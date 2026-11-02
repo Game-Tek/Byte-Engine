@@ -1,4 +1,7 @@
 // The block's 16x16 mip-zero depths, then its 8x8, 4x4, and 2x2 reductions after them.
+
+use ::byte_engine::rendering::visibility::layouts::hiz_base::*;
+
 shared_depth: workgroup<f32, 340>;
 
 HIZ_BLOCK_WIDTH: const u32 = 16;
@@ -25,12 +28,12 @@ farthest_of_four: fn (index: u32, stride: u32) -> f32 {
 	);
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, hiz_base: HizBase) -> void {
 	let coordinate: vec2u = input.thread_id;
 	let lane: u32 = input.thread_idx;
 	let block_origin: vec2u = coordinate - vec2u(lane % HIZ_BLOCK_WIDTH, lane / HIZ_BLOCK_WIDTH);
-	let extent: vec2u = image_size(level_0);
-	let source_extent: vec2u = texture_size(source_depth);
+	let extent: vec2u = image_size(hiz_base.level_0);
+	let source_extent: vec2u = texture_size(hiz_base.source_depth);
 
 	// Integer bounds keep the footprint exact: it starts at the first pixel the texel overlaps and ends past the last.
 	let first_x: u32 = coordinate.x * source_extent.x / extent.x;
@@ -40,11 +43,11 @@ main: fn (input: StageInput) -> void {
 	let farthest: f32 = 1.0;
 	for (let y: u32 = first_y; y < end_y; y = y + 1) {
 		for (let x: u32 = first_x; x < end_x; x = x + 1) {
-			farthest = min(farthest, fetch(source_depth, vec2u(x, y)).x);
+			farthest = min(farthest, fetch(hiz_base.source_depth, vec2u(x, y)).x);
 		}
 	}
 	let seeded: f32 = toward_far_plane(farthest);
-	write(level_0, coordinate, vec4f(seeded, 0.0, 0.0, 1.0));
+	write(hiz_base.level_0, coordinate, vec4f(seeded, 0.0, 0.0, 1.0));
 	shared_depth[lane] = seeded;
 	workgroup_barrier();
 
@@ -52,7 +55,7 @@ main: fn (input: StageInput) -> void {
 	if (lane < 64) {
 		let texel: vec2u = vec2u(lane % 8, lane / 8);
 		let depth: f32 = farthest_of_four(texel.y * 2 * HIZ_BLOCK_WIDTH + texel.x * 2, HIZ_BLOCK_WIDTH);
-		write(level_1, block_origin / vec2u(2, 2) + texel, vec4f(depth, 0.0, 0.0, 1.0));
+		write(hiz_base.level_1, block_origin / vec2u(2, 2) + texel, vec4f(depth, 0.0, 0.0, 1.0));
 		shared_depth[HIZ_LEVEL_1_OFFSET + lane] = depth;
 	}
 	workgroup_barrier();
@@ -61,7 +64,7 @@ main: fn (input: StageInput) -> void {
 	if (lane < 16) {
 		let texel: vec2u = vec2u(lane % 4, lane / 4);
 		let depth: f32 = farthest_of_four(HIZ_LEVEL_1_OFFSET + texel.y * 2 * 8 + texel.x * 2, 8);
-		write(level_2, block_origin / vec2u(4, 4) + texel, vec4f(depth, 0.0, 0.0, 1.0));
+		write(hiz_base.level_2, block_origin / vec2u(4, 4) + texel, vec4f(depth, 0.0, 0.0, 1.0));
 		shared_depth[HIZ_LEVEL_2_OFFSET + lane] = depth;
 	}
 	workgroup_barrier();
@@ -70,7 +73,7 @@ main: fn (input: StageInput) -> void {
 	if (lane < 4) {
 		let texel: vec2u = vec2u(lane % 2, lane / 2);
 		let depth: f32 = farthest_of_four(HIZ_LEVEL_2_OFFSET + texel.y * 2 * 4 + texel.x * 2, 4);
-		write(level_3, block_origin / vec2u(8, 8) + texel, vec4f(depth, 0.0, 0.0, 1.0));
+		write(hiz_base.level_3, block_origin / vec2u(8, 8) + texel, vec4f(depth, 0.0, 0.0, 1.0));
 		shared_depth[HIZ_LEVEL_3_OFFSET + lane] = depth;
 	}
 	workgroup_barrier();
@@ -78,6 +81,6 @@ main: fn (input: StageInput) -> void {
 	// Lane 0 reduces it to the block's one texel of mip four.
 	if (lane == 0) {
 		let depth: f32 = farthest_of_four(HIZ_LEVEL_3_OFFSET, 2);
-		write(level_4, block_origin / vec2u(16, 16), vec4f(depth, 0.0, 0.0, 1.0));
+		write(hiz_base.level_4, block_origin / vec2u(16, 16), vec4f(depth, 0.0, 0.0, 1.0));
 	}
 }

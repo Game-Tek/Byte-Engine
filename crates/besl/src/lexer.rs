@@ -3,6 +3,7 @@
 mod ast;
 mod bools;
 mod entry;
+mod layers;
 mod lowering;
 mod matching;
 mod resolution;

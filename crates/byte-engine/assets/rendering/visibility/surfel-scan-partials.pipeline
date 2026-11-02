@@ -1,1 +1,1 @@
-{"name":"Surfel Scan Partials","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/surfel-scan-partials.besl"}}
+{"name":"Surfel Scan Partials","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/surfel-scan-partials.besl"}}

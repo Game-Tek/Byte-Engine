@@ -5,7 +5,7 @@ use super::image_transform::Configuration;
 pub const TONE_MAPPING: Configuration = Configuration {
 	name: "aces",
 	label: "ACES Tonemap",
-	pipeline_id: "byte-engine/rendering/aces/tone-mapping.pipeline",
+	pipeline_id: "byte_engine/rendering/aces/tone-mapping.pipeline",
 	output_name: "ACES Tonemap Output",
 	requires_float_input: true,
 };

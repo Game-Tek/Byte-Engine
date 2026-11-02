@@ -38,8 +38,8 @@ impl DebugMeshRenderPass {
 		);
 
 		let pipeline_manager = render_pass_builder.pipeline_manager().clone();
-		let depth_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/debug/depth.pipeline");
-		let overlay_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/debug/overlay.pipeline");
+		let depth_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/debug/depth.pipeline");
+		let overlay_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/debug/overlay.pipeline");
 		let working_color_handle = ghi::BaseImageHandle::from(working_color);
 		let source_copy = ImageBypassPass::new(render_pass_builder, source, working_color_handle);
 		let output_copy = ImageBypassPass::new(render_pass_builder, working_color_handle, output);

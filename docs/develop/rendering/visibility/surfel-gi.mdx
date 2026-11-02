@@ -471,7 +471,7 @@ deviations from the history's luminance cuts the history's confidence, down to
 one frame's worth at 8 deviations, so a change, such as a lamp turning off,
 shows within a frame or two. As in kajiya, the history counts its samples to a
 limit and cuts the limit back when the light changes past its variance.
-`surfel_temporal_accumulate`, in `layouts/surfel-temporal.besl`, does this at
+`surfel_temporal_accumulate`, in `layouts/surfel_temporal.besl`, does this at
 the end of the resolve. It was a pass of its own, which read the estimate and
 the confidence back from two images; inside the resolve, it saves that
 dispatch, both images, and four reads a pixel: 0.64 ms of resolve and 0.19 ms
@@ -542,10 +542,10 @@ and 9%.
   their cell's range without a clamp, so a pass that lists a surfel in more
   cells, or entries sized below the capacity times the limit, reads and writes
   past the buffer. The limit in `render_pass/surfel_gi.rs` equals the one in
-  `layouts/surfel-gi.besl`.
+  `layouts/surfel_gi.besl`.
 - **A slot's grid threads share a subgroup and reach every shuffle.**
   `surfel-count` and `surfel-scatter` take `SURFEL_GRID_LANES` threads a slot,
-  in `render_pass/surfel_gi.rs` as in `layouts/surfel-gi.besl`, at consecutive
+  in `render_pass/surfel_gi.rs` as in `layouts/surfel_gi.besl`, at consecutive
   indices that start at a multiple of their count, so any subgroup of four or
   more threads holds them. The count's threads run every shuffle, a dead or
   out-of-pool slot's included, so none returns before the last one; its walks
@@ -562,7 +562,7 @@ and 9%.
   `surfel_granted_ray`, and a slot asks for rays in one class only.
 - **A sort key fits 32 bits.** The material slot sits above 20 bits of rank, so
   the material limit stays at most 4,096 and the ray budget at most 2<sup>20</sup>.
-  The material counts of `RayHitSort` in `layouts/ray-hits.besl` number
+  The material counts of `RayHitSort` in `layouts/ray_hits.besl` number
   `MAX_MATERIALS`.
 - **Records reach the table before their instances.**
   `SceneAccelerationStructures::admit` gives the meshes a frame draws for the

@@ -1,1 +1,1 @@
-{"name":"Hable Filmic Tone Mapping","kind":{"type":"tile","shader":"byte-engine/rendering/hable/tone-mapping.besl"}}
+{"name":"Hable Filmic Tone Mapping","kind":{"type":"tile","shader":"byte_engine/rendering/hable/tone-mapping.besl"}}

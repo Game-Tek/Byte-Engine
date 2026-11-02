@@ -10,6 +10,9 @@
 // result stays scene-linear for the tone mapper that follows. The result is held to the half-float range, so a scene
 // texel that overflowed to infinity stores finite. The climb lives in `layouts/climb.besl`, which binds both levels.
 
+use ::byte_engine::rendering::bloom::layouts::parameters::*;
+use ::byte_engine::rendering::bloom::layouts::climb::*;
+
 scene_texture: descriptor<{ type: Texture2D, binding: 2, access: read }>;
 bloom_parameters: descriptor<{ type: BloomParameters, binding: 4, access: read, memory: constant }>;
 result: output<vec4f, 0>;
@@ -39,7 +42,7 @@ region_coordinate: fn (origin: u32, region: u32, extent: u32) -> u32 {
 
 // Builds the top-level texel at region cell `cell`. Every lane builds one, so the tent's taps fold into four bilinear
 // reads wherever the radius allows.
-climb: fn (region_origin: vec2u, cell: vec2u, top_size: vec2u) -> vec4f {
+climb: fn (climb_set: Climb, region_origin: vec2u, cell: vec2u, top_size: vec2u) -> vec4f {
 	let texel: vec2u = vec2u(
 		region_coordinate(region_origin.x, cell.x, top_size.x),
 		region_coordinate(region_origin.y, cell.y, top_size.y)
@@ -47,8 +50,8 @@ climb: fn (region_origin: vec2u, cell: vec2u, top_size: vec2u) -> vec4f {
 	let uv: vec2f = level_uv(texel, top_size);
 	let same_weight: vec4f = bloom_parameters.same_weight[0];
 	let low_weight: vec4f = bloom_parameters.low_weight[0];
-	let climbed: vec3f = same_level(uv) * vec3f(same_weight.x, same_weight.y, same_weight.z)
-		+ folded_tent(uv, bloom_parameters.filter[0].x) * vec3f(low_weight.x, low_weight.y, low_weight.z);
+	let climbed: vec3f = same_level(climb_set, uv) * vec3f(same_weight.x, same_weight.y, same_weight.z)
+		+ folded_tent(climb_set, uv, bloom_parameters.filter[0].x) * vec3f(low_weight.x, low_weight.y, low_weight.z);
 	return vec4f(climbed.x, climbed.y, climbed.z, 0.0);
 }
 
@@ -93,7 +96,7 @@ write_block: fn (base: vec2u, size: vec2u, top_left: vec4f, top_right: vec4f, bo
 	}
 }
 
-main: fn(input: StageInput) -> void {
+main: fn(input: StageInput, climb_set: Climb) -> void {
 	let lane: u32 = input.thread_idx;
 	let base: vec2u = input.thread_id * vec2u(BLOOM_LANE_WIDTH, BLOOM_LANE_WIDTH);
 	let result_size: vec2u = input.extent;
@@ -119,12 +122,12 @@ main: fn(input: StageInput) -> void {
 
 	// Each lane builds the top-level texel under its own block, one in from the ring, and the first 68 lanes also build
 	// one ring texel. The lane's own climb is issued first, so its reads are in flight while the ring lanes start theirs.
-	let top_size: vec2u = texture_size(high_resolution_texture);
+	let top_size: vec2u = texture_size(climb_set.high_resolution_texture);
 	let lane_position: vec2u = input.thread_id % vec2u(BLOOM_WORKGROUP_WIDTH, BLOOM_WORKGROUP_WIDTH);
 	// The top-level texel under the tile's first pixel; the region starts one texel before it.
 	let region_origin: vec2u = input.thread_id - lane_position;
 	let own_cell: vec2u = lane_position + vec2u(1, 1);
-	let own: vec4f = climb(region_origin, own_cell, top_size);
+	let own: vec4f = climb(climb_set, region_origin, own_cell, top_size);
 	if (lane < BLOOM_RING_TEXELS) {
 		let ring_cell: vec2u = vec2u(BLOOM_REGION_LAST, lane - 51);
 		if (lane < 18) {
@@ -134,7 +137,7 @@ main: fn(input: StageInput) -> void {
 		} else if (lane < 52) {
 			ring_cell = vec2u(0, lane - 35);
 		}
-		shared_top_level[ring_cell.y * BLOOM_REGION_WIDTH + ring_cell.x] = climb(region_origin, ring_cell, top_size);
+		shared_top_level[ring_cell.y * BLOOM_REGION_WIDTH + ring_cell.x] = climb(climb_set, region_origin, ring_cell, top_size);
 	}
 	shared_top_level[own_cell.y * BLOOM_REGION_WIDTH + own_cell.x] = own;
 	workgroup_barrier();

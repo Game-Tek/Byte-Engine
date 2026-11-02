@@ -18,7 +18,7 @@ hull. The Academy's reference builds them when a transform starts, with
 bisection searches that run thousands of color conversions. The engine renders
 to one display, so `scripts/generate-aces2-tables.py` runs those searches once
 and writes the results, with the display's matrices and constants, to
-`crates/byte-engine/assets/rendering/layouts/aces2-rec709-100nit.besl`. The
+`crates/byte-engine/assets/rendering/layouts/aces2_rec709_100nit.besl`. The
 shader, `color-grading/aces2.besl`, reads that layout and runs only the
 per-pixel transform.
 
@@ -28,7 +28,7 @@ only. Its forward transform is also the reference model the shader's tests use.
 ## Rules a change must keep
 
 - Never edit `aces2-rec709-100nit.besl` by hand. Change the script, then run
-  `python3 scripts/generate-aces2-tables.py > crates/byte-engine/assets/rendering/layouts/aces2-rec709-100nit.besl`
+  `python3 scripts/generate-aces2-tables.py > crates/byte-engine/assets/rendering/layouts/aces2_rec709_100nit.besl`
   from the repository root.
 - Keep the reference's arithmetic, including its quirks. The narrowed hue
   search that picks the upper hull's gamma starts one entry high for about a

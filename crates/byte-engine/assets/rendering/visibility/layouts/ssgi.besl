@@ -10,4 +10,6 @@ SsgiParameters: struct {
 	padding_1: u32,
 }
 
-ssgi_parameters: descriptor<{ type: SsgiParameters, binding: 1, access: read }>;
+Ssgi: layer {
+	ssgi_parameters: descriptor<{ type: SsgiParameters, binding: 1, access: read }>;
+}

@@ -1,1 +1,1 @@
-{"name":"Image Blit","kind":{"type":"compute","shader":"byte-engine/rendering/blit/image.besl"}}
+{"name":"Image Blit","kind":{"type":"compute","shader":"byte_engine/rendering/blit/image.besl"}}

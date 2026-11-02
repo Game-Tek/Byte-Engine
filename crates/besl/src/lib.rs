@@ -16,9 +16,11 @@
 )]
 
 pub mod lexer;
+mod modules;
 pub mod optimization;
 pub mod parser;
 pub mod sampler;
+mod signatures;
 mod tokenizer;
 pub mod vm;
 mod writer;
@@ -32,6 +34,7 @@ pub use lexer::infer_expression_type;
 
 pub use crate::lexer::NodeReference;
 pub use crate::lexer::{BindingTypes, BufferMemoryClass, CallTarget, ElseBranch, FixedArray, MatchArm};
+pub use crate::modules::{LoadedModule, ModuleLoader, ModuleQuery, attach_modules};
 pub use crate::sampler::SamplerState;
 pub use crate::writer::write;
 
@@ -133,7 +136,9 @@ pub type ParserNode<'a> = parser::Node<'a>;
 /// This function tokenizes the source and builds a syntax tree. Call [`lex`] to
 /// resolve the tree's named references before compilation.
 pub fn parse<'a>(source: &'a str) -> Result<parser::Node<'a>, CompilationError> {
-	parser::parse(&tokenizer::tokenize(source)).map_err(CompilationError::Parsing)
+	let mut program = parser::parse(&tokenizer::tokenize(source)).map_err(CompilationError::Parsing)?;
+	modules::gather_root_modules(&mut program);
+	Ok(program)
 }
 
 /// Resolves a parsed syntax tree and returns its linked root node.
@@ -160,88 +165,6 @@ pub fn compile_to_besl(source: &str, parent: Option<Node>) -> Result<NodeReferen
 	let parser_root_node = parse(source)?;
 
 	lexer::lex_with_root(parent.unwrap_or_else(Node::root), parser_root_node).map_err(CompilationError::Lex)
-}
-
-/// Places layout layers under a parsed module so the module can reference their declarations.
-///
-/// A layout layer is BESL source without a `main` function. It holds the declarations several shaders share, such as
-/// structs, descriptors, a push constant block, constants, and helper functions.
-///
-/// The descriptors one layer declares form one descriptor set layout, named after the layer: every shader that lists
-/// the layer shares that set, and the application binds it as a whole. Declare each descriptor set in a layer of its
-/// own, and keep shared structs and helpers that no set owns in layers without descriptors. The descriptors a module
-/// declares itself form the module's own layout.
-///
-/// `layers` yields each layer's name and source. Layers stack in that order: each layer can reference the layers
-/// before it, and the module can reference all of them. A layer's name identifies its descriptor set layout and
-/// appears in error messages. A declaration name may appear only once across the module and its layers, so a stale
-/// copy left in a shader fails instead of silently diverging from the layer.
-///
-/// Next, pass the returned node to [`lex`].
-pub fn stack_layers<'a>(
-	mut module: parser::Node<'a>,
-	layers: impl IntoIterator<Item = (&'a str, &'a str)>,
-) -> Result<parser::Node<'a>, CompilationError> {
-	let invalid = |message: String| CompilationError::Lex(lexer::LexError::invalid(message));
-
-	// Every layer declaration in stacking order, and the name and layer of each one that has a name.
-	let mut stacked = Vec::new();
-	let mut declared: Vec<(&str, &str)> = Vec::new();
-
-	for (layer, source) in layers {
-		let mut root = parse(source).map_err(|error| {
-			invalid(format!(
-				"Layout layer `{layer}` did not parse ({error:?}). The most likely cause is invalid BESL syntax in the layer."
-			))
-		})?;
-
-		// `parse` always returns a scope.
-		let parser::Nodes::Scope { children, .. } = root.node_mut() else {
-			continue;
-		};
-
-		for mut declaration in children.drain(..) {
-			// The resources one layer declares form one descriptor set layout, named after the layer.
-			declaration.set_layout(layer);
-
-			if let Some(name) = declaration.name() {
-				if name == "main" {
-					return Err(invalid(format!(
-						"Layout layer `{layer}` declares `main`. The most likely cause is that a shader was listed as a layer; a layer holds only shared declarations."
-					)));
-				}
-
-				if let Some((_, owner)) = declared.iter().find(|(declared, _)| *declared == name) {
-					return Err(invalid(format!(
-						"Layout layer `{layer}` redeclares `{name}`, which layer `{owner}` already declares. The most likely cause is that both layers describe the same resource; keep the declaration in one of them."
-					)));
-				}
-
-				declared.push((name, layer));
-			}
-
-			stacked.push(declaration);
-		}
-	}
-
-	let parser::Nodes::Scope { children, .. } = module.node_mut() else {
-		return Err(invalid(
-			"Invalid shader module: the parsed node is not a scope. The most likely cause is that the node is not the root that besl::parse returns.".to_string(),
-		));
-	};
-
-	for name in children.iter().filter_map(parser::Node::name) {
-		if let Some((_, owner)) = declared.iter().find(|(declared, _)| *declared == name) {
-			return Err(invalid(format!(
-				"The shader redeclares `{name}`, which layout layer `{owner}` already declares. The most likely cause is a declaration left in the shader after it moved to the layer; delete the shader's copy."
-			)));
-		}
-	}
-
-	// Layer declarations go first so the lexer links them before the module declarations that reference them.
-	children.splice(0..0, stacked);
-
-	Ok(module)
 }
 
 #[derive(Debug)]

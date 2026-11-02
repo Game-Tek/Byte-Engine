@@ -15,29 +15,36 @@
 // Next, the sort orders the hits by material, so the shade pass runs each material's closest-hit shader for a run of
 // hits side by side.
 
-main: fn (input: StageInput) -> void {
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+use ::byte_engine::rendering::visibility::layouts::ray_traced_scene::*;
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::surfel_gi::*;
+use ::byte_engine::rendering::visibility::layouts::ray_hits::*;
+
+main: fn (input: StageInput, scene: Scene, ray_traced_scene: RayTracedScene, surfel_gi_set: SurfelGi, ray_hits: RayHits) -> void {
 	let ray: u32 = input.thread_id.x;
 	// The frame's rays: the priority window's, then the regular one's.
-	let rays: u32 = surfel_pool.priority_rays + surfel_pool.regular_rays;
+	let rays: u32 = surfel_gi_set.surfel_pool.priority_rays + surfel_gi_set.surfel_pool.regular_rays;
 	if (ray == 0) {
-		ray_hit_sort.rays = rays;
+		ray_hits.ray_hit_sort.rays = rays;
 	}
 	if (ray >= rays) {
 		return;
 	}
-	let ray_record: u32 = surfel_rays[ray];
+	let ray_record: u32 = surfel_gi_set.surfel_rays[ray];
 	let slot: u32 = ray_record & SURFEL_SLOT_MASK;
 	let sample: u32 = ray_record >> SURFEL_SLOT_BITS;
-	let surfel: SurfelRecord = surfel_records[slot];
+	let surfel: SurfelRecord = surfel_gi_set.surfel_records[slot];
 	let normal: vec3f = decode_surfel_normal(surfel.normal);
-	let seed: u32 = surfel_hash_combine(surfel_hash_combine(slot, surfel_parameters.frame_index), sample);
+	let seed: u32 = surfel_hash_combine(surfel_hash_combine(slot, surfel_gi_set.surfel_parameters.frame_index), sample);
 	let jitter_seed: u32 = surfel_hash(seed);
 	let jitter: vec2f = vec2f(surfel_unit(jitter_seed), surfel_unit(surfel_hash(jitter_seed)));
 
 	let guide: u32 = slot * SURFEL_GUIDE_CELLS;
-	let mass: f32 = surfel_irradiance[slot].guide_mass;
+	let mass: f32 = surfel_gi_set.surfel_irradiance[slot].guide_mass;
 	// The rays the surfel received before this frame, which also number its rays along its R2 sequence.
-	let received: f32 = surfel_irradiance[slot].rays;
+	let received: f32 = surfel_gi_set.surfel_irradiance[slot].rays;
 	let share: f32 = 0.0;
 	if (mass > 0.000001) {
 		share = SURFEL_GUIDE_SHARE * clamp(received / SURFEL_GUIDE_RAYS, 0.0, 1.0);
@@ -51,7 +58,7 @@ main: fn (input: StageInput) -> void {
 		let target: f32 = surfel_unit(surfel_hash(surfel_hash(jitter_seed))) * mass;
 		let cell: u32 = SURFEL_GUIDE_CELLS - 1;
 		for (let candidate: u32 = 0; candidate < SURFEL_GUIDE_CELLS; candidate = candidate + 1) {
-			let weight: f32 = max(0.0, f32(surfel_guides[guide + candidate]));
+			let weight: f32 = max(0.0, f32(surfel_gi_set.surfel_guides[guide + candidate]));
 			if (target < weight) {
 				cell = candidate;
 				break;
@@ -71,7 +78,7 @@ main: fn (input: StageInput) -> void {
 	let cosine_density: f32 = max(local.z, 0.0) / 3.14159265359;
 	let guide_density: f32 = 0.0;
 	if (share > 0.0) {
-		let cell_weight: f32 = max(0.0, f32(surfel_guides[guide + surfel_square_cell(point, SURFEL_GUIDE_SIDE)]));
+		let cell_weight: f32 = max(0.0, f32(surfel_gi_set.surfel_guides[guide + surfel_square_cell(point, SURFEL_GUIDE_SIDE)]));
 		guide_density = cell_weight / mass * f32(SURFEL_GUIDE_CELLS) / 6.28318530718;
 	}
 	let density: f32 = (1.0 - share) * cosine_density + share * guide_density;
@@ -82,17 +89,17 @@ main: fn (input: StageInput) -> void {
 
 	let direction: vec3f = surfel_to_world(surfel_basis(normal), normal, local);
 	let origin: vec3f = surfel.position + normal * surfel_ray_offset(surfel.radius);
-	let hit: Hit = intersect(scene_structure, 255, origin, direction, 0.0, SURFEL_RAY_LENGTH);
+	let hit: Hit = intersect(ray_traced_scene.scene_structure, 255, origin, direction, 0.0, SURFEL_RAY_LENGTH);
 	let packed_point: u32 = surfel_pack_square(point);
 	if (hit.distance < 0.0) {
-		surfel_ray_results[ray] = SurfelRayResult(vec3f(0.0, 0.0, 0.0), -1.0, packed_point, weight, guided);
-		ray_hit_keys[ray] = NO_HIT;
+		surfel_gi_set.surfel_ray_results[ray] = SurfelRayResult(vec3f(0.0, 0.0, 0.0), -1.0, packed_point, weight, guided);
+		ray_hits.ray_hit_keys[ray] = NO_HIT;
 		return;
 	}
 	// The shade pass fills in the light and whether the ray hit a back face; the rest of the result is known now.
-	surfel_ray_results[ray] = SurfelRayResult(vec3f(0.0, 0.0, 0.0), hit.distance, packed_point, weight, guided);
+	surfel_gi_set.surfel_ray_results[ray] = SurfelRayResult(vec3f(0.0, 0.0, 0.0), hit.distance, packed_point, weight, guided);
 
 	// The geometry table leads the hit to the frame's record of the primitive it hit, which names its material.
-	let geometry: vec2u = ray_tracing_geometries.geometries[hit.custom_index + hit.geometry_index];
-	keep_ray_hit(ray, meshes.meshes[geometry.x].material_index, hit);
+	let geometry: vec2u = ray_traced_scene.ray_tracing_geometries.geometries[hit.custom_index + hit.geometry_index];
+	keep_ray_hit(ray_hits, ray, scene.meshes.meshes[geometry.x].material_index, hit);
 }

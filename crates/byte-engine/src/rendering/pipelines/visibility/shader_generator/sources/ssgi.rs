@@ -9,7 +9,7 @@
 // Decodes a normal the SSGI trace stored as an octahedral pair in RG, or returns zero for the pair (0, 0), which marks
 // a texel without a normal. That pair encodes +z, which points away from the camera and so is never a stored normal.
 // It decodes at half precision, which the normal agreement test tolerates, so the upsample keeps its four pairs in
-// half-width registers. `decode_stored_normal` in `layouts/screen-trace.besl` is the same decoder at full precision;
+// half-width registers. `decode_stored_normal` in `layouts/screen_trace.besl` is the same decoder at full precision;
 // keep both in sync with `encode_stored_normal` there.
 pub(crate) const SSGI_STORED_NORMAL_SOURCE: &str = r#"
 ssgi_stored_normal: fn (stored: vec2f16) -> vec3f16 {
@@ -84,6 +84,7 @@ indirect_diffuse_source_position: fn (pixel: vec2u, extent: vec2u, source_extent
 // images use.
 pub(crate) const WEIGH_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE: &str = r#"
 weigh_screen_space_indirect_diffuse: fn (
+	material_evaluation: MaterialEvaluation,
 	base: vec2f,
 	fraction: vec2f,
 	source_extent: vec2u,
@@ -108,7 +109,7 @@ weigh_screen_space_indirect_diffuse: fn (
 			min(base.x + f32(tap % 2), f32(source_extent.x - 1)),
 			min(base.y + f32(tap / 2), f32(source_extent.y - 1))
 		);
-		let ray: vec2f = tap_texel * ssgi_view.pixel_to_ray_mul + ssgi_view.pixel_to_ray_add;
+		let ray: vec2f = tap_texel * material_evaluation.ssgi_view.pixel_to_ray_mul + material_evaluation.ssgi_view.pixel_to_ray_add;
 		let tap_normal: vec3f16 = ssgi_stored_normal(stored_normals[tap]);
 		let bilinear: f32 = mix(1.0 - fraction.x, fraction.x, f32(tap % 2)) * mix(1.0 - fraction.y, fraction.y, f32(tap / 2));
 		// A small floor keeps a texel that lands exactly on the far side of the bilinear footprint eligible. A texel
@@ -160,6 +161,7 @@ weigh_screen_space_indirect_diffuse: fn (
 // the same reads and retain the normal and tangent-plane tests.
 pub(crate) const SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE: &str = r#"
 sample_screen_space_indirect_diffuse: fn (
+	material_evaluation: MaterialEvaluation,
 	pixel: vec2u,
 	extent: vec2u,
 	position: vec3f,
@@ -167,7 +169,7 @@ sample_screen_space_indirect_diffuse: fn (
 	geometric_normal: vec3f,
 	ray_traced: bool
 ) -> vec4f {
-	let source_extent: vec2u = texture_size(ssgi_history);
+	let source_extent: vec2u = texture_size(material_evaluation.ssgi_history);
 	let source_position: vec2f = indirect_diffuse_source_position(pixel, extent, source_extent);
 	let base: vec2f = vec2f(floor(source_position.x), floor(source_position.y));
 	// Every texel is read before any weight is computed, so the gather and eight fetches can overlap instead of
@@ -179,7 +181,7 @@ sample_screen_space_indirect_diffuse: fn (
 	// evaluation 0.8 to 1.4 % faster on the Sponza hall view (2026-10-06).
 	// One gather reads the same clamped 2x2 depth footprint as the four independent texel fetches. The corner
 	// lies between the texel centers; gather returns bottom-left, bottom-right, top-right, top-left.
-	let depth_quad: vec4f = gather(depth_pyramid, (base + vec2f(1.0, 1.0)) / vec2f(f32(source_extent.x), f32(source_extent.y)));
+	let depth_quad: vec4f = gather(material_evaluation.depth_pyramid, (base + vec2f(1.0, 1.0)) / vec2f(f32(source_extent.x), f32(source_extent.y)));
 	let depths: f32[4] = f32[4](depth_quad.w, depth_quad.z, depth_quad.x, depth_quad.y);
 	let zero_pair: vec2f16 = vec2f16(0.0, 0.0);
 	let stored_normals: vec2f16[4] = vec2f16[4](zero_pair, zero_pair, zero_pair, zero_pair);
@@ -190,11 +192,12 @@ sample_screen_space_indirect_diffuse: fn (
 			min(u32(base.x) + tap % 2, source_extent.x - 1),
 			min(u32(base.y) + tap / 2, source_extent.y - 1)
 		);
-		let stored: vec4f = fetch(ssgi_normals, texel);
+		let stored: vec4f = fetch(material_evaluation.ssgi_normals, texel);
 		stored_normals[tap] = vec2f16(vec2f(stored.x, stored.y));
-		lights[tap] = vec4f16(fetch(ssgi_history, texel));
+		lights[tap] = vec4f16(fetch(material_evaluation.ssgi_history, texel));
 	}
 	let indirect: vec4f = weigh_screen_space_indirect_diffuse(
+		material_evaluation,
 		base,
 		source_position - base,
 		source_extent,
@@ -211,6 +214,7 @@ sample_screen_space_indirect_diffuse: fn (
 	// Retry the same texels against the triangle plane, with the nearest-depth fallback for a thin surface.
 	// Keeping the original reads avoids a second texture window without changing either reconstruction's tests.
 	return weigh_screen_space_indirect_diffuse(
+		material_evaluation,
 		base, source_position - base, source_extent, depths, stored_normals, lights, position, geometric_normal, true
 	);
 }
@@ -234,6 +238,7 @@ indirect_diffuse_window_origin: fn (pixel: vec2u, extent: vec2u, source_extent: 
 // clamped positions the images give the taps, so the result is the same.
 pub(crate) const SAMPLE_TILE_INDIRECT_DIFFUSE_SOURCE: &str = r#"
 sample_screen_space_indirect_diffuse: fn (
+	material_evaluation: MaterialEvaluation,
 	pixel: vec2u,
 	extent: vec2u,
 	position: vec3f,
@@ -241,7 +246,7 @@ sample_screen_space_indirect_diffuse: fn (
 	geometric_normal: vec3f,
 	ray_traced: bool
 ) -> vec4f {
-	let source_extent: vec2u = texture_size(ssgi_history);
+	let source_extent: vec2u = texture_size(material_evaluation.ssgi_history);
 	let source_position: vec2f = indirect_diffuse_source_position(pixel, extent, source_extent);
 	let base: vec2f = vec2f(floor(source_position.x), floor(source_position.y));
 	let window_origin: vec2u = indirect_diffuse_window_origin(pixel, extent, source_extent);
@@ -262,6 +267,7 @@ sample_screen_space_indirect_diffuse: fn (
 		lights[tap] = vec4f16(tile_indirect_lights[window_index]);
 	}
 	let indirect: vec4f = weigh_screen_space_indirect_diffuse(
+		material_evaluation,
 		base,
 		source_position - base,
 		source_extent,
@@ -278,6 +284,7 @@ sample_screen_space_indirect_diffuse: fn (
 	// Retry the same texels against the triangle plane, with the nearest-depth fallback for a thin surface.
 	// Keeping the original reads avoids a second texture window without changing either reconstruction's tests.
 	return weigh_screen_space_indirect_diffuse(
+		material_evaluation,
 		base, source_position - base, source_extent, depths, stored_normals, lights, position, geometric_normal, true
 	);
 }

@@ -12,26 +12,40 @@ pub use reflection::{BindingKind, BindingUsage, ProgramEvaluation, RayPayload, S
 pub use reflection::{FNV1A_OFFSET_BASIS, fnv1a};
 pub(crate) use reflection::{collect_bindings, collect_set_nodes};
 
-/// Reflects the descriptor set layouts that layout layers declare, without a shader that lists them.
+/// Reflects the descriptor set the layer `layer` declares, such as `::byte_engine::layouts::scene::Scene`, without a
+/// shader that takes it.
 ///
-/// `layers` yields each layer's name and source, lowest first, as [`besl::stack_layers`] takes them. Each layer that
-/// declares descriptors becomes one [`SetUsage`], named after the layer, with every binding marked as used.
+/// `read` returns the source of a module file by its path from the asset root, such as `byte_engine/layouts/scene.besl`,
+/// or `None` when it doesn't exist. The set has every binding marked as used.
 ///
-/// A renderer uses it to build the descriptor sets it shares with its shaders from the same source the shaders are
-/// baked from. Next, persist a set with [`crate::resources::material::SetInterface::new`]; its identity equals the
-/// identity of the set every shader that lists the layer was baked with.
-pub fn reflect_layers<'a>(layers: impl IntoIterator<Item = (&'a str, &'a str)>) -> Result<Vec<SetUsage>, String> {
-	let module = besl::stack_layers(besl::parser::Node::root(), layers).map_err(|error| {
-		format!("Failed to stack layout layers ({error:?}). The most likely cause is invalid layer source.")
-	})?;
-	let program = besl::lex(module).map_err(|error| {
+/// A renderer uses it to build a descriptor set it shares with its shaders from the same source the shaders are baked
+/// from. Next, persist the set with [`crate::resources::material::SetInterface::new`]; its identity equals the
+/// identity of the set every shader that takes the layer was baked with.
+pub fn reflect_layer(layer: &str, read: impl Fn(&str) -> Option<String>) -> Result<SetUsage, String> {
+	let failed = |error: besl::CompilationError| {
 		format!(
-			"Failed to link layout layers ({error:?}). The most likely cause is a layer that uses a declaration of a layer listed after it, or of a shader."
+			"Failed to load layer `{layer}` ({error:?}). The most likely cause is a misspelled layer path or invalid module source."
 		)
-	})?;
+	};
 
-	reflection::collect_sets(&program)
+	// A program that only names the layer loads its module and the modules that one names.
+	let source = format!("use {layer};");
+	let modules = besl::ModuleLoader::load(&source, read).map_err(failed)?;
+
+	let mut program = besl::parse(&source).map_err(failed)?;
+	besl::attach_modules(&mut program, &modules).map_err(failed)?;
+	let program = besl::lex(program).map_err(failed)?;
+
+	reflection::collect_sets(&program)?
+		.into_iter()
+		.find(|set| set.layout.as_deref() == Some(layer))
+		.ok_or_else(|| {
+			format!(
+				"Layer `{layer}` declares no descriptors. The most likely cause is a layer that holds only a push constant block or tile targets, which form no descriptor set. Reflect a layer that declares descriptors."
+			)
+		})
 }
+
 #[cfg(test)]
 use reflection::{
 	StorageLayout, StorageLayoutTarget, checked_align_up, primitive_storage_layout, reflected_array_buffer_stride_for_target,
@@ -654,20 +668,69 @@ mod tests {
 	}
 
 	#[test]
-	fn layer_reflection_carries_the_sampler_a_texture_declares() {
-		let sets = reflect_layers([(
-			"pyramids",
+	fn sets_follow_the_layers_main_takes_and_skip_the_others() {
+		let program = besl::compile_to_besl(
 			r#"
-				farthest_depth: sampler<{ mip_filter: nearest, reduction: min }>;
+				A: layer { a: descriptor<{ type: f32[], binding: 0, access: read }>; }
+				B: layer { b: descriptor<{ type: f32[], binding: 1, access: read }>; }
+				Unused: layer { c: descriptor<{ type: f32[], binding: 2, access: read }>; }
+				own: descriptor<{ type: f32[], binding: 3, access: write }>;
+				Shader: fn (input: StageInput, b: B, a: A) -> void;
+				main: Shader { own[0] = a.a[0] + b.b[0]; }
+			"#,
+			None,
+		)
+		.expect("Expected the program to link");
+
+		let layouts = reflection::collect_sets(&program)
+			.expect("Expected the sets to reflect")
+			.into_iter()
+			.map(|set| set.layout)
+			.collect::<Vec<_>>();
+
+		assert_eq!(layouts, [Some("B".to_string()), Some("A".to_string()), None]);
+	}
+
+	#[test]
+	fn a_layer_reflects_from_the_modules_that_declare_it() {
+		let files = [
+			("shared/records.besl", "Light: struct { color: vec3f, intensity: f32 }"),
+			(
+				"shared/lighting.besl",
+				"use ::shared::records::Light;\nLighting: layer { lights: descriptor<{ type: Light[], binding: 4, access: read }>; }",
+			),
+		];
+		let read = |file: &str| {
+			files
+				.iter()
+				.find(|(name, _)| *name == file)
+				.map(|(_, source)| source.to_string())
+		};
+
+		let set = reflect_layer("::shared::lighting::Lighting", read).expect("Expected the layer to reflect");
+
+		assert_eq!(set.layout.as_deref(), Some("::shared::lighting::Lighting"));
+		assert_eq!(set.bindings.len(), 1);
+		assert_eq!(set.bindings[0].name, "lights");
+		assert_eq!(set.used, 1);
+	}
+
+	#[test]
+	fn layer_reflection_carries_the_sampler_a_texture_declares() {
+		let pyramids = r#"
+			farthest_depth: sampler<{ mip_filter: nearest, reduction: min }>;
+			Pyramids: layer {
 				pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;
 				albedo: descriptor<{ type: Texture2D, binding: 1, access: read }>;
-			"#,
-		)])
+			}
+		"#;
+		let set = reflect_layer("::shared::pyramids::Pyramids", |file| {
+			(file == "shared/pyramids.besl").then(|| pyramids.to_string())
+		})
 		.expect("Expected the sampled layer to reflect");
 
 		let kind = |name: &str| {
-			sets[0]
-				.bindings
+			set.bindings
 				.iter()
 				.find(|binding| binding.name == name)
 				.expect("Expected the layer binding")

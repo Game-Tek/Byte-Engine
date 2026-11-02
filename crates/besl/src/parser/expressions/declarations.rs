@@ -7,7 +7,7 @@ pub(crate) fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str
 	iterator.next_str("const")?;
 
 	let r#type = iterator
-		.next_identifier()
+		.next_path()
 		.map_err(|error| error.claimed(|| format!("Expected to find a type for const {name}.")))?;
 	let (r#type, mut iterator) = parse_type_name(iterator, r#type)?;
 
@@ -98,7 +98,7 @@ pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'
 
 		match key {
 			"type" => {
-				let resource_type = iterator.next_identifier().map_err(|_| {
+				let resource_type = iterator.next_path().map_err(|_| {
 					syntax_error(format!(
 						"Expected a resource type in descriptor {name}. The most likely cause is that the `type` property is empty."
 					))
@@ -242,7 +242,6 @@ pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'
 				memory_class,
 				count,
 				sampler,
-				layout: None,
 			},
 		},
 		iterator,
@@ -510,6 +509,11 @@ pub(crate) fn parse_shader_interface_declaration<'i, 'a: 'i>(
 pub(crate) fn parse_push_constant<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	iterator.next_str("push_constant")?;
 	iterator.next_str(":")?;
+	parse_push_constant_block(iterator)
+}
+
+/// Parses a push-constant block from its `push_constant` keyword through its closing `}`.
+fn parse_push_constant_block<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	iterator.next_str("push_constant")?;
 	iterator.next_str("{").map_err(|_| ParsingFailReasons::BadSyntax {
 		message: "Expected { after push_constant declaration.".to_string(),
@@ -532,7 +536,7 @@ pub(crate) fn parse_push_constant<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i,
 		iterator.next_str(":").map_err(|_| ParsingFailReasons::BadSyntax {
 			message: format!("Expected : after push-constant member {token}."),
 		})?;
-		let member_type = iterator.next_identifier().map_err(|_| ParsingFailReasons::BadSyntax {
+		let member_type = iterator.next_path().map_err(|_| ParsingFailReasons::BadSyntax {
 			message: format!("Expected a type after push-constant member {token}."),
 		})?;
 		members.push(Node::member(token, member_type));
@@ -545,7 +549,7 @@ pub(crate) fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a st
 	let name = iterator.next_identifier()?;
 	iterator.next_str(":")?;
 	let mut r#type = iterator
-		.next_identifier()
+		.next_path()
 		.map_err(|error| error.claimed(|| format!("Expected to find type while parsing member {name}.")))?
 		.to_string();
 
@@ -616,7 +620,7 @@ pub(crate) fn parse_struct<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a st
 		}
 
 		iterator.next_str(":").map_err(|_| invalid())?;
-		let type_name = iterator.next_identifier().map_err(|_| invalid())?;
+		let type_name = iterator.next_path().map_err(|_| invalid())?;
 		let type_name = if iterator.clone().next().copied() == Some("[") {
 			iterator.next();
 			let count = iterator
@@ -653,12 +657,12 @@ fn parse_record_type<'i, 'a: 'i>(
 		}
 		let name = iterator.next_identifier().map_err(|_| invalid())?;
 		iterator.next_str(":").map_err(|_| invalid())?;
-		let base_type = iterator.next_identifier().map_err(|_| invalid())?;
+		let base_type = iterator.next_path().map_err(|_| invalid())?;
 		// `primitive<T>` marks a value of type `T` that the mesh stage writes once per primitive.
 		let per_primitive = base_type == "primitive" && iterator.clone().next().copied() == Some("<");
 		let (type_name, next) = if per_primitive {
 			iterator.next_str("<").map_err(|_| invalid())?;
-			let element = iterator.next_identifier().map_err(|_| invalid())?;
+			let element = iterator.next_path().map_err(|_| invalid())?;
 			iterator.next_str(">").map_err(|_| invalid())?;
 			(TypeName::Named(element), iterator)
 		} else {
@@ -715,4 +719,136 @@ pub(crate) fn parse_type_name<'i, 'a: 'i>(
 	}
 
 	Ok((type_name, iterator))
+}
+
+/// Parses a module declaration: `name: mod;` names a file module, and `name: mod { ... }` holds an inline module's
+/// declarations. `::path: mod { ... }` holds the declarations of the module from the asset root at `path`, as
+/// [`crate::write`] writes the modules a program attached.
+pub(crate) fn parse_module<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	if let Some(path) = iterator
+		.clone()
+		.next()
+		.and_then(|token| token.strip_prefix("::"))
+		.filter(|path| super::is_path(path))
+	{
+		iterator.next();
+		iterator.next_str(":")?;
+		iterator.next_str("mod")?;
+		iterator.next_str("{")?;
+		let (children, iterator) = crate::parser::declarations::parse_declarations(iterator, true)?;
+		crate::modules::check_module_declarations(path, &children)
+			.map_err(|message| ParsingFailReasons::BadSyntax { message })?;
+		// The program gathers every root module under one scope; see `crate::modules::gather_root_modules`.
+		let module = Node::scope(path, children);
+		return Ok((Node::scope(crate::modules::ROOT_MODULES, vec![module]), iterator));
+	}
+
+	let name = iterator.next_identifier()?;
+	iterator.next_str(":")?;
+	iterator.next_str("mod")?;
+
+	if crate::modules::is_reserved_module_name(name) {
+		return Err(ParsingFailReasons::BadSyntax {
+			message: format!(
+				"Module name `{name}` is reserved. The most likely cause is a module named after a path root such as `crate`, `super`, or `self`. Rename the module."
+			),
+		});
+	}
+
+	match iterator.next().copied() {
+		Some(";") => Ok((Node::file_module(name), iterator)),
+		Some("{") => {
+			let (children, iterator) = crate::parser::declarations::parse_declarations(iterator, true)?;
+			// Inline modules can't declare `main` either; see `attach_module`.
+			crate::modules::check_module_declarations(name, &children)
+				.map_err(|message| ParsingFailReasons::BadSyntax { message })?;
+			Ok((Node::scope(name, children), iterator))
+		}
+		_ => Err(ParsingFailReasons::BadSyntax {
+			message: format!(
+				"Invalid module {name}. The most likely cause is a missing `;` or `{{` after `{name}: mod`. Write `{name}: mod;` for a file module or `{name}: mod {{ ... }}` for an inline one."
+			),
+		}),
+	}
+}
+
+/// Parses `use path;` or `use path::*;`.
+pub(crate) fn parse_use<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	iterator.next_str("use")?;
+
+	let invalid = || {
+		ParsingFailReasons::BadSyntax {
+		message: "Invalid use declaration. The most likely cause is a path that has spaces around `::`, or a missing `;`. Write `use module::name;` or `use module::*;`.".to_string(),
+	}
+	};
+
+	let path = *iterator.next().ok_or_else(invalid)?;
+	let (path, glob) = match path.strip_suffix("::*") {
+		Some(module) => (module, true),
+		None => (path, false),
+	};
+
+	if !super::is_path(path) {
+		return Err(invalid());
+	}
+
+	iterator.next_str(";").map_err(|_| invalid())?;
+
+	Ok((Node::r#use(path, glob), iterator))
+}
+
+/// Parses a layer: `Name: layer { ... }`, whose members are descriptors, one push constant block, and tile targets.
+pub(crate) fn parse_layer<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	let name = iterator.next_identifier()?;
+	iterator.next_str(":")?;
+	iterator.next_str("layer")?;
+
+	let invalid = |member: &str| ParsingFailReasons::BadSyntax {
+		message: format!(
+			"Invalid member `{member}` of layer {name}. The most likely cause is a declaration a layer can't hold. A layer holds `name: descriptor<{{ ... }}>;`, `name: push_constant {{ ... }}`, and `name: output<vec4f, LOCATION>;` members."
+		),
+	};
+
+	iterator.next_str("{").map_err(|_| invalid("{"))?;
+
+	let mut members = Vec::new();
+	loop {
+		let token = *iterator.clone().next().ok_or(ParsingFailReasons::StreamEndedPrematurely)?;
+		if token == "}" {
+			iterator.next();
+			break;
+		}
+
+		let mut member = iterator.clone();
+		let member_name = member.next_identifier().map_err(|_| invalid(token))?;
+		member.next_str(":").map_err(|_| invalid(member_name))?;
+
+		let (node, next) = match member.clone().next().copied() {
+			Some("push_constant") => {
+				let (node, mut next) = parse_push_constant_block(member)?;
+				// A push constant member may end with `;` like the other members.
+				if next.clone().next() == Some(&";") {
+					next.next();
+				}
+				(node, next)
+			}
+			Some("descriptor") => parse_descriptor(iterator)?,
+			Some("output") => parse_shader_interface_declaration(iterator)?,
+			_ => return Err(invalid(member_name)),
+		};
+
+		let allowed = match node.node() {
+			Nodes::Descriptor { .. } | Nodes::PushConstant { .. } => true,
+			Nodes::Output { count, per_vertex, .. } => count.is_none() && !per_vertex,
+			_ => false,
+		};
+		if !allowed {
+			return Err(invalid(member_name));
+		}
+
+		members.push((member_name, node));
+		iterator = next;
+	}
+
+	Ok((Node::layer(name, members), iterator))
 }

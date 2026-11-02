@@ -1,1 +1,1 @@
-{"name":"Surfel Scan Groups","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/surfel-scan-groups.besl"}}
+{"name":"Surfel Scan Groups","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/surfel-scan-groups.besl"}}

@@ -17,10 +17,10 @@ pub enum LutWorkflow {
 impl LutWorkflow {
 	fn pipeline_id(self) -> &'static str {
 		match self {
-			Self::Creative => "byte-engine/rendering/lut/apply.pipeline",
-			Self::Aces => "byte-engine/rendering/color-grading/aces.pipeline",
-			Self::Aces2 => "byte-engine/rendering/color-grading/aces2.pipeline",
-			Self::DaVinciWideGamut => "byte-engine/rendering/color-grading/dwg.pipeline",
+			Self::Creative => "byte_engine/rendering/lut/apply.pipeline",
+			Self::Aces => "byte_engine/rendering/color-grading/aces.pipeline",
+			Self::Aces2 => "byte_engine/rendering/color-grading/aces2.pipeline",
+			Self::DaVinciWideGamut => "byte_engine/rendering/color-grading/dwg.pipeline",
 		}
 	}
 

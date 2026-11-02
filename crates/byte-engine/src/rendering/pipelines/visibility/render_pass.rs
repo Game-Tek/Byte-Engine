@@ -70,10 +70,10 @@ pub(super) fn record_compute_stages<const N: usize>(
 pub(super) struct Pipelines<const N: usize>([crate::rendering::PipelineRef; N]);
 
 impl<const N: usize> Pipelines<N> {
-	/// Requests the pipeline asset `byte-engine/rendering/visibility/{name}.pipeline` for each name. Next, call
+	/// Requests the pipeline asset `byte_engine/rendering/visibility/{name}.pipeline` for each name. Next, call
 	/// [`Self::resolve`] each frame.
 	pub(super) fn request(pipeline_manager: &PipelineManagerClient, names: [&str; N]) -> Self {
-		Self(names.map(|name| pipeline_manager.request_pipeline(&format!("byte-engine/rendering/visibility/{name}.pipeline"))))
+		Self(names.map(|name| pipeline_manager.request_pipeline(&format!("byte_engine/rendering/visibility/{name}.pipeline"))))
 	}
 
 	/// Returns the compiled pipelines in request order, or `None` while any is still compiling.
@@ -89,7 +89,7 @@ impl Pipelines<4> {
 	/// [`PhaseDispatches::opaque_layer`] the same way.
 	pub(super) fn phases(pipeline_manager: &PipelineManagerClient, stem: &str) -> Self {
 		Self(["", "masked-", "double-sided-", "double-sided-masked-"].map(|variant| {
-			pipeline_manager.request_pipeline(&format!("byte-engine/rendering/visibility/{variant}{stem}.pipeline"))
+			pipeline_manager.request_pipeline(&format!("byte_engine/rendering/visibility/{variant}{stem}.pipeline"))
 		}))
 	}
 }
@@ -134,7 +134,7 @@ pub(super) fn record_meshlet_dispatches(
 }
 
 use self::depth_pyramid::DepthPyramidPass;
-// Only the layout tests compare the record with the stride its layout layer reflects.
+// Only the layout tests compare the record with the stride its layer reflects.
 #[cfg(test)]
 pub(crate) use self::depth_pyramid::ScreenViewData;
 pub(super) use self::gtao::GTAO_PIPELINES;

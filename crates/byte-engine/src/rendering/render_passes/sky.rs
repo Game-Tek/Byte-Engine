@@ -123,13 +123,13 @@ impl AtmosphereSkyRenderPass {
 			sky_view_pipeline,
 			composite_pipeline,
 		] = [
-			("Sky Transmittance LUT", "byte-engine/rendering/sky-transmittance.pipeline"),
+			("Sky Transmittance LUT", "byte_engine/rendering/sky-transmittance.pipeline"),
 			(
 				"Sky Multiple Scattering LUT",
-				"byte-engine/rendering/sky-multiple-scattering.pipeline",
+				"byte_engine/rendering/sky-multiple-scattering.pipeline",
 			),
-			("Sky View LUT", "byte-engine/rendering/sky-view.pipeline"),
-			("Sky Composite", "byte-engine/rendering/sky.pipeline"),
+			("Sky View LUT", "byte_engine/rendering/sky-view.pipeline"),
+			("Sky Composite", "byte_engine/rendering/sky.pipeline"),
 		]
 		.map(|(label, pipeline_id)| {
 			simple_compute::Pipeline::compile(render_pass_builder, simple_compute::Descriptor::new(label, pipeline_id))

@@ -5,21 +5,25 @@
 // light, worth SURFEL_PARENT_PRIOR_RAYS rays, so it neither flashes dark while it fades in nor jumps to its first rays'
 // noisy average. The next frame's grid lists it.
 
-main: fn (input: StageInput) -> void {
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::surfel_gi::*;
+use ::byte_engine::rendering::visibility::layouts::surfel_resolve::*;
+
+main: fn (input: StageInput, surfel_gi_set: SurfelGi, surfel_resolve: SurfelResolve) -> void {
 	let tile: u32 = input.thread_id.x;
-	if (tile >= surfel_resolve_parameters.spawn_tile_count || surfel_spawns[tile].requested == 0) {
+	if (tile >= surfel_resolve.surfel_resolve_parameters.spawn_tile_count || surfel_resolve.surfel_spawns[tile].requested == 0) {
 		return;
 	}
-	let slot: u32 = surfel_take_slot();
+	let slot: u32 = surfel_take_slot(surfel_gi_set);
 	if (slot == NO_SURFEL) {
 		return;
 	}
-	let request: SurfelSpawn = surfel_spawns[tile];
+	let request: SurfelSpawn = surfel_resolve.surfel_spawns[tile];
 	let light: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	let prior: f32 = 0.0;
 	if (request.parent != NO_SURFEL) {
-		light = vec4f(surfel_records[request.parent].irradiance);
+		light = vec4f(surfel_gi_set.surfel_records[request.parent].irradiance);
 		prior = SURFEL_PARENT_PRIOR_RAYS;
 	}
-	surfel_start(slot, request.position, request.normal, light, prior, 0);
+	surfel_start(surfel_gi_set, slot, request.position, request.normal, light, prior, 0);
 }

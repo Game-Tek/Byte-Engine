@@ -287,7 +287,7 @@ fn material_debug_view_source() -> &'static str {
 		);
 		for ((name, color), member) in MATERIAL_DEBUG_VIEWS.iter().zip(MATERIAL_DEBUG_VIEW_MEMBERS) {
 			source.push_str(&format!(
-				"\t// {name}\n\tif (push_constant.{member}) {{\n\t\twrite(debug_view_targets[debug_view_next_slot], pixel_coordinates, {color});\n\t\tdebug_view_next_slot = debug_view_next_slot + 1;\n\t}}\n"
+				"\t// {name}\n\tif (push_constant.{member}) {{\n\t\twrite(material_evaluation.debug_view_targets[debug_view_next_slot], pixel_coordinates, {color});\n\t\tdebug_view_next_slot = debug_view_next_slot + 1;\n\t}}\n"
 			));
 		}
 		source.push_str("}\n");

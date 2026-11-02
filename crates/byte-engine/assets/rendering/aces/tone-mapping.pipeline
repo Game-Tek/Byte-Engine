@@ -1,1 +1,1 @@
-{"name":"ACES Tone Mapping","kind":{"type":"tile","shader":"byte-engine/rendering/aces/tone-mapping.besl"}}
+{"name":"ACES Tone Mapping","kind":{"type":"tile","shader":"byte_engine/rendering/aces/tone-mapping.besl"}}

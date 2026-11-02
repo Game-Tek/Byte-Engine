@@ -18,6 +18,8 @@
 // them. A wider tile shares more of the blocks under its filters, and each lane keeps ten block reads in flight instead
 // of three.
 
+use ::byte_engine::rendering::bloom::layouts::parameters::*;
+
 source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 bloom_parameters: descriptor<{ type: BloomParameters, binding: 2, access: read, memory: constant }>;
 result: output<vec4f, 0>;

@@ -506,7 +506,7 @@ mod tests {
 	async fn components_are_grouped_by_kind_in_entity_order_with_references_resolved() {
 		let (level, payload) = bake(
 			r#"{
-				"$schema": "byte-engine/schemas/level.schema.json",
+				"$schema": "byte_engine/schemas/level.schema.json",
 				entities: [
 					{ id: "a", components: { tag: "first", hinge: { other: { "$entity": "b" }, axis: [0, 1.5, -2] } } },
 					{ id: "b", components: { tag: "second" } },

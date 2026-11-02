@@ -176,7 +176,7 @@ impl AssetManager {
 		self.configurable_state().program_generator = Some(Box::new(generator));
 	}
 
-	/// Installs the transform every standalone BESL program goes through after its layout layers stack and before it
+	/// Installs the transform every standalone BESL program goes through after its modules attach and before it
 	/// links.
 	pub fn set_program_transform<T: ProgramTransform + 'static>(&mut self, transform: T) {
 		self.configurable_state().program_transform = Some(Box::new(transform));

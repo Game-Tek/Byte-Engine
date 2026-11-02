@@ -62,10 +62,9 @@ const TILE_WORKGROUP_SIZE: usize = 64;
 ///
 /// Returns the program rather than its `main`, because the program owns every function it calls.
 fn asset_program(source: &str) -> besl::NodeReference {
-	let mut root = besl::parse(source)
-		.expect("Failed to parse a visibility shader asset. The most likely cause is invalid checked-in BESL source.");
+	let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
 	// Baking gives every standalone shader the common helpers, such as `source_over`.
-	root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);
+	root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
 	let program = besl::lex(root)
 		.expect("Failed to link a visibility shader asset. The most likely cause is an invalid shader declaration.");
 	program
@@ -74,7 +73,7 @@ fn asset_program(source: &str) -> besl::NodeReference {
 	program
 }
 
-/// Reads one checked-in visibility asset's source, with the layout layers its sidecar lists placed before it.
+/// Reads one checked-in visibility asset's source.
 macro_rules! asset_source {
 	($name:literal) => {
 		crate::rendering::shader_vm_test::asset_source(concat!("visibility/", $name))
@@ -2665,7 +2664,7 @@ fn sun_visibility_without_contact_shadows_reaches_no_trace() {
 	use crate::rendering::common_shader_generator::CommonShaderGenerator;
 
 	let reaches_trace = |features| {
-		let source = besl::parse(asset_source!("sun-visibility.besl")).expect("sun visibility should parse");
+		let source = crate::rendering::shader_vm_test::with_engine_modules(asset_source!("sun-visibility.besl"));
 		let root =
 			besl::lex(CommonShaderGenerator::with_features(features).transform(source)).expect("sun visibility should link");
 		let main = root.get_main().expect("sun visibility should contain main");
@@ -3152,9 +3151,9 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 		("probe_update", asset_source!("probe-update.besl"), surfel_slots()),
 		("probe_resolve", asset_source!("probe-resolve.besl"), tile()),
 	] {
-		let mut root = besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}"));
+		let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
 		// Baking gives every standalone shader the common helpers, such as `source_over`.
-		root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);
+		root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
 		let root = besl::lex(root).unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
 		PlatformShaderCompiler::new()
 			.generate(&settings.name(name.to_string()), &root)
@@ -3176,8 +3175,10 @@ async fn ray_tracing_shaders_lower_to_the_platform_shader_language() {
 		("probe_shade", "visibility/probe-shade.besl", Settings::ray_generation()),
 		("default_hit", "visibility/default-hit.besl", Settings::closest_hit()),
 	] {
-		let root = besl::lex(crate::rendering::shader_vm_test::stacked_asset(asset))
-			.unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
+		let root = besl::lex(crate::rendering::shader_vm_test::with_engine_modules(
+			crate::rendering::shader_vm_test::asset_source(asset),
+		))
+		.unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
 		PlatformShaderCompiler::new()
 			.generate(&settings.name(name.to_string()), &root)
 			.await

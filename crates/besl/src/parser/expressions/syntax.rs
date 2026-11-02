@@ -18,7 +18,7 @@ pub(crate) fn parse_var_decl<'i, 'a: 'i>(
 	let variable_name = iterator.next_identifier()?;
 	iterator.next_str(":")?;
 	let variable_type = iterator
-		.next_identifier()
+		.next_path()
 		.map_err(|error| error.claimed(|| format!("Expected to find a type for variable {variable_name}")))?;
 	let (variable_type, iterator) = parse_type_name(iterator, variable_type)?;
 
@@ -81,7 +81,7 @@ pub(crate) fn parse_variable<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
-	let name = iterator.next_identifier()?;
+	let name = iterator.next_path()?;
 
 	expressions.push(Atoms::Member { name });
 
@@ -435,7 +435,7 @@ pub(crate) fn parse_function_call<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
-	let function_name = iterator.next_identifier()?;
+	let function_name = iterator.next_path()?;
 	// Until `(` follows, the tokens may still be a variable or an index expression such as `items[4294967296]`, so a
 	// failed type name only declines.
 	let (function_name, mut iterator) = parse_type_name(iterator, function_name).map_err(|_| ParsingFailReasons::NotMine)?;
@@ -680,6 +680,29 @@ pub(crate) fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 
 	iterator.next_str(":")?;
 	iterator.next_str("fn")?;
+
+	let (params, mut iterator) = parse_parameters(iterator, name)?;
+	iterator.next_str("->")?;
+
+	let return_type = iterator
+		.next_path()
+		.map_err(|error| error.claimed(|| format!("Expected a return type for function {name} declaration.")))?;
+	let (return_type, mut iterator) = parse_type_name(iterator, return_type)?;
+
+	iterator
+		.next_str("{")
+		.map_err(|error| error.claimed(|| format!("Expected a {{ after function {name} declaration.")))?;
+
+	let (statements, iterator) = parse_function_body(iterator, name)?;
+
+	Ok((Node::function(name, params, return_type, statements), iterator))
+}
+
+/// Parses a function's parameter list, from `(` through `)`, for the function or signature `name`.
+pub(crate) fn parse_parameters<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	name: &str,
+) -> Result<(Vec<Node<'a>>, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
 	iterator.next_str("(")?;
 
 	let mut params = Vec::new();
@@ -699,7 +722,7 @@ pub(crate) fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 			.map_err(|error| error.claimed(|| format!("Expected a parameter name for function {name}.")))?;
 		iterator.next_str(":")?;
 		let param_type = iterator
-			.next_identifier()
+			.next_path()
 			.map_err(|error| error.claimed(|| format!("Expected a parameter type for function {name}.")))?;
 		let (param_type, next_iterator) = parse_type_name(iterator, param_type)?;
 		params.push(Node::parameter(param_name, param_type));
@@ -714,17 +737,15 @@ pub(crate) fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 			iterator.next();
 		}
 	}
-	iterator.next_str("->")?;
 
-	let return_type = iterator
-		.next_identifier()
-		.map_err(|error| error.claimed(|| format!("Expected a return type for function {name} declaration.")))?;
-	let (return_type, mut iterator) = parse_type_name(iterator, return_type)?;
+	Ok((params, iterator))
+}
 
-	iterator
-		.next_str("{")
-		.map_err(|error| error.claimed(|| format!("Expected a {{ after function {name} declaration.")))?;
-
+/// Parses the statements of the function `name`'s body, after its `{` through its closing `}`.
+pub(crate) fn parse_function_body<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	name: &str,
+) -> Result<(Vec<Node<'a>>, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
 	let mut statements = vec![];
 
 	loop {
@@ -763,5 +784,89 @@ pub(crate) fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 		}
 	}
 
-	Ok((Node::function(name, params, return_type, statements), iterator))
+	Ok((statements, iterator))
+}
+
+/// Parses a signature: `Name: fn (params) -> Return;`, or several parts joined with `+`, such as `Name: A + B;`. Each
+/// part is a path to another signature or an inline `fn (params) [-> Return]`.
+///
+/// It declines `name: fn (...) -> R { ... }`, which [`parse_function`] reads.
+pub(crate) fn parse_signature<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	let name = iterator.next_identifier()?;
+	iterator.next_str(":")?;
+
+	let mut parts = Vec::new();
+	loop {
+		let token = *iterator.clone().next().ok_or(ParsingFailReasons::StreamEndedPrematurely)?;
+		if token == "fn" {
+			iterator.next();
+			let (params, next) = parse_parameters(iterator, name)?;
+			iterator = next;
+			let return_type = if iterator.clone().next() == Some(&"->") {
+				iterator.next();
+				let return_type = iterator.next_path()?;
+				let (return_type, next) = parse_type_name(iterator, return_type)?;
+				iterator = next;
+				return_type
+			} else {
+				TypeName::Named("void")
+			};
+			parts.push(SignaturePart::Inline { params, return_type });
+		} else if is_path(token) && !is_declaration_keyword(token) {
+			iterator.next();
+			parts.push(SignaturePart::Named(token));
+		} else {
+			return Err(ParsingFailReasons::NotMine);
+		}
+
+		match iterator.clone().next().copied() {
+			Some("+") => {
+				iterator.next();
+			}
+			Some(";") => {
+				iterator.next();
+				break;
+			}
+			// A body after an inline part makes this a function; a body after a path is an implementation.
+			_ if parts.len() == 1 => return Err(ParsingFailReasons::NotMine),
+			_ => {
+				return Err(ParsingFailReasons::BadSyntax {
+					message: format!(
+						"Invalid signature {name}. The most likely cause is a missing `;` or `+` between its parts. Write `{name}: A + B;` or `{name}: fn (name: Type) -> Return;`."
+					),
+				});
+			}
+		}
+	}
+
+	Ok((Node::signature(name, parts), iterator))
+}
+
+/// Parses `name: Signature { ... }`, a function that implements the signature that `Signature` names.
+pub(crate) fn parse_implementation<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	let name = iterator.next_identifier()?;
+	iterator.next_str(":")?;
+	let signature = iterator.next_is(|token| is_path(token) && !is_declaration_keyword(token))?;
+	iterator.next_str("{")?;
+
+	let (statements, iterator) = parse_function_body(iterator, name)?;
+
+	Ok((Node::implementation(name, signature, statements), iterator))
+}
+
+/// Reports whether `token` starts a declaration form after `name:`, so it can't name a signature.
+fn is_declaration_keyword(token: &str) -> bool {
+	matches!(
+		token,
+		"struct"
+			| "fn" | "const"
+			| "mod" | "layer"
+			| "descriptor"
+			| "sampler"
+			| "push_constant"
+			| "input" | "output"
+			| "vertex_output"
+			| "task_payload"
+			| "workgroup"
+	)
 }

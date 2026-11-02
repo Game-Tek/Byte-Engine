@@ -130,7 +130,7 @@ impl ParticleManager {
 			deletions_listener: world.channel::<DeleteMessage>().listener(),
 			emitters: HashMap::default(),
 			systems: Vec::new(),
-			prepare_pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/particles/prepare.pipeline"),
+			prepare_pipeline: pipeline_manager.request_pipeline("byte_engine/rendering/particles/prepare.pipeline"),
 			pipeline_manager,
 			sink_attachments: SmallVec::new(),
 			simulated_time: 0.0,

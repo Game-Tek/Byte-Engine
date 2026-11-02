@@ -1,6 +1,6 @@
 ---
 title: Interface
-description: The BESL interface, from stage values, tile outputs, and descriptors to shared storage, layout layers, and stage metadata.
+description: The BESL interface, from stage values, tile outputs, and descriptors to shared storage, stage metadata, layers, and signatures.
 icon: Cable
 ---
 
@@ -128,15 +128,14 @@ The shaders of one pipeline follow these rules:
 
 - Every closest-hit shader takes the payload type that the ray generation
   shader passes to `invoke`: a struct with the same name and the same members
-  in the same order. Declare it once, in a layout layer that every shader of
-  the pipeline lists. A pipeline whose shaders disagree on the payload is an
-  error.
+  in the same order. Declare it once, in a module that every shader of the
+  pipeline uses. A pipeline whose shaders disagree on the payload is an error.
 - A closest-hit shader declares no descriptors of its own, so its descriptor
-  sets are those of the layers it lists. They must be the first sets of the ray
-  generation shader, in the same order, or fewer: list the layers that declare
-  descriptors in the order the ray generation shader lists them, and leave out
-  only the last ones. A closest-hit shader can use descriptors of those layers
-  that the ray generation shader doesn't use.
+  sets are those of the [layers](#layers) its `main` takes. They must be the
+  first sets of the ray generation shader, in the same order, or fewer: take
+  the layers that declare descriptors in the order the ray generation shader
+  takes them, and leave out only the last ones. A closest-hit shader can use
+  descriptors of those layers that the ray generation shader doesn't use.
 - Every shader of the pipeline reads the same push constant block, so declare
   the block in a shared layer too.
 - A closest-hit shader doesn't call `invoke`, `intersect`, or
@@ -560,83 +559,104 @@ block of pixels. Omitting `workgroup` uses one invocation for each pixel,
 `Vertex`, `Fragment`, `RayGeneration`, and `ClosestHit` stages don't accept
 `workgroup`, `tile`, or mesh limits.
 
-## Layout layers
+## Layers and signatures
 
-Use a layout layer to declare an interface once and share it between shaders. A
-layer is a `.besl` file without a `main` function and without a `.besl.bead`
-file. It holds the declarations several shaders need: structs, descriptors, a
-push constant block, constants, and helper functions.
-
-The descriptors of one layer form one descriptor set. Every shader that lists
-the layer reads the same set, and the application creates that set once and
-binds it wherever one of those shaders runs. Put the resources you bind
-together in one layer, and put each group you bind separately in a layer of
-its own. The descriptors a shader declares itself form one more set, which
-belongs to that shader.
+A layer groups the resources a set of shaders binds together. A signature is a
+function type that lists what a shader consumes: its stage input, its
+interface, its layers, and what it returns. A shader's `main` implements a
+signature.
 
 ```rust
-// layouts/frame.besl
-Frame: struct {
-	view_projection: mat4f,
+Scene: layer {
+	views: descriptor<{ type: Views, binding: 0, access: read }>;
+	meshes: descriptor<{ type: Meshes, binding: 1, access: read }>;
 }
 
-frame: descriptor<{ type: Frame, binding: 0, access: read, memory: constant }>;
-```
+SceneShader: fn (input: StageInput, scene: Scene) -> void;
 
-List the layers a shader builds on under `layouts` in its `.besl.bead` file.
-Write each path relative to the shader's directory. Use `../` to reach a layer
-that shaders in several directories share:
+Evaluation: layer {
+	constants: push_constant { phase: u32 };
+	results: descriptor<{ type: Texture2D, binding: 40, access: write }>;
+}
 
-```json
-{ "stage": "Vertex", "layouts": ["layouts/frame.besl", "layouts/geometry.besl"] }
-```
+EvaluationParts: fn (evaluation: Evaluation);
+EvaluationShader: SceneShader + EvaluationParts;
 
-The shader then uses the layers' declarations as if it declared them itself:
+mesh_of: fn (scene: Scene, index: u32) -> Mesh {
+	return scene.meshes.meshes[index];
+}
 
-```rust
-in_position: input<vec3f, 0>;
-
-main: fn () -> interface { position: vec4f } {
-	let position: vec4f = frame.view_projection * vec4f(in_position.x, in_position.y, in_position.z, 1.0);
-	return { position };
+main: EvaluationShader {
+	let mesh: Mesh = mesh_of(scene, input.thread_id.x);
+	let phase: u32 = evaluation.constants.phase;
 }
 ```
 
-Layers stack in the order you list them. Each layer can use the layers before
-it, and the shader can use all of them. A layer can't use a layer listed after
-it.
+### Layers
 
-A name can be declared only once across a shader and its layers. Baking fails
-if a shader keeps its own copy of a layer declaration, if two layers declare
-the same name, or if a layer declares `main`. The error names the declaration
-and the layer. Delete the copy to fix it. A shader and its layers can hold one
-`push_constant` block between them.
+Declare a layer with `Name: layer { ... }`. A layer can contain:
 
-A shader declares the whole set of every layer it lists, so that every shader
-that shares a layer sees the same set. Only the descriptors that code reachable
-from `main` uses count as the shader's resource accesses, and only those need
-a resource before the shader runs. A shader that uses no descriptor of a layer
-doesn't need that layer's set bound at all. A layer that declares only
-structs, constants, and helper functions declares no set, so you can share
-record types freely.
+| Member | Form |
+| --- | --- |
+| Descriptors | `name: descriptor<{ ... }>;`, as in [Descriptors](#descriptors). |
+| One push constant block | `name: push_constant { field: Type, ... };`, as in [Push constants](#push-constants). |
+| Tile targets | `name: output<vec4f, LOCATION>;`, as in [Tile entry points](#tile-entry-points). |
 
-`binding` numbers are unique across a shader and all of its layers. Give each
-layer its own range, so layers that are listed together never collide.
+A layer's descriptors form one descriptor set, named by the layer's path, such
+as `::byte_engine::rendering::visibility::layouts::scene::Scene`. A layer
+without descriptors forms no set. Every shader that takes a layer declares its
+whole set, so shaders that share a layer bind the same set. Only the
+descriptors that code reachable from `main` uses count as the shader's
+resource accesses, and only those need a resource before the shader runs.
 
-A descriptor's `access` applies to every shader that lists its layer. When some
-shaders write a resource and others only read it, declare it in two layers:
-one with `access: write` or `read_write` for the writers, and one with
-`access: read` for the readers. Bind the same resource in both sets. A shader
-that only reads then isn't ordered after other readers of the resource.
+Put the resources you bind together in one layer, and each group you bind
+separately in a layer of its own. Declare a layer that several shaders share in
+a [module](/docs/reference/besl/language#modules) of its own, and reach it with
+a path from the asset root, so every shader takes the same layer.
 
-In Byte Engine, build the set a layer declares with
-`rendering::SetLayout::from_layers`, and bind its resources by the names the
-layer gives them. A set made from a layer matches every shader baked against
-that version of the layer. If you edit a layer and run with shaders baked
-against the old version, binding fails with an error that names the layer.
+A descriptor's `access` applies to every shader that takes its layer. When some
+shaders write a resource and others only read it, declare it in two layers: one
+with `access: write` or `read_write` for the writers, and one with
+`access: read` for the readers, and bind the same resource in both sets.
 
-Baking tracks each listed layer as a dependency of the shader. When you edit a
-layer, the next bake rebuilds every shader that lists it.
+A layer is a type. Reach its members only through a value of that type, such
+as `scene.views`. Layer values exist only while the shader compiles: a
+function can take one as a parameter and pass it on, but can't store, return,
+or build one, and generated code has no trace of it.
+
+### Signatures
+
+| Form | Declares |
+| --- | --- |
+| `Name: fn (name: Type, ...) -> Return;` | A signature with these parameters and return type. Without `-> Return`, it returns `void`. |
+| `Name: A + B;` | A signature that combines the signatures `A` and `B`. |
+
+A combined signature takes the parameters of each operand in order. Two
+parameters with the same name must have the same type, and they become one
+parameter. At most one operand may return something other than `void`, and the
+combined signature returns that.
+
+A parameter can have any type a function parameter can have, plus `StageInput`,
+an `interface` or `output` record, and a layer.
+
+### Implement a signature
+
+Write `name: Signature { ... }` to declare a function whose parameters and
+return type are the signature's. The parameters keep the signature's names.
+
+When `main` implements a signature, the signature is what the shader consumes:
+
+- `StageInput`, `interface`, and `output` parameters and returns follow the
+  entry rules of the shader's stage.
+- Each layer parameter adds the layer's descriptor set. Sets follow the order of
+  the parameters, and the descriptors the shader declares itself form one more
+  set, last.
+- The layers' push constant blocks and the shader's own `push_constant` block
+  can hold one block between them.
+- A layer that the program declares but `main` doesn't take adds no set.
+
+`binding` numbers are unique across a shader and the layers it takes. Give each
+layer its own range, so layers that shaders take together never collide.
 
 ## Stage and backend support
 

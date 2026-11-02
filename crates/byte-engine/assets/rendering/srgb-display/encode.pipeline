@@ -1,1 +1,1 @@
-{"name":"sRGB Display Encoding","kind":{"type":"tile","shader":"byte-engine/rendering/srgb-display/encode.besl"}}
+{"name":"sRGB Display Encoding","kind":{"type":"tile","shader":"byte_engine/rendering/srgb-display/encode.besl"}}

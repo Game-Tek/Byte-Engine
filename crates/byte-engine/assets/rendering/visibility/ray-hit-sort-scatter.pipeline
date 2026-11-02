@@ -1,1 +1,1 @@
-{"name":"Ray Hit Sort Scatter","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/ray-hit-sort-scatter.besl"}}
+{"name":"Ray Hit Sort Scatter","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/ray-hit-sort-scatter.besl"}}

@@ -209,7 +209,7 @@ count and the grid side, from a dynamic buffer the renderer fills each frame.
 ### One descriptor name and one member per view
 
 Every view-writing shader declares the pool itself, under one name, as an arrayed storage image in the set it
-already has; a shared layout layer would be one more descriptor set for every pipeline that writes views:
+already has; a shared layer would be one more descriptor set for every pipeline that writes views:
 
 ```besl
 debug_view_targets: descriptor<{ type: StorageImage, binding: 3, access: write, count: 15 }>;
@@ -339,7 +339,7 @@ branches that never fire or the runtime selects a view that writes nothing and r
 
 - **One descriptor per view instead of an array, rebound on selection.** Rewrites descriptor sets while frames are
   in flight and makes every pass carry as many bindings as it has views. The array keeps sets fixed after build.
-- **A shared layout layer for the pool.** One file would declare the name once, but a layer is a descriptor set,
+- **A shared layer for the pool.** One module would declare the name once, but a layer is a descriptor set,
   and every pipeline that writes views would bind one more set. Declaring the pool by name in each shader costs
   nothing at run time.
 - **Resizing slots in the tile instead of the blit.** Would make a pass's output depend on how many views are

@@ -16,13 +16,13 @@ use crate::rendering::pipelines::visibility::set_layouts;
 /// The hit sort's compute pipelines, named as [`Pipelines::request`] takes them, in recording order.
 pub(in crate::rendering::pipelines::visibility) const RAY_HIT_PIPELINES: [&str; 2] =
 	["ray-hit-sort-scan", "ray-hit-sort-scatter"];
-/// The material slots hits sort by, which `RayHitSort` in `layouts/ray-hits.besl` sizes its tables for.
+/// The material slots hits sort by, which `RayHitSort` in `layouts/ray_hits.besl` sizes its tables for.
 const HIT_KEYS: usize = super::super::layout::MAX_MATERIALS;
 /// The threads of the sort's one scan workgroup, and of each scatter workgroup. Matches `HIT_SORT_WORKGROUP_SIZE` in
-/// `layouts/ray-hits.besl`.
+/// `layouts/ray_hits.besl`.
 const HIT_SORT_WORKGROUP_SIZE: u32 = 256;
 
-/// The `RayHit` struct is one ray's hit, kept for the shade pass. It matches `RayHit` in `layouts/ray-hits.besl`; only
+/// The `RayHit` struct is one ray's hit, kept for the shade pass. It matches `RayHit` in `layouts/ray_hits.besl`; only
 /// the GPU reads and writes it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -38,7 +38,7 @@ struct RayHit {
 	_padding: [u32; 3],
 }
 
-/// The `RayHitSort` struct is the counting sort of a frame's hits. It matches `RayHitSort` in `layouts/ray-hits.besl`;
+/// The `RayHitSort` struct is the counting sort of a frame's hits. It matches `RayHitSort` in `layouts/ray_hits.besl`;
 /// only the GPU reads and writes it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -196,7 +196,7 @@ mod tests {
 	use crate::rendering::SetLayout;
 
 	#[test]
-	fn host_records_match_the_strides_their_layout_layers_reflect() {
+	fn host_records_match_the_strides_their_layers_reflect() {
 		let stride = |layout: &SetLayout, name: &str| {
 			layout
 				.interface()

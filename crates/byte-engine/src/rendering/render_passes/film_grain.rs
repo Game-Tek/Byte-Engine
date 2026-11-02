@@ -41,7 +41,7 @@ impl Default for FilmGrainPassSettings {
 	}
 }
 
-/// The `FilmGrainShaderData` struct mirrors `FilmGrainParameters` in `film-grain/layouts/grain.besl`.
+/// The `FilmGrainShaderData` struct mirrors `FilmGrainParameters` in `film_grain/layouts/grain.besl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct FilmGrainShaderData {
@@ -236,7 +236,7 @@ impl FilmGrainPass {
 			render_pass_builder,
 			simple_tile::Descriptor::new(
 				"Film Grain Apply",
-				"byte-engine/rendering/film-grain/apply.pipeline",
+				"byte_engine/rendering/film_grain/apply.pipeline",
 				&[output.format()],
 			),
 		)
@@ -321,7 +321,7 @@ mod tests {
 
 	/// Runs the grain shader over a `size` by `size` scene with the constants `data`, as `FilmGrainPass` records it.
 	fn grain(size: u32, scene: &[[f32; 4]], data: &FilmGrainShaderData) -> Texture {
-		let linked = simple_compute::compile_test_program(asset_source("film-grain/apply.besl"));
+		let linked = simple_compute::compile_test_program(asset_source("film_grain/apply.besl"));
 		let slot = binding_slot(&linked, "parameters");
 		let program = compile(linked);
 		let mut parameters = buffer(&program, slot);

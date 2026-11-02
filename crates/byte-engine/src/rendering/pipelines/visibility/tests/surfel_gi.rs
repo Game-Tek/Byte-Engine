@@ -18,8 +18,8 @@ use super::{
 	run_workgroup_containing, screen_view_buffer, ssgi_projection, ssgi_ray_at,
 };
 use crate::rendering::shader_vm_test::{
-	IDENTITY_MATRIX, array_buffer, assert_rgba_close, buffer, column_major, compile, empty_image, lane_config, rgba,
-	stacked_asset, stacked_on_layers_of, texture_2d,
+	IDENTITY_MATRIX, array_buffer, assert_rgba_close, asset_source, buffer, column_major, compile, empty_image, lane_config,
+	rgba, texture_2d, with_engine_modules,
 };
 
 const DEPTH_PYRAMID_SLOT: ResourceSlot = ResourceSlot::new(1033);
@@ -91,7 +91,7 @@ const WARM_UP_RAYS: f32 = 512.0;
 /// The rays the fixtures' settled surfels have received, well past [`WARM_UP_RAYS`].
 const SETTLED_RECEIVED: f32 = 1000.0;
 /// The threads that walk one surfel's cells in the count pass and the scatter. Matches `SURFEL_GRID_LANES` in
-/// `layouts/surfel-gi.besl`.
+/// `layouts/surfel_gi.besl`.
 const GRID_LANES: u32 = 4;
 /// The most spawn requests rays' hits make in a frame.
 const MAX_HIT_SPAWNS: usize = 64;
@@ -117,10 +117,9 @@ fn reconstruct_covered_face(normal: [f32; 3], geometric: [f32; 3], stored: [f32;
 	};
 	const RESULT: ResourceSlot = ResourceSlot::new(0);
 	const VIEW: ResourceSlot = ResourceSlot::new(1048);
-	let (_, layout) = crate::rendering::set_layout::layer!("visibility/layouts/material-evaluation.besl");
 	let source = format!(
 		r#"
-		{layout}
+		use ::byte_engine::rendering::visibility::layouts::material_evaluation::*;
 		{SSGI_STORED_NORMAL_SOURCE}
 		{SSGI_SURFACE_WEIGHT_SOURCE}
 		{INDIRECT_DIFFUSE_SOURCE_POSITION_SOURCE}
@@ -128,8 +127,9 @@ fn reconstruct_covered_face(normal: [f32; 3], geometric: [f32; 3], stored: [f32;
 		{SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE}
 		ReconstructionResult: struct {{ light: vec4f }}
 		results: descriptor<{{ type: ReconstructionResult, binding: 0, access: write, memory: device }}>;
-		main: fn () -> void {{
+		main: fn (material_evaluation: MaterialEvaluation) -> void {{
 			results.light = sample_screen_space_indirect_diffuse(
+				material_evaluation,
 				vec2u(16, 16), vec2u(32, 32), vec3f(0.0, 0.0, 1.0),
 				vec3f({}, {}, {}), vec3f({}, {}, {}), true
 			);
@@ -137,7 +137,7 @@ fn reconstruct_covered_face(normal: [f32; 3], geometric: [f32; 3], stored: [f32;
 		"#,
 		normal[0], normal[1], normal[2], geometric[0], geometric[1], geometric[2],
 	);
-	let program = compile(besl::lex(besl::parse(&source).expect("reconstruction fixture")).expect("reconstruction shader"));
+	let program = compile(besl::lex(with_engine_modules(source.leak())).expect("reconstruction shader"));
 	let mut view = buffer(&program, VIEW);
 	view.write("pixel_to_ray_mul", Value::Vec2F([0.01, -0.01]))
 		.expect("view scale");
@@ -1289,6 +1289,7 @@ fn surfel_clearance_stops_short_of_the_nearest_wall() {
 fn surfel_hemisphere_map_round_trips_and_keeps_solid_angle() {
 	const RESULTS_SLOT: ResourceSlot = ResourceSlot::new(1290);
 	const MAP_STAND_IN: &str = "
+use ::byte_engine::rendering::visibility::layouts::surfel_gi::*;
 MapResults: struct {
 	round_trip_error: f32,
 	length_error: f32,
@@ -1314,10 +1315,7 @@ main: fn () -> void {
 	}
 }
 ";
-	let program = compile(
-		besl::lex(stacked_on_layers_of("visibility/surfel-count.besl", MAP_STAND_IN))
-			.expect("the hemisphere map stand-in should link"),
-	);
+	let program = compile(besl::lex(with_engine_modules(MAP_STAND_IN)).expect("the hemisphere map stand-in should link"));
 	let mut results = buffer(&program, RESULTS_SLOT);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(RESULTS_SLOT, &mut results);
@@ -1514,11 +1512,18 @@ struct WhiteShade {
 
 impl WhiteShade {
 	fn new() -> Self {
-		let shade = compile(besl::lex(stacked_asset("visibility/surfel-shade.besl")).expect("the shade pass should link"));
+		let shade = compile(
+			besl::lex(with_engine_modules(asset_source("visibility/surfel-shade.besl"))).expect("the shade pass should link"),
+		);
 		// Material hit shaders stack on the layers the shader generator gives them.
-		let white_hit = besl::parse(WHITE_HIT).expect("the white hit should parse");
-		let white_hit = besl::stack_layers(white_hit, super::super::shader_generator::MATERIAL_HIT_LAYERS)
-			.expect("the white hit should stack on the material hit layers");
+		// The stand-in takes the layers and modules every material's closest hit takes.
+		use super::super::shader_generator::{
+			MATERIAL_HIT_LAYERS, MATERIAL_HIT_MODULE_FILES, MATERIAL_HIT_MODULES, layered_program,
+		};
+		let mut white_hit = besl::parse(WHITE_HIT).expect("the white hit should parse");
+		let main = white_hit.get_mut("main").expect("the white hit declares `main`").clone();
+		let white_hit = layered_program(main, &MATERIAL_HIT_LAYERS, &MATERIAL_HIT_MODULES, &MATERIAL_HIT_MODULE_FILES)
+			.expect("the white hit should take the material hit layers");
 		let white_hit = compile(besl::lex(white_hit).expect("the white hit should link"));
 		let hits = array_buffer(&shade, HITS_SLOT, RAY_BUDGET as usize);
 		let lights = buffer(&shade, SCENE_LIGHTS_SLOT);
@@ -2031,16 +2036,22 @@ struct History {
 /// does, with `surfel_temporal_accumulate`, but reads them and the pixel's normal from fixture images instead of
 /// gathering them from surfels.
 const TEMPORAL_STAND_IN: &str = "
+use ::byte_engine::rendering::visibility::layouts::screen_trace::*;
+use ::byte_engine::rendering::visibility::layouts::surfel_resolve::*;
+use ::byte_engine::rendering::visibility::layouts::surfel_temporal::*;
+
 temporal_estimate: descriptor<{ type: Texture2D, binding: 1290, access: read }>;
 temporal_confidence: descriptor<{ type: Texture2D, binding: 1291, access: read }>;
 temporal_normals: descriptor<{ type: Texture2D, binding: 1292, access: read }>;
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, screen_trace: ScreenTrace, surfel_resolve: SurfelResolve, surfel_temporal: SurfelTemporal) -> void {
 	let pixel: vec2u = input.thread_id;
-	let z: f32 = fetch(depth_pyramid, pixel).x;
+	let z: f32 = fetch(screen_trace.depth_pyramid, pixel).x;
 	surfel_temporal_accumulate(
+		surfel_resolve,
+		surfel_temporal,
 		pixel,
-		view_position(vec2f(f32(pixel.x), f32(pixel.y)), z),
+		view_position(screen_trace, vec2f(f32(pixel.x), f32(pixel.y)), z),
 		decode_stored_normal(fetch(temporal_normals, pixel)),
 		fetch(temporal_estimate, pixel),
 		fetch(temporal_confidence, pixel).x
@@ -2055,10 +2066,7 @@ const STAND_IN_NORMALS_SLOT: ResourceSlot = ResourceSlot::new(1292);
 /// resolved `estimate` with `confidence`, over `history` reprojected by a camera that didn't move, and returns pixel
 /// (4, 4)'s history and weights.
 fn run_temporal(estimate: [f32; 4], confidence: f32, history: Option<History>) -> ([f32; 4], [f32; 4]) {
-	let program = compile(
-		besl::lex(stacked_on_layers_of("visibility/surfel-resolve.besl", TEMPORAL_STAND_IN))
-			.expect("the temporal stand-in should link"),
-	);
+	let program = compile(besl::lex(with_engine_modules(TEMPORAL_STAND_IN)).expect("the temporal stand-in should link"));
 	let extent = TEMPORAL_EXTENT;
 	let texels = |value: [f32; 4]| texture_2d(extent, extent, &vec![value; (extent * extent) as usize]);
 	let mut view = screen_view_buffer(&program, VIEWS_SLOT, extent, extent);

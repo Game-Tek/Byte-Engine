@@ -101,7 +101,7 @@ impl ExponentialHeightFogRenderPass {
 			render_pass_builder,
 			simple_tile::Descriptor::new(
 				"Exponential Height Fog",
-				"byte-engine/rendering/height-fog.pipeline",
+				"byte_engine/rendering/height-fog.pipeline",
 				&[output.format()],
 			),
 		);

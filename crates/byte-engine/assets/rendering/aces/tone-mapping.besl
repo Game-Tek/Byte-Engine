@@ -1,3 +1,5 @@
+use ::byte_engine::rendering::layouts::color::*;
+
 source: descriptor<{ type: StorageImage, binding: 0, access: read }>;
 // A tile output, so the replacement for `main` this writes needs no shader-write usage and stays losslessly compressed.
 result: output<vec4f, 0>;

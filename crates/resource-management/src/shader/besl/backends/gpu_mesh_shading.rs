@@ -21,7 +21,7 @@ use super::gpu_harness::{bake, create_baked_shader, gpu_context, upload};
 use crate::shader::generator::ShaderGenerationSettings;
 
 /// The push constant both stages read, as the visibility pipeline's task and mesh stages share theirs, and the set
-/// layout both declare whole, as the visibility stages declare theirs through layout layers. Metal numbers a set's
+/// layout both declare whole, as the visibility stages declare theirs through layers. Metal numbers a set's
 /// arguments densely in slot order, so a stage that declared only the bindings it reads would read the wrong ones.
 const SHARED_DECLARATIONS: &str = r#"
 	push_constant: push_constant {

@@ -45,50 +45,11 @@ pub(crate) fn push_constant_buffer(program: &ExecutableProgram) -> Buffer {
 	)
 }
 
-/// Reads one checked-in rendering shader and the layout layers its sidecar lists, as each layer's name and source in
-/// stacking order, then the shader's own source.
+/// Reads one checked-in rendering shader. `asset` is its path under `assets/rendering`, such as `bloom/extract.besl`.
 ///
-/// `asset` is the shader's path under `assets/rendering`, such as `bloom/extract.besl`.
-fn asset_parts(asset: &str) -> (Vec<(String, String)>, String) {
-	use resource_management::asset::{ResourceId, parse_json};
-
-	let read = |path: &str| {
-		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-			.join("assets/rendering")
-			.join(path);
-		std::fs::read_to_string(&path).unwrap_or_else(|error| {
-			panic!(
-				"Failed to read {}: {error}. The most likely cause is a test or a sidecar naming a file that does not exist.",
-				path.display()
-			)
-		})
-	};
-
-	let sidecar = parse_json(&read(&format!("{asset}.bead")))
-		.expect("Failed to parse a shader sidecar. The most likely cause is invalid JSON in a `.besl.bead` file.");
-	let layers = sidecar
-		.get("layouts")
-		.and_then(|layouts| layouts.as_array())
-		.into_iter()
-		.flatten()
-		.map(|layout| {
-			let layer = ResourceId::new(asset).resolve_relative(layout.as_str().expect("Expected a layout layer path."));
-			let source = read(&layer);
-			(layer, source)
-		})
-		.collect();
-	(layers, read(asset))
-}
-
-/// Reads one checked-in rendering shader together with the layout layers its sidecar lists, as one source.
-///
-/// `asset` is the shader's path under `assets/rendering`, such as `bloom/extract.besl`. The result holds each
-/// layer's declarations, lowest layer first, and then the shader's own, which is the order baking links them in. A
-/// shader without layers returns its own source. Tests read shaders through this function so they follow the sidecar
-/// and never name a shader's layers themselves.
-///
-/// The layers are also stacked with [`besl::stack_layers`], so a shader that redeclares a layer's name fails here as
-/// it does when baked. Each source is read once and kept for the rest of the test run.
+/// Link the result, alone or with a test's own declarations, through [`link_program`] or [`with_engine_modules`],
+/// which attach the modules its `use` declarations name. Each source is read once and kept for the rest of the test
+/// run.
 pub(crate) fn asset_source(asset: &str) -> &'static str {
 	use std::{
 		collections::HashMap,
@@ -101,57 +62,51 @@ pub(crate) fn asset_source(asset: &str) -> &'static str {
 	if let Some(source) = sources.get(asset) {
 		return source;
 	}
-
-	stacked_asset(asset);
-	let (layers, shader) = asset_parts(asset);
-	// One text holds the same declarations in the order the stacked tree has them, so callers keep passing a source.
-	let mut source: String = layers.iter().flat_map(|(_, layer)| [layer.as_str(), "\n"]).collect();
-	source.push_str(&shader);
-
-	let source: &'static str = source.leak();
+	let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+		.join("assets/rendering")
+		.join(asset);
+	let source: &'static str = std::fs::read_to_string(&path)
+		.unwrap_or_else(|error| {
+			panic!(
+				"Failed to read {}: {error}. The most likely cause is a test naming a shader that does not exist.",
+				path.display()
+			)
+		})
+		.leak();
 	sources.insert(asset.to_string(), source);
 	source
 }
 
-/// Parses `shader`, a test's stand-in for the checked-in shader `asset`, and stacks it on the layout layers the sidecar
-/// of `asset` lists, as baking stacks `asset` itself.
+/// Parses `source`, a checked-in shader or a test's stand-in for one, and attaches the modules from the asset root
+/// it names, read from the engine's `assets` directory as `byte_engine/...`, as baking attaches them.
 ///
-/// Tests use it to run a layer's helper through a smaller `main` than the shader's own, with fixture inputs where the
-/// shader computes them. Next, pass the result to [`besl::lex`].
-pub(crate) fn stacked_on_layers_of(asset: &str, shader: &'static str) -> besl::parser::Node<'static> {
-	let (layers, _) = asset_parts(asset);
-	stack_on_layers(asset, layers, shader)
-}
-
-/// Parses one checked-in rendering shader and stacks it on the layout layers its sidecar lists, as baking does.
-///
-/// Unlike [`asset_source`], the result keeps each layer's descriptors in the layer's own set, which ray tracing
-/// shaders need: a closest hit may only read the sets of the layers it shares with its ray generation shader. Next,
-/// pass the result to [`besl::lex`]. The sources are kept for the rest of the test run.
-pub(crate) fn stacked_asset(asset: &str) -> besl::parser::Node<'static> {
-	let (layers, shader) = asset_parts(asset);
-	stack_on_layers(asset, layers, shader.leak())
-}
-
-/// Parses `shader`, `asset` or a test's stand-in for it, and stacks it on `layers`, the layout layers `asset`'s
-/// sidecar lists. The sources are kept for the rest of the test run.
-fn stack_on_layers(asset: &str, layers: Vec<(String, String)>, shader: &'static str) -> besl::parser::Node<'static> {
-	let layers: Vec<(&'static str, &'static str)> = layers
-		.into_iter()
-		.map(|(layer, source)| (&*layer.leak(), &*source.leak()))
-		.collect();
-	let module = besl::parse(shader).unwrap_or_else(|error| {
-		panic!("Failed to parse {asset} or its stand-in: {error:?}. The most likely cause is invalid BESL syntax.")
+/// Next, pass the result to [`besl::lex`]. The modules are kept for the rest of the test run.
+pub(crate) fn with_engine_modules(source: &str) -> besl::parser::Node<'static> {
+	let source: &'static str = source.to_string().leak();
+	let failed = |error: besl::CompilationError| -> ! {
+		panic!(
+			"Failed to load the modules of a test shader: {error:?}. The most likely cause is a `use` that names a module file that does not exist."
+		)
+	};
+	let read = |file: &str| {
+		let file = file.strip_prefix("byte_engine/")?;
+		std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join(file)).ok()
+	};
+	let modules: &'static [besl::LoadedModule] =
+		Vec::leak(besl::ModuleLoader::load(source, read).unwrap_or_else(|error| failed(error)));
+	let mut program = besl::parse(source).unwrap_or_else(|error| {
+		panic!("Failed to parse a test shader: {error:?}. The most likely cause is invalid BESL syntax.")
 	});
-	besl::stack_layers(module, layers).unwrap_or_else(|error| panic!("Failed to stack {asset} on its layout layers: {error:?}"))
+	besl::attach_modules(&mut program, modules).unwrap_or_else(|error| failed(error));
+	program
 }
 
-/// Links one checked-in BESL shader through the frontend production baking uses.
+/// Links one checked-in BESL shader, with the modules it names, through the frontend production baking uses.
 ///
 /// Returns the program rather than its `main`, because the program owns every function it calls. Pass the result to
 /// [`compile`].
 pub(crate) fn link_program(source: &str, name: &str) -> besl::NodeReference {
-	let program = besl::compile_to_besl(source, None).unwrap_or_else(|error| {
+	let program = besl::lex(with_engine_modules(source)).unwrap_or_else(|error| {
 		panic!("Failed to link {name}: {error:?}. The most likely cause is invalid syntax in the checked-in BESL asset.")
 	});
 	program.get_main().unwrap_or_else(|| {
@@ -194,18 +149,18 @@ pub(crate) fn empty_image(width: u32, height: u32) -> Texture {
 /// Returns the slot of the descriptor a linked program declares as `name`, so tests bind resources by the name the
 /// shader gives them.
 pub(crate) fn binding_slot(program: &besl::NodeReference, name: &str) -> ResourceSlot {
-	/// Finds the descriptor among the declarations of `scope` and of the scopes nested in it. A struct member or a
-	/// local of the same name is not a declaration.
+	/// Finds the descriptor among the declarations of `scope` and of the scopes and layers nested in it. A struct
+	/// member or a local of the same name is not a declaration.
 	fn find(scope: &besl::NodeReference, name: &str) -> Option<u32> {
 		let scope = scope.borrow();
-		let besl::Nodes::Scope { children, .. } = scope.node() else {
+		let (besl::Nodes::Scope { children, .. } | besl::Nodes::Layer { members: children, .. }) = scope.node() else {
 			return None;
 		};
 		children.iter().find_map(|child| match child.borrow().node() {
 			besl::Nodes::Binding {
 				name: declared, slot, ..
 			} if declared == name => Some(*slot),
-			besl::Nodes::Scope { .. } => find(child, name),
+			besl::Nodes::Scope { .. } | besl::Nodes::Layer { .. } => find(child, name),
 			_ => None,
 		})
 	}

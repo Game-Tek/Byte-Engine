@@ -4,6 +4,7 @@ use super::*;
 use crate::parser;
 
 const DECLARATION_ORDER_DOCS_PATH: &str = "reference/besl/language#declaration-order";
+pub(super) const MODULES_DOCS_PATH: &str = "reference/besl/language#modules";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum DescendantSearch {
@@ -17,7 +18,13 @@ pub(super) enum DescendantSearch {
 /// too: the lexer pushes each statement onto the chain after the function, so the chain searches them before it
 /// reaches the function. Functions reached while searching an enclosing scope keep theirs private. See
 /// [`find_descendant`].
+///
+/// A path such as `noise::hash` resolves through [`resolve_path`].
 pub(super) fn get_reference(chain: &[NodeReference], name: &str) -> Option<NodeReference> {
+	if name.contains("::") {
+		return resolve_path(chain, name);
+	}
+
 	for node in chain.iter().rev() {
 		let reference = match node.borrow().node() {
 			Nodes::Intrinsic { .. } => find_descendant(node, name, DescendantSearch::Any),
@@ -37,6 +44,140 @@ pub(super) fn get_reference(chain: &[NodeReference], name: &str) -> Option<NodeR
 	}
 
 	None
+}
+
+/// Resolves a path such as `lighting::brdf::ggx` to the declaration it names.
+///
+/// The first segment is `crate` (the root), `self` (the innermost module of `chain`), one or more `super` (each one
+/// module further out), or a name visible from `chain`, usually a module. Each later segment names a declaration of
+/// the module before it.
+pub(super) fn resolve_path(chain: &[NodeReference], path: &str) -> Option<NodeReference> {
+	// A path from the asset root starts at the module from the asset root that its start names.
+	if let Some(rest) = path.strip_prefix("::") {
+		return resolve_root_path(chain, rest);
+	}
+
+	let mut segments = path.split("::").peekable();
+	// The modules that enclose the lookup, innermost first. The root is the last one.
+	let mut modules = chain
+		.iter()
+		.rev()
+		.filter(|node| matches!(node.borrow().node(), Nodes::Scope { .. }));
+
+	let mut current = match segments.next()? {
+		"crate" => chain.first()?.clone(),
+		"self" => modules.next()?.clone(),
+		"super" => {
+			modules.next()?;
+			while segments.next_if_eq(&"super").is_some() {
+				modules.next()?;
+			}
+			modules.next()?.clone()
+		}
+		name => get_reference(chain, name)?,
+	};
+
+	for segment in segments {
+		let next = match current.borrow().node() {
+			Nodes::Scope { children, .. } => find_named_child(children, segment)?,
+			_ => return None,
+		};
+		current = next;
+	}
+
+	Some(current)
+}
+
+/// Returns the scope chain of the module at `path`, a list of module names from the program root, as code inside that
+/// module sees it: the root first, then each module down to it. `chain` is the chain of the code asking, which holds
+/// the scope of the modules from the asset root while those link.
+pub(super) fn module_chain(chain: &[NodeReference], path: &[&str]) -> Option<Vec<NodeReference>> {
+	let mut modules = vec![chain.first()?.clone()];
+	for segment in path {
+		let current = modules.last()?.clone();
+		let next = match current.borrow().node() {
+			Nodes::Scope { children, .. } => find_named_child(children, segment),
+			_ => None,
+		}
+		// A scope that is still linking is on `chain`, not yet in its parent.
+		.or_else(|| chain.iter().find(|node| node.borrow().get_name() == Some(segment)).cloned())?;
+		modules.push(next);
+	}
+	Some(modules)
+}
+
+/// Resolves `path`, a path from the asset root without its leading `::`, among the modules from the asset root that
+/// the program holds in its `::` scope. The module is the one whose name starts the path; the rest names a declaration
+/// in it.
+fn resolve_root_path(chain: &[NodeReference], path: &str) -> Option<NodeReference> {
+	// While those modules link, their scope is on the chain and not yet in the program root.
+	let modules = chain
+		.iter()
+		.find(|node| node.borrow().get_name() == Some("::"))
+		.cloned()
+		.or_else(|| match chain.first()?.borrow().node() {
+			Nodes::Scope { children, .. } => find_named_child(children, "::"),
+			_ => None,
+		})?;
+	let (mut current, rest) = match modules.borrow().node() {
+		Nodes::Scope { children, .. } => children.iter().find_map(|module| {
+			let module_ref = module.borrow();
+			let name = module_ref.get_name()?;
+			let rest = match path.strip_prefix(name)? {
+				"" => "",
+				rest => rest.strip_prefix("::")?,
+			};
+			Some((module.clone(), rest.to_string()))
+		})?,
+		_ => return None,
+	};
+	for segment in rest.split("::").filter(|segment| !segment.is_empty()) {
+		let next = match current.borrow().node() {
+			Nodes::Scope { children, .. } => find_named_child(children, segment)?,
+			_ => return None,
+		};
+		current = next;
+	}
+	Some(current)
+}
+
+/// Finds `name` among the declarations of one scope, as code inside the scope sees them: the scope's own declarations
+/// first, then the names its `use` declarations bring in, explicit ones before `*` ones.
+///
+/// A nested module is a namespace, so the search never looks inside one. Code reaches its declarations through a path
+/// or a `use`.
+fn find_in_scope(children: &[NodeReference], name: &str) -> Option<NodeReference> {
+	find_named_child(children, name)
+		.or_else(|| children.iter().find_map(|child| imported(child, name, false)))
+		.or_else(|| children.iter().find_map(|child| imported(child, name, true)))
+		.or_else(|| {
+			children
+				.iter()
+				.filter(|child| !matches!(child.borrow().node(), Nodes::Scope { .. }))
+				.find_map(|child| find_descendant(child, name, DescendantSearch::NonIntrinsic))
+		})
+}
+
+/// Returns the declaration `name` that the `use` declaration `node` brings into its scope. `glob` selects whether
+/// `use module::*;` declarations or explicit ones answer.
+fn imported(node: &NodeReference, name: &str, glob: bool) -> Option<NodeReference> {
+	let node = node.borrow();
+	let Nodes::Use { name: alias, target } = node.node() else {
+		return None;
+	};
+
+	match alias {
+		Some(alias) if !glob => (alias == name).then(|| target.upgrade().map(NodeReference)).flatten(),
+		None if glob => {
+			let module = NodeReference(target.upgrade()?);
+			let module = module.borrow();
+			match module.node() {
+				Nodes::Scope { children, .. } => find_named_child(children, name),
+				_ => None,
+			}
+		}
+		_ => None,
+	}
 }
 
 /// Resolves a type name to its struct declaration.
@@ -276,6 +417,7 @@ pub(super) fn find_descendant(node: &NodeReference, child_name: &str, mode: Desc
 		{
 			None
 		}
+		Nodes::Scope { children, .. } if mode == DescendantSearch::NonIntrinsic => find_in_scope(children, child_name),
 		Nodes::Scope { children, .. } | Nodes::Struct { fields: children, .. } | Nodes::PushConstant { members: children } => {
 			find_in_children(children, child_name, mode == DescendantSearch::NonIntrinsic, mode)
 		}
@@ -806,6 +948,17 @@ pub(super) fn resolve_call_target(
 		return resolve_type_name(chain, name);
 	};
 
+	// A path names one module's declaration, so overloads resolve among that module's declarations only.
+	if let Some((module, function)) = name.rsplit_once("::") {
+		let undeclared = || LexError::UndeclaredName { name: name.to_string() };
+		let module = resolve_path(chain, module).ok_or_else(undeclared)?;
+		let candidate = match module.borrow().node() {
+			Nodes::Scope { children, .. } => children.iter().find_map(|child| call_candidate(child, function, parameters)),
+			_ => None,
+		};
+		return candidate.or_else(|| resolve_path(chain, name)).ok_or_else(undeclared);
+	}
+
 	for node in chain.iter().rev() {
 		if let Some(candidate) = resolve_call_target_in_node(node, name, parameters) {
 			return Ok(candidate);
@@ -854,13 +1007,10 @@ pub(super) fn explain_declaration_order(error: LexError, declarations: &[parser:
 	))
 }
 
-/// Returns the declaration that occupies `name` in its scope, where a lookup by name would find it: `declaration`
-/// itself, or one that a scope `declaration` holds.
+/// Returns `declaration` when it occupies `name` in its scope, where a lookup by name would find it. A module is a
+/// namespace, so the declarations inside one never occupy a name of the scope that holds it.
 fn find_declaration<'d, 'a>(declaration: &'d parser::Node<'a>, name: &str) -> Option<&'d parser::Node<'a>> {
-	match declaration.node() {
-		parser::Nodes::Scope { children, .. } => children.iter().find_map(|child| find_declaration(child, name)),
-		_ => (declaration.name() == Some(name)).then_some(declaration),
-	}
+	(declaration.name() == Some(name)).then_some(declaration)
 }
 
 /// Reports whether overload resolution can trust the expression's linked value type.
@@ -901,23 +1051,53 @@ pub(super) fn resolve_call_target_in_node(
 ) -> Option<NodeReference> {
 	match node.borrow().node() {
 		Nodes::Scope { children, .. } | Nodes::Struct { fields: children, .. } | Nodes::PushConstant { members: children } => {
-			children.iter().find_map(|child| match child.borrow().node() {
-				Nodes::Intrinsic {
-					name: candidate_name, ..
-				} if candidate_name == name && intrinsic_matches_parameters(child, parameters) => Some(child.clone()),
-				Nodes::Function {
-					name: candidate_name,
-					params,
-					..
-				} if candidate_name == name && params.len() == parameters.len() => Some(child.clone()),
-				Nodes::Struct {
-					name: candidate_name,
-					fields,
-					..
-				} if candidate_name == name && fields.len() == parameters.len() => Some(child.clone()),
-				_ => resolve_call_target_in_node(child, name, parameters),
+			children.iter().find_map(|child| {
+				call_candidate(child, name, parameters).or_else(|| match child.borrow().node() {
+					// A module is a namespace: calls reach its functions through a path or a `use`.
+					Nodes::Scope { .. } => None,
+					Nodes::Use { .. } => imported(child, name, false)
+						.and_then(|target| call_candidate(&target, name, parameters))
+						.or_else(|| imported_call_candidate(child, name, parameters)),
+					_ => resolve_call_target_in_node(child, name, parameters),
+				})
 			})
 		}
+		_ => None,
+	}
+}
+
+/// Returns `node` when it is a declaration named `name` that a call with `parameters` can target: an intrinsic whose
+/// parameters match, or a function or struct constructor with as many parameters.
+fn call_candidate(node: &NodeReference, name: &str, parameters: &[NodeReference]) -> Option<NodeReference> {
+	let matches = match node.borrow().node() {
+		Nodes::Intrinsic {
+			name: candidate_name, ..
+		} => candidate_name == name && intrinsic_matches_parameters(node, parameters),
+		Nodes::Function {
+			name: candidate_name,
+			params,
+			..
+		} => candidate_name == name && params.len() == parameters.len(),
+		Nodes::Struct {
+			name: candidate_name,
+			fields,
+			..
+		} => candidate_name == name && fields.len() == parameters.len(),
+		_ => false,
+	};
+	matches.then(|| node.clone())
+}
+
+/// Returns the call target among the declarations of the module a `use module::*;` declaration, `node`, brings in.
+fn imported_call_candidate(node: &NodeReference, name: &str, parameters: &[NodeReference]) -> Option<NodeReference> {
+	let node = node.borrow();
+	let Nodes::Use { name: None, target } = node.node() else {
+		return None;
+	};
+	let module = NodeReference(target.upgrade()?);
+	let module = module.borrow();
+	match module.node() {
+		Nodes::Scope { children, .. } => children.iter().find_map(|child| call_candidate(child, name, parameters)),
 		_ => None,
 	}
 }

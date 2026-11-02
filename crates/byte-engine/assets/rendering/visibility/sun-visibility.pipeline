@@ -1,1 +1,1 @@
-{"name":"Sun Visibility","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/sun-visibility.besl"}}
+{"name":"Sun Visibility","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/sun-visibility.besl"}}

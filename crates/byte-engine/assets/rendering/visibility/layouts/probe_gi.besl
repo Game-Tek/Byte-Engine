@@ -1,0 +1,135 @@
+// The frame-wide probe GI set: what the schedule, trace, shade, and update passes write while they bring the probe
+// volume up to date. The first sink's frame writes it; list it after `probe-volume.besl`, whose cascades and helpers
+// it uses, and `light-table.besl`, whose records its light table holds. `render_pass/probe_gi.rs` fills it.
+
+use ::byte_engine::rendering::visibility::layouts::probe_volume::*;
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+
+// Each update traces PROBE_RAYS rays from the probe, in a spherical Fibonacci pattern that a random rotation turns
+// every frame, so successive updates sample new directions.
+PROBE_RAYS: const u32 = 128;
+// How far a probe's rays reach, in meters.
+PROBE_RAY_LENGTH: const f32 = 10000.0;
+// The distance a ray that misses records, past any distance limit.
+PROBE_MISS_DISTANCE: const f32 = 1000000.0;
+// The specular level of the environment a miss brings light back from, the one prefiltered for roughness 2/7, as for
+// surfel GI. Its blur keeps a small bright patch of sky from making the probes noisy.
+PROBE_SKY_LEVEL: const f32 = 2.0;
+// How far along its normal a shadow ray leaves a hit, in meters.
+PROBE_HIT_OFFSET: const f32 = 0.002;
+// The most radiance one ray brings back in a channel, in nits, which keeps the half-float atlas finite and a lone
+// bright hit from flashing a probe.
+PROBE_MAX_RADIANCE: const f32 = 30000.0;
+// The share of the light reaching a hit that the volume's own bounce adds there: a little under one, so light
+// bouncing between probes settles instead of growing.
+PROBE_BOUNCE_ENERGY: const f32 = 0.95;
+// The share of a settled probe's light an update keeps. A young probe keeps less: its first updates weigh evenly.
+PROBE_HYSTERESIS: const f32 = 0.97;
+// A probe whose rays bring back PROBE_RESTART_RATIO times more or less light, on average, than its irradiance map holds
+// saw its surroundings change: a light went out or came on, a wall appeared, or the level loaded around it. Its average
+// starts over. Noise moves single texels that far, but seldom the mean of every ray. Mean radiances under
+// PROBE_RESTART_FLOOR nits count as that many, so probes in the dark don't restart on noise.
+PROBE_RESTART_RATIO: const f32 = 10.0;
+PROBE_RESTART_FLOOR: const f32 = 0.01;
+// How sharply a distance texel weighs the rays near its direction: the cosine to this power.
+PROBE_DISTANCE_EXPONENT: const f32 = 50.0;
+// Distances a ray found to a back face count this share, so the distance map pulls in where a probe sees into a wall.
+PROBE_BACKFACE_DISTANCE: const f32 = 0.2;
+// A probe whose rays hit back faces more than this share of the time sits inside geometry.
+PROBE_BURIED_SHARE: const f32 = 0.25;
+// Relocation keeps a probe this share of its spacing from the nearest front face, and within this share of its
+// spacing from its grid position on each axis, so it stays inside its cell.
+PROBE_MIN_FRONTFACE_DISTANCE: const f32 = 0.2;
+PROBE_MAX_OFFSET: const f32 = 0.45;
+// The schedule's priority buckets: a probe's bucket grows with the log of the frames since its last update, weighed by
+// how much it matters. Unset probes take the top buckets, the seen ones first.
+PROBE_PRIORITY_BUCKETS: const u32 = 64;
+
+// The settings of one frame's probe updates, uploaded by the CPU as `ProbeGiParameters`.
+ProbeGiParameters: struct {
+	// The rotation that turns this frame's ray pattern, as its three rows.
+	rotation_x: vec3f,
+	// The most probes the frame updates: the ray budget over PROBE_RAYS.
+	probe_budget: u32,
+	rotation_y: vec3f,
+	_padding0: u32,
+	rotation_z: vec3f,
+	_padding1: u32,
+}
+
+// The schedule of one frame: the priorities the schedule pass counts, and the probes the gather pass lists.
+ProbeSchedule: struct {
+	// How many probes fell in each priority bucket.
+	histogram: atomicu32[64],
+	// Probes in buckets above `threshold` update this frame, and the first `quota` probes of the threshold bucket.
+	threshold: u32,
+	quota: u32,
+	// How many probes of the threshold bucket asked so far.
+	quota_taken: atomicu32,
+	// The probes the gather pass listed, which can pass the budget; the budget's first ones update.
+	count: atomicu32,
+	// The probes of each state the schedule counted, and the totals of the last frame, which the host reads back.
+	active: atomicu32,
+	idle: atomicu32,
+	buried: atomicu32,
+	unset: atomicu32,
+	last_active: u32,
+	last_idle: u32,
+	last_buried: u32,
+	last_unset: u32,
+	last_count: u32,
+	_padding0: u32,
+	_padding1: u32,
+	_padding2: u32,
+}
+
+// What one of the frame's rays brings back to its probe.
+ProbeRayResult: struct {
+	// The radiance the ray found, in nits.
+	radiance: vec3f,
+	// How far the ray went: PROBE_MISS_DISTANCE for a miss, negative for a hit on a back face.
+	distance: f32,
+}
+
+ProbeGi: layer {
+	probe_gi_parameters: descriptor<{ type: ProbeGiParameters, binding: 1180, access: read }>;
+	// Each probe's priority bucket this frame, which the schedule pass writes and the gather pass reads.
+	probe_priorities: descriptor<{ type: u32[], binding: 1183, access: read_write }>;
+	probe_schedule: descriptor<{ type: ProbeSchedule, binding: 1184, access: read_write }>;
+	// The slots the frame updates, in no particular order.
+	probe_list: descriptor<{ type: u32[], binding: 1185, access: read_write }>;
+	// Each ray of the frame: PROBE_RAYS for each listed probe, in list order.
+	probe_ray_results: descriptor<{ type: ProbeRayResult[], binding: 1186, access: read_write }>;
+	// The atlases, as the update pass blends each probe's rays into them. Readers sample them as `probe_irradiance` and
+	// `probe_distance`.
+	probe_irradiance_atlas: descriptor<{ type: StorageImage<rgba16f>, binding: 1191, access: read_write }>;
+	probe_distance_atlas: descriptor<{ type: StorageImage<rg16f>, binding: 1192, access: read_write }>;
+	// The scene's light table, whose lights light what probe rays hit.
+	probe_scene_lights: descriptor<{ type: LightingBuffer, binding: 1193, access: read, memory: device }>;
+}
+
+// Returns how many probes the frame updates: those the gather pass listed, up to the budget.
+probe_listed_count: fn (probe_gi_set: ProbeGi) -> u32 {
+	return min(atomic_load(probe_gi_set.probe_schedule.count), probe_gi_set.probe_gi_parameters.probe_budget);
+}
+
+// Returns the direction of ray `ray` of an update: a point of the spherical Fibonacci pattern of PROBE_RAYS points,
+// turned by the frame's rotation.
+probe_ray_direction: fn (probe_gi_set: ProbeGi, ray: u32) -> vec3f {
+	// The golden angle, π(3 - √5).
+	let angle: f32 = f32(ray) * 2.39996322973;
+	let z: f32 = 1.0 - (2.0 * f32(ray) + 1.0) / f32(PROBE_RAYS);
+	let radius: f32 = sqrt(max(0.0, 1.0 - z * z));
+	let local: vec3f = vec3f(radius * cos(angle), radius * sin(angle), z);
+	return vec3f(
+		dot(probe_gi_set.probe_gi_parameters.rotation_x, local),
+		dot(probe_gi_set.probe_gi_parameters.rotation_y, local),
+		dot(probe_gi_set.probe_gi_parameters.rotation_z, local)
+	);
+}
+
+// Returns the world position of the probe in `slot` of `cascade`, whose record is `record`: its grid position plus the
+// offset relocation gave it.
+probe_world_position: fn (probe_volume: ProbeVolume, record: ProbeRecord, cascade: u32) -> vec3f {
+	return record.coordinate * probe_volume.probe_volume_parameters.cascades[cascade].spacing + record.offset;
+}

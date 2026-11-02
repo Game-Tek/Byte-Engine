@@ -1,4 +1,7 @@
 // Each thread's running total while the workgroup scans them.
+
+use ::byte_engine::rendering::visibility::layouts::material_dispatch::*;
+
 thread_totals: workgroup<u32, 256>;
 
 // One workgroup scans the pixel count of every evaluation slot: each thread owns four consecutive slots. Materials that
@@ -6,12 +9,12 @@ thread_totals: workgroup<u32, 256>;
 MATERIAL_OFFSET_WORKGROUP_SIZE: const u32 = 256;
 MATERIALS_PER_THREAD: const u32 = 4;
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, material_dispatch: MaterialDispatch) -> void {
 	let thread: u32 = input.thread_idx;
 	let first_material: u32 = thread * MATERIALS_PER_THREAD;
 	let thread_total: u32 = 0;
 	for (let i: u32 = 0; i < MATERIALS_PER_THREAD; i = i + 1) {
-		thread_total = thread_total + atomic_load(material_count_buffer.material_count[first_material + i]);
+		thread_total = thread_total + atomic_load(material_dispatch.material_count_buffer.material_count[first_material + i]);
 	}
 	thread_totals[thread] = thread_total;
 	workgroup_barrier();
@@ -32,11 +35,11 @@ main: fn (input: StageInput) -> void {
 	let offset: u32 = thread_totals[thread] - thread_total;
 	for (let i: u32 = 0; i < MATERIALS_PER_THREAD; i = i + 1) {
 		let material: u32 = first_material + i;
-		let count: u32 = atomic_load(material_count_buffer.material_count[material]);
-		material_offset_buffer.material_offset[material] = offset;
-		atomic_store(material_offset_scratch_buffer.material_offset_scratch[material], offset);
+		let count: u32 = atomic_load(material_dispatch.material_count_buffer.material_count[material]);
+		material_dispatch.material_offset_buffer.material_offset[material] = offset;
+		atomic_store(material_dispatch.material_offset_scratch_buffer.material_offset_scratch[material], offset);
 		// The indirect dispatch consumes all three components for group counts.
-		material_evaluation_dispatches.material_evaluation_dispatches[material] = vec3u((count + 127) / 128, 1, 1);
+		material_dispatch.material_evaluation_dispatches.material_evaluation_dispatches[material] = vec3u((count + 127) / 128, 1, 1);
 		offset = offset + count;
 	}
 }

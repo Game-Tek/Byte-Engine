@@ -17,11 +17,11 @@ use crate::rendering::pipeline_compilation::{HitGroupShader, RayTracingPipelineR
 use crate::rendering::{PipelineManagerClient, PipelineRef, PipelineState};
 
 /// The ray generation shader that shades surfel hits.
-pub(super) const SURFEL_SHADE_SHADER: &str = "byte-engine/rendering/visibility/surfel-shade.besl";
+pub(super) const SURFEL_SHADE_SHADER: &str = "byte_engine/rendering/visibility/surfel-shade.besl";
 /// The ray generation shader that shades probe hits.
-pub(super) const PROBE_SHADE_SHADER: &str = "byte-engine/rendering/visibility/probe-shade.besl";
+pub(super) const PROBE_SHADE_SHADER: &str = "byte_engine/rendering/visibility/probe-shade.besl";
 /// The closest-hit shader of hit group 0.
-const DEFAULT_HIT_SHADER: &str = "byte-engine/rendering/visibility/default-hit.besl";
+const DEFAULT_HIT_SHADER: &str = "byte_engine/rendering/visibility/default-hit.besl";
 /// The stem of [`SURFEL_SHADE_SHADER`], which a bake leaves out with the rest of surfel GI, and of
 /// [`PROBE_SHADE_SHADER`], which it leaves out with the rest of probe GI. They have no pipeline asset, because
 /// [`HitShading`] assembles the pipeline from them.

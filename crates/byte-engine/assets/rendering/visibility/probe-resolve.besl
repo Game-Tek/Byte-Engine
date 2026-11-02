@@ -7,6 +7,11 @@
 // light as if nothing hid the sky. Every other pixel of every other row marks the eight probes around it in each cascade
 // that lights it, with the frame.
 
+use ::byte_engine::rendering::visibility::layouts::screen_view::*;
+use ::byte_engine::rendering::visibility::layouts::screen_trace::*;
+use ::byte_engine::rendering::visibility::layouts::probe_volume::*;
+use ::byte_engine::rendering::visibility::layouts::probe_resolve::*;
+
 // Per tile texel: the positive linear depth, or zero where no surface was drawn or outside the image.
 tile_depth: workgroup<f32, 144>;
 
@@ -26,8 +31,9 @@ PROBE_VIEW_STOPS: const f32 = 12.0;
 
 // Returns `axis_tangent` with neighbor depths read from the workgroup's tile. `stride` steps one texel along `axis`
 // in the tile.
-tile_axis_tangent: fn (center_index: u32, stride: u32, pixel: vec2f, axis: vec2f, center_position: vec3f) -> vec3f {
+tile_axis_tangent: fn (screen_trace: ScreenTrace, center_index: u32, stride: u32, pixel: vec2f, axis: vec2f, center_position: vec3f) -> vec3f {
 	return axis_tangent(
+		screen_trace,
 		pixel,
 		axis,
 		center_position,
@@ -39,19 +45,19 @@ tile_axis_tangent: fn (center_index: u32, stride: u32, pixel: vec2f, axis: vec2f
 }
 
 // Transforms a view-space point or direction (w = 0) of the sink's camera to world space.
-to_world: fn (view: vec3f, w: f32) -> vec3f {
-	let world: vec4f = probe_resolve_parameters.view_to_world * vec4f(view.x, view.y, view.z, w);
+to_world: fn (probe_resolve: ProbeResolve, view: vec3f, w: f32) -> vec3f {
+	let world: vec4f = probe_resolve.probe_resolve_parameters.view_to_world * vec4f(view.x, view.y, view.z, w);
 	return vec3f(world.x, world.y, world.z);
 }
 
 // Marks the eight probes of `cascade` around `position` as read in this frame, with one plus the frame index, so zero
 // means a probe no pixel ever read.
-mark_probes: fn (cascade: u32, position: vec3f) -> void {
-	let window: ProbeCascade = probe_volume_parameters.cascades[cascade];
+mark_probes: fn (probe_volume: ProbeVolume, cascade: u32, position: vec3f) -> void {
+	let window: ProbeCascade = probe_volume.probe_volume_parameters.cascades[cascade];
 	let base: vec3f = probe_cell(probe_grid_position(window, position));
-	let mark: u32 = probe_volume_parameters.frame_index + 1;
+	let mark: u32 = probe_volume.probe_volume_parameters.frame_index + 1;
 	for (let corner: u32 = 0; corner < 8; corner = corner + 1) {
-		probe_seen[probe_slot(window.start, base + probe_corner(corner), cascade)] = mark;
+		probe_volume.probe_seen[probe_slot(window.start, base + probe_corner(corner), cascade)] = mark;
 	}
 }
 
@@ -71,7 +77,7 @@ view_light: fn (light: vec3f) -> vec4f {
 // Returns the color the probes debug view gives the probe in `slot`, whose record is `record`, where its sphere faces
 // `normal`: magenta for an unset probe, red for a buried one, and its irradiance toward `normal` for the rest, dimmed
 // toward blue for an idle one.
-probe_debug_color: fn (slot: u32, record: ProbeRecord, normal: vec3f) -> vec4f {
+probe_debug_color: fn (probe_resolve: ProbeResolve, probe_volume: ProbeVolume, slot: u32, record: ProbeRecord, normal: vec3f) -> vec4f {
 	if (record.state == PROBE_STATE_UNSET) {
 		return vec4f(1.0, 0.0, 1.0, 1.0);
 	}
@@ -79,11 +85,11 @@ probe_debug_color: fn (slot: u32, record: ProbeRecord, normal: vec3f) -> vec4f {
 		return vec4f(1.0, 0.0, 0.0, 1.0);
 	}
 	let irradiance: vec4f = texture_lod(
-		probe_irradiance,
-		probe_atlas_uv(slot, normal, PROBE_IRRADIANCE_SIDE, PROBE_IRRADIANCE_TILE, texture_size(probe_irradiance)),
+		probe_volume.probe_irradiance,
+		probe_atlas_uv(slot, normal, PROBE_IRRADIANCE_SIDE, PROBE_IRRADIANCE_TILE, texture_size(probe_volume.probe_irradiance)),
 		0.0
 	);
-	let color: vec4f = view_light(vec3f(irradiance.x, irradiance.y, irradiance.z) * probe_resolve_parameters.exposure);
+	let color: vec4f = view_light(vec3f(irradiance.x, irradiance.y, irradiance.z) * probe_resolve.probe_resolve_parameters.exposure);
 	if (record.state == PROBE_STATE_IDLE) {
 		return vec4f(color.x * 0.25, color.y * 0.25, color.z * 0.25 + 0.3, 1.0);
 	}
@@ -92,8 +98,8 @@ probe_debug_color: fn (slot: u32, record: ProbeRecord, normal: vec3f) -> vec4f {
 
 // Returns the color of the first probe sphere of the finest cascade along the view ray from `origin` along the unit
 // `direction`, before `limit` meters, or a negative alpha when the ray passes every sphere.
-probe_sphere_color: fn (origin: vec3f, direction: vec3f, limit: f32) -> vec4f {
-	let window: ProbeCascade = probe_volume_parameters.cascades[0];
+probe_sphere_color: fn (probe_resolve: ProbeResolve, probe_volume: ProbeVolume, origin: vec3f, direction: vec3f, limit: f32) -> vec4f {
+	let window: ProbeCascade = probe_volume.probe_volume_parameters.cascades[0];
 	let radius: f32 = PROBE_DEBUG_RADIUS * window.spacing;
 	let nearest: f32 = limit;
 	let color: vec4f = vec4f(0.0, 0.0, 0.0, -1.0);
@@ -112,7 +118,7 @@ probe_sphere_color: fn (origin: vec3f, direction: vec3f, limit: f32) -> vec4f {
 			continue;
 		}
 		let slot: u32 = probe_slot(window.start, local, 0);
-		let record: ProbeRecord = probe_records[slot];
+		let record: ProbeRecord = probe_volume.probe_records[slot];
 		let center: vec3f = (window.start + local) * window.spacing + record.offset;
 		// The nearer root of |origin + t direction - center|² = radius².
 		let to_origin: vec3f = origin - center;
@@ -124,26 +130,26 @@ probe_sphere_color: fn (origin: vec3f, direction: vec3f, limit: f32) -> vec4f {
 		let t: f32 = -b - sqrt(discriminant);
 		if (t > 0.0 && t < nearest) {
 			nearest = t;
-			color = probe_debug_color(slot, record, normalize(origin + direction * t - center));
+			color = probe_debug_color(probe_resolve, probe_volume, slot, record, normalize(origin + direction * t - center));
 		}
 	}
 	return color;
 }
 
 // Writes `color` to the full-resolution pixels a half-resolution `pixel` covers in the debug view at pool `slot`.
-write_debug_view: fn (slot: u32, pixel: vec2u, color: vec4f) -> void {
+write_debug_view: fn (probe_resolve: ProbeResolve, slot: u32, pixel: vec2u, color: vec4f) -> void {
 	let x: u32 = pixel.x * 2;
 	let y: u32 = pixel.y * 2;
-	write(debug_view_targets[slot], vec2u(x, y), color);
-	write(debug_view_targets[slot], vec2u(x + 1, y), color);
-	write(debug_view_targets[slot], vec2u(x, y + 1), color);
-	write(debug_view_targets[slot], vec2u(x + 1, y + 1), color);
+	write(probe_resolve.debug_view_targets[slot], vec2u(x, y), color);
+	write(probe_resolve.debug_view_targets[slot], vec2u(x + 1, y), color);
+	write(probe_resolve.debug_view_targets[slot], vec2u(x, y + 1), color);
+	write(probe_resolve.debug_view_targets[slot], vec2u(x + 1, y + 1), color);
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, screen_trace: ScreenTrace, probe_volume: ProbeVolume, probe_resolve: ProbeResolve) -> void {
 	let pixel: vec2u = input.thread_id;
 	let lane: u32 = input.thread_idx;
-	let extent: vec2u = image_size(history_output);
+	let extent: vec2u = image_size(probe_resolve.history_output);
 	let local: vec2u = vec2u(lane % PROBE_RESOLVE_WORKGROUP_WIDTH, lane / PROBE_RESOLVE_WORKGROUP_WIDTH);
 	let workgroup_origin: vec2u = pixel - local;
 	// Every invocation helps load the tile, including those past the image edge, before any of them returns.
@@ -153,6 +159,7 @@ main: fn (input: StageInput) -> void {
 		tile_index = tile_index + PROBE_RESOLVE_WORKGROUP_SIZE
 	) {
 		tile_depth[tile_index] = neighbor_depth(
+			screen_trace,
 			workgroup_origin,
 			f32(tile_index % PROBE_RESOLVE_TILE_WIDTH) - f32(PROBE_RESOLVE_TILE_RADIUS),
 			f32(tile_index / PROBE_RESOLVE_TILE_WIDTH) - f32(PROBE_RESOLVE_TILE_RADIUS),
@@ -170,37 +177,37 @@ main: fn (input: StageInput) -> void {
 	let view_normal: vec3f = vec3f(0.0, 0.0, 0.0);
 	let world_position: vec3f = vec3f(0.0, 0.0, 0.0);
 	if (center_z != 0.0) {
-		let center_position: vec3f = view_position(pixel_f, center_z);
+		let center_position: vec3f = view_position(screen_trace, pixel_f, center_z);
 		view_normal = tangent_normal(
-			tile_axis_tangent(center_index, 1, pixel_f, vec2f(1.0, 0.0), center_position),
-			tile_axis_tangent(center_index, PROBE_RESOLVE_TILE_WIDTH, pixel_f, vec2f(0.0, 1.0), center_position),
+			tile_axis_tangent(screen_trace, center_index, 1, pixel_f, vec2f(1.0, 0.0), center_position),
+			tile_axis_tangent(screen_trace, center_index, PROBE_RESOLVE_TILE_WIDTH, pixel_f, vec2f(0.0, 1.0), center_position),
 			center_position
 		);
-		world_position = to_world(center_position, 1.0);
+		world_position = to_world(probe_resolve, center_position, 1.0);
 	}
 	let surface: bool = dot(view_normal, view_normal) != 0.0;
-	let normal: vec3f = to_world(view_normal, 0.0);
-	let camera: vec3f = to_world(vec3f(0.0, 0.0, 0.0), 1.0);
-	let exposure: f32 = probe_resolve_parameters.exposure;
+	let normal: vec3f = to_world(probe_resolve, view_normal, 0.0);
+	let camera: vec3f = to_world(probe_resolve, vec3f(0.0, 0.0, 0.0), 1.0);
+	let exposure: f32 = probe_resolve.probe_resolve_parameters.exposure;
 
 	let history: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	if (surface) {
-		let light: vec4f = probe_volume_lookup(world_position, normal, normalize(camera - world_position), true);
+		let light: vec4f = probe_volume_lookup(probe_volume, world_position, normal, normalize(camera - world_position), true);
 		if (light.w >= 0.0) {
 			history = vec4f(light.x * exposure, light.y * exposure, light.z * exposure, light.w);
 		} else {
 			// No cascade reaches the pixel. It takes the environment's light as if nothing hid the sky, as material
 			// evaluation would light it without probe GI.
-			let sky: vec4f = texture_lod(probe_environment_irradiance, normal, 0.0);
-			let scale: f32 = probe_volume_parameters.environment_intensity * exposure;
+			let sky: vec4f = texture_lod(probe_volume.probe_environment_irradiance, normal, 0.0);
+			let scale: f32 = probe_volume.probe_volume_parameters.environment_intensity * exposure;
 			history = vec4f(sky.x * scale, sky.y * scale, sky.z * scale, 0.0);
 		}
 		// A quarter of the pixels mark the probes they read: neighbors read the same probes.
 		if (((pixel.x | pixel.y) & 1) == 0) {
 			for (let cascade: u32 = 0; cascade < PROBE_CASCADES; cascade = cascade + 1) {
-				let share: f32 = probe_cascade_share(cascade, world_position);
+				let share: f32 = probe_cascade_share(probe_volume, cascade, world_position);
 				if (share > 0.0) {
-					mark_probes(cascade, world_position);
+					mark_probes(probe_volume, cascade, world_position);
 					// Past its blend band, the cascade lights the pixel alone.
 					if (share >= 1.0) {
 						break;
@@ -209,28 +216,28 @@ main: fn (input: StageInput) -> void {
 			}
 		}
 	}
-	write(history_output, pixel, history);
-	write(normal_output, pixel, encode_stored_normal(view_normal));
+	write(probe_resolve.history_output, pixel, history);
+	write(probe_resolve.normal_output, pixel, encode_stored_normal(view_normal));
 
 	// The probe light view writes the slot after the probes view's when both are shown.
-	let light_slot: u32 = probe_resolve_parameters.debug_view_first_slot;
-	if (probe_resolve_parameters.debug_view_probes) {
+	let light_slot: u32 = probe_resolve.probe_resolve_parameters.debug_view_first_slot;
+	if (probe_resolve.probe_resolve_parameters.debug_view_probes) {
 		light_slot = light_slot + 1;
 	}
-	if (probe_resolve_parameters.debug_view_probes) {
-		let view_ray: vec3f = view_position(pixel_f, 1.0);
-		let direction: vec3f = normalize(to_world(view_ray, 0.0));
+	if (probe_resolve.probe_resolve_parameters.debug_view_probes) {
+		let view_ray: vec3f = view_position(screen_trace, pixel_f, 1.0);
+		let direction: vec3f = normalize(to_world(probe_resolve, view_ray, 0.0));
 		let limit: f32 = 1000.0;
 		if (surface) {
 			limit = length(world_position - camera);
 		}
-		let color: vec4f = probe_sphere_color(camera, direction, limit);
+		let color: vec4f = probe_sphere_color(probe_resolve, probe_volume, camera, direction, limit);
 		if (color.w < 0.0) {
 			color = view_light(vec3f(history.x, history.y, history.z));
 		}
-		write_debug_view(probe_resolve_parameters.debug_view_first_slot, pixel, color);
+		write_debug_view(probe_resolve, probe_resolve.probe_resolve_parameters.debug_view_first_slot, pixel, color);
 	}
-	if (probe_resolve_parameters.debug_view_probe_light) {
-		write_debug_view(light_slot, pixel, view_light(vec3f(history.x, history.y, history.z)));
+	if (probe_resolve.probe_resolve_parameters.debug_view_probe_light) {
+		write_debug_view(probe_resolve, light_slot, pixel, view_light(vec3f(history.x, history.y, history.z)));
 	}
 }

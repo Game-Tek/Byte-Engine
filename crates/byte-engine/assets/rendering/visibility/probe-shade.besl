@@ -6,28 +6,36 @@
 // sees into a wall: it brings back no light, and its distance turns negative, which the update pass reads to relocate
 // the probe. The result goes to the hit's ray, which the update pass then blends into its probe.
 
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+use ::byte_engine::rendering::visibility::layouts::ray_traced_scene::*;
+use ::byte_engine::rendering::visibility::layouts::probe_volume::*;
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::probe_gi::*;
+use ::byte_engine::rendering::visibility::layouts::ray_hits::*;
+
 // Returns the light the scene's lights give a surface at `position` with the unit `normal`, as irradiance over π: each
 // sun, and each point and cone light within reach, when no geometry hides it. Point and cone lights shine as material
 // evaluation lights a surface, but at their peak intensity in every direction: an IES profile doesn't shape their light
 // here.
-probe_direct_light: fn (position: vec3f, normal: vec3f) -> vec3f {
+probe_direct_light: fn (probe_gi_set: ProbeGi, ray_traced_scene: RayTracedScene, position: vec3f, normal: vec3f) -> vec3f {
 	let shadow_origin: vec3f = position + normal * PROBE_HIT_OFFSET;
 	let light: vec3f = vec3f(0.0, 0.0, 0.0);
-	for (let index: u32 = 0; index < probe_scene_lights.light_count; index = index + 1) {
-		if (probe_scene_lights.lights[index].type == DIRECTIONAL_LIGHT) {
+	for (let index: u32 = 0; index < probe_gi_set.probe_scene_lights.light_count; index = index + 1) {
+		if (probe_gi_set.probe_scene_lights.lights[index].type == DIRECTIONAL_LIGHT) {
 			// A sun keeps the direction its light travels in `position`.
-			let toward_sun: vec3f = -probe_scene_lights.lights[index].position;
+			let toward_sun: vec3f = -probe_gi_set.probe_scene_lights.lights[index].position;
 			let sun_cosine: f32 = dot(normal, toward_sun);
 			if (sun_cosine > 0.0) {
-				if (!trace_occlusion(scene_structure, 255, shadow_origin, toward_sun, 0.0, PROBE_RAY_LENGTH)) {
-					light = light + probe_scene_lights.lights[index].color * (sun_cosine / 3.14159265359);
+				if (!trace_occlusion(ray_traced_scene.scene_structure, 255, shadow_origin, toward_sun, 0.0, PROBE_RAY_LENGTH)) {
+					light = light + probe_gi_set.probe_scene_lights.lights[index].color * (sun_cosine / 3.14159265359);
 				}
 			}
 			continue;
 		}
-		let to_light: vec3f = probe_scene_lights.lights[index].position - position;
+		let to_light: vec3f = probe_gi_set.probe_scene_lights.lights[index].position - position;
 		let distance_squared: f32 = dot(to_light, to_light);
-		let reach: f32 = probe_scene_lights.lights[index].reach;
+		let reach: f32 = probe_gi_set.probe_scene_lights.lights[index].reach;
 		if (distance_squared <= 0.0 || distance_squared >= reach * reach) {
 			continue;
 		}
@@ -35,33 +43,33 @@ probe_direct_light: fn (position: vec3f, normal: vec3f) -> vec3f {
 		let toward_light: vec3f = to_light * (1.0 / distance);
 		let cosine: f32 = dot(normal, toward_light);
 		let falloff: f32 = 1.0 / distance_squared;
-		if (probe_scene_lights.lights[index].type == CONE_LIGHT) {
-			let cone: vec2f = probe_scene_lights.lights[index].cone_cosines;
-			let along: f32 = 0.0 - dot(probe_scene_lights.lights[index].direction, toward_light);
+		if (probe_gi_set.probe_scene_lights.lights[index].type == CONE_LIGHT) {
+			let cone: vec2f = probe_gi_set.probe_scene_lights.lights[index].cone_cosines;
+			let along: f32 = 0.0 - dot(probe_gi_set.probe_scene_lights.lights[index].direction, toward_light);
 			falloff = falloff * clamp((along - cone.y) / (cone.x - cone.y), 0.0, 1.0);
 		}
 		if (cosine > 0.0 && falloff > 0.0) {
-			if (!trace_occlusion(scene_structure, 255, shadow_origin, toward_light, 0.0, distance - PROBE_HIT_OFFSET)) {
-				light = light + probe_scene_lights.lights[index].color * (falloff * cosine / 3.14159265359);
+			if (!trace_occlusion(ray_traced_scene.scene_structure, 255, shadow_origin, toward_light, 0.0, distance - PROBE_HIT_OFFSET)) {
+				light = light + probe_gi_set.probe_scene_lights.lights[index].color * (falloff * cosine / 3.14159265359);
 			}
 		}
 	}
 	return light;
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, scene: Scene, ray_traced_scene: RayTracedScene, probe_volume: ProbeVolume, probe_gi_set: ProbeGi, ray_hits: RayHits) -> void {
 	let index: u32 = input.launch_index.x;
-	if (index >= ray_hit_sort.hit_count) {
+	if (index >= ray_hits.ray_hit_sort.hit_count) {
 		return;
 	}
-	let ray: u32 = ray_sorted_hits[index];
-	let hit: Hit = kept_ray_hit(ray);
+	let ray: u32 = ray_hits.ray_sorted_hits[index];
+	let hit: Hit = kept_ray_hit(ray_hits, ray);
 	let surface: HitSurface = invoke(
 		hit,
 		HitSurface(vec3f16(0.0, 0.0, 0.0), 0, vec3f(0.0, 0.0, 0.0), vec3f16(0.0, 0.0, 1.0))
 	);
 	if (surface.front_face == 0) {
-		probe_ray_results[ray] = ProbeRayResult(vec3f(0.0, 0.0, 0.0), -hit.distance);
+		probe_gi_set.probe_ray_results[ray] = ProbeRayResult(vec3f(0.0, 0.0, 0.0), -hit.distance);
 		return;
 	}
 	let radiance: vec3f = surface.emission;
@@ -71,16 +79,16 @@ main: fn (input: StageInput) -> void {
 		let position: vec3f = hit.origin + hit.direction * hit.distance;
 		let normal: vec3f = normalize(vec3f(surface.normal));
 		// The light reaching the hit as irradiance over π, which the albedo turns into reflected radiance.
-		let light: vec3f = probe_direct_light(position, normal);
+		let light: vec3f = probe_direct_light(probe_gi_set, ray_traced_scene, position, normal);
 		// The volume as the last update left it. Where no cascade reaches, or the finest that does has no light around
 		// the hit yet, the hit gets the direct light alone, rather than sky that walls may hide.
-		let bounce: vec4f = probe_volume_lookup(position, normal, -hit.direction, false);
+		let bounce: vec4f = probe_volume_lookup(probe_volume, position, normal, -hit.direction, false);
 		if (bounce.w >= 0.0) {
 			light = light + vec3f(bounce.x, bounce.y, bounce.z) * PROBE_BOUNCE_ENERGY;
 		}
 		radiance = radiance + albedo * light;
 	}
-	probe_ray_results[ray] = ProbeRayResult(
+	probe_gi_set.probe_ray_results[ray] = ProbeRayResult(
 		clamp(radiance, vec3f(0.0, 0.0, 0.0), vec3f(PROBE_MAX_RADIANCE, PROBE_MAX_RADIANCE, PROBE_MAX_RADIANCE)),
 		hit.distance
 	);

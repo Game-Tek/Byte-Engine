@@ -135,7 +135,7 @@ mod tests {
 		std::fs::create_dir_all(&root).unwrap();
 		std::fs::write(engine_assets.join("shaders/render-pass.bema"), []).unwrap();
 		std::fs::write(engine_assets.join("engine-icon.png"), []).unwrap();
-		symlink(&engine_assets, root.join("byte-engine")).unwrap();
+		symlink(&engine_assets, root.join("byte_engine")).unwrap();
 		symlink(engine_assets.join("engine-icon.png"), root.join("linked-engine-icon.png")).unwrap();
 		symlink(&root, engine_assets.join("cycle-to-application-assets")).unwrap();
 
@@ -151,8 +151,8 @@ mod tests {
 		assert_eq!(
 			ids,
 			[
-				"byte-engine/engine-icon.png",
-				"byte-engine/shaders/render-pass.bema",
+				"byte_engine/engine-icon.png",
+				"byte_engine/shaders/render-pass.bema",
 				"linked-engine-icon.png",
 			]
 		);

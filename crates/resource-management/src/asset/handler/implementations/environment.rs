@@ -196,7 +196,7 @@ mod tests {
 
 		source_storage.add_file(
 			"studio.environment.bead",
-			br#"{ "$schema": "byte-engine/schemas/environment.bead.schema.json", source: "studio.exr" }"#,
+			br#"{ "$schema": "byte_engine/schemas/environment.bead.schema.json", source: "studio.exr" }"#,
 		);
 		source_storage.add_file("studio.exr", &exr_fixture(4.0));
 

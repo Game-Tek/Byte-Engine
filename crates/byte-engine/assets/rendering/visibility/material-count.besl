@@ -1,17 +1,22 @@
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+use ::byte_engine::rendering::visibility::layouts::material_dispatch::*;
+use ::byte_engine::rendering::visibility::layouts::pixel_materials::*;
+
 MATERIAL_COUNT_TILE_CAPACITY: const u32 = 32;
 INVALID_EVALUATION_INDEX: const u32 = 4294967295;
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, scene: Scene, material_dispatch: MaterialDispatch) -> void {
 	let coord: vec2u = input.thread_id;
-	let extent: vec2u = image_size(instance_index_render_target);
+	let extent: vec2u = image_size(material_dispatch.instance_index_render_target);
 	// The pixel's evaluation slot. Pixels are counted per slot, not per material, so every material of a slot is
 	// shaded by one dispatch.
 	let evaluation_index: u32 = INVALID_EVALUATION_INDEX;
 
 	if (coord.x < extent.x && coord.y < extent.y) {
-		let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, coord);
+		let pixel_instance_index: u32 = image_load_u32(material_dispatch.instance_index_render_target, coord);
 		if (pixel_instance_index < 1024) {
-			evaluation_index = material_evaluations.evaluation_indices[meshes.meshes[pixel_instance_index].material_index];
+			evaluation_index = scene.material_evaluations.evaluation_indices[scene.meshes.meshes[pixel_instance_index].material_index];
 		}
 	}
 
@@ -55,7 +60,7 @@ main: fn (input: StageInput) -> void {
 
 			if (claimed_slot == INVALID_EVALUATION_INDEX) {
 				// A full tile hash falls back once per subgroup evaluation partition, not once per pixel.
-				atomic_add(material_count_buffer.material_count[leader_evaluation_index], matching_count);
+				atomic_add(material_dispatch.material_count_buffer.material_count[leader_evaluation_index], matching_count);
 			}
 		}
 
@@ -68,7 +73,7 @@ main: fn (input: StageInput) -> void {
 		let key: u32 = atomic_load(tile_histogram_keys[input.thread_idx]);
 
 		if (key < 1024) {
-			atomic_add(material_count_buffer.material_count[key], atomic_load(tile_histogram_counts[input.thread_idx]));
+			atomic_add(material_dispatch.material_count_buffer.material_count[key], atomic_load(tile_histogram_counts[input.thread_idx]));
 		}
 	}
 }

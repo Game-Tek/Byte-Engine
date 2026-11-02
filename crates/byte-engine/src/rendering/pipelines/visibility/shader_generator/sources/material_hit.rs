@@ -8,19 +8,19 @@ pub(crate) const MATERIAL_HIT_PREFIX_SOURCE: &str = r#"
 material_hit_prefix: fn (input: StageInput) -> void {
 	// The geometry table leads a hit to the frame's record of the primitive it hit and to the primitive's first
 	// triangle in the flat triangle lists.
-	let geometry: vec2u = ray_tracing_geometries.geometries[input.hit_custom_index + input.hit_geometry_index];
-	let mesh: Mesh = meshes.meshes[geometry.x];
-	let material: Material = materials.materials[mesh.material_index];
+	let geometry: vec2u = ray_traced_scene.ray_tracing_geometries.geometries[input.hit_custom_index + input.hit_geometry_index];
+	let mesh: Mesh = scene.meshes.meshes[geometry.x];
+	let material: Material = scene.materials.materials[mesh.material_index];
 	let first_index: u32 = (geometry.y + input.hit_primitive_index) * 3;
 	let triangle_vertex_indices: u32[3] = u32[3](
-		mesh.base_vertex_index + u16_to_u32(flat_triangle_indices[first_index]),
-		mesh.base_vertex_index + u16_to_u32(flat_triangle_indices[first_index + 1]),
-		mesh.base_vertex_index + u16_to_u32(flat_triangle_indices[first_index + 2])
+		mesh.base_vertex_index + u16_to_u32(ray_traced_scene.flat_triangle_indices[first_index]),
+		mesh.base_vertex_index + u16_to_u32(ray_traced_scene.flat_triangle_indices[first_index + 1]),
+		mesh.base_vertex_index + u16_to_u32(ray_traced_scene.flat_triangle_indices[first_index + 2])
 	);
 	let model: mat4x3f = mesh.model;
-	let position0: vec3f = vertex_positions[triangle_vertex_indices[0]];
-	let position1: vec3f = vertex_positions[triangle_vertex_indices[1]];
-	let position2: vec3f = vertex_positions[triangle_vertex_indices[2]];
+	let position0: vec3f = scene.vertex_positions[triangle_vertex_indices[0]];
+	let position1: vec3f = scene.vertex_positions[triangle_vertex_indices[1]];
+	let position2: vec3f = scene.vertex_positions[triangle_vertex_indices[2]];
 	let world_vertex_position0: vec3f = model * vec4f(position0.x, position0.y, position0.z, 1.0);
 	let world_vertex_position1: vec3f = model * vec4f(position1.x, position1.y, position1.z, 1.0);
 	let world_vertex_position2: vec3f = model * vec4f(position2.x, position2.y, position2.z, 1.0);
@@ -31,9 +31,9 @@ material_hit_prefix: fn (input: StageInput) -> void {
 	let world_space_vertex_position: vec3f = world_vertex_position0 + barycentric.x * world_edge1
 		+ barycentric.y * world_edge2;
 	// As in material evaluation, unit vertex normals are interpolated in model space and turned into world space once.
-	let model_space_vertex_normal0: vec3f = normalize(decode_octahedral_normal(vertex_normals[triangle_vertex_indices[0]]));
-	let model_space_vertex_normal1: vec3f = normalize(decode_octahedral_normal(vertex_normals[triangle_vertex_indices[1]]));
-	let model_space_vertex_normal2: vec3f = normalize(decode_octahedral_normal(vertex_normals[triangle_vertex_indices[2]]));
+	let model_space_vertex_normal0: vec3f = normalize(decode_octahedral_normal(scene.vertex_normals[triangle_vertex_indices[0]]));
+	let model_space_vertex_normal1: vec3f = normalize(decode_octahedral_normal(scene.vertex_normals[triangle_vertex_indices[1]]));
+	let model_space_vertex_normal2: vec3f = normalize(decode_octahedral_normal(scene.vertex_normals[triangle_vertex_indices[2]]));
 	let model_space_normal: vec3f = model_space_vertex_normal0
 		+ barycentric.x * (model_space_vertex_normal1 - model_space_vertex_normal0)
 		+ barycentric.y * (model_space_vertex_normal2 - model_space_vertex_normal0);
@@ -78,9 +78,9 @@ material_hit_backface: fn (payload: HitSurface) -> HitSurface {
 /// both axes make the sampler pick the level of detail that width asks for.
 pub(crate) const MATERIAL_HIT_UV_SOURCE: &str = r#"
 material_hit_uv: fn (input: StageInput) -> void {
-	let vertex_uv0: vec2f = decode_f16_vec2(vertex_uvs[triangle_vertex_indices[0]]);
-	let uv_edge1: vec2f = decode_f16_vec2(vertex_uvs[triangle_vertex_indices[1]]) - vertex_uv0;
-	let uv_edge2: vec2f = decode_f16_vec2(vertex_uvs[triangle_vertex_indices[2]]) - vertex_uv0;
+	let vertex_uv0: vec2f = decode_f16_vec2(scene.vertex_uvs[triangle_vertex_indices[0]]);
+	let uv_edge1: vec2f = decode_f16_vec2(scene.vertex_uvs[triangle_vertex_indices[1]]) - vertex_uv0;
+	let uv_edge2: vec2f = decode_f16_vec2(scene.vertex_uvs[triangle_vertex_indices[2]]) - vertex_uv0;
 	let vertex_uv: vec2f = vertex_uv0 + barycentric.x * uv_edge1 + barycentric.y * uv_edge2;
 	let world_area: f32 = length(cross(world_edge1, world_edge2));
 	let uv_area: f32 = abs(uv_edge1.x * uv_edge2.y - uv_edge2.x * uv_edge1.y);

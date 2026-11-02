@@ -261,12 +261,12 @@ impl UiRenderPass {
 	pub(crate) fn request_pipelines(
 		pipeline_manager: &crate::rendering::PipelineManagerClient,
 	) -> [crate::rendering::PipelineRef; 5] {
-		let pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/ui.pipeline");
-		let clear_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/layer-clear.pipeline");
+		let pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/ui.pipeline");
+		let clear_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/layer-clear.pipeline");
 		let blur_downsample_pipeline =
-			pipeline_manager.request_pipeline("byte-engine/rendering/ui/backdrop-blur-downsample.pipeline");
-		let blur_filter_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/backdrop-blur-filter.pipeline");
-		let composite_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/composite.pipeline");
+			pipeline_manager.request_pipeline("byte_engine/rendering/ui/backdrop-blur-downsample.pipeline");
+		let blur_filter_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/backdrop-blur-filter.pipeline");
+		let composite_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/composite.pipeline");
 		crate::rendering::render_passes::blit::ImageBypassPass::request_pipeline(pipeline_manager);
 		[
 			pipeline,

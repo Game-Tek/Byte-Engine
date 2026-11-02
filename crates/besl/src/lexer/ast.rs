@@ -174,16 +174,23 @@ impl std::fmt::Debug for CallTarget {
 /// Links a parsed program under `root`, which supplies the built-in registry from [`Node::root`] and any generated
 /// declarations the program may reference.
 pub(crate) fn lex_with_root(root: Node, mut node: parser::Node) -> Result<NodeReference, LexError> {
+	crate::signatures::expand_signatures(&mut node)?;
+	crate::modules::order_root_modules(&mut node)?;
 	node.sort();
 
 	let root: NodeReference = root.into();
 
-	let parser::Nodes::Scope { name, children } = &mut node.node else {
+	let parser::Nodes::Scope { name, .. } = &node.node else {
 		return Err(LexError::invalid(
 			"Invalid program root: the parsed node is not a scope. The most likely cause is that the node passed to the lexer is not the root that besl::parse returns.",
 		));
 	};
 	assert_eq!(*name, "root");
+
+	crate::modules::check_unique_names(&node)?;
+	let parser::Nodes::Scope { children, .. } = &mut node.node else {
+		unreachable!("The program root was checked to be a scope above");
+	};
 
 	// Each declaration links against the ones before it, so it can only use the declarations before it.
 	let mut lexer = Lexer::new(root.clone());
@@ -200,6 +207,10 @@ pub(crate) fn lex_with_root(root: Node, mut node: parser::Node) -> Result<NodeRe
 			.map_err(|error| super::resolution::explain_declaration_order(error, &children[index..]))?;
 		root.borrow_mut().add_child(child);
 	}
+
+	// Backends and the VM never see a layer parameter: they read the layers' members as plain declarations.
+	super::layers::record_entry_layers(&root)?;
+	super::layers::erase_layer_parameters(&root);
 
 	// Backends and the VM never see a `bool` member: they read the bytes that hold it.
 	super::bools::pack_bool_members(&root)?;
@@ -679,6 +690,17 @@ impl Node {
 		})
 	}
 
+	/// Creates a `use` declaration that brings `target` in by `name`, or, with no `name`, every declaration of the
+	/// module `target`.
+	pub fn r#use(name: Option<String>, target: &NodeReference) -> Node {
+		Node {
+			node: Nodes::Use {
+				name,
+				target: Rc::downgrade(&target.0),
+			},
+		}
+	}
+
 	/// Creates a scope that groups child nodes.
 	pub fn scope(name: String) -> Node {
 		Node {
@@ -976,6 +998,8 @@ impl Node {
 	pub fn get_name(&self) -> Option<&str> {
 		match &self.node {
 			Nodes::Scope { name, .. }
+			| Nodes::Layer { name, .. }
+			| Nodes::Signature { name }
 			| Nodes::Function { name, .. }
 			| Nodes::Member { name, .. }
 			| Nodes::Struct { name, .. }
@@ -1139,9 +1163,41 @@ pub struct MatchArm {
 
 #[derive(Clone)]
 pub enum Nodes {
+	/// A module, or the program root. Code inside it sees its declarations by name, and code outside reaches them
+	/// through a path such as `module::name` or a [`Nodes::Use`].
 	Scope {
 		name: String,
 		children: Vec<NodeReference>,
+	},
+	/// A `use` declaration. Name lookups in the scope that holds it see `target` by `name`. With no `name`, from
+	/// `use module::*;`, they see every declaration of the module `target` instead.
+	///
+	/// It holds `target` weakly: a module can bring in one of its own ancestors, and a strong reference would form an
+	/// `Rc` cycle that is never freed. Backends emit nothing for it.
+	Use {
+		name: Option<String>,
+		target: Weak<RefCell<Node>>,
+	},
+	/// A layer: the descriptors, push constant block, and tile targets a shader consumes through one parameter of the
+	/// layer's type.
+	///
+	/// Its descriptors are bindings in the layout named `path`, the layer's full path, so they form one descriptor set.
+	/// Code reaches a member through a layer value, such as `scene.views`, never by its bare name.
+	Layer {
+		name: String,
+		/// The layer's path from the program root, such as `::byte_engine::layouts::scene::Scene`, which names its set.
+		path: String,
+		members: Vec<NodeReference>,
+		/// The name code reaches the push constant member by, which a push constant block doesn't carry itself.
+		push_constant: Option<String>,
+		/// Where `main` takes the layer among its layer parameters, or `None` when `main` doesn't take it. Reflection
+		/// orders a shader's sets by it and leaves out the sets of layers `main` doesn't take.
+		entry: Option<usize>,
+	},
+	/// A signature, a function type. Linking gives its parameters to the functions that implement it, so only its name
+	/// is kept, for `use` declarations that name it.
+	Signature {
+		name: String,
 	},
 	Struct {
 		name: String,
@@ -1198,7 +1254,7 @@ pub enum Nodes {
 		memory_class: BufferMemoryClass,
 		r#type: BindingTypes,
 		count: Option<NonZeroU32>,
-		/// The name of the descriptor set layout that declares the binding: the layout layer it came from, or `None`
+		/// The name of the descriptor set layout that declares the binding: the path of the layer it is a member of, or `None`
 		/// for the program's own layout. Bindings that share a layout form one descriptor set.
 		layout: Option<String>,
 	},
@@ -1408,6 +1464,15 @@ impl std::fmt::Debug for Node {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match &self.node {
 			Nodes::Scope { name, children } => write!(f, "Scope {{ name: {name}, children: {:#?} }}", names(children)),
+			Nodes::Layer { name, path, members, .. } => {
+				write!(f, "Layer {{ name: {name}, path: {path}, members: {:?} }}", names(members))
+			}
+			Nodes::Signature { name } => write!(f, "Signature {{ name: {name} }}"),
+			Nodes::Use { name, target } => write!(
+				f,
+				"Use {{ name: {name:?}, target: {:?} }}",
+				target.upgrade().map(|target| target.borrow().get_name().map(str::to_string))
+			),
 			Nodes::Struct { name, fields, .. } => write!(f, "Struct {{ name: {name}, fields: {:?} }}", names(fields)),
 			Nodes::Member { name, r#type, .. } => {
 				write!(f, "Member {{ name: {name}, type: {:?} }}", r#type.borrow().get_name())

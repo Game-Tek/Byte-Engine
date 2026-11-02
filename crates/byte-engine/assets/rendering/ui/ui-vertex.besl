@@ -1,6 +1,8 @@
 // The UI ubershader's vertex stage. No vertex or index buffer is bound: six vertices pull one
 // record from `primitives` and place the corners of its quad.
 
+use ::byte_engine::rendering::ui::layouts::ui::*;
+
 push_constant: push_constant {
 	viewport: vec2f,
 	// The record the draw's first vertex belongs to. A push constant means the same on every backend,
@@ -24,7 +26,7 @@ blossom: fn (c01: vec4f, c23: vec4f, u: f32, v: f32, w: f32) -> vec2f {
 	return p012 + (p123 - p012) * w;
 }
 
-main: fn (input: StageInput) -> interface {
+main: fn (input: StageInput, ui: Ui) -> interface {
 	position: vec4f,
 	curve_from: vec4f,
 	curve_to: vec2f,
@@ -38,8 +40,8 @@ main: fn (input: StageInput) -> interface {
 	let corner_index: u32 = input.vertex_index % 6;
 	let corner: vec2f = vec2f(f32((14 >> corner_index) & 1), f32((28 >> corner_index) & 1));
 
-	let bounds: vec4f = primitives[primitive].bounds;
-	let a: vec4f = primitives[primitive].a;
+	let bounds: vec4f = ui.primitives[primitive].bounds;
+	let a: vec4f = ui.primitives[primitive].a;
 	let pixel_position: vec2f = vec2f(mix(bounds.x, bounds.z, corner.x), mix(bounds.y, bounds.w, corner.y));
 	// Images and atlas glyphs keep their texture rectangle in `a`.
 	let uv: vec2f = vec2f(mix(a.x, a.z, corner.x), mix(a.y, a.w, corner.y));
@@ -49,8 +51,8 @@ main: fn (input: StageInput) -> interface {
 	// A turned edge crosses pixels at an angle, so the rasterizer can no longer resolve it. The quad
 	// grows by a pixel for the fragment stage to fade the edge across, and the texture rectangle
 	// grows with it. Glyphs carry their own padding and curves their own expansion.
-	let turn: vec4f = masks[primitives[primitive].mask].rotation;
-	let kind: u32 = primitives[primitive].kind;
+	let turn: vec4f = ui.masks[ui.primitives[primitive].mask].rotation;
+	let kind: u32 = ui.primitives[primitive].kind;
 	if (abs(turn.y) > 0.00001 && (kind == 0 || kind == 1 || kind == 3)) {
 		let outward: vec2f = vec2f(corner.x * 2.0 - 1.0, corner.y * 2.0 - 1.0);
 		pixel_position = pixel_position + outward;
@@ -61,9 +63,9 @@ main: fn (input: StageInput) -> interface {
 	}
 
 	// A curve piece holds its segment's whole cubic and which slice of it to draw.
-	if (primitives[primitive].kind == 2) {
-		let piece: u32 = primitives[primitive].data0 & 65535;
-		let count: u32 = primitives[primitive].data0 >> 16;
+	if (ui.primitives[primitive].kind == 2) {
+		let piece: u32 = ui.primitives[primitive].data0 & 65535;
+		let count: u32 = ui.primitives[primitive].data0 >> 16;
 		let t0: f32 = f32(piece) / f32(count);
 		let t1: f32 = f32(piece + 1) / f32(count);
 		let s0: vec2f = blossom(bounds, a, t0, t0, t0);
@@ -88,7 +90,7 @@ main: fn (input: StageInput) -> interface {
 		let along: f32 = dot(control - s0, tangent);
 		let across: f32 = dot(control - s0, normal) * 0.5;
 		// Half the stroke plus one pixel of anti-aliasing, which also covers a round cap.
-		let expansion: f32 = primitives[primitive].b.x + 1.0;
+		let expansion: f32 = ui.primitives[primitive].b.x + 1.0;
 		let along_min: f32 = min(min(along, 0.0), chord_length) - expansion;
 		let along_max: f32 = max(max(along, 0.0), chord_length) + expansion;
 		let across_min: f32 = min(across, 0.0) - expansion;

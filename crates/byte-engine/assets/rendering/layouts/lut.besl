@@ -8,19 +8,21 @@ LutParameters: struct {
 	sampling: vec4f,
 }
 
-source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-lut_texture: descriptor<{ type: Texture3D, binding: 1, access: read }>;
-parameters: descriptor<{ type: LutParameters, binding: 3, access: read, memory: constant }>;
+Lut: layer {
+	source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+	lut_texture: descriptor<{ type: Texture3D, binding: 1, access: read }>;
+	parameters: descriptor<{ type: LutParameters, binding: 3, access: read, memory: constant }>;
+}
 
 // Maps a color through the table and mixes the result with the input by the look strength, in the encoding the
 // table reads, so a strength of 0 leaves the color unchanged and 1 applies the full look. The domain controls
 // coordinates, not output clipping.
-apply_lut: fn(color: vec3f) -> vec3f {
-	let domain_min: vec3f = vec3f(parameters.domain_min.x, parameters.domain_min.y, parameters.domain_min.z);
-	let domain_scale: vec3f = vec3f(parameters.domain_scale.x, parameters.domain_scale.y, parameters.domain_scale.z);
+apply_lut: fn(lut: Lut, color: vec3f) -> vec3f {
+	let domain_min: vec3f = vec3f(lut.parameters.domain_min.x, lut.parameters.domain_min.y, lut.parameters.domain_min.z);
+	let domain_scale: vec3f = vec3f(lut.parameters.domain_scale.x, lut.parameters.domain_scale.y, lut.parameters.domain_scale.z);
 	let normalized: vec3f = clamp((color - domain_min) * domain_scale, vec3f(0.0, 0.0, 0.0), vec3f(1.0, 1.0, 1.0));
-	let lut_uv: vec3f = normalized * parameters.sampling.x + vec3f(parameters.sampling.y, parameters.sampling.y, parameters.sampling.y);
-	let sampled: vec4f = texture_lod(lut_texture, lut_uv);
+	let lut_uv: vec3f = normalized * lut.parameters.sampling.x + vec3f(lut.parameters.sampling.y, lut.parameters.sampling.y, lut.parameters.sampling.y);
+	let sampled: vec4f = texture_lod(lut.lut_texture, lut_uv);
 	let looked: vec3f = vec3f(sampled.x, sampled.y, sampled.z);
-	return color + (looked - color) * parameters.sampling.z;
+	return color + (looked - color) * lut.parameters.sampling.z;
 }

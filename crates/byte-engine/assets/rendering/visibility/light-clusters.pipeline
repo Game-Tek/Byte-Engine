@@ -1,1 +1,1 @@
-{"name":"Light Clusters","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/light-clusters.besl"}}
+{"name":"Light Clusters","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/light-clusters.besl"}}

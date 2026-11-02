@@ -5,29 +5,33 @@
 // the cut scatter through the volume instead of sweeping across it in slot order. Next, the trace pass traces
 // PROBE_RAYS rays from each listed probe.
 
+use ::byte_engine::rendering::visibility::layouts::probe_volume::*;
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::probe_gi::*;
+
 // Multiplying by a stride coprime with PROBE_COUNT, 2¹⁰ × 3³, permutes the slots; the offset turns the order every frame.
 PROBE_GATHER_STRIDE: const u32 = 7919;
 PROBE_GATHER_OFFSET: const u32 = 2357;
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, probe_volume: ProbeVolume, probe_gi_set: ProbeGi) -> void {
 	let index: u32 = input.thread_id.x;
 	if (index >= PROBE_COUNT) {
 		return;
 	}
-	let offset: u32 = (probe_volume_parameters.frame_index % PROBE_COUNT) * PROBE_GATHER_OFFSET % PROBE_COUNT;
+	let offset: u32 = (probe_volume.probe_volume_parameters.frame_index % PROBE_COUNT) * PROBE_GATHER_OFFSET % PROBE_COUNT;
 	let slot: u32 = (index * PROBE_GATHER_STRIDE + offset) % PROBE_COUNT;
-	let bucket: u32 = probe_priorities[slot];
-	let threshold: u32 = probe_schedule.threshold;
+	let bucket: u32 = probe_gi_set.probe_priorities[slot];
+	let threshold: u32 = probe_gi_set.probe_schedule.threshold;
 	if (bucket < threshold) {
 		return;
 	}
 	if (bucket == threshold) {
-		if (atomic_add(probe_schedule.quota_taken, 1) >= probe_schedule.quota) {
+		if (atomic_add(probe_gi_set.probe_schedule.quota_taken, 1) >= probe_gi_set.probe_schedule.quota) {
 			return;
 		}
 	}
-	let listed: u32 = atomic_add(probe_schedule.count, 1);
-	if (listed < probe_gi_parameters.probe_budget) {
-		probe_list[listed] = slot;
+	let listed: u32 = atomic_add(probe_gi_set.probe_schedule.count, 1);
+	if (listed < probe_gi_set.probe_gi_parameters.probe_budget) {
+		probe_gi_set.probe_list[listed] = slot;
 	}
 }

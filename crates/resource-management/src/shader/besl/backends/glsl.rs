@@ -615,7 +615,7 @@ mod tests {
 		compile(&shader, "besl-prefix-operators-and-if-values");
 	}
 
-	/// Stacks the ray tracing fixture layers under `source` and lowers the program to minified GLSL for `settings`.
+	/// Links `source` after the ray tracing fixture declarations and lowers the program to minified GLSL for `settings`.
 	fn lower_ray_tracing_fixture(source: &str, settings: &ShaderGenerationSettings) -> String {
 		let program = super::super::link_ray_tracing_fixture(source);
 		generate(settings, &program.get_main().expect("Expected the fixture's main function"))
@@ -670,15 +670,15 @@ mod tests {
 	fn ray_queries_compile_in_compute_shaders() {
 		let shader = lower_ray_tracing_fixture(
 			r#"
-			main: fn (input: StageInput) -> void {
+			main: fn (input: StageInput, scene: Scene) -> void {
 				let origin: vec3f = vec3f(f32(input.thread_id.x), 0.0, 0.0);
-				let hit: Hit = intersect(scene, 1, origin, vec3f(0.0, 0.0, 1.0), 0.0, 10.0);
+				let hit: Hit = intersect(scene.scene, 1, origin, vec3f(0.0, 0.0, 1.0), 0.0, 10.0);
 				let rebuilt: Hit = Hit(hit.record, hit.distance, 0, 0, 0, vec2f(0.0, 0.0), origin, vec3f(0.0, 0.0, 1.0));
 				let surface: SurfaceHit = SurfaceHit(vec3f(rebuilt.barycentrics.x, 0.0, 0.0), rebuilt.distance);
-				if (trace_occlusion(scene, 255, origin, vec3f(0.0, 0.0, 1.0), 0.0, 10.0)) {
+				if (trace_occlusion(scene.scene, 255, origin, vec3f(0.0, 0.0, 1.0), 0.0, 10.0)) {
 					surface.distance = 0.0;
 				}
-				surfaces[input.thread_id.x] = surface;
+				scene.surfaces[input.thread_id.x] = surface;
 			}
 			"#,
 			&ShaderGenerationSettings::compute(utils::Extent::line(64)),

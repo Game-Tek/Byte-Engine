@@ -1,1 +1,1 @@
-{"name":"Surfel Trace","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/surfel-trace.besl"}}
+{"name":"Surfel Trace","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/surfel-trace.besl"}}

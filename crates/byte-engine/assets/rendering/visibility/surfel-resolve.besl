@@ -10,9 +10,16 @@
 // `SSGI Normals`; the spatial pass then fills what neither covers. A pixel hidden from every surfel that would light it
 // takes no light, with the confidence of the surfels that hide it.
 //
-// While it reads the cell, it marks the surfels that serve it, and each subgroup then votes once per marked surfel to
-// keep it alive. The tile then elects at most one spawn, at its least covered pixel, and one despawn, of the heaviest
-// surfel at its most covered pixel. Next, the allocate pass turns the spawn requests into surfels.
+// While it reads the cell, it keeps alive the surfels that serve it. The tile then elects at most one spawn, at its
+// least covered pixel, and one despawn, of the heaviest surfel at its most covered pixel. Next, the allocate pass turns
+// the spawn requests into surfels.
+
+use ::byte_engine::rendering::visibility::layouts::screen_view::*;
+use ::byte_engine::rendering::visibility::layouts::screen_trace::*;
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::surfel_gi::*;
+use ::byte_engine::rendering::visibility::layouts::surfel_resolve::*;
+use ::byte_engine::rendering::visibility::layouts::surfel_temporal::*;
 
 // Per tile texel: the positive linear depth, or zero where no surface was drawn or outside the image.
 tile_depth: workgroup<f32, 144>;
@@ -37,8 +44,9 @@ SURFEL_PARENT_FACING: const f32 = 0.9;
 
 // Returns `axis_tangent` with neighbor depths read from the workgroup's tile. `stride` steps one texel along `axis`
 // in the tile.
-tile_axis_tangent: fn (center_index: u32, stride: u32, pixel: vec2f, axis: vec2f, center_position: vec3f) -> vec3f {
+tile_axis_tangent: fn (screen_trace: ScreenTrace, center_index: u32, stride: u32, pixel: vec2f, axis: vec2f, center_position: vec3f) -> vec3f {
 	return axis_tangent(
+		screen_trace,
 		pixel,
 		axis,
 		center_position,
@@ -56,19 +64,19 @@ surfel_color: fn (slot: u32) -> vec3f {
 }
 
 // Writes `color` to the full-resolution pixels a half-resolution `pixel` covers in the debug view at pool `slot`.
-write_debug_view: fn (slot: u32, pixel: vec2u, color: vec4f) -> void {
+write_debug_view: fn (surfel_resolve: SurfelResolve, slot: u32, pixel: vec2u, color: vec4f) -> void {
 	let x: u32 = pixel.x * 2;
 	let y: u32 = pixel.y * 2;
-	write(debug_view_targets[slot], vec2u(x, y), color);
-	write(debug_view_targets[slot], vec2u(x + 1, y), color);
-	write(debug_view_targets[slot], vec2u(x, y + 1), color);
-	write(debug_view_targets[slot], vec2u(x + 1, y + 1), color);
+	write(surfel_resolve.debug_view_targets[slot], vec2u(x, y), color);
+	write(surfel_resolve.debug_view_targets[slot], vec2u(x + 1, y), color);
+	write(surfel_resolve.debug_view_targets[slot], vec2u(x, y + 1), color);
+	write(surfel_resolve.debug_view_targets[slot], vec2u(x + 1, y + 1), color);
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, screen_trace: ScreenTrace, surfel_gi_set: SurfelGi, surfel_resolve: SurfelResolve, surfel_temporal: SurfelTemporal) -> void {
 	let pixel: vec2u = input.thread_id;
 	let lane: u32 = input.thread_idx;
-	let extent: vec2u = image_size(normal_output);
+	let extent: vec2u = image_size(surfel_resolve.normal_output);
 	let local: vec2u = vec2u(lane % SURFEL_RESOLVE_WORKGROUP_WIDTH, lane / SURFEL_RESOLVE_WORKGROUP_WIDTH);
 	let workgroup_origin: vec2u = pixel - local;
 	if (lane == 0) {
@@ -82,6 +90,7 @@ main: fn (input: StageInput) -> void {
 		tile_index = tile_index + SURFEL_RESOLVE_WORKGROUP_SIZE
 	) {
 		tile_depth[tile_index] = neighbor_depth(
+			screen_trace,
 			workgroup_origin,
 			f32(tile_index % SURFEL_RESOLVE_TILE_WIDTH) - f32(SURFEL_RESOLVE_TILE_RADIUS),
 			f32(tile_index / SURFEL_RESOLVE_TILE_WIDTH) - f32(SURFEL_RESOLVE_TILE_RADIUS),
@@ -98,16 +107,16 @@ main: fn (input: StageInput) -> void {
 	let center_position: vec3f = vec3f(0.0, 0.0, 0.0);
 	let world_position: vec3f = vec3f(0.0, 0.0, 0.0);
 	if (center_z != 0.0) {
-		center_position = view_position(pixel_f, center_z);
+		center_position = view_position(screen_trace, pixel_f, center_z);
 		view_normal = tangent_normal(
-			tile_axis_tangent(center_index, 1, pixel_f, vec2f(1.0, 0.0), center_position),
-			tile_axis_tangent(center_index, SURFEL_RESOLVE_TILE_WIDTH, pixel_f, vec2f(0.0, 1.0), center_position),
+			tile_axis_tangent(screen_trace, center_index, 1, pixel_f, vec2f(1.0, 0.0), center_position),
+			tile_axis_tangent(screen_trace, center_index, SURFEL_RESOLVE_TILE_WIDTH, pixel_f, vec2f(0.0, 1.0), center_position),
 			center_position
 		);
-		world_position = to_world(center_position, 1.0);
+		world_position = to_world(surfel_resolve, center_position, 1.0);
 	}
 	let surface: bool = in_image && dot(view_normal, view_normal) != 0.0;
-	let normal: vec3f = to_world(view_normal, 0.0);
+	let normal: vec3f = to_world(surfel_resolve, view_normal, 0.0);
 
 	// The trusted light of the surfels that see the pixel and its trusted weight, and their coverage: their weights by
 	// distance, facing, and visibility alone. The surfels the pixel lies hidden from, by their radial depth, add up
@@ -128,28 +137,22 @@ main: fn (input: StageInput) -> void {
 	let parent: u32 = NO_SURFEL;
 	let parent_weight: f32 = 0.0;
 	let cell_count: u32 = 0;
-	let cell: u32 = 0;
-	let start: u32 = 0;
-	// The entries of the cell's list, counted from `start`, that this pixel keeps alive: the first 32 in the low
-	// word and the rest in the high one. Only an uncrowded cell keeps surfels alive, so 48 bits hold them all.
-	let keep_alive_low: u32 = 0;
-	let keep_alive_high: u32 = 0;
 	if (surface) {
-		cell = surfel_cell_of(world_position);
-		start = surfel_scan[cell];
-		cell_count = surfel_scan[cell + 1] - start;
+		let cell: u32 = surfel_cell_of(surfel_gi_set, world_position);
+		let start: u32 = surfel_gi_set.surfel_scan[cell];
+		cell_count = surfel_gi_set.surfel_scan[cell + 1] - start;
 		let end: u32 = start + min(cell_count, SURFEL_LOOKUP_LIMIT);
 		for (let entry: u32 = start; entry < end; entry = entry + 1) {
-			let surfel: u32 = surfel_cell_entries[entry];
+			let surfel: u32 = surfel_gi_set.surfel_cell_entries[entry];
 			// A cell lists surfels that reach any of its points, and most of them reach only part of it. The squished
 			// distance is never shorter than the straight one, so a surfel this far away weighs nothing here, and the
 			// rest of its record needn't be read.
-			let surfel_offset: vec3f = world_position - surfel_records[surfel].position;
-			let reach: f32 = surfel_records[surfel].radius * SURFEL_LOOKUP_SCALE;
+			let surfel_offset: vec3f = world_position - surfel_gi_set.surfel_records[surfel].position;
+			let reach: f32 = surfel_gi_set.surfel_records[surfel].radius * SURFEL_LOOKUP_SCALE;
 			if (dot(surfel_offset, surfel_offset) >= reach * reach) {
 				continue;
 			}
-			let record: SurfelRecord = surfel_records[surfel];
+			let record: SurfelRecord = surfel_gi_set.surfel_records[surfel];
 			let surfel_normal: vec3f = decode_surfel_normal(record.normal);
 			let distance: f32 = surfel_distance(surfel_offset, surfel_normal);
 			let facing: f32 = max(0.0, dot(surfel_normal, normal));
@@ -165,7 +168,7 @@ main: fn (input: StageInput) -> void {
 			}
 			let visibility: f32 = 1.0;
 			if (weight > 0.0) {
-				visibility = surfel_occlusion(surfel, record, surfel_normal, world_position);
+				visibility = surfel_occlusion(surfel_gi_set, surfel, record, surfel_normal, world_position);
 			}
 			let visible: f32 = weight * visibility;
 			let trusted: f32 = visible * record.weight;
@@ -178,15 +181,16 @@ main: fn (input: StageInput) -> void {
 				best_light_weight = trusted;
 				best_surfel = surfel;
 			}
-			// A pixel keeps the surfels of its own cell alive while the cell is not crowded. It only marks the entry
-			// here; the subgroup votes after the loop, and checks there that the surfel belongs to the cell.
-			if (cell_count <= SURFEL_CROWDED_CELL && facing > SURFEL_KEEP_ALIVE_FACING) {
-				let offset: u32 = entry - start;
-				if (offset < 32) {
-					keep_alive_low = keep_alive_low | (1 << offset);
-				} else {
-					keep_alive_high = keep_alive_high | (1 << (offset - 32));
-				}
+			// A pixel keeps the surfels of its own cell alive while the cell is not crowded. Votes only grow during the
+			// resolve, so a pixel that finds the vote already cast skips the read-modify-write, which every pixel of
+			// the tile would otherwise queue on the same surfel.
+			if (
+				cell_count <= SURFEL_CROWDED_CELL
+				&& facing > SURFEL_KEEP_ALIVE_FACING
+				&& surfel_gi_set.surfel_states[surfel].cell == cell
+				&& atomic_load(surfel_gi_set.surfel_states[surfel].touched) < 5
+			) {
+				atomic_max(surfel_gi_set.surfel_states[surfel].touched, 5);
 			}
 			if (weight > parent_weight && facing > SURFEL_PARENT_FACING && record.weight >= 1.0) {
 				parent = surfel;
@@ -203,20 +207,20 @@ main: fn (input: StageInput) -> void {
 			} else if (best_light_weight > 0.05) {
 				vote = 2;
 			}
-			if (vote != 0 && atomic_load(surfel_states[best_surfel].touched) < vote) {
-				atomic_max(surfel_states[best_surfel].touched, vote);
+			if (vote != 0 && atomic_load(surfel_gi_set.surfel_states[best_surfel].touched) < vote) {
+				atomic_max(surfel_gi_set.surfel_states[best_surfel].touched, vote);
 			}
 		}
 
 		// A sparsely covered pixel may ask for a surfel, more likely the farther it lies.
 		let random: f32 = surfel_unit(
-			surfel_hash_combine(surfel_hash_combine(pixel.x, surfel_hash(pixel.y)), surfel_parameters.frame_index)
+			surfel_hash_combine(surfel_hash_combine(pixel.x, surfel_hash(pixel.y)), surfel_gi_set.surfel_parameters.frame_index)
 		);
 		if (
 			second < SURFEL_SPAWN_SECOND_WEIGHT
 			&& scoring_coverage < SURFEL_SPAWN_COVERAGE
 			&& cell_count < SURFEL_CROWDED_CELL
-			&& random < surfel_resolve_parameters.spawn_probability * center_z
+			&& random < surfel_resolve.surfel_resolve_parameters.spawn_probability * center_z
 		) {
 			atomic_min(spawn_vote, (u32(min(coverage, 15.99) * 4194304.0) << 6) | lane);
 		}
@@ -225,45 +229,6 @@ main: fn (input: StageInput) -> void {
 		if (scoring_coverage > mix(3.5, 3.0, fullness) && second > mix(0.9, 0.8, fullness)) {
 			atomic_max(despawn_vote, (u32(min(scoring_coverage, 63.99) * 1048576.0) << 6) | lane);
 		}
-	}
-
-	// Each subgroup casts one keep-alive vote per marked entry instead of one per pixel. Pixels of one cell share its
-	// list, which starts at `start`, so the lanes that marked the same entry there mean the same surfel, and the lowest
-	// of them votes for all. Votes only take their maximum, so the same surfels survive as with a vote per pixel.
-	let keep_alive_pending: vec4u = subgroup_ballot(keep_alive_low != 0 || keep_alive_high != 0);
-	for (
-		let has_pending: bool = subgroup_ballot_any(keep_alive_pending);
-		has_pending;
-		has_pending = subgroup_ballot_any(keep_alive_pending)
-	) {
-		let leader_lane: u32 = subgroup_ballot_find_lsb(keep_alive_pending);
-		let lowest_offset: u32 = 0;
-		if (keep_alive_low != 0) {
-			lowest_offset = find_lsb(keep_alive_low);
-		} else if (keep_alive_high != 0) {
-			lowest_offset = 32 + find_lsb(keep_alive_high);
-		}
-		let voted_start: u32 = subgroup_broadcast_u32(start, leader_lane);
-		let voted_offset: u32 = subgroup_broadcast_u32(lowest_offset, leader_lane);
-		if (subgroup_lane_index() == leader_lane) {
-			// A cell lists the surfels that reach it, and only those whose own cell it is stay alive through it. Votes
-			// only grow during the resolve, so a vote already cast as high skips the read-modify-write.
-			let surfel: u32 = surfel_cell_entries[start + voted_offset];
-			if (surfel_states[surfel].cell == cell && atomic_load(surfel_states[surfel].touched) < 5) {
-				atomic_max(surfel_states[surfel].touched, 5);
-			}
-		}
-		// Every lane that marked the voted entry drops it.
-		if (start == voted_start) {
-			if (voted_offset < 32) {
-				if ((keep_alive_low & (1 << voted_offset)) != 0) {
-					keep_alive_low = keep_alive_low - (1 << voted_offset);
-				}
-			} else if ((keep_alive_high & (1 << (voted_offset - 32))) != 0) {
-				keep_alive_high = keep_alive_high - (1 << (voted_offset - 32));
-			}
-		}
-		keep_alive_pending = subgroup_ballot(keep_alive_low != 0 || keep_alive_high != 0);
 	}
 
 	if (in_image) {
@@ -282,31 +247,33 @@ main: fn (input: StageInput) -> void {
 			confidence = hidden_trusted / max(hidden_weight, 1.0);
 		}
 		if (center_z == 0.0) {
-			write(surfel_history_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
-			write(surfel_weights_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+			write(surfel_temporal.surfel_history_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+			write(surfel_temporal.surfel_weights_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
 		} else {
-			surfel_temporal_accumulate(pixel, center_position, view_normal, estimate, confidence);
+			surfel_temporal_accumulate(surfel_resolve, surfel_temporal, pixel, center_position, view_normal, estimate, confidence);
 		}
-		write(normal_output, pixel, encode_stored_normal(view_normal));
+		write(surfel_resolve.normal_output, pixel, encode_stored_normal(view_normal));
 		// The coverage view writes the slot after the surfels view's when both are shown.
-		let coverage_slot: u32 = surfel_resolve_parameters.debug_view_first_slot;
-		if (surfel_resolve_parameters.debug_view_surfels) {
+		let coverage_slot: u32 = surfel_resolve.surfel_resolve_parameters.debug_view_first_slot;
+		if (surfel_resolve.surfel_resolve_parameters.debug_view_surfels) {
 			coverage_slot = coverage_slot + 1;
 		}
-		if (surfel_resolve_parameters.debug_view_surfels) {
+		if (surfel_resolve.surfel_resolve_parameters.debug_view_surfels) {
 			let color: vec3f = vec3f(0.0, 0.0, 0.0);
 			if (heaviest != NO_SURFEL) {
 				color = surfel_color(heaviest) * (0.25 + 0.75 * largest);
 			}
 			write_debug_view(
-				surfel_resolve_parameters.debug_view_first_slot,
+				surfel_resolve,
+				surfel_resolve.surfel_resolve_parameters.debug_view_first_slot,
 				pixel,
 				vec4f(color.x, color.y, color.z, 1.0)
 			);
 		}
-		if (surfel_resolve_parameters.debug_view_surfel_coverage) {
+		if (surfel_resolve.surfel_resolve_parameters.debug_view_surfel_coverage) {
 			// Green up to full coverage, then red as more surfels overlap, and blue for the confidence.
 			write_debug_view(
+				surfel_resolve,
 				coverage_slot,
 				pixel,
 				vec4f(clamp((coverage - 1.0) / 3.0, 0.0, 1.0), clamp(coverage, 0.0, 1.0), confidence, 1.0)
@@ -315,19 +282,19 @@ main: fn (input: StageInput) -> void {
 	}
 	workgroup_barrier();
 
-	let tile: u32 = (workgroup_origin.y / SURFEL_RESOLVE_WORKGROUP_WIDTH) * surfel_resolve_parameters.spawn_tiles_per_row
+	let tile: u32 = (workgroup_origin.y / SURFEL_RESOLVE_WORKGROUP_WIDTH) * surfel_resolve.surfel_resolve_parameters.spawn_tiles_per_row
 		+ workgroup_origin.x / SURFEL_RESOLVE_WORKGROUP_WIDTH;
 	// A sink with more tiles than its request buffer holds asks for surfels only in the tiles that fit.
-	if (tile < surfel_resolve_parameters.spawn_tile_count) {
+	if (tile < surfel_resolve.surfel_resolve_parameters.spawn_tile_count) {
 		let spawn: u32 = atomic_load(spawn_vote);
 		if (spawn != NO_SURFEL && (spawn & 63) == lane) {
-			surfel_spawns[tile] = SurfelSpawn(world_position, encode_surfel_normal(normal), parent, 1);
+			surfel_resolve.surfel_spawns[tile] = SurfelSpawn(world_position, encode_surfel_normal(normal), parent, 1);
 		} else if (spawn == NO_SURFEL && lane == 0) {
-			surfel_spawns[tile].requested = 0;
+			surfel_resolve.surfel_spawns[tile].requested = 0;
 		}
 	}
 	let despawn: u32 = atomic_load(despawn_vote);
 	if (despawn != 0 && (despawn & 63) == lane) {
-		atomic_max(surfel_states[heaviest].touched, SURFEL_KILL);
+		atomic_max(surfel_gi_set.surfel_states[heaviest].touched, SURFEL_KILL);
 	}
 }

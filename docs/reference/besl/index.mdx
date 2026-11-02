@@ -46,6 +46,9 @@ main: fn (
 The parser records the source structure. The lexer then resolves names, types,
 members, intrinsics, and references.
 
+A file can split its helpers into [modules](/docs/reference/besl/language#modules),
+each in its own file.
+
 Separate fields in structs, `interface` and `output` types, and returned records
 with commas. You can add a trailing comma. Semicolons still end declarations
 and statements, but they aren't valid field separators.

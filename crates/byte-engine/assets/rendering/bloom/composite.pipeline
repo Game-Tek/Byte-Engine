@@ -1,1 +1,1 @@
-{"name":"Bloom Composite","kind":{"type":"tile","shader":"byte-engine/rendering/bloom/composite.besl"}}
+{"name":"Bloom Composite","kind":{"type":"tile","shader":"byte_engine/rendering/bloom/composite.besl"}}

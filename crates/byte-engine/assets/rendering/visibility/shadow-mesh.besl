@@ -1,3 +1,6 @@
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+
 meshlet_instances: task_payload<u32, 192>;
 out_instance_index: output<u32, 0, 126>;
 out_primitive_index: output<u32, 1, 126>;
@@ -12,33 +15,33 @@ push_constant: push_constant {
 	view_count: u32,
 }
 
-main: fn() -> void {
+main: fn(scene: Scene) -> void {
 	let payload_index: u32 = threadgroup_position();
 	// Decode every index from the same payload read so a meshlet cannot be paired with another grid's instance or view.
 	let meshlet_instance: u32 = meshlet_instances[payload_index];
 	let instance_index: u32 = (meshlet_instance >> 12) & 1023;
 	let view_offset: u32 = (meshlet_instance >> 22) & 7;
-	let mesh: Mesh = meshes.meshes[instance_index];
+	let mesh: Mesh = scene.meshes.meshes[instance_index];
 	// Task shaders pack the meshlet relative to its instance's first meshlet.
 	let meshlet_index: u32 = mesh.base_meshlet_index + (meshlet_instance & 4095);
-	let view: View = views.views[push_constant.view_base + view_offset];
-	let meshlet: Meshlet = meshlets[meshlet_index];
+	let view: View = scene.views.views[push_constant.view_base + view_offset];
+	let meshlet: Meshlet = scene.meshlets[meshlet_index];
 	let primitive_index: u32 = thread_idx();
 
 	set_mesh_output_counts(meshlet.primitive_count, meshlet.triangle_count);
 
 	if (primitive_index < meshlet.primitive_count) {
 		let relative_vertex_index: u32 =
-			u32(vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]);
+			u32(scene.vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]);
 		let vertex_index: u32 = mesh.base_vertex_index + relative_vertex_index;
 		// A posed instance's record points at its own range, which skinning wrote this frame.
-		let object_position: vec3f = vertex_positions[vertex_index];
+		let object_position: vec3f = scene.vertex_positions[vertex_index];
 		let position: vec4f = vec4f(object_position.x, object_position.y, object_position.z, 1.0);
 
 		let world_position: vec3f = mesh.model * position;
 		let clip_position: vec4f = view.view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0);
 		set_mesh_vertex_position(primitive_index, clip_position);
-		out_uv[primitive_index] = vertex_uvs[vertex_index];
+		out_uv[primitive_index] = scene.vertex_uvs[vertex_index];
 	}
 
 	if (primitive_index < meshlet.triangle_count) {
@@ -46,9 +49,9 @@ main: fn() -> void {
 		set_mesh_triangle(
 			primitive_index,
 			vec3u(
-				u32(primitive_indices[triangle_base_index * 3 + 0]),
-				u32(primitive_indices[triangle_base_index * 3 + 1]),
-				u32(primitive_indices[triangle_base_index * 3 + 2])
+				u32(scene.primitive_indices[triangle_base_index * 3 + 0]),
+				u32(scene.primitive_indices[triangle_base_index * 3 + 1]),
+				u32(scene.primitive_indices[triangle_base_index * 3 + 2])
 			)
 		);
 		set_mesh_primitive_render_target_array_index(primitive_index, push_constant.layer_base + view_offset);

@@ -173,7 +173,7 @@ impl MotionBlurPass {
 			render_pass_builder,
 			simple_tile::Descriptor::new(
 				"Motion Blur",
-				"byte-engine/rendering/motion-blur.pipeline",
+				"byte_engine/rendering/motion-blur.pipeline",
 				&[output.format()],
 			),
 		);
@@ -556,8 +556,8 @@ mod tests {
 	async fn motion_blur_besl_program_lowers_to_the_platform_shader_language() {
 		use resource_management::shader::{ShaderGenerationSettings, besl::backends::platform::PlatformShaderCompiler};
 
-		let mut root = besl::parse(MOTION_BLUR_BESL).expect("motion blur shader should parse");
-		root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);
+		let mut root = crate::rendering::shader_vm_test::with_engine_modules(MOTION_BLUR_BESL);
+		root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
 		let root = besl::lex(root).expect("motion blur shader should link");
 		let settings = ShaderGenerationSettings::tile(PIXEL_TILE, Extent::square(PIXEL_TILE)).name("motion_blur".to_string());
 

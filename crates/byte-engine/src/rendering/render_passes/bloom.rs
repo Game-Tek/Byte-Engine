@@ -239,23 +239,23 @@ impl BloomPass {
 			render_pass_builder,
 			simple_tile::Descriptor::new(
 				"Bloom Extract",
-				"byte-engine/rendering/bloom/extract.pipeline",
+				"byte_engine/rendering/bloom/extract.pipeline",
 				&pyramid_formats,
 			),
 		);
 		let downsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("Bloom Downsample", "byte-engine/rendering/bloom/downsample.pipeline"),
+			simple_compute::Descriptor::new("Bloom Downsample", "byte_engine/rendering/bloom/downsample.pipeline"),
 		);
 		let upsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("Bloom Upsample", "byte-engine/rendering/bloom/upsample.pipeline"),
+			simple_compute::Descriptor::new("Bloom Upsample", "byte_engine/rendering/bloom/upsample.pipeline"),
 		);
 		let composite_pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
 			simple_tile::Descriptor::new(
 				"Bloom Upsample Composite",
-				"byte-engine/rendering/bloom/upsample-composite.pipeline",
+				"byte_engine/rendering/bloom/upsample-composite.pipeline",
 				&[output.format()],
 			),
 		);
@@ -1145,8 +1145,8 @@ mod tests {
 				Some(UPSAMPLE_COMPOSITE_TILE),
 			),
 		] {
-			let mut root = besl::parse(source).expect("bloom shader should parse");
-			root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);
+			let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
+			root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
 			let root = besl::lex(root).expect("bloom shader should link");
 			let settings = match tile {
 				Some((tile, width)) => ShaderGenerationSettings::tile(tile, Extent::square(width)),

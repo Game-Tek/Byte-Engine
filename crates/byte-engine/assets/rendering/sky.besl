@@ -1,3 +1,5 @@
+use ::byte_engine::rendering::layouts::sky_parameters::*;
+
 depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 result: descriptor<{ type: StorageImage, binding: 2, access: write }>;
 sky_view_lut: descriptor<{ type: Texture2D, binding: 3, access: read }>;

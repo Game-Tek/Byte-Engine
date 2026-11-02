@@ -114,7 +114,7 @@ form:
 
 | Declaration | Written as |
 | --- | --- |
-| Resource of a [layout layer](/docs/reference/besl/interface#layout-layers) | A `// layer: <name>` comment before the first resource of each run of resources from one layer. |
+| [Module from the asset root](/docs/reference/besl/language#modules-from-the-asset-root) | An inline `::path: mod { ... }` module that holds the file's declarations. It parses back to the same program. |
 | Binding built by the engine | A `descriptor`. A buffer binding lists its members inline, as `type: { name: Type }`, which source can't declare. |
 | Specialization constant | A `// specialization <id>: <name>: <type>` comment. |
 | Intrinsic | A `// intrinsic <name> -> <type>` comment. |

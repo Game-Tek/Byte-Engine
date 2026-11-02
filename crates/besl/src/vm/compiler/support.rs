@@ -750,6 +750,9 @@ pub(super) fn resolve_referenced_value_type(source: &NodeReference) -> Result<Va
 pub(super) fn describe_node(node: &Nodes) -> &'static str {
 	match node {
 		Nodes::Scope { .. } => "scope",
+		Nodes::Use { .. } => "use declaration",
+		Nodes::Layer { .. } => "layer",
+		Nodes::Signature { .. } => "signature",
 		Nodes::Struct { .. } => "struct",
 		Nodes::Member { .. } => "member",
 		Nodes::Function { .. } => "function",

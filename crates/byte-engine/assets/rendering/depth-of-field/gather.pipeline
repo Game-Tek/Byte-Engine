@@ -1,1 +1,0 @@
-{"name":"Depth of Field Gather","kind":{"type":"compute","shader":"byte-engine/rendering/depth-of-field/gather.besl"}}

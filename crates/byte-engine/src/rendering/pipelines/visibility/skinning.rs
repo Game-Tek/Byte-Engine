@@ -85,7 +85,7 @@ impl SkinningPass {
 			skinning.buffer("vertex_normals", geometry.vertex_normals),
 		]);
 		Self {
-			pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/visibility/skinning.pipeline"),
+			pipeline: pipeline_manager.request_pipeline("byte_engine/rendering/visibility/skinning.pipeline"),
 			descriptor_set,
 			matrix_palette_buffer,
 			dual_quaternion_palette_buffer,
@@ -261,7 +261,7 @@ mod tests {
 
 	#[test]
 	fn skinning_host_types_match_besl_buffer_layouts() {
-		// The strides are the ones the skinning layout layer reflects, so a record that changes on one side fails here.
+		// The strides are the ones the skinning layer reflects, so a record that changes on one side fails here.
 		let stride = |name: &str| {
 			set_layouts::SKINNING
 				.interface()

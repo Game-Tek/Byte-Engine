@@ -66,7 +66,7 @@ impl<'a> Stage<'a> for MaterialStage<'a> {
 		Ok(Node::call(
 			"sample_texture_2d_array_grad",
 			vec![
-				Node::member_expression("textures"),
+				scene_member("textures"),
 				Node::accessor(
 					material_textures,
 					Node::sentence(vec![Node::literal_expression(format!("{slot}u"))]),
@@ -91,7 +91,7 @@ impl<'a> Stage<'a> for MaterialStage<'a> {
 				ParameterKind::Dynamic(declared) if parameter.name == name && declared == r#type => {
 					let block = Node::accessor(Node::member_expression("mesh"), Node::member_expression("parameter_block"));
 					let index = Node::operator("+", block, Node::literal_expression(format!("{entry}u")));
-					let value = Node::accessor(Node::member_expression("material_parameters"), Node::sentence(vec![index]));
+					let value = Node::accessor(scene_member("material_parameters"), Node::sentence(vec![index]));
 
 					return Ok(construct(
 						(0..r#type.width()).map(|index| component(&value, index, 4)).collect(),
@@ -247,4 +247,9 @@ fn assign<'a>(
 ) {
 	lowering.drain_statements_into(statements);
 	statements.push(Node::member_assignment(name, Node::call(narrow, vec![value])));
+}
+
+/// Returns a read of the scene layer's member `name` through the `scene` parameter every generated `main` takes.
+fn scene_member<'a>(name: &'a str) -> Node<'a> {
+	Node::accessor(Node::member_expression("scene"), Node::member_expression(name))
 }

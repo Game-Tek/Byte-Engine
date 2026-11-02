@@ -679,7 +679,7 @@ fn check_ray_payloads<'a>(
 		)
 	};
 	Err(format!(
-		"Closest-hit shader '{hit}' takes {}, but ray generation shader '{}' passes {}. The most likely cause is that the shaders declare their payload structs apart, or were baked against different versions of the layer that declares it. Declare the payload once, in a layout layer both shaders list, and rebake them.",
+		"Closest-hit shader '{hit}' takes {}, but ray generation shader '{}' passes {}. The most likely cause is that the shaders declare their payload structs apart, or were baked against different versions of the layer that declares it. Declare the payload once, in a module both shaders use, and rebake them.",
 		name(payload),
 		ray_generation.0,
 		name(ray_generation.1)

@@ -55,6 +55,7 @@ pub fn dependency_order(main_function_node: &besl::NodeReference) -> Vec<besl::N
 
 		match node_borrow.node() {
 			besl::Nodes::Scope { children, .. }
+			| besl::Nodes::Layer { members: children, .. }
 			| besl::Nodes::Struct { fields: children, .. }
 			| besl::Nodes::PushConstant { members: children }
 			| besl::Nodes::Intrinsic { elements: children, .. } => children.iter().for_each(&mut visit),
@@ -120,6 +121,8 @@ pub fn dependency_order(main_function_node: &besl::NodeReference) -> Vec<besl::N
 				| besl::BindingTypes::CombinedImageSampler { .. }
 				| besl::BindingTypes::AccelerationStructure => {}
 			},
+			// A `use` and a signature only link names; what they name is ordered where it is declared.
+			besl::Nodes::Use { .. } | besl::Nodes::Signature { .. } => {}
 			besl::Nodes::Const { r#type, value, .. } => {
 				visit(r#type);
 				visit(value);

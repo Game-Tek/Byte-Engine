@@ -1,1 +1,1 @@
-{"name":"Bloom Extract","kind":{"type":"tile","shader":"byte-engine/rendering/bloom/extract.besl"}}
+{"name":"Bloom Extract","kind":{"type":"tile","shader":"byte_engine/rendering/bloom/extract.besl"}}

@@ -1,7 +1,11 @@
 // The closest hit of hit group 0, which every hit record runs until its material's own hit group is in the published
 // ray tracing pipeline. It reports a black occluder: the ray stops there, but no light comes back from it.
 
-main: fn (input: StageInput, payload: HitSurface) -> HitSurface {
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+use ::byte_engine::rendering::visibility::layouts::ray_traced_scene::*;
+
+main: fn (input: StageInput, payload: HitSurface, scene: Scene, ray_traced_scene: RayTracedScene) -> HitSurface {
 	let hit_surface: HitSurface = payload;
 	hit_surface.albedo = vec3f16(0.0, 0.0, 0.0);
 	hit_surface.front_face = 1;

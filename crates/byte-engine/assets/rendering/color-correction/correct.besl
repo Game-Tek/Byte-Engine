@@ -9,6 +9,8 @@
 // pivot that `density` moves from the lightness to the largest channel. At the largest channel, stronger color only
 // lowers the others, as more dye does in film, so saturated color gets denser, not brighter.
 
+use ::byte_engine::rendering::layouts::acescct::*;
+
 // `to_working` takes linear sRGB to ACEScg with exposure and white balance applied, one row per vec4f. `from_working`
 // takes ACEScg back to linear sRGB. `look` is contrast, saturation, and density. `tone` is shadows, highlights, and the
 // highlight and shadow split strengths. `split` is the split direction in ACEScct.

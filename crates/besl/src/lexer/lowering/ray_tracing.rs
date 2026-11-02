@@ -69,12 +69,16 @@ pub(super) fn validate_entry_payload(function: &NodeReference) -> Result<(), Lex
 	else {
 		return Ok(());
 	};
-	let [parameter] = params.as_slice() else {
-		return Ok(());
-	};
 	if name != "main" {
 		return Ok(());
 	}
+	// Layer parameters only name what the shader binds; the payload is the one value parameter.
+	let mut values = params
+		.iter()
+		.filter(|parameter| !super::super::layers::is_layer_parameter(parameter));
+	let (Some(parameter), None) = (values.next(), values.next()) else {
+		return Ok(());
+	};
 	match parameter.borrow().node() {
 		Nodes::Parameter { r#type, .. } if r#type == return_type => validate_payload(r#type),
 		_ => Ok(()),

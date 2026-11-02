@@ -23,6 +23,13 @@
 // Copyright (c) 2019 Embark Studios): its spiral of up to eight taps, which shrinks from 16 texels to 2 and from eight
 // taps to two as the center grows confident, and its reversible tone map. See THIRD_PARTY_NOTICES.md.
 
+use ::byte_engine::rendering::visibility::layouts::screen_view::*;
+use ::byte_engine::rendering::visibility::layouts::screen_trace::*;
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::surfel_gi::*;
+use ::byte_engine::rendering::visibility::layouts::surfel_resolve::*;
+use ::byte_engine::rendering::visibility::layouts::surfel_spatial::*;
+
 // The most taps a pixel reads, its own included, and the fewest.
 SURFEL_SPATIAL_TAPS: const u32 = 8;
 SURFEL_SPATIAL_MIN_TAPS: const u32 = 2;
@@ -57,24 +64,24 @@ surfel_uncrunch: fn (value: vec4f) -> vec4f {
 	return vec4f(value.x * scale, value.y * scale, value.z * scale, value.w);
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, screen_trace: ScreenTrace, surfel_gi_set: SurfelGi, surfel_resolve: SurfelResolve, surfel_spatial: SurfelSpatial) -> void {
 	let pixel: vec2u = input.thread_id;
-	let extent: vec2u = image_size(surfel_output);
+	let extent: vec2u = image_size(surfel_spatial.surfel_output);
 	if (pixel.x >= extent.x || pixel.y >= extent.y) {
 		return;
 	}
 	// The GPU waits for a thread's reads at every branch, so each of the pixel's and its taps' reads issue together,
 	// before any test of them.
-	let z: f32 = fetch(depth_pyramid, pixel).x;
-	let stored_normal: vec4f = fetch(surfel_spatial_normals, pixel);
-	let center: vec4f = fetch(surfel_temporal_history, pixel);
-	let center_confidence: f32 = fetch(surfel_temporal_weights, pixel).x;
+	let z: f32 = fetch(screen_trace.depth_pyramid, pixel).x;
+	let stored_normal: vec4f = fetch(surfel_spatial.surfel_spatial_normals, pixel);
+	let center: vec4f = fetch(surfel_spatial.surfel_temporal_history, pixel);
+	let center_confidence: f32 = fetch(surfel_spatial.surfel_temporal_weights, pixel).x;
 	if (z == 0.0) {
-		write(surfel_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+		write(surfel_spatial.surfel_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
 		return;
 	}
 	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
-	let position: vec3f = view_position(pixel_f, z);
+	let position: vec3f = view_position(screen_trace, pixel_f, z);
 	let normal: vec3f = decode_stored_normal(stored_normal);
 	// As in kajiya, the spiral's area shrinks with the center's confidence, and its taps with the square of what the
 	// confidence lacks: half a full confidence already reads only the fewest taps.
@@ -110,14 +117,14 @@ main: fn (input: StageInput) -> void {
 			u32(clamp(tap_x, 0.0, f32(extent.x - 1))),
 			u32(clamp(tap_y, 0.0, f32(extent.y - 1)))
 		);
-		let tap_z: f32 = fetch(depth_pyramid, coordinate).x;
-		let tap_confidence: f32 = fetch(surfel_temporal_weights, coordinate).x;
-		let tap_light: vec4f = fetch(surfel_temporal_history, coordinate);
-		let tap_stored_normal: vec4f = fetch(surfel_spatial_normals, coordinate);
+		let tap_z: f32 = fetch(screen_trace.depth_pyramid, coordinate).x;
+		let tap_confidence: f32 = fetch(surfel_spatial.surfel_temporal_weights, coordinate).x;
+		let tap_light: vec4f = fetch(surfel_spatial.surfel_temporal_history, coordinate);
+		let tap_stored_normal: vec4f = fetch(surfel_spatial.surfel_spatial_normals, coordinate);
 		if (!inside || tap_z == 0.0 || tap_confidence <= 0.0) {
 			continue;
 		}
-		let tap_position: vec3f = view_position(vec2f(tap_x, tap_y), tap_z);
+		let tap_position: vec3f = view_position(screen_trace, vec2f(tap_x, tap_y), tap_z);
 		let tap_normal: vec3f = decode_stored_normal(tap_stored_normal);
 		// Taps farther out on the spiral weigh less.
 		let falloff: f32 = exp(-2.0 * share);
@@ -159,9 +166,9 @@ main: fn (input: StageInput) -> void {
 					u32(clamp(tap_x, 0.0, f32(extent.x - 1))),
 					u32(clamp(tap_y, 0.0, f32(extent.y - 1)))
 				);
-				let tap_z: f32 = fetch(depth_pyramid, coordinate).x;
-				let tap_confidence: f32 = fetch(surfel_temporal_weights, coordinate).x;
-				let tap_light: vec4f = fetch(surfel_temporal_history, coordinate);
+				let tap_z: f32 = fetch(screen_trace.depth_pyramid, coordinate).x;
+				let tap_confidence: f32 = fetch(surfel_spatial.surfel_temporal_weights, coordinate).x;
+				let tap_light: vec4f = fetch(surfel_spatial.surfel_temporal_history, coordinate);
 				if (!inside || tap_z == 0.0 || tap_confidence <= 0.0) {
 					continue;
 				}
@@ -185,7 +192,7 @@ main: fn (input: StageInput) -> void {
 		fallback = around * (1.0 / around_weight);
 	}
 	write(
-		surfel_output,
+		surfel_spatial.surfel_output,
 		pixel,
 		mix(fallback, light, clamp(filtered_weight / SURFEL_SPATIAL_FULL_CONFIDENCE, 0.0, 1.0))
 	);

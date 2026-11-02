@@ -11,34 +11,37 @@
 // It also records the cell of each surfel's center, which the surfel's rent reads next frame, and writes the record of
 // each of the surfel's rays the budget granted, at the ray's place among the frame's rays.
 
-main: fn (input: StageInput) -> void {
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::surfel_gi::*;
+
+main: fn (input: StageInput, surfel_gi_set: SurfelGi) -> void {
 	let slot: u32 = input.thread_id.x / SURFEL_GRID_LANES;
 	let lane: u32 = input.thread_id.x % SURFEL_GRID_LANES;
-	if (slot >= surfel_parameters.surfel_capacity || surfel_states[slot].life == 0) {
+	if (slot >= surfel_gi_set.surfel_parameters.surfel_capacity || surfel_gi_set.surfel_states[slot].life == 0) {
 		return;
 	}
-	let record: SurfelRecord = surfel_records[slot];
+	let record: SurfelRecord = surfel_gi_set.surfel_records[slot];
 	if (lane == 0) {
-		surfel_states[slot].cell = surfel_cell_of(record.position);
+		surfel_gi_set.surfel_states[slot].cell = surfel_cell_of(surfel_gi_set, record.position);
 	}
 
-	let wanted: u32 = surfel_wanted_rays(slot);
+	let wanted: u32 = surfel_wanted_rays(surfel_gi_set, slot);
 	for (let sample: u32 = lane; sample < wanted; sample = sample + SURFEL_GRID_LANES) {
-		let ray: u32 = surfel_granted_ray(slot, sample);
+		let ray: u32 = surfel_granted_ray(surfel_gi_set, slot, sample);
 		if (ray != NO_SURFEL) {
-			surfel_rays[ray] = slot | (sample << SURFEL_SLOT_BITS);
+			surfel_gi_set.surfel_rays[ray] = slot | (sample << SURFEL_SLOT_BITS);
 		}
 	}
 
 	let normal: vec3f = decode_surfel_normal(record.normal);
 	// The count pass wrote this frame's radius into the record.
 	let lookup_radius: f32 = record.radius * SURFEL_LOOKUP_SCALE;
-	let listing: u32 = surfel_states[slot].listing;
-	let cascades: vec2u = surfel_cascades(record.position);
+	let listing: u32 = surfel_gi_set.surfel_states[slot].listing;
+	let cascades: vec2u = surfel_cascades(surfel_gi_set, record.position);
 	let cascade_count: u32 = if (cascades.x == cascades.y) { 1 } else { 2 };
 	for (let pass: u32 = 0; pass < cascade_count; pass = pass + 1) {
 		let cascade: u32 = if (pass == 0) { cascades.x } else { cascades.y };
-		let range: SurfelCellRange = surfel_cell_range(record.position, lookup_radius, cascade);
+		let range: SurfelCellRange = surfel_cell_range(surfel_gi_set, record.position, lookup_radius, cascade);
 		let height: u32 = u32(range.last.y) - u32(range.first.y) + 1;
 		let rows: u32 = height * (u32(range.last.z) - u32(range.first.z) + 1);
 		for (let row: u32 = lane; row < rows; row = row + SURFEL_GRID_LANES) {
@@ -46,21 +49,21 @@ main: fn (input: StageInput) -> void {
 			let z: u32 = u32(range.first.z) + row / height;
 			for (let x: u32 = u32(range.first.x); x <= u32(range.last.x); x = x + 1) {
 				let cell_coordinates: vec3f = vec3f(f32(x), f32(y), f32(z));
-				let reach: f32 = surfel_cell_reach(record.position, normal, cell_coordinates, cascade);
+				let reach: f32 = surfel_cell_reach(surfel_gi_set, record.position, normal, cell_coordinates, cascade);
 				if (surfel_listing_bucket(reach, lookup_radius) < listing) {
 					let cell: u32 = surfel_cell_index(cell_coordinates, cascade);
-					let start: u32 = surfel_scan[cell];
-					let count: u32 = surfel_scan[cell + 1] - start;
-					if (surfel_cell_is_near(record.position, normal, lookup_radius, cell_coordinates, cascade)) {
-						let index: u32 = atomic_add(surfel_cells.front[cell], 1);
+					let start: u32 = surfel_gi_set.surfel_scan[cell];
+					let count: u32 = surfel_gi_set.surfel_scan[cell + 1] - start;
+					if (surfel_cell_is_near(surfel_gi_set, record.position, normal, lookup_radius, cell_coordinates, cascade)) {
+						let index: u32 = atomic_add(surfel_gi_set.surfel_cells.front[cell], 1);
 						if (index < count) {
-							surfel_cell_entries[start + index] = slot;
+							surfel_gi_set.surfel_cell_entries[start + index] = slot;
 						}
 					} else {
 						// The fill before this surfel took its slot: one past the slot, from the end of the list.
-						let remaining: u32 = atomic_sub(surfel_cells.fill[cell], 1);
+						let remaining: u32 = atomic_sub(surfel_gi_set.surfel_cells.fill[cell], 1);
 						if (remaining != 0 && remaining <= count) {
-							surfel_cell_entries[start + remaining - 1] = slot;
+							surfel_gi_set.surfel_cell_entries[start + remaining - 1] = slot;
 						}
 					}
 				}

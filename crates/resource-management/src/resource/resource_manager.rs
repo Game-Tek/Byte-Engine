@@ -71,7 +71,7 @@ pub enum RequestError {
 	Bake {
 		id: String,
 		source: LoadMessages,
-		/// Whether the engine's `assets/byte-engine` link is broken, which changes the suggested fix.
+		/// Whether the engine's `assets/byte_engine` link is broken, which changes the suggested fix.
 		engine_assets_inaccessible: bool,
 	},
 	/// The stored record could not become the requested typed resource.
@@ -97,8 +97,8 @@ impl RequestError {
 				error: LoadErrors::AssetCouldNotBeRead,
 				..
 			}
-		) && (id == "byte-engine" || id.starts_with("byte-engine/"))
-			&& asset_manager.source_directory_accessible(std::path::Path::new("byte-engine")) == Some(false);
+		) && (id == "byte_engine" || id.starts_with("byte_engine/"))
+			&& asset_manager.source_directory_accessible(std::path::Path::new("byte_engine")) == Some(false);
 
 		RequestError::Bake {
 			id: id.to_owned(),
@@ -155,7 +155,7 @@ impl std::fmt::Display for RequestError {
 						asset.as_str(),
 						error.message(),
 						if *engine_assets_inaccessible {
-							"Configure or repair the 'assets/byte-engine' directory link, then retry."
+							"Configure or repair the 'assets/byte_engine' directory link, then retry."
 						} else {
 							error.fix()
 						},
@@ -634,14 +634,14 @@ mod debug_tests {
 		let resource_manager = resource_manager_with_file_assets(assets.clone());
 
 		let error = resource_manager
-			.request::<Shader>("byte-engine/missing.test")
+			.request::<Shader>("byte_engine/missing.test")
 			.await
 			.unwrap_err();
 
 		assert_eq!(
 			error.to_string(),
 			format!(
-				"Could not bake asset.\n\n  Asset: byte-engine/missing.test\n  Cause: The source asset could not be read.\n  Fix: Configure or repair the 'assets/byte-engine' directory link, then retry.\n  Guide: {}",
+				"Could not bake asset.\n\n  Asset: byte_engine/missing.test\n  Cause: The source asset could not be read.\n  Fix: Configure or repair the 'assets/byte_engine' directory link, then retry.\n  Guide: {}",
 				super::online_docs_url(super::BAKING_APP_RESOURCES_DOCS_PATH)
 			)
 		);
@@ -653,7 +653,7 @@ mod debug_tests {
 	async fn missing_engine_asset_namespace_suggests_checking_the_asset_id() {
 		let assets = temporary_asset_directory("accessible-root");
 
-		fs::create_dir_all(assets.join("byte-engine")).unwrap();
+		fs::create_dir_all(assets.join("byte_engine")).unwrap();
 
 		let resource_manager = resource_manager_with_file_assets(assets.clone());
 
@@ -665,7 +665,7 @@ mod debug_tests {
 		assert_eq!(
 			error.to_string(),
 			format!(
-				"Could not bake asset.\n\n  Asset: rendering/simple/vertex.besl\n  Cause: The source asset could not be read.\n  Fix: Check the asset ID and configured assets directory. Engine asset IDs start with 'byte-engine/'.\n  Guide: {}",
+				"Could not bake asset.\n\n  Asset: rendering/simple/vertex.besl\n  Cause: The source asset could not be read.\n  Fix: Check the asset ID and configured assets directory. Engine asset IDs start with 'byte_engine/'.\n  Guide: {}",
 				super::online_docs_url(super::BAKING_APP_RESOURCES_DOCS_PATH)
 			)
 		);

@@ -2,6 +2,5 @@
 	"$schema": "../../schemas/besl.bead.schema.json",
 	"stage": "Tile",
 	"tile": 32,
-	"workgroup": [16, 16, 1],
-	"layouts": ["layouts/parameters.besl", "layouts/climb.besl"]
+	"workgroup": [16, 16, 1]
 }

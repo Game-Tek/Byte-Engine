@@ -1,9 +1,11 @@
+use ::byte_engine::rendering::simple::layouts::scene::*;
+
 in_position: input<vec3f, 0>;
 
-main: fn (input: StageInput) -> interface { position: vec4f, instance_index: u32, local_position: vec3f } {
-	let transform: mat4x3f = instances.transforms[input.instance_index];
+main: fn (input: StageInput, scene: Scene) -> interface { position: vec4f, instance_index: u32, local_position: vec3f } {
+	let transform: mat4x3f = scene.instances.transforms[input.instance_index];
 	let world_position: vec3f = transform * vec4f(in_position.x, in_position.y, in_position.z, 1.0);
-	let position: vec4f = cameras.cameras[0].view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0);
+	let position: vec4f = scene.cameras.cameras[0].view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0);
 
 	return { position, instance_index: input.instance_index, local_position: in_position };
 }

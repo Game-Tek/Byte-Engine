@@ -1,1 +1,1 @@
-{"name":"GTAO Upscale","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/gtao-upscale.besl"}}
+{"name":"GTAO Upscale","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/gtao-upscale.besl"}}

@@ -6,7 +6,7 @@ use utils::Extent;
 use super::{Adoption, RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::Sink;
 #[cfg(test)]
-use crate::rendering::common_shader_generator::common_shader_scope;
+use crate::rendering::common_shader_generator::common_shader_module;
 pub use crate::rendering::set_layout::Resource;
 use crate::rendering::set_layout::{PipelineSets, create_sets};
 
@@ -28,10 +28,8 @@ impl<'a> Descriptor<'a> {
 /// The program owns every function, so keep it alive while compiling or running its `main`.
 #[cfg(test)]
 pub fn compile_test_program(source: &str) -> besl::NodeReference {
-	let mut root = besl::parse(source).expect(
-		"Failed to parse a canonical render-pass BESL asset. The most likely cause is invalid source syntax or descriptor declarations.",
-	);
-	root.add(vec![common_shader_scope()]);
+	let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
+	root.add(common_shader_module().to_vec());
 	let program = besl::lex(root).expect(
 		"Failed to link a canonical render-pass BESL asset. The most likely cause is an unresolved shared helper or descriptor declaration.",
 	);

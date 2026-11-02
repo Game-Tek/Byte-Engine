@@ -1,7 +1,8 @@
 // The scene descriptor set of the visibility pipeline: the views, the instance and material tables, the geometry
-// streams, and the bindless textures. Every stage that draws or shades the scene binds it, and reads what it needs
-// from it. `rendering/pipelines/visibility/manager.rs` creates it and binds its resources by these names.
-// List it after `scene-records.besl`.
+// streams, and the bindless textures. Every stage that draws or shades the scene binds it, and reads what it needs from
+// it. `rendering/pipelines/visibility/manager.rs` creates it and binds its resources by these names.
+
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
 
 // The camera, then each sun's cascades, then cone layers, then point cube faces.
 Views: struct {
@@ -41,26 +42,28 @@ material_texture_sampler: sampler<{ address: repeat, anisotropy: 16 }>;
 // the material sampler's filtering so profiles read as they did through a bound sampler.
 ies_profile_sampler: sampler<{ address: clamp, anisotropy: 16 }>;
 
-views: descriptor<{ type: Views, binding: 0, access: read, memory: constant }>;
-meshes: descriptor<{ type: Meshes, binding: 1, access: read, memory: device }>;
-vertex_positions: descriptor<{ type: vec3f[], binding: 2, access: read, memory: device }>;
-// Octahedrally encoded unit normals.
-vertex_normals: descriptor<{ type: vec2u16[], binding: 3, access: read, memory: device }>;
-vertex_uvs: descriptor<{ type: vec2f16[], binding: 5, access: read, memory: device }>;
-vertex_indices: descriptor<{ type: u16[], binding: 6, access: read, memory: device }>;
-// Three meshlet-local vertex indices per triangle.
-primitive_indices: descriptor<{ type: u8[], binding: 7, access: read, memory: device }>;
-meshlets: descriptor<{ type: Meshlet[], binding: 8, access: read, memory: device }>;
-// The bindless texture pool that material table entries index.
-textures: descriptor<{ type: Texture2D, binding: 9, access: read, count: 1024, sampler: material_texture_sampler }>;
-materials: descriptor<{ type: Materials, binding: 1046, access: read, memory: device }>;
-// One packed work item per group of meshlets a task workgroup culls.
-mesh_dispatch_work: descriptor<{ type: MeshDispatchWork, binding: 1063, access: read, memory: device }>;
-// The evaluation slot of every material table entry, which the material prepasses bucket pixels by.
-material_evaluations: descriptor<{ type: MaterialEvaluations, binding: 1068, access: read, memory: device }>;
-// The values of dynamic material parameters, one entry per parameter. An instance's `parameter_block` names where its
-// material's parameters start, in the order the material declares them.
-material_parameters: descriptor<{ type: vec4f[], binding: 1071, access: read, memory: device }>;
-// The IES profiles of the texture pool. A profile takes the pool index a light's `ies_profile_texture` names, and
-// binds here instead of in `textures`, so it reads through the clamp sampler.
-ies_profiles: descriptor<{ type: Texture2D, binding: 4096, access: read, count: 1024, sampler: ies_profile_sampler }>;
+Scene: layer {
+	views: descriptor<{ type: Views, binding: 0, access: read, memory: constant }>;
+	meshes: descriptor<{ type: Meshes, binding: 1, access: read, memory: device }>;
+	vertex_positions: descriptor<{ type: vec3f[], binding: 2, access: read, memory: device }>;
+	// Octahedrally encoded unit normals.
+	vertex_normals: descriptor<{ type: vec2u16[], binding: 3, access: read, memory: device }>;
+	vertex_uvs: descriptor<{ type: vec2f16[], binding: 5, access: read, memory: device }>;
+	vertex_indices: descriptor<{ type: u16[], binding: 6, access: read, memory: device }>;
+	// Three meshlet-local vertex indices per triangle.
+	primitive_indices: descriptor<{ type: u8[], binding: 7, access: read, memory: device }>;
+	meshlets: descriptor<{ type: Meshlet[], binding: 8, access: read, memory: device }>;
+	// The bindless texture pool that material table entries index.
+	textures: descriptor<{ type: Texture2D, binding: 9, access: read, count: 1024, sampler: material_texture_sampler }>;
+	materials: descriptor<{ type: Materials, binding: 1046, access: read, memory: device }>;
+	// One packed work item per group of meshlets a task workgroup culls.
+	mesh_dispatch_work: descriptor<{ type: MeshDispatchWork, binding: 1063, access: read, memory: device }>;
+	// The evaluation slot of every material table entry, which the material prepasses bucket pixels by.
+	material_evaluations: descriptor<{ type: MaterialEvaluations, binding: 1068, access: read, memory: device }>;
+	// The values of dynamic material parameters, one entry per parameter. An instance's `parameter_block` names where its
+	// material's parameters start, in the order the material declares them.
+	material_parameters: descriptor<{ type: vec4f[], binding: 1071, access: read, memory: device }>;
+	// The IES profiles of the texture pool. A profile takes the pool index a light's `ies_profile_texture` names, and
+	// binds here instead of in `textures`, so it reads through the clamp sampler.
+	ies_profiles: descriptor<{ type: Texture2D, binding: 4096, access: read, count: 1024, sampler: ies_profile_sampler }>;
+}

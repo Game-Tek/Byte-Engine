@@ -2,6 +2,10 @@
 // vertical denoise. Horizontal interpolation adds the smoothing that would
 // otherwise require a separate upscale pass.
 
+use ::byte_engine::rendering::visibility::layouts::screen_view::*;
+use ::byte_engine::rendering::visibility::layouts::gtao_view::*;
+use ::byte_engine::rendering::visibility::layouts::gtao_upscale::*;
+
 shared_linear_depth: workgroup<f32, 60>;
 shared_ao: workgroup<f32, 60>;
 
@@ -37,9 +41,9 @@ tiled_source_coordinate: fn (origin: u32, tile_coordinate: u32, halo: u32, exten
 	return origin + min(tile_coordinate - halo, extent - 1 - origin);
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, gtao_view: GtaoView, gtao_upscale: GtaoUpscale) -> void {
 	let coordinate: vec2u = input.thread_id;
-	let source_extent: vec2u = texture_size(ao_source);
+	let source_extent: vec2u = texture_size(gtao_upscale.ao_source);
 	let workgroup_origin: vec2u = coordinate - coordinate % vec2u(GTAO_UPSCALE_WORKGROUP_WIDTH, GTAO_UPSCALE_WORKGROUP_HEIGHT);
 	let source_origin: vec2u = workgroup_origin / vec2u(2, 2);
 	let lane: u32 = input.thread_idx;
@@ -52,17 +56,17 @@ main: fn (input: StageInput) -> void {
 			tiled_source_coordinate(source_origin.y, index / GTAO_UPSCALE_TILE_WIDTH, GTAO_UPSCALE_HALO_Y, source_extent.y)
 		);
 		// The AO source has the same extent as mip zero of the depth pyramid.
-		shared_linear_depth[index] = fetch(low_resolution_depth, source_coordinate).x;
-		shared_ao[index] = fetch(ao_source, source_coordinate).x;
+		shared_linear_depth[index] = fetch(gtao_upscale.low_resolution_depth, source_coordinate).x;
+		shared_ao[index] = fetch(gtao_upscale.ao_source, source_coordinate).x;
 	}
 	workgroup_barrier();
 
 	// Partial edge workgroups must participate in the cooperative load before returning.
-	guard_image_bounds(ao_output, coordinate);
-	let device_depth: f32 = fetch(visibility_depth, coordinate).x;
-	let center_linear_depth: f32 = linearize_depth(device_depth);
+	guard_image_bounds(gtao_upscale.ao_output, coordinate);
+	let device_depth: f32 = fetch(gtao_upscale.visibility_depth, coordinate).x;
+	let center_linear_depth: f32 = linearize_depth(gtao_view, device_depth);
 	if (center_linear_depth == 0.0) {
-		write(ao_output, coordinate, vec4f(1.0, 0.0, 0.0, 1.0));
+		write(gtao_upscale.ao_output, coordinate, vec4f(1.0, 0.0, 0.0, 1.0));
 		return;
 	}
 
@@ -104,5 +108,5 @@ main: fn (input: StageInput) -> void {
 	if (total_weight > 0.00001) {
 		final_ao = filtered_ao / total_weight;
 	}
-	write(ao_output, coordinate, vec4f(final_ao, 0.0, 0.0, 1.0));
+	write(gtao_upscale.ao_output, coordinate, vec4f(final_ao, 0.0, 0.0, 1.0));
 }

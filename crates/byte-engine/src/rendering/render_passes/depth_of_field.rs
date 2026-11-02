@@ -146,17 +146,17 @@ impl DepthOfFieldPass {
 		let prepare = pipeline(
 			render_pass_builder,
 			"Depth of Field Prepare",
-			"byte-engine/rendering/depth-of-field/prepare.pipeline",
+			"byte_engine/rendering/depth_of_field/prepare.pipeline",
 		);
 		let downsample = pipeline(
 			render_pass_builder,
 			"Depth of Field Downsample",
-			"byte-engine/rendering/depth-of-field/downsample.pipeline",
+			"byte_engine/rendering/depth_of_field/downsample.pipeline",
 		);
 		let gather = pipeline(
 			render_pass_builder,
 			"Depth of Field Gather",
-			"byte-engine/rendering/depth-of-field/gather.pipeline",
+			"byte_engine/rendering/depth_of_field/gather.pipeline",
 		);
 		let debug_views = render_pass_builder.debug_views(&DEPTH_OF_FIELD_DEBUG_VIEWS);
 		let counters = ["depth-of-field-prepare", "depth-of-field-downsample", "depth-of-field-gather"]
@@ -410,7 +410,7 @@ impl DepthOfFieldReferencePass {
 			render_pass_builder,
 			simple_tile::Descriptor::new(
 				"Depth of Field Reference",
-				"byte-engine/rendering/depth-of-field/reference.pipeline",
+				"byte_engine/rendering/depth_of_field/reference.pipeline",
 				&[output.format()],
 			),
 		);
@@ -502,7 +502,7 @@ mod tests {
 	use super::*;
 	use crate::rendering::View;
 	use crate::rendering::shader_vm_test::asset_source;
-	const REFERENCE_BESL: &str = include_str!("../../../assets/rendering/depth-of-field/reference.besl");
+	const REFERENCE_BESL: &str = include_str!("../../../assets/rendering/depth_of_field/reference.besl");
 
 	/// A 1080-pixel-tall sink whose camera has a 50 mm lens on a full frame sensor.
 	fn sink(f_number: f32, focus_distance: f32) -> Sink {
@@ -561,7 +561,7 @@ mod tests {
 
 	/// Reads the constant array `name` of `gather.besl` as numbers.
 	fn gather_table(name: &str) -> Vec<f32> {
-		let source = asset_source("depth-of-field/gather.besl");
+		let source = asset_source("depth_of_field/gather.besl");
 		let start = source
 			.find(&format!("{name}: const"))
 			.expect("The gather declares the table.");
@@ -599,7 +599,7 @@ mod tests {
 			gather_table("RING_AREA"),
 		);
 		let (xs, ys) = (gather_table("OUTER_TAP_X"), gather_table("OUTER_TAP_Y"));
-		let gather = asset_source("depth-of-field/gather.besl");
+		let gather = asset_source("depth_of_field/gather.besl");
 		for (ring, ((&low, &radius), &area)) in inner.iter().zip(&radii).zip(&areas).enumerate() {
 			let high = low * 1.39;
 			assert!((low - 3.5 * 1.39f32.powi(ring as i32)).abs() < 1e-3, "ring {ring}");
@@ -628,7 +628,7 @@ mod tests {
 	fn shader_blur_diameters(circles: &[f32], limits: [f32; 2]) -> Vec<f32> {
 		use besl::vm::{DescriptorBindings, ResourceSlot, Value};
 
-		use crate::rendering::shader_vm_test::{buffer, compile, run_at, stacked_on_layers_of};
+		use crate::rendering::shader_vm_test::{buffer, compile, run_at, with_engine_modules};
 
 		let fields: String = (0..circles.len()).map(|index| format!("\tb{index}: f32,\n")).collect();
 		let calls: String = circles
@@ -642,12 +642,9 @@ mod tests {
 			})
 			.collect();
 		let stand_in = format!(
-			"BlurResults: struct {{\n{fields}}}\nresults: descriptor<{{ type: BlurResults, binding: 900, access: read_write }}>;\nmain: fn () -> void {{\n{calls}}}\n"
+			"use ::byte_engine::rendering::depth_of_field::layouts::parameters::*;\nBlurResults: struct {{\n{fields}}}\nresults: descriptor<{{ type: BlurResults, binding: 900, access: read_write }}>;\nmain: fn () -> void {{\n{calls}}}\n"
 		);
-		let program = compile(
-			besl::lex(stacked_on_layers_of("depth-of-field/prepare.besl", stand_in.leak()))
-				.expect("The blur diameter stand-in links."),
-		);
+		let program = compile(besl::lex(with_engine_modules(stand_in.leak())).expect("The blur diameter stand-in links."));
 		let slot = ResourceSlot::new(900);
 		let mut results = buffer(&program, slot);
 		let mut descriptors = DescriptorBindings::new();
@@ -733,14 +730,14 @@ mod tests {
 			.map(|view| format!("\tdebug_view_{}: bool,\n", view.replace('-', "_")))
 			.collect::<String>();
 
-		let parameters = include_str!("../../../assets/rendering/depth-of-field/layouts/parameters.besl");
+		let parameters = include_str!("../../../assets/rendering/depth_of_field/layouts/parameters.besl");
 		assert!(parameters.contains(&members), "{members}");
 	}
 
 	#[test]
 	fn depth_of_field_shaders_link() {
 		for shader in ["prepare", "downsample", "gather"] {
-			simple_compute::compile_test_program(asset_source(&format!("depth-of-field/{shader}.besl")));
+			simple_compute::compile_test_program(asset_source(&format!("depth_of_field/{shader}.besl")));
 		}
 	}
 

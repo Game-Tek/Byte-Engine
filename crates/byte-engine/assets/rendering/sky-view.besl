@@ -1,3 +1,5 @@
+use ::byte_engine::rendering::layouts::sky_parameters::*;
+
 transmittance_lut: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 sky_view_lut: descriptor<{ type: StorageImage<r11f_g11f_b10f>, binding: 1, access: write }>;
 parameters: descriptor<{ type: SkyParameters, binding: 2, access: read, memory: constant }>;

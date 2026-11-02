@@ -514,7 +514,7 @@ impl std::fmt::Display for VmError {
 				found,
 			} => write!(
 				f,
-				"Hit group {hit_group} takes payload `{found}`, but the ray generation shader passes `{expected}` to `invoke`. The most likely cause is a payload struct whose name, members, or member order differs between the shaders. Declare the payload once, in a layout layer that every shader of the pipeline lists."
+				"Hit group {hit_group} takes payload `{found}`, but the ray generation shader passes `{expected}` to `invoke`. The most likely cause is a payload struct whose name, members, or member order differs between the shaders. Declare the payload once, in a module that every shader of the pipeline uses."
 			),
 			VmError::NotAClosestHitShader { hit_group } => write!(
 				f,

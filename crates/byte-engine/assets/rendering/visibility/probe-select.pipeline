@@ -1,1 +1,1 @@
-{"name":"Probe Select","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/probe-select.besl"}}
+{"name":"Probe Select","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/probe-select.besl"}}

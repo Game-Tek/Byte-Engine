@@ -17,7 +17,7 @@ use crate::rendering::{PipelineManagerClient, Sink};
 /// the pyramid starts at half resolution.
 pub(super) const DEPTH_PYRAMID_MIP_COUNT: u32 = 3;
 
-/// The pyramid's mips, as `layouts/depth-pyramid.besl` names the image each one is written through.
+/// The pyramid's mips, as `layouts/depth_pyramid.besl` names the image each one is written through.
 const REDUCED_DEPTH_NAMES: [&str; DEPTH_PYRAMID_MIP_COUNT as usize] = ["reduced_depth_1", "reduced_depth_2", "reduced_depth_3"];
 
 /// The `ScreenViewData` struct gives half-resolution screen-space passes compact camera reconstruction constants.

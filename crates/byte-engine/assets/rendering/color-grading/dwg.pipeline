@@ -1,1 +1,1 @@
-{"name":"DaVinci Wide Gamut Color Grading","kind":{"type":"tile","shader":"byte-engine/rendering/color-grading/dwg.besl"}}
+{"name":"DaVinci Wide Gamut Color Grading","kind":{"type":"tile","shader":"byte_engine/rendering/color-grading/dwg.besl"}}

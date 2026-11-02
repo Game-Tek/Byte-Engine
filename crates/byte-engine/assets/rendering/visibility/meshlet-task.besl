@@ -1,4 +1,9 @@
 // Up to six views of each of the workgroup's 32 meshlets.
+
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+use ::byte_engine::rendering::visibility::layouts::occlusion::*;
+
 meshlet_instances: task_payload<u32, 192>;
 visible_count: workgroup<atomicu32>;
 // The late pass's unoccluded meshlets, one bit per lane.
@@ -115,7 +120,7 @@ circle_tangent_slopes: fn(lateral: f32, depth: f32, radius: f32) -> vec2f {
 //
 // A sphere that crosses the near plane, or reaches past the screen edge, is never hidden. The pyramid holds nothing
 // outside the screen.
-sphere_is_occluded: fn(view: View, sphere: vec4f) -> bool {
+sphere_is_occluded: fn(occlusion: Occlusion, view: View, sphere: vec4f) -> bool {
 	let center: vec3f = view.view * vec4f(sphere.x, sphere.y, sphere.z, 1.0);
 	let nearest_z: f32 = center.z - sphere.w;
 	if (nearest_z <= view.near) {
@@ -137,7 +142,7 @@ sphere_is_occluded: fn(view: View, sphere: vec4f) -> bool {
 
 	// Pick the level where the rectangle spans at most one texel on each axis. The bilinear 2x2 footprint around its
 	// center then covers all of it, and the minimum-reduction sampler returns the farthest of those four texels.
-	let base_extent: vec2u = texture_size(occlusion_pyramid);
+	let base_extent: vec2u = texture_size(occlusion.occlusion_pyramid);
 	let footprint: f32 = max(
 		(uv_max.x - uv_min.x) * f32(base_extent.x),
 		(uv_max.y - uv_min.y) * f32(base_extent.y)
@@ -146,22 +151,22 @@ sphere_is_occluded: fn(view: View, sphere: vec4f) -> bool {
 	if (level > OCCLUSION_PYRAMID_LAST_LEVEL) {
 		return false;
 	}
-	let farthest_depth: f32 = downsample_min(occlusion_pyramid, (uv_min + uv_max) * 0.5, level);
+	let farthest_depth: f32 = downsample_min(occlusion.occlusion_pyramid, (uv_min + uv_max) * 0.5, level);
 	// Reversed perspective depth runs from one at the near plane to zero at the far plane.
 	let nearest_depth: f32 = (view.near * view.far / nearest_z - view.near) / (view.far - view.near);
 	return nearest_depth < farthest_depth;
 }
 
-main: fn() -> void {
+main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	let workgroup_index: u32 = thread_position() / 32;
-	let work: u32 = mesh_dispatch_work.items[push_constant.work_item_base + workgroup_index];
+	let work: u32 = scene.mesh_dispatch_work.items[push_constant.work_item_base + workgroup_index];
 	let instance_index: u32 = work & 1023;
 	let chunk_index: u32 = (work >> 10) & 127;
 	let lane: u32 = thread_idx();
 	let view_count: u32 = min(push_constant.view_count, MAX_TASK_VIEWS);
 	let phase: u32 = push_constant.occlusion_phase;
 
-	let mesh: Mesh = meshes.meshes[instance_index];
+	let mesh: Mesh = scene.meshes.meshes[instance_index];
 	// Posed meshlets can leave their bind-pose bounds, so every view keeps a skinned instance and all its meshlets.
 	let skinned: bool = (mesh.flags & 2) != 0;
 	let tests_occlusion: bool = (phase == OCCLUSION_LATE || phase == OCCLUSION_TEST) && skinned == false;
@@ -171,7 +176,7 @@ main: fn() -> void {
 	// workgroup whose instance no view sees returns before it reads a single meshlet.
 	let instance_views: u32 = 0;
 	for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
-		let view: View = views.views[push_constant.view_base + view_offset];
+		let view: View = scene.views.views[push_constant.view_base + view_offset];
 		if (skinned || sphere_is_visible(view, instance_sphere)) {
 			instance_views = instance_views | (1 << view_offset);
 		}
@@ -181,7 +186,7 @@ main: fn() -> void {
 	// camera passes read the same word, so they agree on what the early pass drew whatever the word holds.
 	let previously_unoccluded: u32 = 0;
 	if (phase == OCCLUSION_EARLY || phase == OCCLUSION_LATE) {
-		previously_unoccluded = occlusion_visibility.words[work];
+		previously_unoccluded = occlusion.occlusion_visibility.words[work];
 	}
 	if (phase == OCCLUSION_EARLY && previously_unoccluded == 0) {
 		instance_views = 0;
@@ -190,14 +195,14 @@ main: fn() -> void {
 	// condition skips the pyramid read entirely when it cannot matter, since shader languages need not short-circuit.
 	// A hidden instance hides every meshlet, and the early pass already drew any it had to.
 	if (tests_occlusion && instance_views != 0) {
-		if (sphere_is_occluded(views.views[push_constant.view_base], instance_sphere)) {
+		if (sphere_is_occluded(occlusion, scene.views.views[push_constant.view_base], instance_sphere)) {
 			instance_views = 0;
 		}
 	}
 	if (instance_views == 0) {
 		if (lane == 0) {
 			if (phase == OCCLUSION_LATE) {
-				occlusion_visibility.words[work] = 0;
+				occlusion.occlusion_visibility.words[work] = 0;
 			}
 			set_task_mesh_output_count(0);
 		}
@@ -215,18 +220,18 @@ main: fn() -> void {
 
 	if (lane < chunk_meshlet_count) {
 		let relative_meshlet_index: u32 = first_meshlet + lane;
-		let meshlet: Meshlet = meshlets[mesh.base_meshlet_index + relative_meshlet_index];
+		let meshlet: Meshlet = scene.meshlets[mesh.base_meshlet_index + relative_meshlet_index];
 		let meshlet_sphere: vec4f = world_sphere(mesh.model, meshlet.center_radius);
 		let drawn_early: bool = ((previously_unoccluded >> lane) & 1) != 0;
 		for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
 			if ((instance_views & (1 << view_offset)) != 0) {
-				let view: View = views.views[push_constant.view_base + view_offset];
+				let view: View = scene.views.views[push_constant.view_base + view_offset];
 				if (skinned || (sphere_is_visible(view, meshlet_sphere) && cone_allows_rendering(mesh, meshlet, view))) {
 					// The early pass draws only what the previous late pass found unoccluded.
 					// Occlusion-testing passes are never early, so the test decides alone.
 					let emit: bool = phase != OCCLUSION_EARLY || drawn_early;
 					if (tests_occlusion) {
-						emit = sphere_is_occluded(view, meshlet_sphere) == false;
+						emit = sphere_is_occluded(occlusion, view, meshlet_sphere) == false;
 					}
 					// The late pass remembers every unoccluded meshlet, but draws only those the early pass skipped.
 					if (phase == OCCLUSION_LATE) {
@@ -250,7 +255,7 @@ main: fn() -> void {
 	workgroup_barrier();
 	if (lane == 0) {
 		if (phase == OCCLUSION_LATE) {
-			occlusion_visibility.words[work] = atomic_load(unoccluded_meshlets);
+			occlusion.occlusion_visibility.words[work] = atomic_load(unoccluded_meshlets);
 		}
 		set_task_mesh_output_count(atomic_load(visible_count));
 	}

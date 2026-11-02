@@ -94,7 +94,7 @@ fn validate_entry_point(stage: Stages, name: &str, main: &besl::NodeReference) -
 }
 
 /// Rejects a closest hit that declares descriptors itself. Its sets must be the first sets of the ray generation
-/// shader, which only shared layout layers can declare.
+/// shader, which only the layers both shaders take can declare.
 fn validate_closest_hit_descriptors(name: &str, program: &besl::NodeReference) -> Result<(), String> {
 	let sets = crate::shader::besl::evaluation::collect_set_nodes(program)?;
 	let Some(own) = sets
@@ -108,7 +108,7 @@ fn validate_closest_hit_descriptors(name: &str, program: &besl::NodeReference) -
 	let own = own.borrow();
 	let binding = own.get_name().unwrap_or("<unnamed>");
 	Err(format!(
-		"Closest-hit shader `{name}` declares descriptor `{binding}` itself. The most likely cause is a descriptor declared in the shader instead of in a layout layer, which gives the closest hit a set that the ray generation shader doesn't have. Move `{binding}` to a layout layer that the ray generation shader lists, and list that layer in this shader too. See {}.",
+		"Closest-hit shader `{name}` declares descriptor `{binding}` itself. The most likely cause is a descriptor declared in the shader instead of in a layer, which gives the closest hit a set that the ray generation shader doesn't have. Move `{binding}` to a layer that the ray generation shader's `main` takes, and take that layer in this shader's `main` too. See {}.",
 		crate::online_docs_url(RAY_TRACING_ENTRY_DOCS_PATH)
 	))
 }
@@ -277,20 +277,30 @@ fn language_name(language: PlatformShaderLanguage) -> &'static str {
 mod tests {
 	use super::*;
 
-	/// The layers every fixture lists: the payload closest hits take and return, and the scene ray queries test.
-	const LAYERS: [(&str, &str); 2] = [
-		("surface", "SurfaceHit: struct { albedo: vec3f, distance: f32, }"),
-		(
-			"scene",
-			"scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>;",
-		),
-	];
+	/// The declarations every fixture reads: the payload closest hits take and return, and the layer of the scene ray
+	/// queries test, which every fixture's `main` takes as `world`.
+	const PRELUDE: &str = "SurfaceHit: struct { albedo: vec3f, distance: f32, }\nWorld: layer { scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>; }\n";
 
-	/// Links `source` under [`LAYERS`] and checks it for `stage` in `language`.
+	/// Links `source` after [`PRELUDE`], with `world: World` added to its `main`, and checks it for `stage` in
+	/// `language`.
 	fn validate(language: PlatformShaderLanguage, stage: Stages, source: &str) -> Result<(), String> {
-		let module = besl::parse(source).unwrap_or_else(|error| panic!("Expected the fixture to parse ({error:?}): {source}"));
-		let program = besl::stack_layers(module, LAYERS)
-			.and_then(besl::lex)
+		let source = source.replacen("main: fn ()", "main: fn (world: World)", 1).replacen(
+			"main: fn (input: StageInput)",
+			"main: fn (input: StageInput, world: World)",
+			1,
+		);
+		let source = source
+			.replacen(
+				"main: fn (payload: SurfaceHit)",
+				"main: fn (payload: SurfaceHit, world: World)",
+				1,
+			)
+			.replacen(
+				"main: fn (input: StageInput, payload: SurfaceHit)",
+				"main: fn (input: StageInput, payload: SurfaceHit, world: World)",
+				1,
+			);
+		let program = besl::compile_to_besl(&format!("{PRELUDE}{source}"), None)
 			.unwrap_or_else(|error| panic!("Expected the fixture to link ({error:?}): {source}"));
 		validate_stage(language, stage, "fixture", &program)
 	}
@@ -321,7 +331,7 @@ mod tests {
 		let shaders = [
 			(
 				Stages::RayGeneration,
-				"main: fn (input: StageInput) -> void { let hit: Hit = intersect(scene, 255, vec3f(f32(input.launch_index.x), 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 100.0); let surface: SurfaceHit = invoke(hit, SurfaceHit(vec3f(0.0, 0.0, 0.0), -1.0)); }",
+				"main: fn (input: StageInput) -> void { let hit: Hit = intersect(world.scene, 255, vec3f(f32(input.launch_index.x), 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 100.0); let surface: SurfaceHit = invoke(hit, SurfaceHit(vec3f(0.0, 0.0, 0.0), -1.0)); }",
 			),
 			(
 				Stages::ClosestHit,
@@ -329,7 +339,7 @@ mod tests {
 			),
 			(
 				compute,
-				"main: fn () -> void { let blocked: bool = trace_occlusion(scene, 255, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 100.0); }",
+				"main: fn () -> void { let blocked: bool = trace_occlusion(world.scene, 255, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 100.0); }",
 			),
 		];
 		for language in [PlatformShaderLanguage::Msl, PlatformShaderLanguage::Glsl] {
@@ -350,12 +360,12 @@ mod tests {
 		let cases = [
 			(
 				Stages::Fragment,
-				"main: fn () -> void { let hit: Hit = intersect(scene, 255, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 1.0); }",
+				"main: fn () -> void { let hit: Hit = intersect(world.scene, 255, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 1.0); }",
 				"calls `intersect`",
 			),
 			(
 				Stages::ClosestHit,
-				"main: fn (payload: SurfaceHit) -> SurfaceHit { let blocked: bool = trace_occlusion(scene, 255, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 1.0); return payload; }",
+				"main: fn (payload: SurfaceHit) -> SurfaceHit { let blocked: bool = trace_occlusion(world.scene, 255, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 1.0); return payload; }",
 				"calls `trace_occlusion`",
 			),
 			(
@@ -438,7 +448,7 @@ mod tests {
 		let error = validate(
 			language,
 			compute,
-			"main: fn () -> void { let hit: Hit = intersect(scene, 255, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 1.0); }",
+			"main: fn () -> void { let hit: Hit = intersect(world.scene, 255, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 1.0); }",
 		)
 		.expect_err("Expected a ray query to be rejected");
 		assert!(

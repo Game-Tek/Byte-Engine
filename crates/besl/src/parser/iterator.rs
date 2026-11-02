@@ -1,6 +1,6 @@
 use std::ops::Index;
 
-use super::expressions::is_identifier;
+use super::expressions::{is_identifier, is_path};
 use super::*;
 
 impl<'a> Index<&str> for Node<'a> {
@@ -37,6 +37,9 @@ pub(super) trait ParserIterator<'a> {
 	fn next_is(&mut self, f: impl Fn(&'a str) -> bool) -> Result<&'a str, ParsingFailReasons>;
 	fn next_str(&mut self, expected: &'a str) -> Result<&'a str, ParsingFailReasons>;
 	fn next_identifier(&mut self) -> Result<&'a str, ParsingFailReasons>;
+	/// Reads a reference to a declaration, which may be a module path. Declarations name themselves with
+	/// [`ParserIterator::next_identifier`], which rejects paths.
+	fn next_path(&mut self) -> Result<&'a str, ParsingFailReasons>;
 }
 
 impl<'i, 'a> ParserIterator<'a> for std::slice::Iter<'i, &'a str> {
@@ -55,5 +58,9 @@ impl<'i, 'a> ParserIterator<'a> for std::slice::Iter<'i, &'a str> {
 
 	fn next_identifier(&mut self) -> Result<&'a str, ParsingFailReasons> {
 		self.next_is(is_identifier)
+	}
+
+	fn next_path(&mut self) -> Result<&'a str, ParsingFailReasons> {
+		self.next_is(is_path)
 	}
 }

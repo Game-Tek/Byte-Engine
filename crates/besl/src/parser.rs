@@ -10,7 +10,7 @@ mod iterator;
 pub(crate) use declarations::parse;
 pub use declarations::{
 	BindingResource, ElseBranch, Expressions, MatchArm, MatchPattern, Node, Nodes, ParsingFailReasons, RecordField, RecordRole,
-	TypeField, TypeName,
+	SignaturePart, TypeField, TypeName,
 };
 #[cfg(test)]
 use expressions::*;
@@ -454,6 +454,7 @@ main: fn () -> void {
 			params,
 			return_type,
 			statements,
+			..
 		} = &node["main"].node
 		else {
 			panic!("Not a function");

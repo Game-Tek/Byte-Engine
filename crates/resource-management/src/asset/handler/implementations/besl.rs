@@ -11,7 +11,7 @@ pub trait ProgramTransform: Send + Sync {
 
 /// The `BESLShaderAssetHandler` struct exists to bake standalone BESL programs into runtime shader resources.
 ///
-/// It applies the asset manager's [`ProgramTransform`] after a shader's layout layers stack and before it links.
+/// It applies the asset manager's [`ProgramTransform`] after a shader's modules attach and before it links.
 pub struct BESLShaderAssetHandler;
 
 impl AssetHandler for BESLShaderAssetHandler {
@@ -45,17 +45,15 @@ impl AssetHandler for BESLShaderAssetHandler {
 
 		let settings = parse_shader_settings(spec.as_ref()).map_err(settings_error)?;
 
-		let layers = read_layout_layers(&context, spec.as_ref(), id)
-			.await
-			.map_err(settings_error)?;
-
 		let compile_error = |error: String| {
 			log::error!("{}", shader_compilation_error_message(id.as_ref(), &error));
 
 			LoadErrors::FailedToProcess
 		};
 
-		let program = parse_standalone_program(source, &layers, context.program_transform()).map_err(compile_error)?;
+		let modules = read_module_files(&context, id, source).await.map_err(compile_error)?;
+
+		let program = parse_standalone_program(source, &modules, context.program_transform()).map_err(compile_error)?;
 
 		// Platform compilation may invoke native shader toolchains, so it must not block the asset executor.
 		let (shader, bytes) = context
@@ -95,17 +93,17 @@ impl ShaderCompiler for PlatformShaderCompilerAdapter {
 	}
 }
 
-/// Parses a standalone shader, stacks it on its layout layers, and applies the renderer's transform.
+/// Parses a standalone shader, attaches its module files, and applies the renderer's transform.
 ///
-/// `layers` holds the asset ID and source of each layout layer `source` builds on, lowest layer first. See
-/// [`besl::stack_layers`].
+/// `modules` holds the module files [`read_module_files`] found.
 pub(crate) fn parse_standalone_program<'a>(
 	source: &'a str,
-	layers: &'a [(String, String)],
+	modules: &'a [besl::LoadedModule],
 	transform: Option<&dyn ProgramTransform>,
 ) -> Result<besl::parser::Node<'a>, String> {
-	let parsed = parse_besl_source(source)?;
-	let parsed = stack_layout_layers(parsed, layers)?;
+	let mut parsed = parse_besl_source(source)?;
+	besl::attach_modules(&mut parsed, modules)
+		.map_err(|error| format!("Failed to attach the shader's BESL modules ({error:?})."))?;
 
 	Ok(match transform {
 		Some(transform) => transform.transform(parsed),
@@ -119,55 +117,41 @@ pub(crate) fn parse_besl_source(source: &str) -> Result<besl::parser::Node<'_>, 
 		.map_err(|error| format!("Failed to parse BESL source ({error:?}). The most likely cause is invalid shader syntax."))
 }
 
-/// Places the declarations of `layers` under `module`, lowest layer first.
+/// Reads the module files `source`, the shader `id`, needs, parents before the modules they declare.
 ///
-/// The program transform runs on the result, so it adapts a module that already carries its layers.
-pub(crate) fn stack_layout_layers<'a>(
-	module: besl::parser::Node<'a>,
-	layers: &'a [(String, String)],
-) -> Result<besl::parser::Node<'a>, String> {
-	let layers = layers.iter().map(|(id, source)| (id.as_str(), source.as_str()));
-
-	// The error names the declaration, the layer, and the likely cause.
-	besl::stack_layers(module, layers).map_err(|error| format!("Failed to link BESL source to its layout layers ({error:?})."))
-}
-
-/// Reads the layout layers a sidecar lists under `layouts`, as asset ID and source pairs in stacking order.
-///
-/// The sidecar names each layer relative to the shader's directory. Reading through `context` records each layer as a
-/// bake dependency, so editing a layer rebakes the shader.
-async fn read_layout_layers(
+/// A [`besl::ModuleLoader`] names the files to read: the shader's own modules relative to its directory, and the
+/// modules from the asset root relative to the asset root. Every file it names is read through `context`, which records
+/// each one as a bake dependency even when it is missing, so editing, creating, or deleting any of them rebakes the
+/// shader.
+async fn read_module_files(
 	context: &BakeContext<'_>,
-	spec: Option<&BEADType>,
 	id: ResourceId<'_>,
-) -> Result<Vec<(String, String)>, String> {
-	let Some(layouts) = spec.and_then(|spec| spec.get("layouts")) else {
-		return Ok(Vec::new());
-	};
+	source: &str,
+) -> Result<Vec<besl::LoadedModule>, String> {
+	let failed = |error: besl::CompilationError| format!("Failed to load the shader's BESL modules ({error:?}).");
 
-	let invalid = || {
-		"Invalid BESL layout layers. The most likely cause is that `layouts` is not an array of layer file paths.".to_string()
-	};
-
-	let mut layers = Vec::new();
-
-	for layout in layouts.as_array().ok_or_else(invalid)? {
-		let layer_id = id.resolve_relative(layout.as_str().ok_or_else(invalid)?);
-
-		let source = match context.resolve(ResourceId::new(&layer_id)).await {
-			Ok((source, _)) => std::str::from_utf8(&source).ok().map(str::to_string),
-			Err(_) => None,
+	let mut loader = besl::ModuleLoader::new(source).map_err(failed)?;
+	while let Some(query) = loader.query() {
+		let mut sources = [None, None];
+		for (file, source) in query.files.iter().zip(&mut sources) {
+			let file_id = if query.from_root {
+				file.clone()
+			} else {
+				id.resolve_relative(file)
+			};
+			let Ok((bytes, _)) = context.resolve(ResourceId::new(&file_id)).await else {
+				continue;
+			};
+			*source = Some(String::from_utf8(bytes.to_vec()).map_err(|_| {
+				format!(
+					"BESL module file '{file_id}' is not UTF-8 text. The most likely cause is a binary file saved with a `.besl` extension. Save the module as UTF-8 BESL source."
+				)
+			})?);
 		}
-		.ok_or_else(|| {
-			format!(
-				"Layout layer '{layer_id}' could not be read as BESL text. The most likely cause is that `layouts` names a file that does not exist; layer paths are relative to the shader's directory."
-			)
-		})?;
-
-		layers.push((layer_id, source));
+		loader.answer(sources).map_err(failed)?;
 	}
 
-	Ok(layers)
+	Ok(loader.into_modules())
 }
 
 /// Reads the stage contract used to compile one standalone BESL source file.
@@ -347,7 +331,7 @@ fn parse_workgroup_size(value: &BEADType) -> Result<Extent, String> {
 /// Links a parsed shader and reflects its resource interface before platform lowering starts, and returns the stage the
 /// platform runs it as, which differs from `stage` only for a `Tile` shader on a platform without tile functions.
 ///
-/// `name` names the layout of the descriptors the shader declares itself; layout layers name their own.
+/// `name` names the layout of the descriptors the shader declares itself; layers name their own by their paths.
 fn prepare_shader(
 	parsed: besl::parser::Node<'_>,
 	name: &str,
@@ -596,19 +580,19 @@ pub(crate) fn shader_compilation_error_message(id: &str, error: &str) -> String 
 #[cfg(test)]
 mod tests {
 	use super::{
-		BESL_DOCS_PATH, BESLShaderAssetHandler, MACOS_SETUP_DOCS_PATH, PlatformShaderLanguage,
+		BESL_DOCS_PATH, BESLShaderAssetHandler, MACOS_SETUP_DOCS_PATH, PlatformShaderLanguage, PreparedBeslShader,
 		ProgramTransform, ShaderCompiler, WINDOWS_SETUP_DOCS_PATH, parse_shader_settings, parse_standalone_program,
-		PreparedBeslShader, parse_workgroup_size, prepare_besl_shader, prepare_shader, shader_compilation_docs_path,
-		shader_compilation_error_message, stack_layout_layers, tile,
+		parse_workgroup_size, prepare_besl_shader, prepare_shader, shader_compilation_docs_path,
+		shader_compilation_error_message, tile,
 	};
 	use crate::{
 		asset::{
 			handler::LoadErrors,
-			manager::{AssetManager, LoadMessages},
+			manager::{AssetManager, LoadMessages, stale_sources},
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 		},
 		r#async,
-		resource::storage_backend::MemoryStorageBackend,
+		resource::{ReadStorageBackend, storage_backend::MemoryStorageBackend},
 		resources::material::{Binding, BindingKind, SetInterface, Shader, ShaderArtifact, ShaderInterface, TextureView},
 		shader::generator::{ShaderGenerationSettings, Stages},
 		types::ShaderTypes,
@@ -767,88 +751,105 @@ mod tests {
 			);
 	}
 
+	/// Verifies a shader links the module files it declares, and that its bake depends on both files each module may
+	/// live in, so editing the module or creating its other file makes the shader stale.
 	#[r#async::test]
-	async fn standalone_besl_handler_links_the_layout_layers_its_sidecar_lists() {
-		// The shader declares nothing itself: its struct, descriptors, and helper all come from the two layers.
-		let source = "main: fn () -> void { results[0] = scaled(frame.exposure); }";
+	async fn standalone_besl_handler_links_module_files_and_depends_on_them() {
+		let source = "results: descriptor<{ type: f32[], binding: 1, access: write }>;\nnoise: mod;\nmain: fn () -> void { results[0] = noise::scaled(1.0); }";
+		let noise = "scaled: fn (value: f32) -> f32 { return value * 2.0; }";
+		let bead = r#"{ "stage": "Compute", "workgroup": [8, 8, 1] }"#;
 
-		let frame_layer = "Frame: struct { exposure: f32 }\nframe: descriptor<{ type: Frame, binding: 0, access: read }>;";
+		let asset_storage = AssetTestStorageBackend::new();
+		asset_storage.add_file("passes/resolve.besl", source.as_bytes());
+		asset_storage.add_file("passes/resolve.besl.bead", bead.as_bytes());
 
-		let result_layer = "results: descriptor<{ type: f32[], binding: 1, access: write }>;\nscaled: fn (value: f32) -> f32 { return value * 2.0; }";
-
-		let bead =
-			r#"{ "stage": "Compute", "workgroup": [8, 8, 1], "layouts": ["layouts/frame.besl", "layouts/result.besl"] }"#;
-
-		let bake = async |files: &[(&'static str, &str)]| {
-			let asset_storage = AssetTestStorageBackend::new();
-
-			for (path, contents) in files {
-				asset_storage.add_file(path, contents.as_bytes());
-			}
-
-			let mut asset_manager = AssetManager::new(asset_storage, MemoryStorageBackend::new());
-
-			asset_manager.set_shader_compiler(TestShaderCompiler);
-			asset_manager.add_asset_handler(BESLShaderAssetHandler);
-
-			asset_manager.bake("passes/resolve.besl").await
-		};
-
-		bake(&[
-			("passes/resolve.besl", source),
-			("passes/resolve.besl.bead", bead),
-			("passes/layouts/frame.besl", frame_layer),
-			("passes/layouts/result.besl", result_layer),
-		])
-		.await
-		.expect(
-			"Failed to bake a layered standalone shader. The most likely cause is that the sidecar's layout layers were not linked under the shader.",
-		);
+		let resource_storage = MemoryStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage.clone(), resource_storage.clone());
+		asset_manager.set_shader_compiler(TestShaderCompiler);
+		asset_manager.add_asset_handler(BESLShaderAssetHandler);
 
 		let failed = Err(LoadMessages::FailedToBake {
 			asset: "passes/resolve.besl".to_string(),
 			error: LoadErrors::FailedToProcess,
 		});
 
-		// A listed layer that does not exist fails the bake instead of compiling without it.
-		assert_eq!(
-			bake(&[
-				("passes/resolve.besl", source),
-				("passes/resolve.besl.bead", bead),
-				("passes/layouts/frame.besl", frame_layer),
-			])
-			.await,
-			failed
-		);
+		// A module with neither file fails the bake.
+		assert_eq!(asset_manager.bake("passes/resolve.besl").await, failed);
 
-		let stale_copy = format!("Frame: struct {{ exposure: f32 }}\n{source}");
+		asset_storage.add_file("passes/noise.besl", noise.as_bytes());
+		asset_manager
+			.bake("passes/resolve.besl")
+			.await
+			.expect("Failed to bake a shader with a module. The most likely cause is that its module file was not attached.");
 
-		// A shader that keeps its own copy of a layer declaration fails instead of shadowing the layer.
-		assert_eq!(
-			bake(&[
-				("passes/resolve.besl", &stale_copy),
-				("passes/resolve.besl.bead", bead),
-				("passes/layouts/frame.besl", frame_layer),
-				("passes/layouts/result.besl", result_layer),
-			])
-			.await,
-			failed
-		);
+		let (stored, _) = resource_storage
+			.read(crate::ResourceId::new("passes/resolve.besl"))
+			.await
+			.unwrap();
+		assert!(stale_sources(&stored, &asset_storage).await.is_empty());
+
+		asset_storage.add_file("passes/noise.besl", b"scaled: fn (value: f32) -> f32 { return value * 3.0; }");
+		assert_eq!(stale_sources(&stored, &asset_storage).await, ["passes/noise.besl"]);
+
+		// Creating the module's other file also makes the shader stale, and the rebake rejects the ambiguous module.
+		asset_storage.add_file("passes/noise.besl", noise.as_bytes());
+		asset_storage.add_file("passes/noise/mod.besl", noise.as_bytes());
+		assert_eq!(stale_sources(&stored, &asset_storage).await, ["passes/noise/mod.besl"]);
+		assert_eq!(asset_manager.bake("passes/resolve.besl").await, failed);
 	}
 
-	/// Verifies a tile shader that builds on a layout layer bakes through the platform compiler with its outputs
+	/// Verifies a shader links a module from the asset root through a layer and signature, and that its bake depends on
+	/// every file the module could live in.
+	#[r#async::test]
+	async fn standalone_besl_handler_links_modules_from_the_asset_root() {
+		let source = "use ::shared::output::Pass;\nmain: Pass { output.results[0] = 2.0; }";
+		let shared = "Output: layer { results: descriptor<{ type: f32[], binding: 1, access: write }>; }\nPass: fn (input: StageInput, output: Output) -> void;";
+		let bead = r#"{ "stage": "Compute", "workgroup": [8, 8, 1] }"#;
+
+		let asset_storage = AssetTestStorageBackend::new();
+		asset_storage.add_file("passes/resolve.besl", source.as_bytes());
+		asset_storage.add_file("passes/resolve.besl.bead", bead.as_bytes());
+		asset_storage.add_file("shared/output.besl", shared.as_bytes());
+
+		let resource_storage = MemoryStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage.clone(), resource_storage.clone());
+		asset_manager.set_shader_compiler(TestShaderCompiler);
+		asset_manager.add_asset_handler(BESLShaderAssetHandler);
+
+		asset_manager
+			.bake("passes/resolve.besl")
+			.await
+			.expect("Failed to bake a shader that implements a shared signature. The most likely cause is that its module from the asset root was not attached.");
+
+		let (stored, _) = resource_storage
+			.read(crate::ResourceId::new("passes/resolve.besl"))
+			.await
+			.unwrap();
+		assert!(stale_sources(&stored, &asset_storage).await.is_empty());
+
+		asset_storage.add_file("shared/output.besl", format!("{shared}\n").as_bytes());
+		assert_eq!(stale_sources(&stored, &asset_storage).await, ["shared/output.besl"]);
+
+		// A shorter start of the path that gains a file would become the module, so it is a dependency too.
+		asset_storage.add_file("shared/output.besl", shared.as_bytes());
+		asset_storage.add_file("shared.besl", b"");
+		assert_eq!(stale_sources(&stored, &asset_storage).await, ["shared.besl"]);
+	}
+
+	/// Verifies a tile shader that takes a layer bakes through the platform compiler with its outputs
 	/// reflected, and records the stage it runs as: a tile function with its threadgroup memory on Metal, and elsewhere
 	/// a compute shader with an outputs set.
 	#[r#async::test]
 	async fn tile_shader_bakes_with_its_outputs_and_the_stage_it_runs_as() {
-		let layer = "Parameters: struct { scale: vec4f[1] }\nparameters: descriptor<{ type: Parameters, binding: 0, access: read, memory: constant }>;";
 		let source = r#"
+			Parameters: struct { scale: vec4f[1] }
+			Settings: layer { parameters: descriptor<{ type: Parameters, binding: 0, access: read, memory: constant }>; }
 			glow: output<vec4f, 1>;
 			color: output<vec4f, 0>;
 			shared_values: workgroup<vec4f, 64>;
 
-			main: fn (input: StageInput) -> void {
-				shared_values[input.thread_idx] = parameters.scale[0];
+			main: fn (input: StageInput, settings: Settings) -> void {
+				shared_values[input.thread_idx] = settings.parameters.scale[0];
 				workgroup_barrier();
 				let pixel: vec2u = input.thread_id * vec2u(2, 2);
 				let extent: vec2u = input.extent;
@@ -859,8 +860,7 @@ mod tests {
 				write(glow, pixel, vec4f(1.0, 0.0, 0.0, 1.0));
 			}
 		"#;
-		let layers = [("passes/layouts/parameters.besl".to_string(), layer.to_string())];
-		let program = parse_standalone_program(source, &layers, None).expect("the tile shader should parse");
+		let program = parse_standalone_program(source, &[], None).expect("the tile shader should parse");
 		let settings = parse_shader_settings(Some(
 			&crate::asset::parse_json(r#"{ "stage": "Tile", "tile": 16, "workgroup": [8, 8, 1] }"#).unwrap(),
 		))
@@ -1131,32 +1131,21 @@ mod tests {
 	}
 
 	#[test]
-	fn each_layout_layer_reflects_as_one_set_with_the_bindings_the_shader_reaches() {
-		let layers = [
-			(
-				"layouts/scene.besl".to_string(),
-				r#"
-					views: descriptor<{ type: f32[], binding: 0, access: read }>;
-					meshes: descriptor<{ type: f32[], binding: 1, access: read }>;
-				"#
-				.to_string(),
-			),
-			(
-				"layouts/unused.besl".to_string(),
-				"history: descriptor<{ type: Texture2D, binding: 2, access: read }>;".to_string(),
-			),
-			// A layer without descriptors declares no set.
-			("layouts/types.besl".to_string(), "Scale: struct { value: f32, }".to_string()),
-		];
+	fn each_layer_main_takes_reflects_as_one_set_with_the_bindings_the_shader_reaches() {
 		let source = r#"
+			Scale: struct { value: f32, }
+			Scene: layer {
+				views: descriptor<{ type: f32[], binding: 0, access: read }>;
+				meshes: descriptor<{ type: f32[], binding: 1, access: read }>;
+			}
+			History: layer { history: descriptor<{ type: Texture2D, binding: 2, access: read }>; }
 			result: descriptor<{ type: f32[], binding: 3, access: write }>;
-			main: fn () -> void {
-				result[0] = meshes[0];
+			main: fn (scene: Scene, history: History) -> void {
+				result[0] = scene.meshes[0];
 			}
 		"#;
 
-		let parsed = stack_layout_layers(besl::parse(source).unwrap(), &layers).expect("Expected the layers to stack");
-		let (_, interface, _) = prepare_shader(parsed, "passes/resolve.besl", Stages::Fragment)
+		let (_, interface, _) = prepare_shader(besl::parse(source).unwrap(), "passes/resolve.besl", Stages::Fragment)
 			.expect("Failed to prepare layered descriptor reflection. The most likely cause is invalid layer fixture syntax.");
 
 		let sets = interface
@@ -1172,34 +1161,30 @@ mod tests {
 		assert_eq!(
 			sets,
 			vec![
-				("layouts/scene.besl", vec!["views", "meshes"], 0b10),
-				("layouts/unused.besl", vec!["history"], 0),
+				("Scene", vec!["views", "meshes"], 0b10),
+				("History", vec!["history"], 0),
 				("passes/resolve.besl", vec!["result"], 0b1),
 			]
 		);
 	}
 
 	#[test]
-	fn a_layout_identity_follows_its_bindings_and_not_the_shader_that_lists_it() {
-		let layer = |declaration: &str| {
-			vec![(
-				"layouts/scene.besl".to_string(),
-				format!("views: descriptor<{{ type: f32[], binding: 0, access: read }}>; {declaration}"),
-			)]
-		};
-		let identity = |layers: &[(String, String)], source: &str| {
-			let parsed = stack_layout_layers(besl::parse(source).unwrap(), layers).expect("Expected the layer to stack");
-			let (_, interface, _) =
-				prepare_shader(parsed, "shader.besl", Stages::Fragment).expect("Expected the shader to link");
+	fn a_layer_identity_follows_its_bindings_and_not_the_shader_that_takes_it() {
+		let identity = |members: &str, body: &str| {
+			let source = format!(
+				"Scene: layer {{ views: descriptor<{{ type: f32[], binding: 0, access: read }}>; {members} }}\nmain: fn (scene: Scene) -> void {{ {body} }}"
+			);
+			let (_, interface, _) = prepare_shader(besl::parse(&source).unwrap(), "shader.besl", Stages::Fragment)
+				.expect("Expected the shader to link");
 			interface.sets[0].identity()
 		};
 
-		let scene = layer("meshes: descriptor<{ type: f32[], binding: 1, access: read }>;");
-		let reader = identity(&scene, "main: fn () -> void { views[0]; }");
-		let other_reader = identity(&scene, "main: fn () -> void { meshes[0]; }");
+		let meshes = "meshes: descriptor<{ type: f32[], binding: 1, access: read }>;";
+		let reader = identity(meshes, "scene.views[0];");
+		let other_reader = identity(meshes, "scene.meshes[0];");
 		let renamed = identity(
-			&layer("instances: descriptor<{ type: f32[], binding: 1, access: read }>;"),
-			"main: fn () -> void { views[0]; }",
+			"instances: descriptor<{ type: f32[], binding: 1, access: read }>;",
+			"scene.views[0];",
 		);
 
 		assert_eq!(reader, other_reader, "shaders that share a layer should share its set");

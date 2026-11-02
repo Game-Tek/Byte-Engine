@@ -37,7 +37,7 @@ const _: () =
 const _: () =
 	assert!(OCCLUSION_PYRAMID_WIDTH >> (BASE_LEVELS - 1) == 32 && OCCLUSION_PYRAMID_HEIGHT >> (BASE_LEVELS - 1) == 16);
 
-/// The pyramid's levels, as `layouts/hiz-base.besl` and `layouts/hiz-tail.besl` name the image each one is written
+/// The pyramid's levels, as `layouts/hiz_base.besl` and `layouts/hiz_tail.besl` name the image each one is written
 /// through. The base stage writes the first [`BASE_LEVELS`] and the tail stage the rest.
 const LEVEL_NAMES: [&str; OCCLUSION_PYRAMID_MIP_COUNT as usize] = [
 	"level_0", "level_1", "level_2", "level_3", "level_4", "level_5", "level_6", "level_7", "level_8",

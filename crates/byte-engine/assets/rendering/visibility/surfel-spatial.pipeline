@@ -1,1 +1,1 @@
-{"name":"Surfel Spatial","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/surfel-spatial.besl"}}
+{"name":"Surfel Spatial","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/surfel-spatial.besl"}}

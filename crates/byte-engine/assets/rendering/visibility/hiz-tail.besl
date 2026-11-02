@@ -1,4 +1,7 @@
 // Mip five's 16x8 depths, then the 8x4 and 4x2 reductions after them.
+
+use ::byte_engine::rendering::visibility::layouts::hiz_tail::*;
+
 shared_depth: workgroup<f32, 168>;
 
 HIZ_TAIL_WIDTH: const u32 = 16;
@@ -13,16 +16,16 @@ farthest_of_four: fn (index: u32, stride: u32) -> f32 {
 	);
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, hiz_tail: HizTail) -> void {
 	let texel: vec2u = input.thread_id;
 	let lane: u32 = input.thread_idx;
 	let source: vec2u = texel * vec2u(2, 2);
 	// Reversed depth makes the minimum the farthest surface.
 	let depth: f32 = min(
-		min(image_load(source_level, source).x, image_load(source_level, source + vec2u(1, 0)).x),
-		min(image_load(source_level, source + vec2u(0, 1)).x, image_load(source_level, source + vec2u(1, 1)).x)
+		min(image_load(hiz_tail.source_level, source).x, image_load(hiz_tail.source_level, source + vec2u(1, 0)).x),
+		min(image_load(hiz_tail.source_level, source + vec2u(0, 1)).x, image_load(hiz_tail.source_level, source + vec2u(1, 1)).x)
 	);
-	write(level_5, texel, vec4f(depth, 0.0, 0.0, 1.0));
+	write(hiz_tail.level_5, texel, vec4f(depth, 0.0, 0.0, 1.0));
 	shared_depth[lane] = depth;
 	workgroup_barrier();
 
@@ -30,7 +33,7 @@ main: fn (input: StageInput) -> void {
 	if (lane < 32) {
 		let texel_6: vec2u = vec2u(lane % 8, lane / 8);
 		let depth_6: f32 = farthest_of_four(texel_6.y * 2 * HIZ_TAIL_WIDTH + texel_6.x * 2, HIZ_TAIL_WIDTH);
-		write(level_6, texel_6, vec4f(depth_6, 0.0, 0.0, 1.0));
+		write(hiz_tail.level_6, texel_6, vec4f(depth_6, 0.0, 0.0, 1.0));
 		shared_depth[HIZ_LEVEL_6_OFFSET + lane] = depth_6;
 	}
 	workgroup_barrier();
@@ -39,7 +42,7 @@ main: fn (input: StageInput) -> void {
 	if (lane < 8) {
 		let texel_7: vec2u = vec2u(lane % 4, lane / 4);
 		let depth_7: f32 = farthest_of_four(HIZ_LEVEL_6_OFFSET + texel_7.y * 2 * 8 + texel_7.x * 2, 8);
-		write(level_7, texel_7, vec4f(depth_7, 0.0, 0.0, 1.0));
+		write(hiz_tail.level_7, texel_7, vec4f(depth_7, 0.0, 0.0, 1.0));
 		shared_depth[HIZ_LEVEL_7_OFFSET + lane] = depth_7;
 	}
 	workgroup_barrier();
@@ -47,6 +50,6 @@ main: fn (input: StageInput) -> void {
 	// Lanes 0-1 reduce it to the 2x1 top.
 	if (lane < 2) {
 		let depth_8: f32 = farthest_of_four(HIZ_LEVEL_7_OFFSET + lane * 2, 4);
-		write(level_8, vec2u(lane, 0), vec4f(depth_8, 0.0, 0.0, 1.0));
+		write(hiz_tail.level_8, vec2u(lane, 0), vec4f(depth_8, 0.0, 0.0, 1.0));
 	}
 }

@@ -1,1 +1,1 @@
-{"name":"GTAO","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/gtao.besl"}}
+{"name":"GTAO","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/gtao.besl"}}

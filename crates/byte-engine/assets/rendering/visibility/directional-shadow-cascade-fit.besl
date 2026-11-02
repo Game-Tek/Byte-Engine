@@ -10,6 +10,10 @@
 // larger than the CPU's fit. Both views share an orientation, so the new view is the old one scaled and moved along
 // the light's axes: its view-projection maps each old normalized device coordinate c to c * scale + offset.
 
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::receiver_bounds::*;
+use ::byte_engine::rendering::visibility::layouts::cascade_fit::*;
+
 // Four cascades for each of up to four suns.
 FITTED_CASCADE_COUNT: const u32 = 16;
 // Keeps stored steps positive for sizes down to about a millimeter.
@@ -33,26 +37,26 @@ refit_column: fn (column: vec4f, scale: vec3f, offset: vec3f) -> vec4f {
 	);
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, cascade_fit: CascadeFit) -> void {
 	let cascade: u32 = input.thread_id.x;
 	if (cascade < FITTED_CASCADE_COUNT) {
 		let first: u32 = cascade * 6;
 		let view_index: u32 = cascade + 1;
 		let cascade_bit: u32 = 1 << cascade;
-		let lower_x_code: u32 = atomic_load(receiver_bounds.bounds[first]);
-		if ((receiver_fit.cascade_masks.x & cascade_bit) == 0) {
+		let lower_x_code: u32 = atomic_load(cascade_fit.receiver_bounds.bounds[first]);
+		if ((cascade_fit.receiver_fit.cascade_masks.x & cascade_bit) == 0) {
 			// A cascade that doesn't draw this frame drops its bounds, so the next frame's pass merges into empty boxes.
 			// It keeps the view it was drawn with, which receivers sample its map with, and a cascade that holds no map
 			// gets a projection that puts every receiver at x = 2, outside it.
 			for (let bound: u32 = 0; bound < 6; bound = bound + 1) {
-				atomic_store(receiver_bounds.bounds[first + bound], 0);
+				atomic_store(cascade_fit.receiver_bounds.bounds[first + bound], 0);
 			}
-			if ((receiver_fit.cascade_masks.y & cascade_bit) != 0) {
-				views.views[view_index].view = drawn_views.views[cascade].view;
-				views.views[view_index].view_projection = drawn_views.views[cascade].view_projection;
-				views.views[view_index].inverse_view = drawn_views.views[cascade].inverse_view;
+			if ((cascade_fit.receiver_fit.cascade_masks.y & cascade_bit) != 0) {
+				cascade_fit.views.views[view_index].view = cascade_fit.drawn_views.views[cascade].view;
+				cascade_fit.views.views[view_index].view_projection = cascade_fit.drawn_views.views[cascade].view_projection;
+				cascade_fit.views.views[view_index].inverse_view = cascade_fit.drawn_views.views[cascade].inverse_view;
 			} else {
-				views.views[view_index].view_projection = mat4f(
+				cascade_fit.views.views[view_index].view_projection = mat4f(
 					vec4f(0.0, 0.0, 0.0, 0.0),
 					vec4f(0.0, 0.0, 0.0, 0.0),
 					vec4f(0.0, 0.0, 0.0, 0.0),
@@ -61,22 +65,22 @@ main: fn (input: StageInput) -> void {
 			}
 		} else if (lower_x_code != 0) {
 			let lower_x: f32 = decode_lower_bound(lower_x_code);
-			let lower_y: f32 = decode_lower_bound(atomic_load(receiver_bounds.bounds[first + 1]));
-			let lower_z: f32 = decode_lower_bound(atomic_load(receiver_bounds.bounds[first + 2]));
-			let upper_x: f32 = decode_upper_bound(atomic_load(receiver_bounds.bounds[first + 3]));
-			let upper_y: f32 = decode_upper_bound(atomic_load(receiver_bounds.bounds[first + 4]));
-			let upper_z: f32 = decode_upper_bound(atomic_load(receiver_bounds.bounds[first + 5]));
+			let lower_y: f32 = decode_lower_bound(atomic_load(cascade_fit.receiver_bounds.bounds[first + 1]));
+			let lower_z: f32 = decode_lower_bound(atomic_load(cascade_fit.receiver_bounds.bounds[first + 2]));
+			let upper_x: f32 = decode_upper_bound(atomic_load(cascade_fit.receiver_bounds.bounds[first + 3]));
+			let upper_y: f32 = decode_upper_bound(atomic_load(cascade_fit.receiver_bounds.bounds[first + 4]));
+			let upper_z: f32 = decode_upper_bound(atomic_load(cascade_fit.receiver_bounds.bounds[first + 5]));
 			for (let bound: u32 = 0; bound < 6; bound = bound + 1) {
-				atomic_store(receiver_bounds.bounds[first + bound], 0);
+				atomic_store(cascade_fit.receiver_bounds.bounds[first + bound], 0);
 			}
 			// The frustum fit's light-space center x and y, half extent, and depth range, in meters. Its normalized
 			// device x and y span one half extent per unit, and z falls from one at its light-facing side to zero one
 			// depth range along the light.
-			let frame: vec4f = receiver_fit.cascade_frames[cascade];
-			let resolution: f32 = receiver_fit.fit_constants.x;
-			let edge_texels: f32 = receiver_fit.fit_constants.y;
-			let caster_reach: f32 = receiver_fit.fit_constants.z;
-			let steps_per_octave: f32 = receiver_fit.fit_constants.w;
+			let frame: vec4f = cascade_fit.receiver_fit.cascade_frames[cascade];
+			let resolution: f32 = cascade_fit.receiver_fit.fit_constants.x;
+			let edge_texels: f32 = cascade_fit.receiver_fit.fit_constants.y;
+			let caster_reach: f32 = cascade_fit.receiver_fit.fit_constants.z;
+			let steps_per_octave: f32 = cascade_fit.receiver_fit.fit_constants.w;
 
 			let fitted_half_extent: f32 = max(upper_x - lower_x, upper_y - lower_y) * 0.5 * frame.z;
 			// A margin of m texels out of r leaves the receivers (r - 2m) / r of the map.
@@ -86,7 +90,7 @@ main: fn (input: StageInput) -> void {
 			// The size grows at once but shrinks only once it can shrink by two steps, so receivers that hover at a
 			// step do not switch the size every frame. Clamping also turns a new buffer's contents into a valid size.
 			let previous_step: f32 = clamp(
-				f32(cascade_size_steps.steps[cascade]) - CASCADE_SIZE_STEP_OFFSET,
+				f32(cascade_fit.cascade_size_steps.steps[cascade]) - CASCADE_SIZE_STEP_OFFSET,
 				needed_step,
 				frustum_step
 			);
@@ -94,7 +98,7 @@ main: fn (input: StageInput) -> void {
 			if (previous_step - needed_step > 1.0) {
 				size_step = needed_step;
 			}
-			cascade_size_steps.steps[cascade] = u32(size_step + CASCADE_SIZE_STEP_OFFSET);
+			cascade_fit.cascade_size_steps.steps[cascade] = u32(size_step + CASCADE_SIZE_STEP_OFFSET);
 			let half_extent: f32 = pow(2.0, size_step / steps_per_octave);
 			let texel_size: f32 = 2.0 * half_extent / resolution;
 			// Light-space coordinates measured from the world origin keep the texel grid still as the camera moves.
@@ -112,10 +116,10 @@ main: fn (input: StageInput) -> void {
 				0.0 - shift.y / half_extent,
 				1.0 - (frame.w - front_shift) / depth_range
 			);
-			let view_projection: mat4f = views.views[view_index].view_projection;
-			let view: mat4x3f = views.views[view_index].view;
-			let inverse_view: mat4x3f = views.views[view_index].inverse_view;
-			views.views[view_index].view_projection = mat4f(
+			let view_projection: mat4f = cascade_fit.views.views[view_index].view_projection;
+			let view: mat4x3f = cascade_fit.views.views[view_index].view;
+			let inverse_view: mat4x3f = cascade_fit.views.views[view_index].inverse_view;
+			cascade_fit.views.views[view_index].view_projection = mat4f(
 				refit_column(view_projection[0], scale, offset),
 				refit_column(view_projection[1], scale, offset),
 				refit_column(view_projection[2], scale, offset),
@@ -123,13 +127,13 @@ main: fn (input: StageInput) -> void {
 			);
 			// The inverse view's first three columns are the light's axes in world space, so moving the view along them
 			// moves its world-space origin by those axes and its light-space origin by the shift itself.
-			views.views[view_index].view = mat4x3f(
+			cascade_fit.views.views[view_index].view = mat4x3f(
 				view[0],
 				view[1],
 				view[2],
 				view[3] - shift
 			);
-			views.views[view_index].inverse_view = mat4x3f(
+			cascade_fit.views.views[view_index].inverse_view = mat4x3f(
 				inverse_view[0],
 				inverse_view[1],
 				inverse_view[2],
@@ -140,10 +144,10 @@ main: fn (input: StageInput) -> void {
 			);
 		}
 		// A cascade that draws keeps the view it draws with, fitted or as the CPU fitted it, for the frames it doesn't.
-		if ((receiver_fit.cascade_masks.x & cascade_bit) != 0) {
-			drawn_views.views[cascade].view = views.views[view_index].view;
-			drawn_views.views[cascade].view_projection = views.views[view_index].view_projection;
-			drawn_views.views[cascade].inverse_view = views.views[view_index].inverse_view;
+		if ((cascade_fit.receiver_fit.cascade_masks.x & cascade_bit) != 0) {
+			cascade_fit.drawn_views.views[cascade].view = cascade_fit.views.views[view_index].view;
+			cascade_fit.drawn_views.views[cascade].view_projection = cascade_fit.views.views[view_index].view_projection;
+			cascade_fit.drawn_views.views[cascade].inverse_view = cascade_fit.views.views[view_index].inverse_view;
 		}
 	}
 }

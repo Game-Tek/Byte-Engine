@@ -1,1 +1,1 @@
-{"name":"AGX Tone Mapping","kind":{"type":"tile","shader":"byte-engine/rendering/agx/tone-mapping.besl"}}
+{"name":"AGX Tone Mapping","kind":{"type":"tile","shader":"byte_engine/rendering/agx/tone-mapping.besl"}}

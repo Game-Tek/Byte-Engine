@@ -1,164 +1,131 @@
 //! The descriptor set layouts of the visibility pipeline.
 //!
-//! Each layout is declared by one layout layer under `assets/rendering/visibility/layouts`, which the pipeline's
-//! shaders list in their sidecars. The layouts here are reflected from the same files, so a set a pass creates from
-//! one matches every shader baked against that layer, and resources are bound by the names the layer gives them.
+//! Each layout is declared by one layer in a module under `assets/rendering/visibility/layouts`, which the pipeline's
+//! shaders take as `main` parameters. The layouts here are reflected from the same modules, so a set a pass creates
+//! from one matches every shader baked against that layer, and resources are bound by the names the layer gives them.
 
 use std::sync::LazyLock;
 
 use crate::rendering::SetLayout;
-use crate::rendering::set_layout::layer;
+use crate::rendering::set_layout::ENGINE_MODULES;
 
-/// Declares the layout of the last of `layers`, which builds on the layers before it.
+/// Declares the layout of the layer at `path`, relative to `::byte_engine::rendering::visibility`.
 macro_rules! layout {
-	($(#[$documentation:meta])* $name:ident, [$($layer:literal),+ $(,)?]) => {
+	($(#[$documentation:meta])* $name:ident, $path:literal) => {
 		$(#[$documentation])*
-		pub(crate) static $name: LazyLock<SetLayout> = LazyLock::new(|| SetLayout::from_layers(&[$(layer!($layer)),+]));
+		pub(crate) static $name: LazyLock<SetLayout> = LazyLock::new(|| {
+			SetLayout::from_layer(concat!("::byte_engine::rendering::visibility::", $path), ENGINE_MODULES)
+		});
 	};
 }
 
 layout!(
 	/// The scene set every stage that draws or shades the scene binds. The pipeline manager creates it.
 	SCENE,
-	["visibility/layouts/scene-records.besl", "visibility/layouts/scene.besl"]
+	"layouts::scene::Scene"
 );
 layout!(
 	/// The camera occlusion culling set the task stage reads. See [`super::render_pass::occlusion`].
 	OCCLUSION,
-	["visibility/layouts/occlusion.besl"]
+	"layouts::occlusion::Occlusion"
 );
 layout!(
 	/// The per-sink set the material dispatch passes count, sort, and list pixels through.
 	MATERIAL_DISPATCH,
-	["visibility/layouts/material-dispatch.besl"]
+	"layouts::material_dispatch::MaterialDispatch"
 );
 layout!(
 	/// The per-sink set material evaluation reads the visibility buffer and its pixel lists through.
 	VISIBILITY_BUFFER,
-	["visibility/layouts/visibility-buffer.besl"]
+	"layouts::visibility_buffer::VisibilityBuffer"
 );
 layout!(
 	/// The per-sink set of material evaluation: the images it shades into and everything lighting reads.
 	MATERIAL_EVALUATION,
-	["visibility/layouts/material-evaluation.besl"]
+	"layouts::material_evaluation::MaterialEvaluation"
 );
 layout!(
 	/// The screen view constants the depth pyramid and GTAO passes share.
 	GTAO_VIEW,
-	["visibility/layouts/screen-view.besl", "visibility/layouts/gtao-view.besl"]
+	"layouts::gtao_view::GtaoView"
 );
-layout!(GTAO, ["visibility/layouts/gtao.besl"]);
-layout!(GTAO_BLUR, ["visibility/layouts/gtao-blur.besl"]);
-layout!(GTAO_UPSCALE, ["visibility/layouts/gtao-upscale.besl"]);
-layout!(
-	DEPTH_PYRAMID,
-	[
-		"visibility/layouts/receiver-bounds.besl",
-		"visibility/layouts/depth-pyramid.besl"
-	]
-);
-layout!(HIZ_BASE, ["visibility/layouts/hiz-base.besl"]);
-layout!(HIZ_TAIL, ["visibility/layouts/hiz-tail.besl"]);
-layout!(SHADOW_DEPTH_PYRAMID, ["visibility/layouts/shadow-depth-pyramid.besl"]);
+layout!(GTAO, "layouts::gtao::Gtao");
+layout!(GTAO_BLUR, "layouts::gtao_blur::GtaoBlur");
+layout!(GTAO_UPSCALE, "layouts::gtao_upscale::GtaoUpscale");
+layout!(DEPTH_PYRAMID, "layouts::depth_pyramid::DepthPyramid");
+layout!(HIZ_BASE, "layouts::hiz_base::HizBase");
+layout!(HIZ_TAIL, "layouts::hiz_tail::HizTail");
+layout!(SHADOW_DEPTH_PYRAMID, "layouts::shadow_depth_pyramid::ShadowDepthPyramid");
 layout!(
 	/// The set the directional shadow cascade fit rewrites the scene's cascade views through.
 	CASCADE_FIT,
-	[
-		"visibility/layouts/scene-records.besl",
-		"visibility/layouts/receiver-bounds.besl",
-		"visibility/layouts/cascade-fit.besl"
-	]
+	"layouts::cascade_fit::CascadeFit"
 );
-layout!(
-	LIGHT_CLUSTERS,
-	[
-		"visibility/layouts/light-table.besl",
-		"visibility/layouts/light-clusters.besl"
-	]
-);
-layout!(
-	SKINNING,
-	["visibility/layouts/scene-records.besl", "visibility/layouts/skinning.besl"]
-);
+layout!(LIGHT_CLUSTERS, "layouts::light_clusters::LightClusters");
+layout!(SKINNING, "layouts::skinning::Skinning");
 layout!(
 	/// The screen view constants and linear depth pyramid a pass that marches screen-space rays reads.
 	SCREEN_TRACE,
-	["visibility/layouts/screen-view.besl", "visibility/layouts/screen-trace.besl"]
+	"layouts::screen_trace::ScreenTrace"
 );
 layout!(
 	/// The settings the SSGI trace and its temporal filter share.
 	SSGI,
-	["visibility/layouts/ssgi.besl"]
+	"layouts::ssgi::Ssgi"
 );
-layout!(SSGI_TRACE, ["visibility/layouts/ssgi-trace.besl"]);
-layout!(SSGI_TEMPORAL, ["visibility/layouts/ssgi-temporal.besl"]);
-layout!(CONTACT_SHADOWS, ["visibility/layouts/contact-shadows.besl"]);
-layout!(
-	SUN_VISIBILITY,
-	[
-		"visibility/layouts/screen-view.besl",
-		"visibility/layouts/sun-visibility.besl"
-	]
-);
+layout!(SSGI_TRACE, "layouts::ssgi_trace::SsgiTrace");
+layout!(SSGI_TEMPORAL, "layouts::ssgi_temporal::SsgiTemporal");
+layout!(CONTACT_SHADOWS, "layouts::contact_shadows::ContactShadows");
+layout!(SUN_VISIBILITY, "layouts::sun_visibility::SunVisibility");
 layout!(
 	/// The frame-wide surfel GI set: the surfel pool, its grid, the scene's light table, and the settings every surfel
 	/// stage shares.
 	SURFEL_GI,
-	["visibility/layouts/light-table.besl", "visibility/layouts/surfel-gi.besl"]
+	"layouts::surfel_gi::SurfelGi"
 );
 layout!(
 	/// The per-sink set of the surfel resolve, allocation, and reconstruction: their settings, spawn requests, and the
 	/// resolve's images.
 	SURFEL_RESOLVE,
-	["visibility/layouts/surfel-resolve.besl"]
+	"layouts::surfel_resolve::SurfelResolve"
 );
 layout!(
-	/// The per-sink history the surfel resolve reprojects and the history it accumulates. Its helper reads the screen
-	/// trace's normal decoding and the resolve's settings, so those layers come first.
+	/// The per-sink history the surfel resolve reprojects and the history it accumulates.
 	SURFEL_TEMPORAL,
-	[
-		"visibility/layouts/screen-view.besl",
-		"visibility/layouts/screen-trace.besl",
-		"visibility/layouts/surfel-resolve.besl",
-		"visibility/layouts/surfel-temporal.besl"
-	]
+	"layouts::surfel_temporal::SurfelTemporal"
 );
 layout!(
 	/// The per-sink images the surfel spatial pass reads and writes.
 	SURFEL_SPATIAL,
-	["visibility/layouts/surfel-spatial.besl"]
+	"layouts::surfel_spatial::SurfelSpatial"
 );
 layout!(
 	/// The set the frame's rays trace the scene through: the top-level acceleration structure, the flat triangles, and
 	/// the geometry table. See [`super::acceleration_structures`].
 	RAY_TRACED_SCENE,
-	["visibility/layouts/ray-traced-scene.besl"]
+	"layouts::ray_traced_scene::RayTracedScene"
 );
 layout!(
 	/// The hits of the rays of whichever ray-traced technique lights the frame, and the sort that orders them by
 	/// material. See [`super::render_pass::RayHits`].
 	RAY_HITS,
-	["visibility/layouts/ray-hits.besl"]
+	"layouts::ray_hits::RayHits"
 );
 layout!(
 	/// The probe volume as its readers see it: the cascades, the probe records and their seen marks, and the atlases
 	/// they sample.
 	PROBE_VOLUME,
-	["visibility/layouts/probe-volume.besl"]
+	"layouts::probe_volume::ProbeVolume"
 );
 layout!(
 	/// The frame-wide probe GI set the schedule, trace, shade, and update passes write.
 	PROBE_GI,
-	[
-		"visibility/layouts/probe-volume.besl",
-		"visibility/layouts/light-table.besl",
-		"visibility/layouts/probe-gi.besl"
-	]
+	"layouts::probe_gi::ProbeGi"
 );
 layout!(
 	/// The per-sink set of the probe resolve: its settings and output images.
 	PROBE_RESOLVE,
-	["visibility/layouts/probe-resolve.besl"]
+	"layouts::probe_resolve::ProbeResolve"
 );
 
 #[cfg(test)]
@@ -173,7 +140,7 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn host_records_match_the_strides_their_layout_layers_reflect() {
+	fn host_records_match_the_strides_their_layers_reflect() {
 		let stride = |layout: &SetLayout, name: &str| {
 			layout
 				.interface()
@@ -202,7 +169,7 @@ mod tests {
 	}
 
 	#[test]
-	fn every_layout_layer_declares_a_descriptor_set() {
+	fn every_layer_declares_a_descriptor_set() {
 		// Each layout reflects its layer on first use, and panics when the layer does not link or declares no descriptor.
 		for layout in [
 			&SCENE,

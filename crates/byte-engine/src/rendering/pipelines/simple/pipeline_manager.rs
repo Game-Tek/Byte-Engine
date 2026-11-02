@@ -111,7 +111,7 @@ impl PipelineManager {
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
-		let pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/simple/simple.pipeline");
+		let pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/simple/simple.pipeline");
 		let (vertex_positions_buffer, indices_buffer) = {
 			let store = resource_store.lock().unwrap_or_else(|error| error.into_inner());
 			(store.vertex_positions_buffer, store.indices_buffer)

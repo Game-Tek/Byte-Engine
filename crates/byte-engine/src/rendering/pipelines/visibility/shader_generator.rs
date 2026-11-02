@@ -1,7 +1,7 @@
 //! Turns BEMX material graphs into visibility material-evaluation compute shaders, and into the closest-hit shaders
 //! that report a material's surface to surfel GI's rays.
 //!
-//! [`visibility_shader_scope`] declares the buffers, images, structs, and BESL helper functions every visibility
+//! [`visibility_shader_module`] declares the buffers, images, structs, and BESL helper functions every visibility
 //! shader can reference. [`VisibilityShaderGenerator`] writes the statements that compute a graph's surface, see
 //! [`material`], and wraps them with the pixel reconstruction prefix and the lighting suffix from [`sources`], or with
 //! the hit reconstruction prefix and the payload suffix.
@@ -11,6 +11,8 @@ mod material;
 mod sources;
 #[cfg(test)]
 mod tests;
+
+use std::sync::LazyLock;
 
 use besl::parser::{MatchArm, MatchPattern, Node};
 use resource_management::asset::handler::implementations::bema::{
@@ -37,10 +39,10 @@ use super::layout::{
 	material_variable_specialization_id,
 };
 use crate::application::parameters::Parameters;
-use crate::rendering::common_shader_generator::common_shader_scope;
-use crate::rendering::set_layout::layer;
+use crate::rendering::common_shader_generator::common_shader_module;
+use crate::rendering::set_layout::{ENGINE_MODULES, module_source};
 
-// The layout layers spell out their array sizes; these guards catch limit changes.
+// The layer modules spell out their array sizes; these guards catch limit changes.
 const _: () = assert!(
 	MAX_LIGHTS == 1024
 		&& LIGHT_CLUSTER_MASK_WORD_COUNT == 98304
@@ -62,25 +64,82 @@ const _: () = assert!(
 	"Update the light cluster grid in the material evaluation suffix and light-clusters.besl when it changes."
 );
 
-/// The layout layers every material-evaluation shader builds on, lowest first: the scene records, then the scene,
-/// visibility buffer, and material evaluation descriptor sets.
+/// The layers every material-evaluation shader's `main` takes, in set order, as parameter name and layer type: the
+/// scene, visibility buffer, and material evaluation sets.
 ///
 /// The render pass creates those sets from the same layers, see [`super::set_layouts`], so a generated shader and the
 /// sets it is bound with cannot disagree.
-const MATERIAL_EVALUATION_LAYERS: [(&str, &str); 4] = [
-	layer!("visibility/layouts/scene-records.besl"),
-	layer!("visibility/layouts/scene.besl"),
-	layer!("visibility/layouts/visibility-buffer.besl"),
-	layer!("visibility/layouts/material-evaluation.besl"),
+const MATERIAL_EVALUATION_LAYERS: [(&str, &str); 3] = [
+	("scene", "Scene"),
+	("visibility_buffer", "VisibilityBuffer"),
+	("material_evaluation", "MaterialEvaluation"),
 ];
 
-/// The layout layers every material closest-hit shader builds on: the scene records, then the scene and ray-traced
-/// scene sets, which the surfel shade pass lists first so its hit shaders' sets are a prefix of its own.
-pub(super) const MATERIAL_HIT_LAYERS: [(&str, &str); 3] = [
-	layer!("visibility/layouts/scene-records.besl"),
-	layer!("visibility/layouts/scene.besl"),
-	layer!("visibility/layouts/ray-traced-scene.besl"),
+/// The modules a material-evaluation shader brings in: the scene records, and the modules that declare
+/// [`MATERIAL_EVALUATION_LAYERS`].
+const MATERIAL_EVALUATION_MODULES: [&str; 4] = [
+	"::byte_engine::rendering::visibility::layouts::scene_records",
+	"::byte_engine::rendering::visibility::layouts::scene",
+	"::byte_engine::rendering::visibility::layouts::visibility_buffer",
+	"::byte_engine::rendering::visibility::layouts::material_evaluation",
 ];
+
+/// The layers every material closest-hit shader's `main` takes: the scene and ray-traced scene sets, which the surfel
+/// shade pass takes first so its hit shaders' sets are a prefix of its own.
+pub(super) const MATERIAL_HIT_LAYERS: [(&str, &str); 2] = [("scene", "Scene"), ("ray_traced_scene", "RayTracedScene")];
+
+/// The modules a material closest-hit shader brings in: the scene records, and the modules that declare
+/// [`MATERIAL_HIT_LAYERS`].
+pub(super) const MATERIAL_HIT_MODULES: [&str; 3] = [
+	"::byte_engine::rendering::visibility::layouts::scene_records",
+	"::byte_engine::rendering::visibility::layouts::scene",
+	"::byte_engine::rendering::visibility::layouts::ray_traced_scene",
+];
+
+/// The module files of [`MATERIAL_EVALUATION_MODULES`], loaded once from the embedded engine modules.
+static MATERIAL_EVALUATION_MODULE_FILES: LazyLock<Vec<besl::LoadedModule>> =
+	LazyLock::new(|| load_engine_modules(&MATERIAL_EVALUATION_MODULES));
+
+/// The module files of [`MATERIAL_HIT_MODULES`], loaded once from the embedded engine modules.
+pub(super) static MATERIAL_HIT_MODULE_FILES: LazyLock<Vec<besl::LoadedModule>> =
+	LazyLock::new(|| load_engine_modules(&MATERIAL_HIT_MODULES));
+
+/// Loads `modules`, paths from the asset root, and the modules they use from [`ENGINE_MODULES`].
+///
+/// # Panics
+///
+/// Panics when a module doesn't load, which is an error in the engine's own assets.
+fn load_engine_modules(modules: &[&str]) -> Vec<besl::LoadedModule> {
+	let source = modules.iter().map(|module| format!("use {module}::*;")).collect::<String>();
+	let failed = |error: besl::CompilationError| -> ! {
+		panic!(
+			"The visibility layer modules failed to load ({error:?}). The most likely cause is an engine layer module that is missing from `ENGINE_MODULES` or doesn't parse. Add the module to the table, or fix its source."
+		)
+	};
+	besl::ModuleLoader::load(&source, |file| module_source(ENGINE_MODULES, file)).unwrap_or_else(|error| failed(error))
+}
+
+/// Returns a program whose `main` takes `layers` after its own parameters, and which brings in `modules`, whose loaded
+/// files are `files`.
+pub(super) fn layered_program<'a>(
+	mut main: Node<'a>,
+	layers: &[(&'a str, &'a str)],
+	modules: &[&'a str],
+	files: &'a [besl::LoadedModule],
+) -> Result<Node<'a>, String> {
+	if let besl::parser::Nodes::Function { params, .. } = main.node_mut() {
+		params.extend(layers.iter().map(|(name, r#type)| Node::parameter(name, *r#type)));
+	}
+	let mut children: Vec<Node<'a>> = modules.iter().map(|module| Node::r#use(module, true)).collect();
+	children.push(main);
+	let mut root = Node::root_with_children(children);
+	besl::attach_modules(&mut root, files).map_err(|error| {
+		format!(
+			"Failed to attach the visibility layer modules to a generated shader ({error:?}). The most likely cause is a material parameter named like a declaration of the layer modules. Rename the parameter."
+		)
+	})?;
+	Ok(root)
+}
 
 /// The `VisibilityShaderGenerator` struct turns BEMX material graphs into visibility material-evaluation shaders.
 ///
@@ -89,11 +148,11 @@ pub(super) const MATERIAL_HIT_LAYERS: [(&str, &str); 3] = [
 #[derive(Clone)]
 pub struct VisibilityShaderGenerator {
 	// Parsed once at construction so each material build only clones it.
-	common: Node<'static>,
+	common: [Node<'static>; 2],
 	/// The scope of the evaluation shaders the project's material evaluation mode builds. An uber shader's also
 	/// declares the tile's workgroup window and reads indirect diffuse light from it.
-	scope: Node<'static>,
-	hit_scope: Node<'static>,
+	scope: [Node<'static>; 2],
+	hit_scope: [Node<'static>; 2],
 	features: VisibilityFeatures,
 }
 
@@ -110,9 +169,9 @@ impl VisibilityShaderGenerator {
 	/// material dispatch buffer.
 	pub fn with_features(features: VisibilityFeatures) -> Self {
 		Self {
-			common: common_shader_scope(),
-			scope: visibility_shader_scope(features.material_evaluation == MaterialEvaluationMode::Uber),
-			hit_scope: material_hit_scope(),
+			common: common_shader_module(),
+			scope: visibility_shader_module(features.material_evaluation == MaterialEvaluationMode::Uber),
+			hit_scope: material_hit_module(),
 			features,
 		}
 	}
@@ -194,13 +253,13 @@ impl VisibilityShaderGenerator {
 		statements.extend(material_lighting_statements(self.features));
 
 		let main = Node::function("main", vec![Node::parameter("input", "StageInput")], "void", statements);
-		let mut root = besl::stack_layers(Node::root_with_children(vec![main]), MATERIAL_EVALUATION_LAYERS)
-			.map_err(|error| {
-				format!(
-					"Failed to stack the uber material evaluation shader on the visibility layout layers ({error:?}). The most likely cause is a material parameter named like a declaration of the layers."
-				)
-			})?;
-		root.add(vec![self.common.clone(), self.scope.clone()]);
+		let mut root = layered_program(
+			main,
+			&MATERIAL_EVALUATION_LAYERS,
+			&MATERIAL_EVALUATION_MODULES,
+			&MATERIAL_EVALUATION_MODULE_FILES,
+		)?;
+		root.add(self.common.iter().chain(&self.scope).cloned().collect());
 
 		Ok(root)
 	}
@@ -296,13 +355,13 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			params.push(Node::parameter("input", "StageInput"));
 		}
 
-		// The layers declare the descriptor sets and the records they hold, ahead of everything that reads them.
-		let mut root = besl::stack_layers(Node::root_with_children(vec![main]), MATERIAL_EVALUATION_LAYERS)
-			.map_err(|error| {
-				format!(
-					"Failed to stack a material on the visibility layout layers ({error:?}). The most likely cause is a material parameter named like a declaration of the layers."
-				)
-			})?;
+		// The layers `main` takes declare the descriptor sets, and their modules the records the sets hold.
+		let mut root = layered_program(
+			main,
+			&MATERIAL_EVALUATION_LAYERS,
+			&MATERIAL_EVALUATION_MODULES,
+			&MATERIAL_EVALUATION_MODULE_FILES,
+		)?;
 
 		// The suffix branches on `transparent`; each phase's pipeline compiles only its own path. Static value parameters
 		// are specialization constants, dynamic ones are read from `material_parameters`, and texture parameters reach
@@ -319,7 +378,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		}
 
 		root.add(declarations);
-		root.add(vec![self.common.clone(), self.scope.clone()]);
+		root.add(self.common.iter().chain(&self.scope).cloned().collect());
 
 		Ok(Some(root))
 	}
@@ -388,11 +447,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			statements,
 		);
 
-		let mut root = besl::stack_layers(Node::root_with_children(vec![main]), MATERIAL_HIT_LAYERS).map_err(|error| {
-			format!(
-				"Failed to stack a material's hit shader on the ray-traced scene layers ({error:?}). The most likely cause is a material parameter named like a declaration of the layers."
-			)
-		})?;
+		let mut root = layered_program(main, &MATERIAL_HIT_LAYERS, &MATERIAL_HIT_MODULES, &MATERIAL_HIT_MODULE_FILES)?;
 		let declarations = (0u32..)
 			.zip(parameters)
 			.filter_map(|(index, parameter)| match parameter.kind {
@@ -405,7 +460,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			})
 			.collect();
 		root.add(declarations);
-		root.add(vec![self.hit_scope.clone()]);
+		root.add(self.hit_scope.to_vec());
 
 		Ok(Some(root))
 	}
@@ -423,13 +478,14 @@ fn sample_texture_intrinsic<'a>() -> Node<'a> {
 			Node::parameter("uv_derivative_x", "vec2f"),
 			Node::parameter("uv_derivative_y", "vec2f"),
 		],
-		Node::sentence(vec![Node::member_expression("textures")]),
+		Node::sentence(vec![Node::member_expression("texture_array")]),
 		"vec4f",
 	)
 }
 
-/// Builds the scope of the helpers a material's closest-hit shader calls, which read only the scene sets.
-fn material_hit_scope<'a>() -> Node<'a> {
+/// Builds the `VisibilityHit` module of the helpers a material's closest-hit shader calls, which read only the scene
+/// sets, followed by the `use` that lets the shader call them by name.
+fn material_hit_module<'a>() -> [Node<'a>; 2] {
 	let mut children = vec![sample_texture_intrinsic()];
 	children.extend(
 		[
@@ -439,15 +495,16 @@ fn material_hit_scope<'a>() -> Node<'a> {
 		]
 		.map(|(source, name)| parse_besl_function(source, name)),
 	);
-	Node::scope("VisibilityHit", children)
+	[Node::scope("VisibilityHit", children), Node::r#use("VisibilityHit", true)]
 }
 
-/// Builds the scope that gives material programs the helpers of the visibility lighting contract.
+/// Builds the `Visibility` module that gives material programs the helpers of the visibility lighting contract,
+/// followed by the `use` that lets them call the helpers by name.
 ///
-/// The descriptors and records the helpers read come from [`MATERIAL_EVALUATION_LAYERS`], which
-/// [`VisibilityShaderGenerator`] stacks under every material. An uber shader's scope, `tile`, also declares the
+/// The helpers take the layers of [`MATERIAL_EVALUATION_LAYERS`] they read as parameters, and the records they read
+/// come from those layers' modules, which [`VisibilityShaderGenerator`] attaches to every material's program. An uber shader's scope, `tile`, also declares the
 /// tile's workgroup window of indirect diffuse texels and the helpers that read it.
-pub(super) fn visibility_shader_scope<'a>(tile: bool) -> Node<'a> {
+pub(super) fn visibility_shader_module<'a>(tile: bool) -> [Node<'a>; 2] {
 	let structs = vec![
 		Node::r#struct(
 			"TriangleInterpolation",
@@ -550,7 +607,7 @@ pub(super) fn visibility_shader_scope<'a>(tile: bool) -> Node<'a> {
 	children.extend(screen_space_indirect_diffuse_scope(tile));
 	children.push(sample_texture);
 	children.extend(helpers.into_iter().map(|(source, name)| parse_besl_function(source, name)));
-	Node::scope("Visibility", children)
+	[Node::scope("Visibility", children), Node::r#use("Visibility", true)]
 }
 
 /// Declares the screen-space indirect diffuse helpers from [`sources`].

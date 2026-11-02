@@ -10,7 +10,7 @@ use super::image_transform::Configuration;
 pub const ENCODING: Configuration = Configuration {
 	name: "srgb-display",
 	label: "sRGB Display Encoding",
-	pipeline_id: "byte-engine/rendering/srgb-display/encode.pipeline",
+	pipeline_id: "byte_engine/rendering/srgb-display/encode.pipeline",
 	output_name: "sRGB Display Output",
 	requires_float_input: true,
 };

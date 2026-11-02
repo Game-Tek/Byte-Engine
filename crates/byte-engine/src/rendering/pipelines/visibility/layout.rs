@@ -1,6 +1,6 @@
 //! Fixed limits and record layouts shared by every visibility shader and the CPU code that feeds them.
 //!
-//! The descriptor sets the shaders read these records through are declared by the layout layers in
+//! The descriptor sets the shaders read these records through are declared by the layers in the modules under
 //! `assets/rendering/visibility/layouts`; see [`super::set_layouts`]. The layers spell out the array sizes, so the
 //! guards here and in [`super::shader_generator`] fail the build when a limit changes without them.
 

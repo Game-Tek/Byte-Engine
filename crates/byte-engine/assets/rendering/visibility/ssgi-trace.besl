@@ -6,6 +6,11 @@
 // Each 8x8 workgroup first loads the depth of its texels and a two-texel border into workgroup memory, so every
 // texel rebuilds its normal from shared values instead of fetching eight neighbors again.
 
+use ::byte_engine::rendering::visibility::layouts::screen_view::*;
+use ::byte_engine::rendering::visibility::layouts::screen_trace::*;
+use ::byte_engine::rendering::visibility::layouts::ssgi::*;
+use ::byte_engine::rendering::visibility::layouts::ssgi_trace::*;
+
 // One ray's screen-space path. Screen position and 1/z are both linear along a projected line.
 SsgiRay: struct {
 	start_pixel: vec2f,
@@ -99,27 +104,27 @@ clamped_texel: fn (x: f32, y: f32, extent: vec2u) -> vec2u {
 // around `hit_pixel` lie on one connected surface, the ray crossed it. At a silhouette, only a ray just behind the
 // nearest texel hit the object in front. A ray further behind passed the object, and reading light there would
 // return the background seen past the object's edge.
-hit_surface: fn (hit_pixel: vec2f, hit_ray_z: f32, extent: vec2u) -> vec3f {
+hit_surface: fn (screen_trace: ScreenTrace, hit_pixel: vec2f, hit_ray_z: f32, extent: vec2u) -> vec3f {
 	let base_x: f32 = floor(hit_pixel.x);
 	let base_y: f32 = floor(hit_pixel.y);
-	let z00: f32 = fetch(depth_pyramid, clamped_texel(base_x, base_y, extent)).x;
-	let z10: f32 = fetch(depth_pyramid, clamped_texel(base_x + 1.0, base_y, extent)).x;
-	let z01: f32 = fetch(depth_pyramid, clamped_texel(base_x, base_y + 1.0, extent)).x;
+	let z00: f32 = fetch(screen_trace.depth_pyramid, clamped_texel(base_x, base_y, extent)).x;
+	let z10: f32 = fetch(screen_trace.depth_pyramid, clamped_texel(base_x + 1.0, base_y, extent)).x;
+	let z01: f32 = fetch(screen_trace.depth_pyramid, clamped_texel(base_x, base_y + 1.0, extent)).x;
 	let continuous_x: bool = depths_are_continuous(
-		fetch(depth_pyramid, clamped_texel(base_x - 1.0, base_y, extent)).x,
+		fetch(screen_trace.depth_pyramid, clamped_texel(base_x - 1.0, base_y, extent)).x,
 		z00,
 		z10,
-		fetch(depth_pyramid, clamped_texel(base_x + 2.0, base_y, extent)).x
+		fetch(screen_trace.depth_pyramid, clamped_texel(base_x + 2.0, base_y, extent)).x
 	);
 	let continuous_y: bool = depths_are_continuous(
-		fetch(depth_pyramid, clamped_texel(base_x, base_y - 1.0, extent)).x,
+		fetch(screen_trace.depth_pyramid, clamped_texel(base_x, base_y - 1.0, extent)).x,
 		z00,
 		z01,
-		fetch(depth_pyramid, clamped_texel(base_x, base_y + 2.0, extent)).x
+		fetch(screen_trace.depth_pyramid, clamped_texel(base_x, base_y + 2.0, extent)).x
 	);
 	if (continuous_x && continuous_y) {
 		let hit_texel: vec2u = clamped_texel(round(hit_pixel.x), round(hit_pixel.y), extent);
-		return vec3f(f32(hit_texel.x), f32(hit_texel.y), fetch(depth_pyramid, hit_texel).x);
+		return vec3f(f32(hit_texel.x), f32(hit_texel.y), fetch(screen_trace.depth_pyramid, hit_texel).x);
 	}
 
 	// At a silhouette, the object in front is the nearest nonzero texel of the footprint.
@@ -127,7 +132,7 @@ hit_surface: fn (hit_pixel: vec2f, hit_ray_z: f32, extent: vec2u) -> vec3f {
 	let nearest_texel: vec2u = vec2u(0, 0);
 	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
 		let texel: vec2u = clamped_texel(base_x + f32(tap % 2), base_y + f32(tap / 2), extent);
-		let z: f32 = fetch(depth_pyramid, texel).x;
+		let z: f32 = fetch(screen_trace.depth_pyramid, texel).x;
 		if (z != 0.0 && (nearest_z == 0.0 || z < nearest_z)) {
 			nearest_z = z;
 			nearest_texel = texel;
@@ -147,9 +152,9 @@ ray_depth: fn (ray: SsgiRay, fraction: f32) -> f32 {
 
 // Returns how far behind the depth buffer the ray is at `fraction` of its screen path. Negative is in front.
 // Background holds nothing to hit, so the ray is in front of it.
-ray_penetration: fn (ray: SsgiRay, fraction: f32, extent: vec2u) -> f32 {
+ray_penetration: fn (screen_trace: ScreenTrace, ray: SsgiRay, fraction: f32, extent: vec2u) -> f32 {
 	let sample_pixel: vec2f = mix(ray.start_pixel, ray.end_pixel, fraction);
-	let scene_z: f32 = fetch(depth_pyramid, clamped_texel(round(sample_pixel.x), round(sample_pixel.y), extent)).x;
+	let scene_z: f32 = fetch(screen_trace.depth_pyramid, clamped_texel(round(sample_pixel.x), round(sample_pixel.y), extent)).x;
 	if (scene_z == 0.0) {
 		return 0.0 - 1.0;
 	}
@@ -159,9 +164,9 @@ ray_penetration: fn (ray: SsgiRay, fraction: f32, extent: vec2u) -> f32 {
 // Returns `axis_tangent` for a hit texel, which can land anywhere on screen, outside the workgroup's tile. Most hit
 // texels lie inside a plane, where 1/z changes by the same step on both sides and the two adjacent texels give the
 // tangent. Only at a crease or silhouette does it fetch the texels two away to pick the center's own side.
-hit_axis_tangent: fn (pixel: vec2u, axis: vec2f, center_position: vec3f, extent: vec2u) -> vec3f {
-	let positive_z: f32 = neighbor_depth(pixel, axis.x, axis.y, extent);
-	let negative_z: f32 = neighbor_depth(pixel, 0.0 - axis.x, 0.0 - axis.y, extent);
+hit_axis_tangent: fn (screen_trace: ScreenTrace, pixel: vec2u, axis: vec2f, center_position: vec3f, extent: vec2u) -> vec3f {
+	let positive_z: f32 = neighbor_depth(screen_trace, pixel, axis.x, axis.y, extent);
+	let negative_z: f32 = neighbor_depth(screen_trace, pixel, 0.0 - axis.x, 0.0 - axis.y, extent);
 	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
 	let inverse_center_z: f32 = 1.0 / center_position.z;
 	if (
@@ -170,23 +175,25 @@ hit_axis_tangent: fn (pixel: vec2u, axis: vec2f, center_position: vec3f, extent:
 		&& abs(1.0 / positive_z + 1.0 / negative_z - 2.0 * inverse_center_z)
 			<= SSGI_HIT_PLANE_TOLERANCE * inverse_center_z
 	) {
-		return view_position(pixel_f + axis, positive_z) - center_position;
+		return view_position(screen_trace, pixel_f + axis, positive_z) - center_position;
 	}
 	return axis_tangent(
+		screen_trace,
 		pixel_f,
 		axis,
 		center_position,
 		positive_z,
 		negative_z,
-		neighbor_depth(pixel, 2.0 * axis.x, 2.0 * axis.y, extent),
-		neighbor_depth(pixel, 0.0 - 2.0 * axis.x, 0.0 - 2.0 * axis.y, extent)
+		neighbor_depth(screen_trace, pixel, 2.0 * axis.x, 2.0 * axis.y, extent),
+		neighbor_depth(screen_trace, pixel, 0.0 - 2.0 * axis.x, 0.0 - 2.0 * axis.y, extent)
 	);
 }
 
 // Returns `axis_tangent` with neighbor depths read from the workgroup's tile. `stride` steps one texel along `axis`
 // in the tile.
-tile_axis_tangent: fn (center_index: u32, stride: u32, pixel: vec2f, axis: vec2f, center_position: vec3f) -> vec3f {
+tile_axis_tangent: fn (screen_trace: ScreenTrace, center_index: u32, stride: u32, pixel: vec2f, axis: vec2f, center_position: vec3f) -> vec3f {
 	return axis_tangent(
+		screen_trace,
 		pixel,
 		axis,
 		center_position,
@@ -198,10 +205,10 @@ tile_axis_tangent: fn (center_index: u32, stride: u32, pixel: vec2f, axis: vec2f
 }
 
 // Rebuilds the view-space normal of a hit texel from fetched depth, or returns zero when the neighborhood is degenerate.
-hit_normal: fn (pixel: vec2u, extent: vec2u, center_position: vec3f) -> vec3f {
+hit_normal: fn (screen_trace: ScreenTrace, pixel: vec2u, extent: vec2u, center_position: vec3f) -> vec3f {
 	return tangent_normal(
-		hit_axis_tangent(pixel, vec2f(1.0, 0.0), center_position, extent),
-		hit_axis_tangent(pixel, vec2f(0.0, 1.0), center_position, extent),
+		hit_axis_tangent(screen_trace, pixel, vec2f(1.0, 0.0), center_position, extent),
+		hit_axis_tangent(screen_trace, pixel, vec2f(0.0, 1.0), center_position, extent),
 		center_position
 	);
 }
@@ -226,8 +233,8 @@ cosine_hemisphere_direction: fn (normal: vec3f, u1: f32, u2: f32) -> vec3f {
 // The trace finds hits in half-resolution depth, which keeps the nearest of each 2x2 pixel block, while radiance is
 // stored per full-resolution pixel. Next to an object's edge, the pixel under the hit can belong to the background.
 // So the four pixels around the hit are read, and only the one whose stored depth matches the hit supplies light.
-previous_radiance: fn (position: vec3f) -> vec4f {
-	let clip: vec4f = ssgi_parameters.current_view_to_previous_clip * vec4f(position.x, position.y, position.z, 1.0);
+previous_radiance: fn (ssgi_trace: SsgiTrace, ssgi_set: Ssgi, position: vec3f) -> vec4f {
+	let clip: vec4f = ssgi_set.ssgi_parameters.current_view_to_previous_clip * vec4f(position.x, position.y, position.z, 1.0);
 	if (clip.w <= 0.0) {
 		return vec4f(0.0, 0.0, 0.0, 0.0 - 1.0);
 	}
@@ -235,14 +242,14 @@ previous_radiance: fn (position: vec3f) -> vec4f {
 	if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
 		return vec4f(0.0, 0.0, 0.0, 0.0 - 1.0);
 	}
-	let radiance_extent: vec2u = texture_size(previous_radiance_map);
+	let radiance_extent: vec2u = texture_size(ssgi_trace.previous_radiance_map);
 	let texel_position: vec2f = vec2f(uv.x * f32(radiance_extent.x) - 0.5, uv.y * f32(radiance_extent.y) - 0.5);
 	let color: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	let best_error: f32 = SSGI_RADIANCE_DEPTH_TOLERANCE;
 	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
 		let tap_x: f32 = floor(texel_position.x) + f32(tap % 2);
 		let tap_y: f32 = floor(texel_position.y) + f32(tap / 2);
-		let tap_color: vec4f = fetch(previous_radiance_map, clamped_texel(tap_x, tap_y, radiance_extent));
+		let tap_color: vec4f = fetch(ssgi_trace.previous_radiance_map, clamped_texel(tap_x, tap_y, radiance_extent));
 		// The previous camera's clip w is its view depth, the same quantity each pixel stored in alpha.
 		let error: f32 = abs(tap_color.w - clip.w) / clip.w;
 		if (error < best_error) {
@@ -253,7 +260,7 @@ previous_radiance: fn (position: vec3f) -> vec4f {
 	if (color.w == 0.0) {
 		return vec4f(0.0, 0.0, 0.0, 0.0 - 1.0);
 	}
-	let radiance: vec3f = vec3f(color.x, color.y, color.z) * ssgi_parameters.history_exposure_ratio;
+	let radiance: vec3f = vec3f(color.x, color.y, color.z) * ssgi_set.ssgi_parameters.history_exposure_ratio;
 	// One non-finite texel would otherwise spread through every later frame's history.
 	if (is_finite(radiance.x + radiance.y + radiance.z) == false) {
 		return vec4f(0.0, 0.0, 0.0, 1.0);
@@ -266,9 +273,9 @@ previous_radiance: fn (position: vec3f) -> vec4f {
 	return vec4f(radiance.x, radiance.y, radiance.z, 1.0);
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, screen_trace: ScreenTrace, ssgi_set: Ssgi, ssgi_trace: SsgiTrace) -> void {
 	let pixel: vec2u = input.thread_id;
-	let extent: vec2u = image_size(raw_output);
+	let extent: vec2u = image_size(ssgi_trace.raw_output);
 	let local: vec2u = vec2u(input.thread_idx % SSGI_TRACE_WORKGROUP_WIDTH, input.thread_idx / SSGI_TRACE_WORKGROUP_WIDTH);
 	let workgroup_origin: vec2u = pixel - local;
 	// Every invocation helps load the tile, including those past the image edge, before any of them returns.
@@ -278,6 +285,7 @@ main: fn (input: StageInput) -> void {
 		tile_index = tile_index + SSGI_TRACE_WORKGROUP_SIZE
 	) {
 		tile_depth[tile_index] = neighbor_depth(
+			screen_trace,
 			workgroup_origin,
 			f32(tile_index % SSGI_TRACE_TILE_WIDTH) - f32(SSGI_TRACE_TILE_RADIUS),
 			f32(tile_index / SSGI_TRACE_TILE_WIDTH) - f32(SSGI_TRACE_TILE_RADIUS),
@@ -286,33 +294,33 @@ main: fn (input: StageInput) -> void {
 	}
 	workgroup_barrier();
 
-	guard_image_bounds(raw_output, pixel);
+	guard_image_bounds(ssgi_trace.raw_output, pixel);
 	let center_index: u32 = (local.y + SSGI_TRACE_TILE_RADIUS) * SSGI_TRACE_TILE_WIDTH + local.x + SSGI_TRACE_TILE_RADIUS;
 	let center_z: f32 = tile_depth[center_index];
 	if (center_z == 0.0) {
-		write(raw_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
-		write(normal_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+		write(ssgi_trace.raw_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+		write(ssgi_trace.normal_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
 		return;
 	}
 
 	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
-	let center_position: vec3f = view_position(pixel_f, center_z);
+	let center_position: vec3f = view_position(screen_trace, pixel_f, center_z);
 	// The normal comes from the depths in the workgroup's tile. A zero normal marks a degenerate neighborhood; the
 	// denoiser then compares depth only.
 	let normal: vec3f = tangent_normal(
-		tile_axis_tangent(center_index, 1, pixel_f, vec2f(1.0, 0.0), center_position),
-		tile_axis_tangent(center_index, SSGI_TRACE_TILE_WIDTH, pixel_f, vec2f(0.0, 1.0), center_position),
+		tile_axis_tangent(screen_trace, center_index, 1, pixel_f, vec2f(1.0, 0.0), center_position),
+		tile_axis_tangent(screen_trace, center_index, SSGI_TRACE_TILE_WIDTH, pixel_f, vec2f(0.0, 1.0), center_position),
 		center_position
 	);
-	write(normal_output, pixel, encode_stored_normal(normal));
+	write(ssgi_trace.normal_output, pixel, encode_stored_normal(normal));
 	// Without history there is no light to gather, so every ray reports a miss and the environment lights the pixel.
-	if (ssgi_parameters.history_valid == 0 || dot(normal, normal) == 0.0) {
-		write(raw_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+	if (ssgi_set.ssgi_parameters.history_valid == 0 || dot(normal, normal) == 0.0) {
+		write(ssgi_trace.raw_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
 		return;
 	}
 
 	// Jimenez's diagonal scrolling animates IGN; Hilbert conversion supplies the two hemisphere coordinates.
-	let frame_offset: f32 = f32(ssgi_parameters.frame_index % 64) * 5.588238;
+	let frame_offset: f32 = f32(ssgi_set.ssgi_parameters.frame_index % 64) * 5.588238;
 	let noise_pixel: vec2f = pixel_f + vec2f(frame_offset, frame_offset);
 	let hemisphere_sample: vec2f = interleaved_gradient_noise_2d(noise_pixel);
 	let jitter: f32 = interleaved_gradient_noise(vec2f(noise_pixel.x + noise_pixel.y, noise_pixel.x * 2.0 + 17.0));
@@ -326,8 +334,8 @@ main: fn (input: StageInput) -> void {
 		ray_length = (minimum_z - origin.z) / direction.z;
 	}
 	let end: vec3f = origin + direction * ray_length;
-	let start_pixel: vec2f = project_to_pixel(origin);
-	let end_pixel: vec2f = project_to_pixel(end);
+	let start_pixel: vec2f = project_to_pixel(screen_trace, origin);
+	let end_pixel: vec2f = project_to_pixel(screen_trace, end);
 	let inverse_end_z: f32 = 1.0 / end.z;
 	let screen_length: f32 = length(end_pixel - start_pixel);
 	// Shorten long rays on screen, not in the world. Screen position and 1/z are both linear along the projected
@@ -350,7 +358,7 @@ main: fn (input: StageInput) -> void {
 		if (sample_pixel.x < 0.0 - 0.5 || sample_pixel.y < 0.0 - 0.5 || sample_pixel.x >= f32(extent.x) - 0.5 || sample_pixel.y >= f32(extent.y) - 0.5) {
 			break;
 		}
-		if (ray_penetration(ray, fraction, extent) <= 0.0) {
+		if (ray_penetration(screen_trace, ray, fraction, extent) <= 0.0) {
 			previous_fraction = fraction;
 			previous_in_front = true;
 			continue;
@@ -367,28 +375,28 @@ main: fn (input: StageInput) -> void {
 		let behind: f32 = fraction;
 		for (let refinement: u32 = 0; refinement < SSGI_REFINEMENT_STEPS; refinement = refinement + 1) {
 			let middle: f32 = 0.5 * (front + behind);
-			if (ray_penetration(ray, middle, extent) > 0.0) {
+			if (ray_penetration(screen_trace, ray, middle, extent) > 0.0) {
 				behind = middle;
 			} else {
 				front = middle;
 			}
 		}
-		let surface: vec3f = hit_surface(mix(ray.start_pixel, ray.end_pixel, behind), ray_depth(ray, behind), extent);
-		let surface_position: vec3f = view_position(vec2f(surface.x, surface.y), surface.z);
+		let surface: vec3f = hit_surface(screen_trace, mix(ray.start_pixel, ray.end_pixel, behind), ray_depth(ray, behind), extent);
+		let surface_position: vec3f = view_position(screen_trace, vec2f(surface.x, surface.y), surface.z);
 		// Rays only hit surfaces that face them. This rejects a surface occluding itself: a ray that leaves a floor
 		// almost parallel to it can land behind the next floor texel, whose depth is quantized.
 		let faces_ray: bool = surface.z != 0.0
-			&& dot(hit_normal(vec2u(u32(surface.x), u32(surface.y)), extent, surface_position), direction)
+			&& dot(hit_normal(screen_trace, vec2u(u32(surface.x), u32(surface.y)), extent, surface_position), direction)
 				<= 0.0 - SSGI_MINIMUM_HIT_FACING;
 		if (faces_ray) {
-			let radiance: vec4f = previous_radiance(surface_position);
+			let radiance: vec4f = previous_radiance(ssgi_trace, ssgi_set, surface_position);
 			if (radiance.w < 0.0) {
 				break;
 			}
-			write(raw_output, pixel, radiance);
+			write(ssgi_trace.raw_output, pixel, radiance);
 			return;
 		}
 	}
 
-	write(raw_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+	write(ssgi_trace.raw_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
 }

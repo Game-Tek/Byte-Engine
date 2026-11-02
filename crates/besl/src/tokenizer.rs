@@ -14,6 +14,9 @@ pub fn tokenize(source: &str) -> Vec<&str> {
 			c.is_alphanumeric() || c == '_' || c == '.' && token.chars().all(|character| character.is_ascii_digit())
 		} else if last == '.' {
 			c.is_numeric()
+		} else if last == ':' && token.len() > 1 {
+			// Only a path token ends in `::`, and the name or `*` after it completes the path.
+			c.is_alphabetic() || c == '_' || c == '*'
 		} else {
 			matches!(
 				(last, c),
@@ -32,6 +35,17 @@ pub fn tokenize(source: &str) -> Vec<&str> {
 	let mut token_start: Option<usize> = None;
 
 	while let Some((idx, c)) = chars.peek().copied() {
+		// A `::` between a name and the next name or `*` joins them into one path token, such as `noise::hash` or
+		// `noise::*`, so the parser reads a path wherever it reads a name.
+		let joins_path = c == ':'
+			&& token_start.is_some_and(|start| is_name(&source[start..idx]))
+			&& source[idx..].starts_with("::")
+			&& source[idx + 2..].starts_with(|next: char| next.is_alphabetic() || next == '_' || next == '*');
+		if joins_path {
+			chars.next();
+			chars.next();
+			continue;
+		}
 		let comment = c == '/' && chars.clone().nth(1).is_some_and(|(_, next)| next == '/');
 		// Whitespace, a comment, or a character that cannot extend the current token ends that token.
 		if let Some(start) = token_start
@@ -39,6 +53,16 @@ pub fn tokenize(source: &str) -> Vec<&str> {
 		{
 			tokens.push(&source[start..idx]);
 			token_start = None;
+		}
+		// A `::` that starts a token begins a path from the asset root, such as `::byte_engine::color`.
+		if token_start.is_none()
+			&& source[idx..].starts_with("::")
+			&& source[idx + 2..].starts_with(|next: char| next.is_alphabetic() || next == '_')
+		{
+			token_start = Some(idx);
+			chars.next();
+			chars.next();
+			continue;
 		}
 		if comment {
 			// Line comments are discarded before punctuation tokenization so their contents remain entirely opaque.
@@ -56,6 +80,12 @@ pub fn tokenize(source: &str) -> Vec<&str> {
 	}
 
 	tokens
+}
+
+/// Reports whether `token` is a name or a path, including one from the asset root, that a `::` can extend.
+fn is_name(token: &str) -> bool {
+	let token = token.strip_prefix("::").unwrap_or(token);
+	token.starts_with(|c: char| c.is_alphabetic() || c == '_') && token.ends_with(|c: char| c.is_alphanumeric() || c == '_')
 }
 
 #[cfg(test)]
@@ -103,6 +133,27 @@ mod tests {
 			"main: fn () -> void { value = 1;// punctuation: } / *\nvalue = value + 2; } // eof comment",
 			"main : fn ( ) -> void { value = 1 ; value = value + 2 ; }",
 		);
+	}
+
+	#[test]
+	fn paths_are_one_token() {
+		assert_tokens(
+			"use noise::*; x: lighting::brdf::Sample = crate::f(a :: b);",
+			"use noise::* ; x : lighting::brdf::Sample = crate::f ( a : : b ) ;",
+		);
+	}
+
+	#[test]
+	fn paths_from_the_asset_root_are_one_token() {
+		assert_tokens(
+			"use ::byte_engine::color::*; main: ::a::Sig { }",
+			"use ::byte_engine::color::* ; main : ::a::Sig { }",
+		);
+	}
+
+	#[test]
+	fn declaration_colon_stays_its_own_token() {
+		assert_tokens("x:u32; noise: mod;", "x : u32 ; noise : mod ;");
 	}
 
 	#[test]

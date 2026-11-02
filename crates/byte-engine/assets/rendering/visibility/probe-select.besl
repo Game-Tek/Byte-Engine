@@ -5,15 +5,19 @@
 // to ask. The pass clears the counts for the next frame's schedule and moves the state counts to their `last_` totals,
 // which the host reads back. Next, the gather pass lists the probes.
 
-main: fn (input: StageInput) -> void {
-	let remaining: u32 = probe_gi_parameters.probe_budget;
+use ::byte_engine::rendering::visibility::layouts::probe_volume::*;
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::probe_gi::*;
+
+main: fn (input: StageInput, probe_volume: ProbeVolume, probe_gi_set: ProbeGi) -> void {
+	let remaining: u32 = probe_gi_set.probe_gi_parameters.probe_budget;
 	let threshold: u32 = 0;
 	// Without a threshold, the budget covers every probe, and the lowest bucket takes them all.
 	let quota: u32 = PROBE_COUNT;
 	let found: bool = false;
 	for (let index: u32 = 0; index < PROBE_PRIORITY_BUCKETS; index = index + 1) {
 		let bucket: u32 = PROBE_PRIORITY_BUCKETS - 1 - index;
-		let count: u32 = atomic_exchange(probe_schedule.histogram[bucket], 0);
+		let count: u32 = atomic_exchange(probe_gi_set.probe_schedule.histogram[bucket], 0);
 		if (!found) {
 			if (count >= remaining) {
 				threshold = bucket;
@@ -24,12 +28,12 @@ main: fn (input: StageInput) -> void {
 			}
 		}
 	}
-	probe_schedule.threshold = threshold;
-	probe_schedule.quota = quota;
-	atomic_store(probe_schedule.quota_taken, 0);
-	probe_schedule.last_count = atomic_exchange(probe_schedule.count, 0);
-	probe_schedule.last_active = atomic_exchange(probe_schedule.active, 0);
-	probe_schedule.last_idle = atomic_exchange(probe_schedule.idle, 0);
-	probe_schedule.last_buried = atomic_exchange(probe_schedule.buried, 0);
-	probe_schedule.last_unset = atomic_exchange(probe_schedule.unset, 0);
+	probe_gi_set.probe_schedule.threshold = threshold;
+	probe_gi_set.probe_schedule.quota = quota;
+	atomic_store(probe_gi_set.probe_schedule.quota_taken, 0);
+	probe_gi_set.probe_schedule.last_count = atomic_exchange(probe_gi_set.probe_schedule.count, 0);
+	probe_gi_set.probe_schedule.last_active = atomic_exchange(probe_gi_set.probe_schedule.active, 0);
+	probe_gi_set.probe_schedule.last_idle = atomic_exchange(probe_gi_set.probe_schedule.idle, 0);
+	probe_gi_set.probe_schedule.last_buried = atomic_exchange(probe_gi_set.probe_schedule.buried, 0);
+	probe_gi_set.probe_schedule.last_unset = atomic_exchange(probe_gi_set.probe_schedule.unset, 0);
 }

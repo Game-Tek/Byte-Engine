@@ -13,9 +13,9 @@
 // `trace_screen_space_reflection`, this made material evaluation 2.2 % faster on the Sponza hall view, and fetching the
 // texel at converted integer coordinates instead was 3 % slower than sampling it (2026-10-06).
 pub(crate) const REFLECTION_RAY_IS_BEHIND_SOURCE: &str = r#"
-reflection_ray_is_behind: fn (ray: ReflectionRay, fraction: f32) -> bool {
+reflection_ray_is_behind: fn (material_evaluation: MaterialEvaluation, ray: ReflectionRay, fraction: f32) -> bool {
 	// Mip zero of the pyramid holds half-resolution positive linear depth.
-	let scene_z: f32 = texture_lod(depth_pyramid, mix(ray.start_uv, ray.end_uv, fraction), 0.0).x;
+	let scene_z: f32 = texture_lod(material_evaluation.depth_pyramid, mix(ray.start_uv, ray.end_uv, fraction), 0.0).x;
 	return scene_z != 0.0 && scene_z * mix(ray.inverse_start_z, ray.inverse_end_z, fraction) < 1.0;
 }
 "#;
@@ -31,13 +31,13 @@ reflection_world_fraction: fn (screen_fraction: f32, start_z: f32, end_z: f32) -
 // Returns how far a pixel of the previous frame lies from a hit at view depth `hit_depth`, as a fraction of that depth,
 // from the pixel's reversed device depth. The background, at zero, is never close.
 pub(crate) const REFLECTION_HISTORY_DEPTH_ERROR_SOURCE: &str = r#"
-reflection_history_depth_error: fn (device_depth: f32, hit_depth: f32) -> f32 {
+reflection_history_depth_error: fn (material_evaluation: MaterialEvaluation, device_depth: f32, hit_depth: f32) -> f32 {
 	if (device_depth == 0.0) {
 		return 1.0;
 	}
 	// The previous camera's clip w is its view depth, which the pixel's device depth unprojects to.
-	let pixel_depth: f32 = reflection_parameters.previous_depth_unproject_numerator
-		/ (device_depth + reflection_parameters.previous_depth_unproject_denominator_offset);
+	let pixel_depth: f32 = material_evaluation.reflection_parameters.previous_depth_unproject_numerator
+		/ (device_depth + material_evaluation.reflection_parameters.previous_depth_unproject_denominator_offset);
 	return abs(pixel_depth - hit_depth) / hit_depth;
 }
 "#;
@@ -50,9 +50,9 @@ reflection_history_depth_error: fn (device_depth: f32, hit_depth: f32) -> f32 {
 // So the four pixels around the hit are read, and only the one whose previous depth matches the hit supplies light.
 // All eight reads are issued before any is compared, so they overlap.
 pub(crate) const REFLECTION_HISTORY_RADIANCE_SOURCE: &str = r#"
-reflection_history_radiance: fn (world_position: vec3f) -> vec4f {
+reflection_history_radiance: fn (material_evaluation: MaterialEvaluation, world_position: vec3f) -> vec4f {
 	let miss: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
-	let clip: vec4f = reflection_parameters.world_to_previous_clip * vec4f(
+	let clip: vec4f = material_evaluation.reflection_parameters.world_to_previous_clip * vec4f(
 		world_position.x,
 		world_position.y,
 		world_position.z,
@@ -65,42 +65,42 @@ reflection_history_radiance: fn (world_position: vec3f) -> vec4f {
 	if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
 		return miss;
 	}
-	let lit_extent: vec2u = texture_size(previous_lit);
+	let lit_extent: vec2u = texture_size(material_evaluation.previous_lit);
 	let base_x: f32 = floor(uv.x * f32(lit_extent.x) - 0.5);
 	let base_y: f32 = floor(uv.y * f32(lit_extent.y) - 0.5);
 	let x0: u32 = u32(clamp(base_x, 0.0, f32(lit_extent.x - 1)));
 	let x1: u32 = u32(clamp(base_x + 1.0, 0.0, f32(lit_extent.x - 1)));
 	let y0: u32 = u32(clamp(base_y, 0.0, f32(lit_extent.y - 1)));
 	let y1: u32 = u32(clamp(base_y + 1.0, 0.0, f32(lit_extent.y - 1)));
-	let depth_0: f32 = fetch(previous_depth, vec2u(x0, y0)).x;
-	let depth_1: f32 = fetch(previous_depth, vec2u(x1, y0)).x;
-	let depth_2: f32 = fetch(previous_depth, vec2u(x0, y1)).x;
-	let depth_3: f32 = fetch(previous_depth, vec2u(x1, y1)).x;
-	let color_0: vec4f = fetch(previous_lit, vec2u(x0, y0));
-	let color_1: vec4f = fetch(previous_lit, vec2u(x1, y0));
-	let color_2: vec4f = fetch(previous_lit, vec2u(x0, y1));
-	let color_3: vec4f = fetch(previous_lit, vec2u(x1, y1));
+	let depth_0: f32 = fetch(material_evaluation.previous_depth, vec2u(x0, y0)).x;
+	let depth_1: f32 = fetch(material_evaluation.previous_depth, vec2u(x1, y0)).x;
+	let depth_2: f32 = fetch(material_evaluation.previous_depth, vec2u(x0, y1)).x;
+	let depth_3: f32 = fetch(material_evaluation.previous_depth, vec2u(x1, y1)).x;
+	let color_0: vec4f = fetch(material_evaluation.previous_lit, vec2u(x0, y0));
+	let color_1: vec4f = fetch(material_evaluation.previous_lit, vec2u(x1, y0));
+	let color_2: vec4f = fetch(material_evaluation.previous_lit, vec2u(x0, y1));
+	let color_3: vec4f = fetch(material_evaluation.previous_lit, vec2u(x1, y1));
 	// A pixel belongs to the hit only when its view depth is within this fraction of the hit's depth. The first of
 	// equally close pixels wins, and an error still at the tolerance means none did.
 	let tolerance: f32 = 0.05;
 	let best_error: f32 = tolerance;
 	let color: vec4f = miss;
-	let error_0: f32 = reflection_history_depth_error(depth_0, clip.w);
+	let error_0: f32 = reflection_history_depth_error(material_evaluation, depth_0, clip.w);
 	if (error_0 < best_error) {
 		best_error = error_0;
 		color = color_0;
 	}
-	let error_1: f32 = reflection_history_depth_error(depth_1, clip.w);
+	let error_1: f32 = reflection_history_depth_error(material_evaluation, depth_1, clip.w);
 	if (error_1 < best_error) {
 		best_error = error_1;
 		color = color_1;
 	}
-	let error_2: f32 = reflection_history_depth_error(depth_2, clip.w);
+	let error_2: f32 = reflection_history_depth_error(material_evaluation, depth_2, clip.w);
 	if (error_2 < best_error) {
 		best_error = error_2;
 		color = color_2;
 	}
-	let error_3: f32 = reflection_history_depth_error(depth_3, clip.w);
+	let error_3: f32 = reflection_history_depth_error(material_evaluation, depth_3, clip.w);
 	if (error_3 < best_error) {
 		best_error = error_3;
 		color = color_3;
@@ -109,7 +109,7 @@ reflection_history_radiance: fn (world_position: vec3f) -> vec4f {
 		return miss;
 	}
 	// The lit image holds light already multiplied by last frame's exposure, which keeps highlights in range.
-	let radiance: vec3f = vec3f(color.x, color.y, color.z) / reflection_parameters.previous_exposure;
+	let radiance: vec3f = vec3f(color.x, color.y, color.z) / material_evaluation.reflection_parameters.previous_exposure;
 	// One non-finite texel would otherwise spread through every later frame's reflections.
 	if (is_finite(radiance.x + radiance.y + radiance.z) == false) {
 		return miss;
@@ -125,13 +125,14 @@ reflection_history_radiance: fn (world_position: vec3f) -> vec4f {
 // direction. `view_projection` is the camera that drew this frame's depth.
 pub(crate) const TRACE_SCREEN_SPACE_REFLECTION_SOURCE: &str = r#"
 trace_screen_space_reflection: fn (
+	material_evaluation: MaterialEvaluation,
 	position: vec3f,
 	normal: vec3f,
 	direction: vec3f,
 	view_projection: mat4f
 ) -> vec4f {
 	let miss: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
-	if (reflection_parameters.history_valid == 0) {
+	if (material_evaluation.reflection_parameters.history_valid == 0) {
 		return miss;
 	}
 	// View depth changes along the ray at this rate per world unit. A ray heading toward the camera can only reach
@@ -212,7 +213,7 @@ trace_screen_space_reflection: fn (
 		let first_fraction: f32 = f32(next_step + 1) / f32(step_count);
 		for (let lane: u32 = 0; lane < 8; lane = lane + 1) {
 			let lane_fraction: f32 = min(first_fraction + f32(lane) / f32(step_count), 1.0);
-			behind_steps = behind_steps | (if (reflection_ray_is_behind(ray, lane_fraction)) { 1 << lane } else { 0 });
+			behind_steps = behind_steps | (if (reflection_ray_is_behind(material_evaluation, ray, lane_fraction)) { 1 << lane } else { 0 });
 		}
 		// The steps are judged in order with bit operations instead of a loop over them. A crossing is a step behind the
 		// depth buffer after the ray was seen in front of it: in an earlier batch, or at an earlier step of this one. A
@@ -251,7 +252,7 @@ trace_screen_space_reflection: fn (
 		let behind: f32 = fraction;
 		for (let refinement: u32 = 0; refinement < 5; refinement = refinement + 1) {
 			let middle: f32 = 0.5 * (front + behind);
-			if (reflection_ray_is_behind(ray, middle)) {
+			if (reflection_ray_is_behind(material_evaluation, ray, middle)) {
 				behind = middle;
 				continue;
 			}
@@ -260,13 +261,13 @@ trace_screen_space_reflection: fn (
 		// The depth buffer stores only front faces. A ray further behind a surface than this passed behind the
 		// object instead of hitting it, and keeps marching.
 		let hit_uv: vec2f = mix(ray.start_uv, ray.end_uv, behind);
-		let scene_z: f32 = texture_lod(depth_pyramid, hit_uv, 0.0).x;
+		let scene_z: f32 = texture_lod(material_evaluation.depth_pyramid, hit_uv, 0.0).x;
 		if (1.0 / mix(ray.inverse_start_z, ray.inverse_end_z, behind) - scene_z >= 0.05 + 0.02 * scene_z) {
 			continue;
 		}
 
 		let hit_distance: f32 = ray_length * reflection_world_fraction(behind, start_clip.w, end_z);
-		let radiance: vec4f = reflection_history_radiance(origin + direction * hit_distance);
+		let radiance: vec4f = reflection_history_radiance(material_evaluation, origin + direction * hit_distance);
 		if (radiance.w == 0.0) {
 			return miss;
 		}

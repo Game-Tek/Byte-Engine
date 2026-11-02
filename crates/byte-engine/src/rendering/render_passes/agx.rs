@@ -4,7 +4,7 @@ use super::image_transform::Configuration;
 pub const TONE_MAPPING: Configuration = Configuration {
 	name: "agx",
 	label: "AgX Tonemap",
-	pipeline_id: "byte-engine/rendering/agx/tone-mapping.pipeline",
+	pipeline_id: "byte_engine/rendering/agx/tone-mapping.pipeline",
 	output_name: "AGX Tonemap Output",
 	requires_float_input: false,
 };

@@ -12,7 +12,7 @@ Keep source assets separate from baked runtime resources:
 ```text
 my-app/
   assets/       # authored source files and linked engine assets
-    byte-engine -> ../path/to/byte-engine/assets
+    byte_engine -> ../path/to/byte-engine/assets
   resources/    # BELD output used by release builds
   src/
 ```
@@ -21,16 +21,16 @@ Keep engine-owned shaders in the engine crate. Expose them in your application's
 asset namespace with a directory symlink:
 
 ```bash
-ln -s ../../Byte-Engine/crates/byte-engine/assets assets/byte-engine
+ln -s ../../Byte-Engine/crates/byte-engine/assets assets/byte_engine
 ```
 
-The logical symlink path is retained in resource IDs, so `assets/byte-engine/rendering/sky.besl` becomes `byte-engine/rendering/sky.besl`. BELD follows linked files and directories and detects directory cycles. Broken or inaccessible links fail the bake instead of silently producing an incomplete release resource set.
+The logical symlink path is retained in resource IDs, so `assets/byte_engine/rendering/sky.besl` becomes `byte_engine/rendering/sky.besl`. BELD follows linked files and directories and detects directory cycles. Broken or inaccessible links fail the bake instead of silently producing an incomplete release resource set.
 
 The engine crate package includes its `assets/` directory. For a registry dependency, vendor the resolved crate source and point the same application symlink at that vendored `assets/` directory. This keeps the link target stable instead of depending on Cargo's registry cache layout:
 
 ```bash
 cargo vendor --locked vendor
-ln -s ../vendor/byte-engine/assets assets/byte-engine
+ln -s ../vendor/byte-engine/assets assets/byte_engine
 ```
 
 Commit both the vendor directory and symlink, or recreate them in the same

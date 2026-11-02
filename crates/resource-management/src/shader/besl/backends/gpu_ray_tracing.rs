@@ -29,19 +29,19 @@ use crate::shader::generator::ShaderGenerationSettings;
 /// second row's only instances with bit 1. Each ray shades what it finds through `invoke`, which leaves a miss's
 /// payload as it is, and adds the launch width to its distance when a surface lies within 3.5 units ahead of it.
 const RAY_GENERATION: &str = r#"
-	main: fn (input: StageInput) -> void {
+	main: fn (input: StageInput, scene: Scene, materials: Materials, constants: Constants) -> void {
 		let item: u32 = input.launch_index.x;
 		let mask: u32 = 255;
 		if (item >= 4) {
 			mask = 2;
 		}
-		let origin: vec3f = vec3f(f32(item % 4) * push_constant.scale, 0.0, 0.0);
-		let hit: Hit = intersect(scene, mask, origin, vec3f(0.0, 0.0, 2.0), 0.0, 100.0);
+		let origin: vec3f = vec3f(f32(item % 4) * constants.push_constant.scale, 0.0, 0.0);
+		let hit: Hit = intersect(scene.scene, mask, origin, vec3f(0.0, 0.0, 2.0), 0.0, 100.0);
 		let surface: SurfaceHit = invoke(hit, SurfaceHit(vec3f(0.25, 0.5, 0.75), -1.0));
-		if (trace_occlusion(scene, mask, origin, vec3f(0.0, 0.0, 1.0), 0.0, 3.5)) {
+		if (trace_occlusion(scene.scene, mask, origin, vec3f(0.0, 0.0, 1.0), 0.0, 3.5)) {
 			surface.distance = surface.distance + f32(input.launch_size.x);
 		}
-		surfaces[item] = surface;
+		scene.surfaces[item] = surface;
 	}
 "#;
 

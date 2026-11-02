@@ -99,7 +99,7 @@ SOFTWARE.
 
 `crates/byte-engine/assets/rendering/color-grading/aces2.besl`,
 `scripts/generate-aces2-tables.py`, and the tables that script generates in
-`crates/byte-engine/assets/rendering/layouts/aces2-rec709-100nit.besl` port the
+`crates/byte-engine/assets/rendering/layouts/aces2_rec709_100nit.besl` port the
 forward ACES 2.0 output transform from the Academy's reference implementation in
 [aces-core](https://github.com/aces-aswf/aces-core)
 (`lib/Lib.Academy.OutputTransform.ctl` and `lib/Lib.Academy.Tonescale.ctl`),
@@ -163,13 +163,13 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## Surfel global illumination
 
 The surfel GI shaders, `crates/byte-engine/assets/rendering/visibility/surfel-*.besl`
-other than the temporal and spatial passes, and their layout layers,
-`crates/byte-engine/assets/rendering/visibility/layouts/surfel-gi.besl` and
-`crates/byte-engine/assets/rendering/visibility/layouts/surfel-resolve.besl`,
+other than the temporal and spatial passes, and their layers,
+`crates/byte-engine/assets/rendering/visibility/layouts/surfel_gi.besl` and
+`crates/byte-engine/assets/rendering/visibility/layouts/surfel_resolve.besl`,
 adapt the surfel lifecycle, grid, resolve, ray tracing, ray guiding, radial
 depth occlusion, and multiscale mean estimator of
 [webgiya by Jure Triglav](https://github.com/jure/webgiya). The
-copyright line is also retained in `layouts/surfel-gi.besl`.
+copyright line is also retained in `layouts/surfel_gi.besl`.
 
 MIT License
 
@@ -196,7 +196,7 @@ SOFTWARE.
 ## Surfel GI reconstruction and hit spawning
 
 The surfel GI history blend and spatial pass,
-`crates/byte-engine/assets/rendering/visibility/layouts/surfel-temporal.besl` and
+`crates/byte-engine/assets/rendering/visibility/layouts/surfel_temporal.besl` and
 `crates/byte-engine/assets/rendering/visibility/surfel-spatial.besl`, adapt the
 temporal and spatial filters of the ray-traced diffuse GI in
 [kajiya by Tomasz Stachowiak and Embark Studios](https://github.com/EmbarkStudios/kajiya):
@@ -236,7 +236,7 @@ SOFTWARE.
 
 ## cinegrain2 film grain model
 
-The film grain model in `crates/byte-engine/assets/rendering/film-grain/` and
+The film grain model in `crates/byte-engine/assets/rendering/film_grain/` and
 `crates/byte-engine/src/rendering/render_passes/film_grain.rs` is adapted from
 [cinegrain2](https://github.com/mr-berndt/cinegrain2) by mr-berndt, as published
 under the MIT license up to commit `fd9e8f3` (12 October 2026). Later versions

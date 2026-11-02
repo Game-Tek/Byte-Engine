@@ -329,7 +329,7 @@ impl ColorCorrectionPass {
 			render_pass_builder,
 			simple_tile::Descriptor::new(
 				"Color Correction",
-				"byte-engine/rendering/color-correction/correct.pipeline",
+				"byte_engine/rendering/color-correction/correct.pipeline",
 				&[output.format()],
 			),
 		);

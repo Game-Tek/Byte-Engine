@@ -7,6 +7,8 @@ GTAOParameters: struct {
 	radial_rays: u32,
 }
 
-gtao_parameters: descriptor<{ type: GTAOParameters, binding: 1, access: read, memory: constant }>;
-depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
-ao_output: descriptor<{ type: StorageImage<r8>, binding: 1034, access: write }>;
+Gtao: layer {
+	gtao_parameters: descriptor<{ type: GTAOParameters, binding: 1, access: read, memory: constant }>;
+	depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
+	ao_output: descriptor<{ type: StorageImage<r8>, binding: 1034, access: write }>;
+}

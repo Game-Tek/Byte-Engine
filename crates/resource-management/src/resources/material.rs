@@ -422,15 +422,15 @@ impl From<crate::shader::besl::evaluation::BindingUsage> for Binding {
 }
 
 /// The `SetInterface` struct preserves one descriptor set layout a shader declares, so the renderer can create a
-/// descriptor set for it, bind resources to it by name, and share it between every shader that lists the same
-/// layout layer.
+/// descriptor set for it, bind resources to it by name, and share it between every shader whose `main` takes the same
+/// layer.
 ///
 /// `bindings` holds the whole layout, because the native set must look the same to every shader that shares it.
 /// `used` records which bindings this shader can reach; only those are its resource accesses, and only those need a
 /// resource before the shader runs. Compare layouts with [`Self::identity`].
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct SetInterface {
-	/// The layout layer that declares the set, or the shader's own name for the descriptors the shader declares
+	/// The path of the layer that declares the set, or the shader's own name for the descriptors the shader declares
 	/// itself. Diagnostics name the set with it.
 	pub layout: String,
 	/// Every binding of the layout, ordered by slot.
@@ -540,8 +540,8 @@ fn layout_identity(bindings: &[Binding]) -> u64 {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct ShaderInterface {
 	pub workgroup_size: Option<(u32, u32, u32)>,
-	/// The descriptor set layouts the shader declares: one per layout layer it lists that declares descriptors, in
-	/// listing order, then its own.
+	/// The descriptor set layouts the shader declares: one per layer with descriptors its `main` takes, in parameter
+	/// order, then its own.
 	pub sets: Vec<SetInterface>,
 	/// The payload the shader passes through ray tracing: the one a closest-hit shader takes, or the one a ray
 	/// generation shader's `invoke` calls pass. `None` for every other shader. Ray tracing pipeline assembly requires

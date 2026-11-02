@@ -66,17 +66,17 @@ const SURFEL_CELL_COUNT: u32 = 262_144;
 /// A cascade-zero cell's side in meters. The grid moves in whole cells of it.
 const SURFEL_CELL_SIZE: f32 = 0.2;
 /// The most cells the grid lists one surfel in, so the cell lists keep this many entries for each pool slot. Matches
-/// `SURFEL_LISTING_LIMIT` in `layouts/surfel-gi.besl`.
+/// `SURFEL_LISTING_LIMIT` in `layouts/surfel_gi.besl`.
 const SURFEL_LISTING_LIMIT: u32 = 32;
 /// The threads that walk one surfel's cells in the count pass and the scatter. Matches `SURFEL_GRID_LANES` in
-/// `layouts/surfel-gi.besl`.
+/// `layouts/surfel_gi.besl`.
 const SURFEL_GRID_LANES: u32 = 4;
 /// The elements one workgroup of the scan covers, and its threads.
 const SURFEL_SCAN_GROUP_ELEMENTS: u32 = 1_024;
 const SURFEL_SCAN_WORKGROUP_SIZE: u32 = 256;
 /// The threads of one trace workgroup.
 const SURFEL_TRACE_WORKGROUP_SIZE: u32 = 64;
-/// The most spawn requests rays' hits make in a frame. Matches `SURFEL_MAX_HIT_SPAWNS` in `layouts/surfel-gi.besl`.
+/// The most spawn requests rays' hits make in a frame. Matches `SURFEL_MAX_HIT_SPAWNS` in `layouts/surfel_gi.besl`.
 const SURFEL_MAX_HIT_SPAWNS: u32 = 64;
 /// The frames between two support checks of one surfel, and so the pool slots one thread of the check covers. Matches
 /// `SURFEL_VALIDATE_PERIOD` in `surfel-validate.besl`.
@@ -139,7 +139,7 @@ pub(crate) fn create_surfel_targets(
 }
 
 /// The `SurfelGiParameters` struct carries one frame's settings of every surfel stage. It matches the struct of the
-/// same name in `layouts/surfel-gi.besl`.
+/// same name in `layouts/surfel_gi.besl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct SurfelGiParameters {
@@ -170,7 +170,7 @@ pub(crate) struct SurfelLight {
 }
 
 /// The `SurfelIrradiance` struct is one surfel's light estimate. It matches `SurfelIrradiance` in
-/// `layouts/surfel-gi.besl`; only the GPU reads and writes it.
+/// `layouts/surfel_gi.besl`; only the GPU reads and writes it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct SurfelIrradiance {
@@ -187,7 +187,7 @@ struct SurfelIrradiance {
 	_padding: u32,
 }
 
-/// The `SurfelRayResult` struct is what one ray brings back. It matches `SurfelRayResult` in `layouts/surfel-gi.besl`;
+/// The `SurfelRayResult` struct is what one ray brings back. It matches `SurfelRayResult` in `layouts/surfel_gi.besl`;
 /// only the GPU reads and writes it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -199,7 +199,7 @@ struct SurfelRayResult {
 	flags: u32,
 }
 
-/// The `SurfelRecord` struct is one surfel as lookups read it. It matches `SurfelRecord` in `layouts/surfel-gi.besl`;
+/// The `SurfelRecord` struct is one surfel as lookups read it. It matches `SurfelRecord` in `layouts/surfel_gi.besl`;
 /// only the GPU reads and writes it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -211,7 +211,7 @@ struct SurfelRecord {
 	irradiance: ghi::pod::Vec4f16,
 }
 
-/// The `SurfelState` struct is the lifecycle of one pool slot. It matches `SurfelState` in `layouts/surfel-gi.besl`;
+/// The `SurfelState` struct is the lifecycle of one pool slot. It matches `SurfelState` in `layouts/surfel_gi.besl`;
 /// only the GPU reads and writes it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -225,7 +225,7 @@ struct SurfelState {
 }
 
 /// The `SurfelHitSpawn` struct is one spawn request a ray's hit made. It matches `SurfelHitSpawn` in
-/// `layouts/surfel-gi.besl`; only the GPU reads and writes it.
+/// `layouts/surfel_gi.besl`; only the GPU reads and writes it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct SurfelHitSpawn {
@@ -234,7 +234,7 @@ struct SurfelHitSpawn {
 }
 
 /// The `SurfelPoolCounts` struct is the pool's allocator and its counts, which the host reads back for logging. It
-/// matches `SurfelPool` in `layouts/surfel-gi.besl`.
+/// matches `SurfelPool` in `layouts/surfel_gi.besl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct SurfelPoolCounts {
@@ -270,7 +270,7 @@ pub(crate) struct SurfelPoolCounts {
 }
 
 /// The `SurfelResolveParameters` struct carries one sink's resolve settings for a frame. It matches the struct of the
-/// same name in `layouts/surfel-resolve.besl`.
+/// same name in `layouts/surfel_resolve.besl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct SurfelResolveParameters {
@@ -290,7 +290,7 @@ struct SurfelResolveParameters {
 	_padding_1: u32,
 }
 
-/// The `SurfelSpawn` struct is one tile's spawn request. It matches `SurfelSpawn` in `layouts/surfel-resolve.besl`;
+/// The `SurfelSpawn` struct is one tile's spawn request. It matches `SurfelSpawn` in `layouts/surfel_resolve.besl`;
 /// only the GPU reads and writes it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -831,7 +831,7 @@ mod tests {
 	use crate::rendering::SetLayout;
 
 	#[test]
-	fn host_records_match_the_strides_their_layout_layers_reflect() {
+	fn host_records_match_the_strides_their_layers_reflect() {
 		let stride = |layout: &SetLayout, name: &str| {
 			layout
 				.interface()

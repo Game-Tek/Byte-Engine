@@ -9,7 +9,7 @@ use super::super::tests::{
 	ssgi_contact_images, ssgi_floor_depth, ssgi_projection, ssgi_ray_at,
 };
 use super::*;
-use crate::rendering::shader_vm_test::{buffer, column_major, compile, run_at, texture_2d};
+use crate::rendering::shader_vm_test::{buffer, column_major, compile, run_at, texture_2d, with_engine_modules};
 
 /// Reads a `.bemx` test graph.
 fn graph(source: &str) -> bemx::Graph {
@@ -83,20 +83,19 @@ fn material_generator_with(features: VisibilityFeatures) -> VisibilityShaderGene
 	VisibilityShaderGenerator::with_features(features)
 }
 
-/// Parses `source` as a `main`, adds `nodes`, such as helper functions and bindings, and compiles the result for the
-/// VM.
+/// The modules a VM test of the generator's helpers brings in: the records and layers material evaluation reads.
+const HELPER_MODULES: &str = "use ::byte_engine::rendering::visibility::layouts::scene_records::*;\nuse ::byte_engine::rendering::visibility::layouts::scene::*;\nuse ::byte_engine::rendering::visibility::layouts::material_evaluation::*;\n";
+
+/// Parses `source` as a `main` with the modules of [`HELPER_MODULES`], adds `nodes`, such as helper functions and
+/// bindings, and compiles the result for the VM.
 fn compile_with(source: &str, nodes: Vec<Node<'static>>) -> besl::vm::ExecutableProgram {
-	let mut root = besl::parse(source).expect("Failed to parse a VM test. The most likely cause is invalid BESL test syntax.");
-	root.add(nodes);
-	compile(
-		besl::lex(root).expect("Failed to lex a VM test. The most likely cause is an unresolved portable helper operation."),
-	)
+	compile_with_prologue(Vec::new(), source, nodes)
 }
 
 /// Like [`compile_with`], with `prologue` spliced in before the statements of `source`'s `main`, as the generator
 /// splices its sources into a material shader's `main`.
 fn compile_with_prologue(prologue: Vec<Node<'static>>, source: &str, nodes: Vec<Node<'static>>) -> besl::vm::ExecutableProgram {
-	let mut root = besl::parse(source).expect("Failed to parse a VM test. The most likely cause is invalid BESL test syntax.");
+	let mut root = with_engine_modules(format!("{HELPER_MODULES}{source}").leak());
 	let besl::parser::Nodes::Scope { children, .. } = root.node_mut() else {
 		unreachable!("A parsed program is a scope.");
 	};
@@ -116,17 +115,6 @@ fn compile_with_prologue(prologue: Vec<Node<'static>>, source: &str, nodes: Vec<
 	compile(
 		besl::lex(root).expect("Failed to lex a VM test. The most likely cause is an unresolved portable helper operation."),
 	)
-}
-
-/// Returns the declarations of the material evaluation layout layer, whose descriptors the screen-space helpers read.
-fn material_evaluation_declarations() -> Vec<Node<'static>> {
-	let (_, source) = layer!("visibility/layouts/material-evaluation.besl");
-	let mut root = besl::parse(source)
-		.expect("Failed to parse the material evaluation layer. The most likely cause is invalid BESL in the layer.");
-	match root.node_mut() {
-		besl::parser::Nodes::Scope { children, .. } => std::mem::take(children),
-		_ => unreachable!("Invalid layer root. The most likely cause is a parser contract regression."),
-	}
 }
 
 fn results_binding(members: Vec<Node<'static>>, slot: ResourceSlot) -> Node<'static> {
@@ -153,16 +141,25 @@ fn run_helper_test(
 	members: Vec<Node<'static>>,
 ) -> besl::vm::Buffer {
 	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
-	let mut nodes = (1..)
+	// A texture named like a member of the material evaluation layer binds at the member's slot, where the helpers read
+	// it through the layer. The test declares every other texture itself.
+	let layer = super::super::set_layouts::MATERIAL_EVALUATION.interface();
+	let slots = (1..)
 		.zip(textures.iter())
-		.map(|(slot, (name, resource, _))| Node::binding(name, resource.clone(), slot, true, false))
+		.map(|(slot, (name, ..))| layer.binding(name).map_or(slot, |binding| binding.slot))
+		.collect::<Vec<_>>();
+	let mut nodes = slots
+		.iter()
+		.zip(textures.iter())
+		.filter(|(_, (name, ..))| layer.binding(name).is_none())
+		.map(|(slot, (name, resource, _))| Node::binding(name, resource.clone(), *slot, true, false))
 		.chain(helpers.iter().map(|(source, name)| parse_besl_function(source, name)))
 		.collect::<Vec<_>>();
 	nodes.push(results_binding(members, RESULT_SLOT));
 	let executable = compile_with(source, nodes);
 	let mut results = buffer(&executable, RESULT_SLOT);
 	let mut descriptors = DescriptorBindings::new();
-	for (slot, (_, _, texture)) in (1..).zip(textures) {
+	for (slot, (_, _, texture)) in slots.into_iter().zip(textures) {
 		descriptors.bind_texture(ResourceSlot::new(slot), texture);
 	}
 	descriptors.bind_buffer(RESULT_SLOT, &mut results);
@@ -693,7 +690,7 @@ fn material_hit_shaders_return_backfaces_before_sampling() {
 		.find("return back_surface")
 		.expect("The hit shader should return a backface payload.");
 	let first_sample = source
-		.find("sample_texture_2d_array_grad(textures")
+		.find("sample_texture_2d_array_grad(scene.textures")
 		.expect("The textured hit shader should sample its textures.");
 	assert!(
 		backface_return < first_sample,
@@ -905,21 +902,21 @@ fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {
 	));
 	let results = run_helper_test(
 		r#"
-		main: fn () -> void {
+		main: fn (material_evaluation: MaterialEvaluation) -> void {
 			results.fully_lit = 0;
 			results.may_be_occluded = 0;
 			results.crosses_tile_boundary = 0;
 			results.adjacent_cell_may_occlude = 0;
-			if (directional_shadow_area_is_fully_lit(vec2f(0.5, 0.5), 0.8, 2, vec2u(16, 16))) {
+			if (directional_shadow_area_is_fully_lit(material_evaluation, vec2f(0.5, 0.5), 0.8, 2, vec2u(16, 16))) {
 				results.fully_lit = 1;
 			}
-			if (directional_shadow_area_is_fully_lit(vec2f(0.5, 0.5), 0.6, 2, vec2u(16, 16))) {
+			if (directional_shadow_area_is_fully_lit(material_evaluation, vec2f(0.5, 0.5), 0.6, 2, vec2u(16, 16))) {
 				results.may_be_occluded = 1;
 			}
-			if (directional_shadow_area_is_fully_lit(vec2f(0.1, 0.5), 1.0, 2, vec2u(16, 16))) {
+			if (directional_shadow_area_is_fully_lit(material_evaluation, vec2f(0.1, 0.5), 1.0, 2, vec2u(16, 16))) {
 				results.crosses_tile_boundary = 1;
 			}
-			if (directional_shadow_area_is_fully_lit(vec2f(0.25, 0.25), 0.8, 0, vec2u(16, 16))) {
+			if (directional_shadow_area_is_fully_lit(material_evaluation, vec2f(0.25, 0.25), 0.8, 0, vec2u(16, 16))) {
 				results.adjacent_cell_may_occlude = 1;
 			}
 		}
@@ -1277,21 +1274,21 @@ fn directional_shadow_blocker_search_finds_nearby_occluders_in_the_besl_vm() {
 	let mut pyramid = texture_2d(8, 32, &cells);
 	let results = run_helper_test(
 		r#"
-		main: fn () -> void {
+		main: fn (material_evaluation: MaterialEvaluation) -> void {
 			let flat: vec2f = vec2f(0.0, 0.0);
 			let extent: vec2u = vec2u(64, 64);
 			// Stored depth spans 100 meters, so occluders fade in over their first 0.0005 above the receiver.
 			let depth_per_meter: f32 = 0.01;
 			// Cell (4, 4) of cascade zero, texels 32 through 39, holds an occluder at 0.9.
-			results.nearby = directional_shadow_blocker_depth(vec2f(36.0, 36.0), 0.5, flat, depth_per_meter, u32(0), extent);
-			results.out_of_reach = directional_shadow_blocker_depth(vec2f(8.0, 8.0), 0.5, flat, depth_per_meter, u32(0), extent);
-			results.other_cascade = directional_shadow_blocker_depth(vec2f(36.0, 36.0), 0.5, flat, depth_per_meter, u32(1), extent);
+			results.nearby = directional_shadow_blocker_depth(material_evaluation, vec2f(36.0, 36.0), 0.5, flat, depth_per_meter, u32(0), extent);
+			results.out_of_reach = directional_shadow_blocker_depth(material_evaluation, vec2f(8.0, 8.0), 0.5, flat, depth_per_meter, u32(0), extent);
+			results.other_cascade = directional_shadow_blocker_depth(material_evaluation, vec2f(36.0, 36.0), 0.5, flat, depth_per_meter, u32(1), extent);
 			// The occluder lies 0.00025 above this receiver, halfway through its fade, and alone at full tent weight
 			// it still counts fully once its share of four units of weight exceeds one.
-			results.fading_in = directional_shadow_blocker_depth(vec2f(36.0, 36.0), 0.89975, flat, depth_per_meter, u32(0), extent);
+			results.fading_in = directional_shadow_blocker_depth(material_evaluation, vec2f(36.0, 36.0), 0.89975, flat, depth_per_meter, u32(0), extent);
 			// At the edge of the search the same occluder carries a quarter unit of weight, so the estimate moves only a
 			// quarter of the way from the receiver toward it.
-			results.entering = directional_shadow_blocker_depth(vec2f(24.0, 24.0), 0.5, flat, depth_per_meter, u32(0), extent);
+			results.entering = directional_shadow_blocker_depth(material_evaluation, vec2f(24.0, 24.0), 0.5, flat, depth_per_meter, u32(0), extent);
 		}
 		"#,
 		&mut [(
@@ -1326,8 +1323,8 @@ fn directional_shadow_blocker_search_finds_nearby_occluders_in_the_besl_vm() {
 	let mut sloped_pyramid = texture_2d(8, 32, &sloped_cells);
 	let results = run_helper_test(
 		r#"
-		main: fn () -> void {
-			results.sloped_self = directional_shadow_blocker_depth(vec2f(36.0, 36.0), 0.5, vec2f(0.01, 0.0), 0.01, u32(0), vec2u(64, 64));
+		main: fn (material_evaluation: MaterialEvaluation) -> void {
+			results.sloped_self = directional_shadow_blocker_depth(material_evaluation, vec2f(36.0, 36.0), 0.5, vec2f(0.01, 0.0), 0.01, u32(0), vec2u(64, 64));
 		}
 		"#,
 		&mut [(
@@ -1515,19 +1512,27 @@ fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 	};
 	statements.append(output);
 	let main = Node::function("main", vec![Node::parameter("input", "StageInput")], "void", statements);
-	let mut root = besl::stack_layers(Node::root_with_children(vec![main]), MATERIAL_EVALUATION_LAYERS).unwrap();
-	root.add(vec![
-		common_shader_scope(),
-		visibility_shader_scope(false),
-		results_binding(
-			vec![
-				Node::member("surface", "vec3f"),
-				Node::member("shading", "vec3f"),
-				Node::member("into_surface", "f32"),
-			],
-			RESULTS,
-		),
-	]);
+	let mut root = layered_program(
+		main,
+		&MATERIAL_EVALUATION_LAYERS,
+		&MATERIAL_EVALUATION_MODULES,
+		&MATERIAL_EVALUATION_MODULE_FILES,
+	)
+	.unwrap();
+	root.add(
+		common_shader_module()
+			.into_iter()
+			.chain(visibility_shader_module(false))
+			.collect(),
+	);
+	root.add(vec![results_binding(
+		vec![
+			Node::member("surface", "vec3f"),
+			Node::member("shading", "vec3f"),
+			Node::member("into_surface", "f32"),
+		],
+		RESULTS,
+	)]);
 	let program = besl::lex(root).expect("material reconstruction links");
 	besl::optimization::optimize(&program.get_main().unwrap());
 	let executable = compile(program);
@@ -2060,8 +2065,9 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 	const PREVIOUS_EXPOSURE: f32 = 2.0;
 	let executable = compile_with(
 		r#"
-		main: fn () -> void {
+		main: fn (material_evaluation: MaterialEvaluation) -> void {
 			results.reflection = trace_screen_space_reflection(
+				material_evaluation,
 				vec3f(inputs.position.x, inputs.position.y, inputs.position.z),
 				vec3f(0.0, 1.0, 0.0),
 				vec3f(inputs.direction.x, inputs.direction.y, inputs.direction.z),
@@ -2071,7 +2077,7 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 		"#,
 		{
 			// The set's descriptors come first, as in the material shader, since helpers read them.
-			let mut bindings = material_evaluation_declarations();
+			let mut bindings = Vec::new();
 			bindings.extend(screen_space_reflection_scope());
 			bindings.push(Node::binding(
 				"inputs",
@@ -2222,8 +2228,9 @@ fn sample_indirect_diffuse(
 ) -> [f32; 4] {
 	let executable = compile_with(
 		r#"
-		main: fn () -> void {
+		main: fn (material_evaluation: MaterialEvaluation) -> void {
 			results.indirect_diffuse = sample_screen_space_indirect_diffuse(
+				material_evaluation,
 				inputs.pixel,
 				inputs.extent,
 				vec3f(inputs.position.x, inputs.position.y, inputs.position.z),
@@ -2234,7 +2241,7 @@ fn sample_indirect_diffuse(
 		}
 		"#,
 		{
-			let mut bindings = material_evaluation_declarations();
+			let mut bindings = Vec::new();
 			bindings.extend(screen_space_indirect_diffuse_scope(false));
 			bindings.push(Node::binding(
 				"inputs",
@@ -2352,19 +2359,19 @@ fn tile_indirect_diffuse_reads_what_the_images_hold() {
 				},
 				&format!(
 					r#"
-					main: fn (input: StageInput) -> void {{
+					main: fn (input: StageInput, material_evaluation: MaterialEvaluation) -> void {{
 						let pixel: vec2u = input.thread_id;
-						let extent: vec2u = image_size(lit_map);
+						let extent: vec2u = image_size(material_evaluation.lit_map);
 						if (pixel.x < extent.x && pixel.y < extent.y) {{
 							let position: vec3f = vec3f(f32(pixel.x) * 0.05 - 0.5, 0.25 - f32(pixel.y) * 0.05, 2.0 + f32(pixel.x % 3));
 							let normal: vec3f = normalize(vec3f(0.1, 0.2, -1.0));
-							results.indirect[pixel.y * {full} + pixel.x] = sample_screen_space_indirect_diffuse(pixel, extent, position, normal, normal, false);
+							results.indirect[pixel.y * {full} + pixel.x] = sample_screen_space_indirect_diffuse(material_evaluation, pixel, extent, position, normal, normal, false);
 						}}
 					}}
 					"#
 				),
 				{
-					let mut nodes = material_evaluation_declarations();
+					let mut nodes = Vec::new();
 					nodes.push(Node::push_constant(vec![Node::member("indirect_diffuse", "u32")]));
 					nodes.extend(screen_space_indirect_diffuse_scope(uber));
 					nodes.push(results_binding(

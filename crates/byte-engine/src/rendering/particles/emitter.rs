@@ -11,7 +11,7 @@ use crate::inspector::Inspectable;
 ///
 /// ```
 /// # use byte_engine::rendering::ParticleEmitter;
-/// let grinder = ParticleEmitter::new("byte-engine/particles/sparks.particles");
+/// let grinder = ParticleEmitter::new("byte_engine/particles/sparks.particles");
 /// let hit = ParticleEmitter { rate: Some(0.0), burst: Some(60), ..grinder.clone() };
 /// ```
 #[derive(Debug, Clone, PartialEq)]

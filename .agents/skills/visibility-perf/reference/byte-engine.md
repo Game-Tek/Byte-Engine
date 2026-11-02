@@ -58,11 +58,11 @@ raised its cost on Sponza from 1.34 to 1.96 ms over GI off; the design page
 `docs/develop/rendering/visibility/surfel-gi.mdx` keeps the per-pass table. What brought it back down, each step
 measured in one clock state:
 
-- The grid's count and scatter run four threads per surfel (`SURFEL_GRID_LANES` in `layouts/surfel-gi.besl` and
+- The grid's count and scatter run four threads per surfel (`SURFEL_GRID_LANES` in `layouts/surfel_gi.besl` and
   `render_pass/surfel_gi.rs`), each taking every fourth row of the surfel's cells. The count's first lane runs the
   surfel economy and hands its verdict to the others with two shuffles, and the lanes add up their distance
   histograms with shuffles, so all four pick the same listing (grid 0.31 to 0.16 ms in the fast state).
-- The temporal accumulation is a helper in `layouts/surfel-temporal.besl` that the resolve calls, once its four
+- The temporal accumulation is a helper in `layouts/surfel_temporal.besl` that the resolve calls, once its four
   bilinear taps' reads were batched (0.230 to 0.192 ms batched, then 0.642 plus 0.192 to 0.726 ms fused).
 - The spatial filter issues each tap's four reads before testing them (0.123 to 0.113 ms).
 - Tried and reverted: batching the resolve's cell-list reads, four entries and their records at a time (0.98 to
@@ -130,7 +130,7 @@ Check each of these once per session, before the first build or run:
 - To read the BESL or MSL of any shader without launching the viewer or instrumenting the engine, intercept it from a
   dry-run bake: `cd ~/development/sandbox/model_viewer && <engine>/target/debug/beld --source assets bake --dry-run
   --intercept '*.besl' --intercept '*.msl' <id> 2>/dev/null`, where `<id>` is a `.bema`, a `.glb`, or a
-  `byte-engine/rendering/visibility/<pass>.pipeline`. Products are named `<shader ID>.besl` and `<shader ID>.msl`;
+  `byte_engine/rendering/visibility/<pass>.pipeline`. Products are named `<shader ID>.besl` and `<shader ID>.msl`;
   `--intercept '*' --format json | jq -r '.intercepted[].name'` lists them. The MSL is what the Metal compiler
   receives, minus the precompiled prelude. Use it to check what a BESL edit lowered to before baking, measuring, or
   extracting a metallib. The `resources` skill in `plugins/byte-engine` has the details.
@@ -326,10 +326,10 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
   `crates/resource-management/src/shader/generator.rs`.
 - Inspector HTTP: `crates/byte-engine/src/inspector/http.rs`. GPU counters: `crates/ghi/src/metal/command_buffer.rs`.
 - Surfel GI: `render_pass/surfel_gi.rs` (the pipeline list, the stages and their thread counts), the passes in
-  `assets/rendering/visibility/surfel-*.besl` and their shared layers in `layouts/surfel-*.besl`, the layer sets in
+  `assets/rendering/visibility/surfel-*.besl` and their shared layers in `layouts/surfel_*.besl`, the layer sets in
   `pipelines/visibility/set_layouts.rs`, and the VM tests in `pipelines/visibility/tests/surfel_gi.rs`, which build
-  shaders with the helpers in `rendering/shader_vm_test.rs` (`asset!`, `asset_source!`, `stacked_asset`,
-  `stacked_on_layers_of`).
+  shaders with the helpers in `rendering/shader_vm_test.rs` (`asset_source`, `link_program`, and
+  `with_engine_modules`, which loads the layer modules a shader `use`s).
 - `sun-visibility.besl` is a copy of the generator's directional shadow helpers plus the umbra probe and the gather
   paths; both headers say so. Keep the two in sync when the shared parts change.
 
@@ -368,10 +368,11 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
   `f32`, which holds integers exactly below 2^24.
 - `&&` and `||` short-circuit, in the VM and in the statements the lexer hoists out of the right side, so
   `lane == 0 && f()` runs `f` only on lane zero.
-- A layout layer whose helpers call another layer's must list that layer before it in its `layout!` set in
-  `set_layouts.rs`, or `every_layout_layer_declares_a_descriptor_set` fails to reflect it with `UndeclaredName`.
-- A layer has no `main`, so test its helpers through `stacked_on_layers_of(asset, stand_in)`, which stacks a stand-in
-  `main` on the layers the asset uses; give the stand-in's own bindings numbers no layer takes.
+- A layer module whose helpers read another layer takes that layer as a parameter and `use`s its module, such as
+  `use ::byte_engine::rendering::visibility::layouts::screen_trace::*;`. Add every layer module a Rust set layout
+  reads to `ENGINE_MODULES` in `set_layout.rs`.
+- A layer module has no `main`, so test its helpers through `with_engine_modules(stand_in)`, whose stand-in `use`s
+  the modules and takes their layers in its own `main`; give the stand-in's own bindings numbers no layer takes.
 
 ## Working agreement with the user
 

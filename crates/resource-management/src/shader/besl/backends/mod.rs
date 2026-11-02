@@ -34,29 +34,24 @@ pub mod tile;
 
 pub(crate) use stage_rules::validate_stage;
 
-/// The layout layers that the ray tracing fixtures list, in the order every shader of their pipeline lists them:
-/// the payload, the scene and the results the ray generation shader writes, the albedos that only closest hits
-/// read, and the push constant.
+/// The declarations the ray tracing fixtures share: the payload, and the layers every shader of their pipeline takes in
+/// this order: the scene and the results the ray generation shader writes, the albedos that only closest hits read,
+/// and the push constant.
 #[cfg(test)]
-const RAY_TRACING_LAYERS: [(&str, &str); 4] = [
-	("surface", "SurfaceHit: struct { albedo: vec3f, distance: f32, }"),
-	(
-		"scene",
-		"scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>; surfaces: descriptor<{ type: SurfaceHit[], binding: 1, access: write }>;",
-	),
-	(
-		"materials",
-		"albedos: descriptor<{ type: vec4f[], binding: 2, access: read }>;",
-	),
-	("constants", "push_constant: push_constant { scale: f32, }"),
-];
+const RAY_TRACING_PRELUDE: &str = r#"
+	SurfaceHit: struct { albedo: vec3f, distance: f32, }
+	Scene: layer {
+		scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>;
+		surfaces: descriptor<{ type: SurfaceHit[], binding: 1, access: write }>;
+	}
+	Materials: layer { albedos: descriptor<{ type: vec4f[], binding: 2, access: read }>; }
+	Constants: layer { push_constant: push_constant { scale: f32, } }
+"#;
 
-/// Stacks the ray tracing fixture layers under `source` and links the program.
+/// Links `source` after the ray tracing fixture's shared declarations.
 #[cfg(test)]
 fn link_ray_tracing_fixture(source: &str) -> besl::NodeReference {
-	let module = besl::parse(source).expect("Expected the ray tracing fixture to parse");
-	besl::lex(besl::stack_layers(module, RAY_TRACING_LAYERS).expect("Expected the layers to stack"))
-		.expect("Expected the ray tracing fixture to link")
+	besl::compile_to_besl(&format!("{RAY_TRACING_PRELUDE}{source}"), None).expect("Expected the ray tracing fixture to link")
 }
 
 /// Shades one ray for each launch point, through a helper that calls `invoke`, and marks occluded launch points.
@@ -66,30 +61,30 @@ const RAY_GENERATION_FIXTURE: &str = r#"
 		return invoke(hit, SurfaceHit(vec3f(0.0, 0.0, 0.0), -1.0));
 	}
 
-	main: fn (input: StageInput) -> void {
-		let origin: vec3f = vec3f(f32(input.launch_index.x) * push_constant.scale, 0.0, 0.0);
-		let hit: Hit = intersect(scene, 255, origin, vec3f(0.0, 0.0, 2.0), 0.0, 100.0);
+	main: fn (input: StageInput, scene: Scene, materials: Materials, constants: Constants) -> void {
+		let origin: vec3f = vec3f(f32(input.launch_index.x) * constants.push_constant.scale, 0.0, 0.0);
+		let hit: Hit = intersect(scene.scene, 255, origin, vec3f(0.0, 0.0, 2.0), 0.0, 100.0);
 		let surface: SurfaceHit = shade(hit);
-		if (trace_occlusion(scene, 255, origin, vec3f(0.0, 0.0, 1.0), 0.0, 100.0)) {
+		if (trace_occlusion(scene.scene, 255, origin, vec3f(0.0, 0.0, 1.0), 0.0, 100.0)) {
 			surface.distance = surface.distance + f32(input.launch_size.x);
 		}
-		surfaces[input.launch_index.x] = surface;
+		scene.surfaces[input.launch_index.x] = surface;
 	}
 "#;
 
 /// Reports a hit's albedo from a set the ray generation shader doesn't read, through a helper that reads the hit.
 #[cfg(test)]
 const CLOSEST_HIT_FIXTURE: &str = r#"
-	albedo_of: fn (geometry: u32) -> vec3f {
-		let albedo: vec4f = albedos[geometry];
+	albedo_of: fn (materials: Materials, geometry: u32) -> vec3f {
+		let albedo: vec4f = materials.albedos[geometry];
 		return vec3f(albedo.x, albedo.y, albedo.z) * hit_distance();
 	}
 
-	main: fn (input: StageInput, payload: SurfaceHit) -> SurfaceHit {
+	main: fn (input: StageInput, payload: SurfaceHit, scene: Scene, materials: Materials, constants: Constants) -> SurfaceHit {
 		let surface: SurfaceHit = payload;
 		let weights: vec2f = input.hit_barycentrics;
-		surface.albedo = albedo_of(input.hit_geometry_index) + vec3f(weights.x, weights.y, f32(input.hit_primitive_index));
-		surface.distance = input.hit_distance * push_constant.scale + input.ray_direction.z;
+		surface.albedo = albedo_of(materials, input.hit_geometry_index) + vec3f(weights.x, weights.y, f32(input.hit_primitive_index));
+		surface.distance = input.hit_distance * constants.push_constant.scale + input.ray_direction.z;
 		return surface;
 	}
 "#;

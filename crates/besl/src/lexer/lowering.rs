@@ -100,12 +100,22 @@ fn is_fixed_array_alias(left: &NodeReference, name: &str) -> bool {
 	)
 }
 
-/// Moves `binding` into the layout layer a parsed resource was declared in, or leaves it in the program's own layout.
-fn binding_in_declared_layout(binding: Node, layout: Option<&str>) -> Node {
-	match layout {
-		Some(layout) => binding.in_layout(layout),
-		None => binding,
-	}
+/// Links the function parameter `name` of type `r#type`, whose type names a declaration visible from `types`.
+///
+/// Only a parameter can take a layer, so only here does a layer name resolve as a type.
+fn lex_parameter(types: &[NodeReference], name: &str, r#type: &parser::TypeName) -> Result<NodeReference, LexError> {
+	let r#type = match r#type {
+		parser::TypeName::Named(type_name) => match get_reference(types, type_name) {
+			Some(layer) if matches!(layer.borrow().node(), Nodes::Layer { .. }) => layer,
+			_ => resolve_type_name(types, r#type)?,
+		},
+		_ => resolve_type_name(types, r#type)?,
+	};
+	Ok(Node::new(Nodes::Parameter {
+		name: name.to_string(),
+		r#type,
+	})
+	.into())
 }
 
 /// Selects the memory class of a binding from its declared `constant` or `device` class, the same way for bindings
@@ -303,6 +313,11 @@ impl Lexer {
 	fn lex_children(&mut self, this: &NodeReference, children: &[parser::Node]) -> Result<(), LexError> {
 		self.in_scope(this, |lexer| {
 			for (index, child) in children.iter().enumerate() {
+				// A module's sampler, like a top-level one, becomes part of the bindings that name it.
+				if let parser::Nodes::Sampler { name, state } = child.node() {
+					lexer.declare_sampler(name, *state);
+					continue;
+				}
 				let child = lexer
 					.lex(child)
 					.map_err(|error| explain_declaration_order(error, &children[index..]))?;
@@ -310,6 +325,56 @@ impl Lexer {
 			}
 			Ok(())
 		})
+	}
+
+	/// Links the layer `name`. Its descriptors become bindings in the layout named by the layer's path, so they form one
+	/// descriptor set, and its push constant block and tile targets link as they do at the top level.
+	fn lex_layer(&mut self, name: &str, members: &[(&str, parser::Node)]) -> Result<NodeReference, LexError> {
+		let path = super::layers::layer_path(&self.scopes, name);
+		let mut push_constant = None;
+		let members = members
+			.iter()
+			.map(|(member, node)| {
+				let member_node = self.lex(node)?;
+				match member_node.borrow_mut().node_mut() {
+					Nodes::Binding { layout, .. } => *layout = Some(path.clone()),
+					Nodes::PushConstant { .. } => push_constant = Some(member.to_string()),
+					_ => {}
+				}
+				Ok(member_node)
+			})
+			.collect::<Result<Vec<_>, LexError>>()?;
+
+		Ok(Node::new(Nodes::Layer {
+			name: name.to_string(),
+			path,
+			members,
+			push_constant,
+			entry: None,
+		})
+		.into())
+	}
+
+	/// Links `use path;`, or `use path::*;` when `glob` is set, against the declarations before it.
+	fn lex_use(&mut self, path: &str, glob: bool) -> Result<NodeReference, LexError> {
+		let target = get_reference(&self.scopes, path).ok_or_else(|| {
+			LexError::invalid(format!(
+				"`use {path}` names no declaration. The most likely cause is a misspelled path, or a `use` written before the module or declaration it names. Check the path, and declare the module above the `use`. See {}.",
+				crate::online_docs_url(super::resolution::MODULES_DOCS_PATH)
+			))
+		})?;
+
+		if glob {
+			if !matches!(target.borrow().node(), Nodes::Scope { .. }) {
+				return Err(LexError::invalid(format!(
+					"`use {path}::*` brings in the declarations of `{path}`, which isn't a module. The most likely cause is a path that names a struct, constant, or function. Drop `::*` to bring in `{path}` itself."
+				)));
+			}
+			return Ok(Node::r#use(None, &target).into());
+		}
+
+		let name = path.rsplit("::").next().unwrap_or(path);
+		Ok(Node::r#use(Some(name.to_string()), &target).into())
 	}
 
 	/// Links one parsed node and its subtree against the current scope chain.
@@ -324,6 +389,14 @@ impl Lexer {
 				self.lex_children(&this, children)?;
 				this
 			}
+			parser::Nodes::FileModule { name } => return Err(crate::modules::unattached_module(name)),
+			parser::Nodes::Layer { name, members } => self.lex_layer(name, members)?,
+			parser::Nodes::Signature { name, .. } => Node::new(Nodes::Signature { name: name.to_string() }).into(),
+			// `crate::signatures::expand_signatures` turns every implementation into a function before linking.
+			parser::Nodes::Implementation { name, .. } => {
+				unreachable!("Function `{name}` still implements a signature after signatures were expanded")
+			}
+			parser::Nodes::Use { path, glob } => self.lex_use(path, *glob)?,
 			parser::Nodes::Struct { name, fields } => {
 				// Every use of a built-in type's name resolves to the built-in, so a struct that takes one would be
 				// declared and never used.
@@ -400,11 +473,7 @@ impl Lexer {
 
 				Node::member(name, resolve_type(&self.scopes, r#type)?).into()
 			}
-			parser::Nodes::Parameter { name, r#type } => Node::new(Nodes::Parameter {
-				name: name.to_string(),
-				r#type: resolve_type_name(&self.scopes, r#type)?,
-			})
-			.into(),
+			parser::Nodes::Parameter { name, r#type } => lex_parameter(&self.scopes, name, r#type)?,
 			parser::Nodes::Input { name, format, location } => {
 				Node::input(name, resolve_type(&self.scopes, format)?, *location).into()
 			}
@@ -426,16 +495,29 @@ impl Lexer {
 				return_type,
 				statements,
 				params,
-				..
+				types,
 			} => {
 				validate_return_type(name, return_type)?;
-				let t = resolve_type_name(&self.scopes, return_type)?;
+				// A function that implements another module's signature names that module's types.
+				let types = match types {
+					Some(path) => module_chain(&self.scopes, path).ok_or_else(|| {
+						LexError::invalid(format!(
+							"Function `{name}` implements a signature whose module `{}` isn't linked. The most likely cause is a signature declared in a module after the function. Declare the module above the function.",
+							path.join("::")
+						))
+					})?,
+					None => self.scopes.clone(),
+				};
+				let t = resolve_type_name(&types, return_type)?;
 
 				let this: NodeReference = Node::function(name, Vec::new(), t, Vec::new()).into();
 
 				self.in_scope(&this, |lexer| {
 					for param in params {
-						let param = lexer.lex(param)?;
+						let param = match param.node() {
+							parser::Nodes::Parameter { name, r#type } => lex_parameter(&types, name, r#type)?,
+							_ => lexer.lex(param)?,
+						};
 						let mut function = this.borrow_mut();
 						let Nodes::Function { params, .. } = function.node_mut() else {
 							unreachable!("The node was built as a function above");
@@ -501,7 +583,6 @@ impl Lexer {
 				write,
 				memory_class,
 				count,
-				layout,
 			} => {
 				let r#type = match r#type {
 					parser::BindingResource::Buffer { members } => BindingTypes::Buffer {
@@ -519,11 +600,7 @@ impl Lexer {
 					},
 				};
 				let memory_class = binding_memory_class(name, &r#type, *memory_class, *write)?;
-				binding_in_declared_layout(
-					Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count),
-					*layout,
-				)
-				.into()
+				Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count).into()
 			}
 			parser::Nodes::Descriptor {
 				name,
@@ -536,7 +613,6 @@ impl Lexer {
 				memory_class,
 				count,
 				sampler,
-				layout,
 			} => {
 				let r#type = resolve_descriptor_type(&self.scopes, resource_type, *format, *runtime_array)?;
 				let r#type = super::samplers::attach_sampler(name, r#type, *sampler, &self.samplers)?;
@@ -545,17 +621,13 @@ impl Lexer {
 					ray_tracing::validate_acceleration_structure_descriptor(name, *write, *count)?;
 				}
 
-				binding_in_declared_layout(
-					Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count),
-					*layout,
-				)
-				.into()
+				Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count).into()
 			}
-			// The program root records samplers before lexing its declarations, so one reaches here only from an inner
-			// scope.
+			// The program root and modules record samplers before lexing their declarations, so one reaches here only from
+			// a function or block.
 			parser::Nodes::Sampler { name, .. } => {
 				return Err(LexError::invalid(format!(
-					"Sampler `{name}` is declared inside a scope. The most likely cause is a sampler declared in a function or block. Declare it at the top level of the shader or layer."
+					"Sampler `{name}` is declared inside a function. The most likely cause is a sampler declared in a function or block. Declare it at the top level of the shader or of a module."
 				)));
 			}
 			parser::Nodes::Expression(expression) => {
@@ -581,6 +653,12 @@ impl Lexer {
 							Some(branch) => self.lex_branch_value(branch, None, true)?,
 							None => self.lex(left)?,
 						};
+						// A layer value's member is the member itself, which backends read by its own name.
+						if let parser::Nodes::Expression(parser::Expressions::Member { name }) = &right.node
+							&& let Some(layer) = super::layers::layer_of(&left)
+						{
+							return super::layers::member_access(&layer, name);
+						}
 						// `binding.alias` on a lowered fixed array names the binding's own elements, so drop the hop.
 						if let parser::Nodes::Expression(parser::Expressions::Member { name }) = &right.node
 							&& is_fixed_array_alias(&left, name)
@@ -628,6 +706,8 @@ impl Lexer {
 								"Function `{name}` can't be used as a value. The most likely cause is a missing `()` after the function name."
 							)));
 						}
+						// A path such as `noise::SEED` names the declaration `SEED`, which backends emit by its own name.
+						let name = name.rsplit("::").next().unwrap_or(name);
 						Node::expression(Expressions::Member {
 							source,
 							name: name.to_string(),

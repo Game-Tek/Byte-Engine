@@ -258,12 +258,144 @@ Each declaration can use only the declarations before it:
   declaration. This includes a struct's fields, a constant's or descriptor's
   type, and a function's parameters, return type, and locals.
 
-The declarations of [layout layers](/docs/reference/besl/interface#layout-layers)
-come before the shader's own, in the order the layers are listed. `main` is the
-exception: it can use every declaration in the shader and its layers, wherever
-you declare it.
+The [modules from the asset root](#modules-from-the-asset-root) a shader uses
+come before the shader's own declarations. `main` is the exception: it can use
+every declaration in the shader and its modules, wherever you declare it.
 
 A declaration that uses one declared after it doesn't link.
+
+## Modules
+
+A module is a named group of declarations. It works like a Rust module: it's a
+namespace, and a file module takes its file from its name, so a declaration never
+writes a file path or extension.
+
+```rust
+noise: mod;
+
+lighting: mod {
+	brdf: mod;
+
+	PI: const f32 = 3.14159;
+}
+
+use noise::hash;
+use lighting::brdf::*;
+
+main: fn () -> void {
+	let h: f32 = hash(1.0);
+	let d: f32 = lighting::brdf::ggx(0.5);
+}
+```
+
+### Declare a module
+
+| Form | Declares |
+| --- | --- |
+| `name: mod;` | A file module. Its declarations live in the module's file. |
+| `name: mod { ... }` | An inline module. Its declarations live between the braces. |
+
+A module can contain any declaration except `main`, which only the shader file
+declares. A module usually holds the
+[layers and signatures](/docs/reference/besl/interface#layers-and-signatures)
+shaders share, with the structs, constants, samplers, and helpers they use. A
+descriptor, push-constant block, or stage interface declaration written in a
+module outside a layer belongs to the shader that declares the module, as if
+the shader declared it: its descriptors join the shader's own descriptor set.
+
+### Module files
+
+The shader file is the root module. A module's path is the list of module names
+from the root to it, and the path picks its file, relative to the directory of
+the shader file:
+
+| Module path | File |
+| --- | --- |
+| `noise` | `noise.besl` or `noise/mod.besl` |
+| `lighting::brdf` | `lighting/brdf.besl` or `lighting/brdf/mod.besl` |
+
+Exactly one of the two files must exist. A module whose files are both present,
+or both missing, doesn't link. Inline modules take part in the path the same
+way: a file module `brdf` declared inside an inline module `lighting` lives in
+`lighting/brdf.besl` or `lighting/brdf/mod.besl`.
+
+Each shader is its own root, so two shaders can declare modules with the same
+files.
+
+Baking tracks both files of every module as dependencies of the shader. Editing,
+adding, or removing either one rebuilds the shader on the next bake.
+
+### Modules from the asset root
+
+A `use` path that starts with `::` names a module by its path from the asset
+root, so shaders in any directory can share it:
+
+```rust
+use ::byte_engine::rendering::layouts::color::*;
+```
+
+The module is the shortest start of the path that has a file:
+`byte_engine/rendering/layouts/color.besl` or
+`byte_engine/rendering/layouts/color/mod.besl` in the example. The rest of the
+path names declarations inside it. A file module that such a module declares
+lives in the directory named after it, as for any module file.
+
+A shader loads each of these modules once, however many of its modules name it.
+They link before the shader's own declarations, each after the modules it
+names, so two of them can't name each other. Code reaches them through a path
+that starts with `::` or through a `use`.
+
+### Paths
+
+A path names a declaration in another module. Write the module names and the
+declaration name separated by `::`, with no spaces. A path can appear wherever
+a name or a type can.
+
+| Path starts with | Starts from |
+| --- | --- |
+| `crate::` | The root module: the shader file. |
+| `::` | The [modules from the asset root](#modules-from-the-asset-root). |
+| `super::` | The parent of the current module. |
+| `self::` | The current module. |
+| A module name | A module declared in the current module or brought in with `use`. |
+
+A declaration name can't contain `::`.
+
+Inside a module, a name without a path resolves in the module first, then in
+each module around it out to the root. A module can therefore use the root's
+declarations and the built-in types by name. Outside a
+module, its declarations need a path or a `use`.
+
+### `use`
+
+A `use` declaration makes declarations of another module available by their
+own names. It declares nothing of its own.
+
+| Form | Makes available |
+| --- | --- |
+| `use path;` | The declaration or module that `path` names, by its last name. |
+| `use path::*;` | Every declaration of the module that `path` names. |
+
+A name declared in the current module takes precedence over a name that a `use`
+brings in.
+
+### Names across modules
+
+Generated shader code names every declaration by its own name, without its
+module path. So a struct or constant name can be declared in only one module of
+a shader, counting the shader file and all its modules. Two
+modules can declare functions with the same name only when their parameter types
+differ, which makes them overloads.
+
+Every declaration of a module can be reached by its path. Modules have no
+private declarations.
+
+### Module declaration order
+
+[Declaration order](#declaration-order) applies across modules. A module's
+declarations come where the module is declared: they can use the declarations
+before the module through `crate::` or `super::`, and the declarations after the
+module can use them.
 
 ## Variables and expressions
 

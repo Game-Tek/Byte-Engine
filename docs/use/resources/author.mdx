@@ -135,7 +135,7 @@ lighting from a high-precision source image, such as a full-sphere EXR. For
 
 ```json5
 {
-  $schema: "byte-engine/schemas/environment.bead.schema.json",
+  $schema: "byte_engine/schemas/environment.bead.schema.json",
   source: "studio.exr",
 }
 ```
@@ -175,7 +175,7 @@ need the smaller levels. To change either step for one PNG or EXR, add an
 
 ```json5
 {
-  $schema: "byte-engine/schemas/image.bead.schema.json",
+  $schema: "byte_engine/schemas/image.bead.schema.json",
   image: {
     mips: false,        // store only the authored size
     compression: false, // keep exact colors instead of BC7

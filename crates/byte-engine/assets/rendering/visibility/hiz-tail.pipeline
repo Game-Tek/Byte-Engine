@@ -1,1 +1,1 @@
-{"name":"Occlusion Pyramid Tail","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/hiz-tail.besl"}}
+{"name":"Occlusion Pyramid Tail","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/hiz-tail.besl"}}

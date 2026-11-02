@@ -3,8 +3,10 @@
 // the edges, and 1 in the corners, out of 16. The upsample pass and the upsample composite both climb, so both build on
 // this layer. It binds the two levels at 0 and 1; a pass binds the rest of its inputs from 2 on.
 
-low_resolution_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-high_resolution_texture: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+Climb: layer {
+	low_resolution_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+	high_resolution_texture: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+}
 
 // Folds the tent's three taps along one axis, at `center` and `radius` texels either side of it, into two bilinear
 // taps. Positions are continuous lower-level texel coordinates, where integers are texel centers. With `radius` at most
@@ -35,49 +37,49 @@ fold_tent_axis: fn (center: f32, radius: f32) -> vec4f {
 }
 
 // Reads the lower level at continuous texel coordinates `x`, `y`.
-sample_low_texel: fn (x: f32, y: f32, low_size: vec2f) -> vec3f {
-	let sampled: vec4f = texture_lod(low_resolution_texture, vec2f((x + 0.5) / low_size.x, (y + 0.5) / low_size.y));
+sample_low_texel: fn (climb_set: Climb, x: f32, y: f32, low_size: vec2f) -> vec3f {
+	let sampled: vec4f = texture_lod(climb_set.low_resolution_texture, vec2f((x + 0.5) / low_size.x, (y + 0.5) / low_size.y));
 	return vec3f(sampled.x, sampled.y, sampled.z);
 }
 
 // Reads the lower level `offset_x`, `offset_y` filter steps away from `uv`.
-sample_low: fn (uv: vec2f, step: vec2f, offset_x: f32, offset_y: f32) -> vec3f {
-	let sampled: vec4f = texture_lod(low_resolution_texture, uv + vec2f(offset_x, offset_y) * step);
+sample_low: fn (climb_set: Climb, uv: vec2f, step: vec2f, offset_x: f32, offset_y: f32) -> vec3f {
+	let sampled: vec4f = texture_lod(climb_set.low_resolution_texture, uv + vec2f(offset_x, offset_y) * step);
 	return vec3f(sampled.x, sampled.y, sampled.z);
 }
 
 // Blurs the lower level around `uv` with the tent, one bilinear read per tap.
-tent: fn (uv: vec2f, radius: f32) -> vec3f {
-	let low_size: vec2u = texture_size(low_resolution_texture);
+tent: fn (climb_set: Climb, uv: vec2f, radius: f32) -> vec3f {
+	let low_size: vec2u = texture_size(climb_set.low_resolution_texture);
 	let step: vec2f = vec2f(radius / f32(low_size.x), radius / f32(low_size.y));
-	let center: vec3f = sample_low(uv, step, 0.0, 0.0);
-	let edges: vec3f = sample_low(uv, step, 0.0 - 1.0, 0.0)
-		+ sample_low(uv, step, 1.0, 0.0)
-		+ sample_low(uv, step, 0.0, 0.0 - 1.0)
-		+ sample_low(uv, step, 0.0, 1.0);
-	let corners: vec3f = sample_low(uv, step, 0.0 - 1.0, 0.0 - 1.0)
-		+ sample_low(uv, step, 1.0, 0.0 - 1.0)
-		+ sample_low(uv, step, 0.0 - 1.0, 1.0)
-		+ sample_low(uv, step, 1.0, 1.0);
+	let center: vec3f = sample_low(climb_set, uv, step, 0.0, 0.0);
+	let edges: vec3f = sample_low(climb_set, uv, step, 0.0 - 1.0, 0.0)
+		+ sample_low(climb_set, uv, step, 1.0, 0.0)
+		+ sample_low(climb_set, uv, step, 0.0, 0.0 - 1.0)
+		+ sample_low(climb_set, uv, step, 0.0, 1.0);
+	let corners: vec3f = sample_low(climb_set, uv, step, 0.0 - 1.0, 0.0 - 1.0)
+		+ sample_low(climb_set, uv, step, 1.0, 0.0 - 1.0)
+		+ sample_low(climb_set, uv, step, 0.0 - 1.0, 1.0)
+		+ sample_low(climb_set, uv, step, 1.0, 1.0);
 	return center * 0.25 + edges * 0.125 + corners * 0.0625;
 }
 
 // Blurs the lower level around `uv` with the tent in as few reads as it allows. Up to a radius of one, its nine taps
 // fold into four, two along each axis; past it they no longer share texels, so each is read on its own. Folding trades
 // five reads for the arithmetic that places the four, which pays where every lane builds its own texel.
-folded_tent: fn (uv: vec2f, radius: f32) -> vec3f {
+folded_tent: fn (climb_set: Climb, uv: vec2f, radius: f32) -> vec3f {
 	if (radius > 1.0) {
-		return tent(uv, radius);
+		return tent(climb_set, uv, radius);
 	}
-	let low_extent: vec2u = texture_size(low_resolution_texture);
+	let low_extent: vec2u = texture_size(climb_set.low_resolution_texture);
 	let low_size: vec2f = vec2f(f32(low_extent.x), f32(low_extent.y));
 	let center: vec2f = uv * low_size - vec2f(0.5, 0.5);
 	let x: vec4f = fold_tent_axis(center.x, radius);
 	let y: vec4f = fold_tent_axis(center.y, radius);
-	return sample_low_texel(x.x, y.x, low_size) * (x.y * y.y)
-		+ sample_low_texel(x.z, y.x, low_size) * (x.w * y.y)
-		+ sample_low_texel(x.x, y.z, low_size) * (x.y * y.w)
-		+ sample_low_texel(x.z, y.z, low_size) * (x.w * y.w);
+	return sample_low_texel(climb_set, x.x, y.x, low_size) * (x.y * y.y)
+		+ sample_low_texel(climb_set, x.z, y.x, low_size) * (x.w * y.y)
+		+ sample_low_texel(climb_set, x.x, y.z, low_size) * (x.y * y.w)
+		+ sample_low_texel(climb_set, x.z, y.z, low_size) * (x.w * y.w);
 }
 
 // Returns the center of texel `texel` of a level `size` texels across, in texture coordinates.
@@ -86,7 +88,7 @@ level_uv: fn (texel: vec2u, size: vec2u) -> vec2f {
 }
 
 // Reads the same-resolution level at `uv`.
-same_level: fn (uv: vec2f) -> vec3f {
-	let sampled: vec4f = texture_lod(high_resolution_texture, uv);
+same_level: fn (climb_set: Climb, uv: vec2f) -> vec3f {
+	let sampled: vec4f = texture_lod(climb_set.high_resolution_texture, uv);
 	return vec3f(sampled.x, sampled.y, sampled.z);
 }

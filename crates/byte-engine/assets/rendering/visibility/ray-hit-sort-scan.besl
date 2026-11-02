@@ -3,18 +3,20 @@
 //
 // It also records the frame's hit count, which bounds the shade pass. Next, the scatter places each hit in its run.
 
+use ::byte_engine::rendering::visibility::layouts::ray_hits::*;
+
 // Each thread's running total while the workgroup scans them.
 thread_totals: workgroup<u32, 256>;
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, ray_hits: RayHits) -> void {
 	let thread: u32 = input.thread_idx;
 	// 1,024 counts, four per thread.
 	let first: u32 = thread * 4;
 	let values: vec4u = vec4u(
-		atomic_exchange(ray_hit_sort.counts[first], 0),
-		atomic_exchange(ray_hit_sort.counts[first + 1], 0),
-		atomic_exchange(ray_hit_sort.counts[first + 2], 0),
-		atomic_exchange(ray_hit_sort.counts[first + 3], 0)
+		atomic_exchange(ray_hits.ray_hit_sort.counts[first], 0),
+		atomic_exchange(ray_hits.ray_hit_sort.counts[first + 1], 0),
+		atomic_exchange(ray_hits.ray_hit_sort.counts[first + 2], 0),
+		atomic_exchange(ray_hits.ray_hit_sort.counts[first + 3], 0)
 	);
 	let thread_total: u32 = values.x + values.y + values.z + values.w;
 	thread_totals[thread] = thread_total;
@@ -32,11 +34,11 @@ main: fn (input: StageInput) -> void {
 	}
 
 	let offset: u32 = thread_totals[thread] - thread_total;
-	ray_hit_sort.offsets[first] = offset;
-	ray_hit_sort.offsets[first + 1] = offset + values.x;
-	ray_hit_sort.offsets[first + 2] = offset + values.x + values.y;
-	ray_hit_sort.offsets[first + 3] = offset + values.x + values.y + values.z;
+	ray_hits.ray_hit_sort.offsets[first] = offset;
+	ray_hits.ray_hit_sort.offsets[first + 1] = offset + values.x;
+	ray_hits.ray_hit_sort.offsets[first + 2] = offset + values.x + values.y;
+	ray_hits.ray_hit_sort.offsets[first + 3] = offset + values.x + values.y + values.z;
 	if (thread == HIT_SORT_WORKGROUP_SIZE - 1) {
-		ray_hit_sort.hit_count = thread_totals[thread];
+		ray_hits.ray_hit_sort.hit_count = thread_totals[thread];
 	}
 }

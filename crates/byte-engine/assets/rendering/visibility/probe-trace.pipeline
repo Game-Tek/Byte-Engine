@@ -1,1 +1,1 @@
-{"name":"Probe Trace","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/probe-trace.besl"}}
+{"name":"Probe Trace","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/probe-trace.besl"}}

@@ -1,1 +1,1 @@
-{"name":"Color Correction","kind":{"type":"tile","shader":"byte-engine/rendering/color-correction/correct.besl"}}
+{"name":"Color Correction","kind":{"type":"tile","shader":"byte_engine/rendering/color-correction/correct.besl"}}

@@ -531,10 +531,11 @@ const COMMON_SHADER_SOURCE: &str = r#"
 	}
 "#;
 
-/// Builds the `Common` scope node that production shaders, VM tests, and graphics backends link against.
+/// Builds the `Common` module that production shaders, VM tests, and graphics backends link against, followed by the
+/// `use Common::*;` that lets the declarations after it call the helpers by name.
 ///
 /// This parses the source on every call. Shader generators call it once when they are created and keep the result.
-pub fn common_shader_scope() -> besl::parser::Node<'static> {
+pub fn common_shader_module() -> [besl::parser::Node<'static>; 2] {
 	let mut root = besl::parse(COMMON_SHADER_SOURCE)
 		.expect("Failed to parse the common BESL shader module. The most likely cause is invalid portable BESL syntax.");
 
@@ -543,7 +544,7 @@ pub fn common_shader_scope() -> besl::parser::Node<'static> {
 		_ => unreachable!("Invalid common BESL shader root. The most likely cause is a parser contract regression."),
 	};
 
-	besl::parser::Node::scope("Common", children)
+	[besl::parser::Node::scope("Common", children), besl::parser::Node::r#use("Common", true)]
 }
 
 /// The `CommonShaderGenerator` struct prepares standalone shaders, such as the engine's render passes, for baking.
@@ -553,7 +554,7 @@ pub fn common_shader_scope() -> besl::parser::Node<'static> {
 /// is created, so repeated shader builds only clone the owned syntax tree.
 #[derive(Clone)]
 pub struct CommonShaderGenerator {
-	scope: besl::parser::Node<'static>,
+	module: [besl::parser::Node<'static>; 2],
 	features: VisibilityFeatures,
 }
 
@@ -569,7 +570,7 @@ impl CommonShaderGenerator {
 	/// Creates the generator for a project that builds in `features`.
 	pub fn with_features(features: VisibilityFeatures) -> Self {
 		Self {
-			scope: common_shader_scope(),
+			module: common_shader_module(),
 			features,
 		}
 	}
@@ -581,7 +582,7 @@ impl ProgramTransform for CommonShaderGenerator {
 		if let Some(besl::parser::Nodes::Function { statements, .. }) = root.get_mut("main").map(|main| main.node_mut()) {
 			self.features.remove_left_out_code(statements);
 		}
-		root.add(vec![self.scope.clone()]);
+		root.add(self.module.to_vec());
 
 		root
 	}
@@ -591,7 +592,7 @@ impl ProgramTransform for CommonShaderGenerator {
 mod tests {
 	use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value};
 
-	use super::common_shader_scope;
+	use super::common_shader_module;
 	use crate::rendering::shader_vm_test::{buffer, compile, run_at, texture_2d};
 
 	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
@@ -643,7 +644,7 @@ mod tests {
 
 			for shader in &shaders {
 				let source = crate::rendering::shader_vm_test::asset_source(&format!("visibility/{shader}"));
-				let root = besl::parse(source).expect("a visibility shader asset should parse");
+				let root = crate::rendering::shader_vm_test::with_engine_modules(source);
 				if let Err(error) = besl::lex(generator.transform(root)) {
 					panic!("'{shader}' doesn't link with {features:?}: {error:?}");
 				}
@@ -657,13 +658,12 @@ mod tests {
 		result_members: Vec<besl::ParserNode<'static>>,
 		extra_nodes: Vec<besl::ParserNode<'static>>,
 	) -> (ExecutableProgram, Buffer) {
-		let mut root = besl::parse(source)
-			.expect("Failed to parse a common shader VM test. The most likely cause is invalid BESL test syntax.");
+		let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
 
 		root.add(extra_nodes);
 
+		root.add(common_shader_module().to_vec());
 		root.add(vec![
-			common_shader_scope(),
 			besl::ParserNode::binding(
 				"results",
 				besl::ParserNode::buffer(result_members),

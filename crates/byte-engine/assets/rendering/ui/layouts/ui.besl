@@ -32,9 +32,6 @@ ClipMask: struct {
 	rotation: vec4f,
 }
 
-primitives: descriptor<{ type: Primitive[], binding: 0, access: read }>;
-masks: descriptor<{ type: ClipMask[], binding: 1, access: read }>;
-
 GlyphCurve: struct {
 	// The first and second control points as (x1, y1, x2, y2). The third control point is the first
 	// point of the next element, which a contour's following curve shares.
@@ -45,15 +42,19 @@ GlyphBand: struct {
 	value: u32,
 }
 
-glyph_curves: descriptor<{ type: GlyphCurve[], binding: 2, access: read }>;
-// Per glyph: a (curve count, list offset) pair for every horizontal band, the same for every
-// vertical band, then the lists of curve indices those offsets point at, relative to the glyph.
-glyph_bands: descriptor<{ type: GlyphBand[], binding: 3, access: read }>;
-// The full and half resolution blurred backdrops that a backdrop blur primitive samples.
-full_blurred_texture: descriptor<{ type: Texture2D, binding: 4, access: read }>;
-half_blurred_texture: descriptor<{ type: Texture2D, binding: 5, access: read }>;
-// Element 0 is the glyph atlas and the rest are images.
-textures: descriptor<{ type: Texture2D, binding: 6, access: read, count: 32 }>;
-// Packed path outlines, laid out exactly like the glyph buffers, after the 32 texture slots. See `path_coverage`.
-path_curves: descriptor<{ type: GlyphCurve[], binding: 38, access: read }>;
-path_bands: descriptor<{ type: GlyphBand[], binding: 39, access: read }>;
+Ui: layer {
+	primitives: descriptor<{ type: Primitive[], binding: 0, access: read }>;
+	masks: descriptor<{ type: ClipMask[], binding: 1, access: read }>;
+	glyph_curves: descriptor<{ type: GlyphCurve[], binding: 2, access: read }>;
+	// Per glyph: a (curve count, list offset) pair for every horizontal band, the same for every
+	// vertical band, then the lists of curve indices those offsets point at, relative to the glyph.
+	glyph_bands: descriptor<{ type: GlyphBand[], binding: 3, access: read }>;
+	// The full and half resolution blurred backdrops that a backdrop blur primitive samples.
+	full_blurred_texture: descriptor<{ type: Texture2D, binding: 4, access: read }>;
+	half_blurred_texture: descriptor<{ type: Texture2D, binding: 5, access: read }>;
+	// Element 0 is the glyph atlas and the rest are images.
+	textures: descriptor<{ type: Texture2D, binding: 6, access: read, count: 32 }>;
+	// Packed path outlines, laid out exactly like the glyph buffers, after the 32 texture slots. See `path_coverage`.
+	path_curves: descriptor<{ type: GlyphCurve[], binding: 38, access: read }>;
+	path_bands: descriptor<{ type: GlyphBand[], binding: 39, access: read }>;
+}

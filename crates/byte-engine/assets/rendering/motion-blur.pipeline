@@ -1,1 +1,1 @@
-{"name":"Motion Blur","kind":{"type":"tile","shader":"byte-engine/rendering/motion-blur.besl"}}
+{"name":"Motion Blur","kind":{"type":"tile","shader":"byte_engine/rendering/motion-blur.besl"}}

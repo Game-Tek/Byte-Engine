@@ -4,14 +4,16 @@
 // Next, the shade pass runs the closest-hit shader of each sorted hit, so neighboring invocations mostly run the same
 // shader.
 
-main: fn (input: StageInput) -> void {
+use ::byte_engine::rendering::visibility::layouts::ray_hits::*;
+
+main: fn (input: StageInput, ray_hits: RayHits) -> void {
 	let ray: u32 = input.thread_id.x;
-	if (ray >= ray_hit_sort.rays) {
+	if (ray >= ray_hits.ray_hit_sort.rays) {
 		return;
 	}
-	let key: u32 = ray_hit_keys[ray];
+	let key: u32 = ray_hits.ray_hit_keys[ray];
 	if (key == NO_HIT) {
 		return;
 	}
-	ray_sorted_hits[ray_hit_sort.offsets[key >> HIT_RANK_BITS] + (key & HIT_RANK_MASK)] = ray;
+	ray_hits.ray_sorted_hits[ray_hits.ray_hit_sort.offsets[key >> HIT_RANK_BITS] + (key & HIT_RANK_MASK)] = ray;
 }

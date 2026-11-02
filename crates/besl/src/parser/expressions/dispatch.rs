@@ -87,8 +87,16 @@ pub(crate) fn is_identifier_char(character: char) -> bool {
 
 pub(crate) fn is_identifier(value: &str) -> bool {
 	// `if` and `match` start values, so a name like `if` would read `if (c)` as a call.
-	if matches!(value, "struct" | "fn" | "let" | "return" | "const" | "match" | "if" | "else") {
+	if matches!(value, "struct" | "fn" | "let" | "return" | "const" | "match" | "if" | "else" | "mod" | "use") {
 		return false;
 	}
 	value.chars().all(is_identifier_char)
+}
+
+/// Reports whether `value` names a declaration: an identifier, or identifiers joined by `::` into a module path such
+/// as `lighting::brdf::ggx` or `::byte_engine::color::Color`. See [`crate::tokenizer::tokenize`], which keeps a path in one token.
+pub(crate) fn is_path(value: &str) -> bool {
+	// A leading `::` starts the path at the asset root.
+	let value = value.strip_prefix("::").unwrap_or(value);
+	value.split("::").all(|segment| !segment.is_empty() && is_identifier(segment))
 }

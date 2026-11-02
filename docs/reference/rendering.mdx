@@ -408,7 +408,7 @@ in `pipelines` mode, and into the shader of its phase in `uber` mode.
 | Alpha mode | Opaque, masked with a cutoff, or blended. Blended materials draw in the transparent phase. |
 | Double-sided | Draws without back-face culling. |
 | Variables | Programs that differ only in textures or dynamic values share one pipeline and one dispatch; each distinct set of static scalar and vector values takes its own. Texture variables take slots in declaration order, up to 16. Dynamic values number at most 16384 in all, counting every loaded material's and every entity's own. |
-| Layout layers | Every material builds on the scene records, scene, visibility buffer, and material evaluation layers. |
+| Layers | Every material evaluation shader takes the scene, visibility buffer, and material evaluation layers, and every closest-hit shader the scene and ray-traced scene layers. |
 
 `render.material-evaluation` chooses how material evaluation runs. Both modes
 shade every pixel with the same surface and lighting:

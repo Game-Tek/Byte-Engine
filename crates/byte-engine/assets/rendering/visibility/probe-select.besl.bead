@@ -1,10 +1,5 @@
 {
 	"$schema": "../../schemas/besl.bead.schema.json",
 	"stage": "Compute",
-	"workgroup": [1, 1, 1],
-	"layouts": [
-		"layouts/probe-volume.besl",
-		"layouts/light-table.besl",
-		"layouts/probe-gi.besl"
-	]
+	"workgroup": [1, 1, 1]
 }

@@ -1,1 +1,1 @@
-{"name":"Pixel Mapping","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/pixel-mapping.besl","push_constants":[{"offset":0,"size":4}]}}
+{"name":"Pixel Mapping","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/pixel-mapping.besl","push_constants":[{"offset":0,"size":4}]}}

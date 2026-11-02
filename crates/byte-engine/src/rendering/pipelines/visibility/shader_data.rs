@@ -1,6 +1,6 @@
 //! CPU mirrors of the GPU records read by the visibility shaders.
 //!
-//! Every type here is `repr(C)` and matches a struct declared in [`super::shader_generator::visibility_shader_scope`].
+//! Every type here is `repr(C)` and matches a struct declared in [`super::shader_generator::visibility_shader_module`].
 //! The layout tests at the bottom pin the offsets the shaders depend on.
 
 use ghi::pod::{Mat4f, Mat4x3f, Vec3f};

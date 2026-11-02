@@ -1,0 +1,24 @@
+// The per-sink set of the probe resolve: the sink's camera and exposure, and the images material evaluation reads
+// indirect diffuse light from.
+
+ProbeResolveParameters: struct {
+	// Maps the sink camera's view-space positions and directions to world space.
+	view_to_world: mat4f,
+	// Multiplies the probes' light, as the lit image's exposure does.
+	exposure: f32,
+	// The pool slot the first shown debug view writes; shown views write consecutive slots in view order.
+	debug_view_first_slot: u32,
+	// Whether to write each probe debug view.
+	debug_view_probes: bool,
+	debug_view_probe_light: bool,
+	_padding: u32,
+}
+
+ProbeResolve: layer {
+	probe_resolve_parameters: descriptor<{ type: ProbeResolveParameters, binding: 1200, access: read }>;
+	// The half-resolution light material evaluation upsamples, named `SSGI History` like SSGI's.
+	history_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1202, access: write }>;
+	// The half-resolution view-space normals material evaluation upsamples with, named `SSGI Normals` like SSGI's.
+	normal_output: descriptor<{ type: StorageImage<rg16_snorm>, binding: 1203, access: write }>;
+	debug_view_targets: descriptor<{ type: StorageImage, binding: 1204, access: write, count: 15 }>;
+}

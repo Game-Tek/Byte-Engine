@@ -1,1 +1,1 @@
-{"name":"Ray Hit Sort Scan","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/ray-hit-sort-scan.besl"}}
+{"name":"Ray Hit Sort Scan","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/ray-hit-sort-scan.besl"}}

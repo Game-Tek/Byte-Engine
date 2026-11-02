@@ -1,4 +1,8 @@
 // A tile output, so the replacement for `main` this writes needs no shader-write usage and stays losslessly compressed.
+
+use ::byte_engine::rendering::layouts::lut::*;
+use ::byte_engine::rendering::layouts::color::*;
+
 result_texture: output<vec4f, 0>;
 
 // Convert the renderer's linear-sRGB D65 output to linear DaVinci Wide Gamut D65.
@@ -73,18 +77,18 @@ agx_display_linear: fn(color: vec3f) -> vec3f {
 }
 
 // Convert to DWG/Intermediate, apply the creative look, then use AgX for SDR display rendering.
-main: fn(input: StageInput) -> void {
+main: fn(input: StageInput, lut: Lut) -> void {
 	let coord: vec2u = input.thread_id;
 	let extent: vec2u = input.extent;
 	if (coord.x >= extent.x || coord.y >= extent.y) {
 		return;
 	}
 	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));
-	let source_color: vec4f = texture_lod(source_texture, uv);
+	let source_color: vec4f = texture_lod(lut.source_texture, uv);
 	let source_rgb: vec3f = vec3f(source_color.x, source_color.y, source_color.z);
 	let grading_color: vec3f = davinci_intermediate(linear_srgb_to_dwg(source_rgb));
 	// The LUT operates entirely in DWG/Intermediate.
-	let looked_dwg: vec3f = davinci_intermediate_to_dwg(apply_lut(grading_color));
+	let looked_dwg: vec3f = davinci_intermediate_to_dwg(apply_lut(lut, grading_color));
 	let display_linear: vec3f = agx_display_linear(dwg_to_linear_srgb(looked_dwg));
 	let result_color: vec3f = linear_srgb_to_srgb(display_linear);
 	write(result_texture, coord, vec4f(result_color.x, result_color.y, result_color.z, source_color.w));

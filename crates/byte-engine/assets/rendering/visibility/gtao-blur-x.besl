@@ -1,3 +1,5 @@
+use ::byte_engine::rendering::visibility::layouts::gtao_blur::*;
+
 shared_linear_depth: workgroup<f32, 120>;
 shared_ao: workgroup<f32, 96>;
 
@@ -60,9 +62,9 @@ compute_local_depth_variance: fn (center_index: u32, center_linear_depth: f32) -
 	return max(mean_sq / sample_count - normalized_mean * normalized_mean, 0.0);
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, gtao_blur: GtaoBlur) -> void {
 	let coord: vec2u = input.thread_id;
-	let extent: vec2u = image_size(ao_output);
+	let extent: vec2u = image_size(gtao_blur.ao_output);
 	let workgroup_origin: vec2u = coord - coord % vec2u(GTAO_BLUR_WORKGROUP_WIDTH, GTAO_BLUR_WORKGROUP_HEIGHT);
 	let lane: u32 = input.thread_idx;
 
@@ -73,26 +75,26 @@ main: fn (input: StageInput) -> void {
 			tiled_source_coordinate(workgroup_origin.x, index % GTAO_BLUR_DEPTH_TILE_WIDTH, GTAO_BLUR_DEPTH_HALO_X, extent.x),
 			tiled_source_coordinate(workgroup_origin.y, index / GTAO_BLUR_DEPTH_TILE_WIDTH, GTAO_BLUR_DEPTH_HALO_Y, extent.y)
 		);
-		shared_linear_depth[index] = fetch(linear_depth, source_coordinate).x;
+		shared_linear_depth[index] = fetch(gtao_blur.linear_depth, source_coordinate).x;
 	}
 	for (let index: u32 = lane; index < GTAO_BLUR_AO_TILE_SIZE; index = index + GTAO_BLUR_WORKGROUP_SIZE) {
 		let source_coordinate: vec2u = vec2u(
 			tiled_source_coordinate(workgroup_origin.x, index % GTAO_BLUR_AO_TILE_WIDTH, GTAO_BLUR_AO_HALO_X, extent.x),
 			tiled_source_coordinate(workgroup_origin.y, index / GTAO_BLUR_AO_TILE_WIDTH, 0, extent.y)
 		);
-		shared_ao[index] = fetch(ao_source, source_coordinate).x;
+		shared_ao[index] = fetch(gtao_blur.ao_source, source_coordinate).x;
 	}
 	workgroup_barrier();
 
 	// Partial edge workgroups must synchronize before their out-of-bounds lanes return.
-	guard_image_bounds(ao_output, coord);
+	guard_image_bounds(gtao_blur.ao_output, coord);
 	let local: vec2u = coord - workgroup_origin;
 	let depth_index: u32 = (local.y + GTAO_BLUR_DEPTH_HALO_Y) * GTAO_BLUR_DEPTH_TILE_WIDTH + local.x + GTAO_BLUR_DEPTH_HALO_X;
 	let ao_index: u32 = local.y * GTAO_BLUR_AO_TILE_WIDTH + local.x + GTAO_BLUR_AO_HALO_X;
 
 	let center_linear_depth: f32 = shared_linear_depth[depth_index];
 	if (center_linear_depth == 0.0) {
-		write(ao_output, coord, vec4f(1.0, 1.0, 1.0, 1.0));
+		write(gtao_blur.ao_output, coord, vec4f(1.0, 1.0, 1.0, 1.0));
 		return;
 	}
 
@@ -123,5 +125,5 @@ main: fn (input: StageInput) -> void {
 
 	let blurred_ao: f32 = filtered_ao / max(total_weight, 0.00001);
 	let final_ao: f32 = mix(center_ao, blurred_ao, blur_mix);
-	write(ao_output, coord, vec4f(final_ao, 0.0, 0.0, 1.0));
+	write(gtao_blur.ao_output, coord, vec4f(final_ao, 0.0, 0.0, 1.0));
 }

@@ -1,0 +1,80 @@
+---
+title: Share a descriptor set between shaders
+description: Declare a descriptor set once as a BESL layer, take it in several shaders, and bind it from Rust by name.
+icon: Layers
+---
+
+Share a descriptor set when several of your shaders read the same resources, such as a frame's camera or a
+sprite page. You declare the set once, as a layer in a BESL module, every shader takes the layer, and your renderer
+builds the set from the same module and binds the resources by the names the layer gives them.
+
+## Declare the layer in a module
+
+Put the layer in its own `.besl` file under your `assets` directory, with the records it holds. The file is a
+module: it has no `main` and no `.besl.bead` sidecar.
+
+```rust
+// assets/shaders/layouts/frame.besl
+Frame: struct {
+	view_projection: mat4f,
+}
+
+FrameSet: layer {
+	frame: descriptor<{ type: Frame, binding: 0, access: read, memory: constant }>;
+}
+```
+
+Give each layer its own range of `binding` numbers, so layers that a shader takes together never collide.
+
+## Take the layer in each shader
+
+Bring the module in with a path from the asset root, and take the layer as a parameter of `main`. Reach its
+descriptors through the parameter:
+
+```rust
+// assets/shaders/sprite.vertex.besl
+use ::shaders::layouts::frame::*;
+
+in_position: input<vec3f, 0>;
+
+main: fn (frame: FrameSet) -> interface { position: vec4f } {
+	let position: vec4f = frame.frame.view_projection * vec4f(in_position.x, in_position.y, in_position.z, 1.0);
+	return { position };
+}
+```
+
+A helper that reads the layer takes it as a parameter too, and `main` passes it on. The parameters you give `main`
+decide the shader's descriptor sets and their order. Baking tracks the module as a dependency of every shader that
+uses it, so editing the layer rebakes them.
+
+## Build and bind the set in Rust
+
+Embed the module, then build the layer's set layout with `SetLayout::from_layer`, naming the layer by its path from
+the asset root:
+
+```rust
+use std::sync::LazyLock;
+
+use byte_engine::rendering::SetLayout;
+
+const MODULES: &[(&str, &str)] = &[(
+	"shaders/layouts/frame.besl",
+	include_str!("../assets/shaders/layouts/frame.besl"),
+)];
+
+static FRAME_LAYOUT: LazyLock<SetLayout> =
+	LazyLock::new(|| SetLayout::from_layer("::shaders::layouts::frame::FrameSet", MODULES));
+```
+
+Create a set with `create_set`, and write its resources by name through `binder`, such as
+`FRAME_LAYOUT.binder(set).buffer("frame", buffer)`. A set built from a layer matches every shader baked against that
+version of the layer. If you edit the layer and run with shaders baked against the old version, binding fails with
+an error that names the layer.
+
+The [layers and signatures](/docs/reference/besl/interface#layers-and-signatures) reference specifies what a layer
+can hold and how a shader's sets are ordered.
+
+## Rust API
+
+- [`SetLayout`](/docs/api/latest/byte_engine/rendering/set_layout/SetLayout)
+- [`set_layout` module](/docs/api/latest/byte_engine/rendering/set_layout)

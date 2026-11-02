@@ -1,1 +1,1 @@
-{"name":"GTAO Blur X","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/gtao-blur-x.besl"}}
+{"name":"GTAO Blur X","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/gtao-blur-x.besl"}}

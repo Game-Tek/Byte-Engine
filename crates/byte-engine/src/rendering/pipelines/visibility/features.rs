@@ -67,8 +67,8 @@ impl std::str::FromStr for MaterialEvaluationMode {
 /// [`MaterialEvaluationMode::Uber`] uses. They are resources with no asset behind them: the bake assembles each from
 /// every material variant the store holds.
 pub(crate) const UBER_MATERIAL_SHADERS: [&str; 2] = [
-	"byte-engine/rendering/visibility/material-evaluation-opaque.uber",
-	"byte-engine/rendering/visibility/material-evaluation-transparent.uber",
+	"byte_engine/rendering/visibility/material-evaluation-opaque.uber",
+	"byte_engine/rendering/visibility/material-evaluation-transparent.uber",
 ];
 
 /// The `VisibilityFeatures` struct records which optional visibility features a project builds into its shaders.
@@ -159,7 +159,7 @@ impl VisibilityFeatures {
 	}
 
 	/// Returns each feature's shader member name, or a prefix of member names when it ends in `_`, the directory under
-	/// `byte-engine/rendering/` and the stems of the engine assets only it uses, and whether the project builds it in.
+	/// `byte_engine/rendering/` and the stems of the engine assets only it uses, and whether the project builds it in.
 	/// Each stem names a pipeline and its shader, or a shader the engine assembles a pipeline from, which takes a row of
 	/// its own.
 	fn table(&self) -> [(&'static str, &'static str, &'static [&'static str], bool); 12] {
@@ -207,7 +207,7 @@ impl VisibilityFeatures {
 	pub fn excludes(&self, id: &str) -> bool {
 		// Each pipeline and its shader share a stem, such as `gtao-upscale.pipeline` and `gtao-upscale.besl`.
 		let Some((path, extension)) = id
-			.strip_prefix("byte-engine/rendering/")
+			.strip_prefix("byte_engine/rendering/")
 			.and_then(|file| file.rsplit_once('.'))
 		else {
 			return false;
@@ -265,14 +265,14 @@ mod tests {
 
 			for extension in ["pipeline", "besl"] {
 				assert!(
-					features.excludes(&format!("byte-engine/rendering/visibility/{pipeline}.{extension}")),
+					features.excludes(&format!("byte_engine/rendering/visibility/{pipeline}.{extension}")),
 					"parameter: {parameter}"
 				);
 			}
 			// Each feature leaves the others' assets alone.
 			let excluded = cases
 				.iter()
-				.filter(|(_, pipeline)| features.excludes(&format!("byte-engine/rendering/visibility/{pipeline}.pipeline")));
+				.filter(|(_, pipeline)| features.excludes(&format!("byte_engine/rendering/visibility/{pipeline}.pipeline")));
 			assert_eq!(excluded.count(), 1, "parameter: {parameter}");
 		}
 	}
@@ -298,7 +298,7 @@ mod tests {
 		assert!(assets.iter().any(|asset| asset == "surfel-count.pipeline"), "{assets:?}");
 		assert!(assets.iter().any(|asset| asset == "surfel-shade.besl"), "{assets:?}");
 		for asset in &assets {
-			let id = format!("byte-engine/rendering/visibility/{asset}");
+			let id = format!("byte_engine/rendering/visibility/{asset}");
 			assert!(left_out.excludes(&id), "a bake without surfel GI should leave out {asset}");
 			assert!(!built_in.excludes(&id), "a bake with surfel GI should keep {asset}");
 		}
@@ -325,7 +325,7 @@ mod tests {
 		assert!(assets.iter().any(|asset| asset == "probe-update.pipeline"), "{assets:?}");
 		assert!(assets.iter().any(|asset| asset == "probe-shade.besl"), "{assets:?}");
 		for asset in &assets {
-			let id = format!("byte-engine/rendering/visibility/{asset}");
+			let id = format!("byte_engine/rendering/visibility/{asset}");
 			assert!(left_out.excludes(&id), "a bake without probe GI should leave out {asset}");
 			assert!(!built_in.excludes(&id), "a bake with probe GI should keep {asset}");
 		}
@@ -333,7 +333,7 @@ mod tests {
 
 	#[test]
 	fn the_default_hit_stays_while_either_technique_traces_rays() {
-		let default_hit = "byte-engine/rendering/visibility/default-hit.besl";
+		let default_hit = "byte_engine/rendering/visibility/default-hit.besl";
 		let features = |surfel_gi, probe_gi| VisibilityFeatures {
 			surfel_gi,
 			probe_gi,
@@ -344,8 +344,8 @@ mod tests {
 		assert!(!features(true, false).excludes(default_hit));
 		assert!(!features(false, true).excludes(default_hit));
 		// Each technique keeps only its own shade pass.
-		assert!(features(false, true).excludes("byte-engine/rendering/visibility/surfel-shade.besl"));
-		assert!(features(true, false).excludes("byte-engine/rendering/visibility/probe-shade.besl"));
+		assert!(features(false, true).excludes("byte_engine/rendering/visibility/surfel-shade.besl"));
+		assert!(features(true, false).excludes("byte_engine/rendering/visibility/probe-shade.besl"));
 	}
 
 	#[test]
@@ -356,11 +356,11 @@ mod tests {
 		assert!(!left_out.debug_views);
 		assert!(built_in.debug_views);
 		for extension in ["pipeline", "besl"] {
-			let id = format!("byte-engine/rendering/debug-view/present.{extension}");
+			let id = format!("byte_engine/rendering/debug-view/present.{extension}");
 			assert!(left_out.excludes(&id));
 			assert!(!built_in.excludes(&id));
 		}
-		assert!(!left_out.excludes("byte-engine/rendering/visibility/gtao.pipeline"));
+		assert!(!left_out.excludes("byte_engine/rendering/visibility/gtao.pipeline"));
 	}
 
 	#[test]
@@ -371,7 +371,7 @@ mod tests {
 		assert!(enabled.surfel_gi);
 		// Surfel GI takes the place of SSGI only at runtime, so building it in leaves SSGI and its assets in.
 		assert!(enabled.ssgi);
-		assert!(!enabled.excludes("byte-engine/rendering/visibility/ssgi-trace.pipeline"));
+		assert!(!enabled.excludes("byte_engine/rendering/visibility/ssgi-trace.pipeline"));
 	}
 
 	#[test]
@@ -389,7 +389,7 @@ mod tests {
 		// The depth pyramid and the sun visibility resolve also serve passes that always run.
 		for asset in ["depth-pyramid.besl", "sun-visibility.pipeline", "sun-visibility.besl"] {
 			assert!(
-				!features.excludes(&format!("byte-engine/rendering/visibility/{asset}")),
+				!features.excludes(&format!("byte_engine/rendering/visibility/{asset}")),
 				"asset: {asset}"
 			);
 		}
@@ -403,7 +403,7 @@ mod tests {
 		assert_eq!(pipelines.material_evaluation, MaterialEvaluationMode::Pipelines);
 		assert_eq!(uber.material_evaluation, MaterialEvaluationMode::Uber);
 		for asset in ["pixel-mapping.pipeline", "material-count.besl", "material-offset.pipeline"] {
-			let id = format!("byte-engine/rendering/visibility/{asset}");
+			let id = format!("byte_engine/rendering/visibility/{asset}");
 			assert!(!pipelines.excludes(&id), "asset: {asset}");
 			assert!(uber.excludes(&id), "asset: {asset}");
 		}
@@ -422,6 +422,6 @@ mod tests {
 		let features = VisibilityFeatures::from_parameters(&[][..] as &[Parameter]);
 
 		assert_eq!(features, VisibilityFeatures::default());
-		assert!(!features.excludes("byte-engine/rendering/visibility/gtao.pipeline"));
+		assert!(!features.excludes("byte_engine/rendering/visibility/gtao.pipeline"));
 	}
 }

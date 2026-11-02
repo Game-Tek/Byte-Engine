@@ -104,7 +104,13 @@ impl Generator {
 					order.push(program.clone());
 				}
 			}
-			besl::Nodes::Scope { children, .. } => {
+			// A layer's set belongs to the shader only when `main` takes the layer.
+			besl::Nodes::Scope { children, .. }
+			| besl::Nodes::Layer {
+				members: children,
+				entry: Some(_),
+				..
+			} => {
 				for child in children {
 					Self::append_declared_bindings(child, order);
 				}
@@ -126,7 +132,12 @@ impl Generator {
 					order.push(program.clone());
 				}
 			}
-			besl::Nodes::Scope { children, .. } => {
+			besl::Nodes::Scope { children, .. }
+			| besl::Nodes::Layer {
+				members: children,
+				entry: Some(_),
+				..
+			} => {
 				for child in children {
 					Self::append_declared_push_constant(child, order);
 				}

@@ -5,28 +5,32 @@
 // frames since their last update, weighed by how much they matter. The pass counts the buckets, and the state of every
 // probe for the host's log. Next, the select pass finds how many buckets the frame's budget covers.
 
-main: fn (input: StageInput) -> void {
+use ::byte_engine::rendering::visibility::layouts::probe_volume::*;
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::probe_gi::*;
+
+main: fn (input: StageInput, probe_volume: ProbeVolume, probe_gi_set: ProbeGi) -> void {
 	let slot: u32 = input.thread_id.x;
 	if (slot >= PROBE_COUNT) {
 		return;
 	}
 	let cascade: u32 = probe_slot_cascade(slot);
-	let coordinate: vec3f = probe_slot_coordinate(probe_volume_parameters.cascades[cascade].start, slot);
-	let frame: u32 = probe_volume_parameters.frame_index;
-	let record: ProbeRecord = probe_records[slot];
+	let coordinate: vec3f = probe_slot_coordinate(probe_volume.probe_volume_parameters.cascades[cascade].start, slot);
+	let frame: u32 = probe_volume.probe_volume_parameters.frame_index;
+	let record: ProbeRecord = probe_volume.probe_records[slot];
 	if (record.coordinate.x != coordinate.x || record.coordinate.y != coordinate.y || record.coordinate.z != coordinate.z) {
 		record = ProbeRecord(vec3f(0.0, 0.0, 0.0), PROBE_STATE_UNSET, coordinate, 0, frame, 0, 0, 0);
-		probe_records[slot] = record;
+		probe_volume.probe_records[slot] = record;
 	}
 
-	let seen: bool = probe_seen_lately(slot);
+	let seen: bool = probe_seen_lately(probe_volume, slot);
 	let bucket: u32 = 0;
 	if (record.state == PROBE_STATE_UNSET) {
 		bucket = PROBE_PRIORITY_BUCKETS - 2 - cascade;
 		if (seen) {
 			bucket = PROBE_PRIORITY_BUCKETS - 1;
 		}
-		atomic_add(probe_schedule.unset, 1);
+		atomic_add(probe_gi_set.probe_schedule.unset, 1);
 	} else {
 		// A probe that lights what a sink sees updates eight times as often as one that lights only what it doesn't,
 		// and a probe that lights nothing an eighth as often, so it still notices geometry that moves next to it.
@@ -36,16 +40,16 @@ main: fn (input: StageInput) -> void {
 			if (seen) {
 				importance = 8.0;
 			}
-			atomic_add(probe_schedule.active, 1);
+			atomic_add(probe_gi_set.probe_schedule.active, 1);
 		} else if (record.state == PROBE_STATE_IDLE) {
-			atomic_add(probe_schedule.idle, 1);
+			atomic_add(probe_gi_set.probe_schedule.idle, 1);
 		} else {
-			atomic_add(probe_schedule.buried, 1);
+			atomic_add(probe_gi_set.probe_schedule.buried, 1);
 		}
 		let score: f32 = f32(frame - record.updated_frame) * importance;
 		// Four buckets for every doubling of the score, below the unset probes' buckets.
 		bucket = u32(min(log2(1.0 + score) * 4.0, f32(PROBE_PRIORITY_BUCKETS - 2 - PROBE_CASCADES)));
 	}
-	probe_priorities[slot] = bucket;
-	atomic_add(probe_schedule.histogram[bucket], 1);
+	probe_gi_set.probe_priorities[slot] = bucket;
+	atomic_add(probe_gi_set.probe_schedule.histogram[bucket], 1);
 }

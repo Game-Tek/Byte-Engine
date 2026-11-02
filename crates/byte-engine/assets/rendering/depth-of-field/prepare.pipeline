@@ -1,1 +1,0 @@
-{"name":"Depth of Field Prepare","kind":{"type":"compute","shader":"byte-engine/rendering/depth-of-field/prepare.besl"}}

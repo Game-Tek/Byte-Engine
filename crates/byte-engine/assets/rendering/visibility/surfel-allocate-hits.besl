@@ -8,25 +8,28 @@
 // It follows the irradiance cache of kajiya by Tomasz Stachowiak (MIT License, Copyright (c) 2019 Embark Studios),
 // which allocates entries where rays look them up. See THIRD_PARTY_NOTICES.md.
 
-main: fn (input: StageInput) -> void {
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::surfel_gi::*;
+
+main: fn (input: StageInput, surfel_gi_set: SurfelGi) -> void {
 	let request: u32 = input.thread_id.x;
-	if (request >= min(atomic_load(surfel_pool.hit_spawns), SURFEL_MAX_HIT_SPAWNS)) {
+	if (request >= min(atomic_load(surfel_gi_set.surfel_pool.hit_spawns), SURFEL_MAX_HIT_SPAWNS)) {
 		return;
 	}
 	// Before the camera's surfels exist, no hit spawns: the share of none is none.
-	if (f32(surfel_pool.last_bounced) >= f32(surfel_pool.last_alive) * SURFEL_BOUNCED_SHARE) {
+	if (f32(surfel_gi_set.surfel_pool.last_bounced) >= f32(surfel_gi_set.surfel_pool.last_alive) * SURFEL_BOUNCED_SHARE) {
 		return;
 	}
 	// The slots in use: those ever used, less the free ones. Requests race on both counts, so each share can overshoot
 	// by at most one frame's requests.
-	let used: u32 = atomic_load(surfel_pool.high_water) - atomic_load(surfel_pool.free_count);
-	if (f32(used) >= f32(surfel_parameters.surfel_capacity) * SURFEL_HIT_SPAWN_SHARE) {
+	let used: u32 = atomic_load(surfel_gi_set.surfel_pool.high_water) - atomic_load(surfel_gi_set.surfel_pool.free_count);
+	if (f32(used) >= f32(surfel_gi_set.surfel_parameters.surfel_capacity) * SURFEL_HIT_SPAWN_SHARE) {
 		return;
 	}
-	let slot: u32 = surfel_take_slot();
+	let slot: u32 = surfel_take_slot(surfel_gi_set);
 	if (slot == NO_SURFEL) {
 		return;
 	}
-	let spawn: SurfelHitSpawn = surfel_hit_spawns[request];
-	surfel_start(slot, spawn.position, spawn.normal, vec4f(0.0, 0.0, 0.0, 0.0), 0.0, 1);
+	let spawn: SurfelHitSpawn = surfel_gi_set.surfel_hit_spawns[request];
+	surfel_start(surfel_gi_set, slot, spawn.position, spawn.normal, vec4f(0.0, 0.0, 0.0, 0.0), 0.0, 1);
 }

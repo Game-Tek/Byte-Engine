@@ -8,6 +8,10 @@
 // over, as a young probe. The border then repeats the edges of both maps across the octahedron's edges. Last, one
 // invocation relocates the probe and sorts it into a state.
 
+use ::byte_engine::rendering::visibility::layouts::probe_volume::*;
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::probe_gi::*;
+
 PROBE_UPDATE_WORKGROUP_SIZE: const u32 = 256;
 // The irradiance and distance texels of one probe: 6 × 6 and 14 × 14.
 PROBE_IRRADIANCE_TEXELS: const u32 = 36;
@@ -61,7 +65,7 @@ probe_restarts: fn (updates: u32) -> bool {
 // Relocation moves the probe out through the nearest back face when its rays hit back faces too often, or away from a
 // front face that is too close. The probe is then buried when it still sees into geometry, active when a surface lies
 // in the cells around it or a pixel read it lately, and idle otherwise.
-probe_updated_record: fn (slot: u32, record: ProbeRecord, spacing: f32, restarted: bool) -> ProbeRecord {
+probe_updated_record: fn (probe_volume: ProbeVolume, slot: u32, record: ProbeRecord, spacing: f32, restarted: bool) -> ProbeRecord {
 	let grid_position: vec3f = record.coordinate * spacing;
 	let position: vec3f = grid_position + record.offset;
 	let backfaces: u32 = 0;
@@ -118,10 +122,10 @@ probe_updated_record: fn (slot: u32, record: ProbeRecord, spacing: f32, restarte
 	let state: u32 = PROBE_STATE_IDLE;
 	if (buried) {
 		state = PROBE_STATE_BURIED;
-	} else if (near_surface || probe_seen_lately(slot)) {
+	} else if (near_surface || probe_seen_lately(probe_volume, slot)) {
 		state = PROBE_STATE_ACTIVE;
 	}
-	return ProbeRecord(offset, state, record.coordinate, updates, probe_volume_parameters.frame_index, 0, 0, 0);
+	return ProbeRecord(offset, state, record.coordinate, updates, probe_volume.probe_volume_parameters.frame_index, 0, 0, 0);
 }
 
 // Returns, for border texel `border` of a map of `side` × `side` texels inside a one texel border, the border texel's
@@ -157,27 +161,27 @@ probe_border_texel: fn (border: u32, side: u32) -> vec4u {
 	return vec4u(side + 1, side + 1, 0, 0);
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, probe_volume: ProbeVolume, probe_gi_set: ProbeGi) -> void {
 	let lane: u32 = input.thread_idx;
 	let listed: u32 = input.thread_id.x / PROBE_UPDATE_WORKGROUP_SIZE;
 	// The whole workgroup leaves together, before any barrier.
-	if (listed >= probe_listed_count()) {
+	if (listed >= probe_listed_count(probe_gi_set)) {
 		return;
 	}
-	let slot: u32 = probe_list[listed];
+	let slot: u32 = probe_gi_set.probe_list[listed];
 	let cascade: u32 = probe_slot_cascade(slot);
-	let spacing: f32 = probe_volume_parameters.cascades[cascade].spacing;
-	let record: ProbeRecord = probe_records[slot];
+	let spacing: f32 = probe_volume.probe_volume_parameters.cascades[cascade].spacing;
+	let record: ProbeRecord = probe_volume.probe_records[slot];
 	if (lane < PROBE_RAYS) {
-		let result: ProbeRayResult = probe_ray_results[listed * PROBE_RAYS + lane];
+		let result: ProbeRayResult = probe_gi_set.probe_ray_results[listed * PROBE_RAYS + lane];
 		rays_light[lane] = vec4f(result.radiance.x, result.radiance.y, result.radiance.z, result.distance);
-		rays_direction[lane] = probe_ray_direction(lane);
+		rays_direction[lane] = probe_ray_direction(probe_gi_set, lane);
 	}
 	if (lane < PROBE_IRRADIANCE_TEXELS) {
 		let held: vec2u = probe_tile_origin(slot, PROBE_IRRADIANCE_TILE)
 			+ vec2u(lane % PROBE_IRRADIANCE_SIDE, lane / PROBE_IRRADIANCE_SIDE)
 			+ vec2u(1, 1);
-		irradiance_texels[lane] = image_load(probe_irradiance_atlas, held);
+		irradiance_texels[lane] = image_load(probe_gi_set.probe_irradiance_atlas, held);
 	}
 	workgroup_barrier();
 
@@ -218,7 +222,7 @@ main: fn (input: StageInput) -> void {
 		if (hysteresis > 0.0) {
 			blended = fresh * (1.0 - hysteresis) + irradiance_texels[lane] * hysteresis;
 		}
-		write(probe_irradiance_atlas, atlas_texel, blended);
+		write(probe_gi_set.probe_irradiance_atlas, atlas_texel, blended);
 		irradiance_texels[lane] = blended;
 	} else if (lane < PROBE_IRRADIANCE_TEXELS + PROBE_DISTANCE_TEXELS) {
 		let index: u32 = lane - PROBE_IRRADIANCE_TEXELS;
@@ -238,7 +242,7 @@ main: fn (input: StageInput) -> void {
 			total = total + weight;
 		}
 		let atlas_texel: vec2u = probe_tile_origin(slot, PROBE_DISTANCE_TILE) + texel + vec2u(1, 1);
-		let previous: vec4f = image_load(probe_distance_atlas, atlas_texel);
+		let previous: vec4f = image_load(probe_gi_set.probe_distance_atlas, atlas_texel);
 		// Without rays near its direction, a texel keeps what it held, or starts at the limit.
 		let blended: vec2f = vec2f(previous.x, previous.y);
 		if (hysteresis == 0.0) {
@@ -247,7 +251,7 @@ main: fn (input: StageInput) -> void {
 		if (total > 0.000001) {
 			blended = sum * (1.0 / total) * (1.0 - hysteresis) + blended * hysteresis;
 		}
-		write(probe_distance_atlas, atlas_texel, vec4f(blended.x, blended.y, 0.0, 0.0));
+		write(probe_gi_set.probe_distance_atlas, atlas_texel, vec4f(blended.x, blended.y, 0.0, 0.0));
 		distance_texels[index] = blended;
 	}
 	workgroup_barrier();
@@ -256,7 +260,7 @@ main: fn (input: StageInput) -> void {
 		let border: vec4u = probe_border_texel(lane, PROBE_IRRADIANCE_SIDE);
 		let origin: vec2u = probe_tile_origin(slot, PROBE_IRRADIANCE_TILE);
 		write(
-			probe_irradiance_atlas,
+			probe_gi_set.probe_irradiance_atlas,
 			origin + vec2u(border.x, border.y),
 			irradiance_texels[border.w * PROBE_IRRADIANCE_SIDE + border.z]
 		);
@@ -264,9 +268,9 @@ main: fn (input: StageInput) -> void {
 		let border: vec4u = probe_border_texel(lane - (4 * PROBE_IRRADIANCE_SIDE + 4), PROBE_DISTANCE_SIDE);
 		let origin: vec2u = probe_tile_origin(slot, PROBE_DISTANCE_TILE);
 		let moments: vec2f = distance_texels[border.w * PROBE_DISTANCE_SIDE + border.z];
-		write(probe_distance_atlas, origin + vec2u(border.x, border.y), vec4f(moments.x, moments.y, 0.0, 0.0));
+		write(probe_gi_set.probe_distance_atlas, origin + vec2u(border.x, border.y), vec4f(moments.x, moments.y, 0.0, 0.0));
 	} else if (lane == PROBE_UPDATE_WORKGROUP_SIZE - 1) {
 		// Relocation and classification read every ray, so one invocation runs them.
-		probe_records[slot] = probe_updated_record(slot, record, spacing, restarted);
+		probe_volume.probe_records[slot] = probe_updated_record(probe_volume, slot, record, spacing, restarted);
 	}
 }

@@ -54,7 +54,7 @@ Cargo's registry cache:
 ```sh
 cargo vendor --locked vendor
 mkdir -p assets
-ln -s ../vendor/byte-engine/assets assets/byte-engine
+ln -s ../vendor/byte-engine/assets assets/byte_engine
 ```
 
 	</Tab>
@@ -63,7 +63,7 @@ ln -s ../vendor/byte-engine/assets assets/byte-engine
 ```sh
 cargo vendor --locked vendor
 mkdir -p assets
-ln -s ../vendor/byte-engine/assets assets/byte-engine
+ln -s ../vendor/byte-engine/assets assets/byte_engine
 ```
 
 	</Tab>
@@ -73,7 +73,7 @@ ln -s ../vendor/byte-engine/assets assets/byte-engine
 cargo vendor --locked vendor
 New-Item -ItemType Directory -Force assets
 New-Item -ItemType SymbolicLink `
-  -Path assets/byte-engine `
+  -Path assets/byte_engine `
   -Target (Resolve-Path vendor/byte-engine/assets)
 ```
 
@@ -109,7 +109,7 @@ application's asset namespace:
 ```sh
 cargo vendor --locked vendor
 mkdir -p assets
-ln -s ../vendor/byte-engine/assets assets/byte-engine
+ln -s ../vendor/byte-engine/assets assets/byte_engine
 ```
 
 	</Tab>
@@ -118,7 +118,7 @@ ln -s ../vendor/byte-engine/assets assets/byte-engine
 ```sh
 cargo vendor --locked vendor
 mkdir -p assets
-ln -s ../vendor/byte-engine/assets assets/byte-engine
+ln -s ../vendor/byte-engine/assets assets/byte_engine
 ```
 
 	</Tab>
@@ -128,7 +128,7 @@ ln -s ../vendor/byte-engine/assets assets/byte-engine
 cargo vendor --locked vendor
 New-Item -ItemType Directory -Force assets
 New-Item -ItemType SymbolicLink `
-  -Path assets/byte-engine `
+  -Path assets/byte_engine `
   -Target (Resolve-Path vendor/byte-engine/assets)
 ```
 
@@ -213,7 +213,7 @@ into it:
 
 ```sh
 mkdir -p assets
-ln -s ../../Byte-Engine/crates/byte-engine/assets assets/byte-engine
+ln -s ../../Byte-Engine/crates/byte-engine/assets assets/byte_engine
 ```
 
 	</Tab>
@@ -221,7 +221,7 @@ ln -s ../../Byte-Engine/crates/byte-engine/assets assets/byte-engine
 
 ```sh
 mkdir -p assets
-ln -s ../../Byte-Engine/crates/byte-engine/assets assets/byte-engine
+ln -s ../../Byte-Engine/crates/byte-engine/assets assets/byte_engine
 ```
 
 	</Tab>
@@ -230,14 +230,14 @@ ln -s ../../Byte-Engine/crates/byte-engine/assets assets/byte-engine
 ```powershell
 New-Item -ItemType Directory -Force assets
 New-Item -ItemType SymbolicLink `
-  -Path assets/byte-engine `
+  -Path assets/byte_engine `
   -Target (Resolve-Path ../Byte-Engine/crates/byte-engine/assets)
 ```
 
 	</Tab>
 </Tabs>
 
-The macOS and Linux target is relative to the `assets/byte-engine` link. The
+The macOS and Linux target is relative to the `assets/byte_engine` link. The
 Windows command resolves the same target to an absolute path. Adjust the target
 if your application and engine checkout don't use the sibling layout shown
 earlier.
@@ -257,8 +257,8 @@ check again.
 </Tab>
 </Tabs>
 
-The `assets/byte-engine` link gives engine shaders stable resource IDs such as
-`byte-engine/rendering/sky.besl`. Keep the link in every developer and CI
+The `assets/byte_engine` link gives engine shaders stable resource IDs such as
+`byte_engine/rendering/sky.besl`. Keep the link in every developer and CI
 checkout. On Windows, [enable Developer Mode](https://learn.microsoft.com/en-us/windows/advanced-settings/developer-mode)
 before setting up the directory link. See [Bake application resources](/docs/use/resources/bake)
 for platform details and the complete baking workflow.

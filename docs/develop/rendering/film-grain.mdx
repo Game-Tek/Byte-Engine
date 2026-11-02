@@ -20,7 +20,7 @@ shows as blotches three to eight times stronger than on the scans, which the wid
 
 ## How the pass is built
 
-The pass is one tile pass, `film-grain/apply.besl`, and the CPU work in `render_passes/film_grain.rs`.
+The pass is one tile pass, `film_grain/apply.besl`, and the CPU work in `render_passes/film_grain.rs`.
 
 - **CPU constants.** `film_grain_shader_data` computes everything that's the same for every pixel: both blurs'
   standard deviations and radii, the scale that brings the difference of blurs to unit variance, the amplitude with

@@ -108,7 +108,7 @@ impl SmaaPass {
 			render_pass_builder,
 			simple_tile::Descriptor::new(
 				"SMAA Edge Detection",
-				"byte-engine/rendering/smaa/edge-detection.pipeline",
+				"byte_engine/rendering/smaa/edge-detection.pipeline",
 				&[ghi::Formats::R8UNORM],
 			),
 		);
@@ -116,7 +116,7 @@ impl SmaaPass {
 			render_pass_builder,
 			simple_tile::Descriptor::new(
 				"SMAA Blend and Neighborhood",
-				"byte-engine/rendering/smaa/blend-weights.pipeline",
+				"byte_engine/rendering/smaa/blend-weights.pipeline",
 				&[output.format()],
 			),
 		);

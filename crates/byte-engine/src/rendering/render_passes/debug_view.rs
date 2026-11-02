@@ -28,7 +28,7 @@ pub(crate) struct DebugViewPresentPass {
 }
 
 impl DebugViewPresentPass {
-	const PIPELINE: &'static str = "byte-engine/rendering/debug-view/present.pipeline";
+	const PIPELINE: &'static str = "byte_engine/rendering/debug-view/present.pipeline";
 
 	/// Creates the pass that tiles `pool` into `output`, the sink's swapchain.
 	pub(crate) fn new(

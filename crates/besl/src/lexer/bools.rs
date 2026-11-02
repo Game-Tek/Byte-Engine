@@ -97,15 +97,16 @@ pub(super) fn pack_bool_members(root: &NodeReference) -> Result<(), LexError> {
 	Ok(())
 }
 
-/// Collects every struct, buffer block, and push-constant block under `scope` that declares a `bool` member.
+/// Collects every struct, buffer block, and push-constant block under `scope` that declares a `bool` member, including
+/// the members of layers.
 fn collect_containers(scope: &NodeReference, containers: &mut Vec<NodeReference>) {
 	let node = scope.borrow();
-	let Nodes::Scope { children, .. } = node.node() else {
+	let (Nodes::Scope { children, .. } | Nodes::Layer { members: children, .. }) = node.node() else {
 		return;
 	};
 	for child in children {
 		let has_bool = match child.borrow().node() {
-			Nodes::Scope { .. } => {
+			Nodes::Scope { .. } | Nodes::Layer { .. } => {
 				collect_containers(child, containers);
 				false
 			}

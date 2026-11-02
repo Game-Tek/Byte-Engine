@@ -1,8 +1,8 @@
 //! Descriptor set layouts the renderer shares with its shaders, and name-based binding of resources to them.
 //!
-//! A layout layer, a `.besl` file that declares descriptors, is the single declaration of one descriptor set: the
-//! shaders that list the layer are baked against it, and the renderer builds its [`SetLayout`] from the same file
-//! with [`SetLayout::from_layers`]. Resources are bound by the names the layer gives them, so no slot number is
+//! A BESL layer, such as `Scene: layer { ... }` in a module file, is the single declaration of one descriptor set: the
+//! shaders whose `main` takes the layer are baked against it, and the renderer builds its [`SetLayout`] from the same
+//! module with [`SetLayout::from_layer`]. Resources are bound by the names the layer gives them, so no slot number is
 //! repeated in Rust.
 
 use std::sync::Arc;
@@ -12,25 +12,86 @@ use ghi::frame::Frame as _;
 use resource_management::resources::material::{Binding, BindingKind, SetInterface, TextureView};
 use smallvec::SmallVec;
 
-/// Names one layout layer under `assets/rendering` and embeds its source, as [`SetLayout::from_layers`] takes it.
-///
-/// The name is the layer's path, which diagnostics show.
-macro_rules! layer {
-	($path:literal) => {
-		(
-			$path,
+/// Embeds engine module files under `assets/rendering` as the path from the asset root and source pairs
+/// [`SetLayout::from_layer`] reads.
+macro_rules! engine_modules {
+	($($path:literal),+ $(,)?) => {
+		&[$((
+			concat!("byte_engine/rendering/", $path),
 			include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/", $path)),
-		)
+		)),+]
 	};
 }
-pub(crate) use layer;
+
+/// The engine's module files that declare layers, and the modules those `use`, embedded so the renderer can build the
+/// layers' descriptor sets without reading assets. Add a module here when an engine set layout takes a layer it declares.
+pub(crate) static ENGINE_MODULES: &[(&str, &str)] = engine_modules![
+	"bloom/layouts/climb.besl",
+	"bloom/layouts/parameters.besl",
+	"depth_of_field/layouts/parameters.besl",
+	"film_grain/layouts/grain.besl",
+	"layouts/aces2_rec709_100nit.besl",
+	"layouts/acescct.besl",
+	"layouts/color.besl",
+	"layouts/lut.besl",
+	"layouts/sky_parameters.besl",
+	"simple/layouts/scene.besl",
+	"ui/layouts/backdrop_blur.besl",
+	"ui/layouts/composite.besl",
+	"ui/layouts/ui.besl",
+	"visibility/layouts/cascade_fit.besl",
+	"visibility/layouts/contact_shadows.besl",
+	"visibility/layouts/depth_pyramid.besl",
+	"visibility/layouts/gtao.besl",
+	"visibility/layouts/gtao_blur.besl",
+	"visibility/layouts/gtao_upscale.besl",
+	"visibility/layouts/gtao_view.besl",
+	"visibility/layouts/hiz_base.besl",
+	"visibility/layouts/hiz_tail.besl",
+	"visibility/layouts/light_clusters.besl",
+	"visibility/layouts/light_table.besl",
+	"visibility/layouts/material_dispatch.besl",
+	"visibility/layouts/material_evaluation.besl",
+	"visibility/layouts/occlusion.besl",
+	"visibility/layouts/pixel_materials.besl",
+	"visibility/layouts/probe_gi.besl",
+	"visibility/layouts/probe_resolve.besl",
+	"visibility/layouts/probe_volume.besl",
+	"visibility/layouts/ray_hits.besl",
+	"visibility/layouts/ray_traced_scene.besl",
+	"visibility/layouts/receiver_bounds.besl",
+	"visibility/layouts/scene.besl",
+	"visibility/layouts/scene_records.besl",
+	"visibility/layouts/screen_trace.besl",
+	"visibility/layouts/screen_view.besl",
+	"visibility/layouts/shadow_depth_pyramid.besl",
+	"visibility/layouts/skinning.besl",
+	"visibility/layouts/ssgi.besl",
+	"visibility/layouts/ssgi_temporal.besl",
+	"visibility/layouts/ssgi_trace.besl",
+	"visibility/layouts/sun_visibility.besl",
+	"visibility/layouts/surfel_gi.besl",
+	"visibility/layouts/surfel_resolve.besl",
+	"visibility/layouts/surfel_spatial.besl",
+	"visibility/layouts/surfel_temporal.besl",
+	"visibility/layouts/visibility_buffer.besl",
+];
+
+/// Returns the source of `file`, a module's path from the asset root, from a table of embedded modules such as
+/// [`ENGINE_MODULES`]. Pass it as the file reader of [`besl::ModuleLoader::load`].
+pub(crate) fn module_source(modules: &[(&str, &str)], file: &str) -> Option<String> {
+	modules
+		.iter()
+		.find(|(path, _)| *path == file)
+		.map(|(_, source)| (*source).to_string())
+}
 
 /// The `SetLayout` struct describes one descriptor set the renderer shares with its shaders: the GHI layout sets are
 /// created from, and the name each resource has in BESL.
 ///
-/// Build it from a layout layer with [`Self::from_layers`], or from a published pipeline's interface with
-/// [`Self::new`]. Next, create a set with [`Self::create_set`] and bind resources to it by name through
-/// [`Self::binder`]. Cloning is cheap; clones are the same layout.
+/// Build it from a BESL layer with [`Self::from_layer`], or from a published pipeline's interface with [`Self::new`].
+/// Next, create a set with [`Self::create_set`] and bind resources to it by name through [`Self::binder`]. Cloning is
+/// cheap; clones are the same layout.
 #[derive(Clone)]
 pub struct SetLayout {
 	interface: Arc<SetInterface>,
@@ -50,29 +111,21 @@ impl SetLayout {
 		}
 	}
 
-	/// Builds the layout the last of `layers` declares. The layers before it are the ones it builds on, lowest first,
-	/// as a shader's sidecar lists them. Give each layer as its name, which diagnostics show, and its source, such as
-	/// the layer's asset path and `include_str!` of the file.
+	/// Builds the layout of the layer at `layer`, a path from the asset root such as
+	/// `::byte_engine::rendering::visibility::layouts::scene::Scene`. `modules` holds the module files the layer's module
+	/// needs, as their paths from the asset root and their sources, such as `include_str!` of the files.
 	///
 	/// # Panics
 	///
-	/// Panics when the layers do not link, or when the last layer declares no descriptor. Both are errors in the
-	/// engine's own assets.
-	pub fn from_layers(layers: &[(&str, &str)]) -> Self {
-		let (name, _) = layers
-			.last()
-			.expect("No layout layer. The most likely cause is that a descriptor set layout was requested without its layer.");
-		let sets = resource_management::shader::besl::evaluation::reflect_layers(layers.iter().copied())
-			.unwrap_or_else(|error| panic!("Layout layer `{name}` could not be reflected. {error}"));
-		let set = sets
-			.into_iter()
-			.find(|set| set.layout.as_deref() == Some(*name))
-			.unwrap_or_else(|| {
+	/// Panics when the layer doesn't link or declares no descriptor. Both are errors in the application's own assets.
+	pub fn from_layer(layer: &str, modules: &[(&str, &str)]) -> Self {
+		let set = resource_management::shader::besl::evaluation::reflect_layer(layer, |file| module_source(modules, file))
+			.unwrap_or_else(|error| {
 				panic!(
-					"Layout layer `{name}` declares no descriptor. The most likely cause is that a layer of shared types was used as a descriptor set layout."
+					"Layer `{layer}` could not be reflected. {error} Check that its module and the modules it uses are in the module table."
 				)
 			});
-		Self::new(&SetInterface::new(set, name))
+		Self::new(&SetInterface::new(set, layer))
 	}
 
 	/// Returns each distinct layout of `sets` once, in first-seen order, with the bindings any of its copies uses
@@ -117,7 +170,7 @@ impl SetLayout {
 	pub fn slot(&self, name: &str) -> ghi::ResourceSlot {
 		let binding = self.interface.binding(name).unwrap_or_else(|| {
 			panic!(
-				"Descriptor set layout `{}` declares no resource named `{name}`. The most likely cause is that the name does not match the layout layer's descriptor.",
+				"Descriptor set layout `{}` declares no resource named `{name}`. The most likely cause is that the name does not match a descriptor of the BESL layer.",
 				self.interface.layout,
 			)
 		});
@@ -286,7 +339,7 @@ fn static_sampler(sampler: besl::SamplerState) -> ghi::sampler::StaticSampler {
 	}
 }
 
-/// The most descriptor sets [`create_sets`] makes for one pipeline: the shader's own and the layout layers it lists.
+/// The most descriptor sets [`create_sets`] makes for one pipeline: the shader's own and the layers its `main` takes.
 pub const MAX_PIPELINE_SETS: usize = 4;
 
 /// The `PipelineSets` struct holds the descriptor sets [`create_sets`] made for one pipeline, to bind when the
@@ -374,7 +427,7 @@ pub fn create_sets(
 	for (index, set) in sets.iter().filter(|set| set.interface().used != 0).enumerate() {
 		let Some(slot) = pipeline_sets.sets.get_mut(index) else {
 			return Err(
-				"Too many descriptor sets. The most likely cause is that the shader lists more layout layers with descriptors than one pipeline binds by name."
+				"Too many descriptor sets. The most likely cause is that the shader's `main` takes more layers with descriptors than one pipeline binds by name."
 					.to_string(),
 			);
 		};
@@ -568,7 +621,7 @@ fn validate_binding_schema(sets: &[SetLayout]) -> Result<(), &'static str> {
 /// Checks the named resources against the pipeline's layouts: every binding the shader reaches takes exactly one
 /// resource of its kind, and every resource names a binding one of the layouts declares.
 ///
-/// A binding the shader does not reach may be left without a resource, which lets shaders that share a layout layer
+/// A binding the shader does not reach may be left without a resource, which lets shaders that share a layer
 /// bind only what each one reads.
 fn validate_resources(sets: &[SetLayout], resources: &[Resource]) -> Result<(), String> {
 	if let Some(resource) = resources
@@ -576,7 +629,7 @@ fn validate_resources(sets: &[SetLayout], resources: &[Resource]) -> Result<(), 
 		.find(|resource| !resource.is_planned() && !declared_bindings(sets).any(|binding| binding.name == resource.name()))
 	{
 		return Err(format!(
-			"Unknown compute resource `{}`. The most likely cause is that the resource name does not match a BESL binding of the shader or of a layout layer it lists.",
+			"Unknown compute resource `{}`. The most likely cause is that the resource name does not match a BESL binding of the shader or of a layer its `main` takes.",
 			resource.name()
 		));
 	}

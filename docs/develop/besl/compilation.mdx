@@ -13,9 +13,7 @@ executes the program in the VM. The language itself is specified in the
 ## Follow the compilation path
 
 1. `parse` tokenizes the source and builds a syntax tree.
-2. `stack_layers` places the declarations of the shader's
-   [layout layers](/docs/reference/besl/interface#layout-layers) under that
-   tree, lowest layer first. A shader without layers skips this step.
+2. [Module files](#link-modules) are parsed and attached to it.
 3. An optional `ProgramTransform` adapts that tree to the renderer, such as by
    adding the helpers its shaders share. Material programs start here instead:
    a renderer's `ProgramGenerator` builds their whole tree, bindings and entry
@@ -24,6 +22,8 @@ executes the program in the VM. The language itself is specified in the
    semantic graph. It normalizes `StageInput`, `interface`, `output`, and record
    returns into the stage input and output nodes that the VM and generators use.
    Then it [packs `bool` members](#pack-bool-members) into bytes.
+   Before it links, it [expands signatures](#link-layers-and-signatures), and
+   after, it records the layers `main` takes and erases layer parameters.
    `compile_to_besl` combines parsing and linking and can link the source to a
    supplied parent scope.
 5. The optimizer removes semantically dead portable code.
@@ -54,7 +54,7 @@ the cause. `declarations_use_only_the_declarations_before_them` guards the
 rule and the errors.
 
 Standalone `.besl` assets use this path during baking and take their stage
-settings and layout layers from the adjacent
+settings from the adjacent
 [`.besl.bead` file](/docs/reference/besl/interface#standalone-stage-metadata).
 
 On macOS, baking keeps a precompiled header of the Metal standard-library
@@ -63,6 +63,92 @@ texture types in the system temporary directory, named
 roughly halves the time a bake takes. Byte Engine builds one header for each
 Metal toolchain and deployment target, and compiles without it if the compiler
 rejects it, so you can delete these files at any time.
+
+## Link modules
+
+BESL does no file I/O, so the host that reads a shader also reads its
+[module files](/docs/reference/besl/language#modules). `modules.rs` gives the
+host three pure steps, which it repeats until nothing is pending, because an
+attached file can declare modules of its own:
+
+1. `pending_modules` lists the module path of each `name: mod;` that has no
+   source yet. The parser keeps such a declaration as `Nodes::FileModule`.
+2. `module_files` names the two files a path may live in. This is the only
+   place the lookup rule lives.
+3. `attach_module` replaces the `FileModule` with a `Nodes::Scope` that holds
+   the file's declarations, after it checks that a module may hold them. The
+   inline `mod` parser runs the same check.
+
+The standalone BESL asset handler, `read_module_files` in
+`asset/handler/implementations/besl.rs`, reads both files of every module
+through `BakeContext::resolve`, even after it finds one. Every read records the
+file as a bake dependency, and `TrackingStorageBackend` records a file that
+doesn't exist as missing. Editing, creating, or deleting either file therefore
+makes the shader and every pipeline that inherits its dependencies stale, and
+the watcher rebakes them in development builds. The handler parses the files
+again in `parse_standalone_program`, so reading stays apart from linking.
+
+A path is one token: the tokenizer joins `a::b::c` and `a::*`, so every parser
+site that reads a reference takes a path through `next_path`, and declaration
+names, read through `next_identifier`, can't contain `::`.
+
+Linking keeps each module a namespace. `find_in_scope` in
+`lexer/resolution.rs` searches a scope's own declarations, then its `use`
+imports, and never the modules inside it. Code inside a module still sees the
+modules around it, because the scope chain holds them, so built-in types and
+layer declarations resolve by name. `resolve_path` handles `crate`, `super`,
+`self`, and module names, and a path call resolves overloads among one module's
+declarations. A `use` links to a `Nodes::Use` that holds its target weakly,
+since a module can import its own ancestor, and backends emit nothing for it.
+
+Backends emit every declaration by its own name, so `check_unique_names` rejects
+a struct, constant, or function name declared in two modules before linking
+starts. Engine-built scopes, such as `Common` and `Visibility`, are modules too:
+their generators add `use <Scope>::*;` after each one.
+
+`crates/besl/tests/modules.rs` guards loading, paths, `use`, and the module
+rules. `standalone_besl_handler_links_module_files_and_depends_on_them` guards
+the bake dependencies.
+
+## Link layers and signatures
+
+[Layers and signatures](/docs/reference/besl/interface#layers-and-signatures)
+are compile-time types: they shape what a shader consumes, and generated code
+has no trace of them.
+
+Signatures expand on the parsed tree, before linking, in `signatures.rs`.
+`expand_signatures` resolves the signature each `name: Signature { ... }` names,
+flattens its `+` parts, and replaces the implementation with a plain function.
+It runs on the parsed tree because entry normalization reads `main`'s parameters
+as parsed. The expanded function records the module path of the signature in
+`types`, so its parameter types resolve where the signature was declared, not
+where the shader implements it. `resolve` in the same file mirrors the linker's
+path rules on the parsed tree; a change to path resolution changes both.
+
+A layer links to `Nodes::Layer`, whose descriptors become ordinary bindings with
+`layout` set to the layer's path. `layer.member` links to the member itself, in
+`lexer/layers.rs`, so the linked graph reads the binding directly. After
+linking, `record_entry_layers` notes on each layer which of `main`'s
+parameters takes it, which reflection reads to order the sets, and
+`erase_layer_parameters` removes layer parameters and arguments everywhere.
+Backends, reflection, and the VM therefore see only plain bindings.
+
+Shared layers live in modules from the asset root, which load once per shader
+and sit under a hidden scope named `::`. `write` prints each one as
+`::path: mod { ... }`, which `parse` places back under that scope, so a program
+with its modules attached writes as one file that links again without them.
+
+A change must keep these true:
+
+- A layer's set has the same bindings in every shader that takes it, so its
+  identity matches the set Rust builds with `SetLayout::from_layer`.
+- Sets follow `main`'s layer parameters, then layouts that backends add, then
+  the shader's own; a layer `main` doesn't take forms no set.
+- A program holds at most one push constant block across its layers and itself.
+
+`crates/besl/tests/signatures.rs` guards signatures, layer access, erasure, and
+the push constant rule, and `crates/besl/tests/modules.rs` the modules from the
+asset root and their written form.
 
 ## Pack bool members
 
@@ -120,7 +206,7 @@ code. They aren't syntax you can write in a `.besl` file.
 | Custom intrinsic | `ParserNode::intrinsic` or `ParserNode::intrinsic_with_parameters` | Register a generated callable operation and its typed body. |
 | Generated struct | `ParserNode::r#struct` with `ParserNode::member` fields | Expose a Rust record shape to the BESL parent scope. |
 | Parent scope | `compile_to_besl(source, Some(parent))` | Let authored source resolve generated types, values, bindings, and helpers. |
-| Layout layers | `stack_layers(module, layers)` | Link a parsed module against shared BESL declarations, such as a descriptor set that several shaders bind. Baking does this for the layers a `.besl.bead` file lists. |
+| Modules from embedded sources | `ModuleLoader::load(source, read)` then `attach_modules` | Attach the modules a program names from sources the host holds in memory, such as a renderer's embedded layer modules. |
 
 A program has no backend-specific code. Add an intrinsic, and lower it in each
 backend, when portable BESL can't express a feature.
@@ -168,9 +254,9 @@ The resource-management shader layer reflects descriptors into stable metadata:
 - read and write usage.
 
 Reflection groups the descriptors into descriptor sets: one for each
-[layout layer](/docs/reference/besl/interface#layout-layers) that declares
-descriptors, in the order the shader lists them, and one for the descriptors the
-shader declares itself. Each set holds its layer's whole layout and marks the
+[layer](/docs/reference/besl/interface#layers) with descriptors that `main`
+takes, in parameter order, and one for the descriptors the shader declares
+itself. Each set holds its layer's whole layout and marks the
 descriptors that code reachable from `main` uses. Two sets with the same
 descriptors have the same identity, whichever shader they were reflected from.
 
@@ -451,7 +537,8 @@ which `crates/besl/tests/ray_tracing.rs` guards:
 ## Rust API
 
 - [`parse`](https://docs.rs/byte-engine-besl/latest/besl/fn.parse.html)
-- [`stack_layers`](https://docs.rs/byte-engine-besl/latest/besl/fn.stack_layers.html)
+- [`ModuleLoader`](https://docs.rs/byte-engine-besl/latest/besl/struct.ModuleLoader.html)
+- [`attach_modules`](https://docs.rs/byte-engine-besl/latest/besl/fn.attach_modules.html)
 - [`lex`](https://docs.rs/byte-engine-besl/latest/besl/fn.lex.html)
 - [`compile_to_besl`](https://docs.rs/byte-engine-besl/latest/besl/fn.compile_to_besl.html)
 - [`write`](https://docs.rs/byte-engine-besl/latest/besl/fn.write.html)

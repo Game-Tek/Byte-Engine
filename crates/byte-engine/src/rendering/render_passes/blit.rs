@@ -21,8 +21,8 @@ enum Copy {
 }
 
 impl ImageBypassPass {
-	const PIPELINE: &'static str = "byte-engine/rendering/blit/image.pipeline";
-	const TILE_PIPELINE: &'static str = "byte-engine/rendering/blit/image-tile.pipeline";
+	const PIPELINE: &'static str = "byte_engine/rendering/blit/image.pipeline";
+	const TILE_PIPELINE: &'static str = "byte_engine/rendering/blit/image-tile.pipeline";
 
 	/// Starts the shared copy shader before a sink needs its forwarding pass.
 	pub(crate) fn request_pipeline(manager: &crate::rendering::PipelineManagerClient) {
@@ -204,8 +204,8 @@ mod tests {
 			),
 			("sky_view", crate::rendering::shader_vm_test::asset_source("sky-view.besl")),
 		] {
-			let mut root = besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}"));
-			root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);
+			let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
+			root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
 			let root = besl::lex(root).unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
 			let settings = ShaderGenerationSettings::compute(Extent::rectangle(8, 8)).name(name.to_string());
 
@@ -257,8 +257,8 @@ mod tests {
 				include_str!("../../../assets/rendering/smaa/blend-weights.besl"),
 			),
 		] {
-			let mut root = besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}"));
-			root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);
+			let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
+			root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
 			let root = besl::lex(root).unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
 			let settings = ShaderGenerationSettings::tile(PIXEL_TILE, Extent::square(PIXEL_TILE)).name(name.to_string());
 			PlatformShaderCompiler::new()

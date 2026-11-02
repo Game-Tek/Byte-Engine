@@ -1,3 +1,6 @@
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::light_clusters::*;
+
 LIGHT_CLUSTER_COLUMNS: const u32 = 16;
 LIGHT_CLUSTER_ROWS: const u32 = 8;
 LIGHT_CLUSTER_MASK_WORDS: const u32 = 32;
@@ -10,7 +13,7 @@ squared_distance_to_box: fn (point: vec3f, box_min: vec3f, box_max: vec3f) -> f3
 	return x * x + y * y + z * z;
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, light_clusters: LightClusters) -> void {
 	let cluster: u32 = threadgroup_position();
 	let word: u32 = input.thread_idx;
 	let column: u32 = cluster % LIGHT_CLUSTER_COLUMNS;
@@ -18,15 +21,15 @@ main: fn (input: StageInput) -> void {
 	let slice: u32 = cluster / (LIGHT_CLUSTER_COLUMNS * LIGHT_CLUSTER_ROWS);
 
 	// The cluster's view-space bounds. Depth slice s spans near * 2^(s / scale) to near * 2^((s + 1) / scale).
-	let near: f32 = light_cluster_parameters.near;
-	let slice_scale: f32 = light_cluster_parameters.depth_slice_scale;
+	let near: f32 = light_clusters.light_cluster_parameters.near;
+	let slice_scale: f32 = light_clusters.light_cluster_parameters.depth_slice_scale;
 	let near_depth: f32 = near * pow(2.0, f32(slice) / slice_scale);
 	let far_depth: f32 = near * pow(2.0, f32(slice + 1) / slice_scale);
 	// Column 0 starts at the left edge of the image, and row 0 starts at the top edge.
-	let left_slope: f32 = (f32(column) * 2.0 / f32(LIGHT_CLUSTER_COLUMNS) - 1.0) * light_cluster_parameters.edge_slopes.x;
-	let right_slope: f32 = (f32(column + 1) * 2.0 / f32(LIGHT_CLUSTER_COLUMNS) - 1.0) * light_cluster_parameters.edge_slopes.x;
-	let top_slope: f32 = (1.0 - f32(row) * 2.0 / f32(LIGHT_CLUSTER_ROWS)) * light_cluster_parameters.edge_slopes.y;
-	let bottom_slope: f32 = (1.0 - f32(row + 1) * 2.0 / f32(LIGHT_CLUSTER_ROWS)) * light_cluster_parameters.edge_slopes.y;
+	let left_slope: f32 = (f32(column) * 2.0 / f32(LIGHT_CLUSTER_COLUMNS) - 1.0) * light_clusters.light_cluster_parameters.edge_slopes.x;
+	let right_slope: f32 = (f32(column + 1) * 2.0 / f32(LIGHT_CLUSTER_COLUMNS) - 1.0) * light_clusters.light_cluster_parameters.edge_slopes.x;
+	let top_slope: f32 = (1.0 - f32(row) * 2.0 / f32(LIGHT_CLUSTER_ROWS)) * light_clusters.light_cluster_parameters.edge_slopes.y;
+	let bottom_slope: f32 = (1.0 - f32(row + 1) * 2.0 / f32(LIGHT_CLUSTER_ROWS)) * light_clusters.light_cluster_parameters.edge_slopes.y;
 	// Each edge's position is its slope times depth, so the extreme is at the near or the far end of the slice.
 	let box_min: vec3f = vec3f(
 		min(left_slope * near_depth, left_slope * far_depth),
@@ -41,37 +44,37 @@ main: fn (input: StageInput) -> void {
 
 	// A reach is measured at an exposure of one. Exposed illuminance falls with the square of distance, so the
 	// reach at this frame's exposure scales with its square root.
-	let reach_scale: f32 = sqrt(max(lighting_data.exposure, 0.0));
-	let light_count: u32 = lighting_data.light_count;
+	let reach_scale: f32 = sqrt(max(light_clusters.lighting_data.exposure, 0.0));
+	let light_count: u32 = light_clusters.lighting_data.light_count;
 	let first_light: u32 = word * 32;
 	let one: u32 = 1;
 	let mask: u32 = 0;
 	for (let bit: u32 = 0; bit < 32 && first_light + bit < light_count; bit = bit + 1) {
 		let light_index: u32 = first_light + bit;
-		let light_type: u32 = lighting_data.lights[light_index].type;
+		let light_type: u32 = light_clusters.lighting_data.lights[light_index].type;
 		// Directional lights reach every cluster.
 		if (light_type == DIRECTIONAL_LIGHT) {
 			mask = mask | (one << bit);
 			continue;
 		}
-		let radius: f32 = lighting_data.lights[light_index].reach * reach_scale;
+		let radius: f32 = light_clusters.lighting_data.lights[light_index].reach * reach_scale;
 		if (radius > 0.0) {
-			let center: vec3f = lighting_data.lights[light_index].position;
+			let center: vec3f = light_clusters.lighting_data.lights[light_index].position;
 			// A narrow cone fits in the sphere through its apex and the rim of its cap. Past a 45 degree half angle
 			// that sphere grows larger than the ball around the apex, so wide cones keep the ball.
 			if (light_type == CONE_LIGHT) {
-				let outer_cosine: f32 = lighting_data.lights[light_index].cone_cosines.y;
+				let outer_cosine: f32 = light_clusters.lighting_data.lights[light_index].cone_cosines.y;
 				let squared_cosine: f32 = outer_cosine * outer_cosine;
 				if (outer_cosine > 0.0 && squared_cosine > 0.5) {
 					radius = radius / (2.0 * squared_cosine);
-					center = center + lighting_data.lights[light_index].direction * radius;
+					center = center + light_clusters.lighting_data.lights[light_index].direction * radius;
 				}
 			}
-			let view_center: vec3f = light_cluster_parameters.view * vec4f(center.x, center.y, center.z, 1.0);
+			let view_center: vec3f = light_clusters.light_cluster_parameters.view * vec4f(center.x, center.y, center.z, 1.0);
 			if (squared_distance_to_box(view_center, box_min, box_max) <= radius * radius) {
 				mask = mask | (one << bit);
 			}
 		}
 	}
-	light_cluster_masks.words[cluster * LIGHT_CLUSTER_MASK_WORDS + word] = mask;
+	light_clusters.light_cluster_masks.words[cluster * LIGHT_CLUSTER_MASK_WORDS + word] = mask;
 }

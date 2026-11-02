@@ -6,29 +6,32 @@
 // whose front starts empty. Next, the partial pass scans the group totals, and the add pass offsets each group by the
 // totals before it.
 
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::surfel_gi::*;
+
 // Each thread's running total while the workgroup scans them.
 thread_totals: workgroup<u32, 256>;
 
 // Returns scan element `index`, resetting a cell's count as it reads it.
-scan_element: fn (index: u32) -> u32 {
+scan_element: fn (surfel_gi_set: SurfelGi, index: u32) -> u32 {
 	if (index < SURFEL_CELL_COUNT) {
-		let count: u32 = atomic_exchange(surfel_cells.counts[index], 0);
-		atomic_store(surfel_cells.fill[index], count);
-		atomic_store(surfel_cells.front[index], 0);
+		let count: u32 = atomic_exchange(surfel_gi_set.surfel_cells.counts[index], 0);
+		atomic_store(surfel_gi_set.surfel_cells.fill[index], count);
+		atomic_store(surfel_gi_set.surfel_cells.front[index], 0);
 		return count;
 	}
 	// The wanted rays list the priority class's for every slot, then the regular class's, in scan order.
 	let want: u32 = index - SURFEL_CELL_COUNT;
-	if (want < surfel_parameters.surfel_capacity * 2) {
-		return surfel_ray_wants[want];
+	if (want < surfel_gi_set.surfel_parameters.surfel_capacity * 2) {
+		return surfel_gi_set.surfel_ray_wants[want];
 	}
 	return 0;
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, surfel_gi_set: SurfelGi) -> void {
 	let thread: u32 = input.thread_idx;
 	let first: u32 = input.threadgroup_position * SURFEL_SCAN_GROUP_ELEMENTS + thread * 4;
-	let values: vec4u = vec4u(scan_element(first), scan_element(first + 1), scan_element(first + 2), scan_element(first + 3));
+	let values: vec4u = vec4u(scan_element(surfel_gi_set, first), scan_element(surfel_gi_set, first + 1), scan_element(surfel_gi_set, first + 2), scan_element(surfel_gi_set, first + 3));
 	let thread_total: u32 = values.x + values.y + values.z + values.w;
 	thread_totals[thread] = thread_total;
 	workgroup_barrier();
@@ -46,11 +49,11 @@ main: fn (input: StageInput) -> void {
 	}
 
 	let offset: u32 = thread_totals[thread] - thread_total;
-	surfel_scan[first] = offset;
-	surfel_scan[first + 1] = offset + values.x;
-	surfel_scan[first + 2] = offset + values.x + values.y;
-	surfel_scan[first + 3] = offset + values.x + values.y + values.z;
+	surfel_gi_set.surfel_scan[first] = offset;
+	surfel_gi_set.surfel_scan[first + 1] = offset + values.x;
+	surfel_gi_set.surfel_scan[first + 2] = offset + values.x + values.y;
+	surfel_gi_set.surfel_scan[first + 3] = offset + values.x + values.y + values.z;
 	if (thread == SURFEL_SCAN_WORKGROUP_SIZE - 1) {
-		surfel_scan_partials[input.threadgroup_position] = thread_totals[thread];
+		surfel_gi_set.surfel_scan_partials[input.threadgroup_position] = thread_totals[thread];
 	}
 }

@@ -12,7 +12,7 @@ port follows the reference's arithmetic, including its interpolation weights, so
 as the reference model for the shader's tests.
 
 Usage, from the repository root:
-    python3 scripts/generate-aces2-tables.py > crates/byte-engine/assets/rendering/layouts/aces2-rec709-100nit.besl
+    python3 scripts/generate-aces2-tables.py > crates/byte-engine/assets/rendering/layouts/aces2_rec709_100nit.besl
     python3 scripts/generate-aces2-tables.py --vectors   # prints reference outputs for the shader's tests
 """
 

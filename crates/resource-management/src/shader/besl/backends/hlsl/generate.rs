@@ -242,7 +242,8 @@ impl Generator {
 		let break_char = formatting.break_str();
 
 		match node.node() {
-			besl::Nodes::Scope { .. } => {}
+			// A `use` and a signature only link names, and a layer's members emit where code reads them.
+			besl::Nodes::Scope { .. } | besl::Nodes::Use { .. } | besl::Nodes::Layer { .. } | besl::Nodes::Signature { .. } => {}
 			besl::Nodes::Function {
 				name,
 				statements,

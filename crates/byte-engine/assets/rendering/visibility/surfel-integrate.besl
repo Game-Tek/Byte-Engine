@@ -21,6 +21,9 @@
 // weights that undo the guide for the light would scatter it around its value even where every ray hits, and
 // reflections it dims would leak into enclosed rooms.
 
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::surfel_gi::*;
+
 // The most rays a surfel's `rays` counts, well within a float's whole numbers.
 SURFEL_MAX_RAYS: const f32 = 1000000.0;
 // A surfel that received this many rays, and whose rays lately hit back faces more than SURFEL_BURIED_SHARE of the
@@ -46,7 +49,7 @@ surfel_luma: fn (value: vec4f) -> f32 {
 
 // Moves the guide cells around `point`, starting at `guide`, toward `light` by their bilinear shares, and returns how
 // much their sum changed.
-surfel_guide_learn: fn (guide: u32, point: vec2f, light: f32) -> f32 {
+surfel_guide_learn: fn (surfel_gi_set: SurfelGi, guide: u32, point: vec2f, light: f32) -> f32 {
 	let position: vec2f = point * f32(SURFEL_GUIDE_SIDE) - vec2f(0.5, 0.5);
 	let first_x: f32 = floor(position.x);
 	let first_y: f32 = floor(position.y);
@@ -60,9 +63,9 @@ surfel_guide_learn: fn (guide: u32, point: vec2f, light: f32) -> f32 {
 			let share_x: f32 = 1.0 - fraction_x + (2.0 * fraction_x - 1.0) * f32(corner & 1);
 			let share_y: f32 = 1.0 - fraction_y + (2.0 * fraction_y - 1.0) * f32(corner >> 1);
 			let index: u32 = guide + u32(y) * SURFEL_GUIDE_SIDE + u32(x);
-			let previous: f32 = f32(surfel_guides[index]);
+			let previous: f32 = f32(surfel_gi_set.surfel_guides[index]);
 			let next: f16 = f16(mix(previous, light * share_x * share_y, SURFEL_GUIDE_RATE));
-			surfel_guides[index] = next;
+			surfel_gi_set.surfel_guides[index] = next;
 			// The sum follows the stored cells, so rounding never makes it drift from them.
 			change = change + f32(next) - previous;
 		}
@@ -72,14 +75,14 @@ surfel_guide_learn: fn (guide: u32, point: vec2f, light: f32) -> f32 {
 
 // Folds `distance` into the radial depth cell of `direction`, a direction of the surfel's hemisphere in its own frame,
 // whose cells start at `depth`.
-surfel_depth_learn: fn (depth: u32, direction: vec3f, distance: f32) -> void {
+surfel_depth_learn: fn (surfel_gi_set: SurfelGi, depth: u32, direction: vec3f, distance: f32) -> void {
 	let index: u32 = depth + surfel_square_cell(surfel_hemisphere_to_depth_square(direction), SURFEL_DEPTH_SIDE);
 	let first: f32 = max(distance, 0.0001);
 	let second: f32 = first * first;
 	let moments: vec4f = vec4f(first, second, second * first, second * second);
-	let previous: vec4f = surfel_depths[index];
+	let previous: vec4f = surfel_gi_set.surfel_depths[index];
 	if (previous.w == 0.0) {
-		surfel_depths[index] = moments;
+		surfel_gi_set.surfel_depths[index] = moments;
 		return;
 	}
 	let rate: f32 = SURFEL_DEPTH_NEARER_RATE;
@@ -90,7 +93,7 @@ surfel_depth_learn: fn (depth: u32, direction: vec3f, distance: f32) -> void {
 	// Blending can leave moments no distribution has, which the occlusion test can't read.
 	next.y = max(next.y, next.x * next.x);
 	next.w = max(next.w, next.y * next.y);
-	surfel_depths[index] = next;
+	surfel_gi_set.surfel_depths[index] = next;
 }
 
 // Returns `estimate` after one MSME step with `sample`. `short_blend` is the short window's blend factor, and
@@ -148,28 +151,28 @@ surfel_msme: fn (estimate: SurfelIrradiance, sample: vec4f, short_blend: f32, ev
 	return result;
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, surfel_gi_set: SurfelGi) -> void {
 	let slot: u32 = input.thread_id.x;
-	if (slot >= surfel_parameters.surfel_capacity || surfel_states[slot].life == 0) {
+	if (slot >= surfel_gi_set.surfel_parameters.surfel_capacity || surfel_gi_set.surfel_states[slot].life == 0) {
 		return;
 	}
-	let estimate: SurfelIrradiance = surfel_irradiance[slot];
+	let estimate: SurfelIrradiance = surfel_gi_set.surfel_irradiance[slot];
 	// Keep the estimator's state usable whatever a slot held before.
 	estimate.blend = clamp(estimate.blend, 1.0 / 32.0, 1.0);
 	estimate.inconsistency = clamp(estimate.inconsistency, 0.0, 10.0);
 	// The estimate moves to this frame's exposure, as the lit image does.
-	let rescale: f32 = surfel_parameters.exposure / surfel_parameters.previous_exposure;
+	let rescale: f32 = surfel_gi_set.surfel_parameters.exposure / surfel_gi_set.surfel_parameters.previous_exposure;
 	let light_scale: vec4f = vec4f(rescale, rescale, rescale, 1.0);
 	estimate.mean = estimate.mean * light_scale;
 	estimate.short_mean = estimate.short_mean * light_scale;
 	estimate.variance = estimate.variance * light_scale * light_scale;
 
 	// The rays the budget granted this surfel lie in its class's window of wanted rays.
-	let wanted: u32 = surfel_wanted_rays(slot);
+	let wanted: u32 = surfel_wanted_rays(surfel_gi_set, slot);
 	let guide: u32 = slot * SURFEL_GUIDE_CELLS;
 	let depth: u32 = slot * SURFEL_DEPTH_CELLS;
-	let reach: f32 = 2.0 * surfel_records[slot].radius;
-	let normal: vec3f = decode_surfel_normal(surfel_records[slot].normal);
+	let reach: f32 = 2.0 * surfel_gi_set.surfel_records[slot].radius;
+	let normal: vec3f = decode_surfel_normal(surfel_gi_set.surfel_records[slot].normal);
 	let basis: SurfelBasis = surfel_basis(normal);
 	let sum: vec3f = vec3f(0.0, 0.0, 0.0);
 	let samples: f32 = 0.0;
@@ -179,9 +182,9 @@ main: fn (input: StageInput) -> void {
 	let back_faces: f32 = 0.0;
 	let mass: f32 = estimate.guide_mass;
 	for (let sample: u32 = 0; sample < wanted; sample = sample + 1) {
-		let ray: u32 = surfel_granted_ray(slot, sample);
+		let ray: u32 = surfel_granted_ray(surfel_gi_set, slot, sample);
 		if (ray != NO_SURFEL) {
-			let result: SurfelRayResult = surfel_ray_results[ray];
+			let result: SurfelRayResult = surfel_gi_set.surfel_ray_results[ray];
 			let hit: f32 = step(0.0, result.distance);
 			let point: vec2f = surfel_unpack_square(result.direction);
 			let local: vec3f = surfel_square_to_hemisphere(point);
@@ -189,11 +192,11 @@ main: fn (input: StageInput) -> void {
 			let found: vec3f = result.radiance;
 			if (hit == 0.0) {
 				let sky: vec4f = texture_lod(
-					surfel_environment_radiance,
+					surfel_gi_set.surfel_environment_radiance,
 					surfel_to_world(basis, normal, local),
 					SURFEL_SKY_LEVEL
 				);
-				found = vec3f(sky.x, sky.y, sky.z) * surfel_parameters.environment_intensity;
+				found = vec3f(sky.x, sky.y, sky.z) * surfel_gi_set.surfel_parameters.environment_intensity;
 			}
 			// Each ray's weight turns the mixture it was drawn from back into the cosine-weighted distribution, whose
 			// plain average estimates irradiance over π.
@@ -207,8 +210,8 @@ main: fn (input: StageInput) -> void {
 				back_faces = back_faces + 1.0;
 			}
 			let luminance: f32 = found.x * 0.2126 + found.y * 0.7152 + found.z * 0.0722;
-			mass = mass + surfel_guide_learn(guide, point, luminance * surfel_parameters.exposure * local.z);
-			surfel_depth_learn(depth, local, mix(reach, min(result.distance, reach), hit));
+			mass = mass + surfel_guide_learn(surfel_gi_set, guide, point, luminance * surfel_gi_set.surfel_parameters.exposure * local.z);
+			surfel_depth_learn(surfel_gi_set, depth, local, mix(reach, min(result.distance, reach), hit));
 		}
 	}
 	estimate.guide_mass = max(mass, 0.0);
@@ -216,14 +219,14 @@ main: fn (input: StageInput) -> void {
 	// reached hides nothing.
 	let clearance: f32 = SURFEL_RAY_LENGTH;
 	for (let cell: u32 = 0; cell < SURFEL_DEPTH_CELLS; cell = cell + 1) {
-		let moments: vec4f = surfel_depths[depth + cell];
+		let moments: vec4f = surfel_gi_set.surfel_depths[depth + cell];
 		if (moments.w != 0.0) {
 			clearance = min(clearance, surfel_moment_clearance(moments));
 		}
 	}
-	surfel_clearances[slot] = clearance;
+	surfel_gi_set.surfel_clearances[slot] = clearance;
 	if (samples > 0.0) {
-		let light: f32 = surfel_parameters.exposure / samples;
+		let light: f32 = surfel_gi_set.surfel_parameters.exposure / samples;
 		// Given which distribution drew each ray, the cosine-weighted ones are plain cosine-weighted samples, so the
 		// share of them that hit estimates the hit fraction without bias.
 		let hit_fraction: f32 = estimate.mean.w;
@@ -234,7 +237,7 @@ main: fn (input: StageInput) -> void {
 		let previous: SurfelIrradiance = estimate;
 		// The rays the long mean held fade with the frames since its last update, so whatever the cadence, rays older
 		// than about SURFEL_MEMORY_FRAMES frames weigh little.
-		let elapsed: u32 = surfel_parameters.frame_index - estimate.updated;
+		let elapsed: u32 = surfel_gi_set.surfel_parameters.frame_index - estimate.updated;
 		let held: f32 = estimate.count * exp(-f32(elapsed) / SURFEL_MEMORY_FRAMES);
 		let total: f32 = held + samples;
 		if (estimate.rays < SURFEL_MATURE_RAYS) {
@@ -269,14 +272,14 @@ main: fn (input: StageInput) -> void {
 		}
 		estimate.count = total;
 		estimate.rays = min(estimate.rays + samples, SURFEL_MAX_RAYS);
-		estimate.updated = surfel_parameters.frame_index;
+		estimate.updated = surfel_gi_set.surfel_parameters.frame_index;
 		estimate.buried = mix(estimate.buried, back_faces / samples, samples / (samples + SURFEL_BURIED_RAYS));
 		if (estimate.rays >= SURFEL_BURIED_MIN_RAYS && estimate.buried > SURFEL_BURIED_SHARE) {
-			surfel_lose(slot);
+			surfel_lose(surfel_gi_set, slot);
 		}
 	}
-	surfel_irradiance[slot] = estimate;
+	surfel_gi_set.surfel_irradiance[slot] = estimate;
 
-	surfel_records[slot].weight = surfel_trust(estimate.rays);
-	surfel_records[slot].irradiance = vec4f16(estimate.mean);
+	surfel_gi_set.surfel_records[slot].weight = surfel_trust(estimate.rays);
+	surfel_gi_set.surfel_records[slot].irradiance = vec4f16(estimate.mean);
 }

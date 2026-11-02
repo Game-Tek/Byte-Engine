@@ -199,7 +199,7 @@ fn collect_outputs(program: &besl::NodeReference) -> Vec<besl::NodeReference> {
 }
 
 /// Returns every node under `root`, once each, that `matches` accepts: the declarations of every scope, the shader's
-/// own and its layout layers', and everything under them.
+/// own and its layers', and everything under them.
 fn collect_nodes(root: &besl::NodeReference, matches: &dyn Fn(&besl::Nodes) -> bool) -> Vec<besl::NodeReference> {
 	fn visit(
 		node: &besl::NodeReference,
@@ -216,7 +216,14 @@ fn collect_nodes(root: &besl::NodeReference, matches: &dyn Fn(&besl::Nodes) -> b
 			found.push(node.clone());
 		}
 		// Scopes hold declarations, which expressions only name, so they are walked apart from expression children.
-		if let besl::Nodes::Scope { children, .. } = borrowed.node() {
+		// The targets of a layer belong to the shader only when `main` takes the layer.
+		if let besl::Nodes::Scope { children, .. }
+		| besl::Nodes::Layer {
+			members: children,
+			entry: Some(_),
+			..
+		} = borrowed.node()
+		{
 			for child in children {
 				visit(child, matches, seen, found);
 			}

@@ -1,5 +1,4 @@
 {
 	"$schema": "../../schemas/besl.bead.schema.json",
-	"stage": "Vertex",
-	"layouts": ["layouts/scene.besl"]
+	"stage": "Vertex"
 }

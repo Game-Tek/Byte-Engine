@@ -19,7 +19,7 @@ use crate::{
 		pipelines::simple::pipeline_manager::InstanceBatch,
 		pipelines::simple::{CameraShaderData, PipelineManager},
 		render_pass::RenderPassFunction,
-		set_layout::layer,
+		set_layout::ENGINE_MODULES,
 	},
 };
 
@@ -35,7 +35,8 @@ pub struct RenderPass {
 }
 
 /// The descriptor set the simple pipeline's shaders share, declared by `simple/layouts/scene.besl`.
-static SCENE_LAYOUT: LazyLock<SetLayout> = LazyLock::new(|| SetLayout::from_layers(&[layer!("simple/layouts/scene.besl")]));
+static SCENE_LAYOUT: LazyLock<SetLayout> =
+	LazyLock::new(|| SetLayout::from_layer("::byte_engine::rendering::simple::layouts::scene::Scene", ENGINE_MODULES));
 
 impl RenderPass {
 	pub fn new(

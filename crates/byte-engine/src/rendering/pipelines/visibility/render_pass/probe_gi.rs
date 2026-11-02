@@ -40,18 +40,18 @@ pub(in crate::rendering::pipelines::visibility) const PROBE_GI_PIPELINES: [&str;
 	"probe-resolve",
 ];
 /// The probes of one cascade along each axis, and the cascades. Match `PROBE_GRID_X`, `PROBE_GRID_Y`, `PROBE_GRID_Z`, and
-/// `PROBE_CASCADES` in `layouts/probe-volume.besl`.
+/// `PROBE_CASCADES` in `layouts/probe_volume.besl`.
 const PROBE_GRID: [u32; 3] = [24, 12, 24];
 const PROBE_CASCADES: usize = 4;
-/// Every probe slot of every cascade. Matches `PROBE_COUNT` in `layouts/probe-volume.besl`.
+/// Every probe slot of every cascade. Matches `PROBE_COUNT` in `layouts/probe_volume.besl`.
 const PROBE_COUNT: u32 = PROBE_GRID[0] * PROBE_GRID[1] * PROBE_GRID[2] * PROBE_CASCADES as u32;
-/// The rays one probe update traces. Matches `PROBE_RAYS` in `layouts/probe-gi.besl`.
+/// The rays one probe update traces. Matches `PROBE_RAYS` in `layouts/probe_gi.besl`.
 pub(crate) const PROBE_RAYS: u32 = 128;
 /// The atlas tiles of one probe's irradiance and distance maps, borders included. Match `PROBE_IRRADIANCE_TILE` and
-/// `PROBE_DISTANCE_TILE` in `layouts/probe-volume.besl`.
+/// `PROBE_DISTANCE_TILE` in `layouts/probe_volume.besl`.
 const IRRADIANCE_TILE: u32 = 8;
 const DISTANCE_TILE: u32 = 16;
-/// The priority buckets of the schedule. Matches `PROBE_PRIORITY_BUCKETS` in `layouts/probe-gi.besl`.
+/// The priority buckets of the schedule. Matches `PROBE_PRIORITY_BUCKETS` in `layouts/probe_gi.besl`.
 const PROBE_PRIORITY_BUCKETS: usize = 64;
 /// The threads of one update workgroup, which updates one probe. Matches `PROBE_UPDATE_WORKGROUP_SIZE` in
 /// `probe-update.besl`.
@@ -70,7 +70,7 @@ pub(crate) const PROBE_SPACING_RANGE: RangeInclusive<f32> = 0.05..=100.0;
 pub(crate) const DEFAULT_PROBE_SPACING: f32 = 1.0;
 
 /// The `ProbeCascade` struct places one cascade's window. It matches the struct of the same name in
-/// `layouts/probe-volume.besl`.
+/// `layouts/probe_volume.besl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct ProbeCascade {
@@ -80,7 +80,7 @@ struct ProbeCascade {
 }
 
 /// The `ProbeVolumeParameters` struct carries what every reader of the volume shares in a frame. It matches the struct
-/// of the same name in `layouts/probe-volume.besl`.
+/// of the same name in `layouts/probe_volume.besl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct ProbeVolumeParameters {
@@ -90,7 +90,7 @@ struct ProbeVolumeParameters {
 	_padding: [u32; 2],
 }
 
-/// The `ProbeRecord` struct is one probe slot. It matches `ProbeRecord` in `layouts/probe-volume.besl`; only the GPU
+/// The `ProbeRecord` struct is one probe slot. It matches `ProbeRecord` in `layouts/probe_volume.besl`; only the GPU
 /// reads and writes it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -104,7 +104,7 @@ struct ProbeRecord {
 }
 
 /// The `ProbeGiParameters` struct carries one frame's settings of the update stages. It matches the struct of the same
-/// name in `layouts/probe-gi.besl`.
+/// name in `layouts/probe_gi.besl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct ProbeGiParameters {
@@ -117,7 +117,7 @@ struct ProbeGiParameters {
 }
 
 /// The `ProbeSchedule` struct is the frame's schedule and the probe counts the host reads back for logging. It matches
-/// `ProbeSchedule` in `layouts/probe-gi.besl`.
+/// `ProbeSchedule` in `layouts/probe_gi.besl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct ProbeSchedule {
@@ -140,7 +140,7 @@ pub(crate) struct ProbeSchedule {
 	_padding: [u32; 3],
 }
 
-/// The `ProbeRayResult` struct is what one ray brings back. It matches `ProbeRayResult` in `layouts/probe-gi.besl`;
+/// The `ProbeRayResult` struct is what one ray brings back. It matches `ProbeRayResult` in `layouts/probe_gi.besl`;
 /// only the GPU reads and writes it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -150,7 +150,7 @@ struct ProbeRayResult {
 }
 
 /// The `ProbeResolveParameters` struct carries one sink's resolve settings for a frame. It matches the struct of the
-/// same name in `layouts/probe-resolve.besl`.
+/// same name in `layouts/probe_resolve.besl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct ProbeResolveParameters {
@@ -643,7 +643,7 @@ mod tests {
 	use crate::rendering::SetLayout;
 
 	#[test]
-	fn host_records_match_the_strides_their_layout_layers_reflect() {
+	fn host_records_match_the_strides_their_layers_reflect() {
 		let stride = |layout: &SetLayout, name: &str| {
 			layout
 				.interface()

@@ -17,8 +17,9 @@
 //! The [`crate::lexer`] module resolves those names later.
 
 use super::expressions::{
-	execute_parsers, parse_const, parse_descriptor, parse_function, parse_macro, parse_member, parse_push_constant,
-	parse_sampler, parse_shader_interface_declaration, parse_struct,
+	execute_parsers, parse_const, parse_descriptor, parse_function, parse_implementation, parse_layer, parse_macro,
+	parse_member, parse_module, parse_push_constant, parse_sampler, parse_shader_interface_declaration, parse_signature,
+	parse_struct, parse_use,
 };
 use crate::lexer::BufferMemoryClass;
 use crate::sampler::SamplerState;
@@ -136,23 +137,43 @@ impl std::fmt::Display for TypeName<'_> {
 
 /// Parses a token stream into the root scope of its declarations.
 pub(crate) fn parse<'i, 'a: 'i>(tokens: &'i [&'a str]) -> Result<Node<'a>, ParsingFailReasons> {
-	let mut iterator = tokens.iter();
+	let (children, _) = parse_declarations(tokens.iter(), false)?;
 
+	Ok(Node::root_with_children(children))
+}
+
+/// Parses the declarations of a module body. A file's body ends with its tokens. An inline module's body, `closed`,
+/// ends at its closing `}`, which this consumes.
+pub(super) fn parse_declarations<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	closed: bool,
+) -> Result<(Vec<Node<'a>>, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
 	let parsers = [
 		parse_push_constant,
 		parse_struct,
+		parse_layer,
+		// A signature must decline before a function claims `name: fn (...)`.
+		parse_signature,
 		parse_function,
 		parse_macro,
 		parse_const,
 		parse_descriptor,
 		parse_sampler,
 		parse_shader_interface_declaration,
+		parse_module,
+		parse_use,
+		parse_implementation,
 		parse_member,
 	];
 
-	let mut children: Vec<Node<'a>> = Vec::with_capacity(64);
+	let mut children: Vec<Node<'a>> = Vec::with_capacity(if closed { 8 } else { 64 });
 
 	loop {
+		if closed && iterator.clone().next() == Some(&"}") {
+			iterator.next();
+			break;
+		}
+
 		let (expression, iter) = execute_parsers(parsers.as_slice(), iterator)?;
 
 		children.push(expression);
@@ -160,11 +181,14 @@ pub(crate) fn parse<'i, 'a: 'i>(tokens: &'i [&'a str]) -> Result<Node<'a>, Parsi
 		iterator = iter;
 
 		if iterator.len() == 0 {
+			if closed {
+				return Err(ParsingFailReasons::StreamEndedPrematurely);
+			}
 			break;
 		}
 	}
 
-	Ok(Node::root_with_children(children))
+	Ok((children, iterator))
 }
 
 use std::borrow::Cow;
@@ -187,6 +211,47 @@ impl<'a> Node<'a> {
 	pub fn scope(name: &'a str, children: Vec<Node<'a>>) -> Node<'a> {
 		Node {
 			node: Nodes::Scope { name, children },
+		}
+	}
+
+	/// Builds a layer: the descriptors, push constant block, and tile targets that `members` name, which a shader
+	/// consumes as one value of the layer's type.
+	pub fn layer(name: &'a str, members: Vec<(&'a str, Node<'a>)>) -> Node<'a> {
+		Node {
+			node: Nodes::Layer { name, members },
+		}
+	}
+
+	/// Builds a signature, a function type made of `parts`. See [`SignaturePart`].
+	pub fn signature(name: &'a str, parts: Vec<SignaturePart<'a>>) -> Node<'a> {
+		Node {
+			node: Nodes::Signature { name, parts },
+		}
+	}
+
+	/// Builds a function `name` that implements the signature `signature` names, with `statements` as its body.
+	pub fn implementation(name: &'a str, signature: &'a str, statements: Vec<Node<'a>>) -> Node<'a> {
+		Node {
+			node: Nodes::Implementation {
+				name,
+				signature,
+				statements,
+			},
+		}
+	}
+
+	/// Builds a `name: mod;` declaration whose file [`crate::attach_module`] attaches later.
+	pub fn file_module(name: &'a str) -> Node<'a> {
+		Node {
+			node: Nodes::FileModule { name },
+		}
+	}
+
+	/// Builds a `use` declaration. With `glob`, it brings in every declaration of the module `path` names, as
+	/// `use path::*;` does.
+	pub fn r#use(path: &'a str, glob: bool) -> Node<'a> {
+		Node {
+			node: Nodes::Use { path, glob },
 		}
 	}
 
@@ -223,6 +288,7 @@ impl<'a> Node<'a> {
 				params,
 				return_type: return_type.into(),
 				statements,
+				types: None,
 			},
 		}
 	}
@@ -291,7 +357,6 @@ impl<'a> Node<'a> {
 				memory_class: Some(BufferMemoryClass::Device),
 				count: None,
 				sampler: None,
-				layout: None,
 			},
 		}
 	}
@@ -319,7 +384,6 @@ impl<'a> Node<'a> {
 				write,
 				memory_class,
 				count,
-				layout: None,
 			},
 		}
 	}
@@ -588,7 +652,12 @@ impl<'a> Node<'a> {
 	/// `push_constant`, which shaders read it through.
 	pub fn name(&self) -> Option<&'a str> {
 		match &self.node {
-			Nodes::Scope { name, .. } => Some(name),
+			Nodes::Scope { name, .. }
+			| Nodes::FileModule { name }
+			| Nodes::Layer { name, .. }
+			| Nodes::Signature { name, .. }
+			| Nodes::Implementation { name, .. } => Some(name),
+			Nodes::Use { .. } => None,
 			Nodes::Struct { name, .. } => Some(name),
 			Nodes::Member { name, .. } => Some(name),
 			Nodes::Function { name, .. } => Some(name),
@@ -612,16 +681,6 @@ impl<'a> Node<'a> {
 	pub fn node_mut(&mut self) -> &mut Nodes<'a> {
 		// TODO: maybe do not expose nodes
 		&mut self.node
-	}
-
-	/// Names the layout layer that declares this resource. Nodes that are not resources are left unchanged.
-	///
-	/// Resources that share a layout name form one descriptor set, which every shader that lists the layer binds as
-	/// a whole. [`crate::stack_layers`] calls it for the resources each layer declares.
-	pub fn set_layout(&mut self, layout: &'a str) {
-		if let Nodes::Binding { layout: target, .. } | Nodes::Descriptor { layout: target, .. } = &mut self.node {
-			*target = Some(layout);
-		}
 	}
 
 	pub fn node(&self) -> &Nodes<'a> {
@@ -652,6 +711,18 @@ impl<'a> Node<'a> {
 	}
 }
 
+/// The `SignaturePart` enum describes one operand of a signature, such as `A` or `fn (x: X)` in `S: A + fn (x: X);`.
+#[derive(Clone, Debug)]
+pub enum SignaturePart<'a> {
+	/// The signature at this path.
+	Named(&'a str),
+	/// Parameters and a return type written in place.
+	Inline {
+		params: Vec<Node<'a>>,
+		return_type: TypeName<'a>,
+	},
+}
+
 /// The `BindingResource` enum describes what a [`Nodes::Binding`] built by engine code gives shaders access to, so
 /// the lexer can link every binding kind in one place.
 #[derive(Clone, Debug)]
@@ -666,11 +737,41 @@ pub enum BindingResource<'a> {
 
 #[derive(Clone, Debug)]
 pub enum Nodes<'a> {
-	/// A named group of BESL declarations, similar to a Rust module.
+	/// A named group of BESL declarations, similar to a Rust module. It is a namespace: other modules reach its
+	/// declarations through a path such as `name::item` or a [`Nodes::Use`].
 	Scope {
 		/// The name used for imports and namespaces.
 		name: &'a str,
 		children: Vec<Node<'a>>,
+	},
+	/// A `name: mod;` declaration whose file is not attached yet. [`crate::attach_module`] replaces it with a
+	/// [`Nodes::Scope`] that holds the file's declarations.
+	FileModule {
+		name: &'a str,
+	},
+	/// A `use` declaration, which makes the declaration or module `path` names available by its last name. With
+	/// `glob`, from `use path::*;`, it makes every declaration of that module available instead.
+	Use {
+		path: &'a str,
+		glob: bool,
+	},
+	/// A layer: the descriptors, push constant block, and tile targets one shader parameter brings, each with the name
+	/// code reaches it by through the parameter.
+	Layer {
+		name: &'a str,
+		members: Vec<(&'a str, Node<'a>)>,
+	},
+	/// A signature: a function type made of `parts`, joined in order.
+	Signature {
+		name: &'a str,
+		parts: Vec<SignaturePart<'a>>,
+	},
+	/// A function that implements the signature `signature` names. Linking gives it the signature's parameters and
+	/// return type.
+	Implementation {
+		name: &'a str,
+		signature: &'a str,
+		statements: Vec<Node<'a>>,
 	},
 	/// A struct declaration and its fields.
 	Struct {
@@ -688,6 +789,9 @@ pub enum Nodes<'a> {
 		params: Vec<Node<'a>>,
 		return_type: TypeName<'a>,
 		statements: Vec<Node<'a>>,
+		/// The path of the module whose declarations the parameter and return types name, from the program root, when
+		/// the function implements a signature another module declares. `None` names the function's own module.
+		types: Option<Vec<&'a str>>,
 	},
 	/// An `if`, with an optional `else` or `else if` branch. As a statement its blocks run for their effects. As an
 	/// operand, such as `let x: f32 = if (c) { a } else { b };`, each block ends in the value it yields; see
@@ -718,9 +822,6 @@ pub enum Nodes<'a> {
 		write: bool,
 		memory_class: Option<BufferMemoryClass>,
 		count: Option<NonZeroU32>,
-		/// The layout layer that declares the resource, or `None` for the module's own layout. See
-		/// [`Node::set_layout`].
-		layout: Option<&'a str>,
 	},
 	/// A named resource descriptor declared directly in BESL source.
 	Descriptor {
@@ -735,9 +836,6 @@ pub enum Nodes<'a> {
 		count: Option<NonZeroU32>,
 		/// The name of the [`Nodes::Sampler`] that fixes a texture's sampler, or `None` when the application binds one.
 		sampler: Option<&'a str>,
-		/// The layout layer that declares the resource, or `None` for the module's own layout. See
-		/// [`Node::set_layout`].
-		layout: Option<&'a str>,
 	},
 	/// A sampler declared in BESL source, which texture descriptors name in their `sampler` property.
 	Sampler {

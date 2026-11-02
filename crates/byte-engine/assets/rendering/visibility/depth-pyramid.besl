@@ -9,6 +9,11 @@
 // device coordinates of the cascade as the CPU fitted it to the camera frustum, where every receiver lies inside -1..1
 // in x and y and 0..1 in z. The cascade fit then shrinks each cascade to its box and resets the bounds.
 
+use ::byte_engine::rendering::visibility::layouts::screen_view::*;
+use ::byte_engine::rendering::visibility::layouts::gtao_view::*;
+use ::byte_engine::rendering::visibility::layouts::receiver_bounds::*;
+use ::byte_engine::rendering::visibility::layouts::depth_pyramid::*;
+
 // How many suns' receiver bounds to find: zero on frames no cascade fits receivers.
 push_constant: push_constant {
 	fitted_suns: u32,
@@ -68,8 +73,8 @@ merge_tile_bounds: fn (fitted_box: u32, lower: vec3f, upper: vec3f) -> void {
 }
 
 // Returns the cascade whose slice holds a camera-space distance, or NO_CASCADE past the last one.
-receiver_cascade: fn (distance: f32) -> u32 {
-	let splits: vec4f = receiver_fit.split_far;
+receiver_cascade: fn (depth_pyramid: DepthPyramid, distance: f32) -> u32 {
+	let splits: vec4f = depth_pyramid.receiver_fit.split_far;
 	if (distance < splits.x) {
 		return 0;
 	}
@@ -87,8 +92,8 @@ receiver_cascade: fn (distance: f32) -> u32 {
 
 // Returns the four depth texels around the corner that texels `corner - 1` and `corner` share on each axis, in gather
 // order: x and y hold the left and right texels of the second row, z and w the right and left texels of the first.
-depth_quad: fn (corner: vec2u, extent: vec2u) -> vec4f {
-	return gather(source_depth, vec2f(f32(corner.x), f32(corner.y)) / vec2f(f32(extent.x), f32(extent.y)));
+depth_quad: fn (depth_pyramid: DepthPyramid, corner: vec2u, extent: vec2u) -> vec4f {
+	return gather(depth_pyramid.source_depth, vec2f(f32(corner.x), f32(corner.y)) / vec2f(f32(extent.x), f32(extent.y)));
 }
 
 // Returns where a thread's pixel `index` lies from its first pixel: the quad, then the last column, the last row, and
@@ -109,7 +114,7 @@ pixel_offset: fn (index: u32) -> vec2u {
 
 // Folds a thread's pixels into the box they fill in their cascade of sun `sun`, leaves the box in workgroup memory for
 // the combiners, and returns its fitted box, or NO_CASCADE when `fits` is false or no pixel is a receiver.
-fold_thread_box: fn (sun: u32, fits: bool, lane: u32, first_pixel: vec2u, pixel_depths: f32[9]) -> u32 {
+fold_thread_box: fn (depth_pyramid: DepthPyramid, sun: u32, fits: bool, lane: u32, first_pixel: vec2u, pixel_depths: f32[9]) -> u32 {
 	let cascade: u32 = NO_CASCADE;
 	if (fits) {
 		let lower: vec3f = vec3f(0.0, 0.0, 0.0);
@@ -118,19 +123,19 @@ fold_thread_box: fn (sun: u32, fits: bool, lane: u32, first_pixel: vec2u, pixel_
 			let depth: f32 = pixel_depths[index];
 			// Zero depth is the sky, which receives no shadow.
 			if (depth != 0.0) {
-				let distance: f32 = receiver_fit.depth_unproject.x / (depth + receiver_fit.depth_unproject.y);
-				let pixel_cascade: u32 = receiver_cascade(distance);
+				let distance: f32 = depth_pyramid.receiver_fit.depth_unproject.x / (depth + depth_pyramid.receiver_fit.depth_unproject.y);
+				let pixel_cascade: u32 = receiver_cascade(depth_pyramid, distance);
 				if (pixel_cascade != NO_CASCADE) {
 					let pixel_box: u32 = sun * 4 + pixel_cascade;
 					let pixel: vec2u = first_pixel + pixel_offset(index);
-					let ray_x: f32 = f32(pixel.x) * receiver_fit.pixel_to_ray.x + receiver_fit.pixel_to_ray.z;
-					let ray_y: f32 = f32(pixel.y) * receiver_fit.pixel_to_ray.y + receiver_fit.pixel_to_ray.w;
+					let ray_x: f32 = f32(pixel.x) * depth_pyramid.receiver_fit.pixel_to_ray.x + depth_pyramid.receiver_fit.pixel_to_ray.z;
+					let ray_y: f32 = f32(pixel.y) * depth_pyramid.receiver_fit.pixel_to_ray.y + depth_pyramid.receiver_fit.pixel_to_ray.w;
 					let view_position: vec4f = vec4f(ray_x * distance, ray_y * distance, distance, 1.0);
 					let first_row: u32 = pixel_box * 3;
 					let position: vec3f = vec3f(
-						dot(receiver_fit.view_to_cascade_rows[first_row], view_position),
-						dot(receiver_fit.view_to_cascade_rows[first_row + 1], view_position),
-						dot(receiver_fit.view_to_cascade_rows[first_row + 2], view_position)
+						dot(depth_pyramid.receiver_fit.view_to_cascade_rows[first_row], view_position),
+						dot(depth_pyramid.receiver_fit.view_to_cascade_rows[first_row + 1], view_position),
+						dot(depth_pyramid.receiver_fit.view_to_cascade_rows[first_row + 2], view_position)
 					);
 					// A thread's pixels almost always share a cascade, so it merges only when the cascade changes.
 					if (pixel_box != cascade) {
@@ -194,7 +199,7 @@ combine_thread_boxes: fn (lane: u32) -> void {
 	}
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, gtao_view: GtaoView, depth_pyramid: DepthPyramid) -> void {
 	let lane: u32 = input.thread_idx;
 	let fitted_suns: u32 = push_constant.fitted_suns;
 	let receiver_bounds_count: u32 = fitted_suns * RECEIVER_BOUNDS_PER_SUN;
@@ -206,8 +211,8 @@ main: fn (input: StageInput) -> void {
 	workgroup_barrier();
 
 	let level_1_coordinate: vec2u = input.thread_id;
-	let level_1_extent: vec2u = image_size(reduced_depth_1);
-	let source_extent: vec2u = texture_size(source_depth);
+	let level_1_extent: vec2u = image_size(depth_pyramid.reduced_depth_1);
+	let source_extent: vec2u = texture_size(depth_pyramid.source_depth);
 	let in_range: bool = level_1_coordinate.x < level_1_extent.x && level_1_coordinate.y < level_1_extent.y;
 	let valid_level_1_coordinate: vec2u = vec2u(
 		min(level_1_coordinate.x, level_1_extent.x - 1),
@@ -219,21 +224,21 @@ main: fn (input: StageInput) -> void {
 	// The thread's quad of source texels and, at an odd extent, the last column and row, which lie outside every quad.
 	// Unused slots hold zero, the sky, which every use below skips. The slots are fixed so the array stays in registers.
 	let first_pixel: vec2u = valid_level_1_coordinate * vec2u(2, 2);
-	let quad: vec4f = depth_quad(first_pixel + vec2u(1, 1), source_extent);
+	let quad: vec4f = depth_quad(depth_pyramid, first_pixel + vec2u(1, 1), source_extent);
 	let pixel_depths: f32[9] = f32[9](quad.w, quad.z, quad.x, quad.y, 0.0, 0.0, 0.0, 0.0, 0.0);
 	let last_column: bool = first_pixel.x + 3 == source_extent.x;
 	let last_row: bool = first_pixel.y + 3 == source_extent.y;
 	if (last_column) {
-		let column_quad: vec4f = depth_quad(first_pixel + vec2u(2, 1), source_extent);
+		let column_quad: vec4f = depth_quad(depth_pyramid, first_pixel + vec2u(2, 1), source_extent);
 		pixel_depths[4] = column_quad.z;
 		pixel_depths[5] = column_quad.y;
 	}
 	if (last_row) {
-		let row_quad: vec4f = depth_quad(first_pixel + vec2u(1, 2), source_extent);
+		let row_quad: vec4f = depth_quad(depth_pyramid, first_pixel + vec2u(1, 2), source_extent);
 		pixel_depths[6] = row_quad.x;
 		pixel_depths[7] = row_quad.y;
 		if (last_column) {
-			let corner_quad: vec4f = depth_quad(first_pixel + vec2u(2, 2), source_extent);
+			let corner_quad: vec4f = depth_quad(depth_pyramid, first_pixel + vec2u(2, 2), source_extent);
 			pixel_depths[8] = corner_quad.y;
 		}
 	}
@@ -243,15 +248,15 @@ main: fn (input: StageInput) -> void {
 	for (let index: u32 = 0; index < DEPTH_PYRAMID_PIXELS_PER_THREAD; index = index + 1) {
 		nearest_source_depth = max(nearest_source_depth, pixel_depths[index]);
 	}
-	let nearest_depth: f32 = linearize_depth(nearest_source_depth);
+	let nearest_depth: f32 = linearize_depth(gtao_view, nearest_source_depth);
 	shared_depth[lane] = nearest_depth;
 	if (in_range) {
-		write(reduced_depth_1, level_1_coordinate, vec4f(nearest_depth, 0.0, 0.0, 1.0));
+		write(depth_pyramid.reduced_depth_1, level_1_coordinate, vec4f(nearest_depth, 0.0, 0.0, 1.0));
 	}
 
 	// The first sun's boxes fold while the half-resolution depths reduce, behind the barriers the reduction needs
 	// anyway. Later suns fold after the pyramid, so a frame with one sun pays nothing for them.
-	shared_box_cascade[lane] = fold_thread_box(0, fitted_suns != 0 && in_range, lane, first_pixel, pixel_depths);
+	shared_box_cascade[lane] = fold_thread_box(depth_pyramid, 0, fitted_suns != 0 && in_range, lane, first_pixel, pixel_depths);
 	workgroup_barrier();
 
 	// Lanes 0-63 reduce the 16x16 half-resolution depths to 8x8 quarter-resolution ones, kept after them.
@@ -268,9 +273,9 @@ main: fn (input: StageInput) -> void {
 		shared_depth[DEPTH_PYRAMID_LEVEL_2_OFFSET + lane] = level_2_depth;
 
 		let output_coordinate: vec2u = workgroup_origin / vec2u(2, 2) + level_coordinate;
-		let output_extent: vec2u = image_size(reduced_depth_2);
+		let output_extent: vec2u = image_size(depth_pyramid.reduced_depth_2);
 		if (output_coordinate.x < output_extent.x && output_coordinate.y < output_extent.y) {
-			write(reduced_depth_2, output_coordinate, vec4f(level_2_depth, 0.0, 0.0, 1.0));
+			write(depth_pyramid.reduced_depth_2, output_coordinate, vec4f(level_2_depth, 0.0, 0.0, 1.0));
 		}
 	}
 	// Meanwhile sixteen lanes each combine sixteen threads' boxes, so the tile's bounds take few contended atomics.
@@ -288,15 +293,15 @@ main: fn (input: StageInput) -> void {
 			nearest_nonzero(shared_depth[source_index + 8], shared_depth[source_index + 9])
 		);
 		let output_coordinate: vec2u = workgroup_origin / vec2u(4, 4) + level_coordinate;
-		let output_extent: vec2u = image_size(reduced_depth_3);
+		let output_extent: vec2u = image_size(depth_pyramid.reduced_depth_3);
 		if (output_coordinate.x < output_extent.x && output_coordinate.y < output_extent.y) {
-			write(reduced_depth_3, output_coordinate, vec4f(level_3_depth, 0.0, 0.0, 1.0));
+			write(depth_pyramid.reduced_depth_3, output_coordinate, vec4f(level_3_depth, 0.0, 0.0, 1.0));
 		}
 	}
 
 	// Every later sun folds and combines its boxes in turn.
 	for (let sun: u32 = 1; sun < fitted_suns; sun = sun + 1) {
-		shared_box_cascade[lane] = fold_thread_box(sun, in_range, lane, first_pixel, pixel_depths);
+		shared_box_cascade[lane] = fold_thread_box(depth_pyramid, sun, in_range, lane, first_pixel, pixel_depths);
 		workgroup_barrier();
 		if (lane < DEPTH_PYRAMID_BOX_COMBINERS) {
 			combine_thread_boxes(lane);
@@ -308,7 +313,7 @@ main: fn (input: StageInput) -> void {
 	if (lane < receiver_bounds_count) {
 		let bound: u32 = atomic_load(tile_bounds[lane]);
 		if (bound != 0) {
-			atomic_max(receiver_bounds.bounds[lane], bound);
+			atomic_max(depth_pyramid.receiver_bounds.bounds[lane], bound);
 		}
 	}
 }

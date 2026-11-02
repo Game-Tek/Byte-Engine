@@ -335,23 +335,12 @@ mod tests {
 
 	#[compio::test]
 	async fn each_used_layout_becomes_one_argument_buffer() {
-		// The layers stack as their sidecar would list them: a shared set, a set the shader never reaches, and types.
-		let layers = [
-			(
-				"scene",
-				"views: descriptor<{ type: f32[], binding: 0, access: read }>; shadow_map: descriptor<{ type: Texture2D, binding: 1, access: read }>; meshes: descriptor<{ type: f32[], binding: 2, access: read }>;",
-			),
-			(
-				"history",
-				"history: descriptor<{ type: Texture2D, binding: 3, access: read }>;",
-			),
-		];
-		let module = besl::parse(
-			"result: descriptor<{ type: f32[], binding: 4, access: write }>; scale: fn () -> f32 { return meshes[0]; } main: fn () -> void { result[0] = scale(); }",
+		// The shader takes a shared set, and a set it never reaches; a layer it doesn't take forms no set.
+		let program = besl::compile_to_besl(
+			"Scene: layer { views: descriptor<{ type: f32[], binding: 0, access: read }>; shadow_map: descriptor<{ type: Texture2D, binding: 1, access: read }>; meshes: descriptor<{ type: f32[], binding: 2, access: read }>; } History: layer { history: descriptor<{ type: Texture2D, binding: 3, access: read }>; } result: descriptor<{ type: f32[], binding: 4, access: write }>; scale: fn (scene: Scene) -> f32 { return scene.meshes[0]; } main: fn (scene: Scene, history: History) -> void { result[0] = scale(scene); }",
+			None,
 		)
-		.expect("Expected the layered fixture to parse");
-		let program = besl::lex(besl::stack_layers(module, layers).expect("Expected the layers to stack"))
-			.expect("Expected the layered fixture to link");
+		.expect("Expected the layered fixture to link");
 		let shader = Generator::new()
 			.minified(true)
 			.generate_program(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &program)

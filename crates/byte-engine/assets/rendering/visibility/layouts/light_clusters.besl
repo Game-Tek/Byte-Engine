@@ -1,0 +1,29 @@
+// The descriptor set of the light cluster pass: the light table and the cluster grid it reads, and the per-cluster
+// light masks it writes.
+//
+// The pass buckets the light table into the clusters of one sink's view frustum, so material evaluation only visits the
+// lights that can reach a pixel. The frustum splits into 16 columns, 8 rows, and 24 depth slices that grow
+// exponentially with depth. Each cluster stores one bit per light. One workgroup fills one cluster, and each of its 32
+// threads tests 32 lights and writes one mask word, so no two threads write the same word.
+
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+
+LightClusterParameters: struct {
+	// Maps world space to the view space the clusters are laid out in, where depth grows along +Z.
+	view: mat4x3f,
+	// The view-space X/Z and Y/Z slopes at the right and top edges of the image.
+	edge_slopes: vec2f,
+	near: f32,
+	// Depth slices per doubling of view depth.
+	depth_slice_scale: f32,
+}
+
+LightClusterMasks: struct {
+	words: u32[98304],
+}
+
+LightClusters: layer {
+	lighting_data: descriptor<{ type: LightingBuffer, binding: 0, access: read, memory: device }>;
+	light_cluster_parameters: descriptor<{ type: LightClusterParameters, binding: 1, access: read }>;
+	light_cluster_masks: descriptor<{ type: LightClusterMasks, binding: 1033, access: write, memory: device }>;
+}

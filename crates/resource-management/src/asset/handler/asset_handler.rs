@@ -73,7 +73,7 @@ impl LoadErrors {
 	pub(crate) const fn fix(&self) -> &'static str {
 		match self {
 			Self::AssetCouldNotBeRead => {
-				"Check the asset ID and configured assets directory. Engine asset IDs start with 'byte-engine/'."
+				"Check the asset ID and configured assets directory. Engine asset IDs start with 'byte_engine/'."
 			}
 			Self::FailedToProcess | Self::AssetCouldNotBeLoaded => {
 				"Check the source asset and its dependencies for invalid or unsupported data."
@@ -102,13 +102,24 @@ pub(crate) struct TrackingStorageBackend<'a> {
 impl TrackingStorageBackend<'_> {
 	/// Runs `read` between two version checks of `id` and records its version, rejecting the result when `id` changed
 	/// during the read.
+	///
+	/// A read that fails because `id` doesn't exist records `id` as missing, so creating it later rebakes the resource.
+	/// Handlers that look for optional files, such as the two files a BESL module may live in, rely on this.
 	async fn tracked<T, F: Future<Output = Result<T, ()>>>(
 		&self,
 		id: ResourceId<'_>,
 		read: impl FnOnce() -> F,
 	) -> Result<T, ()> {
 		let before = self.inner.version(id).await?;
-		let resolved = read().await?;
+		let resolved = match read().await {
+			Ok(resolved) => resolved,
+			Err(()) => {
+				if before == AssetVersion::missing() {
+					upsert_dependency(&mut self.dependencies.lock(), AssetDependency::new(id, before));
+				}
+				return Err(());
+			}
+		};
 		let after = self.inner.version(id).await?;
 
 		if before != after {

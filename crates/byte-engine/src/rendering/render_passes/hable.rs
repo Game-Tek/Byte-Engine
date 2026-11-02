@@ -5,7 +5,7 @@ use super::image_transform::Configuration;
 pub const TONE_MAPPING: Configuration = Configuration {
 	name: "hable",
 	label: "Hable Tonemap",
-	pipeline_id: "byte-engine/rendering/hable/tone-mapping.pipeline",
+	pipeline_id: "byte_engine/rendering/hable/tone-mapping.pipeline",
 	output_name: "Hable Tonemap Output",
 	requires_float_input: true,
 };

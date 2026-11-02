@@ -4,16 +4,19 @@
 // levels already climbed, which the deepest climb uses for the coarsest level's share. The climb itself lives in
 // `layouts/climb.besl`, which binds both levels.
 
+use ::byte_engine::rendering::bloom::layouts::parameters::*;
+use ::byte_engine::rendering::bloom::layouts::climb::*;
+
 result_texture: descriptor<{ type: StorageImage, binding: 2, access: write }>;
 bloom_parameters: descriptor<{ type: BloomParameters, binding: 3, access: read, memory: constant }>;
 
-main: fn(input: StageInput) -> void {
+main: fn(input: StageInput, climb_set: Climb) -> void {
 	let coord: vec2u = input.thread_id;
 	guard_image_bounds(result_texture, coord);
 	let uv: vec2f = level_uv(coord, image_size(result_texture));
 	let same_weight: vec4f = bloom_parameters.same_weight[0];
 	let low_weight: vec4f = bloom_parameters.low_weight[0];
-	let combined: vec3f = same_level(uv) * vec3f(same_weight.x, same_weight.y, same_weight.z)
-		+ folded_tent(uv, bloom_parameters.filter[0].x) * vec3f(low_weight.x, low_weight.y, low_weight.z);
+	let combined: vec3f = same_level(climb_set, uv) * vec3f(same_weight.x, same_weight.y, same_weight.z)
+		+ folded_tent(climb_set, uv, bloom_parameters.filter[0].x) * vec3f(low_weight.x, low_weight.y, low_weight.z);
 	write(result_texture, coord, vec4f(combined.x, combined.y, combined.z, 1.0));
 }

@@ -1,4 +1,7 @@
 // A workgroup's 32 threads reduce four by two cells.
+
+use ::byte_engine::rendering::visibility::layouts::shadow_depth_pyramid::*;
+
 DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH: const u32 = 8;
 DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT: const u32 = 4;
 
@@ -10,8 +13,8 @@ smallest: fn (quad: vec4f) -> f32 {
 	return min(min(quad.x, quad.y), min(quad.z, quad.w));
 }
 
-main: fn (input: StageInput) -> void {
-	let source_extent: vec2u = texture_size(source_depth);
+main: fn (input: StageInput, shadow_depth_pyramid: ShadowDepthPyramid) -> void {
+	let source_extent: vec2u = texture_size(shadow_depth_pyramid.source_depth);
 	let cascade_cell_height: u32 = source_extent.y / 8;
 
 	// A cell's four threads have consecutive local indices that start at a multiple of four, so they share a
@@ -30,10 +33,10 @@ main: fn (input: StageInput) -> void {
 	let extent: vec2f = vec2f(f32(source_extent.x), f32(source_extent.y));
 	let low: vec2f = vec2f(f32(block_texel.x + 1), f32(block_texel.y + 1)) / extent;
 	let high: vec2f = vec2f(f32(block_texel.x + 3), f32(block_texel.y + 3)) / extent;
-	let top_left: vec4f = gather(source_depth, low, shadow_layer);
-	let top_right: vec4f = gather(source_depth, vec2f(high.x, low.y), shadow_layer);
-	let bottom_left: vec4f = gather(source_depth, vec2f(low.x, high.y), shadow_layer);
-	let bottom_right: vec4f = gather(source_depth, high, shadow_layer);
+	let top_left: vec4f = gather(shadow_depth_pyramid.source_depth, low, shadow_layer);
+	let top_right: vec4f = gather(shadow_depth_pyramid.source_depth, vec2f(high.x, low.y), shadow_layer);
+	let bottom_left: vec4f = gather(shadow_depth_pyramid.source_depth, vec2f(low.x, high.y), shadow_layer);
+	let bottom_right: vec4f = gather(shadow_depth_pyramid.source_depth, high, shadow_layer);
 	let maximum_depth: f32 = max(max(largest(top_left), largest(top_right)), max(largest(bottom_left), largest(bottom_right)));
 	let minimum_depth: f32 = min(min(smallest(top_left), smallest(top_right)), min(smallest(bottom_left), smallest(bottom_right)));
 
@@ -46,7 +49,7 @@ main: fn (input: StageInput) -> void {
 	// When the resolution is an odd multiple of 16, each row's last workgroup reaches past the cascade. Its threads
 	// still take part in the shuffles, but only cells inside the cascade are written.
 	if (block_in_cell == 0 && packed_cell.x < source_extent.x / 8) {
-		write(reduced_depth_1, packed_cell, vec4f(maximum_depth, 0.0, 0.0, 1.0));
-		write(reduced_minimum_1, packed_cell, vec4f(minimum_depth, 0.0, 0.0, 1.0));
+		write(shadow_depth_pyramid.reduced_depth_1, packed_cell, vec4f(maximum_depth, 0.0, 0.0, 1.0));
+		write(shadow_depth_pyramid.reduced_minimum_1, packed_cell, vec4f(minimum_depth, 0.0, 0.0, 1.0));
 	}
 }

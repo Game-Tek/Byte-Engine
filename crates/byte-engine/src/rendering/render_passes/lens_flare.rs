@@ -157,23 +157,23 @@ impl LensFlarePass {
 			render_pass_builder,
 			simple_tile::Descriptor::new(
 				"Lens Flare Extract",
-				"byte-engine/rendering/bloom/extract.pipeline",
+				"byte_engine/rendering/bloom/extract.pipeline",
 				&[crate::rendering::SCENE_COLOR_FORMAT],
 			),
 		);
 		let downsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("Lens Flare Downsample", "byte-engine/rendering/bloom/downsample.pipeline"),
+			simple_compute::Descriptor::new("Lens Flare Downsample", "byte_engine/rendering/bloom/downsample.pipeline"),
 		);
 		let features_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("Lens Flare Features", "byte-engine/rendering/lens-flare/features.pipeline"),
+			simple_compute::Descriptor::new("Lens Flare Features", "byte_engine/rendering/lens-flare/features.pipeline"),
 		);
 		let composite_pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
 			simple_tile::Descriptor::new(
 				"Lens Flare Composite",
-				"byte-engine/rendering/bloom/composite.pipeline",
+				"byte_engine/rendering/bloom/composite.pipeline",
 				&[output.format()],
 			),
 		);
@@ -510,8 +510,8 @@ mod tests {
 		use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
 		use utils::Extent;
 
-		let mut root = besl::parse(LENS_FLARE_FEATURES_BESL).expect("lens flare shader should parse");
-		root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);
+		let mut root = crate::rendering::shader_vm_test::with_engine_modules(LENS_FLARE_FEATURES_BESL);
+		root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
 		let root = besl::lex(root).expect("lens flare shader should link");
 		let settings = ShaderGenerationSettings::compute(Extent::rectangle(8, 8)).name("lens_flare_features".to_string());
 

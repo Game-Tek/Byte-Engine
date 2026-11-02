@@ -63,6 +63,7 @@ rotate_shadow_poisson_offset: fn (poisson_offset: vec2f16, rotation: vec2f16) ->
 // cells.
 pub(crate) const DIRECTIONAL_SHADOW_DEPTH_PROBE_SOURCE: &str = r#"
 directional_shadow_area_is_fully_lit: fn (
+	material_evaluation: MaterialEvaluation,
 	shadow_uv: vec2f,
 	surface_depth: f32,
 	shadow_layer: u32,
@@ -77,7 +78,7 @@ directional_shadow_area_is_fully_lit: fn (
 	// and H/8 cells tall per layer.
 	let cell_extent: vec2u = shadow_map_extent / vec2u(8, 8);
 	let layer_offset: f32 = f32(shadow_layer * cell_extent.y);
-	let pyramid_size: vec2u = texture_size(directional_shadow_depth_pyramid);
+	let pyramid_size: vec2u = texture_size(material_evaluation.directional_shadow_depth_pyramid);
 	let pyramid_extent: vec2f = vec2f(f32(pyramid_size.x), f32(pyramid_size.y));
 	let first_cell: vec2f = vec2f(
 		floor(shadow_texel_position.x / 8.0 - 1.5),
@@ -102,10 +103,10 @@ directional_shadow_area_is_fully_lit: fn (
 		clamp(first_cell.y + 3.0, 1.0, maximum_corner.y) + layer_offset
 	) / pyramid_extent;
 	// Issue the independent probes before reducing them, so one fetch does not gate the next.
-	let probe0: f32 = downsample_max(directional_shadow_depth_pyramid, corner0, 0.0);
-	let probe1: f32 = downsample_max(directional_shadow_depth_pyramid, corner1, 0.0);
-	let probe2: f32 = downsample_max(directional_shadow_depth_pyramid, corner2, 0.0);
-	let probe3: f32 = downsample_max(directional_shadow_depth_pyramid, corner3, 0.0);
+	let probe0: f32 = downsample_max(material_evaluation.directional_shadow_depth_pyramid, corner0, 0.0);
+	let probe1: f32 = downsample_max(material_evaluation.directional_shadow_depth_pyramid, corner1, 0.0);
+	let probe2: f32 = downsample_max(material_evaluation.directional_shadow_depth_pyramid, corner2, 0.0);
+	let probe3: f32 = downsample_max(material_evaluation.directional_shadow_depth_pyramid, corner3, 0.0);
 	let block_maximum: f32 = max(max(max(max(0.0, probe0), probe1), probe2), probe3);
 	return surface_depth >= block_maximum;
 }
@@ -128,6 +129,7 @@ directional_shadow_area_is_fully_lit: fn (
 // grows from zero as an occluder enters the search.
 pub(crate) const DIRECTIONAL_SHADOW_BLOCKER_SOURCE: &str = r#"
 directional_shadow_blocker_depth: fn (
+	material_evaluation: MaterialEvaluation,
 	shadow_texel_position: vec2f,
 	surface_depth: f32,
 	depth_gradient_per_texel: vec2f,
@@ -157,7 +159,7 @@ directional_shadow_blocker_depth: fn (
 			// Cells past the cascade's edge hold no occluders for it.
 			if (cell_x >= 0.0 && cell_y >= 0.0 && cell_x < f32(cell_extent.x) && cell_y < f32(cell_extent.y)) {
 				let cell_maximum: f32 = fetch(
-					directional_shadow_depth_pyramid,
+					material_evaluation.directional_shadow_depth_pyramid,
 					vec2u(u32(cell_x), u32(cell_y + layer_offset))
 				).x;
 				let cell_center: vec2f = vec2f(cell_x + 0.5, cell_y + 0.5) * 8.0;
@@ -337,6 +339,7 @@ directional_shadow_receiver_gradient: fn (
 // layers, so the layer modulo four is the cascade's index, which sizes the receiver's depth margin.
 pub(crate) const DIRECTIONAL_SHADOW_OCCLUDER_DISTANCE_SOURCE: &str = r#"
 directional_shadow_occluder_distance: fn (
+	material_evaluation: MaterialEvaluation,
 	shadow_view_projection: mat4f,
 	shadow_layer: u32,
 	world_space_position: vec3f,
@@ -346,7 +349,7 @@ directional_shadow_occluder_distance: fn (
 ) -> f32 {
 	let receiver: vec4f = directional_shadow_receiver(shadow_view_projection, shadow_layer % 4, world_space_position);
 	let shadow_uv: vec2f = vec2f(receiver.x, receiver.y);
-	if (receiver.w == 0.0 || directional_shadow_area_is_fully_lit(shadow_uv, receiver.z, shadow_layer, shadow_map_extent)) {
+	if (receiver.w == 0.0 || directional_shadow_area_is_fully_lit(material_evaluation, shadow_uv, receiver.z, shadow_layer, shadow_map_extent)) {
 		return 0.0 - 1.0;
 	}
 	let shadow_map_extent_f: vec2f = vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
@@ -357,6 +360,7 @@ directional_shadow_occluder_distance: fn (
 	);
 	let depth_per_meter: f32 = directional_shadow_depth_per_meter(shadow_view_projection);
 	let blocker_depth: f32 = directional_shadow_blocker_depth(
+		material_evaluation,
 		shadow_uv * shadow_map_extent_f,
 		receiver.z,
 		depth_gradient / shadow_map_extent_f,
@@ -377,6 +381,7 @@ directional_shadow_occluder_distance: fn (
 // `shadow_layer` is the cascade's shadow-map layer, as in `directional_shadow_occluder_distance`.
 pub(crate) const DIRECTIONAL_SHADOW_CASCADE_SOURCE: &str = r#"
 sample_directional_shadow_cascade: fn (
+	material_evaluation: MaterialEvaluation,
 	shadow_map: ArrayTexture2D,
 	shadow_view_projection: mat4f,
 	shadow_layer: u32,
@@ -392,7 +397,7 @@ sample_directional_shadow_cascade: fn (
 	if (receiver.w == 0.0) {
 		return 1.0;
 	}
-	if (check_fully_lit && directional_shadow_area_is_fully_lit(shadow_uv, receiver.z, shadow_layer, shadow_map_extent)) {
+	if (check_fully_lit && directional_shadow_area_is_fully_lit(material_evaluation, shadow_uv, receiver.z, shadow_layer, shadow_map_extent)) {
 		return 1.0;
 	}
 	let depth_gradient: vec2f = directional_shadow_receiver_gradient(
@@ -583,6 +588,7 @@ sample_cone_shadow_tent: fn (
 // Cone maps use two positive Depth16Unorm steps as a reverse-Z comparison margin after receiver-plane correction.
 pub(crate) const CONE_SHADOW_SOURCE: &str = r#"
 sample_cone_shadow: fn (
+	scene: Scene,
 	shadow_map: ArrayTexture2D,
 	shadow_view_index: u32,
 	shadow_layer: u32,
@@ -591,7 +597,7 @@ sample_cone_shadow: fn (
 	world_space_position_derivative_y: vec3f
 ) -> f32 {
 	// Avoid materializing the full View record. Cone projection only needs this matrix.
-	let shadow_view_projection: mat4f = views.views[shadow_view_index].view_projection;
+	let shadow_view_projection: mat4f = scene.views.views[shadow_view_index].view_projection;
 	let surface_light_clip_position: vec4f = shadow_view_projection * vec4f(
 		world_space_position.x,
 		world_space_position.y,
@@ -881,6 +887,7 @@ point_shadow_poisson_offset: fn (tap: u32) -> vec2f16 {
 // have `shadow_map_resolution` texels per side.
 pub(crate) const POINT_SHADOW_SOURCE: &str = r#"
 sample_point_shadow: fn (
+	scene: Scene,
 	shadow_map: TextureCubeArray,
 	shadow_map_resolution: f32,
 	shadow_view_index: u32,
@@ -895,7 +902,7 @@ sample_point_shadow: fn (
 	if (distance_squared <= 0.0) {
 		return 1.0;
 	}
-	let view: View = views.views[shadow_view_index];
+	let view: View = scene.views.views[shadow_view_index];
 	let receiver_distance: f32 = sqrt(distance_squared);
 	let center_direction: vec3f = light_to_surface / receiver_distance;
 	let pcf_rotation: vec2f16 = compute_shadow_rotation(point_shadow_texel_direction(center_direction, shadow_map_resolution));
@@ -979,6 +986,8 @@ sample_point_shadow: fn (
 // each cascade moves it by `normal_offset` over its texels per meter.
 pub(crate) const DIRECTIONAL_SHADOW_SOURCE: &str = r#"
 sample_directional_shadow: fn (
+	scene: Scene,
+	material_evaluation: MaterialEvaluation,
 	shadow_map: ArrayTexture2D,
 	shadow_view0: u32,
 	shadow_view1: u32,
@@ -992,17 +1001,17 @@ sample_directional_shadow: fn (
 	normal_offset: vec3f
 ) -> f32 {
 	// Surfaces past the last cascade lie beyond the shadow distance and receive no sun shadow.
-	if (view_depth >= views.views[shadow_view3].far) {
+	if (view_depth >= scene.views.views[shadow_view3].far) {
 		return 1.0;
 	}
 	// Descend only while the surface lies beyond a split. This avoids testing
 	// a sentinel cascade index after every successful near-cascade match.
 	let depth_cascade: u32 = 0;
-	if (view_depth >= views.views[shadow_view0].far) {
+	if (view_depth >= scene.views.views[shadow_view0].far) {
 		depth_cascade = 1;
-		if (view_depth >= views.views[shadow_view1].far) {
+		if (view_depth >= scene.views.views[shadow_view1].far) {
 			depth_cascade = 2;
-			if (view_depth >= views.views[shadow_view2].far) {
+			if (view_depth >= scene.views.views[shadow_view2].far) {
 				depth_cascade = 3;
 			}
 		}
@@ -1014,7 +1023,7 @@ sample_directional_shadow: fn (
 	let holding_cascade: u32 = 4;
 	for (let cascade: u32 = depth_cascade; cascade < 4 && holding_cascade == 4; cascade = cascade + 1) {
 		let cascade_view: u32 = directional_shadow_cascade_view(cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
-		if (directional_shadow_cascade_holds(views.views[cascade_view].view_projection, world_space_position, shadow_map_width)) {
+		if (directional_shadow_cascade_holds(scene.views.views[cascade_view].view_projection, world_space_position, shadow_map_width)) {
 			holding_cascade = cascade;
 		}
 	}
@@ -1023,10 +1032,10 @@ sample_directional_shadow: fn (
 	}
 	depth_cascade = holding_cascade;
 	let texels_per_meter: vec4f = vec4f(
-		directional_shadow_texels_per_meter(views.views[shadow_view0].view_projection, shadow_map_width),
-		directional_shadow_texels_per_meter(views.views[shadow_view1].view_projection, shadow_map_width),
-		directional_shadow_texels_per_meter(views.views[shadow_view2].view_projection, shadow_map_width),
-		directional_shadow_texels_per_meter(views.views[shadow_view3].view_projection, shadow_map_width)
+		directional_shadow_texels_per_meter(scene.views.views[shadow_view0].view_projection, shadow_map_width),
+		directional_shadow_texels_per_meter(scene.views.views[shadow_view1].view_projection, shadow_map_width),
+		directional_shadow_texels_per_meter(scene.views.views[shadow_view2].view_projection, shadow_map_width),
+		directional_shadow_texels_per_meter(scene.views.views[shadow_view3].view_projection, shadow_map_width)
 	);
 
 	// Percentage-closer soft shadows: a disk of angular radius a leaves a penumbra reaching d * tan(a) to each side of
@@ -1039,12 +1048,13 @@ sample_directional_shadow: fn (
 	let search_view: u32 = directional_shadow_cascade_view(search_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
 	// A coarser cascade fitted to its own surfaces may not hold this one; the search then stays in the surface's
 	// cascade, where the penumbra it finds is cut off at the search's reach.
-	if (directional_shadow_cascade_holds(views.views[search_view].view_projection, world_space_position, shadow_map_width) == false) {
+	if (directional_shadow_cascade_holds(scene.views.views[search_view].view_projection, world_space_position, shadow_map_width) == false) {
 		search_cascade = depth_cascade;
 		search_view = directional_shadow_cascade_view(search_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
 	}
 	let occluder_distance: f32 = directional_shadow_occluder_distance(
-		views.views[search_view].view_projection,
+		material_evaluation,
+		scene.views.views[search_view].view_projection,
 		first_layer + search_cascade,
 		world_space_position + normal_offset / directional_shadow_cascade_scale(search_cascade, texels_per_meter),
 		world_space_position_derivative_x,
@@ -1068,7 +1078,7 @@ sample_directional_shadow: fn (
 		let cascade_view: u32 = directional_shadow_cascade_view(cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
 		if (cascade == depth_cascade
 			|| cascade == search_cascade
-			|| directional_shadow_cascade_holds(views.views[cascade_view].view_projection, world_space_position, shadow_map_width)) {
+			|| directional_shadow_cascade_holds(scene.views.views[cascade_view].view_projection, world_space_position, shadow_map_width)) {
 			let width: f32 = fitted_penumbra_meters * directional_shadow_cascade_scale(cascade, texels_per_meter);
 			let misfit: f32 = max(2.0 / width, width / 6.0);
 			if (misfit < filter_misfit) {
@@ -1084,8 +1094,9 @@ sample_directional_shadow: fn (
 	}
 	let filter_view: u32 = directional_shadow_cascade_view(filter_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
 	let lit: f32 = sample_directional_shadow_cascade(
+		material_evaluation,
 		shadow_map,
-		views.views[filter_view].view_projection,
+		scene.views.views[filter_view].view_projection,
 		first_layer + filter_cascade,
 		world_space_position + normal_offset / directional_shadow_cascade_scale(filter_cascade, texels_per_meter),
 		world_space_position_derivative_x,
@@ -1102,8 +1113,9 @@ sample_directional_shadow: fn (
 		runner_up_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3
 	);
 	let runner_up_lit: f32 = sample_directional_shadow_cascade(
+		material_evaluation,
 		shadow_map,
-		views.views[runner_up_view].view_projection,
+		scene.views.views[runner_up_view].view_projection,
 		first_layer + runner_up_cascade,
 		world_space_position + normal_offset / directional_shadow_cascade_scale(runner_up_cascade, texels_per_meter),
 		world_space_position_derivative_x,

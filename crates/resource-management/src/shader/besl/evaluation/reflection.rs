@@ -10,20 +10,20 @@ pub struct BindingUsage {
 	pub buffer_stride: Option<u32>,
 	pub read: bool,
 	pub write: bool,
-	/// The layout layer that declares the binding, or `None` for the program's own layout. See [`SetUsage`].
+	/// The layer that declares the binding, by its path, or `None` for the program's own layout. See [`SetUsage`].
 	pub layout: Option<String>,
 }
 
 /// The `SetUsage` struct describes one descriptor set layout a BESL program declares, so a backend can lay the set
 /// out once for every program that shares it, and the renderer can bind it as a whole.
 ///
-/// A layout holds every binding its layout layer declares, whether or not this program reads it, because the
+/// A layout holds every binding its layer declares, whether or not this program reads it, because the
 /// native set must look the same to every program. `used` records which of them this program can reach, and only
 /// those count as the program's resource accesses. Get the sets of a program from
 /// [`ProgramEvaluation::sets`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SetUsage {
-	/// The layout layer that declares the set, or `None` for the program's own layout.
+	/// The path of the layer that declares the set, or `None` for the program's own layout.
 	pub layout: Option<String>,
 	/// Every binding of the layout, ordered by slot.
 	pub bindings: Vec<BindingUsage>,
@@ -39,7 +39,7 @@ impl SetUsage {
 /// The `ProgramSet` struct holds the binding nodes of one descriptor set layout a program declares, in the order
 /// [`SetUsage`] reflects them, so a backend emits exactly the layout that reflection reports.
 pub(crate) struct ProgramSet {
-	/// The layout layer that declares the set, or `None` for the program's own layout.
+	/// The path of the layer that declares the set, or `None` for the program's own layout.
 	pub(crate) layout: Option<String>,
 	/// Every binding of the layout, ordered by slot.
 	pub(crate) nodes: Vec<besl::NodeReference>,
@@ -528,9 +528,11 @@ pub(crate) fn collect_sets(program: &besl::NodeReference) -> Result<Vec<SetUsage
 /// Groups the binding nodes declared under `program` into the descriptor set layouts it declares.
 ///
 /// `program` is a linked program, or its `main` function when only reachable bindings should form the layouts.
-/// Layouts declared by layout layers come first, in the order the program first declares one of their bindings, and
-/// the program's own layout comes last. Each layout's bindings are ordered by slot. A binding counts as used when
-/// code reachable from `main` uses it; without a `main`, every binding does.
+/// The layers `main` takes come first, in the order of its parameters. Layouts that backends add, such as tile outputs, follow, in the
+/// order the program first declares one of their bindings, and the program's own layout comes last. A layer the
+/// program declares but `main` doesn't take forms no layout. Each layout's bindings are ordered by slot. A binding
+/// counts as used when code reachable from `main` uses it; without a `main`, every binding does, and every layer
+/// forms its layout.
 ///
 /// Reflection and every backend take their sets from here, so a lowered shader and its interface cannot disagree.
 pub(crate) fn collect_set_nodes(program: &besl::NodeReference) -> Result<Vec<ProgramSet>, String> {
@@ -557,15 +559,29 @@ pub(crate) fn collect_set_nodes(program: &besl::NodeReference) -> Result<Vec<Pro
 		sets[position].nodes.push(node);
 	}
 
-	// The program's own layout goes last, so listing another layer never renumbers the sets before it.
-	sets.sort_by_key(|set| set.layout.is_none());
+	// With a `main`, a layer's set belongs to the shader only when `main` takes the layer.
+	let layers = layer_entries(program);
+	let entry = |layout: &str| layers.iter().find(|(path, _)| path == layout).map(|(_, entry)| *entry);
+	if reachable.is_some() {
+		sets.retain(|set| set.layout.as_deref().and_then(entry) != Some(None));
+	}
+
+	// The layers `main` takes come first, in parameter order, and the program's own layout goes last, so listing
+	// another layer never renumbers the sets before it.
+	sets.sort_by_key(|set| match set.layout.as_deref() {
+		None => (2, 0),
+		Some(layout) => match entry(layout).flatten() {
+			Some(index) => (0, index),
+			None => (1, 0),
+		},
+	});
 
 	for set in &mut sets {
 		set.nodes.sort_by_key(|node| binding_slot_range(node).0);
 
 		if set.nodes.len() > SetUsage::MAX_BINDINGS {
 			return Err(format!(
-				"Descriptor set layout `{}` declares {} bindings, more than the {} one layout can hold. The most likely cause is that one layout layer groups resources that belong to several descriptor sets.",
+				"Descriptor set layout `{}` declares {} bindings, more than the {} one layout can hold. The most likely cause is that one layer groups resources that belong to several descriptor sets.",
 				set.layout.as_deref().unwrap_or("<shader>"),
 				set.nodes.len(),
 				SetUsage::MAX_BINDINGS
@@ -581,7 +597,23 @@ pub(crate) fn collect_set_nodes(program: &besl::NodeReference) -> Result<Vec<Pro
 	Ok(sets)
 }
 
-/// Returns the layout layer that declares a binding node, or `None` for the program's own layout.
+/// Returns the path of every layer `program` declares, and which of `main`'s layer parameters takes it, if any.
+fn layer_entries(program: &besl::NodeReference) -> Vec<(String, Option<usize>)> {
+	/// Adds the layers under `node` to `layers`.
+	fn visit(node: &besl::NodeReference, layers: &mut Vec<(String, Option<usize>)>) {
+		match node.borrow().node() {
+			besl::Nodes::Layer { path, entry, .. } => layers.push((path.clone(), *entry)),
+			besl::Nodes::Scope { children, .. } => children.iter().for_each(|child| visit(child, layers)),
+			_ => {}
+		}
+	}
+
+	let mut layers = Vec::new();
+	visit(program, &mut layers);
+	layers
+}
+
+/// Returns the layout of a binding node, the path of the layer that declares it, or `None` for the program's own layout.
 fn binding_layout(node: &besl::NodeReference) -> Option<String> {
 	match node.borrow().node() {
 		besl::Nodes::Binding { layout, .. } => layout.clone(),
@@ -821,11 +853,15 @@ fn build_bindings(node: &besl::NodeReference, state: &mut BindingCollectionState
 				build_bindings(child, state);
 			}
 		}
-		besl::Nodes::Struct { fields: nested, .. } | besl::Nodes::Scope { children: nested, .. } => {
+		besl::Nodes::Struct { fields: nested, .. }
+		| besl::Nodes::Scope { children: nested, .. }
+		| besl::Nodes::Layer { members: nested, .. } => {
 			for child in nested {
 				build_bindings(child, state);
 			}
 		}
+		// A `use` and a signature only link names; what they name is collected where it is declared.
+		besl::Nodes::Use { .. } | besl::Nodes::Signature { .. } => {}
 		besl::Nodes::Const { r#type, value, .. } => {
 			build_bindings(r#type, state);
 			build_bindings(value, state);

@@ -6,31 +6,39 @@
 // Next, the sort orders the hits by material, so the shade pass runs each material's closest-hit shader for a run of
 // hits side by side.
 
-main: fn (input: StageInput) -> void {
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+use ::byte_engine::rendering::visibility::layouts::ray_traced_scene::*;
+use ::byte_engine::rendering::visibility::layouts::probe_volume::*;
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::probe_gi::*;
+use ::byte_engine::rendering::visibility::layouts::ray_hits::*;
+
+main: fn (input: StageInput, scene: Scene, ray_traced_scene: RayTracedScene, probe_volume: ProbeVolume, probe_gi_set: ProbeGi, ray_hits: RayHits) -> void {
 	let ray: u32 = input.thread_id.x;
-	let rays: u32 = probe_listed_count() * PROBE_RAYS;
+	let rays: u32 = probe_listed_count(probe_gi_set) * PROBE_RAYS;
 	if (ray == 0) {
-		ray_hit_sort.rays = rays;
+		ray_hits.ray_hit_sort.rays = rays;
 	}
 	if (ray >= rays) {
 		return;
 	}
-	let slot: u32 = probe_list[ray / PROBE_RAYS];
-	let origin: vec3f = probe_world_position(probe_records[slot], probe_slot_cascade(slot));
-	let direction: vec3f = probe_ray_direction(ray % PROBE_RAYS);
-	let hit: Hit = intersect(scene_structure, 255, origin, direction, 0.0, PROBE_RAY_LENGTH);
+	let slot: u32 = probe_gi_set.probe_list[ray / PROBE_RAYS];
+	let origin: vec3f = probe_world_position(probe_volume, probe_volume.probe_records[slot], probe_slot_cascade(slot));
+	let direction: vec3f = probe_ray_direction(probe_gi_set, ray % PROBE_RAYS);
+	let hit: Hit = intersect(ray_traced_scene.scene_structure, 255, origin, direction, 0.0, PROBE_RAY_LENGTH);
 	if (hit.distance < 0.0) {
-		let sky: vec4f = texture_lod(probe_environment_radiance, direction, PROBE_SKY_LEVEL);
+		let sky: vec4f = texture_lod(probe_volume.probe_environment_radiance, direction, PROBE_SKY_LEVEL);
 		let radiance: vec3f = clamp(
-			vec3f(sky.x, sky.y, sky.z) * probe_volume_parameters.environment_intensity,
+			vec3f(sky.x, sky.y, sky.z) * probe_volume.probe_volume_parameters.environment_intensity,
 			vec3f(0.0, 0.0, 0.0),
 			vec3f(PROBE_MAX_RADIANCE, PROBE_MAX_RADIANCE, PROBE_MAX_RADIANCE)
 		);
-		probe_ray_results[ray] = ProbeRayResult(radiance, PROBE_MISS_DISTANCE);
-		ray_hit_keys[ray] = NO_HIT;
+		probe_gi_set.probe_ray_results[ray] = ProbeRayResult(radiance, PROBE_MISS_DISTANCE);
+		ray_hits.ray_hit_keys[ray] = NO_HIT;
 		return;
 	}
 	// The geometry table leads the hit to the frame's record of the primitive it hit, which names its material.
-	let geometry: vec2u = ray_tracing_geometries.geometries[hit.custom_index + hit.geometry_index];
-	keep_ray_hit(ray, meshes.meshes[geometry.x].material_index, hit);
+	let geometry: vec2u = ray_traced_scene.ray_tracing_geometries.geometries[hit.custom_index + hit.geometry_index];
+	keep_ray_hit(ray_hits, ray, scene.meshes.meshes[geometry.x].material_index, hit);
 }

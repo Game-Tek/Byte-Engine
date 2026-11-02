@@ -1,1 +1,1 @@
-{"name":"Probe Schedule","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/probe-schedule.besl"}}
+{"name":"Probe Schedule","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/probe-schedule.besl"}}

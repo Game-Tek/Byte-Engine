@@ -1,3 +1,6 @@
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+
 main: fn (
 	input: StageInput,
 	// The mesh stage writes the instance and primitive once per primitive, and the UV per vertex.
@@ -6,19 +9,20 @@ main: fn (
 		primitive_index: primitive<u32>,
 		uv: vec2f16,
 	},
+	scene: Scene
 ) -> output {
 	primitive_index: u32,
 	instance_id: u32,
 } {
-	let material_index: u32 = meshes.meshes[pipeline_input.instance_index].material_index;
+	let material_index: u32 = scene.meshes.meshes[pipeline_input.instance_index].material_index;
 	// Read only the material fields the alpha test uses, instead of copying the whole material and its texture slots.
-	let coverage: f32 = materials.materials[material_index].coverage_factor;
-	let coverage_texture_slot: u32 = materials.materials[material_index].coverage_texture_slot;
+	let coverage: f32 = scene.materials.materials[material_index].coverage_factor;
+	let coverage_texture_slot: u32 = scene.materials.materials[material_index].coverage_texture_slot;
 	if (coverage_texture_slot != 4294967295) {
-		let texture_index: u32 = materials.materials[material_index].textures[coverage_texture_slot];
-		coverage = coverage * sample(textures[texture_index], vec2f(pipeline_input.uv)).w;
+		let texture_index: u32 = scene.materials.materials[material_index].textures[coverage_texture_slot];
+		coverage = coverage * sample(scene.textures[texture_index], vec2f(pipeline_input.uv)).w;
 	}
-	if (coverage < materials.materials[material_index].alpha_cutoff) {
+	if (coverage < scene.materials.materials[material_index].alpha_cutoff) {
 		discard;
 	}
 	return {

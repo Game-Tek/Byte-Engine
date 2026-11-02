@@ -13,6 +13,9 @@
 // changing, and writes its radius at this frame's camera, which every later stage reads. Next, the scan turns the
 // counts into list offsets and grants the rays.
 
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::surfel_gi::*;
+
 // Adds rent for a cell that lists `count` surfels: one frame per 10 surfels past SURFEL_CROWDED_CELL, and the square
 // of that excess over 32 once the cell holds twice as many.
 surfel_rent: fn (count: u32) -> u32 {
@@ -30,21 +33,21 @@ surfel_rent: fn (count: u32) -> u32 {
 // Ages the surfel in `slot` by one frame and its cell's rent, recycles it when it dies, and otherwise asks for its rays
 // and writes its radius at this frame's camera. Returns whether the surfel lives this frame. The first of the slot's
 // threads runs it.
-surfel_economy: fn (slot: u32) -> bool {
-	let capacity: u32 = surfel_parameters.surfel_capacity;
-	surfel_ray_wants[slot] = 0;
-	surfel_ray_wants[capacity + slot] = 0;
-	let life: u32 = surfel_states[slot].life;
+surfel_economy: fn (surfel_gi_set: SurfelGi, slot: u32) -> bool {
+	let capacity: u32 = surfel_gi_set.surfel_parameters.surfel_capacity;
+	surfel_gi_set.surfel_ray_wants[slot] = 0;
+	surfel_gi_set.surfel_ray_wants[capacity + slot] = 0;
+	let life: u32 = surfel_gi_set.surfel_states[slot].life;
 	if (life == 0) {
 		return false;
 	}
 
 	// The strongest vote since the last frame, which also resets it for the next one.
-	let income: u32 = atomic_exchange(surfel_states[slot].touched, 0);
-	let cell: u32 = surfel_states[slot].cell;
+	let income: u32 = atomic_exchange(surfel_gi_set.surfel_states[slot].touched, 0);
+	let cell: u32 = surfel_gi_set.surfel_states[slot].cell;
 	let age_step: u32 = 1;
 	if (cell != NO_SURFEL) {
-		age_step = age_step + surfel_rent(surfel_scan[cell + 1] - surfel_scan[cell]);
+		age_step = age_step + surfel_rent(surfel_gi_set.surfel_scan[cell + 1] - surfel_gi_set.surfel_scan[cell]);
 	}
 	// A vote stops a surfel from aging, but never makes it younger.
 	let age: u32 = life - 1;
@@ -52,16 +55,16 @@ surfel_economy: fn (slot: u32) -> bool {
 		age = age + (age_step - income);
 	}
 	if (income == SURFEL_KILL || age >= SURFEL_TTL) {
-		surfel_states[slot].life = 0;
-		let top: u32 = atomic_add(surfel_pool.free_count, 1);
-		surfel_free[top] = slot;
-		atomic_add(surfel_pool.recycled, 1);
+		surfel_gi_set.surfel_states[slot].life = 0;
+		let top: u32 = atomic_add(surfel_gi_set.surfel_pool.free_count, 1);
+		surfel_gi_set.surfel_free[top] = slot;
+		atomic_add(surfel_gi_set.surfel_pool.recycled, 1);
 		return false;
 	}
-	surfel_states[slot].life = age + 1;
-	atomic_add(surfel_pool.alive, 1);
-	if (surfel_states[slot].bounce != 0) {
-		atomic_add(surfel_pool.bounced, 1);
+	surfel_gi_set.surfel_states[slot].life = age + 1;
+	atomic_add(surfel_gi_set.surfel_pool.alive, 1);
+	if (surfel_gi_set.surfel_states[slot].bounce != 0) {
+		atomic_add(surfel_gi_set.surfel_pool.bounced, 1);
 	}
 
 	// A young surfel traces many rays until it received SURFEL_WARM_UP_RAYS, well past the SURFEL_MATURE_RAYS at which
@@ -70,30 +73,30 @@ surfel_economy: fn (slot: u32) -> bool {
 	// light changes faster than its estimate follows traces more than a settled one. Both ask in the priority class,
 	// whose rays come first, when the camera saw their surface. A surfel a ray's hit spawned lights only what other rays hit, so its rays take
 	// their turns in the regular class, young or not, and never take rays from the surfaces the camera sees.
-	if (surfel_states[slot].bounce != 0) {
-		surfel_ray_wants[capacity + slot] = SURFEL_RAYS;
-	} else if (surfel_irradiance[slot].rays < SURFEL_WARM_UP_RAYS) {
-		surfel_ray_wants[slot] = SURFEL_YOUNG_RAYS;
-	} else if (surfel_irradiance[slot].inconsistency > SURFEL_UNSETTLED_INCONSISTENCY) {
-		surfel_ray_wants[slot] = SURFEL_UNSETTLED_RAYS;
+	if (surfel_gi_set.surfel_states[slot].bounce != 0) {
+		surfel_gi_set.surfel_ray_wants[capacity + slot] = SURFEL_RAYS;
+	} else if (surfel_gi_set.surfel_irradiance[slot].rays < SURFEL_WARM_UP_RAYS) {
+		surfel_gi_set.surfel_ray_wants[slot] = SURFEL_YOUNG_RAYS;
+	} else if (surfel_gi_set.surfel_irradiance[slot].inconsistency > SURFEL_UNSETTLED_INCONSISTENCY) {
+		surfel_gi_set.surfel_ray_wants[slot] = SURFEL_UNSETTLED_RAYS;
 	} else {
-		surfel_ray_wants[capacity + slot] = SURFEL_RAYS;
+		surfel_gi_set.surfel_ray_wants[capacity + slot] = SURFEL_RAYS;
 	}
-	surfel_records[slot].radius = surfel_radius(surfel_records[slot].position);
+	surfel_gi_set.surfel_records[slot].radius = surfel_radius(surfel_gi_set, surfel_gi_set.surfel_records[slot].position);
 	return true;
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, surfel_gi_set: SurfelGi) -> void {
 	let slot: u32 = input.thread_id.x / SURFEL_GRID_LANES;
 	let lane: u32 = input.thread_id.x % SURFEL_GRID_LANES;
-	let in_pool: bool = slot < surfel_parameters.surfel_capacity;
+	let in_pool: bool = slot < surfel_gi_set.surfel_parameters.surfel_capacity;
 	// Only the first thread reads and rewrites the slot's state, so no thread reads a state another one already
 	// changed. The others hold zero, so the slot's sum over two shuffles is the first thread's verdict. Every thread of
 	// the subgroup takes part in the shuffles, so none returns before the last one.
 	let lives: f32 = 0.0;
 	if (lane == 0 && in_pool) {
 		// Nested, so no shading language with eager `&&` runs the economy on every thread.
-		if (surfel_economy(slot)) {
+		if (surfel_economy(surfel_gi_set, slot)) {
 			lives = 1.0;
 		}
 	}
@@ -106,10 +109,10 @@ main: fn (input: StageInput) -> void {
 	let cascades: vec2u = vec2u(0, 0);
 	let cascade_count: u32 = 0;
 	if (alive) {
-		position = surfel_records[slot].position;
-		normal = decode_surfel_normal(surfel_records[slot].normal);
-		lookup_radius = surfel_radius(position) * SURFEL_LOOKUP_SCALE;
-		cascades = surfel_cascades(position);
+		position = surfel_gi_set.surfel_records[slot].position;
+		normal = decode_surfel_normal(surfel_gi_set.surfel_records[slot].normal);
+		lookup_radius = surfel_radius(surfel_gi_set, position) * SURFEL_LOOKUP_SCALE;
+		cascades = surfel_cascades(surfel_gi_set, position);
 		cascade_count = if (cascades.x == cascades.y) { 1 } else { 2 };
 	}
 
@@ -119,14 +122,14 @@ main: fn (input: StageInput) -> void {
 	let buckets: u32[8] = u32[8](0, 0, 0, 0, 0, 0, 0, 0);
 	for (let pass: u32 = 0; pass < cascade_count; pass = pass + 1) {
 		let cascade: u32 = if (pass == 0) { cascades.x } else { cascades.y };
-		let range: SurfelCellRange = surfel_cell_range(position, lookup_radius, cascade);
+		let range: SurfelCellRange = surfel_cell_range(surfel_gi_set, position, lookup_radius, cascade);
 		let height: u32 = u32(range.last.y) - u32(range.first.y) + 1;
 		let rows: u32 = height * (u32(range.last.z) - u32(range.first.z) + 1);
 		for (let row: u32 = lane; row < rows; row = row + SURFEL_GRID_LANES) {
 			let y: u32 = u32(range.first.y) + row % height;
 			let z: u32 = u32(range.first.z) + row / height;
 			for (let x: u32 = u32(range.first.x); x <= u32(range.last.x); x = x + 1) {
-				let reach: f32 = surfel_cell_reach(position, normal, vec3f(f32(x), f32(y), f32(z)), cascade);
+				let reach: f32 = surfel_cell_reach(surfel_gi_set, position, normal, vec3f(f32(x), f32(y), f32(z)), cascade);
 				let bucket: u32 = surfel_listing_bucket(reach, lookup_radius);
 				if (bucket < SURFEL_LISTING_BUCKETS) {
 					buckets[bucket] = buckets[bucket] + 1;
@@ -150,12 +153,12 @@ main: fn (input: StageInput) -> void {
 		}
 	}
 	if (alive && lane == 0) {
-		surfel_states[slot].listing = listing;
+		surfel_gi_set.surfel_states[slot].listing = listing;
 	}
 
 	for (let pass: u32 = 0; pass < cascade_count; pass = pass + 1) {
 		let cascade: u32 = if (pass == 0) { cascades.x } else { cascades.y };
-		let range: SurfelCellRange = surfel_cell_range(position, lookup_radius, cascade);
+		let range: SurfelCellRange = surfel_cell_range(surfel_gi_set, position, lookup_radius, cascade);
 		let height: u32 = u32(range.last.y) - u32(range.first.y) + 1;
 		let rows: u32 = height * (u32(range.last.z) - u32(range.first.z) + 1);
 		for (let row: u32 = lane; row < rows; row = row + SURFEL_GRID_LANES) {
@@ -163,9 +166,9 @@ main: fn (input: StageInput) -> void {
 			let z: u32 = u32(range.first.z) + row / height;
 			for (let x: u32 = u32(range.first.x); x <= u32(range.last.x); x = x + 1) {
 				let cell_coordinates: vec3f = vec3f(f32(x), f32(y), f32(z));
-				let reach: f32 = surfel_cell_reach(position, normal, cell_coordinates, cascade);
+				let reach: f32 = surfel_cell_reach(surfel_gi_set, position, normal, cell_coordinates, cascade);
 				if (surfel_listing_bucket(reach, lookup_radius) < listing) {
-					atomic_add(surfel_cells.counts[surfel_cell_index(cell_coordinates, cascade)], 1);
+					atomic_add(surfel_gi_set.surfel_cells.counts[surfel_cell_index(cell_coordinates, cascade)], 1);
 				}
 			}
 		}

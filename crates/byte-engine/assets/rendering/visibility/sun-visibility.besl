@@ -20,9 +20,14 @@
 // not count, so shadows keep to their surface. Each 8x8 workgroup first loads the linear depth and trace of the 8x8
 // texels its pixels tap into workgroup memory, so every pixel's 25 taps and depth gradient read shared values.
 
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+use ::byte_engine::rendering::visibility::layouts::screen_view::*;
+use ::byte_engine::rendering::visibility::layouts::sun_visibility::*;
+
 // Returns the view-space position at continuous full-resolution pixel coordinates, where integers are pixel centers.
-sun_view_position: fn (pixel: vec2f, z: f32) -> vec3f {
-	let pixel_to_ray: vec4f = sun_visibility_parameters.pixel_to_ray;
+sun_view_position: fn (sun_visibility: SunVisibility, pixel: vec2f, z: f32) -> vec3f {
+	let pixel_to_ray: vec4f = sun_visibility.sun_visibility_parameters.pixel_to_ray;
 	let ray: vec2f = pixel * vec2f(pixel_to_ray.x, pixel_to_ray.y) + vec2f(pixel_to_ray.z, pixel_to_ray.w);
 	return vec3f(ray.x * z, ray.y * z, z);
 }
@@ -129,6 +134,7 @@ sample_directional_shadow_penumbra: fn (
 // `directional_shadow_blocker_depth` searches with four maximum-reduction samples, each on the corner shared by four
 // cells.
 directional_shadow_area_is_fully_lit: fn (
+	sun_visibility: SunVisibility,
 	shadow_uv: vec2f,
 	surface_depth: f32,
 	shadow_layer: u32,
@@ -143,7 +149,7 @@ directional_shadow_area_is_fully_lit: fn (
 	// and H/8 cells tall per layer.
 	let cell_extent: vec2u = shadow_map_extent / vec2u(8, 8);
 	let layer_offset: f32 = f32(shadow_layer * cell_extent.y);
-	let pyramid_size: vec2u = texture_size(directional_shadow_depth_pyramid);
+	let pyramid_size: vec2u = texture_size(sun_visibility.directional_shadow_depth_pyramid);
 	let pyramid_extent: vec2f = vec2f(f32(pyramid_size.x), f32(pyramid_size.y));
 	let first_cell: vec2f = vec2f(
 		floor(shadow_texel_position.x / 8.0 - 1.5),
@@ -168,10 +174,10 @@ directional_shadow_area_is_fully_lit: fn (
 		clamp(first_cell.y + 3.0, 1.0, maximum_corner.y) + layer_offset
 	) / pyramid_extent;
 	// Issue the independent probes before reducing them, so one fetch does not gate the next.
-	let probe0: f32 = downsample_max(directional_shadow_depth_pyramid, corner0, 0.0);
-	let probe1: f32 = downsample_max(directional_shadow_depth_pyramid, corner1, 0.0);
-	let probe2: f32 = downsample_max(directional_shadow_depth_pyramid, corner2, 0.0);
-	let probe3: f32 = downsample_max(directional_shadow_depth_pyramid, corner3, 0.0);
+	let probe0: f32 = downsample_max(sun_visibility.directional_shadow_depth_pyramid, corner0, 0.0);
+	let probe1: f32 = downsample_max(sun_visibility.directional_shadow_depth_pyramid, corner1, 0.0);
+	let probe2: f32 = downsample_max(sun_visibility.directional_shadow_depth_pyramid, corner2, 0.0);
+	let probe3: f32 = downsample_max(sun_visibility.directional_shadow_depth_pyramid, corner3, 0.0);
 	let block_maximum: f32 = max(max(max(max(0.0, probe0), probe1), probe2), probe3);
 	return surface_depth >= block_maximum;
 }
@@ -181,6 +187,7 @@ directional_shadow_area_is_fully_lit: fn (
 // minimum-reduction samples of the cascades' minimum-depth pyramid, and lifts the receiver's plane by the most it can
 // rise over the filter's reach of four texels, so a sloped receiver counts only when every tap lies behind the map.
 directional_shadow_area_is_fully_shadowed: fn (
+	sun_visibility: SunVisibility,
 	shadow_uv: vec2f,
 	surface_depth: f32,
 	depth_gradient_per_texel: vec2f,
@@ -194,7 +201,7 @@ directional_shadow_area_is_fully_shadowed: fn (
 	let shadow_texel_position: vec2f = shadow_uv * vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
 	let cell_extent: vec2u = shadow_map_extent / vec2u(8, 8);
 	let layer_offset: f32 = f32(shadow_layer * cell_extent.y);
-	let pyramid_size: vec2u = texture_size(directional_shadow_depth_minimum_pyramid);
+	let pyramid_size: vec2u = texture_size(sun_visibility.directional_shadow_depth_minimum_pyramid);
 	let pyramid_extent: vec2f = vec2f(f32(pyramid_size.x), f32(pyramid_size.y));
 	let first_cell: vec2f = vec2f(
 		floor(shadow_texel_position.x / 8.0 - 1.5),
@@ -218,10 +225,10 @@ directional_shadow_area_is_fully_shadowed: fn (
 		clamp(first_cell.y + 3.0, 1.0, maximum_corner.y) + layer_offset
 	) / pyramid_extent;
 	// Issue the independent probes before reducing them, so one fetch does not gate the next.
-	let probe0: f32 = downsample_min(directional_shadow_depth_minimum_pyramid, corner0, 0.0);
-	let probe1: f32 = downsample_min(directional_shadow_depth_minimum_pyramid, corner1, 0.0);
-	let probe2: f32 = downsample_min(directional_shadow_depth_minimum_pyramid, corner2, 0.0);
-	let probe3: f32 = downsample_min(directional_shadow_depth_minimum_pyramid, corner3, 0.0);
+	let probe0: f32 = downsample_min(sun_visibility.directional_shadow_depth_minimum_pyramid, corner0, 0.0);
+	let probe1: f32 = downsample_min(sun_visibility.directional_shadow_depth_minimum_pyramid, corner1, 0.0);
+	let probe2: f32 = downsample_min(sun_visibility.directional_shadow_depth_minimum_pyramid, corner2, 0.0);
+	let probe3: f32 = downsample_min(sun_visibility.directional_shadow_depth_minimum_pyramid, corner3, 0.0);
 	let block_minimum: f32 = min(min(min(min(1.0, probe0), probe1), probe2), probe3);
 	let plane_rise: f32 = 4.0 * (abs(depth_gradient_per_texel.x) + abs(depth_gradient_per_texel.y));
 	return block_minimum > surface_depth + plane_rise;
@@ -258,6 +265,7 @@ directional_shadow_blocker_cell: fn (
 // occluders found carry less than one unit of weight, the result moves toward the receiver's own depth, so a penumbra
 // grows from zero as an occluder enters the search.
 directional_shadow_blocker_depth: fn (
+	sun_visibility: SunVisibility,
 	shadow_texel_position: vec2f,
 	surface_depth: f32,
 	depth_gradient_per_texel: vec2f,
@@ -283,7 +291,7 @@ directional_shadow_blocker_depth: fn (
 		&& first_cell.x + 3.0 < f32(cell_extent.x) && first_cell.y + 3.0 < f32(cell_extent.y)) {
 		// The whole block lies inside the cascade, so four gathers read it, each the quad around one cell corner: x and
 		// y hold the left and right cells of the quad's second row, z and w the right and left cells of its first row.
-		let pyramid_extent: vec2u = texture_size(directional_shadow_depth_cells);
+		let pyramid_extent: vec2u = texture_size(sun_visibility.directional_shadow_depth_cells);
 		let pyramid_extent_f: vec2f = vec2f(f32(pyramid_extent.x), f32(pyramid_extent.y));
 		// The first cell's center lies between two and one cells before the receiver on each axis, so the four tent
 		// weights per axis, 2 - |offset|, sum to four.
@@ -312,7 +320,7 @@ directional_shadow_blocker_depth: fn (
 				let next_row: u32 = row + 1;
 				// The corner the quad's four cells share, in the cascade's rows of the pyramid.
 				let corner_uv: vec2f = (first_cell + vec2f(f32(next_column), f32(next_row) + layer_offset)) / pyramid_extent_f;
-				let quad: vec4f = gather(directional_shadow_depth_cells, corner_uv);
+				let quad: vec4f = gather(sun_visibility.directional_shadow_depth_cells, corner_uv);
 				let depth: f32 = first_depth + cell_step.x * f32(column) + cell_step.y * f32(row);
 				sums = sums
 					+ directional_shadow_blocker_cell(quad.w, depth, weight_x[column] * weight_y[row], cell_plane_rise, fade_depth)
@@ -340,7 +348,7 @@ directional_shadow_blocker_depth: fn (
 				let cell_x: f32 = first_cell.x + f32(column);
 				if (cell_x >= 0.0 && cell_y >= 0.0 && cell_x < f32(cell_extent.x) && cell_y < f32(cell_extent.y)) {
 					let cell_maximum: f32 = fetch(
-						directional_shadow_depth_cells,
+						sun_visibility.directional_shadow_depth_cells,
 						vec2u(u32(cell_x), u32(cell_y + layer_offset))
 					).x;
 					let cell_center: vec2f = vec2f(cell_x + 0.5, cell_y + 0.5) * 8.0;
@@ -502,6 +510,7 @@ directional_shadow_receiver_gradient: fn (
 // `directional_shadow_receiver` projects it into the cascade, `depth_gradient` its plane's depth change per unit of uv
 // there, and `depth_per_meter` the cascade's stored depth per meter along the light.
 directional_shadow_occluder_distance: fn (
+	sun_visibility: SunVisibility,
 	receiver: vec4f,
 	depth_gradient: vec2f,
 	depth_per_meter: f32,
@@ -511,10 +520,11 @@ directional_shadow_occluder_distance: fn (
 	let shadow_uv: vec2f = vec2f(receiver.x, receiver.y);
 	let shadow_map_extent_f: vec2f = vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
 	let depth_gradient_per_texel: vec2f = depth_gradient / shadow_map_extent_f;
-	if (directional_shadow_area_is_fully_shadowed(shadow_uv, receiver.z, depth_gradient_per_texel, shadow_layer, shadow_map_extent)) {
+	if (directional_shadow_area_is_fully_shadowed(sun_visibility, shadow_uv, receiver.z, depth_gradient_per_texel, shadow_layer, shadow_map_extent)) {
 		return 0.0 - 2.0;
 	}
 	let blocker_depth: f32 = directional_shadow_blocker_depth(
+		sun_visibility,
 		shadow_uv * shadow_map_extent_f,
 		receiver.z,
 		depth_gradient_per_texel,
@@ -533,6 +543,7 @@ directional_shadow_occluder_distance: fn (
 // When `check_fully_lit` is true, it first proves the receiver fully lit or fully shadowed in this cascade when it can:
 // callers set it when a coarser cascade decided, because a thin occluder or gap can vanish at that resolution.
 sample_directional_shadow_cascade: fn (
+	sun_visibility: SunVisibility,
 	shadow_map: ArrayTexture2D,
 	shadow_layer: u32,
 	receiver: vec4f,
@@ -545,10 +556,11 @@ sample_directional_shadow_cascade: fn (
 	if (receiver.w == 0.0) {
 		return 1.0;
 	}
-	if (check_fully_lit && directional_shadow_area_is_fully_lit(shadow_uv, receiver.z, shadow_layer, shadow_map_extent)) {
+	if (check_fully_lit && directional_shadow_area_is_fully_lit(sun_visibility, shadow_uv, receiver.z, shadow_layer, shadow_map_extent)) {
 		return 1.0;
 	}
 	if (check_fully_lit && directional_shadow_area_is_fully_shadowed(
+		sun_visibility,
 		shadow_uv,
 		receiver.z,
 		depth_gradient / vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y)),
@@ -575,6 +587,8 @@ sample_directional_shadow_cascade: fn (
 // triangle, and `normal_offset` is how far the receiver moves off it, in texels: each cascade moves it by
 // `normal_offset` over its texels per meter.
 sample_directional_shadow: fn (
+	scene: Scene,
+	sun_visibility: SunVisibility,
 	shadow_map: ArrayTexture2D,
 	shadow_view0: u32,
 	shadow_view1: u32,
@@ -591,17 +605,17 @@ sample_directional_shadow: fn (
 ) -> f32 {
 	let depth_value: f32 = abs(view_space_position.z);
 	// Surfaces past the last cascade lie beyond the shadow distance and receive no sun shadow.
-	if (depth_value >= views.views[shadow_view3].far) {
+	if (depth_value >= scene.views.views[shadow_view3].far) {
 		return 1.0;
 	}
 	// Descend only while the surface lies beyond a split. This avoids testing
 	// a sentinel cascade index after every successful near-cascade match.
 	let depth_cascade: u32 = 0;
-	if (depth_value >= views.views[shadow_view0].far) {
+	if (depth_value >= scene.views.views[shadow_view0].far) {
 		depth_cascade = 1;
-		if (depth_value >= views.views[shadow_view1].far) {
+		if (depth_value >= scene.views.views[shadow_view1].far) {
 			depth_cascade = 2;
-			if (depth_value >= views.views[shadow_view2].far) {
+			if (depth_value >= scene.views.views[shadow_view2].far) {
 				depth_cascade = 3;
 			}
 		}
@@ -613,7 +627,7 @@ sample_directional_shadow: fn (
 	let holding_cascade: u32 = 4;
 	for (let cascade: u32 = depth_cascade; cascade < 4 && holding_cascade == 4; cascade = cascade + 1) {
 		let cascade_view: u32 = directional_shadow_cascade_view(cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
-		if (directional_shadow_cascade_holds(views.views[cascade_view].view_projection, world_space_position, shadow_map_width)) {
+		if (directional_shadow_cascade_holds(scene.views.views[cascade_view].view_projection, world_space_position, shadow_map_width)) {
 			holding_cascade = cascade;
 		}
 	}
@@ -632,13 +646,13 @@ sample_directional_shadow: fn (
 	let search_view: u32 = directional_shadow_cascade_view(search_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
 	// A coarser cascade fitted to its own surfaces may not hold this one; the search then stays in the surface's
 	// cascade, where the penumbra it finds is cut off at the search's reach.
-	if (directional_shadow_cascade_holds(views.views[search_view].view_projection, world_space_position, shadow_map_width) == false) {
+	if (directional_shadow_cascade_holds(scene.views.views[search_view].view_projection, world_space_position, shadow_map_width) == false) {
 		search_cascade = depth_cascade;
 		search_view = directional_shadow_cascade_view(search_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
 	}
 	// The receiver in the search cascade, projected once for its probes, its search, and its filter when that stays
 	// in the same cascade. -1 proves it fully lit there; the plane gradient is only needed past that probe.
-	let search_view_projection: mat4f = views.views[search_view].view_projection;
+	let search_view_projection: mat4f = scene.views.views[search_view].view_projection;
 	let search_texels_per_meter: f32 = directional_shadow_cascade_scale(search_cascade, texels_per_meter);
 	let search_receiver: vec4f = directional_shadow_receiver(
 		search_view_projection, search_cascade, world_space_position + normal_offset / search_texels_per_meter
@@ -646,10 +660,12 @@ sample_directional_shadow: fn (
 	let search_gradient: vec2f = vec2f(0.0, 0.0);
 	let occluder_distance: f32 = 0.0 - 1.0;
 	if (search_receiver.w != 0.0 && directional_shadow_area_is_fully_lit(
+		sun_visibility,
 		vec2f(search_receiver.x, search_receiver.y), search_receiver.z, first_layer + search_cascade, shadow_map_extent
 	) == false) {
 		search_gradient = directional_shadow_receiver_gradient(search_view_projection, surface_vector0, surface_vector1);
 		occluder_distance = directional_shadow_occluder_distance(
+			sun_visibility,
 			search_receiver,
 			search_gradient,
 			directional_shadow_cascade_scale(search_cascade, depth_per_meter),
@@ -686,7 +702,7 @@ sample_directional_shadow: fn (
 		let cascade_view: u32 = directional_shadow_cascade_view(cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
 		if (cascade == depth_cascade
 			|| cascade == search_cascade
-			|| directional_shadow_cascade_holds(views.views[cascade_view].view_projection, world_space_position, shadow_map_width)) {
+			|| directional_shadow_cascade_holds(scene.views.views[cascade_view].view_projection, world_space_position, shadow_map_width)) {
 			let width: f32 = fitted_penumbra_meters * directional_shadow_cascade_scale(cascade, texels_per_meter);
 			let misfit: f32 = max(2.0 / width, width / 6.0);
 			if (misfit < filter_misfit) {
@@ -704,7 +720,7 @@ sample_directional_shadow: fn (
 	let filter_gradient: vec2f = search_gradient;
 	if (filter_cascade != search_cascade) {
 		let filter_view: u32 = directional_shadow_cascade_view(filter_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
-		let filter_view_projection: mat4f = views.views[filter_view].view_projection;
+		let filter_view_projection: mat4f = scene.views.views[filter_view].view_projection;
 		filter_receiver = directional_shadow_receiver(
 			filter_view_projection,
 			filter_cascade,
@@ -713,6 +729,7 @@ sample_directional_shadow: fn (
 		filter_gradient = directional_shadow_receiver_gradient(filter_view_projection, surface_vector0, surface_vector1);
 	}
 	let lit: f32 = sample_directional_shadow_cascade(
+		sun_visibility,
 		shadow_map,
 		first_layer + filter_cascade,
 		filter_receiver,
@@ -735,7 +752,7 @@ sample_directional_shadow: fn (
 		let runner_up_view: u32 = directional_shadow_cascade_view(
 			runner_up_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3
 		);
-		let runner_up_view_projection: mat4f = views.views[runner_up_view].view_projection;
+		let runner_up_view_projection: mat4f = scene.views.views[runner_up_view].view_projection;
 		runner_up_receiver = directional_shadow_receiver(
 			runner_up_view_projection,
 			runner_up_cascade,
@@ -746,6 +763,7 @@ sample_directional_shadow: fn (
 		);
 	}
 	let runner_up_lit: f32 = sample_directional_shadow_cascade(
+		sun_visibility,
 		shadow_map,
 		first_layer + runner_up_cascade,
 		runner_up_receiver,
@@ -819,6 +837,8 @@ trace_position: fn (pixel: vec2u, full_to_trace_scale: vec2f) -> vec2f {
 // `edge1` are the receiver's world-space triangle edges, and `normal` and `view_normal` its unit triangle normal on the
 // camera's side, in world and view space.
 resolve_sun_shadow: fn (
+	scene: Scene,
+	sun_visibility: SunVisibility,
 	sun: u32,
 	world_position: vec3f,
 	view_position: vec3f,
@@ -833,12 +853,13 @@ resolve_sun_shadow: fn (
 	// texels of slope above it, so the margin grows where the light grazes the surface and errors grow with it, and
 	// vanishes where the sun shines straight on. The receiver moves by at most one texel, so shadows move by at most one.
 	let sun_cosine: f32 = dot(view_normal, vec3f(
-		sun_visibility_parameters.suns[sun].x, sun_visibility_parameters.suns[sun].y, sun_visibility_parameters.suns[sun].z
+		sun_visibility.sun_visibility_parameters.suns[sun].x, sun_visibility.sun_visibility_parameters.suns[sun].y, sun_visibility.sun_visibility_parameters.suns[sun].z
 	));
 	let normal_offset: vec3f = normal * sqrt(max(1.0 - sun_cosine * sun_cosine, 0.0));
 	let first_cascade: u32 = sun * 4;
 	return sample_directional_shadow(
-		depth_shadow_map,
+		scene, sun_visibility,
+		sun_visibility.depth_shadow_map,
 		first_cascade + 1,
 		first_cascade + 2,
 		first_cascade + 3,
@@ -855,7 +876,7 @@ resolve_sun_shadow: fn (
 			shared_cascade_depth_per_meter[first_cascade + 2],
 			shared_cascade_depth_per_meter[first_cascade + 3]
 		),
-		sun_visibility_parameters.suns[sun].w,
+		sun_visibility.sun_visibility_parameters.suns[sun].w,
 		world_position,
 		view_position,
 		edge0,
@@ -864,12 +885,12 @@ resolve_sun_shadow: fn (
 	);
 }
 
-main: fn (input: StageInput) -> void {
+main: fn (input: StageInput, scene: Scene, sun_visibility: SunVisibility) -> void {
 	let pixel: vec2u = input.thread_id;
-	let extent: vec2u = image_size(sun_visibility_output);
+	let extent: vec2u = image_size(sun_visibility.sun_visibility_output);
 	// Mip zero of the depth pyramid is at the trace resolution, so its size is the trace grid without reading the trace.
-	let trace_extent: vec2u = texture_size(depth_pyramid);
-	let sun_count: u32 = sun_visibility_parameters.sun_count;
+	let trace_extent: vec2u = texture_size(sun_visibility.depth_pyramid);
+	let sun_count: u32 = sun_visibility.sun_visibility_parameters.sun_count;
 	let local: vec2u = vec2u(
 		input.thread_idx % CONTACT_SHADOW_FILTER_WORKGROUP_WIDTH,
 		input.thread_idx / CONTACT_SHADOW_FILTER_WORKGROUP_WIDTH
@@ -885,58 +906,58 @@ main: fn (input: StageInput) -> void {
 		min(tile_origin.x + tile_index % CONTACT_SHADOW_FILTER_TILE_WIDTH, trace_extent.x - 1),
 		min(tile_origin.y + tile_index / CONTACT_SHADOW_FILTER_TILE_WIDTH, trace_extent.y - 1)
 	);
-	let depth: f32 = fetch(depth_pyramid, texel).x;
+	let depth: f32 = fetch(sun_visibility.depth_pyramid, texel).x;
 	shared_inverse_depth[tile_index] = 0.0;
 	if (depth != 0.0) {
 		shared_inverse_depth[tile_index] = 1.0 / depth;
 	}
-	if (sun_visibility_parameters.contact_shadows != 0) {
-		shared_trace[tile_index] = fetch(contact_shadow_trace, texel);
+	if (sun_visibility.sun_visibility_parameters.contact_shadows != 0) {
+		shared_trace[tile_index] = fetch(sun_visibility.contact_shadow_trace, texel);
 	}
 	// One lane per cascade of every sun computes its scales while the tile loads; views 1 onward hold the cascades.
 	if (input.thread_idx < sun_count * 4) {
-		let cascade_view_projection: mat4f = views.views[input.thread_idx + 1].view_projection;
+		let cascade_view_projection: mat4f = scene.views.views[input.thread_idx + 1].view_projection;
 		shared_cascade_texels_per_meter[input.thread_idx] = directional_shadow_texels_per_meter(
-			cascade_view_projection, f32(texture_size(depth_shadow_map).x)
+			cascade_view_projection, f32(texture_size(sun_visibility.depth_shadow_map).x)
 		);
 		shared_cascade_depth_per_meter[input.thread_idx] = directional_shadow_depth_per_meter(cascade_view_projection);
 	}
 	workgroup_barrier();
 
-	guard_image_bounds(sun_visibility_output, pixel);
-	let device_depth: f32 = fetch(visibility_depth, pixel).x;
+	guard_image_bounds(sun_visibility.sun_visibility_output, pixel);
+	let device_depth: f32 = fetch(sun_visibility.visibility_depth, pixel).x;
 	if (device_depth == 0.0) {
-		write(sun_visibility_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
+		write(sun_visibility.sun_visibility_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
 		return;
 	}
-	let center_inverse_z: f32 = (device_depth + screen_view.depth_unproject_denominator_offset) / screen_view.depth_unproject_numerator;
+	let center_inverse_z: f32 = (device_depth + sun_visibility.screen_view.depth_unproject_denominator_offset) / sun_visibility.screen_view.depth_unproject_numerator;
 	// The receiver the shadow map sees: the pixel's view-space position from its depth, on the plane of the triangle the
 	// visibility buffer holds for the pixel. The plane comes from the triangle itself, not from neighboring depths,
 	// so it does not jump where the pixel's neighbors lie on other triangles, at creases and silhouettes. The shadow
 	// helpers take world space, as the cascades are fitted there.
 	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
-	let view_position: vec3f = sun_view_position(pixel_f, 1.0 / center_inverse_z);
-	let world_position: vec3f = views.views[0].inverse_view * vec4f(view_position.x, view_position.y, view_position.z, 1.0);
-	let instance_index: u32 = image_load_u32(instance_index_render_target, pixel);
+	let view_position: vec3f = sun_view_position(sun_visibility, pixel_f, 1.0 / center_inverse_z);
+	let world_position: vec3f = scene.views.views[0].inverse_view * vec4f(view_position.x, view_position.y, view_position.z, 1.0);
+	let instance_index: u32 = image_load_u32(sun_visibility.instance_index_render_target, pixel);
 	if (instance_index >= 1024) {
-		write(sun_visibility_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
+		write(sun_visibility.sun_visibility_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
 		return;
 	}
-	let mesh: Mesh = meshes.meshes[instance_index];
+	let mesh: Mesh = scene.meshes.meshes[instance_index];
 	// The low eight bits name the triangle within its meshlet, and the rest the meshlet.
-	let triangle_meshlet_indices: u32 = image_load_u32(triangle_index, pixel);
-	let meshlet: Meshlet = meshlets[triangle_meshlet_indices >> 8];
+	let triangle_meshlet_indices: u32 = image_load_u32(sun_visibility.triangle_index, pixel);
+	let meshlet: Meshlet = scene.meshlets[triangle_meshlet_indices >> 8];
 	let primitive_index_base: u32 = (mesh.base_triangle_index + meshlet.triangle_offset + (triangle_meshlet_indices & 255)) * 3;
 	let vertex_index_base: u32 = mesh.base_primitive_index + meshlet.primitive_offset;
-	let position0: vec3f = vertex_positions[mesh.base_vertex_index + u32(vertex_indices[vertex_index_base + u32(primitive_indices[primitive_index_base])])];
-	let position1: vec3f = vertex_positions[mesh.base_vertex_index + u32(vertex_indices[vertex_index_base + u32(primitive_indices[primitive_index_base + 1])])];
-	let position2: vec3f = vertex_positions[mesh.base_vertex_index + u32(vertex_indices[vertex_index_base + u32(primitive_indices[primitive_index_base + 2])])];
+	let position0: vec3f = scene.vertex_positions[mesh.base_vertex_index + u32(scene.vertex_indices[vertex_index_base + u32(scene.primitive_indices[primitive_index_base])])];
+	let position1: vec3f = scene.vertex_positions[mesh.base_vertex_index + u32(scene.vertex_indices[vertex_index_base + u32(scene.primitive_indices[primitive_index_base + 1])])];
+	let position2: vec3f = scene.vertex_positions[mesh.base_vertex_index + u32(scene.vertex_indices[vertex_index_base + u32(scene.primitive_indices[primitive_index_base + 2])])];
 	let edge0: vec3f = mesh.model * vec4f(position1.x - position0.x, position1.y - position0.y, position1.z - position0.z, 0.0);
 	let edge1: vec3f = mesh.model * vec4f(position2.x - position0.x, position2.y - position0.y, position2.z - position0.z, 0.0);
 	// The triangle's normal, turned to the camera's side, which is the side the receiver's normal offset leaves on. The
 	// camera lies at the view-space origin, so the receiver's view-space position points away from it.
 	let normal: vec3f = normalize(cross(edge0, edge1));
-	let view_normal: vec3f = views.views[0].view * vec4f(normal.x, normal.y, normal.z, 0.0);
+	let view_normal: vec3f = scene.views.views[0].view * vec4f(normal.x, normal.y, normal.z, 0.0);
 	if (dot(view_normal, view_position) > 0.0) {
 		normal = normal * (0.0 - 1.0);
 		view_normal = view_normal * (0.0 - 1.0);
@@ -944,24 +965,24 @@ main: fn (input: StageInput) -> void {
 	// Each sun's shadow-map visibility in its channel. Material evaluation never reads an unused slot's channel, so
 	// it stays zero and leaves the fully-shadowed test below to the used ones.
 	let suns: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
-	suns.x = resolve_sun_shadow(0, world_position, view_position, edge0, edge1, normal, view_normal);
+	suns.x = resolve_sun_shadow(scene, sun_visibility, 0, world_position, view_position, edge0, edge1, normal, view_normal);
 	if (sun_count > 1) {
-		suns.y = resolve_sun_shadow(1, world_position, view_position, edge0, edge1, normal, view_normal);
+		suns.y = resolve_sun_shadow(scene, sun_visibility, 1, world_position, view_position, edge0, edge1, normal, view_normal);
 		if (sun_count > 2) {
-			suns.z = resolve_sun_shadow(2, world_position, view_position, edge0, edge1, normal, view_normal);
+			suns.z = resolve_sun_shadow(scene, sun_visibility, 2, world_position, view_position, edge0, edge1, normal, view_normal);
 			if (sun_count > 3) {
-				suns.w = resolve_sun_shadow(3, world_position, view_position, edge0, edge1, normal, view_normal);
+				suns.w = resolve_sun_shadow(scene, sun_visibility, 3, world_position, view_position, edge0, edge1, normal, view_normal);
 			}
 		}
 	}
 	// A pixel every shadow map fully shadows needs no contact shadow.
 	if (max(max(suns.x, suns.y), max(suns.z, suns.w)) <= 0.0) {
-		write(sun_visibility_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+		write(sun_visibility.sun_visibility_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
 		return;
 	}
 	// Without contact shadows, the shadow map alone shadows the pixel.
 	let result: vec4f = vec4f(1.0, 1.0, 1.0, 1.0);
-	if (sun_visibility_parameters.contact_shadows != 0) {
+	if (sun_visibility.sun_visibility_parameters.contact_shadows != 0) {
 		// Reconstruct contact-filter coordinates only after the shadow-map resolve: they are unused for fully
 		// shadowed pixels and otherwise need not occupy registers through the cascade search and filter.
 		let position: vec2f = trace_position(pixel, full_to_trace_scale);
@@ -1019,5 +1040,5 @@ main: fn (input: StageInput) -> void {
 			result = lit / total_weight;
 		}
 	}
-	write(sun_visibility_output, pixel, suns * result);
+	write(sun_visibility.sun_visibility_output, pixel, suns * result);
 }

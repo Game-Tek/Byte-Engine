@@ -6,10 +6,11 @@
 //!
 //! - A binding writes as a `descriptor`. A buffer binding names its members inline, which source can't.
 //! - A specialization constant and an intrinsic declaration write as `//` comments.
-//! - Before the first resource of each layout layer, a `// layer: <name>` comment names the layer that declares it.
 
 use crate::lexer::BufferMemoryClass;
-use crate::parser::{BindingResource, ElseBranch, Expressions, MatchArm, MatchPattern, Node, Nodes, RecordField};
+use crate::parser::{
+	BindingResource, ElseBranch, Expressions, MatchArm, MatchPattern, Node, Nodes, RecordField, SignaturePart,
+};
 use crate::sampler::SamplerState;
 
 /// Writes `node`, usually the root that [`crate::parse`] or a program generator returns, as BESL source.
@@ -20,19 +21,16 @@ pub fn write(node: &Node<'_>) -> String {
 	let mut writer = Writer {
 		out: String::with_capacity(4096),
 		depth: 0,
-		layout: None,
 	};
 	writer.declaration(node);
 	writer.out
 }
 
 /// The `Writer` struct accumulates source text and tracks where the next line starts.
-struct Writer<'a> {
+struct Writer {
 	out: String,
 	/// The number of tabs that start the next line.
 	depth: usize,
-	/// The layout layer of the last resource written, so a layer comment is written once per run of its resources.
-	layout: Option<&'a str>,
 }
 
 /// The precedence of operands that never need parentheses: names, literals, calls, groups, and `if`/`match` values.
@@ -40,7 +38,7 @@ const OPERAND: u8 = 0;
 /// The precedence of member access and indexing, the tightest binding.
 const ACCESS: u8 = 1;
 
-impl<'a> Writer<'a> {
+impl Writer {
 	/// Starts a new line at the current depth.
 	fn line(&mut self) {
 		for _ in 0..self.depth {
@@ -58,21 +56,85 @@ impl<'a> Writer<'a> {
 		}
 	}
 
+	/// Writes the module `node`, a scope, inline under its name after `prefix`. A module whose file is attached writes
+	/// inline too, so the result is one file.
+	fn module(&mut self, node: &Node<'_>, prefix: &str) {
+		let Nodes::Scope { name, children } = node.node() else {
+			return self.declaration(node);
+		};
+		self.line();
+		self.push_display(format_args!("{prefix}{name}: mod {{\n"));
+		self.depth += 1;
+		self.separated(children, "\n", Self::declaration);
+		self.depth -= 1;
+		self.line();
+		self.out.push_str("}\n");
+	}
+
 	/// Writes a module-level declaration, or a whole scope of them.
-	fn declaration(&mut self, node: &Node<'a>) {
+	fn declaration(&mut self, node: &Node<'_>) {
 		match node.node() {
 			Nodes::Scope { name, children } => {
 				// `#[name]` attributes parse to an empty scope that keeps no name, so there is nothing to write.
 				if *name == "MACRO" && children.is_empty() {
 					return;
 				}
-				// Nested scopes, such as a library a generator splices in, have no source form; their declarations
-				// link as if written in place.
-				if *name != "root" {
-					self.line();
-					self.push_display(format_args!("// scope: {name}\n"));
+				if *name == "root" {
+					self.separated(children, "\n", Self::declaration);
+					return;
 				}
-				self.separated(children, "\n", Self::declaration);
+				// The modules from the asset root write as `::path: mod { ... }`, which parses back to the same place.
+				if *name == crate::modules::ROOT_MODULES {
+					self.separated(children, "\n", |writer, module| writer.module(module, "::"));
+					return;
+				}
+				self.module(node, "");
+			}
+			Nodes::FileModule { name } => {
+				self.line();
+				self.push_display(format_args!("{name}: mod;\n"));
+			}
+			Nodes::Use { path, glob } => {
+				self.line();
+				self.push_display(format_args!("use {path}{};\n", if *glob { "::*" } else { "" }));
+			}
+			Nodes::Layer { name, members } => {
+				self.line();
+				self.push_display(format_args!("{name}: layer {{\n"));
+				self.depth += 1;
+				for (member, node) in members {
+					match node.node() {
+						// A push constant block takes the member's name, where a top-level block is always `push_constant`.
+						Nodes::PushConstant { members } => self.members(format_args!("{member}: push_constant"), members),
+						_ => self.declaration(node),
+					}
+				}
+				self.depth -= 1;
+				self.line();
+				self.out.push_str("}\n");
+			}
+			Nodes::Signature { name, parts } => {
+				self.line();
+				self.push_display(format_args!("{name}: "));
+				self.separated(parts, " + ", |writer, part| match part {
+					SignaturePart::Named(path) => writer.out.push_str(path),
+					SignaturePart::Inline { params, return_type } => {
+						writer.out.push_str("fn (");
+						writer.separated(params, ", ", |writer, parameter| writer.member(parameter));
+						writer.push_display(format_args!(") -> {return_type}"));
+					}
+				});
+				self.out.push_str(";\n");
+			}
+			Nodes::Implementation {
+				name,
+				signature,
+				statements,
+			} => {
+				self.line();
+				self.push_display(format_args!("{name}: {signature} "));
+				self.block(statements);
+				self.out.push('\n');
 			}
 			Nodes::Struct { name, fields } => self.members(format_args!("{name}: struct"), fields),
 			Nodes::PushConstant { members } => self.members(format_args!("push_constant: push_constant"), members),
@@ -86,6 +148,7 @@ impl<'a> Writer<'a> {
 				params,
 				return_type,
 				statements,
+				..
 			} => {
 				self.line();
 				self.push_display(format_args!("{name}: fn ("));
@@ -102,9 +165,8 @@ impl<'a> Writer<'a> {
 				write,
 				memory_class,
 				count,
-				layout,
 			} => {
-				self.descriptor_head(name, *layout);
+				self.descriptor_head(name);
 				match r#type {
 					BindingResource::Buffer { members } => {
 						self.out.push_str("{ ");
@@ -131,9 +193,8 @@ impl<'a> Writer<'a> {
 				memory_class,
 				count,
 				sampler,
-				layout,
 			} => {
-				self.descriptor_head(name, *layout);
+				self.descriptor_head(name);
 				self.out.push_str(resource_type);
 				if *runtime_array {
 					self.out.push_str("[]");
@@ -207,7 +268,7 @@ impl<'a> Writer<'a> {
 	}
 
 	/// Writes `header`, then `members` one per line in braces, as structs and the push constant block declare them.
-	fn members(&mut self, header: std::fmt::Arguments<'_>, members: &[Node<'a>]) {
+	fn members(&mut self, header: std::fmt::Arguments<'_>, members: &[Node<'_>]) {
 		self.line();
 		self.push_display(header);
 		self.out.push_str(" {\n");
@@ -239,14 +300,8 @@ impl<'a> Writer<'a> {
 		self.out.push_str(">;\n");
 	}
 
-	/// Writes a descriptor up to its type, after a `// layer: <name>` comment when `layout` starts a run of resources
-	/// from another layer than the last.
-	fn descriptor_head(&mut self, name: &str, layout: Option<&'a str>) {
-		if layout != self.layout {
-			self.layout = layout;
-			self.line();
-			self.push_display(format_args!("// layer: {}\n", layout.unwrap_or("the module's own layout")));
-		}
+	/// Writes a descriptor up to its type.
+	fn descriptor_head(&mut self, name: &str) {
 		self.line();
 		self.push_display(format_args!("{name}: descriptor<{{ type: "));
 	}
@@ -280,7 +335,7 @@ impl<'a> Writer<'a> {
 	}
 
 	/// Writes `{`, `statements` one per line one level deeper, and `}`, leaving the cursor after the `}`.
-	fn block(&mut self, statements: &[Node<'a>]) {
+	fn block(&mut self, statements: &[Node<'_>]) {
 		self.out.push_str("{\n");
 		self.depth += 1;
 		for statement in statements {
@@ -292,7 +347,7 @@ impl<'a> Writer<'a> {
 	}
 
 	/// Writes one statement of a block on its own lines.
-	fn statement(&mut self, node: &Node<'a>) {
+	fn statement(&mut self, node: &Node<'_>) {
 		match node.node() {
 			// Blocks end the statement themselves; a block's value has no `;`.
 			Nodes::Conditional { .. }
@@ -314,7 +369,7 @@ impl<'a> Writer<'a> {
 
 	/// Writes `node` as an expression that sits where an operand of precedence `limit` may go, adding parentheses when
 	/// it binds more loosely. `OPERAND` accepts anything.
-	fn expression(&mut self, node: &Node<'a>, limit: u8) {
+	fn expression(&mut self, node: &Node<'_>, limit: u8) {
 		let parenthesize = limit != OPERAND && precedence(node) > limit;
 		if parenthesize {
 			self.out.push('(');
@@ -326,7 +381,7 @@ impl<'a> Writer<'a> {
 	}
 
 	/// Writes `node` as an expression without parentheses around it.
-	fn unparenthesized(&mut self, node: &Node<'a>) {
+	fn unparenthesized(&mut self, node: &Node<'_>) {
 		match node.node() {
 			Nodes::Conditional {
 				condition,
@@ -394,7 +449,7 @@ impl<'a> Writer<'a> {
 	}
 
 	/// Writes one [`Expressions`] form without parentheses around it.
-	fn expression_form(&mut self, expression: &Expressions<'a>) {
+	fn expression_form(&mut self, expression: &Expressions<'_>) {
 		match expression {
 			// A parsed group, `(a + b)`, or the index of an accessor; see `Expressions::Accessor` below.
 			Expressions::Expression(elements) => {
@@ -425,7 +480,8 @@ impl<'a> Writer<'a> {
 				self.separated(fields, ", ", |writer, RecordField { name, value }| {
 					writer.out.push_str(name);
 					// `{ color }` is shorthand for `{ color: color }`.
-					let shorthand = matches!(value.node(), Nodes::Expression(Expressions::Member { name: value }) if value == name);
+					let shorthand =
+						matches!(value.node(), Nodes::Expression(Expressions::Member { name: value }) if value == name);
 					if !shorthand {
 						writer.out.push_str(": ");
 						writer.expression(value, OPERAND);
@@ -480,9 +536,7 @@ impl<'a> Writer<'a> {
 	/// Appends formatted text without an intermediate allocation.
 	fn push_display(&mut self, arguments: std::fmt::Arguments<'_>) {
 		use std::fmt::Write as _;
-		self.out
-			.write_fmt(arguments)
-			.expect("Writing to a String never fails.");
+		self.out.write_fmt(arguments).expect("Writing to a String never fails.");
 	}
 }
 
@@ -505,7 +559,8 @@ mod tests {
 	fn assert_round_trips(source: &str) -> String {
 		let tree = crate::parse(source).expect("The test source should parse.");
 		let written = write(&tree);
-		let reparsed = crate::parse(&written).unwrap_or_else(|error| panic!("The written source should parse ({error:?}):\n{written}"));
+		let reparsed =
+			crate::parse(&written).unwrap_or_else(|error| panic!("The written source should parse ({error:?}):\n{written}"));
 		assert_eq!(
 			format!("{reparsed:?}"),
 			format!("{tree:?}"),
@@ -609,13 +664,13 @@ mod tests {
 			"#,
 		);
 
-		crate::lex(crate::parse(&written).unwrap()).unwrap_or_else(|error| panic!("The written source should link ({error:?}):\n{written}"));
+		crate::lex(crate::parse(&written).unwrap())
+			.unwrap_or_else(|error| panic!("The written source should link ({error:?}):\n{written}"));
 	}
 
 	#[test]
 	fn engine_built_declarations_write_in_their_nearest_source_form() {
-		let mut frame = Node::binding("frame", Node::buffer(vec![Node::member("exposure", "f32")]), 0, true, false);
-		frame.set_layout("layouts/frame.besl");
+		let frame = Node::binding("frame", Node::buffer(vec![Node::member("exposure", "f32")]), 0, true, false);
 		let root = Node::root_with_children(vec![
 			frame,
 			Node::specialization("transparent", "bool", 7),
@@ -624,12 +679,10 @@ mod tests {
 
 		assert_eq!(
 			write(&root),
-			"// layer: layouts/frame.besl\n\
-			frame: descriptor<{ type: { exposure: f32 }, binding: 0, access: read }>;\n\
+			"frame: descriptor<{ type: { exposure: f32 }, binding: 0, access: read }>;\n\
 			\n\
 			// specialization 7: transparent: bool\n\
 			\n\
-			// layer: the module's own layout\n\
 			albedo: descriptor<{ type: Texture2D, binding: 1, access: read }>;\n"
 		);
 	}

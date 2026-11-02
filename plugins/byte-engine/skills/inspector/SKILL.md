@@ -142,6 +142,7 @@ jq -c 'select(.name == "Character") | .data' streams.ndjson | tail -20
 | --- | --- |
 | Nothing answers on the port | The application is still starting, it crashed (read its log), or the inspector moved to another port. |
 | `presented_ticks` is 0, or screenshots time out | The window is hidden, minimized, or covered, or the screen is locked. |
+| The first message of a run takes about a second | On macOS, a covered window can block the first frame it presents. Send a warm-up message and wait before a timed sequence. |
 | A setting has no effect | `GET /configuration` lists it as pending or not set, with the reason. Some settings keep their startup value. |
 | An entity query returns `[]` | Names are exact and case-sensitive, and `type` needs the full Rust path, such as `byte_engine::rendering::window::Window`. |
 

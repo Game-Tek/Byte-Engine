@@ -256,6 +256,7 @@ error for it.
 | Cascades | Four, splitting the range from the camera to `render.directional-shadows.distance` by the split blend between logarithmic and even. |
 | Fitting | With receivers fitting, each cascade shrinks to the surfaces the camera sees, after two small depth passes. With frustum fitting, it covers the whole slice without them. |
 | Stability | Each cascade is the smallest light-space square around its slice, padded by 17 texels, rounded in 8 steps per doubling, and snapped to a world-fixed texel grid. Casters start 100 m toward the light. |
+| Holding a receiver | A cascade holds a receiver that lies inside its square, at least 10 texels from its edge, and inside its depth range, from where its casters start to its far side, give or take one depth step of 1/65535. With receivers fitting, a cascade's far side is the surface farthest from the light that the camera sees in that cascade's slice, so a cascade often doesn't hold a receiver of another slice. |
 | Beyond the last cascade | No sun shadow. |
 | Receiver | The surface point, moved off its triangle along the triangle's normal on the camera's side by sin θ texels of the cascade it's tested in, where θ is the angle between that normal and the direction toward the sun. |
 | Receiver plane | Each filter tap compares the stored depth with the depth of the receiver's triangle plane at the tap's texel center, moved toward the sun by 1.5 depth steps of 1/65535 per cascade, from cascade 0 at 1.5 to cascade 3 at 6. Where the sun is within about 3° of the plane, the plane's depth changes across the map as it would at that angle, a slope of 20. |
@@ -330,8 +331,8 @@ the first one draws anyway.
 
 Until a map has been drawn, its light is lit without that shadow. A map that
 isn't drawn this frame keeps the view it was drawn with, and receivers sample
-it with that view. A receiver outside a cascade's drawn square uses the next
-coarser cascade that covers it, and gets no shadow from that light when none
+it with that view. A receiver that a cascade's drawn view doesn't hold uses the
+next coarser cascade that holds it, and gets no shadow from that light when none
 does. A new map, a map in a new size class, and every map of an image that
 changed size count as not yet drawn.
 
@@ -407,6 +408,7 @@ One source lights the indirect diffuse light of a frame's opaque surfaces:
 | Images | The source writes `SSGI History` and `SSGI Normals`, which material evaluation reads. Material evaluation writes `Diffuse Radiance History`, which SSGI rays read in the next frame, only in a frame that SSGI lights. |
 | SSGI history | SSGI reads its history only after a frame it lit at the same sink size. Its first frame after a frame it didn't light starts without history. |
 | Environment light | Material evaluation adds the environment's irradiance around each opaque pixel's normal, times the environment's intensity and the pixel's environment visibility: the smaller of one minus the source's hit fraction and GTAO's visibility, each when it ran. Under surfel GI or probe GI it adds none: their light holds the environment's light their rays reached. The environment visibility also dims the environment's reflections. |
+| Small-scale occlusion | Under surfel GI or probe GI, material evaluation multiplies the source's light at each opaque pixel by GTAO's visibility, when GTAO runs. |
 | Surfels | At most `render.surfel-gi.surfel-capacity` surfels live at once, and they trace at most `render.surfel-gi.ray-budget` rays a frame. |
 | Probes | Probes trace at most `render.probe-gi.ray-budget` rays a frame, 128 for each probe they update. |
 | Baked shaders | Material shaders keep the indirect diffuse read while any source is built in, and the diffuse radiance write while SSGI is. |

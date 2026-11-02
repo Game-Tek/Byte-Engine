@@ -569,7 +569,8 @@ mod tests {
 	#[test]
 	fn geometry_table_maps_each_geometry_to_its_frame_record() {
 		// The mesh's middle primitive is masked, so its two geometries hold primitives 0 and 2.
-		let bottom_levels = HashMap::from_iter([(MeshKey::Resource(resource_key("hall")), bottom_level(3, vec![0, 2], 5, true))]);
+		let bottom_levels =
+			HashMap::from_iter([(MeshKey::Resource(resource_key("hall")), bottom_level(3, vec![0, 2], 5, true))]);
 		// The frame lists primitives in any order, and two renderables share the mesh.
 		let mut primitives = [
 			traced(2, "hall", 2, 21),

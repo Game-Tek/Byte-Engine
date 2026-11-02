@@ -153,27 +153,34 @@ weigh_screen_space_indirect_diffuse: fn (
 // texels around the pixel, weighed by `weigh_screen_space_indirect_diffuse`.
 //
 // `pixel` is the full-resolution pixel of an `extent` image. `position` and `normal` are its view-space surface
-// position and geometric normal, in the space the SSGI images use. `nearest_fallback` picks what a pixel without a
-// matching texel takes, as `weigh_screen_space_indirect_diffuse` describes.
+// position and smooth normal, in the space the SSGI images use. Ray-traced light retries with `geometric_normal` if
+// the smooth normal rejects every tap, then keeps the nearest-depth tap for a surface thinner than a history texel.
+// A smooth normal can reject a covered facet, while a thin bevel may have no history texel of its own. The retry
+// prevents either case from replacing ray-traced visibility with unoccluded environment light. Both attempts reuse
+// the same reads and retain the normal and tangent-plane tests.
 pub(crate) const SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE: &str = r#"
 sample_screen_space_indirect_diffuse: fn (
 	pixel: vec2u,
 	extent: vec2u,
 	position: vec3f,
 	normal: vec3f,
-	nearest_fallback: bool
+	geometric_normal: vec3f,
+	ray_traced: bool
 ) -> vec4f {
 	let source_extent: vec2u = texture_size(ssgi_history);
 	let source_position: vec2f = indirect_diffuse_source_position(pixel, extent, source_extent);
 	let base: vec2f = vec2f(floor(source_position.x), floor(source_position.y));
-	// Every texel is read before any weight is computed, so the twelve fetches overlap instead of waiting on each
-	// other: the material shader's register footprint leaves few other threads to hide their latency. Each tap keeps
+	// Every texel is read before any weight is computed, so the gather and eight fetches can overlap instead of
+	// waiting on each other: the material shader's register footprint leaves few other threads to hide their latency. Each tap keeps
 	// only what its fetches returned, the depth at full precision and the stored normal pair and light at the half
 	// precision their 16-bit images hold, and derives its position and decoded normal when it is weighted, so the
 	// fetch window holds as little as possible. Keeping the pairs and the light at half precision took the window's
 	// register peak, the highest of the opaque material shader without local lights, from 86 to 74, and material
 	// evaluation 0.8 to 1.4 % faster on the Sponza hall view (2026-10-06).
-	let depths: f32[4] = f32[4](0.0, 0.0, 0.0, 0.0);
+	// One gather reads the same clamped 2x2 depth footprint as the four independent texel fetches. The corner
+	// lies between the texel centers; gather returns bottom-left, bottom-right, top-right, top-left.
+	let depth_quad: vec4f = gather(depth_pyramid, (base + vec2f(1.0, 1.0)) / vec2f(f32(source_extent.x), f32(source_extent.y)));
+	let depths: f32[4] = f32[4](depth_quad.w, depth_quad.z, depth_quad.x, depth_quad.y);
 	let zero_pair: vec2f16 = vec2f16(0.0, 0.0);
 	let stored_normals: vec2f16[4] = vec2f16[4](zero_pair, zero_pair, zero_pair, zero_pair);
 	let zero_light: vec4f16 = vec4f16(0.0, 0.0, 0.0, 0.0);
@@ -183,13 +190,11 @@ sample_screen_space_indirect_diffuse: fn (
 			min(u32(base.x) + tap % 2, source_extent.x - 1),
 			min(u32(base.y) + tap / 2, source_extent.y - 1)
 		);
-		// Mip zero of the depth pyramid holds positive linear depth at the history's resolution.
-		depths[tap] = fetch(depth_pyramid, texel).x;
 		let stored: vec4f = fetch(ssgi_normals, texel);
 		stored_normals[tap] = vec2f16(vec2f(stored.x, stored.y));
 		lights[tap] = vec4f16(fetch(ssgi_history, texel));
 	}
-	return weigh_screen_space_indirect_diffuse(
+	let indirect: vec4f = weigh_screen_space_indirect_diffuse(
 		base,
 		source_position - base,
 		source_extent,
@@ -198,7 +203,15 @@ sample_screen_space_indirect_diffuse: fn (
 		lights,
 		position,
 		normal,
-		nearest_fallback
+		false
+	);
+	if (!ray_traced || dot(indirect, indirect) != 0.0) {
+		return indirect;
+	}
+	// Retry the same texels against the triangle plane, with the nearest-depth fallback for a thin surface.
+	// Keeping the original reads avoids a second texture window without changing either reconstruction's tests.
+	return weigh_screen_space_indirect_diffuse(
+		base, source_position - base, source_extent, depths, stored_normals, lights, position, geometric_normal, true
 	);
 }
 "#;
@@ -225,7 +238,8 @@ sample_screen_space_indirect_diffuse: fn (
 	extent: vec2u,
 	position: vec3f,
 	normal: vec3f,
-	nearest_fallback: bool
+	geometric_normal: vec3f,
+	ray_traced: bool
 ) -> vec4f {
 	let source_extent: vec2u = texture_size(ssgi_history);
 	let source_position: vec2f = indirect_diffuse_source_position(pixel, extent, source_extent);
@@ -247,7 +261,7 @@ sample_screen_space_indirect_diffuse: fn (
 		stored_normals[tap] = vec2f16(tile_indirect_normals[window_index]);
 		lights[tap] = vec4f16(tile_indirect_lights[window_index]);
 	}
-	return weigh_screen_space_indirect_diffuse(
+	let indirect: vec4f = weigh_screen_space_indirect_diffuse(
 		base,
 		source_position - base,
 		source_extent,
@@ -256,29 +270,15 @@ sample_screen_space_indirect_diffuse: fn (
 		lights,
 		position,
 		normal,
-		nearest_fallback
+		false
 	);
-}
-"#;
-
-// Keeps the current reconstruction when it has light or hit information. A smoothed vertex normal can differ from
-// the depth-derived triangle normal enough to reject every tap, even in the interior of a finely faceted ornament.
-// Ray-traced GI carries the environment too, so losing its hit information would expose unoccluded sky reflections:
-// a surface no history texel matches in either normal, such as a curtain rod or a ledge's bevel, would show as a thin
-// white line. So the retry falls back to the tap nearest in depth.
-pub(crate) const SAMPLE_RAY_TRACED_INDIRECT_DIFFUSE_SOURCE: &str = r#"
-sample_ray_traced_indirect_diffuse: fn (
-	pixel: vec2u,
-	extent: vec2u,
-	position: vec3f,
-	normal: vec3f,
-	geometric_normal: vec3f
-) -> vec4f {
-	let indirect: vec4f = sample_screen_space_indirect_diffuse(pixel, extent, position, normal, false);
-	if (dot(indirect, indirect) != 0.0) {
+	if (!ray_traced || dot(indirect, indirect) != 0.0) {
 		return indirect;
 	}
-	// Retain both the normal and tangent-plane tests on the retry, so a matching texel wins over the nearest one.
-	return sample_screen_space_indirect_diffuse(pixel, extent, position, geometric_normal, true);
+	// Retry the same texels against the triangle plane, with the nearest-depth fallback for a thin surface.
+	// Keeping the original reads avoids a second texture window without changing either reconstruction's tests.
+	return weigh_screen_space_indirect_diffuse(
+		base, source_position - base, source_extent, depths, stored_normals, lights, position, geometric_normal, true
+	);
 }
 "#;

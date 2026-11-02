@@ -74,7 +74,10 @@ impl ConeLight {
 	/// Checks the angular range shared by uniform and IES-backed cone lights: finite half angles, the inner one from
 	/// zero up to the outer one, and the outer one at most π.
 	fn validate_angles(inner_angle: Radians, outer_angle: Radians) -> Result<(), PhotometricError> {
-		if !(inner_angle.is_finite() && outer_angle.is_finite() && inner_angle >= Radians::new(0.0) && inner_angle < outer_angle)
+		if !(inner_angle.is_finite()
+			&& outer_angle.is_finite()
+			&& inner_angle >= Radians::new(0.0)
+			&& inner_angle < outer_angle)
 		{
 			return Err(PhotometricError::new(
 				"that the cone's half angles aren't finite or its inner angle isn't below its outer angle. Give both in radians, the inner one from zero up to the outer one",

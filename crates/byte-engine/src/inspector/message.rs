@@ -126,9 +126,8 @@ impl DefaultInspector {
 mod tests {
 	use std::sync::Arc;
 
-	use serde_json::json;
-
 	use math::Point;
+	use serde_json::json;
 
 	use super::*;
 	use crate::{
@@ -242,7 +241,11 @@ mod tests {
 		let target = Factory::new().create(());
 
 		inspector
-			.post_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, target, r#"{ "position": [1.0, 2.0, 3.0] }"#)
+			.post_message(
+				TRANSFORMATION_UPDATE_MESSAGE_TYPE,
+				target,
+				r#"{ "position": [1.0, 2.0, 3.0] }"#,
+			)
 			.expect("accept a transform payload that names only its position");
 
 		let update = transforms.read().expect("the transform is published");

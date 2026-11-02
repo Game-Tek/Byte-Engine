@@ -865,6 +865,18 @@ mod tests {
 use std::collections::BTreeMap;
 
 use math::{Point, Vector};
+#[cfg(feature = "headed")]
+use {
+	crate::{
+		core::{
+			channel::{Channel as _, DefaultChannel},
+			factory::Factory,
+		},
+		rendering::debug::{DebugMesh, DebugShape},
+	},
+	math::UnitVector,
+	utils::RGBA,
+};
 
 use super::{NavigationMesh, NavigationMeshBuildError, NavigationPathError, steering};
 use crate::{
@@ -877,16 +889,4 @@ use crate::{
 		message_bus::MessageScope,
 	},
 	gameplay::{Transform, TransformationUpdate},
-};
-#[cfg(feature = "headed")]
-use {
-	crate::{
-		core::{
-			channel::{Channel as _, DefaultChannel},
-			factory::Factory,
-		},
-		rendering::debug::{DebugMesh, DebugShape},
-	},
-	math::UnitVector,
-	utils::RGBA,
 };

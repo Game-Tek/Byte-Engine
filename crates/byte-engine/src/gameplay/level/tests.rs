@@ -137,10 +137,22 @@ fn entity_references_hold_the_referenced_entity_handle() {
 #[test]
 fn a_level_that_cannot_spawn_publishes_nothing() {
 	for (problem, source) in [
-		("unregistered kind", r#"{ entities: [{ components: { name: "a", score: 3 } }] }"#),
-		("payload of the wrong shape", r#"{ entities: [{ components: { name: "a", team: { number: "one" } } }] }"#),
-		("payload with an unknown field", r#"{ entities: [{ components: { name: "a", team: { number: 1, color: 2 } } }] }"#),
-		("payload the converter rejects", r#"{ entities: [{ components: { name: "" } }] }"#),
+		(
+			"unregistered kind",
+			r#"{ entities: [{ components: { name: "a", score: 3 } }] }"#,
+		),
+		(
+			"payload of the wrong shape",
+			r#"{ entities: [{ components: { name: "a", team: { number: "one" } } }] }"#,
+		),
+		(
+			"payload with an unknown field",
+			r#"{ entities: [{ components: { name: "a", team: { number: 1, color: 2 } } }] }"#,
+		),
+		(
+			"payload the converter rejects",
+			r#"{ entities: [{ components: { name: "" } }] }"#,
+		),
 	] {
 		let world = MessageScope::standalone("world");
 		let mut scenes = world.factory::<Scene>().listener();
@@ -149,7 +161,10 @@ fn a_level_that_cannot_spawn_publishes_nothing() {
 		let error = spawn(&spawner(), &world, source).expect_err(problem);
 
 		assert!(error.starts_with("Level could not be spawned."), "{problem}: {error}");
-		assert!(drain(&mut scenes).is_empty() && drain(&mut names).is_empty(), "{problem} published something");
+		assert!(
+			drain(&mut scenes).is_empty() && drain(&mut names).is_empty(),
+			"{problem} published something"
+		);
 	}
 }
 
@@ -187,7 +202,9 @@ fn deleting_the_root_deletes_every_entity() {
 	deletes.send(DeleteMessage::new(root));
 	scenes.cascade();
 
-	let mut deleted = std::iter::from_fn(|| deleted.read()).map(|deletion| deletion.into_handle()).collect::<Vec<_>>();
+	let mut deleted = std::iter::from_fn(|| deleted.read())
+		.map(|deletion| deletion.into_handle())
+		.collect::<Vec<_>>();
 	let mut expected = drain(&mut names).into_iter().map(|(handle, _)| handle).collect::<Vec<_>>();
 	expected.push(root);
 	deleted.sort_by_key(|handle| handle.id());
@@ -260,7 +277,10 @@ fn rendering_kinds_read_the_payloads_the_reference_specifies() {
 	let lamps = drain(&mut lamps);
 	assert_eq!(lamps.len(), 2);
 	let bulb = &lamps[1].1.emission;
-	assert_eq!(bulb.ies_profile().map(|profile| (profile.resource_id(), profile.dimmer())), Some(("lamp.ies", 0.5)));
+	assert_eq!(
+		bulb.ies_profile().map(|profile| (profile.resource_id(), profile.dimmer())),
+		Some(("lamp.ies", 0.5))
+	);
 	assert_eq!((bulb.shadow_near_override(), bulb.shadow_far_override()), (None, Some(12.0)));
 
 	let spots = drain(&mut spots);
@@ -268,11 +288,17 @@ fn rendering_kinds_read_the_payloads_the_reference_specifies() {
 	let (photometric, profiled) = (&spots[0].1, &spots[1].1);
 	assert_eq!((photometric.inner_angle.value(), photometric.outer_angle.value()), (0.3, 0.5));
 	assert_eq!(
-		(photometric.emission.shadow_near_override(), photometric.emission.shadow_far_override()),
+		(
+			photometric.emission.shadow_near_override(),
+			photometric.emission.shadow_far_override()
+		),
 		(Some(0.2), Some(20.0))
 	);
 	assert!(photometric.emission.ies_profile().is_none());
-	assert_eq!(profiled.emission.ies_profile().map(|profile| profile.resource_id()), Some("spot.ies"));
+	assert_eq!(
+		profiled.emission.ies_profile().map(|profile| profile.resource_id()),
+		Some("spot.ies")
+	);
 }
 
 #[cfg(feature = "headed")]
@@ -311,8 +337,12 @@ fn lights_that_cannot_take_shape_fail_the_spawn() {
 		let world = MessageScope::standalone("world");
 		let mut scenes = world.factory::<Scene>().listener();
 
-		let error = spawn(&spawner(), &world, &format!("{{ entities: [{{ id: \"lamp\", components: {{ {light} }} }}] }}"))
-			.expect_err(problem);
+		let error = spawn(
+			&spawner(),
+			&world,
+			&format!("{{ entities: [{{ id: \"lamp\", components: {{ {light} }} }}] }}"),
+		)
+		.expect_err(problem);
 
 		assert!(error.contains("component of entity 'lamp'"), "{problem}: {error}");
 		assert!(drain(&mut scenes).is_empty(), "{problem} published something");
@@ -337,7 +367,12 @@ fn large_levels_publish_every_component_in_entity_order() {
 
 	let teams = drain(&mut teams);
 	assert_eq!(teams.len(), 2_500);
-	assert!(teams.iter().enumerate().all(|(position, (_, team))| team.number == position as u32));
+	assert!(
+		teams
+			.iter()
+			.enumerate()
+			.all(|(position, (_, team))| team.number == position as u32)
+	);
 	assert!(
 		teams.windows(2).all(|pair| pair[1].0.id() == pair[0].0.id() + 1),
 		"the entities of a level spawn on consecutive handles"

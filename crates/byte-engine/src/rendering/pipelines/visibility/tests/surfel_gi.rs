@@ -112,9 +112,8 @@ const UP: [f32; 3] = [0.0, 1.0, 0.0];
 /// Runs the production material reconstruction against a covered planar face at half resolution.
 fn reconstruct_covered_face(normal: [f32; 3], geometric: [f32; 3], stored: [f32; 4]) -> [f32; 4] {
 	use super::super::shader_generator::{
-		INDIRECT_DIFFUSE_SOURCE_POSITION_SOURCE, SAMPLE_RAY_TRACED_INDIRECT_DIFFUSE_SOURCE,
-		SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE, SSGI_STORED_NORMAL_SOURCE, SSGI_SURFACE_WEIGHT_SOURCE,
-		WEIGH_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE,
+		INDIRECT_DIFFUSE_SOURCE_POSITION_SOURCE, SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE, SSGI_STORED_NORMAL_SOURCE,
+		SSGI_SURFACE_WEIGHT_SOURCE, WEIGH_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE,
 	};
 	const RESULT: ResourceSlot = ResourceSlot::new(0);
 	const VIEW: ResourceSlot = ResourceSlot::new(1048);
@@ -127,13 +126,12 @@ fn reconstruct_covered_face(normal: [f32; 3], geometric: [f32; 3], stored: [f32;
 		{INDIRECT_DIFFUSE_SOURCE_POSITION_SOURCE}
 		{WEIGH_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE}
 		{SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE}
-		{SAMPLE_RAY_TRACED_INDIRECT_DIFFUSE_SOURCE}
 		ReconstructionResult: struct {{ light: vec4f }}
 		results: descriptor<{{ type: ReconstructionResult, binding: 0, access: write, memory: device }}>;
 		main: fn () -> void {{
-			results.light = sample_ray_traced_indirect_diffuse(
+			results.light = sample_screen_space_indirect_diffuse(
 				vec2u(16, 16), vec2u(32, 32), vec3f(0.0, 0.0, 1.0),
-				vec3f({}, {}, {}), vec3f({}, {}, {})
+				vec3f({}, {}, {}), vec3f({}, {}, {}), true
 			);
 		}}
 		"#,

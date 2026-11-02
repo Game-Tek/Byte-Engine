@@ -911,7 +911,14 @@ mod tests {
 
 		// The separate passes: climb into a top-level image, then sample it from the scene's texels and blend.
 		let top_size = size / 2;
-		let top_level = upsample(size / 4, &low, top_size, &high, 1.0, (rgb(data.same_weight), rgb(data.low_weight)));
+		let top_level = upsample(
+			size / 4,
+			&low,
+			top_size,
+			&high,
+			1.0,
+			(rgb(data.same_weight), rgb(data.low_weight)),
+		);
 		let scale = top_size as f32 / size as f32;
 		for texel in 0..size * size {
 			let coordinate = [texel % size, texel / size];
@@ -961,7 +968,9 @@ mod tests {
 	fn bloom(size: u32, scene: &[[f32; 4]], settings: BloomPassSettings, levels: usize) -> Texture {
 		let data = climbs(settings, levels, size);
 		let texels = |image: &Texture, size: u32| -> Vec<[f32; 4]> {
-			(0..size * size).map(|index| rgba(image, [index % size, index / size])).collect()
+			(0..size * size)
+				.map(|index| rgba(image, [index % size, index / size]))
+				.collect()
 		};
 		let rgb = |value: [f32; 4]| [value[0], value[1], value[2]];
 		let level_size = |level: usize| size / level_divisor(level);
@@ -974,7 +983,14 @@ mod tests {
 		let mut finished = downsampled[levels - 1].clone();
 		for level in (1..levels.saturating_sub(1)).rev() {
 			let weights = (rgb(data[level].same_weight), rgb(data[level].low_weight));
-			finished = upsample(level_size(level + 1), &finished, level_size(level), &downsampled[level], 1.0, weights);
+			finished = upsample(
+				level_size(level + 1),
+				&finished,
+				level_size(level),
+				&downsampled[level],
+				1.0,
+				weights,
+			);
 		}
 		let below_top = if levels == 1 { downsampled[0].clone() } else { finished };
 		upsample_composite(size, scene, &below_top, &downsampled[0], data[0])
@@ -992,7 +1008,9 @@ mod tests {
 			descriptors.bind_image(ResourceSlot::new(1), &mut result);
 			run_at(&program, &mut descriptors, [index % half, index / half]);
 		}
-		(0..half * half).map(|index| rgba(&result, [index % half, index / half])).collect()
+		(0..half * half)
+			.map(|index| rgba(&result, [index % half, index / half]))
+			.collect()
 	}
 
 	/// Returns a `size` by `size` scene of `background` with an 8x8 block of `highlight` at its center.
@@ -1038,11 +1056,18 @@ mod tests {
 
 		let result = bloom(SIZE, &scene, settings(0.1, 2.5, [0.0; 3], [0.005; 3]), 4);
 
-		assert!(rgba(&result, [32, 32])[0] < 8.0, "the highlight grew: {:?}", rgba(&result, [32, 32]));
+		assert!(
+			rgba(&result, [32, 32])[0] < 8.0,
+			"the highlight grew: {:?}",
+			rgba(&result, [32, 32])
+		);
 		// Texels right of the block, two to twenty texels past its edge.
 		let tail = [38, 42, 48, 56].map(|x| rgba(&result, [x, 32])[0]);
 		assert!(tail[0] > 0.01, "no tail: {tail:?}");
-		assert!(tail.windows(2).all(|pair| pair[0] > pair[1] && pair[1] > 0.01 * 0.9), "{tail:?}");
+		assert!(
+			tail.windows(2).all(|pair| pair[0] > pair[1] && pair[1] > 0.01 * 0.9),
+			"{tail:?}"
+		);
 	}
 
 	/// Verifies that a larger tail exponent keeps the glow closer to its source: brighter beside it, dimmer far away.
@@ -1055,8 +1080,18 @@ mod tests {
 		let tight = bloom(SIZE, &scene, settings(0.1, 3.0, [0.0; 3], [0.005; 3]), 4);
 
 		let (near, far) = ([36, 32], [60, 32]);
-		assert!(rgba(&tight, near)[0] > rgba(&wide, near)[0], "{:?} {:?}", rgba(&tight, near), rgba(&wide, near));
-		assert!(rgba(&tight, far)[0] < rgba(&wide, far)[0], "{:?} {:?}", rgba(&tight, far), rgba(&wide, far));
+		assert!(
+			rgba(&tight, near)[0] > rgba(&wide, near)[0],
+			"{:?} {:?}",
+			rgba(&tight, near),
+			rgba(&wide, near)
+		);
+		assert!(
+			rgba(&tight, far)[0] < rgba(&wide, far)[0],
+			"{:?} {:?}",
+			rgba(&tight, far),
+			rgba(&wide, far)
+		);
 	}
 
 	/// Verifies that halation in one channel fringes a white highlight in that channel alone and leaves the others as

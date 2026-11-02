@@ -229,6 +229,17 @@ wall that sees sky only high up through a roof got the light of a hemisphere
 centered on the horizon. It also hung the whole sky on one number per surfel,
 and in a dim gallery that number's error set neighbors visibly apart.
 
+Surfels resolve occlusion only down to their own size, 24 centimeters across
+near the camera, so the light in a crease, a joint between floor tiles, or the
+foot of a column is the light of the open surface around it. GTAO fills that
+gap: material evaluation multiplies the surfels' light by GTAO's visibility.
+Keep GTAO's radius below the surfels' size, as the model viewer's 15
+centimeters is. A radius that reaches as far as the surfels do counts the
+occlusion their rays already found twice. Probe GI shares the same
+push-constant value and gets the same product, since its cells are 20
+centimeters across. SSGI instead takes the smaller of its own visibility and
+GTAO's, because both estimate the same screen-space occlusion.
+
 A pixel no surfel covers yet takes its light from the spatial pass: its
 neighbors' light, or the nearest light the screen knows, or none, until a
 surfel spawns there, as

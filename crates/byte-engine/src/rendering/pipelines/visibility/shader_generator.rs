@@ -21,9 +21,8 @@ use resource_management::shader::generator::ShaderGenerationSettings;
 use resource_management::types::AlphaMode;
 #[cfg(test)]
 pub(super) use sources::{
-	INDIRECT_DIFFUSE_SOURCE_POSITION_SOURCE, SAMPLE_RAY_TRACED_INDIRECT_DIFFUSE_SOURCE,
-	SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE, SSGI_STORED_NORMAL_SOURCE, SSGI_SURFACE_WEIGHT_SOURCE,
-	WEIGH_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE,
+	INDIRECT_DIFFUSE_SOURCE_POSITION_SOURCE, SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE, SSGI_STORED_NORMAL_SOURCE,
+	SSGI_SURFACE_WEIGHT_SOURCE, WEIGH_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE,
 };
 
 use self::ast::*;
@@ -586,10 +585,6 @@ fn screen_space_indirect_diffuse_scope(tile: bool) -> Vec<Node<'static>> {
 			"sample_screen_space_indirect_diffuse",
 		));
 	}
-	helpers.push((
-		SAMPLE_RAY_TRACED_INDIRECT_DIFFUSE_SOURCE,
-		"sample_ray_traced_indirect_diffuse",
-	));
 	window
 		.into_iter()
 		.flatten()

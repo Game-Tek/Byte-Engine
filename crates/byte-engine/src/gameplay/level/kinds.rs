@@ -32,7 +32,9 @@ impl Spawner {
 		#[cfg(feature = "headed")]
 		{
 			spawner.register_with("mesh", rendering::mesh).expect(DISTINCT);
-			spawner.register_with("directional_light", rendering::directional_light).expect(DISTINCT);
+			spawner
+				.register_with("directional_light", rendering::directional_light)
+				.expect(DISTINCT);
 			spawner.register_with("point_light", rendering::point_light).expect(DISTINCT);
 			spawner.register_with("cone_light", rendering::cone_light).expect(DISTINCT);
 		}
@@ -263,9 +265,9 @@ mod rendering {
 				}
 				RenderableMesh::generated(Box::new(generator))
 			}
-			MeshPayload::Sphere { radius } => RenderableMesh::generated(Box::new(SphereMeshGenerator::from_radius(positive(
-				radius, "radius",
-			)?))),
+			MeshPayload::Sphere { radius } => {
+				RenderableMesh::generated(Box::new(SphereMeshGenerator::from_radius(positive(radius, "radius")?)))
+			}
 			MeshPayload::Capsule {
 				radius,
 				height,

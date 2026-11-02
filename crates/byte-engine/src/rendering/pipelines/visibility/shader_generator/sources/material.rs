@@ -366,12 +366,12 @@ material_evaluation_suffix: fn () -> void {
 				let view_space_geometric_normal: vec3f = views.views[0].view * vec4f(
 					geometric_normal.x, geometric_normal.y, geometric_normal.z, 0.0
 				);
-				screen_space_indirect = sample_ray_traced_indirect_diffuse(
-					pixel_coordinates, image_extent, view_space_surface_position, view_space_normal, view_space_geometric_normal
+				screen_space_indirect = sample_screen_space_indirect_diffuse(
+					pixel_coordinates, image_extent, view_space_surface_position, view_space_normal, view_space_geometric_normal, true
 				);
 			} else {
 				screen_space_indirect = sample_screen_space_indirect_diffuse(
-					pixel_coordinates, image_extent, view_space_surface_position, view_space_normal, false
+					pixel_coordinates, image_extent, view_space_surface_position, view_space_normal, view_space_normal, false
 				);
 			}
 			// Both sources carry pre-exposed light through half-float images. Undo that scale before combining it
@@ -386,10 +386,16 @@ material_evaluation_suffix: fn () -> void {
 			adds_environment_diffuse = false;
 		}
 		if (push_constant.gtao != 0) {
+			let gtao_visibility: f32 = fetch(ao, pixel_coordinates).x;
 			// Both passes estimate the same visibility, so multiplying them would darken an occluder they both see
 			// twice. The smaller one keeps an occluder that only one of them resolves, such as a crease below SSGI's
 			// half resolution.
-			environment_visibility = min(environment_visibility, fetch(ao, pixel_coordinates).x);
+			environment_visibility = min(environment_visibility, gtao_visibility);
+			// Surfels and probes resolve occlusion only down to their own size, 20 centimeters or more, so their light
+			// misses the creases a smaller GTAO radius finds, and the product adds what they can't see.
+			if (push_constant.indirect_diffuse == 2) {
+				screen_space_irradiance = screen_space_irradiance * gtao_visibility;
+			}
 		}
 	}
 	// Environment maps store arbitrary units; the intensity calibrates them to the lux their Environment requests.
@@ -524,58 +530,20 @@ material_evaluation_suffix: fn () -> void {
 				}
 				attenuation = 1.0;
 			} else {
-				match light_type {
-					0 => {
-						let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
-						if (shadow_view_index != 0) {
-							let shadow_cube_index: u32 = lighting_data.lights[light_index].shadow_layer;
-							// Size class `c` holds cube faces of `128 << c` texels per side.
-							let shadow_size_class: u32 = lighting_data.lights[light_index].shadow_size_class;
-							occlusion_factor = f16(sample_point_shadow(
-								point_shadow_maps[shadow_size_class],
-								f32(128 << shadow_size_class),
-								shadow_view_index,
-								shadow_cube_index,
-								world_space_vertex_position,
-								light_position,
-								position_derivative_x,
-								position_derivative_y
-							));
-							if (occlusion_factor == 0.0) {
-								continue;
-							}
-						}
+				// The cheap factors come first: the cone's falloff, then the IES profile's one texel. Either can drop the
+				// light, and then the shadow filter, which reads eight or sixteen texels, never runs.
+				if (light_type == 1) {
+					let cone_direction: vec3f16 = vec3f16(lighting_data.lights[light_index].direction);
+					let cone_cosine: f16 = dot(cone_direction, vec3f16(0.0, 0.0, 0.0) - L_material);
+					let cone_factor: f16 = f16(cone_attenuation(
+						f32(cone_cosine),
+						lighting_data.lights[light_index].cone_cosines.x,
+						lighting_data.lights[light_index].cone_cosines.y
+					));
+					if (cone_factor <= 0.0) {
+						continue;
 					}
-					1 => {
-						let cone_direction: vec3f16 = vec3f16(lighting_data.lights[light_index].direction);
-						let cone_cosine: f16 = dot(cone_direction, vec3f16(0.0, 0.0, 0.0) - L_material);
-						let cone_factor: f16 = f16(cone_attenuation(
-							f32(cone_cosine),
-							lighting_data.lights[light_index].cone_cosines.x,
-							lighting_data.lights[light_index].cone_cosines.y
-						));
-						if (cone_factor <= 0.0) {
-							continue;
-						}
-						attenuation = attenuation * f32(cone_factor);
-						let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
-						if (shadow_view_index != 0) {
-							let shadow_layer: u32 = lighting_data.lights[light_index].shadow_layer;
-							let shadow_size_class: u32 = lighting_data.lights[light_index].shadow_size_class;
-							occlusion_factor = f16(sample_cone_shadow(
-								cone_shadow_maps[shadow_size_class],
-								shadow_view_index,
-								shadow_layer,
-								world_space_vertex_position,
-								position_derivative_x,
-								position_derivative_y
-							));
-							if (occlusion_factor == 0.0) {
-								continue;
-							}
-						}
-					}
-					_ => {}
+					attenuation = attenuation * f32(cone_factor);
 				}
 				if (lighting_data.lights[light_index].ies_profile_texture != 4294967295) {
 					let emission_direction: vec3f = vec3f(0.0, 0.0, 0.0) - L;
@@ -590,6 +558,36 @@ material_evaluation_suffix: fn () -> void {
 						continue;
 					}
 					attenuation = attenuation * intensity_factor;
+				}
+				let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
+				if (shadow_view_index != 0) {
+					let shadow_layer: u32 = lighting_data.lights[light_index].shadow_layer;
+					let shadow_size_class: u32 = lighting_data.lights[light_index].shadow_size_class;
+					if (light_type == 0) {
+						// Size class `c` holds cube faces of `128 << c` texels per side; `shadow_layer` is the cube.
+						occlusion_factor = f16(sample_point_shadow(
+							point_shadow_maps[shadow_size_class],
+							f32(128 << shadow_size_class),
+							shadow_view_index,
+							shadow_layer,
+							world_space_vertex_position,
+							light_position,
+							position_derivative_x,
+							position_derivative_y
+						));
+					} else if (light_type == 1) {
+						occlusion_factor = f16(sample_cone_shadow(
+							cone_shadow_maps[shadow_size_class],
+							shadow_view_index,
+							shadow_layer,
+							world_space_vertex_position,
+							position_derivative_x,
+							position_derivative_y
+						));
+					}
+					if (occlusion_factor == 0.0) {
+						continue;
+					}
 				}
 			}
 

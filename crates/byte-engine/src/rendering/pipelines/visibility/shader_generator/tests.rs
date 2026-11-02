@@ -1402,8 +1402,10 @@ fn directional_shadow_fitting_cascade_picks_the_finest_that_fits_in_the_besl_vm(
 
 /// Verifies a directional cascade holds a receiver only while the receiver is at least eight texels, the filter's reach,
 /// inside the cascade's square: a 20-meter square on a 2048-texel map holds receivers up to 9.92 meters from its center.
+/// It must also lie inside the cascade's depth range, from 100 meters toward the light to 0 meters, where receivers fitting
+/// ends a cascade at its farthest receiver.
 #[test]
-fn directional_shadow_cascade_holds_receivers_inside_the_filter_margin_in_the_besl_vm() {
+fn directional_shadow_cascade_holds_receivers_inside_the_filter_margin_and_depth_range_in_the_besl_vm() {
 	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
@@ -1425,17 +1427,26 @@ fn directional_shadow_cascade_holds_receivers_inside_the_filter_margin_in_the_be
 			if (directional_shadow_cascade_holds(projection, vec3f(0.0, 0.0 - 9.95, 3.0), 2048.0)) {
 				results.past_y = 1;
 			}
+			results.past_far_side = 0;
+			if (directional_shadow_cascade_holds(projection, vec3f(0.0, 0.0, 0.0 - 0.1), 2048.0)) {
+				results.past_far_side = 1;
+			}
+			results.past_near_side = 0;
+			if (directional_shadow_cascade_holds(projection, vec3f(0.0, 0.0, 100.1), 2048.0)) {
+				results.past_near_side = 1;
+			}
 		}
 		"#,
 		&mut [],
 		&[(DIRECTIONAL_SHADOW_CASCADE_HOLDS_SOURCE, "directional_shadow_cascade_holds")],
-		members("u32", &["inside", "past_x", "past_y"]),
+		members("u32", &["inside", "past_x", "past_y", "past_far_side", "past_near_side"]),
 	);
-	for (name, expected) in [("inside", 1), ("past_x", 0), ("past_y", 0)] {
+	for (name, expected) in [("inside", 1), ("past_x", 0), ("past_y", 0), ("past_far_side", 0), ("past_near_side", 0)] {
 		assert_eq!(
 			results.read(name).expect("cascade holds result"),
 			Value::U32(expected),
-			"Unexpected cascade holds result for {name}. The most likely cause is a margin other than eight texels."
+			"Unexpected cascade holds result for {name}. The most likely cause is a margin other than eight texels, or a \
+			 depth range left unchecked."
 		);
 	}
 }
@@ -1572,7 +1583,10 @@ fn tangent_frame_is_orthonormal_and_points_the_bitangent_toward_decreasing_v_in_
 
 	for (setup, u_direction) in [(SETUP, 1.0f32), (MIRRORED_SETUP, -1.0)] {
 		let mut prologue = parse_besl_statements(setup, "setup");
-		prologue.extend(parse_besl_statements(MATERIAL_EVALUATION_TANGENT_SOURCE, "material_evaluation_tangent"));
+		prologue.extend(parse_besl_statements(
+			MATERIAL_EVALUATION_TANGENT_SOURCE,
+			"material_evaluation_tangent",
+		));
 		let executable = compile_with_prologue(
 			prologue,
 			r#"
@@ -1600,7 +1614,10 @@ fn tangent_frame_is_orthonormal_and_points_the_bitangent_toward_decreasing_v_in_
 				panic!("Unexpected {name} type.");
 			};
 			assert!(
-				actual.iter().zip(expected).all(|(actual, expected)| (actual - expected).abs() <= 0.002),
+				actual
+					.iter()
+					.zip(expected)
+					.all(|(actual, expected)| (actual - expected).abs() <= 0.002),
 				"Unexpected {name} {actual:?}, expected {expected:?}, for u along {u_direction} x. The most likely cause \
 				 is a tangent not projected onto the normal's plane or a bitangent along increasing v."
 			);
@@ -2176,6 +2193,7 @@ fn sample_indirect_diffuse(
 				inputs.extent,
 				vec3f(inputs.position.x, inputs.position.y, inputs.position.z),
 				vec3f(inputs.normal.x, inputs.normal.y, inputs.normal.z),
+				vec3f(inputs.normal.x, inputs.normal.y, inputs.normal.z),
 				false
 			);
 		}
@@ -2305,7 +2323,7 @@ fn tile_indirect_diffuse_reads_what_the_images_hold() {
 						if (pixel.x < extent.x && pixel.y < extent.y) {{
 							let position: vec3f = vec3f(f32(pixel.x) * 0.05 - 0.5, 0.25 - f32(pixel.y) * 0.05, 2.0 + f32(pixel.x % 3));
 							let normal: vec3f = normalize(vec3f(0.1, 0.2, -1.0));
-							results.indirect[pixel.y * {full} + pixel.x] = sample_screen_space_indirect_diffuse(pixel, extent, position, normal, false);
+							results.indirect[pixel.y * {full} + pixel.x] = sample_screen_space_indirect_diffuse(pixel, extent, position, normal, normal, false);
 						}}
 					}}
 					"#

@@ -167,6 +167,14 @@ A change to the penumbra filter must keep:
   a cascade's edge, so the filter never reads past the map. The penumbra
   cascade is chosen only among cascades that hold the receiver, and the margin
   stays inside the 17 texels that pad every fitted cascade.
+- A cascade holding a receiver only inside its depth range as well as its
+  square. Receivers fitting ends each cascade at the surface farthest from the
+  light in its own slice, and a receiver past that end projects outside the
+  map's depth, where a sample reads as lit. Looking down Sponza's courtyard
+  toward the sun, the floor near the camera lay past cascade 1's end, and
+  where the cascade fade mixed cascade 1 into cascade 0, a gray band leaked
+  into the floor's shadow, cut off in 8-texel steps where the fully-shadowed
+  probe took over.
 - The two copies, in `sun-visibility.besl` and `shader_generator/sources/shadow.rs`,
   in agreement. The VM tests
   `directional_shadow_penumbra_widens_with_its_radius_in_the_besl_vm` and

@@ -168,11 +168,7 @@ impl PipelineManager {
 	/// Composes the matrix of every instance whose shown transform changed this frame.
 	fn move_instances(&mut self, transforms: &ShownTransforms) {
 		for (handle, transform) in transforms.changed() {
-			if let Some((_, model)) = self
-				.instance_slots
-				.get(handle)
-				.and_then(|slot| self.instances.get_mut(*slot))
-			{
+			if let Some((_, model)) = self.instance_slots.get(handle).and_then(|slot| self.instances.get_mut(*slot)) {
 				*model = transform.get_matrix().into();
 			}
 		}

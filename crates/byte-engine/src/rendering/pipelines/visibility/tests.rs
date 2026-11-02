@@ -2690,7 +2690,9 @@ impl SunVisibilityGeometry {
 		let mut vertex_indices = array_buffer(program, VERTEX_INDICES_SLOT, vertices.len());
 		let mut primitive_indices = array_buffer(program, PRIMITIVE_INDICES_SLOT, vertices.len());
 		for (index, vertex) in vertices.into_iter().enumerate() {
-			positions.write_array_element(index, Value::Vec3F(vertex)).expect("scene vertex");
+			positions
+				.write_array_element(index, Value::Vec3F(vertex))
+				.expect("scene vertex");
 			vertex_indices
 				.write_array_element(index, Value::U16(index as u16))
 				.expect("vertex index");
@@ -2700,7 +2702,9 @@ impl SunVisibilityGeometry {
 		}
 		let mut meshlets = array_buffer(program, MESHLETS_SLOT, 1);
 		for (field, value) in [("primitive_count", 6), ("triangle_count", 2)] {
-			meshlets.write_array_member(0, field, Value::U32(value)).expect("meshlet field");
+			meshlets
+				.write_array_member(0, field, Value::U32(value))
+				.expect("meshlet field");
 		}
 		let mut triangle_indices = Texture::new(extent, extent).expect("triangle index fixture");
 		let instance_indices = instance_texture(extent, |_| 0);
@@ -2943,7 +2947,10 @@ fn sun_visibility_shadows_the_floor_the_wall_hides_from_the_sun() {
 	// The tent's weights sum to one only up to rounding, so a filtered lit receiver may fall short of one by a unit in
 	// the last place.
 	let lit = run_sun_visibility(clear, true, [column, lit_row]);
-	assert!((lit - 1.0).abs() <= 0.000001, "Expected the floor away from the wall to be lit, got {lit}.");
+	assert!(
+		(lit - 1.0).abs() <= 0.000001,
+		"Expected the floor away from the wall to be lit, got {lit}."
+	);
 	assert_eq!(run_sun_visibility(|_, _, _| 0.0, false, [column, lit_row]), 0.0);
 }
 
@@ -2965,7 +2972,10 @@ fn sun_visibility_resolves_each_sun_from_its_own_cascades() {
 	assert_eq!([shadowed[0], shadowed[1]], [1.0, 0.0]);
 	// As in `sun_visibility_shadows_the_floor_the_wall_hides_from_the_sun`, a filtered lit receiver is one up to rounding.
 	let lit = run_sun_visibility_in_slot(clear, true, [column, lit_row], 1)[1];
-	assert!((lit - 1.0).abs() <= 0.000001, "Expected the second sun to light the floor away from the wall, got {lit}.");
+	assert!(
+		(lit - 1.0).abs() <= 0.000001,
+		"Expected the second sun to light the floor away from the wall, got {lit}."
+	);
 }
 
 /// Verifies the contact-shadow trace marches each sun's own ray: the floor in front of the low wall is shadowed for a

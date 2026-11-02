@@ -19,16 +19,16 @@ use std::{
 	sync::atomic::{AtomicUsize, Ordering},
 };
 
-use resource_management::{ResourceManager, resource::read_target::ReadTargetsMut};
 pub use resource_management::resources::level::Level;
 use resource_management::resources::level::{LevelKind, RUN};
+use resource_management::{ResourceManager, resource::read_target::ReadTargetsMut};
+use serde::de::DeserializeOwned;
+use tokens::TokenDeserializer;
 
 use crate::{
 	core::{factory::Handle, machine::performance_parallelism, message_bus::MessageScope},
 	gameplay::{Scene, SceneNode},
 };
-use serde::de::DeserializeOwned;
-use tokens::TokenDeserializer;
 
 /// The field that turns a payload object into a reference to another entity of the level.
 const ENTITY_REFERENCE: &str = "$entity";

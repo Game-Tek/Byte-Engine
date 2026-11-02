@@ -39,7 +39,7 @@ impl Default for ContactShadowSettings {
 	fn default() -> Self {
 		Self {
 			enabled: true,
-			max_distance: 0.15,
+			max_distance: 0.1,
 		}
 	}
 }

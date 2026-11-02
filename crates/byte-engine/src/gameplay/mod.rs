@@ -9,10 +9,10 @@
 //! baked level's entities under one scene.
 
 pub mod anchor;
+pub mod level;
 pub mod name;
 pub mod pathfinding;
 pub mod scene;
-pub mod level;
 pub mod tasks;
 pub mod transform;
 

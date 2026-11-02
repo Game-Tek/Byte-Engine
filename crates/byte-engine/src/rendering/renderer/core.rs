@@ -1252,6 +1252,10 @@ use crate::rendering::{
 	debug_views::{DebugViewCatalog, DebugViewRegistry, DebugViewSettings, PendingDebugView, apply_debug_view_configuration},
 	render_passes::debug_view::DebugViewPresentPass,
 };
+use crate::rendering::{
+	render_pass::{RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassState, RenderPassStates},
+	render_passes::blit::ImageBypassPass,
+};
 use crate::{
 	application::parameters::Parameters,
 	configuration::ConfigurationPort,
@@ -1263,10 +1267,6 @@ use crate::{
 		render_pass::RenderPassReturn,
 		window::{self, Window},
 	},
-};
-use crate::rendering::{
-	render_pass::{RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassState, RenderPassStates},
-	render_passes::blit::ImageBypassPass,
 };
 
 #[cfg(test)]

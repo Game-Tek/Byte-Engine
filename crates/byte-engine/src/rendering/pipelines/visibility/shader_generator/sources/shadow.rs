@@ -85,20 +85,28 @@ directional_shadow_area_is_fully_lit: fn (
 	);
 	// Corners are clamped to the cascade, so no sample reads a neighboring cascade's cells.
 	let maximum_corner: vec2f = vec2f(f32(cell_extent.x - 1), f32(cell_extent.y - 1));
-	let block_maximum: f32 = 0.0;
-	for (let quad_row: u32 = 0; quad_row < 2; quad_row = quad_row + 1) {
-		for (let quad_column: u32 = 0; quad_column < 2; quad_column = quad_column + 1) {
-			let corner: vec2f = vec2f(
-				clamp(first_cell.x + f32(quad_column * 2 + 1), 1.0, maximum_corner.x),
-				clamp(first_cell.y + f32(quad_row * 2 + 1), 1.0, maximum_corner.y)
-			);
-			block_maximum = max(block_maximum, downsample_max(
-				directional_shadow_depth_pyramid,
-				vec2f(corner.x, corner.y + layer_offset) / pyramid_extent,
-				0.0
-			));
-		}
-	}
+	let corner0: vec2f = vec2f(
+		clamp(first_cell.x + 1.0, 1.0, maximum_corner.x),
+		clamp(first_cell.y + 1.0, 1.0, maximum_corner.y) + layer_offset
+	) / pyramid_extent;
+	let corner1: vec2f = vec2f(
+		clamp(first_cell.x + 3.0, 1.0, maximum_corner.x),
+		clamp(first_cell.y + 1.0, 1.0, maximum_corner.y) + layer_offset
+	) / pyramid_extent;
+	let corner2: vec2f = vec2f(
+		clamp(first_cell.x + 1.0, 1.0, maximum_corner.x),
+		clamp(first_cell.y + 3.0, 1.0, maximum_corner.y) + layer_offset
+	) / pyramid_extent;
+	let corner3: vec2f = vec2f(
+		clamp(first_cell.x + 3.0, 1.0, maximum_corner.x),
+		clamp(first_cell.y + 3.0, 1.0, maximum_corner.y) + layer_offset
+	) / pyramid_extent;
+	// Issue the independent probes before reducing them, so one fetch does not gate the next.
+	let probe0: f32 = downsample_max(directional_shadow_depth_pyramid, corner0, 0.0);
+	let probe1: f32 = downsample_max(directional_shadow_depth_pyramid, corner1, 0.0);
+	let probe2: f32 = downsample_max(directional_shadow_depth_pyramid, corner2, 0.0);
+	let probe3: f32 = downsample_max(directional_shadow_depth_pyramid, corner3, 0.0);
+	let block_maximum: f32 = max(max(max(max(0.0, probe0), probe1), probe2), probe3);
 	return surface_depth >= block_maximum;
 }
 "#;
@@ -236,9 +244,11 @@ directional_shadow_fitting_cascade: fn (
 }
 "#;
 
-// Returns whether a world-space receiver lies inside a directional cascade's square, at least ten texels from its
-// edge, so the penumbra filter's reach of eight texels stays inside the map when the receiver moves off its surface. Cascades fitted to the camera's opaque surfaces hold every one of them, but not a surface drawn
-// later, such as a transparent one.
+// Returns whether a directional cascade can shadow a world-space receiver: the receiver lies inside the cascade's
+// square, at least ten texels from its edge, so the penumbra filter's reach of eight texels stays inside the map when
+// the receiver moves off its surface, and inside the cascade's depth range, where the map knows what lies above it.
+// Each cascade fitted to the camera's opaque surfaces holds those of its own slice, but often not those of another
+// slice, nor a surface drawn later, such as a transparent one.
 pub(crate) const DIRECTIONAL_SHADOW_CASCADE_HOLDS_SOURCE: &str = r#"
 directional_shadow_cascade_holds: fn (shadow_view_projection: mat4f, world_space_position: vec3f, shadow_map_width: f32) -> bool {
 	let clip_position: vec4f = shadow_view_projection * vec4f(
@@ -249,7 +259,11 @@ directional_shadow_cascade_holds: fn (shadow_view_projection: mat4f, world_space
 	);
 	// A texel spans two over the width in normalized device units.
 	let limit: f32 = 1.0 - 20.0 / shadow_map_width;
-	return abs(clip_position.x) <= limit && abs(clip_position.y) <= limit;
+	// A fitted cascade ends at the receiver of its slice farthest from the light, so a receiver of a nearer slice can
+	// lie past it, where its samples would read as lit. One depth step of slack keeps the slice's own farthest
+	// receivers, which rounding can put just past the end and the receiver's depth margin brings back.
+	return abs(clip_position.x) <= limit && abs(clip_position.y) <= limit
+		&& clip_position.z >= 0.0 - 1.0 / 65535.0 && clip_position.z <= 1.0;
 }
 "#;
 
@@ -996,7 +1010,7 @@ sample_directional_shadow: fn (
 	let shadow_map_extent: vec2u = texture_size(shadow_map);
 	let shadow_map_width: f32 = f32(shadow_map_extent.x);
 	let first_layer: u32 = shadow_view0 - 1;
-	// A surface outside its cascade's square moves to the first coarser cascade that holds it, and is lit when none does.
+	// A surface its cascade doesn't hold moves to the first coarser cascade that does, and is lit when none does.
 	let holding_cascade: u32 = 4;
 	for (let cascade: u32 = depth_cascade; cascade < 4 && holding_cascade == 4; cascade = cascade + 1) {
 		let cascade_view: u32 = directional_shadow_cascade_view(cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);

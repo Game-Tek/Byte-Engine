@@ -192,12 +192,17 @@ impl App {
 	}
 
 	/// Creates and shows a native window; see [`crate::window::App::create_window`].
-	pub(crate) fn create_window(&mut self, name: &str, extent: utils::Extent, _features: Features) -> Result<Window, String> {
+	pub(crate) fn create_window(&mut self, name: &str, extent: utils::Extent, features: Features) -> Result<Window, String> {
 		let name = CString::new(name).map_err(
 			|_| "Failed to build the window title. The most likely cause is that the window name contains an interior null byte.",
 		)?;
 
-		let window_style = WS_POPUP | WS_VISIBLE;
+		// A background window is never shown, so it cannot take focus from the desktop.
+		let window_style = if features.contains(Features::BACKGROUND) {
+			WS_POPUP
+		} else {
+			WS_POPUP | WS_VISIBLE
+		};
 
 		let (width, height) = (extent.width() as i32, extent.height() as i32);
 

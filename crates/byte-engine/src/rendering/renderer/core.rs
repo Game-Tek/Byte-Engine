@@ -89,6 +89,8 @@ pub struct Renderer {
 	acquisitions: (u64, SmallVec<[WindowFrame; 16]>),
 	/// The minimum time between presented frames applied to every window; `None` presents on every refresh.
 	present_interval: Option<std::time::Duration>,
+	/// Whether no one watches the windows: they open in the background and render whether or not they can be seen.
+	unattended: bool,
 	/// The swapchain image count requested for every window; `None` keeps the backend default.
 	swapchain_images: Option<u8>,
 	/// Sink indices and their camera handles.
@@ -280,6 +282,7 @@ impl Renderer {
 			app: None,
 			acquisitions: (0, SmallVec::with_capacity(16)),
 			present_interval: None,
+			unattended: false,
 			swapchain_images,
 			sink_cameras: SmallVec::with_capacity(16),
 			cameras: SmallVec::with_capacity(16),
@@ -592,6 +595,16 @@ impl Renderer {
 		}
 	}
 
+	/// Makes the renderer serve runs no one watches, such as an agent debugging the application.
+	///
+	/// Windows created afterwards open in the background ([`ghi::window::Features::BACKGROUND`]) and present without
+	/// waiting for a display refresh, and every window renders each frame whether or not it can be seen. The caller
+	/// paces frames, as the `unattended` application parameter does in
+	/// [`crate::application::graphics::GraphicsApplication`].
+	pub fn set_unattended(&mut self, unattended: bool) {
+		self.unattended = unattended;
+	}
+
 	/// Returns the shortest refresh interval among the displays showing a window, when any platform reports one.
 	///
 	/// The fastest display decides so that no window handles its events later than its display could show them.
@@ -608,7 +621,8 @@ impl Renderer {
 	/// previous tick or starts this one, so simulation still follows the display.
 	/// A window that cannot be seen is skipped without acquiring: whatever the frame presented there would never be
 	/// shown, and on Metal the presentation engine stops pacing the loop for it. Pass the sinks a screenshot captures
-	/// as `captured` so those windows render anyway.
+	/// as `captured` so those windows render anyway. An unattended renderer ([`Self::set_unattended`]) renders every
+	/// window.
 	///
 	/// The call is idempotent for one frame: windows already decided are skipped, so [`Self::prepare`] can call it
 	/// to pick up windows adopted later in the tick, hidden windows a screenshot captures, or to acquire when nothing
@@ -641,7 +655,7 @@ impl Renderer {
 			if !undecided(&self.acquisitions.1, index) {
 				continue;
 			}
-			if !captured(index) && !window.is_visible() {
+			if !self.unattended && !captured(index) && !window.is_visible() {
 				self.acquisitions.1.push(WindowFrame::Hidden);
 				continue;
 			}
@@ -1104,10 +1118,17 @@ impl Renderer {
 		let extent = window.extent();
 		let camera = window.camera();
 
-		let features = if window.features().contains(window::Features::DECORATIONS) {
+		let mut features = if window.features().contains(window::Features::DECORATIONS) {
 			ghi::window::Features::DECORATIONS
 		} else {
 			ghi::window::Features::empty()
+		};
+		// An unseen window has no display refresh to wait for, so it presents immediately and the loop paces frames.
+		let presentation_mode = if self.unattended {
+			features |= ghi::window::Features::BACKGROUND;
+			ghi::PresentationModes::Inmediate
+		} else {
+			ghi::PresentationModes::FIFO
 		};
 
 		// Connect on first use so headless renderers never touch the windowing system.
@@ -1122,7 +1143,7 @@ impl Renderer {
 			Ok(window) => {
 				let swapchain_handle = self.context.bind_to_window(
 					&window.os_handles(),
-					ghi::PresentationModes::FIFO,
+					presentation_mode,
 					self.swapchain_images,
 					extent,
 					ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferSource,

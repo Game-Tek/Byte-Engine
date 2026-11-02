@@ -32,6 +32,7 @@ delta since the previous tick, or the fixed step in the stepped loop.
 | Stall cap | A delta never exceeds four skipped-frame paces, whichever cadence measured it. Elapsed time still advances by the full interval, so a stall lands in the clock but no system simulates through it. |
 | Stale present | A presented time older than one frame before the previous tick is ignored. |
 | Skipped-frame pace | The larger of the frame-rate cap and the display refresh, 16,667 µs by default, slept when nothing presents. |
+| Unattended | The delta is exactly one frame period, and elapsed time advances by it. Neither the display nor the wall clock changes it, and the stall cap doesn't apply. |
 
 ## Tick order
 
@@ -40,7 +41,7 @@ delta since the previous tick, or the fixed step in the stepped loop.
 | 1 | The message bus begins the tick and the frame allocator resets. |
 | 2 | Window events are processed, raw input is recorded, and the loop waits in the window system only when rendering on demand and idle. |
 | 3 | A close event ends the run. |
-| 4 | Swapchain images are acquired when rendering is active; otherwise the loop sleeps the skipped-frame pace. |
+| 4 | Swapchain images are acquired when rendering is active. An unattended loop then sleeps until the tick's deadline; otherwise, a tick that presents nothing sleeps the skipped-frame pace. |
 | 5 | The frame clock samples the tick's time. |
 | 6 | Gamepads are polled and the input sink resolves actions. |
 | 7 | The application's callback runs, or the fixed steps and the frame callback. The renderer steps after each simulation step. |
@@ -61,6 +62,21 @@ delta since the previous tick, or the fixed step in the stepped loop.
 | Display time | The end of the latest step, less one step, plus the remainder. A frame shows the world one step behind, at the [shown transforms](/docs/reference/rendering#shown-transforms) of this time. |
 | Blend factor | The remainder over the step: how far the display time lies from the previous step toward the latest. Available to application code. |
 | Wake-up | The next step's deadline wakes an idle on-demand loop. |
+
+## Unattended runs
+
+The `unattended` parameter runs an application for no one at the desktop, such as an agent that
+drives it through the [inspector](/docs/reference/inspector). Its value is the rendering rate in
+frames per second, such as `30`.
+
+| Rule | Behavior |
+| --- | --- |
+| Rate | Required. A missing, zero, negative, or non-numeric rate stops startup. |
+| Windows | Open without being shown and never take focus. On macOS the application also has no Dock icon. Wayland windows still show. |
+| Rendering | Every tick renders every window, whether or not it can be seen. `render-on-demand` is ignored. |
+| Pace | Tick deadlines lie one frame period apart. A tick starts at its deadline, or at once after a stall, which moves the later deadlines. `max-frame-rate` is ignored. |
+| Clock | Each tick advances by exactly one frame period, so a run repeats and a slow machine runs slower than real time instead of skipping time. |
+| Tied loop | The rate is the presentation cadence a `simulation-rate` must match. |
 
 ## Ending a run
 

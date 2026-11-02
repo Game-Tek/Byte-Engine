@@ -61,8 +61,9 @@ the skill that fits:
 | `inspector` | Run your application and look at it or measure it | "Start the game, press jump, and show me a screenshot." "Which render pass takes the most GPU time?" |
 | `resources` | Bake assets, or find something in the resource store | "Bake the resources for a release build." "Which textures are stored uncompressed?" |
 
-The `inspector` skill starts your application with its own inspector port and
-closes it when it's done. The `resources` skill asks you before it deletes
+The `inspector` skill starts your application unattended, with its own inspector
+port, and closes it when it's done. Its window renders in the background without
+being shown or taking focus, so you can keep working while the agent tests it. The `resources` skill asks you before it deletes
 resources or clears the store.
 
 ## Keep the skills up to date

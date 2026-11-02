@@ -494,8 +494,14 @@ impl App {
 		let next = window.cascadeTopLeftFromPoint(NSPoint::new(seed.0, seed.1));
 		self.next_window_cascade_top_left = Some((next.x as f64, next.y as f64));
 
-		window.makeKeyAndOrderFront(None);
-		app.activate();
+		if features.contains(Features::BACKGROUND) {
+			// The window is never ordered in and the app never activates, so nothing on the desktop moves. An accessory
+			// app also has no Dock icon or menu bar to take over.
+			app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+		} else {
+			window.makeKeyAndOrderFront(None);
+			app.activate();
+		}
 		// Placement can select a display with a different backing scale than the
 		// screen used to request the window. Publish the actual pixels before input.
 		if let Some(view) = window.contentView() {

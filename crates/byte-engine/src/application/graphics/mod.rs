@@ -29,6 +29,7 @@
 /// - `debug.streams.changes-only`: Writes a data stream record only when the system's key for it changed, leaving out records where only progress like a phase moved. The default is `false`.
 /// - `max-frame-rate`: Caps presentation at this many frames per second; frames land on even refreshes. The default is uncapped.
 /// - `simulation-rate`: Steps simulation this many times per second, independent of how often frames are presented. [`Self::tick_stepped_with`] paces its steps on it and defaults to `60`. [`Self::tick_with`] simulates once per frame and panics when this rate disagrees with the rate frames are presented at.
+/// - `unattended`: Runs the application for no one at the desktop, such as an agent debugging it through the inspector, at this many frames per second. Windows open without being shown or taking focus, every tick renders every window whether or not it can be seen, the loop paces itself to the rate, and the clock advances by exactly one frame period per tick, so runs repeat. The rate is required; `max-frame-rate` and `render-on-demand` are ignored. The default is `None`, an attended run.
 /// - `render-on-demand`: Renders only when something changed instead of on every tick. Window changes, UI renders, and screenshot requests ask for frames; call [`Renderer::request_redraw`] after changing the scene. Idle ticks keep running at the refresh rate of the fastest display showing a window, or the `max-frame-rate` pace when that is slower, so events are still handled. Once the frame is shown and no UI component waits for a frame, the loop waits in the window system until an event, a UI timer, or a [`crate::application::LoopWaker`] wakes it; call [`crate::application::LoopWaker::wake`] from threads that change state the loop must see. The default is `false`.
 /// - `assets-path`: Selects the debug-build asset directory. Relative overrides use the current working directory. In development, the default is `assets` under `CARGO_MANIFEST_DIR` when available, then beside the executable.
 /// - `resources.path`: Selects the resource directory. Relative overrides use the current working directory. In development, the default uses `CARGO_MANIFEST_DIR` when available; otherwise, it is beside the executable.
@@ -91,6 +92,10 @@ pub struct GraphicsApplication {
 	elapsed_at_last_present: MediaTime,
 	/// Whether frames are rendered only when something changed; the `render-on-demand` parameter.
 	render_on_demand: bool,
+	/// The frame period of an unattended run; the `unattended` parameter when given.
+	unattended: Option<std::time::Duration>,
+	/// When the next unattended tick may start.
+	next_frame_at: std::time::Instant,
 	/// Whether the last tick rendered because something changed, so this tick expects to render again.
 	rendering_active: bool,
 	/// Wakes this loop when state it cannot observe through window events changes.
@@ -325,8 +330,13 @@ impl GraphicsApplication {
 				.and_then(|parameter| parameter.parse::<f64>().ok())
 				.filter(|rate| *rate > 0.0)
 		};
-		let present_interval = positive_rate("max-frame-rate").map(|rate| std::time::Duration::from_secs_f64(1.0 / rate));
+		let unattended = unattended_period(application.get_parameter("unattended"));
+		// An unattended run paces itself, so no presentation cap applies.
+		let present_interval = positive_rate("max-frame-rate")
+			.filter(|_| unattended.is_none())
+			.map(|rate| std::time::Duration::from_secs_f64(1.0 / rate));
 		renderer.set_present_interval(present_interval);
+		renderer.set_unattended(unattended.is_some());
 		let simulation_step = positive_rate("simulation-rate").map(|rate| MediaTime::from_seconds_f64(1.0 / rate));
 		let render_on_demand = application
 			.get_parameter("render-on-demand")
@@ -401,6 +411,8 @@ impl GraphicsApplication {
 			skipped_frame_pace: skipped_frame_pace(present_interval, None),
 			elapsed_at_last_present: MediaTime::ZERO,
 			render_on_demand,
+			unattended,
+			next_frame_at: std::time::Instant::now(),
 			rendering_active: true,
 			waker: services.waker,
 			platform_waker_set: false,
@@ -458,6 +470,16 @@ impl GraphicsApplication {
 	/// [`STALL_FRAMES`] paces the same way, so a stall the loop did not wait through, such as a sleep or a presentation
 	/// the system held for a second, cannot advance a clip or a body by that whole second in one tick.
 	fn sample_frame_time(&mut self, present_time: Option<std::time::Instant>, waited: bool) -> Time {
+		// An unattended run advances by exactly one frame period, whatever the wall clock did, so runs repeat and a
+		// slow machine runs slower than real time instead of skipping time.
+		if let Some(period) = self.unattended {
+			let delta = MediaTime::from_std(period);
+			self.elapsed += delta;
+			return Time {
+				elapsed: self.elapsed,
+				delta,
+			};
+		}
 		let now = std::time::Instant::now();
 		// A presented time from more than a frame before the previous tick shows a frame from before a stretch in which
 		// no tick read one, such as while the window was hidden or the loop idled. Anchoring the clock to it would fold
@@ -534,7 +556,8 @@ impl GraphicsApplication {
 			// Smoke runs count ticks, so they keep ticking while idle.
 			return ghi::window::Wait::Immediate;
 		}
-		if !self.render_on_demand || self.rendering_active {
+		// Unattended runs pace themselves in the tick, so they never wait for events either.
+		if !self.render_on_demand || self.rendering_active || self.unattended.is_some() {
 			return ghi::window::Wait::Immediate;
 		}
 		if !self.platform_waker_set {
@@ -625,8 +648,11 @@ impl GraphicsApplication {
 		let Some(step) = self.simulation_step else {
 			return;
 		};
-		// Frames arrive no faster than the slower of the cap and the display.
-		let Some(present_interval) = self.present_interval.max(self.renderer.refresh_interval()) else {
+		// Frames arrive at the unattended rate, or otherwise no faster than the slower of the cap and the display.
+		let Some(present_interval) = self
+			.unattended
+			.or_else(|| self.present_interval.max(self.renderer.refresh_interval()))
+		else {
 			return;
 		};
 		assert!(
@@ -789,7 +815,11 @@ impl GraphicsApplication {
 		} else {
 			None
 		};
-		if self.tick_count > 0 && !waited && !self.renderer.presents_this_frame() {
+		if let Some(period) = self.unattended {
+			// Unattended runs render every window and nothing waits on a display, so the loop holds their rate here.
+			std::thread::sleep(self.next_frame_at.saturating_duration_since(std::time::Instant::now()));
+			self.next_frame_at = next_frame_deadline(self.next_frame_at, period, std::time::Instant::now());
+		} else if self.tick_count > 0 && !waited && !self.renderer.presents_this_frame() {
 			// The first tick has no previous frame to pace. Later ticks that neither present nor wait for
 			// events sleep here so a windowless or unchanged application does not spin a core.
 			std::thread::sleep(self.skipped_frame_pace);
@@ -814,7 +844,7 @@ impl GraphicsApplication {
 		let screenshot_requests = self.screenshot_broker.drain();
 		// Ask the renderer even when rendering anyway so passes adopt this tick's inputs before deciding next tick.
 		let changed = self.renderer.needs_frame() || !screenshot_requests.is_empty();
-		self.rendering_active = changed || !self.render_on_demand;
+		self.rendering_active = changed || !self.render_on_demand || self.unattended.is_some();
 		let frame = (self.rendering_active || self.renderer.presents_this_frame())
 			.then(|| self.render_frame(screenshot_requests, time));
 		// Rendering may acquire more than the tick's start did, such as a hidden window a screenshot captures.
@@ -1128,6 +1158,35 @@ fn idle_wait(
 	}
 }
 
+/// Reads the frame period of an unattended run from the `unattended` parameter.
+///
+/// Returns `None` when the parameter is absent. The rate is required, so a bare `--unattended` or a rate that is not
+/// a positive number stops startup.
+fn unattended_period(parameter: Option<&Parameter>) -> Option<std::time::Duration> {
+	parameter.map(|parameter| {
+		let rate = parameter.parse::<f64>().ok().filter(|rate| rate.is_finite() && *rate > 0.0);
+		let rate = rate.unwrap_or_else(|| {
+			panic!(
+				"The `unattended` parameter has no valid rendering rate: '{}'. The most likely cause is a bare `--unattended` or a value that is not a positive number. Pass a rate in frames per second, such as `--unattended=30`.",
+				parameter.value()
+			)
+		});
+		std::time::Duration::from_secs_f64(1.0 / rate)
+	})
+}
+
+/// Chooses when the next unattended tick may start, given the deadline the tick starting at `now` waited for.
+///
+/// Deadlines stay one `period` apart, so oversleeping one tick does not slow the rate. A tick that started more
+/// than a period late, after a stall, moves the schedule to `now` instead of running the missed ticks back to back.
+fn next_frame_deadline(
+	deadline: std::time::Instant,
+	period: std::time::Duration,
+	now: std::time::Instant,
+) -> std::time::Instant {
+	(deadline + period).max(now)
+}
+
 /// Chooses how long a tick that presents nothing sleeps.
 ///
 /// No frame reaches the screen faster than the display refreshes or than the cap allows, so the slower of the two
@@ -1204,6 +1263,40 @@ mod tests {
 		assert_eq!(idle_wait(false, Some(later), None, now), Wait::Until(later));
 		assert_eq!(idle_wait(false, Some(later), Some(soon), now), Wait::Until(soon));
 		assert_eq!(idle_wait(false, None, Some(soon), now), Wait::Until(soon));
+	}
+
+	#[test]
+	fn unattended_period_is_one_frame_at_the_given_rate() {
+		assert_eq!(unattended_period(None), None);
+		assert_eq!(
+			unattended_period(Some(&Parameter::new("unattended", "50"))),
+			Some(std::time::Duration::from_millis(20))
+		);
+	}
+
+	#[test]
+	#[should_panic(expected = "rendering rate")]
+	fn unattended_without_a_rate_stops_startup() {
+		unattended_period(Some(&Parameter::new("unattended", "")));
+	}
+
+	#[test]
+	#[should_panic(expected = "rendering rate")]
+	fn unattended_with_a_non_positive_rate_stops_startup() {
+		unattended_period(Some(&Parameter::new("unattended", "0")));
+	}
+
+	#[test]
+	fn next_frame_deadline_keeps_the_rate_and_moves_after_a_stall() {
+		let start = std::time::Instant::now();
+		let period = std::time::Duration::from_millis(20);
+		let overslept = start + std::time::Duration::from_millis(1);
+		let stalled = start + std::time::Duration::from_millis(100);
+
+		// Oversleeping a deadline does not push later deadlines back.
+		assert_eq!(next_frame_deadline(start, period, overslept), start + period);
+		// A stall restarts the schedule instead of owing the missed ticks.
+		assert_eq!(next_frame_deadline(start, period, stalled), stalled);
 	}
 
 	#[test]

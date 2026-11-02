@@ -95,12 +95,13 @@ Check each of these once per session, before the first build or run:
   cd ~/development/sandbox/model_viewer
   echo '{"render":{"debug-views":{"enabled":false}}}' > <scratch>/release.json
   ../target/release/model-viewer-beld --source "$PWD/assets" --destination <store> --config <scratch>/release.json bake
-  ../target/release/model-viewer --resources.path=<store> --render.ghi.features.counters=true --inspector.port=<port>
+  ../target/release/model-viewer --unattended=60 --resources.path=<store> --render.ghi.features.counters=true --inspector.port=<port>
   ```
 
-- **The window presents.** Front it and sample only presented ticks. On a hidden window or locked screen, force
-  frames from about six parallel `GET /screenshots?sink=0&format=raw` clients, never one at a time: serial frames
-  give temporal passes no history, so they skip work and their stage times are wrong (see "Determinism" below).
+- **Every tick renders.** Pass `--unattended=<hz>`, so the window renders each tick in the background, hidden or
+  not, and sample only presented ticks. Without it, a hidden window or locked screen renders only frames that captures
+  force, and those give temporal passes no history, so they skip work and their stage times are wrong (see
+  "Determinism" below).
 - **One dispatch is one counter.** Ray-tracing hit shaders run inside the trace dispatch, so no timestamp separates
   closest-hit from the trace. Measure a hit shader by A/B against a stub hit shader, or with Metal System Trace.
 - **Register and occupancy numbers come from `scripts/pipeline_statistics.m`**, not from AIR or MSL.
@@ -121,9 +122,8 @@ Check each of these once per session, before the first build or run:
   viewer runs the stale baked shader. An edit to a `.besl` asset rebakes on its own, because baked resources record
   their assets' content hashes, so an A/B can swap one asset file between runs. Launch from the crate directory, or
   assets silently fail to resolve.
-- `scripts/measure.sh <name> [viewer params]` does the whole run: launch, front the window for twenty seconds, pin
-  the look (`LOOK=lx,ly,lz`, default the hall view from the spawn point), sample `stage.*` by forcing frames with
-  screenshots, capture the lit image and `TARGET="<render target>"`, stop the viewer. `REBAKE=1` deletes the
+- `scripts/measure.sh <name> [viewer params]` does the whole run: launch unattended at `RATE` (default 60), wait for
+  the inspector, pin the look (`LOOK=lx,ly,lz`, default the hall view from the spawn point), sample `stage.*`, capture the lit image and `TARGET="<render target>"`, stop the viewer. `REBAKE=1` deletes the
   resources first. `OUT_DIR` defaults to `$TMPDIR/byte-engine-perf`.
 - `scripts/pngdiff.py before.png after.png` diffs the first channel of two captures without an image library.
 - `scripts/sample_metrics.py [host:port] [rounds] [shots]` is the forced-frame sampler on its own.
@@ -181,9 +181,9 @@ Check each of these once per session, before the first build or run:
 - The GPU has run in three states on one day (shadow-maps 0.64, 1.22, and 2.09 ms for the same raster). Discard
   pairs whose `stage.shadow-maps` differs by more than 1%, and never compare across states.
 - `BINARY=<saved viewer>` runs a copy of the viewer saved from an earlier build, so two variants can be measured back
-  to back without rebuilding; `ROUNDS=<n>` raises the forced-frame sampling. A run whose presented frame count equals
-  the forced count ran hidden or behind a locked screen (`CGSSessionScreenIsLocked`): its SSGI history is invalid and
-  the trace exits early, so it cannot measure the screen-space block.
+  to back without rebuilding; `ROUNDS=<n>` raises the sampling. A run whose presented frame count equals the
+  capture count ran attended while hidden or behind a locked screen (`CGSSessionScreenIsLocked`): its SSGI history is
+  invalid and the trace exits early, so it cannot measure the screen-space block. Run it again with `--unattended`.
 
 Every screen-space pass with a multi-tap footprint now loads its tile into workgroup memory (GTAO evaluate, blur,
 and upscale, SSGI trace and temporal, sun visibility, pixel mapping, material count and offset, both depth pyramids,
@@ -201,6 +201,10 @@ replaced had cost nothing measurable, so counter overhead is off the list.
 How to prove a change pixel-identical in the model viewer, and how to measure in hidden or release runs.
 
 ### Determinism
+
+- Run A/Bs with `--unattended=<hz>`. Every tick renders, so temporal histories stay valid, and each tick advances the
+  clock by exactly one frame period, so tick N shows the same simulated time in every run. The forced-frame notes
+  below were measured on attended runs, before the flag existed; recheck them before relying on them unattended.
 
 - Presented frames never match bit for bit, even between two runs of one build. SSGI's noise scrolls with
   `frame_index % 64`, and its float16 history depends on every earlier frame. Compare per-channel means of raw
@@ -243,10 +247,10 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
 
 - The release `model-viewer` reads only a BELD-baked store. From `~/development/sandbox/model_viewer`, bake with
   `target/release/model-viewer-beld --source "$PWD/assets" --destination <store> --config <config.json> bake`, then
-  run `model-viewer --inspector.port=<port> --resources.path=<store>`.
+  run `model-viewer --unattended=60 --inspector.port=<port> --resources.path=<store>`.
 - GPU stage metrics need `--render.ghi.features.counters=true` in release; otherwise `/metrics` holds only CPU spans.
-- On a locked screen, frames render only on capture requests and temporal histories reset. Use the parallel
-  capture clients above.
+- Pass `--unattended=<hz>` to release runs as well. Without it, a locked screen renders frames only on capture
+  requests and temporal histories reset.
 - `target/` is managed by mbx, which deletes whole target directories when disk runs low. Copy each built binary out
   of `target/` right after building.
 - `TriggerAction` on the `Lookaround` action with a Vector3 direction snaps the view.

@@ -258,11 +258,12 @@ keep on.
   vsync-paced frames idle 25 to 40% per refresh, so a reduction of X ms shows as about 1.5X in paced milliseconds and
   never linearly. Use a stage nothing in the change touches as the regime key (a pure raster pass works) and compare
   only runs where it matches within 1%.
-- **A window behind another or a locked screen renders nothing** and reports meaningless times. Front the window,
-  force frames through a screenshot endpoint, and sample only presented ticks. Frames forced one at a time through a
-  hidden window are not a substitute for a presenting window: temporal passes see no valid history on them and skip
-  their work, so a cold run showed the SSGI trace at a third of its real cost. Treat a run with only as many
-  presented frames as you forced as invalid for anything temporal, and check the lock state before blaming the code.
+- **Run unattended.** Start the viewer with `--unattended=<hz>` (`scripts/measure.sh` does). Every tick then renders
+  at that rate in the background, without fronting the window, while the user works or the screen is locked, and the
+  clock steps by exactly one frame period, so runs repeat. An attended window behind another or behind a locked screen
+  renders nothing and reports meaningless times: frames forced one at a time through it give temporal passes no valid
+  history, so they skip their work, and a cold run showed the SSGI trace at a third of its real cost. If a run's
+  presented frames equal the captures you sent, it ran attended; start it again with `--unattended`.
 - **Prebuild the binaries of an A/B** and save them aside, so the runs can go back to back when the machine is
   available, without a build between them that lets the GPU state or the screen lock change.
 - **Walked cameras never repeat** when movement integrates velocity with frame time. Pin the look direction from a

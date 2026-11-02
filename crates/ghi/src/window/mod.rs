@@ -131,5 +131,10 @@ bitflags::bitflags! {
 	pub struct Features : u32 {
 		/// A title bar and border decorate the window.
 		const DECORATIONS = 0b0001;
+		/// The window serves runs no one watches, such as an agent debugging an application: it opens without being
+		/// shown and never takes focus from the desktop. Bind it with
+		/// [`crate::PresentationModes::Inmediate`], since an unseen window has no display refresh to wait for, and
+		/// pace frames on the CPU.
+		const BACKGROUND = 0b0010;
 	}
 }

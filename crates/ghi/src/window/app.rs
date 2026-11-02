@@ -20,7 +20,7 @@ impl App {
 		})
 	}
 
-	/// Creates and shows a window.
+	/// Creates a window and shows it, unless `features` contains [`Features::BACKGROUND`].
 	///
 	/// Next, pass [`Window::os_handles`] to [`crate::context::Context::bind_to_window`] and match
 	/// [`Window::id`] against the events from [`App::poll`].

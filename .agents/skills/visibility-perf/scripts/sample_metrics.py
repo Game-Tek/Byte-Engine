@@ -1,6 +1,7 @@
 # Samples the inspector's per-tick GPU metrics while forcing frames with screenshots, and prints every GPU metric
-# sorted by its median. A window that is hidden or behind another renders nothing on its own, and the inspector keeps
-# only 1024 ticks, so frames are forced in small batches and accumulated here.
+# sorted by its median. An unattended viewer (`--unattended=<hz>`, as measure.sh starts it) renders every tick on its
+# own, so the screenshots only pace the rounds; an attended one whose window is hidden or behind another renders
+# nothing except what they force. The inspector keeps only 1024 ticks, so samples are accumulated here.
 #
 # usage: sample_metrics.py [host:port] [rounds] [shots_per_round]
 import json

@@ -102,7 +102,10 @@ curl -s 'http://localhost:6680/metrics?presented=true' | jq '.metrics[] | select
 
 `presented=true` drops ticks in which no window could reach the screen, such as
 while the window is hidden behind another one. Those ticks render nothing and
-would skew the numbers. Pass `since=<tick>` to compare the ticks after a change
+would skew the numbers. To measure while you keep working, or with the screen
+locked, start the application with `--unattended=60`: its window renders every
+tick in the background without being shown, at that rate. See
+[Unattended runs](/docs/reference/time#unattended-runs). Pass `since=<tick>` to compare the ticks after a change
 with the ticks before it.
 
 Read the ticks themselves, one JSON object per line, to see where a spike landed:
@@ -119,7 +122,7 @@ To measure a run without polling, let the application close itself and write
 the metrics on the way out:
 
 ```bash
-cargo run -- --kill-after=600 --metrics-out=run.json
+cargo run -- --unattended=60 --kill-after=600 --metrics-out=run.json
 ```
 
 A path ending in `.ndjson` writes every retained tick instead of the summary.

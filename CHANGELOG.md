@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `--unattended=<frames per second>` runs an application for no one at the desktop, such as an agent driving it through the inspector. Windows open without showing or taking focus, every tick renders every window at that rate whether or not it can be seen, and each tick advances the clock by exactly one frame period, so a run repeats. The rate is required, and `max-frame-rate` and `render-on-demand` are ignored. Wayland windows still show. The `inspector` agent skill starts applications this way.
+  - `ghi::window::Features::BACKGROUND` opens a window without showing it or taking focus, and `Renderer::set_unattended` turns the mode on for a renderer.
+
 - BELD bakes one generated glTF or FBX material on its own: `beld bake 'sponza/Sponza.gltf#materials/material_3.variant'` bakes that material, its shaders, and the images it samples, without the mesh, so `--intercept '*.msl'` shows that one material's shader. The ID also takes `.material`. A `#materials/` ID that names no generated material fails with an error that says how materials are named, where it had been read as an image and failed with no cause. The assets reference lists every container fragment.
 
 - A project that leaves out debug views bakes the probe GI resolve again. Leaving out a feature drops the statements that read it, but a `let` that kept a debug view's slot in a local was dropped while the `if` that read the local stayed, so `probe-resolve.besl` failed to link with `probes_view` undeclared. A dropped `let` now takes the statements that read its local with it.

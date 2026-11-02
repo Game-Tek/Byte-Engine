@@ -1,6 +1,6 @@
 #!/bin/zsh
-# Launches the model viewer, brings its window to the front, pins the camera's look direction so every run renders
-# the same frame, samples the per-stage GPU metrics, captures the lit image and optionally one intermediate target,
+# Launches the model viewer unattended, so its window renders every tick in the background without being fronted and
+# without disturbing the desktop, pins the camera's look direction so every run renders the same frame, samples the per-stage GPU metrics, captures the lit image and optionally one intermediate target,
 # and stops the viewer.
 #
 # usage: measure.sh <name> [viewer parameters...]
@@ -10,7 +10,8 @@
 #   SANDBOX=<dir>     the sandbox workspace (default ~/development/sandbox)
 #   BINARY=<path>     a saved viewer binary to run instead of the sandbox's debug build, for A/B runs without rebuilding
 #   REBAKE=1          delete the viewer's baked resources first; required after any shader change
-#   ROUNDS=<n>        sampling rounds of twelve forced frames each (default 3); raise it when the window stays hidden
+#   RATE=<hz>         the unattended rendering rate (default 60); raise it above what the GPU reaches to render back to back
+#   ROUNDS=<n>        sampling rounds of twelve captures each (default 3)
 set -u
 name=$1; shift
 sandbox=${SANDBOX:-$HOME/development/sandbox}
@@ -24,12 +25,9 @@ pkill -x "$(basename "$binary")" 2>/dev/null; sleep 1
 if [[ ${REBAKE:-0} == 1 ]]; then rm -rf "$sandbox/model_viewer/resources"; fi
 # The viewer resolves assets relative to its crate directory.
 cd "$sandbox/model_viewer" || exit 1
-( "$binary" "$@" > "$out/$name.log" 2>&1 & )
-# The window opens behind the terminal and renders nothing until it is fronted; the first bake can take a while.
-for i in {1..10}; do
-	sleep 2
-	osascript -e "tell application \"System Events\" to set frontmost of (first process whose name is \"$(basename "$binary")\") to true" >/dev/null 2>&1
-done
+( "$binary" --unattended="${RATE:-60}" "$@" > "$out/$name.log" 2>&1 & )
+# The inspector answers once the viewer runs; the first bake can take a while after that.
+until curl -sf 'http://127.0.0.1:6680/configuration' > /dev/null; do sleep 1; done
 sleep 6
 # The look action's handle depends on what the viewer creates before it, so resolve it by name.
 look_target=$(curl -s 'http://127.0.0.1:6680/entities?name=Lookaround' | python3 -c 'import json, sys; print(json.load(sys.stdin)[0]["target"])')

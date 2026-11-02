@@ -1,6 +1,6 @@
 ---
 name: inspector
-description: "Drive and observe a running Byte Engine application through its HTTP inspector: find entities, post messages such as TriggerAction to play-test input, capture screenshots of the window or of any render target, show debug views, read CPU and GPU metrics, read debug data streams, and close the app. Use when the user wants to check what a Byte Engine app does at runtime, test gameplay or input without a human at the keyboard, see a frame or an intermediate render target, or measure frame time."
+description: "Drive and observe a running Byte Engine application through its HTTP inspector: find entities, post messages such as TriggerAction to play-test input, capture screenshots of the window or of any render target, show debug views, read CPU and GPU metrics, read debug data streams, and close the app. Start it with `--unattended=<frames per second>` so it renders on its own in the background without disturbing the desktop. Use when the user wants to check what a Byte Engine app does at runtime, test gameplay or input without a human at the keyboard, see a frame or an intermediate render target, or measure frame time."
 ---
 
 # Drive a running Byte Engine application
@@ -14,11 +14,18 @@ application does.
 1. Pick a port per instance and pass it on the command line. The default is 6680. If the default port is in use,
    the inspector quietly moves to a free port and logs `HTTP inspector port 6680 is in use, so the inspector
    serves on port N instead.` A port you set explicitly that is in use stops startup, which is easier to notice.
-2. Run the application in the background and send its log to a file, so you can read errors and the port later:
+2. Run the application in the background with `--unattended=<frames per second>`, and send its log to a file so
+   you can read errors and the port later:
 
    ```bash
-   cargo run -- --inspector.port=6699 > app.log 2>&1 &
+   cargo run -- --unattended=30 --inspector.port=6699 > app.log 2>&1 &
    ```
+
+   With `--unattended`, the window never shows or takes focus, so the user keeps working undisturbed. Every tick
+   still renders at the rate you give, even while the window can't be seen or the screen is locked, so you never
+   force frames or bring the window to the front. Each tick advances time by exactly one frame (1/30 s above), so
+   tick N shows the same simulated time in every run. The rate is required: 30 is enough to watch behavior, 60
+   matches what a player sees. Leave the flag out only when the user wants to watch or play the window themselves.
 
    Add `--metrics-out=metrics.json` (summary) or `--metrics-out=metrics.ndjson` (every retained tick) to keep
    metrics after the application closes, and `--debug.streams=streams.ndjson` to collect debug data streams.
@@ -117,8 +124,12 @@ release build only when `config.json` sets `render.debug-views.enabled` and the 
 
 ## Measure frame time
 
-- Always pass `presented=true` to `/metrics` and `/metrics/frames`. Ticks of a hidden or covered window present
-  nothing and skew the numbers.
+- Run with `--unattended=<rate>` so every tick renders, whether or not the window can be seen. Still pass
+  `presented=true` to `/metrics` and `/metrics/frames`: in an attended run, ticks of a hidden or covered window
+  present nothing and skew the numbers.
+- An unattended run sleeps to hold its rate, so wall-clock frame time is the period. Read the CPU spans and GPU
+  passes for cost, not `dt`. To measure the fastest a frame can go, pass a rate above what the machine reaches,
+  such as `--unattended=1000`.
 - GPU metrics are `frame`, `scene.<pipeline>`, `pass.<name>`, and `stage.<name>`, with `@<sink>` on sinks after
   the first. CPU metrics are named after `tracing` spans, such as `GraphicsApplication::tick`. Every time is in
   milliseconds.
@@ -142,8 +153,9 @@ jq -c 'select(.name == "Character") | .data' streams.ndjson | tail -20
 | Symptom | Likely cause |
 | --- | --- |
 | Nothing answers on the port | The application is still starting, it crashed (read its log), or the inspector moved to another port. |
-| `presented_ticks` is 0, or screenshots time out | The window is hidden, minimized, or covered, or the screen is locked. |
-| The first message of a run takes about a second | On macOS, a covered window can block the first frame it presents. Send a warm-up message and wait before a timed sequence. |
+| `presented_ticks` is 0, or screenshots time out | The run is attended and the window is hidden, minimized, or covered, or the screen is locked. Start it again with `--unattended=<rate>`. |
+| The first message of a run takes about a second | On macOS, a covered window in an attended run can block the first frame it presents. Start it with `--unattended=<rate>`, or send a warm-up message and wait before a timed sequence. |
+| Startup stops with "The `unattended` parameter has no valid rendering rate" | `--unattended` needs a positive rate, such as `--unattended=30`. |
 | A setting has no effect | `GET /configuration` lists it as pending or not set, with the reason. Some settings keep their startup value. |
 | An entity query returns `[]` | Names are exact and case-sensitive, and `type` needs the full Rust path, such as `byte_engine::rendering::window::Window`. |
 
@@ -153,6 +165,7 @@ Read these pages for the exact rules. Each is served as Markdown:
 
 - Inspector, metrics, messages, and screenshots: https://byte-engine.0x44491229.dev/docs/reference/inspector.md
 - Every startup parameter: https://byte-engine.0x44491229.dev/docs/reference/parameters.md
+- Unattended runs, pacing, and tick time: https://byte-engine.0x44491229.dev/docs/reference/time.md
 - Debug views: https://byte-engine.0x44491229.dev/docs/use/debug-views.md
 - Debug data streams: https://byte-engine.0x44491229.dev/docs/use/debug-data-streams.md and https://byte-engine.0x44491229.dev/docs/reference/debug-data-streams.md
 - Index of every page: https://byte-engine.0x44491229.dev/llms.txt

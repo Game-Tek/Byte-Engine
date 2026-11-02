@@ -20,12 +20,17 @@ use utils::Extent;
 use super::gpu_harness::{bake, create_baked_shader, gpu_context, upload};
 use crate::shader::generator::ShaderGenerationSettings;
 
-/// The push constant both stages read, as the visibility pipeline's task and mesh stages share theirs.
-const PUSH_CONSTANT: &str = r#"
+/// The push constant both stages read, as the visibility pipeline's task and mesh stages share theirs, and the set
+/// layout both declare whole, as the visibility stages declare theirs through layout layers. Metal numbers a set's
+/// arguments densely in slot order, so a stage that declared only the bindings it reads would read the wrong ones.
+const SHARED_DECLARATIONS: &str = r#"
 	push_constant: push_constant {
 		culled_workgroup: u32,
 		row_offset: u32,
 	}
+	keep: descriptor<{ type: u32[], binding: 0, access: read }>;
+	rows: descriptor<{ type: u32[], binding: 1, access: read }>;
+	kept: descriptor<{ type: u32[], binding: 2, access: write }>;
 "#;
 
 /// Keeps the items its lanes find marked in `keep`, compacts them into the payload through a workgroup counter, writes
@@ -33,8 +38,6 @@ const PUSH_CONSTANT: &str = r#"
 /// returns early after it sets an empty grid, as the meshlet task shader does for an instance no view sees, so its
 /// items never appear.
 const TASK: &str = r#"
-	keep: descriptor<{ type: u32[], binding: 0, access: read }>;
-	kept: descriptor<{ type: u32[], binding: 2, access: write }>;
 	visible_items: task_payload<u32, 32>;
 	visible_count: workgroup<atomicu32>;
 
@@ -69,7 +72,6 @@ const TASK: &str = r#"
 /// Draws a quad over the row `rows` assigns the item its payload entry names, moved down by the push constant's
 /// offset, with the item as a per-primitive output and a per-vertex value of one.
 const MESH: &str = r#"
-	rows: descriptor<{ type: u32[], binding: 1, access: read }>;
 	visible_items: task_payload<u32, 32>;
 	out_item: output<u32, 0, 2>;
 	out_shade: vertex_output<f32, 1, 4>;
@@ -140,7 +142,7 @@ fn expected_rows() -> Vec<u32> {
 
 /// Links a standalone BESL source, after the push constant every fixture stage declares.
 fn link(source: &str) -> besl::NodeReference {
-	besl::compile_to_besl(&format!("{PUSH_CONSTANT}{source}"), None).expect("Expected the mesh shading fixture to link")
+	besl::compile_to_besl(&format!("{SHARED_DECLARATIONS}{source}"), None).expect("Expected the mesh shading fixture to link")
 }
 
 /// Verifies baked task, mesh, and fragment shaders draw what BESL specifies: the task stage's payload and mesh grid,
@@ -186,7 +188,7 @@ fn draw_on_the_gpu(task: &[u8], mesh: &[u8], fragment: &[u8]) -> (Vec<u32>, Vec<
 		gpu_context(ghi::device::Features::new().validation(true), ghi::WorkloadTypes::RASTER);
 
 	use ghi::context::{Context as _, ContextCreate as _};
-	// The task stage reads `keep` and writes `kept`, and the mesh stage reads `rows`, so each declares only its own.
+	// The task stage reads `keep` and writes `kept`, and the mesh stage reads `rows`.
 	let storage = |slot: u32, access: ghi::AccessPolicies| {
 		ghi::ShaderResourceDescriptor::single(ghi::ResourceSlot::new(slot), ghi::ResourceKind::StorageBuffer, access)
 	};

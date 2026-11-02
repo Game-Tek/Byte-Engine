@@ -1,0 +1,63 @@
+---
+title: Film grain
+description: Learn how the film grain pass builds its grain in one tile pass, and what a change to it must keep true.
+icon: Film
+---
+
+Read this page before you change the `film-grain` pass, its shader, or the constants it computes on the CPU. What the
+pass renders is specified under [Film grain](/docs/reference/rendering#film-grain) in the rendering reference.
+
+## Where the model comes from
+
+The grain model is adapted from [cinegrain2](https://github.com/mr-berndt/cinegrain2) by mr-berndt, as published
+under the MIT license up to commit `fd9e8f3`. Its notice is in `THIRD_PARTY_NOTICES.md`. Later versions of cinegrain2
+use a copyleft license that the engine's MIT license can't take in, so don't read or port them; take new ideas from
+published papers, such as Newson et al.'s stochastic film grain model, instead.
+
+The model fits ten scanned film plates: white noise blurred by a narrow Gaussian, minus 0.95 of a Gaussian 8.4 times as
+wide, applied to the display-encoded picture as a change of density. Plain blurred noise keeps coarse structure that
+shows as blotches three to eight times stronger than on the scans, which the wide part removes.
+
+## How the pass is built
+
+The pass is one tile pass, `film-grain/apply.besl`, and the CPU work in `render_passes/film_grain.rs`.
+
+- **CPU constants.** `film_grain_shader_data` computes everything that's the same for every pixel: both blurs'
+  standard deviations and radii, the scale that brings the difference of blurs to unit variance, the amplitude with
+  its downscale retention, the zone weights divided by the weight at mid grey, and the frame's noise seed.
+- **One tile per workgroup.** Each 16 × 16 tile draws the noise its pixels reach into workgroup memory, with a ring of
+  the narrow radius, and the 6 × 6 cells its pixels filter between, with a ring of the wide radius. Each cell is the
+  mean of a 4 × 4 block of the same noise. The tile blurs both regions' rows, then the wide region's columns, then
+  each pixel blurs its own narrow column, filters the wide cells bilinearly, and applies the grain.
+- **No intermediate images.** No grain image reaches memory.
+
+The pass is one pass because any pass in front of it costs more than the grain. On an Apple M4 at 1024 × 1024, a
+version that built the wide part in separate passes, two compute dispatches or two quarter-resolution tile passes,
+added 0.5 to 0.6 ms to the frame. The single tile pass adds about 0.25 to 0.35 ms, and the grain math alone measured
+about 0.13 ms over a copy. The separate passes slowed the color-grading pass in front of them, which a pass's own timer
+doesn't show, so compare the sum of both passes' timers, or the frame time, when you measure a change.
+
+The wide region's cost grows with the grain size: about 3.5 noise draws per pixel for 35 mm grain at 1024 pixels
+tall, and about 25 for 16 mm grain at 4K. Each cell's 16 draws run on one lane, so most lanes wait while 36 lanes
+average the cells. Spreading those draws across lanes is the next place to save time.
+
+## Rules a change must keep
+
+- Keep the pass a single tile pass. Measure before you split it, as [How the pass is built](#how-the-pass-is-built)
+  explains.
+- Keep `MAX_NARROW_RADIUS` and `MAX_WIDE_RADIUS` in `film_grain.rs` in step with the workgroup arrays and strides in
+  `apply.besl`, and `GRAIN_NOISE_MARGIN` in `layouts/grain.besl` at least 4 × (1 + the largest wide radius), so noise
+  positions stay unsigned.
+- Keep `WIDE_SHARE` in `film_grain.rs` equal to `GRAIN_WIDE_SHARE` in the layout, and `unit_variance_scale` in step
+  with the shader's kernels. The grey-card test catches a mismatch.
+- Every lane in a tile reaches every barrier. A lane past the image's edge returns only after the last barrier.
+- Draw the narrow and wide parts from one noise field. The wide part removes the narrow part's coarse structure, which
+  only works when both blur the same noise.
+
+## Tests
+
+- `grey_card_grain_has_unit_variance_density` runs the shader in the BESL VM on a 96 × 96 grey card with 16 mm grain,
+  so both blurs span several tiles, and checks that the density change has mean 0 and standard deviation 1 in units of
+  the amplitude.
+- `default_zones_leave_white_clean` checks that white takes no grain with the default zones and mid grey does.
+- `shorter_pictures_show_less_fine_grain` checks that shorter sinks keep less fine grain than coarse grain.

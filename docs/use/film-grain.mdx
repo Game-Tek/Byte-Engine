@@ -1,0 +1,54 @@
+---
+title: Add film grain
+description: Give your application's picture the grain of scanned 35 mm, 16 mm, or 8 mm film.
+icon: Film
+---
+
+Add film grain when you want the picture to look shot on film. The grain changes every frame, and its strength
+follows the picture's brightness, so you can keep highlights clean while shadows show grain.
+
+## Install the pass
+
+Call `setup_film_grain_render_pass` before you create the first window. Install it after tone mapping or color
+grading and after antialiasing, so they don't smooth the grain away, and before the UI, so the UI stays clean:
+
+```rust
+setup_smaa_render_pass(&mut app);
+setup_aces_tonemap_render_pass(&mut app);
+setup_film_grain_render_pass(&mut app, FilmGrainPassSettings::default());
+setup_ui_render_pass(&mut app, &ui, None);
+```
+
+The default settings give the look of 35 mm stock.
+
+## Choose a look
+
+Set the fields of `FilmGrainPassSettings` to choose a different look:
+
+```rust
+let settings = FilmGrainPassSettings {
+	level: 0.6,
+	size: 1.2,
+	..Default::default()
+};
+setup_film_grain_render_pass(&mut app, settings);
+```
+
+- `level` sets the strength. At `1` the grain on mid grey is as strong as on scans of real film; `0` turns it off.
+- `size` sets how coarse the grain is. Use about `0.4` for 35 mm, `1.2` for 16 mm, and `2.7` for 8 mm. Coarse grain
+  costs more GPU time than fine grain.
+- `zone_gains` sets how strong the grain is in the Black, Shadow, Mid, High, and White zones of the picture's
+  brightness. `0` keeps a zone as strong as mid grey, `-1` removes its grain, and `3` makes it four times as strong.
+  The defaults strengthen the shadows and fade the grain out toward white.
+
+The exact grain model is in [Film grain](/docs/reference/rendering#film-grain) in the rendering reference.
+
+## Turn the grain on and off
+
+Set the `render.pass.film-grain` parameter to bypass the pass or turn it back on while the application runs, as
+with any other pass.
+
+## Rust API
+
+- [`setup_film_grain_render_pass`](/docs/api/latest/byte_engine/application/graphics#fn.setup_film_grain_render_pass)
+- [`FilmGrainPassSettings`](/docs/api/latest/byte_engine/rendering/render_passes/film_grain/FilmGrainPassSettings)

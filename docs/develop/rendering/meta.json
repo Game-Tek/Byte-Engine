@@ -6,6 +6,7 @@
 		"lighting",
 		"visibility",
 		"shown-transforms",
+		"film-grain",
 		"ray-tracing",
 		"shader-variants",
 		"debug-views"

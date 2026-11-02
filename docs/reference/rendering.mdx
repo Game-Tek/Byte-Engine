@@ -97,6 +97,7 @@ animation steps once per frame.
 | Antialiasing | `smaa` | `SMAA Output`, `SMAA Edges` | After the `main` to filter, before sharp overlays. |
 | AgX, ACES, Hable, and sRGB display | `agx`, `aces`, `hable`, `srgb-display` | Their named outputs | As the tone mapper, before creating a window. The sRGB display pass needs float input and suits SDR scenes without a tone mapper. |
 | Color grading | `lut`, `aces-color-grading`, `dwg-color-grading` | Their named outputs | After scene-linear effects, before tone mapping. |
+| Film grain | `film-grain` | `Film Grain` | After tone mapping or color grading and antialiasing, before the UI. |
 | UI | `ui` | `UI` | Before the renders every sink must see are published. |
 | Debug meshes | `debug-meshes` | `Debug Meshes` | After tone mapping and the overlays it should cover, before the first window. |
 
@@ -115,7 +116,30 @@ scene reaches the swapchain through the copy.
 | Height fog | A layer's height falloff 0.2 and base height 0; a fog's albedo white, maximum opacity 1, anisotropy 0.7 within 0 to 1, ambient illuminance 0 lux. |
 | Atmosphere sky | Earth's radii and scale heights, Mie anisotropy 0.76, ozone strength 1, ground albedo 0.3, the sun disk capped at 32,768 per channel; not settable through the setup function. |
 | Antialiasing | SMAA 1x Ultra: edge threshold 0.05 on perceptual luma √(L / (1 + L)), local contrast factor 2, 32 orthogonal and 16 diagonal search steps, corner rounding 0.25; not settable. |
+| Film grain | Level 1, size 0.37, zone gains 0, 0.65, 0, −0.65, and −2 for the Black, Shadow, Mid, High, and White zones. |
 | Tone mapping, UI, debug meshes | No settings. |
+
+### Film grain
+
+Film grain imitates the grain of scanned film stock on the display-encoded
+picture. Each frame draws new grain. Grain changes the picture's density, so
+every channel of a pixel scales by the same factor, and dark and bright areas
+take the same relative grain.
+
+| Term | Definition |
+| --- | --- |
+| Result | Each color channel times e<sup>a × z(L) × g</sup>, held to 0 and above. Alpha passes through. At a level of 0 or below, or while bypassed, the picture passes through unchanged. |
+| Luma `L` | 0.2126 R + 0.7152 G + 0.0722 B of the display-encoded color, held between 0 and 1. |
+| Noise | White noise per pixel and frame: the sum of four uniform draws minus 2, so mean 0 and variance 1/3. The noise continues past the image's edges, so edge pixels take grain like any other. |
+| Narrow blur `N` | The noise blurred by a Gaussian of standard deviation σ = max(size × H / 2160, 0.05) pixels, where H is the sink's height, cut off at a radius of min(⌈2.5 σ⌉, 8) pixels, with weights that sum to 1. |
+| Cells | The image divided into 4 × 4 pixel blocks from its top-left corner. A cell's value is the mean of its block's noise. |
+| Wide blur `W` | The cells blurred by a Gaussian of standard deviation √(max((8.4 σ)² − 3.92, 0)) / 4 cells, cut off at a radius of min(⌈2.5 × that⌉, 16) cells, then filtered bilinearly between cell centers at each pixel. Below 0.3 cells the blur is left out, and the cells are only filtered. |
+| Grain `g` | (N − 0.95 W) scaled to unit variance on a field of uniform color. |
+| Amplitude `a` | level × 0.08505 × r. The factor r is 1 for a sink 2,160 pixels tall or taller. For a shorter sink, it's the share of the grain's standard deviation that's left when a 2,160-pixel picture is downscaled to H pixels with a Hermite filter widened by 2,160 / H, a widening held to at most 11. Fine grain loses more than coarse grain. |
+| Zone weight `z` | Each zone's weight is max(0, 1 + gain), at luma 0 (Black), 0.13 (Shadow), 0.30 (Mid), 0.60 (High), and 1 (White). Between two zones the weight blends with a smooth step, 3t² − 2t³. Every weight is divided by the weight at luma 0.5, at least 0.05, so z is 1 at mid grey whatever the gains. |
+| Level | 1 makes grain on a 50 % grey card as strong as on scans of real 35 mm, 16 mm, and 8 mm stock. |
+| Size | The narrow blur's standard deviation in pixels of a 2,160-pixel-tall picture. About 0.4 matches 35 mm, 1.2 matches 16 mm, and 2.7 matches 8 mm. |
+| Gain | Any value. −1 or below removes the zone's grain, 0 keeps it as strong as at mid grey, and 3 makes it four times as strong. |
 
 ### Bloom
 

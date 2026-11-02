@@ -1,0 +1,59 @@
+// The film grain passes share this layer: the parameter type, the white noise every pass draws from, and the Gaussian
+// weight. The grain model follows cinegrain2 by mr-berndt (https://github.com/mr-berndt/cinegrain2), as published under
+// the MIT license up to commit fd9e8f3; see THIRD_PARTY_NOTICES.md.
+//
+// Grain is white noise shaped like a film scan's: a narrow Gaussian blur at the grain size, minus 0.95 of a wide blur
+// 8.4 times as wide that removes the coarse blotches plain blurred noise shows. Both parts draw the same noise for the
+// same pixel and frame, so they are two blurs of one field.
+
+FilmGrainParameters: struct {
+	// The grain weights of the Black, Shadow, Mid, and High luma zones, already divided by the weight at mid grey.
+	zone_weights: vec4f,
+	// The grain weight of the White zone, divided like the others.
+	white_weight: f32,
+	// The narrow blur's standard deviation and radius, in pixels. The radius is at most 8.
+	narrow_sigma: f32,
+	narrow_radius: u32,
+	// The wide blur's standard deviation and radius, in quarter-resolution cells, at most 16. A radius of 0 skips the
+	// blur.
+	wide_sigma: f32,
+	wide_radius: u32,
+	// Scales the difference of the two blurs to unit variance.
+	normalization: f32,
+	// The exponent scale that turns unit-variance grain into a change of density.
+	amplitude: f32,
+	// Picks this frame's noise.
+	seed: u32,
+}
+
+// The wide part's share of the difference of blurs, fitted to the scans.
+GRAIN_WIDE_SHARE: const f32 = 0.95;
+
+// Returns a well-mixed 32-bit hash of `value` (the PCG output permutation, from "Hash Functions for GPU Rendering",
+// Jarzynski and Olano, 2020).
+grain_hash: fn (value: u32) -> u32 {
+	let state: u32 = value * 747796405 + 2891336453;
+	let word: u32 = ((state >> ((state >> 28) + 4)) ^ state) * 277803737;
+	return (word >> 22) ^ word;
+}
+
+// Pixels the noise reaches before the image's first row and column. Callers pass a pixel plus this margin, so a blur
+// that reads up to this many pixels before the image keeps unsigned coordinates. The wide region reaches furthest:
+// one cell for the bilinear filter plus a ring of 16 cells, 4 pixels each.
+GRAIN_NOISE_MARGIN: const u32 = 68;
+
+// Returns the white noise at `position`, a pixel plus GRAIN_NOISE_MARGIN, for the frame `seed` picks: the sum of four
+// uniform draws minus 2, so mean 0 and variance 1/3, close to Gaussian. Pixels outside the image have noise too, so a
+// blur needs no edge handling.
+grain_noise: fn (position: vec2u, seed: u32) -> f32 {
+	let first: u32 = grain_hash(position.x ^ grain_hash(position.y ^ seed));
+	let second: u32 = grain_hash(first);
+	// Four 16-bit draws, each centered in its interval so their mean is exactly 1/2.
+	let sum: f32 = f32(first & 65535) + f32(first >> 16) + f32(second & 65535) + f32(second >> 16);
+	return (sum + 2.0) / 65536.0 - 2.0;
+}
+
+// Returns the unnormalized Gaussian weight `distance` away from the center, for standard deviation `sigma`.
+grain_gaussian: fn (distance: f32, sigma: f32) -> f32 {
+	return exp(-0.5 * distance * distance / (sigma * sigma));
+}

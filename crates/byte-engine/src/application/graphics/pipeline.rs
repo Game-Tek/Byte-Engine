@@ -493,6 +493,26 @@ pub fn setup_lens_flare_render_pass(
 		});
 }
 
+/// Installs a film grain pass for every current and future render sink.
+///
+/// The pass gives the display-encoded picture the grain of scanned film stock, with `settings` choosing its strength,
+/// size, and how it follows brightness. Call it after tone mapping, color grading, and [`setup_smaa_render_pass`], so
+/// none of them smooths the grain away, and before [`setup_ui_render_pass`], so the UI stays clean. Use
+/// `render.pass.film-grain` to enable or bypass it at runtime.
+pub fn setup_film_grain_render_pass(
+	application: &mut GraphicsApplication,
+	settings: rendering::render_passes::film_grain::FilmGrainPassSettings,
+) {
+	application
+		.renderer
+		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+			Box::new(rendering::render_passes::film_grain::FilmGrainPass::new(
+				render_pass_builder,
+				settings,
+			))
+		});
+}
+
 /// Installs a fused ACEScg/ACEScct grading and SDR output pass from a prepared LUT.
 ///
 /// The LUT must accept and return ACEScct values. The pass uses an AP1-aware

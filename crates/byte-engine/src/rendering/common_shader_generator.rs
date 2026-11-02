@@ -608,6 +608,55 @@ mod tests {
 
 	const SAMPLE_DEPTH_SLOT: ResourceSlot = ResourceSlot::new(3);
 
+	/// Every standalone visibility shader still links when any one feature is left out, so taking out a feature's
+	/// statements never leaves a statement reading something they declared.
+	#[test]
+	fn every_visibility_shader_links_with_each_feature_left_out() {
+		use resource_management::asset::handler::implementations::besl::ProgramTransform;
+
+		use crate::rendering::pipelines::visibility::{MaterialEvaluationMode, VisibilityFeatures};
+
+		let all = VisibilityFeatures {
+			gtao: true,
+			ssgi: true,
+			surfel_gi: true,
+			probe_gi: true,
+			contact_shadows: true,
+			debug_views: true,
+			material_evaluation: MaterialEvaluationMode::Pipelines,
+		};
+		let left_out: [fn(&mut VisibilityFeatures); 6] = [
+			|features| features.gtao = false,
+			|features| features.ssgi = false,
+			|features| features.surfel_gi = false,
+			|features| features.probe_gi = false,
+			|features| features.contact_shadows = false,
+			|features| features.debug_views = false,
+		];
+
+		let directory = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/visibility");
+		let mut shaders = std::fs::read_dir(directory)
+			.expect("the visibility assets should be readable")
+			.map(|entry| entry.expect("a visibility asset entry should be readable").file_name())
+			.filter_map(|name| name.to_str().filter(|name| name.ends_with(".besl")).map(str::to_string))
+			.collect::<Vec<_>>();
+		shaders.sort();
+
+		for leave_out in left_out {
+			let mut features = all;
+			leave_out(&mut features);
+			let generator = super::CommonShaderGenerator::with_features(features);
+
+			for shader in &shaders {
+				let source = crate::rendering::shader_vm_test::asset_source(&format!("visibility/{shader}"));
+				let root = besl::parse(source).expect("a visibility shader asset should parse");
+				if let Err(error) = besl::lex(generator.transform(root)) {
+					panic!("'{shader}' doesn't link with {features:?}: {error:?}");
+				}
+			}
+		}
+	}
+
 	/// Compiles a synthetic main that exposes common-function values through one result buffer.
 	fn compile_common_main(
 		source: &'static str,

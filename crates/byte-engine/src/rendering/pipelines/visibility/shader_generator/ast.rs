@@ -1,5 +1,7 @@
 //! The statements wrapped around a material body, and the parser-tree transforms applied to them.
 
+use std::borrow::Cow;
+
 use besl::parser::{ElseBranch, Expressions, Node, Nodes};
 
 use super::sources::*;
@@ -281,53 +283,78 @@ fn material_debug_view_source() -> &'static str {
 /// Removes every statement, at any depth, that reads the member `name`: a conditional whose condition reads it, with
 /// its whole block, and any other statement that reads it, such as a `let` or a `write`.
 ///
+/// A removed `let` takes the statements after it that read its local with it, so a feature's code may keep a value
+/// in a local, as in `let slot: u32 = debug_view_slot(parameters.debug_views, 0u); if (slot != 0) { ... }`.
+///
 /// A conditional or loop that does not read it keeps its block, minus the statements inside that do. Backends emit
 /// only what `main` reaches, so this also drops the bindings and helpers only the removed statements used.
-pub(crate) fn remove_statements_reading(statements: &mut Vec<Node<'_>>, name: &str) {
-	statements.retain_mut(|statement| {
-		let reads_name = |node: &mut Node<'_>| {
-			let mut reads_name = false;
-			walk_expressions(node, &mut |expression| {
-				reads_name |= matches!(expression, Expressions::Member { name: member } if member.as_ref() == name);
+pub(crate) fn remove_statements_reading<'a>(statements: &mut Vec<Node<'a>>, name: &'a str) {
+	remove_statements_reading_any(statements, &mut vec![Cow::Borrowed(name)]);
+}
+
+/// Removes the statements that read any of `names`, adding the local of each removed `let` to `names` for the
+/// statements after it. A nested block's removed locals go out of scope when the block ends.
+fn remove_statements_reading_any<'a>(statements: &mut Vec<Node<'a>>, names: &mut Vec<Cow<'a, str>>) {
+	let reads_any = |node: &mut Node<'a>, names: &[Cow<'a, str>]| {
+		let mut reads = false;
+		walk_expressions(node, &mut |expression| {
+			reads |= matches!(expression, Expressions::Member { name } if names.contains(name));
+		});
+		reads
+	};
+	// Runs `remove` on a nested block, then forgets the locals the block declared.
+	let in_scope = |names: &mut Vec<Cow<'a, str>>, statements: &mut Vec<Node<'a>>| {
+		let outer = names.len();
+		remove_statements_reading_any(statements, names);
+		names.truncate(outer);
+	};
+
+	statements.retain_mut(|statement| match statement.node_mut() {
+		Nodes::Conditional {
+			condition,
+			statements,
+			else_branch,
+		} => {
+			if reads_any(condition, names) {
+				return false;
+			}
+			in_scope(names, statements);
+			*else_branch = match else_branch.take() {
+				Some(ElseBranch::Block(mut statements)) => {
+					in_scope(names, &mut statements);
+					Some(ElseBranch::Block(statements))
+				}
+				Some(ElseBranch::If(conditional)) => {
+					// An `else if` is one conditional: dropping it drops the whole link, as a block would be.
+					let mut link = vec![*conditional];
+					in_scope(names, &mut link);
+					link.pop().map(|conditional| ElseBranch::If(Box::new(conditional)))
+				}
+				None => None,
+			};
+			true
+		}
+		Nodes::ForLoop { statements, .. } => {
+			in_scope(names, statements);
+			true
+		}
+		Nodes::Match { arms, .. } => {
+			for arm in arms {
+				in_scope(names, &mut arm.statements);
+			}
+			true
+		}
+		_ => {
+			if !reads_any(statement, names) {
+				return true;
+			}
+			// The statements after this one can't read a local it declared.
+			walk_expressions(statement, &mut |expression| {
+				if let Expressions::VariableDeclaration { name, .. } = expression {
+					names.push(name.clone());
+				}
 			});
-			reads_name
-		};
-		match statement.node_mut() {
-			Nodes::Conditional {
-				condition,
-				statements,
-				else_branch,
-			} => {
-				if reads_name(condition) {
-					return false;
-				}
-				remove_statements_reading(statements, name);
-				*else_branch = match else_branch.take() {
-					Some(ElseBranch::Block(mut statements)) => {
-						remove_statements_reading(&mut statements, name);
-						Some(ElseBranch::Block(statements))
-					}
-					Some(ElseBranch::If(conditional)) => {
-						// An `else if` is one conditional: dropping it drops the whole link, as a block would be.
-						let mut link = vec![*conditional];
-						remove_statements_reading(&mut link, name);
-						link.pop().map(|conditional| ElseBranch::If(Box::new(conditional)))
-					}
-					None => None,
-				};
-				true
-			}
-			Nodes::ForLoop { statements, .. } => {
-				remove_statements_reading(statements, name);
-				true
-			}
-			Nodes::Match { arms, .. } => {
-				for arm in arms {
-					remove_statements_reading(&mut arm.statements, name);
-				}
-				true
-			}
-			_ => !reads_name(statement),
+			false
 		}
 	});
 }

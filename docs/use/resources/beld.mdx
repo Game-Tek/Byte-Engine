@@ -106,6 +106,38 @@ don't need `--payload` to read them. Name the clip's ID to bake it:
 beld --source assets bake --dry-run --format json 'character.fbx#animations/Walk'
 ```
 
+## See the shader program a material compiles
+
+Add `--intercept '*.besl'` to a dry run to print the BESL program each shader
+compiles from, as your application's renderer generated it. Use it to check
+what a material's graph turned into, or to read the program behind a shader
+compile error:
+
+```bash
+beld --source assets bake --dry-run --intercept '*.besl' materials/wood.bema
+```
+
+Each program prints under a `// <shader ID>.besl` line, such as
+`// materials/wood.bema#shader.besl`. A glTF or FBX file's generated materials
+compile to shared shaders named `character.glb#shaders/<key>`. To print only
+one file's programs, match its ID, such as `--intercept 'character.glb#*'`.
+Add `--format json` to read them with another tool.
+
+To see the platform shader each program lowered to, intercept `*.msl` on
+macOS, `*.hlsl` on Windows, or `*.glsl` on Linux. Use it to check what the
+platform compiler receives, such as when a shader compiles but runs slower or
+renders differently than its BESL suggests:
+
+```bash
+beld --source assets bake --dry-run --intercept '*.msl' materials/wood.bema
+```
+
+Pass both patterns, `--intercept '*.besl' --intercept '*.msl'`, to read each
+program beside the shader it became.
+
+BELD bakes with your project's `config.json`, so the programs match the
+renderer features your application uses.
+
 To read the data of a resource you already baked, add the same `--payload`
 option to `beld inspect`. Logs go to standard error, so you can redirect the
 output to a file or pipe it to another tool. The

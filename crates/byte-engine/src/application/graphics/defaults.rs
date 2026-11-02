@@ -12,7 +12,7 @@
 /// [`GraphicsApplication::world`], then run the application with
 /// [`GraphicsApplication::do_loop`].
 pub fn default_setup(application: &mut GraphicsApplication) {
-	setup_default_resource_and_asset_management(application, register_default_asset_handlers);
+	setup_default_resource_and_asset_management(application, configure_default_baking);
 
 	setup_default_input(application);
 
@@ -87,16 +87,16 @@ pub fn setup_default_window(application: &mut GraphicsApplication) {
 		.create(Window::new(application.get_name(), Extent::rectangle(1920, 1080)));
 }
 
-/// In debug builds, connects the asset directory to the resource manager, with the asset handlers `register` installs
-/// for the application's parameters.
+/// In debug builds, connects the asset directory to the resource manager, with the bake services and asset handlers
+/// `configure` installs for the application's parameters.
 ///
-/// Pass the function the application's own BELD passes to `beld::run`, such as [`register_default_asset_handlers`], so
-/// a debug run and a release bake produce the same resources. Release builds intentionally leave the manager without
-/// asset processors and must receive their complete resource store from BELD.
+/// Pass the function the application's own BELD passes to `beld::run`, such as [`configure_default_baking`], so a debug
+/// run and a release bake produce the same resources. Release builds intentionally leave the manager without asset
+/// processors and must receive their complete resource store from BELD.
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub fn setup_default_resource_and_asset_management(
 	application: &mut GraphicsApplication,
-	register: impl FnOnce(&mut AssetManager, &[Parameter]),
+	configure: impl FnOnce(&mut AssetManager, &[Parameter]),
 ) {
 	#[cfg(debug_assertions)]
 	{
@@ -107,8 +107,6 @@ pub fn setup_default_resource_and_asset_management(
 		let storage_backend = FileStorageBackend::new(assets_path);
 
 		let mut asset_manager = AssetManager::new_shared(storage_backend, application.resource_manager.storage_backend());
-
-		asset_manager.set_image_processor(default_image_processor());
 
 		use crate::application::parameters::Parameters as _;
 
@@ -121,37 +119,33 @@ pub fn setup_default_resource_and_asset_management(
 				.collect(),
 		);
 
-		register(&mut asset_manager, application.parameters());
+		configure(&mut asset_manager, application.parameters());
 
 		application.resource_manager.set_asset_manager(asset_manager);
 	}
 }
 
-/// Registers the standard material, model, image, audio, and standalone-shader handlers on `asset_manager`, for the
-/// visibility renderer configured by the `render` scope of `parameters`.
+/// Configures `asset_manager` to bake the way the standard engine does: installs the bake services every handler
+/// shares, then the material, model, image, audio, and standalone-shader handlers, for the visibility renderer
+/// configured by the `render` scope of `parameters`.
 ///
 /// Pass it to [`setup_default_resource_and_asset_management`] and to `beld::run`, so a debug run and a baked store
-/// produce the same resources from the same assets. An application with its own formats registers these, then adds
-/// its handlers with [`AssetManager::add_asset_handler`], in one function it passes to both. Generated material
-/// shaders target the visibility renderer, and standalone shaders leave out the features the parameters leave out.
-/// Every handler that produces images bakes them through the manager's image processor; install
-/// [`default_image_processor`] with [`AssetManager::set_image_processor`] to use the GPU backends.
-pub fn register_default_asset_handlers(asset_manager: &mut AssetManager, parameters: &[Parameter]) {
+/// produce the same resources from the same assets with the same services. An application with its own formats calls
+/// it, then adds its handlers with [`AssetManager::add_asset_handler`], in one function it passes to both.
+///
+/// The services are [`default_image_processor`], one [`VisibilityShaderGenerator`] that `.bema`, glTF, and FBX
+/// materials all target, and the [`CommonShaderGenerator`] transform, which leaves out of standalone shaders the
+/// features the parameters leave out.
+pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[Parameter]) {
 	let features = VisibilityFeatures::from_parameters(parameters.scope(RENDER_PARAMETERS));
-	let generator = VisibilityShaderGenerator::with_features(features);
 
-	let mut material_asset_handler = BEMAAssetHandler::new();
-	material_asset_handler.set_shader_generator(generator.clone());
-	asset_manager.add_asset_handler(material_asset_handler);
+	asset_manager.set_image_processor(default_image_processor());
+	asset_manager.set_program_generator(VisibilityShaderGenerator::with_features(features));
+	asset_manager.set_program_transform(CommonShaderGenerator::with_features(features));
 
-	let mut fbx_asset_handler = FBXAssetHandler::new();
-	fbx_asset_handler.set_shader_generator(generator.clone());
-	asset_manager.add_asset_handler(fbx_asset_handler);
-
-	let mut gltf_asset_handler = GLTFAssetHandler::new();
-	gltf_asset_handler.set_shader_generator(generator);
-	asset_manager.add_asset_handler(gltf_asset_handler);
-
+	asset_manager.add_asset_handler(BEMAAssetHandler);
+	asset_manager.add_asset_handler(FBXAssetHandler);
+	asset_manager.add_asset_handler(GLTFAssetHandler);
 	// PNG and EXR both handle `Image` sources and the asset manager picks the first match, so PNG must come first.
 	asset_manager.add_asset_handler(PNGAssetHandler::new());
 	asset_manager.add_asset_handler(IESAssetHandler::new());
@@ -159,22 +153,19 @@ pub fn register_default_asset_handlers(asset_manager: &mut AssetManager, paramet
 	asset_manager.add_asset_handler(FlipbookAssetHandler);
 	asset_manager.add_asset_handler(LevelAssetHandler);
 	asset_manager.add_asset_handler(AudioGraphAssetHandler);
-	asset_manager.add_asset_handler(ParticleSystemAssetHandler::new());
+	asset_manager.add_asset_handler(ParticleSystemAssetHandler);
 	asset_manager.add_asset_handler(EXRAssetHandler::new());
 	asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
 	asset_manager.add_asset_handler(LUTAssetHandler::new());
 	asset_manager.add_asset_handler(WAVAssetHandler::new());
 	asset_manager.add_asset_handler(OGGAssetHandler::new());
-
-	let mut besl_shader_asset_handler = BESLShaderAssetHandler::new();
-	besl_shader_asset_handler.set_program_transform(CommonShaderGenerator::with_features(features));
-	asset_manager.add_asset_handler(besl_shader_asset_handler);
+	asset_manager.add_asset_handler(BESLShaderAssetHandler);
 }
 
 /// Returns an image processor with GPU mip and environment-map generators, falling back to CPU generation for each one
 /// whose GPU setup fails.
 ///
-/// Install it with [`AssetManager::set_image_processor`].
+/// [`configure_default_baking`] installs it with [`AssetManager::set_image_processor`].
 pub fn default_image_processor() -> ImageProcessor {
 	let mips = MaterialMipGenerator::try_with_default_gpu()
 		.map(MipGenerator::Gpu)

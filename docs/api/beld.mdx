@@ -6,9 +6,10 @@ icon: TerminalSquare
 
 BELD bakes source assets into a resource store and inspects the result. This
 page specifies its command line. Every application's BELD binary has this
-command line; each starts from its application's own parameters and registers
-its application's asset handlers. The standalone `beld` binary starts from no
-parameters and registers the [default handlers](#handlers). To add one, follow
+command line; each starts from its application's own parameters and configures
+baking as its application does: the same bake services and asset handlers. The
+standalone `beld` binary starts from no parameters and uses the default
+services and [handlers](#handlers). To add one, follow
 [Add BELD to your application](/docs/use/resources/add-beld), and to use it,
 [Use BELD](/docs/use/resources/beld); the store it writes is specified in the
 [resource store](/docs/reference/resource-store) reference.
@@ -30,7 +31,7 @@ BELD reads the `RUST_LOG` environment variable for its log filter.
 
 | Command | Arguments and flags | Effect |
 | --- | --- | --- |
-| `bake [ids...]` | `--force`; `--prune`; `--memory-budget-mib <n>`, default half the available memory and never below a quarter of the installed memory; `--texture-compression none` or `metal-io-lz4`; `--dry-run`; `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Bakes the given IDs, or every discovered asset. `--force` rebakes the selection and its dependencies. `--prune` then deletes what no root reaches; see [Pruning](#pruning). Of the parameters, the asset handlers read what they need, and the bake reads the render feature flags and the excluded assets. `--dry-run` bakes into memory and prints the result instead; see [Dry runs](#dry-runs). |
+| `bake [ids...]` | `--force`; `--prune`; `--memory-budget-mib <n>`, default half the available memory and never below a quarter of the installed memory; `--texture-compression none` or `metal-io-lz4`; `--dry-run`; `--intercept <pattern>`, repeatable; `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Bakes the given IDs, or every discovered asset. `--force` rebakes the selection and its dependencies. `--prune` then deletes what no root reaches; see [Pruning](#pruning). Of the parameters, the asset handlers read what they need, and the bake reads the render feature flags and the excluded assets. `--dry-run` bakes into memory and prints the result instead; see [Dry runs](#dry-runs). `--intercept` prints the dry run's intermediate products instead of its resources; see [Intercepts](#intercepts). |
 | `list` | | Prints one resource ID per line, read-only. |
 | `inspect <id or uid>` | `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Prints one resource's metadata and model, read-only. A 32-character hexadecimal argument is tried as a UID first. |
 | `query [terms...]` | `--group <field>`, `--sort <field>`, `--reverse`, `--limit <n>`, `--format human` or `json` | Prints the resources that match a filter, grouped and sorted, read-only; see [Query](#query). |
@@ -83,9 +84,41 @@ anything under the destination directory.
 | `--force`, `--texture-compression` | Rejected with exit code 2. Every dry run bakes from scratch, and payloads stay uncompressed. |
 | `--destination`, `--storage-mode` | No effect. |
 | `--memory-budget-mib`, `--config` | Apply as in a normal bake. The roots don't apply, because a dry run bakes only its IDs. |
-| `--format`, `--payload` | Accepted on `bake` only with `--dry-run`. |
+| `--format`, `--payload`, `--intercept` | Accepted on `bake` only with `--dry-run`. |
 | `--prune` | Rejected with exit code 2. |
 | Exit code | The same as a normal bake of the same IDs. |
+
+## Intercepts
+
+`bake --dry-run --intercept <pattern>` prints the intermediate products the
+dry run builds on its way to its resources. A
+product is what a bake builds and then turns into something else, such as the
+BESL program it compiles into a shader.
+
+| Rule | Effect |
+| --- | --- |
+| Product name | The ID of the resource the product belongs to, a `.`, and the usual file extension of the product's format. |
+| Pattern | Matches a whole product name, ignoring ASCII case. `*` matches any run of characters, including `/` and `#`, and `?` matches one character. A product prints when any pattern matches it. |
+| Order | Products print sorted by name. |
+| No match | A warning on standard error. The exit code doesn't change. |
+| Exit code | The same as the dry run without `--intercept`. |
+
+| Product | Name | Content |
+| --- | --- | --- |
+| BESL source | `<shader ID>.besl`, such as `wood.bema#shader.besl`, `wood.bema#hit-shader.besl`, or `mesh.gltf#shaders/<key>.besl` | The program the shader compiles from, after the renderer's program generator or transform, as BESL source. |
+| Platform source | `<shader ID>.msl` on Apple platforms, `<shader ID>.hlsl` on Windows, and `<shader ID>.glsl` on Linux | The source BESL lowered to, which the platform compiler compiles into the shader's payload. It leaves out the precompiled MSL prelude that the compiler includes. |
+
+The BESL source follows the [BESL language](/docs/reference/besl/language),
+with these additions for declarations the engine builds that have no source
+form:
+
+| Declaration | Written as |
+| --- | --- |
+| Resource of a [layout layer](/docs/reference/besl/interface#layout-layers) | A `// layer: <name>` comment before the first resource of each run of resources from one layer. |
+| Binding built by the engine | A `descriptor`. A buffer binding lists its members inline, as `type: { name: Type }`, which source can't declare. |
+| Specialization constant | A `// specialization <id>: <name>: <type>` comment. |
+| Intrinsic | A `// intrinsic <name> -> <type>` comment. |
+| Nested scope | A `// scope: <name>` comment, then its declarations. |
 
 ## Query
 
@@ -283,6 +316,8 @@ A failed bake has only `id`, `source`, and `status`.
 | `inspect`, human | `key: value` lines, nested objects indented by two spaces, arrays as dashed items. |
 | `bake --dry-run`, JSON | An object with `resources`, every stored resource in the `inspect` JSON shape ordered by ID, and `failed`, one object per requested ID that failed, with `id` and `error`. Debug builds add `trace` to both. |
 | `bake --dry-run`, human | The same object in the `inspect` human layout. |
+| `bake --dry-run --intercept`, JSON | The `bake --dry-run` object, with `intercepted` added: one object per product ordered by name, with `name`, `encoding`, and `content`. `encoding` is `utf-8` when the content is text, which `content` holds as a string, and `base64` otherwise. `--payload` applies to `resources` as without `--intercept`. |
+| `bake --dry-run --intercept`, human | Each product as a `// <name>` line followed by its text, or by its size when it isn't text, and a blank line. Failed IDs follow in the `inspect` human layout. |
 | `query`, JSON | An object with `count`, the number of matching resources and failed bakes; `size` and `stored`, their summed decoded and stored sizes; and `share`, `stored` divided by the summed stored size of every resource in the store, or 0 for an empty store. Without `--group`, it adds `resources`, the listed resources in order. With `--group`, it adds `groups` in order, each with `name`, the group's value as text, and the group's own `count`, `size`, `stored`, `share`, and `resources`. |
 | `query`, JSON resource | An object with `uid`, `properties`, and every [field](#fields) with a fixed name that the resource has, under that name. Sizes are in bytes, and `baked` is in seconds. It adds each `model.<path>` field that the filter, `--group`, or `--sort` names, when the resource has it. Debug builds add `trace`, the bake messages. A failed bake has `id`, `source`, `status`, and `trace`. |
 | `query`, human | A line of field names, then one line per resource with its `id`, `class`, `stored`, `encoding`, and `ratio`, followed by every other field that the filter, `--group`, or `--sort` names. A failed bake shows `failed` as its class. With `--group`, each group starts with a line of its name and totals, and its resources follow, indented. A line says how many resources `--limit` left out of a group. The last line gives the totals of every matching resource. |

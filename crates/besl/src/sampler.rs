@@ -47,6 +47,16 @@ pub enum Filter {
 	Linear,
 }
 
+impl Filter {
+	/// Returns the value's source spelling, as the `filter` and `mip_filter` sampler properties write it.
+	pub fn token(self) -> &'static str {
+		match self {
+			Self::Nearest => "nearest",
+			Self::Linear => "linear",
+		}
+	}
+}
+
 /// The `Reduction` enum selects how a read combines the texels of its footprint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(
@@ -63,6 +73,17 @@ pub enum Reduction {
 	Max,
 }
 
+impl Reduction {
+	/// Returns the value's source spelling, as the `reduction` sampler property writes it.
+	pub fn token(self) -> &'static str {
+		match self {
+			Self::Average => "average",
+			Self::Min => "min",
+			Self::Max => "max",
+		}
+	}
+}
+
 /// The `Address` enum selects what a coordinate outside `[0, 1]` reads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(
@@ -77,4 +98,15 @@ pub enum Address {
 	Repeat,
 	/// Wraps around with every other repetition reversed.
 	Mirror,
+}
+
+impl Address {
+	/// Returns the value's source spelling, as the `address` sampler property writes it.
+	pub fn token(self) -> &'static str {
+		match self {
+			Self::Clamp => "clamp",
+			Self::Repeat => "repeat",
+			Self::Mirror => "mirror",
+		}
+	}
 }

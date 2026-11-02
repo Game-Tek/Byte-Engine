@@ -179,29 +179,13 @@ impl MaterialProgram {
 	}
 }
 
-pub struct BEMAAssetHandler {
-	generator: Option<Box<dyn ProgramGenerator>>,
-	compiler: Box<dyn ShaderCompiler>,
-}
-
-impl Default for BEMAAssetHandler {
-	fn default() -> Self {
-		Self::new()
-	}
-}
+/// The `BEMAAssetHandler` struct bakes `.bema` materials, their variants, and the assembled evaluation shaders a
+/// renderer names.
+///
+/// Materials target the asset manager's [`ProgramGenerator`].
+pub struct BEMAAssetHandler;
 
 impl BEMAAssetHandler {
-	pub fn new() -> BEMAAssetHandler {
-		BEMAAssetHandler {
-			generator: None,
-			compiler: Box::new(PlatformShaderCompilerAdapter),
-		}
-	}
-
-	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
-		self.generator = Some(Box::new(generator));
-	}
-
 	/// Bakes a material definition and the shader its graph generates.
 	async fn bake_material<'a>(&self, context: BakeContext<'a>, url: ResourceId<'a>, asset: &Value) -> Result<(), LoadErrors> {
 		let invalid = |problem: &str| report_invalid(context, "material", url, problem);
@@ -210,7 +194,7 @@ impl BEMAAssetHandler {
 		asset["domain"]
 			.as_str()
 			.ok_or_else(|| invalid("it has no `domain`. The most likely cause is a material written without one."))?;
-		let generator = self.generator.as_deref().ok_or(LoadErrors::FailedToProcess)?;
+		let generator = context.program_generator()?;
 		let graph = asset["graph"].as_str().ok_or_else(|| {
 			invalid("it names no `graph`. The most likely cause is a material written for the removed `shaders` field; point `graph` at a `.bemx` file instead.")
 		})?;
@@ -331,9 +315,7 @@ impl BEMAAssetHandler {
 			context.error(shader_compilation_error_message(url.as_ref(), &error));
 			LoadErrors::FailedToProcess
 		};
-		let generator = self.generator.as_deref().ok_or_else(|| {
-			fail("No shader generator is installed. The most likely cause is an asset manager built without the renderer's asset handlers.".to_string())
-		})?;
+		let generator = context.program_generator()?;
 		let mut ids = context
 			.query_resources(crate::resource::storage_backend::Query::new("Variant"))
 			.await?;
@@ -404,7 +386,7 @@ impl BEMAAssetHandler {
 			.collect::<Vec<_>>();
 
 		let (program, settings) = generator.generate_assembled(url.as_ref(), &arms).map_err(fail)?;
-		let prepared = prepare_besl_shader(program, &settings).map_err(fail)?;
+		let prepared = context.prepare_shader(program, &settings).map_err(fail)?;
 		let compiler_identity = PlatformShaderCompiler::compiler_identity().await.map_err(fail)?;
 		let shader_id = format!("{}#shaders/{:016x}", url.as_ref(), prepared.cache_key(compiler_identity));
 		store_generated_shader(context, &shader_id, prepared).await?;
@@ -472,9 +454,8 @@ impl BEMAAssetHandler {
 			let Some(program) = program else {
 				return Ok(None);
 			};
-			let (shader, bytes) = self
-				.compiler
-				.compile(program, compute_material_stage(&shader_id))
+			let (shader, bytes) = context
+				.compile_shader(program, compute_material_stage(&shader_id))
 				.await
 				.map_err(compile_error)?;
 			store_model_owned(context, &shader_id, shader, bytes).await.map(Some)
@@ -483,9 +464,8 @@ impl BEMAAssetHandler {
 			let Some(program) = hit_program else {
 				return Ok(None);
 			};
-			let (shader, bytes) = self
-				.compiler
-				.compile(program, closest_hit_material_stage(&hit_shader_id))
+			let (shader, bytes) = context
+				.compile_shader(program, closest_hit_material_stage(&hit_shader_id))
 				.await
 				.map_err(hit_compile_error)?;
 			store_model_owned(context, &hit_shader_id, shader, bytes).await.map(Some)
@@ -632,7 +612,6 @@ const OVERRIDE_BAKE_CONCURRENCY: usize = 8;
 /// Next, reference the returned variants from the container's mesh primitives.
 pub(crate) async fn resolve_container_materials(
 	context: BakeContext<'_>,
-	generator: Option<&dyn ProgramGenerator>,
 	container_id: ResourceId<'_>,
 	image_ids: &[String],
 	materials: Vec<MaterialSource>,
@@ -652,7 +631,7 @@ pub(crate) async fn resolve_container_materials(
 
 	let (overridden, generated) = std::future::join!(
 		context.bake_dependencies::<VariantModel>(&overrides, OVERRIDE_BAKE_CONCURRENCY),
-		store_generated_materials(context, generator, container_id, image_ids, generated),
+		store_generated_materials(context, container_id, image_ids, generated),
 	)
 	.await;
 
@@ -677,7 +656,6 @@ pub(crate) fn bead_material_override(spec: Option<&serde_json::Value>, name: &st
 /// compiled shader.
 async fn store_generated_materials(
 	context: BakeContext<'_>,
-	generator: Option<&dyn ProgramGenerator>,
 	container_id: ResourceId<'_>,
 	image_ids: &[String],
 	materials: Vec<GeneratedMaterial>,
@@ -686,13 +664,7 @@ async fn store_generated_materials(
 		return Ok(Vec::new());
 	}
 
-	let generator = generator.ok_or_else(|| {
-		context.error(
-			"Material generation is unavailable. The most likely cause is that the asset handler has no shader generator.",
-		);
-
-		LoadErrors::FailedToProcess
-	})?;
+	let generator = context.program_generator()?;
 
 	let mut baked_images = Vec::new();
 
@@ -887,7 +859,7 @@ async fn store_generated_shaders(
 				let (prepared, material_program, key) =
 					match generator.generate(&material.graph, &parameters).map_err(compile_error)? {
 						Some(program) => {
-							let prepared = prepare_besl_shader(program, &settings).map_err(compile_error)?;
+							let prepared = context.prepare_shader(program, &settings).map_err(compile_error)?;
 							let key = prepared.cache_key(compiler_identity);
 							(Some(prepared), None, key)
 						}
@@ -902,7 +874,7 @@ async fn store_generated_shaders(
 				let hit = generator
 					.generate_hit(&material.graph, &parameters)
 					.map_err(compile_error)?
-					.map(|program| prepare_besl_shader(program, &hit_settings))
+					.map(|program| context.prepare_shader(program, &hit_settings))
 					.transpose()
 					.map_err(compile_error)?;
 
@@ -951,7 +923,7 @@ async fn store_generated_shader(
 		return Ok(stored.into());
 	}
 
-	let (shader, shader_bytes) = prepared.compile(shader_id).await.map_err(|error| {
+	let (shader, shader_bytes) = context.compile_prepared(shader_id, prepared).await.map_err(|error| {
 		context.error(shader_compilation_error_message(shader_id, &error));
 		LoadErrors::FailedToProcess
 	})?;
@@ -1032,7 +1004,7 @@ pub mod tests {
 	use std::sync::Arc;
 
 	use super::{MaterialParameter, ProgramGenerator};
-	use crate::asset::handler::implementations::besl::ShaderCompiler;
+	use crate::asset::handler::implementations::besl::{PreparedBeslShader, ShaderCompiler};
 	use crate::bemx;
 	use crate::{
 		ReferenceModel,
@@ -1054,14 +1026,14 @@ pub mod tests {
 	impl ShaderCompiler for TestShaderCompiler {
 		fn compile<'a>(
 			&'a self,
-			_program: besl::parser::Node<'a>,
-			settings: ShaderGenerationSettings,
+			shader: PreparedBeslShader,
+			id: &'a str,
 		) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
 			Box::pin(async move {
 				Ok((
 					Shader {
-						id: settings.name,
-						stage: settings.stage.into(),
+						id: id.to_string(),
+						stage: shader.stage(),
 						interface: ShaderInterface {
 							workgroup_size: Some((128, 0, 0)),
 							sets: vec![SetInterface::with_bindings(
@@ -1142,10 +1114,9 @@ pub mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
 
-		asset_manager.add_asset_handler(BEMAAssetHandler {
-			generator: Some(Box::new(MinimalTestShaderGenerator)),
-			compiler: Box::new(TestShaderCompiler),
-		});
+		asset_manager.set_program_generator(MinimalTestShaderGenerator);
+		asset_manager.set_shader_compiler(TestShaderCompiler);
+		asset_manager.add_asset_handler(BEMAAssetHandler);
 
 		let _: ReferenceModel<VariantModel> = asset_manager
 			.bake_if_not_exists("load_variant.bema")
@@ -1230,10 +1201,9 @@ pub mod tests {
 
 		let resource_storage_backend = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-		asset_manager.add_asset_handler(BEMAAssetHandler {
-			generator: Some(Box::new(MinimalTestShaderGenerator)),
-			compiler: Box::new(TestShaderCompiler),
-		});
+		asset_manager.set_program_generator(MinimalTestShaderGenerator);
+		asset_manager.set_shader_compiler(TestShaderCompiler);
+		asset_manager.add_asset_handler(BEMAAssetHandler);
 
 		let _: ReferenceModel<VariantModel> = asset_manager
 			.bake_if_not_exists("dynamic_variant.bema")
@@ -1281,6 +1251,9 @@ pub mod tests {
 	/// traces rays does.
 	struct HitTestShaderGenerator;
 
+	/// The smallest closest-hit program: it returns the payload it receives.
+	const HIT_PROGRAM: &str = "SurfaceHit: struct { distance: f32 }\nmain: fn (payload: SurfaceHit) -> SurfaceHit { return payload; }";
+
 	impl ProgramGenerator for HitTestShaderGenerator {
 		fn generate<'a>(
 			&self,
@@ -1292,10 +1265,10 @@ pub mod tests {
 
 		fn generate_hit<'a>(
 			&self,
-			graph: &'a bemx::Graph,
-			parameters: &'a [MaterialParameter],
+			_: &'a bemx::Graph,
+			_: &'a [MaterialParameter],
 		) -> Result<Option<besl::parser::Node<'a>>, String> {
-			self.generate(graph, parameters)
+			besl::parse(HIT_PROGRAM).map(Some).map_err(|error| format!("{error:?}"))
 		}
 	}
 
@@ -1311,10 +1284,9 @@ pub mod tests {
 		asset_storage_backend.add_file("hit.bemx", r#"{ nodes: [{ name: "surface", node: "surface" }] }"#.as_bytes());
 		let resource_storage_backend = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-		asset_manager.add_asset_handler(BEMAAssetHandler {
-			generator: Some(Box::new(HitTestShaderGenerator)),
-			compiler: Box::new(TestShaderCompiler),
-		});
+		asset_manager.set_program_generator(HitTestShaderGenerator);
+		asset_manager.set_shader_compiler(TestShaderCompiler);
+		asset_manager.add_asset_handler(BEMAAssetHandler);
 
 		let _: ReferenceModel<MaterialModel> = asset_manager
 			.bake_if_not_exists("hit_material.bema")
@@ -1338,6 +1310,92 @@ pub mod tests {
 		assert_eq!(hit_shader.stage, crate::types::ShaderTypes::ClosestHit);
 	}
 
+	/// The `RecordingInterceptor` struct collects the bake products whose names `wants` accepts.
+	struct RecordingInterceptor {
+		wants: fn(&str) -> bool,
+		products: std::sync::Mutex<Vec<(String, String)>>,
+	}
+
+	impl crate::asset::intercept::BakeInterceptor for RecordingInterceptor {
+		fn wants(&self, name: &str) -> bool {
+			(self.wants)(name)
+		}
+
+		fn receive(&self, name: String, content: Vec<u8>) {
+			let content = String::from_utf8(content).expect("BESL products are UTF-8 text.");
+			self.products.lock().unwrap().push((name, content));
+		}
+	}
+
+	/// Bakes `hit_material.bema` with a generator that builds hit programs, and returns the products the bake emitted
+	/// whose names `wants` accepts, sorted by name.
+	async fn intercepted_material_products(wants: fn(&str) -> bool) -> Vec<(String, String)> {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+		asset_storage_backend.add_file(
+			"hit_material.bema",
+			r#"{ "domain": "World", "graph": "hit.bemx", "variables": [] }"#.as_bytes(),
+		);
+		asset_storage_backend.add_file("hit.bemx", r#"{ nodes: [{ name: "surface", node: "surface" }] }"#.as_bytes());
+		let interceptor = std::sync::Arc::new(RecordingInterceptor {
+			wants,
+			products: std::sync::Mutex::new(Vec::new()),
+		});
+		let mut asset_manager = AssetManager::new(asset_storage_backend, MemoryStorageBackend::new());
+		asset_manager.set_program_generator(HitTestShaderGenerator);
+		asset_manager.set_shader_compiler(TestShaderCompiler);
+		asset_manager.set_interceptor(interceptor.clone());
+		asset_manager.add_asset_handler(BEMAAssetHandler);
+
+		let _: ReferenceModel<MaterialModel> = asset_manager
+			.bake_if_not_exists("hit_material.bema")
+			.await
+			.expect("Failed to bake an intercepted material");
+
+		let mut products = std::mem::take(&mut *interceptor.products.lock().unwrap());
+		products.sort();
+		products
+	}
+
+	/// An intercepted bake emits the BESL source of each shader it compiles, named after the shader with `.besl`, as
+	/// the program generator built it.
+	#[r#async::test]
+	async fn an_intercepted_bake_emits_the_besl_of_every_shader_it_compiles() {
+		let products = intercepted_material_products(|name| name.ends_with(".besl")).await;
+
+		let hit = besl::write(&besl::parse(HIT_PROGRAM).unwrap());
+		assert_eq!(
+			products,
+			[
+				("hit_material.bema#hit-shader.besl".to_string(), hit),
+				("hit_material.bema#shader.besl".to_string(), "main: fn () -> void {\n}\n".to_string()),
+			]
+		);
+	}
+
+	/// An intercepted bake emits the platform source each shader lowered to, named after the shader with the
+	/// platform language's extension, such as `.msl`.
+	#[r#async::test]
+	async fn an_intercepted_bake_emits_the_platform_source_of_every_shader_it_compiles() {
+		let extension = crate::shader::besl::backends::platform::PlatformShaderLanguage::current_platform().extension();
+		let products = intercepted_material_products(|name| !name.ends_with(".besl")).await;
+
+		let names = products.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>();
+		assert_eq!(
+			names,
+			[
+				format!("hit_material.bema#hit-shader.{extension}"),
+				format!("hit_material.bema#shader.{extension}")
+			]
+		);
+		assert!(products.iter().all(|(_, source)| !source.trim().is_empty()));
+	}
+
+	/// An interceptor receives only the products it wants.
+	#[r#async::test]
+	async fn an_interceptor_receives_only_the_products_it_wants() {
+		assert_eq!(intercepted_material_products(|_| false).await, Vec::new());
+	}
+
 	/// A texture can't change at runtime, so a material that declares one dynamic fails to bake.
 	#[r#async::test]
 	async fn a_dynamic_texture_fails_to_bake() {
@@ -1358,10 +1416,9 @@ pub mod tests {
 			r#"{ nodes: [{ name: "surface", node: "surface" }] }"#.as_bytes(),
 		);
 		let mut asset_manager = AssetManager::new(asset_storage_backend, MemoryStorageBackend::new());
-		asset_manager.add_asset_handler(BEMAAssetHandler {
-			generator: Some(Box::new(MinimalTestShaderGenerator)),
-			compiler: Box::new(TestShaderCompiler),
-		});
+		asset_manager.set_program_generator(MinimalTestShaderGenerator);
+		asset_manager.set_shader_compiler(TestShaderCompiler);
+		asset_manager.add_asset_handler(BEMAAssetHandler);
 
 		let baked: Result<ReferenceModel<MaterialModel>, _> = asset_manager.bake_if_not_exists("dynamic_texture.bema").await;
 
@@ -1439,10 +1496,9 @@ pub mod tests {
 		}
 		let resource_storage_backend = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-		asset_manager.add_asset_handler(BEMAAssetHandler {
-			generator: Some(Box::new(AssemblingTestGenerator { colliding })),
-			compiler: Box::new(TestShaderCompiler),
-		});
+		asset_manager.set_program_generator(AssemblingTestGenerator { colliding });
+		asset_manager.set_shader_compiler(TestShaderCompiler);
+		asset_manager.add_asset_handler(BEMAAssetHandler);
 		(asset_manager, resource_storage_backend)
 	}
 
@@ -1536,10 +1592,9 @@ pub mod tests {
 		);
 		let resource_storage_backend = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-		asset_manager.add_asset_handler(BEMAAssetHandler {
-			generator: Some(Box::new(AssemblingTestGenerator { colliding: false })),
-			compiler: Box::new(TestShaderCompiler),
-		});
+		asset_manager.set_program_generator(AssemblingTestGenerator { colliding: false });
+		asset_manager.set_shader_compiler(TestShaderCompiler);
+		asset_manager.add_asset_handler(BEMAAssetHandler);
 		let _: ReferenceModel<VariantModel> = asset_manager
 			.bake_if_not_exists("statics_variant.bema")
 			.await
@@ -1585,7 +1640,7 @@ use super::{
 	store_model, store_model_owned,
 };
 use crate::asset::handler::implementations::besl::{
-	PlatformShaderCompilerAdapter, PreparedBeslShader, ShaderCompiler, prepare_besl_shader, shader_compilation_error_message,
+	PreparedBeslShader, shader_compilation_error_message,
 };
 use crate::bemx::{self, import::ImportedMaterial, material_texture_parameter_name, material_texture_slot};
 use crate::resources::image::Image;

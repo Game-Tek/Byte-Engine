@@ -19,7 +19,9 @@ pub use query::query;
 mod tests {
 	use std::time::{SystemTime, UNIX_EPOCH};
 
-	use byte_engine::application::{Parameter, graphics::register_default_asset_handlers};
+	use byte_engine::application::Parameter;
+
+	use crate::utils::configure_cpu_baking;
 	#[cfg(debug_assertions)]
 	use resource_management::{
 		ProcessedAsset, ResourceTraceItem, ResourceTraceLevel,
@@ -79,7 +81,7 @@ mod tests {
 			FileStorageBackend::new(root.clone()),
 			ReDBStorageBackend::new(root.join("test-resources")),
 			&[],
-			register_default_asset_handlers,
+			configure_cpu_baking,
 		);
 		let executor = resource_management::r#async::Executor::new().unwrap();
 		let ids = executor.block_on(asset_manager.discover()).unwrap();
@@ -108,7 +110,7 @@ mod tests {
 			FileStorageBackend::new(root.clone()),
 			ReDBStorageBackend::new(root.join("test-resources")),
 			&[],
-			register_default_asset_handlers,
+			configure_cpu_baking,
 		);
 		let executor = resource_management::r#async::Executor::new().unwrap();
 		let ids = executor.block_on(asset_manager.discover()).unwrap();
@@ -141,7 +143,7 @@ mod tests {
 			FileStorageBackend::new(root.clone()),
 			ReDBStorageBackend::new(root.join("test-resources")),
 			&[],
-			register_default_asset_handlers,
+			configure_cpu_baking,
 		);
 		let executor = resource_management::r#async::Executor::new().unwrap();
 		let ids = executor.block_on(asset_manager.discover()).unwrap();
@@ -215,7 +217,7 @@ mod tests {
 			std::num::NonZeroUsize::new(1024 * 1024).unwrap(),
 			false,
 			&parameters,
-			register_default_asset_handlers,
+			configure_cpu_baking,
 			prune,
 		));
 		let mut ids = executor
@@ -308,7 +310,7 @@ mod tests {
 				std::num::NonZeroUsize::new(1024 * 1024).unwrap(),
 				false,
 				&[],
-				register_default_asset_handlers,
+				configure_cpu_baking,
 				false,
 			)),
 			Err(1)

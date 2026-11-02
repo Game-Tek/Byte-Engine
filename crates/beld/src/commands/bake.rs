@@ -1,12 +1,12 @@
-use std::{cell::RefCell, num::NonZeroUsize, time::Instant};
+use std::{cell::RefCell, num::NonZeroUsize, sync::Arc, time::Instant};
 
 use byte_engine::{
 	application::{Parameter, parameters::Parameters as _},
 	rendering::pipelines::visibility::{RENDER_PARAMETERS, VisibilityFeatures},
 };
 use resource_management::{
-	asset::{FileStorageBackend, ResourceId, manager::AssetManager, manager::LoadMessages},
-	inspect::{ResourceDocument, inspect_payload, inspect_resource},
+	asset::{FileStorageBackend, ResourceId, intercept::BakeInterceptor, manager::AssetManager, manager::LoadMessages},
+	inspect::{Base64View, ResourceDocument, inspect_payload, inspect_resource},
 	resource::{
 		MemoryStorageBackend, ReDBStorageBackend, ReadStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode,
 		ResourceStorageSettings,
@@ -14,7 +14,7 @@ use resource_management::{
 };
 use serde::Serialize;
 use serde_json::{Value, json};
-use utils::{Glob, r#async::StreamExt};
+use utils::{Glob, r#async::StreamExt, sync::Mutex};
 
 use crate::{
 	OutputFormat, Payload,
@@ -26,8 +26,8 @@ use crate::{
 /// Bakes selected source assets, or every discoverable asset when `ids` is empty.
 ///
 /// `parameters` are the application's, resolved with
-/// [`layer_parameters`](byte_engine::application::parameters::layer_parameters), and `register` installs the
-/// application's asset handlers for them, as its debug runtime does. Assets whose stored resource is current with its
+/// [`layer_parameters`](byte_engine::application::parameters::layer_parameters), and `configure` installs the
+/// application's bake services and asset handlers for them, as its debug runtime does. Assets whose stored resource is current with its
 /// source files are skipped unless `force` is set. Force a bake after changing an asset processor,
 /// `texture_compression`, or a baked parameter, because source versions don't record those.
 ///
@@ -52,7 +52,7 @@ pub async fn bake(
 	memory_budget: NonZeroUsize,
 	force: bool,
 	parameters: &[Parameter],
-	register: impl FnOnce(&mut AssetManager, &[Parameter]),
+	configure: impl FnOnce(&mut AssetManager, &[Parameter]),
 	prune: bool,
 ) -> Result<(), i32> {
 	let features = VisibilityFeatures::from_parameters(parameters.scope(RENDER_PARAMETERS));
@@ -85,7 +85,7 @@ pub async fn bake(
 		1
 	})?;
 
-	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend, parameters, register);
+	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend, parameters, configure);
 	asset_manager.set_excluded_assets(globs(parameters, "resources.exclude"));
 
 	// A forced run treats everything stored before it started as stale, so shared dependencies rebuild once.
@@ -201,17 +201,22 @@ fn select_discovered(
 /// `output`, leaving the destination directory untouched.
 ///
 /// The document lists each stored resource in [`crate::inspect`]'s shape, ordered by ID, then each requested ID that
-/// failed. `parameters` and `register` are the application's, as in [`bake`], which also apply `resources.exclude`.
+/// failed. `parameters` and `configure` are the application's, as in [`bake`], which also apply `resources.exclude`.
 /// Pass `payload` to add the decoded stream bytes, which needs [`OutputFormat::JSON`]. The resources the visibility
 /// features assemble from every material bake after `ids`, from the materials `ids` reach. Without `ids` nothing bakes,
 /// because a dry run doesn't discover assets. Run [`bake`] next to write the same resources to a store.
+///
+/// With `intercept` patterns, the document lists instead the intermediate products of the bake whose names match one
+/// of them, such as `*.besl` for the BESL source of every shader; see [`resource_management::asset::intercept`] for how
+/// products are named.
 #[allow(clippy::too_many_arguments)]
 pub async fn bake_dry_run(
 	source_path: String,
 	ids: Vec<String>,
 	memory_budget: NonZeroUsize,
 	parameters: &[Parameter],
-	register: impl FnOnce(&mut AssetManager, &[Parameter]),
+	configure: impl FnOnce(&mut AssetManager, &[Parameter]),
+	intercept: Vec<String>,
 	format: OutputFormat,
 	payload: Payload,
 	output: &mut impl std::io::Write,
@@ -221,8 +226,17 @@ pub async fn bake_dry_run(
 	let asset_storage_backend = open_asset_storage(source_path).await?;
 	// The manager owns one clone; this one reads back what it baked once it is done.
 	let resource_storage_backend = MemoryStorageBackend::new();
-	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend.clone(), parameters, register);
+	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend.clone(), parameters, configure);
 	asset_manager.set_excluded_assets(globs(parameters, "resources.exclude"));
+	let interception = (!intercept.is_empty()).then(|| {
+		Arc::new(Interception {
+			globs: intercept.iter().map(|pattern| Glob::new(pattern)).collect(),
+			products: Mutex::new(Vec::new()),
+		})
+	});
+	if let Some(interception) = &interception {
+		asset_manager.set_interceptor(interception.clone());
+	}
 	let bakes_anything = !ids.is_empty();
 	let mut failures = bake_ids(&mut asset_manager, ids, memory_budget).await;
 	if bakes_anything {
@@ -230,6 +244,21 @@ pub async fn bake_dry_run(
 		failures.extend(bake_assembled(&asset_manager, &features).await);
 	}
 	drop(asset_manager);
+
+	// The manager held the only other reference, so the products are now this function's alone.
+	let intercepted = interception.map(|interception| {
+		let mut products = Arc::into_inner(interception)
+			.expect("The asset manager is dropped, so nothing else holds the interception.")
+			.products
+			.into_inner();
+		products.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+		if products.is_empty() {
+			log::warn!(
+				"The dry run intercepted no product matching the `--intercept` patterns. The most likely cause is that the baked IDs build no such product, such as an image for `*.besl`, or that a pattern misses the `<resource ID>.<extension>` name. Pass `--intercept '*'` to list every product the bake builds."
+			);
+		}
+		products
+	});
 
 	let mut resource_ids = resource_storage_backend
 		.list()
@@ -271,6 +300,13 @@ pub async fn bake_dry_run(
 	}
 
 	match format {
+		// Intercepted products print as they are, so a reader can pipe one straight into a file.
+		OutputFormat::Human if let Some(products) = &intercepted => {
+			write_products(output, products)?;
+			if !failed.is_empty() {
+				print_human(&json!({ "failed": failed }));
+			}
+		}
 		OutputFormat::Human => {
 			let resources = resources.into_iter().map(|(_, json, _)| json).collect();
 			print_human(&json!({ "resources": Value::Array(resources), "failed": failed }));
@@ -295,11 +331,83 @@ pub async fn bake_dry_run(
 					payload: payload.as_ref(),
 				})
 				.collect();
-			write_json(output, &DryRunDocument { resources, failed })?;
+			let intercepted = intercepted.as_ref().map(|products| {
+				products
+					.iter()
+					.map(|(name, content)| InterceptedDocument {
+						name,
+						content: match std::str::from_utf8(content) {
+							Ok(text) => Content::Text(text),
+							Err(_) => Content::Bytes(Base64View(content)),
+						},
+					})
+					.collect()
+			});
+			write_json(
+				output,
+				&DryRunDocument {
+					resources,
+					failed,
+					intercepted,
+				},
+			)?;
 		}
 	}
 
 	if failures.is_empty() { Ok(()) } else { Err(1) }
+}
+
+/// The `Interception` struct collects the bake products whose names match a dry run's `--intercept` patterns.
+struct Interception {
+	globs: Vec<Glob>,
+	/// Each received product's name and content, in the order concurrent bakes emitted them.
+	products: Mutex<Vec<(String, Vec<u8>)>>,
+}
+
+impl BakeInterceptor for Interception {
+	fn wants(&self, name: &str) -> bool {
+		self.globs.iter().any(|glob| glob.matches(name))
+	}
+
+	fn receive(&self, name: String, content: Vec<u8>) {
+		self.products.lock().push((name, content));
+	}
+}
+
+/// Writes each product under a `// <name>` line, as text when it is UTF-8 and as its size when it isn't.
+fn write_products(output: &mut impl std::io::Write, products: &[(String, Vec<u8>)]) -> Result<(), i32> {
+	let write = |output: &mut dyn std::io::Write, name: &str, content: &[u8]| match std::str::from_utf8(content) {
+		Ok(text) => writeln!(output, "// {name}\n{}\n", text.trim_end()),
+		Err(_) => writeln!(output, "// {name}\n// {} of binary content\n", plural(content.len(), "byte")),
+	};
+	for (name, content) in products {
+		write(output, name, content).map_err(|error| {
+			log::error!(
+				"Failed to write the intercepted products. The most likely cause is a closed output stream. Error: {error}"
+			);
+			1
+		})?;
+	}
+	Ok(())
+}
+
+/// One intercepted product in the JSON document, with its content as UTF-8 text when it is text and as base64
+/// otherwise.
+#[derive(Serialize)]
+struct InterceptedDocument<'a> {
+	name: &'a str,
+	#[serde(flatten)]
+	content: Content<'a>,
+}
+
+/// The `Content` enum writes a product's bytes in the encoding that keeps them readable.
+#[derive(Serialize)]
+#[serde(tag = "encoding", content = "content")]
+enum Content<'a> {
+	#[serde(rename = "utf-8")]
+	Text(&'a str),
+	#[serde(rename = "base64")]
+	Bytes(Base64View<'a>),
 }
 
 /// The JSON document of a dry run. It is written straight to the output, so payload streams never become a JSON tree.
@@ -307,6 +415,9 @@ pub async fn bake_dry_run(
 struct DryRunDocument<'a> {
 	resources: Vec<ResourceDocument<'a>>,
 	failed: Vec<Value>,
+	/// The intercepted products, ordered by name, when the dry run has `--intercept` patterns.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	intercepted: Option<Vec<InterceptedDocument<'a>>>,
 }
 
 /// Opens the source asset directory a bake reads from.

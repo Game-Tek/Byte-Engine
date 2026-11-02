@@ -27,6 +27,15 @@ impl PlatformShaderLanguage {
 		}
 	}
 
+	/// Returns the usual file extension of source in this language, which names the lowered source a bake intercepts.
+	pub const fn extension(self) -> &'static str {
+		match self {
+			Self::Glsl => "glsl",
+			Self::Hlsl => "hlsl",
+			Self::Msl => "msl",
+		}
+	}
+
 	pub const fn entry_point(self) -> &'static str {
 		match self {
 			Self::Glsl => "main",

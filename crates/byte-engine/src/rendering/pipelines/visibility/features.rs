@@ -3,7 +3,7 @@
 //! The project's `config.json` selects them once, and both BELD and the running application read the same values: BELD
 //! generates shaders without the code of a left-out feature and skips its pipelines, and the application never creates
 //! its pass. Build the set with [`VisibilityFeatures::from_parameters`], then pass it to
-//! [`super::VisibilityShaderGenerator::new`], [`crate::application::graphics::register_default_asset_handlers`], and
+//! [`super::VisibilityShaderGenerator::new`], [`crate::application::graphics::configure_default_baking`], and
 //! [`super::VisibilityPipelineSettings::with_features`].
 
 use besl::parser::Node;

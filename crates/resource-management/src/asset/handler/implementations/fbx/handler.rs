@@ -87,22 +87,12 @@ async fn resolve_animation_skeleton(
 }
 
 /// The `FBXAssetHandler` struct provides the authored-FBX import path used to bake meshes, skeletons, and animation clips.
-#[derive(Default)]
-pub struct FBXAssetHandler {
-	generator: Option<Box<dyn ProgramGenerator>>,
-}
+///
+/// Generated materials target the asset manager's
+/// [`ProgramGenerator`](crate::asset::handler::implementations::ProgramGenerator).
+pub struct FBXAssetHandler;
 
 impl FBXAssetHandler {
-	/// Creates an FBX importer using the engine's clockwise mesh-processing convention.
-	pub fn new() -> Self {
-		Self::default()
-	}
-
-	/// Installs the renderer-specific shader transformation used for generated FBX materials.
-	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
-		self.generator = Some(Box::new(generator));
-	}
-
 	/// Bakes one texture of an FBX as its own image resource.
 	///
 	/// Materials request these as dependencies, so the scene is parsed without geometry or animation data. `spec` is
@@ -272,7 +262,6 @@ impl AssetHandler for FBXAssetHandler {
 				source_id,
 				&scene,
 				&material_keys,
-				self.generator.as_deref()
 			),
 			async {
 				import_fbx_mesh_session(

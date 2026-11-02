@@ -1,5 +1,5 @@
-//! Black-box tests of the `beld` binary's dry-run bake and payload output, as specified in the BELD command-line
-//! reference.
+//! Black-box tests of the `beld` binary's dry-run bake, payload, and intercept output, as specified in the BELD
+//! command-line reference.
 
 use std::{path::PathBuf, process::Command};
 
@@ -205,6 +205,63 @@ fn payload_output_needs_the_json_format() {
 	let root = temporary_root("payload-format");
 
 	let (code, _) = run_beld(&root, &["inspect", "tone.wav", "--payload", "typed"]);
+
+	assert_eq!(code, Some(2));
+	std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn an_intercepted_dry_run_prints_the_besl_of_every_shader_it_compiles() {
+	let root = temporary_root("intercept-besl");
+	std::fs::create_dir_all(root.join("assets")).unwrap();
+	std::fs::write(root.join("assets/triangle_move.fbx"), TRIANGLE_MOVE_FBX).unwrap();
+
+	let (code, output) = run_beld(
+		&root,
+		&[
+			"--source",
+			"assets",
+			"--destination",
+			"resources",
+			"bake",
+			"--dry-run",
+			"--intercept",
+			"*.besl",
+			"--format",
+			"json",
+			"triangle_move.fbx",
+		],
+	);
+
+	assert_eq!(code, Some(0));
+	assert!(!root.join("resources").exists(), "a dry run must not create the destination");
+	let output = output.expect("standard output should hold exactly one JSON document");
+	assert_eq!(output["failed"], Value::Array(Vec::new()));
+	assert!(
+		!output["resources"].as_array().unwrap().is_empty(),
+		"an intercepted dry run still lists its resources"
+	);
+	let intercepted = output["intercepted"].as_array().unwrap();
+	assert!(!intercepted.is_empty(), "the FBX's generated material should compile a shader");
+	for product in intercepted {
+		let name = product["name"].as_str().unwrap();
+		assert!(
+			name.starts_with("triangle_move.fbx#shaders/") && name.ends_with(".besl"),
+			"unexpected product {name}"
+		);
+		assert_eq!(product["encoding"], "utf-8");
+		let source = product["content"].as_str().unwrap();
+		besl::parse(source).unwrap_or_else(|error| panic!("{name} should hold BESL source ({error:?}):\n{source}"));
+	}
+
+	std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn intercept_needs_a_dry_run() {
+	let root = temporary_root("intercept-dry-run");
+
+	let (code, _) = run_beld(&root, &["bake", "--intercept", "*.besl", "triangle_move.fbx"]);
 
 	assert_eq!(code, Some(2));
 	std::fs::remove_dir_all(root).unwrap();

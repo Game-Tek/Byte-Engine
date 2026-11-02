@@ -14,6 +14,7 @@ use crate::{
 
 mod bake_memory;
 pub mod handler;
+pub mod intercept;
 pub mod manager;
 
 #[cfg(debug_assertions)]

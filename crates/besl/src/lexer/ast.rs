@@ -1091,6 +1091,16 @@ pub enum BufferMemoryClass {
 	Device,
 }
 
+impl BufferMemoryClass {
+	/// Returns the value's source spelling, as the `memory` descriptor property writes it.
+	pub fn token(self) -> &'static str {
+		match self {
+			Self::Constant => "constant",
+			Self::Device => "device",
+		}
+	}
+}
+
 /// The `ElseBranch` enum keeps `else if` chains distinct from plain `else` blocks,
 /// so backends can lower each form by structure. See [`Nodes::Conditional`].
 #[derive(Clone, Debug)]
@@ -1572,6 +1582,14 @@ impl Operators {
 			.iter()
 			.find(|(operator_token, ..)| *operator_token == token)
 			.map(|(_, operator, _)| *operator)
+	}
+
+	/// Returns the token that spells this operator in BESL source.
+	pub fn token(&self) -> &'static str {
+		OPERATOR_TOKENS
+			.iter()
+			.find(|(_, operator, _)| operator == self)
+			.map_or("", |(token, ..)| *token)
 	}
 
 	/// Returns how loosely this operator binds. The parser splits an expression at its loosest operator first.

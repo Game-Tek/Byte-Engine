@@ -362,30 +362,6 @@ pub(crate) fn emit_statement_block<F>(
 	}
 }
 
-pub(crate) fn operator_token(operator: &besl::Operators) -> &'static str {
-	match operator {
-		besl::Operators::Plus => "+",
-		besl::Operators::Minus => "-",
-		besl::Operators::Multiply => "*",
-		besl::Operators::Divide => "/",
-		besl::Operators::Modulo => "%",
-		besl::Operators::ShiftLeft => "<<",
-		besl::Operators::ShiftRight => ">>",
-		besl::Operators::BitwiseAnd => "&",
-		besl::Operators::BitwiseOr => "|",
-		besl::Operators::BitwiseXor => "^",
-		besl::Operators::Assignment => "=",
-		besl::Operators::Equality => "==",
-		besl::Operators::LessThan => "<",
-		besl::Operators::Inequality => "!=",
-		besl::Operators::GreaterThan => ">",
-		besl::Operators::LessThanOrEqual => "<=",
-		besl::Operators::GreaterThanOrEqual => ">=",
-		besl::Operators::LogicalAnd => "&&",
-		besl::Operators::LogicalOr => "||",
-	}
-}
-
 /// Reports whether the BESL type `name` is a texture, which a function parameter can take. Backends whose textures
 /// carry no sampler of their own pair each such parameter with one.
 pub(crate) fn is_texture_besl_type(name: &str) -> bool {
@@ -1009,7 +985,7 @@ pub(crate) trait NodeEmitter {
 
 				emit_value(self, string, left, left_as_f16);
 				string.push_str(formatting.space_str());
-				string.push_str(operator_token(operator));
+				string.push_str(operator.token());
 				string.push_str(formatting.space_str());
 				emit_value(self, string, right, right_as_f16);
 			}

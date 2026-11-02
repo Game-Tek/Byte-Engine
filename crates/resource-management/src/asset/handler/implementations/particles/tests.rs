@@ -5,7 +5,7 @@ use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, R
 use super::{ParticleSystemAssetHandler, generator, schema::ParticleSystemSource};
 use crate::{
 	asset::{
-		handler::implementations::besl::ShaderCompiler, manager::AssetManager,
+		handler::implementations::besl::{PreparedBeslShader, ShaderCompiler}, manager::AssetManager,
 		storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 	},
 	r#async,
@@ -15,7 +15,6 @@ use crate::{
 		particle_system::ParticleSystem,
 		pipeline::{Pipeline, PipelineKind},
 	},
-	shader::ShaderGenerationSettings,
 };
 
 /// Sparks that leave a point emitter inside a cone whose half angle has a cosine of 0.9, with no forces.
@@ -51,21 +50,21 @@ const CAPACITY: usize = 4096;
 const EMITTER_SLOT: usize = 3;
 const EMITTER_POSITION: [f32; 3] = [1.0, 2.0, 3.0];
 
-/// The `LinkingCompiler` struct stands in for the platform compiler and only checks that generated BESL links.
+/// The `LinkingCompiler` struct stands in for the platform toolchain, so the tests only depend on generated BESL
+/// linking and lowering, which the bake does before it compiles.
 struct LinkingCompiler;
 
 impl ShaderCompiler for LinkingCompiler {
 	fn compile<'a>(
 		&'a self,
-		program: besl::parser::Node<'a>,
-		settings: ShaderGenerationSettings,
+		shader: PreparedBeslShader,
+		id: &'a str,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
 		Box::pin(async move {
-			besl::lex(program).map_err(|error| format!("{error:?}"))?;
 			Ok((
 				Shader {
-					id: settings.name,
-					stage: settings.stage.into(),
+					id: id.to_string(),
+					stage: shader.stage(),
 					interface: ShaderInterface {
 						workgroup_size: None,
 						sets: Vec::new(),
@@ -82,9 +81,8 @@ impl ShaderCompiler for LinkingCompiler {
 
 fn asset_manager(assets: AssetTestStorageBackend, resources: MemoryStorageBackend) -> AssetManager {
 	let mut asset_manager = AssetManager::new(assets, resources);
-	asset_manager.add_asset_handler(ParticleSystemAssetHandler {
-		compiler: Box::new(LinkingCompiler),
-	});
+	asset_manager.set_shader_compiler(LinkingCompiler);
+	asset_manager.add_asset_handler(ParticleSystemAssetHandler);
 	asset_manager
 }
 
@@ -358,7 +356,7 @@ async fn generated_programs_lower_to_the_platform_shader_language() {
 	assets.add_file("sparks.particles", SPARKS.as_bytes());
 	assets.add_file("smoke.particles", SMOKE.as_bytes());
 	let mut asset_manager = AssetManager::new(assets, MemoryStorageBackend::new());
-	asset_manager.add_asset_handler(ParticleSystemAssetHandler::new());
+	asset_manager.add_asset_handler(ParticleSystemAssetHandler);
 
 	for id in ["sparks.particles", "smoke.particles"] {
 		asset_manager

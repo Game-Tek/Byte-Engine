@@ -218,11 +218,9 @@ mod tests {
 	fn gltf_asset_manager(assets: AssetTestStorageBackend, resources: MemoryStorageBackend) -> AssetManager {
 		let mut asset_manager = AssetManager::new(assets, resources);
 
-		let mut handler = GLTFAssetHandler::new();
+		asset_manager.set_program_generator(MinimalTestShaderGenerator);
 
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		asset_manager.add_asset_handler(GLTFAssetHandler);
 
 		asset_manager
 	}
@@ -1356,7 +1354,7 @@ use super::{
 	mesh_lod_settings, sanitize_material_name, select_unfragmented_resource, store_imported_image, store_model,
 };
 use crate::asset::handler::implementations::bema::{
-	GeneratedMaterial, MaterialSource, ProgramGenerator, bead_material_override, resolve_container_materials,
+	GeneratedMaterial, MaterialSource, bead_material_override, resolve_container_materials,
 };
 use crate::{
 	ProcessedAsset, ReferenceModel,

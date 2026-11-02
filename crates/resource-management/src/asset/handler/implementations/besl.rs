@@ -1,7 +1,8 @@
 /// The `ProgramTransform` trait lets a renderer adapt standalone BESL programs before they link, such as by adding
 /// the helper functions every one of its shaders may call.
 ///
-/// Install one on [`BESLShaderAssetHandler::set_program_transform`]. Materials do not go through it: they are BEMX
+/// Install one with [`AssetManager::set_program_transform`](crate::asset::manager::AssetManager::set_program_transform).
+/// Materials do not go through it: they are BEMX
 /// graphs that a [`ProgramGenerator`](super::bema::ProgramGenerator) turns into whole programs.
 pub trait ProgramTransform: Send + Sync {
 	/// Returns `program` adapted to the renderer, before it links.
@@ -9,31 +10,9 @@ pub trait ProgramTransform: Send + Sync {
 }
 
 /// The `BESLShaderAssetHandler` struct exists to bake standalone BESL programs into runtime shader resources.
-pub struct BESLShaderAssetHandler {
-	compiler: Box<dyn ShaderCompiler>,
-	transform: Option<Box<dyn ProgramTransform>>,
-}
-
-impl Default for BESLShaderAssetHandler {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
-impl BESLShaderAssetHandler {
-	pub fn new() -> Self {
-		Self {
-			compiler: Box::new(PlatformShaderCompilerAdapter),
-			transform: None,
-		}
-	}
-
-	/// Configures the transform applied to standalone shaders after their layout layers are stacked and before they
-	/// link.
-	pub fn set_program_transform<T: ProgramTransform + 'static>(&mut self, transform: T) {
-		self.transform = Some(Box::new(transform));
-	}
-}
+///
+/// It applies the asset manager's [`ProgramTransform`] after a shader's layout layers stack and before it links.
+pub struct BESLShaderAssetHandler;
 
 impl AssetHandler for BESLShaderAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
@@ -76,12 +55,11 @@ impl AssetHandler for BESLShaderAssetHandler {
 			LoadErrors::FailedToProcess
 		};
 
-		let program = parse_standalone_program(source, &layers, self.transform.as_deref()).map_err(compile_error)?;
+		let program = parse_standalone_program(source, &layers, context.program_transform()).map_err(compile_error)?;
 
 		// Platform compilation may invoke native shader toolchains, so it must not block the asset executor.
-		let (shader, bytes) = self
-			.compiler
-			.compile(program, settings.name(id.as_ref().to_string()))
+		let (shader, bytes) = context
+			.compile_shader(program, settings.name(id.as_ref().to_string()))
 			.await
 			.map_err(compile_error)?;
 
@@ -89,18 +67,18 @@ impl AssetHandler for BESLShaderAssetHandler {
 	}
 }
 
-/// The `ShaderCompiler` trait lets the BESL, BEMA, and particle asset handlers compile shaders through the platform
-/// toolchain in production and through a test double in handler tests.
+/// The `ShaderCompiler` trait lets every handler compile shaders through the platform toolchain in production and
+/// through a test double in handler tests.
 ///
-/// Production handlers use [`PlatformShaderCompilerAdapter`], which runs [`prepare_besl_shader`] and
-/// [`PreparedBeslShader::compile`].
+/// It covers only the toolchain step: linking and lowering always run, in [`BakeContext::prepare_shader`]. The asset
+/// manager owns one, which handlers reach through [`BakeContext::compile_prepared`]. A new manager uses
+/// [`PlatformShaderCompilerAdapter`]; tests replace it with `AssetManager::set_shader_compiler`.
 pub(crate) trait ShaderCompiler: Send + Sync {
-	/// Compiles `program`, a parsed module that already holds everything it links against, for the stage in
-	/// `settings` into the shader named by `settings`.
+	/// Compiles `shader`, already linked and lowered, into the shader `id`.
 	fn compile<'a>(
 		&'a self,
-		program: besl::parser::Node<'a>,
-		settings: ShaderGenerationSettings,
+		shader: PreparedBeslShader,
+		id: &'a str,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>>;
 }
 
@@ -110,10 +88,10 @@ pub(crate) struct PlatformShaderCompilerAdapter;
 impl ShaderCompiler for PlatformShaderCompilerAdapter {
 	fn compile<'a>(
 		&'a self,
-		program: besl::parser::Node<'a>,
-		settings: ShaderGenerationSettings,
+		shader: PreparedBeslShader,
+		id: &'a str,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
-		Box::pin(async move { prepare_besl_shader(program, &settings)?.compile(&settings.name).await })
+		Box::pin(shader.compile(id))
 	}
 }
 
@@ -419,6 +397,8 @@ pub(crate) struct PreparedBeslShader {
 	stage: ShaderTypes,
 	interface: ShaderInterface,
 	lowered: LoweredPlatformShader,
+	/// The BESL source the shader was prepared from, kept only while a bake interceptor is installed.
+	pub(in crate::asset::handler) source: Option<String>,
 }
 
 /// Links a parsed shader, reflects its resource interface, and lowers it to platform source without compiling it.
@@ -442,10 +422,28 @@ pub(crate) fn prepare_besl_shader(
 		stage: stage.into(),
 		interface,
 		lowered,
+		source: None,
 	})
 }
 
 impl PreparedBeslShader {
+	/// Returns the platform source the shader lowered to, which the platform compiler compiles.
+	pub(crate) fn platform_source(&self) -> &str {
+		&self.lowered.source
+	}
+
+	/// Returns the stage the shader runs in, for test compilers that build their shader by hand.
+	#[cfg(test)]
+	pub(crate) fn stage(&self) -> ShaderTypes {
+		self.stage
+	}
+
+	/// Returns the resource interface semantic reflection found, for test compilers that check it.
+	#[cfg(test)]
+	pub(crate) fn interface(&self) -> &ShaderInterface {
+		&self.interface
+	}
+
 	/// Returns a key that changes whenever compiling this shader could produce a different binary.
 	///
 	/// The key covers the lowered platform source, which already reflects the program generator or transform, the BESL backend,
@@ -598,9 +596,9 @@ pub(crate) fn shader_compilation_error_message(id: &str, error: &str) -> String 
 #[cfg(test)]
 mod tests {
 	use super::{
-		BESL_DOCS_PATH, BESLShaderAssetHandler, MACOS_SETUP_DOCS_PATH, PlatformShaderCompilerAdapter, PlatformShaderLanguage,
+		BESL_DOCS_PATH, BESLShaderAssetHandler, MACOS_SETUP_DOCS_PATH, PlatformShaderLanguage,
 		ProgramTransform, ShaderCompiler, WINDOWS_SETUP_DOCS_PATH, parse_shader_settings, parse_standalone_program,
-		parse_workgroup_size, prepare_besl_shader, prepare_shader, shader_compilation_docs_path,
+		PreparedBeslShader, parse_workgroup_size, prepare_besl_shader, prepare_shader, shader_compilation_docs_path,
 		shader_compilation_error_message, stack_layout_layers, tile,
 	};
 	use crate::{
@@ -642,23 +640,18 @@ mod tests {
 	impl ShaderCompiler for TestShaderCompiler {
 		fn compile<'a>(
 			&'a self,
-			program: besl::parser::Node<'a>,
-			settings: ShaderGenerationSettings,
+			shader: PreparedBeslShader,
+			id: &'a str,
 		) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
 			Box::pin(async move {
-				assert_eq!(settings.name, "passes/resolve.besl");
-				assert!(matches!(
-					settings.stage,
-					Stages::Compute { local_size } if local_size == utils::Extent::new(8, 8, 1)
-				));
-
-				// Linking checks the program has a `main` and resolves everything its layers and transform added.
-				prepare_shader(program, &settings.name, settings.stage)?;
+				assert_eq!(id, "passes/resolve.besl");
+				assert_eq!(shader.stage(), ShaderTypes::Compute);
+				assert_eq!(shader.interface().workgroup_size, Some((8, 8, 1)));
 
 				Ok((
 					Shader {
-						id: settings.name,
-						stage: settings.stage.into(),
+						id: id.to_string(),
+						stage: shader.stage(),
 						interface: ShaderInterface {
 							workgroup_size: Some((8, 8, 1)),
 							sets: vec![SetInterface::with_bindings(
@@ -714,10 +707,8 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage, MemoryStorageBackend::new());
 
-		asset_manager.add_asset_handler(BESLShaderAssetHandler {
-			compiler: Box::new(TestShaderCompiler),
-			transform: None,
-		});
+		asset_manager.set_shader_compiler(TestShaderCompiler);
+		asset_manager.add_asset_handler(BESLShaderAssetHandler);
 
 		assert!(asset_manager.supports("passes/resolve.besl"));
 		assert!(!asset_manager.should_discover("passes/resolve.besl", false));
@@ -734,10 +725,8 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
-		asset_manager.add_asset_handler(BESLShaderAssetHandler {
-			compiler: Box::new(TestShaderCompiler),
-			transform: None,
-		});
+		asset_manager.set_shader_compiler(TestShaderCompiler);
+		asset_manager.add_asset_handler(BESLShaderAssetHandler);
 
 		let result = asset_manager.bake("passes/no-settings.besl").await;
 
@@ -766,14 +755,9 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
-		let mut handler = BESLShaderAssetHandler {
-			compiler: Box::new(TestShaderCompiler),
-			transform: None,
-		};
-
-		handler.set_program_transform(TestStandaloneTransform);
-
-		asset_manager.add_asset_handler(handler);
+		asset_manager.set_shader_compiler(TestShaderCompiler);
+		asset_manager.set_program_transform(TestStandaloneTransform);
+		asset_manager.add_asset_handler(BESLShaderAssetHandler);
 
 		asset_manager
 			.bake("passes/resolve.besl")
@@ -804,10 +788,8 @@ mod tests {
 
 			let mut asset_manager = AssetManager::new(asset_storage, MemoryStorageBackend::new());
 
-			asset_manager.add_asset_handler(BESLShaderAssetHandler {
-				compiler: Box::new(TestShaderCompiler),
-				transform: None,
-			});
+			asset_manager.set_shader_compiler(TestShaderCompiler);
+			asset_manager.add_asset_handler(BESLShaderAssetHandler);
 
 			asset_manager.bake("passes/resolve.besl").await
 		};
@@ -885,8 +867,9 @@ mod tests {
 		.expect("the tile sidecar should parse")
 		.name("passes/tile.besl".to_string());
 
-		let (shader, _) = PlatformShaderCompilerAdapter
-			.compile(program, settings)
+		let (shader, _) = prepare_besl_shader(program, &settings)
+			.expect("the tile shader should link")
+			.compile(&settings.name)
 			.await
 			.unwrap_or_else(|error| panic!("the tile shader should bake: {error}"));
 

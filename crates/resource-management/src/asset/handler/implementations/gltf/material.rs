@@ -28,7 +28,6 @@ pub(crate) async fn resolve_gltf_materials(
 	mesh_url: ResourceId<'_>,
 	gltf: &gltf::Gltf,
 	materials: &[gltf::Material<'_>],
-	generator: Option<&dyn ProgramGenerator>,
 ) -> Result<Vec<ReferenceModel<VariantModel>>, LoadErrors> {
 	let image_semantics = gltf_image_semantics(gltf);
 	let sources = materials
@@ -54,7 +53,7 @@ pub(crate) async fn resolve_gltf_materials(
 		.map(|image| generated_gltf_image_id(mesh_url, image.index() as u32, image.name()))
 		.collect::<Vec<_>>();
 
-	resolve_container_materials(context, generator, mesh_url, &image_ids, sources).await
+	resolve_container_materials(context, mesh_url, &image_ids, sources).await
 }
 
 /// Builds the BEMX graph of a generated glTF material, with channel reads moved to where its packed images store them.

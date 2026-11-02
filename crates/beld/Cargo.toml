@@ -37,3 +37,4 @@ workspace = true
 
 [dev-dependencies]
 base64 = "0.13.1"
+besl = { package = "byte-engine-besl", path = "../besl" }

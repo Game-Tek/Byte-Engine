@@ -503,8 +503,10 @@ impl Serialize for StreamInspection<'_> {
 	}
 }
 
-/// Writes bytes as one padded base64 string without building the string first.
-struct Base64View<'a>(&'a [u8]);
+/// The `Base64View` struct writes bytes as one padded base64 string without building the string first.
+///
+/// Serialize it wherever a JSON document carries raw bytes, as payload streams and intercepted bake products do.
+pub struct Base64View<'a>(pub &'a [u8]);
 
 impl Serialize for Base64View<'_> {
 	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

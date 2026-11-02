@@ -15,7 +15,6 @@ pub(crate) async fn resolve_fbx_materials(
 	url: ResourceId<'_>,
 	scene: &ufbx::Scene,
 	keys: &[MaterialKey],
-	generator: Option<&dyn ProgramGenerator>,
 ) -> Result<Vec<ReferenceModel<VariantModel>>, LoadErrors> {
 	let sources = keys
 		.iter()
@@ -53,7 +52,7 @@ pub(crate) async fn resolve_fbx_materials(
 		.map(|texture| generated_fbx_image_id(url, texture))
 		.collect::<Vec<_>>();
 
-	resolve_container_materials(context, generator, url, &image_ids, sources).await
+	resolve_container_materials(context, url, &image_ids, sources).await
 }
 
 /// Collects material identities in deterministic first-use order across FBX mesh instances.

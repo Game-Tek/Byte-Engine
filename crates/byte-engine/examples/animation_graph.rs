@@ -15,7 +15,7 @@ use byte_engine::{
 	application::{
 		Parameter,
 		graphics::{
-			GraphicsApplication, register_default_asset_handlers, setup_animation_pool, setup_default_audio,
+			GraphicsApplication, configure_default_baking, setup_animation_pool, setup_default_audio,
 			setup_default_input, setup_default_resource_and_asset_management, setup_pbr_visibility_shading_render_pipeline,
 		},
 	},
@@ -76,7 +76,7 @@ fn main() {
 	// Register every resource worker before the loading thread starts.
 	// `default_setup` launches that thread internally, so this explicit setup form
 	// is the one to use when an app also owns animation-loading workers.
-	setup_default_resource_and_asset_management(&mut app, register_default_asset_handlers);
+	setup_default_resource_and_asset_management(&mut app, configure_default_baking);
 	setup_default_input(&mut app);
 	setup_default_audio(&mut app);
 	setup_pbr_visibility_shading_render_pipeline(&mut app);

@@ -21,6 +21,7 @@ pub mod parser;
 pub mod sampler;
 mod tokenizer;
 pub mod vm;
+mod writer;
 
 pub use lexer::Expressions;
 pub use lexer::Node;
@@ -32,6 +33,7 @@ pub use lexer::infer_expression_type;
 pub use crate::lexer::NodeReference;
 pub use crate::lexer::{BindingTypes, BufferMemoryClass, CallTarget, ElseBranch, FixedArray, MatchArm};
 pub use crate::sampler::SamplerState;
+pub use crate::writer::write;
 
 /// The base of every link to the online documentation. Set `BYTE_ENGINE_DOCS_BASE_URL` at build time to link elsewhere.
 ///

@@ -444,6 +444,85 @@ impl<'a> BakeContext<'a> {
 	pub fn allocator(&self) -> &'a dyn Allocator {
 		self.allocator
 	}
+
+	/// Returns the renderer's program generator, which every handler that bakes materials shares.
+	///
+	/// Reports the error and fails when the manager has none. Next, build the material's program with
+	/// [`ProgramGenerator::generate`].
+	pub fn program_generator(&self) -> Result<&'a dyn ProgramGenerator, LoadErrors> {
+		self.asset_manager.program_generator.as_deref().ok_or_else(|| {
+			self.error(
+				"Material generation is unavailable. The most likely cause is an asset manager configured without the renderer's program generator. Install one with `AssetManager::set_program_generator`, as `configure_default_baking` does.",
+			);
+			LoadErrors::FailedToProcess
+		})
+	}
+
+	/// Returns the renderer's transform for standalone BESL programs, or `None` when the manager has none.
+	pub fn program_transform(&self) -> Option<&'a dyn ProgramTransform> {
+		self.asset_manager.program_transform.as_deref()
+	}
+
+	/// Emits an intermediate product of this bake to the manager's
+	/// [`BakeInterceptor`](crate::asset::intercept::BakeInterceptor), if one wants `name`.
+	///
+	/// `name` is the ID of the resource the product belongs to, a `.`, and the usual file extension of its format, such
+	/// as `wood.bema#shader.besl`; see [`crate::asset::intercept`]. `produce` runs only when an interceptor wants the
+	/// product, so emitting one is free for a bake nobody intercepts.
+	pub fn intercept(&self, name: impl fmt::Display, produce: impl FnOnce() -> Vec<u8>) {
+		let Some(interceptor) = &self.asset_manager.interceptor else {
+			return;
+		};
+		let name = name.to_string();
+		if interceptor.wants(&name) {
+			interceptor.receive(name, produce());
+		}
+	}
+
+	/// Links and lowers `program` without compiling it, for shaders whose resource ID hashes their lowered source.
+	///
+	/// While an interceptor is installed, the result keeps the program's BESL source, which [`Self::compile_prepared`]
+	/// emits once the ID is known. Next, name the shader, then call [`Self::compile_prepared`].
+	pub(crate) fn prepare_shader(
+		&self,
+		program: besl::parser::Node<'_>,
+		settings: &ShaderGenerationSettings,
+	) -> Result<PreparedBeslShader, String> {
+		let source = self.asset_manager.interceptor.is_some().then(|| besl::write(&program));
+		let mut prepared = prepare_besl_shader(program, settings)?;
+		prepared.source = source;
+		Ok(prepared)
+	}
+
+	/// Compiles `shader` with the manager's shader compiler into the shader `id`. Every shader a bake compiles goes
+	/// through here.
+	///
+	/// Before compiling, it emits the shader's BESL source as the `<id>.besl` product, and the platform source it lowered
+	/// to as `<id>.msl`, `<id>.hlsl`, or `<id>.glsl`, in the platform's shading language.
+	pub(crate) async fn compile_prepared(
+		&self,
+		id: &str,
+		mut shader: PreparedBeslShader,
+	) -> Result<(Shader, Box<[u8]>), String> {
+		if let Some(source) = shader.source.take() {
+			self.intercept(format_args!("{id}.besl"), || source.into_bytes());
+		}
+		let language = PlatformShaderLanguage::current_platform();
+		self.intercept(format_args!("{id}.{}", language.extension()), || {
+			shader.platform_source().as_bytes().to_vec()
+		});
+		self.asset_manager.shader_compiler.compile(shader, id).await
+	}
+
+	/// Prepares and compiles `program` into the shader named by `settings`, for shaders whose ID is known up front.
+	pub(crate) async fn compile_shader(
+		&self,
+		program: besl::parser::Node<'_>,
+		settings: ShaderGenerationSettings,
+	) -> Result<(Shader, Box<[u8]>), String> {
+		let shader = self.prepare_shader(program, &settings)?;
+		self.compile_prepared(&settings.name, shader).await
+	}
 }
 
 /// Replaces the recorded version of a source already in `dependencies`, or inserts it so the list stays sorted by ID.
@@ -476,6 +555,14 @@ use crate::asset::{
 	storage_backend::{AssetDependency, AssetVersion},
 };
 use crate::{
-	Model, ProcessedAsset, ReferenceModel, SerializableResource, asset, r#async::BoxedFuture,
-	processors::image::ImageProcessor, resource,
+	Model, ProcessedAsset, ReferenceModel, SerializableResource, asset,
+	asset::handler::implementations::{
+		ProgramGenerator, ProgramTransform,
+		besl::{PreparedBeslShader, prepare_besl_shader},
+	},
+	r#async::BoxedFuture,
+	processors::image::ImageProcessor,
+	resource,
+	resources::material::Shader,
+	shader::{besl::backends::platform::PlatformShaderLanguage, generator::ShaderGenerationSettings},
 };

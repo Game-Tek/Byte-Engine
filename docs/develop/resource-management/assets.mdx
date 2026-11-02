@@ -90,7 +90,7 @@ Every resource type has one processor, and every handler that produces that type
 This keeps two rules true, so preserve them when you change a handler or a processor:
 
 - The same pixels with the same semantic and settings bake to the same image, whether they came from a PNG, an EXR, or a glTF or FBX texture. A step such as mip generation can't be present for one format and missing for another.
-- A handler holds no processing backend. The asset manager owns the `ImageProcessor`, which holds the mip and environment-lighting generators, and handlers reach it through `BakeContext::image_processor`. Install GPU backends once with `AssetManager::set_image_processor`; a new manager processes on the CPU.
+- A handler holds no processing backend. The asset manager owns the `ImageProcessor`, which holds the mip and environment-lighting generators, and handlers reach it through `BakeContext::image_processor`. Install GPU backends once with `AssetManager::set_image_processor`; a new manager processes on the CPU. See [Bake services](#bake-services) for the other services the manager owns.
 
 To add an image format, decode it into an `ImageSource` and call `ImageProcessor::process_in`, then name the result with `ProcessedImage::into_asset` and store it. Don't build an `Image` yourself. The `Semantic` decides the stored format and channel packing. `ImageProcessorSettings` decides the optional steps: whether the image gets a mip chain and whether it's block-compressed. Start from `ImageProcessorSettings::for_semantic` for a sampled texture, or `ImageProcessorSettings::LOOKUP` for a table read at exact coordinates. Authors override these through the asset's sidecar: read it with `image_settings`, which takes the `image` key for a standalone image or the `images` key for a model, so every format honors the same [image settings](/docs/reference/assets#image-settings). When your decoder writes into a buffer it owns, hand that buffer over with `ImageProcessor::process_owned_in` instead of lending it. When the decoded bytes already are the stored format, the processor keeps the buffer as the stored image and filters the mip chain into it after the base level, so the pixels are never copied. Reserve `ImageProcessor::in_place_capacity` bytes before decoding: the bake arena can't grow a buffer without copying it, and memory it frees isn't reused until the bake ends. The PNG, EXR, and IES handlers work this way.
 
@@ -103,6 +103,36 @@ The image processor tests cover format, packing, mip, and compression decisions 
 When you write a mesh importer, pass a `MeshLodSettings` to `MeshProcessorSession::new`; `MeshLodSettings::default()` gives the defaults listed under [detail levels](/docs/reference/assets#detail-levels).
 Have each `MeshPrimitiveSource` return a material slot, an index into a material list you resolve separately. Geometry doesn't depend on material contents, so you can process primitives while their materials and textures bake, as the glTF and FBX handlers do. Pass the resolved materials, in slot order, to the session's finish call.
 Material and standalone shader processing compile BESL to platform-native shader artifacts and store reflected interface metadata such as descriptor names, slots, access, and workgroup size.
+
+## Bake services
+
+A handler holds no service it bakes with. The asset manager owns one instance of each, every handler reaches it through `BakeContext`, and one configuration function installs them all, so a `.bema` material, a glTF material, and an FBX material target the same renderer with the same generator:
+
+| Service | Installed with | Reached with | Default |
+| --- | --- | --- | --- |
+| `ImageProcessor` | `AssetManager::set_image_processor` | `BakeContext::image_processor` | CPU generation |
+| `ProgramGenerator` | `AssetManager::set_program_generator` | `BakeContext::program_generator` | None; materials fail to bake |
+| `ProgramTransform` | `AssetManager::set_program_transform` | `BakeContext::program_transform` | None; standalone shaders link unchanged |
+| `ShaderCompiler` | `AssetManager::set_shader_compiler`, in tests only | `BakeContext::compile_prepared` | The platform compiler |
+| `BakeInterceptor` | `AssetManager::set_interceptor` | `BakeContext::intercept` | None |
+
+`configure_default_baking` installs the engine's services and handlers. The debug runtime and BELD both receive the application's configuration function and differ only in storage, so keep every setup step in that function. A step taken in only one of them makes a debug run and a release bake produce different resources.
+
+Every shader takes the same two steps. `BakeContext::prepare_shader` links, reflects, and lowers it, which needs no platform toolchain. `BakeContext::compile_prepared` then emits its BESL and compiles it with the manager's `ShaderCompiler`, which covers only the toolchain step. Shaders whose ID hashes their lowered source, the generated material shaders and the assembled evaluation shaders, take the steps apart, so they can name the shader in between. `BakeContext::compile_shader` takes both at once for a shader whose ID is known up front. A test compiler therefore replaces the toolchain for every shader, but every test program must still link and lower for its stage.
+
+## Intercept intermediate products
+
+A bake can hand the intermediate products it builds to a caller, so a developer can see what the bake really did, such as the BESL program a renderer generated for a material. BELD prints them with `bake --dry-run --intercept`; see the [BELD reference](/docs/api/beld#intercepts).
+
+A product is an artifact: bytes and a name. The name is the ID of the resource the product belongs to, a `.`, and the usual file extension of the product's format, such as `wood.bema#shader.besl`. There's no list of products. To emit a new one, call `BakeContext::intercept` with its name and a closure that builds its bytes, at the point in the bake where the product exists. Name it by the same rule, so callers can select it with a pattern such as `*.msl` or `mesh.gltf#*`.
+
+A change must keep these rules true:
+
+- A product comes from the bake that builds the resource, never from a separate path, so it's exactly what the bake used.
+- A product nobody asked for costs one branch. `BakeContext::intercept` runs the closure only when an interceptor wants the name, so build the product inside the closure, never before the call.
+- Every compiled shader emits its BESL and its lowered platform source, `<id>.msl`, `<id>.hlsl`, or `<id>.glsl`, in `BakeContext::compile_prepared`. While an interceptor is installed, `BakeContext::prepare_shader` keeps the program's source in the `PreparedBeslShader`, because a shader whose ID hashes its lowered source has no name until it's prepared. A shader the bake reuses from the store isn't compiled, so it emits nothing.
+
+The `an_intercepted_bake_emits_the_besl_of_every_shader_it_compiles` and `an_interceptor_receives_only_the_products_it_wants` tests in the `.bema` handler guard the names and the selection. BELD's `an_intercepted_dry_run_prints_the_besl_of_every_shader_it_compiles` test guards the output.
 
 ## Allocation shape
 

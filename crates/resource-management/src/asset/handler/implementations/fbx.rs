@@ -663,11 +663,9 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
 
-		let mut handler = FBXAssetHandler::new();
+		asset_manager.set_program_generator(MinimalTestShaderGenerator);
 
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		asset_manager.add_asset_handler(FBXAssetHandler);
 
 		asset_manager
 			.bake("material_factors.fbx")
@@ -739,7 +737,7 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
-		asset_manager.add_asset_handler(FBXAssetHandler::new());
+		asset_manager.add_asset_handler(FBXAssetHandler);
 
 		let animation: ReferenceModel<AnimationModel> = asset_manager
 			.bake_if_not_exists("triangle_move.fbx#animations/MoveX")
@@ -768,7 +766,7 @@ mod tests {
 
 		asset_manager.add_asset_handler(TestVariantAssetHandler);
 
-		asset_manager.add_asset_handler(FBXAssetHandler::new());
+		asset_manager.add_asset_handler(FBXAssetHandler);
 
 		let result = asset_manager.bake("degenerate_quad.fbx").await;
 
@@ -804,7 +802,7 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
 
-		asset_manager.add_asset_handler(FBXAssetHandler::new());
+		asset_manager.add_asset_handler(FBXAssetHandler);
 
 		assert!(asset_manager.bake("broken.fbx").await.is_err());
 		assert!(resource_storage.get_resource(ResourceId::new("broken.fbx")).is_none());
@@ -826,7 +824,7 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
 
-		asset_manager.add_asset_handler(FBXAssetHandler::new());
+		asset_manager.add_asset_handler(FBXAssetHandler);
 
 		asset_manager
 			.bake("animation_only.fbx")
@@ -863,7 +861,7 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
-		asset_manager.add_asset_handler(FBXAssetHandler::new());
+		asset_manager.add_asset_handler(FBXAssetHandler);
 
 		let animation: ReferenceModel<AnimationModel> = asset_manager
 			.bake_if_not_exists("triangle_move.fbx")
@@ -885,11 +883,9 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
-		let mut handler = FBXAssetHandler::new();
+		asset_manager.set_program_generator(MinimalTestShaderGenerator);
 
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		asset_manager.add_asset_handler(FBXAssetHandler);
 
 		let mesh: ReferenceModel<MeshModel> = asset_manager
 			.bake_if_not_exists("triangle_move.fbx")
@@ -1063,7 +1059,7 @@ use super::{
 	mesh_lod_settings, sanitize_material_name, select_unfragmented_resource, store_imported_image, store_model,
 };
 use crate::asset::handler::implementations::bema::{
-	GeneratedMaterial, MaterialSource, ProgramGenerator, bead_material_override, resolve_container_materials,
+	GeneratedMaterial, MaterialSource, bead_material_override, resolve_container_materials,
 };
 use crate::{
 	ProcessedAsset, ReferenceModel, asset,

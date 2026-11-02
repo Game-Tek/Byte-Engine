@@ -34,14 +34,14 @@ pub(super) fn attach_sampler(
 		if state.mip_filter != Filter::Nearest {
 			return Err(LexError::invalid(format!(
 				"Sampler `{sampler}` reduces with `{}` but blends levels. The most likely cause is an omitted `mip_filter`, which defaults to `linear`. Add `mip_filter: nearest` to the sampler. See {}.",
-				reduction_name(state.reduction),
+				state.reduction.token(),
 				crate::online_docs_url(SAMPLERS_DOCS_PATH)
 			)));
 		}
 		if state.address != Address::Clamp {
 			return Err(LexError::invalid(format!(
 				"Sampler `{sampler}` reduces with `{}` but doesn't clamp coordinates. The most likely cause is a `repeat` or `mirror` address on a min or max sampler. Remove the `address` property, or set it to `clamp`. See {}.",
-				reduction_name(state.reduction),
+				state.reduction.token(),
 				crate::online_docs_url(SAMPLERS_DOCS_PATH)
 			)));
 		}
@@ -49,7 +49,7 @@ pub(super) fn attach_sampler(
 		if !format.is_empty() && format != "ArrayTexture2D" {
 			return Err(LexError::invalid(format!(
 				"Descriptor `{descriptor}` is a {format}, but its sampler `{sampler}` reduces with `{}`. The most likely cause is a reducing sampler on a texture that isn't 2D. Use a `Texture2D` or `Texture2DArray` descriptor, or a sampler with `reduction: average`. See {}.",
-				reduction_name(state.reduction),
+				state.reduction.token(),
 				crate::online_docs_url(SAMPLERS_DOCS_PATH)
 			)));
 		}
@@ -72,7 +72,7 @@ pub(super) fn validate_sampled_read(intrinsic: &str, texture: &NodeReference) ->
 		"sample" if state.reduces() => {
 			return Err(LexError::invalid(format!(
 				"`sample` reads a texture whose sampler reduces with `{}`. The most likely cause is a reducing sampler on a texture read with implicit derivatives. Read it with `texture_lod`, `downsample_min`, or `downsample_max`. See {}.",
-				reduction_name(state.reduction),
+				state.reduction.token(),
 				crate::online_docs_url(SAMPLERS_DOCS_PATH)
 			)));
 		}
@@ -81,8 +81,8 @@ pub(super) fn validate_sampled_read(intrinsic: &str, texture: &NodeReference) ->
 	if state.reduction != required {
 		return Err(LexError::invalid(format!(
 			"`{intrinsic}` reads a texture whose sampler reduces with `{}`. The most likely cause is a downsample call that doesn't match the sampler. Call the downsample intrinsic that matches the sampler, or set the sampler's `reduction` to `{}`. See {}.",
-			reduction_name(state.reduction),
-			reduction_name(required),
+			state.reduction.token(),
+			required.token(),
 			crate::online_docs_url(SAMPLERS_DOCS_PATH)
 		)));
 	}
@@ -95,7 +95,7 @@ pub(super) fn validate_function_argument(function: &str, argument: &NodeReferenc
 	match binding_sampler(argument) {
 		Some(state) if state.reduces() => Err(LexError::invalid(format!(
 			"Function `{function}` takes a texture whose sampler reduces with `{}`. The most likely cause is a helper function that reads a min or max texture through a parameter. Read the texture in the function that calls `{function}`, and pass the values it reads. See {}.",
-			reduction_name(state.reduction),
+			state.reduction.token(),
 			crate::online_docs_url(SAMPLERS_DOCS_PATH)
 		))),
 		_ => Ok(()),
@@ -121,11 +121,3 @@ pub fn binding_sampler(texture: &NodeReference) -> Option<SamplerState> {
 	}
 }
 
-/// Returns the source spelling of a reduction, for messages.
-fn reduction_name(reduction: Reduction) -> &'static str {
-	match reduction {
-		Reduction::Average => "average",
-		Reduction::Min => "min",
-		Reduction::Max => "max",
-	}
-}

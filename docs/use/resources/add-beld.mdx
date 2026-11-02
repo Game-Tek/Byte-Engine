@@ -6,7 +6,8 @@ icon: Hammer
 
 Give your application its own BELD binary, so a release bake produces the
 resources a debug run does. It starts from your application's parameters,
-registers its asset handlers, and builds from its `Cargo.lock`.
+configures baking the way your application does, and builds from its
+`Cargo.lock`.
 
 ## Add the dependency
 
@@ -52,30 +53,33 @@ In `src/main.rs`, create the application with it:
 let mut app = GraphicsApplication::new("My Game", &my_game::parameters());
 ```
 
-## Register the same asset handlers
+## Configure baking the same way
 
-Pass the function that registers your asset handlers to
-`setup_default_resource_and_asset_management`. With only the engine's formats,
-pass `register_default_asset_handlers`:
+Pass the function that configures your asset manager to
+`setup_default_resource_and_asset_management`. It installs the services every
+handler bakes with, such as the image processor and the renderer's material
+program generator, and the asset handlers. With only the engine's formats,
+pass `configure_default_baking`:
 
 ```rust
 use byte_engine::application::graphics::{
-	register_default_asset_handlers, setup_default_resource_and_asset_management,
+	configure_default_baking, setup_default_resource_and_asset_management,
 };
 
-setup_default_resource_and_asset_management(&mut app, register_default_asset_handlers);
+setup_default_resource_and_asset_management(&mut app, configure_default_baking);
 ```
 
 To bake a format of your own, write one function in `src/lib.rs` that
-registers the engine's handlers and then yours, and pass it here instead:
+configures the engine's baking and then registers your handlers, and pass it
+here instead:
 
 ```rust
-use byte_engine::application::{Parameter, graphics::register_default_asset_handlers};
+use byte_engine::application::{Parameter, graphics::configure_default_baking};
 use resource_management::asset::manager::AssetManager;
 
-/// Registers the asset handlers the game bakes with, in debug runs and in its BELD.
-pub fn register_asset_handlers(asset_manager: &mut AssetManager, parameters: &[Parameter]) {
-	register_default_asset_handlers(asset_manager, parameters);
+/// Configures how the game bakes its assets, in debug runs and in its BELD.
+pub fn configure_baking(asset_manager: &mut AssetManager, parameters: &[Parameter]) {
+	configure_default_baking(asset_manager, parameters);
 	asset_manager.add_asset_handler(DialogueAssetHandler::new());
 }
 ```
@@ -83,13 +87,13 @@ pub fn register_asset_handlers(asset_manager: &mut AssetManager, parameters: &[P
 ## Add the binary
 
 Create `src/bin/beld.rs`, and pass `beld::run` your parameters and the same
-registration function:
+configuration function:
 
 ```rust
-use byte_engine::application::graphics::register_default_asset_handlers;
+use byte_engine::application::graphics::configure_default_baking;
 
 fn main() -> std::process::ExitCode {
-	beld::run(&my_game::parameters(), register_default_asset_handlers)
+	beld::run(&my_game::parameters(), configure_default_baking)
 }
 ```
 
@@ -118,6 +122,6 @@ Next, [use BELD](/docs/use/resources/beld) to bake or inspect resources.
 
 ## Rust API
 
-- [`register_default_asset_handlers`](/docs/api/latest/byte_engine/application/graphics#fn.register_default_asset_handlers)
-- [`setup_default_resource_and_asset_management`](/docs/api/latest/byte_engine/application/graphics#fn.setup_default_resource_and_asset_management)
+- [`configure_default_baking`](/docs/api/latest/byte_engine/application/graphics/defaults#fn.configure_default_baking)
+- [`setup_default_resource_and_asset_management`](/docs/api/latest/byte_engine/application/graphics/defaults#fn.setup_default_resource_and_asset_management)
 - [`layer_parameters`](/docs/api/latest/byte_engine/application/parameters#fn.layer_parameters)

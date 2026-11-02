@@ -102,7 +102,7 @@ impl VisibilityShaderGenerator {
 	/// Creates a generator for a project whose `render` parameters, such as `app.parameters().scope("render")`,
 	/// select the features it builds in; see [`VisibilityFeatures::from_parameters`].
 	///
-	/// Next, pass it to [`crate::application::graphics::register_default_asset_handlers`].
+	/// Next, pass it to [`crate::application::graphics::configure_default_baking`].
 	pub fn new(parameters: impl Parameters) -> Self {
 		Self::with_features(VisibilityFeatures::from_parameters(parameters))
 	}

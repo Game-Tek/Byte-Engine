@@ -7,7 +7,7 @@ use utils::Extent;
 
 use super::{
 	ResourceId,
-	besl::{PlatformShaderCompilerAdapter, ShaderCompiler, parse_besl_source},
+	besl::parse_besl_source,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	store_model, store_model_owned,
 };
@@ -24,23 +24,7 @@ use crate::{
 /// Baking `effects/sparks.particles` stores the [`ParticleSystem`] under that ID, its generated shaders under
 /// `effects/sparks.particles#shaders/simulate`, `#shaders/vertex`, and `#shaders/fragment`, and the pipelines named by
 /// [`ParticleSystem::simulate_pipeline`] and [`ParticleSystem::draw_pipeline`]. Requesting any of them bakes them all.
-pub struct ParticleSystemAssetHandler {
-	compiler: Box<dyn ShaderCompiler>,
-}
-
-impl Default for ParticleSystemAssetHandler {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
-impl ParticleSystemAssetHandler {
-	pub fn new() -> Self {
-		Self {
-			compiler: Box::new(PlatformShaderCompilerAdapter),
-		}
-	}
-}
+pub struct ParticleSystemAssetHandler;
 
 impl AssetHandler for ParticleSystemAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
@@ -91,7 +75,7 @@ impl AssetHandler for ParticleSystemAssetHandler {
 		let compiled = utils::r#async::join_all(stages.map(|(stage, source, settings)| async move {
 			let id = shader(stage);
 			let result = match parse_besl_source(&source) {
-				Ok(program) => self.compiler.compile(program, settings.name(id.clone())).await,
+				Ok(program) => context.compile_shader(program, settings.name(id.clone())).await,
 				Err(error) => Err(error),
 			};
 			(stage, id, result)

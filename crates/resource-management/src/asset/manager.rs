@@ -14,6 +14,14 @@ pub(crate) struct AssetManagerState {
 	asset_handlers: Vec<Box<dyn DynAssetHandler>>,
 	/// The image pipeline every handler that produces images shares.
 	pub(in crate::asset) image_processor: ImageProcessor,
+	/// The renderer's generator every handler that bakes materials turns their BEMX graphs into programs with.
+	pub(in crate::asset) program_generator: Option<Box<dyn ProgramGenerator>>,
+	/// The renderer's adaptation every standalone BESL program goes through before it links.
+	pub(in crate::asset) program_transform: Option<Box<dyn ProgramTransform>>,
+	/// The compiler every handler that bakes shaders compiles them with.
+	pub(in crate::asset) shader_compiler: Box<dyn ShaderCompiler>,
+	/// The caller that receives the intermediate products a bake emits, if any asked for them.
+	pub(in crate::asset) interceptor: Option<Arc<dyn BakeInterceptor>>,
 	storage_backend: Box<dyn DynStorageBackend>,
 	pub(in crate::asset) resource_storage_backend: Arc<dyn DynResourceStorageBackend>,
 	in_flight_bakes: Arc<Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>>,
@@ -87,6 +95,10 @@ impl AssetManager {
 			state: Arc::new(AssetManagerState {
 				asset_handlers: Vec::with_capacity(8),
 				image_processor: ImageProcessor::default(),
+				program_generator: None,
+				program_transform: None,
+				shader_compiler: Box::new(PlatformShaderCompilerAdapter),
+				interceptor: None,
 				storage_backend: Box::new(storage_backend),
 				resource_storage_backend,
 				in_flight_bakes: Arc::new(Mutex::new(HashMap::with_capacity_and_hasher(32, Default::default()))),
@@ -108,9 +120,7 @@ impl AssetManager {
 	/// to this budget. Active work can exceed the budget so it can finish and release memory without deadlocking.
 	/// Configure the budget before calling [`Self::bake`] or sharing the manager.
 	pub fn set_bake_memory_budget(&mut self, byte_budget: NonZeroUsize) {
-		Arc::get_mut(&mut self.state)
-			.expect("The bake memory budget must be configured before the asset manager starts processing requests.")
-			.bake_memory_budget = Some(Arc::new(BakeMemoryBudget::new(byte_budget.get())));
+		self.configurable_state().bake_memory_budget = Some(Arc::new(BakeMemoryBudget::new(byte_budget.get())));
 	}
 
 	/// Makes every resource stored before `time` stale, so the next bakes rebuild it once.
@@ -125,9 +135,7 @@ impl AssetManager {
 			.duration_since(std::time::UNIX_EPOCH)
 			.map_or(0, |elapsed| u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX));
 
-		Arc::get_mut(&mut self.state)
-			.expect("The rebuild cutoff must be configured before the asset manager starts processing requests.")
-			.rebuild_cutoff = Some(cutoff);
+		self.configurable_state().rebuild_cutoff = Some(cutoff);
 	}
 
 	/// Sets the patterns of asset IDs that are never baked, usually the project's `resources.exclude`.
@@ -136,9 +144,7 @@ impl AssetManager {
 	/// asset. [`Self::discover`] still lists matching assets, so a caller can check them against its own selection
 	/// with [`Self::is_excluded`] before baking. Configure it before calling [`Self::bake`] or sharing the manager.
 	pub fn set_excluded_assets(&mut self, patterns: Vec<Glob>) {
-		Arc::get_mut(&mut self.state)
-			.expect("The excluded assets must be configured before the asset manager starts processing requests.")
-			.excluded = patterns;
+		self.configurable_state().excluded = patterns;
 	}
 
 	/// Returns whether a pattern set with [`Self::set_excluded_assets`] matches the asset ID.
@@ -151,10 +157,7 @@ impl AssetManager {
 	/// After all handlers are registered, install this manager on a
 	/// [`crate::ResourceManager`] in a debug build or call [`Self::bake`].
 	pub fn add_asset_handler<T: AssetHandler + Send + Sync + 'static>(&mut self, asset_handler: T) {
-		Arc::get_mut(&mut self.state)
-			.expect("Asset handlers must be registered before the asset manager starts processing requests.")
-			.asset_handlers
-			.push(Box::new(asset_handler));
+		self.configurable_state().asset_handlers.push(Box::new(asset_handler));
 	}
 
 	/// Replaces the image processor every handler that produces images bakes with.
@@ -162,9 +165,42 @@ impl AssetManager {
 	/// A new manager processes images on the CPU. Install a processor with GPU backends here once, instead of on each
 	/// image-producing handler, so every source format bakes images the same way.
 	pub fn set_image_processor(&mut self, image_processor: ImageProcessor) {
+		self.configurable_state().image_processor = image_processor;
+	}
+
+	/// Installs the generator every material handler turns BEMX graphs into shader programs with.
+	///
+	/// Install the renderer's generator here once, so `.bema`, glTF, and FBX materials all target it with one instance.
+	/// Without one, materials fail to bake.
+	pub fn set_program_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
+		self.configurable_state().program_generator = Some(Box::new(generator));
+	}
+
+	/// Installs the transform every standalone BESL program goes through after its layout layers stack and before it
+	/// links.
+	pub fn set_program_transform<T: ProgramTransform + 'static>(&mut self, transform: T) {
+		self.configurable_state().program_transform = Some(Box::new(transform));
+	}
+
+	/// Replaces the platform compiler every shader bakes with, so tests can bake shaders without a platform toolchain.
+	#[cfg(test)]
+	pub(crate) fn set_shader_compiler<C: ShaderCompiler + 'static>(&mut self, compiler: C) {
+		self.configurable_state().shader_compiler = Box::new(compiler);
+	}
+
+	/// Installs the interceptor that receives the intermediate products bakes emit, such as the BESL source of every
+	/// shader.
+	///
+	/// See [`BakeInterceptor`] for how products are named. A bake without an interceptor emits nothing and pays only a
+	/// branch per product.
+	pub fn set_interceptor(&mut self, interceptor: Arc<dyn BakeInterceptor>) {
+		self.configurable_state().interceptor = Some(interceptor);
+	}
+
+	/// Returns the state to configure, which only exists while no bake shares it.
+	fn configurable_state(&mut self) -> &mut AssetManagerState {
 		Arc::get_mut(&mut self.state)
-			.expect("The image processor must be set before the asset manager starts processing requests.")
-			.image_processor = image_processor;
+			.expect("The asset manager must be configured before it starts processing requests.")
 	}
 
 	/// Reports whether a source directory can be read when the storage backend exposes paths.
@@ -1796,7 +1832,14 @@ use crate::{
 	Model, ProcessedAsset, ReferenceModel,
 	asset::{
 		self, DynStorageBackend, ResourceId,
-		handler::{DynAssetHandler, LoadErrors},
+		handler::{
+			DynAssetHandler, LoadErrors,
+			implementations::{
+				ProgramGenerator, ProgramTransform,
+				besl::{PlatformShaderCompilerAdapter, ShaderCompiler},
+			},
+		},
+		intercept::BakeInterceptor,
 		storage_backend::AssetDependency,
 	},
 	online_docs_url,

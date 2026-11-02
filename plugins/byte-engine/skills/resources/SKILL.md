@@ -1,6 +1,6 @@
 ---
 name: resources
-description: "Bake Byte Engine assets into resources with BELD and inspect the resource store efficiently: when a bake is needed at all, which BELD binary to run, dry runs, scriptable queries for what fills the store, stale, failed, duplicate, uncompressed, or unreachable resources, reading one resource's model or payload data, and why a resource doesn't load. Use when the user asks to bake, rebake, or package assets, asks what an asset turns into, or wants to find or debug resources in a Byte Engine project."
+description: "Bake Byte Engine assets into resources with BELD and inspect the resource store efficiently: when a bake is needed at all, which BELD binary to run, dry runs, intercepting a bake's intermediate products such as the BESL and MSL each shader compiles from, scriptable queries for what fills the store, stale, failed, duplicate, uncompressed, or unreachable resources, reading one resource's model or payload data, and why a resource doesn't load. Use when the user asks to bake, rebake, or package assets, asks what an asset turns into, wants to see the shader source a material or shader generates, or wants to find or debug resources in a Byte Engine project."
 ---
 
 # Bake and inspect Byte Engine resources
@@ -114,6 +114,59 @@ beld --source "$PWD/assets" bake --dry-run --format json character.glb 2>/dev/nu
 
 Quote IDs with a fragment, such as `'character.fbx#animations/Walk'`, so the shell keeps the `#`. Animation clips
 print their keyframes under `resource.tracks` without `--payload`.
+
+## See a bake's intermediate products, without instrumenting the application
+
+A bake builds intermediate products it normally throws away, such as the BESL program each shader compiles from and
+the platform source that BESL lowers to. Add `--intercept <pattern>` to a dry run to print them. Don't add logging,
+debug prints, or file dumps to the engine or the application to get these; intercept them.
+
+Each product is named `<resource ID>.<extension>`, after the resource it belongs to and its format:
+
+| Product | Name | When you need it |
+| --- | --- | --- |
+| BESL a shader compiles from | `<shader ID>.besl` | What a material's graph or a standalone shader became after the renderer's program generator or transform; reading the program behind a shader compile error. |
+| Platform source the BESL lowered to | `<shader ID>.msl` on macOS, `.hlsl` on Windows, `.glsl` on Linux | What the platform compiler received; a shader that compiles but renders or performs differently than its BESL suggests. |
+
+Shader IDs are `<material>.bema#shader` and `#hit-shader` for `.bema` materials (a variant uses its parent
+material's shader), `<container>#shaders/<key>` for glTF and FBX materials, and `<system>.particles#shaders/<stage>`
+for particles. A standalone shader's ID is its `.besl` asset, so its products are `<shader>.besl.besl` and
+`<shader>.besl.msl`. Baking a `.pipeline` bakes the standalone shaders it lists, such as
+`byte-engine/rendering/visibility/shadow-mesh.besl.msl` for `cone-shadow.pipeline`.
+
+```bash
+# The BESL every shader of a material compiles from
+beld --source "$PWD/assets" bake --dry-run --intercept '*.besl' materials/wood.bema 2>/dev/null
+
+# The BESL beside the MSL it lowered to, for one glTF's generated materials
+beld --source "$PWD/assets" bake --dry-run --intercept 'character.glb#*.besl' --intercept 'character.glb#*.msl' \
+  character.glb 2>/dev/null
+
+# Every product a bake builds, by name only
+beld --source "$PWD/assets" bake --dry-run --intercept '*' --format json character.glb 2>/dev/null \
+  | jq -r '.intercepted[].name'
+
+# One product's text, to save or diff
+beld --source "$PWD/assets" bake --dry-run --intercept '*.msl' --format json materials/wood.bema 2>/dev/null \
+  | jq -r '.intercepted[] | select(.name == "materials/wood.bema#shader.msl") | .content' > wood.msl
+```
+
+- Patterns match the whole name, ignoring case. `*` also matches `/` and `#`. Quote them so the shell doesn't
+  expand them.
+- The human format prints each product under a `// <name>` line and nothing else, so it pipes cleanly. The JSON
+  format is the usual dry-run document with `intercepted` added; each entry has `name`, `encoding` (`utf-8` or
+  `base64`), and `content`.
+- A dry run bakes into an empty store, so every product is built. A pattern that matches nothing logs a warning on
+  standard error and still exits with code 0.
+- BELD reads the project's `config.json`, so the programs match the render features the application uses. Pass
+  `--config` or set `BE_RENDER__*` variables to see another configuration's shaders.
+- The BESL is written back from the program the bake built. Declarations engine code adds with no BESL syntax print
+  as comments (`// specialization …`, `// intrinsic …`, `// layer: …`), so the text reads as the program but may
+  not parse back. The MSL leaves out the precompiled prelude the Metal compiler includes.
+- When `render.material-evaluation` is `uber`, materials compile no shader of their own. A dry run then bakes the
+  assembled shaders the materials feed, which appear as
+  `byte-engine/rendering/visibility/material-evaluation-<phase>.uber#shaders/<key>.besl` and `.msl`. Set
+  `BE_RENDER__MATERIAL_EVALUATION=pipelines` to see one shader per material instead.
 
 ## Find what a bake failed on
 

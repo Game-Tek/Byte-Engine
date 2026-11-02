@@ -179,6 +179,7 @@ dependencies = [
  "anstream",
  "base64",
  "byte-engine",
+ "byte-engine-besl",
  "byte-engine-resource-management",
  "byte-engine-utils",
  "clap",

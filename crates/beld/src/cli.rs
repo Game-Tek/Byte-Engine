@@ -3,22 +3,22 @@
 /// Runs the BELD command line for an application, and returns the exit code of the command it ran.
 ///
 /// Call it from the `main` of the application's BELD binary. `parameters` are the parameters the application starts
-/// with, before its `config.json` and `BE_*` variables override them, and `register` is the function its debug runtime
+/// with, before its `config.json` and `BE_*` variables override them, and `configure` is the function its debug runtime
 /// passes to [`setup_default_resource_and_asset_management`]. With both, a bake produces the resources a debug run
-/// does. An application without parameters or formats of its own passes `&[]` and
-/// [`register_default_asset_handlers`]. Invalid arguments exit with 2, and a failed command with 1.
+/// does, with the same bake services. An application without parameters or formats of its own passes `&[]` and
+/// [`configure_default_baking`]. Invalid arguments exit with 2, and a failed command with 1.
 ///
 /// [`setup_default_resource_and_asset_management`]: byte_engine::application::graphics::setup_default_resource_and_asset_management
-/// [`register_default_asset_handlers`]: byte_engine::application::graphics::register_default_asset_handlers
-pub fn run(parameters: &[Parameter], register: impl FnOnce(&mut AssetManager, &[Parameter])) -> ExitCode {
-	match run_cli(parameters, register) {
+/// [`configure_default_baking`]: byte_engine::application::graphics::configure_default_baking
+pub fn run(parameters: &[Parameter], configure: impl FnOnce(&mut AssetManager, &[Parameter])) -> ExitCode {
+	match run_cli(parameters, configure) {
 		Ok(()) => ExitCode::SUCCESS,
 		Err(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
 	}
 }
 
 /// Parses the arguments, then runs the command they select.
-fn run_cli(parameters: &[Parameter], register: impl FnOnce(&mut AssetManager, &[Parameter])) -> Result<(), i32> {
+fn run_cli(parameters: &[Parameter], configure: impl FnOnce(&mut AssetManager, &[Parameter])) -> Result<(), i32> {
 	let color = parse_color_choice(std::env::args());
 	// BELD's own output reads the choice from here, separately for each stream.
 	anstream::ColorChoice::write_global(match color {
@@ -42,13 +42,13 @@ fn run_cli(parameters: &[Parameter], register: impl FnOnce(&mut AssetManager, &[
 		1
 	})?;
 
-	executor.block_on(dispatch(cli, parameters, register))
+	executor.block_on(dispatch(cli, parameters, configure))
 }
 
 /// Dispatches one parsed command through BELD's asynchronous library API.
 ///
 /// Only the commands that read the project resolve its parameters, so a broken `config.json` doesn't stop `list`.
-async fn dispatch(cli: Cli, defaults: &[Parameter], register: impl FnOnce(&mut AssetManager, &[Parameter])) -> Result<(), i32> {
+async fn dispatch(cli: Cli, defaults: &[Parameter], configure: impl FnOnce(&mut AssetManager, &[Parameter])) -> Result<(), i32> {
 	match cli.command {
 		Commands::Wipe {} => crate::wipe(cli.destination).await,
 		Commands::Clear {} => crate::clear(cli.destination).await,
@@ -76,6 +76,7 @@ async fn dispatch(cli: Cli, defaults: &[Parameter], register: impl FnOnce(&mut A
 			force,
 			prune,
 			dry_run,
+			intercept,
 			format,
 			payload,
 		} => {
@@ -86,7 +87,8 @@ async fn dispatch(cli: Cli, defaults: &[Parameter], register: impl FnOnce(&mut A
 					ids,
 					bake_memory_budget(memory_budget),
 					&parameters,
-					register,
+					configure,
+					intercept,
 					format.unwrap_or(OutputFormat::Human),
 					payload.unwrap_or_default(),
 					&mut std::io::stdout().lock(),
@@ -102,7 +104,7 @@ async fn dispatch(cli: Cli, defaults: &[Parameter], register: impl FnOnce(&mut A
 				bake_memory_budget(memory_budget),
 				force,
 				&parameters,
-				register,
+				configure,
 				prune,
 			)
 			.await
@@ -268,6 +270,14 @@ enum Commands {
 		/// Example: `beld bake --dry-run --format json --payload typed mesh.gltf`
 		#[arg(long, requires = "ids", conflicts_with_all = ["force", "texture_compression"])]
 		dry_run: bool,
+		/// Prints the intermediate products of the dry run whose names match this pattern. The human format prints
+		/// them instead of the resources, and the JSON format adds them as `intercepted`.
+		/// A product is named after its resource and its format, such as `wood.bema#shader.besl` for a shader's BESL
+		/// source, or `wood.bema#shader.msl` for the platform source it lowered to. `*` matches any run of characters
+		/// and `?` one character. Repeat it to match several patterns.
+		/// Example: `beld bake --dry-run --intercept '*.besl' materials/wood.bema`
+		#[arg(long, requires = "dry_run")]
+		intercept: Vec<String>,
 		/// The dry-run output format. Defaults to `human`.
 		#[arg(long, value_enum, requires = "dry_run")]
 		format: Option<OutputFormat>,

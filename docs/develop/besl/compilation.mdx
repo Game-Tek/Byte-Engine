@@ -79,6 +79,25 @@ code. They aren't syntax you can write in a `.besl` file.
 A program has no backend-specific code. Add an intrinsic, and lower it in each
 backend, when portable BESL can't express a feature.
 
+## Write a program back as source
+
+`write` turns a parsed syntax tree, or one a generator built, back into BESL
+source. Bakes use it to show the program each shader compiles from; see
+[Intercept intermediate products](/docs/develop/resource-management/assets#intercept-intermediate-products).
+
+A change to the parser or the syntax tree must keep this rule true: source
+that parses writes as source that parses back to the same tree. Every node
+writes in the form the parser reads, with parentheses only where operator
+precedence needs them. A parsed group, `(a + b)`, stays a group, so writing
+twice gives the same text. When you add a node or a syntax form, add its
+written form to `writer.rs` and a case to its round-trip tests.
+
+The features in [Extend a program from Rust](#extend-a-program-from-rust)
+have no source form. They write in the nearest form a reader understands:
+bindings as descriptors, and specializations and intrinsics as comments. The
+[BELD reference](/docs/api/beld#intercepts) lists each one. A program that
+holds them doesn't parse back, and doesn't need to.
+
 ## Understand optimization
 
 `optimization::optimize` operates on functions reachable from `main`. It:
@@ -386,6 +405,7 @@ which `crates/besl/tests/ray_tracing.rs` guards:
 - [`stack_layers`](https://docs.rs/byte-engine-besl/latest/besl/fn.stack_layers.html)
 - [`lex`](https://docs.rs/byte-engine-besl/latest/besl/fn.lex.html)
 - [`compile_to_besl`](https://docs.rs/byte-engine-besl/latest/besl/fn.compile_to_besl.html)
+- [`write`](https://docs.rs/byte-engine-besl/latest/besl/fn.write.html)
 - [`optimization` module](https://docs.rs/byte-engine-besl/latest/besl/optimization/)
 - [`vm` module](https://docs.rs/byte-engine-besl/latest/besl/vm/)
 

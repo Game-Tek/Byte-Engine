@@ -3,20 +3,12 @@ use super::*;
 pub(crate) const MAX_SKIN_JOINTS: usize = u16::MAX as usize + 1;
 
 /// The `GLTFAssetHandler` struct provides the glTF boundary used to bake renderable meshes, skeletal clips, materials, and images.
-#[derive(Default)]
-pub struct GLTFAssetHandler {
-	generator: Option<Box<dyn ProgramGenerator>>,
-}
+///
+/// Generated materials target the asset manager's
+/// [`ProgramGenerator`](crate::asset::handler::implementations::ProgramGenerator).
+pub struct GLTFAssetHandler;
 
 impl GLTFAssetHandler {
-	pub fn new() -> GLTFAssetHandler {
-		Self::default()
-	}
-
-	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
-		self.generator = Some(Box::new(generator));
-	}
-
 	/// Packs glTF primitives through the shared mesh processor, naming each primitive's material by its slot.
 	///
 	/// The work is synchronous, so it yields between primitives to let futures joined with it, such as the material
@@ -168,7 +160,7 @@ impl GLTFAssetHandler {
 		let (unique_materials, material_slots) =
 			unique_gltf_materials(primitives_and_transform.iter().map(|(primitive, ..)| primitive.material()));
 		let (materials, mesh) = std::future::join!(
-			resolve_gltf_materials(context, spec, url, gltf, &unique_materials, self.generator.as_deref()),
+			resolve_gltf_materials(context, spec, url, gltf, &unique_materials),
 			Self::process_geometry(
 				url,
 				buffers,

@@ -567,7 +567,7 @@ impl CommonShaderGenerator {
 	/// Creates the generator for a project whose `render` parameters, such as `app.parameters().scope("render")`,
 	/// select the features it builds in; see [`VisibilityFeatures::from_parameters`].
 	///
-	/// Next, pass it to the standalone BESL handler's `set_shader_generator`.
+	/// Next, install it with [`AssetManager::set_program_transform`](resource_management::asset::manager::AssetManager::set_program_transform).
 	pub fn new(parameters: impl Parameters) -> Self {
 		Self::with_features(VisibilityFeatures::from_parameters(parameters))
 	}

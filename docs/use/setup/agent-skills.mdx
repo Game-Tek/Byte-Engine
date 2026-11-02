@@ -1,0 +1,78 @@
+---
+title: Give your coding agent Byte Engine skills
+description: Install the Byte Engine plugin so Claude Code can drive your running application and bake and inspect its resources.
+icon: Sparkles
+---
+
+Install the Byte Engine plugin when you work on your application with Claude
+Code. Its skills teach the agent to use the engine's own tools instead of
+guessing from source code: it can start your application, play-test input,
+take screenshots, read metrics, and bake and query resources with BELD.
+
+## Install the plugin
+
+In Claude Code, add the engine repository as a plugin marketplace and install
+the plugin from it:
+
+```text
+/plugin marketplace add Game-Tek/Byte-Engine
+/plugin install byte-engine@byte-engine
+```
+
+Restart Claude Code to load the skills.
+
+To install from a shell instead, run the same commands with `claude plugin`.
+Add `--sparse .claude-plugin plugins` so Claude Code downloads only the plugin,
+not the whole engine repository:
+
+```bash
+claude plugin marketplace add Game-Tek/Byte-Engine --sparse .claude-plugin plugins
+claude plugin install byte-engine@byte-engine
+```
+
+### Share it with your team
+
+Install the plugin with `--scope project` to record it in your project's
+`.claude/settings.json`. Commit that file, and everyone who opens the project
+in Claude Code gets the same skills:
+
+```bash
+claude plugin install byte-engine@byte-engine --scope project
+```
+
+### Use a local engine checkout
+
+If your application depends on a local checkout of Byte Engine, add the
+marketplace from that checkout instead, so the skills match the engine you
+build against:
+
+```bash
+claude plugin marketplace add ../Byte-Engine
+claude plugin install byte-engine@byte-engine
+```
+
+## Ask for what you need
+
+You don't call the skills by name. Ask in your own words, and the agent loads
+the skill that fits:
+
+| Skill | The agent uses it when you ask to | For example |
+| --- | --- | --- |
+| `inspector` | Run your application and look at it or measure it | "Start the game, press jump, and show me a screenshot." "Which render pass takes the most GPU time?" |
+| `resources` | Bake assets, or find something in the resource store | "Bake the resources for a release build." "Which textures are stored uncompressed?" |
+
+The `inspector` skill starts your application with its own inspector port and
+closes it when it's done. The `resources` skill asks you before it deletes
+resources or clears the store.
+
+## Keep the skills up to date
+
+Update the marketplace and the plugin when you update Byte Engine, then restart
+Claude Code:
+
+```bash
+claude plugin marketplace update byte-engine
+claude plugin update byte-engine@byte-engine
+```
+
+Next, [create your first Byte](/docs/use/sample-project).

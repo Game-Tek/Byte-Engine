@@ -1,0 +1,16 @@
+{
+  "name": "byte-engine",
+  "owner": {
+    "name": "Game-Tek"
+  },
+  "metadata": {
+    "description": "Agent plugins for building applications with Byte Engine."
+  },
+  "plugins": [
+    {
+      "name": "byte-engine",
+      "source": "./plugins/byte-engine",
+      "description": "Skills that teach an agent to drive a running Byte Engine application through its inspector, and to bake and inspect resources with BELD."
+    }
+  ]
+}

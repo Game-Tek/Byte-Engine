@@ -1,0 +1,12 @@
+{
+  "name": "byte-engine",
+  "version": "0.1.0",
+  "description": "Skills that teach an agent to drive a running Byte Engine application through its inspector, and to bake and inspect resources with BELD.",
+  "author": {
+    "name": "Game-Tek"
+  },
+  "homepage": "https://byte-engine.0x44491229.dev/docs",
+  "repository": "https://github.com/Game-Tek/Byte-Engine",
+  "license": "MIT",
+  "keywords": ["byte-engine", "game-engine", "rust", "inspector", "beld"]
+}

@@ -1,5 +1,5 @@
 {
 	"title": "Setup",
 	"icon": "WrenchScrewdriver",
-	"pages": ["environment", "project", "installation"]
+	"pages": ["environment", "project", "installation", "agent-skills"]
 }

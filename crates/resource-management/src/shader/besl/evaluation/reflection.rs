@@ -174,6 +174,7 @@ pub(super) fn reflected_array_buffer_stride_for_target(
 	};
 	let mut visiting = HashSet::new();
 	let layout = if let Some(fields) = user_struct_fields {
+		super::byte_windows::validate_byte_windows(&fields)?;
 		reflected_storage_members_layout(&fields, target, &mut visiting)?
 	} else if target == StorageLayoutTarget::Hlsl
 		&& element
@@ -212,6 +213,7 @@ pub(super) fn reflected_storage_buffer_stride_for_target(
 		);
 	}
 
+	super::byte_windows::validate_byte_windows(members)?;
 	// The lexer lowers a lone fixed-array member to an array buffer, so these buffers are always wrapper structs.
 	let size = reflected_storage_members_layout(members, target, &mut HashSet::new())?.size;
 
@@ -243,7 +245,12 @@ fn reflected_storage_members_layout(
 					.to_string(),
 			);
 		};
-		let element = reflected_storage_type_layout(r#type, target, visiting)?;
+		let element = if target == StorageLayoutTarget::Hlsl && count.is_some() && r#type.borrow().get_name() == Some("u8") {
+			// DX12 declares a `u8` array member as a `uint` array, one 32-bit word per element.
+			StorageLayout { size: 4, alignment: 4 }
+		} else {
+			reflected_storage_type_layout(r#type, target, visiting)?
+		};
 		let member_alignment = element.alignment;
 		let element_stride = checked_align_up(element.size, member_alignment)?;
 		let count = count.map(std::num::NonZeroUsize::get).unwrap_or(1);
@@ -302,18 +309,16 @@ pub(super) fn reflected_storage_type_layout(
 /// Returns the backend layout for one built-in BESL storage type.
 pub(super) fn primitive_storage_layout(type_name: &str, target: StorageLayoutTarget) -> Option<StorageLayout> {
 	let (size, alignment) = match (target, type_name) {
-		// BESL u8 remains a 32-bit uint in HLSL.
-		(StorageLayoutTarget::Hlsl, "u8") => (4, 4),
-		// Metal stores a one-byte bool and keeps its native column alignment for matrices other than `mat4x3f`.
-		(StorageLayoutTarget::Msl, "bool") => (1, 1),
+		// Metal keeps its native column alignment for matrices other than `mat4x3f`.
 		(StorageLayoutTarget::Msl, "mat2f") => (16, 8),
 		(StorageLayoutTarget::Msl, "mat3f") => (48, 16),
 		(StorageLayoutTarget::Msl, "mat4f") => (64, 16),
-		// Every other type has one layout on every backend. Metal stores vectors as packed types, and native u16 values
-		// keep their two-byte object representation and scalar alignment.
+		// Every other type has one layout on every backend. Metal stores vectors as packed types, native u16 values keep
+		// their two-byte object representation and scalar alignment, and DX12 stores single `u8` members in 2-byte
+		// windows (see `byte_windows`). A linked program has no `bool` members: they are packed into `u8` members.
 		(_, "u8") => (1, 1),
 		(_, "u16" | "f16") => (2, 2),
-		(_, "bool" | "u32" | "atomicu32" | "i32" | "atomici32" | "f32") => (4, 4),
+		(_, "u32" | "atomicu32" | "i32" | "atomici32" | "f32") => (4, 4),
 		(_, "vec2u16" | "vec2f16") => (4, 2),
 		(_, "vec3f16") => (6, 2),
 		(_, "vec4u16" | "vec4f16") => (8, 2),

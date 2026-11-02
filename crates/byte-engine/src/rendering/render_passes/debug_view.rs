@@ -15,13 +15,10 @@ use crate::rendering::{
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct DebugViewPresentShaderData {
-	/// One bit per pool slot, set while a view holds it.
-	taken: u32,
-	/// How many bits of `taken` are set.
+	/// How many views are shown: they hold the first `count` pool slots.
 	count: u32,
 	/// The grid's side: the smallest whole number whose square holds `count` views.
 	side: u32,
-	_padding: u32,
 }
 
 /// The `DebugViewPresentPass` struct tiles one sink's shown debug views into its final output.
@@ -79,10 +76,8 @@ impl DebugViewPresentPass {
 fn present_shader_data(taken: u32) -> DebugViewPresentShaderData {
 	let count = taken.count_ones();
 	DebugViewPresentShaderData {
-		taken,
 		count,
 		side: (count as f64).sqrt().ceil() as u32,
-		_padding: 0,
 	}
 }
 
@@ -119,11 +114,10 @@ mod tests {
 		let result_slot = ResourceSlot::new(0);
 		let parameter_slot = ResourceSlot::new(1);
 		let pool_slot = |slot: u32| ResourceSlot::new(2 + slot);
-		// Slots 1 and 3 are taken; slot 1 is red and slot 3 fades from black to white along x.
-		let data = present_shader_data(0b1010);
+		// Slots 0 and 1 are taken; slot 0 is red and slot 1 fades from black to white along x.
+		let data = present_shader_data(0b11);
 		let mut parameters = buffer(&program, parameter_slot);
 		for (name, value) in [
-			("taken", Value::U32(data.taken)),
 			("count", Value::U32(data.count)),
 			("side", Value::U32(data.side)),
 		] {
@@ -140,10 +134,10 @@ mod tests {
 				let mut descriptors = DescriptorBindings::new();
 				descriptors.bind_image(result_slot, &mut result);
 				descriptors.bind_buffer(parameter_slot, &mut parameters);
-				descriptors.bind_image(pool_slot(0), &mut unused_first);
-				descriptors.bind_image(pool_slot(1), &mut red);
-				descriptors.bind_image(pool_slot(2), &mut unused_second);
-				descriptors.bind_image(pool_slot(3), &mut ramp);
+				descriptors.bind_image(pool_slot(0), &mut red);
+				descriptors.bind_image(pool_slot(1), &mut ramp);
+				descriptors.bind_image(pool_slot(2), &mut unused_first);
+				descriptors.bind_image(pool_slot(3), &mut unused_second);
 				run_at(&program, &mut descriptors, [x, y]);
 			}
 		}

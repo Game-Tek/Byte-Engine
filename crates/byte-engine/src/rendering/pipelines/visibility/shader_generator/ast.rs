@@ -263,16 +263,29 @@ pub(crate) const MATERIAL_DEBUG_VIEW_NAMES: [&str; MATERIAL_DEBUG_VIEWS.len()] =
 	names
 };
 
+/// The push-constant `bool` member of each of [`MATERIAL_DEBUG_VIEWS`], in order: `debug_view_` and the view's name.
+pub(crate) const MATERIAL_DEBUG_VIEW_MEMBERS: [&str; MATERIAL_DEBUG_VIEWS.len()] = [
+	"debug_view_normals",
+	"debug_view_albedo",
+	"debug_view_roughness",
+	"debug_view_metalness",
+	"debug_view_occlusion",
+	"debug_view_irradiance",
+];
+
 /// The statements that write each shown debug view of [`MATERIAL_DEBUG_VIEWS`], generated once from the table so
-/// the shader's numbering cannot drift from the declared names. Every statement reads `debug_views` in its
-/// condition, so a bake without debug views drops them all.
+/// the shader's order cannot drift from the declared names. Shown views write consecutive pool slots in view order,
+/// so each shown view writes the next slot. Every statement reads a `debug_view_` member, so a bake without debug views
+/// drops them all.
 fn material_debug_view_source() -> &'static str {
 	static SOURCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 	SOURCE.get_or_init(|| {
-		let mut source = String::from("material_evaluation_debug_views: fn () -> void {\n");
-		for (view, (name, color)) in MATERIAL_DEBUG_VIEWS.iter().enumerate() {
+		let mut source = String::from(
+			"material_evaluation_debug_views: fn () -> void {\n\tlet debug_view_next_slot: u32 = push_constant.debug_view_first_slot;\n",
+		);
+		for ((name, color), member) in MATERIAL_DEBUG_VIEWS.iter().zip(MATERIAL_DEBUG_VIEW_MEMBERS) {
 			source.push_str(&format!(
-				"\t// {name}\n\tif (debug_view_slot(push_constant.debug_views, {view}) != 0) {{\n\t\twrite(debug_view_targets[debug_view_slot(push_constant.debug_views, {view}) - 1], pixel_coordinates, {color});\n\t}}\n"
+				"\t// {name}\n\tif (push_constant.{member}) {{\n\t\twrite(debug_view_targets[debug_view_next_slot], pixel_coordinates, {color});\n\t\tdebug_view_next_slot = debug_view_next_slot + 1;\n\t}}\n"
 			));
 		}
 		source.push_str("}\n");
@@ -280,11 +293,12 @@ fn material_debug_view_source() -> &'static str {
 	})
 }
 
-/// Removes every statement, at any depth, that reads the member `name`: a conditional whose condition reads it, with
-/// its whole block, and any other statement that reads it, such as a `let` or a `write`.
+/// Removes every statement, at any depth, that reads the member `name`, or any member starting with `name` when it ends
+/// in `_`: a conditional whose condition reads it, with its whole block, and any other statement that reads it, such as
+/// a `let` or a `write`.
 ///
 /// A removed `let` takes the statements after it that read its local with it, so a feature's code may keep a value
-/// in a local, as in `let slot: u32 = debug_view_slot(parameters.debug_views, 0u); if (slot != 0) { ... }`.
+/// in a local, as in `let slot: u32 = parameters.debug_view_first_slot; if (parameters.debug_view_normals) { ... }`.
 ///
 /// A conditional or loop that does not read it keeps its block, minus the statements inside that do. Backends emit
 /// only what `main` reaches, so this also drops the bindings and helpers only the removed statements used.
@@ -298,7 +312,8 @@ fn remove_statements_reading_any<'a>(statements: &mut Vec<Node<'a>>, names: &mut
 	let reads_any = |node: &mut Node<'a>, names: &[Cow<'a, str>]| {
 		let mut reads = false;
 		walk_expressions(node, &mut |expression| {
-			reads |= matches!(expression, Expressions::Member { name } if names.contains(name));
+			// A name ending in `_` is a prefix, which a feature uses to mark code that reads any of several members.
+			reads |= matches!(expression, Expressions::Member { name } if names.iter().any(|read| read == name || (read.ends_with('_') && name.starts_with(read.as_ref()))));
 		});
 		reads
 	};

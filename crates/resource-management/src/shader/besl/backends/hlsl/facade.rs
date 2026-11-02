@@ -21,6 +21,8 @@ pub struct Generator {
 	pub(crate) atomic_temporary_counter: u32,
 	pub(crate) atomic_temporaries: HashMap<besl::NodeReference, String>,
 	pub(crate) match_break_depth: Option<usize>,
+	/// The window that holds each `u8` member and the bit shift of its byte; see [`Generator::plan_byte_windows`].
+	pub(crate) byte_windows: HashMap<besl::NodeReference, (besl::NodeReference, u32)>,
 }
 
 /// The `HlslBufferBindingSource` struct preserves the binding metadata needed while flattening BESL buffers for HLSL.
@@ -47,6 +49,7 @@ impl Generator {
 			atomic_temporary_counter: 0,
 			atomic_temporaries: HashMap::default(),
 			match_break_depth: None,
+			byte_windows: HashMap::default(),
 		}
 	}
 

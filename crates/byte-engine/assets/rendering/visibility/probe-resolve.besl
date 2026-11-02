@@ -16,9 +16,6 @@ PROBE_RESOLVE_WORKGROUP_SIZE: const u32 = 64;
 PROBE_RESOLVE_TILE_RADIUS: const u32 = 2;
 PROBE_RESOLVE_TILE_WIDTH: const u32 = 12;
 PROBE_RESOLVE_TILE_SIZE: const u32 = 144;
-// The debug views after the six of material evaluation, in the pipeline manager's declaration.
-PROBES_VIEW: const u32 = 6;
-PROBE_LIGHT_VIEW: const u32 = 7;
 // The probes debug view draws each probe of the finest cascade as a sphere of this share of its spacing, marching the
 // view ray in steps of PROBE_DEBUG_STEP spacings, at most PROBE_DEBUG_STEPS of them.
 PROBE_DEBUG_RADIUS: const f32 = 0.1;
@@ -133,14 +130,14 @@ probe_sphere_color: fn (origin: vec3f, direction: vec3f, limit: f32) -> vec4f {
 	return color;
 }
 
-// Writes `color` to the full-resolution pixels a half-resolution `pixel` covers in the debug view at `slot`.
+// Writes `color` to the full-resolution pixels a half-resolution `pixel` covers in the debug view at pool `slot`.
 write_debug_view: fn (slot: u32, pixel: vec2u, color: vec4f) -> void {
 	let x: u32 = pixel.x * 2;
 	let y: u32 = pixel.y * 2;
-	write(debug_view_targets[slot - 1], vec2u(x, y), color);
-	write(debug_view_targets[slot - 1], vec2u(x + 1, y), color);
-	write(debug_view_targets[slot - 1], vec2u(x, y + 1), color);
-	write(debug_view_targets[slot - 1], vec2u(x + 1, y + 1), color);
+	write(debug_view_targets[slot], vec2u(x, y), color);
+	write(debug_view_targets[slot], vec2u(x + 1, y), color);
+	write(debug_view_targets[slot], vec2u(x, y + 1), color);
+	write(debug_view_targets[slot], vec2u(x + 1, y + 1), color);
 }
 
 main: fn (input: StageInput) -> void {
@@ -215,8 +212,12 @@ main: fn (input: StageInput) -> void {
 	write(history_output, pixel, history);
 	write(normal_output, pixel, encode_stored_normal(view_normal));
 
-	let probes_view: u32 = debug_view_slot(probe_resolve_parameters.debug_views, PROBES_VIEW);
-	if (probes_view != 0) {
+	// The probe light view writes the slot after the probes view's when both are shown.
+	let light_slot: u32 = probe_resolve_parameters.debug_view_first_slot;
+	if (probe_resolve_parameters.debug_view_probes) {
+		light_slot = light_slot + 1;
+	}
+	if (probe_resolve_parameters.debug_view_probes) {
 		let view_ray: vec3f = view_position(pixel_f, 1.0);
 		let direction: vec3f = normalize(to_world(view_ray, 0.0));
 		let limit: f32 = 1000.0;
@@ -227,10 +228,9 @@ main: fn (input: StageInput) -> void {
 		if (color.w < 0.0) {
 			color = view_light(vec3f(history.x, history.y, history.z));
 		}
-		write_debug_view(probes_view, pixel, color);
+		write_debug_view(probe_resolve_parameters.debug_view_first_slot, pixel, color);
 	}
-	let light_view: u32 = debug_view_slot(probe_resolve_parameters.debug_views, PROBE_LIGHT_VIEW);
-	if (light_view != 0) {
-		write_debug_view(light_view, pixel, view_light(vec3f(history.x, history.y, history.z)));
+	if (probe_resolve_parameters.debug_view_probe_light) {
+		write_debug_view(light_slot, pixel, view_light(vec3f(history.x, history.y, history.z)));
 	}
 }

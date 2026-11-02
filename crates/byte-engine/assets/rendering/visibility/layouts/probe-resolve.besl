@@ -6,10 +6,12 @@ ProbeResolveParameters: struct {
 	view_to_world: mat4f,
 	// Multiplies the probes' light, as the lit image's exposure does.
 	exposure: f32,
-	// Which debug views to write; see `debug_view_slot`.
-	debug_views: u32,
-	_padding0: u32,
-	_padding1: u32,
+	// The pool slot the first shown debug view writes; shown views write consecutive slots in view order.
+	debug_view_first_slot: u32,
+	// Whether to write each probe debug view.
+	debug_view_probes: bool,
+	debug_view_probe_light: bool,
+	_padding: u32,
 }
 
 probe_resolve_parameters: descriptor<{ type: ProbeResolveParameters, binding: 1200, access: read }>;

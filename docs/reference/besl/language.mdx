@@ -22,7 +22,7 @@ These are the built-in value types available to authored BESL:
 | Category | Types | Use |
 | --- | --- | --- |
 | Control | `void` | A function that doesn't return a value. |
-| Boolean | `bool` | Conditions and the literals `true` and `false`. |
+| Boolean | `bool` | Conditions and the literals `true` and `false`. A `bool` member takes one bit; see [Bool members](#bool-members). |
 | Unsigned integers | `u8`, `u16`, `u32` | Integer data and indices. Most arithmetic intrinsics use `u32`. |
 | Signed integers | `i32` | Signed integer data and arithmetic. |
 | Floating point | `f16`, `f32` | Half-precision and single-precision values. |
@@ -50,6 +50,34 @@ Light: struct {
 	intensity: f32,
 }
 ```
+
+### Bool members
+
+A `bool` member of a struct, buffer block, or push-constant block takes one bit.
+A run of `N` contiguous `bool` members takes `ceil(N / 8)` bytes:
+
+| Property | Value |
+| --- | --- |
+| Bit of the `i`-th `bool` of a run | Bit `i % 8`, least significant first, of byte `i / 8` of the run |
+| Alignment | 1 byte |
+| A member of another type between two `bool` members | Ends the run; the next `bool` starts a new byte |
+| Unused bits of a run's last byte | Zero after a constructor; otherwise unchanged |
+
+Every backend stores these bytes at the same offsets. On the CPU, mirror each
+byte of a run with one `u8`.
+
+A `bool` member has these rules:
+
+- It can't be an array, such as `flags: bool[4]`. Declare separate `bool`
+  members, or keep the flags in a `u32` and test them with `&`.
+- Writing it reads and rewrites the byte that holds it. The write isn't atomic,
+  so invocations mustn't write `bool` members of the same byte at the same time;
+  use `atomic_or` and `atomic_and` on an `atomicu32` for shared flags.
+- A buffer whose `bool` members a shader writes must be `access: read_write`.
+- A place you write a `bool` or `u8` member through can't call a function or an
+  atomic in its index, such as `flags[next()].ready = true`. Store the index in a
+  `let` first.
+- A member name can't start with `_besl_bits`, which names the bytes.
 
 ## Arrays
 

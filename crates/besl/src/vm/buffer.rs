@@ -204,7 +204,6 @@ impl Buffer {
 		let bytes = self.read_bytes(offset, value_type.size())?;
 
 		let value = match value_type {
-			ValueType::Bool => Value::Bool(bytes[0] != 0),
 			ValueType::U8 => Value::U8(u8::from_ne(bytes)),
 			ValueType::U16 => Value::U16(u16::from_ne(bytes)),
 			ValueType::U32 => Value::U32(u32::from_ne(bytes)),
@@ -225,13 +224,15 @@ impl Buffer {
 			ValueType::Vec4F => Value::Vec4F(read_lanes(bytes)),
 			ValueType::Mat4F => Value::Mat4F(read_lanes(bytes)),
 			ValueType::Mat4x3F => Value::Mat4x3F(read_lanes(bytes)),
-			ValueType::Texture2D
+			// A linked program packs `bool` members into bytes, so no layout holds one.
+			ValueType::Bool
+			| ValueType::Texture2D
 			| ValueType::Texture3D
 			| ValueType::TextureCube
 			| ValueType::TextureCubeArray
 			| ValueType::ArrayTexture2D => {
 				return Err(VmError::UnsupportedBufferLayout {
-					message: "Resource handles cannot be stored in CPU buffer memory".to_string(),
+					message: format!("A `{}` can't be stored in CPU buffer memory", value_type.name()),
 				});
 			}
 			ValueType::Struct { fields, .. } => {
@@ -270,7 +271,6 @@ impl Buffer {
 		}
 
 		match value {
-			Value::Bool(value) => write_lanes(self, offset, &[u8::from(*value)]),
 			Value::U8(value) => write_lanes(self, offset, std::slice::from_ref(value)),
 			Value::U16(value) => write_lanes(self, offset, std::slice::from_ref(value)),
 			Value::U32(value) => write_lanes(self, offset, std::slice::from_ref(value)),
@@ -291,8 +291,8 @@ impl Buffer {
 			Value::Vec4F(value) => write_lanes(self, offset, value),
 			Value::Mat4F(value) => write_lanes(self, offset, value),
 			Value::Mat4x3F(value) => write_lanes(self, offset, value),
-			Value::Resource { .. } => Err(VmError::UnsupportedBufferLayout {
-				message: "Resource handles cannot be written into CPU buffer memory".to_string(),
+			Value::Bool(_) | Value::Resource { .. } => Err(VmError::UnsupportedBufferLayout {
+				message: format!("A `{}` can't be written into CPU buffer memory", value_type.name()),
 			}),
 			Value::Struct { fields, .. } => {
 				let ValueType::Struct {

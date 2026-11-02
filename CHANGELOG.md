@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- BESL `bool` members take one bit. A run of contiguous `bool` members of a struct, buffer block, or push constant packs into one byte per eight, least significant bit first, at the same offsets on Metal, Vulkan, DX12, and in the BESL VM. A `bool` array member, a `bool` written to a write-only buffer, and a `bool` or `u8` written through an index that calls a function are rejected with errors that say what to change. The language reference specifies the layout under Bool members. Rebake the engine's assets and generated material shaders.
+  - `u8` members take one byte on DX12 too, stored in 2-byte `uint16_t` windows, so a record with `u8` members has one stride everywhere. Reflection rejects, on every platform, a record whose window would share a byte with another member or that ends in a `u8` at an odd size. BESL gains a `u8(u32)` conversion.
+  - The BESL VM places buffer members on their scalar alignment, as the GPU backends do, so a member after a narrower one may move: `{ u8, u32 }` puts the `u32` at byte 4.
+  - Debug views write from one `bool` per view and a `debug_view_first_slot`, where each pass packed four bits of slot number per view into a `u32`. Shown views hold the first pool slots in order, so showing or hiding a view moves the views after it to the next or previous slot. `DebugViews::shown` takes the range of views one shader writes and returns a `ShownDebugViews`.
+  - Vulkan requires `storagePushConstant8`.
+  - Breaking: `ghi::pod::Bool` is gone; mirror packed `bool` members with a `u8` per byte.
+
 - `setup_debug_overlay_render_pass(app, handle)` prints an entity's position, orientation, and scale in the window's top-left corner and updates them as the entity moves. The overlay draws with the UI, so register it last to keep the text unchanged by grading and film grain. It shows the newest transform the entity published from the tick the pass was registered in, and `no transform` until one arrives. Use `render.pass.debug-overlay` to hide it. The model viewer shows its camera's transform this way.
 
 - `--unattended=<frames per second>` runs an application for no one at the desktop, such as an agent driving it through the inspector. Windows open without showing or taking focus, every tick renders every window at that rate whether or not it can be seen, and each tick advances the clock by exactly one frame period, so a run repeats. The rate is required, and `max-frame-rate` and `render-on-demand` are ignored. Wayland windows still show. The `inspector` agent skill starts applications this way.

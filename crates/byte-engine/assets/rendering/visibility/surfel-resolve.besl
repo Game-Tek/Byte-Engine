@@ -34,9 +34,6 @@ SURFEL_SPAWN_SECOND_WEIGHT: const f32 = 0.4;
 SURFEL_KEEP_ALIVE_FACING: const f32 = 0.8;
 // A spawn copies the light of a surfel lookups fully trust that faces its pixel this much.
 SURFEL_PARENT_FACING: const f32 = 0.9;
-// The debug views after the six of material evaluation, in the pipeline manager's declaration.
-SURFELS_VIEW: const u32 = 6;
-SURFEL_COVERAGE_VIEW: const u32 = 7;
 
 // Returns `axis_tangent` with neighbor depths read from the workgroup's tile. `stride` steps one texel along `axis`
 // in the tile.
@@ -58,14 +55,14 @@ surfel_color: fn (slot: u32) -> vec3f {
 	return vec3f(f32(hash & 255) / 255.0, f32((hash >> 8) & 255) / 255.0, f32((hash >> 16) & 255) / 255.0);
 }
 
-// Writes `color` to the full-resolution pixels a half-resolution `pixel` covers in the debug view at `slot`.
+// Writes `color` to the full-resolution pixels a half-resolution `pixel` covers in the debug view at pool `slot`.
 write_debug_view: fn (slot: u32, pixel: vec2u, color: vec4f) -> void {
 	let x: u32 = pixel.x * 2;
 	let y: u32 = pixel.y * 2;
-	write(debug_view_targets[slot - 1], vec2u(x, y), color);
-	write(debug_view_targets[slot - 1], vec2u(x + 1, y), color);
-	write(debug_view_targets[slot - 1], vec2u(x, y + 1), color);
-	write(debug_view_targets[slot - 1], vec2u(x + 1, y + 1), color);
+	write(debug_view_targets[slot], vec2u(x, y), color);
+	write(debug_view_targets[slot], vec2u(x + 1, y), color);
+	write(debug_view_targets[slot], vec2u(x, y + 1), color);
+	write(debug_view_targets[slot], vec2u(x + 1, y + 1), color);
 }
 
 main: fn (input: StageInput) -> void {
@@ -247,21 +244,26 @@ main: fn (input: StageInput) -> void {
 			surfel_temporal_accumulate(pixel, center_position, view_normal, estimate, confidence);
 		}
 		write(normal_output, pixel, encode_stored_normal(view_normal));
-		if (debug_view_slot(surfel_resolve_parameters.debug_views, SURFELS_VIEW) != 0) {
+		// The coverage view writes the slot after the surfels view's when both are shown.
+		let coverage_slot: u32 = surfel_resolve_parameters.debug_view_first_slot;
+		if (surfel_resolve_parameters.debug_view_surfels) {
+			coverage_slot = coverage_slot + 1;
+		}
+		if (surfel_resolve_parameters.debug_view_surfels) {
 			let color: vec3f = vec3f(0.0, 0.0, 0.0);
 			if (heaviest != NO_SURFEL) {
 				color = surfel_color(heaviest) * (0.25 + 0.75 * largest);
 			}
 			write_debug_view(
-				debug_view_slot(surfel_resolve_parameters.debug_views, SURFELS_VIEW),
+				surfel_resolve_parameters.debug_view_first_slot,
 				pixel,
 				vec4f(color.x, color.y, color.z, 1.0)
 			);
 		}
-		if (debug_view_slot(surfel_resolve_parameters.debug_views, SURFEL_COVERAGE_VIEW) != 0) {
+		if (surfel_resolve_parameters.debug_view_surfel_coverage) {
 			// Green up to full coverage, then red as more surfels overlap, and blue for the confidence.
 			write_debug_view(
-				debug_view_slot(surfel_resolve_parameters.debug_views, SURFEL_COVERAGE_VIEW),
+				coverage_slot,
 				pixel,
 				vec4f(clamp((coverage - 1.0) / 3.0, 0.0, 1.0), clamp(coverage, 0.0, 1.0), confidence, 1.0)
 			);

@@ -64,7 +64,7 @@ pub mod csm;
 
 pub use camera::Camera;
 pub use debug::{DebugDepthMode, DebugMesh, DebugMeshRenderPass, DebugSceneManager, DebugShape};
-pub use debug_views::{DebugViewCatalog, DebugViews};
+pub use debug_views::{DebugViewCatalog, DebugViews, ShownDebugViews};
 pub use device::GraphicsDevice;
 pub use environment::Environment;
 pub use fog::{ExponentialHeightFog, FogLayer};

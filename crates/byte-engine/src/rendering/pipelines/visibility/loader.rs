@@ -26,6 +26,7 @@ use utils::hash::HashMap;
 use super::features::{MaterialEvaluationMode, UBER_MATERIAL_SHADERS};
 use super::geometry::{GENERATED_MESH_MATERIAL, GeometryBuffers, GeometryHandles, MeshData, PreparedMesh};
 use super::layout::{MAX_BINDLESS_TEXTURES, MAX_MATERIALS, TRANSPARENT_SPECIALIZATION_ID, material_variable_specialization_id};
+use super::render_pass::MATERIAL_EVALUATION_PUSH_CONSTANT_SIZE;
 use super::shader_generator::uber_arm_key;
 use crate::core::EntityHandle;
 use crate::rendering::loading::{
@@ -770,13 +771,14 @@ impl VisibilityLoader {
 						"Visibility material shader is missing for {id}. The most likely cause is that the material was baked with `render.material-evaluation` set to `uber`. Bake it again with `beld bake --force`."
 					)));
 				};
-				// Material evaluation pushes five u32s: the evaluation index, the GTAO, SSGI, and indirect diffuse flags,
-				// and the debug views.
 				MaterialEvaluator::Pipeline(self.pipeline_manager.request_specialized_compute_pipeline(
 					SpecializedComputePipelineRequest::new(
 						shader_id,
 						specialization_entries(alpha_mode, &variant.variables),
-						vec![ghi::pipelines::PushConstantRange::new(0, 20)],
+						vec![ghi::pipelines::PushConstantRange::new(
+							0,
+							MATERIAL_EVALUATION_PUSH_CONSTANT_SIZE,
+						)],
 					),
 				))
 			}
@@ -855,7 +857,10 @@ impl VisibilityLoader {
 			.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
 				assembled.shader.clone(),
 				Vec::new(),
-				vec![ghi::pipelines::PushConstantRange::new(0, 20)],
+				vec![ghi::pipelines::PushConstantRange::new(
+					0,
+					MATERIAL_EVALUATION_PUSH_CONSTANT_SIZE,
+				)],
 			));
 		Ok(VisibilityResident::UberShader {
 			transparent,

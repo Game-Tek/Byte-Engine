@@ -421,7 +421,7 @@ impl Generator {
 					"is_finite" => "isfinite",
 					"is_normal" => "isnormal",
 					"inversesqrt" => "rsqrt",
-					"f32" | "f16" | "u32" | "u16" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
+					"f32" | "f16" | "u32" | "u16" | "u8" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
 						Self::translate_type(name)
 					}
 					// These call the helpers that `generate_msl_header_block` declares.

@@ -23,6 +23,25 @@ const _: () = assert!(
 	"Update the material offset scan in `material-offset.besl` when the material limit changes."
 );
 
+/// The `MaterialEvaluationPushConstant` struct mirrors the push constant of the material evaluation shaders, which
+/// `shader_generator.rs` declares: what one dispatch shades and which lighting and debug views it uses.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MaterialEvaluationPushConstant {
+	evaluation_index: u32,
+	gtao: u32,
+	ssgi: u32,
+	indirect_diffuse: u32,
+	/// The pool slot the first shown debug view writes.
+	debug_view_first_slot: u32,
+	/// The shader's `bool` members, one bit per view of `MATERIAL_DEBUG_VIEWS`.
+	debug_views: u8,
+	_padding: [u8; 3],
+}
+
+/// The size of the push constant every material evaluation pipeline declares.
+pub(in super::super) const MATERIAL_EVALUATION_PUSH_CONSTANT_SIZE: u32 = size_of::<MaterialEvaluationPushConstant>() as u32;
+
 /// Returns whether this frame contains geometry of the requested visibility phase whose material uses one evaluation slot.
 pub(super) fn evaluation_is_active(active_evaluations: &ActiveEvaluationMask, evaluation_index: u32) -> bool {
 	let evaluation_index = evaluation_index as usize;
@@ -179,8 +198,8 @@ pub(super) struct MaterialEvaluationPass {
 impl MaterialEvaluationPass {
 	/// Prepares one material phase; the transparent phase composites over the lit target the opaque phase wrote.
 	///
-	/// Records one dispatch for each of `evaluations` that `active_evaluations` marks. `debug_views` is what
-	/// [`crate::rendering::DebugViews::shown`] packs for the manager's views this frame.
+	/// Records one dispatch for each of `evaluations` that `active_evaluations` marks. `shown` is what
+	/// [`crate::rendering::DebugViews::shown`] reports for the material views this frame.
 	///
 	/// With `pixel_lists`, the indirect dispatches the material prepasses wrote, each evaluation shades its slot's
 	/// pixel list. Without them, each phase's uber shader shades the sink's `extent` in [`UBER_WORKGROUP`] tiles, and
@@ -194,7 +213,7 @@ impl MaterialEvaluationPass {
 		pixel_lists: Option<ghi::BufferHandle<[[u32; 3]; MAX_MATERIALS]>>,
 		extent: Extent,
 		screen_space_lighting: ScreenSpaceLighting,
-		debug_views: u32,
+		shown: crate::rendering::ShownDebugViews,
 	) -> impl RenderPassFunction + use<'a> {
 		let descriptor_sets = [self.base_descriptor_set, self.visibility_descriptor_set, self.descriptor_set];
 		let clears_background = pixel_lists.is_none() && phase == VisibilityPhase::Opaque;
@@ -230,7 +249,18 @@ impl MaterialEvaluationPass {
 					let c = c.bind_compute_pipeline(evaluation.pipeline);
 					c.bind_descriptor_sets(&descriptor_sets);
 					let [gtao, ssgi, indirect_diffuse] = flags;
-					c.write_push_constant(0, [evaluation.index, gtao, ssgi, indirect_diffuse, debug_views]);
+					c.write_push_constant(
+						0,
+						MaterialEvaluationPushConstant {
+							evaluation_index: evaluation.index,
+							gtao,
+							ssgi,
+							indirect_diffuse,
+							debug_view_first_slot: shown.first_slot,
+							debug_views: shown.views,
+							_padding: [0; 3],
+						},
+					);
 					match pixel_lists {
 						Some(dispatches) => c.indirect_dispatch(dispatches, evaluation.index as usize),
 						None => c.dispatch(ghi::DispatchExtent::new(extent, UBER_WORKGROUP)),

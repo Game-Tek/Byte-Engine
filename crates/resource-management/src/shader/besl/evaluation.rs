@@ -1,3 +1,4 @@
+mod byte_windows;
 mod opacity;
 mod push_constant_layout;
 mod reflection;
@@ -5,6 +6,7 @@ mod reflection;
 #[cfg(test)]
 use std::collections::HashSet;
 
+pub(crate) use byte_windows::{ByteWindow, byte_windows};
 pub use opacity::OpacityEvaluation;
 pub use reflection::{BindingKind, BindingUsage, ProgramEvaluation, RayPayload, SetUsage, TextureView};
 pub use reflection::{FNV1A_OFFSET_BASIS, fnv1a};
@@ -193,6 +195,86 @@ mod tests {
 	}
 
 	#[test]
+	fn packed_bool_and_byte_records_reflect_one_stride_on_every_backend() {
+		let program = besl::compile_to_besl(
+			r#"
+			Mixed: struct { visible: bool, selected: bool, id: u32, hovered: bool }
+			Many: struct {
+				f0: bool, f1: bool, f2: bool, f3: bool, f4: bool, f5: bool, f6: bool, f7: bool, f8: bool,
+				f9: bool, f10: bool, f11: bool, f12: bool, f13: bool, f14: bool, f15: bool, f16: bool,
+				tail: u16,
+			}
+			Bytes: struct { mode: u8, flag: bool, layer: u16, count: u32 }
+			main: fn () -> void {}
+			"#,
+			None,
+		)
+		.expect("Expected the bool records to link");
+
+		for (name, stride) in [("Mixed", 12), ("Many", 6), ("Bytes", 8)] {
+			let record = program.borrow().get_child(name).expect("Expected the record struct");
+			for target in [
+				StorageLayoutTarget::Hlsl,
+				StorageLayoutTarget::Msl,
+				StorageLayoutTarget::GlslScalar,
+			] {
+				assert_eq!(
+					reflected_array_buffer_stride_for_target(&record, target),
+					Ok(stride),
+					"{name} on {target:?}"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn reflection_rejects_bytes_dx12_cannot_window() {
+		for (records, expected) in [
+			(
+				"Record: struct { a: bool, mode: u8, layer: u8 }",
+				"`u8` member `layer` ends a layout of 3 bytes",
+			),
+			(
+				"Inner: struct { x: u8, y: u8 } Record: struct { flag: u8, inner: Inner, tail: u8, pad: u8 }",
+				"`u8` member `flag` shares 2 bytes with member `inner`",
+			),
+			(
+				"Record: struct { flag: u8, values: u8[3] }",
+				"`u8` member `flag` shares 2 bytes with member `values`",
+			),
+		] {
+			let source = format!(
+				"{records} records: descriptor<{{ type: Record[], binding: 0, access: read }}>; main: fn () -> void {{ records; }}"
+			);
+			let program = besl::compile_to_besl(&source, None).expect("Expected the record program to link");
+
+			let error = ProgramEvaluation::from_program(&program).expect_err("Expected the record layout to be rejected");
+
+			assert!(error.contains(expected), "{records}: {error}");
+			assert!(error.contains("reference/besl/interface#stored-records"), "{error}");
+		}
+	}
+
+	#[test]
+	fn reflection_accepts_packed_bools_in_a_push_constant() {
+		let program = besl::compile_to_besl(
+			r#"
+			push_constant: push_constant {
+				first_slot: u32,
+				show_normals: bool,
+				show_albedo: bool,
+				mode: u8,
+			}
+			main: fn () -> void { push_constant.show_albedo; }
+			"#,
+			None,
+		)
+		.expect("Expected the push-constant program to link");
+
+		ProgramEvaluation::from_program(&program).expect("Expected packed bools to reflect in a push constant");
+	}
+
+	#[test]
 	fn runtime_storage_buffer_reflects_its_element_stride() {
 		let mut root = besl::Node::root();
 		let vec3f = root.get_child("vec3f").expect("Expected vec3f");
@@ -257,6 +339,8 @@ mod tests {
 			StorageLayoutTarget::GlslScalar,
 		] {
 			for (type_name, size, alignment) in [
+				// DX12 stores `u8` members in 2-byte windows, so a `u8` takes one byte everywhere.
+				("u8", 1, 1),
 				("u16", 2, 2),
 				("u32", 4, 4),
 				("f16", 2, 2),
@@ -271,18 +355,6 @@ mod tests {
 			] {
 				assert_builtin_layout(&root, target, type_name, StorageLayout { size, alignment });
 			}
-		}
-
-		// HLSL widens u8 to a 32-bit uint, and Metal stores a one-byte bool.
-		for (target, type_name, size) in [
-			(StorageLayoutTarget::Hlsl, "u8", 4),
-			(StorageLayoutTarget::Msl, "u8", 1),
-			(StorageLayoutTarget::GlslScalar, "u8", 1),
-			(StorageLayoutTarget::Hlsl, "bool", 4),
-			(StorageLayoutTarget::Msl, "bool", 1),
-			(StorageLayoutTarget::GlslScalar, "bool", 4),
-		] {
-			assert_builtin_layout(&root, target, type_name, StorageLayout { size, alignment: size });
 		}
 	}
 

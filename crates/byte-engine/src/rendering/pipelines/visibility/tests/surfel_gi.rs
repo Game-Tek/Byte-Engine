@@ -1359,7 +1359,7 @@ impl WallSink {
 		let mut parameters = buffer(&program, RESOLVE_PARAMETERS_SLOT);
 		for (member, value) in [
 			("view_to_world", Value::Mat4F(IDENTITY_MATRIX)),
-			("debug_views", Value::U32(0)),
+			("debug_view_first_slot", Value::U32(0)),
 			("spawn_tiles_per_row", Value::U32(1)),
 			("spawn_tile_count", Value::U32(1)),
 			// Every candidate passes the random draw, which scales with the wall's one-meter depth.

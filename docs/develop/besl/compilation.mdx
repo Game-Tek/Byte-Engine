@@ -23,6 +23,7 @@ executes the program in the VM. The language itself is specified in the
 4. `lex` resolves names, types, members, calls, overloads, and references into a
    semantic graph. It normalizes `StageInput`, `interface`, `output`, and record
    returns into the stage input and output nodes that the VM and generators use.
+   Then it [packs `bool` members](#pack-bool-members) into bytes.
    `compile_to_besl` combines parsing and linking and can link the source to a
    supplied parent scope.
 5. The optimizer removes semantically dead portable code.
@@ -62,6 +63,51 @@ texture types in the system temporary directory, named
 roughly halves the time a bake takes. Byte Engine builds one header for each
 Metal toolchain and deployment target, and compiles without it if the compiler
 rejects it, so you can delete these files at any time.
+
+## Pack bool members
+
+A `bool` has no byte form that every backend shares: Metal stores one byte, and
+GLSL and HLSL store four. So a linked program never stores one. After linking,
+`lex` runs `pack_bool_members` in `lexer/bools.rs`, which turns each run of
+contiguous `bool` members of a struct, buffer block, or push-constant block into
+`ceil(N / 8)` hidden `u8` members named `_besl_bits<k>`, and rewrites every
+access in place:
+
+- a read becomes `(u32(byte) & mask) != 0`;
+- a write becomes `byte = u8((u32(byte) & ~mask) | (value ? mask : 0))`; and
+- a constructor call assembles each byte from its `bool` arguments, in order.
+
+The [Bool members](/docs/reference/besl/language#bool-members) reference states
+the resulting layout. Backends, reflection, the optimizer, and the VM see only
+`u8` members, so none of them has `bool` storage rules. The pass runs once per
+linked graph: a second run finds no `bool` members left.
+
+Each backend stores a `u8` member in one byte. HLSL has no 1-byte member type,
+so the DX12 generator declares each `uint16_t` window that holds `u8` members at
+their scalar offset, `_besl_bytes<offset / 2>`, in place of those members, and
+reads and writes each byte with shifts. `evaluation/byte_windows.rs` plans the
+windows, and reflection rejects, on every platform, a stored layout whose window
+would cover a byte of another member or lie past the layout's end. A `u8` array
+member stays a `uint` array on DX12, one word per element.
+
+The VM places buffer members with the same scalar alignment that reflection
+uses, so host code reads the bytes a GPU writes.
+
+A change must keep these true:
+
+- A write to a packed `bool` reads its byte, so the pass rejects one through a
+  write-only buffer, or through a place whose index calls a function, which
+  would run twice. The second rule covers every `u8` write, since a DX12 window
+  write reads its word too.
+- Writes aren't atomic on any backend.
+- Every backend and the VM agree on each member's offset and each struct's size.
+
+`bool_members_pack_into_bits_in_declaration_order` and
+`buffer_members_start_on_their_scalar_alignment` guard the VM layout,
+`bool_members_reject_what_bits_cannot_store` the rejections,
+`packed_bool_and_byte_records_reflect_one_stride_on_every_backend` and
+`reflection_rejects_bytes_dx12_cannot_window` the shared layout, and
+`byte_members_lower_to_two_byte_windows` the HLSL generator.
 
 ## Extend a program from Rust
 
@@ -355,6 +401,9 @@ The VM supports:
   triangles, and render-target array indices; and
 - ray queries against a scene, and ray tracing pipelines whose ray generation
   program runs closest-hit programs through `invoke`.
+
+Buffer layouts place each member on its scalar alignment and round a struct up
+to its largest alignment, as reflection does for the GPU backends.
 
 Compile a linked graph with `ExecutableProgram`, bind its resources through
 `DescriptorBindings`, and call `run_main`, `run_main_with_config`, or

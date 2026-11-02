@@ -64,7 +64,7 @@ const TILE_WORKGROUP_SIZE: usize = 64;
 fn asset_program(source: &str) -> besl::NodeReference {
 	let mut root = besl::parse(source)
 		.expect("Failed to parse a visibility shader asset. The most likely cause is invalid checked-in BESL source.");
-	// Baking gives every standalone shader the common helpers, such as `debug_view_slot`.
+	// Baking gives every standalone shader the common helpers, such as `source_over`.
 	root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);
 	let program = besl::lex(root)
 		.expect("Failed to link a visibility shader asset. The most likely cause is an invalid shader declaration.");
@@ -3122,7 +3122,7 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 		("probe_resolve", asset_source!("probe-resolve.besl"), tile()),
 	] {
 		let mut root = besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}"));
-		// Baking gives every standalone shader the common helpers, such as `debug_view_slot`.
+		// Baking gives every standalone shader the common helpers, such as `source_over`.
 		root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);
 		let root = besl::lex(root).unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
 		PlatformShaderCompiler::new()

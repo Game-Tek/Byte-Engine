@@ -43,14 +43,13 @@ main: fn (input: StageInput) -> void {
 		reach = abs(blur) * 0.5;
 
 		// The blur view: red in front of the focus distance, blue behind it, green where the blur is under a pixel.
-		let slot: u32 = debug_view_slot(parameters.debug_views, 0);
-		if (slot != 0) {
+		if (parameters.debug_view_circle_of_confusion) {
 			let in_focus: f32 = 0.0;
 			if (abs(blur) < 1.0) {
 				in_focus = 1.0;
 			}
 			write(
-				debug_view_targets[slot - 1],
+				debug_view_targets[parameters.debug_view_first_slot],
 				pixel,
 				vec4f(clamp((0.0 - blur) / DEBUG_FULL_SCALE, 0.0, 1.0), in_focus, clamp(blur / DEBUG_FULL_SCALE, 0.0, 1.0), 1.0)
 			);

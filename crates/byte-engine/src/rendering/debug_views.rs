@@ -2,7 +2,7 @@
 //! debug targets.
 //!
 //! A pass declares its views once, while it is built, with [`RenderPassBuilder::debug_views`], and writes the shown
-//! ones from its shader behind `debug_view_slot(…, view)` checks. The renderer lends one pool slot to each view that
+//! ones from its shader behind one `bool` member per view. The renderer lends one pool slot to each view that
 //! `render.debug.view.<pass>.<view>=true` shows, refuses a view when the pool is full, and tiles the shown slots into
 //! each sink's output after everything else. Projects leave the feature out of release bakes through
 //! `render.debug-views.enabled`; see [`VisibilityFeatures`].
@@ -13,6 +13,7 @@
 
 use std::{
 	collections::VecDeque,
+	ops::Range,
 	sync::{
 		Arc, Mutex,
 		atomic::{AtomicU32, Ordering},
@@ -25,10 +26,9 @@ use smallvec::SmallVec;
 use crate::configuration::{ConfigurationEventId, ConfigurationPort, ConfigurationUpdate, ConfigurationValue};
 use crate::rendering::pipelines::visibility::VisibilityFeatures;
 
-/// The most debug targets a sink's pool holds: a slot number takes four bits in [`DebugViews::shown`], and `0` means
-/// hidden.
+/// The most debug targets a sink's pool holds, as many as the shaders' `debug_view_targets` arrays declare.
 pub const MAX_DEBUG_TARGETS: u32 = 15;
-/// The most views one pass declares, since each takes four bits of one `u32`.
+/// The most views one pass declares, since its shown views are the bits of one byte.
 pub const MAX_VIEWS_PER_PASS: usize = 8;
 /// How many debug targets a sink's pool holds unless `render.debug.targets` says otherwise.
 pub const DEFAULT_DEBUG_TARGETS: u32 = 4;
@@ -74,13 +74,28 @@ impl DebugViewSettings {
 /// and where.
 ///
 /// Get one from [`RenderPassBuilder::debug_views`](crate::rendering::render_pass::RenderPassBuilder::debug_views).
-/// Bind [`Self::targets`] where the shader declares `debug_view_targets`, and write [`Self::shown`] to the shader
-/// member named `debug_views` every frame. The shader then asks `debug_view_slot(debug_views, view)` which slot a
-/// view writes, where `view` is the index of its name in the list the pass declared.
+/// Bind [`Self::targets`] where the shader declares `debug_view_targets`, and write [`Self::shown`] to the shader's
+/// `debug_view_first_slot` member and the `bool` members after it, one per view, every frame.
 #[derive(Clone)]
 pub struct DebugViews {
 	targets: SmallVec<[ghi::BaseImageHandle; MAX_DEBUG_TARGETS as usize]>,
+	/// The pass's shown views, one bit per view in declaration order, in the low byte, and the pool slot of its first
+	/// shown view above it. Atomic, because render commands capture their pass.
 	shown: Arc<AtomicU32>,
+}
+
+/// The `ShownDebugViews` struct is what one shader needs to write its shown debug views: which are shown, and the pool
+/// slot the first of them writes.
+///
+/// Write [`Self::first_slot`] to the shader's `debug_view_first_slot` member and [`Self::views`] to the byte that holds
+/// its `bool` members, one per view in declaration order. Shown views write consecutive slots in view order, so a view
+/// writes `first_slot` plus the number of shown views before it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShownDebugViews {
+	/// The pool slot of the first shown view.
+	pub first_slot: u32,
+	/// One bit per view, set while it is shown, with the first view in the lowest bit.
+	pub views: u8,
 }
 
 impl DebugViews {
@@ -104,10 +119,17 @@ impl DebugViews {
 		&self.targets
 	}
 
-	/// Which of this pass's views are shown this frame and in which slot, packed as the shader reads it: four bits
-	/// per view in declaration order, holding the slot number plus one, or `0` while the view is hidden.
-	pub fn shown(&self) -> u32 {
-		self.shown.load(Ordering::Relaxed)
+	/// Which of the views in `views`, a range of this pass's declared views, are shown this frame, and the slot the
+	/// first of them writes. A pass whose views several shaders write gives each shader its own range.
+	pub fn shown(&self, views: Range<usize>) -> ShownDebugViews {
+		let cell = self.shown.load(Ordering::Relaxed);
+		let mask = cell & 0xFF;
+		// The shown views before the range write the slots before its first one.
+		let before = mask & ((1 << views.start) - 1);
+		ShownDebugViews {
+			first_slot: (cell >> 8) + before.count_ones(),
+			views: ((mask >> views.start) & ((1 << views.len()) - 1)) as u8,
+		}
 	}
 }
 
@@ -149,22 +171,26 @@ impl DebugViewCatalog {
 	}
 }
 
-/// One pass that declared views, with the cell of every sink's instance.
+/// One pass that declared views, with its shown views and the cell of every sink's instance.
 struct RegisteredPass {
 	name: String,
 	views: &'static [&'static str],
+	/// One bit per declared view, set while it is shown.
+	shown: u8,
 	cells: Vec<Arc<AtomicU32>>,
 }
 
 /// The `DebugViewRegistry` struct owns which views exist, which are shown, and which pool slot each shown view holds.
+///
+/// Shown views hold the first slots of the pool, in registration order of their passes and then declaration order, so
+/// a pass's shown views always hold consecutive slots and its shaders find theirs from one first slot. Showing or hiding
+/// a view moves the views after it.
 ///
 /// The renderer registers each pass's views as it builds the pass, applies `render.debug.view.*` updates through
 /// [`apply_debug_view_configuration`], and reads [`Self::taken`] to size the pool and tile the output.
 pub(crate) struct DebugViewRegistry {
 	settings: DebugViewSettings,
 	passes: Vec<RegisteredPass>,
-	/// The pass and view holding each pool slot.
-	slots: SmallVec<[Option<(usize, usize)>; MAX_DEBUG_TARGETS as usize]>,
 	catalog: Arc<DebugViewCatalog>,
 }
 
@@ -174,7 +200,6 @@ impl DebugViewRegistry {
 		let registry = Self {
 			settings,
 			passes: Vec::new(),
-			slots: (0..settings.pool_size).map(|_| None).collect(),
 			catalog,
 		};
 		registry.publish();
@@ -204,14 +229,15 @@ impl DebugViewRegistry {
 			None => self.passes.push(RegisteredPass {
 				name: name.to_string(),
 				views,
+				shown: 0,
 				cells: vec![cell],
 			}),
 		}
 		self.publish();
 	}
 
-	/// Shows `view` of `pass` in the first free pool slot, or hides it and frees its slot. Hiding a hidden view or
-	/// showing a shown one changes nothing.
+	/// Shows `view` of `pass`, or hides it and frees its slot. Hiding a hidden view or showing a shown one changes
+	/// nothing.
 	///
 	/// Returns the reason when the pass has no such view, when every slot is taken, or when the build has no debug
 	/// views. Returns `Ok(false)` when no pass named `pass` has registered yet, so the caller can keep the request.
@@ -232,62 +258,61 @@ impl DebugViewRegistry {
 				registered.views
 			));
 		};
-		let held = self.slots.iter().position(|slot| *slot == Some((pass_index, view_index)));
-		match (shown, held) {
-			(true, Some(_)) | (false, None) => {}
-			(true, None) => {
-				let Some(free) = self.slots.iter().position(Option::is_none) else {
-					return Err(format!(
-						"Debug view was not set. The most likely cause is that every one of the {} debug targets is taken; hide a view or raise `render.debug.targets`.",
-						self.slots.len()
-					));
-				};
-				self.slots[free] = Some((pass_index, view_index));
-			}
-			(false, Some(slot)) => self.slots[slot] = None,
+		let bit = 1 << view_index;
+		if shown && registered.shown & bit == 0 && self.count() >= self.settings.pool_size {
+			return Err(format!(
+				"Debug view was not set. The most likely cause is that every one of the {} debug targets is taken; hide a view or raise `render.debug.targets`.",
+				self.settings.pool_size
+			));
 		}
-		self.pack(pass_index);
+		let registered = &mut self.passes[pass_index];
+		registered.shown = if shown {
+			registered.shown | bit
+		} else {
+			registered.shown & !bit
+		};
+		self.pack();
 		self.publish();
 		Ok(true)
 	}
 
-	/// Writes the packed slots of every view of one pass into each of its instances' cells.
-	fn pack(&self, pass_index: usize) {
-		let mut packed = 0u32;
-		for (slot, held) in self.slots.iter().enumerate() {
-			if let Some((pass, view)) = held
-				&& *pass == pass_index
-			{
-				packed |= (slot as u32 + 1) << (4 * *view as u32);
+	/// Writes every pass's shown views and first slot into each of its instances' cells. Every pass is written, since
+	/// a view shown or hidden in one pass moves the slots of the passes after it.
+	fn pack(&self) {
+		let mut first_slot = 0;
+		for pass in &self.passes {
+			let packed = u32::from(pass.shown) | (first_slot << 8);
+			for cell in &pass.cells {
+				cell.store(packed, Ordering::Relaxed);
 			}
-		}
-		for cell in &self.passes[pass_index].cells {
-			cell.store(packed, Ordering::Relaxed);
+			first_slot += pass.shown.count_ones();
 		}
 	}
 
-	/// One bit per pool slot, set while a view holds it.
+	/// How many views are shown.
+	fn count(&self) -> u32 {
+		self.passes.iter().map(|pass| pass.shown.count_ones()).sum()
+	}
+
+	/// One bit per pool slot, set while a view holds it. Shown views hold the first slots, so these are the low bits.
 	pub(crate) fn taken(&self) -> u32 {
-		self.slots
-			.iter()
-			.enumerate()
-			.filter(|(_, slot)| slot.is_some())
-			.fold(0, |mask, (index, _)| mask | (1 << index))
+		(1 << self.count()) - 1
 	}
 
 	fn publish(&self) {
+		let mut first_slot = 0;
 		let views = self
 			.passes
 			.iter()
-			.enumerate()
-			.flat_map(|(pass_index, pass)| {
-				pass.views.iter().enumerate().map(move |(view_index, view)| DebugViewEntry {
-					name: format!("{}.{view}", pass.name),
-					slot: self
-						.slots
-						.iter()
-						.position(|slot| *slot == Some((pass_index, view_index)))
-						.map(|slot| slot as u32),
+			.flat_map(|pass| {
+				let pass_first_slot = first_slot;
+				first_slot += pass.shown.count_ones();
+				pass.views.iter().enumerate().map(move |(view_index, view)| {
+					let bit = 1u8 << view_index;
+					DebugViewEntry {
+						name: format!("{}.{view}", pass.name),
+						slot: (pass.shown & bit != 0).then(|| pass_first_slot + (pass.shown & (bit - 1)).count_ones()),
+					}
 				})
 			})
 			.collect();
@@ -392,8 +417,8 @@ mod tests {
 	}
 
 	#[test]
-	fn showing_a_view_takes_the_first_free_slot_and_packs_it_into_every_instance() {
-		let mut registry = registry(2);
+	fn shown_views_hold_consecutive_slots_in_every_instance() {
+		let mut registry = registry(3);
 		let (first_sink, second_sink, other) = (cell(), cell(), cell());
 		registry.register("blur", &["velocity", "taps"], first_sink.clone());
 		registry.register("blur", &["velocity", "taps"], second_sink.clone());
@@ -402,18 +427,51 @@ mod tests {
 		assert_eq!(registry.set_view("blur", "taps", true), Ok(true));
 		assert_eq!(registry.set_view("scene", "normals", true), Ok(true));
 
-		// Taps holds slot 0 as its second view (bits 4..8); normals holds slot 1.
-		assert_eq!(value(&first_sink), 1 << 4);
-		assert_eq!(value(&second_sink), 1 << 4);
-		assert_eq!(value(&other), 2);
+		// Taps is blur's only shown view, so it holds slot 0; normals comes after it, in slot 1.
+		let blur = DebugViews::new(&[], first_sink.clone());
+		let scene = DebugViews::new(&[], other.clone());
+		assert_eq!(
+			blur.shown(0..2),
+			ShownDebugViews {
+				first_slot: 0,
+				views: 0b10
+			}
+		);
+		assert_eq!(DebugViews::new(&[], second_sink).shown(0..2), blur.shown(0..2));
+		assert_eq!(
+			scene.shown(0..1),
+			ShownDebugViews {
+				first_slot: 1,
+				views: 0b1
+			}
+		);
 		assert_eq!(registry.taken(), 0b11);
-		assert_eq!(DebugViews::new(&[], first_sink.clone()).shown(), 1 << 4);
 
-		// Two views of one pass pack side by side once a slot frees up.
-		assert_eq!(registry.set_view("scene", "normals", false), Ok(true));
+		// Showing velocity puts it before taps, which moves taps and normals one slot on.
 		assert_eq!(registry.set_view("blur", "velocity", true), Ok(true));
-		assert_eq!(value(&first_sink), (1 << 4) | 2);
-		assert_eq!(value(&other), 0);
+		assert_eq!(
+			blur.shown(0..2),
+			ShownDebugViews {
+				first_slot: 0,
+				views: 0b11
+			}
+		);
+		// A shader that writes only taps starts after the velocity view.
+		assert_eq!(
+			blur.shown(1..2),
+			ShownDebugViews {
+				first_slot: 1,
+				views: 0b1
+			}
+		);
+		assert_eq!(
+			scene.shown(0..1),
+			ShownDebugViews {
+				first_slot: 2,
+				views: 0b1
+			}
+		);
+		assert_eq!(registry.taken(), 0b111);
 	}
 
 	#[test]

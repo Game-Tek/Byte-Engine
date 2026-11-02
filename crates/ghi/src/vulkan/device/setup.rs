@@ -611,6 +611,8 @@ fn feature_requirements(settings: &crate::device::Features) -> Vec<(&'static str
 		feature!(vulkan_12.shader_int8),
 		feature!(vulkan_12.storage_buffer8_bit_access),
 		feature!(vulkan_12.uniform_and_storage_buffer8_bit_access),
+		// Packed `bool` members are bytes, and push constants hold them too.
+		feature!(vulkan_12.storage_push_constant8),
 		feature!(vulkan_12.vulkan_memory_model),
 		feature!(vulkan_12.vulkan_memory_model_device_scope),
 		feature!(vulkan_12.timeline_semaphore),

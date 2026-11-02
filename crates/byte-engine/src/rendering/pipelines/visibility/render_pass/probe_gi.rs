@@ -156,8 +156,12 @@ struct ProbeRayResult {
 struct ProbeResolveParameters {
 	view_to_world: ghi::pod::Mat4f,
 	exposure: f32,
-	debug_views: u32,
-	_padding: [u32; 2],
+	/// The pool slot the first shown debug view writes.
+	debug_view_first_slot: u32,
+	/// The shader's `bool` members: bit 0 shows the probes, bit 1 their light.
+	debug_views: u8,
+	_padding: [u8; 3],
+	_padding_1: u32,
 }
 
 /// Returns the camera position of `view`: the translation of its inverse.
@@ -533,20 +537,22 @@ impl ProbeResolvePass {
 	/// Uploads this frame's resolve settings and returns the resolve.
 	///
 	/// `probes` is the frame's probe work from [`ProbeVolume::prepare`], `exposure` the frame's shared exposure, and
-	/// `debug_views` the shown views, packed as [`crate::rendering::DebugViews::shown`] packs them.
+	/// `shown` the probe views to write, from [`crate::rendering::DebugViews::shown`].
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		probes: &ProbeFrame,
 		exposure: f32,
-		debug_views: u32,
+		shown: crate::rendering::ShownDebugViews,
 	) -> ComputeStage<3> {
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = ProbeResolveParameters {
 			view_to_world: math::inverse(sink.view().view()).into(),
 			exposure,
-			debug_views,
-			_padding: [0; 2],
+			debug_view_first_slot: shown.first_slot,
+			debug_views: shown.views,
+			_padding: [0; 3],
+			_padding_1: 0,
 		};
 		frame.sync_buffer(self.parameters);
 		ComputeStage {

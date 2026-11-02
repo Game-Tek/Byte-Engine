@@ -209,6 +209,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		Self::emit_c_declaration(string, name, type_name);
 	}
 	fn emit_expression_override(&mut self, string: &mut String, expression: &besl::Expressions) -> bool {
+		if self.emit_windowed_byte(string, expression) {
+			return true;
+		}
 		if let Some((declaration, initializer)) = Self::declaration_with_initializer(expression)
 			&& let Some(elements) = crate::shader::generator::array_constructor_elements(initializer)
 		{

@@ -77,8 +77,9 @@ pub(crate) const UBER_MATERIAL_SHADERS: [&str; 2] = [
 /// pipelines to the resource store, and the runtime cannot turn it on.
 ///
 /// Shaders mark a feature's code with a statement that reads a member named after it, such as
-/// `if (push_constant.ssgi != 0) { ... }` or `let slot: u32 = debug_view_slot(parameters.debug_views, 0u);`. The
-/// shader generators drop those statements for a left-out feature, so the bindings only they use are left out too.
+/// `if (push_constant.ssgi != 0) { ... }`, or for debug views any member starting with `debug_view_`, such as
+/// `if (parameters.debug_view_normals) { ... }`. The shader generators drop those statements for a left-out feature,
+/// so the bindings only they use are left out too.
 /// Code that serves every source of indirect diffuse light, SSGI, surfel GI, or probe GI, reads `indirect_diffuse` and
 /// stays while any of them is built in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,9 +158,10 @@ impl VisibilityFeatures {
 		self.surfel_gi || self.probe_gi
 	}
 
-	/// Returns each feature's shader member name, the directory under `byte-engine/rendering/` and the stems of the
-	/// engine assets only it uses, and whether the project builds it in. Each stem names a pipeline and its shader, or a
-	/// shader the engine assembles a pipeline from, which takes a row of its own.
+	/// Returns each feature's shader member name, or a prefix of member names when it ends in `_`, the directory under
+	/// `byte-engine/rendering/` and the stems of the engine assets only it uses, and whether the project builds it in.
+	/// Each stem names a pipeline and its shader, or a shader the engine assembles a pipeline from, which takes a row of
+	/// its own.
 	fn table(&self) -> [(&'static str, &'static str, &'static [&'static str], bool); 12] {
 		use super::ray_tracing::{DEFAULT_HIT_SHADERS, PROBE_SHADING_SHADERS, SURFEL_SHADING_SHADERS};
 		use super::render_pass::{
@@ -190,7 +192,7 @@ impl VisibilityFeatures {
 				&CONTACT_SHADOW_PIPELINES,
 				self.contact_shadows,
 			),
-			("debug_views", "debug-view/", &DEBUG_VIEW_PIPELINES, self.debug_views),
+			("debug_view_", "debug-view/", &DEBUG_VIEW_PIPELINES, self.debug_views),
 			// Only per-material evaluation shaders read the pixel lists the prepasses write.
 			(
 				"pixel_mapping",

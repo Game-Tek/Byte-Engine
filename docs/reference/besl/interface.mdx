@@ -296,7 +296,8 @@ a push constant must also follow these rules:
 - Arrays and `mat4f` members start on a 16-byte boundary, and array elements
   must each take a multiple of 16 bytes, such as `vec4f[4]`. Store eight
   scalars as two `vec4f` members instead of an `f32[8]`.
-- Use `mat4f` for matrices, and `u32` instead of `bool` or `u8`.
+- Use `mat4f` for matrices. `bool` members pack into bytes like they do in
+  buffers; see [Bool members](/docs/reference/besl/language#bool-members).
 
 Shader baking checks these rules on every platform. If a push constant breaks
 one, the error names the member and its byte offset on each backend. Reorder the
@@ -407,16 +408,6 @@ main: fn (pipeline_input: interface { instance_index: u32 }) -> void {
 array of descriptors. Reflection reports one storage-buffer binding and the
 element stride.
 
-Stored records use the same layout on every backend. Vector members such as
-`vec2f`, `vec3f`, and `vec4f` take their component size and align to one
-component, so you can declare them in any order without padding. Push constants
-have extra rules. See [Push constants](#push-constants). Mirror a
-record on the CPU with the `ghi::pod` vector types, which use the same layout.
-Matrices keep their backend alignment, so place `mat4f` members on 16-byte
-offsets. If a shader writes a single `vec4` member of a buffer record, keep that
-member on a 16-byte offset too: on Apple GPUs, a lone write that crosses a
-16-byte boundary is slower.
-
 `Texture2DArray` also describes one resource: a layered two-dimensional
 texture. Indexing it selects a layer from that resource before sampling:
 
@@ -447,6 +438,24 @@ Counters: struct {
 counters: descriptor<{ type: Counters, binding: 5, access: read_write, memory: device }>;
 index_image: descriptor<{ type: StorageImage<r32ui>, binding: 6, access: read }>;
 ```
+
+### Stored records
+
+Stored records use the same layout on every backend. Vector members such as
+`vec2f`, `vec3f`, and `vec4f` take their component size and align to one
+component, so you can declare them in any order without padding. A `u8` takes
+one byte, and contiguous `bool` members take one bit each; see
+[Bool members](/docs/reference/besl/language#bool-members). DX12 stores `u8`
+members in 2-byte windows at even offsets, so the other byte of each window must
+be another `u8` member or padding, and a layout that ends in a `u8` must take an
+even number of bytes. Shader baking rejects a record that breaks this, on every
+platform. Push constants
+have extra rules. See [Push constants](#push-constants). Mirror a
+record on the CPU with the `ghi::pod` vector types, which use the same layout.
+Matrices keep their backend alignment, so place `mat4f` members on 16-byte
+offsets. If a shader writes a single `vec4` member of a buffer record, keep that
+member on a 16-byte offset too: on Apple GPUs, a lone write that crosses a
+16-byte boundary is slower.
 
 ## Samplers
 

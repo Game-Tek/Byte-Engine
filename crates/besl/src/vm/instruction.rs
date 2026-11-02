@@ -646,6 +646,7 @@ pub(super) enum ScalarUnaryOperator {
 	FromU8ToU32,
 	FromU16ToU32,
 	FromU32ToU16,
+	FromU32ToU8,
 	FromI32ToU32,
 }
 

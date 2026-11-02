@@ -1,6 +1,7 @@
 //! BESL analysis and lowering into executable VM instructions.
 
 mod ast;
+mod bools;
 mod entry;
 mod lowering;
 mod matching;
@@ -1432,5 +1433,59 @@ main: fn () -> void {
 
 		let root = crate::compile_to_besl("Config: struct { main: u32, }", None).expect("source should link");
 		assert!(root.get_main().is_none(), "a struct member is not an entry point");
+	}
+
+	#[test]
+	fn bool_members_reject_what_bits_cannot_store() {
+		const NEXT: &str = "next: fn () -> u32 { return 0; }";
+		for (source, expected) in [
+			(
+				"Flags: struct { values: bool[4] } main: fn () -> void {}".to_string(),
+				"member `values` is a `bool` array",
+			),
+			(
+				"Flags: struct { _besl_bits0: u8, ready: bool } main: fn () -> void {}".to_string(),
+				"declares `_besl_bits0`",
+			),
+			(
+				format!(
+					"Flags: struct {{ ready: bool }} flags: descriptor<{{ type: Flags[], binding: 0, access: read_write }}>; {NEXT} main: fn () -> void {{ flags[next()].ready = true; }}"
+				),
+				"written through a place that calls `next`",
+			),
+			(
+				format!(
+					"Bytes: struct {{ value: u8 }} bytes: descriptor<{{ type: Bytes[], binding: 0, access: read_write }}>; {NEXT} main: fn () -> void {{ bytes[next()].value = u8(1); }}"
+				),
+				"written through a place that calls `next`",
+			),
+			(
+				"Flags: struct { ready: bool } flags: descriptor<{ type: Flags, binding: 0, access: write }>; main: fn () -> void { flags.ready = true; }".to_string(),
+				"which is write-only",
+			),
+		] {
+			let message = link_error(&source);
+
+			assert!(message.contains(expected), "{source}: {message}");
+			assert!(message.contains("reference/besl/language#bool-members"), "{message}");
+		}
+	}
+
+	#[test]
+	fn bool_members_link_in_locals_constructors_and_indexed_places() {
+		let source = r#"
+			NormalDelta: struct { value: vec3f, valid: bool }
+			Flags: struct { ready: bool, done: bool }
+			flags: descriptor<{ type: Flags[], binding: 0, access: read_write }>;
+			make: fn (valid: bool) -> NormalDelta { return NormalDelta(vec3f(0.0, 0.0, 0.0), valid); }
+			main: fn () -> void {
+				let index: u32 = 1;
+				let delta: NormalDelta = make(true);
+				flags[index].ready = delta.valid;
+				flags[index + 1].done = !flags[index].ready;
+			}
+		"#;
+
+		crate::compile_to_besl(source, None).expect("bool members should link");
 	}
 }

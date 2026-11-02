@@ -2625,21 +2625,11 @@ fn executable_program_classifies_f16_and_f32_values() {
 	);
 	let result = run_slot(&executable, 44);
 
-	for member in [
-		"nan_f16",
-		"infinite_f16",
-		"finite_f16",
-		"normal_f16",
-		"nan_f32",
-		"infinite_f32",
-		"finite_f32",
-		"normal_f32",
-	] {
-		assert_eq!(
-			result.read(member).expect("Expected classification result"),
-			Value::Bool(true)
-		);
-	}
+	// The eight `bool` members pack into one byte, one bit each, so every classification holding sets all of them.
+	assert_eq!(
+		result.read("_besl_bits0").expect("Expected classification result"),
+		Value::U8(0xFF)
+	);
 }
 
 #[test]
@@ -3198,4 +3188,78 @@ fn prefix_operators_reject_operands_they_do_not_apply_to() {
 		};
 		assert!(matches!(error, VmError::TypeMismatch { .. }), "{body}: {error:?}");
 	}
+}
+
+#[test]
+fn bool_members_pack_into_bits_in_declaration_order() {
+	let executable = compile_test_program(
+		r#"
+		Flags: struct {
+			a: bool,
+			b: bool,
+			value: u32,
+			c: bool,
+		}
+		Many: struct {
+			f0: bool, f1: bool, f2: bool, f3: bool, f4: bool, f5: bool, f6: bool, f7: bool, f8: bool,
+		}
+		flags: descriptor<{ type: Flags, binding: 0, access: read_write }>;
+		many: descriptor<{ type: Many, binding: 1, access: read_write }>;
+		main: fn () -> void {
+			flags.b = true;
+			flags.c = true;
+			flags.a = flags.b;
+			flags.b = false;
+			let local: Flags = Flags(true, false, 7, flags.c);
+			if (local.a && !local.b && local.c) {
+				flags.value = local.value;
+			}
+			many.f8 = true;
+			many.f0 = local.a;
+		}
+		"#,
+		None,
+	);
+	let mut flags = buffer_for_slot(&executable, ResourceSlot::new(0));
+	let mut many = buffer_for_slot(&executable, ResourceSlot::new(1));
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(ResourceSlot::new(0), &mut flags);
+	descriptors.bind_buffer(ResourceSlot::new(1), &mut many);
+	executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+	drop(descriptors);
+
+	// `a` and `b` share byte 0, `value` starts on its 4-byte alignment, and `c` starts a new byte after it. The struct
+	// rounds up to its 4-byte alignment.
+	let mut expected = vec![0b01, 0, 0, 0];
+	expected.extend(7u32.to_ne_bytes());
+	expected.extend([0b1, 0, 0, 0]);
+	assert_eq!(flags.bytes(), expected);
+	// The ninth `bool` of a run spills into a second byte.
+	assert_eq!(many.bytes(), [0b1, 0b1]);
+}
+
+#[test]
+fn buffer_members_start_on_their_scalar_alignment() {
+	let executable = compile_test_program(
+		r#"
+		Record: struct {
+			small: u8,
+			value: u32,
+			half: f16,
+			position: vec3f,
+		}
+		record: descriptor<{ type: Record, binding: 0, access: read_write }>;
+		main: fn () -> void {
+			record.value = 3;
+		}
+		"#,
+		None,
+	);
+	let layout = executable
+		.buffer_layout(ResourceSlot::new(0))
+		.expect("Expected buffer layout");
+
+	let offsets = layout.members().iter().map(|member| member.offset()).collect::<Vec<_>>();
+	assert_eq!(offsets, [0, 4, 8, 12]);
+	assert_eq!(layout.size(), 24);
 }

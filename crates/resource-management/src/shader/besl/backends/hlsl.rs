@@ -10,6 +10,7 @@ use crate::shader::generator::{
 };
 
 mod analysis;
+mod byte_windows;
 mod emit;
 mod facade;
 mod generate;
@@ -1060,6 +1061,47 @@ mod tests {
 		);
 
 		compile_dxil(&shader, "packed-narrow-buffer-write-regression", ShaderTypes::Compute);
+	}
+
+	/// Verifies `u8` members, and the `bool` members packed into them, live in 2-byte windows at their scalar offsets.
+	#[test]
+	fn byte_members_lower_to_two_byte_windows() {
+		let shader = lower_fixture(
+			r#"
+			Record: struct { index: u32, ready: bool, visible: bool, mode: u8, layer: u16 }
+			records: descriptor<{ type: Record[], binding: 0, access: read_write }>;
+			push_constant: push_constant { count: u32, show: bool, level: u8 }
+			main: fn () -> void {
+				let local: Record = Record(1, true, false, u8(3), u16(4));
+				records[0].mode = local.mode;
+				records[1].ready = push_constant.show;
+				records[2].mode = push_constant.level;
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+
+		// `ready` and `visible` pack into byte 4 and `mode` is byte 5, so one window at byte 4 holds both.
+		assert_string_contains!(shader, "uint16_t _besl_bytes2;");
+		assert_string_does_not_contain!(shader, "uint mode;");
+		assert_string_contains!(
+			shader,
+			"besl_value._besl_bytes2=uint16_t(((besl_argument__besl_bits1&0xFFu)<<0u)|((besl_argument_mode&0xFFu)<<8u))"
+		);
+		// Reads shift their byte out of the window, and writes keep the window's other byte.
+		assert_string_contains!(shader, "((uint(local._besl_bytes2)>>8u)&0xFFu)");
+		assert_string_contains!(
+			shader,
+			"records[2]._besl_bytes2=uint16_t((uint(records[2]._besl_bytes2)&255u)|((uint("
+		);
+		assert_string_contains!(
+			shader,
+			"records[1]._besl_bytes2=uint16_t((uint(records[1]._besl_bytes2)&65280u)|((uint("
+		);
+		// The push constant's bytes share the window after `count`.
+		assert_string_contains!(shader, "((uint(push_constant._besl_bytes2)>>8u)&0xFFu)");
+
+		compile_dxil(&shader, "byte-member-windows", ShaderTypes::Compute);
 	}
 
 	#[test]

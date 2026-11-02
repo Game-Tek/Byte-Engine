@@ -461,15 +461,22 @@ pub(super) fn visibility_shader_scope<'a>(tile: bool) -> Node<'a> {
 		// `evaluation_index` selects the pixel list this dispatch shades; every pixel reads its own material. `gtao` is
 		// nonzero when GTAO wrote its image this frame. `indirect_diffuse` names the source that wrote the indirect
 		// diffuse images, as `IndirectDiffuseSource::push_constant` numbers it, or is zero when none did. `ssgi` is
-		// nonzero when SSGI lit the frame, so its next frame's rays need this frame's diffuse light. `debug_views` packs the debug views to write, as `DebugViews::shown` does. The phase is the
-		// `transparent` specialization instead, so each phase's pipeline compiles only its own path.
-		Node::push_constant(vec![
-			Node::member("evaluation_index", "u32"),
-			Node::member("gtao", "u32"),
-			Node::member("ssgi", "u32"),
-			Node::member("indirect_diffuse", "u32"),
-			Node::member("debug_views", "u32"),
-		]),
+		// nonzero when SSGI lit the frame, so its next frame's rays need this frame's diffuse light.
+		// `debug_view_first_slot` is the pool slot of the first shown debug view, and one `bool` per
+		// `MATERIAL_DEBUG_VIEWS` entry says whether to write it. The phase is the `transparent` specialization instead,
+		// so each phase's pipeline compiles only its own path. `MaterialEvaluationPushConstant` mirrors it.
+		Node::push_constant(
+			[
+				Node::member("evaluation_index", "u32"),
+				Node::member("gtao", "u32"),
+				Node::member("ssgi", "u32"),
+				Node::member("indirect_diffuse", "u32"),
+				Node::member("debug_view_first_slot", "u32"),
+			]
+			.into_iter()
+			.chain(MATERIAL_DEBUG_VIEW_MEMBERS.iter().map(|member| Node::member(member, "bool")))
+			.collect(),
+		),
 	];
 
 	// Texture operations that differ by API stay typed intrinsics; every other helper is authored once in BESL.

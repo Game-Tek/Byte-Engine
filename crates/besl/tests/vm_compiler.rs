@@ -233,7 +233,8 @@ fn comparison_literals_inherit_the_typed_operand() {
 				members: vec![Node::member("value", bool_type).into()],
 			},
 			0,
-			false,
+			// Writing a packed `bool` reads its byte first.
+			true,
 			true,
 		)
 		.into(),
@@ -256,7 +257,8 @@ fn comparison_literals_inherit_the_typed_operand() {
 	descriptors.bind_buffer(slot, &mut result);
 	executable.run_main(&mut descriptors).expect("Expected comparison execution");
 
-	assert_eq!(result.read("value").expect("Expected comparison result"), Value::Bool(true));
+	// `value` is bit 0 of the byte that holds the buffer's `bool` members.
+	assert_eq!(result.read("_besl_bits0").expect("Expected comparison result"), Value::U8(1));
 }
 
 #[test]
@@ -270,7 +272,8 @@ fn incompatible_typed_comparison_operands_fail_during_compilation() {
 				members: vec![Node::member("value", bool_type).into()],
 			},
 			0,
-			false,
+			// Writing a packed `bool` reads its byte first.
+			true,
 			true,
 		)
 		.into(),

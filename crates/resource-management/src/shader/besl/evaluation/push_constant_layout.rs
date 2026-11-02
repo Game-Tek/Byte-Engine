@@ -18,6 +18,7 @@ const REGISTER: usize = 16;
 /// runs on every platform, so a block that only one backend would misread fails everywhere.
 /// [`super::ProgramEvaluation`] calls it while it reflects a program.
 pub(super) fn validate_push_constant_layout(members: &[besl::NodeReference]) -> Result<(), String> {
+	super::byte_windows::validate_byte_windows(members)?;
 	// Every member before the current one matched on all backends, so they agree on where the next one may start.
 	let mut offset = 0;
 	for member in members {
@@ -43,7 +44,7 @@ pub(super) fn validate_push_constant_layout(members: &[besl::NodeReference]) -> 
 		}
 		if cpu.len() != metal.len() || cpu.len() != dx12.len() {
 			return Err(format!(
-				"Push-constant member `{name}` takes {} bytes on the CPU and Vulkan, {} on Metal, and {} on DX12. The most likely cause is an array of elements smaller than 16 bytes, or a type whose size differs between backends, such as `bool` or `u8`; use `vec4` elements or `u32` instead. See {docs}.",
+				"Push-constant member `{name}` takes {} bytes on the CPU and Vulkan, {} on Metal, and {} on DX12. The most likely cause is an array of elements smaller than 16 bytes; use `vec4` elements instead. See {docs}.",
 				cpu.len(),
 				metal.len(),
 				dx12.len(),
@@ -140,6 +141,13 @@ mod tests {
 			],
 			// Vectors at 4-byte offsets that stay inside one register.
 			vec![("scale", "f32", None), ("offset", "vec2f", None), ("tint", "vec2f16", None)],
+			// Bytes, as packed `bool` members lower to, at any offset; DX12 reads each through its 2-byte window.
+			vec![
+				("index", "u32", None),
+				("flags", "u8", None),
+				("mode", "u8", None),
+				("layer", "u16", None),
+			],
 		] {
 			assert_eq!(validate_push_constant_layout(&members(&block)), Ok(()), "{block:?}");
 		}
@@ -159,14 +167,6 @@ mod tests {
 			(
 				vec![("weights", "f32", Some(4)), ("count", "u32", None)],
 				"`weights` takes 16 bytes on the CPU and Vulkan, 16 on Metal, and 52 on DX12",
-			),
-			(
-				vec![("flag", "bool", None)],
-				"`flag` takes 4 bytes on the CPU and Vulkan, 1 on Metal, and 4 on DX12",
-			),
-			(
-				vec![("flag", "u8", None)],
-				"`flag` takes 1 bytes on the CPU and Vulkan, 1 on Metal, and 4 on DX12",
 			),
 			(
 				vec![("affine", "mat4x3f", None)],

@@ -277,13 +277,17 @@ struct SurfelResolveParameters {
 	view_to_world: ghi::pod::Mat4f,
 	current_view_to_previous_clip: ghi::pod::Mat4f,
 	current_view_to_previous_view: ghi::pod::Mat4f,
-	debug_views: u32,
+	/// The pool slot the first shown debug view writes.
+	debug_view_first_slot: u32,
 	spawn_tiles_per_row: u32,
 	spawn_tile_count: u32,
 	spawn_probability: f32,
 	history_valid: u32,
 	history_exposure_ratio: f32,
-	_padding: [u32; 2],
+	/// The shader's `bool` members: bit 0 shows the surfels, bit 1 their coverage.
+	debug_views: u8,
+	_padding: [u8; 3],
+	_padding_1: u32,
 }
 
 /// The `SurfelSpawn` struct is one tile's spawn request. It matches `SurfelSpawn` in `layouts/surfel-resolve.besl`;
@@ -666,7 +670,7 @@ impl SurfelResolvePass {
 	/// `surfels` is the frame's surfel work from [`SurfelPool::prepare`]. `history` describes the previous frame's view
 	/// and exposure, or is `None` when its images don't hold this sink's data; only a frame that surfel GI lit leaves
 	/// surfel history. `exposure` is the shared lighting exposure uploaded for every sink in this frame, and
-	/// `debug_views` the shown views, packed as [`crate::rendering::DebugViews::shown`] packs them.
+	/// `shown` the surfel views to write, from [`crate::rendering::DebugViews::shown`].
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
@@ -674,7 +678,7 @@ impl SurfelResolvePass {
 		surfels: &SurfelFrame,
 		history: Option<SinkHistory>,
 		exposure: f32,
-		debug_views: u32,
+		shown: crate::rendering::ShownDebugViews,
 	) -> SurfelResolveStages {
 		let extent = sink.extent().scaled_down(SURFEL_RESOLVE_DIVISOR);
 		let tiles_per_row = extent.width().div_ceil(SURFEL_RESOLVE_WORKGROUP_WIDTH);
@@ -686,13 +690,15 @@ impl SurfelResolvePass {
 			view_to_world: math::inverse(sink.view().view()).into(),
 			current_view_to_previous_clip: previous_clip.into(),
 			current_view_to_previous_view: previous_view.into(),
-			debug_views,
+			debug_view_first_slot: shown.first_slot,
 			spawn_tiles_per_row: tiles_per_row,
 			spawn_tile_count: tile_count,
 			spawn_probability: SPAWN_RATE / (extent.width() * extent.height()) as f32,
 			history_valid: history.is_some() as u32,
 			history_exposure_ratio,
-			_padding: [0; 2],
+			debug_views: shown.views,
+			_padding: [0; 3],
+			_padding_1: 0,
 		};
 		frame.sync_buffer(self.parameters);
 		let screen_stage = |label, pipeline, descriptor_sets| ComputeStage {

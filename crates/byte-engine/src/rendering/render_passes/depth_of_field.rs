@@ -14,7 +14,7 @@ use utils::Extent;
 use crate::{
 	core::Entity,
 	rendering::{
-		DebugViews, Sink, View,
+		DebugViews, ShownDebugViews, Sink, View,
 		debug_views::DEBUG_VIEW_TARGETS_BINDING,
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
 		render_passes::blit::ImageBypassPass,
@@ -48,9 +48,12 @@ struct DepthOfFieldShaderData {
 	blur_limits: [f32; 2],
 	/// How many tiles make one row of the tile reach buffer.
 	tiles_per_row: u32,
-	/// The debug views to write, as [`DebugViews::shown`] packs them; see [`DEPTH_OF_FIELD_DEBUG_VIEWS`].
-	debug_views: u32,
-	_padding: [u32; 2],
+	/// The pool slot the first shown debug view writes; see [`ShownDebugViews`].
+	debug_view_first_slot: u32,
+	/// The shader's `bool` members, one bit per view of [`DEPTH_OF_FIELD_DEBUG_VIEWS`].
+	debug_views: u8,
+	_padding: [u8; 3],
+	_padding_1: u32,
 }
 
 /// The `DownsampleShaderData` struct mirrors the `DepthOfFieldDownsampleParameters` layout of `downsample.besl`.
@@ -243,7 +246,7 @@ impl RenderPass for DepthOfFieldPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		let circle_of_confusion = circle_of_confusion(sink);
-		let debug_views = self.debug_views.shown();
+		let shown: ShownDebugViews = self.debug_views.shown(0..DEPTH_OF_FIELD_DEBUG_VIEWS.len());
 		let extent = sink.extent();
 		let tiles_per_row = extent.width().div_ceil(TILE_WIDTH);
 		let tiles = tiles_per_row * extent.height().div_ceil(TILE_WIDTH);
@@ -257,7 +260,7 @@ impl RenderPass for DepthOfFieldPass {
 		}
 		// A pinhole blurs nothing without a smallest blur, so `main` passes through unless the blur view needs the
 		// prepare pass.
-		if circle_of_confusion == [0.0, 0.0] && self.blur_limits[0] == 0.0 && debug_views == 0 {
+		if circle_of_confusion == [0.0, 0.0] && self.blur_limits[0] == 0.0 && shown.views == 0 {
 			return self.main_copy.prepare(frame, sink, frame_allocator);
 		}
 		let (Some(prepare), Some(gather)) = (self.prepare_pass.ready(frame), self.gather_pass.ready(frame)) else {
@@ -273,8 +276,10 @@ impl RenderPass for DepthOfFieldPass {
 			circle_of_confusion,
 			blur_limits: self.blur_limits,
 			tiles_per_row,
-			debug_views,
-			_padding: [0; 2],
+			debug_view_first_slot: shown.first_slot,
+			debug_views: shown.views,
+			_padding: [0; 3],
+			_padding_1: 0,
 		};
 		for (level, parameters) in self.downsample_parameters.iter().enumerate() {
 			*frame.get_mut_dynamic_buffer_slice(*parameters) = DownsampleShaderData {
@@ -719,16 +724,17 @@ mod tests {
 		assert_eq!(limits(Some(f32::NAN), Some(f32::NAN)), [0.0, 64.0]);
 	}
 
-	/// The shader numbers each debug view as the Rust list declares it.
+	/// The parameters declare one `bool` member per debug view, consecutive and in the order the Rust list declares
+	/// them.
 	#[test]
-	fn debug_views_are_numbered_as_declared() {
-		for (view, _) in DEPTH_OF_FIELD_DEBUG_VIEWS.iter().enumerate() {
-			assert!(
-				asset_source("depth-of-field/prepare.besl")
-					.contains(&format!("debug_view_slot(parameters.debug_views, {view})")),
-				"prepare.besl does not write debug view {view}"
-			);
-		}
+	fn debug_views_are_declared_in_order() {
+		let members = DEPTH_OF_FIELD_DEBUG_VIEWS
+			.iter()
+			.map(|view| format!("\tdebug_view_{}: bool,\n", view.replace('-', "_")))
+			.collect::<String>();
+
+		let parameters = include_str!("../../../assets/rendering/depth-of-field/layouts/parameters.besl");
+		assert!(parameters.contains(&members), "{members}");
 	}
 
 	#[test]

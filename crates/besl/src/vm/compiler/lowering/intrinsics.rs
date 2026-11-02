@@ -600,18 +600,19 @@ impl<'a> Compiler<'a> {
 				self.emit(NumericInstruction::RoundToVec2I { register, value });
 				Ok(register)
 			}
-			"f32" | "f16" | "u32" | "u16" => {
+			"f32" | "f16" | "u32" | "u16" | "u8" => {
 				require_argument_count(arguments, 1)?;
 				// Each target keeps the type untyped literals fall back to and the source list its mismatch reports.
 				let (fallback_type, accepted_sources) = match name.as_str() {
 					"f32" => (ValueType::U32, "f16, u32, or i32"),
 					"f16" => (ValueType::F32, "f32, u32, or i32"),
 					"u32" => (ValueType::F32, "u8, u16, i32, f16, or f32"),
+					// `u16` and `u8` keep the low bits of a `u32`.
 					_ => (ValueType::U32, "u32"),
 				};
 				let source_type = self.infer_expression_type(&arguments[0], &fallback_type)?;
 				// Integer conversions to their own type are the identity and emit no instruction.
-				if source_type == return_type && matches!(return_type, ValueType::U32 | ValueType::U16) {
+				if source_type == return_type && matches!(return_type, ValueType::U32 | ValueType::U16 | ValueType::U8) {
 					return self.compile_value_expression(&arguments[0], &return_type);
 				}
 				let operator = conversion_operator(&source_type, &return_type).ok_or_else(|| VmError::TypeMismatch {

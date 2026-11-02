@@ -302,11 +302,12 @@ pub(super) fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmEr
 			type_name: type_name.to_string(),
 		});
 	};
-	let (fields, size) = compile_member_layouts(fields, false)?;
+	let (fields, size, alignment) = compile_member_layouts(fields, false)?;
 	Ok(ValueType::Struct {
 		name: type_name.to_string(),
 		fields,
 		size,
+		alignment,
 	})
 }
 
@@ -322,11 +323,11 @@ pub(super) fn is_resource_type(value_type: &ValueType) -> bool {
 }
 
 pub(super) fn compile_buffer_layout(members: &[NodeReference]) -> Result<BufferLayout, VmError> {
-	let (compiled_members, offset) = compile_member_layouts(members, true)?;
+	let (compiled_members, size, _) = compile_member_layouts(members, true)?;
 
 	Ok(BufferLayout {
 		members: compiled_members,
-		size: offset,
+		size,
 		element: None,
 		element_count: None,
 	})
@@ -367,11 +368,14 @@ pub(super) fn compile_buffer_array_layout(
 	Ok((layout, value_type))
 }
 
+/// Places `members` with the scalar layout the GPU backends use: each member starts on its type's alignment, and the
+/// size is rounded up to the largest alignment. Returns the member layouts, the size, and that alignment.
 pub(super) fn compile_member_layouts(
 	members: &[NodeReference],
 	allow_array_members: bool,
-) -> Result<(Vec<BufferMemberLayout>, usize), VmError> {
-	let mut offset = 0;
+) -> Result<(Vec<BufferMemberLayout>, usize, usize), VmError> {
+	let mut offset: usize = 0;
+	let mut alignment = 1;
 	let mut compiled_members = Vec::with_capacity(members.len());
 	for member in members {
 		let member = member.borrow();
@@ -389,6 +393,15 @@ pub(super) fn compile_member_layouts(
 						message: format!("Buffer member `{}` cannot contain resource handles", name),
 					});
 				}
+				if value_type == ValueType::Bool {
+					return Err(VmError::UnsupportedBufferLayout {
+						message: format!(
+							"Member `{name}` is an unpacked `bool`. The most likely cause is a program that was not linked with `besl::lex`, which packs `bool` members into bytes; link it with `besl::lex` or `besl::compile_to_besl`."
+						),
+					});
+				}
+				offset = offset.next_multiple_of(value_type.alignment());
+				alignment = alignment.max(value_type.alignment());
 				let count = count.map(std::num::NonZeroUsize::get).unwrap_or(1);
 				let member_size = value_type
 					.size()
@@ -415,7 +428,7 @@ pub(super) fn compile_member_layouts(
 			}
 		}
 	}
-	Ok((compiled_members, offset))
+	Ok((compiled_members, offset.next_multiple_of(alignment), alignment))
 }
 
 pub(super) enum AccessSelector {

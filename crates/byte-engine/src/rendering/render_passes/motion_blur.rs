@@ -17,7 +17,7 @@ use crate::{
 	configuration::{ConfigurationPort, ConfigurationValue},
 	core::Entity,
 	rendering::{
-		DebugViews, Sink, View,
+		DebugViews, ShownDebugViews, Sink, View,
 		debug_views::DEBUG_VIEW_TARGETS_BINDING,
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_tile},
 		render_passes::blit::ImageBypassPass,
@@ -123,9 +123,11 @@ struct MotionBlurShaderData {
 	noise_offset: f32,
 	/// The most taps one pixel gathers.
 	taps: u32,
-	/// The debug views to write, as [`DebugViews::shown`] packs them; see [`MOTION_BLUR_DEBUG_VIEWS`].
-	debug_views: u32,
-	_padding: u32,
+	/// The pool slot the first shown debug view writes; see [`ShownDebugViews`].
+	debug_view_first_slot: u32,
+	/// The shader's `bool` members, one bit per view of [`MOTION_BLUR_DEBUG_VIEWS`].
+	debug_views: u8,
+	_padding: [u8; 3],
 }
 
 /// The debug views the pass declares, in the order `motion-blur.besl` numbers them from `0`.
@@ -236,8 +238,14 @@ impl RenderPass for MotionBlurPass {
 		let Some(command) = self.blur_pass.prepare(frame, sink, frame_allocator) else {
 			return self.main_copy.prepare(frame, sink, frame_allocator);
 		};
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) =
-			motion_blur_shader_data(&settings, previous, sink, fraction, self.frame, self.debug_views.shown());
+		*frame.get_mut_dynamic_buffer_slice(self.parameters) = motion_blur_shader_data(
+			&settings,
+			previous,
+			sink,
+			fraction,
+			self.frame,
+			self.debug_views.shown(0..MOTION_BLUR_DEBUG_VIEWS.len()),
+		);
 		Some(command)
 	}
 
@@ -267,15 +275,15 @@ fn shutter_fraction(shutter: MediaTime, frame_interval: MediaTime) -> f32 {
 	}
 }
 
-/// Builds one sink's blur constants for a frame that moves from `previous` to the sink's view, writing the debug
-/// views `debug_views` packs.
+/// Builds one sink's blur constants for a frame that moves from `previous` to the sink's view, writing the `shown`
+/// debug views.
 fn motion_blur_shader_data(
 	settings: &MotionBlurPassSettings,
 	previous: View,
 	sink: &Sink,
 	fraction: f32,
 	frame: u32,
-	debug_views: u32,
+	shown: ShownDebugViews,
 ) -> MotionBlurShaderData {
 	let extent = sink.extent();
 	let taps = settings.taps.clamp(1, MAX_TAPS);
@@ -290,8 +298,9 @@ fn motion_blur_shader_data(
 		// The noise shifts by this much per frame and repeats after 64 frames.
 		noise_offset: 5.588_238 * (frame % 64) as f32,
 		taps,
-		debug_views,
-		_padding: 0,
+		debug_view_first_slot: shown.first_slot,
+		debug_views: shown.views,
+		_padding: [0; 3],
 	}
 }
 
@@ -337,20 +346,17 @@ mod tests {
 
 	const MOTION_BLUR_BESL: &str = include_str!("../../../assets/rendering/motion-blur.besl");
 
-	/// The shader numbers each debug view as the Rust list declares it.
+	/// The shader declares one `bool` member per debug view, consecutive and in the order the Rust list declares them.
 	#[test]
-	fn debug_views_are_numbered_as_declared() {
-		for (view, _) in MOTION_BLUR_DEBUG_VIEWS.iter().enumerate() {
-			assert!(
-				MOTION_BLUR_BESL.contains(&format!("debug_view_slot(parameters.debug_views, {view})")),
-				"motion-blur.besl does not write debug view {view}"
-			);
-		}
-		assert!(!MOTION_BLUR_BESL.contains(&format!(
-			"debug_view_slot(parameters.debug_views, {})",
-			MOTION_BLUR_DEBUG_VIEWS.len()
-		)));
+	fn debug_views_are_declared_in_order() {
+		let members = MOTION_BLUR_DEBUG_VIEWS
+			.iter()
+			.map(|view| format!("\tdebug_view_{}: bool,\n", view.replace('-', "_")))
+			.collect::<String>();
+
+		assert!(MOTION_BLUR_BESL.contains(&members), "{members}");
 	}
+
 	const FOV: f32 = 60.0;
 
 	/// A camera at the origin looking along `direction` with a square 60° view.
@@ -474,7 +480,14 @@ mod tests {
 		let width = texels.len() as u32;
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(MOTION_BLUR_BESL));
 		let sink = Sink::new(current, Extent::rectangle(width, 1), 0);
-		let data = motion_blur_shader_data(&MotionBlurPassSettings::default(), previous, &sink, fraction, 1, 0);
+		let data = motion_blur_shader_data(
+			&MotionBlurPassSettings::default(),
+			previous,
+			&sink,
+			fraction,
+			1,
+			ShownDebugViews::default(),
+		);
 		let parameter_slot = ResourceSlot::new(2);
 		let mut parameters = buffer(&program, parameter_slot);
 		for (name, value) in [

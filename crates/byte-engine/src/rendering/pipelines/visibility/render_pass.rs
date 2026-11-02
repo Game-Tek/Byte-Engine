@@ -141,7 +141,7 @@ pub(super) use self::gtao::GTAO_PIPELINES;
 use self::gtao::GtaoPass;
 pub(crate) use self::gtao::GtaoSettings;
 use self::light_clusters::LightClusterPass;
-pub(super) use self::materials::MATERIAL_PREPASS_PIPELINES;
+pub(super) use self::materials::{MATERIAL_EVALUATION_PUSH_CONSTANT_SIZE, MATERIAL_PREPASS_PIPELINES};
 use self::materials::{MaterialEvaluationPass, MaterialPrepasses, ScreenSpaceLighting};
 use self::occlusion::OcclusionCulling;
 pub(crate) use self::occlusion::OcclusionPhase;
@@ -185,7 +185,7 @@ use super::shader_data::LightingData;
 use super::skinning::SkinningPass;
 use crate::configuration::ConfigurationValue;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassFunction};
-use crate::rendering::{PipelineManagerClient, Sink, View};
+use crate::rendering::{PipelineManagerClient, ShownDebugViews, Sink, View};
 
 /// The `FrameWork` struct is the work one sink records for the whole frame, before any sink samples its results.
 ///
@@ -781,13 +781,16 @@ impl VisibilityRenderPass {
 		// SSGI history exists only if SSGI also lit last frame: another source leaves no diffuse radiance for its rays.
 		let ssgi_history = history.filter(|history| history.indirect_diffuse == Some(IndirectDiffuseSource::ScreenSpace));
 		let ssgi = ssgi_pipelines.map(|(ssgi, pipelines)| ssgi.prepare(frame, sink, ssgi_history, exposure, pipelines));
-		let debug_views = self.debug_views.shown();
+		// Material evaluation writes the first views, and the resolve that lights the frame the two after them.
+		let material_views = 0..super::shader_generator::MATERIAL_DEBUG_VIEW_NAMES.len();
+		let material_debug_views = self.debug_views.shown(material_views.clone());
+		let resolve_debug_views = self.debug_views.shown(material_views.end..material_views.end + 2);
 		let lit_by_surfels = indirect_diffuse == Some(IndirectDiffuseSource::Surfels);
 		// Surfel history likewise exists only if surfel GI lit last frame.
 		let surfel_history = history.filter(|history| history.indirect_diffuse == Some(IndirectDiffuseSource::Surfels));
 		let surfel_resolve = match (&self.surfel_resolve, &surfels) {
 			(Some(resolve), Some(surfels)) if lit_by_surfels => {
-				Some(resolve.prepare(frame, sink, surfels, surfel_history, exposure, debug_views))
+				Some(resolve.prepare(frame, sink, surfels, surfel_history, exposure, resolve_debug_views))
 			}
 			_ => None,
 		};
@@ -797,7 +800,11 @@ impl VisibilityRenderPass {
 		let probe_resolve = match (&self.probe_resolve, &probes) {
 			(Some(resolve), Some(probes)) if lit_by_probes => {
 				// The two views after material evaluation's are surfel GI's when it is built in.
-				let probe_views = if self.surfel_resolve.is_some() { 0 } else { debug_views };
+				let probe_views = if self.surfel_resolve.is_some() {
+					ShownDebugViews::default()
+				} else {
+					resolve_debug_views
+				};
 				Some(resolve.prepare(frame, sink, probes, exposure, probe_views))
 			}
 			_ => None,
@@ -832,7 +839,7 @@ impl VisibilityRenderPass {
 			pixel_lists,
 			sink.extent(),
 			screen_space_lighting,
-			debug_views,
+			material_debug_views,
 		);
 		let transparent_materials = self.material_evaluation.prepare(
 			&render_info.transparent_evaluations,
@@ -841,7 +848,7 @@ impl VisibilityRenderPass {
 			pixel_lists,
 			sink.extent(),
 			screen_space_lighting,
-			debug_views,
+			material_debug_views,
 		);
 		// Prepare the background last: it may record one-time work, such as building lookup tables, that would be
 		// lost if this pass gave up on the frame after it. A background still compiling leaves the sky black for this

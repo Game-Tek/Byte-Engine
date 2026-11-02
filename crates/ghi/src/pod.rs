@@ -10,36 +10,6 @@
 //! is not padded to 16-byte alignment. A matrix is its column vectors back to back, so [`Mat4x3f`]
 //! is four [`Vec3f`] columns taking 48 bytes.
 
-/// The shader `bool`. It is 32 bits wide in buffers, so it is not Rust's one-byte `bool`.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Bool(u32);
-
-impl Bool {
-	pub const FALSE: Self = Self(0);
-	pub const TRUE: Self = Self(1);
-
-	pub const fn new(value: bool) -> Self {
-		Self(value as u32)
-	}
-
-	pub const fn get(self) -> bool {
-		self.0 != 0
-	}
-}
-
-impl From<bool> for Bool {
-	fn from(value: bool) -> Self {
-		Self::new(value)
-	}
-}
-
-impl From<Bool> for bool {
-	fn from(value: Bool) -> Self {
-		value.get()
-	}
-}
-
 pub type U8 = u8;
 pub type U16 = u16;
 pub type U32 = u32;
@@ -180,7 +150,6 @@ mod tests {
 
 	#[test]
 	fn types_match_the_scalar_block_layout() {
-		assert_eq!((size_of::<Bool>(), align_of::<Bool>()), (4, 4));
 		assert_eq!((size_of::<F16>(), align_of::<F16>()), (2, 2));
 		assert_eq!((size_of::<Vec2u16>(), align_of::<Vec2u16>()), (4, 2));
 		assert_eq!((size_of::<Vec4u16>(), align_of::<Vec4u16>()), (8, 2));

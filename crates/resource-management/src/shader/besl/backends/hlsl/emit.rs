@@ -383,6 +383,12 @@ impl Generator {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str("))");
 			}
+			// HLSL stores a BESL `u8` as a `uint`, so the conversion keeps the low byte itself.
+			"u8" => {
+				string.push_str("(uint(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(") & 0xFFu)");
+			}
 			"workgroup_barrier" => string.push_str("GroupMemoryBarrierWithGroupSync()"),
 			"set_task_mesh_output_count" => {
 				string.push_str("besl_mesh_output_count = ");

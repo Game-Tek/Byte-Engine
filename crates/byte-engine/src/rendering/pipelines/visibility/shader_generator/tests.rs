@@ -425,17 +425,17 @@ fn a_graph_reading_an_undeclared_parameter_is_reported() {
 	assert!(error.contains("'tint'"), "{error}");
 }
 
-/// The suffix sums irradiance behind the view index the table gives the irradiance view.
+/// Each material debug view's push-constant member is named after the view, and the suffix sums irradiance behind the
+/// irradiance view's member.
 #[test]
-fn irradiance_view_is_summed_at_its_table_index() {
-	use super::ast::MATERIAL_DEBUG_VIEWS;
+fn material_debug_view_members_follow_the_table() {
+	use super::ast::{MATERIAL_DEBUG_VIEW_MEMBERS, MATERIAL_DEBUG_VIEWS};
 	use super::sources::MATERIAL_EVALUATION_SUFFIX_SOURCE;
 
-	let irradiance = MATERIAL_DEBUG_VIEWS
-		.iter()
-		.position(|(name, _)| *name == "irradiance")
-		.expect("The material debug views include irradiance");
-	assert!(MATERIAL_EVALUATION_SUFFIX_SOURCE.contains(&format!("debug_view_slot(push_constant.debug_views, {irradiance})")));
+	for ((name, _), member) in MATERIAL_DEBUG_VIEWS.iter().zip(MATERIAL_DEBUG_VIEW_MEMBERS) {
+		assert_eq!(member, format!("debug_view_{name}"));
+	}
+	assert!(MATERIAL_EVALUATION_SUFFIX_SOURCE.contains("push_constant.debug_view_irradiance"));
 }
 
 /// Verifies that a project without GTAO or SSGI bakes material shaders that never reach those features' images.

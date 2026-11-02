@@ -44,6 +44,7 @@ impl Generator {
 		self.packed_write_counter = 0;
 		self.atomic_temporary_counter = 0;
 		self.atomic_temporaries.clear();
+		self.plan_byte_windows(&order);
 		for node in &order {
 			match node.borrow().node() {
 				besl::Nodes::TaskPayload { .. } => self.task_payloads.push(node.clone()),
@@ -149,8 +150,8 @@ impl Generator {
 		formatting.push_indentation(string, 1);
 		let _ = write!(string, "{} besl_value", Self::identifier(name));
 		formatting.push_statement_end(string);
-		for field in fields {
-			let field = field.borrow();
+		for field_node in fields {
+			let field = field_node.borrow();
 			let besl::Nodes::Member {
 				name: field_name, count, ..
 			} = field.node()
@@ -158,6 +159,15 @@ impl Generator {
 				continue;
 			};
 			let member = Self::identifier(field_name);
+			let mut window = String::new();
+			if self.emit_windowed_factory_field(&mut window, field_node, fields) {
+				if !window.is_empty() {
+					formatting.push_indentation(string, 1);
+					string.push_str(&window);
+					formatting.push_statement_end(string);
+				}
+				continue;
+			}
 			formatting.push_indentation(string, 1);
 			if let Some(count) = count {
 				let _ = write!(
@@ -249,7 +259,10 @@ impl Generator {
 			}
 			besl::Nodes::Struct {
 				name, fields, template, ..
-			} => self.emit_struct_node(string, name, fields, template),
+			} => {
+				let fields = self.windowed_members(fields);
+				self.emit_struct_node(string, name, &fields, template)
+			}
 			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
 				if *operator == besl::Operators::Assignment && self.emit_image_size_assignment(string, left, right) => {}
 			besl::Nodes::PushConstant { members } => {
@@ -258,7 +271,8 @@ impl Generator {
 					string.push_str("// Root constants\n");
 				}
 				self.emit_named_struct_start(string, "PushConstant");
-				emit_statement_block(string, formatting, members, 1, |string, member| {
+				let members = self.windowed_members(members);
+				emit_statement_block(string, formatting, &members, 1, |string, member| {
 					self.emit_node_string(string, member)
 				});
 				self.emit_struct_declaration_end(string);
@@ -384,7 +398,8 @@ impl Generator {
 				match r#type {
 					besl::BindingTypes::Buffer { members } => {
 						self.emit_named_struct_start(string, format_args!("_{name}"));
-						emit_statement_block(string, formatting, members, 1, |string, member| {
+						let members = self.windowed_members(members);
+						emit_statement_block(string, formatting, &members, 1, |string, member| {
 							self.emit_node_string(string, member)
 						});
 						self.emit_struct_declaration_end(string);

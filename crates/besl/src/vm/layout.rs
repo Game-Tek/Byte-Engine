@@ -109,7 +109,10 @@ pub enum ValueType {
 	Struct {
 		name: String,
 		fields: Vec<BufferMemberLayout>,
+		/// The struct's size, rounded up to `alignment`.
 		size: usize,
+		/// The largest alignment of the struct's fields.
+		alignment: usize,
 	},
 }
 
@@ -170,6 +173,39 @@ impl ValueType {
 			| ValueType::TextureCubeArray
 			| ValueType::ArrayTexture2D => 0,
 			ValueType::Struct { size, .. } => *size,
+		}
+	}
+
+	/// The byte boundary a value of this type starts on in buffer memory: the alignment of its scalar component, as
+	/// the scalar layout that every GPU backend uses for buffers places it.
+	pub const fn alignment(&self) -> usize {
+		match self {
+			ValueType::Bool | ValueType::U8 => 1,
+			ValueType::U16
+			| ValueType::F16
+			| ValueType::Vec2U16
+			| ValueType::Vec4U16
+			| ValueType::Vec2F16
+			| ValueType::Vec3F16
+			| ValueType::Vec4F16 => 2,
+			ValueType::U32
+			| ValueType::I32
+			| ValueType::F32
+			| ValueType::Vec2I
+			| ValueType::Vec2U
+			| ValueType::Vec3U
+			| ValueType::Vec4U
+			| ValueType::Vec2F
+			| ValueType::Vec3F
+			| ValueType::Vec4F
+			| ValueType::Mat4F
+			| ValueType::Mat4x3F => 4,
+			ValueType::Texture2D
+			| ValueType::Texture3D
+			| ValueType::TextureCube
+			| ValueType::TextureCubeArray
+			| ValueType::ArrayTexture2D => 1,
+			ValueType::Struct { alignment, .. } => *alignment,
 		}
 	}
 

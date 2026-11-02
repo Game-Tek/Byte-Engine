@@ -611,8 +611,8 @@ material_evaluation_suffix: fn () -> void {
 			let irradiance: vec3f = light_color * (attenuation * f32(NdotL * occlusion_factor));
 			diffuse = diffuse + vec3f(local_diffuse) * irradiance;
 			specular = specular + vec3f(local_specular) * irradiance;
-			// View 5 of `MATERIAL_DEBUG_VIEWS`, the irradiance.
-			if (debug_view_slot(push_constant.debug_views, 5) != 0) {
+			// The irradiance view of `MATERIAL_DEBUG_VIEWS`.
+			if (push_constant.debug_view_irradiance) {
 				total_irradiance = total_irradiance + irradiance;
 			}
 		}

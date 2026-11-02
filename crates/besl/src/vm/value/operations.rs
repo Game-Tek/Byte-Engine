@@ -39,6 +39,7 @@ pub(crate) fn conversion_operator(source: &ValueType, target: &ValueType) -> Opt
 		(ValueType::F16, ValueType::U32) => ScalarUnaryOperator::FromF16ToU32,
 		(ValueType::F32, ValueType::U32) => ScalarUnaryOperator::FromF32ToU32,
 		(ValueType::U32, ValueType::U16) => ScalarUnaryOperator::FromU32ToU16,
+		(ValueType::U32, ValueType::U8) => ScalarUnaryOperator::FromU32ToU8,
 		_ => return None,
 	})
 }
@@ -575,6 +576,7 @@ pub(crate) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 		(Unary::FromU8ToU32, Value::U8(value)) => Ok(Value::U32(u32::from(*value))),
 		(Unary::FromU16ToU32, Value::U16(value)) => Ok(Value::U32(u32::from(*value))),
 		(Unary::FromU32ToU16, Value::U32(value)) => Ok(Value::U16(*value as u16)),
+		(Unary::FromU32ToU8, Value::U32(value)) => Ok(Value::U8(*value as u8)),
 		(Unary::FindLsb, Value::U32(value)) => Ok(Value::U32(if *value == 0 { u32::MAX } else { value.trailing_zeros() })),
 		// Signed-to-unsigned shader casts preserve the low 32 bits for negative inputs.
 		(Unary::FromI32ToU32, Value::I32(value)) => Ok(Value::U32(*value as u32)),
@@ -582,7 +584,7 @@ pub(crate) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 		(Unary::FromF32ToF16 | Unary::FromF32ToU32, _) => mismatch(ValueType::F32),
 		(Unary::FromU8ToU32, _) => mismatch(ValueType::U8),
 		(Unary::FromU16ToU32, _) => mismatch(ValueType::U16),
-		(Unary::FromU32ToF32 | Unary::FromU32ToF16 | Unary::FromU32ToU16 | Unary::FindLsb, _) => mismatch(ValueType::U32),
+		(Unary::FromU32ToF32 | Unary::FromU32ToF16 | Unary::FromU32ToU16 | Unary::FromU32ToU8 | Unary::FindLsb, _) => mismatch(ValueType::U32),
 		(Unary::FromI32ToF32 | Unary::FromI32ToF16 | Unary::FromI32ToU32, _) => mismatch(ValueType::I32),
 		(Unary::LogicalNot, Value::Bool(value)) => Ok(Value::Bool(!value)),
 		(Unary::LogicalNot, _) => mismatch(ValueType::Bool),

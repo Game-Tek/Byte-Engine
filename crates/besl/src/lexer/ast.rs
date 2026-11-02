@@ -201,6 +201,9 @@ pub(crate) fn lex_with_root(root: Node, mut node: parser::Node) -> Result<NodeRe
 		root.borrow_mut().add_child(child);
 	}
 
+	// Backends and the VM never see a `bool` member: they read the bytes that hold it.
+	super::bools::pack_bool_members(&root)?;
+
 	Ok(root)
 }
 
@@ -605,9 +608,10 @@ impl Node {
 			));
 		}
 		// Conversions take one `value` of the source type and return the target type.
-		let conversions: [(&str, &[&NodeReference], &NodeReference); 9] = [
+		let conversions: [(&str, &[&NodeReference], &NodeReference); 10] = [
 			("f16", &[&f32_t, &f16_t, &u32_t, &i32_t], &f16_t),
 			("u16", &[&u32_t], &u16_t),
+			("u8", &[&u32_t], &u8_t),
 			("f32", &[&f16_t, &u32_t, &i32_t], &f32_t),
 			("vec2f16", &[&vec2f32, &vec2f16], &vec2f16),
 			("vec3f16", &[&vec3f32, &vec3f16], &vec3f16),

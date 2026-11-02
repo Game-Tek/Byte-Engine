@@ -629,7 +629,7 @@ fn built_in_or_off(enabled: bool, built_in: bool, parameter: &str) -> bool {
 const GI_LOG_INTERVAL: u64 = 256;
 
 /// The debug views of a sink a resolve can light: material evaluation's, then the resolve's two, which the resolve
-/// numbers from 6.
+/// writes from the range after material evaluation's.
 type ResolveDebugViewNames = [&'static str; super::shader_generator::MATERIAL_DEBUG_VIEW_NAMES.len() + 2];
 
 /// Returns material evaluation's debug view names followed by a resolve's `views`.

@@ -681,7 +681,7 @@ impl NodeEmitter for Generator {
 					"is_finite" => "_besl_is_finite",
 					"is_normal" => "_besl_is_normal",
 					"u32" => "uint",
-					"f32" | "f16" | "u16" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
+					"f32" | "f16" | "u16" | "u8" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
 						Self::type_from_besl(name)
 					}
 					"subgroup_ballot" => "subgroupBallot",

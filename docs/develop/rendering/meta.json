@@ -6,6 +6,7 @@
 		"lighting",
 		"visibility",
 		"shown-transforms",
+		"color-correction",
 		"color-grading",
 		"film-grain",
 		"ray-tracing",

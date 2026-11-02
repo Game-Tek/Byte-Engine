@@ -1,0 +1,83 @@
+---
+title: Correct exposure and color
+description: Set your application's exposure, white balance, tone, split tone, and saturation before tone mapping.
+icon: SlidersHorizontal
+---
+
+Correct the picture when a scene is too dark, lit by light that's too warm or too cool, crushed in the shadows, or too
+flat or too colorful for the look you want, and give it a split tone, such as teal shadows and orange highlights. The correction works on scene light, so the tone mapper or a LUT still controls how highlights
+roll off.
+
+## Install the pass
+
+Call `setup_color_correction_render_pass` before you create the first window. Install it after every pass that writes
+scene light, such as bloom, and before a LUT or tone mapper:
+
+```rust
+setup_bloom_render_pass(&mut app, BloomPassSettings::default());
+setup_color_correction_render_pass(&mut app, ColorCorrectionPassSettings {
+	exposure: 0.5,
+	temperature: 5000.0,
+	contrast: 1.2,
+	saturation: 1.1,
+	..Default::default()
+});
+setup_agx_tonemap_render_pass(&mut app);
+```
+
+The default settings leave the picture unchanged, so set only the fields you need.
+
+## Choose the correction
+
+- `exposure` brightens or darkens the picture in stops: `1` doubles the light, `-1` halves it. It adds to the camera's
+  exposure.
+- `temperature` names the color temperature, in kelvins, of the light that should look white. Set it to the
+  temperature of your scene's main light to neutralize it: `3200` for tungsten, `5600` for daylight. A lower value turns
+  the picture bluer, a higher one warmer.
+- `tint` corrects green or magenta light, from `-1` to `1`. Positive values turn the picture magenta, negative values
+  green.
+- `shadows` brightens the shadows from `0` to `1`, or deepens them from `0` to `-1`. Black and mid grey don't move,
+  so use it to recover shadow detail that a LUT or the ACES output crushes without turning black grey.
+- `highlights` brightens the highlights from `0` to `1`, or pulls them down from `0` to `-1`. Mid grey and the brightest
+  light don't move.
+- `contrast` sets the S-curve's slope at mid grey. Values above `1` deepen shadows and lift highlights, and mid grey
+  stays where it is. The curve rolls off toward black, so shadows darken without clipping.
+- `saturation` sets the strength of color: `0` is black and white, `1` keeps the color.
+- `density` sets how saturation behaves. At `0`, stronger color gets brighter, which can look like neon. At `1`, it
+  gets deeper and darker, the way more dye does on film, and weaker color gets lighter. The default, `0.5`, is between
+  the two.
+
+## Add a split tone
+
+A split tone leans the highlights toward one hue and the shadows toward the opposite hue, such as the orange and teal of
+many films:
+
+```rust
+setup_color_correction_render_pass(&mut app, ColorCorrectionPassSettings {
+	split_hue: 55.0,
+	split_amount: 0.4,
+	..Default::default()
+});
+```
+
+- `split_hue` is the highlights' hue in degrees around the Oklab color wheel. `55` gives orange highlights and teal
+  shadows; `90` gives yellow and blue, and `0` pink and green.
+- `split_amount` sets how strong the tint is, from `0` to `1`. Start low: around `0.3` is often enough.
+- `split_balance` shifts the tint toward the shadows, down to `-1` for shadows only, or toward the highlights, up to
+  `1` for highlights only.
+
+The split tone keeps black, mid grey, and the brightest highlights neutral, doesn't change brightness, and leaves
+saturated colors such as skin mostly alone, so faces keep their color while the scene around them takes the tint. It
+runs before saturation, so raise `saturation` after you set the split, not before.
+
+The exact formulas are in [Color correction](/docs/reference/rendering#color-correction) in the rendering reference.
+
+## Turn the correction on and off
+
+Set the `render.pass.color-correction` parameter to bypass the pass or turn it back on while the application runs, as
+with any other pass.
+
+## Rust API
+
+- [`setup_color_correction_render_pass`](/docs/api/latest/byte_engine/application/graphics#fn.setup_color_correction_render_pass)
+- [`ColorCorrectionPassSettings`](/docs/api/latest/byte_engine/rendering/render_passes/color_correction/ColorCorrectionPassSettings)

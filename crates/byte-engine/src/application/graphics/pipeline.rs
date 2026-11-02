@@ -513,6 +513,28 @@ pub fn setup_film_grain_render_pass(
 		});
 }
 
+/// Installs exposure, white balance, tone curve, split tone, and saturation correction for every render sink.
+///
+/// Call this after every pass that writes scene light, such as
+/// [`setup_bloom_render_pass`], so they are corrected too, and before a LUT or
+/// tone mapper, such as [`setup_lut_render_pass`] or
+/// [`setup_agx_tonemap_render_pass`], which then receive the corrected
+/// scene-linear `main`. Use `render.pass.color-correction` to enable or bypass it
+/// at runtime.
+pub fn setup_color_correction_render_pass(
+	application: &mut GraphicsApplication,
+	settings: rendering::render_passes::color_correction::ColorCorrectionPassSettings,
+) {
+	application
+		.renderer
+		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+			Box::new(rendering::render_passes::color_correction::ColorCorrectionPass::new(
+				render_pass_builder,
+				settings,
+			))
+		});
+}
+
 /// Installs a fused ACEScg/ACEScct grading and SDR output pass from a prepared LUT.
 ///
 /// The LUT must accept and return ACEScct values. The pass uses an AP1-aware

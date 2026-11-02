@@ -1,0 +1,67 @@
+---
+title: Color correction
+description: Learn how the color correction pass splits its work between the CPU and the shader, and what a change to it must keep true.
+icon: SlidersHorizontal
+---
+
+Read this page before you change the `color-correction` pass, its shader, or the matrices it builds on the CPU. What
+the pass computes is specified under [Color correction](/docs/reference/rendering#color-correction) in the rendering
+reference.
+
+## How the pass is built
+
+The pass is one tile pass, `color-correction/correct.besl`, and the CPU work in `render_passes/color_correction.rs`.
+
+- **CPU matrices.** Exposure and white balance are linear, so `color_correction_shader_data` folds them, with the
+  conversion to ACEScg, into one 3 × 3 matrix. The Planckian white, the CAT16 adaptation, and the grey luminance
+  normalization run once in double precision at setup. The shader pays one matrix multiply for all three.
+- **CPU split direction.** `split_direction` takes the Oklab color at mid grey's lightness with the split hue to
+  ACEScct offsets once, with their luminance-weighted mean removed.
+- **Shader.** The shader encodes ACEScct, moves the lightness (the L of hue, saturation, and lightness) through the
+  shadows and highlights bumps and the contrast S-curve, adds the split tone's offsets, scales the channels' offsets
+  around the saturation pivot, decodes, and converts back to linear sRGB with the second matrix.
+
+## Why it works in ACEScct
+
+In a logarithmic encoding, a channel's offset from the lightness is a ratio of linear light. Curving only the
+lightness and keeping the offsets keeps every pixel's hue and saturation, so contrast doesn't make colors more
+saturated, as a per-channel curve does. Saturation that scales those offsets acts the same at every exposure.
+
+Moving the saturation pivot to the largest channel makes saturation subtractive: the channel that carries the color
+stays put and the others drop, like dye adding density. Grey has no offsets, so it never moves, whatever the pivot.
+
+## Why the split tone works like printer lights
+
+The split tone adds a per-channel offset in ACEScct, which is a per-channel exposure change in linear light, the way a
+film printer's lights change density. Colorists warn that teal and orange looks cheap when it tints every tone, turns
+skin orange, or tints the deepest shadows. So the pass:
+
+- Weights the offset by smooth bumps that are 0, with a slope of 0, at black, at mid grey, and at 16. Blacks,
+  midtones, where faces usually sit, and the brightest highlights stay neutral, and no tone shows an edge.
+- Uses one direction for both halves, negated for the shadows, so the two tints are exact opposites and cancel on
+  average.
+- Removes the direction's luminance-weighted mean, so tinting a grey doesn't brighten or darken it.
+- Fades the tint down with the pixel's channel spread, so already saturated colors, such as skin and products, keep
+  their hue while the neutral surroundings carry the look.
+- Runs before saturation, so saturation acts on the finished split, as a colorist adjusts saturation after the split.
+
+## Rules a change must keep
+
+- The default settings must leave the picture unchanged, and a white card under light of the set temperature must
+  show as D65. D65 lies a little green of the Planckian locus, so `white` shifts the locus by the offset that takes
+  6,504 K to D65. Adapting to the 6,504 K Planckian white instead turns every balanced white about 5 % magenta.
+- `SRGB_TO_ACESCG` must match `linear_srgb_to_acescg` in `layouts/acescct.besl`, and the shader's black, pivot, and
+  white constants must be the ACEScct values of 0, 0.18, and 65,504.
+- The tone curve must not clip and must keep a ramp in order at every setting: contrast fixes black and white, the
+  shadows bump fixes black and mid grey, and the highlights bump fixes mid grey and 64. The shadows scale stops at a
+  slope of 0 at black and the highlights scale keeps the slope at or above 0.42.
+- The pass stays a pure per-pixel tile pass with no neighbors, so it can share a tile with other per-pixel work.
+
+## Tests
+
+The tests in `color_correction.rs` run the shader in the BESL virtual machine with the matrices the pass builds. They
+check that the defaults change nothing, that a stop doubles the light, that contrast keeps mid grey and doesn't clip
+shadows, that shadows and highlights move their tones by the specified stops and keep their fixed points, that no tone
+setting reverses a ramp, that the split tone tints shadows and highlights opposite ways without changing a grey's
+brightness, spares saturated colors, and follows its balance, that saturation and density never tint grey, that dense saturation darkens while additive saturation
+brightens, and that a white card under the set temperature shows as neutral while grey keeps its luminance.

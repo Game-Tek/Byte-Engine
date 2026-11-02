@@ -96,6 +96,7 @@ animation steps once per frame.
 | Bloom | `bloom` | `Bloom Output` | After everything that writes scene light, before tone mapping. |
 | Antialiasing | `smaa` | `SMAA Output`, `SMAA Edges` | After the `main` to filter, before sharp overlays. |
 | AgX, ACES, Hable, and sRGB display | `agx`, `aces`, `hable`, `srgb-display` | Their named outputs | As the tone mapper, before creating a window. The sRGB display pass needs float input and suits SDR scenes without a tone mapper. |
+| Color correction | `color-correction` | `Color Correction` | After everything that writes scene light, before a LUT and tone mapping. |
 | Color grading | `lut`, `aces-color-grading`, `aces2-color-grading`, `dwg-color-grading` | Their named outputs | After scene-linear effects. `lut` goes before tone mapping; the ACES, ACES 2.0, and DaVinci passes end in display color, so they take the tone mapper's place. |
 | Film grain | `film-grain` | `Film Grain` | After tone mapping or color grading and antialiasing, before the UI. |
 | UI | `ui` | `UI` | Before the renders every sink must see are published. |
@@ -116,6 +117,7 @@ scene reaches the swapchain through the copy.
 | Height fog | A layer's height falloff 0.2 and base height 0; a fog's albedo white, maximum opacity 1, anisotropy 0.7 within 0 to 1, ambient illuminance 0 lux. |
 | Atmosphere sky | Earth's radii and scale heights, Mie anisotropy 0.76, ozone strength 1, ground albedo 0.3, the sun disk capped at 32,768 per channel; not settable through the setup function. |
 | Antialiasing | SMAA 1x Ultra: edge threshold 0.05 on perceptual luma √(L / (1 + L)), local contrast factor 2, 32 orthogonal and 16 diagonal search steps, corner rounding 0.25; not settable. |
+| Color correction | Exposure 0 EV, temperature 6,504 K within 1,000 to 15,000 K, tint 0 within −1 to 1, shadows 0 and highlights 0 within −1 to 1, contrast 1 above 0, split hue 0°, split amount 0 within 0 to 1, split balance 0 within −1 to 1, saturation 1 at 0 or above, density 0.5 within 0 to 1. The defaults leave the picture unchanged. |
 | Color grading | Look strength 1, within 0 to 1. Each channel is the input plus the strength times the LUT's change to it, in the encoding the LUT reads: scene-linear for `lut`, ACEScct for `aces-color-grading` and `aces2-color-grading`, DaVinci Intermediate for `dwg-color-grading`. |
 | Film grain | Level 1, size 0.37, zone gains 0, 0.65, 0, −0.65, and −2 for the Black, Shadow, Mid, High, and White zones. |
 | Tone mapping, UI, debug meshes | No settings. |
@@ -134,6 +136,43 @@ transform for one display.
 | Highlights | Scene 1 encodes 0.707 and scene 16 encodes 0.975; only values past about 128 reach display white. |
 | Output range | Linear display color is clamped to 0 to 1 before encoding. |
 | Conformance | Each encoded channel is within 0.002 of the Academy's `Output.Academy.Rec709-D65_100nit_in_Rec709-D65_sRGB-Piecewise` transform for ACES 2.0, which ACES 2.1 leaves unchanged for this display. |
+
+### Color correction
+
+Color correction adjusts the scene-linear picture before tone mapping. It
+reads only each pixel's own color. Its steps run in the order of the table.
+
+| Step | Definition |
+| --- | --- |
+| Input | Scene-linear sRGB with a D65 white. Alpha passes through. |
+| Exposure | Every channel times 2<sup>exposure</sup>. |
+| White balance | A von Kries adaptation in CAT16 cone space from the white W(temperature, tint) to D65, with both whites at luminance 1, then scaled so a neutral grey keeps its luminance. |
+| White `W(T, t)` | The Planckian white of temperature T in CIE 1960 *uv*, from Krystek's 1985 approximation, moved by the *uv* offset that takes the 6,504 K Planckian white to D65, then 0.05 × t along the locus's unit normal toward the green side, which is higher *v*. W(6,504 K, 0) is D65. |
+| Working space | ACEScg, through the D65-to-D60 adapted matrix of the ACES passes. Channels below 0 are held to 0, then encoded as ACEScct. |
+| Lightness `L` | (max + min) / 2 of the three ACEScct channels. Each channel's offset is its value minus L. |
+| Tone position | u = (L − black) / (white − black), where black = 0.0729055 (ACEScct of 0) and white = 1.4679963 (ACEScct of 65,504); p = 0.2442012, u at ACEScct 0.4135884 of mid grey 0.18; t = 0.5908968, u at ACEScct 0.8972603 of 64. |
+| Shadows | For 0 < u < p, u becomes u + k u (1 − u / p)<sup>2</sup>, where k = 2 × shadows for shadows ≥ 0 and k = shadows below 0. |
+| Highlights | For p < u < t, with y = (u − p) / (t − p), u becomes u + 3 × highlights × (t − p) × y<sup>2</sup> (1 − y)<sup>2</sup>. |
+| Contrast | With u after shadows and highlights, for u ≤ p, f(u) = p (u / p)<sup>contrast</sup>; for p < u < 1, f(u) = 1 − (1 − p) ((1 − u) / (1 − p))<sup>contrast</sup>; at u ≥ 1, f(u) = u. L becomes black + (white − black) × f(u). Each channel keeps its offset from L. |
+| Split tone | Each channel c becomes c + n × (m<sub>h</sub> × H − m<sub>s</sub> × S) × D. The masks are m<sub>s</sub> = 16 y<sup>2</sup> (1 − y)<sup>2</sup> with y = (L − 0.0729055) / (0.4135884 − 0.0729055) between black and mid grey, and m<sub>h</sub> = 16 y<sup>2</sup> (1 − y)<sup>2</sup> with y = (L − 0.4135884) / (0.7831050 − 0.4135884) between mid grey and 16 (ACEScct 0.7831050); each is 0 outside its range. H = amount × min(1, 1 + balance) and S = amount × min(1, 1 − balance). The protection n = 1 / (1 + (C / 0.1)<sup>2</sup>), where C is the largest minus the smallest ACEScct channel. |
+| Split direction `D` | The ACEScct offsets log2(c<sub>i</sub> / 0.18) / 17.52 of the ACEScg color c that has mid grey's Oklab lightness, Oklab chroma 0.05, and Oklab hue h, less their mean weighted by ACEScg luminance (0.2722287, 0.6740818, 0.0536895). |
+| Saturation | L and the offsets are taken again from the split-toned channels. Each channel c becomes q + saturation × (c − q), around the pivot q = L + density × the largest offset. |
+| Output | ACEScct decoded to ACEScg, converted to linear sRGB with the inverse of the input matrix, and held to 0 and above. |
+
+| Term | Definition |
+| --- | --- |
+| Exposure | Stops, any value. +1 doubles the light, −1 halves it. It adds to the camera's exposure. |
+| Temperature | The color temperature, in kelvins, of the light that shows as neutral. A lower value turns the picture bluer, a higher one warmer. |
+| Tint | The white's distance from the Planckian locus, from −1 to 1. Positive values neutralize a greener light and turn the picture magenta; negative values turn it green. |
+| Shadows | From −1 to 1. Positive values brighten the shadows, steepening the curve just above black up to 3 times: at 1, a tone 4.5 stops below mid grey rises 1.7 stops. Negative values deepen them, until at −1 the curve is flat at black and the same tone falls 1.2 stops. Black, mid grey, and everything brighter stay in place. |
+| Highlights | From −1 to 1. Positive values brighten the tones from mid grey to 64, most at 4.25 stops above mid grey, which 1 raises by 1.6 stops; negative values pull them down by as much. The change fades out smoothly at both ends, so mid grey and everything past 64 stay in place. |
+| Split hue | The Oklab hue h, in degrees, that the highlights move toward. The shadows move toward the opposite hue. About 55 gives orange highlights and teal shadows. |
+| Split amount | From 0 to 1. At 1, a grey at the peak of either mask moves by about 0.05 in Oklab chroma, at the peaks 3 stops below and 3.25 stops above mid grey. Black, mid grey, and tones past 16 keep their color. The offsets sum to 0 under ACEScg luminance, so a tinted grey keeps its brightness to first order. |
+| Split balance | From −1 to 1. Negative values keep the shadow tint and weaken the highlight tint, down to none at −1; positive values do the opposite. |
+| Split protection | Built in. A grey takes the whole tint; a color whose ACEScct channels spread by 0.1 (about 1.75 stops) takes half, so skin and saturated colors keep their own hue. |
+| Contrast | The curve's slope at mid grey. Above 1 it darkens the shadows and brightens the highlights, rolling off toward black and toward 65,504 so nothing clips; below 1 it flattens them. Mid grey never moves. |
+| Saturation | 0 removes all color, 1 keeps it, and higher values strengthen it. A pixel whose channels are equal never changes. |
+| Density | Where saturation takes its light from. At 0 channels move around L, so stronger color is brighter in its main channel. At 1 they move around the largest channel, so stronger color only lowers the others, as more dye does in film, and weaker color raises them toward it. Values between blend the two pivots. |
 
 ### Film grain
 

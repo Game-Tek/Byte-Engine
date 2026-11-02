@@ -1,0 +1,138 @@
+// Corrects the scene-linear picture before tone mapping: exposure and white balance in linear light, then the tone
+// curve, the split tone, and saturation in ACEScct, where a stop is the same step at every brightness.
+//
+// The tone curve and saturation work like HSL: lightness is the mean of the largest and smallest channel, and each
+// channel's offset from it carries hue and saturation. The shadows, highlights, and contrast curves move only the
+// lightness, so hues and saturation hold. The split tone works like printer lights: it adds a per-channel density
+// offset, toward one hue in the highlights and the opposite hue in the shadows, faded out at black, mid grey, and the
+// top of the highlights, and faded down on colors that are already saturated. Saturation scales the offsets around a
+// pivot that `density` moves from the lightness to the largest channel. At the largest channel, stronger color only
+// lowers the others, as more dye does in film, so saturated color gets denser, not brighter.
+
+// `to_working` takes linear sRGB to ACEScg with exposure and white balance applied, one row per vec4f. `from_working`
+// takes ACEScg back to linear sRGB. `look` is contrast, saturation, and density. `tone` is shadows, highlights, and the
+// highlight and shadow split strengths. `split` is the split direction in ACEScct.
+ColorCorrectionParameters: struct {
+	to_working_x: vec4f,
+	to_working_y: vec4f,
+	to_working_z: vec4f,
+	from_working_x: vec4f,
+	from_working_y: vec4f,
+	from_working_z: vec4f,
+	look: vec4f,
+	tone: vec4f,
+	split: vec4f,
+}
+
+source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+parameters: descriptor<{ type: ColorCorrectionParameters, binding: 1, access: read, memory: constant }>;
+// A tile output, so the replacement for `main` this writes needs no shader-write usage and stays losslessly compressed.
+result_texture: output<vec4f, 0>;
+
+// ACEScct of 0, of mid grey 0.18, and of 65504, the largest half float: the contrast curve's ends and pivot.
+CORRECTION_BLACK: const f32 = 0.0729055341958355;
+CORRECTION_PIVOT: const f32 = 0.4135884024924423;
+CORRECTION_WHITE: const f32 = 1.4679963120447153;
+// ACEScct of 64, where the highlights curve ends, and of 16, where the highlight split tone ends.
+CORRECTION_HIGHLIGHT_END: const f32 = 0.8972602739726028;
+CORRECTION_SPLIT_END: const f32 = 0.7831050228310502;
+// The channel spread, in ACEScct, at which the split tone falls to half, so saturated colors keep their own hue.
+CORRECTION_SPLIT_PROTECTION: const f32 = 0.1;
+
+// Multiplies `color` by the 3x3 matrix whose rows are `x`, `y`, and `z`.
+correction_transform: fn(x: vec4f, y: vec4f, z: vec4f, color: vec3f) -> vec3f {
+	return vec3f(
+		x.x * color.x + x.y * color.y + x.z * color.z,
+		y.x * color.x + y.y * color.y + y.z * color.z,
+		z.x * color.x + z.y * color.y + z.z * color.z
+	);
+}
+
+// Returns a smooth bump over `value` from `low` to `high`: 1 at the middle, and 0 with a slope of 0 at both ends and
+// outside them, so whatever it weights fades in and out without a visible edge.
+correction_bump: fn(value: f32, low: f32, high: f32) -> f32 {
+	let y: f32 = (value - low) / (high - low);
+	if (y <= 0.0 || y >= 1.0) {
+		return 0.0;
+	}
+	return 16.0 * y * y * (1.0 - y) * (1.0 - y);
+}
+
+// Moves ACEScct lightness through the tone curve: the shadows and highlights bumps, then an S whose slope at mid grey is
+// `contrast`. The shadows bump is 0 at black and fades out by mid grey; the highlights bump fades in after mid grey and
+// out by 64. The S is two power curves meeting at the pivot, one rising from black and one falling from white, so the
+// ends stay put and nothing clips. Lightness past white is left unchanged.
+correction_tone: fn(lightness: f32, contrast: f32, shadows: f32, highlights: f32) -> f32 {
+	let range: f32 = CORRECTION_WHITE - CORRECTION_BLACK;
+	let u: f32 = (lightness - CORRECTION_BLACK) / range;
+	let p: f32 = (CORRECTION_PIVOT - CORRECTION_BLACK) / range;
+	let t: f32 = (CORRECTION_HIGHLIGHT_END - CORRECTION_BLACK) / range;
+	if (u <= 0.0 || u >= 1.0) {
+		return lightness;
+	}
+	if (u < p) {
+		// Lifting may steepen the curve at black up to 3 times; deepening stops where it turns flat.
+		let lift: f32 = shadows;
+		if (shadows > 0.0) {
+			lift = 2.0 * shadows;
+		}
+		let below: f32 = 1.0 - u / p;
+		u = u + lift * u * below * below;
+	} else {
+		// The bump over 16 is y²(1 − y)². Scaled by 3 (t − p), the curve's slope stays between 0.42 and 1.58.
+		u = u + highlights * 3.0 * (t - p) * 0.0625 * correction_bump(u, p, t);
+	}
+	let curved: f32 = 0.0;
+	if (u <= p) {
+		curved = p * pow(u / p, contrast);
+	} else {
+		curved = 1.0 - (1.0 - p) * pow((1.0 - u) / (1.0 - p), contrast);
+	}
+	return CORRECTION_BLACK + range * curved;
+}
+
+main: fn(input: StageInput) -> void {
+	let coord: vec2u = input.thread_id;
+	let extent: vec2u = input.extent;
+	if (coord.x >= extent.x || coord.y >= extent.y) {
+		return;
+	}
+	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));
+	let source_color: vec4f = texture_lod(source_texture, uv);
+	let source_rgb: vec3f = vec3f(source_color.x, source_color.y, source_color.z);
+
+	let working: vec3f = correction_transform(parameters.to_working_x, parameters.to_working_y, parameters.to_working_z, source_rgb);
+	let encoded: vec3f = acescct(max(working, vec3f(0.0, 0.0, 0.0)));
+
+	let largest: f32 = max(encoded.x, max(encoded.y, encoded.z));
+	let smallest: f32 = min(encoded.x, min(encoded.y, encoded.z));
+	let lightness: f32 = 0.5 * (largest + smallest);
+	let offsets: vec3f = encoded - vec3f(lightness, lightness, lightness);
+
+	let contrast: f32 = parameters.look.x;
+	let saturation: f32 = parameters.look.y;
+	let density: f32 = parameters.look.z;
+	let curved_lightness: f32 = correction_tone(lightness, contrast, parameters.tone.x, parameters.tone.y);
+	let contrasted: vec3f = vec3f(curved_lightness, curved_lightness, curved_lightness) + offsets;
+
+	// The split tone weighs one density offset by where the pixel sits: toward the split hue in the highlights, the
+	// opposite way in the shadows, and less the more color the pixel already has.
+	let highlight_mask: f32 = correction_bump(curved_lightness, CORRECTION_PIVOT, CORRECTION_SPLIT_END);
+	let shadow_mask: f32 = correction_bump(curved_lightness, CORRECTION_BLACK, CORRECTION_PIVOT);
+	let spread: f32 = (largest - smallest) / CORRECTION_SPLIT_PROTECTION;
+	let protection: f32 = 1.0 / (1.0 + spread * spread);
+	let split_weight: f32 = protection * (highlight_mask * parameters.tone.z - shadow_mask * parameters.tone.w);
+	let toned: vec3f = contrasted + vec3f(parameters.split.x, parameters.split.y, parameters.split.z) * split_weight;
+
+	// Saturation reads the lightness and offsets again, as the split tone moved them. The largest offset is the largest
+	// channel's, so density 1 pivots on that channel and leaves it unchanged.
+	let toned_largest: f32 = max(toned.x, max(toned.y, toned.z));
+	let toned_lightness: f32 = 0.5 * (toned_largest + min(toned.x, min(toned.y, toned.z)));
+	let pivot: f32 = toned_lightness + density * (toned_largest - toned_lightness);
+	let pivot_rgb: vec3f = vec3f(pivot, pivot, pivot);
+	let saturated: vec3f = pivot_rgb + (toned - pivot_rgb) * saturation;
+
+	let linear: vec3f = correction_transform(parameters.from_working_x, parameters.from_working_y, parameters.from_working_z, acescct_to_acescg(saturated));
+	let result_rgb: vec3f = max(linear, vec3f(0.0, 0.0, 0.0));
+	write(result_texture, coord, vec4f(result_rgb.x, result_rgb.y, result_rgb.z, source_color.w));
+}

@@ -154,6 +154,16 @@ pub trait RenderPass {
 	fn needs_frame(&mut self) -> bool {
 		false
 	}
+
+	/// Reports whether this pass needs its sink's view moved to a new point of the camera's aperture every frame; see
+	/// [`Sink::with_lens_sample`].
+	///
+	/// While an enabled pass of a sink answers `true`, every pass and scene pipeline of that sink sees the moved view,
+	/// and [`Sink::camera_view`] keeps the camera's own. Passes that average frames into a lens's blur answer `true`;
+	/// every other pass keeps the default.
+	fn samples_lens(&self) -> bool {
+		false
+	}
 }
 
 /// The `RenderPassState` enum identifies which preparation path a render pass uses: [`RenderPass::prepare`] or
@@ -200,6 +210,11 @@ impl RenderPassHarness {
 	/// Reports whether the wrapped pass asks for a new frame; see [`RenderPass::needs_frame`].
 	pub(crate) fn needs_frame(&mut self) -> bool {
 		self.render_pass.needs_frame()
+	}
+
+	/// Reports whether the wrapped pass is enabled and asks for lens samples; see [`RenderPass::samples_lens`].
+	pub(crate) fn samples_lens(&self) -> bool {
+		self.state.get() == RenderPassState::Enabled && self.render_pass.samples_lens()
 	}
 
 	/// Returns the pass state used for the next frame preparation.

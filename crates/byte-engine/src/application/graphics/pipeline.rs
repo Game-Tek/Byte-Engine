@@ -450,6 +450,50 @@ pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: 
 	});
 }
 
+/// Installs depth of field for every current and future render sink.
+///
+/// The pass blurs `main` by each sink's camera lens, set with [`rendering::Camera::set_f_number`] and
+/// [`rendering::Camera::set_focus_distance`], within the blur diameters `settings` allow. Set
+/// [`DepthOfFieldPassSettings::max_blur_diameter`](rendering::render_passes::depth_of_field::DepthOfFieldPassSettings::max_blur_diameter)
+/// to bound its cost when the lens can blur widely. The `depth-of-field.circle-of-confusion` debug view shows how far
+/// each pixel is out of focus. Call it after the passes that write
+/// scene light and [`setup_exponential_height_fog_render_pass`], and before [`setup_motion_blur_render_pass`],
+/// [`setup_lens_flare_render_pass`], [`setup_bloom_render_pass`], and tone mapping. Use `render.pass.depth-of-field`
+/// to enable or bypass it at runtime.
+pub fn setup_depth_of_field_render_pass(
+	application: &mut GraphicsApplication,
+	settings: rendering::render_passes::depth_of_field::DepthOfFieldPassSettings,
+) {
+	application
+		.renderer
+		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+			Box::new(rendering::render_passes::depth_of_field::DepthOfFieldPass::new(
+				render_pass_builder,
+				settings,
+			))
+		});
+}
+
+/// Installs the depth-of-field reference for every current and future render sink, bypassed.
+///
+/// While `render.pass.depth-of-field-reference=enabled`, each sink's view moves over its camera's aperture from frame
+/// to frame, and the pass replaces `main` with the mean of those frames: the lens's exact blur for a still scene,
+/// slow to converge, to compare [`setup_depth_of_field_render_pass`] against. It starts over whenever the camera, its
+/// lens, or the window's size changes, and past 1,024 frames it averages the latest 1,024 or so. Call it where
+/// [`setup_depth_of_field_render_pass`] goes, and bypass motion blur while it runs.
+pub fn setup_depth_of_field_reference_render_pass(application: &mut GraphicsApplication) {
+	application
+		.renderer
+		.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| {
+			Box::new(rendering::render_passes::depth_of_field::DepthOfFieldReferencePass::new(
+				render_pass_builder,
+			))
+		});
+	application
+		.renderer
+		.set_render_pass_state("depth-of-field-reference", rendering::render_pass::RenderPassState::Bypassed);
+}
+
 /// Installs camera motion blur for every current and future render sink.
 ///
 /// The pass smears `main` along the camera's turn and zoom since the previous frame, for the fraction of the frame

@@ -35,10 +35,40 @@ passes write 16-bit float display color. The window's swapchain is `BGRAsRGB`.
 | Exposure | 0 stops | The exposure scale is 2 to the power of the stops, within ±64. |
 | Near and far planes | 0.1 and 100 | Fixed. |
 | Projection | Perspective | Sinks always use a perspective view. |
-| Aspect ratio, aperture, focus distance | | Stored but not read; the aspect ratio comes from the window's extent. |
+| F-number | ∞ | Above 0. ∞ is a pinhole, which keeps every depth in focus. |
+| Focus distance | 10 m | Above 0. The depth that's in focus. |
+| Sensor height | 24 mm | Above 0. |
+| Aspect ratio | | Stored but not read; the aspect ratio comes from the window's extent. |
 
 The camera's position and orientation come from its shown transform. Up is
 +Y, unless the view direction is within 1 percent of vertical, when +Z is used.
+
+### Lens
+
+The camera is a thin lens. Depth is the distance from the camera along its
+view direction.
+
+| Quantity | Definition |
+| --- | --- |
+| Focal length F | h / (2 tan(θ / 2)), for sensor height h and vertical field of view θ. |
+| Aperture diameter A | F / N, for f-number N. |
+| Focus distance S | The camera's focus distance, held to at least F + 1 mm. |
+| Circle of confusion c | The signed diameter, in pixels, of the disc that a point at depth z spreads over: c = A · F / (S − F) · (1 − S / z) · H / h, for a sink H pixels tall. It's 0 at the focus distance, positive behind it, and negative in front of it. |
+| Depth of the background | Where depth is 0, z is the far plane. |
+
+### Lens sampling
+
+While an enabled pass asks for lens samples, such as the depth-of-field
+reference, the sink's view moves each frame to a point of the camera's
+aperture. Scene pipelines and every post-scene pass of that sink see the moved
+view.
+
+| Rule | Value |
+| --- | --- |
+| Aperture | A disc perpendicular to the view direction, centered on the camera, with a diameter of A · S / (S − F). |
+| Sample on frame k | The point at √u of the disc's radius and at angle 2πv, for u = frac(0.5 + 0.7548776662 k) and v = frac(0.5 + 0.5698402910 k), where k counts the renderer's frames. |
+| Projection | Sheared so that every point at the focus distance shows where the camera's own view shows it. Depth is unchanged. |
+| Result | A point at depth z moves by c(z) pixels between opposite edges of the aperture. |
 
 ## Shown transforms
 
@@ -91,6 +121,8 @@ animation steps once per frame.
 | Particles | `ParticleManager` | `main` | After the scene pipeline, before the deferred tasks thread starts. |
 | Atmosphere sky | `atmosphere sky` | The scene color where depth is 0 | As the scene background. Black when bypassed or without a directional light. |
 | Height fog | `exponential-height-fog` | `Exponential Height Fog` | After the scene and particles, before lens flare, bloom, and tone mapping. |
+| Depth-of-field reference | `depth-of-field-reference` | `Depth of Field Reference`, and its mean as `Depth of Field Reference Red`, `Green`, and `Blue` | In place of depth of field. Its setup function installs it bypassed. |
+| Depth of field | `depth-of-field` | `Depth of Field` | After scene light and fog, before motion blur, lens flare, bloom, and tone mapping. |
 | Motion blur | `motion-blur` | `Motion Blur` | After scene light and fog, before lens flare, bloom, and tone mapping. |
 | Lens flare | `lens-flare` | `Lens Flare Output` | Before bloom and tone mapping. |
 | Bloom | `bloom` | `Bloom Output` | After everything that writes scene light, before tone mapping. |
@@ -112,6 +144,8 @@ scene reaches the swapchain through the copy.
 | Pass | Settings and defaults |
 | --- | --- |
 | Bloom | Scatter 0.06, tail exponent 2, halation 0 in every channel, halation radius 0.005 of the sink's height in every channel, maximum brightness 4,096, radius 1, 6 levels of 1 to 6. |
+| Depth-of-field reference | No settings. While enabled, it samples the lens. `main` becomes a running mean of the scene, restarted when the camera's own view, its lens, or the sink's extent changes: frame n since the restart weighs 1 / n for its first 1,024 frames, and 1 / 1,024 after that. The mean is held at 32-bit float per channel, after each color channel is held to 65,504; alpha is the current frame's. Moving objects don't restart it. |
+| Depth of field | The minimum and maximum blur diameters, in pixels, each unset by default; the lens is the camera's. See [Depth of field](#depth-of-field). The `circle-of-confusion` view shows −b / 32 in red and b / 32 in blue, each held to 0 to 1, and green 1 where \|b\| is under 1 pixel. |
 | Motion blur | Shutter 8,333 µs, maximum blur radius 32 pixels, 8 taps of 1 to 32. It blurs camera turns and zooms only, by the shutter's share of the frame interval. |
 | Lens flare | Threshold 1, soft knee 0.5, maximum brightness 64, intensity 0.05, 4 ghosts of 1 to 8, ghost spacing 0.35, halo width 0.45, halo intensity 0.5, chromatic distortion 0.004, a blue tint, squeeze 1. |
 | Height fog | A layer's height falloff 0.2 and base height 0; a fog's albedo white, maximum opacity 1, anisotropy 0.7 within 0 to 1, ambient illuminance 0 lux. |
@@ -136,6 +170,25 @@ transform for one display.
 | Highlights | Scene 1 encodes 0.707 and scene 16 encodes 0.975; only values past about 128 reach display white. |
 | Output range | Linear display color is clamped to 0 to 1 before encoding. |
 | Conformance | Each encoded channel is within 0.002 of the Academy's `Output.Academy.Rec709-D65_100nit_in_Rec709-D65_sRGB-Piecewise` transform for ACES 2.0, which ACES 2.1 leaves unchanged for this display. |
+
+### Depth of field
+
+The `depth-of-field` pass blurs each pixel p of `main` by the camera's lens.
+The terms use the circle of confusion c of the [lens](#lens), r for the
+distance in pixels from p to a point s of the image, and b<sub>p</sub> and
+b<sub>s</sub> for the blur diameters at p and s.
+
+| Term | Definition |
+| --- | --- |
+| Maximum blur diameter M | 64 pixels, or the pass's maximum when it has one, held to 1 to 64 pixels. |
+| Minimum blur diameter m | 0, or the pass's minimum when it has one, held to 0 to M. |
+| Blur diameter b | The sign of c times max(d, m), where d is \|c\| when \|c\| is at most M / 2, and otherwise M / 2 + M / 2 × tanh((\|c\| − M / 2) / (M / 2)), which stays below M. A c of 0 counts as positive. |
+| Reach of s | e = \|b<sub>s</sub>\| / 2. When b<sub>s</sub> > b<sub>p</sub>, s lies behind p, and e is at most \|b<sub>p</sub>\| / 2. |
+| Coverage | clamp(e − r + 0.5, 0, 1). |
+| Density | 1 / max(π b<sub>s</sub><sup>2</sup> / 4, 1). |
+| Result | The mean of the colors around p, each weighted by coverage × density, in scene-linear light with each channel held to 65,504. |
+| Sampling | Every pixel within 3.5 pixels of p is a point. Beyond, 16 points per ring stand for the ring's area, at rings whose bounds grow by 1.39 times from 3.5 pixels, each read from the image or an average of it whose texels are 2, 4, or 8 pixels wide, the widest no wider than the points' spacing. Each average takes 2 × 2 texels of the one before, weighing each by min(\|b\| / w, 1) for texels w pixels wide, or evenly where every weight is 0, and averages b the same way. Rings that no blur near p can reach are skipped. |
+| Pinhole | A lens whose c is 0 everywhere, such as one with an f-number of ∞, leaves `main` unchanged when m is 0, and blurs every pixel by m otherwise. |
 
 ### Color correction
 

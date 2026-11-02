@@ -36,6 +36,20 @@ struct SinkPass {
 /// A GPU timing counter paired with the metric the renderer publishes its durations to.
 type GpuCounter = (ghi::CounterHandle, MetricId);
 
+/// Returns the point of the unit disc a sink's view samples the lens from on frame `index`.
+///
+/// Consecutive frames walk Roberts' R2 sequence, which covers the disc evenly from any starting frame, so an average
+/// that restarts mid-sequence converges as fast as one from frame 0. The square root spreads the points evenly over
+/// the disc's area.
+fn lens_sample(index: u64) -> [f32; 2] {
+	// The R2 sequence's steps are one over the plastic number and its square.
+	let u = (0.5 + index as f64 * 0.754_877_666_246_692_7).fract();
+	let v = (0.5 + index as f64 * 0.569_840_290_998_053_2).fract();
+	let radius = u.sqrt();
+	let (sine, cosine) = (std::f64::consts::TAU * v).sin_cos();
+	[(radius * cosine) as f32, (radius * sine) as f32]
+}
+
 impl SinkPass {
 	/// Prepares the pass's command and, while it is bypassed, the copy that forwards `main` after it.
 	fn prepare<'a>(
@@ -826,11 +840,19 @@ impl Renderer {
 
 						let transform = transforms.get(*camera_handle).cloned().unwrap_or_default();
 						let view = make_perspective_view_from_camera(camera, &transform, extent);
-						sinks.push(
-							Sink::new(view, extent, *sink_id)
-								.with_exposure_scale(camera.exposure_scale())
-								.with_frame_interval(frame_interval),
-						);
+						let sink = Sink::new(view, extent, *sink_id)
+							.with_exposure_scale(camera.exposure_scale())
+							.with_lens(camera.f_number(), camera.focus_distance(), camera.sensor_height())
+							.with_frame_interval(frame_interval);
+						let samples_lens = self
+							.render_passes
+							.iter()
+							.any(|render_pass| render_pass.sink == *sink_id && render_pass.harness.samples_lens());
+						sinks.push(if samples_lens {
+							sink.with_lens_sample(lens_sample(self.started_frame_count))
+						} else {
+							sink
+						});
 					}
 				}
 
@@ -1271,7 +1293,25 @@ use crate::{
 
 #[cfg(test)]
 mod tests {
-	use super::gpu_metric_name;
+	use super::{gpu_metric_name, lens_sample};
+
+	/// The samples stay on the unit disc and cover it evenly from any starting frame: centered, with a quarter of
+	/// them within half the radius, as a quarter of the area is.
+	#[test]
+	fn lens_samples_cover_the_disc_evenly_from_any_frame() {
+		for start in [0, 7, 1_000_003] {
+			let samples = (start..start + 1024).map(lens_sample).collect::<Vec<_>>();
+			assert!(samples.iter().all(|[x, y]| x * x + y * y <= 1.0));
+			let count = samples.len() as f32;
+			let [mean_x, mean_y] = samples.iter().fold([0.0, 0.0], |[sx, sy], [x, y]| [sx + x, sy + y]);
+			assert!(
+				(mean_x / count).abs() < 0.01 && (mean_y / count).abs() < 0.01,
+				"start {start}"
+			);
+			let inner = samples.iter().filter(|[x, y]| x * x + y * y < 0.25).count() as f32;
+			assert!((inner / count - 0.25).abs() < 0.01, "start {start}: {}", inner / count);
+		}
+	}
 
 	/// Saves `data` to a fresh path under the system's temporary directory and returns what the file holds
 	/// afterwards, or `None` when there is no file. `existing` is what the file holds before the save.

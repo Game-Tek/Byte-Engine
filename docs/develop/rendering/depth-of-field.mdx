@@ -1,0 +1,92 @@
+---
+title: Depth of field
+description: Learn how the depth-of-field pass gathers one continuous blur, how its reference checks it, and what a change to either must keep true.
+icon: Aperture
+---
+
+Read this page before you change the `depth-of-field` or `depth-of-field-reference` pass, their shaders in
+`assets/rendering/depth-of-field`, or the lens fields on `Camera` and `Sink`. What the passes render is specified under
+[Lens](/docs/reference/rendering#lens) and [Depth of field](/docs/reference/rendering#depth-of-field) in the rendering
+reference.
+
+## Why one continuous gather
+
+The pass gathers every pixel's blur from one lattice of taps into one weighted mean. It doesn't split the scene into
+depth layers and composite them: layers show seams where a surface crosses from one layer to the next, and the seams
+move as the focus changes. With one gather, a pixel's weight changes smoothly with its depth, so no depth draws a line.
+
+The tap lattice is fixed in pixels. Tiles decide only how far the walk goes, never where a tap lands, so a tile's edge
+never shows either.
+
+## How the pass is built
+
+The CPU work is in `render_passes/depth_of_field.rs`. It turns the sink's lens into the circle of confusion's bias and
+scale over reverse-Z device depth, which is affine in it, and records three stages, each inside its own GPU counter:
+
+- **Prepare** (`prepare.besl`, 16 × 16 compute). Each pixel computes its blur diameter b once and writes color and b
+  to the full-resolution source. Each tile reduces its widest reach with lane shuffles over rows of 16 lanes, then one
+  workgroup atomic per row, and writes it to `tile_reaches`. The debug view is written here.
+- **Downsample** (`downsample.besl`, 8 × 8 compute, three dispatches). Each level averages 2 × 2 texels of the one
+  before, weighted by min(|b| / w, 1), so sharp texels don't bleed into the blur that later rings read.
+- **Gather** (`gather.besl`, 16 × 16 compute). Each workgroup stages its tile and a 3-pixel halo, 22 × 22 texels, into
+  workgroup memory, with color already multiplied by density. 49 lanes read the 7 × 7 neighboring tiles' reaches to
+  find the search reach, the farthest any blur nearby can reach into this tile. Each pixel then walks the 37 inner taps
+  from workgroup memory, nearest first, and stops at the search reach. The 7 outer rings of 16 taps read the averaged
+  levels directly; a ring beyond the search reach is skipped whole.
+
+The tap lattice is compiled into `gather.besl` as constant arrays: each inner tap's texel in the shared tile and its
+distance, each ring's bounds, radius, and area, and each outer tap's offset. Every offset, distance, and weight factor
+is a constant, so the compiler can fold them, and the shader reads no lattice from memory.
+
+On an Apple M4 rendering Sponza at 1024 × 1024 at f/1.4, the pass takes 1.11 ms: 0.88 ms for the gather, 0.15 ms for
+the downsample, and a prepare stage too short for its counter. Three changes brought the gather down from 2.13 ms:
+
+- Lane shuffles and one atomic per 16 lanes, instead of 256 lanes contending on one workgroup atomic, saved 0.7 ms.
+- Constant tap tables, instead of a lattice read from the parameters buffer, together with inner taps sorted by
+  distance so the walk can stop early, and rings skipped beyond the search reach, saved 0.5 ms more.
+
+## The reference
+
+The `depth-of-field-reference` pass renders the lens's exact blur, slowly, to judge the gather against. While it's
+enabled, `RenderPass::samples_lens` asks the renderer to move each sink's view over the aperture every frame:
+`Sink::with_lens_sample` picks a point on the R2 sequence mapped to the disc, and `View::with_lens_offset` moves the
+eye there and shears the projection so the focus plane stays put. The pass keeps the running mean of those frames in
+three R32F images. The aperture is scaled by S / (S − F), so the spread of each depth matches the thin-lens circle of
+confusion that the gather uses.
+
+To compare the two, capture the model viewer once with each pass enabled and the other bypassed:
+
+```sh
+--render.pass.depth-of-field=bypassed --render.pass.depth-of-field-reference=enabled
+```
+
+## Rules a change must keep
+
+- Keep one continuous gather. Don't add depth layers or per-tile tap sets; both bring back seams.
+- Keep the tap tables in `gather.besl` in step with the rule they follow: inner taps are every pixel within 3.5 pixels,
+  sorted by distance; ring bounds grow by 1.39 times from 3.5 pixels; each tap sits at the radius that halves its
+  ring's area; each ring reads the widest level no wider than its taps' spacing. When you change the rule, recompute
+  every table from it; the tests check them.
+- Keep the last ring's outer bound beyond the widest reach, 32.5 pixels, which follows from `MAX_BLUR_DIAMETER`, 64
+  pixels, in `depth_of_field.rs`. `blur_limits` holds `DepthOfFieldPassSettings::max_blur_diameter` to it, and the
+  shader rolls every blur off below the largest diameter it's given, so a smaller largest diameter also bounds the
+  search reach and skips the outer rings.
+- Keep `blur_diameter` in `layouts/parameters.besl` equal to the reference's blur diameter. The blur bound tests run
+  it in the BESL VM against that formula.
+- Keep `MAX_TILES` in `depth_of_field.rs` equal to the length of `TileReaches` in the layout.
+- Every lane in a workgroup reaches every barrier and every shuffle. A lane past the image's edge returns only after
+  the last barrier.
+- Keep the pixel's own tap in the gather. It covers at least half of itself, so the sum of weights is never 0.
+
+## Tests
+
+- `inner_taps_are_the_pixels_within_their_radius_nearest_first` and
+  `outer_rings_cover_every_reach_with_even_areas` check the shader's tap tables against the lattice's rule.
+- `blur_diameters_stay_within_their_bounds` runs `blur_diameter` in the BESL VM and checks it against the
+  reference's formula with no bounds, a smallest diameter, and both; `blur_bounds_are_held_to_their_ranges` checks
+  how the settings are held to their ranges.
+- `depth_of_field_shaders_link` compiles the three shaders.
+- The circle-of-confusion tests check the thin-lens formula, its sign, the pinhole, and the held focus distance.
+- `lens_samples_spread_each_depth_over_its_circle_of_confusion` checks that the reference's moved views spread each
+  depth by the same circle of confusion.
+- `reference_besl_vm_moves_the_mean_by_the_frames_share` runs the reference shader in the BESL VM.

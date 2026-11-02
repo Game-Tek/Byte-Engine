@@ -57,6 +57,38 @@ mod tests {
 		}
 	}
 
+	struct LensSamplingPass;
+
+	impl RenderPass for LensSamplingPass {
+		fn name(&self) -> &'static str {
+			"lens-sampling"
+		}
+
+		fn prepare<'a>(
+			&mut self,
+			_frame: &mut ghi::implementation::Frame,
+			_sink: &Sink,
+			_frame_allocator: &'a bumpalo::Bump,
+		) -> Option<RenderPassReturn<'a>> {
+			None
+		}
+
+		fn samples_lens(&self) -> bool {
+			true
+		}
+	}
+
+	#[test]
+	fn only_an_enabled_pass_samples_the_lens() {
+		let mut states = RenderPassStates::default();
+		let sampling = RenderPassHarness::new(Box::new(LensSamplingPass), &mut states);
+		let [other] = harnesses(&mut states, ["bloom"]);
+		assert!(sampling.samples_lens() && !other.samples_lens());
+
+		set_render_pass_state(&mut states, "lens-sampling", RenderPassState::Bypassed);
+		assert!(!sampling.samples_lens());
+	}
+
 	/// Creates one harness per name, sharing state by name the way the renderer does for every sink.
 	fn harnesses<const N: usize>(states: &mut RenderPassStates, names: [&'static str; N]) -> [RenderPassHarness; N] {
 		names.map(|name| RenderPassHarness::new(Box::new(NamedRenderPass(name)), states))

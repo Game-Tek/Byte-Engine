@@ -1,0 +1,39 @@
+// The constants the depth-of-field prepare and gather passes share. This layer declares the type and the helpers both
+// use; each pass binds the buffer at its own slot. `depth_of_field.rs` builds it, and `DepthOfFieldShaderData` mirrors
+// its layout.
+
+DepthOfFieldParameters: struct {
+	// The circle of confusion at reverse-Z depth 0 and its change per unit of depth, in pixels.
+	circle_of_confusion: vec2f,
+	// The smallest and largest blur diameters, in pixels: m and M in the reference. The largest is at most 64.
+	blur_limits: vec2f,
+	// How many 16x16 tiles make one row of `tile_reaches`.
+	tiles_per_row: u32,
+	// The debug views to write, as `DebugViews::shown` packs them: view 0 is the blur diameter.
+	debug_views: u32,
+	_padding_0: u32,
+	_padding_1: u32,
+}
+
+// The tile reach buffer: per 16x16 tile, the reach of its widest blur.
+TileReaches: struct {
+	values: f32[65536],
+}
+
+// Holds the circle of confusion `circle_of_confusion` to a blur diameter between `limits.x` and `limits.y`: unchanged
+// up to half the largest, then rolling off along a hyperbolic tangent, which keeps the slope continuous and stays below
+// the largest; then raised to at least the smallest. A circle of confusion of 0 counts as positive.
+blur_diameter: fn (circle_of_confusion: f32, limits: vec2f) -> f32 {
+	let knee: f32 = limits.y * 0.5;
+	let magnitude: f32 = abs(circle_of_confusion);
+	if (magnitude > knee) {
+		let excess: f32 = (magnitude - knee) / knee;
+		// tanh(x) = 1 − 2 / (e^2x + 1); a very large excess overflows e^2x to infinity, which still gives 1.
+		magnitude = knee + knee * (1.0 - 2.0 / (exp(2.0 * excess) + 1.0));
+	}
+	magnitude = max(magnitude, limits.x);
+	if (circle_of_confusion < 0.0) {
+		return 0.0 - magnitude;
+	}
+	return magnitude;
+}

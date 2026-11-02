@@ -1,0 +1,77 @@
+---
+title: Add depth of field
+description: Blur what lies in front of and behind your camera's focus, as a real lens does, and keep the cost bounded.
+icon: Aperture
+---
+
+Add depth of field when you want the camera to focus on one distance and blur the rest, as a photograph does. The
+blur follows the camera's lens, so a wider aperture or a closer focus blurs more.
+
+## Install the pass
+
+Call `setup_depth_of_field_render_pass` before you create the first window. Install it after the passes that write
+scene light and the fog, and before motion blur, lens flare, bloom, and tone mapping:
+
+```rust
+use byte_engine::rendering::render_passes::depth_of_field::DepthOfFieldPassSettings;
+
+setup_exponential_height_fog_render_pass(&mut app);
+setup_depth_of_field_render_pass(
+	&mut app,
+	DepthOfFieldPassSettings {
+		max_blur_diameter: Some(32.0),
+		..Default::default()
+	},
+);
+setup_motion_blur_render_pass(&mut app, MotionBlurPassSettings::default());
+```
+
+<Callout type="warn" title="Set a largest blur">
+The pass's cost grows with the widest blur on screen. Without `max_blur_diameter`, a wide aperture or a close focus
+lets blurs reach 64 pixels across, and every pixel near a wide blur reads more of the picture to gather it. Set
+`max_blur_diameter` to the widest blur your frame budget allows, such as `32.0`, and measure on your slowest target.
+</Callout>
+
+## Set the lens
+
+Set the lens on the camera. The default f-number, `f32::INFINITY`, is a pinhole that keeps every depth in focus, so
+the pass changes nothing until you set one:
+
+```rust
+use byte_engine::rendering::Camera;
+
+let camera = Camera::new()
+	.with_f_number(1.4)
+	.with_focus_distance(8.0);
+```
+
+- `with_f_number` sets the aperture. Smaller numbers, such as `1.4`, blur more; larger ones, such as `16.0`, keep
+  more of the scene sharp.
+- `with_focus_distance` sets the distance, in meters, that stays sharp.
+- `with_sensor_height` sets the sensor's height, in meters. The default, `0.024`, is a full-frame sensor; a smaller
+  sensor blurs less at the same field of view and f-number.
+
+The inspector sets `f_number`, `focus_distance`, and `sensor_height` on a running camera.
+
+## Bound the blur
+
+Set the fields of `DepthOfFieldPassSettings` to bound the blur, in pixels across:
+
+- `max_blur_diameter`, from `1` to `64`, holds the widest blur. Blurs approach it smoothly instead of stopping at it.
+- `min_blur_diameter`, from `0` to the largest, softens every pixel at least this much, even in focus. `2.0`
+  softens the whole picture by about one pixel around each pixel; `1.0` covers only the pixel itself, so it changes
+  nothing.
+
+The exact blur is in [Depth of field](/docs/reference/rendering#depth-of-field) in the rendering reference.
+
+## Check the focus
+
+Set `render.debug.view.depth-of-field.circle-of-confusion` to see how far each pixel is out of focus: red in front of
+the focus distance, blue behind it, and green where it's in focus. Set the `render.pass.depth-of-field` parameter to
+bypass the pass or turn it back on while the application runs, as with any other pass.
+
+## Rust API
+
+- [`setup_depth_of_field_render_pass`](/docs/api/latest/byte_engine/application/graphics#fn.setup_depth_of_field_render_pass)
+- [`DepthOfFieldPassSettings`](/docs/api/latest/byte_engine/rendering/render_passes/depth_of_field/DepthOfFieldPassSettings)
+- [`Camera`](/docs/api/latest/byte_engine/rendering/camera/Camera)

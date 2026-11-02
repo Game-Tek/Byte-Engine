@@ -1,0 +1,48 @@
+// Averages the frames a sink renders from points spread over the camera's aperture into the lens's exact blur. The
+// renderer moves the view to a new point every frame while this pass is enabled; each frame adds its scene to a
+// running mean held in 32-bit floats, one image per color channel, which also replaces `main`.
+//
+// The frame's share of the mean comes from the CPU, the same for every pixel: the n-th frame since the mean started
+// over weighs 1 / n, and from the window on a fixed share, so the mean turns into an exponential average and what
+// changes in the scene, such as meshes that finish streaming in, fades in instead of staying out. A share of 1 starts
+// the mean over without reading it, which also skips whatever the images held before.
+
+DepthOfFieldReferenceParameters: struct {
+	// This frame's share of the mean, from 0 to 1.
+	weight: f32,
+}
+
+scene_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+// The running mean's red, green, and blue channels, which persist across frames.
+mean_red: descriptor<{ type: StorageImage<r32f>, binding: 1, access: read_write }>;
+mean_green: descriptor<{ type: StorageImage<r32f>, binding: 2, access: read_write }>;
+mean_blue: descriptor<{ type: StorageImage<r32f>, binding: 3, access: read_write }>;
+parameters: descriptor<{ type: DepthOfFieldReferenceParameters, binding: 4, access: read, memory: constant }>;
+// A tile output, so the replacement for `main` this writes needs no shader-write usage and stays losslessly compressed.
+result: output<vec4f, 0>;
+
+HALF_FLOAT_MAX: const f32 = 65504.0;
+
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
+	let extent: vec2u = input.extent;
+	if (pixel.x >= extent.x || pixel.y >= extent.y) {
+		return;
+	}
+	// A texel at the half-float limit would turn the mean infinite.
+	let texel: vec4f = fetch(scene_texture, pixel);
+	let scene: vec3f = vec3f(min(texel.x, HALF_FLOAT_MAX), min(texel.y, HALF_FLOAT_MAX), min(texel.z, HALF_FLOAT_MAX));
+	let mean: vec3f = scene;
+	if (parameters.weight < 1.0) {
+		let previous: vec3f = vec3f(
+			image_load(mean_red, pixel).x,
+			image_load(mean_green, pixel).x,
+			image_load(mean_blue, pixel).x
+		);
+		mean = previous + (scene - previous) * parameters.weight;
+	}
+	write(mean_red, pixel, vec4f(mean.x, 0.0, 0.0, 1.0));
+	write(mean_green, pixel, vec4f(mean.y, 0.0, 0.0, 1.0));
+	write(mean_blue, pixel, vec4f(mean.z, 0.0, 0.0, 1.0));
+	write(result, pixel, vec4f(mean.x, mean.y, mean.z, texel.w));
+}

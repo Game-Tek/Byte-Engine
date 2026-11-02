@@ -9,6 +9,7 @@
 		"color-correction",
 		"color-grading",
 		"film-grain",
+		"depth-of-field",
 		"ray-tracing",
 		"shader-variants",
 		"debug-views"

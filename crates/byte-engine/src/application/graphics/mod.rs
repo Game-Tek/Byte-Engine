@@ -1179,11 +1179,11 @@ mod pipeline;
 pub use pipeline::{
 	setup_aces_color_grading_render_pass, setup_aces_tonemap_render_pass, setup_aces2_color_grading_render_pass,
 	setup_agx_tonemap_render_pass, setup_atmosphere_sky_render_pass, setup_bloom_render_pass,
-	setup_color_correction_render_pass, setup_debug_mesh_render_pass, setup_dwg_color_grading_render_pass,
-	setup_exponential_height_fog_render_pass, setup_film_grain_render_pass, setup_hable_tonemap_render_pass,
-	setup_lens_flare_render_pass, setup_lut_render_pass, setup_motion_blur_render_pass, setup_particles,
-	setup_pbr_visibility_shading_render_pipeline, setup_simple_render_pipeline, setup_smaa_render_pass,
-	setup_srgb_display_render_pass, setup_ui_render_pass,
+	setup_color_correction_render_pass, setup_debug_mesh_render_pass, setup_depth_of_field_reference_render_pass,
+	setup_depth_of_field_render_pass, setup_dwg_color_grading_render_pass, setup_exponential_height_fog_render_pass,
+	setup_film_grain_render_pass, setup_hable_tonemap_render_pass, setup_lens_flare_render_pass, setup_lut_render_pass,
+	setup_motion_blur_render_pass, setup_particles, setup_pbr_visibility_shading_render_pipeline,
+	setup_simple_render_pipeline, setup_smaa_render_pass, setup_srgb_display_render_pass, setup_ui_render_pass,
 };
 
 use crate::application::LoopWaker;

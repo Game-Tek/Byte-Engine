@@ -94,6 +94,33 @@ impl View {
 		}
 	}
 
+	/// Creates the view a thin lens sees from one point of its aperture, `offset` meters along the view's right and
+	/// up axes from its center, keeping the plane `focus_distance` meters ahead where this view shows it.
+	///
+	/// Averaging the views from points spread over the aperture blurs every other depth as the lens does. The eye
+	/// moves by `offset`, and the projection shears by `offset / focus_distance` per meter of depth, so the two cancel
+	/// on the focus plane. Depth is unchanged.
+	pub fn with_lens_offset(&self, offset: [f32; 2], focus_distance: f32) -> Self {
+		let [x, y] = offset;
+		let translation = Matrix::from((
+			Vec4f::new(1.0, 0.0, 0.0, -x),
+			Vec4f::new(0.0, 1.0, 0.0, -y),
+			Vec4f::new(0.0, 0.0, 1.0, 0.0),
+			Vec4f::new(0.0, 0.0, 0.0, 1.0),
+		));
+		let shear = Matrix::from((
+			Vec4f::new(1.0, 0.0, x / focus_distance, 0.0),
+			Vec4f::new(0.0, 1.0, y / focus_distance, 0.0),
+			Vec4f::new(0.0, 0.0, 1.0, 0.0),
+			Vec4f::new(0.0, 0.0, 0.0, 1.0),
+		));
+		Self {
+			projection: self.projection * shear,
+			view: translation * self.view,
+			..*self
+		}
+	}
+
 	/// Returns the projection matrix.
 	pub fn projection(&self) -> Matrix {
 		self.projection
@@ -224,6 +251,40 @@ mod tests {
 		assert!((actual.x() - expected.x()).abs() < 0.001);
 		assert!((actual.y() - expected.y()).abs() < 0.001);
 		assert!((actual.z() - expected.z()).abs() < 0.001);
+	}
+
+	/// Where `view` shows the view-space point `point`, in normalized device coordinates.
+	fn project(view: View, point: Vec3f) -> Vec3f {
+		let clip = view.projection() * Vec4f::new(point.x, point.y, point.z, 1.0);
+		Vec3f::new(clip.x / clip.w, clip.y / clip.w, clip.z / clip.w)
+	}
+
+	#[test]
+	fn a_lens_offset_keeps_the_focus_plane_and_shifts_other_depths_by_their_parallax() {
+		let view = View::new_perspective(Degrees::new(40.0), 1.5, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
+		let (offset, focus) = ([0.02, -0.01], 3.0);
+		let moved = view.with_lens_offset(offset, focus);
+		for point in [
+			Vec3f::new(0.4, -0.2, 3.0),
+			Vec3f::new(-1.0, 0.5, 3.0),
+			Vec3f::new(0.3, 0.1, 9.0),
+		] {
+			// The moved view's eye sits `offset` from the camera's, so a view-space point is that much closer to it.
+			let seen = maths_rs::Vec3f::from(moved.view() * maths_rs::Vec4f::new(point.x, point.y, point.z, 1.0));
+			let shifted = project(moved, seen);
+			let original = project(view, point);
+			let [scale_x, scale_y] = [view.projection()[0], view.projection()[5]];
+			let parallax = 1.0 / focus - 1.0 / point.z;
+			assert!(
+				(shifted.x - original.x - scale_x * offset[0] * parallax).abs() < 1e-5,
+				"{point:?}"
+			);
+			assert!(
+				(shifted.y - original.y - scale_y * offset[1] * parallax).abs() < 1e-5,
+				"{point:?}"
+			);
+			assert!((shifted.z - original.z).abs() < 1e-6, "{point:?}");
+		}
 	}
 
 	#[test]

@@ -1,0 +1,240 @@
+// Blurs each pixel by the camera's lens in one continuous gather: every point around the pixel adds its color,
+// weighted by how much of its blur disc covers the pixel and by one over the disc's area, and the weights normalize.
+// No pixel is sorted into a near or far layer and no two images are blended, so a surface that recedes through focus
+// blurs by an amount that grows continuously along it. See the depth of field section of the rendering reference.
+//
+// The taps sit on a lattice fixed in pixels, compiled into the tables below so every offset, distance, and area is a
+// constant: every pixel within 3.5 pixels, sorted by distance, then rings of 16 taps whose bounds grow by 1.39 times
+// from 3.5 pixels, each reading the widest averaged level whose texels are no wider than its taps' spacing. Tiles only
+// decide where the walk stops, never where taps land, so a tile's edge never shows. The depth of field tests check
+// these tables against that rule.
+//
+// The workgroup stages its 16x16 pixels and a 3-pixel halo in shared memory once, with each texel's density, one over
+// its blur disc's area, already multiplied into its color, so an inner tap costs one coverage test and one
+// multiply-add. The workgroup also reads the reach of the tiles around it and skips every ring that no blur in reach
+// of it can cover.
+
+source_level_0: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+source_level_1: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+source_level_2: descriptor<{ type: Texture2D, binding: 2, access: read }>;
+source_level_3: descriptor<{ type: Texture2D, binding: 3, access: read }>;
+parameters: descriptor<{ type: DepthOfFieldParameters, binding: 4, access: read, memory: constant }>;
+tile_reaches: descriptor<{ type: TileReaches, binding: 5, access: read }>;
+result: descriptor<{ type: StorageImage, binding: 6, access: write }>;
+
+// rgb: the texel's color times its density; a: its density.
+shared_weighted: workgroup<vec4f, 484>;
+// The texel's blur diameter.
+shared_blur: workgroup<f32, 484>;
+// How far, in 1/64 pixels, any blur that reaches this tile can reach.
+search_reach: workgroup<atomicu32, 1>;
+
+DEPTH_OF_FIELD_TILE_WIDTH: const u32 = 16;
+WORKGROUP_LANES: const u32 = 256;
+// The staged tile: the workgroup's 16 pixels and 3 more on each side.
+SHARED_WIDTH: const u32 = 22;
+SHARED_TEXELS: const u32 = 484;
+HALO: const u32 = 3;
+INNER_TAPS: const u32 = 37;
+TAPS_PER_RING: const u32 = 16;
+
+// The inner taps, nearest first: each one's texel in the shared tile, counted from the first texel of the pixel's
+// 7x7 window, and its distance from the pixel.
+INNER_TAP_TEXEL: const u32[37] = u32[37](
+	69, 47, 68, 70, 91, 46, 48, 90, 92, 25,
+	67, 71, 113, 24, 26, 45, 49, 89, 93, 112,
+	114, 23, 27, 111, 115, 3, 66, 72, 135, 2,
+	4, 44, 50, 88, 94, 134, 136
+);
+INNER_TAP_DISTANCE: const f32[37] = f32[37](
+	0.0, 1.0, 1.0, 1.0, 1.0, 1.414214, 1.414214, 1.414214,
+	1.414214, 2.0, 2.0, 2.0, 2.0, 2.236068, 2.236068, 2.236068,
+	2.236068, 2.236068, 2.236068, 2.236068, 2.236068, 2.828427, 2.828427, 2.828427,
+	2.828427, 3.0, 3.0, 3.0, 3.0, 3.162278, 3.162278, 3.162278,
+	3.162278, 3.162278, 3.162278, 3.162278, 3.162278
+);
+
+// Each outer ring's inner bound, the radius of its taps, which splits the ring's area in half, and the area each tap
+// stands for: a sixteenth of the ring.
+RING_INNER_RADIUS: const f32[7] = f32[7](
+	3.5, 4.865, 6.76235, 9.399666, 13.065536, 18.161096, 25.243923
+);
+RING_RADIUS: const f32[7] = f32[7](
+	4.237819, 5.890569, 8.187891, 11.381168, 15.819824, 21.989555, 30.565481
+);
+RING_AREA: const f32[7] = f32[7](
+	2.241963, 4.331697, 8.369272, 16.170271, 31.24258, 60.363789, 116.628876
+);
+
+// The outer taps' offsets from the pixel, 16 per ring; each ring turns by the golden angle from the one before, so
+// the taps don't line up into spokes.
+OUTER_TAP_X: const f32[112] = f32[112](
+	4.237819, 3.915235, 2.996591, 1.621743, 0.0, -1.621743, -2.996591, -3.915235,
+	-4.237819, -3.915235, -2.996591, -1.621743, -0.0, 1.621743, 2.996591, 3.915235,
+	-4.343522, -5.535597, -5.884927, -5.338331, -3.979022, -2.013943, 0.25774, 2.490185,
+	4.343522, 5.535597, 5.884927, 5.338331, 3.979022, 2.013943, -0.25774, -2.490185,
+	0.715832, 3.782715, 6.273714, 7.809597, 8.15654, 7.261723, 5.261375, 2.46003,
+	-0.715832, -3.782715, -6.273714, -7.809597, -8.15654, -7.261723, -5.261375, -2.46003,
+	6.924745, 2.941194, -1.490128, -5.69459, -9.032104, -10.994561, -11.283196, -9.854066,
+	-6.924745, -2.941194, 1.490128, 5.69459, 9.032104, 10.994561, 11.283196, 9.854066,
+	-15.577994, -13.337695, -9.066853, -3.415664, 2.755528, 8.507216, 12.963757, 15.446684,
+	15.577994, 13.337695, 9.066853, 3.415664, -2.755528, -8.507216, -12.963757, -15.446684,
+	18.553803, 21.658066, 21.465085, 18.004239, 11.802411, 3.803773, -4.773955, -12.624892,
+	-18.553803, -21.658066, -21.465085, -18.004239, -11.802411, -3.803773, 4.773955, 12.624892,
+	-7.93493, -18.626796, -26.4829, -30.307223, -29.517546, -24.23409, -15.261214, -3.964956,
+	7.93493, 18.626796, 26.4829, 30.307223, 29.517546, 24.23409, 15.261214, 3.964956
+);
+OUTER_TAP_Y: const f32[112] = f32[112](
+	0.0, 1.621743, 2.996591, 3.915235, 4.237819, 3.915235, 2.996591, 1.621743,
+	0.0, -1.621743, -2.996591, -3.915235, -4.237819, -3.915235, -2.996591, -1.621743,
+	3.979022, 2.013943, -0.25774, -2.490185, -4.343522, -5.535597, -5.884927, -5.338331,
+	-3.979022, -2.013943, 0.25774, 2.490185, 4.343522, 5.535597, 5.884927, 5.338331,
+	-8.15654, -7.261723, -5.261375, -2.46003, 0.715832, 3.782715, 6.273714, 7.809597,
+	8.15654, 7.261723, 5.261375, 2.46003, -0.715832, -3.782715, -6.273714, -7.809597,
+	9.032104, 10.994561, 11.283196, 9.854066, 6.924745, 2.941194, -1.490128, -5.69459,
+	-9.032104, -10.994561, -11.283196, -9.854066, -6.924745, -2.941194, 1.490128, 5.69459,
+	-2.755528, -8.507216, -12.963757, -15.446684, -15.577994, -13.337695, -9.066853, -3.415664,
+	2.755528, 8.507216, 12.963757, 15.446684, 15.577994, 13.337695, 9.066853, 3.415664,
+	-11.802411, -3.803773, 4.773955, 12.624892, 18.553803, 21.658066, 21.465085, 18.004239,
+	11.802411, 3.803773, -4.773955, -12.624892, -18.553803, -21.658066, -21.465085, -18.004239,
+	29.517546, 24.23409, 15.261214, 3.964956, -7.93493, -18.626796, -26.4829, -30.307223,
+	-29.517546, -24.23409, -15.261214, -3.964956, 7.93493, 18.626796, 26.4829, 30.307223
+);
+// The tiles around this one, 3 on each side, that a blur below 64 pixels across can reach from.
+NEIGHBOR_TILES: const u32 = 49;
+NEIGHBOR_WIDTH: const u32 = 7;
+REACH_STEPS_PER_PIXEL: const f32 = 64.0;
+
+// One over the area of a blur disc `blur` pixels across, and 1 for a disc under a pixel, which lands on one pixel.
+density: fn (blur: f32) -> f32 {
+	return 1.0 / max(0.785398163 * blur * blur, 1.0);
+}
+
+// How far the blur of a point whose diameter is `blur` reaches toward a pixel whose diameter is `center`. A point
+// behind the pixel (a larger signed diameter) is hidden by the pixel's own surface except within the pixel's blur.
+reach: fn (blur: f32, center: f32) -> f32 {
+	let own: f32 = abs(blur) * 0.5;
+	// Where blur equals center the two are the same, so the step's edge doesn't matter.
+	return mix(own, min(own, abs(center) * 0.5), step(center, blur));
+}
+
+// Adds up outer ring `ring`'s taps from `level`, an averaged level as wide as their spacing, around the pixel at `uv`
+// whose blur diameter is `center`. A ring whose taps lie beyond `search` adds nothing: no blur in reach covers them.
+gather_ring: fn (level: Texture2D, ring: u32, uv: vec2f, inverse_extent: vec2f, center: f32, search: f32) -> vec4f {
+	let sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let radius: f32 = RING_RADIUS[ring];
+	if (radius >= search) {
+		return sum;
+	}
+	let area: f32 = RING_AREA[ring];
+	for (let index: u32 = ring * TAPS_PER_RING; index < ring * TAPS_PER_RING + TAPS_PER_RING; index = index + 1) {
+		let texel: vec4f = texture_lod(level, uv + vec2f(OUTER_TAP_X[index], OUTER_TAP_Y[index]) * inverse_extent);
+		let weight: f32 = clamp(reach(texel.w, center) - radius + 0.5, 0.0, 1.0) * density(texel.w) * area;
+		sum = sum + vec4f(texel.x * weight, texel.y * weight, texel.z * weight, weight);
+	}
+	return sum;
+}
+
+// Returns the distance, in tile widths, between a tile and one `offset` tiles away along an axis, counted from 3:
+// 0 for itself and its neighbors, which touch it.
+tile_gap: fn (offset: u32) -> f32 {
+	let distance: u32 = max(offset, HALO) - min(offset, HALO);
+	return f32(max(distance, 1) - 1);
+}
+
+main: fn (input: StageInput) -> void {
+	let lane: u32 = input.thread_idx;
+	let pixel: vec2u = input.thread_id;
+	let local: vec2u = vec2u(lane % DEPTH_OF_FIELD_TILE_WIDTH, lane / DEPTH_OF_FIELD_TILE_WIDTH);
+	let origin: vec2u = pixel - local;
+	let extent: vec2u = texture_size(source_level_0);
+	let last: vec2u = extent - vec2u(1, 1);
+	if (lane == 0) {
+		atomic_store(search_reach[0], 0);
+	}
+
+	// Stage the tile and its halo, clamped to the image like the sampler; each lane reads up to two texels, both
+	// issued before either is weighed.
+	let first: u32 = lane;
+	let second: u32 = min(lane + WORKGROUP_LANES, SHARED_TEXELS - 1);
+	let first_texel: vec4f = fetch(
+		source_level_0,
+		vec2u(min(max(origin.x + first % SHARED_WIDTH, HALO) - HALO, last.x), min(max(origin.y + first / SHARED_WIDTH, HALO) - HALO, last.y))
+	);
+	let second_texel: vec4f = fetch(
+		source_level_0,
+		vec2u(min(max(origin.x + second % SHARED_WIDTH, HALO) - HALO, last.x), min(max(origin.y + second / SHARED_WIDTH, HALO) - HALO, last.y))
+	);
+	let first_density: f32 = density(first_texel.w);
+	shared_weighted[first] = vec4f(first_texel.x * first_density, first_texel.y * first_density, first_texel.z * first_density, first_density);
+	shared_blur[first] = first_texel.w;
+	if (lane + WORKGROUP_LANES < SHARED_TEXELS) {
+		let second_density: f32 = density(second_texel.w);
+		shared_weighted[second] = vec4f(second_texel.x * second_density, second_texel.y * second_density, second_texel.z * second_density, second_density);
+		shared_blur[second] = second_texel.w;
+	}
+
+	// The search reach: the widest reach of any tile whose blur can reach this one. The prepare pass stored each
+	// tile's widest reach; a tile counts when that reach spans the gap between the two tiles.
+	let tile: vec2u = origin / DEPTH_OF_FIELD_TILE_WIDTH;
+	let tiles: vec2u = (extent + vec2u(DEPTH_OF_FIELD_TILE_WIDTH - 1, DEPTH_OF_FIELD_TILE_WIDTH - 1)) / DEPTH_OF_FIELD_TILE_WIDTH;
+	workgroup_barrier();
+	let needed: f32 = 0.0;
+	if (lane < NEIGHBOR_TILES) {
+		let offset: vec2u = vec2u(lane % NEIGHBOR_WIDTH, lane / NEIGHBOR_WIDTH);
+		let neighbor: vec2u = tile + offset;
+		// Neighbors before the first tile wrap to huge values and fail the bound test like those past the last.
+		if (neighbor.x >= HALO && neighbor.y >= HALO && neighbor.x - HALO < tiles.x && neighbor.y - HALO < tiles.y) {
+			let index: u32 = (neighbor.y - HALO) * parameters.tiles_per_row + neighbor.x - HALO;
+			let neighbor_reach: f32 = tile_reaches.values[index] + 0.5;
+			let gap: vec2f = vec2f(tile_gap(offset.x), tile_gap(offset.y)) * f32(DEPTH_OF_FIELD_TILE_WIDTH);
+			if (neighbor_reach >= sqrt(dot(gap, gap))) {
+				needed = neighbor_reach;
+			}
+		}
+	}
+	// The widest of each aligned group of 16 lanes from lane shuffles, then one atomic per group; every lane takes
+	// part in the shuffles, and only the first four groups hold neighbors.
+	needed = max(needed, subgroup_shuffle_xor_f32(needed, 1));
+	needed = max(needed, subgroup_shuffle_xor_f32(needed, 2));
+	needed = max(needed, subgroup_shuffle_xor_f32(needed, 4));
+	needed = max(needed, subgroup_shuffle_xor_f32(needed, 8));
+	if (lane < NEIGHBOR_TILES && lane % DEPTH_OF_FIELD_TILE_WIDTH == 0) {
+		atomic_max(search_reach[0], u32(ceil(needed * REACH_STEPS_PER_PIXEL)));
+	}
+	workgroup_barrier();
+	let search: f32 = f32(atomic_load(search_reach[0])) / REACH_STEPS_PER_PIXEL;
+	if (pixel.x >= extent.x || pixel.y >= extent.y) {
+		return;
+	}
+
+	// The inner taps, one per pixel within 3.5 pixels, from shared memory.
+	let window: u32 = local.y * SHARED_WIDTH + local.x;
+	let center: f32 = shared_blur[window + HALO * SHARED_WIDTH + HALO];
+	let sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	for (let index: u32 = 0; index < INNER_TAPS; index = index + 1) {
+		let distance: f32 = INNER_TAP_DISTANCE[index];
+		// The taps are sorted by distance, so once one lies beyond every reach, so do the rest.
+		if (distance >= search) {
+			break;
+		}
+		let texel: u32 = window + INNER_TAP_TEXEL[index];
+		let coverage: f32 = clamp(reach(shared_blur[texel], center) - distance + 0.5, 0.0, 1.0);
+		sum = sum + shared_weighted[texel] * coverage;
+	}
+
+	// The rings beyond, each from the widest level no wider than its taps' spacing.
+	let inverse_extent: vec2f = vec2f(1.0 / f32(extent.x), 1.0 / f32(extent.y));
+	let uv: vec2f = (vec2f(f32(pixel.x), f32(pixel.y)) + vec2f(0.5, 0.5)) * inverse_extent;
+	sum = sum + gather_ring(source_level_0, 0, uv, inverse_extent, center, search);
+	sum = sum + gather_ring(source_level_1, 1, uv, inverse_extent, center, search);
+	sum = sum + gather_ring(source_level_1, 2, uv, inverse_extent, center, search);
+	sum = sum + gather_ring(source_level_2, 3, uv, inverse_extent, center, search);
+	sum = sum + gather_ring(source_level_2, 4, uv, inverse_extent, center, search);
+	sum = sum + gather_ring(source_level_3, 5, uv, inverse_extent, center, search);
+	sum = sum + gather_ring(source_level_3, 6, uv, inverse_extent, center, search);
+
+	// The pixel's own tap covers at least half of it, so the sum of weights is never 0.
+	let blurred: vec3f = vec3f(sum.x, sum.y, sum.z) * (1.0 / sum.w);
+	write(result, pixel, vec4f(blurred.x, blurred.y, blurred.z, 1.0));
+}

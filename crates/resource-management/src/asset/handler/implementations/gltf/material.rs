@@ -78,6 +78,28 @@ pub(crate) fn generated_gltf_material(
 	Ok(material)
 }
 
+/// Finds the generated material that `url`, a `#materials/<name>.variant` or `.material` ID, names among the materials
+/// the container's primitives use.
+///
+/// Materials a BEAD sidecar overrides are left out, because the container never generates them.
+pub(crate) fn generated_material_for_id<'a>(
+	gltf: &'a gltf::Gltf,
+	spec: Option<&serde_json::Value>,
+	url: ResourceId<'_>,
+) -> Option<gltf::Material<'a>> {
+	let base = url.get_base();
+	let source_id = ResourceId::new(base.as_ref());
+	let primitives = gltf.meshes().flat_map(|mesh| mesh.primitives());
+	let (materials, _) = unique_gltf_materials(primitives.map(|primitive| primitive.material()));
+
+	materials.into_iter().find(|material| {
+		let overridden = material.name().and_then(|name| bead_material_override(spec, name)).is_some();
+		let named = names_generated_material(url, &generated_material_base_id(source_id, material));
+
+		!overridden && named
+	})
+}
+
 pub(crate) fn generated_material_base_id(mesh_url: ResourceId<'_>, material: &gltf::Material<'_>) -> String {
 	let material_name = material
 		.name()

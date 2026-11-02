@@ -638,6 +638,46 @@ mod tests {
 	}
 
 	#[r#async::test]
+	async fn a_material_fragment_bakes_that_material_without_the_mesh() {
+		let bake = |id: String| async move {
+			let asset_storage = AssetTestStorageBackend::new();
+			asset_storage.add_file("material_factors.fbx", MATERIAL_FACTORS_FBX);
+			asset_storage.add_file(
+				"textures/factored_diffuse.png",
+				&generated_rgba8_png(1, 1, &[255, 64, 32, 255]),
+			);
+
+			let resource_storage = MemoryStorageBackend::new();
+			let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
+			asset_manager.set_program_generator(MinimalTestShaderGenerator);
+			asset_manager.add_asset_handler(FBXAssetHandler);
+
+			let result = asset_manager.bake(&id).await;
+			(result, resource_storage.get_resources())
+		};
+
+		// The mesh bake names the variant ID a material fragment uses.
+		let (_, resources) = bake("material_factors.fbx".to_string()).await;
+		let variant_id = resources
+			.iter()
+			.find(|resource| resource.class == "Variant" && resource.id.ends_with("FactoredPhong.variant"))
+			.expect("the mesh bake should store the Phong variant")
+			.id
+			.clone();
+
+		let (result, resources) = bake(variant_id.clone()).await;
+		result.expect("a material fragment should bake");
+
+		let mut classes = resources.iter().map(|resource| resource.class.as_str()).collect::<Vec<_>>();
+		classes.sort();
+		assert_eq!(classes, ["Image", "Material", "Shader", "Variant"]);
+		assert!(resources.iter().any(|resource| resource.id == variant_id));
+
+		let (result, _) = bake(variant_id.trim_end_matches(".variant").to_string()).await;
+		assert!(result.is_err(), "a material fragment without its suffix names no resource");
+	}
+
+	#[r#async::test]
 	async fn bakes_fbx_diffuse_textures_into_opaque_material_variants() {
 		let asset_storage = AssetTestStorageBackend::new();
 
@@ -1053,10 +1093,11 @@ use serde_json::Value;
 use utils::Extent;
 
 use super::{
-	ANIMATION_FRAGMENT_PREFIX, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, ResourceId, SKELETON_FRAGMENT,
-	commit_mesh, generated_skeleton_id,
+	ANIMATION_FRAGMENT_PREFIX, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, MATERIAL_FRAGMENT_PREFIX, ResourceId,
+	SKELETON_FRAGMENT, commit_mesh, generated_skeleton_id,
 	handler::{AssetHandler, BakeContext, LoadErrors},
-	mesh_lod_settings, sanitize_material_name, select_unfragmented_resource, store_imported_image, store_model,
+	mesh_lod_settings, missing_generated_material, names_generated_material, sanitize_material_name,
+	select_unfragmented_resource, store_imported_image, store_model,
 };
 use crate::asset::handler::implementations::bema::{
 	GeneratedMaterial, MaterialSource, bead_material_override, resolve_container_materials,

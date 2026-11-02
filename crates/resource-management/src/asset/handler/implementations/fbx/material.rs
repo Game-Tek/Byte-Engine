@@ -19,16 +19,7 @@ pub(crate) async fn resolve_fbx_materials(
 	let sources = keys
 		.iter()
 		.map(|&key| {
-			let material = match key {
-				MaterialKey::Default => None,
-				MaterialKey::Material(index) => scene.materials.as_ref().get(index as usize).map(AsRef::as_ref),
-			};
-
-			// Unnamed materials use the `default` override key.
-			let name = material
-				.map(|material| material.element.name.as_ref())
-				.filter(|name| !name.is_empty())
-				.unwrap_or("default");
+			let (material, name) = fbx_material_for_key(scene, key);
 
 			match bead_material_override(spec, name) {
 				Some(override_id) => Ok(MaterialSource::Override(override_id)),
@@ -53,6 +44,42 @@ pub(crate) async fn resolve_fbx_materials(
 		.collect::<Vec<_>>();
 
 	resolve_container_materials(context, url, &image_ids, sources).await
+}
+
+/// Finds the generated material that `url`, a `#materials/<index>_<name>.variant` or `.material` ID, names among the
+/// materials the scene's meshes use.
+///
+/// Materials a BEAD sidecar overrides are left out, because the container never generates them.
+pub(crate) fn generated_material_key_for_id(
+	scene: &ufbx::Scene,
+	spec: Option<&Value>,
+	url: ResourceId<'_>,
+	allocator: &dyn Allocator,
+) -> Option<MaterialKey> {
+	let base = url.get_base();
+	let source_id = ResourceId::new(base.as_ref());
+
+	used_material_keys(scene, allocator).into_iter().find(|&key| {
+		let (material, name) = fbx_material_for_key(scene, key);
+
+		bead_material_override(spec, name).is_none()
+			&& names_generated_material(url, &generated_fbx_material_base_id(source_id, key, material))
+	})
+}
+
+/// Returns the material `key` names in `scene`, if any, and the name a BEAD sidecar overrides it by. Unnamed materials
+/// use the `default` override key.
+fn fbx_material_for_key(scene: &ufbx::Scene, key: MaterialKey) -> (Option<&ufbx::Material>, &str) {
+	let material = match key {
+		MaterialKey::Default => None,
+		MaterialKey::Material(index) => scene.materials.as_ref().get(index as usize).map(AsRef::as_ref),
+	};
+	let name = material
+		.map(|material| material.element.name.as_ref())
+		.filter(|name| !name.is_empty())
+		.unwrap_or("default");
+
+	(material, name)
 }
 
 /// Collects material identities in deterministic first-use order across FBX mesh instances.

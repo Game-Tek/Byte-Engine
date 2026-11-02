@@ -1,9 +1,10 @@
 //! Source-format implementations of [`super::AssetHandler`].
 
 pub(crate) use crate::asset::{
-	ANIMATION_FRAGMENT_PREFIX, BEADType, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, ResourceId, SKELETON_FRAGMENT,
-	commit_mesh, generated_skeleton_id, handler, manager, mesh_lod_settings, sanitize_material_name,
-	select_unfragmented_resource, store_imported_image, store_model, store_model_owned,
+	ANIMATION_FRAGMENT_PREFIX, BEADType, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, MATERIAL_FRAGMENT_PREFIX,
+	ResourceId, SKELETON_FRAGMENT, commit_mesh, generated_skeleton_id, handler, manager, mesh_lod_settings,
+	missing_generated_material, names_generated_material, sanitize_material_name, select_unfragmented_resource,
+	store_imported_image, store_model, store_model_owned,
 };
 
 pub mod audio_graph;

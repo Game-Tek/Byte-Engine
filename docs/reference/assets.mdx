@@ -197,6 +197,33 @@ A `.lut` or `.cube` file is a text table with `TITLE`, `LUT_1D_SIZE` or
 with `#`. It bakes to a one- or three-dimensional LUT whose entry count is the
 size or the size cubed.
 
+## Container fragments
+
+A glTF, GLB, or FBX file is a container: one source file that bakes into several resources. The fragment after `#`
+in a resource ID names which one. The same fragments work in debug baking and in BELD.
+
+| Fragment | glTF and GLB | FBX | Resource |
+| --- | --- | --- | --- |
+| None | `character.glb` | `character.fbx` | The container's default resource, described under [Skeletal models](#skeletal-models). |
+| `skeleton` | Yes | Yes | The transform hierarchy. |
+| `animation` | Yes | Yes | The first animation clip. |
+| `animations/<index>` | Yes | Yes | The clip at that zero-based index. |
+| `animations/<name>` | Yes | Yes | The clip with that exact name. |
+| `images/<index>` | Yes | No | The image at that zero-based index. |
+| `images/<texture id>` | No | Yes | The texture with that ID. |
+| `materials/<material>.variant` | Yes | Yes | One generated material's variant, its material, its shaders, and the images it samples, without the mesh. |
+| `materials/<material>.material` | Yes | Yes | The same bake, requested by its material. |
+
+`<material>` is the name the container's mesh gives its generated material:
+
+| Container | `<material>` |
+| --- | --- |
+| glTF and GLB | The material's sanitized name, with each character other than a letter, digit, `_`, or `-` replaced by `_`; `material_<index>` for an unnamed material; `material_default` for primitives without one. |
+| FBX | `<index>_<sanitized name>`, where `<index>` is the material's index in the file; `<index>_material` for an unnamed material; `default_material` for polygons without one. |
+
+A material that a sidecar overrides isn't generated, so it has no `materials/` resource; bake the override's own ID.
+A `materials/` fragment that matches no generated material fails to bake.
+
 ## Skeletal models
 
 glTF, GLB, and FBX use one import-neutral skeletal representation.
@@ -214,12 +241,7 @@ The adjusted matrices account for the bind-pose transform already flattened into
 Rigid primitives have no skin binding, and mixed rigid/skinned source files retain primitive-local joint and weight stream offsets.
 FBX vertices without authored cluster weights use a mesh-node fallback palette entry, so they continue following animated mesh ancestors instead of freezing in bind space.
 
-Container fragments address the generated subresources consistently:
-
-- `character.glb#skeleton` or `character.fbx#skeleton` selects the transform hierarchy.
-- `character.glb#animation` or `character.fbx#animation` selects the first clip.
-- `character.glb#animations/0` selects a clip by zero-based index.
-- `character.glb#animations/Walk` selects a clip by exact name.
+Each clip and the skeleton is its own resource, named by a [container fragment](#container-fragments).
 
 Without a fragment, FBX and glTF containers use a content-only default that's identical in debug baking and BELD:
 

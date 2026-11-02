@@ -1196,6 +1196,48 @@ mod tests {
 		);
 	}
 
+	#[r#async::test]
+	async fn a_material_fragment_bakes_that_material_without_the_mesh() {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+
+		asset_storage_backend.add_file("two_materials.glb", &generated_two_material_textured_glb());
+
+		let resource_storage_backend = MemoryStorageBackend::new();
+
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
+
+		asset_manager
+			.bake("two_materials.glb#materials/Second_Material.variant")
+			.await
+			.expect("a material fragment should bake");
+
+		let mut stored = resource_storage_backend
+			.get_resources()
+			.iter()
+			.filter(|resource| resource.class != "Shader")
+			.map(|resource| resource.id.clone())
+			.collect::<Vec<_>>();
+
+		stored.sort();
+
+		assert_eq!(
+			stored,
+			[
+				"two_materials.glb#images/1_Second",
+				"two_materials.glb#materials/Second_Material.material",
+				"two_materials.glb#materials/Second_Material.variant",
+			]
+		);
+
+		assert!(
+			asset_manager
+				.bake("two_materials.glb#materials/Second_Material")
+				.await
+				.is_err(),
+			"a material fragment without its suffix names no resource"
+		);
+	}
+
 	/// Bakes the textured triangle, then replaces its stored generated shader payload with `marker`.
 	///
 	/// A later bake that keeps the marker reused the stored shader; one that replaces it compiled again.
@@ -1348,10 +1390,11 @@ use maths_rs::{
 use utils::Extent;
 
 use super::{
-	ANIMATION_FRAGMENT_PREFIX, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, ResourceId, SKELETON_FRAGMENT,
-	commit_mesh, generated_skeleton_id,
+	ANIMATION_FRAGMENT_PREFIX, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, MATERIAL_FRAGMENT_PREFIX, ResourceId,
+	SKELETON_FRAGMENT, commit_mesh, generated_skeleton_id,
 	handler::{AssetHandler, BakeContext, LoadErrors},
-	mesh_lod_settings, sanitize_material_name, select_unfragmented_resource, store_imported_image, store_model,
+	mesh_lod_settings, missing_generated_material, names_generated_material, sanitize_material_name,
+	select_unfragmented_resource, store_imported_image, store_model,
 };
 use crate::asset::handler::implementations::bema::{
 	GeneratedMaterial, MaterialSource, bead_material_override, resolve_container_materials,

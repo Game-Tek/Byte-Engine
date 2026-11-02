@@ -165,9 +165,8 @@ meshlet holds at most 64 vertices and 124 triangles.
 | Detail levels | The first level's error is 0, errors never decrease, and the levels' meshlet counts sum to the meshlet stream's count. |
 | Skins | Need a skeleton, hold at most 65,536 entries, and name nodes inside it. A skinned primitive carries joints and weights for every vertex. |
 
-Container fragments name the resources a model file produces: `#skeleton`,
-`#animation`, `#animations/<index or name>`, `#images/<index>` for glTF and
-`#images/<texture id>` for FBX, and `#materials/<name>` for generated variants.
+Container fragments name the resources a model file produces, such as `#skeleton`, `#images/<index>`, and
+`#materials/<material>.variant`; [container fragments](/docs/reference/assets#container-fragments) lists them.
 
 ## Rust API
 

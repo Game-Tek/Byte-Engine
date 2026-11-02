@@ -168,6 +168,17 @@ impl AssetHandler for FBXAssetHandler {
 			LoadErrors::FailedToProcess
 		})?;
 
+		// A material fragment bakes that one generated material, its shader, and the images it samples, without the mesh.
+		if let Some(fragment) = fragment
+			&& fragment.starts_with(MATERIAL_FRAGMENT_PREFIX)
+		{
+			let key = generated_material_key_for_id(&scene, spec.as_ref(), url, allocator)
+				.ok_or_else(|| missing_generated_material(context, url))?;
+
+			resolve_fbx_materials(context, spec.as_ref(), source_id, &scene, &[key]).await?;
+			return Ok(());
+		}
+
 		// Any fragment left names the skeleton or an animation. An unfragmented request bakes the container's default
 		// resource, and its diagnostics say so.
 		let default_clip = fragment.is_none();

@@ -220,7 +220,18 @@ impl AssetHandler for GLTFAssetHandler {
 			return context.store_primary(ProcessedAsset::new(url, graph.skeleton), &[]).await;
 		}
 
-		// Any fragment other than the skeleton or an animation names an image.
+		// A material fragment bakes that one generated material, its shader, and the images it samples, without the mesh.
+		if let Some(fragment) = fragment
+			&& fragment.starts_with(MATERIAL_FRAGMENT_PREFIX)
+		{
+			let material =
+				generated_material_for_id(&gltf, spec.as_ref(), url).ok_or_else(|| missing_generated_material(context, url))?;
+
+			resolve_gltf_materials(context, spec.as_ref(), source_id, &gltf, &[material]).await?;
+			return Ok(());
+		}
+
+		// Any fragment other than the skeleton, a material, or an animation names an image.
 		if let Some(fragment) = fragment
 			&& fragment != DEFAULT_ANIMATION_FRAGMENT
 			&& !fragment.starts_with(ANIMATION_FRAGMENT_PREFIX)

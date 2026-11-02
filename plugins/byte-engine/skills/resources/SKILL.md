@@ -163,6 +163,22 @@ beld --source "$PWD/assets" bake --dry-run --intercept '*.msl' --format json mat
 - The BESL is written back from the program the bake built. Declarations engine code adds with no BESL syntax print
   as comments (`// specialization …`, `// intrinsic …`, `// layer: …`), so the text reads as the program but may
   not parse back. The MSL leaves out the precompiled prelude the Metal compiler includes.
+- To see one glTF or FBX material's shader, bake that material alone. A container's generated materials are named
+  `<container>#materials/<material>.variant`. Unnamed glTF materials are `material_<index>`, and FBX materials are
+  `<index>_<name>`. Shader products are named by a hash of their source (`#shaders/<hash>`), so the material is the
+  handle. List a container's materials, then intercept one:
+
+  ```bash
+  beld --source "$PWD/assets" bake --dry-run --format json sponza/Sponza.gltf 2>/dev/null \
+    | jq -r '.resources[] | select(.class == "Variant") | .id'
+  beld --source "$PWD/assets" bake --dry-run --intercept '*.msl' 'sponza/Sponza.gltf#materials/material_3.variant' \
+    2>/dev/null
+  ```
+
+  A material that a sidecar overrides isn't generated; bake the override's own ID. Without the `.variant` suffix,
+  the ID names no resource and the bake fails.
+- Bake with debug views off when you read shaders for performance. A debug BELD builds them into every shader. Pass
+  `--config` with `{"render":{"debug-views":{"enabled":false}}}`, or set `BE_RENDER__DEBUG_VIEWS__ENABLED=false`.
 - When `render.material-evaluation` is `uber`, materials compile no shader of their own. A dry run then bakes the
   assembled shaders the materials feed, which appear as
   `byte-engine/rendering/visibility/material-evaluation-<phase>.uber#shaders/<key>.besl` and `.msl`. Set

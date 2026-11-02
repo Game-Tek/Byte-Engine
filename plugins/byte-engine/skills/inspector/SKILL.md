@@ -84,7 +84,8 @@ the stream. It reports message ranges by Rust type, not payloads.
 ## Capture images
 
 - Save the response to a file and open the file to look at it. The response headers give the frame number, sink,
-  texture format, and size (`X-Byte-Engine-Frame`, `X-Byte-Engine-Width`, and so on).
+  texture format, and size (`X-Byte-Engine-Frame`, `X-Byte-Engine-Width`, and so on). The inspector sends header
+  names in lowercase (`x-byte-engine-frame`), so match them without regard to case.
 - `format=png` is an 8-bit preview that clamps HDR values. Use `format=exr` to read HDR values or compare images
   numerically, and `format=raw` for the bytes the GPU stores.
 - A sink is a window, numbered from 0. An application without a window has no sink, and the request returns 404.

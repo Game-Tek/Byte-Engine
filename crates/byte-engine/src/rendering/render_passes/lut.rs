@@ -6,6 +6,9 @@ pub enum LutWorkflow {
 	Creative,
 	/// Converts scene-linear sRGB to ACEScg and ACEScct before applying the output LUT, then writes SDR display color.
 	Aces,
+	/// Converts scene-linear sRGB to ACEScg and ACEScct before applying the output LUT, then writes SDR display color
+	/// through the ACES 2.0 output transform for a Rec.709, D65, 100-nit display.
+	Aces2,
 	/// Converts scene-linear sRGB to DaVinci Wide Gamut and DaVinci Intermediate before applying the output LUT, then
 	/// writes SDR display color.
 	DaVinciWideGamut,
@@ -16,6 +19,7 @@ impl LutWorkflow {
 		match self {
 			Self::Creative => "byte-engine/rendering/lut/apply.pipeline",
 			Self::Aces => "byte-engine/rendering/color-grading/aces.pipeline",
+			Self::Aces2 => "byte-engine/rendering/color-grading/aces2.pipeline",
 			Self::DaVinciWideGamut => "byte-engine/rendering/color-grading/dwg.pipeline",
 		}
 	}
@@ -25,6 +29,7 @@ impl LutWorkflow {
 		match self {
 			Self::Creative => "lut",
 			Self::Aces => "aces-color-grading",
+			Self::Aces2 => "aces2-color-grading",
 			Self::DaVinciWideGamut => "dwg-color-grading",
 		}
 	}
@@ -34,6 +39,7 @@ impl LutWorkflow {
 		match self {
 			Self::Creative => "LUT Output",
 			Self::Aces => "ACES Color Grading Output",
+			Self::Aces2 => "ACES 2.0 Color Grading Output",
 			Self::DaVinciWideGamut => "DWG Color Grading Output",
 		}
 	}
@@ -42,8 +48,24 @@ impl LutWorkflow {
 	fn label(self) -> &'static str {
 		match self {
 			Self::Creative => "LUT",
-			Self::Aces | Self::DaVinciWideGamut => "Color Grading",
+			Self::Aces | Self::Aces2 | Self::DaVinciWideGamut => "Color Grading",
 		}
+	}
+}
+
+/// The `LutPassSettings` struct lets an application soften a LUT whose look is stronger than the scene needs.
+///
+/// Pass it to [`crate::application::graphics::setup_aces2_color_grading_render_pass`] or another LUT setup function.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LutPassSettings {
+	/// How much of the look to apply, from 0 (none) to 1 (all of it). The pass mixes the ungraded and graded color
+	/// in the encoding the LUT reads, such as ACEScct, so a half-strength look stays in the LUT's color space.
+	pub strength: f32,
+}
+
+impl Default for LutPassSettings {
+	fn default() -> Self {
+		Self { strength: 1.0 }
 	}
 }
 
@@ -73,10 +95,15 @@ impl Entity for LutPass {}
 impl LutPass {
 	/// Creates one sink's LUT pass from asynchronously prepared metadata and bytes.
 	///
-	/// The ACES workflow expects an ACEScct-to-ACEScct LUT. The DaVinci workflow expects a DaVinci Wide
+	/// The ACES and ACES 2.0 workflows expect an ACEScct-to-ACEScct LUT. The DaVinci workflow expects a DaVinci Wide
 	/// Gamut/Intermediate-to-Intermediate LUT. Prepare the LUT through [`PreparedLut::load`] on application-owned
 	/// asynchronous work before constructing this render-thread pass.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder, workflow: LutWorkflow, lut: PreparedLut) -> Self {
+	pub fn new(
+		render_pass_builder: &mut RenderPassBuilder,
+		workflow: LutWorkflow,
+		lut: PreparedLut,
+		settings: LutPassSettings,
+	) -> Self {
 		let PreparedLut {
 			metadata: lut_metadata,
 			bytes,
@@ -86,12 +113,17 @@ impl LutPass {
 			matches!(lut_metadata.kind, LutKind::ThreeDimensional),
 			"Unsupported LUT kind for LUT render pass. The most likely cause is that the injected LUT resource is not a 3D LUT."
 		);
+		assert!(
+			(0.0..=1.0).contains(&settings.strength),
+			"Invalid LUT strength {}. The most likely cause is a strength outside 0 to 1. Set LutPassSettings::strength between 0 (no look) and 1 (the full look).",
+			settings.strength
+		);
 
 		let source = render_pass_builder.read_from("main");
 		// A creative LUT grades scene-linear color for later passes; the grading workflows end in display color.
 		let output_format = match workflow {
 			LutWorkflow::Creative => render_pass_builder.format_of("main"),
-			LutWorkflow::Aces | LutWorkflow::DaVinciWideGamut => crate::rendering::DISPLAY_COLOR_FORMAT,
+			LutWorkflow::Aces | LutWorkflow::Aces2 | LutWorkflow::DaVinciWideGamut => crate::rendering::DISPLAY_COLOR_FORMAT,
 		};
 		// The grade's tile output, which the builder gives the uses that needs.
 		let output = render_pass_builder
@@ -118,7 +150,7 @@ impl LutPass {
 				.name("LUT Parameters")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		*context.get_mut_buffer_slice(parameters) = lut_shader_parameters(&lut_metadata);
+		*context.get_mut_buffer_slice(parameters) = lut_shader_parameters(&lut_metadata, settings.strength);
 
 		let pass = pipeline.bind(
 			workflow.label(),
@@ -152,7 +184,7 @@ impl LutPass {
 	}
 }
 
-fn lut_shader_parameters(lut: &Lut) -> LutShaderParameters {
+fn lut_shader_parameters(lut: &Lut, strength: f32) -> LutShaderParameters {
 	debug_assert!(
 		lut.size > 0,
 		"LUT size is zero. The most likely cause is accepting an empty LUT resource."
@@ -170,7 +202,7 @@ fn lut_shader_parameters(lut: &Lut) -> LutShaderParameters {
 	LutShaderParameters {
 		domain_min: [lut.domain_min[0], lut.domain_min[1], lut.domain_min[2], 0.0],
 		domain_scale: [domain_scale[0], domain_scale[1], domain_scale[2], 0.0],
-		sampling: [(lut_size - 1.0) / lut_size, 0.5 / lut_size, 0.0, 0.0],
+		sampling: [(lut_size - 1.0) / lut_size, 0.5 / lut_size, strength, 0.0],
 	}
 }
 
@@ -305,6 +337,8 @@ mod tests {
 
 	static ACES_SHADER: std::sync::LazyLock<&str> =
 		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("color-grading/aces.besl"));
+	static ACES2_SHADER: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("color-grading/aces2.besl"));
 	static DWG_SHADER: std::sync::LazyLock<&str> =
 		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("color-grading/dwg.besl"));
 
@@ -327,7 +361,7 @@ mod tests {
 		for (name, value) in [
 			("domain_min", [0.0, 0.0, 0.0, 0.0]),
 			("domain_scale", [1.0, 1.0, 1.0, 0.0]),
-			("sampling", [0.5, 0.25, 0.0, 0.0]),
+			("sampling", [0.5, 0.25, 1.0, 0.0]),
 		] {
 			parameters
 				.write(name, Value::Vec4F(value))
@@ -359,7 +393,7 @@ mod tests {
 
 	#[test]
 	fn grading_workflows_bound_black_and_hdr_values_for_sdr_output() {
-		for shader in [*ACES_SHADER, *DWG_SHADER] {
+		for shader in [*ACES_SHADER, *ACES2_SHADER, *DWG_SHADER] {
 			for input in [0.0, 1.0, 16.0] {
 				let output = run_workflow(shader, [input, input, input, 0.25]);
 				assert!(
@@ -370,6 +404,30 @@ mod tests {
 				);
 				assert!((output[0] - output[1]).abs() <= 4e-4 && (output[1] - output[2]).abs() <= 4e-4);
 			}
+		}
+	}
+
+	/// Checks the ACES 2.0 output transform against the Academy reference, through an identity look.
+	///
+	/// The expected colors come from `scripts/generate-aces2-tables.py --vectors`, a port of the reference
+	/// implementation, which agrees with OpenColorIO 2.6's ACES 2.0 view within 0.001. They cover mid grey at 10 nits,
+	/// black, highlights past white, and saturated colors that the chroma and gamut compression reshape.
+	#[test]
+	fn aces2_grading_matches_the_reference_output_transform() {
+		for (input, expected) in [
+			([0.18, 0.18, 0.18], [0.3491891, 0.3491891, 0.3491891]),
+			([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+			([1.0, 1.0, 1.0], [0.7066839, 0.7066839, 0.7066839]),
+			([16.0, 16.0, 16.0], [0.9747303, 0.9747303, 0.9747303]),
+			([0.5, 0.1, 0.05], [0.5848386, 0.2504861, 0.1614661]),
+			([0.05, 0.4, 0.1], [0.1915109, 0.5202122, 0.2732095]),
+			([0.02, 0.05, 0.6], [0.0505988, 0.1406792, 0.6100106]),
+			([4.0, 0.5, 0.1], [1.0, 0.619354, 0.4811281]),
+			([0.3, 0.25, 0.9], [0.4576994, 0.4243927, 0.7209163]),
+			([0.9, 0.9, 0.05], [0.6972113, 0.7018813, 0.3009407]),
+		] {
+			let output = run_workflow(*ACES2_SHADER, [input[0], input[1], input[2], 0.5]);
+			assert_rgba_close(output, [expected[0], expected[1], expected[2], 0.5], 2e-4);
 		}
 	}
 
@@ -384,7 +442,7 @@ mod tests {
 		};
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*LUT_SHADER));
 		let parameter_slot = ResourceSlot::new(3);
-		let shader_parameters = lut_shader_parameters(&lut);
+		let shader_parameters = lut_shader_parameters(&lut, 1.0);
 		let mut parameters = buffer(&program, parameter_slot);
 		for (name, value) in [
 			("domain_min", shader_parameters.domain_min),
@@ -422,6 +480,55 @@ mod tests {
 		assert_rgba_close(rgba(&result, [0, 0]), [0.5, 0.5, 0.5, 0.4], 1e-6);
 		assert_rgba_close(rgba(&result, [1, 0]), [0.0, 0.25, 0.75, 0.2], 1e-6);
 		assert_rgba_close(rgba(&result, [2, 0]), [1.0, 0.75, 0.0, 0.8], 1e-6);
+	}
+
+	/// Verifies that the look strength mixes the input and the looked-up color, through an inverting LUT.
+	#[test]
+	fn lut_besl_vm_mixes_the_look_by_its_strength() {
+		let lut = Lut {
+			kind: LutKind::ThreeDimensional,
+			size: 2,
+			domain_min: [0.0, 0.0, 0.0],
+			domain_max: [1.0, 1.0, 1.0],
+		};
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*LUT_SHADER));
+		let parameter_slot = ResourceSlot::new(3);
+		// Each corner stores one minus its coordinate, so the full look maps 0.25 to 0.75.
+		let mut inverting_lut = Texture::new_3d(2, 2, 2).expect("Expected a valid test LUT extent");
+		for z in 0..2 {
+			for y in 0..2 {
+				for x in 0..2 {
+					inverting_lut
+						.write_3d([x, y, z], [1.0 - x as f32, 1.0 - y as f32, 1.0 - z as f32, 1.0])
+						.expect("Expected a valid test LUT coordinate");
+				}
+			}
+		}
+
+		for (strength, expected) in [(0.0, 0.25), (0.25, 0.375), (1.0, 0.75)] {
+			let shader_parameters = lut_shader_parameters(&lut, strength);
+			let mut parameters = buffer(&program, parameter_slot);
+			for (name, value) in [
+				("domain_min", shader_parameters.domain_min),
+				("domain_scale", shader_parameters.domain_scale),
+				("sampling", shader_parameters.sampling),
+			] {
+				parameters
+					.write(name, Value::Vec4F(value))
+					.expect("Expected LUT parameters to match the shader");
+			}
+			let mut source = texture_2d(1, 1, &[[0.25, 0.25, 0.25, 0.5]]);
+			let mut result = empty_image(1, 1);
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(ResourceSlot::new(0), &mut source);
+			descriptors.bind_texture(ResourceSlot::new(1), &mut inverting_lut);
+			descriptors.bind_image(output_slot(0), &mut result);
+			descriptors.bind_buffer(parameter_slot, &mut parameters);
+			run_pixel(&program, &mut descriptors, [0, 0], PIXEL_TILE, [1, 1]);
+			drop(descriptors);
+
+			assert_rgba_close(rgba(&result, [0, 0]), [expected, expected, expected, 0.5], 1e-6);
+		}
 	}
 
 	#[test]

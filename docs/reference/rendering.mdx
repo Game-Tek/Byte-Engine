@@ -96,7 +96,7 @@ animation steps once per frame.
 | Bloom | `bloom` | `Bloom Output` | After everything that writes scene light, before tone mapping. |
 | Antialiasing | `smaa` | `SMAA Output`, `SMAA Edges` | After the `main` to filter, before sharp overlays. |
 | AgX, ACES, Hable, and sRGB display | `agx`, `aces`, `hable`, `srgb-display` | Their named outputs | As the tone mapper, before creating a window. The sRGB display pass needs float input and suits SDR scenes without a tone mapper. |
-| Color grading | `lut`, `aces-color-grading`, `dwg-color-grading` | Their named outputs | After scene-linear effects, before tone mapping. |
+| Color grading | `lut`, `aces-color-grading`, `aces2-color-grading`, `dwg-color-grading` | Their named outputs | After scene-linear effects. `lut` goes before tone mapping; the ACES, ACES 2.0, and DaVinci passes end in display color, so they take the tone mapper's place. |
 | Film grain | `film-grain` | `Film Grain` | After tone mapping or color grading and antialiasing, before the UI. |
 | UI | `ui` | `UI` | Before the renders every sink must see are published. |
 | Debug meshes | `debug-meshes` | `Debug Meshes` | After tone mapping and the overlays it should cover, before the first window. |
@@ -116,8 +116,24 @@ scene reaches the swapchain through the copy.
 | Height fog | A layer's height falloff 0.2 and base height 0; a fog's albedo white, maximum opacity 1, anisotropy 0.7 within 0 to 1, ambient illuminance 0 lux. |
 | Atmosphere sky | Earth's radii and scale heights, Mie anisotropy 0.76, ozone strength 1, ground albedo 0.3, the sun disk capped at 32,768 per channel; not settable through the setup function. |
 | Antialiasing | SMAA 1x Ultra: edge threshold 0.05 on perceptual luma √(L / (1 + L)), local contrast factor 2, 32 orthogonal and 16 diagonal search steps, corner rounding 0.25; not settable. |
+| Color grading | Look strength 1, within 0 to 1. Each channel is the input plus the strength times the LUT's change to it, in the encoding the LUT reads: scene-linear for `lut`, ACEScct for `aces-color-grading` and `aces2-color-grading`, DaVinci Intermediate for `dwg-color-grading`. |
 | Film grain | Level 1, size 0.37, zone gains 0, 0.65, 0, −0.65, and −2 for the Black, Shadow, Mid, High, and White zones. |
 | Tone mapping, UI, debug meshes | No settings. |
+
+### ACES 2.0 output
+
+The `aces2-color-grading` pass renders its look with the ACES 2.0 output
+transform for one display.
+
+| Property | Value |
+| --- | --- |
+| Input | Scene-linear sRGB with a D65 white, converted to ACEScg with a D65-to-D60 adapted matrix, then to ACEScct for the LUT, then back to ACEScg. |
+| Accepted range | Each ACEScg channel is held within 0 to 1,024 before rendering. |
+| Display | Rec.709 primaries, a D65 white, and a 100-nit peak, encoded with the piecewise sRGB transfer function. |
+| Mid grey | ACEScg 0.18 in every channel shows at 10.013 nits, encoded 0.349. |
+| Highlights | Scene 1 encodes 0.707 and scene 16 encodes 0.975; only values past about 128 reach display white. |
+| Output range | Linear display color is clamped to 0 to 1 before encoding. |
+| Conformance | Each encoded channel is within 0.002 of the Academy's `Output.Academy.Rec709-D65_100nit_in_Rec709-D65_sRGB-Piecewise` transform for ACES 2.0, which ACES 2.1 leaves unchanged for this display. |
 
 ### Film grain
 

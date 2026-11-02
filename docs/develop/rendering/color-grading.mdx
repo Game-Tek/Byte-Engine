@@ -1,0 +1,58 @@
+---
+title: ACES 2.0 color grading
+description: Learn how the ACES 2.0 color-grading pass reads tables computed offline, and what a change to it must keep true.
+icon: SwatchBook
+---
+
+Read this page before you change the `aces2-color-grading` pass, its shader, or
+the script that computes its tables. What the pass renders is specified under
+[ACES 2.0 output](/docs/reference/rendering#aces-20-output) in the rendering
+reference.
+
+## Tables computed offline
+
+The ACES 2.0 output transform shapes each color by its hue, from three tables
+with an entry for about every degree: the display gamut's cusp, the reach
+gamut's colorfulness at peak lightness, and the gamma of the gamut's upper
+hull. The Academy's reference builds them when a transform starts, with
+bisection searches that run thousands of color conversions. The engine renders
+to one display, so `scripts/generate-aces2-tables.py` runs those searches once
+and writes the results, with the display's matrices and constants, to
+`crates/byte-engine/assets/rendering/layouts/aces2-rec709-100nit.besl`. The
+shader, `color-grading/aces2.besl`, reads that layout and runs only the
+per-pixel transform.
+
+The script is a line-by-line Python port of the reference, standard library
+only. Its forward transform is also the reference model the shader's tests use.
+
+## Rules a change must keep
+
+- Never edit `aces2-rec709-100nit.besl` by hand. Change the script, then run
+  `python3 scripts/generate-aces2-tables.py > crates/byte-engine/assets/rendering/layouts/aces2-rec709-100nit.besl`
+  from the repository root.
+- Keep the reference's arithmetic, including its quirks. The narrowed hue
+  search that picks the upper hull's gamma starts one entry high for about a
+  quarter of hues, and the gamma then extrapolates from that interval by the
+  hue difference itself. The cusp comes from a correct search. Matching the
+  reference matters more than tidying these.
+- BESL has no `while`, so the shader bounds both hue searches. The script
+  computes the bounds from the table, and `--vectors` checks that the bounded
+  searches agree with the reference's loops at 360,000 hues. Run it after any
+  change to the tables or the searches.
+- The shader indexes the tables with `u32` arithmetic. The script refuses a
+  table whose search offsets would go negative.
+
+## Tests
+
+- `aces2_grading_matches_the_reference_output_transform` runs the shader in the
+  BESL VM with an identity look and compares ten colors with the script's
+  output, within 0.0002. Regenerate those values with
+  `python3 scripts/generate-aces2-tables.py --vectors`.
+- `grading_workflows_bound_black_and_hdr_values_for_sdr_output` checks that
+  black, white, and highlights stay neutral and within the display range.
+- `packed_hdr_programs_lower_to_the_platform_shader_language` compiles the
+  shader for the platform's shader language.
+
+The script's output was cross-checked against the ACES 2.0 and ACES 2.1 views
+of OpenColorIO 2.6's built-in studio configurations over 20,009 colors: the
+largest difference was 0.0009 in an encoded channel, on a saturated highlight.

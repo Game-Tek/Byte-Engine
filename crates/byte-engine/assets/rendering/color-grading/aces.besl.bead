@@ -2,5 +2,5 @@
 	"$schema": "../../schemas/besl.bead.schema.json",
 	"stage": "Tile",
 	"tile": 16,
-	"layouts": ["../layouts/lut.besl", "../layouts/color.besl"]
+	"layouts": ["../layouts/lut.besl", "../layouts/color.besl", "../layouts/acescct.besl"]
 }

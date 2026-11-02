@@ -523,8 +523,28 @@ pub fn setup_film_grain_render_pass(
 pub fn setup_aces_color_grading_render_pass(
 	application: &mut GraphicsApplication,
 	lut: crate::rendering::render_passes::lut::PreparedLut,
+	settings: crate::rendering::render_passes::lut::LutPassSettings,
 ) {
-	setup_lut_workflow_render_pass(application, lut, LutWorkflow::Aces);
+	setup_lut_workflow_render_pass(application, lut, LutWorkflow::Aces, settings);
+}
+
+/// Installs a fused ACEScct grading and ACES 2.0 SDR output pass from a prepared LUT.
+///
+/// The LUT must accept and return ACEScct values, like the LUT for
+/// [`setup_aces_color_grading_render_pass`]. In place of that pass's fitted curve, this
+/// pass renders the look with the ACES 2.0 output transform for a Rec.709, D65,
+/// 100-nit display, which has softer mid-tone contrast, a longer highlight roll-off,
+/// and hue-preserving chroma compression. Load the LUT with
+/// [`crate::rendering::render_passes::lut::PreparedLut::load`] on
+/// application-owned asynchronous work before calling this setup function. Call
+/// this after scene-linear effects, in place of a tone mapper. Later passes consume
+/// its remapped `main` output.
+pub fn setup_aces2_color_grading_render_pass(
+	application: &mut GraphicsApplication,
+	lut: crate::rendering::render_passes::lut::PreparedLut,
+	settings: crate::rendering::render_passes::lut::LutPassSettings,
+) {
+	setup_lut_workflow_render_pass(application, lut, LutWorkflow::Aces2, settings);
 }
 
 /// Installs a fused DaVinci Wide Gamut/Intermediate grading and SDR output pass from a prepared LUT.
@@ -538,8 +558,9 @@ pub fn setup_aces_color_grading_render_pass(
 pub fn setup_dwg_color_grading_render_pass(
 	application: &mut GraphicsApplication,
 	lut: crate::rendering::render_passes::lut::PreparedLut,
+	settings: crate::rendering::render_passes::lut::LutPassSettings,
 ) {
-	setup_lut_workflow_render_pass(application, lut, LutWorkflow::DaVinciWideGamut);
+	setup_lut_workflow_render_pass(application, lut, LutWorkflow::DaVinciWideGamut, settings);
 }
 
 /// Installs a 3D LUT grading pass from asynchronously prepared resource data.
@@ -549,8 +570,12 @@ pub fn setup_dwg_color_grading_render_pass(
 /// application-owned asynchronous work. Each sink receives its own copy of the
 /// bytes, which its pass drops after the first upload. Call this after passes that
 /// produce the HDR `main` target and before tone mapping.
-pub fn setup_lut_render_pass(application: &mut GraphicsApplication, lut: crate::rendering::render_passes::lut::PreparedLut) {
-	setup_lut_workflow_render_pass(application, lut, LutWorkflow::Creative);
+pub fn setup_lut_render_pass(
+	application: &mut GraphicsApplication,
+	lut: crate::rendering::render_passes::lut::PreparedLut,
+	settings: crate::rendering::render_passes::lut::LutPassSettings,
+) {
+	setup_lut_workflow_render_pass(application, lut, LutWorkflow::Creative, settings);
 }
 
 /// Installs one LUT workflow for every render sink.
@@ -558,11 +583,12 @@ fn setup_lut_workflow_render_pass(
 	application: &mut GraphicsApplication,
 	lut: crate::rendering::render_passes::lut::PreparedLut,
 	workflow: LutWorkflow,
+	settings: crate::rendering::render_passes::lut::LutPassSettings,
 ) {
 	application
 		.renderer
 		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
-			Box::new(LutPass::new(render_pass_builder, workflow, lut.clone()))
+			Box::new(LutPass::new(render_pass_builder, workflow, lut.clone(), settings))
 		});
 }
 

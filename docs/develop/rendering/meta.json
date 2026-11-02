@@ -6,6 +6,7 @@
 		"lighting",
 		"visibility",
 		"shown-transforms",
+		"color-grading",
 		"film-grain",
 		"ray-tracing",
 		"shader-variants",

@@ -1,0 +1,36 @@
+// The conversions that the ACES color-grading passes share: the renderer's linear-sRGB output to ACEScg, and
+// ACEScg to and from ACEScct, the logarithmic encoding their looks are graded in.
+
+// This D65-to-D60-adapted matrix converts the renderer's linear-sRGB output to ACEScg AP1.
+linear_srgb_to_acescg: fn(color: vec3f) -> vec3f {
+	let x: f32 = 0.6130974024 * color.x + 0.3395231462 * color.y + 0.0473794514 * color.z;
+	let y: f32 = 0.0701937225 * color.x + 0.9163538791 * color.y + 0.0134523985 * color.z;
+	let z: f32 = 0.0206155929 * color.x + 0.1095697729 * color.y + 0.8698146342 * color.z;
+	return vec3f(x, y, z);
+}
+
+acescct_channel: fn(value: f32) -> f32 {
+	if (value <= 0.0078125) {
+		return 10.5402377416545 * value + 0.0729055341958355;
+	}
+	return (log2(vec3f(value, value, value)).x + 9.72) / 17.52;
+}
+
+acescct: fn(color: vec3f) -> vec3f {
+	return vec3f(acescct_channel(color.x), acescct_channel(color.y), acescct_channel(color.z));
+}
+
+acescct_to_acescg_channel: fn(value: f32) -> f32 {
+	if (value <= 0.155251141552511) {
+		return (value - 0.0729055341958355) / 10.5402377416545;
+	}
+	return pow(2.0, value * 17.52 - 9.72);
+}
+
+acescct_to_acescg: fn(color: vec3f) -> vec3f {
+	return vec3f(
+		acescct_to_acescg_channel(color.x),
+		acescct_to_acescg_channel(color.y),
+		acescct_to_acescg_channel(color.z)
+	);
+}

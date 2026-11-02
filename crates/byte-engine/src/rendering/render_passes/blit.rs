@@ -241,6 +241,10 @@ mod tests {
 				crate::rendering::shader_vm_test::asset_source("color-grading/aces.besl"),
 			),
 			(
+				"aces2_color_grading",
+				crate::rendering::shader_vm_test::asset_source("color-grading/aces2.besl"),
+			),
+			(
 				"dwg_color_grading",
 				crate::rendering::shader_vm_test::asset_source("color-grading/dwg.besl"),
 			),

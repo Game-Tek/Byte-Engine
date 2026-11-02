@@ -95,6 +95,28 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## ACES 2.0 output transform
+
+`crates/byte-engine/assets/rendering/color-grading/aces2.besl`,
+`scripts/generate-aces2-tables.py`, and the tables that script generates in
+`crates/byte-engine/assets/rendering/layouts/aces2-rec709-100nit.besl` port the
+forward ACES 2.0 output transform from the Academy's reference implementation in
+[aces-core](https://github.com/aces-aswf/aces-core)
+(`lib/Lib.Academy.OutputTransform.ctl` and `lib/Lib.Academy.Tonescale.ctl`),
+as its Rec.709-D65 100-nit sRGB-piecewise output runs it. The port changes the
+language and leaves out the inverse transform and the other displays.
+
+Copyright Contributors to the ACES Project.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+these files except in compliance with the License. You may obtain a copy of the
+License at http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
 ## Hable filmic tone curve
 
 The tone curve in `crates/byte-engine/assets/rendering/hable/tone-mapping.besl`,

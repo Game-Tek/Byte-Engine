@@ -1,0 +1,305 @@
+// The ACES 2.0 output transform for an SDR sRGB display, after a creative look graded in ACEScct.
+//
+// This is an independent implementation of the forward transform in the Academy's Apache-2.0 reference
+// (https://github.com/aces-aswf/aces-core, lib/Lib.Academy.OutputTransform.ctl and lib/Lib.Academy.Tonescale.ctl),
+// as its Rec.709-D65 100-nit sRGB-piecewise output runs it. The per-hue tables it reads are computed offline by
+// scripts/generate-aces2-tables.py into layouts/aces2-rec709-100nit.besl.
+
+// A tile output, so the replacement for `main` this writes needs no shader-write usage and stays losslessly compressed.
+result_texture: output<vec4f, 0>;
+
+ACES2_DEGREES_PER_RADIAN: const f32 = 57.29577951308232;
+ACES2_LOG10_OF_2: const f32 = 0.30102999566398;
+// The lowest and highest gamut table entries that can end the interval holding a hue; entry 0 only wraps the hue circle.
+ACES2_FIRST_ENTRY: const u32 = 1;
+ACES2_LAST_ENTRY: const u32 = 361;
+
+// The CAM's compression of one adapted cone response, keeping its sign.
+aces2_compress: fn(value: f32) -> f32 {
+	let f: f32 = pow(abs(value), 0.42);
+	let compressed: f32 = f / (ACES2_CAM_NL_OFFSET + f);
+	if (value < 0.0) {
+		return 0.0 - compressed;
+	}
+	return compressed;
+}
+
+// Inverts `aces2_compress`, holding the response below its asymptote as the reference does.
+aces2_decompress: fn(value: f32) -> f32 {
+	let limited: f32 = min(abs(value), 0.99);
+	let decompressed: f32 = pow(ACES2_CAM_NL_OFFSET * limited / (1.0 - limited), 1.0 / 0.42);
+	if (value < 0.0) {
+		return 0.0 - decompressed;
+	}
+	return decompressed;
+}
+
+// The luminance, relative to the 100-nit reference, of an achromatic color with lightness `j`.
+aces2_j_to_y: fn(j: f32) -> f32 {
+	let achromatic: f32 = pow(abs(j) / 100.0, 1.0 / ACES2_CZ);
+	return abs(aces2_decompress(ACES2_A_W_J * achromatic)) / ACES2_F_L_N;
+}
+
+// The lightness of an achromatic color with luminance `y`, relative to the 100-nit reference.
+aces2_y_to_j: fn(y: f32) -> f32 {
+	let response: f32 = aces2_compress(abs(y) * ACES2_F_L_N);
+	return 100.0 * pow(response / ACES2_A_W_J, ACES2_CZ);
+}
+
+// The Daniele Evo tone scale: scene-linear luminance to display luminance in nits.
+aces2_tonescale: fn(x: f32) -> f32 {
+	let f: f32 = ACES2_TONESCALE_M_2 * pow(max(0.0, x) / (x + ACES2_TONESCALE_S_2), ACES2_TONESCALE_G);
+	return max(0.0, f * f / (f + ACES2_TONESCALE_T_1)) * 100.0;
+}
+
+// The reach gamut's colorfulness at peak lightness, between the whole degrees around `h`.
+aces2_reach_m: fn(h: f32) -> f32 {
+	let base: f32 = min(floor(h), 359.0);
+	let index: u32 = u32(base) + 1;
+	return mix(ACES2_REACH_M[index], ACES2_REACH_M[index + 1], h - base);
+}
+
+// The rendering space's cusp colorfulness at `h`, which normalizes the chroma compression.
+aces2_chroma_compress_norm: fn(h: f32) -> f32 {
+	let radians_h: f32 = radians(h);
+	let a: f32 = cos(radians_h);
+	let b: f32 = sin(radians_h);
+	let cos_2h: f32 = a * a - b * b;
+	let sin_2h: f32 = 2.0 * a * b;
+	let cos_3h: f32 = 4.0 * a * a * a - 3.0 * a;
+	let sin_3h: f32 = 3.0 * b - 4.0 * b * b * b;
+	let m: f32 = 11.34072 * a + 16.46899 * cos_2h + 7.88380 * cos_3h + 14.66441 * b - 6.37224 * sin_2h + 9.19364 * sin_3h
+		+ 77.12896;
+	return m * ACES2_CHROMA_COMPRESS_SCALE;
+}
+
+// Remaps `x` below `limit` through a toe whose size and shape `k1_in` and `k2_in` set; values above stay.
+aces2_toe: fn(x: f32, limit: f32, k1_in: f32, k2_in: f32) -> f32 {
+	if (x > limit) {
+		return x;
+	}
+	let k2: f32 = max(k2_in, 0.001);
+	let k1: f32 = sqrt(k1_in * k1_in + k2 * k2);
+	let k3: f32 = (limit + k1) / (limit + k2);
+	let minus_b: f32 = k3 * x - k1;
+	let minus_c: f32 = k2 * k3 * x;
+	return 0.5 * (minus_b + sqrt(minus_b * minus_b + 4.0 * minus_c));
+}
+
+// Scales the colorfulness `m` of a color of lightness `j` to the tone-mapped lightness `tonemapped_j`, then expands
+// muted colors in the shadows and mid-tones and rolls off colorfulness in the highlights.
+aces2_chroma_compress: fn(j: f32, m: f32, h: f32, tonemapped_j: f32) -> f32 {
+	if (m == 0.0) {
+		return m;
+	}
+	let nj: f32 = tonemapped_j / ACES2_LIMIT_J_MAX;
+	let snj: f32 = max(0.0, 1.0 - nj);
+	let m_norm: f32 = aces2_chroma_compress_norm(h);
+	let limit: f32 = pow(nj, ACES2_MODEL_GAMMA_INV) * aces2_reach_m(h) / m_norm;
+	let compressed: f32 = m * pow(tonemapped_j / j, ACES2_MODEL_GAMMA_INV) / m_norm;
+	compressed = limit - aces2_toe(limit - compressed, limit - 0.001, snj * ACES2_SAT, sqrt(nj * nj + ACES2_SAT_THR));
+	compressed = aces2_toe(compressed, limit, nj * ACES2_COMPR, snj);
+	return compressed * m_norm;
+}
+
+// The lightness where the line from the color toward the focus crosses the achromatic axis.
+aces2_solve_j_intersect: fn(j: f32, m: f32, focus_j: f32, slope_gain: f32) -> f32 {
+	let m_scaled: f32 = m / slope_gain;
+	let a: f32 = m_scaled / focus_j;
+	if (j < focus_j) {
+		let b: f32 = 1.0 - m_scaled;
+		let c: f32 = 0.0 - j;
+		return -2.0 * c / (b + sqrt(b * b - 4.0 * a * c));
+	}
+	let b: f32 = 0.0 - (1.0 + m_scaled + ACES2_LIMIT_J_MAX * a);
+	let c: f32 = ACES2_LIMIT_J_MAX * m_scaled + j;
+	return -2.0 * c / (b - sqrt(b * b - 4.0 * a * c));
+}
+
+// The slope, in lightness per colorfulness, of the compression line through `intersect_j`.
+aces2_compression_slope: fn(intersect_j: f32, focus_j: f32, slope_gain: f32) -> f32 {
+	let direction: f32 = intersect_j;
+	if (intersect_j >= focus_j) {
+		direction = ACES2_LIMIT_J_MAX - intersect_j;
+	}
+	return direction * (intersect_j - focus_j) / (focus_j * slope_gain);
+}
+
+// Approximates where a line meets a hull of shape J = J_max (M / M_max) ^ (1 / gamma), without iterating.
+aces2_line_and_boundary_m: fn(j_axis_intersect: f32, slope: f32, inv_gamma: f32, j_max: f32, m_max: f32, j_reference: f32) -> f32 {
+	let shifted: f32 = j_reference * pow(j_axis_intersect / j_reference, inv_gamma);
+	return shifted * m_max / (j_max - slope * m_max);
+}
+
+// The colorfulness of the display gamut's boundary along the compression line, with its cusp rounded.
+aces2_gamut_boundary_m: fn(cusp: vec2f, gamma_top_inv: f32, j_source: f32, slope: f32, j_cusp: f32) -> f32 {
+	let lower: f32 = aces2_line_and_boundary_m(j_source, slope, ACES2_LOWER_HULL_GAMMA_INV, cusp.x, cusp.y, j_cusp);
+	let upper: f32 = aces2_line_and_boundary_m(
+		ACES2_LIMIT_J_MAX - j_source,
+		0.0 - slope,
+		gamma_top_inv,
+		ACES2_LIMIT_J_MAX - cusp.x,
+		cusp.y,
+		ACES2_LIMIT_J_MAX - j_cusp
+	);
+	let smoothing: f32 = ACES2_SMOOTH_CUSPS * cusp.y;
+	let weight: f32 = max(smoothing - abs(lower - upper), 0.0) / smoothing;
+	return min(lower, upper) - weight * weight * weight * smoothing / 6.0;
+}
+
+// How steeply the compression lines converge on the focus; lines near peak lightness steepen so they stay inside.
+aces2_focus_gain: fn(j: f32, analytical_threshold: f32) -> f32 {
+	let gain: f32 = ACES2_LIMIT_J_MAX * ACES2_FOCUS_DIST;
+	if (j > analytical_threshold) {
+		let ratio: f32 = (ACES2_LIMIT_J_MAX - analytical_threshold) / max(0.0001, ACES2_LIMIT_J_MAX - j);
+		let adjustment: f32 = log2(ratio) * ACES2_LOG10_OF_2;
+		gain = gain * (adjustment * adjustment + 1.0);
+	}
+	return gain;
+}
+
+// Compresses colorfulness between a threshold inside the gamut boundary and the reach boundary onto the gamut.
+aces2_remap_m: fn(m: f32, gamut_boundary_m: f32, reach_boundary_m: f32) -> f32 {
+	let proportion: f32 = max(gamut_boundary_m / reach_boundary_m, ACES2_COMPRESSION_THRESHOLD);
+	let threshold: f32 = proportion * gamut_boundary_m;
+	if (m <= threshold || proportion >= 1.0) {
+		return m;
+	}
+	let gamut_offset: f32 = gamut_boundary_m - threshold;
+	let reach_offset: f32 = reach_boundary_m - threshold;
+	let scale: f32 = reach_offset / (reach_offset / gamut_offset - 1.0);
+	let nd: f32 = (m - threshold) / scale;
+	return threshold + scale * nd / (1.0 + nd);
+}
+
+// The first gamut table entry whose hue reaches `h`, scanning the few entries the generator proved can hold it.
+aces2_cusp_entry: fn(h: f32) -> u32 {
+	let start: u32 = ACES2_FIRST_ENTRY + u32(floor(h)) + ACES2_CUSP_WINDOW_START;
+	let entry: u32 = start + ACES2_CUSP_WINDOW_SIZE - 1;
+	for (let offset: u32 = 0; offset < ACES2_CUSP_WINDOW_SIZE; offset = offset + 1) {
+		let candidate: u32 = min(start + offset, ACES2_LAST_ENTRY);
+		if (ACES2_HUES[candidate] >= h) {
+			entry = candidate;
+			break;
+		}
+	}
+	return clamp(entry, ACES2_FIRST_ENTRY, ACES2_LAST_ENTRY);
+}
+
+// The reference's narrowed hue search, which picks the interval the upper hull's gamma is read from. It starts one
+// entry high for about a quarter of hues, which the gamma's interpolation then extrapolates from, as the reference does.
+aces2_gamma_entry: fn(h: f32) -> u32 {
+	let i: u32 = ACES2_FIRST_ENTRY + u32(h / 360.0 * 362.0);
+	let low: u32 = max(ACES2_FIRST_ENTRY, i + ACES2_HUE_SEARCH_LOWER);
+	let high: u32 = min(ACES2_LAST_ENTRY, i + ACES2_HUE_SEARCH_UPPER);
+	for (let step: u32 = 0; step < ACES2_HUE_SEARCH_STEPS; step = step + 1) {
+		if (low + 1 >= high) {
+			break;
+		}
+		if (h > ACES2_HUES[min(i, ACES2_LAST_ENTRY)]) {
+			low = i;
+		} else {
+			high = i;
+		}
+		i = (low + high) / 2;
+	}
+	return max(ACES2_FIRST_ENTRY, high);
+}
+
+// Compresses a tone-mapped color into the display gamut along lines toward a focus on the achromatic axis.
+aces2_gamut_compress: fn(jmh: vec3f) -> vec2f {
+	let j: f32 = jmh.x;
+	let m: f32 = jmh.y;
+	let h: f32 = jmh.z;
+	if (j <= 0.0) {
+		return vec2f(0.0, 0.0);
+	}
+	if (m < 0.0 || j > ACES2_LIMIT_J_MAX) {
+		return vec2f(j, 0.0);
+	}
+
+	let cusp_entry: u32 = aces2_cusp_entry(h);
+	let cusp_t: f32 = (h - ACES2_HUES[cusp_entry - 1]) / (ACES2_HUES[cusp_entry] - ACES2_HUES[cusp_entry - 1]);
+	let cusp: vec2f = vec2f(
+		mix(ACES2_CUSP_J[cusp_entry - 1], ACES2_CUSP_J[cusp_entry], cusp_t),
+		mix(ACES2_CUSP_M[cusp_entry - 1], ACES2_CUSP_M[cusp_entry], cusp_t)
+	);
+	// The reference weighs the gamma by the hue difference itself, not by the position within the interval.
+	let gamma_entry: u32 = aces2_gamma_entry(h);
+	let gamma_top_inv: f32 = mix(
+		ACES2_UPPER_HULL_GAMMA_INV[gamma_entry - 1],
+		ACES2_UPPER_HULL_GAMMA_INV[gamma_entry],
+		h - ACES2_HUES[gamma_entry - 1]
+	);
+
+	let focus_j: f32 = mix(cusp.x, ACES2_MID_J, min(1.0, ACES2_CUSP_MID_BLEND - cusp.x / ACES2_LIMIT_J_MAX));
+	let analytical_threshold: f32 = mix(cusp.x, ACES2_LIMIT_J_MAX, ACES2_FOCUS_GAIN_BLEND);
+	let gain: f32 = aces2_focus_gain(j, analytical_threshold);
+	let j_source: f32 = aces2_solve_j_intersect(j, m, focus_j, gain);
+	let slope: f32 = aces2_compression_slope(j_source, focus_j, gain);
+	let j_cusp: f32 = aces2_solve_j_intersect(cusp.x, cusp.y, focus_j, gain);
+
+	let boundary_m: f32 = aces2_gamut_boundary_m(cusp, gamma_top_inv, j_source, slope, j_cusp);
+	if (boundary_m <= 0.0) {
+		return vec2f(j, 0.0);
+	}
+	let reach_boundary_m: f32 = aces2_line_and_boundary_m(
+		j_source,
+		slope,
+		ACES2_MODEL_GAMMA_INV,
+		ACES2_LIMIT_J_MAX,
+		aces2_reach_m(h),
+		ACES2_LIMIT_J_MAX
+	);
+	let remapped_m: f32 = aces2_remap_m(m, boundary_m, reach_boundary_m);
+	return vec2f(j_source + remapped_m * slope, remapped_m);
+}
+
+// Renders scene-linear ACEScg as linear Rec.709 display color within 0 to the display's peak.
+aces2_output_transform: fn(acescg: vec3f) -> vec3f {
+	let clamped: vec3f = clamp(acescg, splat3(0.0), splat3(ACES2_FORWARD_LIMIT));
+	let cone: vec3f = aces2_acescg_to_cam16(clamped);
+	let aab: vec3f = aces2_input_cone_to_aab(vec3f(aces2_compress(cone.x), aces2_compress(cone.y), aces2_compress(cone.z)));
+	if (aab.x <= 0.0) {
+		return splat3(0.0);
+	}
+
+	// Lightness, colorfulness, and hue in the CAM.
+	let j: f32 = 100.0 * pow(aab.x, ACES2_CZ);
+	let m: f32 = sqrt(aab.y * aab.y + aab.z * aab.z);
+	let h: f32 = atan2(aab.z, aab.y) * ACES2_DEGREES_PER_RADIAN;
+	if (h < 0.0) {
+		h = h + 360.0;
+	}
+
+	// The tone scale maps the color's luminance, and its lightness follows.
+	let tonemapped_j: f32 = aces2_y_to_j(aces2_tonescale(aces2_j_to_y(j) / 100.0));
+	let compressed_m: f32 = aces2_chroma_compress(j, m, h, tonemapped_j);
+	let jm: vec2f = aces2_gamut_compress(vec3f(tonemapped_j, compressed_m, h));
+
+	// Back from the CAM to the display's RGB.
+	let radians_h: f32 = radians(h);
+	let achromatic: f32 = pow(jm.x / 100.0, 1.0 / ACES2_CZ);
+	let display_cone: vec3f = aces2_limit_aab_to_cone(vec3f(achromatic, jm.y * cos(radians_h), jm.y * sin(radians_h)));
+	let display: vec3f = aces2_limit_cam16_to_rgb(
+		vec3f(aces2_decompress(display_cone.x), aces2_decompress(display_cone.y), aces2_decompress(display_cone.z))
+	);
+	return clamp(display, splat3(0.0), splat3(ACES2_PEAK));
+}
+
+// Convert to ACEScct, apply the creative look, then render the result with the ACES 2.0 output transform.
+main: fn(input: StageInput) -> void {
+	let coord: vec2u = input.thread_id;
+	let extent: vec2u = input.extent;
+	if (coord.x >= extent.x || coord.y >= extent.y) {
+		return;
+	}
+	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));
+	let source_color: vec4f = texture_lod(source_texture, uv);
+	let source_rgb: vec3f = vec3f(source_color.x, source_color.y, source_color.z);
+	let grading_color: vec3f = acescct(linear_srgb_to_acescg(source_rgb));
+	// The LUT operates entirely in ACEScct.
+	let looked_acescg: vec3f = acescct_to_acescg(apply_lut(grading_color));
+	let result_color: vec3f = linear_srgb_to_srgb(aces2_output_transform(looked_acescg));
+	write(result_texture, coord, vec4f(result_color.x, result_color.y, result_color.z, source_color.w));
+}

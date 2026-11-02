@@ -1,0 +1,75 @@
+---
+title: Grade with a film look
+description: Give your application's picture a creative look from a 3D LUT, rendered for the display with ACES 2.0.
+icon: SwatchBook
+---
+
+Grade your picture with a look when you want a consistent style, such as a film stock, across every scene. A look
+is a 3D lookup table (LUT) in a `.cube` file. The ACES 2.0 color-grading pass applies it and then renders the
+result for the display, so it takes the tone mapper's place.
+
+## Add the LUT to your assets
+
+Put the `.cube` file in your application's assets folder. The pass expects a LUT that reads and writes ACEScct, the
+logarithmic encoding most film looks are graded in. Look for "ACEScct to ACEScct" in the LUT's name or notes. A LUT
+for another encoding shifts colors and contrast.
+
+## Install the pass
+
+Load the LUT on your application's asynchronous work, then install the pass after the scene-linear effects, such as
+fog, motion blur, antialiasing, and bloom, and before you create the first window. Don't install a tone mapper as
+well; this pass already writes display color.
+
+```rust
+let look = build_single_threaded_async_runtime()
+	.block_on(PreparedLut::load(app.resource_manager(), "film-look.cube"))
+	.unwrap_or_else(|error| panic!("{error}"));
+setup_bloom_render_pass(&mut app, BloomPassSettings::default());
+setup_aces2_color_grading_render_pass(&mut app, look, LutPassSettings::default());
+```
+
+## Choose how strong the look is
+
+Set `strength` in `LutPassSettings` to soften a look that's stronger than your scene needs:
+
+```rust
+setup_aces2_color_grading_render_pass(&mut app, look, LutPassSettings { strength: 0.5 });
+```
+
+`1` applies the whole look and `0` leaves the picture ungraded. Values in between blend the two in ACEScct, the
+encoding the look was made in.
+
+## Expose for the look
+
+A look shapes the tones it was graded on, so the picture must land where the look expects:
+
+- Keep lit surfaces at or below about twice diffuse white in the scene. ACES 2.0 fades colors toward white as they
+  approach the display's peak, so a scene exposed too bright looks washed out whatever the look does.
+- Give the shadows some light. Film looks tint the darker tones, such as the teal of a teal-and-orange look, and
+  pure black has no hue to tint. A neutral fill light, such as a grey studio environment, also starts the shadows
+  grey; an outdoor sky fill starts them cool.
+- Judge the look after the indirect light settles. Surfel global illumination lights shadows only after it has
+  gathered for a few frames, so the first frames after launch show black shadows.
+
+Change the camera's exposure first, then the look's strength.
+
+## Other color-grading passes
+
+- `setup_aces_color_grading_render_pass` applies the same kind of LUT and renders it with a fitted approximation of
+  the older ACES curve, which has more contrast and saturation.
+- `setup_dwg_color_grading_render_pass` applies a LUT made for DaVinci Wide Gamut and DaVinci Intermediate.
+- `setup_lut_render_pass` applies a LUT to scene-linear color before a separate tone mapper.
+
+Each takes `LutPassSettings` the same way. The ACES 2.0 transform is specified in
+[ACES 2.0 output](/docs/reference/rendering#aces-20-output) in the rendering reference.
+
+## Turn the look on and off
+
+Set the `render.pass.aces2-color-grading` parameter to bypass the pass or turn it back on while the application
+runs, as with any other pass.
+
+## Rust API
+
+- [`setup_aces2_color_grading_render_pass`](/docs/api/latest/byte_engine/application/graphics#fn.setup_aces2_color_grading_render_pass)
+- [`PreparedLut`](/docs/api/latest/byte_engine/rendering/render_passes/lut/PreparedLut)
+- [`LutPassSettings`](/docs/api/latest/byte_engine/rendering/render_passes/lut/LutPassSettings)

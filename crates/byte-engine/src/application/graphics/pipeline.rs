@@ -36,6 +36,34 @@ pub fn setup_debug_mesh_render_pass(application: &mut GraphicsApplication) -> Fa
 	factory
 }
 
+/// Installs a text overlay that prints the transform of the entity `handle` names in the window's top-left corner.
+///
+/// Register it after every pass it should cover, usually last, so grading and film grain leave the text unchanged. A
+/// scene pipeline must come first, so the overlay has a `main` image to draw over. Like every pass, register it before
+/// the first window is adopted, which may be in the tick that creates the window and the entity. The overlay shows
+/// transforms published from the start of the tick it is registered in, and "no transform" until one arrives. It
+/// shows the newest published transform, without blending between simulation steps. Use `render.pass.debug-overlay`
+/// to turn it on or off at runtime.
+///
+/// Next, move the entity by sending a [`TransformationUpdate`] for `handle`.
+pub fn setup_debug_overlay_render_pass(application: &mut GraphicsApplication, handle: crate::core::factory::Handle) {
+	UiRenderPass::request_pipelines(&application.renderer.pipeline_manager_client());
+	// One listener for every sink, created now so the transform published with the entity isn't missed.
+	let source = std::rc::Rc::new(std::cell::RefCell::new(rendering::debug::DebugOverlaySource::new(
+		handle,
+		application.world().channel::<TransformationUpdate>().listener(),
+	)));
+
+	application
+		.renderer
+		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+			Box::new(rendering::debug::DebugOverlayRenderPass::new(
+				render_pass_builder,
+				std::rc::Rc::clone(&source),
+			))
+		});
+}
+
 /// Installs the simple scene pipeline and registers its asynchronous mesh-loading worker.
 ///
 /// This setup is the smallest end-to-end implementation of

@@ -4,10 +4,15 @@
 //! [`crate::application::graphics::setup_debug_mesh_render_pass`], then create
 //! [`DebugMesh`] values through the returned factory. Derive a replacement under
 //! the same handle to update a mesh, or delete its handle through the world.
+//!
+//! To print an entity's transform on screen, register
+//! [`crate::application::graphics::setup_debug_overlay_render_pass`] with its handle.
 
+mod overlay;
 mod render_pass;
 mod scene_manager;
 
+pub(crate) use overlay::{DebugOverlayRenderPass, DebugOverlaySource};
 pub use render_pass::DebugMeshRenderPass;
 pub use scene_manager::DebugSceneManager;
 

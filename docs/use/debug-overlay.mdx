@@ -1,0 +1,44 @@
+---
+title: Show an entity's transform on screen
+description: Print the position, orientation, and scale of one entity, such as the camera, over the window while you debug.
+icon: Crosshair
+---
+
+Use the debug overlay when you want to see where an entity is while the application runs. The overlay prints the
+entity's position, orientation, and scale in the window's top-left corner and updates them whenever the entity moves.
+
+## Show the transform
+
+Pass the entity's handle to `setup_debug_overlay_render_pass`. Register the overlay after every other render pass,
+so color grading and film grain leave the text unchanged:
+
+```rust
+let camera_handle: Handle = app
+    .world()
+    .create(Camera::new())
+    .with(Transform::from_position(Point::new(-10.0, 2.0, 0.0)))
+    .into();
+
+setup_debug_overlay_render_pass(app, camera_handle);
+
+let mut window = Window::new("Viewer", Extent::rectangle(1024, 1024));
+window.attach(camera_handle);
+app.window_factory().create(window);
+```
+
+Every render pass must be registered before the renderer adopts the first window. A window you create in a tick is
+adopted after that tick, so you can create the entity, register the overlay, and create the window in the same tick,
+as the example does.
+
+The overlay shows the transforms the entity publishes from the start of the tick you register it in. Until one
+arrives, it shows `no transform`. It shows the newest transform the entity published, without blending between
+simulation steps.
+
+## Hide the overlay
+
+The overlay is the `debug-overlay` render pass. Set `render.pass.debug-overlay` to `bypassed` to hide it and to
+`enabled` to show it again, as you would any other render pass.
+
+## API reference
+
+- [`setup_debug_overlay_render_pass`](/docs/api/latest/byte_engine/application/graphics#fn.setup_debug_overlay_render_pass)

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `setup_debug_overlay_render_pass(app, handle)` prints an entity's position, orientation, and scale in the window's top-left corner and updates them as the entity moves. The overlay draws with the UI, so register it last to keep the text unchanged by grading and film grain. It shows the newest transform the entity published from the tick the pass was registered in, and `no transform` until one arrives. Use `render.pass.debug-overlay` to hide it. The model viewer shows its camera's transform this way.
+
 - `--unattended=<frames per second>` runs an application for no one at the desktop, such as an agent driving it through the inspector. Windows open without showing or taking focus, every tick renders every window at that rate whether or not it can be seen, and each tick advances the clock by exactly one frame period, so a run repeats. The rate is required, and `max-frame-rate` and `render-on-demand` are ignored. Wayland windows still show. The `inspector` agent skill starts applications this way.
   - `ghi::window::Features::BACKGROUND` opens a window without showing it or taking focus, and `Renderer::set_unattended` turns the mode on for a renderer.
 

@@ -1,7 +1,10 @@
-// The descriptor set of the SSGI trace: the rays and normals it writes and last frame's radiance, which a hit reads.
+// The descriptor set of the SSGI trace: the rays and normals it writes, last frame's radiance, which a hit reads, and the
+// blue noise that picks each ray.
 
 SsgiTrace: layer {
 	raw_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1034, access: write }>;
 	previous_radiance_map: descriptor<{ type: Texture2D, binding: 1035, access: read }>;
 	normal_output: descriptor<{ type: StorageImage<rg16_snorm>, binding: 1036, access: write }>;
+	// Two channels of tiling blue noise: the ray's direction and its march offset.
+	blue_noise: descriptor<{ type: Texture2D, binding: 1037, access: read }>;
 }

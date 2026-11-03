@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- SSGI picks each pixel's ray direction and march offset from a 64 × 64 blue-noise texture, moved each frame by a point of the R2 sequence, where it used interleaved gradient noise. Neighboring rays take far-apart directions, which its 5 × 5 filter averages. The 8 KiB texture ships inside the binary, and a test regenerates it with the void-and-cluster method. Rebake the engine's assets.
+
 - Breaking: BESL layers and signatures replace layout layers. `Scene: layer { ... }` declares a layer, which holds descriptors, at most one push constant block, and tile targets; its descriptors form one descriptor set named by the layer's path. A shader takes the layers it uses as parameters of `main`, which decide its sets and their order, and reaches their members through them, as `scene.meshes`. `Name: fn (scene: Scene) -> void;` declares a signature, `A + B` combines two, and `main: Name { ... }` implements one. A helper that reads a layer takes it as a parameter; generated code drops layer parameters, so the platform shaders are unchanged. The interface reference specifies the rules under Layers and signatures.
   - The `.besl.bead` `layouts` key, `besl::stack_layers`, and `resource_management::shader::besl::evaluation::reflect_layers` are gone. Declare a shared layer in a module and reach it with a path from the asset root, such as `use ::byte_engine::rendering::visibility::layouts::scene::*;`.
   - The engine's asset prefix is `byte_engine/`, so module paths can name it: link the engine's assets as `assets/byte_engine`, and rename `byte-engine/` asset IDs and `$schema` paths. Layer files and the `depth-of-field` and `film-grain` directories take snake_case names.

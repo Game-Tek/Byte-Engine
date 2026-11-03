@@ -19,6 +19,7 @@ use utils::Extent;
 
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::{ComputeStage, Pipelines, SinkHistory};
+use crate::rendering::lookup_textures::{blue_noise_offset, create_blue_noise_texture};
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink};
 
@@ -99,13 +100,12 @@ struct SsgiShaderParameters {
 	current_view_to_previous_clip: ghi::pod::Mat4f,
 	/// Rotates current view-space normals into the previous camera's axes (multiply with w = 0).
 	current_view_to_previous_view: ghi::pod::Mat4f,
-	/// Animates the interleaved gradient noise so each frame traces different directions.
-	frame_index: u32,
+	/// Animates the trace's blue noise so each frame traces different directions; see [`blue_noise_offset`].
+	noise_offset: [f32; 2],
 	/// Nonzero when the previous frame's radiance, SSGI history, and depth pyramid hold this sink's data.
 	history_valid: u32,
 	/// Converts the previous frame's pre-exposed radiance to this frame's exposure.
 	history_exposure_ratio: f32,
-	_padding: u32,
 }
 
 /// The `SsgiPass` struct adds bounce light from visible geometry to the diffuse ambient term of opaque surfaces.
@@ -150,6 +150,7 @@ impl SsgiPass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
+		let blue_noise = create_blue_noise_texture(context);
 		let SsgiTargets {
 			raw,
 			normals,
@@ -169,6 +170,7 @@ impl SsgiPass {
 			trace.image("normal_output", normals),
 			// Point sampling keeps a hit's light from blending with the background next to the hit object.
 			trace.sampled_with_frame("previous_radiance_map", diffuse_radiance_history, point_sampler, -1),
+			trace.sampled("blue_noise", blue_noise, point_sampler),
 			temporal.sampled("raw_radiance", raw, point_sampler),
 			temporal.image("history_output", history),
 			temporal.sampled_with_frame("previous_history", history, point_sampler, -1),
@@ -209,11 +211,9 @@ impl SsgiPass {
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = SsgiShaderParameters {
 			current_view_to_previous_clip: previous_clip.into(),
 			current_view_to_previous_view: previous_view.into(),
-			// Only the low bits animate the noise, so wrapping the frame index is harmless.
-			frame_index: frame.key().frame_index() as u32,
+			noise_offset: blue_noise_offset(frame.key().frame_index()),
 			history_valid: history.is_some() as u32,
 			history_exposure_ratio,
-			_padding: 0,
 		};
 		frame.sync_buffer(self.parameters);
 

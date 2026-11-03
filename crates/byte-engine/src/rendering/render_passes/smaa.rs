@@ -1,12 +1,10 @@
 use std::io::Read as _;
 
-use ghi::{
-	command_buffer::CommonCommandBufferMode as _,
-	context::{Context as _, ContextCreate as _},
-};
+use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _};
 
 use crate::rendering::{
 	RenderPass, Sink,
+	lookup_textures::create_lookup_texture,
 	render_pass::{RenderPassBuilder, RenderPassReturn, simple_tile},
 };
 
@@ -37,26 +35,6 @@ fn decode_lookup_texture(encoded: &str, expected_byte_count: usize, name: &str) 
 		"Invalid SMAA {name} size. The most likely cause is a LUT that does not match the reference texture dimensions."
 	);
 	pixels
-}
-
-/// Creates and uploads one immutable reference LUT.
-fn create_lookup_texture(
-	context: &mut ghi::implementation::Context,
-	name: &str,
-	format: ghi::Formats,
-	extent: utils::Extent,
-	pixels: &[u8],
-) -> ghi::ImageHandle {
-	let image = context.build_image(
-		ghi::image::Builder::new(format, ghi::Uses::Image | ghi::Uses::TransferDestination)
-			.name(name)
-			.extent(extent)
-			.device_accesses(ghi::DeviceAccesses::HostToDevice)
-			.use_case(ghi::UseCases::STATIC),
-	);
-	context.get_texture_slice_mut(image).copy_from_slice(pixels);
-	context.sync_texture(image);
-	image
 }
 
 /// The `SmaaPass` struct provides complete spatial SMAA 1x for one render sink.

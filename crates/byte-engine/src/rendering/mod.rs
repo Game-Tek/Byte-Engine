@@ -19,6 +19,7 @@ pub mod common_shader_generator;
 
 mod environment;
 mod fog;
+pub(crate) mod lookup_textures;
 
 /// Retained wireframe geometry for renderer and gameplay diagnostics.
 pub mod debug;

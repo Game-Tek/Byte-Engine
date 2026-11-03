@@ -206,8 +206,8 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
   clock by exactly one frame period, so tick N shows the same simulated time in every run. The forced-frame notes
   below were measured on attended runs, before the flag existed; recheck them before relying on them unattended.
 
-- Presented frames never match bit for bit, even between two runs of one build. SSGI's noise scrolls with
-  `frame_index % 64`, and its float16 history depends on every earlier frame. Compare per-channel means of raw
+- Presented frames never match bit for bit, even between two runs of one build. SSGI's blue noise moves by a
+  per-frame R2 offset, and its float16 history depends on every earlier frame. Compare per-channel means of raw
   captures instead; two runs of one build agree within about 0.03 %. At a pinned look the final image was
   deterministic run to run within one build, so 8-bit captures of two variants compare directly.
 - `format=raw` without a target returns the final BGRAu8 image, not RGBA16F. Add `&target=Lit` for the HDR target.

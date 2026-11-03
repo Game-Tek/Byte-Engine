@@ -57,11 +57,15 @@ SSGI_TRACE_WORKGROUP_SIZE: const u32 = 64;
 SSGI_TRACE_TILE_WIDTH: const u32 = 12;
 SSGI_TRACE_TILE_SIZE: const u32 = 144;
 
-// Converts scalar animated IGN to a uniform 32x32 Hilbert grid. Using a space-filling curve gives the
-// hemisphere two distinct coordinates while retaining IGN's stratification and 64-frame scrolling.
+// The side of the tiling blue-noise texture, `BLUE_NOISE_SIDE` in `lookup_textures.rs`.
+SSGI_BLUE_NOISE_SIDE: const u32 = 64;
+
+// Maps a value in [0, 1) to the center of a cell of a 32x32 grid along a Hilbert curve. The curve keeps close values in
+// close cells, so values spread evenly over [0, 1) also spread evenly over the square, and the hemisphere gets two
+// coordinates from one channel of noise.
 // See https://blog.demofox.org/2022/01/01/interleaved-gradient-noise-a-different-kind-of-low-discrepancy-sequence/.
-interleaved_gradient_noise_2d: fn (pixel: vec2f) -> vec2f {
-	let index: u32 = u32(interleaved_gradient_noise(pixel) * 1024.0);
+hilbert_square: fn (value: f32) -> vec2f {
+	let index: u32 = u32(value * 1024.0);
 	let coordinate: vec2u = vec2u(0, 0);
 	for (let scale: u32 = 1; scale < 32; scale = scale * 2) {
 		let rx: u32 = (index / 2) % 2;
@@ -319,11 +323,13 @@ main: fn (input: StageInput, screen_trace: ScreenTrace, ssgi_set: Ssgi, ssgi_tra
 		return;
 	}
 
-	// Jimenez's diagonal scrolling animates IGN; Hilbert conversion supplies the two hemisphere coordinates.
-	let frame_offset: f32 = f32(ssgi_set.ssgi_parameters.frame_index % 64) * 5.588238;
-	let noise_pixel: vec2f = pixel_f + vec2f(frame_offset, frame_offset);
-	let hemisphere_sample: vec2f = interleaved_gradient_noise_2d(noise_pixel);
-	let jitter: f32 = interleaved_gradient_noise(vec2f(noise_pixel.x + noise_pixel.y, noise_pixel.x * 2.0 + 17.0));
+	// Tiling blue noise gives neighboring rays far-apart directions and march offsets, which the 5x5 filter averages, and
+	// this frame's offset walks each texel along a low-discrepancy sequence. Bytes read back as k / 255; rescaling them
+	// to (k + 0.5) / 256 keeps 255 from wrapping onto 0.
+	let noise: vec4f = fetch(ssgi_trace.blue_noise, vec2u(pixel.x % SSGI_BLUE_NOISE_SIDE, pixel.y % SSGI_BLUE_NOISE_SIDE));
+	let offset: vec2f = ssgi_set.ssgi_parameters.noise_offset;
+	let hemisphere_sample: vec2f = hilbert_square(fract(noise.x * 0.99609375 + 0.001953125 + offset.x));
+	let jitter: f32 = fract(noise.y * 0.99609375 + 0.001953125 + offset.y);
 	let direction: vec3f = cosine_hemisphere_direction(normal, hemisphere_sample.x, hemisphere_sample.y);
 
 	let origin: vec3f = center_position + normal * (center_z * SSGI_ORIGIN_BIAS_SCALE);

@@ -1990,13 +1990,27 @@ fn ssgi_parameters(program: &ExecutableProgram, previous_clip: Option<maths_rs::
 			"current_view_to_previous_view",
 			Value::Mat4F(column_major(maths_rs::Mat4f::identity())),
 		),
-		("frame_index", Value::U32(frame_index)),
+		(
+			"noise_offset",
+			Value::Vec2F(crate::rendering::lookup_textures::blue_noise_offset(u64::from(frame_index))),
+		),
 		("history_valid", Value::U32(previous_clip.is_some() as u32)),
 		("history_exposure_ratio", Value::F32(1.0)),
 	] {
 		parameters.write(member, value).expect("SSGI parameters");
 	}
 	parameters
+}
+
+/// Returns the engine's blue noise as the RG8 texture the SSGI trace reads, each byte `k` as `k / 255`.
+fn ssgi_blue_noise() -> Texture {
+	use crate::rendering::lookup_textures::{BLUE_NOISE, BLUE_NOISE_SIDE};
+
+	let texels: Vec<[f32; 4]> = BLUE_NOISE
+		.chunks_exact(2)
+		.map(|texel| [texel[0] as f32 / 255.0, texel[1] as f32 / 255.0, 0.0, 1.0])
+		.collect();
+	texture_2d(BLUE_NOISE_SIDE, BLUE_NOISE_SIDE, &texels)
 }
 
 /// Returns the view-space ray `(x / z, y / z)` through the center of pixel `(x, y)` of a square fixture image
@@ -2069,6 +2083,7 @@ fn run_ssgi_trace_outputs(
 		.unwrap();
 	let mut depth_pyramid = texture_2d(extent, extent, depth);
 	let mut previous_lit = texture_2d(extent * 2, extent * 2, radiance);
+	let mut blue_noise = ssgi_blue_noise();
 	let mut output = empty_image(extent, extent);
 	let mut normals = empty_image(extent, extent);
 	let mut workgroups: Vec<[u32; 2]> = pixels
@@ -2085,6 +2100,7 @@ fn run_ssgi_trace_outputs(
 		descriptors.bind_image(ResourceSlot::new(1034), &mut output);
 		descriptors.bind_texture(ResourceSlot::new(1035), &mut previous_lit);
 		descriptors.bind_image(ResourceSlot::new(1036), &mut normals);
+		descriptors.bind_texture(ResourceSlot::new(1037), &mut blue_noise);
 		run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, workgroup_base);
 	}
 	pixels
@@ -3833,16 +3849,20 @@ fn gtao_depth_pyramid_includes_last_row_and_column_at_odd_extents() {
 	}
 }
 
-/// Hemisphere samples must cover distinct azimuth/elevation combinations even on diagonal pixels.
+/// A pixel's hemisphere samples over 64 frames, from the trace's blue noise and its per-frame offset, must cover every
+/// quadrant of the sample square, so its rays take distinct azimuth and elevation combinations.
 #[test]
-fn ssgi_animated_ign_covers_two_dimensional_hemisphere_samples() {
+fn ssgi_animated_blue_noise_covers_two_dimensional_hemisphere_samples() {
+	use crate::rendering::lookup_textures::{BLUE_NOISE, BLUE_NOISE_SIDE, blue_noise_offset};
+
+	// The thread index carries the noise value the trace computes for one pixel and frame, in steps of 2^-20.
+	const VALUE_STEPS: f32 = 1048576.0;
 	let source = asset_source!("ssgi-trace.besl").split("main: fn").next().unwrap();
 	let program = compile(asset_program(&format!(
 		"{source}
 probe_output: descriptor<{{ type: StorageImage<rgba16f>, binding: 2000, access: write }}>;
 main: fn (input: StageInput) -> void {{
-	let offset: f32 = f32(input.thread_idx % 64) * 5.588238;
-	let sample: vec2f = interleaved_gradient_noise_2d(vec2f(f32(input.thread_id.x) + offset, f32(input.thread_id.y) + offset));
+	let sample: vec2f = hilbert_square(f32(input.thread_idx) / {VALUE_STEPS:?});
 	write(probe_output, input.thread_id, vec4f(sample.x, sample.y, 0.0, 1.0));
 }}
 "
@@ -3851,11 +3871,17 @@ main: fn (input: StageInput) -> void {{
 	for pixel in [[16, 16], [16, 22], [8, 24]] {
 		let mut quadrant_counts = [0; 4];
 		let mut moments = [0.0; 3];
+		let texel = (pixel[1] % BLUE_NOISE_SIDE * BLUE_NOISE_SIDE + pixel[0] % BLUE_NOISE_SIDE) as usize;
 		for frame in 0..64 {
+			// The trace's rescaled direction channel plus this frame's offset, modulo one.
+			let value = ((BLUE_NOISE[texel * 2] as f32 + 0.5) / 256.0 + blue_noise_offset(frame)[0]).fract();
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_image(ResourceSlot::new(2000), &mut output);
 			program
-				.run_main_with_config(&mut descriptors, &lane_config(frame).with_thread_id(pixel))
+				.run_main_with_config(
+					&mut descriptors,
+					&lane_config((value * VALUE_STEPS) as u32).with_thread_id(pixel),
+				)
 				.unwrap();
 			drop(descriptors);
 			let sample = rgba(&output, pixel);

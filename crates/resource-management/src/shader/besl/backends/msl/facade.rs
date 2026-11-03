@@ -82,10 +82,6 @@ pub(crate) const TILE_BLOCK_TYPE: &str = "imageblock<_besl_tile_outputs, imagebl
 /// The Metal GHI backend binds each set's argument buffer at the same indices.
 pub(crate) const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
 
-/// The most descriptor sets one shader can take: Metal has 31 buffer indices, and the sets start at
-/// [`ARGUMENT_BUFFER_BINDING_BASE`].
-pub(crate) const MAX_ARGUMENT_SETS: usize = 15;
-
 /// The `SetArgument` struct writes the name of the entry-point parameter that carries one descriptor set, so every
 /// declaration, forwarded argument, and resource reference spells it the same way.
 pub(crate) struct SetArgument(pub(crate) usize);

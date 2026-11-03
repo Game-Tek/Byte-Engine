@@ -93,7 +93,7 @@ impl Device {
 		);
 		self.transition_tracked_image(&command_list, source_image, &source_resource, TextureBarrierState::COMMON);
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.counters.texture_copy_count += 1;
+		self.native_counters.texture_copy_count += 1;
 	}
 
 	pub(crate) fn rasterize_mesh_to_image(

@@ -3,14 +3,24 @@
 
 pub(super) const GPU_IBL_GLSL: &str = r#"#version 460
 #pragma shader_stage(compute)
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_samplerless_texture_functions : require
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) uniform sampler2D source_atlas;
-layout(rgba16f, set = 0, binding = 1) uniform writeonly image2D output_atlas;
+// The pipeline index of the shader's set 0, which the backend specializes.
+layout(constant_id = 1984) const uint SET0 = 0u;
 
+// The source atlas is the set's first descriptor and the output atlas its second. The kernel only fetches texels, so
+// it reads the source texture without its sampler.
+layout(descriptor_heap, descriptor_stride = 64) uniform texture2D source_atlases[];
+layout(descriptor_heap, descriptor_stride = 64, rgba16f) uniform writeonly image2D output_atlases[];
+
+// Each set's resource and sampler heap base indices come before the push constants.
 layout(push_constant) uniform PushConstants {
-	uint source_width;
+	uvec2 sets[15];
+	layout(offset = 128) uint source_width;
 	uint source_height;
 	uint source_level_count;
 	uint output_face_size;
@@ -107,17 +117,18 @@ vec3 sample_lat_long_level(uint level, vec2 uv) {
 	uint y1 = min(y0 + 1u, level_height - 1u);
 	float y_fraction = source_y - float(y0);
 
-	vec3 top_left = texelFetch(source_atlas, ivec2(x0, level_y_offset + y0), 0).rgb;
+	uint source_atlas = push_constants.sets[SET0].x;
+	vec3 top_left = texelFetch(source_atlases[source_atlas], ivec2(x0, level_y_offset + y0), 0).rgb;
 	vec3 top = x0 == x1
 		? top_left
-		: lerp_radiance(top_left, texelFetch(source_atlas, ivec2(x1, level_y_offset + y0), 0).rgb, x_fraction);
+		: lerp_radiance(top_left, texelFetch(source_atlases[source_atlas], ivec2(x1, level_y_offset + y0), 0).rgb, x_fraction);
 	if (y0 == y1) {
 		return top;
 	}
-	vec3 bottom_left = texelFetch(source_atlas, ivec2(x0, level_y_offset + y1), 0).rgb;
+	vec3 bottom_left = texelFetch(source_atlases[source_atlas], ivec2(x0, level_y_offset + y1), 0).rgb;
 	vec3 bottom = x0 == x1
 		? bottom_left
-		: lerp_radiance(bottom_left, texelFetch(source_atlas, ivec2(x1, level_y_offset + y1), 0).rgb, x_fraction);
+		: lerp_radiance(bottom_left, texelFetch(source_atlases[source_atlas], ivec2(x1, level_y_offset + y1), 0).rgb, x_fraction);
 	return lerp_radiance(top, bottom, y_fraction);
 }
 
@@ -262,7 +273,7 @@ void generate_environment_map() {
 		x,
 		push_constants.output_y_offset + face * push_constants.output_face_size + y
 	);
-	imageStore(output_atlas, output_coordinate, vec4(sanitize_radiance(radiance), 1.0));
+	imageStore(output_atlases[push_constants.sets[SET0].x + 1u], output_coordinate, vec4(sanitize_radiance(radiance), 1.0));
 }
 
 void main() {
@@ -564,9 +575,13 @@ kernel void generate_environment_map(
 }
 "#;
 
-pub(super) const GPU_IBL_HLSL: &str = r#"Texture2D<float4> source_atlas : register(t0, space0);
-SamplerState source_atlas_sampler : register(s0, space0);
-RWTexture2D<float4> output_atlas : register(u1, space0);
+pub(super) const GPU_IBL_HLSL: &str = r#"// Set 0 keeps its resource base index in the first component.
+cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; };
+
+// The source atlas is the set's first descriptor and the output atlas its second. The kernel only loads texels, so it
+// reads the source texture without its sampler.
+static Texture2D<float4> source_atlas = ResourceDescriptorHeap[_besl_sets[0].x];
+static RWTexture2D<float4> output_atlas = ResourceDescriptorHeap[_besl_sets[0].x + 1u];
 
 struct PushConstants {
 	uint source_width;

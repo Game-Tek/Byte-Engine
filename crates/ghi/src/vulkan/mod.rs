@@ -165,10 +165,9 @@ pub(crate) struct Shader {
 	/// `None` without a pipeline cache or without `VK_EXT_shader_module_identifier`.
 	identifier: Option<pipeline_binaries::Key>,
 	stage: crate::Stages,
-	/// The resources the shader uses, across its sets, as one list ordered by slot.
-	shader_resource_descriptors: Vec<crate::shader::ShaderResourceDescriptor>,
-	/// The sets the shader declares, in the order its source declares them. Ray tracing pipelines reserve every
-	/// resource of the ray generation shader's sets, and check that each closest hit declares a prefix of them.
+	/// The sets the shader declares, in the order its source declares them: set `s` reads its pipeline index from
+	/// specialization constant [`SET_SPECIALIZATION_BASE`] `+ s`. Ray tracing pipelines check that each closest hit
+	/// declares a prefix of the ray generation shader's sets.
 	descriptor_sets: Box<[crate::shader::ShaderDescriptorSet]>,
 }
 
@@ -246,8 +245,6 @@ impl Shader {
 			code,
 			identifier,
 			stage: stage.into(),
-			// This backend still derives its native layouts from flat slots.
-			shader_resource_descriptors: crate::shader::flatten_used_resources(descriptor_sets.iter().cloned()),
 			descriptor_sets,
 		})
 	}
@@ -255,7 +252,7 @@ impl Shader {
 
 pub(crate) struct Pipeline {
 	pipeline: vk::Pipeline,
-	layout: graphics_hardware_interface::PipelineLayoutHandle,
+	layout: PipelineLayout,
 	/// What traces need of a ray tracing pipeline, and `None` for other pipelines.
 	ray_tracing: Option<Box<ray_tracing::RayTracingPipelineState>>,
 }
@@ -272,14 +269,21 @@ pub(crate) struct MappedMemoryPointer(pub(crate) *mut u8);
 // all accesses, including accesses through copied addresses and GPU commands.
 unsafe impl Send for MappedMemoryPointer {}
 
-/// The `DescriptorHeapArena` struct owns one long-lived mapped Vulkan descriptor heap.
+/// The `DescriptorHeapArena` struct owns one long-lived mapped Vulkan descriptor heap, which descriptor sets take
+/// ranges of.
+///
+/// It counts in descriptors of `unit` bytes, so a range's start is the heap index shaders add their offsets to. The
+/// implementation's reserved range sits after every index the arena hands out.
 pub(crate) struct DescriptorHeapArena {
 	buffer: vk::Buffer,
 	pointer: crate::vulkan::MappedMemoryPointer,
 	device_address: vk::DeviceAddress,
 	size: u64,
+	/// The bytes of one descriptor, the arena's unit.
+	unit: u64,
+	reserved_offset: u64,
 	reserved_size: u64,
-	/// The bytes descriptor snapshots can take. The heap size fits in `usize` because the heap is mapped.
+	/// The descriptors sets can take. The heap size fits in `usize` because the heap is mapped.
 	free: ::utils::RangeAllocator,
 }
 
@@ -290,22 +294,24 @@ pub(crate) struct DescriptorHeaps {
 }
 
 impl DescriptorHeapArena {
-	/// Reserves immutable heap bytes so descriptors referenced by in-flight command buffers are never overwritten.
-	pub(crate) fn allocate(&mut self, size: u32, alignment: u64) -> u32 {
-		let range = self.free.take(size as usize, alignment as usize).expect(
-			"Vulkan descriptor heap is exhausted. The most likely cause is that live immutable descriptor snapshots exceed the long-lived heap capacity.",
+	/// Takes `count` consecutive descriptors and returns the heap index of the first.
+	pub(crate) fn allocate(&mut self, count: u32) -> u32 {
+		let range = self.free.take(count as usize, 1).expect(
+			"Vulkan descriptor heap is exhausted. The most likely cause is that the live descriptor sets and their frame-local copies hold more descriptors than the heap. Create fewer sets, or sets with smaller arrays.",
 		);
-		// The heap is at most `u32::MAX` bytes, which `Context::create_descriptor_heap_arena` asserts.
+		// The heap holds at most `u32::MAX` bytes, which `Context::create_descriptor_heap_arena` asserts.
 		range.start as u32
 	}
 
-	/// Returns a retired immutable snapshot range to the arena after its frame fence completes.
-	pub(crate) fn release(&mut self, offset: u32, size: u32) {
-		self.free.give_back(offset as usize..offset as usize + size as usize);
+	/// Returns `count` descriptors that [`Self::allocate`] handed out at `index`.
+	pub(crate) fn release(&mut self, index: u32, count: u32) {
+		self.free.give_back(index as usize..index as usize + count as usize);
 	}
 
-	pub(crate) fn host_range(&self, offset: u32, size: u64) -> vk::HostAddressRangeEXT<'_> {
-		assert!(offset as u64 + size <= self.size);
+	/// Returns the host memory of descriptor `index`, `size` bytes long.
+	pub(crate) fn host_range(&self, index: u32, size: u64) -> vk::HostAddressRangeEXT<'_> {
+		let offset = u64::from(index) * self.unit;
+		assert!(offset + size <= self.reserved_offset);
 		let size = usize::try_from(size).expect(
 			"Vulkan descriptor range exceeds addressable host memory. The most likely cause is an invalid descriptor size.",
 		);
@@ -322,43 +328,9 @@ impl DescriptorHeapArena {
 					.address(self.device_address)
 					.size(self.size),
 			)
-			.reserved_range_offset(0)
+			.reserved_range_offset(self.reserved_offset)
 			.reserved_range_size(self.reserved_size)
 	}
-}
-
-crate::handle::index_handle! {
-	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-	pub(crate) struct DescriptorMaterializationHandle;
-}
-
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub(crate) struct MaterializationKey {
-	layout: graphics_hardware_interface::PipelineLayoutHandle,
-	descriptor_sets: smallvec::SmallVec<[(graphics_hardware_interface::DescriptorSetHandle, u64, u64); 4]>,
-	sequence_index: u8,
-	resource_epochs: smallvec::SmallVec<[(u8, u64); MAX_FRAMES_IN_FLIGHT]>,
-	swapchain_images: smallvec::SmallVec<[(graphics_hardware_interface::SwapchainHandle, u8); 4]>,
-}
-
-/// The `ResolvedPipelineDescriptor` struct retains a resource that one immutable descriptor snapshot makes commands
-/// access, decoded once, so every draw that binds the snapshot consumes it as it is.
-#[derive(Clone, Copy)]
-pub(crate) struct ResolvedPipelineDescriptor {
-	handle: Handles,
-	/// The layout an image is accessed in, and [`crate::Layouts::General`] for other resources.
-	layout: crate::Layouts,
-	stages: crate::Stages,
-	access: crate::AccessPolicies,
-}
-
-/// The `DescriptorMaterialization` struct retains one immutable union of logical descriptor sets in the global heaps.
-pub(crate) struct DescriptorMaterialization {
-	resource_heap_offset: u32,
-	resource_heap_size: u32,
-	sampler_heap_offset: u32,
-	sampler_heap_size: u32,
-	resources: smallvec::SmallVec<[ResolvedPipelineDescriptor; 128]>,
 }
 
 /// The `Sampler` struct retains the create parameters needed to write sampler descriptors directly into the sampler heap.
@@ -375,7 +347,7 @@ pub(crate) struct Sampler {
 }
 
 impl Sampler {
-	/// Builds the sampler a pipeline embeds for a shader's fixed sampler. It reads every level of the image.
+	/// Builds the sampler the sampler heap holds for a shader's fixed sampler. It reads every level of the image.
 	pub(crate) fn fixed(sampler: crate::sampler::StaticSampler) -> Self {
 		let filter = utils::filter(sampler.filtering_mode);
 		Self {
@@ -583,10 +555,13 @@ pub(crate) enum Tasks {
 		/// The new layer count, or `None` to keep the image's current one.
 		array_layers: Option<std::num::NonZeroU32>,
 	},
-	/// Refreshes the frame-local descriptor snapshot after deferred backing resources are ready.
-	UpdateDescriptor {
-		descriptor_write: crate::descriptors::DescriptorWrite,
-		expected_set_version: u64,
+	/// Returns a descriptor set copy's heap ranges once the frame recorded in [`Task`] has completed: `count`
+	/// descriptors at each `index`.
+	FreeDescriptorRanges {
+		resource_index: u32,
+		resource_count: u32,
+		sampler_index: u32,
+		sampler_count: u32,
 	},
 }
 

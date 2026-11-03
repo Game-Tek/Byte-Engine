@@ -83,10 +83,11 @@ crate::handle::index_handle! {
 
 /// The `StaticSampler` struct describes a sampler a shader fixes, so the application binds only the image it samples.
 ///
-/// A shader declares one for a texture through a BESL `sampler` declaration. Attach it to the texture's
-/// [`crate::ShaderResourceDescriptor`] with [`crate::ShaderResourceDescriptor::static_sampler`], and each backend
-/// builds it into the pipeline: Vulkan embeds it in the descriptor mapping, DX12 adds it to the root signature, and
-/// Metal compiles it into the shader. It reads every level of the image, so it has no level-of-detail clamp.
+/// A shader declares one for a texture through a BESL `sampler` declaration, and the set holds only the image. Metal
+/// compiles the sampler into the shader. Vulkan and DX12 write every fixed sampler once, at the start of the sampler
+/// heap, and shaders read it at the index its state decides, as the
+/// [fixed sampler table](/docs/reference/ghi#descriptor-sets) specifies. It reads every level of the image, so it has
+/// no level-of-detail clamp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StaticSampler {
 	pub filtering_mode: FilteringModes,

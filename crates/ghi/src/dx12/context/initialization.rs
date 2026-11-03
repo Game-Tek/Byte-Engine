@@ -222,6 +222,7 @@ impl Device {
 			D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
 		]
 		.map(|heap_type| unsafe { device.GetDescriptorHandleIncrementSize(heap_type) });
+		let shader_visible_heaps = Self::create_shader_visible_heaps(&device);
 		Self {
 			device,
 			device_configuration,
@@ -248,9 +249,9 @@ impl Device {
 			image_group_heaps: Vec::new(),
 			samplers: Vec::new(),
 			descriptor_sets: Vec::new(),
-			descriptor_materializations: HashMap::default(),
+			shader_visible_heaps,
 			pipeline_layouts: Vec::new(),
-			pipeline_layout_indices: HashMap::default(),
+			root_signatures: HashMap::default(),
 			pipelines: Vec::new(),
 			indirect_dispatch_signature: None,
 			indirect_draw_signature: None,
@@ -275,7 +276,7 @@ impl Device {
 			free_clear_uav_descriptor_slots: Vec::new(),
 			buffer_states: HashMap::default(),
 			image_states: HashMap::default(),
-			counters: Dx12Counters::default(),
+			native_counters: Dx12Counters::default(),
 		}
 	}
 
@@ -527,7 +528,8 @@ impl Device {
 				frame_resources.resize_with(frames as usize, || None);
 			}
 		}
-		self.invalidate_descriptor_materializations();
+		// Frame offsets resolve to other sequences under the new count, so every descriptor is written again.
+		self.mark_stale_descriptors(|_| true);
 	}
 
 	pub fn create_allocation(
@@ -581,7 +583,7 @@ impl Device {
 		name: Option<&str>,
 		shader_source_type: Sources,
 		stage: ShaderTypes,
-		shader_resource_descriptors: impl IntoIterator<Item = ShaderResourceDescriptor>,
+		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<ShaderHandle, ()> {
 		let (spirv, dxil, hlsl) = match shader_source_type {
 			Sources::SPIRV(bytes) => (Some(bytes.into_owned()), None, None),
@@ -599,17 +601,12 @@ impl Device {
 			Sources::MTL { .. } | Sources::MTLB { .. } => return Err(()),
 		};
 
-		let mut resources = shader_resource_descriptors.into_iter().collect::<Vec<_>>();
-		if let Some(hlsl) = hlsl.as_ref() {
-			Self::apply_hlsl_structured_buffer_strides(&mut resources, &hlsl.source);
-		}
-
 		self.shaders.push(Shader {
 			stage,
 			spirv,
 			dxil,
 			hlsl,
-			resources,
+			descriptor_sets: descriptor_sets.into_iter().collect(),
 		});
 
 		// DX12 consumes native bytecode for PSO creation, while SPIR-V is retained as portable metadata.

@@ -17,30 +17,30 @@ impl Device {
 	}
 
 	pub(crate) fn debug_region_begin_count(&self) -> usize {
-		self.counters.debug_region_begin_count.get()
+		self.native_counters.debug_region_begin_count.get()
 	}
 
 	pub(crate) fn debug_region_end_count(&self) -> usize {
-		self.counters.debug_region_end_count.get()
+		self.native_counters.debug_region_end_count.get()
 	}
 
 	pub(crate) fn texture_copy_count(&self) -> usize {
-		self.counters.texture_copy_count
+		self.native_counters.texture_copy_count
 	}
 
 	pub(crate) fn buffer_copy_count(&self) -> usize {
-		self.counters.buffer_copy_count
+		self.native_counters.buffer_copy_count
 	}
 
 	pub(crate) fn buffer_clear_count(&self) -> usize {
-		self.counters.buffer_clear_count
+		self.native_counters.buffer_clear_count
 	}
 
 	pub(crate) fn native_command_list_execute_count(&self) -> usize {
-		self.counters.native_command_list_execute_count
+		self.native_counters.native_command_list_execute_count
 	}
 
 	pub(crate) fn empty_command_list_skip_count(&self) -> usize {
-		self.counters.empty_command_list_skip_count
+		self.native_counters.empty_command_list_skip_count
 	}
 }

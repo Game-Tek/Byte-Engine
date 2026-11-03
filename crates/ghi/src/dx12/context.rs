@@ -27,9 +27,11 @@ pub struct Device {
 	images: Vec<Image>,
 	samplers: Vec<Sampler>,
 	descriptor_sets: Vec<DescriptorSet>,
-	descriptor_materializations: HashMap<DescriptorMaterializationKey, DescriptorMaterialization>,
+	/// The resource and sampler heaps shaders index directly. Every command list binds them once, when it opens.
+	shader_visible_heaps: ShaderVisibleHeaps,
 	pipeline_layouts: Vec<NativePipelineLayout>,
-	pipeline_layout_indices: HashMap<PipelineLayout, PipelineLayoutHandle>,
+	/// Root signatures by shape, so pipelines whose stages read the same number of sets share one.
+	root_signatures: HashMap<RootSignatureKey, ID3D12RootSignature>,
 	pub(crate) pipelines: Vec<Pipeline>,
 	indirect_dispatch_signature: Option<ID3D12CommandSignature>,
 	indirect_draw_signature: Option<ID3D12CommandSignature>,
@@ -69,7 +71,7 @@ pub struct Device {
 	/// The heaps backing each image group's members, indexed by group.
 	image_group_heaps: Vec<SmallVec<[ID3D12Heap; 2]>>,
 	/// Command and resource counts that tests and diagnostics read.
-	counters: Dx12Counters,
+	native_counters: Dx12Counters,
 }
 
 /// The `Dx12Counters` struct records how often the backend encodes or creates each kind of native object, so tests
@@ -86,9 +88,9 @@ struct Dx12Counters {
 	empty_command_list_skip_count: usize,
 	root_signature_bind_count: usize,
 	descriptor_heap_bind_count: usize,
-	descriptor_table_bind_count: usize,
+	set_base_write_count: usize,
 	#[cfg(test)]
-	descriptor_table_bind_records: Vec<DescriptorTableBindRecord>,
+	set_base_write_records: Vec<SetBaseWriteRecord>,
 	push_constant_write_count: usize,
 	#[cfg(test)]
 	push_constant_write_records: Vec<PushConstantWriteRecord>,
@@ -166,8 +168,8 @@ impl Device {
 		retain_field!(images);
 		retain_field!(samplers);
 		retain_field!(descriptor_sets);
-		retain_field!(descriptor_materializations);
 		retain_field!(pipeline_layouts);
+		retain_field!(root_signatures);
 		retain_field!(pipelines);
 		retain_field!(indirect_dispatch_signature);
 		retain_field!(indirect_draw_signature);
@@ -180,6 +182,9 @@ impl Device {
 		retain_field!(depth_stencil_views);
 		retain_field!(retained_clear_uav_descriptors);
 		retain_field!(clear_uav_descriptor_pages);
+		// The heaps have no default, and dropping them would free descriptors queued work still reads.
+		std::mem::forget(self.shader_visible_heaps.resources.native.clone());
+		std::mem::forget(self.shader_visible_heaps.samplers.native.clone());
 
 		let readbacks = std::mem::replace(&mut self.texture_readbacks, crate::context::TextureReadbackRegistry::new());
 		std::mem::forget(readbacks);
@@ -247,6 +252,7 @@ struct CommandBufferFrame {
 	command_list: Option<ID3D12GraphicsCommandList7>,
 	pending_clear_descriptor_copies: Vec<PendingDescriptorCopy>,
 	prepared_clear_descriptors: Vec<PreparedClearDescriptor>,
+	/// The attachment view heaps the recording uses, kept until its submission completes.
 	retained_descriptor_heaps: Vec<ID3D12DescriptorHeap>,
 	retained_resources: Vec<ID3D12Resource>,
 	retained_resource_keys: HashSet<usize>,
@@ -257,10 +263,10 @@ struct CommandBufferFrame {
 	recorded_texture_syncs: Vec<(crate::BaseImageHandle, u8, Option<crate::image::Region>)>,
 	original_buffer_states: SmallVec<[(usize, Option<BufferBarrierState>); 16]>,
 	original_image_states: SmallVec<[(usize, Option<TextureBarrierState>); 16]>,
-	cbv_srv_uav_staging_heap: Option<DescriptorHeapArena>,
-	sampler_staging_heap: Option<DescriptorHeapArena>,
-	bound_cbv_srv_uav_heap: Option<usize>,
-	bound_sampler_heap: Option<usize>,
+	/// The range of the shader-visible resource heap that this frame's UAV clears take their descriptors from.
+	clear_descriptors: Option<DescriptorLease>,
+	/// Clear descriptor ranges outgrown during the recording, given back once its submission completes.
+	retired_clear_descriptors: SmallVec<[std::ops::Range<usize>; 2]>,
 	is_open: bool,
 	recorded_work: bool,
 	sequence_index: u8,
@@ -286,24 +292,24 @@ impl CommandBufferFrame {
 		self.recorded_texture_syncs.clear();
 		self.original_buffer_states.clear();
 		self.original_image_states.clear();
-		self.bound_cbv_srv_uav_heap = None;
-		self.bound_sampler_heap = None;
 	}
 
-	/// Rewinds reusable descriptor arenas without releasing their native heaps.
-	fn rewind_staging_heaps(&mut self) {
-		if let Some(arena) = self.cbv_srv_uav_staging_heap.as_mut() {
-			arena.used = 0;
+	/// Starts the clear descriptor range over and gives back the ranges it outgrew, once no submission reads them.
+	fn rewind_clear_descriptors(&mut self, heaps: &mut ShaderVisibleHeaps) {
+		if let Some(lease) = self.clear_descriptors.as_mut() {
+			lease.used = 0;
 		}
-		if let Some(arena) = self.sampler_staging_heap.as_mut() {
-			arena.used = 0;
+		for range in self.retired_clear_descriptors.drain(..) {
+			heaps.free_resources.give_back(range);
 		}
 	}
 
-	/// Releases descriptor arenas before changing the resource topology.
-	fn release_staging_heaps(&mut self) {
-		self.cbv_srv_uav_staging_heap = None;
-		self.sampler_staging_heap = None;
+	/// Gives back every clear descriptor range before changing the resource topology.
+	fn release_clear_descriptors(&mut self, heaps: &mut ShaderVisibleHeaps) {
+		self.rewind_clear_descriptors(heaps);
+		if let Some(lease) = self.clear_descriptors.take() {
+			heaps.free_resources.give_back(lease.range);
+		}
 	}
 }
 
@@ -533,6 +539,36 @@ struct DescriptorHeap {
 	gpu_start: Option<D3D12_GPU_DESCRIPTOR_HANDLE>,
 }
 
+/// The `ShaderVisibleHeaps` struct owns the two descriptor heaps that shaders index directly, and keeps track of
+/// the ranges of them that descriptor sets and UAV clears lease.
+///
+/// The sampler heap starts with the [`FIXED_SAMPLER_COUNT`] fixed samplers, which shaders index by their state; set
+/// ranges come after them.
+struct ShaderVisibleHeaps {
+	resources: DescriptorHeap,
+	samplers: DescriptorHeap,
+	free_resources: ::utils::RangeAllocator,
+	free_samplers: ::utils::RangeAllocator,
+}
+
+/// How many CBV, SRV, and UAV descriptors the shader-visible resource heap holds, across every descriptor set and
+/// frame copy of the context.
+const RESOURCE_HEAP_CAPACITY: u32 = 1 << 18;
+
+/// How many samplers the shader-visible sampler heap holds, the most a D3D12 shader-visible sampler heap may hold.
+const SAMPLER_HEAP_CAPACITY: u32 = 2048;
+
+/// How many fixed samplers lead the sampler heap: two filters, two mip filters, three reductions, and three address
+/// modes. A fixed sampler's index is `filter + 2 × mip filter + 4 × reduction + 12 × address`.
+const FIXED_SAMPLER_COUNT: u32 = 36;
+
+/// The `DescriptorLease` struct is one range of the shader-visible resource heap that a command-buffer frame fills
+/// from its start, one descriptor at a time.
+struct DescriptorLease {
+	range: std::ops::Range<usize>,
+	used: u32,
+}
+
 /// The `DescriptorHeapArena` struct exists to reuse descriptor slots across command-buffer recordings.
 struct DescriptorHeapArena {
 	heap: DescriptorHeap,
@@ -711,28 +747,25 @@ struct Sampler {
 	max_lod: f32,
 }
 
-/// The `DescriptorSet` struct retains one frame's logical resource writes and native snapshot version.
+/// The `DescriptorSet` struct is one frame's copy of a descriptor set: the retained writes of its layout's
+/// descriptors, and the ranges of the shader-visible heaps that hold their native descriptors.
+///
+/// A shader finds the set through two root constants, its resource and sampler bases, so binding the set writes only
+/// those. A write changes the retained descriptor and queues its element in `stale`; the native descriptor follows at
+/// the copy's next bind, which records for the copy's own frame sequence, so the heap never changes under queued work.
 pub(crate) struct DescriptorSet {
 	pub(crate) next: Option<crate::descriptors::DescriptorSetHandle>,
 	sequence_index: u8,
 	version: u64,
-	descriptors: HashMap<ResourceSlot, HashMap<u32, RetainedDescriptor>>,
-}
-
-/// The `DescriptorMaterializationKey` struct identifies one frame-resolved set union for a pipeline layout.
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct DescriptorMaterializationKey {
-	layout: PipelineLayoutHandle,
-	descriptor_sets: SmallVec<[DescriptorSetHandle; 8]>,
-	sequence_index: u8,
-}
-
-/// The `DescriptorMaterialization` struct retains immutable shader-visible heaps until its logical sets change.
-#[derive(Clone)]
-struct DescriptorMaterialization {
-	versions: SmallVec<[u64; 8]>,
-	cbv_srv_uav_heap: Option<DescriptorHeap>,
-	sampler_heap: Option<DescriptorHeap>,
+	layout: crate::shader::DescriptorSetLayout,
+	/// The heap index of the set's first descriptor; the set holds `layout.element_count()` of them.
+	resource_base: u32,
+	/// The heap index of the set's first application-bound sampler; see [`Device::layout_sampler_count`].
+	sampler_base: u32,
+	/// The retained write of each descriptor, at `layout.element_base(resource) + array_element`.
+	descriptors: Box<[Option<RetainedDescriptor>]>,
+	/// Elements whose native descriptor no longer matches what they reference. Kept between binds for its capacity.
+	stale: Vec<u32>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -741,39 +774,46 @@ struct RetainedDescriptor {
 	frame_offset: i32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct PipelineResource {
-	descriptor: ShaderResourceDescriptor,
-	cbv_srv_uav_offset: Option<u32>,
-	sampler_offset: Option<u32>,
+/// The `PipelineSet` struct is one descriptor set layout a pipeline's stages read, which the bound set created from
+/// the same layout fills.
+struct PipelineSet {
+	layout: crate::shader::DescriptorSetLayout,
+	/// The layout's resources any stage uses, as a mask over [`crate::shader::DescriptorSetLayout::resources`].
+	used: u64,
 }
 
-/// The `PipelineLayout` struct identifies one logical DX12 binding interface for layout interning.
+/// The `StageSets` struct is the root-constant parameter that gives one shader stage the bases of its sets.
+struct StageSets {
+	root_parameter: u32,
+	/// For each set position of the stage's shader, up to the last one it reads, the set's index in
+	/// [`NativePipelineLayout::sets`], or `None` when the stage reads nothing from it.
+	sets: SmallVec<[Option<u8>; 8]>,
+}
+
+/// The `RootSignatureKey` struct is the shape of a root signature, which is all that tells two apart.
 #[derive(Clone, PartialEq, Eq, Hash)]
-struct PipelineLayout {
-	resources: Vec<PipelineResource>,
-	cbv_srv_uav_descriptor_count: u32,
-	sampler_descriptor_count: u32,
-	push_constant_ranges: Vec<PushConstantRange>,
+struct RootSignatureKey {
+	push_constant_dwords: u32,
+	/// The visibility and root-constant count of each stage's set bases, in root parameter order.
+	stages: SmallVec<[(i32, u32); 3]>,
 }
 
-/// The `NativePipelineLayout` struct owns one complete native binding layout for pipeline creation and command encoding.
+/// The `NativePipelineLayout` struct is how one pipeline finds its descriptor sets: its root signature, the set
+/// layouts its stages read, and where each stage's set bases go.
 struct NativePipelineLayout {
-	key: PipelineLayout,
 	root_signature: ID3D12RootSignature,
-	resource_table_root: Option<u32>,
-	sampler_table_root: Option<u32>,
+	sets: SmallVec<[PipelineSet; 4]>,
+	stages: SmallVec<[StageSets; 3]>,
 	push_constant_root: Option<u32>,
+	push_constant_ranges: Box<[PushConstantRange]>,
 }
 
 #[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct DescriptorTableBindRecord {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SetBaseWriteRecord {
 	pub(crate) root_parameter_index: u32,
-	pub(crate) set_index: usize,
-	pub(crate) binding_index: u32,
-	pub(crate) sampler_heap: bool,
-	pub(crate) heap_slot: u32,
+	pub(crate) bases: SmallVec<[u32; 8]>,
+	pub(crate) compute_root: bool,
 }
 
 #[cfg(test)]
@@ -837,7 +877,8 @@ struct Shader {
 	spirv: Option<Vec<u8>>,
 	dxil: Option<Vec<u8>>,
 	hlsl: Option<HlslSource>,
-	resources: Vec<ShaderResourceDescriptor>,
+	/// The sets the shader declares, at the positions its source reads them.
+	descriptor_sets: Box<[crate::shader::ShaderDescriptorSet]>,
 }
 
 #[derive(Clone)]
@@ -1044,23 +1085,14 @@ impl crate::context::ContextCreate for Device {
 		stage: ShaderTypes,
 		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<ShaderHandle, ()> {
-		// This backend still derives its root signature from flat slots, so it reads the sets as one flat interface.
-		Device::create_shader(
-			self,
-			name,
-			shader_source_type,
-			stage,
-			crate::shader::flatten_used_resources(descriptor_sets),
-		)
+		Device::create_shader(self, name, shader_source_type, stage, descriptor_sets)
 	}
-	/// Creates a retained group of flat slots. This backend materializes native descriptors per pipeline, so it does
-	/// not lay the set out from `layout` yet.
 	fn create_descriptor_set(
 		&mut self,
 		name: Option<&str>,
-		_layout: &crate::shader::DescriptorSetLayout,
+		layout: &crate::shader::DescriptorSetLayout,
 	) -> DescriptorSetHandle {
-		Device::create_descriptor_set(self, name)
+		Device::create_descriptor_set(self, name, layout)
 	}
 	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> PipelineHandle {
 		Device::create_raster_pipeline(self, builder)
@@ -1315,10 +1347,7 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_DEPTH_STENCIL_VIEW_DESC, D3D12_DEPTH_STENCIL_VIEW_DESC_0, D3D12_DEPTH_STENCILOP_DESC, D3D12_DEPTH_WRITE_MASK_ALL,
 	D3D12_DEPTH_WRITE_MASK_ZERO, D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
 	D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-	D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE,
-	D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE, D3D12_DESCRIPTOR_RANGE_TYPE, D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
-	D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
-	D3D12_DESCRIPTOR_RANGE1, D3D12_DSV_DIMENSION_TEXTURE2D, D3D12_DSV_DIMENSION_TEXTURE2DARRAY, D3D12_DSV_FLAG_NONE,
+	D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_DSV_DIMENSION_TEXTURE2D, D3D12_DSV_DIMENSION_TEXTURE2DARRAY, D3D12_DSV_FLAG_NONE,
 	D3D12_FEATURE_D3D12_OPTIONS4, D3D12_FEATURE_D3D12_OPTIONS12, D3D12_FEATURE_DATA_D3D12_OPTIONS4,
 	D3D12_FEATURE_DATA_D3D12_OPTIONS12, D3D12_FEATURE_DATA_SHADER_MODEL, D3D12_FEATURE_SHADER_MODEL, D3D12_FENCE_FLAGS,
 	D3D12_FILL_MODE, D3D12_FILL_MODE_SOLID, D3D12_FILL_MODE_WIREFRAME, D3D12_FILTER, D3D12_FILTER_ANISOTROPIC,
@@ -1343,21 +1372,21 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_DIMENSION_TEXTURE3D,
 	D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
 	D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_FLAGS, D3D12_ROOT_CONSTANTS,
-	D3D12_ROOT_DESCRIPTOR_TABLE1, D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-	D3D12_ROOT_PARAMETER1, D3D12_ROOT_PARAMETER1_0, D3D12_ROOT_SIGNATURE_DESC2,
-	D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_RT_FORMAT_ARRAY, D3D12_RTV_DIMENSION_TEXTURE2D,
-	D3D12_RTV_DIMENSION_TEXTURE2DARRAY, D3D12_SAMPLER_DESC, D3D12_SAMPLER_FLAG_NONE, D3D12_SHADER_BYTECODE,
-	D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SHADER_VISIBILITY_ALL,
-	D3D12_SRV_DIMENSION_BUFFER, D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE, D3D12_SRV_DIMENSION_TEXTURE2D,
-	D3D12_SRV_DIMENSION_TEXTURE2DARRAY, D3D12_SRV_DIMENSION_TEXTURE3D, D3D12_SRV_DIMENSION_TEXTURECUBE,
-	D3D12_SRV_DIMENSION_TEXTURECUBEARRAY, D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK, D3D12_STATIC_SAMPLER_DESC1,
-	D3D12_STENCIL_OP_KEEP, D3D12_TEX2D_ARRAY_DSV, D3D12_TEX2D_ARRAY_RTV, D3D12_TEX2D_ARRAY_SRV, D3D12_TEX2D_ARRAY_UAV,
-	D3D12_TEX2D_DSV, D3D12_TEX2D_RTV, D3D12_TEX2D_SRV, D3D12_TEX2D_UAV, D3D12_TEX3D_SRV, D3D12_TEX3D_UAV,
-	D3D12_TEXCUBE_ARRAY_SRV, D3D12_TEXCUBE_SRV, D3D12_TEXTURE_ADDRESS_MODE, D3D12_TEXTURE_ADDRESS_MODE_BORDER,
-	D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_MIRROR, D3D12_TEXTURE_ADDRESS_MODE_WRAP,
-	D3D12_TEXTURE_BARRIER, D3D12_TEXTURE_BARRIER_FLAG_NONE, D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
-	D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-	D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_UAV_DIMENSION_BUFFER, D3D12_UAV_DIMENSION_TEXTURE2D,
+	D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER1, D3D12_ROOT_PARAMETER1_0, D3D12_ROOT_SIGNATURE_DESC2,
+	D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED,
+	D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED, D3D12_RT_FORMAT_ARRAY, D3D12_RTV_DIMENSION_TEXTURE2D,
+	D3D12_RTV_DIMENSION_TEXTURE2DARRAY, D3D12_SAMPLER_DESC, D3D12_SHADER_BYTECODE, D3D12_SHADER_RESOURCE_VIEW_DESC,
+	D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SHADER_VISIBILITY, D3D12_SHADER_VISIBILITY_ALL,
+	D3D12_SHADER_VISIBILITY_AMPLIFICATION, D3D12_SHADER_VISIBILITY_MESH, D3D12_SHADER_VISIBILITY_PIXEL,
+	D3D12_SHADER_VISIBILITY_VERTEX, D3D12_SRV_DIMENSION_BUFFER, D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE,
+	D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_SRV_DIMENSION_TEXTURE2DARRAY, D3D12_SRV_DIMENSION_TEXTURE3D,
+	D3D12_SRV_DIMENSION_TEXTURECUBE, D3D12_SRV_DIMENSION_TEXTURECUBEARRAY, D3D12_STENCIL_OP_KEEP, D3D12_TEX2D_ARRAY_DSV,
+	D3D12_TEX2D_ARRAY_RTV, D3D12_TEX2D_ARRAY_SRV, D3D12_TEX2D_ARRAY_UAV, D3D12_TEX2D_DSV, D3D12_TEX2D_RTV, D3D12_TEX2D_SRV,
+	D3D12_TEX2D_UAV, D3D12_TEX3D_SRV, D3D12_TEX3D_UAV, D3D12_TEXCUBE_ARRAY_SRV, D3D12_TEXCUBE_SRV, D3D12_TEXTURE_ADDRESS_MODE,
+	D3D12_TEXTURE_ADDRESS_MODE_BORDER, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_MIRROR,
+	D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_BARRIER, D3D12_TEXTURE_BARRIER_FLAG_NONE, D3D12_TEXTURE_COPY_LOCATION,
+	D3D12_TEXTURE_COPY_LOCATION_0, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+	D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_UAV_DIMENSION_BUFFER, D3D12_UAV_DIMENSION_TEXTURE2D,
 	D3D12_UAV_DIMENSION_TEXTURE2DARRAY, D3D12_UAV_DIMENSION_TEXTURE3D, D3D12_UNORDERED_ACCESS_VIEW_DESC,
 	D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12_VERSIONED_ROOT_SIGNATURE_DESC, D3D12_VERSIONED_ROOT_SIGNATURE_DESC_0,
 	D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT, D3D12GetInterface, ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue,
@@ -1399,6 +1428,6 @@ use crate::{
 	image,
 	pipelines::{self, PushConstantRange, VertexElement},
 	sampler,
-	shader::{ResourceKind, ResourceSlot, ShaderResourceDescriptor, Sources},
+	shader::{ResourceKind, ShaderResourceDescriptor, Sources},
 	window,
 };

@@ -117,8 +117,9 @@ pub(super) fn compile_shaders_with_model_matrix() -> (CompiledShaderSource, Comp
 
 		layout(location = 0) out vec4 out_color;
 
+		// Push constants start after the 128 bytes of descriptor set base indices.
 		layout(push_constant) uniform ModelMatrix {
-			mat4 model_matrix;
+			layout(offset = 128) mat4 model_matrix;
 		} push_constants;
 
 		void main() {

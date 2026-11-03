@@ -158,8 +158,12 @@ outputs into a set of its own.
 
 Every consumer reads the placement instead of regrouping the program:
 reflection orders `SetUsage` by it, the MSL generator binds set `n` at buffer
-`16 + n`, and the VM keys resources by `ResourceSlot { set, slot }`, where
-`slot` is the `resource` offset.
+`16 + n`, the GLSL and HLSL generators index the descriptor heaps at set `n`'s
+base plus the `resource` or `sampler` offset, and the VM keys resources by
+`ResourceSlot { set, slot }`, where `slot` is the `resource` offset. A shader
+reads at most `besl::MAX_DESCRIPTOR_SETS` sets, and each generator rejects a
+program past it. See [Descriptor sets](/docs/develop/rendering/descriptor-sets)
+for how each backend binds them.
 
 Shared layers live in modules from the asset root, which load once per shader
 and sit under a hidden scope named `::`. `write` prints each one as
@@ -315,16 +319,17 @@ the linked graph. The linker records each one as it reaches it, and puts its
 state, `besl::SamplerState`, on every texture binding that names it, in
 `BindingTypes::CombinedImageSampler`. Reflection carries the state into the
 persisted interface, so it's part of the layout identity. The renderer then
-declares the texture as a `ghi::ResourceKind::SampledImage` with a
-`ghi::sampler::StaticSampler`, and the application binds only the image.
+declares the texture as a `ghi::ResourceKind::SampledImage`, and the
+application binds only the image.
 
-Each backend builds the sampler into the pipeline in its own way:
+Each backend reads the sampler in its own way:
 
-- Vulkan embeds it in the descriptor-heap mapping of the texture's binding,
-  through `pEmbeddedSampler`, so the GLSL generator still declares a
-  `sampler2D`.
-- DX12 adds a static sampler to the root signature at `s{slot}`, the register
-  the HLSL generator already declares for every texture's sampler.
+- Vulkan and DX12 write the 36 fixed samplers once, at the start of the sampler
+  heap. The GLSL and HLSL generators read a fixed sampler at the literal index
+  `besl::SamplerState::fixed_index` returns, and the texture's set holds no
+  sampler for it. The GHI writes the table in the same order; the
+  [fixed sampler table](/docs/reference/ghi#descriptor-sets) is the contract
+  between them.
 - Metal compiles it into the shader: the MSL generator declares a program-scope
   `constexpr sampler`, and leaves the sampler out of the argument buffer and
   the kernel parameters.

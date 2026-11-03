@@ -55,6 +55,7 @@ impl Generator {
 			}
 		}
 		self.generate_hlsl_header_block(&mut string, shader_compilation_settings, &requirements);
+		emit_set_bases(&mut string, &order, ShaderFormatting::new(self.minified).break_str())?;
 		if matches!(self.stage, Stages::Task { .. }) {
 			string.push_str("groupshared uint32_t besl_mesh_output_count;");
 			string.push_str(ShaderFormatting::new(self.minified).break_str());
@@ -267,7 +268,7 @@ impl Generator {
 			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
 				if *operator == besl::Operators::Assignment && self.emit_image_size_assignment(string, left, right) => {}
 			besl::Nodes::PushConstant { members } => {
-				// Root constants use the constant-buffer namespace, while flat resources use t/u/s registers in space 0.
+				// Push constants are the root constants at b0; the set bases follow at b1 and descriptors take no register.
 				if !self.minified {
 					string.push_str("// Root constants\n");
 				}
@@ -383,18 +384,24 @@ impl Generator {
 			} => self.emit_for_loop_node(string, initializer, condition, update, statements),
 			besl::Nodes::Binding {
 				name,
-				slot,
 				read,
 				write,
 				r#type,
 				count,
+				placement,
 				..
 			} => {
-				// HLSL preserves the flat slot in the matching register namespace and always uses space 0.
-				let register_index = *slot;
+				// Descriptors live in the shader-visible heaps, at their set's base plus their placement in the set.
+				// `generate` rejects reachable bindings without a placement before it emits any node.
+				let placement = placement.expect("HLSL generation emits only placed bindings");
+				let count = count.map(|count| count.get());
 				let read_only = *read && !*write;
 				let buffer_type = if read_only { "StructuredBuffer" } else { "RWStructuredBuffer" };
-				let register_type = if read_only { "t" } else { "u" };
+				let resource = DescriptorIndex::Set {
+					set: placement.set,
+					sampler: false,
+					offset: placement.resource,
+				};
 
 				match r#type {
 					besl::BindingTypes::Buffer { members } => {
@@ -405,27 +412,29 @@ impl Generator {
 						});
 						self.emit_struct_declaration_end(string);
 
-						let _ = write!(string, "{buffer_type}<_{name}> {}", Self::identifier(name));
-						if let Some(count) = count {
-							let _ = write!(string, "[{count}]");
-						}
-						let _ = write!(string, " : register({register_type}{register_index}, space0);{break_char}");
+						emit_descriptor_declaration(
+							string,
+							break_char,
+							format_args!("{buffer_type}<_{name}>"),
+							Self::identifier(name),
+							resource,
+							count,
+						);
 					}
 					besl::BindingTypes::BufferArray { element, .. } => {
 						let element = element.borrow();
 						let element_type = element.get_name().unwrap();
-						string.push_str(buffer_type);
-						string.push('<');
 						// Narrow elements share 32-bit words so their lane writes can use InterlockedCompareExchange.
-						if super::hlsl_narrow_element(element_type).is_some() {
-							string.push_str("uint");
-						} else {
-							Self::type_identifier(element_type).push_to(string);
-						}
-						let _ = write!(
+						let narrow = super::hlsl_narrow_element(element_type).is_some();
+						let element_type = Self::type_identifier(element_type);
+						let element_type: &dyn std::fmt::Display = if narrow { &"uint" } else { &element_type };
+						emit_descriptor_declaration(
 							string,
-							"> {} : register({register_type}{register_index}, space0);{break_char}",
-							Self::identifier(name)
+							break_char,
+							format_args!("{buffer_type}<{element_type}>"),
+							Self::identifier(name),
+							resource,
+							count,
 						);
 					}
 					besl::BindingTypes::Image { format } => {
@@ -438,14 +447,17 @@ impl Generator {
 							_ => "float4",
 						};
 
-						let _ = write!(string, "{texture_type}<{element_type}> {}", Self::identifier(name));
-						if let Some(count) = count {
-							let _ = write!(string, "[{count}]");
-						}
-						let _ = write!(string, " : register({register_type}{register_index}, space0);{break_char}");
+						emit_descriptor_declaration(
+							string,
+							break_char,
+							format_args!("{texture_type}<{element_type}>"),
+							Self::identifier(name),
+							resource,
+							count,
+						);
 					}
-					besl::BindingTypes::CombinedImageSampler { format, .. } => {
-						// HLSL separates textures and samplers, but for combined sampler we use Texture2D
+					besl::BindingTypes::CombinedImageSampler { format, sampler } => {
+						// HLSL separates textures and samplers, so a combined sampler becomes a texture and a sampler.
 						let texture_type = match format.as_str() {
 							"Texture3D" => "Texture3D",
 							"TextureCube" => "TextureCube",
@@ -460,19 +472,32 @@ impl Generator {
 						// References build the sampler name from the escaped texture name, so both use one identifier.
 						let name = Self::identifier(name);
 
-						let _ = write!(string, "{texture_type}{element_type} {name}");
-						if let Some(count) = count {
-							let _ = write!(string, "[{count}]");
-						}
-						// Also declare a sampler with the same name + _sampler suffix
-						let _ = write!(
+						emit_descriptor_declaration(
 							string,
-							" : register(t{register_index}, space0);{break_char}SamplerState {name}_sampler"
+							break_char,
+							format_args!("{texture_type}{element_type}"),
+							name,
+							resource,
+							count,
 						);
-						if let Some(count) = count {
-							let _ = write!(string, "[{count}]");
-						}
-						let _ = write!(string, " : register(s{register_index}, space0);{break_char}");
+						// A fixed sampler sits at the sampler heap index its state decides; the application binds the
+						// others into the set's sampler range.
+						let sampler = match sampler {
+							Some(state) => DescriptorIndex::FixedSampler(state.fixed_index()),
+							None => DescriptorIndex::Set {
+								set: placement.set,
+								sampler: true,
+								offset: placement.sampler,
+							},
+						};
+						emit_descriptor_declaration(
+							string,
+							break_char,
+							"SamplerState",
+							format_args!("{name}_sampler"),
+							sampler,
+							count,
+						);
 					}
 					besl::BindingTypes::AccelerationStructure => {
 						unreachable!("HLSL generation rejects ray tracing programs before it emits their bindings")
@@ -547,4 +572,96 @@ float16_t4 _besl_fma_f16(float16_t4 first, float16_t4 second, float16_t4 third) 
 			);
 		}
 	}
+}
+
+/// The `DescriptorIndex` enum names where one descriptor of a binding sits in a shader-visible heap, so a declaration
+/// can read it with `ResourceDescriptorHeap` or `SamplerDescriptorHeap`.
+#[derive(Clone, Copy)]
+pub(crate) enum DescriptorIndex {
+	/// `offset` descriptors past the base of the set at position `set`: the set's resource base, or its sampler base
+	/// when `sampler` is set.
+	Set { set: u32, sampler: bool, offset: u32 },
+	/// A fixed sampler, at the sampler heap index its state decides. See [`besl::SamplerState::fixed_index`].
+	FixedSampler(u32),
+}
+
+impl std::fmt::Display for DescriptorIndex {
+	/// Writes the heap index expression. A set's two bases are root constants: set `s` keeps its resource base in
+	/// `_besl_sets[s >> 1][(s & 1) * 2]` and its sampler base in the component after it.
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match *self {
+			Self::Set { set, sampler, offset } => {
+				let component = ["x", "y", "z", "w"][((set & 1) * 2 + u32::from(sampler)) as usize];
+				write!(formatter, "_besl_sets[{}].{component}", set >> 1)?;
+				if offset != 0 {
+					write!(formatter, "+{offset}u")?;
+				}
+				Ok(())
+			}
+			Self::FixedSampler(index) => write!(formatter, "{index}u"),
+		}
+	}
+}
+
+/// Declares the root constants that hold the base heap indices of each set the shader reads, sized to the last of
+/// them, or nothing when the shader reads no descriptor.
+///
+/// Returns an error when a reachable binding has no placement, which linking gives every binding of a set `main`
+/// takes, or when the shader reads more sets than the root constants hold.
+fn emit_set_bases(string: &mut String, order: &[besl::NodeReference], break_char: &str) -> Result<(), ()> {
+	let mut set_count = 0u32;
+	for node in order {
+		if let besl::Nodes::Binding { placement, .. } = node.borrow().node() {
+			set_count = set_count.max(placement.ok_or(())?.set + 1);
+		}
+	}
+	if set_count == 0 {
+		return Ok(());
+	}
+	if set_count > besl::MAX_DESCRIPTOR_SETS {
+		return Err(());
+	}
+	let _ = write!(
+		string,
+		"cbuffer _BeslSets : register(b1, space0) {{ uint4 _besl_sets[{}]; }};{break_char}",
+		set_count.div_ceil(2)
+	);
+	Ok(())
+}
+
+/// Declares the binding `name` of `count` descriptors of `type_name` read from the heap at `index`.
+///
+/// A single descriptor is a static global. An array is a static global of a struct whose `operator[]` reads element
+/// `i` at `index + i`, so references index it as they would a native array. Lanes may pick different elements, so
+/// the element's heap index is always marked non-uniform.
+fn emit_descriptor_declaration(
+	string: &mut String,
+	break_char: &str,
+	type_name: impl std::fmt::Display,
+	name: impl std::fmt::Display,
+	index: DescriptorIndex,
+	count: Option<u32>,
+) {
+	let heap = match index {
+		DescriptorIndex::Set { sampler: false, .. } => "ResourceDescriptorHeap",
+		DescriptorIndex::Set { sampler: true, .. } | DescriptorIndex::FixedSampler(_) => "SamplerDescriptorHeap",
+	};
+	if count.is_none() {
+		let _ = write!(string, "static {type_name} {name} = {heap}[{index}];{break_char}");
+		return;
+	}
+	let _ = write!(
+		string,
+		"struct _besl_array_{name} {{ {type_name} operator[](uint i) {{ return "
+	);
+	match index {
+		// Every element of a fixed sampler array is the same sampler.
+		DescriptorIndex::FixedSampler(_) => {
+			let _ = write!(string, "{heap}[{index}]");
+		}
+		DescriptorIndex::Set { .. } => {
+			let _ = write!(string, "{heap}[NonUniformResourceIndex({index}+i)]");
+		}
+	}
+	let _ = write!(string, "; }} }};{break_char}static _besl_array_{name} {name};{break_char}");
 }

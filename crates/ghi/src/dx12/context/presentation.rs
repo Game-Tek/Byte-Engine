@@ -108,7 +108,8 @@ impl Device {
 			// One dynamic logical image already resolves to distinct native resources for each frame sequence.
 			swapchain.image = Some(image);
 			swapchain.proxy_resource_uses = resource_uses;
-			self.invalidate_descriptor_materializations();
+			// Descriptors of the swapchain now name the new proxy's resources.
+			self.mark_stale_descriptors(|descriptor| descriptor == WriteData::Swapchain(swapchain_handle));
 		}
 		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
 		swapchain.proxy_uses = requested_uses;
@@ -305,7 +306,7 @@ impl Device {
 		for key in retired_state_keys {
 			self.buffer_states.remove(&key);
 		}
-		self.invalidate_descriptor_materializations();
+		self.mark_stale_descriptors(|descriptor| matches!(descriptor, WriteData::Buffer { handle } if handle == buffer_handle));
 	}
 
 	/// Establishes and waits for one terminal fence on every distinct native queue.
@@ -358,7 +359,7 @@ impl Device {
 	pub(crate) fn block_queue_until_test_fence(&self, queue_handle: QueueHandle) -> windows::core::Result<ID3D12Fence> {
 		let queue = self
 			.queues
-			.get(queue_handle.0 as usize)
+			.get(queue_handle.index() as usize)
 			.expect("Invalid DX12 queue handle. The most likely cause is that the test used a queue from another device.");
 		let fence = unsafe { self.device.CreateFence(0, D3D12_FENCE_FLAGS(0)) }?;
 		unsafe { queue.queue.Wait(&fence, 1) }?;
@@ -398,12 +399,11 @@ impl Device {
 				frame.is_open = false;
 				frame.lifecycle = CommandBufferLifecycle::Idle;
 				frame.clear_recording_state();
-				frame.release_staging_heaps();
+				frame.release_clear_descriptors(&mut self.shader_visible_heaps);
 			}
 			command_buffer.active_sequence_index = 0;
 		}
 		self.untracked_present_work = false;
-		self.invalidate_descriptor_materializations();
 		Ok(())
 	}
 
@@ -603,12 +603,14 @@ impl Device {
 		unsafe { command_list.Reset(allocator, None) }.expect(
 			"Failed to reset a DX12 command list. The most likely cause is that the list was not closed or its allocator is invalid.",
 		);
+		let command_list = command_list.clone();
 		// Reset removes recorded references before fence-complete transient resources and heaps are released.
 		frame.clear_recording_state();
 		frame.sequence_index = sequence_index;
-		frame.rewind_staging_heaps();
+		frame.rewind_clear_descriptors(&mut self.shader_visible_heaps);
 		frame.is_open = true;
 		frame.lifecycle = CommandBufferLifecycle::Recording;
+		self.bind_shader_visible_heaps(&command_list);
 		self.begin_command_buffer_state_transaction(command_buffer_handle);
 	}
 

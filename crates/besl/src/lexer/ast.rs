@@ -1082,6 +1082,10 @@ impl BindingTypes {
 	}
 }
 
+/// The most descriptor sets one shader can read. Every backend can bind this many: Metal binds them after its 16
+/// reserved buffer indices, and Vulkan and DirectX 12 keep their heap bases in a fixed block of push data.
+pub const MAX_DESCRIPTOR_SETS: u32 = 15;
+
 /// The `Placement` struct locates one binding inside the descriptor sets of the program that declares it, so every
 /// backend and the VM address the binding the same way without regrouping the program's sets.
 ///

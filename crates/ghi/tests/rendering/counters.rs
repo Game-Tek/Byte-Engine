@@ -227,10 +227,15 @@ pub(super) fn counters_ended_after_the_last_dispatch_resolve(
 			glsl: "
 				#version 450
 				#pragma shader_stage(compute)
-				layout(set=0,binding=0, rgba8) uniform image2D img;
+				#extension GL_EXT_descriptor_heap : require
+				#extension GL_EXT_nonuniform_qualifier : require
+				// The pipeline index of the shader's set 0, and each set's heap base indices.
+				layout(constant_id = 1984) const uint SET0 = 0u;
+				layout(push_constant) uniform Sets { uvec2 sets[15]; } push_constants;
+				layout(descriptor_heap, descriptor_stride = 64, rgba8) uniform image2D images[];
 				layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 				void main() {
-					imageStore(img, ivec2(gl_GlobalInvocationID.xy), vec4(1.0, 0.0, 0.0, 1.0));
+					imageStore(images[push_constants.sets[SET0].x], ivec2(gl_GlobalInvocationID.xy), vec4(1.0, 0.0, 0.0, 1.0));
 				}
 			",
 			msl: r#"
@@ -245,7 +250,8 @@ pub(super) fn counters_ended_after_the_last_dispatch_resolve(
 			"#,
 			msl_entry_point: "compute_main",
 			hlsl: r#"
-				RWTexture2D<float4> image : register(u0, space0);
+				cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; };
+				static RWTexture2D<float4> image = ResourceDescriptorHeap[_besl_sets[0].x];
 				[numthreads(1, 1, 1)]
 				void compute_main(uint3 gid : SV_DispatchThreadID) {
 					image[gid.xy] = float4(1.0, 0.0, 0.0, 1.0);

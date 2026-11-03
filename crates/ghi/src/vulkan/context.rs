@@ -7,9 +7,8 @@ use utils::{Extent, hash::HashMap};
 
 use super::{
 	Allocation, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DedicatedResource, DescriptorHeapArena,
-	DescriptorHeaps, DescriptorMaterialization, DescriptorMaterializationHandle, DescriptorSet, Image, MAX_FRAMES_IN_FLIGHT,
-	MaterializationKey, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, PipelineLayoutKey,
-	PipelineResourceDescriptor, ResolvedPipelineDescriptor, Sampler, Shader, Swapchain, Synchronizer, TransitionState,
+	DescriptorHeaps, DescriptorSet, Image, MAX_FRAMES_IN_FLIGHT, MemoryBackedResourceCreationResult, Mesh, Pipeline,
+	PipelineLayout, Sampler, Shader, Swapchain, Synchronizer, TransitionState,
 	utils::{into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, uses_to_vk_usage_flags},
 };
 use crate::vulkan::{Device, InnerDevice, StoredQueue};
@@ -46,20 +45,17 @@ pub struct Context {
 	pub(super) images: Vec<Image>,
 	pub(super) samplers: Vec<Sampler>,
 	pub(super) allocations: Vec<Allocation>,
-	pub(super) pipeline_layouts: Vec<PipelineLayout>,
-	pipeline_layout_indices: HashMap<PipelineLayoutKey, graphics_hardware_interface::PipelineLayoutHandle>,
 	pub(super) descriptor_sets: Vec<DescriptorSet>,
+	/// The heaps every descriptor set lives in, created with the first set, so a context without sets reserves none.
 	pub(super) descriptor_heaps: Option<DescriptorHeaps>,
-	pub(super) descriptor_materializations: Vec<Option<DescriptorMaterialization>>,
-	materialization_indices: HashMap<MaterializationKey, DescriptorMaterializationHandle>,
-	/// The index that merges the descriptors of one resource while a large layout materializes, kept empty between
-	/// materializations so it keeps its memory.
+	/// The set elements whose writes name each resource, by the resource's first frame-local copy, so replacing the
+	/// resource's storage rewrites only them. A swapchain's writes are listed under its first image.
+	descriptor_references: HashMap<super::Handles, SmallVec<[(u32, u32); 2]>>,
+	/// The index that merges the descriptors of one resource while a large set copy lists its consumptions, kept empty
+	/// in between so it keeps its memory.
 	descriptor_merge_index: HashMap<(super::Handles, crate::Layouts), usize>,
 	/// The vectors recordings plan barriers in. A recording takes them and hands them back when it drops.
 	pub(super) planning_storage: crate::vulkan::command_buffer::PlanningStorage,
-	retired_materializations: [Vec<DescriptorMaterializationHandle>; MAX_FRAMES_IN_FLIGHT],
-	free_materialization_handles: Vec<DescriptorMaterializationHandle>,
-	descriptor_sequence_epochs: [u64; MAX_FRAMES_IN_FLIGHT],
 	pub(super) meshes: Vec<Mesh>,
 	pub(super) shaders: Vec<Shader>,
 	pub(super) pipelines: Vec<Pipeline>,
@@ -110,23 +106,6 @@ pub struct Context {
 	pub(crate) ray_tracing_libraries: crate::vulkan::ray_tracing::Libraries,
 }
 
-/// Accepts deferred descriptor work only while both its payload and post-write version remain current.
-fn descriptor_task_is_current(
-	set: &DescriptorSet,
-	descriptor_write: crate::descriptors::DescriptorWrite,
-	expected_set_version: u64,
-) -> bool {
-	if set.version != expected_set_version {
-		return false;
-	}
-
-	let frame_offset = descriptor_write.frame_offset.unwrap_or(0);
-	set.descriptors
-		.get(&descriptor_write.slot)
-		.and_then(|elements| elements.get(&descriptor_write.array_element))
-		.is_some_and(|current| current.descriptor == descriptor_write.descriptor && current.frame_offset == frame_offset)
-}
-
 mod acceleration_structures;
 mod descriptors;
 mod drop;
@@ -137,42 +116,3 @@ pub(crate) use resources::unbacked_image;
 mod resources;
 mod runtime;
 mod traits;
-
-#[cfg(test)]
-mod descriptor_task_tests {
-	use super::*;
-
-	fn retained_set(write: crate::descriptors::DescriptorWrite, version: u64) -> DescriptorSet {
-		let mut descriptors = HashMap::default();
-		descriptors.entry(write.slot).or_insert_with(HashMap::default).insert(
-			write.array_element,
-			crate::vulkan::descriptor_set::RetainedDescriptor {
-				descriptor: write.descriptor,
-				frame_offset: write.frame_offset.unwrap_or(0),
-			},
-		);
-		DescriptorSet {
-			next: None,
-			version,
-			sequence_versions: [0; MAX_FRAMES_IN_FLIGHT],
-			descriptors,
-		}
-	}
-
-	fn buffer_write(buffer: u64) -> crate::descriptors::DescriptorWrite {
-		crate::descriptors::DescriptorWrite::buffer(
-			graphics_hardware_interface::DescriptorSetHandle::from_index(0),
-			crate::shader::ResourceSlot::new(3),
-			graphics_hardware_interface::BaseBufferHandle::from_index(buffer),
-		)
-	}
-
-	#[test]
-	fn deferred_descriptor_task_uses_version_to_reject_aba_writes() {
-		let value = buffer_write(7);
-		let set = retained_set(value, 3);
-
-		assert!(!descriptor_task_is_current(&set, value, 1));
-		assert!(descriptor_task_is_current(&set, value, 3));
-	}
-}

@@ -2,23 +2,13 @@ use super::*;
 use crate::vulkan::pipeline_binaries::{PipelineBinaries, create_pipeline};
 
 impl Context {
-	/// Adds a built pipeline and returns the handle commands bind it with.
-	///
-	/// Pipelines built on factory threads bring their own layouts, so an equal layout this context already holds is
-	/// shared instead of added again.
+	/// Adds a built pipeline, with the layout its shaders' sets and push constants make, and returns the handle
+	/// commands bind it with.
 	pub(crate) fn add_pipeline(
 		&mut self,
 		pipeline: vk::Pipeline,
 		layout: PipelineLayout,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let layouts = &mut self.pipeline_layouts;
-		let layout = *self
-			.pipeline_layout_indices
-			.entry(PipelineLayoutKey::new(&layout))
-			.or_insert_with(|| {
-				layouts.push(layout);
-				graphics_hardware_interface::PipelineLayoutHandle::from_index(layouts.len() as u64 - 1)
-			});
 		self.pipelines.push(Pipeline {
 			pipeline,
 			layout,
@@ -38,21 +28,18 @@ impl Context {
 	}
 }
 
-/// Builds the descriptor-heap layout shared by the shaders that `parameters` name.
+/// Builds the layout of the sets and push constants that the shaders `parameters` name declare.
 pub(super) fn shader_pipeline_layout(
 	shaders: &[Shader],
 	parameters: &[crate::pipelines::ShaderParameter],
 	push_constant_ranges: &[crate::pipelines::PushConstantRange],
 	properties: &vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'_>,
 ) -> PipelineLayout {
-	let stage_resources = parameters
-		.iter()
-		.map(|parameter| {
-			let shader = &shaders[parameter.handle.index() as usize];
-			(shader.stage, shader.shader_resource_descriptors.as_slice())
-		})
-		.collect::<StageList<_>>();
-	crate::vulkan::build_pipeline_layout(&stage_resources, push_constant_ranges, properties)
+	let stage_sets = parameters.iter().map(|parameter| {
+		let shader = &shaders[parameter.handle.index() as usize];
+		(shader.stage, &*shader.descriptor_sets)
+	});
+	crate::vulkan::build_pipeline_layout(stage_sets, push_constant_ranges, properties)
 }
 
 /// The `StageList` type alias holds one value per shader stage without touching the heap for raster and compute
@@ -68,8 +55,8 @@ pub(super) type StageList<T> = SmallVec<[T; 4]>;
 /// When every shader has an identifier, `create` first runs with the identified stages alone, which finds a
 /// pipeline the cache holds without touching any code. Only when that reports `VK_PIPELINE_COMPILE_REQUIRED` does
 /// `create` run again with the code, which each shader either keeps or was lent through
-/// [`crate::pipelines::ShaderParameter::with_code`]. Every stage is chained to its descriptor-heap mapping and its
-/// specialization constants, and everything the stages point at lives until `create` returns.
+/// [`crate::pipelines::ShaderParameter::with_code`]. Every stage gets its specialization constants, followed by the
+/// pipeline index of each set its shader declares, and everything the stages point at lives until `create` returns.
 ///
 /// # Panics
 ///
@@ -85,57 +72,19 @@ pub(crate) fn with_shader_stages(
 ) -> Result<vk::Pipeline, vk::Result> {
 	let shaders = parameters.iter().map(|parameter| &shaders[parameter.handle.index() as usize]);
 
-	// The mappings point at the samplers each stage embeds, and those at their reductions, so all of them live until
-	// `create` returns.
-	let fixed = shaders
-		.clone()
-		.map(|shader| crate::vulkan::embedded_samplers(&shader.shader_resource_descriptors))
-		.collect::<StageList<_>>();
-	let reductions = fixed
-		.iter()
-		.map(|samplers| {
-			samplers
-				.iter()
-				.map(|(_, sampler)| vk::SamplerReductionModeCreateInfo::default().reduction_mode(sampler.reduction_mode))
-				.collect::<StageList<_>>()
-		})
-		.collect::<StageList<_>>();
-	let embedded = fixed
-		.iter()
-		.zip(&reductions)
-		.map(|(samplers, reductions)| {
-			samplers
-				.iter()
-				.zip(reductions)
-				.map(|((slot, sampler), reduction)| {
-					let mut info = sampler.create_info();
-					info.p_next = (reduction as *const vk::SamplerReductionModeCreateInfo).cast();
-					(*slot, info)
-				})
-				.collect::<StageList<_>>()
-		})
-		.collect::<StageList<_>>();
-	let mappings = shaders
-		.clone()
-		.zip(&embedded)
-		.map(|(shader, embedded)| crate::vulkan::build_shader_mappings(layout, &shader.shader_resource_descriptors, embedded))
-		.collect::<StageList<_>>();
 	let specializations = parameters
 		.iter()
-		.map(|parameter| crate::vulkan::utils::build_specialization_entries(parameter.specialization_map))
+		.zip(shaders.clone())
+		.map(|(parameter, shader)| {
+			let (mut data, mut entries) = crate::vulkan::utils::build_specialization_entries(parameter.specialization_map);
+			crate::vulkan::push_set_specializations(layout, &shader.descriptor_sets, &mut data, &mut entries);
+			(data, entries)
+		})
 		.collect::<StageList<_>>();
 	let specialization_infos = specializations
 		.iter()
 		.map(|(data, entries)| vk::SpecializationInfo::default().data(data).map_entries(entries))
 		.collect::<StageList<_>>();
-	// Each list of stages links its own mapping structures, because a structure can sit in only one chain.
-	let mapping_infos = || {
-		let mapping_info = |mappings| vk::ShaderDescriptorSetAndBindingMappingInfoEXT::default().mappings(mappings);
-		mappings
-			.iter()
-			.map(|mappings| mapping_info(mappings))
-			.collect::<StageList<_>>()
-	};
 
 	let mut identifiers = shaders
 		.clone()
@@ -144,10 +93,9 @@ pub(crate) fn with_shader_stages(
 			Some(identifier.identifier(shader.identifier.as_ref()?.bytes()))
 		})
 		.collect::<Option<StageList<_>>>();
-	let mut identified_mapping_infos = mapping_infos();
 	let identified_stages = identifiers
 		.as_mut()
-		.map(|identifiers| shader_stages(parameters, &mut identified_mapping_infos, identifiers, &specialization_infos));
+		.map(|identifiers| shader_stages(parameters, identifiers, &specialization_infos));
 	if let Some(identified_stages) = &identified_stages {
 		match create(None, Some(identified_stages)) {
 			Err(vk::Result::PIPELINE_COMPILE_REQUIRED) => {}
@@ -168,16 +116,14 @@ pub(crate) fn with_shader_stages(
 		.iter()
 		.map(|code| vk::ShaderModuleCreateInfo::default().code(code))
 		.collect::<StageList<_>>();
-	let mut code_mapping_infos = mapping_infos();
-	let stages = shader_stages(parameters, &mut code_mapping_infos, &mut code, &specialization_infos);
+	let stages = shader_stages(parameters, &mut code, &specialization_infos);
 	create(Some(&stages), identified_stages.as_deref())
 }
 
-/// Builds the stage create infos of a pipeline, each chained to its heap mapping and to its entry of `sources`,
-/// which tells the driver what the shader is: its SPIR-V or its identifier.
+/// Builds the stage create infos of a pipeline, each chained to its entry of `sources`, which tells the driver what
+/// the shader is: its SPIR-V or its identifier.
 fn shader_stages<'a, 'b: 'a, 'c: 'a, S>(
 	parameters: &[crate::pipelines::ShaderParameter],
-	mapping_infos: &'a mut [vk::ShaderDescriptorSetAndBindingMappingInfoEXT<'b>],
 	sources: &'a mut [S],
 	specialization_infos: &'a [vk::SpecializationInfo<'b>],
 ) -> StageList<vk::PipelineShaderStageCreateInfo<'a>>
@@ -186,12 +132,10 @@ where
 {
 	parameters
 		.iter()
-		.zip(mapping_infos)
 		.zip(sources)
 		.zip(specialization_infos)
-		.map(|(((parameter, mapping_info), source), specialization_info)| {
+		.map(|((parameter, source), specialization_info)| {
 			vk::PipelineShaderStageCreateInfo::default()
-				.push(mapping_info)
 				.push(source)
 				.stage(parameter.stage.into())
 				.name(c"main")
@@ -342,18 +286,26 @@ pub(crate) fn build_raster_pipeline(
 	let pipeline = with_shader_stages(shaders, builder.shaders, &layout, |stages, identified_stages| {
 		let compiled = stages.map(|stages| pipeline_create_info.stages(stages));
 		let identified = identified_stages.map(|stages| pipeline_create_info.stages(stages));
-		create_pipeline(pipeline_binaries, vk::PipelineCreateFlags2::empty(), compiled.as_ref(), identified.as_ref(), |create_info| {
-			unsafe { device.create_graphics_pipelines(vk::PipelineCache::null(), std::slice::from_ref(create_info), None) }
-				.map(|pipelines| pipelines[0])
-				.map_err(|(_, result)| result)
-		})
+		create_pipeline(
+			pipeline_binaries,
+			vk::PipelineCreateFlags2::empty(),
+			compiled.as_ref(),
+			identified.as_ref(),
+			|create_info| {
+				unsafe { device.create_graphics_pipelines(vk::PipelineCache::null(), std::slice::from_ref(create_info), None) }
+					.map(|pipelines| pipelines[0])
+					.map_err(|(_, result)| result)
+			},
+		)
 	})
-	.expect("Vulkan raster pipeline creation failed. The most likely cause is an invalid shader resource mapping or a shader interface that does not match the render targets.");
+	.expect(
+		"Vulkan raster pipeline creation failed. The most likely cause is a shader interface that does not match the render targets.",
+	);
 
 	(pipeline, layout)
 }
 
-/// Creates a native compute pipeline whose flat bindings map directly into descriptor heaps.
+/// Creates a native compute pipeline that reads its descriptor sets from the descriptor heaps.
 ///
 /// Like [`build_raster_pipeline`], it only reads device state, so detached factories and contexts share it.
 pub(crate) fn build_compute_pipeline(
@@ -371,13 +323,21 @@ pub(crate) fn build_compute_pipeline(
 		let create_info = vk::ComputePipelineCreateInfo::default().layout(vk::PipelineLayout::null());
 		let compiled = stages.map(|stages| create_info.stage(stages[0]));
 		let identified = identified_stages.map(|stages| create_info.stage(stages[0]));
-		create_pipeline(pipeline_binaries, vk::PipelineCreateFlags2::empty(), compiled.as_ref(), identified.as_ref(), |create_info| {
-			unsafe { device.create_compute_pipelines(vk::PipelineCache::null(), std::slice::from_ref(create_info), None) }
-				.map(|pipelines| pipelines[0])
-				.map_err(|(_, result)| result)
-		})
+		create_pipeline(
+			pipeline_binaries,
+			vk::PipelineCreateFlags2::empty(),
+			compiled.as_ref(),
+			identified.as_ref(),
+			|create_info| {
+				unsafe { device.create_compute_pipelines(vk::PipelineCache::null(), std::slice::from_ref(create_info), None) }
+					.map(|pipelines| pipelines[0])
+					.map_err(|(_, result)| result)
+			},
+		)
 	})
-	.expect("Vulkan descriptor-heap compute pipeline creation failed. The most likely cause is an invalid shader resource mapping or specialization constant.");
+	.expect(
+		"Vulkan descriptor-heap compute pipeline creation failed. The most likely cause is an invalid specialization constant.",
+	);
 
 	crate::vulkan::ComputePipeline { pipeline, layout }
 }

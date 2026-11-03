@@ -347,7 +347,7 @@ impl Device {
 		if before == after {
 			if after.access == D3D12_BARRIER_ACCESS_UNORDERED_ACCESS && !ordered_by_group {
 				barriers.buffer.push(Self::buffer_barrier(resource, before, after));
-				self.counters.uav_barrier_count += 1;
+				self.native_counters.uav_barrier_count += 1;
 			}
 			return;
 		}
@@ -395,7 +395,7 @@ impl Device {
 		if before == after {
 			if after.access == D3D12_BARRIER_ACCESS_UNORDERED_ACCESS && !ordered_by_group {
 				barriers.texture.push(Self::texture_barrier(resource, before, after));
-				self.counters.uav_barrier_count += 1;
+				self.native_counters.uav_barrier_count += 1;
 			}
 			return;
 		}

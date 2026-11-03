@@ -95,21 +95,22 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 
 impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 	fn write_push_constant<T: crate::Pod>(&mut self, offset: u32, data: T) {
-		let layout_handle = self.bound_pipeline_layout.expect(
+		let pipeline = self.bound_pipeline.expect(
 			"No Vulkan pipeline is bound. The most likely cause is that write_push_constant was called before binding a pipeline.",
 		);
 		let size = std::mem::size_of::<T>();
 		let end = (offset as usize).checked_add(size).expect(
 			"Invalid Vulkan push-data range. The most likely cause is that the offset and data size overflow addressable memory.",
 		);
-		let layout = &self.device.pipeline_layouts[layout_handle.index() as usize];
+		let layout = &self.device.pipelines[pipeline.index() as usize].layout;
 
 		assert!(
 			offset.is_multiple_of(4) && size.is_multiple_of(4) && end <= layout.push_constant_size as usize,
 			"Invalid Vulkan push-data write. The most likely cause is that the offset or data size is not four-byte aligned or exceeds the pipeline's declared push-constant ranges.",
 		);
+		// The sets' base indices come first in the push data, and push constants after them.
 		let push_info = vk::PushDataInfoEXT::default()
-			.offset(offset)
+			.offset(crate::vulkan::PUSH_CONSTANT_OFFSET + offset)
 			.data(vk::HostAddressRangeConstEXT::default().address(bytemuck::bytes_of(&data)));
 		unsafe {
 			self.device
@@ -122,14 +123,13 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 		self.bound_pipeline.expect(
 			"No Vulkan pipeline is bound. The most likely cause is that bind_descriptor_sets was called before binding a pipeline.",
 		);
-		// Binding replaces the complete flat set union; no implicit set index or prior binding survives. A recording
-		// cannot write descriptors, bump epochs, or acquire images, so rebinding the same sets keeps their
-		// materialization; their read-only resources are still consumed again before the next draw or dispatch.
-		if self.bound_descriptor_set_handles != sets {
+		// Binding replaces every bound set; the pipeline picks its sets from them by layout. A recording cannot write
+		// descriptors or acquire images, so rebinding the same sets keeps their base indices; their read-only
+		// resources are still consumed again before the next draw or dispatch.
+		if self.bound_descriptor_set_handles.as_slice() != sets {
 			self.bound_descriptor_set_handles.clear();
 			self.bound_descriptor_set_handles.extend_from_slice(sets);
-			self.current_descriptor_materialization = None;
-			self.descriptor_materialization_dirty = true;
+			self.descriptor_bindings_dirty = true;
 		}
 		self.descriptor_resources_initialized = false;
 		self

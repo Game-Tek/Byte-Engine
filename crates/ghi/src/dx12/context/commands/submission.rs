@@ -114,7 +114,7 @@ impl Device {
 				readback_candidates.extend_from_slice(&self.command_buffers[command_buffer_index].recorded_readbacks);
 			} else {
 				debug_assert!(self.command_buffers[command_buffer_index].recorded_readbacks.is_empty());
-				self.counters.empty_command_list_skip_count += 1;
+				self.native_counters.empty_command_list_skip_count += 1;
 			}
 		}
 
@@ -129,8 +129,8 @@ impl Device {
 			for &handle in command_buffer_handles {
 				self.command_buffers[handle.index() as usize].lifecycle = CommandBufferLifecycle::Poisoned;
 			}
-			self.counters.native_command_list_execute_count = self
-				.counters
+			self.native_counters.native_command_list_execute_count = self
+				.native_counters
 				.native_command_list_execute_count
 				.saturating_add(native_lists.len());
 			for handle in readback_candidates {
@@ -263,7 +263,7 @@ impl Device {
 		}
 		present_barriers.submit(&command_list);
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.counters.texture_copy_count += copies.len();
+		self.native_counters.texture_copy_count += copies.len();
 	}
 
 	/// Transitions every backbuffer used by one recording into PRESENT through one native barrier batch.
@@ -284,7 +284,7 @@ impl Device {
 		if transition_count != 0 {
 			barriers.submit(command_list);
 			self.mark_command_buffer_work(command_buffer_handle);
-			self.counters.swapchain_present_transition_count += transition_count;
+			self.native_counters.swapchain_present_transition_count += transition_count;
 		}
 	}
 

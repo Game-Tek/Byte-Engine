@@ -21,15 +21,15 @@ impl Device {
 					PipelineKind::Raster => command_list.SetGraphicsRootSignature(&layout.root_signature),
 				}
 			}
-			self.counters.root_signature_bind_count += 1;
+			self.native_counters.root_signature_bind_count += 1;
 		}
 		if let Some(pipeline_state) = &pipeline.pipeline_state {
 			unsafe { command_list.SetPipelineState(pipeline_state) };
-			self.counters.pipeline_state_bind_count += 1;
+			self.native_counters.pipeline_state_bind_count += 1;
 		}
 		if matches!(pipeline.kind, PipelineKind::Raster) {
 			unsafe { command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) };
-			self.counters.primitive_topology_set_count += 1;
+			self.native_counters.primitive_topology_set_count += 1;
 		}
 	}
 }

@@ -40,8 +40,7 @@ impl CommandBufferRecording<'_> {
 
 		self.pipeline_bind_point = bind_point;
 		self.bound_pipeline = Some(pipeline_handle);
-		self.bound_pipeline_layout = Some(pipeline.layout);
-		self.descriptor_materialization_dirty = true;
+		self.descriptor_bindings_dirty = true;
 		self.descriptor_resources_initialized = false;
 		self
 	}

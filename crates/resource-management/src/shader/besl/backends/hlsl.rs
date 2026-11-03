@@ -328,15 +328,29 @@ mod tests {
 		// The test sets read=true, write=true for buff, which makes it a RWStructuredBuffer
 		// Check for structured buffer (writable buffer)
 		assert_string_contains!(shader, "struct _buff{float member;};");
-		assert_string_contains!(shader, "RWStructuredBuffer<_buff> buff : register(u0, space0);");
+		assert_string_contains!(shader, "cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; };");
+		assert_string_contains!(
+			shader,
+			"static RWStructuredBuffer<_buff> buff = ResourceDescriptorHeap[_besl_sets[0].x];"
+		);
 
 		// Check for RWTexture2D (image)
-		assert_string_contains!(shader, "RWTexture2D<float4> image : register(u1, space0);");
+		assert_string_contains!(
+			shader,
+			"static RWTexture2D<float4> image = ResourceDescriptorHeap[_besl_sets[0].x+1u];"
+		);
 
 		// Check for Texture2D and SamplerState (combined image sampler)
 		// `texture` is an HLSL keyword, so the binding and its sampler use the escaped name.
-		assert_string_contains!(shader, "Texture2D<float4> besl_texture : register(t2, space0);");
-		assert_string_contains!(shader, "SamplerState besl_texture_sampler : register(s2, space0);");
+		assert_string_contains!(
+			shader,
+			"static Texture2D<float4> besl_texture = ResourceDescriptorHeap[_besl_sets[0].x+2u];"
+		);
+		// The texture is the set's first texture with an application-bound sampler, so it takes the first sampler.
+		assert_string_contains!(
+			shader,
+			"static SamplerState besl_texture_sampler = SamplerDescriptorHeap[_besl_sets[0].y];"
+		);
 
 		// Check main function
 		assert_string_contains!(shader, "void besl_main(){buff;image;besl_texture;}");
@@ -357,7 +371,7 @@ mod tests {
 			return sampler;
 		}
 
-		texture: descriptor<{ type: Texture2D, binding: 2, access: read }>;
+		texture: descriptor<{ type: Texture2D, binding: 1, access: read }>;
 
 		main: fn () -> void {
 			let float4: half = half(vec3f(1.0, 2.0, 3.0));
@@ -394,9 +408,18 @@ mod tests {
 		assert_string_contains!(shader, "besl_value.besl_float3=besl_argument_float3;");
 		assert_string_contains!(shader, "float besl_lerp(float besl_sampler){return besl_sampler;}");
 		assert_string_contains!(shader, "struct _Buffer{float besl_min;};");
-		assert_string_contains!(shader, "RWStructuredBuffer<_Buffer> besl_Buffer : register(u0, space0);");
-		assert_string_contains!(shader, "Texture2D<float4> besl_texture : register(t2, space0);");
-		assert_string_contains!(shader, "SamplerState besl_texture_sampler : register(s2, space0);");
+		assert_string_contains!(
+			shader,
+			"static RWStructuredBuffer<_Buffer> besl_Buffer = ResourceDescriptorHeap[_besl_sets[0].x];"
+		);
+		assert_string_contains!(
+			shader,
+			"static Texture2D<float4> besl_texture = ResourceDescriptorHeap[_besl_sets[0].x+1u];"
+		);
+		assert_string_contains!(
+			shader,
+			"static SamplerState besl_texture_sampler = SamplerDescriptorHeap[_besl_sets[0].y];"
+		);
 		assert_string_contains!(shader, "besl_half besl_float4=besl_construct_half(float3(1.0,2.0,3.0));");
 		assert_string_contains!(shader, "float besl_mul=besl_lerp(wrapper.value.besl_float3.x);");
 		assert_string_contains!(shader, "besl_texture.Sample(besl_texture_sampler, float2(0.0,0.0))");
@@ -405,11 +428,68 @@ mod tests {
 	}
 
 	#[test]
+	fn each_set_reads_its_descriptors_from_its_own_root_constant_bases() {
+		// The shader takes a shared set, and a set it never reaches; a layer it doesn't take forms no set.
+		let shader = lower_fixture(
+			"Scene: layer { views: descriptor<{ type: f32[], binding: 0, access: read }>; shadow_map: descriptor<{ type: Texture2D, binding: 1, access: read }>; meshes: descriptor<{ type: f32[], binding: 2, access: read }>; } History: layer { history: descriptor<{ type: Texture2D, binding: 0, access: read }>; } result: descriptor<{ type: f32[], binding: 0, access: write }>; scale: fn (scene: Scene) -> f32 { return scene.meshes[0]; } main: fn (scene: Scene, history: History) -> void { result[0] = scale(scene); }",
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+
+		// The unreached history set keeps position 1, so the shader's own set is the third and the bases cover two vectors.
+		assert_string_contains!(shader, "cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[2]; };");
+		// `meshes` follows two descriptors of its set, whichever of them the shader reads.
+		assert_string_contains!(
+			shader,
+			"static StructuredBuffer<float> meshes = ResourceDescriptorHeap[_besl_sets[0].x+2u];"
+		);
+		assert_string_contains!(
+			shader,
+			"static RWStructuredBuffer<float> result = ResourceDescriptorHeap[_besl_sets[1].x];"
+		);
+		assert_string_does_not_contain!(shader, "views");
+		assert_string_does_not_contain!(shader, "history");
+
+		compile_dxil(&shader, "besl-layout-sets", ShaderTypes::Compute);
+	}
+
+	#[test]
+	fn fixed_samplers_read_the_sampler_heap_index_their_state_decides() {
+		let shader = lower_fixture(
+			r#"
+			nearest_texel: sampler<{ filter: nearest, mip_filter: nearest, address: repeat }>;
+			tiles: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: nearest_texel }>;
+			albedo: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+			result: descriptor<{ type: f32[], binding: 2, access: write }>;
+			main: fn () -> void {
+				result[0] = texture_lod(tiles, vec2f(0.5, 0.5), 1.0).x + texture_lod(albedo, vec2f(0.5, 0.5), 0.0).x;
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+
+		// Nearest filters, average reduction, and repeat addressing: 0 + 2 × 0 + 4 × 0 + 12 × 1.
+		assert_string_contains!(shader, "static SamplerState tiles_sampler = SamplerDescriptorHeap[12u];");
+		// The fixed sampler takes none of the set's samplers, so `albedo` takes the first.
+		assert_string_contains!(
+			shader,
+			"static Texture2D<float4> albedo = ResourceDescriptorHeap[_besl_sets[0].x+1u];static SamplerState albedo_sampler = SamplerDescriptorHeap[_besl_sets[0].y];"
+		);
+
+		compile_dxil(&shader, "besl-fixed-samplers", ShaderTypes::Compute);
+	}
+
+	#[test]
 	fn runtime_buffer_and_texture_array_layer_use_native_hlsl_resources() {
 		let shader = lower_fixture(super::super::RUNTIME_ARRAY_FRAGMENT, &ShaderGenerationSettings::fragment());
 
-		assert_string_contains!(shader, "StructuredBuffer<Instance> instances : register(t1, space0);");
-		assert_string_contains!(shader, "Texture2DArray<float4> sprites : register(t0, space0);");
+		assert_string_contains!(
+			shader,
+			"static StructuredBuffer<Instance> instances = ResourceDescriptorHeap[_besl_sets[0].x+1u];"
+		);
+		assert_string_contains!(
+			shader,
+			"static Texture2DArray<float4> sprites = ResourceDescriptorHeap[_besl_sets[0].x];"
+		);
 		assert_string_contains!(shader, "Instance instance=instances[");
 		assert_string_contains!(shader, "sprites.Sample(sprites_sampler, float3(");
 		assert_string_contains!(shader, "float(instance.sprite_id)");
@@ -422,10 +502,22 @@ mod tests {
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
 		);
 
-		assert_string_contains!(shader, "StructuredBuffer<float3> positions : register(t0, space0);");
-		assert_string_contains!(shader, "StructuredBuffer<uint> indices : register(t1, space0);");
-		assert_string_contains!(shader, "StructuredBuffer<uint> corners : register(t2, space0);");
-		assert_string_contains!(shader, "RWStructuredBuffer<uint32_t> results : register(u3, space0);");
+		assert_string_contains!(
+			shader,
+			"static StructuredBuffer<float3> positions = ResourceDescriptorHeap[_besl_sets[0].x];"
+		);
+		assert_string_contains!(
+			shader,
+			"static StructuredBuffer<uint> indices = ResourceDescriptorHeap[_besl_sets[0].x+1u];"
+		);
+		assert_string_contains!(
+			shader,
+			"static StructuredBuffer<uint> corners = ResourceDescriptorHeap[_besl_sets[0].x+2u];"
+		);
+		assert_string_contains!(
+			shader,
+			"static RWStructuredBuffer<uint32_t> results = ResourceDescriptorHeap[_besl_sets[0].x+3u];"
+		);
 		// Narrow elements are recovered from the 32-bit word that holds them.
 		assert_string_contains!(shader, "((indices[(item) / 2u] >> (((item) % 2u) * 16u)) & 0xffffu)");
 		assert_string_contains!(shader, "((corners[(item) / 4u] >> (((item) % 4u) * 8u)) & 0xffu)");
@@ -457,7 +549,7 @@ mod tests {
 	#[test]
 	fn descriptor_array_sample_grad_indexes_the_matching_sampler_and_compiles() {
 		let mut root = besl::parse(
-			"textures: descriptor<{ type: Texture2D, binding: 3, access: read, count: 4 }>; main: fn () -> void { let color: vec4f = sample_texture_2d_array_grad(textures, 2, vec2f(0.0, 0.0), vec2f(0.0, 0.0), vec2f(0.0, 0.0)); color; }",
+			"textures: descriptor<{ type: Texture2D, binding: 0, access: read, count: 4 }>; main: fn () -> void { let color: vec4f = sample_texture_2d_array_grad(textures, 2, vec2f(0.0, 0.0), vec2f(0.0, 0.0), vec2f(0.0, 0.0)); color; }",
 		)
 		.expect("Expected descriptor-array gradient sample source to parse");
 		root.add(vec![besl::parser::Node::intrinsic_with_parameters(
@@ -478,8 +570,15 @@ mod tests {
 			&root.get_main().expect("Expected main"),
 		);
 
-		assert_string_contains!(shader, "Texture2D<float4> textures[4] : register(t3, space0);");
-		assert_string_contains!(shader, "SamplerState textures_sampler[4] : register(s3, space0);");
+		// An array reads element `i` at the set's base plus its placement plus `i`, as a native array would index.
+		assert_string_contains!(
+			shader,
+			"struct _besl_array_textures { Texture2D<float4> operator[](uint i) { return ResourceDescriptorHeap[NonUniformResourceIndex(_besl_sets[0].x+i)]; } };static _besl_array_textures textures;"
+		);
+		assert_string_contains!(
+			shader,
+			"struct _besl_array_textures_sampler { SamplerState operator[](uint i) { return SamplerDescriptorHeap[NonUniformResourceIndex(_besl_sets[0].y+i)]; } };static _besl_array_textures_sampler textures_sampler;"
+		);
 		assert_string_contains!(
 			shader,
 			"textures[NonUniformResourceIndex(2)].SampleGrad(textures_sampler[NonUniformResourceIndex(2)],float2(0.0,0.0),float2(0.0,0.0),float2(0.0,0.0))"
@@ -513,7 +612,10 @@ mod tests {
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
 			&generator::tests::vec2u16_array_binding(),
 		);
-		assert_string_contains!(shader, "RWStructuredBuffer<uint16_t2> buff : register(u0, space0);");
+		assert_string_contains!(
+			shader,
+			"static RWStructuredBuffer<uint16_t2> buff = ResourceDescriptorHeap[_besl_sets[0].x];"
+		);
 		assert_string_does_not_contain!(shader, "RWStructuredBuffer<uint2> buff");
 	}
 
@@ -886,7 +988,7 @@ mod tests {
 		root.add(vec![besl::parser::Node::binding(
 			"shadow_map",
 			besl::parser::Node::combined_array_image_sampler(),
-			11,
+			0,
 			true,
 			false,
 		)]);
@@ -896,7 +998,10 @@ mod tests {
 			.get_main()
 			.expect("Expected array texture binding shader source to contain main");
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main);
-		assert_string_contains!(shader, "Texture2DArray<float4> shadow_map : register(t11, space0);");
+		assert_string_contains!(
+			shader,
+			"static Texture2DArray<float4> shadow_map = ResourceDescriptorHeap[_besl_sets[0].x];"
+		);
 		assert_string_does_not_contain!(shader, "Texture2DArray<float4><float4>");
 	}
 
@@ -981,8 +1086,14 @@ mod tests {
 
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main);
 		// A written image is a UAV, and one the shader only reads is an SRV, which binds as a sampled image.
-		assert_string_contains!(shader, "RWTexture2D<uint> image : register(u0, space0);");
-		assert_string_contains!(shader, "Texture2D<float4> color_image : register(t1, space0);");
+		assert_string_contains!(
+			shader,
+			"static RWTexture2D<uint> image = ResourceDescriptorHeap[_besl_sets[0].x];"
+		);
+		assert_string_contains!(
+			shader,
+			"static Texture2D<float4> color_image = ResourceDescriptorHeap[_besl_sets[0].x+1u];"
+		);
 		assert_string_contains!(shader, "uint2 _besl_image_size;");
 		assert_string_contains!(shader, "image.GetDimensions(_besl_image_size.x, _besl_image_size.y);");
 		assert_string_contains!(shader, "if (any(coord >= _besl_image_size)) { return; }");
@@ -1035,8 +1146,14 @@ mod tests {
 			.expect("Failed to compile read-write narrow-buffer BESL. The most likely cause is invalid test source.");
 		let main = program.get_main().expect("Expected read-write narrow-buffer main function");
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main);
-		assert_string_contains!(shader, "RWStructuredBuffer<uint> bytes : register(u0, space0);");
-		assert_string_contains!(shader, "RWStructuredBuffer<uint> shorts : register(u1, space0);");
+		assert_string_contains!(
+			shader,
+			"static RWStructuredBuffer<uint> bytes = ResourceDescriptorHeap[_besl_sets[0].x];"
+		);
+		assert_string_contains!(
+			shader,
+			"static RWStructuredBuffer<uint> shorts = ResourceDescriptorHeap[_besl_sets[0].x+1u];"
+		);
 		assert_string_contains!(shader, "bytes[(5) / 4u] >> (((5) % 4u) * 8u)) & 0xffu");
 		assert_string_contains!(shader, "shorts[(3) / 2u] >> (((3) % 2u) * 16u)) & 0xffffu");
 		assert_string_contains!(shader, "uint besl_packed_index_");
@@ -1183,8 +1300,14 @@ mod tests {
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main);
 		assert_string_contains!(shader, "[numthreads(8, 8, 1)]void besl_main(");
 		assert_string_contains!(shader, "uint32_t item_index=index_image[coord];");
-		assert_string_contains!(shader, "StructuredBuffer<Item> item_data : register(t0, space0);");
-		assert_string_contains!(shader, "RWStructuredBuffer<uint32_t> counter_buffer : register(u1, space0);");
+		assert_string_contains!(
+			shader,
+			"static StructuredBuffer<Item> item_data = ResourceDescriptorHeap[_besl_sets[0].x];"
+		);
+		assert_string_contains!(
+			shader,
+			"static RWStructuredBuffer<uint32_t> counter_buffer = ResourceDescriptorHeap[_besl_sets[0].x+1u];"
+		);
 		assert_string_contains!(shader, "uint32_t counter_index=item_data[item_index].counter_index;");
 		assert_string_contains!(
 			shader,
@@ -1240,7 +1363,7 @@ mod tests {
 						besl::Node::member("sun_direction", vec4f.clone()).into(),
 					],
 				},
-				2,
+				1,
 				true,
 				false,
 			)
@@ -1264,7 +1387,10 @@ mod tests {
 			shader,
 			"struct _parameters{float4x4 inverse_view_projection;float4 sun_direction;};"
 		);
-		assert_string_contains!(shader, "StructuredBuffer<_parameters> parameters : register(t2, space0);");
+		assert_string_contains!(
+			shader,
+			"static StructuredBuffer<_parameters> parameters = ResourceDescriptorHeap[_besl_sets[0].x+1u];"
+		);
 		assert_string_contains!(
 			shader,
 			"float4 texel=depth_texture.SampleLevel(depth_texture_sampler, uv, 0.0);"
@@ -1280,7 +1406,7 @@ mod tests {
 	}
 
 	#[test]
-	fn push_constants_and_flat_resources_use_space_zero() {
+	fn push_constants_take_b0_and_set_bases_take_b1() {
 		let script = r#"
 		main: fn () -> void {
 			push_constant;
@@ -1297,7 +1423,7 @@ mod tests {
 				besl::BindingTypes::Buffer {
 					members: vec![besl::Node::array("items", u32_type, 4)],
 				},
-				7,
+				0,
 				true,
 				false,
 			)
@@ -1307,7 +1433,11 @@ mod tests {
 		let main = root.get_main().expect("Expected main function");
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main);
 		assert_string_contains!(shader, "ConstantBuffer<PushConstant> push_constant : register(b0, space0);");
-		assert_string_contains!(shader, "StructuredBuffer<uint32_t> values : register(t7, space0);");
+		assert_string_contains!(shader, "cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; };");
+		assert_string_contains!(
+			shader,
+			"static StructuredBuffer<uint32_t> values = ResourceDescriptorHeap[_besl_sets[0].x];"
+		);
 		assert_string_does_not_contain!(shader, "vk::push_constant");
 	}
 
@@ -1626,8 +1756,14 @@ mod tests {
 			&root.get_main().expect("Expected main"),
 		);
 		// Read-only buffers bind as SRVs (`t`), writable ones as UAVs (`u`), and single-member buffers flatten to their element.
-		assert_string_contains!(shader, "StructuredBuffer<Item> item_data : register(t0, space0);");
-		assert_string_contains!(shader, "RWStructuredBuffer<uint32_t> counter_buffer : register(u1, space0);");
+		assert_string_contains!(
+			shader,
+			"static StructuredBuffer<Item> item_data = ResourceDescriptorHeap[_besl_sets[0].x];"
+		);
+		assert_string_contains!(
+			shader,
+			"static RWStructuredBuffer<uint32_t> counter_buffer = ResourceDescriptorHeap[_besl_sets[0].x+1u];"
+		);
 		assert_string_contains!(shader, "uint2 extent;output_image.GetDimensions(extent.x, extent.y);");
 		assert_string_contains!(shader, "float noise=frac(1.25);");
 		// HLSL `*` is component-wise, so BESL matrix-vector products must use `mul`.
@@ -1637,7 +1773,7 @@ mod tests {
 		// HLSL has no atomic store, so the store is an exchange whose previous value is discarded.
 		assert_string_contains!(shader, "InterlockedExchange(counter_buffer[item_index],2,besl_atomic_stored_");
 		assert_string_does_not_contain!(shader, "fract(");
-		assert_string_does_not_contain!(shader, "item_data : register(u0");
+		assert_string_does_not_contain!(shader, "RWStructuredBuffer<Item> item_data");
 	}
 
 	/// Verifies compare-exchange returns the previous value through HLSL's out parameter, with one temporary per call.

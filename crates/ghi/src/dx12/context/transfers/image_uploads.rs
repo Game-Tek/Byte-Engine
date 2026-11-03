@@ -362,9 +362,9 @@ impl Device {
 		unsafe {
 			command_list.BeginEvent(0, Some(encoded_name.as_ptr().cast()), encoded_size);
 		}
-		self.counters
+		self.native_counters
 			.debug_region_begin_count
-			.set(self.counters.debug_region_begin_count.get() + 1);
+			.set(self.native_counters.debug_region_begin_count.get() + 1);
 	}
 
 	pub(crate) fn end_debug_region(&self, command_buffer_handle: CommandBufferHandle) {
@@ -382,9 +382,9 @@ impl Device {
 		unsafe {
 			command_list.EndEvent();
 		}
-		self.counters
+		self.native_counters
 			.debug_region_end_count
-			.set(self.counters.debug_region_end_count.get() + 1);
+			.set(self.native_counters.debug_region_end_count.get() + 1);
 	}
 
 	pub(crate) fn record_image_upload(

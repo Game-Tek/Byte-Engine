@@ -24,7 +24,8 @@ FrameSet: layer {
 }
 ```
 
-Give each layer its own range of `binding` numbers, so layers that a shader takes together never collide.
+Number the layer's bindings from 0 without gaps. An array takes one number. Each layer has its own numbers, so layers
+that a shader takes together never collide.
 
 ## Take the layer in each shader
 

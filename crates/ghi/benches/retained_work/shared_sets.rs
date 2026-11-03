@@ -51,11 +51,13 @@ fn render(bencher: Bencher, pipelines: usize, table: Table) {
 			.device_accesses(DeviceAccesses::DeviceOnly),
 	);
 	// Each pipeline samples its own element of the shared table, so every one of them reads the set.
+	// The table is the set's only binding, so element `index` sits `index` descriptors past the set's resource base and
+	// its sampler `index` entries past the set's sampler base.
 	let pipelines: Vec<_> = (0..pipelines)
 		.map(|index| {
-			let glsl = format!("#version 450\n#pragma shader_stage(fragment)\nlayout(set=0,binding=0) uniform sampler2D textures[{TEXTURES}]; layout(location=0) out vec4 output_color; void main() {{ output_color = texture(textures[{index}], vec2(0.5)); }}");
+			let glsl = format!("#version 450\n#pragma shader_stage(fragment)\n#extension GL_EXT_descriptor_heap : require\n#extension GL_EXT_nonuniform_qualifier : require\nlayout(constant_id = 1984) const uint SET0 = 0u; layout(push_constant) uniform Sets {{ uvec2 sets[15]; }} push_constants; layout(descriptor_heap, descriptor_stride = 64) uniform texture2D textures[]; layout(descriptor_heap) uniform sampler samplers[]; layout(location=0) out vec4 output_color; void main() {{ uvec2 base = push_constants.sets[SET0]; output_color = texture(sampler2D(textures[base.x + {index}u], samplers[base.y + {index}u]), vec2(0.5)); }}");
 			let msl = format!("#include <metal_stdlib>\nusing namespace metal; struct Textures {{ texture2d<float> textures [[id(0)]][{TEXTURES}]; sampler samplers [[id({TEXTURES})]][{TEXTURES}]; }}; fragment float4 fragment_main(constant Textures& set [[buffer(16)]]) {{ return set.textures[{index}].sample(set.samplers[{index}], float2(0.5)); }}");
-			let hlsl = format!("Texture2D<float4> textures[{TEXTURES}] : register(t0, space0); SamplerState samplers[{TEXTURES}] : register(s0, space0); float4 fragment_main() : SV_TARGET0 {{ return textures[{index}].Sample(samplers[{index}], float2(0.5, 0.5)); }}");
+			let hlsl = format!("cbuffer _BeslSets : register(b1, space0) {{ uint4 _besl_sets[1]; }}; static Texture2D<float4> table_texture = ResourceDescriptorHeap[_besl_sets[0].x + {index}u]; static SamplerState table_sampler = SamplerDescriptorHeap[_besl_sets[0].y + {index}u]; float4 fragment_main() : SV_TARGET0 {{ return table_texture.Sample(table_sampler, float2(0.5, 0.5)); }}");
 			let source = ghi::shader::compile("benchmark fragment", ShaderSource::PlatformNative {
 				glsl: &glsl,
 				msl: &msl,

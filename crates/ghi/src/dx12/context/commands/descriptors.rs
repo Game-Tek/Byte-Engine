@@ -189,7 +189,67 @@ impl Device {
 		)
 	}
 
-	/// Transitions the concrete resources referenced by the active pipeline's retained set union.
+	/// Returns, for each set the pipeline's stages read, the frame copy for `sequence_index` of the bound set created
+	/// from the same layout, as an index into the device's descriptor sets.
+	///
+	/// # Panics
+	///
+	/// Panics when no bound set, or more than one, was created from a layout the pipeline reads.
+	pub(crate) fn resolve_bound_sets(
+		&self,
+		pipeline_handle: PipelineHandle,
+		sets: &[DescriptorSetHandle],
+		sequence_index: u8,
+	) -> SmallVec<[usize; 4]> {
+		let pipeline = &self.pipelines[pipeline_handle.index() as usize];
+		let layout = &self.pipeline_layouts[pipeline.layout.index() as usize];
+		layout
+			.sets
+			.iter()
+			.map(|pipeline_set| {
+				let identity = pipeline_set.layout.identity();
+				let mut matches = sets
+					.iter()
+					.filter(|set| self.descriptor_sets[set.index() as usize].layout.identity() == identity);
+				let set = *matches.next().unwrap_or_else(|| {
+					panic!(
+						"Missing descriptor set for layout `{}`. The most likely cause is that no set created from this layout was bound for the pipeline, or that a shader was built from another version of the layout. Bind a set created from the layout the shader declares.",
+						pipeline_set.layout.name(),
+					)
+				});
+				assert!(
+					matches.next().is_none(),
+					"Ambiguous descriptor sets for layout `{}`. The most likely cause is that two sets created from the same layout were bound for one pipeline. Bind one set per layout.",
+					pipeline_set.layout.name(),
+				);
+				self.descriptor_set_for_sequence(set, sequence_index).unwrap_or(set).index() as usize
+			})
+			.collect()
+	}
+
+	/// Calls `visit` with each retained descriptor that the pipeline's stages use in the resolved sets, and the layout
+	/// resource it fills.
+	fn visit_used_descriptors(
+		&self,
+		layout: &NativePipelineLayout,
+		resolved: &[usize],
+		mut visit: impl FnMut(ShaderResourceDescriptor, RetainedDescriptor),
+	) {
+		for (pipeline_set, &set_index) in layout.sets.iter().zip(resolved) {
+			let set = &self.descriptor_sets[set_index];
+			for (resource_index, &resource) in set.layout.resources().iter().enumerate() {
+				if pipeline_set.used & (1 << resource_index) == 0 {
+					continue;
+				}
+				let base = set.layout.element_base(resource_index) as usize;
+				for retained in set.descriptors[base..base + resource.count() as usize].iter().flatten() {
+					visit(resource, *retained);
+				}
+			}
+		}
+	}
+
+	/// Transitions the resources the bound sets give the pipeline into the states its stages use them in.
 	pub(crate) fn flush_pending_descriptor_texture_syncs(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
@@ -201,39 +261,17 @@ impl Device {
 			return;
 		};
 		let command_list = self.descriptor_command_list_for_recording(command_buffer_handle);
-		let Some(pipeline) = self.pipelines.get(pipeline_handle.index() as usize) else {
-			return;
-		};
+		let resolved = self.resolve_bound_sets(pipeline_handle, sets, sequence_index);
+		let pipeline = &self.pipelines[pipeline_handle.index() as usize];
 		let pipeline_kind = pipeline.kind;
-		let Some(layout) = self
-			.pipeline_layouts
-			.get(pipeline.layout.index() as usize)
-			.map(|layout| &layout.key)
-		else {
-			return;
-		};
+		let layout = &self.pipeline_layouts[pipeline.layout.index() as usize];
 
+		// The scratch list keeps its capacity in the command buffer, so binding allocates nothing once it has grown.
 		let mut retained =
 			std::mem::take(&mut self.command_buffers[command_buffer_handle.index() as usize].descriptor_sync_scratch);
-		for resource in &layout.resources {
-			for &set_handle in sets {
-				let Some(set_handle) = self.descriptor_set_for_sequence(set_handle, sequence_index) else {
-					continue;
-				};
-				let Some(descriptors) = self.descriptor_sets[set_handle.index() as usize]
-					.descriptors
-					.get(&resource.descriptor.slot())
-				else {
-					continue;
-				};
-				retained.extend(
-					descriptors
-						.values()
-						.copied()
-						.map(|descriptor| (resource.descriptor, descriptor)),
-				);
-			}
-		}
+		self.visit_used_descriptors(layout, &resolved, |resource, descriptor| {
+			retained.push((resource, descriptor))
+		});
 
 		// Complete deferred uploads before collecting barriers. Holding a batch across a copy command
 		// would move an earlier transition past the command that depends on it.
@@ -339,69 +377,41 @@ impl Device {
 		DescriptorAliasKey::Image(handle, if dynamic { sequence_index } else { 0 })
 	}
 
-	/// Collects active descriptors while proving that every repeated whole-resource binding is compatible.
+	/// Collects the resolved sets' used descriptors while proving that every repeated whole-resource binding is
+	/// compatible.
 	fn descriptor_alias_uses(
 		&self,
 		pipeline_handle: PipelineHandle,
-		sets: &[DescriptorSetHandle],
+		resolved: &[usize],
 		sequence_index: u8,
-	) -> SmallVec<[DescriptorAliasUse; 32]> {
+	) -> SmallVec<[DescriptorAliasUse; DESCRIPTOR_LINEAR_SEARCH_LIMIT]> {
 		let pipeline = &self.pipelines[pipeline_handle.index() as usize];
-		let layout = &self.pipeline_layouts[pipeline.layout.index() as usize].key;
+		let layout = &self.pipeline_layouts[pipeline.layout.index() as usize];
 		let pipeline_kind = pipeline.kind;
-		let capacity_hint = layout
-			.resources
-			.iter()
-			.map(|resource| resource.descriptor.count() as usize)
-			.sum();
-		let mut aliases = DescriptorAliasCollection::new(capacity_hint);
+		let mut aliases = DescriptorAliasCollection::new(DESCRIPTOR_LINEAR_SEARCH_LIMIT);
 
-		for resource in &layout.resources {
-			for &set_handle in sets {
-				let Some(set_handle) = self.descriptor_set_for_sequence(set_handle, sequence_index) else {
-					continue;
-				};
-				let Some(descriptors) = self.descriptor_sets[set_handle.index() as usize]
-					.descriptors
-					.get(&resource.descriptor.slot())
-				else {
-					continue;
-				};
-
-				for retained in descriptors.values() {
-					let resource_sequence = self.frame_index_with_offset(sequence_index, retained.frame_offset);
-					let alias = match retained.descriptor {
-						WriteData::Buffer { handle, .. } => DescriptorAliasUse {
-							key: self.descriptor_buffer_alias_key(handle, resource_sequence),
-							state: DescriptorAliasState::Buffer(Self::descriptor_buffer_state(
-								resource.descriptor,
-								pipeline_kind,
-							)),
-						},
-						WriteData::Image { handle, .. }
-						| WriteData::CombinedImageSampler {
-							image_handle: handle, ..
-						} => DescriptorAliasUse {
-							key: self.descriptor_image_alias_key(handle, resource_sequence),
-							state: DescriptorAliasState::Texture(Self::descriptor_image_state(
-								resource.descriptor,
-								pipeline_kind,
-							)),
-						},
-						WriteData::Swapchain(handle) => DescriptorAliasUse {
-							key: DescriptorAliasKey::Swapchain(handle, resource_sequence),
-							state: DescriptorAliasState::Texture(Self::descriptor_image_state(
-								resource.descriptor,
-								pipeline_kind,
-							)),
-						},
-						_ => continue,
-					};
-
-					aliases.merge_or_insert(alias);
-				}
-			}
-		}
+		self.visit_used_descriptors(layout, resolved, |resource, retained| {
+			let resource_sequence = self.frame_index_with_offset(sequence_index, retained.frame_offset);
+			let alias = match retained.descriptor {
+				WriteData::Buffer { handle, .. } => DescriptorAliasUse {
+					key: self.descriptor_buffer_alias_key(handle, resource_sequence),
+					state: DescriptorAliasState::Buffer(Self::descriptor_buffer_state(resource, pipeline_kind)),
+				},
+				WriteData::Image { handle, .. }
+				| WriteData::CombinedImageSampler {
+					image_handle: handle, ..
+				} => DescriptorAliasUse {
+					key: self.descriptor_image_alias_key(handle, resource_sequence),
+					state: DescriptorAliasState::Texture(Self::descriptor_image_state(resource, pipeline_kind)),
+				},
+				WriteData::Swapchain(handle) => DescriptorAliasUse {
+					key: DescriptorAliasKey::Swapchain(handle, resource_sequence),
+					state: DescriptorAliasState::Texture(Self::descriptor_image_state(resource, pipeline_kind)),
+				},
+				_ => return,
+			};
+			aliases.merge_or_insert(alias);
+		});
 
 		aliases.entries
 	}
@@ -559,7 +569,8 @@ impl Device {
 		}
 	}
 
-	/// Validates that bound retained sets form one complete, non-overlapping flat resource union.
+	/// Validates the bound sets against a pipeline: one set for each layout it reads, with every single resource its
+	/// stages use written.
 	pub(crate) fn validate_descriptor_sets(
 		&self,
 		pipeline_handle: PipelineHandle,
@@ -569,90 +580,47 @@ impl Device {
 		let _ = self.validate_descriptor_sets_and_collect_aliases(pipeline_handle, sets, sequence_index);
 	}
 
-	/// Validates retained sets and returns their already-merged aliases for the next binding check.
+	/// Validates the bound sets and returns their already-merged aliases for the next binding check.
+	///
+	/// A write already checks its kind and array element against its set's layout, so only completeness and the
+	/// native requirements of each resource remain.
 	fn validate_descriptor_sets_and_collect_aliases(
 		&self,
 		pipeline_handle: PipelineHandle,
 		sets: &[DescriptorSetHandle],
 		sequence_index: u8,
 	) -> SmallVec<[DescriptorAliasUse; DESCRIPTOR_LINEAR_SEARCH_LIMIT]> {
+		let resolved = self.resolve_bound_sets(pipeline_handle, sets, sequence_index);
 		let pipeline = &self.pipelines[pipeline_handle.index() as usize];
-		let layout = &self.pipeline_layouts[pipeline.layout.index() as usize].key;
-		let sequence_sets = sets
-			.iter()
-			.map(|&set| self.descriptor_set_for_sequence(set, sequence_index).unwrap_or(set))
-			.collect::<SmallVec<[DescriptorSetHandle; 8]>>();
+		let layout = &self.pipeline_layouts[pipeline.layout.index() as usize];
 
-		for &set_handle in &sequence_sets {
-			let set = &self.descriptor_sets[set_handle.index() as usize];
-			for &slot in set.descriptors.keys() {
-				// Pipeline resources are sorted and non-overlapping, so only the insertion point and its predecessor can match.
-				let slot_index = slot.index();
-				let insertion_index = layout
-					.resources
-					.partition_point(|resource| resource.descriptor.slot().index() < slot_index);
-				if layout
-					.resources
-					.get(insertion_index)
-					.is_some_and(|resource| resource.descriptor.slot() == slot)
-				{
+		for (pipeline_set, &set_index) in layout.sets.iter().zip(&resolved) {
+			let set = &self.descriptor_sets[set_index];
+			for (resource_index, &resource) in set.layout.resources().iter().enumerate() {
+				// An array may be populated in part; a single resource a stage uses must be written.
+				if pipeline_set.used & (1 << resource_index) == 0 || resource.count() != 1 {
 					continue;
 				}
-				let is_array_interior = insertion_index.checked_sub(1).is_some_and(|previous_index| {
-					let descriptor = layout.resources[previous_index].descriptor;
-					descriptor.slot().index() < slot_index && slot_index < descriptor.range_end()
-				});
-
 				assert!(
-					!is_array_interior,
-					"Invalid retained descriptor slot. The most likely cause is that an array element was written as an interior flat slot instead of using array_element at the array's base slot.",
-				);
-				// Retained sets can be shared by several passes, so descriptors outside this pipeline interface remain dormant.
-			}
-		}
-
-		for resource in &layout.resources {
-			let owners = sequence_sets
-				.iter()
-				.filter_map(|set_handle| {
-					self.descriptor_sets[set_handle.index() as usize]
-						.descriptors
-						.get(&resource.descriptor.slot())
-				})
-				.collect::<SmallVec<[&HashMap<u32, RetainedDescriptor>; 4]>>();
-
-			assert!(
-				owners.len() <= 1,
-				"Overlapping retained descriptor sets. The most likely cause is that two bound sets own the same active shader resource.",
-			);
-			if resource.descriptor.count() == 1 {
-				assert!(
-					owners.first().is_some_and(|descriptors| descriptors.contains_key(&0)),
-					"Missing retained descriptor at resource slot {}. The most likely cause is that a scalar pipeline resource was not written before rendering.",
-					resource.descriptor.slot().index(),
+					set.descriptors[set.layout.element_base(resource_index) as usize].is_some(),
+					"Missing descriptor at resource slot {} of layout `{}`. The most likely cause is that a resource the pipeline uses was not written before rendering. Write the resource into the set before binding it.",
+					resource.slot().index(),
+					set.layout.name(),
 				);
 			}
-			if let Some(descriptors) = owners.first() {
-				for (&array_element, retained) in descriptors.iter() {
-					assert!(
-						array_element < resource.descriptor.count(),
-						"Descriptor array element is out of range. The most likely cause is that a retained write exceeded the shader resource count.",
-					);
-					assert!(
-						retained.descriptor.matches_kind(resource.descriptor.kind()),
-						"Descriptor kind mismatch. The most likely cause is that a retained write does not match the active shader resource interface.",
-					);
-					self.validate_descriptor_resource(resource.descriptor, *retained, sequence_index);
-				}
-			}
 		}
+		self.visit_used_descriptors(layout, &resolved, |resource, retained| {
+			self.validate_descriptor_resource(resource, retained, sequence_index)
+		});
 
-		// Descriptor tables expose every retained view to one draw or dispatch. Validate repeated
-		// resources as one simultaneous access contract before any barrier or native heap write.
-		self.descriptor_alias_uses(pipeline_handle, sets, sequence_index)
+		// Every used descriptor is visible to one draw or dispatch. Validate repeated resources as one simultaneous
+		// access contract before any barrier or root constant is recorded.
+		self.descriptor_alias_uses(pipeline_handle, &resolved, sequence_index)
 	}
 
-	pub(crate) fn bind_descriptor_heaps_and_tables(
+	/// Gives the pipeline's stages the bound sets: writes the descriptors of each resolved frame copy that changed
+	/// since it was last bound, then each stage's set bases into its root constants.
+	pub(crate) fn bind_descriptor_sets_native(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		pipeline_handle: Option<PipelineHandle>,
@@ -663,100 +631,45 @@ impl Device {
 			return;
 		};
 		let command_list = self.descriptor_command_list_for_recording(command_buffer_handle);
-		let Some(pipeline) = self.pipelines.get(pipeline_handle.index() as usize) else {
-			return;
-		};
-		let layout_handle = pipeline.layout;
-		let pipeline_kind = pipeline.kind;
+		let resolved = self.resolve_bound_sets(pipeline_handle, sets, sequence_index);
+		for &set_index in &resolved {
+			self.write_stale_descriptors(set_index);
+		}
 
-		let Some(materialization) = self.materialize_descriptor_heaps(layout_handle, sets, sequence_index) else {
-			return;
-		};
-		self.retain_descriptor_materialization(command_buffer_handle, &materialization);
-		let mut heaps = [None, None];
-		let mut heap_count = 0usize;
-		if let Some(heap) = materialization.cbv_srv_uav_heap.as_ref() {
-			heaps[heap_count] = Some(heap.native.clone());
-			heap_count += 1;
-		}
-		if let Some(heap) = materialization.sampler_heap.as_ref() {
-			heaps[heap_count] = Some(heap.native.clone());
-			heap_count += 1;
-		}
-		if heap_count == 0 {
-			return;
-		}
-		let cbv_srv_uav_identity = materialization
-			.cbv_srv_uav_heap
-			.as_ref()
-			.map(|heap| heap.native.as_raw() as usize);
-		let sampler_identity = materialization
-			.sampler_heap
-			.as_ref()
-			.map(|heap| heap.native.as_raw() as usize);
-		let heaps_changed = self
-			.command_buffers
-			.get(command_buffer_handle.index() as usize)
-			.is_none_or(|command_buffer| {
-				command_buffer.bound_cbv_srv_uav_heap != cbv_srv_uav_identity
-					|| command_buffer.bound_sampler_heap != sampler_identity
-			});
-
-		if heaps_changed {
-			unsafe {
-				command_list.SetDescriptorHeaps(&heaps[..heap_count]);
-			}
-			if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
-				command_buffer.bound_cbv_srv_uav_heap = cbv_srv_uav_identity;
-				command_buffer.bound_sampler_heap = sampler_identity;
-			}
-			self.counters.descriptor_heap_bind_count += 1;
-		}
-		let Some((resource_table_root, sampler_table_root)) = self
-			.pipeline_layouts
-			.get(layout_handle.index() as usize)
-			.map(|layout| (layout.resource_table_root, layout.sampler_table_root))
-		else {
-			return;
-		};
-		let mut table_binds = 0;
-		for (root_parameter_index, sampler_heap) in [(resource_table_root, false), (sampler_table_root, true)] {
-			let Some(root_parameter_index) = root_parameter_index else {
-				continue;
-			};
-			let heap = if sampler_heap {
-				materialization.sampler_heap.as_ref()
-			} else {
-				materialization.cbv_srv_uav_heap.as_ref()
-			};
-			let Some(heap) = heap else {
-				continue;
-			};
-			let heap_type = if sampler_heap {
-				D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER
-			} else {
-				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
-			};
-			let handle = self.descriptor_gpu_handle(heap, heap_type, 0);
-			unsafe {
-				match pipeline_kind {
-					PipelineKind::Compute => command_list.SetComputeRootDescriptorTable(root_parameter_index, handle),
-					PipelineKind::Raster => command_list.SetGraphicsRootDescriptorTable(root_parameter_index, handle),
+		let pipeline = &self.pipelines[pipeline_handle.index() as usize];
+		let compute_root = matches!(pipeline.kind, PipelineKind::Compute);
+		let layout = &self.pipeline_layouts[pipeline.layout.index() as usize];
+		let mut writes = 0;
+		for stage in &layout.stages {
+			// Set `s` keeps its resource base at value `2s` and its sampler base after it; sets the stage doesn't read
+			// and the padding of the last `uint4` stay zero.
+			let mut bases = [0u32; 32];
+			for (position, set) in stage.sets.iter().enumerate() {
+				if let Some(set) = set {
+					let set = &self.descriptor_sets[resolved[*set as usize]];
+					bases[position * 2] = set.resource_base;
+					bases[position * 2 + 1] = set.sampler_base;
 				}
 			}
-			table_binds += 1;
+			let count = Self::set_base_dwords(stage.sets.len());
+			unsafe {
+				if compute_root {
+					command_list.SetComputeRoot32BitConstants(stage.root_parameter, count, bases.as_ptr().cast(), 0);
+				} else {
+					command_list.SetGraphicsRoot32BitConstants(stage.root_parameter, count, bases.as_ptr().cast(), 0);
+				}
+			}
+			writes += 1;
 			#[cfg(test)]
 			{
-				self.counters.descriptor_table_bind_records.push(DescriptorTableBindRecord {
-					root_parameter_index,
-					set_index: 0,
-					binding_index: 0,
-					sampler_heap,
-					heap_slot: 0,
+				self.native_counters.set_base_write_records.push(SetBaseWriteRecord {
+					root_parameter_index: stage.root_parameter,
+					bases: bases[..stage.sets.len() * 2].iter().copied().collect(),
+					compute_root,
 				});
 			}
 		}
-		self.counters.descriptor_table_bind_count += table_binds;
+		self.native_counters.set_base_write_count += writes;
 	}
 
 	pub(crate) fn write_push_constants_native(
@@ -801,7 +714,6 @@ impl Device {
 		);
 		assert!(
 			layout
-				.key
 				.push_constant_ranges
 				.iter()
 				.any(|range| offset >= range.offset && end <= range.offset.saturating_add(range.size)),
@@ -828,15 +740,17 @@ impl Device {
 				);
 			}
 		}
-		self.counters.push_constant_write_count += 1;
+		self.native_counters.push_constant_write_count += 1;
 		#[cfg(test)]
 		{
-			self.counters.push_constant_write_records.push(PushConstantWriteRecord {
-				root_parameter_index,
-				offset,
-				size: bytes.len() as u32,
-				compute_root,
-			});
+			self.native_counters
+				.push_constant_write_records
+				.push(PushConstantWriteRecord {
+					root_parameter_index,
+					offset,
+					size: bytes.len() as u32,
+					compute_root,
+				});
 		}
 	}
 }

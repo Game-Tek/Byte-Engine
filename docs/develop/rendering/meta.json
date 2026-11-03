@@ -13,6 +13,7 @@
 		"depth-of-field",
 		"ray-tracing",
 		"shader-variants",
+		"descriptor-sets",
 		"debug-views"
 	]
 }

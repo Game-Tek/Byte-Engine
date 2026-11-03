@@ -29,15 +29,75 @@ mod tests {
 
 		let shader = generate(&ShaderGenerationSettings::vertex(), &main);
 
-		// We have to split the assertions because the order of the bindings is not guaranteed.
-		assert_string_contains!(shader, "layout(set=0,binding=0,scalar) buffer _buff{float member;}buff;");
-		assert_string_contains!(shader, "layout(set=0,binding=1,r8) writeonly uniform image2D image;");
-		assert_string_contains!(shader, "layout(set=0,binding=2) uniform sampler2D besl_texture;");
-		assert_string_contains!(shader, "void main(){buff;image;besl_texture;}");
+		// Every descriptor aliases the heap, and code reads it at its set's base index plus its offset in the set.
+		assert_string_contains!(shader, "#extension GL_EXT_descriptor_heap:require");
+		assert_string_contains!(
+			shader,
+			"layout(push_constant,scalar)uniform PushConstant{uvec2 _besl_sets[15];}push_constant;"
+		);
+		assert_string_contains!(shader, "layout(descriptor_heap)uniform sampler _besl_samplers[];");
+		assert_string_contains!(shader, "layout(constant_id=1984)const uint _besl_set0=0u;");
+		assert_string_contains!(
+			shader,
+			"layout(descriptor_heap,descriptor_stride=64,scalar) buffer _buff{float member;}buff[];"
+		);
+		assert_string_contains!(
+			shader,
+			"layout(descriptor_heap,descriptor_stride=64,r8) writeonly uniform image2D image[];"
+		);
+		assert_string_contains!(
+			shader,
+			"layout(descriptor_heap,descriptor_stride=64) uniform texture2D besl_texture[];"
+		);
 		assert!(!shader.contains("GL_EXT_shader_explicit_arithmetic_types_float16"));
+		assert!(!shader.contains("set="));
 
-		// Assert that main is the last element in the shader string, which means that the bindings are before it.
-		shader.ends_with("void main(){buff;image;besl_texture;}");
+		// The texture's sampler is the first sampler of the set, which the sampler heap holds after the set's base.
+		assert!(shader.ends_with(
+			"void main(){buff[push_constant._besl_sets[_besl_set0].x+0u];image[push_constant._besl_sets[_besl_set0].x+1u];sampler2D(besl_texture[push_constant._besl_sets[_besl_set0].x+2u],_besl_samplers[push_constant._besl_sets[_besl_set0].y+0u]);}"
+		));
+	}
+
+	/// Verifies a layer's descriptors and the shader's own ones read their own sets' base indices, each found through
+	/// the specialization constant of its set position, and that push constants start after the base indices.
+	#[test]
+	fn layered_descriptors_read_their_sets_base_indices_in_glsl() {
+		let shader = lower_fixture(
+			r#"
+			nearest_texel: sampler<{ filter: nearest, mip_filter: nearest, address: repeat }>;
+			Scene: layer {
+				positions: descriptor<{ type: vec2f[], binding: 0, access: read }>;
+				albedo: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+				tiles: descriptor<{ type: Texture2D, binding: 2, access: read, sampler: nearest_texel }>;
+				constants: push_constant { scale: f32 };
+			}
+			result: descriptor<{ type: StorageImage<rgba16f>, binding: 0, access: write }>;
+			main: fn (input: StageInput, scene: Scene) -> void {
+				let uv: vec2f = scene.positions[input.thread_id.x];
+				write(result, input.thread_id, sample(scene.albedo, uv) * sample(scene.tiles, uv) * scene.constants.scale);
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
+		);
+
+		assert_string_contains!(
+			shader,
+			"layout(push_constant,scalar)uniform PushConstant{uvec2 _besl_sets[15];layout(offset=128)float scale;}push_constant;"
+		);
+		assert_string_contains!(shader, "layout(constant_id=1984)const uint _besl_set0=0u;");
+		assert_string_contains!(shader, "layout(constant_id=1985)const uint _besl_set1=1u;");
+		assert_string_contains!(
+			shader,
+			"texture(sampler2D(albedo[push_constant._besl_sets[_besl_set0].x+1u],_besl_samplers[push_constant._besl_sets[_besl_set0].y+0u]),uv)"
+		);
+		// A fixed sampler sits at the sampler heap index its state decides: nearest, nearest, average, repeat.
+		assert_string_contains!(
+			shader,
+			"texture(sampler2D(tiles[push_constant._besl_sets[_besl_set0].x+2u],_besl_samplers[12u]),uv)"
+		);
+		assert_string_contains!(shader, "imageStore(result[push_constant._besl_sets[_besl_set1].x+0u],");
+
+		compile(&shader, "besl-layered-descriptors");
 	}
 
 	#[test]
@@ -46,11 +106,20 @@ mod tests {
 
 		assert_string_contains!(
 			shader,
-			"layout(set=0,binding=1,scalar) readonly buffer _instances{Instance instances[];};"
+			"layout(descriptor_heap,descriptor_stride=64,scalar) readonly buffer _instances{Instance instances[];}instances[];"
 		);
-		assert_string_contains!(shader, "layout(set=0,binding=0) uniform sampler2DArray sprites;");
-		assert_string_contains!(shader, "Instance instance=instances[");
-		assert_string_contains!(shader, "texture(sprites,vec3(");
+		assert_string_contains!(
+			shader,
+			"layout(descriptor_heap,descriptor_stride=64) uniform texture2DArray sprites[];"
+		);
+		assert_string_contains!(
+			shader,
+			"Instance instance=instances[push_constant._besl_sets[_besl_set0].x+1u].instances["
+		);
+		assert_string_contains!(
+			shader,
+			"texture(sampler2DArray(sprites[push_constant._besl_sets[_besl_set0].x+0u],_besl_samplers[push_constant._besl_sets[_besl_set0].y+0u]),vec3("
+		);
 		assert_string_contains!(shader, "float(instance.sprite_id)");
 		compile(&shader, "besl-runtime-array-texture-layer");
 	}
@@ -64,19 +133,19 @@ mod tests {
 
 		assert_string_contains!(
 			shader,
-			"layout(set=0,binding=0,scalar) readonly buffer _positions{vec3 positions[];};"
+			"layout(descriptor_heap,descriptor_stride=64,scalar) readonly buffer _positions{vec3 positions[];}positions[];"
 		);
 		assert_string_contains!(
 			shader,
-			"layout(set=0,binding=1,scalar) readonly buffer _indices{uint16_t indices[];};"
+			"layout(descriptor_heap,descriptor_stride=64,scalar) readonly buffer _indices{uint16_t indices[];}indices[];"
 		);
 		assert_string_contains!(
 			shader,
-			"layout(set=0,binding=2,scalar) readonly buffer _corners{uint8_t corners[];};"
+			"layout(descriptor_heap,descriptor_stride=64,scalar) readonly buffer _corners{uint8_t corners[];}corners[];"
 		);
 		assert_string_contains!(
 			shader,
-			"layout(set=0,binding=3,scalar) writeonly buffer _results{uint32_t results[];};"
+			"layout(descriptor_heap,descriptor_stride=64,scalar) writeonly buffer _results{uint32_t results[];}results[];"
 		);
 		compile(&shader, "besl-scalar-runtime-array");
 	}
@@ -94,15 +163,22 @@ mod tests {
 			}
 		"#;
 		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
-		assert_string_contains!(shader, "textureGather(depth_texture,");
-		assert_string_contains!(shader, "textureGather(array_depth_texture,vec3(");
+		assert_string_contains!(
+			shader,
+			"textureGather(sampler2D(depth_texture[push_constant._besl_sets[_besl_set0].x+0u],_besl_samplers[push_constant._besl_sets[_besl_set0].y+0u]),"
+		);
+		assert_string_contains!(
+			shader,
+			"textureGather(sampler2DArray(array_depth_texture[push_constant._besl_sets[_besl_set0].x+1u],_besl_samplers[push_constant._besl_sets[_besl_set0].y+1u]),vec3("
+		);
 
 		compile(&shader, "besl-gather");
 	}
 
-	/// Verifies a texture parameter needs no companion in GLSL, whose sampler types carry their own.
+	/// Verifies a texture parameter takes the heap indices of its texture and sampler, because glslang can't pass a heap
+	/// alias's element to a function, and that functions pass both on and read them through heap aliases of the type.
 	#[test]
-	fn texture_parameters_pass_as_combined_samplers_in_glsl() {
+	fn texture_parameters_pass_heap_indices_in_glsl() {
 		let source = r#"
 			array_depth_texture: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
 			quad_maximum: fn (depth_map: ArrayTexture2D, uv: vec2f, layer: u32) -> f32 {
@@ -119,9 +195,21 @@ mod tests {
 		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
 		assert_string_contains!(
 			shader,
-			"float quad_maximum(in sampler2DArray depth_map,vec2 uv,uint32_t layer)"
+			"layout(descriptor_heap,descriptor_stride=64) uniform texture2DArray _besl_texture2DArray[];"
 		);
-		assert_string_contains!(shader, "first_layer_maximum(array_depth_texture,vec2(");
+		assert_string_contains!(
+			shader,
+			"float quad_maximum(uint depth_map,uint depth_map_sampler,vec2 uv,uint32_t layer)"
+		);
+		assert_string_contains!(
+			shader,
+			"textureGather(sampler2DArray(_besl_texture2DArray[nonuniformEXT(depth_map)],_besl_samplers[nonuniformEXT(depth_map_sampler)]),vec3(uv,float(layer)))"
+		);
+		assert_string_contains!(shader, "return quad_maximum(depth_map,depth_map_sampler,uv,0);");
+		assert_string_contains!(
+			shader,
+			"first_layer_maximum(push_constant._besl_sets[_besl_set0].x+0u,push_constant._besl_sets[_besl_set0].y+0u,vec2("
+		);
 
 		compile(&shader, "besl-texture-parameter");
 	}
@@ -136,7 +224,10 @@ mod tests {
 			}
 		"#;
 		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
-		assert_string_contains!(shader, "layout(set=0,binding=0,r16) writeonly uniform image2D cells");
+		assert_string_contains!(
+			shader,
+			"layout(descriptor_heap,descriptor_stride=64,r16) writeonly uniform image2D cells[]"
+		);
 
 		compile(&shader, "besl-unorm-storage-image");
 	}
@@ -148,7 +239,7 @@ mod tests {
 		let source = r#"
 			ids: descriptor<{ type: StorageImage<r32ui>, binding: 0, access: read }>;
 			layers: descriptor<{ type: StorageImage, binding: 1, access: read, count: 2 }>;
-			result: descriptor<{ type: StorageImage, binding: 3, access: write }>;
+			result: descriptor<{ type: StorageImage, binding: 2, access: write }>;
 			main: fn () -> void {
 				let coord: vec2u = vec2u(1, 2);
 				guard_image_bounds(ids, coord);
@@ -160,14 +251,28 @@ mod tests {
 		"#;
 		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
 
-		assert_string_contains!(shader, "layout(set=0,binding=0) uniform utexture2D ids;");
-		assert_string_contains!(shader, "layout(set=0,binding=1) uniform texture2D layers[2];");
-		assert_string_contains!(shader, "layout(set=0,binding=3) writeonly uniform image2D result;");
-		assert_string_contains!(shader, ".x>=uint(textureSize(ids,0).x)");
-		assert_string_contains!(shader, "uvec2(textureSize(ids,0))");
-		assert_string_contains!(shader, "texelFetch(ids,ivec2(coord),0).x");
-		assert_string_contains!(shader, "texelFetch(layers[");
-		assert_string_contains!(shader, "imageStore(result,");
+		let ids = "ids[push_constant._besl_sets[_besl_set0].x+0u]";
+		assert_string_contains!(
+			shader,
+			"layout(descriptor_heap,descriptor_stride=64) uniform utexture2D ids[];"
+		);
+		assert_string_contains!(
+			shader,
+			"layout(descriptor_heap,descriptor_stride=64) uniform texture2D layers[];"
+		);
+		assert_string_contains!(
+			shader,
+			"layout(descriptor_heap,descriptor_stride=64) writeonly uniform image2D result[];"
+		);
+		assert_string_contains!(shader, &format!(".x>=uint(textureSize({ids},0).x)"));
+		assert_string_contains!(shader, &format!("uvec2(textureSize({ids},0))"));
+		assert_string_contains!(shader, &format!("texelFetch({ids},ivec2(coord),0).x"));
+		// The array holds two descriptors, so the image after it is the set's fourth.
+		assert_string_contains!(
+			shader,
+			"texelFetch(layers[nonuniformEXT(push_constant._besl_sets[_besl_set0].x+1u+(id%2))],"
+		);
+		assert_string_contains!(shader, "imageStore(result[push_constant._besl_sets[_besl_set0].x+3u],");
 
 		compile(&shader, "besl-read-only-storage-image");
 	}
@@ -176,9 +281,17 @@ mod tests {
 	fn descriptor_array_elements_reach_every_texture_intrinsic_in_glsl() {
 		let shader = lower_fixture(super::super::DESCRIPTOR_ARRAY_FRAGMENT, &ShaderGenerationSettings::fragment());
 
-		assert_string_contains!(shader, "uvec2(textureSize(textures[nonuniformEXT(items[index].slot)],0))");
-		assert_string_contains!(shader, "textureLod(textures[nonuniformEXT(index+1)],uv,0.0)");
-		assert_string_contains!(shader, "texture(textures[nonuniformEXT(items[index].slot)],uv)");
+		let items = "items[push_constant._besl_sets[_besl_set0].x+0u].items";
+		// The element's texture and sampler are both picked past the array's first, with an index that may diverge.
+		let element = |index: &str| {
+			format!(
+				"sampler2D(textures[nonuniformEXT(push_constant._besl_sets[_besl_set0].x+1u+({index}))],_besl_samplers[nonuniformEXT(push_constant._besl_sets[_besl_set0].y+0u+({index}))])"
+			)
+		};
+		let slot = format!("{items}[index].slot");
+		assert_string_contains!(shader, &format!("uvec2(textureSize({},0))", element(&slot)));
+		assert_string_contains!(shader, &format!("textureLod({},uv,0.0)", element("index+1")));
+		assert_string_contains!(shader, &format!("texture({},uv)", element(&slot)));
 
 		compile(&shader, "besl-descriptor-array-intrinsics");
 	}
@@ -213,7 +326,11 @@ mod tests {
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
 		);
 
-		assert_string_contains!(shader, "buffer _buffer{float besl_half;uint32_t besl_output;}besl_buffer;");
+		assert_string_contains!(shader, "buffer _buffer{float besl_half;uint32_t besl_output;}besl_buffer[];");
+		assert_string_contains!(
+			shader,
+			"besl_buffer[push_constant._besl_sets[_besl_set0].x+0u].besl_half=besl_float;"
+		);
 		assert_string_contains!(shader, "float besl_texture(float besl_input,float besl_besl_float)");
 		assert_string_contains!(shader, "float besl_min=min(besl_input,besl_besl_float);");
 		assert_string_contains!(shader, "struct besl_sampler{float besl_half;uint32_t besl_output;};");
@@ -245,12 +362,15 @@ mod tests {
 	#[test]
 	fn source_unformatted_storage_image_descriptor_omits_glsl_format() {
 		let shader = lower_fixture(
-			"image: descriptor<{ type: StorageImage, binding: 5, access: write }>; main: fn () -> void { image; }",
+			"image: descriptor<{ type: StorageImage, binding: 0, access: write }>; main: fn () -> void { image; }",
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
 		);
-		assert_string_contains!(shader, "layout(set=0,binding=5) writeonly uniform image2D image;");
+		assert_string_contains!(
+			shader,
+			"layout(descriptor_heap,descriptor_stride=64) writeonly uniform image2D image[];"
+		);
 		assert!(
-			!shader.contains("binding=5,"),
+			!shader.contains("descriptor_stride=64,)"),
 			"Unformatted storage image emitted a dangling GLSL format comma: {shader}"
 		);
 	}
@@ -262,7 +382,7 @@ mod tests {
 			&generator::tests::vec4f_meshlet_binding(),
 		);
 		assert_string_contains!(shader, "vec4 center_radius;vec4 cone_apex_cutoff;");
-		assert_string_contains!(shader, "layout(set=0,binding=0,scalar)");
+		assert_string_contains!(shader, "layout(descriptor_heap,descriptor_stride=64,scalar)");
 	}
 
 	#[test]
@@ -271,7 +391,10 @@ mod tests {
 			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
 			&generator::tests::same_named_buffer_member_access(),
 		);
-		assert_string_contains!(shader, "pixel_mapping[0]=meshes[1];");
+		assert_string_contains!(
+			shader,
+			"pixel_mapping[push_constant._besl_sets[_besl_set0].x+1u].pixel_mapping[0]=meshes[push_constant._besl_sets[_besl_set0].x+0u].meshes[1];"
+		);
 	}
 
 	/// Verifies each specialization becomes a constant at its declared id with a typed default.
@@ -358,7 +481,7 @@ mod tests {
 		let shader = generate(&ShaderGenerationSettings::vertex(), &generator::tests::push_constant());
 		assert_string_contains!(
 			shader,
-			"layout(push_constant,scalar)uniform PushConstant{uint32_t material_id;}push_constant;void main(){push_constant;}"
+			"layout(push_constant,scalar)uniform PushConstant{uvec2 _besl_sets[15];layout(offset=128)uint32_t material_id;}push_constant;void main(){push_constant;}"
 		);
 	}
 
@@ -604,11 +727,12 @@ mod tests {
 			"#,
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
 		);
-		assert_string_contains!(shader, "((~bodies[item].bits)^(flag?1:2))");
+		let body = "bodies[push_constant._besl_sets[_besl_set0].x+0u].bodies[item]";
+		assert_string_contains!(shader, &format!("((~{body}.bits)^(flag?1:2))"));
 		// A nested negation keeps its parentheses, so `- -x` never prints as the decrement `--x`.
-		assert_string_contains!(shader, "((-(-bodies[item].velocity))-(-bodies[item].velocity))");
+		assert_string_contains!(shader, &format!("((-(-{body}.velocity))-(-{body}.velocity))"));
 		// GLSL does not narrow float literals to float16_t, so a literal branch beside an f16 branch is cast.
-		assert_string_contains!(shader, "((!flag)?bodies[item].weight:float16_t(1.0))");
+		assert_string_contains!(shader, &format!("((!flag)?{body}.weight:float16_t(1.0))"));
 		compile(&shader, "besl-prefix-operators-and-if-values");
 	}
 
@@ -630,13 +754,19 @@ mod tests {
 		assert_string_contains!(shader, "#version 460 core\n#pragma shader_stage(raygen)\n");
 		assert_string_contains!(shader, "#extension GL_EXT_ray_tracing:require");
 		assert_string_contains!(shader, "#extension GL_EXT_ray_query:require");
-		assert_string_contains!(shader, "layout(set=0,binding=0) uniform accelerationStructureEXT scene;");
+		assert_string_contains!(
+			shader,
+			"layout(descriptor_heap,descriptor_stride=64) uniform accelerationStructureEXT scene[];"
+		);
 		// The callable data carries the payload and the hit, and `invoke` calls the hit's record.
 		assert_string_contains!(shader, "struct _besl_call{SurfaceHit payload;Hit hit;};");
 		assert_string_contains!(shader, "layout(location=0) callableDataEXT _besl_call _besl_call_data;");
 		assert_string_contains!(shader, "executeCallableEXT(hit.record,0)");
 		assert_string_contains!(shader, "return _besl_invoke(hit,SurfaceHit(");
-		assert_string_contains!(shader, "_besl_trace_occlusion(scene,255,");
+		assert_string_contains!(
+			shader,
+			"_besl_trace_occlusion(scene[push_constant._besl_sets[_besl_set0].x+0u],255,"
+		);
 		assert_string_contains!(shader, "gl_LaunchIDEXT.x");
 		assert_string_contains!(shader, "gl_LaunchSizeEXT.x");
 
@@ -683,7 +813,10 @@ mod tests {
 
 		assert_string_contains!(shader, "#version 460 core\n#pragma shader_stage(compute)\n");
 		assert_string_does_not_contain!(shader, "GL_EXT_ray_tracing");
-		assert_string_contains!(shader, "Hit hit=_besl_intersect(scene,1,origin,");
+		assert_string_contains!(
+			shader,
+			"Hit hit=_besl_intersect(scene[push_constant._besl_sets[_besl_set0].x+0u],1,origin,"
+		);
 		assert_string_contains!(shader, "rebuilt.besl_distance");
 
 		compile(&shader, "besl-ray-queries");
@@ -715,7 +848,7 @@ mod tests {
 	fn modern_half_and_integer_atomics_lower_to_portable_glsl() {
 		let source = r#"
 			Counters: struct { buffer_value: atomicu32, }
-			counters: descriptor<{ type: Counters, binding: 7, access: read_write }>;
+			counters: descriptor<{ type: Counters, binding: 0, access: read_write }>;
 			unsigned_value: workgroup<atomicu32>;
 			signed_value: workgroup<atomici32>;
 			main: fn () -> void {
@@ -749,7 +882,10 @@ mod tests {
 		// Signed atomics must stay signed so `atomic_min` compares as signed integers.
 		assert_string_contains!(shader, "shared int32_t signed_value;");
 		// GLSL has no atomic load, so a load is an add of zero.
-		assert_string_contains!(shader, "atomicAdd(counters.buffer_value,0u)");
+		assert_string_contains!(
+			shader,
+			"atomicAdd(counters[push_constant._besl_sets[_besl_set0].x+0u].buffer_value,0u)"
+		);
 		for operation in [
 			"atomicExchange(",
 			"atomicAdd(",
@@ -789,10 +925,13 @@ mod tests {
 	#[test]
 	fn source_storage_image_descriptor_emits_explicit_glsl_format() {
 		let shader = lower_fixture(
-			"image: descriptor<{ type: StorageImage<rgba16f>, binding: 4, access: write }>; main: fn () -> void { image; }",
+			"image: descriptor<{ type: StorageImage<rgba16f>, binding: 0, access: write }>; main: fn () -> void { image; }",
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
 		);
-		assert_string_contains!(shader, "layout(set=0,binding=4,rgba16f) writeonly uniform image2D image;");
+		assert_string_contains!(
+			shader,
+			"layout(descriptor_heap,descriptor_stride=64,rgba16f) writeonly uniform image2D image[];"
+		);
 	}
 
 	/// Verifies `fetch` reads an exact texel through `texelFetch` with signed coordinates and an explicit mip level.
@@ -802,7 +941,10 @@ mod tests {
 			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
 			&generator::tests::texel_fetch(),
 		);
-		assert_string_contains!(shader, "vec4 texel=texelFetch(besl_texture,ivec2(coord),0);");
+		assert_string_contains!(
+			shader,
+			"vec4 texel=texelFetch(sampler2D(besl_texture[push_constant._besl_sets[_besl_set0].x+0u],_besl_samplers[push_constant._besl_sets[_besl_set0].y+0u]),ivec2(coord),0);"
+		);
 
 		compile(&shader, "besl-fetch");
 	}

@@ -208,7 +208,7 @@ impl Device {
 			BufferBarrierState::COMMON,
 		);
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.counters.buffer_copy_count += 1;
+		self.native_counters.buffer_copy_count += 1;
 	}
 
 	pub(crate) fn record_buffer_clear(
@@ -249,11 +249,10 @@ impl Device {
 				);
 			}
 			unsafe {
-				self.bind_active_staged_descriptor_heaps(command_buffer_handle);
 				command_list.ClearUnorderedAccessViewUint(descriptor.gpu, descriptor.cpu, &destination, &[0, 0, 0, 0], &[]);
 			}
 			self.mark_command_buffer_work(command_buffer_handle);
-			self.counters.buffer_clear_count += 1;
+			self.native_counters.buffer_clear_count += 1;
 			return;
 		}
 		let (Some(upload), mapped, _) = self.create_buffer_resource(destination_size, DeviceAccesses::HostToDevice) else {
@@ -276,7 +275,7 @@ impl Device {
 		self.transition_tracked_buffer(&command_list, buffer_handle, &destination, BufferBarrierState::COMMON);
 		self.mark_command_buffer_work(command_buffer_handle);
 		self.retain_command_buffer_upload_resource(command_buffer_handle, upload);
-		self.counters.buffer_clear_count += 1;
+		self.native_counters.buffer_clear_count += 1;
 	}
 
 	pub(crate) fn copy_buffer_info_for_sequence(

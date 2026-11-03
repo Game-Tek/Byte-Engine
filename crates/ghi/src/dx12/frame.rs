@@ -94,7 +94,12 @@ impl<'a> Frame<'a> {
 					}
 				};
 				self.device
-					.create_shader(shader.name.as_deref(), source, shader.stage, shader.resources.iter().copied())
+					.create_shader(
+						shader.name.as_deref(),
+						source,
+						shader.stage,
+						shader.descriptor_sets.iter().cloned(),
+					)
 					.expect(
 						"Failed to intern DX12 factory shader. The most likely cause is that the factory stored an unsupported shader source.",
 					)

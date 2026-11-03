@@ -4,7 +4,7 @@ use super::*;
 
 impl Device {
 	pub fn create_raster_pipeline(&mut self, builder: pipelines::raster::Builder) -> PipelineHandle {
-		let layout = self.get_or_create_pipeline_layout(builder.shaders, builder.push_constant_ranges);
+		let layout = self.create_pipeline_layout(builder.shaders, builder.push_constant_ranges);
 		let pipeline_state = self.create_graphics_pipeline_state(layout, &builder);
 		let shaders = builder.shaders.iter().map(|s| *s.handle).collect();
 		let has_mesh_shader = builder.shaders.iter().any(|shader| matches!(shader.stage, ShaderTypes::Mesh));
@@ -59,7 +59,7 @@ impl Device {
 		let (blend, render_targets, depth_stencil_format) =
 			Self::render_target_state(builder, D3D12_RENDER_TARGET_BLEND_DESC::default())?;
 
-		self.counters.graphics_pipeline_state_create_attempt_count += 1;
+		self.native_counters.graphics_pipeline_state_create_attempt_count += 1;
 		let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
 			pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature)),
 			VS: Self::shader_bytecode(&vertex_shader),
@@ -129,7 +129,7 @@ impl Device {
 		let (blend, render_targets, depth_stencil_format) =
 			Self::render_target_state(builder, Self::render_target_blend_desc(pipelines::raster::BlendMode::None))?;
 
-		self.counters.graphics_pipeline_state_create_attempt_count += 1;
+		self.native_counters.graphics_pipeline_state_create_attempt_count += 1;
 		let mut stream = MeshPipelineStateStream {
 			root_signature: PipelineStateStreamSubobject {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE,
@@ -200,11 +200,11 @@ impl Device {
 	) -> Option<ID3D12PipelineState> {
 		match pipeline_state {
 			Ok(pipeline_state) => {
-				self.counters.graphics_pipeline_state_last_error = None;
+				self.native_counters.graphics_pipeline_state_last_error = None;
 				Some(pipeline_state)
 			}
 			Err(error) => {
-				self.counters.graphics_pipeline_state_last_error = Some(error.code().0);
+				self.native_counters.graphics_pipeline_state_last_error = Some(error.code().0);
 				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
 				self.log_dx12_error(format!(
 					"Failed to create DX12 {kind} pipeline state: {error:?}; device removed reason: {removed_reason:?}"
@@ -349,7 +349,7 @@ impl Device {
 					)
 					.ok();
 				if dxil.is_some() {
-					self.counters.hlsl_specialization_compile_count += 1;
+					self.native_counters.hlsl_specialization_compile_count += 1;
 				}
 				return dxil;
 			}
@@ -412,7 +412,7 @@ impl Device {
 	}
 
 	pub fn create_compute_pipeline(&mut self, builder: pipelines::compute::Builder) -> PipelineHandle {
-		let layout = self.get_or_create_pipeline_layout(std::slice::from_ref(&builder.shader), builder.push_constant_ranges);
+		let layout = self.create_pipeline_layout(std::slice::from_ref(&builder.shader), builder.push_constant_ranges);
 		let shader_parameter = builder.shader;
 		let pipeline_state = self.create_compute_pipeline_state(layout, shader_parameter);
 		self.pipelines.push(Pipeline {
@@ -435,7 +435,7 @@ impl Device {
 		if dxil.is_empty() {
 			return None;
 		}
-		self.counters.compute_pipeline_state_create_attempt_count += 1;
+		self.native_counters.compute_pipeline_state_create_attempt_count += 1;
 		let mut desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
 			pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature)),
 			CS: Self::shader_bytecode(&dxil),

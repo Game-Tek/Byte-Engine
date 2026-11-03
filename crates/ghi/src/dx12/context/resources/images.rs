@@ -157,7 +157,7 @@ impl Device {
 
 	#[cfg(test)]
 	pub(crate) fn image_native_dimension(&self, image: ImageHandle) -> Option<(i32, u16)> {
-		let resource = self.images.get(image.0.0 as usize)?.resource.as_ref()?;
+		let resource = self.images.get(image.0.index() as usize)?.resource.as_ref()?;
 		// SAFETY: The image registry retains this COM resource for the duration of the query.
 		let descriptor = unsafe { resource.GetDesc() };
 		Some((descriptor.Dimension.0, descriptor.DepthOrArraySize))
@@ -264,12 +264,12 @@ impl Device {
 
 	#[cfg(test)]
 	pub(crate) fn render_target_view_allocation_count(&self) -> usize {
-		self.counters.render_target_view_allocation_count
+		self.native_counters.render_target_view_allocation_count
 	}
 
 	#[cfg(test)]
 	pub(crate) fn depth_stencil_view_allocation_count(&self) -> usize {
-		self.counters.depth_stencil_view_allocation_count
+		self.native_counters.depth_stencil_view_allocation_count
 	}
 
 	#[cfg(test)]
@@ -291,6 +291,6 @@ impl Device {
 	}
 
 	pub(crate) fn texture_readback_resolve_count(&self) -> usize {
-		self.counters.texture_readback_resolve_count
+		self.native_counters.texture_readback_resolve_count
 	}
 }

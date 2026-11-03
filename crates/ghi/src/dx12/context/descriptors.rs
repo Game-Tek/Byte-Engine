@@ -2,7 +2,6 @@
 
 mod clear_copies;
 mod descriptor_heaps;
-mod hlsl_reflection;
-mod materialization;
+mod descriptor_sets;
 mod pipeline_layout;
 mod view_descriptors;

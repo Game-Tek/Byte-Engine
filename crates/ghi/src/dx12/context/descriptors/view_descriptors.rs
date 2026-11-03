@@ -1,39 +1,6 @@
 use super::super::*;
 
 impl Device {
-	/// Initializes a pipeline-defined descriptor table so sparse arrays have valid native entries.
-	pub(crate) fn initialize_descriptor_heap_defaults(
-		&self,
-		layout: &PipelineLayout,
-		sampler_heap: bool,
-		heap: &DescriptorHeap,
-		base_offset: u32,
-	) {
-		let heap_type = if sampler_heap {
-			D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER
-		} else {
-			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
-		};
-		for resource in &layout.resources {
-			let offset = if sampler_heap {
-				resource.sampler_offset
-			} else {
-				resource.cbv_srv_uav_offset
-			};
-			let Some(offset) = offset else {
-				continue;
-			};
-			for array_element in 0..resource.descriptor.count() {
-				let cpu_handle = self.descriptor_cpu_handle(heap, heap_type, base_offset + offset + array_element);
-				if sampler_heap {
-					self.write_default_sampler_descriptor(cpu_handle);
-				} else {
-					self.write_null_cbv_srv_uav_descriptor(resource.descriptor, cpu_handle);
-				}
-			}
-		}
-	}
-
 	/// Writes a null CBV, SRV, or UAV that matches one pipeline resource representation.
 	pub(crate) fn write_null_cbv_srv_uav_descriptor(
 		&self,

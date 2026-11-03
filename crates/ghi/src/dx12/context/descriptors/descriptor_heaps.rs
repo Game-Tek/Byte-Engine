@@ -35,36 +35,6 @@ impl Device {
 		handle
 	}
 
-	/// Creates a shader-visible heap for retained tables or transient GPU descriptor operations.
-	pub(crate) fn create_shader_visible_descriptor_heap(
-		&self,
-		heap_type: windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE,
-		descriptor_count: u32,
-	) -> Option<DescriptorHeap> {
-		let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
-			Type: heap_type,
-			NumDescriptors: descriptor_count,
-			Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-			NodeMask: 0,
-		};
-		match unsafe { self.device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&heap_desc) } {
-			Ok(native) => Some(DescriptorHeap {
-				cpu_start: unsafe { native.GetCPUDescriptorHandleForHeapStart() },
-				gpu_start: Some(unsafe { native.GetGPUDescriptorHandleForHeapStart() }),
-				native,
-			}),
-			Err(error) => {
-				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
-				let message = format!(
-					"Failed to create a shader-visible DX12 descriptor heap. The most likely cause is descriptor heap exhaustion or device removal. Heap type: {:?}. Descriptor count: {descriptor_count}. Error: {error:?}. Device removed reason: {removed_reason:?}",
-					heap_type
-				);
-				self.log_dx12_error(&message);
-				panic!("{message}");
-			}
-		}
-	}
-
 	/// Creates one CPU-readable descriptor heap for reusable command-buffer staging.
 	pub(crate) fn create_cpu_descriptor_heap(
 		&self,
@@ -162,126 +132,156 @@ impl Device {
 		}
 	}
 
-	pub(crate) fn reserve_staged_descriptor_range(
-		&mut self,
-		command_buffer_handle: CommandBufferHandle,
-		sampler_heap: bool,
-		descriptor_count: u32,
-	) -> Option<(DescriptorHeap, u32)> {
-		if descriptor_count == 0 {
-			return None;
+	/// Creates the shader-visible resource and sampler heaps of a context, and writes the fixed samplers at the start
+	/// of the sampler heap, where shaders index them by their state.
+	pub(crate) fn create_shader_visible_heaps(device: &ID3D12Device10) -> ShaderVisibleHeaps {
+		let create = |heap_type, descriptor_count| {
+			let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
+				Type: heap_type,
+				NumDescriptors: descriptor_count,
+				Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+				NodeMask: 0,
+			};
+			let native = unsafe { device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&heap_desc) }.unwrap_or_else(|error| {
+				panic!(
+					"Failed to create a shader-visible DX12 descriptor heap of {descriptor_count} descriptors. The most likely cause is that the device is out of memory or was removed. Close other GPU applications and restart. Heap type: {heap_type:?}. Error: {error:?}"
+				)
+			});
+			DescriptorHeap {
+				cpu_start: unsafe { native.GetCPUDescriptorHandleForHeapStart() },
+				gpu_start: Some(unsafe { native.GetGPUDescriptorHandleForHeapStart() }),
+				native,
+			}
+		};
+		let resources = create(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, RESOURCE_HEAP_CAPACITY);
+		let samplers = create(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, SAMPLER_HEAP_CAPACITY);
+
+		let sampler_stride = unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER) } as usize;
+		for index in 0..FIXED_SAMPLER_COUNT {
+			let desc = Self::fixed_sampler_desc(index);
+			let mut handle = samplers.cpu_start;
+			handle.ptr += index as usize * sampler_stride;
+			unsafe { device.CreateSampler(&desc, handle) };
 		}
 
-		let heap_type = if sampler_heap {
-			D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER
-		} else {
-			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
-		};
-		let command_buffer_index = command_buffer_handle.index() as usize;
-		let (current_capacity, current_used) = {
-			let command_buffer = self.command_buffers.get(command_buffer_index)?;
-			let arena = if sampler_heap {
-				command_buffer.sampler_staging_heap.as_ref()
-			} else {
-				command_buffer.cbv_srv_uav_staging_heap.as_ref()
-			};
-			arena.map(|arena| (arena.capacity, arena.used)).unwrap_or((0, 0))
-		};
-		let required = current_used.saturating_add(descriptor_count);
+		let mut free_samplers = ::utils::RangeAllocator::new(SAMPLER_HEAP_CAPACITY as usize, 16);
+		// The fixed samplers stay for the context's lifetime.
+		free_samplers.take(FIXED_SAMPLER_COUNT as usize, 1);
+		ShaderVisibleHeaps {
+			resources,
+			samplers,
+			free_resources: ::utils::RangeAllocator::new(RESOURCE_HEAP_CAPACITY as usize, 64),
+			free_samplers,
+		}
+	}
 
-		if required > current_capacity {
-			let capacity = required.max(current_capacity.saturating_mul(2)).max(256);
-			let heap = self.create_shader_visible_descriptor_heap(heap_type, capacity)?;
-			let command_buffer = self.command_buffers.get_mut(command_buffer_index)?;
-			let target_arena = if sampler_heap {
-				&mut command_buffer.sampler_staging_heap
+	/// Describes the fixed sampler at sampler heap `index`: `filter + 2 × mip filter + 4 × reduction + 12 × address`.
+	///
+	/// A fixed sampler reads every level of the image, so it doesn't clamp the level of detail.
+	fn fixed_sampler_desc(index: u32) -> D3D12_SAMPLER_DESC {
+		let filter = |bit: u32| {
+			if bit == 0 {
+				FilteringModes::Closest
 			} else {
-				&mut command_buffer.cbv_srv_uav_staging_heap
-			};
-			if let Some(previous) = target_arena.replace(DescriptorHeapArena { heap, capacity, used: 0 }) {
-				if previous.used > 0 {
-					command_buffer.retained_descriptor_heaps.push(previous.heap.native);
-				}
+				FilteringModes::Linear
+			}
+		};
+		let reduction = match index / 4 % 3 {
+			0 => SamplingReductionModes::WeightedAverage,
+			1 => SamplingReductionModes::Min,
+			_ => SamplingReductionModes::Max,
+		};
+		let address = Self::sampler_address_mode(match index / 12 {
+			0 => SamplerAddressingModes::Clamp,
+			1 => SamplerAddressingModes::Repeat,
+			_ => SamplerAddressingModes::Mirror,
+		});
+		D3D12_SAMPLER_DESC {
+			Filter: Self::sampler_filter(filter(index % 2), filter(index / 2 % 2), reduction, false),
+			AddressU: address,
+			AddressV: address,
+			AddressW: address,
+			MipLODBias: 0.0,
+			MaxAnisotropy: 1,
+			ComparisonFunc: D3D12_COMPARISON_FUNC_NEVER,
+			BorderColor: [0.0, 0.0, 0.0, 0.0],
+			MinLOD: 0.0,
+			MaxLOD: D3D12_FLOAT32_MAX,
+		}
+	}
+
+	/// Leases `count` contiguous descriptors of the shader-visible resource heap, or of the sampler heap when
+	/// `sampler_heap` is set, and returns the index of the first.
+	///
+	/// # Panics
+	///
+	/// Panics when the heap has no free range that large.
+	pub(crate) fn lease_shader_visible_range(&mut self, sampler_heap: bool, count: u32) -> u32 {
+		let heaps = &mut self.shader_visible_heaps;
+		let (free, capacity) = if sampler_heap {
+			(&mut heaps.free_samplers, SAMPLER_HEAP_CAPACITY)
+		} else {
+			(&mut heaps.free_resources, RESOURCE_HEAP_CAPACITY)
+		};
+		let range = free.take(count as usize, 1).unwrap_or_else(|| {
+			panic!(
+				"The DX12 shader-visible {} heap has no room for {count} more descriptors. The most likely cause is that the application keeps more descriptor sets, frame copies, or array elements alive than the heap's {capacity} descriptors hold. Create fewer or smaller descriptor sets, or run fewer frames in flight.",
+				if sampler_heap { "sampler" } else { "resource" },
+			)
+		});
+		range.start as u32
+	}
+
+	/// Returns the CPU handle of one descriptor of a shader-visible heap.
+	pub(crate) fn shader_visible_cpu_handle(&self, sampler_heap: bool, index: u32) -> D3D12_CPU_DESCRIPTOR_HANDLE {
+		let (heap, heap_type) = if sampler_heap {
+			(&self.shader_visible_heaps.samplers, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)
+		} else {
+			(&self.shader_visible_heaps.resources, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
+		};
+		self.descriptor_cpu_handle(heap, heap_type, index)
+	}
+
+	/// Reserves one descriptor of the command buffer's clear range in the shader-visible resource heap, growing the
+	/// range when the recording has used all of it, and returns its heap index.
+	pub(crate) fn reserve_clear_descriptor(&mut self, command_buffer_handle: CommandBufferHandle) -> u32 {
+		let index = command_buffer_handle.index() as usize;
+		let (capacity, used) = self.command_buffers[index]
+			.clear_descriptors
+			.as_ref()
+			.map_or((0, 0), |lease| (lease.range.len() as u32, lease.used));
+		if used == capacity {
+			// This recording may still read the old range, so it goes back once the recording's submission completes.
+			let capacity = (capacity * 2).max(64);
+			let start = self.lease_shader_visible_range(false, capacity) as usize;
+			let command_buffer = &mut self.command_buffers[index];
+			if let Some(previous) = command_buffer.clear_descriptors.replace(DescriptorLease {
+				range: start..start + capacity as usize,
+				used: 0,
+			}) {
+				command_buffer.retired_clear_descriptors.push(previous.range);
 			}
 		}
-
-		let command_buffer = self.command_buffers.get_mut(command_buffer_index)?;
-		let arena = if sampler_heap {
-			command_buffer.sampler_staging_heap.as_mut()
-		} else {
-			command_buffer.cbv_srv_uav_staging_heap.as_mut()
-		}?;
-		let offset = arena.used;
-		arena.used = arena.used.saturating_add(descriptor_count);
-		Some((arena.heap.clone(), offset))
+		let lease = self.command_buffers[index]
+			.clear_descriptors
+			.as_mut()
+			.expect("A clear descriptor range was leased above");
+		let slot = lease.range.start as u32 + lease.used;
+		lease.used += 1;
+		slot
 	}
 
-	/// Binds the command buffer's active staged descriptor heaps after transient descriptor writes.
-	pub(crate) fn bind_active_staged_descriptor_heaps(&mut self, command_buffer_handle: CommandBufferHandle) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
-			return;
-		};
-		let Some(command_buffer) = self.command_buffers.get(command_buffer_handle.index() as usize) else {
-			return;
-		};
-
-		let mut heaps = [None, None];
-		let mut heap_count = 0usize;
-		if let Some(arena) = command_buffer
-			.cbv_srv_uav_staging_heap
-			.as_ref()
-			.filter(|arena| arena.used > 0)
-		{
-			heaps[heap_count] = Some(arena.heap.native.clone());
-			heap_count += 1;
-		}
-		if let Some(arena) = command_buffer.sampler_staging_heap.as_ref().filter(|arena| arena.used > 0) {
-			heaps[heap_count] = Some(arena.heap.native.clone());
-			heap_count += 1;
-		}
-		if heap_count == 0 {
-			return;
-		}
-		let cbv_srv_uav_identity = command_buffer
-			.cbv_srv_uav_staging_heap
-			.as_ref()
-			.filter(|arena| arena.used > 0)
-			.map(|arena| arena.heap.native.as_raw() as usize);
-		let sampler_identity = command_buffer
-			.sampler_staging_heap
-			.as_ref()
-			.filter(|arena| arena.used > 0)
-			.map(|arena| arena.heap.native.as_raw() as usize);
-		if command_buffer.bound_cbv_srv_uav_heap == cbv_srv_uav_identity
-			&& command_buffer.bound_sampler_heap == sampler_identity
-		{
-			return;
-		}
-
-		unsafe {
-			command_list.SetDescriptorHeaps(&heaps[..heap_count]);
-		}
-		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
-			command_buffer.bound_cbv_srv_uav_heap = cbv_srv_uav_identity;
-			command_buffer.bound_sampler_heap = sampler_identity;
-		}
-		self.counters.descriptor_heap_bind_count += 1;
-	}
-	/// Retains each bound heap until this command buffer's submitted work has completed.
-	pub(crate) fn retain_descriptor_materialization(
-		&mut self,
-		command_buffer_handle: CommandBufferHandle,
-		materialization: &DescriptorMaterialization,
-	) {
-		for heap in [
-			materialization.cbv_srv_uav_heap.as_ref(),
-			materialization.sampler_heap.as_ref(),
-		]
-		.into_iter()
-		.flatten()
-		{
-			self.retain_descriptor_heap(command_buffer_handle, heap);
-		}
+	/// Binds the context's shader-visible heaps to a command list that just opened.
+	///
+	/// Shaders index both heaps directly, and a root signature that allows it requires the heaps to be set before it,
+	/// so every recording sets them first and never changes them.
+	pub(crate) fn bind_shader_visible_heaps(&mut self, command_list: &ID3D12GraphicsCommandList7) {
+		let heaps = [
+			Some(self.shader_visible_heaps.resources.native.clone()),
+			Some(self.shader_visible_heaps.samplers.native.clone()),
+		];
+		unsafe { command_list.SetDescriptorHeaps(&heaps) };
+		self.native_counters.descriptor_heap_bind_count += 1;
 	}
 
 	/// Retains a descriptor heap until the command buffer's previous submission has completed.

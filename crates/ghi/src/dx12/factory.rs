@@ -10,7 +10,8 @@ pub(crate) struct Shader {
 	pub(crate) name: Option<String>,
 	pub(crate) source: ShaderSource,
 	pub(crate) stage: ShaderTypes,
-	pub(crate) resources: Vec<ShaderResourceDescriptor>,
+	/// The sets the shader declares, at the positions its source reads them.
+	pub(crate) descriptor_sets: Box<[crate::shader::ShaderDescriptorSet]>,
 }
 
 /// The `ShaderSource` enum stores owned shader bytecode for detached DX12 shader creation.
@@ -135,8 +136,7 @@ impl crate::device::Device for Factory {
 			name: name.map(str::to_owned),
 			source,
 			stage,
-			// This backend still derives its root signature from flat slots.
-			resources: crate::shader::flatten_used_resources(descriptor_sets),
+			descriptor_sets: descriptor_sets.into_iter().collect(),
 		});
 
 		Ok(ShaderHandle::from_index((self.shaders.len() - 1) as u64))
@@ -219,6 +219,5 @@ use utils::Extent;
 
 use crate::{
 	DeviceAccesses, FilteringModes, Formats, SamplerAddressingModes, SamplingReductionModes, ShaderHandle, ShaderTypes,
-	UseCases, Uses, image, pipelines, sampler,
-	shader::{ShaderResourceDescriptor, Sources},
+	UseCases, Uses, image, pipelines, sampler, shader::Sources,
 };

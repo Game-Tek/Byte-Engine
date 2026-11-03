@@ -19,9 +19,16 @@ const RAY_GENERATION: &str = r#"
 #version 460
 #pragma shader_stage(raygen)
 #extension GL_EXT_ray_tracing : require
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : require
 struct Payload { vec3 albedo; float distance; };
-layout(set = 0, binding = 0, std430) readonly buffer Records { uint records[]; };
-layout(set = 0, binding = 1, std430) writeonly buffer Results { vec4 results[]; };
+// The pipeline index of the shader's set 0, and each set's heap base indices.
+layout(constant_id = 1984) const uint SET0 = 0u;
+layout(push_constant) uniform Sets { uvec2 sets[15]; } push_constants;
+layout(descriptor_heap, descriptor_stride = 64, std430) readonly buffer Records { uint records[]; } record_buffers[];
+layout(descriptor_heap, descriptor_stride = 64, std430) writeonly buffer Results { vec4 results[]; } result_buffers[];
+#define records record_buffers[push_constants.sets[SET0].x].records
+#define results result_buffers[push_constants.sets[SET0].x + 1].results
 layout(location = 0) callableDataEXT Payload payload;
 void main() {
 	uint index = gl_LaunchIDEXT.x;

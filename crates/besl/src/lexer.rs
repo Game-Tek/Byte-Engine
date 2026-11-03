@@ -10,8 +10,8 @@ mod resolution;
 mod samplers;
 
 pub use ast::{
-	BindingTypes, BufferMemoryClass, CallTarget, ElseBranch, Expressions, FixedArray, LexError, MatchArm, Node, NodeReference,
-	Nodes, Operators, Placement, UnaryOperators,
+	BindingTypes, BufferMemoryClass, CallTarget, ElseBranch, Expressions, FixedArray, LexError, MAX_DESCRIPTOR_SETS, MatchArm,
+	Node, NodeReference, Nodes, Operators, Placement, UnaryOperators,
 };
 pub(crate) use ast::{UNARY_PRECEDENCE, lex_with_root};
 pub use layers::place_descriptors;

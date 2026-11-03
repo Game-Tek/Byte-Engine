@@ -1,0 +1,142 @@
+---
+title: Descriptor sets
+description: Keep descriptor sets shareable across shaders and cheap to bind when you change how BESL places bindings or how a GHI backend binds sets.
+icon: Layers
+---
+
+Read this page before you change how BESL numbers bindings, how a shader
+generator declares descriptors, or how a graphics hardware interface (GHI)
+backend creates, writes, or binds descriptor sets. It explains the one set
+model every backend shares, how each backend builds it, and the rules a change
+must keep. The [GHI reference](/docs/reference/ghi#descriptor-sets) specifies
+the interface a shader sees; this page explains how the engine builds it.
+
+## One set model for every backend
+
+A BESL layer is a descriptor set. Each layer numbers its bindings from 0, and an
+array is one binding that holds `count` consecutive descriptors. Linking places
+every binding once, with `besl::place_descriptors`: the set's position in the
+shader, the binding's resource offset in the set, and its sampler offset. See
+[Place descriptors](/docs/develop/besl/compilation#place-descriptors).
+
+Because a layer's offsets don't depend on the shader that takes it, a set that
+the renderer writes once binds in every pipeline whose shaders take that layer,
+at any position. The GHI matches a bound set to a pipeline's set by layout
+identity, never by number, so binding stays a lookup.
+
+Each backend turns the set's position into something it can change in one
+cheap command:
+
+| Backend | A set is | Binding a set writes |
+| --- | --- | --- |
+| Metal | An argument buffer | The buffer address at index `16 + position` |
+| Vulkan | A range of the resource heap and a range of the sampler heap | Two base indices in the push data |
+| DX12 | A range of the shader-visible resource heap and a range of the sampler heap | Two base indices in the root constants |
+
+All three cap a shader at 15 sets, `besl::MAX_DESCRIPTOR_SETS` and
+`ghi::shader::MAX_DESCRIPTOR_SETS`. Metal is the tightest: its 31 buffer
+indices leave 15 after the 16 that vertex buffers and push constants use.
+
+## How Metal binds a set
+
+Each set is one argument buffer, written once per frame copy. The MSL
+generator declares set `n` as an entry-point parameter at `[[buffer(16 + n)]]`
+and gives its arguments IDs from 0 in binding order, so an array's elements
+take consecutive IDs. A set the shader takes but doesn't read keeps its
+position. `build_pipeline_layout` in `ghi/src/metal/pipeline.rs` binds only the
+sets a stage reads.
+
+## How Vulkan binds a set
+
+The context owns two descriptor heaps from `VK_EXT_descriptor_heap`: a resource
+heap of 64-byte slots and a sampler heap. Every image, buffer, and
+acceleration structure descriptor fits in one slot, so a descriptor's heap index
+is its slot. Device setup rejects a device whose descriptors are larger.
+
+The sampler heap starts with the 36 fixed samplers. Shaders read them at the
+literal index `besl::SamplerState::fixed_index` returns, so a set never holds
+them and a pipeline never declares them.
+
+Each descriptor set reserves one range in each heap for every frame in flight.
+The GLSL generator declares each resource as a `descriptor_heap` array and
+reads element `i` at `_besl_sets[s].x + resource + i`, and an application-bound
+sampler at `_besl_sets[s].y + sampler + i`. The first 120 bytes of push data
+hold those two bases for each pipeline set, and the shader's own push constants
+start at byte 128.
+
+Stages number their sets locally, and two stages can take one layer at
+different positions. Specialization constant `1984 + s` holds the pipeline set
+of the stage's set `s`, so both stages read the same push data. The GLSL
+generator and `ghi/src/vulkan/descriptor_heap.rs` each define this interface once and
+point to each other; a change to one must change the other.
+
+glslang can't pass a heap element to a function, so the generator lowers a
+texture parameter to two heap indices, `p` and `p_sampler`, and reads them
+through per-type aliases. glslang also crashes on a whole-struct store into a
+heap-declared buffer, so generated code must store struct members one at a
+time.
+
+Writes are retained and applied when a set is bound. Writing a set records the
+write and marks the element dirty in every frame copy. A reverse index from each
+resource to the elements that name it lets resizing, recreating, or acquiring a
+resource dirty only those elements. Binding a copy writes its dirty elements
+into the heap and rebuilds its list of consumed resources, which barrier
+tracking reads. When commands of the current frame already bound that copy, it
+moves to new ranges first, and the old ranges are freed once that frame
+completes, so recorded commands never read a rewritten descriptor.
+
+## How DX12 binds a set
+
+DX12 uses Shader Model 6.6 dynamic resources. The context owns the
+shader-visible resource heap and sampler heap, and the sampler heap starts with
+the same 36 fixed samplers, in the same order as Vulkan's.
+
+Each frame copy of a set leases its ranges when the set is created and fills
+them with null descriptors, so a shader can read an element the application
+never wrote. The HLSL generator declares a single descriptor as a `static`
+global read from `ResourceDescriptorHeap` or `SamplerDescriptorHeap`, and an
+array as a struct whose `operator[]` reads the element at
+`NonUniformResourceIndex(base + i)`.
+
+Each stage declares `uint4 _besl_sets[]` at `register(b1, space0)`, sized to
+the last set it reads. Set `s` keeps its resource base at value `2s` and its
+sampler base at `2s + 1`. Binding writes the descriptors of each copy that
+changed since it was last bound, then each stage's bases with
+`SetGraphicsRoot32BitConstants` or `SetComputeRoot32BitConstants`. The root
+signature holds no tables and no static samplers.
+
+## Rules a change must keep
+
+- A layer's placement depends only on the layer. Never number a binding from
+  the bindings of another layer, and never let an array move the binding
+  numbers after it.
+- A set keeps its position whether or not the shader reads it. Only the `used`
+  mask depends on reachability.
+- A shader reads at most 15 sets on every backend, and the BESL and GHI limits
+  stay equal.
+- The fixed sampler order is `filter + 2 × mip filter + 4 × reduction +
+  12 × address`, in the GLSL and HLSL generators, the Vulkan and DX12 sampler
+  heaps, and the reference.
+- Binding allocates nothing and does no work proportional to the number of
+  sets the context holds.
+- Every element a stage uses is written before the set is bound.
+- A heap range that recorded commands read is reused only after their frame
+  completes.
+- On Vulkan, the shader's push constants start at byte 128, and 128 plus their
+  size fits in `maxPushDataSize`.
+
+## Tests that guard the rules
+
+- `crates/besl/tests/descriptor_sets.rs` covers placement: per-set numbering,
+  arrays as one binding, set order, and the errors for gaps and repeats.
+- The MSL, GLSL, and HLSL generator tests in
+  `crates/resource-management/src/shader/besl/backends` check the declarations
+  each generator emits for layered sets, arrays, and fixed samplers.
+- `ghi/src/shader.rs` tests check that a layout requires dense numbering.
+- `ghi/src/vulkan/descriptor_heap.rs` tests check set merging across stages,
+  specialization indices, and the fixed sampler order.
+- `ghi/src/dx12/mod.rs` tests check heap leases, retained rewrites, and that
+  each set position receives the bases of the set bound for its layout.
+- The `crates/ghi/tests/rendering` suites run the sets on a device. Only Metal
+  runs them today; run them on a Vulkan and a DX12 device after you change
+  those backends.

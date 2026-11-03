@@ -19,14 +19,20 @@ pub(super) fn unordered_dispatches_write_their_own_rows(
 			glsl: "
 				#version 450
 				#pragma shader_stage(compute)
-				layout(set=0,binding=0, rgba8) uniform image2D img;
+				#extension GL_EXT_descriptor_heap : require
+				#extension GL_EXT_nonuniform_qualifier : require
+				// The pipeline index of the shader's set 0, which the backend specializes.
+				layout(constant_id = 1984) const uint SET0 = 0u;
+				// Each set's resource and sampler heap base indices come before the push constants.
 				layout(push_constant) uniform PushConstants {
-					uint row;
+					uvec2 sets[15];
+					layout(offset = 128) uint row;
 				} push_constants;
+				layout(descriptor_heap, descriptor_stride = 64, rgba8) uniform image2D images[];
 				layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 				void main() {
 					vec4 color = push_constants.row == 0 ? vec4(1.0, 0.0, 0.0, 1.0) : vec4(0.0, 1.0, 0.0, 1.0);
-					imageStore(img, ivec2(gl_GlobalInvocationID.x, push_constants.row), color);
+					imageStore(images[push_constants.sets[SET0].x], ivec2(gl_GlobalInvocationID.x, push_constants.row), color);
 				}
 			",
 			msl: r#"
@@ -45,7 +51,8 @@ pub(super) fn unordered_dispatches_write_their_own_rows(
 			"#,
 			msl_entry_point: "compute_main",
 			hlsl: r#"
-				RWTexture2D<float4> image : register(u0, space0);
+				cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; };
+				static RWTexture2D<float4> image = ResourceDescriptorHeap[_besl_sets[0].x];
 				struct PushConstant { uint row; };
 				ConstantBuffer<PushConstant> push_constant : register(b0, space0);
 				[numthreads(1, 1, 1)]

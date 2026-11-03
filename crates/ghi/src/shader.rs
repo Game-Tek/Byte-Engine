@@ -192,8 +192,6 @@ pub struct ShaderResourceDescriptor {
 	pub(crate) access: AccessPolicies,
 	pub(crate) texture_view_type: TextureViewTypes,
 	pub(crate) buffer_stride: u32,
-	/// The sampler the shader fixes for a [`ResourceKind::SampledImage`] it samples, or `None` when it only loads it.
-	pub(crate) sampler: Option<crate::sampler::StaticSampler>,
 }
 
 impl ShaderResourceDescriptor {
@@ -209,7 +207,6 @@ impl ShaderResourceDescriptor {
 			access,
 			texture_view_type: TextureViewTypes::Texture2D,
 			buffer_stride: 4,
-			sampler: None,
 		}
 	}
 
@@ -224,17 +221,6 @@ impl ShaderResourceDescriptor {
 
 	pub const fn buffer_stride(mut self, buffer_stride: u32) -> Self {
 		self.buffer_stride = buffer_stride;
-		self
-	}
-
-	/// Fixes the sampler a shader samples this [`ResourceKind::SampledImage`] through, so the descriptor set holds only
-	/// the image. Write the image with [`crate::DescriptorWrite::image`].
-	pub const fn static_sampler(mut self, sampler: crate::sampler::StaticSampler) -> Self {
-		assert!(
-			matches!(self.kind, ResourceKind::SampledImage),
-			"Invalid static sampler. The most likely cause is a fixed sampler attached to a resource that isn't a sampled image. Attach it to a `ResourceKind::SampledImage` resource."
-		);
-		self.sampler = Some(sampler);
 		self
 	}
 
@@ -261,36 +247,12 @@ impl ShaderResourceDescriptor {
 	pub const fn buffer_element_stride(self) -> u32 {
 		self.buffer_stride
 	}
-
-	/// Returns the sampler the shader fixes for this image, if it declares one. See [`Self::static_sampler`].
-	pub const fn sampler(self) -> Option<crate::sampler::StaticSampler> {
-		self.sampler
-	}
-
-	/// Returns the flat slot right after the last one this resource's array covers.
-	#[cfg_attr(target_os = "macos", allow(dead_code, reason = "Only the Vulkan and DX12 backends use it."))]
-	pub(crate) fn range_end(self) -> u32 {
-		self.slot.index().checked_add(self.count).expect(
-			"Shader resource range overflowed. The most likely cause is an invalid flat resource slot or descriptor count. Lower the slot or the array length.",
-		)
-	}
-
-	/// Returns whether the flat slot ranges of two resources share a slot, which no two resources of one pipeline may.
-	#[cfg_attr(target_os = "macos", allow(dead_code, reason = "Only the Vulkan and DX12 backends use it."))]
-	pub(crate) fn overlaps(self, other: Self) -> bool {
-		self.slot.index() < other.range_end() && other.slot.index() < self.range_end()
-	}
-
-	/// Returns whether two declarations describe one resource and differ at most in their access policies, so the
-	/// stages that declare them can share its pipeline slot.
-	#[cfg_attr(target_os = "macos", allow(dead_code, reason = "Only the Vulkan and DX12 backends use it."))]
-	pub(crate) fn matches_representation(self, other: Self) -> bool {
-		self == Self {
-			access: self.access,
-			..other
-		}
-	}
 }
+
+/// The most descriptor sets one shader can read, on every backend. Metal binds them after its 16 reserved buffer
+/// indices, and Vulkan and DX12 keep their heap base indices in a fixed block of push data or root constants. BESL
+/// enforces the same limit as `besl::MAX_DESCRIPTOR_SETS`.
+pub const MAX_DESCRIPTOR_SETS: usize = 15;
 
 /// The most resources one [`DescriptorSetLayout`] can declare, the width of [`ShaderDescriptorSet::used`].
 pub const MAX_LAYOUT_RESOURCES: usize = u64::BITS as usize;
@@ -490,33 +452,6 @@ impl ShaderDescriptorSet {
 			.enumerate()
 			.filter(|(index, _)| self.used & (1 << index) != 0)
 	}
-}
-
-/// Returns the resources a shader uses across its descriptor sets as one list ordered by slot.
-///
-/// The Vulkan and DX12 backends derive their native layouts from this flat interface, and treat descriptor sets as
-/// groups of flat slots. Slots are unique across the sets a pipeline declares, so the list names each resource once.
-#[cfg(not(target_os = "macos"))]
-/// Returns every resource that `descriptor_sets` declare, used or not, ordered by slot.
-pub(crate) fn flatten_declared_resources(descriptor_sets: &[ShaderDescriptorSet]) -> Vec<ShaderResourceDescriptor> {
-	let mut resources = descriptor_sets
-		.iter()
-		.flat_map(|set| set.layout().resources().iter().copied())
-		.collect::<Vec<_>>();
-	resources.sort_by_key(|resource| resource.slot());
-	resources
-}
-
-#[cfg_attr(target_os = "macos", allow(dead_code, reason = "Only the Vulkan and DX12 backends use it."))]
-pub(crate) fn flatten_used_resources(
-	descriptor_sets: impl IntoIterator<Item = ShaderDescriptorSet>,
-) -> Vec<ShaderResourceDescriptor> {
-	let mut resources = descriptor_sets
-		.into_iter()
-		.flat_map(|set| set.used_resources().map(|(_, resource)| resource).collect::<Vec<_>>())
-		.collect::<Vec<_>>();
-	resources.sort_by_key(|resource| resource.slot());
-	resources
 }
 
 #[cfg(test)]

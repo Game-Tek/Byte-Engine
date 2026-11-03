@@ -1,209 +1,169 @@
+//! Lays out the descriptor heaps and the push data that Vulkan shaders read their descriptor sets through.
+//!
+//! Every descriptor set owns a range of the resource heap, one 64-byte slot per descriptor, and a range of the
+//! sampler heap, one sampler descriptor per sampler it holds. A pipeline finds its sets through two base indices per
+//! set in the push data, and each shader stage finds its sets' pipeline positions through specialization constants.
+//! The GLSL generator in `resource-management/src/shader/besl/backends/glsl/generator.rs` writes shaders to this ABI.
+
 use ash::vk;
+use smallvec::SmallVec;
 
-use crate::shader::{ResourceKind, ShaderResourceDescriptor};
+use crate::shader::{DescriptorSetLayout, ResourceKind, ShaderDescriptorSet};
 
-/// The `PipelineResourceDescriptor` struct retains one merged flat resource and its descriptor-heap locations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct PipelineResourceDescriptor {
-	pub(crate) descriptor: ShaderResourceDescriptor,
-	pub(crate) stages: crate::Stages,
-	pub(crate) resource_heap_offset: Option<u32>,
-	pub(crate) sampler_heap_offset: Option<u32>,
-	pub(crate) resource_stride: u32,
-	pub(crate) sampler_stride: u32,
+/// The specialization constant id that holds the pipeline index of a shader's set 0. Set position `s` reads its
+/// pipeline index from id `SET_SPECIALIZATION_BASE + s`.
+///
+/// The GLSL generator declares the constants with the same base, `SET_SPECIALIZATION_BASE` in
+/// `resource-management/src/shader/besl/backends/glsl/generator.rs`.
+pub(crate) const SET_SPECIALIZATION_BASE: u32 = 1984;
+
+/// The most descriptor sets one pipeline can bind: the push data holds two base indices per set in its first 120 bytes.
+pub(crate) use crate::shader::MAX_DESCRIPTOR_SETS;
+
+/// The byte of the push data where a pipeline's own push constants start, after the sets' base indices.
+pub(crate) const PUSH_CONSTANT_OFFSET: u32 = 128;
+
+/// The bytes of one resource heap slot. Every image, buffer, and acceleration structure descriptor takes one, so a
+/// descriptor's heap index is its slot.
+pub(crate) const RESOURCE_DESCRIPTOR_SIZE: u64 = 64;
+
+/// How many fixed samplers the sampler heap holds before the sets' own samplers: every combination of filter, mip
+/// filter, reduction, and address mode.
+pub(crate) const FIXED_SAMPLER_COUNT: u32 = 36;
+
+/// Returns the fixed sampler at sampler heap index `index`, as `docs/reference/ghi.mdx` lays them out:
+/// `filter + 2 × mip filter + 4 × reduction + 12 × address`.
+pub(crate) fn fixed_sampler(index: u32) -> crate::sampler::StaticSampler {
+	let filter = |bit: u32| match bit {
+		0 => crate::FilteringModes::Closest,
+		_ => crate::FilteringModes::Linear,
+	};
+	crate::sampler::StaticSampler {
+		filtering_mode: filter(index % 2),
+		mip_map_mode: filter(index / 2 % 2),
+		reduction_mode: match index / 4 % 3 {
+			0 => crate::SamplingReductionModes::WeightedAverage,
+			1 => crate::SamplingReductionModes::Min,
+			_ => crate::SamplingReductionModes::Max,
+		},
+		addressing_mode: match index / 12 {
+			0 => crate::SamplerAddressingModes::Clamp,
+			1 => crate::SamplerAddressingModes::Repeat,
+			_ => crate::SamplerAddressingModes::Mirror,
+		},
+	}
 }
 
-/// The `PipelineLayout` struct retains the descriptor mappings and push-data contract derived from a pipeline's shaders.
+/// Returns whether a resource of `kind` holds samplers in its set's sampler range, one per array element.
+pub(crate) fn holds_samplers(kind: ResourceKind) -> bool {
+	matches!(kind, ResourceKind::CombinedImageSampler | ResourceKind::Sampler)
+}
+
+/// The `PipelineLayout` struct describes the descriptor sets a pipeline's shaders read and its push constants, so
+/// binding sets knows where each one goes in the push data and which resources each one makes commands access.
+///
+/// Build one with [`build_pipeline_layout`]. Next, give each stage its set positions with
+/// [`push_set_specializations`].
 #[derive(Clone)]
 pub(crate) struct PipelineLayout {
-	pub(crate) resources: Vec<PipelineResourceDescriptor>,
-	pub(crate) push_constant_ranges: Vec<crate::pipelines::PushConstantRange>,
+	/// The sets the stages declare, matched by layout identity, in the order the stages first declare them. Set `p`'s
+	/// base indices are words `2p` and `2p + 1` of the push data.
+	pub(crate) sets: SmallVec<[PipelineSet; 4]>,
+	/// The bytes of push constants the pipeline declares, which start at [`PUSH_CONSTANT_OFFSET`] of the push data.
 	pub(crate) push_constant_size: u32,
-	pub(crate) heap_push_data_offset: u32,
-	pub(crate) resource_heap_size: u32,
-	pub(crate) sampler_heap_size: u32,
 }
 
-/// The `PipelineLayoutKey` struct identifies a reusable flat descriptor-heap layout.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub(crate) struct PipelineLayoutKey {
-	resources: Vec<PipelineResourceDescriptor>,
-	push_constant_ranges: Vec<crate::pipelines::PushConstantRange>,
+/// The `PipelineSet` struct is one descriptor set a pipeline binds, with the stages that read each of its resources.
+#[derive(Clone)]
+pub(crate) struct PipelineSet {
+	pub(crate) layout: DescriptorSetLayout,
+	/// The stages that use each resource of the layout, by resource index. A resource no stage uses has none.
+	pub(crate) stages: SmallVec<[crate::Stages; 8]>,
 }
 
-impl PipelineLayoutKey {
-	pub(crate) fn new(layout: &PipelineLayout) -> Self {
-		Self {
-			resources: layout.resources.clone(),
-			push_constant_ranges: layout.push_constant_ranges.clone(),
-		}
+impl PipelineSet {
+	/// Returns whether any stage uses a resource of the set, which then has to be bound before shader work.
+	pub(crate) fn used(&self) -> bool {
+		self.stages.iter().any(|stages| !stages.is_empty())
 	}
 }
 
-pub(crate) fn resource_accepts_retained_slot_key(
-	descriptor: ShaderResourceDescriptor,
-	stored_slot: crate::shader::ResourceSlot,
-) -> bool {
-	let stored = stored_slot.index();
-	stored <= descriptor.slot().index() || stored >= descriptor.range_end()
-}
-
-/// Canonicalizes one shader stage so declaration order cannot change pipeline mappings.
+/// Builds the layout of a pipeline whose stages declare `stage_sets`: each stage with the sets its shader declares,
+/// in the shader's set order.
 ///
-/// The result is sorted by slot, with declarations of one slot merged. It is built in place in one stack list,
-/// because every pipeline creation canonicalizes each of its stages.
-fn canonicalize_stage_resources(resources: &[ShaderResourceDescriptor]) -> smallvec::SmallVec<[ShaderResourceDescriptor; 16]> {
-	let mut canonical = smallvec::SmallVec::<[ShaderResourceDescriptor; 16]>::from_slice(resources);
-	canonical.sort_by_key(|descriptor| descriptor.slot());
-
-	// The first `kept` entries are canonical. Each later entry merges into the last of them or becomes the next.
-	let mut kept = 0usize;
-	for index in 0..canonical.len() {
-		let descriptor = canonical[index];
-		match kept.checked_sub(1).map(|last| &mut canonical[last]) {
-			Some(previous) if previous.slot() == descriptor.slot() => {
-				assert!(
-					previous.matches_representation(descriptor),
-					"Conflicting Vulkan shader resources. The most likely cause is that one stage declared the same flat slot with incompatible representations.",
-				);
-				previous.access |= descriptor.access;
-			}
-			previous => {
-				assert!(
-					previous.is_none_or(|previous| !previous.overlaps(descriptor)),
-					"Overlapping Vulkan shader resources. The most likely cause is that one stage declared intersecting flat resource ranges.",
-				);
-				canonical[kept] = descriptor;
-				kept += 1;
-			}
-		}
-	}
-	canonical.truncate(kept);
-
-	canonical
-}
-
-fn descriptor_heap_representation(
-	descriptor: ShaderResourceDescriptor,
-	properties: &vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'_>,
-) -> (Option<(u64, u64)>, Option<(u64, u64)>) {
-	let image = (properties.image_descriptor_size, properties.image_descriptor_alignment);
-	let buffer = (properties.buffer_descriptor_size, properties.buffer_descriptor_alignment);
-	let sampler = (properties.sampler_descriptor_size, properties.sampler_descriptor_alignment);
-
-	match descriptor.kind() {
-		ResourceKind::UniformBuffer | ResourceKind::StorageBuffer | ResourceKind::AccelerationStructure => (Some(buffer), None),
-		ResourceKind::SampledImage | ResourceKind::StorageImage | ResourceKind::InputAttachment => (Some(image), None),
-		ResourceKind::CombinedImageSampler => (Some(image), Some(sampler)),
-		ResourceKind::Sampler => (None, Some(sampler)),
-	}
-}
-
-fn reserve_descriptor_range(cursor: &mut u64, count: u32, representation: Option<(u64, u64)>) -> (Option<u32>, u32) {
-	let Some((size, alignment)) = representation else {
-		return (None, 0);
-	};
-	assert!(
-		size > 0,
-		"Invalid Vulkan descriptor size. The most likely cause is incomplete descriptor-heap properties."
-	);
-	*cursor = cursor.next_multiple_of(alignment);
-	let offset = u32::try_from(*cursor).expect(
-		"Vulkan descriptor-heap offset exceeded 32 bits. The most likely cause is a pipeline resource layout larger than the extension mapping API supports.",
-	);
-	let stride = u32::try_from(size)
-		.expect("Vulkan descriptor size exceeded 32 bits. The most likely cause is invalid descriptor-heap properties.");
-	*cursor = cursor
-		.checked_add(
-			size.checked_mul(count as u64)
-				.expect("Vulkan descriptor array size overflowed. The most likely cause is an invalid shader resource count."),
-		)
-		.expect("Vulkan descriptor heap size overflowed. The most likely cause is an invalid pipeline resource interface.");
-	(Some(offset), stride)
-}
-
-/// Builds a descriptor-heap layout by merging every shader stage's flat resource interface.
-///
-/// An entry without stages reserves heap room for its resources and gives them no descriptor: they keep their heap
-/// offsets, but the layout's resources leave out every resource no stage uses.
-pub(crate) fn build_pipeline_layout(
-	stage_resources: &[(crate::Stages, &[ShaderResourceDescriptor])],
+/// Sets of equal layout identity are one pipeline set, so stages that share a layer read one set.
+pub(crate) fn build_pipeline_layout<'a>(
+	stage_sets: impl IntoIterator<Item = (crate::Stages, &'a [ShaderDescriptorSet])>,
 	push_constant_ranges: &[crate::pipelines::PushConstantRange],
 	properties: &vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'_>,
 ) -> PipelineLayout {
-	let mut merged = Vec::<(ShaderResourceDescriptor, crate::Stages)>::new();
-	for (stage, resources) in stage_resources {
-		for descriptor in canonicalize_stage_resources(resources) {
-			if let Some((existing, existing_stages)) =
-				merged.iter_mut().find(|(existing, _)| existing.slot() == descriptor.slot())
-			{
-				assert!(
-					existing.matches_representation(descriptor),
-					"Conflicting Vulkan pipeline resources. The most likely cause is that shader stages declared incompatible resources at the same flat slot.",
-				);
-				*existing_stages |= *stage;
-				existing.access |= descriptor.access;
-				continue;
+	let mut sets = SmallVec::<[PipelineSet; 4]>::new();
+	for (stage, shader_sets) in stage_sets {
+		for shader_set in shader_sets {
+			let identity = shader_set.layout().identity();
+			let position = match sets.iter().position(|set| set.layout.identity() == identity) {
+				Some(position) => position,
+				None => {
+					sets.push(PipelineSet {
+						layout: shader_set.layout().clone(),
+						stages: SmallVec::from_elem(crate::Stages::empty(), shader_set.layout().resources().len()),
+					});
+					sets.len() - 1
+				}
+			};
+			for (index, _) in shader_set.used_resources() {
+				sets[position].stages[index] |= stage;
 			}
-
-			assert!(
-				merged.iter().all(|(existing, _)| !existing.overlaps(descriptor)),
-				"Overlapping Vulkan pipeline resources. The most likely cause is that shader resource arrays reserve intersecting flat slot ranges.",
-			);
-			merged.push((descriptor, *stage));
 		}
 	}
-	merged.sort_by_key(|(descriptor, _)| descriptor.slot());
-
-	let (mut resource_cursor, mut sampler_cursor) = (0u64, 0u64);
-	let resources = merged
-		.into_iter()
-		.map(|(descriptor, stages)| {
-			let (resource, sampler) = descriptor_heap_representation(descriptor, properties);
-			let (resource_heap_offset, resource_stride) =
-				reserve_descriptor_range(&mut resource_cursor, descriptor.count(), resource);
-			let (sampler_heap_offset, sampler_stride) =
-				reserve_descriptor_range(&mut sampler_cursor, descriptor.count(), sampler);
-
-			PipelineResourceDescriptor {
-				descriptor,
-				stages,
-				resource_heap_offset,
-				sampler_heap_offset,
-				resource_stride,
-				sampler_stride,
-			}
-		})
-		// Reserved resources took their offsets above. No stage reads them, so they need no descriptor.
-		.filter(|resource| !resource.stages.is_empty())
-		.collect::<Vec<_>>();
+	assert!(
+		sets.len() <= MAX_DESCRIPTOR_SETS,
+		"Vulkan pipeline creation failed because its shaders declare {} distinct descriptor sets. The most likely cause is that the stages declare different layers, which add up past the limit. Declare at most {MAX_DESCRIPTOR_SETS} sets across a pipeline's stages.",
+		sets.len(),
+	);
 
 	let push_constant_size = push_constant_ranges
 		.iter()
 		.map(|range| {
-			range
-				.offset
-				.checked_add(range.size)
-				.expect("Vulkan push-data range overflowed. The most likely cause is an invalid push-constant range.")
+			range.offset.checked_add(range.size).expect(
+				"Vulkan push constant range overflowed. The most likely cause is an invalid push constant range. Pass ranges whose offset and size fit in 32 bits.",
+			)
 		})
 		.max()
 		.unwrap_or(0);
-	let heap_push_data_offset = u32::try_from((push_constant_size as u64).next_multiple_of(4)).unwrap();
-
 	assert!(
-		heap_push_data_offset as u64 + 8 <= properties.max_push_data_size,
-		"Vulkan push data is exhausted. The most likely cause is that declared push constants leave no room for descriptor-heap base offsets.",
+		u64::from(PUSH_CONSTANT_OFFSET + push_constant_size) <= properties.max_push_data_size,
+		"Vulkan push data is exhausted. The most likely cause is that the pipeline declares {push_constant_size} bytes of push constants, which together with the {PUSH_CONSTANT_OFFSET} bytes of set base indices exceed the device's {} bytes of push data. Move push constants into a buffer.",
+		properties.max_push_data_size,
 	);
 
 	PipelineLayout {
-		resources,
-		push_constant_ranges: push_constant_ranges.to_vec(),
+		sets,
 		push_constant_size,
-		heap_push_data_offset,
-		resource_heap_size: u32::try_from(resource_cursor)
-			.expect("Vulkan resource layout exceeded 32 bits. The most likely cause is an oversized descriptor array."),
-		sampler_heap_size: u32::try_from(sampler_cursor)
-			.expect("Vulkan sampler layout exceeded 32 bits. The most likely cause is an oversized descriptor array."),
+	}
+}
+
+/// Appends to a stage's specialization constants the pipeline index of each set the stage's shader declares, at
+/// [`SET_SPECIALIZATION_BASE`] plus the set's position in `shader_sets`.
+pub(crate) fn push_set_specializations(
+	layout: &PipelineLayout,
+	shader_sets: &[ShaderDescriptorSet],
+	data: &mut SmallVec<[u8; 64]>,
+	entries: &mut SmallVec<[vk::SpecializationMapEntry; 16]>,
+) {
+	for (position, shader_set) in (0u32..).zip(shader_sets) {
+		let index = layout
+			.sets
+			.iter()
+			.position(|set| set.layout.identity() == shader_set.layout().identity())
+			.expect("Missing Vulkan pipeline set. The most likely cause is that the layout was built from other shaders than the stages it specializes.");
+		entries.push(
+			vk::SpecializationMapEntry::default()
+				.constant_id(SET_SPECIALIZATION_BASE + position)
+				.offset(data.len() as u32)
+				.size(4),
+		);
+		data.extend_from_slice(&(index as u32).to_ne_bytes());
 	}
 }
 
@@ -219,158 +179,58 @@ pub(crate) fn descriptor_type(kind: ResourceKind) -> Option<vk::DescriptorType> 
 	}
 }
 
-fn spirv_resource_mask(descriptor: ShaderResourceDescriptor) -> vk::SpirvResourceTypeFlagsEXT {
-	match descriptor.kind() {
-		ResourceKind::UniformBuffer => vk::SpirvResourceTypeFlagsEXT::UNIFORM_BUFFER,
-		ResourceKind::StorageBuffer if descriptor.access().intersects(crate::AccessPolicies::WRITE) => {
-			vk::SpirvResourceTypeFlagsEXT::READ_WRITE_STORAGE_BUFFER
-		}
-		ResourceKind::StorageBuffer => vk::SpirvResourceTypeFlagsEXT::READ_ONLY_STORAGE_BUFFER,
-		// The shader samples an image with a fixed sampler as a combined image sampler whose sampler is embedded.
-		ResourceKind::SampledImage if descriptor.sampler().is_some() => vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE,
-		ResourceKind::SampledImage => vk::SpirvResourceTypeFlagsEXT::SAMPLED_IMAGE,
-		ResourceKind::CombinedImageSampler => vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE,
-		ResourceKind::StorageImage if descriptor.access().intersects(crate::AccessPolicies::WRITE) => {
-			vk::SpirvResourceTypeFlagsEXT::READ_WRITE_IMAGE
-		}
-		ResourceKind::StorageImage | ResourceKind::InputAttachment => vk::SpirvResourceTypeFlagsEXT::READ_ONLY_IMAGE,
-		ResourceKind::Sampler => vk::SpirvResourceTypeFlagsEXT::SAMPLER,
-		ResourceKind::AccelerationStructure => vk::SpirvResourceTypeFlagsEXT::ACCELERATION_STRUCTURE,
-	}
-}
-
-/// Returns the sampler a pipeline stage embeds for each image its shader samples through a fixed sampler, by slot.
-///
-/// Keep the result, and the create infos built from it, alive until the pipeline is created, then pass the create
-/// infos to [`build_shader_mappings`].
-pub(crate) fn embedded_samplers(
-	shader_resources: &[ShaderResourceDescriptor],
-) -> smallvec::SmallVec<[(crate::shader::ResourceSlot, super::Sampler); 4]> {
-	shader_resources
-		.iter()
-		.filter_map(|descriptor| Some((descriptor.slot(), super::Sampler::fixed(descriptor.sampler()?))))
-		.collect()
-}
-
-/// Builds the set-zero binding mappings consumed by one pipeline shader stage.
-///
-/// `embedded_samplers` holds the sampler create info of every image the stage samples through a fixed sampler, by
-/// slot, from [`embedded_samplers`]. The mappings point at them, so they must outlive the mappings.
-pub(crate) fn build_shader_mappings<'a>(
-	layout: &PipelineLayout,
-	shader_resources: &[ShaderResourceDescriptor],
-	embedded_samplers: &'a [(crate::shader::ResourceSlot, vk::SamplerCreateInfo<'a>)],
-) -> smallvec::SmallVec<[vk::DescriptorSetAndBindingMappingEXT<'a>; 16]> {
-	canonicalize_stage_resources(shader_resources)
-		.into_iter()
-		.map(|descriptor| {
-			let resource = layout
-				.resources
-				.iter()
-				.find(|resource| resource.descriptor.slot() == descriptor.slot())
-				.expect("Missing Vulkan pipeline resource mapping. The most likely cause is inconsistent shader metadata.");
-			let is_sampler = descriptor.kind() == ResourceKind::Sampler;
-			let (heap_offset, heap_stride) = if is_sampler {
-				(resource.sampler_heap_offset, resource.sampler_stride)
-			} else {
-				(resource.resource_heap_offset, resource.resource_stride)
-			};
-			let mut push_index = vk::DescriptorMappingSourcePushIndexEXT::default()
-				.heap_offset(heap_offset.unwrap_or(0))
-				.push_offset(layout.heap_push_data_offset + u32::from(is_sampler) * 4)
-				.heap_index_stride(1)
-				.heap_array_stride(heap_stride);
-
-			if descriptor.kind() == ResourceKind::CombinedImageSampler {
-				push_index = push_index
-					.sampler_heap_offset(resource.sampler_heap_offset.unwrap())
-					.sampler_push_offset(layout.heap_push_data_offset + 4)
-					.sampler_heap_index_stride(1)
-					.sampler_heap_array_stride(resource.sampler_stride);
-			}
-			if descriptor.sampler().is_some() {
-				let (_, sampler) = embedded_samplers
-					.iter()
-					.find(|(slot, _)| *slot == descriptor.slot())
-					.expect("Missing Vulkan embedded sampler. The most likely cause is that the stage's fixed samplers were built from other resources than its mappings.");
-				push_index = push_index.embedded_sampler(sampler);
-			}
-
-			vk::DescriptorSetAndBindingMappingEXT::default()
-				.descriptor_set(0)
-				.first_binding(descriptor.slot().index())
-				.binding_count(1)
-				.resource_mask(spirv_resource_mask(descriptor))
-				.source(vk::DescriptorMappingSourceEXT::HEAP_WITH_PUSH_INDEX)
-				.source_data(vk::DescriptorMappingSourceDataEXT { push_index })
-		})
-		.collect()
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::shader::{ResourceSlot, ShaderResourceDescriptor};
 
 	fn properties() -> vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static> {
-		vk::PhysicalDeviceDescriptorHeapPropertiesEXT::default()
-			.image_descriptor_size(64)
-			.image_descriptor_alignment(64)
-			.buffer_descriptor_size(32)
-			.buffer_descriptor_alignment(32)
-			.sampler_descriptor_size(16)
-			.sampler_descriptor_alignment(16)
-			.max_push_data_size(256)
+		vk::PhysicalDeviceDescriptorHeapPropertiesEXT::default().max_push_data_size(256)
 	}
 
-	fn resource(slot: u32, kind: ResourceKind, count: u32) -> ShaderResourceDescriptor {
-		ShaderResourceDescriptor::new(
-			crate::shader::ResourceSlot::new(slot),
-			kind,
-			count,
-			crate::AccessPolicies::READ,
+	fn layout(name: &str, kinds: &[ResourceKind]) -> DescriptorSetLayout {
+		DescriptorSetLayout::new(
+			name,
+			(0u32..).zip(kinds).map(|(slot, kind)| {
+				ShaderResourceDescriptor::single(ResourceSlot::new(slot), *kind, crate::AccessPolicies::READ)
+			}),
 		)
 	}
 
 	#[test]
-	fn flat_arrays_reserve_ranges_but_one_native_mapping() {
-		let resources = vec![
-			resource(9, ResourceKind::CombinedImageSampler, 1024),
-			resource(1033, ResourceKind::StorageBuffer, 1),
+	fn stages_share_the_sets_of_one_layout_in_the_order_they_first_declare_them() {
+		let scene = layout("scene", &[ResourceKind::StorageBuffer, ResourceKind::CombinedImageSampler]);
+		let pass = layout("pass", &[ResourceKind::StorageImage]);
+		let vertex = [ShaderDescriptorSet::with_used(scene.clone(), 0b01)];
+		let fragment = [
+			ShaderDescriptorSet::new(pass.clone()),
+			ShaderDescriptorSet::with_used(scene.clone(), 0b10),
 		];
-		let layout = build_pipeline_layout(&[(crate::Stages::COMPUTE, resources.as_slice())], &[], &properties());
-		let mappings = build_shader_mappings(&layout, &resources, &[]);
-
-		assert_eq!(layout.resources.len(), 2);
-		assert_eq!(mappings.len(), 2);
-		assert_eq!(mappings[0].first_binding, 9);
-		assert_eq!(mappings[0].binding_count, 1);
-		assert_eq!(layout.resources[0].resource_stride, 64);
-		assert_eq!(layout.resources[0].sampler_stride, 16);
-		assert_eq!(layout.resources[1].resource_heap_offset, Some(64 * 1024));
-	}
-
-	#[test]
-	#[should_panic(expected = "Overlapping Vulkan shader resources")]
-	fn flat_arrays_reject_interior_resource_slots() {
-		let resources = vec![
-			resource(9, ResourceKind::CombinedImageSampler, 1024),
-			resource(10, ResourceKind::StorageBuffer, 1),
-		];
-		let _ = build_pipeline_layout(&[(crate::Stages::COMPUTE, resources.as_slice())], &[], &properties());
-	}
-
-	#[test]
-	fn compatible_stage_resources_merge_visibility_and_access() {
-		let read = resource(4, ResourceKind::StorageBuffer, 1);
-		let write = ShaderResourceDescriptor::new(read.slot(), read.kind(), read.count(), crate::AccessPolicies::WRITE);
 		let layout = build_pipeline_layout(
-			&[(crate::Stages::VERTEX, &[read][..]), (crate::Stages::FRAGMENT, &[write][..])],
+			[(crate::Stages::VERTEX, &vertex[..]), (crate::Stages::FRAGMENT, &fragment[..])],
 			&[],
 			&properties(),
 		);
 
-		assert_eq!(layout.resources.len(), 1);
-		assert_eq!(layout.resources[0].stages, crate::Stages::VERTEX | crate::Stages::FRAGMENT);
-		assert_eq!(layout.resources[0].descriptor.access(), crate::AccessPolicies::READ_WRITE);
+		assert_eq!(layout.sets.len(), 2);
+		assert_eq!(layout.sets[0].layout.identity(), scene.identity());
+		assert_eq!(&layout.sets[0].stages[..], [crate::Stages::VERTEX, crate::Stages::FRAGMENT]);
+		assert_eq!(&layout.sets[1].stages[..], [crate::Stages::FRAGMENT]);
+
+		// The fragment shader's set 0 is the pipeline's set 1, and its set 1 the pipeline's set 0.
+		let (mut data, mut entries) = (SmallVec::new(), SmallVec::new());
+		push_set_specializations(&layout, &fragment, &mut data, &mut entries);
+		let ids = entries.iter().map(|entry| entry.constant_id).collect::<Vec<_>>();
+		assert_eq!(ids, [SET_SPECIALIZATION_BASE, SET_SPECIALIZATION_BASE + 1]);
+		assert_eq!(&data[..], [1u32.to_ne_bytes(), 0u32.to_ne_bytes()].concat());
+	}
+
+	#[test]
+	fn fixed_samplers_follow_the_documented_index() {
+		let sampler = fixed_sampler(1 + 2 + 4 * 2 + 12 * 2);
+		assert_eq!(sampler.filtering_mode, crate::FilteringModes::Linear);
+		assert_eq!(sampler.mip_map_mode, crate::FilteringModes::Linear);
+		assert_eq!(sampler.reduction_mode, crate::SamplingReductionModes::Max);
+		assert_eq!(sampler.addressing_mode, crate::SamplerAddressingModes::Mirror);
 	}
 }

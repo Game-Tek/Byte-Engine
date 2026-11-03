@@ -113,6 +113,8 @@ impl Device {
 			resources.resize_with(frame_index + 1, || None);
 		}
 		resources[frame_index] = Some(frame_storage);
+		// Descriptors of this sequence read the base storage until now, so they are written again at their next bind.
+		self.mark_stale_descriptors(|descriptor| matches!(descriptor, WriteData::Buffer { handle } if handle == buffer_handle));
 	}
 
 	pub(crate) fn buffer_resource_for_sequence(

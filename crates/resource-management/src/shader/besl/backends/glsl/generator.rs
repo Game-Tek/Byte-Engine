@@ -3,11 +3,32 @@ use std::{cell::RefCell, fmt::Write as _};
 use super::super::{ResourceAccessorKind, intrinsic_requirements, is_two, resource_accessor, resource_reference_kind};
 use crate::shader::generator::{
 	NodeEmitter, ShaderFormatting, ShaderGenerationSettings, Stages, emit_statement_block, is_integer_besl_type,
-	ordered_shader_nodes,
+	is_texture_besl_type, ordered_shader_nodes,
 };
 
 pub(super) mod mesh_shading;
 pub(super) mod ray_tracing;
+
+/// The specialization constant id that holds where the pipeline binds a shader's set 0. Set position `s` reads its
+/// pipeline set index from id `SET_SPECIALIZATION_BASE + s`, and defaults to `s`.
+///
+/// The Vulkan GHI backend fills these constants with the same base, `SET_SPECIALIZATION_BASE` in
+/// `ghi/src/vulkan/descriptor_heap.rs`. It sits well above the ids BESL programs give their specializations, and
+/// below glslang's limit of 2047.
+pub(crate) const SET_SPECIALIZATION_BASE: u32 = 1984;
+
+/// The byte of the push data where a shader's own push constants start, after the sets' base indices.
+pub(crate) const PUSH_CONSTANT_OFFSET: u32 = 128;
+
+/// The stride, in bytes, of every resource heap alias. Each descriptor takes one 64-byte slot of the resource heap.
+const RESOURCE_DESCRIPTOR_STRIDE: u32 = 64;
+
+/// Names the push data member that holds, for each pipeline set, its resource base index in `.x` and its sampler base
+/// index in `.y`.
+const SET_BASES: &str = "_besl_sets";
+
+/// Names the sampler heap alias that both application-bound and fixed samplers are read from.
+const SAMPLER_HEAP: &str = "_besl_samplers";
 
 /// The `Features` struct holds what a shader's reachable code needs of GLSL beyond the core language, which picks its
 /// version, extensions, and prelude.
@@ -18,6 +39,12 @@ struct Features {
 	ray_tracing: bool,
 	/// Fragment inputs that a mesh stage writes once per primitive.
 	primitive_inputs: bool,
+	/// The shader reads a descriptor, so it declares heap aliases and the sets' base indices.
+	descriptors: bool,
+	/// The shader samples a texture, so it declares the sampler heap alias.
+	samplers: bool,
+	/// The shader declares push constants, whose block also holds the sets' base indices.
+	push_constants: bool,
 }
 
 /// The `Generator` struct exists to produce GLSL source for Vulkan-backed shader pipelines.
@@ -32,6 +59,10 @@ pub struct Generator {
 	match_break_depth: Option<usize>,
 	/// The program's `task_payload` arrays, in declaration order, which become the members of one payload struct.
 	task_payloads: Vec<besl::NodeReference>,
+	/// One bit per set position whose pipeline index constant is already declared.
+	declared_sets: u32,
+	/// One bit per texture type whose resource heap alias texture parameters read is already declared.
+	declared_parameter_textures: u8,
 }
 
 impl Generator {
@@ -42,6 +73,8 @@ impl Generator {
 			stage: Stages::Vertex,
 			match_break_depth: None,
 			task_payloads: Vec::new(),
+			declared_sets: 0,
+			declared_parameter_textures: 0,
 		}
 	}
 
@@ -70,8 +103,24 @@ impl Generator {
 		main_function_node: &besl::NodeReference,
 	) -> Result<String, ()> {
 		self.stage = shader_compilation_settings.stage;
+		self.declared_sets = 0;
+		self.declared_parameter_textures = 0;
 		let mut string = String::with_capacity(2048);
-		let order = ordered_shader_nodes(main_function_node, "GLSL");
+		let mut order = ordered_shader_nodes(main_function_node, "GLSL");
+		// Every reachable descriptor is addressed through its set's base indices, so it needs a placement in a set the
+		// push data holds bases for.
+		let mut descriptors = false;
+		let mut samplers = false;
+		for node in &order {
+			if let besl::Nodes::Binding { placement, r#type, .. } = node.borrow().node() {
+				if placement.is_none_or(|placement| placement.set >= besl::MAX_DESCRIPTOR_SETS) {
+					return Err(());
+				}
+				descriptors = true;
+				samplers |= matches!(r#type, besl::BindingTypes::CombinedImageSampler { .. });
+			}
+		}
+		let push_constants = hoist_push_constant(&mut order);
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
 		self.task_payloads = order
 			.iter()
@@ -93,6 +142,9 @@ impl Generator {
 			primitive_inputs: order
 				.iter()
 				.any(|node| matches!(node.borrow().node(), besl::Nodes::Input { per_primitive: true, .. })),
+			descriptors,
+			samplers,
+			push_constants,
 		};
 		if features.subgroups && !matches!(shader_compilation_settings.stage, Stages::Compute { .. }) {
 			return Err(());
@@ -213,6 +265,9 @@ impl Generator {
 		glsl_block.push_str("#extension GL_EXT_buffer_reference:enable\n");
 		glsl_block.push_str("#extension GL_EXT_buffer_reference2:enable\n");
 		glsl_block.push_str("#extension GL_EXT_shader_image_load_formatted:enable\n");
+		if features.descriptors {
+			glsl_block.push_str("#extension GL_EXT_descriptor_heap:require\n");
+		}
 		// Read-only images are textures without a sampler, which `texelFetch` and `textureSize` read through this.
 		glsl_block.push_str("#extension GL_EXT_samplerless_texture_functions:enable\n");
 		if compilation_settings.stage.is_ray_tracing() {
@@ -273,7 +328,205 @@ impl Generator {
 				 bool _besl_is_normal(float16_t value){return _besl_is_finite(value)&&abs(value)>=float16_t(0.00006103515625);}\n",
 			);
 		}
-		glsl_block.push_str(ShaderFormatting::new(self.minified).break_str());
+		let break_str = ShaderFormatting::new(self.minified).break_str();
+		// A shader with push constants declares the sets' base indices in their block, where its `PushConstant` node is.
+		if features.descriptors && !features.push_constants {
+			let _ = write!(
+				glsl_block,
+				"layout(push_constant,scalar)uniform PushConstant{{uvec2 {SET_BASES}[{}];}}push_constant;{break_str}",
+				besl::MAX_DESCRIPTOR_SETS
+			);
+		}
+		// Fixed samplers and the ones the application binds share the sampler heap, at the device's sampler stride.
+		if features.samplers {
+			let _ = write!(
+				glsl_block,
+				"layout(descriptor_heap)uniform sampler {SAMPLER_HEAP}[];{break_str}"
+			);
+		}
+		glsl_block.push_str(break_str);
+	}
+
+	/// Declares the specialization constant that holds the pipeline index of the shader's set `set`, once per shader.
+	fn declare_set(&mut self, string: &mut String, set: u32) {
+		if self.declared_sets & (1 << set) != 0 {
+			return;
+		}
+		self.declared_sets |= 1 << set;
+		let _ = write!(
+			string,
+			"layout(constant_id={})const uint _besl_set{set}={set}u;{}",
+			SET_SPECIALIZATION_BASE + set,
+			ShaderFormatting::new(self.minified).break_str()
+		);
+	}
+
+	/// Writes the heap index of descriptor `offset` of the shader's set `set`, plus `index` when one element of an array
+	/// is picked. `component` is `x` for the resource heap and `y` for the sampler heap.
+	///
+	/// An index any expression picks may differ across a draw, so it is marked non-uniform.
+	fn emit_heap_index(
+		&mut self,
+		string: &mut String,
+		set: u32,
+		component: char,
+		offset: u32,
+		index: Option<&besl::NodeReference>,
+	) {
+		if index.is_some() {
+			string.push_str("nonuniformEXT(");
+		}
+		let _ = write!(string, "push_constant.{SET_BASES}[_besl_set{set}].{component}+{offset}u");
+		if let Some(index) = index {
+			string.push_str("+(");
+			self.emit_node(string, index);
+			string.push_str("))");
+		}
+	}
+
+	/// Writes the descriptor `binding` names, or element `index` of it when it is an array, read from the heap aliases
+	/// its declaration made. A texture the shader samples is combined with its sampler, as GLSL's texture functions
+	/// take it.
+	fn emit_binding_access(&mut self, string: &mut String, binding: &besl::NodeReference, index: Option<&besl::NodeReference>) {
+		let node = binding.borrow();
+		let besl::Nodes::Binding { name, r#type, .. } = node.node() else {
+			unreachable!("Expected a binding node.");
+		};
+		match r#type {
+			besl::BindingTypes::CombinedImageSampler { format, .. } => {
+				string.push_str(combined_sampler_type(format));
+				string.push('(');
+				self.emit_texture_and_sampler(string, binding, index);
+				string.push(')');
+			}
+			besl::BindingTypes::BufferArray { .. } => {
+				self.emit_resource_element(string, binding, index);
+				string.push('.');
+				Self::identifier(name).push_to(string);
+			}
+			_ => self.emit_resource_element(string, binding, index),
+		}
+	}
+
+	/// Writes the resource heap element of `binding`, or of its element `index`.
+	fn emit_resource_element(
+		&mut self,
+		string: &mut String,
+		binding: &besl::NodeReference,
+		index: Option<&besl::NodeReference>,
+	) {
+		let node = binding.borrow();
+		let besl::Nodes::Binding {
+			name,
+			placement: Some(placement),
+			..
+		} = node.node()
+		else {
+			unreachable!("`generate` admits only placed bindings.");
+		};
+		Self::identifier(name).push_to(string);
+		string.push('[');
+		self.emit_heap_index(string, placement.set, 'x', placement.resource, index);
+		string.push(']');
+	}
+
+	/// Writes the texture of the texture binding `binding`, or of its element `index`, then a comma and its sampler:
+	/// the one the application binds in the set, or the fixed one at the sampler heap index its state decides.
+	fn emit_texture_and_sampler(&mut self, string: &mut String, binding: &besl::NodeReference, index: Option<&besl::NodeReference>) {
+		self.emit_resource_element(string, binding, index);
+		string.push(',');
+		string.push_str(SAMPLER_HEAP);
+		string.push('[');
+		self.emit_sampler_index(string, binding, index);
+		string.push(']');
+	}
+
+	/// Writes the heap indices of the texture binding `binding`, or of its element `index`: its texture's resource heap
+	/// index, a comma, and its sampler's sampler heap index.
+	fn emit_texture_and_sampler_indices(
+		&mut self,
+		string: &mut String,
+		binding: &besl::NodeReference,
+		index: Option<&besl::NodeReference>,
+	) {
+		let placement = match binding.borrow().node() {
+			besl::Nodes::Binding {
+				placement: Some(placement),
+				..
+			} => *placement,
+			_ => unreachable!("`generate` admits only placed bindings."),
+		};
+		self.emit_heap_index(string, placement.set, 'x', placement.resource, index);
+		string.push(',');
+		self.emit_sampler_index(string, binding, index);
+	}
+
+	/// Writes the sampler heap index of the sampler of the texture binding `binding`, or of its element `index`.
+	fn emit_sampler_index(&mut self, string: &mut String, binding: &besl::NodeReference, index: Option<&besl::NodeReference>) {
+		let node = binding.borrow();
+		let besl::Nodes::Binding {
+			r#type: besl::BindingTypes::CombinedImageSampler { sampler, .. },
+			placement: Some(placement),
+			..
+		} = node.node()
+		else {
+			unreachable!("Expected a placed texture binding.");
+		};
+		match sampler {
+			Some(sampler) => {
+				let _ = write!(string, "{}u", sampler.fixed_index());
+			}
+			None => self.emit_heap_index(string, placement.set, 'y', placement.sampler, index),
+		}
+	}
+
+	/// Declares, once per shader, the resource heap alias that a texture parameter of BESL type `type_name` reads.
+	fn declare_parameter_texture(&mut self, string: &mut String, type_name: &str) {
+		let texture_type = parameter_texture_type(type_name);
+		let bit = match texture_type {
+			"texture3D" => 1,
+			"textureCube" => 2,
+			"textureCubeArray" => 4,
+			"texture2DArray" => 8,
+			_ => 16,
+		};
+		if self.declared_parameter_textures & bit != 0 {
+			return;
+		}
+		self.declared_parameter_textures |= bit;
+		let _ = write!(
+			string,
+			"layout(descriptor_heap,descriptor_stride={RESOURCE_DESCRIPTOR_STRIDE}) uniform {texture_type} _besl_{texture_type}[];{}",
+			ShaderFormatting::new(self.minified).break_str()
+		);
+	}
+
+	/// Writes a texture argument of a user function as the resource heap index of the texture, a comma, and the
+	/// sampler heap index of its sampler, which the parameter pair takes.
+	fn emit_texture_argument(&mut self, string: &mut String, argument: &besl::NodeReference) {
+		// A descriptor array element names its binding through an accessor.
+		let (binding, index) = match argument.borrow().node() {
+			besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) => (direct_binding(left), Some(right.clone())),
+			_ => (direct_binding(argument), None),
+		};
+		if let Some(binding) = binding
+			&& matches!(
+				binding.borrow().node(),
+				besl::Nodes::Binding {
+					r#type: besl::BindingTypes::CombinedImageSampler { .. },
+					..
+				}
+			) {
+			self.emit_texture_and_sampler_indices(string, &binding, index.as_ref());
+			return;
+		}
+		// A texture parameter passes on with the sampler it came with.
+		if let Some(name) = texture_parameter(argument) {
+			let name = Self::identifier(&name);
+			let _ = write!(string, "{name},{name}_sampler");
+			return;
+		}
+		self.emit_node(string, argument);
 	}
 
 	// Emits ordinary 2D samples, descriptor-array samples, and one selected 2D-array layer.
@@ -316,6 +569,110 @@ fn reads_sampled_image(image: &besl::NodeReference) -> bool {
 	})
 }
 
+/// Returns the binding `node` names directly, as a reference to it, without an accessor in between.
+fn direct_binding(node: &besl::NodeReference) -> Option<besl::NodeReference> {
+	match node.borrow().node() {
+		besl::Nodes::Binding { .. } => Some(node.clone()),
+		besl::Nodes::Expression(besl::Expressions::Member { source, .. })
+			if matches!(source.borrow().node(), besl::Nodes::Binding { .. }) =>
+		{
+			Some(source.clone())
+		}
+		_ => None,
+	}
+}
+
+/// Returns the name of the texture parameter `node` names, as a reference to it.
+fn texture_parameter(node: &besl::NodeReference) -> Option<String> {
+	let node = node.borrow();
+	let besl::Nodes::Expression(besl::Expressions::Member { source, .. }) = node.node() else {
+		return None;
+	};
+	let source = source.borrow();
+	let besl::Nodes::Parameter { name, r#type } = source.node() else {
+		return None;
+	};
+	r#type
+		.borrow()
+		.get_name()
+		.is_some_and(is_texture_besl_type)
+		.then(|| name.clone())
+}
+
+/// Moves the push constant block, and the structs its members name, to the front of `order`, and returns whether the
+/// program has one.
+///
+/// The block holds the sets' base indices that every descriptor access reads, so it has to be declared before any
+/// function that reads a descriptor. `order` lists dependencies first, so moving a dependency-closed group to the front
+/// keeps every node after what it names.
+fn hoist_push_constant(order: &mut Vec<besl::NodeReference>) -> bool {
+	/// Appends `node`'s struct dependencies, then `node`, to `group`, once each.
+	fn collect(node: &besl::NodeReference, group: &mut Vec<besl::NodeReference>) {
+		if group.contains(node) {
+			return;
+		}
+		match node.borrow().node() {
+			besl::Nodes::PushConstant { members: children } | besl::Nodes::Struct { fields: children, .. } => {
+				children.iter().for_each(|child| collect(child, group))
+			}
+			besl::Nodes::Member { r#type, .. } => collect(r#type, group),
+			_ => {}
+		}
+		group.push(node.clone());
+	}
+
+	let Some(push_constant) = order
+		.iter()
+		.find(|node| matches!(node.borrow().node(), besl::Nodes::PushConstant { .. }))
+		.cloned()
+	else {
+		return false;
+	};
+	let mut group = Vec::new();
+	collect(&push_constant, &mut group);
+	// Only emitted nodes move; members and built-in types are not in `order`.
+	group.retain(|node| order.contains(node));
+	order.retain(|node| !group.contains(node));
+	group.append(order);
+	*order = group;
+	true
+}
+
+/// Returns how a texture of BESL format `format` is declared in the resource heap: as a texture without its sampler.
+fn texture_declaration(format: &str) -> &'static str {
+	match format {
+		"Texture3D" => "uniform texture3D",
+		"TextureCube" => "uniform textureCube",
+		"TextureCubeArray" => "uniform textureCubeArray",
+		"ArrayTexture2D" => "uniform texture2DArray",
+		"r8ui" | "r16ui" | "r32ui" => "uniform utexture2D",
+		_ => "uniform texture2D",
+	}
+}
+
+/// Returns the GLSL texture type that a texture parameter of BESL type `type_name` reads its texture as.
+fn parameter_texture_type(type_name: &str) -> &'static str {
+	match type_name {
+		"Texture3D" => "texture3D",
+		"TextureCube" => "textureCube",
+		"TextureCubeArray" => "textureCubeArray",
+		"ArrayTexture2D" => "texture2DArray",
+		_ => "texture2D",
+	}
+}
+
+/// Returns the GLSL sampler type that combines a texture of BESL format `format` with a sampler.
+fn combined_sampler_type(format: &str) -> &'static str {
+	match format {
+		"Texture3D" => "sampler3D",
+		"TextureCube" => "samplerCube",
+		"TextureCubeArray" => "samplerCubeArray",
+		"ArrayTexture2D" => "sampler2DArray",
+		"r8ui" | "r16ui" | "r32ui" => "usampler2D",
+		_ => "sampler2D",
+	}
+}
+
 impl NodeEmitter for Generator {
 	/// Translates BESL intrinsic type names to GLSL type names, such as `vec2f` to `vec2`.
 	fn type_from_besl(source: &str) -> &str {
@@ -346,11 +703,9 @@ impl NodeEmitter for Generator {
 			"u16" => "uint16_t",
 			"u32" => "uint32_t",
 			"i32" => "int32_t",
-			"Texture2D" => "in sampler2D",
-			"Texture3D" => "in sampler3D",
-			"TextureCube" => "in samplerCube",
-			"TextureCubeArray" => "in samplerCubeArray",
-			"ArrayTexture2D" => "in sampler2DArray",
+			// A texture parameter takes the texture's resource heap index, followed by its sampler's sampler heap index;
+			// see `emit_texture_parameter_sampler`. glslang can't pass a heap alias's element to a function.
+			"Texture2D" | "Texture3D" | "TextureCube" | "TextureCubeArray" | "ArrayTexture2D" => "uint",
 			_ => source,
 		}
 	}
@@ -421,10 +776,10 @@ impl NodeEmitter for Generator {
 			"sample" => self.emit_sample(string, arguments),
 			"sample_texture_2d_array_grad" => {
 				string.push_str("textureGrad(");
-				self.emit_node(string, &arguments[0]);
-				string.push_str("[nonuniformEXT(");
-				self.emit_node(string, &arguments[1]);
-				string.push_str(")]");
+				let Some(textures) = direct_binding(&arguments[0]) else {
+					unreachable!("`sample_texture_2d_array_grad` takes an array of textures as its first argument.");
+				};
+				self.emit_binding_access(string, &textures, Some(&arguments[1]));
 				for argument in &arguments[2..5] {
 					self.emit_separator(string);
 					self.emit_node(string, argument);
@@ -698,7 +1053,64 @@ impl NodeEmitter for Generator {
 			}
 		}
 	}
+	fn emit_texture_parameter_sampler(&mut self, string: &mut String, name: &str) {
+		self.emit_separator(string);
+		let _ = write!(string, "uint {}_sampler", Self::identifier(name));
+	}
+	/// Replaces a call to a function with texture parameters, whose arguments each pass a texture and its sampler.
+	fn emit_function_call(
+		&mut self,
+		string: &mut String,
+		function: &besl::NodeReference,
+		parameters: &[besl::NodeReference],
+	) -> bool {
+		let function = function.borrow();
+		let besl::Nodes::Function { name, params, .. } = function.node() else {
+			return false;
+		};
+		let takes_texture = |parameter: &besl::NodeReference| match parameter.borrow().node() {
+			besl::Nodes::Parameter { r#type, .. } => r#type.borrow().get_name().is_some_and(is_texture_besl_type),
+			_ => false,
+		};
+		if !params.iter().any(takes_texture) {
+			return false;
+		}
+		Self::emit_type_name(string, name);
+		string.push('(');
+		for (index, argument) in parameters.iter().enumerate() {
+			if index > 0 {
+				self.emit_separator(string);
+			}
+			if params.get(index).is_some_and(takes_texture) {
+				self.emit_texture_argument(string, argument);
+			} else {
+				self.emit_node(string, argument);
+			}
+		}
+		string.push(')');
+		true
+	}
 	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeReference) -> bool {
+		// A descriptor lives in the heap, at its set's base index plus its offset in the set.
+		if matches!(source.borrow().node(), besl::Nodes::Binding { .. }) {
+			self.emit_binding_access(string, source, None);
+			return true;
+		}
+		// A texture parameter holds heap indices, which a texture function reads through the heap aliases of its type.
+		// A caller may pass an element any expression picks, so the indices may differ across a draw.
+		if let besl::Nodes::Parameter { r#type, .. } = source.borrow().node()
+			&& let Some(type_name) = r#type.borrow().get_name()
+			&& is_texture_besl_type(type_name)
+		{
+			let parameter = Self::identifier(name);
+			let _ = write!(
+				string,
+				"{}(_besl_{}[nonuniformEXT({parameter})],{SAMPLER_HEAP}[nonuniformEXT({parameter}_sampler)])",
+				combined_sampler_type(type_name),
+				parameter_texture_type(type_name),
+			);
+			return true;
+		}
 		let source = source.borrow();
 		match source.node() {
 			besl::Nodes::Input { name: input_name, .. } if name == input_name => match name {
@@ -723,13 +1135,15 @@ impl NodeEmitter for Generator {
 		true
 	}
 	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
+		// An element of a descriptor array is the heap element its index picks past the array's first one.
+		if let Some(binding) = direct_binding(left)
+			&& matches!(binding.borrow().node(), besl::Nodes::Binding { count: Some(_), .. })
+		{
+			self.emit_binding_access(string, &binding, Some(right));
+			return;
+		}
 		self.emit_wrapped_expression(string, left);
-		if resource_reference_kind(left) == Some(ResourceAccessorKind::DescriptorArray) {
-			// Any expression may pick the element, so the index cannot be assumed uniform across a draw.
-			string.push_str("[nonuniformEXT(");
-			self.emit_node(string, right);
-			string.push_str(")]");
-		} else if !matches!(
+		if !matches!(
 			right.borrow().node(),
 			besl::Nodes::Expression(besl::Expressions::Member { .. })
 		) && left.borrow().node().is_indexable()
@@ -765,18 +1179,37 @@ impl NodeEmitter for Generator {
 				return_type,
 				params,
 				..
-			} => self.emit_function_node(string, this_node, name, statements, return_type, params),
+			} => {
+				// Texture parameters read the heap aliases of their types, which are declared before the function.
+				for parameter in params {
+					if let besl::Nodes::Parameter { r#type, .. } = parameter.borrow().node()
+						&& let Some(type_name) = r#type.borrow().get_name()
+						&& is_texture_besl_type(type_name)
+					{
+						self.declare_parameter_texture(string, type_name);
+					}
+				}
+				self.emit_function_node(string, this_node, name, statements, return_type, params)
+			}
 			// The ray tracing prelude declares `Hit` before the helpers that return it.
 			besl::Nodes::Struct { name, .. } if name == besl::HIT_STRUCT => {}
 			besl::Nodes::Struct {
 				name, fields, template, ..
 			} => self.emit_struct_node(string, name, fields, template),
+			// The sets' base indices come first, and the program's own members start at `PUSH_CONSTANT_OFFSET`.
 			besl::Nodes::PushConstant { members } => {
 				let _ = write!(
 					string,
 					"layout(push_constant,{space_char}scalar){space_char}uniform PushConstant{space_char}{{{break_char}"
 				);
+				formatting.push_indentation(string, 1);
+				let _ = write!(string, "uvec2 {SET_BASES}[{}]", besl::MAX_DESCRIPTOR_SETS);
+				formatting.push_statement_end(string);
+				let mut first = true;
 				emit_statement_block(string, formatting, members, 1, |string, member| {
+					if std::mem::take(&mut first) {
+						let _ = write!(string, "layout(offset={PUSH_CONSTANT_OFFSET}){space_char}");
+					}
 					self.emit_node(string, member)
 				});
 				let _ = write!(string, "}}{space_char}push_constant;{break_char}");
@@ -893,15 +1326,20 @@ impl NodeEmitter for Generator {
 				update,
 				statements,
 			} => self.emit_for_loop_node(string, initializer, condition, update, statements),
+			// Each descriptor declares an unsized array that aliases the resource heap at 64-byte slots, which code
+			// indexes from its set's base index. See `Generator::emit_binding_access`.
 			besl::Nodes::Binding {
 				name,
-				slot,
 				read,
 				write,
 				r#type,
-				count,
+				placement,
 				..
 			} => {
+				let Some(placement) = placement else {
+					unreachable!("`generate` admits only placed bindings.");
+				};
+				self.declare_set(string, placement.set);
 				// A sampled image is a texture without a sampler, which takes no format or access qualifier.
 				let sampled_image = r#type.is_sampled_image(*read, *write);
 				let binding_type = match r#type {
@@ -915,18 +1353,12 @@ impl NodeEmitter for Generator {
 							(false, false) => "uniform image2D",
 						}
 					}
-					besl::BindingTypes::CombinedImageSampler { format, .. } => match format.as_str() {
-						"Texture3D" => "uniform sampler3D",
-						"TextureCube" => "uniform samplerCube",
-						"TextureCubeArray" => "uniform samplerCubeArray",
-						"ArrayTexture2D" => "uniform sampler2DArray",
-						"r8ui" | "r16ui" | "r32ui" => "uniform usampler2D",
-						_ => "uniform sampler2D",
-					},
+					// The texture alone lives in the resource heap; its sampler is combined with it where it is read.
+					besl::BindingTypes::CombinedImageSampler { format, .. } => texture_declaration(format),
 					besl::BindingTypes::AccelerationStructure => "uniform accelerationStructureEXT",
 				};
 
-				let _ = write!(string, "layout(set=0,binding={slot}");
+				let _ = write!(string, "layout(descriptor_heap,descriptor_stride={RESOURCE_DESCRIPTOR_STRIDE}");
 				match r#type {
 					besl::BindingTypes::Buffer { .. } | besl::BindingTypes::BufferArray { .. } => string.push_str(",scalar"),
 					besl::BindingTypes::Image { format } if format != "unknown" && !sampled_image => {
@@ -953,8 +1385,8 @@ impl NodeEmitter for Generator {
 							self.emit_statement_end(string);
 						}
 						string.push('}');
-						Self::identifier(name).push_to(string);
 					}
+					// The block's one member has the binding's name, which `emit_binding_access` reads it through.
 					besl::BindingTypes::BufferArray { element, fixed } => {
 						let _ = write!(string, "_{name}{{");
 						Self::emit_type_name(string, element.borrow().get_name().unwrap());
@@ -971,16 +1403,10 @@ impl NodeEmitter for Generator {
 					}
 					besl::BindingTypes::Image { .. }
 					| besl::BindingTypes::CombinedImageSampler { .. }
-					| besl::BindingTypes::AccelerationStructure => {
-						Self::identifier(name).push_to(string);
-					}
+					| besl::BindingTypes::AccelerationStructure => {}
 				}
-
-				if !matches!(r#type, besl::BindingTypes::BufferArray { .. })
-					&& let Some(count) = count
-				{
-					let _ = write!(string, "[{count}]");
-				}
+				Self::identifier(name).push_to(string);
+				string.push_str("[]");
 
 				self.emit_statement_end(string);
 			}

@@ -1,228 +1,155 @@
 use super::super::*;
 
+/// The most sets one stage can read. Their bases fill at most eight `uint4` root-constant vectors at `b1, space0`.
+const MAX_STAGE_SETS: usize = crate::shader::MAX_DESCRIPTOR_SETS;
+
+/// The most 32-bit values a D3D12 root signature holds.
+const MAX_ROOT_SIGNATURE_DWORDS: u32 = 64;
+
 impl Device {
-	pub(crate) fn descriptor_range_type(
-		descriptor: ShaderResourceDescriptor,
-		sampler_heap: bool,
-	) -> Option<D3D12_DESCRIPTOR_RANGE_TYPE> {
-		match descriptor.kind() {
-			ResourceKind::UniformBuffer if !sampler_heap => Some(D3D12_DESCRIPTOR_RANGE_TYPE_CBV),
-			ResourceKind::StorageBuffer if !sampler_heap && descriptor.access().intersects(crate::AccessPolicies::WRITE) => {
-				Some(D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
-			}
-			ResourceKind::StorageBuffer if !sampler_heap => Some(D3D12_DESCRIPTOR_RANGE_TYPE_SRV),
-			ResourceKind::StorageImage if !sampler_heap => Some(D3D12_DESCRIPTOR_RANGE_TYPE_UAV),
-			ResourceKind::SampledImage
-			| ResourceKind::InputAttachment
-			| ResourceKind::AccelerationStructure
-			| ResourceKind::CombinedImageSampler
-				if !sampler_heap =>
-			{
-				Some(D3D12_DESCRIPTOR_RANGE_TYPE_SRV)
-			}
-			ResourceKind::Sampler | ResourceKind::CombinedImageSampler if sampler_heap => {
-				Some(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
-			}
-			_ => None,
+	/// Returns the visibility of a stage's root parameters. A compute shader is the pipeline's only stage, so its
+	/// parameters are visible to all.
+	fn stage_visibility(stage: ShaderTypes) -> D3D12_SHADER_VISIBILITY {
+		match stage {
+			ShaderTypes::Vertex => D3D12_SHADER_VISIBILITY_VERTEX,
+			ShaderTypes::Fragment => D3D12_SHADER_VISIBILITY_PIXEL,
+			ShaderTypes::Task => D3D12_SHADER_VISIBILITY_AMPLIFICATION,
+			ShaderTypes::Mesh => D3D12_SHADER_VISIBILITY_MESH,
+			ShaderTypes::Compute => D3D12_SHADER_VISIBILITY_ALL,
+			ShaderTypes::RayGen | ShaderTypes::ClosestHit => crate::rt::unsupported("DX12"),
+			ShaderTypes::Tile => crate::pipelines::tile::unsupported("DX12"),
 		}
 	}
 
-	/// Merges shader resource declarations and assigns dense native heap offsets.
-	pub(crate) fn build_pipeline_resources(&self, shaders: &[pipelines::ShaderParameter]) -> Vec<PipelineResource> {
-		let mut descriptors = shaders
-			.iter()
-			.flat_map(|parameter| self.shaders[parameter.handle.index() as usize].resources.iter().copied())
-			.collect::<Vec<_>>();
-		descriptors.sort_by_key(|descriptor| descriptor.slot());
-
-		let mut merged = Vec::<ShaderResourceDescriptor>::with_capacity(descriptors.len());
-		for descriptor in descriptors {
-			if let Some(previous) = merged.last_mut() {
-				if previous.slot() == descriptor.slot() {
-					assert!(
-						previous.matches_representation(descriptor),
-						"Conflicting DX12 shader resources. The most likely cause is that shader stages declared the same flat slot with incompatible representations.",
-					);
-					assert!(
-						Self::descriptor_range_type(*previous, false) == Self::descriptor_range_type(descriptor, false),
-						"Conflicting DX12 storage access. The most likely cause is that shader stages map the same flat slot to different SRV and UAV register classes.",
-					);
-					*previous = ShaderResourceDescriptor::new(
-						previous.slot(),
-						previous.kind(),
-						previous.count(),
-						previous.access() | descriptor.access(),
-					)
-					.texture_view_type(previous.texture_view())
-					.buffer_stride(previous.buffer_element_stride());
-					continue;
-				}
-
-				assert!(
-					!previous.overlaps(descriptor),
-					"Overlapping DX12 shader resources. The most likely cause is that shader resource arrays reserve intersecting flat slot ranges.",
-				);
-			}
-			merged.push(descriptor);
-		}
-
-		let mut cbv_srv_uav_offset = 0u32;
-		let mut sampler_offset = 0u32;
-		merged
-			.into_iter()
-			.map(|descriptor| {
-				let cbv_offset = Self::descriptor_range_type(descriptor, false).map(|_| {
-					let offset = cbv_srv_uav_offset;
-					cbv_srv_uav_offset = cbv_srv_uav_offset.checked_add(descriptor.count()).expect(
-						"DX12 CBV/SRV/UAV descriptor count overflowed. The most likely cause is an invalid shader resource count.",
-					);
-					offset
-				});
-				let native_sampler_offset = Self::descriptor_range_type(descriptor, true).map(|_| {
-					let offset = sampler_offset;
-					sampler_offset = sampler_offset.checked_add(descriptor.count()).expect(
-						"DX12 sampler descriptor count overflowed. The most likely cause is an invalid shader resource count.",
-					);
-					offset
-				});
-				PipelineResource {
-					descriptor,
-					cbv_srv_uav_offset: cbv_offset,
-					sampler_offset: native_sampler_offset,
-				}
-			})
-			.collect()
-	}
-
-	/// Creates one complete native layout with a root signature and its root-parameter indices.
-	pub(crate) fn create_native_pipeline_layout(&self, key: PipelineLayout) -> Option<NativePipelineLayout> {
-		let mut resource_ranges = SmallVec::<[D3D12_DESCRIPTOR_RANGE1; 16]>::new();
-		let mut sampler_ranges = SmallVec::<[D3D12_DESCRIPTOR_RANGE1; 16]>::new();
-		for resource in &key.resources {
-			if let (Some(range_type), Some(offset)) = (
-				Self::descriptor_range_type(resource.descriptor, false),
-				resource.cbv_srv_uav_offset,
-			) {
-				resource_ranges.push(D3D12_DESCRIPTOR_RANGE1 {
-					RangeType: range_type,
-					NumDescriptors: resource.descriptor.count(),
-					BaseShaderRegister: resource.descriptor.slot().index(),
-					RegisterSpace: 0,
-					// Command buffers own copied descriptors and may sequence GPU writes through a table.
-					// Volatile descriptors and data preserve that workflow in the versioned root signature.
-					Flags: D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE | D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE,
-					OffsetInDescriptorsFromTableStart: offset,
-				});
-			}
-			if let (Some(range_type), Some(offset)) = (
-				Self::descriptor_range_type(resource.descriptor, true),
-				resource.sampler_offset,
-			) {
-				sampler_ranges.push(D3D12_DESCRIPTOR_RANGE1 {
-					RangeType: range_type,
-					NumDescriptors: resource.descriptor.count(),
-					BaseShaderRegister: resource.descriptor.slot().index(),
-					RegisterSpace: 0,
-					Flags: D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE,
-					OffsetInDescriptorsFromTableStart: offset,
-				});
-			}
-		}
-
-		let mut parameters = SmallVec::<[D3D12_ROOT_PARAMETER1; 3]>::new();
-		let mut resource_table_root = None;
-		let mut sampler_table_root = None;
-		if !resource_ranges.is_empty() {
-			let root_parameter_index = parameters.len() as u32;
-			parameters.push(D3D12_ROOT_PARAMETER1 {
-				ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-				Anonymous: D3D12_ROOT_PARAMETER1_0 {
-					DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE1 {
-						NumDescriptorRanges: resource_ranges.len() as u32,
-						pDescriptorRanges: resource_ranges.as_ptr(),
-					},
-				},
-				ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
-			});
-			resource_table_root = Some(root_parameter_index);
-		}
-		if !sampler_ranges.is_empty() {
-			let root_parameter_index = parameters.len() as u32;
-			parameters.push(D3D12_ROOT_PARAMETER1 {
-				ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-				Anonymous: D3D12_ROOT_PARAMETER1_0 {
-					DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE1 {
-						NumDescriptorRanges: sampler_ranges.len() as u32,
-						pDescriptorRanges: sampler_ranges.as_ptr(),
-					},
-				},
-				ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
-			});
-			sampler_table_root = Some(root_parameter_index);
-		}
-
-		let push_constant_size = key
-			.push_constant_ranges
+	/// Builds a pipeline's layout from the sets its stages declare: one root-constant parameter per stage that reads a
+	/// set, holding a resource and a sampler base for each of its set positions, after the push constants.
+	///
+	/// Stages that declare the same layout share its set. A stage's shader reads the bases of the set at its own
+	/// position `s` from `_besl_sets[s >> 1][(s & 1) * 2]` and the component after it, so no stage needs remapping.
+	pub(crate) fn create_pipeline_layout(
+		&mut self,
+		shaders: &[pipelines::ShaderParameter],
+		push_constant_ranges: &[PushConstantRange],
+	) -> PipelineLayoutHandle {
+		let push_constant_size = push_constant_ranges
 			.iter()
 			.map(|range| range.offset.saturating_add(range.size))
 			.max()
 			.unwrap_or(0);
-		let push_constant_dword_count = push_constant_size.div_ceil(4);
-		let descriptor_table_count = u32::from(resource_table_root.is_some()) + u32::from(sampler_table_root.is_some());
+		let push_constant_dwords = push_constant_size.div_ceil(4);
+		let mut root_parameter = u32::from(push_constant_dwords != 0);
 
-		assert!(
-			push_constant_dword_count.saturating_add(descriptor_table_count) <= 64,
-			"DX12 root signature exceeds 64 DWORDs. The most likely cause is that push constants leave insufficient space for the descriptor tables."
-		);
-		let mut push_constant_root = None;
-		if push_constant_size != 0 {
+		let mut sets = SmallVec::<[PipelineSet; 4]>::new();
+		let mut stages = SmallVec::<[StageSets; 3]>::new();
+		let mut key = RootSignatureKey {
+			push_constant_dwords,
+			stages: SmallVec::new(),
+		};
+		for parameter in shaders {
+			let shader = &self.shaders[parameter.handle.index() as usize];
+			// The stage's bases end at the last set it reads; the sets after it take no root constants.
+			let Some(set_count) = shader
+				.descriptor_sets
+				.iter()
+				.rposition(|set| set.used() != 0)
+				.map(|position| position + 1)
+			else {
+				continue;
+			};
 			assert!(
-				key.resources.iter().all(|resource| {
-					resource.descriptor.kind() != ResourceKind::UniformBuffer || resource.descriptor.slot().index() != 0
-				}),
-				"Conflicting DX12 root register. The most likely cause is that push constants and a uniform buffer both use b0, space0.",
+				set_count <= MAX_STAGE_SETS,
+				"Too many descriptor sets in a DX12 {:?} shader. The most likely cause is that the shader reads a set at position {} where the root constants hold {MAX_STAGE_SETS}. Merge layouts so the shader reads at most {MAX_STAGE_SETS} sets.",
+				shader.stage,
+				set_count - 1,
 			);
-			let root_parameter_index = parameters.len() as u32;
-			parameters.push(D3D12_ROOT_PARAMETER1 {
-				ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
-				Anonymous: D3D12_ROOT_PARAMETER1_0 {
-					Constants: D3D12_ROOT_CONSTANTS {
-						ShaderRegister: 0,
-						RegisterSpace: 0,
-						Num32BitValues: push_constant_dword_count,
-					},
-				},
-				ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+
+			let mut stage_sets = SmallVec::<[Option<u8>; 8]>::with_capacity(set_count);
+			for shader_set in &shader.descriptor_sets[..set_count] {
+				if shader_set.used() == 0 {
+					stage_sets.push(None);
+					continue;
+				}
+				let identity = shader_set.layout().identity();
+				let index = match sets.iter().position(|set| set.layout.identity() == identity) {
+					Some(index) => {
+						sets[index].used |= shader_set.used();
+						index
+					}
+					None => {
+						sets.push(PipelineSet {
+							layout: shader_set.layout().clone(),
+							used: shader_set.used(),
+						});
+						sets.len() - 1
+					}
+				};
+				stage_sets.push(Some(index as u8));
+			}
+
+			let dwords = Self::set_base_dwords(set_count);
+			key.stages.push((Self::stage_visibility(shader.stage).0, dwords));
+			stages.push(StageSets {
+				root_parameter,
+				sets: stage_sets,
 			});
-			push_constant_root = Some(root_parameter_index);
+			root_parameter += 1;
 		}
 
-		// A sampler the shader fixes sits at the register of the texture it belongs to, `s{slot}`, which the HLSL
-		// generator declares for every sampled texture. It reads every level, so it doesn't clamp the LOD.
-		let static_samplers = key
-			.resources
-			.iter()
-			.filter_map(|resource| Some((resource.descriptor, resource.descriptor.sampler()?)))
-			.flat_map(|(descriptor, sampler)| {
-				let address_mode = Self::sampler_address_mode(sampler.addressing_mode);
-				(0..descriptor.count()).map(move |element| D3D12_STATIC_SAMPLER_DESC1 {
-					Filter: Self::sampler_filter(sampler.filtering_mode, sampler.mip_map_mode, sampler.reduction_mode, false),
-					AddressU: address_mode,
-					AddressV: address_mode,
-					AddressW: address_mode,
-					MipLODBias: 0.0,
-					MaxAnisotropy: 1,
-					ComparisonFunc: D3D12_COMPARISON_FUNC_NEVER,
-					BorderColor: D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK,
-					MinLOD: 0.0,
-					MaxLOD: D3D12_FLOAT32_MAX,
-					ShaderRegister: descriptor.slot().index() + element,
+		let root_signature = match self.root_signatures.get(&key) {
+			Some(root_signature) => root_signature.clone(),
+			None => {
+				let root_signature = self.create_root_signature(&key).expect(
+					"Failed to create a DX12 root signature. The most likely cause is an incompatible Agility SDK runtime or a removed device. Check the logged serialization diagnostics.",
+				);
+				self.root_signatures.insert(key, root_signature.clone());
+				root_signature
+			}
+		};
+
+		let handle = PipelineLayoutHandle::from_index(self.pipeline_layouts.len() as u64);
+		self.pipeline_layouts.push(NativePipelineLayout {
+			root_signature,
+			sets,
+			stages,
+			push_constant_root: (push_constant_dwords != 0).then_some(0),
+			push_constant_ranges: push_constant_ranges.into(),
+		});
+		handle
+	}
+
+	/// Returns how many root constants hold the bases of `set_count` sets: two per set, in whole `uint4` vectors, as
+	/// the shader declares them.
+	pub(crate) fn set_base_dwords(set_count: usize) -> u32 {
+		(set_count.div_ceil(2) * 4) as u32
+	}
+
+	/// Serializes and creates a root signature of the shape `key` describes: push constants at `b0`, then each stage's
+	/// set bases at `b1`, and shader access to both heaps by index instead of through tables.
+	fn create_root_signature(&self, key: &RootSignatureKey) -> Option<ID3D12RootSignature> {
+		let total_dwords = key.push_constant_dwords + key.stages.iter().map(|(_, dwords)| dwords).sum::<u32>();
+		assert!(
+			total_dwords <= MAX_ROOT_SIGNATURE_DWORDS,
+			"DX12 root signature exceeds {MAX_ROOT_SIGNATURE_DWORDS} DWORDs ({total_dwords}). The most likely cause is that the push constants and the set bases of every stage don't fit together. Shrink the push constants or have the stages read fewer sets."
+		);
+
+		let root_constants = |register: u32, values: u32, visibility: D3D12_SHADER_VISIBILITY| D3D12_ROOT_PARAMETER1 {
+			ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+			Anonymous: D3D12_ROOT_PARAMETER1_0 {
+				Constants: D3D12_ROOT_CONSTANTS {
+					ShaderRegister: register,
 					RegisterSpace: 0,
-					ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
-					Flags: D3D12_SAMPLER_FLAG_NONE,
-				})
-			})
-			.collect::<SmallVec<[D3D12_STATIC_SAMPLER_DESC1; 4]>>();
+					Num32BitValues: values,
+				},
+			},
+			ShaderVisibility: visibility,
+		};
+		let mut parameters = SmallVec::<[D3D12_ROOT_PARAMETER1; 4]>::new();
+		if key.push_constant_dwords != 0 {
+			parameters.push(root_constants(0, key.push_constant_dwords, D3D12_SHADER_VISIBILITY_ALL));
+		}
+		for &(visibility, dwords) in &key.stages {
+			parameters.push(root_constants(1, dwords, D3D12_SHADER_VISIBILITY(visibility)));
+		}
 
 		let desc = D3D12_ROOT_SIGNATURE_DESC2 {
 			NumParameters: parameters.len() as u32,
@@ -231,13 +158,11 @@ impl Device {
 			} else {
 				parameters.as_ptr()
 			},
-			NumStaticSamplers: static_samplers.len() as u32,
-			pStaticSamplers: if static_samplers.is_empty() {
-				std::ptr::null()
-			} else {
-				static_samplers.as_ptr()
-			},
-			Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+			NumStaticSamplers: 0,
+			pStaticSamplers: std::ptr::null(),
+			Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+				| D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+				| D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED,
 		};
 		let versioned_desc = D3D12_VERSIONED_ROOT_SIGNATURE_DESC {
 			Version: D3D_ROOT_SIGNATURE_VERSION_1_2,
@@ -259,20 +184,20 @@ impl Device {
 				"DX12 returned no serialization diagnostics.".to_string()
 			};
 			self.log_dx12_error(format!(
-				"Failed to serialize DX12 root signature. The most likely cause is an invalid root parameter or an incompatible Agility SDK runtime. Error: {error:?}. {details}"
+				"Failed to serialize DX12 root signature. The most likely cause is an invalid root parameter or an incompatible Agility SDK runtime. Update the Agility SDK to one with root signature 1.2. Error: {error:?}. {details}"
 			));
 			return None;
 		}
 		let Some(blob) = blob else {
 			self.log_dx12_error(
-				"DX12 root-signature serialization returned no data. The most likely cause is an incompatible Agility SDK runtime.",
+				"DX12 root-signature serialization returned no data. The most likely cause is an incompatible Agility SDK runtime. Update the Agility SDK to one with root signature 1.2.",
 			);
 			return None;
 		};
 		let bytes = match Self::d3d_blob_bytes(&blob) {
 			Ok([]) => {
 				self.log_dx12_error(
-					"DX12 root-signature serialization returned empty data. The most likely cause is an incompatible Agility SDK runtime.",
+					"DX12 root-signature serialization returned empty data. The most likely cause is an incompatible Agility SDK runtime. Update the Agility SDK to one with root signature 1.2.",
 				);
 				return None;
 			}
@@ -282,25 +207,17 @@ impl Device {
 				return None;
 			}
 		};
-		let root_signature = match unsafe { self.device.CreateRootSignature(0, bytes) } {
-			Ok(root_signature) => root_signature,
+		match unsafe { self.device.CreateRootSignature(0, bytes) } {
+			Ok(root_signature) => Some(root_signature),
 			Err(error) => {
 				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
 				self.log_dx12_error(format!(
-					"Failed to create DX12 root signature. The most likely cause is an invalid serialized layout or a removed device. Parameters: {}, descriptor tables: {descriptor_table_count}, error: {error:?}, device removed reason: {removed_reason:?}",
+					"Failed to create DX12 root signature. The most likely cause is an invalid serialized layout or a removed device. Check the device removed reason. Parameters: {}, error: {error:?}, device removed reason: {removed_reason:?}",
 					parameters.len(),
 				));
-				return None;
+				None
 			}
-		};
-
-		Some(NativePipelineLayout {
-			key,
-			root_signature,
-			resource_table_root,
-			sampler_table_root,
-			push_constant_root,
-		})
+		}
 	}
 
 	/// Borrows the bytes reported by a live D3D blob without constructing a slice from a null pointer.
@@ -312,45 +229,10 @@ impl Device {
 		let bytes = unsafe { blob.GetBufferPointer() }.cast::<u8>();
 		if bytes.is_null() {
 			return Err(
-				"DX12 returned a null pointer for nonempty serialized root-signature data. The most likely cause is an invalid runtime response.",
+				"DX12 returned a null pointer for nonempty serialized root-signature data. The most likely cause is an invalid runtime response. Restart the application, and update the graphics driver if it repeats.",
 			);
 		}
 		// ID3DBlob owns byte_len initialized bytes at this pointer and remains borrowed for the returned slice lifetime.
 		Ok(unsafe { std::slice::from_raw_parts(bytes, byte_len) })
-	}
-
-	pub(crate) fn get_or_create_pipeline_layout(
-		&mut self,
-		shaders: &[pipelines::ShaderParameter],
-		push_constant_ranges: &[PushConstantRange],
-	) -> PipelineLayoutHandle {
-		let resources = self.build_pipeline_resources(shaders);
-		let key = PipelineLayout {
-			cbv_srv_uav_descriptor_count: resources
-				.iter()
-				.filter_map(|resource| resource.cbv_srv_uav_offset.map(|offset| offset + resource.descriptor.count()))
-				.max()
-				.unwrap_or(0),
-			sampler_descriptor_count: resources
-				.iter()
-				.filter_map(|resource| resource.sampler_offset.map(|offset| offset + resource.descriptor.count()))
-				.max()
-				.unwrap_or(0),
-			resources,
-			push_constant_ranges: push_constant_ranges.to_vec(),
-		};
-
-		if let Some(handle) = self.pipeline_layout_indices.get(&key) {
-			return *handle;
-		}
-
-		// Build every native object before publishing the handle so a failed root signature cannot misalign layout state.
-		let native_layout = self.create_native_pipeline_layout(key.clone()).expect(
-			"Failed to create DX12 pipeline layout. The most likely cause is an invalid root signature or a removed device.",
-		);
-		let handle = PipelineLayoutHandle::from_index(self.pipeline_layouts.len() as u64);
-		self.pipeline_layouts.push(native_layout);
-		self.pipeline_layout_indices.insert(key, handle);
-		handle
 	}
 }

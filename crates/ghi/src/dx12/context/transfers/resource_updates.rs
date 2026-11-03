@@ -93,7 +93,6 @@ impl Device {
 				);
 			}
 		}
-		self.invalidate_descriptor_materializations();
 	}
 
 	/// Recreates every member of an image group as placed resources in heaps that members with disjoint lifetimes share.
@@ -227,11 +226,12 @@ impl Device {
 			image.resource = Some(resource);
 			self.pending_texture_syncs
 				.retain(|(pending, ..)| pending.index() as usize != index);
+			let handle = crate::BaseImageHandle::from_index(index as u64);
+			self.mark_stale_descriptors(|descriptor| Self::references_image(descriptor, handle));
 		}
 
 		// The queues are idle and the previous members were released above, so their heaps can go now.
 		self.image_group_heaps[group.index() as usize] = heaps;
-		self.invalidate_descriptor_materializations();
 		self.image_groups.commit(group, requests, placement);
 	}
 
@@ -278,6 +278,8 @@ impl Device {
 			self.invalidate_clear_uav_descriptors_for_resources(&[key]);
 			self.image_states.remove(&key);
 		}
+		// Each frame copy rewrites its descriptors of the image when it next binds, which is after this sequence's fence.
+		self.mark_stale_descriptors(|descriptor| Self::references_image(descriptor, image_handle.0));
 
 		let resource = self.create_image_resource(extent, is_3d, format, uses, array_layers, mip_levels, optimized_clear_value);
 		if let Some(resource) = resource.as_ref() {

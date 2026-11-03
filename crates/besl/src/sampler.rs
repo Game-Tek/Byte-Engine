@@ -26,10 +26,23 @@ pub struct SamplerState {
 	pub address: Address,
 }
 
+/// The number of fixed sampler states: every combination of filter, mip filter, reduction, and address.
+pub const FIXED_SAMPLER_COUNT: u32 = 36;
+
 impl SamplerState {
 	/// Returns whether reads return the smallest or largest texel of their footprint instead of a weighted average.
 	pub fn reduces(&self) -> bool {
 		self.reduction != Reduction::Average
+	}
+
+	/// Returns the index of this state among the [`FIXED_SAMPLER_COUNT`] fixed samplers:
+	/// `filter + 2 × mip filter + 4 × reduction + 12 × address`, with each property numbered in declaration order.
+	///
+	/// Shader generators for heap-indexed platforms read the fixed sampler at this sampler heap index, where the
+	/// runtime writes it. See the [fixed sampler table](/docs/reference/ghi#descriptor-sets).
+	pub fn fixed_index(&self) -> u32 {
+		let filter = |filter: Filter| filter as u32;
+		filter(self.filter) + 2 * filter(self.mip_filter) + 4 * self.reduction as u32 + 12 * self.address as u32
 	}
 }
 

@@ -25,11 +25,10 @@ impl CommandBufferRecording<'_> {
 			states: device.states.clone(),
 			buffer_states: device.buffer_states.clone(),
 
-			bound_pipeline_layout: None,
 			bound_pipeline: None,
-			bound_descriptor_set_handles: Vec::new(),
-			current_descriptor_materialization: None,
-			descriptor_materialization_dirty: false,
+			bound_descriptor_set_handles: SmallVec::new(),
+			pipeline_sets: SmallVec::new(),
+			descriptor_bindings_dirty: false,
 			descriptor_resources_initialized: false,
 			descriptor_heaps_bound: false,
 			unordered_group: None,
@@ -111,7 +110,7 @@ impl CommandBufferRecording<'_> {
 		&self.device.command_buffers[self.command_buffer.index() as usize].frames[self.sequence_index as usize]
 	}
 
-	/// Binds the context's long-lived heaps once for this command buffer.
+	/// Binds the context's descriptor heaps once for this command buffer.
 	fn bind_descriptor_heaps_once(&mut self) {
 		if self.descriptor_heaps_bound {
 			return;
@@ -119,7 +118,7 @@ impl CommandBufferRecording<'_> {
 
 		let command_buffer = self.get_command_buffer().command_buffer;
 		let heaps = self.device.descriptor_heaps.as_ref().expect(
-			"Missing Vulkan descriptor heaps. The most likely cause is that command recording started on an incompletely initialized context.",
+			"Missing Vulkan descriptor heaps. The most likely cause is that a pipeline with descriptor sets was bound before any set was created. Create the sets a pipeline reads before recording work with it.",
 		);
 		unsafe {
 			self.device
@@ -132,45 +131,71 @@ impl CommandBufferRecording<'_> {
 		self.descriptor_heaps_bound = true;
 	}
 
-	/// Materializes the retained flat-set union only after its pipeline layout or backing resources change.
-	fn ensure_descriptor_materialization(&mut self) -> Option<DescriptorMaterializationHandle> {
-		let layout_handle = self.bound_pipeline_layout.expect(
-			"No Vulkan pipeline layout is active. The most likely cause is that a draw or dispatch was recorded before binding a pipeline.",
-		);
-		if self.device.pipeline_layouts[layout_handle.index() as usize]
-			.resources
-			.is_empty()
-		{
-			self.current_descriptor_materialization = None;
-			self.descriptor_materialization_dirty = false;
-			return None;
+	/// Finds each set the bound pipeline reads among the bound sets, by layout, readies the copy of it this frame
+	/// sequence reads, and pushes the sets' base indices, once after the pipeline or the bound sets change.
+	///
+	/// # Panics
+	///
+	/// Panics when the recording belongs to no frame, or when no set is bound for a set whose resources the pipeline
+	/// uses.
+	fn ensure_descriptor_bindings(&mut self) {
+		if !self.descriptor_bindings_dirty {
+			return;
 		}
-		if !self.descriptor_materialization_dirty {
-			return self.current_descriptor_materialization;
+		self.descriptor_bindings_dirty = false;
+		self.pipeline_sets.clear();
+		let pipeline = self.bound_pipeline.expect(
+			"No Vulkan pipeline is bound. The most likely cause is that a draw or dispatch was recorded before binding a pipeline.",
+		);
+		let set_count = self.device.pipelines[pipeline.index() as usize].layout.sets.len();
+		if set_count == 0 {
+			return;
+		}
+		let frame_key = self.frame_key.expect(
+			"Vulkan descriptor sets require a frame-owned command buffer. The most likely cause is that descriptor sets were bound on a context-level transfer recording, whose commands no frame retires. Record shader work in a frame.",
+		);
+
+		// Each pipeline set takes two words: its resource heap base index, then its sampler heap base index.
+		let mut bases = [0u32; 2 * crate::vulkan::MAX_DESCRIPTOR_SETS];
+		for position in 0..set_count {
+			let pipeline_set = &self.device.pipelines[pipeline.index() as usize].layout.sets[position];
+			let identity = pipeline_set.layout.identity();
+			let bound = self
+				.bound_descriptor_set_handles
+				.iter()
+				.copied()
+				.find(|set| self.device.descriptor_sets[set.index() as usize].layout.identity() == identity);
+			match bound {
+				Some(set) => {
+					let [resource, sampler] = self.device.bind_descriptor_set(
+						pipeline,
+						position,
+						set,
+						frame_key.sequence_index,
+						frame_key.frame_index,
+					);
+					bases[2 * position] = resource;
+					bases[2 * position + 1] = sampler;
+				}
+				None => assert!(
+					!pipeline_set.used(),
+					"No Vulkan descriptor set is bound for layout `{}`, which the bound pipeline reads as its set {position}. The most likely cause is that bind_descriptor_sets left out a set the pipeline's shaders declare. Bind a set created from that layout.",
+					pipeline_set.layout.name(),
+				),
+			}
+			self.pipeline_sets.push(bound);
 		}
 
-		self.frame_key.expect(
-			"Vulkan descriptor heaps require a frame-owned command buffer. The most likely cause is that descriptor sets were bound on a context-level transfer recording that has no retirement fence.",
-		);
-		let materialization =
-			self.device
-				.materialize_descriptor_sets(layout_handle, &self.bound_descriptor_set_handles, self.sequence_index);
 		self.bind_descriptor_heaps_once();
-
-		let snapshot = self.device.descriptor_materialization(materialization);
-		let heap_offsets = [snapshot.resource_heap_offset, snapshot.sampler_heap_offset];
 		let push_info = vk::PushDataInfoEXT::default()
-			.offset(self.device.pipeline_layouts[layout_handle.index() as usize].heap_push_data_offset)
-			.data(vk::HostAddressRangeConstEXT::default().address(::utils::as_byte_slice(&heap_offsets)));
+			.offset(0)
+			.data(vk::HostAddressRangeConstEXT::default().address(bytemuck::cast_slice(&bases[..2 * set_count])));
+		// SAFETY: The push data range lies before the pipeline's push constants, which every device's push data holds.
 		unsafe {
 			self.device
 				.descriptor_heap
 				.cmd_push_data(self.get_command_buffer().command_buffer, &push_info);
 		}
-
-		self.current_descriptor_materialization = Some(materialization);
-		self.descriptor_materialization_dirty = false;
-		Some(materialization)
 	}
 
 	#[must_use]
@@ -180,23 +205,45 @@ impl CommandBufferRecording<'_> {
 	) -> TransitionStateUpdates {
 		let mut consumptions = std::mem::take(&mut self.consumptions);
 		let include_read_only = !self.descriptor_resources_initialized;
-		if let Some(materialization) = self.ensure_descriptor_materialization() {
-			for resource in &self.device.descriptor_materialization(materialization).resources {
-				let writes = resource.access.intersects(crate::AccessPolicies::WRITE);
-
-				assert!(
-					!self.active_rendering || !writes,
-					"Writable Vulkan descriptors cannot be reused by multiple draws in one render pass. The most likely cause is that a storage resource needs a barrier; split the draws into separate render passes.",
-				);
-				if !include_read_only && !writes {
+		self.ensure_descriptor_bindings();
+		if let Some(pipeline) = self.bound_pipeline {
+			let layout = &self.device.pipelines[pipeline.index() as usize].layout;
+			for (pipeline_set, set) in layout.sets.iter().zip(&self.pipeline_sets) {
+				let Some(set) = set else {
 					continue;
+				};
+				let set = &self.device.descriptor_sets[set.index() as usize];
+				for consumption in &set.copies[self.sequence_index as usize].consumptions {
+					// The pipeline consumes a resource with the stages that read the layout resources naming it.
+					let (mut stages, mut access) = (crate::Stages::empty(), crate::AccessPolicies::empty());
+					let mut resources = consumption.resources;
+					while resources != 0 {
+						let index = resources.trailing_zeros() as usize;
+						resources &= resources - 1;
+						if !pipeline_set.stages[index].is_empty() {
+							stages |= pipeline_set.stages[index];
+							access |= set.layout.resources()[index].access();
+						}
+					}
+					if stages.is_empty() {
+						continue;
+					}
+					let writes = access.intersects(crate::AccessPolicies::WRITE);
+
+					assert!(
+						!self.active_rendering || !writes,
+						"Writable Vulkan descriptors cannot be reused by multiple draws in one render pass. The most likely cause is that a storage resource needs a barrier; split the draws into separate render passes.",
+					);
+					if !include_read_only && !writes {
+						continue;
+					}
+					consumptions.push(Consumption {
+						handle: consumption.handle,
+						stages,
+						access,
+						layout: consumption.layout,
+					});
 				}
-				consumptions.push(Consumption {
-					handle: resource.handle,
-					stages: resource.stages,
-					access: resource.access,
-					layout: resource.layout,
-				});
 			}
 		}
 		self.descriptor_resources_initialized = true;

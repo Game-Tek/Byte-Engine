@@ -1,18 +1,33 @@
 use super::*;
 use crate::descriptors::WriteData;
+use crate::vulkan::descriptor_set::{RetainedDescriptor, SetConsumption, SetCopy};
+use crate::vulkan::{FIXED_SAMPLER_COUNT, RESOURCE_DESCRIPTOR_SIZE, holds_samplers};
 
 impl Context {
+	/// Creates one mapped descriptor heap of `size` bytes that counts in descriptors of `unit` bytes.
+	///
+	/// The implementation's reserved range goes at the end of the heap, so heap index 0 belongs to the application,
+	/// where the sampler heap keeps its fixed samplers.
 	pub(crate) fn create_descriptor_heap_arena(
 		&mut self,
 		name: &str,
 		size: u64,
 		heap_alignment: u64,
-		descriptor_alignment: u64,
+		unit: u64,
 		reserved_size: u64,
 	) -> DescriptorHeapArena {
 		assert!(
 			size <= u32::MAX as u64,
-			"Vulkan descriptor heap exceeds the 32-bit push-index address space. The most likely cause is an implementation reservation larger than the mapping interface supports.",
+			"Vulkan descriptor heap exceeds the 32-bit index space. The most likely cause is an implementation reservation larger than base indices can address.",
+		);
+		let reserved_offset = size.checked_sub(reserved_size).expect(
+			"Vulkan descriptor heap is smaller than its reserved range. The most likely cause is invalid descriptor-heap properties.",
+		) / heap_alignment.max(unit)
+			* heap_alignment.max(unit);
+		let units = reserved_offset / unit;
+		assert!(
+			units > 0,
+			"Vulkan descriptor heap has no application-owned range. The most likely cause is that the implementation reservation consumes the device's maximum heap size.",
 		);
 		let buffer_size = size
 			.checked_add(heap_alignment)
@@ -38,90 +53,597 @@ impl Context {
 
 		assert!(base_offset + size <= buffer_size);
 
-		let application_offset = reserved_size.next_multiple_of(descriptor_alignment);
-
-		assert!(
-			application_offset < size,
-			"Vulkan descriptor heap has no application-owned range. The most likely cause is that the implementation reservation consumes the device's maximum heap size.",
-		);
 		DescriptorHeapArena {
 			buffer: creation.resource,
 			pointer: crate::vulkan::MappedMemoryPointer(unsafe { pointer.add(base_offset as usize) }),
 			device_address: aligned_address,
 			size,
+			unit,
+			reserved_offset,
 			reserved_size,
-			free: {
-				let mut free = ::utils::RangeAllocator::new(size as usize, 1);
-				// The implementation owns the bytes before the first application offset, so they stay taken.
-				free.take(application_offset as usize, 1);
-				free
-			},
+			free: ::utils::RangeAllocator::new(units as usize, 64),
 		}
 	}
 
-	/// Allocates the long-lived resource and sampler heaps of the context. [`Self::materialize_descriptor_sets`] calls
-	/// it once, on first use.
+	/// Allocates the long-lived resource and sampler heaps of the context, and writes the fixed samplers at the first
+	/// [`FIXED_SAMPLER_COUNT`] sampler heap indices. The first descriptor set creates them.
 	pub(crate) fn create_descriptor_heaps(&mut self) -> DescriptorHeaps {
 		const RESOURCE_HEAP_TARGET_SIZE: u64 = 64 * 1024 * 1024;
 		const SAMPLER_HEAP_TARGET_SIZE: u64 = 1024 * 1024;
 		let properties = self.device.descriptor_heap_properties;
-		let resource_descriptor_alignment = properties
-			.buffer_descriptor_alignment
-			.max(properties.image_descriptor_alignment);
-		let resource_minimum = properties
-			.min_resource_heap_reserved_range
-			.next_multiple_of(resource_descriptor_alignment)
-			.checked_add(properties.buffer_descriptor_size.max(properties.image_descriptor_size))
-			.unwrap();
-		let sampler_minimum = properties
-			.min_sampler_heap_reserved_range
-			.next_multiple_of(properties.sampler_descriptor_alignment)
-			.checked_add(properties.sampler_descriptor_size)
-			.unwrap();
-
+		let sampler_size = properties.sampler_descriptor_size;
 		assert!(
-			resource_minimum <= properties.max_resource_heap_size,
-			"Vulkan resource heap limits are inconsistent. The most likely cause is that the implementation reservation leaves no room for one resource descriptor.",
+			sampler_size > 0 && sampler_size.is_multiple_of(properties.sampler_descriptor_alignment.max(1)),
+			"Vulkan sampler descriptors can't be indexed by their size. The most likely cause is a device whose sampler descriptor size isn't a multiple of its alignment, which this backend doesn't support.",
 		);
+		let resource_minimum = properties.min_resource_heap_reserved_range + RESOURCE_DESCRIPTOR_SIZE;
+		let sampler_minimum = properties.min_sampler_heap_reserved_range + sampler_size * u64::from(FIXED_SAMPLER_COUNT + 1);
 		assert!(
-			sampler_minimum <= properties.max_sampler_heap_size,
-			"Vulkan sampler heap limits are inconsistent. The most likely cause is that the implementation reservation leaves no room for one sampler descriptor.",
+			resource_minimum <= properties.max_resource_heap_size && sampler_minimum <= properties.max_sampler_heap_size,
+			"Vulkan descriptor heap limits are inconsistent. The most likely cause is that the implementation reservation leaves no room for the application's descriptors.",
 		);
 		let resource_size = RESOURCE_HEAP_TARGET_SIZE
 			.max(resource_minimum)
 			.min(properties.max_resource_heap_size);
-		let sampler_size = SAMPLER_HEAP_TARGET_SIZE
+		let sampler_size_bytes = SAMPLER_HEAP_TARGET_SIZE
 			.max(sampler_minimum)
 			.min(properties.max_sampler_heap_size);
 
-		DescriptorHeaps {
-			resource: self.create_descriptor_heap_arena(
-				"GHI Resource Descriptor Heap",
-				resource_size,
-				properties.resource_heap_alignment,
-				resource_descriptor_alignment,
-				properties.min_resource_heap_reserved_range,
-			),
-			sampler: self.create_descriptor_heap_arena(
-				"GHI Sampler Descriptor Heap",
-				sampler_size,
-				properties.sampler_heap_alignment,
-				properties.sampler_descriptor_alignment,
-				properties.min_sampler_heap_reserved_range,
-			),
+		let resource = self.create_descriptor_heap_arena(
+			"GHI Resource Descriptor Heap",
+			resource_size,
+			properties.resource_heap_alignment.max(1),
+			RESOURCE_DESCRIPTOR_SIZE,
+			properties.min_resource_heap_reserved_range,
+		);
+		let mut sampler = self.create_descriptor_heap_arena(
+			"GHI Sampler Descriptor Heap",
+			sampler_size_bytes,
+			properties.sampler_heap_alignment.max(1),
+			sampler_size,
+			properties.min_sampler_heap_reserved_range,
+		);
+
+		// Shaders index fixed samplers by their state, so they take the first indices, and sets' samplers come after.
+		let fixed = sampler.allocate(FIXED_SAMPLER_COUNT);
+		assert_eq!(fixed, 0, "The fixed samplers must start the sampler heap.");
+		let samplers = std::array::from_fn::<_, { FIXED_SAMPLER_COUNT as usize }, _>(|index| {
+			Sampler::fixed(crate::vulkan::fixed_sampler(index as u32))
+		});
+		let reductions = samplers
+			.each_ref()
+			.map(|sampler| vk::SamplerReductionModeCreateInfo::default().reduction_mode(sampler.reduction_mode));
+		let infos = std::array::from_fn::<_, { FIXED_SAMPLER_COUNT as usize }, _>(|index| {
+			let mut info = samplers[index].create_info();
+			info.p_next = (&raw const reductions[index]).cast();
+			info
+		});
+		let destinations = std::array::from_fn::<_, { FIXED_SAMPLER_COUNT as usize }, _>(|index| {
+			sampler.host_range(index as u32, sampler_size)
+		});
+		// SAFETY: Every create info and the reduction it points at live until the call returns, and every destination
+		// is mapped heap memory that no command reads yet.
+		unsafe {
+			self.device
+				.descriptor_heap
+				.write_sampler_descriptors(&infos, &destinations)
+				.expect(
+					"Vulkan fixed sampler write failed. The most likely cause is a device without support for min and max sampler reductions.",
+				);
+		}
+
+		DescriptorHeaps { resource, sampler }
+	}
+
+	/// Creates a set for `layout` with one heap copy per frame in flight, whose ranges it holds until the context
+	/// drops.
+	pub(crate) fn create_descriptor_set_internal(
+		&mut self,
+		layout: &crate::shader::DescriptorSetLayout,
+	) -> graphics_hardware_interface::DescriptorSetHandle {
+		let mut sampler_count = 0u32;
+		let sampler_bases = layout
+			.resources()
+			.iter()
+			.map(|resource| {
+				let base = sampler_count;
+				if holds_samplers(resource.kind()) {
+					sampler_count += resource.count();
+				}
+				base
+			})
+			.collect::<Box<[_]>>();
+		if self.descriptor_heaps.is_none() {
+			self.descriptor_heaps = Some(self.create_descriptor_heaps());
+		}
+		let element_count = layout.element_count();
+		let copies = (0..self.frames)
+			.map(|_| self.allocate_set_copy(element_count, sampler_count))
+			.collect();
+
+		let handle = graphics_hardware_interface::DescriptorSetHandle::from_index(self.descriptor_sets.len() as u64);
+		self.descriptor_sets.push(DescriptorSet {
+			next: None,
+			layout: layout.clone(),
+			sampler_bases,
+			sampler_count,
+			descriptors: vec![None; element_count as usize].into_boxed_slice(),
+			copies,
+		});
+		handle
+	}
+
+	/// Takes the heap ranges of one copy of a set with `element_count` descriptors and `sampler_count` samplers.
+	pub(crate) fn allocate_set_copy(&mut self, element_count: u32, sampler_count: u32) -> SetCopy {
+		let heaps = self.descriptor_heaps.as_mut().expect(
+			"Missing Vulkan descriptor heaps. The most likely cause is that a set copy was allocated before the first set created the heaps.",
+		);
+		SetCopy {
+			resource_base: heaps.resource.allocate(element_count),
+			sampler_base: heaps.sampler.allocate(sampler_count),
+			dirty: Vec::new(),
+			consumptions: Vec::new(),
+			bound_frame: None,
 		}
 	}
 
-	pub(crate) fn descriptors_at_slot<'a>(
-		&'a self,
-		sets: &[graphics_hardware_interface::DescriptorSetHandle],
-		slot: crate::shader::ResourceSlot,
-	) -> Option<&'a HashMap<u32, crate::vulkan::descriptor_set::RetainedDescriptor>> {
-		sets.iter()
-			.find_map(|set| self.descriptor_sets[set.index() as usize].descriptors.get(&slot))
+	/// Gives every set a copy for each frame sequence from `first_sequence` to the frames in flight, with every
+	/// written element still to write.
+	pub(crate) fn add_descriptor_set_copies(&mut self, first_sequence: u8) {
+		for set_index in 0..self.descriptor_sets.len() {
+			let set = &self.descriptor_sets[set_index];
+			let (element_count, sampler_count) = (set.descriptors.len() as u32, set.sampler_count);
+			for _ in first_sequence..self.frames {
+				let mut copy = self.allocate_set_copy(element_count, sampler_count);
+				let descriptors = &self.descriptor_sets[set_index].descriptors;
+				copy.dirty
+					.extend((0..element_count).filter(|&element| descriptors[element as usize].is_some()));
+				self.descriptor_sets[set_index].copies.push(copy);
+			}
+		}
 	}
 
-	/// Returns the resource a materialized descriptor makes commands access, and the layout an image is accessed in.
+	/// Returns the resource whose storage replacements rewrite a write of `descriptor`: its first frame-local copy, or
+	/// a swapchain's first image. Samplers and acceleration structures keep their storage.
+	fn reference_key(&self, descriptor: WriteData) -> Option<super::super::Handles> {
+		use super::super::Handles;
+		match descriptor {
+			WriteData::Buffer { handle } => Some(Handles::Buffer(BufferHandle::from_index(handle.index()))),
+			WriteData::Image { handle, .. }
+			| WriteData::CombinedImageSampler {
+				image_handle: handle, ..
+			} => Some(Handles::Image(ImageHandle::from_index(handle.index()))),
+			WriteData::Swapchain(handle) => Some(Handles::Image(self.swapchains[handle.index() as usize].images[0])),
+			WriteData::Sampler(_) | WriteData::AccelerationStructure { .. } => None,
+		}
+	}
+
+	/// Retains each write in its set, and marks its element to write into every copy of the set before commands bind
+	/// the copy again. A write that repeats the element's current one changes nothing.
+	///
+	/// # Panics
+	///
+	/// Panics when a write names a slot the set's layout doesn't declare, an array element past the resource's count,
+	/// or a resource of another kind than the layout declares.
+	pub(crate) fn write_descriptors(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
+		for &descriptor_write in descriptor_set_writes {
+			let retained = RetainedDescriptor {
+				descriptor: descriptor_write.descriptor,
+				frame_offset: descriptor_write.frame_offset.unwrap_or(0),
+			};
+			let set_index = descriptor_write.descriptor_set.index();
+			let set = self.descriptor_sets.get_mut(set_index as usize).expect(
+				"Invalid Vulkan descriptor set. The most likely cause is that the write used a handle from another context. Write sets the context created.",
+			);
+			let layout = &set.layout;
+			let slot = descriptor_write.slot;
+			let resource_index = layout.resource_index(slot).unwrap_or_else(|| {
+				panic!(
+					"Descriptor set layout `{}` declares no resource at slot {}. The most likely cause is that the write names a resource of another descriptor set, or an array element by its flat slot instead of its array element. Write the slot the set's layout declares, and pick array elements with `with_array_element`.",
+					layout.name(),
+					slot.index(),
+				)
+			});
+			let resource = layout.resources()[resource_index];
+			assert!(
+				descriptor_write.array_element < resource.count(),
+				"Descriptor array element {} is out of range at slot {} of layout `{}`. The most likely cause is that a write exceeded the resource count the layout declares. Write elements below {}.",
+				descriptor_write.array_element,
+				slot.index(),
+				layout.name(),
+				resource.count(),
+			);
+			assert!(
+				retained.descriptor.matches_kind(resource.kind()),
+				"Descriptor kind mismatch at slot {} of layout `{}`. The most likely cause is that an image, sampler, or buffer was written where the layout declares a {:?}. Write the kind of resource the layout declares.",
+				slot.index(),
+				layout.name(),
+				resource.kind(),
+			);
+			let element = layout.element_base(resource_index) + descriptor_write.array_element;
+			let previous = set.descriptors[element as usize].replace(retained);
+			if previous == Some(retained) {
+				continue;
+			}
+			for copy in &mut set.copies {
+				copy.dirty.push(element);
+			}
+
+			// Keep the reverse index in step, so replacing a resource's storage finds every element that names it.
+			let previous_key = previous.and_then(|previous| self.reference_key(previous.descriptor));
+			let key = self.reference_key(retained.descriptor);
+			if previous_key == key {
+				continue;
+			}
+			if let Some(previous_key) = previous_key
+				&& let Some(references) = self.descriptor_references.get_mut(&previous_key)
+			{
+				if let Some(position) = references
+					.iter()
+					.position(|reference| *reference == (set_index as u32, element))
+				{
+					references.swap_remove(position);
+				}
+				if references.is_empty() {
+					self.descriptor_references.remove(&previous_key);
+				}
+			}
+			if let Some(key) = key {
+				self.descriptor_references
+					.entry(key)
+					.or_default()
+					.push((set_index as u32, element));
+			}
+		}
+	}
+
+	/// Marks every set element whose write names `resource` to write again into every copy before commands bind it,
+	/// because the storage behind it, or the swapchain image it resolves to, changed. `resource` is the key
+	/// [`Self::reference_key`] gives.
+	pub(crate) fn invalidate_descriptors(&mut self, resource: super::super::Handles) {
+		let Some(references) = self.descriptor_references.get(&resource) else {
+			return;
+		};
+		for &(set_index, element) in references {
+			for copy in &mut self.descriptor_sets[set_index as usize].copies {
+				copy.dirty.push(element);
+			}
+		}
+	}
+
+	/// Readies the copy of the set `handle` that frame `frame`, on frame sequence `sequence_index`, binds as set
+	/// `position` of `pipeline`, and returns its resource and sampler heap base indices for the push data.
+	///
+	/// The copy writes the elements that changed since commands last bound it. Commands of the same frame may already
+	/// read it, so then the copy moves to new heap ranges, and its old ones return once the frame completes.
+	///
+	/// # Panics
+	///
+	/// Panics when a resource of the set that the pipeline uses, other than an array, was never written.
+	pub(crate) fn bind_descriptor_set(
+		&mut self,
+		pipeline: graphics_hardware_interface::PipelineHandle,
+		position: usize,
+		handle: graphics_hardware_interface::DescriptorSetHandle,
+		sequence_index: u8,
+		frame: u64,
+	) -> [u32; 2] {
+		let set_index = handle.index() as usize;
+		let sequence = sequence_index as usize;
+		{
+			let pipeline_set = &self.pipelines[pipeline.index() as usize].layout.sets[position];
+			let set = &self.descriptor_sets[set_index];
+			for (index, stages) in pipeline_set.stages.iter().enumerate() {
+				let resource = set.layout.resources()[index];
+				assert!(
+					stages.is_empty()
+						|| resource.count() > 1
+						|| set.descriptors[set.layout.element_base(index) as usize].is_some(),
+					"Missing Vulkan descriptor at slot {} of layout `{}`. The most likely cause is that a resource the pipeline reads was not written before the set was bound. Write every resource of the set that the pipeline's shaders read.",
+					resource.slot().index(),
+					set.layout.name(),
+				);
+			}
+		}
+
+		let copy = &mut self.descriptor_sets[set_index].copies[sequence];
+		let read_this_frame = copy.bound_frame.replace(frame) == Some(frame);
+		if !copy.dirty.is_empty() {
+			if read_this_frame {
+				self.move_set_copy(set_index, sequence);
+			}
+			let mut dirty = std::mem::take(&mut self.descriptor_sets[set_index].copies[sequence].dirty);
+			dirty.sort_unstable();
+			dirty.dedup();
+			self.write_set_elements(set_index, sequence_index, &dirty);
+			dirty.clear();
+			self.descriptor_sets[set_index].copies[sequence].dirty = dirty;
+			self.rebuild_set_consumptions(set_index, sequence_index);
+		}
+		let copy = &self.descriptor_sets[set_index].copies[sequence];
+		[copy.resource_base, copy.sampler_base]
+	}
+
+	/// Moves one copy of a set to new heap ranges, marking every written element to write there, and returns its old
+	/// ranges once the frames started so far complete.
+	fn move_set_copy(&mut self, set_index: usize, sequence: usize) {
+		let set = &mut self.descriptor_sets[set_index];
+		let (element_count, sampler_count) = (set.descriptors.len() as u32, set.sampler_count);
+		let heaps = self.descriptor_heaps.as_mut().expect(
+			"Missing Vulkan descriptor heaps. The most likely cause is that a set was bound before the first set created the heaps.",
+		);
+		let copy = &mut set.copies[sequence];
+		let retired = Tasks::FreeDescriptorRanges {
+			resource_index: copy.resource_base,
+			resource_count: element_count,
+			sampler_index: copy.sampler_base,
+			sampler_count,
+		};
+		copy.resource_base = heaps.resource.allocate(element_count);
+		copy.sampler_base = heaps.sampler.allocate(sampler_count);
+		copy.dirty.clear();
+		let descriptors = &set.descriptors;
+		copy.dirty
+			.extend((0..element_count).filter(|&element| descriptors[element as usize].is_some()));
+		self.defer_destruction(retired);
+	}
+
+	/// Returns the heap ranges a moved set copy held. [`Self::run_destruction_task`] calls it once the frames that read
+	/// them complete.
+	pub(crate) fn free_descriptor_ranges(
+		&mut self,
+		resource_index: u32,
+		resource_count: u32,
+		sampler_index: u32,
+		sampler_count: u32,
+	) {
+		if let Some(heaps) = &mut self.descriptor_heaps {
+			heaps.resource.release(resource_index, resource_count);
+			heaps.sampler.release(sampler_index, sampler_count);
+		}
+	}
+
+	/// Writes `elements` of one copy of a set into the heaps, each resolved to the resources of the copy's frame
+	/// sequence. `elements` holds each element once.
+	fn write_set_elements(&self, set_index: usize, sequence_index: u8, elements: &[u32]) {
+		let properties = self.device.descriptor_heap_properties;
+		let set = &self.descriptor_sets[set_index];
+		let copy = &set.copies[sequence_index as usize];
+
+		// Each list stays on the stack for the few elements a change usually rewrites.
+		let mut address_writes = SmallVec::<[(vk::DescriptorType, vk::DeviceAddressRangeEXT, u32, u64); 8]>::new();
+		let mut image_writes = SmallVec::<
+			[(
+				vk::DescriptorType,
+				vk::ImageViewCreateInfo<'static>,
+				vk::ImageLayout,
+				u32,
+				u64,
+			); 8],
+		>::new();
+		let mut sampler_writes = SmallVec::<[(graphics_hardware_interface::SamplerHandle, u32); 8]>::new();
+		for &element in elements {
+			let Some(retained) = set.descriptors[element as usize] else {
+				continue;
+			};
+			let (resource_index, array_element) = set.resource_of(element);
+			let resource = set.layout.resources()[resource_index];
+			let slot = copy.resource_base + element;
+			let sampler_index = copy.sampler_base + set.sampler_bases[resource_index] + array_element;
+			match self.resolve_retained_descriptor(retained, sequence_index) {
+				Descriptor::Buffer { buffer } => {
+					let buffer = self.buffers.resource(buffer);
+					let size = buffer.size as u64;
+					assert!(
+						size > 0,
+						"Invalid Vulkan buffer descriptor. The most likely cause is that an empty buffer was written to a shader resource. Create the buffer with a non-zero size."
+					);
+					address_writes.push((
+						crate::vulkan::descriptor_type(resource.kind()).unwrap(),
+						vk::DeviceAddressRangeEXT::default().address(buffer.device_address).size(size),
+						slot,
+						properties.buffer_descriptor_size,
+					));
+				}
+				Descriptor::Image {
+					image,
+					layout: image_layout,
+					mip_level,
+				} => {
+					let image = &self.images[image.index() as usize];
+					let descriptor_type = crate::vulkan::descriptor_type(resource.kind()).unwrap();
+					// Storage views address exactly one mip; a sampled image without a chosen mip exposes the whole chain.
+					let (base_mip_level, level_count) = match mip_level {
+						Some(mip_level) => (mip_level, 1),
+						None if descriptor_type == vk::DescriptorType::SAMPLED_IMAGE => (0, image.mip_levels),
+						None => (0, 1),
+					};
+					image_writes.push((
+						descriptor_type,
+						self.descriptor_image_view_create_info(image, resource.texture_view(), base_mip_level, level_count),
+						texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None),
+						slot,
+						properties.image_descriptor_size,
+					));
+				}
+				Descriptor::CombinedImageSampler {
+					image,
+					sampler,
+					layout: image_layout,
+				} => {
+					let image = &self.images[image.index() as usize];
+					image_writes.push((
+						vk::DescriptorType::SAMPLED_IMAGE,
+						self.descriptor_image_view_create_info(image, resource.texture_view(), 0, image.mip_levels),
+						texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None),
+						slot,
+						properties.image_descriptor_size,
+					));
+					sampler_writes.push((sampler, sampler_index));
+				}
+				Descriptor::Sampler { sampler } => sampler_writes.push((sampler, sampler_index)),
+				Descriptor::AccelerationStructure { handle, copy } => {
+					let top_level = self.acceleration_structures.top_level(handle);
+					let copy = top_level.copies.get(copy as usize).expect(
+						"The top-level acceleration structure has no copy for this frame. The most likely cause is that the frames in flight grew after the structure was created. Create top-level structures after you set the frames in flight.",
+					);
+					// Descriptors name a structure by its address; the range's size only has to be valid.
+					address_writes.push((
+						vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+						vk::DeviceAddressRangeEXT::default()
+							.address(copy.address)
+							.size(copy.storage.size),
+						slot,
+						properties.buffer_descriptor_size,
+					));
+				}
+			}
+		}
+
+		let heaps = self.descriptor_heaps.as_ref().unwrap();
+		if !address_writes.is_empty() {
+			let infos = address_writes
+				.iter()
+				.map(|(ty, range, ..)| {
+					vk::ResourceDescriptorInfoEXT::default()
+						.ty(*ty)
+						.data(vk::ResourceDescriptorDataEXT { p_address_range: range })
+				})
+				.collect::<SmallVec<[_; 8]>>();
+			let destinations = address_writes
+				.iter()
+				.map(|(_, _, slot, size)| heaps.resource.host_range(*slot, *size))
+				.collect::<SmallVec<[_; 8]>>();
+			// SAFETY: The infos point at ranges that live until the call returns, and no command that may still execute
+			// reads the destinations: the copy was last bound by a completed frame, or moved to new ranges.
+			unsafe {
+				self.device
+					.descriptor_heap
+					.write_resource_descriptors(&infos, &destinations)
+					.expect("Vulkan buffer descriptor write failed. The most likely cause is an invalid device address range.");
+			}
+		}
+		if !image_writes.is_empty() {
+			let images = image_writes
+				.iter()
+				.map(|(_, view, layout, ..)| vk::ImageDescriptorInfoEXT::default().view(view).layout(*layout))
+				.collect::<SmallVec<[_; 8]>>();
+			let infos = image_writes
+				.iter()
+				.zip(&images)
+				.map(|((ty, ..), image)| {
+					vk::ResourceDescriptorInfoEXT::default()
+						.ty(*ty)
+						.data(vk::ResourceDescriptorDataEXT { p_image: image })
+				})
+				.collect::<SmallVec<[_; 8]>>();
+			let destinations = image_writes
+				.iter()
+				.map(|(_, _, _, slot, size)| heaps.resource.host_range(*slot, *size))
+				.collect::<SmallVec<[_; 8]>>();
+			// SAFETY: As above, and the view descriptions live until the call returns.
+			unsafe {
+				self.device
+					.descriptor_heap
+					.write_resource_descriptors(&infos, &destinations)
+					.expect(
+						"Vulkan image descriptor write failed. The most likely cause is an invalid image view description or layout.",
+					);
+			}
+		}
+		if !sampler_writes.is_empty() {
+			let reductions = sampler_writes
+				.iter()
+				.map(|(handle, _)| {
+					vk::SamplerReductionModeCreateInfo::default()
+						.reduction_mode(self.samplers[handle.index() as usize].reduction_mode)
+				})
+				.collect::<SmallVec<[_; 8]>>();
+			let samplers = sampler_writes
+				.iter()
+				.zip(&reductions)
+				.map(|((handle, _), reduction)| {
+					let mut sampler = self.samplers[handle.index() as usize].create_info();
+					sampler.p_next = (reduction as *const vk::SamplerReductionModeCreateInfo).cast();
+					sampler
+				})
+				.collect::<SmallVec<[_; 8]>>();
+			let destinations = sampler_writes
+				.iter()
+				.map(|(_, index)| heaps.sampler.host_range(*index, properties.sampler_descriptor_size))
+				.collect::<SmallVec<[_; 8]>>();
+			// SAFETY: As above, and each reduction a create info points at lives until the call returns.
+			unsafe {
+				self.device
+					.descriptor_heap
+					.write_sampler_descriptors(&samplers, &destinations)
+					.expect(
+						"Vulkan sampler descriptor write failed. The most likely cause is an unsupported sampler description.",
+					);
+			}
+		}
+	}
+
+	/// Lists the resources one copy of a set makes commands access, merged by resource and layout, each with the
+	/// layout resources that name it.
+	///
+	/// A table of bindless textures can name thousands of distinct resources, so once the list holds more than a few,
+	/// earlier entries are found through an index instead of a scan. The index keeps its memory on the context.
+	fn rebuild_set_consumptions(&mut self, set_index: usize, sequence_index: u8) {
+		const SCANNED: usize = 16;
+		let mut consumptions =
+			std::mem::take(&mut self.descriptor_sets[set_index].copies[sequence_index as usize].consumptions);
+		consumptions.clear();
+		let mut merged = std::mem::take(&mut self.descriptor_merge_index);
+		merged.clear();
+
+		let set = &self.descriptor_sets[set_index];
+		for (element, retained) in (0u32..).zip(&set.descriptors) {
+			let Some(retained) = retained else {
+				continue;
+			};
+			let Some((handle, layout)) = Self::consumed_resource(self.resolve_retained_descriptor(*retained, sequence_index))
+			else {
+				continue;
+			};
+			let (resource_index, _) = set.resource_of(element);
+			let resource = 1u64 << resource_index;
+			if merged.is_empty() && consumptions.len() > SCANNED {
+				merged.extend(
+					consumptions
+						.iter()
+						.enumerate()
+						.map(|(index, existing)| ((existing.handle, existing.layout), index)),
+				);
+			}
+			let existing = if merged.is_empty() {
+				consumptions
+					.iter()
+					.position(|existing| (existing.handle, existing.layout) == (handle, layout))
+			} else {
+				match merged.entry((handle, layout)) {
+					std::collections::hash_map::Entry::Occupied(entry) => Some(*entry.get()),
+					std::collections::hash_map::Entry::Vacant(entry) => {
+						entry.insert(consumptions.len());
+						None
+					}
+				}
+			};
+			match existing {
+				Some(index) => consumptions[index].resources |= resource,
+				None => consumptions.push(SetConsumption {
+					handle,
+					layout,
+					resources: resource,
+				}),
+			}
+		}
+
+		self.descriptor_sets[set_index].copies[sequence_index as usize].consumptions = consumptions;
+		self.descriptor_merge_index = merged;
+	}
+
+	/// Returns the resource a set's descriptor makes commands access, and the layout an image is accessed in.
 	///
 	/// Descriptors that return the same value merge into one consumption. A sampler returns `None`, because it touches
 	/// no memory the resource tracker follows.
@@ -140,147 +662,8 @@ impl Context {
 		}
 	}
 
-	/// Validates one complete logical set union against the active flat pipeline layout.
-	pub(crate) fn validate_descriptor_sets(
-		&self,
-		layout: &PipelineLayout,
-		sets: &[graphics_hardware_interface::DescriptorSetHandle],
-	) {
-		for set in sets {
-			assert!(
-				(set.index() as usize) < self.descriptor_sets.len(),
-				"Invalid Vulkan descriptor set. The most likely cause is that a bound handle came from another context.",
-			);
-		}
-
-		for resource in &layout.resources {
-			let descriptor = resource.descriptor;
-			for set in sets {
-				assert!(
-					self.descriptor_sets[set.index() as usize]
-						.descriptors
-						.keys()
-						.all(|slot| crate::vulkan::resource_accepts_retained_slot_key(descriptor, *slot)),
-					"Invalid retained Vulkan descriptor slot. The most likely cause is that an array element was written as an interior flat slot instead of using array_element at the array base.",
-				);
-			}
-
-			let owners = sets
-				.iter()
-				.filter(|set| {
-					self.descriptor_sets[set.index() as usize]
-						.descriptors
-						.contains_key(&descriptor.slot())
-				})
-				.count();
-
-			assert!(
-				owners <= 1,
-				"Overlapping retained Vulkan descriptor sets. The most likely cause is that two bound sets write the same active flat resource slot.",
-			);
-
-			let elements = self.descriptors_at_slot(sets, descriptor.slot());
-			if descriptor.count() == 1 {
-				assert!(
-					elements.is_some_and(|elements| elements.contains_key(&0)),
-					"Missing retained Vulkan descriptor at resource slot {}. The most likely cause is that a scalar pipeline resource was not written before rendering.",
-					descriptor.slot().index(),
-				);
-			}
-			if let Some(elements) = elements {
-				for (&array_element, retained) in elements {
-					assert!(
-						array_element < descriptor.count(),
-						"Vulkan descriptor array element is out of range. The most likely cause is that a retained write exceeded the shader resource count.",
-					);
-					assert!(
-						retained.descriptor.matches_kind(descriptor.kind()),
-						"Vulkan descriptor kind mismatch. The most likely cause is that a retained write does not match the active shader resource interface.",
-					);
-				}
-			}
-		}
-	}
-
-	pub(crate) fn swapchain_key_for_image(
-		&self,
-		handle: graphics_hardware_interface::BaseImageHandle,
-		sequence_index: u8,
-	) -> Option<(graphics_hardware_interface::SwapchainHandle, u8)> {
-		self.swapchains.iter().enumerate().find_map(|(index, swapchain)| {
-			(swapchain.images[0].index() == handle.index() || swapchain.native_images[0].index() == handle.index()).then_some((
-				graphics_hardware_interface::SwapchainHandle::from_index(index as u64),
-				swapchain.acquired_image_indices[sequence_index as usize],
-			))
-		})
-	}
-
-	pub(crate) fn materialization_key(
-		&self,
-		layout_handle: graphics_hardware_interface::PipelineLayoutHandle,
-		sets: &[graphics_hardware_interface::DescriptorSetHandle],
-		sequence_index: u8,
-	) -> MaterializationKey {
-		let layout = &self.pipeline_layouts[layout_handle.index() as usize];
-		let mut descriptor_sets = sets
-			.iter()
-			.map(|set| {
-				let descriptor_set = &self.descriptor_sets[set.index() as usize];
-				(
-					*set,
-					descriptor_set.version,
-					descriptor_set.sequence_versions[sequence_index as usize],
-				)
-			})
-			.collect::<SmallVec<[_; 4]>>();
-		descriptor_sets.sort_unstable_by_key(|(set, ..)| set.index());
-		let mut resource_epochs = SmallVec::<[_; MAX_FRAMES_IN_FLIGHT]>::new();
-		let mut swapchain_images = SmallVec::<[_; 4]>::new();
-		for resource in &layout.resources {
-			let Some(elements) = self.descriptors_at_slot(sets, resource.descriptor.slot()) else {
-				continue;
-			};
-			for retained in elements.values() {
-				let target_sequence =
-					frame_index_with_offset(sequence_index as usize, retained.frame_offset, self.frames as usize) as u8;
-				let key = match retained.descriptor {
-					WriteData::Buffer { .. } => None,
-					WriteData::Swapchain(handle) => Some((
-						handle,
-						self.swapchains[handle.index() as usize].acquired_image_indices[target_sequence as usize],
-					)),
-					WriteData::Image { handle, .. }
-					| WriteData::CombinedImageSampler {
-						image_handle: handle, ..
-					} => self.swapchain_key_for_image(handle, target_sequence),
-					_ => continue,
-				};
-				// Only a few distinct entries exist, so skipping repeats keeps both lists inline for large arrays.
-				let epoch = (target_sequence, self.descriptor_sequence_epochs[target_sequence as usize]);
-				if !resource_epochs.contains(&epoch) {
-					resource_epochs.push(epoch);
-				}
-				if let Some(key) = key
-					&& !swapchain_images.contains(&key)
-				{
-					swapchain_images.push(key);
-				}
-			}
-		}
-		resource_epochs.sort_unstable_by_key(|(sequence, _)| *sequence);
-		resource_epochs.dedup();
-		swapchain_images.sort_unstable_by_key(|(handle, image)| (handle.index(), *image));
-		swapchain_images.dedup();
-
-		MaterializationKey {
-			layout: layout_handle,
-			descriptor_sets,
-			sequence_index,
-			resource_epochs,
-			swapchain_images,
-		}
-	}
-
+	/// Resolves a retained write to the resources the copy of its set for frame sequence `sequence_index` names: that
+	/// sequence's copy of a per-frame resource, moved by the write's frame offset, and a swapchain's acquired image.
 	pub(crate) fn resolve_retained_descriptor(
 		&self,
 		retained: crate::vulkan::descriptor_set::RetainedDescriptor,
@@ -297,7 +680,7 @@ impl Context {
 		match retained.descriptor {
 			WriteData::Buffer { handle } => Descriptor::Buffer {
 				buffer: self.buffers.nth_handle(handle, resource_sequence).expect(
-					"Missing deferred Vulkan buffer. The most likely cause is that frame resource tasks were not processed before descriptor materialization.",
+					"Missing Vulkan buffer copy. The most likely cause is that the buffer has fewer frame-local copies than the frames in flight. Create dynamic buffers after you set the frames in flight.",
 				),
 			},
 			WriteData::Image {
@@ -404,306 +787,6 @@ impl Context {
 				base_array_layer,
 				layer_count,
 			})
-	}
-
-	/// Writes one immutable logical-set union into previously unused descriptor-heap memory and caches it.
-	pub(crate) fn materialize_descriptor_sets(
-		&mut self,
-		layout_handle: graphics_hardware_interface::PipelineLayoutHandle,
-		sets: &[graphics_hardware_interface::DescriptorSetHandle],
-		sequence_index: u8,
-	) -> DescriptorMaterializationHandle {
-		let key = self.materialization_key(layout_handle, sets, sequence_index);
-		if let Some(handle) = self.materialization_indices.get(&key) {
-			return *handle;
-		}
-
-		let layout = self.pipeline_layouts[layout_handle.index() as usize].clone();
-		self.validate_descriptor_sets(&layout, sets);
-		let mut resolved = Vec::<(PipelineResourceDescriptor, u32, Descriptor)>::new();
-		for resource in &layout.resources {
-			let Some(elements) = self.descriptors_at_slot(sets, resource.descriptor.slot()) else {
-				continue;
-			};
-			let mut elements = elements.iter().collect::<SmallVec<[_; 16]>>();
-			elements.sort_unstable_by_key(|(array_element, _)| **array_element);
-			for (&array_element, &retained) in elements {
-				resolved.push((
-					*resource,
-					array_element,
-					self.resolve_retained_descriptor(retained, sequence_index),
-				));
-			}
-		}
-
-		let properties = self.device.descriptor_heap_properties;
-		let resource_alignment = properties
-			.buffer_descriptor_alignment
-			.max(properties.image_descriptor_alignment);
-		// The heaps are created by the first materialization, so a context that binds no descriptors reserves none.
-		if self.descriptor_heaps.is_none() {
-			self.descriptor_heaps = Some(self.create_descriptor_heaps());
-		}
-		let heaps = self.descriptor_heaps.as_mut().unwrap();
-		let resource_heap_offset = if layout.resource_heap_size > 0 {
-			heaps.resource.allocate(layout.resource_heap_size, resource_alignment)
-		} else {
-			0
-		};
-		let sampler_heap_offset = if layout.sampler_heap_size > 0 {
-			heaps
-				.sampler
-				.allocate(layout.sampler_heap_size, properties.sampler_descriptor_alignment)
-		} else {
-			0
-		};
-
-		let mut address_writes = Vec::<(vk::DescriptorType, vk::DeviceAddressRangeEXT, u32, u64)>::new();
-		let mut image_writes = Vec::<(vk::DescriptorType, vk::ImageViewCreateInfo, vk::ImageLayout, u32, u64)>::new();
-		let mut sampler_writes = Vec::<(graphics_hardware_interface::SamplerHandle, u32, u64)>::new();
-		let mut materialized_resources = SmallVec::<[ResolvedPipelineDescriptor; 128]>::new();
-		// Descriptors of one resource merge into one consumption. A table of bindless textures can name thousands of
-		// distinct resources, so once a layout has named more than a few, earlier ones are found through an index
-		// instead of a scan. A table that repeats a placeholder stays on the scan, which finds it at once. The index
-		// keeps its memory on the context between materializations.
-		const SCANNED: usize = 16;
-		let descriptor_count = resolved.len();
-		let mut merged_indices = std::mem::take(&mut self.descriptor_merge_index);
-		merged_indices.clear();
-		let mut indexed = false;
-		for (resource, array_element, descriptor) in resolved {
-			let resource_offset = resource
-				.resource_heap_offset
-				.map(|offset| resource_heap_offset + offset + array_element * resource.resource_stride);
-			let sampler_offset = resource
-				.sampler_heap_offset
-				.map(|offset| sampler_heap_offset + offset + array_element * resource.sampler_stride);
-			match descriptor {
-				Descriptor::Buffer { buffer } => {
-					let buffer = self.buffers.resource(buffer);
-					let size = buffer.size as u64;
-
-					assert!(
-						size > 0,
-						"Invalid Vulkan buffer descriptor. The most likely cause is that an empty buffer was written to a shader resource. Create the buffer with a non-zero size."
-					);
-					address_writes.push((
-						crate::vulkan::descriptor_type(resource.descriptor.kind()).unwrap(),
-						vk::DeviceAddressRangeEXT::default().address(buffer.device_address).size(size),
-						resource_offset.unwrap(),
-						resource.resource_stride as u64,
-					));
-				}
-				Descriptor::Image {
-					image,
-					layout: image_layout,
-					mip_level,
-				} => {
-					let image = &self.images[image.index() as usize];
-					let descriptor_type = crate::vulkan::descriptor_type(resource.descriptor.kind()).unwrap();
-					// Storage views address exactly one mip; a sampled image without a chosen mip exposes the whole chain.
-					let (base_mip_level, level_count) = match mip_level {
-						Some(mip_level) => (mip_level, 1),
-						None if descriptor_type == vk::DescriptorType::SAMPLED_IMAGE => (0, image.mip_levels),
-						None => (0, 1),
-					};
-					image_writes.push((
-						descriptor_type,
-						self.descriptor_image_view_create_info(
-							image,
-							resource.descriptor.texture_view(),
-							base_mip_level,
-							level_count,
-						),
-						texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None),
-						resource_offset.unwrap(),
-						resource.resource_stride as u64,
-					));
-				}
-				Descriptor::CombinedImageSampler {
-					image,
-					sampler,
-					layout: image_layout,
-				} => {
-					let image = &self.images[image.index() as usize];
-					image_writes.push((
-						vk::DescriptorType::SAMPLED_IMAGE,
-						self.descriptor_image_view_create_info(image, resource.descriptor.texture_view(), 0, image.mip_levels),
-						texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None),
-						resource_offset.unwrap(),
-						resource.resource_stride as u64,
-					));
-					sampler_writes.push((sampler, sampler_offset.unwrap(), resource.sampler_stride as u64));
-				}
-				Descriptor::Sampler { sampler } => {
-					sampler_writes.push((sampler, sampler_offset.unwrap(), resource.sampler_stride as u64));
-				}
-				Descriptor::AccelerationStructure { handle, copy } => {
-					let top_level = self.acceleration_structures.top_level(handle);
-					let copy = top_level.copies.get(copy as usize).expect(
-						"The top-level acceleration structure has no copy for this frame. The most likely cause is that the frames in flight grew after the structure was created. Create top-level structures after you set the frames in flight.",
-					);
-					// Descriptors name a structure by its address; the range's size only has to be valid.
-					address_writes.push((
-						vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-						vk::DeviceAddressRangeEXT::default()
-							.address(copy.address)
-							.size(copy.storage.size),
-						resource_offset.unwrap(),
-						resource.resource_stride as u64,
-					));
-				}
-			}
-			if let Some((handle, layout)) = Self::consumed_resource(descriptor) {
-				if !indexed && materialized_resources.len() > SCANNED {
-					merged_indices.reserve(descriptor_count);
-					merged_indices.extend(
-						materialized_resources
-							.iter()
-							.enumerate()
-							.map(|(index, existing)| ((existing.handle, existing.layout), index)),
-					);
-					indexed = true;
-				}
-				let existing = if indexed {
-					match merged_indices.entry((handle, layout)) {
-						std::collections::hash_map::Entry::Occupied(entry) => Some(*entry.get()),
-						std::collections::hash_map::Entry::Vacant(entry) => {
-							entry.insert(materialized_resources.len());
-							None
-						}
-					}
-				} else {
-					materialized_resources
-						.iter()
-						.position(|existing| (existing.handle, existing.layout) == (handle, layout))
-				};
-				match existing {
-					Some(index) => {
-						let existing = &mut materialized_resources[index];
-						existing.stages |= resource.stages;
-						existing.access |= resource.descriptor.access();
-					}
-					None => materialized_resources.push(ResolvedPipelineDescriptor {
-						handle,
-						layout,
-						stages: resource.stages,
-						access: resource.descriptor.access(),
-					}),
-				}
-			}
-		}
-		self.descriptor_merge_index = merged_indices;
-
-		let heaps = self.descriptor_heaps.as_ref().unwrap();
-		if !address_writes.is_empty() {
-			let ranges = address_writes.iter().map(|(_, range, ..)| *range).collect::<Box<[_]>>();
-			let infos = address_writes
-				.iter()
-				.zip(&ranges)
-				.map(|((ty, ..), range)| {
-					vk::ResourceDescriptorInfoEXT::default()
-						.ty(*ty)
-						.data(vk::ResourceDescriptorDataEXT { p_address_range: range })
-				})
-				.collect::<Box<[_]>>();
-			let destinations = address_writes
-				.iter()
-				.map(|(_, _, offset, size)| heaps.resource.host_range(*offset, *size))
-				.collect::<Box<[_]>>();
-			unsafe {
-				self.device
-					.descriptor_heap
-					.write_resource_descriptors(&infos, &destinations)
-					.expect("Vulkan buffer descriptor write failed. The most likely cause is an invalid device address range.");
-			}
-		}
-		if !image_writes.is_empty() {
-			let views = image_writes.iter().map(|(_, view, ..)| *view).collect::<Box<[_]>>();
-			let images = image_writes
-				.iter()
-				.zip(&views)
-				.map(|((_, _, layout, ..), view)| vk::ImageDescriptorInfoEXT::default().view(view).layout(*layout))
-				.collect::<Box<[_]>>();
-			let infos = image_writes
-				.iter()
-				.zip(&images)
-				.map(|((ty, ..), image)| {
-					vk::ResourceDescriptorInfoEXT::default()
-						.ty(*ty)
-						.data(vk::ResourceDescriptorDataEXT { p_image: image })
-				})
-				.collect::<Box<[_]>>();
-			let destinations = image_writes
-				.iter()
-				.map(|(_, _, _, offset, size)| heaps.resource.host_range(*offset, *size))
-				.collect::<Box<[_]>>();
-			unsafe {
-				self.device
-					.descriptor_heap
-					.write_resource_descriptors(&infos, &destinations)
-					.expect(
-						"Vulkan image descriptor write failed. The most likely cause is an invalid image view description or layout.",
-					);
-			}
-		}
-		if !sampler_writes.is_empty() {
-			let reductions = sampler_writes
-				.iter()
-				.map(|(handle, ..)| {
-					vk::SamplerReductionModeCreateInfo::default()
-						.reduction_mode(self.samplers[handle.index() as usize].reduction_mode)
-				})
-				.collect::<Box<[_]>>();
-			let samplers = sampler_writes
-				.iter()
-				.zip(&reductions)
-				.map(|((handle, ..), reduction)| {
-					let mut sampler = self.samplers[handle.index() as usize].create_info();
-					sampler.p_next = (reduction as *const vk::SamplerReductionModeCreateInfo).cast();
-					sampler
-				})
-				.collect::<Box<[_]>>();
-			let destinations = sampler_writes
-				.iter()
-				.map(|(_, offset, size)| heaps.sampler.host_range(*offset, *size))
-				.collect::<Box<[_]>>();
-			unsafe {
-				self.device
-					.descriptor_heap
-					.write_sampler_descriptors(&samplers, &destinations)
-					.expect(
-						"Vulkan sampler descriptor write failed. The most likely cause is an unsupported sampler description.",
-					);
-			}
-		}
-
-		let materialization = DescriptorMaterialization {
-			resource_heap_offset,
-			resource_heap_size: layout.resource_heap_size,
-			sampler_heap_offset,
-			sampler_heap_size: layout.sampler_heap_size,
-			resources: materialized_resources,
-		};
-		let handle = self
-			.free_materialization_handles
-			.pop()
-			.unwrap_or(DescriptorMaterializationHandle::from_index(
-				self.descriptor_materializations.len() as u64,
-			));
-		if handle.index() as usize == self.descriptor_materializations.len() {
-			self.descriptor_materializations.push(Some(materialization));
-		} else {
-			self.descriptor_materializations[handle.index() as usize] = Some(materialization);
-		}
-		self.materialization_indices.insert(key, handle);
-		handle
-	}
-
-	pub(crate) fn descriptor_materialization(&self, handle: DescriptorMaterializationHandle) -> &DescriptorMaterialization {
-		self.descriptor_materializations[handle.index() as usize].as_ref().expect(
-			"Retired Vulkan descriptor materialization was reused. The most likely cause is that a command buffer outlived its frame sequence fence.",
-		)
 	}
 
 	#[inline]

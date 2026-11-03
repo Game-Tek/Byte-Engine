@@ -299,39 +299,13 @@ fn binding_to_descriptor(binding: &Binding) -> ghi::ShaderResourceDescriptor {
 			};
 			match sampler {
 				// The shader fixes the sampler, so the set holds only the image. Bind it with `SetBinder::texture`.
-				Some(sampler) => descriptor(ghi::ResourceKind::SampledImage)
-					.texture_view_type(view)
-					.static_sampler(static_sampler(sampler)),
+				Some(_) => descriptor(ghi::ResourceKind::SampledImage).texture_view_type(view),
 				None => descriptor(ghi::ResourceKind::CombinedImageSampler).texture_view_type(view),
 			}
 		}
 		BindingKind::StorageImage => descriptor(ghi::ResourceKind::StorageImage),
 		BindingKind::SampledImage => descriptor(ghi::ResourceKind::SampledImage),
 		BindingKind::AccelerationStructure => descriptor(ghi::ResourceKind::AccelerationStructure),
-	}
-}
-
-/// Converts the sampler a BESL `sampler` declaration fixes into the one a pipeline builds into its layout.
-fn static_sampler(sampler: besl::SamplerState) -> ghi::sampler::StaticSampler {
-	use besl::sampler::{Address, Filter, Reduction};
-
-	let filter = |filter| match filter {
-		Filter::Nearest => ghi::FilteringModes::Closest,
-		Filter::Linear => ghi::FilteringModes::Linear,
-	};
-	ghi::sampler::StaticSampler {
-		filtering_mode: filter(sampler.filter),
-		mip_map_mode: filter(sampler.mip_filter),
-		reduction_mode: match sampler.reduction {
-			Reduction::Average => ghi::SamplingReductionModes::WeightedAverage,
-			Reduction::Min => ghi::SamplingReductionModes::Min,
-			Reduction::Max => ghi::SamplingReductionModes::Max,
-		},
-		addressing_mode: match sampler.address {
-			Address::Clamp => ghi::SamplerAddressingModes::Clamp,
-			Address::Repeat => ghi::SamplerAddressingModes::Repeat,
-			Address::Mirror => ghi::SamplerAddressingModes::Mirror,
-		},
 	}
 }
 

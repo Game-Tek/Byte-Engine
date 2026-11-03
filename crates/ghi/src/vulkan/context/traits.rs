@@ -121,7 +121,9 @@ impl crate::context::Context for Context {
 			self.command_buffers[i].frames.push(frame);
 		}
 
+		let first_new_sequence = self.frames;
 		self.frames = frames;
+		self.add_descriptor_set_copies(first_new_sequence);
 	}
 
 	fn get_buffer_address(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> u64 {
@@ -194,46 +196,10 @@ impl crate::context::Context for Context {
 		self.pending_image_syncs.insert((handle, None));
 	}
 
-	/// Retains flat descriptor writes and schedules frame-local snapshot refreshes without touching command-visible heap memory.
+	/// Retains descriptor writes in their sets. Each copy of a set writes them into the heaps when commands of its
+	/// frame sequence next bind it.
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
-		let mut changed_sets = SmallVec::<[graphics_hardware_interface::DescriptorSetHandle; 8]>::new();
-		for &descriptor_write in descriptor_set_writes {
-			let retained = crate::vulkan::descriptor_set::RetainedDescriptor {
-				descriptor: descriptor_write.descriptor,
-				frame_offset: descriptor_write.frame_offset.unwrap_or(0),
-			};
-			let descriptor_set = self
-				.descriptor_sets
-				.get_mut(descriptor_write.descriptor_set.index() as usize)
-				.expect(
-					"Invalid Vulkan descriptor set. The most likely cause is that the write used a handle from another context.",
-				);
-			let previous = descriptor_set
-				.descriptors
-				.entry(descriptor_write.slot)
-				.or_default()
-				.insert(descriptor_write.array_element, retained);
-			if previous == Some(retained) {
-				continue;
-			}
-
-			descriptor_set.version = descriptor_set.version.wrapping_add(1);
-			let expected_set_version = descriptor_set.version;
-			if !changed_sets.contains(&descriptor_write.descriptor_set) {
-				changed_sets.push(descriptor_write.descriptor_set);
-			}
-			self.add_task_to_all_frames(Tasks::UpdateDescriptor {
-				descriptor_write,
-				expected_set_version,
-			});
-		}
-
-		// Snapshots of every changed set are retired in one pass over the cache instead of one pass per write.
-		if !changed_sets.is_empty() {
-			self.retire_descriptor_materializations(|key| {
-				key.descriptor_sets.iter().any(|(handle, ..)| changed_sets.contains(handle))
-			});
-		}
+		self.write_descriptors(descriptor_set_writes);
 	}
 
 	fn bind_to_window(
@@ -462,9 +428,10 @@ impl crate::context::Context for Context {
 			self.buffer_states.remove(&crate::vulkan::Handles::Buffer(handle));
 		}
 
-		for sequence_index in 0..self.frames {
-			self.bump_descriptor_sequence_epoch(sequence_index);
-		}
+		// Every set element that names the buffer writes its new storage before commands bind it again.
+		self.invalidate_descriptors(crate::vulkan::Handles::Buffer(BufferHandle::from_index(
+			master_handle.index(),
+		)));
 	}
 
 	fn wait_for_synchronizer(&mut self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
@@ -550,20 +517,13 @@ impl crate::context::ContextCreate for Context {
 		))
 	}
 
-	/// Creates a retained group of flat slots. This backend materializes native descriptors per pipeline, so it does
-	/// not lay the set out from `layout` yet.
+	/// Creates a set for `layout`, with a range of the descriptor heaps for each frame in flight.
 	fn create_descriptor_set(
 		&mut self,
 		name: Option<&str>,
-		_layout: &crate::shader::DescriptorSetLayout,
+		layout: &crate::shader::DescriptorSetLayout,
 	) -> graphics_hardware_interface::DescriptorSetHandle {
-		let handle = graphics_hardware_interface::DescriptorSetHandle::from_index(self.descriptor_sets.len() as u64);
-		self.descriptor_sets.push(DescriptorSet {
-			next: None,
-			version: 0,
-			sequence_versions: [0; MAX_FRAMES_IN_FLIGHT],
-			descriptors: HashMap::default(),
-		});
+		let handle = self.create_descriptor_set_internal(layout);
 		self.set_object_debug_name(name, graphics_hardware_interface::Handles::DescriptorSet(handle));
 		handle
 	}

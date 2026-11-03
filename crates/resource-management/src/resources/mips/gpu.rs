@@ -549,10 +549,18 @@ struct BlockPushConstants {
 
 const GPU_MIP_GLSL: &str = r#"#version 460
 #pragma shader_stage(compute)
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_samplerless_texture_functions : require
 layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
-layout(set=0,binding=0) uniform sampler2D source_image;
-layout(rgba8,set=0,binding=1) uniform writeonly image2D destination_image;
-layout(push_constant) uniform PushConstants { uint source_width; uint source_height; uint destination_width; uint destination_height; uint srgb; } pc;
+// The pipeline index of the shader's set 0, which the backend specializes.
+layout(constant_id = 1984) const uint SET0 = 0u;
+// The source is the set's first descriptor and the destination its second. The kernel only fetches texels, so it
+// reads the source texture without its sampler.
+layout(descriptor_heap, descriptor_stride = 64) uniform texture2D source_images[];
+layout(descriptor_heap, descriptor_stride = 64, rgba8) uniform writeonly image2D destination_images[];
+// Each set's resource and sampler heap base indices come before the push constants.
+layout(push_constant) uniform PushConstants { uvec2 sets[15]; layout(offset = 128) uint source_width; uint source_height; uint destination_width; uint destination_height; uint srgb; } pc;
 vec3 srgb_to_linear(vec3 color) {
 	vec3 low = color / 12.92;
 	vec3 high = pow((color + 0.055) / 1.055, vec3(2.4));
@@ -565,13 +573,14 @@ vec3 linear_to_srgb(vec3 color) {
 }
 void generate_mip() {
 	uvec2 p=gl_GlobalInvocationID.xy; if(any(greaterThanEqual(p,uvec2(pc.destination_width,pc.destination_height)))) return;
-	uvec2 maximum=uvec2(pc.source_width-1u,pc.source_height-1u); uvec2 origin=p*2u;
-	vec4 a=texelFetch(source_image,ivec2(min(origin,maximum)),0); vec4 b=texelFetch(source_image,ivec2(min(origin+uvec2(1u,0u),maximum)),0);
-	vec4 c=texelFetch(source_image,ivec2(min(origin+uvec2(0u,1u),maximum)),0); vec4 d=texelFetch(source_image,ivec2(min(origin+uvec2(1u,1u),maximum)),0);
+	uvec2 maximum=uvec2(pc.source_width-1u,pc.source_height-1u); uvec2 origin=p*2u; uint base=pc.sets[SET0].x;
+	vec4 a=texelFetch(source_images[base],ivec2(min(origin,maximum)),0); vec4 b=texelFetch(source_images[base],ivec2(min(origin+uvec2(1u,0u),maximum)),0);
+	vec4 c=texelFetch(source_images[base],ivec2(min(origin+uvec2(0u,1u),maximum)),0); vec4 d=texelFetch(source_images[base],ivec2(min(origin+uvec2(1u,1u),maximum)),0);
 	vec4 result=(a+b+c+d)*0.25;
 	if(pc.srgb!=0u) result.rgb=linear_to_srgb((srgb_to_linear(a.rgb)+srgb_to_linear(b.rgb)+srgb_to_linear(c.rgb)+srgb_to_linear(d.rgb))*0.25);
-	imageStore(destination_image,ivec2(p),result);
-}"#;
+	imageStore(destination_images[base+1u],ivec2(p),result);
+}
+void main() { generate_mip(); }"#;
 
 const GPU_MIP_MSL: &str = r#"#include <metal_stdlib>
 using namespace metal;
@@ -933,9 +942,12 @@ mod tests {
 	}
 }
 
-const GPU_MIP_HLSL: &str = r#"Texture2D<float4> source_image : register(t0,space0);
-SamplerState source_sampler : register(s0,space0);
-RWTexture2D<float4> destination_image : register(u1,space0);
+const GPU_MIP_HLSL: &str = r#"// Set 0 keeps its resource base index in the first component.
+cbuffer _BeslSets : register(b1,space0) { uint4 _besl_sets[1]; };
+// The source is the set's first descriptor and the destination its second. The kernel only loads texels, so it reads
+// the source texture without its sampler.
+static Texture2D<float4> source_image = ResourceDescriptorHeap[_besl_sets[0].x];
+static RWTexture2D<float4> destination_image = ResourceDescriptorHeap[_besl_sets[0].x+1u];
 struct PushConstants { uint source_width; uint source_height; uint destination_width; uint destination_height; uint srgb; };
 ConstantBuffer<PushConstants> pc : register(b0,space0);
 float3 srgb_to_linear(float3 color) { float3 low=color/12.92; float3 high=pow((color+0.055)/1.055,2.4); return lerp(high,low,step(color,0.04045)); }

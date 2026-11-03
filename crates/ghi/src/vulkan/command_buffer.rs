@@ -4,8 +4,7 @@ use utils::{Extent, hash::HashMap};
 
 use super::{
 	AccelerationStructureMemory, Buffer, BufferHandle, BufferRange, BufferTransitionState, CommandBufferInternal, Consumption,
-	Context, DescriptorMaterializationHandle, Handles, Image, ImageHandle, Swapchain, TextureReadbackStorage, TransitionState,
-	VulkanConsumption,
+	Context, Handles, Image, ImageHandle, Swapchain, TextureReadbackStorage, TransitionState, VulkanConsumption,
 	utils::{
 		acceleration_structure_access, extent_into_vk_extent, image_aspect_mask,
 		texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value, to_load_operation,
@@ -34,11 +33,13 @@ pub struct CommandBufferRecording<'a> {
 	pub(crate) buffer_states: HashMap<Handles, Vec<BufferTransitionState>>,
 	pipeline_bind_point: vk::PipelineBindPoint,
 
-	bound_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
-	bound_descriptor_set_handles: Vec<graphics_hardware_interface::DescriptorSetHandle>,
-	current_descriptor_materialization: Option<DescriptorMaterializationHandle>,
-	descriptor_materialization_dirty: bool,
+	/// The sets the last `bind_descriptor_sets` bound, which the bound pipeline picks its sets from by layout.
+	bound_descriptor_set_handles: SmallVec<[graphics_hardware_interface::DescriptorSetHandle; 8]>,
+	/// The bound set the pipeline reads as each of its sets, or `None` for a set none was bound for.
+	pipeline_sets: SmallVec<[Option<graphics_hardware_interface::DescriptorSetHandle>; 4]>,
+	/// Whether the pipeline or the bound sets changed since the sets' base indices were last pushed.
+	descriptor_bindings_dirty: bool,
 	descriptor_resources_initialized: bool,
 	descriptor_heaps_bound: bool,
 	/// The resources consumed so far in the open unordered group, while one is open. Their later consumptions in
@@ -159,7 +160,7 @@ mod tests {
 
 	#[test]
 	fn planner_barriers_equal_write_states() {
-		let handle = Handles::Buffer(BufferHandle(1));
+		let handle = Handles::Buffer(BufferHandle::from_index(1));
 		let write = buffer_transition(vk::PipelineStageFlags2::TRANSFER, vk::AccessFlags2::TRANSFER_WRITE);
 
 		let planned = plan(
@@ -180,7 +181,7 @@ mod tests {
 
 	#[test]
 	fn planner_merges_read_after_read_buffer_state_without_a_barrier() {
-		let handle = Handles::Buffer(BufferHandle(11));
+		let handle = Handles::Buffer(BufferHandle::from_index(11));
 		let fragment_read = buffer_transition(vk::PipelineStageFlags2::FRAGMENT_SHADER, vk::AccessFlags2::SHADER_READ);
 		let compute_read = buffer_transition(vk::PipelineStageFlags2::COMPUTE_SHADER, vk::AccessFlags2::SHADER_READ);
 
@@ -204,7 +205,7 @@ mod tests {
 
 	#[test]
 	fn planner_barriers_read_after_read_for_stages_the_last_write_barrier_missed() {
-		let handle = Handles::Buffer(BufferHandle(20));
+		let handle = Handles::Buffer(BufferHandle::from_index(20));
 		let fragment_read = read_after_write(
 			vk::PipelineStageFlags2::FRAGMENT_SHADER,
 			vk::AccessFlags2::SHADER_READ,
@@ -237,7 +238,7 @@ mod tests {
 
 	#[test]
 	fn planner_skips_read_after_read_already_visible_to_the_new_stage() {
-		let handle = Handles::Image(ImageHandle(21));
+		let handle = Handles::Image(ImageHandle::from_index(21));
 		let sampled = read_after_write(
 			vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::COMPUTE_SHADER,
 			vk::AccessFlags2::SHADER_SAMPLED_READ,
@@ -263,7 +264,7 @@ mod tests {
 
 	#[test]
 	fn planner_barriers_first_reader_after_a_consumed_transfer_write() {
-		let handle = Handles::Image(ImageHandle(22));
+		let handle = Handles::Image(ImageHandle::from_index(22));
 		// consume_last_resources leaves pending uploads as a TRANSFER/NONE state that only remembers the write.
 		let consumed_upload = read_after_write(
 			vk::PipelineStageFlags2::TRANSFER,
@@ -296,7 +297,7 @@ mod tests {
 
 	#[test]
 	fn planner_barriers_image_read_after_read_for_uncovered_stages_without_write_history() {
-		let handle = Handles::Image(ImageHandle(23));
+		let handle = Handles::Image(ImageHandle::from_index(23));
 		// The layout transition into this state is itself a write the new stage must be ordered after.
 		let fragment_sample = transition(
 			vk::PipelineStageFlags2::FRAGMENT_SHADER,
@@ -323,7 +324,7 @@ mod tests {
 
 	#[test]
 	fn planner_keeps_pending_writes_for_untouched_parts_of_a_split_buffer_range() {
-		let handle = Handles::Buffer(BufferHandle(24));
+		let handle = Handles::Buffer(BufferHandle::from_index(24));
 		let buffer = Some(vk::Buffer::from_raw(24));
 		let copy_write = buffer_transition(vk::PipelineStageFlags2::COPY, vk::AccessFlags2::TRANSFER_WRITE);
 		let compute_read = buffer_transition(vk::PipelineStageFlags2::COMPUTE_SHADER, vk::AccessFlags2::SHADER_READ);
@@ -356,7 +357,7 @@ mod tests {
 
 	#[test]
 	fn planner_clips_buffer_barriers_to_each_tracked_range() {
-		let handle = Handles::Buffer(BufferHandle(25));
+		let handle = Handles::Buffer(BufferHandle::from_index(25));
 		let write = buffer_transition(vk::PipelineStageFlags2::COPY, vk::AccessFlags2::TRANSFER_WRITE);
 		let tracked = buffer_states(
 			handle,
@@ -388,7 +389,7 @@ mod tests {
 
 	#[test]
 	fn acquired_swapchain_image_barrier_is_sourced_from_its_first_use_stage() {
-		let handle = Handles::Image(ImageHandle(26));
+		let handle = Handles::Image(ImageHandle::from_index(26));
 		let acquired = vk::Image::from_raw(26);
 		let acquired_state = transition(
 			vk::PipelineStageFlags2::NONE,
@@ -422,7 +423,7 @@ mod tests {
 
 	#[test]
 	fn planner_skips_non_overlapping_buffer_ranges() {
-		let handle = Handles::Buffer(BufferHandle(12));
+		let handle = Handles::Buffer(BufferHandle::from_index(12));
 		let copy_write = buffer_transition(vk::PipelineStageFlags2::COPY, vk::AccessFlags2::TRANSFER_WRITE);
 
 		let planned = plan(
@@ -439,7 +440,7 @@ mod tests {
 
 	#[test]
 	fn planner_includes_last_buffer_write_when_read_state_transitions_to_write() {
-		let handle = Handles::Buffer(BufferHandle(14));
+		let handle = Handles::Buffer(BufferHandle::from_index(14));
 		let copy_write = buffer_transition(vk::PipelineStageFlags2::COPY, vk::AccessFlags2::TRANSFER_WRITE);
 		let mut read_state = buffer_transition(vk::PipelineStageFlags2::COMPUTE_SHADER, vk::AccessFlags2::SHADER_READ);
 		read_state.last_write_stage = copy_write.stage;
@@ -467,7 +468,7 @@ mod tests {
 	#[test]
 	fn planner_merges_repeated_image_consumptions_into_one_barrier() {
 		// Uploading several mips of one image consumes it once per mip in the same batch.
-		let handle = Handles::Image(ImageHandle(31));
+		let handle = Handles::Image(ImageHandle::from_index(31));
 		let sampled = transition(
 			vk::PipelineStageFlags2::FRAGMENT_SHADER,
 			vk::AccessFlags2::SHADER_READ,
@@ -520,7 +521,7 @@ mod tests {
 		let planned = plan(
 			&[],
 			&BufferStates::default(),
-			[consumption(Handles::Image(ImageHandle(5)), image_write)],
+			[consumption(Handles::Image(ImageHandle::from_index(5)), image_write)],
 			Some((vk::Image::null(), vk::Format::R8G8B8A8_UNORM)),
 			None,
 		);
@@ -536,7 +537,7 @@ mod tests {
 		let planned = plan(
 			&[],
 			&BufferStates::default(),
-			[consumption(Handles::Buffer(BufferHandle(7)), buffer_write)],
+			[consumption(Handles::Buffer(BufferHandle::from_index(7)), buffer_write)],
 			None,
 			Some(vk::Buffer::null()),
 		);
@@ -568,7 +569,7 @@ mod tests {
 	#[test]
 	fn planner_merges_duplicate_consumptions_of_one_buffer() {
 		// A mesh buffer read as vertices and indices in one batch needs one barrier, and later writers must wait for both reads.
-		let handle = Handles::Buffer(BufferHandle(10));
+		let handle = Handles::Buffer(BufferHandle::from_index(10));
 		let source = buffer_transition(vk::PipelineStageFlags2::TRANSFER, vk::AccessFlags2::TRANSFER_WRITE);
 		let vertex_read = buffer_transition(vk::PipelineStageFlags2::VERTEX_INPUT, vk::AccessFlags2::VERTEX_ATTRIBUTE_READ);
 		let index_read = buffer_transition(vk::PipelineStageFlags2::INDEX_INPUT, vk::AccessFlags2::INDEX_READ);

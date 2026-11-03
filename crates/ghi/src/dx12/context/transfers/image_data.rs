@@ -231,7 +231,7 @@ impl Device {
 
 			readback.data.bytes = compact;
 			readback.resource = None;
-			self.counters.texture_readback_resolve_count += 1;
+			self.native_counters.texture_readback_resolve_count += 1;
 		}
 	}
 

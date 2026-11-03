@@ -47,10 +47,18 @@ const PROBE_GLSL: &str = r#"
 #version 460
 #pragma shader_stage(compute)
 #extension GL_EXT_ray_query : require
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : require
 layout(local_size_x = 1) in;
-layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
-layout(set = 0, binding = 1, std430) readonly buffer Origins { vec4 origins[]; };
-layout(set = 0, binding = 2, std430) writeonly buffer Hits { uint hits[]; };
+// The pipeline index of the shader's set 0, and each set's heap base indices.
+layout(constant_id = 1984) const uint SET0 = 0u;
+layout(push_constant) uniform Sets { uvec2 sets[15]; } push_constants;
+layout(descriptor_heap, descriptor_stride = 64) uniform accelerationStructureEXT scenes[];
+layout(descriptor_heap, descriptor_stride = 64, std430) readonly buffer Origins { vec4 origins[]; } origin_buffers[];
+layout(descriptor_heap, descriptor_stride = 64, std430) writeonly buffer Hits { uint hits[]; } hit_buffers[];
+#define scene scenes[push_constants.sets[SET0].x]
+#define origins origin_buffers[push_constants.sets[SET0].x + 1].origins
+#define hits hit_buffers[push_constants.sets[SET0].x + 2].hits
 void main() {
 	uint index = gl_GlobalInvocationID.x;
 	rayQueryEXT query;
@@ -721,6 +729,10 @@ macro_rules! glsl_pipeline_prelude {
 			r#"
 #extension GL_EXT_ray_tracing : require
 #extension GL_EXT_ray_query : require
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : require
+// Each set's heap base indices, at the pipeline index each shader's set specialization constants hold.
+layout(push_constant) uniform Sets { uvec2 sets[15]; } push_constants;
 struct Payload { uint group; uint value; };
 struct HitAttributes { uint record; uint custom_index; uint geometry; uint primitive; };
 struct Call { Payload payload; HitAttributes hit; };
@@ -731,14 +743,18 @@ struct Call { Payload payload; HitAttributes hit; };
 
 /// The ray generation shader of the hit group scenarios in GLSL. Each invocation traces one ray along +z from its
 /// origin with a ray query, calls the closest hit of the record the query reports through the shader binding table's
-/// callable region, and writes the payload. The materials set its closest hits read is the binding at slot 3, which
-/// it doesn't declare.
+/// callable region, and writes the payload. The materials set its closest hits read is its set 1, which it declares
+/// without reading.
 const RAY_GENERATION_GLSL: &str = concat!(
 	glsl_pipeline_prelude!("raygen"),
 	r#"
-layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
-layout(set = 0, binding = 1, std430) readonly buffer Origins { vec4 origins[]; };
-layout(set = 0, binding = 2, std430) writeonly buffer Payloads { Payload payloads[]; };
+layout(constant_id = 1984) const uint SET0 = 0u;
+layout(descriptor_heap, descriptor_stride = 64) uniform accelerationStructureEXT scenes[];
+layout(descriptor_heap, descriptor_stride = 64, std430) readonly buffer Origins { vec4 origins[]; } origin_buffers[];
+layout(descriptor_heap, descriptor_stride = 64, std430) writeonly buffer Payloads { Payload payloads[]; } payload_buffers[];
+#define scene scenes[push_constants.sets[SET0].x]
+#define origins origin_buffers[push_constants.sets[SET0].x + 1].origins
+#define payloads payload_buffers[push_constants.sets[SET0].x + 2].payloads
 layout(location = 0) callableDataEXT Call call;
 void main() {
 	uint index = gl_LaunchIDEXT.x;
@@ -758,7 +774,9 @@ void main() {
 		executeCallableEXT(record, 0);
 		payload = call.payload;
 	}
-	payloads[index] = payload;
+	// Stores each member: glslang crashes storing a whole struct into a descriptor heap buffer.
+	payloads[index].group = payload.group;
+	payloads[index].value = payload.value;
 }
 "#
 );
@@ -793,7 +811,9 @@ void main() {
 const MATERIAL_HIT_GLSL: &str = concat!(
 	glsl_pipeline_prelude!("callable"),
 	r#"
-layout(set = 0, binding = 3, std430) readonly buffer Materials { uint values[]; };
+layout(constant_id = 1985) const uint SET1 = 1u;
+layout(descriptor_heap, descriptor_stride = 64, std430) readonly buffer Materials { uint values[]; } materials[];
+#define values materials[push_constants.sets[SET1].x].values
 layout(location = 0) callableDataInEXT Call call;
 void main() {
 	call.payload.group = 40u;
@@ -808,9 +828,17 @@ const LAUNCH_GLSL: &str = r#"
 #version 460
 #pragma shader_stage(raygen)
 #extension GL_EXT_ray_tracing : require
-layout(set = 0, binding = 0, std430) buffer Count { uint count; };
-layout(set = 0, binding = 1, std430) writeonly buffer Size { uvec4 size; };
-layout(set = 0, binding = 2, std430) writeonly buffer Points { uvec4 points[]; };
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : require
+// The pipeline index of the shader's set 0, and each set's heap base indices.
+layout(constant_id = 1984) const uint SET0 = 0u;
+layout(push_constant) uniform Sets { uvec2 sets[15]; } push_constants;
+layout(descriptor_heap, descriptor_stride = 64, std430) buffer Count { uint count; } counts[];
+layout(descriptor_heap, descriptor_stride = 64, std430) writeonly buffer Size { uvec4 size; } sizes[];
+layout(descriptor_heap, descriptor_stride = 64, std430) writeonly buffer Points { uvec4 points[]; } point_buffers[];
+#define count counts[push_constants.sets[SET0].x].count
+#define size sizes[push_constants.sets[SET0].x + 1].size
+#define points point_buffers[push_constants.sets[SET0].x + 2].points
 void main() {
 	atomicAdd(count, 1u);
 	uvec3 index = gl_LaunchIDEXT;

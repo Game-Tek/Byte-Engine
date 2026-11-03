@@ -8,11 +8,11 @@ impl Device {
 		let mut current = Some(handle);
 
 		while let Some(handle) = current {
-			let Some(set) = self.descriptor_sets.get(handle.0 as usize) else {
+			let Some(set) = self.descriptor_sets.get(handle.index() as usize) else {
 				break;
 			};
 			handles.push(handle);
-			current = set.next.map(|handle| DescriptorSetHandle::from_index(handle.0));
+			current = set.next.map(|handle| DescriptorSetHandle::from_index(handle.index()));
 		}
 
 		handles
@@ -67,11 +67,14 @@ impl Device {
 		&self,
 		descriptor_set: DescriptorSetHandle,
 		sequence_index: u8,
-		slot: ResourceSlot,
+		slot: crate::shader::ResourceSlot,
 	) -> Option<usize> {
-		let descriptor_set = self.descriptor_set_for_sequence(descriptor_set, sequence_index)?;
-		let descriptors = self.descriptor_sets[descriptor_set.0 as usize].descriptors.get(&slot)?;
-		let retained = descriptors.get(&0).or_else(|| descriptors.values().next())?;
+		let descriptor_set =
+			&self.descriptor_sets[self.descriptor_set_for_sequence(descriptor_set, sequence_index)?.index() as usize];
+		let resource_index = descriptor_set.layout.resource_index(slot)?;
+		let base = descriptor_set.layout.element_base(resource_index) as usize;
+		let count = descriptor_set.layout.resources()[resource_index].count() as usize;
+		let retained = descriptor_set.descriptors[base..base + count].iter().flatten().next()?;
 		Some(usize::from(
 			self.frame_index_with_offset(sequence_index, retained.frame_offset),
 		))
@@ -159,80 +162,14 @@ impl Device {
 		let _ = self.ensure_image_resource_for_sequence(image_handle, 0);
 	}
 
-	pub(crate) fn write_native_descriptor_for_heap(
-		&mut self,
-		resource: PipelineResource,
-		retained: RetainedDescriptor,
-		array_element: u32,
-		sequence_index: u8,
-		sampler_heap: bool,
-		heap: &DescriptorHeap,
-		base_offset: u32,
-	) {
-		if array_element >= resource.descriptor.count() {
-			return;
-		}
-		let offset = if sampler_heap {
-			resource.sampler_offset
-		} else {
-			resource.cbv_srv_uav_offset
-		};
-		let Some(offset) = offset else {
-			return;
-		};
-		let slot = base_offset + offset + array_element;
-		let resource_sequence = self.frame_index_with_offset(sequence_index, retained.frame_offset);
-
-		if sampler_heap {
-			let sampler = match retained.descriptor {
-				WriteData::CombinedImageSampler { sampler_handle, .. } | WriteData::Sampler(sampler_handle) => {
-					Some(sampler_handle)
-				}
-				_ => None,
-			};
-			if sampler.is_some() {
-				self.write_native_sampler_descriptor(sampler, heap, slot);
-			}
-			return;
-		}
-
-		match retained.descriptor {
-			WriteData::Buffer { handle } => {
-				self.write_native_buffer_descriptor(resource.descriptor, handle, resource_sequence, heap, slot)
-			}
-			WriteData::Image { handle, mip_level, .. } => {
-				self.write_native_image_descriptor(resource.descriptor, handle, resource_sequence, None, mip_level, heap, slot)
-			}
-			WriteData::CombinedImageSampler { image_handle, .. } => {
-				self.write_native_image_descriptor(resource.descriptor, image_handle, resource_sequence, None, None, heap, slot)
-			}
-			WriteData::Swapchain(handle) => {
-				let uses = Self::descriptor_image_use(resource.descriptor);
-				let image = self.get_swapchain_image_for_sequence(handle, uses, resource_sequence).0;
-				self.write_native_image_descriptor(
-					resource.descriptor,
-					image.into(),
-					resource_sequence,
-					None,
-					None,
-					heap,
-					slot,
-				);
-			}
-			WriteData::AccelerationStructure { .. } => crate::rt::unsupported("DX12"),
-			_ => {}
-		}
-	}
-
 	pub(crate) fn write_native_buffer_descriptor(
 		&mut self,
 		descriptor: ShaderResourceDescriptor,
 		handle: BaseBufferHandle,
 		sequence_index: u8,
-		heap: &DescriptorHeap,
 		slot: u32,
 	) {
-		// Binding flushes CPU writes before materialization. Repeating the upload here would copy the same range twice.
+		// Resolving the resource flushes dirty CPU writes to it.
 		let Some(resource) = self.buffer_resource_for_sequence(handle, sequence_index) else {
 			return;
 		};
@@ -247,7 +184,7 @@ impl Device {
 			heap_kind != BufferHeapKind::Readback,
 			"Invalid DX12 shader buffer descriptor. The most likely cause is that a readback-heap resource reached native CBV, SRV, or UAV materialization. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#readback-heap-resources."
 		);
-		let cpu_handle = self.descriptor_cpu_handle(heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, slot);
+		let cpu_handle = self.shader_visible_cpu_handle(false, slot);
 		match descriptor.kind() {
 			ResourceKind::UniformBuffer => {
 				let size_in_bytes = Self::constant_buffer_view_size(buffer, &resource, buffer_size);
@@ -316,7 +253,7 @@ impl Device {
 			}
 			_ => return,
 		}
-		self.counters.descriptor_write_count += 1;
+		self.native_counters.descriptor_write_count += 1;
 	}
 
 	/// Validates and rounds one logical uniform-buffer range for a native CBV.
@@ -359,10 +296,9 @@ impl Device {
 		sequence_index: u8,
 		layer: Option<u32>,
 		mip_level: Option<u32>,
-		heap: &DescriptorHeap,
 		slot: u32,
 	) {
-		let cpu_handle = self.descriptor_cpu_handle(heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, slot);
+		let cpu_handle = self.shader_visible_cpu_handle(false, slot);
 		let resource = self.ensure_image_resource_for_sequence(image_handle, sequence_index).expect(
 			"Missing DX12 descriptor image resource. The most likely cause is that a deferred zero-sized image was bound before it was resized or native allocation failed.",
 		);
@@ -397,7 +333,7 @@ impl Device {
 				);
 				self.device
 					.CreateUnorderedAccessView(&resource, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
-				self.counters.image_uav_descriptor_write_count += 1;
+				self.native_counters.image_uav_descriptor_write_count += 1;
 			} else {
 				let desc = Self::descriptor_texture_srv_desc(
 					format,
@@ -409,31 +345,18 @@ impl Device {
 					mip_level,
 				);
 				self.device.CreateShaderResourceView(&resource, Some(&desc), cpu_handle);
-				self.counters.image_srv_descriptor_write_count += 1;
+				self.native_counters.image_srv_descriptor_write_count += 1;
 			}
 		}
-		self.counters.descriptor_write_count += 1;
+		self.native_counters.descriptor_write_count += 1;
 	}
 
-	pub(crate) fn write_native_sampler_descriptor(
-		&mut self,
-		sampler_handle: Option<SamplerHandle>,
-		heap: &DescriptorHeap,
-		slot: u32,
-	) {
-		let cpu_handle = self.descriptor_cpu_handle(heap, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, slot);
-		let fallback_sampler = Sampler {
-			filtering_mode: FilteringModes::Linear,
-			reduction_mode: SamplingReductionModes::WeightedAverage,
-			mip_map_mode: FilteringModes::Linear,
-			addressing_mode: SamplerAddressingModes::Clamp,
-			anisotropy: None,
-			min_lod: 0.0,
-			max_lod: 0.0,
-		};
-		let sampler = sampler_handle
-			.and_then(|handle| self.samplers.get(handle.index() as usize))
-			.unwrap_or(&fallback_sampler);
+	/// Writes the native sampler of `sampler_handle` at `slot` of the shader-visible sampler heap.
+	pub(crate) fn write_native_sampler_descriptor(&mut self, sampler_handle: SamplerHandle, slot: u32) {
+		let cpu_handle = self.shader_visible_cpu_handle(true, slot);
+		let sampler = self.samplers.get(sampler_handle.index() as usize).expect(
+			"Invalid DX12 sampler descriptor. The most likely cause is that the sampler handle came from another device. Write samplers built by this device.",
+		);
 		let filter = Self::sampler_filter(
 			sampler.filtering_mode,
 			sampler.mip_map_mode,
@@ -459,7 +382,7 @@ impl Device {
 		}
 		#[cfg(test)]
 		{
-			self.counters
+			self.native_counters
 				.sampler_descriptor_write_records
 				.push(SamplerDescriptorWriteRecord {
 					filter,
@@ -469,7 +392,7 @@ impl Device {
 					max_lod: sampler.max_lod,
 				});
 		}
-		self.counters.descriptor_write_count += 1;
+		self.native_counters.descriptor_write_count += 1;
 	}
 
 	/// Encodes the D3D12 filter of a sampler, for the sampler heap and for the static samplers of a root signature.

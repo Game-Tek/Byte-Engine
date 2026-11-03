@@ -77,7 +77,8 @@ impl<'a> CommandBufferRecording<'a> {
 			.validate_descriptor_binding_contract(pipeline, sets, self.sequence_index(), &self.active_attachments);
 	}
 
-	/// Rebinds descriptor tables when an intervening command changed the active DX12 descriptor heap.
+	/// Binds the sets again when the pipeline changed, which resets the root constants, or when a clear moved the
+	/// state of a resource they hold.
 	fn refresh_descriptor_tables_if_dirty(&mut self) {
 		if !self.descriptor_tables_dirty || self.bound_descriptor_sets.is_empty() {
 			return;
@@ -89,7 +90,7 @@ impl<'a> CommandBufferRecording<'a> {
 		self.bind_descriptor_tables(pipeline);
 	}
 
-	/// Flushes the texture uploads that the bound sets read, then binds their descriptor heaps and tables.
+	/// Transitions the resources the bound sets hold for the pipeline, then gives each stage its set bases.
 	fn bind_descriptor_tables(&mut self, pipeline: PipelineHandle) {
 		self.device.flush_pending_descriptor_texture_syncs(
 			self.command_buffer,
@@ -97,7 +98,7 @@ impl<'a> CommandBufferRecording<'a> {
 			&self.bound_descriptor_sets,
 			self.sequence_index(),
 		);
-		self.device.bind_descriptor_heaps_and_tables(
+		self.device.bind_descriptor_sets_native(
 			self.command_buffer,
 			Some(pipeline),
 			&self.bound_descriptor_sets,
@@ -106,12 +107,11 @@ impl<'a> CommandBufferRecording<'a> {
 		self.descriptor_tables_dirty = false;
 	}
 
-	/// Revalidates retained descriptor sets against a pipeline, binds its native state, and marks the tables for a
-	/// refresh before the next command that reads them.
+	/// Binds a pipeline's native state and marks the bound sets for a bind before the next command that reads them.
+	///
+	/// The sets are checked against the pipeline then, so a caller can bind the sets of a pipeline with other layouts
+	/// after it.
 	fn bind_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut Self {
-		if !self.bound_descriptor_sets.is_empty() {
-			self.validate_descriptor_bindings(pipeline_handle, &self.bound_descriptor_sets);
-		}
 		self.bound_pipeline = Some(pipeline_handle);
 		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.index() as usize].layout);
 		self.device.bind_pipeline_native_state(self.command_buffer, pipeline_handle);
@@ -202,7 +202,11 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			);
 			active_attachments.push(image);
 		}
-		if let Some(pipeline) = self.bound_pipeline.filter(|_| !self.bound_descriptor_sets.is_empty()) {
+		// Sets waiting for a bind are checked against the active attachments when the next draw binds them.
+		if let Some(pipeline) = self
+			.bound_pipeline
+			.filter(|_| !self.bound_descriptor_sets.is_empty() && !self.descriptor_tables_dirty)
+		{
 			self.device.validate_descriptor_binding_contract(
 				pipeline,
 				&self.bound_descriptor_sets,

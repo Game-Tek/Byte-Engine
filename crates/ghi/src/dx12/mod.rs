@@ -126,18 +126,28 @@ mod tests {
 		))
 	}
 
+	/// Builds the layout of one set holding `resources`, for tests whose shaders read a single set.
+	fn test_layout(resources: impl IntoIterator<Item = crate::ShaderResourceDescriptor>) -> crate::shader::DescriptorSetLayout {
+		crate::shader::DescriptorSetLayout::new("test", resources)
+	}
+
+	/// Declares `layout` to a shader that uses all of it.
+	fn uses(layout: &crate::shader::DescriptorSetLayout) -> crate::shader::ShaderDescriptorSet {
+		crate::shader::ShaderDescriptorSet::new(layout.clone())
+	}
+
 	/// Builds a compute pipeline from SPIR-V-less shader metadata, so descriptor tests exercise only the binding layout.
 	fn create_metadata_compute_pipeline(
 		device: &mut Device,
 		push_constant_ranges: &[crate::pipelines::PushConstantRange],
-		resources: impl IntoIterator<Item = crate::ShaderResourceDescriptor>,
+		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> crate::PipelineHandle {
 		let shader = device
 			.create_shader(
 				None,
 				crate::shader::Sources::SPIRV(std::borrow::Cow::Borrowed(&[])),
 				crate::ShaderTypes::Compute,
-				resources,
+				descriptor_sets,
 			)
 			.expect("Failed to create DX12 shader metadata.");
 		device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
@@ -364,7 +374,12 @@ mod tests {
 			return;
 		};
 		let slot = crate::ResourceSlot::new(0);
-		let set = device.create_descriptor_set(None);
+		let layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::CombinedImageSampler,
+			crate::AccessPolicies::READ,
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
 		let image = device.build_dynamic_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
 		);
@@ -388,7 +403,12 @@ mod tests {
 			return;
 		};
 		let slot = crate::ResourceSlot::new(0);
-		let set = device.create_descriptor_set(None);
+		let layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::CombinedImageSampler,
+			crate::AccessPolicies::READ,
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
 		let image = device.build_dynamic_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
 		);
@@ -417,24 +437,27 @@ mod tests {
 	}
 
 	#[test]
-	fn descriptor_arrays_keep_declared_dx12_slot_count() {
+	fn descriptor_set_copies_lease_disjoint_heap_ranges_after_the_fixed_samplers() {
 		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let slot = crate::ResourceSlot::new(0);
-		let resource = crate::ShaderResourceDescriptor::new(
-			slot,
+		let layout = test_layout([crate::ShaderResourceDescriptor::new(
+			crate::ResourceSlot::new(0),
 			crate::ResourceKind::CombinedImageSampler,
 			1024,
 			crate::AccessPolicies::READ,
-		);
-		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [resource]);
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
+		let copies = device.collect_descriptor_set_handles(set);
 
-		assert_eq!(device.pipeline_descriptor_counts(pipeline), Some((1024, 1024)));
-		assert_eq!(device.pipeline_descriptor_slot(pipeline, slot, 1023, false), Some(1023));
-		assert_eq!(device.pipeline_descriptor_slot(pipeline, slot, 1024, false), None);
-		assert_eq!(device.pipeline_descriptor_slot(pipeline, slot, 1023, true), Some(1023));
-		assert_eq!(device.pipeline_descriptor_slot(pipeline, slot, 1024, true), None);
+		assert_eq!(copies.len(), device.frames as usize);
+		let (first_resources, first_samplers) = device.descriptor_set_bases(copies[0]).unwrap();
+		let (second_resources, second_samplers) = device.descriptor_set_bases(copies[1]).unwrap();
+		// Each copy holds every element of the array, in the resource heap and in the sampler heap.
+		assert!(first_resources.abs_diff(second_resources) >= 1024);
+		assert!(first_samplers.abs_diff(second_samplers) >= 1024);
+		// The fixed samplers keep the start of the sampler heap.
+		assert!(first_samplers.min(second_samplers) >= 36);
 	}
 
 	#[test]
@@ -443,16 +466,19 @@ mod tests {
 			return;
 		};
 		let slot = crate::ResourceSlot::new(0);
-		let resource =
-			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::SampledImage, crate::AccessPolicies::READ);
-		let set = device.create_descriptor_set(None);
+		let layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::SampledImage,
+			crate::AccessPolicies::READ,
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
 		let image = device.build_dynamic_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
 		);
 		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::Read)]);
 		device.queue_texture_sync_for_sequence(image.into(), 0);
 		device.queue_texture_sync_for_sequence(image.into(), 1);
-		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [resource]);
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let expected_state = TextureBarrierState::shader_resource(D3D12_BARRIER_SYNC_COMPUTE_SHADING);
 		let synchronizer = device.create_synchronizer(None, false);
@@ -513,14 +539,24 @@ mod tests {
 			crate::ResourceKind::StorageImage,
 			crate::AccessPolicies::WRITE,
 		);
-		let set = device.create_descriptor_set(None);
+		let layout = test_layout([first_resource, second_resource]);
+		let set = device.create_descriptor_set(None, &layout);
 		let image = device.build_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage)
 				.extent(::utils::Extent::rectangle(1, 1)),
 		);
 		device.write(&[crate::DescriptorWrite::image(set, first_slot, image, crate::Layouts::General)]);
-		let first_pipeline = create_metadata_compute_pipeline(&mut device, &[], [first_resource]);
-		let second_pipeline = create_metadata_compute_pipeline(&mut device, &[], [second_resource]);
+		// Each pipeline uses one resource of the shared layout; the second one's was never written.
+		let first_pipeline = create_metadata_compute_pipeline(
+			&mut device,
+			&[],
+			[crate::shader::ShaderDescriptorSet::with_used(layout.clone(), 0b01)],
+		);
+		let second_pipeline = create_metadata_compute_pipeline(
+			&mut device,
+			&[],
+			[crate::shader::ShaderDescriptorSet::with_used(layout.clone(), 0b10)],
+		);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 
 		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -543,13 +579,11 @@ mod tests {
 			return;
 		};
 		let active_slot = crate::ResourceSlot::new(0);
-		let inactive_slot = crate::ResourceSlot::new(5);
-		let active_resource = crate::ShaderResourceDescriptor::single(
-			active_slot,
-			crate::ResourceKind::StorageImage,
-			crate::AccessPolicies::WRITE,
-		);
-		let set = device.create_descriptor_set(None);
+		let inactive_slot = crate::ResourceSlot::new(1);
+		let layout = test_layout([active_slot, inactive_slot].map(|slot| {
+			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageImage, crate::AccessPolicies::WRITE)
+		}));
+		let set = device.create_descriptor_set(None, &layout);
 		let active_image = device.build_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage)
 				.extent(::utils::Extent::rectangle(1, 1)),
@@ -562,7 +596,11 @@ mod tests {
 			crate::DescriptorWrite::image(set, active_slot, active_image, crate::Layouts::General),
 			crate::DescriptorWrite::image(set, inactive_slot, inactive_image, crate::Layouts::General),
 		]);
-		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [active_resource]);
+		let pipeline = create_metadata_compute_pipeline(
+			&mut device,
+			&[],
+			[crate::shader::ShaderDescriptorSet::with_used(layout.clone(), 0b01)],
+		);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 
 		{
@@ -570,72 +608,84 @@ mod tests {
 			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
 		}
 
-		assert_eq!(device.image_uav_descriptor_write_count(), 1);
+		// The set's heap range holds both images, but only the one the pipeline uses moves into its state.
+		assert_eq!(device.image_uav_descriptor_write_count(), 2);
+		assert_eq!(
+			device.tracked_image_resource_state(active_image),
+			Some(TextureBarrierState::unordered_access(D3D12_BARRIER_SYNC_COMPUTE_SHADING))
+		);
+		assert_ne!(
+			device.tracked_image_resource_state(inactive_image),
+			Some(TextureBarrierState::unordered_access(D3D12_BARRIER_SYNC_COMPUTE_SHADING))
+		);
 	}
 
-	/// Verifies that frame rotation reuses stable native descriptor heaps instead of consuming transient arena slots.
+	/// Verifies that binding writes each frame copy's descriptors once, then only the bases of the copy it binds.
 	#[test]
-	fn descriptor_materializations_are_reused_across_frame_sequences() {
+	fn descriptor_set_copies_are_written_once_across_frame_sequences() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
 		let slot = crate::ResourceSlot::new(0);
-		let resource =
-			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::UniformBuffer, crate::AccessPolicies::READ);
-		let set = device.create_descriptor_set(None);
+		let layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::UniformBuffer,
+			crate::AccessPolicies::READ,
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
 		let camera = device.build_dynamic_buffer::<[f32; 16]>(
 			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
 		);
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, camera.into())]);
-		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [resource]);
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let copies = device.collect_descriptor_set_handles(set);
 
 		for frame_index in 0..512 {
 			let sequence_index = (frame_index % device.frames as usize) as u8;
 			device.begin_command_buffer(command_buffer, sequence_index);
 			device.bind_pipeline_native_state(command_buffer, pipeline);
 			device.validate_descriptor_sets(pipeline, &[set], sequence_index);
-			device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], sequence_index);
+			device.bind_descriptor_sets_native(command_buffer, Some(pipeline), &[set], sequence_index);
 		}
 
 		assert_eq!(device.descriptor_write_count(), device.frames as usize);
-		assert_eq!(device.descriptor_materialization_count(), device.frames as usize);
-		assert!(
-			device
-				.descriptor_table_bind_records()
-				.iter()
-				.all(|record| record.heap_slot == 0),
-			"Retained DX12 descriptor tables moved within a transient heap. The most likely cause is that bind-time materialization still consumes an accumulating arena offset.",
-		);
+		for (frame_index, record) in device.set_base_write_records().iter().enumerate() {
+			let copy = copies[frame_index % device.frames as usize];
+			let (resource_base, sampler_base) = device.descriptor_set_bases(copy).unwrap();
+			assert_eq!(record.bases.as_slice(), &[resource_base, sampler_base]);
+		}
 	}
 
-	/// Verifies that retained heaps refresh once after logical writes or descriptor-visible resource replacement.
+	/// Verifies that a bind rewrites only the descriptors whose write or resource changed since the last one.
 	#[test]
-	fn descriptor_materializations_refresh_after_retained_changes() {
+	fn descriptor_set_copies_rewrite_only_changed_descriptors() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
 		let slot = crate::ResourceSlot::new(0);
-		let resource =
-			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::UniformBuffer, crate::AccessPolicies::READ);
-		let set = device.create_descriptor_set(None);
+		let layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::UniformBuffer,
+			crate::AccessPolicies::READ,
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
 		let first_buffer = device.build_dynamic_buffer::<[f32; 16]>(
 			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
 		);
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, first_buffer.into())]);
-		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [resource]);
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let bind = |device: &mut crate::dx12::Device| {
 			device.begin_command_buffer(command_buffer, 0);
 			device.bind_pipeline_native_state(command_buffer, pipeline);
 			device.validate_descriptor_sets(pipeline, &[set], 0);
-			device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], 0);
+			device.bind_descriptor_sets_native(command_buffer, Some(pipeline), &[set], 0);
 		};
 
 		bind(&mut device);
 
 		assert_eq!(device.descriptor_write_count(), 1);
-		assert_eq!(device.descriptor_materialization_count(), 1);
 
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, first_buffer.into())]);
 		bind(&mut device);
@@ -655,43 +705,10 @@ mod tests {
 
 		device.resize_buffer(replacement, std::mem::size_of::<[f32; 32]>());
 
-		assert_eq!(device.descriptor_materialization_count(), 0);
+		assert_eq!(device.stale_descriptor_count(set), Some(1));
 		bind(&mut device);
 
 		assert_eq!(device.descriptor_write_count(), 3);
-	}
-
-	#[test]
-	fn hlsl_structured_buffer_stride_inference_matches_shader_struct_layout() {
-		let source = r#"
-struct View {
-	float4x4 view;
-	float4x4 projection;
-	float4x4 view_projection;
-	float4x4 inverse_view;
-	float4x4 inverse_projection;
-	float4x4 inverse_view_projection;
-	float2 fov;
-	float near;
-	float far;
-};
-struct SkinInfluences {
-	uint16_t4 joints;
-};
-StructuredBuffer<View> views : register(t0, space0);
-StructuredBuffer<uint> indices : register(t6, space0);
-RWStructuredBuffer<uint4> dispatches : register(u3, space1);
-StructuredBuffer<SkinInfluences> skin_influences : register(t4, space2);
-StructuredBuffer<uint16_t2> packed_pairs : register(t5, space2);
-"#;
-
-		let strides = Device::hlsl_structured_buffer_strides(source);
-
-		assert_eq!(strides.get(&(0, 0)), Some(&400));
-		assert_eq!(strides.get(&(0, 6)), Some(&4));
-		assert_eq!(strides.get(&(1, 3)), Some(&16));
-		assert_eq!(strides.get(&(2, 4)), Some(&8));
-		assert_eq!(strides.get(&(2, 5)), Some(&4));
 	}
 
 	#[test]
@@ -722,123 +739,27 @@ StructuredBuffer<uint16_t2> packed_pairs : register(t5, space2);
 	}
 
 	#[test]
-	fn hlsl_shader_creation_preserves_explicit_buffer_stride() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let slot = crate::ResourceSlot::new(0);
-		let resource =
-			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageBuffer, crate::AccessPolicies::READ)
-				.buffer_stride(400);
-		let shader_source = r#"
-StructuredBuffer<uint> views : register(t0, space0);
-[numthreads(1, 1, 1)]
-void main() {}
-"#;
-		let Ok(shader) = device.create_shader(
-			Some("explicit structured stride"),
-			crate::shader::Sources::HLSL {
-				source: shader_source,
-				entry_point: "main",
-			},
-			crate::ShaderTypes::Compute,
-			[resource],
-		) else {
-			return;
-		};
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
-			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
-
-		assert_eq!(
-			device
-				.pipeline_resource_descriptor(pipeline, slot)
-				.map(crate::ShaderResourceDescriptor::buffer_element_stride),
-			Some(400),
-		);
-	}
-
-	#[test]
-	fn hlsl_shader_creation_infers_later_flat_buffer_stride() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let resources = [
-			crate::ShaderResourceDescriptor::single(
-				crate::ResourceSlot::new(0),
-				crate::ResourceKind::CombinedImageSampler,
-				crate::AccessPolicies::READ,
-			),
-			crate::ShaderResourceDescriptor::single(
-				crate::ResourceSlot::new(1),
-				crate::ResourceKind::StorageImage,
-				crate::AccessPolicies::WRITE,
-			),
-			crate::ShaderResourceDescriptor::single(
-				crate::ResourceSlot::new(2),
-				crate::ResourceKind::StorageBuffer,
-				crate::AccessPolicies::READ,
-			),
-		];
-		let shader_source = r#"
-struct _parameters {
-	float4x4 inverse_view_projection;
-	float4 camera_position;
-	float4 sun_direction;
-	float4 planet_center;
-	float4 atmosphere;
-	float4 misc;
-};
-StructuredBuffer<_parameters> parameters : register(t2, space0);
-RWTexture2D<float4> main_texture : register(u1, space0);
-Texture2D<float4> depth_texture : register(t0, space0);
-SamplerState depth_texture_sampler : register(s0, space0);
-[numthreads(1, 1, 1)]
-void main() {
-	main_texture[uint2(0, 0)] = parameters[0].camera_position;
-}
-"#;
-		let Ok(shader) = device.create_shader(
-			Some("sky structured stride inference"),
-			crate::shader::Sources::HLSL {
-				source: shader_source,
-				entry_point: "main",
-			},
-			crate::ShaderTypes::Compute,
-			resources,
-		) else {
-			return;
-		};
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
-			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
-
-		assert_eq!(
-			device
-				.pipeline_resource_descriptor(pipeline, crate::ResourceSlot::new(2))
-				.map(crate::ShaderResourceDescriptor::buffer_element_stride),
-			Some(144),
-		);
-	}
-
-	#[test]
 	fn pipelines_create_native_root_signatures() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
 		let slot = crate::ResourceSlot::new(0);
-		let resource =
-			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageImage, crate::AccessPolicies::WRITE);
-		let set = device.create_descriptor_set(None);
+		let layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::StorageImage,
+			crate::AccessPolicies::WRITE,
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
 		let image = device.build_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage)
 				.extent(::utils::Extent::rectangle(1, 1)),
 		);
 		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::General)]);
-		let pipeline =
-			create_metadata_compute_pipeline(&mut device, &[crate::pipelines::PushConstantRange::new(0, 16)], [resource]);
+		let pipeline = create_metadata_compute_pipeline(
+			&mut device,
+			&[crate::pipelines::PushConstantRange::new(0, 16)],
+			[uses(&layout)],
+		);
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
@@ -852,13 +773,23 @@ void main() {
 		assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
 		assert_eq!(device.pipeline_state_bind_count(), 0);
 		assert_eq!(device.compute_dispatch_encode_count(), 0);
+		// The recording binds the shader-visible heaps once, when it opens, and the set's bases follow the push constants.
 		assert_eq!(device.descriptor_heap_bind_count(), 1);
-		assert_eq!(device.descriptor_table_bind_count(), 1);
+		assert_eq!(device.set_base_write_count(), 1);
+		let (resource_base, sampler_base) = device.descriptor_set_bases(set).unwrap();
+		assert_eq!(
+			device.set_base_write_records(),
+			&[crate::dx12::device::SetBaseWriteRecord {
+				root_parameter_index: 1,
+				bases: smallvec::smallvec![resource_base, sampler_base],
+				compute_root: true,
+			}]
+		);
 		assert_eq!(device.push_constant_write_count(), 1);
 		assert_eq!(
 			device.push_constant_write_records(),
 			&[crate::dx12::device::PushConstantWriteRecord {
-				root_parameter_index: 1,
+				root_parameter_index: 0,
 				offset: 4,
 				size: 4,
 				compute_root: true,
@@ -1100,25 +1031,29 @@ void main() {
 			.expect("Failed to create DX12 test window.");
 		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), None, extent, crate::Uses::Storage);
 		let slot = crate::ResourceSlot::new(0);
-		let resource =
-			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageImage, crate::AccessPolicies::WRITE);
-		let set = device.create_descriptor_set(None);
+		let layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::StorageImage,
+			crate::AccessPolicies::WRITE,
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
 		device.write(&[crate::DescriptorWrite::swapchain(set, slot, swapchain)]);
 		let shader = device
 			.create_shader(
 				Some("storage swapchain present"),
 				crate::shader::Sources::HLSL {
 					source: "
-						RWTexture2D<float4> output_texture : register(u0, space0);
+						cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; };
 						[numthreads(1, 1, 1)]
 						void main(uint3 dispatch_thread_id : SV_DispatchThreadID) {
+							RWTexture2D<float4> output_texture = ResourceDescriptorHeap[_besl_sets[0].x];
 							output_texture[dispatch_thread_id.xy] = float4(1.0, 0.25, 0.5, 1.0);
 						}
 					",
 					entry_point: "main",
 				},
 				crate::ShaderTypes::Compute,
-				[resource],
+				[uses(&layout)],
 			)
 			.expect("Failed to compile DX12 storage swapchain present shader.");
 		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
@@ -1270,28 +1205,30 @@ void main() {
 	}
 
 	#[test]
-	fn descriptor_tables_stage_multiple_sets_into_one_native_heap() {
+	fn each_set_position_takes_the_bases_of_the_bound_set_of_its_layout() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let base_slot = crate::ResourceSlot::new(1);
-		let visibility_buffer_slot = crate::ResourceSlot::new(0);
-		let visibility_image_slot = crate::ResourceSlot::new(7);
-		let resources = [
-			crate::ShaderResourceDescriptor::single(base_slot, crate::ResourceKind::StorageBuffer, crate::AccessPolicies::READ),
-			crate::ShaderResourceDescriptor::single(
-				visibility_buffer_slot,
-				crate::ResourceKind::StorageBuffer,
-				crate::AccessPolicies::READ,
-			),
-			crate::ShaderResourceDescriptor::single(
-				visibility_image_slot,
-				crate::ResourceKind::StorageImage,
-				crate::AccessPolicies::WRITE,
-			),
-		];
-		let base_set = device.create_descriptor_set(None);
-		let visibility_set = device.create_descriptor_set(None);
+		let slot = crate::ResourceSlot::new(0);
+		let image_slot = crate::ResourceSlot::new(1);
+		let base_layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::StorageBuffer,
+			crate::AccessPolicies::READ,
+		)]);
+		let visibility_layout = crate::shader::DescriptorSetLayout::new(
+			"visibility",
+			[
+				crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageBuffer, crate::AccessPolicies::READ),
+				crate::ShaderResourceDescriptor::single(
+					image_slot,
+					crate::ResourceKind::StorageImage,
+					crate::AccessPolicies::WRITE,
+				),
+			],
+		);
+		let base_set = device.create_descriptor_set(None, &base_layout);
+		let visibility_set = device.create_descriptor_set(None, &visibility_layout);
 		let base_buffer = device.build_buffer::<[u32; 4]>(
 			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
 		);
@@ -1302,17 +1239,13 @@ void main() {
 			crate::image::Builder::new(crate::Formats::U32, crate::Uses::Storage).extent(::utils::Extent::rectangle(1, 1)),
 		);
 		device.write(&[
-			crate::DescriptorWrite::buffer(base_set, base_slot, base_buffer.into()),
-			crate::DescriptorWrite::buffer(visibility_set, visibility_buffer_slot, visibility_buffer.into()),
-			crate::DescriptorWrite::image(
-				visibility_set,
-				visibility_image_slot,
-				visibility_image,
-				crate::Layouts::General,
-			),
+			crate::DescriptorWrite::buffer(base_set, slot, base_buffer.into()),
+			crate::DescriptorWrite::buffer(visibility_set, slot, visibility_buffer.into()),
+			crate::DescriptorWrite::image(visibility_set, image_slot, visibility_image, crate::Layouts::General),
 		]);
 
-		let pipeline = create_metadata_compute_pipeline(&mut device, &[], resources);
+		// The shader declares the visibility set first, so it reads it at position 0, whichever order the sets bind in.
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&visibility_layout), uses(&base_layout)]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		recording
@@ -1320,24 +1253,16 @@ void main() {
 			.bind_descriptor_sets(&[base_set, visibility_set]);
 		drop(recording);
 
-		assert_eq!(
-			device.pipeline_descriptor_slot(pipeline, visibility_buffer_slot, 0, false),
-			Some(0)
-		);
-		assert_eq!(device.pipeline_descriptor_slot(pipeline, base_slot, 0, false), Some(1));
-		assert_eq!(
-			device.pipeline_descriptor_slot(pipeline, visibility_image_slot, 0, false),
-			Some(2)
-		);
+		let (base_resources, base_samplers) = device.descriptor_set_bases(base_set).unwrap();
+		let (visibility_resources, visibility_samplers) = device.descriptor_set_bases(visibility_set).unwrap();
+		assert_eq!(device.pipeline_stage_set_counts(pipeline), Some(smallvec::smallvec![2]));
 		assert_eq!(device.descriptor_heap_bind_count(), 1);
 		assert_eq!(
-			device.descriptor_table_bind_records(),
-			&[crate::dx12::context::DescriptorTableBindRecord {
+			device.set_base_write_records(),
+			&[crate::dx12::device::SetBaseWriteRecord {
 				root_parameter_index: 0,
-				set_index: 0,
-				binding_index: 0,
-				sampler_heap: false,
-				heap_slot: 0,
+				bases: smallvec::smallvec![visibility_resources, visibility_samplers, base_resources, base_samplers],
+				compute_root: true,
 			}]
 		);
 	}
@@ -1352,7 +1277,7 @@ void main() {
 		};
 		let source_slot = crate::ResourceSlot::new(0);
 		let output_slot = crate::ResourceSlot::new(1);
-		let resources = [
+		let layout = test_layout([
 			crate::ShaderResourceDescriptor::single(
 				source_slot,
 				crate::ResourceKind::CombinedImageSampler,
@@ -1363,24 +1288,25 @@ void main() {
 				crate::ResourceKind::StorageImage,
 				crate::AccessPolicies::WRITE,
 			),
-		];
+		]);
 		let shader = device
 			.create_shader(
 				Some("compute queue sampled image"),
 				crate::shader::Sources::HLSL {
 					source: r#"
-Texture2D<float4> source_image : register(t0, space0);
-SamplerState source_sampler : register(s0, space0);
-RWTexture2D<float4> output_image : register(u1, space0);
+cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; };
 [numthreads(1, 1, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
+	Texture2D<float4> source_image = ResourceDescriptorHeap[_besl_sets[0].x];
+	SamplerState source_sampler = SamplerDescriptorHeap[_besl_sets[0].y];
+	RWTexture2D<float4> output_image = ResourceDescriptorHeap[_besl_sets[0].x + 1];
 	output_image[id.xy] = source_image.SampleLevel(source_sampler, float2(0.5, 0.5), 0.0);
 }
 "#,
 					entry_point: "main",
 				},
 				crate::ShaderTypes::Compute,
-				resources,
+				[uses(&layout)],
 			)
 			.expect("Failed to compile the DX12 compute-queue sampled-image shader.");
 		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
@@ -1395,7 +1321,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 				.extent(::utils::Extent::rectangle(1, 1)),
 		);
 		let sampler = device.build_sampler(crate::sampler::Builder::new());
-		let set = device.create_descriptor_set(Some("compute queue sampled image"));
+		let set = device.create_descriptor_set(Some("compute queue sampled image"), &layout);
 		device.write(&[
 			crate::DescriptorWrite::combined_image_sampler(set, source_slot, source, sampler, crate::Layouts::Read),
 			crate::DescriptorWrite::image(set, output_slot, output, crate::Layouts::General),
@@ -1441,16 +1367,19 @@ void main(uint3 id : SV_DispatchThreadID) {
 		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
 			return;
 		};
-		let slot = crate::ResourceSlot::new(7);
-		let resource =
-			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageImage, crate::AccessPolicies::WRITE);
-		let set = device.create_descriptor_set(None);
+		let slot = crate::ResourceSlot::new(0);
+		let layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::StorageImage,
+			crate::AccessPolicies::WRITE,
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
 		let image = device.build_image(
 			crate::image::Builder::new(crate::Formats::U32, crate::Uses::RenderTarget | crate::Uses::Storage)
 				.extent(::utils::Extent::rectangle(1, 1)),
 		);
 		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::General)]);
-		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [resource]);
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 
 		let synchronizer = device.create_synchronizer(None, false);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
@@ -1493,14 +1422,17 @@ void main(uint3 id : SV_DispatchThreadID) {
 			return;
 		};
 		let slot = crate::ResourceSlot::new(0);
-		let resource =
-			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageBuffer, crate::AccessPolicies::WRITE);
-		let set = device.create_descriptor_set(None);
+		let layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::StorageBuffer,
+			crate::AccessPolicies::WRITE,
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
 		let buffer = device.build_buffer::<[u32; 4]>(
 			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::DeviceOnly),
 		);
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
-		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [resource]);
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
@@ -2390,17 +2322,14 @@ void main(uint3 id : SV_DispatchThreadID) {
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage)
 				.extent(::utils::Extent::rectangle(1, 1)),
 		);
-		let set = device.create_descriptor_set(None);
+		let layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::SampledImage,
+			crate::AccessPolicies::READ,
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
 		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::Read)]);
-		let pipeline = create_metadata_compute_pipeline(
-			&mut device,
-			&[],
-			[crate::ShaderResourceDescriptor::single(
-				slot,
-				crate::ResourceKind::SampledImage,
-				crate::AccessPolicies::READ,
-			)],
-		);
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 
 		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 			device.validate_descriptor_sets(pipeline, &[set], 0);
@@ -2417,20 +2346,17 @@ void main(uint3 id : SV_DispatchThreadID) {
 			return;
 		};
 		let slot = crate::ResourceSlot::new(0);
-		let set = device.create_descriptor_set(None);
+		let layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::UniformBuffer,
+			crate::AccessPolicies::READ,
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
 		let buffer = device.build_buffer::<[u32; 4]>(
 			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::CpuWrite),
 		);
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
-		let pipeline = create_metadata_compute_pipeline(
-			&mut device,
-			&[],
-			[crate::ShaderResourceDescriptor::single(
-				slot,
-				crate::ResourceKind::UniformBuffer,
-				crate::AccessPolicies::READ,
-			)],
-		);
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 
 		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 			device.validate_descriptor_sets(pipeline, &[set], 0);
@@ -2444,20 +2370,17 @@ void main(uint3 id : SV_DispatchThreadID) {
 			return;
 		};
 		let slot = crate::ResourceSlot::new(0);
-		let set = device.create_descriptor_set(None);
+		let layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::UniformBuffer,
+			crate::AccessPolicies::READ,
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
 		let buffer = device.build_buffer::<[u32; 16_385]>(
 			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
 		);
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
-		let pipeline = create_metadata_compute_pipeline(
-			&mut device,
-			&[],
-			[crate::ShaderResourceDescriptor::single(
-				slot,
-				crate::ResourceKind::UniformBuffer,
-				crate::AccessPolicies::READ,
-			)],
-		);
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 
 		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 			device.validate_descriptor_sets(pipeline, &[set], 0);
@@ -2535,7 +2458,15 @@ void main(uint3 id : SV_DispatchThreadID) {
 		};
 		let read_slot = crate::ResourceSlot::new(0);
 		let write_slot = crate::ResourceSlot::new(1);
-		let set = device.create_descriptor_set(None);
+		let layout = test_layout([
+			crate::ShaderResourceDescriptor::single(read_slot, crate::ResourceKind::StorageBuffer, crate::AccessPolicies::READ),
+			crate::ShaderResourceDescriptor::single(
+				write_slot,
+				crate::ResourceKind::StorageBuffer,
+				crate::AccessPolicies::WRITE,
+			),
+		]);
+		let set = device.create_descriptor_set(None, &layout);
 		let buffer = device.build_buffer::<[u32; 4]>(
 			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::DeviceOnly),
 		);
@@ -2543,22 +2474,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 			crate::DescriptorWrite::buffer(set, read_slot, buffer.into()),
 			crate::DescriptorWrite::buffer(set, write_slot, buffer.into()),
 		]);
-		let pipeline = create_metadata_compute_pipeline(
-			&mut device,
-			&[],
-			[
-				crate::ShaderResourceDescriptor::single(
-					read_slot,
-					crate::ResourceKind::StorageBuffer,
-					crate::AccessPolicies::READ,
-				),
-				crate::ShaderResourceDescriptor::single(
-					write_slot,
-					crate::ResourceKind::StorageBuffer,
-					crate::AccessPolicies::WRITE,
-				),
-			],
-		);
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		recording.bind_compute_pipeline(pipeline);
@@ -2579,7 +2495,15 @@ void main(uint3 id : SV_DispatchThreadID) {
 		};
 		let read_slot = crate::ResourceSlot::new(0);
 		let write_slot = crate::ResourceSlot::new(1);
-		let set = device.create_descriptor_set(None);
+		let layout = test_layout([
+			crate::ShaderResourceDescriptor::single(read_slot, crate::ResourceKind::SampledImage, crate::AccessPolicies::READ),
+			crate::ShaderResourceDescriptor::single(
+				write_slot,
+				crate::ResourceKind::StorageImage,
+				crate::AccessPolicies::WRITE,
+			),
+		]);
+		let set = device.create_descriptor_set(None, &layout);
 		let image = device.build_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::Storage)
 				.extent(::utils::Extent::rectangle(1, 1)),
@@ -2588,22 +2512,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 			crate::DescriptorWrite::image(set, read_slot, image, crate::Layouts::Read),
 			crate::DescriptorWrite::image(set, write_slot, image, crate::Layouts::General),
 		]);
-		let pipeline = create_metadata_compute_pipeline(
-			&mut device,
-			&[],
-			[
-				crate::ShaderResourceDescriptor::single(
-					read_slot,
-					crate::ResourceKind::SampledImage,
-					crate::AccessPolicies::READ,
-				),
-				crate::ShaderResourceDescriptor::single(
-					write_slot,
-					crate::ResourceKind::StorageImage,
-					crate::AccessPolicies::WRITE,
-				),
-			],
-		);
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		recording.bind_compute_pipeline(pipeline);
@@ -2623,21 +2532,18 @@ void main(uint3 id : SV_DispatchThreadID) {
 			return;
 		};
 		let slot = crate::ResourceSlot::new(0);
-		let set = device.create_descriptor_set(None);
+		let layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::SampledImage,
+			crate::AccessPolicies::READ,
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
 		let image = device.build_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::RenderTarget)
 				.extent(::utils::Extent::rectangle(1, 1)),
 		);
 		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::Read)]);
-		let pipeline = create_metadata_compute_pipeline(
-			&mut device,
-			&[],
-			[crate::ShaderResourceDescriptor::single(
-				slot,
-				crate::ResourceKind::SampledImage,
-				crate::AccessPolicies::READ,
-			)],
-		);
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);

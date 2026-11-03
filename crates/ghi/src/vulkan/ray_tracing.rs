@@ -41,14 +41,14 @@ impl Drop for Library {
 	}
 }
 
-/// The `LibraryKey` struct names what a library compiled: a shader of its factory, its specialization constants, and
-/// the resource layout its descriptor mappings point into.
+/// The `LibraryKey` struct names what a library compiled: a shader of its factory and its specialization constants.
+///
+/// The pipeline index of each of the shader's sets is also a specialization constant, and it is always the set's
+/// position, because the pipeline's sets are the ray generation shader's and every closest hit declares a prefix of
+/// them. See [`check_hit_group_sets`].
 struct LibraryKey {
 	shader: usize,
 	specialization: Box<[crate::pipelines::SpecializationMapEntry]>,
-	/// Every resource the ray generation shader's sets declare, which fixes where in the heaps each one lives.
-	declared: Box<[crate::shader::ShaderResourceDescriptor]>,
-	push_constant_size: u32,
 }
 
 /// The `Libraries` struct is the cache of the ray tracing libraries one factory or context compiled.
@@ -126,8 +126,8 @@ fn check_hit_group_sets(shaders: &[Shader], builder: &crate::pipelines::ray_trac
 	}
 }
 
-/// Creates the library of one shader of a ray tracing pipeline with the mappings of `layout`, or returns the one
-/// `libraries` already holds for the same shader, constants, and layout.
+/// Creates the library of one shader of a ray tracing pipeline whose sets `layout` describes, or returns the one
+/// `libraries` already holds for the same shader and constants.
 fn library(
 	device: &ash::Device,
 	ray_tracing: &RayTracing,
@@ -135,15 +135,11 @@ fn library(
 	shaders: &[Shader],
 	libraries: &mut Libraries,
 	layout: &PipelineLayout,
-	declared: &[crate::shader::ShaderResourceDescriptor],
 	parameter: &crate::pipelines::ShaderParameter,
 ) -> Arc<Library> {
 	// Pipelines rebuilt as materials load find nearly every library cached, so the lookup copies nothing.
 	let cached = libraries.entries.iter().find(|(key, _)| {
-		key.shader == parameter.handle.index() as usize
-			&& key.push_constant_size == layout.push_constant_size
-			&& *key.specialization == *parameter.specialization_map
-			&& *key.declared == *declared
+		key.shader == parameter.handle.index() as usize && *key.specialization == *parameter.specialization_map
 	});
 	if let Some((_, library)) = cached {
 		return library.clone();
@@ -151,8 +147,6 @@ fn library(
 	let key = LibraryKey {
 		shader: parameter.handle.index() as usize,
 		specialization: parameter.specialization_map.into(),
-		declared: declared.into(),
-		push_constant_size: layout.push_constant_size,
 	};
 
 	// The one group of the library is its shader, which a ray generation shader launches or calls as a callable.
@@ -180,7 +174,9 @@ fn library(
 			|create_info| create_ray_tracing_pipeline(ray_tracing, create_info),
 		)
 	})
-	.expect("Vulkan ray tracing library creation failed. The most likely cause is an invalid shader resource mapping, or a ray tracing shader whose SPIR-V the driver rejects.");
+	.expect(
+		"Vulkan ray tracing library creation failed. The most likely cause is a ray tracing shader whose SPIR-V the driver rejects.",
+	);
 
 	let library = Arc::new(Library {
 		device: device.handle(),
@@ -221,9 +217,9 @@ fn create_ray_tracing_pipeline(
 /// Links a ray tracing pipeline from the libraries of its shaders, compiling the libraries `libraries` doesn't hold
 /// yet.
 ///
-/// The pipeline's resource layout reserves every resource the ray generation shader's sets declare, used or not, so a
-/// library compiled for one version of a pipeline fits every later version with more hit groups. It only reads device
-/// state, so factories call it on compiler threads and contexts call it for their own pipelines.
+/// The pipeline's sets are the ray generation shader's, in its order, so a library compiled for one version of a
+/// pipeline fits every later version with more hit groups. It only reads device state, so factories call it on
+/// compiler threads and contexts call it for their own pipelines.
 pub(crate) fn build_ray_tracing_pipeline(
 	device: &ash::Device,
 	ray_tracing: &RayTracing,
@@ -252,41 +248,17 @@ pub(crate) fn build_ray_tracing_pipeline(
 	}
 	check_hit_group_sets(shaders, &builder);
 
-	// The layout reserves every resource the ray generation shader's sets declare, used or not, with no stage and no
-	// access of their own. Each resource then keeps the heap offset that compiled libraries point at when a later
-	// version of the pipeline links a closest hit that uses more of them.
-	let declared = crate::shader::flatten_declared_resources(&ray_generation.descriptor_sets)
-		.into_iter()
-		.map(|resource| crate::shader::ShaderResourceDescriptor {
-			access: crate::AccessPolicies::NONE,
-			..resource
-		})
-		.collect::<Box<[_]>>();
-	let stage_resources = std::iter::once((crate::Stages::empty(), &*declared))
-		.chain(
-			std::iter::once(&builder.ray_generation)
-				.chain(builder.hit_groups)
-				.map(|parameter| {
-					let shader = &shaders[parameter.handle.index() as usize];
-					(shader.stage, shader.shader_resource_descriptors.as_slice())
-				}),
-		)
-		.collect::<SmallVec<[_; 8]>>();
-	let layout =
-		crate::vulkan::build_pipeline_layout(&stage_resources, builder.push_constant_ranges, descriptor_heap_properties);
+	// The ray generation shader comes first, so its sets take their own positions, and closest hits declare a prefix
+	// of them.
+	let stage_sets = std::iter::once(&builder.ray_generation)
+		.chain(builder.hit_groups)
+		.map(|parameter| {
+			let shader = &shaders[parameter.handle.index() as usize];
+			(shader.stage, &*shader.descriptor_sets)
+		});
+	let layout = crate::vulkan::build_pipeline_layout(stage_sets, builder.push_constant_ranges, descriptor_heap_properties);
 
-	let mut library_of = |parameter| {
-		library(
-			device,
-			ray_tracing,
-			pipeline_binaries,
-			shaders,
-			libraries,
-			&layout,
-			&declared,
-			parameter,
-		)
-	};
+	let mut library_of = |parameter| library(device, ray_tracing, pipeline_binaries, shaders, libraries, &layout, parameter);
 	// The ray generation library comes first, so its group is group 0, and each distinct closest hit follows once.
 	let mut linked = SmallVec::<[Arc<Library>; 8]>::new();
 	linked.push(library_of(&builder.ray_generation));

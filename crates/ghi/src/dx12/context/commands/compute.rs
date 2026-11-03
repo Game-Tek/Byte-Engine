@@ -22,7 +22,7 @@ impl Device {
 			command_list.Dispatch(extent.width(), extent.height(), extent.depth());
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.counters.compute_dispatch_encode_count += 1;
+		self.native_counters.compute_dispatch_encode_count += 1;
 	}
 
 	/// Encodes a native DX12 indirect compute dispatch command.
@@ -40,7 +40,7 @@ impl Device {
 			D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH,
 			|| crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index),
 		) {
-			self.counters.indirect_dispatch_encode_count += 1;
+			self.native_counters.indirect_dispatch_encode_count += 1;
 		}
 	}
 

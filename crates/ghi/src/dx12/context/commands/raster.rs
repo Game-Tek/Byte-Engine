@@ -56,7 +56,7 @@ impl Device {
 			command_list.IASetVertexBuffers(0, Some(&views));
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.counters.vertex_buffer_bind_count += 1;
+		self.native_counters.vertex_buffer_bind_count += 1;
 	}
 
 	/// Binds a native DX12 index buffer view for raster input assembly.
@@ -124,7 +124,7 @@ impl Device {
 			command_list.IASetIndexBuffer(Some(&view));
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.counters.index_buffer_bind_count += 1;
+		self.native_counters.index_buffer_bind_count += 1;
 	}
 
 	/// Encodes a native DX12 non-indexed draw command.
@@ -143,7 +143,7 @@ impl Device {
 			command_list.DrawInstanced(vertex_count, instance_count, first_vertex, first_instance);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.counters.draw_encode_count += 1;
+		self.native_counters.draw_encode_count += 1;
 	}
 
 	/// Encodes a native DX12 non-indexed draw whose counts come from one record of a GPU buffer.
@@ -162,7 +162,7 @@ impl Device {
 			D3D12_INDIRECT_ARGUMENT_TYPE_DRAW,
 			|| entry,
 		) {
-			self.counters.draw_encode_count += 1;
+			self.native_counters.draw_encode_count += 1;
 		}
 	}
 
@@ -183,7 +183,7 @@ impl Device {
 			command_list.DrawIndexedInstanced(index_count, instance_count, first_index, vertex_offset, first_instance);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.counters.draw_indexed_encode_count += 1;
+		self.native_counters.draw_indexed_encode_count += 1;
 	}
 
 	/// Encodes a native DX12 mesh shader dispatch when a mesh pipeline is bound.
@@ -213,7 +213,7 @@ impl Device {
 			command_list.DispatchMesh(x, y, z);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.counters.mesh_dispatch_encode_count += 1;
+		self.native_counters.mesh_dispatch_encode_count += 1;
 	}
 
 	/// Binds a stored mesh and encodes a native DX12 indexed draw command.
@@ -243,9 +243,9 @@ impl Device {
 			command_list.DrawIndexedInstanced(mesh.index_count, 1, 0, 0, 0);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.counters.vertex_buffer_bind_count += 1;
-		self.counters.index_buffer_bind_count += 1;
-		self.counters.draw_indexed_encode_count += 1;
+		self.native_counters.vertex_buffer_bind_count += 1;
+		self.native_counters.index_buffer_bind_count += 1;
+		self.native_counters.draw_indexed_encode_count += 1;
 	}
 
 	/// Returns a stable RTV descriptor for one native resource view, creating it on first use.
@@ -314,7 +314,7 @@ impl Device {
 			}
 		}
 		self.render_target_views.insert(key, heap.clone());
-		self.counters.render_target_view_allocation_count += 1;
+		self.native_counters.render_target_view_allocation_count += 1;
 		heap
 	}
 
@@ -348,7 +348,7 @@ impl Device {
 			}
 		}
 		self.depth_stencil_views.insert(key, heap.clone());
-		self.counters.depth_stencil_view_allocation_count += 1;
+		self.native_counters.depth_stencil_view_allocation_count += 1;
 		heap
 	}
 
@@ -520,7 +520,7 @@ impl Device {
 					target.layer_count,
 				);
 				if target.swapchain_backbuffer {
-					self.counters.swapchain_backbuffer_bind_count += 1;
+					self.native_counters.swapchain_backbuffer_bind_count += 1;
 				}
 				if let Some(clear) = target.clear {
 					// Integer images clear through a UAV; every other target clears as a float render target.
@@ -541,12 +541,12 @@ impl Device {
 						unsafe { command_list.ClearRenderTargetView(handle, &Self::clear_color_f32(clear), None) };
 					}
 					self.mark_command_buffer_work(command_buffer_handle);
-					self.counters.render_target_clear_count += 1;
+					self.native_counters.render_target_clear_count += 1;
 				}
 				handles.push(handle);
 			}
 
-			self.counters.render_target_bind_count += 1;
+			self.native_counters.render_target_bind_count += 1;
 		}
 
 		let mut post_clear_barriers = EnhancedBarrierBatch::default();
@@ -576,10 +576,10 @@ impl Device {
 					command_list.ClearDepthStencilView(handle, D3D12_CLEAR_FLAG_DEPTH, depth, 0, None);
 				}
 				self.mark_command_buffer_work(command_buffer_handle);
-				self.counters.depth_stencil_clear_count += 1;
+				self.native_counters.depth_stencil_clear_count += 1;
 			}
 			depth_handle = Some(handle);
-			self.counters.depth_stencil_bind_count += 1;
+			self.native_counters.depth_stencil_bind_count += 1;
 		}
 
 		let depth_handle_pointer = depth_handle
@@ -606,7 +606,7 @@ impl Device {
 		unsafe {
 			command_list.OMSetRenderTargets(0, None, false, None);
 		}
-		self.counters.render_pass_end_count += 1;
+		self.native_counters.render_pass_end_count += 1;
 	}
 
 	/// Sets native DX12 viewport and scissor state for a render pass.
@@ -634,8 +634,8 @@ impl Device {
 			command_list.RSSetViewports(&[viewport]);
 			command_list.RSSetScissorRects(&[scissor]);
 		}
-		self.counters.viewport_set_count += 1;
-		self.counters.scissor_set_count += 1;
+		self.native_counters.viewport_set_count += 1;
+		self.native_counters.scissor_set_count += 1;
 	}
 
 	/// Sets the native DX12 scissor rectangle inside an active render pass.
@@ -654,6 +654,6 @@ impl Device {
 		unsafe {
 			command_list.RSSetScissorRects(&[scissor]);
 		}
-		self.counters.scissor_set_count += 1;
+		self.native_counters.scissor_set_count += 1;
 	}
 }

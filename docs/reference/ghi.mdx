@@ -230,6 +230,20 @@ whichever of them it reads.
 | Vulkan | A range of the resource heap, in 64-byte slots, and a range of the sampler heap | Two 32-bit base indices in the push data |
 | Direct3D 12 | A range of the shader-visible resource heap, and a range of the sampler heap | Two 32-bit base indices in the root constants |
 
+A shader written in the platform's own language reads its sets through this
+interface:
+
+| Backend | Set `s` of a shader | Set base indices |
+| --- | --- | --- |
+| Metal | An argument buffer at `[[buffer(16 + s)]]`, with argument IDs from 0 in binding order | |
+| Vulkan | `GL_EXT_descriptor_heap` arrays with a descriptor stride of 64 bytes | The push data holds two 32-bit values per pipeline set, the resource base, then the sampler base, in bytes 0 to 120. Specialization constant `1984 + s` holds the pipeline set of the shader's set `s`. |
+| Direct3D 12 | `ResourceDescriptorHeap` and `SamplerDescriptorHeap` | `uint4` constants at `register(b1, space0)`: value `2s` holds set `s`'s resource base, and value `2s + 1` its sampler base. Push constants stay at `register(b0, space0)`. |
+
+A binding's descriptor is at its set's resource base plus the number of
+descriptors that the bindings before it hold. A sampler that the application
+binds is at the set's sampler base plus the number of application-bound
+samplers before it.
+
 A texture that declares a fixed sampler takes no sampler of its set. Vulkan and
 Direct3D 12 keep every fixed sampler at an index of the sampler heap that its
 state decides:

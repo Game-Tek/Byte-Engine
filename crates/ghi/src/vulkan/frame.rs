@@ -335,7 +335,7 @@ impl Frame<'_> {
 		let handle = image_handles[(current_frame as usize).rem_euclid(image_handles.len())];
 
 		// Replaced storage is destroyed only once in-flight frames finish, so even a shared static image resizes now.
-		self.device.resize_image_internal(handle, extent, array_layers, current_frame);
+		self.device.resize_image_internal(handle, extent, array_layers);
 
 		// Other sequences' copies may still be in flight, so they are rebuilt when their own frame starts.
 		if image_handles.len() > 1 {

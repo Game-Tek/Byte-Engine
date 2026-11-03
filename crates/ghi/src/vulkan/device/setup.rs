@@ -212,6 +212,32 @@ impl InnerDevice {
 		unsafe { vk_instance.get_physical_device_properties2(physical_device, &mut physical_device_properties) };
 		// Counters convert ticks with the device period.
 		let timestamp_period = physical_device_properties.properties.limits.timestamp_period;
+		// Shaders index every image and buffer descriptor by its 64-byte slot of the resource heap.
+		let slot = crate::vulkan::RESOURCE_DESCRIPTOR_SIZE;
+		let fits_slot = |size: u64, alignment: u64| size <= slot && alignment <= slot && slot.is_multiple_of(alignment.max(1));
+		if !fits_slot(
+			descriptor_heap_properties.image_descriptor_size,
+			descriptor_heap_properties.image_descriptor_alignment,
+		) || !fits_slot(
+			descriptor_heap_properties.buffer_descriptor_size,
+			descriptor_heap_properties.buffer_descriptor_alignment,
+		) {
+			return Err(
+				"Failed to create a Vulkan device because the GPU's image or buffer descriptors don't fit in 64 bytes. The most likely cause is a GPU whose descriptors are larger than the heap slots this backend indexes shaders' descriptors by. Select a GPU whose image and buffer descriptors take at most 64 bytes.",
+			);
+		}
+		// Acceleration structures take resource heap slots too. Their descriptor size has no property of its own.
+		// SAFETY: The physical device belongs to the instance, which enables the descriptor heap extension's queries.
+		if settings.ray_tracing
+			&& unsafe {
+				ash::ext::descriptor_heap::Instance::load(vk_entry, vk_instance)
+					.get_physical_device_descriptor_size(physical_device, vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+			} > slot
+		{
+			return Err(
+				"Failed to create a Vulkan device because the GPU's acceleration structure descriptors don't fit in 64 bytes. The most likely cause is a GPU whose descriptors are larger than the heap slots this backend indexes shaders' descriptors by. Create the device without ray tracing, or select a GPU whose acceleration structure descriptors take at most 64 bytes.",
+			);
+		}
 
 		let available_device_extensions = available_device_extensions(vk_instance, physical_device)?;
 		let mut device_extension_names = required_device_extensions(&settings)
@@ -324,6 +350,7 @@ impl InnerDevice {
 			memory_properties: unsafe { vk_instance.get_physical_device_memory_properties(physical_device) },
 			timestamp_period,
 			timestamp_valid_bits,
+			settings,
 			queues: stored_queues,
 			swapchain_native_supports_formatless_storage_write: supports_formatless_storage_write(vk::Format::B8G8R8A8_SRGB),
 			swapchain_proxy_supports_formatless_storage_write: supports_formatless_storage_write(vk::Format::B8G8R8A8_UNORM),

@@ -84,7 +84,7 @@ impl Generator {
 			self.argument_sets.pop();
 		}
 
-		if self.argument_sets.len() > MAX_ARGUMENT_SETS {
+		if self.argument_sets.len() > besl::MAX_DESCRIPTOR_SETS as usize {
 			return Err(());
 		}
 		Ok(())

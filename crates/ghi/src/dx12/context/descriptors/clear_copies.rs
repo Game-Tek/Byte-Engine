@@ -23,19 +23,22 @@ impl Device {
 		resource: &ID3D12Resource,
 		description: &D3D12_UNORDERED_ACCESS_VIEW_DESC,
 	) -> bool {
-		let Some((heap, descriptor_offset)) = self.reserve_staged_descriptor_range(command_buffer_handle, false, 1) else {
-			return false;
-		};
 		let Some(cpu_descriptor) = self.retained_clear_uav_descriptor(resource, description) else {
 			return false;
 		};
-		let destination = self.descriptor_cpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, descriptor_offset);
+		// The clear reads its descriptor from the bound resource heap, so it takes one of the frame's clear range.
+		let descriptor_offset = self.reserve_clear_descriptor(command_buffer_handle);
+		let destination = self.shader_visible_cpu_handle(false, descriptor_offset);
 		let source = self.descriptor_cpu_handle(
 			&cpu_descriptor.heap,
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
 			cpu_descriptor.slot,
 		);
-		let gpu = self.descriptor_gpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, descriptor_offset);
+		let gpu = self.descriptor_gpu_handle(
+			&self.shader_visible_heaps.resources,
+			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+			descriptor_offset,
+		);
 		self.queue_clear_descriptor_copy(command_buffer_handle, destination, source);
 		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
 			return false;
@@ -91,7 +94,7 @@ impl Device {
 					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
 				);
 			}
-			self.counters.clear_descriptor_copy_call_count += 1;
+			self.native_counters.clear_descriptor_copy_call_count += 1;
 			first = end;
 		}
 		copies.clear();

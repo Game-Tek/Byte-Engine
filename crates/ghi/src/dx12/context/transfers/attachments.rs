@@ -221,7 +221,6 @@ impl Device {
 			);
 		}
 		unsafe {
-			self.bind_active_staged_descriptor_heaps(command_buffer_handle);
 			match clear {
 				crate::ClearValue::Integer(r, g, b, a) => {
 					command_list.ClearUnorderedAccessViewUint(descriptor.gpu, descriptor.cpu, &destination, &[r, g, b, a], &[]);

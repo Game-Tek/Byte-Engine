@@ -22,18 +22,12 @@ impl Context {
 			buffers: ResourceCollection::with_capacity(1024),
 			images: Vec::with_capacity(512),
 			samplers: Vec::with_capacity(128),
-			pipeline_layouts: Vec::with_capacity(64),
-			pipeline_layout_indices: HashMap::with_capacity_and_hasher(64, Default::default()),
 			descriptor_sets: Vec::with_capacity(512),
-			// Created on first use, so a context that binds no descriptors, such as a loader's, reserves no heap memory.
+			// Created with the first set, so a context that binds no descriptors, such as a loader's, reserves no heap memory.
 			descriptor_heaps: None,
-			descriptor_materializations: Vec::with_capacity(512),
-			materialization_indices: HashMap::with_capacity_and_hasher(512, Default::default()),
+			descriptor_references: HashMap::default(),
 			descriptor_merge_index: HashMap::default(),
 			planning_storage: Default::default(),
-			retired_materializations: std::array::from_fn(|_| Vec::with_capacity(128)),
-			free_materialization_handles: Vec::with_capacity(128),
-			descriptor_sequence_epochs: [0; MAX_FRAMES_IN_FLIGHT],
 			shaders: Vec::with_capacity(1024),
 			pipelines: Vec::with_capacity(1024),
 			meshes: Vec::new(),
@@ -249,7 +243,7 @@ impl Context {
 				self.images[native.index() as usize] = image;
 
 				if uses_proxy_images {
-					self.resize_image_internal(images[index], proxy_extent, None, 0);
+					self.resize_image_internal(images[index], proxy_extent, None);
 				}
 			} else {
 				native_images[index] = self.create_swapchain_image(
@@ -278,10 +272,9 @@ impl Context {
 			self.states.remove(&crate::vulkan::Handles::Image(native));
 		}
 
-		// Snapshots may hold views of the replaced images in any sequence.
-		for sequence_index in 0..self.frames {
-			self.bump_descriptor_sequence_epoch(sequence_index);
-		}
+		// Set copies of any sequence may hold views of the replaced images.
+		self.invalidate_descriptors(crate::vulkan::Handles::Image(images[0]));
+		self.invalidate_descriptors(crate::vulkan::Handles::Image(native_images[0]));
 
 		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
 		swapchain.swapchain = new_swapchain;
@@ -370,16 +363,12 @@ impl Context {
 		// `None` orders below every frame, so the known completed frame only ever advances.
 		self.completed_frame = self.completed_frame.max(completed_frame.map(|frame| frame.frame_index));
 
-		// The sequence fence has completed, so immutable snapshots retired by earlier updates can now be reused.
-		self.release_retired_descriptor_materializations(sequence_index);
 		// Build lazy resources before the frame may need them.
 		self.process_tasks(sequence_index);
 		// The sequence's previous frame completed, so its builds no longer read the scratch it handed them.
 		self.acceleration_structures.scratch[sequence_index as usize].reset();
 		self.advance_acceleration_structures();
 		self.expect_shared_buffer_writes();
-		// Tasks processed after the fence can retire prior-frame snapshots immediately.
-		self.release_retired_descriptor_materializations(sequence_index);
 
 		crate::queue::StartedFrame::new(Frame::new(self, frame_key), completed_frame)
 	}
@@ -433,10 +422,18 @@ impl Context {
 		};
 
 		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
+		let changed = swapchain.acquired_image_indices[sequence_index as usize] != index as u8;
 		swapchain.acquired_image_indices[sequence_index as usize] = index as u8;
 		swapchain.acquire_wait_stages[sequence_index as usize] = vk::PipelineStageFlags2::NONE;
 		let native_image = swapchain.native_images[index as usize];
 		let extent = Extent::rectangle(swapchain.extent.width, swapchain.extent.height);
+		let (first_image, first_native_image) = (swapchain.images[0], swapchain.native_images[0]);
+
+		// Set elements that name the swapchain resolve to the image this sequence acquired.
+		if changed {
+			self.invalidate_descriptors(crate::vulkan::Handles::Image(first_image));
+			self.invalidate_descriptors(crate::vulkan::Handles::Image(first_native_image));
+		}
 
 		// The presentation engine hands the image back with undefined contents and no prior GPU work to order against;
 		// recording chains its first barrier to the acquire semaphore instead.
@@ -553,62 +550,7 @@ impl Context {
 		handles[sequence_index.rem_euclid(handles.len())]
 	}
 
-	/// Removes cached keys immediately while retaining their immutable bytes until the owning frame sequence completes.
-	pub(crate) fn retire_descriptor_materializations(&mut self, predicate: impl Fn(&MaterializationKey) -> bool) {
-		for (key, handle) in self.materialization_indices.extract_if(|key, _| predicate(key)) {
-			self.retired_materializations[key.sequence_index as usize].push(handle);
-		}
-	}
-
-	pub(crate) fn invalidate_descriptor_set_materializations(
-		&mut self,
-		descriptor_set: graphics_hardware_interface::DescriptorSetHandle,
-		sequence_index: Option<u8>,
-	) {
-		self.retire_descriptor_materializations(|key| {
-			sequence_index.is_none_or(|sequence_index| key.sequence_index == sequence_index)
-				&& key.descriptor_sets.iter().any(|(handle, ..)| *handle == descriptor_set)
-		});
-	}
-
-	pub(crate) fn bump_descriptor_sequence_epoch(&mut self, sequence_index: u8) {
-		let epoch = &mut self.descriptor_sequence_epochs[sequence_index as usize];
-		*epoch = epoch.wrapping_add(1);
-		self.retire_descriptor_materializations(|key| {
-			key.resource_epochs
-				.iter()
-				.any(|(resource_sequence, _)| *resource_sequence == sequence_index)
-		});
-	}
-
-	/// Reclaims stale heap ranges only after the sequence fence proves that no command buffer still references them.
-	pub(crate) fn release_retired_descriptor_materializations(&mut self, sequence_index: u8) {
-		let sequence_index = sequence_index as usize;
-		if self.retired_materializations[sequence_index].is_empty() {
-			return;
-		}
-		let mut retired = std::mem::take(&mut self.retired_materializations[sequence_index]);
-
-		let heaps = self.descriptor_heaps.as_mut().expect(
-			"Missing Vulkan descriptor heaps. The most likely cause is that snapshot retirement ran before context initialization completed.",
-		);
-		for handle in retired.drain(..) {
-			let Some(materialization) = self.descriptor_materializations[handle.index() as usize].take() else {
-				continue;
-			};
-			heaps
-				.resource
-				.release(materialization.resource_heap_offset, materialization.resource_heap_size);
-			heaps
-				.sampler
-				.release(materialization.sampler_heap_offset, materialization.sampler_heap_size);
-			self.free_materialization_handles.push(handle);
-		}
-		// Hand the emptied vector back so its capacity is reused.
-		self.retired_materializations[sequence_index] = retired;
-	}
-
-	/// Executes deferred resource work and invalidates only the frame-local immutable descriptor snapshots that may reference it.
+	/// Executes the deferred resource work that is due on frame sequence `sequence_index`.
 	pub(crate) fn process_tasks(&mut self, sequence_index: u8) {
 		// Tasks may queue more tasks, such as resizes retiring old storage, so collect those separately and keep them.
 		let mut tasks = std::mem::take(&mut self.tasks);
@@ -624,27 +566,9 @@ impl Context {
 				| Tasks::DeleteVulkanImageView { .. }
 				| Tasks::DeleteVulkanBuffer { .. }
 				| Tasks::FreeAllocation { .. }
-				| Tasks::DeleteAccelerationStructure { .. } => {
+				| Tasks::DeleteAccelerationStructure { .. }
+				| Tasks::FreeDescriptorRanges { .. } => {
 					self.run_destruction_task(&task.task);
-				}
-				Tasks::UpdateDescriptor {
-					descriptor_write,
-					expected_set_version,
-				} => {
-					let current = self
-						.descriptor_sets
-						.get_mut(descriptor_write.descriptor_set.index() as usize)
-						.is_some_and(|set| {
-							if !descriptor_task_is_current(set, *descriptor_write, *expected_set_version) {
-								return false;
-							}
-							let version = &mut set.sequence_versions[sequence_index as usize];
-							*version = version.wrapping_add(1);
-							true
-						});
-					if current {
-						self.invalidate_descriptor_set_materializations(descriptor_write.descriptor_set, Some(sequence_index));
-					}
 				}
 				Tasks::ResizeImage {
 					handle,
@@ -653,7 +577,7 @@ impl Context {
 				} => {
 					// The task names the resized frame's own image, which need not be the chain's first.
 					let handle = self.image_handle_for_sequence(handle.root(&self.images), sequence_index as usize);
-					self.resize_image_internal(handle, *extent, *array_layers, sequence_index);
+					self.resize_image_internal(handle, *extent, *array_layers);
 				}
 			}
 

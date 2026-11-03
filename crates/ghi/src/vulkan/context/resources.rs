@@ -627,15 +627,13 @@ impl Context {
 			if let Some(state) = self.states.get_mut(&crate::vulkan::Handles::Image(handle)) {
 				state.layout = vk::ImageLayout::UNDEFINED;
 			}
+			self.invalidate_descriptors(crate::vulkan::Handles::Image(handle.root(&self.images)));
 		}
 
 		// In-flight frames may still use members bound to the previous heaps, so free those heaps once the frames finish.
 		let previous_heaps = std::mem::replace(&mut self.image_group_heaps[group.index() as usize], heaps);
 		for heap in previous_heaps {
 			self.defer_destruction(Tasks::FreeAllocation { handle: heap });
-		}
-		for sequence_index in 0..self.frames {
-			self.bump_descriptor_sequence_epoch(sequence_index);
 		}
 		self.image_groups.commit(group, requests, placement);
 	}
@@ -675,7 +673,6 @@ impl Context {
 		image_handle: ImageHandle,
 		extent: Extent,
 		array_layers: Option<std::num::NonZeroU32>,
-		sequence_index: u8,
 	) {
 		let image = image_handle.access(&self.images);
 		let array_layers = array_layers.or(image.layers);
@@ -705,14 +702,8 @@ impl Context {
 			state.layout = vk::ImageLayout::UNDEFINED;
 		}
 
-		// A static image is one instance shared by every sequence, so every sequence's snapshots may hold its old views.
-		if root_handle.get_all(&self.images).len() == 1 {
-			for sequence_index in 0..self.frames {
-				self.bump_descriptor_sequence_epoch(sequence_index);
-			}
-		} else {
-			self.bump_descriptor_sequence_epoch(sequence_index);
-		}
+		// Set elements name the image by its chain, and a frame offset can make any copy of a set read this member.
+		self.invalidate_descriptors(crate::vulkan::Handles::Image(root_handle));
 	}
 
 	/// Queues a destruction for the first task pass after every frame started so far has completed on the GPU.
@@ -797,17 +788,16 @@ impl Context {
 					}
 					self.acceleration_structures.storage.free(storage);
 				}
+				Tasks::FreeDescriptorRanges {
+					resource_index,
+					resource_count,
+					sampler_index,
+					sampler_count,
+				} => self.free_descriptor_ranges(resource_index, resource_count, sampler_index, sampler_count),
 				_ => return false,
 			}
 		}
 		true
-	}
-
-	/// Add the task to all frames
-	pub(crate) fn add_task_to_all_frames(&mut self, tasks: Tasks) {
-		for i in 0..self.frames {
-			self.tasks.push(Task::new(tasks, Some(i)));
-		}
 	}
 
 	/// Add the task to all other frames but the current frame.

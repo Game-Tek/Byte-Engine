@@ -823,18 +823,26 @@ pub(super) fn multiframe_resources(device: &mut impl ghi::context::Context, queu
 	let compute_shader_string = "
 		#version 450
 		#pragma shader_stage(compute)
+		#extension GL_EXT_descriptor_heap : require
+		#extension GL_EXT_nonuniform_qualifier : require
 
-		layout(set=0,binding=0, rgba8) uniform image2D img;
-		layout(set=0,binding=1, rgba8) uniform readonly image2D last_frame_img;
+		// The pipeline index of the shader's set 0, which the backend specializes.
+		layout(constant_id = 1984) const uint SET0 = 0u;
 
+		// Each set's resource and sampler heap base indices come before the push constants.
 		layout(push_constant) uniform PushConstants {
-			float value;
+			uvec2 sets[15];
+			layout(offset = 128) float value;
 		} push_constants;
+
+		layout(descriptor_heap, descriptor_stride = 64, rgba8) uniform image2D images[];
+		layout(descriptor_heap, descriptor_stride = 64, rgba8) uniform readonly image2D read_images[];
 
 		layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 		void main() {
-			imageStore(img, ivec2(0, 0), vec4(vec3(push_constants.value), 1));
-			imageStore(img, ivec2(1, 0), imageLoad(last_frame_img, ivec2(0, 0)));
+			uint base = push_constants.sets[SET0].x;
+			imageStore(images[base], ivec2(0, 0), vec4(vec3(push_constants.value), 1));
+			imageStore(images[base], ivec2(1, 0), imageLoad(read_images[base + 1], ivec2(0, 0)));
 		}
 	";
 	let compute_shader_msl = r#"
@@ -853,8 +861,9 @@ pub(super) fn multiframe_resources(device: &mut impl ghi::context::Context, queu
 		}
 	"#;
 	let compute_shader_hlsl = r#"
-		RWTexture2D<float4> image : register(u0, space0);
-		RWTexture2D<float4> last_frame_image : register(u1, space0);
+		cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; };
+		static RWTexture2D<float4> image = ResourceDescriptorHeap[_besl_sets[0].x];
+		static RWTexture2D<float4> last_frame_image = ResourceDescriptorHeap[_besl_sets[0].x+1u];
 		struct PushConstant { float value; };
 		ConstantBuffer<PushConstant> push_constant : register(b0, space0);
 		[numthreads(1, 1, 1)]
@@ -1132,12 +1141,20 @@ pub(super) fn texture3d_lut_round_trip(device: &mut impl ghi::context::Context, 
 			glsl: r#"
 				#version 450
 				#pragma shader_stage(compute)
-				layout(set=0, binding=0, rgba8) uniform readonly image3D source_texture;
-				layout(set=0, binding=1, rgba8) uniform writeonly image3D destination_texture;
+				#extension GL_EXT_descriptor_heap : require
+				#extension GL_EXT_nonuniform_qualifier : require
+				#extension GL_EXT_samplerless_texture_functions : require
+				// The pipeline index of the shader's set 0, and each set's heap base indices.
+				layout(constant_id = 1984) const uint SET0 = 0u;
+				layout(push_constant) uniform Sets { uvec2 sets[15]; } push_constants;
+				// The source is a sampled image and the destination a storage image, as the set's layout declares.
+				layout(descriptor_heap, descriptor_stride = 64) uniform texture3D source_textures[];
+				layout(descriptor_heap, descriptor_stride = 64, rgba8) uniform writeonly image3D destination_textures[];
 				layout(local_size_x=1, local_size_y=1, local_size_z=1) in;
 				void main() {
+					uint base = push_constants.sets[SET0].x;
 					ivec3 location = ivec3(gl_GlobalInvocationID);
-					imageStore(destination_texture, location, imageLoad(source_texture, location));
+					imageStore(destination_textures[base + 1], location, texelFetch(source_textures[base], location, 0));
 				}
 			"#,
 			msl: r#"
@@ -1155,8 +1172,9 @@ pub(super) fn texture3d_lut_round_trip(device: &mut impl ghi::context::Context, 
 			"#,
 			msl_entry_point: "compute_main",
 			hlsl: r#"
-				Texture3D<float4> source_texture : register(t0, space0);
-				RWTexture3D<float4> destination_texture : register(u1, space0);
+				cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; };
+				static Texture3D<float4> source_texture = ResourceDescriptorHeap[_besl_sets[0].x];
+				static RWTexture3D<float4> destination_texture = ResourceDescriptorHeap[_besl_sets[0].x+1u];
 				[numthreads(1, 1, 1)]
 				void compute_main(uint3 gid : SV_DispatchThreadID) {
 					destination_texture[gid] = source_texture.Load(int4(gid, 0));

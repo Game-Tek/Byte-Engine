@@ -4,15 +4,20 @@
 //! curve's. A timeline stores its values key by key, with every curve's value at a key side by side, so sampling a
 //! pose reads two rows of adjacent words: the keys before and after the time.
 
+use std::sync::Arc;
+
 use resource_management::{
-	Reference,
 	resources::{
 		animation::{Animation, Curve, CurveComponents, NodeTrack},
+		motion_database::MotionDatabase,
 		skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
 	},
 };
 
-use super::math::{CurveInterpolation, CurveValue, KeySpan, interpolate};
+use super::{
+	matching::search::{DatabaseInfo, pack_database},
+	math::{CurveInterpolation, CurveValue, KeySpan, interpolate},
+};
 
 /// Marks a track channel without a curve.
 const NONE: u32 = u32::MAX;
@@ -33,26 +38,45 @@ const TIMELINE_WORDS: usize = 4;
 /// Timelines a pose sample places on the stack. A clip with more places each curve's time on its own.
 const STACK_TIMELINES: usize = 16;
 
-/// The `PackedAnimationData` struct stages one packed clip before the animation pool copies it into its arena.
+/// The `PackedAnimationData` struct stages one packed clip or motion database before the animation pool copies it into
+/// its arena.
 ///
-/// The load worker packs each clip, so the thread that admits it into the arena only copies its words.
+/// The load worker packs each resource, so the thread that admits it into the arena only copies its words.
 #[derive(Debug)]
 pub(crate) struct PackedAnimationData {
-	pub(crate) skeleton: Reference<Skeleton>,
+	pub(crate) contents: PackedContents,
 	pub(crate) data: Box<[u32]>,
 }
 
+/// The `PackedContents` enum keeps what a packed resource needs beside its arena words, staged and resident alike.
+#[derive(Debug)]
+pub(crate) enum PackedContents {
+	/// A clip, with the skeleton it was authored for.
+	Clip(Arc<Skeleton>),
+	/// A motion database, with its clips and its search settings.
+	Database(Box<DatabaseInfo>),
+}
+
 impl PackedAnimationData {
-	/// Returns the arena bytes this packed clip occupies.
+	/// Returns the arena bytes this packed resource occupies.
 	pub(crate) fn resident_bytes(&self) -> usize {
 		self.data.len() * std::mem::size_of::<u32>()
 	}
 
-	/// Consumes a loaded resource and combines its tracks, timelines, and values into one allocation.
+	/// Consumes a loaded clip and combines its tracks, timelines, and values into one allocation.
 	pub(crate) fn from_resource(animation: Animation) -> Self {
 		Self {
 			data: pack_data(animation.duration, animation.frame_rate, animation.tracks),
-			skeleton: animation.skeleton,
+			contents: PackedContents::Clip(Arc::new(animation.skeleton.into_resource())),
+		}
+	}
+
+	/// Consumes a loaded motion database and packs its per-frame data into one allocation.
+	pub(crate) fn from_database(database: MotionDatabase) -> Self {
+		let (info, data) = pack_database(database);
+		Self {
+			data,
+			contents: PackedContents::Database(Box::new(info)),
 		}
 	}
 }
@@ -559,7 +583,10 @@ mod tests {
 		};
 		let packed = PackedAnimationData::from_resource(animation);
 		let clip = PackedAnimation::from_words(&packed.data);
-		let targets = TrackTargets::by_name(clip, packed.skeleton.resource(), &target);
+		let super::PackedContents::Clip(skeleton) = &packed.contents else {
+			unreachable!("a packed animation holds a clip");
+		};
+		let targets = TrackTargets::by_name(clip, skeleton, &target);
 		let mut output = [LocalTransform::identity()];
 
 		clip.sample_pose(0.0, &targets, &mut output);

@@ -104,25 +104,28 @@ impl<'a> ResourceId<'a> {
 
 	/// Returns the source type used to select an asset handler.
 	///
-	/// Standalone `.environment.bead` declarations use their compound suffix.
+	/// Standalone `.environment.bead` and `.motion.bead` declarations use their compound suffix.
 	/// Other assets, including ordinary BEAD sidecars, use their physical file extension.
 	pub fn get_asset_type(&self) -> &'a str {
 		let Some(base) = get_base(self.full) else {
 			return "";
 		};
-		let extension = self.get_extension();
-		const ENVIRONMENT_SUFFIX: &str = "environment.bead";
-		let suffix_start = base.len().saturating_sub(ENVIRONMENT_SUFFIX.len());
-		let has_suffix_boundary = suffix_start == 0
-			|| base
-				.as_bytes()
-				.get(suffix_start.saturating_sub(1))
-				.is_some_and(|separator| matches!(separator, b'.' | b'/' | b'\\'));
-
-		base.get(suffix_start..)
-			.filter(|suffix| suffix.eq_ignore_ascii_case(ENVIRONMENT_SUFFIX))
-			.filter(|_| has_suffix_boundary)
-			.unwrap_or(extension)
+		const COMPOUND_SUFFIXES: [&str; 2] = ["environment.bead", "motion.bead"];
+		COMPOUND_SUFFIXES
+			.iter()
+			.find_map(|compound| {
+				let suffix_start = base.len().checked_sub(compound.len())?;
+				// The suffix starts the file name or follows a separator, so `not-an-environment.bead` stays a sidecar.
+				let has_suffix_boundary = suffix_start == 0
+					|| base
+						.as_bytes()
+						.get(suffix_start - 1)
+						.is_some_and(|separator| matches!(separator, b'.' | b'/' | b'\\'));
+				base.get(suffix_start..)
+					.filter(|suffix| suffix.eq_ignore_ascii_case(compound))
+					.filter(|_| has_suffix_boundary)
+			})
+			.unwrap_or(self.get_extension())
 	}
 
 	pub fn get_fragment(&self) -> Option<ResourceIdFragment<'a>> {
@@ -228,5 +231,7 @@ pub mod tests {
 		assert_eq!(ResourceId::new("not-an-environment.bead").get_asset_type(), "bead");
 		assert_eq!(ResourceId::new("lighting/.bead").get_asset_type(), "");
 		assert_eq!(ResourceId::new("lighting.v2/studio.bead").get_asset_type(), "bead");
+		assert_eq!(ResourceId::new("characters/locomotion.motion.bead").get_asset_type(), "motion.bead");
+		assert_eq!(ResourceId::new("characters/emotion.bead").get_asset_type(), "bead");
 	}
 }

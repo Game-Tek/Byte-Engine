@@ -1,7 +1,14 @@
-//! Curve sampling shared by resource and packed animation clips.
+//! Curve sampling shared by resource and packed animation clips, and the transform and yaw measures that the look
+//! chain, root motion, and motion matching share.
+
+use std::f32::consts::PI;
 
 use math::{Orientation, Scale, Vector};
-use resource_management::resources::{ParentSpace, animation::CurveComponents};
+use resource_management::resources::{
+	ParentSpace,
+	animation::CurveComponents,
+	skeleton::{LocalTransform, Skeleton},
+};
 
 /// Evaluates one cubic Hermite span, scaling the tangents by the span duration.
 ///
@@ -152,4 +159,83 @@ pub(crate) fn interpolate<V: CurveValue<N>, const N: usize>(
 			))
 		}
 	}
+}
+
+/// Prepends `parent` to `child`, preserving the hierarchy's scale-rotate-translate order.
+pub(crate) fn compose_local_transform(parent: LocalTransform, child: LocalTransform) -> LocalTransform {
+	LocalTransform {
+		translation: parent.translation + parent.rotation.rotate_vector(parent.scale * child.translation),
+		rotation: parent.rotation.compose(child.rotation),
+		scale: parent.scale * child.scale,
+	}
+}
+
+/// Returns `node`'s transform in the object space of `pose`, composed with its ancestors' local transforms.
+pub(crate) fn object_transform(skeleton: &Skeleton, pose: &[LocalTransform], node: usize) -> LocalTransform {
+	let mut transform = pose[node];
+	let mut ancestor = skeleton.nodes[node].parent;
+	while let Some(parent) = ancestor {
+		transform = compose_local_transform(pose[parent as usize], transform);
+		ancestor = skeleton.nodes[parent as usize].parent;
+	}
+	transform
+}
+
+/// The `NodeLookup` enum says why [`unique_node`] found no single node, so each caller can report it in its own
+/// error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NodeLookup {
+	Missing,
+	Duplicate,
+}
+
+/// Returns the one node of `skeleton` named `name`, for settings that name nodes, like root motion, look chains, and
+/// motion databases.
+pub(crate) fn unique_node(skeleton: &Skeleton, name: &str) -> Result<usize, NodeLookup> {
+	let mut matches = skeleton
+		.nodes
+		.iter()
+		.enumerate()
+		.filter(|(_, node)| node.name.as_deref() == Some(name))
+		.map(|(index, _)| index);
+	let node = matches.next().ok_or(NodeLookup::Missing)?;
+	match matches.next() {
+		Some(_) => Err(NodeLookup::Duplicate),
+		None => Ok(node),
+	}
+}
+
+/// Returns the rotation of `yaw` radians about +Y.
+pub(crate) fn yaw_rotation(yaw: f32) -> Orientation {
+	let (sin, cos) = (yaw * 0.5).sin_cos();
+	Orientation::from_unit_array_unchecked([0.0, sin, 0.0, cos])
+}
+
+/// Returns the object-space rotation of `node`, composed from its own and its ancestors' local rotations, or the
+/// identity for no node.
+pub(crate) fn model_rotation(skeleton: &Skeleton, local_rotation: impl Fn(usize) -> Orientation, node: Option<u32>) -> Orientation {
+	let mut rotation = Orientation::identity();
+	let mut ancestor = node;
+	while let Some(node) = ancestor {
+		rotation = local_rotation(node as usize).compose(rotation);
+		ancestor = skeleton.nodes[node as usize].parent;
+	}
+	rotation
+}
+
+/// Returns how far `posed` turns about +Y from `rest`, in radians, measured as the angle from -Z to -Z turned by the
+/// difference and projected onto the XZ plane.
+pub(crate) fn animated_yaw(posed: Orientation, rest: Orientation) -> f32 {
+	let forward: Vector<ParentSpace> = posed.compose(rest.inverse()).rotate_vector(Vector::new(0.0, 0.0, -1.0));
+	yaw_of_direction(forward.x(), forward.z())
+}
+
+/// Returns the yaw about +Y that turns -Z toward the direction `(x, z)` on the XZ plane.
+pub(crate) fn yaw_of_direction(x: f32, z: f32) -> f32 {
+	wrap_angle(x.atan2(z) - PI)
+}
+
+/// Wraps an angle in radians into -π..π.
+pub(crate) fn wrap_angle(angle: f32) -> f32 {
+	(angle + PI).rem_euclid(2.0 * PI) - PI
 }

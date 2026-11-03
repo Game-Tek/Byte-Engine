@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://byte-engine.dev/schemas/motion.bead.schema.json",
+  "title": "Byte Engine motion database",
+  "description": "A standalone motion database: the animation clips a matched state searches, and the features it compares them by.",
+  "type": "object",
+  "required": ["clips", "root"],
+  "properties": {
+    "$schema": { "type": "string", "description": "The local JSON Schema reference for this asset." },
+    "clips": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Clip asset IDs, fragment included, and `*` or `?` patterns that match source file IDs. Clips follow the order of their entries.",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "root": {
+      "type": "object",
+      "description": "The ground root: the node it projects onto the ground, and how much its motion is smoothed.",
+      "required": ["node"],
+      "properties": {
+        "node": { "type": "string", "minLength": 1, "description": "The node the ground root projects, usually the hips." },
+        "position_smoothing": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.1,
+          "description": "The standard deviation, in seconds, of the Gaussian that smooths the ground root's position."
+        },
+        "facing_smoothing": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.25,
+          "description": "The standard deviation, in seconds, of the Gaussian that smooths the ground root's yaw."
+        }
+      },
+      "additionalProperties": false
+    },
+    "sample_rate": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 30,
+      "description": "The frames per second the database samples its clips at."
+    },
+    "nodes": {
+      "type": "object",
+      "description": "The node feature weights, by node name. Each node needs a positive weight.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "position": { "type": "number", "minimum": 0, "default": 0, "description": "The weight of the node's position feature." },
+          "velocity": { "type": "number", "minimum": 0, "default": 0, "description": "The weight of the node's velocity feature." }
+        },
+        "additionalProperties": false
+      }
+    },
+    "trajectory": {
+      "type": "object",
+      "description": "When the trajectory features sample and how much they weigh.",
+      "properties": {
+        "times": {
+          "type": "array",
+          "minItems": 1,
+          "default": [0.333, 0.667, 1.0],
+          "description": "The times ahead of a frame, in seconds, that the trajectory features sample. Positive and strictly ascending.",
+          "items": { "type": "number", "exclusiveMinimum": 0 }
+        },
+        "position": { "type": "number", "minimum": 0, "default": 1, "description": "The weight of the trajectory position feature." },
+        "direction": { "type": "number", "minimum": 0, "default": 1.5, "description": "The weight of the trajectory direction feature." }
+      },
+      "additionalProperties": false
+    },
+    "search": {
+      "type": "object",
+      "description": "How often a matched state searches and how it switches.",
+      "properties": {
+        "interval": { "type": "number", "exclusiveMinimum": 0, "default": 0.1, "description": "Seconds between searches while a matched state plays." },
+        "exclusion": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.333,
+          "description": "Seconds from the playing time within which frames of the playing clip aren't candidates."
+        },
+        "blend": { "type": "number", "minimum": 0, "default": 0.2, "description": "Seconds a switch to a found frame inertializes over." }
+      },
+      "additionalProperties": false
+    },
+    "halflife": {
+      "type": "object",
+      "description": "How fast the predicted trajectory reaches the requested velocity and facing.",
+      "properties": {
+        "velocity": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 0.27,
+          "description": "The halflife, in seconds, of the spring that predicts the trajectory's position."
+        },
+        "facing": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 0.27,
+          "description": "The halflife, in seconds, of the spring that predicts the trajectory's direction."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

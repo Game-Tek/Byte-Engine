@@ -11,6 +11,7 @@ pub mod blend;
 pub mod flipbook;
 pub mod graph;
 pub mod inertialization;
+pub mod matching;
 pub(crate) mod math;
 /// Packed animation storage and allocation-free pose sampling.
 pub mod packed;

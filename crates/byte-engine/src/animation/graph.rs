@@ -11,7 +11,10 @@
 //! [`AnimationGraphStateBuilder::planar`], and request them with a position
 //! through [`LinearStateId::at`] and [`PlanarStateId::at`]. Group states that
 //! share one position, like a walk and its starts and stops, into a space with
-//! [`AnimationGraphBuilder::planar_space`]. Connect state
+//! [`AnimationGraphBuilder::planar_space`]. A matched state, built with
+//! [`AnimationGraphStateBuilder::matched`], instead plays a motion database's
+//! clips from the frames its searches find; request it with a velocity and a
+//! facing through [`MatchedStateId::toward`]. Connect state
 //! handles with [`AnimationGraphState::to`], then use
 //! [`AnimationGraphTransitionConditionBuilder::when`] or
 //! [`AnimationGraphTransitionConditionBuilder::anytime`] to choose whether a
@@ -468,6 +471,11 @@ impl AnimationGraphBuilderData {
 	/// Resolves a moment of `state`'s clip named `clip`, or of its only clip when `clip` is `None`, recording an error
 	/// for [`AnimationGraphBuilder::build`] when the state has no such clip.
 	fn clip_point(&mut self, state: AnimationStateId, clip: Option<&str>, time: ClipTime) -> Option<ClipPoint> {
+		if matches!(self.states[state.index].motion, StateMotion::Matched { .. }) {
+			self.errors
+				.push(AnimationGraphBuildError::RoutePointOnMatchedState { state: state.index });
+			return None;
+		}
 		let clips = self.states[state.index].motion.clips();
 		let index = match clip {
 			Some(clip) => clips.iter().position(|candidate| candidate.resource_id() == clip),
@@ -627,6 +635,27 @@ impl<'builder> AnimationGraphStateBuilder<'builder> {
 		};
 		let id = builder.push_state(self.graph, self.name, motion, self.space, None, MediaTime::ZERO);
 		AnimationGraphState { data: self.data, id }
+	}
+
+	/// Plays the clips of the motion database `database`, the ID of a baked `.motion.bead` file, one at a time from
+	/// the frames its searches find. Use it for locomotion that follows the input without a route for every start,
+	/// stop, and turn.
+	///
+	/// Request it with a velocity and a facing through [`MatchedStateId::toward`]. A matched state belongs to no space,
+	/// routes from it start at once, and no route names a wait or entry point on it.
+	pub fn matched(self, database: impl Into<Arc<str>>) -> MatchedGraphState<'builder> {
+		let mut builder = self.data.borrow_mut();
+		let builder = builder.as_mut().expect("the animation graph has already been built");
+		if self.space.is_some() {
+			builder.errors.push(AnimationGraphBuildError::MatchedStateInSpace {
+				state: builder.states.len(),
+			});
+		}
+		let motion = StateMotion::Matched {
+			database: AnimationClip::once(database),
+		};
+		let id = builder.push_state(self.graph, self.name, motion, None, None, MediaTime::ZERO);
+		MatchedGraphState(AnimationGraphState { data: self.data, id })
 	}
 
 	/// Plays a blend of clips placed on a line. Request it with a position through [`LinearStateId::at`].
@@ -1239,6 +1268,16 @@ pub enum AnimationGraphBuildError {
 		/// The index of the blend state.
 		state: usize,
 	},
+	/// A matched state was built in a space, which it can't share a position with.
+	MatchedStateInSpace {
+		/// The index of the matched state.
+		state: usize,
+	},
+	/// A route names a wait or entry point on a matched state, whose clips are known only once it plays.
+	RoutePointOnMatchedState {
+		/// The index of the matched state the point was looked up in.
+		state: usize,
+	},
 }
 
 impl fmt::Display for AnimationGraphBuildError {
@@ -1312,6 +1351,14 @@ impl fmt::Display for AnimationGraphBuildError {
 				formatter,
 				"Animation route point does not say which clip it counts frames of. The most likely cause is calling `at_frame` or `at_time` on a route from blend state {state}; use `at_frames` with one of its clips."
 			),
+			Self::MatchedStateInSpace { state } => write!(
+				formatter,
+				"Animation matched state {state} is in a space. The most likely cause is building it through `AnimationGraphSpace::state`; build it with `AnimationGraphBuilder::state` instead."
+			),
+			Self::RoutePointOnMatchedState { state } => write!(
+				formatter,
+				"Animation route names a wait or entry point on matched state {state}. The most likely cause is an `at_frame`, `at_frames`, `at_time`, or `entering_at_frame` call on a route from or into it; remove the point, since routes from a matched state start at once and a search picks where it starts."
+			),
 			Self::MixedBlendPlayback { state } => write!(
 				formatter,
 				"Animation blend or round-robin state mixes looping and one-shot clips. The most likely cause is state {state} using `AnimationClip::once` for some clips and `AnimationClip::looping` for others."
@@ -1342,7 +1389,8 @@ use std::{
 
 use math::{AffineMatrix, Vector};
 pub use motion::{
-	AnimationBlend, AnimationMotion, AnimationRequest, LinearGraphState, LinearStateId, PlanarGraphState, PlanarStateId,
+	AnimationBlend, AnimationMotion, AnimationRequest, LinearGraphState, LinearStateId, MatchedGraphState, MatchedStateId,
+	PlanarGraphState, PlanarStateId,
 };
 use motion::{BlendPositions, BlendValue, ClipPoint, ClipTime, RoundRobinTurns, SpaceKind, StateMotion};
 use resource_management::{
@@ -1350,6 +1398,7 @@ use resource_management::{
 	resources::{
 		ParentSpace,
 		animation::Animation,
+		motion_database::MotionDatabase,
 		skeleton::{LocalTransform, Skeleton},
 	},
 };
@@ -1363,7 +1412,9 @@ pub use runtime::{
 use super::{
 	blend::{BlendSpaceError, BlendWeights, blend_local_poses},
 	inertialization::PoseInertializer,
-	packed::{PackedAnimation, PackedAnimationData, TrackTargets},
+	math::{NodeLookup, compose_local_transform, unique_node, wrap_angle, yaw_rotation},
+	matching::search::{Found, PackedDatabase, Playing, search},
+	packed::{PackedAnimation, PackedAnimationData, PackedContents, TrackTargets},
 	root_motion::RootMotionDelta,
 	skeletal::write_global_pose,
 };

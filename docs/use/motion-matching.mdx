@@ -1,0 +1,106 @@
+---
+title: Match locomotion to input
+description: Let a matched animation state pick the clip and frame that best continue your character toward the velocity and facing your input asks for.
+icon: Footprints
+---
+
+A matched state plays your locomotion clips without a route for every start,
+stop, and turn. Each frame you tell it where the character should head and
+face; it searches its clips for the frame that best continues the current pose
+toward that, and blends to it. Put your walk, run, start, stop, and turn clips
+in one motion database, and the state finds the transitions in them.
+
+This page builds on [Animate a character](/docs/use/animation), which shows the
+graph, the animation system, and the frame loop. The rules a matched state
+follows are in the
+[animation reference](/docs/reference/animation#matched-states).
+
+## Author the database
+
+Write a `.motion.bead` file beside your clips. Name the clips, the node the
+character's ground position follows, and the nodes whose motion the search
+compares:
+
+```json5
+{
+  $schema: "byte_engine/schemas/motion.bead.schema.json",
+  clips: ["locomotion/*.fbx"],
+  root: { node: "Hips" },
+  nodes: {
+    LeftFoot: { position: 1, velocity: 1 },
+    RightFoot: { position: 1, velocity: 1 },
+    Hips: { velocity: 1 },
+  },
+}
+```
+
+Feet and hips are the usual features: they let the search keep the stride
+going. The trajectory, where the ground root goes over the next second,
+compares by default. Every other setting has a default; the
+[format](/docs/reference/assets#motion-databases) lists them.
+
+Record clips with varied motion in each, rather than one tidy cycle each: long
+takes of walking that start, stop, and turn give the search more frames to
+continue from. A frame needs a whole second of clip after it to be found, so a
+clip shorter than a second adds nothing.
+
+## Build the matched state
+
+Name the file in a matched state. It belongs to no space, and routes in and out
+of it work as for any state:
+
+```rust
+let graph = AnimationGraph::builder();
+let locomotion = graph.state("locomotion").matched("characters/locomotion.motion.bead");
+let jump = graph.state("jump").with(AnimationClip::once("anims/jump.fbx#animation"));
+locomotion.to(jump).when(blend);
+jump.to(locomotion).when(blend);
+let locomotion_id = locomotion.id();
+let graph = graph.build(locomotion)?;
+```
+
+Give the animator root motion settings, so the step's root motion moves the
+entity. A matched state moves it by its ground root, whatever node the settings
+name:
+
+```rust
+Animator::new(graph).with_root_motion(RootMotionSettings::full("Hips"))
+```
+
+## Steer it every tick
+
+Each frame, request the matched state with the velocity and facing you want, in
+the entity's object space, where the entity faces -Z. Then apply the root motion
+as for any state:
+
+```rust
+let move_input = controls.movement(); // X and Z on the ground, in camera space
+let velocity = orientation.inverse().rotate_vector(camera_to_world(move_input) * max_speed);
+let facing = yaw_toward(orientation, view_forward);
+world
+	.set(locomotion_id.toward([velocity.x(), velocity.z()], facing))
+	.on(character);
+```
+
+A zero velocity asks the character to stand. The facing is a yaw in radians
+about +Y from the way the entity faces, so zero keeps it facing ahead. The
+engine's axes are left-handed, so a positive angle turns the character to its
+right, clockwise seen from above.
+
+If you send a request only when the input changes, the animator holds it and
+turns it as the entity turns by root motion, so the character keeps heading
+the same way in the world.
+
+## See what it found
+
+Give the animator a [debug data stream](/docs/use/debug-data-streams). Each
+record's `match` field says whether that step searched, the frame it found, the
+cost, and the trajectory the query predicted. A character that sticks to one
+clip usually lacks clips that head where you ask; one that switches often may
+need a longer `search.interval`, or lower trajectory weights.
+
+## Rust API
+
+- [`animation::matching`](/docs/api/latest/byte_engine/animation/matching)
+- [`AnimationGraphStateBuilder`](/docs/api/latest/byte_engine/animation/graph/AnimationGraphStateBuilder)
+- [`MatchedStateId`](/docs/api/latest/byte_engine/animation/graph/MatchedStateId)

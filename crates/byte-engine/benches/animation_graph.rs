@@ -64,3 +64,8 @@ fn characters_switching(bencher: Bencher, character_count: usize) {
 fn characters_locomotion(bencher: Bencher, character_count: usize) {
 	characters(bencher, AnimationGraphBenchmark::Locomotion, character_count);
 }
+
+#[divan::bench(args = [1, 64, 1024])]
+fn characters_matching(bencher: Bencher, character_count: usize) {
+	characters(bencher, AnimationGraphBenchmark::Matching, character_count);
+}

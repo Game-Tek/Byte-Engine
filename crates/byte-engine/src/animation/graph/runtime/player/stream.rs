@@ -21,6 +21,8 @@ struct Record<'a> {
 	motion: Option<Motion<'a>>,
 	transition: Option<Transition<'a>>,
 	pending: Option<Pending<'a>>,
+	#[serde(rename = "match")]
+	matched: Option<Match<'a>>,
 	root_motion: RootMotion,
 	look: Option<super::look::LookReport>,
 }
@@ -41,7 +43,26 @@ struct Key<'a> {
 struct Request<'a> {
 	state: &'a str,
 	position: Position,
+	velocity: Option<[f32; 2]>,
+	facing: Option<f32>,
 	inertialization: f32,
+}
+
+/// A matched state's latest search.
+#[derive(Serialize)]
+struct Match<'a> {
+	searched: bool,
+	bar: Option<f32>,
+	found: Option<Frame<'a>>,
+	cost: Option<f32>,
+	trajectory: &'a [crate::animation::matching::search::TrajectorySample],
+}
+
+/// A frame of a motion database: its clip and its time in the clip.
+#[derive(Serialize)]
+struct Frame<'a> {
+	clip: ClipName<'a>,
+	time: f32,
 }
 
 /// A blend position, which serializes as null, a number, or a pair of numbers.
@@ -300,6 +321,29 @@ impl AnimationGraphPlayer {
 			})
 		});
 		let root_motion = ready.map_or(RootMotionDelta::IDENTITY, |ready| ready.root_motion);
+		// Only a matched state, playing or blending in, reports its search.
+		let matched = ready.zip(playing).and_then(|(ready, motion)| {
+			let samples = motion.samples(graph);
+			if !is_matched(samples) {
+				return None;
+			}
+			let record = ready.search.as_deref()?;
+			let found = record.result.found;
+			Some(Match {
+				searched: record.searched,
+				bar: record.result.bar,
+				found: found.map(|found| Frame {
+					clip: ClipName(&samples[found.clip].resource_id),
+					time: found.time,
+				}),
+				cost: found.map(|found| found.cost),
+				trajectory: &record.trajectory[..record.trajectory_len],
+			})
+		});
+		let (velocity, facing) = match self.requested.value {
+			BlendValue::Motion { velocity, facing } => (Some(velocity), Some(facing)),
+			_ => (None, None),
+		};
 		Record {
 			status,
 			error,
@@ -307,15 +351,18 @@ impl AnimationGraphPlayer {
 			request: Request {
 				state: name(self.requested.state),
 				position: match self.requested.value {
-					BlendValue::Unset => Position::None,
+					BlendValue::Unset | BlendValue::Motion { .. } => Position::None,
 					BlendValue::Linear(value) => Position::Line(value),
 					BlendValue::Planar(value) => Position::Plane(value),
 				},
+				velocity,
+				facing,
 				inertialization: self.requested.inertialization.as_seconds_f32(),
 			},
 			motion: playing.map(|motion| Motion::new(graph, motion)),
 			transition,
 			pending,
+			matched,
 			root_motion: RootMotion {
 				translation: root_motion.translation.to_array(),
 				rotation: root_motion.rotation.to_array(),
@@ -369,6 +416,49 @@ mod tests {
 			pool.admit(id.into(), test_animation(id, end));
 		}
 		pool
+	}
+
+	#[test]
+	fn matched_states_report_their_last_search_and_the_requested_motion() {
+		use super::super::matched::tests::{DATABASE, locomotion_pool};
+
+		let (stream, path) = stream(false);
+		let mut pool = locomotion_pool("");
+		let builder = AnimationGraph::builder();
+		let locomotion = builder.state("locomotion").matched(DATABASE);
+		let graph = builder.build(locomotion).expect("graph should build");
+		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("hips")));
+		player.set_stream(Some(stream));
+		let request = locomotion.id().toward([0.0, -1.5], 0.5);
+		for _ in 0..2 {
+			player
+				.advance(&graph, MediaTime::from_millis(30), request, &mut pool)
+				.expect("plays the matched state");
+		}
+
+		let records = records(path);
+		let number = |value: &serde_json::Value| value.as_f64().expect("a number");
+		let entered = &records[0];
+		assert_eq!(entered["request"]["velocity"], serde_json::json!([0.0, -1.5]));
+		assert_eq!(entered["request"]["facing"], 0.5);
+		assert!(entered["request"]["position"].is_null());
+		let search = &entered["match"];
+		assert_eq!(search["searched"], true);
+		assert!(search["bar"].is_null(), "entering the state sets no bar");
+		assert_eq!(search["found"]["clip"], "walk");
+		assert!(number(&search["cost"]) >= 0.0);
+		let times: Vec<f64> = search["trajectory"]
+			.as_array()
+			.expect("a trajectory")
+			.iter()
+			.map(|sample| number(&sample["time"]))
+			.collect();
+		assert_eq!(times.len(), 3, "one sample for each trajectory time");
+		assert!((times[2] - 1.0).abs() < 1.0e-6);
+		assert_eq!(
+			records[1]["match"]["searched"], false,
+			"the next step searches only once the interval elapses"
+		);
 	}
 
 	#[test]

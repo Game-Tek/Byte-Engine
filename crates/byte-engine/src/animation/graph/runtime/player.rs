@@ -3,10 +3,12 @@
 use super::*;
 
 mod look;
+mod matched;
 mod stream;
 
 use look::LookChain;
 pub use look::{LookChainSettings, LookTarget};
+use matched::{HeldMotion, MatchRecord, QueryPoses};
 
 /// The `RuntimeMotion` struct plays one graph state, keeping a blend's clips in step through one shared phase.
 ///
@@ -25,6 +27,9 @@ struct RuntimeMotion {
 	phase: f32,
 	/// The phase before the latest advance, which a blend's root motion measures from.
 	previous_phase: f32,
+	/// Seconds played since the motion started, or since its matched state's latest search, which the next search
+	/// waits for. A blend into a matched state counts.
+	since_search: f32,
 }
 
 impl RuntimeMotion {
@@ -37,12 +42,13 @@ impl RuntimeMotion {
 			weights,
 			phase: 0.0,
 			previous_phase: 0.0,
+			since_search: 0.0,
 		}
 	}
 
 	/// Returns the state's clips as `graph`'s binding resolved them when the state first started.
 	fn samples<'graph>(&self, graph: &'graph AnimationGraph) -> &'graph [ClipBinding] {
-		graph.binding.bound(self.state.index)
+		&graph.binding.bound(self.state.index).clips
 	}
 
 	/// Returns how long one cycle lasts: the clips' durations weighed by how much each plays. `samples` are
@@ -137,6 +143,7 @@ impl RuntimeMotion {
 	/// Moves playback forward by `delta` and returns how many times a looping motion wrapped.
 	fn advance(&mut self, samples: &[ClipBinding], delta: MediaTime) -> usize {
 		self.previous_phase = self.phase;
+		self.since_search += delta.as_seconds_f32();
 		let duration = self.duration(samples);
 		if duration <= 0.0 {
 			self.phase = 0.0;
@@ -190,22 +197,74 @@ fn warn_past_clip_end(sample: &ClipBinding, seconds: f32) {
 }
 
 /// Resolves a state's resident clips against the canonical skeleton `target`, for [`GraphBinding::state`].
-fn bind_clips(motion: &StateMotion, pool: &AnimationPool, target: &Skeleton) -> Box<[ClipBinding]> {
-	motion
-		.clips()
-		.iter()
-		.map(|clip| {
-			let resident = pool
-				.resident(clip.resource_id())
-				.expect("a started motion's clips must be resident");
-			ClipBinding {
-				resource_id: clip.resource_id.clone(),
-				targets: TrackTargets::by_name(resident.packed, resident.skeleton, target),
-				duration: resident.packed.duration(),
-				frame_rate: resident.packed.frame_rate(),
-			}
-		})
-		.collect()
+///
+/// A matched state binds its database's clips, in the database's order, each with where its ground roots are, and its
+/// database's nodes.
+fn bind_clips(motion: &StateMotion, pool: &AnimationPool, target: &Skeleton) -> StateBinding {
+	let bind = |resource_id: &Arc<str>, ground: Option<GroundBinding>| {
+		let resident = pool.resident(resource_id).expect("a started motion's clips must be resident");
+		ClipBinding {
+			resource_id: Arc::clone(resource_id),
+			targets: TrackTargets::by_name(resident.packed, resident.skeleton, target),
+			duration: resident.packed.duration(),
+			frame_rate: resident.packed.frame_rate(),
+			ground,
+		}
+	};
+	if let StateMotion::Matched { database } = motion {
+		let resident = pool
+			.resident_database(database.resource_id())
+			.expect("a started matched state's database must be resident");
+		let roots: Arc<[u32]> = (0..target.nodes.len() as u32)
+			.filter(|&node| target.nodes[node as usize].parent.is_none())
+			.collect();
+		let clips = resident.info.clips.iter().enumerate().map(|(clip, entry)| {
+			let ground = GroundBinding {
+				database: Arc::clone(database.shared_resource_id()),
+				clip,
+				roots: Arc::clone(&roots),
+			};
+			bind(&entry.id, Some(ground))
+		});
+		return StateBinding {
+			clips: clips.collect(),
+			nodes: Some(matched::resolve_nodes(resident.info, target)),
+		};
+	}
+	StateBinding {
+		clips: motion.clips().iter().map(|clip| bind(clip.shared_resource_id(), None)).collect(),
+		nodes: None,
+	}
+}
+
+/// Returns whether a state's bound clips are a matched state's, whose poses follow their ground roots.
+fn is_matched(samples: &[ClipBinding]) -> bool {
+	samples.first().is_some_and(|sample| sample.ground.is_some())
+}
+
+/// Returns the clip a matched motion plays, the one it weighs.
+fn playing_clip(motion: &RuntimeMotion) -> usize {
+	motion.weights.iter().next().map_or(0, |(clip, _)| clip)
+}
+
+/// Starts a matched motion at a found frame: it plays the frame's clip from the frame's time.
+fn start_at_found(motion: &mut RuntimeMotion, samples: &[ClipBinding], found: Found) {
+	motion.weights = BlendWeights::single(found.clip);
+	let point = ClipPoint {
+		clip: found.clip,
+		time: ClipTime::Seconds(found.time),
+	};
+	motion.phase = motion.phase_of(samples, point).expect("a time in seconds always has a phase");
+	motion.previous_phase = motion.phase;
+}
+
+/// The `Entering` enum says which poses the search of an entered matched state measures.
+#[derive(Clone, Copy)]
+enum Entering {
+	/// At a step's start, before the step plays: the two poses posted last, over the last step's root motion and delta.
+	AtStepStart,
+	/// At a hand-over within a step: the pose the step reached and the one posted last, over the part played.
+	MidStep { root_motion: RootMotionDelta, interval: MediaTime },
 }
 
 /// The `Evaluation` struct lends a player what one evaluation needs besides its own state, so players on several
@@ -261,7 +320,8 @@ impl Evaluation<'_, '_> {
 		resident
 	}
 
-	/// Returns whether every clip a state plays is resident, listing the ones that aren't.
+	/// Returns whether every clip a state plays is resident, listing the ones that aren't. A matched state also needs
+	/// every clip its database names, which are known once the database is resident.
 	fn motion_ready(&mut self, motion: &StateMotion) -> bool {
 		// Every clip is checked, so one call lists every clip that is missing.
 		let missing = motion
@@ -269,7 +329,31 @@ impl Evaluation<'_, '_> {
 			.iter()
 			.filter(|clip| !self.resident(clip.shared_resource_id()))
 			.count();
-		missing == 0
+		if missing > 0 {
+			return false;
+		}
+		let StateMotion::Matched { database } = motion else {
+			return true;
+		};
+		let pool = self.pool;
+		let info = pool
+			.resident_database(database.resource_id())
+			.expect("the database was found resident above")
+			.info;
+		info.clips.iter().filter(|clip| !self.resident(&clip.id)).count() == 0
+	}
+
+	/// Returns whether a playing motion can play on, listing what it lacks: every clip of most states, but only the
+	/// database and the playing clip of a matched state, whose searches skip the clips the pool lacks.
+	fn playing_ready(&mut self, graph: &AnimationGraph, motion: &RuntimeMotion) -> bool {
+		let state = &graph.state(motion.state).motion;
+		let StateMotion::Matched { database } = state else {
+			return self.motion_ready(state);
+		};
+		let clip = &motion.samples(graph)[playing_clip(motion)].resource_id;
+		// Both are checked, so one call lists both when both are missing.
+		let database = self.resident(database.shared_resource_id());
+		self.resident(clip) && database
 	}
 
 	/// Lists the clips of the states directly reachable from `state`, through its own routes and its space's, that
@@ -296,6 +380,13 @@ struct ActiveTransition {
 	begun: bool,
 	/// Why the blend started, which the player's data stream reports.
 	origin: RouteOrigin,
+}
+
+/// Returns whether a blend between motions of these clips inertializes poses as shown, from the pose posted last into
+/// the destination with its root motion removed: a blend into or out of a matched state, whose poses follow a ground
+/// root instead.
+fn is_visual(source: &[ClipBinding], destination: &[ClipBinding]) -> bool {
+	is_matched(source) || is_matched(destination)
 }
 
 /// The `PendingPlayerTransition` struct holds a selected route while its target loads or its source plays on to a
@@ -421,6 +512,8 @@ pub struct AnimationGraphPlayer {
 	runtime: PlayerRuntime,
 	/// The latest request, which holds until another replaces it.
 	requested: AnimationRequest,
+	/// The velocity and facing the player's matched states head toward, which turn with the entity's root motion.
+	held: HeldMotion,
 	/// The clips the latest evaluation needed but the pool didn't hold, for the pool to request.
 	missing: Vec<Arc<str>>,
 	/// Where the player reports its state after each advance; see [`Self::set_stream`].
@@ -472,6 +565,7 @@ impl AnimationPool {
 			look_target: None,
 			runtime: PlayerRuntime::Loading,
 			requested: graph.initial_state().into(),
+			held: HeldMotion::default(),
 			missing: Vec::new(),
 			stream: None,
 		}
@@ -589,15 +683,18 @@ impl AnimationGraphPlayer {
 
 	/// Replaces the state this player plays toward, which holds until the next request.
 	///
-	/// `requested` is a state ID, or a blend state with its position from [`LinearStateId::at`] or
-	/// [`PlanarStateId::at`]. An [inertialized](AnimationRequest::inertialized) request blends a playing blend state
-	/// to a position that changes its weights; a request held after that blend changes nothing more.
+	/// `requested` is a state ID, a blend state with its position from [`LinearStateId::at`] or
+	/// [`PlanarStateId::at`], or a matched state with its motion from [`MatchedStateId::toward`]. An
+	/// [inertialized](AnimationRequest::inertialized) request blends a playing blend state to a position that changes
+	/// its weights; a request held after that blend changes nothing more. A matched state's velocity and facing hold
+	/// until a request carries new ones, turning with the entity's root motion meanwhile.
 	pub fn request(&mut self, requested: impl Into<AnimationRequest>) -> Result<(), AnimationGraphPlayerError> {
 		let requested = requested.into();
 		// State IDs carry their graph's ID, so a request needs no graph to check it.
 		if requested.state.graph != self.graph {
 			return Err(AnimationGraphPlayerError::StateFromDifferentGraph);
 		}
+		self.held.hold(requested.value);
 		self.requested = requested;
 		Ok(())
 	}
@@ -685,10 +782,16 @@ impl AnimationGraphPlayer {
 					missing: &mut self.missing,
 					scratch,
 				};
-				runtime.advance(graph, delta, self.requested, self.look_target, &mut evaluation);
+				runtime.advance(graph, delta, self.requested, self.held, self.look_target, &mut evaluation);
 				// A hand-over turned the held target with the entity, and it stays turned. The application's turn is applied
 				// once; a held target does not keep turning the chain back.
 				self.look_target = runtime.pose.look_target.map(|target| LookTarget { turned: 0.0, ..target });
+				// The held motion keeps its direction in the world while the entity turns by the step's root motion.
+				self.held = self.held.turned(runtime.root_motion);
+				if let Some(error) = runtime.rejection.take() {
+					self.runtime = PlayerRuntime::Rejected { error, reported: false };
+					return true;
+				}
 			}
 			PlayerRuntime::Rejected { reported, .. } => return !*reported,
 			PlayerRuntime::Loading => {}
@@ -699,8 +802,17 @@ impl AnimationGraphPlayer {
 	/// Leaves [`PlayerRuntime::Loading`] once the initial clip is resident: its skeleton becomes the canonical
 	/// skeleton, which sizes the player's poses and resolves its root motion node.
 	fn start(&mut self, graph: &AnimationGraph, pool: &AnimationPool) {
-		// The initial state's first clip supplies the canonical skeleton.
-		let initial = graph.state(graph.initial_state()).motion.clips()[0].shared_resource_id();
+		// The initial state's first clip supplies the canonical skeleton: a matched state's is its database's first
+		// clip, known once the database is resident.
+		let motion = &graph.state(graph.initial_state()).motion;
+		let mut initial = motion.clips()[0].shared_resource_id();
+		if let StateMotion::Matched { database } = motion {
+			let Some(resident) = pool.resident_database(database.resource_id()) else {
+				self.missing.push(Arc::clone(initial));
+				return;
+			};
+			initial = &resident.info.clips[0].id;
+		}
 		if !pool.is_resident(initial) {
 			self.missing.push(Arc::clone(initial));
 			return;
@@ -729,6 +841,10 @@ impl AnimationGraphPlayer {
 				turns: RoundRobinTurns::new(graph.round_robins),
 				last_delta: MediaTime::ZERO,
 				root_motion: RootMotionDelta::IDENTITY,
+				held: HeldMotion::default(),
+				search: None,
+				posed: 0,
+				rejection: None,
 				pose,
 			}),
 			Err(error) => PlayerRuntime::Rejected { error, reported: false },
@@ -751,6 +867,15 @@ struct ReadyAnimationGraphPlayer {
 	last_delta: MediaTime,
 	/// The root motion of the latest advance.
 	root_motion: RootMotionDelta,
+	/// The motion the player's matched states head toward in this advance, which the player lends.
+	held: HeldMotion,
+	/// The latest search of the playing matched state, which the data stream reports. Boxed on the first search, so
+	/// players that match nothing stay small.
+	search: Option<Box<MatchRecord>>,
+	/// How many poses the player has produced, up to two, which a query needs to measure node features.
+	posed: u8,
+	/// Why a matched state the player entered doesn't resolve against the canonical skeleton, which rejects the player.
+	rejection: Option<AnimationGraphPlayerError>,
 	pose: PlayerPose,
 }
 
@@ -783,6 +908,9 @@ struct PlayerPose {
 	/// The local pose with the look chain turned, which the global pose is built from; `local_pose` stays the
 	/// graph's own pose, which later blends measure from.
 	looked_pose: Vec<LocalTransform>,
+	/// Whether the inertializer carries a matched state's switch to a found frame, which the playing motion settles
+	/// into while it plays on its own.
+	settling: bool,
 }
 
 impl ReadyAnimationGraphPlayer {
@@ -828,11 +956,16 @@ impl ReadyAnimationGraphPlayer {
 		graph: &AnimationGraph,
 		delta: MediaTime,
 		requested: AnimationRequest,
+		held: HeldMotion,
 		look: Option<LookTarget>,
 		evaluation: &mut Evaluation<'_, '_>,
 	) {
 		self.pose.look_target = look;
 		self.pose.frame_delta = delta;
+		self.held = held;
+		if let Some(search) = &mut self.search {
+			search.searched = false;
+		}
 		self.positions.remember(graph.state(requested.state).space, requested.value);
 		self.refresh_pending_transition(graph, requested.state);
 		self.start_pending(graph, evaluation);
@@ -849,13 +982,16 @@ impl ReadyAnimationGraphPlayer {
 		self.pose.begin_frame();
 		// The part of the frame left once the playing motion reaches a wait point or a one-shot's end.
 		let mut leftover = None;
+		let matched = matches!(&self.playback, Playback::Playing(active) if is_matched(active.samples(graph)));
 		let root_motion = match &mut self.playback {
 			Playback::AwaitingInitial => {
 				self.pose.write_rest_pose();
 				RootMotionDelta::IDENTITY
 			}
+			// A matched state reaches no wait point and hands over nothing: routes from it start at once.
+			Playback::Playing(_) if matched => self.advance_matched(graph, delta, evaluation),
 			Playback::Playing(active) => {
-				if evaluation.motion_ready(&graph.state(active.state).motion) {
+				if evaluation.playing_ready(graph, active) {
 					let samples = active.samples(graph);
 					// A route waiting for a moment of the clip starts there, so the motion plays only up to it.
 					let waited = self
@@ -882,8 +1018,8 @@ impl ReadyAnimationGraphPlayer {
 			}
 			Playback::Transitioning(transition) => {
 				// Both sides are checked, so one evaluation lists every clip either lacks.
-				let source_ready = evaluation.motion_ready(&graph.state(transition.source.state).motion);
-				if evaluation.motion_ready(&graph.state(transition.destination.state).motion) && source_ready {
+				let source_ready = evaluation.playing_ready(graph, &transition.source);
+				if evaluation.playing_ready(graph, &transition.destination) && source_ready {
 					let root_motion = self.pose.advance_transition(transition, delta, evaluation);
 					if transition.elapsed == transition.duration {
 						// Move the destination into sole ownership only when the transition completes.
@@ -905,16 +1041,109 @@ impl ReadyAnimationGraphPlayer {
 		// A motion that reaches a wait point or a one-shot's end hands the rest of the frame to the next state, so
 		// the route starts exactly there and a one-shot's last pose is never shown twice.
 		let root_motion = match leftover {
-			Some(leftover) => root_motion.then(self.hand_over(graph, delta, leftover, requested, evaluation)),
+			Some(leftover) => root_motion.then(self.hand_over(graph, delta, leftover, root_motion, requested, evaluation)),
 			None => root_motion,
 		};
 		// The look chain turns once, on the frame's last pose, after any hand-over turned the entity under it.
 		if !matches!(self.playback, Playback::AwaitingInitial) {
 			self.pose.write_visual_pose();
+			self.posed = (self.posed + 1).min(2);
 		}
 
 		self.last_delta = delta;
 		self.root_motion = root_motion;
+	}
+
+	/// Plays a matched state on its own: advances its clip, then searches, and switches to a found frame from the end
+	/// of the step.
+	///
+	/// The step's pose and root motion are the playing clip's; a found frame plays from the next step, inertialized
+	/// from the pose this step posts.
+	fn advance_matched(&mut self, graph: &AnimationGraph, delta: MediaTime, evaluation: &mut Evaluation<'_, '_>) -> RootMotionDelta {
+		let Playback::Playing(active) = &mut self.playback else {
+			unreachable!("only a playing matched state advances on its own");
+		};
+		if !evaluation.playing_ready(graph, active) {
+			self.pose.hold_frame();
+			return RootMotionDelta::IDENTITY;
+		}
+		let samples = active.samples(graph);
+		let root_motion = self.pose.advance_active(active, samples, delta, evaluation);
+		let mut motion = *active;
+		let entering = Entering::MidStep {
+			root_motion,
+			interval: delta,
+		};
+		if let Some(blend) = self.search_matched(graph, &mut motion, entering, true, evaluation) {
+			self.pose.begin_switch(&motion, samples, delta, blend, evaluation);
+		}
+		self.playback = Playback::Playing(motion);
+		root_motion
+	}
+
+	/// Searches the database of the matched state `motion` plays, measuring the latest poses as `entering` says, and
+	/// starts `motion` at the frame it finds. Returns how long the switch to that frame blends.
+	///
+	/// While the state plays on its own (`playing`), it searches only once the search interval elapsed or the clip
+	/// passed its last pickable frame, the playing frame sets the bar, and clips the pool lacks are no candidates. A
+	/// database whose nodes don't resolve against the canonical skeleton rejects the player.
+	fn search_matched(
+		&mut self,
+		graph: &AnimationGraph,
+		motion: &mut RuntimeMotion,
+		entering: Entering,
+		playing: bool,
+		evaluation: &mut Evaluation<'_, '_>,
+	) -> Option<MediaTime> {
+		let StateMotion::Matched { database } = &graph.state(motion.state).motion else {
+			return None;
+		};
+		let binding = graph.binding.bound(motion.state.index);
+		let database = evaluation
+			.pool
+			.resident_database(database.resource_id())
+			.expect("a matched state's database is resident while it plays");
+		let info = database.info;
+		let playing = playing.then(|| {
+			let clip = playing_clip(motion);
+			Playing {
+				clip,
+				time: motion.phase * binding.clips[clip].duration,
+			}
+		});
+		if let Some(Playing { clip, time }) = playing {
+			let last_pickable = (info.clips[clip].pickable as f32 - 1.0) / info.search.sample_rate;
+			if motion.since_search < info.search.interval && time <= last_pickable {
+				return None;
+			}
+		}
+		let nodes = match binding.nodes.as_ref().expect("a matched state's binding resolves its nodes") {
+			Ok(nodes) => nodes,
+			Err(error) => {
+				self.rejection = Some(error.clone());
+				return None;
+			}
+		};
+		let (root_motion, interval, produced, held) = match entering {
+			Entering::AtStepStart => (self.root_motion, self.last_delta, self.posed >= 2, self.held),
+			// Mid-step, the entity has already moved by the part of the step played, which the held motion turns with.
+			Entering::MidStep { root_motion, interval } => (root_motion, interval, self.posed >= 1, self.held.turned(root_motion)),
+		};
+		let poses = QueryPoses {
+			current: &self.pose.local_pose,
+			previous: &self.pose.local_previous,
+			root_motion,
+			interval,
+			produced,
+		};
+		let query = matched::matched_query(info, nodes, &self.pose.target, poses, held);
+		// Entering needs every clip resident, so only a playing state's search skips any.
+		let result = search(database, &query, playing, |candidate| evaluation.resident(&info.clips[candidate].id));
+		self.search.get_or_insert_default().record(&query, result);
+		motion.since_search = 0.0;
+		let found = result.found?;
+		start_at_found(motion, &binding.clips, found);
+		Some(MediaTime::from_seconds_f32(info.search.blend))
 	}
 
 	/// Borrows the latest advance's pose and root motion.
@@ -951,7 +1180,7 @@ impl ReadyAnimationGraphPlayer {
 			return;
 		}
 		let (target, duration, origin) = (route.target, route.duration, route.origin);
-		let destination = self.start_motion(graph, target, route.entry, evaluation.pool);
+		let destination = self.start_motion(graph, target, route.entry, Entering::AtStepStart, evaluation);
 		let Playback::Transitioning(transition) = std::mem::replace(&mut self.playback, Playback::AwaitingInitial) else {
 			unreachable!("only a blend in progress can be redirected");
 		};
@@ -1067,15 +1296,16 @@ impl ReadyAnimationGraphPlayer {
 		origin: RouteOrigin,
 		evaluation: &mut Evaluation<'_, '_>,
 	) {
-		self.pose.sample(
-			&destination,
-			destination.samples(evaluation.graph),
-			destination.phase,
-			evaluation,
-			Sampled::Destination,
-		);
-		self.pose.destination_previous.copy_from_slice(&self.pose.destination_current);
-		self.pose.begin_from_display(self.last_delta, duration);
+		let graph = evaluation.graph;
+		if is_visual(source.samples(graph), destination.samples(graph)) {
+			self.pose
+				.begin_visual_blend(&destination, destination.samples(graph), self.last_delta, duration, evaluation);
+		} else {
+			self.pose
+				.sample(&destination, destination.samples(graph), destination.phase, evaluation, Sampled::Destination);
+			self.pose.destination_previous.copy_from_slice(&self.pose.destination_current);
+			self.pose.begin_from_display(self.last_delta, duration);
+		}
 		self.playback = Playback::Transitioning(ActiveTransition {
 			source,
 			destination,
@@ -1087,19 +1317,21 @@ impl ReadyAnimationGraphPlayer {
 	}
 
 	/// Starts the motion of `target`, a blend at its space's position or a round robin at its next clip, at the `entry`
-	/// point of its heaviest named clip or at its beginning.
+	/// point of its heaviest named clip or at its beginning. A matched state starts at the frame its search finds,
+	/// measuring the latest poses as `entering` says.
 	fn start_motion(
 		&mut self,
 		graph: &AnimationGraph,
 		target: AnimationStateId,
 		entry: &[ClipPoint],
-		pool: &AnimationPool,
+		entering: Entering,
+		evaluation: &mut Evaluation<'_, '_>,
 	) -> RuntimeMotion {
 		let state = graph.state(target);
 		// The first player to start the state binds its clips, which every motion of the state then reads.
 		graph
 			.binding
-			.state(target.index, || bind_clips(&state.motion, pool, &self.pose.target));
+			.state(target.index, || bind_clips(&state.motion, evaluation.pool, &self.pose.target));
 		let mut runtime = RuntimeMotion::new(target, &state.motion, self.positions.recall(state.space));
 		if let Some(clip) = self.turns.take(&state.motion) {
 			runtime.weights = BlendWeights::single(clip);
@@ -1109,6 +1341,7 @@ impl ReadyAnimationGraphPlayer {
 			runtime.phase = phase;
 			runtime.previous_phase = phase;
 		}
+		self.search_matched(graph, &mut runtime, entering, false, evaluation);
 		runtime
 	}
 
@@ -1122,6 +1355,7 @@ impl ReadyAnimationGraphPlayer {
 		graph: &AnimationGraph,
 		delta: MediaTime,
 		leftover: MediaTime,
+		played: RootMotionDelta,
 		requested: AnimationRequest,
 		evaluation: &mut Evaluation<'_, '_>,
 	) -> RootMotionDelta {
@@ -1146,7 +1380,12 @@ impl ReadyAnimationGraphPlayer {
 			return RootMotionDelta::IDENTITY;
 		}
 		let source = *active;
-		let mut destination = self.start_motion(graph, target, entry, evaluation.pool);
+		// A matched target searches from the pose the source reached at the hand-over moment.
+		let entering = Entering::MidStep {
+			root_motion: played,
+			interval: delta - leftover,
+		};
+		let mut destination = self.start_motion(graph, target, entry, entering, evaluation);
 
 		let root_motion = if blend == MediaTime::ZERO {
 			let samples = destination.samples(graph);
@@ -1154,6 +1393,10 @@ impl ReadyAnimationGraphPlayer {
 			self.pose
 				.sample(&destination, samples, destination.phase, evaluation, Sampled::Active);
 			self.pose.advance_active(&mut destination, samples, leftover, evaluation)
+		} else if is_matched(destination.samples(graph)) {
+			let samples = destination.samples(graph);
+			self.pose
+				.begin_visual_handover(&mut destination, samples, delta - leftover, leftover, blend, evaluation)
 		} else {
 			self.pose
 				.begin_handover_blend(&source, &mut destination, delta, leftover, blend, evaluation)
@@ -1164,10 +1407,7 @@ impl ReadyAnimationGraphPlayer {
 			RouteOrigin::Completion(state) if graph.states[state].completion_turn != 0.0 => {
 				let turn = graph.states[state].completion_turn;
 				self.pose.turn_entity(turn);
-				let rotation = crate::math::Orientation::try_from_rotation_vector(crate::math::Vector::<
-					resource_management::resources::ParentSpace,
-				>::new(0.0, turn, 0.0))
-				.expect("a finite turn is a valid rotation");
+				let rotation = yaw_rotation(turn);
 				RootMotionDelta {
 					translation: rotation.rotate_vector(root_motion.translation),
 					rotation: root_motion.rotation.compose(rotation),
@@ -1202,29 +1442,34 @@ impl ReadyAnimationGraphPlayer {
 			return;
 		}
 		let (target, origin, entry, duration) = (pending.target, pending.origin, graph.points(pending.entry), pending.duration);
-		let destination = self.start_motion(graph, target, entry, evaluation.pool);
+		let destination = self.start_motion(graph, target, entry, Entering::AtStepStart, evaluation);
 
 		// A route of zero length cuts to its target, so only the target plays this frame.
-		self.playback = if let Some(duration) = duration.filter(|duration| *duration > MediaTime::ZERO) {
+		if let Some(duration) = duration.filter(|duration| *duration > MediaTime::ZERO) {
 			let Playback::Playing(source) = std::mem::replace(&mut self.playback, Playback::AwaitingInitial) else {
 				unreachable!("Only a playing clip can start a graph transition");
 			};
-			self.pose.sample(
-				&destination,
-				destination.samples(evaluation.graph),
-				destination.phase,
-				evaluation,
-				Sampled::Destination,
-			);
-			self.pose.destination_previous.copy_from_slice(&self.pose.destination_current);
-			Playback::Transitioning(ActiveTransition {
-				source,
-				destination,
-				duration,
-				elapsed: MediaTime::ZERO,
-				begun: false,
-				origin,
-			})
+			// A blend into or out of a matched state starts from the pose posted last, as shown.
+			if is_visual(source.samples(graph), destination.samples(graph)) {
+				self.blend_from_display(source, destination, duration, origin, evaluation);
+			} else {
+				self.pose.sample(
+					&destination,
+					destination.samples(evaluation.graph),
+					destination.phase,
+					evaluation,
+					Sampled::Destination,
+				);
+				self.pose.destination_previous.copy_from_slice(&self.pose.destination_current);
+				self.playback = Playback::Transitioning(ActiveTransition {
+					source,
+					destination,
+					duration,
+					elapsed: MediaTime::ZERO,
+					begun: false,
+					origin,
+				});
+			}
 		} else {
 			self.pose.sample(
 				&destination,
@@ -1234,8 +1479,8 @@ impl ReadyAnimationGraphPlayer {
 				Sampled::Active,
 			);
 			self.pose.active_previous.copy_from_slice(&self.pose.active_current);
-			Playback::Playing(destination)
-		};
+			self.playback = Playback::Playing(destination);
+		}
 		self.pending = None;
 		evaluation.prefetch_neighbors(graph, target);
 	}
@@ -1373,6 +1618,7 @@ impl PlayerPose {
 			look,
 			look_target: None,
 			frame_delta: MediaTime::ZERO,
+			settling: false,
 		})
 	}
 
@@ -1436,8 +1682,121 @@ impl PlayerPose {
 		std::mem::swap(&mut self.active_previous, &mut self.active_current);
 		self.sample(active, samples, active.phase, evaluation, Sampled::Active);
 		let root_motion = self.root_delta(active, samples, wrapped_loops, evaluation.pool, Sampled::Active);
-		self.local_pose.copy_from_slice(&self.active_current);
-		self.finish_visual_pose();
+		if self.settling {
+			self.inertializer
+				.apply(&self.active_current, delta, &mut self.local_pose)
+				.expect("player pose buffers must match the canonical skeleton");
+			self.settling = self.inertializer.is_active();
+		} else {
+			self.local_pose.copy_from_slice(&self.active_current);
+		}
+		// A matched state's pose keeps every root motion channel: its ground root places it.
+		if !is_matched(samples) {
+			remove_root_motion(self.root_motion, &mut self.local_pose);
+		}
+		root_motion
+	}
+
+	/// Starts playing `switched`, a matched state's found frame, from the end of this step: samples it at its time and
+	/// `interval` before, and inertializes from the pose this step reached over `blend`.
+	///
+	/// The next step's root motion measures from the found frame's sample.
+	fn begin_switch(
+		&mut self,
+		switched: &RuntimeMotion,
+		samples: &[ClipBinding],
+		interval: MediaTime,
+		blend: MediaTime,
+		evaluation: &mut Evaluation<'_, '_>,
+	) {
+		sample_span(
+			switched,
+			samples,
+			interval,
+			evaluation.pool,
+			evaluation.scratch,
+			&mut self.active_previous,
+			&mut self.active_current,
+		);
+		self.settling = blend > MediaTime::ZERO && interval > MediaTime::ZERO;
+		if self.settling {
+			self.inertializer
+				.begin(
+					&self.local_previous,
+					&self.local_pose,
+					&self.active_previous,
+					&self.active_current,
+					interval,
+					blend,
+				)
+				.expect("player pose buffers must match the canonical skeleton");
+		}
+	}
+
+	/// Starts inertializing from the pose posted last, and its velocity over `interval`, into `destination` sampled at
+	/// its phase and `interval` before it, over `duration`. A blend into or out of a matched state starts this way.
+	///
+	/// A destination that isn't matched has its root motion removed first, so the blend moves between poses as shown.
+	fn begin_visual_blend(
+		&mut self,
+		destination: &RuntimeMotion,
+		samples: &[ClipBinding],
+		interval: MediaTime,
+		duration: MediaTime,
+		evaluation: &mut Evaluation<'_, '_>,
+	) {
+		self.settling = false;
+		sample_span(
+			destination,
+			samples,
+			interval,
+			evaluation.pool,
+			evaluation.scratch,
+			&mut self.destination_previous,
+			&mut self.destination_current,
+		);
+		// Without a velocity to measure, the pose posted last stands still.
+		let (source_previous, interval) = if interval > MediaTime::ZERO {
+			(&self.local_previous, interval)
+		} else {
+			(&self.local_pose, MediaTime::from_seconds_f32(1.0e-3))
+		};
+		let (previous, current): (&[LocalTransform], &[LocalTransform]) = if is_matched(samples) {
+			(&self.destination_previous, &self.destination_current)
+		} else {
+			let nodes = self.local_pose.len();
+			let PoseScratch { loop_start, loop_end, .. } = &mut *evaluation.scratch;
+			let (previous, current) = (&mut loop_start[..nodes], &mut loop_end[..nodes]);
+			previous.copy_from_slice(&self.destination_previous);
+			current.copy_from_slice(&self.destination_current);
+			remove_root_motion(self.root_motion, previous);
+			remove_root_motion(self.root_motion, current);
+			(previous, current)
+		};
+		self.inertializer
+			.begin(source_previous, &self.local_pose, previous, current, interval, duration)
+			.expect("player pose buffers must match the canonical skeleton");
+	}
+
+	/// Starts inertializing from the pose a step reached at a hand-over into `destination`, a matched state, which
+	/// then plays `leftover` of the step. `played` is the part of the step before the hand-over.
+	fn begin_visual_handover(
+		&mut self,
+		destination: &mut RuntimeMotion,
+		samples: &[ClipBinding],
+		played: MediaTime,
+		leftover: MediaTime,
+		blend: MediaTime,
+		evaluation: &mut Evaluation<'_, '_>,
+	) -> RootMotionDelta {
+		self.begin_visual_blend(destination, samples, played, blend, evaluation);
+		let wrapped_loops = destination.advance(samples, leftover);
+		std::mem::swap(&mut self.destination_previous, &mut self.destination_current);
+		self.sample(destination, samples, destination.phase, evaluation, Sampled::Destination);
+		let root_motion = self.root_delta(destination, samples, wrapped_loops, evaluation.pool, Sampled::Destination);
+		self.inertializer
+			.apply(&self.destination_current, leftover, &mut self.local_pose)
+			.expect("player pose buffers must match the canonical skeleton");
 		root_motion
 	}
 
@@ -1486,10 +1845,22 @@ impl PlayerPose {
 		);
 
 		let duration = transition.duration;
+		self.settling = false;
+		// A blend as shown moves toward the destination with its root motion removed, unless it is matched.
+		let visual = is_visual(source_samples, destination_samples);
+		let nodes = self.local_pose.len();
+		let shown = &mut evaluation.scratch.loop_end[..nodes];
+		let destination: &[LocalTransform] = if visual && !is_matched(destination_samples) {
+			shown.copy_from_slice(&self.destination_current);
+			remove_root_motion(self.root_motion, shown);
+			shown
+		} else {
+			&self.destination_current
+		};
 		// How far this frame takes the blend, which starts from the poses this frame samples.
 		let mut blended = delta;
 		if duration == MediaTime::ZERO {
-			self.local_pose.copy_from_slice(&self.destination_current);
+			self.local_pose.copy_from_slice(destination);
 		} else if delta == MediaTime::ZERO && !transition.begun {
 			// Inertialization needs a non-zero sample interval to derive velocities.
 			// Keep the source pose for this zero-time tick and begin next advance.
@@ -1512,7 +1883,7 @@ impl PlayerPose {
 				blended = MediaTime::ZERO;
 			}
 			self.inertializer
-				.apply(&self.destination_current, blended, &mut self.local_pose)
+				.apply(destination, blended, &mut self.local_pose)
 				.expect("player pose buffers must match the canonical skeleton");
 		}
 
@@ -1522,7 +1893,9 @@ impl PlayerPose {
 		} else {
 			(transition.elapsed.as_seconds_f32() / duration.as_seconds_f32()).clamp(0.0, 1.0)
 		};
-		self.finish_visual_pose();
+		if !visual {
+			remove_root_motion(self.root_motion, &mut self.local_pose);
+		}
 
 		if transition.elapsed == duration {
 			self.active_previous.copy_from_slice(&self.destination_current);
@@ -1640,7 +2013,8 @@ impl PlayerPose {
 		self.inertializer
 			.apply(&self.destination_current, leftover, &mut self.local_pose)
 			.expect("player pose buffers must match the canonical skeleton");
-		self.finish_visual_pose();
+		self.settling = false;
+		remove_root_motion(self.root_motion, &mut self.local_pose);
 		root_motion
 	}
 
@@ -1676,17 +2050,11 @@ impl PlayerPose {
 		self.write_global_pose();
 	}
 
-	/// Finishes a sampled visual pose by removing the extracted root motion. The step builds the global pose from the
-	/// last one with [`Self::write_visual_pose`].
-	fn finish_visual_pose(&mut self) {
-		self.remove_root_motion_from_visual_pose();
-	}
-
 	/// Tells the look chain the entity turned by `turn` about +Y at a hand-over within this frame: the target, set in
 	/// the entity's frame before the turn, and the eased yaw turn back by as much, so the look holds in the world.
 	fn turn_entity(&mut self, turn: f32) {
 		if let Some(target) = &mut self.look_target {
-			target.yaw = look::wrap_angle(target.yaw - turn);
+			target.yaw = wrap_angle(target.yaw - turn);
 			target.turned += turn;
 		}
 	}
@@ -1708,19 +2076,6 @@ impl PlayerPose {
 		}
 	}
 
-	/// Removes extracted motion from the visual pose so the owning object applies it once.
-	fn remove_root_motion_from_visual_pose(&mut self) {
-		let Some(root_motion) = self.root_motion else {
-			return;
-		};
-		let local = &mut self.local_pose[root_motion.node];
-		local.translation = root_motion
-			.translation
-			.select(root_motion.reference.translation, local.translation);
-		if root_motion.rotation == RootMotionRotation::Full {
-			local.rotation = root_motion.reference.rotation;
-		}
-	}
 
 	/// Updates the borrowed global pose after local sampling.
 	fn write_global_pose(&mut self) {
@@ -1766,6 +2121,16 @@ pub enum AnimationGraphPlayerError {
 		/// The setting that is out of range.
 		setting: &'static str,
 	},
+	/// Name motion database root and feature nodes that exist in the canonical skeleton.
+	MatchNodeNotFound {
+		/// The node name the database uses.
+		name: String,
+	},
+	/// Name motion database root and feature nodes that are unique in the canonical skeleton.
+	DuplicateMatchNodeName {
+		/// The ambiguous node name.
+		name: String,
+	},
 }
 
 impl fmt::Display for AnimationGraphPlayerError {
@@ -1803,6 +2168,14 @@ impl fmt::Display for AnimationGraphPlayerError {
 				formatter,
 				"Look chain setting '{setting}' is out of range. The most likely cause is a share or response that is not positive, a yaw limit above π, or a pitch limit above π/2."
 			),
+			Self::MatchNodeNotFound { name } => write!(
+				formatter,
+				"Motion database node was not found. The most likely cause is that the canonical skeleton has no node named '{name}'; bake the database from clips of the graph's skeleton, or rename its node."
+			),
+			Self::DuplicateMatchNodeName { name } => write!(
+				formatter,
+				"Motion database node name is ambiguous. The most likely cause is that the canonical skeleton has more than one node named '{name}'; name a unique node in the `.motion.bead` file."
+			),
 		}
 	}
 }
@@ -1818,31 +2191,47 @@ fn resolve_root_motion_target(
 		return Ok(None);
 	};
 	let name = settings.node_name;
-	let mut matches = target
-		.nodes
-		.iter()
-		.enumerate()
-		.filter(|(_, node)| node.name.as_deref() == Some(name));
-	let Some((node, root)) = matches.next() else {
-		return Err(AnimationGraphPlayerError::RootMotionNodeNotFound { name: name.into() });
-	};
-	if matches.next().is_some() {
-		return Err(AnimationGraphPlayerError::DuplicateRootMotionNodeName { name: name.into() });
-	}
+	let node = unique_node(target, name).map_err(|lookup| match lookup {
+		NodeLookup::Missing => AnimationGraphPlayerError::RootMotionNodeNotFound { name: name.into() },
+		NodeLookup::Duplicate => AnimationGraphPlayerError::DuplicateRootMotionNodeName { name: name.into() },
+	})?;
 	Ok(Some(RootMotionTarget {
 		node,
-		reference: root.rest_local,
+		reference: target.nodes[node].rest_local,
 		translation: settings.translation,
 		rotation: settings.rotation,
 	}))
 }
 
-/// Samples one clip of a motion at `phase` into canonical-skeleton local transforms.
+/// Removes extracted motion from a pose so the owning object applies it once: the root motion node keeps its
+/// reference values on the extracted channels.
+fn remove_root_motion(root_motion: Option<RootMotionTarget>, pose: &mut [LocalTransform]) {
+	let Some(root_motion) = root_motion else {
+		return;
+	};
+	let local = &mut pose[root_motion.node];
+	local.translation = root_motion
+		.translation
+		.select(root_motion.reference.translation, local.translation);
+	if root_motion.rotation == RootMotionRotation::Full {
+		local.rotation = root_motion.reference.rotation;
+	}
+}
+
+/// Samples one clip of a motion at `phase` into canonical-skeleton local transforms. A matched state's clip is placed
+/// relative to its ground root at that time.
 fn sample_clip(sample: &ClipBinding, phase: f32, pool: &AnimationPool, output: &mut [LocalTransform]) {
 	let resident = pool
 		.resident(&sample.resource_id)
 		.expect("a ready motion's clips must remain resident");
-	resident.packed.sample_pose(phase * sample.duration, &sample.targets, output);
+	let time = phase * sample.duration;
+	resident.packed.sample_pose(time, &sample.targets, output);
+	if let Some(ground) = &sample.ground {
+		let database = pool
+			.resident_database(&ground.database)
+			.expect("a ready matched motion's database must remain resident");
+		matched::place_on_ground(output, &ground.roots, database.ground_at(ground.clip, time));
+	}
 }
 
 /// Samples the root chain's nodes of one clip of a motion at `phase` into `output`, one transform per chain node.
@@ -1853,6 +2242,33 @@ fn sample_chain(sample: &ClipBinding, phase: f32, pool: &AnimationPool, nodes: &
 	resident
 		.packed
 		.sample_nodes(phase * sample.duration, &sample.targets, nodes, output);
+}
+
+/// Samples `motion` at its phase into `current`, and `interval` before it into `previous`, so the two measure its
+/// velocity there.
+///
+/// Nothing comes before a clip's start, so there the span after it measures the velocity, mirrored to before.
+fn sample_span(
+	motion: &RuntimeMotion,
+	samples: &[ClipBinding],
+	interval: MediaTime,
+	pool: &AnimationPool,
+	scratch: &mut PoseScratch,
+	previous: &mut [LocalTransform],
+	current: &mut [LocalTransform],
+) {
+	let duration = motion.duration(samples);
+	let span = if duration > 0.0 { interval.as_seconds_f32() / duration } else { 0.0 };
+	sample_motion(motion, samples, motion.phase, pool, &mut scratch.blend_poses, current);
+	if motion.phase >= span {
+		sample_motion(motion, samples, motion.phase - span, pool, &mut scratch.blend_poses, previous);
+		return;
+	}
+	let later = &mut scratch.loop_start[..current.len()];
+	sample_motion(motion, samples, (motion.phase + span).min(1.0), pool, &mut scratch.blend_poses, later);
+	for ((previous, later), current) in previous.iter_mut().zip(&*later).zip(&*current) {
+		*previous = shifted_sample(*current, *later, current);
+	}
 }
 
 /// Samples a motion at `phase`, mixing a blend's weighted clips through `blend_poses`.
@@ -1933,6 +2349,16 @@ fn motion_root_delta(
 	let Some(root_motion) = root_motion else {
 		return RootMotionDelta::IDENTITY;
 	};
+	// A matched state's clip moves the entity as its ground root moves, whatever the root motion node does.
+	if let Some(ground) = samples.first().and_then(|sample| sample.ground.as_ref()) {
+		let clip = playing_clip(motion);
+		let duration = samples[clip].duration;
+		let database = pool
+			.resident_database(&ground.database)
+			.expect("a ready matched motion's database must remain resident");
+		let at = |phase: f32| database.ground_at(clip, phase * duration);
+		return matched::ground_delta(at(motion.previous_phase), at(motion.phase));
+	}
 	if let [sample] = samples {
 		// A single clip's poses are already sampled, so the chain copies its links from them.
 		for (link, &node) in chain.nodes.iter().enumerate() {
@@ -2013,15 +2439,6 @@ fn extracted_root_transform(root_motion: RootMotionTarget, mut transform: LocalT
 		transform.rotation = root_motion.reference.rotation;
 	}
 	transform
-}
-
-/// Prepends `parent` to `child`, preserving the hierarchy's scale-rotate-translate order.
-fn compose_local_transform(parent: LocalTransform, child: LocalTransform) -> LocalTransform {
-	LocalTransform {
-		translation: parent.translation + parent.rotation.rotate_vector(parent.scale * child.translation),
-		rotation: parent.rotation.compose(child.rotation),
-		scale: parent.scale * child.scale,
-	}
 }
 
 #[cfg(test)]

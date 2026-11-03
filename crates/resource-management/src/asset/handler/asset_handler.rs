@@ -301,6 +301,36 @@ impl<'a> BakeContext<'a> {
 		Ok(dependencies)
 	}
 
+	/// Solves a dependency [`Self::bake_dependency`] or [`Self::bake_dependencies`] returned into its runtime resource,
+	/// for a handler that reads what it baked, like a motion database that samples its clips.
+	///
+	/// Fails when the stored resource is of another class than `M`'s, or doesn't solve.
+	pub async fn solve<M: StoredModel>(&self, dependency: ReferenceModel<M>) -> Result<Reference<M::Resource>, LoadErrors> {
+		let storage: &dyn crate::resource::DynReadStorageBackend = self.asset_manager.resource_storage_backend.as_ref();
+		let (stored, reader) = storage.read(dependency.id()).await.ok_or(LoadErrors::FailedToProcess)?;
+		if stored.class() != M::get_class() {
+			return Err(LoadErrors::FailedToProcess);
+		}
+		M::solve_stored(stored, reader, storage)
+			.await
+			.map_err(|_| LoadErrors::FailedToProcess)
+	}
+
+	/// Returns the ID of every source asset the asset storage can enumerate, for a handler that selects sources by
+	/// pattern, like a motion database's clips.
+	///
+	/// The bake records no dependency on the list, so a source added later reaches the resource only when it is baked
+	/// again.
+	pub async fn source_ids(&self) -> Result<Vec<String>, LoadErrors> {
+		let sources = self
+			.asset_storage_backend
+			.inner
+			.discover()
+			.await
+			.map_err(|_| LoadErrors::AssetCouldNotBeRead)?;
+		Ok(sources.into_iter().map(|source| source.into_id()).collect())
+	}
+
 	/// Adds one stored dependency's transitive source versions to the parent bake.
 	fn inherit_dependency_provenance(&self, resource: &SerializableResource) {
 		let mut dependencies = self.asset_storage_backend.dependencies.lock();
@@ -575,7 +605,7 @@ use crate::asset::{
 	storage_backend::{AssetDependency, AssetVersion},
 };
 use crate::{
-	Model, ProcessedAsset, ReferenceModel, SerializableResource, asset,
+	Model, ProcessedAsset, Reference, ReferenceModel, SerializableResource, StoredModel, asset,
 	asset::handler::implementations::{
 		ProgramGenerator, ProgramTransform,
 		besl::{PreparedBeslShader, prepare_besl_shader},

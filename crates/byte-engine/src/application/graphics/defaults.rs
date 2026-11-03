@@ -160,6 +160,7 @@ pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[
 	asset_manager.add_asset_handler(WAVAssetHandler::new());
 	asset_manager.add_asset_handler(OGGAssetHandler::new());
 	asset_manager.add_asset_handler(BESLShaderAssetHandler);
+	asset_manager.add_asset_handler(crate::animation::matching::MotionDatabaseAssetHandler);
 }
 
 /// Returns an image processor with GPU mip and environment-map generators, falling back to CPU generation for each one

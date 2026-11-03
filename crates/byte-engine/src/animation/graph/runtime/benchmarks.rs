@@ -28,6 +28,9 @@ pub enum AnimationGraphBenchmark {
 	/// Steers through a planar blend of five clips keyed at 30 frames per second, with root motion, the way a
 	/// third-person character walks most frames.
 	Locomotion,
+	/// Steers a matched state through a motion database of the five locomotion directions, searching it every tenth
+	/// of a second, the way a motion-matched character walks.
+	Matching,
 }
 
 /// The clips of the locomotion blend: resource ID, blend position, and duration in seconds. Durations differ, as
@@ -41,14 +44,33 @@ const LOCOMOTION_CLIPS: [(&str, [f32; 2], f32); 5] = [
 ];
 /// The frame rate the locomotion clips are keyed at, like clips baked from FBX.
 const LOCOMOTION_FRAME_RATE: f32 = 30.0;
+/// The motion database the matching benchmark searches.
+const MATCHING_DATABASE_ID: &str = "benchmark-locomotion.motion.bead";
+/// How long each clip of the matching benchmark's database lasts, which makes a database of about 3,000 frames.
+const MATCHING_CLIP_SECONDS: f32 = 20.0;
+/// The matching benchmark's database settings: the root's ground projection and two feet's positions and velocities
+/// beside the default trajectory, 24 dimensions in all.
+const MATCHING_SETTINGS: &str = r#"{
+	clips: ["benchmark"],
+	root: { node: "joint-0" },
+	nodes: { "joint-2": { position: 1, velocity: 1 }, "joint-3": { position: 1, velocity: 1 } },
+}"#;
+
+/// The `Steering` enum names the state a benchmark crowd steers, and how it is requested.
+#[derive(Clone, Copy)]
+enum Steering {
+	None,
+	Planar(PlanarStateId),
+	Matched(MatchedStateId),
+}
 
 /// The `AnimationGraphBenchmarkFixture` struct owns graph and clip resources outside the measured loop.
 pub struct AnimationGraphBenchmarkFixture {
 	graph: AnimationGraph,
 	initial: AnimationStateId,
 	destination: AnimationStateId,
-	/// The blend the locomotion benchmark steers through.
-	locomotion: Option<PlanarStateId>,
+	/// The state the locomotion benchmarks steer.
+	steering: Steering,
 	pool: AnimationPool,
 	benchmark: AnimationGraphBenchmark,
 }
@@ -68,6 +90,7 @@ impl AnimationGraphBenchmarkFixture {
 					)
 				})
 				.collect(),
+			AnimationGraphBenchmark::Matching => matching_animations(node_count),
 			AnimationGraphBenchmark::ActivePose | AnimationGraphBenchmark::ActiveRootMotion => {
 				vec![(ACTIVE_CLIP_ID, benchmark_animation("active", node_count, 0.25))]
 			}
@@ -81,12 +104,12 @@ impl AnimationGraphBenchmarkFixture {
 		for (resource_id, packed) in animations {
 			pool.admit(resource_id.into(), packed);
 		}
-		let (graph, initial, destination, locomotion) = benchmark_graph(benchmark);
+		let (graph, initial, destination, steering) = benchmark_graph(benchmark);
 		Self {
 			graph,
 			initial,
 			destination,
-			locomotion,
+			steering,
 			pool,
 			benchmark,
 		}
@@ -139,7 +162,7 @@ impl AnimationGraphBenchmarkFixture {
 				benchmark: self.benchmark,
 				initial: self.initial,
 				destination: self.destination,
-				locomotion: self.locomotion,
+				steering: self.steering,
 				frame: 0,
 			},
 		}
@@ -157,7 +180,9 @@ fn ready_player(
 	offset: MediaTime,
 ) -> AnimationGraphPlayer {
 	let root_motion = match benchmark {
-		AnimationGraphBenchmark::ActiveRootMotion => Some(RootMotionSettings::full("joint-0")),
+		AnimationGraphBenchmark::ActiveRootMotion | AnimationGraphBenchmark::Matching => {
+			Some(RootMotionSettings::full("joint-0"))
+		}
 		// A walking character takes its horizontal travel and leaves the body's bob and turn in the pose.
 		AnimationGraphBenchmark::Locomotion => Some(RootMotionSettings {
 			node_name: "joint-0",
@@ -236,7 +261,7 @@ struct CharacterRequests {
 	benchmark: AnimationGraphBenchmark,
 	initial: AnimationStateId,
 	destination: AnimationStateId,
-	locomotion: Option<PlanarStateId>,
+	steering: Steering,
 	frame: usize,
 }
 
@@ -246,12 +271,11 @@ impl CharacterRequests {
 	/// A switching crowd asks for the state it isn't in, a walking crowd steers around a circle, each character
 	/// facing its own way, and the others keep asking for the destination.
 	fn request(&self, character: usize) -> AnimationRequest {
-		match (self.benchmark, self.locomotion) {
+		let angle = self.frame as f32 * 0.02 + character as f32 * 0.37;
+		match (self.benchmark, self.steering) {
 			(AnimationGraphBenchmark::StateSwitching, _) if self.frame.is_multiple_of(2) => self.initial.into(),
-			(AnimationGraphBenchmark::Locomotion, Some(locomotion)) => {
-				let angle = self.frame as f32 * 0.02 + character as f32 * 0.37;
-				locomotion.at([0.8 * angle.cos(), 0.8 * angle.sin()])
-			}
+			(_, Steering::Planar(locomotion)) => locomotion.at([0.8 * angle.cos(), 0.8 * angle.sin()]),
+			(_, Steering::Matched(locomotion)) => locomotion.toward([1.4 * angle.cos(), 1.4 * angle.sin()], 0.0),
 			_ => self.destination.into(),
 		}
 	}
@@ -259,11 +283,15 @@ impl CharacterRequests {
 
 /// Builds a graph whose selected path stays stable throughout one benchmark run.
 ///
-/// Returns the graph, its initial state, the state the benchmark requests, and the locomotion blend if it has one.
-fn benchmark_graph(
-	benchmark: AnimationGraphBenchmark,
-) -> (AnimationGraph, AnimationStateId, AnimationStateId, Option<PlanarStateId>) {
+/// Returns the graph, its initial state, the state the benchmark requests, and the state its crowd steers.
+fn benchmark_graph(benchmark: AnimationGraphBenchmark) -> (AnimationGraph, AnimationStateId, AnimationStateId, Steering) {
 	let builder = AnimationGraph::builder();
+	if benchmark == AnimationGraphBenchmark::Matching {
+		let locomotion = builder.state("locomotion").matched(MATCHING_DATABASE_ID);
+		let id = locomotion.id();
+		let graph = builder.build(locomotion).expect("benchmark graph must be valid");
+		return (graph, id.into(), id.into(), Steering::Matched(id));
+	}
 	if benchmark == AnimationGraphBenchmark::Locomotion {
 		let blend = LOCOMOTION_CLIPS
 			.iter()
@@ -273,7 +301,7 @@ fn benchmark_graph(
 		let locomotion = builder.state("locomotion").planar(blend);
 		let id = locomotion.id();
 		let graph = builder.build(locomotion).expect("benchmark graph must be valid");
-		return (graph, id.into(), id.into(), Some(id));
+		return (graph, id.into(), id.into(), Steering::Planar(id));
 	}
 	let active = builder.state("active").with(AnimationClip::looping(ACTIVE_CLIP_ID));
 	let destination = match benchmark {
@@ -294,7 +322,7 @@ fn benchmark_graph(
 		builder.build(active).expect("benchmark graph must be valid"),
 		active.id(),
 		destination.id(),
-		None,
+		Steering::None,
 	)
 }
 
@@ -342,9 +370,39 @@ fn benchmark_animation(name: &str, node_count: usize, motion_scale: f32) -> Pack
 	pack_clip(name, node_count, CLIP_DURATION_SECONDS, None, tracks)
 }
 
-/// Packs one walk cycle keyed at [`LOCOMOTION_FRAME_RATE`]: the root travels along `direction` and bobs, and every
-/// other node sways, so every key differs as in motion-captured clips.
+/// Builds the matching benchmark's database from the five locomotion directions, each [`MATCHING_CLIP_SECONDS`] long,
+/// and returns it to admit beside its clips.
+fn matching_animations(node_count: usize) -> Vec<(&'static str, PackedAnimationData)> {
+	let clips: Vec<(String, Animation)> = LOCOMOTION_CLIPS
+		.iter()
+		.map(|&(resource_id, direction, _)| {
+			(
+				resource_id.to_owned(),
+				locomotion_clip(resource_id, node_count, direction, MATCHING_CLIP_SECONDS),
+			)
+		})
+		.collect();
+	let named: Vec<(String, &Animation)> = clips.iter().map(|(id, clip)| (id.clone(), clip)).collect();
+	let database = crate::animation::matching::database_from_clips(MATCHING_SETTINGS, &named)
+		.expect("the benchmark clips must form a motion database");
+	std::iter::once((MATCHING_DATABASE_ID, PackedAnimationData::from_database(database)))
+		.chain(
+			LOCOMOTION_CLIPS
+				.iter()
+				.zip(clips)
+				.map(|(&(resource_id, ..), (_, clip))| (resource_id, PackedAnimationData::from_resource(clip))),
+		)
+		.collect()
+}
+
+/// Packs one walk cycle keyed at [`LOCOMOTION_FRAME_RATE`], as [`locomotion_clip`] builds it.
 fn locomotion_animation(name: &str, node_count: usize, direction: [f32; 2], duration: f32) -> PackedAnimationData {
+	PackedAnimationData::from_resource(locomotion_clip(name, node_count, direction, duration))
+}
+
+/// Builds one walk cycle keyed at [`LOCOMOTION_FRAME_RATE`]: the root travels along `direction` and bobs, and every
+/// other node sways, so every key differs as in motion-captured clips.
+fn locomotion_clip(name: &str, node_count: usize, direction: [f32; 2], duration: f32) -> Animation {
 	let keys = (duration * LOCOMOTION_FRAME_RATE).round() as usize + 1;
 	let times: Vec<f32> = (0..keys).map(|key| key as f32 / LOCOMOTION_FRAME_RATE).collect();
 	// One cycle of sway over the clip.
@@ -394,7 +452,7 @@ fn locomotion_animation(name: &str, node_count: usize, direction: [f32; 2], dura
 			}
 		})
 		.collect();
-	pack_clip(name, node_count, duration, Some(LOCOMOTION_FRAME_RATE), tracks)
+	clip(name, node_count, duration, Some(LOCOMOTION_FRAME_RATE), tracks)
 }
 
 /// Packs `tracks` as a clip authored for the benchmark skeleton of `node_count` nodes.
@@ -405,13 +463,18 @@ fn pack_clip(
 	frame_rate: Option<f32>,
 	tracks: Vec<NodeTrack>,
 ) -> PackedAnimationData {
-	PackedAnimationData::from_resource(Animation {
+	PackedAnimationData::from_resource(clip(name, node_count, duration, frame_rate, tracks))
+}
+
+/// Builds `tracks` into a clip authored for the benchmark skeleton of `node_count` nodes.
+fn clip(name: &str, node_count: usize, duration: f32, frame_rate: Option<f32>, tracks: Vec<NodeTrack>) -> Animation {
+	Animation {
 		name: Some(name.into()),
 		skeleton: Reference::in_memory(format!("{name}.skeleton"), benchmark_skeleton(node_count)),
 		duration,
 		frame_rate,
 		tracks,
-	})
+	}
 }
 
 fn benchmark_frame_delta() -> MediaTime {

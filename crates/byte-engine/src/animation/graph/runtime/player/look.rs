@@ -6,6 +6,7 @@ use std::f32::consts::PI;
 use resource_management::resources::ParentSpace;
 
 use super::*;
+use crate::animation::math::{NodeLookup, animated_yaw, model_rotation, unique_node, wrap_angle};
 use crate::math::{Orientation, Vector};
 
 /// The `LookChainSettings` struct names the nodes a player turns toward its look target, from a spine to the head,
@@ -90,20 +91,11 @@ pub(super) struct LookReport {
 impl LookChain {
 	/// Resolves `settings` against `skeleton`, or says which setting cannot be.
 	pub(super) fn resolve(skeleton: &Skeleton, settings: LookChainSettings<'_>) -> Result<Self, AnimationGraphPlayerError> {
-		let node = |name: &str| -> Result<usize, AnimationGraphPlayerError> {
-			let mut matches = skeleton
-				.nodes
-				.iter()
-				.enumerate()
-				.filter(|(_, node)| node.name.as_deref() == Some(name))
-				.map(|(index, _)| index);
-			let index = matches
-				.next()
-				.ok_or_else(|| AnimationGraphPlayerError::LookChainNodeNotFound { name: name.into() })?;
-			if matches.next().is_some() {
-				return Err(AnimationGraphPlayerError::DuplicateLookChainNodeName { name: name.into() });
-			}
-			Ok(index)
+		let node = |name: &str| {
+			unique_node(skeleton, name).map_err(|lookup| match lookup {
+				NodeLookup::Missing => AnimationGraphPlayerError::LookChainNodeNotFound { name: name.into() },
+				NodeLookup::Duplicate => AnimationGraphPlayerError::DuplicateLookChainNodeName { name: name.into() },
+			})
 		};
 		let out_of_range = |setting: &'static str| AnimationGraphPlayerError::LookChainSettingOutOfRange { setting };
 		if settings.nodes.is_empty() {
@@ -233,25 +225,6 @@ fn descends_from(skeleton: &Skeleton, node: usize, ancestor: usize) -> bool {
 	false
 }
 
-/// Returns the object-space rotation of `node`, composed from its own and its ancestors' local rotations, or the
-/// identity for no node.
-fn model_rotation(skeleton: &Skeleton, local_rotation: impl Fn(usize) -> Orientation, node: Option<u32>) -> Orientation {
-	let mut rotation = Orientation::identity();
-	let mut ancestor = node;
-	while let Some(node) = ancestor {
-		rotation = local_rotation(node as usize).compose(rotation);
-		ancestor = skeleton.nodes[node as usize].parent;
-	}
-	rotation
-}
-
-/// Returns how far `posed` turns about +Y from `rest`, in radians, measured as the angle from -Z to -Z turned by the
-/// difference and projected onto the XZ plane.
-fn animated_yaw(posed: Orientation, rest: Orientation) -> f32 {
-	let forward: Vector<ParentSpace> = posed.compose(rest.inverse()).rotate_vector(Vector::new(0.0, 0.0, -1.0));
-	wrap_angle(forward.x().atan2(forward.z()) - PI)
-}
-
 /// Returns a rotation that pitches about +X, then yaws about +Y.
 fn yaw_pitch_rotation(yaw: f32, pitch: f32) -> Orientation {
 	let about = |x: f32, y: f32| {
@@ -261,7 +234,3 @@ fn yaw_pitch_rotation(yaw: f32, pitch: f32) -> Orientation {
 	about(0.0, yaw).compose(about(pitch, 0.0))
 }
 
-/// Wraps an angle in radians into -π..π.
-pub(super) fn wrap_angle(angle: f32) -> f32 {
-	(angle + PI).rem_euclid(2.0 * PI) - PI
-}

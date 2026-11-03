@@ -80,8 +80,8 @@ character's playback is shared:
 | Shared data | Held once per | Holds |
 | --- | --- | --- |
 | Graph | Graph | States, spaces, routes, and clip resource IDs. Players refer to it, never copy it. |
-| Graph binding | Graph and canonical skeleton | For every state, its clips' track targets, durations, and frame rates. The graph owns it. The first player takes the canonical skeleton from the initial clip, and a state binds the first time any player enters it with its clips resident. |
-| Clip pool | Pool | Packed clips in one arena. |
+| Graph binding | Graph and canonical skeleton | For every state, its clips' track targets, durations, and frame rates, and for a matched state its database's nodes. The graph owns it. The first player takes the canonical skeleton from the initial clip, and a state binds the first time any player enters it with its clips resident. |
+| Clip pool | Pool | Packed clips and motion databases in one arena. |
 | Scratch poses | Thread | A blend's per-clip poses and a hand-over's spans: poses a frame fills and reads, which no player keeps between frames. Lanes are persistent threads, so each lane's scratch lasts across steps. |
 
 A player keeps only what lasts from one frame to the next: its playback, whose
@@ -124,6 +124,48 @@ a step uses at most as many lanes as the fastest cores have hardware threads,
 as physics does. Spreading work so that faster lanes take more, rather than
 balanced shares, is what would let the efficiency cores help.
 
+## Motion matching
+
+A matched state plays the clips of a motion database, starting each from the
+frame a search finds. The code lives in `animation/matching` and in
+`animation/graph/runtime/player/matched.rs`:
+
+| Part | Code | What it does |
+| --- | --- | --- |
+| Bake | `matching/bake.rs`, `matching/features.rs` | `MotionDatabaseAssetHandler` bakes the clips a `.motion.bead` file names, samples them at the database's rate, smooths each clip's ground root, measures every frame's features in its root frame, and normalizes them over the pickable frames. |
+| Residency | `matching/search.rs`, `graph/runtime.rs` | The load worker loads an ID whose asset type is `motion.bead` as a database. `pack_database` keeps its clips and its `MotionSearch`, which holds the nodes, means, scales, and settings, in a `DatabaseInfo` beside the arena, like a clip's skeleton, and its features, ground roots, and block bounds in arena words. |
+| Query | `player/matched.rs` | `matched_query` measures the feature nodes in the player's latest pose and the one before, and predicts the trajectory with springs from the step's root motion toward the held velocity and facing. |
+| Search | `matching/search.rs` | `search` walks each resident clip's pickable frames in blocks of 64, then 16, skips a block whose bounds can't beat the best cost so far, and compares the frames of the rest, stopping a frame's sum once it reaches the best, checked every eight dimensions so the sums vectorize. |
+| Playback | `player.rs` | A matched motion weighs one clip. Its clip bindings carry a ground binding, so sampling places the pose on the ground root, and root motion is the ground root's movement. The state's binding also resolves the database's nodes, once, when the first player enters it. |
+
+The bake lives in the engine crate, not in `resource-management`, because it
+samples clips with `sample_local_pose`, the sampler playback uses, so a frame's
+features measure the pose playback shows. The handler is among the default
+baking handlers.
+
+The search is exact. Rounding keeps a block's bound at or below the cost of
+every frame in it, so skipping blocks finds the frame and cost that comparing
+every candidate finds, and the result doesn't depend on block sizes.
+
+On the M4 in November 2026, 1,024 matched characters over a database of about
+3,000 frames of 24 dimensions took about 0.48 ms a frame, searching every tenth
+of a second, against 0.57 ms for the same crowd walking a planar blend. A
+matched step samples one clip where the blend samples three, which pays for
+the searches.
+
+A matched pose keeps the root motion node's channels and sits on its ground
+root, while another state's sample keeps its travel in those channels until the
+visual pose removes it. Inertializing between raw samples of the two would carry
+that travel into the blend. So a switch to a found frame, and a route into or
+out of a matched state, start from the pose the player posted last, and blend
+toward a destination whose root motion is removed unless it's matched. A switch
+starts at the end of the step that found it; the inertializer then settles the
+playing motion while it plays on its own, which `PlayerPose::settling` marks.
+
+A request's velocity and facing are in the entity's object space when it's
+sent. The player holds them and turns them back by each step's root motion
+yaw, so a request sent once keeps its direction in the world.
+
 ## Rules a change must keep
 
 1. Evaluation only reads the pool, the graph, and the binding. Whatever changes
@@ -141,6 +183,12 @@ balanced shares, is what would let the efficiency cores help.
    it was packed from. Curves share a timeline only when their key times match
    bit for bit.
 6. Root motion samples the root chain only, never a whole pose.
+7. A search finds the frame and cost that comparing every candidate finds.
+8. A matched state samples one clip a step, and the found clip too in a step
+   that switches. A query lives on the stack: a database has at most 64
+   dimensions.
+9. The bake's features and the player's query measure the same quantities the
+   same way. Change both together, after the reference.
 
 ## Tests and benchmarks
 
@@ -151,7 +199,9 @@ balanced shares, is what would let the efficiency cores help.
 | `pool_evicts_the_least_recently_sampled_clip_to_admit_another` | 1 |
 | `packed_poses_match_the_resource_curves_they_were_packed_from` | 5 |
 | The playback tests in `animation/graph/runtime/player.rs` | 6, and the playback rules of the reference |
-| `characters_*` benchmarks | 3, 4, 6 |
+| `the_search_finds_what_comparing_every_candidate_finds` | 7 |
+| The tests in `animation/matching/tests.rs` and `animation/graph/runtime/player/matched.rs` | 9, and the Motion databases and Matched states sections of the reference |
+| `characters_*` benchmarks | 3, 4, 6, 8 |
 | `active_pose`, `active_root_motion`, and `inertialized_transition` benchmarks | The cost of one player by skeleton size |
 
 The `characters_*` benchmarks time one frame of 1, 64, and 1,024 characters
@@ -160,8 +210,10 @@ an alley. The locomotion case steers through a planar blend of five clips keyed
 at 30 frames per second, with root motion, the typical frame above. The root
 motion case plays one looping clip, the transitioning case keeps every
 character inside an inertialized transition, and the switching case enters a
-state on every frame. Each character starts at its own phase, so characters
-don't sample in lockstep.
+state on every frame. The matching case steers a matched state over a database of
+the five locomotion clips, 20 seconds each, about 3,000 frames of 24 dimensions,
+searching every tenth of a second. Each character starts at its own phase, so
+characters don't sample in lockstep.
 
 Run the tests, then the benchmarks before and after your change:
 

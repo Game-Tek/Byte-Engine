@@ -4,7 +4,7 @@ use super::*;
 
 #[derive(Debug)]
 struct CachedAnimation {
-	skeleton: Arc<Skeleton>,
+	contents: PackedContents,
 	/// The clip's word range in [`AnimationPool::storage`].
 	region: std::ops::Range<usize>,
 	/// The last [`AnimationPool::update`] whose step sampled the clip, which eviction picks the oldest of.
@@ -194,6 +194,29 @@ impl AnimationPool {
 	///
 	/// It only reads the pool, so players on several lanes call it at once.
 	pub(crate) fn resident(&self, resource_id: &str) -> Option<ResidentAnimation<'_>> {
+		let entry = self.used(resource_id)?;
+		let PackedContents::Clip(skeleton) = &entry.contents else {
+			return None;
+		};
+		Some(ResidentAnimation {
+			skeleton,
+			packed: PackedAnimation::from_words(&self.storage[entry.region.clone()]),
+		})
+	}
+
+	/// Returns a resident motion database to search or to read ground roots from, and stamps it as used this step.
+	///
+	/// It only reads the pool, like [`Self::resident`].
+	pub(crate) fn resident_database(&self, resource_id: &str) -> Option<PackedDatabase<'_>> {
+		let entry = self.used(resource_id)?;
+		let PackedContents::Database(info) = &entry.contents else {
+			return None;
+		};
+		Some(PackedDatabase::new(info, &self.storage[entry.region.clone()]))
+	}
+
+	/// Returns a resident entry and stamps it as used this step, which keeps it from eviction longest.
+	fn used(&self, resource_id: &str) -> Option<&CachedAnimation> {
 		let AnimationPoolEntry::Resident(entry) = self.entries.get(resource_id)? else {
 			return None;
 		};
@@ -201,10 +224,7 @@ impl AnimationPool {
 		if entry.last_used.load(Ordering::Relaxed) < self.step {
 			entry.last_used.store(self.step, Ordering::Relaxed);
 		}
-		Some(ResidentAnimation {
-			skeleton: &entry.skeleton,
-			packed: PackedAnimation::from_words(&self.storage[entry.region.clone()]),
-		})
+		Some(entry)
 	}
 
 	/// Returns whether a clip is resident and can be sampled now.
@@ -331,7 +351,7 @@ impl AnimationPool {
 		let replaced = self.entries.insert(
 			resource_id,
 			AnimationPoolEntry::Resident(CachedAnimation {
-				skeleton: Arc::new(packed.skeleton.into_resource()),
+				contents: packed.contents,
 				region,
 				last_used: AtomicU64::new(self.step),
 			}),
@@ -381,7 +401,7 @@ impl AnimationPool {
 	}
 }
 
-/// The `AnimationLoadWorker` struct loads and packs animation resources away from synchronous pose evaluation.
+/// The `AnimationLoadWorker` struct loads and packs clips and motion databases away from synchronous pose evaluation.
 pub struct AnimationLoadWorker {
 	resource_manager: EntityHandle<ResourceManager>,
 	commands: kanal::AsyncReceiver<String>,
@@ -389,17 +409,25 @@ pub struct AnimationLoadWorker {
 }
 
 impl AnimationLoadWorker {
-	/// Loads queued clips until the animation pool drops its command channel.
+	/// Loads queued clips and motion databases until the animation pool drops its command channel.
+	///
+	/// A resource ID whose asset type is `motion.bead` names a motion database; every other ID names a clip.
 	pub async fn run(self) {
 		while let Ok(resource_id) = self.commands.recv().await {
 			// Animation resources keep decoded curves in metadata, so the
 			// reference reader is intentionally released before pooling. Packing
 			// here keeps the per-key work off the thread that calls `AnimationPool::update`.
-			let completion = self
-				.resource_manager
-				.request::<Animation>(&resource_id)
-				.await
-				.map(|reference| PackedAnimationData::from_resource(reference.into_resource()));
+			let completion = if is_motion_database(&resource_id) {
+				self.resource_manager
+					.request::<MotionDatabase>(&resource_id)
+					.await
+					.map(|reference| PackedAnimationData::from_database(reference.into_resource()))
+			} else {
+				self.resource_manager
+					.request::<Animation>(&resource_id)
+					.await
+					.map(|reference| PackedAnimationData::from_resource(reference.into_resource()))
+			};
 			if self.completions.send((resource_id, completion)).await.is_err() {
 				break;
 			}
@@ -408,10 +436,17 @@ impl AnimationLoadWorker {
 	}
 }
 
+/// Returns whether `resource_id` names a motion database, a `.motion.bead` file, rather than a clip.
+fn is_motion_database(resource_id: &str) -> bool {
+	resource_management::asset::ResourceId::new(resource_id)
+		.get_asset_type()
+		.eq_ignore_ascii_case("motion.bead")
+}
+
 mod binding;
 mod player;
 
-use binding::ClipBinding;
+use binding::{ClipBinding, GroundBinding, StateBinding};
 pub(super) use binding::GraphBinding;
 
 pub mod benchmarks;

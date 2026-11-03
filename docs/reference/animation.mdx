@@ -1,6 +1,6 @@
 ---
 title: Animation
-description: Look up the skeleton, clip, pose, and sampling model, the blend and inertialization rules, root motion, the animation graph and its spaces, animators and their updates and data stream, the look chain, the clip pool, and flipbooks.
+description: Look up the skeleton, clip, pose, and sampling model, the blend and inertialization rules, root motion, motion databases, the animation graph with its spaces and matched states, animators and their updates and data stream, the look chain, the clip pool, and flipbooks.
 icon: Sparkles
 ---
 
@@ -104,13 +104,60 @@ space. When a looping clip wraps, the delta covers the remainder to the clip's
 end, any whole loops, and the start to the current time. In a blend, each
 positively weighted clip contributes its own delta, mixed as a weighted mean. In
 a transition, the source and destination deltas blend by the transition factor.
-The visual pose keeps the rest values on the extracted channels.
+The visual pose keeps the rest values on the extracted channels, except a
+[matched state's](#visual-pose), which its ground root places instead.
 
 A step in which a one-shot hands over to its target with a
 [hand-over turn](#routes) rotates by the turn at the hand-over moment, whatever
 the rotation setting: the delta's rotation composes the motion before the
 hand-over, the turn, and the motion after it. The motion after the hand-over is
 in the turned frame, so its translation rotates by the turn before it adds.
+
+A [matched state](#matched-states) takes its root motion from its database's
+[ground root](#frames) instead of the root motion node: the ground root's
+movement between the previous and current playing time, in the previous one's
+[root frame](#frames), as a translation on X and Z and a rotation about +Y,
+whatever the node and axes settings. An animator without root motion settings
+carries the identity delta in a matched state too.
+
+## Motion databases
+
+A motion database is a set of clips sampled at a fixed rate, with a feature
+vector for every frame, that a [matched state](#matched-states) searches. It
+bakes from a `.motion.bead` file, whose fields are specified in the
+[asset formats reference](/docs/reference/assets#motion-databases).
+
+### Frames
+
+| Term | Definition |
+| --- | --- |
+| Frame interval | One over the database's sample rate, in seconds. |
+| Frame | A clip sampled at a whole number of frame intervals, from zero up to the clip's duration. Frames are numbered across the database: clips in the database's order, and each clip's frames by time. |
+| Pickable frame | A frame whose time plus the last trajectory time is at most its clip's duration. A search finds only pickable frames; any frame can play. |
+| Ground root | At each frame, the root node's object-space position with its Y set to zero, and the root node's [animated yaw](#look-chain). The position and the yaw's direction on the XZ plane are each smoothed over the clip's frames with a Gaussian of the database's standard deviation for them; samples beyond the clip's ends repeat its first or last frame. Between frames, the position interpolates linearly and the yaw along the shorter way. |
+| Root frame | The space whose origin is a frame's ground root position and whose -Z axis is -Z turned about +Y by the frame's ground root yaw. |
+
+### Features
+
+Every frame has a feature vector. A feature whose weight is zero has no
+dimensions.
+
+| Feature | Dimensions | Value at a frame |
+| --- | --- | --- |
+| Node position | 3 for each node | The node's object-space position, in the frame's root frame. |
+| Node velocity | 3 for each node | The node's position in the frame's root frame, minus its position one frame interval earlier in the same root frame, divided by the frame interval. At a clip's first frame, the position one frame interval later minus the first frame's position, divided by the frame interval. |
+| Trajectory position | 2 for each trajectory time | The ground root position at the frame's time plus the trajectory time, in the frame's root frame, as its X and Z. |
+| Trajectory direction | 2 for each trajectory time | -Z turned about +Y by the ground root yaw at the frame's time plus the trajectory time minus the frame's ground root yaw, as its X and Z. |
+
+Feature vectors are compared normalized:
+
+| Term | Definition |
+| --- | --- |
+| Group | Each node's position, each node's velocity, the trajectory positions, and the trajectory directions form one group each. |
+| Mean | A dimension's mean over the database's pickable frames. |
+| Deviation | A group's deviation is the mean, over its dimensions, of each dimension's standard deviation over the pickable frames. A deviation of zero counts as one. |
+| Normalized value | The value minus its dimension's mean, times its group's weight, divided by its group's deviation. |
+| Cost | Between two normalized feature vectors, the sum of the squared differences of their dimensions. |
 
 ## Animation graph
 
@@ -126,6 +173,7 @@ A graph is a state machine built in code. Its states can be grouped into
 | Round robin | One or more clips, in order. | Plays one clip at a time, as a clip state. Each time the animator enters the state, it plays the next clip, starting with the first and wrapping after the last. |
 | Linear blend | Clips at scalar positions, as a 1D blend space. | Its space's position picks the weights. |
 | Planar blend | Clips at 2D positions, as a 2D blend space with explicit or fan triangulation. | Its space's position picks the weights. |
+| Matched | A [motion database](#motion-databases). | Plays one clip of the database at a time, from the frame a search finds, as [Matched states](#matched-states) specifies. |
 
 Every clip in a blend or a round robin shares one playback mode. A blend's
 duration is the weighted sum of its clips' durations, so all its clips share one
@@ -144,13 +192,89 @@ space's position is a scalar; a planar space's position is a 2D point.
 
 | Rule | Behavior |
 | --- | --- |
-| Membership | A state belongs to at most one space. A clip state may belong to one. A blend state always belongs to one: a blend state built outside a space forms a space of its own, named after the state, that holds only it. |
+| Membership | A state belongs to at most one space. A clip state may belong to one, and a matched state belongs to none. A blend state always belongs to one: a blend state built outside a space forms a space of its own, named after the state, that holds only it. |
 | Kind | Every blend state of a linear space is a linear blend, and every blend state of a planar space is a planar blend. |
 | Samples | Each blend state of a space has its own clips and positions. Two blends of one space need not share positions or a clip count. |
 | Position | Each animator keeps one position for each space. A request for a state of the space that carries a position sets it. Before any request sets it, the position is the origin. |
 | Weights | A blend weighs its clips at its space's position every step, whether it loops or plays once, until a blend played once finishes and holds its last pose. |
 | Nesting | A space can't hold another space. |
 | Other spaces | A space's position never changes the weights of another space's blends. |
+
+### Matched states
+
+A matched state plays the clips of its [motion database](#motion-databases)
+one at a time, from frames it finds by searching the database for the least
+[cost](#features) against a query built from the animator's pose and its
+requested motion.
+
+| Rule | Behavior |
+| --- | --- |
+| Playback | The playing clip plays once at its own speed. One clip is sampled per step, and the found clip too in a step that switches. |
+| Routes | Routes from a matched state start at once. A matched state has no wait or entry points. |
+| Blends | A route into or out of a matched state inertializes from the pose the animator posted last and its velocity, toward the destination with its root motion removed unless the destination is matched. |
+| Residency | An animator enters a matched state once its database and every clip it names are resident. Prefetch requests them all. While the state plays, it needs its database and its playing clip, and holds as an [other clip not resident](#playback) does without them. |
+
+#### Requested motion
+
+| Rule | Behavior |
+| --- | --- |
+| Velocity | Two numbers, X and Z, in object-space units per second, in the entity's object space. |
+| Facing | A yaw about +Y in radians, from the direction the entity faces. It wraps to the range from −π, excluded, to π. |
+| Holding | Each animator holds one velocity and one facing, which every matched state of its graph follows. A request for a matched state that carries them sets them, also when that state is playing; a request without them leaves them. Before any request sets them, both are zero. |
+| Turning | Each step turns the held velocity and facing about +Y the other way by the step's root motion rotation, so they keep their direction while the entity turns by root motion. |
+
+#### Query
+
+A search compares every candidate frame with a query, a feature vector built
+from the animator, normalized with the database's means and deviations:
+
+| Query feature | Value |
+| --- | --- |
+| Node position | The node's position in the entity's object space, in the latest pose, before the look chain. |
+| Node velocity | The node's position in the latest pose, minus its position in the pose before it with the root motion between them undone, divided by the time between them. |
+| Trajectory position | At each trajectory time t: v × t + j × ((2 ÷ y) × (1 − e^(−y × t)) − t × e^(−y × t)), as its X and Z. |
+| Trajectory direction | At each trajectory time t: -Z turned about +Y by f + e^(−y × t) × (w × t − f × (1 + y × t)), as its X and Z. |
+
+The latest pose is the step's own when a step searches after it advances, the
+pose the source reached when a hand-over enters the state, and the pose posted
+last when a step enters the state at its start. The pose before the latest is
+the one posted before that, and the root motion and time between them are the
+step's, the part of the step before the hand-over, or the last step's.
+
+In the trajectory features, v is the held velocity and f the held facing, both
+turned by the root motion between the poses. The starting velocity is that root
+motion's translation divided by the time between the poses, turned about +Y
+the other way by its rotation, and w, the starting turn rate, is its rotation
+about +Y divided by that time; both are zero before the animator's first step.
+j is the starting velocity minus v. y is 2 × ln 2 divided by the database's
+velocity halflife for the position, and by its facing halflife for the
+direction.
+
+Until the animator has produced two poses, the cost leaves out the node
+features.
+
+#### Search
+
+| Rule | Behavior |
+| --- | --- |
+| Candidates | Every pickable frame of a resident clip of the database, except frames of the playing clip less than the database's exclusion time from the playing time. A search lists the clips the pool doesn't hold as missing. |
+| Playing frame | The frame of the playing clip nearest the playing time; of two frames equally near, the earlier. |
+| Bar | The playing frame's cost when that frame is pickable and resident. A search on entering the state, or with any other playing frame, has no bar. |
+| Result | The candidate with the least cost, when that cost is less than the bar. Of equal costs, the lowest frame number wins. |
+| Entering | Entering the state searches, and the state starts its found clip at the found frame's time instead of the clip's start. |
+| Interval | A step in which the state plays on its own and that brings its time since its last search to at least the database's search interval searches, after it advances the playing clip. The time a route blends into the state counts. |
+| End of the pickable frames | A step in which the state plays on its own and that advances the playing clip past its last pickable frame searches, whatever the interval. |
+| Searches per step | At most one. A search restarts the interval. |
+| Switch | A found frame plays from the end of the step that found it: the inertializer carries the pose from the pose and velocity the animator posted last into the found clip at the found time, over the database's blend time. The step's root motion is the movement of the clip that played before the switch. |
+| No result | The playing clip plays on. A clip that reaches its end holds its last pose. |
+
+#### Visual pose
+
+The visual pose of a matched state is its sampled pose placed relative to the
+ground root at the playing time: the skeleton's top-level nodes take the
+inverse of the ground root's transform, so the ground root sits at the object
+origin, facing -Z. The root motion node keeps its sampled values on every
+channel.
 
 ### Routes
 
@@ -221,7 +345,9 @@ Building validates the graph and reports the first problem:
 | `InitialStateOutOfRange`, `TransitionSourceOutOfRange`, `TransitionTargetOutOfRange`, `TransitionStateCompletionOutOfRange` | A state index names no state. |
 | `EmptyStateName`, `DuplicateStateName` | A state has no name, or two share one. |
 | `EmptySpaceName`, `DuplicateSpaceName` | A space has no name, or two share one. |
-| `EmptyResourceId` | A clip has no resource ID. |
+| `EmptyResourceId` | A clip or a matched state's database has no resource ID. |
+| `MatchedStateInSpace` | A matched state is built in a space. |
+| `RoutePointOnMatchedState` | A route names a wait or entry point on a matched state. |
 | `TransitionStateMustPlayOnce` | A one-shot transition clip, or a clip of a one-shot transition blend, loops. |
 | `NegativeTransitionDuration` | A route or exit duration is negative. |
 | `InvalidBlend`, `MixedBlendPlayback` | A blend space is invalid, or the clips of a blend or a round robin mix looping and once. |
@@ -253,14 +379,15 @@ the entity it poses, usually a skinned renderable.
 | Adoption | The system adopts animators created after the system, at the start of its next step. It never adopts one created before it. |
 | Replacement | An animator created again under the same handle replaces the previous one and starts over at its graph's initial state. |
 | Removal | A deletion of the handle removes the animator at the start of the next step. Nothing more is posted for that handle. |
-| Canonical skeleton | The skeleton of the first clip of the graph's initial state. Every animator of a graph shares it. Every clip an animator samples maps onto it, and the root motion and look chain node names resolve against it once it's resident. |
+| Canonical skeleton | The skeleton of the first clip of the graph's initial state, or of its database's first clip when the initial state is matched. Every animator of a graph shares it. Every clip an animator samples maps onto it, and the root motion and look chain node names resolve against it once it's resident. |
 | Rejection | An animator whose settings don't resolve against the canonical skeleton is rejected. The system reports the error and posts nothing for the handle. |
 
 ### Requests
 
 A request is a targeted message on an animator's handle. It names a state
 and whether a position change is inertialized. A request for a blend state can
-also carry a position of its space's kind.
+also carry a position of its space's kind, and a request for a matched state a
+[velocity and a facing](#requested-motion).
 
 | Rule | Behavior |
 | --- | --- |
@@ -277,12 +404,12 @@ request, through the routes of its graph.
 | Rule | Behavior |
 | --- | --- |
 | Phase | Advances by the delta divided by the clip's duration. A looping clip wraps; a clip played once stops at its end. A clip of zero duration stays at its start. |
-| Clips sampled per step | At most three per motion: the triangle of a planar blend, the pair of a linear blend, or one clip, which for a round robin is the clip of its current turn. Only positive weights are sampled. |
-| Transition | The destination is sampled at its start phase, both motions advance, and the inertializer carries the pose until the route's duration elapses. |
+| Clips sampled per step | At most three per motion: the triangle of a planar blend, the pair of a linear blend, or one clip, which for a round robin is the clip of its current turn and for a matched state its playing clip. Only positive weights are sampled. |
+| Transition | The destination is sampled at its start phase, or a matched state at its found frame, both motions advance, and the inertializer carries the pose until the route's duration elapses. |
 | Hand-over at a wait point or a one-shot's end | The time left in the step plays on the next state in the same step. |
 | Redirect | A blend in progress can be redirected along an anytime route once the animator has posted a pose, from the pose and velocity it posted last. |
 | Position change on a blend | An inertialized request blends the playing blend from its current weights to the new ones, from the pose posted last. A blend played once blends this way while it has at least the request's duration left to play, and moves its weights at once otherwise, so its end is never held back by the blend. A request without a position leaves every blend's weights as they are. While a blend to a new position plays, later requests move only the position it heads to; the weights it left stay until it ends, so its root motion ramps across the blend. |
-| Prefetch | Entering a state requests the clips of every state its own routes and its space's routes can reach. A round robin needs all its clips resident before the animator enters it. |
+| Prefetch | Entering a state requests the clips of every state its own routes and its space's routes can reach; a matched state's clips are its database and every clip the database names. A round robin needs all its clips resident before the animator enters it, and a matched state its database and every clip. |
 | Initial clip not resident | The animator posts nothing. |
 | Other clip not resident | The animator holds and posts its previous pose, with an identity root motion delta. |
 
@@ -291,7 +418,7 @@ request, through the routes of its graph.
 The system steps once per frame, with the frame's delta. A step adopts new
 animators and removes deleted ones; applies the latest requests and look
 targets; admits the clips that finished loading; then evaluates every animator:
-it takes its routes, phases, and hand-overs for the delta, samples, blends, and
+it takes its routes, phases, hand-overs, and searches for the delta, samples, blends, and
 inertializes its pose, extracts its root motion, applies its look chain, builds
 its global pose, and posts its updates. Evaluation only reads the clip pool, so
 an animator that needs a clip the pool doesn't hold lists it, and once every
@@ -354,6 +481,7 @@ or extension; when the ID's fragment picks a clip by name or index, as in
 | `motion` | Motion or null | The state playing, or the state a blend moves to. Null until the initial clip plays. |
 | `transition` | Transition or null | The blend in progress; null when one state plays alone. |
 | `pending` | Pending or null | A route the animator selected but hasn't started; null when there's none. |
+| `match` | Match or null | The last search of the matched state playing; null when no matched state plays. |
 | `root_motion` | Root motion | The motion the advance extracted for the entity to apply. |
 | `look` | Look or null | What the [look chain](#look-chain) measured and turned in the advance; null without a look chain or while it's released. |
 
@@ -363,6 +491,8 @@ A request:
 | --- | --- | --- |
 | `state` | String | The requested state's name. |
 | `position` | Null, number, or array of two numbers | The requested blend position: null for none, a number on a line, or a point on a plane. |
+| `velocity` | Null or array of two numbers | The requested velocity of a matched state, X then Z; null for none. |
+| `facing` | Null or number | The requested facing of a matched state; null for none. |
 | `inertialization` | Number | How long the request blends to its position; zero changes the weights at once. |
 
 A motion:
@@ -418,6 +548,31 @@ A wait:
 | `point` | Point or null | The wait point of that clip the playing state reaches next; null when it reaches none, like a one-shot past all of them. A point is `{"frame": n}` or `{"seconds": s}`, as authored. |
 | `starts_in` | Number or null | How long the playing state plays before it reaches `point`; null with it. |
 
+A match:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `searched` | Boolean | Whether the advance searched. |
+| `bar` | Number or null | The [bar](#search) of the last search; null when it had none. |
+| `found` | Frame or null | The frame the last search found; null when no candidate beat the bar. |
+| `cost` | Number or null | The found frame's cost; null with it. |
+| `trajectory` | Array of trajectory samples | The last search's query trajectory, one sample for each trajectory time. |
+
+A frame:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `clip` | String | The frame's clip. |
+| `time` | Number | The frame's time in its clip. |
+
+A trajectory sample, in the entity's object space:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `time` | Number | The trajectory time. |
+| `position` | Array of two numbers | The trajectory position, X then Z. |
+| `direction` | Array of two numbers | The trajectory direction, X then Z. |
+
 Root motion:
 
 | Field | Type | Meaning |
@@ -440,8 +595,8 @@ The key, which [changes-only](/docs/reference/debug-data-streams#destination) st
 compare, is `status`, `missing`, the request's `state`, the motion's `state`
 and `clips`, the transition's `from` state and `route`, and the pending route's
 `requested`, `target`, `route`, and wait `clip`. Phases, times, the request's
-position, a blend's `elapsed`, the wait's `point` and `starts_in`, root
-motion, and the look aren't part of it.
+position, velocity, and facing, a blend's `elapsed`, the wait's `point` and
+`starts_in`, the match, root motion, and the look aren't part of it.
 
 ### Look chain
 
@@ -485,13 +640,16 @@ released.
 | `LookNodeNotFound`, `DuplicateLookNodeName` | A look chain or body node name is absent or ambiguous. | The animator is rejected. |
 | `LookChainOutOfOrder` | A look chain node doesn't descend from the node before it. | The animator is rejected. |
 | `InvalidLookChain` | The chain is empty, or a share, limit, or response is out of range. | The animator is rejected. |
+| `MatchNodeNotFound`, `DuplicateMatchNodeName` | A motion database's root or feature node name is absent from or ambiguous in the canonical skeleton. | The animator is rejected when it first enters the matched state. |
 | `StateFromDifferentGraph` | A request names a state of another graph. | The request is discarded. |
 
 ## Clip pool
 
 The animation system owns one pool, and every animator samples clips from it.
-The pool keeps packed clips in one arena sized by a byte budget that the
-application chooses, and loads clips on a worker.
+The pool keeps packed clips and motion databases in one arena sized by a byte
+budget that the application chooses, and loads them on a worker. The rules for
+clips below apply to databases too, and a search counts as sampling its
+database.
 
 | Request result | Meaning |
 | --- | --- |
@@ -522,6 +680,8 @@ the [asset formats reference](/docs/reference/assets#flipbooks).
 | --- | --- |
 | Clip loads in flight, pool events kept, clips waiting for room | 64 each |
 | Clips sampled per step per motion | 3 |
+| Searches per step per animator | 1 |
+| Motion database feature dimensions | 64 |
 | Remembered blend positions | One per space per animator |
 | Requests and look targets applied per step | The last of each per animator |
 | Animators | No fixed limit |

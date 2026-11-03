@@ -146,6 +146,7 @@ has none.
 | `Material` | Its shaders and every image a parameter's value names. |
 | `Animation` | Its skeleton. |
 | `Flipbook` | Its images. |
+| `MotionDatabase` | Its clips. |
 | `Pipeline` | Its shaders. |
 | `ParticleSystem` | Its simulate and draw pipelines. |
 | Every other class | None. |
@@ -175,6 +176,7 @@ the mismatch without touching the directory.
 | `Mesh` | Optional skeleton, skin bindings, vertex components, streams, material variants by reference, primitives. | Packed vertex, index, and meshlet data, grouped by detail level. | `level[N].` streams per detail level, listed after this table. | Its skeleton; materials are listed but not loaded with the mesh. |
 | `Skeleton` | Nodes with optional names, parents, and rest transforms. | None | None | None |
 | `Animation` | Optional name, skeleton, duration, optional frame rate, per-node curves. | None; curves live in the metadata. | None | Its skeleton. |
+| `MotionDatabase` | Clips with their frame and pickable frame counts, sample rate, ground root and feature node names, trajectory times, normalization, every frame's features and ground root, and search and spring settings. | None; frames live in the metadata. | None | None; its clips are listed but not loaded with it. |
 
 Image formats: `BC5`, `BC5SNORM`, `RG8`, `RG16`, `R16F`, `RGB8`, `RGBA8`,
 `BC7`, `RGB16`, `RGBA16`, `BC7SRGB`, `RGBA16F`, and `RGBA8SRGB`, with linear

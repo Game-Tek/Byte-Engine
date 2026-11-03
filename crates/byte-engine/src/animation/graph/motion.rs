@@ -24,13 +24,18 @@ pub(super) enum StateMotion {
 		/// The state's slot among the graph's round robins, which indexes each player's [`RoundRobinTurns`].
 		slot: usize,
 	},
+	/// Plays the clips of a motion database one at a time, from the frames its searches find.
+	///
+	/// The database's clips are known only once it is resident, so [`Self::clips`] names the database itself, which
+	/// players load and list like a clip; the player binds the database's clips when it first enters the state.
+	Matched { database: AnimationClip },
 }
 
 impl StateMotion {
 	/// Returns every clip the state may sample, in the order its weights use.
 	pub(super) fn clips(&self) -> &[AnimationClip] {
 		match self {
-			Self::Clip(clip) => std::slice::from_ref(clip),
+			Self::Clip(clip) | Self::Matched { database: clip } => std::slice::from_ref(clip),
 			Self::Linear { clips, .. } | Self::Planar { clips, .. } | Self::RoundRobin { clips, .. } => clips,
 		}
 	}
@@ -43,7 +48,7 @@ impl StateMotion {
 	/// Returns the kind of space a blend weighs its clips in, or `None` for a single clip.
 	pub(super) fn kind(&self) -> Option<SpaceKind> {
 		match self {
-			Self::Clip(_) | Self::RoundRobin { .. } => None,
+			Self::Clip(_) | Self::RoundRobin { .. } | Self::Matched { .. } => None,
 			Self::Linear { .. } => Some(SpaceKind::Linear),
 			Self::Planar { .. } => Some(SpaceKind::Planar),
 		}
@@ -56,7 +61,7 @@ impl StateMotion {
 	pub(super) fn weights(&self, value: BlendValue, current: BlendWeights) -> BlendWeights {
 		match (self, value) {
 			(Self::Clip(_), _) => BlendWeights::single(0),
-			(Self::RoundRobin { .. }, _) => current,
+			(Self::RoundRobin { .. } | Self::Matched { .. }, _) => current,
 			(Self::Linear { space, .. }, BlendValue::Linear(value)) => space.weights(value).unwrap_or(current),
 			(Self::Planar { space, .. }, BlendValue::Planar(value)) => space.weights(value).unwrap_or(current),
 			_ => current,
@@ -320,13 +325,74 @@ impl From<PlanarStateId> for AnimationRequest {
 	}
 }
 
+/// The `MatchedGraphState` struct is a matched state, as returned by [`AnimationGraphStateBuilder::matched`].
+///
+/// Connect it with routes like any [`AnimationGraphState`], then keep [`Self::id`] to request it.
+#[derive(Clone, Copy)]
+pub struct MatchedGraphState<'builder>(pub(super) AnimationGraphState<'builder>);
+
+impl<'builder> MatchedGraphState<'builder> {
+	/// Returns the ID client code requests with a velocity and a facing, through [`MatchedStateId::toward`].
+	pub const fn id(self) -> MatchedStateId {
+		MatchedStateId(self.0.id)
+	}
+}
+
+impl<'builder> Deref for MatchedGraphState<'builder> {
+	type Target = AnimationGraphState<'builder>;
+
+	fn deref(&self) -> &Self::Target {
+		&self.0
+	}
+}
+
+impl<'builder> From<MatchedGraphState<'builder>> for AnimationGraphState<'builder> {
+	fn from(state: MatchedGraphState<'builder>) -> Self {
+		state.0
+	}
+}
+
+/// The `MatchedStateId` struct identifies a matched state, so a request for it can carry the motion it heads toward.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(transparent)]
+pub struct MatchedStateId(AnimationStateId);
+
+impl MatchedStateId {
+	/// Requests this state heading at `velocity`, X and Z in the entity's object-space units per second, and turning to
+	/// `facing`, a yaw about +Y in radians from the direction the entity faces.
+	///
+	/// The player holds both until another request replaces them, and turns them back as the entity turns by root
+	/// motion, so they keep their direction in the world. Request them again whenever the input changes, in the
+	/// entity's object space at that moment. Pass the request to [`AnimationGraphPlayer::advance`] or
+	/// [`AnimationGraphPlayer::request`].
+	pub const fn toward(self, velocity: [f32; 2], facing: f32) -> AnimationRequest {
+		AnimationRequest {
+			state: self.0,
+			value: BlendValue::Motion { velocity, facing },
+			inertialization: MediaTime::ZERO,
+		}
+	}
+}
+
+impl From<MatchedStateId> for AnimationStateId {
+	fn from(id: MatchedStateId) -> Self {
+		id.0
+	}
+}
+
+impl From<MatchedStateId> for AnimationRequest {
+	fn from(id: MatchedStateId) -> Self {
+		id.0.into()
+	}
+}
+
 /// The `AnimationRequest` struct is what client code asks a player for each frame: a state, and where to play its
 /// blend.
 ///
-/// Make one from any state ID, or with [`LinearStateId::at`] and [`PlanarStateId::at`] for blend states, then pass
-/// it to [`AnimationGraphPlayer::advance`]. A position sets the position of the blend state's space, which every
-/// looping blend of the space follows. A blend requested without a position keeps its space's position, and a blend
-/// the player enters on its own starts there.
+/// Make one from any state ID, with [`LinearStateId::at`] and [`PlanarStateId::at`] for blend states, or with
+/// [`MatchedStateId::toward`] for a matched state, then pass it to [`AnimationGraphPlayer::advance`]. A position sets
+/// the position of the blend state's space, which every looping blend of the space follows. A blend requested without
+/// a position keeps its space's position, and a blend the player enters on its own starts there.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AnimationRequest {
 	pub(super) state: AnimationStateId,
@@ -446,11 +512,14 @@ impl RoundRobinTurns {
 	}
 }
 
-/// The `BlendValue` enum carries a requested blend position of the dimensionality its state blends in.
+/// The `BlendValue` enum carries what a request asks of its state beyond playing it: a blend position of the
+/// dimensionality its state blends in, or the motion a matched state heads toward.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum BlendValue {
-	/// No position: a blend state keeps the one it has.
+	/// No position: a blend state keeps the one it has, and a matched state the motion it holds.
 	Unset,
 	Linear(f32),
 	Planar([f32; 2]),
+	/// A matched state's requested velocity, X and Z in object-space units per second, and facing, a yaw in radians.
+	Motion { velocity: [f32; 2], facing: f32 },
 }

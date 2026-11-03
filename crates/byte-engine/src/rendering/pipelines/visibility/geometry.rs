@@ -279,14 +279,20 @@ pub(crate) struct PrimitiveBlock {
 	pub(crate) lods: MeshLods,
 }
 
-/// The `PlacedPrimitives` struct reports how a prepared block of finer levels was placed, primitive by primitive.
-pub(crate) struct PlacedPrimitives {
-	/// Each placed primitive, by index in its mesh, with its block.
-	pub(crate) placed: Vec<(usize, PrimitiveBlock)>,
-	/// The primitives that held levels but found no free range; nothing of theirs was placed.
-	pub(crate) without_room: Vec<usize>,
-	/// The copies that fill every placed primitive's ranges from the staging lease.
-	pub(crate) copies: SmallVec<[BufferRegion; 16]>,
+/// The `PrimitiveLevels` struct names one primitive's part in a load of finer detail levels and carries back where
+/// they landed.
+///
+/// [`super::residency::MeshResidencies::end_frame`] lists them, [`GeometryBuffers::append_primitives`] fills in each
+/// [`Self::block`], and the same list returns to the residencies with the load's outcome, so a load allocates no list
+/// of its own.
+#[derive(Debug, Clone)]
+pub(crate) struct PrimitiveLevels {
+	/// The primitive's index in its mesh.
+	pub(crate) primitive: u32,
+	/// The finest level to load. The load holds the primitive's levels from it down to, but not including, its coarsest.
+	pub(crate) finest: u8,
+	/// Where the levels landed: `None` until the load places them, and after it when the geometry buffers had no room.
+	pub(crate) block: Option<PrimitiveBlock>,
 }
 
 /// The `MeshPrimitive` struct locates one primitive's geometry, material slot, and optional skin inside its mesh.
@@ -562,30 +568,32 @@ impl GeometryBuffers {
 		Ok((mesh, copies))
 	}
 
-	/// Places each prepared primitive that holds levels in free ranges of its own, so each loads and releases apart
-	/// from the others, and returns where they live with the copies that fill them.
+	/// Places each primitive of `primitives` in free ranges of its own, so each loads and releases apart from the
+	/// others, by filling in its block, and returns the copies that fill them from `prepared`.
 	///
-	/// A primitive without room is reported and takes nothing, while the others still land. Returns `Err` with the
+	/// A primitive without room keeps no block and takes nothing, while the others still land. Returns `Err` with the
 	/// meshlet count of a level no instance can address, and places nothing. Hand the copies to the loader with the
 	/// prepared mesh's staging lease, and publish the blocks only once they finished.
-	pub(crate) fn append_primitives(&mut self, prepared: &PreparedMesh) -> Result<PlacedPrimitives, u32> {
-		let levels = prepared
+	pub(crate) fn append_primitives(
+		&mut self,
+		prepared: &PreparedMesh,
+		primitives: &mut [PrimitiveLevels],
+	) -> Result<SmallVec<[BufferRegion; 16]>, u32> {
+		let unaddressable = prepared
 			.primitives
 			.iter()
 			.flat_map(|prepared| prepared.primitive.lods.levels())
-			.filter(|level| level.resident);
-		if let Some(level) = levels.into_iter().find(|level| level.meshlet_count as usize > MAX_INSTANCE_MESHLETS) {
+			.find(|level| level.resident && level.meshlet_count as usize > MAX_INSTANCE_MESHLETS);
+		if let Some(level) = unaddressable {
 			return Err(level.meshlet_count);
 		}
 		let streams = &prepared.streams;
 		let handles = &self.handles;
-		let mut result = PlacedPrimitives {
-			placed: Vec::new(),
-			without_room: Vec::new(),
-			copies: SmallVec::new(),
-		};
+		// Six stream copies per primitive, reserved at once.
+		let mut copies = SmallVec::with_capacity(primitives.len() * 6);
 		let mut ranges = handles.ranges.lock().unwrap_or_else(|error| error.into_inner());
-		for (index, prepared) in prepared.primitives.iter().enumerate() {
+		for levels in primitives.iter_mut() {
+			let prepared = &prepared.primitives[levels.primitive as usize];
 			let elements = &prepared.elements;
 			if elements.meshlets.is_empty() {
 				continue;
@@ -599,7 +607,6 @@ impl GeometryBuffers {
 				..GeometryCounts::default()
 			};
 			let Ok(block) = ranges.take(&counts) else {
-				result.without_room.push(index);
 				continue;
 			};
 			// Copies this primitive's `elements` of a prepared stream, of `stride` bytes each, to `destination`.
@@ -611,7 +618,7 @@ impl GeometryBuffers {
 					size: (elements.end - elements.start) as usize * stride,
 				}
 			};
-			result.copies.extend([
+			copies.extend([
 				copy(&streams.positions, &elements.vertices, 12, handles.vertex_positions.into(), block.vertices.start),
 				copy(
 					&streams.normals,
@@ -652,8 +659,8 @@ impl GeometryBuffers {
 					block.primitive_indices.start + level.primitive_index_base - elements.primitive_indices.start;
 				level.triangle_base = block.triangles.start + level.triangle_base - elements.triangles.start;
 			}
-			result.placed.push((index, PrimitiveBlock { ranges: block, lods }));
+			levels.block = Some(PrimitiveBlock { ranges: block, lods });
 		}
-		Ok(result)
+		Ok(copies)
 	}
 }

@@ -27,7 +27,7 @@ use utils::hash::HashMap;
 use super::features::{MaterialEvaluationMode, UBER_MATERIAL_SHADERS};
 use super::geometry::{
 	GENERATED_MESH_MATERIAL, GeometryBuffers, GeometryHandles, GeometryRanges, MeshData, PreparedLevels, PreparedMesh,
-	PrimitiveBlock, RetiredRanges,
+	PrimitiveBlock, PrimitiveLevels, RetiredRanges,
 };
 use super::lod::MeshLods;
 use super::layout::{
@@ -95,11 +95,11 @@ pub(crate) enum VisibilityLoadRequest {
 	Query(Query),
 	/// A mesh with each primitive's coarsest detail level.
 	Mesh(MeshSource),
-	/// Finer detail levels of some primitives of resource mesh `id`: each listed primitive, by index, with the finest
-	/// level to load. Each primitive's levels from there down to its coarsest replace the finer levels it held.
+	/// Finer detail levels of some primitives of resource mesh `id`, in ascending primitive order. Each primitive's
+	/// levels from its finest listed one down to its coarsest replace the finer levels it held.
 	MeshLevels {
 		id: Arc<str>,
-		primitives: Vec<(u32, u8)>,
+		primitives: Vec<PrimitiveLevels>,
 	},
 	Material(String),
 	Texture(String),
@@ -176,12 +176,11 @@ pub(crate) enum VisibilityResident {
 	Routed,
 	/// A resident mesh and the key it was requested by.
 	Mesh(MeshKey, MeshData),
-	/// Finer detail levels of some primitives of a mesh: the blocks that were placed, by primitive index, and the
-	/// primitives the geometry buffers had no room for.
+	/// Finer detail levels of some primitives of a mesh: the requested primitives, each with its block when the
+	/// geometry buffers had room for it.
 	MeshLevels {
 		key: MeshKey,
-		placed: Vec<(u32, PrimitiveBlock)>,
-		without_room: Vec<u32>,
+		primitives: Vec<PrimitiveLevels>,
 	},
 	Material(ResidentMaterial),
 	/// An upload-complete texture whose image the render thread still interns.
@@ -212,13 +211,13 @@ pub(crate) enum VisibilityLoaderEvent {
 		key: MeshKey,
 		mesh: Arc<MeshData>,
 	},
-	/// A load of finer levels of `key`'s primitives finished. Each `placed` primitive, by index, now holds its levels
-	/// from the given one down; read its table with [`VisibilityLoaderClient::primitive_lods`]. The geometry buffers had
-	/// no room for the `without_room` primitives, which placed nothing.
+	/// A load of finer levels of `key`'s primitives finished. Each primitive with a block now holds its levels from its
+	/// finest listed one down; read its table with [`VisibilityLoaderClient::primitive_lods`]. The geometry buffers had
+	/// no room for the primitives without one, which placed nothing. Hand the list back to the residencies, which reuse
+	/// it.
 	MeshLevelsLoaded {
 		key: MeshKey,
-		placed: Vec<(u32, u8)>,
-		without_room: Vec<u32>,
+		primitives: Vec<PrimitiveLevels>,
 	},
 	/// A mesh's finer levels failed to load for a reason more room won't fix.
 	MeshLevelsUnavailable {
@@ -382,12 +381,12 @@ impl VisibilityLoaderClient {
 		}
 	}
 
-	/// Loads finer detail levels of some of `key`'s primitives in one load: each listed primitive, by index, from the
-	/// given level down to its coarsest, replacing the finer levels it holds.
+	/// Loads finer detail levels of some of `key`'s primitives in one load: each listed primitive from its finest listed
+	/// level down to its coarsest, replacing the finer levels it holds.
 	///
 	/// The result arrives as [`VisibilityLoaderEvent::MeshLevelsLoaded`]. Returns `false`, and loads nothing, for a mesh
 	/// that isn't a resident resource mesh.
-	pub(crate) fn request_mesh_levels(&mut self, key: MeshKey, primitives: Vec<(u32, u8)>) -> bool {
+	pub(crate) fn request_mesh_levels(&mut self, key: MeshKey, primitives: Vec<PrimitiveLevels>) -> bool {
 		let Some(id) = self.mesh_ids.get(&key).filter(|_| self.meshes.contains_key(&key)) else {
 			return false;
 		};
@@ -477,29 +476,18 @@ impl VisibilityLoaderClient {
 					VisibilityLoaderEvent::MeshReady { key, mesh }
 				}
 				LoaderEvent::Ready {
-					resident: VisibilityResident::MeshLevels {
-						key,
-						placed,
-						without_room,
-					},
+					resident: VisibilityResident::MeshLevels { key, primitives },
 					..
 				} => {
-					let placed = placed
-						.into_iter()
-						.map(|(primitive, block)| {
-							let finest = block.lods.levels().iter().position(|level| level.resident).unwrap_or(0) as u8;
-							// The new block holds every level the old one did and more, so the old one retires.
-							if let Some(previous) = self.refined.insert((key, primitive), block) {
-								self.retired_ranges.retire(previous.ranges, self.next_frame);
-							}
-							(primitive, finest)
-						})
-						.collect();
-					VisibilityLoaderEvent::MeshLevelsLoaded {
-						key,
-						placed,
-						without_room,
+					for levels in &primitives {
+						// The new block holds every level the old one did and more, so the old one retires.
+						if let Some(block) = &levels.block
+							&& let Some(previous) = self.refined.insert((key, levels.primitive), block.clone())
+						{
+							self.retired_ranges.retire(previous.ranges, self.next_frame);
+						}
 					}
+					VisibilityLoaderEvent::MeshLevelsLoaded { key, primitives }
 				}
 				LoaderEvent::Ready {
 					resident: VisibilityResident::Material(material),
@@ -786,7 +774,20 @@ impl VisibilityLoader {
 	async fn load_mesh(&self, source: MeshSource, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
 		let staging = lane.staging().clone();
 		let key = source.key();
-		// Materials load while this mesh is read, converted, and uploaded.
+		// Every primitive gets its material's stable table slot, and materials load while this mesh is read, converted,
+		// and uploaded.
+		let mut slots = SmallVec::<[u32; 8]>::new();
+		let mut material = |id: &str| {
+			lane.request(VisibilityLoadRequest::Material(id.to_string()));
+			let mut table = self.material_slots.lock().unwrap_or_else(|error| error.into_inner());
+			slots.push(assign_slot(&mut table, id, MAX_MATERIALS, "material").ok_or_else(|| {
+				LoadError(
+					"Visibility mesh material slots could not be assigned. The most likely cause is that the material table is full."
+						.to_string(),
+				)
+			})?);
+			Ok::<_, LoadError>(())
+		};
 		let prepared = match source {
 			MeshSource::Resource(id) => {
 				let resource: Reference<Mesh> = self.resource_manager.request(&id).await.map_err(|_| {
@@ -796,39 +797,19 @@ impl VisibilityLoader {
 				})?;
 				let mesh = resource.resource();
 				for primitive in &mesh.primitives {
-					lane.request(VisibilityLoadRequest::Material(
-						mesh.material(primitive).id().as_ref().to_string(),
-					));
+					material(mesh.material(primitive).id().as_ref())?;
 				}
 				// The base mesh holds each primitive's coarsest level, so every instance can draw from the start.
 				PreparedMesh::resource(resource, staging, self.flat_triangles, PreparedLevels::Coarsest).await
 			}
 			MeshSource::Generated(generator) => {
-				lane.request(VisibilityLoadRequest::Material(
-					generator.material().unwrap_or(GENERATED_MESH_MATERIAL).to_string(),
-				));
+				material(generator.material().unwrap_or(GENERATED_MESH_MATERIAL))?;
 				PreparedMesh::generated(generator.as_ref(), staging, self.flat_triangles).await
 			}
 		}
 		.ok_or_else(|| {
 			LoadError(
 				"Visibility mesh conversion failed. The most likely cause is an unsupported or malformed vertex stream."
-					.to_string(),
-			)
-		})?;
-
-		// Every primitive gets its material's stable table slot.
-		let slots = {
-			let mut slots = self.material_slots.lock().unwrap_or_else(|error| error.into_inner());
-			prepared
-				.primitives
-				.iter()
-				.map(|primitive| assign_slot(&mut slots, &primitive.material_id, MAX_MATERIALS, "material"))
-				.collect::<Option<SmallVec<[u32; 8]>>>()
-		}
-		.ok_or_else(|| {
-			LoadError(
-				"Visibility mesh material slots could not be assigned. The most likely cause is that the material table is full."
 					.to_string(),
 			)
 		})?;
@@ -850,16 +831,17 @@ impl VisibilityLoader {
 		Ok(VisibilityResident::Mesh(key, mesh))
 	}
 
-	/// Loads finer detail levels of the listed primitives of resource mesh `id`, each from its given level down to,
-	/// but not including, its coarsest, with every vertex they index, and places each primitive in ranges of its own.
+	/// Loads finer detail levels of the listed primitives of resource mesh `id`, each from its finest listed level down
+	/// to, but not including, its coarsest, with every vertex they index, and places each primitive in ranges of its
+	/// own.
 	///
 	/// Every listed primitive loads from one read of each level stream. The base mesh already holds the coarsest levels,
-	/// which rays hit, so these blocks keep no flat triangles. A primitive without room places nothing and is reported,
-	/// which lets the renderer free other primitives' levels and ask again; the others still land.
+	/// which rays hit, so these blocks keep no flat triangles. A primitive without room places nothing and comes back
+	/// without a block, which lets the renderer free other primitives' levels and ask again; the others still land.
 	async fn load_mesh_levels(
 		&self,
 		id: Arc<str>,
-		primitives: Vec<(u32, u8)>,
+		mut primitives: Vec<PrimitiveLevels>,
 		lane: &LoaderLane<Self>,
 	) -> Result<VisibilityResident, LoadError> {
 		let key = MeshSource::Resource(id.clone()).key();
@@ -868,45 +850,38 @@ impl VisibilityLoader {
 				"Visibility mesh resource request failed for {id}. The most likely cause is that the mesh id is missing or the asset database is not loaded."
 			))
 		})?;
-		let mut finest = vec![None; resource.resource().primitives.len()];
-		for &(primitive, level) in &primitives {
-			let Some(slot) = finest.get_mut(primitive as usize) else {
-				return Err(LoadError(format!(
-					"Visibility detail levels were requested for primitive {primitive} of {id}, which has {} primitives. The most likely cause is a residency request for a mesh that was rebaked with fewer primitives.",
-					resource.resource().primitives.len()
-				)));
-			};
-			*slot = Some(level);
+		// The list ascends, so its last primitive is the highest index.
+		let primitive_count = resource.resource().primitives.len();
+		if let Some(levels) = primitives
+			.last()
+			.filter(|levels| levels.primitive as usize >= primitive_count)
+		{
+			return Err(LoadError(format!(
+				"Visibility detail levels were requested for primitive {} of {id}, which has {primitive_count} primitives. The most likely cause is a residency request for a mesh that was rebaked with fewer primitives.",
+				levels.primitive
+			)));
 		}
-		let prepared = PreparedMesh::resource(resource, lane.staging().clone(), false, PreparedLevels::Finer(&finest))
+		let prepared = PreparedMesh::resource(resource, lane.staging().clone(), false, PreparedLevels::Finer(&primitives))
 			.await
 			.ok_or_else(|| {
 				LoadError(format!(
 					"Visibility detail level conversion failed for {id}. The most likely cause is an unsupported or malformed vertex stream."
 				))
 			})?;
-		let placed = self
+		let copies = self
 			.geometry
 			.lock()
 			.unwrap_or_else(|error| error.into_inner())
-			.append_primitives(&prepared)
+			.append_primitives(&prepared, &mut primitives)
 			.map_err(|meshlets| {
 				LoadError(format!(
 					"Visibility detail level placement failed for {id}. The most likely cause is that a primitive level has {meshlets} meshlets, more than the {MAX_INSTANCE_MESHLETS} one instance can address; split the primitive."
 				))
 			})?;
-		if !placed.placed.is_empty() {
-			lane.upload(prepared.staging, [], placed.copies).await?;
+		if !copies.is_empty() {
+			lane.upload(prepared.staging, [], copies).await?;
 		}
-		Ok(VisibilityResident::MeshLevels {
-			key,
-			placed: placed
-				.placed
-				.into_iter()
-				.map(|(primitive, block)| (primitive as u32, block))
-				.collect(),
-			without_room: placed.without_room.into_iter().map(|primitive| primitive as u32).collect(),
-		})
+		Ok(VisibilityResident::MeshLevels { key, primitives })
 	}
 
 	/// Assigns every shader-table slot a material needs before publishing it to the render thread.

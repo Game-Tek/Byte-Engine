@@ -7,8 +7,11 @@
 //! their levels independently, so a large mesh refines only where the camera is close. [`MeshResidencies`] only
 //! decides; the visibility manager carries its decisions out through the loader.
 
-use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 
+use utils::hash::HashMap;
+
+use super::geometry::PrimitiveLevels;
 use crate::rendering::renderable::mesh::MeshKey;
 
 /// Frames a load waits before asking again when no primitive could give back room.
@@ -16,17 +19,27 @@ const RETRY_WITHOUT_ROOM_FRAMES: u64 = 60;
 
 /// The `ResidencySlot` struct names one followed primitive, so the frame loop records wants without hashing.
 ///
-/// Get one from [`MeshResidencies::add_mesh`] or [`MeshResidencies::slot`] and keep it with the primitive's render
-/// entities.
+/// Get one from [`MeshResidencies::slot`] and keep it with the primitive's render entities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ResidencySlot(u32);
+
+/// The `MeshResidency` struct groups one followed mesh's primitives, which load together.
+struct MeshResidency {
+	key: MeshKey,
+	/// The mesh's primitives in [`MeshResidencies::primitives`], in primitive order.
+	primitives: Range<usize>,
+	/// Whether a load of the mesh is in flight, so no second one starts.
+	loading: bool,
+	/// Whether the mesh's finer levels failed for a reason more room won't fix, so none is asked for again.
+	unavailable: bool,
+}
 
 /// The `PrimitiveResidency` struct follows one primitive's resident detail levels and what its instances want.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PrimitiveResidency {
-	key: MeshKey,
-	primitive: u32,
-	/// The primitive's coarsest level, which its base block holds.
+	/// The primitive's mesh in [`MeshResidencies::meshes`].
+	mesh: u32,
+	/// The primitive's coarsest level, which its base block holds. Zero leaves nothing finer to load.
 	base: u8,
 	/// The finest resident level: `base` until a finer block loads.
 	finest: u8,
@@ -34,61 +47,57 @@ struct PrimitiveResidency {
 	wanted: u8,
 	/// The last frame some instance wanted a level finer than `base`, which the finer block holds.
 	last_wanted_finer: Option<u64>,
-	/// Whether the primitive's finer levels failed for a reason more room won't fix, so none is asked for again.
-	unavailable: bool,
 	/// The first frame a load that found no room may ask again.
 	retry_frame: u64,
 }
 
-/// The `MeshLevelLoad` struct asks the loader for finer levels of some primitives of one mesh, which load together.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct MeshLevelLoad {
-	pub(crate) key: MeshKey,
-	/// Each primitive to load, by index in its mesh, with the finest level to load for it.
-	pub(crate) primitives: Vec<(u32, u8)>,
-}
-
-/// The `MeshResidencies` struct decides detail level loads and releases for every primitive with finer levels to load.
+/// The `MeshResidencies` struct decides detail level loads and releases for every resident resource mesh.
 ///
-/// Each frame, report the level every drawn instance wants with [`Self::want`], then call [`Self::end_frame`] for the
-/// loads to request. Report each load's outcome per primitive with [`Self::loaded`] or [`Self::without_room`], then
+/// Each frame, report the level every drawn instance wants with [`Self::want`], then call [`Self::end_frame`] to
+/// request the loads. Report each load's outcome per primitive with [`Self::loaded`] or [`Self::without_room`], then
 /// close it with [`Self::load_finished`]; report a load that failed outright with [`Self::unavailable`].
 #[derive(Default)]
 pub(crate) struct MeshResidencies {
+	meshes: Vec<MeshResidency>,
+	/// Each followed mesh's index in `meshes`.
+	mesh_indices: HashMap<MeshKey, u32>,
 	primitives: Vec<PrimitiveResidency>,
-	slots: HashMap<(MeshKey, u32), ResidencySlot>,
-	/// Meshes with a load in flight, so no second one starts.
-	loading: HashSet<MeshKey>,
+	/// Primitive lists of finished loads, which the next loads reuse instead of allocating their own.
+	spare_lists: Vec<Vec<PrimitiveLevels>>,
 	/// The frame the wants being reported belong to.
 	frame: u64,
 }
 
 impl MeshResidencies {
-	/// Starts following a resident mesh whose primitives' coarsest levels are `coarsest`, in primitive order. A
-	/// primitive whose coarsest level is full detail has nothing finer to load, so it isn't followed.
+	/// Starts following a resident mesh whose primitives' coarsest levels are `coarsest`, in primitive order.
 	pub(crate) fn add_mesh(&mut self, key: MeshKey, coarsest: impl IntoIterator<Item = u8>) {
-		for (primitive, base) in coarsest.into_iter().enumerate() {
-			let primitive = primitive as u32;
-			if base == 0 || self.slots.contains_key(&(key, primitive)) {
-				continue;
-			}
-			self.slots.insert((key, primitive), ResidencySlot(self.primitives.len() as u32));
-			self.primitives.push(PrimitiveResidency {
-				key,
-				primitive,
-				base,
-				finest: base,
-				wanted: u8::MAX,
-				last_wanted_finer: None,
-				unavailable: false,
-				retry_frame: 0,
-			});
+		if self.mesh_indices.contains_key(&key) {
+			return;
 		}
+		let mesh = self.meshes.len() as u32;
+		let first = self.primitives.len();
+		self.primitives.extend(coarsest.into_iter().map(|base| PrimitiveResidency {
+			mesh,
+			base,
+			finest: base,
+			wanted: u8::MAX,
+			last_wanted_finer: None,
+			retry_frame: 0,
+		}));
+		self.mesh_indices.insert(key, mesh);
+		self.meshes.push(MeshResidency {
+			key,
+			primitives: first..self.primitives.len(),
+			loading: false,
+			unavailable: false,
+		});
 	}
 
 	/// Returns the slot of a followed primitive, or `None` when it has nothing finer to load.
 	pub(crate) fn slot(&self, key: MeshKey, primitive: u32) -> Option<ResidencySlot> {
-		self.slots.get(&(key, primitive)).copied()
+		let mesh = &self.meshes[*self.mesh_indices.get(&key)? as usize];
+		let slot = mesh.primitives.start + primitive as usize;
+		(mesh.primitives.contains(&slot) && self.primitives[slot].base != 0).then_some(ResidencySlot(slot as u32))
 	}
 
 	/// Records that an instance of the primitive in `slot` wants `level` this frame.
@@ -97,38 +106,39 @@ impl MeshResidencies {
 		primitive.wanted = primitive.wanted.min(level);
 	}
 
-	/// Closes the frame's wants and returns, per mesh without a load in flight, the primitives to load one level finer
-	/// than they hold, with that level.
+	/// Closes the frame's wants and hands `request` each mesh without a load in flight whose primitives want more
+	/// detail, with those primitives in order, each with the level one finer than it holds. `request` returns whether
+	/// the load started; a mesh whose load can't start is marked unavailable.
 	///
 	/// A primitive asks for one level at a time, which keeps each load small and makes detail arrive coarse to fine.
 	/// A mesh's primitives load together, so each of its level streams is read once per load.
-	pub(crate) fn end_frame(&mut self) -> Vec<MeshLevelLoad> {
+	pub(crate) fn end_frame(&mut self, mut request: impl FnMut(MeshKey, Vec<PrimitiveLevels>) -> bool) {
 		let frame = self.frame;
 		self.frame += 1;
-		let mut loads: Vec<MeshLevelLoad> = Vec::new();
-		for primitive in &mut self.primitives {
-			let wanted = std::mem::replace(&mut primitive.wanted, u8::MAX);
-			if wanted < primitive.base {
-				primitive.last_wanted_finer = Some(frame);
+		for mesh in &mut self.meshes {
+			let mut loads = Vec::new();
+			for (primitive, residency) in self.primitives[mesh.primitives.clone()].iter_mut().enumerate() {
+				let wanted = std::mem::replace(&mut residency.wanted, u8::MAX);
+				if wanted < residency.base {
+					residency.last_wanted_finer = Some(frame);
+				}
+				if wanted >= residency.finest || frame < residency.retry_frame || mesh.loading || mesh.unavailable {
+					continue;
+				}
+				if loads.capacity() == 0 {
+					loads = self.spare_lists.pop().unwrap_or_default();
+				}
+				loads.push(PrimitiveLevels {
+					primitive: primitive as u32,
+					finest: residency.finest - 1,
+					block: None,
+				});
 			}
-			if wanted >= primitive.finest
-				|| primitive.unavailable
-				|| frame < primitive.retry_frame
-				|| self.loading.contains(&primitive.key)
-			{
-				continue;
-			}
-			let level = (primitive.primitive, primitive.finest - 1);
-			match loads.iter_mut().find(|load| load.key == primitive.key) {
-				Some(load) => load.primitives.push(level),
-				None => loads.push(MeshLevelLoad {
-					key: primitive.key,
-					primitives: vec![level],
-				}),
+			if !loads.is_empty() {
+				mesh.loading = request(mesh.key, loads);
+				mesh.unavailable = !mesh.loading;
 			}
 		}
-		self.loading.extend(loads.iter().map(|load| load.key));
-		loads
 	}
 
 	/// Records that a primitive of `key` now holds levels `finest` and coarser.
@@ -153,49 +163,73 @@ impl MeshResidencies {
 			.filter(|(_, candidate)| {
 				candidate.finest < candidate.base
 					&& candidate.last_wanted_finer < last_frame
-					&& !self.loading.contains(&candidate.key)
+					&& !self.meshes[candidate.mesh as usize].loading
 			})
 			.min_by_key(|(_, candidate)| candidate.last_wanted_finer)
 			.map(|(index, _)| index);
 		let released = victim.map(|index| {
 			let victim = &mut self.primitives[index];
 			victim.finest = victim.base;
-			(victim.key, victim.primitive)
+			let mesh = &self.meshes[victim.mesh as usize];
+			(mesh.key, (index - mesh.primitives.start) as u32)
 		});
 		if let Some(slot) = self.slot(key, primitive) {
-			self.primitives[slot.0 as usize].retry_frame =
-				self.frame + if released.is_some() { frames_in_flight + 1 } else { RETRY_WITHOUT_ROOM_FRAMES };
+			self.primitives[slot.0 as usize].retry_frame = self.frame
+				+ if released.is_some() {
+					frames_in_flight + 1
+				} else {
+					RETRY_WITHOUT_ROOM_FRAMES
+				};
 		}
 		released
 	}
 
-	/// Closes `key`'s load once every primitive's outcome was reported, so the mesh can load again.
-	pub(crate) fn load_finished(&mut self, key: MeshKey) {
-		self.loading.remove(&key);
+	/// Closes `key`'s load once every primitive's outcome was reported, so the mesh can load again, and keeps the
+	/// load's primitive list for a later load to reuse.
+	pub(crate) fn load_finished(&mut self, key: MeshKey, mut primitives: Vec<PrimitiveLevels>) {
+		if let Some(&mesh) = self.mesh_indices.get(&key) {
+			self.meshes[mesh as usize].loading = false;
+		}
+		if primitives.capacity() != 0 {
+			primitives.clear();
+			self.spare_lists.push(primitives);
+		}
 	}
 
 	/// Records that `key`'s finer levels can't load, so none is asked for again, and closes its load.
 	pub(crate) fn unavailable(&mut self, key: MeshKey) {
-		for primitive in self.primitives.iter_mut().filter(|primitive| primitive.key == key) {
-			primitive.unavailable = true;
-		}
-		self.loading.remove(&key);
+		let Some(&mesh) = self.mesh_indices.get(&key) else {
+			return;
+		};
+		let mesh = &mut self.meshes[mesh as usize];
+		mesh.loading = false;
+		mesh.unavailable = true;
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{MeshLevelLoad, MeshResidencies};
+	use super::MeshResidencies;
 	use crate::rendering::renderable::mesh::MeshKey;
 
 	const NEAR: MeshKey = MeshKey::Resource(1);
 	const FAR: MeshKey = MeshKey::Resource(2);
 
-	fn load(key: MeshKey, primitives: &[(u32, u8)]) -> MeshLevelLoad {
-		MeshLevelLoad {
-			key,
-			primitives: primitives.to_vec(),
-		}
+	/// Ends the frame and returns each requested load as its mesh and its primitives with the level each loads.
+	fn end_frame(residencies: &mut MeshResidencies) -> Vec<(MeshKey, Vec<(u32, u8)>)> {
+		let mut loads = Vec::new();
+		residencies.end_frame(|key, primitives| {
+			loads.push((
+				key,
+				primitives.iter().map(|levels| (levels.primitive, levels.finest)).collect(),
+			));
+			true
+		});
+		loads
+	}
+
+	fn load(key: MeshKey, primitives: &[(u32, u8)]) -> (MeshKey, Vec<(u32, u8)>) {
+		(key, primitives.to_vec())
 	}
 
 	#[test]
@@ -206,19 +240,19 @@ mod tests {
 
 		residencies.want(slot, 1);
 		residencies.want(slot, 2);
-		assert_eq!(residencies.end_frame(), [load(NEAR, &[(0, 2)])]);
+		assert_eq!(end_frame(&mut residencies), [load(NEAR, &[(0, 2)])]);
 		// A mesh with a load in flight is not asked for again.
 		residencies.want(slot, 1);
-		assert!(residencies.end_frame().is_empty());
+		assert!(end_frame(&mut residencies).is_empty());
 
 		residencies.loaded(NEAR, 0, 2);
-		residencies.load_finished(NEAR);
+		residencies.load_finished(NEAR, Vec::new());
 		residencies.want(slot, 1);
-		assert_eq!(residencies.end_frame(), [load(NEAR, &[(0, 1)])]);
+		assert_eq!(end_frame(&mut residencies), [load(NEAR, &[(0, 1)])]);
 		residencies.loaded(NEAR, 0, 1);
-		residencies.load_finished(NEAR);
+		residencies.load_finished(NEAR, Vec::new());
 		residencies.want(slot, 1);
-		assert!(residencies.end_frame().is_empty());
+		assert!(end_frame(&mut residencies).is_empty());
 	}
 
 	#[test]
@@ -230,13 +264,13 @@ mod tests {
 
 		residencies.want(residencies.slot(NEAR, 0).unwrap(), 0);
 		residencies.want(residencies.slot(NEAR, 2).unwrap(), 3);
-		assert_eq!(residencies.end_frame(), [load(NEAR, &[(0, 1)])]);
+		assert_eq!(end_frame(&mut residencies), [load(NEAR, &[(0, 1)])]);
 		residencies.loaded(NEAR, 0, 1);
-		residencies.load_finished(NEAR);
+		residencies.load_finished(NEAR, Vec::new());
 
 		residencies.want(residencies.slot(NEAR, 0).unwrap(), 0);
 		residencies.want(residencies.slot(NEAR, 2).unwrap(), 0);
-		assert_eq!(residencies.end_frame(), [load(NEAR, &[(0, 0), (2, 2)])]);
+		assert_eq!(end_frame(&mut residencies), [load(NEAR, &[(0, 0), (2, 2)])]);
 	}
 
 	#[test]
@@ -246,24 +280,24 @@ mod tests {
 		residencies.add_mesh(NEAR, [2]);
 		let (far, near) = (residencies.slot(FAR, 0).unwrap(), residencies.slot(NEAR, 0).unwrap());
 		residencies.want(far, 1);
-		assert_eq!(residencies.end_frame(), [load(FAR, &[(0, 1)])]);
+		assert_eq!(end_frame(&mut residencies), [load(FAR, &[(0, 1)])]);
 		residencies.loaded(FAR, 0, 1);
-		residencies.load_finished(FAR);
+		residencies.load_finished(FAR, Vec::new());
 
 		// The camera turns to the other mesh; the first one is drawn only at its base level now.
 		residencies.want(far, 2);
 		residencies.want(near, 0);
-		assert_eq!(residencies.end_frame(), [load(NEAR, &[(0, 1)])]);
+		assert_eq!(end_frame(&mut residencies), [load(NEAR, &[(0, 1)])]);
 		assert_eq!(residencies.without_room(NEAR, 0, 2), Some((FAR, 0)));
-		residencies.load_finished(NEAR);
+		residencies.load_finished(NEAR, Vec::new());
 
 		// The released ranges free after the frames in flight, so the load waits for them.
 		for _ in 0..3 {
 			residencies.want(near, 0);
-			assert!(residencies.end_frame().is_empty());
+			assert!(end_frame(&mut residencies).is_empty());
 		}
 		residencies.want(near, 0);
-		assert_eq!(residencies.end_frame(), [load(NEAR, &[(0, 1)])]);
+		assert_eq!(end_frame(&mut residencies), [load(NEAR, &[(0, 1)])]);
 	}
 
 	#[test]
@@ -273,19 +307,19 @@ mod tests {
 		residencies.add_mesh(NEAR, [2]);
 		let (far, near) = (residencies.slot(FAR, 0).unwrap(), residencies.slot(NEAR, 0).unwrap());
 		residencies.want(far, 1);
-		residencies.end_frame();
+		end_frame(&mut residencies);
 		residencies.loaded(FAR, 0, 1);
-		residencies.load_finished(FAR);
+		residencies.load_finished(FAR, Vec::new());
 
 		residencies.want(far, 1);
 		residencies.want(near, 1);
-		assert_eq!(residencies.end_frame(), [load(NEAR, &[(0, 1)])]);
+		assert_eq!(end_frame(&mut residencies), [load(NEAR, &[(0, 1)])]);
 
 		// Nothing can give room back, so the load waits and asks again later instead of failing.
 		assert_eq!(residencies.without_room(NEAR, 0, 2), None);
-		residencies.load_finished(NEAR);
+		residencies.load_finished(NEAR, Vec::new());
 		residencies.want(far, 1);
 		residencies.want(near, 1);
-		assert!(residencies.end_frame().is_empty());
+		assert!(end_frame(&mut residencies).is_empty());
 	}
 }

@@ -1084,29 +1084,26 @@ impl VisibilityPipelineManager {
 					);
 					self.resolve_pending_renderables(key, &mesh, transforms);
 				}
-				VisibilityLoaderEvent::MeshLevelsLoaded {
-					key,
-					placed,
-					without_room,
-				} => {
-					for (primitive, finest) in placed {
-						self.mesh_residencies.loaded(key, primitive, finest);
-						self.refresh_entity_lods(key, primitive);
-					}
-					for primitive in without_room {
-						let frames_in_flight = ghi::MAX_FRAMES_IN_FLIGHT as u64;
-						if let Some((released, released_primitive)) =
-							self.mesh_residencies.without_room(key, primitive, frames_in_flight)
+				VisibilityLoaderEvent::MeshLevelsLoaded { key, primitives } => {
+					for levels in &primitives {
+						if levels.block.is_some() {
+							self.mesh_residencies.loaded(key, levels.primitive, levels.finest);
+							self.refresh_entity_lods(key, levels.primitive);
+						} else if let Some((released, released_primitive)) =
+							self.mesh_residencies
+								.without_room(key, levels.primitive, ghi::MAX_FRAMES_IN_FLIGHT as u64)
 						{
 							self.loader.release_mesh_levels(released, released_primitive);
 							self.refresh_entity_lods(released, released_primitive);
 						}
 					}
-					self.mesh_residencies.load_finished(key);
+					self.mesh_residencies.load_finished(key, primitives);
 				}
 				VisibilityLoaderEvent::MeshLevelsUnavailable { key, error } => {
 					self.mesh_residencies.unavailable(key);
-					warn!("Visibility finer detail levels of mesh {key:?} are unavailable; its instances keep their coarser levels. {error}");
+					warn!(
+						"Visibility finer detail levels of mesh {key:?} are unavailable; its instances keep their coarser levels. {error}"
+					);
 				}
 				VisibilityLoaderEvent::MaterialReady(material, evaluation) => {
 					self.adopt_material(material, evaluation);
@@ -1670,11 +1667,8 @@ impl VisibilityPipelineManager {
 		frame.sync_buffer(self.scene.meshes_buffer);
 		self.skinning_pass
 			.write_palettes(frame, &self.skinning_frame.matrices, &self.skinning_frame.dual_quaternions);
-		for load in self.mesh_residencies.end_frame() {
-			if !self.loader.request_mesh_levels(load.key, load.primitives) {
-				self.mesh_residencies.unavailable(load.key);
-			}
-		}
+		self.mesh_residencies
+			.end_frame(|key, primitives| self.loader.request_mesh_levels(key, primitives));
 	}
 
 	/// Returns each shadowed sun's cascades, fitted to the camera frustum, by sun slot, and the view every map of

@@ -15,8 +15,8 @@ use resource_management::resources::mesh::MAX_PRIMITIVE_LODS;
 use resource_management::types::{IndexStreamTypes, Stream, Streams, VertexSemantics};
 
 use super::{
-	GeometryCounts, MeshPrimitive, MeshRanges, SKINNING_JOINTS_STRIDE, SKINNING_NORMAL_STRIDE, SKINNING_POSITION_STRIDE,
-	SKINNING_WEIGHTS_STRIDE,
+	GeometryCounts, MeshPrimitive, MeshRanges, PrimitiveLevels, SKINNING_JOINTS_STRIDE, SKINNING_NORMAL_STRIDE,
+	SKINNING_POSITION_STRIDE, SKINNING_WEIGHTS_STRIDE,
 };
 use crate::rendering::mesh::generator::{MeshGenerator, validate_triangle_indices};
 use crate::rendering::pipelines::visibility::layout::{
@@ -56,9 +56,8 @@ pub(super) struct PreparedStreams {
 	pub(super) flat_triangles: Option<Range<usize>>,
 }
 
-/// The `PreparedPrimitive` struct is one primitive's record plus the material it needs resolved on the render thread.
+/// The `PreparedPrimitive` struct is one primitive's record and where its elements lie in the prepared streams.
 pub(crate) struct PreparedPrimitive {
-	pub(crate) material_id: String,
 	/// `material_index` and `skinning_source_vertex_offset` are finalized by [`GeometryBuffers::append_mesh`].
 	pub(crate) primitive: MeshPrimitive,
 	/// The primitive's elements of each prepared stream, so it can be placed apart from the rest of the mesh. Its
@@ -151,7 +150,6 @@ impl PreparedMesh {
 			staging,
 			streams,
 			primitives: vec![PreparedPrimitive {
-				material_id: generator.material().unwrap_or(GENERATED_MESH_MATERIAL).to_string(),
 				primitive: MeshPrimitive {
 					lods: MeshLods::single(meshlets.len() as u32),
 					bounding_sphere: enclosing_sphere(&meshlets),
@@ -199,27 +197,26 @@ impl PreparedMesh {
 			.skeleton
 			.as_ref()
 			.map_or(0, |skeleton| skeleton.resource().nodes.len() as u32);
-		// The bindings move out of the resource, which this function drops: nothing below reads its skins.
-		let skins = std::mem::take(&mut resource.resource_mut().skins)
-			.into_iter()
-			.map(Arc::new)
-			.collect::<Vec<_>>();
+		// The bindings move out of the resource, which this function drops: nothing below reads its skins. Only a
+		// preparation that holds a skinned primitive needs them.
+		let skins = match plan.skinning {
+			Some(_) => std::mem::take(&mut resource.resource_mut().skins)
+				.into_iter()
+				.map(Arc::new)
+				.collect::<Vec<_>>(),
+			None => Vec::new(),
+		};
 		let mut staging = allocate_staging(&upload_staging, plan.backing_size).await?;
 		let backing = staging.bytes_mut();
 		let (source_bytes, output) = backing.split_at_mut(plan.source_size);
 
-		let read_plan = plan.read_plan();
-		resource
-			.load(split_targets(source_bytes, &read_plan).into())
-			.await
-			.ok()
-			.or_else(|| {
-				log::error!(
-					"Mesh resource streams could not be loaded. The most likely cause is that the baked mesh payload is missing or unreadable."
-				);
-				None
-			})?;
-		let (primitives, flat_triangle_count) = plan.convert(resource.resource(), source_bytes, output, &skins)?;
+		resource.load(plan.read_targets(source_bytes).into()).await.ok().or_else(|| {
+			log::error!(
+				"Mesh resource streams could not be loaded. The most likely cause is that the baked mesh payload is missing or unreadable."
+			);
+			None
+		})?;
+		let (primitives, flat_triangle_count) = plan.convert(resource.resource(), levels, source_bytes, output, &skins)?;
 		let mut streams = plan.streams;
 		let mut counts = plan.counts;
 		if let Some(range) = streams.flat_triangles.as_mut() {
@@ -252,13 +249,13 @@ async fn allocate_staging(upload_staging: &Arc<UploadStagingArena>, byte_count: 
 ///
 /// Primitives have different level counts, so each one's coarsest level is its own last level, not a level number the
 /// mesh shares. That keeps a primitive with few levels from pulling the other primitives' finer levels in with it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum PreparedLevels<'a> {
 	/// Each primitive's coarsest level, which every instance of the mesh can draw.
 	Coarsest,
-	/// For each primitive, by index, its levels from this one down to, but not including, its coarsest; `None`
-	/// holds nothing of that primitive.
-	Finer(&'a [Option<u8>]),
+	/// For each listed primitive, in ascending primitive order, its levels from [`PrimitiveLevels::finest`] down to,
+	/// but not including, its coarsest. Nothing of an unlisted primitive.
+	Finer(&'a [PrimitiveLevels]),
 }
 
 impl PreparedLevels<'_> {
@@ -267,9 +264,9 @@ impl PreparedLevels<'_> {
 		let coarsest = level_count - 1;
 		match self {
 			Self::Coarsest => coarsest..level_count,
-			Self::Finer(finest) => match finest.get(primitive).copied().flatten() {
-				Some(finest) => (finest as usize).min(coarsest)..coarsest,
-				None => coarsest..coarsest,
+			Self::Finer(primitives) => match primitives.binary_search_by_key(&(primitive as u32), |levels| levels.primitive) {
+				Ok(index) => (primitives[index].finest as usize).min(coarsest)..coarsest,
+				Err(_) => coarsest..coarsest,
 			},
 		}
 	}
@@ -283,20 +280,35 @@ const MESHLET_STREAMS: [Streams; 3] = [
 	Streams::Indices(IndexStreamTypes::Meshlets),
 	Streams::Meshlets,
 ];
-const MESHLET_STREAM_NAMES: [&str; 3] = ["VertexIndices", "MeshletIndices", "Meshlets"];
-const VERTEX_STREAM_NAMES: [&str; 3] = ["Vertex.Position", "Vertex.Normal", "Vertex.UV"];
+
+/// Spells out each level's stream names at compile time, so reads name their streams without formatting any.
+macro_rules! level_stream_names {
+	($($level:literal),*) => {
+		[$([
+			concat!("level[", $level, "].Vertex.Position"),
+			concat!("level[", $level, "].Vertex.Normal"),
+			concat!("level[", $level, "].Vertex.UV"),
+			concat!("level[", $level, "].VertexIndices"),
+			concat!("level[", $level, "].MeshletIndices"),
+			concat!("level[", $level, "].Meshlets"),
+		]),*]
+	};
+}
+/// Each level's position, normal, UV, meshlet vertex-index, triangle-index, and record stream names, in the order a
+/// [`ResourcePlan`] lays them out.
+const LEVEL_STREAM_NAMES: [[&str; 6]; MAX_PRIMITIVE_LODS] = level_stream_names!(0, 1, 2, 3, 4, 5, 6, 7);
 
 /// The `ResourcePlan` struct lays out one preparation of a baked mesh: which level streams load where in the front of
 /// the staging lease, and where each runtime stream lands behind them.
 ///
 /// It reads only the mesh's metadata, so every size is known before the payload loads.
 struct ResourcePlan {
-	/// The levels of each primitive the preparation holds, by primitive index.
-	held: Vec<Range<usize>>,
 	/// Where each level's position, normal, and UV streams load, indexed by level; empty where none loads.
-	vertex_sources: Vec<[Range<usize>; 3]>,
+	vertex_sources: [[Range<usize>; 3]; MAX_PRIMITIVE_LODS],
 	/// Where each level's meshlet vertex-index, triangle-index, and record streams load, indexed by level.
-	meshlet_sources: Vec<[Range<usize>; 3]>,
+	meshlet_sources: [[Range<usize>; 3]; MAX_PRIMITIVE_LODS],
+	/// How many of the source ranges above are not empty, each one read target.
+	source_count: usize,
 	/// Where the level 0 joint and weight streams load, when a skinned primitive's full detail is held.
 	skinning: Option<(Range<usize>, Range<usize>)>,
 	uvs_are_f32: bool,
@@ -327,21 +339,16 @@ impl ResourcePlan {
 			}
 		};
 		let uv_stride = if uvs_are_f32 { F32_UV_STRIDE } else { F16_UV_STRIDE };
+		// Solving the mesh checked that no primitive has more than `MAX_PRIMITIVE_LODS` levels.
 		let level_count = mesh.level_count() as usize;
 		// Which levels' streams some primitive reads.
-		let mut vertex_levels = vec![false; level_count];
-		let mut meshlet_levels = vec![false; level_count];
+		let mut vertex_levels = [false; MAX_PRIMITIVE_LODS];
+		let mut meshlet_levels = [false; MAX_PRIMITIVE_LODS];
 		let mut counts = GeometryCounts::default();
 		let mut skinned = false;
 		let mut flat_triangle_bound = 0;
-		let held_levels = mesh
-			.primitives
-			.iter()
-			.enumerate()
-			.map(|(index, primitive)| levels.of(index, primitive.lods.len()))
-			.collect::<Vec<_>>();
-		for (index, (primitive, held)) in mesh.primitives.iter().zip(&held_levels).enumerate() {
-			let held = held.clone();
+		for (index, primitive) in mesh.primitives.iter().enumerate() {
+			let held = levels.of(index, primitive.lods.len());
 			if held.is_empty() {
 				continue;
 			}
@@ -379,36 +386,38 @@ impl ResourcePlan {
 
 		// Every needed stream loads into its own 4-byte aligned range at the front of the lease.
 		let mut cursor = 0;
+		let mut source_count = 0;
 		let mut source = |stream: Option<&Stream>, name: &str, stride: usize| -> Option<Range<usize>> {
 			let Some(stream) = stream else {
 				return Some(cursor..cursor);
 			};
 			stream_count(stream, name, stride)?;
+			source_count += 1;
 			Some(take_range(&mut cursor, stream.size))
 		};
-		let mut vertex_sources = Vec::with_capacity(level_count);
-		let mut meshlet_sources = Vec::with_capacity(level_count);
+		let mut vertex_sources: [[Range<usize>; 3]; MAX_PRIMITIVE_LODS] = Default::default();
+		let mut meshlet_sources: [[Range<usize>; 3]; MAX_PRIMITIVE_LODS] = Default::default();
 		for level in 0..level_count {
 			let vertex_stream = |index: usize| {
 				vertex_levels[level]
 					.then(|| mesh.stream(Streams::Vertices(VERTEX_SEMANTICS[index]), level as u8))
 					.flatten()
 			};
-			vertex_sources.push([
+			vertex_sources[level] = [
 				source(vertex_stream(0), "position", SKINNING_POSITION_STRIDE)?,
 				source(vertex_stream(1), "normal", SKINNING_NORMAL_STRIDE)?,
 				source(vertex_stream(2), "UV", uv_stride)?,
-			]);
+			];
 			let meshlet_stream = |index: usize| {
 				meshlet_levels[level]
 					.then(|| mesh.stream(MESHLET_STREAMS[index], level as u8))
 					.flatten()
 			};
-			meshlet_sources.push([
+			meshlet_sources[level] = [
 				source(meshlet_stream(0), "meshlet vertex-index", VERTEX_INDEX_STRIDE)?,
 				source(meshlet_stream(1), "meshlet triangle-index", 1)?,
 				source(meshlet_stream(2), "meshlet", RESOURCE_MESHLET_STRIDE)?,
-			]);
+			];
 		}
 		let skinning = if skinned {
 			let require = |semantic, name| {
@@ -438,13 +447,13 @@ impl ResourcePlan {
 			vertex_indices: take_range(&mut cursor, counts.primitive_indices as usize * VERTEX_INDEX_STRIDE),
 			primitive_indices: take_range(&mut cursor, counts.triangles as usize * 3),
 			meshlets: take_range(&mut cursor, counts.meshlets as usize * std::mem::size_of::<ShaderMeshletData>()),
-			flat_triangles: (flat_triangles && levels == PreparedLevels::Coarsest)
+			flat_triangles: (flat_triangles && matches!(levels, PreparedLevels::Coarsest))
 				.then(|| take_range(&mut cursor, flat_triangle_bound * 6)),
 		};
 		Some(Self {
-			held: held_levels,
 			vertex_sources,
 			meshlet_sources,
+			source_count,
 			skinning,
 			uvs_are_f32,
 			source_size,
@@ -454,20 +463,26 @@ impl ResourcePlan {
 		})
 	}
 
-	/// Names every source stream and the range it loads into, for [`split_targets`], in ascending order.
-	fn read_plan(&self) -> Vec<(String, Range<usize>)> {
-		let mut targets = Vec::with_capacity(self.vertex_sources.len() * 6 + 2);
-		for (level, (vertices, meshlets)) in self.vertex_sources.iter().zip(&self.meshlet_sources).enumerate() {
-			for (name, range) in VERTEX_STREAM_NAMES.iter().zip(vertices).chain(MESHLET_STREAM_NAMES.iter().zip(meshlets)) {
-				targets.push((format!("level[{level}].{name}"), range.clone()));
-			}
+	/// Splits `source`, the front of the staging lease, into one named read target per stream the plan loads.
+	///
+	/// The plan lays its sources out level by level, then the skinning streams, so walking them in that order meets
+	/// their ranges in ascending order, which splitting needs.
+	fn read_targets<'b>(&self, source: &'b mut [u8]) -> Vec<StreamMut<'b>> {
+		let levels = self.vertex_sources.iter().zip(&self.meshlet_sources).zip(LEVEL_STREAM_NAMES);
+		let level_sources =
+			levels.flat_map(|((vertices, meshlets), names)| names.into_iter().zip(vertices.iter().chain(meshlets)));
+		let skinning_sources = self
+			.skinning
+			.iter()
+			.flat_map(|(joints, weights)| [("level[0].Vertex.Joints", joints), ("level[0].Vertex.Weights", weights)]);
+		let mut targets = Vec::with_capacity(self.source_count);
+		let mut allocator = utils::BufferAllocator::new(source);
+		let mut cursor = 0;
+		for (name, range) in level_sources.chain(skinning_sources).filter(|(_, range)| !range.is_empty()) {
+			allocator.take(range.start - cursor);
+			cursor = range.end;
+			targets.push(StreamMut::new(name, allocator.take(range.len())));
 		}
-		if let Some((joints, weights)) = &self.skinning {
-			targets.push(("level[0].Vertex.Joints".to_string(), joints.clone()));
-			targets.push(("level[0].Vertex.Weights".to_string(), weights.clone()));
-		}
-		targets.retain(|(_, range)| !range.is_empty());
-		targets.sort_by_key(|(_, range)| range.start);
 		targets
 	}
 
@@ -480,6 +495,7 @@ impl ResourcePlan {
 	fn convert(
 		&self,
 		mesh: &Mesh,
+		levels: PreparedLevels<'_>,
 		source: &[u8],
 		output: &mut [u8],
 		skins: &[Arc<SkinBinding>],
@@ -494,7 +510,7 @@ impl ResourcePlan {
 		let mut skinning_vertex = 0;
 		let mut primitives = Vec::with_capacity(mesh.primitives.len());
 		for (index, primitive) in mesh.primitives.iter().enumerate() {
-			let held = self.held[index].clone();
+			let held = levels.of(index, primitive.lods.len());
 			let vertex_base = vertex as u32;
 			let flat_start = flat as u32;
 			let (primitive_vertex_index, primitive_triangle, primitive_meshlet) = (vertex_index, triangle, meshlet);
@@ -634,7 +650,6 @@ impl ResourcePlan {
 			};
 			let skinned = skinning.is_some();
 			primitives.push(PreparedPrimitive {
-				material_id: mesh.material(primitive).id().as_ref().to_string(),
 				primitive: MeshPrimitive {
 					material_index: 0,
 					lods: MeshLods::new(&lods[..primitive.lods.len()]),
@@ -666,19 +681,6 @@ impl ResourcePlan {
 		}
 		Some((primitives, flat as u32))
 	}
-}
-
-/// Splits `backing` into one named read target per range of `plan`, whose ranges ascend without overlapping.
-fn split_targets<'b>(backing: &'b mut [u8], plan: &'b [(String, Range<usize>)]) -> Vec<StreamMut<'b>> {
-	let mut allocator = utils::BufferAllocator::new(backing);
-	let mut cursor = 0;
-	plan.iter()
-		.map(|(name, range)| {
-			allocator.take(range.start - cursor);
-			cursor = range.end;
-			StreamMut::new(name, allocator.take(range.len()))
-		})
-		.collect()
 }
 
 /// Returns the element count of a stream after validating its stride.

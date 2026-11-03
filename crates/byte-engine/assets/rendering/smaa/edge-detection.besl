@@ -1,13 +1,12 @@
 // Spatial SMAA 1x luma edge detection ported from the reference implementation.
 // See LICENSE.txt beside this shader for the original authors and license.
 source: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-// A tile output on an R8 target, which needs no shader-write usage and stays losslessly compressed.
+// A tile output on an RG8 target, which needs no shader-write usage and stays losslessly compressed.
 edges: output<vec4f, 0>;
 
 // These values match the official SMAA 1x Ultra preset.
 SMAA_EDGE_THRESHOLD: const f32 = 0.05;
 SMAA_LOCAL_CONTRAST_FACTOR: const f32 = 2.0;
-SMAA_PACKED_EDGE_MAX: const f32 = 3.0;
 
 // A 16x16 tile, one lane per pixel, needs two texels of left/top halo and one texel of right/bottom halo.
 // Sharing luma reduces seven source samples per output pixel to 361 loads per 256-pixel tile.
@@ -93,14 +92,15 @@ main: fn(input: StageInput) -> void {
 	// Local contrast adaptation suppresses a weak crossing edge hidden by a stronger neighbor.
 	let maximum_delta: f32 = max(max(west_delta, north_delta), max(east_delta, south_delta));
 	maximum_delta = max(maximum_delta, max(far_west_delta, far_north_delta));
-	let packed_edges: u32 = 0;
+	let west: f32 = 0.0;
+	let north: f32 = 0.0;
 	if (west_delta >= SMAA_EDGE_THRESHOLD && SMAA_LOCAL_CONTRAST_FACTOR * west_delta >= maximum_delta) {
-		packed_edges = packed_edges | 1;
+		west = 1.0;
 	}
 	if (north_delta >= SMAA_EDGE_THRESHOLD && SMAA_LOCAL_CONTRAST_FACTOR * north_delta >= maximum_delta) {
-		packed_edges = packed_edges | 2;
+		north = 1.0;
 	}
 
-	// The R8 target stores west in bit 0 and north in bit 1 as one of four exact UNORM levels.
-	write(edges, coordinate, vec4f(f32(packed_edges) / SMAA_PACKED_EDGE_MAX, 0.0, 0.0, 0.0));
+	// The RG8 target stores the west edge in red and the north edge in green, so bilinear filtering blends each alone.
+	write(edges, coordinate, vec4f(west, north, 0.0, 0.0));
 }

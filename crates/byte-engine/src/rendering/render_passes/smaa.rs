@@ -46,6 +46,8 @@ fn decode_lookup_texture(encoded: &str, expected_byte_count: usize, name: &str) 
 pub struct SmaaPass {
 	edge_pass: simple_tile::Pass,
 	resolve_pass: simple_tile::Pass,
+	/// The GPU counters of the edge and resolve stages, reported as `stage.smaa-edges` and `stage.smaa-resolve`.
+	counters: [ghi::CounterHandle; 2],
 }
 
 impl SmaaPass {
@@ -60,7 +62,7 @@ impl SmaaPass {
 
 		let edge_uses = simple_tile::output_uses(&*render_pass_builder.context());
 		let edges = render_pass_builder.create_render_target(
-			ghi::image::Builder::new(ghi::Formats::R8UNORM, ghi::Uses::Image | edge_uses).name("SMAA Edges"),
+			ghi::image::Builder::new(ghi::Formats::RG8UNORM, ghi::Uses::Image | edge_uses).name("SMAA Edges"),
 		);
 
 		let context = render_pass_builder.context();
@@ -87,7 +89,7 @@ impl SmaaPass {
 			simple_tile::Descriptor::new(
 				"SMAA Edge Detection",
 				"byte_engine/rendering/smaa/edge-detection.pipeline",
-				&[ghi::Formats::R8UNORM],
+				&[ghi::Formats::RG8UNORM],
 			),
 		);
 		let resolve_pipeline = simple_tile::Pipeline::compile(
@@ -120,7 +122,13 @@ impl SmaaPass {
 			&[simple_tile::Output::new("result", output)],
 		);
 
-		Self { edge_pass, resolve_pass }
+		let counters = ["smaa-edges", "smaa-resolve"].map(|name| render_pass_builder.create_gpu_counter(name));
+
+		Self {
+			edge_pass,
+			resolve_pass,
+			counters,
+		}
 	}
 }
 
@@ -138,6 +146,7 @@ impl RenderPass for SmaaPass {
 		let edge_pass = self.edge_pass.ready(frame)?;
 		let resolve_pass = self.resolve_pass.ready(frame)?;
 		let extent = sink.extent();
+		let [edge_counter, resolve_counter] = self.counters;
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
@@ -145,8 +154,8 @@ impl RenderPass for SmaaPass {
 				command_buffer.region(
 					|label| label.write_str("SMAA"),
 					|command_buffer| {
-						edge_pass.record(command_buffer, extent);
-						resolve_pass.record(command_buffer, extent);
+						command_buffer.counter(edge_counter, |command_buffer| edge_pass.record(command_buffer, extent));
+						command_buffer.counter(resolve_counter, |command_buffer| resolve_pass.record(command_buffer, extent));
 					},
 				);
 			},
@@ -213,10 +222,9 @@ mod tests {
 			.expect("Failed to execute the fused SMAA tile. The most likely cause is invalid shared-cache synchronization.");
 	}
 
-	/// Builds one VM edge texel using the production R8 bit layout.
-	fn packed_edge(west: bool, north: bool) -> [f32; 4] {
-		let bits = u32::from(west) | (u32::from(north) << 1);
-		[bits as f32 / 3.0, 0.0, 0.0, 0.0]
+	/// Builds one VM edge texel in the production RG8 layout: the west flag in red and the north flag in green.
+	fn edge_texel(west: bool, north: bool) -> [f32; 4] {
+		[f32::from(u8::from(west)), f32::from(u8::from(north)), 0.0, 0.0]
 	}
 
 	/// Expands a normalized byte LUT into the VM's RGBA texture representation.
@@ -236,6 +244,23 @@ mod tests {
 		texture
 	}
 
+	/// Resolves a square image of `extent` with the reference lookup textures, running every tile that covers it.
+	fn resolve_with_reference_lookups(extent: u32, source_texels: &[[f32; 4]], edge_texels: &[[f32; 4]]) -> Texture {
+		let area_bytes = decode_lookup_texture(AREA_TEXTURE, AREA_TEXTURE_BYTE_COUNT, "area texture");
+		let search_bytes = decode_lookup_texture(SEARCH_TEXTURE, SEARCH_TEXTURE_BYTE_COUNT, "search texture");
+		let mut source = texture_2d(extent, extent, source_texels);
+		let mut edges = texture_2d(extent, extent, edge_texels);
+		let mut area = vm_lookup_texture(&area_bytes, AREA_TEXTURE_WIDTH, AREA_TEXTURE_HEIGHT, 2);
+		let mut search = vm_lookup_texture(&search_bytes, SEARCH_TEXTURE_WIDTH, SEARCH_TEXTURE_HEIGHT, 1);
+		let mut result = empty_image(extent, extent);
+		for y in (0..extent).step_by(PIXEL_TILE as usize) {
+			for x in (0..extent).step_by(PIXEL_TILE as usize) {
+				run_resolve_tile(&mut source, &mut edges, &mut area, &mut search, &mut result, [x, y], [extent, extent]);
+			}
+		}
+		result
+	}
+
 	/// Resolves a 32x32 image whose only edges form an orthogonal line on the boundary before row or column `line`,
 	/// ending in crossing edges as in [`smaa_fused_resolve_besl_vm_uses_reference_areas_for_an_orthogonal_line`]. The
 	/// source is white before the boundary and black from it on.
@@ -248,9 +273,9 @@ mod tests {
 		};
 		let edge = |on_line: bool, crossing: bool| {
 			if vertical {
-				packed_edge(on_line, crossing)
+				edge_texel(on_line, crossing)
 			} else {
-				packed_edge(crossing, on_line)
+				edge_texel(crossing, on_line)
 			}
 		};
 		let mut edge_texels = vec![[0.0, 0.0, 0.0, 0.0]; (EXTENT * EXTENT) as usize];
@@ -266,17 +291,7 @@ mod tests {
 			}
 		}
 
-		let area_bytes = decode_lookup_texture(AREA_TEXTURE, AREA_TEXTURE_BYTE_COUNT, "area texture");
-		let search_bytes = decode_lookup_texture(SEARCH_TEXTURE, SEARCH_TEXTURE_BYTE_COUNT, "search texture");
-		let mut source = texture_2d(EXTENT, EXTENT, &source_texels);
-		let mut edges = texture_2d(EXTENT, EXTENT, &edge_texels);
-		let mut area = vm_lookup_texture(&area_bytes, AREA_TEXTURE_WIDTH, AREA_TEXTURE_HEIGHT, 2);
-		let mut search = vm_lookup_texture(&search_bytes, SEARCH_TEXTURE_WIDTH, SEARCH_TEXTURE_HEIGHT, 1);
-		let mut result = empty_image(EXTENT, EXTENT);
-		for origin in [[0, 0], [16, 0], [0, 16], [16, 16]] {
-			run_resolve_tile(&mut source, &mut edges, &mut area, &mut search, &mut result, origin, [EXTENT, EXTENT]);
-		}
-		result
+		resolve_with_reference_lookups(EXTENT, &source_texels, &edge_texels)
 	}
 
 	/// Calculates a stable FNV-1a fingerprint for vendored reference data.
@@ -304,10 +319,10 @@ mod tests {
 		let mut source = texture_2d(5, 1, &colors);
 		let mut edges = empty_image(5, 1);
 		run_edge_tile(&mut source, &mut edges, [0, 0], [5, 1]);
-		assert_rgba_close(rgba(&edges, [2, 0]), [1.0 / 3.0, 0.0, 0.0, 0.0], 0.0);
+		assert_rgba_close(rgba(&edges, [2, 0]), [1.0, 0.0, 0.0, 0.0], 0.0);
 
 		// Steps are judged as a tone mapper shows them: a dim shadow step is an edge, a wide highlight step is not.
-		for (dark, bright, expected) in [(0.01, 0.04, 1.0 / 3.0), (8.0, 10.0, 0.0)] {
+		for (dark, bright, expected) in [(0.01, 0.04, 1.0), (8.0, 10.0, 0.0)] {
 			let step = [dark, dark, bright, bright, bright].map(|value| [value, value, value, 1.0]);
 			let mut source = texture_2d(5, 1, &step);
 			let mut edges = empty_image(5, 1);
@@ -329,7 +344,7 @@ mod tests {
 		let mut source = texture_2d(3, 3, &north_only);
 		let mut edges = empty_image(3, 3);
 		run_edge_tile(&mut source, &mut edges, [0, 0], [3, 3]);
-		assert_rgba_close(rgba(&edges, [1, 1]), [2.0 / 3.0, 0.0, 0.0, 0.0], 0.0);
+		assert_rgba_close(rgba(&edges, [1, 1]), [0.0, 1.0, 0.0, 0.0], 0.0);
 
 		let both = [
 			[0.0, 0.0, 0.0, 1.0],
@@ -345,7 +360,7 @@ mod tests {
 		let mut source = texture_2d(3, 3, &both);
 		let mut edges = empty_image(3, 3);
 		run_edge_tile(&mut source, &mut edges, [0, 0], [3, 3]);
-		assert_rgba_close(rgba(&edges, [1, 1]), [1.0, 0.0, 0.0, 0.0], 0.0);
+		assert_rgba_close(rgba(&edges, [1, 1]), [1.0, 1.0, 0.0, 0.0], 0.0);
 	}
 
 	#[test]
@@ -363,20 +378,11 @@ mod tests {
 		for offset in -3_i32..=3 {
 			let x = (4 + offset) as usize;
 			let y = (4 - offset) as usize;
-			edge_texels[y * 9 + x] = packed_edge(true, true);
+			edge_texels[y * 9 + x] = edge_texel(true, true);
 		}
 		let mut source_texels = [[1.0, 1.0, 1.0, 1.0]; 81];
 		source_texels[4 * 9 + 4] = [0.0, 0.0, 0.0, 1.0];
-		let area_bytes = decode_lookup_texture(AREA_TEXTURE, AREA_TEXTURE_BYTE_COUNT, "area texture");
-		let search_bytes = decode_lookup_texture(SEARCH_TEXTURE, SEARCH_TEXTURE_BYTE_COUNT, "search texture");
-		let mut source = texture_2d(9, 9, &source_texels);
-		let mut edges = texture_2d(9, 9, &edge_texels);
-		let mut area = vm_lookup_texture(&area_bytes, AREA_TEXTURE_WIDTH, AREA_TEXTURE_HEIGHT, 2);
-		let mut search = vm_lookup_texture(&search_bytes, SEARCH_TEXTURE_WIDTH, SEARCH_TEXTURE_HEIGHT, 1);
-		let mut result = empty_image(9, 9);
-		// One tile covers the whole 9x9 image.
-		run_resolve_tile(&mut source, &mut edges, &mut area, &mut search, &mut result, [0, 0], [9, 9]);
-		let resolved = rgba(&result, [4, 4]);
+		let resolved = rgba(&resolve_with_reference_lookups(9, &source_texels, &edge_texels), [4, 4]);
 
 		assert!(
 			resolved[0] > 0.0 && resolved[1] > 0.0 && resolved[2] > 0.0,
@@ -389,22 +395,13 @@ mod tests {
 	fn smaa_fused_resolve_besl_vm_uses_reference_areas_for_an_orthogonal_line() {
 		let mut edge_texels = [[0.0, 0.0, 0.0, 0.0]; 81];
 		for x in 1..=7 {
-			edge_texels[4 * 9 + x] = packed_edge(false, true);
+			edge_texels[4 * 9 + x] = edge_texel(false, true);
 		}
-		edge_texels[4 * 9 + 1] = packed_edge(true, true);
-		edge_texels[4 * 9 + 8] = packed_edge(true, false);
+		edge_texels[4 * 9 + 1] = edge_texel(true, true);
+		edge_texels[4 * 9 + 8] = edge_texel(true, false);
 		let mut source_texels = [[1.0, 1.0, 1.0, 1.0]; 81];
 		source_texels[4 * 9 + 4] = [0.0, 0.0, 0.0, 1.0];
-		let area_bytes = decode_lookup_texture(AREA_TEXTURE, AREA_TEXTURE_BYTE_COUNT, "area texture");
-		let search_bytes = decode_lookup_texture(SEARCH_TEXTURE, SEARCH_TEXTURE_BYTE_COUNT, "search texture");
-		let mut source = texture_2d(9, 9, &source_texels);
-		let mut edges = texture_2d(9, 9, &edge_texels);
-		let mut area = vm_lookup_texture(&area_bytes, AREA_TEXTURE_WIDTH, AREA_TEXTURE_HEIGHT, 2);
-		let mut search = vm_lookup_texture(&search_bytes, SEARCH_TEXTURE_WIDTH, SEARCH_TEXTURE_HEIGHT, 1);
-		let mut result = empty_image(9, 9);
-		// One tile covers the whole 9x9 image.
-		run_resolve_tile(&mut source, &mut edges, &mut area, &mut search, &mut result, [0, 0], [9, 9]);
-		let resolved = rgba(&result, [4, 4]);
+		let resolved = rgba(&resolve_with_reference_lookups(9, &source_texels, &edge_texels), [4, 4]);
 
 		assert!(
 			resolved[0] > 0.0 && resolved[1] > 0.0 && resolved[2] > 0.0,
@@ -458,6 +455,47 @@ mod tests {
 		for y in 0..9 {
 			for x in 0..17 {
 				assert_rgba_close(rgba(&result, [x, y]), source_texels[(y * 17 + x) as usize], 0.0);
+			}
+		}
+	}
+
+	/// Verifies that resolving a rectangle and its transpose gives transposed results. SMAA treats both axes alike, so
+	/// a corner pixel, which has a north and a west edge, must blend by its west weights as it does by its north ones.
+	#[test]
+	fn smaa_fused_resolve_besl_vm_resolves_transposed_rectangles_transposed() {
+		const EXTENT: u32 = 16;
+		/// Builds the source and edges of a gray `width` by `height` rectangle at [4, 4] on black.
+		fn rectangle(width: u32, height: u32) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
+			let inside = |x: u32, y: u32| (4..4 + width).contains(&x) && (4..4 + height).contains(&y);
+			let mut source_texels = Vec::with_capacity((EXTENT * EXTENT) as usize);
+			let mut edge_texels = Vec::with_capacity((EXTENT * EXTENT) as usize);
+			for y in 0..EXTENT {
+				for x in 0..EXTENT {
+					let west = x > 0 && inside(x, y) != inside(x - 1, y);
+					let north = y > 0 && inside(x, y) != inside(x, y - 1);
+					edge_texels.push(edge_texel(west, north));
+					let value = if inside(x, y) { 0.5 } else { 0.0 };
+					source_texels.push([value, value, value, 1.0]);
+				}
+			}
+			(source_texels, edge_texels)
+		}
+
+		for (width, height) in [(5, 3), (6, 2), (8, 4)] {
+			let (source_texels, edge_texels) = rectangle(width, height);
+			let wide = resolve_with_reference_lookups(EXTENT, &source_texels, &edge_texels);
+			let (source_texels, edge_texels) = rectangle(height, width);
+			let tall = resolve_with_reference_lookups(EXTENT, &source_texels, &edge_texels);
+			for y in 0..EXTENT {
+				for x in 0..EXTENT {
+					let (wide_value, tall_value) = (rgba(&wide, [x, y])[0], rgba(&tall, [y, x])[0]);
+					assert!(
+						(wide_value - tall_value).abs() <= 0.0005,
+						"Pixel [{x}, {y}] of a {width}x{height} rectangle resolved to {wide_value}, but the same pixel of its \
+						 transpose resolved to {tall_value}. The most likely cause is a corner pixel that dropped its west \
+						 weights. Check that smaa/blend-weights.besl skips the west search only when a diagonal owns the pixel."
+					);
+				}
 			}
 		}
 	}

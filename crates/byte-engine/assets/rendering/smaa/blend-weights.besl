@@ -17,14 +17,13 @@ SMAA_AREA_PIXEL_SIZE: const vec2f16 = vec2f16(0.00625, 0.0017857142857142857);
 SMAA_SEARCH_SIZE: const vec2f16 = vec2f16(66.0, 33.0);
 SMAA_SEARCH_PACKED_SIZE: const vec2f16 = vec2f16(64.0, 16.0);
 SMAA_SEARCH_LENGTH_SCALE: const f16 = 2.0078125;
-SMAA_PACKED_EDGE_MAX: const f16 = 3.0;
 SMAA_DIAGONAL_CONTINUATION: const f16 = 0.9;
 SMAA_ORTHOGONAL_CONTINUATION: const f16 = 0.8281;
 
-// A 16x16 output tile, one lane per pixel, keeps the original two-dimensional locality. It needs one
-// texel of right and bottom weight look-ahead. The shared cache replaces the
-// full-screen RGBA8 weight intermediate; each entry packs four quantized UNORM
-// bytes so resolve matches the former store/load.
+// A 16x16 output tile, one lane per pixel, keeps the original two-dimensional
+// locality. It needs one texel of right and bottom weight look-ahead. The
+// shared cache replaces the full-screen RGBA8 weight intermediate; each entry
+// holds quantized UNORM bytes so resolve matches the former store/load.
 SMAA_RESOLVE_WORKGROUP_WIDTH: const u32 = 16;
 SMAA_RESOLVE_WORKGROUP_HEIGHT: const u32 = 16;
 SMAA_RESOLVE_WORKGROUP_THREADS: const u32 = 256;
@@ -33,29 +32,24 @@ SMAA_WEIGHT_TILE_WIDTH: const u32 = 17;
 // row holds only the bottom look-ahead. Resolve never reads the corner entry
 // (16, 16), so the cache stops one entry short of 17x17.
 SMAA_WEIGHT_TILE_SIZE: const u32 = 288;
+// A job is a weight-tile entry index, with this bit set for a west-edge search.
+SMAA_WEST_JOB: const u32 = 512;
+SMAA_JOB_INDEX_MASK: const u32 = 511;
+// Set in a north entry whose weights came from a diagonal.
+SMAA_DIAGONAL_FLAG: const u32 = 65536;
 
-// Each lane cooperatively supplies final packed RGBA8 weights for a small tile.
-cached_weights: workgroup<u32, 288>;
+// North weights in bytes 0 and 1 with the diagonal flag, and west weights in
+// bytes 0 and 1, for every entry of the tile.
+north_weights: workgroup<u32, 288>;
+west_weights: workgroup<u32, 288>;
+// At most one north and one west job per entry.
+jobs: workgroup<u32, 576>;
+job_count: workgroup<atomicu32>;
 
-// Decodes the west and north binary flags stored in the low two bits of R8UNORM.
-unpack_edge_flags: fn(value: f32) -> vec2f16 {
-	// R8UNORM encodes only 0, 1/3, 2/3, and 1. Round in half precision before
-	// converting to an integer so this hot edge-fetch path stays on the f16 ALU.
-	let packed: u32 = u32(round(clamp(f16(value), f16(0.0), f16(1.0)) * SMAA_PACKED_EDGE_MAX));
-	let west: u32 = packed & 1;
-	let north: u32 = (packed >> 1) & 1;
-	return vec2f16(f16(west), f16(north));
-}
-
+// Reads the west (red) and north (green) edge flags of one texel.
 edge_flags_at: fn(coordinate: vec2u) -> vec2f16 {
-	return unpack_edge_flags(fetch(edges, coordinate).x);
-}
-
-edge_next_coordinate: fn(value: u32, extent: u32) -> u32 {
-	if (value + 1 >= extent) {
-		return value;
-	}
-	return value + 1;
+	let texel: vec4f = fetch(edges, coordinate);
+	return vec2f16(f16(texel.x), f16(texel.y));
 }
 
 // Converts a pixel-space sample position to an in-bounds source texel. Weight
@@ -75,62 +69,13 @@ sample_edges_pixel: fn(position: vec2f, extent: vec2u) -> vec2f16 {
 	return edge_flags_at(edge_lower_coordinate(position, extent));
 }
 
-// The second diagonal orientation is always one quarter of a pixel right of a
-// texel center, so it needs just two packed R8 reads instead of a generic 2x2 sample.
-sample_edges_x_quarter_pixel: fn(position: vec2f, extent: vec2u) -> vec2f16 {
-	let lower: vec2u = edge_lower_coordinate(position, extent);
-	let fraction: f16 = 0.25;
-	if (position.x < 0.0 || position.x > f32(extent.x - 1)) {
-		fraction = 0.0;
-	}
-	let lower_edge: vec2f16 = edge_flags_at(lower);
-	let upper_edge: vec2f16 = edge_flags_at(vec2u(edge_next_coordinate(lower.x, extent.x), lower.y));
-	return lower_edge * (1.0 - fraction) + upper_edge * fraction;
-}
-
-// Interpolates the edge flags of texel `lower`, the texels after it on each
-// axis, and the diagonal texel, reading all four with one gather. The gather
-// corner `lower + 1` lies half a texel from every texel center, so the quad is
-// exactly these texels. Past the last row or column the Clamp sampler repeats
-// it, as `edge_next_coordinate` does. Gather order puts the second row in x
-// (left) and y (right), and the first row in z (right) and w (left). Each
-// texel is unpacked before blending, so the result matches four fetches.
-interpolate_edge_quad: fn(lower: vec2u, fraction: vec2f16, extent: vec2u) -> vec2f16 {
-	let quad: vec4f = gather(edges, vec2f(f32(lower.x + 1), f32(lower.y + 1)) / vec2f(f32(extent.x), f32(extent.y)));
-	let lower_row: vec2f16 = unpack_edge_flags(quad.w) * (1.0 - fraction.x)
-		+ unpack_edge_flags(quad.z) * fraction.x;
-	let upper_row: vec2f16 = unpack_edge_flags(quad.x) * (1.0 - fraction.x)
-		+ unpack_edge_flags(quad.y) * fraction.x;
-	return lower_row * (1.0 - fraction.y) + upper_row * fraction.y;
-}
-
-// Orthogonal searches use fixed subpixel phases. Keeping those phases explicit
-// removes normalized-coordinate setup and dynamic fractional interpolation from
-// their hot loops while preserving Clamp sampling at the image boundary.
-sample_edges_fixed_pixel: fn(position: vec2f, fraction: vec2f16, extent: vec2u) -> vec2f16 {
-	let lower: vec2u = edge_lower_coordinate(position, extent);
-	let fraction_x: f16 = fraction.x;
-	let fraction_y: f16 = fraction.y;
-	if (position.x < 0.0 || position.x > f32(extent.x - 1)) {
-		fraction_x = 0.0;
-	}
-	if (position.y < 0.0 || position.y > f32(extent.y - 1)) {
-		fraction_y = 0.0;
-	}
-	return interpolate_edge_quad(lower, vec2f16(fraction_x, fraction_y), extent);
-}
-
-// Endpoint correction and corner tests have LUT-derived phases, so they retain
-// the general pixel-space reconstruction. This is outside the search hot loops.
+// Bilinearly filters the west and north flags at a pixel-space position, whose
+// integer values are texel centers. The flags sit in separate channels, so one
+// hardware sample replaces a gather and four decodes, as in the reference. The
+// Clamp sampler repeats the border texels past the image's edge.
 sample_edges_linear_pixel: fn(position: vec2f, extent: vec2u) -> vec2f16 {
-	let maximum: vec2f = vec2f(f32(extent.x - 1), f32(extent.y - 1));
-	let clamped: vec2f = vec2f(
-		clamp(position.x, 0.0, maximum.x),
-		clamp(position.y, 0.0, maximum.y)
-	);
-	let lower: vec2u = vec2u(u32(floor(clamped.x)), u32(floor(clamped.y)));
-	let fraction: vec2f16 = vec2f16(f16(fract(clamped.x)), f16(fract(clamped.y)));
-	return interpolate_edge_quad(lower, fraction, extent);
+	let texel: vec4f = texture_lod(edges, (position + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y)));
+	return vec2f16(f16(texel.x), f16(texel.y));
 }
 
 decode_diagonal: fn(value: vec2f16) -> vec2f16 {
@@ -153,7 +98,7 @@ search_diagonal_1: fn(pixel_position: vec2f, direction: vec2f, extent: vec2u) ->
 	return vec4f16(distance, continuation, edge.x, edge.y);
 }
 
-// The quarter-pixel shift lets linear filtering retrieve both diagonal edge bits.
+// The quarter-pixel shift lets bilinear filtering retrieve both diagonal edge bits in one sample.
 search_diagonal_2: fn(pixel_position: vec2f, direction: vec2f, extent: vec2u) -> vec4f16 {
 	let position: vec2f = pixel_position + vec2f(0.25, 0.0);
 	let distance: f16 = f16(0.0) - f16(1.0);
@@ -162,7 +107,7 @@ search_diagonal_2: fn(pixel_position: vec2f, direction: vec2f, extent: vec2u) ->
 	for (let step: u32 = 0; step < SMAA_MAX_DIAGONAL_SEARCH_STEPS && continuation > SMAA_DIAGONAL_CONTINUATION; step = step + 1) {
 		position = position + direction;
 		distance = distance + 1.0;
-		edge = decode_diagonal(sample_edges_x_quarter_pixel(position, extent));
+		edge = decode_diagonal(sample_edges_linear_pixel(position, extent));
 		continuation = 0.5 * (edge.x + edge.y);
 	}
 	return vec4f16(distance, continuation, edge.x, edge.y);
@@ -262,7 +207,7 @@ search_x_left: fn(start: vec2f, end: f32, extent: vec2u) -> f32 {
 	let position: vec2f = start;
 	let edge: vec2f16 = vec2f16(0.0, 1.0);
 	for (let step: u32 = 0; step < SMAA_MAX_SEARCH_STEPS && position.x > end && edge.y > SMAA_ORTHOGONAL_CONTINUATION && edge.x <= 0.0; step = step + 1) {
-		edge = sample_edges_fixed_pixel(position, vec2f16(0.75, 0.875), extent);
+		edge = sample_edges_linear_pixel(position, extent);
 		position = position - vec2f(2.0, 0.0);
 	}
 	let correction: f16 = f16(3.25) - SMAA_SEARCH_LENGTH_SCALE * search_length(edge, f16(0.0));
@@ -273,7 +218,7 @@ search_x_right: fn(start: vec2f, end: f32, extent: vec2u) -> f32 {
 	let position: vec2f = start;
 	let edge: vec2f16 = vec2f16(0.0, 1.0);
 	for (let step: u32 = 0; step < SMAA_MAX_SEARCH_STEPS && position.x < end && edge.y > SMAA_ORTHOGONAL_CONTINUATION && edge.x <= 0.0; step = step + 1) {
-		edge = sample_edges_fixed_pixel(position, vec2f16(0.25, 0.875), extent);
+		edge = sample_edges_linear_pixel(position, extent);
 		position = position + vec2f(2.0, 0.0);
 	}
 	let correction: f16 = f16(3.25) - SMAA_SEARCH_LENGTH_SCALE * search_length(edge, f16(0.5));
@@ -284,7 +229,7 @@ search_y_up: fn(start: vec2f, end: f32, extent: vec2u) -> f32 {
 	let position: vec2f = start;
 	let edge: vec2f16 = vec2f16(1.0, 0.0);
 	for (let step: u32 = 0; step < SMAA_MAX_SEARCH_STEPS && position.y > end && edge.x > SMAA_ORTHOGONAL_CONTINUATION && edge.y <= 0.0; step = step + 1) {
-		edge = sample_edges_fixed_pixel(position, vec2f16(0.875, 0.75), extent);
+		edge = sample_edges_linear_pixel(position, extent);
 		position = position - vec2f(0.0, 2.0);
 	}
 	let correction: f16 = f16(3.25) - SMAA_SEARCH_LENGTH_SCALE * search_length(vec2f16(edge.y, edge.x), f16(0.0));
@@ -295,7 +240,7 @@ search_y_down: fn(start: vec2f, end: f32, extent: vec2u) -> f32 {
 	let position: vec2f = start;
 	let edge: vec2f16 = vec2f16(1.0, 0.0);
 	for (let step: u32 = 0; step < SMAA_MAX_SEARCH_STEPS && position.y < end && edge.x > SMAA_ORTHOGONAL_CONTINUATION && edge.y <= 0.0; step = step + 1) {
-		edge = sample_edges_fixed_pixel(position, vec2f16(0.875, 0.25), extent);
+		edge = sample_edges_linear_pixel(position, extent);
 		position = position + vec2f(0.0, 2.0);
 	}
 	let correction: f16 = f16(3.25) - SMAA_SEARCH_LENGTH_SCALE * search_length(vec2f16(edge.y, edge.x), f16(0.5));
@@ -347,55 +292,48 @@ vertical_corners: fn(value: vec2f16, top_coord: vec2f, bottom_coord: vec2f, dist
 	return value * vec2f16(clamp(factor_a, f16(0.0), f16(1.0)), clamp(factor_b, f16(0.0), f16(1.0)));
 }
 
-// Calculates the final reference weights before their former RGBA8 storage step.
-// When `west_used` is false the west-edge weights in z and w stay zero; the
-// north weights in x and y never depend on them.
-blend_weights_at: fn(coordinate: vec2u, extent: vec2u, edge: vec2f16, west_used: bool) -> vec4f16 {
+// Calculates the north-edge weights of one pixel and reports in z whether a
+// diagonal produced them. A diagonal owns its pixel, so the pixel's west-edge
+// weights are dropped when z is set.
+north_weights_at: fn(coordinate: vec2u, extent: vec2u, edge: vec2f16) -> vec3f16 {
 	let pixel_position: vec2f = vec2f(f32(coordinate.x), f32(coordinate.y));
-	let output: vec4f16 = vec4f16(0.0, 0.0, 0.0, 0.0);
-
-	if (edge.y > 0.0) {
-		let diagonal: vec2f16 = vec2f16(0.0, 0.0);
-		if (diagonal_candidate(pixel_position, extent)) {
-			diagonal = diagonal_weights(pixel_position, edge, extent);
-		}
-		output = vec4f16(diagonal.x, diagonal.y, 0.0, 0.0);
-		if (diagonal.x + diagonal.y <= 0.0) {
-			let left_start: vec2f = pixel_position + vec2f(0.0 - 0.25, 0.0 - 0.125);
-			let right_start: vec2f = pixel_position + vec2f(1.25, 0.0 - 0.125);
-			let left_end: f32 = left_start.x - 2.0 * f32(SMAA_MAX_SEARCH_STEPS);
-			let right_end: f32 = right_start.x + 2.0 * f32(SMAA_MAX_SEARCH_STEPS);
-			let left_x: f32 = search_x_left(left_start, left_end, extent);
-			let right_x: f32 = search_x_right(right_start, right_end, extent);
-			let distance: vec2f16 = abs(round(vec2f16(vec2f(left_x, right_x) - vec2f(pixel_position.x, pixel_position.x))));
-			let root_distance: vec2f16 = vec2f16(sqrt(distance.x), sqrt(distance.y));
-			let area: vec2f16 = area_orthogonal(root_distance,
-				sample_edges_linear_pixel(vec2f(left_x, pixel_position.y - 0.25), extent).x,
-				sample_edges_linear_pixel(vec2f(right_x + 1.0, pixel_position.y - 0.25), extent).x);
-			let cornered: vec2f16 = horizontal_corners(area, vec2f(left_x, pixel_position.y), vec2f(right_x, pixel_position.y), distance, extent);
-			output = vec4f16(cornered.x, cornered.y, 0.0, 0.0);
-		}
+	let diagonal: vec2f16 = vec2f16(0.0, 0.0);
+	if (diagonal_candidate(pixel_position, extent)) {
+		diagonal = diagonal_weights(pixel_position, edge, extent);
 	}
-
-	// A detected diagonal owns this pixel, so west-edge processing is skipped.
-	if (west_used && edge.x > 0.0 && output.x + output.y <= 0.0) {
-		let top_start: vec2f = pixel_position + vec2f(0.0 - 0.125, 0.0 - 0.25);
-		let bottom_start: vec2f = pixel_position + vec2f(0.0 - 0.125, 1.25);
-		let top_end: f32 = top_start.y - 2.0 * f32(SMAA_MAX_SEARCH_STEPS);
-		let bottom_end: f32 = bottom_start.y + 2.0 * f32(SMAA_MAX_SEARCH_STEPS);
-		let top_y: f32 = search_y_up(top_start, top_end, extent);
-		let bottom_y: f32 = search_y_down(bottom_start, bottom_end, extent);
-		let distance: vec2f16 = abs(round(vec2f16(vec2f(top_y, bottom_y) - vec2f(pixel_position.y, pixel_position.y))));
-		let root_distance: vec2f16 = vec2f16(sqrt(distance.x), sqrt(distance.y));
-		let area: vec2f16 = area_orthogonal(root_distance,
-			sample_edges_linear_pixel(vec2f(pixel_position.x - 0.25, top_y), extent).y,
-			sample_edges_linear_pixel(vec2f(pixel_position.x - 0.25, bottom_y + 1.0), extent).y);
-		let cornered: vec2f16 = vertical_corners(area, vec2f(pixel_position.x, top_y), vec2f(pixel_position.x, bottom_y), distance, extent);
-		output.z = cornered.x;
-		output.w = cornered.y;
+	if (diagonal.x + diagonal.y > 0.0) {
+		return vec3f16(diagonal.x, diagonal.y, 1.0);
 	}
+	let left_start: vec2f = pixel_position + vec2f(0.0 - 0.25, 0.0 - 0.125);
+	let right_start: vec2f = pixel_position + vec2f(1.25, 0.0 - 0.125);
+	let left_end: f32 = left_start.x - 2.0 * f32(SMAA_MAX_SEARCH_STEPS);
+	let right_end: f32 = right_start.x + 2.0 * f32(SMAA_MAX_SEARCH_STEPS);
+	let left_x: f32 = search_x_left(left_start, left_end, extent);
+	let right_x: f32 = search_x_right(right_start, right_end, extent);
+	let distance: vec2f16 = abs(round(vec2f16(vec2f(left_x, right_x) - vec2f(pixel_position.x, pixel_position.x))));
+	let root_distance: vec2f16 = vec2f16(sqrt(distance.x), sqrt(distance.y));
+	let area: vec2f16 = area_orthogonal(root_distance,
+		sample_edges_linear_pixel(vec2f(left_x, pixel_position.y - 0.25), extent).x,
+		sample_edges_linear_pixel(vec2f(right_x + 1.0, pixel_position.y - 0.25), extent).x);
+	let cornered: vec2f16 = horizontal_corners(area, vec2f(left_x, pixel_position.y), vec2f(right_x, pixel_position.y), distance, extent);
+	return vec3f16(cornered.x, cornered.y, 0.0);
+}
 
-	return output;
+// Calculates the west-edge weights of one pixel from its vertical search.
+west_weights_at: fn(coordinate: vec2u, extent: vec2u) -> vec2f16 {
+	let pixel_position: vec2f = vec2f(f32(coordinate.x), f32(coordinate.y));
+	let top_start: vec2f = pixel_position + vec2f(0.0 - 0.125, 0.0 - 0.25);
+	let bottom_start: vec2f = pixel_position + vec2f(0.0 - 0.125, 1.25);
+	let top_end: f32 = top_start.y - 2.0 * f32(SMAA_MAX_SEARCH_STEPS);
+	let bottom_end: f32 = bottom_start.y + 2.0 * f32(SMAA_MAX_SEARCH_STEPS);
+	let top_y: f32 = search_y_up(top_start, top_end, extent);
+	let bottom_y: f32 = search_y_down(bottom_start, bottom_end, extent);
+	let distance: vec2f16 = abs(round(vec2f16(vec2f(top_y, bottom_y) - vec2f(pixel_position.y, pixel_position.y))));
+	let root_distance: vec2f16 = vec2f16(sqrt(distance.x), sqrt(distance.y));
+	let area: vec2f16 = area_orthogonal(root_distance,
+		sample_edges_linear_pixel(vec2f(pixel_position.x - 0.25, top_y), extent).y,
+		sample_edges_linear_pixel(vec2f(pixel_position.x - 0.25, bottom_y + 1.0), extent).y);
+	return vertical_corners(area, vec2f(pixel_position.x, top_y), vec2f(pixel_position.x, bottom_y), distance, extent);
 }
 
 // Matches conversion through the former RGBA8UNORM weight image before sampling.
@@ -403,15 +341,9 @@ quantize_unorm8: fn(value: f16) -> u32 {
 	return u32(round(clamp(value, f16(0.0), f16(1.0)) * f16(255.0)));
 }
 
-pack_weights: fn(value: vec4f16) -> u32 {
-	return quantize_unorm8(value.x)
-		| (quantize_unorm8(value.y) << 8)
-		| (quantize_unorm8(value.z) << 16)
-		| (quantize_unorm8(value.w) << 24);
-}
-
-cached_weight_at: fn(local: vec2u) -> u32 {
-	return cached_weights[local.y * SMAA_WEIGHT_TILE_WIDTH + local.x];
+// Packs two weights as the two UNORM8 bytes the resolve reads.
+pack_weight_pair: fn(value: vec2f16) -> u32 {
+	return quantize_unorm8(value.x) | (quantize_unorm8(value.y) << 8);
 }
 
 unpack_weight_component: fn(value: u32, shift: u32) -> f16 {
@@ -428,6 +360,14 @@ clamp_tile_add: fn(origin: u32, offset: u32, extent: u32) -> u32 {
 	return origin + offset;
 }
 
+// The shared-tile entry `index` maps to this clamped image coordinate.
+weight_coordinate_at: fn(workgroup_origin: vec2u, index: u32, extent: vec2u) -> vec2u {
+	return vec2u(
+		clamp_tile_add(workgroup_origin.x, index % SMAA_WEIGHT_TILE_WIDTH, extent.x),
+		clamp_tile_add(workgroup_origin.y, index / SMAA_WEIGHT_TILE_WIDTH, extent.y)
+	);
+}
+
 main: fn(input: StageInput) -> void {
 	let coordinate: vec2u = input.thread_id;
 	let extent: vec2u = input.extent;
@@ -437,19 +377,46 @@ main: fn(input: StageInput) -> void {
 	);
 	let lane: u32 = input.thread_idx;
 
-	// Cooperatively calculate the core plus the two resolve look-ahead borders.
-	// All lanes populate shared storage before any partial-workgroup lane returns.
+	if (lane == 0) {
+		atomic_store(job_count, 0);
+	}
+	workgroup_barrier();
+
+	// Edge pixels are few and scattered, so a lane per entry would leave most
+	// lanes of a SIMD group idle while one searches. Each entry instead clears
+	// its weights and appends one job per edge search it needs; the jobs then
+	// run packed onto consecutive lanes.
 	for (let index: u32 = lane; index < SMAA_WEIGHT_TILE_SIZE; index = index + SMAA_RESOLVE_WORKGROUP_THREADS) {
-		let local: vec2u = vec2u(index % SMAA_WEIGHT_TILE_WIDTH, index / SMAA_WEIGHT_TILE_WIDTH);
-		let weight_coordinate: vec2u = vec2u(
-			clamp_tile_add(workgroup_origin.x, local.x, extent.x),
-			clamp_tile_add(workgroup_origin.y, local.y, extent.y)
-		);
-		// Resolve reads only the north weights of the bottom look-ahead row, so
-		// that row skips the west-edge search.
-		let west_used: bool = local.y < SMAA_RESOLVE_WORKGROUP_HEIGHT;
-		let weights: vec4f16 = blend_weights_at(weight_coordinate, extent, edge_flags_at(weight_coordinate), west_used);
-		cached_weights[index] = pack_weights(weights);
+		north_weights[index] = 0;
+		west_weights[index] = 0;
+		let edge: vec2f16 = edge_flags_at(weight_coordinate_at(workgroup_origin, index, extent));
+		if (edge.y > 0.0) {
+			let slot: u32 = atomic_add(job_count, 1);
+			jobs[slot] = index;
+		}
+		// Resolve reads only the north weights of the bottom look-ahead row.
+		if (edge.x > 0.0 && index / SMAA_WEIGHT_TILE_WIDTH < SMAA_RESOLVE_WORKGROUP_HEIGHT) {
+			let slot: u32 = atomic_add(job_count, 1);
+			jobs[slot] = index | SMAA_WEST_JOB;
+		}
+	}
+	workgroup_barrier();
+
+	let count: u32 = atomic_load(job_count);
+	for (let slot: u32 = lane; slot < count; slot = slot + SMAA_RESOLVE_WORKGROUP_THREADS) {
+		let job: u32 = jobs[slot];
+		let index: u32 = job & SMAA_JOB_INDEX_MASK;
+		let weight_coordinate: vec2u = weight_coordinate_at(workgroup_origin, index, extent);
+		if ((job & SMAA_WEST_JOB) != 0) {
+			west_weights[index] = pack_weight_pair(west_weights_at(weight_coordinate, extent));
+		} else {
+			let north: vec3f16 = north_weights_at(weight_coordinate, extent, edge_flags_at(weight_coordinate));
+			let diagonal_flag: u32 = 0;
+			if (north.z > 0.0) {
+				diagonal_flag = SMAA_DIAGONAL_FLAG;
+			}
+			north_weights[index] = pack_weight_pair(vec2f16(north.x, north.y)) | diagonal_flag;
+		}
 	}
 	workgroup_barrier();
 
@@ -457,11 +424,19 @@ main: fn(input: StageInput) -> void {
 		return;
 	}
 	let local: vec2u = coordinate - workgroup_origin;
-	let center_weights: u32 = cached_weight_at(local);
-	let right: f16 = unpack_weight_component(cached_weight_at(local + vec2u(1, 0)), 24);
-	let top: f16 = unpack_weight_component(cached_weight_at(local + vec2u(0, 1)), 8);
-	let bottom: f16 = unpack_weight_component(center_weights, 0);
-	let left: f16 = unpack_weight_component(center_weights, 16);
+	let center: u32 = local.y * SMAA_WEIGHT_TILE_WIDTH + local.x;
+	let right_index: u32 = center + 1;
+	let center_north: u32 = north_weights[center];
+	let right: f16 = 0.0;
+	if ((north_weights[right_index] & SMAA_DIAGONAL_FLAG) == 0) {
+		right = unpack_weight_component(west_weights[right_index], 8);
+	}
+	let top: f16 = unpack_weight_component(north_weights[center + SMAA_WEIGHT_TILE_WIDTH], 8);
+	let bottom: f16 = unpack_weight_component(center_north, 0);
+	let left: f16 = 0.0;
+	if ((center_north & SMAA_DIAGONAL_FLAG) == 0) {
+		left = unpack_weight_component(west_weights[center], 0);
+	}
 	let total: f16 = right + top + bottom + left;
 	if (total < f16(0.00001)) {
 		// An exact texel read avoids filtering work for the overwhelmingly common no-edge path.

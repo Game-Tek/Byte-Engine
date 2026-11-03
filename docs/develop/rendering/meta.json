@@ -9,6 +9,7 @@
 		"color-correction",
 		"color-grading",
 		"film-grain",
+		"smaa",
 		"depth-of-field",
 		"ray-tracing",
 		"shader-variants",

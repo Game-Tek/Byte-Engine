@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- SMAA costs about 29% less: 1.9 ms instead of 2.6 ms for the model viewer at 3840 × 2036 on an Apple M4. Its resolve queues each tile's edge searches in workgroup memory and runs them on consecutive lanes, where each lane searched for its own pixel and most lanes of a SIMD group sat idle. The `SMAA Edges` target is RG8, with the west edge in red and the north edge in green, so each search step takes one bilinear sample where it took a gather and four decodes. The pass reports `stage.smaa-edges` and `stage.smaa-resolve` GPU metrics. Rebake, because both SMAA shaders changed.
+  - Fixed: a pixel with both a north and a west edge kept only its north weights whenever they weren't zero. As in the reference, only a diagonal now drops the west weights, so a rectangle and its transpose resolve alike. About 0.2% of the model viewer's pixels change, all at corners.
+  - The SMAA design note describes the pass, how to measure it, and the rules a change must keep.
+
 - SSGI picks each pixel's ray direction and march offset from a 64 × 64 blue-noise texture, moved each frame by a point of the R2 sequence, where it used interleaved gradient noise. Neighboring rays take far-apart directions, which its 5 × 5 filter averages. The 8 KiB texture ships inside the binary, and a test regenerates it with the void-and-cluster method. Rebake the engine's assets.
 
 - Breaking: BESL layers and signatures replace layout layers. `Scene: layer { ... }` declares a layer, which holds descriptors, at most one push constant block, and tile targets; its descriptors form one descriptor set named by the layer's path. A shader takes the layers it uses as parameters of `main`, which decide its sets and their order, and reaches their members through them, as `scene.meshes`. `Name: fn (scene: Scene) -> void;` declares a signature, `A + B` combines two, and `main: Name { ... }` implements one. A helper that reads a layer takes it as a parameter; generated code drops layer parameters, so the platform shaders are unchanged. The interface reference specifies the rules under Layers and signatures.

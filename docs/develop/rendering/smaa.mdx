@@ -1,0 +1,79 @@
+---
+title: SMAA
+description: Learn how the SMAA pass finds edges and blends them in two tile passes, why its resolve packs edge searches onto lanes, and what a change to it must keep true.
+icon: Scan
+---
+
+Read this page before you change the `smaa` pass, `render_passes/smaa.rs`, or its shaders in `smaa/`. What the pass
+renders is specified under [Pass settings](/docs/reference/rendering#pass-settings) in the rendering reference.
+
+## How the pass is built
+
+The pass is spatial SMAA 1x at the Ultra preset, ported from the reference implementation, in two tile passes.
+
+- **Edge detection.** `edge-detection.besl` caches the perceptual luma of each 16 × 16 tile and its halo in workgroup
+  memory and writes the `SMAA Edges` target: an RG8 image with the west edge in red and the north edge in green.
+- **Weights and resolve.** `blend-weights.besl` computes the blending weights of a tile and its one-pixel right and
+  bottom look-ahead in workgroup memory, then blends each pixel with its neighbors into `SMAA Output`. No weight image
+  reaches memory. The weights are rounded to UNORM8 levels, as the reference's RGBA8 weight image stores them.
+
+The resolve does its edge searches in three steps, each ending at a workgroup barrier:
+
+1. Each lane reads the edges of its weight entries, clears their weights, and appends a job for each edge search an
+   entry needs to a shared list: one for a north edge, which tries the diagonal searches and then the horizontal one,
+   and one for a west edge, which does the vertical search. An atomic counter hands out the slots.
+2. The jobs run on consecutive lanes, one job per lane.
+3. Each pixel reads its four weights and blends.
+
+Edge pixels are few and scattered, so giving each lane its own pixel leaves most lanes idle. In the model viewer at
+3840 × 2036, 4% of pixels had an edge, 17% of the 32-lane groups the GPU runs together held one, and those groups
+averaged 7 busy lanes of 32; 11% of groups ran a north and a west search one after the other. Packing the jobs onto
+lanes made the resolve 19% faster.
+
+Reading the edges as two channels made it a further 20% faster. Each step of a search filters the edges at a fixed
+subpixel position, and with one edge per channel the hardware's bilinear filter does that in one sample. A packed R8
+edge image took a gather and four decodes per step instead. The edge image is mostly zeros, so its second channel
+costs almost nothing to write.
+
+Together, on an Apple M4, the pass went from 2.6 to 1.9 ms at that size: the resolve from 2.05 to 1.31 ms, and edge
+detection stayed at 0.56 ms. A resolve that only copies its input takes about 0.8 ms, so the edge searches cost about
+0.5 ms.
+
+## Measure a change
+
+The pass times its passes as `stage.smaa-edges` and `stage.smaa-resolve`. Turn on the GPU counters, which release
+builds leave off, and read the stage metrics as [Measure performance](/docs/develop#measure-performance) describes:
+
+```bash
+cargo run --release -- --unattended=30 --render.ghi.features.counters=true --viewer.window.width=3840 --viewer.window.height=2160
+```
+
+A release build reads shaders from the resource store and doesn't rebake them. Bake the changed pipelines with the
+application's BELD binary before each run, for example
+`bake byte_engine/rendering/smaa/edge-detection.pipeline byte_engine/rendering/smaa/blend-weights.pipeline`.
+
+Other applications on the GPU stretch a pass's time by two to three times. To compare two versions of a shader, run
+both in one frame, one after the other, alternating which goes first, and compare their medians over a few hundred
+frames.
+
+## Rules a change must keep
+
+- Skip a pixel's west search only when a diagonal produced its north weights, as the reference does. A pixel whose
+  north weights come from the horizontal search keeps its west weights.
+- Every lane in a tile reaches every barrier. A lane past the image's edge returns only after the last barrier.
+- Keep the weight entries the resolve reads in step with the ones step 1 fills: 17 per row for the tile's 16 rows, and
+  the bottom look-ahead row's north weights. That row skips its west searches because the resolve never reads them.
+- Keep the job list large enough for one north and one west job per entry, and the west-job bit above the largest
+  entry index.
+- Round each weight to a UNORM8 level before the resolve reads it.
+
+## Tests
+
+The tests in `render_passes/smaa.rs` run both shaders in the BESL VM.
+
+- `smaa_edge_besl_vm_rejects_constant_regions_and_keeps_dominant_edges` checks the edge threshold, the local contrast
+  adaptation, and the RG8 edge layout.
+- `smaa_fused_resolve_besl_vm_matches_across_tile_borders` checks that a tile's look-ahead weights match the ones the
+  next tile computes for itself.
+- `smaa_fused_resolve_besl_vm_resolves_transposed_rectangles_transposed` checks that a rectangle and its transpose
+  resolve to transposed images, which fails when a corner pixel drops its west weights.

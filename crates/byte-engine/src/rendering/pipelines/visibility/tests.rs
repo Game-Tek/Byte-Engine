@@ -1813,8 +1813,8 @@ fn gtao_writes_white_for_background_and_expected_recessed_foreground_ao() {
 	assert_rgba_close(disabled, [1.0, 1.0, 1.0, 1.0], 0.00001);
 }
 
-/// Verifies a workgroup whose only foreground pixels sit in its last subgroup still evaluates them, so the group-wide
-/// background test combines every subgroup instead of trusting the first.
+/// Verifies a workgroup whose only foreground pixels sit in its last subgroup still evaluates them, so no background
+/// test shared across the workgroup skips them.
 #[test]
 fn gtao_evaluates_foreground_that_only_the_last_subgroup_holds() {
 	let program = asset!("gtao.besl");
@@ -1840,7 +1840,7 @@ fn gtao_evaluates_foreground_that_only_the_last_subgroup_holds() {
 	let recessed = run_gtao_fixture(&program, EXTENT, EXTENT, &depth_texels, center, (1.0, 6, 8));
 	assert!(
 		recessed[0] < 0.999,
-		"Expected the recessed foreground pixel to receive occlusion, found {recessed:?}. The most likely cause is that the GTAO workgroup reduction dropped the last subgroup's required mip and took the background early out."
+		"Expected the recessed foreground pixel to receive occlusion, found {recessed:?}. The most likely cause is that a workgroup-wide background test took the early out for a group with foreground pixels."
 	);
 }
 
@@ -1878,7 +1878,8 @@ fn run_gtao_blur_fixture(
 	rgba(&output, coordinate)
 }
 
-/// Runs the production depth-aware upscale workgroup and reads one full-resolution output pixel.
+/// Runs the production depth-aware upscale workgroup whose 2x2 output quads include `coordinate`, and reads that
+/// full-resolution output pixel.
 fn run_gtao_upscale_fixture(
 	program: &ExecutableProgram,
 	full_extent: [u32; 2],
@@ -1899,7 +1900,8 @@ fn run_gtao_upscale_fixture(
 	descriptors.bind_texture(ResourceSlot::new(1034), &mut ao);
 	descriptors.bind_image(ResourceSlot::new(1035), &mut output);
 	descriptors.bind_texture(ResourceSlot::new(1036), &mut linear_depth);
-	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, coordinate);
+	let quad = [coordinate[0] / 2, coordinate[1] / 2];
+	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, quad);
 	rgba(&output, coordinate)
 }
 

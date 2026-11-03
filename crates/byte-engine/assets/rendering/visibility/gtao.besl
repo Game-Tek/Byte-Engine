@@ -17,10 +17,26 @@ RadiusData: struct {
 	fade: f32,
 }
 
-SampleAddress: struct {
-	coord: vec2u,
-	level: u32,
-	key: u32,
+// The level-zero depths of a pixel's four edge neighbors.
+NeighborDepths: struct {
+	right: f32,
+	left: f32,
+	top: f32,
+	bottom: f32,
+}
+
+// Per mip level, the inverse of the mip's extent times its texel size in half-resolution pixels. Multiplying a
+// half-resolution position by it gives the position's normalized coordinate in that mip.
+LevelScales: struct {
+	level_0: vec2f,
+	level_1: vec2f,
+	level_2: vec2f,
+}
+
+// One step's texel in the half-resolution image, as integer-valued coordinates, and the mip level that serves it.
+SamplePoint: struct {
+	position: vec2f,
+	level: f32,
 }
 
 GTAO_BIAS: const f32 = 0.05;
@@ -40,108 +56,43 @@ GTAO_GOLDEN: const f32 = 0.618033988749;
 // Unlike a world-space area threshold, it is invariant under projection scale.
 GTAO_NORMAL_SIN_SQ_EPSILON: const f32 = 0.00000001;
 
-WORKGROUP_X: const u32 = 16;
-WORKGROUP_Y: const u32 = 8;
-
-// Each mip level caches the rectangle around the workgroup's footprint at that level, indexed by level. The halo is
-// how far the rectangle reaches past the footprint on each side. Complete cached rectangles are 30x22, 24x20, and
-// 20x18. Each row has one padding element to reduce shared-memory bank conflicts.
-CACHE_HALOS: const u32[3] = u32[3](7, 8, 8);
-CACHE_WIDTHS: const u32[3] = u32[3](30, 24, 20);
-CACHE_HEIGHTS: const u32[3] = u32[3](22, 20, 18);
-CACHE_STRIDES: const u32[3] = u32[3](31, 25, 21);
-CACHE_BASES: const u32[3] = u32[3](0, 682, 1182);
-INVALID_SAMPLE_KEY: const u32 = 4294967295;
-
-cached_depth: workgroup<f32, 1560>;
-group_required_mip: workgroup<atomicu32>;
-
 // Jorge Jimenez's interleaved gradient noise:
 // https://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare/
 interleaved_gradient_noise: fn (pixel: vec2u) -> f32 {
 	return fract(52.9829189 * fract(0.06711056 * f32(pixel.x) + 0.00583715 * f32(pixel.y)));
 }
 
-fetch_linear_depth: fn (gtao_set: Gtao, coordinate: vec2u, level: u32, extent: vec2u) -> f32 {
-	let uv: vec2f = vec2f((f32(coordinate.x) + 0.5) / f32(extent.x), (f32(coordinate.y) + 0.5) / f32(extent.y));
-	return texture_lod(gtao_set.depth_pyramid, uv, f32(level)).x;
-}
-
-// Maps a shared-tile coordinate to the corresponding clamped texture coordinate.
-halo_coordinate: fn (base: u32, tile_coordinate: u32, halo: u32, extent: u32) -> u32 {
-	return min(max(base + tile_coordinate, halo) - halo, extent - 1);
-}
-
-// Maps one texture coordinate back into a cache whose logical origin may be off-screen.
-cache_coordinate: fn (coordinate: u32, base: u32, halo: u32) -> u32 {
-	// Every caller selects a mip whose cache includes this coordinate, so the result is nonnegative.
-	return halo + coordinate - base;
-}
-
-// Loads the cached rectangle of mip `level` around the workgroup whose level-zero origin is `group_base`.
-prefetch_level: fn (gtao_set: Gtao, level: u32, group_base: vec2u) -> void {
-	let lane: u32 = thread_idx();
-	let base_extent: vec2u = texture_size(gtao_set.depth_pyramid);
-	// Mip extents halve per level down to one texel.
-	let extent: vec2u = vec2u(max(base_extent.x >> level, 1), max(base_extent.y >> level, 1));
-	let level_group_base: vec2u = vec2u(group_base.x >> level, group_base.y >> level);
-	let halo: u32 = CACHE_HALOS[level];
-	let stride: u32 = CACHE_STRIDES[level];
-
-	for (let tile_y: u32 = lane / WORKGROUP_X; tile_y < CACHE_HEIGHTS[level]; tile_y = tile_y + WORKGROUP_Y) {
-		for (let tile_x: u32 = lane % WORKGROUP_X; tile_x < CACHE_WIDTHS[level]; tile_x = tile_x + WORKGROUP_X) {
-			// The center-depth loads in `main` already initialized the level-zero interior.
-			if (level == 0 && tile_x >= halo && tile_x < halo + WORKGROUP_X && tile_y >= halo && tile_y < halo + WORKGROUP_Y) {
-				continue;
-			}
-
-			let mip_coord: vec2u = vec2u(
-				halo_coordinate(level_group_base.x, tile_x, halo, extent.x),
-				halo_coordinate(level_group_base.y, tile_y, halo, extent.y)
-			);
-			cached_depth[CACHE_BASES[level] + tile_y * stride + tile_x] = fetch_linear_depth(gtao_set, mip_coord, level, extent);
-		}
+// Reads the depth of the mip `level` texel that covers the integer-valued half-resolution `position`. Scaling by the
+// texel size puts the position's texel coordinate in the mip at `position >> level` plus a fraction, whether or not
+// halving the extent dropped a texel, so nearest sampling reads that texel without integer math. The fraction lies at
+// least an eighth of a texel from either edge, and positions past a mip's edge clamp to its last texel.
+hierarchical_depth: fn (gtao_set: Gtao, position: vec2f, level: f32, level_scales: LevelScales) -> f32 {
+	let position_scale: vec2f = level_scales.level_0;
+	if (level == 1.0) {
+		position_scale = level_scales.level_1;
 	}
-}
-
-// Reads the cached depth of the mip `level` texel that covers `base_resolution_coord`. This runs per sample step, so
-// each level's arm indexes the cache tables with a constant instead of reading them at a runtime index.
-cached_hierarchical_depth: fn (base_resolution_coord: vec2u, level: u32, group_base: vec2u) -> f32 {
-	match level {
-		2 => {
-			return cached_depth[
-				CACHE_BASES[2] +
-				cache_coordinate(base_resolution_coord.y >> 2, group_base.y >> 2, CACHE_HALOS[2]) * CACHE_STRIDES[2] +
-				cache_coordinate(base_resolution_coord.x >> 2, group_base.x >> 2, CACHE_HALOS[2])
-			];
-		}
-		1 => {
-			return cached_depth[
-				CACHE_BASES[1] +
-				cache_coordinate(base_resolution_coord.y >> 1, group_base.y >> 1, CACHE_HALOS[1]) * CACHE_STRIDES[1] +
-				cache_coordinate(base_resolution_coord.x >> 1, group_base.x >> 1, CACHE_HALOS[1])
-			];
-		}
-		_ => {
-			return cached_depth[
-				CACHE_BASES[0] +
-				cache_coordinate(base_resolution_coord.y, group_base.y, CACHE_HALOS[0]) * CACHE_STRIDES[0] +
-				cache_coordinate(base_resolution_coord.x, group_base.x, CACHE_HALOS[0])
-			];
-		}
+	if (level == 2.0) {
+		position_scale = level_scales.level_2;
 	}
+	return texture_lod(gtao_set.depth_pyramid, (position + vec2f(0.5, 0.5)) * position_scale, level).x;
 }
 
-// Reconstructs Psample - Pcenter without materializing either complete position.
+// Returns mip `level`'s entry of `LevelScales` for a mip zero of `extent`.
+level_position_scale: fn (extent: vec2u, level: u32) -> vec2f {
+	return vec2f(
+		1.0 / f32(max(extent.x >> level, 1) << level),
+		1.0 / f32(max(extent.y >> level, 1) << level)
+	);
+}
+
+// Reconstructs Psample - Pcenter from the sample's offset in pixels, without materializing either complete position.
 view_position_delta: fn (
 	gtao_view: GtaoView,
-	sample_coord: vec2u,
-	center_coord: vec2u,
+	delta_pixel: vec2f,
 	sample_linear_depth: f32,
 	center_ray: vec2f,
 	center_z: f32
 ) -> vec3f {
-	let delta_pixel: vec2f = vec2f(f32(sample_coord.x) - f32(center_coord.x), f32(sample_coord.y) - f32(center_coord.y));
 	let sample_z: f32 = sample_linear_depth * gtao_view.gtao_view.view_z_sign;
 	let delta_z: f32 = sample_z - center_z;
 	let delta_ray: vec2f = delta_pixel * gtao_view.gtao_view.pixel_to_ray_mul;
@@ -160,7 +111,8 @@ normal_delta: fn (
 	if (sample_depth == 0.0 || (sample_coord.x == center_coord.x && sample_coord.y == center_coord.y)) {
 		return NormalDelta(vec3f(0.0, 0.0, 0.0), false);
 	}
-	return NormalDelta(view_position_delta(gtao_view, sample_coord, center_coord, sample_depth, center_ray, center_z), true);
+	let delta_pixel: vec2f = vec2f(f32(sample_coord.x) - f32(center_coord.x), f32(sample_coord.y) - f32(center_coord.y));
+	return NormalDelta(view_position_delta(gtao_view, delta_pixel, sample_depth, center_ray, center_z), true);
 }
 
 // Returns a derivative oriented toward the positive screen axis. The negative
@@ -186,11 +138,11 @@ camera_facing_normal_winding: fn (gtao_view: GtaoView) -> f32 {
 	return 1.0;
 }
 
-reconstruct_normal_cached: fn (
+reconstruct_normal: fn (
 	gtao_view: GtaoView,
 	pixel: vec2u,
 	extent: vec2u,
-	group_base: vec2u,
+	neighbor_depths: NeighborDepths,
 	center_ray: vec2f,
 	center_z: f32
 ) -> vec3f {
@@ -199,19 +151,14 @@ reconstruct_normal_cached: fn (
 	let top_coord: vec2u = vec2u(pixel.x, max(pixel.y, 1) - 1);
 	let bottom_coord: vec2u = vec2u(pixel.x, min(pixel.y + 1, extent.y - 1));
 
-	// Issue all four shared loads before consuming any result.
-	let right_depth: f32 = cached_hierarchical_depth(right_coord, 0, group_base);
-	let left_depth: f32 = cached_hierarchical_depth(left_coord, 0, group_base);
-	let top_depth: f32 = cached_hierarchical_depth(top_coord, 0, group_base);
-	let bottom_depth: f32 = cached_hierarchical_depth(bottom_coord, 0, group_base);
-
+	// A neighbor past the image edge reads the edge texel, the pixel itself, which `normal_delta` rejects.
 	let dx: NormalDelta = nearer_oriented_delta(
-		normal_delta(gtao_view, right_coord, pixel, right_depth, center_ray, center_z),
-		normal_delta(gtao_view, left_coord, pixel, left_depth, center_ray, center_z)
+		normal_delta(gtao_view, right_coord, pixel, neighbor_depths.right, center_ray, center_z),
+		normal_delta(gtao_view, left_coord, pixel, neighbor_depths.left, center_ray, center_z)
 	);
 	let dy: NormalDelta = nearer_oriented_delta(
-		normal_delta(gtao_view, bottom_coord, pixel, bottom_depth, center_ray, center_z),
-		normal_delta(gtao_view, top_coord, pixel, top_depth, center_ray, center_z)
+		normal_delta(gtao_view, bottom_coord, pixel, neighbor_depths.bottom, center_ray, center_z),
+		normal_delta(gtao_view, top_coord, pixel, neighbor_depths.top, center_ray, center_z)
 	);
 
 	// Without two reliable tangents, returning zero suppresses AO instead of
@@ -246,57 +193,39 @@ compute_radius_data: fn (gtao_view: GtaoView, gtao_set: Gtao, linear_depth: f32)
 	);
 }
 
-// Returns the coarsest mip level that a pixel at `linear_depth` samples, or zero for background.
-maximum_required_mip: fn (gtao_view: GtaoView, gtao_set: Gtao, linear_depth: f32) -> u32 {
-	if (linear_depth == 0.0) {
-		return 0;
-	}
-
-	let screen_radius: f32 = compute_radius_data(gtao_view, gtao_set, linear_depth).screen_radius;
-	let level: u32 = 0;
-	if (screen_radius >= 7.5) {
-		level = level + 1;
-	}
-	if (screen_radius >= 15.5) {
-		level = level + 1;
-	}
-	return level;
-}
-
-make_sample_address: fn (
-	pixel: vec2u,
-	extent: vec2u,
+sample_point: fn (
+	pixel_position: vec2f,
+	maximum_position: vec2f,
 	scaled_direction: vec2f,
 	step_ratio: f32
-) -> SampleAddress {
+) -> SamplePoint {
 	let requested_offset: vec2f = round(scaled_direction * step_ratio);
 	let maximum_offset: f32 = max(abs(requested_offset.x), abs(requested_offset.y));
 
-	let level: u32 = u32(step(8.0, maximum_offset) + step(16.0, maximum_offset));
-	let sample_coord: vec2u = vec2u(
-		u32(clamp(f32(pixel.x) + requested_offset.x, 0.0, f32(extent.x - 1))),
-		u32(clamp(f32(pixel.y) + requested_offset.y, 0.0, f32(extent.y - 1)))
+	let level: f32 = step(8.0, maximum_offset) + step(16.0, maximum_offset);
+	let position: vec2f = vec2f(
+		clamp(pixel_position.x + requested_offset.x, 0.0, maximum_position.x),
+		clamp(pixel_position.y + requested_offset.y, 0.0, maximum_position.y)
 	);
-	// The key identifies the cached texel, so a step that lands on the previous step's texel can skip it.
-	return SampleAddress(sample_coord, level, sample_coord.x | (sample_coord.y << 14) | (level << 28));
+	return SamplePoint(position, level);
 }
 
 update_direction_occlusion: fn (
 	gtao_view: GtaoView,
 	previous_occlusion: f32,
-	sample_coord: vec2u,
+	sample_position: vec2f,
 	sample_linear_depth: f32,
-	pixel: vec2u,
+	pixel_position: vec2f,
 	center_ray: vec2f,
 	center_z: f32,
 	normal: vec3f,
 	inverse_radius_sq: f32
 ) -> f32 {
-	if (sample_linear_depth == 0.0 || (sample_coord.x == pixel.x && sample_coord.y == pixel.y)) {
+	if (sample_linear_depth == 0.0 || (sample_position.x == pixel_position.x && sample_position.y == pixel_position.y)) {
 		return previous_occlusion;
 	}
 
-	let delta: vec3f = view_position_delta(gtao_view, sample_coord, pixel, sample_linear_depth, center_ray, center_z);
+	let delta: vec3f = view_position_delta(gtao_view, sample_position - pixel_position, sample_linear_depth, center_ray, center_z);
 	let distance_sq: f32 = dot(delta, delta);
 	let normalized_distance_sq: f32 = distance_sq * inverse_radius_sq;
 	if (distance_sq <= 0.00001 || normalized_distance_sq > 1.0) {
@@ -309,70 +238,33 @@ update_direction_occlusion: fn (
 }
 
 main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
-	let lane: u32 = input.thread_idx;
-	let local: vec2u = vec2u(lane % WORKGROUP_X, lane / WORKGROUP_X);
 	let pixel: vec2u = input.thread_id;
-	let group_base: vec2u = pixel - local;
 	let extent: vec2u = image_size(gtao_set.ao_output);
-	let in_bounds: bool = pixel.x < extent.x && pixel.y < extent.y;
-	let safe_pixel: vec2u = vec2u(min(pixel.x, extent.x - 1), min(pixel.y, extent.y - 1));
-
-	// One coalesced center load per lane preserves the group-level background early out.
-	let center_linear_depth: f32 = fetch_linear_depth(gtao_set, safe_pixel, 0, extent);
-	let center_shared_index: u32 = CACHE_BASES[0] + (local.y + CACHE_HALOS[0]) * CACHE_STRIDES[0] + local.x + CACHE_HALOS[0];
-	cached_depth[center_shared_index] = center_linear_depth;
-
-	let active: bool = in_bounds && center_linear_depth != 0.0;
-	let required_mip: u32 = 0;
-	if (active) {
-		// Encode active mip zero as one so zero remains the all-background sentinel.
-		required_mip = maximum_required_mip(gtao_view, gtao_set, center_linear_depth) + 1;
-	}
-	// Every lane reaches this reduction before any lane returns, so each subgroup covers all of its lanes.
-	let subgroup_required_mip: u32 = subgroup_max_u32(required_mip);
-	if (lane == 0) {
-		atomic_store(group_required_mip, 0);
-	}
-	workgroup_barrier();
-
-	// One atomic per subgroup combines the subgroup maxima. Maximum is order-independent, so the result matches a
-	// serial scan of every lane, and it stays uniform for the prefetch branches below.
-	if (input.subgroup_lane_index == 0) {
-		atomic_max(group_required_mip, subgroup_required_mip);
-	}
-	workgroup_barrier();
-
-	let encoded_group_mip: u32 = atomic_load(group_required_mip);
-	if (encoded_group_mip == 0) {
-		if (in_bounds) {
-			write(gtao_set.ao_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
-		}
+	if (pixel.x >= extent.x || pixel.y >= extent.y) {
 		return;
 	}
-	let group_maximum_mip: u32 = encoded_group_mip - 1;
-
-	prefetch_level(gtao_set, 0, group_base);
-	if (group_maximum_mip >= 1) {
-		prefetch_level(gtao_set, 1, group_base);
-	}
-	if (group_maximum_mip >= 2) {
-		prefetch_level(gtao_set, 2, group_base);
-	}
-	workgroup_barrier();
-
-	if (in_bounds == false) {
-		return;
-	}
+	// Two gathers read the pixel and its four edge neighbors in mip zero: the first the quad that ends at the pixel, and
+	// the second the quad that starts at it. The sampler clamps neighbors past the image edge to the edge.
+	let inverse_extent: vec2f = vec2f(1.0 / f32(extent.x), 1.0 / f32(extent.y));
+	let pixel_position: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
+	let upper_left: vec4f = gather(gtao_set.depth_pyramid, pixel_position * inverse_extent);
+	let lower_right: vec4f = gather(gtao_set.depth_pyramid, (pixel_position + vec2f(1.0, 1.0)) * inverse_extent);
+	let center_linear_depth: f32 = upper_left.y;
 	if (center_linear_depth == 0.0) {
 		write(gtao_set.ao_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
 		return;
 	}
 
-	// Recompute short-lived values after prefetching instead of carrying them
-	// across the shared-memory loading phase.
-	let center_ray: vec2f = fma(vec2f(f32(pixel.x), f32(pixel.y)), gtao_view.gtao_view.pixel_to_ray_mul, gtao_view.gtao_view.pixel_to_ray_add);
+	let center_ray: vec2f = fma(pixel_position, gtao_view.gtao_view.pixel_to_ray_mul, gtao_view.gtao_view.pixel_to_ray_add);
 	let center_z: f32 = center_linear_depth * gtao_view.gtao_view.view_z_sign;
-	let normal: vec3f = reconstruct_normal_cached(gtao_view, pixel, extent, group_base, center_ray, center_z);
+	let normal: vec3f = reconstruct_normal(
+		gtao_view,
+		pixel,
+		extent,
+		NeighborDepths(lower_right.z, upper_left.x, upper_left.z, lower_right.x),
+		center_ray,
+		center_z
+	);
 	if (dot(normal, normal) == 0.0) {
 		write(gtao_set.ao_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
 		return;
@@ -387,6 +279,12 @@ main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
 	let axis_direction: vec2f = vec2f(rotation_trigonometry.y, rotation_trigonometry.x);
 	let axis_rotation: vec2f = sincos(GTAO_PI / f32(ray_pairs));
 	let total_occlusion: f32 = 0.0;
+	let maximum_position: vec2f = vec2f(f32(extent.x - 1), f32(extent.y - 1));
+	let level_scales: LevelScales = LevelScales(
+		level_position_scale(extent, 0),
+		level_position_scale(extent, 1),
+		level_position_scale(extent, 2)
+	);
 
 	// Keep this loop rolled. Unrolling the complete sample set can raise the
 	// backend's register-allocation tier and reduce occupancy.
@@ -396,8 +294,6 @@ main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
 		let negative_noise: f32 = interleaved_gradient_noise(pixel + vec2u(negative_index * 7, negative_index * 13));
 		let positive_maximum: f32 = 0.0;
 		let negative_maximum: f32 = 0.0;
-		let previous_positive_key: u32 = INVALID_SAMPLE_KEY;
-		let previous_negative_key: u32 = INVALID_SAMPLE_KEY;
 		let scaled_axis_direction: vec2f = axis_direction * radius.screen_radius;
 
 		for (let step: u32 = 1; step <= samples_per_ray; step = step + 1) {
@@ -406,55 +302,40 @@ main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
 			let negative_step_noise: f32 = fract(negative_noise + step_f * GTAO_GOLDEN);
 			let positive_ratio: f32 = (step_f - 0.5 + positive_step_noise * 0.5) * inverse_samples_per_ray;
 			let negative_ratio: f32 = (step_f - 0.5 + negative_step_noise * 0.5) * inverse_samples_per_ray;
-			let positive_sample: SampleAddress = make_sample_address(pixel, extent, scaled_axis_direction, positive_ratio);
-			let negative_sample: SampleAddress = make_sample_address(
-				pixel,
-				extent,
+			let positive_sample: SamplePoint = sample_point(pixel_position, maximum_position, scaled_axis_direction, positive_ratio);
+			let negative_sample: SamplePoint = sample_point(
+				pixel_position,
+				maximum_position,
 				vec2f(0.0, 0.0) - scaled_axis_direction,
 				negative_ratio
 			);
-			let evaluate_positive: bool = positive_sample.key != previous_positive_key;
-			let evaluate_negative: bool = negative_sample.key != previous_negative_key;
-			let positive_depth: f32 = 0.0;
-			let negative_depth: f32 = 0.0;
 
-			// Issue both shared reads before consuming either result.
-			if (evaluate_positive) {
-				positive_depth = cached_hierarchical_depth(positive_sample.coord, positive_sample.level, group_base);
-			}
-			if (evaluate_negative) {
-				negative_depth = cached_hierarchical_depth(negative_sample.coord, negative_sample.level, group_base);
-			}
-
-			if (evaluate_positive) {
-				positive_maximum = update_direction_occlusion(
-					gtao_view,
-					positive_maximum,
-					positive_sample.coord,
-					positive_depth,
-					pixel,
-					center_ray,
-					center_z,
-					normal,
-					radius.inverse_world_radius_sq
-				);
-			}
-			if (evaluate_negative) {
-				negative_maximum = update_direction_occlusion(
-					gtao_view,
-					negative_maximum,
-					negative_sample.coord,
-					negative_depth,
-					pixel,
-					center_ray,
-					center_z,
-					normal,
-					radius.inverse_world_radius_sq
-				);
-			}
-
-			previous_positive_key = positive_sample.key;
-			previous_negative_key = negative_sample.key;
+			// Issue both reads before consuming either result. A step that lands on the previous step's texel repeats
+			// its occlusion, which leaves the maximum unchanged, so every step evaluates without checking for repeats.
+			let positive_depth: f32 = hierarchical_depth(gtao_set, positive_sample.position, positive_sample.level, level_scales);
+			let negative_depth: f32 = hierarchical_depth(gtao_set, negative_sample.position, negative_sample.level, level_scales);
+			positive_maximum = update_direction_occlusion(
+				gtao_view,
+				positive_maximum,
+				positive_sample.position,
+				positive_depth,
+				pixel_position,
+				center_ray,
+				center_z,
+				normal,
+				radius.inverse_world_radius_sq
+			);
+			negative_maximum = update_direction_occlusion(
+				gtao_view,
+				negative_maximum,
+				negative_sample.position,
+				negative_depth,
+				pixel_position,
+				center_ray,
+				center_z,
+				normal,
+				radius.inverse_world_radius_sq
+			);
 		}
 
 		total_occlusion = total_occlusion + positive_maximum + negative_maximum;

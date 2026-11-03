@@ -1,9 +1,12 @@
 // The descriptor set of the final GTAO stage: the full- and half-resolution depths it compares, the occlusion it
 // reconstructs from, and the full-resolution image it writes.
 
+// The half-resolution footprints a quad gathers cross the image edge there, and clamp to the edge texels.
+gtao_upscale_footprint: sampler<{ filter: nearest, mip_filter: nearest, address: clamp }>;
+
 GtaoUpscale: layer {
 	visibility_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
-	ao_source: descriptor<{ type: Texture2D, binding: 1034, access: read }>;
+	ao_source: descriptor<{ type: Texture2D, binding: 1034, access: read, sampler: gtao_upscale_footprint }>;
 	ao_output: descriptor<{ type: StorageImage<r8>, binding: 1035, access: write }>;
-	low_resolution_depth: descriptor<{ type: Texture2D, binding: 1036, access: read }>;
+	low_resolution_depth: descriptor<{ type: Texture2D, binding: 1036, access: read, sampler: gtao_upscale_footprint }>;
 }

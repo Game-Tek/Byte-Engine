@@ -168,15 +168,15 @@ impl GtaoPass {
 		let upscale = set_layouts::GTAO_UPSCALE.binder(upscale_descriptor_set);
 		context.write(&[
 			evaluate.buffer("gtao_parameters", parameters),
-			evaluate.sampled("depth_pyramid", depth_pyramid, depth_sampler),
+			evaluate.texture("depth_pyramid", depth_pyramid),
 			evaluate.image("ao_output", raw_ao_map),
 			blur.sampled("linear_depth", depth_pyramid, depth_sampler),
 			blur.sampled("ao_source", raw_ao_map, ao_sampler),
 			blur.image("ao_output", blurred_ao_map),
 			upscale.sampled("visibility_depth", depth, depth_sampler),
-			upscale.sampled("ao_source", blurred_ao_map, ao_sampler),
+			upscale.texture("ao_source", blurred_ao_map),
 			upscale.image("ao_output", ao_map),
-			upscale.sampled("low_resolution_depth", depth_pyramid, depth_sampler),
+			upscale.texture("low_resolution_depth", depth_pyramid),
 		]);
 
 		Self {
@@ -227,11 +227,12 @@ impl GtaoPass {
 				extent: gtao_extent,
 				workgroup: Extent::new(8, 8, 1),
 			},
+			// Each upscale thread writes a 2x2 quad of the full-resolution image.
 			upscale: ComputeStage {
 				label: "GTAO Denoise and Depth-Aware Upscale",
 				pipeline: upscale,
 				descriptor_sets: [self.view_descriptor_set, self.upscale_descriptor_set],
-				extent,
+				extent: Extent::rectangle(extent.width().div_ceil(2), extent.height().div_ceil(2)),
 				workgroup: Extent::new(8, 8, 1),
 			},
 		}

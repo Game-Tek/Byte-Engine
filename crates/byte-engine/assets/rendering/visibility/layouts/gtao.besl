@@ -7,8 +7,12 @@ GTAOParameters: struct {
 	radial_rays: u32,
 }
 
+// Reads whole mip texels. Halving an odd extent drops a mip's last texel, so the evaluation's reads past a coarse mip's
+// edge clamp to the texel that holds them rather than reading the border.
+gtao_depth_texels: sampler<{ filter: nearest, mip_filter: nearest, address: clamp }>;
+
 Gtao: layer {
 	gtao_parameters: descriptor<{ type: GTAOParameters, binding: 1, access: read, memory: constant }>;
-	depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
+	depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read, sampler: gtao_depth_texels }>;
 	ao_output: descriptor<{ type: StorageImage<r8>, binding: 1034, access: write }>;
 }

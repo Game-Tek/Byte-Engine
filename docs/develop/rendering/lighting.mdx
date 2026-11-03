@@ -37,6 +37,54 @@ reaches as far as its exposed illuminance stays above 1/1024 lux, so reach
 grows with the light's intensity and the camera exposure. The light list holds
 1,024 lights. The renderer logs a warning and leaves out the rest.
 
+## Fog is lit by its own light tiles
+
+Height fog gathers light along each view ray, not at the surface a pixel shows,
+so the light clusters can't light it: a cluster holds the lights near the
+surfaces in it, and leaves out a lamp hanging in the open air in front of them.
+The visibility pipeline lights the fog in two compute passes of its own, after
+the shadow maps and the opaque depth exist:
+
+1. The tile pass splits the screen into a fixed grid of 32 × 18 tiles and
+   records, one bit per light, the lights whose reach overlaps both the tile's
+   view from the camera outward and the fog. The fog is the box of each layer's
+   dense part: its own box, cut at the height where its density falls under
+   0.0001 per meter.
+2. The march runs at half resolution. Each pixel visits its tile's lights and
+   writes the light they scatter toward the camera into the `Fog Light` target.
+   The height fog pass upsamples it with depth-aware weights and adds the sky's
+   light.
+
+The march spends its samples on the light alone, because the fog's
+transmittance has a closed form. A shadowed sun splits the ray into segments
+that each weigh the closed-form transmittance at their start less that at their
+end, so unshadowed fog equals the closed form exactly, and only shadows add
+error (Hillaire, Physically Based and Unified Volumetric Rendering in Frostbite,
+2015). A point or cone light places its samples at equal steps of the angle the
+ray subtends at the light, which cancels its inverse-square falloff (Kulla and
+Fajardo, Importance Sampling Techniques for Path Tracing in Participating
+Media, 2012). Cones also clip the ray to their cone first. One fixed blue-noise
+value per pixel offsets every light's samples, so the grain doesn't flicker and
+no temporal filter is needed.
+
+A change here must keep these rules:
+
+- Without shadows, a sun's marched light equals the closed form at any sample
+  count.
+- The march writes zero alpha only where it marched nothing. The height fog
+  pass reads zero alpha as no march and falls back to the unshadowed sun, which
+  also covers pipelines without a march and frames whose march pipelines are
+  still compiling.
+- Each layer's density and transmittance at a sample come from one exponential
+  of the ray's clipped part of the layer, and a sun's cascades step outward with
+  its samples. Both keep the cost per sample flat; measure `stage.fog-light`
+  before and after a change.
+
+The visibility tests `fog_light_tiles_hold_the_lights_that_reach_the_fog` and
+the `fog_light_of_*` tests guard the culling, the closed form, the shadow
+lookup, and the point and cone estimates against reference integrals. The
+height fog tests guard the blend.
+
 ## Shadow maps belong to the visibility pipeline
 
 The visibility pipeline selects, sizes, and updates the shadow maps lights cast.

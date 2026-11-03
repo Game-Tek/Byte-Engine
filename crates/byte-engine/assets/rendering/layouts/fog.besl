@@ -1,0 +1,87 @@
+// Exponential height fog as both of its passes read it: the height fog pass that blends it over the scene and the
+// visibility pipeline's fog light march. Each layer's density falls off exponentially with height, so the fog along a
+// view ray from the camera has a closed form. Positions are relative to the camera, which keeps them precise far from the
+// world origin.
+
+// One fog layer, packed by `FogLayerShaderData` in `rendering/fog.rs`.
+FogLayer: struct {
+	// x: density at the base height per meter, y: height falloff per meter, z: the density exponent at the camera,
+	// falloff × (base height − camera height), and w: 1 when the layer is confined to the box between its bounds'
+	// corners, which are relative to the camera. Zero density turns a layer off.
+	shape: vec4f,
+	bounds_min: vec4f,
+	bounds_max: vec4f,
+}
+
+// Background pixels hold no surface, so they're fogged as if this far away. Rays that climb out of the fog stop
+// gathering it long before this distance, while level rays stay fully fogged at the horizon.
+BACKGROUND_DISTANCE: const f32 = 100000.0;
+// The largest exponent whose exponential stays finite in f32, with margin.
+MAX_EXPONENT: const f32 = 80.0;
+// Below this total change in exponent along a ray, a series replaces a difference of two nearly equal exponentials.
+LEVEL_RAY_EXPONENT: const f32 = 0.01;
+
+// Narrows the ray interval `range` to where a ray from the camera lies between `low` and `high` along one axis. The
+// result is empty when its start is not below its end.
+clip_to_slab: fn (range: vec2f, direction: f32, low: f32, high: f32) -> vec2f {
+	// A ray parallel to the slab stays inside it, where the camera is, or outside it for its whole length.
+	if (abs(direction) < 0.000001) {
+		if (low > 0.0 || high < 0.0) {
+			return vec2f(0.0, 0.0);
+		}
+		return range;
+	}
+	let reciprocal: f32 = 1.0 / direction;
+	let first: f32 = low * reciprocal;
+	let second: f32 = high * reciprocal;
+	return vec2f(max(range.x, min(first, second)), min(range.y, max(first, second)));
+}
+
+// Returns the part of the view ray up to `distance` meters that `layer` fills, so a march can find the fog up to any
+// point of it without clipping it again: x and y are where the part starts and ends, z the density there, and w how
+// quickly the density falls per meter along the ray. A bounded layer fills the part inside its box, which keeps the
+// closed form: the clipped part is one straight segment. An unused or missed layer fills nothing.
+layer_segment: fn (layer: FogLayer, direction: vec3f, distance: f32) -> vec4f {
+	// Every pixel takes the same branch here, so skipping an unused layer costs nothing.
+	if (layer.shape.x <= 0.0) {
+		return vec4f(0.0, 0.0, 0.0, 0.0);
+	}
+	let range: vec2f = vec2f(0.0, distance);
+	if (layer.shape.w > 0.5) {
+		range = clip_to_slab(range, direction.x, layer.bounds_min.x, layer.bounds_max.x);
+		range = clip_to_slab(range, direction.y, layer.bounds_min.y, layer.bounds_max.y);
+		range = clip_to_slab(range, direction.z, layer.bounds_min.z, layer.bounds_max.z);
+		if (range.y <= range.x) {
+			return vec4f(0.0, 0.0, 0.0, 0.0);
+		}
+	}
+	// Along the ray the density is density · e^(exponent − rate · t).
+	let rate: f32 = layer.shape.y * direction.y;
+	let start_density: f32 = layer.shape.x * exp(clamp(layer.shape.z - rate * range.x, 0.0 - MAX_EXPONENT, MAX_EXPONENT));
+	return vec4f(range.x, range.y, start_density, rate);
+}
+
+// Returns the density of a layer's ray part `segment`, from `layer_segment`, at `t` meters along the ray in x, zero
+// outside the part, and the fog the part puts on the ray up to `t` in y.
+segment_fog: fn (segment: vec4f, t: f32) -> vec2f {
+	let span: f32 = clamp(t, segment.x, segment.y) - segment.x;
+	let change: f32 = segment.w * span;
+	let end_density: f32 = segment.z * exp(min(0.0 - change, MAX_EXPONENT));
+	let density: f32 = 0.0;
+	if (t >= segment.x && t <= segment.y) {
+		density = end_density;
+	}
+	// The density's integral is the difference of the two ends over the rate.
+	if (abs(change) < LEVEL_RAY_EXPONENT) {
+		// span · (1 − e^-change) / change, expanded to second order.
+		return vec2f(density, segment.z * span * (1.0 - change * 0.5 + change * change / 6.0));
+	}
+	return vec2f(density, (segment.z - end_density) / segment.w);
+}
+
+// Returns the fog both layers put along the view ray over `distance` meters. The layers' densities add at every
+// height, so their fog adds too.
+fog_optical_depth: fn (first: FogLayer, second: FogLayer, direction: vec3f, distance: f32) -> f32 {
+	return segment_fog(layer_segment(first, direction, distance), distance).y
+		+ segment_fog(layer_segment(second, direction, distance), distance).y;
+}

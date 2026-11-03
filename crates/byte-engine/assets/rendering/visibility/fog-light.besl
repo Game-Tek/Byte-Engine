@@ -1,0 +1,376 @@
+// Marches each half-resolution pixel's view ray through the height fog and gathers the light the scene's lights scatter
+// toward the camera, shadowed by their shadow maps. The height fog pass upsamples the result and adds the sky's light.
+//
+// The fog's transmittance has a closed form, so the march spends its samples on the light alone, single scattering only.
+// A shadowed directional light splits the ray up to its shadow distance into segments that grow with the square of the
+// distance, which keeps short segments near the camera where shafts show. Each segment weighs the closed-form
+// transmittance at its start less that at its end and takes the light at one point inside it, so unshadowed fog gets
+// exactly the closed-form result (Hillaire, "Physically Based and Unified Volumetric Rendering in Frostbite", 2015).
+// A point or cone light places its samples at equal steps of the angle the ray subtends at the light, which puts them
+// where its inverse-square light is strongest and cancels that falloff from the estimate (Kulla and Fajardo,
+// "Importance Sampling Techniques for Path Tracing in Participating Media", 2012). One blue-noise value per pixel offsets
+// every light's samples, the same every frame.
+//
+// Each pixel marches toward the nearest of the four sink pixels it covers on even checkerboard squares and toward the
+// farthest on odd ones, so the depth-aware upsample finds samples on both sides of an edge (Vos, "Volumetric Light
+// Effects in Killzone: Shadow Fall", 2014).
+
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::layouts::fog::*;
+use ::byte_engine::rendering::visibility::layouts::fog_light::*;
+
+// The side of the tiling blue-noise texture, `BLUE_NOISE_SIDE` in `lookup_textures.rs`.
+BLUE_NOISE_SIDE: const u32 = 64;
+// The cosine of the widest cone the march clips its rays to, 80 degrees; wider cones keep their reach's sphere.
+CONE_CLIP_COSINE: const f32 = 0.1736;
+HALF_FLOAT_MAX: const f32 = 65504.0;
+
+// Returns the density of the fog `t` meters along the ray in x, and the transmittance from the camera to there in y.
+// `first` and `second` are the layers' parts of the ray, from `layer_segment`.
+fog_at: fn (first: vec4f, second: vec4f, t: f32) -> vec2f {
+	let fog: vec2f = segment_fog(first, t) + segment_fog(second, t);
+	return vec2f(fog.x, exp(0.0 - fog.y));
+}
+
+// Returns the Henyey-Greenstein phase function at the scattering angle whose cosine is `cosine`: 1 when the light
+// travels straight toward the camera.
+phase: fn (fog_light: FogLight, cosine: f32) -> f32 {
+	let root: f32 = inversesqrt(max(fog_light.parameters.phase.x - fog_light.parameters.phase.y * cosine, 0.000001));
+	return fog_light.parameters.phase.z * root * root * root;
+}
+
+// Returns the share of light at `uv` in a shadow map: the depth comparisons of the four texels around it, blended
+// bilinearly. Stored depth grows toward the light, so a texel lights a receiver at `receiver_depth` or beyond.
+bilinear_shadow: fn (stored: vec4f, uv: vec2f, extent: vec2u, receiver_depth: f32) -> f32 {
+	let position: vec2f = vec2f(uv.x * f32(extent.x) - 0.5, uv.y * f32(extent.y) - 0.5);
+	let weight: vec2f = vec2f(fract(position.x), fract(position.y));
+	// A gather's x and y are the quad's second row, left then right, and its z and w the first row, right then left.
+	let first_row: f32 = mix(step(stored.w, receiver_depth), step(stored.z, receiver_depth), weight.x);
+	let second_row: f32 = mix(step(stored.x, receiver_depth), step(stored.y, receiver_depth), weight.x);
+	return mix(first_row, second_row, weight.y);
+}
+
+// Returns the share of a directional light reaching a point whose position in a cascade's clip space is `clip`, from the
+// map in shadow-map layer `layer`, cascade `cascade` of its light, or a negative value when the cascade doesn't hold
+// the point.
+cascade_shadow: fn (fog_light: FogLight, clip: vec4f, layer: u32, cascade: u32) -> f32 {
+	if (abs(clip.x) < 1.0 && abs(clip.y) < 1.0 && clip.z >= 0.0 && clip.z <= 1.0) {
+		let uv: vec2f = vec2f(clip.x * 0.5 + 0.5, 0.5 - clip.y * 0.5);
+		// The same margin as surfaces receive, which absorbs the 16-bit rounding of stored depth.
+		let receiver_depth: f32 = clip.z + 1.5 / 65535.0 * f32(cascade + 1);
+		let stored: vec4f = gather(fog_light.directional_shadow_map, uv, layer);
+		return bilinear_shadow(stored, uv, texture_size(fog_light.directional_shadow_map), receiver_depth);
+	}
+	return 0.0 - 1.0;
+}
+
+// Returns the share of a directional light reaching `position`, in world space, from the first of its cascades from
+// `first_cascade` that holds it. The light's cascades are views `first_view` through `first_view + 3`, drawn into
+// shadow-map layers one below their view index. Fog that no cascade holds is lit.
+coarser_cascade_shadow: fn (scene: Scene, fog_light: FogLight, first_view: u32, first_cascade: u32, position: vec3f) -> f32 {
+	for (let cascade: u32 = first_cascade; cascade < 4; cascade = cascade + 1) {
+		let view: u32 = first_view + cascade;
+		let clip: vec4f = scene.views.views[view].view_projection * vec4f(position.x, position.y, position.z, 1.0);
+		let lit: f32 = cascade_shadow(fog_light, clip, view - 1, cascade);
+		if (lit >= 0.0) {
+			return lit;
+		}
+	}
+	return 1.0;
+}
+
+// Returns the share of a cone light reaching `position`, in world space, through its map in view `view`, layer `layer`
+// of the image of size class `size_class`. Fog outside the map's depth range is lit.
+cone_shadow: fn (scene: Scene, fog_light: FogLight, view: u32, size_class: u32, layer: u32, position: vec3f) -> f32 {
+	let clip: vec4f = scene.views.views[view].view_projection * vec4f(position.x, position.y, position.z, 1.0);
+	if (clip.w <= 0.0) {
+		return 1.0;
+	}
+	let ndc: vec3f = vec3f(clip.x, clip.y, clip.z) / clip.w;
+	let receiver_depth: f32 = ndc.z + 2.0 / 65535.0;
+	if (receiver_depth < 0.0 || receiver_depth > 1.0 || abs(ndc.x) >= 1.0 || abs(ndc.y) >= 1.0) {
+		return 1.0;
+	}
+	let uv: vec2f = vec2f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+	let stored: vec4f = gather(fog_light.cone_shadow_maps[size_class], uv, layer);
+	return bilinear_shadow(stored, uv, texture_size(fog_light.cone_shadow_maps[size_class]), receiver_depth);
+}
+
+// Returns the share of a point light reaching the fog `light_to_fog` from it, through cube `cube` of the image of size
+// class `size_class`, whose faces' views start at `view`. Fog outside the cube's depth range is lit.
+point_shadow: fn (scene: Scene, fog_light: FogLight, view: u32, size_class: u32, cube: u32, light_to_fog: vec3f) -> f32 {
+	let near: f32 = scene.views.views[view].near;
+	let far: f32 = scene.views.views[view].far;
+	let face_distance: f32 = max(max(abs(light_to_fog.x), abs(light_to_fog.y)), abs(light_to_fog.z));
+	if (face_distance <= near || face_distance >= far) {
+		return 1.0;
+	}
+	let receiver_depth: f32 = (near * far / face_distance - near) / (far - near);
+	let closest: f32 = texture_cube_array_lod(fog_light.point_shadow_maps[size_class], light_to_fog, cube, 0.0).x;
+	if (closest <= 0.0) {
+		return 1.0;
+	}
+	return step(closest, receiver_depth + 2.0 / 65535.0);
+}
+
+// Narrows `range` to where the ray from the camera along `direction` lies inside a cone whose apex lies at `apex` from
+// the camera, opening around `axis` to the half angle whose cosine is `cosine`. A point p lies inside when
+// (a · (p − apex))² ≥ cos² |p − apex|² on the axis's side of the apex, a quadratic in the ray distance.
+clip_to_cone: fn (range: vec2f, direction: vec3f, apex: vec3f, axis: vec3f, cosine: f32) -> vec2f {
+	let offset: vec3f = vec3f(0.0, 0.0, 0.0) - apex;
+	let squared_cosine: f32 = cosine * cosine;
+	let direction_axis: f32 = dot(direction, axis);
+	let offset_axis: f32 = dot(offset, axis);
+	let a: f32 = direction_axis * direction_axis - squared_cosine;
+	let b: f32 = direction_axis * offset_axis - squared_cosine * dot(direction, offset);
+	let c: f32 = offset_axis * offset_axis - squared_cosine * dot(offset, offset);
+	// Along a ray parallel to the cone's surface the quadratic degenerates; the reach's sphere alone bounds it.
+	if (abs(a) < 0.000001) {
+		return range;
+	}
+	let discriminant: f32 = b * b - a * c;
+	if (discriminant < 0.0) {
+		// A ray that never crosses the surface lies outside the double cone, or inside one nappe for its whole length.
+		if (a < 0.0) {
+			return vec2f(0.0, 0.0);
+		}
+		return range;
+	}
+	let root: f32 = sqrt(discriminant);
+	let first: f32 = (0.0 - b - root) / a;
+	let second: f32 = (0.0 - b + root) / a;
+	let near_root: f32 = min(first, second);
+	let far_root: f32 = max(first, second);
+	if (a < 0.0) {
+		// Between the roots the ray lies in one nappe, which must be the cone's own, ahead of its apex.
+		let middle: f32 = (near_root + far_root) * 0.5;
+		if (offset_axis + middle * direction_axis < 0.0) {
+			return vec2f(0.0, 0.0);
+		}
+		return vec2f(max(range.x, near_root), min(range.y, far_root));
+	}
+	// Past both roots, each end of the ray lies in one nappe: the cone's own one is where the ray heads along its axis.
+	if (direction_axis > 0.0) {
+		return vec2f(max(range.x, far_root), range.y);
+	}
+	return vec2f(range.x, min(range.y, near_root));
+}
+
+// Returns the light a directional light scatters toward the camera over `distance` meters of the ray, per unit of its
+// illuminance and of the fog's albedo. `first` and `second` are the layers' parts of the ray.
+directional_light: fn (
+	scene: Scene,
+	fog_light: FogLight,
+	light_index: u32,
+	direction: vec3f,
+	distance: f32,
+	first: vec4f,
+	second: vec4f,
+	full_transmittance: f32,
+	noise: f32
+) -> f32 {
+	// A sun keeps the direction its light travels in `position`.
+	let travel: vec3f = fog_light.lighting_data.lights[light_index].position;
+	let scattering: f32 = phase(fog_light, dot(direction, vec3f(0.0, 0.0, 0.0) - travel));
+	let first_view: u32 = fog_light.lighting_data.lights[light_index].shadow_view_0;
+	if (first_view == 0) {
+		return scattering * (1.0 - full_transmittance);
+	}
+	// The shadow reaches the far end of the last cascade along the camera's view axis.
+	let forward: f32 = dot(direction, vec3f(fog_light.parameters.camera_forward.x, fog_light.parameters.camera_forward.y, fog_light.parameters.camera_forward.z));
+	let shadow_depth: f32 = scene.views.views[first_view + 3].far;
+	let shadowed: f32 = distance;
+	if (forward * distance > shadow_depth) {
+		shadowed = shadow_depth / forward;
+	}
+	let camera: vec3f = vec3f(fog_light.parameters.camera_position.x, fog_light.parameters.camera_position.y, fog_light.parameters.camera_position.z);
+	// The samples move away from the camera, so they step through the cascades in order. Cascades are orthographic, so
+	// the ray projects to a straight line in each: the camera's projection plus t times the direction's.
+	let cascade: u32 = 0;
+	let cascade_far: f32 = scene.views.views[first_view].far;
+	let clip_origin: vec4f = scene.views.views[first_view].view_projection * vec4f(camera.x, camera.y, camera.z, 1.0);
+	let clip_step: vec4f = scene.views.views[first_view].view_projection * vec4f(direction.x, direction.y, direction.z, 0.0);
+	let samples: u32 = fog_light.parameters.samples;
+	let step_scale: f32 = 1.0 / f32(samples);
+	let lit: f32 = 0.0;
+	let segment_start: f32 = 1.0;
+	for (let sample: u32 = 0; sample < samples; sample = sample + 1) {
+		let end_fraction: f32 = f32(sample + 1) * step_scale;
+		let segment_end: f32 = fog_at(first, second, shadowed * end_fraction * end_fraction).y;
+		let fraction: f32 = (f32(sample) + noise) * step_scale;
+		let t: f32 = shadowed * fraction * fraction;
+		let view_depth: f32 = forward * t;
+		for (let next: u32 = cascade + 1; next < 4 && view_depth >= cascade_far; next = next + 1) {
+			cascade = next;
+			cascade_far = scene.views.views[first_view + next].far;
+			clip_origin = scene.views.views[first_view + next].view_projection * vec4f(camera.x, camera.y, camera.z, 1.0);
+			clip_step = scene.views.views[first_view + next].view_projection * vec4f(direction.x, direction.y, direction.z, 0.0);
+		}
+		let visibility: f32 = cascade_shadow(fog_light, clip_origin + clip_step * t, first_view - 1 + cascade, cascade);
+		// A cascade fitted to the surfaces of its slice may not hold the fog in front of them; a coarser one may.
+		if (visibility < 0.0) {
+			visibility = coarser_cascade_shadow(scene, fog_light, first_view, cascade + 1, camera + direction * t);
+		}
+		lit = lit + (segment_start - segment_end) * visibility;
+		segment_start = segment_end;
+	}
+	// Past the shadow distance the fog is lit.
+	return scattering * (lit + segment_start - full_transmittance);
+}
+
+// Returns the light a point or cone light scatters toward the camera over `distance` meters of the ray, per unit of its
+// intensity and of the fog's albedo, or zero when the ray misses its reach. `first` and `second` are the layers' parts
+// of the ray.
+local_light: fn (
+	scene: Scene,
+	fog_light: FogLight,
+	light_index: u32,
+	light_type: u32,
+	direction: vec3f,
+	distance: f32,
+	first: vec4f,
+	second: vec4f,
+	noise: f32
+) -> f32 {
+	let camera: vec3f = vec3f(fog_light.parameters.camera_position.x, fog_light.parameters.camera_position.y, fog_light.parameters.camera_position.z);
+	let light_position: vec3f = fog_light.lighting_data.lights[light_index].position;
+	let center: vec3f = light_position - camera;
+	let reach: f32 = fog_light.lighting_data.lights[light_index].reach * sqrt(max(fog_light.lighting_data.exposure, 0.0));
+	// The part of the ray inside the reach's sphere.
+	let along: f32 = dot(center, direction);
+	let squared_offset: f32 = max(dot(center, center) - along * along, 0.0);
+	let squared_half_chord: f32 = reach * reach - squared_offset;
+	if (squared_half_chord <= 0.0) {
+		return 0.0;
+	}
+	let half_chord: f32 = sqrt(squared_half_chord);
+	let range: vec2f = vec2f(max(along - half_chord, 0.0), min(along + half_chord, distance));
+	let axis: vec3f = fog_light.lighting_data.lights[light_index].direction;
+	let cone_cosines: vec2f = fog_light.lighting_data.lights[light_index].cone_cosines;
+	if (light_type == CONE_LIGHT && cone_cosines.y > CONE_CLIP_COSINE) {
+		range = clip_to_cone(range, direction, center, axis, cone_cosines.y);
+	}
+	if (range.y <= range.x) {
+		return 0.0;
+	}
+
+	// Equal steps of the angle the ray subtends at the light. A sample at angle θ lies at along + h · tan θ, where h is
+	// the light's distance from the ray, with a density of h / (Δθ · r²) for its distance r from the light.
+	let height: f32 = max(sqrt(squared_offset), 0.0001);
+	let first_angle: f32 = atan2(range.x - along, height);
+	let angle_span: f32 = atan2(range.y - along, height) - first_angle;
+	let shadow_view: u32 = fog_light.lighting_data.lights[light_index].shadow_view_0;
+	let size_class: u32 = fog_light.lighting_data.lights[light_index].shadow_size_class;
+	let shadow_layer: u32 = fog_light.lighting_data.lights[light_index].shadow_layer;
+	let samples: u32 = fog_light.parameters.samples;
+	let gathered: f32 = 0.0;
+	for (let sample: u32 = 0; sample < samples; sample = sample + 1) {
+		let angle: f32 = first_angle + angle_span * (f32(sample) + noise) / f32(samples);
+		let t: f32 = along + height * tan(angle);
+		let position: vec3f = direction * t;
+		let to_light: vec3f = normalize(center - position);
+		let fog: vec2f = fog_at(first, second, t);
+		let light: f32 = fog.x * fog.y * phase(fog_light, dot(direction, to_light));
+		if (light_type == CONE_LIGHT) {
+			let cone_cosine: f32 = dot(axis, vec3f(0.0, 0.0, 0.0) - to_light);
+			light = light * clamp((cone_cosine - cone_cosines.y) / (cone_cosines.x - cone_cosines.y), 0.0, 1.0);
+		}
+		if (light > 0.0 && shadow_view != 0) {
+			if (light_type == POINT_LIGHT) {
+				light = light * point_shadow(scene, fog_light, shadow_view, size_class, shadow_layer, position - center);
+			} else {
+				light = light * cone_shadow(scene, fog_light, shadow_view, size_class, shadow_layer, camera + position);
+			}
+		}
+		gathered = gathered + light;
+	}
+	// The light's 1 / r² cancels against the samples' density, which leaves Δθ / h per sample.
+	return gathered * angle_span / (height * f32(samples));
+}
+
+main: fn (input: StageInput, scene: Scene, fog_light: FogLight) -> void {
+	let pixel: vec2u = input.thread_id;
+	let extent: vec2u = image_size(fog_light.scattered_light);
+	if (pixel.x >= extent.x || pixel.y >= extent.y) {
+		return;
+	}
+	// The sink pixels this one covers, clamped to the sink's last row and column.
+	let sink_extent: vec2u = texture_size(fog_light.depth);
+	let last: vec2u = vec2u(sink_extent.x - 1, sink_extent.y - 1);
+	let first_pixel: vec2u = vec2u(min(pixel.x * 2, last.x), min(pixel.y * 2, last.y));
+	let next_pixel: vec2u = vec2u(min(pixel.x * 2 + 1, last.x), min(pixel.y * 2 + 1, last.y));
+	let corners: vec4f = vec4f(
+		fetch(fog_light.depth, first_pixel).x,
+		fetch(fog_light.depth, vec2u(next_pixel.x, first_pixel.y)).x,
+		fetch(fog_light.depth, vec2u(first_pixel.x, next_pixel.y)).x,
+		fetch(fog_light.depth, next_pixel).x
+	);
+	// Reverse Z grows toward the camera, so the nearest pixel holds the largest depth.
+	let depth: f32 = min(min(corners.x, corners.y), min(corners.z, corners.w));
+	if ((pixel.x + pixel.y) % 2 == 0) {
+		depth = max(max(corners.x, corners.y), max(corners.z, corners.w));
+	}
+	let sink_pixel: vec2u = next_pixel;
+	if (corners.x == depth) {
+		sink_pixel = first_pixel;
+	} else if (corners.y == depth) {
+		sink_pixel = vec2u(next_pixel.x, first_pixel.y);
+	} else if (corners.z == depth) {
+		sink_pixel = vec2u(first_pixel.x, next_pixel.y);
+	}
+
+	// Background pixels hold no surface. Reverse Z puts the near plane at depth 1, which still gives their direction.
+	let is_surface: bool = depth > 0.000001;
+	let ray_depth: f32 = 1.0;
+	if (is_surface) {
+		ray_depth = depth;
+	}
+	let offset: vec4f = fog_light.parameters.pixel_to_camera_offset * vec4f(f32(sink_pixel.x), f32(sink_pixel.y), ray_depth, 1.0);
+	let ray: vec3f = vec3f(offset.x, offset.y, offset.z) * (1.0 / offset.w);
+	let ray_length: f32 = length(ray);
+	let direction: vec3f = ray * (1.0 / ray_length);
+	let distance: f32 = BACKGROUND_DISTANCE;
+	if (is_surface) {
+		distance = ray_length;
+	}
+	let first: vec4f = layer_segment(fog_light.parameters.layers[0], direction, distance);
+	let second: vec4f = layer_segment(fog_light.parameters.layers[1], direction, distance);
+	let full_transmittance: f32 = fog_at(first, second, distance).y;
+	let noise: f32 = fetch(fog_light.blue_noise, vec2u(pixel.x % BLUE_NOISE_SIDE, pixel.y % BLUE_NOISE_SIDE)).x;
+
+	// The tile of the light masks that holds this pixel.
+	let column: u32 = min(sink_pixel.x * FOG_LIGHT_TILE_COLUMNS / sink_extent.x, FOG_LIGHT_TILE_COLUMNS - 1);
+	let row: u32 = min(sink_pixel.y * FOG_LIGHT_TILE_ROWS / sink_extent.y, FOG_LIGHT_TILE_ROWS - 1);
+	let mask_base: u32 = (row * FOG_LIGHT_TILE_COLUMNS + column) * FOG_LIGHT_TILE_MASK_WORDS;
+	let mask_word_count: u32 = (fog_light.lighting_data.light_count + 31) >> 5;
+	let light: vec3f = vec3f(0.0, 0.0, 0.0);
+	for (let mask_word: u32 = 0; mask_word < mask_word_count; mask_word = mask_word + 1) {
+		// Each pass takes the lowest remaining light and clears its bit.
+		for (
+			let light_bits: u32 = fog_light.tile_masks.words[mask_base + mask_word];
+			light_bits != 0;
+			light_bits = light_bits & (light_bits - 1)
+		) {
+			let light_index: u32 = mask_word * 32 + find_lsb(light_bits);
+			let light_type: u32 = fog_light.lighting_data.lights[light_index].type;
+			let scattered: f32 = 0.0;
+			if (light_type == DIRECTIONAL_LIGHT) {
+				scattered = directional_light(scene, fog_light, light_index, direction, distance, first, second, full_transmittance, noise);
+			} else {
+				scattered = local_light(scene, fog_light, light_index, light_type, direction, distance, first, second, noise);
+			}
+			light = light + fog_light.lighting_data.lights[light_index].color * scattered;
+		}
+	}
+	let albedo: vec3f = vec3f(fog_light.parameters.albedo.x, fog_light.parameters.albedo.y, fog_light.parameters.albedo.z);
+	let exposed: vec3f = light * albedo;
+	// Held to the half-float range so a bright glow around a light never overflows to infinity on store.
+	write(fog_light.scattered_light, pixel, vec4f(
+		min(exposed.x, HALF_FLOAT_MAX),
+		min(exposed.y, HALF_FLOAT_MAX),
+		min(exposed.z, HALF_FLOAT_MAX),
+		log2(1.0 + distance)
+	));
+}

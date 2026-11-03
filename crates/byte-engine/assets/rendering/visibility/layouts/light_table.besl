@@ -1,7 +1,7 @@
 // The scene's light table, as the visibility pipeline uploads it for its lighting passes (`LightingData` in
 // `shader_data.rs`). This layer declares types only; a layer module that uses it, such as `light_clusters.besl` or
-// `probe_gi.besl`, declares the buffer that holds the table. Material evaluation declares its own copy, which names the
-// shadow assignments only it reads.
+// `fog_light.besl`, declares the buffer that holds the table. Material evaluation declares its own copy, which reads
+// the shadow assignments as an array.
 
 // The light types a record's `type` holds.
 POINT_LIGHT: const u32 = 0;
@@ -17,16 +17,18 @@ Light: struct {
 	// The cosines of a cone's inner and outer half angles.
 	cone_cosines: vec2f,
 	type: u32,
-	// The readers of this layer never read shadow assignments. Eight scalars hold the bytes of the `u32[4]`, size
-	// class, and padding that material evaluation declares, at the same offsets on every backend.
-	_shadow_view_0: u32,
-	_shadow_view_1: u32,
-	_shadow_view_2: u32,
-	_shadow_view_3: u32,
-	_shadow_view_4: u32,
-	_shadow_view_5: u32,
-	_shadow_view_6: u32,
-	_shadow_view_7: u32,
+	// A sun's four cascade views, or a cone's view or a point's first cube-face view in the first, zero without a shadow.
+	// Eight scalars hold the bytes of the `u32[4]`, size class, and padding that material evaluation declares, at the
+	// same offsets on every backend.
+	shadow_view_0: u32,
+	shadow_view_1: u32,
+	shadow_view_2: u32,
+	shadow_view_3: u32,
+	// The size class of a cone or point light's map, which indexes the cone or point shadow map images.
+	shadow_size_class: u32,
+	_padding_0: u32,
+	_padding_1: u32,
+	_padding_2: u32,
 	shadow_layer: u32,
 	ies_profile_texture: u32,
 	ies_c0_tangent: vec2u16,

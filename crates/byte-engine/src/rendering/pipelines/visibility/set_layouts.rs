@@ -62,6 +62,11 @@ layout!(
 	"layouts::cascade_fit::CascadeFit"
 );
 layout!(LIGHT_CLUSTERS, "layouts::light_clusters::LightClusters");
+layout!(
+	/// The per-sink set the fog light tile pass and march read the light table, the shadow maps, and the fog through.
+	FOG_LIGHT,
+	"layouts::fog_light::FogLight"
+);
 layout!(SKINNING, "layouts::skinning::Skinning");
 layout!(
 	/// The screen view constants and linear depth pyramid a pass that marches screen-space rays reads.
@@ -133,7 +138,7 @@ mod tests {
 	use std::mem::size_of;
 
 	use super::super::layout::ShaderMeshletData;
-	use super::super::render_pass::ScreenViewData;
+	use super::super::render_pass::{FogLightShaderParameters, ScreenViewData};
 	use super::super::shader_data::{
 		LightClusterParameters, LightingData, MaterialData, ReflectionShaderParameters, ShaderMesh, ShaderViewData,
 	};
@@ -156,6 +161,8 @@ mod tests {
 		assert_eq!(stride(&SCENE, "materials"), size_of::<MaterialData>());
 		assert_eq!(stride(&MATERIAL_EVALUATION, "lighting_data"), size_of::<LightingData>());
 		assert_eq!(stride(&LIGHT_CLUSTERS, "lighting_data"), size_of::<LightingData>());
+		assert_eq!(stride(&FOG_LIGHT, "lighting_data"), size_of::<LightingData>());
+		assert_eq!(stride(&FOG_LIGHT, "parameters"), size_of::<FogLightShaderParameters>());
 		assert_eq!(
 			stride(&MATERIAL_EVALUATION, "light_cluster_parameters"),
 			size_of::<LightClusterParameters>()
@@ -187,6 +194,7 @@ mod tests {
 			&SHADOW_DEPTH_PYRAMID,
 			&CASCADE_FIT,
 			&LIGHT_CLUSTERS,
+			&FOG_LIGHT,
 			&SKINNING,
 			&SCREEN_TRACE,
 			&SSGI,

@@ -3079,6 +3079,12 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 			Settings::compute(Extent::line(super::layout::LIGHT_CLUSTER_MASK_WORDS as u32)),
 		),
 		(
+			"fog_light_tiles",
+			asset_source!("fog-light-tiles.besl"),
+			Settings::compute(Extent::line(32)),
+		),
+		("fog_light", asset_source!("fog-light.besl"), tile()),
+		(
 			"directional_shadow_cascade_fit",
 			asset_source!("directional-shadow-cascade-fit.besl"),
 			Settings::compute(Extent::line(4)),
@@ -3934,4 +3940,383 @@ fn a_mesh_one_stream_cannot_hold_takes_nothing_from_the_others() {
 	// Two meshes still fill every stream, so the rejected mesh left no range behind.
 	assert!(take(geometry_fixture_mesh()).is_ok());
 	assert!(take(geometry_fixture_mesh()).is_ok());
+}
+
+/* Fog light */
+
+const FOG_LIGHT_LIGHTING_SLOT: ResourceSlot = ResourceSlot::new(1033);
+const FOG_LIGHT_PARAMETERS_SLOT: ResourceSlot = ResourceSlot::new(1034);
+const FOG_LIGHT_TILE_MASKS_SLOT: ResourceSlot = ResourceSlot::new(1035);
+const FOG_LIGHT_DEPTH_SLOT: ResourceSlot = ResourceSlot::new(1036);
+const FOG_LIGHT_BLUE_NOISE_SLOT: ResourceSlot = ResourceSlot::new(1037);
+const FOG_LIGHT_DIRECTIONAL_SHADOW_SLOT: ResourceSlot = ResourceSlot::new(1038);
+const FOG_LIGHT_OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(1039);
+/// The tile grid's columns, as `fog_light.besl` declares it.
+const FOG_LIGHT_TILE_COLUMNS: u32 = 32;
+
+/// Writes `parameters` into the fog light parameter buffer of `program`.
+fn fog_light_parameters(
+	program: &ExecutableProgram,
+	parameters: &super::render_pass::FogLightShaderParameters,
+) -> besl::vm::Buffer {
+	let mut buffer = buffer(program, FOG_LIGHT_PARAMETERS_SLOT);
+	for (field, value) in [
+		(
+			"pixel_to_camera_offset",
+			Value::Mat4F(bytemuck::cast(parameters.pixel_to_camera_offset)),
+		),
+		("view", Value::Mat4x3F(bytemuck::cast(parameters.view))),
+		("camera_position", Value::Vec4F(parameters.camera_position)),
+		("camera_forward", Value::Vec4F(parameters.camera_forward)),
+		("phase", Value::Vec4F(parameters.phase)),
+		("albedo", Value::Vec4F(parameters.albedo)),
+		("edge_slopes", Value::Vec2F(parameters.edge_slopes)),
+		("samples", Value::U32(parameters.samples)),
+	] {
+		buffer.write(field, value).expect("fog light parameter");
+	}
+	for index in 0..2 {
+		let layer = parameters.layers[index];
+		for (field, value) in [
+			("shape", layer.shape),
+			("bounds_min", layer.bounds_min),
+			("bounds_max", layer.bounds_max),
+		] {
+			buffer
+				.write_indexed_field("layers", index, field, Value::Vec4F(value))
+				.expect("fog light layer");
+		}
+		let volume = parameters.volumes[index];
+		for (field, value) in [("min", volume.min), ("max", volume.max)] {
+			buffer
+				.write_indexed_field("volumes", index, field, Value::Vec4F(value))
+				.expect("fog light volume");
+		}
+	}
+	buffer
+}
+
+/// Uploads `lights` into the fog light passes' light table at `exposure`.
+fn fog_light_table(program: &ExecutableProgram, lights: &[super::shader_data::LightData], exposure: f32) -> besl::vm::Buffer {
+	let mut lighting = buffer(program, FOG_LIGHT_LIGHTING_SLOT);
+	lighting
+		.write("light_count", Value::U32(lights.len() as u32))
+		.expect("light count");
+	lighting.write("exposure", Value::F32(exposure)).expect("exposure");
+	for (index, light) in lights.iter().enumerate() {
+		for (field, value) in [
+			("position", Value::Vec3F(light.position.into())),
+			("color", Value::Vec3F(light.color.into())),
+			("direction", Value::Vec3F(light.direction.into())),
+			("cone_cosines", Value::Vec2F(light.cone_cosines)),
+			("type", Value::U32(light.light_type)),
+			("shadow_view_0", Value::U32(light.shadow_views[0])),
+			("shadow_size_class", Value::U32(light.shadow_size_class)),
+			("shadow_layer", Value::U32(light.shadow_layer)),
+			("reach", Value::F32(light.reach)),
+		] {
+			lighting
+				.write_indexed_field("lights", index, field, value)
+				.expect("light field");
+		}
+	}
+	lighting
+}
+
+/// Runs the fog light tile pass over `lights` for the tile at `column` and `row` of `sink`, and returns its first mask
+/// word.
+fn run_fog_light_tiles(
+	fog: &crate::rendering::ExponentialHeightFog,
+	sink: &crate::rendering::Sink,
+	lights: &[super::shader_data::LightData],
+	exposure: f32,
+	[column, row]: [u32; 2],
+) -> u32 {
+	let program = asset!("fog-light-tiles.besl");
+	let mut parameters = fog_light_parameters(&program, &super::render_pass::fog_light_shader_parameters(fog, sink));
+	let mut lighting = fog_light_table(&program, lights, exposure);
+	let mut masks = buffer(&program, FOG_LIGHT_TILE_MASKS_SLOT);
+	let tile = row * FOG_LIGHT_TILE_COLUMNS + column;
+	let configs: [ExecutionConfig; 32] =
+		std::array::from_fn(|lane| lane_config(lane as u32).with_threadgroup_position(tile));
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(FOG_LIGHT_LIGHTING_SLOT, &mut lighting);
+	descriptors.bind_buffer(FOG_LIGHT_PARAMETERS_SLOT, &mut parameters);
+	descriptors.bind_buffer(FOG_LIGHT_TILE_MASKS_SLOT, &mut masks);
+	run_workgroup(&program, descriptors, &configs);
+	read_u32(&masks, tile as usize * 32)
+}
+
+/// Returns a camera at the origin that looks along +Z through a 2x2 sink, with a field of view narrow enough that
+/// every pixel looks along the axis.
+fn fog_light_sink() -> crate::rendering::Sink {
+	let view = crate::rendering::View::new_perspective(
+		math::Degrees::new(0.5),
+		1.0,
+		0.1,
+		100.0,
+		math::Point::origin(),
+		math::UnitVector::z_axis(),
+	);
+	crate::rendering::Sink::new(view, utils::Extent::square(2), 0)
+}
+
+/// Returns the reverse-Z depth [`fog_light_sink`] stores for a surface `distance` meters ahead.
+fn fog_light_depth(distance: f32) -> f32 {
+	let sink = fog_light_sink();
+	let clip = sink.view().projection() * maths_rs::Vec4f::new(0.0, 0.0, distance, 1.0);
+	clip.z / clip.w
+}
+
+/// The `FogLightShadows` struct holds what a march fixture's shadowed directional light reads: the views of its four
+/// cascades from view 1, and the depth every texel of its shadow map stores.
+struct FogLightShadows {
+	view_projection: [f32; 16],
+	stored_depth: f32,
+}
+
+/// Marches the single pixel of [`fog_light_sink`]'s half-resolution image through `fog` toward a surface at reverse-Z
+/// `depth`, lit by `lights`, every one of which the pixel's tile holds. Returns the scattered light and the distance
+/// channel.
+fn run_fog_light(
+	fog: &crate::rendering::ExponentialHeightFog,
+	lights: &[super::shader_data::LightData],
+	depth: f32,
+	shadows: Option<FogLightShadows>,
+) -> [f32; 4] {
+	let program = asset!("fog-light.besl");
+	let sink = fog_light_sink();
+	let mut parameters = fog_light_parameters(&program, &super::render_pass::fog_light_shader_parameters(fog, &sink));
+	let mut lighting = fog_light_table(&program, lights, 1.0);
+	// The sink's one march pixel lies in the first tile, which holds every light. The tile pass's own tests cover which
+	// lights a tile holds.
+	let mut masks = buffer(&program, FOG_LIGHT_TILE_MASKS_SLOT);
+	masks
+		.write_array_element(0, Value::U32((1u32 << lights.len()) - 1))
+		.expect("fog light tile mask");
+	let mut depth_texture = texture_2d(2, 2, &[[depth, 0.0, 0.0, 1.0]; 4]);
+	// The middle of the noise's range places every sample in the middle of its step.
+	let mut blue_noise = texture_2d(1, 1, &[[0.5, 0.5, 0.0, 1.0]]);
+	let mut views = buffer(&program, VIEWS_SLOT);
+	let mut shadow_map = Texture::new_3d(4, 4, 4).expect("shadow map");
+	if let Some(shadows) = &shadows {
+		for cascade in 0..4 {
+			views
+				.write_array_member(1 + cascade, "view_projection", Value::Mat4F(shadows.view_projection))
+				.expect("cascade view");
+			views
+				.write_array_member(1 + cascade, "far", Value::F32(1000.0))
+				.expect("cascade far");
+			for texel in 0..16 {
+				shadow_map
+					.write_3d([texel % 4, texel / 4, cascade as u32], [shadows.stored_depth, 0.0, 0.0, 1.0])
+					.expect("shadow texel");
+			}
+		}
+	}
+	let mut output = empty_image(1, 1);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(VIEWS_SLOT, &mut views);
+	descriptors.bind_buffer(FOG_LIGHT_LIGHTING_SLOT, &mut lighting);
+	descriptors.bind_buffer(FOG_LIGHT_PARAMETERS_SLOT, &mut parameters);
+	descriptors.bind_buffer(FOG_LIGHT_TILE_MASKS_SLOT, &mut masks);
+	descriptors.bind_texture(FOG_LIGHT_DEPTH_SLOT, &mut depth_texture);
+	descriptors.bind_texture(FOG_LIGHT_BLUE_NOISE_SLOT, &mut blue_noise);
+	descriptors.bind_texture(FOG_LIGHT_DIRECTIONAL_SHADOW_SLOT, &mut shadow_map);
+	descriptors.bind_image(FOG_LIGHT_OUTPUT_SLOT, &mut output);
+	run_at(&program, &mut descriptors, [0, 0]);
+	drop(descriptors);
+	rgba(&output, [0, 0])
+}
+
+/// Returns a sun of `lux` lux whose light travels along `travel`, shadowed from view 1 when `shadowed`.
+fn fog_light_sun(lux: f32, travel: math::UnitVector, shadowed: bool) -> super::shader_data::LightData {
+	use crate::rendering::lights::{DirectionalLight, LightColor, Lights, PhotometricIntensity};
+
+	let sun = Lights::Direction(
+		DirectionalLight::new(
+			LightColor::LinearSrgb(maths_rs::Vec3f::new(1.0, 1.0, 1.0)),
+			PhotometricIntensity::Illuminance {
+				lux,
+				measurement_distance_m: 1.0,
+			},
+		)
+		.expect("physical directional light"),
+	);
+	let shadow = if shadowed {
+		super::shadow_selection::LightShadow::Directional { slot: 0 }
+	} else {
+		super::shadow_selection::LightShadow::None
+	};
+	let transform =
+		crate::gameplay::Transform::from_position(math::Point::origin()).rotation(math::orientation_from_direction(travel));
+	super::scene::light_data(&sun, &transform, shadow, None)
+}
+
+/// Returns uniform fog of `density` per meter, lit by nothing but the lights, that scatters with anisotropy
+/// `anisotropy` and takes `samples` light samples.
+fn uniform_fog(density: f32, anisotropy: f32, samples: u32) -> crate::rendering::ExponentialHeightFog {
+	use crate::rendering::{ExponentialHeightFog, FogLayer};
+
+	ExponentialHeightFog::new(FogLayer::new(density).with_height_falloff(0.0))
+		.with_anisotropy(anisotropy)
+		.with_light_samples(samples)
+}
+
+/// Returns the Henyey-Greenstein phase function with anisotropy `g` at a scattering angle whose cosine is `cosine`.
+fn henyey_greenstein(g: f32, cosine: f32) -> f32 {
+	(1.0 - g * g) / (4.0 * std::f32::consts::PI * (1.0 + g * g - 2.0 * g * cosine).powf(1.5))
+}
+
+/// Integrates, along the view axis from the camera to `distance`, the light that `intensity` candela at `light`
+/// scatter toward the camera in uniform fog of `density`, weighting each point by `falloff` of the direction from the
+/// light to it. A reference for the march's estimate.
+fn reference_local_fog_light(
+	light: [f32; 3],
+	intensity: f32,
+	density: f32,
+	anisotropy: f32,
+	distance: f32,
+	falloff: impl Fn([f32; 3]) -> f32,
+) -> f32 {
+	const STEPS: usize = 200_000;
+	let step = distance / STEPS as f32;
+	(0..STEPS)
+		.map(|index| {
+			let t = (index as f32 + 0.5) * step;
+			let to_light = [light[0], light[1], light[2] - t];
+			let squared = to_light.iter().map(|axis| axis * axis).sum::<f32>();
+			let length = squared.sqrt();
+			let light_to_fog = to_light.map(|axis| -axis / length);
+			density * (-density * t).exp() * intensity / squared * henyey_greenstein(anisotropy, to_light[2] / length)
+				* falloff(light_to_fog)
+				* step
+		})
+		.sum()
+}
+
+/// Verifies a tile holds directional lights, and point lights whose reach overlaps both the tile's view and the fog,
+/// with one bit per light-table entry.
+#[test]
+fn fog_light_tiles_hold_the_lights_that_reach_the_fog() {
+	use math::{Point, UnitVector};
+
+	use crate::rendering::{ExponentialHeightFog, FogLayer};
+
+	let sink = crate::rendering::Sink::new(fixture_camera(1.0), utils::Extent::square(64), 0);
+	let forward = UnitVector::z_axis();
+	let lights = [
+		// 20 m ahead, in the fog, on the edge of the tile right of the image's center.
+		uploaded_light(light_cluster_fixture_light(false), Point::new(0.0, 0.0, 20.0), forward),
+		// Behind the camera, 20 m away.
+		uploaded_light(light_cluster_fixture_light(false), Point::new(0.0, 0.0, -20.0), forward),
+		fog_light_sun(100_000.0, -UnitVector::y_axis(), false),
+	];
+	// At this exposure each point light reaches 10 m.
+	let dim = 1.0 / 1024.0;
+	let center_tile = [16, 9];
+	let layer = FogLayer::new(0.1).with_height_falloff(1.0);
+	// The density falls to 0.0001 ln(1000) ≈ 6.9 m above the base height.
+	let around_the_light = ExponentialHeightFog::new(layer);
+	let far_below_the_light = ExponentialHeightFog::new(layer.with_base_height(-20.0));
+	let beside_the_light = ExponentialHeightFog::new(FogLayer::new(0.1).with_bounds(math::AABB::new(
+		Point::new(20.0, -1.0, 15.0),
+		Point::new(30.0, 1.0, 25.0),
+	)));
+
+	assert_eq!(run_fog_light_tiles(&around_the_light, &sink, &lights, dim, center_tile), 0b101);
+	assert_eq!(run_fog_light_tiles(&far_below_the_light, &sink, &lights, dim, center_tile), 0b100);
+	assert_eq!(run_fog_light_tiles(&beside_the_light, &sink, &lights, dim, center_tile), 0b100);
+	// A tile at the image's left edge looks away from the light ahead.
+	assert_eq!(run_fog_light_tiles(&around_the_light, &sink, &lights, dim, [0, 9]), 0b100);
+}
+
+/// Verifies an unshadowed sun lights the fog by the closed form, without samples: its illuminance times the phase
+/// function times the fog's opacity, with the marched distance in alpha.
+#[test]
+fn fog_light_of_an_unshadowed_sun_is_the_closed_form() {
+	let density = 0.1;
+	let lux = 10.0;
+	// Looking straight up the sun's light, which travels toward the camera.
+	let sun = fog_light_sun(lux, -math::UnitVector::z_axis(), false);
+
+	let light = run_fog_light(&uniform_fog(density, 0.5, 1), &[sun], fog_light_depth(5.0), None);
+
+	let expected = lux * henyey_greenstein(0.5, 1.0) * (1.0 - (-density * 5.0f32).exp());
+	assert_rgba_close(light, [expected, expected, expected, (1.0f32 + 5.0).log2()], expected * 1e-3);
+}
+
+/// Verifies a shadowed sun lights the fog only where its shadow map leaves it lit: fully with no occluder, and not at
+/// all with one above every texel.
+#[test]
+fn fog_light_of_a_shadowed_sun_follows_its_shadow_map() {
+	let density = 0.1;
+	let sun = fog_light_sun(10.0, -math::UnitVector::z_axis(), true);
+	// An orthographic cascade, in columns, that holds the view axis's first 10 m: x across it, z down it, and every point
+	// at a depth of 0.5.
+	let view_projection = [
+		0.1, 0.0, 0.0, 0.0, //
+		0.0, 0.0, 0.0, 0.0, //
+		0.0, 0.1, 0.0, 0.0, //
+		0.0, -0.5, 0.5, 1.0,
+	];
+	let shadows = |stored_depth| {
+		Some(FogLightShadows {
+			view_projection,
+			stored_depth,
+		})
+	};
+	let fog = uniform_fog(density, 0.0, 8);
+
+	let lit = run_fog_light(&fog, &[sun], fog_light_depth(5.0), shadows(0.0));
+	let shadowed = run_fog_light(&fog, &[sun], fog_light_depth(5.0), shadows(1.0));
+
+	let expected = 10.0 * henyey_greenstein(0.0, 1.0) * (1.0 - (-density * 5.0f32).exp());
+	assert_rgba_close(lit, [expected, expected, expected, lit[3]], expected * 1e-3);
+	assert_rgba_close(shadowed, [0.0, 0.0, 0.0, shadowed[3]], 1e-6);
+}
+
+/// Verifies the march's estimate of a point light's light in the fog matches the scattering integral.
+#[test]
+fn fog_light_of_a_point_light_matches_the_scattering_integral() {
+	use math::{Point, UnitVector};
+
+	let density = 0.05;
+	let anisotropy = 0.3;
+	let light = uploaded_light(light_cluster_fixture_light(false), Point::new(1.0, 0.0, 4.0), UnitVector::z_axis());
+
+	let marched = run_fog_light(&uniform_fog(density, anisotropy, 64), &[light], fog_light_depth(8.0), None);
+
+	let expected = reference_local_fog_light([1.0, 0.0, 4.0], 100.0, density, anisotropy, 8.0, |_| 1.0);
+	assert!(
+		(marched[0] - expected).abs() <= expected * 0.02,
+		"The march's point light estimate is off. The most likely cause is a wrong equi-angular weight: marched {marched:?}, expected {expected}"
+	);
+}
+
+/// Verifies a cone light lights only the fog inside its cone: a cone above the view axis pointing down at it matches
+/// the scattering integral with its angular falloff, and one pointing up lights nothing.
+#[test]
+fn fog_light_of_a_cone_light_stays_inside_its_cone() {
+	use math::{Point, UnitVector};
+
+	let density = 0.05;
+	let apex = Point::new(0.0, 2.0, 4.0);
+	let fog = uniform_fog(density, 0.0, 64);
+	let down = uploaded_light(light_cluster_fixture_light(true), apex, -UnitVector::y_axis());
+	let up = uploaded_light(light_cluster_fixture_light(true), apex, UnitVector::y_axis());
+
+	let marched = run_fog_light(&fog, &[down], fog_light_depth(8.0), None);
+	let away = run_fog_light(&fog, &[up], fog_light_depth(8.0), None);
+
+	// The fixture cone's inner and outer half angles are 15° and 30°.
+	let (inner, outer) = (15f32.to_radians().cos(), 30f32.to_radians().cos());
+	let expected = reference_local_fog_light([0.0, 2.0, 4.0], 100.0, density, 0.0, 8.0, |direction| {
+		((-direction[1] - outer) / (inner - outer)).clamp(0.0, 1.0)
+	});
+	assert!(
+		(marched[0] - expected).abs() <= expected * 0.03,
+		"The march's cone light estimate is off. The most likely cause is a wrong cone clip: marched {marched:?}, expected {expected}"
+	);
+	assert_rgba_close(away, [0.0, 0.0, 0.0, away[3]], 1e-6);
 }

@@ -92,6 +92,49 @@ The visibility pipeline specifies which lights get shadow maps, how large they
 are, and how often they're drawn, under
 [shadow maps](/docs/reference/rendering#shadow-maps).
 
+## Height fog lighting
+
+An `ExponentialHeightFog` takes light from the sky and from the scene's lights. Each view ray
+gathers the light its fog scatters toward the camera, single scattering only:
+
+| Term | Rule |
+| --- | --- |
+| Opacity | 1 − T(d) for a surface d meters along the ray, where T(t) = e^(−τ(t)) and τ(t) is the sum of each layer's density integrated from the camera to t. A layer's density is its base density × e^(−falloff × (height − base height)) inside its box, and 0 outside it. The opacity is held to the fog's maximum opacity. |
+| Background | A pixel with no surface has d = 100 km. |
+| Sky light | The ambient illuminance E gives every point of fog a radiance of albedo × E / π from every direction, unshadowed. |
+| Phase | Henyey-Greenstein with the fog's anisotropy g, at the scattering angle: the angle between the direction the light travels and the direction from the fog toward the camera. Looking straight at a light gives an angle of 0. |
+| Light toward the fog | A light reaches a point of fog undimmed by the fog between them. |
+| Lights | Every light in the scene's light table, up to its limit. Directional lights light every point of fog. Point and cone lights light fog within their reach, at their peak intensity in every direction: IES profiles don't apply, the inverse-square falloff and a cone's angular falloff do. |
+| Fog volume | A point or cone light lights the fog only where its reach overlaps a layer's box or, for a layer without one, lies below the height where the layer's density falls under 0.0001 per meter. |
+| Shadows | A light with a shadow map shadows each sample of fog. A directional or cone light's sample blends the depth comparisons of the four texels around its position bilinearly; a point light's sample compares the one texel its direction selects. |
+| Directional shadow distance | A directional light's shadow reaches the far end of its last cascade, along the camera's view axis. Fog past it, and fog that no cascade holds, is lit. A sample takes the first cascade, from the one its depth falls in, that holds it. |
+| Local shadow range | A cone or point light shadows fog between its shadow's near and far planes. Fog outside that range is lit. |
+
+### Light samples
+
+| Setting | Default | Rule |
+| --- | --- | --- |
+| Light samples n | 16 | 1 through 64 per view ray, for each directional light with a shadow map and each point or cone light whose lit part of the fog the ray crosses. |
+
+| Light | Placement |
+| --- | --- |
+| Directional, unshadowed | No samples: its light is the opacity × phase × albedo × illuminance. |
+| Directional, shadowed | Over the shadowed length L, the shorter of d and the shadow distance, sample k of n lies at L × ((k + ξ) / n)², for k from 0. It weighs T at its segment's start less T at its end, the segment running from L × (k / n)² to L × ((k + 1) / n)². Past L, the fog is lit and weighs T(L) − T(d). |
+| Point or cone | Over the part of the ray within the light's reach, and for a cone with an outer half angle below 80° within its cone, sample k of n lies at equal steps of the angle the ray subtends at the light, at (k + ξ) / n of the way. |
+
+ξ is the first channel of the engine's 64 × 64 blue noise at the march pixel, modulo 64. It's the
+same every frame.
+
+Where nothing shadows a light, the shadowed and unshadowed placements give the same light.
+
+### Resolution
+
+| Rule | Value |
+| --- | --- |
+| March | Half the sink's resolution. A march pixel takes the nearest of the four sink pixels it covers when its row and column add up to an even number, and the farthest otherwise. |
+| Upsample | Each sink pixel blends the four nearest march pixels by their bilinear weight times 1 / (0.01 + 16 × \|log₂(1 + d) − log₂(1 + dᵢ)\|), where dᵢ is a march pixel's distance. |
+| Pipelines | The visibility pipeline lights the fog this way. With another scene pipeline, only the sky and the newest directional light light the fog, unshadowed. |
+
 ## Sky and calibration
 
 If you install the atmosphere sky with `setup_atmosphere_sky_render_pass`, the newest directional

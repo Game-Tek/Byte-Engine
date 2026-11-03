@@ -1,7 +1,7 @@
 use bytemuck::Zeroable as _;
 use ghi::{context::ContextCreate as _, frame::Frame as _};
 use math::inverse;
-use maths_rs::{Vec3f, Vec4f};
+use maths_rs::Vec3f;
 use utils::Extent;
 
 use crate::{
@@ -12,7 +12,8 @@ use crate::{
 	},
 	gameplay::transform::TransformationUpdate,
 	rendering::{
-		DirectionalLight, ExponentialHeightFog, FogLayer, Sink, View,
+		DirectionalLight, ExponentialHeightFog, Sink,
+		fog::{FOG_LIGHT_TARGET, FogLayerShaderData, pixel_to_camera_offset},
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_tile},
 		render_passes::{blit::ImageBypassPass, sun::Sun},
 	},
@@ -29,35 +30,12 @@ struct FogShaderData {
 	sun_inscattering: [f32; 4],
 }
 
-/// The `FogLayerShaderData` struct packs one [`FogLayer`] relative to the camera, as the fog shader reads it.
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct FogLayerShaderData {
-	/// Density, height falloff, the density exponent at the camera, and `1` when the layer has bounds.
-	shape: [f32; 4],
-	bounds_min: [f32; 4],
-	bounds_max: [f32; 4],
-}
-
-impl FogLayerShaderData {
-	/// Packs `layer` for a camera at `camera`.
-	fn new(layer: FogLayer, camera: Vec3f) -> Self {
-		// The density at the camera is density · e^exponent. The shader clamps the exponent once it adds the ray's part.
-		let exponent = layer.height_falloff() * (layer.base_height() - camera.y);
-		let (bounded, bounds_min, bounds_max) = match layer.bounds() {
-			Some(bounds) => (1.0, bounds.min().into_maths() - camera, bounds.max().into_maths() - camera),
-			None => (0.0, Vec3f::new(0.0, 0.0, 0.0), Vec3f::new(0.0, 0.0, 0.0)),
-		};
-		Self {
-			shape: [layer.density(), layer.height_falloff(), exponent, bounded],
-			bounds_min: [bounds_min.x, bounds_min.y, bounds_min.z, 0.0],
-			bounds_max: [bounds_max.x, bounds_max.y, bounds_max.z, 0.0],
-		}
-	}
-}
-
 /// The `ExponentialHeightFogRenderPass` struct hides the scene behind the newest [`ExponentialHeightFog`], so
-/// distant surfaces and the horizon fade into mist lit by the sky and the sun.
+/// distant surfaces and the horizon fade into mist lit by the sky and the scene's lights.
+///
+/// Under the visibility pipeline, the scene's lights and their shadows reach the fog through the half-resolution
+/// light the pipeline marches into its `Fog Light` target, which this pass upsamples. Without that target, the newest
+/// [`DirectionalLight`] lights the fog unshadowed.
 ///
 /// It is a post-scene pass: install it with
 /// [`crate::application::graphics::setup_exponential_height_fog_render_pass`] after the scene pipeline and particles,
@@ -88,6 +66,9 @@ impl ExponentialHeightFogRenderPass {
 	) -> Self {
 		let source = render_pass_builder.read_from("main");
 		let depth = render_pass_builder.read_from("depth");
+		// The scene pipeline's marched fog light, if it marches one. A black texel with no distance stands in otherwise,
+		// which the shader reads as no march.
+		let fog_light = render_pass_builder.try_read_from(FOG_LIGHT_TARGET).map(ghi::BaseImageHandle::from);
 		let main_format = render_pass_builder.format_of("main");
 		// The fog's tile output, which the builder gives the uses that needs.
 		let output = render_pass_builder
@@ -113,11 +94,22 @@ impl ExponentialHeightFogRenderPass {
 		);
 		// The shader fetches texels by coordinate, so the sampler only completes the texture bindings.
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
+		let fog_light = fog_light.unwrap_or_else(|| {
+			crate::rendering::lookup_textures::create_lookup_texture(
+				context,
+				"No Fog Light",
+				ghi::Formats::RGBA16F,
+				Extent::square(1),
+				&[0; 8],
+			)
+			.into()
+		});
 		let fog_pass = pipeline.bind(
 			"Exponential Height Fog Descriptor Set",
 			&[
 				simple_tile::Resource::combined_image_sampler("depth_texture", depth, sampler, ghi::Layouts::Read),
 				simple_tile::Resource::combined_image_sampler("scene_texture", source, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::combined_image_sampler("fog_light", fog_light, sampler, ghi::Layouts::Read),
 				simple_tile::Resource::buffer("parameters", parameters),
 			],
 			&[simple_tile::Output::new("result", output)],
@@ -190,15 +182,6 @@ fn fog_shader_data(
 		ambient_inscattering: [ambient.x, ambient.y, ambient.z, 0.0],
 		sun_inscattering: [sun.x, sun.y, sun.z, 0.0],
 	}
-}
-
-/// Returns the matrix that takes a pixel's integer coordinate and reverse-Z depth to its offset from the camera, in
-/// world axes, before the division by w.
-fn pixel_to_camera_offset(view: View, extent: Extent) -> math::Matrix {
-	// Without the view's translation, the inverse lands relative to the camera instead of the world origin.
-	let mut rotation = view.view();
-	rotation.set_column(3, Vec4f::new(0.0, 0.0, 0.0, 1.0));
-	inverse(view.projection() * rotation) * super::pixel_to_ndc(extent)
 }
 
 impl RenderPass for ExponentialHeightFogRenderPass {
@@ -278,7 +261,7 @@ mod tests {
 		fog_pixel_through(fog, sun_illuminance, sun_direction, &sink(camera, direction), [0, 0], depth)
 	}
 
-	/// Fogs `pixel` of a `sink`-sized image of [`SCENE`] at reverse-Z `depth`. See [`fog_pixel`].
+	/// Fogs `pixel` of a `sink`-sized image of [`SCENE`] at reverse-Z `depth`, with nothing marched. See [`fog_pixel`].
 	fn fog_pixel_through(
 		fog: ExponentialHeightFog,
 		sun_illuminance: [f32; 3],
@@ -286,6 +269,20 @@ mod tests {
 		sink: &crate::rendering::Sink,
 		pixel: [u32; 2],
 		depth: f32,
+	) -> [f32; 4] {
+		fog_pixel_marched(fog, sun_illuminance, sun_direction, sink, pixel, depth, [0.0; 4])
+	}
+
+	/// Fogs `pixel` of a `sink`-sized image of [`SCENE`] at reverse-Z `depth`, with `marched` in every texel of the
+	/// half-resolution fog light. See [`fog_pixel`].
+	fn fog_pixel_marched(
+		fog: ExponentialHeightFog,
+		sun_illuminance: [f32; 3],
+		sun_direction: Option<UnitVector>,
+		sink: &crate::rendering::Sink,
+		pixel: [u32; 2],
+		depth: f32,
+		marched: [f32; 4],
 	) -> [f32; 4] {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(HEIGHT_FOG_BESL));
 		let parameter_slot = ResourceSlot::new(3);
@@ -326,10 +323,17 @@ mod tests {
 		let texels = (width * height) as usize;
 		let mut depth_texture = texture_2d(width, height, &vec![[depth, 0.0, 0.0, 1.0]; texels]);
 		let mut scene = texture_2d(width, height, &vec![SCENE; texels]);
+		let march_extent = sink.extent().scaled_down(2);
+		let mut fog_light = texture_2d(
+			march_extent.width(),
+			march_extent.height(),
+			&vec![marched; (march_extent.width() * march_extent.height()) as usize],
+		);
 		let mut result = empty_image(width, height);
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture(ResourceSlot::new(0), &mut depth_texture);
 		descriptors.bind_texture(ResourceSlot::new(1), &mut scene);
+		descriptors.bind_texture(ResourceSlot::new(2), &mut fog_light);
 		descriptors.bind_image(output_slot(0), &mut result);
 		descriptors.bind_buffer(parameter_slot, &mut parameters);
 		run_pixel(&program, &mut descriptors, pixel, PIXEL_TILE, [width, height]);
@@ -553,6 +557,39 @@ mod tests {
 			exposed(sun_lit, [4.0 * std::f32::consts::PI; 3]),
 			[exposure, exposure, exposure, SCENE[3]],
 			1e-5,
+		);
+	}
+
+	/// Verifies that marched light replaces the unshadowed sun: the fog shows the sky's light by its opacity and adds
+	/// the march's light, while the sun's own glow drops out.
+	#[test]
+	fn marched_light_replaces_the_unshadowed_sun() {
+		let density = 0.1;
+		let fog = ExponentialHeightFog::new(FogLayer::new(density).with_height_falloff(0.0))
+			.with_ambient_illuminance(std::f32::consts::PI);
+		let sink = sink(Point::origin(), level());
+		let marched = [0.5, 0.25, 0.125, (1.0f32 + 5.0).log2()];
+		let fogged = fog_pixel_marched(fog, [10_000.0; 3], Some(level()), &sink, [0, 0], depth_at(5.0), marched);
+
+		// A sky of π lux has a radiance of 1 nit.
+		let transmittance = (-density * 5.0f32).exp();
+		let expected = [0, 1, 2].map(|channel| SCENE[channel] * transmittance + (1.0 - transmittance) + marched[channel]);
+		assert_rgba_close(fogged, [expected[0], expected[1], expected[2], SCENE[3]], 1e-3);
+	}
+
+	/// Verifies that the maximum opacity scales the marched light with the rest of the fog.
+	#[test]
+	fn max_opacity_caps_the_marched_light() {
+		let fog = ExponentialHeightFog::new(FogLayer::new(1.0)).with_max_opacity(0.5);
+		let sink = sink(Point::origin(), level());
+		// The fog is opaque by the background, so its opacity of one is held to a half.
+		let marched = [1.0, 1.0, 1.0, (1.0f32 + 100_000.0).log2()];
+		let fogged = fog_pixel_marched(fog, [0.0; 3], None, &sink, [0, 0], BACKGROUND, marched);
+
+		assert_rgba_close(
+			fogged,
+			[SCENE[0] * 0.5 + 0.5, SCENE[1] * 0.5 + 0.5, SCENE[2] * 0.5 + 0.5, SCENE[3]],
+			1e-4,
 		);
 	}
 }

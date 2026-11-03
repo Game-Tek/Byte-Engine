@@ -612,6 +612,13 @@ impl<'a> RenderPassBuilder<'a> {
 		}
 	}
 
+	/// Returns the image named `name` for reading by this render pass, or `None` when no earlier pass created it, such
+	/// as a target only one scene pipeline writes.
+	pub fn try_read_from(&mut self, name: &'a str) -> Option<ReadFromResult> {
+		self.images.get_image_index(name, self.sink_id)?;
+		Some(self.read_from(name))
+	}
+
 	pub fn context(&mut self) -> &'_ mut ghi::implementation::Context {
 		self.context
 	}

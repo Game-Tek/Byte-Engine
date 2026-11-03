@@ -1,0 +1,95 @@
+// Buckets the light table into the fog light march's screen tiles. A tile keeps every directional light, and every
+// point or cone light whose reach overlaps both the part of the view frustum the tile covers and the fog: the light
+// cluster grid can't serve here, because its clusters bound the surfaces a pixel shows, while a ray gathers light from
+// all the fog in front of them.
+
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::layouts::fog::*;
+use ::byte_engine::rendering::visibility::layouts::fog_light::*;
+
+// Returns the squared distance from a point to an axis-aligned box, which is zero inside the box.
+squared_distance_to_box: fn (point: vec3f, box_min: vec3f, box_max: vec3f) -> f32 {
+	let x: f32 = max(box_min.x - point.x, 0.0) + max(point.x - box_max.x, 0.0);
+	let y: f32 = max(box_min.y - point.y, 0.0) + max(point.y - box_max.y, 0.0);
+	let z: f32 = max(box_min.z - point.z, 0.0) + max(point.z - box_max.z, 0.0);
+	return x * x + y * y + z * z;
+}
+
+// Returns whether a sphere around `center` reaches `volume`. A volume whose minimum lies above its maximum holds no fog.
+reaches_volume: fn (volume: FogVolume, center: vec3f, squared_radius: f32) -> bool {
+	return volume.min.x <= volume.max.x && squared_distance_to_box(
+		center,
+		vec3f(volume.min.x, volume.min.y, volume.min.z),
+		vec3f(volume.max.x, volume.max.y, volume.max.z)
+	) <= squared_radius;
+}
+
+// Returns whether a sphere reaches the inside of the plane through the camera with normal (a, 0, b) or (0, a, b), whose
+// normal is not unit length.
+reaches_plane: fn (distance: f32, normal_length: f32, radius: f32) -> bool {
+	return distance >= 0.0 - radius * normal_length;
+}
+
+main: fn (input: StageInput, scene: Scene, fog_light: FogLight) -> void {
+	let tile: u32 = threadgroup_position();
+	let word: u32 = input.thread_idx;
+	let column: u32 = tile % FOG_LIGHT_TILE_COLUMNS;
+	let row: u32 = tile / FOG_LIGHT_TILE_COLUMNS;
+
+	// The tile's four side planes pass through the camera. Column 0 starts at the left edge of the image, and row 0 at
+	// the top edge. A view-space point (x, y, z) lies inside them when x is between the left and right slopes times z,
+	// and y between the bottom and top slopes times z.
+	let slopes: vec2f = fog_light.parameters.edge_slopes;
+	let left: f32 = (f32(column) * 2.0 / f32(FOG_LIGHT_TILE_COLUMNS) - 1.0) * slopes.x;
+	let right: f32 = (f32(column + 1) * 2.0 / f32(FOG_LIGHT_TILE_COLUMNS) - 1.0) * slopes.x;
+	let top: f32 = (1.0 - f32(row) * 2.0 / f32(FOG_LIGHT_TILE_ROWS)) * slopes.y;
+	let bottom: f32 = (1.0 - f32(row + 1) * 2.0 / f32(FOG_LIGHT_TILE_ROWS)) * slopes.y;
+
+	// A reach is measured at an exposure of one. Exposed illuminance falls with the square of distance, so the reach
+	// at this frame's exposure scales with its square root.
+	let reach_scale: f32 = sqrt(max(fog_light.lighting_data.exposure, 0.0));
+	let light_count: u32 = fog_light.lighting_data.light_count;
+	let first_light: u32 = word * 32;
+	let one: u32 = 1;
+	let mask: u32 = 0;
+	for (let bit: u32 = 0; bit < 32 && first_light + bit < light_count; bit = bit + 1) {
+		let light_index: u32 = first_light + bit;
+		let light_type: u32 = fog_light.lighting_data.lights[light_index].type;
+		// Directional lights light all the fog.
+		if (light_type == DIRECTIONAL_LIGHT) {
+			mask = mask | (one << bit);
+			continue;
+		}
+		let radius: f32 = fog_light.lighting_data.lights[light_index].reach * reach_scale;
+		if (radius > 0.0) {
+			let center: vec3f = fog_light.lighting_data.lights[light_index].position;
+			// A narrow cone fits in the sphere through its apex and the rim of its cap, as the light clusters fit it.
+			if (light_type == CONE_LIGHT) {
+				let outer_cosine: f32 = fog_light.lighting_data.lights[light_index].cone_cosines.y;
+				let squared_cosine: f32 = outer_cosine * outer_cosine;
+				if (outer_cosine > 0.0 && squared_cosine > 0.5) {
+					radius = radius / (2.0 * squared_cosine);
+					center = center + fog_light.lighting_data.lights[light_index].direction * radius;
+				}
+			}
+			// The fog: the reach must overlap the box of either layer's dense part.
+			let squared_radius: f32 = radius * radius;
+			let in_fog: bool = reaches_volume(fog_light.parameters.volumes[0], center, squared_radius)
+				|| reaches_volume(fog_light.parameters.volumes[1], center, squared_radius);
+			// The frustum: rays start at the camera and run to any depth, so the tile's volume is its four side planes in
+			// front of the camera.
+			let view_center: vec3f = fog_light.parameters.view * vec4f(center.x, center.y, center.z, 1.0);
+			let in_tile: bool = view_center.z >= 0.0 - radius
+				&& reaches_plane(view_center.x - left * view_center.z, sqrt(1.0 + left * left), radius)
+				&& reaches_plane(right * view_center.z - view_center.x, sqrt(1.0 + right * right), radius)
+				&& reaches_plane(top * view_center.z - view_center.y, sqrt(1.0 + top * top), radius)
+				&& reaches_plane(view_center.y - bottom * view_center.z, sqrt(1.0 + bottom * bottom), radius);
+			if (in_fog && in_tile) {
+				mask = mask | (one << bit);
+			}
+		}
+	}
+	fog_light.tile_masks.words[tile * FOG_LIGHT_TILE_MASK_WORDS + word] = mask;
+}

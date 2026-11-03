@@ -40,7 +40,7 @@ use super::render_pass::{
 	FrameWork, GiSettings, GtaoSettings, IndirectDiffuseSource, MAX_SURFEL_RAY_BUDGET, PROBE_RAY_BUDGET_RANGE, PROBE_RAYS,
 	PROBE_SPACING_RANGE, ProbeGiSettings, ProbeVolume, RayHits, RayTracing, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
 	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool,
-	VisibilityRenderPass, create_gtao_targets, create_ssgi_targets, create_sun_visibility_targets, create_surfel_targets,
+	VisibilityRenderPass, create_fog_light_target, create_gtao_targets, create_ssgi_targets, create_sun_visibility_targets, create_surfel_targets,
 };
 use super::scene::{Instance, MaterialEvaluation, PosedVertices, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::set_layouts;
@@ -685,6 +685,9 @@ pub struct VisibilityPipelineManager {
 	point_light_listener: DefaultListener<CreateMessage<PointLight>>,
 	mesh_listener: DefaultListener<CreateMessage<RenderableMesh>>,
 	environment_listener: DefaultListener<CreateMessage<Environment>>,
+	fog_listener: DefaultListener<CreateMessage<crate::rendering::ExponentialHeightFog>>,
+	/// The newest height fog, which each sink's fog light march lights.
+	fog: Option<crate::rendering::ExponentialHeightFog>,
 	/// World edits adopted at the start of [`PipelineManager::prepare`].
 	pose_listener: DefaultListener<UpdatePose>,
 	material_parameter_listener: DefaultListener<SetMaterialParameter>,
@@ -900,6 +903,8 @@ impl VisibilityPipelineManager {
 			point_light_listener: world.factory::<PointLight>().listener(),
 			mesh_listener: world.factory::<RenderableMesh>().listener(),
 			environment_listener: world.factory::<Environment>().listener(),
+			fog_listener: world.factory::<crate::rendering::ExponentialHeightFog>().listener(),
+			fog: None,
 			pose_listener: world.channel::<UpdatePose>().listener(),
 			material_parameter_listener: world.channel::<SetMaterialParameter>().listener(),
 			material_parameters: MaterialParameters::new(),
@@ -1789,6 +1794,9 @@ impl PipelineManager for VisibilityPipelineManager {
 		while let Some(message) = self.mesh_listener.read() {
 			self.request_mesh(message.handle(), message.into_data(), transforms);
 		}
+		while let Some(message) = self.fog_listener.read() {
+			self.fog = Some(*message.data());
+		}
 		while let Some(message) = self.environment_listener.read() {
 			self.create_environment(message.into_data());
 		}
@@ -2047,6 +2055,7 @@ impl PipelineManager for VisibilityPipelineManager {
 					probes,
 					self.gtao_settings,
 					self.contact_shadow_settings,
+					self.fog.as_ref(),
 					background,
 					frame_allocator,
 				)?;
@@ -2105,6 +2114,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let ssgi = create_ssgi_targets(render_pass_builder);
 		let sun_visibility = create_sun_visibility_targets(render_pass_builder);
 		let gtao = create_gtao_targets(render_pass_builder);
+		let fog_light = create_fog_light_target(render_pass_builder);
 		let stage_counters = super::render_pass::StageCounters::new(render_pass_builder);
 		let surfel_gi = self.surfel_pool.is_some();
 		let surfels = surfel_gi.then(|| create_surfel_targets(render_pass_builder));
@@ -2135,6 +2145,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				surfels,
 				sun_visibility,
 				gtao,
+				fog_light,
 			},
 			&self.shadow_maps,
 			stage_counters,

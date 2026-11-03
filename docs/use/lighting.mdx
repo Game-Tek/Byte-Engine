@@ -457,19 +457,37 @@ let splash_mist = FogLayer::new(0.3).with_height_falloff(3.0).with_bounds(courty
 The fog stops sharply at the box's faces, so line them up with walls, pillars, or the ground where
 geometry hides them. Put the top where the layer has already thinned out.
 
-Two light sources light the fog, in the same units as the rest of the scene:
+The sky and the scene's lights light the fog, in the same units as the rest of the scene:
 
 - The sky, given in lux with `with_ambient_illuminance`. Use the same value as the environment's
   `with_illuminance`, so fully fogged views match the brightness of an even overcast sky.
-- The newest directional light, scattered mostly forward by water droplets. Looking toward the sun,
-  the fog glows, and `with_anisotropy` sets how tight that glow is.
+- Every directional, point, and cone light, scattered mostly forward by water droplets. Looking
+  toward a light, the fog glows, and `with_anisotropy` sets how tight that glow is. Lights that cast
+  shadows cast them into the fog too, so sunlight falls through gaps in shafts and lamps light cones
+  of mist.
+
+Shadows in fog are sampled along each view ray. Set how many samples each light takes with
+`with_light_samples`:
+
+```rust
+ExponentialHeightFog::new(FogLayer::new(0.06).with_height_falloff(0.1))
+	.with_ambient_illuminance(15_000.0)
+	// Sharper shafts and finer grain than the default 16, for more GPU time per light.
+	.with_light_samples(32)
+```
+
+The samples sit at the same places every frame, so the grain they leave doesn't flicker. Lower the
+count for scenes with many lamps in the fog, and raise it when thin shadows, such as railings, look
+grainy.
 
 Fog also covers the sky: the horizon disappears into it, while the sky straight up stays mostly
 clear. Use `with_max_opacity` to keep a trace of distant surfaces visible through the thickest fog.
 
 <Callout type="info" title="Height fog limits">
-	The fog doesn't cast or receive shadows, so it glows evenly in shaded areas too. Transparent
-	surfaces and particles take the fog of the opaque surface behind them.
+	Only the PBR visibility pipeline lights fog with point and cone lights and shadows. With another
+	pipeline, the sky and the newest directional light light it, without shadows. Point and cone
+	lights light the fog without their IES profiles, at their peak intensity in every direction.
+	Transparent surfaces and particles take the fog of the opaque surface behind them.
 </Callout>
 
 ## Rust API

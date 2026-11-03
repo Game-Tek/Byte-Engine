@@ -102,6 +102,7 @@ pub struct ExponentialHeightFog {
 	max_opacity: f32,
 	anisotropy: f32,
 	ambient_illuminance: f32,
+	light_samples: u32,
 }
 
 impl ExponentialHeightFog {
@@ -117,6 +118,7 @@ impl ExponentialHeightFog {
 			max_opacity: 1.0,
 			anisotropy: 0.7,
 			ambient_illuminance: 0.0,
+			light_samples: 16,
 		}
 	}
 
@@ -183,6 +185,21 @@ impl ExponentialHeightFog {
 		self
 	}
 
+	/// Sets how many points along each view ray sample each light's shadow, from `1` to `64`.
+	///
+	/// More samples draw sharper light shafts with finer grain, and cost more GPU time per light that lights the fog.
+	/// The default is `16`. The samples sit at the same places every frame, so the grain doesn't flicker. Only the
+	/// visibility pipeline samples lights and their shadows in fog; see
+	/// [`crate::application::graphics::setup_exponential_height_fog_render_pass`].
+	pub fn with_light_samples(mut self, samples: u32) -> Self {
+		debug_assert!(
+			(1..=64).contains(&samples),
+			"Fog light samples are invalid. The most likely cause is a sample count outside 1 to 64."
+		);
+		self.light_samples = samples;
+		self
+	}
+
 	/// Returns the layer given to [`Self::new`].
 	pub fn layer(&self) -> FogLayer {
 		self.layer
@@ -212,4 +229,51 @@ impl ExponentialHeightFog {
 	pub fn ambient_illuminance(&self) -> f32 {
 		self.ambient_illuminance
 	}
+
+	/// Returns how many points along each view ray sample each light's shadow. See [`Self::with_light_samples`].
+	pub fn light_samples(&self) -> u32 {
+		self.light_samples
+	}
+}
+
+/// The render-graph name of the light a scene pipeline marches through the fog at half the sink's resolution: the
+/// exposed light the fog scatters toward the camera in rgb, and log2(1 + the marched distance) in alpha, zero where
+/// nothing was marched. The visibility pipeline writes it and the height fog pass upsamples it.
+pub(crate) const FOG_LIGHT_TARGET: &str = "Fog Light";
+
+/// The `FogLayerShaderData` struct packs one [`FogLayer`] relative to the camera, as `FogLayer` in
+/// `layouts/fog.besl` declares it, for the height fog pass and the visibility pipeline's fog light march.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct FogLayerShaderData {
+	/// Density, height falloff, the density exponent at the camera, and `1` when the layer has bounds.
+	pub(crate) shape: [f32; 4],
+	pub(crate) bounds_min: [f32; 4],
+	pub(crate) bounds_max: [f32; 4],
+}
+
+impl FogLayerShaderData {
+	/// Packs `layer` for a camera at `camera`.
+	pub(crate) fn new(layer: FogLayer, camera: Vec3f) -> Self {
+		// The density at the camera is density · e^exponent. The shader clamps the exponent once it adds the ray's part.
+		let exponent = layer.height_falloff() * (layer.base_height() - camera.y);
+		let (bounded, bounds_min, bounds_max) = match layer.bounds() {
+			Some(bounds) => (1.0, bounds.min().into_maths() - camera, bounds.max().into_maths() - camera),
+			None => (0.0, Vec3f::new(0.0, 0.0, 0.0), Vec3f::new(0.0, 0.0, 0.0)),
+		};
+		Self {
+			shape: [layer.density(), layer.height_falloff(), exponent, bounded],
+			bounds_min: [bounds_min.x, bounds_min.y, bounds_min.z, 0.0],
+			bounds_max: [bounds_max.x, bounds_max.y, bounds_max.z, 0.0],
+		}
+	}
+}
+
+/// Returns the matrix that takes a pixel's integer coordinate and reverse-Z depth to its offset from the camera, in
+/// world axes, before the division by w.
+pub(crate) fn pixel_to_camera_offset(view: crate::rendering::View, extent: utils::Extent) -> math::Matrix {
+	// Without the view's translation, the inverse lands relative to the camera instead of the world origin.
+	let mut rotation = view.view();
+	rotation.set_column(3, maths_rs::Vec4f::new(0.0, 0.0, 0.0, 1.0));
+	math::inverse(view.projection() * rotation) * super::render_passes::pixel_to_ndc(extent)
 }

@@ -1,6 +1,6 @@
 //! Per-sink GPU work: shadows, light clusters, visibility rasterization, material prepasses, the cascade fit, the
-//! occlusion and linear depth pyramids, sun visibility, GTAO, SSGI or the surfel or probe resolve, and material
-//! evaluation, which also traces screen-space reflections. GTAO runs only while its settings enable it, and SSGI, surfel
+//! occlusion and linear depth pyramids, sun visibility, GTAO, SSGI or the surfel or probe resolve, material
+//! evaluation, which also traces screen-space reflections, and the light of the height fog. GTAO runs only while its settings enable it, and SSGI, surfel
 //! GI, and probe GI only in frames they light; see [`IndirectDiffuseSource`].
 //!
 //! One [`VisibilityRenderPass`] exists per sink. It owns the sink's images, buffers, and descriptor sets, and
@@ -8,6 +8,7 @@
 //! with the sink's [`StageCounters`] so the inspector reports where the pass's GPU time goes.
 
 mod depth_pyramid;
+mod fog_light;
 mod gtao;
 mod light_clusters;
 mod materials;
@@ -157,6 +158,10 @@ use self::reflections::ScreenSpaceReflections;
 use self::shadows::CascadeFitPass;
 pub(crate) use self::shadows::{ShadowMaps, ShadowWork, SunCascades};
 pub(super) use self::ssgi::SSGI_PIPELINES;
+use self::fog_light::FogLightPass;
+#[cfg(test)]
+pub(crate) use self::fog_light::{FogLightShaderParameters, fog_light_shader_parameters};
+pub(crate) use self::fog_light::create_fog_light_target;
 use self::ssgi::SsgiPass;
 pub(crate) use self::ssgi::{SsgiTargets, create_ssgi_targets};
 pub(super) use self::sun_visibility::CONTACT_SHADOW_PIPELINES;
@@ -239,6 +244,8 @@ pub(crate) struct StageCounters {
 	/// The sun visibility, GTAO, and SSGI, surfel, or probe resolve dispatches, recorded interleaved so the GPU can overlap
 	/// them. One counter covers them all, because a precise timestamp between stages would serialize them again.
 	screen_space: ghi::CounterHandle,
+	/// The fog light tile pass and march.
+	fog_light: ghi::CounterHandle,
 	/// Opaque material evaluation.
 	material_evaluation: ghi::CounterHandle,
 	background: ghi::CounterHandle,
@@ -269,6 +276,7 @@ impl StageCounters {
 			probe_trace: builder.create_gpu_counter("probe-trace"),
 			probe_update: builder.create_gpu_counter("probe-update"),
 			screen_space: builder.create_gpu_counter("screen-space"),
+			fog_light: builder.create_gpu_counter("fog-light"),
 			material_evaluation: builder.create_gpu_counter("material-evaluation"),
 			background: builder.create_gpu_counter("background"),
 			transparent: builder.create_gpu_counter("transparent"),
@@ -295,6 +303,8 @@ pub(crate) struct SinkTargets {
 	pub(crate) sun_visibility: SunVisibilityTargets,
 	/// The ambient occlusion GTAO writes and opaque material evaluation reads.
 	pub(crate) gtao: GtaoTargets,
+	/// The half-resolution light of the height fog, which the height fog pass reads.
+	pub(crate) fog_light: ghi::BaseImageHandle,
 }
 
 /// The `IndirectDiffuseSource` enum names the pass that lights a frame's indirect diffuse light, so the frame runs only
@@ -478,6 +488,7 @@ pub(crate) struct VisibilityRenderPass {
 	probe_resolve: Option<ProbeResolvePass>,
 	reflections: ScreenSpaceReflections,
 	material_evaluation: MaterialEvaluationPass,
+	fog_light: FogLightPass,
 	stage_counters: StageCounters,
 	/// Which material debug views to write this frame; see `MATERIAL_DEBUG_VIEWS`.
 	debug_views: crate::rendering::DebugViews,
@@ -655,6 +666,15 @@ impl VisibilityRenderPass {
 				targets.sun_visibility,
 				features.contact_shadows,
 			),
+			fog_light: FogLightPass::new(
+				context,
+				&pipeline_manager,
+				base_descriptor_set,
+				lighting_buffer,
+				depth,
+				shadow_maps,
+				targets.fog_light,
+			),
 			depth_pyramid,
 			ssgi,
 			surfel_resolve,
@@ -681,7 +701,8 @@ impl VisibilityRenderPass {
 	/// manager picked to light this frame's indirect diffuse light, and `surfels` or `probes` the frame's surfel or probe
 	/// work when it picked surfel GI or probe GI; the sink that records the frame-wide work also records the surfel grid
 	/// or the probe updates. `gtao_settings` and
-	/// `contact_shadow_settings` are the runtime controls the manager holds.
+	/// `contact_shadow_settings` are the runtime controls the manager holds. `fog` is the newest height fog, which the
+	/// sink's fog light march lights.
 	pub(crate) fn prepare<'a>(
 		&'a self,
 		frame: &mut ghi::implementation::Frame,
@@ -697,6 +718,7 @@ impl VisibilityRenderPass {
 		probes: Option<ProbeFrame>,
 		gtao_settings: GtaoSettings,
 		contact_shadow_settings: ContactShadowSettings,
+		fog: Option<&crate::rendering::ExponentialHeightFog>,
 		background: Option<&crate::rendering::render_pass::SceneBackground>,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<impl RenderPassFunction + use<'a>> {
@@ -812,6 +834,9 @@ impl VisibilityRenderPass {
 			.and_then(|work| work.acceleration_structures)
 			.filter(|_| surfel_grid.is_some() || probe_updates.is_some());
 		self.reflections.prepare(frame, history);
+		// The height fog pass lights the fog unshadowed while the march's pipelines compile, so they don't hold the
+		// frame back.
+		let fog_light = fog.and_then(|fog| self.fog_light.prepare(frame, pipeline_manager, sink, fog));
 		let screen_space_lighting = ScreenSpaceLighting {
 			gtao: gtao.is_some(),
 			ssgi: ssgi.is_some(),
@@ -972,6 +997,10 @@ impl VisibilityRenderPass {
 					record_compute_stages(c, None, &[gtao.upscale]);
 				}
 			});
+			// The march reads the shadow maps and the opaque depth, which every order above records before it.
+			if let Some(stages) = &fog_light {
+				c.counter(counters.fog_light, |c| record_compute_stages(c, None, stages));
+			}
 			c.counter(counters.material_evaluation, &opaque_materials);
 			// The background fills pixels no opaque surface covered, so transparent surfaces composite over it.
 			if let Some(background) = background {

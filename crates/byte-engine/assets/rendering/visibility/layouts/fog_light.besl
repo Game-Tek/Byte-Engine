@@ -1,0 +1,69 @@
+// The descriptor set of the fog light passes: the light table and the shadow maps they light the fog with, one sink's
+// fog and camera, the per-tile light masks, and the image the march writes. The views that hold the shadow maps'
+// projections come from `scene.besl`, which both passes take before this layer, so these bindings sit past its slots.
+// `rendering/pipelines/visibility/render_pass/fog_light.rs` creates it and binds its resources by these names.
+//
+// The tile pass buckets the light table into a fixed grid of screen tiles, testing each light's reach against the fog
+// the tile sees instead of the surfaces it shows, so the march only visits the lights that light a pixel's fog. One
+// workgroup fills one tile, and each of its 32 threads tests 32 lights and writes one mask word.
+
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::layouts::fog::*;
+
+FOG_LIGHT_TILE_COLUMNS: const u32 = 32;
+FOG_LIGHT_TILE_ROWS: const u32 = 18;
+FOG_LIGHT_TILE_MASK_WORDS: const u32 = 32;
+
+// The world-space box where one layer's fog is dense enough for a light to light, packed by `fog_volume` in
+// `render_pass/fog_light.rs`. A box whose minimum lies above its maximum holds no fog.
+FogVolume: struct {
+	min: vec4f,
+	max: vec4f,
+}
+
+// Packed by `FogLightShaderParameters` in `render_pass/fog_light.rs`.
+FogLightParameters: struct {
+	// Maps a sink pixel's integer coordinate and reverse-Z depth to its offset from the camera, in world axes, before
+	// the division by w.
+	pixel_to_camera_offset: mat4f,
+	// Maps world space to the view space the tiles are laid out in, where depth grows along +Z.
+	view: mat4x3f,
+	layers: FogLayer[2],
+	volumes: FogVolume[2],
+	// xyz: the camera's world position.
+	camera_position: vec4f,
+	// xyz: the camera's view axis in world space, along which directional cascades split.
+	camera_forward: vec4f,
+	// x: 1 + g² and y: 2g for the fog's anisotropy g, z: (1 − g²) / 4π, the phase function's constant factor.
+	phase: vec4f,
+	// rgb: the fog's albedo times the light table's exposure.
+	albedo: vec4f,
+	// The view-space X/Z and Y/Z slopes at the right and top edges of the image.
+	edge_slopes: vec2f,
+	// Light samples per view ray for each light that needs them.
+	samples: u32,
+	_padding: u32,
+}
+
+FogLightTileMasks: struct {
+	words: u32[18432],
+}
+
+FogLight: layer {
+	lighting_data: descriptor<{ type: LightingBuffer, binding: 1033, access: read, memory: device }>;
+	parameters: descriptor<{ type: FogLightParameters, binding: 1034, access: read }>;
+	tile_masks: descriptor<{ type: FogLightTileMasks, binding: 1035, access: read_write, memory: device }>;
+	// The sink's reverse-Z depth, which the march picks each pixel's surface from.
+	depth: descriptor<{ type: Texture2D, binding: 1036, access: read }>;
+	// The engine's tiling blue noise, which places each pixel's samples.
+	blue_noise: descriptor<{ type: Texture2D, binding: 1037, access: read }>;
+	directional_shadow_map: descriptor<{ type: Texture2DArray, binding: 1038, access: read }>;
+	// rgb: the exposed light the fog scatters toward the camera; a: log2(1 + the marched distance), zero where nothing
+	// was marched.
+	scattered_light: descriptor<{ type: StorageImage<rgba16f>, binding: 1039, access: write }>;
+	// One image per power-of-two size class of cone maps and point cube faces, as material evaluation binds them.
+	// Arrayed bindings take `count` flat slots, so they sit past every other binding of the layers a shader takes
+	// with this one.
+	cone_shadow_maps: descriptor<{ type: Texture2DArray, binding: 1072, access: read, count: 5 }>;
+	point_shadow_maps: descriptor<{ type: TextureCubeArray, binding: 1077, access: read, count: 5 }>;
+}

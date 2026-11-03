@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use resource_management::resources::motion_database::{MotionDatabase, MotionSearch};
 
-use super::{GroundRoot, MAX_DIMENSIONS, direction, ground_at};
+use super::{Cycle, GroundRoot, Loop, MAX_DIMENSIONS, PredictedVelocity, direction, ground_at};
 
 /// Frames in a small bounding block, which a search skips at once when the block can't hold a better frame.
 const SMALL_BLOCK: usize = 16;
@@ -20,6 +20,8 @@ pub(crate) struct DatabaseClip {
 	pub(crate) first: usize,
 	pub(crate) frames: usize,
 	pub(crate) pickable: usize,
+	/// What continues a looping clip past its ends; `None` for a clip that plays once.
+	pub(crate) looping: Option<Loop>,
 }
 
 /// The `DatabaseInfo` struct keeps the small part of a resident motion database outside the pool's arena: its clips
@@ -79,6 +81,10 @@ pub(crate) fn pack_database(database: MotionDatabase) -> (DatabaseInfo, Box<[u32
 				first,
 				frames: clip.frames as usize,
 				pickable: clip.pickable as usize,
+				looping: clip.cycle.map(|cycle| Loop {
+					duration: clip.duration,
+					cycle: Cycle::from_array(cycle),
+				}),
 			};
 			first += placed.frames;
 			placed
@@ -127,10 +133,13 @@ impl<'a> PackedDatabase<'a> {
 		GroundRoot::from_array([value(0), value(1), value(2)])
 	}
 
-	/// Returns the ground root of clip `clip` at `time` seconds, between its frames as the reference specifies.
+	/// Returns the ground root of clip `clip` at `time` seconds, between its frames as the reference specifies, and
+	/// continued past a looping clip's ends.
 	pub(crate) fn ground_at(self, clip: usize, time: f32) -> GroundRoot {
 		let clip = &self.info.clips[clip];
-		ground_at(self.info.search.sample_rate, clip.frames, time, |frame| self.ground(clip.first + frame))
+		ground_at(self.info.search.sample_rate, clip.frames, clip.looping, time, |frame| {
+			self.ground(clip.first + frame)
+		})
 	}
 
 	/// Returns the bounds of block `block` of `size` frames: each dimension's minimum, then each one's maximum.
@@ -146,15 +155,16 @@ impl<'a> PackedDatabase<'a> {
 }
 
 /// The `RequestedMotion` struct is what a matched state's query predicts the trajectory from: the velocity and facing
-/// the application requests, and how the entity moved and turned in the last step.
+/// the application requests, the predicted velocity the trajectory starts from, and how the entity turned in the last
+/// step.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct RequestedMotion {
 	/// The held velocity, X and Z, in object-space units per second.
 	pub(crate) velocity: [f32; 2],
 	/// The held facing, a yaw about +Y in radians.
 	pub(crate) facing: f32,
-	/// The last step's root motion translation over its delta, in the object space after the step.
-	pub(crate) start_velocity: [f32; 2],
+	/// The predicted velocity and acceleration, in the object space after the step.
+	pub(crate) predicted: PredictedVelocity,
 	/// The last step's root motion yaw over its delta, in radians per second.
 	pub(crate) start_turn_rate: f32,
 }
@@ -180,8 +190,8 @@ pub(crate) struct Query {
 ///
 /// `nodes` holds each feature node's position in the latest pose and its position in the pose before, with the last
 /// step's root motion undone, and the seconds between them; without it the cost leaves out the node features. The
-/// trajectory is predicted by critically damped springs from `motion`'s starting velocity and turn rate toward its
-/// held velocity and facing.
+/// trajectory is predicted by critically damped springs from `motion`'s predicted velocity and starting turn rate
+/// toward its held velocity and facing.
 pub(crate) fn build_query(info: &DatabaseInfo, nodes: Option<(&[[f32; 3]], &[[f32; 3]], f32)>, motion: RequestedMotion) -> Query {
 	let search = &info.search;
 	let mut query = Query {
@@ -212,23 +222,13 @@ pub(crate) fn build_query(info: &DatabaseInfo, nodes: Option<(&[[f32; 3]], &[[f3
 		None => write(&search.mean[..info.node_dimensions]),
 	}
 
-	let spring = |halflife: f32| 2.0 * std::f32::consts::LN_2 / halflife;
-	let (velocity_damping, facing_damping) = (spring(search.velocity_halflife), spring(search.facing_halflife));
-	let difference = [
-		motion.start_velocity[0] - motion.velocity[0],
-		motion.start_velocity[1] - motion.velocity[1],
-	];
+	let (velocity_damping, facing_damping) = (damping(search.velocity_halflife), damping(search.facing_halflife));
 	for (sample, &time) in query.trajectory.iter_mut().zip(search.trajectory_times.iter()) {
-		let decay = (-velocity_damping * time).exp();
-		let offset = (2.0 / velocity_damping) * (1.0 - decay) - time * decay;
 		let decay = (-facing_damping * time).exp();
 		let yaw = motion.facing + decay * (motion.start_turn_rate * time - motion.facing * (1.0 + facing_damping * time));
 		*sample = TrajectorySample {
 			time,
-			position: [
-				motion.velocity[0] * time + difference[0] * offset,
-				motion.velocity[1] * time + difference[1] * offset,
-			],
+			position: motion.predicted.travel(motion.velocity, velocity_damping, time),
 			direction: direction(yaw),
 		};
 	}
@@ -248,6 +248,12 @@ pub(crate) fn build_query(info: &DatabaseInfo, nodes: Option<(&[[f32; 3]], &[[f3
 		*value = (*value - mean) * scale;
 	}
 	query
+}
+
+/// Returns the damping of a spring of `halflife` seconds, 2 × ln 2 over the halflife, which the predicted velocity and
+/// the query's trajectory springs share.
+pub(crate) fn damping(halflife: f32) -> f32 {
+	2.0 * std::f32::consts::LN_2 / halflife
 }
 
 /// The `Playing` struct is the clip a matched state plays when it searches, which sets the search's bar and the frames
@@ -291,8 +297,13 @@ pub(crate) fn search(
 	let query_features = &query.features[range.clone()];
 	let bar = playing.and_then(|playing| {
 		let clip = &info.clips[playing.clip];
-		// The nearest frame, the earlier of two equally near ones.
-		let frame = ((playing.time * rate - 0.5).ceil().max(0.0) as usize).min(clip.frames - 1);
+		// The nearest frame, the earlier of two equally near ones; past a looping clip's last frame, its first counts
+		// as standing at its duration.
+		let last = (clip.frames - 1) as f32 / rate;
+		let frame = match clip.looping {
+			Some(looping) if playing.time - last > looping.duration - playing.time => 0,
+			_ => ((playing.time * rate - 0.5).ceil().max(0.0) as usize).min(clip.frames - 1),
+		};
 		(frame < clip.pickable).then(|| cost(&database.features(clip.first + frame)[range.clone()], query_features, f32::INFINITY))
 	});
 
@@ -302,9 +313,14 @@ pub(crate) fn search(
 		if clip.pickable == 0 || !resident(index) {
 			continue;
 		}
-		let excluded = playing
-			.filter(|playing| playing.clip == index)
-			.map(|playing| (playing.time - info.search.exclusion, playing.time + info.search.exclusion));
+		// Around a looping clip, the distance runs the shorter way past its duration.
+		let excluded = playing.filter(|playing| playing.clip == index).map(|playing| {
+			move |time: f32| {
+				let distance = (time - playing.time).abs();
+				let distance = clip.looping.map_or(distance, |looping| distance.min(looping.duration - distance));
+				distance < info.search.exclusion
+			}
+		});
 		let end = clip.first + clip.pickable;
 		let mut frame = clip.first;
 		while frame < end {
@@ -319,7 +335,7 @@ pub(crate) fn search(
 					for candidate in frame..small_end {
 						// Only the playing clip and a better frame need the candidate's time.
 						let time = || (candidate - clip.first) as f32 / rate;
-						if excluded.is_some_and(|(start, end)| start < time() && time() < end) {
+						if excluded.as_ref().is_some_and(|excluded| excluded(time())) {
 							continue;
 						}
 						let cost = cost(&database.features(candidate)[range.clone()], query_features, best);

@@ -22,8 +22,19 @@ pub(in super::super) struct ClipBinding {
 pub(in super::super) struct GroundBinding {
 	pub(super) database: Arc<str>,
 	pub(super) clip: usize,
-	/// The canonical skeleton's top-level nodes, which take the inverse of the ground root's transform.
-	pub(super) roots: Arc<[u32]>,
+	/// The nodes placing the pose changes; `None` when the database's root node doesn't resolve, which rejects the
+	/// player before it posts a pose.
+	pub(super) placement: Option<Arc<GroundPlacement>>,
+}
+
+/// The `GroundPlacement` struct holds the nodes that place a matched state's pose on its ground root, resolved once
+/// against the canonical skeleton: the database's root node and its ancestors.
+pub(in super::super) struct GroundPlacement {
+	pub(super) root: u32,
+	/// The root node's ancestors, nearest first, each with its rest transform.
+	pub(super) ancestors: Box<[(u32, LocalTransform)]>,
+	/// The object-space transform of the root node's parent with every ancestor at rest.
+	pub(super) parent_rest: LocalTransform,
 }
 
 /// The `StateBinding` struct keeps one state's clips resolved against the canonical skeleton, and a matched state's

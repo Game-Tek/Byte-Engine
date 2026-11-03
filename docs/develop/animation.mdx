@@ -132,11 +132,11 @@ frame a search finds. The code lives in `animation/matching` and in
 
 | Part | Code | What it does |
 | --- | --- | --- |
-| Bake | `matching/bake.rs`, `matching/features.rs` | `MotionDatabaseAssetHandler` bakes the clips a `.motion.bead` file names, samples them at the database's rate, smooths each clip's ground root, measures every frame's features in its root frame, and normalizes them over the pickable frames. |
+| Bake | `matching/bake.rs`, `matching/features.rs` | `MotionDatabaseAssetHandler` bakes the clips a `.motion.bead` file names, samples them at the database's rate, smooths each clip's ground root, measures every frame's features in its root frame, and normalizes them over the pickable frames. A looping clip also samples its duration for its `Cycle`, which continues its ground root through the smoothing and the trajectory features. |
 | Residency | `matching/search.rs`, `graph/runtime.rs` | The load worker loads an ID whose asset type is `motion.bead` as a database. `pack_database` keeps its clips and its `MotionSearch`, which holds the nodes, means, scales, and settings, in a `DatabaseInfo` beside the arena, like a clip's skeleton, and its features, ground roots, and block bounds in arena words. |
-| Query | `player/matched.rs` | `matched_query` measures the feature nodes in the player's latest pose and the one before, and predicts the trajectory with springs from the step's root motion toward the held velocity and facing. |
+| Query | `player/matched.rs`, `matching/mod.rs` | `matched_query` measures the feature nodes in the player's latest pose and the one before, and predicts the trajectory with springs from the player's `Prediction` toward the held velocity and facing. `keep_motion` turns the held motion by each step's root motion, sets the prediction from the step that enters a matched state, and steps its `PredictedVelocity` toward the held velocity every later step; a state playing on its own does this before it searches, so the search reads what the step leaves. |
 | Search | `matching/search.rs` | `search` walks each resident clip's pickable frames in blocks of 64, then 16, skips a block whose bounds can't beat the best cost so far, and compares the frames of the rest, stopping a frame's sum once it reaches the best, checked every eight dimensions so the sums vectorize. |
-| Playback | `player.rs` | A matched motion weighs one clip. Its clip bindings carry a ground binding, so sampling places the pose on the ground root, and root motion is the ground root's movement. The state's binding also resolves the database's nodes, once, when the first player enters it. |
+| Playback | `player.rs` | A matched motion weighs one clip, looping when the database loops it. Its clip bindings carry a ground binding, so sampling places the pose on the ground root, and root motion is the ground root's movement, continued by the cycle across a wrap. The state's binding also resolves the database's nodes, once, when the first player enters it. |
 
 The bake lives in the engine crate, not in `resource-management`, because it
 samples clips with `sample_local_pose`, the sampler playback uses, so a frame's
@@ -161,6 +161,25 @@ out of a matched state, start from the pose the player posted last, and blend
 toward a destination whose root motion is removed unless it's matched. A switch
 starts at the end of the step that found it; the inertializer then settles the
 playing motion while it plays on its own, which `PlayerPose::settling` marks.
+
+Placing a matched pose moves the database's root node and rests its ancestors,
+rather than moving the skeleton's top-level nodes. In a rig whose root node has
+a parent, like a `Root` above `Hips`, moving the top-level node leaves the
+clip's travel in the root node's local translation, meters into a long clip.
+The inertializer blends local transforms, so a switch between two frames of
+different travel would slide the body across that distance while the blend
+settles. Placed at the root node, every matched pose keeps its root node near
+the origin, as a pose with root motion removed does.
+
+The trajectory starts from a predicted velocity the player keeps, not from the
+step's root motion. Restarted from the root motion at every search, the spring
+spends most of a short horizon near the velocity the clip already plays, so the
+query keeps asking for that motion and the search keeps finding it: a walking
+character asked to strafe never leaves the walk. Kept across steps, the
+prediction comes within a tenth of the requested velocity in about three
+halflives whatever the clips do, and the query then asks for the change
+outright. Entering a matched state resets it to the step's root motion, so the
+trajectory starts where the character actually moves.
 
 A request's velocity and facing are in the entity's object space when it's
 sent. The player holds them and turns them back by each step's root motion

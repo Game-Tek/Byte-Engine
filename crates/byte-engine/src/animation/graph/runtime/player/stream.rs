@@ -327,7 +327,7 @@ impl AnimationGraphPlayer {
 			if !is_matched(samples) {
 				return None;
 			}
-			let record = ready.search.as_deref()?;
+			let record = &ready.matched.as_deref()?.search;
 			let found = record.result.found;
 			Some(Match {
 				searched: record.searched,
@@ -416,6 +416,40 @@ mod tests {
 			pool.admit(id.into(), test_animation(id, end));
 		}
 		pool
+	}
+
+	#[test]
+	fn a_matched_search_starts_its_trajectory_from_the_predicted_velocity() {
+		use super::super::matched::tests::{DATABASE, locomotion_pool};
+
+		let (stream, path) = stream(false);
+		let mut pool = locomotion_pool("");
+		let builder = AnimationGraph::builder();
+		let locomotion = builder.state("locomotion").matched(DATABASE);
+		let graph = builder.build(locomotion).expect("graph should build");
+		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("hips")));
+		player.set_stream(Some(stream));
+		let step = MediaTime::from_frames(1, 30).expect("the engine timebase represents 30 Hz exactly");
+		// A second walking ahead, then a second asking to move sideways, which no clip of the database does.
+		for velocity in [[0.0, -1.4], [-1.4, 0.0]] {
+			for _ in 0..30 {
+				player
+					.advance(&graph, step, locomotion.id().toward(velocity, 0.0), &mut pool)
+					.expect("plays the matched state");
+			}
+		}
+
+		let records = records(path);
+		let search = records
+			.iter()
+			.rev()
+			.find(|record| record["match"]["searched"] == true)
+			.expect("the state searches every tenth of a second");
+		let first = &search["match"]["trajectory"][0];
+		let number = |value: &serde_json::Value| value.as_f64().expect("a number");
+		let (time, x, z) = (number(&first["time"]), number(&first["position"][0]), number(&first["position"][1]));
+		// Whatever the clips play, the prediction has nearly reached the sideways velocity.
+		assert!(x < -1.4 * time * 0.9 && z.abs() < 0.03, "the trajectory starts toward ({x}, {z})");
 	}
 
 	#[test]

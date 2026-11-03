@@ -8,7 +8,7 @@ mod stream;
 
 use look::LookChain;
 pub use look::{LookChainSettings, LookTarget};
-use matched::{HeldMotion, MatchRecord, QueryPoses};
+use matched::{HeldMotion, MatchedPlay, Prediction, QueryPoses};
 
 /// The `RuntimeMotion` struct plays one graph state, keeping a blend's clips in step through one shared phase.
 ///
@@ -215,14 +215,14 @@ fn bind_clips(motion: &StateMotion, pool: &AnimationPool, target: &Skeleton) -> 
 		let resident = pool
 			.resident_database(database.resource_id())
 			.expect("a started matched state's database must be resident");
-		let roots: Arc<[u32]> = (0..target.nodes.len() as u32)
-			.filter(|&node| target.nodes[node as usize].parent.is_none())
-			.collect();
+		let placement = unique_node(target, &resident.info.search.root)
+			.ok()
+			.map(|root| Arc::new(matched::ground_placement(target, root)));
 		let clips = resident.info.clips.iter().enumerate().map(|(clip, entry)| {
 			let ground = GroundBinding {
 				database: Arc::clone(database.shared_resource_id()),
 				clip,
-				roots: Arc::clone(&roots),
+				placement: placement.clone(),
 			};
 			bind(&entry.id, Some(ground))
 		});
@@ -247,9 +247,15 @@ fn playing_clip(motion: &RuntimeMotion) -> usize {
 	motion.weights.iter().next().map_or(0, |(clip, _)| clip)
 }
 
-/// Starts a matched motion at a found frame: it plays the frame's clip from the frame's time.
-fn start_at_found(motion: &mut RuntimeMotion, samples: &[ClipBinding], found: Found) {
+/// Starts a matched motion at a found frame: it plays the frame's clip from the frame's time, looping when the
+/// database loops the clip.
+fn start_at_found(motion: &mut RuntimeMotion, samples: &[ClipBinding], found: Found, looping: bool) {
 	motion.weights = BlendWeights::single(found.clip);
+	motion.playback = if looping {
+		AnimationPlayback::Loop
+	} else {
+		AnimationPlayback::Once
+	};
 	let point = ClipPoint {
 		clip: found.clip,
 		time: ClipTime::Seconds(found.time),
@@ -786,8 +792,8 @@ impl AnimationGraphPlayer {
 				// A hand-over turned the held target with the entity, and it stays turned. The application's turn is applied
 				// once; a held target does not keep turning the chain back.
 				self.look_target = runtime.pose.look_target.map(|target| LookTarget { turned: 0.0, ..target });
-				// The held motion keeps its direction in the world while the entity turns by the step's root motion.
-				self.held = self.held.turned(runtime.root_motion);
+				// The step turned the held motion with the entity's root motion.
+				self.held = runtime.held;
 				if let Some(error) = runtime.rejection.take() {
 					self.runtime = PlayerRuntime::Rejected { error, reported: false };
 					return true;
@@ -842,7 +848,7 @@ impl AnimationGraphPlayer {
 				last_delta: MediaTime::ZERO,
 				root_motion: RootMotionDelta::IDENTITY,
 				held: HeldMotion::default(),
-				search: None,
+				matched: None,
 				posed: 0,
 				rejection: None,
 				pose,
@@ -869,9 +875,9 @@ struct ReadyAnimationGraphPlayer {
 	root_motion: RootMotionDelta,
 	/// The motion the player's matched states head toward in this advance, which the player lends.
 	held: HeldMotion,
-	/// The latest search of the playing matched state, which the data stream reports. Boxed on the first search, so
-	/// players that match nothing stay small.
-	search: Option<Box<MatchRecord>>,
+	/// What the player keeps while it plays matched states. Boxed on the first search, so players that match nothing
+	/// stay small.
+	matched: Option<Box<MatchedPlay>>,
 	/// How many poses the player has produced, up to two, which a query needs to measure node features.
 	posed: u8,
 	/// Why a matched state the player entered doesn't resolve against the canonical skeleton, which rejects the player.
@@ -963,8 +969,8 @@ impl ReadyAnimationGraphPlayer {
 		self.pose.look_target = look;
 		self.pose.frame_delta = delta;
 		self.held = held;
-		if let Some(search) = &mut self.search {
-			search.searched = false;
+		if let Some(matched) = &mut self.matched {
+			matched.search.searched = false;
 		}
 		self.positions.remember(graph.state(requested.state).space, requested.value);
 		self.refresh_pending_transition(graph, requested.state);
@@ -1050,8 +1056,57 @@ impl ReadyAnimationGraphPlayer {
 			self.posed = (self.posed + 1).min(2);
 		}
 
+		// A matched state playing on its own kept its motion before it searched.
+		if !matched {
+			self.keep_motion(graph, root_motion, delta, evaluation);
+		}
 		self.last_delta = delta;
 		self.root_motion = root_motion;
+	}
+
+	/// Turns the held motion by the step's root motion, so it keeps its direction in the world, and keeps the predicted
+	/// velocity of the matched state the step played, on its own or as a blend's destination: the step that entered
+	/// it sets it from the step's root motion, and later steps move it toward the held velocity. Any other step drops
+	/// it.
+	fn keep_motion(
+		&mut self,
+		graph: &AnimationGraph,
+		root_motion: RootMotionDelta,
+		delta: MediaTime,
+		evaluation: &Evaluation<'_, '_>,
+	) {
+		let motion = match &self.playback {
+			Playback::Playing(motion) => Some(motion),
+			Playback::Transitioning(transition) => Some(&transition.destination),
+			Playback::AwaitingInitial => None,
+		};
+		let matched = motion.and_then(|motion| match &graph.state(motion.state).motion {
+			StateMotion::Matched { database } => Some((motion.state, database)),
+			_ => None,
+		});
+		let Some((state, database)) = matched else {
+			if let Some(play) = &mut self.matched {
+				play.prediction = None;
+			}
+			// Most animators hold no motion and play no matched state, and nothing turns for them.
+			if self.held != HeldMotion::default() {
+				self.held = self.held.turned(matched::yaw_of(root_motion.rotation));
+			}
+			return;
+		};
+		// One yaw turns both the held motion and the prediction.
+		let yaw = matched::yaw_of(root_motion.rotation);
+		self.held = self.held.turned(yaw);
+		// Entering the state searched, which made room for the prediction.
+		let play = self.matched.get_or_insert_default();
+		play.prediction = match play.prediction {
+			Some(prediction) if prediction.state == state => Some(prediction.stepped(yaw, delta, self.held.velocity)),
+			_ => evaluation.pool.resident_database(database.resource_id()).map(|database| Prediction {
+				state,
+				velocity: matched::starting_velocity(root_motion, delta),
+				damping: crate::animation::matching::search::damping(database.info.search.velocity_halflife),
+			}),
+		};
 	}
 
 	/// Plays a matched state on its own: advances its clip, then searches, and switches to a found frame from the end
@@ -1065,11 +1120,14 @@ impl ReadyAnimationGraphPlayer {
 		};
 		if !evaluation.playing_ready(graph, active) {
 			self.pose.hold_frame();
+			self.keep_motion(graph, RootMotionDelta::IDENTITY, delta, evaluation);
 			return RootMotionDelta::IDENTITY;
 		}
 		let samples = active.samples(graph);
 		let root_motion = self.pose.advance_active(active, samples, delta, evaluation);
 		let mut motion = *active;
+		// The search reads the held motion and the prediction as this step leaves them.
+		self.keep_motion(graph, root_motion, delta, evaluation);
 		let entering = Entering::MidStep {
 			root_motion,
 			interval: delta,
@@ -1113,7 +1171,9 @@ impl ReadyAnimationGraphPlayer {
 		});
 		if let Some(Playing { clip, time }) = playing {
 			let last_pickable = (info.clips[clip].pickable as f32 - 1.0) / info.search.sample_rate;
-			if motion.since_search < info.search.interval && time <= last_pickable {
+			// A looping clip wraps rather than running out of pickable frames.
+			let past_pickable = info.clips[clip].looping.is_none() && time > last_pickable;
+			if motion.since_search < info.search.interval && !past_pickable {
 				return None;
 			}
 		}
@@ -1124,10 +1184,29 @@ impl ReadyAnimationGraphPlayer {
 				return None;
 			}
 		};
-		let (root_motion, interval, produced, held) = match entering {
-			Entering::AtStepStart => (self.root_motion, self.last_delta, self.posed >= 2, self.held),
-			// Mid-step, the entity has already moved by the part of the step played, which the held motion turns with.
-			Entering::MidStep { root_motion, interval } => (root_motion, interval, self.posed >= 1, self.held.turned(root_motion)),
+		let (root_motion, interval, produced) = match entering {
+			Entering::AtStepStart => (self.root_motion, self.last_delta, self.posed >= 2),
+			Entering::MidStep { root_motion, interval } => (root_motion, interval, self.posed >= 1),
+		};
+		let held = match (playing, entering) {
+			// A hand-over enters mid-step, once the entity has moved by the part of the step played, which the held
+			// motion turns with.
+			(None, Entering::MidStep { root_motion, .. }) => self.held.turned(matched::yaw_of(root_motion.rotation)),
+			// A state playing on its own kept its motion for this step before it searched.
+			_ => self.held,
+		};
+		// A playing state's search starts from the prediction as this step leaves it; entering starts from the poses'
+		// velocity, and the step's end sets the prediction anew.
+		let play = self.matched.get_or_insert_default();
+		let predicted = match playing {
+			Some(_) => play
+				.prediction
+				.filter(|prediction| prediction.state == motion.state)
+				.map(|prediction| prediction.velocity),
+			None => {
+				play.prediction = None;
+				None
+			}
 		};
 		let poses = QueryPoses {
 			current: &self.pose.local_pose,
@@ -1136,13 +1215,13 @@ impl ReadyAnimationGraphPlayer {
 			interval,
 			produced,
 		};
-		let query = matched::matched_query(info, nodes, &self.pose.target, poses, held);
+		let query = matched::matched_query(info, nodes, &self.pose.target, poses, held, predicted);
 		// Entering needs every clip resident, so only a playing state's search skips any.
 		let result = search(database, &query, playing, |candidate| evaluation.resident(&info.clips[candidate].id));
-		self.search.get_or_insert_default().record(&query, result);
+		play.search.record(&query, result);
 		motion.since_search = 0.0;
 		let found = result.found?;
-		start_at_found(motion, &binding.clips, found);
+		start_at_found(motion, &binding.clips, found, info.clips[found.clip].looping.is_some());
 		Some(MediaTime::from_seconds_f32(info.search.blend))
 	}
 
@@ -2226,11 +2305,13 @@ fn sample_clip(sample: &ClipBinding, phase: f32, pool: &AnimationPool, output: &
 		.expect("a ready motion's clips must remain resident");
 	let time = phase * sample.duration;
 	resident.packed.sample_pose(time, &sample.targets, output);
-	if let Some(ground) = &sample.ground {
+	if let Some(ground) = &sample.ground
+		&& let Some(placement) = &ground.placement
+	{
 		let database = pool
 			.resident_database(&ground.database)
 			.expect("a ready matched motion's database must remain resident");
-		matched::place_on_ground(output, &ground.roots, database.ground_at(ground.clip, time));
+		matched::place_on_ground(output, placement, database.ground_at(ground.clip, time));
 	}
 }
 
@@ -2357,7 +2438,8 @@ fn motion_root_delta(
 			.resident_database(&ground.database)
 			.expect("a ready matched motion's database must remain resident");
 		let at = |phase: f32| database.ground_at(clip, phase * duration);
-		return matched::ground_delta(at(motion.previous_phase), at(motion.phase));
+		// Past a looping clip's wraps, the ground root continues by its cycle.
+		return matched::ground_delta(at(motion.previous_phase), at(motion.phase + wrapped_loops as f32));
 	}
 	if let [sample] = samples {
 		// A single clip's poses are already sampled, so the chain copies its links from them.

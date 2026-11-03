@@ -13,12 +13,23 @@
       "description": "Clip asset IDs, fragment included, and `*` or `?` patterns that match source file IDs. Clips follow the order of their entries.",
       "items": { "type": "string", "minLength": 1 }
     },
+    "loops": {
+      "type": "array",
+      "default": [],
+      "description": "Clip asset IDs and `*` or `?` patterns naming the clips of `clips` that loop. A looping clip's frames are all pickable, and its ground root continues into its next cycle.",
+      "items": { "type": "string", "minLength": 1 }
+    },
     "root": {
       "type": "object",
       "description": "The ground root: the node it projects onto the ground, and how much its motion is smoothed.",
       "required": ["node"],
       "properties": {
         "node": { "type": "string", "minLength": 1, "description": "The node the ground root projects, usually the hips." },
+        "facing": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The node whose yaw the ground root faces; the `node` when left out. Name a node that faces where the body faces, like the head, when the root node twists toward the travel, as the hips do in many strafes."
+        },
         "position_smoothing": {
           "type": "number",
           "minimum": 0,
@@ -91,7 +102,7 @@
           "type": "number",
           "exclusiveMinimum": 0,
           "default": 0.27,
-          "description": "The halflife, in seconds, of the spring that predicts the trajectory's position."
+          "description": "The halflife, in seconds, of the spring that moves the predicted velocity toward the requested one and predicts the trajectory's position from it."
         },
         "facing": {
           "type": "number",

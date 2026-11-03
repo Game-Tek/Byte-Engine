@@ -170,6 +170,18 @@ pub(crate) fn compose_local_transform(parent: LocalTransform, child: LocalTransf
 	}
 }
 
+/// Returns the local transform that [`compose_local_transform`] places under `parent` as `object`: the inverse of
+/// composing.
+pub(crate) fn relative_local_transform(parent: LocalTransform, object: LocalTransform) -> LocalTransform {
+	let unrotate = parent.rotation.inverse();
+	let unscale = Scale::from_array(parent.scale.to_array().map(f32::recip));
+	LocalTransform {
+		translation: unscale * unrotate.rotate_vector(object.translation - parent.translation),
+		rotation: unrotate.compose(object.rotation),
+		scale: unscale * object.scale,
+	}
+}
+
 /// Returns `node`'s transform in the object space of `pose`, composed with its ancestors' local transforms.
 pub(crate) fn object_transform(skeleton: &Skeleton, pose: &[LocalTransform], node: usize) -> LocalTransform {
 	let mut transform = pose[node];

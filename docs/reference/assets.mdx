@@ -152,6 +152,7 @@ object with these fields:
 | --- | --- | --- |
 | `$schema` | None | `byte_engine/schemas/motion.bead.schema.json`, for editor completion. |
 | `clips` | Required | An array of clip asset IDs and patterns, with at least one entry. |
+| `loops` | `[]` | An array of clip asset IDs and patterns naming the clips of `clips` that loop. |
 | `root` | Required | The [ground root settings](#ground-root-settings). |
 | `sample_rate` | `30` | The frames per second the database samples its clips at. Finite and positive. |
 | `nodes` | `{}` | The [node feature weights](#node-feature-weights), by node name. |
@@ -168,11 +169,16 @@ The `clips` entries name the database's clips:
 | Order | Clips follow the order of their entries. A clip that several entries name keeps the place of the first. |
 | Later sources | A pattern matches the sources there are when the database bakes. A matching source added later joins the database the next time the database bakes. |
 
+A `loops` entry names the database's clips whose asset IDs it equals, as an ID,
+or matches, as a pattern of the same syntax. A clip that a `loops` entry names
+[loops](/docs/reference/animation#frames) in the database.
+
 ### Ground root settings
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `node` | Required | The name of the node the ground root projects, usually the hips. |
+| `facing` | The `node` | The name of the node whose yaw the ground root faces. Name a node that faces where the body faces, like the head, when the root node twists toward the travel, as the hips do in many strafes. |
 | `position_smoothing` | `0.1` | The standard deviation, in seconds, of the Gaussian that smooths the ground root's position. Zero leaves it as sampled. |
 | `facing_smoothing` | `0.25` | The standard deviation, in seconds, of the Gaussian that smooths the ground root's yaw. Zero leaves it as sampled. |
 
@@ -205,7 +211,7 @@ Each key of `nodes` is a node name, and its value is an object of these keys:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `velocity` | `0.27` | The halflife, in seconds, of the spring that predicts the trajectory's position. Finite and positive. |
+| `velocity` | `0.27` | The halflife, in seconds, of the spring that moves the predicted velocity toward the requested one and predicts the trajectory's position from it. Finite and positive. |
 | `facing` | `0.27` | The halflife, in seconds, of the spring that predicts the trajectory's direction. Finite and positive. |
 
 Every weight is finite and zero or more. Every key is optional unless the
@@ -214,8 +220,9 @@ when:
 
 - `clips` is empty, an entry matches nothing, or an entry names a resource that
   isn't an animation clip.
-- The root node or a node of `nodes` is missing from a clip's skeleton, or
-  appears in it more than once.
+- A `loops` entry names none of the database's clips.
+- The root node, the facing node, or a node of `nodes` is missing from a clip's
+  skeleton, or appears in it more than once.
 - A node of `nodes` has no positive weight.
 - The features have no dimensions, or more than 64.
 - No frame is pickable.

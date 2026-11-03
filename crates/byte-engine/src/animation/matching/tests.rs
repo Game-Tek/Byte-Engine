@@ -15,7 +15,7 @@ use crate::animation::{
 };
 
 use super::{
-	MAX_DIMENSIONS, database_from_clips,
+	MAX_DIMENSIONS, PredictedVelocity, database_from_clips,
 	features::DatabaseError,
 	search::{DatabaseInfo, Found, Playing, Query, RequestedMotion, TrajectorySample, build_query, pack_database, search},
 };
@@ -82,6 +82,34 @@ pub(crate) fn walk(duration: f32, speed: f32) -> Animation {
 		|time| ([0.0, 1.0, -speed * time], 0.0),
 		|time| [0.0, -1.0, 0.3 * (std::f32::consts::TAU * time).sin()],
 	)
+}
+
+/// A clip whose hips walk a circle at `speed` units a second, turning right at `turn_rate` radians a second from
+/// facing -Z, with the foot swinging.
+pub(crate) fn circle_walk(duration: f32, speed: f32, turn_rate: f32) -> Animation {
+	let radius = speed / turn_rate;
+	clip(
+		duration,
+		|time| {
+			let yaw = turn_rate * time;
+			([-radius * (1.0 - yaw.cos()), 1.0, -radius * yaw.sin()], yaw)
+		},
+		|time| [0.0, -1.0, 0.3 * (std::f32::consts::TAU * time).sin()],
+	)
+}
+
+/// `animation` with its skeleton under a `root` node half a unit up, which no track moves, so its hips have a parent.
+pub(crate) fn rooted(mut animation: Animation) -> Animation {
+	let mut nodes = vec![node("root", None, [0.0, 0.5, 0.0])];
+	nodes.extend(skeleton().nodes.into_iter().map(|mut node| {
+		node.parent = Some(node.parent.map_or(0, |parent| parent + 1));
+		node
+	}));
+	animation.skeleton = Reference::in_memory("rooted.skeleton", Skeleton { nodes });
+	for track in &mut animation.tracks {
+		track.node += 1;
+	}
+	animation
 }
 
 /// A clip whose hips stand still, facing -Z.
@@ -275,7 +303,10 @@ fn a_query_that_starts_at_its_requested_velocity_predicts_a_straight_line() {
 		RequestedMotion {
 			velocity: [0.6, -1.2],
 			facing: 0.0,
-			start_velocity: [0.6, -1.2],
+			predicted: PredictedVelocity {
+				velocity: [0.6, -1.2],
+				acceleration: [0.0; 2],
+			},
 			start_turn_rate: 0.0,
 		},
 	);
@@ -300,7 +331,7 @@ fn a_query_turns_toward_its_facing_and_eases_into_its_velocity() {
 		RequestedMotion {
 			velocity: [0.0, -1.4],
 			facing: 1.0,
-			start_velocity: [0.0, 0.0],
+			predicted: PredictedVelocity::default(),
 			start_turn_rate: 0.0,
 		},
 	);
@@ -468,4 +499,119 @@ fn the_playing_frame_sets_the_bar_and_frames_near_it_are_no_candidates() {
 			.is_none_or(|found| found.clip != 0 || (found.time - (frame as f32 / 30.0 + 0.1)).abs() >= 0.333),
 		"no frame within the exclusion time is a candidate, not even the query's own"
 	);
+}
+
+/// A database whose only clip is a one-second walk loop, in which the foot swings through one whole stride.
+fn walk_loop(extra: &str) -> MotionDatabase {
+	let walking = walk(1.0, 1.4);
+	let clips: Vec<(String, &Animation)> = vec![("walk.animation".into(), &walking)];
+	database_from_clips(
+		&format!(r#"{{ clips: ["placeholder"], loops: ["*.animation"], root: {{ node: "hips" }}, {extra} }}"#),
+		&clips,
+	)
+	.expect("the loop should form a database")
+}
+
+#[test]
+fn a_looping_clip_is_pickable_at_every_frame_and_its_trajectory_continues_past_its_end() {
+	let database = walk_loop("trajectory: { times: [0.5] }");
+
+	let clip = &database.clips[0];
+	// The frames stop short of the duration, where the next cycle's first frame stands.
+	assert_eq!((clip.frames, clip.pickable), (30, 30));
+	let [x, z, yaw] = clip.cycle.expect("the clip loops");
+	assert_near(x, 0.0, "cycle x");
+	assert_near(z, -1.4, "cycle z");
+	assert_near(yaw, 0.0, "cycle yaw");
+	// The last frame's trajectory runs half a second into the next cycle, 0.7 straight ahead.
+	let features = raw_features(&database, 29);
+	assert_near(features[0], 0.0, "trajectory x");
+	assert_near(features[1], -0.7, "trajectory z");
+}
+
+#[test]
+fn a_looping_clip_smooths_its_ground_root_across_its_ends() {
+	let database = walk_loop("");
+
+	// Continued by its cycle, a steady walk stays steady at the ends a clip played once pulls inward.
+	assert_near(database.ground[0][1], 0.0, "the first frame");
+	assert_near(database.ground[29][1], -1.4 * 29.0 / 30.0, "the last frame");
+}
+
+#[test]
+fn a_loops_entry_must_name_a_clip_of_the_database() {
+	let walking = walk(1.0, 1.4);
+	let error = database(r#"loops: ["run.animation"]"#, &[("walk.animation", &walking)])
+		.expect_err("a loops entry that names no clip should fail");
+	assert!(error.contains("'run.animation'"), "the error names the entry: {error}");
+}
+
+#[test]
+fn a_looping_clip_excludes_and_bars_frames_around_its_wrap() {
+	let database = walk_loop("");
+	let dimensions = database.search.dimensions();
+	let features = database.features.clone();
+	let (info, words) = pack_database(database);
+	let packed = super::search::PackedDatabase::new(&info, &words);
+	let first_frame = query_of(&features[..dimensions], 0);
+
+	// Past the last frame, at 29/30 s, the first frame is nearer, standing at the duration.
+	let at_the_wrap = search(packed, &first_frame, Some(Playing { clip: 0, time: 0.99 }), |_| true);
+	assert_eq!(at_the_wrap.bar, Some(0.0));
+	assert_eq!(at_the_wrap.found, None, "nothing beats the first frame playing again");
+
+	// A tenth of a second before the end, the first frame is a tenth of a second away around the loop.
+	let before_the_wrap = search(packed, &first_frame, Some(Playing { clip: 0, time: 0.9 }), |_| true);
+	let around = |time: f32| (time - 0.9).abs().min(1.0 - (time - 0.9).abs());
+	assert!(
+		before_the_wrap.found.is_none_or(|found| around(found.time) >= 0.333),
+		"no frame within the exclusion time around the loop is a candidate"
+	);
+}
+
+#[test]
+fn a_prediction_stepped_toward_its_goal_travels_the_queried_trajectory() {
+	let start = PredictedVelocity {
+		velocity: [1.0, -0.5],
+		acceleration: [-2.0, 3.0],
+	};
+	let (goal, damping) = ([-1.4, 0.2], super::search::damping(0.27));
+
+	// Summing the velocity over small steps integrates the trajectory a query predicts from the same start.
+	let steps = 3000;
+	let seconds = 1.0 / steps as f32;
+	let (mut prediction, mut travelled) = (start, [0.0f32; 2]);
+	for _ in 0..steps {
+		let next = prediction.toward(goal, damping, seconds);
+		for axis in 0..2 {
+			travelled[axis] += (prediction.velocity[axis] + next.velocity[axis]) * 0.5 * seconds;
+		}
+		prediction = next;
+	}
+	let trajectory = start.travel(goal, damping, 1.0);
+	let stepped_at_once = start.toward(goal, damping, 1.0);
+	for axis in 0..2 {
+		assert_near(travelled[axis], trajectory[axis], "travel");
+		assert_near(prediction.velocity[axis], stepped_at_once.velocity[axis], "velocity");
+		assert_near(prediction.acceleration[axis], stepped_at_once.acceleration[axis], "acceleration");
+	}
+}
+
+#[test]
+fn ground_roots_face_where_the_facing_node_faces() {
+	// The hips turn while a `root` node above them keeps facing -Z.
+	let turning = rooted(clip(2.0, |time| ([0.5 * time, 1.0, -time], 0.8 * time), |_| [0.0, -1.0, 0.0]));
+	let database = database_from_clips(
+		r#"{ clips: ["placeholder"], root: { node: "hips", facing: "root", position_smoothing: 0, facing_smoothing: 0 } }"#,
+		&[("turn.animation".into(), &turning)],
+	)
+	.expect("the clip should form a database");
+
+	for frame in [0, 15, 60] {
+		let time = frame as f32 / 30.0;
+		let [x, z, yaw] = database.ground[frame];
+		assert_near(x, 0.5 * time, "ground x follows the hips");
+		assert_near(z, -time, "ground z follows the hips");
+		assert_near(yaw, 0.0, "ground yaw follows the facing node");
+	}
 }

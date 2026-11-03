@@ -5,11 +5,14 @@
 use super::*;
 use crate::animation::{
 	matching::{
-		GroundRoot, MAX_DIMENSIONS,
+		GroundRoot, MAX_DIMENSIONS, PredictedVelocity,
 		search::{DatabaseInfo, Query, RequestedMotion, SearchResult, TrajectorySample, build_query},
 		turn_back,
 	},
-	math::{NodeLookup, animated_yaw, object_transform, unique_node, wrap_angle, yaw_rotation},
+	math::{
+		NodeLookup, animated_yaw, compose_local_transform, object_transform, relative_local_transform, unique_node,
+		wrap_angle, yaw_rotation,
+	},
 };
 use crate::math::Orientation;
 
@@ -36,14 +39,13 @@ impl HeldMotion {
 		}
 	}
 
-	/// Returns the held motion turned about +Y the other way by `root_motion`'s yaw, so it keeps its direction in the
-	/// world while the entity turns by root motion.
-	pub(super) fn turned(self, root_motion: RootMotionDelta) -> Self {
+	/// Returns the held motion turned about +Y the other way by `yaw`, a step's root motion yaw, so it keeps its
+	/// direction in the world while the entity turns by root motion.
+	pub(super) fn turned(self, yaw: f32) -> Self {
 		// Most animators never request a matched state, and nothing turns a motion that holds still.
 		if self == Self::default() {
 			return self;
 		}
-		let yaw = yaw_of(root_motion.rotation);
 		let [x, z] = self.velocity;
 		let (x, z) = turn_back(yaw, x, z);
 		Self {
@@ -51,6 +53,16 @@ impl HeldMotion {
 			facing: wrap_angle(self.facing - yaw),
 		}
 	}
+}
+
+/// The `MatchedPlay` struct is what a player keeps while it plays matched states: its latest search and the
+/// predicted velocity its searches start from.
+#[derive(Default)]
+pub(super) struct MatchedPlay {
+	pub(super) search: MatchRecord,
+	/// The prediction of the matched state the player plays; `None` while it plays no matched state, and in the step
+	/// that enters one.
+	pub(super) prediction: Option<Prediction>,
 }
 
 /// The `MatchRecord` struct is what a player's latest search measured, which its data stream reports.
@@ -87,13 +99,51 @@ pub(super) struct QueryPoses<'a> {
 	pub(super) produced: bool,
 }
 
-/// Builds the query a matched state searches its database with, from the animator's poses and its held motion.
+/// The `Prediction` struct is the predicted velocity a player keeps for the matched state it plays, which the state's
+/// searches start their trajectory from.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Prediction {
+	pub(super) state: AnimationStateId,
+	pub(super) velocity: PredictedVelocity,
+	/// The damping of the state's database's velocity spring.
+	pub(super) damping: f32,
+}
+
+impl Prediction {
+	/// Returns the prediction after a step that turned the entity by `yaw` over `delta`, moved toward `held`, the held
+	/// velocity already turned by the step.
+	pub(super) fn stepped(self, yaw: f32, delta: MediaTime, held: [f32; 2]) -> Self {
+		Self {
+			velocity: self.velocity.turned(yaw).toward(held, self.damping, delta.as_seconds_f32()),
+			..self
+		}
+	}
+}
+
+/// Returns the velocity of `root_motion` over `interval`, in the object space after it, with no acceleration: what a
+/// trajectory starts from when the animator enters a matched state.
+pub(super) fn starting_velocity(root_motion: RootMotionDelta, interval: MediaTime) -> PredictedVelocity {
+	let seconds = interval.as_seconds_f32();
+	if seconds <= 0.0 {
+		return PredictedVelocity::default();
+	}
+	let translation = root_motion.translation;
+	let (x, z) = turn_back(yaw_of(root_motion.rotation), translation.x(), translation.z());
+	PredictedVelocity {
+		velocity: [x / seconds, z / seconds],
+		acceleration: [0.0; 2],
+	}
+}
+
+/// Builds the query a matched state searches its database with, from the animator's poses, its held motion, and the
+/// predicted velocity its trajectory starts from: the poses' starting velocity when there is no `predicted`.
 pub(super) fn matched_query(
 	info: &DatabaseInfo,
 	nodes: &[u32],
 	skeleton: &Skeleton,
 	poses: QueryPoses<'_>,
 	held: HeldMotion,
+	predicted: Option<PredictedVelocity>,
 ) -> Query {
 	let seconds = poses.interval.as_seconds_f32();
 	let RootMotionDelta { translation, rotation } = poses.root_motion;
@@ -109,31 +159,59 @@ pub(super) fn matched_query(
 		}
 		(&current[..nodes.len()], &previous[..nodes.len()], seconds)
 	});
-	let yaw = yaw_of(rotation);
-	let (start_x, start_z) = turn_back(yaw, translation.x(), translation.z());
-	let per_second = |value: f32| if seconds > 0.0 { value / seconds } else { 0.0 };
+	let turn_rate = if seconds > 0.0 { yaw_of(rotation) / seconds } else { 0.0 };
 	build_query(
 		info,
 		node_poses,
 		RequestedMotion {
 			velocity: held.velocity,
 			facing: held.facing,
-			start_velocity: [per_second(start_x), per_second(start_z)],
-			start_turn_rate: per_second(yaw),
+			predicted: predicted.unwrap_or_else(|| starting_velocity(poses.root_motion, poses.interval)),
+			start_turn_rate: turn_rate,
 		},
 	)
 }
 
-/// Places a sampled pose relative to its ground root: the top-level nodes `roots` take the inverse of the ground
-/// root's transform, so the ground root sits at the object origin, facing -Z.
-pub(super) fn place_on_ground(pose: &mut [LocalTransform], roots: &[u32], ground: GroundRoot) {
-	let turn = yaw_rotation(-ground.yaw);
-	for &root in roots {
-		let local = &mut pose[root as usize];
-		let offset = local.translation - Vector::new(ground.x, 0.0, ground.z);
-		local.translation = turn.rotate_vector(offset);
-		local.rotation = turn.compose(local.rotation);
+/// Resolves what placing a matched pose changes in `skeleton`, the canonical one: the database's root node `root` and
+/// its ancestors, for a [`GroundBinding`].
+pub(super) fn ground_placement(skeleton: &Skeleton, root: usize) -> GroundPlacement {
+	let ancestors: Box<[(u32, LocalTransform)]> = std::iter::successors(skeleton.nodes[root].parent, |&node| {
+		skeleton.nodes[node as usize].parent
+	})
+	.map(|node| (node, skeleton.nodes[node as usize].rest_local))
+	.collect();
+	// Composed from the topmost ancestor down, so the nearest ancestor's rest is innermost.
+	let parent_rest = ancestors.iter().fold(LocalTransform::identity(), |transform, &(_, rest)| {
+		compose_local_transform(rest, transform)
+	});
+	GroundPlacement {
+		root: root as u32,
+		ancestors,
+		parent_rest,
 	}
+}
+
+/// Places a sampled pose relative to its ground root, so the ground root sits at the object origin, facing -Z: the
+/// root node keeps its sampled object-space transform with the inverse of the ground root's applied, under its
+/// ancestors at rest.
+///
+/// The travel stays out of every local transform, so inertializing between two placed poses blends what they show.
+pub(super) fn place_on_ground(pose: &mut [LocalTransform], placement: &GroundPlacement, ground: GroundRoot) {
+	let root = placement.root as usize;
+	let sampled = placement
+		.ancestors
+		.iter()
+		.fold(pose[root], |transform, &(node, _)| compose_local_transform(pose[node as usize], transform));
+	for &(node, rest) in &placement.ancestors {
+		pose[node as usize] = rest;
+	}
+	let turn = yaw_rotation(-ground.yaw);
+	let placed = LocalTransform {
+		translation: turn.rotate_vector(sampled.translation - Vector::new(ground.x, 0.0, ground.z)),
+		rotation: turn.compose(sampled.rotation),
+		scale: sampled.scale,
+	};
+	pose[root] = relative_local_transform(placement.parent_rest, placed);
 }
 
 /// Returns the root motion between two ground roots of one clip: the later one's position in the earlier one's root
@@ -147,7 +225,7 @@ pub(super) fn ground_delta(earlier: GroundRoot, later: GroundRoot) -> RootMotion
 }
 
 /// Returns how far `rotation` turns -Z about +Y, projected onto the XZ plane.
-fn yaw_of(rotation: Orientation) -> f32 {
+pub(super) fn yaw_of(rotation: Orientation) -> f32 {
 	animated_yaw(rotation, Orientation::identity())
 }
 
@@ -168,25 +246,29 @@ pub(super) mod tests {
 	use super::*;
 	use crate::animation::matching::{
 		database_from_clips,
-		tests::{idle, walk},
+		tests::{circle_walk, idle, rooted, walk},
 	};
+	use resource_management::resources::animation::Animation;
 
 	pub(in super::super) const DATABASE: &str = "locomotion.motion.bead";
 
 	/// A pool holding a database of a standing and a walking clip, three seconds each, beside the clips themselves.
 	/// `settings` adds to the database's settings.
 	pub(in super::super) fn locomotion_pool(settings: &str) -> AnimationPool {
-		let (standing, walking) = (idle(3.0), walk(3.0, 1.4));
-		let database = database_from_clips(
-			&format!(r#"{{ clips: ["placeholder"], root: {{ node: "hips" }}, {settings} }}"#),
-			&[("idle.animation".into(), &standing), ("walk.animation".into(), &walking)],
+		database_pool(
+			&format!(r#"root: {{ node: "hips" }}, {settings}"#),
+			vec![("idle.animation", idle(3.0)), ("walk.animation", walk(3.0, 1.4))],
 		)
-		.expect("the clips should form a database");
-		let entries = [
-			(DATABASE, PackedAnimationData::from_database(database)),
-			("idle.animation", PackedAnimationData::from_resource(standing)),
-			("walk.animation", PackedAnimationData::from_resource(walking)),
-		];
+	}
+
+	/// A pool holding a database of `clips`, with `settings` beside its clip list, and the clips themselves.
+	fn database_pool(settings: &str, clips: Vec<(&str, Animation)>) -> AnimationPool {
+		let named: Vec<(String, &Animation)> = clips.iter().map(|(id, clip)| (id.to_string(), clip)).collect();
+		let database = database_from_clips(&format!(r#"{{ clips: ["placeholder"], {settings} }}"#), &named)
+			.expect("the clips should form a database");
+		let entries: Vec<(&str, PackedAnimationData)> = std::iter::once((DATABASE, PackedAnimationData::from_database(database)))
+			.chain(clips.into_iter().map(|(id, clip)| (id, PackedAnimationData::from_resource(clip))))
+			.collect();
 		// Room to spare for clips a test admits later.
 		let budget = entries.iter().map(|(_, packed)| packed.resident_bytes()).sum::<usize>() + 64 * 1024;
 		let mut pool = AnimationPool::detached(budget);
@@ -255,6 +337,55 @@ pub(super) mod tests {
 		assert!(foot.abs() < 0.05, "the foot moved to {foot} in the step the route started");
 		let walked = travel(&mut player, &graph, &mut pool, request, 45);
 		assert!((walked + 1.4 * 10.0 / 30.0).abs() < 0.05, "ten steps of walking moved {walked}");
+	}
+
+	#[test]
+	fn a_switch_keeps_hips_under_a_parent_on_the_ground_root() {
+		// The hips walk a circle under a `root` node. Once the clip passes its last pickable frame, at two seconds, the
+		// search switches back to an earlier frame, which differs in travel and in yaw.
+		let pool_settings = r#"root: { node: "hips", position_smoothing: 0, facing_smoothing: 0 }"#;
+		let mut pool = database_pool(pool_settings, vec![("walk.animation", rooted(circle_walk(3.0, 1.4, 0.5)))]);
+		let builder = AnimationGraph::builder();
+		let locomotion = builder.state("locomotion").matched(DATABASE);
+		let id = locomotion.id();
+		let graph = builder.build(locomotion).expect("the graph should build");
+		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("hips")));
+
+		for frame in 0..90 {
+			let pose = player
+				.advance(&graph, step(), id.toward([0.0, -1.4], 0.0), &mut pool)
+				.expect("the player should advance")
+				.expect("every clip is resident");
+			let hips = unique_node(pose.skeleton, "hips").expect("the skeleton has hips");
+			let [x, _, z] = object_transform(pose.skeleton, pose.local_pose, hips).translation.to_array();
+			assert!(x.hypot(z) < 0.01, "step {frame} placed the hips at ({x}, {z})");
+		}
+	}
+
+	#[test]
+	fn a_looping_clip_walks_on_across_its_wraps() {
+		let settings = r#"root: { node: "hips" }, loops: ["walk.animation"]"#;
+		let mut pool = database_pool(settings, vec![("walk.animation", walk(1.0, 1.4))]);
+		let builder = AnimationGraph::builder();
+		let locomotion = builder.state("locomotion").matched(DATABASE);
+		let id = locomotion.id();
+		let graph = builder.build(locomotion).expect("the graph should build");
+		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("hips")));
+
+		// Three seconds of a one-second loop: every step moves as far, wrap or not.
+		for frame in 0..90 {
+			let pose = player
+				.advance(&graph, step(), id.toward([0.0, -1.4], 0.0), &mut pool)
+				.expect("the player should advance")
+				.expect("every clip is resident");
+			let [x, _, z] = pose.root_motion.translation.to_array();
+			if frame > 0 {
+				assert!(
+					x.abs() < 1.0e-3 && (z + 1.4 / 30.0).abs() < 1.0e-3,
+					"step {frame} moved ({x}, {z})"
+				);
+			}
+		}
 	}
 
 	#[test]

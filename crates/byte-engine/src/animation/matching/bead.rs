@@ -12,6 +12,9 @@ pub(crate) struct MotionBead {
 	_schema: Option<String>,
 	/// Clip asset IDs and `*` or `?` patterns, in database order.
 	pub(crate) clips: Vec<String>,
+	/// Clip asset IDs and `*` or `?` patterns naming the clips of `clips` that loop.
+	#[serde(default)]
+	pub(crate) loops: Vec<String>,
 	pub(crate) root: GroundRootSettings,
 	#[serde(default = "default_sample_rate")]
 	pub(crate) sample_rate: f32,
@@ -31,6 +34,9 @@ pub(crate) struct MotionBead {
 #[serde(deny_unknown_fields)]
 pub(crate) struct GroundRootSettings {
 	pub(crate) node: String,
+	/// The node whose yaw the ground root faces; `None` faces where `node` does.
+	#[serde(default)]
+	pub(crate) facing: Option<String>,
 	/// Seconds of standard deviation for the position's Gaussian.
 	#[serde(default = "default_position_smoothing")]
 	pub(crate) position_smoothing: f32,

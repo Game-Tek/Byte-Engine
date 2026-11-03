@@ -25,6 +25,7 @@ compares:
 {
   $schema: "byte_engine/schemas/motion.bead.schema.json",
   clips: ["locomotion/*.fbx"],
+  loops: ["locomotion/*_loop.fbx"],
   root: { node: "Hips" },
   nodes: {
     LeftFoot: { position: 1, velocity: 1 },
@@ -35,14 +36,18 @@ compares:
 ```
 
 Feet and hips are the usual features: they let the search keep the stride
-going. The trajectory, where the ground root goes over the next second,
+going. The ground root faces where the root node turns; if your hips twist
+toward the travel in strafes, name a steadier node, like the head, in
+`root.facing`, so a strafe heads sideways rather than diagonally. The trajectory, where the ground root goes over the next second,
 compares by default. Every other setting has a default; the
 [format](/docs/reference/assets#motion-databases) lists them.
 
-Record clips with varied motion in each, rather than one tidy cycle each: long
-takes of walking that start, stop, and turn give the search more frames to
-continue from. A frame needs a whole second of clip after it to be found, so a
-clip shorter than a second adds nothing.
+Record clips with varied motion in each: long takes of walking that start,
+stop, and turn give the search more frames to continue from. A frame of a clip
+that plays once needs a whole second of clip after it to be found, so a short
+start or stop adds only its first frames. Name your walk and run cycles in
+`loops`: a looping clip continues into its next cycle, so the search can find
+every frame of it, and the state plays it on for as long as it fits.
 
 ## Build the matched state
 

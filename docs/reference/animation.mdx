@@ -117,7 +117,9 @@ A [matched state](#matched-states) takes its root motion from its database's
 [ground root](#frames) instead of the root motion node: the ground root's
 movement between the previous and current playing time, in the previous one's
 [root frame](#frames), as a translation on X and Z and a rotation about +Y,
-whatever the node and axes settings. An animator without root motion settings
+whatever the node and axes settings. When a looping clip wraps, the current
+playing time counts the wraps, so the movement runs along the continued ground
+root through every cycle it crossed. An animator without root motion settings
 carries the identity delta in a matched state too.
 
 ## Motion databases
@@ -132,9 +134,13 @@ bakes from a `.motion.bead` file, whose fields are specified in the
 | Term | Definition |
 | --- | --- |
 | Frame interval | One over the database's sample rate, in seconds. |
-| Frame | A clip sampled at a whole number of frame intervals, from zero up to the clip's duration. Frames are numbered across the database: clips in the database's order, and each clip's frames by time. |
-| Pickable frame | A frame whose time plus the last trajectory time is at most its clip's duration. A search finds only pickable frames; any frame can play. |
-| Ground root | At each frame, the root node's object-space position with its Y set to zero, and the root node's [animated yaw](#look-chain). The position and the yaw's direction on the XZ plane are each smoothed over the clip's frames with a Gaussian of the database's standard deviation for them; samples beyond the clip's ends repeat its first or last frame. Between frames, the position interpolates linearly and the yaw along the shorter way. |
+| Looping clip | A clip that the database's `loops` field names. Any other clip plays once. |
+| Frame | A clip sampled at a whole number of frame intervals, from zero up to the clip's duration, or, for a looping clip, up to but not including its duration. Frames are numbered across the database: clips in the database's order, and each clip's frames by time. |
+| Pickable frame | A frame whose time plus the last trajectory time is at most its clip's duration, and every frame of a looping clip. A search finds only pickable frames; any frame can play. |
+| Raw ground root | At a time in a clip, the root node's object-space position with its Y set to zero, and the [animated yaw](#look-chain) of the database's facing node, which is the root node unless the database names another. |
+| Cycle | A looping clip's movement over one duration: the rigid movement on the XZ plane, a turn about +Y and a translation, that carries the raw ground root at the clip's start onto the raw ground root at its duration. |
+| Ground root | At each frame, the raw ground root with its position and its yaw's direction on the XZ plane each smoothed over the clip's frames with a Gaussian of the database's standard deviation for them. Samples beyond the ends of a clip that plays once repeat its first or last frame. Beyond the ends of a looping clip, the frames continue: the frame after the last is the first moved by the cycle, and the frame before the first is the last moved back by the cycle. Between frames, the position interpolates linearly and the yaw along the shorter way. |
+| Continued ground root | A looping clip's ground root at any time: between its last frame and its duration it interpolates toward the first frame moved by the cycle, and at a time a whole number of durations past a time within the clip, it's the ground root at that time moved by the cycle once per duration, or moved back for a time before the start. A clip that plays once holds its first or last frame past its ends. The trajectory features and a matched state's root motion use it. |
 | Root frame | The space whose origin is a frame's ground root position and whose -Z axis is -Z turned about +Y by the frame's ground root yaw. |
 
 ### Features
@@ -209,7 +215,7 @@ requested motion.
 
 | Rule | Behavior |
 | --- | --- |
-| Playback | The playing clip plays once at its own speed. One clip is sampled per step, and the found clip too in a step that switches. |
+| Playback | The playing clip plays at its own speed: a looping clip loops, and any other clip plays once. One clip is sampled per step, and the found clip too in a step that switches. |
 | Routes | Routes from a matched state start at once. A matched state has no wait or entry points. |
 | Blends | A route into or out of a matched state inertializes from the pose the animator posted last and its velocity, toward the destination with its root motion removed unless the destination is matched. |
 | Residency | An animator enters a matched state once its database and every clip it names are resident. Prefetch requests them all. While the state plays, it needs its database and its playing clip, and holds as an [other clip not resident](#playback) does without them. |
@@ -222,6 +228,7 @@ requested motion.
 | Facing | A yaw about +Y in radians, from the direction the entity faces. It wraps to the range from −π, excluded, to π. |
 | Holding | Each animator holds one velocity and one facing, which every matched state of its graph follows. A request for a matched state that carries them sets them, also when that state is playing; a request without them leaves them. Before any request sets them, both are zero. |
 | Turning | Each step turns the held velocity and facing about +Y the other way by the step's root motion rotation, so they keep their direction while the entity turns by root motion. |
+| Predicted velocity | Each animator keeps a predicted velocity and a predicted acceleration, X and Z, in the entity's object space, which a search's trajectory starts from. The step that enters a matched state sets the predicted velocity to that step's root motion translation divided by its delta, turned about +Y the other way by its rotation, or to zero for a zero delta, and the acceleration to zero. Every later step that plays the state, on its own or as the destination of a route's blend, turns both like the held velocity and then moves them toward the held velocity over the step's delta d: with j the predicted velocity minus the held velocity, k the acceleration plus j × y, and y as for the trajectory position, the velocity becomes the held velocity plus e^(−y × d) × (j + k × d), and the acceleration e^(−y × d) × (a − k × y × d). A step that plays no matched state drops them. |
 
 #### Query
 
@@ -232,7 +239,7 @@ from the animator, normalized with the database's means and deviations:
 | --- | --- |
 | Node position | The node's position in the entity's object space, in the latest pose, before the look chain. |
 | Node velocity | The node's position in the latest pose, minus its position in the pose before it with the root motion between them undone, divided by the time between them. |
-| Trajectory position | At each trajectory time t: v × t + j × ((2 ÷ y) × (1 − e^(−y × t)) − t × e^(−y × t)), as its X and Z. |
+| Trajectory position | At each trajectory time t: v × t + j ÷ y + k ÷ y² − e^(−y × t) × (k ÷ y² + (j + k × t) ÷ y), as its X and Z. |
 | Trajectory direction | At each trajectory time t: -Z turned about +Y by f + e^(−y × t) × (w × t − f × (1 + y × t)), as its X and Z. |
 
 The latest pose is the step's own when a step searches after it advances, the
@@ -242,13 +249,15 @@ the one posted before that, and the root motion and time between them are the
 step's, the part of the step before the hand-over, or the last step's.
 
 In the trajectory features, v is the held velocity and f the held facing, both
-turned by the root motion between the poses. The starting velocity is that root
-motion's translation divided by the time between the poses, turned about +Y
-the other way by its rotation, and w, the starting turn rate, is its rotation
-about +Y divided by that time; both are zero before the animator's first step.
-j is the starting velocity minus v. y is 2 × ln 2 divided by the database's
-velocity halflife for the position, and by its facing halflife for the
-direction.
+turned by the root motion between the poses. p and a are the
+[predicted velocity](#requested-motion) and acceleration as the searching step
+leaves them; a search on entering the state takes the starting velocity for p
+and zero for a. The starting velocity is the root motion's translation divided
+by the time between the poses, turned about +Y the other way by its rotation,
+and w, the starting turn rate, is its rotation about +Y divided by that time;
+both are zero before the animator's first step. j is p minus v, and k is a plus
+j × y. y is 2 × ln 2 divided by the database's velocity halflife for the
+position, and by its facing halflife for the direction.
 
 Until the animator has produced two poses, the cost leaves out the node
 features.
@@ -257,13 +266,13 @@ features.
 
 | Rule | Behavior |
 | --- | --- |
-| Candidates | Every pickable frame of a resident clip of the database, except frames of the playing clip less than the database's exclusion time from the playing time. A search lists the clips the pool doesn't hold as missing. |
-| Playing frame | The frame of the playing clip nearest the playing time; of two frames equally near, the earlier. |
+| Candidates | Every pickable frame of a resident clip of the database, except frames of the playing clip less than the database's exclusion time from the playing time, measured the shorter way around a looping clip. A search lists the clips the pool doesn't hold as missing. |
+| Playing frame | The frame of the playing clip nearest the playing time; of two frames equally near, the earlier. Past a looping clip's last frame, its first frame counts as a frame at its duration. |
 | Bar | The playing frame's cost when that frame is pickable and resident. A search on entering the state, or with any other playing frame, has no bar. |
 | Result | The candidate with the least cost, when that cost is less than the bar. Of equal costs, the lowest frame number wins. |
 | Entering | Entering the state searches, and the state starts its found clip at the found frame's time instead of the clip's start. |
 | Interval | A step in which the state plays on its own and that brings its time since its last search to at least the database's search interval searches, after it advances the playing clip. The time a route blends into the state counts. |
-| End of the pickable frames | A step in which the state plays on its own and that advances the playing clip past its last pickable frame searches, whatever the interval. |
+| End of the pickable frames | A step in which the state plays on its own and that advances a playing clip that plays once past its last pickable frame searches, whatever the interval. A looping clip wraps instead. |
 | Searches per step | At most one. A search restarts the interval. |
 | Switch | A found frame plays from the end of the step that found it: the inertializer carries the pose from the pose and velocity the animator posted last into the found clip at the found time, over the database's blend time. The step's root motion is the movement of the clip that played before the switch. |
 | No result | The playing clip plays on. A clip that reaches its end holds its last pose. |
@@ -271,10 +280,16 @@ features.
 #### Visual pose
 
 The visual pose of a matched state is its sampled pose placed relative to the
-ground root at the playing time: the skeleton's top-level nodes take the
-inverse of the ground root's transform, so the ground root sits at the object
-origin, facing -Z. The root motion node keeps its sampled values on every
-channel.
+ground root at the playing time, so the ground root sits at the object origin,
+facing -Z:
+
+| Node | Local transform |
+| --- | --- |
+| The database's root node | The transform whose object-space transform is the root node's sampled one with the inverse of the ground root's transform applied, under its ancestors at rest. |
+| An ancestor of the root node | Its rest transform. |
+| Every other node | Its sampled transform. |
+
+The root motion node keeps these values on every channel.
 
 ### Routes
 

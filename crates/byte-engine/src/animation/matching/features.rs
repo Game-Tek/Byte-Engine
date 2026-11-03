@@ -8,7 +8,7 @@ use resource_management::resources::{
 	motion_database::{MotionClip, MotionDatabase, MotionNode, MotionSearch},
 };
 
-use super::{GroundRoot, MAX_DIMENSIONS, bead::MotionBead, ground_at, turn_back};
+use super::{Cycle, GroundRoot, Loop, MAX_DIMENSIONS, bead::MotionBead, ground_at, turn_back};
 use crate::animation::{
 	math::{NodeLookup, animated_yaw, model_rotation, object_transform, unique_node, yaw_of_direction},
 	sample_local_pose,
@@ -27,6 +27,8 @@ pub(crate) enum DatabaseError {
 	TooManyDimensions(usize),
 	/// No clip is long enough to hold a frame and the whole trajectory after it.
 	NoPickableFrame,
+	/// A `loops` entry names none of the database's clips.
+	LoopNamesNoClip(String),
 }
 
 impl fmt::Display for DatabaseError {
@@ -50,18 +52,24 @@ impl fmt::Display for DatabaseError {
 			),
 			Self::NoPickableFrame => write!(
 				formatter,
-				"Motion database has no frame a search can find. The most likely cause is that every clip is shorter than the last trajectory time. Add longer clips, or shorten `trajectory.times`."
+				"Motion database has no frame a search can find. The most likely cause is that every clip is shorter than the last trajectory time. Add longer clips, name looping clips in `loops`, or shorten `trajectory.times`."
+			),
+			Self::LoopNamesNoClip(entry) => write!(
+				formatter,
+				"Motion database `loops` entry '{entry}' names none of its clips. The most likely cause is a misspelled ID or a pattern that matches no entry of `clips`. Name a clip that `clips` names, or remove the entry."
 			),
 		}
 	}
 }
 
-/// The `ClipSamples` struct holds one clip's frames as the bake measures them: the raw ground root and the features'
-/// nodes in object space.
+/// The `ClipSamples` struct holds one clip's frames as the bake measures them: the smoothed ground root and the
+/// features' nodes in object space.
 struct ClipSamples {
 	ground: Vec<GroundRoot>,
 	/// Each frame's feature-node object-space positions, frame after frame, one per node of the database.
 	positions: Vec<[f32; 3]>,
+	/// What continues a looping clip's ground root past its ends; `None` for a clip that plays once.
+	looping: Option<Loop>,
 }
 
 /// Builds a motion database from its settings and its clips, in database order, each with its resource ID.
@@ -86,6 +94,10 @@ pub(crate) fn build_database(settings: &MotionBead, clips: &[(String, &Animation
 		return Err(DatabaseError::TooManyDimensions(layout.dimensions));
 	}
 
+	if let Some(entry) = settings.loops.iter().find(|entry| !clips.iter().any(|(id, _)| names(entry, id))) {
+		return Err(DatabaseError::LoopNamesNoClip(entry.clone()));
+	}
+
 	let rate = settings.sample_rate;
 	let horizon = settings.trajectory.times.last().copied().unwrap_or(0.0);
 	let mut motion_clips = Vec::with_capacity(clips.len());
@@ -93,9 +105,14 @@ pub(crate) fn build_database(settings: &MotionBead, clips: &[(String, &Animation
 	let mut features = Vec::new();
 	let mut pickable = Vec::new();
 	for (id, animation) in clips {
-		let samples = sample_clip(id, animation, settings, &nodes)?;
+		let looping = settings.loops.iter().any(|entry| names(entry, id));
+		let samples = sample_clip(id, animation, settings, &nodes, looping)?;
 		let frames = samples.ground.len();
-		let clip_pickable = pickable_count(animation.duration, rate, horizon).min(frames);
+		let clip_pickable = if looping {
+			frames
+		} else {
+			pickable_count(animation.duration, rate, horizon).min(frames)
+		};
 		let first = ground.len();
 		ground.extend(samples.ground.iter().map(|root| [root.x, root.z, root.yaw]));
 		features.resize(features.len() + frames * layout.dimensions, 0.0);
@@ -108,6 +125,8 @@ pub(crate) fn build_database(settings: &MotionBead, clips: &[(String, &Animation
 			id: id.clone(),
 			frames: frames as u32,
 			pickable: clip_pickable as u32,
+			duration: animation.duration,
+			cycle: samples.looping.map(|looping| looping.cycle.to_array()),
 		});
 	}
 	if !pickable.iter().any(|&pickable| pickable) {
@@ -143,11 +162,24 @@ pub(crate) fn build_database(settings: &MotionBead, clips: &[(String, &Animation
 	})
 }
 
+/// Returns whether a `clips` or `loops` entry names the clip `id`: an ID by equality, a pattern by matching it.
+fn names(entry: &str, id: &str) -> bool {
+	if entry.contains(['*', '?']) {
+		utils::glob::Glob::new(entry).matches(id)
+	} else {
+		entry == id
+	}
+}
+
 /// Returns how many frames a clip of `duration` seconds has at `rate`: one per frame interval from zero up to its
-/// duration.
-fn frame_count(duration: f32, rate: f32) -> usize {
-	// The tolerance keeps a duration that is a whole number of frames from losing its last frame to rounding.
-	(duration * rate + 1.0e-4).floor() as usize + 1
+/// duration, or, for a looping clip, up to but not including it, where the next cycle's first frame stands.
+fn frame_count(duration: f32, rate: f32, looping: bool) -> usize {
+	// The tolerance keeps a duration that is a whole number of frames from gaining or losing a frame to rounding.
+	if looping {
+		((duration * rate - 1.0e-4).ceil() as usize).max(1)
+	} else {
+		(duration * rate + 1.0e-4).floor() as usize + 1
+	}
 }
 
 /// Returns how many of a clip's first frames have the whole trajectory, up to `horizon` seconds, left in the clip.
@@ -155,11 +187,19 @@ fn pickable_count(duration: f32, rate: f32, horizon: f32) -> usize {
 	if duration + 1.0e-6 < horizon {
 		return 0;
 	}
-	frame_count(duration - horizon, rate)
+	frame_count(duration - horizon, rate, false)
 }
 
 /// Samples every frame of one clip, measuring its smoothed ground root and its feature nodes' object-space positions.
-fn sample_clip(id: &str, animation: &Animation, settings: &MotionBead, nodes: &[MotionNode]) -> Result<ClipSamples, DatabaseError> {
+///
+/// A looping clip is also sampled at its duration, which gives its cycle.
+fn sample_clip(
+	id: &str,
+	animation: &Animation,
+	settings: &MotionBead,
+	nodes: &[MotionNode],
+	looping: bool,
+) -> Result<ClipSamples, DatabaseError> {
 	let skeleton = animation.skeleton.resource();
 	let find = |name: &str| {
 		unique_node(skeleton, name).map_err(|lookup| {
@@ -171,47 +211,65 @@ fn sample_clip(id: &str, animation: &Animation, settings: &MotionBead, nodes: &[
 		})
 	};
 	let root = find(&settings.root.node)?;
+	let facing = settings.root.facing.as_deref().map_or(Ok(root), find)?;
 	let feature_nodes = nodes.iter().map(|node| find(&node.name)).collect::<Result<Vec<_>, _>>()?;
-	let rest_rotation = model_rotation(skeleton, |node| skeleton.nodes[node].rest_local.rotation, Some(root as u32));
+	let rest_rotation = model_rotation(skeleton, |node| skeleton.nodes[node].rest_local.rotation, Some(facing as u32));
 
 	let rate = settings.sample_rate;
-	let frames = frame_count(animation.duration, rate);
+	let frames = frame_count(animation.duration, rate, looping);
 	let mut local = Vec::with_capacity(skeleton.nodes.len());
 	let mut raw = Vec::with_capacity(frames);
 	let mut positions = Vec::with_capacity(frames * feature_nodes.len());
+	let raw_ground = |time: f32, local: &mut Vec<_>| {
+		sample_local_pose(animation, time, local);
+		let position = object_transform(skeleton, local, root).translation;
+		GroundRoot {
+			x: position.x(),
+			z: position.z(),
+			yaw: animated_yaw(object_transform(skeleton, local, facing).rotation, rest_rotation),
+		}
+	};
 	for frame in 0..frames {
 		let time = (frame as f32 / rate).min(animation.duration);
-		sample_local_pose(animation, time, &mut local);
-		let root_transform = object_transform(skeleton, &local, root);
-		raw.push(GroundRoot {
-			x: root_transform.translation.x(),
-			z: root_transform.translation.z(),
-			yaw: animated_yaw(root_transform.rotation, rest_rotation),
-		});
+		raw.push(raw_ground(time, &mut local));
 		positions.extend(
 			feature_nodes
 				.iter()
 				.map(|&node| object_transform(skeleton, &local, node).translation.to_array()),
 		);
 	}
+	let looping = looping.then(|| Loop {
+		duration: animation.duration,
+		cycle: Cycle::between(raw[0], raw_ground(animation.duration, &mut local)),
+	});
 
 	Ok(ClipSamples {
-		ground: smooth_ground(&raw, settings.root.position_smoothing * rate, settings.root.facing_smoothing * rate),
+		ground: smooth_ground(
+			&raw,
+			looping.map(|looping| looping.cycle),
+			settings.root.position_smoothing * rate,
+			settings.root.facing_smoothing * rate,
+		),
 		positions,
+		looping,
 	})
 }
 
 /// Smooths a clip's ground root over its frames: the position with a Gaussian whose standard deviation is
 /// `position_sigma` frames, and the yaw's direction with one of `facing_sigma` frames.
 ///
-/// Samples beyond the clip's ends repeat its first or last frame. A direction that averages out to nothing, like a
-/// spin in place, keeps the frame's own yaw.
-fn smooth_ground(raw: &[GroundRoot], position_sigma: f32, facing_sigma: f32) -> Vec<GroundRoot> {
-	let values = |value: fn(&GroundRoot) -> f32| raw.iter().map(value).collect::<Vec<_>>();
-	let x = gaussian(&values(|root| root.x), position_sigma);
-	let z = gaussian(&values(|root| root.z), position_sigma);
-	let forward_x = gaussian(&values(|root| -root.yaw.sin()), facing_sigma);
-	let forward_z = gaussian(&values(|root| -root.yaw.cos()), facing_sigma);
+/// Samples beyond the ends of a clip that plays once repeat its first or last frame, and those of a looping clip
+/// continue by its `cycle`. A direction that averages out to nothing, like a spin in place, keeps the frame's own yaw.
+fn smooth_ground(raw: &[GroundRoot], cycle: Option<Cycle>, position_sigma: f32, facing_sigma: f32) -> Vec<GroundRoot> {
+	let frames = raw.len() as isize;
+	let sample = |frame: isize| match cycle {
+		Some(cycle) => cycle.moved(raw[frame.rem_euclid(frames) as usize], frame.div_euclid(frames) as i32),
+		None => raw[frame.clamp(0, frames - 1) as usize],
+	};
+	let x = gaussian(raw.len(), position_sigma, |frame| sample(frame).x);
+	let z = gaussian(raw.len(), position_sigma, |frame| sample(frame).z);
+	let forward_x = gaussian(raw.len(), facing_sigma, |frame| -sample(frame).yaw.sin());
+	let forward_z = gaussian(raw.len(), facing_sigma, |frame| -sample(frame).yaw.cos());
 	raw.iter()
 		.enumerate()
 		.map(|(frame, root)| {
@@ -229,24 +287,23 @@ fn smooth_ground(raw: &[GroundRoot], position_sigma: f32, facing_sigma: f32) -> 
 		.collect()
 }
 
-/// Convolves one value of every frame with a normalized Gaussian of `sigma` frames, cut off at three deviations, and
-/// repeats the end frames beyond the clip. A zero `sigma` returns the values as they are.
-fn gaussian(values: &[f32], sigma: f32) -> Vec<f32> {
+/// Convolves one value of each of `frames` frames, which `value` reads for any frame number, with a normalized
+/// Gaussian of `sigma` frames, cut off at three deviations. A zero `sigma` returns the values as they are.
+fn gaussian(frames: usize, sigma: f32, value: impl Fn(isize) -> f32) -> Vec<f32> {
 	if sigma <= 0.0 {
-		return values.to_vec();
+		return (0..frames as isize).map(value).collect();
 	}
 	let radius = (3.0 * sigma).ceil() as isize;
 	let weights: Vec<f32> = (-radius..=radius)
 		.map(|offset| (-(offset * offset) as f32 / (2.0 * sigma * sigma)).exp())
 		.collect();
 	let total: f32 = weights.iter().sum();
-	let last = values.len() as isize - 1;
-	(0..values.len() as isize)
+	(0..frames as isize)
 		.map(|frame| {
 			weights
 				.iter()
 				.zip(-radius..=radius)
-				.map(|(weight, offset)| weight * values[(frame + offset).clamp(0, last) as usize])
+				.map(|(weight, offset)| weight * value(frame + offset))
 				.sum::<f32>()
 				/ total
 		})
@@ -313,7 +370,7 @@ impl Layout {
 			}
 		}
 		let time = frame as f32 / rate;
-		let ahead = |offset: f32| ground_at(rate, frames, time + offset, |frame| samples.ground[frame]);
+		let ahead = |offset: f32| ground_at(rate, frames, samples.looping, time + offset, |frame| samples.ground[frame]);
 		if settings.trajectory.position > 0.0 {
 			for &offset in &settings.trajectory.times {
 				let future = ahead(offset);

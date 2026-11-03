@@ -90,10 +90,18 @@ fn motion_database_references(database: &MotionDatabase) -> Vec<&str> {
 pub struct MotionClip {
 	/// The clip's resource ID, which the clip pool loads it by.
 	pub id: String,
-	/// How many frames the clip has: one per frame interval from zero up to its duration.
+	/// How many frames the clip has: one per frame interval from zero up to its duration, or, for a looping clip, up to
+	/// but not including its duration.
 	pub frames: u32,
-	/// How many of its first frames a search can find: those with a whole trajectory left in the clip.
+	/// How many of its first frames a search can find: those with a whole trajectory left in the clip, or every frame
+	/// of a looping clip.
 	pub pickable: u32,
+	/// The clip's duration in seconds.
+	pub duration: f32,
+	/// How a looping clip's next cycle moves from this one, which continues its ground root past its ends: the turn
+	/// about +Y, then the X and Z translation, as `[x, z, yaw]` in the clip's object space. `None` for a clip that
+	/// plays once.
+	pub cycle: Option<[f32; 3]>,
 }
 
 /// The `MotionNode` struct names one node whose features a [`MotionDatabase`] compares.

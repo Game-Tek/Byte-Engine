@@ -6,9 +6,9 @@
 // blends the light of the surfels that can see it by how close they lie and how well they face it, normalized over how
 // much lookups trust each one. Its confidence is how much of its coverage those trusted surfels make up: a lone new
 // surfel's light shows at once in the estimate, but with only the confidence its rays earned. It blends the estimate
-// into the pixel's validated history by that confidence, with `surfel_temporal_accumulate`, and writes its normal to
-// `SSGI Normals`; the spatial pass then fills what neither covers. A pixel hidden from every surfel that would light it
-// takes no light, with the confidence of the surfels that hide it.
+// into the pixel's validated history by that confidence, with `surfel_temporal_reproject` and `surfel_temporal_blend`,
+// and writes its normal to `SSGI Normals`; the spatial pass then fills what neither covers. A pixel hidden from every
+// surfel that would light it takes no light, with the confidence of the surfels that hide it.
 //
 // While it reads the cell, it keeps alive the surfels that serve it. The tile then elects at most one spawn, at its
 // least covered pixel, and one despawn, of the heaviest surfel at its most covered pixel. Next, the allocate pass turns
@@ -41,6 +41,12 @@ SURFEL_SPAWN_SECOND_WEIGHT: const f32 = 0.4;
 SURFEL_KEEP_ALIVE_FACING: const f32 = 0.8;
 // A spawn copies the light of a surfel lookups fully trust that faces its pixel this much.
 SURFEL_PARENT_FACING: const f32 = 0.9;
+// The gather is most of the resolve's cost, and a settled history changes little from one estimate to the next, so
+// each tile gathers once every SURFEL_RESOLVE_INTERVAL frames, in turn with its neighbors, and otherwise keeps its
+// pixels' history. A subgroup with a pixel whose history holds less than
+// SURFEL_RESOLVE_WEAK_HISTORY gathers every frame, so newly seen surfaces take their light at once.
+SURFEL_RESOLVE_INTERVAL: const u32 = 2;
+SURFEL_RESOLVE_WEAK_HISTORY: const f32 = 4.0;
 
 // Returns `axis_tangent` with neighbor depths read from the workgroup's tile. `stride` steps one texel along `axis`
 // in the tile.
@@ -118,6 +124,17 @@ main: fn (input: StageInput, screen_trace: ScreenTrace, surfel_gi_set: SurfelGi,
 	let surface: bool = in_image && dot(view_normal, view_normal) != 0.0;
 	let normal: vec3f = to_world(surfel_resolve, view_normal, 0.0);
 
+	// The history comes first, so a subgroup whose pixels all hold enough of it can skip the gather on its tile's off
+	// frames.
+	let reprojected: SurfelHistory = SurfelHistory(vec4f(0.0, 0.0, 0.0, 0.0), 0.0, 0.0);
+	if (surface) {
+		reprojected = surfel_temporal_reproject(surfel_resolve, surfel_temporal, center_position, view_normal);
+	}
+	let tile_turn: u32 = workgroup_origin.x / SURFEL_RESOLVE_WORKGROUP_WIDTH + workgroup_origin.y / SURFEL_RESOLVE_WORKGROUP_WIDTH
+		+ surfel_gi_set.surfel_parameters.frame_index;
+	let gathers: bool = tile_turn % SURFEL_RESOLVE_INTERVAL == 0
+		|| subgroup_ballot_any(subgroup_ballot(surface && reprojected.confidence < SURFEL_RESOLVE_WEAK_HISTORY));
+
 	// The trusted light of the surfels that see the pixel and its trusted weight, and their coverage: their weights by
 	// distance, facing, and visibility alone. The surfels the pixel lies hidden from, by their radial depth, add up
 	// apart, the same two ways.
@@ -137,22 +154,40 @@ main: fn (input: StageInput, screen_trace: ScreenTrace, surfel_gi_set: SurfelGi,
 	let parent: u32 = NO_SURFEL;
 	let parent_weight: f32 = 0.0;
 	let cell_count: u32 = 0;
-	if (surface) {
+	if (surface && gathers) {
 		let cell: u32 = surfel_cell_of(surfel_gi_set, world_position);
 		let start: u32 = surfel_gi_set.surfel_scan[cell];
 		cell_count = surfel_gi_set.surfel_scan[cell + 1] - start;
 		let end: u32 = start + min(cell_count, SURFEL_LOOKUP_LIMIT);
+		// The GPU waits for a thread's reads at every branch, so the loop reads one surfel ahead: each iteration issues
+		// the next surfel's record and clearance, and the index of the one after, before it tests the current one. The
+		// last entry is read again past the end, which keeps every read inside the cell's list.
+		let last_entry: u32 = max(end, start + 1) - 1;
+		let next_surfel: u32 = NO_SURFEL;
+		let following_surfel: u32 = NO_SURFEL;
+		let next_record: SurfelRecord = SurfelRecord(vec3f(0.0, 0.0, 0.0), 0.0, 0, 0.0, vec4f16(0.0, 0.0, 0.0, 0.0));
+		let next_clearance: f32 = 0.0;
+		if (end > start) {
+			next_surfel = surfel_gi_set.surfel_cell_entries[start];
+			following_surfel = surfel_gi_set.surfel_cell_entries[min(start + 1, last_entry)];
+			next_record = surfel_gi_set.surfel_records[next_surfel];
+			next_clearance = surfel_gi_set.surfel_clearances[next_surfel];
+		}
 		for (let entry: u32 = start; entry < end; entry = entry + 1) {
-			let surfel: u32 = surfel_gi_set.surfel_cell_entries[entry];
+			let surfel: u32 = next_surfel;
+			let record: SurfelRecord = next_record;
+			let clearance: f32 = next_clearance;
+			next_surfel = following_surfel;
+			next_record = surfel_gi_set.surfel_records[next_surfel];
+			next_clearance = surfel_gi_set.surfel_clearances[next_surfel];
+			following_surfel = surfel_gi_set.surfel_cell_entries[min(entry + 2, last_entry)];
 			// A cell lists surfels that reach any of its points, and most of them reach only part of it. The squished
-			// distance is never shorter than the straight one, so a surfel this far away weighs nothing here, and the
-			// rest of its record needn't be read.
-			let surfel_offset: vec3f = world_position - surfel_gi_set.surfel_records[surfel].position;
-			let reach: f32 = surfel_gi_set.surfel_records[surfel].radius * SURFEL_LOOKUP_SCALE;
+			// distance is never shorter than the straight one, so a surfel this far away weighs nothing here.
+			let surfel_offset: vec3f = world_position - record.position;
+			let reach: f32 = record.radius * SURFEL_LOOKUP_SCALE;
 			if (dot(surfel_offset, surfel_offset) >= reach * reach) {
 				continue;
 			}
-			let record: SurfelRecord = surfel_gi_set.surfel_records[surfel];
 			let surfel_normal: vec3f = decode_surfel_normal(record.normal);
 			let distance: f32 = surfel_distance(surfel_offset, surfel_normal);
 			let facing: f32 = max(0.0, dot(surfel_normal, normal));
@@ -168,7 +203,7 @@ main: fn (input: StageInput, screen_trace: ScreenTrace, surfel_gi_set: SurfelGi,
 			}
 			let visibility: f32 = 1.0;
 			if (weight > 0.0) {
-				visibility = surfel_occlusion(surfel_gi_set, surfel, record, surfel_normal, world_position);
+				visibility = surfel_occlusion(surfel_gi_set, surfel, record, surfel_normal, world_position, clearance);
 			}
 			let visible: f32 = weight * visibility;
 			let trusted: f32 = visible * record.weight;
@@ -212,7 +247,8 @@ main: fn (input: StageInput, screen_trace: ScreenTrace, surfel_gi_set: SurfelGi,
 			}
 		}
 
-		// A sparsely covered pixel may ask for a surfel, more likely the farther it lies.
+		// A sparsely covered pixel may ask for a surfel, more likely the farther it lies, and SURFEL_RESOLVE_INTERVAL
+		// times as likely as it would every frame, since its tile asks only in the frames it gathers.
 		let random: f32 = surfel_unit(
 			surfel_hash_combine(surfel_hash_combine(pixel.x, surfel_hash(pixel.y)), surfel_gi_set.surfel_parameters.frame_index)
 		);
@@ -220,7 +256,7 @@ main: fn (input: StageInput, screen_trace: ScreenTrace, surfel_gi_set: SurfelGi,
 			second < SURFEL_SPAWN_SECOND_WEIGHT
 			&& scoring_coverage < SURFEL_SPAWN_COVERAGE
 			&& cell_count < SURFEL_CROWDED_CELL
-			&& random < surfel_resolve.surfel_resolve_parameters.spawn_probability * center_z
+			&& random < surfel_resolve.surfel_resolve_parameters.spawn_probability * f32(SURFEL_RESOLVE_INTERVAL) * center_z
 		) {
 			atomic_min(spawn_vote, (u32(min(coverage, 15.99) * 4194304.0) << 6) | lane);
 		}
@@ -250,7 +286,7 @@ main: fn (input: StageInput, screen_trace: ScreenTrace, surfel_gi_set: SurfelGi,
 			write(surfel_temporal.surfel_history_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
 			write(surfel_temporal.surfel_weights_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
 		} else {
-			surfel_temporal_accumulate(surfel_resolve, surfel_temporal, pixel, center_position, view_normal, estimate, confidence);
+			surfel_temporal_blend(surfel_temporal, pixel, reprojected, estimate, confidence);
 		}
 		write(surfel_resolve.normal_output, pixel, encode_stored_normal(view_normal));
 		// The coverage view writes the slot after the surfels view's when both are shown.

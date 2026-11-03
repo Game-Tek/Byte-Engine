@@ -41,7 +41,7 @@ own three passes inside `screen-space`.
 | `surfel-validate` | `surfel-validate` | Traces a support ray for an eighth of the surfels, and votes out those whose surface is gone. |
 | `surfel-integrate` | `surfel-integrate` | Folds each surfel's ray results into its estimate, its guide, and its radial depth, measures how far its radial depth is clear, votes out a surfel buried in geometry, and rewrites its record. |
 | | `surfel-allocate-hits` | Turns the hits' spawn requests into surfels while the pool has room for them. |
-| `screen-space` | `surfel-resolve` | Lights each half-resolution pixel from the first surfels its cell lists, blends that estimate into the pixel's reprojected history by their confidences, into `Surfel History`, and votes on spawns and despawns. |
+| `screen-space` | `surfel-resolve` | Lights each half-resolution pixel from the first surfels its cell lists, every other frame, blends that estimate into the pixel's reprojected history by their confidences, into `Surfel History`, and votes on spawns and despawns. |
 | | `surfel-allocate` | Turns each tile's spawn request into a surfel. |
 | | `surfel-spatial` | Filters the history over each pixel's surface and fills what it lacks, into `SSGI History`, which material evaluation reads. |
 
@@ -469,13 +469,13 @@ temporal pass checks. It blends the estimate in by its confidence, so a surfel
 that fades in or dies changes the light gradually. An estimate more than 3
 deviations from the history's luminance cuts the history's confidence, down to
 one frame's worth at 8 deviations, so a change, such as a lamp turning off,
-shows within a frame or two. As in kajiya, the history counts its samples to a
+shows within a few frames. As in kajiya, the history counts its samples to a
 limit and cuts the limit back when the light changes past its variance.
-`surfel_temporal_accumulate`, in `layouts/surfel_temporal.besl`, does this at
-the end of the resolve. It was a pass of its own, which read the estimate and
-the confidence back from two images; inside the resolve, it saves that
-dispatch, both images, and four reads a pixel: 0.64 ms of resolve and 0.19 ms
-of history became 0.73 ms.
+`surfel_temporal_reproject` and `surfel_temporal_blend`, in
+`layouts/surfel_temporal.besl`, do this inside the resolve. It was a pass of
+its own, which read the estimate and the confidence back from two images;
+inside the resolve, it saves that dispatch, both images, and four reads a
+pixel: 0.64 ms of resolve and 0.19 ms of history became 0.73 ms.
 
 `surfel-spatial` filters the history for material evaluation, into
 `SSGI History`. Each pixel averages its history with neighbors on a
@@ -488,6 +488,56 @@ comes from its neighbors at a similar depth on any surface, and where none
 knows anything, from the environment's irradiance. The output feeds nothing but
 material evaluation, never a surfel, a ray, or the history, so the filter's
 error never compounds.
+
+## Tiles gather every other frame
+
+Most of the resolve's time goes to the gather: each pixel walks its cell's
+list, about 12 entries on Sponza, and tests the radial depth of the 5 surfels
+that weigh it. A settled history holds 16 frames of confidence, so one more
+estimate moves it by a seventeenth. So each 8 × 8 tile gathers only every
+`SURFEL_RESOLVE_INTERVAL`, 2, frames, alternating with the tiles beside it like
+a checkerboard, and in between its pixels keep their reprojected history, as
+kajiya updates its reservoirs only every third frame. The resolve reprojects the
+history before the gather to decide: a subgroup with a pixel whose history
+holds less than `SURFEL_RESOLVE_WEAK_HISTORY`, 4, gathers every frame, so a
+surface the camera has just revealed takes its light at once, as before. A tile
+votes and spawns only in the frames it gathers, so a candidate pixel passes the
+spawn draw twice as often, which keeps the spawn rate.
+
+At 3840 × 2036 on an Apple M4, the resolve fell from about 2.9 ms to 1.8 ms and
+the surfel stages together from about 3.9 ms to 2.8 ms, with the screen-space
+stages timed one by one. Timed together, as the frame runs them, `screen-space`
+fell from 12.1 ms to 11.0 ms. Sponza's mean light stayed within the spread
+between runs, and after a 90-degree turn its light followed the same curve. On
+a still camera, 16 × 16-pixel blocks of the final image change 1.3% between
+frames, against 1.2% when every tile gathers every frame; film grain is most of
+both.
+
+## Lookups read ahead
+
+The GPU waits for a thread's outstanding reads at every branch. A lookup's
+loop used to read a list entry, then the surfel's position to test its reach,
+then the rest of its record, then its clearance, then each of four radial depth
+cells, each behind a branch. The resolve now reads each surfel's record and
+clearance one entry ahead of the one it tests, and `surfel_occlusion` takes the
+clearance from its caller and issues all four cells' reads before it tests any.
+That took the surfel stages from about 3.9 ms to 3.7 ms at 3840 × 2036 on an
+Apple M4.
+
+These attempts didn't pay:
+
+- A tile that read its cell list into workgroup memory once, culled against a
+  sphere around its pixels, walked 8 entries instead of 12, but its barriers
+  cost about what the shorter walk saved.
+- Finishing the spatial filter inside the resolve, for the confident pixels
+  whose one tap lies in their tile, left the spatial pass with a scattered
+  quarter of its pixels in every subgroup, so it ran as long as before.
+- Summing the gathered light in half precision, to free registers, left the
+  resolve's time unchanged, so its occupancy doesn't limit it.
+- Reading the four history texels of the reprojection together, instead of
+  each behind its bilinear share's branch, made the resolve about 0.07 ms
+  slower: on a still camera the reprojection lands on texel centers, so the
+  branches skip three of the four reads.
 
 ## Pixels nothing knows take the nearest known light
 
@@ -615,6 +665,11 @@ and 9%.
   light other pixels know, or with none. A pass that adds the environment again
   counts the sky twice, and one that adds it where no surfel looked lights
   enclosed rooms with sky that walls hide.
+- **A pixel that doesn't gather keeps its history.** `surfel_temporal_blend`
+  with a zero confidence writes the reprojected history unchanged, which is
+  what the resolve passes on a tile's off frames. The gather decision reads the
+  reprojected confidence before the gather, so a pixel the previous frame didn't
+  see always gathers.
 - **The spatial pass feeds only material evaluation.** It reads the temporal
   history and writes `SSGI History`, which nothing in surfel GI reads. A pass
   that fed its output back into the history, a surfel, or a ray would compound
@@ -657,6 +712,7 @@ and 9%.
 | `surfel_hemisphere_map_round_trips_and_keeps_solid_angle` | The map's inverse undoes it, and equal areas of the square cover equal solid angles. |
 | `surfel_resolve_blends_the_light_of_the_surfels_around_each_pixel` | A pixel blends its surfels' light normalized over their trust, with the confidence their rays earned, and a pixel no trusted surfel lights has neither light nor confidence. |
 | `surfel_resolve_occlusion_hides_a_surfel_behind_a_wall` | A pixel takes no light from a surfel whose radial depth hides it, and a pixel every surfel hides takes neither light nor sky, with the hiding surfels' confidence. |
+| `surfel_resolve_gathers_every_other_frame_unless_the_history_is_weak` | A tile keeps its settled history on its off frames, blends the surfels' light in on its turn, and gathers out of turn when its history is weak. |
 | `surfel_resolve_elects_the_least_covered_pixel_of_an_uncovered_tile`, `surfel_resolve_kills_the_heaviest_surfel_of_an_overcrowded_pixel` | Tiles spawn at their least covered pixel and kill the heaviest surfel of an overcrowded one. |
 | `surfel_shade_occlusion_hides_a_surfel_behind_a_wall` | A ray's hit takes the light of a surfel that sees it and none from a surfel whose radial depth puts a wall between them. |
 | `surfel_shade_lights_a_hit_with_the_scenes_lights_unless_something_hides_them` | A hit reflects point and cone lights as the light table describes them, unless geometry hides them. |

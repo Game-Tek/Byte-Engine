@@ -1398,6 +1398,38 @@ impl WallSink {
 		run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&self.program, descriptors, TILE_WORKGROUP_WIDTH, [0, 0]);
 	}
 
+	/// Runs the resolve as [`Self::resolve`] does, over a previous frame, seen by a camera that didn't move, whose
+	/// history holds `light` with `confidence` at every pixel.
+	fn resolve_over_history(&mut self, set: &mut SurfelSet, light: [f32; 4], confidence: f32) {
+		for (member, value) in [
+			("current_view_to_previous_clip", Value::Mat4F(column_major(ssgi_projection()))),
+			("current_view_to_previous_view", Value::Mat4F(IDENTITY_MATRIX)),
+			("history_valid", Value::U32(1)),
+			("history_exposure_ratio", Value::F32(1.0)),
+		] {
+			self.parameters.write(member, value).expect("surfel resolve parameters");
+		}
+		let texels = |value: [f32; 4]| texture_2d(RESOLVE_EXTENT, RESOLVE_EXTENT, &vec![value; (RESOLVE_EXTENT * RESOLVE_EXTENT) as usize]);
+		let mut previous_history = texels(light);
+		let mut previous_weights = texels([confidence, 0.0, 0.0, 0.0]);
+		let mut previous_depth = texels([WALL_DEPTH, 0.0, 0.0, 1.0]);
+		let mut previous_normals = texels(SSGI_WALL_NORMAL);
+		let mut descriptors = DescriptorBindings::new();
+		set.bind(&mut descriptors);
+		descriptors.bind_buffer(VIEWS_SLOT, &mut self.view);
+		descriptors.bind_buffer(RESOLVE_PARAMETERS_SLOT, &mut self.parameters);
+		descriptors.bind_buffer(SPAWNS_SLOT, &mut self.spawns);
+		descriptors.bind_texture(DEPTH_PYRAMID_SLOT, &mut self.depth);
+		descriptors.bind_texture(PREVIOUS_HISTORY_SLOT, &mut previous_history);
+		descriptors.bind_texture(PREVIOUS_WEIGHTS_SLOT, &mut previous_weights);
+		descriptors.bind_texture(PREVIOUS_DEPTH_SLOT, &mut previous_depth);
+		descriptors.bind_texture(PREVIOUS_NORMALS_SLOT, &mut previous_normals);
+		descriptors.bind_image(NORMALS_SLOT, &mut self.normals);
+		descriptors.bind_image(HISTORY_OUTPUT_SLOT, &mut self.history);
+		descriptors.bind_image(WEIGHTS_OUTPUT_SLOT, &mut self.weights);
+		run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&self.program, descriptors, TILE_WORKGROUP_WIDTH, [0, 0]);
+	}
+
 	fn spawn(&self, member: &str) -> Value {
 		self.spawns.read_array_member(0, member).expect("surfel spawn request")
 	}
@@ -1908,6 +1940,40 @@ fn surfel_resolve_kills_the_heaviest_surfel_of_an_overcrowded_pixel() {
 	);
 }
 
+/// Verifies a tile gathers its surfels' light every other frame and keeps its pixels' history in between, and that a
+/// pixel whose history holds little gathers in every frame, so a newly seen surface takes its light at once.
+#[test]
+fn surfel_resolve_gathers_every_other_frame_unless_the_history_is_weak() {
+	let passes = SurfelPasses::new();
+	let mut set = SurfelSet::new(&passes);
+	let mut sink = WallSink::new();
+	let lit = [1.0, 1.0, 1.0, 0.5];
+	set.place(0, WallSink::wall_point([3, 3]), WALL_NORMAL);
+	set.set_record(0, "irradiance", Value::Vec4F16(lit.map(f16::from_f32)));
+	set.set_record(0, "weight", Value::F32(1.0));
+	passes.run_grid(&mut set);
+	// Close enough to the surfel's light that the blend reads it as noise, not a change.
+	let history = [0.9, 0.9, 0.9, 0.5];
+	let gather = |set: &mut SurfelSet, sink: &mut WallSink, frame: u32, confidence: f32| {
+		set.parameters.write("frame_index", Value::U32(frame)).expect("frame index");
+		sink.resolve_over_history(set, history, confidence);
+		(sink.light([3, 3]), sink.confidence([3, 3]))
+	};
+
+	// The resolve's only tile takes its turn in even frames. In an odd one, its settled history stays as it was.
+	let (light, confidence) = gather(&mut set, &mut sink, 1, 16.0);
+	assert_rgba_close(light, history, 0.00001);
+	assert!((confidence - 16.0).abs() < 0.001, "{confidence}");
+	// In its turn, the surfel's light blends in by its full confidence.
+	let (light, confidence) = gather(&mut set, &mut sink, 2, 16.0);
+	assert_rgba_close(light, std::array::from_fn(|channel| (history[channel] * 16.0 + lit[channel]) / 17.0), 0.001);
+	assert!((confidence - 17.0).abs() < 0.001, "{confidence}");
+	// A weak history gathers out of turn.
+	let (light, confidence) = gather(&mut set, &mut sink, 1, 2.0);
+	assert_rgba_close(light, std::array::from_fn(|channel| (history[channel] * 2.0 + lit[channel]) / 3.0), 0.001);
+	assert!((confidence - 3.0).abs() < 0.001, "{confidence}");
+}
+
 /// Verifies the pixels of a surfel's own cell keep it alive while it faces them, even when it lights nothing, and that
 /// pixels it doesn't face don't. The kept surfel lies between the tile's two subgroups, so both vote for it.
 #[test]
@@ -2033,8 +2099,8 @@ struct History {
 }
 
 /// The temporal tests' stand-in for the resolve: it accumulates each pixel's estimate and confidence as the resolve
-/// does, with `surfel_temporal_accumulate`, but reads them and the pixel's normal from fixture images instead of
-/// gathering them from surfels.
+/// does, with `surfel_temporal_reproject` and `surfel_temporal_blend`, but reads them and the pixel's normal from
+/// fixture images instead of gathering them from surfels.
 const TEMPORAL_STAND_IN: &str = "
 use ::byte_engine::rendering::visibility::layouts::screen_trace::*;
 use ::byte_engine::rendering::visibility::layouts::surfel_resolve::*;
@@ -2047,12 +2113,16 @@ temporal_normals: descriptor<{ type: Texture2D, binding: 1292, access: read }>;
 main: fn (input: StageInput, screen_trace: ScreenTrace, surfel_resolve: SurfelResolve, surfel_temporal: SurfelTemporal) -> void {
 	let pixel: vec2u = input.thread_id;
 	let z: f32 = fetch(screen_trace.depth_pyramid, pixel).x;
-	surfel_temporal_accumulate(
+	let reprojected: SurfelHistory = surfel_temporal_reproject(
 		surfel_resolve,
 		surfel_temporal,
-		pixel,
 		view_position(screen_trace, vec2f(f32(pixel.x), f32(pixel.y)), z),
-		decode_stored_normal(fetch(temporal_normals, pixel)),
+		decode_stored_normal(fetch(temporal_normals, pixel))
+	);
+	surfel_temporal_blend(
+		surfel_temporal,
+		pixel,
+		reprojected,
 		fetch(temporal_estimate, pixel),
 		fetch(temporal_confidence, pixel).x
 	);

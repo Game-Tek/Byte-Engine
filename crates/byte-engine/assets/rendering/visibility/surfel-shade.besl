@@ -112,18 +112,20 @@ main: fn (input: StageInput, scene: Scene, ray_traced_scene: RayTracedScene, sur
 		let best_surfel: u32 = NO_SURFEL;
 		for (let entry: u32 = start; entry < end; entry = entry + 1) {
 			let surfel: u32 = surfel_gi_set.surfel_cell_entries[entry];
-			// As in the resolve, a surfel farther away than its lookup radius weighs nothing.
-			let surfel_offset: vec3f = position - surfel_gi_set.surfel_records[surfel].position;
-			let reach: f32 = surfel_gi_set.surfel_records[surfel].radius * SURFEL_LOOKUP_SCALE;
+			// As in the resolve, the record and clearance are read together, and a surfel farther away than its lookup
+			// radius weighs nothing.
+			let record: SurfelRecord = surfel_gi_set.surfel_records[surfel];
+			let clearance: f32 = surfel_gi_set.surfel_clearances[surfel];
+			let surfel_offset: vec3f = position - record.position;
+			let reach: f32 = record.radius * SURFEL_LOOKUP_SCALE;
 			if (dot(surfel_offset, surfel_offset) >= reach * reach) {
 				continue;
 			}
-			let record: SurfelRecord = surfel_gi_set.surfel_records[surfel];
 			let surfel_normal: vec3f = decode_surfel_normal(record.normal);
 			let distance: f32 = surfel_distance(surfel_offset, surfel_normal);
 			let weight: f32 = (1.0 - smoothstep(0.0, reach, distance)) * max(0.0, dot(surfel_normal, normal));
 			if (weight > 0.0) {
-				weight = weight * surfel_occlusion(surfel_gi_set, surfel, record, surfel_normal, position);
+				weight = weight * surfel_occlusion(surfel_gi_set, surfel, record, surfel_normal, position, clearance);
 			}
 			let contribution: vec4f = vec4f(record.irradiance) * (weight * record.weight);
 			gathered = gathered + contribution;

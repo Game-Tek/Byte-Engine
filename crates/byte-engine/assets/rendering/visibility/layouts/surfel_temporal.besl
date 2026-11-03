@@ -98,11 +98,18 @@ surfel_history_share: fn (value: vec4f, weight: f32) -> vec4f {
 	return vec4f(0.0, 0.0, 0.0, 0.0);
 }
 
-// Blends `estimate`, the light of the surfels around the half-resolution `pixel`, held with `confidence` from zero to
-// one, into the history the previous frame kept where it saw the pixel's surface, and writes the pixel's history and
-// weights. `position` and `normal` are the surface's view-space position and normal; a zero normal agrees with any
-// history normal, so depth decides alone.
-surfel_temporal_accumulate: fn (surfel_resolve: SurfelResolve, surfel_temporal: SurfelTemporal, pixel: vec2u, position: vec3f, normal: vec3f, estimate: vec4f, confidence: f32) -> void {
+// The history the previous frame kept where it saw a pixel's surface, at this frame's exposure: its light, the
+// confidence it accumulated, and the variance of its luminance. A pixel the previous frame didn't see holds none.
+SurfelHistory: struct {
+	light: vec4f,
+	confidence: f32,
+	variance: f32,
+}
+
+// Returns the history the previous frame kept where it saw the surface at the view-space `position`, facing `normal`;
+// a zero normal agrees with any history normal, so depth decides alone. Next, `surfel_temporal_blend` blends this
+// frame's estimate into it.
+surfel_temporal_reproject: fn (surfel_resolve: SurfelResolve, surfel_temporal: SurfelTemporal, position: vec3f, normal: vec3f) -> SurfelHistory {
 	let extent: vec2u = image_size(surfel_temporal.surfel_history_output);
 
 	// The history where the previous frame saw this surface, and the confidence and variance it held there.
@@ -182,6 +189,16 @@ surfel_temporal_accumulate: fn (surfel_resolve: SurfelResolve, surfel_temporal: 
 			history_confidence = weights_sum.x;
 		}
 	}
+	return SurfelHistory(history, history_confidence, history_variance);
+}
+
+// Blends `estimate`, the light of the surfels around the half-resolution `pixel`, held with `confidence` from zero to
+// one, into `reprojected`, the pixel's history from `surfel_temporal_reproject`, and writes the pixel's history and
+// weights. A pixel that gathered no estimate this frame passes a zero confidence, which keeps its history as it was.
+surfel_temporal_blend: fn (surfel_temporal: SurfelTemporal, pixel: vec2u, reprojected: SurfelHistory, estimate: vec4f, confidence: f32) -> void {
+	let history: vec4f = reprojected.light;
+	let history_confidence: f32 = reprojected.confidence;
+	let history_variance: f32 = reprojected.variance;
 
 	let estimate_luma: f32 = surfel_temporal_luma(estimate);
 	let history_luma: f32 = surfel_temporal_luma(history);

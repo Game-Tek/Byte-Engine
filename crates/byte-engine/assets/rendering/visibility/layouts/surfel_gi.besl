@@ -772,47 +772,54 @@ surfel_moment_visibility: fn (moments: vec4f, distance: f32, cosine: f32) -> f32
 	return clamp((1.0 - shadow - bleed) / (1.0 - bleed), 0.0, 1.0);
 }
 
-// Returns how visible `position` is from the surfel in `slot`, whose record is `record` and whose normal is `normal`, by
-// its radial depth around the direction toward `position`, blended bilinearly between cells.
-surfel_occlusion: fn (surfel_gi_set: SurfelGi, slot: u32, record: SurfelRecord, normal: vec3f, position: vec3f) -> f32 {
+// Returns how visible `position` is from the surfel in `slot`, whose record is `record`, whose normal is `normal`, and
+// whose clearance is `clearance`, by its radial depth around the direction toward `position`, blended bilinearly
+// between cells.
+//
+// The GPU waits for a thread's reads at every branch, so the caller reads `clearance` with the record, which lets the
+// clearance test run before any read here, and the four cells' reads issue together, before any test of them.
+surfel_occlusion: fn (surfel_gi_set: SurfelGi, slot: u32, record: SurfelRecord, normal: vec3f, position: vec3f, clearance: f32) -> f32 {
 	// Distances count from where the surfel's rays leave, as its radial depth does.
 	let offset: vec3f = position - (record.position + normal * surfel_ray_offset(record.radius));
-	let distance: f32 = length(offset);
+	let distance_squared: f32 = dot(offset, offset);
+	let inverse_distance: f32 = inversesqrt(max(distance_squared, 0.00000001));
+	let distance: f32 = distance_squared * inverse_distance;
 	// Every direction is clear that near, so no wall can stand between the surfel and the point.
-	if (distance <= 0.0001 || distance < surfel_gi_set.surfel_clearances[slot]) {
+	if (distance <= 0.0001 || distance < clearance) {
 		return 1.0;
 	}
-	let local: vec3f = surfel_to_local(surfel_basis(normal), normal, offset * (1.0 / distance));
+	let local: vec3f = surfel_to_local(surfel_basis(normal), normal, offset * inverse_distance);
 	// A point below the surfel's plane takes the cell of the nearest direction on its horizon.
 	let horizon: vec3f = vec3f(local.x, local.y, max(local.z, 0.0));
 	let length_squared: f32 = dot(horizon, horizon);
-	if (length_squared <= 0.00000001) {
-		return 1.0;
-	}
-	let direction: vec3f = horizon * inversesqrt(length_squared);
+	let direction: vec3f = horizon * inversesqrt(max(length_squared, 0.00000001));
 	let position_in_cells: vec2f = surfel_hemisphere_to_depth_square(direction) * f32(SURFEL_DEPTH_SIDE) - vec2f(0.5, 0.5);
 	let first_x: f32 = floor(position_in_cells.x);
 	let first_y: f32 = floor(position_in_cells.y);
 	let fraction_x: f32 = position_in_cells.x - first_x;
 	let fraction_y: f32 = position_in_cells.y - first_y;
 	let last: f32 = f32(SURFEL_DEPTH_SIDE - 1);
-	let moments: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
-	let total: f32 = 0.0;
-	for (let corner: u32 = 0; corner < 4; corner = corner + 1) {
-		let x: u32 = u32(clamp(first_x + f32(corner & 1), 0.0, last));
-		let y: u32 = u32(clamp(first_y + f32(corner >> 1), 0.0, last));
-		let cell: vec4f = surfel_gi_set.surfel_depths[slot * SURFEL_DEPTH_CELLS + y * SURFEL_DEPTH_SIDE + x];
-		// Cells no ray reached yet take no part.
-		if (cell.w != 0.0) {
-			let share: f32 = (1.0 - fraction_x + (2.0 * fraction_x - 1.0) * f32(corner & 1))
-				* (1.0 - fraction_y + (2.0 * fraction_y - 1.0) * f32(corner >> 1));
-			moments = moments + cell * share;
-			total = total + share;
-		}
+	let x_0: u32 = u32(clamp(first_x, 0.0, last));
+	let x_1: u32 = u32(clamp(first_x + 1.0, 0.0, last));
+	let row_0: u32 = slot * SURFEL_DEPTH_CELLS + u32(clamp(first_y, 0.0, last)) * SURFEL_DEPTH_SIDE;
+	let row_1: u32 = slot * SURFEL_DEPTH_CELLS + u32(clamp(first_y + 1.0, 0.0, last)) * SURFEL_DEPTH_SIDE;
+	let cell_0: vec4f = surfel_gi_set.surfel_depths[row_0 + x_0];
+	let cell_1: vec4f = surfel_gi_set.surfel_depths[row_0 + x_1];
+	let cell_2: vec4f = surfel_gi_set.surfel_depths[row_1 + x_0];
+	let cell_3: vec4f = surfel_gi_set.surfel_depths[row_1 + x_1];
+	if (length_squared <= 0.00000001) {
+		return 1.0;
 	}
+	// Cells no ray reached yet take no part.
+	let share_0: f32 = if (cell_0.w != 0.0) { (1.0 - fraction_x) * (1.0 - fraction_y) } else { 0.0 };
+	let share_1: f32 = if (cell_1.w != 0.0) { fraction_x * (1.0 - fraction_y) } else { 0.0 };
+	let share_2: f32 = if (cell_2.w != 0.0) { (1.0 - fraction_x) * fraction_y } else { 0.0 };
+	let share_3: f32 = if (cell_3.w != 0.0) { fraction_x * fraction_y } else { 0.0 };
+	let total: f32 = share_0 + share_1 + share_2 + share_3;
 	if (total < 0.00000001) {
 		return 1.0;
 	}
+	let moments: vec4f = cell_0 * share_0 + cell_1 * share_1 + cell_2 * share_2 + cell_3 * share_3;
 	return surfel_moment_visibility(moments * (1.0 / total), distance, direction.z);
 }
 

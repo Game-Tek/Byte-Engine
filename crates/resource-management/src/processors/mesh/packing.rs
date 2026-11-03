@@ -28,6 +28,10 @@ pub struct MeshProcessorSession {
 	skeleton: Option<ReferenceModel<SkeletonModel>>,
 	skeleton_nodes: Option<usize>,
 	skins: Vec<SkinBinding>,
+	/// One block per vertex stream, holding the current primitive's attributes in source order until its vertices are
+	/// ordered by detail level and moved to [`Self::blocks`].
+	source_blocks: Vec<PackedStreamBlock>,
+	/// The payload's streams, one block per stream type and detail level, created as levels appear.
 	blocks: Vec<PackedStreamBlock>,
 	/// Processed primitives. Until the mesh finishes, each one's material holds its material slot.
 	primitives: Vec<Primitive>,
@@ -63,9 +67,12 @@ impl MeshProcessorSession {
 			Streams::Meshlets,
 		]);
 
-		let blocks = stream_order
-			.map(|stream_type| PackedStreamBlock {
+		let source_blocks = stream_order
+			.enumerate()
+			.map(|(order, stream_type)| PackedStreamBlock {
 				stream_type,
+				level: 0,
+				order,
 				stride: stream_stride(&vertex_layout, stream_type),
 				bytes: Vec::new(),
 			})
@@ -75,7 +82,8 @@ impl MeshProcessorSession {
 			skeleton,
 			skeleton_nodes,
 			skins,
-			blocks,
+			source_blocks,
+			blocks: Vec::new(),
 			primitives: Vec::new(),
 			lods,
 			scratch: MeshProcessingScratch::default(),
@@ -93,22 +101,17 @@ impl MeshProcessorSession {
 	}
 
 	/// Processes one borrowed primitive immediately so the handler can reuse its source-format scratch afterward.
+	///
+	/// Every fallible step runs before the primitive writes to the payload blocks, so a failed primitive leaves them
+	/// untouched.
 	pub fn push_primitive<P: MeshPrimitiveSource>(
 		&mut self,
 		primitive: &P,
 	) -> Result<(), MeshPrimitiveProcessingError<P::Error>> {
-		self.scratch.block_lengths.clear();
-		self.scratch
-			.block_lengths
-			.extend(self.blocks.iter().map(|block| block.bytes.len()));
-
-		let result = self.push_primitive_inner(primitive);
-		if result.is_err() {
-			for (block, &length) in self.blocks.iter_mut().zip(&self.scratch.block_lengths) {
-				block.bytes.truncate(length);
-			}
+		for block in &mut self.source_blocks {
+			block.bytes.clear();
 		}
-		result
+		self.push_primitive_inner(primitive)
 	}
 
 	/// Packs one primitive into aggregate stream writers while using scratch only for meshopt's random-access inputs.
@@ -141,7 +144,7 @@ impl MeshProcessorSession {
 		}
 		rewind_triangles_to_clockwise(&mut self.scratch.indices);
 		meshopt::optimize_vertex_cache_in_place(&mut self.scratch.indices, position_count);
-		let mut primitive_streams = self.append_primitive_vertex_streams(primitive, primitive_index, position_count)?;
+		let source_streams = self.append_primitive_vertex_streams(primitive, primitive_index, position_count)?;
 
 		// meshopt reads native-endian positions, which is what casting the position scratch gives it.
 		let positions = meshopt::VertexDataAdapter::new(bytemuck::cast_slice(&self.scratch.positions), 12, 0)
@@ -149,7 +152,7 @@ impl MeshProcessorSession {
 		// A skinned primitive keeps full detail only. Its error would be measured in the bind pose and its bounds do
 		// not follow the animation, so a renderer could not tell when a coarser level is safe to draw.
 		let coarser_levels = if primitive.skin().is_none() {
-			read_normals(&self.blocks, &primitive_streams, &mut self.scratch.normals);
+			read_normals(&self.source_blocks, &source_streams, &mut self.scratch.normals);
 			simplify_levels(
 				&self.scratch.indices,
 				&positions,
@@ -161,8 +164,7 @@ impl MeshProcessorSession {
 			Vec::new()
 		};
 
-		// Level 0 is the source triangle list. Every level gets its own meshlets over the same vertices, and the
-		// meshlet streams hold them in level order, so one primitive range covers all levels.
+		// Level 0 is the source triangle list. Every level gets its own meshlets over the primitive's vertices.
 		let level_indices =
 			std::iter::once(&self.scratch.indices[..]).chain(coarser_levels.iter().map(|level| &level.indices[..]));
 		let levels = level_indices
@@ -176,55 +178,82 @@ impl MeshProcessorSession {
 				)
 			})
 			.collect::<Vec<_>>();
+		let vertex_counts = order_vertices_by_level(
+			levels.iter().map(|level| level.iter().flat_map(|meshlet| meshlet.vertices.iter().copied())),
+			position_count,
+			&mut self.scratch.vertex_levels,
+			&mut self.scratch.vertex_order,
+			&mut self.scratch.vertex_remap,
+		);
 		let errors = std::iter::once(0.0).chain(coarser_levels.iter().map(|level| level.error));
 		let lods = levels
 			.iter()
 			.zip(errors)
-			.map(|(meshlets, error)| PrimitiveLod {
+			.zip(&vertex_counts)
+			.map(|((meshlets, error), &vertex_count)| PrimitiveLod {
 				meshlet_count: meshlets.len() as u32,
+				vertex_count,
 				error,
 			})
 			.collect();
-		let meshlets = || levels.iter().flat_map(|level| level.iter());
 
+		// Nothing below fails, so the primitive's payload writes happen only once it is known to be valid.
+		let mut primitive_streams = Vec::with_capacity(source_streams.len() * levels.len() + 4 * levels.len());
+		for source in &source_streams {
+			split_vertex_stream(
+				&self.source_blocks,
+				&mut self.blocks,
+				source,
+				&self.scratch.vertex_order,
+				&vertex_counts,
+				&mut primitive_streams,
+			);
+		}
+		let remap = &self.scratch.vertex_remap;
+		for (level, meshlets) in levels.iter().enumerate() {
+			let level = level as u8;
+			let vertex_count = vertex_counts[level as usize] as usize;
+			primitive_streams.push(append_generated_stream(
+				level_block(&mut self.blocks, &self.source_blocks, Streams::Indices(IndexStreamTypes::Vertices), level),
+				|bytes| {
+					for &index in meshlets.iter().flat_map(|meshlet| meshlet.vertices) {
+						let index = remap[index as usize] as usize;
+						debug_assert!(
+							index < vertex_count,
+							"Meshlet vertex index leaves its level's vertex prefix. The most likely cause is a vertex order that does not put a level's vertices before the finer levels' vertices."
+						);
+						bytes.extend((index as u16).to_le_bytes());
+					}
+				},
+			));
+			primitive_streams.push(append_generated_stream(
+				level_block(&mut self.blocks, &self.source_blocks, Streams::Indices(IndexStreamTypes::Meshlets), level),
+				|bytes| {
+					for meshlet in meshlets.iter() {
+						bytes.extend_from_slice(meshlet.triangles);
+					}
+				},
+			));
+			primitive_streams.push(append_generated_stream(
+				level_block(&mut self.blocks, &self.source_blocks, Streams::Meshlets, level),
+				|bytes| {
+					for meshlet in meshlets.iter() {
+						// Bounds read the source positions, which the meshlet still indexes in source order.
+						let bounds = meshopt::clusterize::compute_meshlet_bounds(meshlet, &positions);
+						write_meshlet_record(bytes, meshlet, &bounds);
+					}
+				},
+			));
+		}
+		// The plain triangle list holds full detail, for renderers that draw without meshlets.
 		primitive_streams.push(append_generated_stream(
-			&mut self.blocks,
-			Streams::Indices(IndexStreamTypes::Vertices),
-			|bytes| {
-				for &index in meshlets().flat_map(|meshlet| meshlet.vertices) {
-					debug_assert!(
-						(index as usize) < position_count,
-						"Meshlet vertex index leaves the primitive. The most likely cause is a detail level built from another primitive's triangle list."
-					);
-					bytes.extend((index as u16).to_le_bytes());
-				}
-			},
-		));
-		// The plain triangle list stays at full detail, for renderers that draw without meshlets.
-		primitive_streams.push(append_generated_stream(
-			&mut self.blocks,
-			Streams::Indices(IndexStreamTypes::Triangles),
+			level_block(&mut self.blocks, &self.source_blocks, Streams::Indices(IndexStreamTypes::Triangles), 0),
 			|bytes| {
 				for &index in &self.scratch.indices {
-					bytes.extend((index as u16).to_le_bytes());
+					bytes.extend((remap[index as usize] as u16).to_le_bytes());
 				}
 			},
 		));
-		primitive_streams.push(append_generated_stream(
-			&mut self.blocks,
-			Streams::Indices(IndexStreamTypes::Meshlets),
-			|bytes| {
-				for meshlet in meshlets() {
-					bytes.extend_from_slice(meshlet.triangles);
-				}
-			},
-		));
-		primitive_streams.push(append_generated_stream(&mut self.blocks, Streams::Meshlets, |bytes| {
-			for meshlet in meshlets() {
-				let bounds = meshopt::clusterize::compute_meshlet_bounds(meshlet, &positions);
-				write_meshlet_record(bytes, meshlet, &bounds);
-			}
-		}));
 
 		self.primitives.push(Primitive {
 			material: primitive.material_slot() as u32,
@@ -232,6 +261,7 @@ impl MeshProcessorSession {
 			skin: primitive.skin(),
 			streams: primitive_streams,
 			bounding_box: bounds,
+			bounding_sphere: bounding_sphere(&bounds, &self.scratch.positions),
 			vertex_count: position_count as u32,
 			lods,
 		});
@@ -256,10 +286,9 @@ impl MeshProcessorSession {
 			&self.skins,
 		)?;
 
-		let mut streams = Vec::with_capacity(self.vertex_layout.len() + 4);
+		let mut streams = Vec::with_capacity(self.vertex_layout.len());
 		streams.push(append_generated_stream(
-			&mut self.blocks,
-			Streams::Vertices(VertexSemantics::Position),
+			source_block(&mut self.source_blocks, Streams::Vertices(VertexSemantics::Position)),
 			|bytes| {
 				for position in &self.scratch.positions {
 					write_f32_components(bytes, position);
@@ -268,7 +297,7 @@ impl MeshProcessorSession {
 		));
 		append_optional_f32(
 			&mut streams,
-			&mut self.blocks,
+			&mut self.source_blocks,
 			VertexSemantics::Normal,
 			position_count,
 			primitive
@@ -278,14 +307,14 @@ impl MeshProcessorSession {
 		)?;
 		append_optional_f32(
 			&mut streams,
-			&mut self.blocks,
+			&mut self.source_blocks,
 			VertexSemantics::Tangent,
 			position_count,
 			primitive.tangents().map_err(MeshPrimitiveProcessingError::Source)?,
 		)?;
 		append_optional_f32(
 			&mut streams,
-			&mut self.blocks,
+			&mut self.source_blocks,
 			VertexSemantics::BiTangent,
 			position_count,
 			primitive
@@ -295,14 +324,14 @@ impl MeshProcessorSession {
 		)?;
 		append_optional_f32(
 			&mut streams,
-			&mut self.blocks,
+			&mut self.source_blocks,
 			VertexSemantics::UV,
 			position_count,
 			primitive.uvs().map_err(MeshPrimitiveProcessingError::Source)?,
 		)?;
 		append_optional_f32(
 			&mut streams,
-			&mut self.blocks,
+			&mut self.source_blocks,
 			VertexSemantics::Color,
 			position_count,
 			primitive.colors().map_err(MeshPrimitiveProcessingError::Source)?,
@@ -310,7 +339,7 @@ impl MeshProcessorSession {
 		if let Some(vertex_skin) = vertex_skin {
 			append_vertex_skin(
 				&mut streams,
-				&mut self.blocks,
+				&mut self.source_blocks,
 				primitive_index,
 				position_count,
 				vertex_skin,
@@ -415,6 +444,8 @@ impl MeshProcessorSession {
 			})
 			.collect::<Vec<_>>();
 		self.blocks.retain(|block| !block.bytes.is_empty());
+		// Levels follow one another, full detail first, so a reader that loads a range of levels reads one span.
+		self.blocks.sort_by_key(|block| (block.level, block.order));
 		let mut streams = Vec::with_capacity(self.blocks.len());
 		let mut stream_descriptions = Vec::with_capacity(self.blocks.len());
 		let mut offset = 0;
@@ -424,9 +455,14 @@ impl MeshProcessorSession {
 				offset,
 				size,
 				stream_type: block.stream_type,
+				level: block.level,
 				stride: block.stride,
 			});
-			stream_descriptions.push(StreamDescription::new(stream_name(block.stream_type), size, offset));
+			stream_descriptions.push(StreamDescription::new(
+				mesh_stream_name(block.stream_type, block.level),
+				size,
+				offset,
+			));
 			offset += size;
 		}
 		(
@@ -460,11 +496,19 @@ struct MeshProcessingScratch {
 	normals: Vec<f32>,
 	/// Lock storage the simplifier requires alongside attributes.
 	vertex_locks: Vec<bool>,
-	block_lengths: Vec<usize>,
+	/// The coarsest detail level that uses each source vertex.
+	vertex_levels: Vec<u8>,
+	/// Source vertex of each output vertex.
+	vertex_order: Vec<u32>,
+	/// Output vertex of each source vertex.
+	vertex_remap: Vec<u32>,
 }
 
 struct PackedStreamBlock {
 	stream_type: Streams,
+	level: u8,
+	/// Position of the stream type in the payload's stream order, within its level.
+	order: usize,
 	stride: usize,
 	bytes: Vec<u8>,
 }
@@ -498,6 +542,7 @@ where
 		offset,
 		size: block.bytes.len() - offset,
 		stream_type,
+		level: 0,
 		stride: block.stride,
 	});
 	Ok(())
@@ -549,25 +594,149 @@ where
 			offset,
 			size: blocks[index].bytes.len() - offset,
 			stream_type,
+			level: 0,
 			stride: blocks[index].stride,
 		});
 	}
 	Ok(())
 }
 
-fn append_generated_stream(blocks: &mut [PackedStreamBlock], stream_type: Streams, write: impl FnOnce(&mut Vec<u8>)) -> Stream {
-	let block = blocks
-		.iter_mut()
-		.find(|block| block.stream_type == stream_type)
-		.expect("processor stream order should contain every generated stream");
+/// Appends what `write` produces to `block` and returns the range it wrote.
+fn append_generated_stream(block: &mut PackedStreamBlock, write: impl FnOnce(&mut Vec<u8>)) -> Stream {
 	let offset = block.bytes.len();
 	write(&mut block.bytes);
 	Stream {
 		offset,
 		size: block.bytes.len() - offset,
-		stream_type,
+		stream_type: block.stream_type,
+		level: block.level,
 		stride: block.stride,
 	}
+}
+
+/// Returns the source block that collects the current primitive's `stream_type` attributes.
+fn source_block(source_blocks: &mut [PackedStreamBlock], stream_type: Streams) -> &mut PackedStreamBlock {
+	source_blocks
+		.iter_mut()
+		.find(|block| block.stream_type == stream_type)
+		.expect("processor stream order should contain every generated stream")
+}
+
+/// Returns the payload block for `stream_type` at `level`, creating it with the stride and order of its source block.
+fn level_block<'a>(
+	blocks: &'a mut Vec<PackedStreamBlock>,
+	source_blocks: &[PackedStreamBlock],
+	stream_type: Streams,
+	level: u8,
+) -> &'a mut PackedStreamBlock {
+	let index = match blocks
+		.iter()
+		.position(|block| block.stream_type == stream_type && block.level == level)
+	{
+		Some(index) => index,
+		None => {
+			let template = source_blocks
+				.iter()
+				.find(|block| block.stream_type == stream_type)
+				.expect("processor stream order should contain every generated stream");
+			blocks.push(PackedStreamBlock {
+				stream_type,
+				level,
+				order: template.order,
+				stride: template.stride,
+				bytes: Vec::new(),
+			});
+			blocks.len() - 1
+		}
+	};
+	&mut blocks[index]
+}
+
+/// Orders a primitive's vertices by the coarsest detail level that uses them, coarsest first, and returns how many
+/// vertices each level needs.
+///
+/// `levels` yields each level's meshlet vertex indices, finest first. A level then uses only vertices that it or a
+/// coarser level introduces, which is a prefix of the order, so a renderer holding a level holds every coarser level's
+/// vertices and loads a finer level by appending. Vertices no level uses go last, with full detail. Ties keep source
+/// order, which the vertex cache optimization chose. `order` receives the source vertex of each output vertex and
+/// `remap` the output vertex of each source vertex.
+fn order_vertices_by_level<L: Iterator<Item = u32>>(
+	levels: impl ExactSizeIterator<Item = L>,
+	vertex_count: usize,
+	vertex_levels: &mut Vec<u8>,
+	order: &mut Vec<u32>,
+	remap: &mut Vec<u32>,
+) -> Vec<u32> {
+	let level_count = levels.len();
+	vertex_levels.clear();
+	vertex_levels.resize(vertex_count, 0);
+	// Levels arrive finest first, so the last level to name a vertex is the coarsest that uses it.
+	for (level, indices) in levels.enumerate() {
+		for index in indices {
+			vertex_levels[index as usize] = level as u8;
+		}
+	}
+	order.clear();
+	order.extend(0..vertex_count as u32);
+	order.sort_by_key(|&vertex| std::cmp::Reverse(vertex_levels[vertex as usize]));
+	remap.clear();
+	remap.resize(vertex_count, 0);
+	for (output, &source) in order.iter().enumerate() {
+		remap[source as usize] = output as u32;
+	}
+	// The order puts coarser vertices first, so level k's prefix is every vertex whose coarsest level is k or coarser.
+	(0..level_count)
+		.map(|level| vertex_levels.iter().filter(|&&coarsest| coarsest as usize >= level).count() as u32)
+		.collect()
+}
+
+/// Moves one primitive vertex stream from its source block into the payload's level blocks, in level order.
+///
+/// Level k receives the vertices it adds to the coarser levels: output vertices `vertex_counts[k + 1]..vertex_counts[k]`.
+/// A stream that only some primitives carry, such as skin joints, follows the same split.
+fn split_vertex_stream(
+	source_blocks: &[PackedStreamBlock],
+	blocks: &mut Vec<PackedStreamBlock>,
+	source: &Stream,
+	order: &[u32],
+	vertex_counts: &[u32],
+	primitive_streams: &mut Vec<Stream>,
+) {
+	let source_bytes = &source_blocks
+		.iter()
+		.find(|block| block.stream_type == source.stream_type)
+		.expect("a primitive stream is appended to a block of its type")
+		.bytes[source.offset..source.offset + source.size];
+	for level in 0..vertex_counts.len() {
+		let first = vertex_counts.get(level + 1).copied().unwrap_or(0) as usize;
+		let last = vertex_counts[level] as usize;
+		if first == last {
+			continue;
+		}
+		let block = level_block(blocks, source_blocks, source.stream_type, level as u8);
+		primitive_streams.push(append_generated_stream(block, |bytes| {
+			for &vertex in &order[first..last] {
+				bytes.extend_from_slice(&source_bytes[vertex as usize * source.stride..][..source.stride]);
+			}
+		}));
+	}
+}
+
+/// Returns a sphere around `positions`, as xyz center and w radius, centered on their bounding box.
+///
+/// Centering on the box keeps it close to the smallest sphere for the elongated shapes meshes usually have.
+fn bounding_sphere(bounds: &AABB<ModelSpace>, positions: &[[f32; 3]]) -> [f32; 4] {
+	let center = bounds.center().to_array();
+	let radius = positions
+		.iter()
+		.map(|position| {
+			(0..3)
+				.map(|axis| (position[axis] - center[axis]).powi(2))
+				.sum::<f32>()
+				.sqrt()
+		})
+		.fold(0.0f32, f32::max);
+	[center[0], center[1], center[2], radius]
 }
 
 /// Copies the normals just packed for one primitive into `scratch`, three components per vertex. Leaves it empty
@@ -651,6 +820,11 @@ fn stream_stride(vertex_layout: &[VertexComponent], stream_type: Streams) -> usi
 		Streams::Indices(IndexStreamTypes::Meshlets) => size_of::<u8>(),
 		Streams::Meshlets => MESHLET_STREAM_STRIDE,
 	}
+}
+
+/// Returns the payload name of a mesh stream, such as `level[0].Vertex.Position`.
+fn mesh_stream_name(stream_type: Streams, level: u8) -> String {
+	format!("level[{level}].{}", stream_name(stream_type))
 }
 
 fn stream_name(stream_type: Streams) -> &'static str {

@@ -18,6 +18,9 @@ pub struct Primitive {
 	pub skin: Option<u32>,
 	pub streams: Vec<Stream>,
 	pub bounding_box: math::AABB<crate::resources::ModelSpace>,
+	/// A sphere around the full-detail triangles, as xyz center and w radius. It bounds every level, so a renderer
+	/// culls the primitive with it whatever level it has loaded.
+	pub bounding_sphere: [f32; 4],
 	pub vertex_count: u32,
 	/// The detail levels of this primitive, finest first. Level 0 is full detail and is always present.
 	pub lods: Vec<PrimitiveLod>,
@@ -26,29 +29,33 @@ pub struct Primitive {
 /// The most detail levels one primitive stores, counting full detail. Renderers size fixed level tables with it.
 pub const MAX_PRIMITIVE_LODS: usize = 8;
 
-/// The `PrimitiveLod` struct lets a renderer draw one detail level of a primitive by naming the meshlets that hold it.
+/// The `PrimitiveLod` struct lets a renderer load and draw one detail level of a primitive.
 ///
-/// Every level indexes the primitive's own vertices, and the levels' meshlets follow one another in the primitive's
-/// meshlet streams, full detail first. So a renderer switches levels by drawing another meshlet range and nothing
-/// else. Read the levels from [`Primitive::lods`], and pick the coarsest one whose [`Self::error`] stays invisible at
-/// the distance the primitive is drawn from.
+/// Each level's meshlets live in that level's streams, and they index a prefix of the primitive's vertices: the baker
+/// orders vertices by the coarsest level that uses them, coarsest first. So a renderer that holds a level holds the
+/// vertices of every coarser level too, and loading a finer level only appends vertices. Read the levels from
+/// [`Primitive::lods`], and pick the coarsest one whose [`Self::error`] stays invisible at the distance the primitive
+/// is drawn from.
 #[derive(
 	Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
 pub struct PrimitiveLod {
 	pub meshlet_count: u32,
+	/// How many of the primitive's first vertices this level and the coarser ones use. Every index this level's
+	/// meshlets name is below it.
+	pub vertex_count: u32,
 	/// Estimated largest distance, in model-space units, between this level's surface and full detail. Zero for
 	/// level 0.
 	pub error: f32,
 }
 
 impl Primitive {
-	pub fn stream(&self, stream_type: Streams) -> Option<&Stream> {
-		self.streams.iter().find(|stream| stream.stream_type == stream_type)
-	}
-
-	pub fn meshlet_stream(&self) -> Option<&Stream> {
-		self.stream(Streams::Meshlets)
+	/// Returns this primitive's range of one stream at one detail level, relative to the mesh's stream of that type
+	/// and level.
+	pub fn stream(&self, stream_type: Streams, level: u8) -> Option<&Stream> {
+		self.streams
+			.iter()
+			.find(|stream| stream.stream_type == stream_type && stream.level == level)
 	}
 }
 
@@ -56,11 +63,12 @@ super::impl_resource_model!(Primitive, Primitive, "Primitive");
 
 /// The `Mesh` struct supplies packed geometry, material primitives, and optional skeletal bindings to runtime rendering.
 ///
-/// The index streams use these meanings:
+/// Every stream belongs to one detail level, and each level's streams list the primitives in order. The index streams
+/// use these meanings:
 ///
-/// - `Vertices` entries index the vertex buffer.
-/// - `Meshlets` entries index the `Vertices` stream.
-/// - `Triangles` entries index the vertex buffer.
+/// - `Vertices` entries index the primitive's vertices.
+/// - `Meshlets` entries index their meshlet's entries in the `Vertices` stream.
+/// - `Triangles`, stored at level 0 only, index the primitive's vertices.
 ///
 /// Material variants stay unsolved: request each one by its ID when it is needed, which lets renderers load and
 /// deduplicate materials on their own schedule instead of once per primitive.
@@ -75,15 +83,6 @@ pub struct Mesh {
 	pub primitives: Vec<Primitive>,
 }
 
-// Named stream accessors remain part of the public API while sharing one exact cloned lookup implementation.
-macro_rules! cloned_stream_accessor {
-	($name:ident, $stream_type:expr) => {
-		pub fn $name(&self) -> Option<Stream> {
-			self.stream($stream_type).cloned()
-		}
-	};
-}
-
 impl Mesh {
 	pub fn primitives(&self) -> impl Iterator<Item = &Primitive> {
 		self.primitives.iter()
@@ -94,32 +93,17 @@ impl Mesh {
 		&self.materials[primitive.material as usize]
 	}
 
-	pub fn stream(&self, stream_type: Streams) -> Option<&Stream> {
-		self.streams.iter().find(|stream| stream.stream_type == stream_type)
+	/// Returns the mesh's stream of one type at one detail level. Its offset addresses the resource payload.
+	pub fn stream(&self, stream_type: Streams, level: u8) -> Option<&Stream> {
+		self.streams
+			.iter()
+			.find(|stream| stream.stream_type == stream_type && stream.level == level)
 	}
 
-	pub fn vertex_stream(&self, semantic: VertexSemantics) -> Option<&Stream> {
-		self.stream(Streams::Vertices(semantic))
+	/// Returns how many detail levels the mesh stores: the most of any primitive.
+	pub fn level_count(&self) -> u8 {
+		self.primitives.iter().map(|primitive| primitive.lods.len() as u8).max().unwrap_or(0)
 	}
-
-	pub fn index_stream(&self, stream_type: IndexStreamTypes) -> Option<&Stream> {
-		self.stream(Streams::Indices(stream_type))
-	}
-
-	cloned_stream_accessor!(position_stream, Streams::Vertices(VertexSemantics::Position));
-	cloned_stream_accessor!(normal_stream, Streams::Vertices(VertexSemantics::Normal));
-	cloned_stream_accessor!(tangent_stream, Streams::Vertices(VertexSemantics::Tangent));
-	cloned_stream_accessor!(bi_tangent_stream, Streams::Vertices(VertexSemantics::BiTangent));
-	cloned_stream_accessor!(uv_stream, Streams::Vertices(VertexSemantics::UV));
-
-	pub fn color_stream(&self) -> Option<&Stream> {
-		self.vertex_stream(VertexSemantics::Color)
-	}
-
-	cloned_stream_accessor!(triangle_indices_stream, Streams::Indices(IndexStreamTypes::Triangles));
-	cloned_stream_accessor!(vertex_indices_stream, Streams::Indices(IndexStreamTypes::Vertices));
-	cloned_stream_accessor!(meshlet_indices_stream, Streams::Indices(IndexStreamTypes::Meshlets));
-	cloned_stream_accessor!(meshlets_stream, Streams::Meshlets);
 }
 
 /// The `MeshModel` struct preserves processed geometry and skeletal bindings for storage and later runtime solving.
@@ -206,17 +190,21 @@ fn validate_material_indices(material_count: usize, primitives: &[Primitive]) ->
 	}
 }
 
-/// Rejects a primitive whose detail levels do not split its meshlets into ranges of rising error.
+/// Rejects a primitive whose detail levels do not match its streams or do not rise in error.
 ///
-/// Renderers index meshlets straight from these ranges, so levels that cover more meshlets than the primitive stores
-/// would draw another primitive's geometry.
+/// Renderers read each level's meshlets and vertices straight from these counts, so a level that claims more than its
+/// streams hold would draw another primitive's geometry.
 fn validate_lods(primitives: &[Primitive]) -> Result<(), SolveError> {
 	for (index, primitive) in primitives.iter().enumerate() {
 		let lods = &primitive.lods;
-		let meshlets = primitive.meshlet_stream().map_or(0, Stream::count);
-		let covered = lods.iter().map(|lod| lod.meshlet_count as usize).sum::<usize>();
+		let count = |stream_type, level: usize| primitive.stream(stream_type, level as u8).map_or(0, Stream::count);
 		// A NaN error fails the comparison, so it is rejected with the falling ones.
 		let errors_rise = lods.iter().is_sorted_by(|finer, coarser| finer.error <= coarser.error);
+		let vertices_shrink = lods.iter().is_sorted_by(|finer, coarser| finer.vertex_count >= coarser.vertex_count);
+		// Each level's vertex streams hold the vertices it adds to the coarser levels.
+		let added_vertices = |level: usize| {
+			lods[level].vertex_count as usize - lods.get(level + 1).map_or(0, |coarser| coarser.vertex_count as usize)
+		};
 		let reason = if lods.is_empty() || lods.len() > MAX_PRIMITIVE_LODS {
 			format!("it stores {} levels, outside 1..={MAX_PRIMITIVE_LODS}", lods.len())
 		} else if lods[0].error != 0.0 || !errors_rise || !lods[lods.len() - 1].error.is_finite() {
@@ -224,8 +212,22 @@ fn validate_lods(primitives: &[Primitive]) -> Result<(), SolveError> {
 		} else if lods.len() > 1 && lods.iter().any(|lod| lod.meshlet_count == 0) {
 			// Only a primitive without triangles holds an empty level, and then it is the only one.
 			"a level holds no meshlets".to_string()
-		} else if covered != meshlets {
-			format!("the levels cover {covered} meshlets, but the primitive stores {meshlets}")
+		} else if lods[0].vertex_count != primitive.vertex_count || !vertices_shrink {
+			"the level vertex counts do not shrink from the primitive's vertex count".to_string()
+		} else if let Some(level) = (0..lods.len()).find(|&level| count(Streams::Meshlets, level) != lods[level].meshlet_count as usize) {
+			format!(
+				"level {level} claims {} meshlets, but its stream holds {}",
+				lods[level].meshlet_count,
+				count(Streams::Meshlets, level)
+			)
+		} else if let Some(level) = (0..lods.len())
+			.find(|&level| count(Streams::Vertices(VertexSemantics::Position), level) != added_vertices(level))
+		{
+			format!(
+				"level {level} adds {} vertices, but its position stream holds {}",
+				added_vertices(level),
+				count(Streams::Vertices(VertexSemantics::Position), level)
+			)
 		} else {
 			continue;
 		};
@@ -286,8 +288,9 @@ fn validate_skin_metadata(
 				));
 			}
 		}
-		let joints_stream = primitive.stream(Streams::Vertices(VertexSemantics::Joints));
-		let weights_stream = primitive.stream(Streams::Vertices(VertexSemantics::Weights));
+		// A skinned primitive has one detail level, so its skin streams are at level 0.
+		let joints_stream = primitive.stream(Streams::Vertices(VertexSemantics::Joints), 0);
+		let weights_stream = primitive.stream(Streams::Vertices(VertexSemantics::Weights), 0);
 
 		match primitive.skin {
 			Some(skin) => {
@@ -295,6 +298,12 @@ fn validate_skin_metadata(
 					return invalid_mesh_skeletal_metadata(format!(
 						"primitive {primitive_index} targets skin {skin} outside the {}-skin table",
 						skins.len()
+					));
+				}
+				if primitive.lods.len() != 1 {
+					return invalid_mesh_skeletal_metadata(format!(
+						"primitive {primitive_index} is skinned but stores {} detail levels instead of one",
+						primitive.lods.len()
 					));
 				}
 				let (Some(joints_stream), Some(weights_stream)) = (joints_stream, weights_stream) else {
@@ -369,6 +378,7 @@ mod tests {
 	fn stream(stream_type: Streams, offset: usize, size: usize, stride: usize) -> Stream {
 		Stream {
 			stream_type,
+			level: 0,
 			offset,
 			size,
 			stride,
@@ -459,40 +469,67 @@ mod tests {
 			skin,
 			streams,
 			bounding_box: math::AABB::new(math::Point::origin(), math::Point::origin()),
+			bounding_sphere: [0.0; 4],
 			vertex_count: 1,
-			lods: vec![lod(0, 0.0)],
+			lods: vec![lod(0, 1, 0.0)],
 		}
 	}
 
-	fn lod(meshlet_count: u32, error: f32) -> PrimitiveLod {
-		PrimitiveLod { meshlet_count, error }
+	fn lod(meshlet_count: u32, vertex_count: u32, error: f32) -> PrimitiveLod {
+		PrimitiveLod {
+			meshlet_count,
+			vertex_count,
+			error,
+		}
+	}
+
+	/// Builds a primitive whose level streams hold `(meshlets, added vertices)` per level, finest first.
+	fn leveled_primitive(streams: &[(usize, usize)], lods: Vec<PrimitiveLod>) -> Primitive {
+		let mut primitive = test_primitive(None, false, false);
+		primitive.vertex_count = streams.iter().map(|&(_, vertices)| vertices as u32).sum();
+		primitive.streams = streams
+			.iter()
+			.enumerate()
+			.flat_map(|(level, &(meshlets, vertices))| {
+				[
+					Stream {
+						level: level as u8,
+						..stream(Streams::Meshlets, 0, meshlets * 52, 52)
+					},
+					Stream {
+						level: level as u8,
+						..stream(Streams::Vertices(VertexSemantics::Position), 0, vertices * 12, 12)
+					},
+				]
+			})
+			.collect();
+		primitive.lods = lods;
+		primitive
 	}
 
 	#[test]
-	fn detail_levels_must_split_the_primitive_meshlets_with_rising_error() {
-		let valid = |meshlets: usize, lods: Vec<PrimitiveLod>| {
-			let mut primitive = test_primitive(None, false, false);
-			primitive.streams.push(stream(Streams::Meshlets, 0, meshlets * 52, 52));
-			primitive.lods = lods;
-			validate_lods(&[primitive]).is_ok()
-		};
+	fn detail_levels_must_match_their_streams_with_rising_error() {
+		let valid = |streams: &[(usize, usize)], lods: Vec<PrimitiveLod>| validate_lods(&[leveled_primitive(streams, lods)]).is_ok();
+		let three_levels = [(4, 5), (2, 3), (1, 4)];
 
-		assert!(valid(7, vec![lod(4, 0.0), lod(2, 0.5), lod(1, 0.5)]));
+		assert!(valid(&three_levels, vec![lod(4, 12, 0.0), lod(2, 7, 0.5), lod(1, 4, 0.5)]));
 		// A primitive with no triangles keeps one empty level.
-		assert!(valid(0, vec![lod(0, 0.0)]));
+		assert!(valid(&[(0, 3)], vec![lod(0, 3, 0.0)]));
 
-		assert!(!valid(4, Vec::new()));
-		assert!(!valid(MAX_PRIMITIVE_LODS + 1, vec![lod(1, 0.0); MAX_PRIMITIVE_LODS + 1]));
+		assert!(!valid(&[(4, 3)], Vec::new()));
+		assert!(!valid(&[(1, 1); MAX_PRIMITIVE_LODS + 1], vec![lod(1, 1, 0.0); MAX_PRIMITIVE_LODS + 1]));
 		// Full detail has no error to speak of.
-		assert!(!valid(4, vec![lod(4, 0.25)]));
-		// Levels may not be empty, and together they cover exactly the primitive's meshlets.
-		assert!(!valid(4, vec![lod(4, 0.0), lod(0, 0.5)]));
-		assert!(!valid(4, vec![lod(4, 0.0), lod(2, 0.5)]));
-		assert!(!valid(8, vec![lod(4, 0.0), lod(2, 0.5)]));
+		assert!(!valid(&[(4, 3)], vec![lod(4, 3, 0.25)]));
+		// Levels may not be empty, and each holds exactly the meshlets its stream stores.
+		assert!(!valid(&[(4, 3), (0, 0)], vec![lod(4, 3, 0.0), lod(0, 0, 0.5)]));
+		assert!(!valid(&[(4, 3), (2, 0)], vec![lod(4, 3, 0.0), lod(1, 0, 0.5)]));
+		// Each level's position stream holds the vertices it adds, and vertex counts shrink toward coarser levels.
+		assert!(!valid(&three_levels, vec![lod(4, 12, 0.0), lod(2, 8, 0.5), lod(1, 4, 0.5)]));
+		assert!(!valid(&[(4, 0), (2, 3)], vec![lod(4, 3, 0.0), lod(2, 4, 0.5)]));
 		// A coarser level never claims less error than a finer one.
-		assert!(!valid(7, vec![lod(4, 0.0), lod(2, 0.5), lod(1, 0.25)]));
-		assert!(!valid(6, vec![lod(4, 0.0), lod(2, f32::NAN)]));
-		assert!(!valid(6, vec![lod(4, 0.0), lod(2, f32::INFINITY)]));
+		assert!(!valid(&three_levels, vec![lod(4, 12, 0.0), lod(2, 7, 0.5), lod(1, 4, 0.25)]));
+		assert!(!valid(&[(4, 3), (2, 0)], vec![lod(4, 3, 0.0), lod(2, 0, f32::NAN)]));
+		assert!(!valid(&[(4, 3), (2, 0)], vec![lod(4, 3, 0.0), lod(2, 0, f32::INFINITY)]));
 	}
 
 	#[test]

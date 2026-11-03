@@ -166,7 +166,7 @@ mod tests {
 		assert_eq!(processed.mesh.primitives[0].vertex_count, 3);
 		assert_eq!(
 			processed.mesh.primitives[0]
-				.stream(Streams::Indices(IndexStreamTypes::Triangles))
+				.stream(Streams::Indices(IndexStreamTypes::Triangles), 0)
 				.expect("triangle stream should exist")
 				.size,
 			6
@@ -986,19 +986,26 @@ mod tests {
 		(second[0] - first[0]) * (third[1] - first[1]) - (second[1] - first[1]) * (third[0] - first[0])
 	}
 
-	/// Returns one primitive's bytes of `stream_type` from the processed aggregate buffer.
-	fn primitive_stream(processed: &ProcessedMesh, primitive_index: usize, stream_type: Streams) -> &[u8] {
-		let aggregate = processed
-			.mesh
-			.streams
-			.iter()
-			.find(|stream| stream.stream_type == stream_type)
-			.expect("aggregate stream should exist");
-		let primitive = processed.mesh.primitives[primitive_index]
-			.stream(stream_type)
-			.expect("primitive stream should exist");
-		let begin = aggregate.offset + primitive.offset;
-		&processed.buffer[begin..begin + primitive.size]
+	/// Returns one primitive's bytes of `stream_type` from the processed aggregate buffer, joining its detail levels
+	/// coarsest first, which is the order of the primitive's vertices.
+	fn primitive_stream(processed: &ProcessedMesh, primitive_index: usize, stream_type: Streams) -> Vec<u8> {
+		let primitive = &processed.mesh.primitives[primitive_index];
+		let bytes = (0..primitive.lods.len() as u8)
+			.rev()
+			.filter_map(|level| {
+				let range = primitive.stream(stream_type, level)?;
+				let aggregate = processed
+					.mesh
+					.streams
+					.iter()
+					.find(|stream| stream.stream_type == stream_type && stream.level == level)
+					.expect("aggregate stream should exist");
+				let begin = aggregate.offset + range.offset;
+				Some(&processed.buffer[begin..begin + range.size])
+			})
+			.collect::<Vec<_>>();
+		assert!(!bytes.is_empty(), "primitive stream should exist");
+		bytes.concat()
 	}
 
 	/// Decodes one primitive's packed floating-point stream from the processed aggregate buffer.

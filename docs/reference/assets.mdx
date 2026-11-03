@@ -80,8 +80,10 @@ each with about half the triangles of the one before, until a level stops
 getting smaller, fits in about two meshlets, or reaches the level limit. Every
 level uses the primitive's own vertices. Each level records an error: the
 estimated largest distance, in model units, between it and full detail. The
-renderer draws the coarsest level whose error covers at most a pixel. Skinned
-primitives keep full detail only.
+renderer draws the coarsest level whose error covers at most a pixel, and
+keeps only the levels that some instance needs; the
+[detail level rules](/docs/reference/rendering#the-visibility-pipeline) define
+which. Skinned primitives keep full detail only.
 
 A model's BEAD file tunes its levels with a `lods` object:
 

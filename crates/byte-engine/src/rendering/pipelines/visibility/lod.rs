@@ -1,27 +1,39 @@
-//! Detail level selection: which of a primitive's baked meshlet ranges each instance draws this frame.
+//! Detail level selection: which of a primitive's baked levels each instance wants this frame, and which resident one
+//! it draws.
 //!
-//! A baked primitive stores its levels as consecutive meshlet ranges over the same vertices, so drawing another level
-//! only changes the meshlet range an instance names. [`MeshLods`] carries those ranges from the loaded mesh to each
-//! render entity, and [`LodView`] picks one per instance from the main camera. Shadow views draw the same level, which
-//! keeps a caster and its lit surface in agreement.
+//! A mesh keeps only some of its levels resident. [`MeshLods`] carries where each resident level lives from the loaded
+//! mesh to each render entity, and [`LodView`] picks the level each instance wants from the main camera. An instance
+//! draws that level when it is resident, or the finest resident level coarser than it otherwise. Shadow views draw the
+//! same level, which keeps a caster and its lit surface in agreement.
 
 /// Error, in pixels, a level may show on screen at the default bias before a finer one is drawn.
 const LOD_PIXEL_ERROR: f32 = 1.0;
 
-/// The `MeshLod` struct names the meshlet range an instance draws for one detail level.
+/// The `MeshLod` struct names where an instance reads one detail level of its primitive from.
+///
+/// A prepared mesh counts the bases from the start of its own streams; [`super::geometry::GeometryBuffers::append_mesh`]
+/// turns them into buffer elements once it places the mesh. Levels that are not resident keep only their meshlet
+/// count and error.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct MeshLod {
-	/// First meshlet of the level, counted from the primitive's first meshlet.
 	pub(crate) first_meshlet: u32,
 	pub(crate) meshlet_count: u32,
+	/// The primitive's first vertex in the block that holds this level.
+	pub(crate) vertex_base: u32,
+	/// What the level's meshlet records count their vertex-index offsets from.
+	pub(crate) primitive_index_base: u32,
+	/// What the level's meshlet records count their triangle offsets from.
+	pub(crate) triangle_base: u32,
 	/// Estimated largest distance, in model-space units, between this level's surface and full detail.
 	pub(crate) error: f32,
+	/// Whether the level's geometry is in the buffers, so an instance can draw it.
+	pub(crate) resident: bool,
 }
 
 /// The `MeshLods` struct keeps a primitive's detail levels, finest first, in storage the frame loop can copy freely.
 ///
-/// A fixed table avoids a heap allocation per render entity. Build one with [`Self::from_resource`] for a baked
-/// primitive or [`Self::single`] for geometry without coarser levels, then let [`LodView::select`] choose from it.
+/// A fixed table avoids a heap allocation per render entity. Build one with [`Self::new`] for a baked primitive or
+/// [`Self::single`] for geometry without coarser levels, then let [`LodView::select`] choose from it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct MeshLods {
 	levels: [MeshLod; MAX_PRIMITIVE_LODS],
@@ -37,28 +49,22 @@ impl Default for MeshLods {
 impl MeshLods {
 	/// Returns the table of a primitive that only has full detail.
 	pub(crate) fn single(meshlet_count: u32) -> Self {
-		Self::from_resource(&[PrimitiveLod {
+		Self::new(&[MeshLod {
 			meshlet_count,
-			error: 0.0,
+			resident: true,
+			..MeshLod::default()
 		}])
 	}
 
-	/// Lays out a baked primitive's levels as the consecutive meshlet ranges they are stored in.
-	pub(crate) fn from_resource(lods: &[PrimitiveLod]) -> Self {
+	/// Collects a primitive's levels, finest first. Each level names its own meshlet range, so levels need not follow
+	/// one another.
+	pub(crate) fn new(lods: &[MeshLod]) -> Self {
 		assert!(
 			(1..=MAX_PRIMITIVE_LODS).contains(&lods.len()),
 			"Mesh primitive has an unsupported number of detail levels. The most likely cause is a mesh resource that was not validated when it was solved."
 		);
 		let mut levels = [MeshLod::default(); MAX_PRIMITIVE_LODS];
-		let mut first_meshlet = 0;
-		for (level, lod) in levels.iter_mut().zip(lods) {
-			*level = MeshLod {
-				first_meshlet,
-				meshlet_count: lod.meshlet_count,
-				error: lod.error,
-			};
-			first_meshlet += lod.meshlet_count;
-		}
+		levels[..lods.len()].copy_from_slice(lods);
 		Self {
 			levels,
 			count: lods.len() as u8,
@@ -69,13 +75,40 @@ impl MeshLods {
 		&self.levels[..self.count as usize]
 	}
 
+	pub(crate) fn levels_mut(&mut self) -> &mut [MeshLod] {
+		&mut self.levels[..self.count as usize]
+	}
+
+	/// Returns the level an instance that wants `wanted` draws: that level when it is resident, or else the finest
+	/// resident level coarser than it. The coarsest levels are always resident while the mesh is.
+	pub(crate) fn drawn(&self, wanted: usize) -> MeshLod {
+		let levels = self.levels();
+		let wanted = wanted.min(levels.len() - 1);
+		*levels[wanted..]
+			.iter()
+			.find(|level| level.resident)
+			.or_else(|| levels.iter().rev().find(|level| level.resident))
+			.expect("Mesh primitive has no resident detail level. The most likely cause is a render entity whose mesh was released while it was still in the scene.")
+	}
+
+	/// Overlays every resident level of `other`, a block holding other levels of the same primitive, onto this table.
+	pub(crate) fn overlay(&mut self, other: &MeshLods) {
+		for (level, other) in self.levels_mut().iter_mut().zip(other.levels()) {
+			if other.resident {
+				*level = *other;
+			}
+		}
+	}
+
 	/// Returns the coarsest level whose error is at most `allowed_error`, or full detail when none is.
 	///
 	/// Errors never fall as levels get coarser, so the first match from the coarse end is the answer. A NaN allowance
 	/// matches nothing and gives full detail.
-	fn select(&self, allowed_error: f32) -> MeshLod {
-		let fitting = self.levels().iter().rev().find(|level| level.error <= allowed_error);
-		*fitting.unwrap_or(&self.levels[0])
+	fn select(&self, allowed_error: f32) -> usize {
+		self.levels()
+			.iter()
+			.rposition(|level| level.error <= allowed_error)
+			.unwrap_or(0)
 	}
 }
 
@@ -163,11 +196,11 @@ impl LodView {
 		}
 	}
 
-	/// Returns the level an instance draws, as a range relative to its primitive's first meshlet, given its `model`
-	/// matrix and its object-space bounding `sphere` as xyz center and w radius.
-	pub(crate) fn select(&self, lods: &MeshLods, model: &Mat4x3f, sphere: [f32; 4]) -> MeshLod {
+	/// Returns the level an instance wants, given its `model` matrix and its object-space bounding `sphere` as xyz
+	/// center and w radius. Pass it to [`MeshLods::drawn`] for the level the instance can draw now.
+	pub(crate) fn select(&self, lods: &MeshLods, model: &Mat4x3f, sphere: [f32; 4]) -> usize {
 		match self.force {
-			Some(level) => lods.levels()[(level as usize).min(lods.levels().len() - 1)],
+			Some(level) => (level as usize).min(lods.levels().len() - 1),
 			None => lods.select(self.allowed_error(model, sphere)),
 		}
 	}
@@ -195,10 +228,9 @@ impl LodView {
 #[cfg(test)]
 mod tests {
 	use math::{Degrees, Point, UnitVector};
-	use resource_management::resources::mesh::PrimitiveLod;
 	use utils::Extent;
 
-	use super::{LodSettings, LodView, MeshLods};
+	use super::{LodSettings, LodView, MeshLod, MeshLods};
 	use crate::configuration::ConfigurationValue;
 	use crate::rendering::{Sink, view::View};
 
@@ -206,9 +238,13 @@ mod tests {
 
 	/// Three levels of 8, 4 and 2 meshlets with errors 0, 0.1 and 1.
 	fn three_levels() -> MeshLods {
-		MeshLods::from_resource(
-			&[(8, 0.0), (4, 0.1), (2, 1.0)].map(|(meshlet_count, error)| PrimitiveLod { meshlet_count, error }),
-		)
+		MeshLods::new(&[(0, 8, 0.0), (8, 4, 0.1), (12, 2, 1.0)].map(|(first_meshlet, meshlet_count, error)| MeshLod {
+			first_meshlet,
+			meshlet_count,
+			error,
+			resident: true,
+			..MeshLod::default()
+		}))
 	}
 
 	/// A uniformly scaled instance at `z` along the camera's view direction.
@@ -233,7 +269,7 @@ mod tests {
 	#[test]
 	fn instances_draw_the_coarsest_level_whose_error_stays_within_a_pixel() {
 		let (lods, view) = (three_levels(), perspective(LodSettings::default()));
-		let meshlets = |model| view.select(&lods, &model, SPHERE).meshlet_count;
+		let meshlets = |model| lods.drawn(view.select(&lods, &model, SPHERE)).meshlet_count;
 
 		// 51 units away with a unit radius leaves 50 units to the nearest point, where a pixel spans 0.1 units.
 		assert_eq!(meshlets(instance(0.0, 50.0, 1.0)), 8);
@@ -251,17 +287,36 @@ mod tests {
 
 	#[test]
 	fn the_selected_range_follows_the_finer_levels() {
-		let level = perspective(LodSettings::default()).select(&three_levels(), &instance(0.0, 51.5, 1.0), SPHERE);
+		let lods = three_levels();
+		let level = lods.drawn(perspective(LodSettings::default()).select(&lods, &instance(0.0, 51.5, 1.0), SPHERE));
 
 		assert_eq!((level.first_meshlet, level.meshlet_count), (8, 4));
+	}
+
+	#[test]
+	fn instances_draw_the_finest_resident_level_no_finer_than_they_want() {
+		let mut lods = three_levels();
+		lods.levels_mut()[0].resident = false;
+		lods.levels_mut()[1].resident = false;
+
+		// Wanting a level that isn't resident draws the next coarser resident one.
+		assert_eq!(lods.drawn(0).meshlet_count, 2);
+		assert_eq!(lods.drawn(1).meshlet_count, 2);
+
+		let mut refined = three_levels();
+		refined.levels_mut()[2].resident = false;
+		refined.levels_mut()[1].first_meshlet = 40;
+		lods.overlay(&refined);
+
+		assert_eq!(lods.drawn(0).meshlet_count, 8);
+		assert_eq!((lods.drawn(1).first_meshlet, lods.drawn(2).first_meshlet), (40, 12));
 	}
 
 	#[test]
 	fn bias_scales_the_allowed_error_and_force_overrides_distance() {
 		let (lods, model) = (three_levels(), instance(0.0, 51.5, 1.0));
 		let meshlets = |bias, force| {
-			perspective(LodSettings { bias, force })
-				.select(&lods, &model, SPHERE)
+			lods.drawn(perspective(LodSettings { bias, force }).select(&lods, &model, SPHERE))
 				.meshlet_count
 		};
 
@@ -293,8 +348,7 @@ mod tests {
 		let sink = Sink::new(view, Extent::square(1000), 0);
 		let lods = three_levels();
 		let meshlets = |bias, z| {
-			LodView::new(&sink, LodSettings { bias, force: None })
-				.select(&lods, &instance(0.0, z, 1.0), SPHERE)
+			lods.drawn(LodView::new(&sink, LodSettings { bias, force: None }).select(&lods, &instance(0.0, z, 1.0), SPHERE))
 				.meshlet_count
 		};
 
@@ -323,7 +377,7 @@ mod tests {
 
 use ghi::pod::Mat4x3f;
 use maths_rs::{Vec3f, dist, dot};
-use resource_management::resources::mesh::{MAX_PRIMITIVE_LODS, PrimitiveLod};
+use resource_management::resources::mesh::MAX_PRIMITIVE_LODS;
 
 use crate::configuration::ConfigurationValue;
 use crate::rendering::Sink;

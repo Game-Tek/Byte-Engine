@@ -354,10 +354,10 @@ code 1.
 
 | Class | Stream | `element` | Each element in `data` |
 | --- | --- | --- | --- |
-| Mesh | `Vertex.Position`, `Vertex.Normal`, `Vertex.Tangent`, `Vertex.BiTangent`, `Vertex.UV`, `Vertex.Color`, `Vertex.Joints`, `Vertex.Weights` | The vertex component format, such as `vec3f` | An array of the format's component count. |
-| Mesh | `VertexIndices`, `TriangleIndices` | `u16` | An integer. |
-| Mesh | `MeshletIndices` | `u8` | An integer. |
-| Mesh | `Meshlets` | `meshlet` | An object with `vertex_count`, `triangle_count`, `center`, `radius`, `cone_apex`, `cone_cutoff`, and `cone_axis`. |
+| Mesh | `level[N].Vertex.Position`, `level[N].Vertex.Normal`, `level[N].Vertex.Tangent`, `level[N].Vertex.BiTangent`, `level[N].Vertex.UV`, `level[N].Vertex.Color`, `level[N].Vertex.Joints`, `level[N].Vertex.Weights` | The vertex component format, such as `vec3f` | An array of the format's component count. |
+| Mesh | `level[N].VertexIndices`, `level[0].TriangleIndices` | `u16` | An integer. |
+| Mesh | `level[N].MeshletIndices` | `u8` | An integer. |
+| Mesh | `level[N].Meshlets` | `meshlet` | An object with `vertex_count`, `triangle_count`, `center`, `radius`, `cone_apex`, `cone_cutoff`, and `cone_axis`. |
 | Image | Every stream | The stream's texel format, such as `RGBA8` | An array of channel values. |
 | Audio | `payload` | `frame` | An array with one sample per channel. |
 | LUT | `payload` | `rgb` | An array of three numbers. |

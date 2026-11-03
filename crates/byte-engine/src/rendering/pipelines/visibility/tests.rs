@@ -1,10 +1,12 @@
-//! Executes the checked-in visibility BESL assets in the BESL VM against small fixtures.
+//! Executes the checked-in visibility BESL assets in the BESL VM against small fixtures, and places meshes in the
+//! geometry streams.
 
 use besl::vm::{
 	DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, TaskOutputs, Texture, Value,
 	WorkgroupState, input_slot, output_slot,
 };
 
+use super::geometry::{GeometryCapacity, GeometryCounts, GeometryRanges, RetiredRanges};
 use super::mesh_dispatch::MeshDispatchWorkItem;
 use super::render_pass::{OCCLUSION_PYRAMID_HEIGHT, OCCLUSION_PYRAMID_MIP_COUNT, OCCLUSION_PYRAMID_WIDTH, OcclusionPhase};
 use super::shader_data::{MESH_FLAG_DOUBLE_SIDED, MESH_FLAG_SKINNED};
@@ -3874,3 +3876,62 @@ main: fn (input: StageInput) -> void {{
 }
 
 mod surfel_gi;
+
+/// A capacity with room for exactly two [`geometry_fixture_mesh`] meshes in every stream.
+fn two_mesh_geometry_capacity() -> GeometryCapacity {
+	GeometryCapacity {
+		vertices: 200,
+		vertex_indices: 400,
+		triangles: 600,
+		meshlets: 8,
+		skinning_vertices: 100,
+	}
+}
+
+/// A mesh that uses half of [`two_mesh_geometry_capacity`] in every stream.
+fn geometry_fixture_mesh() -> GeometryCounts {
+	GeometryCounts {
+		vertices: 100,
+		primitive_indices: 200,
+		triangles: 300,
+		meshlets: 4,
+		skinning_vertices: 50,
+		flat_triangles: 300,
+	}
+}
+
+#[test]
+fn released_mesh_ranges_are_reused_once_no_frame_in_flight_reads_them() {
+	let ranges = std::sync::Mutex::new(GeometryRanges::new(two_mesh_geometry_capacity()));
+	let take = |counts| ranges.lock().unwrap().take(&counts);
+	let first = take(geometry_fixture_mesh()).expect("the first mesh fits");
+	let second = take(geometry_fixture_mesh()).expect("the second mesh fits");
+	assert!(take(geometry_fixture_mesh()).is_err());
+
+	// Frame 10 is the first that no longer draws the first mesh; earlier frames may still be on the GPU.
+	let mut retired = RetiredRanges::default();
+	retired.retire(first.clone(), 10);
+	let completed_frame = 10 + ghi::MAX_FRAMES_IN_FLIGHT as u64;
+	retired.give_back_completed(completed_frame - 1, &ranges);
+	assert!(take(geometry_fixture_mesh()).is_err());
+	retired.give_back_completed(completed_frame, &ranges);
+
+	let third = take(geometry_fixture_mesh()).expect("the third mesh fits where the first was");
+	assert_eq!(third, first);
+	assert_ne!(third, second);
+}
+
+#[test]
+fn a_mesh_one_stream_cannot_hold_takes_nothing_from_the_others() {
+	let ranges = std::sync::Mutex::new(GeometryRanges::new(two_mesh_geometry_capacity()));
+	let take = |counts| ranges.lock().unwrap().take(&counts);
+	let too_many_meshlets = GeometryCounts {
+		meshlets: 9,
+		..geometry_fixture_mesh()
+	};
+	assert!(take(too_many_meshlets).is_err());
+
+	// Two meshes still fill every stream, so the rejected mesh left no range behind.
+	assert!(take(geometry_fixture_mesh()).is_ok());
+	assert!(take(geometry_fixture_mesh()).is_ok());
+}

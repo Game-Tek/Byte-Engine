@@ -110,7 +110,7 @@ mod tests {
 
 			assert_eq!(mesh.class(), "Mesh");
 
-			for expected in ["Vertex.Position", "Vertex.Normal", "Vertex.UV"] {
+			for expected in ["level[0].Vertex.Position", "level[0].Vertex.Normal", "level[0].Vertex.UV"] {
 				assert!(streams.iter().any(|stream| stream.name() == expected));
 			}
 

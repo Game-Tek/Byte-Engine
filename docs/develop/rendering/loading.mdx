@@ -66,6 +66,56 @@ notifications. It knows nothing else about the loader.
    render context, and writes descriptors with samplers it owns. Resources can
    become ready in any order, so adopt each one on its own.
 
+## How mesh detail levels stream
+
+The visibility pipeline loads each mesh's detail levels from coarse to fine as
+instances want them, so memory follows what the camera needs rather than the
+size of every loaded mesh. The
+[detail level rules](/docs/reference/rendering#the-visibility-pipeline) define
+the behavior; this section explains how it's built.
+
+- A mesh lives in two blocks of the geometry buffers. The base block holds each
+  primitive's coarsest level. It loads with the mesh, never moves, and is never
+  released, so rays hit it and acceleration structures are built once per mesh.
+  A primitive's coarsest level is its own last level, not a level number the
+  mesh shares, so a primitive with few levels doesn't pull the others' full
+  detail into the base.
+- Each primitive has its own finer block, which holds its levels from its finest
+  resident level down to, but not including, its coarsest. Primitives refine
+  independently, so a large mesh holds full detail only where the camera is
+  close. The baker orders vertices coarsest level first, so those levels need a
+  prefix of the primitive's vertices. Moving one level finer loads a new block
+  and retires the old one. That re-reads the coarser levels, which are no
+  larger than the new one, but it never moves geometry another frame still
+  reads.
+- `PreparedLevels` names which levels of each primitive a preparation holds.
+  Meshlet records count their offsets from their primitive, and each prepared
+  primitive records its own elements of every stream, so
+  `GeometryBuffers::append_primitives` places each primitive in ranges of its
+  own. Each primitive's `MeshLods` marks the levels it can draw.
+  `MeshLods::drawn` picks the finest resident level that isn't finer than the
+  one an instance wants, and every level names its own vertex, index, and
+  meshlet bases.
+- `MeshResidencies` decides what loads and what goes. Each followed primitive
+  has a slot, which its render entities keep, so recording the level an
+  instance wants is an array write. Once a frame, each mesh without a load in
+  flight asks for the next finer level of every primitive that wants more, in
+  one load. A level stream holds every primitive of its mesh, so one load reads
+  and decodes it once however many primitives refine. A primitive without room
+  releases the finer block that went unwanted the longest and waits for the
+  frames in flight before trying again. With nothing to release, it waits
+  longer. It's never dropped, and it keeps drawing what it has.
+
+A change here must keep these true:
+
+- An instance never draws a level that isn't resident.
+- A block is released only after the frames that read it finish on the GPU.
+- A resident mesh's base block is never released.
+- A mesh has at most one load of finer levels in flight.
+
+The residency decisions are tested in `rendering::pipelines::visibility::residency`, and the level table in
+`rendering::pipelines::visibility::lod`.
+
 ## Rules that keep rendering independent
 
 Keep these rules when you change loading. Each one prevents a regression that
@@ -100,8 +150,11 @@ already happened once or that this design exists to avoid.
   can't build it, so the visibility pipeline builds it on the render context,
   a frame's budget of triangles at a time, once a frame draws the mesh.
   `todo.md` tracks moving these builds to the loading timeline.
-- **Lanes only append to shared buffers.** A lane writes only ranges that no
-  frame reads yet, and publishes a range only after its copy finished.
+- **Lanes write only free ranges of shared buffers.** The visibility pipeline
+  places each mesh in free ranges of every geometry stream that
+  `GeometryRanges` tracks. A released mesh's ranges become free only after the
+  frames that drew it finish on the GPU, so a lane never writes ranges a frame
+  still reads. A lane publishes a range only after its copy finished.
 - **Samplers belong to pipelines.** A pipeline creates its few samplers at setup.
   Loaded textures don't carry samplers.
 

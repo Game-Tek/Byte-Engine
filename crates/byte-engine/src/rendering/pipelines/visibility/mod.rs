@@ -28,6 +28,7 @@ mod material_parameters;
 mod mesh_dispatch;
 mod ray_tracing;
 mod render_pass;
+mod residency;
 mod scene;
 mod set_layouts;
 mod shader_data;

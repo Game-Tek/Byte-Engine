@@ -22,6 +22,7 @@ use crate::core::factory::Handle;
 use crate::gameplay::transform::Transform;
 use crate::rendering::lights::Lights;
 use crate::rendering::renderable::mesh::MeshKey;
+use super::residency::ResidencySlot;
 use crate::space::{Orientable as _, Positionable as _};
 
 /// The `Instance` struct identifies one dense shader mesh and the work needed to rasterize it.
@@ -42,8 +43,10 @@ pub struct RenderEntity {
 	pub(crate) availability: AvailabilityHandle,
 	/// The record of the primitive at full detail. Each frame copies it and names the level picked for that frame.
 	pub(crate) shader_mesh: ShaderMesh,
-	/// The primitive's detail levels as meshlet ranges relative to its first meshlet.
+	/// The primitive's detail levels, with the ones it holds now marked resident.
 	pub(crate) lods: MeshLods,
+	/// Where the primitive's wanted level is recorded each frame, when it has finer levels to load.
+	pub(crate) residency: Option<ResidencySlot>,
 	pub(crate) skinning: Option<RenderSkin>,
 }
 

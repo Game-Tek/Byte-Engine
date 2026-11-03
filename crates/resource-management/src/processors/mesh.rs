@@ -295,7 +295,7 @@ mod tests {
 	}
 
 	#[test]
-	fn detailed_primitives_gain_coarser_levels_over_the_same_vertices() {
+	fn detailed_primitives_gain_coarser_levels_over_a_shared_vertex_prefix() {
 		for with_normals in [true, false] {
 			let mut layout = vec![VertexComponent::canonical(VertexSemantics::Position)];
 			let mut primitive = TestPrimitive::wavy_grid(32);
@@ -306,46 +306,52 @@ mod tests {
 			let (vertex_count, index_count) = (primitive.positions.len(), primitive.indices.len());
 			let processed = process(layout, &[primitive], None, Vec::new()).unwrap();
 			let lods = &processed.mesh.primitives[0].lods;
-
-			// Each meshlet record starts with its vertex count and its triangle count. The levels' records follow
-			// one another, full detail first.
-			let mut records = stream_bytes(&processed, Streams::Meshlets)
-				.as_chunks::<MESHLET_STREAM_STRIDE>()
-				.0;
-			let triangles = lods
-				.iter()
-				.map(|lod| {
-					let (level, coarser) = records.split_at(lod.meshlet_count as usize);
-					records = coarser;
-					level.iter().map(|record| record[1] as usize).sum::<usize>()
-				})
-				.collect::<Vec<_>>();
-			assert!(records.is_empty(), "the levels should cover every meshlet");
-
 			assert!(
 				lods.len() >= 2,
 				"a 2,048-triangle surface should get at least one coarser level"
 			);
+
+			// Each meshlet record starts with its vertex count and its triangle count.
+			let triangles = (0..lods.len() as u8)
+				.map(|level| {
+					let records = stream_bytes(&processed, Streams::Meshlets, level);
+					let records = records.as_chunks::<MESHLET_STREAM_STRIDE>().0;
+					assert_eq!(records.len(), lods[level as usize].meshlet_count as usize);
+					records.iter().map(|record| record[1] as usize).sum::<usize>()
+				})
+				.collect::<Vec<_>>();
 			assert_eq!((triangles[0], lods[0].error), (index_count / 3, 0.0));
 			assert!(triangles.is_sorted_by(|finer, coarser| finer > coarser));
 			assert!(lods[1..].is_sorted_by(|finer, coarser| finer.error < coarser.error) && lods[1].error > 0.0);
 
-			// Every level's meshlets index the primitive's own vertices.
-			let vertex_indices = stream_bytes(&processed, Streams::Indices(IndexStreamTypes::Vertices))
-				.as_chunks::<2>()
-				.0;
-			assert!(
-				vertex_indices
-					.iter()
-					.all(|index| (u16::from_le_bytes(*index) as usize) < vertex_count)
-			);
+			// Each level's meshlets index a prefix of the vertices that shrinks toward coarser levels, and each level's
+			// position stream holds what it adds to that prefix.
+			assert_eq!(lods[0].vertex_count as usize, vertex_count);
+			assert!(lods.is_sorted_by(|finer, coarser| finer.vertex_count >= coarser.vertex_count));
+			assert!(lods.last().unwrap().vertex_count < lods[0].vertex_count);
+			for (level, lod) in lods.iter().enumerate() {
+				let level = level as u8;
+				let vertex_indices = stream_bytes(&processed, Streams::Indices(IndexStreamTypes::Vertices), level);
+				assert!(
+					vertex_indices
+						.as_chunks::<2>()
+						.0
+						.iter()
+						.all(|index| u32::from(u16::from_le_bytes(*index)) < lod.vertex_count)
+				);
+				assert_eq!(
+					stream_bytes(&processed, Streams::Indices(IndexStreamTypes::Meshlets), level).len(),
+					triangles[level as usize] * 3
+				);
+				let added = lod.vertex_count - lods.get(level as usize + 1).map_or(0, |coarser| coarser.vertex_count);
+				assert_eq!(
+					stream_bytes(&processed, Streams::Vertices(VertexSemantics::Position), level).len(),
+					added as usize * 12
+				);
+			}
+			// The plain triangle list holds full detail, at level 0, for renderers that draw without meshlets.
 			assert_eq!(
-				stream_bytes(&processed, Streams::Indices(IndexStreamTypes::Meshlets)).len(),
-				triangles.iter().sum::<usize>() * 3
-			);
-			// The plain triangle list stays at full detail for renderers that draw without meshlets.
-			assert_eq!(
-				stream_bytes(&processed, Streams::Indices(IndexStreamTypes::Triangles)).len(),
+				stream_bytes(&processed, Streams::Indices(IndexStreamTypes::Triangles), 0).len(),
 				index_count * size_of::<u16>()
 			);
 		}
@@ -376,13 +382,13 @@ mod tests {
 		assert_eq!(level_count(process_skinned(grid.with_skin(0, skin)).unwrap()), 1);
 	}
 
-	/// Returns the bytes of one stream of a mesh that was processed from a single primitive.
-	fn stream_bytes(processed: &ProcessedMesh, stream_type: Streams) -> &[u8] {
+	/// Returns the bytes of one stream at one level of a mesh that was processed from a single primitive.
+	fn stream_bytes(processed: &ProcessedMesh, stream_type: Streams, level: u8) -> &[u8] {
 		let stream = processed
 			.mesh
 			.streams
 			.iter()
-			.find(|stream| stream.stream_type == stream_type)
+			.find(|stream| stream.stream_type == stream_type && stream.level == level)
 			.expect("processed mesh should hold the stream");
 		&processed.buffer[stream.offset..stream.offset + stream.size]
 	}

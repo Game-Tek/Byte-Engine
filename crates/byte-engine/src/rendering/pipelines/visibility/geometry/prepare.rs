@@ -11,17 +11,18 @@ use resource_management::Reference;
 use resource_management::resources::mesh::Mesh;
 use resource_management::resources::skeleton::SkinBinding;
 use resource_management::stream::StreamMut;
-use resource_management::types::{Stream, Streams, VertexSemantics};
+use resource_management::resources::mesh::MAX_PRIMITIVE_LODS;
+use resource_management::types::{IndexStreamTypes, Stream, Streams, VertexSemantics};
 
 use super::{
-	GeometryCounts, MeshPrimitive, SKINNING_JOINTS_STRIDE, SKINNING_NORMAL_STRIDE, SKINNING_POSITION_STRIDE,
+	GeometryCounts, MeshPrimitive, MeshRanges, SKINNING_JOINTS_STRIDE, SKINNING_NORMAL_STRIDE, SKINNING_POSITION_STRIDE,
 	SKINNING_WEIGHTS_STRIDE,
 };
 use crate::rendering::mesh::generator::{MeshGenerator, validate_triangle_indices};
 use crate::rendering::pipelines::visibility::layout::{
 	RuntimeUnitVector, ShaderMeshletData, TRIANGLE_COUNT, VERTEX_COUNT, VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
 };
-use crate::rendering::pipelines::visibility::lod::MeshLods;
+use crate::rendering::pipelines::visibility::lod::{MeshLod, MeshLods};
 use crate::rendering::resource_loading::{StagingLease, UploadStagingArena};
 
 /// Byte size of one baked meshlet record: two u8 counts, padding, and three packed vec4 bounds.
@@ -60,6 +61,9 @@ pub(crate) struct PreparedPrimitive {
 	pub(crate) material_id: String,
 	/// `material_index` and `skinning_source_vertex_offset` are finalized by [`GeometryBuffers::append_mesh`].
 	pub(crate) primitive: MeshPrimitive,
+	/// The primitive's elements of each prepared stream, so it can be placed apart from the rest of the mesh. Its
+	/// level bases count from the start of the prepared streams, like these ranges.
+	pub(crate) elements: MeshRanges,
 	pub(super) skinning: Option<SkinningCopy>,
 }
 
@@ -155,6 +159,13 @@ impl PreparedMesh {
 					flat_triangle_count,
 					..MeshPrimitive::default()
 				},
+				elements: MeshRanges {
+					vertices: 0..positions.len() as u32,
+					primitive_indices: 0..vertex_indices.len() as u32,
+					triangles: 0..primitive_indices.len() as u32,
+					meshlets: 0..meshlets.len() as u32,
+					..MeshRanges::default()
+				},
 				skinning: None,
 			}],
 			counts: GeometryCounts {
@@ -169,16 +180,21 @@ impl PreparedMesh {
 		})
 	}
 
-	/// Loads a baked mesh resource and converts it into the runtime geometry formats, with flat triangle lists when
-	/// `flat_triangles` is set.
+	/// Loads the detail `levels` of a baked mesh resource and converts them into the runtime geometry formats, with
+	/// flat triangle lists of each primitive's coarsest level when `flat_triangles` is set and `levels` holds it.
+	///
+	/// The prepared mesh holds each primitive's meshlets of the levels `levels` names, and every vertex they index: the
+	/// primitive's vertices from its coarsest level down to the finest level held. Its primitives' level tables mark
+	/// those levels as resident. Each needed level stream loads into the front of the staging lease, and every runtime
+	/// stream is gathered behind them, primitive by primitive.
 	pub(crate) async fn resource(
 		mut resource: Reference<Mesh>,
 		upload_staging: Arc<UploadStagingArena>,
 		flat_triangles: bool,
+		levels: PreparedLevels<'_>,
 	) -> Option<Self> {
 		let mesh = resource.resource();
-		let source = ResourceStreams::new(mesh)?;
-		let mut layout = source.layout(mesh, flat_triangles)?;
+		let plan = ResourcePlan::new(mesh, levels, flat_triangles)?;
 		let skeleton_node_count = mesh
 			.skeleton
 			.as_ref()
@@ -188,12 +204,13 @@ impl PreparedMesh {
 			.into_iter()
 			.map(Arc::new)
 			.collect::<Vec<_>>();
-		let mut staging = allocate_staging(&upload_staging, layout.backing_size).await?;
+		let mut staging = allocate_staging(&upload_staging, plan.backing_size).await?;
 		let backing = staging.bytes_mut();
-		let (source_bytes, output) = backing.split_at_mut(layout.source.byte_count);
+		let (source_bytes, output) = backing.split_at_mut(plan.source_size);
 
-		let loaded = resource
-			.load(source.read_targets(source_bytes).into())
+		let read_plan = plan.read_plan();
+		resource
+			.load(split_targets(source_bytes, &read_plan).into())
 			.await
 			.ok()
 			.or_else(|| {
@@ -202,52 +219,19 @@ impl PreparedMesh {
 				);
 				None
 			})?;
-		let meshlet_bytes = loaded.stream("Meshlets").expect("requested meshlet stream").buffer();
-		let (mut primitives, meshlets) =
-			build_resource_primitives(resource.resource(), meshlet_bytes, &skins, layout.counts, &layout.source)?;
-
-		// Converted streams live after every loaded source stream, so their ranges are rebased into `output`.
-		let rebase = |range: &Range<usize>| range.start - layout.source.byte_count..range.end - layout.source.byte_count;
-		for (destination, source) in output[rebase(&layout.streams.normals)]
-			.as_chunks_mut::<4>()
-			.0
-			.iter_mut()
-			.zip(source_bytes[layout.source.normals.clone()].as_chunks::<12>().0.iter())
-		{
-			write_unit_vector(destination, (read_f32(source, 0), read_f32(source, 4), read_f32(source, 8)));
-		}
-		// Half floats keep sampler coordinates outside [0, 1] instead of clamping them.
-		if layout.uvs_are_f32 {
-			for (destination, source) in output[rebase(&layout.streams.uvs)]
-				.as_chunks_mut::<F16_UV_STRIDE>()
-				.0
-				.iter_mut()
-				.zip(source_bytes[layout.source.uvs.clone()].as_chunks::<F32_UV_STRIDE>().0)
-			{
-				write_f16_pair(destination, read_f32(source, 0), read_f32(source, 4));
-			}
-		}
-		output[rebase(&layout.streams.meshlets)].copy_from_slice(bytemuck::cast_slice(&meshlets));
-		if let Some(range) = layout.streams.flat_triangles.clone() {
-			let triangles = flatten_full_detail_triangles(
-				&mut primitives,
-				&meshlets,
-				source_bytes[layout.source.vertex_indices.clone()]
-					.as_chunks::<VERTEX_INDEX_STRIDE>()
-					.0,
-				source_bytes[layout.source.primitive_indices.clone()].as_chunks::<3>().0,
-				output[rebase(&range)].as_chunks_mut::<6>().0,
-			);
-			// The range was sized for every level; only full detail is copied.
-			layout.streams.flat_triangles = Some(range.start..range.start + triangles as usize * 6);
-			layout.counts.flat_triangles = triangles;
+		let (primitives, flat_triangle_count) = plan.convert(resource.resource(), source_bytes, output, &skins)?;
+		let mut streams = plan.streams;
+		let mut counts = plan.counts;
+		if let Some(range) = streams.flat_triangles.as_mut() {
+			range.end = range.start + flat_triangle_count as usize * 6;
+			counts.flat_triangles = flat_triangle_count;
 		}
 
 		Some(Self {
 			staging,
-			streams: layout.streams,
+			streams,
 			primitives,
-			counts: layout.counts,
+			counts,
 			skeleton_node_count,
 		})
 	}
@@ -264,105 +248,69 @@ async fn allocate_staging(upload_staging: &Arc<UploadStagingArena>, byte_count: 
 
 /* Resource meshes */
 
-/// The `ResourceStreams` struct is the set of aggregate baked streams the visibility format needs.
-struct ResourceStreams {
-	positions: Stream,
-	normals: Stream,
-	uvs: Stream,
-	vertex_indices: Stream,
-	meshlet_indices: Stream,
-	meshlets: Stream,
-	/// Present when at least one primitive is skinned.
-	skinning: Option<(Stream, Stream)>,
+/// The `PreparedLevels` enum chooses which detail levels of each primitive a prepared mesh holds.
+///
+/// Primitives have different level counts, so each one's coarsest level is its own last level, not a level number the
+/// mesh shares. That keeps a primitive with few levels from pulling the other primitives' finer levels in with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PreparedLevels<'a> {
+	/// Each primitive's coarsest level, which every instance of the mesh can draw.
+	Coarsest,
+	/// For each primitive, by index, its levels from this one down to, but not including, its coarsest; `None`
+	/// holds nothing of that primitive.
+	Finer(&'a [Option<u8>]),
 }
 
-/// The `ResourceLayout` struct places loaded source streams and converted runtime streams in one staging lease.
-struct ResourceLayout {
-	streams: PreparedStreams,
-	/// Where every source stream was loaded; conversions and skinned copies read from these ranges.
-	source: SourceStagingLayout,
+impl PreparedLevels<'_> {
+	/// Returns the levels of primitive `primitive`, which has `level_count` levels, that this preparation holds.
+	fn of(self, primitive: usize, level_count: usize) -> Range<usize> {
+		let coarsest = level_count - 1;
+		match self {
+			Self::Coarsest => coarsest..level_count,
+			Self::Finer(finest) => match finest.get(primitive).copied().flatten() {
+				Some(finest) => (finest as usize).min(coarsest)..coarsest,
+				None => coarsest..coarsest,
+			},
+		}
+	}
+}
+
+/// Vertex attribute streams the visibility format reads, in the order each level loads them.
+const VERTEX_SEMANTICS: [VertexSemantics; 3] = [VertexSemantics::Position, VertexSemantics::Normal, VertexSemantics::UV];
+/// Meshlet streams the visibility format reads, in the order each level loads them.
+const MESHLET_STREAMS: [Streams; 3] = [
+	Streams::Indices(IndexStreamTypes::Vertices),
+	Streams::Indices(IndexStreamTypes::Meshlets),
+	Streams::Meshlets,
+];
+const MESHLET_STREAM_NAMES: [&str; 3] = ["VertexIndices", "MeshletIndices", "Meshlets"];
+const VERTEX_STREAM_NAMES: [&str; 3] = ["Vertex.Position", "Vertex.Normal", "Vertex.UV"];
+
+/// The `ResourcePlan` struct lays out one preparation of a baked mesh: which level streams load where in the front of
+/// the staging lease, and where each runtime stream lands behind them.
+///
+/// It reads only the mesh's metadata, so every size is known before the payload loads.
+struct ResourcePlan {
+	/// The levels of each primitive the preparation holds, by primitive index.
+	held: Vec<Range<usize>>,
+	/// Where each level's position, normal, and UV streams load, indexed by level; empty where none loads.
+	vertex_sources: Vec<[Range<usize>; 3]>,
+	/// Where each level's meshlet vertex-index, triangle-index, and record streams load, indexed by level.
+	meshlet_sources: Vec<[Range<usize>; 3]>,
+	/// Where the level 0 joint and weight streams load, when a skinned primitive's full detail is held.
+	skinning: Option<(Range<usize>, Range<usize>)>,
 	uvs_are_f32: bool,
+	source_size: usize,
 	backing_size: usize,
+	/// The runtime streams, as ranges of the whole staging lease.
+	streams: PreparedStreams,
 	counts: GeometryCounts,
 }
 
-/// The `SourceStagingLayout` struct places every loaded source stream in the front of a staging lease.
-///
-/// [`ResourceStreams::read_targets`] loads the streams in this order, so a copy that reads a source stream
-/// addresses it through these ranges rather than through the baked resource's own offsets. A baked primitive records
-/// its stream offsets relative to its semantic's aggregate stream, while the copies in
-/// [`GeometryBuffers::append_mesh`] address the staging lease, so these ranges convert between the two.
-struct SourceStagingLayout {
-	positions: Range<usize>,
-	normals: Range<usize>,
-	uvs: Range<usize>,
-	vertex_indices: Range<usize>,
-	primitive_indices: Range<usize>,
-	/// Joint indices and weights, present when at least one primitive is skinned.
-	skinning: Option<(Range<usize>, Range<usize>)>,
-	byte_count: usize,
-}
-
-impl ResourceStreams {
-	/// Reserves the source region in the order [`Self::read_targets`] loads it.
-	fn source_staging_layout(&self) -> SourceStagingLayout {
-		let mut cursor = 0;
-		let positions = take_range(&mut cursor, self.positions.size);
-		let normals = take_range(&mut cursor, self.normals.size);
-		let uvs = take_range(&mut cursor, self.uvs.size);
-		let vertex_indices = take_range(&mut cursor, self.vertex_indices.size);
-		let primitive_indices = take_range(&mut cursor, self.meshlet_indices.size);
-		// Source meshlets are only read on the CPU; they need no copy alignment.
-		cursor += self.meshlets.size;
-		let skinning = self.skinning.as_ref().map(|(joints, weights)| {
-			let joints = take_range(&mut cursor, joints.size);
-			let weights = take_range(&mut cursor, weights.size);
-			(joints, weights)
-		});
-
-		SourceStagingLayout {
-			positions,
-			normals,
-			uvs,
-			vertex_indices,
-			primitive_indices,
-			skinning,
-			byte_count: cursor,
-		}
-	}
-
-	fn new(mesh: &Mesh) -> Option<Self> {
-		let require = |stream: Option<Stream>, name: &str| {
-			stream.or_else(|| {
-				log::error!(
-					"Mesh resource does not contain a {name} stream. The most likely cause is that the mesh was baked without the geometry the visibility pipeline needs."
-				);
-				None
-			})
-		};
-		let skinned = mesh.primitives.iter().any(|primitive| primitive.skin.is_some());
-		let skinning = if skinned {
-			Some((
-				require(mesh.vertex_stream(VertexSemantics::Joints).cloned(), "joint-index")?,
-				require(mesh.vertex_stream(VertexSemantics::Weights).cloned(), "vertex-weight")?,
-			))
-		} else {
-			None
-		};
-		Some(Self {
-			positions: require(mesh.position_stream(), "vertex position")?,
-			normals: require(mesh.normal_stream(), "vertex normal")?,
-			uvs: require(mesh.uv_stream(), "vertex UV")?,
-			vertex_indices: require(mesh.vertex_indices_stream(), "vertex index")?,
-			meshlet_indices: require(mesh.meshlet_indices_stream(), "meshlet index")?,
-			meshlets: require(mesh.meshlets_stream(), "meshlet")?,
-			skinning,
-		})
-	}
-
-	/// Validates stream strides and computes where every stream lands in the staging lease, with room for the flat
-	/// triangle lists when `flat_triangles` is set.
-	fn layout(&self, mesh: &Mesh, flat_triangles: bool) -> Option<ResourceLayout> {
+impl ResourcePlan {
+	/// Validates the streams of `mesh` that `levels` needs and lays out the preparation, with room for each primitive's
+	/// coarsest triangles when `flat_triangles` is set.
+	fn new(mesh: &Mesh, levels: PreparedLevels<'_>, flat_triangles: bool) -> Option<Self> {
 		let uvs_are_f32 = match mesh
 			.vertex_components
 			.iter()
@@ -378,132 +326,359 @@ impl ResourceStreams {
 				return None;
 			}
 		};
-		let vertex_count = stream_count(&self.positions, "position", SKINNING_POSITION_STRIDE)?;
-		if stream_count(&self.normals, "normal", SKINNING_NORMAL_STRIDE)? != vertex_count
-			|| stream_count(&self.uvs, "UV", if uvs_are_f32 { F32_UV_STRIDE } else { F16_UV_STRIDE })? != vertex_count
-		{
-			log::error!(
-				"Mesh attribute counts do not match the position count. The most likely cause is malformed vertex stream metadata."
-			);
-			return None;
+		let uv_stride = if uvs_are_f32 { F32_UV_STRIDE } else { F16_UV_STRIDE };
+		let level_count = mesh.level_count() as usize;
+		// Which levels' streams some primitive reads.
+		let mut vertex_levels = vec![false; level_count];
+		let mut meshlet_levels = vec![false; level_count];
+		let mut counts = GeometryCounts::default();
+		let mut skinned = false;
+		let mut flat_triangle_bound = 0;
+		let held_levels = mesh
+			.primitives
+			.iter()
+			.enumerate()
+			.map(|(index, primitive)| levels.of(index, primitive.lods.len()))
+			.collect::<Vec<_>>();
+		for (index, (primitive, held)) in mesh.primitives.iter().zip(&held_levels).enumerate() {
+			let held = held.clone();
+			if held.is_empty() {
+				continue;
+			}
+			// A primitive's vertices for a level are its vertices of that level and every coarser one.
+			for level in held.start..primitive.lods.len() {
+				vertex_levels[level] = true;
+			}
+			counts.vertices += primitive.lods[held.start].vertex_count;
+			for level in held.clone() {
+				meshlet_levels[level] = true;
+				let count = |stream_type, name, stride| {
+					primitive
+						.stream(stream_type, level as u8)
+						.map_or(Some(0), |stream| stream_count(stream, name, stride))
+				};
+				counts.primitive_indices += count(MESHLET_STREAMS[0], "meshlet vertex-index", VERTEX_INDEX_STRIDE)? as u32;
+				let triangle_indices = count(MESHLET_STREAMS[1], "meshlet triangle-index", 1)?;
+				if !triangle_indices.is_multiple_of(3) {
+					log::error!(
+						"Mesh primitive {index} detail level {level} does not contain complete triangles. The most likely cause is truncated baked meshlet index data."
+					);
+					return None;
+				}
+				counts.triangles += (triangle_indices / 3) as u32;
+				counts.meshlets += count(MESHLET_STREAMS[2], "meshlet", RESOURCE_MESHLET_STRIDE)? as u32;
+				if level + 1 == primitive.lods.len() && primitive.skin.is_none() {
+					flat_triangle_bound += triangle_indices / 3;
+				}
+			}
+			if primitive.skin.is_some() {
+				skinned = true;
+				counts.skinning_vertices += primitive.vertex_count;
+			}
 		}
-		let primitive_index_count = stream_count(&self.vertex_indices, "meshlet vertex-index", VERTEX_INDEX_STRIDE)?;
-		let meshlet_index_count = stream_count(&self.meshlet_indices, "meshlet triangle-index", 1)?;
-		if !meshlet_index_count.is_multiple_of(3) {
-			log::error!(
-				"Meshlet triangle-index stream does not contain complete triangles. The most likely cause is truncated baked meshlet index data."
-			);
-			return None;
-		}
-		let meshlet_count = stream_count(&self.meshlets, "meshlet", RESOURCE_MESHLET_STRIDE)?;
-		let skinning_vertices = self.validate_skinning(mesh)?;
 
-		let source = self.source_staging_layout();
-		let mut cursor = source.byte_count;
-		let normals = take_range(&mut cursor, vertex_count * VERTEX_NORMAL_BUFFER_STRIDE as usize);
-		let uvs = if uvs_are_f32 {
-			take_range(&mut cursor, vertex_count * VERTEX_UV_BUFFER_STRIDE as usize)
-		} else {
-			source.uvs.clone()
+		// Every needed stream loads into its own 4-byte aligned range at the front of the lease.
+		let mut cursor = 0;
+		let mut source = |stream: Option<&Stream>, name: &str, stride: usize| -> Option<Range<usize>> {
+			let Some(stream) = stream else {
+				return Some(cursor..cursor);
+			};
+			stream_count(stream, name, stride)?;
+			Some(take_range(&mut cursor, stream.size))
 		};
-		let meshlets = take_range(&mut cursor, meshlet_count * std::mem::size_of::<ShaderMeshletData>());
-		// Full detail is one level of each primitive, so every level's triangles bound it.
-		let flat_triangles = flat_triangles.then(|| take_range(&mut cursor, meshlet_index_count / 3 * 6));
+		let mut vertex_sources = Vec::with_capacity(level_count);
+		let mut meshlet_sources = Vec::with_capacity(level_count);
+		for level in 0..level_count {
+			let vertex_stream = |index: usize| {
+				vertex_levels[level]
+					.then(|| mesh.stream(Streams::Vertices(VERTEX_SEMANTICS[index]), level as u8))
+					.flatten()
+			};
+			vertex_sources.push([
+				source(vertex_stream(0), "position", SKINNING_POSITION_STRIDE)?,
+				source(vertex_stream(1), "normal", SKINNING_NORMAL_STRIDE)?,
+				source(vertex_stream(2), "UV", uv_stride)?,
+			]);
+			let meshlet_stream = |index: usize| {
+				meshlet_levels[level]
+					.then(|| mesh.stream(MESHLET_STREAMS[index], level as u8))
+					.flatten()
+			};
+			meshlet_sources.push([
+				source(meshlet_stream(0), "meshlet vertex-index", VERTEX_INDEX_STRIDE)?,
+				source(meshlet_stream(1), "meshlet triangle-index", 1)?,
+				source(meshlet_stream(2), "meshlet", RESOURCE_MESHLET_STRIDE)?,
+			]);
+		}
+		let skinning = if skinned {
+			let require = |semantic, name| {
+				mesh.stream(Streams::Vertices(semantic), 0).or_else(|| {
+					log::error!(
+						"Mesh resource does not contain a full-detail {name} stream. The most likely cause is that the mesh was baked without the skin data its skinned primitives need."
+					);
+					None
+				})
+			};
+			let joints = require(VertexSemantics::Joints, "joint-index")?;
+			let weights = require(VertexSemantics::Weights, "vertex-weight")?;
+			Some((
+				source(Some(joints), "joint-index", SKINNING_JOINTS_STRIDE)?,
+				source(Some(weights), "vertex-weight", SKINNING_WEIGHTS_STRIDE)?,
+			))
+		} else {
+			None
+		};
+		let source_size = cursor;
 
-		Some(ResourceLayout {
-			streams: PreparedStreams {
-				positions: source.positions.clone(),
-				normals,
-				uvs,
-				vertex_indices: source.vertex_indices.clone(),
-				primitive_indices: source.primitive_indices.clone(),
-				meshlets,
-				flat_triangles,
-			},
-			source,
+		let vertices = counts.vertices as usize;
+		let streams = PreparedStreams {
+			positions: take_range(&mut cursor, vertices * SKINNING_POSITION_STRIDE),
+			normals: take_range(&mut cursor, vertices * VERTEX_NORMAL_BUFFER_STRIDE as usize),
+			uvs: take_range(&mut cursor, vertices * VERTEX_UV_BUFFER_STRIDE as usize),
+			vertex_indices: take_range(&mut cursor, counts.primitive_indices as usize * VERTEX_INDEX_STRIDE),
+			primitive_indices: take_range(&mut cursor, counts.triangles as usize * 3),
+			meshlets: take_range(&mut cursor, counts.meshlets as usize * std::mem::size_of::<ShaderMeshletData>()),
+			flat_triangles: (flat_triangles && levels == PreparedLevels::Coarsest)
+				.then(|| take_range(&mut cursor, flat_triangle_bound * 6)),
+		};
+		Some(Self {
+			held: held_levels,
+			vertex_sources,
+			meshlet_sources,
+			skinning,
 			uvs_are_f32,
+			source_size,
 			backing_size: cursor,
-			counts: GeometryCounts {
-				vertices: vertex_count as u32,
-				primitive_indices: primitive_index_count as u32,
-				triangles: (meshlet_index_count / 3) as u32,
-				meshlets: meshlet_count as u32,
-				skinning_vertices: skinning_vertices as u32,
-				// Counted once the triangles are flattened.
-				flat_triangles: 0,
-			},
+			streams,
+			counts,
 		})
 	}
 
-	/// Checks every skinned primitive's streams against the aggregate skin streams and returns the skinned vertex total.
-	fn validate_skinning(&self, mesh: &Mesh) -> Option<usize> {
-		let Some((joints, weights)) = &self.skinning else {
-			return Some(0);
-		};
-		let aggregates = [
-			(&self.positions, VertexSemantics::Position, SKINNING_POSITION_STRIDE),
-			(&self.normals, VertexSemantics::Normal, SKINNING_NORMAL_STRIDE),
-			(joints, VertexSemantics::Joints, SKINNING_JOINTS_STRIDE),
-			(weights, VertexSemantics::Weights, SKINNING_WEIGHTS_STRIDE),
-		];
-		let mut vertex_count = 0;
-		for (index, primitive) in mesh.primitives.iter().enumerate() {
-			let Some(skin_index) = primitive.skin else {
-				continue;
-			};
-			if skin_index as usize >= mesh.skins.len() {
-				log::error!(
-					"Skinned primitive {index} references a missing skin binding. The most likely cause is corrupted primitive metadata."
-				);
-				return None;
+	/// Names every source stream and the range it loads into, for [`split_targets`], in ascending order.
+	fn read_plan(&self) -> Vec<(String, Range<usize>)> {
+		let mut targets = Vec::with_capacity(self.vertex_sources.len() * 6 + 2);
+		for (level, (vertices, meshlets)) in self.vertex_sources.iter().zip(&self.meshlet_sources).enumerate() {
+			for (name, range) in VERTEX_STREAM_NAMES.iter().zip(vertices).chain(MESHLET_STREAM_NAMES.iter().zip(meshlets)) {
+				targets.push((format!("level[{level}].{name}"), range.clone()));
 			}
-			for (aggregate, semantic, stride) in aggregates {
-				let Some(stream) = primitive.stream(Streams::Vertices(semantic)) else {
-					log::error!(
-						"Skinned primitive {index} is missing its {semantic:?} stream. The most likely cause is that the mesh was baked without complete per-primitive skinning metadata."
-					);
-					return None;
+		}
+		if let Some((joints, weights)) = &self.skinning {
+			targets.push(("level[0].Vertex.Joints".to_string(), joints.clone()));
+			targets.push(("level[0].Vertex.Weights".to_string(), weights.clone()));
+		}
+		targets.retain(|(_, range)| !range.is_empty());
+		targets.sort_by_key(|(_, range)| range.start);
+		targets
+	}
+
+	/// Gathers and converts every held level of every primitive from the loaded `source` into `output`, the lease
+	/// after the source region, and returns the prepared primitives with the number of flat triangles written.
+	///
+	/// Each primitive's vertices follow one another, coarsest level first, the order its meshlets index them in.
+	/// Meshlet records count their offsets from their primitive's first prepared vertex index and triangle, and each
+	/// held level's bases name those, so a primitive can be placed on its own.
+	fn convert(
+		&self,
+		mesh: &Mesh,
+		source: &[u8],
+		output: &mut [u8],
+		skins: &[Arc<SkinBinding>],
+	) -> Option<(Vec<PreparedPrimitive>, u32)> {
+		let rebase = |range: &Range<usize>| range.start - self.source_size..range.end - self.source_size;
+		let streams = &self.streams;
+		let mut vertex = 0usize;
+		let mut vertex_index = 0usize;
+		let mut triangle = 0usize;
+		let mut meshlet = 0usize;
+		let mut flat = 0usize;
+		let mut skinning_vertex = 0;
+		let mut primitives = Vec::with_capacity(mesh.primitives.len());
+		for (index, primitive) in mesh.primitives.iter().enumerate() {
+			let held = self.held[index].clone();
+			let vertex_base = vertex as u32;
+			let flat_start = flat as u32;
+			let (primitive_vertex_index, primitive_triangle, primitive_meshlet) = (vertex_index, triangle, meshlet);
+			let mut lods = [MeshLod::default(); MAX_PRIMITIVE_LODS];
+			for (level, lod) in primitive.lods.iter().enumerate() {
+				lods[level] = MeshLod {
+					meshlet_count: lod.meshlet_count,
+					error: lod.error,
+					..MeshLod::default()
 				};
-				let expected_size = primitive.vertex_count as usize * stride;
-				if aggregate.stride != stride
-					|| stream.stride != stride
-					|| stream.size != expected_size
-					|| !stream.offset.is_multiple_of(stride)
-					|| stream.offset + stream.size > aggregate.size
-				{
+			}
+			let slice = |stream_type, level: usize, base: &Range<usize>| -> Option<Range<usize>> {
+				let stream = primitive.stream(stream_type, level as u8)?;
+				let start = base.start + stream.offset;
+				let range = start..start + stream.size;
+				(range.end <= base.end).then_some(range).or_else(|| {
 					log::error!(
-						"Skinned primitive {index} has an invalid {semantic:?} stream. The most likely cause is that its offset, stride, or size does not match its {} vertices inside the baked aggregate stream.",
-						primitive.vertex_count
+						"Mesh primitive {index} {stream_type:?} range at detail level {level} is out of bounds. The most likely cause is that its baked range does not refer to the level's stream."
+					);
+					None
+				})
+			};
+
+			// Vertices, coarsest level first.
+			if !held.is_empty() {
+				for level in (held.start..primitive.lods.len()).rev() {
+					let sources = &self.vertex_sources[level];
+					let (Some(positions), Some(normals), Some(uvs)) = (
+						slice(Streams::Vertices(VertexSemantics::Position), level, &sources[0]),
+						slice(Streams::Vertices(VertexSemantics::Normal), level, &sources[1]),
+						slice(Streams::Vertices(VertexSemantics::UV), level, &sources[2]),
+					) else {
+						// A level that adds no vertices has no slices.
+						continue;
+					};
+					let count = positions.len() / SKINNING_POSITION_STRIDE;
+					output[rebase(&streams.positions)][vertex * SKINNING_POSITION_STRIDE..][..positions.len()]
+						.copy_from_slice(&source[positions]);
+					for (destination, normal) in output[rebase(&streams.normals)].as_chunks_mut::<4>().0[vertex..][..count]
+						.iter_mut()
+						.zip(source[normals].as_chunks::<12>().0)
+					{
+						write_unit_vector(destination, (read_f32(normal, 0), read_f32(normal, 4), read_f32(normal, 8)));
+					}
+					let destination = &mut output[rebase(&streams.uvs)].as_chunks_mut::<F16_UV_STRIDE>().0[vertex..][..count];
+					// Half floats keep sampler coordinates outside [0, 1] instead of clamping them.
+					if self.uvs_are_f32 {
+						for (destination, uv) in destination.iter_mut().zip(source[uvs].as_chunks::<F32_UV_STRIDE>().0) {
+							write_f16_pair(destination, read_f32(uv, 0), read_f32(uv, 4));
+						}
+					} else {
+						destination.as_flattened_mut().copy_from_slice(&source[uvs]);
+					}
+					vertex += count;
+				}
+				let expected = primitive.lods[held.start].vertex_count as usize;
+				if vertex - vertex_base as usize != expected {
+					log::error!(
+						"Mesh primitive {index} holds {} vertices for detail level {}, not the {expected} its metadata names. The most likely cause is inconsistent baked vertex streams.",
+						vertex - vertex_base as usize,
+						held.start
 					);
 					return None;
 				}
 			}
-			vertex_count += primitive.vertex_count as usize;
-		}
-		Some(vertex_count)
-	}
 
-	/// Builds the named read targets that load every source stream into the front of the staging lease.
-	fn read_targets<'b>(&self, backing: &'b mut [u8]) -> Vec<StreamMut<'b>> {
-		let mut allocator = utils::BufferAllocator::new(backing);
-		let mut streams = Vec::with_capacity(8);
-		for (name, size) in [
-			("Vertex.Position", self.positions.size),
-			("Vertex.Normal", self.normals.size),
-			("Vertex.UV", self.uvs.size),
-			("VertexIndices", self.vertex_indices.size),
-			("MeshletIndices", self.meshlet_indices.size),
-		] {
-			streams.push(StreamMut::new(name, allocator.take_with_offset_aligned(size, 4).1));
-		}
-		streams.push(StreamMut::new("Meshlets", allocator.take(self.meshlets.size)));
-		if let Some((joints, weights)) = &self.skinning {
-			for (name, size) in [("Vertex.Joints", joints.size), ("Vertex.Weights", weights.size)] {
-				streams.push(StreamMut::new(name, allocator.take_with_offset_aligned(size, 4).1));
+			// Meshlets of every held level.
+			for level in held.clone() {
+				let sources = &self.meshlet_sources[level];
+				let empty = |base: &Range<usize>| base.start..base.start;
+				let vertex_indices = slice(MESHLET_STREAMS[0], level, &sources[0]).unwrap_or_else(|| empty(&sources[0]));
+				let triangles = slice(MESHLET_STREAMS[1], level, &sources[1]).unwrap_or_else(|| empty(&sources[1]));
+				let records = slice(MESHLET_STREAMS[2], level, &sources[2]).unwrap_or_else(|| empty(&sources[2]));
+				let first_meshlet = meshlet;
+				let vertex_index_start = vertex_index;
+				let triangle_start = triangle;
+				const RUNTIME_MESHLET_STRIDE: usize = std::mem::size_of::<ShaderMeshletData>();
+				for bytes in source[records.clone()].as_chunks::<RESOURCE_MESHLET_STRIDE>().0 {
+					let record = read_resource_meshlet(
+						bytes,
+						(vertex_index - primitive_vertex_index) as u32,
+						(triangle - primitive_triangle) as u32,
+					);
+					vertex_index += record.primitive_count as usize;
+					triangle += record.triangle_count as usize;
+					output[rebase(&streams.meshlets)][meshlet * RUNTIME_MESHLET_STRIDE..][..RUNTIME_MESHLET_STRIDE]
+						.copy_from_slice(bytemuck::bytes_of(&record));
+					meshlet += 1;
+				}
+				if (vertex_index - vertex_index_start) * VERTEX_INDEX_STRIDE != vertex_indices.len()
+					|| (triangle - triangle_start) * 3 != triangles.len()
+					|| meshlet - first_meshlet != primitive.lods[level].meshlet_count as usize
+				{
+					log::error!(
+						"Mesh primitive {index} detail level {level} meshlets do not cover its index streams. The most likely cause is inconsistent baked meshlet data."
+					);
+					return None;
+				}
+				output[rebase(&streams.vertex_indices)][vertex_index_start * VERTEX_INDEX_STRIDE..][..vertex_indices.len()]
+					.copy_from_slice(&source[vertex_indices.clone()]);
+				output[rebase(&streams.primitive_indices)][triangle_start * 3..][..triangles.len()]
+					.copy_from_slice(&source[triangles.clone()]);
+				lods[level] = MeshLod {
+					first_meshlet: first_meshlet as u32,
+					vertex_base,
+					primitive_index_base: primitive_vertex_index as u32,
+					triangle_base: primitive_triangle as u32,
+					resident: true,
+					..lods[level]
+				};
+				// Rays hit each unskinned primitive's coarsest level.
+				if let Some(range) = &streams.flat_triangles
+					&& level + 1 == primitive.lods.len()
+					&& primitive.skin.is_none()
+				{
+					let written = flatten_meshlet_triangles(
+						source[records].as_chunks::<RESOURCE_MESHLET_STRIDE>().0,
+						source[vertex_indices].as_chunks::<VERTEX_INDEX_STRIDE>().0,
+						source[triangles].as_chunks::<3>().0,
+						&mut output[rebase(range)].as_chunks_mut::<6>().0[flat..],
+					);
+					flat += written;
+				}
+			}
+
+			let skinning = match (primitive.skin, &self.skinning) {
+				(Some(_), Some((joints, weights))) if !held.is_empty() => {
+					let sources = &self.vertex_sources[0];
+					Some(SkinningCopy {
+						positions: slice(Streams::Vertices(VertexSemantics::Position), 0, &sources[0])?,
+						normals: slice(Streams::Vertices(VertexSemantics::Normal), 0, &sources[1])?,
+						joints: slice(Streams::Vertices(VertexSemantics::Joints), 0, joints)?,
+						weights: slice(Streams::Vertices(VertexSemantics::Weights), 0, weights)?,
+					})
+				}
+				_ => None,
+			};
+			let skinned = skinning.is_some();
+			primitives.push(PreparedPrimitive {
+				material_id: mesh.material(primitive).id().as_ref().to_string(),
+				primitive: MeshPrimitive {
+					material_index: 0,
+					lods: MeshLods::new(&lods[..primitive.lods.len()]),
+					bounding_sphere: primitive.bounding_sphere,
+					// Each level names its own bases, counted from the start of the prepared streams.
+					meshlet_offset: 0,
+					vertex_offset: vertex_base,
+					primitive_offset: 0,
+					triangle_offset: 0,
+					vertex_count: vertex as u32 - vertex_base,
+					flat_triangle_offset: flat_start,
+					flat_triangle_count: flat as u32 - flat_start,
+					skinning_source_vertex_offset: skinning.as_ref().map(|_| skinning_vertex),
+					skinning_vertex_count: skinning.as_ref().map_or(0, |_| primitive.vertex_count),
+					skin: primitive.skin.map(|skin_index| skins[skin_index as usize].clone()),
+				},
+				elements: MeshRanges {
+					vertices: vertex_base..vertex as u32,
+					primitive_indices: primitive_vertex_index as u32..vertex_index as u32,
+					triangles: primitive_triangle as u32..triangle as u32,
+					meshlets: primitive_meshlet as u32..meshlet as u32,
+					..MeshRanges::default()
+				},
+				skinning,
+			});
+			if skinned {
+				skinning_vertex += primitive.vertex_count;
 			}
 		}
-		streams
+		Some((primitives, flat as u32))
 	}
+}
+
+/// Splits `backing` into one named read target per range of `plan`, whose ranges ascend without overlapping.
+fn split_targets<'b>(backing: &'b mut [u8], plan: &'b [(String, Range<usize>)]) -> Vec<StreamMut<'b>> {
+	let mut allocator = utils::BufferAllocator::new(backing);
+	let mut cursor = 0;
+	plan.iter()
+		.map(|(name, range)| {
+			allocator.take(range.start - cursor);
+			cursor = range.end;
+			StreamMut::new(name, allocator.take(range.len()))
+		})
+		.collect()
 }
 
 /// Returns the element count of a stream after validating its stride.
@@ -519,147 +694,29 @@ fn stream_count(stream: &Stream, name: &str, expected_stride: usize) -> Option<u
 	Some(stream.size / expected_stride)
 }
 
-/// Converts baked primitive metadata and meshlet records into per-primitive ranges and runtime meshlets.
-fn build_resource_primitives(
-	mesh: &Mesh,
-	meshlet_bytes: &[u8],
-	skins: &[Arc<SkinBinding>],
-	expected: GeometryCounts,
-	source: &SourceStagingLayout,
-) -> Option<(Vec<PreparedPrimitive>, Vec<ShaderMeshletData>)> {
-	let mut primitives = Vec::with_capacity(mesh.primitives.len());
-	let mut meshlets = Vec::with_capacity(expected.meshlets as usize);
-	let mut counts = GeometryCounts::default();
-
-	for (index, primitive) in mesh.primitives.iter().enumerate() {
-		let Some(meshlet_stream) = primitive.meshlet_stream() else {
-			log::error!(
-				"Mesh primitive {index} is missing its meshlet stream. The most likely cause is incomplete baked primitive metadata."
-			);
-			return None;
-		};
-		stream_count(meshlet_stream, "primitive meshlet", RESOURCE_MESHLET_STRIDE)?;
-		let Some(meshlet_source) = meshlet_bytes.get(meshlet_stream.offset..meshlet_stream.offset + meshlet_stream.size) else {
-			log::error!(
-				"Mesh primitive {index} meshlet range is out of bounds. The most likely cause is that its baked range does not refer to the aggregate meshlet stream."
-			);
-			return None;
-		};
-		let meshlet_offset = meshlets.len() as u32;
-		let mut local_primitive_offset = 0;
-		let mut local_triangle_offset = 0;
-		for bytes in meshlet_source.as_chunks::<RESOURCE_MESHLET_STRIDE>().0 {
-			let meshlet = read_resource_meshlet(bytes, local_primitive_offset, local_triangle_offset);
-			local_primitive_offset += meshlet.primitive_count;
-			local_triangle_offset += meshlet.triangle_count;
-			meshlets.push(meshlet);
-		}
-
-		// Solving the mesh resource checked that the levels cover exactly these meshlets. Every level draws the
-		// full-detail vertices, so the sphere around full detail bounds all of them.
-		let lods = MeshLods::from_resource(&primitive.lods);
-		let full_detail = &meshlets[meshlet_offset as usize..][..lods.levels()[0].meshlet_count as usize];
-		let bounding_sphere = enclosing_sphere(full_detail);
-
-		let skinning = primitive.skin.map(|_| {
-			let (joints, weights) = source
-				.skinning
-				.as_ref()
-				.expect("a skinned primitive requires skinning staging ranges");
-			// A baked stream offset is relative to its semantic's aggregate stream, so rebase it onto
-			// where that stream was loaded in the staging lease. Without the rebase every primitive
-			// would copy from the front of the lease, which holds the position stream.
-			let range = |semantic, base: &Range<usize>| {
-				// Stream presence and bounds were validated by `ResourceStreams::validate_skinning`.
-				let stream = primitive
-					.stream(Streams::Vertices(semantic))
-					.expect("validated skinning stream");
-				let range = base.start + stream.offset..base.start + stream.offset + stream.size;
-				debug_assert!(
-					range.start >= base.start && range.end <= base.end,
-					"Skinned primitive {semantic:?} copy leaves its staging stream. The most likely cause is a baked offset used without rebasing it onto the staging lease."
-				);
-				range
-			};
-			SkinningCopy {
-				positions: range(VertexSemantics::Position, &source.positions),
-				normals: range(VertexSemantics::Normal, &source.normals),
-				joints: range(VertexSemantics::Joints, joints),
-				weights: range(VertexSemantics::Weights, weights),
-			}
-		});
-		primitives.push(PreparedPrimitive {
-			material_id: mesh.material(primitive).id().as_ref().to_string(),
-			primitive: MeshPrimitive {
-				material_index: 0,
-				lods,
-				bounding_sphere,
-				meshlet_offset,
-				vertex_offset: counts.vertices,
-				primitive_offset: counts.primitive_indices,
-				triangle_offset: counts.triangles,
-				vertex_count: primitive.vertex_count,
-				// Set when the triangles are flattened.
-				flat_triangle_offset: 0,
-				flat_triangle_count: 0,
-				skinning_source_vertex_offset: primitive.skin.map(|_| counts.skinning_vertices),
-				skinning_vertex_count: primitive.skin.map_or(0, |_| primitive.vertex_count),
-				skin: primitive.skin.map(|skin_index| skins[skin_index as usize].clone()),
-			},
-			skinning,
-		});
-		counts.vertices += primitive.vertex_count;
-		counts.primitive_indices += local_primitive_offset;
-		counts.triangles += local_triangle_offset;
-		if primitive.skin.is_some() {
-			counts.skinning_vertices += primitive.vertex_count;
-		}
-	}
-	counts.meshlets = meshlets.len() as u32;
-
-	if counts != expected {
-		log::error!(
-			"Prepared primitive counts do not match the aggregate mesh streams: expected {expected:?}, found {counts:?}. The most likely cause is inconsistent or overlapping baked primitive ranges."
-		);
-		return None;
-	}
-	Some((primitives, meshlets))
-}
-
-/// Writes the full-detail triangles of every unskinned primitive to `flat`, each as three indices relative to its
-/// primitive's first vertex, and returns how many it wrote.
+/// Writes the triangles of one primitive level's baked meshlet `records` to `flat`, each as three indices relative to
+/// the primitive's first vertex, and returns how many it wrote.
 ///
-/// A meshlet triangle names its corners among its meshlet's vertex indices, which name the primitive's vertices, so
-/// each corner takes both steps. `vertex_indices` and `triangles` are the mesh's whole streams, as little-endian bytes
-/// that need no alignment, and `meshlets` the runtime meshlets, whose offsets are relative to their primitive. Skinned
-/// primitives get no triangles, because rays never hit them. Each primitive records where its triangles start in
-/// `flat` and how many there are.
-fn flatten_full_detail_triangles(
-	primitives: &mut [PreparedPrimitive],
-	meshlets: &[ShaderMeshletData],
+/// Acceleration structures and hit shaders read this flat form. A meshlet triangle names its corners among its
+/// meshlet's vertex indices, which name the primitive's vertices, so each corner takes both steps. `vertex_indices` and
+/// `triangles` are the level's slices of the primitive's streams, which the records walk in order.
+fn flatten_meshlet_triangles(
+	records: &[[u8; RESOURCE_MESHLET_STRIDE]],
 	vertex_indices: &[[u8; VERTEX_INDEX_STRIDE]],
 	triangles: &[[u8; 3]],
 	flat: &mut [[u8; 6]],
-) -> u32 {
-	let mut written = 0;
-	for prepared in primitives {
-		let primitive = &mut prepared.primitive;
-		primitive.flat_triangle_offset = written;
-		if primitive.skin.is_some() {
-			continue;
+) -> usize {
+	let (mut vertex_index, mut triangle, mut written) = (0, 0, 0);
+	for record in records {
+		let (vertex_count, triangle_count) = (record[0] as usize, record[1] as usize);
+		let meshlet_vertices = &vertex_indices[vertex_index..][..vertex_count];
+		for corners in &triangles[triangle..][..triangle_count] {
+			let corners = corners.map(|corner| u16::from_le_bytes(meshlet_vertices[corner as usize]));
+			flat[written] = bytemuck::cast(corners.map(u16::to_le));
+			written += 1;
 		}
-		let full_detail = &meshlets[primitive.meshlet_offset as usize..][..primitive.lods.levels()[0].meshlet_count as usize];
-		for meshlet in full_detail {
-			let meshlet_vertices = &vertex_indices[(primitive.primitive_offset + meshlet.primitive_offset) as usize..];
-			let meshlet_triangles =
-				&triangles[(primitive.triangle_offset + meshlet.triangle_offset) as usize..][..meshlet.triangle_count as usize];
-			for triangle in meshlet_triangles {
-				let corners = triangle.map(|corner| u16::from_le_bytes(meshlet_vertices[corner as usize]));
-				flat[written as usize] = bytemuck::cast(corners.map(u16::to_le));
-				written += 1;
-			}
-		}
-		primitive.flat_triangle_count = written - primitive.flat_triangle_offset;
+		vertex_index += vertex_count;
+		triangle += triangle_count;
 	}
 	written
 }
@@ -800,118 +857,25 @@ fn write_f16_pair(destination: &mut [u8; 4], u: f32, v: f32) {
 mod tests {
 	use super::*;
 
-	/// Verifies each skinned source stream is copied from its own staging range.
-	///
-	/// A baked primitive records stream offsets relative to its semantic's aggregate stream, while the copies in
-	/// `append_mesh` address the staging lease. Using a baked offset directly aliased every skinned stream onto the
-	/// front of the lease, so joints and weights read position bytes and the mesh rendered in its bind pose.
 	#[test]
-	fn skinned_source_streams_occupy_distinct_staging_ranges() {
-		let stream = |stream_type, size, stride| Stream {
-			stream_type,
-			offset: 0,
-			size,
-			stride,
+	fn flat_triangles_name_primitive_vertices_through_each_meshlet() {
+		// Two baked meshlets: three vertices and one triangle, then three vertices and two triangles.
+		let record = |vertex_count, triangle_count| {
+			let mut record = [0u8; RESOURCE_MESHLET_STRIDE];
+			record[0] = vertex_count;
+			record[1] = triangle_count;
+			record
 		};
-		let vertices = 8;
-		let streams = ResourceStreams {
-			positions: stream(Streams::Vertices(VertexSemantics::Position), vertices * 12, 12),
-			normals: stream(Streams::Vertices(VertexSemantics::Normal), vertices * 12, 12),
-			uvs: stream(Streams::Vertices(VertexSemantics::UV), vertices * 8, 8),
-			vertex_indices: stream(
-				Streams::Indices(resource_management::types::IndexStreamTypes::Vertices),
-				vertices * 2,
-				2,
-			),
-			meshlet_indices: stream(
-				Streams::Indices(resource_management::types::IndexStreamTypes::Triangles),
-				3,
-				1,
-			),
-			meshlets: stream(Streams::Meshlets, RESOURCE_MESHLET_STRIDE, RESOURCE_MESHLET_STRIDE),
-			skinning: Some((
-				stream(Streams::Vertices(VertexSemantics::Joints), vertices * 8, 8),
-				stream(Streams::Vertices(VertexSemantics::Weights), vertices * 16, 16),
-			)),
-		};
+		let records = [record(3, 1), record(3, 2)];
+		let vertex_indices = [5u16, 6, 7, 1, 2, 3].map(u16::to_le_bytes);
+		let triangles = [[2, 0, 1], [0, 2, 1], [1, 1, 0]];
+		let mut flat = [[0u8; 6]; 3];
 
-		let layout = streams.source_staging_layout();
-		let (joints, weights) = layout.skinning.expect("a skinned mesh reserves joint and weight staging");
-
-		// Every skinned source must have its own bytes; aliasing is what produced the bind-pose regression.
-		let ranges = [&layout.positions, &layout.normals, &joints, &weights];
-		for (index, first) in ranges.iter().enumerate() {
-			assert!(!first.is_empty(), "skinned source stream {index} reserved no staging bytes");
-			for second in &ranges[index + 1..] {
-				assert!(
-					first.end <= second.start || second.end <= first.start,
-					"skinned source streams overlap in the staging lease: {first:?} and {second:?}"
-				);
-			}
-		}
-		assert_eq!(joints.len(), vertices * 8);
-		assert_eq!(weights.len(), vertices * 16);
-	}
-
-	#[test]
-	fn flat_triangles_index_the_full_detail_vertices_of_unskinned_primitives() {
-		let meshlet = |primitive_offset, triangle_offset| ShaderMeshletData {
-			primitive_offset,
-			triangle_offset,
-			primitive_count: 3,
-			triangle_count: 1,
-			..bytemuck::Zeroable::zeroed()
-		};
-		let primitive = |lods: &[u32], meshlet_offset, primitive_offset, triangle_offset, skinned: bool| PreparedPrimitive {
-			material_id: String::new(),
-			primitive: MeshPrimitive {
-				lods: MeshLods::from_resource(
-					&lods
-						.iter()
-						.map(|&meshlet_count| resource_management::resources::mesh::PrimitiveLod {
-							meshlet_count,
-							error: 0.0,
-						})
-						.collect::<Vec<_>>(),
-				),
-				meshlet_offset,
-				primitive_offset,
-				triangle_offset,
-				skin: skinned.then(|| Arc::new(SkinBinding { entries: Vec::new() })),
-				..MeshPrimitive::default()
-			},
-			skinning: None,
-		};
-		// The first primitive has two full-detail meshlets and a coarser level, the second is skinned, and the third
-		// follows it. Each meshlet's offsets are relative to its primitive.
-		let mut primitives = [
-			primitive(&[2, 1], 0, 0, 0, false),
-			primitive(&[1], 3, 9, 3, true),
-			primitive(&[1], 4, 12, 4, false),
-		];
-		let meshlets = [meshlet(0, 0), meshlet(3, 1), meshlet(6, 2), meshlet(0, 0), meshlet(0, 0)];
-		let vertex_indices = [5u16, 6, 7, 1, 2, 3, 0, 0, 0, 9, 9, 9, 4, 0, 8].map(u16::to_le_bytes);
-		let triangles = [[2, 0, 1], [0, 2, 1], [0, 1, 2], [0, 1, 2], [1, 2, 0]];
-		let mut flat = [[0u8; 6]; 5];
-
-		let written = flatten_full_detail_triangles(&mut primitives, &meshlets, &vertex_indices, &triangles, &mut flat);
+		let written = flatten_meshlet_triangles(&records, &vertex_indices, &triangles, &mut flat);
 
 		assert_eq!(written, 3);
-		let flat: Vec<[u16; 3]> = flat[..3]
-			.iter()
-			.map(|bytes| std::array::from_fn(|corner| u16::from_le_bytes([bytes[corner * 2], bytes[corner * 2 + 1]])))
-			.collect();
-		assert_eq!(flat, [[7, 5, 6], [1, 3, 2], [0, 8, 4]]);
-		let ranges: Vec<_> = primitives
-			.iter()
-			.map(|prepared| {
-				(
-					prepared.primitive.flat_triangle_offset,
-					prepared.primitive.flat_triangle_count,
-				)
-			})
-			.collect();
-		assert_eq!(ranges, [(0, 2), (2, 0), (2, 1)]);
+		let flat = flat.map(|bytes| std::array::from_fn::<u16, 3, _>(|corner| u16::from_le_bytes([bytes[corner * 2], bytes[corner * 2 + 1]])));
+		assert_eq!(flat, [[7, 5, 6], [1, 3, 2], [2, 2, 1]]);
 	}
 
 	#[test]

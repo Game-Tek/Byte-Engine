@@ -172,7 +172,7 @@ the mismatch without touching the directory.
 | `Flipbook` | Frames per second and images. | None | None | Its images. |
 | `Material` | Double-sidedness, alpha mode, coverage, shaders, render model, parameters. | None | None | Its shaders and parameter images. |
 | `Variant` | Parent material, variable values, alpha mode. | None | None | Its material. |
-| `Mesh` | Optional skeleton, skin bindings, vertex components, streams, material variants by reference, primitives. | Packed vertex, index, and meshlet data. | Listed after this table. | Its skeleton; materials are listed but not loaded with the mesh. |
+| `Mesh` | Optional skeleton, skin bindings, vertex components, streams, material variants by reference, primitives. | Packed vertex, index, and meshlet data, grouped by detail level. | `level[N].` streams per detail level, listed after this table. | Its skeleton; materials are listed but not loaded with the mesh. |
 | `Skeleton` | Nodes with optional names, parents, and rest transforms. | None | None | None |
 | `Animation` | Optional name, skeleton, duration, optional frame rate, per-node curves. | None; curves live in the metadata. | None | Its skeleton. |
 
@@ -185,17 +185,35 @@ Shader stages: vertex, fragment, compute, task, mesh, ray generation, closest
 hit, any hit, intersection, miss, and callable. Artifacts: SPIR-V, HLSL, MSL,
 Metal library, and DXIL.
 
-Mesh streams, by name: `Vertex.Position`, `Vertex.Normal`, `Vertex.Tangent`,
-`Vertex.BiTangent`, `Vertex.UV`, `Vertex.Color`, `Vertex.Joints`,
-`Vertex.Weights`, `VertexIndices`, `TriangleIndices`, `MeshletIndices`, and
-`Meshlets`. Positions, normals, and bitangents are three floats; UVs two;
-tangents, colors, and weights four floats; joints four 16-bit integers. A
-meshlet holds at most 64 vertices and 124 triangles.
+Mesh streams hold one detail level each, so a reader can load the levels it
+needs and leave the rest on disk. Level 0 is full detail; each later level is
+coarser. Every stream name starts with its level, `level[N].`, followed by one
+of these names:
+
+| Stream | Element | Holds |
+| --- | --- | --- |
+| `Vertex.Position`, `Vertex.Normal`, `Vertex.BiTangent` | Three floats | The vertices that level N adds, for every primitive. |
+| `Vertex.UV` | Two floats | Same. |
+| `Vertex.Tangent`, `Vertex.Color`, `Vertex.Weights` | Four floats | Same. |
+| `Vertex.Joints` | Four 16-bit integers | Same. |
+| `VertexIndices` | 16-bit integer | Level N's meshlet vertices, as indexes into the primitive's vertices. |
+| `MeshletIndices` | 8-bit integer | Level N's triangle corners, as indexes into their meshlet's vertices. |
+| `Meshlets` | Meshlet record | Level N's meshlets. |
+| `TriangleIndices` | 16-bit integer | Level 0 only: full detail as a plain triangle list, three indexes into the primitive's vertices per triangle. |
+
+Each stream lists its primitives in order, and a primitive with nothing at a
+level has nothing in that level's streams. A meshlet holds at most 64 vertices
+and 124 triangles.
 
 | Mesh rule | Value |
 | --- | --- |
-| Primitive | A material index, an optional transform node, an optional skin, its streams, a bounding box, a vertex count, and 1 to 8 detail levels. |
-| Detail levels | The first level's error is 0, errors never decrease, and the levels' meshlet counts sum to the meshlet stream's count. |
+| Primitive | A material index, an optional transform node, an optional skin, its streams, a bounding box, a bounding sphere around its full-detail triangles, a vertex count, and 1 to 8 detail levels. |
+| Detail level | An error, a meshlet count, and a vertex count. |
+| Detail level errors | The first level's error is 0, and errors never decrease. |
+| Meshlet counts | Each level's meshlet count is the count of that primitive's meshlets in the level's `Meshlets` stream. |
+| Vertex order | Vertices are ordered by the coarsest level that uses them, coarsest first. A level's vertex count V is the number of vertices that level or any coarser level uses, and every index the level's meshlets name is below V. |
+| Vertex streams | A primitive's first V vertices for level N are its vertices in the `level[L]` vertex streams for every level L from the coarsest down to N, in that order. Vertex counts never increase from one level to the next coarser one, and the first level's vertex count is the primitive's vertex count. |
+| Skinned primitives | Have exactly one detail level. |
 | Skins | Need a skeleton, hold at most 65,536 entries, and name nodes inside it. A skinned primitive carries joints and weights for every vertex. |
 
 Container fragments name the resources a model file produces, such as `#skeleton`, `#images/<index>`, and

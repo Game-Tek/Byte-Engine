@@ -144,6 +144,9 @@ pub enum IndexStreamTypes {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Stream {
 	pub stream_type: Streams,
+	/// The mesh detail level this stream holds, 0 for full detail. Each level has its own streams, so a renderer can
+	/// read the levels it draws and leave the others on disk.
+	pub level: u8,
 	pub offset: usize,
 	pub size: usize,
 	pub stride: usize,

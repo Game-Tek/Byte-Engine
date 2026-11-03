@@ -30,7 +30,8 @@ use super::layout::{
 use super::loader::{
 	MaterialEvaluator, ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent,
 };
-use super::lod::{LodSettings, LodView};
+use super::lod::{LodSettings, LodView, MeshLods};
+use super::residency::MeshResidencies;
 use super::material_parameters::MaterialParameters;
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
 use super::ray_tracing::{HitShading, PROBE_SHADE_SHADER, SURFEL_SHADE_SHADER};
@@ -769,6 +770,8 @@ pub struct VisibilityPipelineManager {
 	contact_shadow_settings: ContactShadowSettings,
 	lod_configuration: crate::configuration::ConfigurationPort,
 	lod_settings: LodSettings,
+	/// Decides which meshes load finer detail levels and whose finer levels to release for room.
+	mesh_residencies: MeshResidencies,
 	/// The sinks whose visibility pass recorded in the previous frame, with the view and extent they used. Only their
 	/// per-frame images hold usable history, and only while the extent is unchanged.
 	recorded_sinks: SmallVec<[Sink; 4]>,
@@ -962,6 +965,7 @@ impl VisibilityPipelineManager {
 			contact_shadow_settings: ContactShadowSettings::default(),
 			lod_configuration,
 			lod_settings: LodSettings::default(),
+			mesh_residencies: MeshResidencies::default(),
 			recorded_sinks: SmallVec::new(),
 			recorded_exposure: 1.0,
 			surfel_exposure: 1.0,
@@ -1043,14 +1047,14 @@ impl VisibilityPipelineManager {
 	fn remove_mesh_instance(&mut self, handle: Handle) {
 		self.pending_renderables.retain(|pending| pending.handle != handle);
 		self.material_parameters.release_entity(handle);
-		let vertex_ranges = &self.geometry.vertex_ranges;
+		let ranges = &self.geometry.ranges;
 		// Nothing reads a range after its instance leaves the frame, except frames still in flight, and the backends
 		// order the next owner's writes after those reads.
 		self.scene.remove_renderable(handle, |range| {
-			vertex_ranges
+			ranges
 				.lock()
 				.unwrap_or_else(|error| error.into_inner())
-				.give_back(range.start as usize..range.end as usize);
+				.give_back_vertices(range);
 		});
 		self.availability.remove(&Availability::Renderable(handle)).expect(
 			"Visibility renderable availability could not be removed. The most likely cause is that another graph node depends on a renderable.",
@@ -1067,7 +1071,38 @@ impl VisibilityPipelineManager {
 		let mut materials_changed = false;
 		for event in events.drain(..) {
 			match event {
-				VisibilityLoaderEvent::MeshReady { key, mesh } => self.resolve_pending_renderables(key, &mesh, transforms),
+				VisibilityLoaderEvent::MeshReady { key, mesh } => {
+					// The base block holds each primitive's coarsest level.
+					self.mesh_residencies.add_mesh(
+						key,
+						mesh.primitives.iter().map(|primitive| (primitive.lods.levels().len() - 1) as u8),
+					);
+					self.resolve_pending_renderables(key, &mesh, transforms);
+				}
+				VisibilityLoaderEvent::MeshLevelsLoaded {
+					key,
+					placed,
+					without_room,
+				} => {
+					for (primitive, finest) in placed {
+						self.mesh_residencies.loaded(key, primitive, finest);
+						self.refresh_entity_lods(key, primitive);
+					}
+					for primitive in without_room {
+						let frames_in_flight = ghi::MAX_FRAMES_IN_FLIGHT as u64;
+						if let Some((released, released_primitive)) =
+							self.mesh_residencies.without_room(key, primitive, frames_in_flight)
+						{
+							self.loader.release_mesh_levels(released, released_primitive);
+							self.refresh_entity_lods(released, released_primitive);
+						}
+					}
+					self.mesh_residencies.load_finished(key);
+				}
+				VisibilityLoaderEvent::MeshLevelsUnavailable { key, error } => {
+					self.mesh_residencies.unavailable(key);
+					warn!("Visibility finer detail levels of mesh {key:?} are unavailable; its instances keep their coarser levels. {error}");
+				}
 				VisibilityLoaderEvent::MaterialReady(material, evaluation) => {
 					self.adopt_material(material, evaluation);
 					materials_changed = true;
@@ -1389,6 +1424,22 @@ impl VisibilityPipelineManager {
 		self.pending_renderables = pending;
 	}
 
+	/// Gives every render entity of one primitive of `key` the detail levels it holds now, after finer levels arrived
+	/// or left.
+	fn refresh_entity_lods(&mut self, key: MeshKey, primitive: u32) {
+		let Some(lods) = self.loader.primitive_lods(key, primitive as usize) else {
+			return;
+		};
+		for entity in self
+			.scene
+			.render_entities
+			.iter_mut()
+			.filter(|entity| entity.mesh == key && entity.primitive == primitive)
+		{
+			entity.lods = lods;
+		}
+	}
+
 	/// Adds one resident renderable where its handle is shown.
 	fn add_renderable(&mut self, handle: Handle, key: MeshKey, mesh: &MeshData, transforms: &ShownTransforms) {
 		if let Some(structures) = &mut self.acceleration_structures {
@@ -1406,6 +1457,9 @@ impl VisibilityPipelineManager {
 			self.availability
 				.add_dependency(availability, material)
 				.expect("Visibility renderable dependency could not be registered. The most likely cause is a cyclic or stale resource relationship.");
+			// The mesh may already hold finer levels another renderable asked for.
+			let lods: MeshLods = self.loader.primitive_lods(key, index).unwrap_or(primitive.lods);
+			let finest = lods.drawn(0);
 			self.scene.add_render_entity(RenderEntity {
 				handle,
 				mesh: key,
@@ -1414,17 +1468,18 @@ impl VisibilityPipelineManager {
 				shader_mesh: ShaderMesh {
 					model,
 					material_index: primitive.material_index,
-					base_vertex_index: mesh.vertex_offset + primitive.vertex_offset,
-					base_primitive_index: mesh.primitive_offset + primitive.primitive_offset,
-					base_triangle_index: mesh.triangle_offset + primitive.triangle_offset,
-					base_meshlet_index: mesh.meshlet_offset + primitive.meshlet_offset,
-					meshlet_count: primitive.lods.levels()[0].meshlet_count,
+					base_vertex_index: finest.vertex_base,
+					base_primitive_index: finest.primitive_index_base,
+					base_triangle_index: finest.triangle_base,
+					base_meshlet_index: finest.first_meshlet,
+					meshlet_count: finest.meshlet_count,
 					flags: 0,
 					// Each frame names the block the instance reads.
 					parameter_block: 0,
 					bounding_sphere: primitive.bounding_sphere,
 				},
-				lods: primitive.lods,
+				lods,
+				residency: self.mesh_residencies.slot(key, index as u32),
 				skinning: primitive.skin.as_ref().map(|binding| RenderSkin {
 					binding: binding.clone(),
 					source_vertex_offset: primitive
@@ -1486,7 +1541,9 @@ impl VisibilityPipelineManager {
 
 	/// Rebuilds the frame's instance lists from whole renderables whose dependencies are ready, and uploads skin palettes.
 	///
-	/// Each instance draws the detail level `lod_view` picks for it, or full detail when the frame has no camera.
+	/// Each instance draws the detail level `lod_view` picks for it when it is resident, or the finest resident level
+	/// coarser than it. Without a camera it draws the finest resident level. The levels instances want go to
+	/// [`MeshResidencies`], which decides what loads next.
 	fn rebuild_active_instances(&mut self, frame: &mut ghi::implementation::Frame, lod_view: Option<LodView>) {
 		let render_info = &mut self.scene.render_info;
 		render_info.clear_active_instances();
@@ -1521,13 +1578,24 @@ impl VisibilityPipelineManager {
 			// Sidedness comes from the currently loaded material, so a reloaded material takes effect next frame.
 			shader_mesh.flags = if material.double_sided { MESH_FLAG_DOUBLE_SIDED } else { 0 };
 			shader_mesh.parameter_block = self.material_parameters.block(entity.handle, shader_mesh.material_index);
-			// Naming another meshlet range is all a level switch takes. Every view of the frame, shadows included,
+			// Naming another level's ranges is all a level switch takes. Every view of the frame, shadows included,
 			// then draws this level.
-			if let Some(view) = lod_view {
-				let lod = view.select(&entity.lods, &shader_mesh.model, shader_mesh.bounding_sphere);
-				shader_mesh.base_meshlet_index += lod.first_meshlet;
-				shader_mesh.meshlet_count = lod.meshlet_count;
-			}
+			let wanted = match lod_view {
+				Some(view) => {
+					let wanted = view.select(&entity.lods, &shader_mesh.model, shader_mesh.bounding_sphere);
+					if let Some(slot) = entity.residency {
+						self.mesh_residencies.want(slot, wanted as u8);
+					}
+					wanted
+				}
+				None => 0,
+			};
+			let lod = entity.lods.drawn(wanted);
+			shader_mesh.base_vertex_index = lod.vertex_base;
+			shader_mesh.base_primitive_index = lod.primitive_index_base;
+			shader_mesh.base_triangle_index = lod.triangle_base;
+			shader_mesh.base_meshlet_index = lod.first_meshlet;
+			shader_mesh.meshlet_count = lod.meshlet_count;
 			if let Some(skin) = &mut entity.skinning
 				&& let Some(pose) = self.scene.skinning_poses.get(&entity.handle)
 			{
@@ -1540,7 +1608,7 @@ impl VisibilityPipelineManager {
 				// mesh's bind pose. Without room it keeps drawing the bind pose; the allocator logged why.
 				if skin.posed_vertices == PosedVertices::Unallocated && skin.vertex_count > 0 {
 					skin.posed_vertices =
-						allocate_vertices(&self.geometry.vertex_ranges, skin.vertex_count, "a posed skinned instance")
+						allocate_vertices(&self.geometry.ranges, skin.vertex_count, "a posed skinned instance")
 							.map_or(PosedVertices::Unavailable, PosedVertices::Allocated);
 					// Skinning writes only positions and normals, so the bind-pose UVs are copied beside them once.
 					if let PosedVertices::Allocated(range) = &skin.posed_vertices {
@@ -1597,6 +1665,11 @@ impl VisibilityPipelineManager {
 		frame.sync_buffer(self.scene.meshes_buffer);
 		self.skinning_pass
 			.write_palettes(frame, &self.skinning_frame.matrices, &self.skinning_frame.dual_quaternions);
+		for load in self.mesh_residencies.end_frame() {
+			if !self.loader.request_mesh_levels(load.key, load.primitives) {
+				self.mesh_residencies.unavailable(load.key);
+			}
+		}
 	}
 
 	/// Returns each shadowed sun's cascades, fitted to the camera frustum, by sun slot, and the view every map of

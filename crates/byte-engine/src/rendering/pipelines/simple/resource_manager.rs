@@ -279,9 +279,13 @@ struct ResourcePrimitiveLayout {
 	vertex_offset: usize,
 	vertex_count: usize,
 	index_range: Range<usize>,
+	/// The primitive's position bytes in each level's stream, coarsest level first, which is its vertex order.
+	position_slices: Vec<(u8, Range<usize>)>,
 }
 
 struct ResourceMeshLayout {
+	/// The size of each detail level's position stream, finest first; zero for a level without one.
+	level_position_sizes: Vec<usize>,
 	position_size: usize,
 	index_size: usize,
 	primitives: Vec<ResourcePrimitiveLayout>,
@@ -306,35 +310,64 @@ fn resource_mesh_layout(mesh: &ResourceMesh) -> Result<ResourceMeshLayout, Simpl
 	{
 		return Err(SimpleMeshError::UnsupportedMeshFeatures);
 	}
-	let positions = mesh.position_stream().ok_or(SimpleMeshError::MissingPositionStream)?;
-	let indices = mesh.triangle_indices_stream().ok_or(SimpleMeshError::MissingIndexStream)?;
-	if positions.stride != POSITION_STRIDE || positions.size % POSITION_STRIDE != 0 {
+	// Simple draws full detail, which needs every level's vertices: each level stores the vertices it adds.
+	let position_type = Streams::Vertices(VertexSemantics::Position);
+	let level_positions = (0..mesh.level_count())
+		.map(|level| mesh.stream(position_type, level))
+		.collect::<Vec<_>>();
+	if level_positions.iter().all(Option::is_none) {
+		return Err(SimpleMeshError::MissingPositionStream);
+	}
+	let indices = mesh
+		.stream(Streams::Indices(IndexStreamTypes::Triangles), 0)
+		.ok_or(SimpleMeshError::MissingIndexStream)?;
+	if level_positions
+		.iter()
+		.flatten()
+		.any(|positions| positions.stride != POSITION_STRIDE || positions.size % POSITION_STRIDE != 0)
+	{
 		return Err(SimpleMeshError::InvalidPositionStream);
 	}
 	if indices.stride != INDEX_STRIDE || indices.size % (INDEX_STRIDE * 3) != 0 {
 		return Err(SimpleMeshError::InvalidIndexStream);
 	}
-	let vertex_count = positions.size / POSITION_STRIDE;
+	let level_position_sizes = level_positions
+		.iter()
+		.map(|positions| positions.map_or(0, |positions| positions.size))
+		.collect::<Vec<_>>();
+	let position_size = level_position_sizes.iter().sum::<usize>();
+	let vertex_count = position_size / POSITION_STRIDE;
 	if vertex_count > usize::from(u16::MAX) + 1 {
 		return Err(SimpleMeshError::IndexLimit);
 	}
 
+	// Each level's streams list the primitives in order, so every primitive's slice must start where the previous
+	// primitive's slice of that level ended.
+	let mut expected_level_offsets = vec![0usize; level_positions.len()];
 	let mut expected_vertex_offset = 0usize;
 	let mut expected_index_offset = 0usize;
 	let mut primitives = Vec::with_capacity(mesh.primitives.len());
 	for primitive in &mesh.primitives {
-		let primitive_positions = primitive
-			.stream(Streams::Vertices(VertexSemantics::Position))
-			.ok_or(SimpleMeshError::InvalidPrimitiveLayout)?;
 		let primitive_indices = primitive
-			.stream(Streams::Indices(IndexStreamTypes::Triangles))
+			.stream(Streams::Indices(IndexStreamTypes::Triangles), 0)
 			.ok_or(SimpleMeshError::InvalidPrimitiveLayout)?;
-		let primitive_vertex_size = (primitive.vertex_count as usize)
-			.checked_mul(POSITION_STRIDE)
-			.ok_or(SimpleMeshError::InvalidPrimitiveLayout)?;
-		if primitive_positions.offset != expected_vertex_offset
-			|| primitive_positions.size != primitive_vertex_size
-			|| primitive_positions.stride != POSITION_STRIDE
+		let mut position_slices = Vec::with_capacity(primitive.lods.len());
+		let mut primitive_vertex_size = 0usize;
+		for level in (0..primitive.lods.len() as u8).rev() {
+			let Some(slice) = primitive.stream(position_type, level) else {
+				continue;
+			};
+			let expected_offset = expected_level_offsets
+				.get_mut(level as usize)
+				.ok_or(SimpleMeshError::InvalidPrimitiveLayout)?;
+			if slice.offset != *expected_offset || slice.stride != POSITION_STRIDE || slice.size % POSITION_STRIDE != 0 {
+				return Err(SimpleMeshError::InvalidPrimitiveLayout);
+			}
+			*expected_offset += slice.size;
+			primitive_vertex_size += slice.size;
+			position_slices.push((level, slice.offset..slice.offset + slice.size));
+		}
+		if primitive_vertex_size != primitive.vertex_count as usize * POSITION_STRIDE
 			|| primitive_indices.offset != expected_index_offset
 			|| primitive_indices.stride != INDEX_STRIDE
 			|| primitive_indices.size % (INDEX_STRIDE * 3) != 0
@@ -346,21 +379,21 @@ fn resource_mesh_layout(mesh: &ResourceMesh) -> Result<ResourceMeshLayout, Simpl
 			.checked_add(primitive_indices.size)
 			.ok_or(SimpleMeshError::InvalidPrimitiveLayout)?;
 		primitives.push(ResourcePrimitiveLayout {
-			vertex_offset: primitive_positions.offset / POSITION_STRIDE,
+			vertex_offset: expected_vertex_offset / POSITION_STRIDE,
 			vertex_count: primitive.vertex_count as usize,
 			index_range: primitive_indices.offset..index_end,
+			position_slices,
 		});
-		expected_vertex_offset = expected_vertex_offset
-			.checked_add(primitive_positions.size)
-			.ok_or(SimpleMeshError::InvalidPrimitiveLayout)?;
+		expected_vertex_offset += primitive_vertex_size;
 		expected_index_offset = index_end;
 	}
-	if expected_vertex_offset != positions.size || expected_index_offset != indices.size {
+	if expected_level_offsets != level_position_sizes || expected_index_offset != indices.size {
 		return Err(SimpleMeshError::InvalidPrimitiveLayout);
 	}
 
 	Ok(ResourceMeshLayout {
-		position_size: positions.size,
+		level_position_sizes,
+		position_size,
 		index_size: indices.size,
 		primitives,
 	})
@@ -424,12 +457,26 @@ async fn prepare_generated_mesh(
 }
 
 /// Loads and converts only the baked streams consumed by the Simple renderer.
+///
+/// Every level's position stream loads into the front of the staging lease. Each primitive's slices are then gathered
+/// behind them in its vertex order, so the copied positions list every primitive's vertices one after another.
 async fn prepare_resource_mesh(
 	mut resource: Reference<ResourceMesh>,
 	staging: Arc<UploadStagingArena>,
 ) -> Result<PreparedSimpleMesh, SimpleMeshError> {
 	let layout = resource_mesh_layout(resource.resource())?;
-	let index_start = layout.position_size.next_multiple_of(4);
+	let mut cursor = 0usize;
+	let level_sources = layout
+		.level_position_sizes
+		.iter()
+		.map(|&size| {
+			let start = cursor.next_multiple_of(4);
+			cursor = start + size;
+			start..cursor
+		})
+		.collect::<Vec<_>>();
+	let position_start = cursor.next_multiple_of(4);
+	let index_start = (position_start + layout.position_size).next_multiple_of(4);
 	let byte_count = index_start
 		.checked_add(layout.index_size)
 		.ok_or(SimpleMeshError::StagingCapacity)?;
@@ -438,18 +485,26 @@ async fn prepare_resource_mesh(
 		.await
 		.ok_or(SimpleMeshError::StagingCapacity)?;
 
+	let stream_names = (0..level_sources.len())
+		.map(|level| format!("level[{level}].Vertex.Position"))
+		.collect::<Vec<_>>();
 	let loaded = {
 		let bytes = staging.bytes_mut();
-		let (positions, remainder) = bytes.split_at_mut(index_start);
-		let indices = &mut remainder[..layout.index_size];
+		let (sources, remainder) = bytes.split_at_mut(position_start);
+		let indices = &mut remainder[index_start - position_start..][..layout.index_size];
+		let mut targets = Vec::with_capacity(level_sources.len() + 1);
+		// The allocator walks the same 4-byte aligned ranges `level_sources` reserved.
+		let mut allocator = utils::BufferAllocator::new(sources);
+		for (name, range) in stream_names.iter().zip(&level_sources) {
+			let (offset, target) = allocator.take_with_offset_aligned(range.len(), 4);
+			debug_assert_eq!(offset, range.start);
+			if !target.is_empty() {
+				targets.push(resource_management::stream::StreamMut::new(name, target));
+			}
+		}
+		targets.push(resource_management::stream::StreamMut::new("level[0].TriangleIndices", indices));
 		resource
-			.load(
-				vec![
-					resource_management::stream::StreamMut::new("Vertex.Position", &mut positions[..layout.position_size]),
-					resource_management::stream::StreamMut::new("TriangleIndices", indices),
-				]
-				.into(),
-			)
+			.load(targets.into())
 			.await
 			.map_err(|_| SimpleMeshError::ResourceLoad)?
 	};
@@ -457,12 +512,22 @@ async fn prepare_resource_mesh(
 		return Err(SimpleMeshError::ResourceLoad);
 	}
 
-	for component in staging.bytes_mut()[..layout.position_size]
-		.as_chunks_mut::<{ std::mem::size_of::<f32>() }>()
-		.0
-	{
-		let value = f32::from_le_bytes(*component);
-		component.copy_from_slice(&value.to_ne_bytes());
+	let (sources, positions) = staging.bytes_mut().split_at_mut(position_start);
+	let mut written = 0;
+	for primitive in &layout.primitives {
+		for (level, slice) in &primitive.position_slices {
+			let source = &sources[level_sources[*level as usize].start..][slice.clone()];
+			let destination = &mut positions[written..][..source.len()];
+			for (destination, component) in destination
+				.as_chunks_mut::<{ std::mem::size_of::<f32>() }>()
+				.0
+				.iter_mut()
+				.zip(source.as_chunks::<{ std::mem::size_of::<f32>() }>().0)
+			{
+				*destination = f32::from_le_bytes(*component).to_ne_bytes();
+			}
+			written += source.len();
+		}
 	}
 	rebase_resource_indices(
 		&mut staging.bytes_mut()[index_start..][..layout.index_size],
@@ -471,7 +536,7 @@ async fn prepare_resource_mesh(
 
 	Ok(PreparedSimpleMesh {
 		staging,
-		positions: 0..layout.position_size,
+		positions: position_start..position_start + layout.position_size,
 		indices: index_start..index_start + layout.index_size,
 		vertex_count: layout.position_size / POSITION_STRIDE,
 		index_count: layout.index_size / INDEX_STRIDE,
@@ -556,11 +621,13 @@ mod tests {
 				vertex_offset: 0,
 				vertex_count: 3,
 				index_range: 0..6,
+				position_slices: Vec::new(),
 			},
 			ResourcePrimitiveLayout {
 				vertex_offset: 3,
 				vertex_count: 3,
 				index_range: 6..12,
+				position_slices: Vec::new(),
 			},
 		];
 
@@ -578,6 +645,7 @@ mod tests {
 			vertex_offset: 0,
 			vertex_count: 3,
 			index_range: 0..2,
+			position_slices: Vec::new(),
 		}];
 		assert!(matches!(
 			rebase_resource_indices(&mut indices, &primitives),

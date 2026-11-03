@@ -90,7 +90,7 @@ fn dry_run_prints_every_baked_resource_with_typed_streams_and_writes_no_store() 
 		.find(|resource| resource["id"] == "triangle_move.fbx")
 		.unwrap();
 	assert_eq!(mesh["class"], "Mesh");
-	let positions = stream(mesh, "Vertex.Position");
+	let positions = stream(mesh, "level[0].Vertex.Position");
 	assert_eq!(
 		(&positions["encoding"], &positions["element"]),
 		(&"json".into(), &"vec3f".into())
@@ -99,10 +99,10 @@ fn dry_run_prints_every_baked_resource_with_typed_streams_and_writes_no_store() 
 	assert_eq!(vertices.len() * 12, positions["size"].as_u64().unwrap() as usize);
 	assert!(vertices.iter().all(|vertex| vertex.as_array().unwrap().len() == 3));
 
-	let triangles = stream(mesh, "TriangleIndices");
+	let triangles = stream(mesh, "level[0].TriangleIndices");
 	assert_eq!(triangles["element"], "u16");
 	assert!(triangles["data"].as_array().unwrap().iter().all(Value::is_u64));
-	let meshlets = stream(mesh, "Meshlets");
+	let meshlets = stream(mesh, "level[0].Meshlets");
 	assert_eq!(meshlets["element"], "meshlet");
 	let first_meshlet = &meshlets["data"][0];
 	assert_eq!(first_meshlet["triangle_count"], 1);

@@ -65,8 +65,8 @@ impl PrimitiveGeometry {
 		mesh.primitives
 			.iter()
 			.map(|primitive| {
-				let vertices = mesh.vertex_offset + primitive.vertex_offset;
-				let triangles = mesh.flat_triangle_offset + primitive.flat_triangle_offset;
+				let vertices = mesh.ranges.vertices.start + primitive.vertex_offset;
+				let triangles = mesh.ranges.flat_triangles.start + primitive.flat_triangle_offset;
 				Self {
 					material: primitive.material_index,
 					vertices: vertices..vertices + primitive.vertex_count,

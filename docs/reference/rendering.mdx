@@ -585,6 +585,7 @@ that surfel GI lights, the probe stages in a frame that probe GI lights, and
 | `primitive index`, `instance_id` | 32-bit IDs per pixel. |
 | `Sun Visibility`, `Contact Shadow Trace` | Sun visibility per shadow slot, full size, and its half-size contact trace. |
 | `SSGI Raw`, `SSGI Normals`, `SSGI History`, `Diffuse Radiance History` | Half-size indirect lighting and its history. |
+| `Ambient Occlusion`, `GTAO Raw`, `GTAO Blur` | Ambient occlusion, full size, and its half-size evaluation and denoised intermediate; no usable data on frames GTAO doesn't run. |
 | `Surfel History`, `Surfel History Weights` | Half-size history of surfel GI's light, and its confidence and luminance variance; only when surfel GI is built in. |
 
 These names, with a pass's outputs, select a screenshot through the inspector;

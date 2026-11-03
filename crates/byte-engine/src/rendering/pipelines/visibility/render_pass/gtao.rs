@@ -20,6 +20,43 @@ const MAX_SAMPLES_PER_RAY: u32 = 32;
 const MIN_RADIAL_RAYS: u32 = 2;
 const MAX_RADIAL_RAYS: u32 = 32;
 
+/// GTAO evaluates and denoises at half the sink resolution.
+const GTAO_RESOLUTION_DIVISOR: u32 = 2;
+
+/// The `GtaoTargets` struct holds the images the three GTAO stages write, so the visibility pass can hand them to
+/// [`GtaoPass::new`] and bind the result in material evaluation.
+#[derive(Clone, Copy)]
+pub(crate) struct GtaoTargets {
+	/// The noisy half-resolution evaluation, named `GTAO Raw`.
+	pub(crate) raw: ghi::BaseImageHandle,
+	/// The horizontally denoised half-resolution occlusion, named `GTAO Blur`.
+	pub(crate) blurred: ghi::BaseImageHandle,
+	/// The full-resolution result material evaluation reads, named `Ambient Occlusion`.
+	pub(crate) ambient_occlusion: ghi::BaseImageHandle,
+}
+
+/// Creates the GTAO render targets for the sink that `render_pass_builder` sets up.
+///
+/// They are render targets so the renderer sizes them with the sink and the inspector can capture them by name.
+/// Material evaluation binds the result even when GTAO is not built in, so every sink has them.
+pub(crate) fn create_gtao_targets(render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>) -> GtaoTargets {
+	let mut target = |name, resolution_divisor| {
+		render_pass_builder
+			.create_scaled_render_target(
+				ghi::image::Builder::new(ghi::Formats::R8UNORM, ghi::Uses::Storage | ghi::Uses::Image)
+					.name(name)
+					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+				resolution_divisor,
+			)
+			.into()
+	};
+	GtaoTargets {
+		raw: target("GTAO Raw", GTAO_RESOLUTION_DIVISOR),
+		blurred: target("GTAO Blur", GTAO_RESOLUTION_DIVISOR),
+		ambient_occlusion: target("Ambient Occlusion", 1),
+	}
+}
+
 /// The `GtaoSettings` struct defines the runtime quality and world-space search controls for GTAO.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct GtaoSettings {
@@ -116,13 +153,10 @@ pub(super) struct GtaoPass {
 	/// The evaluate, blur, and upscale pipelines.
 	pub(super) pipelines: Pipelines<3>,
 	parameters: ghi::DynamicBufferHandle<GtaoShaderParameters>,
-	raw_ao_map: ghi::DynamicImageHandle,
-	blurred_ao_map: ghi::DynamicImageHandle,
-	ao_map: ghi::BaseImageHandle,
 }
 
 impl GtaoPass {
-	/// Creates the intermediate images and wires the three-stage descriptor graph.
+	/// Wires the three-stage descriptor graph through `targets`, which [`create_gtao_targets`] creates.
 	///
 	/// `depth_pyramid` and `view_descriptor_set`, the set that holds the screen view constants, come from
 	/// [`super::depth_pyramid::DepthPyramidPass`], which must run first.
@@ -132,7 +166,7 @@ impl GtaoPass {
 		depth: ghi::BaseImageHandle,
 		depth_pyramid: ghi::DynamicImageHandle,
 		view_descriptor_set: ghi::DescriptorSetHandle,
-		ao_map: ghi::BaseImageHandle,
+		targets: GtaoTargets,
 	) -> Self {
 		let gtao_descriptor_set = set_layouts::GTAO.create_set(context, "GTAO Descriptor Set");
 		let blur_descriptor_set = set_layouts::GTAO_BLUR.create_set(context, "GTAO Blur X Descriptor Set");
@@ -156,26 +190,19 @@ impl GtaoPass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
 		);
-		let half_resolution_image = |name| {
-			ghi::image::Builder::new(ghi::Formats::R8UNORM, ghi::Uses::Storage | ghi::Uses::Image)
-				.name(name)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-		};
-		let raw_ao_map = context.build_dynamic_image(half_resolution_image("GTAO Half-Resolution Raw"));
-		let blurred_ao_map = context.build_dynamic_image(half_resolution_image("GTAO Half-Resolution Blur Intermediate"));
 		let evaluate = set_layouts::GTAO.binder(gtao_descriptor_set);
 		let blur = set_layouts::GTAO_BLUR.binder(blur_descriptor_set);
 		let upscale = set_layouts::GTAO_UPSCALE.binder(upscale_descriptor_set);
 		context.write(&[
 			evaluate.buffer("gtao_parameters", parameters),
 			evaluate.texture("depth_pyramid", depth_pyramid),
-			evaluate.image("ao_output", raw_ao_map),
+			evaluate.image("ao_output", targets.raw),
 			blur.sampled("linear_depth", depth_pyramid, depth_sampler),
-			blur.sampled("ao_source", raw_ao_map, ao_sampler),
-			blur.image("ao_output", blurred_ao_map),
+			blur.sampled("ao_source", targets.raw, ao_sampler),
+			blur.image("ao_output", targets.blurred),
 			upscale.sampled("visibility_depth", depth, depth_sampler),
-			upscale.texture("ao_source", blurred_ao_map),
-			upscale.image("ao_output", ao_map),
+			upscale.texture("ao_source", targets.blurred),
+			upscale.image("ao_output", targets.ambient_occlusion),
 			upscale.texture("low_resolution_depth", depth_pyramid),
 		]);
 
@@ -186,13 +213,10 @@ impl GtaoPass {
 			upscale_descriptor_set,
 			pipelines: Pipelines::request(pipeline_manager, GTAO_PIPELINES),
 			parameters,
-			raw_ao_map,
-			blurred_ao_map,
-			ao_map,
 		}
 	}
 
-	/// Uploads this frame's `settings`, resizes the intermediates, and returns the three-stage recording.
+	/// Uploads this frame's `settings` and returns the three-stage recording.
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
@@ -201,16 +225,13 @@ impl GtaoPass {
 		[gtao, blur, upscale]: [ghi::PipelineHandle; 3],
 	) -> GtaoStages {
 		let extent = sink.extent();
-		let gtao_extent = extent.scaled_down(2);
+		let gtao_extent = extent.scaled_down(GTAO_RESOLUTION_DIVISOR);
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = GtaoShaderParameters {
 			radius: settings.radius,
 			samples_per_ray: settings.samples_per_ray,
 			radial_rays: settings.radial_rays,
 		};
 		frame.sync_buffer(self.parameters);
-		frame.resize_image(self.ao_map, extent);
-		frame.resize_image(self.raw_ao_map.into(), gtao_extent);
-		frame.resize_image(self.blurred_ao_map.into(), gtao_extent);
 
 		GtaoStages {
 			evaluate: ComputeStage {

@@ -39,7 +39,7 @@ use super::render_pass::{
 	FrameWork, GiSettings, GtaoSettings, IndirectDiffuseSource, MAX_SURFEL_RAY_BUDGET, PROBE_RAY_BUDGET_RANGE, PROBE_RAYS,
 	PROBE_SPACING_RANGE, ProbeGiSettings, ProbeVolume, RayHits, RayTracing, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
 	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool,
-	VisibilityRenderPass, create_ssgi_targets, create_sun_visibility_targets, create_surfel_targets,
+	VisibilityRenderPass, create_gtao_targets, create_ssgi_targets, create_sun_visibility_targets, create_surfel_targets,
 };
 use super::scene::{Instance, MaterialEvaluation, PosedVertices, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::set_layouts;
@@ -2038,6 +2038,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		});
 		let ssgi = create_ssgi_targets(render_pass_builder);
 		let sun_visibility = create_sun_visibility_targets(render_pass_builder);
+		let gtao = create_gtao_targets(render_pass_builder);
 		let stage_counters = super::render_pass::StageCounters::new(render_pass_builder);
 		let surfel_gi = self.surfel_pool.is_some();
 		let surfels = surfel_gi.then(|| create_surfel_targets(render_pass_builder));
@@ -2067,6 +2068,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				ssgi,
 				surfels,
 				sun_visibility,
+				gtao,
 			},
 			&self.shadow_maps,
 			stage_counters,

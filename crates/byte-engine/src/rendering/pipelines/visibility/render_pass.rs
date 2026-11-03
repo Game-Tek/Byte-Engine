@@ -138,8 +138,8 @@ use self::depth_pyramid::DepthPyramidPass;
 #[cfg(test)]
 pub(crate) use self::depth_pyramid::ScreenViewData;
 pub(super) use self::gtao::GTAO_PIPELINES;
-use self::gtao::GtaoPass;
-pub(crate) use self::gtao::GtaoSettings;
+use self::gtao::{GtaoPass, GtaoTargets};
+pub(crate) use self::gtao::{GtaoSettings, create_gtao_targets};
 use self::light_clusters::LightClusterPass;
 pub(super) use self::materials::{MATERIAL_EVALUATION_PUSH_CONSTANT_SIZE, MATERIAL_PREPASS_PIPELINES};
 use self::materials::{MaterialEvaluationPass, MaterialPrepasses, ScreenSpaceLighting};
@@ -293,6 +293,8 @@ pub(crate) struct SinkTargets {
 	pub(crate) surfels: Option<SurfelTargets>,
 	/// The sun's contact shadows, which opaque material evaluation multiplies into the sun's shadow.
 	pub(crate) sun_visibility: SunVisibilityTargets,
+	/// The ambient occlusion GTAO writes and opaque material evaluation reads.
+	pub(crate) gtao: GtaoTargets,
 }
 
 /// The `IndirectDiffuseSource` enum names the pass that lights a frame's indirect diffuse light, so the frame runs only
@@ -517,14 +519,6 @@ impl VisibilityRenderPass {
 				targets.instance_id,
 			)
 		});
-		let ao_map = context.build_dynamic_image(
-			ghi::image::Builder::new(
-				ghi::Formats::R8UNORM,
-				ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination,
-			)
-			.name("Occlusion Map")
-			.device_accesses(ghi::DeviceAccesses::DeviceOnly),
-		);
 		let linear_sampler = context.build_sampler(ghi::sampler::Builder::new());
 		let depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
@@ -599,7 +593,7 @@ impl VisibilityRenderPass {
 			evaluation.image("lit_map", targets.lit),
 			evaluation.image("diffuse_radiance_map", targets.ssgi.diffuse_radiance_history),
 			evaluation.buffer("lighting_data", lighting_buffer),
-			evaluation.sampled("ao", ao_map, linear_sampler),
+			evaluation.sampled("ao", targets.gtao.ambient_occlusion, linear_sampler),
 			// Material evaluation upsamples the half-resolution SSGI result itself, so it point-samples its images.
 			evaluation.sampled("ssgi_history", targets.ssgi.history, depth_sampler),
 			evaluation.sampled("ssgi_normals", targets.ssgi.normals, depth_sampler),
@@ -644,7 +638,7 @@ impl VisibilityRenderPass {
 					depth,
 					depth_pyramid.depth_pyramid,
 					depth_pyramid.view_descriptor_set,
-					ao_map.into(),
+					targets.gtao,
 				)
 			}),
 			sun_visibility: SunVisibilityPass::new(

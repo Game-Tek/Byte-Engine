@@ -1,1 +1,0 @@
-{"name":"Depth of Field Downsample","kind":{"type":"compute","shader":"byte_engine/rendering/depth_of_field/downsample.besl"}}

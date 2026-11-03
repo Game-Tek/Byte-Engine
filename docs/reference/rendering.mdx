@@ -122,7 +122,7 @@ animation steps once per frame.
 | Atmosphere sky | `atmosphere sky` | The scene color where depth is 0 | As the scene background. Black when bypassed or without a directional light. |
 | Height fog | `exponential-height-fog` | `Exponential Height Fog` | After the scene and particles, before lens flare, bloom, and tone mapping. |
 | Depth-of-field reference | `depth-of-field-reference` | `Depth of Field Reference`, and its mean as `Depth of Field Reference Red`, `Green`, and `Blue` | In place of depth of field. Its setup function installs it bypassed. |
-| Depth of field | `depth-of-field` | `Depth of Field` | After scene light and fog, before motion blur, lens flare, bloom, and tone mapping. |
+| Depth of field | `depth-of-field` | `Depth of Field`, and the unfiltered blur as `Depth of Field Gathered` | After scene light and fog, before motion blur, lens flare, bloom, and tone mapping. |
 | Motion blur | `motion-blur` | `Motion Blur` | After scene light and fog, before lens flare, bloom, and tone mapping. |
 | Lens flare | `lens-flare` | `Lens Flare Output` | Before bloom and tone mapping. |
 | Bloom | `bloom` | `Bloom Output` | After everything that writes scene light, before tone mapping. |
@@ -186,8 +186,10 @@ b<sub>s</sub> for the blur diameters at p and s.
 | Reach of s | e = \|b<sub>s</sub>\| / 2. When b<sub>s</sub> > b<sub>p</sub>, s lies behind p, and e is at most \|b<sub>p</sub>\| / 2. |
 | Coverage | clamp(e − r + 0.5, 0, 1). |
 | Density | 1 / max(π b<sub>s</sub><sup>2</sup> / 4, 1). |
-| Result | The mean of the colors around p, each weighted by coverage × density, in scene-linear light with each channel held to 65,504. |
-| Sampling | Every pixel within 3.5 pixels of p is a point. Beyond, 16 points per ring stand for the ring's area, at rings whose bounds grow by 1.39 times from 3.5 pixels, each read from the image or an average of it whose texels are 2, 4, or 8 pixels wide, the widest no wider than the points' spacing. Each average takes 2 × 2 texels of the one before, weighing each by min(\|b\| / w, 1) for texels w pixels wide, or evenly where every weight is 0, and averages b the same way. Rings that no blur near p can reach are skipped. |
+| Gathered | The mean of the colors around p, each weighted by coverage × density, in scene-linear light with each channel held to 65,504. |
+| Ring share | The part of the gathered weight that points beyond 3.5 pixels of p carry. |
+| Result | The gathered color moved toward the mean of the 3 × 3 pixels around p, by p's ring share. In that mean each pixel weighs 1, 2, or 1 along each axis, times its own ring share. |
+| Sampling | Every pixel within 3.5 pixels of p is a point. Beyond, 16 points per ring stand for the ring's area, at rings whose bounds grow by 1.39 times from 3.5 pixels. Each pixel turns every ring by its own angle, up to a sixteenth of a turn, and places each ring's points at its own distance between the ring's bounds, spread evenly over the ring's area; both come from a fixed 64 × 64 blue-noise pattern tiled over the image, the same in every frame. Each ring is read from the image or an average of it whose texels are 2, 4, or 8 pixels wide, the widest no wider than the points' spacing. Each average takes 2 × 2 texels of the one before, weighing each by min(\|b\| / w, 1) for texels w pixels wide, or evenly where every weight is 0, and averages b the same way. Rings that no blur near p can reach are skipped. |
 | Pinhole | A lens whose c is 0 everywhere, such as one with an f-number of ∞, leaves `main` unchanged when m is 0, and blurs every pixel by m otherwise. |
 
 ### Color correction

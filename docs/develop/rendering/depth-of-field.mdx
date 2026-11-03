@@ -25,27 +25,67 @@ scale over reverse-Z device depth, which is affine in it, and records three stag
 
 - **Prepare** (`prepare.besl`, 16 × 16 compute). Each pixel computes its blur diameter b once and writes color and b
   to the full-resolution source. Each tile reduces its widest reach with lane shuffles over rows of 16 lanes, then one
-  workgroup atomic per row, and writes it to `tile_reaches`. The debug view is written here.
-- **Downsample** (`downsample.besl`, 8 × 8 compute, three dispatches). Each level averages 2 × 2 texels of the one
-  before, weighted by min(|b| / w, 1), so sharp texels don't bleed into the blur that later rings read.
+  workgroup atomic per row, and writes it to `tile_reaches`. The workgroup then builds the three averaged levels from
+  the half-float values it wrote, in workgroup memory: a 16 × 16 tile holds whole 2 × 2 blocks of every level, down to
+  2 × 2 texels of the last. Each level averages 2 × 2 texels of the one before, weighted by min(|b| / w, 1), so sharp
+  texels don't bleed into the blur that later rings read. The debug view is written here.
 - **Gather** (`gather.besl`, 16 × 16 compute). Each workgroup stages its tile and a 3-pixel halo, 22 × 22 texels, into
-  workgroup memory, with color already multiplied by density. 49 lanes read the 7 × 7 neighboring tiles' reaches to
-  find the search reach, the farthest any blur nearby can reach into this tile. Each pixel then walks the 37 inner taps
-  from workgroup memory, nearest first, and stops at the search reach. The 7 outer rings of 16 taps read the averaged
-  levels directly; a ring beyond the search reach is skipped whole.
+  workgroup memory as the source holds them, in half floats. 49 lanes read the 7 × 7 neighboring tiles' reaches to
+  find the search reach, the farthest any blur nearby can reach into this tile. Each pixel then reads the 37 inner taps
+  from workgroup memory in four groups by distance, nearest first, and skips the groups beyond the search reach. The
+  7 outer rings of 16 taps read the averaged levels directly, turned and placed by blue noise, as
+  [Hiding the lattice](#hiding-the-lattice) explains; a ring whose inner bound lies beyond the search reach is skipped
+  whole. It writes the blur to `Depth of Field Gathered`, with the rings' share of the weight in alpha.
+- **Filter** (`filter.besl`, 8 × 8 compute). Each pixel moves toward a 3 × 3 tent of its neighbors by its ring share,
+  each neighbor weighted by its own, and writes the pass's output.
 
-The tap lattice is compiled into `gather.besl` as constant arrays: each inner tap's texel in the shared tile and its
-distance, each ring's bounds, radius, and area, and each outer tap's offset. Every offset, distance, and weight factor
-is a constant, so the compiler can fold them, and the shader reads no lattice from memory.
+The tap lattice is compiled into `gather.besl`: each inner tap's texel in the shared tile and its distance are written
+into its own statements, and each ring's bounds, radius, and area and each outer tap's offset are constant arrays
+indexed by constants. Every offset, distance, and weight factor is a constant, so the compiler folds them, and the
+shader reads no lattice from memory. Every tap is written out, with a group's or a ring's reads issued before any is
+weighed: the GPU waits for every read in flight at each branch, so a loop that branches once a tap leaves each read's
+latency exposed.
 
-On an Apple M4 rendering Sponza at 1024 × 1024 at f/1.4, the pass takes 1.11 ms: 0.88 ms for the gather, 0.15 ms for
-the downsample, and a prepare stage too short for its counter. Three changes brought the gather down from 2.13 ms:
+Before the 4K changes below, on an Apple M4 rendering Sponza at 1024 × 1024 at f/1.4 focused at 8 m, the pass took
+about 1.3 ms: 0.65 to 0.9 ms for the gather, about 0.3 ms for the filter, about 0.2 ms for the levels, then a
+separate downsample, and a prepare stage too short for its counter. Focused at 1.5 m, where nearly every pixel blurs
+widely, it took about 3.4 ms. These come from the model
+viewer run with `--unattended=60`, each variant interleaved with the others, and vary by about 0.3 ms between runs.
+Before the noise and filter, the gather took 0.88 ms at 8 m. Three changes brought it down from 2.13 ms:
 
 - Lane shuffles and one atomic per 16 lanes, instead of 256 lanes contending on one workgroup atomic, saved 0.7 ms.
 - Constant tap tables, instead of a lattice read from the parameters buffer, together with inner taps sorted by
   distance so the walk can stop early, and rings skipped beyond the search reach, saved 0.5 ms more.
 
-## The reference
+In the model viewer at 3840 × 2036, unpaced with `--unattended=1000`, the hall view at f/1.4 focused at 8 m blurs the
+near arch around most of the frame, and the pass took 7.5 ms: 0.64 ms to prepare, 1.02 ms to downsample in three
+dispatches, 4.84 ms to gather, and 0.98 ms to filter. It now takes 4.96 ms, and the frame 2.5 ms less:
+
+- Writing the inner taps out in four groups, where a loop stopped at the first tap beyond the search reach, took the
+  gather from 4.8 to 3.6 ms, and writing out each ring's 16 taps took it to 3.4 ms.
+- Staging half-float texels, 8 bytes instead of a 16-byte color times density and a 4-byte blur, and recomputing each
+  inner tap's density instead of staging it, took it to 3.1 ms. The inner taps' workgroup reads, not their math,
+  were the limit. Reading the inner taps from the texture cache instead of staging them was slower, 3.7 ms.
+- Building the averaged levels in the prepare workgroup, instead of three dispatches that read the source back, took
+  the prepare from 0.64 to 0.83 ms and removed the 1.02 ms downsample.
+
+The blur is unchanged: the BESL VM gives the same gather as before to within float rounding, 2.3e-7 relative, and
+`prepare_averages_each_level_from_the_one_before` checks the levels against the averaging rule.
+
+## Hiding the lattice
+
+With every pixel reading the same ring offsets, a small bright point blurs into rings of dots instead of a filled
+disc, and a disc grows in steps as each ring starts to cover it. So each pixel turns all rings by its own angle, up
+to one tap's spacing, and moves each ring's taps to its own radius between the ring's bounds, spread evenly by area.
+Every tap still stands for a sixteenth of its ring's area, so the blur is the same on average; the pattern becomes
+fine grain.
+
+The angle and radius come from the 64 × 64 blue-noise texture in `lookup_textures.rs`, read at the pixel modulo 64.
+Blue noise puts the grain in the finest detail, which the filter's 3 × 3 tent removes. The noise doesn't change from
+frame to frame: nothing accumulates frames, so moving noise would shimmer. The filter weighs by ring share because
+only the rings leave grain: the inner taps read exact pixels, and a pixel that the rings didn't reach is sharp and
+must stay so.
+
 
 The `depth-of-field-reference` pass renders the lens's exact blur, slowly, to judge the gather against. While it's
 enabled, `RenderPass::samples_lens` asks the renderer to move each sink's view over the aperture every frame:
@@ -60,13 +100,24 @@ To compare the two, capture the model viewer once with each pass enabled and the
 --render.pass.depth-of-field=bypassed --render.pass.depth-of-field-reference=enabled
 ```
 
+Against the same gather on a fixed lattice, the noise and filter add about 0.2 ms at 8 m and 0.9 ms at 1.5 m. About
+0.3 ms of it goes to the filter. The gather slows by up to 0.4 ms because it skips a ring only past its inner bound, and
+it turns each tap's offset. Staging the filter's 3 × 3 reads in workgroup memory measured no faster than reading them
+through the texture cache.
+
 ## Rules a change must keep
 
 - Keep one continuous gather. Don't add depth layers or per-tile tap sets; both bring back seams.
-- Keep the tap tables in `gather.besl` in step with the rule they follow: inner taps are every pixel within 3.5 pixels,
-  sorted by distance; ring bounds grow by 1.39 times from 3.5 pixels; each tap sits at the radius that halves its
+- Keep the noise fixed over frames while nothing accumulates frames, and keep each ring's taps within the ring's
+  bounds, each standing for a sixteenth of its area.
+- Skip a ring by its inner bound, not its middle radius: a jittered tap can sit anywhere between the bounds.
+- Keep the taps in `gather.besl` in step with the rule they follow: inner taps are every pixel within 3.5 pixels,
+  sorted by distance, each group skipped only when its nearest tap lies beyond the search reach; ring bounds grow by 1.39 times from 3.5 pixels; each tap sits at the radius that halves its
   ring's area; each ring reads the widest level no wider than its taps' spacing. When you change the rule, recompute
-  every table from it; the tests check them.
+  every table and tap from it; the tests check them.
+- Keep every tap written out, with a group's or ring's reads before its weights. Folding them back into a loop over a
+  table brings back the exposed read latency.
+- Build each averaged level from the half-float values the level before stores, as the gather reads them.
 - Keep the last ring's outer bound beyond the widest reach, 32.5 pixels, which follows from `MAX_BLUR_DIAMETER`, 64
   pixels, in `depth_of_field.rs`. `blur_limits` holds `DepthOfFieldPassSettings::max_blur_diameter` to it, and the
   shader rolls every blur off below the largest diameter it's given, so a smaller largest diameter also bounds the
@@ -81,10 +132,15 @@ To compare the two, capture the model viewer once with each pass enabled and the
 ## Tests
 
 - `inner_taps_are_the_pixels_within_their_radius_nearest_first` and
-  `outer_rings_cover_every_reach_with_even_areas` check the shader's tap tables against the lattice's rule.
+  `outer_rings_cover_every_reach_with_even_areas` check the shader's taps against the lattice's rule.
+- `prepare_averages_each_level_from_the_one_before` runs the prepare's workgroups in the BESL VM over an image whose
+  tiles and levels end partway, and checks each averaged level against the averaging rule over the half-float level
+  before.
 - `blur_diameters_stay_within_their_bounds` runs `blur_diameter` in the BESL VM and checks it against the
   reference's formula with no bounds, a smallest diameter, and both; `blur_bounds_are_held_to_their_ranges` checks
   how the settings are held to their ranges.
+- `filter_smooths_only_what_the_rings_carried` runs the filter in the BESL VM: a flat blur stays flat, sharp pixels
+  neither blur nor tint their neighbors, and grain fades by the tent's weights.
 - `depth_of_field_shaders_link` compiles the three shaders.
 - The circle-of-confusion tests check the thin-lens formula, its sign, the pinhole, and the held focus distance.
 - `lens_samples_spread_each_depth_over_its_circle_of_confusion` checks that the reference's moved views spread each

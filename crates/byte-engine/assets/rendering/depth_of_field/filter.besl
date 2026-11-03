@@ -1,0 +1,40 @@
+// Removes the grain the gather's noise-placed rings leave. Each pixel blends toward a 3x3 tent of its neighbors by the
+// share of its weight the rings carried, and each neighbor counts by its own share, so pixels the rings didn't reach,
+// such as sharp ones, neither blur nor tint their neighbors. Blue noise puts the grain in the finest detail, which the
+// tent removes. See the depth of field section of the rendering reference.
+//
+// The nine reads per pixel come from the texture cache; staging them in workgroup memory measured no faster.
+
+gathered: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+result: descriptor<{ type: StorageImage, binding: 1, access: write }>;
+
+// The tent's weights along one axis.
+TENT: const f32[3] = f32[3](0.25, 0.5, 0.25);
+
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
+	let extent: vec2u = texture_size(gathered);
+	if (pixel.x >= extent.x || pixel.y >= extent.y) {
+		return;
+	}
+	let last: vec2u = extent - vec2u(1, 1);
+	let center: vec4f = fetch(gathered, pixel);
+	let color: vec3f = vec3f(center.x, center.y, center.z);
+	// Sharp pixels, the most common, skip the neighbors.
+	if (center.w > 0.0) {
+		let sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+		for (let row: u32 = 0; row < 3; row = row + 1) {
+			for (let column: u32 = 0; column < 3; column = column + 1) {
+				// Clamped to the image; the offsets stay unsigned by adding before subtracting one.
+				let coordinate: vec2u = vec2u(min(max(pixel.x + column, 1) - 1, last.x), min(max(pixel.y + row, 1) - 1, last.y));
+				let texel: vec4f = fetch(gathered, coordinate);
+				let weight: f32 = TENT[row] * TENT[column] * texel.w;
+				sum = sum + vec4f(texel.x * weight, texel.y * weight, texel.z * weight, weight);
+			}
+		}
+		// The center counts, so the sum of weights is above 0.
+		let filtered: vec3f = vec3f(sum.x, sum.y, sum.z) * (1.0 / sum.w);
+		color = color + (filtered - color) * center.w;
+	}
+	write(result, pixel, vec4f(color.x, color.y, color.z, 1.0));
+}

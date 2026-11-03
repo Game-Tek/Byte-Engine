@@ -1,5 +1,13 @@
-// Prepares the depth-of-field gather: each pixel's color next to its blur diameter, in one half-float image the gather
-// and the averaged levels read, and each 16x16 tile's widest reach, which tells the gather how far it must look.
+// Prepares the depth-of-field gather: each pixel's color next to its blur diameter, in one half-float image, the same
+// averaged over 2, 4, and 8 pixels for the gather's far taps, and each 16x16 tile's widest reach, which tells the
+// gather how far it must look.
+//
+// Each averaged level halves the one before: 2x2 texels become one, each weighed by how wide its blur is next to the
+// new texels, min(|b| / w), since a far tap only reaches the pixel through a wide blur. Sharp texels, which no far tap
+// could carry, fade out instead of tinting the blur around them; where every texel is sharp, they are averaged evenly.
+// The blur diameter is averaged with the same weights, so the far tap's reach follows the colors it carries. A tile
+// holds whole 2x2 blocks of every level down to 2x2 texels of the last, so the workgroup builds them in shared memory
+// from the half-float values it writes, and the full-resolution image is read once.
 //
 // The blur diameter comes from depth in one multiply-add: the thin-lens circle of confusion is affine in reverse-Z
 // depth, and the CPU folds the lens and the view into `parameters.circle_of_confusion`. See the depth of field section
@@ -15,15 +23,51 @@ source: descriptor<{ type: StorageImage<rgba16f>, binding: 3, access: write }>;
 tile_reaches: descriptor<{ type: TileReaches, binding: 4, access: write }>;
 // The renderer's debug target pool, which the shown debug views write; see `debug_views.rs`.
 debug_view_targets: descriptor<{ type: StorageImage, binding: 5, access: write, count: 15 }>;
+// The source averaged over 2, 4, and 8 pixels.
+level_1: descriptor<{ type: StorageImage<rgba16f>, binding: 20, access: write }>;
+level_2: descriptor<{ type: StorageImage<rgba16f>, binding: 21, access: write }>;
+level_3: descriptor<{ type: StorageImage<rgba16f>, binding: 22, access: write }>;
 
 // The tile's widest reach, in 1/64 pixels, so lanes can take its maximum with integer atomics.
 tile_reach: workgroup<atomicu32, 1>;
+// The tile's texels as the source holds them, then its averaged texels of each level, 8x8, 4x4, and 2x2, row by row.
+shared_level_0: workgroup<vec4f16, 256>;
+shared_level_1: workgroup<vec4f16, 64>;
+shared_level_2: workgroup<vec4f16, 16>;
 
 DEPTH_OF_FIELD_TILE_WIDTH: const u32 = 16;
 REACH_STEPS_PER_PIXEL: const f32 = 64.0;
 HALF_FLOAT_MAX: const f32 = 65504.0;
 // The blur diameter, in pixels, at which the debug view reaches full brightness.
 DEBUG_FULL_SCALE: const f32 = 32.0;
+
+// Returns how much `texel` counts in an average whose texels are `texel_width` pixels wide: its blur's width next to
+// theirs, at most 1.
+level_weight: fn (texel: vec4f, inverse_texel_width: f32) -> f32 {
+	return min(abs(texel.w) * inverse_texel_width, 1.0);
+}
+
+// Averages 2x2 texels into one of a level whose texels are `texel_width` pixels wide; `a` and `b` are the top row, left
+// to right, and `c` and `d` the bottom row.
+average: fn (a: vec4f, b: vec4f, c: vec4f, d: vec4f, inverse_texel_width: f32) -> vec4f {
+	let weight_a: f32 = level_weight(a, inverse_texel_width);
+	let weight_b: f32 = level_weight(b, inverse_texel_width);
+	let weight_c: f32 = level_weight(c, inverse_texel_width);
+	let weight_d: f32 = level_weight(d, inverse_texel_width);
+	let total: f32 = weight_a + weight_b + weight_c + weight_d;
+	if (total <= 0.0) {
+		return (a + b + c + d) * 0.25;
+	}
+	return (a * weight_a + b * weight_b + c * weight_c + d * weight_d) * (1.0 / total);
+}
+
+// Returns the index, within the workgroup's `width`-texel-wide rows, of texel `texel` of a level whose last texel is
+// `last`, the workgroup's first being `origin`. Rows and columns past the last read the last, as a clamped fetch would;
+// that only happens inside a 2x2 block, which the workgroup always holds whole.
+shared_index: fn (texel: vec2u, origin: vec2u, last: vec2u, width: u32) -> u32 {
+	let clamped: vec2u = vec2u(min(texel.x, last.x), min(texel.y, last.y)) - origin;
+	return clamped.y * width + clamped.x;
+}
 
 main: fn (input: StageInput) -> void {
 	let lane: u32 = input.thread_idx;
@@ -41,7 +85,9 @@ main: fn (input: StageInput) -> void {
 		let color: vec4f = fetch(scene_texture, pixel);
 		let blur: f32 = blur_diameter(parameters.circle_of_confusion.x + parameters.circle_of_confusion.y * depth, parameters.blur_limits);
 		// A texel at the half-float limit would turn the gather's sums infinite.
-		write(source, pixel, vec4f(min(color.x, HALF_FLOAT_MAX), min(color.y, HALF_FLOAT_MAX), min(color.z, HALF_FLOAT_MAX), blur));
+		let texel: vec4f = vec4f(min(color.x, HALF_FLOAT_MAX), min(color.y, HALF_FLOAT_MAX), min(color.z, HALF_FLOAT_MAX), blur);
+		write(source, pixel, texel);
+		shared_level_0[lane] = vec4f16(texel);
 		reach = abs(blur) * 0.5;
 
 		// The blur view: red in front of the focus distance, blue behind it, green where the blur is under a pixel.
@@ -70,8 +116,72 @@ main: fn (input: StageInput) -> void {
 	workgroup_barrier();
 
 	// Lane 0's pixel is the tile's first, which always lies in the image.
+	let tile: vec2u = pixel / vec2u(DEPTH_OF_FIELD_TILE_WIDTH, DEPTH_OF_FIELD_TILE_WIDTH);
 	if (lane == 0) {
-		let tile: vec2u = pixel / DEPTH_OF_FIELD_TILE_WIDTH;
 		tile_reaches.values[tile.y * parameters.tiles_per_row + tile.x] = f32(atomic_load(tile_reach[0])) / REACH_STEPS_PER_PIXEL;
+	}
+
+	// The averaged levels, each from the one before in shared memory, by the first 64, 16, and 4 lanes. Every lane
+	// reaches the barriers; texels past a level's extent are neither read nor written.
+	let last_0: vec2u = extent - vec2u(1, 1);
+	if (lane < 64) {
+		let local: vec2u = vec2u(lane % 8, lane / 8);
+		let texel: vec2u = tile * vec2u(8, 8) + local;
+		let extent_1: vec2u = image_size(level_1);
+		if (texel.x < extent_1.x && texel.y < extent_1.y) {
+			let origin: vec2u = tile * vec2u(DEPTH_OF_FIELD_TILE_WIDTH, DEPTH_OF_FIELD_TILE_WIDTH);
+			let child: vec2u = texel * vec2u(2, 2);
+			let averaged: vec4f = average(
+				vec4f(shared_level_0[shared_index(child, origin, last_0, 16)]),
+				vec4f(shared_level_0[shared_index(child + vec2u(1, 0), origin, last_0, 16)]),
+				vec4f(shared_level_0[shared_index(child + vec2u(0, 1), origin, last_0, 16)]),
+				vec4f(shared_level_0[shared_index(child + vec2u(1, 1), origin, last_0, 16)]),
+				0.5
+			);
+			write(level_1, texel, averaged);
+			shared_level_1[lane] = vec4f16(averaged);
+		}
+	}
+	workgroup_barrier();
+	if (lane < 16) {
+		let local: vec2u = vec2u(lane % 4, lane / 4);
+		let texel: vec2u = tile * vec2u(4, 4) + local;
+		let extent_2: vec2u = image_size(level_2);
+		if (texel.x < extent_2.x && texel.y < extent_2.y) {
+			let origin: vec2u = tile * vec2u(8, 8);
+			let last_1: vec2u = image_size(level_1) - vec2u(1, 1);
+			let child: vec2u = texel * vec2u(2, 2);
+			let averaged: vec4f = average(
+				vec4f(shared_level_1[shared_index(child, origin, last_1, 8)]),
+				vec4f(shared_level_1[shared_index(child + vec2u(1, 0), origin, last_1, 8)]),
+				vec4f(shared_level_1[shared_index(child + vec2u(0, 1), origin, last_1, 8)]),
+				vec4f(shared_level_1[shared_index(child + vec2u(1, 1), origin, last_1, 8)]),
+				0.25
+			);
+			write(level_2, texel, averaged);
+			shared_level_2[lane] = vec4f16(averaged);
+		}
+	}
+	workgroup_barrier();
+	if (lane < 4) {
+		let local: vec2u = vec2u(lane % 2, lane / 2);
+		let texel: vec2u = tile * vec2u(2, 2) + local;
+		let extent_3: vec2u = image_size(level_3);
+		if (texel.x < extent_3.x && texel.y < extent_3.y) {
+			let origin: vec2u = tile * vec2u(4, 4);
+			let last_2: vec2u = image_size(level_2) - vec2u(1, 1);
+			let child: vec2u = texel * vec2u(2, 2);
+			write(
+				level_3,
+				texel,
+				average(
+					vec4f(shared_level_2[shared_index(child, origin, last_2, 4)]),
+					vec4f(shared_level_2[shared_index(child + vec2u(1, 0), origin, last_2, 4)]),
+					vec4f(shared_level_2[shared_index(child + vec2u(0, 1), origin, last_2, 4)]),
+					vec4f(shared_level_2[shared_index(child + vec2u(1, 1), origin, last_2, 4)]),
+					0.125
+				)
+			);
+		}
 	}
 }

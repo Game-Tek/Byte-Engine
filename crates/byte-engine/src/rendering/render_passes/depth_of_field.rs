@@ -56,14 +56,6 @@ struct DepthOfFieldShaderData {
 	_padding_1: u32,
 }
 
-/// The `DownsampleShaderData` struct mirrors the `DepthOfFieldDownsampleParameters` layout of `downsample.besl`.
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct DownsampleShaderData {
-	/// One over the width, in full-resolution pixels, of the texels the level writes.
-	inverse_texel_width: f32,
-}
-
 /// The `DepthOfFieldPassSettings` struct bounds how much the depth-of-field pass blurs, whatever the lens asks for.
 ///
 /// Pass it to [`crate::application::graphics::setup_depth_of_field_render_pass`]. Both bounds are blur diameters in
@@ -88,18 +80,18 @@ pub struct DepthOfFieldPassSettings {
 /// `render.debug.view.depth-of-field.circle-of-confusion` parameter.
 pub struct DepthOfFieldPass {
 	parameters: ghi::DynamicBufferHandle<DepthOfFieldShaderData>,
-	/// One per averaged level, each with its own texel width.
-	downsample_parameters: [ghi::DynamicBufferHandle<DownsampleShaderData>; LEVEL_COUNT],
+	/// Writes the source and its averaged levels.
 	prepare_pass: simple_compute::Pass,
-	downsample_passes: [simple_compute::Pass; LEVEL_COUNT],
 	gather_pass: simple_compute::Pass,
+	/// Removes the grain the gather's noise-placed rings leave and writes the pass's output.
+	filter_pass: simple_compute::Pass,
 	/// Forwards `main` unchanged for a pinhole lens or while a shader is still compiling.
 	main_copy: ImageBypassPass,
 	/// Which debug views to write this frame.
 	debug_views: DebugViews,
 	/// The smallest and largest blur diameters, in pixels; see [`blur_limits`].
 	blur_limits: [f32; 2],
-	/// The GPU counters of the prepare, downsample, and gather stages, reported as `stage.depth-of-field-<stage>`.
+	/// The GPU counters of the prepare, gather, and filter stages, reported as `stage.depth-of-field-<stage>`.
 	counters: [ghi::CounterHandle; 3],
 }
 
@@ -134,6 +126,14 @@ impl DepthOfFieldPass {
 			);
 			render_pass_builder.create_scaled_render_target(builder, 1 << level).into()
 		});
+		// The gather's blur, with the share of its weight the rings carried in alpha, for the filter to finish.
+		let gathered: ghi::BaseImageHandle = render_pass_builder
+			.create_scaled_render_target(
+				ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage | ghi::Uses::Image)
+					.name("Depth of Field Gathered"),
+				1,
+			)
+			.into();
 		let output = render_pass_builder
 			.create_main_render_target(ghi::image::Builder::new(main_format, ghi::Uses::Storage).name("Depth of Field"));
 		// The builder's copy of the incoming `main` into `output` doubles as this pass's forwarding copy.
@@ -148,18 +148,18 @@ impl DepthOfFieldPass {
 			"Depth of Field Prepare",
 			"byte_engine/rendering/depth_of_field/prepare.pipeline",
 		);
-		let downsample = pipeline(
-			render_pass_builder,
-			"Depth of Field Downsample",
-			"byte_engine/rendering/depth_of_field/downsample.pipeline",
-		);
 		let gather = pipeline(
 			render_pass_builder,
 			"Depth of Field Gather",
 			"byte_engine/rendering/depth_of_field/gather.pipeline",
 		);
+		let filter = pipeline(
+			render_pass_builder,
+			"Depth of Field Filter",
+			"byte_engine/rendering/depth_of_field/filter.pipeline",
+		);
 		let debug_views = render_pass_builder.debug_views(&DEPTH_OF_FIELD_DEBUG_VIEWS);
-		let counters = ["depth-of-field-prepare", "depth-of-field-downsample", "depth-of-field-gather"]
+		let counters = ["depth-of-field-prepare", "depth-of-field-gather", "depth-of-field-filter"]
 			.map(|name| render_pass_builder.create_gpu_counter(name));
 
 		let context = render_pass_builder.context();
@@ -168,22 +168,16 @@ impl DepthOfFieldPass {
 				.name("Depth of Field Parameters")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let downsample_parameters = std::array::from_fn(|_| {
-			context.build_dynamic_buffer(
-				ghi::buffer::Builder::new(ghi::Uses::Storage)
-					.name("Depth of Field Downsample Parameters")
-					.device_accesses(ghi::DeviceAccesses::HostToDevice),
-			)
-		});
 		let tile_reaches = context.build_buffer::<[f32]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Depth of Field Tile Reaches")
 				.length(MAX_TILES as usize)
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
-		// The prepare and downsample passes fetch texels by coordinate; the gather's far taps blend between texels, and
+		// The prepare pass fetches texels by coordinate; the gather's far taps blend between texels, and
 		// the clamp keeps taps past the image's edge on its edge texels.
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
+		let blue_noise = crate::rendering::lookup_textures::create_blue_noise_texture(context);
 		let read = |name, image| simple_compute::Resource::combined_image_sampler(name, image, sampler, ghi::Layouts::Read);
 
 		let prepare_pass = prepare.bind(
@@ -195,18 +189,11 @@ impl DepthOfFieldPass {
 				simple_compute::Resource::image("source", levels[0]),
 				simple_compute::Resource::buffer("tile_reaches", tile_reaches),
 				simple_compute::Resource::image_array(DEBUG_VIEW_TARGETS_BINDING, debug_views.targets()),
+				simple_compute::Resource::image("level_1", levels[1]),
+				simple_compute::Resource::image("level_2", levels[2]),
+				simple_compute::Resource::image("level_3", levels[3]),
 			],
 		);
-		let downsample_passes = std::array::from_fn(|level| {
-			downsample.bind(
-				"Depth of Field Downsample Descriptor Set",
-				&[
-					read("source", levels[level]),
-					simple_compute::Resource::image("result", levels[level + 1]),
-					simple_compute::Resource::buffer("parameters", downsample_parameters[level]),
-				],
-			)
-		});
 		let gather_pass = gather.bind(
 			"Depth of Field Gather Descriptor Set",
 			&[
@@ -216,16 +203,20 @@ impl DepthOfFieldPass {
 				read("source_level_3", levels[3]),
 				simple_compute::Resource::buffer("parameters", parameters),
 				simple_compute::Resource::buffer("tile_reaches", tile_reaches),
-				simple_compute::Resource::image("result", output),
+				simple_compute::Resource::image("result", gathered),
+				read("blue_noise", blue_noise.into()),
 			],
+		);
+		let filter_pass = filter.bind(
+			"Depth of Field Filter Descriptor Set",
+			&[read("gathered", gathered), simple_compute::Resource::image("result", output)],
 		);
 
 		Self {
 			parameters,
-			downsample_parameters,
 			prepare_pass,
-			downsample_passes,
 			gather_pass,
+			filter_pass,
 			main_copy,
 			debug_views,
 			blur_limits,
@@ -263,15 +254,13 @@ impl RenderPass for DepthOfFieldPass {
 		if circle_of_confusion == [0.0, 0.0] && self.blur_limits[0] == 0.0 && shown.views == 0 {
 			return self.main_copy.prepare(frame, sink, frame_allocator);
 		}
-		let (Some(prepare), Some(gather)) = (self.prepare_pass.ready(frame), self.gather_pass.ready(frame)) else {
+		let (Some(prepare), Some(gather), Some(filter)) = (
+			self.prepare_pass.ready(frame),
+			self.gather_pass.ready(frame),
+			self.filter_pass.ready(frame),
+		) else {
 			return self.main_copy.prepare(frame, sink, frame_allocator);
 		};
-		let mut downsamples = [None; LEVEL_COUNT];
-		for (ready, pass) in downsamples.iter_mut().zip(&mut self.downsample_passes) {
-			*ready = Some(pass.ready(frame)?);
-		}
-		let downsamples = downsamples.map(|pass| pass.expect("Every downsample pass is ready."));
-
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = DepthOfFieldShaderData {
 			circle_of_confusion,
 			blur_limits: self.blur_limits,
@@ -281,13 +270,7 @@ impl RenderPass for DepthOfFieldPass {
 			_padding: [0; 3],
 			_padding_1: 0,
 		};
-		for (level, parameters) in self.downsample_parameters.iter().enumerate() {
-			*frame.get_mut_dynamic_buffer_slice(*parameters) = DownsampleShaderData {
-				inverse_texel_width: 1.0 / (2 << level) as f32,
-			};
-		}
-
-		let [prepare_counter, downsample_counter, gather_counter] = self.counters;
+		let [prepare_counter, gather_counter, filter_counter] = self.counters;
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
 			move |command_buffer| {
@@ -295,12 +278,8 @@ impl RenderPass for DepthOfFieldPass {
 					|label| label.write_str("Depth of Field"),
 					|command_buffer| {
 						command_buffer.counter(prepare_counter, |command_buffer| prepare.record(command_buffer, extent));
-						command_buffer.counter(downsample_counter, |command_buffer| {
-							for (level, pass) in downsamples.iter().enumerate() {
-								pass.record(command_buffer, extent.scaled_down(2 << level));
-							}
-						});
 						command_buffer.counter(gather_counter, |command_buffer| gather.record(command_buffer, extent));
+						command_buffer.counter(filter_counter, |command_buffer| filter.record(command_buffer, extent));
 					},
 				);
 			},
@@ -572,21 +551,74 @@ mod tests {
 			.collect()
 	}
 
-	/// The inner taps are every pixel within 3.5 pixels, nearest first, at their place in the 22-texel-wide shared tile.
+	/// The inner taps are every pixel within 3.5 pixels, at their place in the 22-texel-wide shared tile, nearest first,
+	/// and each group of them is skipped only when its nearest tap lies beyond the search reach.
 	#[test]
 	fn inner_taps_are_the_pixels_within_their_radius_nearest_first() {
 		let mut expected = (-3i32..=3)
 			.flat_map(|y| (-3i32..=3).map(move |x| (((x * x + y * y) as f32).sqrt(), (y + 3) * 22 + x + 3)))
 			.filter(|(distance, _)| *distance <= 3.5)
 			.collect::<Vec<_>>();
-		expected.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-		let texels = gather_table("INNER_TAP_TEXEL");
-		let distances = gather_table("INNER_TAP_DISTANCE");
-		assert_eq!(texels.len(), expected.len());
-		for ((distance, texel), (shader_texel, shader_distance)) in expected.iter().zip(texels.iter().zip(&distances)) {
-			assert_eq!(*shader_texel, *texel as f32);
-			assert!((shader_distance - distance).abs() < 1e-5);
+		expected.sort_by(|a, b| a.0.total_cmp(&b.0));
+		let gather = asset_source("depth_of_field/gather.besl");
+		let main = &gather[gather.find("let center: f32").expect("The gather reads the pixel's blur.")..];
+		let main = &main[..main.find("// The rings beyond").expect("The rings follow the inner taps.")];
+		// Each group, after the first, opens with the distance past which the search reach must extend.
+		let mut taps = Vec::new();
+		for (group, body) in main.split("if (search > ").enumerate() {
+			let threshold: f32 = if group == 0 {
+				0.0
+			} else {
+				body[..body.find(')').expect("The group's test closes.")]
+					.parse()
+					.expect("The group tests a distance.")
+			};
+			// Each tap reads its texel as `texel_<n>`, then weighs it at its distance with `inner_tap(texel_<n>, d, center)`.
+			let mut texels = std::collections::HashMap::new();
+			let mut group_taps = Vec::new();
+			for line in body.lines().map(str::trim) {
+				if let Some(rest) = line.strip_prefix("let texel_") {
+					let name = &rest[..rest.find(':').expect("The read declares its type.")];
+					let start = rest.find("window + ").expect("An inner tap reads the shared tile.") + "window + ".len();
+					let texel: i32 = rest[start..rest.find(']').expect("The read closes.")]
+						.parse()
+						.expect("The texel is a number.");
+					texels.insert(name.to_string(), texel);
+				}
+				if let Some(rest) = line.strip_prefix("sum = sum + inner_tap(texel_") {
+					let mut arguments = rest.split(", ");
+					let name = arguments.next().expect("The tap names its read.");
+					let distance: f32 = arguments
+						.next()
+						.expect("The tap gives its distance.")
+						.parse()
+						.expect("The distance is a number.");
+					group_taps.push((distance, texels[name]));
+				}
+			}
+			assert!(!group_taps.is_empty(), "group {group} has taps");
+			let nearest = group_taps.iter().map(|tap| tap.0).fold(f32::INFINITY, f32::min);
+			assert!(
+				(nearest - threshold).abs() < 1e-5,
+				"group {group} is skipped by its nearest tap, {nearest}"
+			);
+			taps.extend(group_taps);
 		}
+		assert_eq!(taps.len(), expected.len());
+		let mut previous = 0.0;
+		for (distance, texel) in &taps {
+			let (expected_distance, _) = expected
+				.iter()
+				.find(|(_, expected_texel)| expected_texel == texel)
+				.unwrap_or_else(|| panic!("texel {texel} lies within 3.5 pixels"));
+			assert!((distance - expected_distance).abs() < 1e-5, "texel {texel}: {distance}");
+			assert!(*distance >= previous, "texel {texel} comes after a farther tap");
+			previous = *distance;
+		}
+		let mut texels: Vec<_> = taps.iter().map(|tap| tap.1).collect();
+		texels.sort();
+		texels.dedup();
+		assert_eq!(texels.len(), expected.len(), "every tap reads its own texel");
 	}
 
 	/// The rings grow by 1.39 times from 3.5 pixels past the widest reach, each tap stands for a sixteenth of its ring
@@ -736,9 +768,183 @@ mod tests {
 
 	#[test]
 	fn depth_of_field_shaders_link() {
-		for shader in ["prepare", "downsample", "gather"] {
+		for shader in ["prepare", "gather", "filter"] {
 			simple_compute::compile_test_program(asset_source(&format!("depth_of_field/{shader}.besl")));
 		}
+	}
+
+	/// Averages 2 × 2 texels as each level's texel width `width` asks: each by min(|b| / w, 1), evenly where all are 0.
+	fn reference_average(texels: [[f32; 4]; 4], width: f32) -> [f32; 4] {
+		let weights = texels.map(|texel| (texel[3].abs() / width).min(1.0));
+		let total: f32 = weights.iter().sum();
+		std::array::from_fn(|channel| {
+			if total <= 0.0 {
+				texels.iter().map(|texel| texel[channel]).sum::<f32>() * 0.25
+			} else {
+				texels
+					.iter()
+					.zip(weights)
+					.map(|(texel, weight)| texel[channel] * weight)
+					.sum::<f32>() / total
+			}
+		})
+	}
+
+	/// The prepare pass's averaged levels follow the averaging rule over the half-float source, level by level, also
+	/// over an image whose tiles and levels end partway.
+	#[test]
+	fn prepare_averages_each_level_from_the_one_before() {
+		use besl::vm::{DescriptorBindings, Value, WorkgroupState};
+
+		use crate::rendering::shader_vm_test::{binding_slot, buffer, compile, empty_image, lane_config, rgba, texture_2d};
+
+		let [width, height] = [40u32, 24u32];
+		let linked = simple_compute::compile_test_program(asset_source("depth_of_field/prepare.besl"));
+		let slot = |name| binding_slot(&linked, name);
+		let program = compile(linked.clone());
+		// Colors and depths that vary per pixel, so blur diameters cover sharp, mid, and wide, on both sides.
+		let texel = |x: u32, y: u32| {
+			[
+				(x * 7 % 11) as f32 * 0.37,
+				(y * 5 % 13) as f32 * 0.21,
+				((x + y) % 7) as f32 * 1.3,
+				1.0,
+			]
+		};
+		let depth = |x: u32, y: u32| [((x * 13 + y * 29) % 31) as f32 / 30.0, 0.0, 0.0, 1.0];
+		let colors: Vec<_> = (0..height).flat_map(|y| (0..width).map(move |x| texel(x, y))).collect();
+		let depths: Vec<_> = (0..height).flat_map(|y| (0..width).map(move |x| depth(x, y))).collect();
+		let mut scene = texture_2d(width, height, &colors);
+		let mut depth_texture = texture_2d(width, height, &depths);
+		let mut parameters = buffer(&program, slot("parameters"));
+		for (member, value) in [
+			("circle_of_confusion", Value::Vec2F([-24.0, 48.0])),
+			("blur_limits", Value::Vec2F([0.0, 64.0])),
+			("tiles_per_row", Value::U32(width.div_ceil(TILE_WIDTH))),
+		] {
+			parameters
+				.write(member, value)
+				.expect("The prepare parameters hold the member.");
+		}
+		let mut reaches = buffer(&program, slot("tile_reaches"));
+		let mut source = empty_image(width, height);
+		let mut levels = [1u32, 2, 3].map(|level| empty_image(width >> level, height >> level));
+		let mut debug_target = empty_image(width, height);
+		for tile_y in 0..height.div_ceil(TILE_WIDTH) {
+			for tile_x in 0..width.div_ceil(TILE_WIDTH) {
+				let configs: Vec<_> = (0..TILE_WIDTH * TILE_WIDTH)
+					.map(|lane| {
+						lane_config(lane).with_thread_id([
+							tile_x * TILE_WIDTH + lane % TILE_WIDTH,
+							tile_y * TILE_WIDTH + lane / TILE_WIDTH,
+						])
+					})
+					.collect();
+				let mut workgroup = WorkgroupState::new();
+				let mut descriptors = DescriptorBindings::new();
+				descriptors.bind_texture(slot("scene_texture"), &mut scene);
+				descriptors.bind_texture(slot("depth_texture"), &mut depth_texture);
+				descriptors.bind_buffer(slot("parameters"), &mut parameters);
+				descriptors.bind_image(slot("source"), &mut source);
+				descriptors.bind_buffer(slot("tile_reaches"), &mut reaches);
+				descriptors.bind_image(slot("debug_view_targets"), &mut debug_target);
+				let [level_1, level_2, level_3] = &mut levels;
+				descriptors.bind_image(slot("level_1"), level_1);
+				descriptors.bind_image(slot("level_2"), level_2);
+				descriptors.bind_image(slot("level_3"), level_3);
+				descriptors.bind_workgroup_state(&mut workgroup);
+				program
+					.run_workgroup(&mut descriptors, &configs)
+					.expect("The prepare workgroup runs in the VM.");
+			}
+		}
+
+		// Each level averages the one before as the GPU stores it, in half floats.
+		let half = |texel: [f32; 4]| texel.map(|value| half::f16::from_f32(value).to_f32());
+		let mut previous: Vec<[f32; 4]> = (0..height)
+			.flat_map(|y| (0..width).map(move |x| [x, y]))
+			.map(|coordinate| half(rgba(&source, coordinate)))
+			.collect();
+		for (level, image) in levels.iter().enumerate() {
+			let [child_width, level_width, level_height] = [width >> level, width >> (level + 1), height >> (level + 1)];
+			let mut current = Vec::new();
+			for y in 0..level_height {
+				for x in 0..level_width {
+					let child = |dx: u32, dy: u32| previous[((y * 2 + dy) * child_width + x * 2 + dx) as usize];
+					let expected = reference_average([child(0, 0), child(1, 0), child(0, 1), child(1, 1)], (2 << level) as f32);
+					let actual = rgba(image, [x, y]);
+					for (actual, expected) in actual.iter().zip(expected) {
+						assert!(
+							(actual - expected).abs() <= 1e-6 * expected.abs().max(1.0),
+							"level {} texel {x}, {y}: {actual} expected {expected}",
+							level + 1
+						);
+					}
+					current.push(half(actual));
+				}
+			}
+			previous = current;
+		}
+		// The blurs span sharp to wide on both sides of the focus, so every weighting case ran.
+		let blurs: Vec<f32> = (0..height)
+			.flat_map(|y| (0..width).map(move |x| [x, y]))
+			.map(|c| rgba(&source, c)[3])
+			.collect();
+		assert!(
+			blurs.iter().any(|blur| blur.abs() < 1.0)
+				&& blurs.iter().any(|blur| *blur < -8.0)
+				&& blurs.iter().any(|blur| *blur > 16.0)
+		);
+	}
+
+	/// Runs the filter shader on a 3 × 3 gathered image, each texel's color and ring share, and returns the center
+	/// pixel it writes.
+	fn filter_center(gathered: [[f32; 4]; 9]) -> [f32; 4] {
+		use besl::vm::{DescriptorBindings, ResourceSlot};
+
+		use crate::rendering::shader_vm_test::{compile, empty_image, rgba, run_at, texture_2d};
+
+		let program = compile(simple_compute::compile_test_program(asset_source(
+			"depth_of_field/filter.besl",
+		)));
+		let mut gathered = texture_2d(3, 3, &gathered);
+		let mut result = empty_image(3, 3);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture(ResourceSlot::new(0), &mut gathered);
+		descriptors.bind_image(ResourceSlot::new(1), &mut result);
+		run_at(&program, &mut descriptors, [1, 1]);
+		drop(descriptors);
+		rgba(&result, [1, 1])
+	}
+
+	/// The filter moves a pixel toward its neighbors by its own ring share, and each neighbor counts by its share, so
+	/// pixels the rings didn't reach neither blur nor tint the pixels around them, and a flat blur stays flat.
+	#[test]
+	fn filter_smooths_only_what_the_rings_carried() {
+		let flat = [[0.5, 0.25, 1.0, 1.0]; 9];
+		assert_eq!(filter_center(flat), [0.5, 0.25, 1.0, 1.0]);
+
+		// A sharp pixel keeps its color among blurred neighbors.
+		let mut sharp = [[1.0, 1.0, 1.0, 1.0]; 9];
+		sharp[4] = [0.0, 0.0, 0.0, 0.0];
+		assert_eq!(filter_center(sharp), [0.0, 0.0, 0.0, 1.0]);
+
+		// Sharp neighbors don't tint a blurred pixel.
+		let mut blurred = [[1.0, 1.0, 1.0, 0.0]; 9];
+		blurred[4] = [0.0, 0.0, 0.0, 1.0];
+		assert_eq!(filter_center(blurred), [0.0, 0.0, 0.0, 1.0]);
+
+		// A grain on a flat blur fades by the tent: the center weighs 4 of 16, so a pixel of share 1 keeps a quarter of
+		// its difference, and one of share 0.5 moves half as far.
+		let mut grain = [[0.0, 0.0, 0.0, 1.0]; 9];
+		grain[4] = [1.0, 1.0, 1.0, 1.0];
+		let [red, ..] = filter_center(grain);
+		assert!((red - 0.25).abs() < 1e-6, "{red}");
+		for texel in &mut grain {
+			texel[3] = 0.5;
+		}
+		let [red, ..] = filter_center(grain);
+		assert!((red - 0.625).abs() < 1e-6, "{red}");
 	}
 
 	/// Where `sink`'s view shows a point `z` meters ahead on the view axis, in pixels from the image's left edge.

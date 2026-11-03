@@ -655,30 +655,6 @@ mod tests {
 	}
 
 	#[compio::test]
-	async fn fixed_sampler_texture_arrays_share_one_anisotropic_constexpr_sampler() {
-		let source = r#"
-			tiled: sampler<{ address: repeat, anisotropy: 16 }>;
-			textures: descriptor<{ type: Texture2D, binding: 0, access: read, count: 4, sampler: tiled }>;
-			result: descriptor<{ type: f32[], binding: 4, access: write }>;
-			main: fn () -> void {
-				result[0] = texture_lod(textures[2], vec2f(0.5, 0.5), 0.0).x;
-			}
-		"#;
-		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::line(1)));
-
-		assert_string_contains!(
-			shader,
-			"constexpr sampler _besl_textures_sampler(coord::normalized, filter::linear, mip_filter::linear, address::repeat, max_anisotropy(16));"
-		);
-		// The array takes one argument ID per texture and none for the sampler, so the next binding follows the textures.
-		assert_string_contains!(shader, "texture2d<float> textures [[id(0)]][4];");
-		assert_string_contains!(shader, "[[id(4)]];");
-		assert_string_contains!(shader, ".sample(_besl_textures_sampler,");
-
-		compile_natively(&shader, "besl-fixed-sampler-texture-array").await;
-	}
-
-	#[compio::test]
 	async fn reducing_samplers_reduce_in_shader_code() {
 		let source = r#"
 			farthest_depth: sampler<{ mip_filter: nearest, reduction: min }>;
@@ -1092,9 +1068,8 @@ mod tests {
 				let leader: u32 = subgroup_ballot_find_lsb(mask);
 				let value: u32 = subgroup_broadcast_u32(thread_idx(), leader);
 				let neighbor: f32 = subgroup_shuffle_xor_f32(f32(value), 1);
-				let largest: u32 = subgroup_max_u32(value) + u32(subgroup_max_f32(neighbor));
 				if (subgroup_ballot_any(mask)) {
-					scratch[0] = subgroup_ballot_count(subgroup_ballot_and_not(mask, subgroup_ballot(value == 0))) + u32(neighbor) + largest;
+					scratch[0] = subgroup_ballot_count(subgroup_ballot_and_not(mask, subgroup_ballot(value == 0))) + u32(neighbor);
 				}
 			}
 			"#,
@@ -1104,8 +1079,6 @@ mod tests {
 		assert_string_contains!(shader, "simd_broadcast(value, ushort(source_lane))");
 		assert_string_contains!(shader, "simd_shuffle_xor(value, ushort(mask))");
 		assert_string_contains!(shader, "_besl_subgroup_shuffle_xor_f32(float(value),1)");
-		assert_string_contains!(shader, "simd_max(value)");
-		assert_string_contains!(shader, "simd_max(neighbor)");
 		assert_string_contains!(shader, "_besl_subgroup_ballot_find_lsb(mask)");
 		assert_string_contains!(shader, "_besl_subgroup_ballot_count(");
 		assert_string_contains!(shader, "threadgroup uint scratch[1]");

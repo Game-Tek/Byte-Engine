@@ -308,7 +308,6 @@ impl ScratchArena {
 				.expect(
 					"Metal acceleration structure scratch allocation failed. The most likely cause is that the device is out of memory. Build fewer acceleration structures per frame.",
 				);
-			#[cfg(debug_assertions)]
 			if self.debug_labels {
 				use objc2_metal::MTLResource as _;
 				buffer.setLabel(Some(&objc2_foundation::NSString::from_str("Acceleration Structure Scratch")));

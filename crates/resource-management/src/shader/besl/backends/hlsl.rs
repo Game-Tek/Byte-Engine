@@ -489,41 +489,6 @@ mod tests {
 	}
 
 	#[test]
-	fn fixed_sampler_descriptor_arrays_share_one_static_sampler_and_compile() {
-		let mut root = besl::parse(
-			"tiled: sampler<{ address: repeat, anisotropy: 16 }>; textures: descriptor<{ type: Texture2D, binding: 3, access: read, count: 4, sampler: tiled }>; main: fn () -> void { let color: vec4f = sample_texture_2d_array_grad(textures, 2, vec2f(0.0, 0.0), vec2f(0.0, 0.0), vec2f(0.0, 0.0)); color; }",
-		)
-		.expect("Expected fixed-sampler descriptor-array source to parse");
-		root.add(vec![besl::parser::Node::intrinsic_with_parameters(
-			"sample_texture_2d_array_grad",
-			vec![
-				besl::parser::Node::parameter("texture_array", "Texture2D"),
-				besl::parser::Node::parameter("texture_index", "u32"),
-				besl::parser::Node::parameter("uv", "vec2f"),
-				besl::parser::Node::parameter("uv_derivative_x", "vec2f"),
-				besl::parser::Node::parameter("uv_derivative_y", "vec2f"),
-			],
-			besl::parser::Node::sentence(vec![besl::parser::Node::member_expression("textures")]),
-			"vec4f",
-		)]);
-		let root = besl::lex(root).expect("Expected fixed-sampler descriptor-array source to link");
-		let shader = generate(
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&root.get_main().expect("Expected main"),
-		);
-
-		// One static sampler at the array's register serves every element, which the DX12 root signature declares once.
-		assert_string_contains!(shader, "Texture2D<float4> textures[4] : register(t3, space0);");
-		assert_string_contains!(shader, "SamplerState textures_sampler : register(s3, space0);");
-		assert_string_contains!(
-			shader,
-			"textures[NonUniformResourceIndex(2)].SampleGrad(textures_sampler,float2(0.0,0.0),float2(0.0,0.0),float2(0.0,0.0))"
-		);
-
-		compile_dxil(&shader, "fixed-sampler-descriptor-array", ShaderTypes::Compute);
-	}
-
-	#[test]
 	fn structural_position_uses_sv_position_without_colliding_with_a_local() {
 		let shader = lower_fixture(super::super::STRUCTURAL_POSITION_VERTEX, &ShaderGenerationSettings::vertex());
 
@@ -1513,8 +1478,6 @@ mod tests {
 		assert_string_contains!(shader, "_besl_subgroup_shuffle_xor_f32(float(value),1)");
 		assert_string_contains!(shader, "_besl_subgroup_ballot_find_lsb(mask)");
 		assert_string_contains!(shader, "_besl_subgroup_ballot_count(remaining)");
-		assert_string_contains!(shader, "WaveActiveMax(group_thread_index)");
-		assert_string_contains!(shader, "WaveActiveMax(neighbor)");
 
 		compile_dxil(&shader, "besl-subgroup-waves", ShaderTypes::Compute);
 	}

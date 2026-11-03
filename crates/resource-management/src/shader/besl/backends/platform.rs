@@ -36,6 +36,16 @@ impl PlatformShaderLanguage {
 		}
 	}
 
+	/// Returns the usual file extension of the binary this language compiles to, or `None` when the platform keeps
+	/// the source as the shader's binary, as HLSL does until the device compiles it.
+	pub const fn binary_extension(self) -> Option<&'static str> {
+		match self {
+			Self::Glsl => Some("spv"),
+			Self::Hlsl => None,
+			Self::Msl => Some("metallib"),
+		}
+	}
+
 	pub const fn entry_point(self) -> &'static str {
 		match self {
 			Self::Glsl => "main",

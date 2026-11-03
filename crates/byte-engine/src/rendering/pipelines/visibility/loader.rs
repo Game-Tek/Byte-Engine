@@ -133,13 +133,11 @@ pub(crate) struct DynamicParameter {
 }
 
 /// The `ResidentTexture` struct carries one upload-complete texture into renderer-owned descriptors.
-///
-/// The scene layout fixes the samplers that read it: `textures` repeats, and `ies_profiles`, which holds the textures
-/// with `photometry`, clamps.
 pub(crate) struct ResidentTexture {
 	pub(crate) id: String,
 	pub(crate) index: u32,
 	pub(crate) image: ghi::BaseImageHandle,
+	pub(crate) sampler: ghi::SamplerHandle,
 	pub(crate) photometry: Option<ImagePhotometry>,
 }
 
@@ -247,6 +245,10 @@ pub(crate) struct VisibilityLoaderClient {
 	/// Reports rebaked material variants, so their materials load again.
 	#[cfg(debug_assertions)]
 	resource_updates: resource_management::resource::ResourceUpdateListener,
+	/// Samples material textures, which repeat outside their bounds.
+	repeat_sampler: ghi::SamplerHandle,
+	/// Samples spherical IES profiles, which must clamp instead of wrapping around the seam.
+	clamp_sampler: ghi::SamplerHandle,
 	/// Samples environment maps across their prefiltered roughness levels, and the one-level fallback environment.
 	pub(super) environment_sampler: ghi::SamplerHandle,
 }
@@ -277,6 +279,16 @@ fn assign_slot(slots: &mut HashMap<String, u32>, id: &str, limit: usize, kind: &
 	let index = slots.len() as u32;
 	slots.insert(id.to_string(), index);
 	Some(index)
+}
+
+/// Builds the default sampler used by visibility material textures.
+///
+/// Anisotropic filtering keeps surfaces seen at grazing angles, like floors, sharp instead of blurring them to the mip
+/// their steepest direction needs.
+fn material_sampler() -> ghi::sampler::Builder {
+	ghi::sampler::Builder::new()
+		.addressing_mode(ghi::SamplerAddressingModes::Repeat)
+		.anisotropy(16.0)
 }
 
 /// Returns whether an image can safely provide the normalized Type C IES intensity-map contract.
@@ -409,6 +421,11 @@ impl VisibilityLoaderClient {
 					id,
 					index,
 					image: frame.intern_image(image).into(),
+					sampler: if photometry.is_some() {
+						self.clamp_sampler
+					} else {
+						self.repeat_sampler
+					},
 					photometry,
 				}),
 				LoaderEvent::Ready {
@@ -554,13 +571,13 @@ pub(crate) fn spawn(
 			uber_shaders: [None, None],
 			#[cfg(debug_assertions)]
 			resource_updates,
-			// Material textures read through the sampler the scene layout fixes, so only environments build one here.
-			environment_sampler: render.build_sampler(
-				ghi::sampler::Builder::new()
-					.addressing_mode(ghi::SamplerAddressingModes::Repeat)
-					.anisotropy(16.0)
-					.max_lod((IBL_SPECULAR_LEVEL_COUNT - 1) as f32),
+			repeat_sampler: render.build_sampler(material_sampler().max_lod(ghi::sampler::UNCLAMPED_MAX_LOD)),
+			clamp_sampler: render.build_sampler(
+				material_sampler()
+					.addressing_mode(ghi::SamplerAddressingModes::Clamp)
+					.max_lod(ghi::sampler::UNCLAMPED_MAX_LOD),
 			),
+			environment_sampler: render.build_sampler(material_sampler().max_lod((IBL_SPECULAR_LEVEL_COUNT - 1) as f32)),
 		},
 		lanes,
 	)

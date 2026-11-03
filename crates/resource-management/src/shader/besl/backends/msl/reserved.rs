@@ -138,7 +138,6 @@ fn is_builtin_function(name: &str) -> bool {
 			| "rint" | "round" | "rsqrt" | "saturate" | "select" | "sign" | "sin" | "sincos" | "sinh" | "smoothstep"
 			| "sqrt" | "step" | "tan" | "tanh" | "transpose" | "trunc" | "as_type" | "discard_fragment"
 			| "threadgroup_barrier" | "simdgroup_barrier" | "simd_ballot" | "simd_broadcast" | "simd_shuffle"
-			| "simd_max"
 			| "atomic_load_explicit" | "atomic_store_explicit" | "atomic_exchange_explicit"
 			| "atomic_compare_exchange_weak_explicit" | "atomic_fetch_add_explicit" | "atomic_fetch_sub_explicit"
 			| "atomic_fetch_min_explicit" | "atomic_fetch_max_explicit" | "atomic_fetch_and_explicit"

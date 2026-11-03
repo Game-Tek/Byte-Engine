@@ -124,12 +124,6 @@ pub use types::{
 /// Rewrite a dynamic buffer this many frames in a row to reach every copy.
 pub const MAX_FRAMES_IN_FLIGHT: usize = 3;
 
-/// Copies a resource name for debuggers, or drops it in release builds.
-#[inline]
-pub(crate) fn debug_name(name: Option<&str>) -> Option<String> {
-	name.filter(|_| cfg!(debug_assertions)).map(str::to_owned)
-}
-
 /// Clamps a scissor rectangle to the active render area so every backend accepts it.
 ///
 /// Returns an empty rectangle at the render-area edge when the request lies fully outside it.

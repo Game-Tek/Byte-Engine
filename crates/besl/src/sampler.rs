@@ -10,7 +10,7 @@
 /// Shader generators read it from [`crate::BindingTypes::CombinedImageSampler`] to emit a static sampler, so the
 /// application binds only the image. [`SamplerState::default`] holds the defaults the specification gives each
 /// omitted property.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(
 	feature = "serialization",
 	derive(serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
@@ -24,26 +24,6 @@ pub struct SamplerState {
 	pub reduction: Reduction,
 	/// What a coordinate outside `[0, 1]` reads on every axis.
 	pub address: Address,
-	/// The most texels a read takes along the footprint's longest axis, from [`MIN_ANISOTROPY`], which turns
-	/// anisotropic filtering off, to [`MAX_ANISOTROPY`].
-	pub anisotropy: u8,
-}
-
-/// The `anisotropy` that turns anisotropic filtering off, and the default of an omitted property.
-pub const MIN_ANISOTROPY: u8 = 1;
-/// The largest `anisotropy` every backend supports.
-pub const MAX_ANISOTROPY: u8 = 16;
-
-impl Default for SamplerState {
-	fn default() -> Self {
-		Self {
-			filter: Filter::default(),
-			mip_filter: Filter::default(),
-			reduction: Reduction::default(),
-			address: Address::default(),
-			anisotropy: MIN_ANISOTROPY,
-		}
-	}
 }
 
 impl SamplerState {

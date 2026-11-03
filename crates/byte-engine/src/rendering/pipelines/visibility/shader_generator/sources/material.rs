@@ -327,7 +327,7 @@ sample_ies_profile: fn (
 ) -> f32 {
 	let uv: vec2f = ies_profile_uv(emission_direction, axis, encoded_c0_tangent);
 	return max(
-		sample_texture_2d_array_grad(scene.ies_profiles, texture_index, uv, vec2f(0.0, 0.0), vec2f(0.0, 0.0)).x,
+		sample_texture_2d_array_grad(scene.textures, texture_index, uv, vec2f(0.0, 0.0), vec2f(0.0, 0.0)).x,
 		0.0
 	);
 }

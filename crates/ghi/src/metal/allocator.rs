@@ -219,7 +219,7 @@ impl Allocator {
 			.device
 			.newHeapWithDescriptor(&descriptor)
 			.expect("Metal heap creation failed. The most likely cause is that the device is out of memory.");
-		if cfg!(debug_assertions) && self.debug_labels {
+		if self.debug_labels {
 			heap.setLabel(Some(&objc2_foundation::NSString::from_str("Context Heap")));
 		}
 		heap

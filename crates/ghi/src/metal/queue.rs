@@ -61,7 +61,6 @@ impl NativeCommand {
 		self.command_buffer.beginCommandBufferWithAllocator(self.allocator.as_ref());
 		self.command_buffer.useResidencySet(residency_set);
 
-		#[cfg(debug_assertions)]
 		if debug_labels {
 			self.command_buffer.setLabel(label.map(NSString::from_str).as_deref());
 		}

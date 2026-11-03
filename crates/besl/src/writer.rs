@@ -210,12 +210,11 @@ impl Writer {
 					mip_filter,
 					reduction,
 					address,
-					anisotropy,
 				} = state;
 				// Every property is written, so the reader doesn't need to know the defaults.
 				self.line();
 				self.push_display(format_args!(
-					"{name}: sampler<{{ filter: {}, mip_filter: {}, reduction: {}, address: {}, anisotropy: {anisotropy} }}>;\n",
+					"{name}: sampler<{{ filter: {}, mip_filter: {}, reduction: {}, address: {} }}>;\n",
 					filter.token(),
 					mip_filter.token(),
 					reduction.token(),

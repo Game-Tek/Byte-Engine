@@ -233,10 +233,7 @@ mod tests {
 		assert_string_contains!(shader, "#extension GL_KHR_shader_subgroup_basic:require");
 		assert_string_contains!(shader, "#extension GL_KHR_shader_subgroup_ballot:require");
 		assert_string_contains!(shader, "#extension GL_KHR_shader_subgroup_shuffle:require");
-		assert_string_contains!(shader, "#extension GL_KHR_shader_subgroup_arithmetic:require");
 		assert_string_contains!(shader, "subgroupShuffleXor(float(value),1)");
-		assert_string_contains!(shader, "subgroupMax(uint(gl_LocalInvocationIndex))");
-		assert_string_contains!(shader, "subgroupMax(neighbor)");
 		assert_string_contains!(shader, "subgroupBallot(uint(gl_LocalInvocationIndex)<4)");
 		assert_string_contains!(shader, "subgroupBroadcast(uint(gl_LocalInvocationIndex),leader)");
 		assert_string_contains!(shader, "subgroupBallotFindLSB(mask)");

@@ -76,7 +76,6 @@ impl CommandBufferRecording<'_> {
 					.expect(
 						"Metal argument buffer allocation failed. The most likely cause is that the device is out of memory.",
 					);
-				#[cfg(debug_assertions)]
 				if device.debug_labels {
 					buffer.setLabel(Some(&NSString::from_str(descriptor_set.layout.name())));
 				}

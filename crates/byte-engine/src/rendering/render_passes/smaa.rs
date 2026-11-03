@@ -261,39 +261,6 @@ mod tests {
 		result
 	}
 
-	/// Resolves a 32x32 image whose only edges form an orthogonal line on the boundary before row or column `line`,
-	/// ending in crossing edges as in [`smaa_fused_resolve_besl_vm_uses_reference_areas_for_an_orthogonal_line`]. The
-	/// source is white before the boundary and black from it on.
-	fn resolve_orthogonal_line(line: u32, vertical: bool) -> Texture {
-		const EXTENT: u32 = 32;
-		// `along` runs with the line and `across` crosses it.
-		let index = |along: u32, across: u32| {
-			let (x, y) = if vertical { (across, along) } else { (along, across) };
-			(y * EXTENT + x) as usize
-		};
-		let edge = |on_line: bool, crossing: bool| {
-			if vertical {
-				edge_texel(on_line, crossing)
-			} else {
-				edge_texel(crossing, on_line)
-			}
-		};
-		let mut edge_texels = vec![[0.0, 0.0, 0.0, 0.0]; (EXTENT * EXTENT) as usize];
-		let mut source_texels = vec![[1.0, 1.0, 1.0, 1.0]; (EXTENT * EXTENT) as usize];
-		for along in 4..=11 {
-			edge_texels[index(along, line)] = edge(true, false);
-		}
-		edge_texels[index(4, line)] = edge(true, true);
-		edge_texels[index(12, line)] = edge(false, true);
-		for along in 0..EXTENT {
-			for across in line..EXTENT {
-				source_texels[index(along, across)] = [0.0, 0.0, 0.0, 1.0];
-			}
-		}
-
-		resolve_with_reference_lookups(EXTENT, &source_texels, &edge_texels)
-	}
-
 	/// Calculates a stable FNV-1a fingerprint for vendored reference data.
 	fn fnv1a(bytes: &[u8]) -> u64 {
 		bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
@@ -408,31 +375,6 @@ mod tests {
 			"The fused reference area lookup must blend the black center toward its white neighbors."
 		);
 		assert_eq!(resolved[3], 1.0);
-	}
-
-	/// Verifies pixels beside a tile border resolve exactly as they do inside a tile, so the weights a tile computes
-	/// for its bottom look-ahead row and right look-ahead column match the ones the next tile computes for itself.
-	#[test]
-	fn smaa_fused_resolve_besl_vm_matches_across_tile_borders() {
-		for vertical in [false, true] {
-			// Row or column 16 starts the second tile, so the pixels just before it read the first tile's look-ahead
-			// weights. At 8 both sides of the boundary lie inside the first tile.
-			let border = resolve_orthogonal_line(16, vertical);
-			let interior = resolve_orthogonal_line(8, vertical);
-			let pixel = |across: u32, along: u32| if vertical { [across, along] } else { [along, across] };
-			let mut blended = false;
-			for along in 0..32 {
-				for offset in 0..2 {
-					let border_texel = rgba(&border, pixel(15 + offset, along));
-					assert_rgba_close(border_texel, rgba(&interior, pixel(7 + offset, along)), 0.0);
-					blended |= border_texel[0] > 0.0 && border_texel[0] < 1.0;
-				}
-			}
-			assert!(
-				blended,
-				"Expected the orthogonal line to blend the pixels beside it (vertical: {vertical}). The most likely cause is a fixture whose edges no longer form a line the reference areas weight."
-			);
-		}
 	}
 
 	#[test]

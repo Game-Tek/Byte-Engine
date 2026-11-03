@@ -208,7 +208,6 @@ fn is_builtin_function(name: &str) -> bool {
 			| "WaveActiveAnyTrue"
 			| "WaveActiveAllTrue"
 			| "WaveActiveCountBits"
-			| "WaveActiveMax"
 			| "WaveIsFirstLane"
 			| "SetMeshOutputCounts"
 			| "DispatchMesh"

@@ -2,7 +2,6 @@ use dispatch2::DispatchData;
 use objc2_foundation::{NSArray, NSString};
 use objc2_metal::MTL4Compiler as _;
 use objc2_metal::MTLComputePipelineState as _;
-#[cfg(debug_assertions)]
 use objc2_metal::MTLLibrary as _;
 use objc2_metal::MTLVisibleFunctionTable as _;
 
@@ -153,7 +152,7 @@ pub(crate) fn build_texture_descriptor(
 pub(crate) fn build_sampler(
 	device: &ProtocolObject<dyn mtl::MTLDevice>,
 	builder: &crate::sampler::Builder,
-	#[cfg_attr(not(debug_assertions), allow(unused_variables))] debug_labels: bool,
+	debug_labels: bool,
 ) -> Retained<ProtocolObject<dyn mtl::MTLSamplerState>> {
 	let descriptor = mtl::MTLSamplerDescriptor::new();
 	descriptor.setMinFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
@@ -185,7 +184,6 @@ pub(crate) fn build_sampler(
 		descriptor.setMaxAnisotropy(anisotropy as _);
 	}
 	// Samplers carry no name, so the label spells out the state that distinguishes them.
-	#[cfg(debug_assertions)]
 	if debug_labels {
 		let label = format!(
 			"Sampler: {:?}, mip {:?}, {:?}, {:?}",
@@ -755,13 +753,12 @@ impl crate::device::Device for Factory {
 		};
 
 		// Every generated entry point is `besl_main`, so the library label is what tells shaders apart in captures.
-		#[cfg(debug_assertions)]
 		if let Some(name) = name.filter(|_| self.settings.debug_labels) {
 			library.setLabel(Some(&NSString::from_str(name)));
 		}
 
 		self.shaders.push(Shader {
-			name: crate::debug_name(name),
+			name: name.map(str::to_owned),
 			stage: stage.into(),
 			descriptor_sets: descriptor_sets.into_iter().collect(),
 			library,
@@ -800,7 +797,7 @@ impl crate::device::Device for Factory {
 			}
 		}
 
-		let name = builder.name.filter(|_| cfg!(debug_assertions) && self.settings.debug_labels);
+		let name = builder.name.filter(|_| self.settings.debug_labels);
 		let render_targets = builder.render_targets;
 		let pipeline = if let Some(mesh_function) = mesh_function.as_deref() {
 			let descriptor = mtl::MTL4MeshRenderPipelineDescriptor::new();
@@ -849,7 +846,6 @@ impl crate::device::Device for Factory {
 				let descriptor = mtl::MTLDepthStencilDescriptor::new();
 				descriptor.setDepthCompareFunction(mtl::MTLCompareFunction::GreaterEqual);
 				descriptor.setDepthWriteEnabled(builder.depth_write);
-				#[cfg(debug_assertions)]
 				if self.settings.debug_labels {
 					descriptor.setLabel(builder.name.map(NSString::from_str).as_deref());
 				}
@@ -879,7 +875,7 @@ impl crate::device::Device for Factory {
 			"Metal compute pipeline creation requires a compute shader. The most likely cause is that a non-compute shader was passed to compute::Builder.",
 		);
 		let function = build_metal4_function_descriptor(shader, builder.shader.specialization_map);
-		let name = builder.name.filter(|_| cfg!(debug_assertions) && self.settings.debug_labels);
+		let name = builder.name.filter(|_| self.settings.debug_labels);
 
 		Pipeline {
 			pipeline: PipelineState::Compute {
@@ -919,7 +915,7 @@ impl crate::device::Device for Factory {
 			tile = builder.tile,
 		);
 		let function = build_metal4_function_descriptor(shader, builder.shader.specialization_map);
-		let name = builder.name.filter(|_| cfg!(debug_assertions) && self.settings.debug_labels);
+		let name = builder.name.filter(|_| self.settings.debug_labels);
 		let descriptor = mtl::MTL4TileRenderPipelineDescriptor::new();
 		descriptor.setLabel(name.map(NSString::from_str).as_deref());
 		descriptor.setTileFunctionDescriptor(Some(&function));
@@ -991,7 +987,7 @@ impl crate::device::Device for Factory {
 				linked.push(function);
 			}
 		}
-		let name = builder.name.filter(|_| cfg!(debug_assertions) && self.settings.debug_labels);
+		let name = builder.name.filter(|_| self.settings.debug_labels);
 		let descriptor = mtl::MTL4ComputePipelineDescriptor::new();
 		descriptor.setLabel(name.map(NSString::from_str).as_deref());
 		descriptor.setComputeFunctionDescriptor(Some(&ray_generation_function));

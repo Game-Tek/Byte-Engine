@@ -47,8 +47,14 @@ impl Device {
 						Self::descriptor_range_type(*previous, false) == Self::descriptor_range_type(descriptor, false),
 						"Conflicting DX12 storage access. The most likely cause is that shader stages map the same flat slot to different SRV and UAV register classes.",
 					);
-					// The representations match, so only the access widens; the fixed sampler stays with the image.
-					previous.access |= descriptor.access();
+					*previous = ShaderResourceDescriptor::new(
+						previous.slot(),
+						previous.kind(),
+						previous.count(),
+						previous.access() | descriptor.access(),
+					)
+					.texture_view_type(previous.texture_view())
+					.buffer_stride(previous.buffer_element_stride());
 					continue;
 				}
 
@@ -192,35 +198,29 @@ impl Device {
 		}
 
 		// A sampler the shader fixes sits at the register of the texture it belongs to, `s{slot}`, which the HLSL
-		// generator declares once for every sampled texture, also for a texture array whose elements share it. It reads
-		// every level, so it doesn't clamp the LOD.
+		// generator declares for every sampled texture. It reads every level, so it doesn't clamp the LOD.
 		let static_samplers = key
 			.resources
 			.iter()
 			.filter_map(|resource| Some((resource.descriptor, resource.descriptor.sampler()?)))
-			.map(|(descriptor, sampler)| {
+			.flat_map(|(descriptor, sampler)| {
 				let address_mode = Self::sampler_address_mode(sampler.addressing_mode);
-				D3D12_STATIC_SAMPLER_DESC1 {
-					Filter: Self::sampler_filter(
-						sampler.filtering_mode,
-						sampler.mip_map_mode,
-						sampler.reduction_mode,
-						sampler.max_anisotropy > 1,
-					),
+				(0..descriptor.count()).map(move |element| D3D12_STATIC_SAMPLER_DESC1 {
+					Filter: Self::sampler_filter(sampler.filtering_mode, sampler.mip_map_mode, sampler.reduction_mode, false),
 					AddressU: address_mode,
 					AddressV: address_mode,
 					AddressW: address_mode,
 					MipLODBias: 0.0,
-					MaxAnisotropy: u32::from(sampler.max_anisotropy.max(1)),
+					MaxAnisotropy: 1,
 					ComparisonFunc: D3D12_COMPARISON_FUNC_NEVER,
 					BorderColor: D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK,
 					MinLOD: 0.0,
 					MaxLOD: D3D12_FLOAT32_MAX,
-					ShaderRegister: descriptor.slot().index(),
+					ShaderRegister: descriptor.slot().index() + element,
 					RegisterSpace: 0,
 					ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
 					Flags: D3D12_SAMPLER_FLAG_NONE,
-				}
+				})
 			})
 			.collect::<SmallVec<[D3D12_STATIC_SAMPLER_DESC1; 4]>>();
 

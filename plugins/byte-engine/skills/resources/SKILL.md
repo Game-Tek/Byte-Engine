@@ -1,6 +1,6 @@
 ---
 name: resources
-description: "Bake Byte Engine assets into resources with BELD and inspect the resource store efficiently: when a bake is needed at all, which BELD binary to run, dry runs, intercepting a bake's intermediate products such as the BESL and MSL each shader compiles from, scriptable queries for what fills the store, stale, failed, duplicate, uncompressed, or unreachable resources, reading one resource's model or payload data, and why a resource doesn't load. Use when the user asks to bake, rebake, or package assets, asks what an asset turns into, wants to see the shader source a material or shader generates, or wants to find or debug resources in a Byte Engine project."
+description: "Bake Byte Engine assets into resources with BELD and inspect the resource store efficiently: when a bake is needed at all, which BELD binary to run, dry runs, intercepting a bake's intermediate products such as the BESL and MSL each shader compiles from and the metallib it compiles to, scriptable queries for what fills the store, stale, failed, duplicate, uncompressed, or unreachable resources, reading one resource's model or payload data, and why a resource doesn't load. Use when the user asks to bake, rebake, or package assets, asks what an asset turns into, wants to see the shader source a material or shader generates or the compiled shader binary, or wants to find or debug resources in a Byte Engine project."
 ---
 
 # Bake and inspect Byte Engine resources
@@ -117,8 +117,9 @@ print their keyframes under `resource.tracks` without `--payload`.
 
 ## See a bake's intermediate products, without instrumenting the application
 
-A bake builds intermediate products it normally throws away, such as the BESL program each shader compiles from and
-the platform source that BESL lowers to. Add `--intercept <pattern>` to a dry run to print them. Don't add logging,
+A bake builds intermediate products it normally throws away, such as the BESL program each shader compiles from, the
+platform source that BESL lowers to, and the binary the platform compiler produces. Add `--intercept <pattern>` to a
+dry run to print them, and `--intercept-out <dir>` to write each one to a file instead. Don't add logging,
 debug prints, or file dumps to the engine or the application to get these; intercept them.
 
 Each product is named `<resource ID>.<extension>`, after the resource it belongs to and its format:
@@ -127,11 +128,12 @@ Each product is named `<resource ID>.<extension>`, after the resource it belongs
 | --- | --- | --- |
 | BESL a shader compiles from | `<shader ID>.besl` | What a material's graph or a standalone shader became after the renderer's program generator or transform; reading the program behind a shader compile error. |
 | Platform source the BESL lowered to | `<shader ID>.msl` on macOS, `.hlsl` on Windows, `.glsl` on Linux | What the platform compiler received; a shader that compiles but renders or performs differently than its BESL suggests. |
+| Compiled binary | `<shader ID>.metallib` on macOS, `.spv` on Linux; none on Windows, where the payload is the HLSL | The exact bytes the store keeps; register, spill, and occupancy statistics, `xcrun metal-source --extract`, and GPU tools that open a metallib. |
 
 Shader IDs are `<material>.bema#shader` and `#hit-shader` for `.bema` materials (a variant uses its parent
 material's shader), `<container>#shaders/<key>` for glTF and FBX materials, and `<system>.particles#shaders/<stage>`
-for particles. A standalone shader's ID is its `.besl` asset, so its products are `<shader>.besl.besl` and
-`<shader>.besl.msl`. Baking a `.pipeline` bakes the standalone shaders it lists, such as
+for particles. A standalone shader's ID is its `.besl` asset, so its products are `<shader>.besl.besl`,
+`<shader>.besl.msl`, and `<shader>.besl.metallib`. Baking a `.pipeline` bakes the standalone shaders it lists, such as
 `byte_engine/rendering/visibility/shadow-mesh.besl.msl` for `cone-shadow.pipeline`.
 
 ```bash
@@ -146,6 +148,11 @@ beld --source "$PWD/assets" bake --dry-run --intercept 'character.glb#*.besl' --
 beld --source "$PWD/assets" bake --dry-run --intercept '*' --format json character.glb 2>/dev/null \
   | jq -r '.intercepted[].name'
 
+# Every shader binary of a pass as files, named after their shaders, for pipeline statistics or other Metal tools
+beld --source "$PWD/assets" bake --dry-run --intercept '*.metallib' --intercept-out shaders \
+  byte_engine/rendering/visibility/gtao.pipeline 2>/dev/null
+# prints shaders/byte_engine/rendering/visibility/gtao.besl.metallib
+
 # One product's text, to save or diff
 beld --source "$PWD/assets" bake --dry-run --intercept '*.msl' --format json materials/wood.bema 2>/dev/null \
   | jq -r '.intercepted[] | select(.name == "materials/wood.bema#shader.msl") | .content' > wood.msl
@@ -153,9 +160,13 @@ beld --source "$PWD/assets" bake --dry-run --intercept '*.msl' --format json mat
 
 - Patterns match the whole name, ignoring case. `*` also matches `/` and `#`. Quote them so the shell doesn't
   expand them.
-- The human format prints each product under a `// <name>` line and nothing else, so it pipes cleanly. The JSON
-  format is the usual dry-run document with `intercepted` added; each entry has `name`, `encoding` (`utf-8` or
-  `base64`), and `content`.
+- The human format prints each product under a `// <name>` line and nothing else, so it pipes cleanly; a binary
+  product prints only its size there. The JSON format is the usual dry-run document with `intercepted` added; each
+  entry has `name`, `encoding` (`utf-8` or `base64`), and `content`.
+- `--intercept-out <dir>` writes each product to `<dir>/<name>`, where each `/` in the name is a directory, and the
+  human format prints one written path per line instead. Use it for binaries, and for many products at once instead
+  of extracting them from JSON. Existing files are overwritten. Never `grep` the store's `*-raw` payload files to
+  find a shader's metallib; intercept it by name.
 - A dry run bakes into an empty store, so every product is built. A pattern that matches nothing logs a warning on
   standard error and still exits with code 0.
 - BELD reads the project's `config.json`, so the programs match the render features the application uses. Pass

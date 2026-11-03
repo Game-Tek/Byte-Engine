@@ -42,12 +42,12 @@ impl BakeMemoryBudget {
 			match self.try_acquire() {
 				Ok(scope) => {
 					if reported_pause {
-						log::info!("Resuming asset baking after retained bake memory dropped below the configured budget.");
+						log::trace!("Resuming asset baking after retained bake memory dropped below the configured budget.");
 					}
 					return scope;
 				}
 				Err(retained_bytes) if !reported_pause => {
-					log::info!(
+					log::debug!(
 						"Pausing new asset bakes because reserved or retained bake memory is {} and the configured budget is {}. Active bakes will continue so they can release memory.",
 						utils::ByteSize::from(retained_bytes),
 						utils::ByteSize::from(self.byte_limit)

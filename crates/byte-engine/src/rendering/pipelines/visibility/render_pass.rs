@@ -594,8 +594,9 @@ impl VisibilityRenderPass {
 			evaluation.image("diffuse_radiance_map", targets.ssgi.diffuse_radiance_history),
 			evaluation.buffer("lighting_data", lighting_buffer),
 			evaluation.sampled("ao", targets.gtao.ambient_occlusion, linear_sampler),
-			// Material evaluation upsamples the half-resolution SSGI result itself, so it point-samples its images.
-			evaluation.sampled("ssgi_history", targets.ssgi.history, depth_sampler),
+			// Material evaluation upsamples the half-resolution SSGI result itself. It fetches texels at edges, and filters the
+			// history in one read where all four texels lie on the pixel's plane.
+			evaluation.sampled("ssgi_history", targets.ssgi.history, linear_sampler),
 			evaluation.sampled("ssgi_normals", targets.ssgi.normals, depth_sampler),
 			evaluation.buffer("ssgi_view", depth_pyramid.view_data),
 			evaluation.sampled("sun_visibility", targets.sun_visibility.visibility, depth_sampler),

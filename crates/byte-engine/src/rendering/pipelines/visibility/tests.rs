@@ -1813,37 +1813,6 @@ fn gtao_writes_white_for_background_and_expected_recessed_foreground_ao() {
 	assert_rgba_close(disabled, [1.0, 1.0, 1.0, 1.0], 0.00001);
 }
 
-/// Verifies a workgroup whose only foreground pixels sit in its last subgroup still evaluates them, so no background
-/// test shared across the workgroup skips them.
-#[test]
-fn gtao_evaluates_foreground_that_only_the_last_subgroup_holds() {
-	let program = asset!("gtao.besl");
-	const EXTENT: u32 = 16;
-	// The first workgroup covers rows 0 to 7. Rows 0 to 6 are background, so only lanes 112 to 127, the last of its
-	// four 32-lane subgroups, see foreground. Row 8 lies outside the workgroup and gives the normal its vertical
-	// tangent.
-	let center = [8u32, 7];
-	let depth_texels = (0..EXTENT * EXTENT)
-		.map(|index| {
-			let (x, y) = (index % EXTENT, index / EXTENT);
-			let depth = if y < center[1] {
-				0.0
-			} else if [x, y] == center {
-				0.35
-			} else {
-				0.75
-			};
-			[depth, 0.0, 0.0, 1.0]
-		})
-		.collect::<Vec<_>>();
-
-	let recessed = run_gtao_fixture(&program, EXTENT, EXTENT, &depth_texels, center, (1.0, 6, 8));
-	assert!(
-		recessed[0] < 0.999,
-		"Expected the recessed foreground pixel to receive occlusion, found {recessed:?}. The most likely cause is that a workgroup-wide background test took the early out for a group with foreground pixels."
-	);
-}
-
 /// Verifies flat-floor normals remain valid when their world-space finite differences become very small.
 #[test]
 fn gtao_floor_has_no_scale_dependent_normal_seam() {

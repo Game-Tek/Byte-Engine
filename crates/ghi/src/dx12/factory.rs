@@ -132,7 +132,7 @@ impl crate::device::Device for Factory {
 		};
 
 		self.shaders.push(Shader {
-			name: crate::debug_name(name),
+			name: name.map(str::to_owned),
 			source,
 			stage,
 			// This backend still derives its root signature from flat slots.
@@ -190,7 +190,7 @@ impl crate::device::Device for Factory {
 
 	fn build_image(&mut self, builder: image::Builder) -> Self::Image {
 		FactoryImage {
-			name: crate::debug_name(builder.name),
+			name: builder.name.map(str::to_owned),
 			extent: builder.extent,
 			format: builder.format,
 			resource_uses: builder.resource_uses,

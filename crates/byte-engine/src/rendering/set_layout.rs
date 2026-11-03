@@ -262,11 +262,6 @@ impl SetBinder<'_> {
 		)
 	}
 
-	/// Binds one element of a texture array whose sampler the shader fixes with a BESL `sampler` declaration.
-	pub fn texture_element(&self, name: &str, image: impl Into<ghi::BaseImageHandle>, index: u32) -> ghi::DescriptorWrite {
-		ghi::DescriptorWrite::image(self.set, self.slot(name), image, ghi::Layouts::Read).with_array_element(index)
-	}
-
 	/// Binds one element of a texture array.
 	pub fn sampled_element(
 		&self,
@@ -335,7 +330,6 @@ fn static_sampler(sampler: besl::SamplerState) -> ghi::sampler::StaticSampler {
 			Address::Repeat => ghi::SamplerAddressingModes::Repeat,
 			Address::Mirror => ghi::SamplerAddressingModes::Mirror,
 		},
-		max_anisotropy: sampler.anisotropy,
 	}
 }
 

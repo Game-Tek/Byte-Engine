@@ -462,8 +462,6 @@ impl Node {
 				vec![("value", f32_t.clone()), ("mask", u32_t.clone())],
 				f32_t.clone(),
 			),
-			builtin_intrinsic("subgroup_max_u32", vec![("value", u32_t.clone())], u32_t.clone()),
-			builtin_intrinsic("subgroup_max_f32", vec![("value", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("workgroup_barrier", vec![], void.clone()),
 			builtin_intrinsic("set_task_mesh_output_count", vec![("count", u32_t.clone())], void.clone()),
 			builtin_intrinsic("thread_id", vec![], vec2u32.clone()),

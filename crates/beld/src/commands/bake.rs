@@ -1,4 +1,10 @@
-use std::{cell::RefCell, num::NonZeroUsize, sync::Arc, time::Instant};
+use std::{
+	cell::RefCell,
+	num::NonZeroUsize,
+	path::{Component, Path, PathBuf},
+	sync::Arc,
+	time::Instant,
+};
 
 use byte_engine::{
 	application::{Parameter, parameters::Parameters as _},
@@ -208,7 +214,8 @@ fn select_discovered(
 ///
 /// With `intercept` patterns, the document lists instead the intermediate products of the bake whose names match one
 /// of them, such as `*.besl` for the BESL source of every shader; see [`resource_management::asset::intercept`] for how
-/// products are named.
+/// products are named. With `intercept_out`, each product is written to a file under that directory, named after it, and
+/// the human format lists the written paths instead of the products.
 #[allow(clippy::too_many_arguments)]
 pub async fn bake_dry_run(
 	source_path: String,
@@ -217,6 +224,7 @@ pub async fn bake_dry_run(
 	parameters: &[Parameter],
 	configure: impl FnOnce(&mut AssetManager, &[Parameter]),
 	intercept: Vec<String>,
+	intercept_out: Option<&Path>,
 	format: OutputFormat,
 	payload: Payload,
 	output: &mut impl std::io::Write,
@@ -259,6 +267,10 @@ pub async fn bake_dry_run(
 		}
 		products
 	});
+	let written = match (&intercepted, intercept_out) {
+		(Some(products), Some(directory)) => Some(write_product_files(directory, products)?),
+		_ => None,
+	};
 
 	let mut resource_ids = resource_storage_backend
 		.list()
@@ -302,7 +314,10 @@ pub async fn bake_dry_run(
 	match format {
 		// Intercepted products print as they are, so a reader can pipe one straight into a file.
 		OutputFormat::Human if let Some(products) = &intercepted => {
-			write_products(output, products)?;
+			match &written {
+				Some(paths) => write_paths(output, paths)?,
+				None => write_products(output, products)?,
+			}
 			if !failed.is_empty() {
 				print_human(&json!({ "failed": failed }));
 			}
@@ -384,6 +399,62 @@ fn write_products(output: &mut impl std::io::Write, products: &[(String, Vec<u8>
 		write(output, name, content).map_err(|error| {
 			log::error!(
 				"Failed to write the intercepted products. The most likely cause is a closed output stream. Error: {error}"
+			);
+			1
+		})?;
+	}
+	Ok(())
+}
+
+/// Returns where the product `name` is written under `directory`: each `/` in the name opens a directory, so
+/// `mesh.gltf#shaders/<key>.metallib` lands in `mesh.gltf#shaders/`. Fails for a name with a `..` or root component,
+/// which would write outside `directory`.
+fn product_path(directory: &Path, name: &str) -> Result<PathBuf, String> {
+	let relative = Path::new(name);
+	if !relative
+		.components()
+		.all(|component| matches!(component, Component::Normal(_)))
+	{
+		return Err(format!(
+			"The intercepted product '{name}' has no file path under the output directory. The most likely cause is a resource ID with a `..` or root component. Narrow `--intercept` to leave the product out, or drop `--intercept-out` to print it."
+		));
+	}
+	Ok(directory.join(relative))
+}
+
+/// Writes every product to its [`product_path`] under `directory` and returns the paths in the products' order.
+fn write_product_files(directory: &Path, products: &[(String, Vec<u8>)]) -> Result<Vec<PathBuf>, i32> {
+	products
+		.iter()
+		.map(|(name, content)| {
+			let path = product_path(directory, name).map_err(|error| {
+				log::error!("{error}");
+				1
+			})?;
+			let write = || -> std::io::Result<()> {
+				if let Some(parent) = path.parent() {
+					std::fs::create_dir_all(parent)?;
+				}
+				std::fs::write(&path, content)
+			};
+			write().map_err(|error| {
+				log::error!(
+					"Failed to write the intercepted product '{name}' to {}. The most likely cause is that the output directory isn't writable. Pass a writable `--intercept-out` directory. Error: {error}",
+					path.display()
+				);
+				1
+			})?;
+			Ok(path)
+		})
+		.collect()
+}
+
+/// Prints each written product's path on its own line.
+fn write_paths(output: &mut impl std::io::Write, paths: &[PathBuf]) -> Result<(), i32> {
+	for path in paths {
+		writeln!(output, "{}", path.display()).map_err(|error| {
+			log::error!(
+				"Failed to write the intercepted product paths. The most likely cause is a closed output stream. Error: {error}"
 			);
 			1
 		})?;

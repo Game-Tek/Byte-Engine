@@ -218,7 +218,7 @@ const DESCRIPTOR_ARRAY_FRAGMENT: &str = r#"
 	}
 "#;
 
-/// Uses every subgroup ballot, broadcast, shuffle, and maximum operation in a compute shader.
+/// Uses every subgroup ballot, broadcast, and shuffle operation in a compute shader.
 #[cfg(test)]
 const SUBGROUP_COMPUTE: &str = r#"
 	main: fn () -> void {
@@ -226,15 +226,11 @@ const SUBGROUP_COMPUTE: &str = r#"
 		let leader: u32 = subgroup_ballot_find_lsb(mask);
 		let value: u32 = subgroup_broadcast_u32(thread_idx(), leader);
 		let neighbor: f32 = subgroup_shuffle_xor_f32(f32(value), 1);
-		let largest_index: u32 = subgroup_max_u32(thread_idx());
-		let largest_neighbor: f32 = subgroup_max_f32(neighbor);
 		let remaining: vec4u = subgroup_ballot_and_not(mask, subgroup_ballot(value == 0));
 		if (subgroup_ballot_any(remaining)) {
 			let count: u32 = subgroup_ballot_count(remaining);
 			count;
 			neighbor;
-			largest_index;
-			largest_neighbor;
 		}
 	}
 "#;
@@ -478,7 +474,7 @@ fn is_intrinsic_call(node: &besl::NodeReference, intrinsic_name: &str) -> bool {
 }
 
 /// The BESL subgroup operations, which every backend supports only in compute shaders.
-const SUBGROUP_INTRINSICS: [&str; 11] = [
+const SUBGROUP_INTRINSICS: [&str; 9] = [
 	"subgroup_lane_index",
 	"subgroup_ballot",
 	"subgroup_ballot_any",
@@ -488,8 +484,6 @@ const SUBGROUP_INTRINSICS: [&str; 11] = [
 	"subgroup_broadcast_u32",
 	"subgroup_broadcast_f32",
 	"subgroup_shuffle_xor_f32",
-	"subgroup_max_u32",
-	"subgroup_max_f32",
 ];
 
 /// The BESL calls that read a ray tracing stage's own values: the launch point of a ray generation shader, the hit a

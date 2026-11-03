@@ -58,7 +58,6 @@ impl CommandBufferRecording<'_> {
 			.metal_device
 			.newBufferWithLength_options(size, mtl::MTLResourceOptions::StorageModeShared)
 			.ok_or(crate::TextureTransferError::AllocationFailed)?;
-		#[cfg(debug_assertions)]
 		if let Some(label) = source_texture.label() {
 			staging.setLabel(Some(&NSString::from_str(&format!("{label} Readback"))));
 		}
@@ -880,7 +879,6 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 	}
 
 	fn start_region(&mut self, _write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result) {
-		#[cfg(debug_assertions)]
 		if self.device.debug_labels {
 			let mut label = crate::command_buffer::DebugLabelWriter::new();
 			_write_label(&mut label).expect("Invalid debug label. The label closure most likely failed while formatting.");
@@ -895,7 +893,6 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 	}
 
 	fn end_region(&mut self) {
-		#[cfg(debug_assertions)]
 		if self.device.debug_labels {
 			self.debug_regions.pop().expect(
 				"Unbalanced Metal debug region. The most likely cause is that end_region was called without start_region.",
@@ -909,13 +906,21 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 	}
 
 	fn start_counter(&mut self, counter: crate::CounterHandle) {
-		if let Some(slot) = self.commit.counters.start(crate::counters::frame_sequence(self.frame_key), counter) {
+		if let Some(slot) = self
+			.commit
+			.counters
+			.start(crate::counters::frame_sequence(self.frame_key), counter)
+		{
 			self.write_timestamp(slot);
 		}
 	}
 
 	fn end_counter(&mut self, counter: crate::CounterHandle) {
-		if let Some(slot) = self.commit.counters.end(crate::counters::frame_sequence(self.frame_key), counter) {
+		if let Some(slot) = self
+			.commit
+			.counters
+			.end(crate::counters::frame_sequence(self.frame_key), counter)
+		{
 			self.write_timestamp(slot);
 		}
 	}

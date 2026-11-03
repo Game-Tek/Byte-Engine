@@ -147,7 +147,6 @@ pub struct GraphicsApplication {
 	/// Observes world-spawned DDS entities and supplies writers when a debug destination is configured.
 	streams: crate::inspector::DebugDataStreams,
 
-	#[cfg(debug_assertions)]
 	kill_after: Option<u64>,
 
 	/// The device every context comes from. Declared last so the renderer's and the loader's contexts drop first.
@@ -344,7 +343,6 @@ impl GraphicsApplication {
 		queue_startup_parameters(application.parameters(), &configuration, RENDER_PASS_CONFIGURATION);
 		queue_startup_parameters(application.parameters(), &configuration, DEBUG_VIEW_CONFIGURATION);
 
-		#[cfg(debug_assertions)]
 		let kill_after = application
 			.get_parameter("kill-after")
 			.map(|parameter| parameter.parse::<u64>().unwrap_or_else(|error| panic!("{error}")));
@@ -421,7 +419,6 @@ impl GraphicsApplication {
 			metrics_out,
 			streams,
 
-			#[cfg(debug_assertions)]
 			kill_after,
 
 			graphics_device,
@@ -551,7 +548,6 @@ impl GraphicsApplication {
 	/// Only an idle on-demand loop with a window system connection waits. Pair a waiting result with
 	/// [`crate::application::waker::end_wait`] once the wait returned.
 	fn event_wait(&mut self) -> ghi::window::Wait {
-		#[cfg(debug_assertions)]
 		if self.kill_after.is_some() {
 			// Smoke runs count ticks, so they keep ticking while idle.
 			return ghi::window::Wait::Immediate;
@@ -860,7 +856,6 @@ impl GraphicsApplication {
 		self.tick_count += 1;
 		self.streams.set_tick(self.tick_count);
 
-		#[cfg(debug_assertions)]
 		if let Some(kill_after) = self.kill_after
 			&& self.tick_count >= kill_after
 		{
@@ -1461,7 +1456,7 @@ pub mod defaults;
 mod integrations;
 
 pub use defaults::{
-	default_image_processor, default_setup, configure_default_baking, setup_animation_pool, setup_animation_system,
+	configure_default_baking, default_image_processor, default_setup, setup_animation_pool, setup_animation_system,
 	setup_default_audio, setup_default_input, setup_default_resource_and_asset_management, setup_default_window,
 };
 pub use integrations::process_default_window_input;

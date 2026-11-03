@@ -159,15 +159,12 @@ impl Generator {
 		string.push_str(")]");
 	}
 
-	/// Emits the sampler paired with a texture argument. Inside a descriptor array it shares the texture's index, unless
-	/// the shader fixes it, in which case every element reads through one static sampler.
+	/// Emits the sampler paired with a texture argument. Inside a descriptor array it shares the texture's index.
 	pub(crate) fn emit_sampler(&mut self, string: &mut String, texture: &besl::NodeReference) {
 		let accessor = resource_accessor(texture);
 		self.emit_node_string(string, accessor.as_ref().map_or(texture, |(_, resource, _)| resource));
 		string.push_str("_sampler");
-		if let Some((ResourceAccessorKind::DescriptorArray, _, index)) = &accessor
-			&& besl::lexer::binding_sampler(texture).is_none()
-		{
+		if let Some((ResourceAccessorKind::DescriptorArray, _, index)) = &accessor {
 			self.emit_descriptor_array_index(string, index);
 		}
 	}
@@ -226,9 +223,7 @@ impl Generator {
 				string.push_str(".SampleGrad(");
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str("_sampler");
-				if besl::lexer::binding_sampler(&arguments[0]).is_none() {
-					self.emit_descriptor_array_index(string, &arguments[1]);
-				}
+				self.emit_descriptor_array_index(string, &arguments[1]);
 				for argument in &arguments[2..5] {
 					self.emit_separator(string);
 					self.emit_node_string(string, argument);
@@ -440,7 +435,6 @@ impl Generator {
 					"subgroup_ballot_and_not" => "_besl_subgroup_ballot_and_not",
 					"subgroup_broadcast_u32" | "subgroup_broadcast_f32" => "WaveReadLaneAt",
 					"subgroup_shuffle_xor_f32" => "_besl_subgroup_shuffle_xor_f32",
-					"subgroup_max_u32" | "subgroup_max_f32" => "WaveActiveMax",
 					"fma" if matches!(r#return.borrow().get_name(), Some("f16" | "vec2f16" | "vec3f16" | "vec4f16")) => {
 						"_besl_fma_f16"
 					}

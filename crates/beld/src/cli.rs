@@ -48,7 +48,11 @@ fn run_cli(parameters: &[Parameter], configure: impl FnOnce(&mut AssetManager, &
 /// Dispatches one parsed command through BELD's asynchronous library API.
 ///
 /// Only the commands that read the project resolve its parameters, so a broken `config.json` doesn't stop `list`.
-async fn dispatch(cli: Cli, defaults: &[Parameter], configure: impl FnOnce(&mut AssetManager, &[Parameter])) -> Result<(), i32> {
+async fn dispatch(
+	cli: Cli,
+	defaults: &[Parameter],
+	configure: impl FnOnce(&mut AssetManager, &[Parameter]),
+) -> Result<(), i32> {
 	match cli.command {
 		Commands::Wipe {} => crate::wipe(cli.destination).await,
 		Commands::Clear {} => crate::clear(cli.destination).await,
@@ -77,6 +81,7 @@ async fn dispatch(cli: Cli, defaults: &[Parameter], configure: impl FnOnce(&mut 
 			prune,
 			dry_run,
 			intercept,
+			intercept_out,
 			format,
 			payload,
 		} => {
@@ -89,6 +94,7 @@ async fn dispatch(cli: Cli, defaults: &[Parameter], configure: impl FnOnce(&mut 
 					&parameters,
 					configure,
 					intercept,
+					intercept_out.as_deref(),
 					format.unwrap_or(OutputFormat::Human),
 					payload.unwrap_or_default(),
 					&mut std::io::stdout().lock(),
@@ -278,6 +284,11 @@ enum Commands {
 		/// Example: `beld bake --dry-run --intercept '*.besl' materials/wood.bema`
 		#[arg(long, requires = "dry_run")]
 		intercept: Vec<String>,
+		/// Writes each intercepted product to `<DIRECTORY>/<name>` instead of printing its content, so binary products
+		/// such as `<shader ID>.metallib` land as files that other tools open. The human format then prints the paths.
+		/// Example: `beld bake --dry-run --intercept '*' --intercept-out shaders materials/wood.bema`
+		#[arg(long, value_name = "DIRECTORY", requires = "intercept")]
+		intercept_out: Option<std::path::PathBuf>,
 		/// The dry-run output format. Defaults to `human`.
 		#[arg(long, value_enum, requires = "dry_run")]
 		format: Option<OutputFormat>,

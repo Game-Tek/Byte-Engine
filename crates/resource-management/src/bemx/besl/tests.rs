@@ -294,22 +294,6 @@ fn geometry_and_parameters_come_from_the_stage() {
 	assert_close(values, ([0.0, 0.0, -1.0], 1.5));
 }
 
-/// A zero-to-one base colour computes exactly even when its intermediates exceed half precision's range. Computing
-/// these products in half overflows them, and their difference becomes NaN.
-#[test]
-fn bounded_values_with_large_intermediates_stay_finite() {
-	let values = evaluate(&surface(
-		r#"{ name: "large", node: "multiply", in1: 1000.0, in2: 1000.0 },
-		{ name: "other", node: "multiply", in1: 999.0, in2: 1000.0 },
-		{ name: "difference", node: "subtract", in1: "large", in2: "other" },
-		{ name: "bounded", node: "multiply", in1: "difference", in2: 0.0005 },
-		{ name: "base", node: "convert", in: "bounded", type: "vector3" },
-		{ name: "rough", node: "multiply", in1: 0.5, in2: 1.0 },"#,
-	));
-
-	assert_close(values, ([0.5, 0.5, 0.5], 0.5));
-}
-
 /// Lowers `node` of the surface the graph `source` describes and returns the failure.
 fn failure(source: &str, input: impl Fn(&bemx::Surface) -> Option<NodeId>) -> LowerError {
 	let graph = bemx::json::parse(source).unwrap_or_else(|error| panic!("Invalid test graph: {error}"));

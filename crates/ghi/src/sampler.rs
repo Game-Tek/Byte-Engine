@@ -93,6 +93,4 @@ pub struct StaticSampler {
 	pub mip_map_mode: FilteringModes,
 	pub reduction_mode: SamplingReductionModes,
 	pub addressing_mode: SamplerAddressingModes,
-	/// The most texels a read takes along the footprint's longest axis. `1` turns anisotropic filtering off.
-	pub max_anisotropy: u8,
 }

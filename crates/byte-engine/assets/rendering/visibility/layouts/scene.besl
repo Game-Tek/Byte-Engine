@@ -35,13 +35,6 @@ MeshDispatchWork: struct {
 	items: u32[131072],
 }
 
-// Every material texture reads through one sampler. Anisotropic filtering keeps surfaces seen at grazing angles, like
-// floors, sharp instead of blurring them to the mip their steepest direction needs.
-material_texture_sampler: sampler<{ address: repeat, anisotropy: 16 }>;
-// Spherical IES profiles clamp instead of wrapping around the seam. They read one level at zero derivatives, but keep
-// the material sampler's filtering so profiles read as they did through a bound sampler.
-ies_profile_sampler: sampler<{ address: clamp, anisotropy: 16 }>;
-
 Scene: layer {
 	views: descriptor<{ type: Views, binding: 0, access: read, memory: constant }>;
 	meshes: descriptor<{ type: Meshes, binding: 1, access: read, memory: device }>;
@@ -54,7 +47,7 @@ Scene: layer {
 	primitive_indices: descriptor<{ type: u8[], binding: 7, access: read, memory: device }>;
 	meshlets: descriptor<{ type: Meshlet[], binding: 8, access: read, memory: device }>;
 	// The bindless texture pool that material table entries index.
-	textures: descriptor<{ type: Texture2D, binding: 9, access: read, count: 1024, sampler: material_texture_sampler }>;
+	textures: descriptor<{ type: Texture2D, binding: 9, access: read, count: 1024 }>;
 	materials: descriptor<{ type: Materials, binding: 1046, access: read, memory: device }>;
 	// One packed work item per group of meshlets a task workgroup culls.
 	mesh_dispatch_work: descriptor<{ type: MeshDispatchWork, binding: 1063, access: read, memory: device }>;
@@ -63,7 +56,4 @@ Scene: layer {
 	// The values of dynamic material parameters, one entry per parameter. An instance's `parameter_block` names where its
 	// material's parameters start, in the order the material declares them.
 	material_parameters: descriptor<{ type: vec4f[], binding: 1071, access: read, memory: device }>;
-	// The IES profiles of the texture pool. A profile takes the pool index a light's `ies_profile_texture` names, and
-	// binds here instead of in `textures`, so it reads through the clamp sampler.
-	ies_profiles: descriptor<{ type: Texture2D, binding: 4096, access: read, count: 1024, sampler: ies_profile_sampler }>;
 }

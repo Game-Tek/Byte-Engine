@@ -32,7 +32,7 @@ impl Context {
 	) -> graphics_hardware_interface::ShaderBindingTableHandle {
 		self.ray_tracing("create a shader binding table");
 		self.shader_binding_tables.push(ShaderBindingTable {
-			name: crate::debug_name(name),
+			name: name.map(str::to_owned),
 			written: None,
 		});
 		graphics_hardware_interface::ShaderBindingTableHandle::from_index(self.shader_binding_tables.len() as u64 - 1)

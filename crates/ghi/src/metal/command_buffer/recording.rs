@@ -254,7 +254,6 @@ impl<'a> CommandBufferRecording<'a> {
 			frame_key,
 			sequence_index,
 			command_buffer: NativeCommandSlot(Some(command_buffer)),
-			#[cfg(debug_assertions)]
 			debug_regions: Vec::new_in(allocator),
 			bound_pipeline: None,
 			bound_descriptor_set_roots: SmallVec::new(),
@@ -280,7 +279,6 @@ impl<'a> CommandBufferRecording<'a> {
 	///
 	/// The label reads `<kind>: <region path> → <targets>`, so capture tools list what each encoder does and writes.
 	/// Returns how many regions it pushed, which the encoder pops before it ends.
-	#[cfg(debug_assertions)]
 	fn begin_encoder_debug_regions(
 		&self,
 		encoder: &ProtocolObject<dyn mtl::MTL4CommandEncoder>,
@@ -379,7 +377,6 @@ impl<'a> CommandBufferRecording<'a> {
 			self.encoder.is_none(),
 			"A Metal encoder is already open. The most likely cause is that a new encoder was created before end_encoder.",
 		);
-		#[cfg(debug_assertions)]
 		let debug_region_depth = self.begin_encoder_debug_regions(encoder.common(), _kind, _targets);
 		if matches!(encoder, ActiveEncoder::Render(_)) {
 			self.render_vertex_buffers_dirty = !self.bound_vertex_buffers.is_empty();
@@ -400,7 +397,6 @@ impl<'a> CommandBufferRecording<'a> {
 			push_constants_dirty: !self.push_constant_data.is_empty(),
 			tail_timestamps: SmallVec::new(),
 			unwaited_bottom_level_work: false,
-			#[cfg(debug_assertions)]
 			debug_region_depth,
 		});
 	}
@@ -413,7 +409,6 @@ impl<'a> CommandBufferRecording<'a> {
 			return;
 		};
 		let encoder = state.encoder.common();
-		#[cfg(debug_assertions)]
 		for _ in 0..state.debug_region_depth {
 			encoder.popDebugGroup();
 		}
@@ -674,7 +669,6 @@ impl<'a> CommandBufferRecording<'a> {
 			let descriptor = mtl::MTL4ArgumentTableDescriptor::new();
 			descriptor.setMaxBufferBindCount(ARGUMENT_TABLE_BUFFER_COUNT);
 			descriptor.setInitializeBindings(true);
-			#[cfg(debug_assertions)]
 			if device.debug_labels {
 				descriptor.setLabel(Some(&NSString::from_str(stage.label())));
 			}

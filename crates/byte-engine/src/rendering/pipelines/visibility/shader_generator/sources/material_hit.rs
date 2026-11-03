@@ -38,10 +38,7 @@ material_hit_prefix: fn (input: StageInput) -> void {
 		+ barycentric.x * (model_space_vertex_normal1 - model_space_vertex_normal0)
 		+ barycentric.y * (model_space_vertex_normal2 - model_space_vertex_normal0);
 	let N: vec3f = normalize(model * vec4f(model_space_normal.x, model_space_normal.y, model_space_normal.z, 0.0));
-	// A ray's direction need not be unit length. The view direction and the ray cone's width both read its length, so
-	// it is computed once.
-	let ray_length: f32 = length(input.ray_direction);
-	let V: vec3f = (vec3f(0.0, 0.0, 0.0) - input.ray_direction) / ray_length;
+	let V: vec3f = normalize(vec3f(0.0, 0.0, 0.0) - input.ray_direction);
 	// The triangle's plane, turned to the side its vertex normals face, tells the front of the surface from its back
 	// for any winding. Both normals then turn to the side the ray came from.
 	let surface_normal: vec3f = normalize(cross(world_edge1, world_edge2));
@@ -49,24 +46,9 @@ material_hit_prefix: fn (input: StageInput) -> void {
 	let front_face: f32 = step(0.0, dot(surface_normal, V));
 	surface_normal = surface_normal * (front_face * 2.0 - 1.0);
 	N = N * (front_face * 2.0 - 1.0);
-}
-"#;
-
-/// Returns the payload for the back of a single-sided surface before the material body reads any texture.
-///
-/// Only the front of a surface, or either side of a double-sided surface, which flag bit 0 marks, reflects and emits
-/// light toward the ray. The back of any other surface still stops the ray, so light doesn't leak through walls seen
-/// from behind, but reports neither albedo nor emission, whatever the material's textures hold.
-pub(crate) const MATERIAL_HIT_BACKFACE_SOURCE: &str = r#"
-material_hit_backface: fn (payload: HitSurface) -> HitSurface {
-	if (front_face == 0.0 && (mesh.flags & 1) == 0) {
-		let back_surface: HitSurface = payload;
-		back_surface.albedo = vec3f16(0.0, 0.0, 0.0);
-		back_surface.front_face = 0;
-		back_surface.emission = vec3f(0.0, 0.0, 0.0);
-		back_surface.normal = vec3f16(N);
-		return back_surface;
-	}
+	// One where the surface reflects and emits light toward the ray: its front, or either side of a double-sided
+	// surface, which flag bit 0 marks.
+	let facing: f32 = max(front_face, f32(mesh.flags & 1));
 }
 "#;
 
@@ -84,7 +66,7 @@ material_hit_uv: fn (input: StageInput) -> void {
 	let vertex_uv: vec2f = vertex_uv0 + barycentric.x * uv_edge1 + barycentric.y * uv_edge2;
 	let world_area: f32 = length(cross(world_edge1, world_edge2));
 	let uv_area: f32 = abs(uv_edge1.x * uv_edge2.y - uv_edge2.x * uv_edge1.y);
-	let cone_width: f32 = HIT_CONE_SPREAD * input.hit_distance * ray_length;
+	let cone_width: f32 = HIT_CONE_SPREAD * input.hit_distance * length(input.ray_direction);
 	let footprint: f32 = cone_width / max(dot(surface_normal, V), 0.01)
 		* sqrt(uv_area / max(world_area, 0.000000000001));
 	let uv_derivative_x: vec2f = vec2f(footprint, 0.0);
@@ -124,19 +106,15 @@ material_hit_defaults: fn () -> void {
 }
 "#;
 
-/// Writes the payload of a side that reflects and emits light toward the ray; [`MATERIAL_HIT_BACKFACE_SOURCE`] has
-/// already returned for any other side. Rays carry only diffuse light into surfels, so the hit reports the base color
-/// times one minus the metalness.
+/// Writes the payload. Rays carry only diffuse light into surfels, so the hit reports the base color times one minus
+/// the metalness. The back of a single-sided surface reports neither albedo nor emission, so light doesn't leak
+/// through walls seen from behind.
 pub(crate) const MATERIAL_HIT_SUFFIX_SOURCE: &str = r#"
 material_hit_suffix: fn (payload: HitSurface) -> HitSurface {
 	let hit_surface: HitSurface = payload;
-	// Precision boundary: the body computes every value in `f32` and narrows it to these half-precision outputs. The
-	// albedo and metalness are already half, and the payload stores the diffuse albedo in half, so the product stays
-	// in half, within about one half-precision step of the narrowed `f32` product. The emission is widened back to
-	// `f32` for the payload; the normal is narrowed from the `f32` shading normal.
-	hit_surface.albedo = albedo * (f16(1.0) - metalness);
-	hit_surface.front_face = 1;
-	hit_surface.emission = vec3f(emission);
+	hit_surface.albedo = vec3f16(vec3f(albedo) * ((1.0 - f32(metalness)) * facing));
+	hit_surface.front_face = u32(facing);
+	hit_surface.emission = vec3f(emission) * facing;
 	hit_surface.normal = vec3f16(N);
 	return hit_surface;
 }

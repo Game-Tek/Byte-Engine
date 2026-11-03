@@ -1139,19 +1139,12 @@ impl VisibilityPipelineManager {
 			id,
 			index,
 			image,
+			sampler,
 			photometry,
 		} = texture;
-		let scene = set_layouts::SCENE.binder(self.scene.descriptor_set);
-		if photometry.is_some() {
-			// Lights read IES profiles through `ies_profiles`, whose sampler clamps instead of wrapping around the seam.
-			// The profile also fills its `textures` element, so no pool index reads an unbound descriptor.
-			frame.write(&[
-				scene.texture_element("ies_profiles", image, index),
-				scene.texture_element("textures", image, index),
-			]);
-		} else {
-			frame.write(&[scene.texture_element("textures", image, index)]);
-		}
+		frame.write(&[set_layouts::SCENE
+			.binder(self.scene.descriptor_set)
+			.sampled_element("textures", image, sampler, index)]);
 		match photometry {
 			Some(photometry) if photometry.intensity_scale_candela.is_finite() && photometry.intensity_scale_candela > 0.0 => {
 				self.loaded_ies_profiles.insert(

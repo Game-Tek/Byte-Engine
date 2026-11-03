@@ -403,10 +403,6 @@ mod tests {
 				"doesn't clamp coordinates",
 			),
 			(
-				"sharp: sampler<{ mip_filter: nearest, reduction: min, anisotropy: 4 }>;\npyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: sharp }>;\nmain: fn () -> void {}".to_string(),
-				"filters anisotropically",
-			),
-			(
 				"farthest_depth: sampler<{ mip_filter: nearest, reduction: min }>;\npyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;\nread: fn (texture: Texture2D) -> f32 { return texture_lod(texture, vec2f(0.5, 0.5), 0.0).x; }\nmain: fn () -> void { let value: f32 = read(pyramid); value; }".to_string(),
 				"Function `read` takes a texture whose sampler reduces",
 			),

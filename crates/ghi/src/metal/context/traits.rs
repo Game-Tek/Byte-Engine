@@ -326,7 +326,6 @@ impl crate::context::ContextCreate for Context {
 	) -> graphics_hardware_interface::AllocationHandle {
 		let options = utils::resource_options_from_access(device_accesses);
 		let buffer = self.allocator.buffer(size, options);
-		#[cfg(debug_assertions)]
 		if self.settings.debug_labels {
 			buffer.setLabel(Some(&NSString::from_str(&format!("Allocation {}", self.allocations.len()))));
 		}
@@ -345,9 +344,7 @@ impl crate::context::ContextCreate for Context {
 		// Split interleaved vertices into one packed stream per Metal vertex binding.
 		let index_buffer = self.create_buffer_with_bytes(indices);
 		// Meshes carry no name, so labels identify them by handle.
-		#[cfg(debug_assertions)]
 		let mesh_index = self.meshes.len();
-		#[cfg(debug_assertions)]
 		if self.settings.debug_labels {
 			index_buffer.setLabel(Some(&NSString::from_str(&format!("Mesh {mesh_index} Indices"))));
 		}
@@ -388,7 +385,6 @@ impl crate::context::ContextCreate for Context {
 					}
 
 					let buffer = self.create_buffer_with_bytes(&binding_vertices);
-					#[cfg(debug_assertions)]
 					if self.settings.debug_labels {
 						buffer.setLabel(Some(&NSString::from_str(&format!(
 							"Mesh {mesh_index} Vertices (binding {_binding})"
@@ -462,7 +458,7 @@ impl crate::context::ContextCreate for Context {
 	fn create_shader_binding_table(&mut self, name: Option<&str>) -> graphics_hardware_interface::ShaderBindingTableHandle {
 		self.assert_ray_tracing("create a shader binding table");
 		self.shader_binding_tables.push(ShaderBindingTable {
-			name: crate::debug_name(name),
+			name: name.map(str::to_owned),
 			written: None,
 		});
 		graphics_hardware_interface::ShaderBindingTableHandle::from_index((self.shader_binding_tables.len() - 1) as u64)

@@ -79,8 +79,7 @@ impl Sampler {
 }
 
 /// Samples with the filter and reduction a BESL `sampler` declaration fixes. The VM always clamps coordinates and
-/// reads one level, so it leaves the address, mip filter, and anisotropy to the shader compiler, which rejects what it
-/// can't run.
+/// reads one level, so it leaves the address and mip filter to the shader compiler, which rejects what it can't run.
 impl From<SamplerState> for Sampler {
 	fn from(state: SamplerState) -> Self {
 		Self {

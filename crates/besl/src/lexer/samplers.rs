@@ -2,7 +2,7 @@
 //! allows. See the [sampler specification](/docs/reference/besl/interface#samplers).
 
 use super::*;
-use crate::sampler::{Address, Filter, MIN_ANISOTROPY, Reduction, SamplerState};
+use crate::sampler::{Address, Filter, Reduction, SamplerState};
 
 const SAMPLERS_DOCS_PATH: &str = "reference/besl/interface#samplers";
 
@@ -41,14 +41,6 @@ pub(super) fn attach_sampler(
 		if state.address != Address::Clamp {
 			return Err(LexError::invalid(format!(
 				"Sampler `{sampler}` reduces with `{}` but doesn't clamp coordinates. The most likely cause is a `repeat` or `mirror` address on a min or max sampler. Remove the `address` property, or set it to `clamp`. See {}.",
-				state.reduction.token(),
-				crate::online_docs_url(SAMPLERS_DOCS_PATH)
-			)));
-		}
-		// Platforms without sampler reduction reduce in shader code, which reads a fixed footprint.
-		if state.anisotropy != MIN_ANISOTROPY {
-			return Err(LexError::invalid(format!(
-				"Sampler `{sampler}` reduces with `{}` but filters anisotropically. The most likely cause is an `anisotropy` property on a min or max sampler. Remove the `anisotropy` property, or set it to `{MIN_ANISOTROPY}`. See {}.",
 				state.reduction.token(),
 				crate::online_docs_url(SAMPLERS_DOCS_PATH)
 			)));

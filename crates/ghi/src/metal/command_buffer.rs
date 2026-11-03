@@ -111,7 +111,6 @@ struct EncoderState {
 	/// one, and splitting the encoder for it would cost more than the build.
 	unwaited_bottom_level_work: bool,
 	/// How many logical debug regions this encoder mirrors, which it pops before it ends.
-	#[cfg(debug_assertions)]
 	debug_region_depth: usize,
 }
 
@@ -135,7 +134,6 @@ pub(super) fn texture_view_2d(
 		"Metal texture view creation failed. The most likely cause is that the selected mip level or array layer does not exist in the image.",
 	);
 	// Images are labeled only when debug labels are enabled, so views follow the same setting.
-	#[cfg(debug_assertions)]
 	if let Some(label) = texture.label() {
 		view.setLabel(Some(&NSString::from_str(&format!(
 			"{label} (mip {mip_level}, layer {layer})"
@@ -164,7 +162,6 @@ pub(super) fn texture_view_2d_array(
 	.expect(
 		"Metal texture view creation failed. The most likely cause is that the selected array layers do not exist in the image.",
 	);
-	#[cfg(debug_assertions)]
 	if let Some(label) = texture.label() {
 		view.setLabel(Some(&NSString::from_str(&format!(
 			"{label} (layers {first_layer} to {})",
@@ -270,7 +267,6 @@ pub(super) enum ArgumentTableStage {
 
 impl ArgumentTableStage {
 	/// Names this stage's argument table in capture tools.
-	#[cfg(debug_assertions)]
 	fn label(self) -> &'static str {
 		match self {
 			Self::Compute => "Compute Argument Table",
@@ -379,7 +375,6 @@ impl UploadArena {
 					.expect(
 						"Metal upload page allocation failed. The most likely cause is that the device is out of shared memory.",
 					);
-				#[cfg(debug_assertions)]
 				if self.debug_labels {
 					let label = if dedicated { "Dedicated Upload Page" } else { "Upload Page" };
 					buffer.setLabel(Some(&NSString::from_str(label)));
@@ -426,7 +421,6 @@ pub struct CommandBufferRecording<'a> {
 	frame_key: Option<graphics_hardware_interface::FrameKey>,
 	sequence_index: u8,
 	command_buffer: NativeCommandSlot,
-	#[cfg(debug_assertions)]
 	debug_regions: Vec<Retained<NSString>, &'a dyn std::alloc::Allocator>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	bound_descriptor_set_roots: SmallVec<[graphics_hardware_interface::DescriptorSetHandle; 4]>,

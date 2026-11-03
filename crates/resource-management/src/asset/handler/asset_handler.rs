@@ -509,7 +509,9 @@ impl<'a> BakeContext<'a> {
 	/// through here.
 	///
 	/// Before compiling, it emits the shader's BESL source as the `<id>.besl` product, and the platform source it lowered
-	/// to as `<id>.msl`, `<id>.hlsl`, or `<id>.glsl`, in the platform's shading language.
+	/// to as `<id>.msl`, `<id>.hlsl`, or `<id>.glsl`, in the platform's shading language. After compiling, it emits the
+	/// binary as `<id>.metallib` or `<id>.spv`, so tools that inspect compiled shaders, such as pipeline statistics, read
+	/// exactly what the bake stored.
 	pub(crate) async fn compile_prepared(
 		&self,
 		id: &str,
@@ -522,7 +524,11 @@ impl<'a> BakeContext<'a> {
 		self.intercept(format_args!("{id}.{}", language.extension()), || {
 			shader.platform_source().as_bytes().to_vec()
 		});
-		self.asset_manager.shader_compiler.compile(shader, id).await
+		let (shader, binary) = self.asset_manager.shader_compiler.compile(shader, id).await?;
+		if let Some(extension) = language.binary_extension() {
+			self.intercept(format_args!("{id}.{extension}"), || binary.to_vec());
+		}
+		Ok((shader, binary))
 	}
 
 	/// Prepares and compiles `program` into the shader named by `settings`, for shaders whose ID is known up front.

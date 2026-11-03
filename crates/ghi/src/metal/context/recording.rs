@@ -34,7 +34,7 @@ impl Context {
 		queues: Vec<queue::StoredQueue>,
 	) -> Result<Context, &'static str> {
 		let compiler_descriptor = mtl::MTL4CompilerDescriptor::new();
-		if cfg!(debug_assertions) && settings.debug_labels {
+		if settings.debug_labels {
 			compiler_descriptor.setLabel(Some(&NSString::from_str("Byte Engine")));
 		}
 		// The context's factory and every factory it creates share this compiler.
@@ -113,13 +113,12 @@ impl Context {
 		device_accesses: crate::DeviceAccesses,
 	) -> Buffer {
 		let options = utils::resource_options_from_access(device_accesses);
-		let name = crate::debug_name(name);
+		let name = name.map(str::to_owned);
 		let buffer = self.allocator.buffer(size, options);
 
 		let staging = (device_accesses == crate::DeviceAccesses::DeviceOnly)
 			.then(|| self.allocator.buffer(size, mtl::MTLResourceOptions::StorageModeShared));
 
-		#[cfg(debug_assertions)]
 		if let Some(name) = name.as_deref().filter(|_| self.settings.debug_labels) {
 			buffer.setLabel(Some(&NSString::from_str(name)));
 			if let Some(staging) = staging.as_ref() {
@@ -178,7 +177,6 @@ impl Context {
 	pub(crate) fn create_image_resource(&mut self, name: Option<&str>, description: ImageDescription) -> Image {
 		let texture = self.allocator.texture(&build_texture_descriptor(description));
 
-		#[cfg(debug_assertions)]
 		if let Some(name) = name.filter(|_| self.settings.debug_labels) {
 			texture.setLabel(Some(&NSString::from_str(name)));
 		}
@@ -193,7 +191,7 @@ impl Context {
 			});
 
 		Image {
-			name: crate::debug_name(name),
+			name: name.map(str::to_owned),
 			texture,
 			description,
 			staging,
@@ -478,7 +476,6 @@ impl Context {
 				let heap = self.device.newHeapWithDescriptor(&descriptor).expect(
 					"Metal heap creation failed. The most likely cause is that the device is out of memory for the image group.",
 				);
-				#[cfg(debug_assertions)]
 				if let Some(name) = group_name.as_deref().filter(|_| self.settings.debug_labels) {
 					heap.setLabel(Some(&objc2_foundation::NSString::from_str(name)));
 				}
@@ -496,7 +493,6 @@ impl Context {
 				"Metal image-group texture creation failed. The most likely cause is a heap that is not a placement heap.",
 			);
 			let image = self.images.resource_mut(handle);
-			#[cfg(debug_assertions)]
 			if let Some(name) = image.name.as_deref().filter(|_| self.settings.debug_labels) {
 				texture.setLabel(Some(&objc2_foundation::NSString::from_str(name)));
 			}
@@ -554,7 +550,7 @@ fn create_counter_heap(
 		);
 		"Metal 4 counter heap creation failed. The most likely cause is that the device does not support timestamp counter heaps."
 	})?;
-	if cfg!(debug_assertions) && debug_labels {
+	if debug_labels {
 		heap.setLabel(Some(&NSString::from_str(&format!("Counters {sequence_index}"))));
 	}
 	Ok(heap)

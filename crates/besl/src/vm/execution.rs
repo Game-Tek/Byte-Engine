@@ -391,29 +391,6 @@ impl ExecutableProgram {
 					lanes[*lane_index].frame.registers[*register] = Some(Value::F32(shuffled));
 				}
 			}
-			Instruction::SubgroupMax {
-				register,
-				value,
-				value_type,
-			} => {
-				// Only active lanes reach the rendezvous, so the reduction covers exactly the lanes a GPU would include.
-				let first = register_ref(&lanes[first_lane].frame.registers, *value)?;
-				if !first.matches_type(value_type) {
-					return Err(type_mismatch(value_type, &first.value_type()));
-				}
-				let mut maximum = first.clone();
-				for lane_index in subgroup {
-					let found = register_ref(&lanes[*lane_index].frame.registers, *value)?;
-					maximum = match (maximum, found) {
-						(Value::U32(current), &Value::U32(found)) => Value::U32(current.max(found)),
-						(Value::F32(current), &Value::F32(found)) => Value::F32(current.max(found)),
-						_ => return Err(type_mismatch(value_type, &found.value_type())),
-					};
-				}
-				for lane_index in subgroup {
-					lanes[*lane_index].frame.registers[*register] = Some(maximum.clone());
-				}
-			}
 			_ => {
 				return Err(VmError::UnsupportedStatement {
 					message: "Expected a subgroup collective instruction".to_string(),
@@ -615,13 +592,6 @@ impl ExecutableProgram {
 			}
 			Instruction::SubgroupBroadcast { .. } | Instruction::SubgroupShuffleXor { .. } => {
 				return Self::execute_subgroup_exchange(collective_behavior);
-			}
-			Instruction::SubgroupMax {
-				register,
-				value,
-				value_type,
-			} => {
-				return Self::execute_subgroup_max(*register, *value, value_type, registers, collective_behavior);
 			}
 			Instruction::WorkgroupBarrier => return Self::execute_workgroup_barrier(collective_behavior),
 		}
@@ -870,31 +840,6 @@ impl ExecutableProgram {
 			CollectiveBehavior::Ignore => {
 				let predicate = expect_bool(register_ref(registers, predicate)?)?;
 				registers[register] = Some(Value::Vec4U([predicate as u32, 0, 0, 0]));
-				Ok(InstructionProgress::Advance)
-			}
-			CollectiveBehavior::Suspend => Ok(InstructionProgress::SuspendSubgroupCollective),
-			CollectiveBehavior::Reject => Err(VmError::UnsupportedStatement {
-				message: "Subgroup collectives inside called functions cannot participate in workgroup rendezvous".to_string(),
-			}),
-		}
-	}
-
-	/// Executes one subgroup maximum according to its scheduler behavior.
-	fn execute_subgroup_max(
-		register: usize,
-		value: usize,
-		value_type: &ValueType,
-		registers: &mut [Option<Value>],
-		collective_behavior: CollectiveBehavior,
-	) -> Result<InstructionProgress, VmError> {
-		match collective_behavior {
-			// A single invocation is its own subgroup, so its value is the maximum.
-			CollectiveBehavior::Ignore => {
-				let value = register_ref(registers, value)?.clone();
-				if !value.matches_type(value_type) {
-					return Err(type_mismatch(value_type, &value.value_type()));
-				}
-				registers[register] = Some(value);
 				Ok(InstructionProgress::Advance)
 			}
 			CollectiveBehavior::Suspend => Ok(InstructionProgress::SuspendSubgroupCollective),

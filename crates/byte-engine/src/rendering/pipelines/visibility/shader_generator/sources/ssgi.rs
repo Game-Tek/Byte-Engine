@@ -183,6 +183,28 @@ sample_screen_space_indirect_diffuse: fn (
 	// lies between the texel centers; gather returns bottom-left, bottom-right, top-right, top-left.
 	let depth_quad: vec4f = gather(material_evaluation.depth_pyramid, (base + vec2f(1.0, 1.0)) / vec2f(f32(source_extent.x), f32(source_extent.y)));
 	let depths: f32[4] = f32[4](depth_quad.w, depth_quad.z, depth_quad.x, depth_quad.y);
+	// The full weighing only matters at edges, as in Black Ops 3's and HDRP's bilateral upsamples. When the gathered
+	// depths put all four texels on the pixel's triangle plane, within 0.5 % of its depth, every tap lies on the
+	// pixel's surface, so one filtered read of the history replaces the eight normal and light fetches, the weighing,
+	// and the retry. Deciding from the gather alone is what pays: the same test after all twelve reads saved nothing.
+	// Material evaluation 5.14 to 4.94-5.02 ms on the Sponza hall view at 4K (2026-11-03).
+	let inverse_depth: f32 = 1.0 / position.z;
+	let plane_offset: f32 = dot(geometric_normal, position);
+	let on_plane: bool = true;
+	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
+		let z: f32 = depths[tap];
+		let tap_texel: vec2f = vec2f(
+			min(base.x + f32(tap % 2), f32(source_extent.x - 1)),
+			min(base.y + f32(tap / 2), f32(source_extent.y - 1))
+		);
+		let ray: vec2f = tap_texel * material_evaluation.ssgi_view.pixel_to_ray_mul + material_evaluation.ssgi_view.pixel_to_ray_add;
+		let plane_distance: f32 = (dot(geometric_normal, vec3f(ray.x * z, ray.y * z, z)) - plane_offset) * inverse_depth;
+		on_plane = on_plane && z > 0.0 && abs(plane_distance) < 0.005;
+	}
+	if (on_plane) {
+		// The history is bound with a linear sampler; texel centers sit at half-texel offsets.
+		return sample(material_evaluation.ssgi_history, (source_position + vec2f(0.5, 0.5)) / vec2f(f32(source_extent.x), f32(source_extent.y)));
+	}
 	let zero_pair: vec2f16 = vec2f16(0.0, 0.0);
 	let stored_normals: vec2f16[4] = vec2f16[4](zero_pair, zero_pair, zero_pair, zero_pair);
 	let zero_light: vec4f16 = vec4f16(0.0, 0.0, 0.0, 0.0);

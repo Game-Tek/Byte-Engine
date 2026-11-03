@@ -437,8 +437,6 @@ impl Generator {
 					"subgroup_broadcast_u32" => "_besl_subgroup_broadcast_u32",
 					"subgroup_broadcast_f32" => "_besl_subgroup_broadcast_f32",
 					"subgroup_shuffle_xor_f32" => "_besl_subgroup_shuffle_xor_f32",
-					// Metal's simd_max overloads cover both uint and float, so it needs no helper.
-					"subgroup_max_u32" | "subgroup_max_f32" => "simd_max",
 					name => name,
 				});
 				string.push('(');

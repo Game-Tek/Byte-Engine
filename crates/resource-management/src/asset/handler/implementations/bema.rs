@@ -1252,7 +1252,8 @@ pub mod tests {
 	struct HitTestShaderGenerator;
 
 	/// The smallest closest-hit program: it returns the payload it receives.
-	const HIT_PROGRAM: &str = "SurfaceHit: struct { distance: f32 }\nmain: fn (payload: SurfaceHit) -> SurfaceHit { return payload; }";
+	const HIT_PROGRAM: &str =
+		"SurfaceHit: struct { distance: f32 }\nmain: fn (payload: SurfaceHit) -> SurfaceHit { return payload; }";
 
 	impl ProgramGenerator for HitTestShaderGenerator {
 		fn generate<'a>(
@@ -1367,7 +1368,10 @@ pub mod tests {
 			products,
 			[
 				("hit_material.bema#hit-shader.besl".to_string(), hit),
-				("hit_material.bema#shader.besl".to_string(), "main: fn () -> void {\n}\n".to_string()),
+				(
+					"hit_material.bema#shader.besl".to_string(),
+					"main: fn () -> void {\n}\n".to_string()
+				),
 			]
 		);
 	}
@@ -1377,7 +1381,11 @@ pub mod tests {
 	#[r#async::test]
 	async fn an_intercepted_bake_emits_the_platform_source_of_every_shader_it_compiles() {
 		let extension = crate::shader::besl::backends::platform::PlatformShaderLanguage::current_platform().extension();
-		let products = intercepted_material_products(|name| !name.ends_with(".besl")).await;
+		let products = intercepted_material_products(|name| {
+			name.rsplit_once('.').map(|(_, extension)| extension)
+				== Some(crate::shader::besl::backends::platform::PlatformShaderLanguage::current_platform().extension())
+		})
+		.await;
 
 		let names = products.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>();
 		assert_eq!(
@@ -1639,9 +1647,7 @@ use super::{
 	manager::AssetManager,
 	store_model, store_model_owned,
 };
-use crate::asset::handler::implementations::besl::{
-	PreparedBeslShader, shader_compilation_error_message,
-};
+use crate::asset::handler::implementations::besl::{PreparedBeslShader, shader_compilation_error_message};
 use crate::bemx::{self, import::ImportedMaterial, material_texture_parameter_name, material_texture_slot};
 use crate::resources::image::Image;
 use crate::{

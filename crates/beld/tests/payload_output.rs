@@ -242,7 +242,10 @@ fn an_intercepted_dry_run_prints_the_besl_of_every_shader_it_compiles() {
 		"an intercepted dry run still lists its resources"
 	);
 	let intercepted = output["intercepted"].as_array().unwrap();
-	assert!(!intercepted.is_empty(), "the FBX's generated material should compile a shader");
+	assert!(
+		!intercepted.is_empty(),
+		"the FBX's generated material should compile a shader"
+	);
 	for product in intercepted {
 		let name = product["name"].as_str().unwrap();
 		assert!(
@@ -252,6 +255,57 @@ fn an_intercepted_dry_run_prints_the_besl_of_every_shader_it_compiles() {
 		assert_eq!(product["encoding"], "utf-8");
 		let source = product["content"].as_str().unwrap();
 		besl::parse(source).unwrap_or_else(|error| panic!("{name} should hold BESL source ({error:?}):\n{source}"));
+	}
+
+	std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn an_intercept_out_directory_receives_every_product_as_a_file() {
+	let root = temporary_root("intercept-out");
+	std::fs::create_dir_all(root.join("assets")).unwrap();
+	std::fs::write(root.join("assets/triangle_move.fbx"), TRIANGLE_MOVE_FBX).unwrap();
+
+	let output = Command::new(env!("CARGO_BIN_EXE_beld"))
+		.current_dir(&root)
+		.args([
+			"--source",
+			"assets",
+			"bake",
+			"--dry-run",
+			"--intercept",
+			"*",
+			"--intercept-out",
+			"products",
+			"triangle_move.fbx",
+		])
+		.output()
+		.expect("BELD could not be started. The most likely cause is that the test binary was not built.");
+
+	assert_eq!(output.status.code(), Some(0));
+	let paths = String::from_utf8(output.stdout)
+		.unwrap()
+		.lines()
+		.map(|line| root.join(line))
+		.collect::<Vec<_>>();
+	assert!(
+		paths
+			.iter()
+			.all(|path| path.starts_with(root.join("products")) && path.is_file()),
+		"every printed path should be a written file under the output directory: {paths:?}"
+	);
+	let source = paths
+		.iter()
+		.find(|path| path.extension().is_some_and(|extension| extension == "besl"))
+		.expect("the FBX's generated material should compile a shader");
+	besl::parse(&std::fs::read_to_string(source).unwrap()).unwrap();
+	// Apple platforms compile to a metallib, which the platform compiler stores with its `MTLB` magic.
+	if cfg!(target_vendor = "apple") {
+		let binary = paths
+			.iter()
+			.find(|path| path.extension().is_some_and(|extension| extension == "metallib"))
+			.expect("the compiled shader should be written next to its source");
+		assert!(std::fs::read(binary).unwrap().starts_with(b"MTLB"));
 	}
 
 	std::fs::remove_dir_all(root).unwrap();

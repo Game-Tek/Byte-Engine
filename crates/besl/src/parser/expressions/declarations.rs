@@ -1,5 +1,5 @@
 use super::*;
-use crate::sampler::{Address, Filter, MAX_ANISOTROPY, MIN_ANISOTROPY, Reduction, SamplerState};
+use crate::sampler::{Address, Filter, Reduction, SamplerState};
 
 pub(crate) fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	let name = iterator.next_identifier()?;
@@ -268,7 +268,7 @@ pub(crate) fn parse_sampler<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a s
 
 	let mut state = SamplerState::default();
 	// The keys already set, so a repeated key is rejected instead of silently overriding the first.
-	let mut declared: [Option<&str>; 5] = [None; 5];
+	let mut declared: [Option<&str>; 4] = [None; 4];
 
 	loop {
 		if iterator.clone().next().copied() == Some("}") {
@@ -324,17 +324,9 @@ pub(crate) fn parse_sampler<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a s
 				};
 				3
 			}
-			"anisotropy" => {
-				state.anisotropy = value
-					.parse::<u8>()
-					.ok()
-					.filter(|anisotropy| (MIN_ANISOTROPY..=MAX_ANISOTROPY).contains(anisotropy))
-					.ok_or_else(|| invalid(&format!("the integers `{MIN_ANISOTROPY}` to `{MAX_ANISOTROPY}`")))?;
-				4
-			}
 			_ => {
 				return Err(syntax_error(format!(
-					"Unknown property `{key}` in sampler {name}. The most likely cause is that the property name is misspelled. Use `filter`, `mip_filter`, `reduction`, `address`, or `anisotropy`."
+					"Unknown property `{key}` in sampler {name}. The most likely cause is that the property name is misspelled. Use `filter`, `mip_filter`, `reduction`, or `address`."
 				)));
 			}
 		};

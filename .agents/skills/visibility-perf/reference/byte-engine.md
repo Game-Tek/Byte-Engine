@@ -104,7 +104,13 @@ Check each of these once per session, before the first build or run:
   "Determinism" below).
 - **One dispatch is one counter.** Ray-tracing hit shaders run inside the trace dispatch, so no timestamp separates
   closest-hit from the trace. Measure a hit shader by A/B against a stub hit shader, or with Metal System Trace.
-- **Register and occupancy numbers come from `scripts/pipeline_statistics.m`**, not from AIR or MSL.
+- **Register and occupancy numbers come from `scripts/pipeline_statistics.m`**, not from AIR or MSL. It reads compute
+  and tile functions; `--json` prints them for a JSON diff of a before and after bake.
+- **Look for the tool before you write one.** Hidden-window rendering, a fixed clock (`--unattended`), a timed exit
+  (`kill-after`), per-tick metrics to a file (`metrics-out`), shader sources and binaries under readable names
+  (`--intercept` with `--intercept-out`), and an isolated store (`beld --destination` with the viewer's
+  `--resources.path`, copied with `cp -cR` when it should start from an existing bake) all exist. Captures and
+  `xctrace` show pass names instead of `besl_main (N)` with `--render.debug.labels=true`, in release builds too.
 - **Tests need their features.** `cargo nextest run --workspace` turns on `gpu-processing` for every package. A run of
   one package needs it named: `cargo nextest run -p byte-engine-resource-management --features gpu-processing`.
   GPU-backed GHI tests also need `--ignore-default-filter`.
@@ -125,20 +131,33 @@ Check each of these once per session, before the first build or run:
 - `scripts/measure.sh <name> [viewer params]` does the whole run: launch unattended at `RATE` (default 60), wait for
   the inspector, pin the look (`LOOK=lx,ly,lz`, default the hall view from the spawn point), sample `stage.*`, capture the lit image and `TARGET="<render target>"`, stop the viewer. `REBAKE=1` deletes the
   resources first. `OUT_DIR` defaults to `$TMPDIR/byte-engine-perf`.
+- `scripts/ab.py --a <saved binary> --b <saved binary> [-- viewer params]` A/Bs two builds: interleaved rounds (A B,
+  then B A), each run unattended to `--ticks` through `kill-after` with its ticks in `metrics-out` NDJSON, the look
+  pinned once through the inspector, and the ticks before the pin and `--settle` after it dropped. It scales each run
+  by its `--control` stage (default `stage.shadow-maps`), reports medians, deltas, and the run-to-run spread as
+  noise, marks stages under `--floor` ms as `~0`, and writes each run's log and NDJSON, `results.json`, and
+  `command.txt` to `--out`.
 - `scripts/pngdiff.py before.png after.png` diffs the first channel of two captures without an image library.
 - `scripts/sample_metrics.py [host:port] [rounds] [shots]` is the forced-frame sampler on its own.
 - To read the BESL or MSL of any shader without launching the viewer or instrumenting the engine, intercept it from a
   dry-run bake: `cd ~/development/sandbox/model_viewer && <engine>/target/debug/beld --source assets bake --dry-run
   --intercept '*.besl' --intercept '*.msl' <id> 2>/dev/null`, where `<id>` is a `.bema`, a `.glb`, or a
-  `byte_engine/rendering/visibility/<pass>.pipeline`. Products are named `<shader ID>.besl` and `<shader ID>.msl`;
-  `--intercept '*' --format json | jq -r '.intercepted[].name'` lists them. The MSL is what the Metal compiler
+  `byte_engine/rendering/visibility/<pass>.pipeline`. Products are named `<shader ID>.besl`, `<shader ID>.msl`, and
+  `<shader ID>.metallib`; `--intercept '*' --format json | jq -r '.intercepted[].name'` lists them. Add
+  `--intercept-out <dir>` to write each one to `<dir>/<name>` instead of printing it, which is how to get metallibs
+  for `pipeline_statistics`. The MSL is what the Metal compiler
   receives, minus the precompiled prelude. Use it to check what a BESL edit lowered to before baking, measuring, or
   extracting a metallib. The `resources` skill in `plugins/byte-engine` has the details.
-- `scripts/pipeline_statistics.m` prints a compute kernel's temporary registers, spills, and instruction counts from
-  a baked metallib (build line in its header). To try a change without rebaking, extract the MSL with
+- `scripts/pipeline_statistics.m` prints the temporary registers, spills, threadgroup memory, and instruction counts
+  of every compute and tile function in a metallib (build line in its header). Get the metallibs with
+  `beld ... bake --dry-run --intercept '*.metallib' --intercept-out <dir> <id>`, then run the probe on `<dir>`'s files;
+  `--json` gives a document to diff. A tile function builds with rgba16f attachments unless `--tile-formats` lists
+  the pass's real formats. To try a change without rebaking, extract the MSL with
   `xcrun metal-source --extract=raw -o=<dir> -f <metallib>`, edit it, and compile it with the command line that the
   extraction's `metal-options.txt` records, which includes the prelude's precompiled header, then run the probe on
-  the result. Moving one call in the extracted resolve and recompiling took a minute and predicted the bake's 71
+  the result. `xcrun metal` guesses the language from the file extension, so pass `-x metal` when the source comes
+  from standard input or from a file not named `.metal`. Without it, standard input fails with "-E or -x required",
+  and a `.msl` file is taken as linker input: it prints only an "input unused" warning and compiles nothing. Moving one call in the extracted resolve and recompiling took a minute and predicted the bake's 71
   registers exactly.
 - By hand: `GET /metrics?presented=true`, `GET /metrics/frames?since=<tick>&presented=true` (NDJSON with `gpu`
   maps), `GET /screenshots?sink=0[&target=<name>][&previous=true][&format=raw]`, `POST /messages` with
@@ -168,9 +187,9 @@ Check each of these once per session, before the first build or run:
 - Useful pinned looks from the spawn point: `1,0,0` (hall), `-1,0,0` (back down the hall), `0.2,-0.5,1` (floor and
   courtyard side). The viewer integrates camera velocity with frame time, so walks never repeat.
 - To study one kernel outside the engine, bake its pipeline without opening the viewer:
-  `cd ~/development/sandbox/model_viewer && <engine>/target/debug/beld --source assets --destination <scratch dir>
-  bake byte-engine/rendering/visibility/<pass>.pipeline`. The `*-raw` files that start with `MTLB` are metallibs
-  (`strings <file> | grep <binding name>` finds the right one in the viewer's own `resources`), and
+  `cd ~/development/sandbox/model_viewer && <engine>/target/debug/beld --source assets bake --dry-run
+  --intercept '*.metallib' --intercept-out <scratch dir> byte_engine/rendering/visibility/<pass>.pipeline`.
+  Each metallib is named after its shader, so there is no need to `grep` the store's `*-raw` files, and
   `xcrun metal-source --extract=raw <file>` writes the MSL the engine compiled. A small Swift harness that renders the
   real input (Sponza's triangles from `assets/sponza/Sponza.gltf`, node scale 0.008, the viewer's sun), alternates two
   copies of it so the system level cache cannot serve repeats, and interleaves variants per round gives
@@ -376,7 +395,9 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
 
 ## Working agreement with the user
 
-Analyze means discuss first. Stage the work in steps, surface decisions that change the result or the scope, stop after
+Analyze means discuss first. When the agreed plan turns out not to work (a tool fails, a measurement can't be taken
+the agreed way, a premise was wrong), stop and ask before switching approach or building a workaround. Stage the work
+in steps, surface decisions that change the result or the scope, stop after
 each step with regime-matched numbers and an image diff, and never commit; the user commits. Flag HLSL, GLSL, Vulkan,
 and DX12 paths as unverified, since only macOS runs here. Never use `git stash`; the user keeps work there. Format only
 files you changed, with `rustfmt --edition 2024 --unstable-features --skip-children <file>`; `core/message_observer.rs`

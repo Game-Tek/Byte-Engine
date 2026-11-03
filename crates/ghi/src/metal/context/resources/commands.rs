@@ -8,7 +8,7 @@ impl Context {
 	) -> graphics_hardware_interface::CommandBufferHandle {
 		self.command_buffers.push(StoredCommandBuffer {
 			queue_handle,
-			name: crate::debug_name(name),
+			name: name.map(str::to_owned),
 		});
 		graphics_hardware_interface::CommandBufferHandle::from_index((self.command_buffers.len() - 1) as u64)
 	}

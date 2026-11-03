@@ -41,12 +41,9 @@ impl Context {
 	) -> (Retained<ProtocolObject<dyn mtl::MTLAccelerationStructure>>, usize) {
 		let sizes = self.device.accelerationStructureSizesWithDescriptor(descriptor);
 		let structure = self.allocator.acceleration_structure(sizes.accelerationStructureSize);
-		#[cfg(debug_assertions)]
 		if let Some(name) = name.filter(|_| self.settings.debug_labels) {
 			structure.setLabel(Some(&NSString::from_str(name)));
 		}
-		#[cfg(not(debug_assertions))]
-		let _ = name;
 		(structure, sizes.buildScratchBufferSize)
 	}
 
@@ -231,7 +228,6 @@ impl Context {
 			return;
 		}
 		let compacted = self.allocator.acceleration_structure(size);
-		#[cfg(debug_assertions)]
 		if let Some(label) = bottom_level.structure.label() {
 			compacted.setLabel(Some(&*label));
 		}

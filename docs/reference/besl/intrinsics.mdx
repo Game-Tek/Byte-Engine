@@ -168,8 +168,6 @@ stage input parameter.
 | `subgroup_broadcast_u32` | `subgroup_broadcast_u32(u32 value, u32 source_lane) -> u32` | Copies an unsigned value from one lane to every participating lane. |
 | `subgroup_broadcast_f32` | `subgroup_broadcast_f32(f32 value, u32 source_lane) -> f32` | Copies a float value from one lane to every participating lane. |
 | `subgroup_shuffle_xor_f32` | `subgroup_shuffle_xor_f32(f32 value, u32 mask) -> f32` | Returns `value` from the lane whose index is your lane index XOR `mask`. Pass the same `mask` in every lane, and keep the source lane active. |
-| `subgroup_max_u32` | `subgroup_max_u32(u32 value) -> u32` | Returns the largest `value` among the active lanes of the subgroup. |
-| `subgroup_max_f32` | `subgroup_max_f32(f32 value) -> f32` | Returns the largest `value` among the active lanes of the subgroup. The result is undefined when an active lane passes NaN. |
 
 Subgroup intrinsics require the target's subgroup or wave capability. BESL's
 GLSL, HLSL, and MSL generators validate them for compute stages only.

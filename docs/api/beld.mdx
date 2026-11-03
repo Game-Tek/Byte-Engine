@@ -84,7 +84,7 @@ anything under the destination directory.
 | `--force`, `--texture-compression` | Rejected with exit code 2. Every dry run bakes from scratch, and payloads stay uncompressed. |
 | `--destination`, `--storage-mode` | No effect. |
 | `--memory-budget-mib`, `--config` | Apply as in a normal bake. The roots don't apply, because a dry run bakes only its IDs. |
-| `--format`, `--payload`, `--intercept` | Accepted on `bake` only with `--dry-run`. |
+| `--format`, `--payload`, `--intercept`, `--intercept-out` | Accepted on `bake` only with `--dry-run`. |
 | `--prune` | Rejected with exit code 2. |
 | Exit code | The same as a normal bake of the same IDs. |
 
@@ -102,11 +102,13 @@ BESL program it compiles into a shader.
 | Order | Products print sorted by name. |
 | No match | A warning on standard error. The exit code doesn't change. |
 | Exit code | The same as the dry run without `--intercept`. |
+| `--intercept-out <directory>` | Writes each product to `<directory>/<name>` instead of printing its content, creating the directory and every directory a `/` in the name opens. It overwrites a file that's already there. A name with a `..` or root component writes nothing and is an error with exit code 1. Needs `--intercept`. |
 
 | Product | Name | Content |
 | --- | --- | --- |
 | BESL source | `<shader ID>.besl`, such as `wood.bema#shader.besl`, `wood.bema#hit-shader.besl`, or `mesh.gltf#shaders/<key>.besl` | The program the shader compiles from, after the renderer's program generator or transform, as BESL source. |
 | Platform source | `<shader ID>.msl` on Apple platforms, `<shader ID>.hlsl` on Windows, and `<shader ID>.glsl` on Linux | The source BESL lowered to, which the platform compiler compiles into the shader's payload. It leaves out the precompiled MSL prelude that the compiler includes. |
+| Compiled binary | `<shader ID>.metallib` on Apple platforms and `<shader ID>.spv` on Linux. Windows has none, because the shader's payload is its HLSL source. | The bytes the platform compiler produced, which the shader's payload stores. |
 
 The BESL source follows the [BESL language](/docs/reference/besl/language),
 with these additions for declarations the engine builds that have no source
@@ -318,6 +320,7 @@ A failed bake has only `id`, `source`, and `status`.
 | `bake --dry-run`, human | The same object in the `inspect` human layout. |
 | `bake --dry-run --intercept`, JSON | The `bake --dry-run` object, with `intercepted` added: one object per product ordered by name, with `name`, `encoding`, and `content`. `encoding` is `utf-8` when the content is text, which `content` holds as a string, and `base64` otherwise. `--payload` applies to `resources` as without `--intercept`. |
 | `bake --dry-run --intercept`, human | Each product as a `// <name>` line followed by its text, or by its size when it isn't text, and a blank line. Failed IDs follow in the `inspect` human layout. |
+| `bake --dry-run --intercept --intercept-out`, human | One line per product: the path it was written to. Failed IDs follow in the `inspect` human layout. The JSON format doesn't change. |
 | `query`, JSON | An object with `count`, the number of matching resources and failed bakes; `size` and `stored`, their summed decoded and stored sizes; and `share`, `stored` divided by the summed stored size of every resource in the store, or 0 for an empty store. Without `--group`, it adds `resources`, the listed resources in order. With `--group`, it adds `groups` in order, each with `name`, the group's value as text, and the group's own `count`, `size`, `stored`, `share`, and `resources`. |
 | `query`, JSON resource | An object with `uid`, `properties`, and every [field](#fields) with a fixed name that the resource has, under that name. Sizes are in bytes, and `baked` is in seconds. It adds each `model.<path>` field that the filter, `--group`, or `--sort` names, when the resource has it. Debug builds add `trace`, the bake messages. A failed bake has `id`, `source`, `status`, and `trace`. |
 | `query`, human | A line of field names, then one line per resource with its `id`, `class`, `stored`, `encoding`, and `ratio`, followed by every other field that the filter, `--group`, or `--sort` names. A failed bake shows `failed` as its class. With `--group`, each group starts with a line of its name and totals, and its resources follow, indented. A line says how many resources `--limit` left out of a group. The last line gives the totals of every matching resource. |

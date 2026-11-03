@@ -163,3 +163,123 @@ pub(super) fn erase_layer_parameters(node: &NodeReference) {
 		erase_layer_parameters(child);
 	}
 }
+
+/// Places every binding of the program at `root` in the program's descriptor sets, and records the result on each
+/// binding as its [`Placement`].
+///
+/// The sets are the layers `main` takes, in parameter order, then the sets backends add (bindings whose layout names
+/// no layer `main` takes, such as tile outputs), in the order the program first declares one of their bindings, and
+/// last the program's own descriptors. A layer without descriptors forms no set. Without a `main`, every layer forms
+/// its set, in declaration order. A binding of a layer `main` doesn't take gets no placement. Each set numbers its
+/// bindings from 0 without gaps, and stores them densely in that order.
+///
+/// Linking calls it. Call it again after adding or replacing bindings in a linked program, as tile lowering does.
+pub fn place_descriptors(root: &NodeReference) -> Result<(), LexError> {
+	/// The order key of a set, its layout, and its bindings.
+	type Set = ((u8, usize), Option<String>, Vec<NodeReference>);
+
+	/// Adds the bindings under `node` to `sets`. `layer` is the enclosing layer's path and its order among the
+	/// program's sets, or `None` when that layer forms no set of the program.
+	fn visit(
+		node: &NodeReference,
+		layer: Option<(&str, Option<usize>)>,
+		has_main: bool,
+		layers: &mut usize,
+		sets: &mut Vec<Set>,
+	) {
+		let borrowed = node.borrow();
+		match borrowed.node() {
+			Nodes::Scope { children, .. } => {
+				for child in children {
+					visit(child, None, has_main, layers, sets);
+				}
+			}
+			Nodes::Layer {
+				path, members, entry, ..
+			} => {
+				// Without a `main`, the layers form their sets in declaration order.
+				let order = if has_main { *entry } else { Some(*layers) };
+				*layers += 1;
+				for member in members {
+					visit(member, Some((path, order)), has_main, layers, sets);
+				}
+			}
+			Nodes::Binding { layout, .. } => {
+				let key = match (layout.as_deref(), layer) {
+					(None, _) => Some((2, 0)),
+					// A layer `main` doesn't take forms no set.
+					(Some(layout), Some((path, order))) if layout == path => order.map(|order| (0, order)),
+					// A layout no layer declares is one a backend added; the first binding declared orders it.
+					(Some(_), _) => Some((1, sets.len())),
+				};
+				drop(borrowed);
+				let Some(key) = key else {
+					if let Nodes::Binding { placement, .. } = node.borrow_mut().node_mut() {
+						*placement = None;
+					}
+					return;
+				};
+				let layout = match node.borrow().node() {
+					Nodes::Binding { layout, .. } => layout.clone(),
+					_ => unreachable!("The node was matched as a binding above"),
+				};
+				match sets.iter_mut().find(|(_, existing, _)| *existing == layout) {
+					Some((_, _, bindings)) => bindings.push(node.clone()),
+					None => sets.push((key, layout, vec![node.clone()])),
+				}
+			}
+			_ => {}
+		}
+	}
+
+	let mut sets = Vec::<Set>::new();
+	visit(root, None, root.get_main().is_some(), &mut 0, &mut sets);
+	sets.sort_by_key(|(key, ..)| *key);
+
+	for (set, (_, layout, bindings)) in sets.iter_mut().enumerate() {
+		let set_name = layout.as_deref().unwrap_or("the shader's own descriptors");
+		let slot = |binding: &NodeReference| match binding.borrow().node() {
+			Nodes::Binding { slot, .. } => *slot,
+			_ => unreachable!("Only bindings are grouped into sets"),
+		};
+		bindings.sort_by_key(slot);
+
+		let mut placement = Placement {
+			set: set as u32,
+			..Placement::default()
+		};
+		for (index, binding) in bindings.iter().enumerate() {
+			let mut binding = binding.borrow_mut();
+			let Nodes::Binding {
+				name,
+				slot,
+				r#type,
+				count,
+				placement: target,
+				..
+			} = binding.node_mut()
+			else {
+				unreachable!("Only bindings are grouped into sets");
+			};
+			if *slot != index as u32 {
+				return Err(LexError::invalid(format!(
+					"Descriptor `{name}` of descriptor set `{set_name}` takes binding {slot}, where the set's next free number is {index}. The most likely cause is a binding number that repeats another one or skips a number. Number the bindings of each set from 0 without gaps or repeats."
+				)));
+			}
+			*target = Some(placement);
+
+			let count = count.map_or(1, |count| count.get());
+			let overflow = || {
+				LexError::invalid(format!(
+					"Descriptor set `{set_name}` holds more descriptors than fit in 32 bits at `{name}`. The most likely cause is a descriptor `count` far larger than intended. Lower the counts of the set's arrays."
+				))
+			};
+			placement.resource = placement.resource.checked_add(count).ok_or_else(overflow)?;
+			if matches!(r#type, BindingTypes::CombinedImageSampler { sampler: None, .. }) {
+				placement.sampler = placement.sampler.checked_add(count).ok_or_else(overflow)?;
+			}
+		}
+	}
+
+	Ok(())
+}

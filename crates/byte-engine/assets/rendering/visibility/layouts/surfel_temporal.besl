@@ -47,17 +47,17 @@ surfel_temporal_luma: fn (value: vec4f) -> f32 {
 
 SurfelTemporal: layer {
 	// The previous frame's `Surfel History` and `Surfel History Weights`.
-	surfel_previous_history: descriptor<{ type: Texture2D, binding: 1222, access: read }>;
-	surfel_previous_weights: descriptor<{ type: Texture2D, binding: 1223, access: read }>;
+	surfel_previous_history: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+	surfel_previous_weights: descriptor<{ type: Texture2D, binding: 1, access: read }>;
 	// The previous frame's linear depth pyramid, whose mip zero matches the history's texels.
-	surfel_previous_depth: descriptor<{ type: Texture2D, binding: 1224, access: read }>;
+	surfel_previous_depth: descriptor<{ type: Texture2D, binding: 2, access: read }>;
 	// The previous frame's `SSGI Normals`.
-	surfel_previous_normals: descriptor<{ type: Texture2D, binding: 1226, access: read }>;
+	surfel_previous_normals: descriptor<{ type: Texture2D, binding: 3, access: read }>;
 	// This frame's `Surfel History`: pre-exposed light in RGB and the hit fraction in alpha.
-	surfel_history_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1227, access: write }>;
+	surfel_history_output: descriptor<{ type: StorageImage<rgba16f>, binding: 4, access: write }>;
 	// This frame's `Surfel History Weights`: the confidence the history holds in R, and the variance of its light's
 	// luminance in G.
-	surfel_weights_output: descriptor<{ type: StorageImage<rg16f>, binding: 1228, access: write }>;
+	surfel_weights_output: descriptor<{ type: StorageImage<rg16f>, binding: 5, access: write }>;
 }
 
 // The previous frame's history at one texel, as the reprojection reads it.

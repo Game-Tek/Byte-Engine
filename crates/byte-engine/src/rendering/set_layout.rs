@@ -698,7 +698,7 @@ mod tests {
 
 		let arrayed = layouts(&[Binding {
 			count: 15,
-			..binding("pool", BindingKind::StorageImage, 2, false, true)
+			..binding("pool", BindingKind::StorageImage, 0, false, true)
 		}]);
 		assert!(validate_binding_schema(&arrayed).is_ok());
 		assert!(validate_resources(&arrayed, &[array]).is_ok());
@@ -741,6 +741,7 @@ mod tests {
 
 		assert!(validate_binding_schema(&layouts(&[array])).is_err());
 		let mut writable_sampler = bindings[1].clone();
+		writable_sampler.slot = 0;
 		writable_sampler.write = true;
 
 		assert!(validate_binding_schema(&layouts(&[writable_sampler])).is_err());

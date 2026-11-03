@@ -210,6 +210,7 @@ pub(crate) fn lex_with_root(root: Node, mut node: parser::Node) -> Result<NodeRe
 
 	// Backends and the VM never see a layer parameter: they read the layers' members as plain declarations.
 	super::layers::record_entry_layers(&root)?;
+	super::layers::place_descriptors(&root)?;
 	super::layers::erase_layer_parameters(&root);
 
 	// Backends and the VM never see a `bool` member: they read the bytes that hold it.
@@ -846,6 +847,7 @@ impl Node {
 				memory_class,
 				count,
 				layout: None,
+				placement: None,
 			},
 		}
 	}
@@ -1080,6 +1082,24 @@ impl BindingTypes {
 	}
 }
 
+/// The `Placement` struct locates one binding inside the descriptor sets of the program that declares it, so every
+/// backend and the VM address the binding the same way without regrouping the program's sets.
+///
+/// A set's descriptors are stored densely in binding order: an array takes `count` consecutive descriptors and one
+/// binding number, so it moves the storage of the bindings after it but never their numbers. Linking computes it with
+/// [`crate::place_descriptors`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Placement {
+	/// The position of the binding's set among the program's sets: the layers `main` takes, in parameter order, then the
+	/// sets backends add, then the program's own descriptors.
+	pub set: u32,
+	/// How many descriptors the bindings before this one in its set hold: the index of its first descriptor.
+	pub resource: u32,
+	/// How many samplers the bindings before this one in its set hold. Only a texture whose sampler the application
+	/// binds holds samplers, one per descriptor.
+	pub sampler: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BindingTypes {
 	Buffer {
@@ -1246,6 +1266,7 @@ pub enum Nodes {
 	Expression(Expressions),
 	Binding {
 		name: String,
+		/// The binding's number within its descriptor set, as `binding:` writes it. Each set numbers its bindings from 0.
 		slot: u32,
 		read: bool,
 		write: bool,
@@ -1255,6 +1276,9 @@ pub enum Nodes {
 		/// The name of the descriptor set layout that declares the binding: the path of the layer it is a member of, or `None`
 		/// for the program's own layout. Bindings that share a layout form one descriptor set.
 		layout: Option<String>,
+		/// Where the binding sits among the program's descriptor sets, or `None` for a binding of a layer `main` doesn't
+		/// take. Linking sets it; see [`crate::place_descriptors`].
+		placement: Option<Placement>,
 	},
 	PushConstant {
 		members: Vec<NodeReference>,
@@ -1530,9 +1554,10 @@ impl std::fmt::Debug for Node {
 				r#type,
 				count,
 				layout,
+				placement,
 			} => write!(
 				f,
-				"Binding {{ name: {name}, slot: {slot}, read: {read}, write: {write}, memory_class: {memory_class:?}, type: {:?}, count: {count:?}, layout: {layout:?} }}",
+				"Binding {{ name: {name}, slot: {slot}, read: {read}, write: {write}, memory_class: {memory_class:?}, type: {:?}, count: {count:?}, layout: {layout:?}, placement: {placement:?} }}",
 				r#type
 			),
 			Nodes::PushConstant { members } => write!(f, "PushConstant {{ members: {:?} }}", names(members)),

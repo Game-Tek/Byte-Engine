@@ -13,8 +13,8 @@
 use ::byte_engine::rendering::bloom::layouts::parameters::*;
 use ::byte_engine::rendering::bloom::layouts::climb::*;
 
-scene_texture: descriptor<{ type: Texture2D, binding: 2, access: read }>;
-bloom_parameters: descriptor<{ type: BloomParameters, binding: 4, access: read, memory: constant }>;
+scene_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+bloom_parameters: descriptor<{ type: BloomParameters, binding: 1, access: read, memory: constant }>;
 result: output<vec4f, 0>;
 
 // The top-level texels under one tile's pixels: one under each lane's 2x2 block, plus the one-texel ring that

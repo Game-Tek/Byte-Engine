@@ -12,29 +12,31 @@ use super::render_pass::{OCCLUSION_PYRAMID_HEIGHT, OCCLUSION_PYRAMID_MIP_COUNT, 
 use super::shader_data::{MESH_FLAG_DOUBLE_SIDED, MESH_FLAG_SKINNED};
 use crate::rendering::shader_vm_test::{
 	IDENTITY_MATRIX, array_buffer, assert_rgba_close, buffer, column_major, compile, empty_image, input_buffer, lane_config,
-	output_buffer, push_constant_buffer, rgba, run_at, texture_2d,
+	output_buffer, push_constant_buffer, rgba, run_at, slot, texture_2d,
 };
 
-const VIEWS_SLOT: ResourceSlot = ResourceSlot::new(0);
-const GTAO_PARAMETERS_SLOT: ResourceSlot = ResourceSlot::new(1);
-const MESH_DATA_SLOT: ResourceSlot = ResourceSlot::new(1);
-const MATERIAL_EVALUATIONS_SLOT: ResourceSlot = ResourceSlot::new(1068);
-const MATERIAL_COUNT_SLOT: ResourceSlot = ResourceSlot::new(1033);
-const MATERIAL_OFFSET_SLOT: ResourceSlot = ResourceSlot::new(1034);
-const MATERIAL_OFFSET_SCRATCH_SLOT: ResourceSlot = ResourceSlot::new(1035);
-const MATERIAL_DISPATCH_SLOT: ResourceSlot = ResourceSlot::new(1036);
-const PIXEL_MAPPING_SLOT: ResourceSlot = ResourceSlot::new(1037);
-const INSTANCE_INDEX_SLOT: ResourceSlot = ResourceSlot::new(1040);
-const LIT_SLOT: ResourceSlot = ResourceSlot::new(1041);
-const DIFFUSE_RADIANCE_HISTORY_SLOT: ResourceSlot = ResourceSlot::new(1057);
-const MESH_DISPATCH_WORK_SLOT: ResourceSlot = ResourceSlot::new(1063);
-const OCCLUSION_PYRAMID_SLOT: ResourceSlot = ResourceSlot::new(1069);
-const OCCLUSION_VISIBILITY_SLOT: ResourceSlot = ResourceSlot::new(1070);
-const VERTEX_POSITIONS_SLOT: ResourceSlot = ResourceSlot::new(2);
-const VERTEX_UVS_SLOT: ResourceSlot = ResourceSlot::new(5);
-const VERTEX_INDICES_SLOT: ResourceSlot = ResourceSlot::new(6);
-const PRIMITIVE_INDICES_SLOT: ResourceSlot = ResourceSlot::new(7);
-const MESHLETS_SLOT: ResourceSlot = ResourceSlot::new(8);
+const VIEWS: &str = "views";
+const GTAO_VIEW: &str = "gtao_view";
+const SCREEN_VIEW: &str = "screen_view";
+const GTAO_PARAMETERS: &str = "gtao_parameters";
+const MESH_DATA: &str = "meshes";
+const MATERIAL_EVALUATIONS: &str = "material_evaluations";
+const MATERIAL_COUNT: &str = "material_count_buffer";
+const MATERIAL_OFFSET: &str = "material_offset_buffer";
+const MATERIAL_OFFSET_SCRATCH: &str = "material_offset_scratch_buffer";
+const MATERIAL_DISPATCH: &str = "material_evaluation_dispatches";
+const PIXEL_MAPPING: &str = "pixel_mapping_buffer";
+const INSTANCE_INDEX: &str = "instance_index_render_target";
+const LIT: &str = "lit_map";
+const DIFFUSE_RADIANCE_HISTORY: &str = "diffuse_radiance_map";
+const MESH_DISPATCH_WORK: &str = "mesh_dispatch_work";
+const OCCLUSION_PYRAMID: &str = "occlusion_pyramid";
+const OCCLUSION_VISIBILITY: &str = "occlusion_visibility";
+const VERTEX_POSITIONS: &str = "vertex_positions";
+const VERTEX_UVS: &str = "vertex_uvs";
+const VERTEX_INDICES: &str = "vertex_indices";
+const PRIMITIVE_INDICES: &str = "primitive_indices";
+const MESHLETS: &str = "meshlets";
 const FIXTURE_INSTANCE_INDEX: usize = 3;
 const FIXTURE_MESHLET_INDEX: usize = 5;
 const MESHLET_INSTANCE_BITS: u32 = 12;
@@ -47,12 +49,10 @@ const GTAO_WORKGROUP_SIZE: usize = 128;
 const PYRAMID_WORKGROUP_WIDTH: u32 = 8;
 const PYRAMID_WORKGROUP_HEIGHT: u32 = 4;
 const PYRAMID_WORKGROUP_SIZE: usize = 32;
-/// The linear depth pyramid pass's workgroup, and its receiver bounds and cascade fit bindings.
+/// The linear depth pyramid pass's workgroup.
 const DEPTH_PYRAMID_WORKGROUP_WIDTH: u32 = 16;
 const DEPTH_PYRAMID_WORKGROUP_HEIGHT: u32 = 16;
 const DEPTH_PYRAMID_WORKGROUP_SIZE: usize = 256;
-const PYRAMID_RECEIVER_BOUNDS_SLOT: ResourceSlot = ResourceSlot::new(1037);
-const PYRAMID_RECEIVER_FIT_SLOT: ResourceSlot = ResourceSlot::new(1038);
 const PIXEL_MAPPING_WORKGROUP_WIDTH: u32 = 16;
 const PIXEL_MAPPING_WORKGROUP_SIZE: usize = 256;
 /// The 8x8 workgroup most visibility compute passes use, such as the material count, the occlusion pyramid, the GTAO
@@ -245,7 +245,7 @@ fn run_meshlet_task_workgroup(
 		(1..=TASK_WORKGROUP_SIZE).contains(&meshlet_count),
 		"Task meshlet fixture must hold between one meshlet and one workgroup of meshlets."
 	);
-	let mut views = buffer(&program, VIEWS_SLOT);
+	let mut views = buffer(&program, slot(&program, VIEWS));
 	for (view_index, view_projection) in view_projections.iter().copied().enumerate() {
 		views
 			.write_array_member(view_index, "view_projection", Value::Mat4F(view_projection))
@@ -265,7 +265,7 @@ fn run_meshlet_task_workgroup(
 			views.write_array_member(0, member, value).expect("task occlusion camera");
 		}
 	}
-	let mut meshes = buffer(&program, MESH_DATA_SLOT);
+	let mut meshes = buffer(&program, slot(&program, MESH_DATA));
 	meshes
 		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX))
 		.expect("task mesh transform");
@@ -281,7 +281,7 @@ fn run_meshlet_task_workgroup(
 			.write_array_member(FIXTURE_INSTANCE_INDEX, field, Value::U32(value))
 			.expect("task mesh field");
 	}
-	let mut meshlets = array_buffer(&program, MESHLETS_SLOT, FIXTURE_MESHLET_INDEX + center_radii.len());
+	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), FIXTURE_MESHLET_INDEX + center_radii.len());
 	for (meshlet_offset, center_radius) in center_radii.iter().copied().enumerate() {
 		let meshlet_index = FIXTURE_MESHLET_INDEX + meshlet_offset;
 		meshlets
@@ -319,13 +319,13 @@ fn run_meshlet_task_workgroup(
 	] {
 		push_constant.write(member, Value::U32(value)).expect("task push constant");
 	}
-	let mut mesh_dispatch_work = buffer(&program, MESH_DISPATCH_WORK_SLOT);
+	let mut mesh_dispatch_work = buffer(&program, slot(&program, MESH_DISPATCH_WORK));
 	let packed_work = MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed;
 	mesh_dispatch_work
 		.write_array_element(workgroup_index as usize, Value::U32(packed_work))
 		.expect("compact mesh dispatch work");
 	// The record is keyed by the packed work item, not by its position in the dispatch.
-	let mut occlusion_visibility = buffer(&program, OCCLUSION_VISIBILITY_SLOT);
+	let mut occlusion_visibility = buffer(&program, slot(&program, OCCLUSION_VISIBILITY));
 	if let Some(occlusion) = &occlusion {
 		occlusion_visibility
 			.write_array_element(packed_work as usize, Value::U32(*occlusion.record))
@@ -337,13 +337,13 @@ fn run_meshlet_task_workgroup(
 		.map(|lane| lane_config(lane).with_thread_position(workgroup_index * TASK_WORKGROUP_SIZE + lane))
 		.collect::<Vec<_>>();
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(VIEWS_SLOT, &mut views);
-	descriptors.bind_buffer(MESH_DATA_SLOT, &mut meshes);
-	descriptors.bind_buffer(MESHLETS_SLOT, &mut meshlets);
-	descriptors.bind_buffer(MESH_DISPATCH_WORK_SLOT, &mut mesh_dispatch_work);
+	descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
+	descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
+	descriptors.bind_buffer(slot(&program, MESHLETS), &mut meshlets);
+	descriptors.bind_buffer(slot(&program, MESH_DISPATCH_WORK), &mut mesh_dispatch_work);
 	let record = occlusion.map(|occlusion| {
-		descriptors.bind_texture(OCCLUSION_PYRAMID_SLOT, occlusion.pyramid);
-		descriptors.bind_buffer(OCCLUSION_VISIBILITY_SLOT, &mut occlusion_visibility);
+		descriptors.bind_texture(slot(&program, OCCLUSION_PYRAMID), occlusion.pyramid);
+		descriptors.bind_buffer(slot(&program, OCCLUSION_VISIBILITY), &mut occlusion_visibility);
 		occlusion.record
 	});
 	descriptors.bind_push_constant(&mut push_constant);
@@ -733,9 +733,9 @@ fn run_hiz_base(width: u32, height: u32, depth: impl Fn(u32, u32) -> f32) -> [Ve
 	let mut levels = [16, 8, 4, 2, 1].map(|size| empty_image(size, size));
 
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_texture(ResourceSlot::new(1033), &mut source);
+	descriptors.bind_texture(slot(&program, "source_depth"), &mut source);
 	for (index, level) in levels.iter_mut().enumerate() {
-		descriptors.bind_image(ResourceSlot::new(1034 + index as u32), level);
+		descriptors.bind_image(slot(&program, &format!("level_{index}")), level);
 	}
 	run_workgroup_containing::<HIZ_BASE_WORKGROUP_SIZE>(&program, descriptors, HIZ_BASE_WORKGROUP_WIDTH, [0, 0]);
 	std::array::from_fn(|level| channel(&levels[level], 16 >> level, 16 >> level))
@@ -803,9 +803,9 @@ fn occlusion_pyramid_tail_reduces_mip_four_to_the_top() {
 	let mut levels = [[16, 8], [8, 4], [4, 2], [2, 1]].map(|[width, height]| empty_image(width, height));
 
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_image(ResourceSlot::new(1033), &mut source);
+	descriptors.bind_image(slot(&program, "source_level"), &mut source);
 	for (index, level) in levels.iter_mut().enumerate() {
-		descriptors.bind_image(ResourceSlot::new(1034 + index as u32), level);
+		descriptors.bind_image(slot(&program, &format!("level_{}", index + 5)), level);
 	}
 	run_workgroup_containing::<HIZ_TAIL_WORKGROUP_SIZE>(&program, descriptors, HIZ_BASE_WORKGROUP_WIDTH, [0, 0]);
 
@@ -848,8 +848,8 @@ fn assert_triangle_mesh_program(
 	expected_clip_positions: [[f32; 4]; 3],
 	expected_render_target_array_index: Option<u32>,
 ) {
-	let mut views = buffer(&program, VIEWS_SLOT);
-	let mut meshes = buffer(&program, MESH_DATA_SLOT);
+	let mut views = buffer(&program, slot(&program, VIEWS));
+	let mut meshes = buffer(&program, slot(&program, MESH_DATA));
 	meshes
 		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX))
 		.expect("mesh model matrix");
@@ -865,15 +865,15 @@ fn assert_triangle_mesh_program(
 			.expect("mesh offset");
 	}
 	let vertex_count = base_vertex as usize + 3;
-	let mut positions = array_buffer(&program, VERTEX_POSITIONS_SLOT, vertex_count);
+	let mut positions = array_buffer(&program, slot(&program, VERTEX_POSITIONS), vertex_count);
 	for (index, position) in [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]].into_iter().enumerate() {
 		positions
 			.write_array_element(base_vertex as usize + index, Value::Vec3F(position))
 			.expect("mesh vertex");
 	}
-	let mut vertex_uvs = array_buffer(&program, VERTEX_UVS_SLOT, vertex_count);
-	let mut vertex_indices = array_buffer(&program, VERTEX_INDICES_SLOT, 3);
-	let mut primitive_indices = array_buffer(&program, PRIMITIVE_INDICES_SLOT, 3);
+	let mut vertex_uvs = array_buffer(&program, slot(&program, VERTEX_UVS), vertex_count);
+	let mut vertex_indices = array_buffer(&program, slot(&program, VERTEX_INDICES), 3);
+	let mut primitive_indices = array_buffer(&program, slot(&program, PRIMITIVE_INDICES), 3);
 	for index in 0..3 {
 		vertex_uvs
 			.write_array_element(base_vertex as usize + index, Value::Vec2F16([besl::vm::f16::ZERO; 2]))
@@ -885,7 +885,7 @@ fn assert_triangle_mesh_program(
 			.write_array_element(index, Value::U8(index as u8))
 			.expect("triangle index");
 	}
-	let mut meshlets = array_buffer(&program, MESHLETS_SLOT, FIXTURE_MESHLET_INDEX + 1);
+	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), FIXTURE_MESHLET_INDEX + 1);
 	for (field, value) in [
 		("primitive_offset", 0),
 		("triangle_offset", 0),
@@ -921,13 +921,13 @@ fn assert_triangle_mesh_program(
 	{
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_task_payload("meshlet_instances", [payload]);
-		descriptors.bind_buffer(VIEWS_SLOT, &mut views);
-		descriptors.bind_buffer(MESH_DATA_SLOT, &mut meshes);
-		descriptors.bind_buffer(VERTEX_POSITIONS_SLOT, &mut positions);
-		descriptors.bind_buffer(VERTEX_UVS_SLOT, &mut vertex_uvs);
-		descriptors.bind_buffer(VERTEX_INDICES_SLOT, &mut vertex_indices);
-		descriptors.bind_buffer(PRIMITIVE_INDICES_SLOT, &mut primitive_indices);
-		descriptors.bind_buffer(MESHLETS_SLOT, &mut meshlets);
+		descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
+		descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
+		descriptors.bind_buffer(slot(&program, VERTEX_POSITIONS), &mut positions);
+		descriptors.bind_buffer(slot(&program, VERTEX_UVS), &mut vertex_uvs);
+		descriptors.bind_buffer(slot(&program, VERTEX_INDICES), &mut vertex_indices);
+		descriptors.bind_buffer(slot(&program, PRIMITIVE_INDICES), &mut primitive_indices);
+		descriptors.bind_buffer(slot(&program, MESHLETS), &mut meshlets);
 		descriptors.bind_buffer(output_slot(0), &mut out_instance_indices);
 		descriptors.bind_buffer(output_slot(1), &mut out_primitive_indices);
 		descriptors.bind_buffer(output_slot(2), &mut out_uvs);
@@ -1019,12 +1019,12 @@ fn run_material_count(
 	tables: &mut PrepassTables,
 	instance_indices: &mut Texture,
 ) -> besl::vm::Buffer {
-	let mut material_counts = buffer(program, MATERIAL_COUNT_SLOT);
+	let mut material_counts = buffer(program, slot(program, MATERIAL_COUNT));
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(MESH_DATA_SLOT, &mut tables.meshes);
-	descriptors.bind_buffer(MATERIAL_EVALUATIONS_SLOT, &mut tables.evaluations);
-	descriptors.bind_buffer(MATERIAL_COUNT_SLOT, &mut material_counts);
-	descriptors.bind_image(INSTANCE_INDEX_SLOT, instance_indices);
+	descriptors.bind_buffer(slot(program, MESH_DATA), &mut tables.meshes);
+	descriptors.bind_buffer(slot(program, MATERIAL_EVALUATIONS), &mut tables.evaluations);
+	descriptors.bind_buffer(slot(program, MATERIAL_COUNT), &mut material_counts);
+	descriptors.bind_image(slot(program, INSTANCE_INDEX), instance_indices);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, [0, 0]);
 	material_counts
 }
@@ -1043,7 +1043,7 @@ fn run_pixel_mapping(
 	width: u32,
 	phase: u32,
 ) -> (besl::vm::Buffer, [Texture; 2]) {
-	let mut pixel_mapping = buffer(program, PIXEL_MAPPING_SLOT);
+	let mut pixel_mapping = buffer(program, slot(program, PIXEL_MAPPING));
 	let mut push_constant = push_constant_buffer(program);
 	push_constant.write("phase", Value::U32(phase)).expect("pixel mapping phase");
 	let mut images = std::array::from_fn(|_| {
@@ -1055,13 +1055,13 @@ fn run_pixel_mapping(
 	});
 	let [lit, diffuse_radiance_history] = &mut images;
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(MESH_DATA_SLOT, &mut tables.meshes);
-	descriptors.bind_buffer(MATERIAL_EVALUATIONS_SLOT, &mut tables.evaluations);
-	descriptors.bind_buffer(MATERIAL_OFFSET_SCRATCH_SLOT, material_offset_scratch);
-	descriptors.bind_buffer(PIXEL_MAPPING_SLOT, &mut pixel_mapping);
-	descriptors.bind_image(INSTANCE_INDEX_SLOT, instance_indices);
-	descriptors.bind_image(LIT_SLOT, lit);
-	descriptors.bind_image(DIFFUSE_RADIANCE_HISTORY_SLOT, diffuse_radiance_history);
+	descriptors.bind_buffer(slot(program, MESH_DATA), &mut tables.meshes);
+	descriptors.bind_buffer(slot(program, MATERIAL_EVALUATIONS), &mut tables.evaluations);
+	descriptors.bind_buffer(slot(program, MATERIAL_OFFSET_SCRATCH), material_offset_scratch);
+	descriptors.bind_buffer(slot(program, PIXEL_MAPPING), &mut pixel_mapping);
+	descriptors.bind_image(slot(program, INSTANCE_INDEX), instance_indices);
+	descriptors.bind_image(slot(program, LIT), lit);
+	descriptors.bind_image(slot(program, DIFFUSE_RADIANCE_HISTORY), diffuse_radiance_history);
 	descriptors.bind_push_constant(&mut push_constant);
 	run_workgroup_containing::<PIXEL_MAPPING_WORKGROUP_SIZE>(program, descriptors, PIXEL_MAPPING_WORKGROUP_WIDTH, [0, 0]);
 	(pixel_mapping, images)
@@ -1086,8 +1086,8 @@ fn mesh_materials_in_evaluations(
 	materials: impl IntoIterator<Item = u32>,
 	evaluation: impl Fn(u32) -> u32,
 ) -> PrepassTables {
-	let mut meshes = buffer(program, MESH_DATA_SLOT);
-	let mut evaluations = buffer(program, MATERIAL_EVALUATIONS_SLOT);
+	let mut meshes = buffer(program, slot(program, MESH_DATA));
+	let mut evaluations = buffer(program, slot(program, MATERIAL_EVALUATIONS));
 	for (mesh_index, material_index) in materials.into_iter().enumerate() {
 		meshes
 			.write_array_member(mesh_index, "material_index", Value::U32(material_index))
@@ -1116,14 +1116,14 @@ fn run_material_offset(
 	program: &ExecutableProgram,
 	material_counts: &mut besl::vm::Buffer,
 ) -> (besl::vm::Buffer, besl::vm::Buffer, besl::vm::Buffer) {
-	let mut offsets = buffer(program, MATERIAL_OFFSET_SLOT);
-	let mut scratch = buffer(program, MATERIAL_OFFSET_SCRATCH_SLOT);
-	let mut dispatches = buffer(program, MATERIAL_DISPATCH_SLOT);
+	let mut offsets = buffer(program, slot(program, MATERIAL_OFFSET));
+	let mut scratch = buffer(program, slot(program, MATERIAL_OFFSET_SCRATCH));
+	let mut dispatches = buffer(program, slot(program, MATERIAL_DISPATCH));
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(MATERIAL_COUNT_SLOT, material_counts);
-	descriptors.bind_buffer(MATERIAL_OFFSET_SLOT, &mut offsets);
-	descriptors.bind_buffer(MATERIAL_OFFSET_SCRATCH_SLOT, &mut scratch);
-	descriptors.bind_buffer(MATERIAL_DISPATCH_SLOT, &mut dispatches);
+	descriptors.bind_buffer(slot(program, MATERIAL_COUNT), material_counts);
+	descriptors.bind_buffer(slot(program, MATERIAL_OFFSET), &mut offsets);
+	descriptors.bind_buffer(slot(program, MATERIAL_OFFSET_SCRATCH), &mut scratch);
+	descriptors.bind_buffer(slot(program, MATERIAL_DISPATCH), &mut dispatches);
 	run_workgroup_containing::<256>(program, descriptors, 256, [0, 0]);
 	(offsets, scratch, dispatches)
 }
@@ -1134,7 +1134,7 @@ fn run_material_offset(
 fn material_offset_scans_every_material_count() {
 	let program = asset!("material-offset.besl");
 	let count = |material: usize| (material * 37 % 300) as u32;
-	let mut material_counts = buffer(&program, MATERIAL_COUNT_SLOT);
+	let mut material_counts = buffer(&program, slot(&program, MATERIAL_COUNT));
 	for material in 0..super::layout::MAX_MATERIALS {
 		material_counts
 			.write_array_element(material, Value::U32(count(material)))
@@ -1253,7 +1253,7 @@ fn materials_sharing_an_evaluation_slot_share_one_pixel_list() {
 fn pixel_mapping_load_fast_path_preserves_coherent_tile_mappings() {
 	let program = asset!("pixel-mapping.besl");
 	let mut tables = mesh_materials(&program, [7]);
-	let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
+	let mut material_offset_scratch = buffer(&program, slot(&program, MATERIAL_OFFSET_SCRATCH));
 	let mut instance_indices = instance_texture(PIXEL_MAPPING_WORKGROUP_WIDTH, |_| 0);
 
 	let (pixel_mapping, _) = run_pixel_mapping(
@@ -1298,7 +1298,7 @@ fn pixel_mapping_zeroes_uncovered_pixels_in_the_opaque_phase_only() {
 	let instances = [0, u32::MAX, u32::MAX, u32::MAX];
 
 	for (phase, uncovered_light) in [(0, [0.0; 4]), (1, STALE_LIGHT)] {
-		let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
+		let mut material_offset_scratch = buffer(&program, slot(&program, MATERIAL_OFFSET_SCRATCH));
 		let mut instance_indices = instance_texture(2, |texel| instances[texel]);
 
 		let (_, images) = run_pixel_mapping(
@@ -1328,7 +1328,7 @@ fn pixel_mapping_zeroes_uncovered_pixels_in_the_opaque_phase_only() {
 fn pixel_mapping_tile_reservation_preserves_overflowed_materials() {
 	let program = asset!("pixel-mapping.besl");
 	let mut tables = mesh_materials(&program, 0..33);
-	let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
+	let mut material_offset_scratch = buffer(&program, slot(&program, MATERIAL_OFFSET_SCRATCH));
 	for material_index in 0..33 {
 		material_offset_scratch
 			.write_array_element(material_index, Value::U32(material_index as u32))
@@ -1375,7 +1375,7 @@ fn pixel_mapping_maps_shared_and_overflowed_materials_exactly_once() {
 	const RANGE: usize = 16;
 	let program = asset!("pixel-mapping.besl");
 	let mut tables = mesh_materials(&program, 0..MATERIALS as u32);
-	let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
+	let mut material_offset_scratch = buffer(&program, slot(&program, MATERIAL_OFFSET_SCRATCH));
 	for material_index in 0..MATERIALS {
 		material_offset_scratch
 			.write_array_element(material_index, Value::U32((material_index * RANGE) as u32))
@@ -1460,7 +1460,7 @@ pub(super) const GTAO_DEPTH_OFFSET: f32 = GTAO_NEAR / (GTAO_FAR - GTAO_NEAR);
 
 /// Creates compact camera data for one square GTAO shader fixture.
 fn gtao_view_data(program: &ExecutableProgram, width: u32, height: u32) -> besl::vm::Buffer {
-	screen_view_buffer(program, VIEWS_SLOT, width, height)
+	screen_view_buffer(program, slot(program, GTAO_VIEW), width, height)
 }
 
 /// Creates the screen-view constants of a `width` by `height` image seen through the fixture projection, for the
@@ -1542,7 +1542,7 @@ fn run_gtao(
 	(radius, samples_per_ray, radial_rays): (f32, u32, u32),
 ) -> [f32; 4] {
 	let mut view = gtao_view_data(program, width, height);
-	let mut parameters = buffer(program, GTAO_PARAMETERS_SLOT);
+	let mut parameters = buffer(program, slot(program, GTAO_PARAMETERS));
 	for (member, value) in [
 		("radius", Value::F32(radius)),
 		("samples_per_ray", Value::U32(samples_per_ray)),
@@ -1556,10 +1556,10 @@ fn run_gtao(
 	}
 	let mut output = empty_image(width, height);
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
-	descriptors.bind_buffer(GTAO_PARAMETERS_SLOT, &mut parameters);
-	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth_pyramid);
-	descriptors.bind_image(ResourceSlot::new(1034), &mut output);
+	descriptors.bind_buffer(slot(program, GTAO_VIEW), &mut view);
+	descriptors.bind_buffer(slot(program, GTAO_PARAMETERS), &mut parameters);
+	descriptors.bind_texture(slot(program, "depth_pyramid"), &mut depth_pyramid);
+	descriptors.bind_image(slot(program, "ao_output"), &mut output);
 	run_workgroup_containing::<GTAO_WORKGROUP_SIZE>(program, descriptors, GTAO_WORKGROUP_WIDTH, coordinate);
 	rgba(&output, coordinate)
 }
@@ -1643,21 +1643,21 @@ fn run_gtao_depth_pyramid(program: &ExecutableProgram, source: &mut Texture, wid
 	];
 	let mut view = gtao_view_data(program, width, height);
 	// Without a cascade fit, the pass leaves the bounds alone.
-	let mut bounds = buffer(program, PYRAMID_RECEIVER_BOUNDS_SLOT);
-	let mut fit = buffer(program, PYRAMID_RECEIVER_FIT_SLOT);
+	let mut bounds = buffer(program, slot(program, RECEIVER_BOUNDS));
+	let mut fit = buffer(program, slot(program, RECEIVER_FIT));
 	let mut push_constant = push_constant_buffer(program);
 	push_constant
 		.write("fitted_suns", Value::U32(0))
 		.expect("depth pyramid push constant");
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
-	descriptors.bind_texture(ResourceSlot::new(1033), source);
+	descriptors.bind_buffer(slot(program, GTAO_VIEW), &mut view);
+	descriptors.bind_texture(slot(program, "source_depth"), source);
 	let [reduced_1, reduced_2, reduced_3] = &mut reduced;
-	descriptors.bind_image(ResourceSlot::new(1034), reduced_1);
-	descriptors.bind_image(ResourceSlot::new(1035), reduced_2);
-	descriptors.bind_image(ResourceSlot::new(1036), reduced_3);
-	descriptors.bind_buffer(PYRAMID_RECEIVER_BOUNDS_SLOT, &mut bounds);
-	descriptors.bind_buffer(PYRAMID_RECEIVER_FIT_SLOT, &mut fit);
+	descriptors.bind_image(slot(program, "reduced_depth_1"), reduced_1);
+	descriptors.bind_image(slot(program, "reduced_depth_2"), reduced_2);
+	descriptors.bind_image(slot(program, "reduced_depth_3"), reduced_3);
+	descriptors.bind_buffer(slot(program, RECEIVER_BOUNDS), &mut bounds);
+	descriptors.bind_buffer(slot(program, RECEIVER_FIT), &mut fit);
 	descriptors.bind_push_constant(&mut push_constant);
 	run_workgroup_containing::<DEPTH_PYRAMID_WORKGROUP_SIZE>(program, descriptors, DEPTH_PYRAMID_WORKGROUP_WIDTH, [0, 0]);
 	reduced
@@ -1762,9 +1762,9 @@ fn directional_shadow_depth_pyramid_combines_each_cells_four_blocks_in_every_cas
 	for layer in 0..layer_count {
 		for workgroup_x in [0, PYRAMID_WORKGROUP_WIDTH] {
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(ResourceSlot::new(1033), &mut source);
-			descriptors.bind_image(ResourceSlot::new(1034), &mut reduced);
-			descriptors.bind_image(ResourceSlot::new(1035), &mut reduced_minimum);
+			descriptors.bind_texture(slot(&program, "source_depth"), &mut source);
+			descriptors.bind_image(slot(&program, "reduced_depth_1"), &mut reduced);
+			descriptors.bind_image(slot(&program, "reduced_minimum_1"), &mut reduced_minimum);
 			run_workgroup_containing::<PYRAMID_WORKGROUP_SIZE>(
 				&program,
 				descriptors,
@@ -1842,9 +1842,9 @@ fn run_gtao_blur_fixture(
 	let mut ao = texture_2d(width, height, ao_texels);
 	let mut output = empty_image(width, height);
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
-	descriptors.bind_texture(ResourceSlot::new(1034), &mut ao);
-	descriptors.bind_image(ResourceSlot::new(1035), &mut output);
+	descriptors.bind_texture(slot(program, "linear_depth"), &mut depth);
+	descriptors.bind_texture(slot(program, "ao_source"), &mut ao);
+	descriptors.bind_image(slot(program, "ao_output"), &mut output);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, coordinate);
 	rgba(&output, coordinate)
 }
@@ -1866,11 +1866,11 @@ fn run_gtao_upscale_fixture(
 	let mut ao = texture_2d(low_extent[0], low_extent[1], ao_texels);
 	let mut output = empty_image(full_extent[0], full_extent[1]);
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
-	descriptors.bind_texture(ResourceSlot::new(1033), &mut device_depth);
-	descriptors.bind_texture(ResourceSlot::new(1034), &mut ao);
-	descriptors.bind_image(ResourceSlot::new(1035), &mut output);
-	descriptors.bind_texture(ResourceSlot::new(1036), &mut linear_depth);
+	descriptors.bind_buffer(slot(program, GTAO_VIEW), &mut view);
+	descriptors.bind_texture(slot(program, "visibility_depth"), &mut device_depth);
+	descriptors.bind_texture(slot(program, "ao_source"), &mut ao);
+	descriptors.bind_image(slot(program, "ao_output"), &mut output);
+	descriptors.bind_texture(slot(program, "low_resolution_depth"), &mut linear_depth);
 	let quad = [coordinate[0] / 2, coordinate[1] / 2];
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, quad);
 	rgba(&output, coordinate)
@@ -1940,7 +1940,7 @@ fn gtao_upscale_is_depth_aware_and_preserves_uniform_ao() {
 
 /* SSGI */
 
-const SSGI_PARAMETERS_SLOT: ResourceSlot = ResourceSlot::new(1);
+const SSGI_PARAMETERS: &str = "ssgi_parameters";
 const SSGI_EXTENT: u32 = 32;
 /// The uniform diffuse radiance of the previous frame in trace fixtures, as the trace reports it for a hit.
 const SSGI_LIT_COLOR: [f32; 4] = [2.0, 1.0, 0.5, 1.0];
@@ -1953,7 +1953,7 @@ pub(super) fn ssgi_projection() -> maths_rs::Mat4f {
 
 /// Creates SSGI per-frame parameters. `previous_clip` is `None` when the frame has no usable history.
 fn ssgi_parameters(program: &ExecutableProgram, previous_clip: Option<maths_rs::Mat4f>, frame_index: u32) -> besl::vm::Buffer {
-	let mut parameters = buffer(program, SSGI_PARAMETERS_SLOT);
+	let mut parameters = buffer(program, slot(program, SSGI_PARAMETERS));
 	for (member, value) in [
 		(
 			"current_view_to_previous_clip",
@@ -2048,7 +2048,7 @@ fn run_ssgi_trace_outputs(
 	pixels: &[[u32; 2]],
 	history_exposure_ratio: f32,
 ) -> Vec<([f32; 4], [f32; 4])> {
-	let mut view = gtao_view_data(program, extent, extent);
+	let mut view = screen_view_buffer(program, slot(program, SCREEN_VIEW), extent, extent);
 	// A static camera reprojects through the unchanged projection.
 	let mut parameters = ssgi_parameters(program, history.then(ssgi_projection), frame_index);
 	parameters
@@ -2067,13 +2067,13 @@ fn run_ssgi_trace_outputs(
 	workgroups.dedup();
 	for workgroup_base in workgroups {
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(VIEWS_SLOT, &mut view);
-		descriptors.bind_buffer(SSGI_PARAMETERS_SLOT, &mut parameters);
-		descriptors.bind_texture(ResourceSlot::new(1033), &mut depth_pyramid);
-		descriptors.bind_image(ResourceSlot::new(1034), &mut output);
-		descriptors.bind_texture(ResourceSlot::new(1035), &mut previous_lit);
-		descriptors.bind_image(ResourceSlot::new(1036), &mut normals);
-		descriptors.bind_texture(ResourceSlot::new(1037), &mut blue_noise);
+		descriptors.bind_buffer(slot(program, SCREEN_VIEW), &mut view);
+		descriptors.bind_buffer(slot(program, SSGI_PARAMETERS), &mut parameters);
+		descriptors.bind_texture(slot(program, "depth_pyramid"), &mut depth_pyramid);
+		descriptors.bind_image(slot(program, "raw_output"), &mut output);
+		descriptors.bind_texture(slot(program, "previous_radiance_map"), &mut previous_lit);
+		descriptors.bind_image(slot(program, "normal_output"), &mut normals);
+		descriptors.bind_texture(slot(program, "blue_noise"), &mut blue_noise);
 		run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, workgroup_base);
 	}
 	pixels
@@ -2231,7 +2231,7 @@ impl SsgiTemporalFixture {
 		let program = asset!("ssgi-temporal.besl");
 		let extent = self.extent;
 		let texel_count = (extent * extent) as usize;
-		let mut view = gtao_view_data(&program, extent, extent);
+		let mut view = screen_view_buffer(&program, slot(&program, SCREEN_VIEW), extent, extent);
 		let mut parameters = ssgi_parameters(
 			&program,
 			self.history.then(|| ssgi_projection() * self.current_to_previous_view),
@@ -2254,15 +2254,15 @@ impl SsgiTemporalFixture {
 		let mut normals = texture_2d(extent, extent, &self.normals);
 		let mut previous_normals = texture_2d(extent, extent, &self.previous_normals);
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(VIEWS_SLOT, &mut view);
-		descriptors.bind_buffer(SSGI_PARAMETERS_SLOT, &mut parameters);
-		descriptors.bind_texture(ResourceSlot::new(1033), &mut depth_pyramid);
-		descriptors.bind_texture(ResourceSlot::new(1034), &mut raw);
-		descriptors.bind_image(ResourceSlot::new(1035), &mut output);
-		descriptors.bind_texture(ResourceSlot::new(1036), &mut previous_history);
-		descriptors.bind_texture(ResourceSlot::new(1037), &mut previous_depth_pyramid);
-		descriptors.bind_texture(ResourceSlot::new(1038), &mut normals);
-		descriptors.bind_texture(ResourceSlot::new(1039), &mut previous_normals);
+		descriptors.bind_buffer(slot(&program, SCREEN_VIEW), &mut view);
+		descriptors.bind_buffer(slot(&program, SSGI_PARAMETERS), &mut parameters);
+		descriptors.bind_texture(slot(&program, "depth_pyramid"), &mut depth_pyramid);
+		descriptors.bind_texture(slot(&program, "raw_radiance"), &mut raw);
+		descriptors.bind_image(slot(&program, "history_output"), &mut output);
+		descriptors.bind_texture(slot(&program, "previous_history"), &mut previous_history);
+		descriptors.bind_texture(slot(&program, "previous_depth_pyramid"), &mut previous_depth_pyramid);
+		descriptors.bind_texture(slot(&program, "surface_normals"), &mut normals);
+		descriptors.bind_texture(slot(&program, "previous_surface_normals"), &mut previous_normals);
 		run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);
 		rgba(&output, pixel)
 	}
@@ -2528,8 +2528,8 @@ fn run_contact_shadows(wall: bool, direction_to_light: [f32; 3], pixel: [u32; 2]
 fn run_contact_shadows_toward(wall: bool, directions_to_light: &[[f32; 3]], pixel: [u32; 2]) -> [f32; 4] {
 	let program = asset!("contact-shadows.besl");
 	let extent = CONTACT_SHADOW_EXTENT;
-	let mut view = gtao_view_data(&program, extent, extent);
-	let mut parameters = buffer(&program, ResourceSlot::new(1));
+	let mut view = screen_view_buffer(&program, slot(&program, SCREEN_VIEW), extent, extent);
+	let mut parameters = buffer(&program, slot(&program, "contact_shadow_parameters"));
 	for (slot, [x, y, z]) in directions_to_light.iter().copied().enumerate() {
 		let length = (x * x + y * y + z * z).sqrt();
 		parameters
@@ -2545,10 +2545,10 @@ fn run_contact_shadows_toward(wall: bool, directions_to_light: &[[f32; 3]], pixe
 	let mut depth = texture_2d(extent, extent, &contact_shadow_linear_depth(wall));
 	let mut output = empty_image(extent, extent);
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
-	descriptors.bind_buffer(ResourceSlot::new(1), &mut parameters);
-	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
-	descriptors.bind_image(ResourceSlot::new(1034), &mut output);
+	descriptors.bind_buffer(slot(&program, SCREEN_VIEW), &mut view);
+	descriptors.bind_buffer(slot(&program, "contact_shadow_parameters"), &mut parameters);
+	descriptors.bind_texture(slot(&program, "depth_pyramid"), &mut depth);
+	descriptors.bind_image(slot(&program, "contact_shadow_output"), &mut output);
 	run_at(&program, &mut descriptors, pixel);
 	drop(descriptors);
 	rgba(&output, pixel)
@@ -2692,7 +2692,7 @@ impl SunVisibilityGeometry {
 	/// Builds the floor scene's geometry for `program`. Triangle zero lies on the floor and triangle one on the wall.
 	fn new(program: &ExecutableProgram) -> Self {
 		let extent = CONTACT_SHADOW_EXTENT;
-		let mut meshes = buffer(program, MESH_DATA_SLOT);
+		let mut meshes = buffer(program, slot(program, MESH_DATA));
 		meshes
 			.write_array_member(0, "model", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX))
 			.expect("mesh model matrix");
@@ -2705,9 +2705,9 @@ impl SunVisibilityGeometry {
 			[1.0, 0.0, CONTACT_SHADOW_WALL_Z],
 			[0.0, 1.0, CONTACT_SHADOW_WALL_Z],
 		];
-		let mut positions = array_buffer(program, VERTEX_POSITIONS_SLOT, vertices.len());
-		let mut vertex_indices = array_buffer(program, VERTEX_INDICES_SLOT, vertices.len());
-		let mut primitive_indices = array_buffer(program, PRIMITIVE_INDICES_SLOT, vertices.len());
+		let mut positions = array_buffer(program, slot(program, VERTEX_POSITIONS), vertices.len());
+		let mut vertex_indices = array_buffer(program, slot(program, VERTEX_INDICES), vertices.len());
+		let mut primitive_indices = array_buffer(program, slot(program, PRIMITIVE_INDICES), vertices.len());
 		for (index, vertex) in vertices.into_iter().enumerate() {
 			positions
 				.write_array_element(index, Value::Vec3F(vertex))
@@ -2719,7 +2719,7 @@ impl SunVisibilityGeometry {
 				.write_array_element(index, Value::U8(index as u8))
 				.expect("triangle index");
 		}
-		let mut meshlets = array_buffer(program, MESHLETS_SLOT, 1);
+		let mut meshlets = array_buffer(program, slot(program, MESHLETS), 1);
 		for (field, value) in [("primitive_count", 6), ("triangle_count", 2)] {
 			meshlets
 				.write_array_member(0, field, Value::U32(value))
@@ -2747,14 +2747,14 @@ impl SunVisibilityGeometry {
 	}
 
 	/// Binds the geometry and the visibility buffer to the resolve's slots.
-	fn bind<'a>(&'a mut self, descriptors: &mut DescriptorBindings<'a>) {
-		descriptors.bind_buffer(MESH_DATA_SLOT, &mut self.meshes);
-		descriptors.bind_buffer(MESHLETS_SLOT, &mut self.meshlets);
-		descriptors.bind_buffer(VERTEX_POSITIONS_SLOT, &mut self.positions);
-		descriptors.bind_buffer(VERTEX_INDICES_SLOT, &mut self.vertex_indices);
-		descriptors.bind_buffer(PRIMITIVE_INDICES_SLOT, &mut self.primitive_indices);
-		descriptors.bind_image(ResourceSlot::new(1043), &mut self.triangle_indices);
-		descriptors.bind_image(ResourceSlot::new(1044), &mut self.instance_indices);
+	fn bind<'a>(&'a mut self, program: &ExecutableProgram, descriptors: &mut DescriptorBindings<'a>) {
+		descriptors.bind_buffer(slot(program, MESH_DATA), &mut self.meshes);
+		descriptors.bind_buffer(slot(program, MESHLETS), &mut self.meshlets);
+		descriptors.bind_buffer(slot(program, VERTEX_POSITIONS), &mut self.positions);
+		descriptors.bind_buffer(slot(program, VERTEX_INDICES), &mut self.vertex_indices);
+		descriptors.bind_buffer(slot(program, PRIMITIVE_INDICES), &mut self.primitive_indices);
+		descriptors.bind_image(slot(program, "triangle_index"), &mut self.triangle_indices);
+		descriptors.bind_image(slot(program, INSTANCE_INDEX), &mut self.instance_indices);
 	}
 }
 
@@ -2766,18 +2766,18 @@ fn run_sun_visibility(trace: impl Fn(u32, u32, f32) -> f32, shadow_map: bool, pi
 	run_sun_visibility_in_slot(trace, shadow_map, pixel, 0)[0]
 }
 
-/// Runs the sun visibility resolve as [`run_sun_visibility`] does, with the test sun in sun slot `slot` and every
+/// Runs the sun visibility resolve as [`run_sun_visibility`] does, with the test sun in sun slot `sun_slot` and every
 /// earlier slot holding the same sun over an empty shadow map and a clear trace. Returns the pixel's texel, sun slot
 /// `s` in channel `s`.
 fn run_sun_visibility_in_slot(
 	trace: impl Fn(u32, u32, f32) -> f32,
 	shadow_map: bool,
 	pixel: [u32; 2],
-	slot: usize,
+	sun_slot: usize,
 ) -> [f32; 4] {
 	let program = asset!("sun-visibility.besl");
 	let extent = CONTACT_SHADOW_EXTENT;
-	let suns = slot + 1;
+	let suns = sun_slot + 1;
 	let cascades = super::layout::SHADOW_CASCADE_COUNT * suns;
 	let linear_depth = contact_shadow_linear_depth(true);
 	let (trace_depth, trace_extent, _) = reduce_nearest_nonzero_depth(&linear_depth, extent, extent);
@@ -2786,7 +2786,7 @@ fn run_sun_visibility_in_slot(
 		.enumerate()
 		.map(|(index, texel)| {
 			let mut channels = [1.0; 4];
-			channels[slot] = trace(index as u32 % trace_extent, index as u32 / trace_extent, texel[0]);
+			channels[sun_slot] = trace(index as u32 % trace_extent, index as u32 / trace_extent, texel[0]);
 			channels
 		})
 		.collect::<Vec<_>>();
@@ -2811,7 +2811,7 @@ fn run_sun_visibility_in_slot(
 			empty_image(cells, cells * cascades as u32),
 		)
 	};
-	let mut views = buffer(&program, VIEWS_SLOT);
+	let mut views = buffer(&program, slot(&program, VIEWS));
 	for (member, value) in [
 		("view", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX)),
 		("inverse_view", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX)),
@@ -2827,9 +2827,9 @@ fn run_sun_visibility_in_slot(
 			.write_array_member(view_index, "far", Value::F32(GTAO_FAR))
 			.expect("cascade far");
 	}
-	let mut trace_view = screen_view_buffer(&program, ResourceSlot::new(1037), trace_extent, trace_extent);
-	let screen = screen_view_buffer(&program, ResourceSlot::new(1037), extent, extent);
-	let mut parameters = buffer(&program, ResourceSlot::new(1038));
+	let mut trace_view = screen_view_buffer(&program, slot(&program, SCREEN_VIEW), trace_extent, trace_extent);
+	let screen = screen_view_buffer(&program, slot(&program, SCREEN_VIEW), extent, extent);
+	let mut parameters = buffer(&program, slot(&program, "sun_visibility_parameters"));
 	let [x, y, z] = [0.0, 1.0, 1.0f32].map(|component| component / 2.0f32.sqrt());
 	for sun in 0..suns {
 		parameters
@@ -2855,18 +2855,21 @@ fn run_sun_visibility_in_slot(
 	let mut output = empty_image(extent, extent);
 	let mut geometry = SunVisibilityGeometry::new(&program);
 	let mut descriptors = DescriptorBindings::new();
-	geometry.bind(&mut descriptors);
-	descriptors.bind_buffer(VIEWS_SLOT, &mut views);
-	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
-	descriptors.bind_image(ResourceSlot::new(1034), &mut output);
-	descriptors.bind_texture(ResourceSlot::new(1035), &mut trace);
-	descriptors.bind_texture(ResourceSlot::new(1036), &mut trace_depth);
-	descriptors.bind_buffer(ResourceSlot::new(1037), &mut trace_view);
-	descriptors.bind_buffer(ResourceSlot::new(1038), &mut parameters);
-	descriptors.bind_texture(ResourceSlot::new(1039), &mut shadow_map);
-	descriptors.bind_texture(ResourceSlot::new(1040), &mut shadow_pyramid);
-	descriptors.bind_texture(ResourceSlot::new(1041), &mut shadow_minimum_pyramid);
-	descriptors.bind_texture(ResourceSlot::new(1042), &mut shadow_cells);
+	geometry.bind(&program, &mut descriptors);
+	descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
+	descriptors.bind_texture(slot(&program, "visibility_depth"), &mut depth);
+	descriptors.bind_image(slot(&program, "sun_visibility_output"), &mut output);
+	descriptors.bind_texture(slot(&program, "contact_shadow_trace"), &mut trace);
+	descriptors.bind_texture(slot(&program, "depth_pyramid"), &mut trace_depth);
+	descriptors.bind_buffer(slot(&program, SCREEN_VIEW), &mut trace_view);
+	descriptors.bind_buffer(slot(&program, "sun_visibility_parameters"), &mut parameters);
+	descriptors.bind_texture(slot(&program, "depth_shadow_map"), &mut shadow_map);
+	descriptors.bind_texture(slot(&program, "directional_shadow_depth_pyramid"), &mut shadow_pyramid);
+	descriptors.bind_texture(
+		slot(&program, "directional_shadow_depth_minimum_pyramid"),
+		&mut shadow_minimum_pyramid,
+	);
+	descriptors.bind_texture(slot(&program, "directional_shadow_depth_cells"), &mut shadow_cells);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);
 	rgba(&output, pixel)
 }
@@ -3235,7 +3238,7 @@ fn light_cluster_fixture_light(cone: bool) -> crate::rendering::lights::Lights {
 fn run_light_clusters(lights: &[super::shader_data::LightData], exposure: f32, cluster: u32) -> [u32; 2] {
 	let program = asset!("light-clusters.besl");
 	let parameters = super::shader_data::LightClusterParameters::from(fixture_camera(1.0));
-	let mut cluster_parameters = buffer(&program, ResourceSlot::new(1));
+	let mut cluster_parameters = buffer(&program, slot(&program, "light_cluster_parameters"));
 	for (field, value) in [
 		("view", Value::Mat4x3F(bytemuck::cast(parameters.view))),
 		("edge_slopes", Value::Vec2F(parameters.edge_slopes)),
@@ -3244,7 +3247,7 @@ fn run_light_clusters(lights: &[super::shader_data::LightData], exposure: f32, c
 	] {
 		cluster_parameters.write(field, value).expect("light cluster parameter");
 	}
-	let mut lighting = buffer(&program, ResourceSlot::new(0));
+	let mut lighting = buffer(&program, slot(&program, "lighting_data"));
 	lighting
 		.write("light_count", Value::U32(lights.len() as u32))
 		.expect("light count");
@@ -3263,13 +3266,13 @@ fn run_light_clusters(lights: &[super::shader_data::LightData], exposure: f32, c
 				.expect("light field");
 		}
 	}
-	let mut masks = buffer(&program, ResourceSlot::new(1033));
+	let mut masks = buffer(&program, slot(&program, "light_cluster_masks"));
 	let configs: [ExecutionConfig; 32] =
 		std::array::from_fn(|lane| lane_config(lane as u32).with_threadgroup_position(cluster));
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(ResourceSlot::new(0), &mut lighting);
-	descriptors.bind_buffer(ResourceSlot::new(1), &mut cluster_parameters);
-	descriptors.bind_buffer(ResourceSlot::new(1033), &mut masks);
+	descriptors.bind_buffer(slot(&program, "lighting_data"), &mut lighting);
+	descriptors.bind_buffer(slot(&program, "light_cluster_parameters"), &mut cluster_parameters);
+	descriptors.bind_buffer(slot(&program, "light_cluster_masks"), &mut masks);
 	run_workgroup(&program, descriptors, &configs);
 	let base = cluster as usize * super::layout::LIGHT_CLUSTER_MASK_WORDS;
 	[read_u32(&masks, base), read_u32(&masks, base + 1)]
@@ -3331,10 +3334,10 @@ fn light_clusters_hold_the_lights_whose_reach_touches_them() {
 
 /* Directional shadow cascade fit */
 
-const RECEIVER_BOUNDS_SLOT: ResourceSlot = ResourceSlot::new(1034);
-const RECEIVER_FIT_SLOT: ResourceSlot = ResourceSlot::new(1035);
-const CASCADE_SIZE_STEPS_SLOT: ResourceSlot = ResourceSlot::new(1036);
-const DRAWN_CASCADE_VIEWS_SLOT: ResourceSlot = ResourceSlot::new(1037);
+const RECEIVER_BOUNDS: &str = "receiver_bounds";
+const RECEIVER_FIT: &str = "receiver_fit";
+const CASCADE_SIZE_STEPS: &str = "cascade_size_steps";
+const DRAWN_CASCADE_VIEWS: &str = "drawn_views";
 /// Pixels one depth pyramid workgroup covers on each side: sixteen threads of two pixels.
 const RECEIVER_BOUNDS_TILE: u32 = 32;
 const RECEIVER_FIT_EXTENT: u32 = 64;
@@ -3466,8 +3469,8 @@ fn run_receiver_bounds(scene: &ReceiverFitScene) -> besl::vm::Buffer {
 		empty_image(half_extent / 2, half_extent / 2),
 		empty_image(half_extent / 4, half_extent / 4),
 	];
-	let mut fit = receiver_fit_buffer(&program, PYRAMID_RECEIVER_FIT_SLOT, &scene.shader_data);
-	let mut bounds = buffer(&program, PYRAMID_RECEIVER_BOUNDS_SLOT);
+	let mut fit = receiver_fit_buffer(&program, slot(&program, RECEIVER_FIT), &scene.shader_data);
+	let mut bounds = buffer(&program, slot(&program, RECEIVER_BOUNDS));
 	let mut push_constant = push_constant_buffer(&program);
 	push_constant
 		.write("fitted_suns", Value::U32(scene.suns.len() as u32))
@@ -3480,13 +3483,13 @@ fn run_receiver_bounds(scene: &ReceiverFitScene) -> besl::vm::Buffer {
 		];
 		let [reduced_1, reduced_2, reduced_3] = &mut reduced;
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(VIEWS_SLOT, &mut view);
-		descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
-		descriptors.bind_image(ResourceSlot::new(1034), reduced_1);
-		descriptors.bind_image(ResourceSlot::new(1035), reduced_2);
-		descriptors.bind_image(ResourceSlot::new(1036), reduced_3);
-		descriptors.bind_buffer(PYRAMID_RECEIVER_BOUNDS_SLOT, &mut bounds);
-		descriptors.bind_buffer(PYRAMID_RECEIVER_FIT_SLOT, &mut fit);
+		descriptors.bind_buffer(slot(&program, GTAO_VIEW), &mut view);
+		descriptors.bind_texture(slot(&program, "source_depth"), &mut depth);
+		descriptors.bind_image(slot(&program, "reduced_depth_1"), reduced_1);
+		descriptors.bind_image(slot(&program, "reduced_depth_2"), reduced_2);
+		descriptors.bind_image(slot(&program, "reduced_depth_3"), reduced_3);
+		descriptors.bind_buffer(slot(&program, RECEIVER_BOUNDS), &mut bounds);
+		descriptors.bind_buffer(slot(&program, RECEIVER_FIT), &mut fit);
 		descriptors.bind_push_constant(&mut push_constant);
 		run_workgroup_containing::<DEPTH_PYRAMID_WORKGROUP_SIZE>(&program, descriptors, DEPTH_PYRAMID_WORKGROUP_WIDTH, base);
 	}
@@ -3504,7 +3507,7 @@ fn run_cascade_fit(
 	size_steps: &mut besl::vm::Buffer,
 	drawn_views: &mut besl::vm::Buffer,
 ) -> besl::vm::Buffer {
-	let mut views = buffer(program, VIEWS_SLOT);
+	let mut views = buffer(program, slot(program, VIEWS));
 	for (cascade, frame) in scene.suns.iter().flatten().enumerate() {
 		let view = frame.view.view();
 		for (field, value) in [
@@ -3519,15 +3522,15 @@ fn run_cascade_fit(
 			views.write_array_member(1 + cascade, field, value).expect("cascade view");
 		}
 	}
-	let mut fit = receiver_fit_buffer(program, RECEIVER_FIT_SLOT, shader_data);
+	let mut fit = receiver_fit_buffer(program, slot(program, RECEIVER_FIT), shader_data);
 	// One workgroup fits each sun, one lane per cascade.
 	for sun in 0..scene.suns.len() as u32 {
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(VIEWS_SLOT, &mut views);
-		descriptors.bind_buffer(RECEIVER_BOUNDS_SLOT, bounds);
-		descriptors.bind_buffer(RECEIVER_FIT_SLOT, &mut fit);
-		descriptors.bind_buffer(CASCADE_SIZE_STEPS_SLOT, size_steps);
-		descriptors.bind_buffer(DRAWN_CASCADE_VIEWS_SLOT, drawn_views);
+		descriptors.bind_buffer(slot(program, VIEWS), &mut views);
+		descriptors.bind_buffer(slot(program, RECEIVER_BOUNDS), bounds);
+		descriptors.bind_buffer(slot(program, RECEIVER_FIT), &mut fit);
+		descriptors.bind_buffer(slot(program, CASCADE_SIZE_STEPS), size_steps);
+		descriptors.bind_buffer(slot(program, DRAWN_CASCADE_VIEWS), drawn_views);
 		run_workgroup_containing::<4>(program, descriptors, 4, [4 * sun, 0]);
 	}
 	views
@@ -3563,8 +3566,8 @@ fn cascades_fit_the_receivers_the_camera_sees_in_the_besl_vm() {
 	let scene = receiver_fit_scene();
 	let mut bounds = run_receiver_bounds(&scene);
 	let program = asset!("directional-shadow-cascade-fit.besl");
-	let mut size_steps = buffer(&program, CASCADE_SIZE_STEPS_SLOT);
-	let mut drawn_views = buffer(&program, DRAWN_CASCADE_VIEWS_SLOT);
+	let mut size_steps = buffer(&program, slot(&program, CASCADE_SIZE_STEPS));
+	let mut drawn_views = buffer(&program, slot(&program, DRAWN_CASCADE_VIEWS));
 	let views = run_cascade_fit(
 		&program,
 		&scene,
@@ -3669,8 +3672,8 @@ fn cascades_fit_the_receivers_the_camera_sees_in_the_besl_vm() {
 fn cascades_that_do_not_draw_keep_their_drawn_view_in_the_besl_vm() {
 	let scene = receiver_fit_scene();
 	let program = asset!("directional-shadow-cascade-fit.besl");
-	let mut size_steps = buffer(&program, CASCADE_SIZE_STEPS_SLOT);
-	let mut drawn_views = buffer(&program, DRAWN_CASCADE_VIEWS_SLOT);
+	let mut size_steps = buffer(&program, slot(&program, CASCADE_SIZE_STEPS));
+	let mut drawn_views = buffer(&program, slot(&program, DRAWN_CASCADE_VIEWS));
 
 	// The first frame draws every cascade from the receivers the camera sees.
 	let drawn = run_cascade_fit(
@@ -3727,7 +3730,7 @@ fn box_bounds(program: &ExecutableProgram, half_size: f32) -> besl::vm::Buffer {
 	const OFFSET: f32 = 8_388_608.0;
 	let lower = |coordinate: f32| 16_777_216 - ((coordinate * STEPS_PER_UNIT).floor() + OFFSET) as u32;
 	let upper = |coordinate: f32| ((coordinate * STEPS_PER_UNIT).ceil() + OFFSET) as u32;
-	let mut bounds = buffer(program, RECEIVER_BOUNDS_SLOT);
+	let mut bounds = buffer(program, slot(program, RECEIVER_BOUNDS));
 	for (index, code) in [
 		lower(-half_size),
 		lower(-half_size),
@@ -3750,8 +3753,8 @@ fn box_bounds(program: &ExecutableProgram, half_size: f32) -> besl::vm::Buffer {
 fn cascade_fit_shrinks_only_by_two_size_steps_in_the_besl_vm() {
 	let scene = receiver_fit_scene();
 	let program = asset!("directional-shadow-cascade-fit.besl");
-	let mut size_steps = buffer(&program, CASCADE_SIZE_STEPS_SLOT);
-	let mut drawn_views = buffer(&program, DRAWN_CASCADE_VIEWS_SLOT);
+	let mut size_steps = buffer(&program, slot(&program, CASCADE_SIZE_STEPS));
+	let mut drawn_views = buffer(&program, slot(&program, DRAWN_CASCADE_VIEWS));
 	let mut fit = |half_size: f32| {
 		let mut bounds = box_bounds(&program, half_size);
 		let views = run_cascade_fit(
@@ -3839,7 +3842,7 @@ fn ssgi_animated_blue_noise_covers_two_dimensional_hemisphere_samples() {
 	let source = asset_source!("ssgi-trace.besl").split("main: fn").next().unwrap();
 	let program = compile(asset_program(&format!(
 		"{source}
-probe_output: descriptor<{{ type: StorageImage<rgba16f>, binding: 2000, access: write }}>;
+probe_output: descriptor<{{ type: StorageImage<rgba16f>, binding: 0, access: write }}>;
 main: fn (input: StageInput) -> void {{
 	let sample: vec2f = hilbert_square(f32(input.thread_idx) / {VALUE_STEPS:?});
 	write(probe_output, input.thread_id, vec4f(sample.x, sample.y, 0.0, 1.0));
@@ -3855,7 +3858,7 @@ main: fn (input: StageInput) -> void {{
 			// The trace's rescaled direction channel plus this frame's offset, modulo one.
 			let value = ((BLUE_NOISE[texel * 2] as f32 + 0.5) / 256.0 + blue_noise_offset(frame)[0]).fract();
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_image(ResourceSlot::new(2000), &mut output);
+			descriptors.bind_image(slot(&program, "probe_output"), &mut output);
 			program
 				.run_main_with_config(
 					&mut descriptors,
@@ -3944,13 +3947,13 @@ fn a_mesh_one_stream_cannot_hold_takes_nothing_from_the_others() {
 
 /* Fog light */
 
-const FOG_LIGHT_LIGHTING_SLOT: ResourceSlot = ResourceSlot::new(1033);
-const FOG_LIGHT_PARAMETERS_SLOT: ResourceSlot = ResourceSlot::new(1034);
-const FOG_LIGHT_TILE_MASKS_SLOT: ResourceSlot = ResourceSlot::new(1035);
-const FOG_LIGHT_DEPTH_SLOT: ResourceSlot = ResourceSlot::new(1036);
-const FOG_LIGHT_BLUE_NOISE_SLOT: ResourceSlot = ResourceSlot::new(1037);
-const FOG_LIGHT_DIRECTIONAL_SHADOW_SLOT: ResourceSlot = ResourceSlot::new(1038);
-const FOG_LIGHT_OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(1039);
+const FOG_LIGHT_LIGHTING: &str = "lighting_data";
+const FOG_LIGHT_PARAMETERS: &str = "parameters";
+const FOG_LIGHT_TILE_MASKS: &str = "tile_masks";
+const FOG_LIGHT_DEPTH: &str = "depth";
+const FOG_LIGHT_BLUE_NOISE: &str = "blue_noise";
+const FOG_LIGHT_DIRECTIONAL_SHADOW: &str = "directional_shadow_map";
+const FOG_LIGHT_OUTPUT: &str = "scattered_light";
 /// The tile grid's columns, as `fog_light.besl` declares it.
 const FOG_LIGHT_TILE_COLUMNS: u32 = 32;
 
@@ -3959,7 +3962,7 @@ fn fog_light_parameters(
 	program: &ExecutableProgram,
 	parameters: &super::render_pass::FogLightShaderParameters,
 ) -> besl::vm::Buffer {
-	let mut buffer = buffer(program, FOG_LIGHT_PARAMETERS_SLOT);
+	let mut buffer = buffer(program, slot(program, FOG_LIGHT_PARAMETERS));
 	for (field, value) in [
 		(
 			"pixel_to_camera_offset",
@@ -3998,7 +4001,7 @@ fn fog_light_parameters(
 
 /// Uploads `lights` into the fog light passes' light table at `exposure`.
 fn fog_light_table(program: &ExecutableProgram, lights: &[super::shader_data::LightData], exposure: f32) -> besl::vm::Buffer {
-	let mut lighting = buffer(program, FOG_LIGHT_LIGHTING_SLOT);
+	let mut lighting = buffer(program, slot(program, FOG_LIGHT_LIGHTING));
 	lighting
 		.write("light_count", Value::U32(lights.len() as u32))
 		.expect("light count");
@@ -4035,14 +4038,13 @@ fn run_fog_light_tiles(
 	let program = asset!("fog-light-tiles.besl");
 	let mut parameters = fog_light_parameters(&program, &super::render_pass::fog_light_shader_parameters(fog, sink));
 	let mut lighting = fog_light_table(&program, lights, exposure);
-	let mut masks = buffer(&program, FOG_LIGHT_TILE_MASKS_SLOT);
+	let mut masks = buffer(&program, slot(&program, FOG_LIGHT_TILE_MASKS));
 	let tile = row * FOG_LIGHT_TILE_COLUMNS + column;
-	let configs: [ExecutionConfig; 32] =
-		std::array::from_fn(|lane| lane_config(lane as u32).with_threadgroup_position(tile));
+	let configs: [ExecutionConfig; 32] = std::array::from_fn(|lane| lane_config(lane as u32).with_threadgroup_position(tile));
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(FOG_LIGHT_LIGHTING_SLOT, &mut lighting);
-	descriptors.bind_buffer(FOG_LIGHT_PARAMETERS_SLOT, &mut parameters);
-	descriptors.bind_buffer(FOG_LIGHT_TILE_MASKS_SLOT, &mut masks);
+	descriptors.bind_buffer(slot(&program, FOG_LIGHT_LIGHTING), &mut lighting);
+	descriptors.bind_buffer(slot(&program, FOG_LIGHT_PARAMETERS), &mut parameters);
+	descriptors.bind_buffer(slot(&program, FOG_LIGHT_TILE_MASKS), &mut masks);
 	run_workgroup(&program, descriptors, &configs);
 	read_u32(&masks, tile as usize * 32)
 }
@@ -4090,14 +4092,14 @@ fn run_fog_light(
 	let mut lighting = fog_light_table(&program, lights, 1.0);
 	// The sink's one march pixel lies in the first tile, which holds every light. The tile pass's own tests cover which
 	// lights a tile holds.
-	let mut masks = buffer(&program, FOG_LIGHT_TILE_MASKS_SLOT);
+	let mut masks = buffer(&program, slot(&program, FOG_LIGHT_TILE_MASKS));
 	masks
 		.write_array_element(0, Value::U32((1u32 << lights.len()) - 1))
 		.expect("fog light tile mask");
 	let mut depth_texture = texture_2d(2, 2, &[[depth, 0.0, 0.0, 1.0]; 4]);
 	// The middle of the noise's range places every sample in the middle of its step.
 	let mut blue_noise = texture_2d(1, 1, &[[0.5, 0.5, 0.0, 1.0]]);
-	let mut views = buffer(&program, VIEWS_SLOT);
+	let mut views = buffer(&program, slot(&program, VIEWS));
 	let mut shadow_map = Texture::new_3d(4, 4, 4).expect("shadow map");
 	if let Some(shadows) = &shadows {
 		for cascade in 0..4 {
@@ -4116,14 +4118,14 @@ fn run_fog_light(
 	}
 	let mut output = empty_image(1, 1);
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(VIEWS_SLOT, &mut views);
-	descriptors.bind_buffer(FOG_LIGHT_LIGHTING_SLOT, &mut lighting);
-	descriptors.bind_buffer(FOG_LIGHT_PARAMETERS_SLOT, &mut parameters);
-	descriptors.bind_buffer(FOG_LIGHT_TILE_MASKS_SLOT, &mut masks);
-	descriptors.bind_texture(FOG_LIGHT_DEPTH_SLOT, &mut depth_texture);
-	descriptors.bind_texture(FOG_LIGHT_BLUE_NOISE_SLOT, &mut blue_noise);
-	descriptors.bind_texture(FOG_LIGHT_DIRECTIONAL_SHADOW_SLOT, &mut shadow_map);
-	descriptors.bind_image(FOG_LIGHT_OUTPUT_SLOT, &mut output);
+	descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
+	descriptors.bind_buffer(slot(&program, FOG_LIGHT_LIGHTING), &mut lighting);
+	descriptors.bind_buffer(slot(&program, FOG_LIGHT_PARAMETERS), &mut parameters);
+	descriptors.bind_buffer(slot(&program, FOG_LIGHT_TILE_MASKS), &mut masks);
+	descriptors.bind_texture(slot(&program, FOG_LIGHT_DEPTH), &mut depth_texture);
+	descriptors.bind_texture(slot(&program, FOG_LIGHT_BLUE_NOISE), &mut blue_noise);
+	descriptors.bind_texture(slot(&program, FOG_LIGHT_DIRECTIONAL_SHADOW), &mut shadow_map);
+	descriptors.bind_image(slot(&program, FOG_LIGHT_OUTPUT), &mut output);
 	run_at(&program, &mut descriptors, [0, 0]);
 	drop(descriptors);
 	rgba(&output, [0, 0])
@@ -4188,7 +4190,8 @@ fn reference_local_fog_light(
 			let squared = to_light.iter().map(|axis| axis * axis).sum::<f32>();
 			let length = squared.sqrt();
 			let light_to_fog = to_light.map(|axis| -axis / length);
-			density * (-density * t).exp() * intensity / squared * henyey_greenstein(anisotropy, to_light[2] / length)
+			density * (-density * t).exp() * intensity / squared
+				* henyey_greenstein(anisotropy, to_light[2] / length)
 				* falloff(light_to_fog)
 				* step
 		})
@@ -4219,14 +4222,22 @@ fn fog_light_tiles_hold_the_lights_that_reach_the_fog() {
 	// The density falls to 0.0001 ln(1000) ≈ 6.9 m above the base height.
 	let around_the_light = ExponentialHeightFog::new(layer);
 	let far_below_the_light = ExponentialHeightFog::new(layer.with_base_height(-20.0));
-	let beside_the_light = ExponentialHeightFog::new(FogLayer::new(0.1).with_bounds(math::AABB::new(
-		Point::new(20.0, -1.0, 15.0),
-		Point::new(30.0, 1.0, 25.0),
-	)));
+	let beside_the_light = ExponentialHeightFog::new(
+		FogLayer::new(0.1).with_bounds(math::AABB::new(Point::new(20.0, -1.0, 15.0), Point::new(30.0, 1.0, 25.0))),
+	);
 
-	assert_eq!(run_fog_light_tiles(&around_the_light, &sink, &lights, dim, center_tile), 0b101);
-	assert_eq!(run_fog_light_tiles(&far_below_the_light, &sink, &lights, dim, center_tile), 0b100);
-	assert_eq!(run_fog_light_tiles(&beside_the_light, &sink, &lights, dim, center_tile), 0b100);
+	assert_eq!(
+		run_fog_light_tiles(&around_the_light, &sink, &lights, dim, center_tile),
+		0b101
+	);
+	assert_eq!(
+		run_fog_light_tiles(&far_below_the_light, &sink, &lights, dim, center_tile),
+		0b100
+	);
+	assert_eq!(
+		run_fog_light_tiles(&beside_the_light, &sink, &lights, dim, center_tile),
+		0b100
+	);
 	// A tile at the image's left edge looks away from the light ahead.
 	assert_eq!(run_fog_light_tiles(&around_the_light, &sink, &lights, dim, [0, 9]), 0b100);
 }
@@ -4283,7 +4294,11 @@ fn fog_light_of_a_point_light_matches_the_scattering_integral() {
 
 	let density = 0.05;
 	let anisotropy = 0.3;
-	let light = uploaded_light(light_cluster_fixture_light(false), Point::new(1.0, 0.0, 4.0), UnitVector::z_axis());
+	let light = uploaded_light(
+		light_cluster_fixture_light(false),
+		Point::new(1.0, 0.0, 4.0),
+		UnitVector::z_axis(),
+	);
 
 	let marched = run_fog_light(&uniform_fog(density, anisotropy, 64), &[light], fog_light_depth(8.0), None);
 

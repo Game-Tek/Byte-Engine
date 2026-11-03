@@ -514,7 +514,8 @@ pub(super) fn resolve_texture_array_access(
 	};
 	let binding = binding.borrow();
 	let Nodes::Binding {
-		slot,
+		name,
+		placement,
 		read,
 		write,
 		r#type: BindingTypes::CombinedImageSampler { format, .. },
@@ -524,7 +525,7 @@ pub(super) fn resolve_texture_array_access(
 	else {
 		return Ok(None);
 	};
-	let slot = ResourceSlot::new(*slot);
+	let slot = placed_slot(name, *placement)?;
 	require_descriptor_access(slot, *read, *write, RequiredAccess::Read)?;
 	slot.slot()
 		.checked_add(count.get() - 1)
@@ -563,11 +564,12 @@ pub(super) fn resolve_image_array_access(
 	};
 	let (slot, count) = match binding.borrow().node() {
 		Nodes::Binding {
-			slot,
+			name,
+			placement,
 			r#type: BindingTypes::Image { .. },
 			count: Some(count),
 			..
-		} => (ResourceSlot::new(*slot), count.get()),
+		} => (placed_slot(name, *placement)?, count.get()),
 		_ => return Ok(None),
 	};
 	slot.slot()
@@ -771,4 +773,13 @@ pub(super) fn describe_node(node: &Nodes) -> &'static str {
 		Nodes::Parameter { .. } => "parameter",
 		Nodes::Const { .. } => "const",
 	}
+}
+
+/// Returns the slot of the first descriptor of binding `name`, from its placement among the program's sets.
+pub(super) fn placed_slot(name: &str, placement: Option<crate::Placement>) -> Result<ResourceSlot, VmError> {
+	placement.map(ResourceSlot::placed).ok_or_else(|| VmError::UnsupportedExpression {
+		message: format!(
+			"Descriptor `{name}` belongs to no descriptor set of the program. The most likely cause is a descriptor of a layer that `main` doesn't take. Take the layer as a parameter of `main`"
+		),
+	})
 }

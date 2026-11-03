@@ -50,20 +50,20 @@ FogLightTileMasks: struct {
 }
 
 FogLight: layer {
-	lighting_data: descriptor<{ type: LightingBuffer, binding: 1033, access: read, memory: device }>;
-	parameters: descriptor<{ type: FogLightParameters, binding: 1034, access: read }>;
-	tile_masks: descriptor<{ type: FogLightTileMasks, binding: 1035, access: read_write, memory: device }>;
+	lighting_data: descriptor<{ type: LightingBuffer, binding: 0, access: read, memory: device }>;
+	parameters: descriptor<{ type: FogLightParameters, binding: 1, access: read }>;
+	tile_masks: descriptor<{ type: FogLightTileMasks, binding: 2, access: read_write, memory: device }>;
 	// The sink's reverse-Z depth, which the march picks each pixel's surface from.
-	depth: descriptor<{ type: Texture2D, binding: 1036, access: read }>;
+	depth: descriptor<{ type: Texture2D, binding: 3, access: read }>;
 	// The engine's tiling blue noise, which places each pixel's samples.
-	blue_noise: descriptor<{ type: Texture2D, binding: 1037, access: read }>;
-	directional_shadow_map: descriptor<{ type: Texture2DArray, binding: 1038, access: read }>;
+	blue_noise: descriptor<{ type: Texture2D, binding: 4, access: read }>;
+	directional_shadow_map: descriptor<{ type: Texture2DArray, binding: 5, access: read }>;
 	// rgb: the exposed light the fog scatters toward the camera; a: log2(1 + the marched distance), zero where nothing
 	// was marched.
-	scattered_light: descriptor<{ type: StorageImage<rgba16f>, binding: 1039, access: write }>;
+	scattered_light: descriptor<{ type: StorageImage<rgba16f>, binding: 6, access: write }>;
 	// One image per power-of-two size class of cone maps and point cube faces, as material evaluation binds them.
 	// Arrayed bindings take `count` flat slots, so they sit past every other binding of the layers a shader takes
 	// with this one.
-	cone_shadow_maps: descriptor<{ type: Texture2DArray, binding: 1072, access: read, count: 5 }>;
-	point_shadow_maps: descriptor<{ type: TextureCubeArray, binding: 1077, access: read, count: 5 }>;
+	cone_shadow_maps: descriptor<{ type: Texture2DArray, binding: 7, access: read, count: 5 }>;
+	point_shadow_maps: descriptor<{ type: TextureCubeArray, binding: 8, access: read, count: 5 }>;
 }

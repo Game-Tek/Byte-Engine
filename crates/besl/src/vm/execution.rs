@@ -623,7 +623,7 @@ impl ExecutableProgram {
 				}
 				// Lowering validates the whole slot range, and the bounded index preserves that proof.
 				registers[*register] = Some(Value::Resource {
-					slot: ResourceSlot::new(slot.slot() + index as u32),
+					slot: slot.offset(index as u32),
 					value_type: value_type.clone(),
 				});
 			}

@@ -2,9 +2,15 @@
 
 use super::*;
 
-/// The `ResourceSlot` struct provides a stable flat lookup key for host resources and VM interface resources.
+/// The `ResourceSlot` struct provides a stable lookup key for host resources and VM interface resources.
+///
+/// A host resource is one descriptor of one of the program's descriptor sets: the set's position and the descriptor's
+/// index among the set's densely stored descriptors, which [`crate::Placement`] gives for a binding. Element `i` of an
+/// array binding is the descriptor `i` after its first one. Bind resources with
+/// [`crate::vm::DescriptorBindings`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResourceSlot {
+	set: u32,
 	slot: u32,
 	// The kind keeps internal VM namespaces distinct from host resources that use the same numeric slot.
 	kind: ResourceSlotKind,
@@ -23,19 +29,45 @@ enum ResourceSlotKind {
 }
 
 impl ResourceSlot {
+	/// Names descriptor `slot` of the program's first descriptor set, the only one of a program without layers.
 	pub const fn new(slot: u32) -> Self {
+		Self::in_set(0, slot)
+	}
+
+	/// Names descriptor `slot` of the descriptor set at position `set`.
+	pub const fn in_set(set: u32, slot: u32) -> Self {
 		Self {
+			set,
 			slot,
 			kind: ResourceSlotKind::Resource,
 		}
 	}
 
+	/// Names the first descriptor of a placed binding.
+	pub const fn placed(placement: crate::Placement) -> Self {
+		Self::in_set(placement.set, placement.resource)
+	}
+
+	/// Returns the position of the descriptor set that holds the resource.
+	pub const fn set(&self) -> u32 {
+		self.set
+	}
+
+	/// Returns the index of the descriptor within its set.
 	pub const fn slot(&self) -> u32 {
 		self.slot
 	}
 
+	/// Names the descriptor `offset` places after this one in the same set, such as element `offset` of an array.
+	pub const fn offset(self, offset: u32) -> Self {
+		Self {
+			slot: self.slot + offset,
+			..self
+		}
+	}
+
 	const fn virtual_slot(slot: u32, kind: ResourceSlotKind) -> Self {
-		Self { slot, kind }
+		Self { set: 0, slot, kind }
 	}
 
 	pub(super) const fn is_dynamic_resource(&self) -> bool {

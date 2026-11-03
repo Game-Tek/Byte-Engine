@@ -55,6 +55,6 @@ Ui: layer {
 	// Element 0 is the glyph atlas and the rest are images.
 	textures: descriptor<{ type: Texture2D, binding: 6, access: read, count: 32 }>;
 	// Packed path outlines, laid out exactly like the glyph buffers, after the 32 texture slots. See `path_coverage`.
-	path_curves: descriptor<{ type: GlyphCurve[], binding: 38, access: read }>;
-	path_bands: descriptor<{ type: GlyphBand[], binding: 39, access: read }>;
+	path_curves: descriptor<{ type: GlyphCurve[], binding: 7, access: read }>;
+	path_bands: descriptor<{ type: GlyphBand[], binding: 8, access: read }>;
 }

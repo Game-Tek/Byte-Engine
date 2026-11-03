@@ -337,12 +337,14 @@ fn pixel_to_previous_pixel(current: View, previous: View, extent: Extent, fracti
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot, Value, output_slot};
+	use besl::vm::{DescriptorBindings, Value, output_slot};
 	use math::{Degrees, Point, UnitVector, Vector};
 
 	use super::*;
 	use crate::rendering::render_pass::simple_compute;
-	use crate::rendering::shader_vm_test::{PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_pixel, texture_2d};
+	use crate::rendering::shader_vm_test::{
+		PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_pixel, slot, texture_2d,
+	};
 
 	const MOTION_BLUR_BESL: &str = include_str!("../../../assets/rendering/motion-blur.besl");
 
@@ -488,7 +490,7 @@ mod tests {
 			1,
 			ShownDebugViews::default(),
 		);
-		let parameter_slot = ResourceSlot::new(2);
+		let parameter_slot = slot(&program, "parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		for (name, value) in [
 			(
@@ -506,7 +508,7 @@ mod tests {
 		let mut scene = texture_2d(width, 1, texels);
 		let mut result = empty_image(width, 1);
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(0), &mut scene);
+		descriptors.bind_texture(slot(&program, "scene_texture"), &mut scene);
 		descriptors.bind_image(output_slot(0), &mut result);
 		descriptors.bind_buffer(parameter_slot, &mut parameters);
 		run_pixel(&program, &mut descriptors, [pixel, 0], PIXEL_TILE, [width, 1]);

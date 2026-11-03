@@ -143,7 +143,7 @@ impl<'a> Compiler<'a> {
 			// Every possible element occupies one flat host slot; only the selected resource is used at execution.
 			for element in 0..count {
 				self.claim_descriptor_layout(
-					ResourceSlot::new(slot.slot() + element as u32),
+					slot.offset(element as u32),
 					DescriptorLayout::Image,
 					"resource type",
 				)?;
@@ -338,7 +338,8 @@ impl<'a> Compiler<'a> {
 /// Returns the slot and resource type of a binding node after checking that the binding allows `access`.
 fn accessible_binding(node: &Nodes, access: RequiredAccess) -> Result<(ResourceSlot, &BindingTypes), VmError> {
 	let Nodes::Binding {
-		slot,
+		name,
+		placement,
 		read,
 		write,
 		r#type,
@@ -349,7 +350,7 @@ fn accessible_binding(node: &Nodes, access: RequiredAccess) -> Result<(ResourceS
 			message: format!("Expected a binding access, but found {}", describe_node(node)),
 		});
 	};
-	let slot = ResourceSlot::new(*slot);
+	let slot = placed_slot(name, *placement)?;
 	require_descriptor_access(slot, *read, *write, access)?;
 	Ok((slot, r#type))
 }

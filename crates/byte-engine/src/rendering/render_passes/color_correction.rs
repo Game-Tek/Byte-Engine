@@ -376,7 +376,7 @@ impl RenderPass for ColorCorrectionPass {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot, Value, output_slot};
+	use besl::vm::{DescriptorBindings, Value, output_slot};
 
 	use super::*;
 	use crate::rendering::{
@@ -389,6 +389,7 @@ mod tests {
 		validate(&settings);
 		let linked = simple_compute::compile_test_program(asset_source("color-correction/correct.besl"));
 		let slot = binding_slot(&linked, "parameters");
+		let source_slot = binding_slot(&linked, "source_texture");
 		let program = compile(linked);
 		let data = color_correction_shader_data(&settings);
 		let mut parameters = buffer(&program, slot);
@@ -412,7 +413,7 @@ mod tests {
 		let mut source = texture_2d(1, 1, &[[color[0], color[1], color[2], 0.5]]);
 		let mut result = empty_image(1, 1);
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(0), &mut source);
+		descriptors.bind_texture(source_slot, &mut source);
 		descriptors.bind_buffer(slot, &mut parameters);
 		descriptors.bind_image(output_slot(0), &mut result);
 		run_pixel(&program, &mut descriptors, [0, 0], PIXEL_TILE, [1, 1]);

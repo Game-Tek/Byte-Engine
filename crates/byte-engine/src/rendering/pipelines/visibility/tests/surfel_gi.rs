@@ -9,63 +9,22 @@ use std::sync::Arc;
 
 use besl::vm::{
 	AccelerationStructure, BottomLevelStructure, Buffer, DescriptorBindings, ExecutableProgram, Instance, RayTracingPipeline,
-	ResourceSlot, Texture, Value,
+	Texture, Value,
 };
 use half::f16;
 
 use super::{
-	SSGI_WALL_NORMAL, TILE_WORKGROUP_SIZE, TILE_WORKGROUP_WIDTH, VIEWS_SLOT, asset_program, read_u32, run_workgroup,
+	SSGI_WALL_NORMAL, TILE_WORKGROUP_SIZE, TILE_WORKGROUP_WIDTH, asset_program, read_u32, run_workgroup,
 	run_workgroup_containing, screen_view_buffer, ssgi_projection, ssgi_ray_at,
 };
 use crate::rendering::shader_vm_test::{
 	IDENTITY_MATRIX, array_buffer, assert_rgba_close, asset_source, buffer, column_major, compile, empty_image, lane_config,
-	rgba, texture_2d, with_engine_modules,
+	rgba, slot, texture_2d, with_engine_modules,
 };
 
-const DEPTH_PYRAMID_SLOT: ResourceSlot = ResourceSlot::new(1033);
-const PARAMETERS_SLOT: ResourceSlot = ResourceSlot::new(1120);
-const RECORDS_SLOT: ResourceSlot = ResourceSlot::new(1121);
-const STATES_SLOT: ResourceSlot = ResourceSlot::new(1122);
-const FREE_SLOT: ResourceSlot = ResourceSlot::new(1123);
-const POOL_SLOT: ResourceSlot = ResourceSlot::new(1124);
-const CELLS_SLOT: ResourceSlot = ResourceSlot::new(1125);
-const SCAN_SLOT: ResourceSlot = ResourceSlot::new(1126);
-const PARTIALS_SLOT: ResourceSlot = ResourceSlot::new(1127);
-const ENTRIES_SLOT: ResourceSlot = ResourceSlot::new(1128);
-const RAY_WANTS_SLOT: ResourceSlot = ResourceSlot::new(1129);
-const IRRADIANCE_SLOT: ResourceSlot = ResourceSlot::new(1130);
-const RAYS_SLOT: ResourceSlot = ResourceSlot::new(1131);
-const RAY_RESULTS_SLOT: ResourceSlot = ResourceSlot::new(1132);
-const SCENE_LIGHTS_SLOT: ResourceSlot = ResourceSlot::new(1133);
-const HIT_SPAWNS_SLOT: ResourceSlot = ResourceSlot::new(1134);
-const SCENE_STRUCTURE_SLOT: ResourceSlot = ResourceSlot::new(1140);
-// The ray hits set the trace and shade passes share with probe GI.
-const HITS_SLOT: ResourceSlot = ResourceSlot::new(1145);
-const HIT_KEYS_SLOT: ResourceSlot = ResourceSlot::new(1146);
-const HIT_SORT_SLOT: ResourceSlot = ResourceSlot::new(1147);
-const SORTED_HITS_SLOT: ResourceSlot = ResourceSlot::new(1148);
-const GUIDES_SLOT: ResourceSlot = ResourceSlot::new(1138);
-const DEPTHS_SLOT: ResourceSlot = ResourceSlot::new(1139);
-const CLEARANCES_SLOT: ResourceSlot = ResourceSlot::new(1143);
-const ENVIRONMENT_RADIANCE_SLOT: ResourceSlot = ResourceSlot::new(1144);
 /// Each surfel's guide cells and radial depth cells.
 const GUIDE_CELLS: usize = 64;
 const DEPTH_CELLS: usize = 16;
-const RESOLVE_PARAMETERS_SLOT: ResourceSlot = ResourceSlot::new(1150);
-const SPAWNS_SLOT: ResourceSlot = ResourceSlot::new(1151);
-const NORMALS_SLOT: ResourceSlot = ResourceSlot::new(1153);
-// The resolve's temporal accumulation set.
-const PREVIOUS_HISTORY_SLOT: ResourceSlot = ResourceSlot::new(1222);
-const PREVIOUS_WEIGHTS_SLOT: ResourceSlot = ResourceSlot::new(1223);
-const PREVIOUS_DEPTH_SLOT: ResourceSlot = ResourceSlot::new(1224);
-const PREVIOUS_NORMALS_SLOT: ResourceSlot = ResourceSlot::new(1226);
-const HISTORY_OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(1227);
-const WEIGHTS_OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(1228);
-// The spatial pass's own set.
-const SPATIAL_HISTORY_SLOT: ResourceSlot = ResourceSlot::new(1230);
-const SPATIAL_WEIGHTS_SLOT: ResourceSlot = ResourceSlot::new(1231);
-const SPATIAL_NORMALS_SLOT: ResourceSlot = ResourceSlot::new(1232);
-const OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(1233);
 
 /// The pool slots of the fixture pools. The passes read the capacity from the parameters, so a small pool works.
 const CAPACITY: u32 = 128;
@@ -115,8 +74,6 @@ fn reconstruct_covered_face(normal: [f32; 3], geometric: [f32; 3], stored: [f32;
 		INDIRECT_DIFFUSE_SOURCE_POSITION_SOURCE, SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE, SSGI_STORED_NORMAL_SOURCE,
 		SSGI_SURFACE_WEIGHT_SOURCE, WEIGH_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE,
 	};
-	const RESULT: ResourceSlot = ResourceSlot::new(0);
-	const VIEW: ResourceSlot = ResourceSlot::new(1048);
 	let source = format!(
 		r#"
 		use ::byte_engine::rendering::visibility::layouts::material_evaluation::*;
@@ -138,7 +95,7 @@ fn reconstruct_covered_face(normal: [f32; 3], geometric: [f32; 3], stored: [f32;
 		normal[0], normal[1], normal[2], geometric[0], geometric[1], geometric[2],
 	);
 	let program = compile(besl::lex(with_engine_modules(source.leak())).expect("reconstruction shader"));
-	let mut view = buffer(&program, VIEW);
+	let mut view = buffer(&program, slot(&program, "ssgi_view"));
 	view.write("pixel_to_ray_mul", Value::Vec2F([0.01, -0.01]))
 		.expect("view scale");
 	view.write("pixel_to_ray_add", Value::Vec2F([-0.075, 0.075]))
@@ -146,13 +103,13 @@ fn reconstruct_covered_face(normal: [f32; 3], geometric: [f32; 3], stored: [f32;
 	let mut depth = texture_2d(16, 16, &[[1.0, 0.0, 0.0, 1.0]; 256]);
 	let mut normals = texture_2d(16, 16, &[stored; 256]);
 	let mut history = texture_2d(16, 16, &[[0.3125, 0.15625, 0.0625, 1.0]; 256]);
-	let mut result = buffer(&program, RESULT);
+	let mut result = buffer(&program, slot(&program, "results"));
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(VIEW, &mut view);
-	descriptors.bind_texture(ResourceSlot::new(1060), &mut depth);
-	descriptors.bind_texture(ResourceSlot::new(1047), &mut normals);
-	descriptors.bind_texture(ResourceSlot::new(1056), &mut history);
-	descriptors.bind_buffer(RESULT, &mut result);
+	descriptors.bind_buffer(slot(&program, "ssgi_view"), &mut view);
+	descriptors.bind_texture(slot(&program, "depth_pyramid"), &mut depth);
+	descriptors.bind_texture(slot(&program, "ssgi_normals"), &mut normals);
+	descriptors.bind_texture(slot(&program, "ssgi_history"), &mut history);
+	descriptors.bind_buffer(slot(&program, "results"), &mut result);
 	crate::rendering::shader_vm_test::run_at(&program, &mut descriptors, [0, 0]);
 	drop(descriptors);
 	match result.read("light").expect("reconstructed light") {
@@ -243,8 +200,8 @@ impl SurfelPasses {
 			.map(|lane| lane_config(lane).with_thread_id([lane, 0]))
 			.collect();
 		let mut descriptors = DescriptorBindings::new();
-		set.bind(&mut descriptors);
-		descriptors.bind_acceleration_structure(SCENE_STRUCTURE_SLOT, scene);
+		set.bind(&self.validate, &mut descriptors);
+		descriptors.bind_acceleration_structure(slot(&self.validate, "scene_structure"), scene);
 		run_workgroup(&self.validate, descriptors, &configs);
 	}
 }
@@ -267,7 +224,7 @@ fn dispatch(program: &ExecutableProgram, set: &mut SurfelSet, threads: u32) {
 			})
 			.collect();
 		let mut descriptors = DescriptorBindings::new();
-		set.bind(&mut descriptors);
+		set.bind(program, &mut descriptors);
 		run_workgroup(program, descriptors, &configs);
 	}
 }
@@ -303,7 +260,10 @@ impl SurfelSet {
 	fn new(passes: &SurfelPasses) -> Self {
 		let capacity = CAPACITY as usize;
 		let groups = scan_group_count() as usize;
-		let mut parameters = buffer(&passes.count, PARAMETERS_SLOT);
+		let array = |program: &ExecutableProgram, name: &str, element_count: usize| {
+			array_buffer(program, slot(program, name), element_count)
+		};
+		let mut parameters = buffer(&passes.count, slot(&passes.count, "surfel_parameters"));
 		for (member, value) in [
 			("grid_origin", Value::Vec3F([0.0; 3])),
 			("surfel_capacity", Value::U32(CAPACITY)),
@@ -317,53 +277,63 @@ impl SurfelSet {
 		}
 		Self {
 			parameters,
-			records: array_buffer(&passes.count, RECORDS_SLOT, capacity),
-			states: array_buffer(&passes.count, STATES_SLOT, capacity),
-			free: array_buffer(&passes.count, FREE_SLOT, capacity),
-			pool: buffer(&passes.count, POOL_SLOT),
-			cells: buffer(&passes.count, CELLS_SLOT),
+			records: array(&passes.count, "surfel_records", capacity),
+			states: array(&passes.count, "surfel_states", capacity),
+			free: array(&passes.count, "surfel_free", capacity),
+			pool: buffer(&passes.count, slot(&passes.count, "surfel_pool")),
+			cells: buffer(&passes.count, slot(&passes.count, "surfel_cells")),
 			// The group pass writes whole groups, so the scan holds every element of its last group.
-			scan: array_buffer(&passes.count, SCAN_SLOT, groups * SCAN_GROUP_ELEMENTS as usize),
-			partials: array_buffer(&passes.scan_groups, PARTIALS_SLOT, groups),
-			entries: array_buffer(&passes.scatter, ENTRIES_SLOT, capacity * LISTING_LIMIT as usize),
+			scan: array(&passes.count, "surfel_scan", groups * SCAN_GROUP_ELEMENTS as usize),
+			partials: array(&passes.scan_groups, "surfel_scan_partials", groups),
+			entries: array(&passes.scatter, "surfel_cell_entries", capacity * LISTING_LIMIT as usize),
 			// Each slot's wanted priority rays, then its wanted regular rays.
-			ray_wants: array_buffer(&passes.count, RAY_WANTS_SLOT, capacity * 2),
-			irradiance: array_buffer(&passes.integrate, IRRADIANCE_SLOT, capacity),
-			rays: array_buffer(&passes.scatter, RAYS_SLOT, RAY_BUDGET as usize),
-			ray_results: array_buffer(&passes.integrate, RAY_RESULTS_SLOT, RAY_BUDGET as usize),
-			hit_keys: array_buffer(&passes.sort_scatter, HIT_KEYS_SLOT, RAY_BUDGET as usize),
-			hit_sort: buffer(&passes.sort_scan, HIT_SORT_SLOT),
-			sorted_hits: array_buffer(&passes.sort_scatter, SORTED_HITS_SLOT, RAY_BUDGET as usize),
-			guides: array_buffer(&passes.integrate, GUIDES_SLOT, capacity * GUIDE_CELLS),
-			depths: array_buffer(&passes.integrate, DEPTHS_SLOT, capacity * DEPTH_CELLS),
-			clearances: array_buffer(&passes.integrate, CLEARANCES_SLOT, capacity),
-			hit_spawns: array_buffer(&passes.allocate_hits, HIT_SPAWNS_SLOT, MAX_HIT_SPAWNS),
+			ray_wants: array(&passes.count, "surfel_ray_wants", capacity * 2),
+			irradiance: array(&passes.integrate, "surfel_irradiance", capacity),
+			rays: array(&passes.scatter, "surfel_rays", RAY_BUDGET as usize),
+			ray_results: array(&passes.integrate, "surfel_ray_results", RAY_BUDGET as usize),
+			hit_keys: array(&passes.sort_scatter, "ray_hit_keys", RAY_BUDGET as usize),
+			hit_sort: buffer(&passes.sort_scan, slot(&passes.sort_scan, "ray_hit_sort")),
+			sorted_hits: array(&passes.sort_scatter, "ray_sorted_hits", RAY_BUDGET as usize),
+			guides: array(&passes.integrate, "surfel_guides", capacity * GUIDE_CELLS),
+			depths: array(&passes.integrate, "surfel_depths", capacity * DEPTH_CELLS),
+			clearances: array(&passes.integrate, "surfel_clearances", capacity),
+			hit_spawns: array(&passes.allocate_hits, "surfel_hit_spawns", MAX_HIT_SPAWNS),
 			environment_radiance: texture_2d(1, 1, &[[0.0; 4]]),
 		}
 	}
 
-	fn bind<'a>(&'a mut self, descriptors: &mut DescriptorBindings<'a>) {
-		descriptors.bind_buffer(PARAMETERS_SLOT, &mut self.parameters);
-		descriptors.bind_buffer(RECORDS_SLOT, &mut self.records);
-		descriptors.bind_buffer(STATES_SLOT, &mut self.states);
-		descriptors.bind_buffer(FREE_SLOT, &mut self.free);
-		descriptors.bind_buffer(POOL_SLOT, &mut self.pool);
-		descriptors.bind_buffer(CELLS_SLOT, &mut self.cells);
-		descriptors.bind_buffer(SCAN_SLOT, &mut self.scan);
-		descriptors.bind_buffer(PARTIALS_SLOT, &mut self.partials);
-		descriptors.bind_buffer(ENTRIES_SLOT, &mut self.entries);
-		descriptors.bind_buffer(RAY_WANTS_SLOT, &mut self.ray_wants);
-		descriptors.bind_buffer(IRRADIANCE_SLOT, &mut self.irradiance);
-		descriptors.bind_buffer(RAYS_SLOT, &mut self.rays);
-		descriptors.bind_buffer(RAY_RESULTS_SLOT, &mut self.ray_results);
-		descriptors.bind_buffer(HIT_KEYS_SLOT, &mut self.hit_keys);
-		descriptors.bind_buffer(HIT_SORT_SLOT, &mut self.hit_sort);
-		descriptors.bind_buffer(SORTED_HITS_SLOT, &mut self.sorted_hits);
-		descriptors.bind_buffer(GUIDES_SLOT, &mut self.guides);
-		descriptors.bind_buffer(DEPTHS_SLOT, &mut self.depths);
-		descriptors.bind_buffer(CLEARANCES_SLOT, &mut self.clearances);
-		descriptors.bind_buffer(HIT_SPAWNS_SLOT, &mut self.hit_spawns);
-		descriptors.bind_texture(ENVIRONMENT_RADIANCE_SLOT, &mut self.environment_radiance);
+	/// Binds the set's resources that `program` declares. Each pass takes only some of the set's layers, at its own set
+	/// positions, so the descriptors are looked up by name in the pass.
+	fn bind<'a>(&'a mut self, program: &ExecutableProgram, descriptors: &mut DescriptorBindings<'a>) {
+		for (name, buffer) in [
+			("surfel_parameters", &mut self.parameters),
+			("surfel_records", &mut self.records),
+			("surfel_states", &mut self.states),
+			("surfel_free", &mut self.free),
+			("surfel_pool", &mut self.pool),
+			("surfel_cells", &mut self.cells),
+			("surfel_scan", &mut self.scan),
+			("surfel_scan_partials", &mut self.partials),
+			("surfel_cell_entries", &mut self.entries),
+			("surfel_ray_wants", &mut self.ray_wants),
+			("surfel_irradiance", &mut self.irradiance),
+			("surfel_rays", &mut self.rays),
+			("surfel_ray_results", &mut self.ray_results),
+			("ray_hit_keys", &mut self.hit_keys),
+			("ray_hit_sort", &mut self.hit_sort),
+			("ray_sorted_hits", &mut self.sorted_hits),
+			("surfel_guides", &mut self.guides),
+			("surfel_depths", &mut self.depths),
+			("surfel_clearances", &mut self.clearances),
+			("surfel_hit_spawns", &mut self.hit_spawns),
+		] {
+			if let Some(slot) = program.slot(name) {
+				descriptors.bind_buffer(slot, buffer);
+			}
+		}
+		if let Some(slot) = program.slot("surfel_environment_radiance") {
+			descriptors.bind_texture(slot, &mut self.environment_radiance);
+		}
 	}
 
 	/// Returns the guide cells of `slot`.
@@ -1287,7 +1257,6 @@ fn surfel_clearance_stops_short_of_the_nearest_wall() {
 /// that holds half of the hemisphere's solid angle.
 #[test]
 fn surfel_hemisphere_map_round_trips_and_keeps_solid_angle() {
-	const RESULTS_SLOT: ResourceSlot = ResourceSlot::new(1290);
 	const MAP_STAND_IN: &str = "
 use ::byte_engine::rendering::visibility::layouts::surfel_gi::*;
 MapResults: struct {
@@ -1296,7 +1265,7 @@ MapResults: struct {
 	below_horizon: u32,
 	upper_half: u32,
 }
-results: descriptor<{ type: MapResults, binding: 1290, access: read_write }>;
+results: descriptor<{ type: MapResults, binding: 0, access: read_write }>;
 main: fn () -> void {
 	for (let row: u32 = 0; row < 64; row = row + 1) {
 		for (let column: u32 = 0; column < 64; column = column + 1) {
@@ -1316,9 +1285,9 @@ main: fn () -> void {
 }
 ";
 	let program = compile(besl::lex(with_engine_modules(MAP_STAND_IN)).expect("the hemisphere map stand-in should link"));
-	let mut results = buffer(&program, RESULTS_SLOT);
+	let mut results = buffer(&program, slot(&program, "results"));
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(RESULTS_SLOT, &mut results);
+	descriptors.bind_buffer(slot(&program, "results"), &mut results);
 	run_workgroup(&program, descriptors, &[lane_config(0)]);
 
 	let read = |member: &str| results.read(member).expect("map result");
@@ -1354,7 +1323,7 @@ struct WallSink {
 impl WallSink {
 	fn new() -> Self {
 		let program = asset!("surfel-resolve.besl");
-		let mut parameters = buffer(&program, RESOLVE_PARAMETERS_SLOT);
+		let mut parameters = buffer(&program, slot(&program, "surfel_resolve_parameters"));
 		for (member, value) in [
 			("view_to_world", Value::Mat4F(IDENTITY_MATRIX)),
 			("debug_view_first_slot", Value::U32(0)),
@@ -1367,8 +1336,8 @@ impl WallSink {
 		}
 		let texels = vec![[WALL_DEPTH, 0.0, 0.0, 1.0]; (RESOLVE_EXTENT * RESOLVE_EXTENT) as usize];
 		Self {
-			view: screen_view_buffer(&program, VIEWS_SLOT, RESOLVE_EXTENT, RESOLVE_EXTENT),
-			spawns: array_buffer(&program, SPAWNS_SLOT, 1),
+			view: screen_view_buffer(&program, slot(&program, "screen_view"), RESOLVE_EXTENT, RESOLVE_EXTENT),
+			spawns: array_buffer(&program, slot(&program, "surfel_spawns"), 1),
 			depth: texture_2d(RESOLVE_EXTENT, RESOLVE_EXTENT, &texels),
 			normals: empty_image(RESOLVE_EXTENT, RESOLVE_EXTENT),
 			history: empty_image(RESOLVE_EXTENT, RESOLVE_EXTENT),
@@ -1387,14 +1356,15 @@ impl WallSink {
 	/// Runs the resolve over the whole image, which is one workgroup.
 	fn resolve(&mut self, set: &mut SurfelSet) {
 		let mut descriptors = DescriptorBindings::new();
-		set.bind(&mut descriptors);
-		descriptors.bind_buffer(VIEWS_SLOT, &mut self.view);
-		descriptors.bind_buffer(RESOLVE_PARAMETERS_SLOT, &mut self.parameters);
-		descriptors.bind_buffer(SPAWNS_SLOT, &mut self.spawns);
-		descriptors.bind_texture(DEPTH_PYRAMID_SLOT, &mut self.depth);
-		descriptors.bind_image(NORMALS_SLOT, &mut self.normals);
-		descriptors.bind_image(HISTORY_OUTPUT_SLOT, &mut self.history);
-		descriptors.bind_image(WEIGHTS_OUTPUT_SLOT, &mut self.weights);
+		let program = &self.program;
+		set.bind(program, &mut descriptors);
+		descriptors.bind_buffer(slot(program, "screen_view"), &mut self.view);
+		descriptors.bind_buffer(slot(program, "surfel_resolve_parameters"), &mut self.parameters);
+		descriptors.bind_buffer(slot(program, "surfel_spawns"), &mut self.spawns);
+		descriptors.bind_texture(slot(program, "depth_pyramid"), &mut self.depth);
+		descriptors.bind_image(slot(program, "normal_output"), &mut self.normals);
+		descriptors.bind_image(slot(program, "surfel_history_output"), &mut self.history);
+		descriptors.bind_image(slot(program, "surfel_weights_output"), &mut self.weights);
 		run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&self.program, descriptors, TILE_WORKGROUP_WIDTH, [0, 0]);
 	}
 
@@ -1415,18 +1385,19 @@ impl WallSink {
 		let mut previous_depth = texels([WALL_DEPTH, 0.0, 0.0, 1.0]);
 		let mut previous_normals = texels(SSGI_WALL_NORMAL);
 		let mut descriptors = DescriptorBindings::new();
-		set.bind(&mut descriptors);
-		descriptors.bind_buffer(VIEWS_SLOT, &mut self.view);
-		descriptors.bind_buffer(RESOLVE_PARAMETERS_SLOT, &mut self.parameters);
-		descriptors.bind_buffer(SPAWNS_SLOT, &mut self.spawns);
-		descriptors.bind_texture(DEPTH_PYRAMID_SLOT, &mut self.depth);
-		descriptors.bind_texture(PREVIOUS_HISTORY_SLOT, &mut previous_history);
-		descriptors.bind_texture(PREVIOUS_WEIGHTS_SLOT, &mut previous_weights);
-		descriptors.bind_texture(PREVIOUS_DEPTH_SLOT, &mut previous_depth);
-		descriptors.bind_texture(PREVIOUS_NORMALS_SLOT, &mut previous_normals);
-		descriptors.bind_image(NORMALS_SLOT, &mut self.normals);
-		descriptors.bind_image(HISTORY_OUTPUT_SLOT, &mut self.history);
-		descriptors.bind_image(WEIGHTS_OUTPUT_SLOT, &mut self.weights);
+		let program = &self.program;
+		set.bind(program, &mut descriptors);
+		descriptors.bind_buffer(slot(program, "screen_view"), &mut self.view);
+		descriptors.bind_buffer(slot(program, "surfel_resolve_parameters"), &mut self.parameters);
+		descriptors.bind_buffer(slot(program, "surfel_spawns"), &mut self.spawns);
+		descriptors.bind_texture(slot(program, "depth_pyramid"), &mut self.depth);
+		descriptors.bind_texture(slot(program, "surfel_previous_history"), &mut previous_history);
+		descriptors.bind_texture(slot(program, "surfel_previous_weights"), &mut previous_weights);
+		descriptors.bind_texture(slot(program, "surfel_previous_depth"), &mut previous_depth);
+		descriptors.bind_texture(slot(program, "surfel_previous_normals"), &mut previous_normals);
+		descriptors.bind_image(slot(program, "normal_output"), &mut self.normals);
+		descriptors.bind_image(slot(program, "surfel_history_output"), &mut self.history);
+		descriptors.bind_image(slot(program, "surfel_weights_output"), &mut self.weights);
 		run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&self.program, descriptors, TILE_WORKGROUP_WIDTH, [0, 0]);
 	}
 
@@ -1538,15 +1509,21 @@ main: fn (input: StageInput, payload: HitSurface) -> HitSurface {
 /// table starts empty, so a hit's light is the surfels' alone until a test adds lights.
 struct WhiteShade {
 	pipeline: RayTracingPipeline,
+	/// A copy of the shade pass, which names the descriptors of the pass the pipeline owns.
+	shade: ExecutableProgram,
 	hits: Buffer,
 	lights: Buffer,
 }
 
 impl WhiteShade {
 	fn new() -> Self {
-		let shade = compile(
-			besl::lex(with_engine_modules(asset_source("visibility/surfel-shade.besl"))).expect("the shade pass should link"),
-		);
+		let shade = || {
+			compile(
+				besl::lex(with_engine_modules(asset_source("visibility/surfel-shade.besl")))
+					.expect("the shade pass should link"),
+			)
+		};
+		let (pass, shade) = (shade(), shade());
 		// Material hit shaders stack on the layers the shader generator gives them.
 		// The stand-in takes the layers and modules every material's closest hit takes.
 		use super::super::shader_generator::{
@@ -1557,10 +1534,15 @@ impl WhiteShade {
 		let white_hit = layered_program(main, &MATERIAL_HIT_LAYERS, &MATERIAL_HIT_MODULES, &MATERIAL_HIT_MODULE_FILES)
 			.expect("the white hit should take the material hit layers");
 		let white_hit = compile(besl::lex(white_hit).expect("the white hit should link"));
-		let hits = array_buffer(&shade, HITS_SLOT, RAY_BUDGET as usize);
-		let lights = buffer(&shade, SCENE_LIGHTS_SLOT);
-		let pipeline = RayTracingPipeline::new(shade, vec![white_hit]).expect("the white hit should run in the shade pass");
-		Self { pipeline, hits, lights }
+		let hits = array_buffer(&shade, slot(&shade, "ray_hits"), RAY_BUDGET as usize);
+		let lights = buffer(&shade, slot(&shade, "surfel_scene_lights"));
+		let pipeline = RayTracingPipeline::new(pass, vec![white_hit]).expect("the white hit should run in the shade pass");
+		Self {
+			pipeline,
+			shade,
+			hits,
+			lights,
+		}
 	}
 
 	/// Shades the frame's hits in a scene without geometry: ray `i` leaves `rays[i]`'s origin along its direction, a unit
@@ -1589,10 +1571,11 @@ impl WhiteShade {
 			.write("hit_count", Value::U32(rays.len() as u32))
 			.expect("surfel hit count");
 		let mut descriptors = DescriptorBindings::new();
-		set.bind(&mut descriptors);
-		descriptors.bind_buffer(HITS_SLOT, &mut self.hits);
-		descriptors.bind_buffer(SCENE_LIGHTS_SLOT, &mut self.lights);
-		descriptors.bind_acceleration_structure(SCENE_STRUCTURE_SLOT, scene);
+		let shade = &self.shade;
+		set.bind(shade, &mut descriptors);
+		descriptors.bind_buffer(slot(shade, "ray_hits"), &mut self.hits);
+		descriptors.bind_buffer(slot(shade, "surfel_scene_lights"), &mut self.lights);
+		descriptors.bind_acceleration_structure(slot(shade, "scene_structure"), scene);
 		self.pipeline
 			.trace_rays(&mut descriptors, &[0], [rays.len() as u32, 1, 1])
 			.expect("the shade pass should shade the hits");
@@ -2001,11 +1984,11 @@ fn surfel_allocate_spawns_from_the_free_stack_until_it_is_empty() {
 		set.set_pool_count("free_count", free.len() as u32);
 		set.set_pool_count("high_water", high_water);
 
-		let mut parameters = buffer(&program, RESOLVE_PARAMETERS_SLOT);
+		let mut parameters = buffer(&program, slot(&program, "surfel_resolve_parameters"));
 		parameters
 			.write("spawn_tile_count", Value::U32(requests.len() as u32 + 1))
 			.expect("spawn tile count");
-		let mut spawns = array_buffer(&program, SPAWNS_SLOT, requests.len() + 1);
+		let mut spawns = array_buffer(&program, slot(&program, "surfel_spawns"), requests.len() + 1);
 		for (tile, position) in requests.iter().enumerate() {
 			for (member, value) in [
 				("position", Value::Vec3F(*position)),
@@ -2019,9 +2002,9 @@ fn surfel_allocate_spawns_from_the_free_stack_until_it_is_empty() {
 
 		let configs: Vec<_> = (0..64).map(|lane| lane_config(lane).with_thread_id([lane, 0])).collect();
 		let mut descriptors = DescriptorBindings::new();
-		set.bind(&mut descriptors);
-		descriptors.bind_buffer(RESOLVE_PARAMETERS_SLOT, &mut parameters);
-		descriptors.bind_buffer(SPAWNS_SLOT, &mut spawns);
+		set.bind(&program, &mut descriptors);
+		descriptors.bind_buffer(slot(&program, "surfel_resolve_parameters"), &mut parameters);
+		descriptors.bind_buffer(slot(&program, "surfel_spawns"), &mut spawns);
 		run_workgroup(&program, descriptors, &configs);
 
 		let spawned: Vec<u32> = (0..4).filter(|&slot| set.state(slot, "life") == 1).collect();
@@ -2085,9 +2068,9 @@ use ::byte_engine::rendering::visibility::layouts::screen_trace::*;
 use ::byte_engine::rendering::visibility::layouts::surfel_resolve::*;
 use ::byte_engine::rendering::visibility::layouts::surfel_temporal::*;
 
-temporal_estimate: descriptor<{ type: Texture2D, binding: 1290, access: read }>;
-temporal_confidence: descriptor<{ type: Texture2D, binding: 1291, access: read }>;
-temporal_normals: descriptor<{ type: Texture2D, binding: 1292, access: read }>;
+temporal_estimate: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+temporal_confidence: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+temporal_normals: descriptor<{ type: Texture2D, binding: 2, access: read }>;
 
 main: fn (input: StageInput, screen_trace: ScreenTrace, surfel_resolve: SurfelResolve, surfel_temporal: SurfelTemporal) -> void {
 	let pixel: vec2u = input.thread_id;
@@ -2107,9 +2090,6 @@ main: fn (input: StageInput, screen_trace: ScreenTrace, surfel_resolve: SurfelRe
 	);
 }
 ";
-const STAND_IN_ESTIMATE_SLOT: ResourceSlot = ResourceSlot::new(1290);
-const STAND_IN_CONFIDENCE_SLOT: ResourceSlot = ResourceSlot::new(1291);
-const STAND_IN_NORMALS_SLOT: ResourceSlot = ResourceSlot::new(1292);
 
 /// Runs the resolve's temporal accumulation over a camera-facing wall at [`RECONSTRUCTION_DEPTH`] whose every pixel
 /// resolved `estimate` with `confidence`, over `history` reprojected by a camera that didn't move, and returns pixel
@@ -2118,8 +2098,8 @@ fn run_temporal(estimate: [f32; 4], confidence: f32, history: Option<History>) -
 	let program = compile(besl::lex(with_engine_modules(TEMPORAL_STAND_IN)).expect("the temporal stand-in should link"));
 	let extent = TEMPORAL_EXTENT;
 	let texels = |value: [f32; 4]| texture_2d(extent, extent, &vec![value; (extent * extent) as usize]);
-	let mut view = screen_view_buffer(&program, VIEWS_SLOT, extent, extent);
-	let mut parameters = buffer(&program, RESOLVE_PARAMETERS_SLOT);
+	let mut view = screen_view_buffer(&program, slot(&program, "screen_view"), extent, extent);
+	let mut parameters = buffer(&program, slot(&program, "surfel_resolve_parameters"));
 	for (member, value) in [
 		("current_view_to_previous_clip", Value::Mat4F(column_major(ssgi_projection()))),
 		("current_view_to_previous_view", Value::Mat4F(IDENTITY_MATRIX)),
@@ -2145,18 +2125,18 @@ fn run_temporal(estimate: [f32; 4], confidence: f32, history: Option<History>) -
 	let mut history_output = empty_image(extent, extent);
 	let mut weights_output = empty_image(extent, extent);
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
-	descriptors.bind_buffer(RESOLVE_PARAMETERS_SLOT, &mut parameters);
-	descriptors.bind_texture(DEPTH_PYRAMID_SLOT, &mut depth);
-	descriptors.bind_texture(STAND_IN_ESTIMATE_SLOT, &mut raw);
-	descriptors.bind_texture(STAND_IN_CONFIDENCE_SLOT, &mut confidences);
-	descriptors.bind_texture(PREVIOUS_HISTORY_SLOT, &mut previous_history);
-	descriptors.bind_texture(PREVIOUS_WEIGHTS_SLOT, &mut previous_weights);
-	descriptors.bind_texture(PREVIOUS_DEPTH_SLOT, &mut previous_depth);
-	descriptors.bind_texture(STAND_IN_NORMALS_SLOT, &mut normals);
-	descriptors.bind_texture(PREVIOUS_NORMALS_SLOT, &mut previous_normals);
-	descriptors.bind_image(HISTORY_OUTPUT_SLOT, &mut history_output);
-	descriptors.bind_image(WEIGHTS_OUTPUT_SLOT, &mut weights_output);
+	descriptors.bind_buffer(slot(&program, "screen_view"), &mut view);
+	descriptors.bind_buffer(slot(&program, "surfel_resolve_parameters"), &mut parameters);
+	descriptors.bind_texture(slot(&program, "depth_pyramid"), &mut depth);
+	descriptors.bind_texture(slot(&program, "temporal_estimate"), &mut raw);
+	descriptors.bind_texture(slot(&program, "temporal_confidence"), &mut confidences);
+	descriptors.bind_texture(slot(&program, "surfel_previous_history"), &mut previous_history);
+	descriptors.bind_texture(slot(&program, "surfel_previous_weights"), &mut previous_weights);
+	descriptors.bind_texture(slot(&program, "surfel_previous_depth"), &mut previous_depth);
+	descriptors.bind_texture(slot(&program, "temporal_normals"), &mut normals);
+	descriptors.bind_texture(slot(&program, "surfel_previous_normals"), &mut previous_normals);
+	descriptors.bind_image(slot(&program, "surfel_history_output"), &mut history_output);
+	descriptors.bind_image(slot(&program, "surfel_weights_output"), &mut weights_output);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, [4, 4]);
 	(rgba(&history_output, [4, 4]), rgba(&weights_output, [4, 4]))
 }
@@ -2231,19 +2211,19 @@ fn run_spatial(texel: impl Fn([u32; 2]) -> (f32, [f32; 4], f32), pixel: [u32; 2]
 			.collect();
 		texture_2d(extent, extent, &texels)
 	};
-	let mut view = screen_view_buffer(&program, VIEWS_SLOT, extent, extent);
+	let mut view = screen_view_buffer(&program, slot(&program, "screen_view"), extent, extent);
 	let mut depth = image(&|(depth, ..)| [depth, 0.0, 0.0, 1.0]);
 	let mut history = image(&|(_, light, _)| light);
 	let mut weights = image(&|(.., confidence)| [confidence, 0.0, 0.0, 0.0]);
 	let mut normals = image(&|_| SSGI_WALL_NORMAL);
 	let mut output = empty_image(extent, extent);
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
-	descriptors.bind_texture(DEPTH_PYRAMID_SLOT, &mut depth);
-	descriptors.bind_texture(SPATIAL_HISTORY_SLOT, &mut history);
-	descriptors.bind_texture(SPATIAL_WEIGHTS_SLOT, &mut weights);
-	descriptors.bind_texture(SPATIAL_NORMALS_SLOT, &mut normals);
-	descriptors.bind_image(OUTPUT_SLOT, &mut output);
+	descriptors.bind_buffer(slot(&program, "screen_view"), &mut view);
+	descriptors.bind_texture(slot(&program, "depth_pyramid"), &mut depth);
+	descriptors.bind_texture(slot(&program, "surfel_temporal_history"), &mut history);
+	descriptors.bind_texture(slot(&program, "surfel_temporal_weights"), &mut weights);
+	descriptors.bind_texture(slot(&program, "surfel_spatial_normals"), &mut normals);
+	descriptors.bind_image(slot(&program, "surfel_output"), &mut output);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);
 	rgba(&output, pixel)
 }

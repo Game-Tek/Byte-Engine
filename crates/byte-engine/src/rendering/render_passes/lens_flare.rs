@@ -292,10 +292,10 @@ impl RenderPass for LensFlarePass {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot, Value};
+	use besl::vm::{DescriptorBindings, Value};
 
 	use super::*;
-	use crate::rendering::shader_vm_test::{buffer, empty_image, rgba, run_at, texture_2d};
+	use crate::rendering::shader_vm_test::{buffer, empty_image, rgba, run_at, slot, texture_2d};
 
 	const LENS_FLARE_FEATURES_BESL: &str = include_str!("../../../assets/rendering/lens-flare/features.besl");
 
@@ -333,7 +333,7 @@ mod tests {
 	/// Runs the features shader over a `width` by `height` source, returning every result texel in row-major order.
 	fn features(width: u32, height: u32, source_texels: &[[f32; 4]], controls: Features) -> Vec<[f32; 4]> {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(LENS_FLARE_FEATURES_BESL));
-		let parameter_slot = ResourceSlot::new(2);
+		let parameter_slot = slot(&program, "lens_flare_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
 			.write_indexed(
@@ -362,8 +362,8 @@ mod tests {
 		for y in 0..height {
 			for x in 0..width {
 				let mut descriptors = DescriptorBindings::new();
-				descriptors.bind_texture(ResourceSlot::new(0), &mut source);
-				descriptors.bind_image(ResourceSlot::new(1), &mut result);
+				descriptors.bind_texture(slot(&program, "source_texture"), &mut source);
+				descriptors.bind_image(slot(&program, "result_texture"), &mut result);
 				descriptors.bind_buffer(parameter_slot, &mut parameters);
 				run_at(&program, &mut descriptors, [x, y]);
 			}

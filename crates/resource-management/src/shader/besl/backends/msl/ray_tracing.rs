@@ -50,7 +50,7 @@ impl Generator {
 			|| requirements.uses_intersect
 			|| requirements.uses_trace_occlusion
 			|| order.iter().any(declares_ray_tracing)
-			|| self.argument_sets.iter().flatten().any(declares_ray_tracing)
+			|| self.argument_sets.iter().flatten().flatten().any(declares_ray_tracing)
 	}
 
 	/// Emits what a shader that uses ray tracing declares before its own code: the `Hit` struct, the addresses a ray
@@ -209,11 +209,17 @@ impl Generator {
 			});
 			self.emit_separator(string);
 			string.push('{');
+			// The context lists every set at its position, so a set the kernel doesn't take holds no address.
 			for set in 0..self.argument_sets.len() {
 				if set > 0 {
 					self.emit_separator(string);
 				}
-				let _ = write!(string, "&{}", SetArgument(set));
+				match self.argument_sets[set] {
+					Some(_) => {
+						let _ = write!(string, "&{}", SetArgument(set));
+					}
+					None => string.push_str("nullptr"),
+				}
 			}
 			if !self.has_argument_sets() {
 				string.push_str("nullptr");
@@ -308,6 +314,9 @@ impl Generator {
 			self.emit_statement_end(string);
 		}
 		for set in 0..self.argument_sets.len() {
+			if self.argument_sets[set].is_none() {
+				continue;
+			}
 			self.emit_indentation(string, 1);
 			let _ = write!(
 				string,

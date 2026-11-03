@@ -254,6 +254,8 @@ impl<'a> ExecutionState<'a> {
 /// The `ExecutableProgram` struct provides a reusable host-side execution form for one lexed BESL program.
 pub struct ExecutableProgram {
 	pub(super) descriptor_layouts: HashMap<ResourceSlot, DescriptorLayout>,
+	/// The slot of every descriptor the program places in a set, by the name the program gives it.
+	pub(super) descriptor_slots: HashMap<String, ResourceSlot>,
 	pub(super) functions: Vec<ExecutableFunction>,
 	pub(super) main_function: usize,
 	/// The payload of a closest hit, whose `main` takes and returns it. `None` for every other program.
@@ -340,6 +342,12 @@ impl ExecutableProgram {
 		specializations: &SpecializationValues,
 	) -> Result<Self, VmError> {
 		compiler::compile(program, specializations)
+	}
+
+	/// Returns the slot of the first descriptor of the binding the program names `name`, or `None` when the program
+	/// declares no such descriptor in its sets. Bind resources at it, and at the slots after it for an array.
+	pub fn slot(&self, name: &str) -> Option<ResourceSlot> {
+		self.descriptor_slots.get(name).copied()
 	}
 
 	pub fn descriptor_layout(&self, slot: ResourceSlot) -> Option<&DescriptorLayout> {

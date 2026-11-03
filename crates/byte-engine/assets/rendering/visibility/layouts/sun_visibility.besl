@@ -28,21 +28,21 @@ nearest_occluder: sampler<{ filter: linear, mip_filter: nearest, reduction: max 
 farthest_occluder: sampler<{ filter: linear, mip_filter: nearest, reduction: min }>;
 
 SunVisibility: layer {
-	visibility_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
-	sun_visibility_output: descriptor<{ type: StorageImage<rgba8>, binding: 1034, access: write }>;
-	contact_shadow_trace: descriptor<{ type: Texture2D, binding: 1035, access: read }>;
+	visibility_depth: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+	sun_visibility_output: descriptor<{ type: StorageImage<rgba8>, binding: 1, access: write }>;
+	contact_shadow_trace: descriptor<{ type: Texture2D, binding: 2, access: read }>;
 	// Mip zero holds positive linear depth at the trace resolution.
-	depth_pyramid: descriptor<{ type: Texture2D, binding: 1036, access: read }>;
+	depth_pyramid: descriptor<{ type: Texture2D, binding: 3, access: read }>;
 	// The screen view constants describe the half-resolution trace image.
-	screen_view: descriptor<{ type: ScreenView, binding: 1037, access: read }>;
-	sun_visibility_parameters: descriptor<{ type: SunVisibilityParameters, binding: 1038, access: read }>;
-	depth_shadow_map: descriptor<{ type: Texture2DArray, binding: 1039, access: read }>;
-	directional_shadow_depth_pyramid: descriptor<{ type: Texture2D, binding: 1040, access: read, sampler: nearest_occluder }>;
-	directional_shadow_depth_minimum_pyramid: descriptor<{ type: Texture2D, binding: 1041, access: read, sampler: farthest_occluder }>;
+	screen_view: descriptor<{ type: ScreenView, binding: 4, access: read }>;
+	sun_visibility_parameters: descriptor<{ type: SunVisibilityParameters, binding: 5, access: read }>;
+	depth_shadow_map: descriptor<{ type: Texture2DArray, binding: 6, access: read }>;
+	directional_shadow_depth_pyramid: descriptor<{ type: Texture2D, binding: 7, access: read, sampler: nearest_occluder }>;
+	directional_shadow_depth_minimum_pyramid: descriptor<{ type: Texture2D, binding: 8, access: read, sampler: farthest_occluder }>;
 	// The maximum pyramid again, with a plain sampler: the blocker search gathers its cells four at a time.
-	directional_shadow_depth_cells: descriptor<{ type: Texture2D, binding: 1042, access: read }>;
+	directional_shadow_depth_cells: descriptor<{ type: Texture2D, binding: 9, access: read }>;
 	// The visibility buffer, as `visibility-buffer.besl` declares it: each pixel's meshlet and meshlet triangle, and its
 	// instance. The resolve takes the receiver's plane and normal from that triangle.
-	triangle_index: descriptor<{ type: StorageImage<r32ui>, binding: 1043, access: read }>;
-	instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 1044, access: read }>;
+	triangle_index: descriptor<{ type: StorageImage<r32ui>, binding: 10, access: read }>;
+	instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 11, access: read }>;
 }

@@ -6,7 +6,7 @@ use utils::Extent;
 use super::*;
 use crate::rendering::{
 	render_pass::simple_compute,
-	shader_vm_test::{assert_rgba_close, compile as compile_shader_vm, rgba, run_at, texture_2d},
+	shader_vm_test::{assert_rgba_close, compile as compile_shader_vm, rgba, run_at, slot, texture_2d},
 };
 use crate::ui::{Size, flow::Location3, layout::Geometry, style::LayerKind};
 
@@ -178,9 +178,9 @@ fn composite_besl_vm_places_the_premultiplied_layer_over_the_scene_inside_the_re
 	// Dispatch rounding produces excess threads; the extent guard must make them no-ops.
 	for x in 0..3 {
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_image(besl::vm::ResourceSlot::new(0), &mut scene);
-		descriptors.bind_image(besl::vm::ResourceSlot::new(1), &mut layer);
-		descriptors.bind_image(besl::vm::ResourceSlot::new(2), &mut result);
+		descriptors.bind_image(slot(&program, "scene"), &mut scene);
+		descriptors.bind_image(slot(&program, "layer"), &mut layer);
+		descriptors.bind_image(slot(&program, "result"), &mut result);
 		descriptors.bind_push_constant(&mut push_constant);
 		run_at(&program, &mut descriptors, [x, 0]);
 	}

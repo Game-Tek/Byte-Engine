@@ -422,11 +422,11 @@ fn bloom_extent(extent: Extent, level: usize) -> Extent {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ExecutableProgram, ResourceSlot, Texture, Value, WorkgroupState, output_slot};
+	use besl::vm::{DescriptorBindings, ExecutableProgram, Texture, Value, WorkgroupState, output_slot};
 
 	use super::*;
 	use crate::rendering::shader_vm_test::{
-		PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_at, run_pixel, texture_2d, tile_lanes, tiles,
+		PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_at, run_pixel, slot, texture_2d, tile_lanes, tiles,
 	};
 
 	static BLOOM_EXTRACT_BESL: std::sync::LazyLock<&str> =
@@ -467,7 +467,7 @@ mod tests {
 	/// Runs the prefilter over a 2x2 source into one texel.
 	fn extract(source_texels: &[[f32; 4]; 4], threshold: f32, soft_knee: f32, max_brightness: f32) -> [f32; 4] {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_EXTRACT_BESL));
-		let parameter_slot = ResourceSlot::new(2);
+		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
 			.write_indexed("prefilter", 0, Value::Vec4F([threshold, soft_knee, 0.0, max_brightness]))
@@ -476,7 +476,7 @@ mod tests {
 		let mut result = empty_image(1, 1);
 		let mut workgroup = WorkgroupState::new();
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(0), &mut source);
+		descriptors.bind_texture(slot(&program, "source_texture"), &mut source);
 		descriptors.bind_image(output_slot(0), &mut result);
 		descriptors.bind_buffer(parameter_slot, &mut parameters);
 		descriptors.bind_workgroup_state(&mut workgroup);
@@ -489,7 +489,7 @@ mod tests {
 	/// lane filters a 2x2 block of destination texels, so a tile's 8x8 lanes cover its 16x16 texels.
 	fn extract_image(size: u32, source_texels: &[[f32; 4]]) -> Texture {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_EXTRACT_BESL));
-		let parameter_slot = ResourceSlot::new(2);
+		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
 			.write_indexed("prefilter", 0, Value::Vec4F([0.0, 0.0, 0.0, NO_CEILING]))
@@ -500,7 +500,7 @@ mod tests {
 		for position in tiles(EXTRACT_TILE.0, extent) {
 			let mut workgroup = WorkgroupState::new();
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(ResourceSlot::new(0), &mut source);
+			descriptors.bind_texture(slot(&program, "source_texture"), &mut source);
 			descriptors.bind_image(output_slot(0), &mut result);
 			descriptors.bind_buffer(parameter_slot, &mut parameters);
 			descriptors.bind_workgroup_state(&mut workgroup);
@@ -617,8 +617,8 @@ mod tests {
 		let mut source = texture_2d(2, 2, source_texels);
 		let mut result = empty_image(1, 1);
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(0), &mut source);
-		descriptors.bind_image(ResourceSlot::new(1), &mut result);
+		descriptors.bind_texture(slot(&program, "source_texture"), &mut source);
+		descriptors.bind_image(slot(&program, "result_texture"), &mut result);
 		run_at(&program, &mut descriptors, [0, 0]);
 		drop(descriptors);
 		rgba(&result, [0, 0])
@@ -650,7 +650,7 @@ mod tests {
 		(same_weight, low_weight): ([f32; 3], [f32; 3]),
 	) -> Vec<[f32; 4]> {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_UPSAMPLE_BESL));
-		let parameter_slot = ResourceSlot::new(3);
+		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
 			.write_indexed("filter", 0, Value::Vec4F([radius, 0.0, 0.0, 0.0]))
@@ -666,9 +666,9 @@ mod tests {
 		for y in 0..high_size {
 			for x in 0..high_size {
 				let mut descriptors = DescriptorBindings::new();
-				descriptors.bind_texture(ResourceSlot::new(0), &mut low);
-				descriptors.bind_texture(ResourceSlot::new(1), &mut high);
-				descriptors.bind_image(ResourceSlot::new(2), &mut result);
+				descriptors.bind_texture(slot(&program, "low_resolution_texture"), &mut low);
+				descriptors.bind_texture(slot(&program, "high_resolution_texture"), &mut high);
+				descriptors.bind_image(slot(&program, "result_texture"), &mut result);
 				descriptors.bind_buffer(parameter_slot, &mut parameters);
 				run_at(&program, &mut descriptors, [x, y]);
 			}
@@ -766,7 +766,7 @@ mod tests {
 	/// Runs the composite over 1x1 inputs with the given intensity.
 	fn composite(scene_color: [f32; 4], bloom_color: [f32; 4], intensity: f32) -> [f32; 4] {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_COMPOSITE_BESL));
-		let parameter_slot = ResourceSlot::new(3);
+		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut scene = texture_2d(1, 1, &[scene_color]);
 		let mut bloom = texture_2d(1, 1, &[bloom_color]);
 		let mut result = empty_image(1, 1);
@@ -775,8 +775,8 @@ mod tests {
 			.write_indexed("prefilter", 0, Value::Vec4F([0.0, 0.0, intensity, 0.0]))
 			.expect("Failed to initialize bloom parameters. The most likely cause is a changed production buffer layout.");
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(0), &mut scene);
-		descriptors.bind_texture(ResourceSlot::new(1), &mut bloom);
+		descriptors.bind_texture(slot(&program, "scene_texture"), &mut scene);
+		descriptors.bind_texture(slot(&program, "bloom_texture"), &mut bloom);
 		descriptors.bind_image(output_slot(0), &mut result);
 		descriptors.bind_buffer(parameter_slot, &mut parameters);
 		run_pixel(&program, &mut descriptors, [0, 0], PIXEL_TILE, [1, 1]);
@@ -815,7 +815,7 @@ mod tests {
 	) -> Texture {
 		let program =
 			crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_UPSAMPLE_COMPOSITE_BESL));
-		let parameter_slot = ResourceSlot::new(4);
+		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		for (field, value) in [
 			("prefilter", data.prefilter),
@@ -835,9 +835,9 @@ mod tests {
 		for position in tiles(UPSAMPLE_COMPOSITE_TILE.0, [size, size]) {
 			let mut workgroup = WorkgroupState::new();
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(ResourceSlot::new(0), &mut low);
-			descriptors.bind_texture(ResourceSlot::new(1), &mut high);
-			descriptors.bind_texture(ResourceSlot::new(2), &mut scene);
+			descriptors.bind_texture(slot(&program, "low_resolution_texture"), &mut low);
+			descriptors.bind_texture(slot(&program, "high_resolution_texture"), &mut high);
+			descriptors.bind_texture(slot(&program, "scene_texture"), &mut scene);
 			descriptors.bind_image(output_slot(0), &mut result);
 			descriptors.bind_buffer(parameter_slot, &mut parameters);
 			descriptors.bind_workgroup_state(&mut workgroup);
@@ -1004,8 +1004,8 @@ mod tests {
 		let mut result = empty_image(half, half);
 		for index in 0..half * half {
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(ResourceSlot::new(0), &mut source);
-			descriptors.bind_image(ResourceSlot::new(1), &mut result);
+			descriptors.bind_texture(slot(&program, "source_texture"), &mut source);
+			descriptors.bind_image(slot(&program, "result_texture"), &mut result);
 			run_at(&program, &mut descriptors, [index % half, index / half]);
 		}
 		(0..half * half)

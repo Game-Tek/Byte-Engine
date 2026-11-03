@@ -106,21 +106,20 @@ mod tests {
 	/// cell the second slot's, and the cells past the last view are black.
 	#[test]
 	fn present_besl_vm_tiles_the_taken_slots_in_slot_order() {
-		use besl::vm::{DescriptorBindings, ResourceSlot, Value};
+		use besl::vm::{DescriptorBindings, Value};
 
-		use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, compile, empty_image, rgba, run_at, texture_2d};
+		use crate::rendering::shader_vm_test::{
+			assert_rgba_close, buffer, compile, empty_image, rgba, run_at, slot, texture_2d,
+		};
 
 		let program = compile(simple_compute::compile_test_program(PRESENT_SHADER));
-		let result_slot = ResourceSlot::new(0);
-		let parameter_slot = ResourceSlot::new(1);
-		let pool_slot = |slot: u32| ResourceSlot::new(2 + slot);
+		let result_slot = slot(&program, "result");
+		let parameter_slot = slot(&program, "parameters");
+		let pool_slot = |index: u32| slot(&program, "debug_view_targets").offset(index);
 		// Slots 0 and 1 are taken; slot 0 is red and slot 1 fades from black to white along x.
 		let data = present_shader_data(0b11);
 		let mut parameters = buffer(&program, parameter_slot);
-		for (name, value) in [
-			("count", Value::U32(data.count)),
-			("side", Value::U32(data.side)),
-		] {
+		for (name, value) in [("count", Value::U32(data.count)), ("side", Value::U32(data.side))] {
 			parameters.write(name, value).expect("present parameters");
 		}
 		let mut red = texture_2d(4, 4, &[[1.0, 0.0, 0.0, 1.0]; 16]);

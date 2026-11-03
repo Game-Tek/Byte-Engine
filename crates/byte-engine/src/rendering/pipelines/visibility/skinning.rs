@@ -199,20 +199,32 @@ fn dual_quaternion_from_rigid_transform(matrix: &AffineMatrix) -> DualQuaternion
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{Buffer, DescriptorBindings, ResourceSlot, Value};
+	use besl::vm::{Buffer, DescriptorBindings, Value};
 
 	use super::*;
-	use crate::rendering::shader_vm_test::{array_buffer, buffer, compile, link_program, push_constant_buffer, run_at};
+	use crate::rendering::shader_vm_test::{array_buffer, buffer, compile, link_program, push_constant_buffer, run_at, slot};
 
 	/// The exact checked-in shader consumed by the runtime resource path.
 	static SKINNING_BESL: std::sync::LazyLock<&str> =
 		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("visibility/skinning.besl"));
 
-	/// Binds every skinning slot and runs one lane at the origin.
+	/// The skinning layer's descriptors, in the order of the fixture's buffers.
+	const DESCRIPTORS: [&str; 8] = [
+		"source_positions",
+		"source_normals",
+		"source_joints",
+		"source_weights",
+		"matrix_palette",
+		"vertex_positions",
+		"dual_quaternion_palette",
+		"vertex_normals",
+	];
+
+	/// Binds every skinning descriptor and runs one lane at the origin.
 	fn run_skinning(program: &besl::vm::ExecutableProgram, buffers: &mut [Buffer; 8], push_constant: &mut Buffer) {
 		let mut descriptors = DescriptorBindings::new();
-		for (slot, buffer) in buffers.iter_mut().enumerate() {
-			descriptors.bind_buffer(ResourceSlot::new(slot as u32), buffer);
+		for (name, buffer) in DESCRIPTORS.into_iter().zip(buffers.iter_mut()) {
+			descriptors.bind_buffer(slot(program, name), buffer);
 		}
 		descriptors.bind_push_constant(push_constant);
 		run_at(program, &mut descriptors, [0, 0]);
@@ -233,7 +245,7 @@ mod tests {
 		}
 	}
 
-	/// Slots of the resident streams skinning writes.
+	/// Positions in [`DESCRIPTORS`] of the resident streams skinning writes.
 	const POSITIONS: usize = 5;
 	const NORMALS: usize = 7;
 
@@ -321,13 +333,13 @@ mod tests {
 		}
 	}
 
-	/// Creates every skinning binding: runtime-length bind-pose sources in slots 0 to 3 and resident streams in slots 5
-	/// and 7, and fixed palettes.
+	/// Creates every skinning binding in [`DESCRIPTORS`] order: runtime-length bind-pose sources first, then fixed palettes
+	/// and the resident streams at [`POSITIONS`] and [`NORMALS`].
 	fn skinning_buffers(program: &besl::vm::ExecutableProgram) -> [Buffer; 8] {
 		const VERTEX_COUNT: usize = 4;
-		std::array::from_fn(|slot| {
-			let resource_slot = ResourceSlot::new(slot as u32);
-			if slot < 4 || slot == POSITIONS || slot == NORMALS {
+		std::array::from_fn(|index| {
+			let resource_slot = slot(program, DESCRIPTORS[index]);
+			if index < 4 || index == POSITIONS || index == NORMALS {
 				array_buffer(program, resource_slot, VERTEX_COUNT)
 			} else {
 				buffer(program, resource_slot)

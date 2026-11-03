@@ -14,7 +14,7 @@ use ::byte_engine::rendering::film_grain::layouts::grain::*;
 scene_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 // A tile output, so the replacement for `main` this writes needs no shader-write usage and stays losslessly compressed.
 result: output<vec4f, 0>;
-parameters: descriptor<{ type: FilmGrainParameters, binding: 2, access: read, memory: constant }>;
+parameters: descriptor<{ type: FilmGrainParameters, binding: 1, access: read, memory: constant }>;
 
 GRAIN_TILE: const u32 = 16;
 GRAIN_LANES: const u32 = 256;

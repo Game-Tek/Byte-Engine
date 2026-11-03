@@ -98,10 +98,12 @@ impl ImageBypassPass {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot, output_slot};
+	use besl::vm::{DescriptorBindings, output_slot};
 
 	use super::simple_compute;
-	use crate::rendering::shader_vm_test::{PIXEL_TILE, assert_rgba_close, empty_image, rgba, run_at, run_pixel, texture_2d};
+	use crate::rendering::shader_vm_test::{
+		PIXEL_TILE, assert_rgba_close, empty_image, rgba, run_at, run_pixel, slot, texture_2d,
+	};
 
 	const IMAGE_BYPASS_SHADER: &str = include_str!("../../../assets/rendering/blit/image.besl");
 	const IMAGE_TILE_BYPASS_SHADER: &str = include_str!("../../../assets/rendering/blit/image-tile.besl");
@@ -128,7 +130,7 @@ mod tests {
 		for y in 0..4 {
 			for x in 0..4 {
 				let mut descriptors = DescriptorBindings::new();
-				descriptors.bind_image(ResourceSlot::new(0), &mut source);
+				descriptors.bind_image(slot(&program, "source"), &mut source);
 				descriptors.bind_image(output_slot(0), &mut result);
 				run_pixel(&program, &mut descriptors, [x, y], PIXEL_TILE, [2, 2]);
 			}
@@ -154,8 +156,8 @@ mod tests {
 		for y in 0..2 {
 			for x in 0..2 {
 				let mut descriptors = DescriptorBindings::new();
-				descriptors.bind_image(ResourceSlot::new(0), &mut source);
-				descriptors.bind_image(ResourceSlot::new(1), &mut result);
+				descriptors.bind_image(slot(&program, "source"), &mut source);
+				descriptors.bind_image(slot(&program, "result"), &mut result);
 				run_at(&program, &mut descriptors, [x, y]);
 			}
 		}
@@ -167,8 +169,8 @@ mod tests {
 		// Dispatch rounding may produce excess invocations, so the production guard must make those invocations true no-ops.
 		for coordinate in [[2, 0], [0, 2]] {
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_image(ResourceSlot::new(0), &mut source);
-			descriptors.bind_image(ResourceSlot::new(1), &mut result);
+			descriptors.bind_image(slot(&program, "source"), &mut source);
+			descriptors.bind_image(slot(&program, "result"), &mut result);
 			run_at(&program, &mut descriptors, coordinate);
 		}
 		for (index, expected) in expected.into_iter().enumerate() {

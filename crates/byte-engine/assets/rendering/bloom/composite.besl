@@ -7,7 +7,7 @@ use ::byte_engine::rendering::bloom::layouts::parameters::*;
 
 scene_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 bloom_texture: descriptor<{ type: Texture2D, binding: 1, access: read }>;
-bloom_parameters: descriptor<{ type: BloomParameters, binding: 3, access: read, memory: constant }>;
+bloom_parameters: descriptor<{ type: BloomParameters, binding: 2, access: read, memory: constant }>;
 result: output<vec4f, 0>;
 
 HALF_FLOAT_MAX: const f32 = 65504.0;

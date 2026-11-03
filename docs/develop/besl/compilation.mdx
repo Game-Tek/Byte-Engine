@@ -129,9 +129,37 @@ A layer links to `Nodes::Layer`, whose descriptors become ordinary bindings with
 `layout` set to the layer's path. `layer.member` links to the member itself, in
 `lexer/layers.rs`, so the linked graph reads the binding directly. After
 linking, `record_entry_layers` notes on each layer which of `main`'s
-parameters takes it, which reflection reads to order the sets, and
-`erase_layer_parameters` removes layer parameters and arguments everywhere.
-Backends, reflection, and the VM therefore see only plain bindings.
+parameters takes it, `place_descriptors` places every binding in the program's
+descriptor sets, and `erase_layer_parameters` removes layer parameters and
+arguments everywhere. Backends, reflection, and the VM therefore see only plain
+bindings, each with its placement.
+
+### Place descriptors
+
+`place_descriptors` in `lexer/layers.rs` is the one place that decides where a
+binding lives. It groups the bindings by `layout`, orders the groups into the
+program's sets, and writes a `besl::Placement` on each binding:
+
+- `set`: the set's position. Layers come in `main`'s parameter order, then
+  layouts a backend adds, such as tile outputs, then the shader's own
+  descriptors. A layer `main` doesn't take gets no placement.
+- `resource`: how many descriptors the bindings before this one in its set
+  hold. An array of `count` descriptors takes one binding number and moves only
+  this offset.
+- `sampler`: how many application-bound samplers come before it, for backends
+  that keep samplers in a heap of their own.
+
+Each set numbers its bindings from 0, so a layer's offsets are the same in
+every shader that takes it, and a set built once from the layer binds wherever
+a shader takes it. A set's position is the same whether or not `main` reads
+from it; only the `used` mask that reflection computes depends on reachability.
+Placing again is cheap and idempotent: tile lowering calls it after it turns
+outputs into a set of its own.
+
+Every consumer reads the placement instead of regrouping the program:
+reflection orders `SetUsage` by it, the MSL generator binds set `n` at buffer
+`16 + n`, and the VM keys resources by `ResourceSlot { set, slot }`, where
+`slot` is the `resource` offset.
 
 Shared layers live in modules from the asset root, which load once per shader
 and sit under a hidden scope named `::`. `write` prints each one as
@@ -143,12 +171,16 @@ A change must keep these true:
 - A layer's set has the same bindings in every shader that takes it, so its
   identity matches the set Rust builds with `SetLayout::from_layer`.
 - Sets follow `main`'s layer parameters, then layouts that backends add, then
-  the shader's own; a layer `main` doesn't take forms no set.
+  the shader's own; a layer `main` doesn't take forms no set. A set's position
+  doesn't depend on which of its descriptors `main` reaches.
+- Each set numbers its bindings from 0 without gaps, and an array takes one
+  number.
 - A program holds at most one push constant block across its layers and itself.
 
 `crates/besl/tests/signatures.rs` guards signatures, layer access, erasure, and
-the push constant rule, and `crates/besl/tests/modules.rs` the modules from the
-asset root and their written form.
+the push constant rule, `crates/besl/tests/descriptor_sets.rs` the placement,
+and `crates/besl/tests/modules.rs` the modules from the asset root and their
+written form.
 
 ## Pack bool members
 
@@ -247,7 +279,7 @@ locals and unreachable statements it removed.
 
 The resource-management shader layer reflects descriptors into stable metadata:
 
-- authored name and flat slot;
+- authored name, binding number within its set, and set;
 - buffer, sampled-texture, storage-image, or acceleration-structure kind;
 - texture view shape and resource count;
 - storage-buffer stride for the active layout target; and
@@ -269,7 +301,7 @@ pipeline assembly compares the hashes of a pipeline's shaders, because Metal
 links visible functions whose payloads differ without an error. Keep the hash
 input in declaration order, so that reordering a payload's members changes it.
 
-It rejects distinct bindings that alias one flat slot. Reflection also classifies
+It rejects distinct bindings that take one binding number of one set. Reflection also classifies
 the reachable output as `Opaque`, `NonOpaque`, or `Unknown` for material
 decisions.
 
@@ -493,7 +525,9 @@ to its largest alignment, as reflection does for the GPU backends.
 
 Compile a linked graph with `ExecutableProgram`, bind its resources through
 `DescriptorBindings`, and call `run_main`, `run_main_with_config`, or
-`run_workgroup`. `ExecutionConfig` sets instruction and call-depth limits,
+`run_workgroup`. A resource's key is its set's position and its descriptor's
+offset in the set; `ExecutableProgram::slot` returns it for a descriptor name, so
+tests bind by the names shaders give their resources. `ExecutionConfig` sets instruction and call-depth limits,
 invocation coordinates, subgroup size, and task or mesh output limits.
 
 ### Trace rays in the VM

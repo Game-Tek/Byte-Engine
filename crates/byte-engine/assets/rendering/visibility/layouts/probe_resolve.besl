@@ -15,10 +15,10 @@ ProbeResolveParameters: struct {
 }
 
 ProbeResolve: layer {
-	probe_resolve_parameters: descriptor<{ type: ProbeResolveParameters, binding: 1200, access: read }>;
+	probe_resolve_parameters: descriptor<{ type: ProbeResolveParameters, binding: 0, access: read }>;
 	// The half-resolution light material evaluation upsamples, named `SSGI History` like SSGI's.
-	history_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1202, access: write }>;
+	history_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write }>;
 	// The half-resolution view-space normals material evaluation upsamples with, named `SSGI Normals` like SSGI's.
-	normal_output: descriptor<{ type: StorageImage<rg16_snorm>, binding: 1203, access: write }>;
-	debug_view_targets: descriptor<{ type: StorageImage, binding: 1204, access: write, count: 15 }>;
+	normal_output: descriptor<{ type: StorageImage<rg16_snorm>, binding: 2, access: write }>;
+	debug_view_targets: descriptor<{ type: StorageImage, binding: 3, access: write, count: 15 }>;
 }

@@ -82,7 +82,7 @@ fn evaluate(source: &str) -> ([f32; 3], f32) {
 
 	let mut program = Node::root_with_children(vec![Node::main_function(statements)]);
 	program.add(vec![
-		Node::binding("albedo", Node::combined_image_sampler(), 1, true, false),
+		Node::binding("albedo", Node::combined_image_sampler(), 0, true, false),
 		Node::output("base_color", "vec3f", 0),
 		Node::output("roughness", "f32", 1),
 	]);
@@ -103,7 +103,7 @@ fn evaluate(source: &str) -> ([f32; 3], f32) {
 
 	{
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(1), &mut albedo);
+		descriptors.bind_texture(ResourceSlot::new(0), &mut albedo);
 
 		for (location, output) in outputs.iter_mut().enumerate() {
 			descriptors.bind_buffer(output_slot(location as u8), output);

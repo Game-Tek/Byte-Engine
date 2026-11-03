@@ -389,6 +389,6 @@ mod tests {
 
 		let error = collect_bindings(&main).expect_err("Expected distinct same-slot declarations to fail");
 
-		assert!(error.contains("Duplicate resource declaration at slot 3"));
+		assert!(error.contains("Duplicate resource declaration at binding 3"), "{error}");
 	}
 }

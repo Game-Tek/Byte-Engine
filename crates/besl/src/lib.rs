@@ -33,7 +33,9 @@ pub use lexer::UnaryOperators;
 pub use lexer::infer_expression_type;
 
 pub use crate::lexer::NodeReference;
-pub use crate::lexer::{BindingTypes, BufferMemoryClass, CallTarget, ElseBranch, FixedArray, MatchArm};
+pub use crate::lexer::{
+	BindingTypes, BufferMemoryClass, CallTarget, ElseBranch, FixedArray, MatchArm, Placement, place_descriptors,
+};
 pub use crate::modules::{LoadedModule, ModuleLoader, ModuleQuery, attach_modules};
 pub use crate::sampler::SamplerState;
 pub use crate::writer::write;

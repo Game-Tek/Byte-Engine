@@ -45,13 +45,37 @@ pub(crate) fn compile(program: NodeReference, specializations: &SpecializationVa
 				_ => None,
 			});
 
+	let mut descriptor_slots = HashMap::new();
+	collect_descriptor_slots(&program, &mut descriptor_slots);
+
 	Ok(ExecutableProgram {
 		descriptor_layouts,
+		descriptor_slots,
 		functions,
 		main_function: function_ids[&main],
 		closest_hit_payload,
 		invoke_payload,
 	})
+}
+
+/// Records the slot of every placed descriptor the program, or a layer under it, declares, by name.
+fn collect_descriptor_slots(node: &NodeReference, slots: &mut HashMap<String, ResourceSlot>) {
+	let borrowed = node.borrow();
+	match borrowed.node() {
+		Nodes::Scope { children, .. } | Nodes::Layer { members: children, .. } => {
+			for child in children {
+				collect_descriptor_slots(child, slots);
+			}
+		}
+		Nodes::Binding {
+			name,
+			placement: Some(placement),
+			..
+		} => {
+			slots.insert(name.clone(), ResourceSlot::placed(*placement));
+		}
+		_ => {}
+	}
 }
 
 /// Returns the payload of a closest-hit `main`, which takes a payload struct and returns the same type, or `None` for

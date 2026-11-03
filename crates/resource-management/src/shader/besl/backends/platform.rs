@@ -4,10 +4,7 @@ use crate::shader::besl::backends::glsl::GLSLTranspiler;
 use crate::shader::besl::backends::hlsl::HLSLTranspiler;
 #[cfg(target_vendor = "apple")]
 use crate::shader::besl::backends::msl::MSLTranspiler;
-use crate::shader::{
-	besl::evaluation::collect_bindings,
-	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, Stages},
-};
+use crate::shader::generator::{CompiledShader, ShaderGenerationSettings, Stages};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlatformShaderLanguage {
@@ -132,10 +129,6 @@ impl Generator {
 		Ok(LoweredPlatformShader {
 			name: shader_generation_settings.name.clone(),
 			source,
-			bindings: collect_bindings(program)?
-				.into_iter()
-				.map(CompiledShaderBinding::from)
-				.collect(),
 			extent,
 			threadgroup_memory,
 		})
@@ -224,7 +217,6 @@ pub struct LoweredPlatformShader {
 	pub source: String,
 	/// The bytes of each threadgroup argument of a Metal tile function, by index; empty for every other shader.
 	pub threadgroup_memory: Vec<u32>,
-	bindings: Vec<CompiledShaderBinding>,
 	extent: Option<utils::Extent>,
 }
 
@@ -265,7 +257,6 @@ impl LoweredPlatformShader {
 
 		Ok(CompiledShader {
 			binary,
-			bindings: self.bindings,
 			extent: self.extent,
 		})
 	}
@@ -295,7 +286,7 @@ mod tests {
 				values: u32[4],
 				logarithm: f32,
 			}
-			result: descriptor<{ type: Result, binding: 43, access: read_write }>;
+			result: descriptor<{ type: Result, binding: 0, access: read_write }>;
 
 			main: fn () -> void {
 				let empty: u32 = 0;
@@ -328,7 +319,7 @@ mod tests {
 			Result: struct {
 				values: u32[4],
 			}
-			result: descriptor<{ type: Result, binding: 43, access: read_write }>;
+			result: descriptor<{ type: Result, binding: 0, access: read_write }>;
 
 			sum: fn (values: u32[8], count: u32) -> u32 {
 				let copy: u32[8] = values;

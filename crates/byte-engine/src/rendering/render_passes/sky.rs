@@ -344,7 +344,7 @@ mod tests {
 	use maths_rs::Vec3f;
 
 	use super::simple_compute;
-	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
+	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, slot, texture_2d};
 
 	static SKY_SHADER_BESL: std::sync::LazyLock<&str> =
 		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("sky.besl"));
@@ -404,16 +404,16 @@ mod tests {
 	/// Runs one sky-view texel with full sun transmittance and a multiple-scattering LUT holding `higher_orders`.
 	fn run_sky_view(higher_orders: [f32; 4]) -> [f32; 4] {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*SKY_VIEW_SHADER_BESL));
-		let parameter_slot = ResourceSlot::new(2);
+		let parameter_slot = slot(&program, "parameters");
 		let mut parameters = sky_parameters(&program, parameter_slot, &Default::default(), TEST_SUN_ILLUMINANCE, 1.0);
 		let mut transmittance = texture_2d(1, 1, &[[1.0, 1.0, 1.0, 1.0]]);
 		let mut multiple_scattering = texture_2d(1, 1, &[higher_orders]);
 		let mut output = empty_image(1, 1);
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(0), &mut transmittance);
-		descriptors.bind_image(ResourceSlot::new(1), &mut output);
+		descriptors.bind_texture(slot(&program, "transmittance_lut"), &mut transmittance);
+		descriptors.bind_image(slot(&program, "sky_view_lut"), &mut output);
 		descriptors.bind_buffer(parameter_slot, &mut parameters);
-		descriptors.bind_texture(ResourceSlot::new(3), &mut multiple_scattering);
+		descriptors.bind_texture(slot(&program, "multiple_scattering_lut"), &mut multiple_scattering);
 		run_at(&program, &mut descriptors, [0, 0]);
 		drop(descriptors);
 		rgba(&output, [0, 0])
@@ -436,7 +436,7 @@ mod tests {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(
 			*SKY_MULTIPLE_SCATTERING_SHADER_BESL,
 		));
-		let parameter_slot = ResourceSlot::new(2);
+		let parameter_slot = slot(&program, "parameters");
 		let settings = super::AtmosphereSkyRenderPassSettings {
 			ground_albedo,
 			..super::AtmosphereSkyRenderPassSettings::default()
@@ -446,8 +446,8 @@ mod tests {
 		let size = super::MULTIPLE_SCATTERING_LUT_EXTENT.width();
 		let mut output = empty_image(size, size);
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(0), &mut transmittance);
-		descriptors.bind_image(ResourceSlot::new(1), &mut output);
+		descriptors.bind_texture(slot(&program, "transmittance_lut"), &mut transmittance);
+		descriptors.bind_image(slot(&program, "multiple_scattering_lut"), &mut output);
 		descriptors.bind_buffer(parameter_slot, &mut parameters);
 		// The last column is a sun zenith cosine of 1 and the first row is ground level.
 		run_at(&program, &mut descriptors, [size - 1, 0]);
@@ -487,8 +487,8 @@ mod tests {
 		let mut surface_depth = texture_2d(1, 1, &[[0.5, 0.0, 0.0, 1.0]]);
 		let mut surface_color = texture_2d(1, 1, &[sentinel]);
 		let mut surface_descriptors = DescriptorBindings::new();
-		surface_descriptors.bind_texture(ResourceSlot::new(0), &mut surface_depth);
-		surface_descriptors.bind_image(ResourceSlot::new(2), &mut surface_color);
+		surface_descriptors.bind_texture(slot(&program, "depth_texture"), &mut surface_depth);
+		surface_descriptors.bind_image(slot(&program, "result"), &mut surface_color);
 		run_at(&program, &mut surface_descriptors, [0, 0]);
 		drop(surface_descriptors);
 		assert_rgba_close(rgba(&surface_color, [0, 0]), sentinel, 0.0);
@@ -503,17 +503,17 @@ mod tests {
 	/// Composites one background pixel whose view misses the sun disk, over a sky-view LUT of `sky_scattering` per lux.
 	fn composite_background(sky_scattering: [f32; 4], sun_illuminance: [f32; 3], exposure_scale: f32) -> [f32; 4] {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*SKY_SHADER_BESL));
-		let parameter_slot = ResourceSlot::new(5);
+		let parameter_slot = slot(&program, "parameters");
 		let mut parameters = sky_parameters(&program, parameter_slot, &Default::default(), sun_illuminance, exposure_scale);
 		let mut sky_view = texture_2d(1, 1, &[sky_scattering]);
 		let mut transmittance = texture_2d(1, 1, &[[1.0, 1.0, 1.0, 1.0]]);
 		let mut depth = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
 		let mut result = empty_image(1, 1);
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(0), &mut depth);
-		descriptors.bind_image(ResourceSlot::new(2), &mut result);
-		descriptors.bind_texture(ResourceSlot::new(3), &mut sky_view);
-		descriptors.bind_texture(ResourceSlot::new(4), &mut transmittance);
+		descriptors.bind_texture(slot(&program, "depth_texture"), &mut depth);
+		descriptors.bind_image(slot(&program, "result"), &mut result);
+		descriptors.bind_texture(slot(&program, "sky_view_lut"), &mut sky_view);
+		descriptors.bind_texture(slot(&program, "transmittance_lut"), &mut transmittance);
 		descriptors.bind_buffer(parameter_slot, &mut parameters);
 		run_at(&program, &mut descriptors, [0, 0]);
 		drop(descriptors);

@@ -43,7 +43,7 @@ impl Generator {
 		}
 	}
 
-	/// Emits one argument-buffer struct per descriptor set, named `_set<n>`.
+	/// Emits one argument-buffer struct per descriptor set the shader takes, named `_set<n>` after its position.
 	///
 	/// Argument IDs are dense and follow slot order: a binding takes one ID per array element, and a combined image
 	/// sampler takes its textures first and then as many samplers. An ID is also the entry's index in the encoded
@@ -51,9 +51,11 @@ impl Generator {
 	/// buffer.
 	pub(crate) fn emit_argument_buffer_structs(&mut self, string: &mut String) {
 		for set in 0..self.argument_sets.len() {
+			let Some(bindings) = self.argument_sets[set].clone() else {
+				continue;
+			};
 			self.emit_named_struct_start(string, format_args!("_set{set}"));
 
-			let bindings = self.argument_sets[set].clone();
 			let mut next_id = 0;
 			for binding in &bindings {
 				self.emit_argument_buffer_field(string, binding, &mut next_id);
@@ -587,7 +589,9 @@ impl Generator {
 				push(string, format_args!("constant PushConstant& "), &"push_constant");
 			}
 			for set in 0..self.argument_sets.len() {
-				push(string, format_args!("constant _set{set}& "), &SetArgument(set));
+				if self.argument_sets[set].is_some() {
+					push(string, format_args!("constant _set{set}& "), &SetArgument(set));
+				}
 			}
 		} else if is_main {
 			let Some(mesh) = &self.mesh_stage_context else {
@@ -598,7 +602,9 @@ impl Generator {
 			}
 			if mesh.has_resources {
 				for set in 0..self.argument_sets.len() {
-					push(string, format_args!("constant _set{set}& "), &SetArgument(set));
+					if self.argument_sets[set].is_some() {
+						push(string, format_args!("constant _set{set}& "), &SetArgument(set));
+					}
 				}
 			}
 			push(string, format_args!("uint "), &"threadgroup_position");
@@ -620,7 +626,9 @@ impl Generator {
 			}
 			if task.has_resources {
 				for set in 0..self.argument_sets.len() {
-					push(string, format_args!("constant _set{set}& "), &SetArgument(set));
+					if self.argument_sets[set].is_some() {
+						push(string, format_args!("constant _set{set}& "), &SetArgument(set));
+					}
 				}
 			}
 			if task.has_task_payload {
@@ -659,7 +667,9 @@ impl Generator {
 			}
 			if compute.has_resources {
 				for set in 0..self.argument_sets.len() {
-					push(string, format_args!("constant _set{set}& "), &SetArgument(set));
+					if self.argument_sets[set].is_some() {
+						push(string, format_args!("constant _set{set}& "), &SetArgument(set));
+					}
 				}
 			}
 			for workgroup in &compute.workgroups {
@@ -683,7 +693,9 @@ impl Generator {
 			}
 			if raster.has_resources {
 				for set in 0..self.argument_sets.len() {
-					push(string, format_args!("constant _set{set}& "), &SetArgument(set));
+					if self.argument_sets[set].is_some() {
+						push(string, format_args!("constant _set{set}& "), &SetArgument(set));
+					}
 				}
 			}
 			if raster.has_vertex_index {

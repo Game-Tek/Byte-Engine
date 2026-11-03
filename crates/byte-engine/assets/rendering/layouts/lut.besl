@@ -11,7 +11,7 @@ LutParameters: struct {
 Lut: layer {
 	source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 	lut_texture: descriptor<{ type: Texture3D, binding: 1, access: read }>;
-	parameters: descriptor<{ type: LutParameters, binding: 3, access: read, memory: constant }>;
+	parameters: descriptor<{ type: LutParameters, binding: 2, access: read, memory: constant }>;
 }
 
 // Maps a color through the table and mixes the result with the input by the look strength, in the encoding the

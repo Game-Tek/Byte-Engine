@@ -658,9 +658,9 @@ mod tests {
 
 	/// Runs the layer's `blur_diameter` on each circle of confusion with `limits` and returns the blur diameters.
 	fn shader_blur_diameters(circles: &[f32], limits: [f32; 2]) -> Vec<f32> {
-		use besl::vm::{DescriptorBindings, ResourceSlot, Value};
+		use besl::vm::{DescriptorBindings, Value};
 
-		use crate::rendering::shader_vm_test::{buffer, compile, run_at, with_engine_modules};
+		use crate::rendering::shader_vm_test::{buffer, compile, run_at, slot, with_engine_modules};
 
 		let fields: String = (0..circles.len()).map(|index| format!("\tb{index}: f32,\n")).collect();
 		let calls: String = circles
@@ -674,10 +674,10 @@ mod tests {
 			})
 			.collect();
 		let stand_in = format!(
-			"use ::byte_engine::rendering::depth_of_field::layouts::parameters::*;\nBlurResults: struct {{\n{fields}}}\nresults: descriptor<{{ type: BlurResults, binding: 900, access: read_write }}>;\nmain: fn () -> void {{\n{calls}}}\n"
+			"use ::byte_engine::rendering::depth_of_field::layouts::parameters::*;\nBlurResults: struct {{\n{fields}}}\nresults: descriptor<{{ type: BlurResults, binding: 0, access: read_write }}>;\nmain: fn () -> void {{\n{calls}}}\n"
 		);
 		let program = compile(besl::lex(with_engine_modules(stand_in.leak())).expect("The blur diameter stand-in links."));
-		let slot = ResourceSlot::new(900);
+		let slot = slot(&program, "results");
 		let mut results = buffer(&program, slot);
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_buffer(slot, &mut results);
@@ -900,9 +900,9 @@ mod tests {
 	/// Runs the filter shader on a 3 × 3 gathered image, each texel's color and ring share, and returns the center
 	/// pixel it writes.
 	fn filter_center(gathered: [[f32; 4]; 9]) -> [f32; 4] {
-		use besl::vm::{DescriptorBindings, ResourceSlot};
+		use besl::vm::DescriptorBindings;
 
-		use crate::rendering::shader_vm_test::{compile, empty_image, rgba, run_at, texture_2d};
+		use crate::rendering::shader_vm_test::{compile, empty_image, rgba, run_at, slot, texture_2d};
 
 		let program = compile(simple_compute::compile_test_program(asset_source(
 			"depth_of_field/filter.besl",
@@ -910,8 +910,8 @@ mod tests {
 		let mut gathered = texture_2d(3, 3, &gathered);
 		let mut result = empty_image(3, 3);
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(0), &mut gathered);
-		descriptors.bind_image(ResourceSlot::new(1), &mut result);
+		descriptors.bind_texture(slot(&program, "gathered"), &mut gathered);
+		descriptors.bind_image(slot(&program, "result"), &mut result);
 		run_at(&program, &mut descriptors, [1, 1]);
 		drop(descriptors);
 		rgba(&result, [1, 1])
@@ -975,12 +975,12 @@ mod tests {
 	/// Runs the reference shader on one pixel whose scene is `scene` and whose mean holds `mean`, giving the frame
 	/// `weight` of the mean, and returns the new mean and the pixel it writes to `main`.
 	fn accumulate(scene: [f32; 4], mean: [f32; 3], weight: f32) -> ([f32; 3], [f32; 4]) {
-		use besl::vm::{DescriptorBindings, ResourceSlot, Value, output_slot};
+		use besl::vm::{DescriptorBindings, Value, output_slot};
 
-		use crate::rendering::shader_vm_test::{PIXEL_TILE, buffer, empty_image, rgba, run_pixel, texture_2d};
+		use crate::rendering::shader_vm_test::{PIXEL_TILE, buffer, empty_image, rgba, run_pixel, slot, texture_2d};
 
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(REFERENCE_BESL));
-		let parameter_slot = ResourceSlot::new(4);
+		let parameter_slot = slot(&program, "parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
 			.write("weight", Value::F32(weight))
@@ -989,9 +989,9 @@ mod tests {
 		let mut channels = mean.map(|value| texture_2d(1, 1, &[[value, 0.0, 0.0, 1.0]]));
 		let mut result = empty_image(1, 1);
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(0), &mut scene_texture);
-		for (slot, channel) in (1..).zip(channels.iter_mut()) {
-			descriptors.bind_image(ResourceSlot::new(slot), channel);
+		descriptors.bind_texture(slot(&program, "scene_texture"), &mut scene_texture);
+		for (name, channel) in ["mean_red", "mean_green", "mean_blue"].into_iter().zip(channels.iter_mut()) {
+			descriptors.bind_image(slot(&program, name), channel);
 		}
 		descriptors.bind_buffer(parameter_slot, &mut parameters);
 		descriptors.bind_image(output_slot(0), &mut result);

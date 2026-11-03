@@ -14,6 +14,6 @@ ContactShadowParameters: struct {
 }
 
 ContactShadows: layer {
-	contact_shadow_parameters: descriptor<{ type: ContactShadowParameters, binding: 1, access: read }>;
-	contact_shadow_output: descriptor<{ type: StorageImage<rgba8>, binding: 1034, access: write }>;
+	contact_shadow_parameters: descriptor<{ type: ContactShadowParameters, binding: 0, access: read }>;
+	contact_shadow_output: descriptor<{ type: StorageImage<rgba8>, binding: 1, access: write }>;
 }

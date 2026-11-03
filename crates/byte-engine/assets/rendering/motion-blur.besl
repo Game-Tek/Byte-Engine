@@ -33,9 +33,9 @@ MotionBlurParameters: struct {
 scene_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 // A tile output, so the replacement for `main` this writes needs no shader-write usage and stays losslessly compressed.
 result: output<vec4f, 0>;
-parameters: descriptor<{ type: MotionBlurParameters, binding: 2, access: read, memory: constant }>;
+parameters: descriptor<{ type: MotionBlurParameters, binding: 1, access: read, memory: constant }>;
 // The renderer's debug target pool, which the shown debug views write; see `debug_views.rs`.
-debug_view_targets: descriptor<{ type: StorageImage, binding: 3, access: write, count: 15 }>;
+debug_view_targets: descriptor<{ type: StorageImage, binding: 2, access: write, count: 15 }>;
 
 HALF_FLOAT_MAX: const f32 = 65504.0;
 // Below this blur length, in pixels, the shutter adds nothing the sampler can show, so the pixel passes through.

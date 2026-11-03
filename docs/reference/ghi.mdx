@@ -40,7 +40,7 @@ the pipeline's declared ranges.
 | Cube images | Six layers, or a multiple of six for an array. |
 | Sampler | Linear filtering, weighted-average reduction, linear mips, clamp addressing, no anisotropy, and a zero LOD range by default. Devices limit sampler counts. |
 | Shader | SPIR-V, keyed SPIR-V, DXIL, HLSL, Metal library, or Metal source. GLSL compiles only on Linux. |
-| Descriptor set layout | At most 64 resources with distinct slots. Equal layouts have equal identities and are interchangeable. |
+| Descriptor set layout | At most 64 bindings, numbered from `0` without gaps. A binding holds one resource, or an array of resources that takes one binding number. Equal layouts have equal identities and are interchangeable. A set created from a layout keeps its descriptors in place, and binding it doesn't copy them. |
 | Raster pipeline | Clockwise front faces, back-face culling, solid fill, and depth writes by default. |
 | Tile pipeline | A tile function, the formats of the one to eight color attachments it writes, and its 16 × 16 or 32 × 32 pixel tile. A tile pass is one render pass whose attachments share one size, and it runs the function once over every tile of them; its threadgroup storage sizes come from the shader. Only contexts that support tile functions create one. |
 | Acceleration structure | Triangle geometry with 16-bit or 32-bit indices. See [Ray tracing](#ray-tracing). |
@@ -213,16 +213,46 @@ A trace launches the ray generation shader over an extent.
 | Gap | Backend |
 | --- | --- |
 | Frame capture, pipeline statistics counters | Metal |
-| Native resource I/O, timed present, shrinking the frames in flight, per-layout native descriptor sets | Vulkan |
+| Native resource I/O, timed present, shrinking the frames in flight | Vulkan |
 | The loader-context contract and the current trait signatures, so Windows builds fail until they land; pipelines compile when interned; swapchain texture transfers; cubemap storage views; ray tracing | Direct3D 12 |
 | Destroying images, buffers, and shaders | All |
+
+## Descriptor sets
+
+A descriptor set holds its layout's bindings in binding order. An array of
+`count` resources takes `count` consecutive descriptors and one binding number.
+A shader finds each set it declares at the set's position among its sets,
+whichever of them it reads.
+
+| Backend | Where a set's descriptors live | What binding a set changes |
+| --- | --- | --- |
+| Metal | One argument buffer per set, at buffer index 16 plus the set's position | The argument buffer address at that index |
+| Vulkan | A range of the resource heap, in 64-byte slots, and a range of the sampler heap | Two 32-bit base indices in the push data |
+| Direct3D 12 | A range of the shader-visible resource heap, and a range of the sampler heap | Two 32-bit base indices in the root constants |
+
+A texture that declares a fixed sampler takes no sampler of its set. Vulkan and
+Direct3D 12 keep every fixed sampler at an index of the sampler heap that its
+state decides:
+
+`filter + 2 × mip filter + 4 × reduction + 12 × address`
+
+| Property | 0 | 1 | 2 |
+| --- | --- | --- | --- |
+| Filter, mip filter | Nearest | Linear | |
+| Reduction | Average | Min | Max |
+| Address | Clamp | Repeat | Mirror |
+
+The sets' own samplers come after index 35.
 
 ## Limits
 
 | Limit | Value |
 | --- | --- |
 | Frames in flight | 3 |
-| Resources per descriptor set layout | 64 |
+| Bindings per descriptor set layout | 64 |
+| Descriptor sets per shader | 15 |
+| Vulkan descriptor size | 64 bytes; a device with a larger image, buffer, or acceleration structure descriptor isn't supported |
+| Push constants on Vulkan | Start at byte 128 of the push data; bytes 0 to 120 hold the bound sets' base indices |
 | Counters per frame | 512 |
 | Texture copy row pitch alignment | 256 bytes |
 | Push constants | Within the pipeline's declared ranges, at offsets and sizes that are multiples of 4 on Vulkan and Direct3D 12 |

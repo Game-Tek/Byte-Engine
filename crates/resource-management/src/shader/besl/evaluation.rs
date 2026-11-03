@@ -324,7 +324,7 @@ mod tests {
 					element: instance,
 					fixed: None,
 				},
-				1,
+				0,
 				true,
 				false,
 			)
@@ -672,9 +672,9 @@ mod tests {
 		let program = besl::compile_to_besl(
 			r#"
 				A: layer { a: descriptor<{ type: f32[], binding: 0, access: read }>; }
-				B: layer { b: descriptor<{ type: f32[], binding: 1, access: read }>; }
-				Unused: layer { c: descriptor<{ type: f32[], binding: 2, access: read }>; }
-				own: descriptor<{ type: f32[], binding: 3, access: write }>;
+				B: layer { b: descriptor<{ type: f32[], binding: 0, access: read }>; }
+				Unused: layer { c: descriptor<{ type: f32[], binding: 0, access: read }>; }
+				own: descriptor<{ type: f32[], binding: 0, access: write }>;
 				Shader: fn (input: StageInput, b: B, a: A) -> void;
 				main: Shader { own[0] = a.a[0] + b.b[0]; }
 			"#,
@@ -697,7 +697,7 @@ mod tests {
 			("shared/records.besl", "Light: struct { color: vec3f, intensity: f32 }"),
 			(
 				"shared/lighting.besl",
-				"use ::shared::records::Light;\nLighting: layer { lights: descriptor<{ type: Light[], binding: 4, access: read }>; }",
+				"use ::shared::records::Light;\nLighting: layer { lights: descriptor<{ type: Light[], binding: 0, access: read }>; }",
 			),
 		];
 		let read = |file: &str| {

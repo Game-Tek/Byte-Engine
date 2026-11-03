@@ -308,7 +308,7 @@ impl RenderPass for FilmGrainPass {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot, Texture, Value, WorkgroupState, output_slot};
+	use besl::vm::{DescriptorBindings, Texture, Value, WorkgroupState, output_slot};
 
 	use super::*;
 	use crate::rendering::{
@@ -323,6 +323,7 @@ mod tests {
 	fn grain(size: u32, scene: &[[f32; 4]], data: &FilmGrainShaderData) -> Texture {
 		let linked = simple_compute::compile_test_program(asset_source("film_grain/apply.besl"));
 		let slot = binding_slot(&linked, "parameters");
+		let scene_slot = binding_slot(&linked, "scene_texture");
 		let program = compile(linked);
 		let mut parameters = buffer(&program, slot);
 		for (name, value) in [
@@ -346,7 +347,7 @@ mod tests {
 		for position in tiles(TILE, [size, size]) {
 			let mut workgroup = WorkgroupState::new();
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(ResourceSlot::new(0), &mut scene);
+			descriptors.bind_texture(scene_slot, &mut scene);
 			descriptors.bind_image(output_slot(0), &mut result);
 			descriptors.bind_buffer(slot, &mut parameters);
 			descriptors.bind_workgroup_state(&mut workgroup);

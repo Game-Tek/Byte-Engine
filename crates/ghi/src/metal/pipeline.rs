@@ -544,8 +544,8 @@ pub(crate) struct RasterState {
 /// Builds the private Metal pipeline layout from the descriptor set layouts each shader stage declares.
 ///
 /// `parameters` select the stage shaders from `shaders`, the shaders of the factory that builds the pipeline. Each
-/// stage takes the sets it uses at consecutive buffer indices, in the order its shader declares them, which is the
-/// order its native source declares their argument buffers. Stages that declare the same layout share its set.
+/// stage takes each set it uses at the buffer index of the set's position among the sets its shader declares, the
+/// index its native source declares the set's argument buffer at. Stages that declare the same layout share its set.
 fn build_pipeline_layout(
 	shaders: &[Shader],
 	parameters: &[crate::pipelines::ShaderParameter],
@@ -558,9 +558,12 @@ fn build_pipeline_layout(
 			stage, descriptor_sets, ..
 		} = &shaders[parameter.handle.index() as usize];
 
-		// A layout the shader uses no resource of has no argument buffer in its source, so it takes no index.
-		let used_sets = descriptor_sets.iter().filter(|set| set.used() != 0);
-		for (index, shader_set) in used_sets.enumerate() {
+		// Each set binds at the index of its position, whichever sets before it the shader takes. A layout the shader
+		// uses no resource of has no argument buffer in its source, so it binds nowhere.
+		for (index, shader_set) in descriptor_sets.iter().enumerate() {
+			if shader_set.used() == 0 {
+				continue;
+			}
 			let binding = command_buffer::ARGUMENT_BUFFER_BINDING_BASE + index as u32;
 			let position = match sets
 				.iter()

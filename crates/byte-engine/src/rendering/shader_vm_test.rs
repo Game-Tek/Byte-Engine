@@ -146,26 +146,43 @@ pub(crate) fn empty_image(width: u32, height: u32) -> Texture {
 }
 
 /// Creates a host buffer using the layout discovered while compiling the shader.
-/// Returns the slot of the descriptor a linked program declares as `name`, so tests bind resources by the name the
-/// shader gives them.
+/// Returns the slot of the descriptor a linked program declares as `name`, in the set linking placed it in, so tests
+/// bind resources by the name the shader gives them.
 pub(crate) fn binding_slot(program: &besl::NodeReference, name: &str) -> ResourceSlot {
 	/// Finds the descriptor among the declarations of `scope` and of the scopes and layers nested in it. A struct
 	/// member or a local of the same name is not a declaration.
-	fn find(scope: &besl::NodeReference, name: &str) -> Option<u32> {
+	fn find(scope: &besl::NodeReference, name: &str) -> Option<Option<besl::Placement>> {
 		let scope = scope.borrow();
 		let (besl::Nodes::Scope { children, .. } | besl::Nodes::Layer { members: children, .. }) = scope.node() else {
 			return None;
 		};
 		children.iter().find_map(|child| match child.borrow().node() {
 			besl::Nodes::Binding {
-				name: declared, slot, ..
-			} if declared == name => Some(*slot),
+				name: declared,
+				placement,
+				..
+			} if declared == name => Some(*placement),
 			besl::Nodes::Scope { .. } | besl::Nodes::Layer { .. } => find(child, name),
 			_ => None,
 		})
 	}
 
-	ResourceSlot::new(find(program, name).unwrap_or_else(|| panic!("Expected the program to declare a descriptor `{name}`")))
+	let placement = find(program, name)
+		.unwrap_or_else(|| panic!("Expected the program to declare a descriptor `{name}`"))
+		.unwrap_or_else(|| {
+			panic!("Expected descriptor `{name}` to belong to a set of the program, through a layer `main` takes")
+		});
+	ResourceSlot::placed(placement)
+}
+
+/// Returns the slot of the descriptor a compiled program names `name`, in the set it was placed in, so tests bind
+/// resources by the name the shader gives them. For an array, element `i` is at `slot(program, name).offset(i)`.
+pub(crate) fn slot(program: &ExecutableProgram, name: &str) -> ResourceSlot {
+	program.slot(name).unwrap_or_else(|| {
+		panic!(
+			"The program declares no descriptor named `{name}` in its sets. The most likely cause is a misspelled descriptor name or a layer `main` doesn't take. Use a name the shader or one of the layers its `main` takes declares."
+		)
+	})
 }
 
 pub(crate) fn buffer(program: &ExecutableProgram, slot: ResourceSlot) -> Buffer {

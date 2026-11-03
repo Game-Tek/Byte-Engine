@@ -18,9 +18,9 @@ PixelCoordinates: struct {
 }
 
 VisibilityBuffer: layer {
-	material_count: descriptor<{ type: MaterialCounts, binding: 1033, access: read, memory: device }>;
-	material_offset: descriptor<{ type: MaterialOffsets, binding: 1034, access: read, memory: device }>;
-	pixel_mapping: descriptor<{ type: PixelCoordinates, binding: 1037, access: read, memory: device }>;
-	triangle_index: descriptor<{ type: StorageImage<r32ui>, binding: 1039, access: read }>;
-	instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 1040, access: read }>;
+	material_count: descriptor<{ type: MaterialCounts, binding: 0, access: read, memory: device }>;
+	material_offset: descriptor<{ type: MaterialOffsets, binding: 1, access: read, memory: device }>;
+	pixel_mapping: descriptor<{ type: PixelCoordinates, binding: 2, access: read, memory: device }>;
+	triangle_index: descriptor<{ type: StorageImage<r32ui>, binding: 3, access: read }>;
+	instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 4, access: read }>;
 }

@@ -66,36 +66,36 @@ ReflectionParameters: struct {
 nearest_occluder: sampler<{ filter: linear, mip_filter: nearest, reduction: max }>;
 
 MaterialEvaluation: layer {
-	lit_map: descriptor<{ type: StorageImage<r11f_g11f_b10f>, binding: 1041, access: read_write }>;
-	lighting_data: descriptor<{ type: LightingData, binding: 1045, access: read, memory: device }>;
+	lit_map: descriptor<{ type: StorageImage<r11f_g11f_b10f>, binding: 0, access: read_write }>;
+	lighting_data: descriptor<{ type: LightingData, binding: 1, access: read, memory: device }>;
 	// The half-resolution SSGI history and normals, from which opaque evaluation reconstructs indirect diffuse light.
-	ssgi_normals: descriptor<{ type: Texture2D, binding: 1047, access: read }>;
-	ssgi_view: descriptor<{ type: SsgiView, binding: 1048, access: read, memory: device }>;
-	ao: descriptor<{ type: Texture2D, binding: 1051, access: read }>;
-	depth_shadow_map: descriptor<{ type: Texture2DArray, binding: 1052, access: read }>;
-	directional_shadow_depth_pyramid: descriptor<{ type: Texture2D, binding: 1053, access: read, sampler: nearest_occluder }>;
-	environment_irradiance: descriptor<{ type: TextureCube, binding: 1054, access: read }>;
-	environment_specular: descriptor<{ type: TextureCube, binding: 1055, access: read }>;
-	ssgi_history: descriptor<{ type: Texture2D, binding: 1056, access: read }>;
+	ssgi_normals: descriptor<{ type: Texture2D, binding: 2, access: read }>;
+	ssgi_view: descriptor<{ type: SsgiView, binding: 3, access: read, memory: device }>;
+	ao: descriptor<{ type: Texture2D, binding: 4, access: read }>;
+	depth_shadow_map: descriptor<{ type: Texture2DArray, binding: 5, access: read }>;
+	directional_shadow_depth_pyramid: descriptor<{ type: Texture2D, binding: 6, access: read, sampler: nearest_occluder }>;
+	environment_irradiance: descriptor<{ type: TextureCube, binding: 7, access: read }>;
+	environment_specular: descriptor<{ type: TextureCube, binding: 8, access: read }>;
+	ssgi_history: descriptor<{ type: Texture2D, binding: 9, access: read }>;
 	// This frame's diffuse radiance, which the next frame's SSGI rays read.
-	diffuse_radiance_map: descriptor<{ type: StorageImage<rgba16f>, binding: 1057, access: write }>;
+	diffuse_radiance_map: descriptor<{ type: StorageImage<rgba16f>, binding: 10, access: write }>;
 	// The sun's resolved visibility per opaque pixel, one channel per sun slot.
-	sun_visibility: descriptor<{ type: Texture2D, binding: 1058, access: read }>;
-	reflection_parameters: descriptor<{ type: ReflectionParameters, binding: 1059, access: read, memory: constant }>;
+	sun_visibility: descriptor<{ type: Texture2D, binding: 11, access: read }>;
+	reflection_parameters: descriptor<{ type: ReflectionParameters, binding: 12, access: read, memory: constant }>;
 	// Mip zero of the linear depth pyramid, which reflection rays march and the indirect diffuse upsample reads.
-	depth_pyramid: descriptor<{ type: Texture2D, binding: 1060, access: read }>;
+	depth_pyramid: descriptor<{ type: Texture2D, binding: 13, access: read }>;
 	// The previous frame's lit image and reverse-Z depth, which reflection rays read the light at their hit from.
-	previous_lit: descriptor<{ type: Texture2D, binding: 1061, access: read }>;
-	previous_depth: descriptor<{ type: Texture2D, binding: 1062, access: read }>;
-	light_cluster_masks: descriptor<{ type: LightClusterMasks, binding: 1066, access: read, memory: device }>;
-	light_cluster_parameters: descriptor<{ type: LightClusterParameters, binding: 1067, access: read, memory: constant }>;
+	previous_lit: descriptor<{ type: Texture2D, binding: 14, access: read }>;
+	previous_depth: descriptor<{ type: Texture2D, binding: 15, access: read }>;
+	light_cluster_masks: descriptor<{ type: LightClusterMasks, binding: 16, access: read, memory: device }>;
+	light_cluster_parameters: descriptor<{ type: LightClusterParameters, binding: 17, access: read, memory: constant }>;
 	// One image per power-of-two size class of cone maps and point cube faces, from 128 texels per side up to 2048. A
 	// light reads the image of its `shadow_size_class`. Arrayed bindings take `count` flat slots, so they sit past every
 	// other binding of the layers a shader takes with this one.
-	cone_shadow_maps: descriptor<{ type: Texture2DArray, binding: 1090, access: read, count: 5 }>;
-	point_shadow_maps: descriptor<{ type: TextureCubeArray, binding: 1095, access: read, count: 5 }>;
+	cone_shadow_maps: descriptor<{ type: Texture2DArray, binding: 18, access: read, count: 5 }>;
+	point_shadow_maps: descriptor<{ type: TextureCubeArray, binding: 19, access: read, count: 5 }>;
 	// The renderer's debug target pool, which the shown debug views of material evaluation write; see `debug_views.rs`.
 	// An arrayed binding takes `count` flat slots, so it sits past every other binding of the layers a
 	// shader takes with this one.
-	debug_view_targets: descriptor<{ type: StorageImage, binding: 1100, access: write, count: 15 }>;
+	debug_view_targets: descriptor<{ type: StorageImage, binding: 20, access: write, count: 15 }>;
 }

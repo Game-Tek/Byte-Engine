@@ -388,10 +388,11 @@ mod flat_binding_tests {
 	fn retained_material_resources_after_bindless_array_reach_metal() {
 		use objc2_metal::MTLComputePipelineState as _;
 
-		const TEXTURES_SLOT: ResourceSlot = ResourceSlot::new(9);
-		const MATERIAL_SLOT: ResourceSlot = ResourceSlot::new(1046);
-		const AO_SLOT: ResourceSlot = ResourceSlot::new(1051);
-		const OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(1054);
+		// Each set numbers its bindings from 0, and the bindless array takes one of them.
+		const TEXTURES_SLOT: ResourceSlot = ResourceSlot::new(0);
+		const MATERIAL_SLOT: ResourceSlot = ResourceSlot::new(1);
+		const AO_SLOT: ResourceSlot = ResourceSlot::new(0);
+		const OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(1);
 		const TEXTURE_INDEX: u32 = 7;
 
 		let source = r#"

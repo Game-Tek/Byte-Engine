@@ -29,8 +29,8 @@ RayTracingGeometries: struct {
 }
 
 RayTracedScene: layer {
-	scene_structure: descriptor<{ type: AccelerationStructure, binding: 1140, access: read }>;
+	scene_structure: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>;
 	// Each full-detail triangle of a primitive that rays hit, as three vertex indices from the primitive's first vertex.
-	flat_triangle_indices: descriptor<{ type: u16[], binding: 1141, access: read, memory: device }>;
-	ray_tracing_geometries: descriptor<{ type: RayTracingGeometries, binding: 1142, access: read, memory: device }>;
+	flat_triangle_indices: descriptor<{ type: u16[], binding: 1, access: read, memory: device }>;
+	ray_tracing_geometries: descriptor<{ type: RayTracingGeometries, binding: 2, access: read, memory: device }>;
 }

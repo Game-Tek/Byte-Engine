@@ -76,7 +76,7 @@ fn a_helper_takes_a_layer_that_generated_code_no_longer_passes() {
 fn combined_signatures_take_each_parameter_once() {
 	let program = linked(
 		r#"
-		Scale: layer { factors: descriptor<{ type: f32[], binding: 1, access: read }>; }
+		Scale: layer { factors: descriptor<{ type: f32[], binding: 0, access: read }>; }
 		Scaled: fn (input: StageInput, scale: Scale);
 		Shader: Compute + Scaled;
 		main: Shader { results.values[0] = 2.0 + f32(input.thread_id.x); }

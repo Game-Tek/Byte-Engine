@@ -225,14 +225,14 @@ impl RenderPass for ExponentialHeightFogRenderPass {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot, Value, output_slot};
+	use besl::vm::{DescriptorBindings, Value, output_slot};
 	use math::{Point, UnitVector};
 	use maths_rs::Vec3f;
 
 	use crate::rendering::{
 		ExponentialHeightFog, FogLayer,
 		render_pass::simple_compute,
-		shader_vm_test::{PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_pixel, texture_2d},
+		shader_vm_test::{PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_pixel, slot, texture_2d},
 	};
 
 	const HEIGHT_FOG_BESL: &str = include_str!("../../../assets/rendering/height-fog.besl");
@@ -285,7 +285,7 @@ mod tests {
 		marched: [f32; 4],
 	) -> [f32; 4] {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(HEIGHT_FOG_BESL));
-		let parameter_slot = ResourceSlot::new(3);
+		let parameter_slot = slot(&program, "parameters");
 		let data = super::fog_shader_data(
 			&fog,
 			Vec3f::new(sun_illuminance[0], sun_illuminance[1], sun_illuminance[2]),
@@ -331,9 +331,9 @@ mod tests {
 		);
 		let mut result = empty_image(width, height);
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(0), &mut depth_texture);
-		descriptors.bind_texture(ResourceSlot::new(1), &mut scene);
-		descriptors.bind_texture(ResourceSlot::new(2), &mut fog_light);
+		descriptors.bind_texture(slot(&program, "depth_texture"), &mut depth_texture);
+		descriptors.bind_texture(slot(&program, "scene_texture"), &mut scene);
+		descriptors.bind_texture(slot(&program, "fog_light"), &mut fog_light);
 		descriptors.bind_image(output_slot(0), &mut result);
 		descriptors.bind_buffer(parameter_slot, &mut parameters);
 		run_pixel(&program, &mut descriptors, pixel, PIXEL_TILE, [width, height]);

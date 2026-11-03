@@ -165,11 +165,11 @@ impl RenderPass for SmaaPass {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot, Texture, WorkgroupState, output_slot};
+	use besl::vm::{DescriptorBindings, Texture, WorkgroupState, output_slot};
 
 	use super::*;
 	use crate::rendering::render_pass::simple_compute;
-	use crate::rendering::shader_vm_test::{PIXEL_TILE, assert_rgba_close, empty_image, rgba, texture_2d, tile_lanes};
+	use crate::rendering::shader_vm_test::{PIXEL_TILE, assert_rgba_close, empty_image, rgba, slot, texture_2d, tile_lanes};
 
 	const EDGE_SHADER: &str = include_str!("../../../assets/rendering/smaa/edge-detection.besl");
 	const RESOLVE_SHADER: &str = include_str!("../../../assets/rendering/smaa/blend-weights.besl");
@@ -189,7 +189,7 @@ mod tests {
 		let configs = tile_configs(origin, extent);
 		let mut workgroup = WorkgroupState::new();
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(0), source);
+		descriptors.bind_texture(slot(&program, "source"), source);
 		descriptors.bind_image(output_slot(0), result);
 		descriptors.bind_workgroup_state(&mut workgroup);
 		program
@@ -211,10 +211,10 @@ mod tests {
 		let configs = tile_configs(origin, extent);
 		let mut workgroup = WorkgroupState::new();
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(0), source);
-		descriptors.bind_texture(ResourceSlot::new(1), edges);
-		descriptors.bind_texture(ResourceSlot::new(2), area);
-		descriptors.bind_texture(ResourceSlot::new(3), search);
+		descriptors.bind_texture(slot(&program, "source"), source);
+		descriptors.bind_texture(slot(&program, "edges"), edges);
+		descriptors.bind_texture(slot(&program, "area_texture"), area);
+		descriptors.bind_texture(slot(&program, "search_texture"), search);
 		descriptors.bind_image(output_slot(0), result);
 		descriptors.bind_workgroup_state(&mut workgroup);
 		program

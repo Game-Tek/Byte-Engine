@@ -39,12 +39,12 @@ SurfelSpawn: struct {
 }
 
 SurfelResolve: layer {
-	surfel_resolve_parameters: descriptor<{ type: SurfelResolveParameters, binding: 1150, access: read }>;
-	surfel_spawns: descriptor<{ type: SurfelSpawn[], binding: 1151, access: read_write }>;
+	surfel_resolve_parameters: descriptor<{ type: SurfelResolveParameters, binding: 0, access: read }>;
+	surfel_spawns: descriptor<{ type: SurfelSpawn[], binding: 1, access: read_write }>;
 	// The half-resolution view-space normals the reconstruction and material evaluation compare surfaces with, named
 	// `SSGI Normals` like SSGI's.
-	normal_output: descriptor<{ type: StorageImage<rg16_snorm>, binding: 1153, access: write }>;
-	debug_view_targets: descriptor<{ type: StorageImage, binding: 1154, access: write, count: 15 }>;
+	normal_output: descriptor<{ type: StorageImage<rg16_snorm>, binding: 2, access: write }>;
+	debug_view_targets: descriptor<{ type: StorageImage, binding: 3, access: write, count: 15 }>;
 }
 
 // Transforms a view-space point or direction (w = 0) of the sink's camera to world space.

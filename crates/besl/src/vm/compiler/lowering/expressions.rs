@@ -175,7 +175,10 @@ impl<'a> Compiler<'a> {
 				} else if is_resource_type(expected_type) && matches!(source.borrow().node(), Nodes::Binding { .. }) {
 					let (slot, layout) = {
 						let source_ref = source.borrow();
-						let Nodes::Binding { slot, r#type, .. } = source_ref.node() else {
+						let Nodes::Binding {
+							name, r#type, placement, ..
+						} = source_ref.node()
+						else {
 							unreachable!("Resource sources are checked before compiling the handle")
 						};
 						let layout = match r#type {
@@ -194,7 +197,7 @@ impl<'a> Compiler<'a> {
 								});
 							}
 						};
-						(ResourceSlot::new(*slot), layout)
+						(placed_slot(name, *placement)?, layout)
 					};
 					self.claim_descriptor_layout(slot, layout, "resource type")?;
 					let register = self.allocate_register();
@@ -381,11 +384,7 @@ impl<'a> Compiler<'a> {
 			}
 			// Every possible element occupies one flat host slot; only the selected resource is read at execution.
 			for element in 0..count {
-				self.claim_descriptor_layout(
-					ResourceSlot::new(slot.slot() + element as u32),
-					DescriptorLayout::Texture,
-					"resource type",
-				)?;
+				self.claim_descriptor_layout(slot.offset(element as u32), DescriptorLayout::Texture, "resource type")?;
 			}
 			let index = self.compile_value_expression(&index, &ValueType::U32)?;
 			let register = self.allocate_register();

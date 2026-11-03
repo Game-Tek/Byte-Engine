@@ -348,8 +348,13 @@ vertices: descriptor<{ type: Vertex[], binding: 1, access: read }>;
 albedo: descriptor<{ type: Texture2D, binding: 2, access: read }>;
 shadow_maps: descriptor<{ type: Texture2DArray, binding: 3, access: read }>;
 gbuffers: descriptor<{ type: Texture2D, binding: 4, access: read, count: 4 }>;
-output_image: descriptor<{ type: StorageImage<rgba16f>, binding: 7, access: write }>;
+output_image: descriptor<{ type: StorageImage<rgba16f>, binding: 5, access: write }>;
 ```
+
+`binding` numbers a descriptor within its descriptor set: the
+[layer](#layers) that declares it, or the shader's own descriptors. Each set
+numbers its descriptors from `0`, without gaps or repeats, so a set of `n`
+descriptors uses `0` to `n - 1`. Two sets can use the same numbers.
 
 The descriptor resource type selects the reflected binding kind. A texture
 descriptor with a [`sampler`](#samplers) property fixes its sampler part, so it
@@ -384,7 +389,9 @@ uses `device`. Image, texture, and acceleration structure descriptors can't
 declare a memory class.
 
 Set `count` to a positive integer to declare an array of independent resources.
-An `AccelerationStructure` descriptor can't declare a count.
+An array is one binding: it takes one `binding` number, and the descriptors
+after it keep theirs. An `AccelerationStructure` descriptor can't declare a
+count.
 
 Write `ElementType[]` to bind one storage buffer whose element count comes from
 the bound resource. Index it directly in a function, without a wrapper struct:
@@ -422,8 +429,8 @@ main: fn (pipeline_input: interface { sprite_id: u32, uv: vec2f }) -> output { c
 Use `descriptor<{ type: Texture2D, binding: BINDING, access: read, count: COUNT }>` when you need `COUNT`
 independent 2D texture descriptors instead.
 
-Reflection retains the authored name and flat slot for each descriptor reachable
-from `main`.
+Reflection retains the authored name, the set, and the `binding` of every
+descriptor in the sets the shader declares.
 
 Storage-buffer counters use `atomicu32` or `atomici32` members with the
 [atomic intrinsics](/docs/reference/besl/intrinsics#buffer-and-workgroup-atomics).
@@ -648,13 +655,14 @@ When `main` implements a signature, the signature is what the shader consumes:
   entry rules of the shader's stage.
 - Each layer parameter adds the layer's descriptor set. Sets follow the order of
   the parameters, and the descriptors the shader declares itself form one more
-  set, last.
+  set, last. A set keeps its position whether or not code reachable from
+  `main` uses it.
 - The layers' push constant blocks and the shader's own `push_constant` block
   can hold one block between them.
 - A layer that the program declares but `main` doesn't take adds no set.
 
-`binding` numbers are unique across a shader and the layers it takes. Give each
-layer its own range, so layers that shaders take together never collide.
+`binding` numbers belong to their set, so layers that shaders take together
+never collide, and a layer's numbers don't depend on the shader that takes it.
 
 ## Stage and backend support
 

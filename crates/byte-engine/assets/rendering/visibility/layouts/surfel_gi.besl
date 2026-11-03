@@ -266,43 +266,43 @@ SurfelHitSpawn: struct {
 }
 
 SurfelGi: layer {
-	surfel_parameters: descriptor<{ type: SurfelGiParameters, binding: 1120, access: read }>;
-	surfel_records: descriptor<{ type: SurfelRecord[], binding: 1121, access: read_write }>;
-	surfel_states: descriptor<{ type: SurfelState[], binding: 1122, access: read_write }>;
+	surfel_parameters: descriptor<{ type: SurfelGiParameters, binding: 0, access: read }>;
+	surfel_records: descriptor<{ type: SurfelRecord[], binding: 1, access: read_write }>;
+	surfel_states: descriptor<{ type: SurfelState[], binding: 2, access: read_write }>;
 	// The free stack: its first `free_count` entries are free slots.
-	surfel_free: descriptor<{ type: u32[], binding: 1123, access: read_write }>;
-	surfel_pool: descriptor<{ type: SurfelPool, binding: 1124, access: read_write }>;
-	surfel_cells: descriptor<{ type: SurfelCells, binding: 1125, access: read_write }>;
+	surfel_free: descriptor<{ type: u32[], binding: 3, access: read_write }>;
+	surfel_pool: descriptor<{ type: SurfelPool, binding: 4, access: read_write }>;
+	surfel_cells: descriptor<{ type: SurfelCells, binding: 5, access: read_write }>;
 	// The exclusive scan of every cell's count, then of every slot's priority rays, then of every slot's regular rays,
 	// then the grand total: entry c is where cell c's list starts, entry SURFEL_CELL_COUNT + s where slot s's priority
 	// rays start after the cells' entries, and entry SURFEL_CELL_COUNT + capacity + s where its regular rays start.
-	surfel_scan: descriptor<{ type: u32[], binding: 1126, access: read_write }>;
+	surfel_scan: descriptor<{ type: u32[], binding: 6, access: read_write }>;
 	// Each scan workgroup's total, which the partial pass turns into an exclusive scan.
-	surfel_scan_partials: descriptor<{ type: u32[], binding: 1127, access: read_write }>;
+	surfel_scan_partials: descriptor<{ type: u32[], binding: 7, access: read_write }>;
 	// The cell lists, each a run of cell entries, SURFEL_LISTING_LIMIT entries for each pool slot. Each list starts with
 	// the surfels near its cell's center.
-	surfel_cell_entries: descriptor<{ type: u32[], binding: 1128, access: read_write }>;
+	surfel_cell_entries: descriptor<{ type: u32[], binding: 8, access: read_write }>;
 	// The rays each slot wants this frame: the priority class's for every slot, then the regular class's. A slot asks in
 	// one class.
-	surfel_ray_wants: descriptor<{ type: u32[], binding: 1129, access: read_write }>;
-	surfel_irradiance: descriptor<{ type: SurfelIrradiance[], binding: 1130, access: read_write }>;
+	surfel_ray_wants: descriptor<{ type: u32[], binding: 9, access: read_write }>;
+	surfel_irradiance: descriptor<{ type: SurfelIrradiance[], binding: 10, access: read_write }>;
 	// Each ray the budget granted this frame, as a ray record.
-	surfel_rays: descriptor<{ type: u32[], binding: 1131, access: read_write }>;
-	surfel_ray_results: descriptor<{ type: SurfelRayResult[], binding: 1132, access: read_write }>;
+	surfel_rays: descriptor<{ type: u32[], binding: 11, access: read_write }>;
+	surfel_ray_results: descriptor<{ type: SurfelRayResult[], binding: 12, access: read_write }>;
 	// The scene's lights, which light what the rays hit.
-	surfel_scene_lights: descriptor<{ type: LightingBuffer, binding: 1133, access: read, memory: device }>;
+	surfel_scene_lights: descriptor<{ type: LightingBuffer, binding: 13, access: read, memory: device }>;
 	// The frame's spawn requests from rays' hits, the first `hit_spawns` of them.
-	surfel_hit_spawns: descriptor<{ type: SurfelHitSpawn[], binding: 1134, access: read_write }>;
+	surfel_hit_spawns: descriptor<{ type: SurfelHitSpawn[], binding: 14, access: read_write }>;
 	// Each surfel's guide cells, SURFEL_GUIDE_CELLS per slot, row by row of the equal-area square.
-	surfel_guides: descriptor<{ type: f16[], binding: 1138, access: read_write }>;
+	surfel_guides: descriptor<{ type: f16[], binding: 15, access: read_write }>;
 	// Each surfel's radial depth cells, SURFEL_DEPTH_CELLS per slot: the mean distance and its square, cube, and fourth
 	// power. A cell no ray reached holds zero.
-	surfel_depths: descriptor<{ type: vec4f[], binding: 1139, access: read_write }>;
+	surfel_depths: descriptor<{ type: vec4f[], binding: 16, access: read_write }>;
 	// Each surfel's clearance: how far from where its rays leave every direction of its radial depth is clear, so the
 	// resolve skips the occlusion test for a pixel nearer than it. The integrate pass measures it every frame.
-	surfel_clearances: descriptor<{ type: f32[], binding: 1143, access: read_write }>;
+	surfel_clearances: descriptor<{ type: f32[], binding: 17, access: read_write }>;
 	// The environment's roughness-prefiltered specular levels, whose light the rays that miss bring back.
-	surfel_environment_radiance: descriptor<{ type: TextureCube, binding: 1144, access: read }>;
+	surfel_environment_radiance: descriptor<{ type: TextureCube, binding: 18, access: read }>;
 }
 
 // Returns the cascade-zero cell that holds `relative`, a position relative to the grid origin. The coordinates are

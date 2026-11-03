@@ -7,8 +7,8 @@
 use ::byte_engine::rendering::bloom::layouts::parameters::*;
 use ::byte_engine::rendering::bloom::layouts::climb::*;
 
-result_texture: descriptor<{ type: StorageImage, binding: 2, access: write }>;
-bloom_parameters: descriptor<{ type: BloomParameters, binding: 3, access: read, memory: constant }>;
+result_texture: descriptor<{ type: StorageImage, binding: 0, access: write }>;
+bloom_parameters: descriptor<{ type: BloomParameters, binding: 1, access: read, memory: constant }>;
 
 main: fn(input: StageInput, climb_set: Climb) -> void {
 	let coord: vec2u = input.thread_id;

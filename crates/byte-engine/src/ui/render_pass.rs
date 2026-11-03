@@ -1091,18 +1091,18 @@ mod tests {
 		CURVE_QUADRATIC_TOLERANCE_PIXELS, DrawClip, DrawClipMask, MAX_CURVE_PIECES, MAX_UI_PRIMITIVES, SECTOR_INSET_SCALE,
 		Sector, UI_ATLAS_TEXTURE_SLOT, UI_BLUR_GAUSSIAN_PAIR_COUNT, UI_BLUR_GAUSSIAN_SUPPORT, UI_BLUR_HALF_DOWNSCALE,
 		UI_CURVE_CAP_END, UI_CURVE_CAP_START, UI_KIND_ATLAS_GLYPH, UI_KIND_BLUR, UI_KIND_CURVE, UI_KIND_IMAGE,
-		UI_KIND_INSET_SHADOW, UI_KIND_RECT, UI_KIND_SAMPLED_SHADOW, UI_KIND_SECTOR, UI_KIND_SHADOW, UI_LAYOUT,
-		UI_SLUG_BAND_CAPACITY, UI_SLUG_CURVE_CAPACITY, UiBlurDrawElement, UiBlurFilterPush, UiBlurKernel, UiClipMaskEntry,
-		UiCurveDrawElement, UiDrawElement, UiDrawList, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiPaint, UiPixelRegion,
-		UiPreparedFrame, UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement, blur_half_dispatch_regions, blur_half_extent,
-		blur_half_sigma, blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution,
-		build_ui_primitives_uncached, build_ui_slug_geometry, clear_primitive, curve_piece_count, encode_shadow_offset,
-		update_from_render,
+		UI_KIND_INSET_SHADOW, UI_KIND_RECT, UI_KIND_SAMPLED_SHADOW, UI_KIND_SECTOR, UI_KIND_SHADOW, UI_SLUG_BAND_CAPACITY,
+		UI_SLUG_CURVE_CAPACITY, UiBlurDrawElement, UiBlurFilterPush, UiBlurKernel, UiClipMaskEntry, UiCurveDrawElement,
+		UiDrawElement, UiDrawList, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiPaint, UiPixelRegion, UiPreparedFrame,
+		UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement, blur_half_dispatch_regions, blur_half_extent, blur_half_sigma,
+		blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution, build_ui_primitives_uncached,
+		build_ui_slug_geometry, clear_primitive, curve_piece_count, encode_shadow_offset, update_from_render,
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
 		shader_vm_test::{
-			array_buffer, assert_rgba_close, compile as compile_shader_vm, empty_image, link_program, rgba, run_at, texture_2d,
+			array_buffer, assert_rgba_close, compile as compile_shader_vm, empty_image, link_program, rgba, run_at, slot,
+			texture_2d,
 		},
 	};
 	use crate::ui::{
@@ -1155,7 +1155,7 @@ mod tests {
 	}
 
 	fn vm_masks(executable: &ExecutableProgram, masks: &[UiClipMaskEntry]) -> Buffer {
-		let mut mask_buffer = vm_array(executable, 1, masks.len());
+		let mut mask_buffer = vm_array(executable, "masks", masks.len());
 		for (index, mask) in masks.iter().enumerate() {
 			for (name, value) in [
 				("clip", mask.clip),
@@ -1173,13 +1173,13 @@ mod tests {
 	}
 
 	/// Allocates at least one element so an empty upload still binds a valid VM buffer, as the render pass does.
-	fn vm_array(executable: &ExecutableProgram, slot: u32, count: usize) -> Buffer {
-		array_buffer(executable, besl::vm::ResourceSlot::new(slot), count.max(1))
+	fn vm_array(executable: &ExecutableProgram, name: &str, count: usize) -> Buffer {
+		array_buffer(executable, slot(executable, name), count.max(1))
 	}
 
 	// Mirrors primitive records into a VM buffer the way the render pass uploads them.
 	fn vm_primitives(executable: &ExecutableProgram, primitives: &[UiPrimitive]) -> Buffer {
-		let mut buffer = vm_array(executable, 0, primitives.len());
+		let mut buffer = vm_array(executable, "primitives", primitives.len());
 		for (index, primitive) in primitives.iter().enumerate() {
 			for (name, value) in [
 				("bounds", Value::Vec4F(primitive.bounds)),
@@ -1216,13 +1216,13 @@ mod tests {
 			let primitives = vm_primitives(&executable, primitives);
 			let mask_buffer = vm_masks(&executable, masks);
 			let (curves, bands) = glyphs.map_or((&[][..], &[][..]), |glyphs| (glyphs.curves(), glyphs.bands()));
-			let mut glyph_curves = vm_array(&executable, 2, curves.len());
+			let mut glyph_curves = vm_array(&executable, "glyph_curves", curves.len());
 			for (index, points) in curves.iter().enumerate() {
 				glyph_curves
 					.write_array_member(index, "points", Value::Vec4F(*points))
 					.expect("Failed to write a glyph curve. The most likely cause is a changed curve element layout.");
 			}
-			let mut glyph_bands = vm_array(&executable, 3, bands.len());
+			let mut glyph_bands = vm_array(&executable, "glyph_bands", bands.len());
 			for (index, value) in bands.iter().enumerate() {
 				glyph_bands
 					.write_array_member(index, "value", Value::U32(*value))
@@ -1237,8 +1237,8 @@ mod tests {
 			}
 		}
 
-		/// Shades one fragment. `textures` pairs shader bindings with the textures bound to them.
-		fn run(&mut self, varyings: UiVaryings, textures: &mut [(u32, &mut Texture)]) -> [f32; 4] {
+		/// Shades one fragment. `textures` pairs a texture descriptor name and array element with the texture bound there.
+		fn run(&mut self, varyings: UiVaryings, textures: &mut [(&str, u32, &mut Texture)]) -> [f32; 4] {
 			// Interface fields take their locations in name order.
 			let mut inputs = [
 				("_besl_interface_curve_from", Value::Vec4F(varyings.curve_from)),
@@ -1274,12 +1274,12 @@ mod tests {
 			);
 			{
 				let mut descriptors = DescriptorBindings::new();
-				descriptors.bind_buffer(besl::vm::ResourceSlot::new(0), &mut self.primitives);
-				descriptors.bind_buffer(besl::vm::ResourceSlot::new(1), &mut self.masks);
-				descriptors.bind_buffer(besl::vm::ResourceSlot::new(2), &mut self.glyph_curves);
-				descriptors.bind_buffer(besl::vm::ResourceSlot::new(3), &mut self.glyph_bands);
-				for (slot, texture) in textures.iter_mut() {
-					descriptors.bind_texture(besl::vm::ResourceSlot::new(*slot), texture);
+				descriptors.bind_buffer(slot(&self.executable, "primitives"), &mut self.primitives);
+				descriptors.bind_buffer(slot(&self.executable, "masks"), &mut self.masks);
+				descriptors.bind_buffer(slot(&self.executable, "glyph_curves"), &mut self.glyph_curves);
+				descriptors.bind_buffer(slot(&self.executable, "glyph_bands"), &mut self.glyph_bands);
+				for (name, element, texture) in textures.iter_mut() {
+					descriptors.bind_texture(slot(&self.executable, name).offset(*element), texture);
 				}
 				for (location, input) in inputs.iter_mut().enumerate() {
 					descriptors.bind_buffer(input_slot(location as u8), input);
@@ -1340,8 +1340,8 @@ mod tests {
 				.collect();
 			{
 				let mut descriptors = DescriptorBindings::new();
-				descriptors.bind_buffer(besl::vm::ResourceSlot::new(0), &mut self.primitives);
-				descriptors.bind_buffer(besl::vm::ResourceSlot::new(1), &mut self.masks);
+				descriptors.bind_buffer(slot(&self.executable, "primitives"), &mut self.primitives);
+				descriptors.bind_buffer(slot(&self.executable, "masks"), &mut self.masks);
 				descriptors.bind_push_constant(&mut push_constant);
 				descriptors.bind_buffer(builtin_vertex_index_slot(), &mut vertex);
 				descriptors.bind_buffer(builtin_position_slot(), &mut position);
@@ -1543,8 +1543,8 @@ mod tests {
 				..UiVaryings::default()
 			},
 			&mut [
-				(UI_LAYOUT.slot("full_blurred_texture").index(), full_blurred),
-				(UI_LAYOUT.slot("half_blurred_texture").index(), half_blurred),
+				("full_blurred_texture", 0, full_blurred),
+				("half_blurred_texture", 0, half_blurred),
 			],
 		)
 	}
@@ -1559,8 +1559,8 @@ mod tests {
 	) {
 		let mut push_constant = blur_region_push_constant(executable, region.origin, region.push_extent());
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(besl::vm::ResourceSlot::new(0), source);
-		descriptors.bind_image(besl::vm::ResourceSlot::new(1), result);
+		descriptors.bind_texture(slot(executable, "source_texture"), source);
+		descriptors.bind_image(slot(executable, "result_texture"), result);
 		descriptors.bind_push_constant(&mut push_constant);
 		for y in 0..region.extent.height() {
 			for x in 0..region.extent.width() {
@@ -1581,8 +1581,8 @@ mod tests {
 	) {
 		let mut push_constant = blur_filter_push_constant(executable, kernel.push(direction, region));
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(besl::vm::ResourceSlot::new(0), source);
-		descriptors.bind_image(besl::vm::ResourceSlot::new(1), result);
+		descriptors.bind_texture(slot(executable, "source_texture"), source);
+		descriptors.bind_image(slot(executable, "result_texture"), result);
 		descriptors.bind_push_constant(&mut push_constant);
 		for y in 0..region.extent.height() {
 			for x in 0..region.extent.width() {
@@ -1719,8 +1719,8 @@ mod tests {
 		let mut result = empty_image(3, 1);
 		let mut push_constant = blur_region_push_constant(&executable, [1, 0], [1, 1]);
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(besl::vm::ResourceSlot::new(0), &mut source);
-		descriptors.bind_image(besl::vm::ResourceSlot::new(1), &mut result);
+		descriptors.bind_texture(slot(&executable, "source_texture"), &mut source);
+		descriptors.bind_image(slot(&executable, "result_texture"), &mut result);
 		descriptors.bind_push_constant(&mut push_constant);
 		run_at(&executable, &mut descriptors, [0, 0]);
 		run_at(&executable, &mut descriptors, [1, 0]);
@@ -1855,8 +1855,8 @@ mod tests {
 		let mut result = empty_image(5, 5);
 		{
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(besl::vm::ResourceSlot::new(0), &mut source);
-			descriptors.bind_image(besl::vm::ResourceSlot::new(1), &mut result);
+			descriptors.bind_texture(slot(&executable, "source_texture"), &mut source);
+			descriptors.bind_image(slot(&executable, "result_texture"), &mut result);
 			descriptors.bind_push_constant(&mut push_constant);
 			run_at(&executable, &mut descriptors, [0, 0]);
 			run_at(&executable, &mut descriptors, [1, 0]);
@@ -1877,8 +1877,8 @@ mod tests {
 		let mut push_constant = blur_filter_push_constant(&executable, UiBlurKernel::gaussian(5.0).push([1.0, 0.0], region));
 		{
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(besl::vm::ResourceSlot::new(0), &mut source);
-			descriptors.bind_image(besl::vm::ResourceSlot::new(1), &mut result);
+			descriptors.bind_texture(slot(&executable, "source_texture"), &mut source);
+			descriptors.bind_image(slot(&executable, "result_texture"), &mut result);
 			descriptors.bind_push_constant(&mut push_constant);
 			run_at(&executable, &mut descriptors, [center - 1, 1]);
 			run_at(&executable, &mut descriptors, [center, 0]);
@@ -1907,8 +1907,8 @@ mod tests {
 		let mut result = empty_image(width, 1);
 		{
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(besl::vm::ResourceSlot::new(0), &mut source);
-			descriptors.bind_image(besl::vm::ResourceSlot::new(1), &mut result);
+			descriptors.bind_texture(slot(&executable, "source_texture"), &mut source);
+			descriptors.bind_image(slot(&executable, "result_texture"), &mut result);
 			descriptors.bind_push_constant(&mut push_constant);
 			for x in 0..width {
 				run_at(&executable, &mut descriptors, [x, 0]);
@@ -2845,7 +2845,7 @@ mod tests {
 				..UiVaryings::default()
 			},
 			// The atlas is the first element of the texture array.
-			&mut [(UI_LAYOUT.slot("textures").index() + UI_ATLAS_TEXTURE_SLOT, &mut atlas)],
+			&mut [("textures", UI_ATLAS_TEXTURE_SLOT, &mut atlas)],
 		);
 
 		assert_vec4_close(color, [0.2, 0.4, 0.6, 0.4]);
@@ -2978,10 +2978,7 @@ mod tests {
 				pixel_position: [1.5, 1.5],
 				..UiVaryings::default()
 			},
-			&mut [
-				(UI_LAYOUT.slot("full_blurred_texture").index(), &mut full),
-				(UI_LAYOUT.slot("half_blurred_texture").index(), &mut half),
-			],
+			&mut [("full_blurred_texture", 0, &mut full), ("half_blurred_texture", 0, &mut half)],
 		);
 
 		assert_vec4_close(color, [0.1, 0.2, 0.3, 0.2]);
@@ -3005,7 +3002,7 @@ mod tests {
 				uv: [0.5, 0.5],
 				..UiVaryings::default()
 			},
-			&mut [(UI_LAYOUT.slot("textures").index() + 7, &mut texture)],
+			&mut [("textures", 7, &mut texture)],
 		);
 
 		assert_vec4_close(color, [0.1, 0.2, 0.3, 0.4]);

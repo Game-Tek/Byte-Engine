@@ -215,8 +215,8 @@ already has; a shared layer would be one more descriptor set for every pipeline 
 debug_view_targets: descriptor<{ type: StorageImage, binding: 3, access: write, count: 15 }>;
 ```
 
-An arrayed binding takes `count` flat slots, so it goes past every other binding of the shader and of the layers it
-stacks on: `3..18` in motion blur, `1100..1115` in the material evaluation layer.
+An arrayed binding takes one binding number in its set, like any other descriptor, so adding the pool never
+renumbers the bindings after it.
 
 Each pass adds a `debug_view_first_slot: u32` member to the parameters struct or push constant it already has,
 followed by one `bool` member per view it writes, named `debug_view_` and the view's name with `-` as `_`:

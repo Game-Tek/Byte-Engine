@@ -112,8 +112,8 @@ pub(crate) fn lower_for(
 
 /// Rewrites tile shader `program` into the compute shader that platforms without tile functions run instead.
 ///
-/// Each output becomes a write-only, formatless storage image in the [`TILE_OUTPUTS_LAYOUT`] set, at the flat slots
-/// after every binding the program declares, in location order. Each `write` to an output becomes the storage-image
+/// Each output becomes a write-only, formatless storage image in the [`TILE_OUTPUTS_LAYOUT`] set, a set of its own that
+/// comes before the program's own descriptors, numbered in location order. Each `write` to an output becomes the storage-image
 /// `write`, and `output_extent()` reads the size of the first output, so the program is an ordinary compute shader.
 /// Call it after [`reflect`] and after checking the tile stage's rules, and before evaluating the program's sets, so
 /// the outputs set is reflected like any other.
@@ -123,16 +123,6 @@ fn lower_as_compute(program: &besl::NodeReference) -> Result<(), String> {
 		besl::Nodes::Output { location, .. } => *location,
 		_ => u8::MAX,
 	});
-	// The outputs go after every flat slot the program's own bindings take.
-	let first_slot = collect_nodes(program, &|node| matches!(node, besl::Nodes::Binding { .. }))
-		.iter()
-		.filter_map(|binding| match binding.borrow().node() {
-			besl::Nodes::Binding { slot, count, .. } => Some(slot + count.map_or(1, std::num::NonZeroU32::get)),
-			_ => None,
-		})
-		.max()
-		.unwrap_or(0);
-
 	let Some(first_output) = outputs.first().cloned() else {
 		return Ok(());
 	};
@@ -183,14 +173,19 @@ fn lower_as_compute(program: &besl::NodeReference) -> Result<(), String> {
 		let binding = besl::Node::binding(
 			&name,
 			besl::BindingTypes::Image { format: String::new() },
-			first_slot + index as u32,
+			index as u32,
 			false,
 			true,
 		)
 		.in_layout(TILE_OUTPUTS_LAYOUT);
 		*output.borrow_mut() = binding;
 	}
-	Ok(())
+	// The outputs set is a set of its own, so the program's sets are placed again to give it a position.
+	besl::place_descriptors(program).map_err(|error| {
+		format!(
+			"Failed to place the outputs of a tile shader in a descriptor set ({error:?}). The most likely cause is an output set with more bindings than one set holds. Declare fewer outputs."
+		)
+	})
 }
 
 /// Returns every `output` declaration of `program`.
@@ -291,7 +286,7 @@ mod tests {
 			};
 			assert_eq!(
 				(binding.name.as_str(), binding.kind, binding.slot, binding.read, binding.write),
-				("result", BindingKind::StorageImage, 1, false, true)
+				("result", BindingKind::StorageImage, 0, false, true)
 			);
 
 			let settings = ShaderGenerationSettings::compute(Extent::square(16));

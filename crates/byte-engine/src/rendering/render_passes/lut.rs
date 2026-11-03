@@ -325,12 +325,14 @@ impl PreparedLut {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot, Texture, Value, output_slot};
+	use besl::vm::{DescriptorBindings, Texture, Value, output_slot};
 	use resource_management::resources::lut::{Lut, LutKind};
 
 	use super::lut_shader_parameters;
 	use crate::rendering::render_pass::simple_compute;
-	use crate::rendering::shader_vm_test::{PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_pixel, texture_2d};
+	use crate::rendering::shader_vm_test::{
+		PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_pixel, slot, texture_2d,
+	};
 
 	static LUT_SHADER: std::sync::LazyLock<&str> =
 		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("lut/apply.besl"));
@@ -356,7 +358,7 @@ mod tests {
 			}
 		}
 		let mut result = empty_image(1, 1);
-		let parameter_slot = ResourceSlot::new(3);
+		let parameter_slot = slot(&program, "parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		for (name, value) in [
 			("domain_min", [0.0, 0.0, 0.0, 0.0]),
@@ -368,8 +370,8 @@ mod tests {
 				.expect("Expected color-grading parameters to match the shader");
 		}
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(0), &mut source);
-		descriptors.bind_texture(ResourceSlot::new(1), &mut lut);
+		descriptors.bind_texture(slot(&program, "source_texture"), &mut source);
+		descriptors.bind_texture(slot(&program, "lut_texture"), &mut lut);
 		descriptors.bind_image(output_slot(0), &mut result);
 		descriptors.bind_buffer(parameter_slot, &mut parameters);
 		run_pixel(&program, &mut descriptors, [0, 0], PIXEL_TILE, [1, 1]);
@@ -441,7 +443,7 @@ mod tests {
 			domain_max: [1.0, 1.0, 1.0],
 		};
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*LUT_SHADER));
-		let parameter_slot = ResourceSlot::new(3);
+		let parameter_slot = slot(&program, "parameters");
 		let shader_parameters = lut_shader_parameters(&lut, 1.0);
 		let mut parameters = buffer(&program, parameter_slot);
 		for (name, value) in [
@@ -470,8 +472,8 @@ mod tests {
 
 		for x in 0..3 {
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(ResourceSlot::new(0), &mut source);
-			descriptors.bind_texture(ResourceSlot::new(1), &mut identity_lut);
+			descriptors.bind_texture(slot(&program, "source_texture"), &mut source);
+			descriptors.bind_texture(slot(&program, "lut_texture"), &mut identity_lut);
 			descriptors.bind_image(output_slot(0), &mut result);
 			descriptors.bind_buffer(parameter_slot, &mut parameters);
 			run_pixel(&program, &mut descriptors, [x, 0], PIXEL_TILE, [3, 1]);
@@ -492,7 +494,7 @@ mod tests {
 			domain_max: [1.0, 1.0, 1.0],
 		};
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*LUT_SHADER));
-		let parameter_slot = ResourceSlot::new(3);
+		let parameter_slot = slot(&program, "parameters");
 		// Each corner stores one minus its coordinate, so the full look maps 0.25 to 0.75.
 		let mut inverting_lut = Texture::new_3d(2, 2, 2).expect("Expected a valid test LUT extent");
 		for z in 0..2 {
@@ -520,8 +522,8 @@ mod tests {
 			let mut source = texture_2d(1, 1, &[[0.25, 0.25, 0.25, 0.5]]);
 			let mut result = empty_image(1, 1);
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(ResourceSlot::new(0), &mut source);
-			descriptors.bind_texture(ResourceSlot::new(1), &mut inverting_lut);
+			descriptors.bind_texture(slot(&program, "source_texture"), &mut source);
+			descriptors.bind_texture(slot(&program, "lut_texture"), &mut inverting_lut);
 			descriptors.bind_image(output_slot(0), &mut result);
 			descriptors.bind_buffer(parameter_slot, &mut parameters);
 			run_pixel(&program, &mut descriptors, [0, 0], PIXEL_TILE, [1, 1]);

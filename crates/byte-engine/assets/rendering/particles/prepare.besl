@@ -25,8 +25,8 @@ ParticleDispatch: struct {
 }
 
 frame: descriptor<{ type: ParticleFrame, binding: 0, access: read }>;
-draws: descriptor<{ type: ParticleDraws, binding: 2, access: read_write }>;
-dispatch: descriptor<{ type: ParticleDispatch, binding: 3, access: write }>;
+draws: descriptor<{ type: ParticleDraws, binding: 1, access: read_write }>;
+dispatch: descriptor<{ type: ParticleDispatch, binding: 2, access: write }>;
 
 WORKGROUP_SIZE: const u32 = 64;
 

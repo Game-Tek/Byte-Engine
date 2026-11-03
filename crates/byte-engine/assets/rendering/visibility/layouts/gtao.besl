@@ -12,7 +12,7 @@ GTAOParameters: struct {
 gtao_depth_texels: sampler<{ filter: nearest, mip_filter: nearest, address: clamp }>;
 
 Gtao: layer {
-	gtao_parameters: descriptor<{ type: GTAOParameters, binding: 1, access: read, memory: constant }>;
-	depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read, sampler: gtao_depth_texels }>;
-	ao_output: descriptor<{ type: StorageImage<r8>, binding: 1034, access: write }>;
+	gtao_parameters: descriptor<{ type: GTAOParameters, binding: 0, access: read, memory: constant }>;
+	depth_pyramid: descriptor<{ type: Texture2D, binding: 1, access: read, sampler: gtao_depth_texels }>;
+	ao_output: descriptor<{ type: StorageImage<r8>, binding: 2, access: write }>;
 }

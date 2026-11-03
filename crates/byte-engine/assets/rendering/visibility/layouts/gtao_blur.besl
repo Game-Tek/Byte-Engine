@@ -2,7 +2,7 @@
 // and the image it writes.
 
 GtaoBlur: layer {
-	linear_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
-	ao_source: descriptor<{ type: Texture2D, binding: 1034, access: read }>;
-	ao_output: descriptor<{ type: StorageImage<r8>, binding: 1035, access: write }>;
+	linear_depth: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+	ao_source: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+	ao_output: descriptor<{ type: StorageImage<r8>, binding: 2, access: write }>;
 }

@@ -430,7 +430,7 @@ mod tests {
 	fn closest_hits_that_declare_descriptors_are_rejected() {
 		assert_rejected(
 			Stages::ClosestHit,
-			"albedos: descriptor<{ type: vec4f[], binding: 1, access: read }>; main: fn (input: StageInput, payload: SurfaceHit) -> SurfaceHit { let surface: SurfaceHit = payload; surface.distance = albedos[input.hit_geometry_index].x; return surface; }",
+			"albedos: descriptor<{ type: vec4f[], binding: 0, access: read }>; main: fn (input: StageInput, payload: SurfaceHit) -> SurfaceHit { let surface: SurfaceHit = payload; surface.distance = albedos[input.hit_geometry_index].x; return surface; }",
 			"declares descriptor `",
 		);
 	}

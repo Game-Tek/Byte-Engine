@@ -456,36 +456,6 @@ impl PreparedBeslShader {
 	pub(crate) async fn compile(self, id: &str) -> Result<(Shader, Box<[u8]>), String> {
 		let compiled = self.lowered.compile().await?;
 
-		// Compiled reflection is a backend contract; semantic reflection supplies the authored names retained in the resource.
-		// The compiler reports one flat list ordered by slot, so the sets are flattened the same way to compare.
-		let mut declared = self.interface.bindings().collect::<Vec<_>>();
-		declared.sort_by_key(|binding| binding.slot);
-		let bindings_match = compiled.bindings.len() == declared.len()
-			&& compiled.bindings.iter().zip(declared).all(|(actual, expected)| {
-				(
-					actual.slot,
-					actual.kind,
-					actual.count,
-					actual.buffer_stride,
-					actual.read,
-					actual.write,
-				) == (
-					expected.slot,
-					expected.kind,
-					expected.count,
-					expected.buffer_stride,
-					expected.read,
-					expected.write,
-				)
-			});
-
-		if !bindings_match {
-			return Err(
-				"BESL shader reflection mismatch. The most likely cause is that the active platform compiler emitted a different resource interface than semantic evaluation."
-					.to_string(),
-			);
-		}
-
 		let compiled_workgroup = compiled.extent.map(|extent| extent.as_tuple());
 
 		if compiled_workgroup != self.interface.workgroup_size {
@@ -755,7 +725,7 @@ mod tests {
 	/// live in, so editing the module or creating its other file makes the shader stale.
 	#[r#async::test]
 	async fn standalone_besl_handler_links_module_files_and_depends_on_them() {
-		let source = "results: descriptor<{ type: f32[], binding: 1, access: write }>;\nnoise: mod;\nmain: fn () -> void { results[0] = noise::scaled(1.0); }";
+		let source = "results: descriptor<{ type: f32[], binding: 0, access: write }>;\nnoise: mod;\nmain: fn () -> void { results[0] = noise::scaled(1.0); }";
 		let noise = "scaled: fn (value: f32) -> f32 { return value * 2.0; }";
 		let bead = r#"{ "stage": "Compute", "workgroup": [8, 8, 1] }"#;
 
@@ -803,7 +773,7 @@ mod tests {
 	#[r#async::test]
 	async fn standalone_besl_handler_links_modules_from_the_asset_root() {
 		let source = "use ::shared::output::Pass;\nmain: Pass { output.results[0] = 2.0; }";
-		let shared = "Output: layer { results: descriptor<{ type: f32[], binding: 1, access: write }>; }\nPass: fn (input: StageInput, output: Output) -> void;";
+		let shared = "Output: layer { results: descriptor<{ type: f32[], binding: 0, access: write }>; }\nPass: fn (input: StageInput, output: Output) -> void;";
 		let bead = r#"{ "stage": "Compute", "workgroup": [8, 8, 1] }"#;
 
 		let asset_storage = AssetTestStorageBackend::new();
@@ -1055,8 +1025,8 @@ mod tests {
 	fn shader_interface_reflection_preserves_descriptor_names_and_shapes() {
 		let source = r#"
 			Data: struct { value: u32, }
-			data: descriptor<{ type: Data, binding: 2, access: read_write }>;
-			textures: descriptor<{ type: Texture2DArray, binding: 5, access: read, count: 4 }>;
+			data: descriptor<{ type: Data, binding: 0, access: read_write }>;
+			textures: descriptor<{ type: Texture2DArray, binding: 1, access: read, count: 4 }>;
 			main: fn () -> void {
 				data;
 				textures;
@@ -1075,12 +1045,12 @@ mod tests {
 		assert_eq!(interface.used, 0b11);
 		assert_eq!(interface.bindings.len(), 2);
 		assert_eq!(interface.bindings[0].name, "data");
-		assert_eq!(interface.bindings[0].slot, 2);
+		assert_eq!(interface.bindings[0].slot, 0);
 		assert_eq!(interface.bindings[0].kind, BindingKind::StorageBuffer);
 		assert!(interface.bindings[0].read);
 		assert!(interface.bindings[0].write);
 		assert_eq!(interface.bindings[1].name, "textures");
-		assert_eq!(interface.bindings[1].slot, 5);
+		assert_eq!(interface.bindings[1].slot, 1);
 		assert_eq!(interface.bindings[1].count, 4);
 		assert_eq!(
 			interface.bindings[1].kind,
@@ -1095,8 +1065,8 @@ mod tests {
 	fn shader_interface_reflection_preserves_visibility_atomic_and_integer_image_access() {
 		let source = r#"
 			Counters: struct { values: atomicu32[1024], }
-			counters: descriptor<{ type: Counters, binding: 1033, access: read_write }>;
-			index_image: descriptor<{ type: StorageImage<r32ui>, binding: 1040, access: read }>;
+			counters: descriptor<{ type: Counters, binding: 0, access: read_write }>;
+			index_image: descriptor<{ type: StorageImage<r32ui>, binding: 1, access: read }>;
 			main: fn () -> void {
 				let coord: vec2u = thread_id();
 				let index: u32 = image_load_u32(index_image, coord);
@@ -1119,12 +1089,12 @@ mod tests {
 		};
 		assert_eq!(interface.bindings.len(), 2);
 		assert_eq!(interface.bindings[0].name, "counters");
-		assert_eq!(interface.bindings[0].slot, 1033);
+		assert_eq!(interface.bindings[0].slot, 0);
 		assert_eq!(interface.bindings[0].kind, BindingKind::StorageBuffer);
 		assert!(interface.bindings[0].read);
 		assert!(interface.bindings[0].write);
 		assert_eq!(interface.bindings[1].name, "index_image");
-		assert_eq!(interface.bindings[1].slot, 1040);
+		assert_eq!(interface.bindings[1].slot, 1);
 		assert_eq!(interface.bindings[1].kind, BindingKind::SampledImage);
 		assert!(interface.bindings[1].read);
 		assert!(!interface.bindings[1].write);
@@ -1138,8 +1108,8 @@ mod tests {
 				views: descriptor<{ type: f32[], binding: 0, access: read }>;
 				meshes: descriptor<{ type: f32[], binding: 1, access: read }>;
 			}
-			History: layer { history: descriptor<{ type: Texture2D, binding: 2, access: read }>; }
-			result: descriptor<{ type: f32[], binding: 3, access: write }>;
+			History: layer { history: descriptor<{ type: Texture2D, binding: 0, access: read }>; }
+			result: descriptor<{ type: f32[], binding: 0, access: write }>;
 			main: fn (scene: Scene, history: History) -> void {
 				result[0] = scene.meshes[0];
 			}

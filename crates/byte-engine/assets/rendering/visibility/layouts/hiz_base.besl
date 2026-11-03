@@ -11,10 +11,10 @@ HizBase: layer {
 	// The pyramid stores 16-bit floats. A depth that no 16-bit float holds exactly is rounded toward the far plane, never
 	// toward the camera, so the pyramid never claims a surface nearer than the one drawn and culling stays conservative.
 	// Every reduction then takes minimums of 16-bit values, which are exact.
-	source_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
-	level_0: descriptor<{ type: StorageImage<r16f>, binding: 1034, access: write }>;
-	level_1: descriptor<{ type: StorageImage<r16f>, binding: 1035, access: write }>;
-	level_2: descriptor<{ type: StorageImage<r16f>, binding: 1036, access: write }>;
-	level_3: descriptor<{ type: StorageImage<r16f>, binding: 1037, access: write }>;
-	level_4: descriptor<{ type: StorageImage<r16f>, binding: 1038, access: write }>;
+	source_depth: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+	level_0: descriptor<{ type: StorageImage<r16f>, binding: 1, access: write }>;
+	level_1: descriptor<{ type: StorageImage<r16f>, binding: 2, access: write }>;
+	level_2: descriptor<{ type: StorageImage<r16f>, binding: 3, access: write }>;
+	level_3: descriptor<{ type: StorageImage<r16f>, binding: 4, access: write }>;
+	level_4: descriptor<{ type: StorageImage<r16f>, binding: 5, access: write }>;
 }

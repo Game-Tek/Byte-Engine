@@ -2,10 +2,10 @@
 // normals, and the history it writes.
 
 SsgiTemporal: layer {
-	raw_radiance: descriptor<{ type: Texture2D, binding: 1034, access: read }>;
-	history_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1035, access: write }>;
-	previous_history: descriptor<{ type: Texture2D, binding: 1036, access: read }>;
-	previous_depth_pyramid: descriptor<{ type: Texture2D, binding: 1037, access: read }>;
-	surface_normals: descriptor<{ type: Texture2D, binding: 1038, access: read }>;
-	previous_surface_normals: descriptor<{ type: Texture2D, binding: 1039, access: read }>;
+	raw_radiance: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+	history_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write }>;
+	previous_history: descriptor<{ type: Texture2D, binding: 2, access: read }>;
+	previous_depth_pyramid: descriptor<{ type: Texture2D, binding: 3, access: read }>;
+	surface_normals: descriptor<{ type: Texture2D, binding: 4, access: read }>;
+	previous_surface_normals: descriptor<{ type: Texture2D, binding: 5, access: read }>;
 }

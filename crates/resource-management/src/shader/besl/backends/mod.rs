@@ -44,7 +44,7 @@ const RAY_TRACING_PRELUDE: &str = r#"
 		scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>;
 		surfaces: descriptor<{ type: SurfaceHit[], binding: 1, access: write }>;
 	}
-	Materials: layer { albedos: descriptor<{ type: vec4f[], binding: 2, access: read }>; }
+	Materials: layer { albedos: descriptor<{ type: vec4f[], binding: 0, access: read }>; }
 	Constants: layer { push_constant: push_constant { scale: f32, } }
 "#;
 
@@ -96,7 +96,7 @@ const TASK_PAYLOAD_FIXTURE: &str = r#"
 	Meshlets: struct {
 		values: u32[32],
 	}
-	meshlets: descriptor<{ type: Meshlets, binding: 8, access: read }>;
+	meshlets: descriptor<{ type: Meshlets, binding: 0, access: read }>;
 	visible_meshlets: task_payload<u32, 32>;
 	visible_count: workgroup<atomicu32>;
 	push_constant: push_constant {

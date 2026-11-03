@@ -84,20 +84,20 @@ ProbeRecord: struct {
 probe_atlas_filter: sampler<{ filter: linear, mip_filter: nearest, address: clamp }>;
 
 ProbeVolume: layer {
-	probe_volume_parameters: descriptor<{ type: ProbeVolumeParameters, binding: 1170, access: read }>;
-	probe_records: descriptor<{ type: ProbeRecord[], binding: 1171, access: read_write }>;
+	probe_volume_parameters: descriptor<{ type: ProbeVolumeParameters, binding: 0, access: read }>;
+	probe_records: descriptor<{ type: ProbeRecord[], binding: 1, access: read_write }>;
 	// One plus the frame each probe was last read by a pixel, or zero for a probe no pixel ever read. Each sink's resolve
 	// marks the probes it reads, and the schedule and update passes read the marks.
-	probe_seen: descriptor<{ type: u32[], binding: 1176, access: read_write }>;
+	probe_seen: descriptor<{ type: u32[], binding: 6, access: read_write }>;
 	// Each probe's irradiance over π in RGB, in nits and not pre-exposed, and the cosine-weighted fraction of its rays that
 	// hit geometry in alpha, as octahedral maps in their tiles.
-	probe_irradiance: descriptor<{ type: Texture2D, binding: 1172, access: read, sampler: probe_atlas_filter }>;
+	probe_irradiance: descriptor<{ type: Texture2D, binding: 2, access: read, sampler: probe_atlas_filter }>;
 	// Each probe's mean distance to what its rays hit around each direction, and the mean squared distance.
-	probe_distance: descriptor<{ type: Texture2D, binding: 1173, access: read, sampler: probe_atlas_filter }>;
+	probe_distance: descriptor<{ type: Texture2D, binding: 3, access: read, sampler: probe_atlas_filter }>;
 	// The environment's roughness-prefiltered specular levels, which the rays that miss bring light back from.
-	probe_environment_radiance: descriptor<{ type: TextureCube, binding: 1174, access: read }>;
+	probe_environment_radiance: descriptor<{ type: TextureCube, binding: 4, access: read }>;
 	// The environment's irradiance, which lights the pixels no probe reaches.
-	probe_environment_irradiance: descriptor<{ type: TextureCube, binding: 1175, access: read }>;
+	probe_environment_irradiance: descriptor<{ type: TextureCube, binding: 5, access: read }>;
 }
 
 // Returns the slot of the probe at the window-relative grid position `local` of `cascade`, whose window starts at

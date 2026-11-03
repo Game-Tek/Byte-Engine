@@ -21,7 +21,7 @@
 use ::byte_engine::rendering::bloom::layouts::parameters::*;
 
 source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-bloom_parameters: descriptor<{ type: BloomParameters, binding: 2, access: read, memory: constant }>;
+bloom_parameters: descriptor<{ type: BloomParameters, binding: 1, access: read, memory: constant }>;
 result: output<vec4f, 0>;
 
 // The weighted 2x2 block averages under one tile's filters. Every tap of the 13-tap filter is one block, and neighboring

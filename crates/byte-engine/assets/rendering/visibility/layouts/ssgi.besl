@@ -11,5 +11,5 @@ SsgiParameters: struct {
 }
 
 Ssgi: layer {
-	ssgi_parameters: descriptor<{ type: SsgiParameters, binding: 1, access: read }>;
+	ssgi_parameters: descriptor<{ type: SsgiParameters, binding: 0, access: read }>;
 }

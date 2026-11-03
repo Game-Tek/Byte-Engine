@@ -92,20 +92,20 @@ ProbeRayResult: struct {
 }
 
 ProbeGi: layer {
-	probe_gi_parameters: descriptor<{ type: ProbeGiParameters, binding: 1180, access: read }>;
+	probe_gi_parameters: descriptor<{ type: ProbeGiParameters, binding: 0, access: read }>;
 	// Each probe's priority bucket this frame, which the schedule pass writes and the gather pass reads.
-	probe_priorities: descriptor<{ type: u32[], binding: 1183, access: read_write }>;
-	probe_schedule: descriptor<{ type: ProbeSchedule, binding: 1184, access: read_write }>;
+	probe_priorities: descriptor<{ type: u32[], binding: 1, access: read_write }>;
+	probe_schedule: descriptor<{ type: ProbeSchedule, binding: 2, access: read_write }>;
 	// The slots the frame updates, in no particular order.
-	probe_list: descriptor<{ type: u32[], binding: 1185, access: read_write }>;
+	probe_list: descriptor<{ type: u32[], binding: 3, access: read_write }>;
 	// Each ray of the frame: PROBE_RAYS for each listed probe, in list order.
-	probe_ray_results: descriptor<{ type: ProbeRayResult[], binding: 1186, access: read_write }>;
+	probe_ray_results: descriptor<{ type: ProbeRayResult[], binding: 4, access: read_write }>;
 	// The atlases, as the update pass blends each probe's rays into them. Readers sample them as `probe_irradiance` and
 	// `probe_distance`.
-	probe_irradiance_atlas: descriptor<{ type: StorageImage<rgba16f>, binding: 1191, access: read_write }>;
-	probe_distance_atlas: descriptor<{ type: StorageImage<rg16f>, binding: 1192, access: read_write }>;
+	probe_irradiance_atlas: descriptor<{ type: StorageImage<rgba16f>, binding: 5, access: read_write }>;
+	probe_distance_atlas: descriptor<{ type: StorageImage<rg16f>, binding: 6, access: read_write }>;
 	// The scene's light table, whose lights light what probe rays hit.
-	probe_scene_lights: descriptor<{ type: LightingBuffer, binding: 1193, access: read, memory: device }>;
+	probe_scene_lights: descriptor<{ type: LightingBuffer, binding: 7, access: read, memory: device }>;
 }
 
 // Returns how many probes the frame updates: those the gather pass listed, up to the budget.

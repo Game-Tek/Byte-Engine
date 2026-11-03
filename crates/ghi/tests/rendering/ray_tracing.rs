@@ -964,12 +964,11 @@ impl Shading {
 				),
 			],
 		);
-		// Slots are unique across the sets of a pipeline, so the materials take slot 3. Metal numbers a set's resources
-		// densely, so this is still its argument 0 there.
+		// Each set numbers its bindings from 0, so the materials' one buffer takes slot 0 of its own set.
 		let materials_layout = ghi::DescriptorSetLayout::new(
 			"Materials",
 			[ghi::ShaderResourceDescriptor::single(
-				ghi::ResourceSlot::new(3),
+				ghi::ResourceSlot::new(0),
 				ghi::ResourceKind::StorageBuffer,
 				ghi::AccessPolicies::READ,
 			)],
@@ -1069,7 +1068,7 @@ impl Shading {
 			ghi::DescriptorWrite::acceleration_structure(rays_set, ghi::ResourceSlot::new(0), structure),
 			ghi::DescriptorWrite::buffer(rays_set, ghi::ResourceSlot::new(1), origin_buffer.into()),
 			ghi::DescriptorWrite::buffer(rays_set, ghi::ResourceSlot::new(2), payloads.into()),
-			ghi::DescriptorWrite::buffer(materials_set, ghi::ResourceSlot::new(3), material_buffer.into()),
+			ghi::DescriptorWrite::buffer(materials_set, ghi::ResourceSlot::new(0), material_buffer.into()),
 		]);
 		ShadedRays {
 			sets: [rays_set, materials_set],

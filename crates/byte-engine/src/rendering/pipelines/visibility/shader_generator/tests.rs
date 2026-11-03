@@ -1,4 +1,4 @@
-use besl::vm::{DescriptorBindings, ResourceSlot, Sampler, Texture, Value};
+use besl::vm::{DescriptorBindings, Sampler, Texture, Value};
 use resource_management::asset::handler::implementations::bema::{
 	AssembledArm, AssembledMaterial, MaterialParameter, ParameterKind, ProgramGenerator,
 };
@@ -9,7 +9,7 @@ use super::super::tests::{
 	ssgi_contact_images, ssgi_floor_depth, ssgi_projection, ssgi_ray_at,
 };
 use super::*;
-use crate::rendering::shader_vm_test::{buffer, column_major, compile, run_at, texture_2d, with_engine_modules};
+use crate::rendering::shader_vm_test::{buffer, column_major, compile, run_at, slot, texture_2d, with_engine_modules};
 
 /// Reads a `.bemx` test graph.
 fn graph(source: &str) -> bemx::Graph {
@@ -117,8 +117,8 @@ fn compile_with_prologue(prologue: Vec<Node<'static>>, source: &str, nodes: Vec<
 	)
 }
 
-fn results_binding(members: Vec<Node<'static>>, slot: ResourceSlot) -> Node<'static> {
-	Node::binding("results", Node::buffer(members), slot.slot(), false, true)
+fn results_binding(members: Vec<Node<'static>>, binding: u32) -> Node<'static> {
+	Node::binding("results", Node::buffer(members), binding, false, true)
 }
 
 /// Declares one buffer member of type `r#type` per name, in the order given, which sets the buffer layout.
@@ -130,8 +130,8 @@ fn read_f32(results: &besl::vm::Buffer, name: &str) -> f32 {
 	results.read_f32(name).expect("VM result")
 }
 
-/// Runs `source` as `main` with the `helpers` functions it calls, `textures` bound from slot one on, and a `results`
-/// buffer of `members` at slot zero, and returns the results.
+/// Runs `source` as `main` with the `helpers` functions it calls, `textures` bound by name, and a `results` buffer of
+/// `members` at binding zero, and returns the results.
 ///
 /// Helper tests use it to execute production BESL helper functions on fixed inputs.
 fn run_helper_test(
@@ -140,29 +140,22 @@ fn run_helper_test(
 	helpers: &[(&'static str, &str)],
 	members: Vec<Node<'static>>,
 ) -> besl::vm::Buffer {
-	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
-	// A texture named like a member of the material evaluation layer binds at the member's slot, where the helpers read
-	// it through the layer. The test declares every other texture itself.
+	// A texture named like a member of the material evaluation layer is the layer's, where the helpers read it through
+	// the layer. The test declares every other texture itself, numbered after the results.
 	let layer = super::super::set_layouts::MATERIAL_EVALUATION.interface();
-	let slots = (1..)
-		.zip(textures.iter())
-		.map(|(slot, (name, ..))| layer.binding(name).map_or(slot, |binding| binding.slot))
-		.collect::<Vec<_>>();
-	let mut nodes = slots
-		.iter()
-		.zip(textures.iter())
-		.filter(|(_, (name, ..))| layer.binding(name).is_none())
-		.map(|(slot, (name, resource, _))| Node::binding(name, resource.clone(), *slot, true, false))
+	let mut nodes = (1..)
+		.zip(textures.iter().filter(|(name, ..)| layer.binding(name).is_none()))
+		.map(|(binding, (name, resource, _))| Node::binding(name, resource.clone(), binding, true, false))
 		.chain(helpers.iter().map(|(source, name)| parse_besl_function(source, name)))
 		.collect::<Vec<_>>();
-	nodes.push(results_binding(members, RESULT_SLOT));
+	nodes.push(results_binding(members, 0));
 	let executable = compile_with(source, nodes);
-	let mut results = buffer(&executable, RESULT_SLOT);
+	let mut results = buffer(&executable, slot(&executable, "results"));
 	let mut descriptors = DescriptorBindings::new();
-	for (slot, (_, _, texture)) in slots.into_iter().zip(textures) {
-		descriptors.bind_texture(ResourceSlot::new(slot), texture);
+	for (name, _, texture) in textures.iter_mut() {
+		descriptors.bind_texture(slot(&executable, name), texture);
 	}
-	descriptors.bind_buffer(RESULT_SLOT, &mut results);
+	descriptors.bind_buffer(slot(&executable, "results"), &mut results);
 	run_at(&executable, &mut descriptors, [0, 0]);
 	drop(descriptors);
 	results
@@ -171,8 +164,6 @@ fn run_helper_test(
 /// Executes representative octahedral seams and axes through the optimized production decoder.
 #[test]
 fn octahedral_decoder_preserves_normal_directions_in_the_besl_vm() {
-	const INPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
-	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
 	let executable = compile_with(
 		r#"
 		main: fn () -> void {
@@ -186,11 +177,11 @@ fn octahedral_decoder_preserves_normal_directions_in_the_besl_vm() {
 			Node::binding(
 				"inputs",
 				Node::buffer(vec![Node::member("values", "vec2u16[5]")]),
-				INPUT_SLOT.slot(),
+				0,
 				true,
 				false,
 			),
-			results_binding(vec![Node::member("values", "vec3f[5]")], RESULT_SLOT),
+			results_binding(vec![Node::member("values", "vec3f[5]")], 1),
 		],
 	);
 	let cases = [
@@ -200,16 +191,16 @@ fn octahedral_decoder_preserves_normal_directions_in_the_besl_vm() {
 		([32768, 65535], [0.0, 1.0, 0.0]),
 		([65535, 65535], [0.0, 0.0, -1.0]),
 	];
-	let mut inputs = buffer(&executable, INPUT_SLOT);
-	let mut results = buffer(&executable, RESULT_SLOT);
+	let mut inputs = buffer(&executable, slot(&executable, "inputs"));
+	let mut results = buffer(&executable, slot(&executable, "results"));
 	for (index, (encoded, _)) in cases.iter().enumerate() {
 		inputs
 			.write_array_element(index, Value::Vec2U16(*encoded))
 			.expect("octahedral input");
 	}
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(INPUT_SLOT, &mut inputs);
-	descriptors.bind_buffer(RESULT_SLOT, &mut results);
+	descriptors.bind_buffer(slot(&executable, "inputs"), &mut inputs);
+	descriptors.bind_buffer(slot(&executable, "results"), &mut results);
 	run_at(&executable, &mut descriptors, [0, 0]);
 	drop(descriptors);
 
@@ -230,8 +221,6 @@ fn octahedral_decoder_preserves_normal_directions_in_the_besl_vm() {
 /// Verifies the packed C0 tangent defines Type C horizontal angles without a world-axis singularity.
 #[test]
 fn ies_profile_uv_uses_the_uploaded_orientation_frame_in_the_besl_vm() {
-	const INPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
-	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
 	let executable = compile_with(
 		r#"
 		main: fn () -> void {
@@ -254,11 +243,11 @@ fn ies_profile_uv_uses_the_uploaded_orientation_frame_in_the_besl_vm() {
 					Node::member("axes", "vec3f[5]"),
 					Node::member("c0_tangents", "vec2u16[5]"),
 				]),
-				INPUT_SLOT.slot(),
+				0,
 				true,
 				false,
 			),
-			results_binding(vec![Node::member("values", "vec2f[5]")], RESULT_SLOT),
+			results_binding(vec![Node::member("values", "vec2f[5]")], 1),
 		],
 	);
 	let cases = [
@@ -268,8 +257,8 @@ fn ies_profile_uv_uses_the_uploaded_orientation_frame_in_the_besl_vm() {
 		([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [32768, 65535], [0.25, 0.5]),
 		([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [65535, 32768], [0.0, 0.5]),
 	];
-	let mut inputs = buffer(&executable, INPUT_SLOT);
-	let mut results = buffer(&executable, RESULT_SLOT);
+	let mut inputs = buffer(&executable, slot(&executable, "inputs"));
+	let mut results = buffer(&executable, slot(&executable, "results"));
 	for (index, (emission_direction, axis, c0_tangent, _)) in cases.iter().enumerate() {
 		inputs
 			.write_indexed("emission_directions", index, Value::Vec3F(*emission_direction))
@@ -280,8 +269,8 @@ fn ies_profile_uv_uses_the_uploaded_orientation_frame_in_the_besl_vm() {
 			.expect("IES C0 tangent");
 	}
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(INPUT_SLOT, &mut inputs);
-	descriptors.bind_buffer(RESULT_SLOT, &mut results);
+	descriptors.bind_buffer(slot(&executable, "inputs"), &mut inputs);
+	descriptors.bind_buffer(slot(&executable, "results"), &mut results);
 	run_at(&executable, &mut descriptors, [0, 0]);
 	drop(descriptors);
 
@@ -1438,7 +1427,13 @@ fn directional_shadow_cascade_holds_receivers_inside_the_filter_margin_and_depth
 		&[(DIRECTIONAL_SHADOW_CASCADE_HOLDS_SOURCE, "directional_shadow_cascade_holds")],
 		members("u32", &["inside", "past_x", "past_y", "past_far_side", "past_near_side"]),
 	);
-	for (name, expected) in [("inside", 1), ("past_x", 0), ("past_y", 0), ("past_far_side", 0), ("past_near_side", 0)] {
+	for (name, expected) in [
+		("inside", 1),
+		("past_x", 0),
+		("past_y", 0),
+		("past_far_side", 0),
+		("past_near_side", 0),
+	] {
 		assert_eq!(
 			results.read(name).expect("cascade holds result"),
 			Value::U32(expected),
@@ -1452,7 +1447,6 @@ fn directional_shadow_cascade_holds_receivers_inside_the_filter_margin_and_depth
 #[test]
 fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 	use crate::rendering::shader_vm_test::{IDENTITY_MATRIX, push_constant_buffer};
-	const RESULTS: ResourceSlot = ResourceSlot::new(2000);
 	let mut statements = material_evaluation_prefix_statements(MaterialReconstructionFeatures::default());
 	for (source, name) in [
 		(MATERIAL_EVALUATION_DEFAULTS_SOURCE, "material_evaluation_defaults"),
@@ -1496,15 +1490,26 @@ fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 			Node::member("shading", "vec3f"),
 			Node::member("into_surface", "f32"),
 		],
-		RESULTS,
+		0,
 	)]);
 	let program = besl::lex(root).expect("material reconstruction links");
 	besl::optimization::optimize(&program.get_main().unwrap());
 	let executable = compile(program);
-	let slots = [0, 1, 2, 3, 6, 7, 8, 1033, 1034, 1037];
-	let mut inputs: Vec<_> = slots
+	let names = [
+		"views",
+		"meshes",
+		"vertex_positions",
+		"vertex_normals",
+		"vertex_indices",
+		"primitive_indices",
+		"meshlets",
+		"material_count",
+		"material_offset",
+		"pixel_mapping",
+	];
+	let mut inputs: Vec<_> = names
 		.iter()
-		.map(|slot| buffer(&executable, ResourceSlot::new(*slot)))
+		.map(|name| buffer(&executable, slot(&executable, name)))
 		.collect();
 	// The triangle supplies three entries in each runtime-sized vertex/index stream.
 	for index in [2, 3, 4, 5] {
@@ -1528,7 +1533,7 @@ fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 	let mut triangles = Texture::new(1, 1).unwrap();
 	let mut instances = Texture::new(1, 1).unwrap();
 	let mut push_constant = push_constant_buffer(&executable);
-	let mut results = buffer(&executable, RESULTS);
+	let mut results = buffer(&executable, slot(&executable, "results"));
 	// Reversing the winding must not move the ray origin into a visible double-sided surface.
 	for (flags, indices) in [(0, [0, 1, 2]), (1, [0, 1, 2]), (1, [0, 2, 1])] {
 		inputs[1].write_array_member(0, "flags", Value::U32(flags)).unwrap();
@@ -1536,13 +1541,13 @@ fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 			inputs[5].write_array_element(index, Value::U8(vertex)).unwrap();
 		}
 		let mut descriptors = DescriptorBindings::new();
-		for (slot, input) in slots.into_iter().zip(&mut inputs) {
-			descriptors.bind_buffer(ResourceSlot::new(slot), input);
+		for (name, input) in names.into_iter().zip(&mut inputs) {
+			descriptors.bind_buffer(slot(&executable, name), input);
 		}
-		descriptors.bind_image(ResourceSlot::new(1039), &mut triangles);
-		descriptors.bind_image(ResourceSlot::new(1040), &mut instances);
+		descriptors.bind_image(slot(&executable, "triangle_index"), &mut triangles);
+		descriptors.bind_image(slot(&executable, "instance_index_render_target"), &mut instances);
 		descriptors.bind_push_constant(&mut push_constant);
-		descriptors.bind_buffer(RESULTS, &mut results);
+		descriptors.bind_buffer(slot(&executable, "results"), &mut results);
 		run_at(&executable, &mut descriptors, [0, 0]);
 		drop(descriptors);
 		assert_eq!(results.read("surface").unwrap(), Value::Vec3F([0.0, 0.0, -1.0]));
@@ -1564,7 +1569,6 @@ fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 /// tangent toward increasing u, the bitangent toward decreasing v, also when the texture is mirrored.
 #[test]
 fn tangent_frame_is_orthonormal_and_points_the_bitangent_toward_decreasing_v_in_the_besl_vm() {
-	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
 	// A surface in the z = 0 plane under a normal tilted toward +x, with v running down the screen, toward -y, as an
 	// image's rows do. u runs along +x, or along -x when the texture is mirrored.
 	const SETUP: &str = r#"
@@ -1600,11 +1604,11 @@ fn tangent_frame_is_orthonormal_and_points_the_bitangent_toward_decreasing_v_in_
 				results.bitangent = vec3f(B);
 			}
 			"#,
-			vec![results_binding(members("vec3f", &["tangent", "bitangent"]), RESULT_SLOT)],
+			vec![results_binding(members("vec3f", &["tangent", "bitangent"]), 0)],
 		);
-		let mut results = buffer(&executable, RESULT_SLOT);
+		let mut results = buffer(&executable, slot(&executable, "results"));
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+		descriptors.bind_buffer(slot(&executable, "results"), &mut results);
 		run_at(&executable, &mut descriptors, [0, 0]);
 		drop(descriptors);
 
@@ -1941,9 +1945,6 @@ fn point_shadow_face_taps_decide_like_general_taps_in_the_besl_vm() {
 
 const REFLECTION_EXTENT: u32 = 64;
 const REFLECTION_FAR: f32 = 100.0;
-const REFLECTION_INPUTS_SLOT: ResourceSlot = ResourceSlot::new(0);
-const REFLECTION_RESULTS_SLOT: ResourceSlot = ResourceSlot::new(1);
-const REFLECTION_PARAMETERS_SLOT: ResourceSlot = ResourceSlot::new(1059);
 const FLOOR_COLOR: [f32; 3] = [0.2, 0.2, 0.2];
 const WALL_COLOR: [f32; 3] = [2.0, 1.0, 0.5];
 const BAR_COLOR: [f32; 3] = [0.0, 5.0, 0.0];
@@ -2051,14 +2052,11 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 					Node::member("position", "vec4f"),
 					Node::member("direction", "vec4f"),
 				]),
-				REFLECTION_INPUTS_SLOT.slot(),
+				0,
 				true,
 				false,
 			));
-			bindings.push(results_binding(
-				vec![Node::member("reflection", "vec4f")],
-				REFLECTION_RESULTS_SLOT,
-			));
+			bindings.push(results_binding(vec![Node::member("reflection", "vec4f")], 1));
 			bindings
 		},
 	);
@@ -2070,7 +2068,7 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 	let length = (position[0] * position[0] + 1.0 + z * z).sqrt();
 	// The floor's normal points up, so the mirror direction flips the view ray's vertical component.
 	let direction = [position[0] / length, 1.0 / length, z / length, 0.0];
-	let mut inputs = buffer(&executable, REFLECTION_INPUTS_SLOT);
+	let mut inputs = buffer(&executable, slot(&executable, "inputs"));
 	for (member, value) in [
 		("view_projection", Value::Mat4F(column_major(ssgi_projection()))),
 		("position", Value::Vec4F([position[0], position[1], position[2], 1.0])),
@@ -2078,7 +2076,7 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 	] {
 		inputs.write(member, value).expect("reflection inputs");
 	}
-	let mut parameters = buffer(&executable, REFLECTION_PARAMETERS_SLOT);
+	let mut parameters = buffer(&executable, slot(&executable, "reflection_parameters"));
 	for (member, value) in [
 		("world_to_previous_clip", Value::Mat4F(column_major(ssgi_projection()))),
 		("previous_exposure", Value::F32(PREVIOUS_EXPOSURE)),
@@ -2090,15 +2088,15 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 	}
 	let mut depth_pyramid = reflection_depth_pyramid(scene);
 	let (mut previous_lit, mut previous_depth) = reflection_previous_frame(previous_scene.unwrap_or(scene), PREVIOUS_EXPOSURE);
-	let mut results = buffer(&executable, REFLECTION_RESULTS_SLOT);
+	let mut results = buffer(&executable, slot(&executable, "results"));
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(REFLECTION_INPUTS_SLOT, &mut inputs);
-	descriptors.bind_buffer(REFLECTION_PARAMETERS_SLOT, &mut parameters);
+	descriptors.bind_buffer(slot(&executable, "inputs"), &mut inputs);
+	descriptors.bind_buffer(slot(&executable, "reflection_parameters"), &mut parameters);
 	// The engine binds the pyramid with a point sampler, which reflection steps read the texel under them with.
-	descriptors.bind_texture_with_sampler(ResourceSlot::new(1060), &mut depth_pyramid, Sampler::nearest());
-	descriptors.bind_texture(ResourceSlot::new(1061), &mut previous_lit);
-	descriptors.bind_texture(ResourceSlot::new(1062), &mut previous_depth);
-	descriptors.bind_buffer(REFLECTION_RESULTS_SLOT, &mut results);
+	descriptors.bind_texture_with_sampler(slot(&executable, "depth_pyramid"), &mut depth_pyramid, Sampler::nearest());
+	descriptors.bind_texture(slot(&executable, "previous_lit"), &mut previous_lit);
+	descriptors.bind_texture(slot(&executable, "previous_depth"), &mut previous_depth);
+	descriptors.bind_buffer(slot(&executable, "results"), &mut results);
 	run_at(&executable, &mut descriptors, [0, 0]);
 	drop(descriptors);
 	match results.read("reflection").expect("reflection result") {
@@ -2175,9 +2173,6 @@ fn reflection_rays_miss_without_a_visible_surface_with_known_light() {
 
 /* Screen-space indirect diffuse */
 
-const INDIRECT_DIFFUSE_INPUTS_SLOT: ResourceSlot = ResourceSlot::new(0);
-const INDIRECT_DIFFUSE_RESULTS_SLOT: ResourceSlot = ResourceSlot::new(1);
-const SSGI_VIEW_SLOT: ResourceSlot = ResourceSlot::new(1048);
 /// The view-space normal of a wall that faces the camera, which looks down positive z.
 const WALL_NORMAL: [f32; 3] = [0.0, 0.0, -1.0];
 
@@ -2216,20 +2211,17 @@ fn sample_indirect_diffuse(
 					Node::member("position", "vec4f"),
 					Node::member("normal", "vec4f"),
 				]),
-				INDIRECT_DIFFUSE_INPUTS_SLOT.slot(),
+				0,
 				true,
 				false,
 			));
-			bindings.push(results_binding(
-				vec![Node::member("indirect_diffuse", "vec4f")],
-				INDIRECT_DIFFUSE_RESULTS_SLOT,
-			));
+			bindings.push(results_binding(vec![Node::member("indirect_diffuse", "vec4f")], 1));
 			bindings
 		},
 	);
 
 	let low_extent = full_extent / 2;
-	let mut inputs = buffer(&executable, INDIRECT_DIFFUSE_INPUTS_SLOT);
+	let mut inputs = buffer(&executable, slot(&executable, "inputs"));
 	for (member, value) in [
 		("pixel", Value::Vec2U(pixel)),
 		("extent", Value::Vec2U([full_extent, full_extent])),
@@ -2241,7 +2233,7 @@ fn sample_indirect_diffuse(
 	// The camera constants of the half-resolution images, as `screen_view_data` builds them.
 	let projection = ssgi_projection();
 	let size = low_extent as f32;
-	let mut view = buffer(&executable, SSGI_VIEW_SLOT);
+	let mut view = buffer(&executable, slot(&executable, "ssgi_view"));
 	for (member, value) in [
 		(
 			"pixel_to_ray_mul",
@@ -2257,14 +2249,14 @@ fn sample_indirect_diffuse(
 	let mut depth = texture_2d(low_extent, low_extent, low_depth);
 	let mut normals = texture_2d(low_extent, low_extent, low_normals);
 	let mut history = texture_2d(low_extent, low_extent, history);
-	let mut results = buffer(&executable, INDIRECT_DIFFUSE_RESULTS_SLOT);
+	let mut results = buffer(&executable, slot(&executable, "results"));
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(INDIRECT_DIFFUSE_INPUTS_SLOT, &mut inputs);
-	descriptors.bind_buffer(SSGI_VIEW_SLOT, &mut view);
-	descriptors.bind_texture(ResourceSlot::new(1060), &mut depth);
-	descriptors.bind_texture(ResourceSlot::new(1047), &mut normals);
-	descriptors.bind_texture(ResourceSlot::new(1056), &mut history);
-	descriptors.bind_buffer(INDIRECT_DIFFUSE_RESULTS_SLOT, &mut results);
+	descriptors.bind_buffer(slot(&executable, "inputs"), &mut inputs);
+	descriptors.bind_buffer(slot(&executable, "ssgi_view"), &mut view);
+	descriptors.bind_texture(slot(&executable, "depth_pyramid"), &mut depth);
+	descriptors.bind_texture(slot(&executable, "ssgi_normals"), &mut normals);
+	descriptors.bind_texture(slot(&executable, "ssgi_history"), &mut history);
+	descriptors.bind_buffer(slot(&executable, "results"), &mut results);
 	run_at(&executable, &mut descriptors, [0, 0]);
 	drop(descriptors);
 	match results.read("indirect_diffuse").expect("indirect diffuse result") {
@@ -2278,8 +2270,6 @@ fn sample_indirect_diffuse(
 /// extent, in tiles that cross the image's edge.
 #[test]
 fn tile_indirect_diffuse_reads_what_the_images_hold() {
-	const RESULTS_SLOT: ResourceSlot = ResourceSlot::new(0);
-	const LIT_SLOT: ResourceSlot = ResourceSlot::new(1041);
 	let tile = UBER_WORKGROUP.width();
 	for full in [16u32, 21] {
 		let low = full.div_ceil(2);
@@ -2341,7 +2331,7 @@ fn tile_indirect_diffuse_reads_what_the_images_hold() {
 					nodes.extend(screen_space_indirect_diffuse_scope(uber));
 					nodes.push(results_binding(
 						vec![Node::member("indirect", &format!("vec4f[{}]", full * full))],
-						RESULTS_SLOT,
+						0,
 					));
 					nodes
 				},
@@ -2355,14 +2345,14 @@ fn tile_indirect_diffuse_reads_what_the_images_hold() {
 					.expect("indirect diffuse source");
 				push_constant
 			});
-			let mut view = buffer(&executable, SSGI_VIEW_SLOT);
+			let mut view = buffer(&executable, slot(&executable, "ssgi_view"));
 			view.write("pixel_to_ray_mul", Value::Vec2F([0.1, -0.1])).expect("SSGI view");
 			view.write("pixel_to_ray_add", Value::Vec2F([-0.4, 0.4])).expect("SSGI view");
 			let mut lit = crate::rendering::shader_vm_test::empty_image(full, full);
 			let mut depth = texture_2d(low, low, &depth);
 			let mut normals = texture_2d(low, low, &normals);
 			let mut history = texture_2d(low, low, &history);
-			let mut results = buffer(&executable, RESULTS_SLOT);
+			let mut results = buffer(&executable, slot(&executable, "results"));
 			for position in crate::rendering::shader_vm_test::tiles(tile, [full, full]) {
 				let lanes = crate::rendering::shader_vm_test::tile_lanes(position, tile, tile, [full, full]);
 				let mut workgroup = besl::vm::WorkgroupState::new();
@@ -2370,12 +2360,12 @@ fn tile_indirect_diffuse_reads_what_the_images_hold() {
 				if let Some(push_constant) = &mut push_constant {
 					descriptors.bind_push_constant(push_constant);
 				}
-				descriptors.bind_buffer(SSGI_VIEW_SLOT, &mut view);
-				descriptors.bind_image(LIT_SLOT, &mut lit);
-				descriptors.bind_texture(ResourceSlot::new(1060), &mut depth);
-				descriptors.bind_texture(ResourceSlot::new(1047), &mut normals);
-				descriptors.bind_texture(ResourceSlot::new(1056), &mut history);
-				descriptors.bind_buffer(RESULTS_SLOT, &mut results);
+				descriptors.bind_buffer(slot(&executable, "ssgi_view"), &mut view);
+				descriptors.bind_image(slot(&executable, "lit_map"), &mut lit);
+				descriptors.bind_texture(slot(&executable, "depth_pyramid"), &mut depth);
+				descriptors.bind_texture(slot(&executable, "ssgi_normals"), &mut normals);
+				descriptors.bind_texture(slot(&executable, "ssgi_history"), &mut history);
+				descriptors.bind_buffer(slot(&executable, "results"), &mut results);
 				descriptors.bind_workgroup_state(&mut workgroup);
 				executable
 					.run_workgroup(&mut descriptors, &lanes)

@@ -25,5 +25,5 @@ LightClusterMasks: struct {
 LightClusters: layer {
 	lighting_data: descriptor<{ type: LightingBuffer, binding: 0, access: read, memory: device }>;
 	light_cluster_parameters: descriptor<{ type: LightClusterParameters, binding: 1, access: read }>;
-	light_cluster_masks: descriptor<{ type: LightClusterMasks, binding: 1033, access: write, memory: device }>;
+	light_cluster_masks: descriptor<{ type: LightClusterMasks, binding: 2, access: write, memory: device }>;
 }

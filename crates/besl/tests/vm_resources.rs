@@ -45,7 +45,7 @@ fn structural_position_return_uses_the_builtin_position_slot_without_shadowing_i
 }
 
 #[test]
-fn maximum_resource_slot_does_not_alias_push_constants() {
+fn a_resource_numbered_like_the_push_constant_does_not_alias_it() {
 	let mut root = Node::root();
 	let f32_type = root.get_child("f32").expect("Expected f32 type");
 	root.add_children(vec![
@@ -54,7 +54,7 @@ fn maximum_resource_slot_does_not_alias_push_constants() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", f32_type.clone()).into()],
 			},
-			u32::MAX,
+			0,
 			true,
 			false,
 		)
@@ -65,7 +65,7 @@ fn maximum_resource_slot_does_not_alias_push_constants() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", f32_type).into()],
 			},
-			0,
+			1,
 			false,
 			true,
 		)
@@ -82,8 +82,8 @@ fn maximum_resource_slot_does_not_alias_push_constants() {
 	)
 	.expect("Expected descriptor and push constant layouts to coexist");
 
-	let descriptor_slot = ResourceSlot::new(u32::MAX);
-	let result_slot = ResourceSlot::new(0);
+	let descriptor_slot = ResourceSlot::new(0);
+	let result_slot = ResourceSlot::new(1);
 	let mut descriptor = Buffer::new(
 		executable
 			.buffer_layout(descriptor_slot)
@@ -115,9 +115,10 @@ fn maximum_resource_slot_does_not_alias_push_constants() {
 
 #[test]
 fn resource_using_dynamic_handle_number_remains_a_real_resource() {
-	let dynamic_resource_slot = u32::MAX - 4;
+	// The first dynamic handle takes register 0, the number of the first descriptor.
+	let dynamic_resource_slot = 0;
 	let texture_slot = ResourceSlot::new(dynamic_resource_slot);
-	let result_slot = ResourceSlot::new(0);
+	let result_slot = ResourceSlot::new(1);
 	let mut root = Node::root();
 	let vec4f_type = root.get_child("vec4f").expect("Expected vec4f type");
 	root.add_children(vec![
@@ -137,7 +138,7 @@ fn resource_using_dynamic_handle_number_remains_a_real_resource() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("color", vec4f_type).into()],
 			},
-			0,
+			1,
 			false,
 			true,
 		)

@@ -11,9 +11,10 @@ mod samplers;
 
 pub use ast::{
 	BindingTypes, BufferMemoryClass, CallTarget, ElseBranch, Expressions, FixedArray, LexError, MatchArm, Node, NodeReference,
-	Nodes, Operators, UnaryOperators,
+	Nodes, Operators, Placement, UnaryOperators,
 };
 pub(crate) use ast::{UNARY_PRECEDENCE, lex_with_root};
+pub use layers::place_descriptors;
 pub use resolution::infer_expression_type;
 pub use samplers::binding_sampler;
 
@@ -45,12 +46,12 @@ mod tests {
 				value: u32,
 				weight: f32,
 			}
-			data: descriptor<{ type: Data, binding: 2, access: read_write, memory: device }>;
-			texture: descriptor<{ type: Texture2D, binding: 5, access: read }>;
-			texture_array: descriptor<{ type: Texture2DArray, binding: 7, access: read, count: 16 }>;
-			volume: descriptor<{ type: Texture3D, binding: 30, access: read }>;
-			result: descriptor<{ type: StorageImage<rgba16f>, binding: 31, access: write }>;
-			unformatted_result: descriptor<{ type: StorageImage, binding: 32, access: write }>;
+			data: descriptor<{ type: Data, binding: 0, access: read_write, memory: device }>;
+			texture: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+			texture_array: descriptor<{ type: Texture2DArray, binding: 2, access: read, count: 16 }>;
+			volume: descriptor<{ type: Texture3D, binding: 3, access: read }>;
+			result: descriptor<{ type: StorageImage<rgba16f>, binding: 4, access: write }>;
+			unformatted_result: descriptor<{ type: StorageImage, binding: 5, access: write }>;
 			main: fn () -> void {
 				data.value = data.value;
 			}
@@ -62,7 +63,7 @@ mod tests {
 		assert!(matches!(
 			data.borrow().node(),
 			Nodes::Binding {
-				slot: 2,
+				slot: 0,
 				read: true,
 				write: true,
 				memory_class: BufferMemoryClass::Device,
@@ -78,7 +79,7 @@ mod tests {
 		assert!(matches!(
 			texture.borrow().node(),
 			Nodes::Binding {
-				slot: 5,
+				slot: 1,
 				read: true,
 				write: false,
 				r#type: BindingTypes::CombinedImageSampler { format, .. },
@@ -94,7 +95,7 @@ mod tests {
 		assert!(matches!(
 			texture_array.borrow().node(),
 			Nodes::Binding {
-				slot: 7,
+				slot: 2,
 				r#type: BindingTypes::CombinedImageSampler { format, .. },
 				count: Some(count),
 				..
@@ -119,7 +120,7 @@ mod tests {
 		assert!(matches!(
 			result.borrow().node(),
 			Nodes::Binding {
-				slot: 31,
+				slot: 4,
 				read: false,
 				write: true,
 				r#type: BindingTypes::Image { format },
@@ -135,7 +136,7 @@ mod tests {
 		assert!(matches!(
 			unformatted_result.borrow().node(),
 			Nodes::Binding {
-				slot: 32,
+				slot: 5,
 				read: false,
 				write: true,
 				r#type: BindingTypes::Image { format },
@@ -519,7 +520,7 @@ mod tests {
 				let source = format!(
 					r#"
 						Counters: struct {{ value: atomicu32, }}
-						counters: descriptor<{{ type: Counters, binding: 3, access: {access} }}>;
+						counters: descriptor<{{ type: Counters, binding: 0, access: {access} }}>;
 						main: fn () -> void {{ {statement} }}
 					"#
 				);
@@ -537,7 +538,7 @@ mod tests {
 			let source = format!(
 				r#"
 					Counters: struct {{ value: atomicu32, }}
-					counters: descriptor<{{ type: Counters, binding: 3, access: read_write }}>;
+					counters: descriptor<{{ type: Counters, binding: 0, access: read_write }}>;
 					main: fn () -> void {{ {statement} }}
 				"#
 			);
@@ -552,7 +553,7 @@ mod tests {
 			let source = format!(
 				r#"
 					Counters: struct {{ value: atomicu32, }}
-					counters: descriptor<{{ type: Counters, binding: 3, access: {access} }}>;
+					counters: descriptor<{{ type: Counters, binding: 0, access: {access} }}>;
 					main: fn () -> void {{ atomic_store(counters.value, 1); }}
 				"#
 			);
@@ -562,7 +563,7 @@ mod tests {
 
 		let source = r#"
 			Counters: struct { value: atomicu32, }
-			counters: descriptor<{ type: Counters, binding: 3, access: read }>;
+			counters: descriptor<{ type: Counters, binding: 0, access: read }>;
 			main: fn () -> void { atomic_store(counters.value, 1); }
 		"#;
 		let message = link_error(source);

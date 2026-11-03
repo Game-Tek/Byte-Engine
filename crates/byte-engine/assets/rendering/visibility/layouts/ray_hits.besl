@@ -48,12 +48,12 @@ RayHitSort: struct {
 
 RayHits: layer {
 	// Each ray's hit, at the ray's index. Only rays that hit write theirs.
-	ray_hits: descriptor<{ type: RayHit[], binding: 1145, access: read_write }>;
+	ray_hits: descriptor<{ type: RayHit[], binding: 0, access: read_write }>;
 	// Each ray's sort key, or NO_HIT.
-	ray_hit_keys: descriptor<{ type: u32[], binding: 1146, access: read_write }>;
-	ray_hit_sort: descriptor<{ type: RayHitSort, binding: 1147, access: read_write }>;
+	ray_hit_keys: descriptor<{ type: u32[], binding: 1, access: read_write }>;
+	ray_hit_sort: descriptor<{ type: RayHitSort, binding: 2, access: read_write }>;
 	// The index of each ray that hit, in the order of the materials they hit.
-	ray_sorted_hits: descriptor<{ type: u32[], binding: 1148, access: read_write }>;
+	ray_sorted_hits: descriptor<{ type: u32[], binding: 3, access: read_write }>;
 }
 
 // Keeps `hit`, which ray `ray` found on the material in slot `material`, for the shade pass, and counts it among the hits

@@ -5,8 +5,8 @@
 gtao_upscale_footprint: sampler<{ filter: nearest, mip_filter: nearest, address: clamp }>;
 
 GtaoUpscale: layer {
-	visibility_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
-	ao_source: descriptor<{ type: Texture2D, binding: 1034, access: read, sampler: gtao_upscale_footprint }>;
-	ao_output: descriptor<{ type: StorageImage<r8>, binding: 1035, access: write }>;
-	low_resolution_depth: descriptor<{ type: Texture2D, binding: 1036, access: read, sampler: gtao_upscale_footprint }>;
+	visibility_depth: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+	ao_source: descriptor<{ type: Texture2D, binding: 1, access: read, sampler: gtao_upscale_footprint }>;
+	ao_output: descriptor<{ type: StorageImage<r8>, binding: 2, access: write }>;
+	low_resolution_depth: descriptor<{ type: Texture2D, binding: 3, access: read, sampler: gtao_upscale_footprint }>;
 }

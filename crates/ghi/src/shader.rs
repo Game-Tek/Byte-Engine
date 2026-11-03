@@ -145,11 +145,11 @@ fn compile_glsl(_name: &str, _source: &str) -> Result<CompiledShaderSource, Stri
 	)
 }
 
-/// The `ResourceSlot` struct identifies one resource in a shader's flat resource namespace.
+/// The `ResourceSlot` struct identifies one binding of a descriptor set layout: its number within the set.
 ///
-/// Slots are unique across the descriptor set layouts a pipeline declares, so a slot names one resource whichever
-/// set holds it. A [`DescriptorSetLayout`] groups the slots that one descriptor set holds, and a write names its
-/// resource by slot.
+/// Each [`DescriptorSetLayout`] numbers its bindings from 0, so a slot names a resource only together with the set
+/// that holds it. A binding holds one resource or an array of them; an array takes one slot, and a write picks its
+/// element with [`crate::DescriptorWrite::with_array_element`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct ResourceSlot(u32);
@@ -201,10 +201,6 @@ impl ShaderResourceDescriptor {
 		assert!(
 			count > 0,
 			"Invalid shader resource count. The most likely cause is that a shader declared an empty resource array."
-		);
-		assert!(
-			slot.index().checked_add(count).is_some(),
-			"Invalid shader resource slot range. The most likely cause is that a resource array extends beyond the flat slot namespace."
 		);
 		Self {
 			slot,
@@ -326,8 +322,8 @@ impl DescriptorSetLayout {
 	///
 	/// # Panics
 	///
-	/// Panics when two resources reserve the same slot, or when the layout declares more than
-	/// [`MAX_LAYOUT_RESOURCES`] resources.
+	/// Panics when the resources' slots aren't the numbers from 0 to one less than their count, or when the layout
+	/// declares more than [`MAX_LAYOUT_RESOURCES`] resources.
 	pub fn new(name: &str, resources: impl IntoIterator<Item = ShaderResourceDescriptor>) -> Self {
 		let mut resources = resources.into_iter().collect::<Vec<_>>();
 		resources.sort_by_key(|resource| resource.slot());
@@ -338,9 +334,10 @@ impl DescriptorSetLayout {
 		);
 		assert!(
 			resources
-				.windows(2)
-				.all(|pair| pair[0].slot().index() + pair[0].count() <= pair[1].slot().index()),
-			"Overlapping resource slots in descriptor set layout `{name}`. The most likely cause is that a resource array reserves a slot another resource declares."
+				.iter()
+				.enumerate()
+				.all(|(index, resource)| resource.slot().index() as usize == index),
+			"Descriptor set layout `{name}` doesn't number its bindings from 0 without gaps or repeats. The most likely cause is a binding numbered across several sets. Number each set's bindings from 0."
 		);
 
 		let mut element_bases = Vec::with_capacity(resources.len());
@@ -396,14 +393,11 @@ impl DescriptorSetLayout {
 		&self.inner.resources
 	}
 
-	/// Returns the position in [`Self::resources`] of the resource declared at `slot`.
-	///
-	/// A resource array is declared at its first slot.
+	/// Returns the position in [`Self::resources`] of the resource declared at `slot`, which is the slot itself, or
+	/// `None` when the layout declares no binding there.
 	pub fn resource_index(&self, slot: ResourceSlot) -> Option<usize> {
-		self.inner
-			.resources
-			.binary_search_by_key(&slot, |resource| resource.slot())
-			.ok()
+		let index = slot.index() as usize;
+		(index < self.inner.resources.len()).then_some(index)
 	}
 
 	/// Returns how many array elements the resources before `resource_index` hold, the position of that resource's
@@ -530,18 +524,18 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn a_layout_orders_its_resources_by_slot_and_finds_them_by_slot() {
+	fn a_layout_orders_its_resources_by_slot_and_stores_arrays_densely() {
 		let layout = DescriptorSetLayout::new(
 			"test",
 			[
 				ShaderResourceDescriptor::new(
-					ResourceSlot::new(9),
+					ResourceSlot::new(1),
 					ResourceKind::CombinedImageSampler,
 					4,
 					AccessPolicies::READ,
 				),
-				ShaderResourceDescriptor::single(ResourceSlot::new(2), ResourceKind::StorageBuffer, AccessPolicies::READ),
-				ShaderResourceDescriptor::single(ResourceSlot::new(13), ResourceKind::StorageImage, AccessPolicies::WRITE),
+				ShaderResourceDescriptor::single(ResourceSlot::new(0), ResourceKind::StorageBuffer, AccessPolicies::READ),
+				ShaderResourceDescriptor::single(ResourceSlot::new(2), ResourceKind::StorageImage, AccessPolicies::WRITE),
 			],
 		);
 
@@ -550,11 +544,23 @@ mod tests {
 			.iter()
 			.map(|resource| resource.slot().index())
 			.collect::<Vec<_>>();
-		assert_eq!(slots, [2, 9, 13]);
-		assert_eq!(layout.resource_index(ResourceSlot::new(9)), Some(1));
-		// An array is declared at its first slot only.
-		assert_eq!(layout.resource_index(ResourceSlot::new(10)), None);
+		assert_eq!(slots, [0, 1, 2]);
+		assert_eq!(layout.resource_index(ResourceSlot::new(1)), Some(1));
+		assert_eq!(layout.resource_index(ResourceSlot::new(3)), None);
+		// The array takes one slot, and its four elements come before the image's.
 		assert_eq!((layout.element_base(2), layout.element_count()), (5, 6));
+	}
+
+	#[test]
+	#[should_panic(expected = "from 0 without gaps or repeats")]
+	fn a_layout_rejects_a_gap_in_its_binding_numbers() {
+		DescriptorSetLayout::new(
+			"test",
+			[
+				ShaderResourceDescriptor::single(ResourceSlot::new(0), ResourceKind::StorageBuffer, AccessPolicies::READ),
+				ShaderResourceDescriptor::single(ResourceSlot::new(2), ResourceKind::StorageBuffer, AccessPolicies::READ),
+			],
+		);
 	}
 
 	#[test]

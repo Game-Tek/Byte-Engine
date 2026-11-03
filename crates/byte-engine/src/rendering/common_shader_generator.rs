@@ -590,18 +590,10 @@ impl ProgramTransform for CommonShaderGenerator {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value};
+	use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, Value};
 
 	use super::common_shader_module;
-	use crate::rendering::shader_vm_test::{buffer, compile, run_at, texture_2d};
-
-	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
-
-	const DEPTH_SLOT: ResourceSlot = ResourceSlot::new(1);
-
-	const EMPTY_DEPTH_SLOT: ResourceSlot = ResourceSlot::new(2);
-
-	const SAMPLE_DEPTH_SLOT: ResourceSlot = ResourceSlot::new(3);
+	use crate::rendering::shader_vm_test::{buffer, compile, run_at, slot, texture_2d};
 
 	/// Every standalone visibility shader still links when any one feature is left out, so taking out a feature's
 	/// statements never leaves a statement reading something they declared.
@@ -663,15 +655,13 @@ mod tests {
 		root.add(extra_nodes);
 
 		root.add(common_shader_module().to_vec());
-		root.add(vec![
-			besl::ParserNode::binding(
-				"results",
-				besl::ParserNode::buffer(result_members),
-				RESULT_SLOT.slot(),
-				false,
-				true,
-			),
-		]);
+		root.add(vec![besl::ParserNode::binding(
+			"results",
+			besl::ParserNode::buffer(result_members),
+			0,
+			false,
+			true,
+		)]);
 
 		let program = besl::lex(root).expect(
 			"Failed to lex a common shader VM test. The most likely cause is an unresolved portable helper or test binding.",
@@ -679,7 +669,7 @@ mod tests {
 
 		let executable = compile(program);
 
-		let results = buffer(&executable, RESULT_SLOT);
+		let results = buffer(&executable, slot(&executable, "results"));
 
 		(executable, results)
 	}
@@ -704,7 +694,7 @@ mod tests {
 		fn run(&mut self) {
 			let mut descriptors = DescriptorBindings::new();
 
-			descriptors.bind_buffer(RESULT_SLOT, &mut self.results);
+			descriptors.bind_buffer(slot(&self.program, "results"), &mut self.results);
 
 			run_at(&self.program, &mut descriptors, [0, 0]);
 		}
@@ -1122,27 +1112,9 @@ mod tests {
 		];
 
 		let bindings = vec![
-			besl::ParserNode::binding(
-				"depth_map",
-				besl::ParserNode::combined_image_sampler(),
-				DEPTH_SLOT.slot(),
-				true,
-				false,
-			),
-			besl::ParserNode::binding(
-				"empty_depth_map",
-				besl::ParserNode::combined_image_sampler(),
-				EMPTY_DEPTH_SLOT.slot(),
-				true,
-				false,
-			),
-			besl::ParserNode::binding(
-				"sample_depth_map",
-				besl::ParserNode::combined_image_sampler(),
-				SAMPLE_DEPTH_SLOT.slot(),
-				true,
-				false,
-			),
+			besl::ParserNode::binding("depth_map", besl::ParserNode::combined_image_sampler(), 1, true, false),
+			besl::ParserNode::binding("empty_depth_map", besl::ParserNode::combined_image_sampler(), 2, true, false),
+			besl::ParserNode::binding("sample_depth_map", besl::ParserNode::combined_image_sampler(), 3, true, false),
 		];
 
 		let (program, mut results) = compile_common_main(source, members, bindings);
@@ -1171,13 +1143,13 @@ mod tests {
 		{
 			let mut descriptors = DescriptorBindings::new();
 
-			descriptors.bind_buffer(RESULT_SLOT, &mut results);
+			descriptors.bind_buffer(slot(&program, "results"), &mut results);
 
-			descriptors.bind_texture(DEPTH_SLOT, &mut depth_map);
+			descriptors.bind_texture(slot(&program, "depth_map"), &mut depth_map);
 
-			descriptors.bind_texture(EMPTY_DEPTH_SLOT, &mut empty_depth_map);
+			descriptors.bind_texture(slot(&program, "empty_depth_map"), &mut empty_depth_map);
 
-			descriptors.bind_texture(SAMPLE_DEPTH_SLOT, &mut sample_depth_map);
+			descriptors.bind_texture(slot(&program, "sample_depth_map"), &mut sample_depth_map);
 
 			run_at(&program, &mut descriptors, [0, 0]);
 		}

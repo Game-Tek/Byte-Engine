@@ -93,7 +93,7 @@ mod tests {
 					format: String::new(),
 					sampler: None,
 				},
-				9,
+				0,
 				true,
 				false,
 				4,
@@ -337,7 +337,7 @@ mod tests {
 	async fn each_used_layout_becomes_one_argument_buffer() {
 		// The shader takes a shared set, and a set it never reaches; a layer it doesn't take forms no set.
 		let program = besl::compile_to_besl(
-			"Scene: layer { views: descriptor<{ type: f32[], binding: 0, access: read }>; shadow_map: descriptor<{ type: Texture2D, binding: 1, access: read }>; meshes: descriptor<{ type: f32[], binding: 2, access: read }>; } History: layer { history: descriptor<{ type: Texture2D, binding: 3, access: read }>; } result: descriptor<{ type: f32[], binding: 4, access: write }>; scale: fn (scene: Scene) -> f32 { return scene.meshes[0]; } main: fn (scene: Scene, history: History) -> void { result[0] = scale(scene); }",
+			"Scene: layer { views: descriptor<{ type: f32[], binding: 0, access: read }>; shadow_map: descriptor<{ type: Texture2D, binding: 1, access: read }>; meshes: descriptor<{ type: f32[], binding: 2, access: read }>; } History: layer { history: descriptor<{ type: Texture2D, binding: 0, access: read }>; } result: descriptor<{ type: f32[], binding: 0, access: write }>; scale: fn (scene: Scene) -> f32 { return scene.meshes[0]; } main: fn (scene: Scene, history: History) -> void { result[0] = scale(scene); }",
 			None,
 		)
 		.expect("Expected the layered fixture to link");
@@ -351,18 +351,19 @@ mod tests {
 			shader,
 			"struct _set0{const device float* views [[id(0)]];texture2d<float> shadow_map [[id(1)]];sampler shadow_map_sampler [[id(2)]];const device float* meshes [[id(3)]];};"
 		);
-		assert_string_contains!(shader, "struct _set1{device float* result [[id(0)]];};");
+		assert_string_contains!(shader, "struct _set2{device float* result [[id(0)]];};");
 		assert!(
 			!shader.contains("history"),
 			"an unreached layout should take no argument buffer"
 		);
+		// The unreached history set keeps its position, so the shader's own set binds at the third index.
 		assert_string_contains!(
 			shader,
-			"constant _set0& set0 [[buffer(16)]],constant _set1& set1 [[buffer(17)]])"
+			"constant _set0& set0 [[buffer(16)]],constant _set2& set2 [[buffer(18)]])"
 		);
 		// Helpers receive every set and read each resource through its own.
-		assert_string_contains!(shader, "constant _set0& set0,constant _set1& set1){return set0.meshes[0];}");
-		assert_string_contains!(shader, "set1.result[0]=scale(");
+		assert_string_contains!(shader, "constant _set0& set0,constant _set2& set2){return set0.meshes[0];}");
+		assert_string_contains!(shader, "set2.result[0]=scale(");
 
 		compile_natively(&shader, "besl-layout-sets").await;
 	}
@@ -370,7 +371,7 @@ mod tests {
 	#[test]
 	fn a_descriptor_set_keeps_the_bindings_its_shader_does_not_reach() {
 		let program = besl::compile_to_besl(
-			"Payload: struct { value: f32, } Unused: struct { payload: Payload, } unused: descriptor<{ type: Unused, binding: 3, access: read, memory: constant }>; Used: struct { value: u32, } used: descriptor<{ type: Used, binding: 9, access: write, memory: device }>; main: fn () -> void { used.value = 7; }",
+			"Payload: struct { value: f32, } Unused: struct { payload: Payload, } unused: descriptor<{ type: Unused, binding: 0, access: read, memory: constant }>; Used: struct { value: u32, } used: descriptor<{ type: Used, binding: 1, access: write, memory: device }>; main: fn () -> void { used.value = 7; }",
 			None,
 		)
 		.expect("Expected full-program resource ABI fixture to link");
@@ -402,53 +403,29 @@ mod tests {
 		}
 	}
 
-	fn main_with(statements: Vec<besl::NodeReference>) -> besl::NodeReference {
-		let root = besl::Node::root();
-		let void = root.get_child("void").expect("Expected the built-in void type");
-		besl::Node::function("main", Vec::new(), void, statements).into()
-	}
-
-	#[test]
-	fn distinct_reachable_declaration_ranges_cannot_overlap() {
-		let array: besl::NodeReference = besl::Node::binding_array(
-			"array",
-			besl::BindingTypes::CombinedImageSampler {
-				format: String::new(),
-				sampler: None,
-			},
-			4,
-			true,
-			false,
-			2,
-		)
-		.into();
-		let main = main_with(vec![array, generator::tests::sampled_binding("interior", 5, true, false)]);
-		assert!(
-			Generator::new()
-				.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
-				.is_err(),
-			"Intersecting flat slot intervals must be rejected before MSL emission"
-		);
-	}
-
 	#[test]
 	fn metal_argument_ids_cannot_overflow() {
-		let binding: besl::NodeReference = besl::Node::binding_array(
-			"textures",
-			besl::BindingTypes::CombinedImageSampler {
-				format: String::new(),
-				sampler: None,
-			},
-			0,
-			true,
-			false,
-			u32::MAX as usize,
-		)
-		.into();
-		let main = main_with(vec![binding]);
+		// Each texture takes an argument ID for itself and one for its sampler, which overflows 32 bits.
+		let mut root = besl::Node::root();
+		root.add_child(
+			besl::Node::binding_array(
+				"textures",
+				besl::BindingTypes::CombinedImageSampler {
+					format: String::new(),
+					sampler: None,
+				},
+				0,
+				true,
+				false,
+				u32::MAX as usize,
+			)
+			.into(),
+		);
+		let program = besl::compile_to_besl("main: fn () -> void { textures; }", Some(root))
+			.expect("Expected the oversized array to link");
 		assert!(
 			Generator::new()
-				.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+				.generate_program(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &program)
 				.is_err(),
 			"Metal argument IDs must not wrap"
 		);
@@ -1439,8 +1416,8 @@ mod tests {
 			Counters: struct {
 				values: atomicu32[8],
 			}
-			counters: descriptor<{ type: Counters, binding: 2, access: read_write }>;
-			index_image: descriptor<{ type: StorageImage<r32ui>, binding: 4, access: read }>;
+			counters: descriptor<{ type: Counters, binding: 0, access: read_write }>;
+			index_image: descriptor<{ type: StorageImage<r32ui>, binding: 1, access: read }>;
 			shared_keys: workgroup<atomicu32, 8>;
 			push_constant: push_constant {
 				base: u32,

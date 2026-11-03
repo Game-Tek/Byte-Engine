@@ -49,17 +49,25 @@ fn violation<T: std::fmt::Debug>(result: Result<T, CompilationError>) -> String 
 	}
 }
 
-/// Runs `program`'s `main` and returns the first element it writes to its `f32` result buffer at binding 0.
+/// Runs `program`'s `main` and returns the first element it writes to its `f32` result buffer at binding 0 of its
+/// first descriptor set.
 fn run(program: NodeReference) -> Value {
+	run_in_set(program, 0)
+}
+
+/// Runs `program`'s `main` and returns the first element it writes to its `f32` result buffer at binding 0 of the
+/// descriptor set at position `set`.
+fn run_in_set(program: NodeReference, set: u32) -> Value {
+	let slot = ResourceSlot::in_set(set, 0);
 	let executable = ExecutableProgram::compile(program).expect("Expected the program to compile");
 	let layout = executable
-		.buffer_layout(ResourceSlot::new(0))
+		.buffer_layout(slot)
 		.expect("Expected a result buffer layout")
 		.clone();
 	let mut results = Buffer::new_array(layout, 1).expect("Expected buffer storage");
 	{
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(ResourceSlot::new(0), &mut results);
+		descriptors.bind_buffer(slot, &mut results);
 		executable.run_main(&mut descriptors).expect("Expected main to run");
 	}
 	results.read_array_element(0).expect("Expected a result")
@@ -295,7 +303,7 @@ fn a_shader_implements_a_signature_composed_across_shared_modules() {
 	let files = [
 		(
 			"assets/shared/scene.besl",
-			"Scene: layer { factors: descriptor<{ type: f32[], binding: 1, access: read }>; }\nSceneShader: fn (input: StageInput, scene: Scene) -> void;",
+			"Scene: layer { factors: descriptor<{ type: f32[], binding: 0, access: read }>; }\nSceneShader: fn (input: StageInput, scene: Scene) -> void;",
 		),
 		(
 			"assets/shared/evaluation.besl",
@@ -306,5 +314,6 @@ fn a_shader_implements_a_signature_composed_across_shared_modules() {
 
 	let program = linked(root, &files).expect("Expected the shader to link");
 
-	assert_eq!(run(program), Value::F32(3.0));
+	// The scene's set comes first, as `SceneShader` takes it first, so the results are in the second set.
+	assert_eq!(run_in_set(program, 1), Value::F32(3.0));
 }

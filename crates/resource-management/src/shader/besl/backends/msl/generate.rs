@@ -47,17 +47,21 @@ impl Generator {
 		self.generate_order(shader_compilation_settings, &main, &order)
 	}
 
-	/// Records the descriptor sets the shader takes as argument buffers: every layout `program` declares that code
-	/// reachable from `main` uses, or every layout it declares when `keep_unused` is set, as ray tracing stages need.
+	/// Records the descriptor sets the shader takes as argument buffers: every set of `program` that code reachable
+	/// from `main` uses, or every set when `keep_unused` is set, as ray tracing stages need.
 	///
-	/// The sets come from the same reflection that produces the shader's persisted interface, in the same order, so
-	/// set `n` here is the `n`th used set there, or the `n`th declared set with `keep_unused`.
+	/// The sets come from the same reflection that produces the shader's persisted interface, at the same positions,
+	/// so set `n` here is set `n` there whether or not the shader takes the sets before it.
 	fn collect_argument_sets(&mut self, program: &besl::NodeReference, keep_unused: bool) -> Result<(), ()> {
 		let sets = crate::shader::besl::evaluation::collect_set_nodes(program).map_err(|_| ())?;
 
 		self.argument_sets.clear();
 		self.binding_sets.clear();
-		for set in sets.into_iter().filter(|set| keep_unused || set.used != 0) {
+		for set in sets {
+			if !keep_unused && set.used == 0 {
+				self.argument_sets.push(None);
+				continue;
+			}
 			// Every argument ID of the set must fit, so emission never wraps one.
 			let mut ids = 0u32;
 			for node in &set.nodes {
@@ -73,7 +77,11 @@ impl Generator {
 				ids = ids.checked_add(reserved).ok_or(())?;
 				self.binding_sets.insert(name.clone(), self.argument_sets.len());
 			}
-			self.argument_sets.push(set.nodes);
+			self.argument_sets.push(Some(set.nodes));
+		}
+		// Sets after the last one the shader takes need no position.
+		while self.argument_sets.last().is_some_and(Option::is_none) {
+			self.argument_sets.pop();
 		}
 
 		if self.argument_sets.len() > MAX_ARGUMENT_SETS {
@@ -178,7 +186,6 @@ impl Generator {
 		{
 			return Err(());
 		}
-		Self::validate_reachable_binding_layout(order)?;
 		self.collect_packed_mat4x3_members(order);
 		self.hidden_contexts = analyze_hidden_contexts(order);
 
@@ -462,29 +469,6 @@ impl Generator {
 			.any(|node| matches!(node.borrow().node(), besl::Nodes::Input { .. } | besl::Nodes::Output { .. }))
 	}
 
-	/// Validates logical flat-slot intervals before source emission.
-	pub(crate) fn validate_reachable_binding_layout(order: &[besl::NodeReference]) -> Result<(), ()> {
-		let mut ranges = Vec::new();
-
-		for binding in order {
-			let binding = binding.borrow();
-			let besl::Nodes::Binding { slot, count, .. } = binding.node() else {
-				continue;
-			};
-			let count = count.map_or(1, |count| count.get());
-			let end = slot.checked_add(count).ok_or(())?;
-			ranges.push((*slot, end));
-		}
-
-		// After sorting, adjacent ranges are enough to detect every overlap.
-		ranges.sort_unstable_by_key(|(start, _)| *start);
-		if ranges.windows(2).any(|ranges| ranges[1].0 < ranges[0].1) {
-			return Err(());
-		}
-
-		Ok(())
-	}
-
 	pub(crate) fn has_non_void_return(function_node: &besl::NodeReference) -> bool {
 		matches!(
 			function_node.borrow().node(),
@@ -492,10 +476,15 @@ impl Generator {
 		)
 	}
 
-	/// Writes one entry-point parameter per descriptor set, each bound at its own buffer index.
+	/// Writes one entry-point parameter per descriptor set the shader takes, each bound at the buffer index of its
+	/// position.
 	pub(crate) fn emit_argument_buffer_parameter(&self, string: &mut String) {
+		let mut first = true;
 		for set in 0..self.argument_sets.len() {
-			if set > 0 {
+			if self.argument_sets[set].is_none() {
+				continue;
+			}
+			if !std::mem::take(&mut first) {
 				self.emit_separator(string);
 			}
 			let _ = write!(
@@ -509,7 +498,7 @@ impl Generator {
 
 	/// Returns whether the shader takes any descriptor set as an argument buffer.
 	pub(crate) fn has_argument_sets(&self) -> bool {
-		!self.argument_sets.is_empty()
+		self.argument_sets.iter().any(Option::is_some)
 	}
 
 	pub(crate) fn classify_nodes(order: &[besl::NodeReference]) -> ClassifiedNodes<'_> {

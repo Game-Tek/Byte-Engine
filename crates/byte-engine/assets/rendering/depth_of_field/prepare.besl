@@ -24,9 +24,9 @@ tile_reaches: descriptor<{ type: TileReaches, binding: 4, access: write }>;
 // The renderer's debug target pool, which the shown debug views write; see `debug_views.rs`.
 debug_view_targets: descriptor<{ type: StorageImage, binding: 5, access: write, count: 15 }>;
 // The source averaged over 2, 4, and 8 pixels.
-level_1: descriptor<{ type: StorageImage<rgba16f>, binding: 20, access: write }>;
-level_2: descriptor<{ type: StorageImage<rgba16f>, binding: 21, access: write }>;
-level_3: descriptor<{ type: StorageImage<rgba16f>, binding: 22, access: write }>;
+level_1: descriptor<{ type: StorageImage<rgba16f>, binding: 6, access: write }>;
+level_2: descriptor<{ type: StorageImage<rgba16f>, binding: 7, access: write }>;
+level_3: descriptor<{ type: StorageImage<rgba16f>, binding: 8, access: write }>;
 
 // The tile's widest reach, in 1/64 pixels, so lanes can take its maximum with integer atomics.
 tile_reach: workgroup<atomicu32, 1>;

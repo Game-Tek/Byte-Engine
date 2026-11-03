@@ -2,75 +2,11 @@ use std::{cell::RefCell, fmt::Write as _};
 
 use utils::Extent;
 
-use crate::shader::besl::{
-	evaluation::{BindingKind, BindingUsage},
-	graph::dependency_order,
-};
-
-/// The `CompiledShaderBinding` struct preserves the flat resource interface required to create a backend shader.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CompiledShaderBinding {
-	pub slot: u32,
-	pub kind: BindingKind,
-	pub count: u32,
-	pub buffer_stride: Option<u32>,
-	pub read: bool,
-	pub write: bool,
-}
-
-impl From<BindingUsage> for CompiledShaderBinding {
-	/// Drops the reflection-only binding name and keeps the flat interface a backend shader needs.
-	fn from(binding: BindingUsage) -> Self {
-		Self {
-			slot: binding.slot,
-			kind: binding.kind,
-			count: binding.count,
-			buffer_stride: binding.buffer_stride,
-			read: binding.read,
-			write: binding.write,
-		}
-	}
-}
-
-impl CompiledShaderBinding {
-	/// Builds one validated compiled resource requirement.
-	pub fn new(slot: u32, kind: BindingKind, count: u32, buffer_stride: Option<u32>, read: bool, write: bool) -> Self {
-		assert!(
-			count > 0,
-			"Invalid resource count. The most likely cause is that a compiled shader resource was declared with an empty array."
-		);
-		assert!(
-			slot.checked_add(count).is_some(),
-			"Invalid resource slot range. The most likely cause is that a compiled shader resource array extends beyond the flat slot space."
-		);
-		match (kind, buffer_stride) {
-			(BindingKind::StorageBuffer, Some(stride)) => assert!(
-				stride > 0,
-				"Invalid storage-buffer stride. The most likely cause is that compiled reflection produced a zero-byte element."
-			),
-			(BindingKind::StorageBuffer, None) => panic!(
-				"Missing storage-buffer stride. The most likely cause is that compiled reflection dropped the element layout."
-			),
-			(_, Some(_)) => panic!(
-				"Unexpected buffer stride. The most likely cause is that compiled reflection attached buffer metadata to a non-buffer resource."
-			),
-			(_, None) => {}
-		}
-		Self {
-			slot,
-			kind,
-			count,
-			buffer_stride,
-			read,
-			write,
-		}
-	}
-}
+use crate::shader::besl::graph::dependency_order;
 
 /// The `CompiledShader` struct provides compiled bytes and reflection metadata across compiler backends.
 pub struct CompiledShader {
 	pub binary: Box<[u8]>,
-	pub bindings: Vec<CompiledShaderBinding>,
 	pub extent: Option<Extent>,
 }
 
@@ -1315,14 +1251,6 @@ pub mod tests {
 	use std::cell::RefCell;
 
 	use utils::Extent;
-
-	use crate::shader::besl::evaluation::BindingKind;
-
-	#[test]
-	#[should_panic(expected = "Invalid resource slot range")]
-	fn compiled_shader_binding_rejects_flat_slot_overflow() {
-		super::CompiledShaderBinding::new(u32::MAX, BindingKind::StorageBuffer, 1, Some(4), true, false);
-	}
 
 	#[test]
 	fn workgroup_storage_is_limited_to_compute_and_task_stages() {

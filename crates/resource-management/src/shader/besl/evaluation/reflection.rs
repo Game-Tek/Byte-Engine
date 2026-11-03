@@ -505,7 +505,7 @@ pub(crate) fn collect_bindings(node: &besl::NodeReference) -> Result<Vec<Binding
 		.iter()
 		.map(reflect_binding)
 		.collect::<Result<Vec<_>, _>>()?;
-	bindings.sort_by_key(|binding| binding.slot);
+	bindings.sort_by(|a, b| (a.layout.as_deref(), a.slot).cmp(&(b.layout.as_deref(), b.slot)));
 	Ok(bindings)
 }
 
@@ -525,14 +525,13 @@ pub(crate) fn collect_sets(program: &besl::NodeReference) -> Result<Vec<SetUsage
 		.collect()
 }
 
-/// Groups the binding nodes declared under `program` into the descriptor set layouts it declares.
+/// Groups the binding nodes declared under `program` into the descriptor sets they were placed in when the program
+/// linked (see [`besl::place_descriptors`]), in set order.
 ///
-/// `program` is a linked program, or its `main` function when only reachable bindings should form the layouts.
-/// The layers `main` takes come first, in the order of its parameters. Layouts that backends add, such as tile outputs, follow, in the
-/// order the program first declares one of their bindings, and the program's own layout comes last. A layer the
-/// program declares but `main` doesn't take forms no layout. Each layout's bindings are ordered by slot. A binding
-/// counts as used when code reachable from `main` uses it; without a `main`, every binding does, and every layer
-/// forms its layout.
+/// `program` is a linked program, or its `main` function. Each set holds every binding placed in it, ordered by slot,
+/// whether or not `main` reaches it, so the native set looks the same to every shader that declares it; a binding
+/// counts as used when code reachable from `main` uses it. Given `main` alone, only the bindings it reaches are
+/// declared. Without a `main`, every binding counts as used.
 ///
 /// Reflection and every backend take their sets from here, so a lowered shader and its interface cannot disagree.
 pub(crate) fn collect_set_nodes(program: &besl::NodeReference) -> Result<Vec<ProgramSet>, String> {
@@ -544,40 +543,28 @@ pub(crate) fn collect_set_nodes(program: &besl::NodeReference) -> Result<Vec<Pro
 
 	let mut sets = Vec::<ProgramSet>::new();
 	for node in declared {
-		let layout = binding_layout(&node);
-		let position = match sets.iter().position(|set| set.layout == layout) {
-			Some(position) => position,
-			None => {
-				sets.push(ProgramSet {
-					layout,
-					nodes: Vec::new(),
-					used: 0,
-				});
-				sets.len() - 1
-			}
+		let (layout, placement) = match node.borrow().node() {
+			besl::Nodes::Binding { layout, placement, .. } => (layout.clone(), *placement),
+			_ => continue,
 		};
-		sets[position].nodes.push(node);
+		// A binding of a layer `main` doesn't take belongs to no set of the program.
+		let Some(placement) = placement else {
+			continue;
+		};
+		let set = placement.set as usize;
+		if sets.len() <= set {
+			sets.resize_with(set + 1, || ProgramSet {
+				layout: None,
+				nodes: Vec::new(),
+				used: 0,
+			});
+		}
+		sets[set].layout = layout;
+		sets[set].nodes.push(node);
 	}
-
-	// With a `main`, a layer's set belongs to the shader only when `main` takes the layer.
-	let layers = layer_entries(program);
-	let entry = |layout: &str| layers.iter().find(|(path, _)| path == layout).map(|(_, entry)| *entry);
-	if reachable.is_some() {
-		sets.retain(|set| set.layout.as_deref().and_then(entry) != Some(None));
-	}
-
-	// The layers `main` takes come first, in parameter order, and the program's own layout goes last, so listing
-	// another layer never renumbers the sets before it.
-	sets.sort_by_key(|set| match set.layout.as_deref() {
-		None => (2, 0),
-		Some(layout) => match entry(layout).flatten() {
-			Some(index) => (0, index),
-			None => (1, 0),
-		},
-	});
 
 	for set in &mut sets {
-		set.nodes.sort_by_key(|node| binding_slot_range(node).0);
+		set.nodes.sort_by_key(binding_slot);
 
 		if set.nodes.len() > SetUsage::MAX_BINDINGS {
 			return Err(format!(
@@ -597,40 +584,16 @@ pub(crate) fn collect_set_nodes(program: &besl::NodeReference) -> Result<Vec<Pro
 	Ok(sets)
 }
 
-/// Returns the path of every layer `program` declares, and which of `main`'s layer parameters takes it, if any.
-fn layer_entries(program: &besl::NodeReference) -> Vec<(String, Option<usize>)> {
-	/// Adds the layers under `node` to `layers`.
-	fn visit(node: &besl::NodeReference, layers: &mut Vec<(String, Option<usize>)>) {
-		match node.borrow().node() {
-			besl::Nodes::Layer { path, entry, .. } => layers.push((path.clone(), *entry)),
-			besl::Nodes::Scope { children, .. } => children.iter().for_each(|child| visit(child, layers)),
-			_ => {}
-		}
-	}
-
-	let mut layers = Vec::new();
-	visit(program, &mut layers);
-	layers
-}
-
-/// Returns the layout of a binding node, the path of the layer that declares it, or `None` for the program's own layout.
-fn binding_layout(node: &besl::NodeReference) -> Option<String> {
+/// Returns the slot of a binding node, its number within its set.
+fn binding_slot(node: &besl::NodeReference) -> u32 {
 	match node.borrow().node() {
-		besl::Nodes::Binding { layout, .. } => layout.clone(),
-		_ => None,
-	}
-}
-
-/// Returns the first slot of a binding node and how many slots it reserves.
-fn binding_slot_range(node: &besl::NodeReference) -> (u32, u32) {
-	match node.borrow().node() {
-		besl::Nodes::Binding { slot, count, .. } => (*slot, count.map_or(1, |count| count.get())),
-		_ => (u32::MAX, 0),
+		besl::Nodes::Binding { slot, .. } => *slot,
+		_ => u32::MAX,
 	}
 }
 
 /// Collects the binding nodes the traversal reaches from `node`, in the order it first reaches each one, after
-/// rejecting duplicate and overlapping slot ranges.
+/// rejecting distinct declarations of one binding.
 fn collect_binding_nodes(node: &besl::NodeReference) -> Result<Vec<besl::NodeReference>, String> {
 	let mut state = BindingCollectionState {
 		visited: utils::hash::HashSet::default(),
@@ -640,23 +603,6 @@ fn collect_binding_nodes(node: &besl::NodeReference) -> Result<Vec<besl::NodeRef
 	build_bindings(node, &mut state);
 	if let Some(error) = state.error {
 		return Err(error);
-	}
-
-	let mut ranges = state.nodes.iter().map(binding_slot_range).collect::<Vec<_>>();
-	ranges.sort_unstable();
-	for (index, (slot, count)) in ranges.iter().enumerate() {
-		let end_slot = slot.checked_add(*count).ok_or_else(|| {
-			format!(
-				"Resource slot range overflow at slot {slot}. The most likely cause is that the declared resource range has no representable exclusive end."
-			)
-		})?;
-		if let Some((next_slot, _)) = ranges.get(index + 1)
-			&& *next_slot < end_slot
-		{
-			return Err(format!(
-				"Resource slot ranges overlap at slots {slot} and {next_slot}. The most likely cause is that a resource array reserves a slot used by another declaration."
-			));
-		}
 	}
 
 	Ok(state.nodes)
@@ -815,13 +761,14 @@ fn build_bindings(node: &besl::NodeReference, state: &mut BindingCollectionState
 			| besl::Expressions::Break
 			| besl::Expressions::Discard => {}
 		},
-		besl::Nodes::Binding { slot, .. } => {
-			let duplicate = state.nodes.iter().any(
-				|collected| matches!(collected.borrow().node(), besl::Nodes::Binding { slot: collected, .. } if collected == slot),
-			);
+		besl::Nodes::Binding { slot, layout, .. } => {
+			let duplicate = state.nodes.iter().any(|collected| {
+				matches!(collected.borrow().node(), besl::Nodes::Binding { slot: collected, layout: collected_layout, .. } if collected == slot && collected_layout == layout)
+			});
 			if duplicate {
 				state.error = Some(format!(
-					"Duplicate resource declaration at slot {slot}. The most likely cause is that distinct binding nodes reuse one flat slot instead of sharing the same binding reference."
+					"Duplicate resource declaration at binding {slot} of set `{}`. The most likely cause is that distinct binding nodes reuse one binding number instead of sharing the same binding reference. Give each binding of a set its own number.",
+					layout.as_deref().unwrap_or("<shader>")
 				));
 			} else {
 				state.nodes.push(node.clone());

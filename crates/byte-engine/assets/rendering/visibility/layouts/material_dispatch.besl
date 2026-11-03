@@ -26,11 +26,11 @@ PixelMapping: struct {
 }
 
 MaterialDispatch: layer {
-	material_count_buffer: descriptor<{ type: MaterialCount, binding: 1033, access: read_write, memory: device }>;
-	material_offset_buffer: descriptor<{ type: MaterialOffset, binding: 1034, access: read_write, memory: device }>;
-	material_offset_scratch_buffer: descriptor<{ type: MaterialOffsetScratch, binding: 1035, access: read_write, memory: device }>;
-	material_evaluation_dispatches: descriptor<{ type: MaterialEvaluationDispatches, binding: 1036, access: read_write, memory: device }>;
-	pixel_mapping_buffer: descriptor<{ type: PixelMapping, binding: 1037, access: write, memory: device }>;
+	material_count_buffer: descriptor<{ type: MaterialCount, binding: 0, access: read_write, memory: device }>;
+	material_offset_buffer: descriptor<{ type: MaterialOffset, binding: 1, access: read_write, memory: device }>;
+	material_offset_scratch_buffer: descriptor<{ type: MaterialOffsetScratch, binding: 2, access: read_write, memory: device }>;
+	material_evaluation_dispatches: descriptor<{ type: MaterialEvaluationDispatches, binding: 3, access: read_write, memory: device }>;
+	pixel_mapping_buffer: descriptor<{ type: PixelMapping, binding: 4, access: write, memory: device }>;
 	// The instance under each pixel, from the visibility buffer.
-	instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 1040, access: read }>;
+	instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 5, access: read }>;
 }

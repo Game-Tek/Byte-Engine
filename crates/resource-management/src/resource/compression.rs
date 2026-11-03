@@ -1,4 +1,11 @@
 //! Compress complete CPU-readable resource payloads without changing their client-facing bytes.
+//!
+//! A [`ResourcePayloadEncoding::CpuLz4`] payload is a block table followed by one block per segment of the decoded
+//! payload. Segments end at every stream boundary, so a reader decodes only the blocks a requested stream covers.
+
+use std::ops::Range;
+
+use crate::StreamDescription;
 
 /// Payloads below this size rarely repay compression setup and metadata costs.
 pub(crate) const MINIMUM_COMPRESSION_SIZE: usize = 1024;
@@ -8,6 +15,11 @@ const MINIMUM_SAVINGS_DIVISOR: usize = 8;
 const PROBE_WINDOW_SIZE: usize = 16 * 1024;
 /// Windows the probe spreads over a payload, from its first byte to its last.
 const PROBE_WINDOWS: usize = 4;
+
+/// Bytes in the block count that opens a CPU LZ4 payload.
+const BLOCK_COUNT_SIZE: usize = 4;
+/// Bytes in each block table entry: the decoded size, then the stored size.
+const BLOCK_ENTRY_SIZE: usize = 16;
 
 /// Selects the explicit storage and delivery encoding for one resource payload.
 ///
@@ -30,7 +42,7 @@ pub enum ResourcePayloadEncoding {
 	/// Stores the resource bytes as authored.
 	#[default]
 	Raw,
-	/// Stores one checked LZ4 block that expands to the resource's declared size.
+	/// Stores a block table and one block per stream segment, each raw or LZ4, so streams decode independently.
 	CpuLz4,
 	/// Stores one Metal I/O LZ4 container that transfers directly into a GPU resource.
 	MetalIoLz4,
@@ -46,7 +58,7 @@ impl ResourcePayloadEncoding {
 		}
 	}
 
-	/// Returns whether clients must receive the complete payload through CPU decompression.
+	/// Returns whether clients must receive decoded bytes through CPU decompression.
 	pub const fn requires_cpu_decompression(self) -> bool {
 		matches!(self, Self::CpuLz4)
 	}
@@ -70,62 +82,250 @@ pub enum ResourceCompressionPolicy {
 	Disabled,
 }
 
-/// The `PreparedCompression` struct carries one CPU LZ4 block and the identity of its decoded bytes.
+/// The `PreparedCompression` struct carries one CPU LZ4 payload and the identity of its decoded bytes.
 pub(crate) struct PreparedCompression {
 	pub(crate) bytes: Vec<u8>,
 	pub(crate) decoded_hash: u64,
 	pub(crate) decoded_size: usize,
 }
 
-/// Compresses a complete payload when it is large enough and saves more than 12.5%.
-pub(crate) fn prepare(data: &[u8], policy: ResourceCompressionPolicy) -> Option<PreparedCompression> {
+/// Builds a CPU LZ4 payload with one block per stream segment, compressing each segment that is large enough and
+/// saves more than 12.5%.
+///
+/// Returns `None` when no segment compresses, so the caller stores the payload raw.
+pub(crate) fn prepare(
+	data: &[u8],
+	streams: Option<&[StreamDescription]>,
+	policy: ResourceCompressionPolicy,
+) -> Option<PreparedCompression> {
 	if policy == ResourceCompressionPolicy::Disabled || data.len() < MINIMUM_COMPRESSION_SIZE {
 		return None;
 	}
-	if !probe_suggests_savings(data) {
-		return None;
-	}
 
-	let Some(maximum_size) = maximum_compressed_size(data.len()) else {
+	let boundaries = segment_boundaries(data.len(), streams);
+	let segments = || boundaries.windows(2).map(|window| window[0]..window[1]);
+	let block_count = boundaries.len() - 1;
+
+	// Every segment's encoder bound is reserved up front, so compressing one segment never reallocates the output.
+	let Some(maximum_size) = segments().try_fold(
+		BLOCK_COUNT_SIZE.checked_add(BLOCK_ENTRY_SIZE.checked_mul(block_count)?)?,
+		|total, segment| total.checked_add(maximum_compressed_size(segment.len())?),
+	) else {
 		log::warn!(
-			"Resource compression was skipped. The most likely cause is that the complete payload is too large for this platform."
+			"Resource compression was skipped. The most likely cause is that the complete payload is too large for this platform. Store the resource with `ResourceCompressionPolicy::Disabled`."
 		);
 		return None;
 	};
-	let mut compressed = Vec::new();
-	if compressed.try_reserve_exact(maximum_size).is_err() {
+	let mut payload = Vec::new();
+	if payload.try_reserve_exact(maximum_size).is_err() {
 		log::warn!(
-			"Resource compression was skipped. The most likely cause is insufficient memory for the temporary LZ4 output."
+			"Resource compression was skipped. The most likely cause is insufficient memory for the temporary LZ4 output. Free memory or store the resource with `ResourceCompressionPolicy::Disabled`."
 		);
 		return None;
 	}
-	compressed.resize(maximum_size, 0);
-	let Ok(compressed_size) = lz4_flex::block::compress_into(data, &mut compressed) else {
-		log::warn!(
-			"Resource compression was skipped. The most likely cause is that the prepared LZ4 output bound was too small."
-		);
-		return None;
-	};
 
-	if !is_worthwhile(data.len(), compressed_size) {
+	payload.extend_from_slice(&u32::try_from(block_count).ok()?.to_le_bytes());
+	payload.resize(BLOCK_COUNT_SIZE + BLOCK_ENTRY_SIZE * block_count, 0);
+	let mut compressed_any = false;
+	for (index, segment) in segments().enumerate() {
+		let decoded_size = segment.len();
+		let stored_size = append_block(&mut payload, &data[segment]);
+		compressed_any |= stored_size != decoded_size;
+
+		let entry = BLOCK_COUNT_SIZE + BLOCK_ENTRY_SIZE * index;
+		payload[entry..entry + 8].copy_from_slice(&(decoded_size as u64).to_le_bytes());
+		payload[entry + 8..entry + 16].copy_from_slice(&(stored_size as u64).to_le_bytes());
+	}
+
+	if !compressed_any {
 		return None;
 	}
 
-	compressed.truncate(compressed_size);
 	Some(PreparedCompression {
-		bytes: compressed,
+		bytes: payload,
 		decoded_hash: payload_hash(data),
 		decoded_size: data.len(),
 	})
 }
 
-/// Decodes one complete LZ4 block into the exact post-decompression buffer.
-pub(crate) fn decompress_into(compressed: &[u8], output: &mut [u8]) -> Result<(), ()> {
-	let written = lz4_flex::block::decompress_into(compressed, output).map_err(|_| ())?;
-	if written != output.len() {
+/// Returns the sorted, distinct offsets where segments start and end: 0, `size`, and every stream's start and end.
+///
+/// Stream ranges past the payload are clamped to it, so malformed descriptions can't create out-of-range segments.
+fn segment_boundaries(size: usize, streams: Option<&[StreamDescription]>) -> Vec<usize> {
+	let streams = streams.unwrap_or_default();
+	let mut boundaries = Vec::with_capacity(2 + streams.len() * 2);
+	boundaries.extend([0, size]);
+	for stream in streams {
+		let start = stream.offset().min(size);
+		boundaries.extend([start, stream.offset().saturating_add(stream.size()).min(size)]);
+	}
+	boundaries.sort_unstable();
+	boundaries.dedup();
+	boundaries
+}
+
+/// Appends one segment's block to `payload` and returns its stored size.
+///
+/// The block is LZ4 when the segment passes the size, probe, and savings rules, and the segment's raw bytes otherwise.
+/// `payload` must already have capacity for the segment's encoder bound.
+fn append_block(payload: &mut Vec<u8>, segment: &[u8]) -> usize {
+	if segment.len() >= MINIMUM_COMPRESSION_SIZE
+		&& probe_suggests_savings(segment)
+		&& let Some(bound) = maximum_compressed_size(segment.len())
+	{
+		let start = payload.len();
+		payload.resize(start + bound, 0);
+		if let Ok(size) = lz4_flex::block::compress_into(segment, &mut payload[start..])
+			&& is_worthwhile(segment.len(), size)
+		{
+			payload.truncate(start + size);
+			return size;
+		}
+		payload.truncate(start);
+	}
+
+	payload.extend_from_slice(segment);
+	segment.len()
+}
+
+/// Decodes a complete CPU LZ4 payload into the exact post-decompression buffer.
+pub(crate) fn decompress_into(payload: &[u8], output: &mut [u8]) -> Result<(), ()> {
+	let mut blocks = Blocks::parse(payload)?;
+	let mut decoded_end = 0;
+	for block in &mut blocks {
+		let block = block?;
+		block.decode_into(output.get_mut(block.decoded.clone()).ok_or(())?)?;
+		decoded_end = block.decoded.end;
+	}
+	if decoded_end != output.len() || !blocks.data.is_empty() {
 		return Err(());
 	}
 	Ok(())
+}
+
+/// Decodes the `range` of decoded bytes into `output`, which must be exactly `range.len()` long, touching only the
+/// blocks that overlap it.
+///
+/// A block that `range` covers completely is decoded straight into `output`. A block it covers only in part is
+/// decoded into `scratch` first, which callers reuse across reads to avoid one allocation per block.
+pub(crate) fn decode_range_into(
+	payload: &[u8],
+	range: Range<usize>,
+	output: &mut [u8],
+	scratch: &mut Vec<u8>,
+) -> Result<(), ()> {
+	debug_assert_eq!(range.len(), output.len());
+	if range.is_empty() {
+		return Ok(());
+	}
+
+	for block in Blocks::parse(payload)? {
+		let block = block?;
+		if block.decoded.end <= range.start {
+			continue;
+		}
+
+		let start = block.decoded.start.max(range.start);
+		let end = block.decoded.end.min(range.end);
+		let destination = &mut output[start - range.start..end - range.start];
+		if start == block.decoded.start && end == block.decoded.end {
+			block.decode_into(destination)?;
+		} else {
+			scratch.clear();
+			scratch.try_reserve(block.decoded.len()).map_err(|_| ())?;
+			scratch.resize(block.decoded.len(), 0);
+			block.decode_into(scratch)?;
+			destination.copy_from_slice(&scratch[start - block.decoded.start..end - block.decoded.start]);
+		}
+
+		if block.decoded.end >= range.end {
+			return Ok(());
+		}
+	}
+
+	// The table ended before the range did.
+	Err(())
+}
+
+/// The `Block` struct locates one stored block of a CPU LZ4 payload and the decoded range it expands to.
+struct Block<'a> {
+	decoded: Range<usize>,
+	stored: &'a [u8],
+}
+
+impl Block<'_> {
+	/// Writes the block's decoded bytes into `output`, which must be exactly the block's decoded size.
+	fn decode_into(&self, output: &mut [u8]) -> Result<(), ()> {
+		if output.len() != self.decoded.len() {
+			return Err(());
+		}
+		// A block stored at its decoded size holds raw bytes, because a kept LZ4 block is always smaller.
+		if self.stored.len() == output.len() {
+			output.copy_from_slice(self.stored);
+			return Ok(());
+		}
+		let written = lz4_flex::block::decompress_into(self.stored, output).map_err(|_| ())?;
+		if written != output.len() {
+			return Err(());
+		}
+		Ok(())
+	}
+}
+
+/// The `Blocks` struct walks a CPU LZ4 payload's block table in decoded order without allocating.
+struct Blocks<'a> {
+	table: &'a [u8],
+	data: &'a [u8],
+	decoded_offset: usize,
+}
+
+impl<'a> Blocks<'a> {
+	/// Splits a payload into its block table and block bytes.
+	fn parse(payload: &'a [u8]) -> Result<Self, ()> {
+		let (count, rest) = payload.split_first_chunk::<BLOCK_COUNT_SIZE>().ok_or(())?;
+		let table_size = usize::try_from(u32::from_le_bytes(*count))
+			.ok()
+			.and_then(|count| count.checked_mul(BLOCK_ENTRY_SIZE))
+			.ok_or(())?;
+		let (table, data) = rest.split_at_checked(table_size).ok_or(())?;
+		Ok(Self {
+			table,
+			data,
+			decoded_offset: 0,
+		})
+	}
+}
+
+impl<'a> Iterator for Blocks<'a> {
+	type Item = Result<Block<'a>, ()>;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		let (entry, table) = self.table.split_first_chunk::<BLOCK_ENTRY_SIZE>()?;
+		self.table = table;
+		let size = |bytes: &[u8]| usize::try_from(u64::from_le_bytes(bytes.try_into().unwrap())).map_err(|_| ());
+		let block = (|| {
+			let decoded_size = size(&entry[..8])?;
+			let stored_size = size(&entry[8..])?;
+			// An LZ4 block larger than its decoded bytes is never kept, so a larger stored size means corrupt metadata.
+			if stored_size > decoded_size {
+				return Err(());
+			}
+			let (stored, data) = self.data.split_at_checked(stored_size).ok_or(())?;
+			let decoded_end = self.decoded_offset.checked_add(decoded_size).ok_or(())?;
+			let block = Block {
+				decoded: self.decoded_offset..decoded_end,
+				stored,
+			};
+			self.data = data;
+			self.decoded_offset = decoded_end;
+			Ok(block)
+		})();
+		if block.is_err() {
+			// Stop after the first corrupt entry, because later offsets depend on it.
+			self.table = &[];
+		}
+		Some(block)
+	}
 }
 
 /// Returns whether compression saves enough storage to repay decoding work.
@@ -133,7 +333,7 @@ fn is_worthwhile(decoded_size: usize, compressed_size: usize) -> bool {
 	compressed_size < decoded_size - decoded_size / MINIMUM_SAVINGS_DIVISOR
 }
 
-/// Predicts from a few spread-out windows whether compressing all of `data` can save enough to keep the result.
+/// Predicts from a few spread-out windows whether compressing all of one segment can save enough to keep the result.
 ///
 /// Block-compressed textures and other dense payloads rarely compress, and trying costs a full pass over them.
 /// Each window sees fewer earlier matches than the whole payload does, so it compresses slightly worse, and the probe
@@ -173,7 +373,8 @@ pub(crate) fn payload_hash(data: &[u8]) -> u64 {
 
 #[cfg(test)]
 mod tests {
-	use super::{ResourceCompressionPolicy, payload_hash, prepare};
+	use super::{ResourceCompressionPolicy, decompress_into, payload_hash, prepare};
+	use crate::StreamDescription;
 
 	/// Returns deterministic bytes that no general-purpose compressor can shrink.
 	fn noise(len: usize) -> Vec<u8> {
@@ -190,7 +391,7 @@ mod tests {
 
 	#[test]
 	fn incompressible_payloads_are_stored_raw() {
-		assert!(prepare(&noise(512 * 1024), ResourceCompressionPolicy::Enabled).is_none());
+		assert!(prepare(&noise(512 * 1024), None, ResourceCompressionPolicy::Enabled).is_none());
 	}
 
 	#[test]
@@ -200,10 +401,30 @@ mod tests {
 		let mut data = noise(64 * 1024);
 		data.extend(std::iter::repeat_n([12_u8, 34, 56, 255], 256 * 1024).flatten());
 
-		let prepared = prepare(&data, ResourceCompressionPolicy::Enabled).expect("a mostly repetitive payload should compress");
+		let prepared = prepare(&data, None, ResourceCompressionPolicy::Enabled).expect("a mostly repetitive payload should compress");
 
 		assert!(prepared.bytes.len() < data.len() / 2);
 		assert_eq!(prepared.decoded_size, data.len());
 		assert_eq!(prepared.decoded_hash, payload_hash(&data));
+	}
+
+	#[test]
+	fn streams_that_do_not_compress_are_stored_raw_beside_streams_that_do() {
+		let mut data = noise(64 * 1024);
+		data.extend(std::iter::repeat_n(9_u8, 64 * 1024));
+		let streams = [
+			StreamDescription::new("noise", 64 * 1024, 0),
+			StreamDescription::new("runs", 64 * 1024, 64 * 1024),
+		];
+
+		let prepared =
+			prepare(&data, Some(&streams), ResourceCompressionPolicy::Enabled).expect("the repetitive stream should compress");
+
+		// The noise stream keeps its full size, and the runs stream shrinks to almost nothing.
+		assert!(prepared.bytes.len() > 64 * 1024);
+		assert!(prepared.bytes.len() < 64 * 1024 + 1024);
+		let mut decoded = vec![0; data.len()];
+		decompress_into(&prepared.bytes, &mut decoded).unwrap();
+		assert_eq!(decoded, data);
 	}
 }

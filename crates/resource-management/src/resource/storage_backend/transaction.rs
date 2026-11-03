@@ -24,7 +24,7 @@ pub struct ResourceTransaction<'a> {
 	guard: ResourceReservationGuard<'a>,
 	resource_id: ResourceId,
 	writer: ResourceWriter,
-	/// The size clients receive after CPU decompression, when the written bytes are one CPU LZ4 block.
+	/// The size clients receive after CPU decompression, when the written bytes are a CPU LZ4 payload.
 	decoded_size: Option<usize>,
 }
 
@@ -151,8 +151,11 @@ impl AsyncWrite for ResourceTransaction<'_> {
 }
 
 /// Prepares and writes one complete owned payload through a caller-selected transaction factory.
+///
+/// `streams` are the payload's named ranges, which CPU compression keeps independently decodable.
 pub(crate) async fn write_complete_owned_resource<'a, T, Begin, BeginFuture>(
 	data: T,
+	streams: Option<&[crate::StreamDescription]>,
 	compression_policy: crate::resource::ResourceCompressionPolicy,
 	begin: Begin,
 ) -> Result<ResourceTransaction<'a>, ()>
@@ -161,7 +164,7 @@ where
 	Begin: FnOnce(usize) -> BeginFuture,
 	BeginFuture: Future<Output = Result<ResourceTransaction<'a>, ()>>,
 {
-	let prepared = crate::resource::compression::prepare(data.as_init(), compression_policy);
+	let prepared = crate::resource::compression::prepare(data.as_init(), streams, compression_policy);
 	if let Some(prepared) = prepared {
 		let mut transaction = begin(prepared.bytes.len())
 			.await?

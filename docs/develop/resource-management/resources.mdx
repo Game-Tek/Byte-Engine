@@ -71,7 +71,11 @@ resources.
 
 ## Payload authoring and encoding
 
-The default complete-payload authoring path uses CPU LZ4 compression. It keeps a payload uncompressed when it's smaller than 1 KiB, compression wouldn't save more than 12.5 percent, or the temporary compression output can't be prepared safely. Before it compresses a payload of 128 KiB or more, it compresses four 16 KiB samples spread across the payload. When the samples save less than 6.25 percent, it stores the payload uncompressed without compressing the rest, which is the usual outcome for BC7 textures. Set `ProcessedAsset::with_compression(ResourceCompressionPolicy::Disabled)` when one resource must remain uncompressed. A backend can override the CPU compression policy when it needs another transport path.
+The default complete-payload authoring path uses CPU LZ4 compression. `compression::prepare` cuts the payload at every stream's start and end offset and stores each segment as its own block behind a small block table, so a reader can decode one stream without the others. The [CPU LZ4 layout](/docs/reference/resource-store#cpu-lz4-layout) defines the table and the segments. A payload without streams is one segment.
+
+The size, probe, and savings rules apply to each segment. A segment stays raw when it's smaller than 1 KiB or compression wouldn't save more than 12.5 percent. Before it compresses a segment of 128 KiB or more, it compresses four 16 KiB samples spread across the segment. When the samples save less than 6.25 percent, it stores the segment raw without compressing the rest of it, which is the usual outcome for BC7 mip levels. When no segment compresses, or the temporary compression output can't be prepared safely, the whole resource is stored as `raw`. Set `ProcessedAsset::with_compression(ResourceCompressionPolicy::Disabled)` when one resource must remain uncompressed. A backend can override the CPU compression policy when it needs another transport path.
+
+The block table lives in the payload instead of the stream descriptions, so a complete read decodes every block without metadata. That keeps `ResourceReader::into_backing_storage` and `beld` payload reads independent of `streams`. A raw block is one whose stored size equals its decoded size: a kept LZ4 block is always smaller, so the table needs no separate flag. The tests in `resource/compression.rs` and `resource/reader/mod.rs` guard that a stream read returns exactly the requested streams' bytes and that a payload with a raw block next to an LZ4 block still decodes completely.
 
 The resource hash always identifies decoded bytes, so changing the storage encoding doesn't change resource identity. Byte Engine computes it with rapidhash V3, a non-cryptographic hash whose output stays the same across crate versions and platforms. Each resource stores one `encoding`: `raw`, `cpu-lz4`, or `metal-io-lz4`. CPU and GPU encodings are mutually exclusive by construction. Inspect `encoding`, `size`, and `stored_size` when you need to distinguish the client-facing payload from its physical extent.
 
@@ -127,7 +131,7 @@ or stream target when you need ownership or preallocated memory.
 Use the default target when the consumer can borrow the backing storage directly.
 Use explicit targets when the consumer needs a specific allocation, lifetime, or stream layout.
 
-A CPU-compressed resource is always decoded before a client receives it. Load it into either an exact buffer sized to `Reference::size` or reader-owned backing storage. Partial ranges and separate stream targets are unavailable for one compressed block. If you need named ranges, load reader-owned backing storage first, then use the resource's `StreamDescription` values to select ranges from the decoded bytes.
+A CPU-compressed resource is always decoded before a client receives it. Load it into an exact buffer sized to `Reference::size`, reader-owned backing storage, or stream targets. A stream target decodes only the blocks its stream covers, so loading one mesh level or one mip level doesn't decompress the rest of the payload. Partial byte ranges are rejected, because a range can start inside an LZ4 block.
 
 ## Rust API
 

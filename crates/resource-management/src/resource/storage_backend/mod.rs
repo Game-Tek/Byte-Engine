@@ -96,7 +96,11 @@ pub trait WriteStorageBackend: Sync + Send {
 		allocator: &'a dyn std::alloc::Allocator,
 	) -> impl Future<Output = Result<SerializableResource, ()>> + 'a {
 		async move {
-			let prepared = crate::resource::compression::prepare(data, self.cpu_compression_policy(&resource));
+			let prepared = crate::resource::compression::prepare(
+				data,
+				resource.streams.as_deref(),
+				self.cpu_compression_policy(&resource),
+			);
 			let transaction = if let Some(prepared) = prepared {
 				let mut transaction = self
 					.begin_resource(ResourceId::new(resource.id()), prepared.bytes.len())

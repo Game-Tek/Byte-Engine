@@ -196,10 +196,16 @@ impl StoredResourceReader {
 	) -> Result<ReadTargets<'a>, ()> {
 		let compressed = self.backing.try_as_slice().ok_or(())?;
 
-		// Stream ranges address decoded bytes, so the payload is decoded once and every stream is copied from it.
+		// Each stream decodes only the blocks it covers, so the rest of the payload is never decompressed.
 		if let ReadTargetsMut::Streams(streams) = read_target {
-			let decoded = decode_owned(compressed, self.decoded_size)?;
-			return copy_streams(&decoded, stream_descriptions, streams);
+			let mut scratch = Vec::new();
+			return read_streams(self.decoded_size, stream_descriptions, streams, |range, destination| {
+				compression::decode_range_into(compressed, range, destination, &mut scratch).map_err(|()| {
+					log::error!(
+						"Compressed resource stream could not be decoded. The most likely cause is corrupt payload data or mismatched stored compression metadata. Bake the resource again."
+					);
+				})
+			});
 		}
 
 		let (buffer, offset, size) = match &mut read_target {
@@ -244,29 +250,59 @@ impl StoredResourceReader {
 					Ok(ReadTargets::Box(buffer))
 				}
 			}
-			ReadTargetsMut::Streams(streams) => copy_streams(data, stream_descriptions, streams),
+			ReadTargetsMut::Streams(streams) => {
+				read_streams(data.len(), stream_descriptions, streams, |range, destination| {
+					destination.copy_from_slice(&data[range]);
+					Ok(())
+				})
+			}
 			ReadTargetsMut::BackingStorage => Err(()),
 		}
 	}
 }
 
-/// Copies each requested named range of decoded payload bytes into its stream.
-fn copy_streams<'a>(
-	data: &[u8],
+/// Fills each requested stream from its named range of decoded payload bytes.
+///
+/// `read` receives a decoded range inside the `payload_size`-byte payload and a destination of the same length. A
+/// stream buffer shorter than its described range receives the range's first bytes.
+fn read_streams<'a>(
+	payload_size: usize,
 	stream_descriptions: Option<&[StreamDescription]>,
 	mut streams: Vec<StreamMut<'a>>,
+	mut read: impl FnMut(Range<usize>, &mut [u8]) -> Result<(), ()>,
 ) -> Result<ReadTargets<'a>, ()> {
 	let Some(stream_descriptions) = stream_descriptions else {
-		log::error!("Resource streams could not be loaded. The most likely cause is that stream descriptions are missing.");
+		log::error!(
+			"Resource streams could not be loaded. The most likely cause is that stream descriptions are missing. Pass the resource's stream descriptions with the stream targets."
+		);
 		return Err(());
 	};
 
 	for stream in &mut streams {
 		let description = find_stream_description(stream_descriptions, stream.name())?;
-		copy_stream(data, description, stream)?;
+		let described = described_range(description, payload_size)?;
+		let destination = stream.buffer_mut();
+		let size = described.len().min(destination.len());
+		read(described.start..described.start + size, &mut destination[..size])?;
 	}
 
 	Ok(ReadTargets::Streams(streams.into_iter().map(Into::into).collect()))
+}
+
+/// Returns one stream's decoded range after checking it lies inside the payload.
+fn described_range(description: &StreamDescription, payload_size: usize) -> Result<Range<usize>, ()> {
+	let end = description.offset.checked_add(description.size).ok_or_else(|| {
+		log::error!(
+			"Resource stream range overflowed. The most likely cause is corrupt stored stream metadata. Bake the resource again."
+		);
+	})?;
+	if end > payload_size {
+		log::error!(
+			"Resource stream is outside its payload. The most likely cause is corrupt stored stream metadata. Bake the resource again."
+		);
+		return Err(());
+	}
+	Ok(description.offset..end)
 }
 
 /// Finds one requested stream and reports mismatched resource metadata at the read boundary.
@@ -291,18 +327,6 @@ fn copy_resource_range(data: &[u8], destination: &mut [u8], offset: usize, reque
 		.min(source.len());
 	destination[..read_len].copy_from_slice(&source[..read_len]);
 	read_len
-}
-
-/// Copies one requested named range while enforcing its persisted bounds.
-fn copy_stream(data: &[u8], description: &StreamDescription, stream: &mut StreamMut<'_>) -> Result<(), ()> {
-	let description_end = description.offset.checked_add(description.size).ok_or_else(|| {
-		log::error!("Resource stream range overflowed. The most likely cause is corrupt stored stream metadata.");
-	})?;
-	let described = data.get(description.offset..description_end).ok_or_else(|| {
-		log::error!("Resource stream is outside its payload. The most likely cause is corrupt stored stream metadata.");
-	})?;
-	copy_resource_range(described, stream.buffer_mut(), 0, None);
-	Ok(())
 }
 
 impl ResourceReader for StoredResourceReader {
@@ -483,18 +507,27 @@ mod tests {
 		fs::remove_file(path).unwrap();
 	}
 
-	#[crate::r#async::test]
-	async fn compressed_stream_reads_return_the_decoded_named_ranges() {
-		// Runs of 64 equal bytes compress well, so the payload is stored as one LZ4 block.
-		let decoded = (0..4096_usize).map(|index| (index / 64) as u8).collect::<Vec<_>>();
-		let compressed = compression::prepare(&decoded, crate::resource::ResourceCompressionPolicy::Enabled)
-			.expect("repeated bytes should pass the compression heuristic");
-		let mut reader = StoredResourceReader::new(
+	/// Stores `decoded` as a CPU LZ4 payload laid out for `descriptions` and returns a reader over it.
+	fn compressed_reader(decoded: &[u8], descriptions: &[StreamDescription]) -> StoredResourceReader {
+		let compressed = compression::prepare(
+			decoded,
+			Some(descriptions),
+			crate::resource::ResourceCompressionPolicy::Enabled,
+		)
+		.expect("repeated bytes should pass the compression heuristic");
+		StoredResourceReader::new(
 			ResourceReaderBacking::Buffer(compressed.bytes.into_boxed_slice()),
 			ResourcePayloadEncoding::CpuLz4,
 			decoded.len(),
-		);
+		)
+	}
+
+	#[crate::r#async::test]
+	async fn compressed_stream_reads_return_the_decoded_named_ranges() {
+		// Runs of 64 equal bytes compress well. The descriptions leave gaps and end inside other runs.
+		let decoded = (0..4096_usize).map(|index| (index / 64) as u8).collect::<Vec<_>>();
 		let descriptions = [StreamDescription::new("head", 8, 60), StreamDescription::new("tail", 4, 4092)];
+		let mut reader = compressed_reader(&decoded, &descriptions);
 		let mut head = [0_u8; 8];
 		let mut tail = [0_u8; 4];
 		let streams = vec![StreamMut::new("head", &mut head), StreamMut::new("tail", &mut tail)];
@@ -506,6 +539,60 @@ mod tests {
 			Some([0, 0, 0, 0, 1, 1, 1, 1].as_slice())
 		);
 		assert_eq!(loaded.stream("tail").map(crate::Stream::buffer), Some([63; 4].as_slice()));
+	}
+
+	#[crate::r#async::test]
+	async fn partial_compressed_stream_reads_return_exactly_the_requested_streams() {
+		// Three compressible streams with different contents, so a stream read from the wrong block would differ.
+		let stream_size = 8 * 1024;
+		let decoded = (0..3 * stream_size)
+			.map(|index| ((index / stream_size) * 50 + index % 7) as u8)
+			.collect::<Vec<_>>();
+		let descriptions = [
+			StreamDescription::new("level[0].positions", stream_size, 0),
+			StreamDescription::new("level[1].positions", stream_size, stream_size),
+			StreamDescription::new("level[2].positions", stream_size, 2 * stream_size),
+		];
+		let mut reader = compressed_reader(&decoded, &descriptions);
+		let mut first = vec![0_u8; stream_size];
+		let mut last = vec![0_u8; stream_size];
+		let streams = vec![
+			StreamMut::new("level[2].positions", &mut last),
+			StreamMut::new("level[0].positions", &mut first),
+		];
+
+		let loaded = reader.read_into(Some(&descriptions), streams.into()).await.unwrap();
+
+		assert_eq!(
+			loaded.stream("level[0].positions").map(crate::Stream::buffer),
+			Some(&decoded[..stream_size])
+		);
+		assert_eq!(
+			loaded.stream("level[2].positions").map(crate::Stream::buffer),
+			Some(&decoded[2 * stream_size..])
+		);
+		assert!(loaded.stream("level[1].positions").is_none());
+	}
+
+	#[crate::r#async::test]
+	async fn compressed_payloads_with_an_incompressible_stream_still_decode_completely() {
+		// The noise stream fails the savings rule and is stored raw beside the compressed one.
+		let mut state = 0x9E37_79B9_u32;
+		let mut decoded = (0..4096)
+			.map(|_| {
+				state ^= state << 13;
+				state ^= state >> 17;
+				state ^= state << 5;
+				state as u8
+			})
+			.collect::<Vec<_>>();
+		decoded.extend(std::iter::repeat_n(7_u8, 4096));
+		let descriptions = [StreamDescription::new("noise", 4096, 0), StreamDescription::new("runs", 4096, 4096)];
+		let reader: Box<dyn ResourceReader> = Box::new(compressed_reader(&decoded, &descriptions));
+
+		let backing = reader.into_backing_storage().await.unwrap();
+
+		assert_eq!(backing.as_slice(), decoded.as_slice());
 	}
 
 	#[crate::r#async::test]

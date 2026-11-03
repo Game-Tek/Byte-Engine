@@ -411,9 +411,12 @@ impl<'a> BakeContext<'a> {
 		let id = ResourceId::new(resource.id());
 		let storage = self.asset_manager.resource_storage_backend.as_ref();
 		let transaction =
-			resource::storage_backend::write_complete_owned_resource(data, storage.cpu_compression_policy(&resource), |size| {
-				storage.begin_resource(id, size)
-			})
+			resource::storage_backend::write_complete_owned_resource(
+				data,
+				resource.streams.as_deref(),
+				storage.cpu_compression_policy(&resource),
+				|size| storage.begin_resource(id, size),
+			)
 			.await
 			.map_err(|_| LoadErrors::FailedToStore)?;
 

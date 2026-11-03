@@ -44,17 +44,50 @@ half of the free space. A packed store that meets it logs a warning once.
 | Encoding | Name | Content |
 | --- | --- | --- |
 | Raw | `raw` | The bytes as authored. |
-| CPU LZ4 | `cpu-lz4` | One LZ4 block that expands to the decoded size. |
+| CPU LZ4 | `cpu-lz4` | A block table followed by one block per segment of the decoded payload, as defined in [CPU LZ4 layout](#cpu-lz4-layout). |
 | Metal I/O LZ4 | `metal-io-lz4` | A Metal I/O container that only the GPU loads, for textures on macOS in files mode. |
 
-A resource stored in one piece is compressed when every rule holds:
+A resource stored in one piece is split into segments, and each segment is
+compressed when every rule holds:
 
 | Rule | Value |
 | --- | --- |
 | Policy | Compression isn't disabled for the resource. |
-| Size | The payload is 1 KiB or more. |
-| Probe | Payloads of 128 KiB or more are probed first: four 16 KiB windows spread across the payload must save more than 6.25 percent, or the payload stays raw without compressing the rest. |
-| Result | The compressed payload is kept only when it saves more than 12.5 percent. |
+| Size | The segment is 1 KiB or more. |
+| Probe | Segments of 128 KiB or more are probed first: four 16 KiB windows spread across the segment must save more than 6.25 percent, or the segment stays raw without compressing the rest of it. |
+| Result | The compressed segment is kept only when it saves more than 12.5 percent. |
+
+A segment that fails a rule is stored raw inside the `cpu-lz4` payload. When no
+segment is compressed, the whole resource is stored as `raw` instead.
+
+### CPU LZ4 layout
+
+| Term | Definition |
+| --- | --- |
+| Boundary | Offset 0, the decoded size, and every stream's start and end offset. |
+| Segment | The decoded bytes between two consecutive distinct boundaries. A payload without streams is one segment. A stream that overlaps no other stream is exactly one segment, and bytes outside every stream form segments of their own. |
+| Block | The stored form of one segment. |
+
+A `cpu-lz4` payload holds these parts in order, with no padding:
+
+| Part | Size | Content |
+| --- | --- | --- |
+| Block count | 4 bytes | The number of blocks, N, as a little-endian unsigned integer. |
+| Block table | 16 × N bytes | One entry per block, in decoded order: the decoded size, then the stored size, each a little-endian 64-bit unsigned integer. |
+| Blocks | Sum of the stored sizes | Each block's stored bytes, in table order. |
+
+| Rule | Value |
+| --- | --- |
+| Raw block | A block whose stored size equals its decoded size holds the segment's bytes as authored. |
+| LZ4 block | Any other block is one LZ4 block, without a frame, that expands to exactly its decoded size. |
+| Decoded size | The blocks' decoded sizes add up to the resource's `size`. |
+| Stored size | The block count, the table, and the blocks add up to the resource's `stored_size`. |
+
+| Read target | Result |
+| --- | --- |
+| Complete payload | Every block is decoded. |
+| Named streams | Only the blocks that each requested stream covers are decoded. |
+| Partial range | Rejected. |
 
 A resource written through a transaction, in partial writes, stays raw. When
 the store's image compression is on, a plain image resource, one without

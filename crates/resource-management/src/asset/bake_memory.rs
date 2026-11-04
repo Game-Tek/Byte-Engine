@@ -1,10 +1,16 @@
-const BAKE_MEMORY_RESERVATION_BYTES: usize = 512 * 1024 * 1024;
-const BAKE_MEMORY_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// What a root bake is charged before its arenas grow; growth past it is charged as it happens.
+///
+/// It only bounds how many roots start before their growth shows, so it stays near a typical root's peak rather than the
+/// largest's: Sponza, the largest model viewer root, peaks at about 240 MiB, while shaders and audio stay under 1 MiB.
+/// A larger reservation fills the budget with roots that never use it and serializes the bake.
+const BAKE_MEMORY_RESERVATION_BYTES: usize = 64 * 1024 * 1024;
 
 /// The `BakeMemoryBudget` struct keeps concurrent bake arenas below a shared soft limit.
 pub(super) struct BakeMemoryBudget {
 	byte_limit: usize,
 	retained_bytes: Mutex<usize>,
+	/// The release that paused roots wait for, replaced each time one is announced.
+	release: Mutex<(Announcer<()>, Announcement<()>)>,
 }
 
 impl BakeMemoryBudget {
@@ -12,7 +18,19 @@ impl BakeMemoryBudget {
 		Self {
 			byte_limit,
 			retained_bytes: Mutex::new(0),
+			release: Mutex::new(Announcement::new()),
 		}
+	}
+
+	/// Returns `bytes` to the budget and wakes every paused root, so the first to retry is admitted as soon as memory
+	/// returns rather than at a polling interval.
+	fn return_bytes(&self, bytes: usize) {
+		{
+			let mut retained_bytes = self.retained_bytes.lock();
+			*retained_bytes = retained_bytes.saturating_sub(bytes);
+		}
+		let (released, _) = std::mem::replace(&mut *self.release.lock(), Announcement::new());
+		let _ = released.announce(());
 	}
 
 	/// Reserves admission capacity when the soft budget has room for another independent bake tree.
@@ -39,6 +57,8 @@ impl BakeMemoryBudget {
 		let mut reported_pause = false;
 
 		loop {
+			// Listen before trying, so a release between a failed try and the wait still wakes this root.
+			let release = self.release.lock().1.listener();
 			match self.try_acquire() {
 				Ok(scope) => {
 					if reported_pause {
@@ -56,7 +76,7 @@ impl BakeMemoryBudget {
 				}
 				Err(_) => {}
 			}
-			compio::time::sleep(BAKE_MEMORY_POLL_INTERVAL).await;
+			let _ = release.listen().await;
 		}
 	}
 }
@@ -99,17 +119,16 @@ impl BakeMemoryScope {
 		}
 
 		let released_charge = state.charged_bytes - new_charge;
-		let mut retained_bytes = self.budget.retained_bytes.lock();
-		*retained_bytes = retained_bytes.saturating_sub(released_charge);
 		state.charged_bytes = new_charge;
+		drop(state);
+		self.budget.return_bytes(released_charge);
 	}
 }
 
 impl Drop for BakeMemoryScope {
 	fn drop(&mut self) {
 		let charged_bytes = self.state.lock().charged_bytes;
-		let mut retained_bytes = self.budget.retained_bytes.lock();
-		*retained_bytes = retained_bytes.saturating_sub(charged_bytes);
+		self.budget.return_bytes(charged_bytes);
 	}
 }
 
@@ -233,7 +252,7 @@ use std::{
 	cell::Cell,
 	ptr::NonNull,
 	sync::Arc,
-	time::Duration,
 };
 
+use announcement::{Announcement, Announcer};
 use utils::sync::Mutex;

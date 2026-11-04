@@ -524,8 +524,10 @@ async fn bake_assembled(asset_manager: &AssetManager, features: &VisibilityFeatu
 		.await
 }
 
-/// Bakes every ID that is stale, up to 16 at once within `memory_budget`, reports progress, and returns the IDs that
-/// failed with their errors.
+/// Bakes every ID that is stale, reports progress, and returns the IDs that failed with their errors.
+///
+/// Every ID starts at once, and `memory_budget` decides how many run: a fixed cap left the cores idle while the last
+/// containers, which sort late, baked their images and shaders.
 ///
 /// When standard error is a terminal, a progress line replaces the message for each asset that starts or is current.
 async fn bake_ids(
@@ -584,7 +586,7 @@ async fn bake_ids(
 	let bake_start = Instant::now();
 
 	let failures = utils::r#async::stream::iter(tasks)
-		.buffer_unordered(16)
+		.buffer_unordered(resource_count.max(1))
 		.filter_map(async |failure| failure)
 		.collect::<Vec<_>>()
 		.await;

@@ -64,6 +64,20 @@ roughly halves the time a bake takes. Byte Engine builds one header for each
 Metal toolchain and deployment target, and compiles without it if the compiler
 rejects it, so you can delete these files at any time.
 
+Release bakes also precompile the declarations that shaders repeat word for
+word. Every material evaluation shader of one feature set declares the same
+75 KiB of structs, bindings, and lighting functions before its entry point, and
+checking them takes a third of its compile. When a second shader of a process
+declares the same text, at least 16 KiB of it, the bake builds a header of the
+declarations, chained on the prelude, and compiles that shader and every later
+one as its entry point alone. Each process builds its own headers and never
+reads one an earlier process left, named `byte-engine-msl-declarations-<hash>.pch`.
+A compile that fails against a header compiles whole, so errors point at the
+whole source. Debug bakes compile whole, because a library compiled against a
+header records only the entry point's source, which Xcode GPU captures read.
+Compiles of identical source, such as the same hit shader in two containers,
+share one compiler run.
+
 ## Link modules
 
 BESL does no file I/O, so the host that reads a shader also reads its

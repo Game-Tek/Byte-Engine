@@ -112,20 +112,31 @@ pub fn read_configuration_file(path: &std::path::Path) -> Result<Vec<Parameter>,
 	}
 }
 
-/// Returns `defaults` overridden by `configuration` and then by the `BE_*` variables among `environment`.
+/// Returns `defaults` overridden by `configuration`, then by `environment`, and then by the `--name=value` entries
+/// among `arguments`, so the most dynamic source wins.
 ///
 /// The application and BELD both resolve their parameters this way, so a bake reads the settings the application
-/// starts with. Pass the application's own parameters as `defaults`, the result of [`read_configuration_file`] as
-/// `configuration`, and [`std::env::vars`] as `environment`. In a variable's name, `_` stands for `-` and `__` for `.`,
-/// so `BE_PHYSICS__STEP_LANES` sets `physics.step-lanes`.
+/// starts with. Pass [`read_configuration_file`]'s result as `configuration`, [`std::env::vars`] as `environment`,
+/// and [`std::env::args`] as `arguments`, or nothing when the arguments are commands. In a `BE_` variable's name, `_`
+/// stands for `-` and `__` for `.`, so `BE_PHYSICS__STEP_LANES` sets `physics.step-lanes`. `RUST_LOG` sets
+/// `log.level` unless `BE_LOG__LEVEL` is set too.
 pub fn layer_parameters(
 	defaults: &[Parameter],
 	configuration: Vec<Parameter>,
 	environment: impl IntoIterator<Item = (String, String)>,
+	arguments: impl IntoIterator<Item = String>,
 ) -> Vec<Parameter> {
 	let mut parameters = defaults.to_vec();
 	for parameter in configuration {
 		upsert_parameter(&mut parameters, parameter);
+	}
+	let environment = environment.into_iter().collect::<Vec<_>>();
+	// Variables come in no particular order, so `RUST_LOG` goes first and the engine's own name wins.
+	if let Some((_, filter)) = environment.iter().find(|(key, _)| key == "RUST_LOG") {
+		upsert_parameter(
+			&mut parameters,
+			Parameter::new_string("log.level".to_string(), filter.clone()),
+		);
 	}
 	for (key, value) in environment {
 		let Some(name) = key.strip_prefix("BE_") else {
@@ -133,6 +144,11 @@ pub fn layer_parameters(
 		};
 		let name = name.replace("__", ".").replace('_', "-").to_lowercase();
 		upsert_parameter(&mut parameters, Parameter::new_string(name, value));
+	}
+	for argument in arguments.into_iter().filter(|argument| argument.starts_with("--")) {
+		if let Ok(parameter) = parse_argument(&argument) {
+			upsert_parameter(&mut parameters, parameter);
+		}
 	}
 	parameters
 }
@@ -283,31 +299,64 @@ mod tests {
 	}
 
 	#[test]
-	fn configuration_overrides_defaults_and_environment_overrides_both() {
+	fn later_sources_override_earlier_ones() {
 		let parameters = layer_parameters(
 			&[
 				Parameter::new("render.gtao.enabled", "false"),
 				Parameter::new("physics.step-lanes", "2"),
-				Parameter::new("log.level", "info"),
+				Parameter::new("inspector.port", "6681"),
+				Parameter::new("messages.capacity", "64"),
 			],
-			parameters_from_json(r#"{ "render.gtao.enabled": true, "physics.step-lanes": 4 }"#)
+			parameters_from_json(r#"{ "render.gtao.enabled": true, "physics.step-lanes": 4, "inspector.port": 6682 }"#)
 				.expect("test configuration should parse"),
 			[
 				("BE_PHYSICS__STEP_LANES".to_string(), "8".to_string()),
+				("BE_INSPECTOR__PORT".to_string(), "7000".to_string()),
 				("PATH".to_string(), "/usr/bin".to_string()),
 			],
+			["program", "--physics.step-lanes=16", "positional"].map(String::from),
 		);
 
 		for (name, value) in [
+			("messages.capacity", Some("64")),
 			("render.gtao.enabled", Some("true")),
-			("physics.step-lanes", Some("8")),
-			("log.level", Some("info")),
+			("inspector.port", Some("7000")),
+			("physics.step-lanes", Some("16")),
 			("path", None),
+			("program", None),
+			("positional", None),
 		] {
 			assert_eq!(
 				parameters[..].get_parameter(name).map(Parameter::value),
 				value,
 				"name: {name}"
+			);
+		}
+	}
+
+	#[test]
+	fn log_level_follows_the_most_dynamic_source() {
+		// `BE_LOG__LEVEL` comes first in the environment to show that its order there does not matter.
+		let rust_log = ("RUST_LOG", "info,byte_engine::physics=trace");
+		let be_log_level = ("BE_LOG__LEVEL", "error");
+		let cases: [(&[(&str, &str)], &[&str], &str); 4] = [
+			(&[], &[], "warn"),
+			(&[rust_log], &[], "info,byte_engine::physics=trace"),
+			(&[be_log_level, rust_log], &[], "error"),
+			(&[be_log_level, rust_log], &["--log.level=off"], "off"),
+		];
+
+		for (environment, arguments, expected) in cases {
+			let parameters = layer_parameters(
+				&[Parameter::new("log.level", "debug")],
+				parameters_from_json(r#"{ "log.level": "warn" }"#).expect("test configuration should parse"),
+				environment.iter().map(|&(key, value)| (key.to_string(), value.to_string())),
+				arguments.iter().map(|argument| argument.to_string()),
+			);
+			assert_eq!(
+				parameters[..].get_parameter("log.level").map(Parameter::value),
+				Some(expected),
+				"environment: {environment:?}, arguments: {arguments:?}"
 			);
 		}
 	}

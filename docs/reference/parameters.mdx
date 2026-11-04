@@ -21,7 +21,7 @@ value with the same name:
 | --- | --- | --- |
 | 1 | The parameters the application passes in code | Used as given. |
 | 2 | The project's `config.json` | Found under the Cargo package directory in a debug build, otherwise beside the executable, never in the working directory. Nested objects flatten into dotted names, so a nested `render`, `gtao`, `enabled` and a single `render.gtao.enabled` key set the same parameter. Strings pass through; booleans and numbers become their text. An array sets one name per element, the array's name followed by `.` and the element's index from 0, so `"roots": ["a", "b"]` sets `roots.0` and `roots.1`; an element is read like any other value. A reader of an array takes elements from index 0 and stops at the first index without a value. Null and a top-level value that isn't an object are errors, and a file that exists but can't be read or parsed stops startup. A missing file sets nothing. |
-| 3 | Environment variables starting with `BE_` | The name drops `BE_`, replaces `__` with `.`, replaces `_` with `-`, and lowercases, so `BE_PHYSICS__STEP_LANES` sets `physics.step-lanes`. The value is used as is. A name containing a literal underscore can't be set this way. |
+| 3 | `RUST_LOG`, then environment variables starting with `BE_` | `RUST_LOG` sets `log.level`. A `BE_` name drops `BE_`, replaces `__` with `.`, replaces `_` with `-`, and lowercases, so `BE_PHYSICS__STEP_LANES` sets `physics.step-lanes`, and `BE_LOG__LEVEL` replaces `RUST_LOG`. The value is used as is. A name containing a literal underscore can't be set this way. |
 | 4 | Process arguments starting with `--` | The text after the dashes splits on `=`: the name is the first part and the value is the second part only, so `--a=b=c` sets `a` to `b`. Without `=` the value is empty. Every such argument becomes a parameter, and unknown names are accepted. |
 
 BELD resolves sources 1 to 3. Source 1 is the parameters its application
@@ -46,7 +46,7 @@ A value is text that the reader converts:
 
 | Name | Type | Default | Effect |
 | --- | --- | --- | --- |
-| `log.level` | `trace`, `debug`, `info`, `warn`, `error`, or `off`; other text means `off` | Not set, so the logger's own level applies, which `RUST_LOG` sets | Caps the log level that prints. |
+| `log.level` | A filter in `RUST_LOG` syntax: a level such as `debug`, or directives such as `info,byte_engine::physics=trace` | `RUST_LOG` when set, otherwise only errors print | Sets which log records print. |
 | `trace` | Presence only; the value is ignored | Absent | Prints every tracing span and event at debug level or above to standard output. |
 | `messages.capacity` | Bytes | 67,108,864 | The message bus storage. |
 | `resources.path` | Path, relative to the working directory | `resources` under the application directory | Where the resource store lives. |
@@ -162,7 +162,7 @@ setup can install are `bloom`, `motion-blur`, `smaa`, `lens-flare`,
 
 | Input | Effect |
 | --- | --- |
-| `RUST_LOG` | The logger's filter, which `log.level` then caps. |
+| `RUST_LOG` | Sets `log.level`, as an environment source. |
 | `CARGO_MANIFEST_DIR` | In a debug build, the application directory that `config.json`, `resources`, and `assets` resolve against. |
 | `BYTE_ENGINE_D3D12_SDK_PATH` | Overrides the Direct3D 12 Agility SDK path on Windows. |
 

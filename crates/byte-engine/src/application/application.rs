@@ -41,15 +41,15 @@ pub struct BaseApplication {
 impl BaseApplication {
 	/// Creates the process configuration with the specified name and configuration parameters.
 	///
-	/// Parameters may be overridden by the project's `config.json`, then by `BE_*` environment variables, and then by
-	/// `--name=value` command-line arguments. In an environment variable's name, `_` stands for `-` and `__` for `.`,
-	/// so `BE_PHYSICS__STEP_LANES` sets `physics.step-lanes`. See [`parameters_from_json`](crate::application::parameters::parameters_from_json) for the file's format.
-	/// Applications are
-	/// singletons: this also installs the process logger and the `tracing` subscriber that feeds span times into
-	/// [`Self::metrics`].
+	/// Parameters may be overridden by the project's `config.json`, then by `RUST_LOG` and `BE_*` environment
+	/// variables, and then by `--name=value` command-line arguments, as [`layer_parameters`] describes. See
+	/// [`parameters_from_json`](crate::application::parameters::parameters_from_json) for the file's format.
+	/// Applications are singletons: this also installs the process logger and the `tracing` subscriber that feeds span
+	/// times into [`Self::metrics`].
 	///
 	/// # Configuration
-	/// - `log.level`: Sets the most verbose `log` level that is printed: `trace`, `debug`, `info`, `warn`, `error`, or `off`.
+	/// - `log.level`: Sets the logger's filter, in `RUST_LOG` syntax: a level such as `debug`, or directives such as
+	///   `info,byte_engine::physics=trace`. `RUST_LOG` sets it too. Without it only errors print.
 	/// - `trace`: Prints every `tracing` span and event at `DEBUG` or less verbose levels to standard output.
 	///
 	/// With the `tracy` Cargo feature, spans and logs also stream to a connected Tracy profiler.
@@ -57,17 +57,16 @@ impl BaseApplication {
 		// A file that exists but cannot be read or parsed stops startup, so a typo does not silently drop settings.
 		let configuration = read_configuration_file(&resolve_application_path(None, CONFIGURATION_FILE_NAME))
 			.unwrap_or_else(|error| panic!("{error}"));
-		let mut parameters = layer_parameters(parameters, configuration, std::env::vars());
-
-		// Take all arguments that have the form `--name=value` and convert them to parameters. BELD layers the same
-		// sources except these, because its own arguments are commands.
-		for argument in std::env::args().filter(|argument| argument.starts_with("--")) {
-			upsert_parameter(&mut parameters, parse_argument(&argument).unwrap());
-		}
+		// BELD layers the same sources except the arguments, because its own arguments are commands.
+		let parameters = layer_parameters(parameters, configuration, std::env::vars(), std::env::args());
 
 		let metrics = Arc::new(Metrics::new());
 		let trace = parameters.iter().any(|parameter| parameter.name == "trace");
-		install_subscriber(Arc::clone(&metrics), trace);
+		install_subscriber(
+			Arc::clone(&metrics),
+			trace,
+			parameters.get_parameter("log.level").map(Parameter::value),
+		);
 
 		let message_bus = MessageBus::new(message_bus_config(&parameters)).unwrap_or_else(|error| panic!("{error}"));
 		// Observation, which the inspector reads, has to start before the first route below is registered.
@@ -89,20 +88,6 @@ impl BaseApplication {
 			events,
 			event_listener,
 		};
-
-		if let Some(e) = application.get_parameter("log.level") {
-			let level = match e.value.as_str() {
-				"trace" => log::LevelFilter::Trace,
-				"debug" => log::LevelFilter::Debug,
-				"info" => log::LevelFilter::Info,
-				"warn" => log::LevelFilter::Warn,
-				"error" => log::LevelFilter::Error,
-				"off" => log::LevelFilter::Off,
-				_ => log::LevelFilter::Off,
-			};
-
-			log::set_max_level(level);
-		}
 
 		info!("Byte-Engine");
 		info!(
@@ -196,11 +181,12 @@ fn install_close_handler(events: &DefaultChannel<Events>) {
 	}
 }
 
-/// Installs the process logger and the global `tracing` subscriber, so span times reach `metrics`.
+/// Installs the process logger with `log_filter` and the global `tracing` subscriber, so span times reach `metrics`.
 ///
-/// `log` and `tracing` allow one global collector each per process. When another one was installed first, the
-/// engine keeps running without CPU metrics and says so.
-fn install_subscriber(metrics: Arc<Metrics>, trace: bool) {
+/// `log_filter` is the resolved `log.level`, which already accounts for `RUST_LOG`, so the logger does not read it.
+/// `log` and `tracing` allow one global collector each per process. When another one was installed first, the engine
+/// keeps running without CPU metrics and says so.
+fn install_subscriber(metrics: Arc<Metrics>, trace: bool, log_filter: Option<&str>) {
 	use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
 
 	let subscriber = tracing_subscriber::registry()
@@ -210,15 +196,27 @@ fn install_subscriber(metrics: Arc<Metrics>, trace: bool) {
 	#[cfg(feature = "tracy")]
 	let subscriber = subscriber.with(tracing_tracy::TracyLayer::default());
 
+	let mut logger = env_logger::Builder::new();
+	if let Some(log_filter) = log_filter {
+		logger.parse_filters(log_filter);
+	}
+	if let Ok(write_style) = std::env::var("RUST_LOG_STYLE") {
+		logger.parse_write_style(&write_style);
+	}
+
 	let logger_installed = {
 		#[cfg(feature = "tracy")]
 		{
-			// Bridge `log` records into `tracing` so the Tracy layer receives engine logs too.
-			tracing_log::LogTracer::init().is_ok()
+			// Bridge `log` records into `tracing` so the Tracy layer receives engine logs too. The bridge takes one
+			// level for every module, so it keeps the most verbose level among the filter's directives.
+			tracing_log::LogTracer::builder()
+				.with_max_level(logger.build().filter())
+				.init()
+				.is_ok()
 		}
 		#[cfg(not(feature = "tracy"))]
 		{
-			env_logger::try_init().is_ok()
+			logger.try_init().is_ok()
 		}
 	};
 
@@ -264,6 +262,4 @@ pub(crate) fn resolve_application_path(parameter: Option<&Parameter>, default_pa
 use log::{info, trace};
 
 use super::Parameter;
-use crate::application::parameters::{
-	CONFIGURATION_FILE_NAME, Parameters, layer_parameters, parse_argument, read_configuration_file, upsert_parameter,
-};
+use crate::application::parameters::{CONFIGURATION_FILE_NAME, Parameters, layer_parameters, read_configuration_file};

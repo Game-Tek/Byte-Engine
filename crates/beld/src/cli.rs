@@ -126,7 +126,12 @@ fn read_parameters(path: &str, defaults: &[Parameter]) -> Result<Vec<Parameter>,
 		log::error!("Failed to read the project configuration. {error}");
 		1
 	})?;
-	Ok(layer_parameters(defaults, configuration, std::env::vars()))
+	Ok(layer_parameters(
+		defaults,
+		configuration,
+		std::env::vars(),
+		std::iter::empty(),
+	))
 }
 
 /// Parses a positive MiB count and converts it to bytes without silently saturating.

@@ -16,7 +16,7 @@ share the one destination.
 | Value | Records go to |
 | --- | --- |
 | Not set | Nowhere. No stream opens, and systems write nothing. |
-| `log` | The log, at the info level with the target `byte_engine::stream`, one record per log line. A `log.level` above `info` hides them. |
+| `log` | The log, at the info level with the target `byte_engine::stream`, one record per log line. A `log.level` that leaves out info records of `byte_engine::stream` hides them. |
 | `stdout` | Standard output, one record per line. |
 | `stderr` | Standard error, one record per line. |
 | Any other text | The file at that path, relative to the working directory, created or truncated at startup. A file that can't be created stops startup. A path such as `/dev/fd/3` writes to an open file descriptor. |

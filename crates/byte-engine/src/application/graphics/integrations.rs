@@ -101,7 +101,7 @@ fn parse_artnet_ipv4_parameter(parameter: Option<&Parameter>, default: Ipv4Addr)
 
 impl crate::core::message::Message for ghi::window::Event {}
 
-/// Records a GHI window event into the standard mouse and keyboard devices.
+/// Records a GHI window event into the standard pointer, mouse, and keyboard devices.
 ///
 /// Focus loss, minimizing, closing, and resizing interrupt the interaction, so
 /// the seat's queued and retained records are discarded and the function
@@ -129,37 +129,46 @@ pub fn process_default_window_input<A: std::alloc::Allocator + Clone>(
 }
 
 /// Names the device and control a window input event drives, with its value.
+///
+/// Returns `None` for events that drive no control, and for controls whose device class the application didn't
+/// register.
 fn translate<A: std::alloc::Allocator + Clone>(
 	collector: &input::InputCollector<A>,
 	event: ghi::window::Events,
 ) -> Option<(input::DeviceHandle, &'static str, input::Value)> {
-	let mouse = collector.devices_by_class_name("Mouse")?.next()?;
-	let keyboard = collector.devices_by_class_name("Keyboard")?.next()?;
+	use ghi::window::{Events, PointingDevice, input::MouseKeys};
 
-	let record = match event {
-		ghi::window::Events::Button { pressed, button, .. } => {
-			let trigger = match button {
-				ghi::window::input::MouseKeys::Left => "Mouse.LeftButton",
-				ghi::window::input::MouseKeys::Right => "Mouse.RightButton",
-				ghi::window::input::MouseKeys::Middle => "Mouse.MiddleButton",
-				ghi::window::input::MouseKeys::ScrollUp => return Some((mouse, "Mouse.Scroll", input::Value::Float(1.0))),
-				ghi::window::input::MouseKeys::ScrollDown => return Some((mouse, "Mouse.Scroll", input::Value::Float(-1.0))),
+	// Each class names its controls with its own prefix.
+	let pointing = |device: PointingDevice, pointer: &'static str, mouse: &'static str| match device {
+		PointingDevice::Pointer => ("Pointer", pointer),
+		PointingDevice::Mouse => ("Mouse", mouse),
+	};
+	let (class, trigger, value) = match event {
+		Events::Button {
+			device, pressed, button, ..
+		} => {
+			let (class, trigger) = match button {
+				MouseKeys::Left => pointing(device, "Pointer.LeftButton", "Mouse.LeftButton"),
+				MouseKeys::Right => pointing(device, "Pointer.RightButton", "Mouse.RightButton"),
+				MouseKeys::Middle => pointing(device, "Pointer.MiddleButton", "Mouse.MiddleButton"),
 			};
-			(mouse, trigger, input::Value::Bool(pressed))
+			(class, trigger, input::Value::Bool(pressed))
 		}
-		ghi::window::Events::MousePosition { x, y, .. } => {
-			(mouse, "Mouse.Position", input::Value::Vector2(input::Axis2::new(x, y)))
+		Events::PointerPosition { x, y, .. } => ("Pointer", "Pointer.Position", input::Value::Vector2(input::Axis2::new(x, y))),
+		Events::MouseMove { device, dx, dy, .. } => {
+			let (class, trigger) = pointing(device, "Pointer.Movement", "Mouse.Movement");
+			(class, trigger, input::Value::Vector2(input::Axis2::new(dx, dy)))
 		}
-		ghi::window::Events::MouseMove { dx, dy, .. } => {
-			(mouse, "Mouse.Movement", input::Value::Vector2(input::Axis2::new(dx, dy)))
+		Events::Scroll { device, dy, .. } => {
+			let (class, trigger) = pointing(device, "Pointer.Scroll", "Mouse.Scroll");
+			(class, trigger, input::Value::Float(dy))
 		}
-		ghi::window::Events::Scroll { dy, .. } => (mouse, "Mouse.Scroll", input::Value::Float(dy)),
-		ghi::window::Events::Key { pressed, key, .. } => (keyboard, keyboard_trigger(key), input::Value::Bool(pressed)),
-		ghi::window::Events::Character { character, .. } => (keyboard, "Keyboard.Character", input::Value::Unicode(character)),
+		Events::Key { pressed, key, .. } => ("Keyboard", keyboard_trigger(key), input::Value::Bool(pressed)),
+		Events::Character { character, .. } => ("Keyboard", "Keyboard.Character", input::Value::Unicode(character)),
 		_ => return None,
 	};
 
-	Some(record)
+	Some((collector.devices_by_class_name(class)?.next()?, trigger, value))
 }
 
 /// Names the keyboard trigger a window key drives, from [`input::utils::KEYBOARD_KEYS`].
@@ -264,35 +273,52 @@ fn keyboard_trigger(key: ghi::window::input::Keys) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
-	use crate::input::utils::{register_keyboard_device_class, register_mouse_device_class};
+	use ghi::window::{Events, PointingDevice, Seat, input::MouseKeys};
 
-	/// Builds the standard mouse and keyboard devices the translation expects.
-	fn window_input() -> (input::InputCollector, input::DeviceHandle, input::DeviceHandle) {
+	use super::*;
+	use crate::input::utils::{register_keyboard_device_class, register_mouse_device_class, register_pointer_device_class};
+
+	/// The `Devices` struct holds the standard devices the translation expects.
+	struct Devices {
+		pointer: input::DeviceHandle,
+		mouse: input::DeviceHandle,
+		keyboard: input::DeviceHandle,
+	}
+
+	/// Builds the standard pointer, mouse, and keyboard devices the translation expects.
+	fn window_input() -> (input::InputCollector, Devices) {
 		let mut collector = input::InputCollector::new();
+		let pointer = register_pointer_device_class(&mut collector);
 		let mouse = register_mouse_device_class(&mut collector);
 		let keyboard = register_keyboard_device_class(&mut collector);
-		let mouse = collector.create_device(&mouse);
-		let keyboard = collector.create_device(&keyboard);
-		(collector, mouse, keyboard)
+		let devices = Devices {
+			pointer: collector.create_device(&pointer),
+			mouse: collector.create_device(&mouse),
+			keyboard: collector.create_device(&keyboard),
+		};
+		(collector, devices)
 	}
 
 	/// Records one event and returns the queued value of a device's control.
-	fn recorded(
-		event: ghi::window::Events,
-		device: impl Fn(input::DeviceHandle, input::DeviceHandle) -> input::DeviceHandle,
-		name: &'static str,
-	) -> input::Value {
-		let (mut collector, mouse, keyboard) = window_input();
+	fn recorded(event: Events, device: impl Fn(&Devices) -> input::DeviceHandle, name: &'static str) -> input::Value {
+		let (mut collector, devices) = window_input();
 		assert!(!process_default_window_input(&mut collector, event));
 		assert_eq!(collector.source_events().len(), 1);
 		collector
 			.value(
 				input::SeatHandle::stub(),
-				device(mouse, keyboard),
+				device(&devices),
 				input::TriggerReference::Name(name),
 			)
 			.expect("registered control")
+	}
+
+	/// Picks the device a pointing device's events drive.
+	fn pointing(device: PointingDevice) -> impl Fn(&Devices) -> input::DeviceHandle {
+		move |devices| match device {
+			PointingDevice::Pointer => devices.pointer,
+			PointingDevice::Mouse => devices.mouse,
+		}
 	}
 
 	#[test]
@@ -391,13 +417,13 @@ mod tests {
 			Keys::CapsLock,
 			Keys::PrintScreen,
 		] {
-			let event = ghi::window::Events::Key {
-				seat: ghi::window::Seat::stub(),
+			let event = Events::Key {
+				seat: Seat::stub(),
 				pressed: true,
 				key,
 			};
 			assert_eq!(
-				recorded(event, |_, keyboard| keyboard, keyboard_trigger(key)),
+				recorded(event, |devices| devices.keyboard, keyboard_trigger(key)),
 				input::Value::Bool(true),
 				"{key:?}"
 			);
@@ -405,26 +431,87 @@ mod tests {
 	}
 
 	#[test]
-	fn maps_mouse_move_to_mouse_movement_trigger() {
-		let event = ghi::window::Events::MouseMove {
-			seat: ghi::window::Seat::stub(),
-			dx: 0.25,
-			dy: -0.5,
+	fn each_pointing_device_drives_its_own_device_class() {
+		// Each device's movement, left, right, and middle button, and scroll controls.
+		let controls = [
+			(
+				PointingDevice::Pointer,
+				[
+					"Pointer.Movement",
+					"Pointer.LeftButton",
+					"Pointer.RightButton",
+					"Pointer.MiddleButton",
+					"Pointer.Scroll",
+				],
+			),
+			(
+				PointingDevice::Mouse,
+				[
+					"Mouse.Movement",
+					"Mouse.LeftButton",
+					"Mouse.RightButton",
+					"Mouse.MiddleButton",
+					"Mouse.Scroll",
+				],
+			),
+		];
+		for (device, [movement_control, left, right, middle, scroll_control]) in controls {
+			let movement = Events::MouseMove {
+				seat: Seat::stub(),
+				device,
+				dx: 0.25,
+				dy: -0.5,
+				time: 1,
+			};
+			assert_eq!(
+				recorded(movement, pointing(device), movement_control),
+				input::Value::Vector2(input::Axis2::new(0.25, -0.5))
+			);
+
+			for (button, control) in [
+				(MouseKeys::Left, left),
+				(MouseKeys::Right, right),
+				(MouseKeys::Middle, middle),
+			] {
+				let press = Events::Button {
+					seat: Seat::stub(),
+					device,
+					pressed: true,
+					button,
+				};
+				assert_eq!(recorded(press, pointing(device), control), input::Value::Bool(true));
+			}
+
+			let scroll = Events::Scroll {
+				seat: Seat::stub(),
+				device,
+				dx: 0.0,
+				dy: 2.0,
+				time: 1,
+			};
+			assert_eq!(recorded(scroll, pointing(device), scroll_control), input::Value::Float(2.0));
+		}
+
+		let position = Events::PointerPosition {
+			seat: Seat::stub(),
+			x: 0.5,
+			y: -1.0,
 			time: 1,
 		};
 		assert_eq!(
-			recorded(event, |mouse, _| mouse, "Mouse.Movement"),
-			input::Value::Vector2(input::Axis2::new(0.25, -0.5))
+			recorded(position, pointing(PointingDevice::Pointer), "Pointer.Position"),
+			input::Value::Vector2(input::Axis2::new(0.5, -1.0))
 		);
 	}
 
 	#[test]
 	fn focus_loss_and_resize_discard_the_seat_and_report_the_interruption() {
 		let (mut collector, ..) = window_input();
-		let press = ghi::window::Events::Button {
-			seat: ghi::window::Seat::stub(),
+		let press = Events::Button {
+			seat: Seat::stub(),
+			device: PointingDevice::Pointer,
 			pressed: true,
-			button: ghi::window::input::MouseKeys::Left,
+			button: MouseKeys::Left,
 		};
 		for interruption in [
 			ghi::window::Events::FocusChanged(false),

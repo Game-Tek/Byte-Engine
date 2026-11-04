@@ -11,8 +11,8 @@ use windows::{
 		Devices::HumanInterfaceDevice::{HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC},
 		Foundation::{CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
 		Graphics::Gdi::{
-			DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW, GetMonitorInfoW, HBRUSH, HMONITOR, MONITOR_DEFAULTTONEAREST,
-			MONITORINFO, MONITORINFOEXW, MonitorFromWindow,
+			ClientToScreen, DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW, GetMonitorInfoW, HBRUSH, HMONITOR,
+			MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW, MonitorFromWindow,
 		},
 		System::{
 			LibraryLoader::GetModuleHandleA,
@@ -21,17 +21,22 @@ use windows::{
 		UI::{
 			HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
 			Input::{
-				GetRawInputData, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, MOUSE_MOVE_RELATIVE, RAWINPUT, RAWINPUTDEVICE,
-				RAWINPUTDEVICE_FLAGS, RAWINPUTHEADER, RID_INPUT, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE, RegisterRawInputDevices,
+				GetRawInputBuffer, GetRawInputData, HRAWINPUT,
+				KeyboardAndMouse::{GetAsyncKeyState, GetFocus, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON},
+				MOUSE_MOVE_ABSOLUTE, MOUSE_VIRTUAL_DESKTOP, RAWINPUT, RAWINPUTDEVICE, RAWINPUTDEVICE_FLAGS, RAWINPUTHEADER,
+				RID_INPUT, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE, RegisterRawInputDevices,
 			},
 			WindowsAndMessaging::{
-				CW_USEDEFAULT, CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GWLP_USERDATA, GetClientRect,
-				GetCursorPos, GetWindowLongPtrA, HCURSOR, HICON, IsIconic, MSG, MWMO_INPUTAVAILABLE,
-				MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageA, QS_ALLINPUT, RI_KEY_BREAK, RegisterClassA,
-				SetWindowLongPtrA, TranslateMessage, UnregisterClassA, WINDOW_EX_STYLE, WM_CLOSE, WM_DISPLAYCHANGE, WM_INPUT,
-				WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-				WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_WINDOWPOSCHANGED,
-				WNDCLASS_STYLES, WNDCLASSA, WS_POPUP, WS_VISIBLE,
+				CW_USEDEFAULT, ClipCursor, CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GWLP_USERDATA,
+				GetClientRect, GetClipCursor, GetSystemMetrics, GetWindowLongPtrA, HCURSOR, HICON, IsIconic, MSG,
+				MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageA, QS_ALLINPUT, RI_KEY_BREAK,
+				RI_MOUSE_HWHEEL, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP, RI_MOUSE_MIDDLE_BUTTON_DOWN,
+				RI_MOUSE_MIDDLE_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP, RI_MOUSE_WHEEL,
+				RegisterClassA, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN, SetWindowLongPtrA,
+				ShowCursor, TranslateMessage, UnregisterClassA, WHEEL_DELTA, WINDOW_EX_STYLE, WM_CLOSE, WM_DISPLAYCHANGE,
+				WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+				WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE,
+				WM_WINDOWPOSCHANGED, WNDCLASS_STYLES, WNDCLASSA, WS_POPUP, WS_VISIBLE,
 			},
 		},
 	},
@@ -39,7 +44,7 @@ use windows::{
 };
 
 use crate::window::{
-	AppEvents, Event, Events, Features, Seat, Wait, WindowId,
+	AppEvents, Event, Events, Features, PointingDevice, Seat, Wait, WindowId,
 	input::{Keys, MouseKeys},
 };
 
@@ -54,6 +59,51 @@ pub struct App {
 	use_raw_mouse: bool,
 	use_raw_keyboard: bool,
 	wake_event: Arc<WakeEvent>,
+	/// The process has one cursor, so every window shares the record of which one holds it.
+	cursor_capture: Rc<CursorCapture>,
+	/// The process has one mouse, so every window shares its last absolute position.
+	absolute_mouse: Rc<AbsoluteMouse>,
+	/// Reused by every raw input drain. `u64` elements keep the records 8-byte aligned, as `RAWINPUT` requires.
+	raw_input: Box<[u64]>,
+}
+
+/// The latest absolute mouse position in pixels, from devices such as remote desktop sessions, virtual machines, and
+/// tablets, so the next one can report the movement between them.
+type AbsoluteMouse = Cell<Option<(i32, i32)>>;
+
+/// The `CursorCapture` struct keeps the state of the one cursor that windows created with
+/// [`Features::CAPTURE_CURSOR`] hold, so the pump can engage, follow, and release it.
+#[derive(Default)]
+struct CursorCapture {
+	/// The window holding the cursor and the one-pixel rectangle, in screen coordinates, the cursor is clipped to.
+	held: Cell<Option<(WindowId, RECT)>>,
+}
+
+impl CursorCapture {
+	/// Clips the cursor to `rect` for `window`, hiding it when the hold starts.
+	fn hold(&self, window: WindowId, rect: RECT) {
+		// Windows drops a clip when another application sets its own or a secure desktop shows, so it is set again
+		// whenever it differs.
+		let mut clip = RECT::default();
+		if unsafe { GetClipCursor(&mut clip) }.is_err() || clip != rect {
+			let _ = unsafe { ClipCursor(Some(&rect)) };
+		}
+		if self.held.replace(Some((window, rect))).is_none() {
+			unsafe { ShowCursor(false) };
+		}
+	}
+
+	/// Frees and shows the cursor where it's held.
+	fn release(&self) {
+		if self.held.take().is_some() {
+			let _ = unsafe { ClipCursor(None) };
+			unsafe { ShowCursor(true) };
+		}
+	}
+
+	fn holds(&self, window: WindowId) -> bool {
+		self.held.get().is_some_and(|(held, _)| held == window)
+	}
 }
 
 /// The `WakeEvent` struct owns the auto-reset event a waiting poll also waits on.
@@ -111,6 +161,12 @@ struct WindowData {
 	use_raw_keyboard: bool,
 	/// The monitor the window was last reported on, so moves report only real display changes.
 	monitor: Cell<HMONITOR>,
+	/// Whether the window holds the cursor while it has focus.
+	captures_cursor: bool,
+	/// The cursor's latest client position in pixels, so the next one can report the movement between them.
+	cursor_position: Cell<Option<(i32, i32)>>,
+	cursor_capture: Rc<CursorCapture>,
+	absolute_mouse: Rc<AbsoluteMouse>,
 }
 
 impl WindowData {
@@ -188,6 +244,10 @@ impl App {
 			use_raw_mouse,
 			use_raw_keyboard,
 			wake_event: Arc::new(WakeEvent(wake_event)),
+			cursor_capture: Rc::default(),
+			absolute_mouse: Rc::default(),
+			// 16 KiB holds hundreds of mouse records, enough for an 8 kHz mouse between two frames.
+			raw_input: vec![0; 16 * 1024 / 8].into_boxed_slice(),
 		})
 	}
 
@@ -232,6 +292,11 @@ impl App {
 			use_raw_mouse: self.use_raw_mouse,
 			use_raw_keyboard: self.use_raw_keyboard,
 			monitor: Cell::new(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }),
+			// A background window is never shown, so it never takes focus to hold the cursor.
+			captures_cursor: features.contains(Features::CAPTURE_CURSOR) && !features.contains(Features::BACKGROUND),
+			cursor_position: Cell::new(None),
+			cursor_capture: self.cursor_capture.clone(),
+			absolute_mouse: self.absolute_mouse.clone(),
 		});
 
 		// Messages sent during creation fall through to `DefWindowProcA` because no data is attached yet.
@@ -279,6 +344,8 @@ impl App {
 			}
 		}
 
+		self.drain_raw_input();
+
 		let mut msg = MSG::default();
 
 		// A null window filter also receives thread messages such as `WM_QUIT`.
@@ -294,7 +361,63 @@ impl App {
 			}
 		}
 
+		self.update_cursor_capture();
+
 		std::iter::from_fn(|| self.events.borrow_mut().pop_front())
+	}
+
+	/// Reads every queued raw input record in batches, instead of one `WM_INPUT` message and system call per record,
+	/// so a mouse reporting thousands of times per second does not flood the message queue.
+	///
+	/// Raw input goes to the focused window, so its records become that window's events. Records the drain misses
+	/// still arrive as `WM_INPUT` messages.
+	fn drain_raw_input(&mut self) {
+		let window = focused_window_data();
+		let header_size = std::mem::size_of::<RAWINPUTHEADER>() as u32;
+		loop {
+			let mut size = std::mem::size_of_val(&*self.raw_input) as u32;
+			let buffer = self.raw_input.as_mut_ptr().cast::<u8>();
+			let count = unsafe { GetRawInputBuffer(Some(buffer.cast()), &mut size, header_size) };
+			if count == 0 || count == u32::MAX {
+				return;
+			}
+			let mut offset = 0;
+			for _ in 0..count {
+				// SAFETY: Each record starts at an 8-byte boundary inside the filled part of the buffer.
+				let record = unsafe { &*buffer.add(offset).cast::<RAWINPUT>() };
+				if let Some(window) = window {
+					translate_raw_input(record, window);
+				}
+				// Records are padded to 8 bytes, as `NEXTRAWINPUTBLOCK` computes.
+				offset += (record.header.dwSize as usize).next_multiple_of(8);
+			}
+		}
+	}
+
+	/// Holds the cursor for the focused capturing window, follows that window's center, and releases the cursor when
+	/// no capturing window has focus.
+	///
+	/// A hold waits until no mouse button is down, so the click that focuses a window ends before the cursor
+	/// disappears.
+	fn update_cursor_capture(&self) {
+		let target = focused_window_data()
+			.filter(|window| window.captures_cursor)
+			.and_then(|window| Some((window.id, center_pixel(window_handle(window.id))?)));
+
+		match (self.cursor_capture.held.get(), target) {
+			// Holding again restores a clip Windows dropped and follows a moved or resized window.
+			(Some((held, _)), Some((window, rect))) if held == window => self.cursor_capture.hold(window, rect),
+			(_, Some((window, rect))) => {
+				self.cursor_capture.release();
+				let pressed = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
+					.into_iter()
+					.any(|button| unsafe { GetAsyncKeyState(button.0 as i32) } < 0);
+				if !pressed {
+					self.cursor_capture.hold(window, rect);
+				}
+			}
+			(_, None) => self.cursor_capture.release(),
+		}
 	}
 
 	pub(crate) fn waker(&self) -> AppWaker {
@@ -335,6 +458,9 @@ impl Window {
 
 impl Drop for Window {
 	fn drop(&mut self) {
+		if self.data.cursor_capture.holds(self.data.id) {
+			self.data.cursor_capture.release();
+		}
 		// `WM_DESTROY` is dispatched synchronously and still reads `data`, which is freed after this body.
 		// Drop cannot report teardown failures, and Windows may have already destroyed the window during shutdown.
 		unsafe {
@@ -373,6 +499,142 @@ fn window_id(hwnd: HWND) -> WindowId {
 	WindowId::from_raw(hwnd.0 as usize as u64)
 }
 
+/// Returns the handle a window id was made from.
+fn window_handle(id: WindowId) -> HWND {
+	HWND(id.0.get() as usize as *mut std::ffi::c_void)
+}
+
+/// Returns the data of this thread's window with keyboard focus, which receives raw input.
+fn focused_window_data<'a>() -> Option<&'a WindowData> {
+	let hwnd = unsafe { GetFocus() };
+	if hwnd.is_invalid() || unsafe { IsIconic(hwnd) }.as_bool() {
+		return None;
+	}
+	// SAFETY: Only this module's windows run on the pump's thread, and each one's data outlives the window.
+	unsafe { (GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *const WindowData).as_ref() }
+}
+
+/// Returns the one-pixel rectangle at the center of the window's client area, in screen coordinates.
+fn center_pixel(hwnd: HWND) -> Option<RECT> {
+	let mut client = RECT::default();
+	unsafe { GetClientRect(hwnd, &mut client) }.ok()?;
+	let mut center = POINT {
+		x: (client.left + client.right) / 2,
+		y: (client.top + client.bottom) / 2,
+	};
+	if !unsafe { ClientToScreen(hwnd, &mut center) }.as_bool() {
+		return None;
+	}
+	Some(RECT {
+		left: center.x,
+		top: center.y,
+		right: center.x + 1,
+		bottom: center.y + 1,
+	})
+}
+
+/// Raw input's button transitions, as `usButtonFlags` bits, and the button and state each reports.
+const RAW_BUTTONS: [(u32, MouseKeys, bool); 6] = [
+	(RI_MOUSE_LEFT_BUTTON_DOWN, MouseKeys::Left, true),
+	(RI_MOUSE_LEFT_BUTTON_UP, MouseKeys::Left, false),
+	(RI_MOUSE_RIGHT_BUTTON_DOWN, MouseKeys::Right, true),
+	(RI_MOUSE_RIGHT_BUTTON_UP, MouseKeys::Right, false),
+	(RI_MOUSE_MIDDLE_BUTTON_DOWN, MouseKeys::Middle, true),
+	(RI_MOUSE_MIDDLE_BUTTON_UP, MouseKeys::Middle, false),
+];
+
+/// Queues the events one raw input record carries for `window`: the [`PointingDevice::Mouse`] movement, buttons,
+/// and wheel, or a key.
+///
+/// Mouse records report movement in mouse counts. Devices that report absolute positions, such as remote desktop
+/// sessions, virtual machines, and tablets, report the pixels between consecutive positions instead. Returns whether
+/// the record was keyboard or mouse input.
+fn translate_raw_input(record: &RAWINPUT, window: &WindowData) -> bool {
+	let seat = Seat::stub();
+	if record.header.dwType == RIM_TYPEMOUSE.0 {
+		if !window.use_raw_mouse {
+			return true;
+		}
+		let mouse = unsafe { &record.data.mouse };
+		let movement = if mouse.usFlags.0 & MOUSE_MOVE_ABSOLUTE.0 != 0 {
+			let (width, height) = if mouse.usFlags.0 & MOUSE_VIRTUAL_DESKTOP.0 != 0 {
+				(SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN)
+			} else {
+				(SM_CXSCREEN, SM_CYSCREEN)
+			};
+			// Absolute positions span the screen from 0 to 65535.
+			let scale = |value: i32, metric| (value as i64 * unsafe { GetSystemMetrics(metric) } as i64 / 65535) as i32;
+			let position = (scale(mouse.lLastX, width), scale(mouse.lLastY, height));
+			window
+				.absolute_mouse
+				.replace(Some(position))
+				.map(|previous| (position.0 - previous.0, position.1 - previous.1))
+		} else {
+			Some((mouse.lLastX, mouse.lLastY))
+		};
+		// Button-only records carry no movement.
+		if let Some((dx, dy)) = movement.filter(|&movement| movement != (0, 0)) {
+			window.push(Events::MouseMove {
+				seat,
+				device: PointingDevice::Mouse,
+				dx: dx as f32,
+				// Raw input grows downward.
+				dy: -dy as f32,
+				time: 0,
+			});
+		}
+
+		let (flags, data) = unsafe {
+			(
+				mouse.Anonymous.Anonymous.usButtonFlags as u32,
+				mouse.Anonymous.Anonymous.usButtonData,
+			)
+		};
+		for (_, button, pressed) in RAW_BUTTONS.into_iter().filter(|(bit, ..)| flags & bit != 0) {
+			window.push(Events::Button {
+				seat,
+				device: PointingDevice::Mouse,
+				pressed,
+				button,
+			});
+		}
+		// The wheel's turn is a signed count of `WHEEL_DELTA` notches.
+		let notches = data as i16 as f32 / WHEEL_DELTA as f32;
+		if flags & RI_MOUSE_WHEEL != 0 {
+			window.push(scroll(PointingDevice::Mouse, 0.0, notches));
+		}
+		if flags & RI_MOUSE_HWHEEL != 0 {
+			window.push(scroll(PointingDevice::Mouse, notches, 0.0));
+		}
+		true
+	} else if record.header.dwType == RIM_TYPEKEYBOARD.0 {
+		if !window.use_raw_keyboard {
+			return true;
+		}
+		let keyboard = unsafe { &record.data.keyboard };
+		if let Some(key) = wparam_to_key(WPARAM(keyboard.VKey as usize)) {
+			window.push(Events::Key {
+				seat,
+				pressed: (keyboard.Flags as u32 & RI_KEY_BREAK) == 0,
+				key,
+			});
+		}
+		true
+	} else {
+		false
+	}
+}
+
+fn scroll(device: PointingDevice, dx: f32, dy: f32) -> Events {
+	Events::Scroll {
+		seat: Seat::stub(),
+		device,
+		dx,
+		dy,
+		time: 0,
+	}
+}
+
 fn client_extent(hwnd: HWND) -> Option<(f32, f32)> {
 	let mut client_rect = RECT::default();
 	unsafe { GetClientRect(hwnd, &mut client_rect) }.ok()?;
@@ -386,16 +648,6 @@ fn client_extent(hwnd: HWND) -> Option<(f32, f32)> {
 fn normalize_client_position(hwnd: HWND, x: f32, y: f32) -> Option<(f32, f32)> {
 	let (width, height) = client_extent(hwnd)?;
 	Some((x / width * 2.0 - 1.0, 1.0 - y / height * 2.0))
-}
-
-fn cursor_position_in_window(hwnd: HWND) -> Option<(f32, f32)> {
-	let _ = hwnd;
-	let _ = POINT::default();
-	let _ = GetCursorPos;
-
-	// The windows crate bindings available in this workspace do not expose ScreenToClient.
-	// Raw absolute mouse input falls back to regular WM_MOUSEMOVE position handling.
-	None
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -424,6 +676,7 @@ fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_dat
 		WM_CLOSE => Events::Close,
 		WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP => Events::Button {
 			seat,
+			device: PointingDevice::Pointer,
 			pressed: matches!(msg, WM_LBUTTONDOWN | WM_MBUTTONDOWN | WM_RBUTTONDOWN),
 			button: match msg {
 				WM_LBUTTONDOWN | WM_LBUTTONUP => MouseKeys::Left,
@@ -431,11 +684,31 @@ fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_dat
 				_ => MouseKeys::Right,
 			},
 		},
+		// A held cursor stays at the window's center, so its position means nothing.
+		// The cursor can't move from that pixel, so it reports no movement either, and the next movement starts from
+		// where the hold leaves it.
+		WM_MOUSEMOVE if window_data.cursor_capture.holds(window_data.id) => {
+			window_data.cursor_position.set(None);
+			return Some(None);
+		}
 		WM_MOUSEMOVE => {
-			let x = (lparam.0 & 0xFFFF) as i16 as f32;
-			let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
-			let (x, y) = normalize_client_position(hwnd, x, y)?;
-			Events::MousePosition { seat, x, y, time: 0 }
+			let position = ((lparam.0 & 0xFFFF) as i16 as i32, ((lparam.0 >> 16) & 0xFFFF) as i16 as i32);
+			// The cursor's movement is the pixels between its consecutive positions, after pointer acceleration.
+			if let Some(previous) = window_data.cursor_position.replace(Some(position)) {
+				let (dx, dy) = (position.0 - previous.0, position.1 - previous.1);
+				if (dx, dy) != (0, 0) {
+					window_data.push(Events::MouseMove {
+						seat,
+						device: PointingDevice::Pointer,
+						dx: dx as f32,
+						// Client coordinates grow downward.
+						dy: -dy as f32,
+						time: 0,
+					});
+				}
+			}
+			let (x, y) = normalize_client_position(hwnd, position.0 as f32, position.1 as f32)?;
+			Events::PointerPosition { seat, x, y, time: 0 }
 		}
 		WM_INPUT => {
 			let mut raw_input = [0u64; 1024 / 8]; // Buffer needs to be aligned to 8 bytes
@@ -457,44 +730,18 @@ fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_dat
 			}
 
 			let raw_input = unsafe { &*(raw_input.as_ptr() as *const RAWINPUT) };
-
-			if raw_input.header.dwType == RIM_TYPEMOUSE.0 && window_data.use_raw_mouse {
-				let mouse_data = unsafe { &raw_input.data.mouse };
-
-				if mouse_data.usFlags == MOUSE_MOVE_RELATIVE {
-					let (width, height) = client_extent(hwnd)?;
-					Events::MouseMove {
-						seat,
-						dx: mouse_data.lLastX as f32 / width * 2.0,
-						dy: -(mouse_data.lLastY as f32) / height * 2.0,
-						time: 0,
-					}
-				} else if (mouse_data.usFlags.0 & MOUSE_MOVE_ABSOLUTE.0) == MOUSE_MOVE_ABSOLUTE.0 {
-					let (x, y) = cursor_position_in_window(hwnd)?;
-					Events::MousePosition { seat, x, y, time: 0 }
-				} else {
-					return Some(None);
-				}
-			} else if raw_input.header.dwType == RIM_TYPEKEYBOARD.0 && window_data.use_raw_keyboard {
-				let keyboard_data = unsafe { &raw_input.data.keyboard };
-				let pressed = (keyboard_data.Flags as u32 & RI_KEY_BREAK) == 0;
-				let Some(key) = wparam_to_key(WPARAM(keyboard_data.VKey as usize)) else {
-					return Some(None);
-				};
-				Events::Key { seat, pressed, key }
+			return translate_raw_input(raw_input, window_data).then_some(None);
+		}
+		// The high word holds the wheel's signed turn in `WHEEL_DELTA` notches; positive turns away from the user, or
+		// to the right.
+		WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+			let notches = ((wparam.0 >> 16) & 0xFFFF) as i16 as f32 / WHEEL_DELTA as f32;
+			if msg == WM_MOUSEWHEEL {
+				scroll(PointingDevice::Pointer, 0.0, notches)
 			} else {
-				return None;
+				scroll(PointingDevice::Pointer, notches, 0.0)
 			}
 		}
-		WM_MOUSEHWHEEL => Events::Button {
-			seat,
-			pressed: true,
-			button: if (wparam.0 & 0xFFFF) as i16 > 0 {
-				MouseKeys::ScrollUp
-			} else {
-				MouseKeys::ScrollDown
-			},
-		},
 		// Raw keyboard input reports keys through `WM_INPUT` instead, so these fall through to default handling.
 		WM_KEYDOWN | WM_KEYUP if !window_data.use_raw_keyboard => Events::Key {
 			seat,

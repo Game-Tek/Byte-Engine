@@ -14,11 +14,12 @@ consumer its own sink, follow [Respond to input](/docs/use/input).
 ## Device classes
 
 A device class describes the input layout for a category of hardware.
-The standard setup registers classes such as `Mouse`, `Keyboard`, and `Gamepad`.
+The standard setup registers classes such as `Pointer`, `Mouse`, `Keyboard`, and `Gamepad`.
 
 Each class has triggers:
 
-- `Mouse.Position`, `Mouse.Movement`, `Mouse.LeftButton`, `Mouse.Scroll`
+- `Pointer.Position`, `Pointer.Movement`, `Pointer.LeftButton`, `Pointer.Scroll`
+- `Mouse.Movement`, `Mouse.LeftButton`, `Mouse.Scroll`
 - `Keyboard.W`, `Keyboard.Space`, `Keyboard.Backspace`, `Keyboard.Character`
 - `Gamepad.LeftStick`, `Gamepad.RightStick`, `Gamepad.X`, `Gamepad.RightTrigger`
 
@@ -30,7 +31,7 @@ produces.
 A device is a concrete instance of a class.
 One keyboard and two gamepads are three devices, even though the gamepads share one device class.
 
-The default graphics setup creates one mouse, one keyboard, and one gamepad device after registering the standard classes.
+The default graphics setup creates one pointer, one mouse, one keyboard, and one gamepad device after registering the standard classes.
 Custom integrations can register their own classes and create devices directly through `InputCollector`.
 
 ## Seats
@@ -47,10 +48,49 @@ A trigger is a named value on a device class.
 It can be boolean, float, unicode, vector, quaternion, color, or another supported input value type.
 
 Window events are translated into trigger records.
-For example, a key press becomes a boolean value for `Keyboard.W`, mouse motion becomes a `Vector2` value for `Mouse.Movement`, and typed text becomes a unicode value for `Keyboard.Character`.
+For example, a key press becomes a boolean value for `Keyboard.W`, mouse motion becomes a `Vector2` value for `Mouse.Movement`, and typed text becomes a unicode value for `Keyboard.Character`. One physical event can become records on more than one device: a mouse click becomes both `Pointer.LeftButton` and `Mouse.LeftButton`.
 
 The collector queues records until the sinks pull them. When the tick ends, it
 keeps the latest value for each seat, device, and trigger.
+
+## Pointer and mouse
+
+The `Pointer` and `Mouse` classes report the same mouse two ways. `Pointer`
+reports the system cursor, as the platform moves it with pointer acceleration;
+bind it for interfaces and anything the cursor points at. `Mouse` reports the
+physical mouse before pointer acceleration; bind it for camera control and
+aiming.
+
+| Trigger | Value |
+| --- | --- |
+| `Pointer.Position` | Where the cursor is: the window's left and bottom edges at `-1`, its center at `0`, and its right and top edges at `1`. Positions outside the window extend past these values. |
+| `Pointer.Movement` | How far the cursor moved since the previous record, after pointer acceleration. |
+| `Mouse.Movement` | How far the mouse moved since the previous record, before pointer acceleration. |
+| `LeftButton`, `RightButton`, `MiddleButton` | Whether the button is held. Both classes report every press and release. |
+| `Scroll` | How far the wheel turned since the previous record. |
+
+Both movements are `Vector2` values: `x` grows to the right and `y` grows
+upward. Each record is one movement, and a tick can hold many. The size of a
+movement doesn't depend on the window's size.
+
+| Platform | `Pointer` source and units | `Mouse` source and units |
+| --- | --- | --- |
+| macOS | AppKit events; movement in points | Game Controller mouse input; movement in mouse counts. While no Game Controller mouse is connected, AppKit events, as `Pointer` reports them. Scroll always comes from AppKit. |
+| Windows | Window messages; movement in pixels | Raw input; movement in mouse counts; scroll in wheel notches |
+| Linux (Wayland) | Pointer events; movement in relative-pointer units | Pointer events; movement in unaccelerated relative-pointer units |
+
+## Cursor capture
+
+A window created with cursor capture holds the cursor while it's captured, so
+the mouse can move without end, and `Mouse.Movement` keeps reporting motion.
+
+| Rule | Value |
+| --- | --- |
+| Engages | While the window has focus and no mouse button is held. On Wayland, the compositor engages it while the window has focus and the pointer is over it. |
+| While captured | The cursor is hidden and held at the window's center. `Pointer.Position` isn't recorded. `Pointer.Movement` keeps reporting motion on macOS and Wayland, and isn't recorded on Windows. |
+| Releases | When the window loses focus, is minimized, or closes. The cursor shows again at the window's center. |
+| One at a time | At most one window holds the cursor. |
+| Background windows | A window that runs unattended never captures the cursor. |
 
 ## Actions
 
@@ -62,7 +102,7 @@ An action represents input that your application understands. It has:
 - a tick policy
 
 For movement, keyboard keys can map to direction vectors, and the resolved action value can be a single `Vector3`.
-For lookaround, mouse position and a gamepad stick can both contribute to the same direction-like action.
+For lookaround, mouse movement turns the view by how far the mouse moved, and a gamepad stick turns it at a rate.
 
 Actions are created on the application's world. A `Name` attached in the same
 creation chain lets inspection tools find the action by name.

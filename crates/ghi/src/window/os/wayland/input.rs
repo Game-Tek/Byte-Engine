@@ -13,10 +13,12 @@ impl wayland_client::Dispatch<wl_seat::WlSeat, ()> for AppData {
 			wl_seat::Event::Capabilities { capabilities } => {
 				let capabilities = capabilities.into_result().unwrap();
 
-				if capabilities.contains(wl_seat::Capability::Pointer) {
+				if capabilities.contains(wl_seat::Capability::Pointer) && this.pointer.is_none() {
 					let pointer = s.get_pointer(qh, ());
 
 					this.zwp_relative_pointer_manager.get_relative_pointer(&pointer, qh, ());
+					this.pointer = Some(pointer);
+					this.lock_cursors(qh);
 				}
 
 				if capabilities.contains(wl_seat::Capability::Keyboard) {
@@ -39,9 +41,13 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 		_: &wayland_client::QueueHandle<AppData>,
 	) {
 		match event {
-			wl_pointer::Event::Enter { surface, .. } => {
+			wl_pointer::Event::Enter { serial, surface, .. } => {
 				if let Some(&id) = surface.data::<WindowId>() {
 					this.pointer_focus = Some((pointer.clone(), id));
+					// A null cursor surface hides the cursor while it's over a capturing window.
+					if this.window(id).is_some_and(|window| window.captures_cursor) {
+						pointer.set_cursor(serial, None, 0, 0);
+					}
 				}
 			}
 			wl_pointer::Event::Leave { .. } => {
@@ -56,32 +62,49 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 
 				let pressed = state.into_result().unwrap() == wl_pointer::ButtonState::Pressed;
 
+				// Linux input event codes: `BTN_LEFT`, `BTN_RIGHT`, and `BTN_MIDDLE`.
 				let button = match button {
-					272 => MouseKeys::Left,
-					2 => MouseKeys::Middle,
-					273 => MouseKeys::Right,
-					4 => MouseKeys::ScrollUp,
-					5 => MouseKeys::ScrollDown,
+					0x110 => MouseKeys::Left,
+					0x111 => MouseKeys::Right,
+					0x112 => MouseKeys::Middle,
 					_ => return,
 				};
 
-				this.push(
-					id,
-					Events::Button {
-						seat: Seat::stub(),
-						pressed,
-						button,
-					},
-				);
+				// Wayland reports buttons once, so both devices share them.
+				for device in [PointingDevice::Pointer, PointingDevice::Mouse] {
+					this.push(
+						id,
+						Events::Button {
+							seat: Seat::stub(),
+							device,
+							pressed,
+							button,
+						},
+					);
+				}
 			}
-			wl_pointer::Event::Axis { axis, value, .. } => {
-				let _ = match axis.into_result().unwrap() {
-					wl_pointer::Axis::VerticalScroll => MouseKeys::ScrollUp,
-					wl_pointer::Axis::HorizontalScroll => MouseKeys::ScrollDown,
+			wl_pointer::Event::Axis { time, axis, value } => {
+				let Some(id) = this.pointer_window() else {
+					return;
+				};
+				// Axis values grow downward and to the right, in surface units.
+				let (dx, dy) = match axis.into_result() {
+					Ok(wl_pointer::Axis::VerticalScroll) => (0.0, -value as f32),
+					Ok(wl_pointer::Axis::HorizontalScroll) => (value as f32, 0.0),
 					_ => return,
 				};
-
-				let _ = value > 0.0;
+				for device in [PointingDevice::Pointer, PointingDevice::Mouse] {
+					this.push(
+						id,
+						Events::Scroll {
+							seat: Seat::stub(),
+							device,
+							dx,
+							dy,
+							time: time as u64,
+						},
+					);
+				}
 			}
 			wl_pointer::Event::Motion {
 				time,
@@ -110,7 +133,7 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 
 					this.push(
 						id,
-						Events::MousePosition {
+						Events::PointerPosition {
 							seat: Seat::stub(),
 							x,
 							y,
@@ -304,26 +327,61 @@ impl wayland_client::Dispatch<zwp_relative_pointer_v1::ZwpRelativePointerV1, ()>
 			zwp_relative_pointer_v1::Event::RelativeMotion {
 				utime_lo,
 				utime_hi,
+				dx,
+				dy,
 				dx_unaccel,
 				dy_unaccel,
-				..
 			} => {
 				let Some(id) = this.pointer_window() else {
 					return;
 				};
 
-				this.push(
-					id,
-					Events::MouseMove {
-						seat: Seat::stub(),
-						dx: dx_unaccel as f32,
-						dy: dy_unaccel as f32,
-						time: (utime_hi as u64) << 32 | utime_lo as u64,
-					},
-				);
+				// One report carries both the cursor's accelerated movement and the mouse's unaccelerated one.
+				let time = ((utime_hi as u64) << 32 | utime_lo as u64) / 1000;
+				for (device, dx, dy) in [
+					(PointingDevice::Pointer, dx, dy),
+					(PointingDevice::Mouse, dx_unaccel, dy_unaccel),
+				] {
+					this.push(
+						id,
+						Events::MouseMove {
+							seat: Seat::stub(),
+							device,
+							dx: dx as f32,
+							// Surface coordinates grow downward.
+							dy: -dy as f32,
+							time,
+						},
+					);
+				}
 			}
 			_ => {}
 		}
+	}
+}
+
+impl wayland_client::Dispatch<zwp_pointer_constraints_v1::ZwpPointerConstraintsV1, ()> for AppData {
+	fn event(
+		_: &mut Self,
+		_: &zwp_pointer_constraints_v1::ZwpPointerConstraintsV1,
+		_: zwp_pointer_constraints_v1::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
+	}
+}
+
+impl wayland_client::Dispatch<zwp_locked_pointer_v1::ZwpLockedPointerV1, ()> for AppData {
+	/// The compositor engages and releases a persistent lock on its own, so its reports need no handling.
+	fn event(
+		_: &mut Self,
+		_: &zwp_locked_pointer_v1::ZwpLockedPointerV1,
+		_: zwp_locked_pointer_v1::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
 	}
 }
 

@@ -35,6 +35,9 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_registry::WlRegistry,
 				"zwp_relative_pointer_manager_v1" => {
 					this.zwp_relative_pointer_manager = Some(registry.bind(name, version, qh, ()));
 				}
+				"zwp_pointer_constraints_v1" => {
+					this.zwp_pointer_constraints = Some(registry.bind(name, version, qh, ()));
+				}
 				_ => {}
 			},
 			wayland_client::protocol::wl_registry::Event::GlobalRemove { .. } => {}

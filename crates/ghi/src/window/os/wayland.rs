@@ -23,6 +23,7 @@ use wayland_client::{
 	},
 };
 use wayland_protocols::{
+	wp::pointer_constraints::zv1::client::{zwp_locked_pointer_v1, zwp_pointer_constraints_v1},
 	wp::relative_pointer::zv1::client::{
 		zwp_relative_pointer_manager_v1::{self},
 		zwp_relative_pointer_v1,
@@ -35,7 +36,7 @@ use wayland_protocols::{
 use xkbcommon::xkb::{self, keysyms};
 
 use crate::window::{
-	Event, Events, Features, Seat, Wait, WindowId,
+	Event, Events, Features, PointingDevice, Seat, Wait, WindowId,
 	input::{Keys, MouseKeys},
 };
 
@@ -92,6 +93,8 @@ struct Configuration {
 	wl_output: Option<WlOutput>,
 	wl_callback: Option<wl_callback::WlCallback>,
 	zwp_relative_pointer_manager: Option<zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1>,
+	/// Optional: without it, windows that capture the cursor only hide it.
+	zwp_pointer_constraints: Option<zwp_pointer_constraints_v1::ZwpPointerConstraintsV1>,
 
 	app_data_queue: wayland_client::QueueHandle<AppData>,
 }
@@ -102,6 +105,8 @@ struct AppData {
 	compositor: WlCompositor,
 	xdg_wm_base: XdgWmBase,
 	zwp_relative_pointer_manager: zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
+	/// Locks the pointer for windows that capture the cursor, when the compositor supports it.
+	zwp_pointer_constraints: Option<zwp_pointer_constraints_v1::ZwpPointerConstraintsV1>,
 
 	windows: Vec<WindowState>,
 
@@ -111,6 +116,8 @@ struct AppData {
 	monitor_extent: Option<Extent>,
 	/// Every output and the refresh rate of its current mode in millihertz, `0` when unknown.
 	outputs: Vec<(WlOutput, i32)>,
+	/// The seat's pointer, once the seat reports one.
+	pointer: Option<wl_pointer::WlPointer>,
 	/// The pointer and the window it is over.
 	pointer_focus: Option<(wl_pointer::WlPointer, WindowId)>,
 	/// The keyboard and the window it targets.
@@ -136,6 +143,10 @@ struct WindowState {
 	outputs: Vec<WlOutput>,
 	/// The refresh interval of the fastest output the surface is on.
 	refresh: SharedRefresh,
+	/// Whether the window hides the cursor and locks the pointer while it has focus.
+	captures_cursor: bool,
+	/// The persistent lock that the compositor engages while the window has focus and the pointer is over it.
+	cursor_lock: Option<zwp_locked_pointer_v1::ZwpLockedPointerV1>,
 }
 
 /// Converts a refresh rate in millihertz to its interval, or `None` when unknown.

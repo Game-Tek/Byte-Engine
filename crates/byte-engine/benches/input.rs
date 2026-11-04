@@ -27,9 +27,9 @@ fn main() {
 
 /// The controls one click records: where the pointer is, then press and release.
 const CLICK: [(&str, Value); 3] = [
-	("Mouse.Position", Value::Vector2(Axis2::new(-0.5, 0.0))),
-	("Mouse.LeftButton", Value::Bool(true)),
-	("Mouse.LeftButton", Value::Bool(false)),
+	("Pointer.Position", Value::Vector2(Axis2::new(-0.5, 0.0))),
+	("Pointer.LeftButton", Value::Bool(true)),
+	("Pointer.LeftButton", Value::Bool(false)),
 ];
 
 /// The `Consumer` struct is one sink with declared actions and a listener draining its events.
@@ -57,7 +57,7 @@ impl<A: Allocator + Clone> Consumer<A> {
 
 /// Records the standard mouse and keyboard, returning their devices.
 fn window<A: Allocator + Clone>(collector: &mut InputCollector<A>) -> [byte_engine::input::DeviceHandle; 2] {
-	let mouse = utils::register_mouse_device_class(collector);
+	let mouse = utils::register_pointer_device_class(collector);
 	let keyboard = utils::register_keyboard_device_class(collector);
 	[collector.create_device(&mouse), collector.create_device(&keyboard)]
 }
@@ -68,7 +68,7 @@ fn record<A: Allocator + Clone>(
 	name: &'static str,
 	value: Value,
 ) {
-	let device = if name.starts_with("Mouse.") { mouse } else { keyboard };
+	let device = if name.starts_with("Pointer.") { mouse } else { keyboard };
 	collector.record(
 		SeatHandle::stub(),
 		device,
@@ -94,7 +94,7 @@ fn single_sink_in<A: Allocator + Clone>(bencher: divan::Bencher, allocator: A) {
 	let mut collector = InputCollector::new_in(allocator.clone());
 	let devices = window(&mut collector);
 	let mut world = Consumer::new(&mut collector, allocator);
-	let binding = ActionBindingDescription::new("Mouse.Position").triggered_by("Mouse.LeftButton");
+	let binding = ActionBindingDescription::new("Pointer.Position").triggered_by("Pointer.LeftButton");
 	world.actions.create(Action::new(&[binding], Types::Vector2));
 	world.actions.create(Action::new(&[binding], Types::Vector2));
 	world.sink.pull(&mut collector, |_| Capture::Passed);
@@ -127,7 +127,7 @@ fn two_sinks_arena(bencher: divan::Bencher) {
 fn two_sinks_in<A: Allocator + Clone>(bencher: divan::Bencher, allocator: A) {
 	let mut collector = InputCollector::new_in(allocator.clone());
 	let devices = window(&mut collector);
-	let binding = ActionBindingDescription::new("Mouse.Position").triggered_by("Mouse.LeftButton");
+	let binding = ActionBindingDescription::new("Pointer.Position").triggered_by("Pointer.LeftButton");
 	let mut sinks = [(); 2].map(|()| {
 		let consumer = Consumer::new(&mut collector, allocator.clone());
 		consumer.actions.create(Action::new(&[binding], Types::Vector2));
@@ -258,47 +258,47 @@ fn drag_capture_in<A: Allocator + Clone>(bencher: divan::Bencher, allocator: A) 
 	let devices = window(&mut collector);
 	let mut interface = Consumer::new(&mut collector, allocator.clone());
 	let card = interface.actions.create(Action::new(
-		&[ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton")],
+		&[ActionBindingDescription::new("Pointer.Position").dragged_by("Pointer.LeftButton")],
 		Types::Vector2,
 	));
 	interface.actions.create(Action::new(
-		&[ActionBindingDescription::new("Mouse.Position")],
+		&[ActionBindingDescription::new("Pointer.Position")],
 		Types::Vector2,
 	));
 	interface
 		.actions
-		.create(Action::new(&[ActionBindingDescription::new("Mouse.Scroll")], Types::Float));
+		.create(Action::new(&[ActionBindingDescription::new("Pointer.Scroll")], Types::Float));
 	interface.actions.create(Action::new(
 		&[ActionBindingDescription::new("Keyboard.Escape")],
 		Types::Boolean,
 	));
 	let mut scene = Consumer::new(&mut collector, allocator);
 	scene.actions.create(Action::new(
-		&[ActionBindingDescription::new("Mouse.Position").triggered_by("Mouse.LeftButton")],
+		&[ActionBindingDescription::new("Pointer.Position").triggered_by("Pointer.LeftButton")],
 		Types::Vector2,
 	));
 	scene
 		.actions
-		.create(Action::new(&[ActionBindingDescription::new("Mouse.Scroll")], Types::Float));
+		.create(Action::new(&[ActionBindingDescription::new("Pointer.Scroll")], Types::Float));
 	scene.actions.create(Action::new(
 		&[ActionBindingDescription::new("Keyboard.Space")],
 		Types::Boolean,
 	));
 	let ticks: [&[(&str, Value)]; 3] = [
 		&[
-			("Mouse.Position", Value::Vector2(Axis2::new(-0.8, -0.8))),
-			("Mouse.LeftButton", Value::Bool(true)),
+			("Pointer.Position", Value::Vector2(Axis2::new(-0.8, -0.8))),
+			("Pointer.LeftButton", Value::Bool(true)),
 		],
 		&[
-			("Mouse.Position", Value::Vector2(Axis2::new(-0.2, -0.3))),
-			("Mouse.Position", Value::Vector2(Axis2::new(0.3, 0.1))),
-			("Mouse.Position", Value::Vector2(Axis2::new(0.5, 0.4))),
+			("Pointer.Position", Value::Vector2(Axis2::new(-0.2, -0.3))),
+			("Pointer.Position", Value::Vector2(Axis2::new(0.3, 0.1))),
+			("Pointer.Position", Value::Vector2(Axis2::new(0.5, 0.4))),
 		],
 		&[
-			("Mouse.LeftButton", Value::Bool(false)),
-			("Mouse.LeftButton", Value::Bool(true)),
-			("Mouse.LeftButton", Value::Bool(false)),
-			("Mouse.Scroll", Value::Float(1.0)),
+			("Pointer.LeftButton", Value::Bool(false)),
+			("Pointer.LeftButton", Value::Bool(true)),
+			("Pointer.LeftButton", Value::Bool(false)),
+			("Pointer.Scroll", Value::Float(1.0)),
 			("Keyboard.Space", Value::Bool(true)),
 			("Keyboard.Space", Value::Bool(false)),
 		],

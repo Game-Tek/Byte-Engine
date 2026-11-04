@@ -17,7 +17,7 @@ impl App {
 		let _ = display.get_registry(&configuration_qh, ());
 
 		// Get globals
-		let (compositor, xdg_wm_base, zwp_relative_pointer_manager) = {
+		let (compositor, xdg_wm_base, zwp_relative_pointer_manager, zwp_pointer_constraints) = {
 			let mut configuration = Configuration {
 				compositor: None,
 				xdg_wm_base: None,
@@ -27,6 +27,7 @@ impl App {
 				wl_callback: None,
 
 				zwp_relative_pointer_manager: None,
+				zwp_pointer_constraints: None,
 
 				app_data_queue: event_queue.handle(),
 			};
@@ -40,7 +41,12 @@ impl App {
 				configuration.xdg_wm_base,
 				configuration.zwp_relative_pointer_manager,
 			) {
-				Ok((compositor, wm_base, zwp_relative_pointer_manager))
+				Ok((
+					compositor,
+					wm_base,
+					zwp_relative_pointer_manager,
+					configuration.zwp_pointer_constraints,
+				))
 			} else {
 				Err("Failed to acquire all required globals".to_string())
 			}
@@ -59,10 +65,12 @@ impl App {
 				compositor,
 				xdg_wm_base,
 				zwp_relative_pointer_manager,
+				zwp_pointer_constraints,
 				windows: Vec::with_capacity(4),
 				output_scale: 1,
 				monitor_extent: None,
 				outputs: Vec::new(),
+				pointer: None,
 				pointer_focus: None,
 				keyboard_focus: None,
 				keyboard_state: None,
@@ -83,7 +91,7 @@ impl App {
 	}
 
 	/// Creates and shows a native window; see [`crate::window::App::create_window`].
-	pub(crate) fn create_window(&mut self, name: &str, extent: Extent, _features: Features) -> Result<Window, String> {
+	pub(crate) fn create_window(&mut self, name: &str, extent: Extent, features: Features) -> Result<Window, String> {
 		let id = WindowId::from_raw(self.next_window);
 		self.next_window = self
 			.next_window
@@ -109,7 +117,10 @@ impl App {
 			configured: false,
 			outputs: Vec::new(),
 			refresh: refresh.clone(),
+			captures_cursor: features.contains(Features::CAPTURE_CURSOR) && !features.contains(Features::BACKGROUND),
+			cursor_lock: None,
 		});
+		self.data.lock_cursors(&qh);
 
 		surface.set_buffer_scale(scale as _);
 		xdg_surface.set_window_geometry(0, 0, extent.width() as _, extent.height() as _);
@@ -245,6 +256,28 @@ impl AppData {
 		self.windows.iter_mut().find(|window| window.id == id)
 	}
 
+	/// Gives each window that captures the cursor a persistent pointer lock, once the seat has a pointer. The
+	/// compositor engages a lock while its window has focus and the pointer is over it, and releases it otherwise.
+	pub(super) fn lock_cursors(&mut self, qh: &wayland_client::QueueHandle<AppData>) {
+		let (Some(constraints), Some(pointer)) = (&self.zwp_pointer_constraints, &self.pointer) else {
+			return;
+		};
+		for window in self
+			.windows
+			.iter_mut()
+			.filter(|window| window.captures_cursor && window.cursor_lock.is_none())
+		{
+			window.cursor_lock = Some(constraints.lock_pointer(
+				&window.surface,
+				pointer,
+				None,
+				zwp_pointer_constraints_v1::Lifetime::Persistent,
+				qh,
+				(),
+			));
+		}
+	}
+
 	pub(super) fn push(&mut self, window: WindowId, event: Events) {
 		self.events.push_back(Event::Window { window, event });
 	}
@@ -273,7 +306,13 @@ impl AppData {
 
 	/// Drops the state of windows whose [`Window`] handle destroyed their surface, along with any focus on them.
 	fn forget_destroyed_windows(&mut self) {
-		self.windows.retain(|window| window.surface.is_alive());
+		self.windows.retain(|window| {
+			let alive = window.surface.is_alive();
+			if !alive && let Some(lock) = &window.cursor_lock {
+				lock.destroy();
+			}
+			alive
+		});
 
 		if self.pointer_focus.as_ref().is_some_and(|(_, id)| self.window(*id).is_none()) {
 			self.pointer_focus = None;

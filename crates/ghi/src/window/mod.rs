@@ -90,39 +90,59 @@ pub enum Events {
 	Key { seat: Seat, pressed: bool, key: input::Keys },
 	/// The user entered a text character.
 	Character { seat: Seat, character: char },
-	/// A mouse button changed state.
+	/// A mouse button changed state, as `device` sees it. Each press and release is reported once for each
+	/// [`PointingDevice`].
 	Button {
 		seat: Seat,
+		device: PointingDevice,
 		pressed: bool,
 		button: input::MouseKeys,
 	},
-	/// The mouse moved relative to its previous position.
-	/// Coordinates are normalized by the current window size.
+	/// The mouse moved, as `device` measures it. `dx` grows to the right and `dy` grows upward. The values don't
+	/// depend on the window's size; see [`PointingDevice`] for the units.
 	MouseMove {
 		seat: Seat,
+		device: PointingDevice,
 		dx: f32,
 		dy: f32,
 		/// The time at which the event occurred.
 		time: u64,
 	},
-	/// The mouse moved to an absolute position.
+	/// The cursor moved to an absolute position.
 	/// Coordinates are normalized with window edges at `-1.0` and `1.0`.
 	/// Captured pointer positions may extend beyond the window edges.
-	MousePosition {
+	PointerPosition {
 		seat: Seat,
 		x: f32,
 		y: f32,
 		/// The time at which the event occurred.
 		time: u64,
 	},
-	/// A mouse wheel or touch surface scrolled.
+	/// A mouse wheel or touch surface scrolled, as `device` sees it.
 	Scroll {
 		seat: Seat,
+		device: PointingDevice,
 		dx: f32,
 		dy: f32,
 		/// The time at which the event occurred.
 		time: u64,
 	},
+}
+
+/// The `PointingDevice` enum tells apart the two views every platform reports of one mouse, so applications can use
+/// the system cursor for interfaces and the physical mouse for camera control.
+///
+/// Map each to its own input device, as `byte_engine`'s window integration maps them to the `Pointer` and `Mouse`
+/// device classes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PointingDevice {
+	/// The system cursor, as the platform moves it with pointer acceleration: points on macOS, pixels on Windows, and
+	/// relative-pointer units on Wayland.
+	Pointer,
+	/// The physical mouse before pointer acceleration: Game Controller mouse counts on macOS, raw input counts on
+	/// Windows, and unaccelerated relative-pointer units on Wayland. On macOS, while no Game Controller mouse is
+	/// connected, it repeats the [`PointingDevice::Pointer`] events.
+	Mouse,
 }
 
 bitflags::bitflags! {
@@ -136,5 +156,9 @@ bitflags::bitflags! {
 		/// [`crate::PresentationModes::Inmediate`], since an unseen window has no display refresh to wait for, and
 		/// pace frames on the CPU.
 		const BACKGROUND = 0b0010;
+		/// The window hides the cursor and holds it at its center while it has focus, so the mouse can move without
+		/// end and [`Events::MouseMove`] keeps reporting motion; [`Events::PointerPosition`] isn't sent meanwhile. Use
+		/// it for camera control in games. A [`Features::BACKGROUND`] window never captures the cursor.
+		const CAPTURE_CURSOR = 0b0100;
 	}
 }

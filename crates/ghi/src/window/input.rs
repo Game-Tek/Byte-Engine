@@ -189,11 +189,11 @@ pub enum Keys {
 	PrintScreen,
 }
 
-#[derive(Debug, Clone, Copy)]
+/// The `MouseKeys` enum names the mouse buttons [`crate::window::Events::Button`] reports. Wheels report through
+/// [`crate::window::Events::Scroll`] instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseKeys {
 	Left,
 	Middle,
 	Right,
-	ScrollUp,
-	ScrollDown,
 }

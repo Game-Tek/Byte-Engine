@@ -15,7 +15,7 @@ use crate::{
 		Value, ValueMapping,
 		device::DeviceClassHandle,
 		trigger::TriggerDescription,
-		utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
+		utils::{register_gamepad_device_class, register_keyboard_device_class, register_pointer_device_class},
 	},
 };
 
@@ -38,7 +38,7 @@ struct Sink {
 impl Fixture {
 	fn new() -> Self {
 		let mut collector = InputCollector::new();
-		let mouse_class = register_mouse_device_class(&mut collector);
+		let mouse_class = register_pointer_device_class(&mut collector);
 		let keyboard_class = register_keyboard_device_class(&mut collector);
 		let mouse = collector.create_device(&mouse_class);
 		let keyboard = collector.create_device(&keyboard_class);
@@ -63,7 +63,7 @@ impl Fixture {
 	}
 
 	fn record(&mut self, name: &'static str, value: impl Into<Value>) {
-		let device = if name.starts_with("Mouse.") {
+		let device = if name.starts_with("Pointer.") {
 			self.mouse
 		} else {
 			self.keyboard
@@ -73,7 +73,7 @@ impl Fixture {
 	}
 
 	fn value(&self, name: &'static str) -> Value {
-		let device = if name.starts_with("Mouse.") {
+		let device = if name.starts_with("Pointer.") {
 			self.mouse
 		} else {
 			self.keyboard
@@ -321,16 +321,16 @@ fn tick_policies_decide_how_held_values_repeat() {
 fn source_events_expose_every_queued_record_until_every_sink_pulled() {
 	let mut fixture = Fixture::new();
 	let mut ui = fixture.sink();
-	ui.button("Mouse.LeftButton", TickPolicy::OnChange);
-	fixture.record("Mouse.LeftButton", true);
-	fixture.record("Mouse.Position", Axis2::new(0.5, 0.5));
+	ui.button("Pointer.LeftButton", TickPolicy::OnChange);
+	fixture.record("Pointer.LeftButton", true);
+	fixture.record("Pointer.Position", Axis2::new(0.5, 0.5));
 	let events: Vec<_> = fixture.collector.source_events().collect();
 	assert_eq!(events.len(), 2);
 	assert_eq!(events[0].seat_handle, SeatHandle::stub());
 	assert_eq!(events[0].device_handle, fixture.mouse);
 	assert_eq!(
 		Some(events[0].trigger_handle),
-		fixture.collector.trigger(TriggerReference::Name("Mouse.LeftButton"))
+		fixture.collector.trigger(TriggerReference::Name("Pointer.LeftButton"))
 	);
 	assert_eq!(events[0].value, Value::Bool(true));
 	assert_eq!(events[1].value, Value::Vector2(Axis2::new(0.5, 0.5)));
@@ -344,32 +344,32 @@ fn source_events_expose_every_queued_record_until_every_sink_pulled() {
 fn resetting_a_seat_discards_interrupted_input_and_allows_a_new_press_without_a_release() {
 	let mut fixture = Fixture::new();
 	let mut sink = fixture.sink();
-	let button = sink.button("Mouse.LeftButton", TickPolicy::OnChange);
-	fixture.record("Mouse.LeftButton", true);
+	let button = sink.button("Pointer.LeftButton", TickPolicy::OnChange);
+	fixture.record("Pointer.LeftButton", true);
 	fixture.pull(&mut sink, handles(button));
 	sink.published();
 
 	// A lost window may never receive this press's release. Its queued motion
 	// and retained press must disappear while another seat keeps its input.
-	fixture.record("Mouse.Position", Axis2::new(0.5, 0.5));
+	fixture.record("Pointer.Position", Axis2::new(0.5, 0.5));
 	fixture.collector.record(
 		SeatHandle::from_index(1),
 		fixture.mouse,
-		TriggerReference::Name("Mouse.LeftButton"),
+		TriggerReference::Name("Pointer.LeftButton"),
 		true.into(),
 	);
 	fixture.collector.reset_seat(SeatHandle::stub());
 	sink.sink.cancel_seat(SeatHandle::stub());
 	assert!(sink.published()[0].is_cancelled());
 
-	fixture.record("Mouse.LeftButton", true);
+	fixture.record("Pointer.LeftButton", true);
 	let resolved = fixture.pull(&mut sink, handles(button));
 	assert_eq!(resolved.len(), 2);
 	let published = sink.published();
 	assert_eq!(published[0].seat_handle(), SeatHandle::from_index(1));
 	assert_eq!(published[1].seat_handle(), SeatHandle::stub());
 	assert!(published.iter().all(|event| event.value() == Value::Bool(true)));
-	assert_eq!(fixture.value("Mouse.Position"), Value::Vector2(Axis2::zero()));
+	assert_eq!(fixture.value("Pointer.Position"), Value::Vector2(Axis2::zero()));
 }
 
 #[test]
@@ -377,16 +377,16 @@ fn a_capturing_sink_keeps_the_same_input_from_reaching_the_next_sink() {
 	let mut fixture = Fixture::new();
 	let mut ui = fixture.sink();
 	let mut game = fixture.sink();
-	let binding = ActionBindingDescription::new("Mouse.Position").triggered_by("Mouse.LeftButton");
+	let binding = ActionBindingDescription::new("Pointer.Position").triggered_by("Pointer.LeftButton");
 	let panel = ui.actions.create(Action::new(&[binding], Types::Vector2));
 	let shoot = game.actions.create(Action::new(&[binding], Types::Vector2));
 
 	// The UI only handles clicks on its own half of the window.
 	let inside_panel = |resolved: &ResolvedAction| matches!(resolved.value, Value::Vector2(position) if position.x < 0.0);
 	for x in [-0.5, 0.5, -0.25] {
-		fixture.record("Mouse.Position", Axis2::new(x, 0.0));
-		fixture.record("Mouse.LeftButton", true);
-		fixture.record("Mouse.LeftButton", false);
+		fixture.record("Pointer.Position", Axis2::new(x, 0.0));
+		fixture.record("Pointer.LeftButton", true);
+		fixture.record("Pointer.LeftButton", false);
 	}
 
 	let ui_actions = fixture.pull(&mut ui, inside_panel);
@@ -414,10 +414,10 @@ fn a_modal_sink_captures_input_no_action_of_its_own_matched() {
 	let mut modal = fixture.sink();
 	let mut game = fixture.sink();
 	let close = modal.button("Keyboard.Escape", TickPolicy::OnChange);
-	game.button("Mouse.LeftButton", TickPolicy::OnChange);
+	game.button("Pointer.LeftButton", TickPolicy::OnChange);
 
 	fixture.record("Keyboard.Escape", true);
-	fixture.record("Mouse.LeftButton", true);
+	fixture.record("Pointer.LeftButton", true);
 
 	let resolved = fixture.pull(&mut modal, handles(close));
 	// The modal swallows the click too, although it has no action bound to it.
@@ -483,10 +483,10 @@ fn cancelling_one_device_leaves_another_device_holding() {
 	let mut fixture = Fixture::new();
 	let mut game = fixture.sink();
 	let keys = game.button("Keyboard.W", TickPolicy::WhileActive);
-	let click = game.button("Mouse.LeftButton", TickPolicy::WhileActive);
+	let click = game.button("Pointer.LeftButton", TickPolicy::WhileActive);
 
 	fixture.record("Keyboard.W", true);
-	fixture.record("Mouse.LeftButton", true);
+	fixture.record("Pointer.LeftButton", true);
 	fixture.pull(&mut game, |_| true);
 	let _ = game.published();
 
@@ -533,15 +533,15 @@ fn impulses_keep_their_order_and_never_repeat_on_later_ticks() {
 	let mut fixture = Fixture::new();
 	let mut sink = fixture.sink();
 	sink.actions
-		.create(Action::new(&[ActionBindingDescription::new("Mouse.Scroll")], Types::Float).tick_policy(TickPolicy::Always));
+		.create(Action::new(&[ActionBindingDescription::new("Pointer.Scroll")], Types::Float).tick_policy(TickPolicy::Always));
 	sink.actions.create(
 		Action::new(&[ActionBindingDescription::new("Keyboard.Character")], Types::Unicode)
 			.tick_policy(TickPolicy::WhileActive),
 	);
 
-	fixture.record("Mouse.Scroll", 1.0f32);
+	fixture.record("Pointer.Scroll", 1.0f32);
 	fixture.record("Keyboard.Character", 'a');
-	fixture.record("Mouse.Scroll", -1.0f32);
+	fixture.record("Pointer.Scroll", -1.0f32);
 	fixture.record("Keyboard.Character", 'b');
 
 	let resolved = fixture.pull(&mut sink, pass);
@@ -563,17 +563,17 @@ fn a_passed_release_still_ends_its_captured_press_before_the_next_press() {
 	let mut fixture = Fixture::new();
 	let mut ui = fixture.sink();
 	let mut game = fixture.sink();
-	ui.button("Mouse.LeftButton", TickPolicy::OnChange);
-	game.button("Mouse.LeftButton", TickPolicy::OnChange);
+	ui.button("Pointer.LeftButton", TickPolicy::OnChange);
+	game.button("Pointer.LeftButton", TickPolicy::OnChange);
 
-	fixture.record("Mouse.LeftButton", true);
+	fixture.record("Pointer.LeftButton", true);
 	fixture.pull(&mut ui, |_| true);
 	assert!(fixture.pull(&mut game, pass).is_empty());
 
 	// The capture includes the first release even when the UI passes it. The
 	// next complete click in this same tick is available to gameplay.
 	for pressed in [false, true, false] {
-		fixture.record("Mouse.LeftButton", pressed);
+		fixture.record("Pointer.LeftButton", pressed);
 	}
 	let resolved = fixture.pull(&mut ui, pass);
 	assert_eq!(
@@ -592,10 +592,10 @@ fn capturing_a_press_does_not_take_a_release_captured_by_an_earlier_sink() {
 	let mut fixture = Fixture::new();
 	let mut ui = fixture.sink();
 	let mut game = fixture.sink();
-	ui.button("Mouse.LeftButton", TickPolicy::OnChange);
-	game.button("Mouse.LeftButton", TickPolicy::OnChange);
-	fixture.record("Mouse.LeftButton", true);
-	fixture.record("Mouse.LeftButton", false);
+	ui.button("Pointer.LeftButton", TickPolicy::OnChange);
+	game.button("Pointer.LeftButton", TickPolicy::OnChange);
+	fixture.record("Pointer.LeftButton", true);
+	fixture.record("Pointer.LeftButton", false);
 	fixture.pull(&mut ui, |action| action.value == Value::Bool(false));
 	let resolved = fixture.pull(&mut game, |_| true);
 	assert_eq!(
@@ -714,8 +714,8 @@ fn snapshot_bindings_sample_each_press_in_queue_order() {
 	let other_mouse = fixture.collector.create_device(&fixture.mouse_class);
 	sink.actions.create(
 		Action::new(
-			&[ActionBindingDescription::new("Mouse.Position")
-				.triggered_by("Mouse.LeftButton")
+			&[ActionBindingDescription::new("Pointer.Position")
+				.triggered_by("Pointer.LeftButton")
 				.trigger_on(TriggerMode::Press)],
 			Types::Vector2,
 		)
@@ -726,21 +726,21 @@ fn snapshot_bindings_sample_each_press_in_queue_order() {
 	fixture.collector.record(
 		seat,
 		other_mouse,
-		TriggerReference::Name("Mouse.Position"),
+		TriggerReference::Name("Pointer.Position"),
 		Value::Vector2(Axis2::new(99.0, 99.0)),
 	);
-	fixture.record("Mouse.LeftButton", true);
+	fixture.record("Pointer.LeftButton", true);
 	assert_eq!(sink.count(&mut fixture.collector), 0);
 	// The held button must be released first; a repeated press is not a new click.
 	for (source, value) in [
-		("Mouse.LeftButton", Value::Bool(false)),
-		("Mouse.Position", Value::Vector2(Axis2::new(1.0, 2.0))),
-		("Mouse.LeftButton", Value::Bool(true)),
-		("Mouse.LeftButton", Value::Bool(false)),
-		("Mouse.Position", Value::Vector2(Axis2::new(3.0, 4.0))),
-		("Mouse.LeftButton", Value::Bool(true)),
-		("Mouse.Position", Value::Vector2(Axis2::new(5.0, 6.0))),
-		("Mouse.LeftButton", Value::Bool(false)),
+		("Pointer.LeftButton", Value::Bool(false)),
+		("Pointer.Position", Value::Vector2(Axis2::new(1.0, 2.0))),
+		("Pointer.LeftButton", Value::Bool(true)),
+		("Pointer.LeftButton", Value::Bool(false)),
+		("Pointer.Position", Value::Vector2(Axis2::new(3.0, 4.0))),
+		("Pointer.LeftButton", Value::Bool(true)),
+		("Pointer.Position", Value::Vector2(Axis2::new(5.0, 6.0))),
+		("Pointer.LeftButton", Value::Bool(false)),
 	] {
 		fixture.record(source, value);
 	}
@@ -751,18 +751,18 @@ fn snapshot_bindings_sample_each_press_in_queue_order() {
 	);
 	assert_eq!(sink.count(&mut fixture.collector), 0);
 	// A later press samples the retained position without requiring more motion.
-	fixture.record("Mouse.LeftButton", true);
+	fixture.record("Pointer.LeftButton", true);
 	fixture.pull(&mut sink, pass);
 	assert_eq!(
 		sink.published().iter().map(ActionEvent::value).collect::<Vec<_>>(),
 		[Value::Vector2(Axis2::new(5.0, 6.0))]
 	);
 	// Motion alone stays silent, and another seat cannot sample this seat's value.
-	fixture.record("Mouse.Position", Axis2::new(7.0, 8.0));
+	fixture.record("Pointer.Position", Axis2::new(7.0, 8.0));
 	fixture.collector.record(
 		SeatHandle::from_index(42),
 		fixture.mouse,
-		TriggerReference::Name("Mouse.LeftButton"),
+		TriggerReference::Name("Pointer.LeftButton"),
 		Value::Bool(true),
 	);
 	assert_eq!(sink.count(&mut fixture.collector), 0);
@@ -772,22 +772,22 @@ fn snapshot_bindings_sample_each_press_in_queue_order() {
 fn click_phase_selects_the_snapshot_across_ticks() {
 	let mut fixture = Fixture::new();
 	let mut sink = fixture.sink();
-	let binding = ActionBindingDescription::new("Mouse.Position").triggered_by("Mouse.LeftButton");
+	let binding = ActionBindingDescription::new("Pointer.Position").triggered_by("Pointer.LeftButton");
 	let release = sink
 		.actions
 		.create(Action::new(&[binding], Types::Vector2).tick_policy(TickPolicy::Always));
 	let press = sink
 		.actions
 		.create(Action::new(&[binding.trigger_on(TriggerMode::Press)], Types::Vector2));
-	fixture.record("Mouse.Position", Axis2::new(1.0, 2.0));
-	fixture.record("Mouse.LeftButton", true);
+	fixture.record("Pointer.Position", Axis2::new(1.0, 2.0));
+	fixture.record("Pointer.LeftButton", true);
 	let actions = fixture.pull(&mut sink, pass);
 	assert_eq!(actions.len(), 1);
 	assert_eq!(actions[0].handle, Some(press));
 	assert_eq!(actions[0].value, Value::Vector2(Axis2::new(1.0, 2.0)));
 	assert!(fixture.pull(&mut sink, pass).is_empty());
-	fixture.record("Mouse.Position", Axis2::new(3.0, 4.0));
-	fixture.record("Mouse.LeftButton", false);
+	fixture.record("Pointer.Position", Axis2::new(3.0, 4.0));
+	fixture.record("Pointer.LeftButton", false);
 	let actions = fixture.pull(&mut sink, pass);
 	assert_eq!(actions.len(), 1);
 	assert_eq!(actions[0].handle, Some(release));
@@ -802,19 +802,19 @@ fn drag_events_preserve_queue_order_and_do_not_repeat_when_held() {
 	let mut sink = fixture.sink();
 	sink.actions.create(
 		Action::new(
-			&[ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton")],
+			&[ActionBindingDescription::new("Pointer.Position").dragged_by("Pointer.LeftButton")],
 			Types::Vector2,
 		)
 		.tick_policy(TickPolicy::Always),
 	);
 	for (source, value) in [
-		("Mouse.Position", Value::Vector2(Axis2::new(1.0, 2.0))),
-		("Mouse.LeftButton", Value::Bool(true)),
-		("Mouse.LeftButton", Value::Bool(true)),
-		("Mouse.Position", Value::Vector2(Axis2::new(3.0, 4.0))),
-		("Mouse.LeftButton", Value::Bool(false)),
-		("Mouse.LeftButton", Value::Bool(false)),
-		("Mouse.LeftButton", Value::Bool(true)),
+		("Pointer.Position", Value::Vector2(Axis2::new(1.0, 2.0))),
+		("Pointer.LeftButton", Value::Bool(true)),
+		("Pointer.LeftButton", Value::Bool(true)),
+		("Pointer.Position", Value::Vector2(Axis2::new(3.0, 4.0))),
+		("Pointer.LeftButton", Value::Bool(false)),
+		("Pointer.LeftButton", Value::Bool(false)),
+		("Pointer.LeftButton", Value::Bool(true)),
 	] {
 		fixture.record(source, value);
 	}
@@ -839,7 +839,7 @@ fn drag_events_preserve_queue_order_and_do_not_repeat_when_held() {
 	assert_eq!(cancelled[0].value(), Value::Vector2(Axis2::new(3.0, 4.0)));
 	// Neither the repeated press nor its release restarts the cancelled drag.
 	for pressed in [true, false] {
-		fixture.record("Mouse.LeftButton", pressed);
+		fixture.record("Pointer.LeftButton", pressed);
 	}
 	assert_eq!(sink.count(&mut fixture.collector), 0);
 }
@@ -850,19 +850,19 @@ fn a_drag_captures_movement_until_release_and_then_allows_other_input() {
 	let mut fixture = Fixture::new();
 	let mut ui = fixture.sink();
 	let mut game = fixture.sink();
-	let binding = ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton");
+	let binding = ActionBindingDescription::new("Pointer.Position").dragged_by("Pointer.LeftButton");
 	let drag = ui
 		.actions
 		.create(Action::new(&[binding], Types::Vector2).tick_policy(TickPolicy::Always));
 	game.actions.create(Action::new(&[binding], Types::Vector2));
 	let game_motion = game.actions.create(Action::new(
-		&[ActionBindingDescription::new("Mouse.Position")],
+		&[ActionBindingDescription::new("Pointer.Position")],
 		Types::Vector2,
 	));
 	// Only the start is accepted by hit testing. Capture must survive moving outside.
 	let start = |action: &ResolvedAction| action.phase == Started;
-	fixture.record("Mouse.Position", Axis2::new(-0.5, 0.0));
-	fixture.record("Mouse.LeftButton", true);
+	fixture.record("Pointer.Position", Axis2::new(-0.5, 0.0));
+	fixture.record("Pointer.LeftButton", true);
 	let actions = fixture.pull(&mut ui, start);
 	assert_eq!(actions.len(), 1);
 	assert_eq!(actions[0].phase, Started);
@@ -874,8 +874,8 @@ fn a_drag_captures_movement_until_release_and_then_allows_other_input() {
 			.all(|action| action.handle == Some(game_motion))
 	);
 	assert!(fixture.pull(&mut ui, pass).is_empty());
-	fixture.record("Mouse.Position", Axis2::new(0.8, 0.2));
-	fixture.record("Mouse.LeftButton", false);
+	fixture.record("Pointer.Position", Axis2::new(0.8, 0.2));
+	fixture.record("Pointer.LeftButton", false);
 	let actions = fixture.pull(&mut ui, pass);
 	assert_eq!(
 		actions.iter().map(|action| (action.phase, action.value)).collect::<Vec<_>>(),
@@ -889,7 +889,7 @@ fn a_drag_captures_movement_until_release_and_then_allows_other_input() {
 		ui.published().iter().map(ActionEvent::phase).collect::<Vec<_>>(),
 		[Started, Updated, Ended]
 	);
-	fixture.record("Mouse.Position", Axis2::new(0.9, 0.3));
+	fixture.record("Pointer.Position", Axis2::new(0.9, 0.3));
 	assert!(fixture.pull(&mut ui, pass).is_empty());
 	assert_eq!(fixture.pull(&mut game, pass)[0].handle, Some(game_motion));
 }
@@ -900,11 +900,11 @@ fn cancelling_a_drag_at_the_origin_does_not_end_or_restart_it() {
 	let mut fixture = Fixture::new();
 	let mut sink = fixture.sink();
 	sink.actions.create(Action::new(
-		&[ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton")],
+		&[ActionBindingDescription::new("Pointer.Position").dragged_by("Pointer.LeftButton")],
 		Types::Vector2,
 	));
-	fixture.record("Mouse.Position", Axis2::zero());
-	fixture.record("Mouse.LeftButton", true);
+	fixture.record("Pointer.Position", Axis2::zero());
+	fixture.record("Pointer.LeftButton", true);
 	fixture.pull(&mut sink, |_| true);
 	sink.published();
 	sink.sink.cancel_action(SeatHandle::stub(), ActionHandle::from_index(0));
@@ -914,11 +914,11 @@ fn cancelling_a_drag_at_the_origin_does_not_end_or_restart_it() {
 	assert_eq!(cancelled[0].phase(), Cancelled);
 	assert!(cancelled[0].is_cancelled());
 	assert_eq!(cancelled[0].value(), Value::Vector2(Axis2::zero()));
-	fixture.record("Mouse.LeftButton", true); // Platform repeat is not a new drag.
-	fixture.record("Mouse.Position", Axis2::new(1.0, 2.0));
-	fixture.record("Mouse.LeftButton", false);
+	fixture.record("Pointer.LeftButton", true); // Platform repeat is not a new drag.
+	fixture.record("Pointer.Position", Axis2::new(1.0, 2.0));
+	fixture.record("Pointer.LeftButton", false);
 	assert!(fixture.pull(&mut sink, pass).is_empty());
-	fixture.record("Mouse.LeftButton", true);
+	fixture.record("Pointer.LeftButton", true);
 	assert_eq!(fixture.pull(&mut sink, pass)[0].phase, Started);
 }
 
@@ -928,7 +928,7 @@ fn drags_require_a_sample_at_press_and_keep_devices_and_seats_separate() {
 	let mut fixture = Fixture::new();
 	let mut sink = fixture.sink();
 	sink.actions.create(Action::new(
-		&[ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton")],
+		&[ActionBindingDescription::new("Pointer.Position").dragged_by("Pointer.LeftButton")],
 		Types::Vector2,
 	));
 	let other = fixture.collector.create_device(&fixture.mouse_class);
@@ -938,13 +938,13 @@ fn drags_require_a_sample_at_press_and_keep_devices_and_seats_separate() {
 		fixture.collector.record(
 			seat,
 			device,
-			TriggerReference::Name("Mouse.Position"),
+			TriggerReference::Name("Pointer.Position"),
 			Axis2::new(8.0, 9.0).into(),
 		);
 	}
-	fixture.record("Mouse.LeftButton", true);
-	fixture.record("Mouse.Position", Axis2::new(1.0, 2.0));
-	fixture.record("Mouse.LeftButton", false);
+	fixture.record("Pointer.LeftButton", true);
+	fixture.record("Pointer.Position", Axis2::new(1.0, 2.0));
+	fixture.record("Pointer.LeftButton", false);
 	assert!(fixture.pull(&mut sink, pass).is_empty());
 	let sources = [
 		(SeatHandle::stub(), fixture.mouse),
@@ -954,7 +954,7 @@ fn drags_require_a_sample_at_press_and_keep_devices_and_seats_separate() {
 	for (seat, device) in sources {
 		fixture
 			.collector
-			.record(seat, device, TriggerReference::Name("Mouse.LeftButton"), true.into());
+			.record(seat, device, TriggerReference::Name("Pointer.LeftButton"), true.into());
 	}
 	assert_eq!(
 		fixture
@@ -971,12 +971,12 @@ fn drags_require_a_sample_at_press_and_keep_devices_and_seats_separate() {
 		fixture.collector.record(
 			seat,
 			device,
-			TriggerReference::Name("Mouse.Position"),
+			TriggerReference::Name("Pointer.Position"),
 			Axis2::new(3.0, 4.0).into(),
 		);
 		fixture
 			.collector
-			.record(seat, device, TriggerReference::Name("Mouse.LeftButton"), false.into());
+			.record(seat, device, TriggerReference::Name("Pointer.LeftButton"), false.into());
 	}
 	assert_eq!(
 		fixture

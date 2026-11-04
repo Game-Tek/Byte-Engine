@@ -51,7 +51,7 @@ release:
 
 ```rust
 let drag = Action::new(
-    &[ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton")],
+    &[ActionBindingDescription::new("Pointer.Position").dragged_by("Pointer.LeftButton")],
     Types::Vector2,
 );
 ```
@@ -73,6 +73,34 @@ focus changes or a device disconnects. A cancelled drag emits
 `ActionPhase::Cancelled` with its last position. Discard the operation instead
 of committing it. The button needs a fresh press to start another drag.
 Cancellation events are delivered through the action event channel.
+
+## Turn a camera with the mouse
+
+To let the player look around without running into the window's edges, create
+the window with cursor capture and turn the camera by `Mouse.Movement`:
+
+```rust
+let mut window = Window::new("Game", Extent::rectangle(1920, 1080))
+    .with_feature(Features::DECORATIONS)
+    .with_feature(Features::CAPTURE_CURSOR);
+window.attach(camera);
+app.create(window);
+
+let look = Action::new(&[ActionBindingDescription::new("Mouse.Movement")], Types::Vector2);
+```
+
+Bind `Mouse`, not `Pointer`: it reports the mouse before pointer acceleration,
+so the same hand movement always turns the camera by the same angle. Keep
+`Pointer` for menus and anything else the cursor points at.
+
+While the window has focus, the cursor stays hidden at its center and every
+movement reaches your action. A tick can carry several `look` events, so add
+each event's `x` and `y` to your yaw and pitch, scaled by a sensitivity, and
+limit the pitch short of straight up and down. Turn by a gamepad stick in a
+separate action, at a rate times the tick's length. The cursor comes back when
+the window loses focus. See [cursor capture](/docs/reference/input#cursor-capture)
+for the exact rules, and [pointer and mouse](/docs/reference/input#pointer-and-mouse)
+for the movement units on each platform.
 
 ## Read actions
 
@@ -153,14 +181,14 @@ binding that publishes the cursor position when a button is released gives the
 sink the exact click position:
 
 ```rust
-ActionBindingDescription::new("Mouse.Position").triggered_by("Mouse.LeftButton")
+ActionBindingDescription::new("Pointer.Position").triggered_by("Pointer.LeftButton")
 ```
 
 Clicks default to release. To capture the position on press, choose the phase:
 
 ```rust
-ActionBindingDescription::new("Mouse.Position")
-    .triggered_by("Mouse.LeftButton")
+ActionBindingDescription::new("Pointer.Position")
+    .triggered_by("Pointer.LeftButton")
     .trigger_on(TriggerMode::Press)
 ```
 

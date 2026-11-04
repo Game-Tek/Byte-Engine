@@ -1118,11 +1118,15 @@ impl Renderer {
 		let extent = window.extent();
 		let camera = window.camera();
 
-		let mut features = if window.features().contains(window::Features::DECORATIONS) {
-			ghi::window::Features::DECORATIONS
-		} else {
-			ghi::window::Features::empty()
-		};
+		let mut features = ghi::window::Features::empty();
+		features.set(
+			ghi::window::Features::DECORATIONS,
+			window.features().contains(window::Features::DECORATIONS),
+		);
+		features.set(
+			ghi::window::Features::CAPTURE_CURSOR,
+			window.features().contains(window::Features::CAPTURE_CURSOR),
+		);
 		// An unseen window has no display refresh to wait for, so it presents immediately and the loop paces frames.
 		let presentation_mode = if self.unattended {
 			features |= ghi::window::Features::BACKGROUND;

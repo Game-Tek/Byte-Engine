@@ -9,16 +9,21 @@ use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message as _, define_class, msg_send};
 use objc2_app_kit::{
 	NSApp, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply,
-	NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSScreen, NSView, NSWindow, NSWindowDelegate,
-	NSWindowOcclusionState, NSWindowStyleMask,
+	NSBackingStoreType, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSScreen, NSView, NSWindow,
+	NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask,
 };
+use objc2_core_graphics::{CGAssociateMouseAndMouseCursorPosition, CGWarpMouseCursorPosition};
 use objc2_foundation::{
 	NSAutoreleasePool, NSDate, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
 	NSString,
 };
 
 use crate::window::input::{Keys, MouseKeys};
-use crate::window::{AppEvents, Event, Events, Features, Seat, Wait, WindowId};
+use crate::window::{AppEvents, Event, Events, Features, PointingDevice, Seat, Wait, WindowId};
+
+mod game_mouse;
+
+use game_mouse::GameMice;
 
 /// Events shared by the pump and the AppKit delegates, in arrival order.
 type EventQueue = Rc<RefCell<VecDeque<Event>>>;
@@ -31,11 +36,65 @@ pub struct App {
 	modifier_state: ModifierState,
 	/// Top-left point where the next window cascades from, so each new window of this app is offset from the last one.
 	next_window_cascade_top_left: Option<(f64, f64)>,
+	/// The process has one cursor, so every window shares the record of which one holds it.
+	cursor: Rc<CursorCapture>,
+	/// The source of [`PointingDevice::Mouse`] events, or `None` where Game Controller mice can't be trusted.
+	game_mice: Option<GameMice>,
 }
 
 pub struct Window {
 	window: Retained<NSWindow>,
 	_delegate: Retained<WindowDelegate>,
+	cursor: Rc<CursorCapture>,
+}
+
+/// The `CursorCapture` struct keeps the state of the one cursor that windows created with
+/// [`Features::CAPTURE_CURSOR`] hold, so the pump can engage, follow, and release it.
+#[derive(Default)]
+struct CursorCapture {
+	/// Windows that capture the cursor while they have focus.
+	windows: RefCell<Vec<WindowId>>,
+	/// The window holding the cursor and the screen point, in Core Graphics coordinates, the cursor is held at.
+	held: Cell<Option<(WindowId, NSPoint)>>,
+	/// The cursor jump from warps since the last motion event, with `y` growing downward like `NSEvent.deltaY`.
+	/// AppKit adds a warp to the next motion delta, so the pump subtracts it there.
+	warp: Cell<(f64, f64)>,
+}
+
+impl CursorCapture {
+	/// Holds the cursor for `window` at `point`, or moves an existing hold there.
+	fn hold(&self, window: WindowId, point: NSPoint) {
+		let from = NSEvent::mouseLocation();
+		let (warp_x, warp_y) = self.warp.get();
+		// `mouseLocation` grows upward from the main display's bottom while Core Graphics grows downward from its top,
+		// so both coordinates convert to the downward-growing deltas AppKit reports.
+		let to_y = primary_display_height().map_or(point.y, |height| height - point.y);
+		self.warp.set((warp_x + point.x - from.x, warp_y + from.y - to_y));
+		let _ = CGWarpMouseCursorPosition(point);
+		if self.held.replace(Some((window, point))).is_none() {
+			// Disconnecting the cursor keeps it in place while motion events still report the mouse's movement.
+			let _ = CGAssociateMouseAndMouseCursorPosition(false);
+			NSCursor::hide();
+		}
+	}
+
+	/// Gives the cursor back to the system where it's held.
+	fn release(&self) {
+		if self.held.take().is_some() {
+			let _ = CGAssociateMouseAndMouseCursorPosition(true);
+			NSCursor::unhide();
+		}
+	}
+
+	fn holds(&self, window: WindowId) -> bool {
+		self.held.get().is_some_and(|(held, _)| held == window)
+	}
+
+	/// Returns a motion delta without the cursor jump from earlier warps.
+	fn take_motion(&self, dx: f64, dy: f64) -> (f64, f64) {
+		let (warp_x, warp_y) = self.warp.replace((0.0, 0.0));
+		(dx - warp_x, dy - warp_y)
+	}
 }
 
 /// The `AppWaker` struct posts an empty application-defined event that ends a waiting poll.
@@ -322,6 +381,23 @@ fn window_id(window: &NSWindow) -> WindowId {
 	WindowId::from_raw(window as *const NSWindow as u64)
 }
 
+/// Returns the height of the display holding the menu bar, which anchors both AppKit and Core Graphics screen
+/// coordinates.
+fn primary_display_height() -> Option<f64> {
+	let mtm = MainThreadMarker::new()?;
+	Some(NSScreen::screens(mtm).firstObject()?.frame().size.height)
+}
+
+/// Returns the center of the window's content in Core Graphics screen coordinates, where `y` grows downward from the
+/// top of the display holding the menu bar.
+fn content_center(window: &NSWindow) -> Option<NSPoint> {
+	let view = window.contentView()?;
+	let frame = window.convertRectToScreen(view.convertRect_toView(view.bounds(), None));
+	let x = frame.origin.x + frame.size.width / 2.0;
+	let y = frame.origin.y + frame.size.height / 2.0;
+	Some(NSPoint::new(x.round(), (primary_display_height()? - y).round()))
+}
+
 /// Normalizes the window center to `0` and edges to `-1` and `1`, preserving
 /// captured positions outside the window so callers can reject an outside drop.
 fn normalize_mouse_position(point: NSPoint, content_frame: NSRect) -> Option<(f32, f32)> {
@@ -353,6 +429,14 @@ fn pixel_extent_to_window_points(extent: utils::Extent, scale_factor: f64) -> NS
 	)
 }
 
+/// Returns the devices an AppKit mouse event reports to: always the cursor, and the mouse too when `mouse` is set
+/// because no Game Controller mouse reports for it.
+fn pointing_devices(mouse: bool) -> impl Iterator<Item = PointingDevice> {
+	[Some(PointingDevice::Pointer), mouse.then_some(PointingDevice::Mouse)]
+		.into_iter()
+		.flatten()
+}
+
 /// Maps an AppKit mouse-button event type to the button it changes and whether it was pressed.
 ///
 /// Returns `None` for every other event type.
@@ -370,14 +454,14 @@ fn mouse_button(event_type: NSEventType) -> Option<(MouseKeys, bool)> {
 
 /// Samples the event's position before a button transition so its drag endpoint
 /// stays correct when AppKit coalesces or omits a separate motion event.
-fn append_mouse_position(window: &NSWindow, event: &NSEvent, time: u64, push: &mut impl FnMut(Events)) {
+fn append_pointer_position(window: &NSWindow, event: &NSEvent, time: u64, push: &mut impl FnMut(Events)) {
 	let Some(content_view) = window.contentView() else {
 		return;
 	};
 	let Some((x, y)) = normalize_mouse_position(event.locationInWindow(), content_view.frame()) else {
 		return;
 	};
-	push(Events::MousePosition {
+	push(Events::PointerPosition {
 		seat: Seat::stub(),
 		x,
 		y,
@@ -433,6 +517,7 @@ impl App {
 		let app = NSApp(mtm);
 		let events = EventQueue::default();
 		let delegate = ApplicationDelegate::new(mtm, events.clone());
+		let game_mice = GameMice::new(events.clone());
 		app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 		app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
 
@@ -442,6 +527,8 @@ impl App {
 			events,
 			modifier_state: ModifierState::default(),
 			next_window_cascade_top_left: None,
+			cursor: Rc::default(),
+			game_mice,
 		})
 	}
 
@@ -515,9 +602,15 @@ impl App {
 			refresh_interval: screen_refresh_interval(&window),
 		});
 
+		// A background window never takes focus, so it would never hold the cursor anyway.
+		if features.contains(Features::CAPTURE_CURSOR) && !features.contains(Features::BACKGROUND) {
+			self.cursor.windows.borrow_mut().push(id);
+		}
+
 		Ok(Window {
 			window,
 			_delegate: delegate,
+			cursor: self.cursor.clone(),
 		})
 	}
 
@@ -535,6 +628,11 @@ impl App {
 			Wait::Forever => Some(NSDate::distantFuture()),
 		}
 		.filter(|_| self.events.borrow().is_empty());
+		if let Some(game_mice) = &self.game_mice {
+			game_mice.rearm_wake();
+		}
+		// AppKit events stand in for a Game Controller mouse while none is connected.
+		let mouse_from_appkit = !self.game_mice.as_ref().is_some_and(GameMice::connected);
 
 		while let Some(event) = app.nextEventMatchingMask_untilDate_inMode_dequeue(
 			NSEventMask::Any,
@@ -553,43 +651,61 @@ impl App {
 			if let Some(window) = event.window(self.mtm) {
 				let time = (event.timestamp() * 1000.0) as u64;
 				let id = window_id(&window);
+				let captured = self.cursor.holds(id);
 				let mut queue = self.events.borrow_mut();
 				let push = &mut |event| queue.push_back(Event::Window { window: id, event });
 
 				if let Some((button, pressed)) = mouse_button(event_type) {
 					// The position goes first so the button event lands at the drag endpoint.
-					append_mouse_position(&window, &event, time, push);
-					push(Events::Button {
-						seat: Seat::stub(),
-						pressed,
-						button,
-					});
+					if !captured {
+						append_pointer_position(&window, &event, time, push);
+					}
+					for device in pointing_devices(mouse_from_appkit) {
+						push(Events::Button {
+							seat: Seat::stub(),
+							device,
+							pressed,
+							button,
+						});
+					}
 				}
 				match event_type {
 					NSEventType::MouseMoved
 					| NSEventType::LeftMouseDragged
 					| NSEventType::RightMouseDragged
 					| NSEventType::OtherMouseDragged => {
-						// Motion reports both the relative movement and the normalized position.
-						push(Events::MouseMove {
-							seat: Seat::stub(),
-							dx: event.deltaX() as f32,
-							dy: event.deltaY() as f32,
-							time,
-						});
-						append_mouse_position(&window, &event, time, push);
+						// Motion reports both the relative movement and the normalized position. A held cursor stays
+						// at the window's center, so only the movement is meaningful.
+						let (dx, dy) = self.cursor.take_motion(event.deltaX(), event.deltaY());
+						for device in pointing_devices(mouse_from_appkit) {
+							push(Events::MouseMove {
+								seat: Seat::stub(),
+								device,
+								dx: dx as f32,
+								// AppKit deltas grow downward.
+								dy: -dy as f32,
+								time,
+							});
+						}
+						if !captured {
+							append_pointer_position(&window, &event, time, push);
+						}
 					}
 					NSEventType::ScrollWheel => {
 						let dx = event.scrollingDeltaX() as f32;
 						let dy = event.scrollingDeltaY() as f32;
 
+						// Game Controller wheels report unreliably, so both devices scroll by AppKit's events.
 						if dx != 0.0 || dy != 0.0 {
-							push(Events::Scroll {
-								seat: Seat::stub(),
-								dx,
-								dy,
-								time,
-							});
+							for device in pointing_devices(true) {
+								push(Events::Scroll {
+									seat: Seat::stub(),
+									device,
+									dx,
+									dy,
+									time,
+								});
+							}
 						}
 					}
 					NSEventType::KeyDown | NSEventType::KeyUp => {
@@ -615,7 +731,35 @@ impl App {
 			}
 		}
 
+		self.update_cursor_capture(&app);
+
 		std::iter::from_fn(|| self.events.borrow_mut().pop_front())
+	}
+
+	/// Holds the cursor for the focused capturing window, follows that window's center, and releases the cursor when
+	/// no capturing window has focus.
+	///
+	/// A hold waits until no mouse button is down, so the click that focuses a window or drags its title bar ends
+	/// before the cursor disappears.
+	fn update_cursor_capture(&self, app: &NSApplication) {
+		let target = app
+			.keyWindow()
+			.filter(|window| app.isActive() && !window.isMiniaturized())
+			.filter(|window| self.cursor.windows.borrow().contains(&window_id(window)))
+			.and_then(|window| Some((window_id(&window), content_center(&window)?)));
+
+		match (self.cursor.held.get(), target) {
+			(Some(held), Some(target)) if held == target => {}
+			// The window moved or resized, so the hold follows its center.
+			(Some((held, _)), Some((window, center))) if held == window => self.cursor.hold(window, center),
+			(_, Some((window, center))) => {
+				self.cursor.release();
+				if NSEvent::pressedMouseButtons() == 0 {
+					self.cursor.hold(window, center);
+				}
+			}
+			(_, None) => self.cursor.release(),
+		}
 	}
 
 	pub(crate) fn waker(&self) -> AppWaker {
@@ -645,6 +789,11 @@ impl Window {
 
 impl Drop for Window {
 	fn drop(&mut self) {
+		let id = window_id(&self.window);
+		self.cursor.windows.borrow_mut().retain(|window| *window != id);
+		if self.cursor.holds(id) {
+			self.cursor.release();
+		}
 		self.window.setDelegate(None);
 		self.window.close();
 	}

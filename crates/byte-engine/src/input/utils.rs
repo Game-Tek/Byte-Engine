@@ -1,38 +1,48 @@
-/// Registers the standard Byte Engine mouse device class.
+/// Registers the standard Byte Engine pointer device class: the system cursor, as the platform moves it with
+/// pointer acceleration. Bind it for interfaces and for anything the cursor points at; bind
+/// [`register_mouse_device_class`]'s `Mouse` for camera control instead.
 ///
 /// # Triggers
 ///
 /// - `Position`: Absolute window-relative position as a 2D vector from -1 to 1.
-/// - `Movement`: Relative movement as a 2D vector normalized by the window size. Each record is one impulse.
-/// - `LeftButton`: State of the left mouse button as a Boolean value.
-/// - `RightButton`: State of the right mouse button as a Boolean value.
-/// - `Scroll`: Vertical scroll amount as a float from -1 to 1. Each record is one impulse.
+/// - `Movement`: The cursor's movement after pointer acceleration, as a 2D vector with `y` growing upward. Each
+///   record is one impulse. See [`ghi::window::PointingDevice::Pointer`] for the units.
+/// - `LeftButton`, `RightButton`, `MiddleButton`: Whether the button is held, as a Boolean value.
+/// - `Scroll`: How far the wheel turned, as a float. Each record is one impulse.
+pub fn register_pointer_device_class<A: Allocator + Clone>(registry: &mut InputCollector<A>) -> DeviceClassHandle {
+	let pointer_device_class_handle = registry.register_device_class("Pointer");
+	registry.register_trigger(
+		&pointer_device_class_handle,
+		"Position",
+		TriggerDescription::<Axis2>::default(),
+	);
+	register_mouse_triggers(registry, &pointer_device_class_handle);
+	pointer_device_class_handle
+}
+
+/// Registers the standard Byte Engine mouse device class: the physical mouse before pointer acceleration, so a
+/// movement always turns a camera by the same amount. Bind it for camera control and aiming; bind
+/// [`register_pointer_device_class`]'s `Pointer` for interfaces instead.
+///
+/// # Triggers
+///
+/// - `Movement`: The mouse's movement before pointer acceleration, as a 2D vector with `y` growing upward. Each record
+///   is one impulse. See [`ghi::window::PointingDevice::Mouse`] for the units.
+/// - `LeftButton`, `RightButton`, `MiddleButton`: Whether the button is held, as a Boolean value.
+/// - `Scroll`: How far the wheel turned, as a float. Each record is one impulse.
 pub fn register_mouse_device_class<A: Allocator + Clone>(registry: &mut InputCollector<A>) -> DeviceClassHandle {
 	let mouse_device_class_handle = registry.register_device_class("Mouse");
-
-	registry.register_trigger(&mouse_device_class_handle, "Position", TriggerDescription::<Axis2>::default());
-	registry.register_trigger(
-		&mouse_device_class_handle,
-		"Movement",
-		TriggerDescription::<Axis2>::default().transient(),
-	);
-	registry.register_trigger(
-		&mouse_device_class_handle,
-		"LeftButton",
-		TriggerDescription::<bool>::default(),
-	);
-	registry.register_trigger(
-		&mouse_device_class_handle,
-		"RightButton",
-		TriggerDescription::<bool>::default(),
-	);
-	registry.register_trigger(
-		&mouse_device_class_handle,
-		"Scroll",
-		TriggerDescription::<f32>::default().transient(),
-	);
-
+	register_mouse_triggers(registry, &mouse_device_class_handle);
 	mouse_device_class_handle
+}
+
+/// Registers the movement, button, and wheel triggers the pointer and mouse classes share.
+fn register_mouse_triggers<A: Allocator + Clone>(registry: &mut InputCollector<A>, class: &DeviceClassHandle) {
+	registry.register_trigger(class, "Movement", TriggerDescription::<Axis2>::default().transient());
+	for button in ["LeftButton", "RightButton", "MiddleButton"] {
+		registry.register_trigger(class, button, TriggerDescription::<bool>::default());
+	}
+	registry.register_trigger(class, "Scroll", TriggerDescription::<f32>::default().transient());
 }
 
 /// Registers the standard Byte Engine keyboard device class.

@@ -68,5 +68,9 @@ bitflags::bitflags! {
 	pub struct Features : u32 {
 		/// The window has decorations (title bar, border, etc.).
 		const DECORATIONS = 0b0001;
+		/// The window hides the cursor and holds it at its center while it has focus, so the mouse moves without end and
+		/// `Mouse.Movement` keeps reporting motion. Use it for camera control; see
+		/// [cursor capture](/docs/reference/input#cursor-capture).
+		const CAPTURE_CURSOR = 0b0010;
 	}
 }

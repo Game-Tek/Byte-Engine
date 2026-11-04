@@ -132,8 +132,6 @@ impl TryFrom<u8> for MouseKeys {
 			1 => Ok(MouseKeys::Left),
 			2 => Ok(MouseKeys::Middle),
 			3 => Ok(MouseKeys::Right),
-			4 => Ok(MouseKeys::ScrollUp),
-			5 => Ok(MouseKeys::ScrollDown),
 			_ => Err(()),
 		}
 	}

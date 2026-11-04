@@ -233,7 +233,7 @@ node.remove().await;
 ## Drag a UI item onto an application target
 
 The engine owns one pointer drag. Create a position action with
-`ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton")`
+`ActionBindingDescription::new("Pointer.Position").dragged_by("Pointer.LeftButton")`
 in your UI's input sink and forward its phases to the engine in normalized
 window coordinates. `Engine::press` grabs the surface under the pointer from
 the last evaluated frame and returns whether it found one. In this example,

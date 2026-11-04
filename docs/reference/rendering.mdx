@@ -15,7 +15,7 @@ contract of the visibility pipeline. The design notes behind it are under
 
 | Object | Role |
 | --- | --- |
-| Window | A named render surface with an extent and optional decorations, with one camera attached. Each window becomes one sink, numbered in creation order. |
+| Window | A named render surface with an extent, optional decorations, and optional [cursor capture](/docs/reference/input#cursor-capture), with one camera attached. Each window becomes one sink, numbered in creation order. |
 | Camera | View settings created on the world with a transform, which the renderer follows. |
 | Sink | The per-frame destination the renderer builds from a window's extent and camera: the view, the extent, the exposure scale, and the frame interval. |
 | View | Projection and view matrices with near, far, vertical field of view, and aspect ratio, perspective or orthographic. |

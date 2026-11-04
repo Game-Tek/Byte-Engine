@@ -194,10 +194,12 @@ pub fn default_image_processor() -> ImageProcessor {
 /// values.
 pub fn setup_default_input(application: &mut GraphicsApplication) {
 	let input = &mut application.input;
+	let pointer = register_pointer_device_class(input);
 	let mouse = register_mouse_device_class(input);
 	let keyboard = register_keyboard_device_class(input);
 	let gamepad = register_gamepad_device_class(input);
 	application.gamepad_device_class_handle = Some(gamepad);
+	input.create_device(&pointer);
 	input.create_device(&mouse);
 	input.create_device(&keyboard);
 	input.create_device(&gamepad);
@@ -371,6 +373,9 @@ use crate::{
 		sample_loader::{AudioLoadSource, AudioSampleLoader, AudioSamplePoolConfig},
 	},
 	core::{listener::Listener as _, message::DeleteMessage},
-	input::utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
+	input::utils::{
+		register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class,
+		register_pointer_device_class,
+	},
 	rendering::window::Window,
 };

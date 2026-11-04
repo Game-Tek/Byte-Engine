@@ -32,6 +32,30 @@ pub struct ShaderMesh {
 	pub(crate) bounding_sphere: [f32; 4],
 }
 
+/// The `InstanceLightmap` struct is one entry of the per-frame table that tells material evaluation where an instance's
+/// light lies in the resident lightmap, indexed like [`ShaderMesh`].
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct InstanceLightmap {
+	/// Maps the instance's lightmap UVs into the lightmap: `uv * scale_offset.xy + scale_offset.zw`.
+	pub(crate) scale_offset: [f32; 4],
+	/// The lightmap's bindless texture slot, or [`NO_LIGHTMAP_TEXTURE`].
+	pub(crate) texture: u32,
+	pub(crate) padding: [u32; 3],
+}
+
+/// [`InstanceLightmap::texture`] of an instance no lightmap lights.
+pub(crate) const NO_LIGHTMAP_TEXTURE: u32 = u32::MAX;
+
+impl InstanceLightmap {
+	/// The entry of an instance no lightmap lights.
+	pub(crate) const NONE: Self = Self {
+		scale_offset: [0.0; 4],
+		texture: NO_LIGHTMAP_TEXTURE,
+		padding: [0; 3],
+	};
+}
+
 /// [`ShaderMesh::flags`] bit for a material with both faces visible. Task shaders keep its back-facing meshlets and
 /// material evaluation reverses the normal of its back-facing pixels. The shaders spell this bit as the literal `1`.
 pub(crate) const MESH_FLAG_DOUBLE_SIDED: u32 = 1;
@@ -186,6 +210,26 @@ impl Default for MaterialData {
 }
 
 impl MaterialData {
+	/// Creates the record of a material whose variables take the bindless texture slots `textures`, and reports
+	/// whether it named more textures than a record holds.
+	///
+	/// The visibility manager records each material it loads with it, and the lightmap bake each material its rays hit.
+	pub(crate) fn describe(
+		textures: &[Option<u32>],
+		coverage: resource_management::resources::material::MaterialCoverage,
+		alpha_mode: resource_management::types::AlphaMode,
+	) -> (Self, bool) {
+		let mut record = Self::default();
+		let overflow = record.set_textures(textures.iter().copied());
+		record.coverage_factor = coverage.factor;
+		record.coverage_texture_slot = coverage.texture_slot.unwrap_or(u32::MAX);
+		record.alpha_cutoff = match alpha_mode {
+			resource_management::types::AlphaMode::Mask(cutoff) => cutoff,
+			resource_management::types::AlphaMode::Opaque | resource_management::types::AlphaMode::Blend => 0.0,
+		};
+		(record, overflow)
+	}
+
 	/// Replaces the texture slots of this record and reports whether the input had more slots than fit.
 	pub(crate) fn set_textures(&mut self, texture_indices: impl IntoIterator<Item = Option<u32>>) -> bool {
 		self.textures = [u32::MAX; MAX_MATERIAL_TEXTURES];
@@ -224,6 +268,8 @@ pub(crate) struct ReflectionShaderParameters {
 /// These are compile-time checks so a layout change fails the build at the definition rather than later
 /// in a shader that silently reads the wrong bytes.
 const _: () = assert!(std::mem::size_of::<ShaderMesh>() == 96);
+const _: () = assert!(std::mem::size_of::<InstanceLightmap>() == 32);
+const _: () = assert!(std::mem::offset_of!(InstanceLightmap, texture) == 16);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, material_index) == 48);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, flags) == 72);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, parameter_block) == 76);

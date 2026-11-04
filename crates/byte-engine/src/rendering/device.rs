@@ -39,6 +39,13 @@ impl GraphicsDevice {
 	/// - `pipeline-cache.path`: When set, the application owns the compiled pipeline cache instead of the GPU
 	///   driver. The [`Renderer`](crate::rendering::Renderer) reads and writes the file. Defaults to none.
 	pub fn new(parameters: impl Parameters) -> Self {
+		Self::try_new(parameters).unwrap_or_else(|error| panic!("{error}"))
+	}
+
+	/// Creates the device like [`Self::new`], or returns why the system's GPU can't provide it.
+	///
+	/// Tools that create a device of their own, such as the lightmap bake, report the error instead of stopping.
+	pub fn try_new(parameters: impl Parameters) -> Result<Self, String> {
 		let flag = |name: &str, default: bool| {
 			parameters
 				.get_parameter(name)
@@ -76,9 +83,9 @@ impl GraphicsDevice {
 					.gpu_validation(false)
 					.api_dump(false)
 					.debug_labels(false);
-				ghi::implementation::Instance::new(features).unwrap()
+				ghi::implementation::Instance::new(features).map_err(|error| instance_error(&error))?
 			}
-			Err(error) => panic!("Failed to create GHI instance: {error}"),
+			Err(error) => return Err(instance_error(&error)),
 		};
 
 		let mut graphics_queue = None;
@@ -94,14 +101,18 @@ impl GraphicsDevice {
 					(ghi::QueueSelection::new(ghi::types::WorkloadTypes::TRANSFER), &mut copy_queue),
 				],
 			)
-			.unwrap();
+			.map_err(|error| {
+				format!(
+					"The GPU device could not be created: {error}. The most likely cause is a GPU or driver without a feature the configuration asks for, such as ray tracing. Turn the feature off, or run on a GPU that has it."
+				)
+			})?;
 
-		Self {
+		Ok(Self {
 			device,
 			_instance: instance,
-			graphics_queue: graphics_queue.unwrap(),
-			copy_queue: copy_queue.unwrap(),
-		}
+			graphics_queue: graphics_queue.expect("Device creation fills every requested queue."),
+			copy_queue: copy_queue.expect("Device creation fills every requested queue."),
+		})
 	}
 
 	/// Creates a context on this device for a timeline of its own.
@@ -150,4 +161,11 @@ fn log_graphics_error(message: &str) {
 	} else {
 		log::error!("{}\n{}", message, filtered.trim_end());
 	}
+}
+
+/// Describes a failure to create the GHI instance.
+fn instance_error(error: &impl std::fmt::Display) -> String {
+	format!(
+		"The graphics instance could not be created: {error}. The most likely cause is a system without a supported GPU driver. Install the GPU's driver, then try again."
+	)
 }

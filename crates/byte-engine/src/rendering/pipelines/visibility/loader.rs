@@ -16,6 +16,7 @@ use resource_management::bemx;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::{
 	image::{Image as ResourceImage, ImagePhotometry},
+	lightmap::{Lightmap as ResourceLightmap, LightmapInstance},
 	material::{AssembledShader, MaterialCoverage, Value, Variant as ResourceVariant},
 	mesh::Mesh,
 };
@@ -43,7 +44,7 @@ use crate::rendering::loading::{
 };
 use crate::rendering::pipeline_compilation::{HitGroupShader, SpecializedComputePipelineRequest};
 use crate::rendering::renderable::mesh::{MeshKey, MeshSource};
-use crate::rendering::resource_loading::load_texture;
+use crate::rendering::resource_loading::{UploadStagingArena, load_texture};
 use crate::rendering::resource_loading::texture::{TextureUploadLayout, load_image_streams, resource_format_to_ghi};
 use crate::rendering::{PipelineManagerClient, PipelineRef, PipelineState};
 use crate::rendering::{Query, Resource};
@@ -66,6 +67,7 @@ pub(crate) enum VisibilityLoadKey {
 	Material(String),
 	Texture(String),
 	Environment(String),
+	Lightmap(String),
 	/// The uber material evaluation shader of the transparent phase when `true`, of the opaque phase otherwise.
 	UberShader(bool),
 }
@@ -79,6 +81,7 @@ impl std::fmt::Display for VisibilityLoadKey {
 			Self::Material(id) => write!(formatter, "material {id}"),
 			Self::Texture(id) => write!(formatter, "texture {id}"),
 			Self::Environment(id) => write!(formatter, "environment {id}"),
+			Self::Lightmap(id) => write!(formatter, "lightmap {id}"),
 			Self::MeshLevels(key) => write!(formatter, "finer detail levels of mesh {key:?}"),
 			Self::UberShader(transparent) => {
 				write!(formatter, "uber shader {}", UBER_MATERIAL_SHADERS[usize::from(*transparent)])
@@ -104,6 +107,8 @@ pub(crate) enum VisibilityLoadRequest {
 	Material(String),
 	Texture(String),
 	Environment(String),
+	/// A baked lightmap and its image.
+	Lightmap(String),
 	/// The uber material evaluation shader of one phase, the transparent one when `transparent` is set. `rebake` bakes
 	/// it again first, from every material the store now holds; only development builds can.
 	UberShader {
@@ -159,6 +164,16 @@ pub(crate) struct ResidentTexture {
 	pub(crate) photometry: Option<ImagePhotometry>,
 }
 
+/// The `ResidentLightmap` struct carries an upload-complete lightmap: where each primitive of its level lies in it, and
+/// its image, which the render thread places in its bindless slot.
+pub(crate) struct ResidentLightmap {
+	pub(crate) id: String,
+	/// The spawn index of the level entity that holds the `lightmap` kind.
+	pub(crate) holder: u32,
+	pub(crate) instances: Vec<LightmapInstance>,
+	pub(crate) texture: ResidentTexture,
+}
+
 /// The `ResidentEnvironment` struct carries upload-complete image-based lighting handles.
 #[derive(Clone, Copy)]
 pub(crate) struct ResidentEnvironment {
@@ -189,6 +204,14 @@ pub(crate) enum VisibilityResident {
 		index: u32,
 		image: ghi::implementation::DetachedImage,
 		photometry: Option<ImagePhotometry>,
+	},
+	/// An upload-complete lightmap whose image the render thread still interns.
+	Lightmap {
+		id: String,
+		holder: u32,
+		instances: Vec<LightmapInstance>,
+		index: u32,
+		image: ghi::implementation::DetachedImage,
 	},
 	/// Upload-complete image-based lighting whose images the render thread still interns.
 	Environment {
@@ -243,6 +266,7 @@ pub(crate) enum VisibilityLoaderEvent {
 		index: u32,
 	},
 	TextureReady(ResidentTexture),
+	LightmapReady(ResidentLightmap),
 	EnvironmentReady {
 		id: String,
 		environment: ResidentEnvironment,
@@ -313,7 +337,7 @@ struct UberShaderPublication {
 }
 
 /// Returns or assigns a stable shader-table slot for `id`, failing once `limit` slots exist.
-fn assign_slot(slots: &mut HashMap<String, u32>, id: &str, limit: usize, kind: &str) -> Option<u32> {
+pub(crate) fn assign_slot(slots: &mut HashMap<String, u32>, id: &str, limit: usize, kind: &str) -> Option<u32> {
 	if let Some(index) = slots.get(id) {
 		return Some(*index);
 	}
@@ -332,7 +356,7 @@ fn assign_slot(slots: &mut HashMap<String, u32>, id: &str, limit: usize, kind: &
 ///
 /// Anisotropic filtering keeps surfaces seen at grazing angles, like floors, sharp instead of blurring them to the mip
 /// their steepest direction needs.
-fn material_sampler() -> ghi::sampler::Builder {
+pub(crate) fn material_sampler() -> ghi::sampler::Builder {
 	ghi::sampler::Builder::new()
 		.addressing_mode(ghi::SamplerAddressingModes::Repeat)
 		.anisotropy(16.0)
@@ -441,6 +465,11 @@ impl VisibilityLoaderClient {
 		});
 	}
 
+	/// Requests one baked lightmap and its image.
+	pub(crate) fn request_lightmap(&mut self, id: String) {
+		self.client.request(VisibilityLoadRequest::Lightmap(id));
+	}
+
 	/// Requests one environment and reports whether it was already resident.
 	pub(crate) fn request_environment(&mut self, id: String) -> Option<ResidentEnvironment> {
 		let resident = self.environments.get(&id).copied();
@@ -542,6 +571,29 @@ impl VisibilityLoaderClient {
 						self.repeat_sampler
 					},
 					photometry,
+				}),
+				LoaderEvent::Ready {
+					resident:
+						VisibilityResident::Lightmap {
+							id,
+							holder,
+							instances,
+							index,
+							image,
+						},
+					..
+				} => VisibilityLoaderEvent::LightmapReady(ResidentLightmap {
+					texture: ResidentTexture {
+						id: id.clone(),
+						index,
+						image: frame.intern_image(image).into(),
+						// Rectangles end at the image's edges, which must not wrap to the opposite side.
+						sampler: self.clamp_sampler,
+						photometry: None,
+					},
+					id,
+					holder,
+					instances,
 				}),
 				LoaderEvent::Ready {
 					resident:
@@ -771,63 +823,37 @@ impl VisibilityLoader {
 
 	/// Requests one mesh's materials, then resolves, converts, places, and uploads its geometry.
 	async fn load_mesh(&self, source: MeshSource, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
-		let staging = lane.staging().clone();
 		let key = source.key();
 		// Every primitive gets its material's stable table slot, and materials load while this mesh is read, converted,
 		// and uploaded.
 		let mut slots = SmallVec::<[u32; 8]>::new();
-		let mut material = |id: &str| {
-			lane.request(VisibilityLoadRequest::Material(id.to_string()));
-			let mut table = self.material_slots.lock().unwrap_or_else(|error| error.into_inner());
-			slots.push(assign_slot(&mut table, id, MAX_MATERIALS, "material").ok_or_else(|| {
-				LoadError(
-					"Visibility mesh material slots could not be assigned. The most likely cause is that the material table is full."
-						.to_string(),
-				)
-			})?);
-			Ok::<_, LoadError>(())
-		};
-		let prepared = match source {
-			MeshSource::Resource(id) => {
-				let resource: Reference<Mesh> = self.resource_manager.request(&id).await.map_err(|_| {
-					LoadError(format!(
-						"Visibility mesh resource request failed for {id}. The most likely cause is that the mesh id is missing or the asset database is not loaded."
-					))
-				})?;
-				let mesh = resource.resource();
-				for primitive in &mesh.primitives {
-					material(mesh.material(primitive).id().as_ref())?;
-				}
-				// The base mesh holds each primitive's coarsest level, so every instance can draw from the start.
-				PreparedMesh::resource(resource, staging, self.flat_triangles, PreparedLevels::Coarsest).await
-			}
-			MeshSource::Generated(generator) => {
-				material(generator.material().unwrap_or(GENERATED_MESH_MATERIAL))?;
-				PreparedMesh::generated(generator.as_ref(), staging, self.flat_triangles).await
-			}
-		}
-		.ok_or_else(|| {
+		// The base mesh holds each primitive's coarsest level, so every instance can draw from the start.
+		let prepared = prepare_mesh_source(
+			&self.resource_manager,
+			&source,
+			lane.staging().clone(),
+			self.flat_triangles,
+			PreparedLevels::Coarsest,
+			|id| {
+				lane.request(VisibilityLoadRequest::Material(id.to_string()));
+				slots.push(self.material_slot(id)?);
+				Ok(())
+			},
+		)
+		.await?;
+		let mesh = place_mesh(&self.geometry, prepared, &slots, lane).await?;
+		Ok(VisibilityResident::Mesh(key, mesh))
+	}
+
+	/// Returns the material table slot of material `id`, assigning the next free one the first time.
+	fn material_slot(&self, id: &str) -> Result<u32, LoadError> {
+		let mut table = self.material_slots.lock().unwrap_or_else(|error| error.into_inner());
+		assign_slot(&mut table, id, MAX_MATERIALS, "material").ok_or_else(|| {
 			LoadError(
-				"Visibility mesh conversion failed. The most likely cause is an unsupported or malformed vertex stream."
+				"Visibility mesh material slots could not be assigned. The most likely cause is that the material table is full."
 					.to_string(),
 			)
-		})?;
-
-		let (mesh, copies) = self
-			.geometry
-			.lock()
-			.unwrap_or_else(|error| error.into_inner())
-			.append_mesh(&prepared, &slots)
-			.map_err(|full| {
-				LoadError(match full {
-					Some(element) => format!(
-						"Visibility geometry placement failed. The most likely cause is that the {element} buffer has no free range for the mesh's coarsest detail levels; raise the capacity with VisibilityPipelineSettings::with_geometry_capacity or the render.geometry startup parameters."
-					),
-					None => "Visibility geometry placement failed. The most likely cause is a primitive no instance can address; split the primitive.".to_string(),
-				})
-			})?;
-		lane.upload(prepared.staging, [], copies).await?;
-		Ok(VisibilityResident::Mesh(key, mesh))
+		})
 	}
 
 	/// Loads finer detail levels of the listed primitives of resource mesh `id`, each from its finest listed level down
@@ -910,23 +936,15 @@ impl VisibilityLoader {
 			))
 		})?;
 		let variant = reference.resource_mut();
-		let alpha_mode = variant.alpha_mode;
-		let texture_ids: Vec<Option<String>> = variant
-			.variables
-			.iter()
-			.map(|parameter| match &parameter.value {
-				Value::Image(image) => Some(image.id().to_string()),
-				_ => None,
-			})
-			.collect();
-		let variable_specialization = variable_specialization_entries(&variant.variables).collect::<Vec<_>>();
-		let parameters = dynamic_parameters(&variant.variables);
+		let MaterialDescription {
+			alpha_mode,
+			texture_ids,
+			hit_group,
+			parameters,
+			double_sided,
+			coverage,
+		} = describe_material(&id, variant)?;
 		let material = variant.material.resource();
-		if material.model.name != "Visibility" || material.model.pass != "MaterialEvaluation" {
-			return Err(LoadError(format!(
-				"Unsupported visibility material model for {id}. The most likely cause is that this material targets a different render model or pass."
-			)));
-		}
 		// A material bakes its evaluation shader, then a closest-hit shader when the project traces rays.
 		let shader_of = |stage| {
 			material
@@ -969,10 +987,6 @@ impl VisibilityLoader {
 				))
 			}
 		};
-		let hit_group = shader_of(resource_management::types::ShaderTypes::ClosestHit).map(|shader_id| HitGroupShader {
-			shader_id,
-			specialization: variable_specialization,
-		});
 		if self.flat_triangles
 			&& hit_group.is_none()
 			&& !self
@@ -997,8 +1011,8 @@ impl VisibilityLoader {
 			index,
 			evaluation,
 			alpha_mode,
-			double_sided: material.double_sided(),
-			coverage: material.coverage,
+			double_sided,
+			coverage,
 			texture_slots,
 			parameters,
 			hit_group,
@@ -1080,137 +1094,39 @@ impl VisibilityLoader {
 		})
 	}
 
+	/// Loads a baked lightmap, then its image into a bindless slot, as a material texture loads.
+	async fn load_lightmap(&self, id: String, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
+		let docs = crate::online_docs_url("reference/assets#lightmaps");
+		let lightmap: Reference<ResourceLightmap> = self.resource_manager.request(&id).await.map_err(|error| {
+			LoadError(format!(
+				"Visibility could not load lightmap {id}. The most likely cause is that the lightmap wasn't baked, or was baked without a GPU that traces rays. Bake it with `beld bake`, and check its log. See {docs}. Request error: {error}"
+			))
+		})?;
+		let ResourceLightmap {
+			holder,
+			image,
+			instances,
+		} = lightmap.into_resource();
+		let image_id = image.id().to_string();
+		let VisibilityResident::Texture { index, image, .. } = self.load_texture(image_id, lane).await? else {
+			unreachable!("a texture load returns a texture");
+		};
+		Ok(VisibilityResident::Lightmap {
+			id,
+			holder,
+			instances,
+			index,
+			image,
+		})
+	}
+
 	/// Loads the diffuse and roughness-prefiltered IBL streams and transfers them as one batch.
 	async fn load_environment(&self, id: String, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
-		let docs = crate::online_docs_url("reference/assets#environment-maps");
-		let mut reference: Reference<ResourceImage> = self.resource_manager.request(&id).await.map_err(|error| {
-			LoadError(format!(
-				"Visibility could not load environment {id}. {error}\nEnvironment maps must come from a `.environment.bead` asset. See {docs}."
-			))
-		})?;
-		let ibl = reference.resource().ibl.clone().ok_or_else(|| {
-			LoadError(format!(
-				"Visibility environment maps are missing for {id}. The most likely cause is that the selected resource is a plain image instead of a standalone `.environment.bead` asset. See {docs}."
-			))
-		})?;
-		let (diffuse, specular) = (&ibl.diffuse_irradiance, &ibl.prefiltered_specular);
-		let linear = resource_management::types::Gamma::Linear;
-		let available_specular_mips =
-			resource_management::resources::mips::mip_level_count(specular.extent[0], specular.extent[1]).unwrap_or(0);
-		if diffuse.mip_count != 1
-			|| specular.mip_count as usize != IBL_SPECULAR_LEVEL_COUNT
-			|| diffuse.gamma != linear
-			|| specular.gamma != linear
-			|| diffuse.array_layers != 6
-			|| specular.array_layers != 6
-			|| diffuse.extent[2] != 0
-			|| specular.extent[2] != 0
-			|| (available_specular_mips as usize) < IBL_SPECULAR_LEVEL_COUNT
-		{
-			return Err(LoadError(format!(
-				"Visibility environment IBL metadata is unsupported for {id}. The most likely cause is that the baked image does not contain one linear six-layer diffuse map and {IBL_SPECULAR_LEVEL_COUNT} linear six-layer specular levels."
-			)));
-		}
-		let diffuse_format = resource_format_to_ghi(diffuse.format);
-		let specular_format = resource_format_to_ghi(specular.format);
-		let diffuse_extent = Extent::from(diffuse.extent);
-		let specular_extent = Extent::from(specular.extent);
-
-		let layout_failure = || {
-			LoadError(format!(
-				"Visibility environment layout is unsupported for {id}. The most likely cause is a baked extent or format the upload path cannot describe."
-			))
-		};
-		// Lay every level out back to back in one lease so the environment transfers as one batch.
-		let mut byte_count = 0;
-		let mut layout = |format, extent| {
-			let upload = TextureUploadLayout::new(format, extent, 6, byte_count);
-			byte_count += upload.as_ref().map_or(0, |upload| upload.padded_size);
-			upload
-		};
-		let diffuse_upload = layout(diffuse_format, diffuse_extent).ok_or_else(layout_failure)?;
-		let mut specular_uploads: [TextureUploadLayout; IBL_SPECULAR_LEVEL_COUNT] = std::array::from_fn(|_| diffuse_upload);
-		for (level, upload) in specular_uploads.iter_mut().enumerate() {
-			*upload = layout(specular_format, specular_extent.mip(level as u32)).ok_or_else(layout_failure)?;
-		}
-		let mut staging = lane.staging().allocate(byte_count, 256).await.ok_or_else(|| {
-			LoadError(format!(
-				"Visibility environment {id} exceeds the GPU upload arena. The most likely cause is that its complete padded IBL data is larger than the configured upload capacity."
-			))
-		})?;
-
-		let specular_stream_names: [String; IBL_SPECULAR_LEVEL_COUNT] = std::array::from_fn(|level| {
-			resource_management::resources::image::ibl_prefiltered_specular_stream_name(level as u32)
-		});
-		{
-			let mut allocator = utils::BufferAllocator::new(staging.bytes_mut());
-			let mut streams = SmallVec::<[_; 16]>::new();
-			let names = std::iter::once(resource_management::resources::image::IBL_DIFFUSE_IRRADIANCE_STREAM_NAME)
-				.chain(specular_stream_names.iter().map(String::as_str));
-			for (name, upload) in names.zip(std::iter::once(&diffuse_upload).chain(&specular_uploads)) {
-				let region = &mut allocator.take(upload.padded_size)[..upload.compact_size];
-				streams.push(resource_management::stream::StreamMut::new(name, region));
-			}
-			load_image_streams(&mut reference, streams).await.map_err(|error| {
-				LoadError(format!(
-					"Visibility environment load failed for {id}. The most likely cause is missing, corrupt, or mismatched IBL stream data. Error: {error}"
-				))
-			})?;
-		}
-		// Measure before packing rows, while the diffuse cube is still tightly packed face after face.
-		let upward_illuminance = if diffuse_format == ghi::Formats::RGBA16F {
-			upward_illuminance(
-				&staging.bytes_mut()[diffuse_upload.offset..diffuse_upload.offset + diffuse_upload.compact_size],
-				diffuse_extent.width(),
-				diffuse_extent.height(),
-			)
-		} else {
-			log::warn!(
-				"Visibility environment {id} can't be calibrated to an illuminance. The most likely cause is a diffuse irradiance map that isn't RGBA16F, so its own values are used."
-			);
-			0.0
-		};
-		for upload in std::iter::once(&diffuse_upload).chain(&specular_uploads) {
-			upload.pack_rows(&mut staging.bytes_mut()[upload.offset..upload.offset + upload.padded_size]);
-		}
-
-		let cube = |name: String, format, extent, mip_levels, regions| ImageUpload {
-			description: ImageDescription {
-				name,
-				format,
-				extent,
-				mip_levels,
-				cube: true,
-			},
-			regions,
-		};
-		let [diffuse_image, specular_image] = lane
-			.upload(
-				staging,
-				[
-					cube(
-						format!("{id} diffuse irradiance"),
-						diffuse_format,
-						diffuse_extent,
-						1,
-						smallvec::smallvec![diffuse_upload.region(0)],
-					),
-					cube(
-						format!("{id} prefiltered specular"),
-						specular_format,
-						specular_extent,
-						IBL_SPECULAR_LEVEL_COUNT as u32,
-						specular_uploads
-							.iter()
-							.enumerate()
-							.map(|(mip_level, upload)| upload.region(mip_level as u32))
-							.collect(),
-					),
-				],
-				SmallVec::new(),
-			)
-			.await?;
-
+		let EnvironmentMaps {
+			diffuse_image,
+			specular_image,
+			upward_illuminance,
+		} = load_environment_maps(&self.resource_manager, &id, lane).await?;
 		Ok(VisibilityResident::Environment {
 			id,
 			diffuse_image,
@@ -1218,6 +1134,160 @@ impl VisibilityLoader {
 			upward_illuminance,
 		})
 	}
+}
+
+/// The `EnvironmentMaps` struct is an environment's image-based light once uploaded: its diffuse irradiance cube, its
+/// roughness-prefiltered specular cube, and the illuminance it delivers to an upward-facing surface.
+pub(crate) struct EnvironmentMaps {
+	pub(crate) diffuse_image: ghi::implementation::DetachedImage,
+	pub(crate) specular_image: ghi::implementation::DetachedImage,
+	/// Lux, or zero when the map can't be calibrated.
+	pub(crate) upward_illuminance: f32,
+}
+
+/// Loads the diffuse and roughness-prefiltered IBL streams of environment `id` and transfers them through `lane` as
+/// one batch.
+///
+/// The visibility loader lights scenes with them, and the lightmap bake lights the paths that leave its scene.
+pub(crate) async fn load_environment_maps<P: LoadPipeline>(
+	resource_manager: &ResourceManager,
+	id: &str,
+	lane: &LoaderLane<P>,
+) -> Result<EnvironmentMaps, LoadError> {
+	let docs = crate::online_docs_url("reference/assets#environment-maps");
+	let mut reference: Reference<ResourceImage> = resource_manager.request(id).await.map_err(|error| {
+		LoadError(format!(
+			"Visibility could not load environment {id}. {error}\nEnvironment maps must come from a `.environment.bead` asset. See {docs}."
+		))
+	})?;
+	let ibl = reference.resource().ibl.clone().ok_or_else(|| {
+		LoadError(format!(
+			"Visibility environment maps are missing for {id}. The most likely cause is that the selected resource is a plain image instead of a standalone `.environment.bead` asset. See {docs}."
+		))
+	})?;
+	let (diffuse, specular) = (&ibl.diffuse_irradiance, &ibl.prefiltered_specular);
+	let linear = resource_management::types::Gamma::Linear;
+	let available_specular_mips =
+		resource_management::resources::mips::mip_level_count(specular.extent[0], specular.extent[1]).unwrap_or(0);
+	if diffuse.mip_count != 1
+		|| specular.mip_count as usize != IBL_SPECULAR_LEVEL_COUNT
+		|| diffuse.gamma != linear
+		|| specular.gamma != linear
+		|| diffuse.array_layers != 6
+		|| specular.array_layers != 6
+		|| diffuse.extent[2] != 0
+		|| specular.extent[2] != 0
+		|| (available_specular_mips as usize) < IBL_SPECULAR_LEVEL_COUNT
+	{
+		return Err(LoadError(format!(
+			"Visibility environment IBL metadata is unsupported for {id}. The most likely cause is that the baked image does not contain one linear six-layer diffuse map and {IBL_SPECULAR_LEVEL_COUNT} linear six-layer specular levels."
+		)));
+	}
+	let diffuse_format = resource_format_to_ghi(diffuse.format);
+	let specular_format = resource_format_to_ghi(specular.format);
+	let diffuse_extent = Extent::from(diffuse.extent);
+	let specular_extent = Extent::from(specular.extent);
+
+	let layout_failure = || {
+		LoadError(format!(
+			"Visibility environment layout is unsupported for {id}. The most likely cause is a baked extent or format the upload path cannot describe."
+		))
+	};
+	// Lay every level out back to back in one lease so the environment transfers as one batch.
+	let mut byte_count = 0;
+	let mut layout = |format, extent| {
+		let upload = TextureUploadLayout::new(format, extent, 6, byte_count);
+		byte_count += upload.as_ref().map_or(0, |upload| upload.padded_size);
+		upload
+	};
+	let diffuse_upload = layout(diffuse_format, diffuse_extent).ok_or_else(layout_failure)?;
+	let mut specular_uploads: [TextureUploadLayout; IBL_SPECULAR_LEVEL_COUNT] = std::array::from_fn(|_| diffuse_upload);
+	for (level, upload) in specular_uploads.iter_mut().enumerate() {
+		*upload = layout(specular_format, specular_extent.mip(level as u32)).ok_or_else(layout_failure)?;
+	}
+	let mut staging = lane.staging().allocate(byte_count, 256).await.ok_or_else(|| {
+		LoadError(format!(
+			"Visibility environment {id} exceeds the GPU upload arena. The most likely cause is that its complete padded IBL data is larger than the configured upload capacity."
+		))
+	})?;
+
+	let specular_stream_names: [String; IBL_SPECULAR_LEVEL_COUNT] = std::array::from_fn(|level| {
+		resource_management::resources::image::ibl_prefiltered_specular_stream_name(level as u32)
+	});
+	{
+		let mut allocator = utils::BufferAllocator::new(staging.bytes_mut());
+		let mut streams = SmallVec::<[_; 16]>::new();
+		let names = std::iter::once(resource_management::resources::image::IBL_DIFFUSE_IRRADIANCE_STREAM_NAME)
+			.chain(specular_stream_names.iter().map(String::as_str));
+		for (name, upload) in names.zip(std::iter::once(&diffuse_upload).chain(&specular_uploads)) {
+			let region = &mut allocator.take(upload.padded_size)[..upload.compact_size];
+			streams.push(resource_management::stream::StreamMut::new(name, region));
+		}
+		load_image_streams(&mut reference, streams).await.map_err(|error| {
+			LoadError(format!(
+				"Visibility environment load failed for {id}. The most likely cause is missing, corrupt, or mismatched IBL stream data. Error: {error}"
+			))
+		})?;
+	}
+	// Measure before packing rows, while the diffuse cube is still tightly packed face after face.
+	let upward_illuminance = if diffuse_format == ghi::Formats::RGBA16F {
+		upward_illuminance(
+			&staging.bytes_mut()[diffuse_upload.offset..diffuse_upload.offset + diffuse_upload.compact_size],
+			diffuse_extent.width(),
+			diffuse_extent.height(),
+		)
+	} else {
+		log::warn!(
+			"Visibility environment {id} can't be calibrated to an illuminance. The most likely cause is a diffuse irradiance map that isn't RGBA16F, so its own values are used."
+		);
+		0.0
+	};
+	for upload in std::iter::once(&diffuse_upload).chain(&specular_uploads) {
+		upload.pack_rows(&mut staging.bytes_mut()[upload.offset..upload.offset + upload.padded_size]);
+	}
+
+	let cube = |name: String, format, extent, mip_levels, regions| ImageUpload {
+		description: ImageDescription {
+			name,
+			format,
+			extent,
+			mip_levels,
+			cube: true,
+		},
+		regions,
+	};
+	let [diffuse_image, specular_image] = lane
+		.upload(
+			staging,
+			[
+				cube(
+					format!("{id} diffuse irradiance"),
+					diffuse_format,
+					diffuse_extent,
+					1,
+					smallvec::smallvec![diffuse_upload.region(0)],
+				),
+				cube(
+					format!("{id} prefiltered specular"),
+					specular_format,
+					specular_extent,
+					IBL_SPECULAR_LEVEL_COUNT as u32,
+					specular_uploads
+						.iter()
+						.enumerate()
+						.map(|(mip_level, upload)| upload.region(mip_level as u32))
+						.collect(),
+				),
+			],
+			SmallVec::new(),
+		)
+		.await?;
+
+	Ok(EnvironmentMaps {
+		diffuse_image,
+		specular_image,
+		upward_illuminance,
+	})
 }
 
 /// Returns the specialization constants of a material variant's evaluation pipeline: its phase, then its scalar and
@@ -1235,6 +1305,120 @@ fn specialization_entries(
 	std::iter::once(transparent)
 		.chain(variable_specialization_entries(variables))
 		.collect()
+}
+
+/// Reads or generates the geometry of `source` and converts it into the visibility geometry formats, holding the
+/// detail `levels` and the flat triangle lists rays hit when `flat_triangles` is set.
+///
+/// Calls `material` with the material ID of each primitive, in primitive order, before the geometry loads, so the
+/// caller can assign table slots and start loading the materials. The visibility loader and the lightmap bake both
+/// prepare meshes here. Next, place and upload the result with [`place_mesh`].
+pub(crate) async fn prepare_mesh_source(
+	resource_manager: &ResourceManager,
+	source: &MeshSource,
+	staging: Arc<UploadStagingArena>,
+	flat_triangles: bool,
+	levels: PreparedLevels<'_>,
+	mut material: impl FnMut(&str) -> Result<(), LoadError>,
+) -> Result<PreparedMesh, LoadError> {
+	let prepared = match source {
+		MeshSource::Resource(id) => {
+			let resource: Reference<Mesh> = resource_manager.request(id).await.map_err(|_| {
+				LoadError(format!(
+					"Visibility mesh resource request failed for {id}. The most likely cause is that the mesh id is missing or the asset database is not loaded."
+				))
+			})?;
+			let mesh = resource.resource();
+			for primitive in &mesh.primitives {
+				material(mesh.material(primitive).id().as_ref())?;
+			}
+			PreparedMesh::resource(resource, staging, flat_triangles, levels).await
+		}
+		MeshSource::Generated(generator) => {
+			material(generator.material().unwrap_or(GENERATED_MESH_MATERIAL))?;
+			PreparedMesh::generated(generator.as_ref(), staging, flat_triangles).await
+		}
+	};
+	prepared.ok_or_else(|| {
+		LoadError(
+			"Visibility mesh conversion failed. The most likely cause is an unsupported or malformed vertex stream."
+				.to_string(),
+		)
+	})
+}
+
+/// Places `prepared` in the geometry buffers with the material table slot of each primitive in `slots`, uploads it
+/// through `lane`, and returns where it landed.
+pub(crate) async fn place_mesh<P: LoadPipeline>(
+	geometry: &Mutex<GeometryBuffers>,
+	prepared: PreparedMesh,
+	slots: &[u32],
+	lane: &LoaderLane<P>,
+) -> Result<MeshData, LoadError> {
+	let (mesh, copies) = geometry
+		.lock()
+		.unwrap_or_else(|error| error.into_inner())
+		.append_mesh(&prepared, slots)
+		.map_err(|full| {
+			LoadError(match full {
+				Some(element) => format!(
+					"Visibility geometry placement failed. The most likely cause is that the {element} buffer has no free range for the mesh's coarsest detail levels; raise the capacity with VisibilityPipelineSettings::with_geometry_capacity or the render.geometry startup parameters."
+				),
+				None => "Visibility geometry placement failed. The most likely cause is a primitive no instance can address; split the primitive.".to_string(),
+			})
+		})?;
+	lane.upload(prepared.staging, [], copies).await?;
+	Ok(mesh)
+}
+
+/// The `MaterialDescription` struct is what a material variant tells every pass that shades its surfaces, apart from
+/// how material evaluation runs it.
+///
+/// [`describe_material`] reads it. The visibility loader adds the evaluation pipeline; the lightmap bake uses it as it
+/// is, to shade its rays' hits.
+pub(crate) struct MaterialDescription {
+	pub(crate) alpha_mode: AlphaMode,
+	/// The image each variable names, by variable, which take texture slots in the material record.
+	pub(crate) texture_ids: Vec<Option<String>>,
+	/// The closest-hit shader rays run on the material's surfaces, when the material baked one.
+	pub(crate) hit_group: Option<HitGroupShader>,
+	pub(crate) parameters: Arc<[DynamicParameter]>,
+	pub(crate) double_sided: bool,
+	pub(crate) coverage: MaterialCoverage,
+}
+
+/// Reads what a material variant tells the passes that shade it, or why the visibility pipeline can't draw it.
+pub(crate) fn describe_material(id: &str, variant: &ResourceVariant) -> Result<MaterialDescription, LoadError> {
+	let material = variant.material.resource();
+	if material.model.name != "Visibility" || material.model.pass != "MaterialEvaluation" {
+		return Err(LoadError(format!(
+			"Unsupported visibility material model for {id}. The most likely cause is that this material targets a different render model or pass."
+		)));
+	}
+	let texture_ids = variant
+		.variables
+		.iter()
+		.map(|parameter| match &parameter.value {
+			Value::Image(image) => Some(image.id().to_string()),
+			_ => None,
+		})
+		.collect();
+	let hit_group = material
+		.shaders()
+		.iter()
+		.find(|shader| shader.resource().stage == resource_management::types::ShaderTypes::ClosestHit)
+		.map(|shader| HitGroupShader {
+			shader_id: shader.id().to_string(),
+			specialization: variable_specialization_entries(&variant.variables).collect(),
+		});
+	Ok(MaterialDescription {
+		alpha_mode: variant.alpha_mode,
+		texture_ids,
+		hit_group,
+		parameters: dynamic_parameters(&variant.variables),
+		double_sided: material.double_sided(),
+		coverage: material.coverage,
+	})
 }
 
 /// Returns the specialization constants of a variant's static values, at the IDs of their variables, which material
@@ -1318,6 +1502,7 @@ impl LoadPipeline for VisibilityLoader {
 			VisibilityLoadRequest::Material(id) => VisibilityLoadKey::Material(id.clone()),
 			VisibilityLoadRequest::Texture(id) => VisibilityLoadKey::Texture(id.clone()),
 			VisibilityLoadRequest::Environment(id) => VisibilityLoadKey::Environment(id.clone()),
+			VisibilityLoadRequest::Lightmap(id) => VisibilityLoadKey::Lightmap(id.clone()),
 			VisibilityLoadRequest::UberShader { transparent, .. } => VisibilityLoadKey::UberShader(*transparent),
 		}
 	}
@@ -1332,6 +1517,7 @@ impl LoadPipeline for VisibilityLoader {
 			VisibilityLoadRequest::Material(id) => self.load_material(id, lane).await,
 			VisibilityLoadRequest::Texture(id) => self.load_texture(id, lane).await,
 			VisibilityLoadRequest::Environment(id) => self.load_environment(id, lane).await,
+			VisibilityLoadRequest::Lightmap(id) => self.load_lightmap(id, lane).await,
 			VisibilityLoadRequest::UberShader { transparent, rebake } => self.load_uber_shader(transparent, rebake).await,
 		}
 	}

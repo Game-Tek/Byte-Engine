@@ -35,7 +35,7 @@ pub struct MeshProcessorSession {
 	blocks: Vec<PackedStreamBlock>,
 	/// Processed primitives. Until the mesh finishes, each one's material holds its material slot.
 	primitives: Vec<Primitive>,
-	lods: MeshLodSettings,
+	settings: MeshSettings,
 	scratch: MeshProcessingScratch,
 }
 
@@ -44,14 +44,20 @@ impl MeshProcessorSession {
 	///
 	/// Call [`Self::push_primitive`] for each imported primitive, then call [`Self::finish_into`] to write the payload
 	/// directly, or [`Self::finish`] when the caller needs an owned payload. Each primitive names its material by its
-	/// slot in the list the finish call receives. `lods` sets how many coarser detail levels each primitive gets.
+	/// slot in the list the finish call receives. `settings` sets how many coarser detail levels each primitive gets
+	/// and whether unskinned primitives get lightmap UVs, which the session adds to `vertex_layout` itself.
 	pub fn new(
-		vertex_layout: Vec<VertexComponent>,
+		mut vertex_layout: Vec<VertexComponent>,
 		skeleton: Option<ReferenceModel<SkeletonModel>>,
 		skins: Vec<SkinBinding>,
-		lods: MeshLodSettings,
+		settings: MeshSettings,
 	) -> Result<Self, MeshProcessingError> {
 		validate_vertex_layout(&vertex_layout)?;
+		if settings.lightmap_uvs.is_some() {
+			// Lightmap UVs are generated, never authored, so the session declares their stream.
+			vertex_layout.push(VertexComponent::canonical(VertexSemantics::LightmapUV));
+			validate_vertex_layout(&vertex_layout)?;
+		}
 		let skeleton_nodes = skeleton_node_count(skeleton.as_ref())?;
 		for (skin_index, skin) in skins.iter().enumerate() {
 			validate_skin_binding(skin_index, skin, skeleton_nodes)?;
@@ -85,7 +91,7 @@ impl MeshProcessorSession {
 			source_blocks,
 			blocks: Vec::new(),
 			primitives: Vec::new(),
-			lods,
+			settings,
 			scratch: MeshProcessingScratch::default(),
 		})
 	}
@@ -143,8 +149,53 @@ impl MeshProcessorSession {
 			return Err(MeshProcessingError::InvalidTriangleIndexCount.into());
 		}
 		rewind_triangles_to_clockwise(&mut self.scratch.indices);
-		meshopt::optimize_vertex_cache_in_place(&mut self.scratch.indices, position_count);
-		let source_streams = self.append_primitive_vertex_streams(primitive, primitive_index, position_count)?;
+		// Lightmap UVs split vertices along chart seams, so they run before anything indexes the final vertices.
+		let lightmap_uvs = match self.settings.lightmap_uvs {
+			Some(settings) if primitive.skin().is_none() && !self.scratch.indices.is_empty() => Some(generate_lightmap_uvs(
+				&self.scratch.positions,
+				&mut self.scratch.indices,
+				settings,
+				&mut self.scratch.lightmap_uvs,
+			)),
+			_ => None,
+		};
+		let vertex_count = lightmap_uvs.as_ref().map_or(position_count, |layout| layout.xref.len());
+		if vertex_count > MAX_PRIMITIVE_VERTICES {
+			return Err(MeshProcessingError::TooManyLightmapVertices {
+				primitive: primitive_index,
+				vertices: vertex_count,
+			}
+			.into());
+		}
+		meshopt::optimize_vertex_cache_in_place(&mut self.scratch.indices, vertex_count);
+		let mut source_streams = self.append_primitive_vertex_streams(primitive, primitive_index, position_count)?;
+		if let Some(layout) = &lightmap_uvs {
+			if layout.cramped {
+				log::warn!(
+					"Lightmap UV charts of primitive {primitive_index} lie closer than two texels apart. The most likely cause is that the primitive has more charts than the `lightmap_uvs.resolution` of its model's BEAD file leaves room for. Raise `lightmap_uvs.resolution` in the BEAD file. See {}.",
+					crate::online_docs_url("reference/assets#lightmap-uvs")
+				);
+			}
+			expand_vertex_streams(
+				&mut self.source_blocks,
+				&mut source_streams,
+				&layout.xref,
+				&mut self.scratch.gather,
+			);
+			self.scratch.gather_positions.clear();
+			self.scratch
+				.gather_positions
+				.extend(layout.xref.iter().map(|&vertex| self.scratch.positions[vertex as usize]));
+			std::mem::swap(&mut self.scratch.positions, &mut self.scratch.gather_positions);
+			source_streams.push(append_generated_stream(
+				source_block(&mut self.source_blocks, Streams::Vertices(VertexSemantics::LightmapUV)),
+				|bytes| {
+					for uv in &layout.uvs {
+						write_f32_components(bytes, uv);
+					}
+				},
+			));
+		}
 
 		// meshopt reads native-endian positions, which is what casting the position scratch gives it.
 		let positions = meshopt::VertexDataAdapter::new(bytemuck::cast_slice(&self.scratch.positions), 12, 0)
@@ -158,7 +209,7 @@ impl MeshProcessorSession {
 				&positions,
 				&self.scratch.normals,
 				&mut self.scratch.vertex_locks,
-				self.lods,
+				self.settings.lods,
 			)
 		} else {
 			Vec::new()
@@ -182,7 +233,7 @@ impl MeshProcessorSession {
 			levels
 				.iter()
 				.map(|level| level.iter().flat_map(|meshlet| meshlet.vertices.iter().copied())),
-			position_count,
+			vertex_count,
 			&mut self.scratch.vertex_levels,
 			&mut self.scratch.vertex_order,
 			&mut self.scratch.vertex_remap,
@@ -274,7 +325,7 @@ impl MeshProcessorSession {
 			streams: primitive_streams,
 			bounding_box: bounds,
 			bounding_sphere: bounding_sphere(&bounds, &self.scratch.positions),
-			vertex_count: position_count as u32,
+			vertex_count: vertex_count as u32,
 			lods,
 		});
 		Ok(())
@@ -514,6 +565,10 @@ struct MeshProcessingScratch {
 	vertex_order: Vec<u32>,
 	/// Output vertex of each source vertex.
 	vertex_remap: Vec<u32>,
+	lightmap_uvs: LightmapUvScratch,
+	/// Staging for a vertex stream or the positions while lightmap UVs split their vertices.
+	gather: Vec<u8>,
+	gather_positions: Vec<[f32; 3]>,
 }
 
 struct PackedStreamBlock {
@@ -734,6 +789,25 @@ fn split_vertex_stream(
 	}
 }
 
+/// Copies each of one primitive's source streams through `xref`, the source vertex of each vertex lightmap UVs split
+/// the primitive into, so every attribute follows its vertex to the charts it lies on.
+fn expand_vertex_streams(source_blocks: &mut [PackedStreamBlock], streams: &mut [Stream], xref: &[u32], gather: &mut Vec<u8>) {
+	for stream in streams {
+		let block = source_blocks
+			.iter_mut()
+			.find(|block| block.stream_type == stream.stream_type)
+			.expect("a primitive stream is appended to a block of its type");
+		let bytes = &block.bytes[stream.offset..stream.offset + stream.size];
+		gather.clear();
+		for &vertex in xref {
+			gather.extend_from_slice(&bytes[vertex as usize * stream.stride..][..stream.stride]);
+		}
+		block.bytes.truncate(stream.offset);
+		block.bytes.extend_from_slice(gather);
+		stream.size = gather.len();
+	}
+}
+
 /// Returns a sphere around `positions`, as xyz center and w radius, centered on their bounding box.
 ///
 /// Centering on the box keeps it close to the smallest sphere for the elongated shapes meshes usually have.
@@ -844,6 +918,7 @@ fn stream_name(stream_type: Streams) -> &'static str {
 		Streams::Vertices(VertexSemantics::Color) => "Vertex.Color",
 		Streams::Vertices(VertexSemantics::Joints) => "Vertex.Joints",
 		Streams::Vertices(VertexSemantics::Weights) => "Vertex.Weights",
+		Streams::Vertices(VertexSemantics::LightmapUV) => "Vertex.LightmapUV",
 		Streams::Indices(IndexStreamTypes::Vertices) => "VertexIndices",
 		Streams::Indices(IndexStreamTypes::Triangles) => "TriangleIndices",
 		Streams::Indices(IndexStreamTypes::Meshlets) => "MeshletIndices",
@@ -852,6 +927,8 @@ fn stream_name(stream_type: Streams) -> &'static str {
 }
 
 const MESHLET_MAX_VERTICES: usize = 64;
+/// The most vertices a primitive holds: its index streams store 16-bit indices.
+const MAX_PRIMITIVE_VERTICES: usize = 1 << 16;
 pub(super) const MESHLET_MAX_TRIANGLES: usize = 124;
 const MESHLET_CONE_WEIGHT: f32 = 0.25;
 /// The byte size of one record in a mesh's `Meshlets` stream. [`crate::inspect`] decodes the same layout.
@@ -860,7 +937,9 @@ pub(crate) const MESHLET_STREAM_STRIDE: usize = 52;
 use math::{AABB, Point, Vector};
 
 use super::{
-	lod::{MeshLodSettings, simplify_levels},
+	MeshSettings,
+	lightmap_uvs::{LightmapUvScratch, generate_lightmap_uvs},
+	lod::simplify_levels,
 	source::{MeshPrimitiveSource, VertexSkin},
 	validation::{
 		MeshProcessingError, skeleton_node_count, validate_primitive_metadata, validate_skin_binding, validate_vertex_layout,

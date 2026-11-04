@@ -20,7 +20,8 @@ use super::{
 };
 use crate::rendering::mesh::generator::{MeshGenerator, validate_triangle_indices};
 use crate::rendering::pipelines::visibility::layout::{
-	RuntimeUnitVector, ShaderMeshletData, TRIANGLE_COUNT, VERTEX_COUNT, VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
+	RuntimeUnitVector, ShaderMeshletData, TRIANGLE_COUNT, VERTEX_COUNT, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE,
+	VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
 };
 use crate::rendering::pipelines::visibility::lod::{MeshLod, MeshLods};
 use crate::rendering::resource_loading::{StagingLease, UploadStagingArena};
@@ -49,6 +50,8 @@ pub(super) struct PreparedStreams {
 	pub(super) positions: Range<usize>,
 	pub(super) normals: Range<usize>,
 	pub(super) uvs: Range<usize>,
+	/// Zero for every vertex of a primitive without lightmap UVs.
+	pub(super) lightmap_uvs: Range<usize>,
 	pub(super) vertex_indices: Range<usize>,
 	pub(super) primitive_indices: Range<usize>,
 	pub(super) meshlets: Range<usize>,
@@ -111,6 +114,7 @@ impl PreparedMesh {
 			positions: take_range(&mut cursor, positions.len() * 12),
 			normals: take_range(&mut cursor, normals.len() * VERTEX_NORMAL_BUFFER_STRIDE as usize),
 			uvs: take_range(&mut cursor, uvs.len() * VERTEX_UV_BUFFER_STRIDE as usize),
+			lightmap_uvs: take_range(&mut cursor, uvs.len() * VERTEX_LIGHTMAP_UV_BUFFER_STRIDE as usize),
 			vertex_indices: take_range(&mut cursor, vertex_indices.len() * VERTEX_INDEX_STRIDE),
 			primitive_indices: take_range(&mut cursor, primitive_indices.len() * 3),
 			meshlets: take_range(&mut cursor, meshlets.len() * std::mem::size_of::<ShaderMeshletData>()),
@@ -137,6 +141,18 @@ impl PreparedMesh {
 		}
 		for (destination, (u, v)) in backing[streams.uvs.clone()].as_chunks_mut::<4>().0.iter_mut().zip(uvs.iter()) {
 			write_f16_pair(destination, *u, *v);
+		}
+		let lightmap_uvs = generator
+			.lightmap_uvs()
+			.filter(|lightmap_uvs| lightmap_uvs.len() == uvs.len());
+		let lightmap_destination = backing[streams.lightmap_uvs.clone()].as_chunks_mut::<4>().0;
+		match lightmap_uvs {
+			Some(lightmap_uvs) => {
+				for (destination, &(u, v)) in lightmap_destination.iter_mut().zip(lightmap_uvs.iter()) {
+					write_unorm16_pair(destination, u, v);
+				}
+			}
+			None => lightmap_destination.as_flattened_mut().fill(0),
 		}
 		backing[streams.vertex_indices.clone()].copy_from_slice(bytemuck::cast_slice(&vertex_indices));
 		backing[streams.primitive_indices.clone()].copy_from_slice(bytemuck::cast_slice(&primitive_indices));
@@ -179,7 +195,8 @@ impl PreparedMesh {
 	}
 
 	/// Loads the detail `levels` of a baked mesh resource and converts them into the runtime geometry formats, with
-	/// flat triangle lists of each primitive's coarsest level when `flat_triangles` is set and `levels` holds it.
+	/// flat triangle lists of each primitive's traced level when `flat_triangles` is set: its coarsest for
+	/// [`PreparedLevels::Coarsest`] and its full detail for [`PreparedLevels::Finest`].
 	///
 	/// The prepared mesh holds each primitive's meshlets of the levels `levels` names, and every vertex they index: the
 	/// primitive's vertices from its coarsest level down to the finest level held. Its primitives' level tables mark
@@ -234,6 +251,50 @@ impl PreparedMesh {
 	}
 }
 
+/// The `PreparedSurface` struct is one prepared primitive's full-detail triangles, read back from the staging lease
+/// before it uploads: what the lightmap bake rasterizes into texels.
+///
+/// [`PreparedMesh::surface`] returns it. Its streams are in the runtime formats; decode normals with
+/// [`decode_octahedral_unit_vector`] and lightmap UVs by dividing by 65,535.
+pub(crate) struct PreparedSurface<'a> {
+	/// Object-space positions of the primitive's vertices.
+	pub(crate) positions: &'a [[f32; 3]],
+	/// Octahedrally encoded object-space normals.
+	pub(crate) normals: &'a [[u16; 2]],
+	/// UNORM16 lightmap UVs, all zero for a primitive without them.
+	pub(crate) lightmap_uvs: &'a [[u16; 2]],
+	/// The full-detail triangles, as indices of the vertices above.
+	pub(crate) triangles: &'a [[u16; 3]],
+}
+
+impl PreparedMesh {
+	/// Returns the full-detail triangles of primitive `index`, or `None` when the mesh holds no flat triangle list for
+	/// it: it was prepared without one, or the primitive is skinned.
+	///
+	/// Only a mesh prepared with [`PreparedLevels::Finest`] or generated holds every triangle of its primitives here.
+	pub(crate) fn surface(&self, index: usize) -> Option<PreparedSurface<'_>> {
+		let flat = self.streams.flat_triangles.as_ref()?;
+		let prepared = self.primitives.get(index)?;
+		let primitive = &prepared.primitive;
+		if primitive.flat_triangle_count == 0 {
+			return None;
+		}
+		let bytes = self.staging.bytes();
+		let vertices = prepared.elements.vertices.start as usize..prepared.elements.vertices.end as usize;
+		let stream = |range: &Range<usize>, stride: usize| &bytes[range.start + vertices.start * stride..][..vertices.len() * stride];
+		let triangles = primitive.flat_triangle_offset as usize..(primitive.flat_triangle_offset + primitive.flat_triangle_count) as usize;
+		Some(PreparedSurface {
+			positions: bytemuck::cast_slice(stream(&self.streams.positions, 12)),
+			normals: bytemuck::cast_slice(stream(&self.streams.normals, VERTEX_NORMAL_BUFFER_STRIDE as usize)),
+			lightmap_uvs: bytemuck::cast_slice(stream(
+				&self.streams.lightmap_uvs,
+				VERTEX_LIGHTMAP_UV_BUFFER_STRIDE as usize,
+			)),
+			triangles: bytemuck::cast_slice(&bytes[flat.start + triangles.start * 6..][..triangles.len() * 6]),
+		})
+	}
+}
+
 async fn allocate_staging(upload_staging: &Arc<UploadStagingArena>, byte_count: usize) -> Option<StagingLease> {
 	upload_staging.allocate(byte_count, STAGING_ALIGNMENT).await.or_else(|| {
 		log::error!(
@@ -253,6 +314,8 @@ async fn allocate_staging(upload_staging: &Arc<UploadStagingArena>, byte_count: 
 pub(crate) enum PreparedLevels<'a> {
 	/// Each primitive's coarsest level, which every instance of the mesh can draw.
 	Coarsest,
+	/// Each primitive's full-detail level, with every vertex. The lightmap bake traces and rasterizes it.
+	Finest,
 	/// For each listed primitive, in ascending primitive order, its levels from [`PrimitiveLevels::finest`] down to,
 	/// but not including, its coarsest. Nothing of an unlisted primitive.
 	Finer(&'a [PrimitiveLevels]),
@@ -264,16 +327,35 @@ impl PreparedLevels<'_> {
 		let coarsest = level_count - 1;
 		match self {
 			Self::Coarsest => coarsest..level_count,
+			Self::Finest => 0..1,
 			Self::Finer(primitives) => match primitives.binary_search_by_key(&(primitive as u32), |levels| levels.primitive) {
 				Ok(index) => (primitives[index].finest as usize).min(coarsest)..coarsest,
 				Err(_) => coarsest..coarsest,
 			},
 		}
 	}
+
+	/// Returns whether level `level` of a primitive with `level_count` levels is the one whose triangles this
+	/// preparation flattens for rays: the coarsest for [`Self::Coarsest`], full detail for [`Self::Finest`], and none
+	/// for finer levels.
+	fn traced(self, level: usize, level_count: usize) -> bool {
+		match self {
+			Self::Coarsest => level + 1 == level_count,
+			Self::Finest => level == 0,
+			Self::Finer(_) => false,
+		}
+	}
 }
 
 /// Vertex attribute streams the visibility format reads, in the order each level loads them.
-const VERTEX_SEMANTICS: [VertexSemantics; 3] = [VertexSemantics::Position, VertexSemantics::Normal, VertexSemantics::UV];
+///
+/// Lightmap UVs are optional: a primitive without them reads zeros, and no lightmap gives it a rectangle.
+const VERTEX_SEMANTICS: [VertexSemantics; 4] = [
+	VertexSemantics::Position,
+	VertexSemantics::Normal,
+	VertexSemantics::UV,
+	VertexSemantics::LightmapUV,
+];
 /// Meshlet streams the visibility format reads, in the order each level loads them.
 const MESHLET_STREAMS: [Streams; 3] = [
 	Streams::Indices(IndexStreamTypes::Vertices),
@@ -288,23 +370,24 @@ macro_rules! level_stream_names {
 			concat!("level[", $level, "].Vertex.Position"),
 			concat!("level[", $level, "].Vertex.Normal"),
 			concat!("level[", $level, "].Vertex.UV"),
+			concat!("level[", $level, "].Vertex.LightmapUV"),
 			concat!("level[", $level, "].VertexIndices"),
 			concat!("level[", $level, "].MeshletIndices"),
 			concat!("level[", $level, "].Meshlets"),
 		]),*]
 	};
 }
-/// Each level's position, normal, UV, meshlet vertex-index, triangle-index, and record stream names, in the order a
-/// [`ResourcePlan`] lays them out.
-const LEVEL_STREAM_NAMES: [[&str; 6]; MAX_PRIMITIVE_LODS] = level_stream_names!(0, 1, 2, 3, 4, 5, 6, 7);
+/// Each level's position, normal, UV, lightmap UV, meshlet vertex-index, triangle-index, and record stream names, in the
+/// order a [`ResourcePlan`] lays them out.
+const LEVEL_STREAM_NAMES: [[&str; 7]; MAX_PRIMITIVE_LODS] = level_stream_names!(0, 1, 2, 3, 4, 5, 6, 7);
 
 /// The `ResourcePlan` struct lays out one preparation of a baked mesh: which level streams load where in the front of
 /// the staging lease, and where each runtime stream lands behind them.
 ///
 /// It reads only the mesh's metadata, so every size is known before the payload loads.
 struct ResourcePlan {
-	/// Where each level's position, normal, and UV streams load, indexed by level; empty where none loads.
-	vertex_sources: [[Range<usize>; 3]; MAX_PRIMITIVE_LODS],
+	/// Where each level's position, normal, UV, and lightmap UV streams load, indexed by level; empty where none loads.
+	vertex_sources: [[Range<usize>; 4]; MAX_PRIMITIVE_LODS],
 	/// Where each level's meshlet vertex-index, triangle-index, and record streams load, indexed by level.
 	meshlet_sources: [[Range<usize>; 3]; MAX_PRIMITIVE_LODS],
 	/// How many of the source ranges above are not empty, each one read target.
@@ -374,7 +457,7 @@ impl ResourcePlan {
 				}
 				counts.triangles += (triangle_indices / 3) as u32;
 				counts.meshlets += count(MESHLET_STREAMS[2], "meshlet", RESOURCE_MESHLET_STRIDE)? as u32;
-				if level + 1 == primitive.lods.len() && primitive.skin.is_none() {
+				if levels.traced(level, primitive.lods.len()) && primitive.skin.is_none() {
 					flat_triangle_bound += triangle_indices / 3;
 				}
 			}
@@ -395,7 +478,7 @@ impl ResourcePlan {
 			source_count += 1;
 			Some(take_range(&mut cursor, stream.size))
 		};
-		let mut vertex_sources: [[Range<usize>; 3]; MAX_PRIMITIVE_LODS] = Default::default();
+		let mut vertex_sources: [[Range<usize>; 4]; MAX_PRIMITIVE_LODS] = Default::default();
 		let mut meshlet_sources: [[Range<usize>; 3]; MAX_PRIMITIVE_LODS] = Default::default();
 		for level in 0..level_count {
 			let vertex_stream = |index: usize| {
@@ -407,6 +490,7 @@ impl ResourcePlan {
 				source(vertex_stream(0), "position", SKINNING_POSITION_STRIDE)?,
 				source(vertex_stream(1), "normal", SKINNING_NORMAL_STRIDE)?,
 				source(vertex_stream(2), "UV", uv_stride)?,
+				source(vertex_stream(3), "lightmap UV", F32_UV_STRIDE)?,
 			];
 			let meshlet_stream = |index: usize| {
 				meshlet_levels[level]
@@ -444,13 +528,14 @@ impl ResourcePlan {
 			positions: take_range(&mut cursor, vertices * SKINNING_POSITION_STRIDE),
 			normals: take_range(&mut cursor, vertices * VERTEX_NORMAL_BUFFER_STRIDE as usize),
 			uvs: take_range(&mut cursor, vertices * VERTEX_UV_BUFFER_STRIDE as usize),
+			lightmap_uvs: take_range(&mut cursor, vertices * VERTEX_LIGHTMAP_UV_BUFFER_STRIDE as usize),
 			vertex_indices: take_range(&mut cursor, counts.primitive_indices as usize * VERTEX_INDEX_STRIDE),
 			primitive_indices: take_range(&mut cursor, counts.triangles as usize * 3),
 			meshlets: take_range(
 				&mut cursor,
 				counts.meshlets as usize * std::mem::size_of::<ShaderMeshletData>(),
 			),
-			flat_triangles: (flat_triangles && matches!(levels, PreparedLevels::Coarsest))
+			flat_triangles: (flat_triangles && !matches!(levels, PreparedLevels::Finer(_)))
 				.then(|| take_range(&mut cursor, flat_triangle_bound * 6)),
 		};
 		Some(Self {
@@ -567,6 +652,21 @@ impl ResourcePlan {
 					} else {
 						destination.as_flattened_mut().copy_from_slice(&source[uvs]);
 					}
+					let destination = &mut output[rebase(&streams.lightmap_uvs)]
+						.as_chunks_mut::<{ VERTEX_LIGHTMAP_UV_BUFFER_STRIDE as usize }>()
+						.0[vertex..][..count];
+					match slice(Streams::Vertices(VertexSemantics::LightmapUV), level, &sources[3]) {
+						Some(lightmap_uvs) => {
+							for (destination, uv) in destination
+								.iter_mut()
+								.zip(source[lightmap_uvs].as_chunks::<F32_UV_STRIDE>().0)
+							{
+								write_unorm16_pair(destination, read_f32(uv, 0), read_f32(uv, 4));
+							}
+						}
+						// The lease is reused, so a primitive without lightmap UVs clears its share.
+						None => destination.as_flattened_mut().fill(0),
+					}
 					vertex += count;
 				}
 				let expected = primitive.lods[held.start].vertex_count as usize;
@@ -624,9 +724,9 @@ impl ResourcePlan {
 					resident: true,
 					..lods[level]
 				};
-				// Rays hit each unskinned primitive's coarsest level.
+				// Rays hit each unskinned primitive's coarsest level, and the lightmap bake's rays its full detail.
 				if let Some(range) = &streams.flat_triangles
-					&& level + 1 == primitive.lods.len()
+					&& levels.traced(level, primitive.lods.len())
 					&& primitive.skin.is_none()
 				{
 					let written = flatten_meshlet_triangles(
@@ -850,12 +950,31 @@ pub(crate) fn encode_octahedral_unit_vector(vector: (f32, f32, f32)) -> RuntimeU
 	[unorm16(x), unorm16(y)]
 }
 
+/// Decodes a unit vector [`encode_octahedral_unit_vector`] encoded, as the shaders decode it.
+pub(crate) fn decode_octahedral_unit_vector(encoded: RuntimeUnitVector) -> [f32; 3] {
+	let snorm = |value: u16| value as f32 / u16::MAX as f32 * 2.0 - 1.0;
+	let (x, y) = (snorm(encoded[0]), snorm(encoded[1]));
+	let z = 1.0 - x.abs() - y.abs();
+	// The square's outer triangles hold the lower hemisphere, folded.
+	let fold = (-z).max(0.0);
+	let x = x + if x >= 0.0 { -fold } else { fold };
+	let y = y + if y >= 0.0 { -fold } else { fold };
+	let length = (x * x + y * y + z * z).sqrt();
+	[x / length, y / length, z / length]
+}
+
 fn write_unit_vector(destination: &mut [u8; 4], vector: (f32, f32, f32)) {
 	*destination = bytemuck::cast(encode_octahedral_unit_vector(vector));
 }
 
 fn write_f16_pair(destination: &mut [u8; 4], u: f32, v: f32) {
 	*destination = bytemuck::cast([half::f16::from_f32(u).to_bits(), half::f16::from_f32(v).to_bits()]);
+}
+
+/// Writes a lightmap UV pair as UNORM16, which shaders decode by dividing by 65,535.
+fn write_unorm16_pair(destination: &mut [u8; 4], u: f32, v: f32) {
+	let unorm16 = |value: f32| (value.clamp(0.0, 1.0) * u16::MAX as f32).round() as u16;
+	*destination = bytemuck::cast([unorm16(u), unorm16(v)]);
 }
 
 #[cfg(test)]

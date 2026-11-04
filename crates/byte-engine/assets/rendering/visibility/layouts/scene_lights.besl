@@ -1,0 +1,52 @@
+// The scene's light table as the passes that light ray hits read it, and the direct light those hits receive. The
+// lightmap bake binds it, so a path's hits are lit as the renderer's ray-traced techniques light theirs.
+
+use ::byte_engine::rendering::visibility::layouts::light_table::*;
+use ::byte_engine::rendering::visibility::layouts::ray_traced_scene::*;
+
+SceneLights: layer {
+	scene_lights: descriptor<{ type: LightingBuffer, binding: 0, access: read, memory: device }>;
+}
+
+// Returns the light the scene's lights give a surface at `position` with the unit `normal`, as irradiance over π: each
+// sun, and each point and cone light within reach, when no geometry hides it. Shadow rays leave `offset` meters along
+// the normal and suns' reach `ray_length` meters. Point and cone lights shine as material evaluation lights a surface,
+// but at their peak intensity in every direction: an IES profile doesn't shape their light here.
+scene_direct_light: fn (ray_traced_scene: RayTracedScene, lights: SceneLights, position: vec3f, normal: vec3f, offset: f32, ray_length: f32) -> vec3f {
+	let shadow_origin: vec3f = position + normal * offset;
+	let light: vec3f = vec3f(0.0, 0.0, 0.0);
+	for (let index: u32 = 0; index < lights.scene_lights.light_count; index = index + 1) {
+		if (lights.scene_lights.lights[index].type == DIRECTIONAL_LIGHT) {
+			// A sun keeps the direction its light travels in `position`.
+			let toward_sun: vec3f = -lights.scene_lights.lights[index].position;
+			let sun_cosine: f32 = dot(normal, toward_sun);
+			if (sun_cosine > 0.0) {
+				if (!trace_occlusion(ray_traced_scene.scene_structure, 255, shadow_origin, toward_sun, 0.0, ray_length)) {
+					light = light + lights.scene_lights.lights[index].color * (sun_cosine / 3.14159265359);
+				}
+			}
+			continue;
+		}
+		let to_light: vec3f = lights.scene_lights.lights[index].position - position;
+		let distance_squared: f32 = dot(to_light, to_light);
+		let reach: f32 = lights.scene_lights.lights[index].reach;
+		if (distance_squared <= 0.0 || distance_squared >= reach * reach) {
+			continue;
+		}
+		let distance: f32 = sqrt(distance_squared);
+		let toward_light: vec3f = to_light * (1.0 / distance);
+		let cosine: f32 = dot(normal, toward_light);
+		let falloff: f32 = 1.0 / distance_squared;
+		if (lights.scene_lights.lights[index].type == CONE_LIGHT) {
+			let cone: vec2f = lights.scene_lights.lights[index].cone_cosines;
+			let along: f32 = 0.0 - dot(lights.scene_lights.lights[index].direction, toward_light);
+			falloff = falloff * clamp((along - cone.y) / (cone.x - cone.y), 0.0, 1.0);
+		}
+		if (cosine > 0.0 && falloff > 0.0) {
+			if (!trace_occlusion(ray_traced_scene.scene_structure, 255, shadow_origin, toward_light, 0.0, distance - offset)) {
+				light = light + lights.scene_lights.lights[index].color * (falloff * cosine / 3.14159265359);
+			}
+		}
+	}
+	return light;
+}

@@ -115,6 +115,11 @@ pub(crate) struct BuildQueue {
 }
 
 impl BuildQueue {
+	/// Returns whether no build waits or awaits its recording.
+	pub(crate) fn is_empty(&self) -> bool {
+		self.waiting.is_empty() && self.taken.is_empty()
+	}
+
 	pub(crate) fn push(&mut self, mesh: MeshKey, triangles: u32) {
 		self.waiting.push_back((mesh, triangles));
 	}
@@ -363,6 +368,11 @@ impl SceneAccelerationStructures {
 			top_level: self.top_level,
 			instances: instances.into_bump_slice(),
 		}
+	}
+
+	/// Returns whether every registered mesh has a built bottom level, or none because no primitive of it is opaque.
+	pub(crate) fn built(&self) -> bool {
+		self.geometries.is_empty() && self.builds.is_empty()
 	}
 
 	/// Settles the builds the last [`Self::prepare`] picked: they are built when `recorded`, the frame recorded its

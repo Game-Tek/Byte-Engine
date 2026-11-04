@@ -120,6 +120,10 @@ pub(crate) const VERTEX_NORMAL_BUFFER_STRIDE: u32 = std::mem::size_of::<RuntimeV
 /// Half-float UVs preserve sampler wrapping coordinates outside `[0, 1]`.
 pub(crate) type RuntimeVertexUv = [u16; 2];
 pub(crate) const VERTEX_UV_BUFFER_STRIDE: u32 = std::mem::size_of::<RuntimeVertexUv>() as u32;
+/// UNORM16 lightmap UVs: lightmap UVs never leave `[0, 1]`, and 16-bit fractions keep a texel's position within a
+/// 4,096-texel lightmap where half floats would drift by half a texel.
+pub(crate) type RuntimeVertexLightmapUv = [u16; 2];
+pub(crate) const VERTEX_LIGHTMAP_UV_BUFFER_STRIDE: u32 = std::mem::size_of::<RuntimeVertexLightmapUv>() as u32;
 
 /// The `ShaderMeshletData` struct stores meshlet offsets and object-space culling bounds for GPU visibility passes.
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]

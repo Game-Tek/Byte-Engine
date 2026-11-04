@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 use crate::{
 	processors::{
 		image::{ImageProcessorSettings, ImageSource, Semantic, gamma_from_semantic},
-		mesh::MeshLodSettings,
+		mesh::{LightmapUvSettings, MeshLodSettings, MeshSettings},
 	},
 	resources::mesh::MAX_PRIMITIVE_LODS,
 };
@@ -87,8 +87,48 @@ impl Default for MeshLodsManifest {
 	}
 }
 
+/// The `LightmapUvsManifest` struct is the optional `lightmap_uvs` object of an FBX or glTF BEAD manifest. A key left
+/// out keeps its default, and an unknown key is an error.
+#[derive(serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct LightmapUvsManifest {
+	enabled: bool,
+	resolution: u32,
+}
+
+impl Default for LightmapUvsManifest {
+	fn default() -> Self {
+		Self {
+			enabled: true,
+			resolution: LightmapUvSettings::default().resolution,
+		}
+	}
+}
+
+/// Reads the mesh settings an FBX or glTF BEAD manifest gives its meshes, or the defaults when it gives none.
+///
+/// `lightmap_uvs` says whether the bake builds in lightmaps; without them, no primitive gets lightmap UVs whatever the
+/// manifest asks.
+pub(crate) fn mesh_settings(spec: Option<&BEADType>, lightmap_uvs: bool) -> Result<MeshSettings, String> {
+	let lods = mesh_lod_settings(spec)?;
+	let manifest = match spec.and_then(|spec| spec.get("lightmap_uvs")) {
+		Some(value) => <LightmapUvsManifest as serde::Deserialize>::deserialize(value)
+			.map_err(|error| format!("`lightmap_uvs` is invalid: {error}"))?,
+		None => LightmapUvsManifest::default(),
+	};
+	if !(16..=4096).contains(&manifest.resolution) {
+		return Err("`lightmap_uvs.resolution` must be from 16 to 4096".to_string());
+	}
+	Ok(MeshSettings {
+		lods,
+		lightmap_uvs: (lightmap_uvs && manifest.enabled).then_some(LightmapUvSettings {
+			resolution: manifest.resolution,
+		}),
+	})
+}
+
 /// Reads the detail level settings an FBX or glTF BEAD manifest gives its meshes, or the defaults when it gives none.
-pub(crate) fn mesh_lod_settings(spec: Option<&BEADType>) -> Result<MeshLodSettings, String> {
+fn mesh_lod_settings(spec: Option<&BEADType>) -> Result<MeshLodSettings, String> {
 	let Some(value) = spec.and_then(|spec| spec.get("lods")) else {
 		return Ok(MeshLodSettings::default());
 	};
@@ -414,6 +454,26 @@ mod mesh_lod_settings_tests {
 			"{ lods: { max_error: 1.5 } }",
 		] {
 			assert!(settings(source).is_err(), "{source} should be rejected");
+		}
+	}
+
+	#[test]
+	fn bead_lightmap_uvs_follow_the_bake_and_the_manifest() {
+		let parse = |source: &str, built_in| super::mesh_settings(Some(&super::parse_json(source).unwrap()), built_in);
+		let resolution = |resolution| Some(super::LightmapUvSettings { resolution });
+
+		assert_eq!(parse("{}", false).map(|settings| settings.lightmap_uvs), Ok(None));
+		assert_eq!(parse("{}", true).map(|settings| settings.lightmap_uvs), Ok(resolution(64)));
+		assert_eq!(
+			parse("{ lightmap_uvs: { resolution: 256 } }", true).map(|settings| settings.lightmap_uvs),
+			Ok(resolution(256))
+		);
+		assert_eq!(
+			parse("{ lightmap_uvs: { enabled: false } }", true).map(|settings| settings.lightmap_uvs),
+			Ok(None)
+		);
+		for source in ["{ lightmap_uvs: { resolution: 8 } }", "{ lightmap_uvs: { size: 64 } }"] {
+			assert!(parse(source, true).is_err(), "{source} should be rejected");
 		}
 	}
 }

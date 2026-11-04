@@ -1,0 +1,69 @@
+// Resolves the paths' light into the lightmap image, then fills the image's empty texels from their neighbors, one
+// ring per pass.
+//
+// Pass 0 gives each texel that holds a traced texel the mean of its paths' light, as irradiance over π, and the share of
+// its paths whose first ray reached the environment, unless more than LIGHTMAP_BACKFACE_SHARE of its paths first hit a
+// back face: the texel lies inside geometry and holds nothing, which alpha -1 marks. Every later pass gives each texel
+// that holds nothing the mean of those of its 8 neighbors that hold light, so light spreads past the charts' edges,
+// where bilinear reads of the renderer reach.
+
+use ::byte_engine::rendering::lightmaps::layouts::lightmap_bake::*;
+
+main: fn (input: StageInput, lightmap_bake: LightmapBake) -> void {
+	let extent: u32 = lightmap_bake.lightmap_parameters.extent;
+	let pixel: u32 = input.thread_id.x;
+	if (pixel >= extent * extent) {
+		return;
+	}
+	if (lightmap_bake.lightmap_parameters.pass == 0) {
+		let traced: u32 = lightmap_bake.lightmap_texel_indices[pixel];
+		let light: vec4f = vec4f(0.0, 0.0, 0.0, -1.0);
+		if (traced != NO_LIGHTMAP_TEXEL) {
+			let sum: vec4f = lightmap_bake.lightmap_accumulation[traced];
+			let samples: f32 = f32(lightmap_bake.lightmap_parameters.samples);
+			if (sum.w <= samples * LIGHTMAP_BACKFACE_SHARE) {
+				let escapes: f32 = lightmap_bake.lightmap_escapes[traced];
+				light = vec4f(sum.x / samples, sum.y / samples, sum.z / samples, escapes / samples);
+			}
+		}
+		lightmap_bake.lightmap_light[pixel] = light;
+		return;
+	}
+	// Odd passes read the image and write its copy; even passes read the copy and write the image.
+	let from_light: bool = lightmap_bake.lightmap_parameters.pass % 2 == 1;
+	let center: vec4f = lightmap_bake.lightmap_dilated[pixel];
+	if (from_light) {
+		center = lightmap_bake.lightmap_light[pixel];
+	}
+	let result: vec4f = center;
+	if (center.w < 0.0) {
+		let x: u32 = pixel % extent;
+		let y: u32 = pixel / extent;
+		let sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+		let count: f32 = 0.0;
+		// Neighbor `n` lies at (x + n % 3 - 1, y + n / 3 - 1); the sums below stay unsigned by adding the one first.
+		for (let neighbor: u32 = 0; neighbor < 9; neighbor = neighbor + 1) {
+			let column: u32 = x + neighbor % 3;
+			let row: u32 = y + neighbor / 3;
+			if (neighbor != 4 && column >= 1 && row >= 1 && column <= extent && row <= extent) {
+				let neighbor_pixel: u32 = (row - 1) * extent + column - 1;
+				let value: vec4f = lightmap_bake.lightmap_dilated[neighbor_pixel];
+				if (from_light) {
+					value = lightmap_bake.lightmap_light[neighbor_pixel];
+				}
+				if (value.w >= 0.0) {
+					sum = sum + value;
+					count = count + 1.0;
+				}
+			}
+		}
+		if (count > 0.0) {
+			result = sum * (1.0 / count);
+		}
+	}
+	if (from_light) {
+		lightmap_bake.lightmap_dilated[pixel] = result;
+	} else {
+		lightmap_bake.lightmap_light[pixel] = result;
+	}
+}

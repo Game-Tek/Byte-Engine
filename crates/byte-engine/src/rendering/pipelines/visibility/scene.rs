@@ -15,7 +15,8 @@ use super::lod::MeshLods;
 use super::render_pass::VisibilityRenderPass;
 use super::residency::ResidencySlot;
 use super::shader_data::{
-	IesProfileTexture, LightData, LightingData, NEUTRAL_UNIT_VECTOR, NO_IES_PROFILE_TEXTURE, ShaderMesh, ShaderViewData,
+	IesProfileTexture, InstanceLightmap, LightData, LightingData, NEUTRAL_UNIT_VECTOR, NO_IES_PROFILE_TEXTURE, ShaderMesh,
+	ShaderViewData,
 };
 use super::shadow_selection::{LightShadow, sun_cascade_view};
 use super::skinning::SkinningDispatch;
@@ -48,6 +49,8 @@ pub struct RenderEntity {
 	/// Where the primitive's wanted level is recorded each frame, when it has finer levels to load.
 	pub(crate) residency: Option<ResidencySlot>,
 	pub(crate) skinning: Option<RenderSkin>,
+	/// Where the primitive's light lies in the resident lightmap, or [`InstanceLightmap::NONE`].
+	pub(crate) lightmap: InstanceLightmap,
 }
 
 /// The `RenderSkin` struct keeps one primitive's immutable skin source and palette mapping beside its scene instance.
@@ -176,6 +179,8 @@ pub struct VisibilityScene {
 	pub(crate) descriptor_set: ghi::DescriptorSetHandle,
 	pub(crate) views_buffer: ghi::DynamicBufferHandle<[ShaderViewData; SHADOW_VIEW_COUNT]>,
 	pub(crate) meshes_buffer: ghi::DynamicBufferHandle<[ShaderMesh; MAX_INSTANCES]>,
+	/// Each instance's place in the resident lightmap, by the same index as [`Self::meshes_buffer`].
+	pub(crate) instance_lightmaps_buffer: ghi::DynamicBufferHandle<[InstanceLightmap; MAX_INSTANCES]>,
 	pub(crate) lighting_buffer: ghi::DynamicBufferHandle<LightingData>,
 	pub(crate) render_info: RenderInfo,
 	pub(crate) sink_states: Vec<SinkState>,
@@ -280,7 +285,7 @@ impl VisibilityScene {
 pub(crate) const LIGHT_REACH_THRESHOLD_LUX: f32 = 1.0 / 1024.0;
 
 /// Builds one GPU light record from a scene light, its retained transform, and its shadow assignment.
-pub(super) fn light_data(
+pub(crate) fn light_data(
 	light: &Lights,
 	transform: &Transform,
 	shadow: LightShadow,

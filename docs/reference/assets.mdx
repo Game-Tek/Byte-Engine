@@ -97,6 +97,36 @@ A model's BEAD file tunes its levels with a `lods` object:
 
 Every key is optional. Set `lock_borders` to `true` when a model's primitives meet along a border, as when one surface is split by material, and gaps show between them at a distance. Each primitive is simplified on its own, so neighbors at different levels can otherwise pull apart by up to the sum of their errors. Locked borders simplify less.
 
+## Lightmap UVs
+
+When the bake builds lightmaps in, with `render.baked-gi.enabled` set to `true`,
+mesh processing gives every unskinned primitive of a glTF, GLB, or FBX model a
+second set of texture coordinates, the `Vertex.LightmapUV` stream, in which no
+two triangles overlap. A [lightmap](#lightmaps) stores light at these
+coordinates. A bake without lightmaps leaves the stream out.
+
+| Term | Definition |
+| --- | --- |
+| Chart | A largest set of triangles connected through shared edges, where an edge is shared when its two end positions are equal, whose normals have the same dominant axis: the axis of the normal's largest component, with its sign. A triangle without area joins the chart of its first neighbor, or forms a chart of its own. |
+| Projection | Each chart projects along its dominant axis onto the plane of the other two, in model units, so every chart of a primitive keeps the same scale. |
+| Square | The charts are placed in rows inside one square, tallest chart first, then scaled so the square spans 0 through 1 on both axes. |
+| Gap | Charts lie at least two texels apart, and at least one texel from the square's edges, at the BEAD file's `resolution` texels per side. A primitive with more charts than that leaves room for keeps smaller gaps, and the bake warns. |
+| Overlap | Triangles of different charts never overlap. Triangles of one chart can, where the surface folds back over itself along the chart's axis, as a spiral does. |
+
+| Rule | Value |
+| --- | --- |
+| Vertices | A vertex shared by two charts splits into one vertex per chart. Every other stream of a split vertex keeps its value. |
+| Detail levels | Every level indexes the same vertices, so each level's triangles keep the coordinates they had at full detail. |
+| Vertex limit | A primitive holds at most 65,536 vertices after the splits, or its bake fails. |
+| Skinned primitives | Have no `Vertex.LightmapUV` stream. |
+
+A model's BEAD file tunes the stream with a `lightmap_uvs` object:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | `false` leaves the stream out, so lightmaps skip the model. |
+| `resolution` | `64` | The texels per side the gap between charts is measured at, from 16 through 4,096. Set it near the texels a lightmap gives the primitive. |
+
 ## Image settings
 
 Every image gets a full mip chain by default, and albedo and normal maps are
@@ -140,6 +170,46 @@ Baking the environment asset retains the source image and adds a diffuse
 irradiance cubemap and eight roughness-prefiltered specular levels. The
 visibility renderer loads the complete set when the asset is selected as the
 world environment.
+
+## Lightmaps
+
+A standalone `.lightmap.bead` file bakes the indirect diffuse light of a
+[level](/docs/reference/levels) into one image, by path tracing its meshes and
+lights on the GPU. It's a JSON5 object with these fields:
+
+| Field | Default | Value |
+| --- | --- | --- |
+| `$schema` | None | `byte_engine/schemas/lightmap.bead.schema.json`, for editor completion. |
+| `level` | Required | The ID of the `.level` asset whose meshes and lights the lightmap holds. |
+| `environment` | None | The ID of an [environment map](#environment-maps) whose sky lights the paths that leave the scene. Without it, they bring back no light. |
+| `illuminance` | None | Lux, finite and zero or more. Scales the environment to deliver it to an upward-facing surface, as the world environment's illuminance does. Without it, the map's own values are used. |
+| `texel_density` | `8` | Texels per meter of surface, finite and positive. |
+| `samples` | `256` | Paths traced from each texel, from 1 through 65,536. |
+| `bounces` | `3` | The most surfaces a path hits, from 1 through 16. |
+| `max_extent` | `2048` | The image's largest side in texels: a power of two from 256 through 8,192. |
+
+Baking the lightmap bakes the level, then every mesh, material, image, and
+environment the level and the lightmap name, and reads those resources, so it
+holds the meshes the renderer draws. A change to any of them bakes the lightmap
+again. It produces a `Lightmap` resource and its image, `<id>#image`. Baking
+needs a GPU that traces rays, and fails without one.
+
+| Rule | Value |
+| --- | --- |
+| Holder | The level names the lightmap's ID in the `lightmap` kind of exactly one entity, or the bake fails. |
+| Primitives | Every primitive of every `mesh` entity that has a `Vertex.LightmapUV` stream gets a rectangle of the image, and the rest get none. Generated meshes have the stream. Each rectangle maps the square of the primitive's [lightmap UVs](#lightmap-uvs). |
+| Rectangle size | A square of side `ceil(sqrt(A / U) × texel_density)` texels, at least 16, where A is the primitive's surface area in meters after its entity's transform and U is the area its triangles cover in the lightmap UV square. |
+| Placement | Rectangles lie in rows, largest first, two texels apart and one texel from the image's edges. The image is the smallest square of power-of-two side that holds them. When they don't fit in `max_extent` texels, every side shrinks by the same factor until they do, and the bake warns. |
+| Texels | A texel holds light when a triangle covers its center: at that point. A texel that a triangle crosses and none covers at its center holds light at the triangle's point nearest its center. |
+| Paths | Each path leaves the texel's point from a quarter of a texel's width above the triangle, along its face's normal, and ends after `bounces` hits, when it misses, or when it hits a back face. Its first direction follows the texel's guide, and every later one is cosine weighted around the hit's normal. From its second hit, a path continues with a probability of its albedo's largest channel, and a path that continues divides its light by that probability. |
+| Guide groups | Texels share a guide when they lie in the same cube of world space four texels wide at the image's density, their normals' largest components lie along the same axis with the same sign, and their normals lie within about 25 degrees of the group's first texel's. A group holds at most 32 texels. |
+| Guides | A texel's first `floor(samples / 8)` paths leave in cosine-weighted directions. Their light, as luminance, sums into the guide of the texel's group over 8 × 8 equal cells of the square that cosine-weighted directions map from. Each cell then takes the mean of its sum and those of the cells around it among its 8 neighbors. The guide's density is a quarter spread evenly over the square, plus three quarters spread in proportion to those means, or evenly when they're all zero. The texel's later paths leave in the directions the density picks. |
+| Guided light | A path whose first direction follows a guide divides its light by the guide's density at that direction, relative to the even density, so every path's light estimates the same irradiance. |
+| Hit surfaces | As for [surfel GI](/docs/reference/rendering#surfel-gi): a path hits each mesh's opaque primitives at full detail, and the hit's material reports its albedo and emission through its closest-hit shader. A material without one reports black. |
+| Path light | A miss brings back the environment's light from its direction, times the environment's scale. A front-face hit brings back its emission, plus its albedo times the light of each sun that it faces and that no geometry hides, and of each point and cone light it faces, within the light's reach, that no geometry hides, lit as material evaluation lights a surface but without the light's IES profile. Each hit multiplies the light of the hits after it by its albedo. |
+| Stored light | Each texel stores the mean of its paths' light: irradiance over π, in nits, in RGB, and in alpha the cosine-weighted share of its directions whose first ray reaches the environment, estimated from its paths as their light is, all as half floats. The texel's own direct light from the scene's lights isn't in it; the renderer draws that. |
+| Back faces | A texel where more than a tenth of its directions, estimated as for the stored alpha, first hit a back face holds no light. |
+| Dilation | Eight passes in turn give each texel that holds no light the mean of the texels around it that do, among its 8 neighbors, alpha included. A texel still without light after them is black, with alpha zero. |
 
 ## Motion databases
 

@@ -87,6 +87,8 @@ pub enum VertexSemantics {
 	Color,
 	Joints,
 	Weights,
+	/// A second set of texture coordinates at which no two triangles overlap, which lightmaps store light at.
+	LightmapUV,
 }
 
 #[derive(
@@ -106,7 +108,7 @@ impl VertexComponent {
 	pub fn canonical(semantic: VertexSemantics) -> Self {
 		let format = match semantic {
 			VertexSemantics::Position | VertexSemantics::Normal | VertexSemantics::BiTangent => "vec3f",
-			VertexSemantics::UV => "vec2f",
+			VertexSemantics::UV | VertexSemantics::LightmapUV => "vec2f",
 			VertexSemantics::Joints => "vec4u16",
 			VertexSemantics::Tangent | VertexSemantics::Color | VertexSemantics::Weights => "vec4f",
 		};

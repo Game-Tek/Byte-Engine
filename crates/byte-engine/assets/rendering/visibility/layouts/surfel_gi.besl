@@ -6,6 +6,7 @@
 // on the cascaded grid of kajiya by Tomasz Stachowiak (MIT License, Copyright (c) 2019 Embark Studios), whose
 // reconstruction and hit spawning the per-pass shaders also adapt. See THIRD_PARTY_NOTICES.md.
 
+use ::byte_engine::rendering::visibility::layouts::sampling::*;
 use ::byte_engine::rendering::visibility::layouts::light_table::*;
 
 // The grid has SURFEL_CASCADES cascades of SURFEL_GRID_SIDE cells per side around the first sink's camera. A cell of
@@ -526,66 +527,18 @@ surfel_ray_offset: fn (radius: f32) -> f32 {
 	return clamp(radius * 0.01, 0.0005, 0.01);
 }
 
-// The tangent and bitangent that make a surfel's hemisphere frame with its normal, in which the normal is z.
-SurfelBasis: struct {
-	tangent: vec3f,
-	bitangent: vec3f,
-}
-
-// Returns the hemisphere frame around `normal`, without a branch on the normal's direction (Duff et al., "Building an
-// Orthonormal Basis, Revisited", 2017).
-surfel_basis: fn (normal: vec3f) -> SurfelBasis {
-	let sign: f32 = step(0.0, normal.z) * 2.0 - 1.0;
-	let a: f32 = 0.0 - 1.0 / (sign + normal.z);
-	let b: f32 = normal.x * normal.y * a;
-	return SurfelBasis(
-		vec3f(1.0 + sign * normal.x * normal.x * a, sign * b, (0.0 - sign) * normal.x),
-		vec3f(b, sign + normal.y * normal.y * a, 0.0 - normal.y)
-	);
-}
-
-// Returns the direction around `normal` that `local` names in the frame of `basis`.
-surfel_to_world: fn (basis: SurfelBasis, normal: vec3f, local: vec3f) -> vec3f {
-	return basis.tangent * local.x + basis.bitangent * local.y + normal * local.z;
-}
-
 // Returns `direction` in the frame of `basis` around `normal`.
-surfel_to_local: fn (basis: SurfelBasis, normal: vec3f, direction: vec3f) -> vec3f {
+surfel_to_local: fn (basis: Basis, normal: vec3f, direction: vec3f) -> vec3f {
 	return vec3f(dot(direction, basis.tangent), dot(direction, basis.bitangent), dot(direction, normal));
-}
-
-// Maps a point of the unit square to a point of the unit disk, so equal areas map to equal areas: Shirley and Chiu's
-// concentric map, which keeps neighboring points of the square neighbors on the disk.
-surfel_square_to_disk: fn (point: vec2f) -> vec2f {
-	let a: f32 = point.x * 2.0 - 1.0;
-	let b: f32 = point.y * 2.0 - 1.0;
-	let radius: f32 = 0.0;
-	let angle: f32 = 0.0;
-	if (a * a > b * b) {
-		radius = a;
-		angle = 0.785398163397 * (b / a);
-	} else if (b != 0.0) {
-		radius = b;
-		angle = 1.57079632679 - 0.785398163397 * (a / b);
-	}
-	return vec2f(radius * cos(angle), radius * sin(angle));
 }
 
 // Maps a point of the unit square to a direction of the hemisphere around z, so equal areas map to equal solid angles:
 // the concentric map onto the unit disk, then the disk's equal-area lift onto the hemisphere.
 surfel_square_to_hemisphere: fn (point: vec2f) -> vec3f {
-	let disk: vec2f = surfel_square_to_disk(point);
+	let disk: vec2f = square_to_disk(point);
 	let squared: f32 = dot(disk, disk);
 	let lift: f32 = sqrt(max(0.0, 2.0 - squared));
 	return vec3f(disk.x * lift, disk.y * lift, 1.0 - squared);
-}
-
-// Maps a point of the unit square to a direction of the hemisphere around z with the cosine-weighted density: the
-// concentric map onto the unit disk, projected up onto the hemisphere (Malley's method). A low-discrepancy set of points
-// stays well spread over the hemisphere.
-surfel_square_to_cosine: fn (point: vec2f) -> vec3f {
-	let disk: vec2f = surfel_square_to_disk(point);
-	return vec3f(disk.x, disk.y, sqrt(max(0.0, 1.0 - dot(disk, disk))));
 }
 
 // Returns the point of the unit square that `surfel_square_to_hemisphere` maps to `direction`, a unit vector with z at
@@ -788,7 +741,7 @@ surfel_occlusion: fn (surfel_gi_set: SurfelGi, slot: u32, record: SurfelRecord, 
 	if (distance <= 0.0001 || distance < clearance) {
 		return 1.0;
 	}
-	let local: vec3f = surfel_to_local(surfel_basis(normal), normal, offset * inverse_distance);
+	let local: vec3f = surfel_to_local(orthonormal_basis(normal), normal, offset * inverse_distance);
 	// A point below the surfel's plane takes the cell of the nearest direction on its horizon.
 	let horizon: vec3f = vec3f(local.x, local.y, max(local.z, 0.0));
 	let length_squared: f32 = dot(horizon, horizon);
@@ -821,40 +774,6 @@ surfel_occlusion: fn (surfel_gi_set: SurfelGi, slot: u32, record: SurfelRecord, 
 	}
 	let moments: vec4f = cell_0 * share_0 + cell_1 * share_1 + cell_2 * share_2 + cell_3 * share_3;
 	return surfel_moment_visibility(moments * (1.0 / total), distance, direction.z);
-}
-
-// Returns a well-mixed 32-bit hash of `value` (Bob Jenkins' one-at-a-time finalizer, as webgiya uses it).
-surfel_hash: fn (value: u32) -> u32 {
-	let x: u32 = value;
-	x = x + (x << 10);
-	x = x ^ (x >> 6);
-	x = x + (x << 3);
-	x = x ^ (x >> 11);
-	x = x + (x << 15);
-	return x;
-}
-
-// Combines two values into one hash (a linear congruential step with Matsumoto tempering, as webgiya uses it).
-surfel_hash_combine: fn (x: u32, y: u32) -> u32 {
-	let seed: u32 = (x * 1664525 + y + 1013904223) * 1664525;
-	seed = seed ^ (seed >> 11);
-	seed = seed ^ ((seed << 7) & 2636928640);
-	seed = seed ^ ((seed << 15) & 4022730752);
-	seed = seed ^ (seed >> 18);
-	return seed;
-}
-
-// Maps a hash to a uniform number in [0, 1).
-surfel_unit: fn (hash: u32) -> f32 {
-	return f32(hash >> 8) / 16777216.0;
-}
-
-// Returns point `index` of the R2 low-discrepancy sequence ("The Unreasonable Effectiveness of Quasirandom Sequences",
-// Martin Roberts, 2018), shifted by a rotation that `seed` picks, so each surfel walks its own sequence. Consecutive
-// points spread evenly over the unit square however many a surfel takes. The steps are 1/g and 1/g² for the plastic
-// number g, as fractions of 2^32, so the sequence stays exact at any index.
-surfel_r2: fn (index: u32, seed: u32) -> vec2f {
-	return vec2f(surfel_unit(index * 3242174889 + seed), surfel_unit(index * 2447445413 + surfel_hash(seed)));
 }
 
 // Takes a free slot for a new surfel: one from the free stack while it holds any, then one no surfel has used yet.

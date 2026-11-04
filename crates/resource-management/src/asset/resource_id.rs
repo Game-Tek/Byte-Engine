@@ -104,13 +104,13 @@ impl<'a> ResourceId<'a> {
 
 	/// Returns the source type used to select an asset handler.
 	///
-	/// Standalone `.environment.bead` and `.motion.bead` declarations use their compound suffix.
+	/// Standalone `.environment.bead`, `.lightmap.bead`, and `.motion.bead` declarations use their compound suffix.
 	/// Other assets, including ordinary BEAD sidecars, use their physical file extension.
 	pub fn get_asset_type(&self) -> &'a str {
 		let Some(base) = get_base(self.full) else {
 			return "";
 		};
-		const COMPOUND_SUFFIXES: [&str; 2] = ["environment.bead", "motion.bead"];
+		const COMPOUND_SUFFIXES: [&str; 3] = ["environment.bead", "lightmap.bead", "motion.bead"];
 		COMPOUND_SUFFIXES
 			.iter()
 			.find_map(|compound| {
@@ -236,5 +236,6 @@ pub mod tests {
 			"motion.bead"
 		);
 		assert_eq!(ResourceId::new("characters/emotion.bead").get_asset_type(), "bead");
+		assert_eq!(ResourceId::new("levels/arena.lightmap.bead").get_asset_type(), "lightmap.bead");
 	}
 }

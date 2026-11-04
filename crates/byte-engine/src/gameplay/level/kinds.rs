@@ -16,9 +16,10 @@ use crate::{
 
 impl Spawner {
 	/// Creates a spawner that knows the engine's kinds: `transform`, `name`, `mesh`, `directional_light`,
-	/// `point_light`, `cone_light`, `body`, `navigation_area`, and `hinge`.
+	/// `point_light`, `cone_light`, `lightmap`, `body`, `navigation_area`, and `hinge`.
 	///
-	/// A build without rendering ignores `mesh` and the lights, so a server spawns the same levels as its clients.
+	/// A build without rendering ignores `mesh`, the lights, and `lightmap`, so a server spawns the same levels as its
+	/// clients.
 	/// Next, register your application's kinds with [`Self::register`] or [`Self::register_with`].
 	pub fn with_engine_kinds() -> Self {
 		let mut spawner = Self::new();
@@ -37,9 +38,10 @@ impl Spawner {
 				.expect(DISTINCT);
 			spawner.register_with("point_light", rendering::point_light).expect(DISTINCT);
 			spawner.register_with("cone_light", rendering::cone_light).expect(DISTINCT);
+			spawner.register_with("lightmap", rendering::lightmap).expect(DISTINCT);
 		}
 		#[cfg(not(feature = "headed"))]
-		for kind in ["mesh", "directional_light", "point_light", "cone_light"] {
+		for kind in ["mesh", "directional_light", "point_light", "cone_light", "lightmap"] {
 			spawner.ignore(kind).expect(DISTINCT);
 		}
 		spawner
@@ -216,7 +218,7 @@ mod rendering {
 
 	use super::{Radians, positive};
 	use crate::rendering::{
-		ConeLight, DirectionalLight, LightColor, PhotometricIntensity, PointLight, RenderableMesh,
+		ConeLight, DirectionalLight, LightColor, Lightmap, PhotometricIntensity, PointLight, RenderableMesh,
 		mesh::generator::{BoxMeshGenerator, CapsuleMeshGenerator, SphereMeshGenerator},
 	};
 
@@ -384,6 +386,14 @@ mod rendering {
 		intensity: IntensityPayload,
 		#[serde(default)]
 		angular_radius: Option<f32>,
+	}
+
+	/// Turns the ID a `lightmap` kind names into the component that loads it.
+	pub(super) fn lightmap(resource_id: String) -> Result<Lightmap, String> {
+		if resource_id.is_empty() {
+			return Err("the lightmap ID is empty. Name the `.lightmap.bead` asset baked from this level".to_string());
+		}
+		Ok(Lightmap::new(resource_id))
 	}
 
 	pub(super) fn directional_light(light: DirectionalLightPayload) -> Result<DirectionalLight, String> {

@@ -42,6 +42,15 @@ pub struct Spawner {
 	kinds: HashMap<Cow<'static, str>, Box<dyn Kind>>,
 }
 
+/// Returns the handle a spawn gave entity `entity` of its level, from the handle `known` it gave entity `known_index`.
+///
+/// One spawn takes one run of handles, the level's root first and then each entity in baked order, so any entity's
+/// handle and spawn index find every other one's. Lightmaps use it to find the entities they light from the entity
+/// that holds their `lightmap` kind.
+pub fn level_entity_handle(known: Handle, known_index: u32, entity: u32) -> Handle {
+	Handle::from_id(known.id() - known_index + entity)
+}
+
 /// The `EntityRef` struct lets a kind's payload name another entity of the same level.
 ///
 /// Use it as a field of a payload type passed to [`Spawner::register_with`], and turn it into the entity's handle

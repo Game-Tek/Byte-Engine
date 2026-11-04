@@ -611,6 +611,7 @@ mod tests {
 			ssgi: true,
 			surfel_gi: true,
 			probe_gi: true,
+			baked_gi: true,
 			contact_shadows: true,
 			debug_views: true,
 			material_evaluation: MaterialEvaluationMode::Pipelines,

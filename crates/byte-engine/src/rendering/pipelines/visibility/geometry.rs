@@ -18,10 +18,13 @@ use resource_management::resources::skeleton::SkinBinding;
 use smallvec::SmallVec;
 use utils::RangeAllocator;
 
-pub(crate) use self::prepare::{GENERATED_MESH_MATERIAL, PreparedLevels, PreparedMesh, encode_octahedral_unit_vector};
+pub(crate) use self::prepare::{
+	GENERATED_MESH_MATERIAL, PreparedLevels, PreparedMesh, PreparedSurface, decode_octahedral_unit_vector,
+	encode_octahedral_unit_vector,
+};
 use super::layout::{
-	MAX_ADDRESSABLE_MESHLETS, MAX_INSTANCE_MESHLETS, RuntimeVertexNormal, RuntimeVertexUv, ShaderMeshletData,
-	VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
+	MAX_ADDRESSABLE_MESHLETS, MAX_INSTANCE_MESHLETS, RuntimeVertexLightmapUv, RuntimeVertexNormal, RuntimeVertexUv,
+	ShaderMeshletData, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE, VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
 };
 use super::lod::MeshLods;
 use crate::rendering::loading::{BufferRegion, Loader};
@@ -333,6 +336,8 @@ pub(crate) struct GeometryHandles {
 	/// Octahedrally encoded normals, two UNORM16 components each.
 	pub(crate) vertex_normals: ghi::BufferHandle<[RuntimeVertexNormal]>,
 	pub(crate) vertex_uvs: ghi::BufferHandle<[RuntimeVertexUv]>,
+	/// UNORM16 lightmap UVs, zero for vertices of primitives without them.
+	pub(crate) vertex_lightmap_uvs: ghi::BufferHandle<[RuntimeVertexLightmapUv]>,
 	/// Meshlet-local indices into the vertex buffers.
 	pub(crate) vertex_indices: ghi::BufferHandle<[u16]>,
 	/// Triangles as indices into `vertex_indices`.
@@ -388,6 +393,7 @@ impl GeometryHandles {
 			vertex_positions: context.build_buffer(build("Visibility Vertex Positions Buffer", geometry, vertices)),
 			vertex_normals: context.build_buffer(build("Visibility Vertex Normals Buffer", geometry, vertices)),
 			vertex_uvs: context.build_buffer(build("Visibility Vertex UV Buffer", geometry, vertices)),
+			vertex_lightmap_uvs: context.build_buffer(build("Visibility Vertex Lightmap UV Buffer", geometry, vertices)),
 			vertex_indices: context.build_buffer(build("Visibility Index Buffer", indices, vertex_indices)),
 			primitive_indices: context.build_buffer(build("Visibility Primitive Indices Buffer", indices, triangles)),
 			meshlets: context.build_buffer(build("Visibility Meshlets Data", storage, meshlets)),
@@ -418,6 +424,7 @@ impl GeometryBuffers {
 				vertex_positions: import(render, loader, handles.vertex_positions),
 				vertex_normals: import(render, loader, handles.vertex_normals),
 				vertex_uvs: import(render, loader, handles.vertex_uvs),
+				vertex_lightmap_uvs: import(render, loader, handles.vertex_lightmap_uvs),
 				vertex_indices: import(render, loader, handles.vertex_indices),
 				primitive_indices: import(render, loader, handles.primitive_indices),
 				meshlets: import(render, loader, handles.meshlets),
@@ -489,6 +496,11 @@ impl GeometryBuffers {
 				&streams.uvs,
 				self.handles.vertex_uvs.into(),
 				base_vertex as usize * VERTEX_UV_BUFFER_STRIDE as usize,
+			),
+			copy(
+				&streams.lightmap_uvs,
+				self.handles.vertex_lightmap_uvs.into(),
+				base_vertex as usize * VERTEX_LIGHTMAP_UV_BUFFER_STRIDE as usize,
 			),
 			copy(
 				&streams.vertex_indices,
@@ -589,8 +601,8 @@ impl GeometryBuffers {
 		}
 		let streams = &prepared.streams;
 		let handles = &self.handles;
-		// Six stream copies per primitive, reserved at once.
-		let mut copies = SmallVec::with_capacity(primitives.len() * 6);
+		// Seven stream copies per primitive, reserved at once.
+		let mut copies = SmallVec::with_capacity(primitives.len() * 7);
 		let mut ranges = handles.ranges.lock().unwrap_or_else(|error| error.into_inner());
 		for levels in primitives.iter_mut() {
 			let prepared = &prepared.primitives[levels.primitive as usize];
@@ -642,6 +654,13 @@ impl GeometryBuffers {
 					&elements.vertices,
 					VERTEX_UV_BUFFER_STRIDE as usize,
 					handles.vertex_uvs.into(),
+					block.vertices.start,
+				),
+				copy(
+					&streams.lightmap_uvs,
+					&elements.vertices,
+					VERTEX_LIGHTMAP_UV_BUFFER_STRIDE as usize,
+					handles.vertex_lightmap_uvs.into(),
 					block.vertices.start,
 				),
 				copy(

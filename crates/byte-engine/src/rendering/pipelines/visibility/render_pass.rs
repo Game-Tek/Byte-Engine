@@ -321,6 +321,9 @@ pub(crate) enum IndirectDiffuseSource {
 	Surfels,
 	/// Probe GI gathers ray-traced bounce light into cascades of irradiance probes around the camera.
 	Probes,
+	/// Lightmaps BELD baked from a level light the instances they cover; material evaluation reads them itself, so no
+	/// pass runs for them.
+	Baked,
 }
 
 impl IndirectDiffuseSource {
@@ -328,11 +331,13 @@ impl IndirectDiffuseSource {
 	/// frame, which is never zero.
 	///
 	/// Material evaluation adds the environment's diffuse light itself under SSGI, whose light holds only what its rays
-	/// hit, and not under surfel GI or probe GI, whose light holds the environment's light their rays reached.
+	/// hit, and not under surfel GI or probe GI, whose light holds the environment's light their rays reached. Under
+	/// lightmaps, a pixel reads its instance's lightmap instead of the SSGI images.
 	pub(crate) fn push_constant(self) -> u32 {
 		match self {
 			Self::ScreenSpace => 1,
 			Self::Surfels | Self::Probes => 2,
+			Self::Baked => 3,
 		}
 	}
 
@@ -342,6 +347,7 @@ impl IndirectDiffuseSource {
 			Self::ScreenSpace => ("ssgi", super::features::SSGI_ENABLED_PARAMETER),
 			Self::Surfels => ("surfels", super::features::SURFEL_GI_ENABLED_PARAMETER),
 			Self::Probes => ("probes", super::features::PROBE_GI_ENABLED_PARAMETER),
+			Self::Baked => ("baked", super::features::BAKED_GI_ENABLED_PARAMETER),
 		}
 	}
 
@@ -356,6 +362,7 @@ impl IndirectDiffuseSource {
 			Self::ScreenSpace => features.ssgi,
 			Self::Surfels => features.surfel_gi,
 			Self::Probes => features.probe_gi,
+			Self::Baked => features.baked_gi,
 		}
 	}
 }
@@ -363,7 +370,7 @@ impl IndirectDiffuseSource {
 /// The `GiSettings` struct holds the runtime global illumination controls the visibility pipeline manager applies to
 /// every frame: whether indirect diffuse light comes from a technique at all, and which one.
 ///
-/// `ssgi.enabled`, `surfel-gi.enabled`, and `probe-gi.enabled` only decide, at startup, which techniques the shaders
+/// `ssgi.enabled`, `surfel-gi.enabled`, `probe-gi.enabled`, and `baked-gi.enabled` only decide, at startup, which techniques the shaders
 /// carry; these settings pick among those. Next, pass them to the manager's indirect diffuse source choice each frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct GiSettings {
@@ -375,7 +382,7 @@ pub(crate) struct GiSettings {
 
 impl GiSettings {
 	/// Creates the controls of a project built with `features`: on, with SSGI when it is built in, then probe GI, then
-	/// surfel GI.
+	/// surfel GI, then lightmaps.
 	pub(crate) fn new(features: VisibilityFeatures) -> Self {
 		let technique = if features.ssgi {
 			IndirectDiffuseSource::ScreenSpace
@@ -383,6 +390,8 @@ impl GiSettings {
 			IndirectDiffuseSource::Probes
 		} else if features.surfel_gi {
 			IndirectDiffuseSource::Surfels
+		} else if features.baked_gi {
+			IndirectDiffuseSource::Baked
 		} else {
 			IndirectDiffuseSource::ScreenSpace
 		};
@@ -417,11 +426,12 @@ impl GiSettings {
 							IndirectDiffuseSource::ScreenSpace,
 							IndirectDiffuseSource::Surfels,
 							IndirectDiffuseSource::Probes,
+							IndirectDiffuseSource::Baked,
 						]
 						.into_iter()
 						.find(|technique| text.eq_ignore_ascii_case(technique.names().0))
 					})
-					.ok_or("GI technique was not set. The most likely cause is that the value is not `ssgi`, `surfels`, or `probes`. Set it to one of the three.")?;
+					.ok_or("GI technique was not set. The most likely cause is that the value is not `ssgi`, `surfels`, `probes`, or `baked`. Set it to one of the four.")?;
 				let (name, feature) = technique.names();
 				if !technique.built_in(features) {
 					return Err(format!(
@@ -845,7 +855,8 @@ impl VisibilityRenderPass {
 				(Some(_), ..) => Some(IndirectDiffuseSource::ScreenSpace),
 				(None, Some(_), _) => Some(IndirectDiffuseSource::Surfels),
 				(None, None, Some(_)) => Some(IndirectDiffuseSource::Probes),
-				(None, None, None) => None,
+				// Lightmaps need no pass: material evaluation reads them itself.
+				(None, None, None) => indirect_diffuse.filter(|source| *source == IndirectDiffuseSource::Baked),
 			},
 		};
 		let pixel_lists = self
@@ -1100,5 +1111,24 @@ mod tests {
 			.unwrap();
 		assert_eq!(probes.technique, IndirectDiffuseSource::Probes);
 		assert_eq!(effective, text("probes"));
+	}
+
+	#[test]
+	fn gi_technique_selects_lightmaps_only_when_they_are_built_in() {
+		let baked = VisibilityFeatures {
+			ssgi: false,
+			baked_gi: true,
+			..VisibilityFeatures::default()
+		};
+		assert_eq!(GiSettings::new(baked).technique, IndirectDiffuseSource::Baked);
+
+		let settings = GiSettings::new(VisibilityFeatures::default());
+		let (lightmaps, effective) = settings.with_parameter("technique", &text("Baked"), baked).unwrap();
+		assert_eq!(lightmaps.technique, IndirectDiffuseSource::Baked);
+		assert_eq!(effective, text("baked"));
+		let reason = settings
+			.with_parameter("technique", &text("baked"), VisibilityFeatures::default())
+			.unwrap_err();
+		assert!(reason.contains("`render.baked-gi.enabled`"), "{reason}");
 	}
 }

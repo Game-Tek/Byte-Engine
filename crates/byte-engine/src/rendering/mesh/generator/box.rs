@@ -5,6 +5,7 @@ use std::{
 };
 
 use maths_rs::Vec3f;
+use resource_management::processors::mesh::{LightmapUvSettings, place_lightmap_charts};
 
 use crate::rendering::{mesh::generator::MeshGenerator, renderable::mesh::MeshSource};
 
@@ -140,6 +141,30 @@ impl MeshGenerator for BoxMeshGenerator {
 				.flat_map(|(u, v)| [(0.0, 0.0), (u, 0.0), (u, v), (0.0, v)])
 				.collect(),
 		)
+	}
+
+	fn lightmap_uvs(&self) -> Option<Cow<'_, [(f32, f32)]>> {
+		let settings = LightmapUvSettings::default();
+		let (width, height, depth) = (self.size.x * 2.0, self.size.y * 2.0, self.size.z * 2.0);
+		// Each face is a chart in meters, in the face order `positions` uses: +Z, -Z, -Y, +Y, +X, -X.
+		let faces = [
+			[width, height],
+			[width, height],
+			[width, depth],
+			[width, depth],
+			[depth, height],
+			[depth, height],
+		];
+		let (placements, side) = place_lightmap_charts(&faces, settings);
+		Some(Cow::Owned(
+			faces
+				.iter()
+				.zip(placements)
+				.flat_map(|(&[u, v], placed)| {
+					[(0.0, 0.0), (u, 0.0), (u, v), (0.0, v)].map(|(x, y)| ((placed[0] + x) / side, (placed[1] + y) / side))
+				})
+				.collect(),
+		))
 	}
 
 	fn indices(&self) -> Cow<'_, [u32]> {

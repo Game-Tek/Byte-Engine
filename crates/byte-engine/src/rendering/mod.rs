@@ -19,6 +19,8 @@ pub mod common_shader_generator;
 
 mod environment;
 mod fog;
+mod lightmap;
+pub mod lightmaps;
 pub(crate) mod lookup_textures;
 
 /// Retained wireframe geometry for renderer and gameplay diagnostics.
@@ -69,6 +71,7 @@ pub use debug_views::{DebugViewCatalog, DebugViews, ShownDebugViews};
 pub use device::GraphicsDevice;
 pub use environment::Environment;
 pub use fog::{ExponentialHeightFog, FogLayer};
+pub use lightmap::Lightmap;
 pub use lights::{
 	ConeLight, DirectionalLight, IesProfile, Light, LightClasses, LightColor, LocalEmission, PhotometricError,
 	PhotometricIntensity, PointLight,

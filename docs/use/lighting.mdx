@@ -410,6 +410,88 @@ it also lights night scenes and interiors without a sun.
 	probe's light changes tenfold, which it takes at once.
 </Callout>
 
+### Light with baked lightmaps
+
+When a level's meshes and lights never move, bake its bounce light once instead
+of tracing it every frame. BELD path traces the level on the GPU and stores the
+light in a lightmap, an image every static mesh reads at full resolution, so
+bounce light costs one texture read per pixel. The renderer still draws direct
+light and its shadows, so a lightmap holds only the light that bounced.
+
+Baking traces rays, so it needs a GPU that supports ray tracing, on Metal or
+Vulkan. The application that reads the lightmap doesn't.
+
+1. Build baked lighting into the bake and select it in the project's
+   `config.json`:
+
+   ```json
+   {
+     "render": {
+       "baked-gi": { "enabled": true },
+       "gi": { "technique": "baked" }
+     }
+   }
+   ```
+
+   This also gives every unskinned mesh a second set of texture coordinates
+   that the lightmap uses. See
+   [Lightmap UVs](/docs/reference/assets#lightmap-uvs).
+
+2. Put the meshes and lights to bake in a [level](/docs/use/levels), and add an
+   entity with a `lightmap` component that names the lightmap asset:
+
+   ```json5
+   {
+     entities: [
+       { components: { mesh: { resource: "sponza/Sponza.gltf" } } },
+       {
+         components: {
+           transform: { orientation: [0.604, 0.302, 0, 0.738] },
+           directional_light: { color: { kelvin: 6000 }, intensity: { illuminance: { lux: 100000 } } },
+         },
+       },
+       { components: { lightmap: "sponza.lightmap.bead" } },
+     ],
+   }
+   ```
+
+3. Next to the level, write the lightmap asset, `sponza.lightmap.bead`. Name the
+   level, the environment whose sky lights the scene, and how many paths each
+   texel traces:
+
+   ```json5
+   {
+     $schema: "byte_engine/schemas/lightmap.bead.schema.json",
+     level: "sponza.level",
+     environment: "monochrome_studio_02_1k.environment.bead",
+     illuminance: 15000,
+     texel_density: 8,
+     samples: 256,
+     bounces: 3,
+   }
+   ```
+
+   More `samples` give smoother light and take longer to bake. A higher
+   `texel_density` gives sharper light and a larger image. The
+   [lightmap reference](/docs/reference/assets#lightmaps) lists every field and
+   the values it accepts.
+
+4. Bake again with `beld bake --force`. BELD bakes the level and everything it
+   draws first, then traces the lightmap and logs its progress. It warns about
+   each primitive that has no lightmap UVs and stays unlit.
+
+5. Start the application and spawn the level. Each mesh of the level that the
+   lightmap holds reads its light from it, and other meshes take their bounce
+   light from the environment.
+
+<Callout type="info" title="Lightmap limits">
+	A lightmap lights only what it was baked with: bake it again after you move
+	a mesh or a light, or change a material. Meshes that aren't in the level,
+	such as characters, get no bounce light from it. Masked and blended
+	materials, such as foliage and glass, don't block the light the bake traces,
+	and point and cone lights bounce without their IES profiles.
+</Callout>
+
 ## Add height fog
 
 Height fog fills the scene with mist that's thickest near the ground and thins out with altitude,
@@ -498,6 +580,8 @@ clear. Use `with_max_opacity` to keep a trace of distant surfaces visible throug
 - [`IesProfile`](/docs/api/latest/byte_engine/rendering)
 - [`Camera`](/docs/api/latest/byte_engine/rendering)
 - [`Environment`](/docs/api/latest/byte_engine/rendering)
+- [`Lightmap`](/docs/api/latest/byte_engine/rendering)
+- [`LightmapAssetHandler`](/docs/api/latest/byte_engine/rendering/lightmaps)
 - [`ExponentialHeightFog`](/docs/api/latest/byte_engine/rendering)
 - [`FogLayer`](/docs/api/latest/byte_engine/rendering)
 - [`LightColor`](/docs/api/latest/byte_engine/rendering)

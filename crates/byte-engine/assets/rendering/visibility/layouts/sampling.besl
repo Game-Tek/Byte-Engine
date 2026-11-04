@@ -1,0 +1,85 @@
+// Sampling helpers shared by the passes that trace rays: hashes that seed per-ray random numbers, a low-discrepancy
+// sequence, the orthonormal frame around a normal, and maps from the unit square to the disk and the hemisphere. Surfel
+// GI and the lightmap bake both use them.
+
+// The tangent and bitangent that make a hemisphere frame with its normal, in which the normal is z.
+Basis: struct {
+	tangent: vec3f,
+	bitangent: vec3f,
+}
+
+// Returns the hemisphere frame around `normal`, without a branch on the normal's direction (Duff et al., "Building an
+// Orthonormal Basis, Revisited", 2017).
+orthonormal_basis: fn (normal: vec3f) -> Basis {
+	let sign: f32 = step(0.0, normal.z) * 2.0 - 1.0;
+	let a: f32 = 0.0 - 1.0 / (sign + normal.z);
+	let b: f32 = normal.x * normal.y * a;
+	return Basis(
+		vec3f(1.0 + sign * normal.x * normal.x * a, sign * b, (0.0 - sign) * normal.x),
+		vec3f(b, sign + normal.y * normal.y * a, 0.0 - normal.y)
+	);
+}
+
+// Returns the direction around `normal` that `local` names in the frame of `basis`.
+basis_to_world: fn (basis: Basis, normal: vec3f, local: vec3f) -> vec3f {
+	return basis.tangent * local.x + basis.bitangent * local.y + normal * local.z;
+}
+
+// Maps a point of the unit square to a point of the unit disk, so equal areas map to equal areas: Shirley and Chiu's
+// concentric map, which keeps neighboring points of the square neighbors on the disk.
+square_to_disk: fn (point: vec2f) -> vec2f {
+	let a: f32 = point.x * 2.0 - 1.0;
+	let b: f32 = point.y * 2.0 - 1.0;
+	let radius: f32 = 0.0;
+	let angle: f32 = 0.0;
+	if (a * a > b * b) {
+		radius = a;
+		angle = 0.785398163397 * (b / a);
+	} else if (b != 0.0) {
+		radius = b;
+		angle = 1.57079632679 - 0.785398163397 * (a / b);
+	}
+	return vec2f(radius * cos(angle), radius * sin(angle));
+}
+
+// Maps a point of the unit square to a direction of the hemisphere around z with the cosine-weighted density: the
+// concentric map onto the unit disk, projected up onto the hemisphere (Malley's method). A low-discrepancy set of points
+// stays well spread over the hemisphere.
+square_to_cosine: fn (point: vec2f) -> vec3f {
+	let disk: vec2f = square_to_disk(point);
+	return vec3f(disk.x, disk.y, sqrt(max(0.0, 1.0 - dot(disk, disk))));
+}
+
+// Returns a well-mixed 32-bit hash of `value` (Bob Jenkins' one-at-a-time finalizer, as webgiya uses it).
+sample_hash: fn (value: u32) -> u32 {
+	let x: u32 = value;
+	x = x + (x << 10);
+	x = x ^ (x >> 6);
+	x = x + (x << 3);
+	x = x ^ (x >> 11);
+	x = x + (x << 15);
+	return x;
+}
+
+// Combines two values into one hash (a linear congruential step with Matsumoto tempering, as webgiya uses it).
+sample_hash_combine: fn (x: u32, y: u32) -> u32 {
+	let seed: u32 = (x * 1664525 + y + 1013904223) * 1664525;
+	seed = seed ^ (seed >> 11);
+	seed = seed ^ ((seed << 7) & 2636928640);
+	seed = seed ^ ((seed << 15) & 4022730752);
+	seed = seed ^ (seed >> 18);
+	return seed;
+}
+
+// Maps a hash to a uniform number in [0, 1).
+sample_unit: fn (hash: u32) -> f32 {
+	return f32(hash >> 8) / 16777216.0;
+}
+
+// Returns point `index` of the R2 low-discrepancy sequence ("The Unreasonable Effectiveness of Quasirandom Sequences",
+// Martin Roberts, 2018), shifted by a rotation that `seed` picks, so each sampler walks its own sequence. Consecutive
+// points spread evenly over the unit square however many a sampler takes. The steps are 1/g and 1/g² for the plastic
+// number g, as fractions of 2^32, so the sequence stays exact at any index.
+sample_r2: fn (index: u32, seed: u32) -> vec2f {
+	return vec2f(sample_unit(index * 3242174889 + seed), sample_unit(index * 2447445413 + sample_hash(seed)));
+}

@@ -236,6 +236,15 @@ impl StagingLease {
 			.offset
 	}
 
+	/// Returns shared CPU access to the persistently mapped region, to read back what was written into it before the
+	/// upload.
+	#[allow(unsafe_code)]
+	pub fn bytes(&self) -> &[u8] {
+		let region = self.region.as_ref().expect("Live staging leases retain their mapped region.");
+		// SAFETY: The region is exclusive to this lease, and the shared borrow excludes writes through it.
+		unsafe { std::slice::from_raw_parts(region.address as *const u8, region.byte_count) }
+	}
+
 	/// Returns exclusive CPU access to the persistently mapped region.
 	///
 	/// Finish all writes before handing the lease to the loader. The

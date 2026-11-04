@@ -21,6 +21,7 @@
 // weights that undo the guide for the light would scatter it around its value even where every ray hits, and
 // reflections it dims would leak into enclosed rooms.
 
+use ::byte_engine::rendering::visibility::layouts::sampling::*;
 use ::byte_engine::rendering::visibility::layouts::light_table::*;
 use ::byte_engine::rendering::visibility::layouts::surfel_gi::*;
 
@@ -173,7 +174,7 @@ main: fn (input: StageInput, surfel_gi_set: SurfelGi) -> void {
 	let depth: u32 = slot * SURFEL_DEPTH_CELLS;
 	let reach: f32 = 2.0 * surfel_gi_set.surfel_records[slot].radius;
 	let normal: vec3f = decode_surfel_normal(surfel_gi_set.surfel_records[slot].normal);
-	let basis: SurfelBasis = surfel_basis(normal);
+	let basis: Basis = orthonormal_basis(normal);
 	let sum: vec3f = vec3f(0.0, 0.0, 0.0);
 	let samples: f32 = 0.0;
 	// The rays the cosine-weighted distribution drew, and how many of them hit.
@@ -193,7 +194,7 @@ main: fn (input: StageInput, surfel_gi_set: SurfelGi) -> void {
 			if (hit == 0.0) {
 				let sky: vec4f = texture_lod(
 					surfel_gi_set.surfel_environment_radiance,
-					surfel_to_world(basis, normal, local),
+					basis_to_world(basis, normal, local),
 					SURFEL_SKY_LEVEL
 				);
 				found = vec3f(sky.x, sky.y, sky.z) * surfel_gi_set.surfel_parameters.environment_intensity;

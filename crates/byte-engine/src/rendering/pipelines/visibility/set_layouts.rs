@@ -159,6 +159,10 @@ mod tests {
 		assert_eq!(stride(&SCENE, "meshes"), size_of::<ShaderMesh>());
 		assert_eq!(stride(&SCENE, "meshlets"), size_of::<ShaderMeshletData>());
 		assert_eq!(stride(&SCENE, "materials"), size_of::<MaterialData>());
+		assert_eq!(
+			stride(&SCENE, "instance_lightmaps"),
+			size_of::<super::super::shader_data::InstanceLightmap>()
+		);
 		assert_eq!(stride(&MATERIAL_EVALUATION, "lighting_data"), size_of::<LightingData>());
 		assert_eq!(stride(&LIGHT_CLUSTERS, "lighting_data"), size_of::<LightingData>());
 		assert_eq!(stride(&FOG_LIGHT, "lighting_data"), size_of::<LightingData>());

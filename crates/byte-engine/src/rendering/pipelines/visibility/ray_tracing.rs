@@ -21,7 +21,7 @@ pub(super) const SURFEL_SHADE_SHADER: &str = "byte_engine/rendering/visibility/s
 /// The ray generation shader that shades probe hits.
 pub(super) const PROBE_SHADE_SHADER: &str = "byte_engine/rendering/visibility/probe-shade.besl";
 /// The closest-hit shader of hit group 0.
-const DEFAULT_HIT_SHADER: &str = "byte_engine/rendering/visibility/default-hit.besl";
+pub(crate) const DEFAULT_HIT_SHADER: &str = "byte_engine/rendering/visibility/default-hit.besl";
 /// The stem of [`SURFEL_SHADE_SHADER`], which a bake leaves out with the rest of surfel GI, and of
 /// [`PROBE_SHADE_SHADER`], which it leaves out with the rest of probe GI. They have no pipeline asset, because
 /// [`HitShading`] assembles the pipeline from them.
@@ -138,6 +138,14 @@ impl HitShading {
 			written: None,
 			record_groups: Vec::new(),
 		}
+	}
+
+	/// Returns whether the published pipeline holds every hit group added so far, so [`Self::prepare`] shades every
+	/// material with its own shader, or the default one where its shader failed.
+	///
+	/// The lightmap bake waits for it before it traces, since its paths shade every material at once.
+	pub(crate) fn settled(&self) -> bool {
+		self.published.is_some() && self.pending.is_none() && !self.request_outdated
 	}
 
 	/// Sets the hit group that hits on the material in `slot` run: `shader`'s, or the default one for `None`.

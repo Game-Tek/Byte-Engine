@@ -144,8 +144,9 @@ pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[
 	asset_manager.set_program_transform(CommonShaderGenerator::with_features(features));
 
 	asset_manager.add_asset_handler(BEMAAssetHandler);
-	asset_manager.add_asset_handler(FBXAssetHandler);
-	asset_manager.add_asset_handler(GLTFAssetHandler);
+	// Lightmaps bake at the meshes' lightmap UVs, so meshes get them only in a bake that builds lightmaps in.
+	asset_manager.add_asset_handler(FBXAssetHandler::default().with_lightmap_uvs(features.baked_gi));
+	asset_manager.add_asset_handler(GLTFAssetHandler::default().with_lightmap_uvs(features.baked_gi));
 	// PNG and EXR both handle `Image` sources and the asset manager picks the first match, so PNG must come first.
 	asset_manager.add_asset_handler(PNGAssetHandler::new());
 	asset_manager.add_asset_handler(IESAssetHandler::new());
@@ -161,6 +162,10 @@ pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[
 	asset_manager.add_asset_handler(OGGAssetHandler::new());
 	asset_manager.add_asset_handler(BESLShaderAssetHandler);
 	asset_manager.add_asset_handler(crate::animation::matching::MotionDatabaseAssetHandler);
+	// Only a project that builds baked GI in traces lightmaps, which needs a GPU that traces rays.
+	if features.baked_gi {
+		asset_manager.add_asset_handler(crate::rendering::lightmaps::LightmapAssetHandler);
+	}
 }
 
 /// Returns an image processor with GPU mip and environment-map generators, falling back to CPU generation for each one

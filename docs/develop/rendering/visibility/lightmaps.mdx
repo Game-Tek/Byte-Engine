@@ -1,0 +1,92 @@
+---
+title: Lightmaps
+description: Understand how BELD path traces a level's bounce light into a lightmap with the renderer's own code, and the rules a change to the bake must keep.
+icon: Sun
+---
+
+Read this page before you change the lightmap bake, its kernels, or how the
+visibility pipeline reads lightmaps. What a lightmap holds and how the renderer
+reads it are specified under [lightmaps](/docs/reference/assets#lightmaps) in
+the asset reference and [lightmaps](/docs/reference/rendering#lightmaps) in the
+rendering reference.
+
+The bake follows the GPU lightmappers of "Interactive Light Map and Irradiance
+Volume Preview in Frostbite" (Apers et al., Ray Tracing Gems, 2019) and Unity's
+progressive GPU lightmapper: a buffer of texels gives each path its first
+point, each hit adds the light of the scene's lights through a shadow ray,
+Russian roulette ends paths, samples accumulate over batches, and dilation
+fills the texels next to each chart. The first bounce is guided as in "Ray
+Guiding for Production Lightmap Baking" (Silvennoinen and Sloan, 2019).
+
+## How the bake runs
+
+`rendering/lightmaps/bake.rs` holds `LightmapAssetHandler`, which BELD runs for
+each `.lightmap.bead` file. It bakes the level and every mesh, material,
+environment, and shader the trace reads, then hands the rest to a thread of its
+own, because the trace blocks on the GPU.
+
+| Step | Code | What it does |
+| --- | --- | --- |
+| Level | `scene.rs` | Spawns the level into a world of its own with `Spawner::with_engine_kinds`, and collects its meshes, world transforms, lights, and the entity whose `lightmap` kind names the lightmap. |
+| Loading | `gpu.rs`, `BakeLoad` | A `LoadPipeline` on the engine's loading timeline. It prepares each mesh's full detail with `prepare_mesh_source` and `PreparedLevels::Finest`, reads its triangles back for the texel raster, and places it with `place_mesh`. It loads materials with `describe_material`, textures with `load_texture`, and the environment with `load_environment_maps`. |
+| Atlas | `atlas.rs` | Sizes a square per lit primitive from its area and places the squares with the row packer the lightmap UVs use, shrinking them until they fit. |
+| Texels | `texels.rs` | Rasterizes each primitive's triangles into its square on the CPU, and records each texel's point, normal, and offset. |
+| Guide groups | `guides.rs` | Groups texels that lie close together in world space and face alike, so they pool the paths that learn a guide. |
+| Scene | `gpu.rs`, `Bake::new` | Binds the meshes in a scene set made from `set_layouts::SCENE`, with material records from `MaterialData::describe`, parameter blocks from `MaterialParameters`, and lights from `light_data`. |
+| Structures | `SceneAccelerationStructures` | Builds each mesh's bottom level and places the instances, frame after frame, until every bottom level is built. |
+| Pipeline | `HitShading` | Requests the ray tracing pipeline of `lightmap-trace` with every material's closest-hit shader, and writes the shader binding table. The bake waits until it settles. |
+| Learning | `lightmap-trace.besl` | For the first eighth of the paths, one invocation per guide group traces its texels in cosine-weighted directions and sums each path's luminance into the guide cell its square point fell in. The group's last learning batch filters the cells and writes the guide's cumulative shares. |
+| Trace | `lightmap-trace.besl` | For the rest, one invocation per texel warps each path's R2 point through its group's guide and divides the path's light by the guide's density there, then adds the batch's light to the texel's sum. Batches stay under 16 million ray segments each, so a dispatch ends within the GPU's watchdog. |
+| Resolve and dilation | `lightmap-dilate.besl` | Pass 0 divides each texel's sum and its escaped first rays by the paths, and empties texels inside geometry, which a negative alpha marks; passes 1 through 8 fill the next ring of empty texels. |
+| Store | `bake.rs` | Stores the image as RGBA16F without mips, then the `Lightmap` resource that maps each primitive into it. |
+
+## Why the bake reuses the renderer
+
+A lightmap is only right when its texels line up with what the renderer draws,
+and when its paths hit the surfaces the renderer shades. So the bake prepares
+meshes with the visibility pipeline's preparation code, binds them in the
+renderer's own scene set, and shades its hits with the closest-hit shaders
+materials bake for surfel GI and probe GI. A change to the vertex streams, the
+scene set, or a material's hit shader then reaches the bake without a second
+implementation to keep in step.
+
+The same reasoning keeps the bake on the engine's loading timeline rather than
+loading resources itself: textures arrive staged or through native I/O exactly
+as they do in an application, and a future runtime lightmapper can start from
+the same pieces.
+
+## Rules a change must keep
+
+| Rule | Why |
+| --- | --- |
+| The bake and the renderer share mesh preparation, material records, light encoding, and mesh generators. | Texels and hits only line up when both read the same geometry and shade it the same way. |
+| The bake traces full detail. `PreparedLevels::Finest` keeps every primitive's level 0 and its flat triangles; the runtime keeps tracing the coarsest level. | The lightmap UVs belong to full detail, and the texels sit on its triangles. |
+| A lightmap holds indirect light only. The trace adds emission and direct light at its hits, never at the texel itself. | The renderer draws the texel's direct light and shadows; adding them twice would double them. |
+| A lightmap's alpha is the share of each texel's first rays that reach the environment, and material evaluation reads it as the hit fraction. | Without it, indoor surfaces reflect the environment unoccluded, which washes a lightmapped interior out as a bright gray veil. |
+| Lightmap UVs follow vertex order. Mesh processing writes them before vertex-cache optimization and level building, and preparation copies them per vertex. | Every level and every prepared stream indexes the same vertices. |
+| Kernels read parameters member by member from their binding, and use unsigned arithmetic. | The BESL VM, which the kernel tests run on, loads neither a whole struct from a binding nor a signed cast of an unsigned value. |
+| Every texel's random sequence starts from a hash that's never zero. | A zero rotation makes the first R2 point the square's corner, a direction that grazes the surface. |
+| A guided path divides its light, its escape, and its back-face hit by the guide's density, and a guide keeps a quarter of its density even. | The stored light, alpha, and inside-geometry test then estimate the same cosine-weighted values with or without guiding, and no path's light grows more than four times. |
+| A texel's first-bounce frame turns around its group's axis with `lightmap_texel_basis`, never `orthonormal_basis`. | `orthonormal_basis` flips where a normal's z crosses zero, which floors and walls lie on, so texels of one group would read the shared guide's cells in rotated frames. |
+| Learning runs one invocation per group, without atomics. | BESL has no float atomics, and per-texel cells would take 256 bytes a texel. The cost is that learning batches run about 1.6 times longer than guided ones, which is why only an eighth of the paths learn. |
+
+## Tests that guard the bake
+
+| Test | What it checks |
+| --- | --- |
+| `lightmaps::tests` | Runs the trace kernel in the BESL VM: a texel under an open sky holds the sky's radiance, a texel under an emissive ceiling holds its emission, a texel inside geometry counts back faces, and guided paths under a half-covered sky hold half its radiance and escape half the time. Runs the dilation kernel on a small image: the resolve averages paths and each pass fills one more ring. |
+| `lightmaps::scene::tests` | A level yields its meshes, lights, and lightmap holder by spawn index, and a level that doesn't name the lightmap fails. |
+| `lightmaps::atlas::tests`, `lightmaps::texels::tests`, `lightmaps::bead::tests` | The atlas's sizes and placement, the texel raster's coverage, and the asset's settings. |
+| `lightmaps::guides::tests` | Texels that lie close and face alike share a group, every texel has exactly one, and crowded cubes split at 32 texels. |
+| `processors::mesh::lightmap_uvs` tests in `resource-management` | Charts don't overlap and keep their gaps, and the shared packer keeps rectangles apart. |
+
+To measure a change to sampling, compare bakes against a reference of many
+more paths traced with other seeds: a reference that shares the bakes' R2
+sequences shares their first paths too, and flatters whichever bake matches
+it. With Sponza at three bounces, guiding reaches the root-mean-square error of cosine
+sampling in about two-thirds of the trace time.
+
+To check a bake end to end, run the model viewer's level scene: bake
+`sponza.lightmap.bead` with `render.baked-gi.enabled` set, then start the viewer
+with `viewer.scene` set to `sponza-level` and `render.gi.technique` set to
+`baked`.

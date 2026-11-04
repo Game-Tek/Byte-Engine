@@ -93,6 +93,7 @@ pub mod audio_graph;
 pub mod flipbook;
 pub mod image;
 pub mod level;
+pub mod lightmap;
 pub mod lut;
 pub mod material;
 pub mod mesh;

@@ -220,7 +220,7 @@ mod tests {
 
 		asset_manager.set_program_generator(MinimalTestShaderGenerator);
 
-		asset_manager.add_asset_handler(GLTFAssetHandler);
+		asset_manager.add_asset_handler(GLTFAssetHandler::default());
 
 		asset_manager
 	}
@@ -1393,8 +1393,8 @@ use super::{
 	ANIMATION_FRAGMENT_PREFIX, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, MATERIAL_FRAGMENT_PREFIX, ResourceId,
 	SKELETON_FRAGMENT, commit_mesh, generated_skeleton_id,
 	handler::{AssetHandler, BakeContext, LoadErrors},
-	mesh_lod_settings, missing_generated_material, names_generated_material, sanitize_material_name,
-	select_unfragmented_resource, store_imported_image, store_model,
+	mesh_settings, missing_generated_material, names_generated_material, sanitize_material_name, select_unfragmented_resource,
+	store_imported_image, store_model,
 };
 use crate::asset::handler::implementations::bema::{
 	GeneratedMaterial, MaterialSource, bead_material_override, resolve_container_materials,
@@ -1408,7 +1408,7 @@ use crate::{
 			ImageSource, METALLIC_ROUGHNESS_PACKING, Semantic, SourceChannels, SourceEncoding, channel_packing_for_semantic,
 			guess_semantic_from_name,
 		},
-		mesh::{MeshLodSettings, MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessorSession, VertexSkin},
+		mesh::{MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessorSession, MeshSettings, VertexSkin},
 	},
 	resources::{
 		ModelSpace,

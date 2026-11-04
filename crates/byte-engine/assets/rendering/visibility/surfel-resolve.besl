@@ -14,6 +14,7 @@
 // least covered pixel, and one despawn, of the heaviest surfel at its most covered pixel. Next, the allocate pass turns
 // the spawn requests into surfels.
 
+use ::byte_engine::rendering::visibility::layouts::sampling::*;
 use ::byte_engine::rendering::visibility::layouts::screen_view::*;
 use ::byte_engine::rendering::visibility::layouts::screen_trace::*;
 use ::byte_engine::rendering::visibility::layouts::light_table::*;
@@ -65,7 +66,7 @@ tile_axis_tangent: fn (screen_trace: ScreenTrace, center_index: u32, stride: u32
 
 // Returns a color that tells neighboring surfels apart in the surfels debug view.
 surfel_color: fn (slot: u32) -> vec3f {
-	let hash: u32 = surfel_hash(slot);
+	let hash: u32 = sample_hash(slot);
 	return vec3f(f32(hash & 255) / 255.0, f32((hash >> 8) & 255) / 255.0, f32((hash >> 16) & 255) / 255.0);
 }
 
@@ -249,8 +250,8 @@ main: fn (input: StageInput, screen_trace: ScreenTrace, surfel_gi_set: SurfelGi,
 
 		// A sparsely covered pixel may ask for a surfel, more likely the farther it lies, and SURFEL_RESOLVE_INTERVAL
 		// times as likely as it would every frame, since its tile asks only in the frames it gathers.
-		let random: f32 = surfel_unit(
-			surfel_hash_combine(surfel_hash_combine(pixel.x, surfel_hash(pixel.y)), surfel_gi_set.surfel_parameters.frame_index)
+		let random: f32 = sample_unit(
+			sample_hash_combine(sample_hash_combine(pixel.x, sample_hash(pixel.y)), surfel_gi_set.surfel_parameters.frame_index)
 		);
 		if (
 			second < SURFEL_SPAWN_SECOND_WEIGHT

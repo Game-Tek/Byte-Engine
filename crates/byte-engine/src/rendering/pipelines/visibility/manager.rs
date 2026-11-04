@@ -27,6 +27,7 @@ use super::layout::{
 	MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIAL_PARAMETERS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, NO_EVALUATION,
 	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT, VERTEX_UV_BUFFER_STRIDE,
 };
+use super::lightmaps::Lightmaps;
 use super::loader::{
 	MaterialEvaluator, ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent,
 };
@@ -46,7 +47,7 @@ use super::residency::MeshResidencies;
 use super::scene::{Instance, MaterialEvaluation, PosedVertices, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::set_layouts;
 use super::shader_data::{
-	IesProfileTexture, MESH_FLAG_DOUBLE_SIDED, MESH_FLAG_SKINNED, MaterialData, ShaderMesh, ShaderViewData,
+	IesProfileTexture, InstanceLightmap, MESH_FLAG_DOUBLE_SIDED, MESH_FLAG_SKINNED, MaterialData, ShaderMesh, ShaderViewData,
 };
 use super::shadow_selection::{
 	SHADOW_DEFAULT_EXPOSURE_SCALE, ShadowBudget, ShadowLayout, ShadowLightSelection, ShadowSlots, make_cone_shadow_view,
@@ -70,7 +71,8 @@ use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::renderable::mesh::MeshKey;
 use crate::rendering::{
-	Environment, PipelineManagerClient, RenderableMesh, Resource, SetMaterialParameter, ShownTransforms, Sink, UpdatePose, View,
+	Environment, Lightmap, PipelineManagerClient, RenderableMesh, Resource, SetMaterialParameter, ShownTransforms, Sink,
+	UpdatePose, View,
 };
 
 /// The startup parameters that set the local-light shadow pool capacities.
@@ -488,17 +490,21 @@ impl ResidentEnvironment {
 }
 
 /// Creates the opaque black environment sampled while no HDR environment is configured or its upload is pending.
-fn create_fallback_environment(context: &mut ghi::implementation::Context, sampler: ghi::SamplerHandle) -> ResidentEnvironment {
+pub(crate) fn create_fallback_environment(context: &mut ghi::implementation::Context, sampler: ghi::SamplerHandle) -> ResidentEnvironment {
 	let image = context.build_image(
 		ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
 			.name("Visibility Environment Fallback")
 			.extent(Extent::square(1))
+			// Materials sample the environment as a cubemap.
+			.cube_compatible()
 			.device_accesses(ghi::DeviceAccesses::HostToDevice)
 			.use_case(ghi::UseCases::STATIC),
 	);
 	// Opaque alpha keeps material evaluation on this black environment instead of the analytical fallback
 	// reserved for explicitly transparent environment texels.
-	context.get_texture_slice_mut(image).copy_from_slice(&[0, 0, 0, u8::MAX]);
+	for face in context.get_texture_slice_mut(image).chunks_exact_mut(4) {
+		face.copy_from_slice(&[0, 0, 0, u8::MAX]);
+	}
 	context.sync_texture(image);
 	ResidentEnvironment {
 		diffuse_image: image.into(),
@@ -686,6 +692,11 @@ pub struct VisibilityPipelineManager {
 	point_light_listener: DefaultListener<CreateMessage<PointLight>>,
 	mesh_listener: DefaultListener<CreateMessage<RenderableMesh>>,
 	environment_listener: DefaultListener<CreateMessage<Environment>>,
+	lightmap_listener: DefaultListener<CreateMessage<Lightmap>>,
+	/// The lightmap the world names, and where each lit primitive lies in it once it loaded.
+	lightmaps: Lightmaps,
+	/// The frame's instance lightmap records, by active instance, kept to reuse their allocation.
+	instance_lightmaps: Vec<InstanceLightmap>,
 	fog_listener: DefaultListener<CreateMessage<crate::rendering::ExponentialHeightFog>>,
 	/// The newest height fog, which each sink's fog light march lights.
 	fog: Option<crate::rendering::ExponentialHeightFog>,
@@ -834,6 +845,8 @@ impl VisibilityPipelineManager {
 		));
 		let views_buffer = context.build_dynamic_buffer(host_buffer("Visibility Views Data", ghi::Uses::Storage));
 		let meshes_buffer = context.build_dynamic_buffer(host_buffer("Visibility Meshes Data", ghi::Uses::Storage));
+		let instance_lightmaps_buffer =
+			context.build_dynamic_buffer(host_buffer("Visibility Instance Lightmaps", ghi::Uses::Storage));
 		let lighting_buffer =
 			context.build_dynamic_buffer(host_buffer("Light Data", ghi::Uses::Storage | ghi::Uses::TransferDestination));
 		let descriptor_set = set_layouts::SCENE.create_set(context, "Scene Descriptor Set");
@@ -893,6 +906,8 @@ impl VisibilityPipelineManager {
 			scene.buffer("materials", materials_buffer),
 			scene.buffer("material_evaluations", material_evaluations_buffer),
 			scene.buffer("material_parameters", material_parameters_buffer),
+			scene.buffer("vertex_lightmap_uvs", geometry.vertex_lightmap_uvs),
+			scene.buffer("instance_lightmaps", instance_lightmaps_buffer),
 		]);
 		Self {
 			loader,
@@ -904,6 +919,9 @@ impl VisibilityPipelineManager {
 			point_light_listener: world.factory::<PointLight>().listener(),
 			mesh_listener: world.factory::<RenderableMesh>().listener(),
 			environment_listener: world.factory::<Environment>().listener(),
+			lightmap_listener: world.factory::<Lightmap>().listener(),
+			lightmaps: Lightmaps::default(),
+			instance_lightmaps: Vec::with_capacity(MAX_INSTANCES),
 			fog_listener: world.factory::<crate::rendering::ExponentialHeightFog>().listener(),
 			fog: None,
 			pose_listener: world.channel::<UpdatePose>().listener(),
@@ -986,6 +1004,7 @@ impl VisibilityPipelineManager {
 				descriptor_set,
 				views_buffer,
 				meshes_buffer,
+				instance_lightmaps_buffer,
 				lighting_buffer,
 				render_info: Default::default(),
 				sink_states: Vec::new(),
@@ -1013,6 +1032,9 @@ impl VisibilityPipelineManager {
 			// A deleted renderable also drops the material parameters set on it.
 			self.remove_mesh_instance(handle);
 			self.material_parameters.forget_entity(handle);
+			if self.lightmaps.forget(handle) {
+				self.refresh_instance_lightmaps();
+			}
 		}
 	}
 
@@ -1139,6 +1161,21 @@ impl VisibilityPipelineManager {
 					materials_changed = true;
 				}
 				VisibilityLoaderEvent::TextureReady(texture) => materials_changed |= self.adopt_texture(frame, texture),
+				VisibilityLoaderEvent::LightmapReady(lightmap) => {
+					let texture = &lightmap.texture;
+					frame.write(&[set_layouts::SCENE.binder(self.scene.descriptor_set).sampled_element(
+						"textures",
+						texture.image,
+						texture.sampler,
+						texture.index,
+					)]);
+					if self
+						.lightmaps
+						.adopt(&lightmap.id, lightmap.holder, &lightmap.instances, texture.index)
+					{
+						self.refresh_instance_lightmaps();
+					}
+				}
 				VisibilityLoaderEvent::EnvironmentReady { id, environment } => {
 					if self.environment.requested.as_deref() == Some(id.as_str()) {
 						self.environment.bind(environment);
@@ -1170,6 +1207,13 @@ impl VisibilityPipelineManager {
 			if let Some(volume) = &self.probe_volume {
 				frame.write(&volume.environment_writes(self.environment.bound));
 			}
+		}
+	}
+
+	/// Gives every resident instance the rectangle the resident lightmap holds for it, after the lightmap changed.
+	fn refresh_instance_lightmaps(&mut self) {
+		for entity in self.scene.render_entities.iter_mut() {
+			entity.lightmap = self.lightmaps.instance(entity.handle, entity.primitive);
 		}
 	}
 
@@ -1236,18 +1280,13 @@ impl VisibilityPipelineManager {
 		for shading in [&mut self.surfel_shading, &mut self.probe_shading].into_iter().flatten() {
 			shading.set_material(index, hit_group.as_ref());
 		}
-		let material_data = &mut self.materials[index as usize];
-		if material_data.set_textures(textures.iter().copied()) {
+		let (record, overflow) = MaterialData::describe(&textures, coverage, alpha_mode);
+		if overflow {
 			warn!(
 				"Visibility material {id} has too many texture slots. The most likely cause is that the material shader expects more textures than the visibility material data supports."
 			);
 		}
-		material_data.coverage_factor = coverage.factor;
-		material_data.coverage_texture_slot = coverage.texture_slot.unwrap_or(u32::MAX);
-		material_data.alpha_cutoff = match alpha_mode {
-			AlphaMode::Mask(cutoff) => cutoff,
-			AlphaMode::Opaque | AlphaMode::Blend => 0.0,
-		};
+		self.materials[index as usize] = record;
 
 		let covered = self.covers(evaluation, alpha_mode);
 		let texture_indices = textures.into_iter().flatten().collect::<Vec<_>>();
@@ -1485,6 +1524,7 @@ impl VisibilityPipelineManager {
 				},
 				lods,
 				residency: self.mesh_residencies.slot(key, index as u32),
+				lightmap: self.lightmaps.instance(handle, index as u32),
 				skinning: primitive.skin.as_ref().map(|binding| RenderSkin {
 					binding: binding.clone(),
 					source_vertex_offset: primitive
@@ -1559,6 +1599,7 @@ impl VisibilityPipelineManager {
 		self.traced_primitives.clear();
 		let traces_rays = self.acceleration_structures.is_some();
 		let mesh_data = frame.get_mut_dynamic_buffer_slice(self.scene.meshes_buffer);
+		self.instance_lightmaps.clear();
 		// Every admitted entity pushes exactly one instance, so this counts the instances so far.
 		let mut active_index = 0;
 
@@ -1643,6 +1684,12 @@ impl VisibilityPipelineManager {
 				}
 			}
 			mesh_data[active_index] = shader_mesh;
+			// A posed skinned instance moved away from what its lightmap holds.
+			self.instance_lightmaps.push(if shader_mesh.flags & MESH_FLAG_SKINNED != 0 {
+				InstanceLightmap::NONE
+			} else {
+				entity.lightmap
+			});
 			if traces_rays {
 				self.traced_primitives.push(TracedPrimitive {
 					renderable: entity.handle,
@@ -1668,6 +1715,10 @@ impl VisibilityPipelineManager {
 			active_index += 1;
 		}
 		frame.sync_buffer(self.scene.meshes_buffer);
+		// The frame's buffers can't be borrowed together, so the instances' lightmaps gather first and copy once.
+		frame.get_mut_dynamic_buffer_slice(self.scene.instance_lightmaps_buffer)[..self.instance_lightmaps.len()]
+			.copy_from_slice(&self.instance_lightmaps);
+		frame.sync_buffer(self.scene.instance_lightmaps_buffer);
 		self.skinning_pass
 			.write_palettes(frame, &self.skinning_frame.matrices, &self.skinning_frame.dual_quaternions);
 		self.mesh_residencies
@@ -1796,6 +1847,13 @@ impl PipelineManager for VisibilityPipelineManager {
 		}
 		while let Some(message) = self.environment_listener.read() {
 			self.create_environment(message.into_data());
+		}
+		while let Some(message) = self.lightmap_listener.read() {
+			let holder = message.handle();
+			let lightmap = message.into_data();
+			if self.lightmaps.request(holder, lightmap.resource_id().into()) {
+				self.loader.request_lightmap(lightmap.resource_id().to_owned());
+			}
 		}
 	}
 
@@ -2247,6 +2305,18 @@ mod tests {
 				"{settings:?}, SSGI {ssgi}, surfel GI {surfel_gi}, probe GI {probe_gi}, ray tracing {ray_tracing}"
 			);
 		}
+
+		// Lightmaps were traced in the bake, so they light frames on a device that doesn't trace rays.
+		let baked = VisibilityFeatures {
+			baked_gi: true,
+			..VisibilityFeatures::default()
+		};
+		let lightmaps = gi(true, IndirectDiffuseSource::Baked);
+		assert_eq!(
+			indirect_diffuse_source(lightmaps, baked, false),
+			Some(IndirectDiffuseSource::Baked)
+		);
+		assert_eq!(indirect_diffuse_source(lightmaps, VisibilityFeatures::default(), true), None);
 	}
 
 	#[test]

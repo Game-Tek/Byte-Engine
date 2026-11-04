@@ -1,0 +1,240 @@
+// Traces one batch of paths from each lightmap texel and adds the light they bring back to the texel's sum.
+//
+// A path leaves the texel and follows the scene's surfaces: each hit runs the closest-hit shader of its material, which
+// reports the surface's albedo, emission, and shading normal, the same way the renderer's ray-traced techniques read
+// it. A front-face hit adds its emission and the direct light of the scene's lights times its albedo, then reflects in
+// a new cosine-weighted direction; from the path's second hit, Russian roulette ends it with a probability of one minus
+// its albedo's largest channel. A miss adds the environment's light. A path whose first hit is a back face counts
+// toward the texel lying inside geometry, and a path whose first ray misses counts toward the texel's view of the
+// environment, which the renderer occludes environment reflections with. The texel's own direct light isn't added: the
+// renderer draws it.
+//
+// The first direction is guided ("Ray Guiding for Production Lightmap Baking", Silvennoinen and Sloan, 2019). While a
+// texel traces its first `learning_samples` paths, the batch launches one invocation per guide group, which traces
+// every texel of the group in cosine-weighted directions and sums each path's luminance into the cell of the square its
+// direction mapped from. The group's last learning batch turns the sums into the guide's cumulative shares. Later
+// batches launch one invocation per texel, which warps each path's square point through its group's guide, so paths
+// leave toward the directions that brought back light, and divides the path's light by the guide's density there.
+// Warping the low-discrepancy point keeps the paths stratified.
+//
+// Each invocation owns its texels and its group, so its sums need no atomics. The bake follows the GPU lightmap bakers
+// of "Interactive Light Map and Irradiance Volume Preview in Frostbite" (Apers et al., Ray Tracing Gems, 2019).
+
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+use ::byte_engine::rendering::visibility::layouts::ray_traced_scene::*;
+use ::byte_engine::rendering::visibility::layouts::scene_lights::*;
+use ::byte_engine::rendering::visibility::layouts::sampling::*;
+use ::byte_engine::rendering::lightmaps::layouts::lightmap_bake::*;
+
+// Returns the cosine-weighted direction around `normal` that the point `point` of the unit square maps to, in the
+// frame of `basis`.
+lightmap_cosine_direction: fn (basis: Basis, normal: vec3f, point: vec2f) -> vec3f {
+	let local: vec3f = square_to_cosine(point);
+	return normalize(basis_to_world(basis, normal, local));
+}
+
+// Returns the hemisphere frame around a texel's `normal` whose tangent is square to the world axis `axis`. Unlike
+// `orthonormal_basis`, which flips where a normal's z crosses zero, it turns smoothly with the normal, so texels that
+// share a guide read its cells in frames that lie alike.
+lightmap_texel_basis: fn (normal: vec3f, axis: u32) -> Basis {
+	let reference: vec3f = vec3f(0.0, 0.0, 1.0);
+	if (axis == 0) {
+		reference = vec3f(1.0, 0.0, 0.0);
+	} else if (axis == 1) {
+		reference = vec3f(0.0, 1.0, 0.0);
+	}
+	let tangent: vec3f = normalize(cross(reference, normal));
+	return Basis(tangent, cross(normal, tangent));
+}
+
+// Returns the mean of the learning sums of cell `cell` of group `group` and of the cells around it.
+lightmap_guide_cell_mean: fn (lightmap_bake: LightmapBake, group: u32, cell: u32) -> f32 {
+	let base: u32 = group * LIGHTMAP_GUIDE_CELLS;
+	let x: u32 = cell % LIGHTMAP_GUIDE_SIDE;
+	let y: u32 = cell / LIGHTMAP_GUIDE_SIDE;
+	let sum: f32 = 0.0;
+	let count: f32 = 0.0;
+	// Neighbor `n` lies at (x + n % 3 - 1, y + n / 3 - 1); the sums below stay unsigned by adding the one first.
+	for (let neighbor: u32 = 0; neighbor < 9; neighbor = neighbor + 1) {
+		let column: u32 = x + neighbor % 3;
+		let row: u32 = y + neighbor / 3;
+		if (column >= 1 && row >= 1 && column <= LIGHTMAP_GUIDE_SIDE && row <= LIGHTMAP_GUIDE_SIDE) {
+			sum = sum + lightmap_bake.lightmap_guide_cells[base + (row - 1) * LIGHTMAP_GUIDE_SIDE + column - 1];
+			count = count + 1.0;
+		}
+	}
+	return sum / count;
+}
+
+// Turns the learning sums of group `group` into its guide: a share of each cell, an even part plus a part in proportion
+// to the cell's mean, written as the rows' cumulative shares and each row's cumulative shares of its cells.
+lightmap_build_guide: fn (lightmap_bake: LightmapBake, group: u32) -> void {
+	let total: f32 = 0.0;
+	for (let cell: u32 = 0; cell < LIGHTMAP_GUIDE_CELLS; cell = cell + 1) {
+		total = total + lightmap_guide_cell_mean(lightmap_bake, group, cell);
+	}
+	let even: f32 = 1.0 / f32(LIGHTMAP_GUIDE_CELLS);
+	let base: u32 = group * LIGHTMAP_GUIDE_STRIDE;
+	let rows: f32 = 0.0;
+	for (let y: u32 = 0; y < LIGHTMAP_GUIDE_SIDE; y = y + 1) {
+		let row_base: u32 = base + LIGHTMAP_GUIDE_SIDE + y * LIGHTMAP_GUIDE_SIDE;
+		let row: f32 = 0.0;
+		for (let x: u32 = 0; x < LIGHTMAP_GUIDE_SIDE; x = x + 1) {
+			// A group whose paths brought back no light keeps the even density.
+			let share: f32 = even;
+			if (total > 0.0) {
+				let mean: f32 = lightmap_guide_cell_mean(lightmap_bake, group, y * LIGHTMAP_GUIDE_SIDE + x);
+				share = LIGHTMAP_GUIDE_EVEN_SHARE * even + (1.0 - LIGHTMAP_GUIDE_EVEN_SHARE) * mean / total;
+			}
+			row = row + share;
+			lightmap_bake.lightmap_guides[row_base + x] = row;
+		}
+		for (let x: u32 = 0; x < LIGHTMAP_GUIDE_SIDE; x = x + 1) {
+			lightmap_bake.lightmap_guides[row_base + x] = lightmap_bake.lightmap_guides[row_base + x] / row;
+		}
+		rows = rows + row;
+		lightmap_bake.lightmap_guides[base + y] = rows;
+	}
+	for (let y: u32 = 0; y < LIGHTMAP_GUIDE_SIDE; y = y + 1) {
+		lightmap_bake.lightmap_guides[base + y] = lightmap_bake.lightmap_guides[base + y] / rows;
+	}
+}
+
+// Warps the point `point` of the unit square through the guide of group `group`: picks a row of cells by the rows'
+// shares, then a cell of the row by its shares, and keeps the point's place inside each. Returns the warped point in xy,
+// and in z the guide's density there relative to the even density.
+lightmap_guide_warp: fn (lightmap_bake: LightmapBake, group: u32, point: vec2f) -> vec3f {
+	let base: u32 = group * LIGHTMAP_GUIDE_STRIDE;
+	let side: f32 = f32(LIGHTMAP_GUIDE_SIDE);
+	// The shares only grow, so the row is how many of the first seven cumulative shares the point lies at or past.
+	let y: u32 = 0;
+	for (let row: u32 = 0; row + 1 < LIGHTMAP_GUIDE_SIDE; row = row + 1) {
+		if (point.y >= lightmap_bake.lightmap_guides[base + row]) {
+			y = row + 1;
+		}
+	}
+	let below_y: f32 = 0.0;
+	if (y > 0) {
+		below_y = lightmap_bake.lightmap_guides[base + y - 1];
+	}
+	let share_y: f32 = lightmap_bake.lightmap_guides[base + y] - below_y;
+	let row_base: u32 = base + LIGHTMAP_GUIDE_SIDE + y * LIGHTMAP_GUIDE_SIDE;
+	let x: u32 = 0;
+	for (let column: u32 = 0; column + 1 < LIGHTMAP_GUIDE_SIDE; column = column + 1) {
+		if (point.x >= lightmap_bake.lightmap_guides[row_base + column]) {
+			x = column + 1;
+		}
+	}
+	let below_x: f32 = 0.0;
+	if (x > 0) {
+		below_x = lightmap_bake.lightmap_guides[row_base + x - 1];
+	}
+	let share_x: f32 = lightmap_bake.lightmap_guides[row_base + x] - below_x;
+	return vec3f(
+		min((f32(x) + (point.x - below_x) / share_x) / side, 1.0),
+		min((f32(y) + (point.y - below_y) / share_y) / side, 1.0),
+		share_x * share_y * side * side
+	);
+}
+
+main: fn (input: StageInput, scene: Scene, ray_traced_scene: RayTracedScene, lights: SceneLights, lightmap_bake: LightmapBake) -> void {
+	let sample_offset: u32 = lightmap_bake.lightmap_parameters.sample_offset;
+	let learning_samples: u32 = lightmap_bake.lightmap_parameters.learning_samples;
+	let learning: bool = sample_offset < learning_samples;
+	// A learning invocation traces every texel of its group; a guided one traces its own texel.
+	let group: u32 = input.launch_index.x;
+	let first: u32 = input.launch_index.x;
+	let count: u32 = 1;
+	if (learning) {
+		if (group >= lightmap_bake.lightmap_parameters.group_count) {
+			return;
+		}
+		first = lightmap_bake.lightmap_groups[group].first;
+		count = lightmap_bake.lightmap_groups[group].count;
+	} else if (first >= lightmap_bake.lightmap_parameters.texel_count) {
+		return;
+	}
+	for (let member: u32 = first; member < first + count; member = member + 1) {
+		let texel_index: u32 = member;
+		if (learning) {
+			texel_index = lightmap_bake.lightmap_group_texels[member];
+		} else {
+			group = lightmap_bake.lightmap_texel_groups[texel_index];
+		}
+		let texel: LightmapTexel = lightmap_bake.lightmap_texels[texel_index];
+		let texel_basis: Basis = lightmap_texel_basis(texel.normal, lightmap_bake.lightmap_groups[group].axis);
+		let light_sum: vec3f = vec3f(0.0, 0.0, 0.0);
+		let backfaces: f32 = 0.0;
+		let escapes: f32 = 0.0;
+		for (let batch_sample: u32 = 0; batch_sample < lightmap_bake.lightmap_parameters.samples_per_batch; batch_sample = batch_sample + 1) {
+			let sample: u32 = sample_offset + batch_sample;
+			let origin: vec3f = texel.position + texel.normal * texel.offset;
+			// Each bounce walks its own R2 sequence, rotated per texel, so a texel's first directions spread over the
+			// hemisphere however few paths it traced. The rotation is a combined hash, never zero, so no texel's first
+			// point is the square's corner, which maps to a direction that grazes the surface.
+			let point: vec2f = sample_r2(sample, sample_hash_combine(texel_index, 0));
+			let weight: f32 = 1.0;
+			if (!learning && learning_samples > 0) {
+				let warped: vec3f = lightmap_guide_warp(lightmap_bake, group, point);
+				point = vec2f(warped.x, warped.y);
+				weight = 1.0 / warped.z;
+			}
+			let direction: vec3f = lightmap_cosine_direction(texel_basis, texel.normal, point);
+			let throughput: vec3f = vec3f(1.0, 1.0, 1.0);
+			let radiance: vec3f = vec3f(0.0, 0.0, 0.0);
+			for (let bounce: u32 = 0; bounce < lightmap_bake.lightmap_parameters.bounces; bounce = bounce + 1) {
+				let hit: Hit = intersect(ray_traced_scene.scene_structure, 255, origin, direction, 0.0, LIGHTMAP_RAY_LENGTH);
+				if (hit.distance < 0.0) {
+					if (bounce == 0) {
+						escapes = escapes + weight;
+					}
+					let sky: vec4f = texture_lod(lightmap_bake.lightmap_environment, direction, 0.0);
+					radiance = radiance + throughput * vec3f(sky.x, sky.y, sky.z) * lightmap_bake.lightmap_parameters.environment_intensity;
+					break;
+				}
+				let surface: HitSurface = invoke(
+					hit,
+					HitSurface(vec3f16(0.0, 0.0, 0.0), 0, vec3f(0.0, 0.0, 0.0), vec3f16(0.0, 0.0, 1.0))
+				);
+				if (surface.front_face == 0) {
+					if (bounce == 0) {
+						backfaces = backfaces + weight;
+					}
+					break;
+				}
+				let position: vec3f = hit.origin + hit.direction * hit.distance;
+				let normal: vec3f = normalize(vec3f(surface.normal));
+				let albedo: vec3f = vec3f(surface.albedo);
+				radiance = radiance + throughput * (
+					surface.emission
+					+ albedo * scene_direct_light(ray_traced_scene, lights, position, normal, LIGHTMAP_HIT_OFFSET, LIGHTMAP_RAY_LENGTH)
+				);
+				throughput = throughput * albedo;
+				let seed: u32 = sample_hash_combine(texel_index, bounce + 1);
+				if (bounce >= 1) {
+					let survival: f32 = max(max(albedo.x, albedo.y), albedo.z);
+					if (sample_unit(sample_hash_combine(seed, sample)) >= survival) {
+						break;
+					}
+					throughput = throughput * (1.0 / survival);
+				}
+				origin = position + normal * LIGHTMAP_HIT_OFFSET;
+				direction = lightmap_cosine_direction(orthonormal_basis(normal), normal, sample_r2(sample, seed));
+			}
+			if (learning) {
+				let cell_x: u32 = min(u32(point.x * f32(LIGHTMAP_GUIDE_SIDE)), LIGHTMAP_GUIDE_SIDE - 1);
+				let cell_y: u32 = min(u32(point.y * f32(LIGHTMAP_GUIDE_SIDE)), LIGHTMAP_GUIDE_SIDE - 1);
+				let cell: u32 = group * LIGHTMAP_GUIDE_CELLS + cell_y * LIGHTMAP_GUIDE_SIDE + cell_x;
+				lightmap_bake.lightmap_guide_cells[cell] = lightmap_bake.lightmap_guide_cells[cell] + dot(radiance, vec3f(0.2126, 0.7152, 0.0722));
+			}
+			light_sum = light_sum + radiance * weight;
+		}
+		let previous: vec4f = lightmap_bake.lightmap_accumulation[texel_index];
+		lightmap_bake.lightmap_accumulation[texel_index] = previous + vec4f(light_sum.x, light_sum.y, light_sum.z, backfaces);
+		lightmap_bake.lightmap_escapes[texel_index] = lightmap_bake.lightmap_escapes[texel_index] + escapes;
+	}
+	if (learning && sample_offset + lightmap_bake.lightmap_parameters.samples_per_batch >= learning_samples) {
+		lightmap_build_guide(lightmap_bake, group);
+	}
+}

@@ -316,6 +316,15 @@ impl<'a> BakeContext<'a> {
 			.map_err(|_| LoadErrors::FailedToProcess)
 	}
 
+	/// Returns a resource manager over the resources this bake stores, for a handler that reads its baked dependencies
+	/// through the runtime's own loading code, like a lightmap bake that loads the meshes and materials the renderer
+	/// draws.
+	///
+	/// Bake each dependency with [`Self::bake_dependency`] first: the manager only reads what is already stored.
+	pub fn resource_manager(&self) -> crate::ResourceManager {
+		crate::ResourceManager::new_shared(self.asset_manager.resource_storage_backend.clone())
+	}
+
 	/// Returns the ID of every source asset the asset storage can enumerate, for a handler that selects sources by
 	/// pattern, like a motion database's clips.
 	///

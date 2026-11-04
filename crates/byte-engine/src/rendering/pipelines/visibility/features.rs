@@ -24,6 +24,10 @@ pub const SURFEL_GI_ENABLED_PARAMETER: &str = "surfel-gi.enabled";
 /// The startup parameter, inside [`RENDER_PARAMETERS`], that builds probe GI into the project, so `gi.technique` can
 /// select it.
 pub const PROBE_GI_ENABLED_PARAMETER: &str = "probe-gi.enabled";
+/// The startup parameter, inside [`RENDER_PARAMETERS`], that builds lightmaps into the project: lightmap UVs in mesh
+/// bakes, closest-hit shaders for the lightmap bake, and lightmap reads in material evaluation, so `gi.technique` can
+/// select `baked`.
+pub const BAKED_GI_ENABLED_PARAMETER: &str = "baked-gi.enabled";
 /// The startup parameter, inside [`RENDER_PARAMETERS`], that builds contact shadows into the project. Its runtime
 /// value also turns them on and off.
 pub const CONTACT_SHADOWS_ENABLED_PARAMETER: &str = "contact-shadows.enabled";
@@ -80,8 +84,8 @@ pub(crate) const UBER_MATERIAL_SHADERS: [&str; 2] = [
 /// `if (push_constant.ssgi != 0) { ... }`, or for debug views any member starting with `debug_view_`, such as
 /// `if (parameters.debug_view_normals) { ... }`. The shader generators drop those statements for a left-out feature,
 /// so the bindings only they use are left out too.
-/// Code that serves every source of indirect diffuse light, SSGI, surfel GI, or probe GI, reads `indirect_diffuse` and
-/// stays while any of them is built in.
+/// Code that serves every source of indirect diffuse light, SSGI, surfel GI, probe GI, or lightmaps, reads
+/// `indirect_diffuse` and stays while any of them is built in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VisibilityFeatures {
 	/// Whether GTAO occlusion reaches material evaluation.
@@ -94,6 +98,8 @@ pub struct VisibilityFeatures {
 	/// Whether ray-traced probe global illumination reaches material evaluation, in place of SSGI on a device that
 	/// traces rays.
 	pub probe_gi: bool,
+	/// Whether lightmaps BELD bakes from levels reach material evaluation, and meshes bake the lightmap UVs they need.
+	pub baked_gi: bool,
 	/// Whether the sun visibility resolve multiplies in the contact-shadow trace.
 	pub contact_shadows: bool,
 	/// Whether passes can show their debug views; see [`crate::rendering::DebugViews`].
@@ -110,6 +116,7 @@ impl Default for VisibilityFeatures {
 			ssgi: true,
 			surfel_gi: false,
 			probe_gi: false,
+			baked_gi: false,
 			contact_shadows: true,
 			debug_views: cfg!(debug_assertions),
 			material_evaluation: MaterialEvaluationMode::default(),
@@ -142,6 +149,7 @@ impl VisibilityFeatures {
 			ssgi: built_in(SSGI_ENABLED_PARAMETER, defaults.ssgi),
 			surfel_gi: built_in(SURFEL_GI_ENABLED_PARAMETER, defaults.surfel_gi),
 			probe_gi: built_in(PROBE_GI_ENABLED_PARAMETER, defaults.probe_gi),
+			baked_gi: built_in(BAKED_GI_ENABLED_PARAMETER, defaults.baked_gi),
 			contact_shadows: built_in(CONTACT_SHADOWS_ENABLED_PARAMETER, defaults.contact_shadows),
 			debug_views: built_in(DEBUG_VIEWS_ENABLED_PARAMETER, defaults.debug_views),
 			material_evaluation: parameters
@@ -158,11 +166,17 @@ impl VisibilityFeatures {
 		self.surfel_gi || self.probe_gi
 	}
 
+	/// Returns whether materials need closest-hit shaders: a built-in technique traces rays at runtime, or the lightmap
+	/// bake traces them in BELD.
+	pub fn generates_hit_shaders(&self) -> bool {
+		self.traces_rays() || self.baked_gi
+	}
+
 	/// Returns each feature's shader member name, or a prefix of member names when it ends in `_`, the directory under
 	/// `byte_engine/rendering/` and the stems of the engine assets only it uses, and whether the project builds it in.
 	/// Each stem names a pipeline and its shader, or a shader the engine assembles a pipeline from, which takes a row of
 	/// its own.
-	fn table(&self) -> [(&'static str, &'static str, &'static [&'static str], bool); 12] {
+	fn table(&self) -> [(&'static str, &'static str, &'static [&'static str], bool); 13] {
 		use super::ray_tracing::{DEFAULT_HIT_SHADERS, PROBE_SHADING_SHADERS, SURFEL_SHADING_SHADERS};
 		use super::render_pass::{
 			CONTACT_SHADOW_PIPELINES, GTAO_PIPELINES, MATERIAL_PREPASS_PIPELINES, PROBE_GI_PIPELINES, RAY_HIT_PIPELINES,
@@ -175,16 +189,29 @@ impl VisibilityFeatures {
 			("surfel_gi", "visibility/", &SURFEL_SHADING_SHADERS, self.surfel_gi),
 			("probe_gi", "visibility/", &PROBE_GI_PIPELINES, self.probe_gi),
 			("probe_gi", "visibility/", &PROBE_SHADING_SHADERS, self.probe_gi),
-			// Every ray tracing pipeline runs the default closest hit for the materials whose own hit group it lacks, and
-			// both techniques sort their hits with the same pipelines.
-			("traces_rays", "visibility/", &DEFAULT_HIT_SHADERS, self.traces_rays()),
+			// Every ray tracing pipeline, the lightmap bake's included, runs the default closest hit for the materials whose
+			// own hit group it lacks, and both runtime techniques sort their hits with the same pipelines.
+			(
+				"traces_rays",
+				"visibility/",
+				&DEFAULT_HIT_SHADERS,
+				self.generates_hit_shaders(),
+			),
 			("traces_rays", "visibility/", &RAY_HIT_PIPELINES, self.traces_rays()),
 			// Material evaluation reads indirect diffuse light from the same images whichever source wrote them.
 			(
 				"indirect_diffuse",
 				"visibility/",
 				&[],
-				self.ssgi || self.surfel_gi || self.probe_gi,
+				self.ssgi || self.surfel_gi || self.probe_gi || self.baked_gi,
+			),
+			// Material evaluation reads lightmaps through the instance records, and BELD bakes them with the lightmap
+			// shaders.
+			(
+				"instance_lightmaps",
+				"lightmaps/",
+				&crate::rendering::lightmaps::LIGHTMAP_BAKE_SHADERS,
+				self.baked_gi,
 			),
 			(
 				"contact_shadows",
@@ -381,6 +408,7 @@ mod tests {
 			ssgi: false,
 			surfel_gi: false,
 			probe_gi: false,
+			baked_gi: false,
 			contact_shadows: false,
 			debug_views: false,
 			material_evaluation: MaterialEvaluationMode::Pipelines,

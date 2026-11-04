@@ -466,6 +466,7 @@ One source lights the indirect diffuse light of a frame's opaque surfaces:
 | --- | --- |
 | Surfel GI | `render.gi.enabled` is `true`, `render.gi.technique` is `surfels`, the device traces rays, and the surfel GI pipelines have compiled, the one that shades its rays included. |
 | Probe GI | `render.gi.enabled` is `true`, `render.gi.technique` is `probes`, the device traces rays, and the probe GI pipelines have compiled, the one that shades its rays included. |
+| Lightmaps | `render.gi.enabled` is `true`, `render.gi.technique` is `baked`, and `render.baked-gi.enabled` was `true` at startup. Each opaque pixel of an instance that a resident lightmap lights reads it; every other pixel is lit as under None. |
 | SSGI | `render.gi.enabled` is `true`, `render.ssgi.enabled` was `true` at startup, and either `render.gi.technique` is `ssgi`, or it's `surfels` or `probes` and that technique doesn't light the frame. |
 | None | None of them does. The environment alone lights indirect diffuse light, darkened by GTAO when it runs. |
 
@@ -473,11 +474,11 @@ One source lights the indirect diffuse light of a frame's opaque surfaces:
 | --- | --- |
 | Images | The source writes `SSGI History` and `SSGI Normals`, which material evaluation reads. Material evaluation writes `Diffuse Radiance History`, which SSGI rays read in the next frame, only in a frame that SSGI lights. |
 | SSGI history | SSGI reads its history only after a frame it lit at the same sink size. Its first frame after a frame it didn't light starts without history. |
-| Environment light | Material evaluation adds the environment's irradiance around each opaque pixel's normal, times the environment's intensity and the pixel's environment visibility: the smaller of one minus the source's hit fraction and GTAO's visibility, each when it ran. Under surfel GI or probe GI it adds none: their light holds the environment's light their rays reached. The environment visibility also dims the environment's reflections. |
-| Small-scale occlusion | Under surfel GI or probe GI, material evaluation multiplies the source's light at each opaque pixel by GTAO's visibility, when GTAO runs. |
+| Environment light | Material evaluation adds the environment's irradiance around each opaque pixel's normal, times the environment's intensity and the pixel's environment visibility: the smaller of one minus the source's hit fraction and GTAO's visibility, each when it ran. Under surfel GI or probe GI, and at a pixel a lightmap lights, it adds none: their light holds the environment's light their rays reached. The environment visibility also dims the environment's reflections. |
+| Small-scale occlusion | Under surfel GI or probe GI, and at a pixel a lightmap lights, material evaluation multiplies the source's light at each opaque pixel by GTAO's visibility, when GTAO runs. |
 | Surfels | At most `render.surfel-gi.surfel-capacity` surfels live at once, and they trace at most `render.surfel-gi.ray-budget` rays a frame. |
 | Probes | Probes trace at most `render.probe-gi.ray-budget` rays a frame, 128 for each probe they update. |
-| Baked shaders | Material shaders keep the indirect diffuse read while any source is built in, and the diffuse radiance write while SSGI is. |
+| Baked shaders | Material shaders keep the indirect diffuse read while any source is built in, the diffuse radiance write while SSGI is, and the lightmap read while lightmaps are. Materials have closest-hit shaders while surfel GI, probe GI, or lightmaps are built in. |
 
 ### Surfel GI
 
@@ -557,6 +558,28 @@ The first sink records the frame-wide probe stages, `probe-schedule`,
 `probe-trace`, and `probe-update`, after the surfel stages and before it draws
 the scene; every sink that probe GI lights reads the probes and marks them
 inside its `screen-space` stage.
+
+### Lightmaps
+
+A lightmap holds the indirect diffuse light of a level's static meshes, which
+BELD bakes from the level; [lightmaps](/docs/reference/assets#lightmaps) define
+what its texels hold. A spawned level's `lightmap` kind makes it resident.
+
+| Term | Definition |
+| --- | --- |
+| Lit instance | An instance of a primitive that the resident lightmap gives a rectangle, on an entity of the spawn whose `lightmap` kind names it, once both the lightmap and its image are loaded. |
+| Lightmap UV | The pixel's [lightmap UVs](/docs/reference/assets#lightmap-uvs), interpolated as its texture coordinates are, times the rectangle's scale, plus its offset. |
+
+| Rule | Value |
+| --- | --- |
+| Pixel light | Each opaque pixel of a lit instance reads the lightmap's full-size level at its lightmap UV, with bilinear filtering and clamped edges, at full resolution. Its light isn't pre-exposed. |
+| Hit fraction | One minus the lightmap's alpha at the pixel's lightmap UV. The lightmap's light replaces the environment's diffuse light, and the hit fraction occludes the environment's reflections as it does for the other sources. |
+| Movement | A lit instance keeps reading its rectangle when its entity moves. Bake the lightmap again after moving what it lights. |
+| Skinned primitives | Are never lit instances. |
+| Residency | One lightmap is resident at a time: a newer `lightmap` component replaces it, and deleting its entity removes it. |
+
+Lightmaps record no stages: material evaluation reads them inside its
+`material-evaluation` stage.
 
 ### Ray-traced scene
 

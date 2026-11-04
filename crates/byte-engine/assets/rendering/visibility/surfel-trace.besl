@@ -15,6 +15,7 @@
 // Next, the sort orders the hits by material, so the shade pass runs each material's closest-hit shader for a run of
 // hits side by side.
 
+use ::byte_engine::rendering::visibility::layouts::sampling::*;
 use ::byte_engine::rendering::visibility::layouts::scene_records::*;
 use ::byte_engine::rendering::visibility::layouts::scene::*;
 use ::byte_engine::rendering::visibility::layouts::ray_traced_scene::*;
@@ -37,9 +38,9 @@ main: fn (input: StageInput, scene: Scene, ray_traced_scene: RayTracedScene, sur
 	let sample: u32 = ray_record >> SURFEL_SLOT_BITS;
 	let surfel: SurfelRecord = surfel_gi_set.surfel_records[slot];
 	let normal: vec3f = decode_surfel_normal(surfel.normal);
-	let seed: u32 = surfel_hash_combine(surfel_hash_combine(slot, surfel_gi_set.surfel_parameters.frame_index), sample);
-	let jitter_seed: u32 = surfel_hash(seed);
-	let jitter: vec2f = vec2f(surfel_unit(jitter_seed), surfel_unit(surfel_hash(jitter_seed)));
+	let seed: u32 = sample_hash_combine(sample_hash_combine(slot, surfel_gi_set.surfel_parameters.frame_index), sample);
+	let jitter_seed: u32 = sample_hash(seed);
+	let jitter: vec2f = vec2f(sample_unit(jitter_seed), sample_unit(sample_hash(jitter_seed)));
 
 	let guide: u32 = slot * SURFEL_GUIDE_CELLS;
 	let mass: f32 = surfel_gi_set.surfel_irradiance[slot].guide_mass;
@@ -52,10 +53,10 @@ main: fn (input: StageInput, scene: Scene, ray_traced_scene: RayTracedScene, sur
 	let point: vec2f = vec2f(0.0, 0.0);
 	let local: vec3f = vec3f(0.0, 0.0, 1.0);
 	let guided: u32 = 0;
-	if (surfel_unit(seed) < share) {
+	if (sample_unit(seed) < share) {
 		guided = SURFEL_RAY_GUIDED;
 		// The cell whose run of the guide's cumulative weights holds the target.
-		let target: f32 = surfel_unit(surfel_hash(surfel_hash(jitter_seed))) * mass;
+		let target: f32 = sample_unit(sample_hash(sample_hash(jitter_seed))) * mass;
 		let cell: u32 = SURFEL_GUIDE_CELLS - 1;
 		for (let candidate: u32 = 0; candidate < SURFEL_GUIDE_CELLS; candidate = candidate + 1) {
 			let weight: f32 = max(0.0, f32(surfel_gi_set.surfel_guides[guide + candidate]));
@@ -71,7 +72,7 @@ main: fn (input: StageInput, scene: Scene, ray_traced_scene: RayTracedScene, sur
 		);
 		local = surfel_square_to_hemisphere(point);
 	} else {
-		local = surfel_square_to_cosine(surfel_r2(u32(received) + sample, surfel_hash(slot)));
+		local = square_to_cosine(sample_r2(u32(received) + sample, sample_hash(slot)));
 		point = surfel_hemisphere_to_square(local);
 	}
 	// Each guide cell spans 2π / 64 steradians, so a direction in a cell has the cell's share of the guide over that.
@@ -87,7 +88,7 @@ main: fn (input: StageInput, scene: Scene, ray_traced_scene: RayTracedScene, sur
 		weight = cosine_density / density;
 	}
 
-	let direction: vec3f = surfel_to_world(surfel_basis(normal), normal, local);
+	let direction: vec3f = basis_to_world(orthonormal_basis(normal), normal, local);
 	let origin: vec3f = surfel.position + normal * surfel_ray_offset(surfel.radius);
 	let hit: Hit = intersect(ray_traced_scene.scene_structure, 255, origin, direction, 0.0, SURFEL_RAY_LENGTH);
 	let packed_point: u32 = surfel_pack_square(point);

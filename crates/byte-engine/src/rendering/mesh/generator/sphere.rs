@@ -4,6 +4,7 @@ use std::{
 };
 
 use maths_rs::{Vec3f, Vec4f, cross, normalize};
+use resource_management::processors::mesh::{LightmapUvSettings, inset_lightmap_uv};
 
 use crate::rendering::{mesh::generator::MeshGenerator, renderable::mesh::MeshSource};
 
@@ -137,6 +138,20 @@ impl MeshGenerator for SphereMeshGenerator {
 			"Sphere meshlet index exceeds u8. The most likely cause is increasing sphere tessellation without widening meshlet indices."
 		);
 		Some(Cow::Owned(self.indices().iter().map(|index| *index as u8).collect()))
+	}
+
+	fn lightmap_uvs(&self) -> Option<Cow<'_, [(f32, f32)]>> {
+		// The latitude-longitude UVs already form one chart without overlaps, which the border moves off the edges.
+		let settings = LightmapUvSettings::default();
+		Some(Cow::Owned(
+			self.uvs()
+				.iter()
+				.map(|&(u, v)| {
+					let [u, v] = inset_lightmap_uv([u, v], settings);
+					(u, v)
+				})
+				.collect(),
+		))
 	}
 
 	fn uvs(&self) -> Cow<'_, [(f32, f32)]> {

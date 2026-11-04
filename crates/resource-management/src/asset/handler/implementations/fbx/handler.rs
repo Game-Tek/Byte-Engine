@@ -90,9 +90,22 @@ async fn resolve_animation_skeleton(
 ///
 /// Generated materials target the asset manager's
 /// [`ProgramGenerator`](crate::asset::handler::implementations::ProgramGenerator).
-pub struct FBXAssetHandler;
+#[derive(Default)]
+pub struct FBXAssetHandler {
+	lightmap_uvs: bool,
+}
 
 impl FBXAssetHandler {
+	/// Returns this handler set to give every unskinned primitive lightmap UVs when `enabled`, unless the model's BEAD
+	/// file sets `lightmap_uvs.enabled` to `false`.
+	///
+	/// The engine's default bake configuration enables it when the bake builds in baked GI, so lightmaps can bake
+	/// the model's meshes.
+	pub fn with_lightmap_uvs(mut self, enabled: bool) -> Self {
+		self.lightmap_uvs = enabled;
+		self
+	}
+
 	/// Bakes one texture of an FBX as its own image resource.
 	///
 	/// Materials request these as dependencies, so the scene is parsed without geometry or animation data. `spec` is
@@ -258,9 +271,9 @@ impl AssetHandler for FBXAssetHandler {
 		// Geometry doesn't depend on material contents, so it is processed while the material textures and shaders
 		// bake on the worker pool, and the resolved materials are attached when the mesh is committed.
 		let material_keys = used_material_keys(&scene, allocator);
-		let lods = mesh_lod_settings(spec.as_ref()).map_err(|error| {
+		let settings = mesh_settings(spec.as_ref(), self.lightmap_uvs).map_err(|error| {
 			context.error(format_args!(
-				"Failed to read FBX detail level settings '{}': {error}. The most likely cause is a mistyped `lods` object in the asset's BEAD file.",
+				"Failed to read FBX mesh settings '{}': {error}. The most likely cause is a mistyped `lods` or `lightmap_uvs` object in the asset's BEAD file.",
 				url.as_ref()
 			));
 			LoadErrors::FailedToProcess
@@ -276,7 +289,7 @@ impl AssetHandler for FBXAssetHandler {
 					&source_to_skeleton,
 					allocator,
 					&mut culled_polygons,
-					lods,
+					settings,
 				)
 			},
 		)

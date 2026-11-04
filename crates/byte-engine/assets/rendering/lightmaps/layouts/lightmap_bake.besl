@@ -1,0 +1,93 @@
+// The set of the lightmap bake: the texels it traces paths from, the light their paths bring back, and the image
+// dilation fills. `rendering/lightmaps/gpu.rs` fills it; the trace pass and the dilate pass read it.
+
+// How far a path's rays reach, in meters.
+LIGHTMAP_RAY_LENGTH: const f32 = 10000.0;
+// How far along its normal a path leaves a hit, and a shadow ray leaves it, in meters.
+LIGHTMAP_HIT_OFFSET: const f32 = 0.002;
+// A texel where more than this share of paths first hit a back face lies inside geometry, and holds no light.
+LIGHTMAP_BACKFACE_SHARE: const f32 = 0.1;
+// The image texel of a texel no triangle crosses.
+NO_LIGHTMAP_TEXEL: const u32 = 4294967295;
+// The cells along each side of a guide's square, which cosine-weighted directions map from.
+LIGHTMAP_GUIDE_SIDE: const u32 = 8;
+// The cells of a guide.
+LIGHTMAP_GUIDE_CELLS: const u32 = 64;
+// The values of a guide: the cumulative share of each row of cells, then each row's cumulative shares of its cells.
+LIGHTMAP_GUIDE_STRIDE: const u32 = 72;
+// The share of a guide's density spread evenly over its square, which bounds how much a guided path's light grows.
+LIGHTMAP_GUIDE_EVEN_SHARE: const f32 = 0.25;
+
+// The settings of one batch of paths, or one pass of the dilation, uploaded by the CPU as `LightmapBakeParameters`.
+LightmapBakeParameters: struct {
+	// The texels the trace launches over.
+	texel_count: u32,
+	// The paths each texel traced before this batch, which seed this batch's random numbers.
+	sample_offset: u32,
+	// The paths each texel traces in this batch.
+	samples_per_batch: u32,
+	// The paths each texel traces in all, which the resolve divides by.
+	samples: u32,
+	// The most surfaces a path hits.
+	bounces: u32,
+	// Scales the environment's light, as the world environment's illuminance does.
+	environment_intensity: f32,
+	// The image's side, in texels.
+	extent: u32,
+	// The dilation pass: 0 resolves the paths' light into the image, then each pass fills the next ring of empty
+	// texels, odd passes from the image into the dilated copy and even ones back.
+	pass: u32,
+	// The paths each texel traces in cosine-weighted directions before its group's guide is built. A batch that starts
+	// before them launches over the groups, and one that starts at or after them over the texels.
+	learning_samples: u32,
+	// The guide groups the trace launches over while it learns.
+	group_count: u32,
+}
+
+// A group of texels that share a guide: a run of `lightmap_group_texels`.
+LightmapGuideGroup: struct {
+	first: u32,
+	count: u32,
+	// The world axis, 0 through 2 for x through z, that its texels' hemisphere frames turn around, so the frames of
+	// texels that face nearly alike lie nearly alike, and the guide's cells point the same way for each of them.
+	axis: u32,
+}
+
+// One texel the bake traces paths from.
+LightmapTexel: struct {
+	// Where the paths leave from, on the surface.
+	position: vec3f,
+	// The texel's index in the image, row after row.
+	pixel: u32,
+	// The surface's face normal, turned to the side the lightmap lights.
+	normal: vec3f,
+	// How far above the surface the paths leave from: a quarter of a texel's width.
+	offset: f32,
+}
+
+LightmapBake: layer {
+	lightmap_parameters: descriptor<{ type: LightmapBakeParameters, binding: 0, access: read }>;
+	lightmap_texels: descriptor<{ type: LightmapTexel[], binding: 1, access: read, memory: device }>;
+	// Per traced texel: the sum of its paths' light in RGB, and how many first hit a back face in alpha.
+	lightmap_accumulation: descriptor<{ type: vec4f[], binding: 2, access: read_write, memory: device }>;
+	// The environment's light, as the roughness-prefiltered specular levels of the world environment.
+	lightmap_environment: descriptor<{ type: TextureCube, binding: 3, access: read }>;
+	// Per image texel: the traced texel it holds, or NO_LIGHTMAP_TEXEL.
+	lightmap_texel_indices: descriptor<{ type: u32[], binding: 4, access: read, memory: device }>;
+	// Per image texel: irradiance over π in RGB, and in alpha the share of the texel's paths whose first ray reached
+	// the environment, or -1 where the texel holds no light.
+	lightmap_light: descriptor<{ type: vec4f[], binding: 5, access: read_write, memory: device }>;
+	lightmap_dilated: descriptor<{ type: vec4f[], binding: 6, access: read_write, memory: device }>;
+	// Per traced texel: how many of its paths' first rays reached the environment, each counted as a guided path's
+	// light is.
+	lightmap_escapes: descriptor<{ type: f32[], binding: 7, access: read_write, memory: device }>;
+	// The groups of texels that share a guide, and their texels, group after group.
+	lightmap_groups: descriptor<{ type: LightmapGuideGroup[], binding: 8, access: read, memory: device }>;
+	lightmap_group_texels: descriptor<{ type: u32[], binding: 9, access: read, memory: device }>;
+	// Per traced texel: its group.
+	lightmap_texel_groups: descriptor<{ type: u32[], binding: 10, access: read, memory: device }>;
+	// Per group, LIGHTMAP_GUIDE_CELLS sums of its learning paths' luminance, row after row.
+	lightmap_guide_cells: descriptor<{ type: f32[], binding: 11, access: read_write, memory: device }>;
+	// Per group, its guide's LIGHTMAP_GUIDE_STRIDE cumulative shares.
+	lightmap_guides: descriptor<{ type: f32[], binding: 12, access: read_write, memory: device }>;
+}

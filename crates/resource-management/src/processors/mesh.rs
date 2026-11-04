@@ -1,21 +1,35 @@
+mod lightmap_uvs;
 mod lod;
 mod packing;
 mod source;
 mod validation;
 
+pub use lightmap_uvs::{LightmapUvSettings, inset_lightmap_uv, place_lightmap_charts, place_lightmap_rectangles};
 pub use lod::MeshLodSettings;
 pub(crate) use packing::MESHLET_STREAM_STRIDE;
 pub use packing::{MeshPrimitiveProcessingError, MeshProcessorSession, ProcessedMesh};
 pub use source::{MeshPrimitiveSource, VertexSkin};
 pub use validation::MeshProcessingError;
 
+/// The `MeshSettings` struct gathers what an asset chooses about how mesh processing bakes its primitives.
+///
+/// Pass it to [`MeshProcessorSession::new`]. The default suits most meshes and leaves lightmap UVs out; an asset
+/// overrides it through the `lods` and `lightmap_uvs` keys of its BEAD file.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MeshSettings {
+	/// How many coarser detail levels each primitive gets.
+	pub lods: MeshLodSettings,
+	/// The lightmap UVs each unskinned primitive gets, or `None` to leave the `Vertex.LightmapUV` stream out.
+	pub lightmap_uvs: Option<LightmapUvSettings>,
+}
+
 #[cfg(test)]
 mod tests {
 	use std::convert::Infallible;
 
 	use super::{
-		MeshLodSettings, MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError, MeshProcessorSession,
-		ProcessedMesh, VertexSkin, packing::MESHLET_STREAM_STRIDE,
+		LightmapUvSettings, MeshLodSettings, MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError,
+		MeshProcessorSession, MeshSettings, ProcessedMesh, VertexSkin, packing::MESHLET_STREAM_STRIDE,
 	};
 	use crate::{
 		ReferenceModel,
@@ -41,7 +55,7 @@ mod tests {
 			Vec::new(),
 		)
 		.unwrap();
-		let mut session = MeshProcessorSession::new(layout, None, Vec::new(), MeshLodSettings::default()).unwrap();
+		let mut session = MeshProcessorSession::new(layout, None, Vec::new(), MeshSettings::default()).unwrap();
 		session
 			.push_primitive(&TestPrimitive::triangle().with_normals().with_uvs())
 			.unwrap();
@@ -73,7 +87,7 @@ mod tests {
 			vec![VertexComponent::canonical(VertexSemantics::Position)],
 			None,
 			Vec::new(),
-			MeshLodSettings::default(),
+			MeshSettings::default(),
 		)
 		.unwrap();
 		for slot in [2, 1, 0] {
@@ -257,7 +271,7 @@ mod tests {
 		let duplicate = [VertexSemantics::UV, VertexSemantics::UV]
 			.map(VertexComponent::canonical)
 			.to_vec();
-		let error = MeshProcessorSession::new(duplicate, None, Vec::new(), MeshLodSettings::default())
+		let error = MeshProcessorSession::new(duplicate, None, Vec::new(), MeshSettings::default())
 			.err()
 			.expect("duplicate layout should fail");
 		assert_eq!(error, MeshProcessingError::DuplicateVertexSemantic(VertexSemantics::UV));
@@ -362,12 +376,15 @@ mod tests {
 		let level_count = |processed: ProcessedMesh| processed.mesh.primitives[0].lods.len();
 		let position_layout = || vec![VertexComponent::canonical(VertexSemantics::Position)];
 		let limited_to = |max_levels| {
-			let settings = MeshLodSettings {
-				max_levels,
-				..MeshLodSettings::default()
+			let settings = MeshSettings {
+				lods: MeshLodSettings {
+					max_levels,
+					..MeshLodSettings::default()
+				},
+				..MeshSettings::default()
 			};
 			let grid = [TestPrimitive::wavy_grid(32)];
-			level_count(process_with_lods(position_layout(), &grid, None, Vec::new(), settings).unwrap())
+			level_count(process_with(position_layout(), &grid, None, Vec::new(), settings).unwrap())
 		};
 
 		assert_eq!(
@@ -380,6 +397,86 @@ mod tests {
 		let grid = TestPrimitive::wavy_grid(32);
 		let skin = vec![valid_vertex_skin(); grid.positions.len()];
 		assert_eq!(level_count(process_skinned(grid.with_skin(0, skin)).unwrap()), 1);
+	}
+
+	#[test]
+	fn lightmap_uvs_follow_every_level_and_keep_each_vertex_attributes() {
+		let layout = vec![
+			VertexComponent::canonical(VertexSemantics::Position),
+			VertexComponent::canonical(VertexSemantics::UV),
+		];
+		let mut grid = TestPrimitive::wavy_grid(32);
+		// Each authored UV is its vertex's x and y, so a split vertex shows whether its attributes followed it.
+		grid.uvs = Some(grid.positions.iter().map(|position| [position[0], position[1]]).collect());
+		let triangles = grid.indices.len() / 3;
+		let settings = MeshSettings {
+			lightmap_uvs: Some(LightmapUvSettings::default()),
+			..MeshSettings::default()
+		};
+		let processed = process_with(layout, &[grid], None, Vec::new(), settings).unwrap();
+		let primitive = &processed.mesh.primitives[0];
+
+		assert!(primitive.lods.len() > 1, "lightmap UVs keep coarser levels");
+		assert_eq!(
+			stream_bytes(&processed, Streams::Indices(IndexStreamTypes::Triangles), 0).len(),
+			triangles * 3 * size_of::<u16>()
+		);
+		let floats = |bytes: &[u8]| {
+			bytes
+				.as_chunks::<4>()
+				.0
+				.iter()
+				.map(|bytes| f32::from_le_bytes(*bytes))
+				.collect::<Vec<_>>()
+		};
+		for level in 0..primitive.lods.len() as u8 {
+			let positions = floats(stream_bytes(&processed, Streams::Vertices(VertexSemantics::Position), level));
+			let uvs = floats(stream_bytes(&processed, Streams::Vertices(VertexSemantics::UV), level));
+			let lightmap_uvs = floats(stream_bytes(
+				&processed,
+				Streams::Vertices(VertexSemantics::LightmapUV),
+				level,
+			));
+			assert_eq!(
+				lightmap_uvs.len() / 2,
+				positions.len() / 3,
+				"level {level} has a lightmap UV per vertex"
+			);
+			assert!(lightmap_uvs.iter().all(|value| (0.0..=1.0).contains(value)));
+			for (position, uv) in positions.as_chunks::<3>().0.iter().zip(uvs.as_chunks::<2>().0) {
+				assert_eq!([position[0], position[1]], *uv, "a split vertex keeps its authored UV");
+			}
+		}
+	}
+
+	#[test]
+	fn skinned_primitives_and_bakes_without_lightmaps_have_no_lightmap_uvs() {
+		let has_lightmap_uvs = |processed: &ProcessedMesh| {
+			processed
+				.mesh
+				.streams
+				.iter()
+				.any(|stream| stream.stream_type == Streams::Vertices(VertexSemantics::LightmapUV))
+		};
+		let layout = vec![VertexComponent::canonical(VertexSemantics::Position)];
+		let without = process(layout.clone(), &[TestPrimitive::wavy_grid(4)], None, Vec::new()).unwrap();
+		assert!(!has_lightmap_uvs(&without));
+
+		let grid = TestPrimitive::wavy_grid(4);
+		let skin = vec![valid_vertex_skin(); grid.positions.len()];
+		let settings = MeshSettings {
+			lightmap_uvs: Some(LightmapUvSettings::default()),
+			..MeshSettings::default()
+		};
+		let skinned = process_with(
+			skinned_layout(),
+			&[grid.with_skin(0, skin)],
+			Some(test_skeleton(1)),
+			vec![test_skin(SkinJoint::Node(0))],
+			settings,
+		)
+		.unwrap();
+		assert!(!has_lightmap_uvs(&skinned));
 	}
 
 	/// Returns the bytes of one stream at one level of a mesh that was processed from a single primitive.
@@ -399,17 +496,17 @@ mod tests {
 		skeleton: Option<ReferenceModel<SkeletonModel>>,
 		skins: Vec<SkinBinding>,
 	) -> Result<ProcessedMesh, MeshProcessingError> {
-		process_with_lods(layout, primitives, skeleton, skins, MeshLodSettings::default())
+		process_with(layout, primitives, skeleton, skins, MeshSettings::default())
 	}
 
-	fn process_with_lods(
+	fn process_with(
 		layout: Vec<VertexComponent>,
 		primitives: &[TestPrimitive],
 		skeleton: Option<ReferenceModel<SkeletonModel>>,
 		skins: Vec<SkinBinding>,
-		lods: MeshLodSettings,
+		settings: MeshSettings,
 	) -> Result<ProcessedMesh, MeshProcessingError> {
-		let mut processor = MeshProcessorSession::new(layout, skeleton, skins, lods)?;
+		let mut processor = MeshProcessorSession::new(layout, skeleton, skins, settings)?;
 		for primitive in primitives {
 			processor.push_primitive(primitive).map_err(|error| match error {
 				MeshPrimitiveProcessingError::Source(never) => match never {},

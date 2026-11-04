@@ -56,11 +56,11 @@ material_evaluation_pixel_list: fn (input: StageInput) -> void {
 /// so 36 threads fetch the window once instead of every pixel fetching its four taps. The window starts at the first
 /// texel the tile's first pixel reads, as `indirect_diffuse_window_origin` finds it, and holds texels clamped to the
 /// image the same way the taps clamp them, so every tap of the tile lands inside it. The fill reads
-/// `push_constant.indirect_diffuse`, so a project without an indirect diffuse source drops it. Every thread reaches
-/// the barrier, those past the image's edge too.
+/// `push_constant.indirect_diffuse`, so a project without an indirect diffuse source drops it. Under lightmaps, value 3,
+/// pixels read no window. Every thread reaches the barrier, those past the image's edge too.
 pub(crate) const MATERIAL_EVALUATION_TILE_WINDOW_SOURCE: &str = r#"
 material_evaluation_tile_window: fn (input: StageInput) -> void {
-	if (push_constant.indirect_diffuse != 0) {
+	if (push_constant.indirect_diffuse != 0 && push_constant.indirect_diffuse != 3) {
 		if (input.thread_idx < 36) {
 			let window_extent: vec2u = texture_size(material_evaluation.ssgi_history);
 			let window_origin: vec2u = indirect_diffuse_window_origin(input.thread_id, image_size(material_evaluation.lit_map), window_extent);
@@ -345,7 +345,38 @@ material_evaluation_suffix: fn () -> void {
 	// Whether the pixel adds the environment's diffuse light itself, which surfel GI's light already holds.
 	let adds_environment_diffuse: bool = true;
 	if (!transparent) {
-		if (push_constant.indirect_diffuse != 0) {
+		if (push_constant.indirect_diffuse == 3) {
+			// Lightmaps light the instances they give a rectangle; the rest take the environment's light alone. The
+			// record is read through `instance_lightmaps`, so a project without lightmaps drops this branch.
+			let lightmap_record: InstanceLightmap = scene.instance_lightmaps.instances[instance_index];
+			if (lightmap_record.texture != 4294967295) {
+				// UNORM16 lightmap UVs, interpolated like the texture coordinates, then placed in the instance's rectangle.
+				let lightmap_scale: f32 = 1.0 / 65535.0;
+				let lightmap_encoded0: vec2u16 = scene.vertex_lightmap_uvs[triangle_vertex_indices[0]];
+				let lightmap_encoded1: vec2u16 = scene.vertex_lightmap_uvs[triangle_vertex_indices[1]];
+				let lightmap_encoded2: vec2u16 = scene.vertex_lightmap_uvs[triangle_vertex_indices[2]];
+				let lightmap_uv0: vec2f = vec2f(f32(u32(lightmap_encoded0.x)), f32(u32(lightmap_encoded0.y))) * lightmap_scale;
+				let lightmap_uv1: vec2f = vec2f(f32(u32(lightmap_encoded1.x)), f32(u32(lightmap_encoded1.y))) * lightmap_scale;
+				let lightmap_uv2: vec2f = vec2f(f32(u32(lightmap_encoded2.x)), f32(u32(lightmap_encoded2.y))) * lightmap_scale;
+				let lightmap_uv: vec2f = lightmap_uv0 + barycentric.x * (lightmap_uv1 - lightmap_uv0)
+					+ barycentric.y * (lightmap_uv2 - lightmap_uv0);
+				let lightmap_texel_uv: vec2f = vec2f(
+					lightmap_uv.x * lightmap_record.scale_offset.x + lightmap_record.scale_offset.z,
+					lightmap_uv.y * lightmap_record.scale_offset.y + lightmap_record.scale_offset.w
+				);
+				// The lightmap has one level, so zero derivatives read it.
+				let lightmap_light: vec4f = sample_texture_2d_array_grad(
+					scene.textures, lightmap_record.texture, lightmap_texel_uv, vec2f(0.0, 0.0), vec2f(0.0, 0.0)
+				);
+				// The bake stored irradiance over π in nits, not pre-exposed, holding the environment's light its paths
+				// reached.
+				screen_space_irradiance = vec3f(lightmap_light.x, lightmap_light.y, lightmap_light.z);
+				adds_environment_diffuse = false;
+				// Alpha is the share of the texel's paths that reached the environment, which occludes its reflections
+				// as the rays' hit fraction does for the other sources.
+				environment_visibility = clamp(lightmap_light.w, 0.0, 1.0);
+			}
+		} else if (push_constant.indirect_diffuse != 0) {
 			// SSGI and surfel GI both store their light in view space at half resolution. The pixel's own surface picks
 			// the history texels that lie on it. Alpha is the fraction of rays that hit, so the rest reach the
 			// environment.
@@ -394,9 +425,10 @@ material_evaluation_suffix: fn () -> void {
 			// twice. The smaller one keeps an occluder that only one of them resolves, such as a crease below SSGI's
 			// half resolution.
 			environment_visibility = min(environment_visibility, gtao_visibility);
-			// Surfels and probes resolve occlusion only down to their own size, 20 centimeters or more, so their light
-			// misses the creases a smaller GTAO radius finds, and the product adds what they can't see.
-			if (push_constant.indirect_diffuse == 2) {
+			// Surfels, probes, and lightmap texels resolve occlusion only down to their own size, 20 centimeters or
+			// more, so their light misses the creases a smaller GTAO radius finds, and the product adds what they
+			// can't see.
+			if (push_constant.indirect_diffuse == 2 || !adds_environment_diffuse) {
 				screen_space_irradiance = screen_space_irradiance * gtao_visibility;
 			}
 		}

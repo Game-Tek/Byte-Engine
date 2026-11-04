@@ -141,7 +141,7 @@ mod tests {
 
 		fn asset_manager(&self, resources: MemoryStorageBackend) -> AssetManager {
 			let mut asset_manager = AssetManager::new(FileStorageBackend::new(self.0.clone()), resources);
-			asset_manager.add_asset_handler(FBXAssetHandler);
+			asset_manager.add_asset_handler(FBXAssetHandler::default());
 			asset_manager.add_asset_handler(MotionDatabaseAssetHandler);
 			asset_manager
 		}

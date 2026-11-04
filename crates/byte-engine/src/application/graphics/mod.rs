@@ -48,9 +48,10 @@
 /// - `render.gtao.samples-per-ray`: Sets the GTAO samples along each ray. The default is `4`.
 /// - `render.gtao.radial-rays`: Sets the even number of GTAO ray directions. The default is `6`.
 /// - `render.gi.enabled`: Lights indirect diffuse light with the technique `render.gi.technique` selects. Off, the environment lights it alone. The default is `true`.
-/// - `render.gi.technique`: Selects the global illumination technique: `ssgi` or `surfels`. A technique left out of the baked shaders is rejected with a warning. The default is `ssgi`, or `surfels` when only surfel GI is built in.
+/// - `render.gi.technique`: Selects the global illumination technique: `ssgi`, `surfels`, `probes`, or `baked`. A technique left out of the baked shaders is rejected with a warning. The default is the first built in of `ssgi`, `probes`, `surfels`, and `baked`.
 /// - `render.ssgi.enabled`: Builds screen-space global illumination, which adds light bounced off visible surfaces and darkens environment light that nearby geometry blocks, into the baked shaders, so `render.gi.technique` can select it. It is read once, at startup. The default is `true`.
 /// - `render.surfel-gi.enabled`: Builds ray-traced surfel global illumination into the baked shaders, so `render.gi.technique` can select it. It is read once, at startup. The default is `false`.
+/// - `render.baked-gi.enabled`: Builds baked lightmaps in: lightmap UVs in mesh bakes, the lightmap bake in BELD, and lightmap reads in the baked shaders, so `render.gi.technique` can select `baked`. It is read once, at startup. The default is `false`.
 /// - `render.contact-shadows.enabled`: Traces short rays toward the sun to shadow where objects touch, such as under a foot on a floor. Like `render.gtao.enabled`, its startup value also decides whether contact shadows are built into the baked shaders. The default is `true`.
 /// - `render.contact-shadows.distance`: Sets the world-space reach of each contact-shadow ray. The default is `0.1`.
 /// - `render.lod.bias`: Scales the on-screen error, one pixel by default, that a mesh detail level may show before a finer one is drawn. Values above `1` draw coarser levels sooner, and `0` allows no error. Levels follow the first window's camera, and shadows draw the same level. The default is `1.0`.

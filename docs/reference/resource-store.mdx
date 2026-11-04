@@ -147,6 +147,7 @@ has none.
 | `Animation` | Its skeleton. |
 | `Flipbook` | Its images. |
 | `MotionDatabase` | Its clips. |
+| `Lightmap` | Its image. |
 | `Pipeline` | Its shaders. |
 | `ParticleSystem` | Its simulate and draw pipelines. |
 | Every other class | None. |
@@ -176,6 +177,7 @@ the mismatch without touching the directory.
 | `Mesh` | Optional skeleton, skin bindings, vertex components, streams, material variants by reference, primitives. | Packed vertex, index, and meshlet data, grouped by detail level. | `level[N].` streams per detail level, listed after this table. | Its skeleton; materials are listed but not loaded with the mesh. |
 | `Skeleton` | Nodes with optional names, parents, and rest transforms. | None | None | None |
 | `Animation` | Optional name, skeleton, duration, optional frame rate, per-node curves. | None; curves live in the metadata. | None | Its skeleton. |
+| `Lightmap` | The spawn index of the level entity that holds the `lightmap` kind, the image by reference, and, for each primitive with a rectangle, its entity's spawn index, its primitive index, and its rectangle as a scale and an offset that map lightmap UVs into the image. | None | None | Its image. |
 | `MotionDatabase` | Clips with their frame and pickable frame counts, sample rate, ground root and feature node names, trajectory times, normalization, every frame's features and ground root, and search and spring settings. | None; frames live in the metadata. | None | None; its clips are listed but not loaded with it. |
 
 Image formats: `BC5`, `BC5SNORM`, `RG8`, `RG16`, `R16F`, `RGB8`, `RGBA8`,
@@ -196,6 +198,7 @@ of these names:
 | --- | --- | --- |
 | `Vertex.Position`, `Vertex.Normal`, `Vertex.BiTangent` | Three floats | The vertices that level N adds, for every primitive. |
 | `Vertex.UV` | Two floats | Same. |
+| `Vertex.LightmapUV` | Two floats | Same, for unskinned primitives with [lightmap UVs](/docs/reference/assets#lightmap-uvs): coordinates from 0 through 1 at which no two triangles overlap. |
 | `Vertex.Tangent`, `Vertex.Color`, `Vertex.Weights` | Four floats | Same. |
 | `Vertex.Joints` | Four 16-bit integers | Same. |
 | `VertexIndices` | 16-bit integer | Level N's meshlet vertices, as indexes into the primitive's vertices. |

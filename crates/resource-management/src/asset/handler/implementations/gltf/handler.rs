@@ -6,9 +6,22 @@ pub(crate) const MAX_SKIN_JOINTS: usize = u16::MAX as usize + 1;
 ///
 /// Generated materials target the asset manager's
 /// [`ProgramGenerator`](crate::asset::handler::implementations::ProgramGenerator).
-pub struct GLTFAssetHandler;
+#[derive(Default)]
+pub struct GLTFAssetHandler {
+	lightmap_uvs: bool,
+}
 
 impl GLTFAssetHandler {
+	/// Returns this handler set to give every unskinned primitive lightmap UVs when `enabled`, unless the model's BEAD
+	/// file sets `lightmap_uvs.enabled` to `false`.
+	///
+	/// The engine's default bake configuration enables it when the bake builds in baked GI, so lightmaps can bake
+	/// the model's meshes.
+	pub fn with_lightmap_uvs(mut self, enabled: bool) -> Self {
+		self.lightmap_uvs = enabled;
+		self
+	}
+
 	/// Packs glTF primitives through the shared mesh processor, naming each primitive's material by its slot.
 	///
 	/// The work is synchronous, so it yields between primitives to let futures joined with it, such as the material
@@ -21,14 +34,15 @@ impl GLTFAssetHandler {
 		skin_bindings: Vec<SkinBinding>,
 		primitives: &[(gltf::Primitive<'a>, math::Matrix, Option<u32>, Option<u32>)],
 		material_slots: &[usize],
-		lods: MeshLodSettings,
+		settings: MeshSettings,
 	) -> Result<MeshProcessorSession, LoadErrors> {
 		let skin_joint_counts = skin_bindings.iter().map(|skin| skin.entries.len()).collect::<Vec<_>>();
 		let primitive_attributes = GltfPrimitiveAttributes::from_layout(&vertex_layout);
-		let mut mesh_processor = MeshProcessorSession::new(vertex_layout, skeleton, skin_bindings, lods).map_err(|error| {
-			log::error!("Failed to initialize glTF mesh processing '{}': {error}", url.as_ref());
-			LoadErrors::FailedToProcess
-		})?;
+		let mut mesh_processor =
+			MeshProcessorSession::new(vertex_layout, skeleton, skin_bindings, settings).map_err(|error| {
+				log::error!("Failed to initialize glTF mesh processing '{}': {error}", url.as_ref());
+				LoadErrors::FailedToProcess
+			})?;
 
 		for ((primitive, transform, transform_node, skin), material_slot) in primitives.iter().zip(material_slots) {
 			validate_gltf_flattened_animation_transform(*transform, *transform_node).map_err(|error| {
@@ -81,9 +95,9 @@ impl GLTFAssetHandler {
 		gltf: &'a gltf::Gltf,
 		buffers: &[Cow<'_, [u8]>],
 	) -> Result<(), LoadErrors> {
-		let lods = mesh_lod_settings(spec).map_err(|error| {
+		let settings = mesh_settings(spec, self.lightmap_uvs).map_err(|error| {
 			log::error!(
-				"Failed to read glTF detail level settings '{}': {error}. The most likely cause is a mistyped `lods` object in the asset's BEAD file.",
+				"Failed to read glTF mesh settings '{}': {error}. The most likely cause is a mistyped `lods` or `lightmap_uvs` object in the asset's BEAD file.",
 				url.as_ref()
 			);
 			LoadErrors::FailedToProcess
@@ -169,7 +183,7 @@ impl GLTFAssetHandler {
 				skin_bindings,
 				&primitives_and_transform,
 				&material_slots,
-				lods,
+				settings,
 			),
 		)
 		.await;

@@ -17,23 +17,24 @@
 //!
 //! Application wiring lives in [`crate::application::graphics::setup_pbr_visibility_shading_render_pipeline`].
 
-mod acceleration_structures;
+pub(crate) mod acceleration_structures;
 mod features;
-mod geometry;
-mod layout;
-mod loader;
+pub(crate) mod geometry;
+pub(crate) mod layout;
+mod lightmaps;
+pub(crate) mod loader;
 mod lod;
-mod manager;
-mod material_parameters;
+pub(crate) mod manager;
+pub(crate) mod material_parameters;
 mod mesh_dispatch;
-mod ray_tracing;
+pub(crate) mod ray_tracing;
 mod render_pass;
 mod residency;
-mod scene;
-mod set_layouts;
-mod shader_data;
+pub(crate) mod scene;
+pub(crate) mod set_layouts;
+pub(crate) mod shader_data;
 mod shader_generator;
-mod shadow_selection;
+pub(crate) mod shadow_selection;
 mod shadow_updates;
 mod skinning;
 #[cfg(test)]

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://byte-engine.dev/schemas/lightmap.bead.schema.json",
+  "title": "Byte Engine lightmap asset",
+  "description": "A standalone lightmap asset: the indirect diffuse light of a level's meshes, path traced on the GPU into one image.",
+  "type": "object",
+  "required": ["level"],
+  "properties": {
+    "$schema": { "type": "string", "description": "The local JSON Schema reference for this asset." },
+    "level": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The ID of the .level asset whose meshes and lights the lightmap holds."
+    },
+    "environment": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The ID of an environment map whose sky lights the paths that leave the scene. Without it, they bring back no light."
+    },
+    "illuminance": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Lux. Scales the environment to deliver it to an upward-facing surface. Without it, the map's own values are used."
+    },
+    "texel_density": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 8,
+      "description": "Texels per meter of surface."
+    },
+    "samples": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65536,
+      "default": 256,
+      "description": "Paths traced from each texel."
+    },
+    "bounces": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16,
+      "default": 3,
+      "description": "The most surfaces a path hits."
+    },
+    "max_extent": {
+      "type": "integer",
+      "enum": [256, 512, 1024, 2048, 4096, 8192],
+      "default": 2048,
+      "description": "The image's largest side in texels."
+    }
+  },
+  "additionalProperties": false
+}

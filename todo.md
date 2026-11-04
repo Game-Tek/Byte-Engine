@@ -144,6 +144,27 @@
 - Trace webgiya's depth probe rays: one ray for a quarter of the surfels each frame, in a depth cell picked in turn, which updates only the radial depth. Guided rays visit dark directions rarely, so their depth cells go stale while the scene changes.
 - Light enclosed rooms evenly and sooner. In Sponza's gallery, most diffuse light is bounce light spread from the few surfels whose rays found the sunlit courtyard, about one ray in several thousand: with no surfel light at hits, 88% of the deep gallery goes black. Its light spans a factor of 6 to 9 between the 10th and 90th percentile of pixels, and three guided runs read a third of an unguided run's level 600 frames after the view was pinned (1.7–1.9e-5 against 5.6e-5 pre-exposed), while runs captured later all read 4–6e-5. The build-up also dominates what a turn shows: after a 60° snap turn into the gallery, the revealed pixels' `SSGI History` reads 0.85–0.9 of its level 1,200 frames later, with a mean |log2| error of about 0.55 over frames 10–45, 0.4 at frame 60, 0.14 at 230, and 0.04 at 460, while young surfels' bright spots (above four times the later level) cover only 0.5% of the pixels. Measure the build-up at matched surfel ages first, then try sharing estimates between neighboring surfels that face the same way, and more rays for surfels whose light comes from rare bright hits; the 512-ray warm-up of young surfels is a first step.
 
+## Baked lightmaps
+
+The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves these for later:
+
+- Read authored second UV sets, glTF `TEXCOORD_1` and FBX `UVSet1`, instead of always unwrapping.
+- Replace the dominant-axis unwrapper with an xatlas-quality one: chart growth by normal cone, seam-aware packing, and per-chart texel density.
+- Pack the atlas tighter. Sponza fills about a quarter of its 2,048² image, because the row packer's square rounds up to the next power of two; try non-square images or a skyline packer.
+- Store directional lightmaps (L1 spherical harmonics) so normal maps shape baked light.
+- Denoise the traced light (an edge-aware filter over position and normal), so fewer samples give smooth light.
+- Sort hits by material before shading them in the bake, as surfel GI does, instead of shading in ray order.
+- Split a level into several atlas pages when it doesn't fit `max_extent`, instead of shrinking the texel density.
+- Light dynamic objects in lightmapped scenes, for example with probes baked from the same paths.
+- Let masked materials occlude the bake's rays with an any-hit alpha test.
+- Apply IES profiles to point and cone lights in the bake.
+- Bake more than the visibility pipeline's 1,024 primitives; the bake traces only the first 1,024.
+- Stop Sponza's masked foliage from glowing white under `render.gi.technique=baked`. Its many tiny charts each get the 16-texel minimum and the bake leaves masked surfaces out of the traced geometry; find which texels go bright (likely texels whose nearest triangle point lies outside the plant) and either fix them or leave masked primitives unlit.
+- Reduce the per-texel noise lightmaps show on large floors at 128 samples, before or with the denoiser above.
+- Learn ray guides with one invocation per texel instead of per group. Learning batches run about 1.6 times longer than guided ones because a group's texels trace in turn; float atomics in BESL (or a per-texel cell buffer) would remove that, and then more paths could learn.
+- Guide more than the first bounce, and weight the learning and guided paths' estimates by their variance instead of averaging them; at three bounces the later, cosine-weighted bounces hold most of the remaining noise.
+- Importance-sample the environment at each hit (an environment CDF with MIS), so sharp skies and small openings stop needing the first bounce's guide to find them.
+
 ## Shader behavior
 
 - Implement Metal interpolation and metadata-driven push-constant mapping without hardcoded backend conventions.

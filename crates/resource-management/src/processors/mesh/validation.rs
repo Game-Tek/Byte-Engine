@@ -1,6 +1,10 @@
 #[derive(Debug, PartialEq, Eq)]
 pub enum MeshProcessingError {
 	MissingAttribute(VertexSemantics, u32),
+	TooManyLightmapVertices {
+		primitive: usize,
+		vertices: usize,
+	},
 	DuplicateVertexSemantic(VertexSemantics),
 	AttributeLengthMismatch(VertexSemantics, u32),
 	InvalidTriangleIndexCount,
@@ -87,6 +91,10 @@ impl std::fmt::Display for MeshProcessingError {
 	#[allow(clippy::too_many_lines)]
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
+			Self::TooManyLightmapVertices { primitive, vertices } => write!(
+				f,
+				"Primitive {primitive} needs {vertices} vertices after its lightmap UVs split them, more than the 65,536 a primitive holds. The most likely cause is a large primitive whose surface turns often, so its charts share many vertices. Split the primitive in the source model, or set `lightmap_uvs.enabled` to `false` in its BEAD file."
+			),
 			Self::MissingAttribute(semantic, channel) => write!(
 				f,
 				"Mesh is missing a required vertex attribute. The most likely cause is that {semantic:?} on channel {channel} is present in the vertex layout but not in the primitive data."
@@ -213,13 +221,14 @@ impl std::fmt::Display for MeshProcessingError {
 impl std::error::Error for MeshProcessingError {}
 
 pub(super) fn validate_vertex_layout(vertex_layout: &[VertexComponent]) -> Result<(), MeshProcessingError> {
-	let mut seen = [false; 8];
+	// One bit per semantic, by its declaration index.
+	let mut seen = 0u32;
 	for component in vertex_layout {
-		let index = component.semantic as usize;
-		if seen[index] {
+		let bit = 1 << component.semantic as u32;
+		if seen & bit != 0 {
 			return Err(MeshProcessingError::DuplicateVertexSemantic(component.semantic));
 		}
-		seen[index] = true;
+		seen |= bit;
 		// The packer writes every stream in its canonical format, so any other declaration would mislabel the bytes.
 		let expected = VertexComponent::canonical(component.semantic).format;
 		if component.format != expected {

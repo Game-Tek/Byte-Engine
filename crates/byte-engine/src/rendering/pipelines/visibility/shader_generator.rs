@@ -429,7 +429,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		graph: &'a bemx::Graph,
 		parameters: &'a [MaterialParameter],
 	) -> Result<Option<Node<'a>>, String> {
-		if !self.features.traces_rays() {
+		if !self.features.generates_hit_shaders() {
 			return Ok(None);
 		}
 		let (body, features) = material::material_hit_body(graph, parameters).map_err(|error| error.to_string())?;

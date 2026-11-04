@@ -392,7 +392,12 @@ impl GeometryHandles {
 			capacity,
 			vertex_positions: context.build_buffer(build("Visibility Vertex Positions Buffer", geometry, vertices)),
 			vertex_normals: context.build_buffer(build("Visibility Vertex Normals Buffer", geometry, vertices)),
-			vertex_uvs: context.build_buffer(build("Visibility Vertex UV Buffer", geometry, vertices)),
+			// Skinned meshes copy their rest UVs to their posed ranges within this buffer.
+			vertex_uvs: context.build_buffer(build(
+				"Visibility Vertex UV Buffer",
+				geometry | ghi::Uses::TransferSource,
+				vertices,
+			)),
 			vertex_lightmap_uvs: context.build_buffer(build("Visibility Vertex Lightmap UV Buffer", geometry, vertices)),
 			vertex_indices: context.build_buffer(build("Visibility Index Buffer", indices, vertex_indices)),
 			primitive_indices: context.build_buffer(build("Visibility Primitive Indices Buffer", indices, triangles)),

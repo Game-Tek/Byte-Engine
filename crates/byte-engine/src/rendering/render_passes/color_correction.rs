@@ -342,6 +342,8 @@ impl ColorCorrectionPass {
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 		*context.get_mut_buffer_slice(parameters) = color_correction_shader_data(&settings);
+		// The write reaches the GPU copy only once synced.
+		context.sync_buffer(parameters);
 
 		let pass = pipeline.bind(
 			"Color Correction",

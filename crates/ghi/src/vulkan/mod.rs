@@ -565,13 +565,23 @@ pub(crate) enum Tasks {
 	},
 }
 
+/// The `Completion` enum says which GPU work has to complete before a recording's results are readable, or before
+/// what its commands read may change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Completion {
+	/// A frame recording, which completed once the context saw its frame complete.
+	Frame(u64),
+	/// A recording outside frames, which completed once its synchronizer's fence signaled.
+	Synchronizer(crate::synchronizer::SynchronizerHandle),
+}
+
 /// The `Task` struct schedules backend work for a required time or frame.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Task {
 	pub(crate) task: Tasks,
 	pub(crate) frame: Option<u8>,
-	/// Frame index whose GPU work must complete before the task runs, for objects that in-flight frames may still use.
-	pub(crate) after_frame: Option<u64>,
+	/// The GPU work that must complete before the task runs, for objects that work may still use.
+	pub(crate) after: Option<Completion>,
 }
 
 impl Task {
@@ -579,22 +589,22 @@ impl Task {
 		Self {
 			task,
 			frame,
-			after_frame: None,
+			after: None,
 		}
 	}
 
-	/// Schedules a task for the first task pass after `frame_index` has completed on the GPU.
-	pub(crate) fn after_frame(task: Tasks, frame_index: u64) -> Self {
+	/// Schedules a task for the first task pass after `completion` is reached on the GPU.
+	pub(crate) fn after(task: Tasks, completion: Completion) -> Self {
 		Self {
-			after_frame: Some(frame_index),
+			after: Some(completion),
 			..Self::new(task, None)
 		}
 	}
 
-	/// Whether the GPU may still use what this task touches, given the latest frame known to have completed.
-	pub(crate) fn is_pending(&self, completed_frame: Option<u64>) -> bool {
-		self.after_frame
-			.is_some_and(|after_frame| completed_frame.is_none_or(|completed_frame| completed_frame < after_frame))
+	/// Whether the GPU may still use what this task touches, given `reached`, which reports whether GPU work
+	/// completed.
+	pub(crate) fn is_pending(&self, reached: impl Fn(Completion) -> bool) -> bool {
+		self.after.is_some_and(|completion| !reached(completion))
 	}
 }
 
@@ -612,16 +622,22 @@ mod task_tests {
 
 	#[test]
 	fn deferred_destruction_waits_for_its_frame_to_complete() {
-		let task = Task::after_frame(
+		let task = Task::after(
 			Tasks::DeleteVulkanBuffer {
 				handle: vk::Buffer::null(),
 			},
-			5,
+			Completion::Frame(5),
 		);
+		let completed = |completed_frame: Option<u64>| {
+			move |completion| match completion {
+				Completion::Frame(index) => completed_frame.is_some_and(|completed| completed >= index),
+				Completion::Synchronizer(_) => unreachable!("The task waits for a frame."),
+			}
+		};
 
-		assert!(task.is_pending(None));
-		assert!(task.is_pending(Some(4)));
-		assert!(!task.is_pending(Some(5)));
-		assert!(!task.is_pending(Some(6)));
+		assert!(task.is_pending(completed(None)));
+		assert!(task.is_pending(completed(Some(4))));
+		assert!(!task.is_pending(completed(Some(5))));
+		assert!(!task.is_pending(completed(Some(6))));
 	}
 }

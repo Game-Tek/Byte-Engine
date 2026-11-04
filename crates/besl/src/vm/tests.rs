@@ -749,7 +749,7 @@ fn executable_program_writes_through_an_indexed_storage_image_array() {
 		Node::binding_array(
 			"images",
 			BindingTypes::Image {
-				format: "rgba8".to_string(),
+				format: Some("rgba8".to_string()),
 			},
 			0,
 			false,
@@ -798,7 +798,7 @@ fn executable_program_writes_a_pixel_to_a_bound_image() {
 		Node::binding(
 			"image",
 			BindingTypes::Image {
-				format: "rgba8".to_string(),
+				format: Some("rgba8".to_string()),
 			},
 			0,
 			false,

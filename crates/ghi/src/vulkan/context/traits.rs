@@ -211,11 +211,7 @@ impl crate::context::Context for Context {
 		uses: crate::Uses,
 	) -> graphics_hardware_interface::SwapchainHandle {
 		let vk_surface = self.create_vulkan_surface(window_os_handles);
-		let vk_present_mode = match presentation_mode {
-			graphics_hardware_interface::PresentationModes::FIFO => vk::PresentModeKHR::FIFO,
-			graphics_hardware_interface::PresentationModes::Inmediate => vk::PresentModeKHR::IMMEDIATE,
-			graphics_hardware_interface::PresentationModes::Mailbox => vk::PresentModeKHR::MAILBOX,
-		};
+		let vk_present_mode = self.surface_present_mode(vk_surface, presentation_mode);
 		let vk_surface_capabilities = self.query_swapchain_surface_capabilities(vk_surface, vk_present_mode);
 		let extent = InnerDevice::swapchain_extent(
 			&vk_surface_capabilities,

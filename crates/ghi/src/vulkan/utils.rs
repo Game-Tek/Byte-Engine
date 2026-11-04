@@ -240,9 +240,8 @@ pub(super) fn to_pipeline_stage_flags(
 		_ => Flags::NONE,
 	} | match format {
 		Some(format) if format.is_depth() => Flags::EARLY_FRAGMENT_TESTS | Flags::LATE_FRAGMENT_TESTS,
-		Some(_) => Flags::FRAGMENT_SHADER,
-		None if layout.is_none() => Flags::FRAGMENT_SHADER,
-		None => Flags::NONE,
+		// Images with a color format and buffers, which have no format, are read and written by the fragment shader.
+		_ => Flags::FRAGMENT_SHADER,
 	};
 	let compute = if layout == Some(Layouts::Indirect) {
 		Flags::DRAW_INDIRECT
@@ -293,7 +292,9 @@ pub(super) fn to_access_flags(
 		let fragment = match (depth, render_target) {
 			(Some(false), true) => Flags::COLOR_ATTACHMENT_READ,
 			(Some(true), true) => Flags::DEPTH_STENCIL_ATTACHMENT_READ,
-			_ => Flags::SHADER_SAMPLED_READ,
+			(Some(_), false) => Flags::SHADER_SAMPLED_READ,
+			// A buffer is read through storage or uniform descriptors, which sampled reads do not cover.
+			(None, _) => Flags::SHADER_READ,
 		};
 		let compute = if layout == Layouts::Indirect {
 			Flags::INDIRECT_COMMAND_READ
@@ -315,9 +316,10 @@ pub(super) fn to_access_flags(
 
 	if accesses.contains(crate::AccessPolicies::WRITE) {
 		let fragment = match (depth, render_target) {
-			(None, _) | (Some(false), true) => Flags::COLOR_ATTACHMENT_WRITE,
+			(Some(false), true) => Flags::COLOR_ATTACHMENT_WRITE,
 			(Some(true), true) => Flags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-			(Some(_), false) => Flags::SHADER_WRITE,
+			// Buffers, which have no format, and images outside a render target are written by the shader.
+			(None, _) | (Some(_), false) => Flags::SHADER_WRITE,
 		};
 		access_flags |= fold_flags(
 			&[
@@ -603,6 +605,25 @@ mod tests {
 				vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::SHADER_WRITE
 			);
 		}
+	}
+
+	/// Verifies a fragment shader's buffer accesses make barriers wait at the fragment shader with plain shader
+	/// accesses. Buffers have no format, and the UI reads its shape buffers this way.
+	#[test]
+	fn fragment_buffer_accesses_name_the_fragment_shader() {
+		assert_eq!(
+			to_pipeline_stage_flags(Stages::FRAGMENT, Some(Layouts::General), None),
+			vk::PipelineStageFlags2::FRAGMENT_SHADER
+		);
+		assert_eq!(
+			to_access_flags(
+				crate::AccessPolicies::READ | crate::AccessPolicies::WRITE,
+				Stages::FRAGMENT,
+				Layouts::General,
+				None
+			),
+			vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::SHADER_WRITE
+		);
 	}
 
 	#[test]

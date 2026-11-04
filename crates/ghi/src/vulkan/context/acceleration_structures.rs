@@ -279,7 +279,7 @@ impl Context {
 	}
 
 	/// Reports whether the GPU finished the work `completion` waits for.
-	fn completion_reached(&self, completion: Completion) -> bool {
+	pub(crate) fn completion_reached(&self, completion: Completion) -> bool {
 		match completion {
 			Completion::Frame(index) => self.completed_frame.is_some_and(|completed| completed >= index),
 			Completion::Synchronizer(handle) => self.private_synchronizer_signaled(handle),

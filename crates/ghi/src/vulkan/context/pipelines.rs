@@ -85,6 +85,23 @@ pub(crate) fn with_shader_stages(
 		.iter()
 		.map(|(data, entries)| vk::SpecializationInfo::default().data(data).map_entries(entries))
 		.collect::<StageList<_>>();
+	let mappings = shaders
+		.clone()
+		.map(|shader| {
+			let mut mappings = SmallVec::new();
+			crate::vulkan::push_binding_mappings(layout, &shader.descriptor_sets, &mut mappings);
+			mappings
+		})
+		.collect::<StageList<_>>();
+	// Each list of stages chains infos of its own, because chaining an info writes to it.
+	let mapping_infos = || {
+		mappings
+			.iter()
+			.map(|mappings| vk::ShaderDescriptorSetAndBindingMappingInfoEXT::default().mappings(mappings))
+			.collect::<StageList<_>>()
+	};
+	let mut identified_mapping_infos = mapping_infos();
+	let mut code_mapping_infos = mapping_infos();
 
 	let mut identifiers = shaders
 		.clone()
@@ -95,7 +112,7 @@ pub(crate) fn with_shader_stages(
 		.collect::<Option<StageList<_>>>();
 	let identified_stages = identifiers
 		.as_mut()
-		.map(|identifiers| shader_stages(parameters, identifiers, &specialization_infos));
+		.map(|identifiers| shader_stages(parameters, identifiers, &mut identified_mapping_infos, &specialization_infos));
 	if let Some(identified_stages) = &identified_stages {
 		match create(None, Some(identified_stages)) {
 			Err(vk::Result::PIPELINE_COMPILE_REQUIRED) => {}
@@ -116,15 +133,17 @@ pub(crate) fn with_shader_stages(
 		.iter()
 		.map(|code| vk::ShaderModuleCreateInfo::default().code(code))
 		.collect::<StageList<_>>();
-	let stages = shader_stages(parameters, &mut code, &specialization_infos);
+	let stages = shader_stages(parameters, &mut code, &mut code_mapping_infos, &specialization_infos);
 	create(Some(&stages), identified_stages.as_deref())
 }
 
 /// Builds the stage create infos of a pipeline, each chained to its entry of `sources`, which tells the driver what
-/// the shader is: its SPIR-V or its identifier.
+/// the shader is: its SPIR-V or its identifier. A stage whose entry of `mappings` maps any descriptor gets it chained
+/// too.
 fn shader_stages<'a, 'b: 'a, 'c: 'a, S>(
 	parameters: &[crate::pipelines::ShaderParameter],
 	sources: &'a mut [S],
+	mappings: &'a mut [vk::ShaderDescriptorSetAndBindingMappingInfoEXT<'b>],
 	specialization_infos: &'a [vk::SpecializationInfo<'b>],
 ) -> StageList<vk::PipelineShaderStageCreateInfo<'a>>
 where
@@ -133,13 +152,19 @@ where
 	parameters
 		.iter()
 		.zip(sources)
+		.zip(mappings)
 		.zip(specialization_infos)
-		.map(|((parameter, source), specialization_info)| {
-			vk::PipelineShaderStageCreateInfo::default()
+		.map(|(((parameter, source), mapping), specialization_info)| {
+			let stage = vk::PipelineShaderStageCreateInfo::default()
 				.push(source)
 				.stage(parameter.stage.into())
 				.name(c"main")
-				.specialization_info(specialization_info)
+				.specialization_info(specialization_info);
+			if mapping.mapping_count == 0 {
+				stage
+			} else {
+				stage.push(mapping)
+			}
 		})
 		.collect()
 }

@@ -101,6 +101,10 @@ pub trait CommandBufferRecording: Sized {
 
 	/// Starts a render pass on the GPU.
 	/// The render pass uses the supplied render targets for subsequent draw commands.
+	///
+	/// The draws of one render pass are not ordered against each other's shader writes, as in an
+	/// [`CommonCommandBufferMode::unordered`] group. Keep draws that read another draw's writes in separate render
+	/// passes.
 	fn start_render_pass(
 		&mut self,
 		extent: Extent,

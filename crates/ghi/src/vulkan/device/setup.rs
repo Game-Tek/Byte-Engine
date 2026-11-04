@@ -530,7 +530,11 @@ fn required_device_extensions(settings: &crate::device::Features) -> Vec<(&'stat
 		extension!(ash::khr::swapchain::NAME, "VK_KHR_swapchain"),
 		extension!(ash::ext::swapchain_maintenance1::NAME, "VK_EXT_swapchain_maintenance1"),
 		extension!(ash::ext::descriptor_heap::NAME, "VK_EXT_descriptor_heap"),
+		// Shaders reach heap descriptors through untyped pointers.
+		extension!(ash::khr::shader_untyped_pointers::NAME, "VK_KHR_shader_untyped_pointers"),
 		extension!(ash::ext::shader_atomic_float::NAME, "VK_EXT_shader_atomic_float"),
+		// Sets name images that have no memory until first used, such as shadow maps, through null descriptors.
+		extension!(ash::khr::robustness2::NAME, "VK_KHR_robustness2"),
 	];
 
 	if settings.mesh_shading {
@@ -555,8 +559,10 @@ struct DeviceFeatures {
 	vulkan_13: vk::PhysicalDeviceVulkan13Features<'static>,
 	vulkan_14: vk::PhysicalDeviceVulkan14Features<'static>,
 	descriptor_heap: vk::PhysicalDeviceDescriptorHeapFeaturesEXT<'static>,
+	shader_untyped_pointers: vk::PhysicalDeviceShaderUntypedPointersFeaturesKHR<'static>,
 	swapchain_maintenance1: vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT<'static>,
 	shader_atomic_float: vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT<'static>,
+	robustness2: vk::PhysicalDeviceRobustness2FeaturesKHR<'static>,
 	mesh_shader: vk::PhysicalDeviceMeshShaderFeaturesEXT<'static>,
 	acceleration_structure: vk::PhysicalDeviceAccelerationStructureFeaturesKHR<'static>,
 	ray_query: vk::PhysicalDeviceRayQueryFeaturesKHR<'static>,
@@ -573,8 +579,10 @@ impl DeviceFeatures {
 			.push(&mut self.vulkan_13)
 			.push(&mut self.vulkan_14)
 			.push(&mut self.descriptor_heap)
+			.push(&mut self.shader_untyped_pointers)
 			.push(&mut self.swapchain_maintenance1)
-			.push(&mut self.shader_atomic_float);
+			.push(&mut self.shader_atomic_float)
+			.push(&mut self.robustness2);
 
 		if settings.mesh_shading {
 			chain = chain.push(&mut self.mesh_shader);
@@ -622,7 +630,11 @@ fn feature_requirements(settings: &crate::device::Features) -> Vec<(&'static str
 		feature!(core.shader_storage_image_read_without_format),
 		feature!(core.shader_storage_image_write_without_format),
 		feature!(core.texture_compression_bc),
+		// Cube map arrays back the environment probes that shaders sample.
+		feature!(core.image_cube_array),
 		feature!(core.fill_mode_non_solid),
+		// Samplers filter anisotropically when their builder asks for it.
+		feature!(core.sampler_anisotropy),
 		feature!(vulkan_11.storage_buffer16_bit_access),
 		feature!(vulkan_11.uniform_and_storage_buffer16_bit_access),
 		feature!(vulkan_12.descriptor_indexing),
@@ -650,13 +662,17 @@ fn feature_requirements(settings: &crate::device::Features) -> Vec<(&'static str
 		feature!(vulkan_13.subgroup_size_control),
 		feature!(vulkan_13.compute_full_subgroups),
 		feature!(vulkan_13.synchronization2),
+		// Shaders target SPIR-V 1.6, where glslang lowers `discard` to demoting the invocation to a helper.
+		feature!(vulkan_13.shader_demote_to_helper_invocation),
 		feature!(vulkan_13.dynamic_rendering),
 		feature!(vulkan_13.maintenance4),
 		// Pipelines take each shader's SPIR-V inline instead of from a shader module.
 		feature!(vulkan_14.maintenance5),
 		feature!(descriptor_heap.descriptor_heap),
+		feature!(shader_untyped_pointers.shader_untyped_pointers),
 		feature!(swapchain_maintenance1.swapchain_maintenance1),
 		feature!(shader_atomic_float.shader_buffer_float32_atomics),
+		feature!(robustness2.null_descriptor),
 	];
 
 	if settings.geometry_shader {

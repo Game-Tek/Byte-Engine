@@ -170,14 +170,8 @@ fn lower_as_compute(program: &besl::NodeReference) -> Result<(), String> {
 
 	for (index, output) in outputs.iter().enumerate() {
 		let name = output.borrow().get_name().unwrap_or_default().to_string();
-		let binding = besl::Node::binding(
-			&name,
-			besl::BindingTypes::Image { format: String::new() },
-			index as u32,
-			false,
-			true,
-		)
-		.in_layout(TILE_OUTPUTS_LAYOUT);
+		let binding = besl::Node::binding(&name, besl::BindingTypes::Image { format: None }, index as u32, false, true)
+			.in_layout(TILE_OUTPUTS_LAYOUT);
 		*output.borrow_mut() = binding;
 	}
 	// The outputs set is a set of its own, so the program's sets are placed again to give it a position.

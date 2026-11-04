@@ -370,7 +370,6 @@ impl DescriptorSetLayout {
 	}
 
 	/// Returns how many array elements the layout's resources hold in total.
-	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal and DX12 backends use it."))]
 	pub(crate) fn element_count(&self) -> u32 {
 		self.inner.element_count
 	}

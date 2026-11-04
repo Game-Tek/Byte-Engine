@@ -119,12 +119,7 @@ impl Generator {
 			PlatformShaderLanguage::Msl => self.msl_transpiler.tile_threadgroup_memory().to_vec(),
 			_ => Vec::new(),
 		};
-		let extent = match shader_generation_settings.stage {
-			Stages::Compute { local_size } => Some(local_size),
-			// SPIR-V reflection reports a workgroup only for compute shaders.
-			_ if PlatformShaderLanguage::current_platform().is_glsl() => None,
-			stage => stage.local_size(),
-		};
+		let extent = shader_generation_settings.stage.local_size();
 
 		Ok(LoweredPlatformShader {
 			name: shader_generation_settings.name.clone(),

@@ -159,7 +159,9 @@ outputs into a set of its own.
 Every consumer reads the placement instead of regrouping the program:
 reflection orders `SetUsage` by it, the MSL generator binds set `n` at buffer
 `16 + n`, the GLSL and HLSL generators index the descriptor heaps at set `n`'s
-base plus the `resource` or `sampler` offset, and the VM keys resources by
+base plus the `resource` or `sampler` offset, the GLSL generator declares
+buffers and acceleration structures at `layout(set = n, binding = resource)`,
+and the VM keys resources by
 `ResourceSlot { set, slot }`, where `slot` is the `resource` offset. A shader
 reads at most `besl::MAX_DESCRIPTOR_SETS` sets, and each generator rejects a
 program past it. See [Descriptor sets](/docs/develop/rendering/descriptor-sets)
@@ -429,7 +431,7 @@ A change to this lowering must keep these rules:
 | --- | --- |
 | `RayGeneration`, `ClosestHit` | `#version 460`, with `#pragma shader_stage(raygen)` or `#pragma shader_stage(callable)` and `GL_EXT_ray_tracing`. |
 | `Hit` | A struct with the members in reference order. `distance` is reserved in GLSL, so that member is `besl_distance`. |
-| `AccelerationStructure` | `uniform accelerationStructureEXT` at its binding, with `GL_EXT_ray_query`. |
+| `AccelerationStructure` | `uniform accelerationStructureEXT` at `layout(set = s, binding = b)`, where `s` is its set and `b` its first descriptor in the set, with `GL_EXT_ray_query`. The helpers take the structure as a parameter. |
 | `intersect` | `_besl_intersect`: a ray query with `gl_RayFlagsOpaqueEXT`. A hit's record is the committed intersection's instance shader binding table offset plus its geometry index. A miss returns the hit that the reference specifies for one. |
 | `trace_occlusion` | `_besl_trace_occlusion`: a ray query with `gl_RayFlagsOpaqueEXT` and `gl_RayFlagsTerminateOnFirstHitEXT`, which reports whether it committed any triangle. |
 | `invoke(hit, payload)` | `_besl_invoke`, which writes the payload and the hit into the callable data and calls `executeCallableEXT(hit.record, 0)` when the hit's distance is zero or more. For a negative distance or one that isn't a number, it returns the payload unchanged. |

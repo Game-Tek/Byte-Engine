@@ -288,6 +288,10 @@ impl Generator {
 			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, name, r#type, *id),
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
+					// HLSL float4x3 has four rows, so row-major packing reads the four stored BESL columns as its rows.
+					if type_name == "mat4x3f" {
+						string.push_str("row_major ");
+					}
 					// A member may be a user struct, which is declared under its escaped name.
 					Self::type_identifier(type_name).push_to(string);
 					string.push(' ');
@@ -442,9 +446,9 @@ impl Generator {
 						// A UAV (unordered access view) for images the shader writes, and an SRV (shader resource view) for
 						// images it only reads, which binds as a sampled image. Both read with `image[coord]`.
 						let texture_type = if read_only { "Texture2D" } else { "RWTexture2D" };
-						let element_type = match format.as_str() {
-							"r8ui" | "r16ui" | "r32ui" => "uint",
-							"r16" => "unorm float4",
+						let element_type = match format.as_deref() {
+							Some("r8ui" | "r16ui" | "r32ui") => "uint",
+							Some("r16") => "unorm float4",
 							_ => "float4",
 						};
 
@@ -549,8 +553,9 @@ impl Generator {
 			"// #pragma shader_stage({stage})\n// Requires: native 16-bit, wave, and 64-bit integer shader operations\n{requirement}"
 		);
 
-		// Matrix layout, then constants.
-		hlsl_block.push_str("#pragma pack_matrix(row_major)\nstatic const float PI = 3.14159265359;");
+		// Matrix layout, then constants. Buffers hold BESL matrices as their columns, so HLSL loads them column-major
+		// and they equal the BESL matrices; `mat4x3f` members override it, see the member declarations.
+		hlsl_block.push_str("#pragma pack_matrix(column_major)\nstatic const float PI = 3.14159265359;");
 
 		hlsl_block.push_str(ShaderFormatting::new(self.minified).break_str());
 		if requirements.uses_subgroup_intrinsics {

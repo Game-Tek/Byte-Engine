@@ -1,4 +1,4 @@
-//! Compute dispatch scenarios: unordered groups.
+//! Compute dispatch scenarios: unordered groups, and buffer struct members read at their offsets.
 
 use super::common::*;
 use super::*;
@@ -157,5 +157,119 @@ pub(super) fn unordered_dispatches_write_their_own_rows(
 		pixels[width..2 * width].iter().all(|pixel| *pixel == green),
 		"row 1: {:?}",
 		&pixels[width..]
+	);
+}
+
+/// The kernel in GLSL. It reads struct members of a buffer declared by set and binding, which the pipeline maps to the
+/// buffer's heap slot, and writes them to the output buffer.
+const BOUND_BUFFER_GLSL: &str = r#"
+#version 460
+#pragma shader_stage(compute)
+#extension GL_EXT_scalar_block_layout : require
+layout(local_size_x = 1) in;
+struct Layer { vec4 shape; vec4 low; vec4 high; };
+layout(set = 0, binding = 0, scalar) readonly buffer Parameters { mat4 transform; Layer layers[2]; vec4 tail; } parameters;
+layout(set = 0, binding = 1, scalar) writeonly buffer Results { vec4 results[]; } results;
+void main() {
+	results.results[0] = parameters.layers[0].shape;
+	results.results[1] = parameters.layers[1].high;
+	results.results[2] = parameters.tail;
+}
+"#;
+
+/// The kernel in MSL. See [`BOUND_BUFFER_GLSL`].
+const BOUND_BUFFER_MSL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+struct Layer { float4 shape; float4 low; float4 high; };
+struct Parameters { float4x4 transform; Layer layers[2]; float4 tail; };
+struct Resources {
+	device const Parameters* parameters [[id(0)]];
+	device float4* results [[id(1)]];
+};
+kernel void bound_buffer_main(constant Resources& resources [[buffer(16)]]) {
+	resources.results[0] = resources.parameters->layers[0].shape;
+	resources.results[1] = resources.parameters->layers[1].high;
+	resources.results[2] = resources.parameters->tail;
+}
+"#;
+
+/// A buffer's struct members read from their own offsets, past a matrix and inside an array of structs.
+///
+/// Word `i` of the input holds `i`, so each result names the words it came from. Vulkan drivers have read such
+/// members from the buffer's start when the shader reached the buffer through the heap alias, so shaders declare
+/// buffers by set and binding.
+pub(super) fn bound_buffer_struct_members_read_at_their_offsets(
+	device: &mut impl ghi::context::Context,
+	queue_handle: QueueHandle,
+) {
+	let layout = ghi::DescriptorSetLayout::new(
+		"Bound Buffer Members",
+		[
+			ghi::ShaderResourceDescriptor::single(
+				ghi::ResourceSlot::new(0),
+				ghi::ResourceKind::StorageBuffer,
+				ghi::AccessPolicies::READ,
+			),
+			ghi::ShaderResourceDescriptor::single(
+				ghi::ResourceSlot::new(1),
+				ghi::ResourceKind::StorageBuffer,
+				ghi::AccessPolicies::WRITE,
+			),
+		],
+	);
+	let shader = super::ray_tracing::native_shader(
+		device,
+		"Bound Buffer Members",
+		ShaderTypes::Compute,
+		(BOUND_BUFFER_GLSL, BOUND_BUFFER_MSL, "bound_buffer_main"),
+		[ghi::ShaderDescriptorSet::new(layout.clone())],
+	);
+	let pipeline = device.create_compute_pipeline(pipelines::compute::Builder::new(
+		&[],
+		ShaderParameter::new(&shader, ShaderTypes::Compute),
+	));
+	let parameters = device.build_buffer::<[f32]>(
+		ghi::buffer::Builder::new(Uses::Storage)
+			.name("Bound Buffer Parameters")
+			.length(44)
+			.device_accesses(DeviceAccesses::HostToDevice),
+	);
+	for (index, word) in device.get_mut_buffer_slice(parameters).iter_mut().enumerate() {
+		*word = index as f32;
+	}
+	device.sync_buffer(parameters);
+	let results = device.build_buffer::<[[f32; 4]]>(
+		ghi::buffer::Builder::new(Uses::Storage)
+			.name("Bound Buffer Results")
+			.length(3)
+			.device_accesses(DeviceAccesses::DeviceToHost),
+	);
+	let set = device.create_descriptor_set(None, &layout);
+	device.write(&[
+		ghi::DescriptorWrite::buffer(set, ghi::ResourceSlot::new(0), parameters.into()),
+		ghi::DescriptorWrite::buffer(set, ghi::ResourceSlot::new(1), results.into()),
+	]);
+
+	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
+	let synchronizer = device.create_synchronizer(None, true);
+	device
+		.queue(queue_handle)
+		.execute(Some(FrameRequest::new(0, synchronizer)), &[], synchronizer, |execution| {
+			execution.record(command_buffer, |recording| {
+				recording
+					.bind_compute_pipeline(pipeline)
+					.bind_descriptor_sets(&[set])
+					.dispatch(DispatchExtent::new(Extent::line(1), Extent::line(1)));
+			});
+			[]
+		});
+	device.wait();
+	assert!(!device.has_errors());
+
+	// The layers start after the 16-word matrix and take 12 words each; the tail follows them at word 40.
+	assert_eq!(
+		device.get_buffer_slice(results),
+		&[[16.0, 17.0, 18.0, 19.0], [36.0, 37.0, 38.0, 39.0], [40.0, 41.0, 42.0, 43.0]]
 	);
 }

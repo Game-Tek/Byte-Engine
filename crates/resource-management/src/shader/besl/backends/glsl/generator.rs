@@ -314,8 +314,8 @@ impl Generator {
 			let _ = writeln!(glsl_block, "shared uint {};", mesh_shading::TASK_MESH_COUNT);
 		}
 
-		// BESL matrices are always row major in uniform and storage buffers.
-		glsl_block.push_str("layout(row_major) uniform;layout(row_major) buffer;\n");
+		// Buffers hold matrices as their column vectors back to back, as `ghi::pod` lays them out, which is GLSL's
+		// default column-major layout.
 
 		glsl_block.push_str("const float PI = 3.14159265359;");
 		glsl_block.push_str(
@@ -384,9 +384,9 @@ impl Generator {
 		}
 	}
 
-	/// Writes the descriptor `binding` names, or element `index` of it when it is an array, read from the heap aliases
-	/// its declaration made. A texture the shader samples is combined with its sampler, as GLSL's texture functions
-	/// take it.
+	/// Writes the descriptor `binding` names, or element `index` of it when it is an array, through the variable or heap
+	/// alias its declaration made. A texture the shader samples is combined with its sampler, as GLSL's texture
+	/// functions take it.
 	fn emit_binding_access(&mut self, string: &mut String, binding: &besl::NodeReference, index: Option<&besl::NodeReference>) {
 		let node = binding.borrow();
 		let besl::Nodes::Binding { name, r#type, .. } = node.node() else {
@@ -399,13 +399,38 @@ impl Generator {
 				self.emit_texture_and_sampler(string, binding, index);
 				string.push(')');
 			}
-			besl::BindingTypes::BufferArray { .. } => {
-				self.emit_resource_element(string, binding, index);
-				string.push('.');
+			// Structures and buffers are variables of their own, which the pipeline maps to their heap slots.
+			besl::BindingTypes::AccelerationStructure | besl::BindingTypes::Buffer { .. } | besl::BindingTypes::BufferArray { .. } => {
 				Self::identifier(name).push_to(string);
+				if let Some(index) = index {
+					string.push_str("[nonuniformEXT(");
+					self.emit_node(string, index);
+					string.push_str(")]");
+				}
+				// A buffer array's block holds one member with the binding's name.
+				if let besl::BindingTypes::BufferArray { .. } = r#type {
+					string.push('.');
+					Self::identifier(name).push_to(string);
+				}
 			}
 			_ => self.emit_resource_element(string, binding, index),
 		}
+	}
+
+	/// Writes the acceleration structure binding `argument` names, or the element of it that `argument` picks, which
+	/// the ray query helpers trace.
+	fn emit_acceleration_structure(&mut self, string: &mut String, argument: &besl::NodeReference) {
+		// A descriptor array element names its binding through an accessor.
+		let (binding, index) = match argument.borrow().node() {
+			besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) => (direct_binding(left), Some(right.clone())),
+			_ => (direct_binding(argument), None),
+		};
+		let Some(binding) = binding else {
+			unreachable!(
+				"`intersect` and `trace_occlusion` take an acceleration structure binding, which semantic analysis checks."
+			);
+		};
+		self.emit_binding_access(string, &binding, index.as_ref());
 	}
 
 	/// Writes the resource heap element of `binding`, or of its element `index`.
@@ -643,6 +668,25 @@ fn hoist_push_constant(order: &mut Vec<besl::NodeReference>) -> bool {
 	true
 }
 
+/// Returns the BESL type a stage input or output of type `besl_type` is declared as between stages.
+///
+/// Vulkan passes 16-bit values between stages only on devices with `storageInputOutput16`, which NVIDIA GPUs lack,
+/// and 8-bit values on none, so narrow inputs and outputs travel as their 32-bit types. Writes widen implicitly, and
+/// reads narrow back; see `emit_expression_member`.
+fn interface_type(besl_type: &str) -> &str {
+	match besl_type {
+		"f16" => "f32",
+		"vec2f16" => "vec2f",
+		"vec3f16" => "vec3f",
+		"vec4f16" => "vec4f",
+		"u8" | "u16" => "u32",
+		"vec2u16" => "vec2u",
+		"vec3u16" => "vec3u",
+		"vec4u16" => "vec4u",
+		other => other,
+	}
+}
+
 /// Returns how a texture of BESL format `format` is declared in the resource heap: as a texture without its sampler.
 fn texture_declaration(format: &str) -> &'static str {
 	match format {
@@ -772,8 +816,17 @@ impl NodeEmitter for Generator {
 			| "ray_origin"
 			| "ray_direction" => Self::emit_hit_value(string, name),
 			// These call the helpers the ray tracing prelude and the callable data declare.
-			"intersect" | "trace_occlusion" | "invoke" => {
+			"intersect" | "trace_occlusion" => {
 				let _ = write!(string, "_besl_{name}(");
+				self.emit_acceleration_structure(string, &arguments[0]);
+				for argument in &arguments[1..] {
+					self.emit_separator(string);
+					self.emit_node(string, argument);
+				}
+				string.push(')');
+			}
+			"invoke" => {
+				string.push_str("_besl_invoke(");
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
@@ -1118,10 +1171,24 @@ impl NodeEmitter for Generator {
 		}
 		let source = source.borrow();
 		match source.node() {
-			besl::Nodes::Input { name: input_name, .. } if name == input_name => match name {
+			besl::Nodes::Input {
+				name: input_name,
+				format,
+				..
+			} if name == input_name => match name {
 				besl::VERTEX_INDEX_BUILTIN => string.push_str("uint(gl_VertexIndex)"),
 				besl::INSTANCE_INDEX_BUILTIN => string.push_str("uint(gl_InstanceIndex)"),
-				_ => return false,
+				_ => {
+					// A narrow input arrives widened, so reading it narrows it back to the type the shader declared.
+					let format = format.borrow();
+					let besl_type = format.get_name().unwrap();
+					if interface_type(besl_type) == besl_type {
+						return false;
+					}
+					let _ = write!(string, "{}(", Self::type_from_besl(besl_type));
+					Self::identifier(name).push_to(string);
+					string.push(')');
+				}
 			},
 			besl::Nodes::Output {
 				name: output_name,
@@ -1256,7 +1323,7 @@ impl NodeEmitter for Generator {
 					},
 					// Vulkan links a per-primitive mesh output only to an input declared per-primitive too.
 					if *per_primitive { "perprimitiveEXT " } else { "" },
-					Self::type_from_besl(besl_type),
+					Self::type_from_besl(interface_type(besl_type)),
 					Self::identifier(name)
 				);
 			}
@@ -1284,7 +1351,7 @@ impl NodeEmitter for Generator {
 				let _ = write!(
 					string,
 					"layout(location={location}){space_char}{qualifier}out {} {}",
-					Self::type_from_besl(besl_type),
+					Self::type_from_besl(interface_type(besl_type)),
 					Self::identifier(name)
 				);
 				if let Some(count) = count {
@@ -1332,7 +1399,67 @@ impl NodeEmitter for Generator {
 				update,
 				statements,
 			} => self.emit_for_loop_node(string, initializer, condition, update, statements),
-			// Each descriptor declares an unsized array that aliases the resource heap at 64-byte slots, which code
+			// Acceleration structures and buffers are declared at their set and first descriptor, which the pipeline maps
+			// to the set's heap range. Read through the heap alias instead, NVIDIA drivers lose the device when a ray query
+			// traverses a structure, and read a buffer's struct members from the buffer's start instead of their offset.
+			besl::Nodes::Binding {
+				name,
+				read,
+				write,
+				r#type:
+					r#type @ (besl::BindingTypes::AccelerationStructure
+					| besl::BindingTypes::Buffer { .. }
+					| besl::BindingTypes::BufferArray { .. }),
+				placement,
+				count,
+				..
+			} => {
+				let Some(placement) = placement else {
+					unreachable!("`generate` admits only placed bindings.");
+				};
+				let _ = write!(string, "layout(set={},binding={}", placement.set, placement.resource);
+				match r#type {
+					besl::BindingTypes::AccelerationStructure => string.push_str(") uniform accelerationStructureEXT "),
+					_ => {
+						let access = match (*read, *write) {
+							(true, false) => "readonly ",
+							(false, true) => "writeonly ",
+							_ => "",
+						};
+						let _ = write!(string, ",scalar) {access}buffer _{name}{{");
+					}
+				}
+				match r#type {
+					besl::BindingTypes::Buffer { members } => {
+						for member in members {
+							self.emit_node(string, member);
+							self.emit_statement_end(string);
+						}
+						string.push('}');
+					}
+					// The block's one member has the binding's name, which `emit_binding_access` reads it through.
+					besl::BindingTypes::BufferArray { element, fixed } => {
+						Self::emit_type_name(string, element.borrow().get_name().unwrap());
+						string.push(' ');
+						Self::identifier(name).push_to(string);
+						// Runtime arrays leave the count to the bound buffer.
+						match fixed {
+							Some(fixed) => {
+								let _ = write!(string, "[{}];", fixed.count);
+							}
+							None => string.push_str("[];"),
+						}
+						string.push('}');
+					}
+					_ => {}
+				}
+				Self::identifier(name).push_to(string);
+				if let Some(count) = count {
+					let _ = write!(string, "[{count}]");
+				}
+				self.emit_statement_end(string);
+			}
+			// Each image descriptor declares an unsized array that aliases the resource heap at 64-byte slots, which code
 			// indexes from its set's base index. See `Generator::emit_binding_access`.
 			besl::Nodes::Binding {
 				name,
@@ -1349,9 +1476,8 @@ impl NodeEmitter for Generator {
 				// A sampled image is a texture without a sampler, which takes no format or access qualifier.
 				let sampled_image = r#type.is_sampled_image(*read, *write);
 				let binding_type = match r#type {
-					besl::BindingTypes::Buffer { .. } | besl::BindingTypes::BufferArray { .. } => "buffer",
 					besl::BindingTypes::Image { format, .. } => {
-						let unsigned = matches!(format.as_str(), "r8ui" | "r16ui" | "r32ui");
+						let unsigned = matches!(format.as_deref(), Some("r8ui" | "r16ui" | "r32ui"));
 						match (sampled_image, unsigned) {
 							(true, true) => "uniform utexture2D",
 							(true, false) => "uniform texture2D",
@@ -1361,59 +1487,32 @@ impl NodeEmitter for Generator {
 					}
 					// The texture alone lives in the resource heap; its sampler is combined with it where it is read.
 					besl::BindingTypes::CombinedImageSampler { format, .. } => texture_declaration(format),
-					besl::BindingTypes::AccelerationStructure => "uniform accelerationStructureEXT",
+					besl::BindingTypes::AccelerationStructure
+					| besl::BindingTypes::Buffer { .. }
+					| besl::BindingTypes::BufferArray { .. } => {
+						unreachable!("Acceleration structures and buffers are declared above.")
+					}
 				};
 
 				let _ = write!(
 					string,
 					"layout(descriptor_heap,descriptor_stride={RESOURCE_DESCRIPTOR_STRIDE}"
 				);
-				match r#type {
-					besl::BindingTypes::Buffer { .. } | besl::BindingTypes::BufferArray { .. } => string.push_str(",scalar"),
-					besl::BindingTypes::Image { format } if format != "unknown" && !sampled_image => {
-						string.push(',');
-						string.push_str(format);
-					}
-					_ => {}
+				if let besl::BindingTypes::Image { format: Some(format) } = r#type
+					&& !sampled_image
+				{
+					string.push(',');
+					string.push_str(format);
 				}
-				// Sampled images and acceleration structures take no access qualifier.
+				// Sampled images take no access qualifier.
 				let access = match r#type {
-					besl::BindingTypes::CombinedImageSampler { .. } | besl::BindingTypes::AccelerationStructure => "",
+					besl::BindingTypes::CombinedImageSampler { .. } => "",
 					_ if sampled_image => "",
 					_ if *read && !*write => "readonly ",
 					_ if *write && !*read => "writeonly ",
 					_ => "",
 				};
 				let _ = write!(string, ") {access}{binding_type} ");
-
-				match r#type {
-					besl::BindingTypes::Buffer { members } => {
-						let _ = write!(string, "_{name}{{");
-						for member in members {
-							self.emit_node(string, member);
-							self.emit_statement_end(string);
-						}
-						string.push('}');
-					}
-					// The block's one member has the binding's name, which `emit_binding_access` reads it through.
-					besl::BindingTypes::BufferArray { element, fixed } => {
-						let _ = write!(string, "_{name}{{");
-						Self::emit_type_name(string, element.borrow().get_name().unwrap());
-						string.push(' ');
-						Self::identifier(name).push_to(string);
-						// Runtime arrays leave the count to the bound buffer.
-						match fixed {
-							Some(fixed) => {
-								let _ = write!(string, "[{}];", fixed.count);
-							}
-							None => string.push_str("[];"),
-						}
-						string.push('}');
-					}
-					besl::BindingTypes::Image { .. }
-					| besl::BindingTypes::CombinedImageSampler { .. }
-					| besl::BindingTypes::AccelerationStructure => {}
-				}
 				Self::identifier(name).push_to(string);
 				string.push_str("[]");
 
@@ -1425,12 +1524,21 @@ impl NodeEmitter for Generator {
 				}
 			}
 			besl::Nodes::Const { name, r#type, value } => {
+				let type_name = r#type.borrow().get_name().unwrap().to_string();
 				string.push_str("const ");
-				Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
+				Self::emit_type_name(string, &type_name);
 				string.push(' ');
 				Self::identifier(name).push_to(string);
 				string.push_str(" = ");
+				// GLSL converts no literal to a narrow scalar implicitly, so a narrow constant constructs its value.
+				let narrow = matches!(type_name.as_str(), "f16" | "u16" | "u8");
+				if narrow {
+					let _ = write!(string, "{}(", Self::type_from_besl(&type_name));
+				}
 				self.emit_node(string, value);
+				if narrow {
+					string.push(')');
+				}
 				let _ = write!(string, ";{break_char}");
 			}
 		}

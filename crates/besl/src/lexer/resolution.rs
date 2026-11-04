@@ -265,7 +265,7 @@ pub(super) fn resolve_descriptor_type(
 			sampler: None,
 		}),
 		"StorageImage" => Ok(BindingTypes::Image {
-			format: format.unwrap_or("unknown").to_string(),
+			format: format.map(str::to_string),
 		}),
 		"AccelerationStructure" => Ok(BindingTypes::AccelerationStructure),
 		struct_name => {

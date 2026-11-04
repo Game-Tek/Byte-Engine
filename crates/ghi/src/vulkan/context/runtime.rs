@@ -25,6 +25,8 @@ impl Context {
 			descriptor_sets: Vec::with_capacity(512),
 			// Created with the first set, so a context that binds no descriptors, such as a loader's, reserves no heap memory.
 			descriptor_heaps: None,
+			open_recording_sets: Vec::new(),
+			open_recording_retirements: Vec::new(),
 			descriptor_references: HashMap::default(),
 			descriptor_merge_index: HashMap::default(),
 			planning_storage: Default::default(),
@@ -554,10 +556,10 @@ impl Context {
 	pub(crate) fn process_tasks(&mut self, sequence_index: u8) {
 		// Tasks may queue more tasks, such as resizes retiring old storage, so collect those separately and keep them.
 		let mut tasks = std::mem::take(&mut self.tasks);
-		let completed_frame = self.completed_frame;
-
 		tasks.retain(|task| {
-			if task.frame.is_some_and(|frame| frame != sequence_index) || task.is_pending(completed_frame) {
+			if task.frame.is_some_and(|frame| frame != sequence_index)
+				|| task.is_pending(|completion| self.completion_reached(completion))
+			{
 				return true;
 			}
 

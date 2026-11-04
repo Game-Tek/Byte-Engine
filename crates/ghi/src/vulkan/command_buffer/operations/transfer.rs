@@ -125,8 +125,31 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			layout: attachment.layout,
 		}))
 		.apply(self);
+		// Viewport and scissor are dynamic state that carries into rendering, so they are set now and `set_scissor`
+		// never has to begin rendering early. Each pass starts with the scissor covering its whole extent.
+		let viewports = [vk::Viewport {
+			x: 0.0,
+			y: extent.height() as f32,
+			width: extent.width() as f32,
+			height: -(extent.height() as f32),
+			min_depth: 0.0,
+			max_depth: 1.0,
+		}];
+		let render_area = vk::Rect2D::default().extent(vk::Extent2D {
+			width: extent.width(),
+			height: extent.height(),
+		});
+		let command_buffer = self.get_command_buffer().command_buffer;
+		unsafe {
+			self.device.cmd_set_viewport(command_buffer, 0, &viewports);
+			self.device.cmd_set_scissor(command_buffer, 0, &[render_area]);
+		}
+		self.active_render_extent = extent;
 		// Delay vkCmdBeginRendering until the first draw so descriptor resources can transition outside rendering.
 		self.pending_rendering = Some((extent, attachments.iter().copied().collect()));
+		// No barrier may run inside rendering, so the pass's draws form one unordered group: the first consumption of a
+		// resource plans its barrier before rendering begins, and later draws record none for it.
+		self.unordered_group = Some(SmallVec::new());
 		self
 	}
 
@@ -469,6 +492,10 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				.expect("Failed to submit Vulkan command buffer. The most likely cause is that the command buffer was not recorded for this queue.");
 		}
 		self.device.synchronizers[synchronizer_handle.index() as usize].armed = true;
+		if self.frame_key.is_none() {
+			self.device
+				.settle_recording_reads(crate::vulkan::Completion::Synchronizer(synchronizer_handle));
+		}
 		if let Some(builds) = self.builds.take() {
 			self.device.submit_recorded_builds(
 				builds,

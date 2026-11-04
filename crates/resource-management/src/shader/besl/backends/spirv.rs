@@ -23,7 +23,7 @@ mod compilation {
 		let (version, revision) = shaderc::get_spirv_version();
 
 		Ok(format!(
-			"shaderc spirv={version:#x}.{revision}; generator={generator:#010x}; probe={:x}; vulkan=1.4; target=spirv1.6; optimization=performance; invert_y; debug_info={}",
+			"shaderc spirv={version:#x}.{revision}; generator={generator:#010x}; probe={:x}; vulkan=1.4; target=spirv1.6; optimization=performance; debug_info={}",
 			md5::compute(&probe),
 			cfg!(debug_assertions)
 		))
@@ -67,8 +67,8 @@ void main() {
 		if cfg!(debug_assertions) {
 			options.set_generate_debug_info();
 		}
+		// Raster passes flip y with a negative viewport height, so the compiler leaves positions as the shader writes them.
 		options.set_target_spirv(shaderc::SpirvVersion::V1_6);
-		options.set_invert_y(true);
 
 		match compiler.compile_into_spirv(glsl, shaderc::ShaderKind::InferFromSource, name, "main", Some(&options)) {
 			Ok(binary) => Ok(Box::from(binary.as_binary_u8())),

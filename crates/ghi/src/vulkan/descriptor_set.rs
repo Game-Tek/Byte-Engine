@@ -12,9 +12,10 @@ pub(crate) struct RetainedDescriptor {
 
 /// The `DescriptorSet` struct is a descriptor set that lives in the context's descriptor heaps, where shaders read it.
 ///
-/// It keeps the writes it was given, and one copy in the heaps for each frame in flight, which commands of that
-/// frame sequence bind. A copy rewrites only the elements whose writes, or whose resources, changed since commands
-/// last bound it. See [`crate::vulkan::Context::bind_descriptor_set`].
+/// It keeps the writes it was given, and copies in the heaps that commands bind: one for recordings outside frames,
+/// and one for each frame in flight, which commands of that frame sequence bind. A copy rewrites only the elements
+/// whose writes, or whose resources, changed since commands last bound it. See
+/// [`crate::vulkan::Context::bind_descriptor_set`].
 pub struct DescriptorSet {
 	/// The set that follows this one in its chain, which is always `None`: a set holds its frame-local copies itself.
 	pub next: Option<DescriptorSetHandle>,
@@ -26,8 +27,9 @@ pub struct DescriptorSet {
 	pub(crate) sampler_count: u32,
 	/// The write of each array element, in layout order, or `None` for an element that was never written.
 	pub(crate) descriptors: Box<[Option<RetainedDescriptor>]>,
-	/// One copy per frame sequence.
-	pub(crate) copies: SmallVec<[SetCopy; super::MAX_FRAMES_IN_FLIGHT]>,
+	/// The copy recordings outside frames bind, then one copy per frame sequence, in the order [`CopyKey::index`]
+	/// gives.
+	pub(crate) copies: SmallVec<[SetCopy; super::MAX_FRAMES_IN_FLIGHT + 1]>,
 }
 
 impl DescriptorSet {
@@ -59,9 +61,49 @@ pub(crate) struct SetCopy {
 	pub(crate) dirty: Vec<u32>,
 	/// The resources the copy makes commands access, merged by resource and layout.
 	pub(crate) consumptions: Vec<SetConsumption>,
-	/// The frame whose commands last bound the copy. Until that frame completes, a change moves the copy to new
-	/// heap ranges instead of writing over the ones those commands read.
-	pub(crate) bound_frame: Option<u64>,
+	/// The work that last bound the copy. Until it completes, a change moves the copy to new heap ranges instead of
+	/// writing over the ones its commands read.
+	pub(crate) reader: Option<Reader>,
+}
+
+/// The `CopyKey` enum names the copy of a set that a recording binds: the one recordings outside frames share, or
+/// the one of a frame's sequence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CopyKey {
+	/// A recording outside frames, such as a GPU worker's, which its synchronizer retires.
+	Recording,
+	/// Frame `frame`, on frame sequence `sequence`.
+	Frame { sequence: u8, frame: u64 },
+}
+
+impl CopyKey {
+	/// Returns the index of the copy in [`DescriptorSet::copies`].
+	pub(crate) fn index(self) -> usize {
+		match self {
+			CopyKey::Recording => 0,
+			CopyKey::Frame { sequence, .. } => 1 + sequence as usize,
+		}
+	}
+
+	/// Returns the frame sequence whose resources the copy's writes resolve to. Recordings outside frames read the
+	/// first sequence's.
+	pub(crate) fn sequence(self) -> u8 {
+		match self {
+			CopyKey::Recording => 0,
+			CopyKey::Frame { sequence, .. } => sequence,
+		}
+	}
+}
+
+/// The `Reader` enum is the work that last bound a set copy, which decides whether the copy may still be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reader {
+	/// The frame of this index, whose completion its frame sequence's next frame waits for.
+	Frame(u64),
+	/// A recording outside frames that has not executed yet.
+	OpenRecording,
+	/// A recording outside frames that executed, and the GPU work it completes with.
+	Recording(super::Completion),
 }
 
 /// The `SetConsumption` struct is one resource that a bound set makes commands access, and which of the set's

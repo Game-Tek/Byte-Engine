@@ -566,7 +566,8 @@ impl<'a> RenderPassBuilder<'a> {
 	/// Creates a replacement for the color image named `main`.
 	///
 	/// The renderer supplies the sink swapchain when this pass is terminal. In every other position, this creates and
-	/// aliases the requested image, adding [`simple_tile::output_uses`] to the uses `builder` asks for. Bind the
+	/// aliases the requested image, adding [`simple_tile::output_uses`] and [`ghi::Uses::Image`], which later passes
+	/// need to sample `main`, to the uses `builder` asks for. Bind the
 	/// returned target without inspecting its variant, and take its format from [`MainRenderTarget::format`], because
 	/// the swapchain format can differ from the intermediate format: request a tile pipeline for that format, write a
 	/// compute output as a formatless storage image, and derive a raster attachment from the target. Next, bind it with
@@ -590,8 +591,9 @@ impl<'a> RenderPassBuilder<'a> {
 				format: self.context.swapchain_format(),
 			}
 		} else {
-			// The copy that forwards `main` while the pass is bypassed writes the replacement as a tile output.
-			let uses = simple_tile::output_uses(&*self.context);
+			// The copy that forwards `main` while the pass is bypassed writes the replacement as a tile output, and the
+			// passes after this one sample it as `main`.
+			let uses = simple_tile::output_uses(&*self.context) | ghi::Uses::Image;
 			let output = self.create_render_target(builder.additional_uses(uses));
 			self.alias(name, "main");
 			MainRenderTarget {

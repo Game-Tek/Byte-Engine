@@ -53,10 +53,10 @@ layout(local_size_x = 1) in;
 // The pipeline index of the shader's set 0, and each set's heap base indices.
 layout(constant_id = 1984) const uint SET0 = 0u;
 layout(push_constant) uniform Sets { uvec2 sets[15]; } push_constants;
-layout(descriptor_heap, descriptor_stride = 64) uniform accelerationStructureEXT scenes[];
+// The pipeline maps the set's structures to the set's heap range by binding, the first descriptor of each.
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 layout(descriptor_heap, descriptor_stride = 64, std430) readonly buffer Origins { vec4 origins[]; } origin_buffers[];
 layout(descriptor_heap, descriptor_stride = 64, std430) writeonly buffer Hits { uint hits[]; } hit_buffers[];
-#define scene scenes[push_constants.sets[SET0].x]
 #define origins origin_buffers[push_constants.sets[SET0].x + 1].origins
 #define hits hit_buffers[push_constants.sets[SET0].x + 2].hits
 void main() {
@@ -749,10 +749,10 @@ const RAY_GENERATION_GLSL: &str = concat!(
 	glsl_pipeline_prelude!("raygen"),
 	r#"
 layout(constant_id = 1984) const uint SET0 = 0u;
-layout(descriptor_heap, descriptor_stride = 64) uniform accelerationStructureEXT scenes[];
+// The pipeline maps the set's structures to the set's heap range by binding, the first descriptor of each.
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 layout(descriptor_heap, descriptor_stride = 64, std430) readonly buffer Origins { vec4 origins[]; } origin_buffers[];
 layout(descriptor_heap, descriptor_stride = 64, std430) writeonly buffer Payloads { Payload payloads[]; } payload_buffers[];
-#define scene scenes[push_constants.sets[SET0].x]
 #define origins origin_buffers[push_constants.sets[SET0].x + 1].origins
 #define payloads payload_buffers[push_constants.sets[SET0].x + 2].payloads
 layout(location = 0) callableDataEXT Call call;

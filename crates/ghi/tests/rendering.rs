@@ -136,6 +136,13 @@ fn unordered_dispatches_write_their_own_rows() {
 	run(|context, queue_handle| compute::unordered_dispatches_write_their_own_rows(context, queue_handle, None));
 }
 
+// The DX12 backend reads storage buffers as structured views of one element type, which this kernel's buffer isn't.
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn bound_buffer_struct_members_read_at_their_offsets() {
+	run(compute::bound_buffer_struct_members_read_at_their_offsets);
+}
+
 /// Runs the unordered dispatch scenario on a first device, then again on a second device that loaded the first
 /// one's pipeline cache, and checks that the second run still computes the right pixels with nothing new to save,
 /// because nothing was compiled.

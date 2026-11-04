@@ -48,6 +48,11 @@ pub struct Context {
 	pub(super) descriptor_sets: Vec<DescriptorSet>,
 	/// The heaps every descriptor set lives in, created with the first set, so a context without sets reserves none.
 	pub(super) descriptor_heaps: Option<DescriptorHeaps>,
+	/// The sets whose recording copy a recording outside frames bound and has not executed yet. See
+	/// [`Self::settle_recording_reads`].
+	pub(super) open_recording_sets: Vec<usize>,
+	/// The heap ranges that recording read and that moved, to return once it completes.
+	pub(super) open_recording_retirements: Vec<crate::vulkan::Tasks>,
 	/// The set elements whose writes name each resource, by the resource's first frame-local copy, so replacing the
 	/// resource's storage rewrites only them. A swapchain's writes are listed under its first image.
 	descriptor_references: HashMap<super::Handles, SmallVec<[(u32, u32); 2]>>,

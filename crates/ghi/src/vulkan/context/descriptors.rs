@@ -1,7 +1,7 @@
 use super::*;
 use crate::descriptors::WriteData;
-use crate::vulkan::descriptor_set::{RetainedDescriptor, SetConsumption, SetCopy};
-use crate::vulkan::{FIXED_SAMPLER_COUNT, RESOURCE_DESCRIPTOR_SIZE, holds_samplers};
+use crate::vulkan::descriptor_set::{CopyKey, Reader, RetainedDescriptor, SetConsumption, SetCopy};
+use crate::vulkan::{Completion, FIXED_SAMPLER_COUNT, RESOURCE_DESCRIPTOR_SIZE, holds_samplers};
 
 impl Context {
 	/// Creates one mapped descriptor heap of `size` bytes that counts in descriptors of `unit` bytes.
@@ -135,8 +135,8 @@ impl Context {
 		DescriptorHeaps { resource, sampler }
 	}
 
-	/// Creates a set for `layout` with one heap copy per frame in flight, whose ranges it holds until the context
-	/// drops.
+	/// Creates a set for `layout` with a heap copy for recordings outside frames and one per frame in flight, whose
+	/// ranges it holds until the context drops.
 	pub(crate) fn create_descriptor_set_internal(
 		&mut self,
 		layout: &crate::shader::DescriptorSetLayout,
@@ -157,7 +157,7 @@ impl Context {
 			self.descriptor_heaps = Some(self.create_descriptor_heaps());
 		}
 		let element_count = layout.element_count();
-		let copies = (0..self.frames)
+		let copies = (0..=self.frames)
 			.map(|_| self.allocate_set_copy(element_count, sampler_count))
 			.collect();
 
@@ -183,7 +183,7 @@ impl Context {
 			sampler_base: heaps.sampler.allocate(sampler_count),
 			dirty: Vec::new(),
 			consumptions: Vec::new(),
-			bound_frame: None,
+			reader: None,
 		}
 	}
 
@@ -311,11 +311,12 @@ impl Context {
 		}
 	}
 
-	/// Readies the copy of the set `handle` that frame `frame`, on frame sequence `sequence_index`, binds as set
-	/// `position` of `pipeline`, and returns its resource and sampler heap base indices for the push data.
+	/// Readies the copy of the set `handle` that `key` names, which a recording binds as set `position` of
+	/// `pipeline`, and returns its resource and sampler heap base indices for the push data.
 	///
-	/// The copy writes the elements that changed since commands last bound it. Commands of the same frame may already
-	/// read it, so then the copy moves to new heap ranges, and its old ones return once the frame completes.
+	/// The copy writes the elements that changed since commands last bound it. When work that may still run read it,
+	/// the copy moves to new heap ranges, and its old ones return once that work completes. A recording outside frames
+	/// reads the copy until it executes; then [`Self::settle_recording_reads`] gives its completion.
 	///
 	/// # Panics
 	///
@@ -325,11 +326,10 @@ impl Context {
 		pipeline: graphics_hardware_interface::PipelineHandle,
 		position: usize,
 		handle: graphics_hardware_interface::DescriptorSetHandle,
-		sequence_index: u8,
-		frame: u64,
+		key: CopyKey,
 	) -> [u32; 2] {
 		let set_index = handle.index() as usize;
-		let sequence = sequence_index as usize;
+		let index = key.index();
 		{
 			let pipeline_set = &self.pipelines[pipeline.index() as usize].layout.sets[position];
 			let set = &self.descriptor_sets[set_index];
@@ -346,33 +346,63 @@ impl Context {
 			}
 		}
 
-		let copy = &mut self.descriptor_sets[set_index].copies[sequence];
-		let read_this_frame = copy.bound_frame.replace(frame) == Some(frame);
-		if !copy.dirty.is_empty() {
-			if read_this_frame {
-				self.move_set_copy(set_index, sequence);
+		let previous = self.descriptor_sets[set_index].copies[index].reader;
+		let reader = match key {
+			CopyKey::Frame { frame, .. } => Reader::Frame(frame),
+			CopyKey::Recording => Reader::OpenRecording,
+		};
+		if !self.descriptor_sets[set_index].copies[index].dirty.is_empty() {
+			// A frame's earlier frames on its sequence completed before it started, so only the frame itself may read the
+			// copy. A recording outside frames may still run until its synchronizer signals.
+			let in_use = match previous {
+				Some(Reader::Frame(frame)) => Some(Reader::Frame(frame)) == Some(reader),
+				Some(Reader::OpenRecording) => true,
+				Some(Reader::Recording(completion)) => !self.completion_reached(completion),
+				None => false,
+			};
+			if in_use {
+				self.move_set_copy(set_index, index, previous);
 			}
-			let mut dirty = std::mem::take(&mut self.descriptor_sets[set_index].copies[sequence].dirty);
+			let mut dirty = std::mem::take(&mut self.descriptor_sets[set_index].copies[index].dirty);
 			dirty.sort_unstable();
 			dirty.dedup();
-			self.write_set_elements(set_index, sequence_index, &dirty);
+			self.write_set_elements(set_index, key, &dirty);
 			dirty.clear();
-			self.descriptor_sets[set_index].copies[sequence].dirty = dirty;
-			self.rebuild_set_consumptions(set_index, sequence_index);
+			self.descriptor_sets[set_index].copies[index].dirty = dirty;
+			self.rebuild_set_consumptions(set_index, key);
 		}
-		let copy = &self.descriptor_sets[set_index].copies[sequence];
+		self.descriptor_sets[set_index].copies[index].reader = Some(reader);
+		if key == CopyKey::Recording && previous != Some(Reader::OpenRecording) {
+			self.open_recording_sets.push(set_index);
+		}
+		let copy = &self.descriptor_sets[set_index].copies[index];
 		[copy.resource_base, copy.sampler_base]
 	}
 
-	/// Moves one copy of a set to new heap ranges, marking every written element to write there, and returns its old
-	/// ranges once the frames started so far complete.
-	fn move_set_copy(&mut self, set_index: usize, sequence: usize) {
+	/// Gives the reads of the recording outside frames that executes now their `completion`: the set copies it bound,
+	/// and the heap ranges it read that moved, which return once it completes.
+	pub(crate) fn settle_recording_reads(&mut self, completion: Completion) {
+		let recording = CopyKey::Recording.index();
+		for set_index in std::mem::take(&mut self.open_recording_sets) {
+			let copy = &mut self.descriptor_sets[set_index].copies[recording];
+			if copy.reader == Some(Reader::OpenRecording) {
+				copy.reader = Some(Reader::Recording(completion));
+			}
+		}
+		for retired in std::mem::take(&mut self.open_recording_retirements) {
+			self.tasks.push(Task::after(retired, completion));
+		}
+	}
+
+	/// Moves copy `index` of a set to new heap ranges, marking every written element to write there, and returns its
+	/// old ranges once `reader`, the work that last read them, completes.
+	fn move_set_copy(&mut self, set_index: usize, index: usize, reader: Option<Reader>) {
 		let set = &mut self.descriptor_sets[set_index];
 		let (element_count, sampler_count) = (set.descriptors.len() as u32, set.sampler_count);
 		let heaps = self.descriptor_heaps.as_mut().expect(
 			"Missing Vulkan descriptor heaps. The most likely cause is that a set was bound before the first set created the heaps.",
 		);
-		let copy = &mut set.copies[sequence];
+		let copy = &mut set.copies[index];
 		let retired = Tasks::FreeDescriptorRanges {
 			resource_index: copy.resource_base,
 			resource_count: element_count,
@@ -385,7 +415,12 @@ impl Context {
 		let descriptors = &set.descriptors;
 		copy.dirty
 			.extend((0..element_count).filter(|&element| descriptors[element as usize].is_some()));
-		self.defer_destruction(retired);
+		match reader {
+			// The recording that read the ranges hasn't executed, so it learns its completion when it does.
+			Some(Reader::OpenRecording) => self.open_recording_retirements.push(retired),
+			Some(Reader::Recording(completion)) => self.tasks.push(Task::after(retired, completion)),
+			Some(Reader::Frame(_)) | None => self.defer_destruction(retired),
+		}
 	}
 
 	/// Returns the heap ranges a moved set copy held. [`Self::run_destruction_task`] calls it once the frames that read
@@ -403,19 +438,21 @@ impl Context {
 		}
 	}
 
-	/// Writes `elements` of one copy of a set into the heaps, each resolved to the resources of the copy's frame
+	/// Writes `elements` of the copy `key` names into the heaps, each resolved to the resources of the copy's frame
 	/// sequence. `elements` holds each element once.
-	fn write_set_elements(&self, set_index: usize, sequence_index: u8, elements: &[u32]) {
+	fn write_set_elements(&self, set_index: usize, key: CopyKey, elements: &[u32]) {
 		let properties = self.device.descriptor_heap_properties;
 		let set = &self.descriptor_sets[set_index];
-		let copy = &set.copies[sequence_index as usize];
+		let copy = &set.copies[key.index()];
+		let sequence_index = key.sequence();
 
 		// Each list stays on the stack for the few elements a change usually rewrites.
 		let mut address_writes = SmallVec::<[(vk::DescriptorType, vk::DeviceAddressRangeEXT, u32, u64); 8]>::new();
 		let mut image_writes = SmallVec::<
 			[(
 				vk::DescriptorType,
-				vk::ImageViewCreateInfo<'static>,
+				// `None` writes a null descriptor, for an image that has no memory yet.
+				Option<vk::ImageViewCreateInfo<'static>>,
 				vk::ImageLayout,
 				u32,
 				u64,
@@ -450,8 +487,11 @@ impl Context {
 					layout: image_layout,
 					mip_level,
 				} => {
-					let image = &self.images[image.index() as usize];
 					let descriptor_type = crate::vulkan::descriptor_type(resource.kind()).unwrap();
+					if descriptor_type == vk::DescriptorType::SAMPLED_IMAGE {
+						self.assert_sampleable(image);
+					}
+					let image = &self.images[image.index() as usize];
 					// Storage views address exactly one mip; a sampled image without a chosen mip exposes the whole chain.
 					let (base_mip_level, level_count) = match mip_level {
 						Some(mip_level) => (mip_level, 1),
@@ -460,7 +500,7 @@ impl Context {
 					};
 					image_writes.push((
 						descriptor_type,
-						self.descriptor_image_view_create_info(image, resource.texture_view(), base_mip_level, level_count),
+						self.descriptor_image_view(image, resource.texture_view(), base_mip_level, level_count),
 						texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None),
 						slot,
 						properties.image_descriptor_size,
@@ -471,10 +511,11 @@ impl Context {
 					sampler,
 					layout: image_layout,
 				} => {
+					self.assert_sampleable(image);
 					let image = &self.images[image.index() as usize];
 					image_writes.push((
 						vk::DescriptorType::SAMPLED_IMAGE,
-						self.descriptor_image_view_create_info(image, resource.texture_view(), 0, image.mip_levels),
+						self.descriptor_image_view(image, resource.texture_view(), 0, image.mip_levels),
 						texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None),
 						slot,
 						properties.image_descriptor_size,
@@ -526,15 +567,20 @@ impl Context {
 		if !image_writes.is_empty() {
 			let images = image_writes
 				.iter()
-				.map(|(_, view, layout, ..)| vk::ImageDescriptorInfoEXT::default().view(view).layout(*layout))
+				.map(|(_, view, layout, ..)| {
+					view.as_ref()
+						.map(|view| vk::ImageDescriptorInfoEXT::default().view(view).layout(*layout))
+				})
 				.collect::<SmallVec<[_; 8]>>();
 			let infos = image_writes
 				.iter()
 				.zip(&images)
 				.map(|((ty, ..), image)| {
+					// A null data pointer writes a null descriptor, which the `nullDescriptor` feature allows.
+					let p_image = image.as_ref().map_or(std::ptr::null(), |image| image as *const _);
 					vk::ResourceDescriptorInfoEXT::default()
 						.ty(*ty)
-						.data(vk::ResourceDescriptorDataEXT { p_image: image })
+						.data(vk::ResourceDescriptorDataEXT { p_image })
 				})
 				.collect::<SmallVec<[_; 8]>>();
 			let destinations = image_writes
@@ -589,10 +635,10 @@ impl Context {
 	///
 	/// A table of bindless textures can name thousands of distinct resources, so once the list holds more than a few,
 	/// earlier entries are found through an index instead of a scan. The index keeps its memory on the context.
-	fn rebuild_set_consumptions(&mut self, set_index: usize, sequence_index: u8) {
+	fn rebuild_set_consumptions(&mut self, set_index: usize, key: CopyKey) {
 		const SCANNED: usize = 16;
-		let mut consumptions =
-			std::mem::take(&mut self.descriptor_sets[set_index].copies[sequence_index as usize].consumptions);
+		let sequence_index = key.sequence();
+		let mut consumptions = std::mem::take(&mut self.descriptor_sets[set_index].copies[key.index()].consumptions);
 		consumptions.clear();
 		let mut merged = std::mem::take(&mut self.descriptor_merge_index);
 		merged.clear();
@@ -639,7 +685,7 @@ impl Context {
 			}
 		}
 
-		self.descriptor_sets[set_index].copies[sequence_index as usize].consumptions = consumptions;
+		self.descriptor_sets[set_index].copies[key.index()].consumptions = consumptions;
 		self.descriptor_merge_index = merged;
 	}
 
@@ -796,6 +842,32 @@ impl Context {
 		if let Some(name) = name {
 			self.names.insert(handle, name.to_string());
 		}
+	}
+
+	/// Asserts that a sampled descriptor names an image created for sampling, which Vulkan requires of the view.
+	fn assert_sampleable(&self, handle: crate::vulkan::ImageHandle) {
+		if self.images[handle.index() as usize].uses.contains(crate::Uses::Image) {
+			return;
+		}
+		let base = graphics_hardware_interface::BaseImageHandle::from_index(handle.index());
+		let name = self.get_object_debug_name(graphics_hardware_interface::ImageHandle(base).into());
+		panic!(
+			"Vulkan image `{}` is sampled but was not created for sampling. The most likely cause is that a shader samples an image whose builder lacks `Uses::Image`. Add `Uses::Image` to the image's uses.",
+			name.unwrap_or_default(),
+		);
+	}
+
+	/// Describes the view a descriptor of `image` reads, or `None` while the image has no native image: it gets one
+	/// once it has an extent and, in an image group, a placement, and those rewrite the descriptors that name it.
+	fn descriptor_image_view(
+		&self,
+		image: &Image,
+		view_type: crate::TextureViewTypes,
+		base_mip_level: u32,
+		level_count: u32,
+	) -> Option<vk::ImageViewCreateInfo<'static>> {
+		(!image.image.is_null())
+			.then(|| self.descriptor_image_view_create_info(image, view_type, base_mip_level, level_count))
 	}
 
 	#[inline]

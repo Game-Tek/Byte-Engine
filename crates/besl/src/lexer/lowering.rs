@@ -592,7 +592,7 @@ impl Lexer {
 							.collect::<Result<Vec<NodeReference>, LexError>>()?,
 					},
 					parser::BindingResource::Image { format } => BindingTypes::Image {
-						format: format.to_string(),
+						format: Some(format.to_string()),
 					},
 					parser::BindingResource::CombinedImageSampler { format } => BindingTypes::CombinedImageSampler {
 						format: format.to_string(),

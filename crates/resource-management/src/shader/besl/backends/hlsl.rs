@@ -1056,21 +1056,14 @@ mod tests {
 			besl::Node::binding(
 				"image",
 				besl::BindingTypes::Image {
-					format: "r32ui".to_string(),
+					format: Some("r32ui".to_string()),
 				},
 				0,
 				true,
 				true,
 			)
 			.into(),
-			besl::Node::binding(
-				"color_image",
-				besl::BindingTypes::Image { format: String::new() },
-				1,
-				true,
-				false,
-			)
-			.into(),
+			besl::Node::binding("color_image", besl::BindingTypes::Image { format: None }, 1, true, false).into(),
 		]);
 		for (name, return_type) in [
 			("guard_image_bounds", void_type),
@@ -1263,7 +1256,7 @@ mod tests {
 			besl::Node::binding(
 				"index_image",
 				besl::BindingTypes::Image {
-					format: "r32ui".to_string(),
+					format: Some("r32ui".to_string()),
 				},
 				2,
 				true,
@@ -1708,14 +1701,7 @@ mod tests {
 				true,
 			)
 			.into(),
-			besl::Node::binding(
-				"output_image",
-				besl::BindingTypes::Image { format: String::new() },
-				2,
-				true,
-				true,
-			)
-			.into(),
+			besl::Node::binding("output_image", besl::BindingTypes::Image { format: None }, 2, true, true).into(),
 		]);
 
 		root.add_child(

@@ -163,14 +163,7 @@ pub(crate) struct CompactionSource {
 	epoch: u64,
 }
 
-/// The `Completion` enum says which GPU work has to complete before a recording's results are readable.
-#[derive(Clone, Copy)]
-pub(crate) enum Completion {
-	/// A frame recording, which completed once the context saw its frame complete.
-	Frame(u64),
-	/// A recording outside frames, which completed once its synchronizer's fence signaled.
-	Synchronizer(crate::synchronizer::SynchronizerHandle),
-}
+pub(crate) use super::Completion;
 
 /// The `SizeQuery` struct is the bottom-level builds of one call, whose compacted sizes the GPU writes into a query
 /// pool after the builds.

@@ -434,6 +434,9 @@ pub trait Context: ContextCreate {
 	///
 	/// `desired_image_count` asks the presentation engine for that many images, clamped to what the backend and
 	/// surface support (Metal accepts only 2 or 3). `None` keeps the backend's default for `presentation_mode`.
+	///
+	/// Keep the window alive until the context drops: the context destroys the swapchain then, and on some platforms,
+	/// such as Wayland, that still talks to the window.
 	fn bind_to_window(
 		&mut self,
 		window_os_handles: &window::Handles,

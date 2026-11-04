@@ -110,6 +110,18 @@ impl CommandBufferRecording<'_> {
 		&self.device.command_buffers[self.command_buffer.index() as usize].frames[self.sequence_index as usize]
 	}
 
+	/// Returns the copy of each descriptor set this recording binds: its frame's, or the one recordings outside frames
+	/// share.
+	fn copy_key(&self) -> crate::vulkan::descriptor_set::CopyKey {
+		match self.frame_key {
+			Some(frame_key) => crate::vulkan::descriptor_set::CopyKey::Frame {
+				sequence: frame_key.sequence_index,
+				frame: frame_key.frame_index,
+			},
+			None => crate::vulkan::descriptor_set::CopyKey::Recording,
+		}
+	}
+
 	/// Binds the context's descriptor heaps once for this command buffer.
 	fn bind_descriptor_heaps_once(&mut self) {
 		if self.descriptor_heaps_bound {
@@ -151,12 +163,11 @@ impl CommandBufferRecording<'_> {
 		if set_count == 0 {
 			return;
 		}
-		let frame_key = self.frame_key.expect(
-			"Vulkan descriptor sets require a frame-owned command buffer. The most likely cause is that descriptor sets were bound on a context-level transfer recording, whose commands no frame retires. Record shader work in a frame.",
-		);
+		let key = self.copy_key();
 
-		// Each pipeline set takes two words: its resource heap base index, then its sampler heap base index.
-		let mut bases = [0u32; 2 * crate::vulkan::MAX_DESCRIPTOR_SETS];
+		// Each pipeline set takes two words: its resource heap base index, then its sampler heap base index. Shaders
+		// declare the whole reserved range, so every byte before the push constants is pushed, unused sets as zero.
+		let mut bases = [0u32; crate::vulkan::PUSH_CONSTANT_OFFSET as usize / 4];
 		for position in 0..set_count {
 			let pipeline_set = &self.device.pipelines[pipeline.index() as usize].layout.sets[position];
 			let identity = pipeline_set.layout.identity();
@@ -167,13 +178,7 @@ impl CommandBufferRecording<'_> {
 				.find(|set| self.device.descriptor_sets[set.index() as usize].layout.identity() == identity);
 			match bound {
 				Some(set) => {
-					let [resource, sampler] = self.device.bind_descriptor_set(
-						pipeline,
-						position,
-						set,
-						frame_key.sequence_index,
-						frame_key.frame_index,
-					);
+					let [resource, sampler] = self.device.bind_descriptor_set(pipeline, position, set, key);
 					bases[2 * position] = resource;
 					bases[2 * position + 1] = sampler;
 				}
@@ -189,7 +194,7 @@ impl CommandBufferRecording<'_> {
 		self.bind_descriptor_heaps_once();
 		let push_info = vk::PushDataInfoEXT::default()
 			.offset(0)
-			.data(vk::HostAddressRangeConstEXT::default().address(bytemuck::cast_slice(&bases[..2 * set_count])));
+			.data(vk::HostAddressRangeConstEXT::default().address(bytemuck::cast_slice(&bases)));
 		// SAFETY: The push data range lies before the pipeline's push constants, which every device's push data holds.
 		unsafe {
 			self.device
@@ -213,7 +218,7 @@ impl CommandBufferRecording<'_> {
 					continue;
 				};
 				let set = &self.device.descriptor_sets[set.index() as usize];
-				for consumption in &set.copies[self.sequence_index as usize].consumptions {
+				for consumption in &set.copies[self.copy_key().index()].consumptions {
 					// The pipeline consumes a resource with the stages that read the layout resources naming it.
 					let (mut stages, mut access) = (crate::Stages::empty(), crate::AccessPolicies::empty());
 					let mut resources = consumption.resources;
@@ -229,13 +234,38 @@ impl CommandBufferRecording<'_> {
 						continue;
 					}
 					let writes = access.intersects(crate::AccessPolicies::WRITE);
-
-					assert!(
-						!self.active_rendering || !writes,
-						"Writable Vulkan descriptors cannot be reused by multiple draws in one render pass. The most likely cause is that a storage resource needs a barrier; split the draws into separate render passes.",
-					);
 					if !include_read_only && !writes {
 						continue;
+					}
+					consumptions.push(Consumption {
+						handle: consumption.handle,
+						stages,
+						access,
+						layout: consumption.layout,
+					});
+				}
+			}
+		}
+		// The draw that begins a render pass is the last point where barriers may run until the pass ends, and later
+		// draws may bind pipelines that read what this one does not. So it also readies every other resource of the
+		// bound sets, for any graphics stage, and the pass's unordered group spares later draws those barriers.
+		if !self.active_rendering && self.pending_rendering.is_some() {
+			let stages = if self.device.settings.mesh_shading {
+				crate::Stages::VERTEX | crate::Stages::TASK | crate::Stages::MESH | crate::Stages::FRAGMENT
+			} else {
+				crate::Stages::VERTEX | crate::Stages::FRAGMENT
+			};
+			for set in &self.bound_descriptor_set_handles {
+				let set = &self.device.descriptor_sets[set.index() as usize];
+				for consumption in &set.copies[self.copy_key().index()].consumptions {
+					if consumptions.iter().any(|planned| planned.handle == consumption.handle) {
+						continue;
+					}
+					let mut access = crate::AccessPolicies::empty();
+					let mut resources = consumption.resources;
+					while resources != 0 {
+						access |= set.layout.resources()[resources.trailing_zeros() as usize].access();
+						resources &= resources - 1;
 					}
 					consumptions.push(Consumption {
 						handle: consumption.handle,
@@ -297,6 +327,9 @@ impl CommandBufferRecording<'_> {
 	pub(super) fn consume_resources(&self, consumptions: impl IntoIterator<Item = Consumption>) -> TransitionStateUpdates {
 		self.vulkan_consume_resources(consumptions.into_iter().map(|consumption| {
 			let format = match consumption.handle {
+				// A consumption without access only orders earlier writes, such as the barrier that ends a recording, and
+				// reads no contents. A group member another member reused since then is no longer live, and need not be.
+				Handles::Image(image_handle) if consumption.access.is_empty() => Some(self.get_image(image_handle).format_),
 				Handles::Image(image_handle) => {
 					self.device.image_groups.assert_initialized(
 						graphics_hardware_interface::BaseImageHandle::from_index(image_handle.index()),
@@ -776,22 +809,11 @@ impl CommandBufferRecording<'_> {
 			.layer_count(graphics_hardware_interface::AttachmentInformation::render_pass_layer_count(
 				&attachments,
 			));
-		let viewports = [vk::Viewport {
-			x: 0.0,
-			y: extent.height() as f32,
-			width: extent.width() as f32,
-			height: -(extent.height() as f32),
-			min_depth: 0.0,
-			max_depth: 1.0,
-		}];
-		let command_buffer = self.get_command_buffer().command_buffer;
 		unsafe {
-			self.device.cmd_set_scissor(command_buffer, 0, &[render_area]);
-			self.device.cmd_set_viewport(command_buffer, 0, &viewports);
-			self.device.cmd_begin_rendering(command_buffer, &rendering_info);
+			self.device
+				.cmd_begin_rendering(self.get_command_buffer().command_buffer, &rendering_info);
 		}
 		self.active_rendering = true;
-		self.active_render_extent = extent;
 	}
 
 	/// Performs a transfer-domain blit from the source image to the destination image, including the required layout
@@ -933,12 +955,21 @@ impl CommandBufferRecording<'_> {
 	}
 
 	pub(crate) fn sync_buffers(&mut self, copy_buffers: impl Iterator<Item = BufferCopy> + Clone) {
-		let consumption = |buffer, offset, size: usize, access| VulkanConsumption {
-			handle: Handles::Buffer(buffer),
-			stages: vk::PipelineStageFlags2::COPY,
-			access,
-			layout: vk::ImageLayout::UNDEFINED,
-			range: Some(BufferRange::new(offset, size as vk::DeviceSize)),
+		let consumption = |buffer, offset: vk::DeviceSize, size: usize, access| {
+			// A copy that reaches the buffer's end covers the rest of it, so tracking keeps no range past the end, where a
+			// later barrier would start outside the buffer.
+			let size = if offset + size as vk::DeviceSize >= self.get_buffer(buffer).size as vk::DeviceSize {
+				vk::WHOLE_SIZE
+			} else {
+				size as vk::DeviceSize
+			};
+			VulkanConsumption {
+				handle: Handles::Buffer(buffer),
+				stages: vk::PipelineStageFlags2::COPY,
+				access,
+				layout: vk::ImageLayout::UNDEFINED,
+				range: Some(BufferRange::new(offset, size)),
+			}
 		};
 		let sources = copy_buffers
 			.clone()

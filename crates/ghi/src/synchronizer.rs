@@ -3,7 +3,7 @@ use crate::{HandleLike, Next, Synchronizer};
 use crate::{PrivateHandle, PrivateHandles};
 
 crate::handle::index_handle! {
-	#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+	#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 	pub(crate) struct SynchronizerHandle;
 }
 

@@ -1331,7 +1331,7 @@ pub mod tests {
 			besl::Node::binding(
 				"image",
 				besl::BindingTypes::Image {
-					format: "r8".to_string(),
+					format: Some("r8".to_string()),
 				},
 				1,
 				false,

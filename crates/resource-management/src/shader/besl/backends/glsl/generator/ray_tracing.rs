@@ -78,13 +78,14 @@ impl Generator {
 		}
 		if requirements.uses_trace_occlusion {
 			// Any triangle answers the query, so traversal stops at the first one and reports nothing about it.
-			string.push_str(
-				"bool _besl_trace_occlusion(accelerationStructureEXT scene,uint mask,vec3 origin,vec3 direction,float t_min,float t_max){\n\
+			let _ = write!(
+				string,
+				"bool _besl_trace_occlusion(accelerationStructureEXT scene,uint mask,vec3 origin,vec3 direction,float t_min,float t_max){{\n\
 				 \trayQueryEXT query;\n\
 				 \trayQueryInitializeEXT(query,scene,gl_RayFlagsOpaqueEXT|gl_RayFlagsTerminateOnFirstHitEXT,mask,origin,t_min,direction,t_max);\n\
 				 \trayQueryProceedEXT(query);\n\
 				 \treturn rayQueryGetIntersectionTypeEXT(query,true)!=gl_RayQueryCommittedIntersectionNoneEXT;\n\
-				 }\n",
+				 }}\n"
 			);
 		}
 	}

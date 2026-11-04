@@ -276,6 +276,14 @@ bindings, so the backend passes no addresses.
 
 ## Rules for Vulkan acceleration structures
 
+- **Shaders never read a structure from the heap alias.** NVIDIA drivers lose
+  the device when a ray query traverses a structure loaded from a
+  `GL_EXT_descriptor_heap` array, while one mapped from a set and binding traces
+  correctly. Shaders declare each structure at `layout(set = s, binding = b)`,
+  as they do buffers; see
+  [How Vulkan binds a set](/docs/develop/rendering/descriptor-sets#how-vulkan-binds-a-set).
+  The `compacted_structures_trace_like_the_original` GHI test stops responding
+  when this breaks.
 - **Structures share storage.** Every structure lives at a 256-byte aligned
   range of a device-local block of 32 MiB, or of its own size when it's
   larger. A scene of thousands of meshes makes a few allocations instead of one

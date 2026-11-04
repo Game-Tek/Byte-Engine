@@ -151,6 +151,8 @@ impl LutPass {
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 		*context.get_mut_buffer_slice(parameters) = lut_shader_parameters(&lut_metadata, settings.strength);
+		// The write reaches the GPU copy only once synced.
+		context.sync_buffer(parameters);
 
 		let pass = pipeline.bind(
 			workflow.label(),

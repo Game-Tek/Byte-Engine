@@ -353,7 +353,7 @@ impl Generator {
 						let _ = write!(string, "* {} [[buffer({index})]];{break_char}", Self::identifier(name));
 					}
 					besl::BindingTypes::Image { format } => {
-						let (element_type, access) = storage_image_type(format, *read, *write);
+						let (element_type, access) = storage_image_type(format.as_deref(), *read, *write);
 						let _ = write!(string, "texture2d<{element_type}, {access}> {}", Self::identifier(name));
 						if let Some(count) = count {
 							let _ = write!(string, "[{count}]");

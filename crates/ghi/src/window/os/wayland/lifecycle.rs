@@ -101,11 +101,15 @@ impl App {
 		let qh = self.event_queue.handle();
 
 		let surface = self.data.compositor.create_surface(&qh, id);
-		let xdg_surface = self.data.xdg_wm_base.get_xdg_surface(&surface, &qh, id);
-		let toplevel = xdg_surface.get_toplevel(&qh, id);
-
-		toplevel.set_title(name.to_string());
-		toplevel.set_app_id(self.id_name.clone());
+		// A surface without a role is never mapped, so a background window renders without appearing or taking focus.
+		let background = features.contains(Features::BACKGROUND);
+		let role = (!background).then(|| {
+			let xdg_surface = self.data.xdg_wm_base.get_xdg_surface(&surface, &qh, id);
+			let toplevel = xdg_surface.get_toplevel(&qh, id);
+			toplevel.set_title(name.to_string());
+			toplevel.set_app_id(self.id_name.clone());
+			(xdg_surface, toplevel)
+		});
 
 		let scale = self.data.output_scale;
 		let refresh = SharedRefresh::default();
@@ -114,7 +118,8 @@ impl App {
 			surface: surface.clone(),
 			scale,
 			extent: None,
-			configured: false,
+			// The compositor configures only surfaces with a role.
+			configured: background,
 			outputs: Vec::new(),
 			refresh: refresh.clone(),
 			captures_cursor: features.contains(Features::CAPTURE_CURSOR) && !features.contains(Features::BACKGROUND),
@@ -123,7 +128,9 @@ impl App {
 		self.data.lock_cursors(&qh);
 
 		surface.set_buffer_scale(scale as _);
-		xdg_surface.set_window_geometry(0, 0, extent.width() as _, extent.height() as _);
+		if let Some((xdg_surface, _)) = &role {
+			xdg_surface.set_window_geometry(0, 0, extent.width() as _, extent.height() as _);
+		}
 
 		surface.commit();
 
@@ -138,8 +145,7 @@ impl App {
 			id,
 			display: self.connection.display(),
 			surface,
-			xdg_surface,
-			xdg_toplevel: toplevel,
+			role,
 			refresh,
 		})
 	}
@@ -241,8 +247,10 @@ impl Window {
 
 impl Drop for Window {
 	fn drop(&mut self) {
-		self.xdg_toplevel.destroy();
-		self.xdg_surface.destroy();
+		if let Some((xdg_surface, toplevel)) = &self.role {
+			toplevel.destroy();
+			xdg_surface.destroy();
+		}
 		self.surface.destroy();
 	}
 }

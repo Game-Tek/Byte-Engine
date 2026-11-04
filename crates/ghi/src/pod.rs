@@ -117,17 +117,12 @@ shader_matrices! {
 	Mat4x3f(Vec3f, f32, 3, 4; x, y, z, w);
 }
 
-/// Lays out an engine matrix the way the platform's shaders multiply `mat4f`: Metal reads its columns, the other
-/// backends read its rows.
+/// Lays out an engine matrix as the four columns every backend's shaders read a `mat4f` from.
 impl From<math::Matrix> for Mat4f {
 	fn from(value: math::Matrix) -> Self {
 		// The engine matrix stores its elements row by row.
 		let rows: [[f32; 4]; 4] = bytemuck::cast(value.m);
-		Self::from(if cfg!(target_os = "macos") {
-			std::array::from_fn(|column| rows.map(|row| row[column]))
-		} else {
-			rows
-		})
+		Self::from(std::array::from_fn(|column| rows.map(|row| row[column])))
 	}
 }
 

@@ -125,7 +125,7 @@ mod tests {
 				write: true,
 				r#type: BindingTypes::Image { format },
 				..
-			} if format == "rgba16f"
+			} if format.as_deref() == Some("rgba16f")
 		));
 
 		let unformatted_result = root
@@ -141,7 +141,7 @@ mod tests {
 				write: true,
 				r#type: BindingTypes::Image { format },
 				..
-			} if format == "unknown"
+			} if format.is_none()
 		));
 	}
 

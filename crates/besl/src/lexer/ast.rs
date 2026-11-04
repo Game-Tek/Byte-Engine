@@ -1125,8 +1125,10 @@ pub enum BindingTypes {
 		/// [`crate::sampler`].
 		sampler: Option<crate::SamplerState>,
 	},
+	/// A storage image shaders load from or store to. `format` names its texel format, such as `rgba16f`, or is `None`
+	/// for a formatless image whose format the bound image gives.
 	Image {
-		format: String,
+		format: Option<String>,
 	},
 	/// A top-level acceleration structure that the ray queries `intersect` and `trace_occlusion` test rays against. It
 	/// is read-only and binds one structure.

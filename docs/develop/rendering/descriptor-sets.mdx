@@ -57,12 +57,21 @@ The sampler heap starts with the 36 fixed samplers. Shaders read them at the
 literal index `besl::SamplerState::fixed_index` returns, so a set never holds
 them and a pipeline never declares them.
 
-Each descriptor set reserves one range in each heap for every frame in flight.
-The GLSL generator declares each resource as a `descriptor_heap` array and
-reads element `i` at `_besl_sets[s].x + resource + i`, and an application-bound
+Each descriptor set reserves one range in each heap for every frame in flight,
+and one for recordings outside frames, which their synchronizer retires.
+The GLSL generator declares each image as a `descriptor_heap` array and reads
+element `i` at `_besl_sets[s].x + resource + i`, and an application-bound
 sampler at `_besl_sets[s].y + sampler + i`. The first 120 bytes of push data
 hold those two bases for each pipeline set, and the shader's own push constants
 start at byte 128.
+
+Buffers and acceleration structures are variables at `layout(set = s, binding =
+b)` instead, with `b` the binding's `resource` offset. Pipeline creation chains
+a `HEAP_WITH_PUSH_INDEX` mapping for each set that holds them, which reads the
+set's resource base from the push data, so their descriptors sit in the same
+slots as through the heap alias. NVIDIA drivers mishandle both through the
+alias: a buffer's struct member reads from the buffer's start instead of its
+offset, and a ray query that traverses a structure loses the device.
 
 Stages number their sets locally, and two stages can take one layer at
 different positions. Specialization constant `1984 + s` holds the pipeline set
@@ -72,9 +81,7 @@ point to each other; a change to one must change the other.
 
 glslang can't pass a heap element to a function, so the generator lowers a
 texture parameter to two heap indices, `p` and `p_sampler`, and reads them
-through per-type aliases. glslang also crashes on a whole-struct store into a
-heap-declared buffer, so generated code must store struct members one at a
-time.
+through per-type aliases.
 
 Writes are retained and applied when a set is bound. Writing a set records the
 write and marks the element dirty in every frame copy. A reverse index from each
@@ -124,6 +131,8 @@ signature holds no tables and no static samplers.
   completes.
 - On Vulkan, the shader's push constants start at byte 128, and 128 plus their
   size fits in `maxPushDataSize`.
+- On Vulkan, shaders reach buffers and acceleration structures only through a
+  set and binding, never through the heap alias.
 
 ## Tests that guard the rules
 
@@ -137,6 +146,9 @@ signature holds no tables and no static samplers.
   specialization indices, and the fixed sampler order.
 - `ghi/src/dx12/mod.rs` tests check heap leases, retained rewrites, and that
   each set position receives the bases of the set bound for its layout.
+- `bound_buffer_struct_members_read_at_their_offsets` in
+  `crates/ghi/tests/rendering` reads struct members past a matrix and inside an
+  array of structs from a buffer declared by set and binding.
 - The `crates/ghi/tests/rendering` suites run the sets on a device. Only Metal
   runs them today; run them on a Vulkan and a DX12 device after you change
   those backends.

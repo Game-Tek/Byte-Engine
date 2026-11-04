@@ -70,8 +70,9 @@ pub struct Window {
 	id: WindowId,
 	display: wl_display::WlDisplay,
 	surface: wl_surface::WlSurface,
-	xdg_surface: xdg_surface::XdgSurface,
-	xdg_toplevel: xdg_toplevel::XdgToplevel,
+	/// The toplevel role that makes the compositor show the surface. A [`Features::BACKGROUND`] window has none, so
+	/// it is never mapped.
+	role: Option<(xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel)>,
 	/// The refresh interval the event queue last reported for this window.
 	refresh: SharedRefresh,
 }

@@ -143,6 +143,16 @@ pub(crate) fn build_pipeline_layout<'a>(
 	}
 }
 
+/// Returns the position among the pipeline's sets of `shader_set`, which a stage's shader declares.
+fn pipeline_set_index(layout: &PipelineLayout, shader_set: &ShaderDescriptorSet) -> u32 {
+	let index = layout
+		.sets
+		.iter()
+		.position(|set| set.layout.identity() == shader_set.layout().identity())
+		.expect("Missing Vulkan pipeline set. The most likely cause is that the layout was built from other shaders than the stages it specializes.");
+	index as u32
+}
+
 /// Appends to a stage's specialization constants the pipeline index of each set the stage's shader declares, at
 /// [`SET_SPECIALIZATION_BASE`] plus the set's position in `shader_sets`.
 pub(crate) fn push_set_specializations(
@@ -152,18 +162,58 @@ pub(crate) fn push_set_specializations(
 	entries: &mut SmallVec<[vk::SpecializationMapEntry; 16]>,
 ) {
 	for (position, shader_set) in (0u32..).zip(shader_sets) {
-		let index = layout
-			.sets
-			.iter()
-			.position(|set| set.layout.identity() == shader_set.layout().identity())
-			.expect("Missing Vulkan pipeline set. The most likely cause is that the layout was built from other shaders than the stages it specializes.");
 		entries.push(
 			vk::SpecializationMapEntry::default()
 				.constant_id(SET_SPECIALIZATION_BASE + position)
 				.offset(data.len() as u32)
 				.size(4),
 		);
-		data.extend_from_slice(&(index as u32).to_ne_bytes());
+		data.extend_from_slice(&pipeline_set_index(layout, shader_set).to_ne_bytes());
+	}
+}
+
+/// Appends to a stage's descriptor mappings one for each set the stage's shader declares that holds an acceleration
+/// structure or a buffer. Chain them to the stage with a `VkShaderDescriptorSetAndBindingMappingInfoEXT`.
+///
+/// Shaders declare acceleration structures and buffers at `layout(set = s, binding = b)` instead of reading them from
+/// the heap alias. Through the heap alias, NVIDIA drivers lose the device when a ray query traverses a structure, and
+/// read a buffer's struct members from the buffer's start instead of their offset. `s` is the set's position in
+/// `shader_sets` and `b` the binding's first descriptor in the set, so the mapping reads the pipeline set's resource
+/// base from the push data and finds the descriptor where every other one is: at that base plus `b` plus the array
+/// element, in 64-byte slots.
+pub(crate) fn push_binding_mappings(
+	layout: &PipelineLayout,
+	shader_sets: &[ShaderDescriptorSet],
+	mappings: &mut SmallVec<[vk::DescriptorSetAndBindingMappingEXT<'static>; 2]>,
+) {
+	for (position, shader_set) in (0u32..).zip(shader_sets) {
+		let set_layout = shader_set.layout();
+		if !set_layout.resources().iter().any(|resource| {
+			matches!(
+				resource.kind(),
+				ResourceKind::AccelerationStructure | ResourceKind::StorageBuffer | ResourceKind::UniformBuffer
+			)
+		}) {
+			continue;
+		}
+		let mut push_index = vk::DescriptorMappingSourcePushIndexEXT::default();
+		// The resource base is the first word of the set's two in the push data.
+		push_index.push_offset = pipeline_set_index(layout, shader_set) * 8;
+		push_index.heap_index_stride = RESOURCE_DESCRIPTOR_SIZE as u32;
+		push_index.heap_array_stride = RESOURCE_DESCRIPTOR_SIZE as u32;
+		mappings.push(
+			vk::DescriptorSetAndBindingMappingEXT::default()
+				.descriptor_set(position)
+				.first_binding(0)
+				.binding_count(set_layout.element_count())
+				.resource_mask(
+					vk::SpirvResourceTypeFlagsEXT::ACCELERATION_STRUCTURE
+						| vk::SpirvResourceTypeFlagsEXT::READ_ONLY_STORAGE_BUFFER
+						| vk::SpirvResourceTypeFlagsEXT::READ_WRITE_STORAGE_BUFFER,
+				)
+				.source(vk::DescriptorMappingSourceEXT::HEAP_WITH_PUSH_INDEX)
+				.source_data(vk::DescriptorMappingSourceDataEXT { push_index }),
+		);
 	}
 }
 

@@ -81,10 +81,6 @@ pub struct Renderer {
 	/// The monotonically increasing identity of the next graphics submission frame.
 	started_frame_count: u64,
 
-	/// Display windows, their swapchains, and whether the latest acquisition warned that the window cannot render.
-	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle, bool); 16]>,
-	/// The windowing connection that pumps every window's events. Declared after `windows` so they drop first.
-	app: Option<ghi::window::App>,
 	/// The frame index the acquisitions belong to and, per window adopted so far, how the window takes part in it.
 	acquisitions: (u64, SmallVec<[WindowFrame; 16]>),
 	/// The minimum time between presented frames applied to every window; `None` presents on every refresh.
@@ -148,8 +144,14 @@ pub struct Renderer {
 	pipeline_cache_path: Option<std::path::PathBuf>,
 
 	/// The GHI context where all rendering resources and operations are performed. Only the render thread uses it.
-	/// This field drops last so renderer subsystems finish pending GPU work before their resources are destroyed.
+	/// This field drops after renderer subsystems so they finish pending GPU work before their resources are destroyed.
 	context: ghi::implementation::Context,
+
+	/// Display windows, their swapchains, and whether the latest acquisition warned that the window cannot render.
+	/// Declared after `context`, because destroying a swapchain's surface may still talk to its window.
+	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle, bool); 16]>,
+	/// The windowing connection that pumps every window's events. Declared after `windows` so they drop first.
+	app: Option<ghi::window::App>,
 }
 
 impl Drop for Renderer {

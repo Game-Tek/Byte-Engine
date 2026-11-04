@@ -236,7 +236,7 @@ interface:
 | Backend | Set `s` of a shader | Set base indices |
 | --- | --- | --- |
 | Metal | An argument buffer at `[[buffer(16 + s)]]`, with argument IDs from 0 in binding order | |
-| Vulkan | `GL_EXT_descriptor_heap` arrays with a descriptor stride of 64 bytes | The push data holds two 32-bit values per pipeline set, the resource base, then the sampler base, in bytes 0 to 120. Specialization constant `1984 + s` holds the pipeline set of the shader's set `s`. |
+| Vulkan | `GL_EXT_descriptor_heap` arrays with a descriptor stride of 64 bytes. A buffer or an acceleration structure is a variable at `layout(set = s, binding = b)` instead, where `b` is its first descriptor's offset in the set. | The push data holds two 32-bit values per pipeline set, the resource base, then the sampler base, in bytes 0 to 120. Specialization constant `1984 + s` holds the pipeline set of the shader's set `s`. |
 | Direct3D 12 | `ResourceDescriptorHeap` and `SamplerDescriptorHeap` | `uint4` constants at `register(b1, space0)`: value `2s` holds set `s`'s resource base, and value `2s + 1` its sampler base. Push constants stay at `register(b0, space0)`. |
 
 A binding's descriptor is at its set's resource base plus the number of

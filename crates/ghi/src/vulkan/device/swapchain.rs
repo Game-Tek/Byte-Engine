@@ -26,6 +26,21 @@ impl InnerDevice {
 		surface
 	}
 
+	/// Returns the present mode a swapchain on `surface` uses for `requested`: the requested mode when the surface
+	/// offers it, otherwise the closest one it offers. See [`resolve_present_mode`].
+	pub(crate) fn surface_present_mode(
+		&self,
+		surface: vk::SurfaceKHR,
+		requested: graphics_hardware_interface::PresentationModes,
+	) -> vk::PresentModeKHR {
+		let supported = unsafe {
+			self.surface
+				.get_physical_device_surface_present_modes(self.physical_device, surface)
+		}
+		.expect("Failed to query Vulkan surface present modes. The most likely cause is that the window surface was lost.");
+		resolve_present_mode(requested, &supported)
+	}
+
 	pub(crate) fn query_swapchain_surface_capabilities(
 		&self,
 		surface: vk::SurfaceKHR,
@@ -113,5 +128,54 @@ impl InnerDevice {
 
 	pub(crate) fn has_errors(&self) -> bool {
 		self.debug_data.get().error_count.load(std::sync::atomic::Ordering::SeqCst) > 0
+	}
+}
+
+/// Picks the present mode for `requested` among the modes a surface offers in `supported`.
+///
+/// Immediate presentation never waits for the display; when the surface lacks it, as Wayland compositors usually do,
+/// mailbox also never blocks the caller, and FIFO, which every surface offers, is the last resort. Mailbox falls back to
+/// FIFO rather than to immediate, so it never tears.
+fn resolve_present_mode(
+	requested: graphics_hardware_interface::PresentationModes,
+	supported: &[vk::PresentModeKHR],
+) -> vk::PresentModeKHR {
+	use graphics_hardware_interface::PresentationModes;
+
+	let preferences: &[vk::PresentModeKHR] = match requested {
+		PresentationModes::Inmediate => &[vk::PresentModeKHR::IMMEDIATE, vk::PresentModeKHR::MAILBOX],
+		PresentationModes::Mailbox => &[vk::PresentModeKHR::MAILBOX],
+		PresentationModes::FIFO => &[],
+	};
+	preferences
+		.iter()
+		.copied()
+		.find(|mode| supported.contains(mode))
+		.unwrap_or(vk::PresentModeKHR::FIFO)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use graphics_hardware_interface::PresentationModes;
+
+	/// Verifies a surface without immediate presentation still never blocks the caller when it offers mailbox.
+	#[test]
+	fn immediate_falls_back_to_mailbox_then_fifo() {
+		let wayland = [vk::PresentModeKHR::MAILBOX, vk::PresentModeKHR::FIFO];
+		assert_eq!(resolve_present_mode(PresentationModes::Inmediate, &wayland), vk::PresentModeKHR::MAILBOX);
+		assert_eq!(
+			resolve_present_mode(PresentationModes::Inmediate, &[vk::PresentModeKHR::FIFO]),
+			vk::PresentModeKHR::FIFO
+		);
+		let all = [vk::PresentModeKHR::IMMEDIATE, vk::PresentModeKHR::MAILBOX, vk::PresentModeKHR::FIFO];
+		assert_eq!(resolve_present_mode(PresentationModes::Inmediate, &all), vk::PresentModeKHR::IMMEDIATE);
+	}
+
+	/// Verifies mailbox falls back to FIFO instead of a mode that tears.
+	#[test]
+	fn mailbox_never_falls_back_to_immediate() {
+		let tearing = [vk::PresentModeKHR::IMMEDIATE, vk::PresentModeKHR::FIFO];
+		assert_eq!(resolve_present_mode(PresentationModes::Mailbox, &tearing), vk::PresentModeKHR::FIFO);
 	}
 }

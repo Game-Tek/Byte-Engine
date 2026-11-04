@@ -5,9 +5,9 @@ use super::*;
 pub(crate) const ACCELERATION_STRUCTURE_TYPE: &str = "raytracing::instance_acceleration_structure";
 
 /// Selects the Metal texture element type and access for a storage image.
-pub(crate) fn storage_image_type(format: &str, read: bool, write: bool) -> (&'static str, &'static str) {
+pub(crate) fn storage_image_type(format: Option<&str>, read: bool, write: bool) -> (&'static str, &'static str) {
 	let element_type = match format {
-		"r8ui" | "r16ui" | "r32ui" => "uint",
+		Some("r8ui" | "r16ui" | "r32ui") => "uint",
 		_ => "float",
 	};
 	let access = if read && write {
@@ -120,7 +120,7 @@ impl Generator {
 				emit_suffix(string, primary_id);
 			}
 			besl::BindingTypes::Image { format } => {
-				let (element_type, access) = storage_image_type(format, *read, *write);
+				let (element_type, access) = storage_image_type(format.as_deref(), *read, *write);
 				let _ = write!(string, "texture2d<{element_type}, {access}> {}", Self::identifier(name));
 				emit_suffix(string, primary_id);
 			}

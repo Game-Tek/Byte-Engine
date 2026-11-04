@@ -31,7 +31,6 @@ use super::loader::{
 	MaterialEvaluator, ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent,
 };
 use super::lod::{LodSettings, LodView, MeshLods};
-use super::residency::MeshResidencies;
 use super::material_parameters::MaterialParameters;
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
 use super::ray_tracing::{HitShading, PROBE_SHADE_SHADER, SURFEL_SHADE_SHADER};
@@ -40,8 +39,10 @@ use super::render_pass::{
 	FrameWork, GiSettings, GtaoSettings, IndirectDiffuseSource, MAX_SURFEL_RAY_BUDGET, PROBE_RAY_BUDGET_RANGE, PROBE_RAYS,
 	PROBE_SPACING_RANGE, ProbeGiSettings, ProbeVolume, RayHits, RayTracing, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
 	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool,
-	VisibilityRenderPass, create_fog_light_target, create_gtao_targets, create_ssgi_targets, create_sun_visibility_targets, create_surfel_targets,
+	VisibilityRenderPass, create_fog_light_target, create_gtao_targets, create_ssgi_targets, create_sun_visibility_targets,
+	create_surfel_targets,
 };
+use super::residency::MeshResidencies;
 use super::scene::{Instance, MaterialEvaluation, PosedVertices, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::set_layouts;
 use super::shader_data::{
@@ -1080,7 +1081,9 @@ impl VisibilityPipelineManager {
 					// The base block holds each primitive's coarsest level.
 					self.mesh_residencies.add_mesh(
 						key,
-						mesh.primitives.iter().map(|primitive| (primitive.lods.levels().len() - 1) as u8),
+						mesh.primitives
+							.iter()
+							.map(|primitive| (primitive.lods.levels().len() - 1) as u8),
 					);
 					self.resolve_pending_renderables(key, &mesh, transforms);
 				}

@@ -233,4 +233,3 @@ fn yaw_pitch_rotation(yaw: f32, pitch: f32) -> Orientation {
 	};
 	about(0.0, yaw).compose(about(pitch, 0.0))
 }
-

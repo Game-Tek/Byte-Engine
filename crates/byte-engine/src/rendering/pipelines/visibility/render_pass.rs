@@ -138,6 +138,10 @@ use self::depth_pyramid::DepthPyramidPass;
 // Only the layout tests compare the record with the stride its layer reflects.
 #[cfg(test)]
 pub(crate) use self::depth_pyramid::ScreenViewData;
+use self::fog_light::FogLightPass;
+pub(crate) use self::fog_light::create_fog_light_target;
+#[cfg(test)]
+pub(crate) use self::fog_light::{FogLightShaderParameters, fog_light_shader_parameters};
 pub(super) use self::gtao::GTAO_PIPELINES;
 use self::gtao::{GtaoPass, GtaoTargets};
 pub(crate) use self::gtao::{GtaoSettings, create_gtao_targets};
@@ -158,10 +162,6 @@ use self::reflections::ScreenSpaceReflections;
 use self::shadows::CascadeFitPass;
 pub(crate) use self::shadows::{ShadowMaps, ShadowWork, SunCascades};
 pub(super) use self::ssgi::SSGI_PIPELINES;
-use self::fog_light::FogLightPass;
-#[cfg(test)]
-pub(crate) use self::fog_light::{FogLightShaderParameters, fog_light_shader_parameters};
-pub(crate) use self::fog_light::create_fog_light_target;
 use self::ssgi::SsgiPass;
 pub(crate) use self::ssgi::{SsgiTargets, create_ssgi_targets};
 pub(super) use self::sun_visibility::CONTACT_SHADOW_PIPELINES;

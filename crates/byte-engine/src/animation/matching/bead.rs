@@ -159,7 +159,10 @@ impl MotionBead {
 			finite_at_least_zero(self.trajectory.position) && finite_at_least_zero(self.trajectory.direction),
 			"a `trajectory` weight that is negative or not finite",
 		)?;
-		check(positive(self.search.interval), "a `search.interval` that is not finite and positive")?;
+		check(
+			positive(self.search.interval),
+			"a `search.interval` that is not finite and positive",
+		)?;
 		check(
 			finite_at_least_zero(self.search.exclusion) && finite_at_least_zero(self.search.blend),
 			"a `search.exclusion` or `search.blend` that is negative or not finite",

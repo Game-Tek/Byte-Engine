@@ -6,12 +6,10 @@
 
 use std::sync::Arc;
 
-use resource_management::{
-	resources::{
-		animation::{Animation, Curve, CurveComponents, NodeTrack},
-		motion_database::MotionDatabase,
-		skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
-	},
+use resource_management::resources::{
+	animation::{Animation, Curve, CurveComponents, NodeTrack},
+	motion_database::MotionDatabase,
+	skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
 };
 
 use super::{

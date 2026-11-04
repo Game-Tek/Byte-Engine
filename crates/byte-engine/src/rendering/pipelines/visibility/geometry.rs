@@ -610,7 +610,11 @@ impl GeometryBuffers {
 				continue;
 			};
 			// Copies this primitive's `elements` of a prepared stream, of `stride` bytes each, to `destination`.
-			let copy = |source: &Range<usize>, elements: &Range<u32>, stride: usize, destination: ghi::BaseBufferHandle, first: u32| {
+			let copy = |source: &Range<usize>,
+			            elements: &Range<u32>,
+			            stride: usize,
+			            destination: ghi::BaseBufferHandle,
+			            first: u32| {
 				BufferRegion {
 					offset: source.start + elements.start as usize * stride,
 					destination,
@@ -619,7 +623,13 @@ impl GeometryBuffers {
 				}
 			};
 			copies.extend([
-				copy(&streams.positions, &elements.vertices, 12, handles.vertex_positions.into(), block.vertices.start),
+				copy(
+					&streams.positions,
+					&elements.vertices,
+					12,
+					handles.vertex_positions.into(),
+					block.vertices.start,
+				),
 				copy(
 					&streams.normals,
 					&elements.vertices,
@@ -641,7 +651,13 @@ impl GeometryBuffers {
 					handles.vertex_indices.into(),
 					block.primitive_indices.start,
 				),
-				copy(&streams.primitive_indices, &elements.triangles, 3, handles.primitive_indices.into(), block.triangles.start),
+				copy(
+					&streams.primitive_indices,
+					&elements.triangles,
+					3,
+					handles.primitive_indices.into(),
+					block.triangles.start,
+				),
 				copy(
 					&streams.meshlets,
 					&elements.meshlets,

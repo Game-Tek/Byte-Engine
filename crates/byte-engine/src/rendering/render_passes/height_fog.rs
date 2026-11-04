@@ -68,7 +68,9 @@ impl ExponentialHeightFogRenderPass {
 		let depth = render_pass_builder.read_from("depth");
 		// The scene pipeline's marched fog light, if it marches one. A black texel with no distance stands in otherwise,
 		// which the shader reads as no march.
-		let fog_light = render_pass_builder.try_read_from(FOG_LIGHT_TARGET).map(ghi::BaseImageHandle::from);
+		let fog_light = render_pass_builder
+			.try_read_from(FOG_LIGHT_TARGET)
+			.map(ghi::BaseImageHandle::from);
 		let main_format = render_pass_builder.format_of("main");
 		// The fog's tile output, which the builder gives the uses that needs.
 		let output = render_pass_builder

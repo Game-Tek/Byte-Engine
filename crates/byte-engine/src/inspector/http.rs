@@ -154,9 +154,9 @@ impl HttpInspectorServer {
 fn free_port(addresses: &[IpAddr], preferred: u16) -> io::Result<u16> {
 	// Port 0 lets the system pick for the first address; the later addresses then probe that same port.
 	let bind_all = |port| {
-		addresses
-			.iter()
-			.try_fold(port, |port, &address| TcpListener::bind((address, port))?.local_addr().map(|a| a.port()))
+		addresses.iter().try_fold(port, |port, &address| {
+			TcpListener::bind((address, port))?.local_addr().map(|a| a.port())
+		})
 	};
 	bind_all(preferred).or_else(|_| {
 		// The system picks a port that is free on the first address only, so pick again while a later one uses it.
@@ -873,7 +873,10 @@ mod tests {
 		let taken_port = taken.local_addr().expect("read occupied port").port();
 		let fallback = super::free_port(&super::LOOPBACK, taken_port).expect("pick fallback port");
 		assert_ne!(fallback, taken_port);
-		assert_eq!(super::free_port(&super::LOOPBACK, fallback).expect("keep free port"), fallback);
+		assert_eq!(
+			super::free_port(&super::LOOPBACK, fallback).expect("keep free port"),
+			fallback
+		);
 	}
 
 	#[test]
@@ -881,7 +884,10 @@ mod tests {
 		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
 		let reservation = TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).expect("reserve inspector test port");
 		let port = reservation.local_addr().expect("read inspector test address").port();
-		let parameters = [Parameter::new("address", "127.0.0.1"), Parameter::new("port", &port.to_string())];
+		let parameters = [
+			Parameter::new("address", "127.0.0.1"),
+			Parameter::new("port", &port.to_string()),
+		];
 		// Holding the IPv6 loopback port proves the inspector binds only the named address.
 		let server = TestServer {
 			_server: HttpInspectorServer::new(inspector, super::LoopWaker::default(), &parameters[..]),

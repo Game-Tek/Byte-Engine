@@ -502,7 +502,10 @@ async fn prepare_resource_mesh(
 				targets.push(resource_management::stream::StreamMut::new(name, target));
 			}
 		}
-		targets.push(resource_management::stream::StreamMut::new("level[0].TriangleIndices", indices));
+		targets.push(resource_management::stream::StreamMut::new(
+			"level[0].TriangleIndices",
+			indices,
+		));
 		resource
 			.load(targets.into())
 			.await

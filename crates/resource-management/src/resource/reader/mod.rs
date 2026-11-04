@@ -250,12 +250,10 @@ impl StoredResourceReader {
 					Ok(ReadTargets::Box(buffer))
 				}
 			}
-			ReadTargetsMut::Streams(streams) => {
-				read_streams(data.len(), stream_descriptions, streams, |range, destination| {
-					destination.copy_from_slice(&data[range]);
-					Ok(())
-				})
-			}
+			ReadTargetsMut::Streams(streams) => read_streams(data.len(), stream_descriptions, streams, |range, destination| {
+				destination.copy_from_slice(&data[range]);
+				Ok(())
+			}),
 			ReadTargetsMut::BackingStorage => Err(()),
 		}
 	}
@@ -587,7 +585,10 @@ mod tests {
 			})
 			.collect::<Vec<_>>();
 		decoded.extend(std::iter::repeat_n(7_u8, 4096));
-		let descriptions = [StreamDescription::new("noise", 4096, 0), StreamDescription::new("runs", 4096, 4096)];
+		let descriptions = [
+			StreamDescription::new("noise", 4096, 0),
+			StreamDescription::new("runs", 4096, 4096),
+		];
 		let reader: Box<dyn ResourceReader> = Box::new(compressed_reader(&decoded, &descriptions));
 
 		let backing = reader.into_backing_storage().await.unwrap();

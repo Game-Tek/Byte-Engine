@@ -102,7 +102,11 @@ impl Mesh {
 
 	/// Returns how many detail levels the mesh stores: the most of any primitive.
 	pub fn level_count(&self) -> u8 {
-		self.primitives.iter().map(|primitive| primitive.lods.len() as u8).max().unwrap_or(0)
+		self.primitives
+			.iter()
+			.map(|primitive| primitive.lods.len() as u8)
+			.max()
+			.unwrap_or(0)
 	}
 }
 
@@ -200,7 +204,9 @@ fn validate_lods(primitives: &[Primitive]) -> Result<(), SolveError> {
 		let count = |stream_type, level: usize| primitive.stream(stream_type, level as u8).map_or(0, Stream::count);
 		// A NaN error fails the comparison, so it is rejected with the falling ones.
 		let errors_rise = lods.iter().is_sorted_by(|finer, coarser| finer.error <= coarser.error);
-		let vertices_shrink = lods.iter().is_sorted_by(|finer, coarser| finer.vertex_count >= coarser.vertex_count);
+		let vertices_shrink = lods
+			.iter()
+			.is_sorted_by(|finer, coarser| finer.vertex_count >= coarser.vertex_count);
 		// Each level's vertex streams hold the vertices it adds to the coarser levels.
 		let added_vertices = |level: usize| {
 			lods[level].vertex_count as usize - lods.get(level + 1).map_or(0, |coarser| coarser.vertex_count as usize)
@@ -214,14 +220,16 @@ fn validate_lods(primitives: &[Primitive]) -> Result<(), SolveError> {
 			"a level holds no meshlets".to_string()
 		} else if lods[0].vertex_count != primitive.vertex_count || !vertices_shrink {
 			"the level vertex counts do not shrink from the primitive's vertex count".to_string()
-		} else if let Some(level) = (0..lods.len()).find(|&level| count(Streams::Meshlets, level) != lods[level].meshlet_count as usize) {
+		} else if let Some(level) =
+			(0..lods.len()).find(|&level| count(Streams::Meshlets, level) != lods[level].meshlet_count as usize)
+		{
 			format!(
 				"level {level} claims {} meshlets, but its stream holds {}",
 				lods[level].meshlet_count,
 				count(Streams::Meshlets, level)
 			)
-		} else if let Some(level) = (0..lods.len())
-			.find(|&level| count(Streams::Vertices(VertexSemantics::Position), level) != added_vertices(level))
+		} else if let Some(level) =
+			(0..lods.len()).find(|&level| count(Streams::Vertices(VertexSemantics::Position), level) != added_vertices(level))
 		{
 			format!(
 				"level {level} adds {} vertices, but its position stream holds {}",
@@ -509,7 +517,8 @@ mod tests {
 
 	#[test]
 	fn detail_levels_must_match_their_streams_with_rising_error() {
-		let valid = |streams: &[(usize, usize)], lods: Vec<PrimitiveLod>| validate_lods(&[leveled_primitive(streams, lods)]).is_ok();
+		let valid =
+			|streams: &[(usize, usize)], lods: Vec<PrimitiveLod>| validate_lods(&[leveled_primitive(streams, lods)]).is_ok();
 		let three_levels = [(4, 5), (2, 3), (1, 4)];
 
 		assert!(valid(&three_levels, vec![lod(4, 12, 0.0), lod(2, 7, 0.5), lod(1, 4, 0.5)]));
@@ -517,7 +526,10 @@ mod tests {
 		assert!(valid(&[(0, 3)], vec![lod(0, 3, 0.0)]));
 
 		assert!(!valid(&[(4, 3)], Vec::new()));
-		assert!(!valid(&[(1, 1); MAX_PRIMITIVE_LODS + 1], vec![lod(1, 1, 0.0); MAX_PRIMITIVE_LODS + 1]));
+		assert!(!valid(
+			&[(1, 1); MAX_PRIMITIVE_LODS + 1],
+			vec![lod(1, 1, 0.0); MAX_PRIMITIVE_LODS + 1]
+		));
 		// Full detail has no error to speak of.
 		assert!(!valid(&[(4, 3)], vec![lod(4, 3, 0.25)]));
 		// Levels may not be empty, and each holds exactly the meshlets its stream stores.

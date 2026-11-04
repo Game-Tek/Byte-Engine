@@ -5,7 +5,8 @@ use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, R
 use super::{ParticleSystemAssetHandler, generator, schema::ParticleSystemSource};
 use crate::{
 	asset::{
-		handler::implementations::besl::{PreparedBeslShader, ShaderCompiler}, manager::AssetManager,
+		handler::implementations::besl::{PreparedBeslShader, ShaderCompiler},
+		manager::AssetManager,
 		storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 	},
 	r#async,

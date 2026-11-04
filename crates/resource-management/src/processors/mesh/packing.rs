@@ -179,7 +179,9 @@ impl MeshProcessorSession {
 			})
 			.collect::<Vec<_>>();
 		let vertex_counts = order_vertices_by_level(
-			levels.iter().map(|level| level.iter().flat_map(|meshlet| meshlet.vertices.iter().copied())),
+			levels
+				.iter()
+				.map(|level| level.iter().flat_map(|meshlet| meshlet.vertices.iter().copied())),
 			position_count,
 			&mut self.scratch.vertex_levels,
 			&mut self.scratch.vertex_order,
@@ -227,7 +229,12 @@ impl MeshProcessorSession {
 				},
 			));
 			primitive_streams.push(append_generated_stream(
-				level_block(&mut self.blocks, &self.source_blocks, Streams::Indices(IndexStreamTypes::Meshlets), level),
+				level_block(
+					&mut self.blocks,
+					&self.source_blocks,
+					Streams::Indices(IndexStreamTypes::Meshlets),
+					level,
+				),
 				|bytes| {
 					for meshlet in meshlets.iter() {
 						bytes.extend_from_slice(meshlet.triangles);
@@ -247,7 +254,12 @@ impl MeshProcessorSession {
 		}
 		// The plain triangle list holds full detail, for renderers that draw without meshlets.
 		primitive_streams.push(append_generated_stream(
-			level_block(&mut self.blocks, &self.source_blocks, Streams::Indices(IndexStreamTypes::Triangles), 0),
+			level_block(
+				&mut self.blocks,
+				&self.source_blocks,
+				Streams::Indices(IndexStreamTypes::Triangles),
+				0,
+			),
 			|bytes| {
 				for &index in &self.scratch.indices {
 					bytes.extend((remap[index as usize] as u16).to_le_bytes());
@@ -729,12 +741,7 @@ fn bounding_sphere(bounds: &AABB<ModelSpace>, positions: &[[f32; 3]]) -> [f32; 4
 	let center = bounds.center().to_array();
 	let radius = positions
 		.iter()
-		.map(|position| {
-			(0..3)
-				.map(|axis| (position[axis] - center[axis]).powi(2))
-				.sum::<f32>()
-				.sqrt()
-		})
+		.map(|position| (0..3).map(|axis| (position[axis] - center[axis]).powi(2)).sum::<f32>().sqrt())
 		.fold(0.0f32, f32::max);
 	[center[0], center[1], center[2], radius]
 }

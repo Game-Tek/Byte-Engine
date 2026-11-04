@@ -232,7 +232,11 @@ fn bind_clips(motion: &StateMotion, pool: &AnimationPool, target: &Skeleton) -> 
 		};
 	}
 	StateBinding {
-		clips: motion.clips().iter().map(|clip| bind(clip.shared_resource_id(), None)).collect(),
+		clips: motion
+			.clips()
+			.iter()
+			.map(|clip| bind(clip.shared_resource_id(), None))
+			.collect(),
 		nodes: None,
 	}
 }
@@ -270,7 +274,10 @@ enum Entering {
 	/// At a step's start, before the step plays: the two poses posted last, over the last step's root motion and delta.
 	AtStepStart,
 	/// At a hand-over within a step: the pose the step reached and the one posted last, over the part played.
-	MidStep { root_motion: RootMotionDelta, interval: MediaTime },
+	MidStep {
+		root_motion: RootMotionDelta,
+		interval: MediaTime,
+	},
 }
 
 /// The `Evaluation` struct lends a player what one evaluation needs besides its own state, so players on several
@@ -1101,11 +1108,14 @@ impl ReadyAnimationGraphPlayer {
 		let play = self.matched.get_or_insert_default();
 		play.prediction = match play.prediction {
 			Some(prediction) if prediction.state == state => Some(prediction.stepped(yaw, delta, self.held.velocity)),
-			_ => evaluation.pool.resident_database(database.resource_id()).map(|database| Prediction {
-				state,
-				velocity: matched::starting_velocity(root_motion, delta),
-				damping: crate::animation::matching::search::damping(database.info.search.velocity_halflife),
-			}),
+			_ => evaluation
+				.pool
+				.resident_database(database.resource_id())
+				.map(|database| Prediction {
+					state,
+					velocity: matched::starting_velocity(root_motion, delta),
+					damping: crate::animation::matching::search::damping(database.info.search.velocity_halflife),
+				}),
 		};
 	}
 
@@ -1114,7 +1124,12 @@ impl ReadyAnimationGraphPlayer {
 	///
 	/// The step's pose and root motion are the playing clip's; a found frame plays from the next step, inertialized
 	/// from the pose this step posts.
-	fn advance_matched(&mut self, graph: &AnimationGraph, delta: MediaTime, evaluation: &mut Evaluation<'_, '_>) -> RootMotionDelta {
+	fn advance_matched(
+		&mut self,
+		graph: &AnimationGraph,
+		delta: MediaTime,
+		evaluation: &mut Evaluation<'_, '_>,
+	) -> RootMotionDelta {
 		let Playback::Playing(active) = &mut self.playback else {
 			unreachable!("only a playing matched state advances on its own");
 		};
@@ -1217,7 +1232,9 @@ impl ReadyAnimationGraphPlayer {
 		};
 		let query = matched::matched_query(info, nodes, &self.pose.target, poses, held, predicted);
 		// Entering needs every clip resident, so only a playing state's search skips any.
-		let result = search(database, &query, playing, |candidate| evaluation.resident(&info.clips[candidate].id));
+		let result = search(database, &query, playing, |candidate| {
+			evaluation.resident(&info.clips[candidate].id)
+		});
 		play.search.record(&query, result);
 		motion.since_search = 0.0;
 		let found = result.found?;
@@ -1377,11 +1394,21 @@ impl ReadyAnimationGraphPlayer {
 	) {
 		let graph = evaluation.graph;
 		if is_visual(source.samples(graph), destination.samples(graph)) {
-			self.pose
-				.begin_visual_blend(&destination, destination.samples(graph), self.last_delta, duration, evaluation);
+			self.pose.begin_visual_blend(
+				&destination,
+				destination.samples(graph),
+				self.last_delta,
+				duration,
+				evaluation,
+			);
 		} else {
-			self.pose
-				.sample(&destination, destination.samples(graph), destination.phase, evaluation, Sampled::Destination);
+			self.pose.sample(
+				&destination,
+				destination.samples(graph),
+				destination.phase,
+				evaluation,
+				Sampled::Destination,
+			);
 			self.pose.destination_previous.copy_from_slice(&self.pose.destination_current);
 			self.pose.begin_from_display(self.last_delta, duration);
 		}
@@ -1844,7 +1871,9 @@ impl PlayerPose {
 			(&self.destination_previous, &self.destination_current)
 		} else {
 			let nodes = self.local_pose.len();
-			let PoseScratch { loop_start, loop_end, .. } = &mut *evaluation.scratch;
+			let PoseScratch {
+				loop_start, loop_end, ..
+			} = &mut *evaluation.scratch;
 			let (previous, current) = (&mut loop_start[..nodes], &mut loop_end[..nodes]);
 			previous.copy_from_slice(&self.destination_previous);
 			current.copy_from_slice(&self.destination_current);
@@ -2155,7 +2184,6 @@ impl PlayerPose {
 		}
 	}
 
-
 	/// Updates the borrowed global pose after local sampling.
 	fn write_global_pose(&mut self) {
 		write_global_pose(&self.target, &self.local_pose, &mut self.global_pose)
@@ -2339,14 +2367,25 @@ fn sample_span(
 	current: &mut [LocalTransform],
 ) {
 	let duration = motion.duration(samples);
-	let span = if duration > 0.0 { interval.as_seconds_f32() / duration } else { 0.0 };
+	let span = if duration > 0.0 {
+		interval.as_seconds_f32() / duration
+	} else {
+		0.0
+	};
 	sample_motion(motion, samples, motion.phase, pool, &mut scratch.blend_poses, current);
 	if motion.phase >= span {
 		sample_motion(motion, samples, motion.phase - span, pool, &mut scratch.blend_poses, previous);
 		return;
 	}
 	let later = &mut scratch.loop_start[..current.len()];
-	sample_motion(motion, samples, (motion.phase + span).min(1.0), pool, &mut scratch.blend_poses, later);
+	sample_motion(
+		motion,
+		samples,
+		(motion.phase + span).min(1.0),
+		pool,
+		&mut scratch.blend_poses,
+		later,
+	);
 	for ((previous, later), current) in previous.iter_mut().zip(&*later).zip(&*current) {
 		*previous = shifted_sample(*current, *later, current);
 	}

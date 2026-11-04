@@ -52,7 +52,12 @@ pub fn bake_level(source: &[u8]) -> Result<(Level, Vec<u8>), String> {
 	let count = u32::try_from(entities.len())
 		.ok()
 		.filter(|&count| count < NO_PARENT)
-		.ok_or_else(|| format!("The most likely cause is that it places {} entities. Split it into smaller levels.", entities.len()))?;
+		.ok_or_else(|| {
+			format!(
+				"The most likely cause is that it places {} entities. Split it into smaller levels.",
+				entities.len()
+			)
+		})?;
 
 	let ids = index_ids(&entities)?;
 	let parents = entities
@@ -270,7 +275,9 @@ fn write_value(writer: &mut TokenWriter, value: &Value, entity: &impl Fn(&str) -
 					));
 				};
 				let index = entity(id).ok_or_else(|| {
-					format!("refers to entity '{id}', which no entity has as its id. Fix the reference or add an entity with that id.")
+					format!(
+						"refers to entity '{id}', which no entity has as its id. Fix the reference or add an entity with that id."
+					)
 				})?;
 				writer.write(Token::Entity(index));
 				return Ok(());
@@ -557,13 +564,28 @@ mod tests {
 			("repeated id", r#"{ entities: [{ id: "a" }, { id: "a" }] }"#),
 			("unknown parent", r#"{ entities: [{ parent: "a" }] }"#),
 			("own parent", r#"{ entities: [{ id: "a", parent: "a" }] }"#),
-			("parent cycle", r#"{ entities: [{ id: "a", parent: "b" }, { id: "b", parent: "a" }] }"#),
+			(
+				"parent cycle",
+				r#"{ entities: [{ id: "a", parent: "b" }, { id: "b", parent: "a" }] }"#,
+			),
 			("repeated kind", r#"{ entities: [{ components: { mesh: 1, mesh: 2 } }] }"#),
-			("repeated payload field", r#"{ entities: [{ components: { mesh: { a: 1, a: 2 } } }] }"#),
+			(
+				"repeated payload field",
+				r#"{ entities: [{ components: { mesh: { a: 1, a: 2 } } }] }"#,
+			),
 			("empty kind", r#"{ entities: [{ components: { "": 1 } }] }"#),
-			("unknown reference", r#"{ entities: [{ components: { follow: { "$entity": "a" } } }] }"#),
-			("reference with another field", r#"{ entities: [{ id: "a", components: { follow: { "$entity": "a", b: 1 } } }] }"#),
-			("reference that isn't a string", r#"{ entities: [{ components: { follow: { "$entity": 0 } } }] }"#),
+			(
+				"unknown reference",
+				r#"{ entities: [{ components: { follow: { "$entity": "a" } } }] }"#,
+			),
+			(
+				"reference with another field",
+				r#"{ entities: [{ id: "a", components: { follow: { "$entity": "a", b: 1 } } }] }"#,
+			),
+			(
+				"reference that isn't a string",
+				r#"{ entities: [{ components: { follow: { "$entity": 0 } } }] }"#,
+			),
 			("non-finite number", r#"{ entities: [{ components: { scale: NaN } }] }"#),
 			("not JSON5", r#"{ entities: [ "#),
 		] {

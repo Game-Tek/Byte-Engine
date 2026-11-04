@@ -29,11 +29,11 @@ use super::geometry::{
 	GENERATED_MESH_MATERIAL, GeometryBuffers, GeometryHandles, GeometryRanges, MeshData, PreparedLevels, PreparedMesh,
 	PrimitiveBlock, PrimitiveLevels, RetiredRanges,
 };
-use super::lod::MeshLods;
 use super::layout::{
 	MAX_BINDLESS_TEXTURES, MAX_INSTANCE_MESHLETS, MAX_MATERIALS, TRANSPARENT_SPECIALIZATION_ID,
 	material_variable_specialization_id,
 };
+use super::lod::MeshLods;
 use super::render_pass::MATERIAL_EVALUATION_PUSH_CONSTANT_SIZE;
 use super::shader_generator::uber_arm_key;
 use crate::core::EntityHandle;
@@ -311,7 +311,6 @@ struct UberShaderPublication {
 	keys: Arc<[u32]>,
 	pipeline: PipelineRef,
 }
-
 
 /// Returns or assigns a stable shader-table slot for `id`, failing once `limit` slots exist.
 fn assign_slot(slots: &mut HashMap<String, u32>, id: &str, limit: usize, kind: &str) -> Option<u32> {

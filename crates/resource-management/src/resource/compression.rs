@@ -401,7 +401,8 @@ mod tests {
 		let mut data = noise(64 * 1024);
 		data.extend(std::iter::repeat_n([12_u8, 34, 56, 255], 256 * 1024).flatten());
 
-		let prepared = prepare(&data, None, ResourceCompressionPolicy::Enabled).expect("a mostly repetitive payload should compress");
+		let prepared =
+			prepare(&data, None, ResourceCompressionPolicy::Enabled).expect("a mostly repetitive payload should compress");
 
 		assert!(prepared.bytes.len() < data.len() / 2);
 		assert_eq!(prepared.decoded_size, data.len());

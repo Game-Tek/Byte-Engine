@@ -447,9 +447,16 @@ mod tests {
 			.expect("the state searches every tenth of a second");
 		let first = &search["match"]["trajectory"][0];
 		let number = |value: &serde_json::Value| value.as_f64().expect("a number");
-		let (time, x, z) = (number(&first["time"]), number(&first["position"][0]), number(&first["position"][1]));
+		let (time, x, z) = (
+			number(&first["time"]),
+			number(&first["position"][0]),
+			number(&first["position"][1]),
+		);
 		// Whatever the clips play, the prediction has nearly reached the sideways velocity.
-		assert!(x < -1.4 * time * 0.9 && z.abs() < 0.03, "the trajectory starts toward ({x}, {z})");
+		assert!(
+			x < -1.4 * time * 0.9 && z.abs() < 0.03,
+			"the trajectory starts toward ({x}, {z})"
+		);
 	}
 
 	#[test]

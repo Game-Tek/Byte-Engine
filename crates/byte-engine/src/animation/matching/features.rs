@@ -94,7 +94,11 @@ pub(crate) fn build_database(settings: &MotionBead, clips: &[(String, &Animation
 		return Err(DatabaseError::TooManyDimensions(layout.dimensions));
 	}
 
-	if let Some(entry) = settings.loops.iter().find(|entry| !clips.iter().any(|(id, _)| names(entry, id))) {
+	if let Some(entry) = settings
+		.loops
+		.iter()
+		.find(|entry| !clips.iter().any(|(id, _)| names(entry, id)))
+	{
 		return Err(DatabaseError::LoopNamesNoClip(entry.clone()));
 	}
 

@@ -1379,7 +1379,13 @@ impl WallSink {
 		] {
 			self.parameters.write(member, value).expect("surfel resolve parameters");
 		}
-		let texels = |value: [f32; 4]| texture_2d(RESOLVE_EXTENT, RESOLVE_EXTENT, &vec![value; (RESOLVE_EXTENT * RESOLVE_EXTENT) as usize]);
+		let texels = |value: [f32; 4]| {
+			texture_2d(
+				RESOLVE_EXTENT,
+				RESOLVE_EXTENT,
+				&vec![value; (RESOLVE_EXTENT * RESOLVE_EXTENT) as usize],
+			)
+		};
 		let mut previous_history = texels(light);
 		let mut previous_weights = texels([confidence, 0.0, 0.0, 0.0]);
 		let mut previous_depth = texels([WALL_DEPTH, 0.0, 0.0, 1.0]);
@@ -1949,11 +1955,19 @@ fn surfel_resolve_gathers_every_other_frame_unless_the_history_is_weak() {
 	assert!((confidence - 16.0).abs() < 0.001, "{confidence}");
 	// In its turn, the surfel's light blends in by its full confidence.
 	let (light, confidence) = gather(&mut set, &mut sink, 2, 16.0);
-	assert_rgba_close(light, std::array::from_fn(|channel| (history[channel] * 16.0 + lit[channel]) / 17.0), 0.001);
+	assert_rgba_close(
+		light,
+		std::array::from_fn(|channel| (history[channel] * 16.0 + lit[channel]) / 17.0),
+		0.001,
+	);
 	assert!((confidence - 17.0).abs() < 0.001, "{confidence}");
 	// A weak history gathers out of turn.
 	let (light, confidence) = gather(&mut set, &mut sink, 1, 2.0);
-	assert_rgba_close(light, std::array::from_fn(|channel| (history[channel] * 2.0 + lit[channel]) / 3.0), 0.001);
+	assert_rgba_close(
+		light,
+		std::array::from_fn(|channel| (history[channel] * 2.0 + lit[channel]) / 3.0),
+		0.001,
+	);
 	assert!((confidence - 3.0).abs() < 0.001, "{confidence}");
 }
 

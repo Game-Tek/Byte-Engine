@@ -15,8 +15,8 @@ use byte_engine::{
 	application::{
 		Parameter,
 		graphics::{
-			GraphicsApplication, configure_default_baking, setup_animation_pool, setup_default_audio,
-			setup_default_input, setup_default_resource_and_asset_management, setup_pbr_visibility_shading_render_pipeline,
+			GraphicsApplication, configure_default_baking, setup_animation_pool, setup_default_audio, setup_default_input,
+			setup_default_resource_and_asset_management, setup_pbr_visibility_shading_render_pipeline,
 		},
 	},
 	core::{Creator as _, channel::Channel as _},

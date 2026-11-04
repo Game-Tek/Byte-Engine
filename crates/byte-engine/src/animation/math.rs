@@ -225,7 +225,11 @@ pub(crate) fn yaw_rotation(yaw: f32) -> Orientation {
 
 /// Returns the object-space rotation of `node`, composed from its own and its ancestors' local rotations, or the
 /// identity for no node.
-pub(crate) fn model_rotation(skeleton: &Skeleton, local_rotation: impl Fn(usize) -> Orientation, node: Option<u32>) -> Orientation {
+pub(crate) fn model_rotation(
+	skeleton: &Skeleton,
+	local_rotation: impl Fn(usize) -> Orientation,
+	node: Option<u32>,
+) -> Orientation {
 	let mut rotation = Orientation::identity();
 	let mut ancestor = node;
 	while let Some(node) = ancestor {

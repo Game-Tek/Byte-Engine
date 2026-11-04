@@ -50,7 +50,9 @@ pub struct LevelKind {
 }
 
 /// The `Section` struct locates one byte range of a level's payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct Section {
 	pub offset: u64,
 	pub size: u64,

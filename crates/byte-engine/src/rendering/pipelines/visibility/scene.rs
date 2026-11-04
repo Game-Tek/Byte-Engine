@@ -13,6 +13,7 @@ use super::geometry::encode_octahedral_unit_vector;
 use super::layout::{ActiveEvaluationMask, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, SHADOW_CASCADE_COUNT, SHADOW_VIEW_COUNT};
 use super::lod::MeshLods;
 use super::render_pass::VisibilityRenderPass;
+use super::residency::ResidencySlot;
 use super::shader_data::{
 	IesProfileTexture, LightData, LightingData, NEUTRAL_UNIT_VECTOR, NO_IES_PROFILE_TEXTURE, ShaderMesh, ShaderViewData,
 };
@@ -22,7 +23,6 @@ use crate::core::factory::Handle;
 use crate::gameplay::transform::Transform;
 use crate::rendering::lights::Lights;
 use crate::rendering::renderable::mesh::MeshKey;
-use super::residency::ResidencySlot;
 use crate::space::{Orientable as _, Positionable as _};
 
 /// The `Instance` struct identifies one dense shader mesh and the work needed to rasterize it.

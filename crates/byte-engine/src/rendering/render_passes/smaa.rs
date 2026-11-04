@@ -255,7 +255,15 @@ mod tests {
 		let mut result = empty_image(extent, extent);
 		for y in (0..extent).step_by(PIXEL_TILE as usize) {
 			for x in (0..extent).step_by(PIXEL_TILE as usize) {
-				run_resolve_tile(&mut source, &mut edges, &mut area, &mut search, &mut result, [x, y], [extent, extent]);
+				run_resolve_tile(
+					&mut source,
+					&mut edges,
+					&mut area,
+					&mut search,
+					&mut result,
+					[x, y],
+					[extent, extent],
+				);
 			}
 		}
 		result

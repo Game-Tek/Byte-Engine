@@ -28,7 +28,8 @@ const FOG_LIGHT_RESOLUTION_DIVISOR: u32 = 2;
 const FOG_LIGHT_TILE_COLUMNS: u32 = 32;
 const FOG_LIGHT_TILE_ROWS: u32 = 18;
 const FOG_LIGHT_TILE_MASK_WORDS: u32 = 32;
-const FOG_LIGHT_TILE_MASK_WORD_COUNT: usize = (FOG_LIGHT_TILE_COLUMNS * FOG_LIGHT_TILE_ROWS * FOG_LIGHT_TILE_MASK_WORDS) as usize;
+const FOG_LIGHT_TILE_MASK_WORD_COUNT: usize =
+	(FOG_LIGHT_TILE_COLUMNS * FOG_LIGHT_TILE_ROWS * FOG_LIGHT_TILE_MASK_WORDS) as usize;
 /// The density per meter below which a layer's fog is too thin for a point or cone light to light.
 const FOG_DENSITY_CUTOFF: f32 = 0.0001;
 
@@ -84,7 +85,10 @@ fn fog_volume(layer: Option<FogLayer>) -> FogVolume {
 	};
 	let (min, mut max) = match layer.bounds() {
 		Some(bounds) => (bounds.min().into_maths(), bounds.max().into_maths()),
-		None => (Vec3f::new(-f32::MAX, -f32::MAX, -f32::MAX), Vec3f::new(f32::MAX, f32::MAX, f32::MAX)),
+		None => (
+			Vec3f::new(-f32::MAX, -f32::MAX, -f32::MAX),
+			Vec3f::new(f32::MAX, f32::MAX, f32::MAX),
+		),
 	};
 	max.y = max.y.min(top);
 	if min.y > max.y {
@@ -145,12 +149,18 @@ pub(crate) fn fog_light_shader_parameters(fog: &ExponentialHeightFog, sink: &Sin
 		layers: [
 			FogLayerShaderData::new(fog.layer(), camera),
 			// A missing second layer packs no density, which adds no fog.
-			fog.second_layer().map_or_else(bytemuck::Zeroable::zeroed, |layer| FogLayerShaderData::new(layer, camera)),
+			fog.second_layer()
+				.map_or_else(bytemuck::Zeroable::zeroed, |layer| FogLayerShaderData::new(layer, camera)),
 		],
 		volumes: [fog_volume(Some(fog.layer())), fog_volume(fog.second_layer())],
 		camera_position: [camera.x, camera.y, camera.z, 0.0],
 		camera_forward: [forward.x, forward.y, forward.z, 0.0],
-		phase: [1.0 + squared, 2.0 * anisotropy, (1.0 - squared) / (4.0 * std::f32::consts::PI), 0.0],
+		phase: [
+			1.0 + squared,
+			2.0 * anisotropy,
+			(1.0 - squared) / (4.0 * std::f32::consts::PI),
+			0.0,
+		],
 		albedo: [albedo.x, albedo.y, albedo.z, 0.0],
 		edge_slopes: [1.0 / projection[0], 1.0 / projection[5]],
 		samples: fog.light_samples(),

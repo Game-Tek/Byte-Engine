@@ -8,10 +8,10 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use resource_management::Reference;
+use resource_management::resources::mesh::MAX_PRIMITIVE_LODS;
 use resource_management::resources::mesh::Mesh;
 use resource_management::resources::skeleton::SkinBinding;
 use resource_management::stream::StreamMut;
-use resource_management::resources::mesh::MAX_PRIMITIVE_LODS;
 use resource_management::types::{IndexStreamTypes, Stream, Streams, VertexSemantics};
 
 use super::{
@@ -446,7 +446,10 @@ impl ResourcePlan {
 			uvs: take_range(&mut cursor, vertices * VERTEX_UV_BUFFER_STRIDE as usize),
 			vertex_indices: take_range(&mut cursor, counts.primitive_indices as usize * VERTEX_INDEX_STRIDE),
 			primitive_indices: take_range(&mut cursor, counts.triangles as usize * 3),
-			meshlets: take_range(&mut cursor, counts.meshlets as usize * std::mem::size_of::<ShaderMeshletData>()),
+			meshlets: take_range(
+				&mut cursor,
+				counts.meshlets as usize * std::mem::size_of::<ShaderMeshletData>(),
+			),
 			flat_triangles: (flat_triangles && matches!(levels, PreparedLevels::Coarsest))
 				.then(|| take_range(&mut cursor, flat_triangle_bound * 6)),
 		};
@@ -876,7 +879,9 @@ mod tests {
 		let written = flatten_meshlet_triangles(&records, &vertex_indices, &triangles, &mut flat);
 
 		assert_eq!(written, 3);
-		let flat = flat.map(|bytes| std::array::from_fn::<u16, 3, _>(|corner| u16::from_le_bytes([bytes[corner * 2], bytes[corner * 2 + 1]])));
+		let flat = flat.map(|bytes| {
+			std::array::from_fn::<u16, 3, _>(|corner| u16::from_le_bytes([bytes[corner * 2], bytes[corner * 2 + 1]]))
+		});
 		assert_eq!(flat, [[7, 5, 6], [1, 3, 2], [2, 2, 1]]);
 	}
 

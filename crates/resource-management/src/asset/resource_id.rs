@@ -231,7 +231,10 @@ pub mod tests {
 		assert_eq!(ResourceId::new("not-an-environment.bead").get_asset_type(), "bead");
 		assert_eq!(ResourceId::new("lighting/.bead").get_asset_type(), "");
 		assert_eq!(ResourceId::new("lighting.v2/studio.bead").get_asset_type(), "bead");
-		assert_eq!(ResourceId::new("characters/locomotion.motion.bead").get_asset_type(), "motion.bead");
+		assert_eq!(
+			ResourceId::new("characters/locomotion.motion.bead").get_asset_type(),
+			"motion.bead"
+		);
 		assert_eq!(ResourceId::new("characters/emotion.bead").get_asset_type(), "bead");
 	}
 }

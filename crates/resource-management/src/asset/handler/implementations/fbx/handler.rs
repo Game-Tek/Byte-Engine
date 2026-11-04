@@ -267,13 +267,7 @@ impl AssetHandler for FBXAssetHandler {
 		})?;
 		let mut culled_polygons = FbxCulledPolygonCounts::default();
 		let (materials, mesh) = std::future::join!(
-			resolve_fbx_materials(
-				context,
-				spec.as_ref(),
-				source_id,
-				&scene,
-				&material_keys,
-			),
+			resolve_fbx_materials(context, spec.as_ref(), source_id, &scene, &material_keys,),
 			async {
 				import_fbx_mesh_session(
 					&scene,

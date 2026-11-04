@@ -199,8 +199,7 @@ impl AssetManager {
 
 	/// Returns the state to configure, which only exists while no bake shares it.
 	fn configurable_state(&mut self) -> &mut AssetManagerState {
-		Arc::get_mut(&mut self.state)
-			.expect("The asset manager must be configured before it starts processing requests.")
+		Arc::get_mut(&mut self.state).expect("The asset manager must be configured before it starts processing requests.")
 	}
 
 	/// Reports whether a source directory can be read when the storage backend exposes paths.

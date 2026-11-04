@@ -192,21 +192,33 @@ mod tests {
 		);
 		// The clip moves its node along X at a steady pace, so half way the ground root has covered half the travel.
 		let ([half, z, _], [whole, ..]) = (database.ground[15], database.ground[30]);
-		assert!(whole > 0.0 && (half - whole / 2.0).abs() < 1.0e-5 && z.abs() < 1.0e-6, "{half}, {z}, {whole}");
+		assert!(
+			whole > 0.0 && (half - whole / 2.0).abs() < 1.0e-5 && z.abs() < 1.0e-6,
+			"{half}, {z}, {whole}"
+		);
 	}
 
 	#[compio::test]
 	async fn a_motion_bead_whose_clips_cannot_form_a_database_fails_to_bake() {
 		for (case, bead) in [
-			("pattern", &br#"{ clips: ["missing/*.fbx"], root: { node: "AnimatedNode" } }"#[..]),
+			(
+				"pattern",
+				&br#"{ clips: ["missing/*.fbx"], root: { node: "AnimatedNode" } }"#[..],
+			),
 			("node", &br#"{ clips: ["solo.fbx"], root: { node: "Hips" } }"#[..]),
-			("unknown", &br#"{ clips: ["solo.fbx"], root: { node: "AnimatedNode" }, speed: 2 }"#[..]),
+			(
+				"unknown",
+				&br#"{ clips: ["solo.fbx"], root: { node: "AnimatedNode" }, speed: 2 }"#[..],
+			),
 		] {
 			let sources = Sources::new(case);
 			sources.add("solo.fbx", MOVING_FBX);
 			sources.add("bad.motion.bead", bead);
 
-			let baked = sources.asset_manager(MemoryStorageBackend::new()).bake("bad.motion.bead").await;
+			let baked = sources
+				.asset_manager(MemoryStorageBackend::new())
+				.bake("bad.motion.bead")
+				.await;
 			assert!(baked.is_err(), "the {case} case should fail to bake");
 		}
 	}

@@ -544,7 +544,10 @@ pub fn common_shader_module() -> [besl::parser::Node<'static>; 2] {
 		_ => unreachable!("Invalid common BESL shader root. The most likely cause is a parser contract regression."),
 	};
 
-	[besl::parser::Node::scope("Common", children), besl::parser::Node::r#use("Common", true)]
+	[
+		besl::parser::Node::scope("Common", children),
+		besl::parser::Node::r#use("Common", true),
+	]
 }
 
 /// The `CommonShaderGenerator` struct prepares standalone shaders, such as the engine's render passes, for baking.

@@ -9,15 +9,15 @@ use resource_management::{
 		skeleton::{LocalTransform, Skeleton, SkeletonNode},
 	},
 };
-use crate::animation::{
-	math::{yaw_of_direction, yaw_rotation},
-	test_node,
-};
 
 use super::{
 	MAX_DIMENSIONS, PredictedVelocity, database_from_clips,
 	features::DatabaseError,
 	search::{DatabaseInfo, Found, Playing, Query, RequestedMotion, TrajectorySample, build_query, pack_database, search},
+};
+use crate::animation::{
+	math::{yaw_of_direction, yaw_rotation},
+	test_node,
 };
 use crate::math::Vector;
 
@@ -190,8 +190,14 @@ fn smoothing_keeps_steady_motion_and_pulls_the_clip_ends_inward() {
 
 	// A Gaussian of 0.1 s reaches 0.3 s, nine frames, to either side.
 	assert_near(database.ground[30][1], -1.0, "the middle of a steady walk");
-	assert!(database.ground[0][1] < -1.0e-3, "the first frame averages in the frames after it");
-	assert!(database.ground[60][1] > -2.0 + 1.0e-3, "the last frame averages in the frames before it");
+	assert!(
+		database.ground[0][1] < -1.0e-3,
+		"the first frame averages in the frames after it"
+	);
+	assert!(
+		database.ground[60][1] > -2.0 + 1.0e-3,
+		"the last frame averages in the frames before it"
+	);
 }
 
 #[test]
@@ -267,7 +273,10 @@ fn databases_that_cannot_be_searched_are_rejected() {
 		error(&format!("trajectory: {{ times: [{}] }}", times.join(", ")), &walking),
 		DatabaseError::TooManyDimensions(68)
 	);
-	assert_eq!(error("trajectory: { times: [2.5] }", &walking), DatabaseError::NoPickableFrame);
+	assert_eq!(
+		error("trajectory: { times: [2.5] }", &walking),
+		DatabaseError::NoPickableFrame
+	);
 }
 
 #[test]
@@ -319,7 +328,10 @@ fn a_query_that_starts_at_its_requested_velocity_predicts_a_straight_line() {
 		assert_near(sample.direction[0], 0.0, "direction x");
 		assert_near(sample.direction[1], -1.0, "direction z");
 	}
-	assert_eq!(query.first_dimension, 0, "without node features the cost compares every dimension");
+	assert_eq!(
+		query.first_dimension, 0,
+		"without node features the cost compares every dimension"
+	);
 }
 
 #[test]
@@ -338,7 +350,10 @@ fn a_query_turns_toward_its_facing_and_eases_into_its_velocity() {
 
 	let yaw = |sample: &TrajectorySample| yaw_of_direction(sample.direction[0], sample.direction[1]);
 	let [half, whole] = [query.trajectory[0], query.trajectory[1]];
-	assert!(0.0 < yaw(&half) && yaw(&half) < yaw(&whole) && yaw(&whole) < 1.0, "the facing turns toward 1 rad");
+	assert!(
+		0.0 < yaw(&half) && yaw(&half) < yaw(&whole) && yaw(&whole) < 1.0,
+		"the facing turns toward 1 rad"
+	);
 	assert!(
 		-1.4 * half.time < half.position[1] && half.position[1] < 0.0,
 		"starting from rest, the trajectory trails the requested velocity"
@@ -393,7 +408,12 @@ fn frame_of(info: &DatabaseInfo, found: Found) -> usize {
 }
 
 /// The least-cost candidate frame and its cost, found by comparing every candidate as the reference specifies.
-fn every_candidate(database: &MotionDatabase, query: &Query, playing: Option<Playing>, resident: &[bool]) -> Option<(usize, f32)> {
+fn every_candidate(
+	database: &MotionDatabase,
+	query: &Query,
+	playing: Option<Playing>,
+	resident: &[bool],
+) -> Option<(usize, f32)> {
 	let dimensions = database.search.dimensions();
 	let cost = |frame: usize| {
 		database.features[frame * dimensions..][query.first_dimension..dimensions]
@@ -593,7 +613,11 @@ fn a_prediction_stepped_toward_its_goal_travels_the_queried_trajectory() {
 	for axis in 0..2 {
 		assert_near(travelled[axis], trajectory[axis], "travel");
 		assert_near(prediction.velocity[axis], stepped_at_once.velocity[axis], "velocity");
-		assert_near(prediction.acceleration[axis], stepped_at_once.acceleration[axis], "acceleration");
+		assert_near(
+			prediction.acceleration[axis],
+			stepped_at_once.acceleration[axis],
+			"acceleration",
+		);
 	}
 }
 

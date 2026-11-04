@@ -10,8 +10,8 @@ use crate::animation::{
 		turn_back,
 	},
 	math::{
-		NodeLookup, animated_yaw, compose_local_transform, object_transform, relative_local_transform, unique_node,
-		wrap_angle, yaw_rotation,
+		NodeLookup, animated_yaw, compose_local_transform, object_transform, relative_local_transform, unique_node, wrap_angle,
+		yaw_rotation,
 	},
 };
 use crate::math::Orientation;
@@ -152,7 +152,9 @@ pub(super) fn matched_query(
 	let node_poses = (poses.produced && seconds > 0.0).then(|| {
 		let undo = rotation.inverse();
 		for ((&node, current), previous) in nodes.iter().zip(&mut current).zip(&mut previous) {
-			*current = object_transform(skeleton, poses.current, node as usize).translation.to_array();
+			*current = object_transform(skeleton, poses.current, node as usize)
+				.translation
+				.to_array();
 			// The previous pose is in the object space before the step's root motion moved the entity.
 			let earlier = object_transform(skeleton, poses.previous, node as usize).translation - translation;
 			*previous = undo.rotate_vector(earlier).to_array();
@@ -175,11 +177,10 @@ pub(super) fn matched_query(
 /// Resolves what placing a matched pose changes in `skeleton`, the canonical one: the database's root node `root` and
 /// its ancestors, for a [`GroundBinding`].
 pub(super) fn ground_placement(skeleton: &Skeleton, root: usize) -> GroundPlacement {
-	let ancestors: Box<[(u32, LocalTransform)]> = std::iter::successors(skeleton.nodes[root].parent, |&node| {
-		skeleton.nodes[node as usize].parent
-	})
-	.map(|node| (node, skeleton.nodes[node as usize].rest_local))
-	.collect();
+	let ancestors: Box<[(u32, LocalTransform)]> =
+		std::iter::successors(skeleton.nodes[root].parent, |&node| skeleton.nodes[node as usize].parent)
+			.map(|node| (node, skeleton.nodes[node as usize].rest_local))
+			.collect();
 	// Composed from the topmost ancestor down, so the nearest ancestor's rest is innermost.
 	let parent_rest = ancestors.iter().fold(LocalTransform::identity(), |transform, &(_, rest)| {
 		compose_local_transform(rest, transform)
@@ -198,10 +199,9 @@ pub(super) fn ground_placement(skeleton: &Skeleton, root: usize) -> GroundPlacem
 /// The travel stays out of every local transform, so inertializing between two placed poses blends what they show.
 pub(super) fn place_on_ground(pose: &mut [LocalTransform], placement: &GroundPlacement, ground: GroundRoot) {
 	let root = placement.root as usize;
-	let sampled = placement
-		.ancestors
-		.iter()
-		.fold(pose[root], |transform, &(node, _)| compose_local_transform(pose[node as usize], transform));
+	let sampled = placement.ancestors.iter().fold(pose[root], |transform, &(node, _)| {
+		compose_local_transform(pose[node as usize], transform)
+	});
 	for &(node, rest) in &placement.ancestors {
 		pose[node as usize] = rest;
 	}
@@ -232,10 +232,12 @@ pub(super) fn yaw_of(rotation: Orientation) -> f32 {
 /// Resolves a matched state's database nodes against the canonical skeleton, for its [`StateBinding`].
 pub(super) fn resolve_nodes(info: &DatabaseInfo, skeleton: &Skeleton) -> Result<Box<[u32]>, AnimationGraphPlayerError> {
 	let find = |name: &str| {
-		unique_node(skeleton, name).map(|node| node as u32).map_err(|lookup| match lookup {
-			NodeLookup::Missing => AnimationGraphPlayerError::MatchNodeNotFound { name: name.into() },
-			NodeLookup::Duplicate => AnimationGraphPlayerError::DuplicateMatchNodeName { name: name.into() },
-		})
+		unique_node(skeleton, name)
+			.map(|node| node as u32)
+			.map_err(|lookup| match lookup {
+				NodeLookup::Missing => AnimationGraphPlayerError::MatchNodeNotFound { name: name.into() },
+				NodeLookup::Duplicate => AnimationGraphPlayerError::DuplicateMatchNodeName { name: name.into() },
+			})
 	};
 	find(&info.search.root)?;
 	info.search.nodes.iter().map(|node| find(&node.name)).collect()
@@ -243,12 +245,13 @@ pub(super) fn resolve_nodes(info: &DatabaseInfo, skeleton: &Skeleton) -> Result<
 
 #[cfg(test)]
 pub(super) mod tests {
+	use resource_management::resources::animation::Animation;
+
 	use super::*;
 	use crate::animation::matching::{
 		database_from_clips,
 		tests::{circle_walk, idle, rooted, walk},
 	};
-	use resource_management::resources::animation::Animation;
 
 	pub(in super::super) const DATABASE: &str = "locomotion.motion.bead";
 
@@ -266,9 +269,14 @@ pub(super) mod tests {
 		let named: Vec<(String, &Animation)> = clips.iter().map(|(id, clip)| (id.to_string(), clip)).collect();
 		let database = database_from_clips(&format!(r#"{{ clips: ["placeholder"], {settings} }}"#), &named)
 			.expect("the clips should form a database");
-		let entries: Vec<(&str, PackedAnimationData)> = std::iter::once((DATABASE, PackedAnimationData::from_database(database)))
-			.chain(clips.into_iter().map(|(id, clip)| (id, PackedAnimationData::from_resource(clip))))
-			.collect();
+		let entries: Vec<(&str, PackedAnimationData)> =
+			std::iter::once((DATABASE, PackedAnimationData::from_database(database)))
+				.chain(
+					clips
+						.into_iter()
+						.map(|(id, clip)| (id, PackedAnimationData::from_resource(clip))),
+				)
+				.collect();
 		// Room to spare for clips a test admits later.
 		let budget = entries.iter().map(|(_, packed)| packed.resident_bytes()).sum::<usize>() + 64 * 1024;
 		let mut pool = AnimationPool::detached(budget);
@@ -296,7 +304,11 @@ pub(super) mod tests {
 					.advance(graph, step(), request, pool)
 					.expect("the player should advance")
 					.expect("every clip is resident");
-				if frame + 10 >= steps { pose.root_motion.translation.z() } else { 0.0 }
+				if frame + 10 >= steps {
+					pose.root_motion.translation.z()
+				} else {
+					0.0
+				}
 			})
 			.sum()
 	}
@@ -311,7 +323,10 @@ pub(super) mod tests {
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("hips")));
 
 		let walked = travel(&mut player, &graph, &mut pool, id.toward([0.0, -1.4], 0.0), 45);
-		assert!((walked + 1.4 * 10.0 / 30.0).abs() < 0.05, "ten steps of walking moved {walked}");
+		assert!(
+			(walked + 1.4 * 10.0 / 30.0).abs() < 0.05,
+			"ten steps of walking moved {walked}"
+		);
 		let stood = travel(&mut player, &graph, &mut pool, id.toward([0.0, 0.0], 0.0), 60);
 		assert!(stood.abs() < 0.01, "ten steps of standing moved {stood}");
 	}
@@ -336,7 +351,10 @@ pub(super) mod tests {
 		let foot = pose.local_pose[1].translation.z();
 		assert!(foot.abs() < 0.05, "the foot moved to {foot} in the step the route started");
 		let walked = travel(&mut player, &graph, &mut pool, request, 45);
-		assert!((walked + 1.4 * 10.0 / 30.0).abs() < 0.05, "ten steps of walking moved {walked}");
+		assert!(
+			(walked + 1.4 * 10.0 / 30.0).abs() < 0.05,
+			"ten steps of walking moved {walked}"
+		);
 	}
 
 	#[test]
@@ -407,7 +425,10 @@ pub(super) mod tests {
 		let error = player
 			.advance(&graph, step(), locomotion.id().toward([0.0, -1.4], 0.0), &mut pool)
 			.err();
-		assert_eq!(error, Some(AnimationGraphPlayerError::MatchNodeNotFound { name: "hips".into() }));
+		assert_eq!(
+			error,
+			Some(AnimationGraphPlayerError::MatchNodeNotFound { name: "hips".into() })
+		);
 		assert!(player.pose().is_none(), "a rejected animator posts nothing");
 	}
 

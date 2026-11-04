@@ -67,7 +67,12 @@ pub(crate) fn pack_database(database: MotionDatabase) -> (DatabaseInfo, Box<[u32
 					maximum[dimension] = maximum[dimension].max(*value);
 				}
 			}
-			words.extend(minimum[..dimensions].iter().chain(&maximum[..dimensions]).map(|value| value.to_bits()));
+			words.extend(
+				minimum[..dimensions]
+					.iter()
+					.chain(&maximum[..dimensions])
+					.map(|value| value.to_bits()),
+			);
 		}
 	}
 	debug_assert_eq!(words.len(), packed_words(frames, dimensions));
@@ -192,7 +197,11 @@ pub(crate) struct Query {
 /// step's root motion undone, and the seconds between them; without it the cost leaves out the node features. The
 /// trajectory is predicted by critically damped springs from `motion`'s predicted velocity and starting turn rate
 /// toward its held velocity and facing.
-pub(crate) fn build_query(info: &DatabaseInfo, nodes: Option<(&[[f32; 3]], &[[f32; 3]], f32)>, motion: RequestedMotion) -> Query {
+pub(crate) fn build_query(
+	info: &DatabaseInfo,
+	nodes: Option<(&[[f32; 3]], &[[f32; 3]], f32)>,
+	motion: RequestedMotion,
+) -> Query {
 	let search = &info.search;
 	let mut query = Query {
 		features: [0.0; MAX_DIMENSIONS],
@@ -214,7 +223,9 @@ pub(crate) fn build_query(info: &DatabaseInfo, nodes: Option<(&[[f32; 3]], &[[f3
 					write(current);
 				}
 				if node.velocity {
-					write(&std::array::from_fn::<f32, 3, _>(|axis| (current[axis] - previous[axis]) / delta));
+					write(&std::array::from_fn::<f32, 3, _>(|axis| {
+						(current[axis] - previous[axis]) / delta
+					}));
 				}
 			}
 		}
@@ -304,7 +315,13 @@ pub(crate) fn search(
 			Some(looping) if playing.time - last > looping.duration - playing.time => 0,
 			_ => ((playing.time * rate - 0.5).ceil().max(0.0) as usize).min(clip.frames - 1),
 		};
-		(frame < clip.pickable).then(|| cost(&database.features(clip.first + frame)[range.clone()], query_features, f32::INFINITY))
+		(frame < clip.pickable).then(|| {
+			cost(
+				&database.features(clip.first + frame)[range.clone()],
+				query_features,
+				f32::INFINITY,
+			)
+		})
 	});
 
 	let mut best = bar.unwrap_or(f32::INFINITY);
@@ -317,7 +334,9 @@ pub(crate) fn search(
 		let excluded = playing.filter(|playing| playing.clip == index).map(|playing| {
 			move |time: f32| {
 				let distance = (time - playing.time).abs();
-				let distance = clip.looping.map_or(distance, |looping| distance.min(looping.duration - distance));
+				let distance = clip
+					.looping
+					.map_or(distance, |looping| distance.min(looping.duration - distance));
 				distance < info.search.exclusion
 			}
 		});

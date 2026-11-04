@@ -28,7 +28,9 @@ pub(super) enum StateMotion {
 	///
 	/// The database's clips are known only once it is resident, so [`Self::clips`] names the database itself, which
 	/// players load and list like a clip; the player binds the database's clips when it first enters the state.
-	Matched { database: AnimationClip },
+	Matched {
+		database: AnimationClip,
+	},
 }
 
 impl StateMotion {
@@ -521,5 +523,8 @@ pub(super) enum BlendValue {
 	Linear(f32),
 	Planar([f32; 2]),
 	/// A matched state's requested velocity, X and Z in object-space units per second, and facing, a yaw in radians.
-	Motion { velocity: [f32; 2], facing: f32 },
+	Motion {
+		velocity: [f32; 2],
+		facing: f32,
+	},
 }

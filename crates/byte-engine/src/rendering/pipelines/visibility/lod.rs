@@ -238,13 +238,15 @@ mod tests {
 
 	/// Three levels of 8, 4 and 2 meshlets with errors 0, 0.1 and 1.
 	fn three_levels() -> MeshLods {
-		MeshLods::new(&[(0, 8, 0.0), (8, 4, 0.1), (12, 2, 1.0)].map(|(first_meshlet, meshlet_count, error)| MeshLod {
-			first_meshlet,
-			meshlet_count,
-			error,
-			resident: true,
-			..MeshLod::default()
-		}))
+		MeshLods::new(
+			&[(0, 8, 0.0), (8, 4, 0.1), (12, 2, 1.0)].map(|(first_meshlet, meshlet_count, error)| MeshLod {
+				first_meshlet,
+				meshlet_count,
+				error,
+				resident: true,
+				..MeshLod::default()
+			}),
+		)
 	}
 
 	/// A uniformly scaled instance at `z` along the camera's view direction.

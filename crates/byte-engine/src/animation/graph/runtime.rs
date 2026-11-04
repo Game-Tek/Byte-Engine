@@ -446,8 +446,8 @@ fn is_motion_database(resource_id: &str) -> bool {
 mod binding;
 mod player;
 
-use binding::{ClipBinding, GroundBinding, GroundPlacement, StateBinding};
 pub(super) use binding::GraphBinding;
+use binding::{ClipBinding, GroundBinding, GroundPlacement, StateBinding};
 
 pub mod benchmarks;
 

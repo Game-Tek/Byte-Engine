@@ -432,7 +432,12 @@ impl Generator {
 
 	/// Writes the texture of the texture binding `binding`, or of its element `index`, then a comma and its sampler:
 	/// the one the application binds in the set, or the fixed one at the sampler heap index its state decides.
-	fn emit_texture_and_sampler(&mut self, string: &mut String, binding: &besl::NodeReference, index: Option<&besl::NodeReference>) {
+	fn emit_texture_and_sampler(
+		&mut self,
+		string: &mut String,
+		binding: &besl::NodeReference,
+		index: Option<&besl::NodeReference>,
+	) {
 		self.emit_resource_element(string, binding, index);
 		string.push(',');
 		string.push_str(SAMPLER_HEAP);
@@ -1172,7 +1177,8 @@ impl NodeEmitter for Generator {
 
 		match node.node() {
 			// A `use` and a signature only link names, and a layer's members emit where code reads them.
-			besl::Nodes::Scope { .. } | besl::Nodes::Use { .. } | besl::Nodes::Layer { .. } | besl::Nodes::Signature { .. } => {}
+			besl::Nodes::Scope { .. } | besl::Nodes::Use { .. } | besl::Nodes::Layer { .. } | besl::Nodes::Signature { .. } => {
+			}
 			besl::Nodes::Function {
 				name,
 				statements,
@@ -1358,7 +1364,10 @@ impl NodeEmitter for Generator {
 					besl::BindingTypes::AccelerationStructure => "uniform accelerationStructureEXT",
 				};
 
-				let _ = write!(string, "layout(descriptor_heap,descriptor_stride={RESOURCE_DESCRIPTOR_STRIDE}");
+				let _ = write!(
+					string,
+					"layout(descriptor_heap,descriptor_stride={RESOURCE_DESCRIPTOR_STRIDE}"
+				);
 				match r#type {
 					besl::BindingTypes::Buffer { .. } | besl::BindingTypes::BufferArray { .. } => string.push_str(",scalar"),
 					besl::BindingTypes::Image { format } if format != "unknown" && !sampled_image => {

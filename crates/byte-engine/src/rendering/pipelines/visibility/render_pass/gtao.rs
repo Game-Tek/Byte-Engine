@@ -39,7 +39,9 @@ pub(crate) struct GtaoTargets {
 ///
 /// They are render targets so the renderer sizes them with the sink and the inspector can capture them by name.
 /// Material evaluation binds the result even when GTAO is not built in, so every sink has them.
-pub(crate) fn create_gtao_targets(render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>) -> GtaoTargets {
+pub(crate) fn create_gtao_targets(
+	render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>,
+) -> GtaoTargets {
 	let mut target = |name, resolution_divisor| {
 		render_pass_builder
 			.create_scaled_render_target(

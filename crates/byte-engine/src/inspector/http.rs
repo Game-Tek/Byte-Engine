@@ -1,6 +1,6 @@
 use std::{
 	io::{self, Write as _},
-	net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener},
+	net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener},
 	time::Duration,
 };
 
@@ -71,37 +71,49 @@ pub struct HttpInspectorServer {
 	_server: ListeningServer,
 }
 
-/// The loopback port the inspector serves on unless the `inspector.port` parameter names another or another
-/// application already uses it.
+/// The port the inspector serves on unless the `inspector.port` parameter names another or another application
+/// already uses it.
 pub const DEFAULT_PORT: u16 = 6680;
 
+/// The addresses the inspector serves on unless the `inspector.address` parameter names another, so only this machine
+/// reaches it.
+const LOOPBACK: [IpAddr; 2] = [IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V6(Ipv6Addr::LOCALHOST)];
+
 impl HttpInspectorServer {
-	/// Starts the HTTP inspector transport on the loopback interface.
+	/// Starts the HTTP inspector transport, on the loopback interface unless `address` names another.
 	///
 	/// Next, request `GET /entities` to verify that the application is available.
 	///
 	/// # Parameters
 	/// Read from `parameters`, the `inspector` subtree of the application's:
+	/// - `address`: The IPv4 or IPv6 address to serve on, such as `0.0.0.0` or `::` to reach the inspector from
+	///   another machine. Defaults to both loopback addresses. An address that is not loopback is logged as a
+	///   warning, because the inspector has no authentication. A value that is not an address stops startup.
 	/// - `port`: The port to serve on. Defaults to [`DEFAULT_PORT`], or to a free port the system picks when that one
 	///   is in use, which is logged as a warning. A named port that is in use, or a value that is not a port, stops
 	///   startup.
 	pub fn new(inspector: EntityHandle<DefaultInspector>, waker: LoopWaker, parameters: impl Parameters) -> Self {
+		let address: Option<IpAddr> = parameters
+			.get_parameter("address")
+			.map(|address| address.parse().unwrap_or_else(|error| panic!("{error}")));
+		let addresses = match &address {
+			Some(address) => std::slice::from_ref(address),
+			None => &LOOPBACK,
+		};
+		if let Some(address) = address.filter(|address| !address.is_loopback()) {
+			log::warn!(
+				"HTTP inspector serves on {address}, which other machines can reach. The inspector has no authentication, so anyone who reaches it can read the application, send it messages, or close it. Leave `inspector.address` unset to serve only this machine."
+			);
+		}
 		let port = match parameters.get_parameter("port") {
 			Some(port) => port.parse().unwrap_or_else(|error| panic!("{error}")),
-			None => free_port(DEFAULT_PORT).unwrap_or_else(|error| {
+			None => free_port(addresses, DEFAULT_PORT).unwrap_or_else(|error| {
 				panic!(
-					"HTTP inspector could not find a free port. The most likely cause is that the loopback interface does not accept IPv4 or IPv6 listeners: {error}"
+					"HTTP inspector could not find a free port. The most likely cause is that no network interface has the inspector's address, or it does not accept listeners: {error}"
 				)
 			}),
 		};
-		Self::spawn(
-			inspector,
-			waker,
-			[
-				SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
-				SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
-			],
-		)
+		Self::spawn(inspector, waker, addresses.iter().map(|&address| SocketAddr::new(address, port)))
 		.unwrap_or_else(|error| {
 			panic!(
 				"HTTP inspector could not start. The most likely cause is that port {port} is already in use, for example by another running application; give one of them a different `inspector.port`: {error}"
@@ -134,20 +146,21 @@ impl HttpInspectorServer {
 	}
 }
 
-/// Returns `preferred` when both loopback addresses can listen on it, otherwise a free port the system picks for both,
-/// logged as a warning.
+/// Returns `preferred` when every address in `addresses` can listen on it, otherwise a free port the system picks for
+/// all of them, logged as a warning.
 ///
 /// Ports are probed and released before the server binds them, because a server that binds one address and fails on
-/// the other keeps listening on the first.
-fn free_port(preferred: u16) -> io::Result<u16> {
-	let bind_both = |port| -> io::Result<u16> {
-		let port = TcpListener::bind((Ipv4Addr::LOCALHOST, port))?.local_addr()?.port();
-		TcpListener::bind((Ipv6Addr::LOCALHOST, port))?;
-		Ok(port)
+/// another keeps listening on the first.
+fn free_port(addresses: &[IpAddr], preferred: u16) -> io::Result<u16> {
+	// Port 0 lets the system pick for the first address; the later addresses then probe that same port.
+	let bind_all = |port| {
+		addresses
+			.iter()
+			.try_fold(port, |port, &address| TcpListener::bind((address, port))?.local_addr().map(|a| a.port()))
 	};
-	bind_both(preferred).or_else(|_| {
-		// The system picks a port that is free on IPv4 only, so pick again while IPv6 already uses it.
-		let port = (0..8).fold(bind_both(0), |port, _| port.or_else(|_| bind_both(0)))?;
+	bind_all(preferred).or_else(|_| {
+		// The system picks a port that is free on the first address only, so pick again while a later one uses it.
+		let port = (0..8).fold(bind_all(0), |port, _| port.or_else(|_| bind_all(0)))?;
 		log::warn!("HTTP inspector port {preferred} is in use, so the inspector serves on port {port} instead.");
 		Ok(port)
 	})
@@ -858,9 +871,26 @@ mod tests {
 	fn free_port_keeps_the_preferred_port_and_falls_back_when_it_is_taken() {
 		let taken = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("occupy inspector test port");
 		let taken_port = taken.local_addr().expect("read occupied port").port();
-		let fallback = super::free_port(taken_port).expect("pick fallback port");
+		let fallback = super::free_port(&super::LOOPBACK, taken_port).expect("pick fallback port");
 		assert_ne!(fallback, taken_port);
-		assert_eq!(super::free_port(fallback).expect("keep free port"), fallback);
+		assert_eq!(super::free_port(&super::LOOPBACK, fallback).expect("keep free port"), fallback);
+	}
+
+	#[test]
+	fn server_serves_only_the_address_parameter() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let address = SocketAddr::from((Ipv4Addr::LOCALHOST, super::free_port(&[Ipv4Addr::LOCALHOST.into()], 0).unwrap()));
+		let parameters = [
+			crate::application::Parameter::new("address", "127.0.0.1"),
+			crate::application::Parameter::new("port", &address.port().to_string()),
+		];
+		let server = TestServer {
+			_server: HttpInspectorServer::new(inspector, super::LoopWaker::default(), &parameters[..]),
+			address,
+		};
+
+		assert!(server.get_json("/entities").is_array());
+		assert!(TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, address.port())).is_err());
 	}
 
 	#[test]

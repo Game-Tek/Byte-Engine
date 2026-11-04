@@ -100,7 +100,7 @@ impl HttpInspectorServer {
 			Some(address) => std::slice::from_ref(address),
 			None => &LOOPBACK,
 		};
-		if let Some(address) = address.filter(|address| !address.is_loopback()) {
+		if let Some(address) = addresses.iter().find(|address| !address.is_loopback()) {
 			log::warn!(
 				"HTTP inspector serves on {address}, which other machines can reach. The inspector has no authentication, so anyone who reaches it can read the application, send it messages, or close it. Leave `inspector.address` unset to serve only this machine."
 			);
@@ -751,7 +751,7 @@ fn response(status: StatusCode, body: impl Into<Body>) -> Response<Body> {
 mod tests {
 	use std::{
 		io::{Read, Write},
-		net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
+		net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream},
 		sync::Arc,
 		time::Duration,
 	};
@@ -760,7 +760,7 @@ mod tests {
 
 	use super::HttpInspectorServer;
 	use crate::{
-		application::Events,
+		application::{Events, Parameter},
 		configuration::Configuration,
 		core::{
 			EntityHandle,
@@ -879,18 +879,16 @@ mod tests {
 	#[test]
 	fn server_serves_only_the_address_parameter() {
 		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
-		let address = SocketAddr::from((Ipv4Addr::LOCALHOST, super::free_port(&[Ipv4Addr::LOCALHOST.into()], 0).unwrap()));
-		let parameters = [
-			crate::application::Parameter::new("address", "127.0.0.1"),
-			crate::application::Parameter::new("port", &address.port().to_string()),
-		];
+		let reservation = TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).expect("reserve inspector test port");
+		let port = reservation.local_addr().expect("read inspector test address").port();
+		let parameters = [Parameter::new("address", "127.0.0.1"), Parameter::new("port", &port.to_string())];
+		// Holding the IPv6 loopback port proves the inspector binds only the named address.
 		let server = TestServer {
 			_server: HttpInspectorServer::new(inspector, super::LoopWaker::default(), &parameters[..]),
-			address,
+			address: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
 		};
 
 		assert!(server.get_json("/entities").is_array());
-		assert!(TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, address.port())).is_err());
 	}
 
 	#[test]

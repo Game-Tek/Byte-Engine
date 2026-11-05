@@ -56,7 +56,8 @@ impl IBLGenerator {
 
 	/// Creates an IBL generator with a self-contained GHI device and context for offline baking.
 	///
-	/// Use [`Self::new`] when deterministic CPU-only baking is required or when this constructor reports a setup error.
+	/// Use [`Self::new`] when CPU-only baking is required or when this constructor reports a setup error. The CPU bake
+	/// sums with algebraic float operations, so its results can differ in their last bits between builds.
 	#[cfg(feature = "gpu-ibl")]
 	pub fn try_with_default_gpu() -> Result<Self, gpu::GPUIBLBakeError> {
 		Self::with_gpu_processor_factory(gpu::GPUIBLProcessor::try_new)

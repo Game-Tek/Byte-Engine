@@ -377,24 +377,28 @@ pub(crate) fn search(
 
 /// Sums the squared differences between a frame's features and the query's, stopping once the sum reaches `limit`.
 ///
-/// It checks the limit after every eight dimensions rather than every one, so the compiler can vectorize the sums; a
-/// sum that stops is at or above the limit either way.
+/// It checks the limit after every eight dimensions rather than every one, and sums each fixed-size block of eight with
+/// algebraic operations, so the compiler adds the squares in vector lanes. The sum can differ from a left-to-right sum
+/// in its last bits; a sum that stops is at or above the limit either way.
 fn cost(frame: &[u32], query: &[f32], limit: f32) -> f32 {
-	let mut sum = 0.0;
-	for (values, queries) in frame.chunks(8).zip(query.chunks(8)) {
-		for (value, query) in values.iter().zip(queries) {
-			let difference = f32::from_bits(*value) - query;
-			sum += difference * difference;
-		}
+	let (blocks, frame_rest) = frame.as_chunks::<8>();
+	let (query_blocks, query_rest) = query.as_chunks::<8>();
+	let squared = |sum: f32, (value, query): (&u32, &f32)| {
+		let difference = f32::from_bits(*value) - query;
+		sum.algebraic_add(difference.algebraic_mul(difference))
+	};
+	let mut sum = 0.0_f32;
+	for (values, queries) in blocks.iter().zip(query_blocks) {
+		sum = sum.algebraic_add(values.iter().zip(queries).fold(0.0, squared));
 		if sum >= limit {
-			break;
+			return sum;
 		}
 	}
-	sum
+	frame_rest.iter().zip(query_rest).fold(sum, squared)
 }
 
 /// Returns the least cost any frame within `bounds` can have against the query: the squared distance from the query
-/// to the bounding box, which never exceeds a frame's own cost.
+/// to the bounding box, which never exceeds a frame's own cost by more than the rounding of the two sums.
 fn bound_cost(bounds: &[u32], range: &std::ops::Range<usize>, query: &[f32]) -> f32 {
 	let dimensions = bounds.len() / 2;
 	let (minimum, maximum) = bounds.split_at(dimensions);

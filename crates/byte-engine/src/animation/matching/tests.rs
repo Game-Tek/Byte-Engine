@@ -407,6 +407,16 @@ fn frame_of(info: &DatabaseInfo, found: Found) -> usize {
 	info.clips[found.clip].first + (found.time * info.search.sample_rate).round() as usize
 }
 
+/// The cost of `frame` against `query`, summed left to right as the reference specifies.
+fn reference_cost(database: &MotionDatabase, query: &Query, frame: usize) -> f32 {
+	let dimensions = database.search.dimensions();
+	database.features[frame * dimensions..][query.first_dimension..dimensions]
+		.iter()
+		.zip(&query.features[query.first_dimension..dimensions])
+		.map(|(value, query)| (value - query) * (value - query))
+		.sum::<f32>()
+}
+
 /// The least-cost candidate frame and its cost, found by comparing every candidate as the reference specifies.
 fn every_candidate(
 	database: &MotionDatabase,
@@ -414,14 +424,7 @@ fn every_candidate(
 	playing: Option<Playing>,
 	resident: &[bool],
 ) -> Option<(usize, f32)> {
-	let dimensions = database.search.dimensions();
-	let cost = |frame: usize| {
-		database.features[frame * dimensions..][query.first_dimension..dimensions]
-			.iter()
-			.zip(&query.features[query.first_dimension..dimensions])
-			.map(|(value, query)| (value - query) * (value - query))
-			.sum::<f32>()
-	};
+	let cost = |frame: usize| reference_cost(database, query, frame);
 	let mut first = 0;
 	let mut placed = Vec::new();
 	for (index, clip) in database.clips.iter().enumerate() {
@@ -474,11 +477,15 @@ fn the_search_finds_what_comparing_every_candidate_finds() {
 		});
 		let resident = [true, case % 5 != 0];
 		let found = search(packed, &query, playing, |clip| resident[clip]).found;
-		assert_eq!(
-			found.map(|found| (frame_of(&info, found), found.cost)),
-			every_candidate(&reference, &query, playing, &resident),
-			"case {case}"
-		);
+		let expected = every_candidate(&reference, &query, playing, &resident);
+		assert_eq!(found.is_some(), expected.is_some(), "case {case}");
+		// The search sums in an unspecified order, so it matches the left-to-right sum only to within rounding, and of
+		// two frames that tie to within rounding it may find either.
+		if let (Some(found), Some((_, cost))) = (found, expected) {
+			for actual in [found.cost, reference_cost(&reference, &query, frame_of(&info, found))] {
+				assert!((actual - cost).abs() <= cost * 1.0e-5, "case {case}: {actual} against {cost}");
+			}
+		}
 	}
 }
 

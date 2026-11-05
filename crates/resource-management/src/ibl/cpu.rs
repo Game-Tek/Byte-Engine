@@ -398,7 +398,8 @@ pub(super) fn downsample_source_mip<A: Allocator>(
 /// Integrates the solid-angle-weighted source texels covered by one destination texel.
 ///
 /// `source_row_solid_angles` weighs each source row, and `source_pixel` reads the source texel at a row-major index, so
-/// the CPU pyramid and the GPU atlas staging share this kernel and its accumulation order and precision.
+/// the CPU pyramid and the GPU atlas staging share this kernel and its precision. It sums with algebraic operations, so
+/// the compiler may reorder the additions and the two can differ in their last bits.
 pub(super) fn downsample_source_pixel(
 	source_width: u32,
 	source_height: u32,
@@ -421,9 +422,9 @@ pub(super) fn downsample_source_pixel(
 		for source_x in source_x_begin..source_x_end {
 			let radiance = source_pixel(source_y as usize * source_width as usize + source_x as usize);
 			for channel in 0..3 {
-				sum[channel] += radiance[channel] as f64 * weight;
+				sum[channel] = sum[channel].algebraic_add((radiance[channel] as f64).algebraic_mul(weight));
 			}
-			total_weight += weight;
+			total_weight = total_weight.algebraic_add(weight);
 		}
 	}
 
@@ -540,7 +541,7 @@ fn diffuse_irradiance(source_mips: &[SourceMIP<'_>], samples: &[Vector; DIFFUSE_
 		let pdf = local_direction.z() / PI;
 		let radiance = sample_filtered_direction(source_mips, direction, pdf, DIFFUSE_SAMPLE_COUNT);
 		for channel in 0..3 {
-			sum[channel] += radiance[channel] as f64;
+			sum[channel] = sum[channel].algebraic_add(radiance[channel] as f64);
 		}
 	}
 	let scale = 1.0 / DIFFUSE_SAMPLE_COUNT as f64;
@@ -571,9 +572,9 @@ fn prefiltered_radiance(
 		let radiance = sample_filtered_direction(source_mips, light, pdf, SPECULAR_SAMPLE_COUNT);
 		let weight = normal_dot_light as f64;
 		for channel in 0..3 {
-			sum[channel] += radiance[channel] as f64 * weight;
+			sum[channel] = sum[channel].algebraic_add((radiance[channel] as f64).algebraic_mul(weight));
 		}
-		total_weight += weight;
+		total_weight = total_weight.algebraic_add(weight);
 	}
 
 	if total_weight > 0.0 {

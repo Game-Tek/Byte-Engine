@@ -143,9 +143,13 @@ samples clips with `sample_local_pose`, the sampler playback uses, so a frame's
 features measure the pose playback shows. The handler is among the default
 baking handlers.
 
-The search is exact. Rounding keeps a block's bound at or below the cost of
-every frame in it, so skipping blocks finds the frame and cost that comparing
-every candidate finds, and the result doesn't depend on block sizes.
+A frame's cost sums with Rust's algebraic float operations, so the compiler
+adds the squares in vector lanes. The order of the additions is unspecified,
+so a cost can differ from a left-to-right sum in its last bits, and of two
+frames that tie to within rounding, the search may find either. Otherwise
+skipping blocks finds the frame that comparing every candidate finds, whatever
+the block sizes. Keep these operations out of anything the multiplayer state
+digest covers: their results can differ between builds.
 
 On the M4 in November 2026, 1,024 matched characters over a database of about
 3,000 frames of 24 dimensions took about 0.48 ms a frame, searching every tenth
@@ -202,7 +206,8 @@ yaw, so a request sent once keeps its direction in the world.
    it was packed from. Curves share a timeline only when their key times match
    bit for bit.
 6. Root motion samples the root chain only, never a whole pose.
-7. A search finds the frame and cost that comparing every candidate finds.
+7. A search finds the frame that comparing every candidate finds, and that
+   frame's cost to within rounding.
 8. A matched state samples one clip a step, and the found clip too in a step
    that switches. A query lives on the stack: a database has at most 64
    dimensions.

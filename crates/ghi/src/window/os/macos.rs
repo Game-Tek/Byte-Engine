@@ -6,7 +6,7 @@ use std::{
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message as _, define_class, msg_send};
+use objc2::{ClassType as _, DefinedClass, MainThreadMarker, MainThreadOnly, Message as _, define_class, msg_send};
 use objc2_app_kit::{
 	NSApp, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply,
 	NSBackingStoreType, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSScreen, NSView, NSWindow,
@@ -384,6 +384,14 @@ fn window_id(window: &NSWindow) -> WindowId {
 	WindowId::from_raw(window as *const NSWindow as u64)
 }
 
+/// Returns whether `window` is one [`App::create_window`] made, as opposed to one AppKit shows for the app, such as a
+/// dialog. Only the former's input becomes events; AppKit handles the rest.
+fn is_app_window(window: &NSWindow) -> bool {
+	window
+		.delegate()
+		.is_some_and(|delegate| delegate.isKindOfClass(WindowDelegate::class()))
+}
+
 /// Returns the height of the display holding the menu bar, which anchors both AppKit and Core Graphics screen
 /// coordinates.
 fn primary_display_height() -> Option<f64> {
@@ -651,10 +659,12 @@ impl App {
 				continue;
 			}
 
-			// Input without a target window, such as motion over the desktop, still reaches AppKit below.
-			if let Some(window) = event.window(self.mtm) {
+			// Input without a target window, such as motion over the desktop, and input to AppKit's own windows, such
+			// as dialogs, still reaches AppKit below.
+			let window = event.window(self.mtm).filter(|window| is_app_window(window));
+			if let Some(window) = &window {
 				let time = (event.timestamp() * 1000.0) as u64;
-				let id = window_id(&window);
+				let id = window_id(window);
 				let captured = self.cursor.holds(id);
 				let mut queue = self.events.borrow_mut();
 				let push = &mut |event| queue.push_back(Event::Window { window: id, event });
@@ -662,7 +672,7 @@ impl App {
 				if let Some((button, pressed)) = mouse_button(event_type) {
 					// The position goes first so the button event lands at the drag endpoint.
 					if !captured {
-						append_pointer_position(&window, &event, time, push);
+						append_pointer_position(window, &event, time, push);
 					}
 					for device in pointing_devices(mouse_from_appkit) {
 						push(Events::Button {
@@ -692,7 +702,7 @@ impl App {
 							});
 						}
 						if !captured {
-							append_pointer_position(&window, &event, time, push);
+							append_pointer_position(window, &event, time, push);
 						}
 					}
 					NSEventType::ScrollWheel => {
@@ -725,12 +735,13 @@ impl App {
 			// AppKit owns native window interactions such as title-bar drags,
 			// close controls, and live resize; re-dispatch after translating input.
 			// Delegates push into the same queue during `sendEvent`, keeping arrival order.
-			// Keyboard events are consumed here because the default responder chain
-			// treats unhandled key presses as errors and plays the system beep.
-			if !matches!(
-				event_type,
-				NSEventType::KeyDown | NSEventType::KeyUp | NSEventType::FlagsChanged
-			) {
+			// Keyboard events to the app's windows are consumed here because the default responder chain
+			// treats unhandled key presses as errors and plays the system beep. Dialogs need theirs.
+			if window.is_none()
+				|| !matches!(
+					event_type,
+					NSEventType::KeyDown | NSEventType::KeyUp | NSEventType::FlagsChanged
+				) {
 				app.sendEvent(&event);
 			}
 		}

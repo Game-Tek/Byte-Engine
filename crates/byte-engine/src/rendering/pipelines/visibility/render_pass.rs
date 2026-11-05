@@ -242,8 +242,11 @@ pub(crate) struct StageCounters {
 	/// The blend of the listed probes' rays into their maps, and their relocation and classification.
 	probe_update: ghi::CounterHandle,
 	/// The sun visibility, GTAO, and SSGI, surfel, or probe resolve dispatches, recorded interleaved so the GPU can overlap
-	/// them. One counter covers them all, because a precise timestamp between stages would serialize them again.
+	/// them. This total is the screen passes' real cost; the per-dispatch counters below overlap one another.
 	screen_space: ghi::CounterHandle,
+	/// One counter per screen-space dispatch, in recording order. An end timestamp waits for every dispatch recorded
+	/// before it, so a dispatch's time can include time other dispatches ran alongside it.
+	screen_space_dispatches: ScreenSpaceCounters,
 	/// The fog light tile pass and march.
 	fog_light: ghi::CounterHandle,
 	/// Opaque material evaluation.
@@ -276,12 +279,42 @@ impl StageCounters {
 			probe_trace: builder.create_gpu_counter("probe-trace"),
 			probe_update: builder.create_gpu_counter("probe-update"),
 			screen_space: builder.create_gpu_counter("screen-space"),
+			screen_space_dispatches: ScreenSpaceCounters {
+				sun_visibility_trace: builder.create_gpu_counter("sun-visibility-trace"),
+				gtao_evaluate: builder.create_gpu_counter("gtao-evaluate"),
+				ssgi_trace: builder.create_gpu_counter("ssgi-trace"),
+				surfel_resolve: builder.create_gpu_counter("surfel-resolve"),
+				probe_resolve: builder.create_gpu_counter("probe-resolve"),
+				sun_visibility_resolve: builder.create_gpu_counter("sun-visibility-resolve"),
+				gtao_blur: builder.create_gpu_counter("gtao-blur"),
+				ssgi_temporal: builder.create_gpu_counter("ssgi-temporal"),
+				surfel_allocate: builder.create_gpu_counter("surfel-allocate"),
+				surfel_spatial: builder.create_gpu_counter("surfel-spatial"),
+				gtao_upscale: builder.create_gpu_counter("gtao-upscale"),
+			},
 			fog_light: builder.create_gpu_counter("fog-light"),
 			material_evaluation: builder.create_gpu_counter("material-evaluation"),
 			background: builder.create_gpu_counter("background"),
 			transparent: builder.create_gpu_counter("transparent"),
 		}
 	}
+}
+
+/// The `ScreenSpaceCounters` struct holds one GPU timing counter per screen-space dispatch, so the inspector can
+/// split [`StageCounters`]'s `screen-space` total by technique and step.
+#[derive(Clone, Copy)]
+struct ScreenSpaceCounters {
+	sun_visibility_trace: ghi::CounterHandle,
+	gtao_evaluate: ghi::CounterHandle,
+	ssgi_trace: ghi::CounterHandle,
+	surfel_resolve: ghi::CounterHandle,
+	probe_resolve: ghi::CounterHandle,
+	sun_visibility_resolve: ghi::CounterHandle,
+	gtao_blur: ghi::CounterHandle,
+	ssgi_temporal: ghi::CounterHandle,
+	surfel_allocate: ghi::CounterHandle,
+	surfel_spatial: ghi::CounterHandle,
+	gtao_upscale: ghi::CounterHandle,
 }
 
 /// The `SinkTargets` struct names the render-graph images a sink gives the visibility pass.
@@ -974,38 +1007,42 @@ impl VisibilityRenderPass {
 			// stages by rank lets the GPU overlap them: the resource tracker barriers the first second stage against
 			// every first stage, and the others need nothing more. The sun visibility resolve also reads the shadow
 			// maps and their pyramid, which both orders above record before it.
+			// Each dispatch also times itself, without a barrier, so the overlap stays.
+			let timed = counters.screen_space_dispatches;
 			c.counter(counters.screen_space, |c| {
 				if let Some(trace) = sun_visibility.and_then(|sun_visibility| sun_visibility.trace) {
-					record_compute_stages(c, None, &[trace]);
+					c.counter(timed.sun_visibility_trace, |c| record_compute_stages(c, None, &[trace]));
 				}
 				if let Some(gtao) = &gtao {
-					record_compute_stages(c, None, &[gtao.evaluate]);
+					c.counter(timed.gtao_evaluate, |c| record_compute_stages(c, None, &[gtao.evaluate]));
 				}
 				if let Some(ssgi) = &ssgi {
-					record_compute_stages(c, None, &[ssgi.trace]);
+					c.counter(timed.ssgi_trace, |c| record_compute_stages(c, None, &[ssgi.trace]));
 				}
 				if let Some(surfels) = &surfel_resolve {
-					record_compute_stages(c, None, &[surfels.resolve]);
+					c.counter(timed.surfel_resolve, |c| record_compute_stages(c, None, &[surfels.resolve]));
 				}
 				if let Some(resolve) = &probe_resolve {
-					record_compute_stages(c, None, &[*resolve]);
+					c.counter(timed.probe_resolve, |c| record_compute_stages(c, None, &[*resolve]));
 				}
 				if let Some(sun_visibility) = &sun_visibility {
-					record_compute_stages(c, None, &[sun_visibility.resolve]);
+					c.counter(timed.sun_visibility_resolve, |c| {
+						record_compute_stages(c, None, &[sun_visibility.resolve])
+					});
 				}
 				if let Some(gtao) = &gtao {
-					record_compute_stages(c, None, &[gtao.blur]);
+					c.counter(timed.gtao_blur, |c| record_compute_stages(c, None, &[gtao.blur]));
 				}
 				if let Some(ssgi) = &ssgi {
-					record_compute_stages(c, None, &[ssgi.temporal]);
+					c.counter(timed.ssgi_temporal, |c| record_compute_stages(c, None, &[ssgi.temporal]));
 				}
 				// The surfel spatial pass reads the history the resolve accumulated, so it records with the second stages.
 				if let Some(surfels) = &surfel_resolve {
-					record_compute_stages(c, None, &[surfels.allocate]);
-					record_compute_stages(c, None, &[surfels.spatial]);
+					c.counter(timed.surfel_allocate, |c| record_compute_stages(c, None, &[surfels.allocate]));
+					c.counter(timed.surfel_spatial, |c| record_compute_stages(c, None, &[surfels.spatial]));
 				}
 				if let Some(gtao) = &gtao {
-					record_compute_stages(c, None, &[gtao.upscale]);
+					c.counter(timed.gtao_upscale, |c| record_compute_stages(c, None, &[gtao.upscale]));
 				}
 			});
 			// The march reads the shadow maps and the opaque depth, which every order above records before it.

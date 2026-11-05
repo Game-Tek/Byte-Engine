@@ -135,9 +135,20 @@ animation steps once per frame.
 | Debug meshes | `debug-meshes` | `Debug Meshes` | After tone mapping and the overlays it should cover, before the first window. |
 
 A pass's `scene.<name>` or `pass.<name>` metric and its `render.pass.<name>`
-parameter use the name in this table. The default setup installs the visibility
-pipeline, particles, and a 1920 by 1080 window, and no post-scene pass, so the
-scene reaches the swapchain through the copy.
+parameter use the name in this table. Passes with more than one stage also report
+a `stage.<name>` metric for each stage they record in a frame:
+
+| Pass | Stages |
+| --- | --- |
+| Atmosphere sky | `sky-transmittance` and `sky-multiple-scattering` in frames that rebuild the atmosphere, `sky-view` in frames that rebuild the view, and `sky-composite` |
+| Depth of field | `depth-of-field-prepare`, `depth-of-field-gather`, `depth-of-field-filter` |
+| Lens flare | `lens-flare-extract`, `lens-flare-downsample`, `lens-flare-features`, `lens-flare-composite` |
+| Bloom | `bloom-extract`, `bloom-downsample` and `bloom-upsample` when the levels need them, `bloom-composite` |
+| Antialiasing | `smaa-edges`, `smaa-resolve` |
+
+The default setup installs the visibility pipeline, particles, and a 1920 by
+1080 window, and no post-scene pass, so the scene reaches the swapchain through
+the copy.
 
 ### Pass settings
 
@@ -612,11 +623,18 @@ metric when it runs: `skinning`, `shadow-maps`, `shadow-depth-pyramid`,
 `surfel-validate`, `surfel-integrate`, `probe-schedule`, `probe-trace`, `probe-update`,
 `visibility-early`, `occlusion-pyramid`, `visibility-late`,
 `material-prepasses`, `depth-pyramid`, `cascade-fit`, `screen-space`,
-`material-evaluation`, `background`, and `transparent`. Only the first sink
+`fog-light`, `material-evaluation`, `background`, and `transparent`. Only the first sink
 records the ray tracing, surfel, and probe stages: the surfel stages in a frame
 that surfel GI lights, the probe stages in a frame that probe GI lights, and
 `acceleration-structures` in either. `material-prepasses` runs only when `render.material-evaluation` is
 `pipelines`.
+
+Inside `screen-space`, each dispatch also reports its own metric, when the
+technique it belongs to runs: `sun-visibility-trace`, `gtao-evaluate`,
+`ssgi-trace`, `surfel-resolve`, `probe-resolve`, `sun-visibility-resolve`,
+`gtao-blur`, `ssgi-temporal`, `surfel-allocate`, `surfel-spatial`, and
+`gtao-upscale`. The dispatches overlap on the GPU, so a dispatch's time isn't
+its cost alone: it can include time other dispatches ran alongside it.
 
 | Target | Content |
 | --- | --- |

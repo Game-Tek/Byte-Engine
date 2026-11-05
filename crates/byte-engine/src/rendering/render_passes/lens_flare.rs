@@ -101,6 +101,9 @@ pub struct LensFlarePass {
 	downsample_pass: simple_compute::Pass,
 	features_pass: simple_compute::Pass,
 	composite_pass: simple_tile::Pass,
+	/// The GPU counters of the extract, downsample, features, and composite stages, reported as
+	/// `stage.lens-flare-<stage>`.
+	counters: [ghi::CounterHandle; 4],
 }
 
 impl Entity for LensFlarePass {}
@@ -211,6 +214,14 @@ impl LensFlarePass {
 			&[simple_tile::Output::new("result", output)],
 		);
 
+		let counters = [
+			"lens-flare-extract",
+			"lens-flare-downsample",
+			"lens-flare-features",
+			"lens-flare-composite",
+		]
+		.map(|name| render_pass_builder.create_gpu_counter(name));
+
 		Self {
 			settings,
 			prefilter_parameters,
@@ -219,6 +230,7 @@ impl LensFlarePass {
 			downsample_pass,
 			features_pass,
 			composite_pass,
+			counters,
 		}
 	}
 
@@ -271,6 +283,7 @@ impl RenderPass for LensFlarePass {
 		let half_extent = extent.scaled_down(HALF_RESOLUTION);
 		let quarter_extent = extent.scaled_down(QUARTER_RESOLUTION);
 		self.write_parameters(frame);
+		let [extract_counter, downsample_counter, features_counter, composite_counter] = self.counters;
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
@@ -279,10 +292,18 @@ impl RenderPass for LensFlarePass {
 					|label| label.write_str("Lens Flare"),
 					|command_buffer| {
 						// The tile passes run over their output's extent, and the compute dispatches over one lane per texel.
-						extract_pass.record(command_buffer, half_extent);
-						downsample_pass.record(command_buffer, quarter_extent);
-						features_pass.record(command_buffer, quarter_extent);
-						composite_pass.record(command_buffer, extent);
+						command_buffer.counter(extract_counter, |command_buffer| {
+							extract_pass.record(command_buffer, half_extent)
+						});
+						command_buffer.counter(downsample_counter, |command_buffer| {
+							downsample_pass.record(command_buffer, quarter_extent)
+						});
+						command_buffer.counter(features_counter, |command_buffer| {
+							features_pass.record(command_buffer, quarter_extent)
+						});
+						command_buffer.counter(composite_counter, |command_buffer| {
+							composite_pass.record(command_buffer, extent)
+						});
 					},
 				);
 			},

@@ -94,6 +94,9 @@ pub struct AtmosphereSkyRenderPass {
 	multiple_scattering_pass: simple_compute::Pass,
 	sky_view_pass: simple_compute::Pass,
 	composite_pass: simple_compute::Pass,
+	/// The GPU counters of the transmittance, multiple scattering, sky view, and composite stages, reported as
+	/// `stage.sky-<stage>`.
+	counters: [ghi::CounterHandle; 4],
 	parameters: ghi::DynamicBufferHandle<SkyShaderData>,
 	settings: AtmosphereSkyRenderPassSettings,
 	sun: Sun,
@@ -134,6 +137,8 @@ impl AtmosphereSkyRenderPass {
 		.map(|(label, pipeline_id)| {
 			simple_compute::Pipeline::compile(render_pass_builder, simple_compute::Descriptor::new(label, pipeline_id))
 		});
+		let counters = ["sky-transmittance", "sky-multiple-scattering", "sky-view", "sky-composite"]
+			.map(|name| render_pass_builder.create_gpu_counter(name));
 		let context = render_pass_builder.context();
 		let parameters = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
@@ -206,6 +211,7 @@ impl AtmosphereSkyRenderPass {
 			multiple_scattering_pass,
 			sky_view_pass,
 			composite_pass,
+			counters,
 			parameters,
 			settings: AtmosphereSkyRenderPassSettings::default(),
 			sun: Sun::new(directional_lights, transform_listener),
@@ -299,21 +305,36 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		self.sky_view_camera_height = Some(camera_height);
 
 		let extent = sink.extent();
+		let [
+			transmittance_counter,
+			multiple_scattering_counter,
+			sky_view_counter,
+			composite_counter,
+		] = self.counters;
 
 		Some(allocate_render_command(frame_allocator, move |command_buffer| {
 			command_buffer.region(
 				|label| label.write_str("Sky"),
 				|command_buffer| {
 					// Multiple scattering reads the transmittance LUT and only depends on the atmosphere, not on the sun's
-					// angle, so both rebuild together.
+					// angle, so both rebuild together. A lookup table times itself only in frames that rebuild it, so a
+					// cached table reports no time.
 					if rebuild_transmittance {
-						transmittance_pass.record(command_buffer, TRANSMITTANCE_LUT_EXTENT);
-						multiple_scattering_pass.record(command_buffer, MULTIPLE_SCATTERING_LUT_EXTENT);
+						command_buffer.counter(transmittance_counter, |command_buffer| {
+							transmittance_pass.record(command_buffer, TRANSMITTANCE_LUT_EXTENT)
+						});
+						command_buffer.counter(multiple_scattering_counter, |command_buffer| {
+							multiple_scattering_pass.record(command_buffer, MULTIPLE_SCATTERING_LUT_EXTENT)
+						});
 					}
 					if rebuild_sky_view {
-						sky_view_pass.record(command_buffer, SKY_VIEW_LUT_EXTENT);
+						command_buffer.counter(sky_view_counter, |command_buffer| {
+							sky_view_pass.record(command_buffer, SKY_VIEW_LUT_EXTENT)
+						});
 					}
-					composite_pass.record(command_buffer, extent);
+					command_buffer.counter(composite_counter, |command_buffer| {
+						composite_pass.record(command_buffer, extent)
+					});
 				},
 			);
 		}))

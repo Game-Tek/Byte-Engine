@@ -159,6 +159,8 @@ pub struct BloomPass {
 	composite_pass: simple_tile::Pass,
 	/// The number of pyramid levels, each a render target the renderer sizes with the sink.
 	level_count: usize,
+	/// The GPU counters of the extract, downsample, upsample, and composite stages, reported as `stage.bloom-<stage>`.
+	counters: [ghi::CounterHandle; 4],
 }
 
 impl Entity for BloomPass {}
@@ -329,6 +331,9 @@ impl BloomPass {
 			&[simple_tile::Output::new("result", output)],
 		);
 
+		let counters = ["bloom-extract", "bloom-downsample", "bloom-upsample", "bloom-composite"]
+			.map(|name| render_pass_builder.create_gpu_counter(name));
+
 		Self {
 			settings,
 			parameters,
@@ -337,6 +342,7 @@ impl BloomPass {
 			upsample_passes,
 			composite_pass,
 			level_count,
+			counters,
 		}
 	}
 
@@ -371,6 +377,7 @@ impl RenderPass for BloomPass {
 		self.write_parameters(frame, extent.height());
 
 		let level_count = self.level_count;
+		let [extract_counter, downsample_counter, upsample_counter, composite_counter] = self.counters;
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
@@ -379,17 +386,30 @@ impl RenderPass for BloomPass {
 					|label| label.write_str("Bloom"),
 					|command_buffer| {
 						// The tile passes run over their output's extent, and the compute dispatches over one lane per texel.
-						extract_pass.record(command_buffer, bloom_extent(extent, 0));
+						command_buffer.counter(extract_counter, |command_buffer| {
+							extract_pass.record(command_buffer, bloom_extent(extent, 0))
+						});
 
-						for (index, pass) in downsample_passes.iter().enumerate() {
-							pass.record(command_buffer, bloom_extent(extent, index + 1));
+						// A pyramid too short to climb records no downsample or upsample, so their counters stay unwritten.
+						if !downsample_passes.is_empty() {
+							command_buffer.counter(downsample_counter, |command_buffer| {
+								for (index, pass) in downsample_passes.iter().enumerate() {
+									pass.record(command_buffer, bloom_extent(extent, index + 1));
+								}
+							});
 						}
 
-						for (level, pass) in (1..level_count.saturating_sub(1)).rev().zip(upsample_passes.iter()) {
-							pass.record(command_buffer, bloom_extent(extent, level));
+						if !upsample_passes.is_empty() {
+							command_buffer.counter(upsample_counter, |command_buffer| {
+								for (level, pass) in (1..level_count.saturating_sub(1)).rev().zip(upsample_passes.iter()) {
+									pass.record(command_buffer, bloom_extent(extent, level));
+								}
+							});
 						}
 
-						composite_pass.record(command_buffer, extent);
+						command_buffer.counter(composite_counter, |command_buffer| {
+							composite_pass.record(command_buffer, extent)
+						});
 					},
 				);
 			},

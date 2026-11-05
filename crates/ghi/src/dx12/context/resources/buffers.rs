@@ -11,7 +11,7 @@ impl Device {
 		BufferHandle(BaseBufferHandle::from_index(handle), std::marker::PhantomData)
 	}
 
-	pub fn build_dynamic_buffer<T: crate::Pod>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T> {
+	pub fn build_dynamic_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T> {
 		let handle = self.create_buffer_with_layout(
 			<T as crate::buffer::BufferContents>::layout(builder.length),
 			builder.resource_uses,

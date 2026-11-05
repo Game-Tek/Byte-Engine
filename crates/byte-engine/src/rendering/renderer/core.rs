@@ -764,6 +764,7 @@ impl Renderer {
 		&'_ mut self,
 		transforms: &ShownTransforms,
 		frame_allocator: &bumpalo::Bump,
+		alley: &mut crate::core::alley::Alley,
 		screenshot_requests: &[(usize, &crate::inspector::screenshot::ScreenshotCapture)],
 		time: crate::time::MediaTime,
 		frame_interval: crate::time::MediaTime,
@@ -895,7 +896,7 @@ impl Renderer {
 					let _span = debug_span!("Renderer::prepare_pipeline_managers").entered();
 					self.pipeline_managers
 						.iter_mut()
-						.map(|pipeline_manager| pipeline_manager.prepare(frame, &sinks, frame_allocator, transforms, time))
+						.map(|pipeline_manager| pipeline_manager.prepare(frame, &sinks, frame_allocator, transforms, alley, time))
 						.collect()
 				};
 

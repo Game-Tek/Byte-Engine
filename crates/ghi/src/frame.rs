@@ -3,7 +3,7 @@ use std::time::Instant;
 use utils::Extent;
 
 use crate::{
-	BaseBufferHandle, BaseImageHandle, BufferHandle, CommandBufferHandle, DynamicBufferHandle, Pod, PresentKey,
+	BaseBufferHandle, BaseImageHandle, BufferHandle, CommandBufferHandle, DynamicBufferHandle, PresentKey,
 	SwapchainHandle, command_buffer::CommandBufferRecording, descriptors,
 };
 
@@ -55,7 +55,7 @@ where
 	/// Every frame in flight has its own copy, so writing it never races an earlier frame. A copy keeps what its
 	/// last frame wrote, so write everything the frame reads, or track which copies already hold a change with
 	/// [`crate::FrameKey::sequence_index`].
-	fn get_mut_dynamic_buffer_slice<T: Pod>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T;
+	fn get_mut_dynamic_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T;
 
 	/// Returns a mutable reference to the dynamic image's contents for the current frame.
 	fn get_mut_dynamic_texture_slice(&mut self, image_handle: BaseImageHandle) -> &mut [u8] {

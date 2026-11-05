@@ -294,7 +294,7 @@ cameras or objects requests a redraw itself.
 | Geometry capacity | Set by the `render.geometry.*` parameters; a mesh that doesn't fit is rejected at upload. |
 | Meshlet | 64 vertices and 124 triangles |
 | Meshlets per primitive instance | 4,096 |
-| Instances drawn per frame | 1,024 |
+| Instances drawn per frame | Set by the `render.instances.*` parameters, at most 33,554,432; the rest are left out with one warning |
 | Materials, bindless textures | 1,024 each |
 | Texture slots per material | 16 |
 | Lights | 1,024; the rest are left out with one warning |

@@ -1112,7 +1112,7 @@ impl crate::context::ContextCreate for Device {
 	fn build_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, builder: buffer::Builder) -> BufferHandle<T> {
 		Device::build_buffer(self, builder)
 	}
-	fn build_dynamic_buffer<T: crate::Pod>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T> {
+	fn build_dynamic_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T> {
 		Device::build_dynamic_buffer(self, builder)
 	}
 	fn build_dynamic_image(&mut self, builder: image::Builder) -> crate::DynamicImageHandle {
@@ -1275,7 +1275,7 @@ impl crate::context::Context for Device {
 		Device::get_image_data(self, texture_copy_handle)
 	}
 
-	fn resize_buffer<T: crate::Pod>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize) {
+	fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize) {
 		Device::resize_buffer(self, buffer_handle, size);
 	}
 

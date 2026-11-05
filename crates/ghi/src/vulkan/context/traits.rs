@@ -391,7 +391,7 @@ impl crate::context::Context for Context {
 	///
 	/// Contents are discarded, matching the other backends. Replaced storage is destroyed only after the frames that
 	/// may still read it have completed, so the resize is safe while earlier frames are in flight.
-	fn resize_buffer<T: crate::Pod>(
+	fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
 		size: usize,
@@ -666,7 +666,7 @@ impl crate::context::ContextCreate for Context {
 		)
 	}
 
-	fn build_dynamic_buffer<T: crate::Pod>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
+	fn build_dynamic_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
 		let size = <T as crate::buffer::BufferContents>::layout(builder.length).size();
 
 		// Create every frame sequence's copy up front, so a buffer created mid-frame never shares a copy with another

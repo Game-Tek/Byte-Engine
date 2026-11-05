@@ -261,7 +261,7 @@ impl Device {
 	}
 
 	/// Replaces CPU shadow storage immediately while retaining each native allocation through its owning sequence fence.
-	pub fn resize_buffer<T: crate::Pod>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize) {
+	pub fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize) {
 		let buffer_handle: BaseBufferHandle = buffer_handle.into();
 		let buffer = self
 			.buffer(buffer_handle)

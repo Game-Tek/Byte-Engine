@@ -8,8 +8,8 @@ pub(crate) const MATERIAL_HIT_PREFIX_SOURCE: &str = r#"
 material_hit_prefix: fn (input: StageInput) -> void {
 	// The geometry table leads a hit to the frame's record of the primitive it hit and to the primitive's first
 	// triangle in the flat triangle lists.
-	let geometry: vec2u = ray_traced_scene.ray_tracing_geometries.geometries[input.hit_custom_index + input.hit_geometry_index];
-	let mesh: Mesh = scene.meshes.meshes[geometry.x];
+	let geometry: vec2u = ray_traced_scene.ray_tracing_geometries[input.hit_custom_index + input.hit_geometry_index];
+	let mesh: Mesh = scene.meshes[geometry.x];
 	let material: Material = scene.materials.materials[mesh.material_index];
 	let first_index: u32 = (geometry.y + input.hit_primitive_index) * 3;
 	let triangle_vertex_indices: u32[3] = u32[3](

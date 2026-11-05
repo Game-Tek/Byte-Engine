@@ -14,7 +14,6 @@
 use ghi::context::{Context as _, ContextCreate as _};
 use utils::Extent;
 
-use super::super::mesh_dispatch::MAX_MESH_DISPATCH_WORK_ITEMS;
 use super::{ComputeStage, Pipelines, record_compute_stages};
 use crate::rendering::PipelineManagerClient;
 use crate::rendering::pipelines::visibility::set_layouts;
@@ -76,11 +75,14 @@ pub(super) struct OcclusionCulling {
 impl OcclusionCulling {
 	/// Creates the pyramid and the unoccluded-meshlet record, and requests the build pipelines.
 	///
-	/// `depth` is the sink's visibility depth. Next, call [`Self::prepare`] each frame.
+	/// `depth` is the sink's visibility depth, and `meshlet_groups` the mesh dispatch work items a frame can hold,
+	/// [`crate::rendering::pipelines::visibility::InstanceCapacity::meshlet_groups`]. Next, call [`Self::prepare`] each
+	/// frame.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		depth: ghi::BaseImageHandle,
+		meshlet_groups: u32,
 	) -> Self {
 		let descriptor_set = set_layouts::OCCLUSION.create_set(context, "Occlusion Culling Descriptor Set");
 		let build_descriptor_sets = [
@@ -103,9 +105,10 @@ impl OcclusionCulling {
 				.filtering_mode(ghi::FilteringModes::Closest)
 				.mip_map_mode(ghi::FilteringModes::Closest),
 		);
-		let visibility = context.build_buffer::<[u32; MAX_MESH_DISPATCH_WORK_ITEMS]>(
+		let visibility = context.build_buffer::<[u32]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Occlusion Visibility")
+				.length(meshlet_groups as usize)
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 		let [base_set, tail_set] = build_descriptor_sets;

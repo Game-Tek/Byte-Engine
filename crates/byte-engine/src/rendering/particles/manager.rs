@@ -353,6 +353,7 @@ impl PipelineManager for ParticleManager {
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
 		transforms: &ShownTransforms,
+		_alley: &mut crate::core::alley::Alley,
 		time: MediaTime,
 	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]> {
 		let mut commands = SmallVec::new();

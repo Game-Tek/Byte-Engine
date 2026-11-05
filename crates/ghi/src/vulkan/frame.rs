@@ -284,7 +284,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.create_command_buffer_recording_internal(command_buffer_handle, false)
 	}
 
-	fn get_mut_dynamic_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: crate::DynamicBufferHandle<T>) -> &mut T {
+	fn get_mut_dynamic_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: crate::DynamicBufferHandle<T>) -> &mut T {
 		let buffers = &self.device.buffers;
 		let handle = buffers
 			.nth_handle(buffer_handle.into(), self.frame_key.sequence_index as _)

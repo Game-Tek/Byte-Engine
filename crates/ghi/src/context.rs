@@ -4,7 +4,7 @@ use crate::synchronizer::SynchronizerHandle as PrivateSynchronizerHandle;
 use crate::{
 	AllocationHandle, BaseBufferHandle, BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle,
 	CounterHandle, DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, DynamicImageHandle, Formats, ImageHandle,
-	MeshHandle, PipelineHandle, Pod, PresentationModes, QueueHandle, SamplerHandle, ShaderBindingTableHandle, ShaderHandle,
+	MeshHandle, PipelineHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderBindingTableHandle, ShaderHandle,
 	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer,
 	buffer::BufferContents,
 	descriptors, image,
@@ -476,7 +476,7 @@ pub trait Context: ContextCreate {
 	fn get_image_data(&mut self, texture_copy_handle: TextureCopyHandle) -> Result<TextureReadback, TextureTransferError>;
 
 	/// Resizes a dynamic buffer to the specified size.
-	fn resize_buffer<T: Pod>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize);
+	fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize);
 
 	/// Waits for operations associated with one synchronizer to complete.
 	///
@@ -601,7 +601,7 @@ pub trait ContextCreate {
 	///
 	/// `T` must implement [`Pod`] so zero initialization and later GPU-written bytes always form a valid value.
 	/// Dynamic buffers can be resized with [`Context::resize_buffer`].
-	fn build_dynamic_buffer<T: Pod>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T>;
+	fn build_dynamic_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T>;
 
 	/// Creates a dynamic image from a builder.
 	///
@@ -772,7 +772,7 @@ macro_rules! delegate_context_create_to_device {
 			self.device.build_buffer(builder)
 		}
 
-		fn build_dynamic_buffer<T: $crate::Pod>(&mut self, builder: $crate::buffer::Builder) -> $crate::DynamicBufferHandle<T> {
+		fn build_dynamic_buffer<T: ?Sized + $crate::buffer::BufferContents>(&mut self, builder: $crate::buffer::Builder) -> $crate::DynamicBufferHandle<T> {
 			self.device.build_dynamic_buffer(builder)
 		}
 

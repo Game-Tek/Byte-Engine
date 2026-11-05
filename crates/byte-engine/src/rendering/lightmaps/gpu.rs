@@ -42,7 +42,7 @@ use crate::rendering::pipelines::visibility::{
 		GeometryBuffers, GeometryCapacity, GeometryHandles, MeshData, PreparedLevels, PreparedSurface,
 		decode_octahedral_unit_vector,
 	},
-	layout::{MAX_BINDLESS_TEXTURES, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS},
+	layout::{MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIALS},
 	loader::{
 		EnvironmentMaps, IBL_SPECULAR_LEVEL_COUNT, MaterialDescription, assign_slot, describe_material,
 		load_environment_maps, material_sampler, place_mesh, prepare_mesh_source,
@@ -617,8 +617,16 @@ impl Bake {
 		settings: &TraceSettings,
 	) -> Self {
 		let queue = device.graphics_queue();
-		let mut structures =
-			SceneAccelerationStructures::new(render, handles).expect("the bake's geometry keeps flat triangle lists");
+		// The bake traces every primitive of every mesh entity that loaded, one instance each.
+		let primitives = scene
+			.meshes
+			.iter()
+			.filter_map(|mesh| loaded.meshes.get(&mesh.source.key()))
+			.map(|(data, _)| data.primitives.len())
+			.sum::<usize>()
+			.max(1);
+		let mut structures = SceneAccelerationStructures::new(render, handles, primitives as u32)
+			.expect("the bake's geometry keeps flat triangle lists");
 		let mut shading = HitShading::new(render, LIGHTMAP_TRACE_SHADER, "lightmap bake");
 		let dilate = pipelines.request_pipeline(LIGHTMAP_DILATE_PIPELINE);
 
@@ -637,7 +645,7 @@ impl Bake {
 		}
 
 		// Instances: one record per primitive of every mesh entity, which hits read by their record.
-		let mut meshes = vec![bytemuck::Zeroable::zeroed(); MAX_INSTANCES];
+		let mut meshes = Vec::with_capacity(primitives);
 		let mut traced = Vec::new();
 		for mesh in &scene.meshes {
 			let key = mesh.source.key();
@@ -651,11 +659,8 @@ impl Bake {
 			let handle = Handle::from_id(mesh.entity + 1);
 			for (primitive_index, primitive) in data.primitives.iter().enumerate() {
 				let record = traced.len() as u32;
-				let Some(destination) = meshes.get_mut(record as usize) else {
-					break;
-				};
 				let finest = primitive.lods.drawn(0);
-				*destination = ShaderMesh {
+				meshes.push(ShaderMesh {
 					model,
 					material_index: primitive.material_index,
 					base_vertex_index: finest.vertex_base,
@@ -670,7 +675,7 @@ impl Bake {
 					},
 					parameter_block: parameters.block(handle, primitive.material_index),
 					bounding_sphere: primitive.bounding_sphere,
-				};
+				});
 				traced.push(TracedPrimitive {
 					renderable: handle,
 					mesh: key,
@@ -680,12 +685,9 @@ impl Bake {
 				});
 			}
 		}
-		if traced.len() > MAX_INSTANCES {
-			log::warn!(
-				"The level has {} primitives, and the lightmap bake traces only the first {MAX_INSTANCES}. The most likely cause is a level with more primitives than the visibility pipeline draws at once. Split the level into smaller levels.",
-				traced.len()
-			);
-			traced.truncate(MAX_INSTANCES);
+		// A scene without primitives still binds a one-record table.
+		if meshes.is_empty() {
+			meshes.push(bytemuck::Zeroable::zeroed());
 		}
 
 		// Lights, as the renderer uploads them.
@@ -708,7 +710,7 @@ impl Bake {
 				.length(length)
 				.device_accesses(ghi::DeviceAccesses::HostToDevice)
 		};
-		let meshes_buffer = upload(render, host("Lightmap Bake Meshes", MAX_INSTANCES), &meshes);
+		let meshes_buffer = upload(render, host("Lightmap Bake Meshes", meshes.len()), &meshes);
 		let materials_buffer = upload(render, host("Lightmap Bake Materials", MAX_MATERIALS), &materials);
 		let (first, values) = parameters.take_changes(0).unwrap_or((0, &[]));
 		let mut parameter_values = vec![[0.0f32; 4]; (first + values.len()).max(1)];

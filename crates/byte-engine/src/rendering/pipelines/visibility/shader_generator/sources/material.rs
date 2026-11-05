@@ -46,7 +46,7 @@ material_evaluation_pixel_list: fn (input: StageInput) -> void {
 		return;
 	}
 	let instance_index: u32 = image_load_u32(visibility_buffer.instance_index_render_target, pixel_coordinates);
-	let mesh: Mesh = scene.meshes.meshes[instance_index];
+	let mesh: Mesh = scene.meshes[instance_index];
 }
 "#;
 
@@ -91,7 +91,7 @@ material_evaluation_tile: fn (input: StageInput) -> void {
 		return;
 	}
 	let instance_index: u32 = image_load_u32(visibility_buffer.instance_index_render_target, pixel_coordinates);
-	if (instance_index >= 1024) {
+	if (instance_index == 4294967295) {
 		if (!transparent) {
 			let zero: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 			write(material_evaluation.lit_map, pixel_coordinates, zero);
@@ -99,7 +99,7 @@ material_evaluation_tile: fn (input: StageInput) -> void {
 		}
 		return;
 	}
-	let mesh: Mesh = scene.meshes.meshes[instance_index];
+	let mesh: Mesh = scene.meshes[instance_index];
 	// The arm key of the pixel's material, which selects its surface code below.
 	let material_arm: u32 = scene.material_evaluations.evaluation_indices[mesh.material_index];
 }
@@ -348,7 +348,7 @@ material_evaluation_suffix: fn () -> void {
 		if (push_constant.indirect_diffuse == 3) {
 			// Lightmaps light the instances they give a rectangle; the rest take the environment's light alone. The
 			// record is read through `instance_lightmaps`, so a project without lightmaps drops this branch.
-			let lightmap_record: InstanceLightmap = scene.instance_lightmaps.instances[instance_index];
+			let lightmap_record: InstanceLightmap = scene.instance_lightmaps[instance_index];
 			if (lightmap_record.texture != 4294967295) {
 				// UNORM16 lightmap UVs, interpolated like the texture coordinates, then placed in the instance's rectangle.
 				let lightmap_scale: f32 = 1.0 / 65535.0;

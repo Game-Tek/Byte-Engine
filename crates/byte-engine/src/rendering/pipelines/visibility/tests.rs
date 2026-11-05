@@ -38,10 +38,14 @@ const VERTEX_INDICES: &str = "vertex_indices";
 const PRIMITIVE_INDICES: &str = "primitive_indices";
 const MESHLETS: &str = "meshlets";
 const FIXTURE_INSTANCE_INDEX: usize = 3;
+/// The length of the fixtures' runtime-sized instance and work tables.
+const FIXTURE_TABLE_LENGTH: usize = 64;
 const FIXTURE_MESHLET_INDEX: usize = 5;
 const MESHLET_INSTANCE_BITS: u32 = 12;
-/// Task payload words keep the view's offset into its batch above the meshlet and the 10-bit instance indices.
-const VIEW_OFFSET_SHIFT: u32 = MESHLET_INSTANCE_BITS + super::layout::MAX_INSTANCES.ilog2();
+/// Task payload words keep the view's offset into its batch above the meshlet index.
+const VIEW_OFFSET_SHIFT: u32 = MESHLET_INSTANCE_BITS;
+/// The task payload word that holds the workgroup's instance, after the six views of 32 meshlets.
+const PAYLOAD_INSTANCE_WORD: usize = 192;
 const TASK_WORKGROUP_SIZE: u32 = 32;
 const GTAO_WORKGROUP_WIDTH: u32 = 16;
 const GTAO_WORKGROUP_SIZE: usize = 128;
@@ -265,7 +269,7 @@ fn run_meshlet_task_workgroup(
 			views.write_array_member(0, member, value).expect("task occlusion camera");
 		}
 	}
-	let mut meshes = buffer(&program, slot(&program, MESH_DATA));
+	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
 	meshes
 		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX))
 		.expect("task mesh transform");
@@ -319,16 +323,16 @@ fn run_meshlet_task_workgroup(
 	] {
 		push_constant.write(member, Value::U32(value)).expect("task push constant");
 	}
-	let mut mesh_dispatch_work = buffer(&program, slot(&program, MESH_DISPATCH_WORK));
+	let mut mesh_dispatch_work = array_buffer(&program, slot(&program, MESH_DISPATCH_WORK), FIXTURE_TABLE_LENGTH);
 	let packed_work = MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed;
 	mesh_dispatch_work
 		.write_array_element(workgroup_index as usize, Value::U32(packed_work))
 		.expect("compact mesh dispatch work");
-	// The record is keyed by the packed work item, not by its position in the dispatch.
-	let mut occlusion_visibility = buffer(&program, slot(&program, OCCLUSION_VISIBILITY));
+	// The record is keyed by the work item's position in the work buffer.
+	let mut occlusion_visibility = array_buffer(&program, slot(&program, OCCLUSION_VISIBILITY), FIXTURE_TABLE_LENGTH);
 	if let Some(occlusion) = &occlusion {
 		occlusion_visibility
-			.write_array_element(packed_work as usize, Value::U32(*occlusion.record))
+			.write_array_element(workgroup_index as usize, Value::U32(*occlusion.record))
 			.expect("task occlusion record");
 	}
 
@@ -350,7 +354,7 @@ fn run_meshlet_task_workgroup(
 	descriptors.bind_task_outputs(&mut task_outputs);
 	run_workgroup(&program, descriptors, &configs);
 	if let Some(record) = record {
-		*record = read_u32(&occlusion_visibility, packed_work as usize);
+		*record = read_u32(&occlusion_visibility, workgroup_index as usize);
 	}
 	task_outputs
 }
@@ -383,11 +387,33 @@ fn task_payload(outputs: &TaskOutputs) -> Vec<Value> {
 ///
 /// `relative_meshlet_index` counts from the instance's first meshlet, `base_meshlet_index`.
 fn batched_meshlet_instance(relative_meshlet_index: u32, view_offset: u32) -> Value {
-	Value::U32(
-		relative_meshlet_index
-			| ((FIXTURE_INSTANCE_INDEX as u32) << MESHLET_INSTANCE_BITS)
-			| (view_offset << VIEW_OFFSET_SHIFT),
-	)
+	Value::U32(relative_meshlet_index | (view_offset << VIEW_OFFSET_SHIFT))
+}
+
+/// Returns the payload a task workgroup of the fixture instance hands its mesh grids, with `first` as grid zero's word.
+fn mesh_task_payload(first: Value) -> Vec<Value> {
+	let mut payload = vec![Value::U32(0); PAYLOAD_INSTANCE_WORD + 1];
+	payload[0] = first;
+	payload[PAYLOAD_INSTANCE_WORD] = Value::U32(FIXTURE_INSTANCE_INDEX as u32);
+	payload
+}
+
+/// Verifies the task stage hands every mesh grid its workgroup's instance in the payload's last word.
+#[test]
+fn task_main_hands_its_instance_to_the_mesh_stage() {
+	let outputs = run_meshlet_task_workgroup(
+		&[IDENTITY_MATRIX],
+		[0, 1],
+		&[[0.0, 0.0, 0.5, 0.1]],
+		TaskMeshFixture::default(),
+		0,
+		None,
+	);
+
+	assert_eq!(
+		outputs.payload_value("meshlet_instances", PAYLOAD_INSTANCE_WORD),
+		Some(&Value::U32(FIXTURE_INSTANCE_INDEX as u32))
+	);
 }
 
 /// Verifies camera culling retains an intersecting meshlet and rejects one outside the frustum.
@@ -849,7 +875,7 @@ fn assert_triangle_mesh_program(
 	expected_render_target_array_index: Option<u32>,
 ) {
 	let mut views = buffer(&program, slot(&program, VIEWS));
-	let mut meshes = buffer(&program, slot(&program, MESH_DATA));
+	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
 	meshes
 		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX))
 		.expect("mesh model matrix");
@@ -920,7 +946,7 @@ fn assert_triangle_mesh_program(
 	let mut mesh_outputs = MeshOutputs::new();
 	{
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_task_payload("meshlet_instances", [payload]);
+		descriptors.bind_task_payload("meshlet_instances", mesh_task_payload(payload));
 		descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
 		descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
 		descriptors.bind_buffer(slot(&program, VERTEX_POSITIONS), &mut positions);
@@ -1086,7 +1112,7 @@ fn mesh_materials_in_evaluations(
 	materials: impl IntoIterator<Item = u32>,
 	evaluation: impl Fn(u32) -> u32,
 ) -> PrepassTables {
-	let mut meshes = buffer(program, slot(program, MESH_DATA));
+	let mut meshes = array_buffer(program, slot(program, MESH_DATA), FIXTURE_TABLE_LENGTH);
 	let mut evaluations = buffer(program, slot(program, MATERIAL_EVALUATIONS));
 	for (mesh_index, material_index) in materials.into_iter().enumerate() {
 		meshes
@@ -2692,7 +2718,7 @@ impl SunVisibilityGeometry {
 	/// Builds the floor scene's geometry for `program`. Triangle zero lies on the floor and triangle one on the wall.
 	fn new(program: &ExecutableProgram) -> Self {
 		let extent = CONTACT_SHADOW_EXTENT;
-		let mut meshes = buffer(program, slot(program, MESH_DATA));
+		let mut meshes = array_buffer(program, slot(program, MESH_DATA), FIXTURE_TABLE_LENGTH);
 		meshes
 			.write_array_member(0, "model", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX))
 			.expect("mesh model matrix");

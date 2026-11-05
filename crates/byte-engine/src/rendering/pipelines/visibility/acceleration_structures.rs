@@ -20,7 +20,6 @@ use resource_management::types::AlphaMode;
 use utils::hash::HashMap;
 
 use super::geometry::{GeometryHandles, MeshData};
-use super::layout::MAX_INSTANCES;
 use super::set_layouts;
 use crate::core::factory::Handle;
 use crate::rendering::renderable::mesh::MeshKey;
@@ -245,7 +244,9 @@ pub(crate) struct SceneAccelerationStructures {
 	top_level: ghi::TopLevelAccelerationStructureHandle,
 	/// For each frame, entry `custom_index + geometry` of a hit names the frame's mesh record it hit and the hit
 	/// geometry's first triangle.
-	geometry_records: ghi::DynamicBufferHandle<[[u32; 2]; MAX_INSTANCES]>,
+	geometry_records: ghi::DynamicBufferHandle<[[u32; 2]]>,
+	/// The most instances the top level places.
+	instances: u32,
 	vertex_positions: ghi::BufferHandle<[[f32; 3]]>,
 	flat_triangle_indices: ghi::BufferHandle<[[u16; 3]]>,
 	/// Every registered mesh's primitives, until its bottom level is created.
@@ -260,13 +261,15 @@ impl SceneAccelerationStructures {
 	/// Creates the top level, the geometry records, and the ray-traced scene set over the flat triangle lists of
 	/// `geometry`.
 	///
-	/// Returns `None` when `geometry` keeps no flat triangle lists, which means the device doesn't trace rays.
-	pub(crate) fn new(context: &mut ghi::implementation::Context, geometry: &GeometryHandles) -> Option<Self> {
+	/// `instances` is the most instances, and geometry records, a frame places. Returns `None` when `geometry` keeps no
+	/// flat triangle lists, which means the device doesn't trace rays.
+	pub(crate) fn new(context: &mut ghi::implementation::Context, geometry: &GeometryHandles, instances: u32) -> Option<Self> {
 		let flat_triangle_indices = geometry.flat_triangle_indices?;
-		let top_level = context.create_top_level_acceleration_structure(Some("Scene Top Level"), MAX_INSTANCES as u32);
+		let top_level = context.create_top_level_acceleration_structure(Some("Scene Top Level"), instances);
 		let geometry_records = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Ray Tracing Geometry Records")
+				.length(instances as usize)
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 		let descriptor_set = set_layouts::RAY_TRACED_SCENE.create_set(context, "Ray-Traced Scene");
@@ -280,6 +283,7 @@ impl SceneAccelerationStructures {
 			descriptor_set,
 			top_level,
 			geometry_records,
+			instances,
 			vertex_positions: geometry.vertex_positions,
 			flat_triangle_indices,
 			geometries: HashMap::default(),
@@ -349,7 +353,7 @@ impl SceneAccelerationStructures {
 			builds.push(bottom_level.structure);
 		}
 
-		let mut placed = bumpalo::collections::Vec::with_capacity_in(MAX_INSTANCES, frame_allocator);
+		let mut placed = bumpalo::collections::Vec::with_capacity_in(self.instances as usize, frame_allocator);
 		let records = frame.get_mut_dynamic_buffer_slice(self.geometry_records);
 		place_instances(primitives, &self.bottom_levels, &mut placed, records);
 		frame.sync_buffer(self.geometry_records);

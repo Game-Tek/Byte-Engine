@@ -625,9 +625,13 @@ impl GraphicsApplication {
 			.flat_map(|request| request.captures.iter().map(|selection| (selection.sink, &selection.capture)))
 			.collect::<Vec<_>>();
 		self.shown_transforms.resolve(self.display_time);
+		let alley = self.alley.as_mut().expect(
+			"Alley is not available to render. The most likely cause is that a frame rendered from a lane of a run_lanes execution, which holds the lanes.",
+		);
 		let (frame, results) = self.renderer.prepare(
 			&self.shown_transforms,
 			&self.application.frame_allocator,
+			alley,
 			&captures,
 			time.elapsed(),
 			time.delta(),

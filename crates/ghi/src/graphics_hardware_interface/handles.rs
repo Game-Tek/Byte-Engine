@@ -60,10 +60,42 @@ impl<T: ?Sized> std::fmt::Debug for BufferHandle<T> {
 	}
 }
 
-/// The `DynamicBufferHandle` struct identifies a resizable buffer with its element type.
-#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
+/// The `DynamicBufferHandle` struct identifies a buffer with one copy per frame in flight, together with the type of
+/// its contents.
+///
+/// Like [`BufferHandle`], `T` is either one [`bytemuck::Pod`] value or a slice `[E]` whose length is chosen at creation
+/// with [`crate::buffer::Builder::length`], so a table can be sized from a runtime setting.
 #[repr(transparent)]
-pub struct DynamicBufferHandle<T>(pub(crate) BaseBufferHandle, pub(crate) std::marker::PhantomData<T>);
+pub struct DynamicBufferHandle<T: ?Sized>(pub(crate) BaseBufferHandle, pub(crate) std::marker::PhantomData<T>);
+
+// Manual impls for the same reason as `BufferHandle`'s: derives would reject slice contents.
+impl<T: ?Sized> Clone for DynamicBufferHandle<T> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+
+impl<T: ?Sized> Copy for DynamicBufferHandle<T> {}
+
+impl<T: ?Sized> PartialEq for DynamicBufferHandle<T> {
+	fn eq(&self, other: &Self) -> bool {
+		self.0 == other.0
+	}
+}
+
+impl<T: ?Sized> Eq for DynamicBufferHandle<T> {}
+
+impl<T: ?Sized> std::hash::Hash for DynamicBufferHandle<T> {
+	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+		self.0.hash(state);
+	}
+}
+
+impl<T: ?Sized> std::fmt::Debug for DynamicBufferHandle<T> {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		formatter.debug_tuple("DynamicBufferHandle").field(&self.0).finish()
+	}
+}
 
 crate::handle::index_handle! {
 	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -325,7 +357,7 @@ impl<T: ?Sized> From<BufferHandle<T>> for BaseBufferHandle {
 	}
 }
 
-impl<T: bytemuck::Pod> From<DynamicBufferHandle<T>> for BaseBufferHandle {
+impl<T: ?Sized> From<DynamicBufferHandle<T>> for BaseBufferHandle {
 	fn from(val: DynamicBufferHandle<T>) -> Self {
 		val.0
 	}

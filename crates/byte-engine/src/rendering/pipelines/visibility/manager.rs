@@ -14,6 +14,7 @@ use log::{error, warn};
 use resource_management::resources::skeleton::SkinBinding;
 use resource_management::types::AlphaMode;
 use smallvec::SmallVec;
+use tracing::debug_span;
 use utils::hash::HashMap;
 use utils::{AvailabilityGraph, Extent, StableVec};
 
@@ -22,10 +23,13 @@ use super::features::{
 	CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, MaterialEvaluationMode, RENDER_PARAMETERS, VisibilityFeatures,
 };
 use super::geometry::{GeometryCapacity, GeometryHandles, MeshData, allocate_vertices};
+use super::instance_rebuild::{
+	Admission, InstanceOutputs, InstanceSources, LaneScratch, instance_phase, rebuild_instances, rebuild_lanes,
+};
 use super::layout::{
-	CONE_SHADOW_VIEW_OFFSET, DEFAULT_SHADOW_MAP_BUDGET_MIB, DEFAULT_SHADOW_MAP_RESOLUTION, MAX_BINDLESS_TEXTURES,
-	MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIAL_PARAMETERS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, NO_EVALUATION,
-	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT, VERTEX_UV_BUFFER_STRIDE,
+	CONE_SHADOW_VIEW_OFFSET, DEFAULT_SHADOW_MAP_BUDGET_MIB, DEFAULT_SHADOW_MAP_RESOLUTION, MAX_BINDLESS_TEXTURES, MAX_LIGHTS,
+	MAX_MATERIAL_PARAMETERS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, NO_EVALUATION, POINT_SHADOW_FACE_COUNT,
+	POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT, VERTEX_UV_BUFFER_STRIDE,
 };
 use super::lightmaps::Lightmaps;
 use super::loader::{
@@ -44,11 +48,11 @@ use super::render_pass::{
 	create_surfel_targets,
 };
 use super::residency::MeshResidencies;
-use super::scene::{Instance, MaterialEvaluation, PosedVertices, RenderEntity, RenderSkin, SinkState, VisibilityScene};
-use super::set_layouts;
-use super::shader_data::{
-	IesProfileTexture, InstanceLightmap, MESH_FLAG_DOUBLE_SIDED, MESH_FLAG_SKINNED, MaterialData, ShaderMesh, ShaderViewData,
+use super::scene::{
+	InstanceCapacity, MaterialEvaluation, PosedVertices, RenderEntity, RenderInfo, RenderSkin, SinkState, VisibilityScene,
 };
+use super::set_layouts;
+use super::shader_data::{IesProfileTexture, InstanceLightmap, MESH_FLAG_SKINNED, MaterialData, ShaderMesh, ShaderViewData};
 use super::shadow_selection::{
 	SHADOW_DEFAULT_EXPOSURE_SCALE, ShadowBudget, ShadowLayout, ShadowLightSelection, ShadowSlots, make_cone_shadow_view,
 	make_point_shadow_view, retain_layout, select_shadow_lights, sun_cascade_view,
@@ -60,6 +64,7 @@ use super::skinning::{
 	DualQuaternion, MAX_SKINNING_MATRICES, SkinningDispatch, SkinningPaletteKind, SkinningPass, append_dual_quaternion_palette,
 };
 use crate::application::parameters::Parameters;
+use crate::core::alley::Alley;
 use crate::core::factory::{CreateMessage, Handle};
 use crate::core::listener::{DefaultListener, Listener as _};
 use crate::core::message::DeleteMessage;
@@ -85,6 +90,12 @@ pub const SHADOW_UPDATE_TEXELS_PARAMETER: &str = "shadow-maps.update-texels";
 /// The prefix, inside the `render` subtree, of the startup parameters that set each scene-wide geometry buffer's
 /// element count, such as `render.geometry.triangle-capacity`. See [`GeometryCapacity`].
 pub const GEOMETRY_CAPACITY_PARAMETER_PREFIX: &str = "geometry.";
+/// The prefix, inside the `render` subtree, of the startup parameters that size the per-frame instance tables:
+/// `render.instances.capacity` and `render.instances.meshlet-group-capacity`. See [`InstanceCapacity`].
+pub const INSTANCE_CAPACITY_PARAMETER_PREFIX: &str = "instances.";
+/// The startup parameter, inside the `render` subtree, that caps how many lanes rebuild the frame's instances. See
+/// [`VisibilityPipelineSettings::with_instance_rebuild_lanes`].
+pub const INSTANCE_REBUILD_LANES_PARAMETER: &str = "instances.rebuild-lanes";
 /// The startup parameters, inside the `render` subtree, that set how far directional shadows reach, in meters, and
 /// the share of their cascade splits that is logarithmic. See [`CascadeSplits`].
 pub const DIRECTIONAL_SHADOW_DISTANCE_PARAMETER: &str = "directional-shadows.distance";
@@ -113,6 +124,8 @@ pub const PROBE_SPACING_PARAMETER: &str = "probe-gi.spacing";
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VisibilityPipelineSettings {
 	geometry_capacity: GeometryCapacity,
+	instance_capacity: InstanceCapacity,
+	instance_rebuild_lanes: Option<std::num::NonZeroUsize>,
 	shadow_map_budget_mib: u32,
 	shadow_update_texels: u64,
 	cascade_splits: CascadeSplits,
@@ -129,6 +142,8 @@ impl Default for VisibilityPipelineSettings {
 	fn default() -> Self {
 		Self {
 			geometry_capacity: GeometryCapacity::default(),
+			instance_capacity: InstanceCapacity::default(),
+			instance_rebuild_lanes: None,
 			shadow_map_budget_mib: DEFAULT_SHADOW_MAP_BUDGET_MIB,
 			shadow_update_texels: DEFAULT_SHADOW_UPDATE_TEXELS,
 			cascade_splits: CascadeSplits::default(),
@@ -186,6 +201,21 @@ impl VisibilityPipelineSettings {
 		settings = settings
 			.with_geometry_capacity(geometry_capacity)
 			.unwrap_or_else(|reason| panic!("{reason}"));
+		let mut instance_capacity = settings.instance_capacity();
+		for (table, capacity) in [
+			("capacity", &mut instance_capacity.instances),
+			("meshlet-group-capacity", &mut instance_capacity.meshlet_groups),
+		] {
+			if let Some(value) = parse(&parameters, &format!("{INSTANCE_CAPACITY_PARAMETER_PREFIX}{table}")) {
+				*capacity = value;
+			}
+		}
+		settings = settings
+			.with_instance_capacity(instance_capacity)
+			.unwrap_or_else(|reason| panic!("{reason}"));
+		if let Some(lanes) = parse(&parameters, INSTANCE_REBUILD_LANES_PARAMETER) {
+			settings = settings.with_instance_rebuild_lanes(lanes);
+		}
 		// Directional shadow coverage: each parameter overrides one part of the default splits.
 		let default_splits = settings.cascade_splits();
 		let shadow_distance = parse(&parameters, DIRECTIONAL_SHADOW_DISTANCE_PARAMETER).unwrap_or(default_splits.distance());
@@ -235,6 +265,33 @@ impl VisibilityPipelineSettings {
 
 	pub fn geometry_capacity(&self) -> GeometryCapacity {
 		self.geometry_capacity
+	}
+
+	/// Sets how many instances, and groups of their meshlets, one frame can draw.
+	///
+	/// Instances past the capacity are left out of the frame, so size this for the most instances shown at once.
+	pub fn with_instance_capacity(mut self, capacity: InstanceCapacity) -> Result<Self, String> {
+		capacity.validate()?;
+		self.instance_capacity = capacity;
+		Ok(self)
+	}
+
+	pub fn instance_capacity(&self) -> InstanceCapacity {
+		self.instance_capacity
+	}
+
+	/// Caps how many lanes rebuild the frame's instances. One keeps the rebuild on the render thread.
+	///
+	/// By default the rebuild takes a lane for every 8,192 render entities, up to the machine's performance cores.
+	pub fn with_instance_rebuild_lanes(mut self, lanes: std::num::NonZeroUsize) -> Self {
+		self.instance_rebuild_lanes = Some(lanes);
+		self
+	}
+
+	/// Returns the most lanes that rebuild the frame's instances.
+	pub fn instance_rebuild_lanes(&self) -> usize {
+		self.instance_rebuild_lanes
+			.map_or_else(crate::core::machine::performance_parallelism, std::num::NonZeroUsize::get)
 	}
 
 	/// Sets how far directional shadows reach from the camera and how their cascades divide that range.
@@ -778,6 +835,8 @@ pub struct VisibilityPipelineManager {
 	/// The primitives the frame draws, as the acceleration structures place them. Kept across frames for its
 	/// allocation.
 	traced_primitives: Vec<TracedPrimitive>,
+	/// What each instance rebuild lane lists, kept so frames reuse the room.
+	rebuild_scratch: Vec<LaneScratch>,
 	/// Whether the warning that a ray-traced GI technique can't light frames on this device was reported while one stays
 	/// selected.
 	reported_surfel_gi_fallback: bool,
@@ -798,7 +857,7 @@ pub struct VisibilityPipelineManager {
 	/// history their images hold.
 	recorded_indirect_diffuse: Option<IndirectDiffuseSource>,
 	/// Whether the light-count and shadow-budget warnings were reported while their limit stays exceeded.
-	reported_limits: [bool; 2],
+	reported_limits: [bool; 3],
 	pub(crate) scene: VisibilityScene,
 }
 
@@ -844,13 +903,16 @@ impl VisibilityPipelineManager {
 			ghi::Uses::Storage | ghi::Uses::TransferDestination,
 		));
 		let views_buffer = context.build_dynamic_buffer(host_buffer("Visibility Views Data", ghi::Uses::Storage));
-		let meshes_buffer = context.build_dynamic_buffer(host_buffer("Visibility Meshes Data", ghi::Uses::Storage));
+		let instances = settings.instance_capacity.instances as usize;
+		let meshes_buffer =
+			context.build_dynamic_buffer(host_buffer("Visibility Meshes Data", ghi::Uses::Storage).length(instances));
 		let instance_lightmaps_buffer =
-			context.build_dynamic_buffer(host_buffer("Visibility Instance Lightmaps", ghi::Uses::Storage));
+			context.build_dynamic_buffer(host_buffer("Visibility Instance Lightmaps", ghi::Uses::Storage).length(instances));
 		let lighting_buffer =
 			context.build_dynamic_buffer(host_buffer("Light Data", ghi::Uses::Storage | ghi::Uses::TransferDestination));
 		let descriptor_set = set_layouts::SCENE.create_set(context, "Scene Descriptor Set");
-		let mesh_dispatch_work = MeshDispatchWorkBuffer::new(context, descriptor_set);
+		let mesh_dispatch_work =
+			MeshDispatchWorkBuffer::new(context, descriptor_set, settings.instance_capacity.meshlet_groups);
 		let shadow_maps = ShadowMaps::new(context, &pipeline_manager, settings.directional_shadow_map_resolution);
 		let ray_tracing = context.supports_ray_tracing();
 		let surfel_pool = (settings.features.surfel_gi && ray_tracing).then(|| {
@@ -874,7 +936,7 @@ impl VisibilityPipelineManager {
 			)
 		});
 		let acceleration_structures = (surfel_pool.is_some() || probe_volume.is_some())
-			.then(|| SceneAccelerationStructures::new(context, &geometry))
+			.then(|| SceneAccelerationStructures::new(context, &geometry, settings.instance_capacity.instances))
 			.flatten();
 		// Only one technique lights a frame, so they share room for the hits of the larger ray budget.
 		let ray_hits = [
@@ -921,7 +983,7 @@ impl VisibilityPipelineManager {
 			environment_listener: world.factory::<Environment>().listener(),
 			lightmap_listener: world.factory::<Lightmap>().listener(),
 			lightmaps: Lightmaps::default(),
-			instance_lightmaps: Vec::with_capacity(MAX_INSTANCES),
+			instance_lightmaps: Vec::with_capacity(instances),
 			fog_listener: world.factory::<crate::rendering::ExponentialHeightFog>().listener(),
 			fog: None,
 			pose_listener: world.channel::<UpdatePose>().listener(),
@@ -946,8 +1008,8 @@ impl VisibilityPipelineManager {
 			uber_shaders_loading: [settings.features.material_evaluation == MaterialEvaluationMode::Uber; 2],
 			loaded_ies_profiles: HashMap::default(),
 			availability: AvailabilityGraph::with_capacity(
-				MAX_INSTANCES + MAX_MATERIALS + MAX_BINDLESS_TEXTURES,
-				MAX_INSTANCES + MAX_MATERIALS * MAX_MATERIAL_TEXTURES,
+				instances + MAX_MATERIALS + MAX_BINDLESS_TEXTURES,
+				instances + MAX_MATERIALS * MAX_MATERIAL_TEXTURES,
 			),
 			environment: EnvironmentState {
 				requested: None,
@@ -984,6 +1046,7 @@ impl VisibilityPipelineManager {
 			surfel_shading,
 			probe_shading,
 			traced_primitives: Vec::new(),
+			rebuild_scratch: Vec::new(),
 			reported_surfel_gi_fallback: false,
 			contact_shadow_configuration,
 			contact_shadow_settings: ContactShadowSettings::default(),
@@ -994,7 +1057,7 @@ impl VisibilityPipelineManager {
 			recorded_exposure: 1.0,
 			surfel_exposure: 1.0,
 			recorded_indirect_diffuse: None,
-			reported_limits: [false; 2],
+			reported_limits: [false; 3],
 			scene: VisibilityScene {
 				render_entities: StableVec::new(),
 				skinning_poses: HashMap::default(),
@@ -1595,132 +1658,148 @@ impl VisibilityPipelineManager {
 	///
 	/// Each instance draws the detail level `lod_view` picks for it when it is resident, or the finest resident level
 	/// coarser than it. Without a camera it draws the finest resident level. The levels instances want go to
-	/// [`MeshResidencies`], which decides what loads next.
-	fn rebuild_active_instances(&mut self, frame: &mut ghi::implementation::Frame, lod_view: Option<LodView>) {
+	/// [`MeshResidencies`], which decides what loads next. Large scenes rebuild on several of `alley`'s lanes, with the
+	/// same result as one; see [`super::instance_rebuild`].
+	fn rebuild_active_instances(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		lod_view: Option<LodView>,
+		alley: &mut Alley,
+	) {
+		let _span = debug_span!(
+			"Visibility::rebuild_active_instances",
+			entities = self.scene.render_entities.len()
+		)
+		.entered();
 		let render_info = &mut self.scene.render_info;
 		render_info.clear_active_instances();
 		if std::mem::take(&mut self.posed_uv_copies_recorded) {
 			render_info.posed_uv_copies.clear();
 		}
 		self.skinning_frame.clear();
-		self.traced_primitives.clear();
-		let traces_rays = self.acceleration_structures.is_some();
 		let mesh_data = frame.get_mut_dynamic_buffer_slice(self.scene.meshes_buffer);
-		self.instance_lightmaps.clear();
-		// Every admitted entity pushes exactly one instance, so this counts the instances so far.
-		let mut active_index = 0;
+		let capacity = mesh_data.len();
 
-		for entity in self.scene.render_entities.iter_mut() {
+		let availability = &self.availability;
+		let loaded_materials = &self.loaded_materials;
+		let material_evaluations = &self.material_evaluations;
+		let sources = InstanceSources {
+			entities: &self.scene.render_entities,
 			// A renderable enters a frame as one object; never expose the subset whose materials loaded first.
-			if !self.availability.is_ready(entity.availability) {
-				continue;
-			}
-			let Some(material) = self
-				.loaded_materials
-				.get(entity.shader_mesh.material_index as usize)
-				.and_then(Option::as_ref)
-			else {
-				continue;
-			};
-			assert!(
-				active_index < MAX_INSTANCES,
-				"Visibility active instance limit exceeded. The most likely cause is that the scene contains more visible mesh primitives than the visibility pipeline supports."
-			);
+			admit: |entity: &RenderEntity| {
+				if !availability.is_ready(entity.availability) {
+					return None;
+				}
+				let material = loaded_materials
+					.get(entity.shader_mesh.material_index as usize)
+					.and_then(Option::as_ref)?;
+				Some(Admission {
+					phase: instance_phase(&material.alpha_mode, material.double_sided),
+					evaluation: match material.evaluation {
+						MaterialEvaluator::Pipeline(_) => material_evaluations[entity.shader_mesh.material_index as usize],
+						// Each phase's uber shader is the only evaluation of its phase.
+						MaterialEvaluator::Arm(_) => UBER_EVALUATION_INDEX,
+					},
+					double_sided: material.double_sided,
+				})
+			},
+			lod_view,
+			residencies: &self.mesh_residencies,
+			parameters: &self.material_parameters,
+			traces_rays: self.acceleration_structures.is_some(),
+		};
 
-			let mut shader_mesh = entity.shader_mesh;
-			// Sidedness comes from the currently loaded material, so a reloaded material takes effect next frame.
-			shader_mesh.flags = if material.double_sided { MESH_FLAG_DOUBLE_SIDED } else { 0 };
+		let RenderInfo {
+			opaque_instances,
+			masked_instances,
+			double_sided_instances,
+			double_sided_masked_instances,
+			transparent_instances,
+			opaque_evaluation_mask,
+			transparent_evaluation_mask,
+			..
+		} = render_info;
+		let lanes = rebuild_lanes(sources.entities.slots_len(), self.settings.instance_rebuild_lanes());
+		let left_out = rebuild_instances(
+			alley,
+			&sources,
+			lanes,
+			InstanceOutputs {
+				meshes: mesh_data,
+				lightmaps: &mut self.instance_lightmaps,
+				traced: &mut self.traced_primitives,
+				phases: [
+					opaque_instances,
+					masked_instances,
+					double_sided_instances,
+					double_sided_masked_instances,
+					transparent_instances,
+				],
+				masks: [opaque_evaluation_mask, transparent_evaluation_mask],
+				lanes: &mut self.rebuild_scratch,
+			},
+		);
+		let mesh_data = frame.get_mut_dynamic_buffer_slice(self.scene.meshes_buffer);
+
+		// Finish, in slot order, the instances whose parameter block or skin changes shared state.
+		for deferred in self.rebuild_scratch.iter().flat_map(|lane| &lane.deferred) {
+			let entity = self
+				.scene
+				.render_entities
+				.get_slot_mut(deferred.slot as usize)
+				.expect("a deferred instance's entity is in the scene");
+			let shader_mesh = &mut mesh_data[deferred.slot as usize];
 			shader_mesh.parameter_block = self.material_parameters.block(entity.handle, shader_mesh.material_index);
-			// Naming another level's ranges is all a level switch takes. Every view of the frame, shadows included,
-			// then draws this level.
-			let wanted = match lod_view {
-				Some(view) => {
-					let wanted = view.select(&entity.lods, &shader_mesh.model, shader_mesh.bounding_sphere);
-					if let Some(slot) = entity.residency {
-						self.mesh_residencies.want(slot, wanted as u8);
-					}
-					wanted
-				}
-				None => 0,
+			let Some(skin) = &mut entity.skinning else {
+				continue;
 			};
-			let lod = entity.lods.drawn(wanted);
-			shader_mesh.base_vertex_index = lod.vertex_base;
-			shader_mesh.base_primitive_index = lod.primitive_index_base;
-			shader_mesh.base_triangle_index = lod.triangle_base;
-			shader_mesh.base_meshlet_index = lod.first_meshlet;
-			shader_mesh.meshlet_count = lod.meshlet_count;
-			if let Some(skin) = &mut entity.skinning
-				&& let Some(pose) = self.scene.skinning_poses.get(&entity.handle)
-			{
-				assert_eq!(
-					pose.len(),
-					skin.skeleton_node_count as usize,
-					"Visibility skin pose has the wrong matrix count. The most likely cause is that the pose was written for a different skeleton."
-				);
-				// The first posed frame takes the instance's own vertices, which every later stage reads in place of the
-				// mesh's bind pose. Without room it keeps drawing the bind pose; the allocator logged why.
-				if skin.posed_vertices == PosedVertices::Unallocated && skin.vertex_count > 0 {
-					skin.posed_vertices =
-						allocate_vertices(&self.geometry.ranges, skin.vertex_count, "a posed skinned instance")
-							.map_or(PosedVertices::Unavailable, PosedVertices::Allocated);
-					// Skinning writes only positions and normals, so the bind-pose UVs are copied beside them once.
-					if let PosedVertices::Allocated(range) = &skin.posed_vertices {
-						let uv_stride = VERTEX_UV_BUFFER_STRIDE as usize;
-						render_info.posed_uv_copies.push(ghi::BufferCopyDescriptor::new(
-							self.geometry.vertex_uvs.into(),
-							shader_mesh.base_vertex_index as usize * uv_stride,
-							self.geometry.vertex_uvs.into(),
-							range.start as usize * uv_stride,
-							skin.vertex_count as usize * uv_stride,
-						));
-					}
-				}
-				if let PosedVertices::Allocated(range) = &skin.posed_vertices
-					&& let Some((palette_base, kind)) = self.skinning_frame.palette(entity.handle, &skin.binding, pose)
-				{
-					render_info.skinning_dispatches.push(SkinningDispatch {
-						source_vertex_base: skin.source_vertex_offset,
-						destination_vertex_base: range.start,
-						palette_base,
-						palette_count: skin.binding.entries.len() as u32,
-						vertex_count: skin.vertex_count,
-						palette_kind: kind as u32,
-					});
-					shader_mesh.base_vertex_index = range.start;
-					shader_mesh.flags |= MESH_FLAG_SKINNED;
-				}
-			}
-			mesh_data[active_index] = shader_mesh;
-			// A posed skinned instance moved away from what its lightmap holds.
-			self.instance_lightmaps.push(if shader_mesh.flags & MESH_FLAG_SKINNED != 0 {
-				InstanceLightmap::NONE
-			} else {
-				entity.lightmap
-			});
-			if traces_rays {
-				self.traced_primitives.push(TracedPrimitive {
-					renderable: entity.handle,
-					mesh: entity.mesh,
-					primitive: entity.primitive,
-					record: active_index as u32,
-					model: shader_mesh.model,
-				});
-			}
-			render_info.push_active_instance(
-				Instance {
-					shader_mesh_index: active_index as u32,
-					meshlet_count: shader_mesh.meshlet_count,
-				},
-				match material.evaluation {
-					MaterialEvaluator::Pipeline(_) => self.material_evaluations[shader_mesh.material_index as usize],
-					// Each phase's uber shader is the only evaluation of its phase.
-					MaterialEvaluator::Arm(_) => UBER_EVALUATION_INDEX,
-				},
-				&material.alpha_mode,
-				material.double_sided,
+			let Some(pose) = self.scene.skinning_poses.get(&entity.handle) else {
+				continue;
+			};
+			assert_eq!(
+				pose.len(),
+				skin.skeleton_node_count as usize,
+				"Visibility skin pose has the wrong matrix count. The most likely cause is that the pose was written for a different skeleton."
 			);
-			active_index += 1;
+			// The first posed frame takes the instance's own vertices, which every later stage reads in place of the
+			// mesh's bind pose. Without room it keeps drawing the bind pose; the allocator logged why.
+			if skin.posed_vertices == PosedVertices::Unallocated && skin.vertex_count > 0 {
+				skin.posed_vertices = allocate_vertices(&self.geometry.ranges, skin.vertex_count, "a posed skinned instance")
+					.map_or(PosedVertices::Unavailable, PosedVertices::Allocated);
+				// Skinning writes only positions and normals, so the bind-pose UVs are copied beside them once.
+				if let PosedVertices::Allocated(range) = &skin.posed_vertices {
+					let uv_stride = VERTEX_UV_BUFFER_STRIDE as usize;
+					self.scene.render_info.posed_uv_copies.push(ghi::BufferCopyDescriptor::new(
+						self.geometry.vertex_uvs.into(),
+						shader_mesh.base_vertex_index as usize * uv_stride,
+						self.geometry.vertex_uvs.into(),
+						range.start as usize * uv_stride,
+						skin.vertex_count as usize * uv_stride,
+					));
+				}
+			}
+			if let PosedVertices::Allocated(range) = &skin.posed_vertices
+				&& let Some((palette_base, kind)) = self.skinning_frame.palette(entity.handle, &skin.binding, pose)
+			{
+				self.scene.render_info.skinning_dispatches.push(SkinningDispatch {
+					source_vertex_base: skin.source_vertex_offset,
+					destination_vertex_base: range.start,
+					palette_base,
+					palette_count: skin.binding.entries.len() as u32,
+					vertex_count: skin.vertex_count,
+					palette_kind: kind as u32,
+				});
+				shader_mesh.base_vertex_index = range.start;
+				shader_mesh.flags |= MESH_FLAG_SKINNED;
+				// A posed skinned instance moved away from what its lightmap holds.
+				self.instance_lightmaps[deferred.slot as usize] = InstanceLightmap::NONE;
+			}
 		}
+		crate::rendering::warn_once(&mut self.reported_limits[2], left_out > 0, || {
+			format!(
+				"Visibility left {left_out} instances out of a frame. The most likely cause is that the scene shows more mesh primitives than the {capacity} instances the pipeline holds; raise `render.instances.capacity`."
+			)
+		});
 		frame.sync_buffer(self.scene.meshes_buffer);
 		// The frame's buffers can't be borrowed together, so the instances' lightmaps gather first and copy once.
 		frame.get_mut_dynamic_buffer_slice(self.scene.instance_lightmaps_buffer)[..self.instance_lightmaps.len()]
@@ -1870,11 +1949,12 @@ impl PipelineManager for VisibilityPipelineManager {
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
 		transforms: &ShownTransforms,
+		alley: &mut Alley,
 		_time: crate::time::MediaTime,
 	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]> {
-		self.adopt_scene_updates(transforms);
+		debug_span!("Visibility::adopt_scene_updates").in_scope(|| self.adopt_scene_updates(transforms));
 		self.apply_runtime_settings();
-		self.adopt_resource_completions(frame, transforms);
+		debug_span!("Visibility::adopt_resource_completions").in_scope(|| self.adopt_resource_completions(frame, transforms));
 		// Each frame sequence has its own buffers, so changed tables are copied into each one on its own frame.
 		let sequence = frame.key().sequence_index() as usize;
 		if !self.materials_copies_current[sequence] {
@@ -1890,14 +1970,15 @@ impl PipelineManager for VisibilityPipelineManager {
 		}
 		// Detail levels follow the first sink's camera, like the views and exposure below.
 		let lod_view = sinks.first().map(|sink| LodView::new(sink, self.lod_settings));
-		self.rebuild_active_instances(frame, lod_view);
+		self.rebuild_active_instances(frame, lod_view, alley);
 		// Instances write their own parameter blocks as the frame names them, so the changes are copied after.
 		if let Some((first, changes)) = self.material_parameters.take_changes(sequence) {
 			frame.get_mut_dynamic_buffer_slice(self.material_parameters_buffer)[first..first + changes.len()]
 				.copy_from_slice(changes);
 			frame.sync_buffer(self.material_parameters_buffer);
 		}
-		let dispatches = self.mesh_dispatch_work.write_phases(frame, &self.scene.render_info);
+		let dispatches = debug_span!("Visibility::write_mesh_dispatch_work")
+			.in_scope(|| self.mesh_dispatch_work.write_phases(frame, &self.scene.render_info));
 
 		crate::rendering::warn_once(&mut self.reported_limits[0], self.scene.lights.len() > MAX_LIGHTS, || {
 			format!(
@@ -1915,6 +1996,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				.map(|(_, light, _)| resolve_ies_profile(light, profiles)),
 		);
 		let budget = self.settings.shadow_budget();
+		let select_span = debug_span!("Visibility::select_shadow_lights", lights = self.scene.lights.len()).entered();
 		let shadows = select_shadow_lights(
 			self.scene.lights.iter().map(|(_, light, transform)| (light, transform)),
 			sinks,
@@ -1922,6 +2004,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			|index| ies_scales[index].0,
 			&self.shadow_slots,
 		);
+		drop(select_span);
 		crate::rendering::warn_once(&mut self.reported_limits[1], shadows.unshadowed_count > 0, || {
 			format!(
 				"Shadow map budget exceeded. The most likely cause is that more visible lights need shadows than the {} set by the `{SHADOW_MAP_BUDGET_PARAMETER}` render parameter holds, or that the directional cascades' resolution leaves too little of it. {} lights remain lit without shadows.",
@@ -1932,24 +2015,28 @@ impl PipelineManager for VisibilityPipelineManager {
 		self.shadow_layout = retain_layout(self.shadow_layout, shadows.layout(), &budget);
 		self.shadow_slots = shadows.slots();
 		// Shadow views follow the first sink's camera, and each map's importance the largest sink.
-		let (cascades, shadow_views) = sinks
-			.first()
-			.map(|sink| self.shadow_views(sink.view(), &shadows, &ies_scales))
-			.unwrap_or_default();
+		let (cascades, shadow_views) = debug_span!("Visibility::shadow_views").in_scope(|| {
+			sinks
+				.first()
+				.map(|sink| self.shadow_views(sink.view(), &shadows, &ies_scales))
+				.unwrap_or_default()
+		});
 		let sink_pixels = sinks
 			.iter()
 			.map(|sink| sink.extent().width() as f32 * sink.extent().height() as f32)
 			.fold(0.0, f32::max);
 		// The frame's states become the kept ones only once the frame-wide work records, below.
 		let mut shadow_states = self.shadow_states.clone();
-		let shadow_draws = shadow_states.update(
-			&shadows,
-			self.shadow_layout,
-			&shadow_views,
-			sink_pixels,
-			self.settings.directional_shadow_map_resolution,
-			self.settings.shadow_update_texels,
-		);
+		let shadow_draws = debug_span!("Visibility::update_shadow_states").in_scope(|| {
+			shadow_states.update(
+				&shadows,
+				self.shadow_layout,
+				&shadow_views,
+				sink_pixels,
+				self.settings.directional_shadow_map_resolution,
+				self.settings.shadow_update_texels,
+			)
+		});
 		if let Some(sink) = sinks.first() {
 			self.write_views(frame, sink.view(), &shadow_views, &shadow_states);
 		}
@@ -1957,8 +2044,10 @@ impl PipelineManager for VisibilityPipelineManager {
 		let shadow_for = |index| shadow_states.shadow_for(&shadows, index);
 		// Like the views above, exposure comes from the first sink; every sink shares one lighting upload.
 		let exposure = sinks.first().map_or(1.0, Sink::exposure_scale);
-		self.scene
-			.write_lighting(frame, shadow_for, exposure, self.environment.intensity(), &ies_scales);
+		debug_span!("Visibility::write_lighting").in_scope(|| {
+			self.scene
+				.write_lighting(frame, shadow_for, exposure, self.environment.intensity(), &ies_scales)
+		});
 		let shadow_work = ShadowWork {
 			suns: shadows.suns.clone(),
 			cascade_resolution: self.settings.directional_shadow_map_resolution,
@@ -1986,6 +2075,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			Some(IndirectDiffuseSource::Probes) => self.probe_shading.as_mut(),
 			_ => None,
 		};
+		let ray_tracing_span = debug_span!("Visibility::prepare_ray_tracing").entered();
 		let tracing = match (&mut self.acceleration_structures, shading) {
 			(Some(structures), Some(shading)) => {
 				let record_materials = structures.admit(frame, &self.traced_primitives, alpha_mode);
@@ -2072,6 +2162,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			(true, Some(structures)) => Some(structures.prepare(frame, &mut self.traced_primitives, frame_allocator)),
 			_ => None,
 		};
+		drop(ray_tracing_span);
 		let frame_work = FrameWork {
 			skinning: &self.skinning_pass,
 			shadows: &self.shadow_maps,
@@ -2103,6 +2194,7 @@ impl PipelineManager for VisibilityPipelineManager {
 						exposure: recorded_exposure,
 						indirect_diffuse: recorded_indirect_diffuse,
 					});
+				let _span = debug_span!("Visibility::prepare_sink", sink = sink.index()).entered();
 				let command = render_pass.prepare(
 					frame,
 					sink,
@@ -2212,6 +2304,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			&self.shadow_maps,
 			stage_counters,
 			self.settings.features,
+			self.settings.instance_capacity.meshlet_groups,
 			probe_gi,
 			debug_views,
 		);

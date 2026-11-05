@@ -137,15 +137,10 @@ impl TaskOutputs {
 		self.payloads.get(name)?.get(index)?.as_ref()
 	}
 
+	/// Records the mesh workgroup count. Every mesh workgroup reads the whole payload, as on the GPU, so words past the
+	/// count keep what the workgroup wrote; [`Self::begin_workgroup`] clears them between workgroups.
 	pub(super) fn set_mesh_output_count(&mut self, count: u32) {
 		self.mesh_output_count = Some(count);
-		let count = count as usize;
-		for payload in self.payloads.values_mut() {
-			if count < payload.len() {
-				// Values outside the published dispatch range must not survive capture reuse.
-				payload[count..].fill(None);
-			}
-		}
 	}
 
 	/// Clears shader-authored values while retaining the capture's allocated payload storage.

@@ -240,6 +240,7 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
 		transforms: &ShownTransforms,
+		_alley: &mut crate::core::alley::Alley,
 		_time: crate::time::MediaTime,
 	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]> {
 		// Instances move even on frames that draw nothing, so none is left at a stale matrix.

@@ -45,6 +45,9 @@ pub trait PipelineManager {
 	/// Drain loader completions before publishing newly resident resources to
 	/// waiting scene instances and building draws.
 	///
+	/// `alley` runs CPU work that scales with the scene on several lanes, such as with
+	/// [`Alley::for_each_mut`](crate::core::alley::Alley::for_each_mut). Record GPU work on the calling thread only.
+	///
 	/// Return one command per sink that renders this frame, paired with that sink's [`Sink::index`]. A sink without
 	/// an entry records nothing, so the renderer clears the targets this manager would have written first.
 	fn prepare<'a>(
@@ -53,6 +56,7 @@ pub trait PipelineManager {
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
 		transforms: &ShownTransforms,
+		alley: &mut crate::core::alley::Alley,
 		time: MediaTime,
 	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]>;
 

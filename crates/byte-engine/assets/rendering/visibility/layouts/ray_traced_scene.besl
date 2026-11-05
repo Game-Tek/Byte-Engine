@@ -21,16 +21,12 @@ HitSurface: struct {
 	normal: vec3f16,
 }
 
-// For each geometry of each instance the frame places, at the instance's custom index plus the geometry's index: the
-// frame's mesh record of the primitive the geometry holds, then the geometry's first triangle in
-// `flat_triangle_indices`.
-RayTracingGeometries: struct {
-	geometries: vec2u[1024],
-}
-
 RayTracedScene: layer {
 	scene_structure: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>;
 	// Each full-detail triangle of a primitive that rays hit, as three vertex indices from the primitive's first vertex.
 	flat_triangle_indices: descriptor<{ type: u16[], binding: 1, access: read, memory: device }>;
-	ray_tracing_geometries: descriptor<{ type: RayTracingGeometries, binding: 2, access: read, memory: device }>;
+	// For each geometry of each instance the frame places, at the instance's custom index plus the geometry's index: the
+	// frame's mesh record of the primitive the geometry holds, then the geometry's first triangle in
+	// `flat_triangle_indices`.
+	ray_tracing_geometries: descriptor<{ type: vec2u[], binding: 2, access: read, memory: device }>;
 }

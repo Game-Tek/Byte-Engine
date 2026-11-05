@@ -1,16 +1,20 @@
 use super::*;
 
 impl Device {
-	pub(crate) fn dynamic_buffer_slice_mut<T: crate::Pod>(
+	pub(crate) fn dynamic_buffer_slice_mut<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		buffer_handle: DynamicBufferHandle<T>,
 		sequence_index: u8,
 	) -> &mut T {
 		let handle = buffer_handle.into();
-		let Some((data, _)) = self.buffer_storage_parts_mut_for_sequence(handle, sequence_index) else {
+		let Some((data, size)) = self.buffer_storage_parts_mut_for_sequence(handle, sequence_index) else {
 			panic!("Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.");
 		};
-		unsafe { &mut *(data as *mut T) }
+		let pointer = <T as crate::buffer::BufferContents>::from_raw_parts(data, size).expect(
+			"Failed to map a typed DX12 dynamic buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage.",
+		);
+		// SAFETY: The validated pointer addresses initialized POD storage that this sequence owns.
+		unsafe { &mut *pointer }
 	}
 
 	/// Resizes the active sequence immediately and schedules every other dynamic sequence after its fence completes.

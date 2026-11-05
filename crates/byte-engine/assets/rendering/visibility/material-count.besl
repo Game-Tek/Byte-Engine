@@ -15,8 +15,8 @@ main: fn (input: StageInput, scene: Scene, material_dispatch: MaterialDispatch) 
 
 	if (coord.x < extent.x && coord.y < extent.y) {
 		let pixel_instance_index: u32 = image_load_u32(material_dispatch.instance_index_render_target, coord);
-		if (pixel_instance_index < 1024) {
-			evaluation_index = scene.material_evaluations.evaluation_indices[scene.meshes.meshes[pixel_instance_index].material_index];
+		if (pixel_instance_index != 4294967295) {
+			evaluation_index = scene.material_evaluations.evaluation_indices[scene.meshes[pixel_instance_index].material_index];
 		}
 	}
 

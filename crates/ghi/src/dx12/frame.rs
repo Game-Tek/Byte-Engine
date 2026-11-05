@@ -151,7 +151,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.device.write(descriptor_set_writes);
 	}
 
-	fn get_mut_dynamic_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T {
+	fn get_mut_dynamic_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T {
 		self.device
 			.dynamic_buffer_slice_mut(buffer_handle, self.frame_key.sequence_index)
 	}

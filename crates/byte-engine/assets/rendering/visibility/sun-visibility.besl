@@ -939,11 +939,11 @@ main: fn (input: StageInput, scene: Scene, sun_visibility: SunVisibility) -> voi
 	let view_position: vec3f = sun_view_position(sun_visibility, pixel_f, 1.0 / center_inverse_z);
 	let world_position: vec3f = scene.views.views[0].inverse_view * vec4f(view_position.x, view_position.y, view_position.z, 1.0);
 	let instance_index: u32 = image_load_u32(sun_visibility.instance_index_render_target, pixel);
-	if (instance_index >= 1024) {
+	if (instance_index == 4294967295) {
 		write(sun_visibility.sun_visibility_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
 		return;
 	}
-	let mesh: Mesh = scene.meshes.meshes[instance_index];
+	let mesh: Mesh = scene.meshes[instance_index];
 	// The low eight bits name the triangle within its meshlet, and the rest the meshlet.
 	let triangle_meshlet_indices: u32 = image_load_u32(sun_visibility.triangle_index, pixel);
 	let meshlet: Meshlet = scene.meshlets[triangle_meshlet_indices >> 8];

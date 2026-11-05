@@ -556,6 +556,7 @@ impl VisibilityRenderPass {
 		shadow_maps: &ShadowMaps,
 		stage_counters: StageCounters,
 		features: VisibilityFeatures,
+		meshlet_groups: u32,
 		probe_gi: bool,
 		debug_views: crate::rendering::DebugViews,
 	) -> Self {
@@ -590,7 +591,7 @@ impl VisibilityRenderPass {
 			cascade_fit.receiver_bounds(),
 			cascade_fit.receiver_fit_parameters(),
 		);
-		let occlusion = OcclusionCulling::new(context, &pipeline_manager, depth);
+		let occlusion = OcclusionCulling::new(context, &pipeline_manager, depth, meshlet_groups);
 		let ssgi = features.ssgi.then(|| {
 			SsgiPass::new(
 				context,

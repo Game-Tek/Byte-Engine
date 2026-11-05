@@ -19,6 +19,7 @@
 
 pub(crate) mod acceleration_structures;
 mod features;
+mod instance_rebuild;
 pub(crate) mod geometry;
 pub(crate) mod layout;
 mod lightmaps;
@@ -45,11 +46,14 @@ pub use features::{
 	RENDER_PARAMETERS, SURFEL_GI_ENABLED_PARAMETER, VisibilityFeatures,
 };
 pub use geometry::GeometryCapacity;
+pub use scene::InstanceCapacity;
 pub(crate) use geometry::GeometryHandles;
 pub(crate) use loader::spawn as spawn_loader;
 pub use manager::{
 	DIRECTIONAL_SHADOW_DISTANCE_PARAMETER, DIRECTIONAL_SHADOW_FITTING_PARAMETER, DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER,
-	DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER, GEOMETRY_CAPACITY_PARAMETER_PREFIX, PROBE_RAY_BUDGET_PARAMETER,
+	DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER, GEOMETRY_CAPACITY_PARAMETER_PREFIX, INSTANCE_CAPACITY_PARAMETER_PREFIX,
+	INSTANCE_REBUILD_LANES_PARAMETER,
+	PROBE_RAY_BUDGET_PARAMETER,
 	PROBE_SPACING_PARAMETER, SHADOW_MAP_BUDGET_PARAMETER, SURFEL_CAPACITY_PARAMETER, SURFEL_RAY_BUDGET_PARAMETER,
 	VisibilityPipelineManager, VisibilityPipelineSettings,
 };

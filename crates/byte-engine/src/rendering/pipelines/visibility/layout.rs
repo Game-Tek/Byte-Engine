@@ -12,7 +12,9 @@
 pub(crate) const MAX_INSTANCE_MESHLETS: usize = 1024 * 4;
 /// Scene-wide meshlets the visibility buffer can address: it stores a meshlet index above an 8-bit triangle index.
 pub(crate) const MAX_ADDRESSABLE_MESHLETS: usize = 1 << 24;
-pub(crate) const MAX_INSTANCES: usize = 1024;
+/// Instances a mesh dispatch work item can address: it stores the instance above a 7-bit meshlet chunk. See
+/// [`super::scene::InstanceCapacity`] for how many the pipeline holds.
+pub(crate) const MAX_ADDRESSABLE_INSTANCES: usize = 1 << 25;
 pub(crate) const MAX_MATERIALS: usize = 1024;
 /// One bit per material evaluation slot; a set bit means a material of that slot has at least one active instance in
 /// the mask's phase this frame. There are never more slots than materials. See [`super::scene::MaterialEvaluation`].

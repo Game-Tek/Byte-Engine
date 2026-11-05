@@ -4,13 +4,12 @@ use std::sync::Arc;
 
 use ghi::frame::Frame as _;
 use resource_management::resources::skeleton::SkinBinding;
-use resource_management::types::AlphaMode;
 use smallvec::SmallVec;
 use utils::hash::HashMap;
 use utils::{AvailabilityHandle, StableVec, StableVecHandle};
 
 use super::geometry::encode_octahedral_unit_vector;
-use super::layout::{ActiveEvaluationMask, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, SHADOW_CASCADE_COUNT, SHADOW_VIEW_COUNT};
+use super::layout::{ActiveEvaluationMask, MAX_ADDRESSABLE_INSTANCES, MAX_LIGHTS, SHADOW_CASCADE_COUNT, SHADOW_VIEW_COUNT};
 use super::lod::MeshLods;
 use super::render_pass::VisibilityRenderPass;
 use super::residency::ResidencySlot;
@@ -127,34 +126,49 @@ impl RenderInfo {
 		self.opaque_evaluation_mask.fill(0);
 		self.transparent_evaluation_mask.fill(0);
 	}
+}
 
-	/// Adds one active primitive to the phase selected by its authored alpha mode and sidedness, and marks its
-	/// material's evaluation slot active in that phase.
-	///
-	/// Double-sided blend primitives stay in the transparent phase, which still culls back faces.
-	pub(crate) fn push_active_instance(
-		&mut self,
-		instance: Instance,
-		evaluation_index: u32,
-		alpha_mode: &AlphaMode,
-		double_sided: bool,
-	) {
-		let evaluation_index = evaluation_index as usize;
-		assert!(
-			evaluation_index < MAX_MATERIALS,
-			"Visibility evaluation slot is out of range. The most likely cause is that an active primitive's material is not in any material evaluation list."
-		);
-		let evaluation_bit = 1u64 << (evaluation_index % u64::BITS as usize);
-		let evaluation_word = evaluation_index / u64::BITS as usize;
-		let (instances, mask) = match alpha_mode {
-			AlphaMode::Blend => (&mut self.transparent_instances, &mut self.transparent_evaluation_mask),
-			AlphaMode::Mask(_) if double_sided => (&mut self.double_sided_masked_instances, &mut self.opaque_evaluation_mask),
-			AlphaMode::Mask(_) => (&mut self.masked_instances, &mut self.opaque_evaluation_mask),
-			AlphaMode::Opaque if double_sided => (&mut self.double_sided_instances, &mut self.opaque_evaluation_mask),
-			AlphaMode::Opaque => (&mut self.opaque_instances, &mut self.opaque_evaluation_mask),
-		};
-		instances.push(instance);
-		mask[evaluation_word] |= evaluation_bit;
+/// The `InstanceCapacity` struct sizes the per-frame tables of the instances the visibility pipeline draws.
+///
+/// Every frame writes one record per drawn instance, and every frame in flight has its own copy, so size this for the
+/// most instances an application shows at once rather than for the most it keeps loaded. Instances past
+/// [`Self::instances`], and meshlet groups past [`Self::meshlet_groups`], are not drawn that frame. Pass the capacity to
+/// [`super::VisibilityPipelineSettings::with_instance_capacity`], or set it with the startup parameters under
+/// [`super::INSTANCE_CAPACITY_PARAMETER_PREFIX`], such as `render.instances.capacity`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InstanceCapacity {
+	/// Instances one frame draws, each one primitive of a renderable mesh.
+	pub instances: u32,
+	/// Groups of up to 32 meshlets of one instance, which is what one task workgroup culls. Each instance takes one
+	/// group per 32 meshlets of the detail level it draws, so a scene of small meshes needs about as many as instances.
+	pub meshlet_groups: u32,
+}
+
+impl Default for InstanceCapacity {
+	fn default() -> Self {
+		Self {
+			instances: 1024,
+			// Room for every default instance to draw a level of 4,096 meshlets.
+			meshlet_groups: 1024 * 128,
+		}
+	}
+}
+
+impl InstanceCapacity {
+	/// Checks that every table can be allocated and that the mesh dispatch work items can address every instance.
+	pub(crate) fn validate(&self) -> Result<(), String> {
+		if self.instances == 0 || self.meshlet_groups == 0 {
+			return Err(
+				"Instance capacity was not set. The most likely cause is that the instance or meshlet group capacity is zero; each table needs at least one element.".to_owned(),
+			);
+		}
+		if self.instances as usize > MAX_ADDRESSABLE_INSTANCES {
+			return Err(format!(
+				"Instance capacity was not set. The most likely cause is that {} instances exceed the {MAX_ADDRESSABLE_INSTANCES} the mesh dispatch work items can address.",
+				self.instances
+			));
+		}
+		Ok(())
 	}
 }
 
@@ -178,9 +192,10 @@ pub struct VisibilityScene {
 	/// The scene descriptor set every visibility pass binds, created from [`super::set_layouts::SCENE`].
 	pub(crate) descriptor_set: ghi::DescriptorSetHandle,
 	pub(crate) views_buffer: ghi::DynamicBufferHandle<[ShaderViewData; SHADOW_VIEW_COUNT]>,
-	pub(crate) meshes_buffer: ghi::DynamicBufferHandle<[ShaderMesh; MAX_INSTANCES]>,
+	/// One record per instance the frame draws, [`InstanceCapacity::instances`] long.
+	pub(crate) meshes_buffer: ghi::DynamicBufferHandle<[ShaderMesh]>,
 	/// Each instance's place in the resident lightmap, by the same index as [`Self::meshes_buffer`].
-	pub(crate) instance_lightmaps_buffer: ghi::DynamicBufferHandle<[InstanceLightmap; MAX_INSTANCES]>,
+	pub(crate) instance_lightmaps_buffer: ghi::DynamicBufferHandle<[InstanceLightmap]>,
 	pub(crate) lighting_buffer: ghi::DynamicBufferHandle<LightingData>,
 	pub(crate) render_info: RenderInfo,
 	pub(crate) sink_states: Vec<SinkState>,

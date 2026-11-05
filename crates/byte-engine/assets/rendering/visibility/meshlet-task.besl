@@ -4,7 +4,8 @@ use ::byte_engine::rendering::visibility::layouts::scene_records::*;
 use ::byte_engine::rendering::visibility::layouts::scene::*;
 use ::byte_engine::rendering::visibility::layouts::occlusion::*;
 
-meshlet_instances: task_payload<u32, 192>;
+// Up to six views of each of the workgroup's 32 meshlets, then the workgroup's instance in the last word.
+meshlet_instances: task_payload<u32, 193>;
 visible_count: workgroup<atomicu32>;
 // The late pass's unoccluded meshlets, one bit per lane.
 unoccluded_meshlets: workgroup<atomicu32>;
@@ -159,14 +160,15 @@ sphere_is_occluded: fn(occlusion: Occlusion, view: View, sphere: vec4f) -> bool 
 
 main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	let workgroup_index: u32 = thread_position() / 32;
-	let work: u32 = scene.mesh_dispatch_work.items[push_constant.work_item_base + workgroup_index];
-	let instance_index: u32 = work & 1023;
-	let chunk_index: u32 = (work >> 10) & 127;
+	let work_index: u32 = push_constant.work_item_base + workgroup_index;
+	let work: u32 = scene.mesh_dispatch_work[work_index];
+	let chunk_index: u32 = work & 127;
+	let instance_index: u32 = work >> 7;
 	let lane: u32 = thread_idx();
 	let view_count: u32 = min(push_constant.view_count, MAX_TASK_VIEWS);
 	let phase: u32 = push_constant.occlusion_phase;
 
-	let mesh: Mesh = scene.meshes.meshes[instance_index];
+	let mesh: Mesh = scene.meshes[instance_index];
 	// Posed meshlets can leave their bind-pose bounds, so every view keeps a skinned instance and all its meshlets.
 	let skinned: bool = (mesh.flags & 2) != 0;
 	let tests_occlusion: bool = (phase == OCCLUSION_LATE || phase == OCCLUSION_TEST) && skinned == false;
@@ -182,11 +184,12 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 		}
 	}
 
-	// The packed work item names the instance and chunk, so its word survives other instances coming and going. Both
-	// camera passes read the same word, so they agree on what the early pass drew whatever the word holds.
+	// Every view of a phase reads the same work range, so both camera passes read the same word and agree on what the
+	// early pass drew whatever the word holds. Instances keep their order between frames, so a word mostly stays with
+	// its chunk.
 	let previously_unoccluded: u32 = 0;
 	if (phase == OCCLUSION_EARLY || phase == OCCLUSION_LATE) {
-		previously_unoccluded = occlusion.occlusion_visibility.words[work];
+		previously_unoccluded = occlusion.occlusion_visibility[work_index];
 	}
 	if (phase == OCCLUSION_EARLY && previously_unoccluded == 0) {
 		instance_views = 0;
@@ -202,7 +205,7 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	if (instance_views == 0) {
 		if (lane == 0) {
 			if (phase == OCCLUSION_LATE) {
-				occlusion.occlusion_visibility.words[work] = 0;
+				occlusion.occlusion_visibility[work_index] = 0;
 			}
 			set_task_mesh_output_count(0);
 		}
@@ -215,6 +218,7 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	if (lane == 0) {
 		atomic_store(visible_count, 0);
 		atomic_store(unoccluded_meshlets, 0);
+		meshlet_instances[192] = instance_index;
 	}
 	workgroup_barrier();
 
@@ -242,10 +246,10 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 					}
 					if (emit) {
 						let payload_index: u32 = atomic_add(visible_count, 1);
-						// One payload word keeps the meshlet, its owning instance, and its view indivisible across
-						// emitted mesh grids. The meshlet index is relative to the instance's first meshlet, so
-						// scene-wide meshlet capacity is not limited by its 12 bits.
-						meshlet_instances[payload_index] = relative_meshlet_index | (instance_index << 12) | (view_offset << 22);
+						// One payload word keeps the meshlet and its view indivisible across emitted mesh grids. The
+						// meshlet index is relative to the instance's first meshlet, so scene-wide meshlet capacity is
+						// not limited by its 12 bits. Every grid shares the workgroup's instance.
+						meshlet_instances[payload_index] = relative_meshlet_index | (view_offset << 12);
 					}
 				}
 			}
@@ -255,7 +259,7 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	workgroup_barrier();
 	if (lane == 0) {
 		if (phase == OCCLUSION_LATE) {
-			occlusion.occlusion_visibility.words[work] = atomic_load(unoccluded_meshlets);
+			occlusion.occlusion_visibility[work_index] = atomic_load(unoccluded_meshlets);
 		}
 		set_task_mesh_output_count(atomic_load(visible_count));
 	}

@@ -8,6 +8,7 @@
 //! decides; the visibility manager carries its decisions out through the loader.
 
 use std::ops::Range;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use utils::hash::HashMap;
 
@@ -35,7 +36,7 @@ struct MeshResidency {
 }
 
 /// The `PrimitiveResidency` struct follows one primitive's resident detail levels and what its instances want.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 struct PrimitiveResidency {
 	/// The primitive's mesh in [`MeshResidencies::meshes`].
 	mesh: u32,
@@ -43,8 +44,9 @@ struct PrimitiveResidency {
 	base: u8,
 	/// The finest resident level: `base` until a finer block loads.
 	finest: u8,
-	/// The finest level any instance wanted this frame, or `u8::MAX` when none was drawn.
-	wanted: u8,
+	/// The finest level any instance wanted this frame, or `u8::MAX` when none was drawn. Lanes that rebuild instances
+	/// lower it together.
+	wanted: AtomicU8,
 	/// The last frame some instance wanted a level finer than `base`, which the finer block holds.
 	last_wanted_finer: Option<u64>,
 	/// The first frame a load that found no room may ask again.
@@ -80,7 +82,7 @@ impl MeshResidencies {
 			mesh,
 			base,
 			finest: base,
-			wanted: u8::MAX,
+			wanted: AtomicU8::new(u8::MAX),
 			last_wanted_finer: None,
 			retry_frame: 0,
 		}));
@@ -101,9 +103,15 @@ impl MeshResidencies {
 	}
 
 	/// Records that an instance of the primitive in `slot` wants `level` this frame.
-	pub(crate) fn want(&mut self, slot: ResidencySlot, level: u8) {
-		let primitive = &mut self.primitives[slot.0 as usize];
-		primitive.wanted = primitive.wanted.min(level);
+	///
+	/// Only the finest level counts, so wants from several threads need no order. Many instances of one primitive
+	/// want the same level, so the slot is read first and written only when the level is finer, which keeps lanes
+	/// from contending for its cache line.
+	pub(crate) fn want(&self, slot: ResidencySlot, level: u8) {
+		let wanted = &self.primitives[slot.0 as usize].wanted;
+		if level < wanted.load(Ordering::Relaxed) {
+			wanted.fetch_min(level, Ordering::Relaxed);
+		}
 	}
 
 	/// Closes the frame's wants and hands `request` each mesh without a load in flight whose primitives want more
@@ -118,7 +126,7 @@ impl MeshResidencies {
 		for mesh in &mut self.meshes {
 			let mut loads = Vec::new();
 			for (primitive, residency) in self.primitives[mesh.primitives.clone()].iter_mut().enumerate() {
-				let wanted = std::mem::replace(&mut residency.wanted, u8::MAX);
+				let wanted = std::mem::replace(residency.wanted.get_mut(), u8::MAX);
 				if wanted < residency.base {
 					residency.last_wanted_finer = Some(frame);
 				}

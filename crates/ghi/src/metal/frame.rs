@@ -276,7 +276,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.device.write(descriptor_set_writes);
 	}
 
-	fn get_mut_dynamic_buffer_slice<T: crate::Pod>(
+	fn get_mut_dynamic_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
 	) -> &mut T {

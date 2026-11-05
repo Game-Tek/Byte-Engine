@@ -244,7 +244,7 @@ impl crate::context::Context for Context {
 		})
 	}
 
-	fn resize_buffer<T: crate::Pod>(
+	fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
 		size: usize,
@@ -491,7 +491,7 @@ impl crate::context::ContextCreate for Context {
 		graphics_hardware_interface::BufferHandle::<T>(handle, std::marker::PhantomData)
 	}
 
-	fn build_dynamic_buffer<T: crate::Pod>(
+	fn build_dynamic_buffer<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		builder: buffer_builder::Builder,
 	) -> graphics_hardware_interface::DynamicBufferHandle<T> {

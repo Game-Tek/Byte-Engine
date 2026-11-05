@@ -1,12 +1,6 @@
 // The descriptor set of camera occlusion culling: the farthest-depth pyramid of the camera's early pass, which the
 // task stage tests meshlet bounds against, and the meshlets its late pass found unoccluded.
 
-// One word per packed work item: bit `m` marks meshlet `m` of the item's chunk as unoccluded when the camera's late pass
-// last culled it.
-OcclusionVisibility: struct {
-	words: u32[131072],
-}
-
 // Culling reads the farthest depth in the 2x2 texel footprint around a meshlet rectangle's center, from the one level it
 // picked.
 farthest_depth: sampler<{ filter: linear, mip_filter: nearest, reduction: min }>;
@@ -14,5 +8,7 @@ farthest_depth: sampler<{ filter: linear, mip_filter: nearest, reduction: min }>
 Occlusion: layer {
 	// Every meshlet pass binds these, but only the camera's passes set `push_constant.occlusion_phase`, which uses them.
 	occlusion_pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;
-	occlusion_visibility: descriptor<{ type: OcclusionVisibility, binding: 1, access: read_write, memory: device }>;
+	// One word per work item, by its position in `mesh_dispatch_work`: bit `m` marks meshlet `m` of the item's chunk as
+	// unoccluded when the camera's late pass last culled it.
+	occlusion_visibility: descriptor<{ type: u32[], binding: 1, access: read_write, memory: device }>;
 }

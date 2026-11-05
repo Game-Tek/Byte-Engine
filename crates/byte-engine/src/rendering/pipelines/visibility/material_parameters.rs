@@ -149,6 +149,9 @@ impl MaterialParameters {
 	/// An entity's block is written here, on the first frame that needs it and after its values or its material's
 	/// change.
 	pub(crate) fn block(&mut self, handle: Handle, material: u32) -> u32 {
+		if let Some(block) = self.current_block(handle, material) {
+			return block;
+		}
 		let Some(material_block) = self.materials.get(material as usize).and_then(Option::as_ref) else {
 			return 0;
 		};
@@ -208,6 +211,30 @@ impl MaterialParameters {
 			}
 		}
 		range.start
+	}
+
+	/// Returns what [`Self::block`] would return when it needs to write nothing, or `None` when the block must be
+	/// written first.
+	///
+	/// It only reads, so lanes that rebuild instances call it and leave the rest to [`Self::block`].
+	pub(crate) fn current_block(&self, handle: Handle, material: u32) -> Option<u32> {
+		let Some(material_block) = self.materials.get(material as usize).and_then(Option::as_ref) else {
+			return Some(0);
+		};
+		let shared = material_block.range.start;
+		let length = material_block.parameters.len();
+		let Some(entity) = self.entities.get(&handle) else {
+			return Some(shared);
+		};
+		if length == 0 {
+			return Some(shared);
+		}
+		entity
+			.blocks
+			.iter()
+			.find(|block| block.material == material)
+			.filter(|block| !block.stale && block.range.len() == length)
+			.map(|block| block.range.start)
 	}
 
 	/// Frees the blocks of a renderable whose primitives leave the scene, keeping the values set on it.

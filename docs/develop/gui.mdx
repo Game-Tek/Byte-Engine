@@ -49,6 +49,11 @@ chain of revisions:
   elements touching that damage, and only when the adopted render revision, the
   viewport extent, the glyph generation, or the damaged regions change. A frame
   with no damage records only the composite.
+- A sink without a scene pipeline has no `main` for the UI to composite over.
+  `UiRenderPass` then starts the `main` chain itself and composites the layer
+  over black with `layer-composite.besl`, so a UI-only application allocates no
+  scene color or depth. On frames it records nothing, the renderer clears its
+  output instead of forwarding a scene.
 
 ## Drawing
 

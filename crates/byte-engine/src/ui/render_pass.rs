@@ -170,8 +170,9 @@ pub struct UiRenderPass {
 	composite_pipeline: crate::rendering::PipelineRef,
 	composite_descriptor_set: ghi::DescriptorSetHandle,
 	blur_resolve_descriptor_set: ghi::DescriptorSetHandle,
-	/// Forwards the scene unchanged while the pass is bypassed and on frames before any UI was drawn.
-	main_copy: crate::rendering::render_passes::blit::ImageBypassPass,
+	/// Forwards the scene unchanged while the pass is bypassed and on frames before any UI was drawn, or `None` on a
+	/// sink without a scene.
+	main_copy: Option<crate::rendering::render_passes::blit::ImageBypassPass>,
 	/// This sink's copy of the adopted UI, so each sink draws it on its own schedule.
 	adopted: AdoptedRender,
 	/// Revision and extent whose pixels the layer currently holds.
@@ -260,13 +261,15 @@ impl UiRenderPass {
 	/// Requests shared shader resources before sink-local images and descriptors are needed.
 	pub(crate) fn request_pipelines(
 		pipeline_manager: &crate::rendering::PipelineManagerClient,
-	) -> [crate::rendering::PipelineRef; 5] {
+	) -> [crate::rendering::PipelineRef; 6] {
 		let pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/ui.pipeline");
 		let clear_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/layer-clear.pipeline");
 		let blur_downsample_pipeline =
 			pipeline_manager.request_pipeline("byte_engine/rendering/ui/backdrop-blur-downsample.pipeline");
 		let blur_filter_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/backdrop-blur-filter.pipeline");
 		let composite_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/composite.pipeline");
+		// Sinks are created after this request, so whether one has a scene under the UI is not known yet.
+		let layer_composite_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/layer-composite.pipeline");
 		crate::rendering::render_passes::blit::ImageBypassPass::request_pipeline(pipeline_manager);
 		[
 			pipeline,
@@ -274,6 +277,7 @@ impl UiRenderPass {
 			blur_downsample_pipeline,
 			blur_filter_pipeline,
 			composite_pipeline,
+			layer_composite_pipeline,
 		]
 	}
 
@@ -284,7 +288,8 @@ impl UiRenderPass {
 	/// `font` is the file to draw text with, or `None` for a system font. It must match the
 	/// font the UI [`crate::ui::Engine`] measured with.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, font: Option<&std::path::Path>) -> Self {
-		let source = render_pass_builder.read_from("main");
+		// A sink without a scene pipeline has no `main`; the UI then composites over black.
+		let scene = render_pass_builder.try_read_from("main");
 		// The layer outlives frames: damaged regions are redrawn into it and the scene is composited under it every frame.
 		// Only draws write it and the composite only reads it, so it takes no storage usage and Metal keeps it compressed.
 		let main_attachment = render_pass_builder.create_persistent_render_target(
@@ -300,7 +305,8 @@ impl UiRenderPass {
 			clear_pipeline,
 			blur_downsample_pipeline,
 			blur_filter_pipeline,
-			composite_pipeline,
+			scene_composite_pipeline,
+			layer_composite_pipeline,
 		] = Self::request_pipelines(&pipeline_manager);
 		let output: ghi::ImageOrSwapchain = output.into();
 
@@ -437,48 +443,46 @@ impl UiRenderPass {
 				.into()
 		});
 		let main_attachment_image: ghi::BaseImageHandle = main_attachment.into();
-		let source_image: ghi::BaseImageHandle = source.into();
-		let blur_resolve_descriptor_set = UI_COMPOSITE_LAYOUT.create_set(context, "UI Backdrop Resolve");
-		let composite_descriptor_set = UI_COMPOSITE_LAYOUT.create_set(context, "UI Composite");
-		context.write(&[
-			ghi::DescriptorWrite::image(
-				composite_descriptor_set,
-				UI_COMPOSITE_LAYOUT.slot("scene"),
-				source_image,
-				ghi::Layouts::General,
-			),
-			ghi::DescriptorWrite::image(
-				composite_descriptor_set,
-				UI_COMPOSITE_LAYOUT.slot("layer"),
+		let scene_image: Option<ghi::BaseImageHandle> = scene.map(Into::into);
+		// Without a scene the composites place the layer over black, so their sets have no scene binding.
+		let (composite_layout, composite_pipeline) = match scene_image {
+			Some(_) => (&*UI_COMPOSITE_LAYOUT, scene_composite_pipeline),
+			None => (&*UI_LAYER_COMPOSITE_LAYOUT, layer_composite_pipeline),
+		};
+		let blur_resolve_descriptor_set = composite_layout.create_set(context, "UI Backdrop Resolve");
+		let composite_descriptor_set = composite_layout.create_set(context, "UI Composite");
+		// Both sets read the same scene and layer, and differ only in the image they write.
+		for set in [composite_descriptor_set, blur_resolve_descriptor_set] {
+			context.write(&[ghi::DescriptorWrite::image(
+				set,
+				composite_layout.slot("layer"),
 				main_attachment_image,
 				ghi::Layouts::General,
-			),
+			)]);
+			if let Some(scene_image) = scene_image {
+				context.write(&[ghi::DescriptorWrite::image(
+					set,
+					composite_layout.slot("scene"),
+					scene_image,
+					ghi::Layouts::General,
+				)]);
+			}
+		}
+		context.write(&[
 			match output {
 				ghi::ImageOrSwapchain::Image(image) => ghi::DescriptorWrite::image(
 					composite_descriptor_set,
-					UI_COMPOSITE_LAYOUT.slot("result"),
+					composite_layout.slot("result"),
 					image,
 					ghi::Layouts::General,
 				),
 				ghi::ImageOrSwapchain::Swapchain(swapchain) => {
-					ghi::DescriptorWrite::swapchain(composite_descriptor_set, UI_COMPOSITE_LAYOUT.slot("result"), swapchain)
+					ghi::DescriptorWrite::swapchain(composite_descriptor_set, composite_layout.slot("result"), swapchain)
 				}
 			},
 			ghi::DescriptorWrite::image(
 				blur_resolve_descriptor_set,
-				UI_COMPOSITE_LAYOUT.slot("scene"),
-				source_image,
-				ghi::Layouts::General,
-			),
-			ghi::DescriptorWrite::image(
-				blur_resolve_descriptor_set,
-				UI_COMPOSITE_LAYOUT.slot("layer"),
-				main_attachment_image,
-				ghi::Layouts::General,
-			),
-			ghi::DescriptorWrite::image(
-				blur_resolve_descriptor_set,
-				UI_COMPOSITE_LAYOUT.slot("result"),
+				composite_layout.slot("result"),
 				blur_images[UI_BLUR_BACKDROP],
 				ghi::Layouts::General,
 			),
@@ -502,10 +506,9 @@ impl UiRenderPass {
 			]);
 			set
 		});
-		// The builder's copy of the incoming `main` into `output` doubles as this pass's own forwarding copy.
-		let main_copy = render_pass_builder.take_main_copy().expect(
-			"Main copy is missing. The most likely cause is that the pass did not call `RenderPassBuilder::create_main_render_target` first.",
-		);
+		// The builder's copy of the incoming `main` into `output` doubles as this pass's own forwarding copy. A sink
+		// without a scene has nothing to forward, and the renderer clears `output` on frames this pass records nothing.
+		let main_copy = render_pass_builder.take_main_copy();
 
 		Self {
 			caches: UiGeometryCaches::default(),
@@ -868,7 +871,7 @@ impl RenderPass for UiRenderPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		self.main_copy.prepare(frame, sink, frame_allocator)
+		self.main_copy.as_mut()?.prepare(frame, sink, frame_allocator)
 	}
 
 	fn needs_frame(&mut self) -> bool {
@@ -886,8 +889,8 @@ impl RenderPass for UiRenderPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		if self.adopted.data.is_empty() && self.layer_revision.is_none() {
-			// Nothing was ever drawn into the layer, so the scene is the complete output.
-			return self.main_copy.prepare(frame, sink, frame_allocator);
+			// Nothing was ever drawn into the layer, so the scene, or the cleared output without one, is the complete output.
+			return self.main_copy.as_mut()?.prepare(frame, sink, frame_allocator);
 		}
 		let pipeline = self.pipeline_manager.pipeline(self.pipeline)?;
 		let clear_pipeline = self.pipeline_manager.pipeline(self.clear_pipeline)?;

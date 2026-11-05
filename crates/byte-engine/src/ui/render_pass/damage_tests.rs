@@ -12,6 +12,8 @@ use crate::ui::{Size, flow::Location3, layout::Geometry, style::LayerKind};
 
 static UI_COMPOSITE_BESL: std::sync::LazyLock<&str> =
 	std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("ui/composite.besl"));
+static UI_LAYER_COMPOSITE_BESL: std::sync::LazyLock<&str> =
+	std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("ui/layer-composite.besl"));
 
 fn region(x: u32, y: u32, width: u32, height: u32) -> UiPixelRegion {
 	UiPixelRegion {
@@ -186,5 +188,25 @@ fn composite_besl_vm_places_the_premultiplied_layer_over_the_scene_inside_the_re
 	}
 	assert_rgba_close(rgba(&result, [0, 0]), [0.5, 0.5, 0.0, 1.0], 0.0001);
 	assert_rgba_close(rgba(&result, [1, 0]), [0.0, 0.0, 1.0, 1.0], 0.0001);
+	assert_rgba_close(rgba(&result, [2, 0]), [9.0; 4], 0.0);
+}
+
+#[test]
+fn layer_composite_besl_vm_places_the_premultiplied_layer_over_black_inside_the_region() {
+	let program = compile_shader_vm(simple_compute::compile_test_program(*UI_LAYER_COMPOSITE_BESL));
+	// Premultiplied half-covered green, fully transparent, then a pixel outside the region.
+	let mut layer = texture_2d(3, 1, &[[0.0, 0.5, 0.0, 0.5], [0.0, 0.0, 0.0, 0.0], [0.0, 0.5, 0.0, 0.5]]);
+	let mut result = texture_2d(3, 1, &[[9.0; 4], [9.0; 4], [9.0; 4]]);
+	let mut push_constant = region_push_constant(&program, region(0, 0, 2, 1));
+	// Dispatch rounding produces excess threads; the extent guard must make them no-ops.
+	for x in 0..3 {
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_image(slot(&program, "layer"), &mut layer);
+		descriptors.bind_image(slot(&program, "result"), &mut result);
+		descriptors.bind_push_constant(&mut push_constant);
+		run_at(&program, &mut descriptors, [x, 0]);
+	}
+	assert_rgba_close(rgba(&result, [0, 0]), [0.0, 0.5, 0.0, 1.0], 0.0001);
+	assert_rgba_close(rgba(&result, [1, 0]), [0.0, 0.0, 0.0, 1.0], 0.0001);
 	assert_rgba_close(rgba(&result, [2, 0]), [9.0; 4], 0.0);
 }

@@ -55,13 +55,14 @@ impl RenderPass {
 			scene.buffer("instances", instance_data_buffer),
 		]);
 
-		let attachments = targets.map(|target| {
-			ghi::AttachmentInformation::new(
-				target,
-				ghi::Layouts::RenderTarget,
-				ghi::LoadOp::Clear(ghi::ClearValue::Color(RGBA::black())),
-				ghi::StoreOp::Store,
-			)
+		// Reverse-Z depth clears to the far plane at 0, matching the target's optimized clear value.
+		let [main, depth] = targets;
+		let attachments = [
+			(main, ghi::ClearValue::Color(RGBA::black())),
+			(depth, ghi::ClearValue::Depth(0.0)),
+		]
+		.map(|(target, clear)| {
+			ghi::AttachmentInformation::new(target, ghi::Layouts::RenderTarget, ghi::LoadOp::Clear(clear), ghi::StoreOp::Store)
 		});
 
 		Self {

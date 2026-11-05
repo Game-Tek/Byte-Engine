@@ -15,6 +15,13 @@ pub(super) static UI_LAYOUT: LazyLock<SetLayout> =
 /// The descriptor set of the composite pass, declared by `ui/layouts/composite.besl`.
 pub(super) static UI_COMPOSITE_LAYOUT: LazyLock<SetLayout> =
 	LazyLock::new(|| SetLayout::from_layer("::byte_engine::rendering::ui::layouts::composite::Composite", ENGINE_MODULES));
+/// The descriptor set of the composite pass on a sink without a scene, declared by `ui/layouts/composite.besl`.
+pub(super) static UI_LAYER_COMPOSITE_LAYOUT: LazyLock<SetLayout> = LazyLock::new(|| {
+	SetLayout::from_layer(
+		"::byte_engine::rendering::ui::layouts::composite::LayerComposite",
+		ENGINE_MODULES,
+	)
+});
 /// The descriptor set of one backdrop blur stage, declared by `ui/layouts/backdrop_blur.besl`.
 pub(super) static UI_BLUR_LAYOUT: LazyLock<SetLayout> = LazyLock::new(|| {
 	SetLayout::from_layer(

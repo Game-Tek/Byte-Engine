@@ -455,7 +455,8 @@ impl<'a> RenderPassBuilder<'a> {
 	/// Hands over the copy that forwards `main` while this builder's pass is bypassed.
 	///
 	/// The renderer takes it after the pass is built. A pass that also forwards `main` on frames with nothing to
-	/// draw takes it first, so it keeps one copy, and then forwards `main` from [`RenderPass::bypass`] too.
+	/// draw takes it first, so it keeps one copy, and then forwards `main` from [`RenderPass::bypass`] too. It is `None`
+	/// when the pass started the `main` chain on a sink without a scene, since there is nothing to forward.
 	pub(crate) fn take_main_copy(&mut self) -> Option<ImageBypassPass> {
 		self.main_copy.take()
 	}
@@ -574,13 +575,15 @@ impl<'a> RenderPassBuilder<'a> {
 	/// [`simple_tile::Output::new`] or [`simple_compute::Resource::image`].
 	///
 	/// While the pass is bypassed, the renderer copies the incoming `main` into the replacement, so later passes read
-	/// the image this pass would have transformed.
+	/// the image this pass would have transformed. A sink without a scene pipeline has no incoming `main`; there the
+	/// pass starts the chain, nothing is copied, and a frame the pass records nothing for leaves the replacement
+	/// cleared.
 	pub fn create_main_render_target(&mut self, builder: ghi::image::Builder<'a>) -> MainRenderTarget {
 		let name = builder.get_name().expect(
 			"Main render target name is missing. The most likely cause is that the image builder was not given a name before replacing `main`.",
 		);
 		// Resolve the incoming `main` before the replacement takes its name.
-		let source = self.read_from("main");
+		let source = self.try_read_from("main");
 		let main = if self.final_output {
 			self.final_output_written = true;
 			let target = ghi::ImageOrSwapchain::Swapchain(self.swapchain);
@@ -601,7 +604,7 @@ impl<'a> RenderPassBuilder<'a> {
 				format: output.format,
 			}
 		};
-		self.main_copy = Some(ImageBypassPass::forwarding(self, source, main));
+		self.main_copy = source.map(|source| ImageBypassPass::forwarding(self, source, main));
 		main
 	}
 

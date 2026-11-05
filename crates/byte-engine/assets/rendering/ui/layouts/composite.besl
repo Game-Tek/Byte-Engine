@@ -6,3 +6,11 @@ Composite: layer {
 	layer: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: read }>;
 	result: descriptor<{ type: StorageImage, binding: 2, access: write }>;
 }
+
+// The descriptor set of the UI composite on a sink without a scene: the premultiplied UI layer and the image the
+// composite writes. The frame output and the backdrop resolve each bind one.
+
+LayerComposite: layer {
+	layer: descriptor<{ type: StorageImage<rgba16f>, binding: 0, access: read }>;
+	result: descriptor<{ type: StorageImage, binding: 1, access: write }>;
+}

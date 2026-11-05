@@ -1,0 +1,80 @@
+---
+title: API pages
+description: How the site builds the Rust API pages and their relation graphs, and what a change to that pipeline must keep true.
+icon: Network
+---
+
+Use this page when you change how the [API](/docs/api/latest) section is
+generated or drawn. To change what one page says, change the doc comment in the
+source instead, as [Write documentation](/docs/develop/documentation#api)
+describes.
+
+## How the pages are built
+
+`scripts/generate-api-docs.sh` runs `cargo rustdoc` with a pinned nightly
+toolchain and writes rustdoc's JSON output. `docs-site/scripts/build-rust-api-model.ts`
+then converts that JSON into the API model, `docs-site/generated/rust-api.json`.
+The site reads only the model; rustdoc's format stays inside
+`docs-site/src/lib/rustdoc/format.ts` and `build-model.ts`, because it changes
+between nightly versions.
+
+The model holds every public item at one canonical path, and a list of
+relations between those items. Each relation joins two items and has one kind:
+
+| Kind | The first item | Found in |
+| --- | --- | --- |
+| `field` | has a field or variant field whose type names the second item | Field types, including generic arguments |
+| `implements` | implements the trait the second item names | The trait's implementations in this crate |
+| `supertrait` | is a trait that requires the second trait | The trait's bounds |
+| `accepts` | is a function, or a type with a method, that takes the second item | Parameter types, without `self` |
+| `returns` | is a function, or a type with a method, that returns the second item | Return types |
+| `mentions` | links to the second item in its docs | Intra-doc links, when no other relation joins the two |
+
+An `accepts` or `returns` relation also names the function or method that
+carries it, so a list can link to that method instead of to its type.
+
+## How a page shows relations
+
+`docs-site/src/lib/rust-api/relations.ts` groups the relations of one item by
+direction and kind. The item page draws the groups as a graph in its
+**Relations** section and lists every entry in a tab per group. The Markdown
+version of the page lists the same groups.
+
+The graph has three columns: the items that depend on the page item, the page
+item, and the items it depends on. Every edge runs left to right, so the layout
+needs no crossing reduction and no layout library. The layout runs while the
+page renders and sizes each box from the length of its label in a monospace
+font, so the browser draws the SVG without measuring text.
+
+The graph stays small whatever the item: a group draws at most four boxes, a
+column at most ten, and a label at most 24 characters. Past a group's budget,
+its last box counts the rest, and the tab lists them all. The largest graph in
+the engine is about 650 by 450 pixels.
+
+## Rules a change must keep
+
+- Read rustdoc JSON only in `format.ts` and `build-model.ts`. Add what pages need
+  to `model.ts` instead of reading rustdoc output in the site.
+- Relate only items that have a place in the model. A relation to a private,
+  hidden, or external item has no page to link to.
+- Keep the relation graph free of client-side code and of layout libraries. The
+  site deploys as a Worker with a size limit, and the three-column layout doesn't
+  need one.
+- Keep the graph bounded. Change the per-group and per-column budgets in
+  `relations.ts` instead of drawing every relation, since some items have more
+  than fifty.
+- Keep the graph and the lists in step. Both read `relationGroups`, so a reader
+  without the graph, such as a screen reader or an agent reading the Markdown,
+  gets the same relations.
+
+## Tests
+
+From `docs-site`, run `bun test test`.
+
+- `test/rustdoc/build-model.test.ts` checks which relations the model records,
+  on the rustdoc JSON of the `test/fixtures/rustdoc-sample` crate.
+- `test/rustdoc/relations.test.ts` checks how relations group, and that the
+  graph places dependents and dependencies on their own sides without overlaps.
+
+After you change the fixture crate, regenerate its JSON as the header of
+`build-model.test.ts` describes.

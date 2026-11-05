@@ -51,6 +51,8 @@ export interface ApiModel {
 	root: string;
 	/** Every public item, keyed by its canonical Rust path, such as `byte_engine::time::MediaTime`. */
 	items: Record<string, ApiItem>;
+	/** Every relation between two public items, which relation graphs and lists on item pages read. */
+	relations: ApiRelation[];
 }
 
 export interface SourceLocation {
@@ -103,10 +105,6 @@ export interface ApiItem {
 	provided?: ApiMember[];
 	/** Traits: the implementations in this crate. */
 	implementors?: ApiImplementor[];
-	/** Types: public functions and methods that take this type as a parameter. */
-	acceptedBy?: ApiReference[];
-	/** Types: public functions and methods that return this type. */
-	returnedBy?: ApiReference[];
 }
 
 export interface ApiChild {
@@ -185,6 +183,32 @@ export interface ApiTraitImpl {
 export interface ApiImplementor {
 	header: Token[];
 	href?: string;
+}
+
+/**
+ * How one item depends on another:
+ *
+ * - `field`: a field or variant field of `from` has a type that names `to`.
+ * - `implements`: `from` implements the trait `to`.
+ * - `supertrait`: the trait `from` requires the trait `to`.
+ * - `accepts`: the function `from`, or a method of the type `from`, takes a parameter whose type names `to`.
+ * - `returns`: the function `from`, or a method of the type `from`, returns a type that names `to`.
+ * - `mentions`: the docs of `from` link to `to`, and no other relation connects them.
+ */
+export type ApiRelationKind = 'field' | 'implements' | 'supertrait' | 'accepts' | 'returns' | 'mentions';
+
+/**
+ * The `ApiRelation` interface records one edge of the item graph, so a page can show
+ * what an item depends on and what depends on it with `relationGroups` from `rust-api/relations.ts`.
+ */
+export interface ApiRelation {
+	/** The key of the item the relation starts at, such as the type that has the field. */
+	from: string;
+	/** The key of the item the relation points at, such as the type of the field. */
+	to: string;
+	kind: ApiRelationKind;
+	/** `accepts` and `returns`: the function or method that carries the relation. */
+	via?: ApiReference;
 }
 
 /** A link to a function or method, used by cross-reference lists. */

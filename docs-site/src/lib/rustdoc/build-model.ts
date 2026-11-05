@@ -37,6 +37,8 @@ import {
 	type ApiMemberKind,
 	type ApiModel,
 	type ApiReference,
+	type ApiRelation,
+	type ApiRelationKind,
 	type ApiSignature,
 	type ApiTraitImpl,
 	type ApiVariant,
@@ -92,8 +94,9 @@ class ModelBuilder {
 	private readonly memberHrefs = new Map<Id, string>();
 	private readonly routes = new Map<Id, string>();
 	private readonly anchors = new Map<Id, string>();
-	private readonly acceptedBy = new Map<Id, ApiReference[]>();
-	private readonly returnedBy = new Map<Id, ApiReference[]>();
+	private readonly relations: ApiRelation[] = [];
+	/** Each recorded relation as `from to kind via`, so a relation found twice is kept once. */
+	private readonly relationKeys = new Set<string>();
 	/** Doc links that rustdoc resolved to items without a public page, as `item: destination`. */
 	readonly unresolvedLinks = new Set<string>();
 	/** The key of the item being built, which names the owner of member docs in warnings. */
@@ -110,7 +113,7 @@ class ModelBuilder {
 		this.placeItems();
 		this.assignRoutes();
 		this.assignMemberAnchors();
-		this.collectCrossReferences();
+		this.collectRelations();
 
 		const items: Record<string, ApiItem> = {};
 		for (const placement of this.placements.values()) {
@@ -124,6 +127,7 @@ class ModelBuilder {
 			formatVersion: this.crate.format_version,
 			root: this.crateName,
 			items,
+			relations: this.relations,
 		};
 	}
 
@@ -362,11 +366,6 @@ class ModelBuilder {
 				break;
 		}
 
-		const accepted = this.acceptedBy.get(item.id);
-		if (accepted?.length) apiItem.acceptedBy = accepted;
-		const returned = this.returnedBy.get(item.id);
-		if (returned?.length) apiItem.returnedBy = returned;
-
 		return apiItem;
 	}
 
@@ -556,46 +555,91 @@ class ModelBuilder {
 	}
 
 	// ---------------------------------------------------------------------
-	// Cross references
+	// Relations
 
-	/** Indexes which public functions and methods take or return each type. */
-	private collectCrossReferences() {
-		const visit = (signature: FunctionSignature, reference: ApiReference, ownerId: Id | undefined) => {
-			const record = (map: Map<Id, ApiReference[]>, type: Type) => {
-				for (const id of referencedIds(type)) {
-					if (id === ownerId || !this.placements.has(id)) continue;
-					const list = map.get(id) ?? [];
-					if (!list.some((entry) => entry.href === reference.href)) list.push(reference);
-					map.set(id, list);
-				}
-			};
-			for (const [name, type] of signature.inputs) {
-				if (name !== 'self') record(this.acceptedBy, type);
-			}
-			if (signature.output) record(this.returnedBy, signature.output);
-		};
-
+	/**
+	 * Records how public items depend on each other: field types, trait implementations,
+	 * supertraits, the parameter and return types of functions and methods, and doc links.
+	 * Doc links run last, so a `mentions` relation only joins items nothing else connects.
+	 */
+	private collectRelations() {
 		for (const { item, kind, path } of this.placements.values()) {
 			this.currentKey = path.join('::');
+			const key = this.currentKey;
+
 			if (kind === 'function') {
-				visit(variantOf(item.inner, 'function')!.sig, { label: path.at(-1)!, href: this.routes.get(item.id)!, summary: summarize(this.docs(item)) }, undefined);
+				const reference = { label: path.at(-1)!, href: this.routes.get(item.id)!, summary: summarize(this.docs(item)) };
+				this.relateSignature(key, variantOf(item.inner, 'function')!.sig, reference, item.id);
 			}
 			for (const { members } of this.inherentImpls(item)) {
 				for (const member of members) {
 					const fn = variantOf(member.inner, 'function');
 					if (!fn) continue;
-					visit(
-						fn.sig,
-						{
-							label: `${path.at(-1)}::${member.name}`,
-							href: this.memberHrefs.get(member.id)!,
-							summary: summarize(this.docs(member)),
-						},
-						item.id,
-					);
+					const reference = {
+						label: `${path.at(-1)}::${member.name}`,
+						href: this.memberHrefs.get(member.id)!,
+						summary: summarize(this.docs(member)),
+					};
+					this.relateSignature(key, fn.sig, reference, item.id);
+				}
+			}
+
+			const fields = [
+				...this.fieldItems(item),
+				...this.items(variantOf(item.inner, 'enum')?.variants ?? []).flatMap((variant) => this.fieldItems(variant)),
+			];
+			for (const field of fields) this.relateType(key, 'field', fieldType(field.item), item.id);
+
+			const trait = variantOf(item.inner, 'trait');
+			if (trait) {
+				for (const bound of trait.bounds) {
+					const traitBound = variantOf(bound, 'trait_bound');
+					if (traitBound) this.relate(key, 'supertrait', traitBound.trait.id);
+				}
+				for (const implItem of this.items(trait.implementations)) {
+					const target = variantOf(variantOf(implItem.inner, 'impl')!.for, 'resolved_path');
+					const from = target && this.key(target.id);
+					if (from && from !== key) this.relateKeys(from, key, 'implements');
 				}
 			}
 		}
+
+		const related = new Set(this.relations.map((relation) => `${relation.from} ${relation.to}`));
+		for (const { item, path } of this.placements.values()) {
+			const key = path.join('::');
+			for (const id of Object.values(item.links)) {
+				const to = this.key(id);
+				if (!to || to === key || related.has(`${key} ${to}`) || related.has(`${to} ${key}`)) continue;
+				this.relateKeys(key, to, 'mentions');
+			}
+		}
+	}
+
+	/** Records `accepts` for each parameter type and `returns` for the return type of a signature. */
+	private relateSignature(from: string, signature: FunctionSignature, via: ApiReference, ownerId: Id) {
+		for (const [name, type] of signature.inputs) {
+			if (name !== 'self') this.relateType(from, 'accepts', type, ownerId, via);
+		}
+		if (signature.output) this.relateType(from, 'returns', signature.output, ownerId, via);
+	}
+
+	/** Relates `from` to every public item a type names, except the item that owns the type. */
+	private relateType(from: string, kind: ApiRelationKind, type: Type, ownerId: Id, via?: ApiReference) {
+		for (const id of referencedIds(type)) {
+			if (id !== ownerId) this.relate(from, kind, id, via);
+		}
+	}
+
+	private relate(from: string, kind: ApiRelationKind, toId: Id, via?: ApiReference) {
+		const to = this.key(toId);
+		if (to) this.relateKeys(from, to, kind, via);
+	}
+
+	private relateKeys(from: string, to: string, kind: ApiRelationKind, via?: ApiReference) {
+		const relationKey = `${from} ${to} ${kind} ${via?.href ?? ''}`;
+		if (this.relationKeys.has(relationKey)) return;
+		this.relationKeys.add(relationKey);
+		this.relations.push(via ? { from, to, kind, via } : { from, to, kind });
 	}
 
 	// ---------------------------------------------------------------------

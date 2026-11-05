@@ -1,5 +1,6 @@
-import type { ApiItem, ApiMember, ApiModel, Token } from '@/lib/rustdoc/model';
+import type { ApiItem, ApiMember, ApiModel, ApiReference, Token } from '@/lib/rustdoc/model';
 import { describe, KIND_ORDER, KINDS, moduleChildren, SYMBOL_INDEX_URL, tokenText } from './items';
+import { relationGroups } from './relations';
 
 /**
  * Renders a Rust API page as Markdown for agents: the same content as the HTML page,
@@ -9,7 +10,8 @@ import { describe, KIND_ORDER, KINDS, moduleChildren, SYMBOL_INDEX_URL, tokenTex
 export function renderRustPageMarkdown(model: ApiModel, key: string | null): string {
 	if (key === null) return landingMarkdown(model);
 	const item = model.items[key];
-	return item.kind === 'module' ? moduleMarkdown(model, item) : itemMarkdown(item);
+	const page = item.kind === 'module' ? moduleMarkdown(model, item) : itemMarkdown(item);
+	return joinSections([page, relationsMarkdown(model, item)]);
 }
 
 /**
@@ -139,8 +141,6 @@ function itemMarkdown(item: ApiItem): string {
 			);
 		}
 	}
-	if (item.acceptedBy?.length) sections.push('## Accepted by', referenceList(item.acceptedBy));
-	if (item.returnedBy?.length) sections.push('## Returned by', referenceList(item.returnedBy));
 	return joinSections(sections);
 }
 
@@ -157,7 +157,14 @@ function heading(item: ApiItem): string {
 	return `${KINDS[item.kind].name} \`${item.key}\``;
 }
 
-function referenceList(references: NonNullable<ApiItem['acceptedBy']>): string {
+/** Lists the relations of an item, one subsection per group, as the page's graph and tabs show them. */
+function relationsMarkdown(model: ApiModel, item: ApiItem): string {
+	const groups = relationGroups(model, item);
+	if (groups.length === 0) return '';
+	return joinSections(['## Relations', ...groups.flatMap((group) => [`### ${group.label}`, referenceList(group.entries)])]);
+}
+
+function referenceList(references: ApiReference[]): string {
 	return references.map((reference) => `- [\`${reference.label}\`](${markdownUrl(reference.href)})${reference.summary ? `: ${reference.summary}` : ''}`).join('\n');
 }
 

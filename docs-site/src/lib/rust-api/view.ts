@@ -20,12 +20,14 @@ import type {
 	ApiItem,
 	ApiMember,
 	ApiModel,
+	ApiReference,
 	ApiTraitImpl,
 	ApiVariant,
 	Token,
 } from '@/lib/rustdoc/model';
 import { rustdocPagePath, withoutSummary } from '@/lib/rustdoc/build-model';
 import { describe, KIND_ORDER, KINDS, moduleChildren } from './items';
+import { relationGraph, relationGroups, type RelationGraphView } from './relations';
 
 const GITHUB_SOURCE_URL = 'https://github.com/Game-Tek/Byte-Engine/blob/master';
 const DOCS_RS_URL = 'https://docs.rs/byte-engine/latest';
@@ -81,8 +83,13 @@ export interface ItemView {
 	required?: MemberView[];
 	provided?: MemberView[];
 	implementors?: ApiItem['implementors'];
-	acceptedBy?: ApiItem['acceptedBy'];
-	returnedBy?: ApiItem['returnedBy'];
+	relations?: RelationsView;
+}
+
+/** The relations section of an item page: the graph and one list per relation group. */
+export interface RelationsView {
+	graph: RelationGraphView;
+	groups: { label: string; entries: ApiReference[] }[];
 }
 
 export interface LandingView {
@@ -139,9 +146,11 @@ async function itemView(model: ApiModel, item: ApiItem): Promise<ItemView> {
 		docsRsUrl: `${DOCS_RS_URL}/${rustdocPagePath(item.kind, item.path)}`,
 		externalReexports: item.externalReexports,
 		implementors: item.implementors,
-		acceptedBy: item.acceptedBy,
-		returnedBy: item.returnedBy,
 	};
+
+	const relations = relationGroups(model, item);
+	const graph = relationGraph(item, relations);
+	if (graph) view.relations = { graph, groups: relations.map(({ label, entries }) => ({ label, entries })) };
 
 	if (item.kind === 'module') {
 		const groups = new Map<ApiItem['kind'], ChildView[]>();
@@ -254,7 +263,7 @@ function tableOfContents(view: ItemView): RustTocItem[] {
 	}
 	if (view.implementors?.length) section('implementors', 'Implementors');
 	if (view.traitImpls?.length) section('trait-implementations', 'Trait implementations');
-	if (view.acceptedBy?.length || view.returnedBy?.length) section('used-by', 'Used by');
+	if (view.relations) section('relations', 'Relations');
 	return toc;
 }
 

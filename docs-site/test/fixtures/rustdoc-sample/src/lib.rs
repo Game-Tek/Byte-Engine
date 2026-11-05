@@ -63,6 +63,20 @@ pub mod engine {
 		}
 	}
 
+	/// The `Perimeter` trait measures the outline of a shape that [`Area`] already measures.
+	pub trait Perimeter: Area {
+		/// Returns the perimeter.
+		fn perimeter(&self) -> f32;
+	}
+
+	/// The `Scene` struct holds the shapes to measure. See [`LIMIT`] for how many it takes.
+	pub struct Scene {
+		/// The shapes in the scene.
+		pub shapes: Vec<Shape>,
+		/// Where the scene starts.
+		pub origin: Point<f32>,
+	}
+
 	/// Builds a shape at a point.
 	pub fn shape_at(point: &Point<f32>) -> Shape {
 		let _ = point;

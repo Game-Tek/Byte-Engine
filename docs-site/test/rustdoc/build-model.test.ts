@@ -59,11 +59,6 @@ describe('implementations', () => {
 		expect(area.implementors!.map((implementor) => implementor.href)).toEqual(['/docs/api/latest/sample/engine/Shape']);
 	});
 
-	test('records which functions accept and return each type', () => {
-		expect(item('sample::engine::Point').acceptedBy!.map((reference) => reference.label)).toEqual(['shape_at']);
-		expect(item('sample::engine::Shape').returnedBy!.map((reference) => reference.label)).toEqual(['shape_at']);
-	});
-
 	test('describes fields and variants with linked types', () => {
 		const point = item('sample::engine::Point');
 		expect(point.fields!.map((field) => [field.name, field.summary])).toEqual([
@@ -75,6 +70,36 @@ describe('implementations', () => {
 		expect(shape.variants![0].fields.map((field) => field.anchor)).toEqual(['variant.Circle.field.radius']);
 		const origin = point.inherent![0].members[0];
 		expect(origin.declaration.map((token) => token.text).join('')).toBe('pub fn origin() -> Self');
+	});
+});
+
+describe('relations', () => {
+	const relations = (from: string, to: string) =>
+		model.relations.filter((relation) => relation.from === from && relation.to === to).map((relation) => relation.kind);
+
+	test('records the function that accepts or returns a type', () => {
+		const accepts = model.relations.find((relation) => relation.kind === 'accepts' && relation.to === 'sample::engine::Point');
+		expect(accepts).toMatchObject({ from: 'sample::engine::shape_at', via: { label: 'shape_at', href: '/docs/api/latest/sample/engine#fn.shape_at' } });
+		expect(relations('sample::engine::shape_at', 'sample::engine::Shape')).toEqual(['returns']);
+	});
+
+	test('relates a type to the types of its fields, including inside generic arguments', () => {
+		expect(relations('sample::engine::Scene', 'sample::engine::Shape')).toEqual(['field']);
+		expect(relations('sample::engine::Scene', 'sample::engine::Point')).toEqual(['field']);
+	});
+
+	test('relates implementations and supertraits to their traits', () => {
+		expect(relations('sample::engine::Shape', 'sample::engine::Area')).toEqual(['implements']);
+		expect(relations('sample::engine::Perimeter', 'sample::engine::Area')).toEqual(['supertrait']);
+	});
+
+	test('records a doc link as a mention only between items nothing else relates', () => {
+		expect(relations('sample::engine::Scene', 'sample::engine::LIMIT')).toEqual(['mentions']);
+		expect(relations('sample::engine::Point', 'sample::engine::shape_at')).toEqual([]);
+	});
+
+	test('leaves out a method returning its own type', () => {
+		expect(relations('sample::engine::Point', 'sample::engine::Point')).toEqual([]);
 	});
 });
 

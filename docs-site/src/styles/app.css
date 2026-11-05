@@ -430,44 +430,101 @@ a.be-tok-link:hover {
 }
 
 /* Each Rust item kind keeps one color in the sidebar tags and page chips; modules keep orange. */
-:is(.be-rust-module-kind, .be-rust-kind-badge) {
+:is(.be-rust-module-kind, .be-rust-kind-badge, .be-rust-graph-node) {
 	--be-kind: hsl(25 86% 44%);
 	--be-kind-dark: hsl(28 95% 68%);
 	color: var(--be-kind);
 }
 
-.dark :is(.be-rust-module-kind, .be-rust-kind-badge) {
+.dark :is(.be-rust-module-kind, .be-rust-kind-badge, .be-rust-graph-node) {
 	color: var(--be-kind-dark);
 }
 
-:is(.be-rust-module-kind, .be-rust-kind-badge):is([data-kind='struct'], [data-kind='union']) {
+:is(.be-rust-module-kind, .be-rust-kind-badge, .be-rust-graph-node):is([data-kind='struct'], [data-kind='union']) {
 	--be-kind: hsl(174 62% 33%);
 	--be-kind-dark: hsl(174 60% 62%);
 }
 
-:is(.be-rust-module-kind, .be-rust-kind-badge):is([data-kind='enum']) {
+:is(.be-rust-module-kind, .be-rust-kind-badge, .be-rust-graph-node):is([data-kind='enum']) {
 	--be-kind: hsl(205 75% 42%);
 	--be-kind-dark: hsl(205 85% 70%);
 }
 
-:is(.be-rust-module-kind, .be-rust-kind-badge):is([data-kind='trait'], [data-kind='trait_alias']) {
+:is(.be-rust-module-kind, .be-rust-kind-badge, .be-rust-graph-node):is([data-kind='trait'], [data-kind='trait_alias']) {
 	--be-kind: hsl(290 55% 48%);
 	--be-kind-dark: hsl(290 75% 78%);
 }
 
-:is(.be-rust-module-kind, .be-rust-kind-badge):is([data-kind='type_alias']) {
+:is(.be-rust-module-kind, .be-rust-kind-badge, .be-rust-graph-node):is([data-kind='type_alias']) {
 	--be-kind: hsl(335 65% 46%);
 	--be-kind-dark: hsl(335 80% 76%);
 }
 
-:is(.be-rust-module-kind, .be-rust-kind-badge):is([data-kind='function'], [data-kind='macro']) {
+:is(.be-rust-module-kind, .be-rust-kind-badge, .be-rust-graph-node):is([data-kind='function'], [data-kind='macro']) {
 	--be-kind: hsl(140 55% 34%);
 	--be-kind-dark: hsl(140 55% 64%);
 }
 
-:is(.be-rust-module-kind, .be-rust-kind-badge):is([data-kind='constant'], [data-kind='static']) {
+:is(.be-rust-module-kind, .be-rust-kind-badge, .be-rust-graph-node):is([data-kind='constant'], [data-kind='static']) {
 	--be-kind: hsl(45 80% 36%);
 	--be-kind-dark: hsl(45 85% 66%);
+}
+
+/* Relation graphs keep their laid-out size and scroll sideways on narrow screens,
+   since the layout sizes boxes for 12px text. Nodes take their stroke from the kind color. */
+.be-rust-graph {
+	overflow-x: auto;
+	margin-block: 1rem;
+}
+
+.be-rust-graph svg {
+	display: block;
+	max-width: none;
+	font-family: var(--font-mono);
+	font-size: 12px;
+}
+
+.be-rust-graph-edge {
+	fill: none;
+	stroke: var(--color-fd-muted-foreground);
+	stroke-opacity: 0.45;
+	stroke-width: 1.25;
+}
+
+.be-rust-graph-edge[data-kind='mentions'] {
+	stroke-dasharray: 4 3;
+}
+
+.be-rust-graph-arrow {
+	fill: var(--color-fd-muted-foreground);
+	fill-opacity: 0.6;
+}
+
+.be-rust-graph-label {
+	fill: var(--color-fd-muted-foreground);
+}
+
+.be-rust-graph-node rect {
+	fill: var(--color-fd-card);
+	stroke: currentColor;
+	stroke-width: 1.25;
+}
+
+.be-rust-graph-node:not([data-kind]) rect {
+	stroke: var(--color-fd-border);
+	stroke-dasharray: 3 3;
+}
+
+.be-rust-graph-node[data-current] rect {
+	stroke-width: 2.5;
+}
+
+.be-rust-graph-node text {
+	fill: var(--color-fd-foreground);
+}
+
+.be-rust-graph a:hover rect {
+	fill: var(--color-fd-accent);
 }
 
 /* Member headings name a method; keep them heading-sized text, not code chips. */

@@ -14,11 +14,12 @@ import type {
 	ItemView,
 	LandingView,
 	MemberView,
+	RelationsView,
 	TraitImplView,
 	VariantView,
 } from '@/lib/rust-api/view';
-import type { ApiReference } from '@/lib/rustdoc/model';
 import { Declaration, Deprecated, DocsMarkdown, InlineText, Section, Tokens } from './parts';
+import { RelationGraph } from './relation-graph';
 
 /** The API landing page: the crate, its top-level modules, and the indexes agents read. */
 export function RustLandingPage({ landing }: { landing: LandingView }) {
@@ -119,7 +120,7 @@ export function RustItemPage({ item }: { item: ItemView }) {
 				</>
 			) : null}
 			{item.traitImpls?.length ? <TraitImplementations traitImpls={item.traitImpls} /> : null}
-			<UsedBy acceptedBy={item.acceptedBy} returnedBy={item.returnedBy} />
+			{item.relations ? <Relations name={item.name} relations={item.relations} /> : null}
 		</>
 	);
 }
@@ -406,30 +407,28 @@ function TraitImplementations({ traitImpls }: { traitImpls: TraitImplView[] }) {
 	);
 }
 
-function UsedBy({ acceptedBy, returnedBy }: { acceptedBy?: ApiReference[]; returnedBy?: ApiReference[] }) {
-	const tabs = [
-		acceptedBy?.length ? { label: `Accepted by (${acceptedBy.length})`, references: acceptedBy } : undefined,
-		returnedBy?.length ? { label: `Returned by (${returnedBy.length})`, references: returnedBy } : undefined,
-	].filter((tab) => tab !== undefined);
-	if (tabs.length === 0) return null;
+/** The relation graph of an item, with a tab per relation group that lists every related item. */
+function Relations({ name, relations }: { name: string; relations: RelationsView }) {
+	const labels = relations.groups.map((group) => `${group.label} (${group.entries.length})`);
 	return (
 		<>
-			<Heading as="h2" id="used-by">
-				Used by
+			<Heading as="h2" id="relations">
+				Relations
 			</Heading>
-			<Tabs items={tabs.map((tab) => tab.label)}>
-				{tabs.map((tab) => (
-					<Tab key={tab.label} value={tab.label}>
+			<RelationGraph graph={relations.graph} title={`How ${name} relates to other items: ${labels.join(', ')}.`} />
+			<Tabs items={labels}>
+				{relations.groups.map((group, index) => (
+					<Tab key={group.label} value={labels[index]}>
 						<ul>
-							{tab.references.map((reference) => (
-								<li key={reference.href}>
-									<Link href={reference.href}>
-										<code>{reference.label}</code>
+							{group.entries.map((entry) => (
+								<li key={entry.href}>
+									<Link href={entry.href}>
+										<code>{entry.label}</code>
 									</Link>
-									{reference.summary ? (
+									{entry.summary ? (
 										<>
 											{' — '}
-											<InlineText text={reference.summary} />
+											<InlineText text={entry.summary} />
 										</>
 									) : null}
 								</li>

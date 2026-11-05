@@ -120,6 +120,9 @@ pub struct ConfigurationEvent {
 	parameter: String,
 	requested: ConfigurationValue,
 	state: ConfigurationUpdateState,
+	/// The [`ConfigurationState::revision`] of the event's last change, which [`Configuration::changes_since`] compares.
+	#[serde(skip)]
+	revision: u64,
 }
 
 impl ConfigurationEvent {
@@ -179,6 +182,8 @@ struct ConfigurationState {
 	next_event_id: u64,
 	routes: Vec<ConfigurationRoute>,
 	events: VecDeque<ConfigurationEvent>,
+	/// Counts every request and state change, so readers can ask for what changed after the count they saw.
+	revision: u64,
 }
 
 /// The `Configuration` struct routes configuration messages while retaining their latest state for debugging tools.
@@ -204,6 +209,7 @@ impl Configuration {
 				next_event_id: 1,
 				routes: Vec::new(),
 				events: VecDeque::new(),
+				revision: 0,
 			})),
 		}
 	}
@@ -251,11 +257,14 @@ impl Configuration {
 				.max_by_key(|route| route.prefix.len())
 				.map(|route| (route.sender.clone(), route.prefix.len()));
 
+			state.revision += 1;
+			let revision = state.revision;
 			state.events.push_back(ConfigurationEvent {
 				id,
 				parameter: parameter.clone(),
 				requested: value.clone(),
 				state: ConfigurationUpdateState::Pending,
+				revision,
 			});
 
 			(id, route)
@@ -294,6 +303,19 @@ impl Configuration {
 	/// Returns a snapshot of all retained configuration events.
 	pub fn events(&self) -> Vec<ConfigurationEvent> {
 		self.state.lock().events.iter().cloned().collect()
+	}
+
+	/// Returns the retained events requested or changed after `revision`, in request order, and the revision to pass
+	/// next. Pass `0` to read every retained event.
+	pub fn changes_since(&self, revision: u64) -> (Vec<ConfigurationEvent>, u64) {
+		let state = self.state.lock();
+		let changed = state
+			.events
+			.iter()
+			.filter(|event| event.revision > revision)
+			.cloned()
+			.collect();
+		(changed, state.revision)
 	}
 
 	fn finish_not_set(&self, id: ConfigurationEventId, reason: impl Into<String>) {
@@ -350,11 +372,14 @@ impl ConfigurationPort {
 /// Completes a pending event once so late or duplicate reports cannot rewrite debugging history.
 fn finish_event(state: &Arc<Mutex<ConfigurationState>>, id: ConfigurationEventId, result: ConfigurationUpdateState) {
 	let mut state = state.lock();
+	let revision = state.revision + 1;
 	let Some(event) = state.events.iter_mut().find(|event| event.id == id) else {
 		return;
 	};
 	if matches!(event.state, ConfigurationUpdateState::Pending) {
 		event.state = result;
+		event.revision = revision;
+		state.revision = revision;
 	}
 }
 

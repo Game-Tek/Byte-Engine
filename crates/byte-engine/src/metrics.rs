@@ -128,6 +128,8 @@ struct Inner {
 	next: usize,
 	/// The time of the first tick that could reach the screen.
 	time_to_first_frame: Option<Duration>,
+	/// The number of renderer frames completed so far: every frame below it has its GPU values.
+	completed_frames: u64,
 }
 
 impl Inner {
@@ -164,6 +166,7 @@ impl Metrics {
 				ring: Vec::with_capacity(TICK_CAPACITY),
 				next: 0,
 				time_to_first_frame: None,
+				completed_frames: 0,
 			}),
 		}
 	}
@@ -204,6 +207,13 @@ impl Metrics {
 		if let Some(sample) = inner.ring.iter_mut().rev().find(|sample| sample.frame == Some(frame)) {
 			sample.values[metric.index()] = duration.as_nanos() as u64;
 		}
+	}
+
+	/// Marks renderer frame `frame` and every earlier frame as complete, after its GPU values were stored with
+	/// [`Self::set_gpu`], so readers of [`Self::updates`] know its tick's row is final.
+	pub fn complete_frame(&self, frame: u64) {
+		let mut inner = self.inner.lock();
+		inner.completed_frames = inner.completed_frames.max(frame + 1);
 	}
 
 	/// Closes the tick: moves the accumulated CPU time into a new row and clears the accumulators.
@@ -248,6 +258,32 @@ impl Metrics {
 				sample: sample.clone(),
 			})
 			.collect()
+	}
+
+	/// Returns what changed since a reader last looked: the ticks from `next_tick` on, and the earlier ticks whose
+	/// frame completed since the reader saw `completed_frames` frames complete.
+	///
+	/// Pass the [`TickUpdates::next_tick`] and [`TickUpdates::completed_frames`] of the previous call to continue.
+	/// Pass `u64::MAX` for both to read only where the ring stands now.
+	pub fn updates(&self, next_tick: u64, completed_frames: u64) -> TickUpdates {
+		let inner = self.inner.lock();
+		let names = Arc::new(Names::from_registrations(&inner.registrations));
+		let sample = |sample: &TickSample| Sample {
+			names: Arc::clone(&names),
+			sample: sample.clone(),
+		};
+		let completed = completed_frames..inner.completed_frames;
+		TickUpdates {
+			ticks: inner.ticks().filter(|row| row.tick >= next_tick).map(sample).collect(),
+			completed: inner
+				.ticks()
+				.filter(|row| row.tick < next_tick && row.frame.is_some_and(|frame| completed.contains(&frame)))
+				.map(sample)
+				.collect(),
+			oldest: inner.ticks().next().map(|row| row.tick),
+			next_tick: inner.ticks().last().map_or(0, |row| row.tick + 1),
+			completed_frames: inner.completed_frames,
+		}
 	}
 
 	/// Summarizes every metric over the retained ticks after `since`, optionally over presented ticks only.
@@ -304,6 +340,25 @@ impl Names {
 				.collect(),
 		}
 	}
+}
+
+/// The `TickUpdates` struct is what changed in the tick ring since a reader last looked, such as an inspector
+/// client waiting for events.
+///
+/// Get it from [`Metrics::updates`], and pass its [`Self::next_tick`] and [`Self::completed_frames`] to the next call.
+pub struct TickUpdates {
+	/// The ticks from the requested tick on, oldest first.
+	pub ticks: Vec<Sample>,
+	/// The ticks before the requested tick whose frame completed since the requested count, oldest first, now with
+	/// their GPU values.
+	pub completed: Vec<Sample>,
+	/// The oldest retained tick, or `None` before the first tick ends. A value above the requested tick means the
+	/// ticks between them left the ring unread.
+	pub oldest: Option<u64>,
+	/// The tick after the newest retained one.
+	pub next_tick: u64,
+	/// The number of renderer frames completed so far.
+	pub completed_frames: u64,
 }
 
 /// The `Sample` struct is one retained tick with the names its values serialize under.

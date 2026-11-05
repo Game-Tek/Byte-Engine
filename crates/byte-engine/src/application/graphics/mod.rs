@@ -112,6 +112,8 @@ pub struct GraphicsApplication {
 	/// Keeps the HTTP inspector transport listening while the application lives.
 	_http_inspector: HttpInspectorServer,
 	screenshot_broker: std::sync::Arc<crate::inspector::screenshot::ScreenshotBroker>,
+	/// Wakes inspector requests waiting for events after each tick, and tells them when the application closes.
+	inspector_events: std::sync::Arc<crate::inspector::EventSignal>,
 	configuration: Configuration,
 
 	window_factory: (Factory<Window>, DefaultListener<CreateMessage<Window>>),
@@ -157,7 +159,8 @@ pub struct GraphicsApplication {
 
 impl Drop for GraphicsApplication {
 	fn drop(&mut self) {
-		// An application closed from outside a tick still gets its metrics written.
+		// An application closed from outside a tick still gets its metrics written and its event waiters released.
+		self.inspector_events.close();
 		self.write_metrics_out();
 		// Workers may own transferred views into renderer allocations. Join them
 		// before field destruction reaches the renderer and its GHI context.
@@ -184,6 +187,7 @@ struct Services {
 	shown_transforms: ShownTransforms,
 	http_inspector: HttpInspectorServer,
 	screenshot_broker: std::sync::Arc<crate::inspector::screenshot::ScreenshotBroker>,
+	inspector_events: std::sync::Arc<crate::inspector::EventSignal>,
 	waker: LoopWaker,
 	window_factory: Factory<Window>,
 	window_factory_listener: DefaultListener<CreateMessage<Window>>,
@@ -268,6 +272,7 @@ impl GraphicsApplication {
 							.unwrap_or_else(|error| panic!("{error}"));
 						let inspector = EntityHandle::from(inspector);
 						let screenshot_broker = inspector.screenshot_broker();
+						let inspector_events = inspector.event_signal();
 						let waker = LoopWaker::default();
 						let http_inspector = HttpInspectorServer::new(inspector, waker.clone(), parameters.scope("inspector"));
 
@@ -284,6 +289,7 @@ impl GraphicsApplication {
 							shown_transforms,
 							http_inspector,
 							screenshot_broker,
+							inspector_events,
 							waker,
 							window_factory,
 							window_factory_listener,
@@ -373,6 +379,7 @@ impl GraphicsApplication {
 
 			_http_inspector: services.http_inspector,
 			screenshot_broker: services.screenshot_broker,
+			inspector_events: services.inspector_events,
 			configuration,
 
 			window_factory: (services.window_factory, services.window_factory_listener),
@@ -515,10 +522,11 @@ impl GraphicsApplication {
 		let mut redraw = false;
 		let mut display_changed = false;
 		for event in self.renderer.poll_windows(wait) {
-			self.window_events.send(event);
-			match event {
+			match &event {
 				ghi::window::Event::App(ghi::window::AppEvents::Quit) => close = true,
-				ghi::window::Event::Window { event, .. } => {
+				// Dialog results only matter to whoever opened the dialog, which reads them from the window events.
+				ghi::window::Event::App(ghi::window::AppEvents::Dialog { .. }) => {}
+				&ghi::window::Event::Window { event, .. } => {
 					close |= matches!(event, ghi::window::Events::Close);
 					display_changed |= matches!(event, ghi::window::Events::DisplayChanged { .. });
 					redraw |= matches!(
@@ -535,6 +543,7 @@ impl GraphicsApplication {
 					}
 				}
 			}
+			self.window_events.send(event);
 		}
 		if redraw {
 			self.renderer.request_redraw();
@@ -769,8 +778,12 @@ impl GraphicsApplication {
 	fn tick_internal<R, F: FnOnce(&mut Self, Time) -> R>(&mut self, run: F) -> Option<R> {
 		let (result, clock) = self.tick_span(run);
 		self.application.metrics().end_tick(clock);
+		// Raised after the row exists, so a woken request reads this tick and the configuration states it settled.
 		if self.close {
+			self.inspector_events.close();
 			self.write_metrics_out();
+		} else {
+			self.inspector_events.notify();
 		}
 		result
 	}

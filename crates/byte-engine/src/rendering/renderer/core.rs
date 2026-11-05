@@ -376,6 +376,7 @@ impl Renderer {
 				self.metrics.set_gpu(frame, *metric, duration);
 			}
 		}
+		self.metrics.complete_frame(frame);
 	}
 
 	/// Connects the renderer to the resource manager whose development rebakes rebuild its pipelines.

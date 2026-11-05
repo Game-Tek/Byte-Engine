@@ -31,6 +31,11 @@
 			"name": "Metrics",
 			"description": "Read per-tick CPU and GPU timings: a summary over the retained ticks, or every retained tick as NDJSON rows.",
 			"x-displayName": "Read performance metrics"
+		},
+		{
+			"name": "Events",
+			"description": "Wait for ticks, GPU times, configuration changes, and the application closing, instead of polling every route.",
+			"x-displayName": "Wait for events"
 		}
 	],
 	"paths": {
@@ -797,6 +802,128 @@
 					}
 				}
 			}
+		},
+		"/events": {
+			"get": {
+				"operationId": "waitForEvents",
+				"summary": "Wait for events",
+				"description": "Returns the events since `after` and the cursor to pass next. Start without `after`: the response returns at once with a cursor at the current tick and the state of every retained configuration update. Then loop: pass the latest `cursor` as `after` and a `wait`, and the request returns as soon as an event exists, or with an empty list once the wait ends. A `tick` event carries the same row as `GET /metrics/frames`; a `gpu` event repeats a row once the frame its tick submitted completed. When the cursor fell behind the 1,024 retained ticks, a `lagged` event reports the oldest tick still held. A `closing` event means the application is closing. The request doesn't wake an idle application.",
+				"tags": [
+					"Events"
+				],
+				"parameters": [
+					{
+						"name": "after",
+						"in": "query",
+						"required": false,
+						"description": "The `cursor` of the previous response. Leave it out to start at the current tick.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "wait",
+						"in": "query",
+						"required": false,
+						"description": "How long to wait for an event, in milliseconds. Ignored without `after`.",
+						"schema": {
+							"type": "integer",
+							"minimum": 0,
+							"maximum": 30000,
+							"default": 0
+						}
+					},
+					{
+						"name": "events",
+						"in": "query",
+						"required": false,
+						"description": "A comma-separated list of the events to send: `tick`, `gpu`, and `configuration`. Defaults to all of them. `lagged` and `closing` are always sent.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The events after `after`, possibly none, and the next cursor.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/EventBatch"
+								},
+								"example": {
+									"cursor": "612-598-3",
+									"events": [
+										{
+											"event": "gpu",
+											"data": {
+												"tick": 609,
+												"frame": 597,
+												"time": 10395.6,
+												"dt": 16.67,
+												"presented": true,
+												"cpu": {
+													"GraphicsApplication::tick": 3.1
+												},
+												"gpu": {
+													"frame": 5.4,
+													"pass.Bloom": 0.41
+												}
+											}
+										},
+										{
+											"event": "tick",
+											"data": {
+												"tick": 611,
+												"frame": 599,
+												"time": 10429.0,
+												"dt": 16.67,
+												"presented": true,
+												"cpu": {
+													"GraphicsApplication::tick": 3.08
+												},
+												"gpu": {}
+											}
+										},
+										{
+											"event": "configuration",
+											"data": {
+												"id": 3,
+												"parameter": "render.pass.bloom",
+												"requested": "bypassed",
+												"state": {
+													"status": "set",
+													"value": "bypassed"
+												}
+											}
+										}
+									]
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "The query names a field other than `after`, `wait`, or `events`, the cursor isn't one a response returned, `wait` isn't a number up to 30000, or `events` names an unknown event.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "Four requests already wait for events. Retry without `wait`, or after one of them returns.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -1486,6 +1613,112 @@
 						"description": "Milliseconds the GPU spent in each counter of the frame the tick submitted. Empty until that frame completes."
 					}
 				}
+			},
+			"EventBatch": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": [
+					"cursor",
+					"events"
+				],
+				"properties": {
+					"cursor": {
+						"type": "string",
+						"description": "Pass it as `after` in the next request."
+					},
+					"events": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Event"
+						},
+						"description": "The events after the previous cursor, in the order `lagged`, `gpu`, `tick`, `configuration`, `closing`."
+					}
+				}
+			},
+			"Event": {
+				"oneOf": [
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": [
+							"event",
+							"data"
+						],
+						"properties": {
+							"event": {
+								"enum": [
+									"tick",
+									"gpu"
+								],
+								"description": "`tick` when the tick ended; `gpu` when the frame it submitted completed, so the row now has its GPU times."
+							},
+							"data": {
+								"$ref": "#/components/schemas/MetricRow"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": [
+							"event",
+							"data"
+						],
+						"properties": {
+							"event": {
+								"const": "configuration"
+							},
+							"data": {
+								"$ref": "#/components/schemas/ConfigurationEvent"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": [
+							"event",
+							"data"
+						],
+						"properties": {
+							"event": {
+								"const": "lagged"
+							},
+							"data": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": [
+									"first",
+									"missed"
+								],
+								"properties": {
+									"first": {
+										"type": "integer",
+										"minimum": 0,
+										"description": "The oldest tick still retained."
+									},
+									"missed": {
+										"type": "integer",
+										"minimum": 1,
+										"description": "The number of ticks that left the ring before this request read them."
+									}
+								}
+							}
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": [
+							"event"
+						],
+						"properties": {
+							"event": {
+								"const": "closing"
+							}
+						}
+					}
+				]
 			}
 		}
 	}

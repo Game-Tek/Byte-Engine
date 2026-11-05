@@ -15,8 +15,8 @@ use crate::{
 	application::LoopWaker,
 	core::{EntityHandle, factory::Handle},
 	inspector::{
-		DefaultInspector, MAX_SCREENSHOT_CAPTURES, ScreenshotCapture, ScreenshotError, ScreenshotFormat, ScreenshotSelection,
-		ScreenshotSubmitError,
+		DefaultInspector, EventCursor, EventFilter, EventWaitError, MAX_EVENT_WAIT, MAX_SCREENSHOT_CAPTURES, ScreenshotCapture,
+		ScreenshotError, ScreenshotFormat, ScreenshotSelection, ScreenshotSubmitError,
 	},
 };
 
@@ -65,6 +65,12 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// `dt`, `presented`, and `cpu` and `gpu` maps; it takes the same filters plus
 /// `limit=<count>` to keep only the newest rows. GPU values of the last frames in
 /// flight arrive once those frames complete.
+///
+/// `GET /events` reports what changed since a client's cursor: ended ticks, GPU
+/// times of completed frames, configuration changes, and the application closing.
+/// Call it without `after` to get a cursor, then pass each response's `cursor` as
+/// `after` with `wait=<milliseconds>` to wait for the next events. It doesn't wake
+/// an idle application.
 ///
 /// See the [inspector reference](/docs/reference/inspector) for its endpoints, payloads, and limits.
 pub struct HttpInspectorServer {
@@ -128,9 +134,14 @@ impl HttpInspectorServer {
 		addresses: impl IntoIterator<Item = SocketAddr>,
 	) -> io::Result<Self> {
 		let mut server = Server::new(move |request| {
+			// Waiting for events only reads; waking the loop for it would make every tick end a wait and start the
+			// next tick, so an idle application would never idle.
+			let reads_events = request.method() == Method::GET && request.uri().path() == "/events";
 			let response = handle_request(&*inspector, &waker, request);
 			// A request is input to the application, like a window event, so an idle loop runs after it.
-			waker.wake();
+			if !reads_events {
+				waker.wake();
+			}
 			response
 		});
 
@@ -180,6 +191,7 @@ fn handle_request(inspector: &DefaultInspector, waker: &LoopWaker, request: &mut
 		(&Method::GET, "/metrics") => metrics_response(inspector, request.uri().query()),
 		(&Method::GET, "/metrics/frames") => metrics_frames_response(inspector, request.uri().query()),
 		(&Method::GET, "/entities") => entities_response(inspector, request.uri().query()),
+		(&Method::GET, "/events") => events_response(inspector, request.uri().query()),
 		(&Method::DELETE, "/") => {
 			inspector.close_application();
 			response(StatusCode::OK, Body::empty())
@@ -303,6 +315,40 @@ fn metrics_frames_response(inspector: &DefaultInspector, query: Option<&str>) ->
 		.header("Content-Type", "application/x-ndjson")
 		.body(Body::from(body))
 		.expect("Inspector NDJSON response is valid. The most likely cause is an invalid static header name.")
+}
+
+const EVENTS_QUERY_ERROR: &str = "Events query is invalid. The most likely cause is a field other than `after`, `wait`, or `events`, a cursor that no response returned, a `wait` that isn't a number of milliseconds up to 30000, or an event other than `tick`, `gpu`, or `configuration`. Pass the `cursor` of the previous response unchanged.";
+
+/// Parses `after`, `wait`, and `events`, rejecting unknown fields, cursors no response returned, and waits above
+/// [`MAX_EVENT_WAIT`].
+fn parse_events_query(query: Option<&str>) -> Result<(Option<EventCursor>, Duration, EventFilter), ()> {
+	let [after, wait, events] = match query {
+		Some(query) => parse_query(query, [&["after"], &["wait"], &["events"]])?,
+		None => [None, None, None],
+	};
+	let wait = Duration::from_millis(wait.map(|wait| wait.parse()).transpose().map_err(|_| ())?.unwrap_or(0));
+	if wait > MAX_EVENT_WAIT {
+		return Err(());
+	}
+	Ok((
+		after.map(|after| after.parse()).transpose()?,
+		wait,
+		events.map(|events| events.parse()).transpose()?.unwrap_or_default(),
+	))
+}
+
+/// Returns the events after the `after` cursor, waiting up to `wait` milliseconds for one.
+fn events_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
+	let Ok((after, wait, filter)) = parse_events_query(query) else {
+		return response(StatusCode::BAD_REQUEST, EVENTS_QUERY_ERROR);
+	};
+	match inspector.wait_for_events(after, filter, wait) {
+		Ok(batch) => json_response(&batch),
+		Err(EventWaitError::Busy) => response(
+			StatusCode::SERVICE_UNAVAILABLE,
+			"Events request could not wait. The most likely cause is that four other requests already wait for events. Retry without `wait`, or after one of them returns.",
+		),
+	}
 }
 
 fn json_response(value: &impl Serialize) -> Response<Body> {
@@ -1310,6 +1356,139 @@ mod tests {
 		let (_, body) = split_response(&response);
 		let row: serde_json::Value = serde_json::from_str(std::str::from_utf8(body).unwrap().trim()).unwrap();
 		assert_eq!(row["tick"], 1);
+	}
+
+	/// Ends tick `tick`, which submitted frame `tick`, the way the graphics loop does.
+	fn end_test_tick(inspector: &DefaultInspector, tick: u64) {
+		inspector.metrics().end_tick(TickClock {
+			tick,
+			frame: Some(tick),
+			time: Duration::from_millis(100 * (tick + 1)),
+			delta: Duration::from_micros(16_667),
+			presented: true,
+		});
+		inspector.event_signal().notify();
+	}
+
+	/// Returns the `event` name of each event in an events response.
+	fn event_names(batch: &serde_json::Value) -> Vec<&str> {
+		batch["events"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.map(|event| event["event"].as_str().unwrap())
+			.collect()
+	}
+
+	#[test]
+	fn events_report_ticks_completed_frames_and_configuration_changes_after_a_cursor() {
+		let configuration = Configuration::new();
+		let port = configuration.register("render.pass.");
+		let id = configuration.update("render.pass.bloom", "bypassed");
+		let (inspector, _events, _transforms) = test_inspector(configuration);
+		record_test_ticks(inspector.metrics());
+		inspector.metrics().complete_frame(0);
+		let server = TestServer::new(inspector.clone());
+
+		let start = server.get_json("/events");
+		assert_eq!(event_names(&start), ["configuration"]);
+		assert_eq!(start["events"][0]["data"]["parameter"], "render.pass.bloom");
+		assert_eq!(start["events"][0]["data"]["state"]["status"], "pending");
+
+		let bloom = inspector.metrics().register(MetricKind::Gpu, "pass.Bloom").unwrap();
+		inspector.metrics().set_gpu(1, bloom, Duration::from_micros(250));
+		inspector.metrics().complete_frame(1);
+		end_test_tick(&inspector, 2);
+		port.set(id, "bypassed".into());
+
+		let batch = server.get_json(&format!("/events?after={}", start["cursor"].as_str().unwrap()));
+		assert_eq!(event_names(&batch), ["gpu", "tick", "configuration"]);
+		assert_eq!(batch["events"][0]["data"]["tick"], 1);
+		assert_eq!(batch["events"][0]["data"]["gpu"]["pass.Bloom"], 0.25);
+		assert_eq!(batch["events"][1]["data"]["tick"], 2);
+		assert_eq!(batch["events"][2]["data"]["state"]["status"], "set");
+
+		let filtered = server.get_json(&format!("/events?after={}&events=tick", start["cursor"].as_str().unwrap()));
+		assert_eq!(event_names(&filtered), ["tick"]);
+
+		let empty = server.get_json(&format!("/events?after={}&wait=20", batch["cursor"].as_str().unwrap()));
+		assert_eq!(event_names(&empty), [] as [&str; 0]);
+		assert_eq!(empty["cursor"], batch["cursor"]);
+	}
+
+	#[test]
+	fn events_wait_until_a_tick_ends() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let server = TestServer::new(inspector.clone());
+		let cursor = server.get_json("/events")["cursor"].as_str().unwrap().to_owned();
+
+		let ticker = std::thread::spawn({
+			let inspector = inspector.clone();
+			move || {
+				std::thread::sleep(Duration::from_millis(100));
+				end_test_tick(&inspector, 0);
+			}
+		});
+		let started = std::time::Instant::now();
+		let batch = server.get_json(&format!("/events?after={cursor}&wait=900"));
+		ticker.join().unwrap();
+
+		assert_eq!(event_names(&batch), ["tick"]);
+		assert!(
+			started.elapsed() < Duration::from_millis(800),
+			"the tick did not end the wait"
+		);
+	}
+
+	#[test]
+	fn events_report_lagged_ticks_and_closing() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let server = TestServer::new(inspector.clone());
+		let cursor = server.get_json("/events")["cursor"].as_str().unwrap().to_owned();
+		let ticks = crate::metrics::TICK_CAPACITY as u64 + 6;
+		for tick in 0..ticks {
+			end_test_tick(&inspector, tick);
+		}
+
+		let batch = server.get_json(&format!("/events?after={cursor}&events=configuration"));
+		assert_eq!(event_names(&batch), ["lagged"]);
+		assert_eq!(batch["events"][0]["data"]["first"], 6);
+		assert_eq!(batch["events"][0]["data"]["missed"], 6);
+
+		inspector.event_signal().close();
+		let started = std::time::Instant::now();
+		let closing = server.get_json(&format!("/events?after={}&wait=900", batch["cursor"].as_str().unwrap()));
+		assert_eq!(event_names(&closing), ["closing"]);
+		assert!(closing["events"][0].get("data").is_none(), "closing carries no data");
+		assert!(started.elapsed() < Duration::from_millis(800), "closing did not end the wait");
+	}
+
+	#[test]
+	fn events_refuse_waiters_beyond_the_limit_and_malformed_queries() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let server = Arc::new(TestServer::new(inspector.clone()));
+		let cursor = server.get_json("/events")["cursor"].as_str().unwrap().to_owned();
+
+		let waiters = (0..crate::inspector::events::MAX_EVENT_WAITERS)
+			.map(|_| {
+				let (server, cursor) = (Arc::clone(&server), cursor.clone());
+				std::thread::spawn(move || server.get_json(&format!("/events?after={cursor}&wait=600")))
+			})
+			.collect::<Vec<_>>();
+		std::thread::sleep(Duration::from_millis(200));
+		let response = server.request("GET", &format!("/events?after={cursor}&wait=600"), "");
+		assert!(response.starts_with(b"HTTP/1.1 503"), "unexpected response: {response:?}");
+		for waiter in waiters {
+			assert_eq!(event_names(&waiter.join().unwrap()), [] as [&str; 0]);
+		}
+
+		for query in ["events=bogus", "after=1-2", "after=a-b-c", "wait=30001", "since=0"] {
+			let response = server.request("GET", &format!("/events?{query}"), "");
+			assert!(
+				response.starts_with(b"HTTP/1.1 400"),
+				"{query}: unexpected response: {response:?}"
+			);
+		}
 	}
 
 	#[test]

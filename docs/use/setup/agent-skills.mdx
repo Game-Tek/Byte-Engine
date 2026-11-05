@@ -63,7 +63,9 @@ the skill that fits:
 
 The `inspector` skill starts your application unattended, with its own inspector
 port, and closes it when it's done. Its window renders in the background without
-being shown or taking focus, so you can keep working while the agent tests it. The `resources` skill asks you before it deletes
+being shown or taking focus, so you can keep working while the agent tests it. It
+waits for ticks, GPU times, and settings through [inspector events](/docs/use/inspector-events)
+instead of sleeping, so its checks finish as soon as the application has the answer. The `resources` skill asks you before it deletes
 resources or clears the store.
 
 ## Keep the skills up to date

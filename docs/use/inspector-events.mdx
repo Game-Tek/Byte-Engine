@@ -1,0 +1,68 @@
+---
+title: Inspector events
+description: Wait for ticks, GPU times, configuration changes, and the application closing from a tool or script, instead of polling the inspector.
+icon: MessagesSquare
+---
+
+Use inspector events when a tool, test harness, or agent needs to react to a running application: a tick ended, a
+frame's GPU times arrived, a setting took effect, or the application is closing. You ask the inspector for the events
+after a cursor, and the request waits until one exists.
+
+## Get a cursor
+
+Run your application, then request `/events` without a cursor. The response returns at once with a `cursor` and the
+current state of every configuration update:
+
+```bash
+curl -s localhost:6680/events
+```
+
+```json
+{ "cursor": "612-598-0", "events": [] }
+```
+
+## Wait for the next events
+
+Pass the latest `cursor` as `after`, and a `wait` in milliseconds. The request returns as soon as something happens, or
+with an empty `events` list once the wait ends. Loop, passing each response's `cursor` to the next request:
+
+```bash
+cursor=$(curl -s localhost:6680/events | jq -r .cursor)
+while true; do
+  batch=$(curl -s "localhost:6680/events?after=$cursor&wait=10000") || break
+  echo "$batch" | jq -c '.events[]'
+  echo "$batch" | jq -e 'any(.events[]; .event == "closing")' >/dev/null && break
+  cursor=$(echo "$batch" | jq -r .cursor)
+done
+```
+
+The request doesn't wake the application, so an idle application stays idle while you wait.
+
+## Ask for only the events you need
+
+Add `events` with a comma-separated list to skip the rest. To follow configuration changes without a `tick` event for
+every frame:
+
+```bash
+curl -s "localhost:6680/events?after=$cursor&wait=10000&events=configuration"
+```
+
+`lagged` and `closing` events always arrive.
+
+## Handle what you missed
+
+A `tick` event carries the same row `GET /metrics/frames` returns, often with empty GPU times. When the frame that tick
+submitted completes, a `gpu` event repeats the row with its GPU times, so update the tick you stored instead of adding a
+new one.
+
+If you wait too long between requests, the inspector drops the oldest ticks before you read them, and the next response
+starts with a `lagged` event. Read the ticks you still need from `GET /metrics/frames?since=<tick>`, or carry on from the
+events that follow.
+
+At most four requests can wait at once. A request beyond that gets `503`: use one loop per tool instead of several.
+
+## Reference
+
+- [Inspector events](/docs/reference/inspector#events) specifies every event, its data, and the rules for cursors,
+  waits, and filters.
+- [HTTP API](/docs/api/inspector/waitForEvents) lists the route's parameters and status codes.

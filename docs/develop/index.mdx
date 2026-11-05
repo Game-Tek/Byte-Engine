@@ -118,6 +118,20 @@ Each row names the renderer `frame` it submitted, which is the same number a
 screenshot of that frame reports, so you can pair a slow frame with its image.
 GPU values arrive once the frame completes, so the newest rows have none yet.
 
+To follow a run as it goes, or to wait for a change to show up, wait on the
+events route instead of sleeping and polling the rows. A `tick` event arrives
+the moment each tick ends, and a `gpu` event repeats the row once its frame's
+GPU times arrive, so you read every tick once and never a row that's still
+missing its GPU values:
+
+```bash
+cursor=$(curl -s localhost:6680/events | jq -r .cursor)
+curl -s "localhost:6680/events?after=$cursor&wait=5000&events=tick,gpu" | jq -c '.events[] | {event, tick: .data.tick, gpu: .data.gpu.frame}'
+```
+
+Pass each response's `cursor` to the next request. See
+[Inspector events](/docs/use/inspector-events).
+
 To measure a run without polling, let the application close itself and write
 the metrics on the way out:
 

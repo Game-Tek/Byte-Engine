@@ -28,13 +28,26 @@ cd "$sandbox/model_viewer" || exit 1
 ( "$binary" --unattended="${RATE:-60}" "$@" > "$out/$name.log" 2>&1 & )
 # The inspector answers once the viewer runs; the first bake can take a while after that.
 until curl -sf 'http://127.0.0.1:6680/configuration' > /dev/null; do sleep 1; done
-sleep 6
-# The look action's handle depends on what the viewer creates before it, so resolve it by name.
-look_target=$(curl -s 'http://127.0.0.1:6680/entities?name=Lookaround' | python3 -c 'import json, sys; print(json.load(sys.stdin)[0]["target"])')
+cursor=$(curl -s 'http://127.0.0.1:6680/events' | jq -r .cursor)
+# Returns once `$1` more ticks ended, or fails when the viewer closes; it paces on the viewer instead of a guessed sleep.
+wait_ticks() {
+	local left=$1 batch
+	while (( left > 0 )); do
+		batch=$(curl -s "http://127.0.0.1:6680/events?after=$cursor&wait=5000&events=tick") || return 1
+		cursor=$(jq -r .cursor <<<"$batch")
+		jq -e 'any(.events[]; .event == "closing")' <<<"$batch" > /dev/null && return 1
+		(( left -= $(jq '[.events[] | select(.event == "tick")] | length' <<<"$batch") ))
+	done
+}
+# The viewer creates its look action after loading, so wait for the action itself, one tick at a time. Its handle
+# depends on what the viewer creates before it, so resolve it by name.
+while [[ $(curl -s 'http://127.0.0.1:6680/entities?name=Lookaround') == '[]' ]]; do wait_ticks 1 || exit 1; done
+look_target=$(curl -s 'http://127.0.0.1:6680/entities?name=Lookaround' | jq '.[0].target')
 curl -s -X POST -H 'Content-Type: application/json' \
 	-d "{\"type\":\"TriggerAction\",\"target\":$look_target,\"payload\":{\"type\":\"Vector3\",\"value\":[$look]}}" \
 	'http://127.0.0.1:6680/messages'
-sleep 1
+# The pin applies on the next tick and shows in the frame after it.
+wait_ticks 2 || exit 1
 echo "== $name"
 python3 "$scripts/sample_metrics.py" 127.0.0.1:6680 "${ROUNDS:-3}"
 curl -s -o "$out/${name}_lit.png" 'http://127.0.0.1:6680/screenshots?sink=0'

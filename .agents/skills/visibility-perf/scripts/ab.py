@@ -61,15 +61,19 @@ def pin(process, name, log_path):
     # The inspector answers before the viewer creates its look action, so wait for the action itself. Its handle
     # depends on what the viewer creates before it, so resolve it by name.
     target = None
+    cursor = None
     while target is None:
         if process.poll() is not None:
             sys.exit(f"{name} exited before its look action existed. See {log_path}.")
         try:
             entities = json.loads(get("/entities?name=Lookaround"))
             target = entities[0]["target"] if entities else None
+            if target is None:
+                # Check again once the next tick ends, instead of after a guessed sleep.
+                path = "/events" if cursor is None else f"/events?after={cursor}&wait=5000&events=tick"
+                cursor = json.loads(get(path))["cursor"]
         except OSError:
-            pass
-        if target is None:
+            # The inspector doesn't answer yet, so there are no ticks to wait for.
             time.sleep(0.5)
     message = {"type": "TriggerAction", "target": target, "payload": {"type": "Vector3", "value": [float(v) for v in arguments.look.split(",")]}}
     request = urllib.request.Request(inspector + "/messages", json.dumps(message).encode(), {"Content-Type": "application/json"})

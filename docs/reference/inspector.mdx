@@ -66,6 +66,35 @@ The configuration route lists every runtime setting update with its parameter,
 the requested value, and its state: pending until the pass it targets is
 installed, set with the value in effect, or not set with the reason.
 
+## Events
+
+The events route reports what changed in the application since a cursor, so
+a client learns about a change without polling every route. A request
+without a cursor returns at once with a cursor at the current tick and the
+state of every retained configuration update. A request with a cursor
+returns the events after it, waiting for one when it allows a wait. Every
+response holds the next cursor and the events in a list, each with its
+event name and its data.
+
+| Event | Data | Sent when |
+| --- | --- | --- |
+| `tick` | The tick's metric row, as the frame rows hold it. | A tick ends. |
+| `gpu` | The tick's metric row again, now with its GPU times. | The frame that an earlier `tick` event's tick submitted completes. |
+| `configuration` | The configuration update, as the configuration route lists it. | An update is requested or its state changes. |
+| `lagged` | `first`, the oldest tick still retained, and `missed`, the number of ticks the client didn't receive. | The cursor's next tick has left the retained ticks. |
+| `closing` | None. | The application is closing. |
+
+| Rule | Value |
+| --- | --- |
+| Cursor | An opaque string. Pass the latest one back unchanged. |
+| Order | `lagged`, then `gpu`, then `tick` in tick order, then `configuration`, then `closing`. |
+| Filter | A comma-separated list of `tick`, `gpu`, and `configuration`. Unlisted events are skipped, and the cursor still moves past them. `lagged` and `closing` are always sent. |
+| Wait | 0 to 30,000 ms, 0 by default. The response returns as soon as an event exists, or with an empty list once the wait ends. A request without a cursor never waits. |
+| Waiting requests | 4 at a time; further requests that would wait are refused. |
+| Rendering on demand | A request doesn't wake the loop, so an idle application stays idle. |
+| GPU times | A frame completes once the frames in flight after it were submitted, so a `gpu` event can arrive several ticks later, or not at all if rendering stops first. A tick whose frame completed before its `tick` event already carries its GPU times and gets no `gpu` event. |
+| Closing | Every request after the application starts closing returns `closing` at once. |
+
 ## Screenshots
 
 | Selection | Captures |

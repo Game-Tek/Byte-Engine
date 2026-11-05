@@ -129,7 +129,7 @@ Check each of these once per session, before the first build or run:
   their assets' content hashes, so an A/B can swap one asset file between runs. Launch from the crate directory, or
   assets silently fail to resolve.
 - `scripts/measure.sh <name> [viewer params]` does the whole run: launch unattended at `RATE` (default 60), wait for
-  the inspector, pin the look (`LOOK=lx,ly,lz`, default the hall view from the spawn point), sample `stage.*`, capture the lit image and `TARGET="<render target>"`, stop the viewer. `REBAKE=1` deletes the
+  the inspector and then for the look action, pacing on `GET /events` tick events instead of sleeping, pin the look (`LOOK=lx,ly,lz`, default the hall view from the spawn point), sample `stage.*`, capture the lit image and `TARGET="<render target>"`, stop the viewer. `REBAKE=1` deletes the
   resources first. `OUT_DIR` defaults to `$TMPDIR/byte-engine-perf`.
 - `scripts/ab.py --a <saved binary> --b <saved binary> [-- viewer params]` A/Bs two builds: interleaved rounds (A B,
   then B A), each run unattended to `--ticks` through `kill-after` with its ticks in `metrics-out` NDJSON, the look
@@ -138,7 +138,8 @@ Check each of these once per session, before the first build or run:
   noise, marks stages under `--floor` ms as `~0`, and writes each run's log and NDJSON, `results.json`, and
   `command.txt` to `--out`.
 - `scripts/pngdiff.py before.png after.png` diffs the first channel of two captures without an image library.
-- `scripts/sample_metrics.py [host:port] [rounds] [shots]` is the forced-frame sampler on its own.
+- `scripts/sample_metrics.py [host:port] [rounds] [shots]` is the forced-frame sampler on its own. It reads rows
+  from `GET /events`, so it misses no tick between rounds and waits for each round's GPU times instead of sleeping.
 - To read the BESL or MSL of any shader without launching the viewer or instrumenting the engine, intercept it from a
   dry-run bake: `cd ~/development/sandbox/model_viewer && <engine>/target/debug/beld --source assets bake --dry-run
   --intercept '*.besl' --intercept '*.msl' <id> 2>/dev/null`, where `<id>` is a `.bema`, a `.glb`, or a
@@ -160,7 +161,9 @@ Check each of these once per session, before the first build or run:
   and a `.msl` file is taken as linker input: it prints only an "input unused" warning and compiles nothing. Moving one call in the extracted resolve and recompiling took a minute and predicted the bake's 71
   registers exactly.
 - By hand: `GET /metrics?presented=true`, `GET /metrics/frames?since=<tick>&presented=true` (NDJSON with `gpu`
-  maps), `GET /screenshots?sink=0[&target=<name>][&previous=true][&format=raw]`, `POST /messages` with
+  maps), `GET /events?after=<cursor>&wait=<ms>&events=tick,gpu` to wait for the next ticks or for a frame's GPU
+  times instead of sleeping (a `gpu` event repeats a tick's row once its frame completes; start with `GET /events`
+  for a cursor), `GET /screenshots?sink=0[&target=<name>][&previous=true][&format=raw]`, `POST /messages` with
   `{"type":"TriggerAction","target":1,"payload":{"type":"Vector3","value":[lx,ly,lz]}}` to pin the look,
   `GET /entities?name=Move` for the movement action. The inspector listens on `127.0.0.1:6680`. Startup parameters
   override as `--name=value`: `render.directional-shadows.resolution`, `render.ssgi.enabled`, `render.gtao.*`,
@@ -234,8 +237,8 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
   ticks after the last, so SSGI has no history and its trace writes zeros by design. Hash 160 frames per run and
   compare the sets of distinct hashes. A `POST /screenshots` batch returns its captures from one frame, numbered in
   the `x-byte-engine-frame` header (lowercase).
-- Back-to-back GET captures can land on consecutive frames, which makes SSGI history valid again. Keep the capture
-  loop slow, or batch the captures with a POST.
+- Back-to-back GET captures can land on consecutive frames, which makes SSGI history valid again. Space the captures
+  by a counted number of `tick` events from `GET /events` instead of a sleep, or batch the captures with a POST.
 - To give temporal passes their history on a locked screen, force frames from about 6 parallel clients looping
   `GET /screenshots?sink=0&format=raw` (raw skips the PNG encode). Each capture then follows 40 to 60 consecutive
   ticks; count them from `/metrics/frames?since=<tick>` rows whose `gpu` map has `screen-space`. One-at-a-time

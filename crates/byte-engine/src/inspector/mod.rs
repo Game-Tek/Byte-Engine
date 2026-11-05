@@ -2,8 +2,8 @@
 //!
 //! [`DefaultInspector`] exposes factory-created handles, their tracked
 //! properties, application controls, screenshots, per-tick performance
-//! metrics, and passive message publication headers without choosing a
-//! transport. Untracked application values and published payloads remain opaque.
+//! metrics, passive message publication headers, and events since a client's
+//! cursor without choosing a transport. Untracked application values and published payloads remain opaque.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -27,6 +27,12 @@ use crate::{
 	metrics::Metrics,
 };
 
+// Only the graphics application raises the event signal and the HTTP inspector reads events; headless builds leave both
+// sides unused.
+#[cfg_attr(not(feature = "headed"), allow(dead_code))]
+mod events;
+#[cfg_attr(not(feature = "headed"), allow(unused_imports))]
+pub(crate) use events::{EventBatch, EventCursor, EventFilter, EventSignal, EventWaitError, MAX_EVENT_WAIT};
 #[cfg(feature = "headed")]
 pub mod http;
 mod message;
@@ -187,6 +193,8 @@ pub struct DefaultInspector {
 	#[cfg(feature = "headed")]
 	debug_views: Option<Arc<crate::rendering::DebugViewCatalog>>,
 	metrics: Arc<Metrics>,
+	/// Wakes requests waiting in [`Self::wait_for_events`]; the application loop raises it.
+	event_signal: Arc<EventSignal>,
 }
 
 impl DefaultInspector {
@@ -225,6 +233,7 @@ impl DefaultInspector {
 			#[cfg(feature = "headed")]
 			debug_views: None,
 			metrics,
+			event_signal: Arc::new(EventSignal::new()),
 		}
 	}
 
@@ -237,6 +246,28 @@ impl DefaultInspector {
 	#[cfg(feature = "headed")]
 	pub(crate) fn screenshot_broker(&self) -> Arc<ScreenshotBroker> {
 		Arc::clone(&self.screenshots)
+	}
+
+	/// Returns the signal the application loop raises after each tick and on closing, which wakes requests waiting
+	/// in [`Self::wait_for_events`].
+	#[cfg_attr(not(feature = "headed"), allow(dead_code))]
+	pub(crate) fn event_signal(&self) -> Arc<EventSignal> {
+		Arc::clone(&self.event_signal)
+	}
+
+	/// Returns the events after `after` that `filter` selects, waiting up to `wait` for one.
+	///
+	/// Without `after` it returns at once with a cursor at the current tick and every retained configuration
+	/// update. Pass each batch's cursor to the next call. See the
+	/// [inspector reference](/docs/reference/inspector#events) for the events and their rules.
+	#[cfg_attr(not(feature = "headed"), allow(dead_code))]
+	pub(crate) fn wait_for_events(
+		&self,
+		after: Option<EventCursor>,
+		filter: EventFilter,
+		wait: std::time::Duration,
+	) -> Result<EventBatch, EventWaitError> {
+		events::wait_for_events(&self.metrics, &self.configuration, &self.event_signal, after, filter, wait)
 	}
 
 	/// Returns the latest configuration event states for protocol adapters.

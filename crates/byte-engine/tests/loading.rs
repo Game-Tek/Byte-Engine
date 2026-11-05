@@ -22,9 +22,22 @@ use byte_engine::{
 	rendering::{
 		GraphicsDevice,
 		loading::{BufferRegion, Event, LoadError, LoadPipeline, Loader, LoaderClient, LoaderLane, spawn},
+		resource_loading::load_texture,
 	},
 };
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::{
+	command_buffer::CommandBufferRecording as _,
+	context::{Context as _, ContextCreate as _},
+	queue::Queue as _,
+};
+use resource_management::{
+	ProcessedAsset, StreamDescription,
+	asset::ResourceId,
+	resource::{MemoryStorageBackend, WriteStorageBackend as _, resource_manager::ResourceManager},
+	resources::image::Image,
+	types::{Formats, Gamma},
+};
+use utils::Extent;
 
 /// Each upload fills this many bytes, so a few of them exceed the loader's staging arena.
 const CHUNK: usize = 8 * 1024 * 1024;
@@ -99,6 +112,63 @@ impl LoadPipeline for TreePipeline {
 		}
 		Ok(node)
 	}
+}
+
+/// The side of [`TEXTURE_ID`]'s base level. Its mips are 32, 16, 8, 4, 2, and 1 texels wide.
+const TEXTURE_SIDE: u32 = 32;
+const TEXTURE_MIPS: u32 = 6;
+const TEXTURE_ID: &str = "texture.image";
+
+/// The `TexturePipeline` struct loads [`TEXTURE_ID`] from the mip level each request names.
+struct TexturePipeline {
+	resources: ResourceManager,
+}
+
+impl LoadPipeline for TexturePipeline {
+	type Key = u32;
+	type Request = u32;
+	type Resident = ghi::implementation::DetachedImage;
+
+	fn key(request: &u32) -> u32 {
+		*request
+	}
+
+	async fn load(&self, first_level: u32, lane: &mut LoaderLane<Self>) -> Result<Self::Resident, LoadError> {
+		let reference = self
+			.resources
+			.request::<Image>(TEXTURE_ID)
+			.await
+			.map_err(|error| LoadError(format!("The test texture is not stored. {error}")))?;
+		load_texture(reference, TEXTURE_ID, first_level, lane)
+			.await
+			.map_err(|error| LoadError(error.to_string()))
+	}
+}
+
+/// Stores an RGBA8 image whose every byte in mip `n` is `n + 1`, so a read texel names the mip it came from.
+async fn store_level_numbered_texture(storage: &MemoryStorageBackend) {
+	let mut streams = Vec::new();
+	let mut bytes = Vec::new();
+	for level in 0..TEXTURE_MIPS {
+		let side = (TEXTURE_SIDE >> level) as usize;
+		streams.push(StreamDescription::new(format!("mip[{level}]"), side * side * 4, bytes.len()));
+		bytes.resize(bytes.len() + side * side * 4, level as u8 + 1);
+	}
+	let image = Image {
+		format: Formats::RGBA8,
+		gamma: Gamma::Linear,
+		extent: [TEXTURE_SIDE, TEXTURE_SIDE, 0],
+		mip_count: TEXTURE_MIPS,
+		ibl: None,
+		photometry: None,
+	};
+	storage
+		.store(
+			ProcessedAsset::new(ResourceId::new(TEXTURE_ID), image).with_streams(streams),
+			&bytes,
+		)
+		.await
+		.expect("The test texture should store.");
 }
 
 /// Runs the loader and its lanes on a thread of their own, the way the loading thread does, until `stop` is set.
@@ -206,6 +276,70 @@ fn dependencies_load_once_without_render_requests() {
 		(0..NODES as u32).collect::<Vec<_>>(),
 		"Every node must load exactly once."
 	);
+}
+
+#[test]
+fn textures_load_from_a_first_mip_level() {
+	//! Tests that a texture loaded from a later mip is an image whose base level holds that mip, with that mip's
+	//! extent, so it samples like the resource with only its finer mips missing.
+
+	let storage = MemoryStorageBackend::new();
+	build_single_threaded_async_runtime().block_on(store_level_numbered_texture(&storage));
+	let device = GraphicsDevice::new(&NoParameters);
+	let mut render = device.create_context();
+	let loader = Loader::new(&device, &NoParameters);
+	let first_levels = [0, 2, TEXTURE_MIPS - 1];
+	let (mut client, lanes) = spawn(
+		&loader,
+		TexturePipeline {
+			resources: ResourceManager::new(storage),
+		},
+		2,
+		first_levels.len(),
+	);
+
+	let stop = Arc::new(AtomicBool::new(false));
+	let thread = run_loading_thread(loader, lanes, stop.clone());
+
+	for first_level in first_levels {
+		client.request(first_level);
+	}
+	let mut images = Vec::new();
+	let deadline = Instant::now() + Duration::from_secs(60);
+	while images.len() < first_levels.len() {
+		assert!(Instant::now() < deadline, "Loading stalled after {} textures.", images.len());
+		match client.poll() {
+			Some(Event::Ready { key, resident }) => images.push((key, render.intern_image(resident))),
+			Some(Event::Failed { error, .. }) => panic!("{error}"),
+			None => std::thread::sleep(Duration::from_millis(1)),
+		}
+	}
+	stop.store(true, Ordering::Relaxed);
+	thread.join().unwrap();
+
+	let command_buffer = render.queue(device.graphics_queue()).create_command_buffer(None);
+	let finished = render.create_synchronizer(None, false);
+	let mut recording = render.create_command_buffer_recording(command_buffer);
+	let transfers = images
+		.iter()
+		.map(|&(first_level, image)| (first_level, recording.transfer_texture(image.into()).unwrap()))
+		.collect::<Vec<_>>();
+	recording.execute(finished);
+	render.wait_for_synchronizer(finished);
+
+	for (first_level, transfer) in transfers {
+		let readback = render.get_image_data(transfer).unwrap();
+		let side = TEXTURE_SIDE >> first_level;
+		assert_eq!(readback.extent, Extent::square(side), "first level {first_level}");
+		for row in 0..side as usize {
+			let texels = &readback.bytes[row * readback.bytes_per_row..][..side as usize * 4];
+			assert!(
+				texels.iter().all(|byte| *byte == first_level as u8 + 1),
+				"The base level of the image loaded from mip {first_level} holds another mip's texels."
+			);
+		}
+	}
+	assert!(!render.has_errors());
 }
 
 #[test]

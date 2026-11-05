@@ -1187,6 +1187,8 @@ impl VisibilityPipelineManager {
 			}
 		}
 		self.resource_events = events;
+		// Every replacement is in its slot now, so nothing binds the images it replaced.
+		self.loader.delete_replaced_images(frame);
 		if materials_changed {
 			self.rebuild_material_lists();
 		}
@@ -1217,7 +1219,8 @@ impl VisibilityPipelineManager {
 		}
 	}
 
-	/// Publishes one texture the loader already transferred, and returns whether a loaded material samples it.
+	/// Publishes one texture the loader already transferred, and returns whether it is the slot's first image and a
+	/// loaded material samples it.
 	fn adopt_texture(&mut self, frame: &mut ghi::implementation::Frame, texture: ResidentTexture) -> bool {
 		let ResidentTexture {
 			id,
@@ -1254,6 +1257,10 @@ impl VisibilityPipelineManager {
 			_ => {}
 		}
 		let texture = self.availability.get_or_insert(Availability::Texture(index), false);
+		// A finer image replacing a coarse one changes no material's readiness, so the material lists stay.
+		if self.availability.is_ready(texture) {
+			return false;
+		}
 		self.availability.set_available(texture, true);
 		self.loaded_materials
 			.iter()

@@ -54,6 +54,9 @@ pub(crate) const IBL_SPECULAR_LEVEL_COUNT: usize =
 	resource_management::resources::image::IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize;
 
 const VISIBILITY_LANE_COUNT: usize = 4;
+/// The largest side, in texels, of the mips a material texture loads before its full chain, so its materials draw
+/// while full chains load. See [`coarse_first_level`].
+const COARSE_TEXTURE_EXTENT: u32 = 128;
 const VISIBILITY_RESULT_CAPACITY: usize = 64;
 
 /// The `VisibilityLoadKey` enum names every logical resource in the visibility pipeline's shared registry.
@@ -66,6 +69,8 @@ pub(crate) enum VisibilityLoadKey {
 	MeshLevels(MeshKey),
 	Material(String),
 	Texture(String),
+	/// The full mip chain of a texture that loaded its coarse mips first.
+	TextureDetail(String),
 	Environment(String),
 	Lightmap(String),
 	/// The uber material evaluation shader of the transparent phase when `true`, of the opaque phase otherwise.
@@ -80,6 +85,7 @@ impl std::fmt::Display for VisibilityLoadKey {
 			Self::Mesh(key) => write!(formatter, "mesh {key}"),
 			Self::Material(id) => write!(formatter, "material {id}"),
 			Self::Texture(id) => write!(formatter, "texture {id}"),
+			Self::TextureDetail(id) => write!(formatter, "full mip chain of texture {id}"),
 			Self::Environment(id) => write!(formatter, "environment {id}"),
 			Self::Lightmap(id) => write!(formatter, "lightmap {id}"),
 			Self::MeshLevels(key) => write!(formatter, "finer detail levels of mesh {key:?}"),
@@ -105,7 +111,10 @@ pub(crate) enum VisibilityLoadRequest {
 		primitives: Vec<PrimitiveLevels>,
 	},
 	Material(String),
+	/// A texture, which loads only its coarse mips first when it has larger ones; see [`coarse_first_level`].
 	Texture(String),
+	/// The full mip chain of a texture whose coarse mips loaded first. It replaces the coarse image in the same slot.
+	TextureDetail(String),
 	Environment(String),
 	/// A baked lightmap and its image.
 	Lightmap(String),
@@ -203,6 +212,8 @@ pub(crate) enum VisibilityResident {
 		id: String,
 		index: u32,
 		image: ghi::implementation::DetachedImage,
+		/// The resource mip that is the image's base level: 0 for the full chain.
+		first_level: u32,
 		photometry: Option<ImagePhotometry>,
 	},
 	/// An upload-complete lightmap whose image the render thread still interns.
@@ -309,6 +320,10 @@ pub(crate) struct VisibilityLoaderClient {
 	retired_ranges: RetiredRanges,
 	/// The first frame that has not started yet, which is the first that cannot draw a mesh released now.
 	next_frame: u64,
+	/// The image in each bindless texture slot, with the resource mip that is its base level.
+	texture_images: HashMap<u32, (ghi::ImageHandle, u32)>,
+	/// Images finer ones replaced in their slots this frame, deleted once the slots name their replacements.
+	replaced_images: Vec<ghi::ImageHandle>,
 	environments: HashMap<String, ResidentEnvironment>,
 	materials: HashMap<u32, MaterialPublication>,
 	/// Each phase's latest uber shader, opaque then transparent, until its pipeline compiles.
@@ -350,6 +365,24 @@ pub(crate) fn assign_slot(slots: &mut HashMap<String, u32>, id: &str, limit: usi
 	let index = slots.len() as u32;
 	slots.insert(id.to_string(), index);
 	Some(index)
+}
+
+/// The `TextureMips` enum chooses which mips one texture load uploads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TextureMips {
+	/// The coarse mips alone when the image has larger ones, and its full chain later; see [`coarse_first_level`].
+	CoarseFirst,
+	/// Every mip at once.
+	Full,
+}
+
+/// Returns the first mip of an `extent` image with `mip_count` mips whose larger side is at most
+/// [`COARSE_TEXTURE_EXTENT`] texels, or 0 when the base level already is or no mip gets that small.
+pub(super) fn coarse_first_level(extent: [u32; 3], mip_count: u32) -> u32 {
+	let largest = extent[0].max(extent[1]);
+	(0..mip_count)
+		.find(|&level| largest.checked_shr(level).unwrap_or(0) <= COARSE_TEXTURE_EXTENT)
+		.unwrap_or(0)
 }
 
 /// Builds the default sampler used by visibility material textures.
@@ -477,6 +510,43 @@ impl VisibilityLoaderClient {
 		resident
 	}
 
+	/// Interns a loaded image for bindless texture slot `index` and returns its handle, or frees it and returns `None`
+	/// when the slot already holds an image with more mips.
+	///
+	/// `first_level` is the resource mip that is the image's base level. An image that replaces the slot's image
+	/// queues the old one for [`Self::delete_replaced_images`]. A coarser image than the resident one, such as coarse
+	/// mips that arrive after their full chain, is dropped before interning, since no frame ever bound it.
+	fn adopt_texture_image(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		index: u32,
+		first_level: u32,
+		image: ghi::implementation::DetachedImage,
+	) -> Option<ghi::ImageHandle> {
+		if self
+			.texture_images
+			.get(&index)
+			.is_some_and(|&(_, resident_first_level)| resident_first_level < first_level)
+		{
+			return None;
+		}
+		let image = frame.intern_image(image);
+		if let Some((replaced, _)) = self.texture_images.insert(index, (image, first_level)) {
+			self.replaced_images.push(replaced);
+		}
+		Some(image)
+	}
+
+	/// Deletes the images that finer ones replaced in their slots this frame.
+	///
+	/// Call it after writing every replacement into its slot, since a context refuses to delete an image a descriptor
+	/// set still binds. The context frees each image once the frames in flight that may sample it complete.
+	pub(crate) fn delete_replaced_images(&mut self, frame: &mut ghi::implementation::Frame) {
+		for image in self.replaced_images.drain(..) {
+			frame.delete_image(image);
+		}
+	}
+
 	/// Appends readiness changes once per frame, after pipeline publication.
 	///
 	/// Interns every image that finished loading into `frame`'s context, and frees the geometry of released meshes no
@@ -554,24 +624,31 @@ impl VisibilityLoaderClient {
 					continue;
 				}
 				LoaderEvent::Ready {
-					resident: VisibilityResident::Texture {
+					resident:
+						VisibilityResident::Texture {
+							id,
+							index,
+							image,
+							first_level,
+							photometry,
+						},
+					..
+				} => {
+					let Some(image) = self.adopt_texture_image(frame, index, first_level, image) else {
+						continue;
+					};
+					VisibilityLoaderEvent::TextureReady(ResidentTexture {
 						id,
 						index,
-						image,
+						image: image.into(),
+						sampler: if photometry.is_some() {
+							self.clamp_sampler
+						} else {
+							self.repeat_sampler
+						},
 						photometry,
-					},
-					..
-				} => VisibilityLoaderEvent::TextureReady(ResidentTexture {
-					id,
-					index,
-					image: frame.intern_image(image).into(),
-					sampler: if photometry.is_some() {
-						self.clamp_sampler
-					} else {
-						self.repeat_sampler
-					},
-					photometry,
-				}),
+					})
+				}
 				LoaderEvent::Ready {
 					resident:
 						VisibilityResident::Lightmap {
@@ -586,7 +663,10 @@ impl VisibilityLoaderClient {
 					texture: ResidentTexture {
 						id: id.clone(),
 						index,
-						image: frame.intern_image(image).into(),
+						image: self
+							.adopt_texture_image(frame, index, 0, image)
+							.expect("A full mip chain always replaces the image in its slot.")
+							.into(),
 						// Rectangles end at the image's edges, which must not wrap to the opposite side.
 						sampler: self.clamp_sampler,
 						photometry: None,
@@ -742,6 +822,8 @@ pub(crate) fn spawn(
 			geometry_ranges: geometry.ranges.clone(),
 			retired_ranges: RetiredRanges::default(),
 			next_frame: 0,
+			texture_images: HashMap::default(),
+			replaced_images: Vec::new(),
 			environments: HashMap::default(),
 			materials: HashMap::default(),
 			uber_shaders: [None, None],
@@ -1057,7 +1139,16 @@ impl VisibilityLoader {
 	}
 
 	/// Loads one image, places it in a bindless slot, and completes its transfer before returning.
-	async fn load_texture(&self, id: String, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
+	///
+	/// With [`TextureMips::CoarseFirst`], an image larger than [`COARSE_TEXTURE_EXTENT`] loads only its mips from
+	/// [`coarse_first_level`] on, then requests its full chain as [`VisibilityLoadRequest::TextureDetail`], which
+	/// replaces the coarse image in the same slot.
+	async fn load_texture(
+		&self,
+		id: String,
+		mips: TextureMips,
+		lane: &LoaderLane<Self>,
+	) -> Result<VisibilityResident, LoadError> {
 		let resource: Reference<ResourceImage> = self.resource_manager.request(&id).await.map_err(|error| {
 			LoadError(format!(
 				"Visibility texture resource request failed for {id}. The most likely cause is that the resource id is missing, its asset handler is not registered, or the asset database is not loaded. Request error: {error}"
@@ -1082,14 +1173,25 @@ impl VisibilityLoader {
 			)
 		})?;
 
-		let image = load_texture(resource, &id, lane)
+		let first_level = match mips {
+			TextureMips::CoarseFirst => coarse_first_level(texture.extent, texture.mip_count),
+			TextureMips::Full => 0,
+		};
+
+		let image = load_texture(resource, &id, first_level, lane)
 			.await
 			.map_err(|error| LoadError(format!("Visibility texture transfer failed for {id}. {error}")))?;
+		if first_level != 0 {
+			// Requested only once the coarse mips are uploaded, so the full chain queues behind the coarse mips of the
+			// textures already waiting, and normally reaches the render thread after its own coarse image.
+			lane.request(VisibilityLoadRequest::TextureDetail(id.clone()));
+		}
 
 		Ok(VisibilityResident::Texture {
 			id,
 			index,
 			image,
+			first_level,
 			photometry,
 		})
 	}
@@ -1108,7 +1210,9 @@ impl VisibilityLoader {
 			instances,
 		} = lightmap.into_resource();
 		let image_id = image.id().to_string();
-		let VisibilityResident::Texture { index, image, .. } = self.load_texture(image_id, lane).await? else {
+		// Lightmap texels are lighting, so a coarse lightmap would light the scene wrongly until its chain loads.
+		let VisibilityResident::Texture { index, image, .. } = self.load_texture(image_id, TextureMips::Full, lane).await?
+		else {
 			unreachable!("a texture load returns a texture");
 		};
 		Ok(VisibilityResident::Lightmap {
@@ -1501,6 +1605,7 @@ impl LoadPipeline for VisibilityLoader {
 			}
 			VisibilityLoadRequest::Material(id) => VisibilityLoadKey::Material(id.clone()),
 			VisibilityLoadRequest::Texture(id) => VisibilityLoadKey::Texture(id.clone()),
+			VisibilityLoadRequest::TextureDetail(id) => VisibilityLoadKey::TextureDetail(id.clone()),
 			VisibilityLoadRequest::Environment(id) => VisibilityLoadKey::Environment(id.clone()),
 			VisibilityLoadRequest::Lightmap(id) => VisibilityLoadKey::Lightmap(id.clone()),
 			VisibilityLoadRequest::UberShader { transparent, .. } => VisibilityLoadKey::UberShader(*transparent),
@@ -1515,7 +1620,8 @@ impl LoadPipeline for VisibilityLoader {
 			VisibilityLoadRequest::Mesh(source) => self.load_mesh(source, lane).await,
 			VisibilityLoadRequest::MeshLevels { id, primitives } => self.load_mesh_levels(id, primitives, lane).await,
 			VisibilityLoadRequest::Material(id) => self.load_material(id, lane).await,
-			VisibilityLoadRequest::Texture(id) => self.load_texture(id, lane).await,
+			VisibilityLoadRequest::Texture(id) => self.load_texture(id, TextureMips::CoarseFirst, lane).await,
+			VisibilityLoadRequest::TextureDetail(id) => self.load_texture(id, TextureMips::Full, lane).await,
 			VisibilityLoadRequest::Environment(id) => self.load_environment(id, lane).await,
 			VisibilityLoadRequest::Lightmap(id) => self.load_lightmap(id, lane).await,
 			VisibilityLoadRequest::UberShader { transparent, rebake } => self.load_uber_shader(transparent, rebake).await,
@@ -1547,6 +1653,19 @@ mod tests {
 		assert_eq!(assign_slot(&mut slots, "b", 2, "test"), Some(1));
 		assert_eq!(assign_slot(&mut slots, "a", 2, "test"), Some(0));
 		assert_eq!(assign_slot(&mut slots, "c", 2, "test"), None);
+	}
+
+	#[test]
+	fn coarse_mips_start_at_the_first_level_no_larger_than_the_coarse_extent() {
+		// 4096 halves to 128 at level 5; the larger side decides for rectangles.
+		assert_eq!(coarse_first_level([4096, 4096, 0], 13), 5);
+		assert_eq!(coarse_first_level([300, 2048, 0], 12), 4);
+		// Non-powers of two round down at each level, as their mips do: 1000 >> 3 = 125.
+		assert_eq!(coarse_first_level([1000, 1000, 0], 10), 3);
+		// Images already this small, and chains that stop before getting there, load whole.
+		assert_eq!(coarse_first_level([128, 64, 0], 8), 0);
+		assert_eq!(coarse_first_level([4096, 4096, 0], 1), 0);
+		assert_eq!(coarse_first_level([4096, 4096, 0], 5), 0);
 	}
 
 	#[test]

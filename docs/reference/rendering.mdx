@@ -293,6 +293,12 @@ cameras or objects requests a redraw itself.
 A renderable is drawn only once its mesh's coarsest detail level, every
 material, and every texture are resident.
 
+A material texture is resident once its coarse mips are: the mips from the
+first one whose larger side is at most 128 texels. Until its full mip chain
+loads, it samples as though its finer mips were missing, so a surface that
+needs them looks blurred. A texture with no mips larger than 128 texels, or no
+mip that small, loads whole. Lightmaps and IES profiles always load whole.
+
 A skinned primitive instance that receives a pose takes its own vertices out of
 the geometry vertex capacity, as many as its primitive has, for as long as it
 keeps receiving poses. It gives them back when it's removed. When the capacity

@@ -245,7 +245,7 @@ impl LoadPipeline for BakeLoad {
 					.await
 					.map_err(|error| LoadError(format!("that texture '{id}' isn't baked ({error})")))?;
 				let slot = slot(&self.texture_slots, &id, MAX_BINDLESS_TEXTURES, "texture")?;
-				let image = load_texture(reference, &id, lane)
+				let image = load_texture(reference, &id, 0, lane)
 					.await
 					.map_err(|error| LoadError(format!("that texture '{id}' couldn't upload: {error}")))?;
 				Ok(BakeResident::Texture { slot, image })

@@ -251,6 +251,87 @@ mod tests {
 		);
 	}
 
+	/// Verifies a deleted image stays alive until its frame sequence starts again, after the frame that deleted it.
+	#[test]
+	fn deleted_image_lives_until_its_frame_sequence_starts_again() {
+		use crate::queue::{FrameRequest, Queue as _, QueueExecution as _};
+
+		let (mut context, queue_handle) = crate::metal::test_context(crate::WorkloadTypes::TRANSFER);
+		let image = context
+			.build_image(crate::image::Builder::new(crate::Formats::R8UNORM, crate::Uses::Image).extent(Extent::square(4)));
+		let texture = objc2::rc::Weak::from_retained(&context.images.get_single(image.0).unwrap().texture);
+		let command_buffer = context.queue(queue_handle).create_command_buffer(None);
+		let signal = context.create_synchronizer(None, true);
+		let frames = u64::from(context.frames);
+		// Runs frame `frame_index`, deleting the image in it when asked. The frame waits only for the frame that last
+		// used its sequence, so earlier frames may still be in flight.
+		let run_frame = |context: &mut Context, frame_index: u64, delete: bool| {
+			context
+				.queue(queue_handle)
+				.execute(Some(FrameRequest::new(frame_index, signal)), &[], signal, |execution| {
+					execution.record(command_buffer, |_| {});
+					if delete {
+						execution.frame().unwrap().delete_image(image);
+					}
+					[]
+				});
+		};
+
+		run_frame(&mut context, 0, true);
+		assert!(context.images.get_single(image.0).is_none());
+		for frame_index in 1..frames {
+			run_frame(&mut context, frame_index, false);
+			assert!(
+				texture.load().is_some(),
+				"The deleted image was freed in frame {frame_index}, while the frame that deleted it may still be in flight.",
+			);
+		}
+		run_frame(&mut context, frames, false);
+		context.wait();
+
+		assert!(
+			texture.load().is_none(),
+			"The deleted image is still alive. The most likely cause is that its task did not run when its frame sequence started again.",
+		);
+	}
+
+	#[test]
+	#[should_panic(expected = "a descriptor set still binds the image")]
+	fn deleting_a_bound_image_panics() {
+		use crate::queue::{FrameRequest, Queue as _, QueueExecution as _};
+		use crate::shader::{ResourceKind, ResourceSlot, ShaderResourceDescriptor};
+
+		let (mut context, queue_handle) = crate::metal::test_context(crate::WorkloadTypes::TRANSFER);
+		let image = context
+			.build_image(crate::image::Builder::new(crate::Formats::R8UNORM, crate::Uses::Image).extent(Extent::square(4)));
+		let slot = ResourceSlot::new(0);
+		let layout = crate::DescriptorSetLayout::new(
+			"Bound Image",
+			[ShaderResourceDescriptor::new(
+				slot,
+				ResourceKind::SampledImage,
+				1,
+				crate::AccessPolicies::READ,
+			)],
+		);
+		let descriptor_set = context.create_descriptor_set(None, &layout);
+		context.write(&[crate::DescriptorWrite::image(
+			descriptor_set,
+			slot,
+			image,
+			crate::Layouts::Read,
+		)]);
+		let command_buffer = context.queue(queue_handle).create_command_buffer(None);
+		let signal = context.create_synchronizer(None, true);
+		context
+			.queue(queue_handle)
+			.execute(Some(FrameRequest::new(0, signal)), &[], signal, |execution| {
+				execution.record(command_buffer, |_| {});
+				execution.frame().unwrap().delete_image(image);
+				[]
+			});
+	}
+
 	#[test]
 	fn texture_transfers_preserve_request_identity_and_layout() {
 		let mut context = test_context();

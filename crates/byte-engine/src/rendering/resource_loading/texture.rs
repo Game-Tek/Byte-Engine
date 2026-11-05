@@ -22,17 +22,20 @@ use crate::rendering::loading::{
 	ImageDescription, ImageRegion, ImageUpload, LoadPipeline, LoaderLane, NativeImageRegion, NativeImageUpload,
 };
 
-/// Loads every mip of an image resource through the loader and returns the finished image.
+/// Loads the mips of an image resource from `first_level` on through the loader and returns the finished image.
 ///
+/// The image's base level is the resource's mip `first_level`, so pass 0 for the whole chain, or a later level to load
+/// only the smaller mips. Samplers pick mips from the image's own extent, so either image samples like the resource.
 /// CPU-readable resources are staged and copied. GPU-backed resources are read straight from their file through
 /// native I/O. Next, return the image in the pipeline's resident value so the render thread interns it and binds
 /// it with a sampler the pipeline owns.
 pub async fn load_texture<P: LoadPipeline>(
 	reference: Reference<ResourceImage>,
 	name: &str,
+	first_level: u32,
 	lane: &LoaderLane<P>,
 ) -> Result<ghi::implementation::DetachedImage, TextureTransferError> {
-	let (metadata, source) = prepare_texture(reference, lane.staging().clone())
+	let (metadata, source) = prepare_texture(reference, first_level, lane.staging().clone())
 		.await
 		.map_err(|error| TextureTransferError(format!("Texture preparation failed for {name}. {error}")))?;
 	let description = ImageDescription {
@@ -88,16 +91,18 @@ impl std::fmt::Display for TextureTransferError {
 
 impl std::error::Error for TextureTransferError {}
 
-/// The `TextureMetadata` struct keeps validated image shape private to the texture utility.
+/// The `TextureMetadata` struct keeps the validated shape of the image being loaded private to the texture utility.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct TextureMetadata {
 	format: ghi::Formats,
 	extent: Extent,
 	mip_count: u32,
+	/// The resource mip that becomes the image's base level, which names the stream each image level reads.
+	first_level: u32,
 }
 
-/// Prepares all persisted mips without choosing a renderer destination, and returns the validated image shape with
-/// the source the loader uploads from.
+/// Prepares the persisted mips from `first_level` on without choosing a renderer destination, and returns the
+/// validated image shape with the source the loader uploads from.
 ///
 /// CPU-readable resources receive one exclusive staging lease with rows
 /// already padded for GHI copies. GPU-backed resources retain their native
@@ -105,6 +110,7 @@ struct TextureMetadata {
 /// logical identity when reporting [`TexturePreparationError`].
 async fn prepare_texture(
 	mut reference: Reference<ResourceImage>,
+	first_level: u32,
 	staging: Arc<UploadStagingArena>,
 ) -> Result<(TextureMetadata, PreparedTextureSource), TexturePreparationError> {
 	let image = reference.resource();
@@ -117,10 +123,14 @@ async fn prepare_texture(
 	if mip_count > available_mips {
 		return Err(TexturePreparationError::MipCount);
 	}
+	if first_level >= mip_count {
+		return Err(TexturePreparationError::FirstLevel);
+	}
 	let metadata = TextureMetadata {
 		format: resource_format_to_ghi(image.format),
-		extent: Extent::rectangle(width, height),
-		mip_count,
+		extent: Extent::rectangle(width, height).mip(first_level),
+		mip_count: mip_count - first_level,
+		first_level,
 	};
 
 	let source = if reference.is_gpu_backed() {
@@ -177,18 +187,19 @@ impl NativeTextureUpload {
 		}
 	}
 
-	/// Locates every persisted mip inside the decoded file stream.
+	/// Locates every loaded mip inside the decoded file stream.
 	fn regions(&self, metadata: TextureMetadata) -> Result<SmallVec<[NativeImageRegion; 16]>, TexturePreparationError> {
 		let mut regions = SmallVec::new();
 		for mip_level in 0..metadata.mip_count {
-			let name = MipStreamName::new(mip_level);
+			let name = MipStreamName::new(metadata.first_level + mip_level);
 			let decoded_offset = match self.reference.streams() {
 				Some(streams) => streams
 					.iter()
 					.find(|stream| stream.name() == name.as_str())
 					.map(StreamDescription::offset)
 					.ok_or(TexturePreparationError::Streams)?,
-				None if metadata.mip_count == 1 => 0,
+				// Only a single-level resource may store its one level without a stream table.
+				None if metadata.mip_count == 1 && metadata.first_level == 0 => 0,
 				None => return Err(TexturePreparationError::Streams),
 			};
 			let extent = metadata.extent.mip(mip_level);
@@ -278,6 +289,8 @@ pub(crate) enum TexturePreparationError {
 	Dimensions,
 	/// The declared mip count exceeds the image dimensions.
 	MipCount,
+	/// The requested first mip level is past the image's last mip.
+	FirstLevel,
 	/// Size arithmetic or staging placement overflowed.
 	Layout,
 	/// The complete padded mip chain does not fit the supplied staging arena.
@@ -297,6 +310,9 @@ impl std::fmt::Display for TexturePreparationError {
 		formatter.write_str(match self {
 			Self::Dimensions => {
 				"Texture dimensions are unsupported. The most likely cause is a zero-sized or non-2D baked image."
+			}
+			Self::FirstLevel => {
+				"Texture first mip level is past the image's last mip. The most likely cause is that the caller chose the first level without reading the resource's mip count. Pass a level below the mip count."
 			}
 			Self::MipCount => {
 				"Texture mip metadata is invalid. The most likely cause is a declared mip count larger than its dimensions permit."
@@ -384,7 +400,7 @@ async fn prepare_staged_texture(
 		.allocate(upload_byte_count, ghi::TEXTURE_COPY_PITCH_ALIGNMENT)
 		.await
 		.ok_or(TexturePreparationError::StagingCapacity)?;
-	load_texture_bytes(reference, &mut staging, &layouts).await?;
+	load_texture_bytes(reference, &mut staging, &layouts, metadata.first_level).await?;
 	for layout in &layouts {
 		let range = layout.offset..layout.offset + layout.padded_size;
 		layout.pack_rows(&mut staging.bytes_mut()[range]);
@@ -451,18 +467,23 @@ async fn load_texture_into(
 	Ok(())
 }
 
+/// Reads the resource mips from `first_level` on into their staging layouts, one layout per loaded level.
 async fn load_texture_bytes(
 	reference: &mut Reference<ResourceImage>,
 	staging: &mut StagingLease,
 	layouts: &[TextureUploadLayout],
+	first_level: u32,
 ) -> Result<(), TexturePreparationError> {
+	// A single-level resource's payload is that level, so it reads whole. A later level alone must read its stream.
 	if let [layout] = layouts
+		&& first_level == 0
 		&& (!reference.requires_cpu_decompression() || reference.size == layout.compact_size)
 	{
 		return load_texture_into(reference, &mut staging.bytes_mut()[..layout.compact_size]).await;
 	}
 
-	let stream_names: [MipStreamName; u32::BITS as usize] = std::array::from_fn(|level| MipStreamName::new(level as u32));
+	let stream_names: [MipStreamName; u32::BITS as usize] =
+		std::array::from_fn(|level| MipStreamName::new(first_level + level as u32));
 	if reference.requires_cpu_decompression()
 		&& texture_payload_is_compact(reference.size, reference.streams(), &stream_names, layouts)
 	{
@@ -512,6 +533,7 @@ mod tests {
 			format: ghi::Formats::RGBA8UNORM,
 			extent: Extent::rectangle(17, 3),
 			mip_count: 3,
+			first_level: 0,
 		};
 		let mut offset = 0;
 		let layouts = (0..metadata.mip_count)

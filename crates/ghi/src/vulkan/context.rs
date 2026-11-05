@@ -55,7 +55,7 @@ pub struct Context {
 	pub(super) open_recording_retirements: Vec<crate::vulkan::Tasks>,
 	/// The set elements whose writes name each resource, by the resource's first frame-local copy, so replacing the
 	/// resource's storage rewrites only them. A swapchain's writes are listed under its first image.
-	descriptor_references: HashMap<super::Handles, SmallVec<[(u32, u32); 2]>>,
+	pub(super) descriptor_references: HashMap<super::Handles, SmallVec<[(u32, u32); 2]>>,
 	/// The index that merges the descriptors of one resource while a large set copy lists its consumptions, kept empty
 	/// in between so it keeps its memory.
 	descriptor_merge_index: HashMap<(super::Handles, crate::Layouts), usize>,

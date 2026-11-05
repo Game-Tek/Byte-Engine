@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Material textures load their coarse mips first: the mips from the first one no larger than 128 texels, then their full mip chains, which replace them. Materials draw as soon as every texture's coarse mips are in, where they waited for every full chain, and the full chains queue behind every texture's coarse mips. Lightmaps and IES profiles still load whole. On the model viewer with warm files on an Apple M4, every Sponza texture loads within about 0.1 s either way, so the gain shows only where texture reads are slow.
+  - Breaking: `resource_loading::load_texture` takes the first mip level to load, and returns an image whose base level is that mip. Pass 0 for the whole chain.
+  - Loaded images are transfer sources, so tests and tools can read them back.
+  - The Metal and Vulkan `Frame` types have `delete_image`, which frees an image once the frames in flight that may use it finish, so callers need no synchronization. It panics when a descriptor set still binds the image. The visibility pipeline uses it to free the image a texture's full chain replaced, and the previous image of a reloaded lightmap. Before, a replaced image stayed allocated.
+
 - Profiling a release build no longer needs scaffolding:
   - `render.debug.labels=true` now labels shader libraries, pipelines, resources, and command debug groups in release builds too, so GPU captures and traces show pass names instead of `besl_main (N)`. Debug builds still turn it on by default.
   - `kill-after` now works in release builds, so `kill-after` with `metrics-out` measures a release run without polling.

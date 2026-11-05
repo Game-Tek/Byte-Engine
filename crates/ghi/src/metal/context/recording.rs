@@ -393,11 +393,20 @@ impl Context {
 				continue;
 			}
 
-			let handle = self
-				.images
-				.nth_handle(task.handle, sequence_index as usize)
-				.expect("Missing Metal frame-local image. The most likely cause is an invalid dynamic image handle.");
-			self.resize_image_internal(handle, task.extent, task.array_layers);
+			match task.kind {
+				TaskKind::ResizeImage {
+					handle,
+					extent,
+					array_layers,
+				} => {
+					let handle = self
+						.images
+						.nth_handle(handle, sequence_index as usize)
+						.expect("Missing Metal frame-local image. The most likely cause is an invalid dynamic image handle.");
+					self.resize_image_internal(handle, extent, array_layers);
+				}
+				TaskKind::DeleteImage(image) => drop(image),
+			}
 		}
 	}
 

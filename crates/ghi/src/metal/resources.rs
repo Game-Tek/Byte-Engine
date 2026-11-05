@@ -13,17 +13,26 @@ pub(crate) struct Mesh {
 	pub(crate) index_count: u32,
 }
 
-/// The `Task` struct defers replacing one frame-local image with a new extent until the frame sequence that uses
-/// it has completed its previous submission.
+/// The `Task` struct defers work on a resource until frame sequence `frame` has completed its previous submission,
+/// which is the last one that may use the resource.
 ///
 /// [`Context::process_tasks`] runs it when that frame sequence starts again.
-#[derive(Clone, PartialEq)]
 pub(crate) struct Task {
-	pub(crate) handle: graphics_hardware_interface::BaseImageHandle,
-	pub(crate) extent: Extent,
-	/// The new layer count, or `None` to keep the image's current one.
-	pub(crate) array_layers: Option<u32>,
+	pub(crate) kind: TaskKind,
 	pub(crate) frame: u8,
+}
+
+/// The `TaskKind` enum is the work a [`Task`] defers.
+pub(crate) enum TaskKind {
+	/// Replaces one frame-local image with storage of a new extent.
+	ResizeImage {
+		handle: graphics_hardware_interface::BaseImageHandle,
+		extent: Extent,
+		/// The new layer count, or `None` to keep the image's current one.
+		array_layers: Option<u32>,
+	},
+	/// Frees an image that no context holds anymore.
+	DeleteImage(Image),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

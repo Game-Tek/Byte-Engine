@@ -135,11 +135,16 @@ pub struct ImageDescription {
 
 impl ImageDescription {
 	/// Returns the GHI builder for this image. The builder's defaults already make it static and device-only.
+	///
+	/// Loaded images are transfer sources too, so tests and debugging tools can read back what a load uploaded.
 	fn builder(&self) -> ghi::image::Builder<'_> {
-		let builder = ghi::image::Builder::new(self.format, ghi::Uses::Image | ghi::Uses::TransferDestination)
-			.name(&self.name)
-			.extent(self.extent)
-			.mip_levels(self.mip_levels);
+		let builder = ghi::image::Builder::new(
+			self.format,
+			ghi::Uses::Image | ghi::Uses::TransferDestination | ghi::Uses::TransferSource,
+		)
+		.name(&self.name)
+		.extent(self.extent)
+		.mip_levels(self.mip_levels);
 		if self.cube { builder.cube_compatible() } else { builder }
 	}
 }

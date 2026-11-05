@@ -107,33 +107,9 @@ impl Context {
 	/// Panics when the handle names no image of this context, an image with one representation per frame, a
 	/// swapchain image, or an image-group member, whose memory belongs to this context's group heap.
 	pub fn export_image(&mut self, image: graphics_hardware_interface::ImageHandle) -> DetachedImage {
-		let handle = crate::vulkan::ImageHandle::from_index(image.0.index());
-		let exportable = self
-			.images
-			.get(handle.index() as usize)
-			.is_some_and(|stored| stored.owns_image && stored.next.is_none() && !stored.image.is_null());
-		assert!(
-			exportable,
-			"Image export failed. The most likely cause is that the handle is stale, belongs to another context, or names a dynamic or swapchain image."
-		);
-		assert!(
-			self.image_groups.member(image.0).is_none(),
-			"Image export failed. The most likely cause is that the image is an image-group member, whose memory stays with its group."
-		);
-
-		// The slot stays, emptied, so the handle can never name a different image later.
-		let stored = &mut self.images[handle.index() as usize];
-		let emptied = Image {
-			owns_image: false,
-			..super::context::unbacked_image(stored.format_, stored.uses, stored.extent, stored.access)
-		};
-		let mut stored = std::mem::replace(stored, emptied);
+		let (mut stored, layout) = self.take_image(image, "export");
 		let memory = self.release_allocation(stored.allocation.take());
 		let staging_memory = self.release_allocation(stored.staging_allocation.take());
-		let layout = self
-			.states
-			.remove(&Handles::Image(handle))
-			.map_or(vk::ImageLayout::UNDEFINED, |state| state.layout);
 
 		DetachedImage {
 			device: self.device.device.clone(),
@@ -145,6 +121,51 @@ impl Context {
 				layout,
 			}),
 		}
+	}
+
+	/// Deletes an image once every frame started so far has completed. See [`Frame::delete_image`].
+	pub(crate) fn delete_image(&mut self, image: graphics_hardware_interface::ImageHandle) {
+		let handle = crate::vulkan::ImageHandle::from_index(image.0.index());
+		assert!(
+			!self.descriptor_references.contains_key(&Handles::Image(handle)),
+			"Image deletion failed. The most likely cause is that a descriptor set still binds the image. Write another resource to those bindings first.",
+		);
+		// A pending upload would read the image after it left the context.
+		self.pending_image_syncs.retain(|&(pending, _)| pending != handle);
+		let (stored, _) = self.take_image(image, "deletion");
+		self.retire_image_storage(&stored);
+	}
+
+	/// Takes an image this context owns out of its slot and returns it with the layout its last submission left it in.
+	///
+	/// The slot stays, emptied, so the handle can never name a different image later. `operation` names the caller in
+	/// panic messages.
+	fn take_image(&mut self, image: graphics_hardware_interface::ImageHandle, operation: &str) -> (Image, vk::ImageLayout) {
+		let handle = crate::vulkan::ImageHandle::from_index(image.0.index());
+		let owned = self
+			.images
+			.get(handle.index() as usize)
+			.is_some_and(|stored| stored.owns_image && stored.next.is_none() && !stored.image.is_null());
+		assert!(
+			owned,
+			"Image {operation} failed. The most likely cause is that the handle is stale, belongs to another context, or names a dynamic or swapchain image."
+		);
+		assert!(
+			self.image_groups.member(image.0).is_none(),
+			"Image {operation} failed. The most likely cause is that the image is an image-group member, whose memory stays with its group."
+		);
+
+		let stored = &mut self.images[handle.index() as usize];
+		let emptied = Image {
+			owns_image: false,
+			..super::context::unbacked_image(stored.format_, stored.uses, stored.extent, stored.access)
+		};
+		let stored = std::mem::replace(stored, emptied);
+		let layout = self
+			.states
+			.remove(&Handles::Image(handle))
+			.map_or(vk::ImageLayout::UNDEFINED, |state| state.layout);
+		(stored, layout)
 	}
 
 	/// Interns an image another context exported and returns the handle recordings use it with.
@@ -316,5 +337,19 @@ impl Frame<'_> {
 	/// Interns an image another context exported. See [`Context::intern_image`].
 	pub fn intern_image(&mut self, image: DetachedImage) -> graphics_hardware_interface::ImageHandle {
 		self.device_mut().intern_image(image)
+	}
+
+	/// Deletes an image once no frame can use it anymore.
+	///
+	/// The handle is invalid when this returns, but frames recorded so far, this one included, may still read the
+	/// image, so the context frees it once they complete. Write another resource to every descriptor set binding that
+	/// names the image first. Work submitted outside frames is not waited for.
+	///
+	/// # Panics
+	///
+	/// Panics when the handle names no image of this context, an image with one representation per frame, a
+	/// swapchain image, or an image-group member, or when a descriptor set still binds the image.
+	pub fn delete_image(&mut self, image: graphics_hardware_interface::ImageHandle) {
+		self.device_mut().delete_image(image);
 	}
 }

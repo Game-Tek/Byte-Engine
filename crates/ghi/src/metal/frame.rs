@@ -66,6 +66,20 @@ impl<'a> Frame<'a> {
 		self.device.intern_image(image)
 	}
 
+	/// Deletes an image once no frame can use it anymore.
+	///
+	/// The handle is invalid when this returns, but frames recorded so far, this one included, may still read the
+	/// image, so the context frees it once they complete. Write another resource to every descriptor set binding that
+	/// names the image first. Work submitted outside frames is not waited for.
+	///
+	/// # Panics
+	///
+	/// Panics when the handle names no image of this context, an image with one representation per frame, or an
+	/// image-group member, or when a descriptor set still binds the image.
+	pub fn delete_image(&mut self, image: graphics_hardware_interface::ImageHandle) {
+		self.device.delete_image(image, self.frame_key.sequence_index);
+	}
+
 	pub fn device(&mut self) -> &mut context::Context {
 		self.device
 	}
@@ -336,9 +350,11 @@ impl Frame<'_> {
 			let frames = self.device.frames;
 			for offset in 1..frames {
 				self.device.tasks.push(Task {
-					handle: image_handle,
-					extent,
-					array_layers,
+					kind: TaskKind::ResizeImage {
+						handle: image_handle,
+						extent,
+						array_layers,
+					},
 					frame: (self.frame_key.sequence_index + offset) % frames,
 				});
 			}

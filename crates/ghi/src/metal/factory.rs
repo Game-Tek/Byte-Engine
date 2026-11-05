@@ -96,6 +96,25 @@ impl Context {
 		image
 	}
 
+	/// Deletes an image once frame sequence `sequence_index` starts again, when every frame recorded so far has
+	/// completed. See [`Frame::delete_image`].
+	pub(crate) fn delete_image(&mut self, image: graphics_hardware_interface::ImageHandle, sequence_index: u8) {
+		let handle = crate::image::ImageHandle::from_index(image.0.index());
+		assert!(
+			!self
+				.resource_to_descriptor
+				.contains_key(&crate::PrivateHandles::Image(handle)),
+			"Image deletion failed. The most likely cause is that a descriptor set still binds the image. Write another resource to those bindings first.",
+		);
+		// A pending upload would read the image after it left the context.
+		self.pending_image_syncs.retain(|&(pending, _)| pending != handle);
+		let image = self.export_image(image);
+		self.tasks.push(Task {
+			kind: TaskKind::DeleteImage(image),
+			frame: sequence_index,
+		});
+	}
+
 	/// Interns an image another context exported and returns the handle recordings use it with.
 	///
 	/// Metal tracks hazards from each image's first use in a context, so the image needs no state from its old one.

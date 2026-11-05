@@ -552,3 +552,19 @@ a.be-tok-link:hover {
 .prose > .be-rust-declaration:first-child {
 	margin-top: 0;
 }
+
+/* Mermaid diagrams sit in the same frame as the page's tables. `components/mermaid.tsx` themes the diagram itself. */
+.be-mermaid {
+	margin-block: 1.5rem;
+	padding: 1.5rem 1rem;
+	overflow-x: auto;
+	border: 1px solid var(--color-fd-border);
+	border-radius: 0.5rem;
+	background: var(--color-fd-card);
+}
+
+.be-mermaid svg {
+	display: block;
+	height: auto;
+	margin-inline: auto;
+}

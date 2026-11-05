@@ -34,6 +34,7 @@ import {
 } from 'react';
 import browserCollections from '@/.source/browser';
 import { InspectorOpenAPIPage } from '@/components/inspector-openapi-page';
+import { Mermaid } from '@/components/mermaid';
 import { InlineText } from '@/components/rust-api/parts';
 import { RustItemPage, RustItemTitle, RustLandingPage } from '@/components/rust-api/rust-api-page';
 import { rustApiModel } from '@/lib/rust-api/load';
@@ -147,6 +148,7 @@ const clientLoader = browserCollections.docs.createClientLoader<DocsContentProps
 					<MDX
 						components={{
 							...defaultMdxComponents,
+							Mermaid,
 							Step,
 							Steps,
 							Tab,
@@ -170,20 +172,26 @@ function useVisibleTableOfContents(
 		if (!content) return;
 
 		const update = () => {
-			setVisibleToc(
-				toc.filter((item) => {
-					if (!item.url.startsWith('#')) return true;
+			const next = toc.filter((item) => {
+				if (!item.url.startsWith('#')) return true;
 
-					const heading = document.getElementById(
-						decodeURIComponent(item.url.slice(1)),
-					);
-					if (!heading || !content.contains(heading)) return false;
+				const heading = document.getElementById(
+					decodeURIComponent(item.url.slice(1)),
+				);
+				if (!heading || !content.contains(heading)) return false;
 
-					return (
-						heading.closest('[role="tabpanel"][data-state="inactive"]') ===
-						null
-					);
-				}),
+				return (
+					heading.closest('[role="tabpanel"][data-state="inactive"]') ===
+					null
+				);
+			});
+			// Keep the previous list when nothing changed. A new array re-renders the page, and content that mutates
+			// the DOM as it renders, such as Mermaid diagrams, would otherwise loop.
+			setVisibleToc((previous) =>
+				previous.length === next.length &&
+				previous.every((item, index) => item === next[index])
+					? previous
+					: next,
 			);
 		};
 

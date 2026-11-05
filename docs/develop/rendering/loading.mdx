@@ -32,20 +32,76 @@ Both contexts come from one `GraphicsDevice`. `GraphicsApplication` creates it
 at startup and keeps it until both contexts are dropped. Neither timeline owns
 the other.
 
-```text
-                 GraphicsDevice (owned by GraphicsApplication)
-                /                                             \
-  render context on the graphics queue        loader context on the copy queue
-  main thread: record, submit, present        loading thread: lanes, batches, submit, wait
-                \                                             /
-                 LoaderClient: requests out, Ready and Failed in
+```mermaid
+flowchart TD
+  device("GraphicsDevice<br/>owned by GraphicsApplication")
+  device --> render("Render context on the graphics queue<br/>main thread: record, submit, present")
+  device --> loader("Loader context on the copy queue<br/>loading thread: lanes, batches, submit, wait")
+  render -- requests --> client("LoaderClient")
+  loader -- Ready and Failed --> client
 ```
 
 The only link between the timelines while the app runs is each pipeline's
 `LoaderClient`. The render thread sends requests and adopts `Ready` and `Failed`
 notifications. It knows nothing else about the loader.
 
+## How a pipeline joins the loading timeline
+
+Each pipeline manager that loads resources, such as `VisibilityPipelineManager`,
+`SimplePipelineManager`, and `ParticleManager`, connects to the loader once, at
+startup, before the loading thread starts:
+
+```mermaid
+flowchart TD
+  subgraph setup["Main thread, once for each pipeline"]
+    A("Pipeline setup function<br/>such as setup_particles") --> B("loader_and_renderer_mut<br/>creates the Loader on first use")
+    B --> C("loading::spawn<br/>returns one LoaderClient and its LoaderLanes")
+    C --> D("Pipeline manager keeps the LoaderClient<br/>Renderer::add_pipeline_manager")
+    C --> E("add_deferred_task<br/>queues every lane")
+  end
+  setup --> F("launch_deferred_tasks_thread")
+  F --> G("Loading thread<br/>Loader::run, then every lane as a task<br/>on one async runtime")
+```
+
+A pipeline set up after `launch_deferred_tasks_thread` can't add lanes, so set
+up every pipeline first.
+
 ## How a resource becomes resident
+
+The diagram follows one mesh from the scene to a drawn instance. Every pipeline
+manager and every resource family follows the same path.
+
+```mermaid
+sequenceDiagram
+  participant W as World
+  participant M as Pipeline manager<br/>render thread
+  participant L as Lanes<br/>loading thread
+  participant LD as Loader<br/>loading thread
+  participant Q as Copy queue
+
+  W->>M: CreateMessage of a RenderableMesh
+  Note over M: update keeps the instance pending
+  M->>L: LoaderClient::request(Mesh)<br/>sends each key once
+  Note over L: skip keys already loading or resident<br/>read metadata
+  L->>L: LoaderLane::request(Material)<br/>another lane starts it at once
+  Note over L: read, decode, write a StagingLease
+  L->>LD: LoaderLane::upload(lease, images, buffers)
+  Note over LD: add the upload to the batch
+  LD->>Q: submit when the window passes, staging runs out,<br/>or every busy lane waits on the loader
+  loop every 0.5 ms
+    LD->>Q: poll_synchronizer
+  end
+  Q-->>LD: batch finished
+  Note over LD: return staging, export images
+  LD-->>L: detached images
+  alt load succeeded
+    L-->>M: Ready with the resident value<br/>a full result channel stalls the lanes
+    Note over M: next prepare polls until None,<br/>interns images, writes descriptors,<br/>resolves pending instances
+  else load failed
+    L-->>M: Failed with the error
+    Note over M: warns and forgets the key,<br/>so the next request retries it
+  end
+```
 
 1. A pipeline calls `LoaderClient::request` on the render thread.
 2. A lane on the loading thread picks up the request and reads the resource's

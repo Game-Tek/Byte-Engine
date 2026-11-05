@@ -80,6 +80,7 @@ impl App {
 			next_window: 1,
 			wake: Arc::new(wake),
 			watched: Vec::new(),
+			portal: None,
 		};
 
 		// Receive seat and output state before the first window picks its scale.
@@ -158,6 +159,10 @@ impl App {
 			.flush()
 			.expect("Failed to flush Wayland requests. The most likely cause is that the compositor connection was lost.");
 
+		// Portal replies read during an earlier request wait in the connection's buffer, where polling its descriptor
+		// cannot see them.
+		self.drain_portal();
+
 		// A guard only exists when nothing is queued for dispatch, so waiting behind it cannot hide events.
 		if let Some(guard) = self.event_queue.prepare_read() {
 			let timeout = match wait {
@@ -174,6 +179,7 @@ impl App {
 				let mut fds = [connection, self.wake.as_fd()]
 					.into_iter()
 					.chain(self.watched.iter().map(|fd| fd.as_fd()))
+					.chain(self.portal.as_ref().map(dialogs::Portal::fd))
 					.map(|fd| rustix::event::PollFd::from_borrowed_fd(fd, rustix::event::PollFlags::IN))
 					.collect::<smallvec::SmallVec<[_; 4]>>();
 				// An interrupted wait is an early return, which the caller treats like any wake.
@@ -194,12 +200,44 @@ impl App {
 		self.event_queue
 			.dispatch_pending(&mut self.data)
 			.expect("Failed to dispatch Wayland events. The most likely cause is a protocol error reported by the compositor.");
+		self.drain_portal();
 
 		std::iter::from_fn(move || self.data.events.pop_front())
 	}
 
 	pub(crate) fn waker(&self) -> AppWaker {
 		AppWaker(Arc::clone(&self.wake))
+	}
+
+	/// Sends a dialog to the desktop portal; see [`crate::window::App::open_dialog`].
+	///
+	/// Portal dialogs are not attached to `parent` yet, so they open on their own.
+	pub(crate) fn open_dialog(
+		&mut self,
+		id: crate::window::DialogId,
+		dialog: &crate::window::Dialog,
+		_parent: Option<&Window>,
+	) -> Result<(), crate::window::DialogError> {
+		// Message boxes have no portal, so they never need the connection.
+		if matches!(dialog, crate::window::Dialog::Message { .. }) {
+			return Err(crate::window::DialogError::Unsupported);
+		}
+		let portal = match &mut self.portal {
+			Some(portal) => portal,
+			portal => portal.insert(dialogs::Portal::connect()?),
+		};
+		portal.open(id, dialog)
+	}
+
+	/// Moves the results the portal delivered into the event queue.
+	fn drain_portal(&mut self) {
+		if let Some(portal) = &self.portal {
+			self.data.events.extend(
+				portal
+					.drain()
+					.map(|(id, result)| Event::App(AppEvents::Dialog { id, result })),
+			);
+		}
 	}
 
 	/// Makes a waiting poll also return when the HID monitor's descriptor becomes readable.

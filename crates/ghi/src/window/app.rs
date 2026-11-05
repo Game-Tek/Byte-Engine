@@ -1,6 +1,6 @@
 use utils::Extent;
 
-use crate::window::{Event, Features, Wait, Window, os};
+use crate::window::{Dialog, DialogError, DialogId, Event, Features, Wait, Window, os};
 
 /// The `App` struct exists because platforms deliver events for the whole process through one queue.
 /// Keep one per process, create every [`Window`] from it, and drain it once per frame with [`App::poll`].
@@ -8,6 +8,8 @@ use crate::window::{Event, Features, Wait, Window, os};
 /// Drop every [`Window`] before the `App` that created it.
 pub struct App {
 	os_app: os::App,
+	/// The raw value of the last [`DialogId`] handed out. Identities start at one.
+	last_dialog: u64,
 }
 
 impl App {
@@ -17,6 +19,7 @@ impl App {
 	pub fn new(id_name: &str) -> Result<App, String> {
 		Ok(App {
 			os_app: os::App::try_new(id_name)?,
+			last_dialog: 0,
 		})
 	}
 
@@ -35,6 +38,18 @@ impl App {
 	/// [`Self::waker`] wakes the app, which then yields no event.
 	pub fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
 		self.os_app.poll(wait)
+	}
+
+	/// Opens an operating system dialog without waiting for the user. A `parent` window owns the dialog, which opens
+	/// attached to it where the platform supports that.
+	///
+	/// Next, match [`crate::window::AppEvents::Dialog`] events from [`Self::poll`] against the returned id; their
+	/// [`crate::window::DialogResult`] carries what the user chose.
+	pub fn open_dialog(&mut self, dialog: &Dialog, parent: Option<&Window>) -> Result<DialogId, DialogError> {
+		let id = DialogId::from_raw(self.last_dialog + 1);
+		self.os_app.open_dialog(id, dialog, parent.map(Window::os_window))?;
+		self.last_dialog += 1;
+		Ok(id)
 	}
 
 	/// Makes a waiting [`Self::poll`] return when a HID device connects or disconnects, so the caller can check

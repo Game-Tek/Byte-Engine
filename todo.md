@@ -284,3 +284,10 @@ The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves th
 - Add a pipeline-statistics counter kind to the GHI counters API for Vulkan and DX12: `create_counter` takes a `CounterKind`, `Context::counter_statistics` returns input vertices and primitives plus vertex, geometry, clipper, fragment, compute, task, and mesh invocations and clipper and mesh primitives, gated by `supports_pipeline_statistics`. Vulkan needs the `pipelineStatisticsQuery` feature and `meshShaderQueries` for the mesh counts; DX12 uses `PIPELINE_STATISTICS1` where the device supports it. Metal 4 counter heaps hold only timestamps, so Metal always reports `None`. A statistics span is one query slot whose begin and end must sit in the same command buffer, and on Vulkan inside the same render pass instance or both outside it. Deferred on 2026-10-04 so timing counters shipped first.
 - Let counters record in detached recordings (loader contexts, the resource-management GPU worker). Timing counters are frame-only because slots are owned per frame sequence; detached recordings would need per-recording slot pages released on synchronizer completion, like texture readbacks.
 - Grow the counter slot pool instead of capping a frame at 512 counters, if a frame ever needs more.
+
+## OS dialogs (deferred)
+
+- Route dialogs from byte-engine: let UI and gameplay code request an OS dialog and receive its `ghi::window::DialogResult`. The renderer owns `ghi::window::App` today, so nothing outside it can call `App::open_dialog`.
+- Attach Linux portal dialogs to their parent window: export the toplevel with `zxdg_exporter_v2` and pass `wayland:<handle>` as the portal's parent window. Today they open on their own.
+- Offer message boxes on Linux, which has no portal for them; `App::open_dialog` returns `DialogError::Unsupported` there.
+- Compile and run the Wayland portal backend (`crates/ghi/src/window/os/wayland/dialogs.rs`) on Linux: it was written on the Mac and never compiled.

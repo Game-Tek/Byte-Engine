@@ -36,7 +36,7 @@ use wayland_protocols::{
 use xkbcommon::xkb::{self, keysyms};
 
 use crate::window::{
-	Event, Events, Features, PointingDevice, Seat, Wait, WindowId,
+	AppEvents, Event, Events, Features, PointingDevice, Seat, Wait, WindowId,
 	input::{Keys, MouseKeys},
 };
 
@@ -51,6 +51,8 @@ pub struct App {
 	wake: Arc<OwnedFd>,
 	/// Other descriptors a waiting poll watches, such as a HID device monitor's; their owners drain them.
 	watched: Vec<OwnedFd>,
+	/// The desktop portal connection dialogs go through, opened by the first dialog.
+	portal: Option<dialogs::Portal>,
 }
 
 /// The `AppWaker` struct writes to the eventfd a waiting poll watches.
@@ -155,6 +157,7 @@ fn refresh_interval(millihertz: i32) -> Option<Duration> {
 	(millihertz > 0).then(|| Duration::from_secs_f64(1000.0 / millihertz as f64))
 }
 
+mod dialogs;
 mod dispatch;
 mod input;
 mod key_translation;

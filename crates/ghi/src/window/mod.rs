@@ -5,11 +5,13 @@
 //! targets. Input is routed to the window holding focus.
 
 pub mod app;
+pub mod dialog;
 pub mod input;
 pub(crate) mod os;
 pub mod window;
 
 pub use self::app::{App, AppWaker};
+pub use self::dialog::{Button, Buttons, Dialog, DialogError, DialogId, DialogResult, FileFilter, MessageLevel};
 pub use self::os::Handles;
 pub use self::window::Window;
 
@@ -40,7 +42,7 @@ pub enum Wait {
 }
 
 /// An event reported by the application pump.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Event {
 	/// The event belongs to the application rather than to one window.
 	App(AppEvents),
@@ -49,10 +51,12 @@ pub enum Event {
 }
 
 /// An event that belongs to the application as a whole.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AppEvents {
 	/// The platform asked the application to quit, e.g. from the dock or a session end.
 	Quit,
+	/// A dialog from [`App::open_dialog`] sent a result. See [`DialogResult`] for the order results arrive in.
+	Dialog { id: DialogId, result: DialogResult },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

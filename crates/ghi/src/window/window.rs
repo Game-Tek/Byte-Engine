@@ -29,6 +29,10 @@ impl Window {
 		self.os_window.id()
 	}
 
+	pub(crate) fn os_window(&self) -> &os::Window {
+		&self.os_window
+	}
+
 	pub fn os_handles(&self) -> os::Handles {
 		self.os_window.handles()
 	}

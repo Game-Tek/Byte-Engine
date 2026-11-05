@@ -21,6 +21,7 @@ use objc2_foundation::{
 use crate::window::input::{Keys, MouseKeys};
 use crate::window::{AppEvents, Event, Events, Features, PointingDevice, Seat, Wait, WindowId};
 
+mod dialogs;
 mod game_mouse;
 
 use game_mouse::GameMice;
@@ -40,6 +41,8 @@ pub struct App {
 	cursor: Rc<CursorCapture>,
 	/// The source of [`PointingDevice::Mouse`] events, or `None` where Game Controller mice can't be trusted.
 	game_mice: Option<GameMice>,
+	/// The receiver of the shared color panel for the last color dialog, kept alive while the panel reports to it.
+	color_dialog: Option<Retained<dialogs::ColorTarget>>,
 }
 
 pub struct Window {
@@ -529,6 +532,7 @@ impl App {
 			next_window_cascade_top_left: None,
 			cursor: Rc::default(),
 			game_mice,
+			color_dialog: None,
 		})
 	}
 
@@ -764,6 +768,23 @@ impl App {
 
 	pub(crate) fn waker(&self) -> AppWaker {
 		AppWaker
+	}
+
+	/// Opens an AppKit dialog; see [`crate::window::App::open_dialog`].
+	pub(crate) fn open_dialog(
+		&mut self,
+		id: crate::window::DialogId,
+		dialog: &crate::window::Dialog,
+		parent: Option<&Window>,
+	) -> Result<(), crate::window::DialogError> {
+		dialogs::open(
+			self.mtm,
+			&self.events,
+			&mut self.color_dialog,
+			id,
+			dialog,
+			parent.map(|window| &*window.window),
+		)
 	}
 }
 

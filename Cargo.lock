@@ -330,6 +330,7 @@ dependencies = [
  "byte-engine-math",
  "byte-engine-utils",
  "bytemuck",
+ "dbus",
  "direct-storage",
  "dispatch2",
  "divan",
@@ -343,6 +344,7 @@ dependencies = [
  "objc2-io-kit",
  "objc2-metal",
  "objc2-quartz-core",
+ "objc2-uniform-type-identifiers",
  "rustix",
  "shaderc",
  "smallvec 1.15.2",
@@ -942,6 +944,17 @@ dependencies = [
  "darling_core 0.24.1",
  "quote",
  "syn 3.0.4",
+]
+
+[[package]]
+name = "dbus"
+version = "0.9.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ab69f03cc8c4340c9c8e315114e1658e6775a9b16a04357973aa21cec22b32e"
+dependencies = [
+ "libc",
+ "libdbus-sys",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1855,6 +1868,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
+name = "libdbus-sys"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "328c4789d42200f1eeec05bd86c9c13c7f091d2ba9a6ea35acdf51f31bc0f043"
+dependencies = [
+ "pkg-config",
+]
+
+[[package]]
 name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2215,6 +2237,7 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation",
  "objc2-quartz-core",
+ "objc2-uniform-type-identifiers",
 ]
 
 [[package]]
@@ -2426,6 +2449,17 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation",
  "objc2-metal",
+]
+
+[[package]]
+name = "objc2-uniform-type-identifiers"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7902ac02859fc1f7045f8b598c63f1ae0cc7efeaa06a9bc9f3d9a3c955974fa4"
+dependencies = [
+ "block2",
+ "objc2",
+ "objc2-foundation",
 ]
 
 [[package]]

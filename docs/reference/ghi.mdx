@@ -189,6 +189,39 @@ A trace launches the ray generation shader over an extent.
 | Invocations | One for each point of the launch size: the width times the height times the depth. A launch size with a width of 0 runs none. |
 | Launch index | The point an invocation runs for. Each component is below the launch size's. |
 
+## Dialogs
+
+The application object opens the operating system's own dialogs. Opening one
+never blocks event polling: the request returns a dialog ID at once, and the
+dialog's results arrive later as application events that carry that ID. A
+dialog with a parent window opens attached to it; one without opens on its own.
+
+| Dialog | Request | Result |
+| --- | --- | --- |
+| Open | A title, a starting folder, file filters, whether to pick more than one item, and whether to pick folders instead of files. | The chosen paths, at least one. |
+| Save | A title, a starting folder, a suggested file name, and file filters. | One path. |
+| Color | A starting color and whether to show alpha. | Colors, as sRGB-encoded red, green, blue, and alpha from 0 to 1. |
+| Message | A level, a title, a text, and a button set. | The button pressed. |
+
+| Value | Definition |
+| --- | --- |
+| File filter | A name and a list of file name extensions without the leading period. With no filters, every file is accepted. |
+| Message level | Information, warning, or error. |
+| Button set | OK; OK and Cancel; Yes and No; Yes, No, and Cancel. |
+
+A dialog sends zero or more color changes, and then exactly one final result:
+paths, a button, a final color, a cancellation, or a failure, when the
+operating system couldn't show or read the dialog after it opened. Nothing
+arrives for that ID after its final result. A color dialog that hides alpha, and the Linux color
+picker, keep the alpha of the starting color.
+
+| Behavior | macOS | Windows | Linux |
+| --- | --- | --- | --- |
+| Open and Save | Native panels; a sheet on the parent | Native dialogs owned by the parent | The desktop portal's file chooser, on its own even with a parent |
+| Color | Live color changes while the panel is open; the last color when it closes | One final color when the user presses OK | The portal's screen color picker; one final color, without alpha |
+| Message | Native alert; a sheet on the parent, or on the focused window without one. With no window at all, opening it waits until the user answers. | Native message box owned by the parent | Not supported |
+| Concurrent color dialogs | One at a time | Any number | Any number |
+
 ## Backends
 
 | Requirement | Metal | Vulkan | Direct3D 12 |
@@ -285,3 +318,4 @@ The sets' own samplers come after index 35.
 | Texture transfer | Unsupported source, format, subresource, layout, or handle; a missing transfer-source use; an allocation or mapping failure. |
 | Resource I/O | An empty batch; unsupported compression; an invalid path, handle, range, state, or layout; queue creation, file open, or execution failure; cancellation. |
 | Ray tracing | A structure created without ray tracing support; a bottom-level structure without geometry, or a top-level structure for zero instances; geometry whose buffers lack the acceleration structure build use, whose ranges pass a buffer's end, or whose offsets, stride, or index format break the triangle geometry rules; a destroyed handle; a second bottom-level build of a structure, unless the recording that held the first was dropped before it executed; a top-level build outside a frame, with more instances than the structure holds, or with an instance whose bottom-level structure has no recorded build; on Vulkan, a second build of one top-level copy in a frame, or a trace that launches more invocations than the device allows; a custom index or hit group offset of 2^24 or more; a ray tracing pipeline without a ray generation shader or a hit group, with a shader of another stage, or with a closest-hit shader that declares a set the ray generation shader doesn't declare at the same position; a shader binding table write that names a hit group the pipeline doesn't have; a trace with a table that was never written, or that was written for another pipeline than the one bound. |
+| Dialogs | The dialog kind isn't supported on this platform; a color dialog is already open where only one may be; the operating system refused to show the dialog. |

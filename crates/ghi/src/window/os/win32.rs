@@ -4,6 +4,7 @@ use std::{
 	ffi::CString,
 	rc::Rc,
 	sync::Arc,
+	sync::mpsc,
 };
 
 use windows::{
@@ -49,6 +50,8 @@ use crate::window::{
 };
 
 /// Events shared by the pump and every window procedure, in arrival order.
+mod dialogs;
+
 type EventQueue = Rc<RefCell<VecDeque<Event>>>;
 
 pub struct App {
@@ -65,6 +68,11 @@ pub struct App {
 	absolute_mouse: Rc<AbsoluteMouse>,
 	/// Reused by every raw input drain. `u64` elements keep the records 8-byte aligned, as `RAWINPUT` requires.
 	raw_input: Box<[u64]>,
+	/// Dialog threads send their results here; each poll turns them into events.
+	dialog_results: (
+		dialogs::Results,
+		mpsc::Receiver<(crate::window::DialogId, crate::window::DialogResult)>,
+	),
 }
 
 /// The latest absolute mouse position in pixels, from devices such as remote desktop sessions, virtual machines, and
@@ -248,6 +256,7 @@ impl App {
 			absolute_mouse: Rc::default(),
 			// 16 KiB holds hundreds of mouse records, enough for an 8 kHz mouse between two frames.
 			raw_input: vec![0; 16 * 1024 / 8].into_boxed_slice(),
+			dialog_results: mpsc::channel(),
 		})
 	}
 
@@ -363,6 +372,16 @@ impl App {
 
 		self.update_cursor_capture();
 
+		{
+			let mut events = self.events.borrow_mut();
+			events.extend(
+				self.dialog_results
+					.1
+					.try_iter()
+					.map(|(id, result)| Event::App(AppEvents::Dialog { id, result })),
+			);
+		}
+
 		std::iter::from_fn(|| self.events.borrow_mut().pop_front())
 	}
 
@@ -422,6 +441,22 @@ impl App {
 
 	pub(crate) fn waker(&self) -> AppWaker {
 		AppWaker(Arc::clone(&self.wake_event))
+	}
+
+	/// Starts a common dialog on its own thread; see [`crate::window::App::open_dialog`].
+	pub(crate) fn open_dialog(
+		&mut self,
+		id: crate::window::DialogId,
+		dialog: &crate::window::Dialog,
+		parent: Option<&Window>,
+	) -> Result<(), crate::window::DialogError> {
+		dialogs::open(
+			&self.dialog_results.0,
+			self.waker(),
+			id,
+			dialog,
+			parent.map(|window| window.hwnd),
+		)
 	}
 }
 

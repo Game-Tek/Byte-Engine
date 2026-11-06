@@ -416,6 +416,30 @@ mod tests {
 	}
 
 	#[test]
+	fn a_primitive_past_the_vertex_limit_fails_without_blaming_lightmap_uvs() {
+		let oversized = TestPrimitive {
+			positions: (0..=1u32 << 16).map(|vertex| [vertex as f32, 0.0, 0.0]).collect(),
+			..TestPrimitive::triangle()
+		};
+
+		let error = process(
+			vec![VertexComponent::canonical(VertexSemantics::Position)],
+			&[oversized],
+			None,
+			Vec::new(),
+		)
+		.expect_err("a primitive past the vertex limit should fail to bake");
+
+		assert_eq!(
+			error,
+			MeshProcessingError::TooManyVertices {
+				primitive: 0,
+				vertices: 65_537
+			}
+		);
+	}
+
+	#[test]
 	fn small_skinned_and_limited_primitives_keep_fewer_levels() {
 		let level_count = |processed: ProcessedMesh| processed.mesh.primitives[0].lods.len();
 		let position_layout = || vec![VertexComponent::canonical(VertexSemantics::Position)];

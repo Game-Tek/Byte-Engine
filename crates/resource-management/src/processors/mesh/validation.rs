@@ -1,6 +1,10 @@
 #[derive(Debug, PartialEq, Eq)]
 pub enum MeshProcessingError {
 	MissingAttribute(VertexSemantics, u32),
+	TooManyVertices {
+		primitive: usize,
+		vertices: usize,
+	},
 	TooManyLightmapVertices {
 		primitive: usize,
 		vertices: usize,
@@ -96,6 +100,10 @@ impl std::fmt::Display for MeshProcessingError {
 	#[allow(clippy::too_many_lines)]
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
+			Self::TooManyVertices { primitive, vertices } => write!(
+				f,
+				"Primitive {primitive} has {vertices} vertices, more than the 65,536 a primitive holds. The most likely cause is a glTF primitive that large: the importer splits large FBX primitives, but not glTF ones. Split the primitive in the source model."
+			),
 			Self::TooManyLightmapVertices { primitive, vertices } => write!(
 				f,
 				"Primitive {primitive} needs {vertices} vertices after its lightmap UVs split them, more than the 65,536 a primitive holds. The most likely cause is a large primitive whose surface turns often, so its charts share many vertices. Split the primitive in the source model, or set `lightmap_uvs.enabled` to `false` in its BEAD file."

@@ -135,6 +135,13 @@ impl MeshProcessorSession {
 				.positions
 				.push(position.map_err(MeshPrimitiveProcessingError::Source)?.to_array());
 		}
+		if position_count > MAX_PRIMITIVE_VERTICES {
+			return Err(MeshProcessingError::TooManyVertices {
+				primitive: primitive_index,
+				vertices: position_count,
+			}
+			.into());
+		}
 		let bounds = bounding_box_from_positions(&self.scratch.positions).ok_or(MeshProcessingError::InvalidPositionData)?;
 
 		let indices = primitive.indices().map_err(MeshPrimitiveProcessingError::Source)?;
@@ -160,6 +167,7 @@ impl MeshProcessorSession {
 			_ => None,
 		};
 		let vertex_count = lightmap_uvs.as_ref().map_or(position_count, |layout| layout.xref.len());
+		// The source fits, so only the chart seams' splits can push the primitive past the limit.
 		if vertex_count > MAX_PRIMITIVE_VERTICES {
 			return Err(MeshProcessingError::TooManyLightmapVertices {
 				primitive: primitive_index,

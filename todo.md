@@ -231,6 +231,7 @@ The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves th
 - Keep processor tests beside the conversion or compression module they verify.
 - Separate mesh source models and normalization from final mesh stream packing in `mesh_processor`.
 - Lock only the vertices that mesh primitives share when simplifying detail levels. `lods.lock_borders` locks every open border, which also stops open sheets from simplifying; finding the shared ones needs a pass over all primitives before `MeshProcessorSession` packs the first.
+- Let authored detail levels change material, so a Megascans plant's last file, a billboard card with its own `Billboard` material, can be its coarsest level. `lods.authored` ends the chain at a file whose materials differ, because a primitive has one material for every level.
 - Weld positions before simplifying detail levels, or use meshopt's `Permissive` option, for meshes whose vertices are split per face. Every vertex of such a mesh is an attribute seam, so `simplify_levels` stalls at once and the mesh keeps full detail only; `Suzanne.gltf` in the model viewer is one.
 - Weigh UVs in detail level simplification without letting tiling UVs inflate the stored error. `simplify_levels` passes normals only, so a level can stretch a texture across a flat region and still report no error.
 

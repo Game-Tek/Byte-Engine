@@ -1,9 +1,24 @@
 #[derive(Debug, PartialEq, Eq)]
 pub enum MeshProcessingError {
 	MissingAttribute(VertexSemantics, u32),
+	TooManyVertices {
+		primitive: usize,
+		vertices: usize,
+	},
 	TooManyLightmapVertices {
 		primitive: usize,
 		vertices: usize,
+	},
+	InvalidAuthoredLevels {
+		primitive: usize,
+	},
+	UnsupportedAuthoredLevels {
+		primitive: usize,
+	},
+	TooManyLevelMeshlets {
+		primitive: usize,
+		level: usize,
+		meshlets: usize,
 	},
 	DuplicateVertexSemantic(VertexSemantics),
 	AttributeLengthMismatch(VertexSemantics, u32),
@@ -91,9 +106,28 @@ impl std::fmt::Display for MeshProcessingError {
 	#[allow(clippy::too_many_lines)]
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
+			Self::TooManyVertices { primitive, vertices } => write!(
+				f,
+				"Primitive {primitive} has {vertices} vertices, more than the 65,536 a primitive holds. The most likely cause is a glTF primitive that large: the importer splits large FBX primitives, but not glTF ones. Split the primitive in the source model."
+			),
 			Self::TooManyLightmapVertices { primitive, vertices } => write!(
 				f,
 				"Primitive {primitive} needs {vertices} vertices after its lightmap UVs split them, more than the 65,536 a primitive holds. The most likely cause is a large primitive whose surface turns often, so its charts share many vertices. Split the primitive in the source model, or set `lightmap_uvs.enabled` to `false` in its BEAD file."
+			),
+			Self::InvalidAuthoredLevels { primitive } => write!(
+				f,
+				"Primitive {primitive} splits its triangle indices into authored detail levels that are empty, out of order, not whole triangles, or more than {} levels. The most likely cause is a model handler that computed the level starts wrongly. Report it as an engine bug.",
+				crate::resources::mesh::MAX_PRIMITIVE_LODS
+			),
+			Self::UnsupportedAuthoredLevels { primitive } => write!(
+				f,
+				"Primitive {primitive} has authored detail levels, but it is skinned or the bake gives it lightmap UVs, and neither supports them. The most likely cause is a model handler that passed authored levels it should have left out. Report it as an engine bug."
+			),
+			Self::TooManyLevelMeshlets { primitive, level, meshlets } => write!(
+				f,
+				"Detail level {level} of primitive {primitive} needs {meshlets} meshlets, more than the {} one level holds. The most likely cause is a primitive whose triangles share few vertices, so each meshlet fills its 64 vertices long before its 124 triangles. Weld the primitive's duplicate vertices or split it in the source model. See {}.",
+				crate::resources::mesh::MAX_LEVEL_MESHLETS,
+				crate::online_docs_url("reference/assets#detail-levels")
 			),
 			Self::MissingAttribute(semantic, channel) => write!(
 				f,

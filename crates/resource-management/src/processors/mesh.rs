@@ -372,6 +372,104 @@ mod tests {
 	}
 
 	#[test]
+	fn a_level_with_more_meshlets_than_a_level_holds_fails_to_bake() {
+		// Triangles over scattered vertices share few of them, so meshlets fill on vertices at about 31 triangles each.
+		// 200,000 such triangles need over 6,000 meshlets while staying under the vertex limit.
+		let vertex_count = 1u32 << 16;
+		let mut state = 0x9E37_79B9u32;
+		let mut next = || {
+			state ^= state << 13;
+			state ^= state >> 17;
+			state ^= state << 5;
+			state % vertex_count
+		};
+		let positions = (0..vertex_count)
+			.map(|vertex| [(vertex % 256) as f32, (vertex / 256) as f32, ((vertex * 7) % 13) as f32])
+			.collect();
+		let indices = (0..200_000).flat_map(|_| [next(), next(), next()]).collect();
+		let scattered = TestPrimitive {
+			indices,
+			positions,
+			..TestPrimitive::triangle()
+		};
+		let settings = MeshSettings {
+			lods: MeshLodSettings {
+				max_levels: 1,
+				..MeshLodSettings::default()
+			},
+			..MeshSettings::default()
+		};
+
+		let error = process_with(
+			vec![VertexComponent::canonical(VertexSemantics::Position)],
+			&[scattered],
+			None,
+			Vec::new(),
+			settings,
+		)
+		.expect_err("a level past the meshlet limit should fail to bake");
+
+		assert!(
+			matches!(error, MeshProcessingError::TooManyLevelMeshlets { primitive: 0, level: 0, meshlets } if meshlets > 4096),
+			"unexpected error: {error:?}"
+		);
+	}
+
+	#[test]
+	fn a_primitive_past_the_vertex_limit_fails_without_blaming_lightmap_uvs() {
+		let oversized = TestPrimitive {
+			positions: (0..=1u32 << 16).map(|vertex| [vertex as f32, 0.0, 0.0]).collect(),
+			..TestPrimitive::triangle()
+		};
+
+		let error = process(
+			vec![VertexComponent::canonical(VertexSemantics::Position)],
+			&[oversized],
+			None,
+			Vec::new(),
+		)
+		.expect_err("a primitive past the vertex limit should fail to bake");
+
+		assert_eq!(
+			error,
+			MeshProcessingError::TooManyVertices {
+				primitive: 0,
+				vertices: 65_537
+			}
+		);
+	}
+
+	#[test]
+	fn authored_levels_follow_full_detail_and_seed_the_generated_ones() {
+		// Full detail is a 32 by 32 rippled grid; the authored level samples the same surface with 4 by 4 quads and
+		// appends its own vertices.
+		let full = TestPrimitive::wavy_grid(32);
+		let coarse = TestPrimitive::wavy_grid_spanning(4, 32.0 * 0.25);
+		let full_vertices = full.positions.len() as u32;
+		let full_indices = full.indices.len();
+		let mut authored = full;
+		authored.positions.extend(&coarse.positions);
+		authored.indices.extend(coarse.indices.iter().map(|index| index + full_vertices));
+		authored.level_starts = vec![full_indices];
+
+		let processed = process(
+			vec![VertexComponent::canonical(VertexSemantics::Position)],
+			&[authored],
+			None,
+			Vec::new(),
+		)
+		.expect("a primitive with an authored level should bake");
+		let lods = &processed.mesh.primitives[0].lods;
+
+		// The authored level draws only its own 25 vertices, which sort ahead of full detail's.
+		assert_eq!(lods[1].vertex_count, 25);
+		assert_eq!(stream_bytes(&processed, Streams::Indices(IndexStreamTypes::Meshlets), 1).len(), 32 * 3);
+		assert!(lods[1].error > 0.0 && lods[1].error.is_finite());
+		assert!(lods.windows(2).all(|pair| pair[0].error <= pair[1].error));
+		assert_eq!(lods[0].vertex_count as usize, 33 * 33 + 25);
+	}
+
+	#[test]
 	fn small_skinned_and_limited_primitives_keep_fewer_levels() {
 		let level_count = |processed: ProcessedMesh| processed.mesh.primitives[0].lods.len();
 		let position_layout = || vec![VertexComponent::canonical(VertexSemantics::Position)];
@@ -597,6 +695,8 @@ mod tests {
 		material_slot: usize,
 		transform_node: Option<u32>,
 		skin: Option<u32>,
+		/// Where each authored coarser level starts in `indices`.
+		level_starts: Vec<usize>,
 	}
 
 	impl TestPrimitive {
@@ -610,6 +710,7 @@ mod tests {
 				material_slot: 0,
 				transform_node: None,
 				skin: None,
+				level_starts: Vec::new(),
 			}
 		}
 
@@ -617,7 +718,12 @@ mod tests {
 		///
 		/// The ripples make simplification cost measurable error; a flat grid would simplify for free.
 		fn wavy_grid(side: u32) -> Self {
-			let step = 0.25f32;
+			Self::wavy_grid_spanning(side, side as f32 * 0.25)
+		}
+
+		/// Returns the surface of [`Self::wavy_grid`] over a square `extent` wide, sampled by `side` by `side` quads.
+		fn wavy_grid_spanning(side: u32, extent: f32) -> Self {
+			let step = extent / side as f32;
 			let mut positions = Vec::new();
 			for row in 0..=side {
 				for column in 0..=side {
@@ -690,6 +796,10 @@ mod tests {
 
 		fn skin(&self) -> Option<u32> {
 			self.skin
+		}
+
+		fn coarser_level_starts(&self) -> &[usize] {
+			&self.level_starts
 		}
 
 		fn indices(&self) -> Result<impl ExactSizeIterator<Item = Result<u32, Self::Error>> + '_, Self::Error> {

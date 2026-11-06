@@ -12,6 +12,7 @@ use crate::{
 	resources::mesh::MAX_PRIMITIVE_LODS,
 };
 
+mod authored_levels;
 mod bake_memory;
 pub mod handler;
 pub mod intercept;
@@ -22,6 +23,8 @@ pub mod resource_trace;
 
 #[cfg(debug_assertions)]
 pub use resource_trace::{ResourceTrace, ResourceTraceItem, ResourceTraceLevel};
+
+pub(crate) use authored_levels::{AuthoredLevelPattern, authored_level_pattern};
 
 pub type BEADType = Value;
 
@@ -69,6 +72,8 @@ struct MeshLodsManifest {
 	max_levels: u8,
 	max_error: f32,
 	lock_borders: bool,
+	/// Validated here for every model; handlers that support authored levels read it with [`authored_level_pattern`].
+	authored: Option<String>,
 }
 
 impl Default for MeshLodsManifest {
@@ -83,6 +88,7 @@ impl Default for MeshLodsManifest {
 			max_levels,
 			max_error,
 			lock_borders,
+			authored: None,
 		}
 	}
 }
@@ -139,6 +145,9 @@ fn mesh_lod_settings(spec: Option<&BEADType>) -> Result<MeshLodSettings, String>
 	}
 	if !(manifest.max_error > 0.0 && manifest.max_error <= 1.0) {
 		return Err("`lods.max_error` must be above 0 and at most 1".to_string());
+	}
+	if let Some(pattern) = &manifest.authored {
+		AuthoredLevelPattern::parse(pattern)?;
 	}
 	Ok(MeshLodSettings {
 		// One level is full detail alone.

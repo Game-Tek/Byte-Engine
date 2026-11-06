@@ -87,6 +87,8 @@ keeps only the levels that some instance needs; the
 [detail level rules](/docs/reference/rendering#the-visibility-pipeline) define
 which. Skinned primitives keep full detail only.
 
+A level holds at most 4,096 meshlets of 64 vertices and 124 triangles. A primitive that needs more for any level fails to bake. That happens when its triangles share few vertices, so each meshlet runs out of vertices first.
+
 A model's BEAD file tunes its levels with a `lods` object:
 
 | Key | Default | Meaning |
@@ -95,8 +97,27 @@ A model's BEAD file tunes its levels with a `lods` object:
 | `max_levels` | `8` | Levels per primitive, counting full detail, from 1 to 8. |
 | `max_error` | `0.25` | The largest error of a level, as a fraction of the primitive's largest extent. |
 | `lock_borders` | `false` | `true` keeps open borders in place. |
+| `authored` | None | A pattern that names the files holding an FBX model's own coarser levels; see [Authored detail levels](#authored-detail-levels). glTF and GLB models that set it fail to bake. |
 
 Every key is optional. Set `lock_borders` to `true` when a model's primitives meet along a border, as when one surface is split by material, and gaps show between them at a distance. Each primitive is simplified on its own, so neighbors at different levels can otherwise pull apart by up to the sum of their errors. Locked borders simplify less.
+
+### Authored detail levels
+
+An FBX model can use coarser levels modeled by hand, stored in files next to it, such as `fern_LOD1.fbx` and
+`fern_LOD2.fbx` for `fern_LOD0.fbx`. Its `lods.authored` pattern names them, so one directory `.bead` file covers
+every model below it.
+
+| Rule | Value |
+| --- | --- |
+| Pattern | Text with placeholders, such as `{name}_LOD{level}`. `{level}` is a decimal number and appears exactly once. Every other placeholder, `{` and a name of letters, digits, and underscores, then `}`, matches any text that isn't empty. Two placeholders can't touch. |
+| Match | The pattern must match the model's file name without its extension. A model whose name doesn't match has no authored levels. |
+| Level files | The model's directory and extension, with the pattern's placeholders as the model's name filled them and the level one higher, then two higher, and so on. A number keeps the model's zero padding, so `LOD01` is followed by `LOD02`. |
+| Chain end | The first level file that doesn't exist, or that holds other than one mesh instance, other material names, or other vertex streams than the model. A model that holds other than one mesh instance uses none. Adding a missing file later rebakes the model. |
+| Count | At most `max_levels` levels, counting full detail. |
+| Primitive | Each material's triangles in a level file become that level of the primitive with the same material, and its vertices are added to the primitive's. A level whose vertices don't fit in the 65,536 a primitive holds, a material that doesn't fit in one primitive at full detail, a skinned model, and a bake with lightmap UVs fall back to simplified levels, with a warning in the model's trace. |
+| Error | Measured against full detail: the farthest a vertex of either lies from the other's triangles. A level's error is at least the error of the level before it. |
+| Coarser levels | Simplified from the last authored level as described above, each with that level's error added to its own. |
+| Baking | The level files are read as sources of the model and don't need to be baked themselves, so [excluded assets](#excluded-assets) can hold them. |
 
 ## Lightmap UVs
 
@@ -552,6 +573,7 @@ poses are specified in the [animation reference](/docs/reference/animation).
 An FBX asset ID that defaults to a mesh bakes every polygon-mesh instance into one `Mesh` resource.
 The importer normalizes axes and authored units, triangulates polygon faces, preserves material parts, transforms instance geometry, and emits position, normal, tangent-frame, color, UV, joint, and weight streams when the source provides them.
 Meshes without authored UVs receive a zero-filled UV stream because the visibility renderer requires that stream even for untextured materials.
+Polygon corners of one mesh whose position, normal, tangent, bitangent, UV, and color are exactly equal, and in a skinned mesh share a control point, become one vertex. Corners that differ in any of them, as along a UV or normal seam, stay separate vertices.
 
 FBX material names can be mapped to existing variants in a sibling `.fbx.bead` file, using the same `asset.<material-name>.asset` shape as other model overrides.
 Without an override, the importer generates a material variant whose [surface](/docs/reference/bemx) inputs come from the FBX material:

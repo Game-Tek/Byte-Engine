@@ -135,6 +135,13 @@ impl MeshProcessorSession {
 				.positions
 				.push(position.map_err(MeshPrimitiveProcessingError::Source)?.to_array());
 		}
+		if position_count > MAX_PRIMITIVE_VERTICES {
+			return Err(MeshProcessingError::TooManyVertices {
+				primitive: primitive_index,
+				vertices: position_count,
+			}
+			.into());
+		}
 		let bounds = bounding_box_from_positions(&self.scratch.positions).ok_or(MeshProcessingError::InvalidPositionData)?;
 
 		let indices = primitive.indices().map_err(MeshPrimitiveProcessingError::Source)?;
@@ -148,6 +155,22 @@ impl MeshProcessorSession {
 		if !self.scratch.indices.len().is_multiple_of(3) {
 			return Err(MeshProcessingError::InvalidTriangleIndexCount.into());
 		}
+		let index_count = self.scratch.indices.len();
+		let level_starts = primitive.coarser_level_starts();
+		if !authored_level_starts_are_valid(level_starts, index_count) {
+			return Err(MeshProcessingError::InvalidAuthoredLevels {
+				primitive: primitive_index,
+			}
+			.into());
+		}
+		if !level_starts.is_empty() && (primitive.skin().is_some() || self.settings.lightmap_uvs.is_some()) {
+			return Err(MeshProcessingError::UnsupportedAuthoredLevels {
+				primitive: primitive_index,
+			}
+			.into());
+		}
+		// Full detail ends where the first authored level starts.
+		let full_end = level_starts.first().copied().unwrap_or(index_count);
 		rewind_triangles_to_clockwise(&mut self.scratch.indices);
 		// Lightmap UVs split vertices along chart seams, so they run before anything indexes the final vertices.
 		let lightmap_uvs = match self.settings.lightmap_uvs {
@@ -160,6 +183,7 @@ impl MeshProcessorSession {
 			_ => None,
 		};
 		let vertex_count = lightmap_uvs.as_ref().map_or(position_count, |layout| layout.xref.len());
+		// The source fits, so only the chart seams' splits can push the primitive past the limit.
 		if vertex_count > MAX_PRIMITIVE_VERTICES {
 			return Err(MeshProcessingError::TooManyLightmapVertices {
 				primitive: primitive_index,
@@ -167,7 +191,9 @@ impl MeshProcessorSession {
 			}
 			.into());
 		}
-		meshopt::optimize_vertex_cache_in_place(&mut self.scratch.indices, vertex_count);
+		for range in level_ranges(level_starts, index_count) {
+			meshopt::optimize_vertex_cache_in_place(&mut self.scratch.indices[range], vertex_count);
+		}
 		let mut source_streams = self.append_primitive_vertex_streams(primitive, primitive_index, position_count)?;
 		if let Some(layout) = &lightmap_uvs {
 			if layout.cramped {
@@ -204,20 +230,41 @@ impl MeshProcessorSession {
 		// not follow the animation, so a renderer could not tell when a coarser level is safe to draw.
 		let coarser_levels = if primitive.skin().is_none() {
 			read_normals(&self.source_blocks, &source_streams, &mut self.scratch.normals);
-			simplify_levels(
-				&self.scratch.indices,
+			let full = &self.scratch.indices[..full_end];
+			let max_levels = (self.settings.lods.max_levels as usize).clamp(1, MAX_PRIMITIVE_LODS);
+			// Authored levels come first, each measured against full detail since it carries no error of its own.
+			// Selection assumes error never falls as levels get coarser.
+			let mut levels: Vec<LodLevel> = Vec::with_capacity(level_starts.len());
+			for range in level_ranges(level_starts, index_count).skip(1).take(max_levels - 1) {
+				let indices = &self.scratch.indices[range];
+				let error = level_distance(&self.scratch.positions, full, indices);
+				levels.push(LodLevel {
+					indices: indices.to_vec(),
+					error: error.max(levels.last().map_or(0.0, |level| level.error)),
+				});
+			}
+			// The levels the authored ones leave room for simplify the coarsest of them.
+			let (coarsest, base_error) = levels.last().map_or((full, 0.0), |level| (&level.indices[..], level.error));
+			let generated = simplify_levels(
+				coarsest,
+				base_error,
 				&positions,
 				&self.scratch.normals,
 				&mut self.scratch.vertex_locks,
-				self.settings.lods,
-			)
+				MeshLodSettings {
+					max_levels: (max_levels - levels.len()) as u8,
+					..self.settings.lods
+				},
+			);
+			levels.extend(generated);
+			levels
 		} else {
 			Vec::new()
 		};
 
 		// Level 0 is the source triangle list. Every level gets its own meshlets over the primitive's vertices.
 		let level_indices =
-			std::iter::once(&self.scratch.indices[..]).chain(coarser_levels.iter().map(|level| &level.indices[..]));
+			std::iter::once(&self.scratch.indices[..full_end]).chain(coarser_levels.iter().map(|level| &level.indices[..]));
 		let levels = level_indices
 			.map(|indices| {
 				meshopt::clusterize::build_meshlets(
@@ -229,6 +276,19 @@ impl MeshProcessorSession {
 				)
 			})
 			.collect::<Vec<_>>();
+		// Renderers address a level's meshlets with a bounded index width, so a level past it could never be drawn.
+		if let Some((level, meshlets)) = levels
+			.iter()
+			.enumerate()
+			.find(|(_, meshlets)| meshlets.len() > MAX_LEVEL_MESHLETS)
+		{
+			return Err(MeshProcessingError::TooManyLevelMeshlets {
+				primitive: primitive_index,
+				level,
+				meshlets: meshlets.len(),
+			}
+			.into());
+		}
 		let vertex_counts = order_vertices_by_level(
 			levels
 				.iter()
@@ -312,7 +372,7 @@ impl MeshProcessorSession {
 				0,
 			),
 			|bytes| {
-				for &index in &self.scratch.indices {
+				for &index in &self.scratch.indices[..full_end] {
 					bytes.extend((remap[index as usize] as u16).to_le_bytes());
 				}
 			},
@@ -825,6 +885,24 @@ fn bounding_sphere(bounds: &AABB<ModelSpace>, positions: &[[f32; 3]]) -> [f32; 4
 ///
 /// Attributes stream from the source straight into their blocks, so the packed bytes are the only copy the simplifier
 /// can read at random.
+/// Reports whether `starts` splits `index_count` triangle indices into full detail and coarser levels that each hold
+/// at least one whole triangle, and whether the levels fit in a primitive.
+fn authored_level_starts_are_valid(starts: &[usize], index_count: usize) -> bool {
+	// Every range holding at least one index also keeps the starts in order and inside the list.
+	starts.len() < MAX_PRIMITIVE_LODS
+		&& starts.iter().all(|start| start.is_multiple_of(3))
+		&& level_ranges(starts, index_count).all(|range| !range.is_empty())
+}
+
+/// Yields the index range of full detail, then of each authored level, from the level starts of a primitive with
+/// `index_count` triangle indices.
+fn level_ranges(starts: &[usize], index_count: usize) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+	std::iter::once(0)
+		.chain(starts.iter().copied())
+		.zip(starts.iter().copied().chain([index_count]))
+		.map(|(start, end)| start..end)
+}
+
 fn read_normals(blocks: &[PackedStreamBlock], primitive_streams: &[Stream], scratch: &mut Vec<f32>) {
 	let stream_type = Streams::Vertices(VertexSemantics::Normal);
 	scratch.clear();
@@ -939,7 +1017,7 @@ use math::{AABB, Point, Vector};
 use super::{
 	MeshSettings,
 	lightmap_uvs::{LightmapUvScratch, generate_lightmap_uvs},
-	lod::simplify_levels,
+	lod::{LodLevel, MeshLodSettings, level_distance, simplify_levels},
 	source::{MeshPrimitiveSource, VertexSkin},
 	validation::{
 		MeshProcessingError, skeleton_node_count, validate_primitive_metadata, validate_skin_binding, validate_vertex_layout,
@@ -951,7 +1029,7 @@ use crate::{
 	resources::{
 		ModelSpace,
 		material::VariantModel,
-		mesh::{MeshModel, Primitive, PrimitiveLod},
+		mesh::{MAX_LEVEL_MESHLETS, MAX_PRIMITIVE_LODS, MeshModel, Primitive, PrimitiveLod},
 		skeleton::{SkeletonModel, SkinBinding},
 	},
 	types::{IndexStreamTypes, Stream, Streams, VertexComponent, VertexSemantics},

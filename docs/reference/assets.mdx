@@ -475,6 +475,7 @@ poses are specified in the [animation reference](/docs/reference/animation).
 An FBX asset ID that defaults to a mesh bakes every polygon-mesh instance into one `Mesh` resource.
 The importer normalizes axes and authored units, triangulates polygon faces, preserves material parts, transforms instance geometry, and emits position, normal, tangent-frame, color, UV, joint, and weight streams when the source provides them.
 Meshes without authored UVs receive a zero-filled UV stream because the visibility renderer requires that stream even for untextured materials.
+Polygon corners of one mesh whose position, normal, tangent, bitangent, UV, and color are exactly equal, and in a skinned mesh share a control point, become one vertex. Corners that differ in any of them, as along a UV or normal seam, stay separate vertices.
 
 FBX material names can be mapped to existing variants in a sibling `.fbx.bead` file, using the same `asset.<material-name>.asset` shape as other model overrides.
 Without an override, the importer generates a material variant from constant base color, opacity, metalness, roughness, emission, and double-sided values.

@@ -60,6 +60,8 @@ mod tests {
 
 	const SKINNED_TRIANGLE_FBX: &[u8] = include_bytes!("../../test_data/skinned_triangle_ascii.fbx");
 
+	const SHARED_EDGE_UV_SEAM_FBX: &[u8] = include_bytes!("../../test_data/shared_edge_uv_seam_ascii.fbx");
+
 	/// Imports a fixture with a test variant for each material it uses, named after the FBX material or `default`, and
 	/// discards diagnostic counts that are not relevant to the focused assertion.
 	fn import_test_fbx_meshes<'a>(
@@ -171,6 +173,21 @@ mod tests {
 				.size,
 			6
 		);
+	}
+
+	#[test]
+	fn corners_with_equal_vertex_data_import_as_one_vertex_and_seams_stay_split() {
+		let scene = load_fbx_scene(SHARED_EDGE_UV_SEAM_FBX, "shared_edge_uv_seam.fbx").expect("fixture FBX should parse");
+
+		let processed = import_test_fbx_meshes(&scene, None, &[], &Global).expect("fixture mesh should import");
+
+		// Six corners over four positions: the shared edge's two corners weld, and the seam corner on vertex 2 stays
+		// apart from the first face's corner there.
+		assert_eq!(processed.mesh.primitives[0].vertex_count, 5);
+		assert_eq!(primitive_triangle_indices(&processed, 0).len(), 6);
+		let mut uvs = primitive_f32_values::<2>(&processed, 0, VertexSemantics::UV);
+		uvs.sort_by(|a, b| a.partial_cmp(b).expect("UVs should be finite"));
+		assert_eq!(uvs, [[0.0, 0.0], [0.0, 1.0], [0.5, 0.0], [1.0, 0.0], [1.0, 1.0]]);
 	}
 
 	#[test]

@@ -487,6 +487,10 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 
 	let mut remapped = RemappedCorners::with_capacity_in(corner_capacity, allocator);
 
+	let mut weld = Vec::with_capacity_in(remap_capacity, allocator);
+
+	let mut weld_table = Vec::with_capacity_in(weld_table_len(remap_capacity), allocator);
+
 	for (node, mesh) in fbx_mesh_instances(scene) {
 		let skin = select_fbx_skin(mesh)?;
 
@@ -513,6 +517,8 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 
 		remap.resize(mesh.num_indices, u32::MAX);
 
+		weld_fbx_corners(mesh, skin.is_some(), &mut weld_table, &mut weld)?;
+
 		// Triangulates the visible faces of one material part and processes them before the next part reuses the
 		// corner storage.
 		let mut import_part = |part: usize, faces: &mut dyn Iterator<Item = usize>, triangles: usize| {
@@ -528,6 +534,11 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 				{
 					culled_polygons.record(face.num_indices);
 				}
+			}
+
+			// Corners that repeat another corner's vertex data index that corner instead, so they become one vertex.
+			for corner in corners.iter_mut() {
+				*corner = weld[*corner as usize];
 			}
 
 			primitive_count += import_fbx_material_corners(
@@ -597,6 +608,83 @@ pub(crate) fn import_fbx_material_corners(
 		processed += 1;
 	}
 	Ok(processed)
+}
+
+/// Maps every corner of `mesh` to the first corner whose vertex data is bitwise equal to its own, into `weld`.
+///
+/// FBX stores vertex data per polygon corner, and a triangulated export often repeats a shared vertex's data in every
+/// corner around it, sometimes without sharing attribute indices. Importing each corner as its own vertex turns such a
+/// mesh into separate triangles, which wastes vertices and meshlets and leaves the simplifier no edges to collapse.
+/// Corners are compared by the source values every vertex stream reads: position, normal, tangent, bitangent, UV, and
+/// color, plus the control point when `skinned`, since skin weights belong to it. Exact equality keeps UV and normal
+/// seams split. `table` is scratch for an open-addressing hash set of corners.
+pub(crate) fn weld_fbx_corners<A: Allocator>(
+	mesh: &ufbx::Mesh,
+	skinned: bool,
+	table: &mut Vec<u32, A>,
+	weld: &mut Vec<u32, A>,
+) -> Result<(), FbxImportError> {
+	let corner_count = u32::try_from(mesh.num_indices).map_err(|_| FbxImportError::InvalidCornerIndex)?;
+	table.clear();
+	table.resize(weld_table_len(mesh.num_indices), u32::MAX);
+	weld.clear();
+	weld.reserve(mesh.num_indices);
+	// The table holds at most half its slots, so linear probing ends quickly.
+	let mask = table.len() - 1;
+
+	for corner in 0..corner_count {
+		let key = corner_weld_key(mesh, skinned, corner as usize);
+		let mut slot = rapidhash::v3::rapidhash_v3(bytemuck::cast_slice(&key)) as usize & mask;
+		let representative = loop {
+			match table[slot] {
+				u32::MAX => {
+					table[slot] = corner;
+					break corner;
+				}
+				other if corner_weld_key(mesh, skinned, other as usize) == key => break other,
+				_ => slot = (slot + 1) & mask,
+			}
+		};
+		weld.push(representative);
+	}
+	Ok(())
+}
+
+/// Returns the slot count of a weld table for meshes of up to `corners` corners: a power of two at least twice as
+/// large, so probing stays short.
+fn weld_table_len(corners: usize) -> usize {
+	corners.saturating_mul(2).next_power_of_two().max(2)
+}
+
+/// Gathers the bits of every source value a corner's vertex streams read, so two corners with equal keys import as
+/// equal vertices. Attributes the mesh lacks stay zero, which every corner shares.
+fn corner_weld_key(mesh: &ufbx::Mesh, skinned: bool, corner: usize) -> [u64; 19] {
+	let mut key = [0u64; 19];
+	let mut write = |offset: usize, values: &[f64]| {
+		for (slot, value) in key[offset..].iter_mut().zip(values) {
+			*slot = value.to_bits();
+		}
+	};
+	let position = mesh.vertex_position[corner];
+	write(0, &[position.x, position.y, position.z]);
+	for (offset, attribute) in [(3, &mesh.vertex_normal), (6, &mesh.vertex_tangent), (9, &mesh.vertex_bitangent)] {
+		if attribute.exists {
+			let value = attribute[corner];
+			write(offset, &[value.x, value.y, value.z]);
+		}
+	}
+	if mesh.vertex_uv.exists {
+		let uv = mesh.vertex_uv[corner];
+		write(12, &[uv.x, uv.y]);
+	}
+	if mesh.vertex_color.exists {
+		let color = mesh.vertex_color[corner];
+		write(14, &[color.x, color.y, color.z, color.w]);
+	}
+	if skinned {
+		key[18] = u64::from(mesh.vertex_indices[corner]);
+	}
+	key
 }
 
 /// The `FbxCulledPolygonCounts` struct accumulates concise import diagnostics without logging once per malformed face.

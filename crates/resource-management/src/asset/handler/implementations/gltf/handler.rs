@@ -102,6 +102,13 @@ impl GLTFAssetHandler {
 			);
 			LoadErrors::FailedToProcess
 		})?;
+		if spec.and_then(|spec| spec.get("lods")).and_then(|lods| lods.get("authored")).is_some() {
+			log::error!(
+				"glTF asset '{}' sets `lods.authored`, but only FBX models read authored detail levels. The most likely cause is a directory `.bead` meant for FBX models that also applies to this one. Move the setting to a directory or sidecar that only FBX models read.",
+				url.as_ref()
+			);
+			return Err(LoadErrors::FailedToProcess);
+		}
 		let graph = import_gltf_node_graph(gltf).map_err(|error| {
 			log::error!("Failed to import glTF node hierarchy '{}': {error}", url.as_ref());
 			LoadErrors::FailedToProcess

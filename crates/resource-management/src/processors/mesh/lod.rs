@@ -36,10 +36,13 @@ pub(super) struct LodLevel {
 /// worth simplifying.
 ///
 /// Each level is simplified from `indices` itself instead of from the level before it, so its error measures the
-/// distance to full detail directly. `normals` holds three components per vertex, or nothing; with them, shading
-/// changes no more than the surface does. `vertex_locks` is scratch storage.
+/// distance to `indices` directly. `base_error` is how far `indices` already lies from full detail, zero when it is
+/// full detail; each level's error adds it, which bounds the level's distance to full detail. `normals` holds three
+/// components per vertex, or nothing; with them, shading changes no more than the surface does. `vertex_locks` is
+/// scratch storage.
 pub(super) fn simplify_levels(
 	indices: &[u32],
+	base_error: f32,
 	positions: &meshopt::VertexDataAdapter<'_>,
 	normals: &[f32],
 	vertex_locks: &mut Vec<bool>,
@@ -61,7 +64,7 @@ pub(super) fn simplify_levels(
 	while levels.len() + 1 < max_levels {
 		let (triangles, error) = levels
 			.last()
-			.map_or((indices.len() / 3, 0.0), |level| (level.indices.len() / 3, level.error));
+			.map_or((indices.len() / 3, base_error), |level| (level.indices.len() / 3, level.error));
 		if triangles <= LOD_MIN_TRIANGLES {
 			break;
 		}
@@ -89,7 +92,7 @@ pub(super) fn simplify_levels(
 		// Selection assumes error never falls as levels get coarser.
 		let level = LodLevel {
 			indices: simplified,
-			error: (relative_error * scale).max(error),
+			error: (relative_error * scale + base_error).max(error),
 		};
 		match levels.last_mut() {
 			// A level that costs no more error than the one before it makes that one useless: selection would
@@ -99,6 +102,197 @@ pub(super) fn simplify_levels(
 		}
 	}
 	levels
+}
+
+/// Returns an estimate of the largest distance between the surfaces of two triangle lists over the same vertices: the
+/// farthest any vertex of either list lies from the other list's triangles.
+///
+/// Measures an authored detail level against full detail, since such a level is modeled separately and carries no
+/// error of its own. Vertices stand in for their surfaces, so a deviation in the middle of a large triangle can go
+/// unseen. Returns infinity when exactly one list has no triangles.
+pub(super) fn level_distance(positions: &[[f32; 3]], full: &[u32], level: &[u32]) -> f32 {
+	if full.is_empty() || level.is_empty() {
+		return if full.is_empty() && level.is_empty() { 0.0 } else { f32::INFINITY };
+	}
+	let one_way = |from: &[u32], to: &[u32]| {
+		let grid = TriangleGrid::new(positions, to);
+		let mut visited = vec![false; positions.len()];
+		let mut farthest = 0.0f32;
+		for &vertex in from {
+			if !std::mem::replace(&mut visited[vertex as usize], true) {
+				farthest = farthest.max(grid.distance(positions[vertex as usize]));
+			}
+		}
+		farthest
+	};
+	one_way(level, full).max(one_way(full, level))
+}
+
+/// The `TriangleGrid` struct buckets a triangle list into a uniform grid so [`level_distance`] can find the triangles
+/// near a point without testing them all.
+struct TriangleGrid<'a> {
+	positions: &'a [[f32; 3]],
+	indices: &'a [u32],
+	origin: [f32; 3],
+	cell: f32,
+	dimensions: [usize; 3],
+	/// Where each cell's triangles start in `triangles`, with one extra entry at the end.
+	starts: Vec<u32>,
+	triangles: Vec<u32>,
+}
+
+impl<'a> TriangleGrid<'a> {
+	/// Buckets every triangle of `indices` into each cell its bounding box overlaps.
+	fn new(positions: &'a [[f32; 3]], indices: &'a [u32]) -> Self {
+		let triangle_count = indices.len() / 3;
+		let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+		for &vertex in indices {
+			for axis in 0..3 {
+				min[axis] = min[axis].min(positions[vertex as usize][axis]);
+				max[axis] = max[axis].max(positions[vertex as usize][axis]);
+			}
+		}
+		let extent = (0..3).map(|axis| max[axis] - min[axis]).fold(0.0f32, f32::max);
+		// About one cell per triangle along the cube root of the count, so a cell holds a few triangles.
+		let cell = (extent / (triangle_count as f32).cbrt().max(1.0)).max(f32::MIN_POSITIVE);
+		let dimensions = std::array::from_fn(|axis| (((max[axis] - min[axis]) / cell) as usize + 1).min(256));
+		let mut grid = Self {
+			positions,
+			indices,
+			origin: min,
+			cell,
+			dimensions,
+			starts: vec![0; dimensions.iter().product::<usize>() + 1],
+			triangles: Vec::new(),
+		};
+		// Counts each cell's triangles, turns the counts into starts, then fills the cells.
+		for triangle in 0..triangle_count {
+			grid.for_each_cell_of(triangle, |cell, starts| starts[cell + 1] += 1);
+		}
+		for cell in 1..grid.starts.len() {
+			grid.starts[cell] += grid.starts[cell - 1];
+		}
+		let mut cursor = grid.starts.clone();
+		grid.triangles = vec![0; *grid.starts.last().unwrap_or(&0) as usize];
+		let mut triangles = std::mem::take(&mut grid.triangles);
+		for triangle in 0..triangle_count {
+			grid.for_each_cell_of(triangle, |cell, _| {
+				triangles[cursor[cell] as usize] = triangle as u32;
+				cursor[cell] += 1;
+			});
+		}
+		grid.triangles = triangles;
+		grid
+	}
+
+	fn cell_of(&self, point: [f32; 3]) -> [usize; 3] {
+		std::array::from_fn(|axis| {
+			(((point[axis] - self.origin[axis]) / self.cell).max(0.0) as usize).min(self.dimensions[axis] - 1)
+		})
+	}
+
+	fn cell_index(&self, [x, y, z]: [usize; 3]) -> usize {
+		(z * self.dimensions[1] + y) * self.dimensions[0] + x
+	}
+
+	fn corners(&self, triangle: usize) -> [[f32; 3]; 3] {
+		std::array::from_fn(|corner| self.positions[self.indices[triangle * 3 + corner] as usize])
+	}
+
+	/// Calls `visit` with every cell the triangle's bounding box overlaps.
+	fn for_each_cell_of(&mut self, triangle: usize, mut visit: impl FnMut(usize, &mut Vec<u32>)) {
+		let corners = self.corners(triangle);
+		let low = self.cell_of(std::array::from_fn(|axis| corners.iter().map(|c| c[axis]).fold(f32::INFINITY, f32::min)));
+		let high =
+			self.cell_of(std::array::from_fn(|axis| corners.iter().map(|c| c[axis]).fold(f32::NEG_INFINITY, f32::max)));
+		for z in low[2]..=high[2] {
+			for y in low[1]..=high[1] {
+				for x in low[0]..=high[0] {
+					let cell = self.cell_index([x, y, z]);
+					visit(cell, &mut self.starts);
+				}
+			}
+		}
+	}
+
+	/// Returns the distance from `point` to the nearest triangle, searching shells of cells outward from the point's
+	/// cell until no farther shell can hold a nearer triangle.
+	fn distance(&self, point: [f32; 3]) -> f32 {
+		let center = self.cell_of(point);
+		let max_radius = self.dimensions.iter().copied().max().unwrap_or(1);
+		let mut nearest = f32::INFINITY;
+		for radius in 0..=max_radius {
+			let low: [usize; 3] = std::array::from_fn(|axis| center[axis].saturating_sub(radius));
+			let high: [usize; 3] = std::array::from_fn(|axis| (center[axis] + radius).min(self.dimensions[axis] - 1));
+			for z in low[2]..=high[2] {
+				for y in low[1]..=high[1] {
+					for x in low[0]..=high[0] {
+						let shell = [x, y, z]
+							.iter()
+							.zip(center)
+							.map(|(&at, center)| at.abs_diff(center))
+							.max()
+							.unwrap_or(0);
+						if shell != radius {
+							continue;
+						}
+						let cell = self.cell_index([x, y, z]);
+						for &triangle in &self.triangles[self.starts[cell] as usize..self.starts[cell + 1] as usize] {
+							nearest = nearest.min(point_triangle_distance(point, self.corners(triangle as usize)));
+						}
+					}
+				}
+			}
+			// Every cell of the next shell lies at least `radius` cells from the point.
+			if nearest <= radius as f32 * self.cell {
+				break;
+			}
+		}
+		nearest
+	}
+}
+
+/// Returns the distance from `point` to the closest point of triangle `[a, b, c]`.
+fn point_triangle_distance(point: [f32; 3], [a, b, c]: [[f32; 3]; 3]) -> f32 {
+	let sub = |u: [f32; 3], v: [f32; 3]| [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
+	let dot = |u: [f32; 3], v: [f32; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+	let along = |origin: [f32; 3], direction: [f32; 3], t: f32| {
+		[origin[0] + direction[0] * t, origin[1] + direction[1] * t, origin[2] + direction[2] * t]
+	};
+	// Closest point by Voronoi region, after Ericson's Real-Time Collision Detection, section 5.1.5.
+	let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(point, a));
+	let (d1, d2) = (dot(ab, ap), dot(ac, ap));
+	let closest = if d1 <= 0.0 && d2 <= 0.0 {
+		a
+	} else {
+		let bp = sub(point, b);
+		let (d3, d4) = (dot(ab, bp), dot(ac, bp));
+		let cp = sub(point, c);
+		let (d5, d6) = (dot(ab, cp), dot(ac, cp));
+		let (vc, vb, va) = (d1 * d4 - d3 * d2, d5 * d2 - d1 * d6, d3 * d6 - d5 * d4);
+		if d3 >= 0.0 && d4 <= d3 {
+			b
+		} else if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+			along(a, ab, d1 / (d1 - d3))
+		} else if d6 >= 0.0 && d5 <= d6 {
+			c
+		} else if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+			along(a, ac, d2 / (d2 - d6))
+		} else if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+			along(b, sub(c, b), (d4 - d3) / ((d4 - d3) + (d5 - d6)))
+		} else {
+			let sum = va + vb + vc;
+			// A triangle without area has no interior; its corner is as good as any point of it.
+			if sum == 0.0 {
+				a
+			} else {
+				let on_ab = along(a, ab, vb / sum);
+				along(on_ab, ac, vc / sum)
+			}
+		}
+	};
+	let offset = sub(point, closest);
+	dot(offset, offset).sqrt()
 }
 
 /// Share of the previous level's triangles that each level aims to keep.

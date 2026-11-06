@@ -86,6 +86,48 @@ async fn resolve_animation_skeleton(
 	Ok((target, source_to_skeleton))
 }
 
+/// Reads the files the `lods.authored` pattern of `spec` names as the coarser levels of the model at `base`, finest
+/// first, stopping at the first that doesn't exist. Returns none when the pattern is unset or doesn't match the model,
+/// when detail levels are off, and, with a warning, when the model is skinned or the bake gives it lightmap UVs.
+async fn load_authored_levels(
+	context: BakeContext<'_>,
+	spec: Option<&asset::BEADType>,
+	base: &str,
+	settings: MeshSettings,
+	skinned: bool,
+) -> Result<Vec<(String, Vec<u8>)>, LoadErrors> {
+	let pattern = asset::authored_level_pattern(spec).map_err(|error| {
+		context.error(format_args!(
+			"Failed to read the authored detail levels of FBX asset '{base}': {error}. The most likely cause is a mistyped `lods.authored` pattern in the asset's BEAD file. Write it like \"{{name}}_LOD{{level}}\"."
+		));
+		LoadErrors::FailedToProcess
+	})?;
+	let Some(ids) = pattern.as_ref().and_then(|pattern| pattern.coarser_level_ids(base)) else {
+		return Ok(Vec::new());
+	};
+	if settings.lods.max_levels <= 1 {
+		return Ok(Vec::new());
+	}
+	if skinned || settings.lightmap_uvs.is_some() {
+		let reason = if skinned { "it has a skeleton" } else { "the bake gives it lightmap UVs" };
+		context.warn(format_args!(
+			"FBX asset '{base}' leaves its authored detail levels out because {reason}, which authored levels don't support. Its levels are generated instead. See {}.",
+			crate::online_docs_url("reference/assets#authored-detail-levels")
+		));
+		return Ok(Vec::new());
+	}
+	let mut levels = Vec::new();
+	for id in ids.take(settings.lods.max_levels as usize - 1) {
+		// A missing file ends the chain. The bake records its absence, so adding it later rebakes the model.
+		let data = match context.resolve(ResourceId::new(&id)).await {
+			Ok((data, _)) => data.to_vec(),
+			Err(_) => break,
+		};
+		levels.push((id, data));
+	}
+	Ok(levels)
+}
+
 /// The `FBXAssetHandler` struct provides the authored-FBX import path used to bake meshes, skeletons, and animation clips.
 ///
 /// Generated materials target the asset manager's
@@ -278,6 +320,20 @@ impl AssetHandler for FBXAssetHandler {
 			));
 			LoadErrors::FailedToProcess
 		})?;
+		let level_sources = load_authored_levels(context, spec.as_ref(), base.as_ref(), settings, skeleton.is_some()).await?;
+		let mut level_scenes = Vec::with_capacity(level_sources.len());
+		for (id, data) in &level_sources {
+			let level_scene = load_fbx_scene(data, id).map_err(|error| {
+				context.error(format_args!(
+					"Failed to import authored detail level '{id}' of FBX asset '{}': {error}",
+					url.as_ref()
+				));
+				LoadErrors::FailedToProcess
+			})?;
+			level_scenes.push((id.as_str(), level_scene));
+		}
+		let levels: Vec<(&str, &ufbx::Scene)> = level_scenes.iter().map(|(id, scene)| (*id, &**scene)).collect();
+		let mut level_notes = FbxAuthoredLevelNotes::default();
 		let mut culled_polygons = FbxCulledPolygonCounts::default();
 		let (materials, mesh) = std::future::join!(
 			resolve_fbx_materials(context, spec.as_ref(), source_id, &scene, &material_keys,),
@@ -290,12 +346,24 @@ impl AssetHandler for FBXAssetHandler {
 					allocator,
 					&mut culled_polygons,
 					settings,
+					&levels,
+					&mut level_notes,
 				)
 			},
 		)
 		.await;
 
 		culled_polygons.trace(context);
+		for warning in &level_notes.warnings {
+			context.warn(format_args!(
+				"FBX asset '{}': {warning} See {}.",
+				url.as_ref(),
+				crate::online_docs_url("reference/assets#authored-detail-levels")
+			));
+		}
+		for note in &level_notes.info {
+			context.info(format_args!("FBX asset '{}': {note}", url.as_ref()));
+		}
 
 		let mesh = mesh.map_err(|error| {
 			context.error(format_args!("Failed to process FBX mesh '{}': {error}", url.as_ref()));

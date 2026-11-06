@@ -17,7 +17,7 @@ mod tests {
 	use std::alloc::{Allocator, Global};
 
 	use super::{
-		FBXAssetHandler, FbxCulledPolygonCounts, FbxImportError, FbxMeshProcessingError, MaterialKey, RemappedCorners,
+		FBXAssetHandler, FbxAuthoredLevelNotes, FbxCulledPolygonCounts, FbxImportError, FbxMeshProcessingError, MaterialKey, RemappedCorners,
 		canonical_animation_node_map, decode_fbx_texture_image, fbx_material, fbx_texture_source_path,
 		finite_material_component, finite_material_product, import_fbx_animation, import_fbx_mesh_session, import_fbx_skeleton,
 		import_fbx_skin_binding, load_fbx_scene, matrix_to_affine, remap_triangle_corners, resolve_fbx_texture_path,
@@ -62,6 +62,12 @@ mod tests {
 
 	const SHARED_EDGE_UV_SEAM_FBX: &[u8] = include_bytes!("../../test_data/shared_edge_uv_seam_ascii.fbx");
 
+	const LEAF_LOD0_FBX: &[u8] = include_bytes!("../../test_data/leaf_lod0_ascii.fbx");
+
+	const LEAF_LOD1_FBX: &[u8] = include_bytes!("../../test_data/leaf_lod1_ascii.fbx");
+
+	const LEAF_LOD2_FBX: &[u8] = include_bytes!("../../test_data/leaf_lod2_ascii.fbx");
+
 	/// Imports a fixture with a test variant for each material it uses, named after the FBX material or `default`, and
 	/// discards diagnostic counts that are not relevant to the focused assertion.
 	fn import_test_fbx_meshes<'a>(
@@ -70,6 +76,19 @@ mod tests {
 		source_to_skeleton: &[u32],
 		allocator: &'a dyn Allocator,
 	) -> Result<ProcessedMesh, FbxMeshProcessingError> {
+		import_test_fbx_levels(scene, &[], skeleton, source_to_skeleton, allocator).map(|(processed, _)| processed)
+	}
+
+	/// Imports a fixture as [`import_test_fbx_meshes`] does, with `levels` as its authored coarser levels, and returns
+	/// what the import noted about them.
+	fn import_test_fbx_levels<'a>(
+		scene: &ufbx::Scene,
+		levels: &[(&str, &ufbx::Scene)],
+		skeleton: Option<ReferenceModel<SkeletonModel>>,
+		source_to_skeleton: &[u32],
+		allocator: &'a dyn Allocator,
+	) -> Result<(ProcessedMesh, FbxAuthoredLevelNotes), FbxMeshProcessingError> {
+		let mut notes = FbxAuthoredLevelNotes::default();
 		let keys = used_material_keys(scene, allocator);
 		let materials = keys
 			.iter()
@@ -86,8 +105,10 @@ mod tests {
 			allocator,
 			&mut FbxCulledPolygonCounts::default(),
 			crate::processors::mesh::MeshSettings::default(),
+			levels,
+			&mut notes,
 		)?;
-		Ok(session.finish(&materials))
+		Ok((session.finish(&materials), notes))
 	}
 
 	/// The `TestVariantAssetHandler` struct supplies a material override without invoking a platform shader compiler.
@@ -188,6 +209,37 @@ mod tests {
 		let mut uvs = primitive_f32_values::<2>(&processed, 0, VertexSemantics::UV);
 		uvs.sort_by(|a, b| a.partial_cmp(b).expect("UVs should be finite"));
 		assert_eq!(uvs, [[0.0, 0.0], [0.0, 1.0], [0.5, 0.0], [1.0, 0.0], [1.0, 1.0]]);
+	}
+
+	#[test]
+	fn authored_levels_follow_full_detail_until_a_file_with_other_materials() {
+		let scene = load_fbx_scene(LEAF_LOD0_FBX, "leaf_LOD0.fbx").expect("fixture FBX should parse");
+		let lod1 = load_fbx_scene(LEAF_LOD1_FBX, "leaf_LOD1.fbx").expect("fixture FBX should parse");
+		let lod2 = load_fbx_scene(LEAF_LOD2_FBX, "leaf_LOD2.fbx").expect("fixture FBX should parse");
+
+		let (processed, notes) = import_test_fbx_levels(
+			&scene,
+			&[("leaf_LOD1.fbx", &lod1), ("leaf_LOD2.fbx", &lod2)],
+			None,
+			&[],
+			&Global,
+		)
+		.expect("fixture mesh with authored levels should import");
+		let primitive = &processed.mesh.primitives[0];
+		let alone = import_test_fbx_meshes(&scene, None, &[], &Global).expect("fixture mesh should import");
+
+		// The flat quad's 4 vertices follow full detail's in the primitive, and sort first.
+		assert_eq!(primitive.vertex_count, alone.mesh.primitives[0].vertex_count + 4);
+		assert_eq!(primitive.lods.len(), 2, "the billboard file ends the chain, and one quad is too small to simplify");
+		assert_eq!(primitive.lods[1].vertex_count, 4);
+		// The raised center lies 0.2 centimeters from the flat quad.
+		assert_close([primitive.lods[1].error], [0.002]);
+		assert!(notes.warnings.is_empty(), "unexpected warnings: {:?}", notes.warnings);
+		assert!(
+			notes.info.iter().any(|note| note.contains("leaf_LOD2.fbx") && note.contains("Billboard")),
+			"the chain should end at the billboard: {:?}",
+			notes.info
+		);
 	}
 
 	#[test]

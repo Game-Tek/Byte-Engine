@@ -1,0 +1,69 @@
+FBXHeaderExtension:  {
+    FBXHeaderVersion: 1003
+    FBXVersion: 7400
+}
+
+GlobalSettings:  {
+    Version: 1000
+    Properties70:  {
+        P: "UpAxis", "int", "Integer", "",1
+        P: "UpAxisSign", "int", "Integer", "",1
+        P: "FrontAxis", "int", "Integer", "",2
+        P: "FrontAxisSign", "int", "Integer", "",-1
+        P: "CoordAxis", "int", "Integer", "",0
+        P: "CoordAxisSign", "int", "Integer", "",1
+        P: "UnitScaleFactor", "double", "Number", "",1
+        P: "OriginalUnitScaleFactor", "double", "Number", "",1
+    }
+}
+
+; Full detail of an authored level chain: a 2 by 2 quad grid whose center vertex rises 0.2 units.
+Objects:  {
+    Geometry: 1001, "Geometry::Leaf", "Mesh" {
+        Vertices: *27 {
+            a: 0,0,0,1,0,0,2,0,0,0,1,0,1,1,0.2,2,1,0,0,2,0,1,2,0,2,2,0
+        }
+        PolygonVertexIndex: *16 {
+            a: 0,1,4,-4,1,2,5,-5,3,4,7,-7,4,5,8,-8
+        }
+        LayerElementMaterial: 0 {
+            Version: 101
+            Name: ""
+            MappingInformationType: "ByPolygon"
+            ReferenceInformationType: "IndexToDirect"
+            Materials: *4 {
+                a: 0,0,0,0
+            }
+        }
+        Layer: 0 {
+            Version: 100
+            LayerElement: {
+                Type: "LayerElementMaterial"
+                TypedIndex: 0
+            }
+        }
+    }
+
+    Model: 1002, "Model::Leaf", "Mesh" {
+        Version: 232
+        Properties70:  {
+            P: "Lcl Translation", "Lcl Translation", "", "A",0,0,0
+            P: "Lcl Rotation", "Lcl Rotation", "", "A",0,0,0
+            P: "Lcl Scaling", "Lcl Scaling", "", "A",1,1,1
+        }
+        Shading: T
+        Culling: "CullingOff"
+    }
+
+    Material: 3001, "Material::Leaf", "" {
+        Version: 102
+        ShadingModel: "phong"
+        MultiLayer: 0
+    }
+}
+
+Connections:  {
+    C: "OO",1001,1002
+    C: "OO",1002,0
+    C: "OO",3001,1002
+}

@@ -32,6 +32,16 @@ pub trait MeshPrimitiveSource {
 		None
 	}
 
+	/// Returns where each coarser authored detail level starts in [`Self::indices`], in indices, finest first.
+	///
+	/// The indices before the first start are full detail, and each level runs to the next start or the end. Every
+	/// level indexes this primitive's vertices, so an importer appends a coarser model's vertices after full detail's.
+	/// Mesh processing measures each level's error against full detail, then simplifies the coarsest one into further
+	/// levels. Empty, the default, means full detail alone, which mesh processing simplifies into every coarser level.
+	fn coarser_level_starts(&self) -> &[usize] {
+		&[]
+	}
+
 	fn indices(&self) -> Result<impl ExactSizeIterator<Item = Result<u32, Self::Error>> + '_, Self::Error>;
 
 	fn positions(&self) -> Result<impl ExactSizeIterator<Item = Result<Point<ModelSpace>, Self::Error>> + '_, Self::Error>;

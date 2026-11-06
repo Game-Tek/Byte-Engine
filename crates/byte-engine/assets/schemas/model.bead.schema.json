@@ -41,6 +41,12 @@
           "type": "boolean",
           "default": false,
           "description": "Whether open borders keep their vertices. Set it when primitives that meet along a border show gaps at a distance."
+        },
+        "authored": {
+          "type": "string",
+          "pattern": "\\{level\\}",
+          "examples": ["{name}_LOD{level}"],
+          "description": "FBX only. A pattern of the model's file name without its extension, naming the files next to it that hold its coarser authored levels: {level} is the level number, and any other {name} matches the same text in every file."
         }
       },
       "additionalProperties": false

@@ -12,6 +12,7 @@ use crate::{
 	resources::mesh::MAX_PRIMITIVE_LODS,
 };
 
+mod authored_levels;
 mod bake_memory;
 pub mod handler;
 pub mod intercept;
@@ -22,6 +23,8 @@ pub mod resource_trace;
 
 #[cfg(debug_assertions)]
 pub use resource_trace::{ResourceTrace, ResourceTraceItem, ResourceTraceLevel};
+
+pub(crate) use authored_levels::{AuthoredLevelPattern, authored_level_pattern};
 
 pub type BEADType = Value;
 
@@ -69,6 +72,9 @@ struct MeshLodsManifest {
 	max_levels: u8,
 	max_error: f32,
 	lock_borders: bool,
+	/// Read by [`authored_level_pattern`] for the model handlers that support authored levels.
+	#[allow(dead_code)]
+	authored: Option<String>,
 }
 
 impl Default for MeshLodsManifest {
@@ -83,6 +89,7 @@ impl Default for MeshLodsManifest {
 			max_levels,
 			max_error,
 			lock_borders,
+			authored: None,
 		}
 	}
 }

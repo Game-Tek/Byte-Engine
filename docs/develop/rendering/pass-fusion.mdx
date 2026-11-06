@@ -1,0 +1,75 @@
+---
+title: Pass fusion
+description: Learn how the renderer records runs of pixel steps as one pass, why it fuses them from assets, and what a change to fusion must keep true.
+icon: Merge
+---
+
+Read this page before you change a pixel step, the pixel chain generator, the `.fusion` handler, or how the renderer
+plans its post-scene passes. What fusion does is specified under
+[pixel steps and fusion](/docs/reference/rendering#pixel-steps-and-fusion) in the rendering reference, the
+[`.fusion` format](/docs/reference/assets#fusions) in the asset reference, and the step contract under
+[pixel shaders](/docs/reference/besl/interface#pixel-shaders).
+
+## Why fuse
+
+Color correction, LUTs, tone mapping, and display encoding each change a pixel from that pixel alone. Recorded as
+separate passes, each one reads `main` from memory and writes a new `main` back, so a chain of four costs four
+full-screen round trips. On a tiled or bandwidth-bound GPU that traffic costs more than the math. One shader that runs
+every step in registers reads `main` once and writes it once.
+
+Metal tile functions could chain inside one render pass and keep the color in tile memory. The compute fallback on
+Vulkan and DX12 can't, and every dispatch would still need a barrier. A generated shader works on every backend.
+
+## How it's built
+
+Fusion has a bake half, in `resource-management`, and a renderer half, in `byte-engine`.
+
+| Part | Where | Role |
+| --- | --- | --- |
+| Pixel chain generator | `shader/pixel_chain.rs` | Writes the wrapper source that attaches each step's shader as the module `step_<i>`, reads `main` through `source`, calls each step's `pixel` in order, and writes `result`. With more than one step, step `i` runs only while bit `i` of the push constant `steps` is set. It renames each `pixel` to `step_<i>_pixel`, because backends emit functions by their own names. |
+| BESL handler | `asset/handler/implementations/besl.rs` | Bakes a shader that declares `pixel` as a chain of one step, so a step's own pipeline is an ordinary `tile` pipeline. `load_pixel_chain` reads the chain's modules: beside each step's shader, or from the asset root. |
+| Fusion handler | `asset/handler/implementations/fusion.rs` | Bakes each step pipeline, checks the steps' tiles, generates the chain, and stores `<id>#shader` and a `Pipeline` of kind `fused`. A request for either ID bakes both. |
+| `kind` property | `resources/pipeline.rs` | Indexes every pipeline by kind, so the renderer queries the fused ones without reading every pipeline. |
+| Registrations | `renderer/core.rs` | Keeps passes and steps in one ordered list. A step registers with its own pipeline ID, so the plan needs no step instance. |
+| Catalog | `render_pass/pixel_steps.rs`, `load_fusions` | When the first window opens, a thread of its own bakes stale `.fusion` sources in development builds and queries the store. Sinks wait in `pending_sink_initializations` until it answers. |
+| Plan | `render_pass/pixel_steps.rs`, `plan` | A pure function from the registrations' pipelines and the fusions to the passes every sink records. |
+| Run | `render_pass/pixel_steps.rs`, `PixelRun` | One render node that builds its steps through one builder, binds every step's resources by name, writes one replacement for `main`, and records one tile pass. |
+
+A run of one step answers to the step's name, so its harness bypasses it like any pass. A fused run answers to its
+steps' names joined by `+`, reads each step's shared state itself, and sets the mask from it every frame. Bypassing a
+fused step changes one bit of the mask; the plan never changes after the graph closes.
+
+## Why fusions are assets
+
+The renderer only fuses what a `.fusion` asset names, and only in that exact order. Each fusion's shader bakes with
+the other assets, so a run never compiles a shader the bake didn't, and a fusion that fails shows up in the bake's
+trace instead of at runtime. The renderer finds fusions by querying the store, so a fusion is available to every
+application whose store holds it, with no registration call.
+
+## Rules a change must keep
+
+- A step reads `main` only through its `pixel` function's color. A step that reads neighbors of `main`, such as a
+  blur, is a render pass, not a step.
+- A step's factory may read other targets, such as `depth`, but never replaces `main`. The run creates the one
+  replacement.
+- Backends emit every declaration and descriptor by its own name. Steps that fuse must not share a helper, constant,
+  or layer descriptor name; give each step's layer descriptors a prefix, such as `correction_parameters`.
+- A step's layer holds only descriptors. The fused shader's one push constant is the step mask.
+- The mask's bit order is the fusion's step order. Changing either changes both.
+- A run with nothing to apply, or whose pipeline is pending or failed, forwards `main` through the copy the builder
+  made. It must never leave `main` cleared.
+- `plan` stays pure: registrations and fusions in, planned passes out. Keep reading the store out of it.
+
+## Tests
+
+| Test | Guards |
+| --- | --- |
+| `pixel_chain::tests` | The generator links steps with and without layers and rejects every rule the reference lists. |
+| `fusion::tests` | A fusion bakes a fused pipeline that the `kind` query finds, a request for its shader bakes the whole fusion, a lone pixel shader bakes with a generated `main`, and invalid fusions fail. |
+| `pixel_steps::tests` planner tests | Longest match, a pass ending a run, unmatched steps running alone, and order. |
+| `a_fused_chain_matches_its_steps_run_one_after_another` | The fused correction, LUT, and ACES chain writes what the three steps write one after another, in the BESL virtual machine. |
+| `a_cleared_step_bit_leaves_that_step_out` | A cleared bit skips its step, and a mask of 0 leaves the color unchanged. |
+| `every_shipped_fusion_lowers_to_the_platform_shader_language` | Every `.fusion` the engine ships lowers to the platform's shading language. |
+
+Each step's own shader tests run it through `link_pixel_chain`, as its bake does. To compare a fused frame with
+unfused steps, run with `render.fusion=false`.

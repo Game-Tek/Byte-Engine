@@ -5,6 +5,28 @@
 //! application owns frame timing and calls the renderer in lifecycle order.
 
 type RenderPassFactory = dyn for<'builder, 'resources> Fn(&'builder mut RenderPassBuilder<'resources>) -> Box<dyn RenderPass>;
+
+/// One post-scene registration, in the order every sink records them.
+enum Registration {
+	/// A pass that records its own commands.
+	Pass(Box<RenderPassFactory>),
+	/// A pixel step, which the renderer records alone or fused with the steps registered next to it.
+	Step {
+		/// The step's own `tile` pipeline, which fusions name it by.
+		pipeline: &'static str,
+		factory: Box<PixelStepFactory>,
+	},
+}
+
+/// The `FusionCatalog` enum tracks the fusions the renderer groups pixel steps with, read once when the graph closes.
+enum FusionCatalog {
+	/// Not read yet. The first window starts reading it.
+	Unread,
+	/// Read on a thread of its own, which sends the fusions when done.
+	Loading(std::sync::mpsc::Receiver<Vec<Fusion>>),
+	/// The passes every sink records, grouped with the fusions read.
+	Planned(Vec<Planned>),
+}
 type SinkId = usize;
 /// Identifies a render pass created by a render-pass factory.
 type RenderPassId = usize;
@@ -100,7 +122,15 @@ pub struct Renderer {
 
 	/// Every sink's post-scene passes, in the order each sink records them. A pass's index is its [`RenderPassId`].
 	render_passes: SmallVec<[SinkPass; 64]>,
-	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
+	/// Every post-scene registration, in the order every sink records them.
+	registrations: SmallVec<[Registration; 16]>,
+	/// The fusions runs of pixel steps use, and the passes they group the registrations into.
+	fusions: FusionCatalog,
+	/// Whether runs of pixel steps use fusions; `render.fusion`.
+	fusion_enabled: bool,
+	/// Where the fusion catalog is read from; `None` until [`Self::set_resource_manager`], which leaves every step on its
+	/// own.
+	resource_manager: Option<EntityHandle<ResourceManager>>,
 	scene_background_factory: Option<Box<crate::rendering::render_pass::SceneBackgroundFactory>>,
 	scene_backgrounds: SmallVec<[crate::rendering::render_pass::SceneBackground; 16]>,
 	scene_presentation_copies: SmallVec<[(SinkId, ImageBypassPass); 16]>,
@@ -236,6 +266,10 @@ impl Renderer {
 			.get_parameter("startup.defer-sink-setup")
 			.map(|parameter| parameter.as_bool_simple())
 			.unwrap_or(false);
+		let fusion_enabled = parameters
+			.get_parameter("fusion")
+			.map(|parameter| parameter.as_bool_simple())
+			.unwrap_or(true);
 		let swapchain_images = parameters
 			.get_parameter("swapchain.images")
 			.and_then(|parameter| parameter.parse::<u8>().ok())
@@ -294,7 +328,10 @@ impl Renderer {
 			resource_updates: None,
 
 			render_passes: SmallVec::with_capacity(64),
-			post_scene_render_pass_factories: SmallVec::with_capacity(16),
+			registrations: SmallVec::with_capacity(16),
+			fusions: FusionCatalog::Unread,
+			fusion_enabled,
+			resource_manager: None,
 			scene_background_factory: None,
 			scene_backgrounds: SmallVec::new(),
 			scene_presentation_copies: SmallVec::with_capacity(16),
@@ -379,13 +416,15 @@ impl Renderer {
 		self.metrics.complete_frame(frame);
 	}
 
-	/// Connects the renderer to the resource manager whose development rebakes rebuild its pipelines.
+	/// Connects the renderer to the resource manager it finds fusions in and whose development rebakes rebuild its
+	/// pipelines.
 	///
-	/// In debug builds the renderer listens for replaced resources and recompiles the pipelines built from them.
-	/// Release builds keep no connection. Call it in any order relative to adding pipeline managers and render
-	/// passes. [`crate::application::graphics::GraphicsApplication::new`] calls it for you.
-	#[cfg_attr(not(debug_assertions), allow(unused_variables))]
+	/// When the first window opens, the renderer reads the fusions in the resource store from it. In debug builds it
+	/// also listens for replaced resources and recompiles the pipelines built from them. Call it in any order relative
+	/// to adding pipeline managers and render passes. [`crate::application::graphics::GraphicsApplication::new`] calls
+	/// it for you.
 	pub fn set_resource_manager(&mut self, resource_manager: &EntityHandle<ResourceManager>) {
+		self.resource_manager = Some(resource_manager.clone());
 		#[cfg(debug_assertions)]
 		{
 			self.resource_updates = Some(resource_manager.resource_updates());
@@ -513,19 +552,124 @@ impl Renderer {
 			self.windows.is_empty(),
 			"Render graph is already closed. The most likely cause is that a post-scene render pass was registered after creating a window. Register every pass before creating the first window."
 		);
-		self.post_scene_render_pass_factories.push(Box::new(render_pass_factory));
+		self.registrations.push(Registration::Pass(Box::new(render_pass_factory)));
 	}
 
-	/// Instantiates all registered post-scene render pass factories for a given sink.
+	/// Registers a pixel step that will be instantiated for every future sink, whose own pipeline is `pipeline`.
+	///
+	/// Register every step before creating a window, like a post-scene pass, in the order of the other passes. When the
+	/// first window opens, the renderer groups the steps registered one after another into runs: each run takes the
+	/// longest fusion in the resource store whose steps are their pipelines, and records as one pass. `factory` builds
+	/// the step's resources for one sink; it reads the run's incoming `main` and must not replace it. See
+	/// [pixel steps and fusion](/docs/reference/rendering#pixel-steps-and-fusion).
+	pub fn add_pixel_step_for_all_sinks<F>(&mut self, pipeline: &'static str, factory: F)
+	where
+		F: for<'builder, 'resources> Fn(&'builder mut RenderPassBuilder<'resources>) -> Box<dyn PixelStep> + 'static,
+	{
+		assert!(
+			self.windows.is_empty(),
+			"Render graph is already closed. The most likely cause is that a pixel step was registered after creating a window. Register every pass before creating the first window."
+		);
+		self.registrations.push(Registration::Step {
+			pipeline,
+			factory: Box::new(factory),
+		});
+	}
+
+	/// Starts reading the fusion catalog, once, when the render graph closes.
+	///
+	/// Without a resource manager or with `render.fusion` off, every pixel step is planned to run alone at once.
+	fn start_fusion_catalog(&mut self) {
+		if !matches!(self.fusions, FusionCatalog::Unread) {
+			return;
+		}
+		let Some(resources) = self.resource_manager.clone().filter(|_| self.fusion_enabled) else {
+			self.fusions = FusionCatalog::Planned(self.plan(&[]));
+			return;
+		};
+		let (sender, receiver) = std::sync::mpsc::channel();
+		let spawned = std::thread::Builder::new()
+			.name("Fusion Catalog".to_string())
+			.spawn(move || {
+				let runtime = compio::runtime::Runtime::new().expect(
+					"Failed to create the fusion catalog's runtime. The most likely cause is that the system ran out of file descriptors or threads.",
+				);
+				// The renderer may have closed before the catalog was read.
+				let _ = sender.send(runtime.block_on(load_fusions(&resources)));
+			});
+		self.fusions = match spawned {
+			Ok(_) => FusionCatalog::Loading(receiver),
+			Err(error) => {
+				log::error!(
+					"Failed to start reading the fusion catalog: {error}. The most likely cause is that the system ran out of threads. Every pixel step records on its own."
+				);
+				FusionCatalog::Planned(self.plan(&[]))
+			}
+		};
+	}
+
+	/// Reports whether the fusion catalog is read and the passes are planned, adopting the catalog when it arrived.
+	fn fusions_planned(&mut self) -> bool {
+		let FusionCatalog::Loading(receiver) = &self.fusions else {
+			return matches!(self.fusions, FusionCatalog::Planned(_));
+		};
+		let fusions = match receiver.try_recv() {
+			Ok(fusions) => fusions,
+			Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+			Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+				log::error!(
+					"The fusion catalog stopped before it was read. The most likely cause is a panic while reading the resource store, which the log shows. Every pixel step records on its own."
+				);
+				Vec::new()
+			}
+		};
+		self.fusions = FusionCatalog::Planned(self.plan(&fusions));
+		true
+	}
+
+	/// Groups the registrations into the passes every sink records, with `fusions`.
+	fn plan(&self, fusions: &[Fusion]) -> Vec<Planned> {
+		let registrations = self
+			.registrations
+			.iter()
+			.map(|registration| match registration {
+				Registration::Pass(_) => None,
+				Registration::Step { pipeline, .. } => Some(*pipeline),
+			})
+			.collect::<SmallVec<[_; 16]>>();
+		plan(&registrations, fusions)
+	}
+
+	/// Instantiates all planned post-scene passes for a given sink.
 	fn add_post_scene_render_passes_for_sink(&mut self, sink_id: SinkId) {
-		// Every pass builds through `self`, so the factories step aside while they run.
-		let factories = std::mem::take(&mut self.post_scene_render_pass_factories);
-		let final_factory_index = factories.len().checked_sub(1);
-		for (factory_index, factory) in factories.iter().enumerate() {
-			let final_output = Some(factory_index) == final_factory_index;
+		// Every pass builds through `self`, so the registrations and the plan step aside while they run.
+		let registrations = std::mem::take(&mut self.registrations);
+		let FusionCatalog::Planned(planned) = std::mem::replace(&mut self.fusions, FusionCatalog::Unread) else {
+			unreachable!("Sinks initialize only after the fusion catalog is planned.");
+		};
+		let final_index = planned.len().checked_sub(1);
+		for (planned_index, entry) in planned.iter().enumerate() {
+			let final_output = Some(planned_index) == final_index;
 			let render_pass_id = self.render_passes.len();
 			let mut builder = self.sink_builder(sink_id, RenderNode::Pass(render_pass_id), final_output);
-			let render_pass = factory(&mut builder);
+			let render_pass: Box<dyn RenderPass> = match entry {
+				Planned::Pass(index) => {
+					let Registration::Pass(factory) = &registrations[*index] else {
+						unreachable!("The plan names passes only by their registrations.");
+					};
+					factory(&mut builder)
+				}
+				Planned::Run { steps, pipeline } => {
+					let factories = registrations[steps.clone()]
+						.iter()
+						.map(|registration| match registration {
+							Registration::Step { factory, .. } => &**factory,
+							Registration::Pass(_) => unreachable!("A run holds only steps."),
+						})
+						.collect::<SmallVec<[_; 8]>>();
+					Box::new(PixelRun::new(&mut builder, &factories, pipeline))
+				}
+			};
 			assert!(
 				!final_output || builder.writes_final_output(),
 				"Final render pass has no presentation output. The most likely cause is that it created or aliased an ordinary image instead of calling `RenderPassBuilder::create_main_render_target`."
@@ -546,11 +690,12 @@ impl Renderer {
 				counter,
 			});
 		}
-		self.post_scene_render_pass_factories = factories;
+		self.registrations = registrations;
+		self.fusions = FusionCatalog::Planned(planned);
 
 		// A scene-only graph has no terminal pass that can receive the swapchain directly. An empty graph also has
 		// no scene color to copy, so presenting the acquired swapchain is the complete frame operation in that case.
-		if final_factory_index.is_none() && self.render_targets.get("main", sink_id).is_some() {
+		if final_index.is_none() && self.render_targets.get("main", sink_id).is_some() {
 			let swapchain = self.windows[sink_id].1;
 			let mut builder = self.sink_builder(sink_id, RenderNode::Presentation, false);
 			let source = builder.read_from("main");
@@ -789,7 +934,11 @@ impl Renderer {
 		self.acquire_swapchain_images(|sink| screenshot_requests.iter().any(|(captured, _)| *captured == sink));
 		self.redraw_requested = false;
 
-		if self.started_frame_count > 0 {
+		// Sinks wait for the fusion catalog, and deferred sinks also for the first frame to be presented.
+		if (self.started_frame_count > 0 || !self.defer_first_frame_sink_setup)
+			&& !self.pending_sink_initializations.is_empty()
+			&& self.fusions_planned()
+		{
 			for sink_id in std::mem::take(&mut self.pending_sink_initializations) {
 				self.initialize_scene_sink(sink_id);
 			}
@@ -1164,9 +1313,11 @@ impl Renderer {
 				self.windows.push((window, swapchain_handle, false));
 				self.redraw_requested = true;
 
+				// The first window closes the render graph, so the fusions its steps group with can be read.
+				self.start_fusion_catalog();
 				if let Some(camera) = camera {
 					self.sink_cameras.push((sink_id, *camera));
-					if self.defer_first_frame_sink_setup && self.started_frame_count == 0 {
+					if (self.defer_first_frame_sink_setup && self.started_frame_count == 0) || !self.fusions_planned() {
 						// The native window and swapchain can be presented before scene pipelines are created; this keeps
 						// first-paint latency independent of shader and PSO warmup.
 						self.pending_sink_initializations.push(sink_id);
@@ -1304,7 +1455,10 @@ use crate::rendering::{
 	render_passes::debug_view::DebugViewPresentPass,
 };
 use crate::rendering::{
-	render_pass::{RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassState, RenderPassStates},
+	render_pass::{
+		RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassState, RenderPassStates,
+		pixel_steps::{Fusion, PixelRun, PixelStep, PixelStepFactory, Planned, load_fusions, plan},
+	},
 	render_passes::blit::ImageBypassPass,
 };
 use crate::{

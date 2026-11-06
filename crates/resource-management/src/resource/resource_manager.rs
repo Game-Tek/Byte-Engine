@@ -334,6 +334,38 @@ impl ResourceManager {
 			.map_err(|source| RequestError::bake(id, source, asset_manager))
 	}
 
+	/// Bakes every discoverable source asset of `asset_type`, such as `fusion`, whose resource is missing or stale, so a
+	/// following [`Self::query_ids`] finds them as it would in a baked store.
+	///
+	/// Development builds call this before querying resources no request names. A source that fails to bake is logged
+	/// and skipped. Without asset management, it does nothing.
+	#[cfg(debug_assertions)]
+	pub async fn bake_discovered(&self, asset_type: &str) {
+		let Some(asset_manager) = self.asset_manager.get() else {
+			return;
+		};
+		let ids = match asset_manager.discover().await {
+			Ok(ids) => ids,
+			Err(error) => {
+				log::warn!(
+					"Failed to list the source assets to bake ({error}). The most likely cause is an unreadable asset directory. Resources of type `{asset_type}` that were never baked stay missing."
+				);
+				return;
+			}
+		};
+		for id in ids
+			.iter()
+			.filter(|id| crate::asset::ResourceId::new(id).get_asset_type() == asset_type)
+		{
+			if let Err(error) = asset_manager.bake_if_stale(id).await {
+				log::error!(
+					"Failed to bake '{id}': {}. The most likely cause is an error in the asset, which its bake trace names.",
+					RequestError::bake(id, error, asset_manager)
+				);
+			}
+		}
+	}
+
 	/// Returns the stored class of `id`, such as `Mesh`, `Variant`, or `Image`.
 	///
 	/// Use this to route a resource whose type the caller does not know, then

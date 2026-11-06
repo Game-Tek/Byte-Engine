@@ -1,0 +1,8 @@
+{
+	"$schema": "../../schemas/fusion.schema.json",
+	"name": "Color Correction and AgX",
+	"steps": [
+		"byte_engine/rendering/color-correction/correct.pipeline",
+		"byte_engine/rendering/agx/tone-mapping.pipeline"
+	]
+}

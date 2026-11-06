@@ -360,13 +360,14 @@ impl PipelineManagerServer {
 		let pipeline = pipeline.resource();
 		let (PipelineKind::Compute { push_constants, .. }
 		| PipelineKind::Raster { push_constants, .. }
-		| PipelineKind::Tile { push_constants, .. }) = &pipeline.kind;
+		| PipelineKind::Tile { push_constants, .. }
+		| PipelineKind::Fused { push_constants, .. }) = &pipeline.kind;
 		let ranges = push_constants
 			.iter()
 			.map(|range| ghi::pipelines::PushConstantRange::new(range.offset, range.size))
 			.collect::<Vec<_>>();
 		match &pipeline.kind {
-			PipelineKind::Tile { .. } => Err(format!(
+			PipelineKind::Tile { .. } | PipelineKind::Fused { .. } => Err(format!(
 				"Tile pipeline '{id}' was requested without its outputs' formats. The most likely cause is a tile pipeline passed to a compute or raster pass. Record it with a `simple_tile` pass, which requests it for the formats of the images it binds."
 			)),
 			PipelineKind::Compute { shader, .. } => {
@@ -539,7 +540,11 @@ impl PipelineManagerServer {
 				)
 			})?;
 		let pipeline = pipeline.resource();
-		let PipelineKind::Tile { shader, push_constants } = &pipeline.kind else {
+		let (PipelineKind::Tile { shader, push_constants }
+		| PipelineKind::Fused {
+			shader, push_constants, ..
+		}) = &pipeline.kind
+		else {
 			return Err(format!(
 				"Pipeline '{id}' is not a tile pipeline. The most likely cause is a compute pipeline asset passed to a `simple_tile` pass. Set the pipeline's `type` to `tile` and its shader's `stage` to `Tile`."
 			));

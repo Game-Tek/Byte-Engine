@@ -1449,7 +1449,7 @@ use crate::{
 		},
 		render_passes::{
 			bloom::{BloomPass, BloomPassSettings},
-			image_transform::ImageTransformPass,
+			image_transform::ImageTransformStep,
 			lut::{LutPass, LutWorkflow},
 			sky::AtmosphereSkyRenderPass,
 			smaa::SmaaPass,

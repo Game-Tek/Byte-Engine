@@ -39,6 +39,30 @@ pub enum PipelineKind {
 		#[serde(default)]
 		push_constants: Vec<PushConstantRange>,
 	},
+	/// A tile pipeline that a `.fusion` asset bakes from pixel step pipelines, so a renderer can record a run of those
+	/// steps as one pass. Its shader runs step `i` while bit `i` of the 4-byte step mask in `push_constants` is set.
+	///
+	/// Renderers find these with a query for `Pipeline` resources whose `kind` is `fused`, and compile them like a
+	/// [`Self::Tile`] pipeline.
+	Fused {
+		shader: String,
+		/// The step pipelines' IDs, in the order the shader runs them.
+		steps: Vec<String>,
+		#[serde(default)]
+		push_constants: Vec<PushConstantRange>,
+	},
+}
+
+impl PipelineKind {
+	/// Returns the name of the kind, as the `type` field of a `.pipeline` file and the `kind` query property spell it.
+	pub fn name(&self) -> &'static str {
+		match self {
+			Self::Compute { .. } => "compute",
+			Self::Raster { .. } => "raster",
+			Self::Tile { .. } => "tile",
+			Self::Fused { .. } => "fused",
+		}
+	}
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -130,12 +154,32 @@ const fn default_depth_write() -> bool {
 	true
 }
 
-super::impl_direct_resource!(Pipeline, "Pipeline", references = pipeline_references);
+super::impl_direct_resource!(
+	Pipeline,
+	"Pipeline",
+	references = pipeline_references,
+	queryable = pipeline_queryable_properties
+);
 
-/// Lists the shaders the pipeline runs, by ID.
+/// Lists the shaders the pipeline runs, by ID, then a fused pipeline's step pipelines.
 fn pipeline_references(pipeline: &Pipeline) -> Vec<&str> {
 	match &pipeline.kind {
 		PipelineKind::Compute { shader, .. } | PipelineKind::Tile { shader, .. } => vec![shader.as_str()],
 		PipelineKind::Raster { shaders, .. } => shaders.iter().map(String::as_str).collect(),
+		PipelineKind::Fused { shader, steps, .. } => std::iter::once(shader).chain(steps).map(String::as_str).collect(),
 	}
+}
+
+/// Indexes a pipeline by name and by kind, so renderers can find every fused pipeline in the store.
+fn pipeline_queryable_properties(pipeline: &Pipeline, id: &str) -> Vec<crate::QueryableProperty> {
+	vec![
+		crate::QueryableProperty {
+			name: "name".to_string(),
+			value: id.into(),
+		},
+		crate::QueryableProperty {
+			name: "kind".to_string(),
+			value: pipeline.kind.name().into(),
+		},
+	]
 }

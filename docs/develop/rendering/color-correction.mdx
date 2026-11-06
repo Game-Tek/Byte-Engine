@@ -10,7 +10,8 @@ reference.
 
 ## How the pass is built
 
-The pass is one tile pass, `color-correction/correct.besl`, and the CPU work in `render_passes/color_correction.rs`.
+The pass is one [pixel step](/docs/develop/rendering/pass-fusion), `color-correction/correct.besl`, and the CPU work in
+`render_passes/color_correction.rs`.
 
 - **CPU matrices.** Exposure and white balance are linear, so `color_correction_shader_data` folds them, with the
   conversion to ACEScg, into one 3 × 3 matrix. The Planckian white, the CAT16 adaptation, and the grey luminance
@@ -55,7 +56,7 @@ skin orange, or tints the deepest shadows. So the pass:
 - The tone curve must not clip and must keep a ramp in order at every setting: contrast fixes black and white, the
   shadows bump fixes black and mid grey, and the highlights bump fixes mid grey and 64. The shadows scale stops at a
   slope of 0 at black and the highlights scale keeps the slope at or above 0.42.
-- The pass stays a pure per-pixel tile pass with no neighbors, so it can share a tile with other per-pixel work.
+- The pass stays a pixel step that reads no neighbors, so it fuses with the LUT and tone mapper after it.
 
 ## Tests
 

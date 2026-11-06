@@ -44,6 +44,7 @@ The standard graphics setup bakes these formats:
 - `.bema` materials and variants
 - `.bemx` material graphs, which `.bema` materials name
 - `.pipeline` GPU pipeline descriptions
+- `.fusion` lists of pixel step pipelines that bake into one fused pipeline
 - `.flipbook` image sequences with a playback rate
 - `.particles` [GPU particle systems](/docs/reference/particles), which bake into generated shaders and pipelines
 - LUT assets
@@ -324,11 +325,11 @@ Only these handlers read sidecars:
 | PNG, EXR | `image` | The [image settings](#image-settings) for the image. Unknown keys fail the bake. |
 | glTF, GLB, FBX | `asset.<material name>.asset` | The ID of a `.bema` variant to use for that material. Unnamed glTF materials can't be overridden; unnamed FBX materials use the key `default`. |
 | FBX | `skeleton` | The ID of the skeleton to bake against, instead of the file's own. |
-| BESL | `stage`, `workgroup`, `maximum_mesh_threadgroups`, `maximum_vertices`, `maximum_primitives` | The stage metadata specified in the [BESL interface](/docs/reference/besl/interface#standalone-stage-metadata). The sidecar is required. |
+| BESL | `stage`, `tile`, `workgroup`, `maximum_mesh_threadgroups`, `maximum_vertices`, `maximum_primitives` | The stage metadata specified in the [BESL interface](/docs/reference/besl/interface#standalone-stage-metadata). The sidecar is required. |
 
 Every hand-written format has a JSON schema under the engine's
 `assets/schemas` directory: `bema.schema.json`, `bemx.schema.json`, `besl.bead.schema.json`,
-`environment.bead.schema.json`, `image.bead.schema.json` for the image
+`environment.bead.schema.json`, `fusion.schema.json`, `image.bead.schema.json` for the image
 sidecar, `model.bead.schema.json` for the model sidecar, `motion.bead.schema.json`, and
 `particles.schema.json`.
 
@@ -341,6 +342,7 @@ free text and its `type` selects the fields:
 | --- | --- | --- |
 | `compute` | `shader`, the shader's asset ID; `push_constants`, a list of ranges with `offset` and `size`. | No push constants. |
 | `raster` | `shaders`, a list of shader IDs; `push_constants`; `vertex_elements`, each with `name`, `format`, and `binding`; `attachments`, each with `format`, an optional `layer`, and `blend`; `face_winding`; `cull_mode`; `fill_mode`; `depth_write`. | `clockwise`, `back`, `solid`, and depth writes on. |
+| `tile` | `shader`, the ID of a `Tile` stage shader; `push_constants`. | No push constants. |
 
 | Field | Values |
 | --- | --- |
@@ -350,7 +352,50 @@ free text and its `type` selects the fields:
 | `cull_mode` | `none`, `front`, `back` |
 | `fill_mode` | `solid`, `wireframe` |
 
-Baking a pipeline bakes each named shader.
+Baking a pipeline bakes each named shader. A `.pipeline` file can't have the
+`fused` type, which only a [fusion](#fusions) bakes.
+
+## Fusions
+
+A `.fusion` file is strict JSON that names pixel step pipelines to run as one
+pass. The renderer finds fusions in the resource store and uses each one for
+the runs of steps it matches; see
+[pixel steps and fusion](/docs/reference/rendering#pixel-steps-and-fusion).
+
+```json
+{
+	"name": "Correction and ACES 2.0 Grading",
+	"steps": [
+		"byte_engine/rendering/color-correction/correct.pipeline",
+		"byte_engine/rendering/color-grading/aces2.pipeline"
+	]
+}
+```
+
+| Field | Value |
+| --- | --- |
+| `name` | Free text. |
+| `steps` | Two to eight `.pipeline` asset IDs, in the order the steps run. |
+| `$schema` | Optional, ignored by baking. |
+
+A fusion fails to bake when:
+
+- `steps` has fewer than two or more than eight entries.
+- A step isn't a `tile` pipeline, or its shader isn't a
+  [pixel shader](/docs/reference/besl/interface#pixel-shaders).
+- The steps' shaders don't share one `tile` size and `workgroup`.
+- Two steps' layers declare a descriptor of the same name, as two steps that
+  take the same layer do.
+- Two steps' shaders declare the same name, other than their `pixel`
+  functions and the modules from the asset root they share.
+- The fused shader binds more than four descriptor sets: one for each step
+  that takes a layer, one for the incoming color, and, where tile shaders run
+  as compute shaders, one for the output.
+
+Baking a fusion bakes each step pipeline, then stores the fused shader as
+`<fusion ID>#shader` and a `Pipeline` resource of kind `fused` at the fusion's
+ID. The fused pipeline has one 4-byte push constant, whose bit *i* is set when
+step *i* runs this frame.
 
 ## Color lookup tables
 

@@ -1,6 +1,5 @@
 use crate::rendering::{
 	Sink,
-	pipeline_compilation::TilePipelineRequest,
 	render_pass::{MainRenderTarget, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
 };
 
@@ -27,11 +26,6 @@ impl ImageBypassPass {
 	/// Starts the shared copy shader before a sink needs its forwarding pass.
 	pub(crate) fn request_pipeline(manager: &crate::rendering::PipelineManagerClient) {
 		manager.request_pipeline(Self::PIPELINE);
-	}
-
-	/// Starts the tile copy that [`Self::forwarding`] records into outputs of `format`.
-	pub(crate) fn request_forwarding_pipeline(manager: &crate::rendering::PipelineManagerClient, format: ghi::Formats) {
-		manager.request_tile_pipeline(TilePipelineRequest::new(Self::TILE_PIPELINE, vec![format]));
 	}
 
 	/// Creates a tile copy from the pass input to the replacement for `main` that downstream passes consume.
@@ -221,36 +215,6 @@ mod tests {
 		for (name, source) in [
 			("blit_image_tile", IMAGE_TILE_BYPASS_SHADER),
 			(
-				"srgb_display",
-				include_str!("../../../assets/rendering/srgb-display/encode.besl"),
-			),
-			(
-				"agx_tone_mapping",
-				crate::rendering::shader_vm_test::asset_source("agx/tone-mapping.besl"),
-			),
-			(
-				"aces_tone_mapping",
-				crate::rendering::shader_vm_test::asset_source("aces/tone-mapping.besl"),
-			),
-			(
-				"hable_tone_mapping",
-				crate::rendering::shader_vm_test::asset_source("hable/tone-mapping.besl"),
-			),
-			("height_fog", include_str!("../../../assets/rendering/height-fog.besl")),
-			("lut_apply", crate::rendering::shader_vm_test::asset_source("lut/apply.besl")),
-			(
-				"aces_color_grading",
-				crate::rendering::shader_vm_test::asset_source("color-grading/aces.besl"),
-			),
-			(
-				"aces2_color_grading",
-				crate::rendering::shader_vm_test::asset_source("color-grading/aces2.besl"),
-			),
-			(
-				"dwg_color_grading",
-				crate::rendering::shader_vm_test::asset_source("color-grading/dwg.besl"),
-			),
-			(
 				"smaa_edge_detection",
 				include_str!("../../../assets/rendering/smaa/edge-detection.besl"),
 			),
@@ -267,6 +231,27 @@ mod tests {
 				.generate(&settings, &root)
 				.await
 				.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error}"));
+		}
+
+		// Pixel steps bake through the pixel chain that wraps them, on the same tile.
+		for step in [
+			"srgb-display/encode.besl",
+			"agx/tone-mapping.besl",
+			"aces/tone-mapping.besl",
+			"hable/tone-mapping.besl",
+			"height-fog.besl",
+			"color-correction/correct.besl",
+			"lut/apply.besl",
+			"color-grading/aces.besl",
+			"color-grading/aces2.besl",
+			"color-grading/dwg.besl",
+		] {
+			let root = crate::rendering::shader_vm_test::link_pixel_chain(&[step]);
+			let settings = ShaderGenerationSettings::tile(PIXEL_TILE, Extent::square(PIXEL_TILE)).name(step.to_string());
+			PlatformShaderCompiler::new()
+				.generate(&settings, &root)
+				.await
+				.unwrap_or_else(|error| panic!("{step} should compile for the platform shader language: {error}"));
 		}
 	}
 }

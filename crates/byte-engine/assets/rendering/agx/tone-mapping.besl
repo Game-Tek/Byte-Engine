@@ -25,10 +25,6 @@
 
 use ::byte_engine::rendering::layouts::color::*;
 
-source: descriptor<{ type: StorageImage, binding: 0, access: read }>;
-// A tile output, so the replacement for `main` this writes needs no shader-write usage and stays losslessly compressed.
-result: output<vec4f, 0>;
-
 agx: fn(color: vec3f) -> vec3f {
 	let agx_min_ev: f32 = 0.0 - 12.47393;
 	let agx_max_ev: f32 = 4.026069;
@@ -75,16 +71,8 @@ agx: fn(color: vec3f) -> vec3f {
 	return linear_srgb_to_srgb(color);
 }
 
-main: fn(input: StageInput) -> void {
-	let coord: vec2u = input.thread_id;
-	let source_color: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
-	let result_color: vec3f = vec3f(0.0, 0.0, 0.0);
-
-	let extent: vec2u = input.extent;
-	if (coord.x >= extent.x || coord.y >= extent.y) {
-		return;
-	}
-	source_color = image_load(source, coord);
-	result_color = agx(vec3f(source_color.x, source_color.y, source_color.z));
-	write(result, coord, vec4f(result_color.x, result_color.y, result_color.z, 1.0));
+// Maps the pixel's scene-linear color to display color, encoded for the swapchain, with an opaque alpha.
+pixel: fn(color: vec4f, coordinate: vec2u, extent: vec2u) -> vec4f {
+	let mapped: vec3f = agx(vec3f(color.x, color.y, color.z));
+	return vec4f(mapped.x, mapped.y, mapped.z, 1.0);
 }

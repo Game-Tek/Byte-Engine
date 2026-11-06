@@ -8,6 +8,7 @@
 		"shown-transforms",
 		"color-correction",
 		"color-grading",
+		"pass-fusion",
 		"film-grain",
 		"smaa",
 		"depth-of-field",

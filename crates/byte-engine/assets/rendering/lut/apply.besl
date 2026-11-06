@@ -1,17 +1,7 @@
-// A tile output, so the replacement for `main` this writes needs no shader-write usage and stays losslessly compressed.
-
 use ::byte_engine::rendering::layouts::lut::*;
 
-result_texture: output<vec4f, 0>;
-
-main: fn (input: StageInput, lut: Lut) -> void {
-	let coord: vec2u = input.thread_id;
-	let extent: vec2u = input.extent;
-	if (coord.x >= extent.x || coord.y >= extent.y) {
-		return;
-	}
-	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));
-	let source_color: vec4f = texture_lod(lut.source_texture, uv);
-	let result_color: vec3f = apply_lut(lut, vec3f(source_color.x, source_color.y, source_color.z));
-	write(result_texture, coord, vec4f(result_color.x, result_color.y, result_color.z, source_color.w));
+// Applies the creative look to one pixel's scene-linear color and keeps its alpha.
+pixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, lut: Lut) -> vec4f {
+	let result_color: vec3f = apply_lut(lut, vec3f(color.x, color.y, color.z));
+	return vec4f(result_color.x, result_color.y, result_color.z, color.w);
 }

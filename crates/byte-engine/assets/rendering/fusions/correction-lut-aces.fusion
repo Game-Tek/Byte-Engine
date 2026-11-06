@@ -1,0 +1,9 @@
+{
+	"$schema": "../../schemas/fusion.schema.json",
+	"name": "Color Correction, LUT, and ACES",
+	"steps": [
+		"byte_engine/rendering/color-correction/correct.pipeline",
+		"byte_engine/rendering/lut/apply.pipeline",
+		"byte_engine/rendering/aces/tone-mapping.pipeline"
+	]
+}

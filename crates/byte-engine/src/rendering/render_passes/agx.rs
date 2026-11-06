@@ -3,7 +3,6 @@ use super::image_transform::Configuration;
 /// The AgX tone mapper, installed by [`crate::application::graphics::setup_agx_tonemap_render_pass`].
 pub const TONE_MAPPING: Configuration = Configuration {
 	name: "agx",
-	label: "AgX Tonemap",
 	pipeline_id: "byte_engine/rendering/agx/tone-mapping.pipeline",
 	output_name: "AGX Tonemap Output",
 	requires_float_input: false,
@@ -12,16 +11,17 @@ pub const TONE_MAPPING: Configuration = Configuration {
 #[cfg(test)]
 mod tests {
 
-	use crate::rendering::render_pass::simple_compute;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, run_image_transform_vm};
 
-	static TONE_MAPPING_SHADER: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("agx/tone-mapping.besl"));
+	/// The step shader, as a path under `assets/rendering`.
+	const TONE_MAPPING_SHADER: &str = "agx/tone-mapping.besl";
 
 	/// Verifies display-encoded reference colors, neutral highlights, channel ordering, and bounded output through the VM.
 	#[test]
 	fn agx_tonemap_besl_vm_produces_bounded_reference_colors() {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*TONE_MAPPING_SHADER));
+		let program = crate::rendering::shader_vm_test::compile(crate::rendering::shader_vm_test::link_pixel_chain(&[
+			TONE_MAPPING_SHADER,
+		]));
 
 		assert_rgba_close(
 			run_image_transform_vm(&program, [0.0, 0.0, 0.0, 0.25]),

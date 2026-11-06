@@ -122,7 +122,7 @@ Every resource records:
 
 | Rule | Value |
 | --- | --- |
-| Properties | Every resource exposes `name`, equal to its ID. A variant also exposes `render-model`, its parent material's render model name, and `render-pass`. |
+| Properties | Every resource exposes `name`, equal to its ID. A variant also exposes `render-model`, its parent material's render model name, and `render-pass`. A pipeline also exposes `kind`: `compute`, `raster`, `tile`, or `fused`. |
 | Query | A class, zero or more property-equals-value predicates, a limit, and an optional cursor. |
 | Matching | The class and every predicate must match exactly, case-sensitively. |
 | Index | The first predicate drives an index scan; later predicates filter the results. Without a predicate the class index is scanned. |
@@ -148,7 +148,7 @@ has none.
 | `Flipbook` | Its images. |
 | `MotionDatabase` | Its clips. |
 | `Lightmap` | Its image. |
-| `Pipeline` | Its shaders. |
+| `Pipeline` | Its shaders, then, for a fused pipeline, its step pipelines. |
 | `ParticleSystem` | Its simulate and draw pipelines. |
 | Every other class | None. |
 
@@ -168,7 +168,7 @@ the mismatch without touching the directory.
 | `Audio` | Bit depth of 8, 16, 24, or 32; channel count; sample rate; frame count. | Interleaved little-endian PCM. | None | None |
 | `Image` | Format, gamma, extent, mip count, optional image-based lighting maps, optional photometry. | Texels. | `mip[N]` per level; `ibl.diffuse_irradiance.mip[0]` and `ibl.prefiltered_specular.mip[0..8)` for environment maps. | None |
 | `Lut` | One- or three-dimensional, size, domain minimum and maximum. | Little-endian float RGB triplets, `size` or `size³` of them. | None | None |
-| `Pipeline` | Name and kind. | None | None | Its shaders, by ID. |
+| `Pipeline` | Name and kind: `compute`, `raster`, `tile`, or `fused`, which also lists its step pipelines. | None | None | Its shaders, by ID. |
 | `ParticleSystem` | Capacity, longest life, rate, burst, simulate and draw pipeline IDs. | None | None | Its pipelines and shaders. |
 | `Shader` | ID, stage, interface, and artifact kind. | The compiled artifact. | None | None |
 | `Flipbook` | Frames per second and images. | None | None | Its images. |

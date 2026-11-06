@@ -7,10 +7,7 @@ use ghi::context::{Context as _, ContextCreate as _};
 
 use crate::{
 	core::Entity,
-	rendering::{
-		Sink,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_tile},
-	},
+	rendering::render_pass::{RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
 };
 
 /// The `ColorCorrectionPassSettings` struct describes the correction and look a scene needs before tone mapping: how
@@ -306,36 +303,24 @@ fn validate(settings: &ColorCorrectionPassSettings) {
 /// The `ColorCorrectionPass` struct lets an application set a scene's exposure, white balance, tone curve, split tone,
 /// and saturation before tone mapping, so a LUT or tone mapper receives a balanced picture with the look it needs.
 ///
-/// Install it with [`crate::application::graphics::setup_color_correction_render_pass`] after every pass that writes
-/// scene light, such as bloom, and before a LUT or tone mapper. Toggle it at runtime with `render.pass.color-correction`.
+/// It is a pixel step: install it with [`crate::application::graphics::setup_color_correction_render_pass`] after every
+/// pass that writes scene light, such as bloom, and before a LUT or tone mapper, which it fuses with. Toggle it at
+/// runtime with `render.pass.color-correction`.
 pub struct ColorCorrectionPass {
-	pass: simple_tile::Pass,
-	_parameters: ghi::BufferHandle<ColorCorrectionShaderData>,
+	resources: [simple_tile::Resource; 1],
 }
 
 impl Entity for ColorCorrectionPass {}
 
 impl ColorCorrectionPass {
-	/// Creates the correction with `settings` and remaps `main` to its scene-linear output for later passes.
+	/// The step's own pipeline, which fusions name it by.
+	pub const PIPELINE: &'static str = "byte_engine/rendering/color-correction/correct.pipeline";
+
+	/// Creates the correction with `settings`, whose parameters the step's run binds.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder, settings: ColorCorrectionPassSettings) -> Self {
 		validate(&settings);
 
-		let source = render_pass_builder.read_from("main");
-		let main_format = render_pass_builder.format_of("main");
-		let output = render_pass_builder
-			.create_main_render_target(ghi::image::Builder::new(main_format, ghi::Uses::Image).name("Color Correction"));
-
-		let pipeline = simple_tile::Pipeline::compile(
-			render_pass_builder,
-			simple_tile::Descriptor::new(
-				"Color Correction",
-				"byte_engine/rendering/color-correction/correct.pipeline",
-				&[output.format()],
-			),
-		);
-
 		let context = render_pass_builder.context();
-		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 		let parameters = context.build_buffer::<ColorCorrectionShaderData>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Color Correction Parameters")
@@ -345,34 +330,23 @@ impl ColorCorrectionPass {
 		// The write reaches the GPU copy only once synced.
 		context.sync_buffer(parameters);
 
-		let pass = pipeline.bind(
-			"Color Correction",
-			&[
-				simple_tile::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
-				simple_tile::Resource::buffer("parameters", parameters),
-			],
-			&[simple_tile::Output::new("result_texture", output)],
-		);
-
 		Self {
-			pass,
-			_parameters: parameters,
+			resources: [simple_tile::Resource::buffer("correction_parameters", parameters)],
 		}
 	}
 }
 
-impl RenderPass for ColorCorrectionPass {
+impl PixelStep for ColorCorrectionPass {
 	fn name(&self) -> &'static str {
 		"color-correction"
 	}
 
-	fn prepare<'a>(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
-		self.pass.prepare(frame, sink, frame_allocator)
+	fn output(&self) -> &'static str {
+		"Color Correction"
+	}
+
+	fn resources(&self) -> &[simple_tile::Resource] {
+		&self.resources
 	}
 }
 
@@ -381,17 +355,16 @@ mod tests {
 	use besl::vm::{DescriptorBindings, Value, output_slot};
 
 	use super::*;
-	use crate::rendering::{
-		render_pass::simple_compute,
-		shader_vm_test::{PIXEL_TILE, asset_source, binding_slot, buffer, compile, empty_image, rgba, run_pixel, texture_2d},
+	use crate::rendering::shader_vm_test::{
+		PIXEL_TILE, binding_slot, buffer, compile, empty_image, link_pixel_chain, rgba, run_pixel, texture_2d,
 	};
 
 	/// Runs the correction shader on one pixel of `color` with `settings`, as `ColorCorrectionPass` records it.
 	fn correct(settings: ColorCorrectionPassSettings, color: [f32; 3]) -> [f32; 3] {
 		validate(&settings);
-		let linked = simple_compute::compile_test_program(asset_source("color-correction/correct.besl"));
-		let slot = binding_slot(&linked, "parameters");
-		let source_slot = binding_slot(&linked, "source_texture");
+		let linked = link_pixel_chain(&["color-correction/correct.besl"]);
+		let slot = binding_slot(&linked, "correction_parameters");
+		let source_slot = binding_slot(&linked, "source");
 		let program = compile(linked);
 		let data = color_correction_shader_data(&settings);
 		let mut parameters = buffer(&program, slot);

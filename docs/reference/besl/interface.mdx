@@ -195,6 +195,46 @@ On Metal, a tile shader is a tile function whose outputs are the color
 attachments of the render pass that runs it. Elsewhere it's a compute shader
 whose outputs are write-only storage images, one set for all of them.
 
+## Pixel shaders
+
+A pixel shader is a `Tile` stage shader that computes each pixel's new color
+from its current color alone. In place of `main`, it declares `pixel`, and
+baking generates the `main` that calls it. A
+[fusion](/docs/reference/assets#fusions) calls several of them in one shader.
+
+```rust
+use ::byte_engine::rendering::layouts::lut::*;
+
+pixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, lut: Lut) -> vec4f {
+	let graded: vec3f = apply_lut(lut, vec3f(color.x, color.y, color.z));
+	return vec4f(graded.x, graded.y, graded.z, color.w);
+}
+```
+
+| Parameter | Type | Value |
+| --- | --- | --- |
+| First | `vec4f` | The pixel's color in the incoming `main`. |
+| Second | `vec2u` | The pixel's coordinate. |
+| Third | `vec2u` | The width and height of `main` in pixels. |
+| Fourth, optional | A layer | The resources the shader reads. |
+
+A pixel shader follows these rules:
+
+- It declares `pixel` and no `main`. `pixel` returns `vec4f`, the pixel's new
+  color, and its parameters have the types and order of the table. Their names
+  are free.
+- It declares no descriptor, `output`, push constant block, or `workgroup`
+  storage of its own. Everything it reads comes through its layer.
+- Its layer holds one or more descriptors and nothing else. The layer's type is
+  a layer the shader declares, a path from the asset root, or a name that a
+  `use` of a module from the asset root brings in.
+- Its layer doesn't name a descriptor `source`.
+- It doesn't call `workgroup_barrier`.
+
+The generated `main` reads each pixel of the incoming `main` inside the
+extent, passes it through `pixel`, and writes the result to the shader's one
+output. The output has location 0 and is named `result`.
+
 ## Stage input values
 
 Add a `StageInput` parameter when a shader needs values supplied by its stage.

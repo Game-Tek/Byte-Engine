@@ -14,8 +14,8 @@ use crate::{
 	rendering::{
 		DirectionalLight, ExponentialHeightFog, Sink,
 		fog::{FOG_LIGHT_TARGET, FogLayerShaderData, pixel_to_camera_offset},
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_tile},
-		render_passes::{blit::ImageBypassPass, sun::Sun},
+		render_pass::{RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
+		render_passes::sun::Sun,
 	},
 };
 
@@ -37,14 +37,12 @@ struct FogShaderData {
 /// light the pipeline marches into its `Fog Light` target, which this pass upsamples. Without that target, the newest
 /// [`DirectionalLight`] lights the fog unshadowed.
 ///
-/// It is a post-scene pass: install it with
-/// [`crate::application::graphics::setup_exponential_height_fog_render_pass`] after the scene pipeline and particles,
-/// and before lens flare, bloom, and tone mapping, so light glows through the fog instead of over it. The pass reads
-/// the opaque scene depth, so transparent surfaces and particles take the fog of the surface behind them.
+/// It is a pixel step: install it with [`crate::application::graphics::setup_exponential_height_fog_render_pass`]
+/// after the scene pipeline and particles, and before lens flare, bloom, and tone mapping, so light glows through the
+/// fog instead of over it. The pass reads the opaque scene depth, so transparent surfaces and particles take the fog
+/// of the surface behind them.
 pub struct ExponentialHeightFogRenderPass {
-	fog_pass: simple_tile::Pass,
-	/// Forwards `main` unchanged while there is no fog or the fog shader is still compiling.
-	main_copy: ImageBypassPass,
+	resources: [simple_tile::Resource; 3],
 	parameters: ghi::DynamicBufferHandle<FogShaderData>,
 	fogs: DefaultListener<CreateMessage<ExponentialHeightFog>>,
 	fog: Option<ExponentialHeightFog>,
@@ -54,40 +52,27 @@ pub struct ExponentialHeightFogRenderPass {
 impl Entity for ExponentialHeightFogRenderPass {}
 
 impl ExponentialHeightFogRenderPass {
-	/// Creates the fog pass and remaps `main` for downstream passes.
+	/// The step's own pipeline, which fusions name it by.
+	pub const PIPELINE: &'static str = "byte_engine/rendering/height-fog.pipeline";
+
+	/// Creates the fog step, which reads the scene's depth and the marched fog light.
 	///
-	/// The pass draws nothing until a fog arrives through `fogs`. The newest directional light from `directional_lights`
-	/// is the sun that lights the fog, and its transform from `transform_listener` sets the sun's direction.
+	/// The step applies nothing until a fog arrives through `fogs`. The newest directional light from
+	/// `directional_lights` is the sun that lights the fog, and its transform from `transform_listener` sets the sun's
+	/// direction.
 	pub fn new(
 		render_pass_builder: &mut RenderPassBuilder,
 		fogs: DefaultListener<CreateMessage<ExponentialHeightFog>>,
 		directional_lights: DefaultListener<CreateMessage<DirectionalLight>>,
 		transform_listener: DefaultListener<TransformationUpdate>,
 	) -> Self {
-		let source = render_pass_builder.read_from("main");
 		let depth = render_pass_builder.read_from("depth");
 		// The scene pipeline's marched fog light, if it marches one. A black texel with no distance stands in otherwise,
 		// which the shader reads as no march.
 		let fog_light = render_pass_builder
 			.try_read_from(FOG_LIGHT_TARGET)
 			.map(ghi::BaseImageHandle::from);
-		let main_format = render_pass_builder.format_of("main");
-		// The fog's tile output, which the builder gives the uses that needs.
-		let output = render_pass_builder
-			.create_main_render_target(ghi::image::Builder::new(main_format, ghi::Uses::Image).name("Exponential Height Fog"));
-		// The builder's copy of the incoming `main` into `output` doubles as this pass's forwarding copy.
-		let main_copy = render_pass_builder.take_main_copy().expect(
-			"Main copy is missing. The most likely cause is that the pass did not call `RenderPassBuilder::create_main_render_target` first.",
-		);
 
-		let pipeline = simple_tile::Pipeline::compile(
-			render_pass_builder,
-			simple_tile::Descriptor::new(
-				"Exponential Height Fog",
-				"byte_engine/rendering/height-fog.pipeline",
-				&[output.format()],
-			),
-		);
 		let context = render_pass_builder.context();
 		let parameters = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
@@ -106,20 +91,13 @@ impl ExponentialHeightFogRenderPass {
 			)
 			.into()
 		});
-		let fog_pass = pipeline.bind(
-			"Exponential Height Fog Descriptor Set",
-			&[
-				simple_tile::Resource::combined_image_sampler("depth_texture", depth, sampler, ghi::Layouts::Read),
-				simple_tile::Resource::combined_image_sampler("scene_texture", source, sampler, ghi::Layouts::Read),
-				simple_tile::Resource::combined_image_sampler("fog_light", fog_light, sampler, ghi::Layouts::Read),
-				simple_tile::Resource::buffer("parameters", parameters),
-			],
-			&[simple_tile::Output::new("result", output)],
-		);
 
 		Self {
-			fog_pass,
-			main_copy,
+			resources: [
+				simple_tile::Resource::combined_image_sampler("depth_texture", depth, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::combined_image_sampler("fog_light", fog_light, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::buffer("fog_parameters", parameters),
+			],
 			parameters,
 			fogs,
 			fog: None,
@@ -186,38 +164,27 @@ fn fog_shader_data(
 	}
 }
 
-impl RenderPass for ExponentialHeightFogRenderPass {
+impl PixelStep for ExponentialHeightFogRenderPass {
 	fn name(&self) -> &'static str {
 		"exponential-height-fog"
 	}
 
-	fn prepare<'a>(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
+	fn output(&self) -> &'static str {
+		"Exponential Height Fog"
+	}
+
+	fn resources(&self) -> &[simple_tile::Resource] {
+		&self.resources
+	}
+
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> bool {
 		self.update();
 		let Some(fog) = self.fog else {
-			return self.main_copy.prepare(frame, sink, frame_allocator);
-		};
-		let Some(command) = self.fog_pass.prepare(frame, sink, frame_allocator) else {
-			return self.main_copy.prepare(frame, sink, frame_allocator);
+			return false;
 		};
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) =
 			fog_shader_data(&fog, self.sun.illuminance, self.sun.direction, sink);
-		Some(command)
-	}
-
-	fn bypass<'a>(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
-		// This pass took the builder's forwarding copy, so it forwards `main` itself.
-		self.update();
-		self.main_copy.prepare(frame, sink, frame_allocator)
+		true
 	}
 
 	fn needs_frame(&mut self) -> bool {
@@ -233,11 +200,13 @@ mod tests {
 
 	use crate::rendering::{
 		ExponentialHeightFog, FogLayer,
-		render_pass::simple_compute,
-		shader_vm_test::{PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_pixel, slot, texture_2d},
+		shader_vm_test::{
+			PIXEL_TILE, assert_rgba_close, buffer, empty_image, link_pixel_chain, rgba, run_pixel, slot, texture_2d,
+		},
 	};
 
-	const HEIGHT_FOG_BESL: &str = include_str!("../../../assets/rendering/height-fog.besl");
+	/// The step shader, as a path under `assets/rendering`.
+	const HEIGHT_FOG_BESL: &str = "height-fog.besl";
 
 	/// Scene color behind the fog in every test.
 	const SCENE: [f32; 4] = [0.2, 0.4, 0.6, 1.0];
@@ -286,8 +255,8 @@ mod tests {
 		depth: f32,
 		marched: [f32; 4],
 	) -> [f32; 4] {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(HEIGHT_FOG_BESL));
-		let parameter_slot = slot(&program, "parameters");
+		let program = crate::rendering::shader_vm_test::compile(link_pixel_chain(&[HEIGHT_FOG_BESL]));
+		let parameter_slot = slot(&program, "fog_parameters");
 		let data = super::fog_shader_data(
 			&fog,
 			Vec3f::new(sun_illuminance[0], sun_illuminance[1], sun_illuminance[2]),
@@ -334,7 +303,7 @@ mod tests {
 		let mut result = empty_image(width, height);
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture(slot(&program, "depth_texture"), &mut depth_texture);
-		descriptors.bind_texture(slot(&program, "scene_texture"), &mut scene);
+		descriptors.bind_texture(slot(&program, "source"), &mut scene);
 		descriptors.bind_texture(slot(&program, "fog_light"), &mut fog_light);
 		descriptors.bind_image(output_slot(0), &mut result);
 		descriptors.bind_buffer(parameter_slot, &mut parameters);

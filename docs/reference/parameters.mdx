@@ -87,6 +87,7 @@ Booleans here are lenient.
 | Name | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `render.startup.defer-sink-setup` | Lenient boolean | `false` | Presents the first window frame before building the sink render pipelines. |
+| `render.fusion` | Lenient boolean | `true` | Records runs of pixel steps with the fusions in the resource store. While `false`, every step records on its own. See [pixel steps and fusion](/docs/reference/rendering#pixel-steps-and-fusion). |
 | `render.swapchain.images` | Positive count; invalid or 0 is ignored | The backend's choice | The swapchain image count each window requests. |
 | `render.pipeline-compilation.threads` | Count; invalid is ignored | Half the available parallelism, clamped to 1 through 4 | Pipeline compilation threads. |
 | `render.loading.batch-window` | Milliseconds, finite and zero or more; invalid is ignored | 4 | How long an upload batch collects requests. See the [loading timeline](/docs/develop/rendering/loading). |

@@ -4,7 +4,6 @@ use super::image_transform::Configuration;
 /// [`crate::application::graphics::setup_hable_tonemap_render_pass`].
 pub const TONE_MAPPING: Configuration = Configuration {
 	name: "hable",
-	label: "Hable Tonemap",
 	pipeline_id: "byte_engine/rendering/hable/tone-mapping.pipeline",
 	output_name: "Hable Tonemap Output",
 	requires_float_input: true,
@@ -13,16 +12,17 @@ pub const TONE_MAPPING: Configuration = Configuration {
 #[cfg(test)]
 mod tests {
 
-	use crate::rendering::render_pass::simple_compute;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, run_image_transform_vm};
 
-	static TONE_MAPPING_SHADER: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("hable/tone-mapping.besl"));
+	/// The step shader, as a path under `assets/rendering`.
+	const TONE_MAPPING_SHADER: &str = "hable/tone-mapping.besl";
 
 	/// Verifies that an overflowed half-float highlight maps to white instead of NaN.
 	#[test]
 	fn hable_tonemap_besl_vm_maps_infinite_input_to_white() {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*TONE_MAPPING_SHADER));
+		let program = crate::rendering::shader_vm_test::compile(crate::rendering::shader_vm_test::link_pixel_chain(&[
+			TONE_MAPPING_SHADER,
+		]));
 
 		assert_rgba_close(
 			run_image_transform_vm(&program, [f32::INFINITY, f32::INFINITY, f32::INFINITY, 1.0]),
@@ -34,7 +34,9 @@ mod tests {
 	/// Verifies black and display-encoded neutral reference colors through the VM.
 	#[test]
 	fn hable_tonemap_besl_vm_produces_display_encoded_reference_colors() {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*TONE_MAPPING_SHADER));
+		let program = crate::rendering::shader_vm_test::compile(crate::rendering::shader_vm_test::link_pixel_chain(&[
+			TONE_MAPPING_SHADER,
+		]));
 
 		assert_rgba_close(
 			run_image_transform_vm(&program, [0.0, 0.0, 0.0, 0.25]),
@@ -56,7 +58,9 @@ mod tests {
 	/// range.
 	#[test]
 	fn hable_tonemap_besl_vm_rises_monotonically_within_display_range() {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*TONE_MAPPING_SHADER));
+		let program = crate::rendering::shader_vm_test::compile(crate::rendering::shader_vm_test::link_pixel_chain(&[
+			TONE_MAPPING_SHADER,
+		]));
 
 		// Inputs below 5.6 map below the linear white, so each must show strictly brighter than the one before it.
 		let rising = [0.0, 0.001, 0.01, 0.05, 0.18, 0.5, 1.0, 2.0, 4.0, 5.5];
@@ -89,7 +93,9 @@ mod tests {
 	/// Verifies that a warm color keeps its channel order and stays in the display range.
 	#[test]
 	fn hable_tonemap_besl_vm_keeps_warm_channel_order() {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*TONE_MAPPING_SHADER));
+		let program = crate::rendering::shader_vm_test::compile(crate::rendering::shader_vm_test::link_pixel_chain(&[
+			TONE_MAPPING_SHADER,
+		]));
 
 		let warm = run_image_transform_vm(&program, [1.0, 0.5, 0.25, 0.0]);
 

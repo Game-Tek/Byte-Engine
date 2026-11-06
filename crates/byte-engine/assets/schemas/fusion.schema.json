@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://byte-engine.dev/schemas/fusion.schema.json",
+  "title": "Byte Engine fusion",
+  "description": "Pixel step pipelines that bake into one fused pipeline, consumed by the .fusion asset handler.",
+  "type": "object",
+  "required": ["name", "steps"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "name": { "description": "Free text that names the fused pipeline.", "type": "string" },
+    "steps": {
+      "description": "The asset IDs of the step pipelines, each a tile pipeline whose shader is a pixel shader, in the order the steps run.",
+      "type": "array",
+      "items": { "type": "string", "pattern": "\\.pipeline$" },
+      "minItems": 2,
+      "maxItems": 8
+    }
+  }
+}

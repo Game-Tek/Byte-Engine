@@ -2,8 +2,10 @@
 // Keeping that contract in one explicit invocation prevents the two identifiers from drifting.
 //
 // `references` names a function that lists the IDs the model refers to, as `Model::references` returns them.
+// `queryable` names a function that lists the properties queries find the model by, as
+// `Model::queryable_properties` returns them.
 macro_rules! impl_resource_model {
-	($resource:ty, $model:ty, $class:literal $(, references = $references:path)?) => {
+	($resource:ty, $model:ty, $class:literal $(, references = $references:path)? $(, queryable = $queryable:path)?) => {
 		impl $crate::Resource for $resource {
 			type Model = $model;
 		}
@@ -18,6 +20,12 @@ macro_rules! impl_resource_model {
 					$references(self)
 				}
 			)?
+
+			$(
+				fn queryable_properties(&self, id: &str) -> Vec<$crate::QueryableProperty> {
+					$queryable(self, id)
+				}
+			)?
 		}
 	};
 }
@@ -27,8 +35,8 @@ pub(crate) use impl_resource_model;
 // Direct resources use the same type for persisted metadata and runtime access.
 // This remains opt-in so resources that resolve dependencies can keep specialized solvers.
 macro_rules! impl_direct_resource {
-	($resource:ty, $class:literal $(, references = $references:path)?) => {
-		$crate::resources::impl_resource_model!($resource, $resource, $class $(, references = $references)?);
+	($resource:ty, $class:literal $(, references = $references:path)? $(, queryable = $queryable:path)?) => {
+		$crate::resources::impl_resource_model!($resource, $resource, $class $(, references = $references)? $(, queryable = $queryable)?);
 
 		impl $crate::StoredModel for $resource {
 			type Resource = $resource;

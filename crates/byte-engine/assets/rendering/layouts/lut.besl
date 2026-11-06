@@ -1,5 +1,5 @@
-// The pipeline layout of a pass that maps an image through a 3D lookup table: its source, table, and the table's
-// domain, with the helper that samples the table. Each pass writes its result as its own tile output.
+// The layer of a pixel step that maps colors through a 3D lookup table: the table and its domain, with the helper
+// that samples the table.
 
 // `sampling.xy` maps a normalized color to texel centers, and `sampling.z` is the look strength.
 LutParameters: struct {
@@ -9,20 +9,19 @@ LutParameters: struct {
 }
 
 Lut: layer {
-	source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-	lut_texture: descriptor<{ type: Texture3D, binding: 1, access: read }>;
-	parameters: descriptor<{ type: LutParameters, binding: 2, access: read, memory: constant }>;
+	lut_texture: descriptor<{ type: Texture3D, binding: 0, access: read }>;
+	lut_parameters: descriptor<{ type: LutParameters, binding: 1, access: read, memory: constant }>;
 }
 
 // Maps a color through the table and mixes the result with the input by the look strength, in the encoding the
 // table reads, so a strength of 0 leaves the color unchanged and 1 applies the full look. The domain controls
 // coordinates, not output clipping.
 apply_lut: fn(lut: Lut, color: vec3f) -> vec3f {
-	let domain_min: vec3f = vec3f(lut.parameters.domain_min.x, lut.parameters.domain_min.y, lut.parameters.domain_min.z);
-	let domain_scale: vec3f = vec3f(lut.parameters.domain_scale.x, lut.parameters.domain_scale.y, lut.parameters.domain_scale.z);
+	let domain_min: vec3f = vec3f(lut.lut_parameters.domain_min.x, lut.lut_parameters.domain_min.y, lut.lut_parameters.domain_min.z);
+	let domain_scale: vec3f = vec3f(lut.lut_parameters.domain_scale.x, lut.lut_parameters.domain_scale.y, lut.lut_parameters.domain_scale.z);
 	let normalized: vec3f = clamp((color - domain_min) * domain_scale, vec3f(0.0, 0.0, 0.0), vec3f(1.0, 1.0, 1.0));
-	let lut_uv: vec3f = normalized * lut.parameters.sampling.x + vec3f(lut.parameters.sampling.y, lut.parameters.sampling.y, lut.parameters.sampling.y);
+	let lut_uv: vec3f = normalized * lut.lut_parameters.sampling.x + vec3f(lut.lut_parameters.sampling.y, lut.lut_parameters.sampling.y, lut.lut_parameters.sampling.y);
 	let sampled: vec4f = texture_lod(lut.lut_texture, lut_uv);
 	let looked: vec3f = vec3f(sampled.x, sampled.y, sampled.z);
-	return color + (looked - color) * lut.parameters.sampling.z;
+	return color + (looked - color) * lut.lut_parameters.sampling.z;
 }

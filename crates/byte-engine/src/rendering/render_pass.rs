@@ -8,6 +8,7 @@
 //! [`RenderPassBuilder::create_main_render_target`]. The builder supplies an
 //! intermediate image or the swapchain without exposing graph position to the pass.
 
+pub mod pixel_steps;
 pub mod simple_compute;
 pub mod simple_tile;
 
@@ -445,6 +446,12 @@ impl<'a> RenderPassBuilder<'a> {
 		))));
 		self.created_scene_backgrounds.push(background.clone());
 		Some(background)
+	}
+
+	/// Returns the state every pass named `name` shares, adding it when it is new, for a run of pixel steps that follows
+	/// each step's state itself.
+	pub(crate) fn render_pass_state(&mut self, name: &str) -> Rc<Cell<RenderPassState>> {
+		self.render_pass_states.entry(name.to_string()).or_default().clone()
 	}
 
 	/// Hands the renderer every background created through this builder so it can ask them for frames.

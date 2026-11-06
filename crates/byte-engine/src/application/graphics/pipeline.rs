@@ -446,21 +446,15 @@ pub fn setup_hable_tonemap_render_pass(application: &mut GraphicsApplication) {
 	setup_image_transform_render_pass(application, &rendering::render_passes::hable::TONE_MAPPING);
 }
 
-/// Starts one image transform's shaders and installs the transform for every render sink.
+/// Installs one image transform as a pixel step for every render sink.
 fn setup_image_transform_render_pass(
 	application: &mut GraphicsApplication,
 	configuration: &'static rendering::render_passes::image_transform::Configuration,
 ) {
-	let swapchain_format = ghi::context::Context::swapchain_format(application.renderer.context_mut());
-	ImageTransformPass::request_pipelines(
-		&application.renderer.pipeline_manager_client(),
-		configuration,
-		swapchain_format,
-	);
 	application
 		.renderer
-		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
-			Box::new(ImageTransformPass::new(render_pass_builder, configuration))
+		.add_pixel_step_for_all_sinks(configuration.pipeline_id, move |render_pass_builder| {
+			Box::new(ImageTransformStep::new(render_pass_builder, configuration))
 		});
 }
 
@@ -597,13 +591,12 @@ pub fn setup_color_correction_render_pass(
 	application: &mut GraphicsApplication,
 	settings: rendering::render_passes::color_correction::ColorCorrectionPassSettings,
 ) {
+	use rendering::render_passes::color_correction::ColorCorrectionPass;
+
 	application
 		.renderer
-		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
-			Box::new(rendering::render_passes::color_correction::ColorCorrectionPass::new(
-				render_pass_builder,
-				settings,
-			))
+		.add_pixel_step_for_all_sinks(ColorCorrectionPass::PIPELINE, move |render_pass_builder| {
+			Box::new(ColorCorrectionPass::new(render_pass_builder, settings))
 		});
 }
 
@@ -681,7 +674,7 @@ fn setup_lut_workflow_render_pass(
 ) {
 	application
 		.renderer
-		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+		.add_pixel_step_for_all_sinks(workflow.pipeline_id(), move |render_pass_builder| {
 			Box::new(LutPass::new(render_pass_builder, workflow, lut.clone(), settings))
 		});
 }
@@ -713,10 +706,12 @@ pub fn setup_exponential_height_fog_render_pass(application: &mut GraphicsApplic
 	let light_factory = application.world().factory::<DirectionalLight>();
 	let transform_channel = application.world().channel::<TransformationUpdate>();
 
+	use rendering::render_passes::height_fog::ExponentialHeightFogRenderPass;
+
 	application
 		.renderer
-		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
-			Box::new(rendering::render_passes::height_fog::ExponentialHeightFogRenderPass::new(
+		.add_pixel_step_for_all_sinks(ExponentialHeightFogRenderPass::PIPELINE, move |render_pass_builder| {
+			Box::new(ExponentialHeightFogRenderPass::new(
 				render_pass_builder,
 				fog_factory.listener(),
 				light_factory.listener(),

@@ -37,6 +37,14 @@ impl AssetHandler for PipelineAssetHandler {
 			PipelineKind::Raster { shaders, .. } => {
 				context.bake_dependencies::<Shader>(shaders, 8).await?;
 			}
+			PipelineKind::Fused { .. } => {
+				context.error(format_args!(
+					"Pipeline asset '{}' has the type `fused`. The most likely cause is a fusion written as a `.pipeline` file, but only a `.fusion` asset bakes a fused pipeline. Move its steps to a `.fusion` file. See {}.",
+					id.as_ref(),
+					crate::online_docs_url("reference/assets#fusions")
+				));
+				return Err(LoadErrors::FailedToProcess);
+			}
 		}
 
 		context.store_primary(ProcessedAsset::new(id, pipeline), &[]).await

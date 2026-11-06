@@ -1,0 +1,139 @@
+---
+title: Fuse post-processing steps
+description: Write a per-pixel effect as a pixel step and fuse it with the steps next to it, so the chain reads and writes the screen once.
+icon: Merge
+---
+
+Effects that change each pixel from its own color alone, such as a tint, a curve, or a tone mapper, run faster fused:
+one pass that runs them all reads the screen once and writes it once. The engine's color correction, LUT, tone
+mapping, and fog are already pixel steps, and it ships fusions for the common chains. Use this page to make your own
+effect a pixel step and fuse it with its neighbors.
+
+## Write the step's shader
+
+A pixel step's shader declares `pixel` in place of `main`. It takes the pixel's color, its coordinate, the screen's
+extent, and, if the step reads resources, one layer. It returns the new color.
+
+```rust
+// assets/post/tint.besl
+TintParameters: struct {
+	color: vec4f,
+}
+
+Tint: layer {
+	tint_parameters: descriptor<{ type: TintParameters, binding: 0, access: read, memory: constant }>;
+}
+
+pixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, tint: Tint) -> vec4f {
+	let shade: vec4f = tint.tint_parameters.color;
+	return vec4f(color.x * shade.x, color.y * shade.y, color.z * shade.z, color.w);
+}
+```
+
+Give the layer's descriptors names that no other step uses, such as a prefix of the step's name. Next to the shader,
+add its stage settings and a `tile` pipeline:
+
+```json5
+// assets/post/tint.besl.bead
+{ stage: "Tile", tile: 16 }
+```
+
+```json
+// assets/post/tint.pipeline
+{ "name": "Tint", "kind": { "type": "tile", "shader": "post/tint.besl" } }
+```
+
+Use the same `tile` as the steps you fuse with. The engine's steps use 16.
+
+## Implement the step
+
+Create the step's resources in its constructor, and hand the renderer what the layer binds:
+
+```rust
+use byte_engine::rendering::render_pass::{RenderPassBuilder, pixel_steps::PixelStep, simple_tile::Resource};
+
+struct TintStep {
+	resources: [Resource; 1],
+}
+
+impl TintStep {
+	fn new(builder: &mut RenderPassBuilder, color: [f32; 4]) -> Self {
+		let context = builder.context();
+		let parameters = context.build_buffer::<[f32; 4]>(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("Tint Parameters")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		*context.get_mut_buffer_slice(parameters) = color;
+		context.sync_buffer(parameters);
+		Self {
+			resources: [Resource::buffer("tint_parameters", parameters)],
+		}
+	}
+}
+
+impl PixelStep for TintStep {
+	fn name(&self) -> &'static str {
+		"tint"
+	}
+
+	fn output(&self) -> &'static str {
+		"Tint"
+	}
+
+	fn resources(&self) -> &[Resource] {
+		&self.resources
+	}
+}
+```
+
+To update the step every frame, override `prepare`. Return `false` from it on frames when the step has nothing to
+apply.
+
+## Register the step
+
+Register the step with its pipeline, in order with the other passes, before you create a window:
+
+```rust
+application
+	.renderer_mut()
+	.add_pixel_step_for_all_sinks("post/tint.pipeline", |builder| Box::new(TintStep::new(builder, [1.0, 0.9, 0.8, 1.0])));
+```
+
+Without a fusion, the step runs as a pass of its own. Toggle it with `render.pass.tint`, as with any pass.
+
+## Fuse the step with its neighbors
+
+Write a `.fusion` file that lists the step pipelines in the order you register them. This one fuses the tint between
+color correction and the AgX tone mapper:
+
+```json
+{
+	"name": "Correction, Tint, and AgX",
+	"steps": [
+		"byte_engine/rendering/color-correction/correct.pipeline",
+		"post/tint.pipeline",
+		"byte_engine/rendering/agx/tone-mapping.pipeline"
+	]
+}
+```
+
+When the window opens, the renderer finds the fusion in the resource store and records the three steps as one pass.
+Each step keeps its own `render.pass.<name>` switch.
+
+## Check the fusion
+
+- The inspector's metrics show one `pass.color-correction+tint+agx` time in place of three pass times.
+- Set `render.fusion=false` to record every step on its own and compare the frames. A fused chain keeps full float
+  precision between steps, so it can differ from the unfused one in the last bits.
+- A fusion that doesn't bake leaves its steps unfused. Its bake trace names the rule it broke.
+
+The matching rules and limits are in [pixel steps and fusion](/docs/reference/rendering#pixel-steps-and-fusion), the
+file format in [fusions](/docs/reference/assets#fusions), and the shader rules in
+[pixel shaders](/docs/reference/besl/interface#pixel-shaders).
+
+## Rust API
+
+- [`PixelStep`](/docs/api/latest/byte_engine/rendering/render_pass/pixel_steps/PixelStep)
+- [`Renderer::add_pixel_step_for_all_sinks`](/docs/api/latest/byte_engine/rendering/Renderer-struct#method.add_pixel_step_for_all_sinks)
+- [`Resource`](/docs/api/latest/byte_engine/rendering/set_layout/Resource)

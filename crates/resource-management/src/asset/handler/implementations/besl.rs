@@ -51,6 +51,22 @@ impl AssetHandler for BESLShaderAssetHandler {
 			LoadErrors::FailedToProcess
 		};
 
+		// A pixel shader declares `pixel` in place of `main`, so it compiles as a pixel chain of one step.
+		if pixel_chain::is_pixel_shader(&parse_besl_source(source).map_err(compile_error)?) {
+			if !matches!(settings.stage, Stages::Tile { .. }) {
+				return Err(compile_error(
+					"A pixel shader has a stage other than `Tile`. The most likely cause is a `.besl.bead` file copied from another shader. Set `stage` to `Tile`.".to_string(),
+				));
+			}
+			let (wrapper, modules) = load_pixel_chain(&context, &[(id, source)]).await.map_err(compile_error)?;
+			let program = chain_program(&wrapper, &modules, context.program_transform()).map_err(compile_error)?;
+			let (shader, bytes) = context
+				.compile_shader(program, settings.name(id.as_ref().to_string()))
+				.await
+				.map_err(compile_error)?;
+			return context.store_primary_owned(ProcessedAsset::new(id, shader), bytes).await;
+		}
+
 		let modules = read_module_files(&context, id, source).await.map_err(compile_error)?;
 
 		let program = parse_standalone_program(source, &modules, context.program_transform()).map_err(compile_error)?;
@@ -63,6 +79,61 @@ impl AssetHandler for BESLShaderAssetHandler {
 
 		context.store_primary_owned(ProcessedAsset::new(id, shader), bytes).await
 	}
+}
+
+/// Reads the modules a pixel chain of `steps` needs, each step an ID and the source read from it, and returns the
+/// chain's wrapper source with the modules.
+///
+/// Files beside a step resolve relative to that step's ID and modules from the asset root from the root. Each file is
+/// read through `context`, so it is a bake dependency even when missing. Next, call [`chain_program`].
+pub(crate) async fn load_pixel_chain(
+	context: &BakeContext<'_>,
+	steps: &[(ResourceId<'_>, &str)],
+) -> Result<(String, Vec<besl::LoadedModule>), String> {
+	let failed = |error: besl::CompilationError| format!("Failed to load the pixel chain's BESL modules ({error:?}).");
+
+	let mut loader = besl::ModuleLoader::new(&pixel_chain::declarations(steps.len())).map_err(failed)?;
+	while let Some(query) = loader.query() {
+		let mut sources = [None, None];
+		for (file, source) in query.files.iter().zip(&mut sources) {
+			let file_id = match pixel_chain::locate(file, query.from_root) {
+				pixel_chain::ChainFile::Step(index) => {
+					*source = steps.get(index).map(|(_, step)| step.to_string());
+					continue;
+				}
+				pixel_chain::ChainFile::BesideStep(index, path) => steps[index].0.resolve_relative(path),
+				pixel_chain::ChainFile::Root(path) => path.to_string(),
+				pixel_chain::ChainFile::Missing => continue,
+			};
+			let Ok((bytes, _)) = context.resolve(ResourceId::new(&file_id)).await else {
+				continue;
+			};
+			*source = Some(String::from_utf8(bytes.to_vec()).map_err(|_| {
+				format!(
+					"BESL module file '{file_id}' is not UTF-8 text. The most likely cause is a binary file saved with a `.besl` extension. Save the module as UTF-8 BESL source."
+				)
+			})?);
+		}
+		loader.answer(sources).map_err(failed)?;
+	}
+	let modules = loader.into_modules();
+
+	let sources = steps.iter().map(|(_, source)| *source).collect::<Vec<_>>();
+	let wrapper = pixel_chain::wrapper(&sources, &modules)?;
+	Ok((wrapper, modules))
+}
+
+/// Parses a pixel chain's wrapper with its modules and applies the renderer's transform, as standalone shaders get it.
+pub(crate) fn chain_program<'a>(
+	wrapper: &'a str,
+	modules: &'a [besl::LoadedModule],
+	transform: Option<&dyn ProgramTransform>,
+) -> Result<besl::parser::Node<'a>, String> {
+	let program = pixel_chain::program(wrapper, modules)?;
+	Ok(match transform {
+		Some(transform) => transform.transform(program),
+		None => program,
+	})
 }
 
 /// The `ShaderCompiler` trait lets every handler compile shaders through the platform toolchain in production and
@@ -155,7 +226,7 @@ async fn read_module_files(
 }
 
 /// Reads the stage contract used to compile one standalone BESL source file.
-fn parse_shader_settings(spec: Option<&BEADType>) -> Result<ShaderGenerationSettings, String> {
+pub(crate) fn parse_shader_settings(spec: Option<&BEADType>) -> Result<ShaderGenerationSettings, String> {
 	let spec = spec.ok_or_else(|| {
 		"Missing BESL shader settings. The most likely cause is that the source has no adjacent `.besl.bead` file.".to_string()
 	})?;
@@ -422,8 +493,7 @@ impl PreparedBeslShader {
 		self.stage
 	}
 
-	/// Returns the resource interface semantic reflection found, for test compilers that check it.
-	#[cfg(test)]
+	/// Returns the resource interface semantic reflection found, for bakes that check it before compiling.
 	pub(crate) fn interface(&self) -> &ShaderInterface {
 		&self.interface
 	}
@@ -1190,6 +1260,7 @@ use crate::{
 			evaluation::ProgramEvaluation,
 		},
 		generator::{ShaderGenerationSettings, Stages},
+		pixel_chain,
 	},
 	types::ShaderTypes,
 };

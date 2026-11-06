@@ -99,6 +99,7 @@ animation steps once per frame.
 | --- | --- |
 | Scene pipeline | Owns scene state and per-sink resources and records one command per sink per frame. Several can be registered; the default setup registers the visibility pipeline and particles. |
 | Render pass | Sink-local post-processing that reads `main` and usually replaces it. Registered for every sink. |
+| Pixel step | A render pass that computes each pixel of its replacement for `main` from the same pixel of the incoming `main`. The renderer records it, alone or [fused](#pixel-steps-and-fusion) with the steps next to it. |
 | Scene background | A pass the scene pipeline records after opaque and before transparent surfaces, such as the sky. A later registration replaces an earlier one. |
 | Pass state | Enabled or bypassed, shared by name across sinks, set in code or by the `render.pass.<name>` parameter. A bypassed pass that replaced `main` has `main` forwarded in its place. |
 
@@ -149,6 +150,41 @@ a `stage.<name>` metric for each stage they record in a frame:
 The default setup installs the visibility pipeline, particles, and a 1920 by
 1080 window, and no post-scene pass, so the scene reaches the swapchain through
 the copy.
+
+### Pixel steps and fusion
+
+Height fog, color correction, the color grading passes, the tone mappers, and
+sRGB display are pixel steps. Each step's pipeline is a `tile` pipeline whose
+shader is a [pixel shader](/docs/reference/besl/interface#pixel-shaders).
+
+| Term | Definition |
+| --- | --- |
+| Run | One or more pixel steps registered one after another, with no other post-scene pass between them, that record as one pass. |
+| Fusion | A pipeline of kind `fused`, baked from a [`.fusion` asset](/docs/reference/assets#fusions), that runs a list of step pipelines in one pass. |
+| Catalog | Every `Pipeline` resource of kind `fused` in the resource store. |
+| Active | A step is active in a frame when it's enabled and has something to apply. Height fog without a fog is inactive. |
+
+| Rule | Value |
+| --- | --- |
+| Catalog read | When the first window opens, the renderer reads the catalog once. Development builds first bake every `.fusion` source that's missing or stale. Sinks initialize after the catalog is read, and draw nothing before. |
+| Matching | Going through the steps in registration order, a run starts at each step that isn't in a run yet. It takes the longest fusion whose steps are the pipelines of that step and the steps after it, in order. With no such fusion, the step is a run of its own on its own pipeline. |
+| Fusion off | With `render.fusion` set to `false`, every step is a run of its own. |
+| Output | A run writes one replacement for `main`, named like its last step's output and in its last step's output format. The run that ends the post-scene passes writes the swapchain. The other steps' outputs don't exist. |
+| Precision | Inside a fused run, color passes from step to step as 32-bit floats. |
+| State | Each step keeps its own pass state and `render.pass.<name>` parameter. A run of one step that's bypassed or inactive forwards `main`. A fused run skips its bypassed and inactive steps, and when all of them are skipped, it writes `main` unchanged. |
+| Pending | While a run's pipeline compiles, and after it fails, the run forwards `main`. |
+| Metric | A run of one step reports `pass.<step name>`. A fused run reports `pass.` followed by its steps' names joined by `+`, such as `pass.color-correction+aces2-color-grading`. |
+
+The engine ships these fusions:
+
+| Fusion | Steps |
+| --- | --- |
+| `byte_engine/rendering/fusions/correction-agx.fusion` | `color-correction`, `agx` |
+| `byte_engine/rendering/fusions/correction-aces.fusion` | `color-correction`, `aces` |
+| `byte_engine/rendering/fusions/correction-lut-agx.fusion` | `color-correction`, `lut`, `agx` |
+| `byte_engine/rendering/fusions/correction-lut-aces.fusion` | `color-correction`, `lut`, `aces` |
+| `byte_engine/rendering/fusions/correction-aces2-grading.fusion` | `color-correction`, `aces2-color-grading` |
+| `byte_engine/rendering/fusions/lut-agx.fusion` | `lut`, `agx` |
 
 ### Pass settings
 

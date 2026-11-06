@@ -115,6 +115,39 @@ pub(crate) fn link_program(source: &str, name: &str) -> besl::NodeReference {
 	program
 }
 
+/// Links the pixel chain of the checked-in pixel shaders `steps`, each a path under `assets/rendering` such as
+/// `lut/apply.besl`, through the generator baking uses, with the engine's common module.
+///
+/// One step links as a step bakes alone; several link as their fusion bakes, with the step mask in its push constant
+/// `steps`. The generated `main` reads `main` through the texture `source` and writes output 0. Pass the result to
+/// [`compile`].
+pub(crate) fn link_pixel_chain(steps: &[&str]) -> besl::NodeReference {
+	use resource_management::shader::pixel_chain::{self, ChainFile};
+
+	let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+	let sources = steps.iter().map(|step| asset_source(step)).collect::<Vec<_>>();
+	let read = |file: ChainFile<'_>| match file {
+		ChainFile::Root(path) => std::fs::read_to_string(assets.join(path.strip_prefix("byte_engine/")?)).ok(),
+		ChainFile::BesideStep(index, path) => {
+			std::fs::read_to_string(assets.join("rendering").join(steps[index]).parent()?.join(path)).ok()
+		}
+		ChainFile::Step(_) | ChainFile::Missing => None,
+	};
+	let (wrapper, modules) = pixel_chain::assemble(&sources, read)
+		.unwrap_or_else(|error| panic!("Failed to generate the pixel chain of {steps:?}: {error}"));
+	// The linked program borrows its sources for the rest of the test run.
+	let wrapper: &'static str = wrapper.leak();
+	let modules: &'static [besl::LoadedModule] = Vec::leak(modules);
+	let mut program = pixel_chain::program(wrapper, modules)
+		.unwrap_or_else(|error| panic!("Failed to parse the pixel chain of {steps:?}: {error}"));
+	program.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
+	besl::lex(program).unwrap_or_else(|error| {
+		panic!(
+			"Failed to link the pixel chain of {steps:?}: {error:?}. The most likely cause is invalid syntax in a step shader."
+		)
+	})
+}
+
 /// Compiles the exact production shader entry point for a VM runtime test.
 pub(crate) fn compile(main: besl::NodeReference) -> ExecutableProgram {
 	ExecutableProgram::compile(main).expect(
@@ -293,15 +326,16 @@ pub(crate) fn assert_rgba_close(actual: [f32; 4], expected: [f32; 4], tolerance:
 /// The tile of the image-transform shaders, as their `.besl.bead` files declare it.
 const IMAGE_TRANSFORM_TILE: u32 = 16;
 
-/// Runs a one-texel image-to-image tile program and returns the written color.
+/// Runs a one-texel pixel chain of steps that take no layer, as [`link_pixel_chain`] links them, and returns the
+/// written color.
 ///
-/// Image-transform passes share this: each binds a 1x1 source at slot 0 and a 1x1 result to output 0, then reads
-/// the single output texel back.
+/// Image-transform steps share this: it binds a 1x1 `source` and a 1x1 result to output 0, then reads the single
+/// output texel back.
 pub(crate) fn run_image_transform_vm(program: &ExecutableProgram, source_color: [f32; 4]) -> [f32; 4] {
 	let mut source = texture_2d(1, 1, &[source_color]);
 	let mut result = empty_image(1, 1);
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_image(ResourceSlot::new(0), &mut source);
+	descriptors.bind_texture(slot(program, "source"), &mut source);
 	descriptors.bind_image(output_slot(0), &mut result);
 	run_pixel(program, &mut descriptors, [0, 0], IMAGE_TRANSFORM_TILE, [1, 1]);
 	drop(descriptors);

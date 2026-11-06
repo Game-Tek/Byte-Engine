@@ -26,10 +26,10 @@ ColorCorrectionParameters: struct {
 	split: vec4f,
 }
 
-source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-parameters: descriptor<{ type: ColorCorrectionParameters, binding: 1, access: read, memory: constant }>;
-// A tile output, so the replacement for `main` this writes needs no shader-write usage and stays losslessly compressed.
-result_texture: output<vec4f, 0>;
+// The correction's one resource, its parameters.
+ColorCorrection: layer {
+	correction_parameters: descriptor<{ type: ColorCorrectionParameters, binding: 0, access: read, memory: constant }>;
+}
 
 // ACEScct of 0, of mid grey 0.18, and of 65504, the largest half float: the contrast curve's ends and pivot.
 CORRECTION_BLACK: const f32 = 0.0729055341958355;
@@ -93,17 +93,11 @@ correction_tone: fn(lightness: f32, contrast: f32, shadows: f32, highlights: f32
 	return CORRECTION_BLACK + range * curved;
 }
 
-main: fn(input: StageInput) -> void {
-	let coord: vec2u = input.thread_id;
-	let extent: vec2u = input.extent;
-	if (coord.x >= extent.x || coord.y >= extent.y) {
-		return;
-	}
-	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));
-	let source_color: vec4f = texture_lod(source_texture, uv);
-	let source_rgb: vec3f = vec3f(source_color.x, source_color.y, source_color.z);
+// Corrects one pixel's scene-linear color and keeps its alpha.
+pixel: fn(color: vec4f, coordinate: vec2u, extent: vec2u, correction: ColorCorrection) -> vec4f {
+	let source_rgb: vec3f = vec3f(color.x, color.y, color.z);
 
-	let working: vec3f = correction_transform(parameters.to_working_x, parameters.to_working_y, parameters.to_working_z, source_rgb);
+	let working: vec3f = correction_transform(correction.correction_parameters.to_working_x, correction.correction_parameters.to_working_y, correction.correction_parameters.to_working_z, source_rgb);
 	let encoded: vec3f = acescct(max(working, vec3f(0.0, 0.0, 0.0)));
 
 	let largest: f32 = max(encoded.x, max(encoded.y, encoded.z));
@@ -111,10 +105,10 @@ main: fn(input: StageInput) -> void {
 	let lightness: f32 = 0.5 * (largest + smallest);
 	let offsets: vec3f = encoded - vec3f(lightness, lightness, lightness);
 
-	let contrast: f32 = parameters.look.x;
-	let saturation: f32 = parameters.look.y;
-	let density: f32 = parameters.look.z;
-	let curved_lightness: f32 = correction_tone(lightness, contrast, parameters.tone.x, parameters.tone.y);
+	let contrast: f32 = correction.correction_parameters.look.x;
+	let saturation: f32 = correction.correction_parameters.look.y;
+	let density: f32 = correction.correction_parameters.look.z;
+	let curved_lightness: f32 = correction_tone(lightness, contrast, correction.correction_parameters.tone.x, correction.correction_parameters.tone.y);
 	let contrasted: vec3f = vec3f(curved_lightness, curved_lightness, curved_lightness) + offsets;
 
 	// The split tone weighs one density offset by where the pixel sits: toward the split hue in the highlights, the
@@ -123,8 +117,8 @@ main: fn(input: StageInput) -> void {
 	let shadow_mask: f32 = correction_bump(curved_lightness, CORRECTION_BLACK, CORRECTION_PIVOT);
 	let spread: f32 = (largest - smallest) / CORRECTION_SPLIT_PROTECTION;
 	let protection: f32 = 1.0 / (1.0 + spread * spread);
-	let split_weight: f32 = protection * (highlight_mask * parameters.tone.z - shadow_mask * parameters.tone.w);
-	let toned: vec3f = contrasted + vec3f(parameters.split.x, parameters.split.y, parameters.split.z) * split_weight;
+	let split_weight: f32 = protection * (highlight_mask * correction.correction_parameters.tone.z - shadow_mask * correction.correction_parameters.tone.w);
+	let toned: vec3f = contrasted + vec3f(correction.correction_parameters.split.x, correction.correction_parameters.split.y, correction.correction_parameters.split.z) * split_weight;
 
 	// Saturation reads the lightness and offsets again, as the split tone moved them. The largest offset is the largest
 	// channel's, so density 1 pivots on that channel and leaves it unchanged.
@@ -134,7 +128,7 @@ main: fn(input: StageInput) -> void {
 	let pivot_rgb: vec3f = vec3f(pivot, pivot, pivot);
 	let saturated: vec3f = pivot_rgb + (toned - pivot_rgb) * saturation;
 
-	let linear: vec3f = correction_transform(parameters.from_working_x, parameters.from_working_y, parameters.from_working_z, acescct_to_acescg(saturated));
+	let linear: vec3f = correction_transform(correction.correction_parameters.from_working_x, correction.correction_parameters.from_working_y, correction.correction_parameters.from_working_z, acescct_to_acescg(saturated));
 	let result_rgb: vec3f = max(linear, vec3f(0.0, 0.0, 0.0));
-	write(result_texture, coord, vec4f(result_rgb.x, result_rgb.y, result_rgb.z, source_color.w));
+	return vec4f(result_rgb.x, result_rgb.y, result_rgb.z, color.w);
 }

@@ -15,7 +15,8 @@ pub enum LutWorkflow {
 }
 
 impl LutWorkflow {
-	fn pipeline_id(self) -> &'static str {
+	/// Returns the workflow's pipeline, which its pixel step registers with and fusions name it by.
+	pub(crate) fn pipeline_id(self) -> &'static str {
 		match self {
 			Self::Creative => "byte_engine/rendering/lut/apply.pipeline",
 			Self::Aces => "byte_engine/rendering/color-grading/aces.pipeline",
@@ -43,14 +44,6 @@ impl LutWorkflow {
 			Self::DaVinciWideGamut => "DWG Color Grading Output",
 		}
 	}
-
-	/// Returns the label of the pass's GPU region and descriptor set.
-	fn label(self) -> &'static str {
-		match self {
-			Self::Creative => "LUT",
-			Self::Aces | Self::Aces2 | Self::DaVinciWideGamut => "Color Grading",
-		}
-	}
 }
 
 /// The `LutPassSettings` struct lets an application soften a LUT whose look is stronger than the scene needs.
@@ -71,11 +64,11 @@ impl Default for LutPassSettings {
 
 /// The `LutPass` struct applies an asynchronously prepared 3D LUT through renderer-owned GPU storage.
 ///
-/// Install it through [`crate::application::graphics::setup_lut_render_pass`] or a color-grading setup function.
+/// It is a pixel step: install it through [`crate::application::graphics::setup_lut_render_pass`] or a color-grading
+/// setup function, and it fuses with the color correction before it and the tone mapper after it.
 pub struct LutPass {
 	workflow: LutWorkflow,
-	pass: simple_tile::Pass,
-	_parameters: ghi::BufferHandle<LutShaderParameters>,
+	resources: [simple_tile::Resource; 2],
 	lut: Lut,
 	/// The prepared texels, dropped once the first frame uploads them into `lut_image`.
 	lut_bytes: Option<StdBox<[u8]>>,
@@ -119,24 +112,9 @@ impl LutPass {
 			settings.strength
 		);
 
-		let source = render_pass_builder.read_from("main");
-		// A creative LUT grades scene-linear color for later passes; the grading workflows end in display color.
-		let output_format = match workflow {
-			LutWorkflow::Creative => render_pass_builder.format_of("main"),
-			LutWorkflow::Aces | LutWorkflow::Aces2 | LutWorkflow::DaVinciWideGamut => crate::rendering::DISPLAY_COLOR_FORMAT,
-		};
-		// The grade's tile output, which the builder gives the uses that needs.
-		let output = render_pass_builder
-			.create_main_render_target(ghi::image::Builder::new(output_format, ghi::Uses::Image).name(workflow.output_name()));
-
-		let pipeline = simple_tile::Pipeline::compile(
-			render_pass_builder,
-			simple_tile::Descriptor::new(workflow.label(), workflow.pipeline_id(), &[output.format()]),
-		);
-
 		let context = render_pass_builder.context();
 
-		// One linear, clamped sampler reads both the scene color and the LUT.
+		// A linear, clamped sampler reads the LUT.
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 		let lut_image = context.build_image(
 			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image | ghi::Uses::TransferDestination)
@@ -154,20 +132,12 @@ impl LutPass {
 		// The write reaches the GPU copy only once synced.
 		context.sync_buffer(parameters);
 
-		let pass = pipeline.bind(
-			workflow.label(),
-			&[
-				simple_tile::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
-				simple_tile::Resource::combined_image_sampler("lut_texture", lut_image, sampler, ghi::Layouts::Read),
-				simple_tile::Resource::buffer("parameters", parameters),
-			],
-			&[simple_tile::Output::new("result_texture", output)],
-		);
-
 		Self {
 			workflow,
-			pass,
-			_parameters: parameters,
+			resources: [
+				simple_tile::Resource::combined_image_sampler("lut_texture", lut_image, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::buffer("lut_parameters", parameters),
+			],
 			lut: lut_metadata,
 			lut_bytes: Some(bytes),
 			lut_image,
@@ -208,20 +178,30 @@ fn lut_shader_parameters(lut: &Lut, strength: f32) -> LutShaderParameters {
 	}
 }
 
-impl RenderPass for LutPass {
+impl PixelStep for LutPass {
 	fn name(&self) -> &'static str {
 		self.workflow.pass_name()
 	}
 
-	fn prepare<'a>(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
-		self.ensure_lut_uploaded(frame);
+	fn output(&self) -> &'static str {
+		self.workflow.output_name()
+	}
 
-		self.pass.prepare(frame, sink, frame_allocator)
+	fn output_format(&self, input: ghi::Formats) -> ghi::Formats {
+		// A creative LUT grades scene-linear color for later passes; the grading workflows end in display color.
+		match self.workflow {
+			LutWorkflow::Creative => input,
+			LutWorkflow::Aces | LutWorkflow::Aces2 | LutWorkflow::DaVinciWideGamut => crate::rendering::DISPLAY_COLOR_FORMAT,
+		}
+	}
+
+	fn resources(&self) -> &[simple_tile::Resource] {
+		&self.resources
+	}
+
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, _sink: &Sink) -> bool {
+		self.ensure_lut_uploaded(frame);
+		true
 	}
 }
 
@@ -331,24 +311,19 @@ mod tests {
 	use resource_management::resources::lut::{Lut, LutKind};
 
 	use super::lut_shader_parameters;
-	use crate::rendering::render_pass::simple_compute;
 	use crate::rendering::shader_vm_test::{
-		PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_pixel, slot, texture_2d,
+		PIXEL_TILE, assert_rgba_close, buffer, empty_image, link_pixel_chain, rgba, run_pixel, slot, texture_2d,
 	};
 
-	static LUT_SHADER: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("lut/apply.besl"));
-
-	static ACES_SHADER: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("color-grading/aces.besl"));
-	static ACES2_SHADER: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("color-grading/aces2.besl"));
-	static DWG_SHADER: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("color-grading/dwg.besl"));
+	// The step shaders, as paths under `assets/rendering`.
+	const LUT_SHADER: &str = "lut/apply.besl";
+	const ACES_SHADER: &str = "color-grading/aces.besl";
+	const ACES2_SHADER: &str = "color-grading/aces2.besl";
+	const DWG_SHADER: &str = "color-grading/dwg.besl";
 
 	/// Executes one complete workflow with a two-point identity LUT in its grading encoding.
 	fn run_workflow(shader: &str, source_color: [f32; 4]) -> [f32; 4] {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(shader));
+		let program = crate::rendering::shader_vm_test::compile(link_pixel_chain(&[shader]));
 		let mut source = texture_2d(1, 1, &[source_color]);
 		let mut lut = Texture::new_3d(2, 2, 2).expect("Expected a valid test LUT extent");
 		for z in 0..2 {
@@ -360,7 +335,7 @@ mod tests {
 			}
 		}
 		let mut result = empty_image(1, 1);
-		let parameter_slot = slot(&program, "parameters");
+		let parameter_slot = slot(&program, "lut_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		for (name, value) in [
 			("domain_min", [0.0, 0.0, 0.0, 0.0]),
@@ -372,7 +347,7 @@ mod tests {
 				.expect("Expected color-grading parameters to match the shader");
 		}
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(slot(&program, "source_texture"), &mut source);
+		descriptors.bind_texture(slot(&program, "source"), &mut source);
 		descriptors.bind_texture(slot(&program, "lut_texture"), &mut lut);
 		descriptors.bind_image(output_slot(0), &mut result);
 		descriptors.bind_buffer(parameter_slot, &mut parameters);
@@ -384,12 +359,12 @@ mod tests {
 	#[test]
 	fn grading_workflows_preserve_neutral_middle_gray_through_their_sdr_transforms() {
 		assert_rgba_close(
-			run_workflow(*ACES_SHADER, [0.18, 0.18, 0.18, 0.4]),
+			run_workflow(ACES_SHADER, [0.18, 0.18, 0.18, 0.4]),
 			[0.3584574, 0.3584574, 0.3584574, 0.4],
 			4e-4,
 		);
 		assert_rgba_close(
-			run_workflow(*DWG_SHADER, [0.18, 0.18, 0.18, 0.4]),
+			run_workflow(DWG_SHADER, [0.18, 0.18, 0.18, 0.4]),
 			[0.45925015, 0.45925015, 0.45925015, 0.4],
 			4e-4,
 		);
@@ -397,7 +372,7 @@ mod tests {
 
 	#[test]
 	fn grading_workflows_bound_black_and_hdr_values_for_sdr_output() {
-		for shader in [*ACES_SHADER, *ACES2_SHADER, *DWG_SHADER] {
+		for shader in [ACES_SHADER, ACES2_SHADER, DWG_SHADER] {
 			for input in [0.0, 1.0, 16.0] {
 				let output = run_workflow(shader, [input, input, input, 0.25]);
 				assert!(
@@ -430,7 +405,7 @@ mod tests {
 			([0.3, 0.25, 0.9], [0.4576994, 0.4243927, 0.7209163]),
 			([0.9, 0.9, 0.05], [0.6972113, 0.7018813, 0.3009407]),
 		] {
-			let output = run_workflow(*ACES2_SHADER, [input[0], input[1], input[2], 0.5]);
+			let output = run_workflow(ACES2_SHADER, [input[0], input[1], input[2], 0.5]);
 			assert_rgba_close(output, [expected[0], expected[1], expected[2], 0.5], 2e-4);
 		}
 	}
@@ -444,8 +419,8 @@ mod tests {
 			domain_min: [0.0, 0.0, 0.0],
 			domain_max: [1.0, 1.0, 1.0],
 		};
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*LUT_SHADER));
-		let parameter_slot = slot(&program, "parameters");
+		let program = crate::rendering::shader_vm_test::compile(link_pixel_chain(&[LUT_SHADER]));
+		let parameter_slot = slot(&program, "lut_parameters");
 		let shader_parameters = lut_shader_parameters(&lut, 1.0);
 		let mut parameters = buffer(&program, parameter_slot);
 		for (name, value) in [
@@ -474,7 +449,7 @@ mod tests {
 
 		for x in 0..3 {
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(slot(&program, "source_texture"), &mut source);
+			descriptors.bind_texture(slot(&program, "source"), &mut source);
 			descriptors.bind_texture(slot(&program, "lut_texture"), &mut identity_lut);
 			descriptors.bind_image(output_slot(0), &mut result);
 			descriptors.bind_buffer(parameter_slot, &mut parameters);
@@ -495,8 +470,8 @@ mod tests {
 			domain_min: [0.0, 0.0, 0.0],
 			domain_max: [1.0, 1.0, 1.0],
 		};
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*LUT_SHADER));
-		let parameter_slot = slot(&program, "parameters");
+		let program = crate::rendering::shader_vm_test::compile(link_pixel_chain(&[LUT_SHADER]));
+		let parameter_slot = slot(&program, "lut_parameters");
 		// Each corner stores one minus its coordinate, so the full look maps 0.25 to 0.75.
 		let mut inverting_lut = Texture::new_3d(2, 2, 2).expect("Expected a valid test LUT extent");
 		for z in 0..2 {
@@ -524,7 +499,7 @@ mod tests {
 			let mut source = texture_2d(1, 1, &[[0.25, 0.25, 0.25, 0.5]]);
 			let mut result = empty_image(1, 1);
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(slot(&program, "source_texture"), &mut source);
+			descriptors.bind_texture(slot(&program, "source"), &mut source);
 			descriptors.bind_texture(slot(&program, "lut_texture"), &mut inverting_lut);
 			descriptors.bind_image(output_slot(0), &mut result);
 			descriptors.bind_buffer(parameter_slot, &mut parameters);
@@ -537,7 +512,7 @@ mod tests {
 
 	#[test]
 	fn lut_besl_reflects_3d_texture_and_parameter_bindings() {
-		let program = simple_compute::compile_test_program(*LUT_SHADER);
+		let program = link_pixel_chain(&[LUT_SHADER]);
 		let main_node = program.get_main().expect("Canonical LUT shader should define main");
 		let bindings = resource_management::shader::besl::evaluation::ProgramEvaluation::from_main(&main_node)
 			.expect("Failed to evaluate the LUT descriptor schema")
@@ -556,7 +531,7 @@ mod tests {
 		));
 		let parameters = bindings
 			.iter()
-			.find(|binding| binding.name == "parameters")
+			.find(|binding| binding.name == "lut_parameters")
 			.unwrap_or_else(|| panic!("Canonical LUT shader should retain its parameter buffer: {bindings:?}"));
 
 		assert!(parameters.read && !parameters.write);
@@ -585,6 +560,6 @@ use crate::{
 	core::Entity,
 	rendering::{
 		Sink,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_tile},
+		render_pass::{RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
 	},
 };

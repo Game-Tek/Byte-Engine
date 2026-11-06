@@ -4,7 +4,6 @@ use super::image_transform::Configuration;
 /// [`crate::application::graphics::setup_aces_tonemap_render_pass`].
 pub const TONE_MAPPING: Configuration = Configuration {
 	name: "aces",
-	label: "ACES Tonemap",
 	pipeline_id: "byte_engine/rendering/aces/tone-mapping.pipeline",
 	output_name: "ACES Tonemap Output",
 	requires_float_input: true,
@@ -13,16 +12,17 @@ pub const TONE_MAPPING: Configuration = Configuration {
 #[cfg(test)]
 mod tests {
 
-	use crate::rendering::render_pass::simple_compute;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, run_image_transform_vm};
 
-	static TONE_MAPPING_SHADER: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("aces/tone-mapping.besl"));
+	/// The step shader, as a path under `assets/rendering`.
+	const TONE_MAPPING_SHADER: &str = "aces/tone-mapping.besl";
 
 	/// Verifies that an overflowed half-float highlight maps to white instead of NaN.
 	#[test]
 	fn aces_tonemap_besl_vm_maps_infinite_input_to_white() {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*TONE_MAPPING_SHADER));
+		let program = crate::rendering::shader_vm_test::compile(crate::rendering::shader_vm_test::link_pixel_chain(&[
+			TONE_MAPPING_SHADER,
+		]));
 
 		assert_rgba_close(
 			run_image_transform_vm(&program, [f32::INFINITY, f32::INFINITY, f32::INFINITY, 1.0]),
@@ -34,7 +34,9 @@ mod tests {
 	/// Verifies black and display-encoded neutral reference colors through the VM.
 	#[test]
 	fn aces_tonemap_besl_vm_produces_display_encoded_reference_colors() {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*TONE_MAPPING_SHADER));
+		let program = crate::rendering::shader_vm_test::compile(crate::rendering::shader_vm_test::link_pixel_chain(&[
+			TONE_MAPPING_SHADER,
+		]));
 
 		assert_rgba_close(
 			run_image_transform_vm(&program, [0.0, 0.0, 0.0, 0.25]),
@@ -61,7 +63,9 @@ mod tests {
 	/// Verifies that bright highlights stay apart below white and that a warm color keeps its channel order.
 	#[test]
 	fn aces_tonemap_besl_vm_separates_highlights_and_keeps_channel_order() {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*TONE_MAPPING_SHADER));
+		let program = crate::rendering::shader_vm_test::compile(crate::rendering::shader_vm_test::link_pixel_chain(&[
+			TONE_MAPPING_SHADER,
+		]));
 
 		let bright = run_image_transform_vm(&program, [4.0, 4.0, 4.0, 0.0]);
 		let brighter = run_image_transform_vm(&program, [16.0, 16.0, 16.0, 0.0]);

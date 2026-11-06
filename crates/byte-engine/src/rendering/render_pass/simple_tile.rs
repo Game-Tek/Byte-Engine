@@ -225,6 +225,17 @@ impl ReadyPass {
 	///
 	/// A tile shader writes every pixel of its outputs, so their earlier contents are discarded.
 	pub fn record(&self, command_buffer: &mut ghi::implementation::CommandBufferRecording, extent: Extent) {
+		self.record_with_constant(command_buffer, extent, None);
+	}
+
+	/// Records this pass like [`Self::record`], writing `constant`, when there is one, as the shader's 4-byte push
+	/// constant, such as the step mask of a fused pixel chain.
+	pub fn record_with_constant(
+		&self,
+		command_buffer: &mut ghi::implementation::CommandBufferRecording,
+		extent: Extent,
+		constant: Option<u32>,
+	) {
 		match self.native {
 			NativeTile::TileFunction => {
 				let attachments = self
@@ -242,6 +253,9 @@ impl ReadyPass {
 					.collect::<smallvec::SmallVec<[_; MAX_OUTPUTS]>>();
 				let pass = command_buffer.start_tile_pass(self.pipeline, extent, &attachments);
 				pass.bind_descriptor_sets(&self.descriptor_sets.handles());
+				if let Some(constant) = constant {
+					pass.write_push_constant(0, constant);
+				}
 				pass.dispatch_tiles();
 			}
 			NativeTile::Compute { workgroup } => {
@@ -252,6 +266,9 @@ impl ReadyPass {
 				);
 				let command_buffer = command_buffer.bind_compute_pipeline(self.pipeline);
 				command_buffer.bind_descriptor_sets(&self.descriptor_sets.handles());
+				if let Some(constant) = constant {
+					command_buffer.write_push_constant(0, constant);
+				}
 				command_buffer.dispatch(ghi::DispatchExtent::new(threads, workgroup));
 			}
 		}

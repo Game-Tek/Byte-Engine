@@ -29,6 +29,10 @@ pub struct Primitive {
 /// The most detail levels one primitive stores, counting full detail. Renderers size fixed level tables with it.
 pub const MAX_PRIMITIVE_LODS: usize = 8;
 
+/// The most meshlets one detail level of a primitive holds. Renderers address a level's meshlets with 12 bits,
+/// relative to its first meshlet, so baking fails for a level with more and loading rejects one.
+pub const MAX_LEVEL_MESHLETS: usize = 1 << 12;
+
 /// The `PrimitiveLod` struct lets a renderer load and draw one detail level of a primitive.
 ///
 /// Each level's meshlets live in that level's streams, and they index a prefix of the primitive's vertices: the baker
@@ -215,6 +219,11 @@ fn validate_lods(primitives: &[Primitive]) -> Result<(), SolveError> {
 			format!("it stores {} levels, outside 1..={MAX_PRIMITIVE_LODS}", lods.len())
 		} else if lods[0].error != 0.0 || !errors_rise || !lods[lods.len() - 1].error.is_finite() {
 			"the level errors do not rise from zero through finite values".to_string()
+		} else if let Some(level) = lods.iter().position(|lod| lod.meshlet_count as usize > MAX_LEVEL_MESHLETS) {
+			format!(
+				"level {level} holds {} meshlets, more than the {MAX_LEVEL_MESHLETS} a level can hold",
+				lods[level].meshlet_count
+			)
 		} else if lods.len() > 1 && lods.iter().any(|lod| lod.meshlet_count == 0) {
 			// Only a primitive without triangles holds an empty level, and then it is the only one.
 			"a level holds no meshlets".to_string()

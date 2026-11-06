@@ -9,7 +9,7 @@
 /// Meshlets one primitive instance can hold. Task shaders address an instance's meshlets with 12 bits, relative to its
 /// first meshlet, so this bounds each primitive rather than the scene. See [`super::geometry::GeometryCapacity`] for the
 /// scene-wide geometry limits.
-pub(crate) const MAX_INSTANCE_MESHLETS: usize = 1024 * 4;
+pub(crate) const MAX_INSTANCE_MESHLETS: usize = resource_management::resources::mesh::MAX_LEVEL_MESHLETS;
 /// Scene-wide meshlets the visibility buffer can address: it stores a meshlet index above an 8-bit triangle index.
 pub(crate) const MAX_ADDRESSABLE_MESHLETS: usize = 1 << 24;
 /// Resident detail levels an instance record can name: it stores the level below its 8 flag bits. See

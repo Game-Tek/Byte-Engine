@@ -372,6 +372,50 @@ mod tests {
 	}
 
 	#[test]
+	fn a_level_with_more_meshlets_than_a_level_holds_fails_to_bake() {
+		// Triangles over scattered vertices share few of them, so meshlets fill on vertices at about 31 triangles each.
+		// 200,000 such triangles need over 6,000 meshlets while staying under the vertex limit.
+		let vertex_count = 1u32 << 16;
+		let mut state = 0x9E37_79B9u32;
+		let mut next = || {
+			state ^= state << 13;
+			state ^= state >> 17;
+			state ^= state << 5;
+			state % vertex_count
+		};
+		let positions = (0..vertex_count)
+			.map(|vertex| [(vertex % 256) as f32, (vertex / 256) as f32, ((vertex * 7) % 13) as f32])
+			.collect();
+		let indices = (0..200_000).flat_map(|_| [next(), next(), next()]).collect();
+		let scattered = TestPrimitive {
+			indices,
+			positions,
+			..TestPrimitive::triangle()
+		};
+		let settings = MeshSettings {
+			lods: MeshLodSettings {
+				max_levels: 1,
+				..MeshLodSettings::default()
+			},
+			..MeshSettings::default()
+		};
+
+		let error = process_with(
+			vec![VertexComponent::canonical(VertexSemantics::Position)],
+			&[scattered],
+			None,
+			Vec::new(),
+			settings,
+		)
+		.expect_err("a level past the meshlet limit should fail to bake");
+
+		assert!(
+			matches!(error, MeshProcessingError::TooManyLevelMeshlets { primitive: 0, level: 0, meshlets } if meshlets > 4096),
+			"unexpected error: {error:?}"
+		);
+	}
+
+	#[test]
 	fn small_skinned_and_limited_primitives_keep_fewer_levels() {
 		let level_count = |processed: ProcessedMesh| processed.mesh.primitives[0].lods.len();
 		let position_layout = || vec![VertexComponent::canonical(VertexSemantics::Position)];

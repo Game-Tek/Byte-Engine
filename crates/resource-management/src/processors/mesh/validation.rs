@@ -5,6 +5,11 @@ pub enum MeshProcessingError {
 		primitive: usize,
 		vertices: usize,
 	},
+	TooManyLevelMeshlets {
+		primitive: usize,
+		level: usize,
+		meshlets: usize,
+	},
 	DuplicateVertexSemantic(VertexSemantics),
 	AttributeLengthMismatch(VertexSemantics, u32),
 	InvalidTriangleIndexCount,
@@ -94,6 +99,12 @@ impl std::fmt::Display for MeshProcessingError {
 			Self::TooManyLightmapVertices { primitive, vertices } => write!(
 				f,
 				"Primitive {primitive} needs {vertices} vertices after its lightmap UVs split them, more than the 65,536 a primitive holds. The most likely cause is a large primitive whose surface turns often, so its charts share many vertices. Split the primitive in the source model, or set `lightmap_uvs.enabled` to `false` in its BEAD file."
+			),
+			Self::TooManyLevelMeshlets { primitive, level, meshlets } => write!(
+				f,
+				"Detail level {level} of primitive {primitive} needs {meshlets} meshlets, more than the {} one level holds. The most likely cause is a primitive whose triangles share few vertices, so each meshlet fills its 64 vertices long before its 124 triangles. Weld the primitive's duplicate vertices or split it in the source model. See {}.",
+				crate::resources::mesh::MAX_LEVEL_MESHLETS,
+				crate::online_docs_url("reference/assets#detail-levels")
 			),
 			Self::MissingAttribute(semantic, channel) => write!(
 				f,

@@ -229,6 +229,19 @@ impl MeshProcessorSession {
 				)
 			})
 			.collect::<Vec<_>>();
+		// Renderers address a level's meshlets with a bounded index width, so a level past it could never be drawn.
+		if let Some((level, meshlets)) = levels
+			.iter()
+			.enumerate()
+			.find(|(_, meshlets)| meshlets.len() > MAX_LEVEL_MESHLETS)
+		{
+			return Err(MeshProcessingError::TooManyLevelMeshlets {
+				primitive: primitive_index,
+				level,
+				meshlets: meshlets.len(),
+			}
+			.into());
+		}
 		let vertex_counts = order_vertices_by_level(
 			levels
 				.iter()
@@ -951,7 +964,7 @@ use crate::{
 	resources::{
 		ModelSpace,
 		material::VariantModel,
-		mesh::{MeshModel, Primitive, PrimitiveLod},
+		mesh::{MAX_LEVEL_MESHLETS, MeshModel, Primitive, PrimitiveLod},
 		skeleton::{SkeletonModel, SkinBinding},
 	},
 	types::{IndexStreamTypes, Stream, Streams, VertexComponent, VertexSemantics},

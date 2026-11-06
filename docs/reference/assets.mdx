@@ -87,6 +87,8 @@ keeps only the levels that some instance needs; the
 [detail level rules](/docs/reference/rendering#the-visibility-pipeline) define
 which. Skinned primitives keep full detail only.
 
+A level holds at most 4,096 meshlets of 64 vertices and 124 triangles. A primitive that needs more for any level fails to bake. That happens when its triangles share few vertices, so each meshlet runs out of vertices first.
+
 A model's BEAD file tunes its levels with a `lods` object:
 
 | Key | Default | Meaning |

@@ -283,13 +283,18 @@ state decides:
 
 `filter + 2 × mip filter + 4 × reduction + 12 × address`
 
-| Property | 0 | 1 | 2 |
-| --- | --- | --- | --- |
-| Filter, mip filter | Nearest | Linear | |
-| Reduction | Average | Min | Max |
-| Address | Clamp | Repeat | Mirror |
+| Property | 0 | 1 | 2 | 3 |
+| --- | --- | --- | --- | --- |
+| Filter, mip filter | Nearest | Linear | | |
+| Reduction | Average | Min | Max | |
+| Address | Clamp | Repeat | Mirror | |
+| Anisotropy level | 2 samples | 4 samples | 8 samples | 16 samples |
 
-The sets' own samplers come after index 35.
+An anisotropic sampler filters linearly and averages, and comes after those 36:
+
+`36 + 3 × anisotropy level + address`
+
+The sets' own samplers come after index 47.
 
 ## Limits
 

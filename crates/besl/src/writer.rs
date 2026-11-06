@@ -210,15 +210,17 @@ impl Writer {
 					mip_filter,
 					reduction,
 					address,
+					anisotropy,
 				} = state;
 				// Every property is written, so the reader doesn't need to know the defaults.
 				self.line();
 				self.push_display(format_args!(
-					"{name}: sampler<{{ filter: {}, mip_filter: {}, reduction: {}, address: {} }}>;\n",
+					"{name}: sampler<{{ filter: {}, mip_filter: {}, reduction: {}, address: {}, anisotropy: {} }}>;\n",
 					filter.token(),
 					mip_filter.token(),
 					reduction.token(),
-					address.token()
+					address.token(),
+					anisotropy.samples()
 				));
 			}
 			Nodes::Specialization { name, r#type, id } => {
@@ -575,9 +577,11 @@ mod tests {
 			Light: struct { position: vec3f, intensity: f32, samples: u32[4], }
 			WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
 			linear_clamp: sampler<{ filter: linear, address: clamp }>;
+			grazing: sampler<{ address: repeat, anisotropy: 8 }>;
 			lights: descriptor<{ type: Light[], binding: 0, access: read, memory: device }>;
 			albedo: descriptor<{ type: Texture2D, binding: 1, access: read, sampler: linear_clamp }>;
 			gbuffers: descriptor<{ type: Texture2D, binding: 2, access: read, count: 4 }>;
+			floors: descriptor<{ type: Texture2D, binding: 6, access: read, sampler: grazing }>;
 			output_image: descriptor<{ type: StorageImage<rgba16f>, binding: 3, access: read_write }>;
 			push_constant: push_constant { index: u32, }
 			instance_index: input<u32, 0>;

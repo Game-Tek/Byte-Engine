@@ -428,6 +428,31 @@ mod tests {
 	}
 
 	#[test]
+	fn anisotropic_fixed_sampler_arrays_read_one_sampler_after_the_isotropic_ones() {
+		let shader = generate(
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+			&super::super::link_with_sample_grad(
+				r#"
+				grazing: sampler<{ address: repeat, anisotropy: 16 }>;
+				result: descriptor<{ type: f32[], binding: 0, access: write }>;
+				textures: descriptor<{ type: Texture2D, binding: 1, access: read, count: 4, sampler: grazing }>;
+				main: fn () -> void {
+					result[0] = sample_texture_2d_array_grad(textures, 2, vec2f(0.5, 0.5), vec2f(0.0, 0.0), vec2f(0.0, 0.0)).x;
+				}
+				"#,
+			),
+		);
+
+		// Anisotropic samplers follow the 36 isotropic ones: 36 + 3 × (16x is level 4 - 1) + repeat 1.
+		assert_string_contains!(
+			shader,
+			"struct _besl_array_textures_sampler { SamplerState operator[](uint i) { return SamplerDescriptorHeap[46u]; } };"
+		);
+
+		compile_dxil(&shader, "besl-anisotropic-fixed-sampler-array", ShaderTypes::Compute);
+	}
+
+	#[test]
 	fn each_set_reads_its_descriptors_from_its_own_root_constant_bases() {
 		// The shader takes a shared set, and a set it never reaches; a layer it doesn't take forms no set.
 		let shader = lower_fixture(

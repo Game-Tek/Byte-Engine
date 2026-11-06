@@ -27,31 +27,12 @@ pub(crate) const PUSH_CONSTANT_OFFSET: u32 = 128;
 /// descriptor's heap index is its slot.
 pub(crate) const RESOURCE_DESCRIPTOR_SIZE: u64 = 64;
 
-/// How many fixed samplers the sampler heap holds before the sets' own samplers: every combination of filter, mip
-/// filter, reduction, and address mode.
-pub(crate) const FIXED_SAMPLER_COUNT: u32 = 36;
+/// How many fixed samplers the sampler heap holds before the sets' own samplers.
+pub(crate) use crate::sampler::FIXED_SAMPLER_COUNT;
 
-/// Returns the fixed sampler at sampler heap index `index`, as `docs/reference/ghi.mdx` lays them out:
-/// `filter + 2 × mip filter + 4 × reduction + 12 × address`.
+/// Returns the fixed sampler at sampler heap index `index`, as `docs/reference/ghi.mdx` lays them out.
 pub(crate) fn fixed_sampler(index: u32) -> crate::sampler::StaticSampler {
-	let filter = |bit: u32| match bit {
-		0 => crate::FilteringModes::Closest,
-		_ => crate::FilteringModes::Linear,
-	};
-	crate::sampler::StaticSampler {
-		filtering_mode: filter(index % 2),
-		mip_map_mode: filter(index / 2 % 2),
-		reduction_mode: match index / 4 % 3 {
-			0 => crate::SamplingReductionModes::WeightedAverage,
-			1 => crate::SamplingReductionModes::Min,
-			_ => crate::SamplingReductionModes::Max,
-		},
-		addressing_mode: match index / 12 {
-			0 => crate::SamplerAddressingModes::Clamp,
-			1 => crate::SamplerAddressingModes::Repeat,
-			_ => crate::SamplerAddressingModes::Mirror,
-		},
-	}
+	crate::sampler::StaticSampler::fixed(index)
 }
 
 /// Returns whether a resource of `kind` holds samplers in its set's sampler range, one per array element.
@@ -282,5 +263,13 @@ mod tests {
 		assert_eq!(sampler.mip_map_mode, crate::FilteringModes::Linear);
 		assert_eq!(sampler.reduction_mode, crate::SamplingReductionModes::Max);
 		assert_eq!(sampler.addressing_mode, crate::SamplerAddressingModes::Mirror);
+		assert_eq!(sampler.max_anisotropy, 1);
+
+		let sampler = fixed_sampler(36 + 3 * 3 + 1);
+		assert_eq!(sampler.filtering_mode, crate::FilteringModes::Linear);
+		assert_eq!(sampler.mip_map_mode, crate::FilteringModes::Linear);
+		assert_eq!(sampler.reduction_mode, crate::SamplingReductionModes::WeightedAverage);
+		assert_eq!(sampler.addressing_mode, crate::SamplerAddressingModes::Repeat);
+		assert_eq!(sampler.max_anisotropy, 16);
 	}
 }

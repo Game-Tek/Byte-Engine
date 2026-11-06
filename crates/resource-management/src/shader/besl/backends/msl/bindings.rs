@@ -505,12 +505,16 @@ impl Generator {
 			};
 			string.push_str("constexpr sampler ");
 			Self::emit_static_sampler_name(string, name);
-			let _ = writeln!(
+			let _ = write!(
 				string,
-				"(coord::normalized, filter::{}, mip_filter::{}, address::{address});",
+				"(coord::normalized, filter::{}, mip_filter::{}, address::{address}",
 				filter(sampler.filter),
 				filter(sampler.mip_filter)
 			);
+			if sampler.anisotropy != besl::sampler::Anisotropy::Off {
+				let _ = write!(string, ", max_anisotropy({})", sampler.anisotropy.samples());
+			}
+			string.push_str(");\n");
 		}
 	}
 

@@ -529,6 +529,10 @@ fn layout_identity(bindings: &[Binding]) -> u64 {
 				sampler.reduction as u8,
 				sampler.address as u8,
 			]);
+			// Isotropic samplers hash as they did before anisotropy existed, so their layouts keep their identity.
+			if sampler.anisotropy != besl::sampler::Anisotropy::Off {
+				write(&[sampler.anisotropy.samples()]);
+			}
 		}
 	}
 

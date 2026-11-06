@@ -632,6 +632,31 @@ mod tests {
 	}
 
 	#[compio::test]
+	async fn anisotropic_fixed_sampler_arrays_sample_through_one_constexpr_sampler() {
+		let shader = generate(
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+			&super::super::link_with_sample_grad(
+				r#"
+				grazing: sampler<{ address: repeat, anisotropy: 16 }>;
+				result: descriptor<{ type: f32[], binding: 0, access: write }>;
+				textures: descriptor<{ type: Texture2D, binding: 1, access: read, count: 4, sampler: grazing }>;
+				main: fn () -> void {
+					result[0] = sample_texture_2d_array_grad(textures, 2, vec2f(0.5, 0.5), vec2f(0.0, 0.0), vec2f(0.0, 0.0)).x;
+				}
+				"#,
+			),
+		);
+
+		assert_string_contains!(
+			shader,
+			"constexpr sampler _besl_textures_sampler(coord::normalized, filter::linear, mip_filter::linear, address::repeat, max_anisotropy(16));"
+		);
+		assert_string_contains!(shader, "set0.textures[2].sample(_besl_textures_sampler,");
+
+		compile_natively(&shader, "besl-anisotropic-fixed-sampler-array").await;
+	}
+
+	#[compio::test]
 	async fn reducing_samplers_reduce_in_shader_code() {
 		let source = r#"
 			farthest_depth: sampler<{ mip_filter: nearest, reduction: min }>;

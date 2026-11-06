@@ -218,6 +218,31 @@ const DESCRIPTOR_ARRAY_FRAGMENT: &str = r#"
 	}
 "#;
 
+/// Links `source` with the `sample_texture_2d_array_grad` intrinsic the visibility pipeline declares, which samples
+/// one element of a texture array with explicit derivatives.
+#[cfg(test)]
+fn link_with_sample_grad(source: &str) -> besl::NodeReference {
+	use besl::parser::Node;
+
+	let mut root = besl::parse(source).expect("Expected the fixture source to parse");
+	root.add(vec![Node::intrinsic_with_parameters(
+		"sample_texture_2d_array_grad",
+		vec![
+			Node::parameter("texture_array", "Texture2D"),
+			Node::parameter("texture_index", "u32"),
+			Node::parameter("uv", "vec2f"),
+			Node::parameter("uv_derivative_x", "vec2f"),
+			Node::parameter("uv_derivative_y", "vec2f"),
+		],
+		Node::sentence(vec![Node::member_expression("texture_array")]),
+		"vec4f",
+	)]);
+	besl::lex(root)
+		.expect("Expected the fixture source to link")
+		.get_main()
+		.expect("Expected a main function")
+}
+
 /// Uses every subgroup ballot, broadcast, and shuffle operation in a compute shader.
 #[cfg(test)]
 const SUBGROUP_COMPUTE: &str = r#"

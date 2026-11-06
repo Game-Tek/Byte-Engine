@@ -18,7 +18,7 @@ use expressions::*;
 mod tests {
 	use super::*;
 	use crate::Operators;
-	use crate::sampler::{Address, Filter, Reduction, SamplerState};
+	use crate::sampler::{Address, Anisotropy, Filter, Reduction, SamplerState};
 	use crate::tokenizer::tokenize;
 
 	#[test]
@@ -261,6 +261,7 @@ mod tests {
 			r#"
 				farthest_depth: sampler<{ reduction: min, mip_filter: nearest, }>;
 				tiled: sampler<{ filter: nearest, mip_filter: linear, reduction: average, address: repeat }>;
+				grazing: sampler<{ address: repeat, anisotropy: 16 }>;
 				defaults: sampler<{}>;
 				pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;
 			"#,
@@ -278,6 +279,7 @@ mod tests {
 				mip_filter: Filter::Nearest,
 				reduction: Reduction::Min,
 				address: Address::Clamp,
+				anisotropy: Anisotropy::Off,
 			}
 		);
 		assert_eq!(
@@ -287,6 +289,15 @@ mod tests {
 				mip_filter: Filter::Linear,
 				reduction: Reduction::Average,
 				address: Address::Repeat,
+				anisotropy: Anisotropy::Off,
+			}
+		);
+		assert_eq!(
+			state("grazing"),
+			SamplerState {
+				address: Address::Repeat,
+				anisotropy: Anisotropy::X16,
+				..SamplerState::default()
 			}
 		);
 		assert_eq!(state("defaults"), SamplerState::default());
@@ -306,7 +317,9 @@ mod tests {
 			"pyramid: sampler<{ mip_filter: cubic }>;",
 			"pyramid: sampler<{ reduction: median }>;",
 			"pyramid: sampler<{ address: border }>;",
-			"pyramid: sampler<{ anisotropy: 16 }>;",
+			"pyramid: sampler<{ anisotropy: 3 }>;",
+			"pyramid: sampler<{ anisotropy: 16, anisotropy: 16 }>;",
+			"pyramid: sampler<{ lod_bias: 1 }>;",
 			"pyramid: sampler<{ filter: linear, filter: nearest }>;",
 			"pyramid: sampler<{ filter: linear; reduction: min }>;",
 			"pyramid: sampler<{ filter: }>;",

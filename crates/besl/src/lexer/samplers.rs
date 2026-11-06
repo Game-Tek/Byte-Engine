@@ -2,7 +2,7 @@
 //! allows. See the [sampler specification](/docs/reference/besl/interface#samplers).
 
 use super::*;
-use crate::sampler::{Address, Filter, Reduction, SamplerState};
+use crate::sampler::{Address, Anisotropy, Filter, Reduction, SamplerState};
 
 const SAMPLERS_DOCS_PATH: &str = "reference/besl/interface#samplers";
 
@@ -30,6 +30,14 @@ pub(super) fn attach_sampler(
 			crate::online_docs_url(SAMPLERS_DOCS_PATH)
 		)));
 	};
+	if state.anisotropy != Anisotropy::Off
+		&& (state.filter != Filter::Linear || state.mip_filter != Filter::Linear || state.reduces())
+	{
+		return Err(LexError::invalid(format!(
+			"Sampler `{sampler}` filters anisotropically but doesn't filter linearly and average. The most likely cause is a `nearest` filter or a min or max reduction on an anisotropic sampler. Remove the `anisotropy` property, or the `filter`, `mip_filter`, and `reduction` properties. See {}.",
+			crate::online_docs_url(SAMPLERS_DOCS_PATH)
+		)));
+	}
 	if state.reduces() {
 		if state.mip_filter != Filter::Nearest {
 			return Err(LexError::invalid(format!(

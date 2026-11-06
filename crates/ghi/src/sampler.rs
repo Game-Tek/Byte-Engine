@@ -94,4 +94,55 @@ pub struct StaticSampler {
 	pub mip_map_mode: FilteringModes,
 	pub reduction_mode: SamplingReductionModes,
 	pub addressing_mode: SamplerAddressingModes,
+	/// The most samples a read combines along its footprint's longer axis, 1 when it doesn't filter anisotropically.
+	pub max_anisotropy: u8,
+}
+
+/// How many fixed samplers lead the sampler heap of the platforms that index samplers: every combination of filter,
+/// mip filter, reduction, and address, then every combination of anisotropy level and address.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+pub(crate) const FIXED_SAMPLER_COUNT: u32 = 48;
+
+/// How many of the fixed samplers don't filter anisotropically. The anisotropic ones follow them.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+const ISOTROPIC_SAMPLER_COUNT: u32 = 36;
+
+// Metal compiles fixed samplers into its shaders, so only the platforms that index samplers build the table.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+impl StaticSampler {
+	/// Returns the fixed sampler at sampler heap `index`, as the
+	/// [fixed sampler table](/docs/reference/ghi#descriptor-sets) lays them out: `filter + 2 × mip filter +
+	/// 4 × reduction + 12 × address` for the first 36, then `36 + 3 × level + address` for linear, averaging samplers
+	/// that combine up to 2, 4, 8, and 16 samples.
+	pub(crate) fn fixed(index: u32) -> Self {
+		let address = |address: u32| match address {
+			0 => SamplerAddressingModes::Clamp,
+			1 => SamplerAddressingModes::Repeat,
+			_ => SamplerAddressingModes::Mirror,
+		};
+		if let Some(anisotropic) = index.checked_sub(ISOTROPIC_SAMPLER_COUNT) {
+			return Self {
+				filtering_mode: FilteringModes::Linear,
+				mip_map_mode: FilteringModes::Linear,
+				reduction_mode: SamplingReductionModes::WeightedAverage,
+				addressing_mode: address(anisotropic % 3),
+				max_anisotropy: 2 << (anisotropic / 3),
+			};
+		}
+		let filter = |bit: u32| match bit {
+			0 => FilteringModes::Closest,
+			_ => FilteringModes::Linear,
+		};
+		Self {
+			filtering_mode: filter(index % 2),
+			mip_map_mode: filter(index / 2 % 2),
+			reduction_mode: match index / 4 % 3 {
+				0 => SamplingReductionModes::WeightedAverage,
+				1 => SamplingReductionModes::Min,
+				_ => SamplingReductionModes::Max,
+			},
+			addressing_mode: address(index / 12),
+			max_anisotropy: 1,
+		}
+	}
 }

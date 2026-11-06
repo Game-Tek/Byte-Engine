@@ -474,6 +474,7 @@ name: sampler<{
 	mip_filter: FILTER,
 	reduction: REDUCTION,
 	address: ADDRESS,
+	anisotropy: SAMPLES,
 }>;
 ```
 
@@ -486,6 +487,7 @@ can add a trailing comma.
 | `mip_filter` | `nearest`, `linear` | `linear` | The levels a read combines. `nearest` reads the level nearest the requested level of detail (LOD). `linear` blends the two levels around it. |
 | `reduction` | `average`, `min`, `max` | `average` | How a read combines the texels of its footprint. `average` weights each texel by its distance from the coordinate. `min` and `max` return the smallest or largest texel. |
 | `address` | `clamp`, `repeat`, `mirror` | `clamp` | What a coordinate outside `[0, 1]` reads on every axis. `clamp` reads the edge texel, `repeat` wraps around, and `mirror` wraps around with every other repetition reversed. |
+| `anisotropy` | `1`, `2`, `4`, `8`, `16` | `1` | The most samples a read takes along the longer axis of its footprint. A surface seen at a grazing angle covers many more texels along one screen axis than the other. With `1`, a read takes the level the longer axis needs, which blurs the shorter one. A larger value reads a finer level instead, with up to this many samples along the longer axis. |
 
 A sampler reads every level of the image bound with it. It doesn't clamp the
 LOD.
@@ -505,6 +507,9 @@ occlusion_pyramid: descriptor<{ type: Texture2D, binding: 1, access: read, sampl
   descriptors can name the same sampler.
 - A descriptor with a `sampler` binds only an image. A texture descriptor
   without one binds an image and a sampler.
+
+A sampler whose `anisotropy` is larger than `1` takes `filter: linear`,
+`mip_filter: linear`, and `reduction: average`.
 
 A sampler whose `reduction` is `min` or `max` has more rules:
 

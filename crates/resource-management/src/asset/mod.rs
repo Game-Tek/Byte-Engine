@@ -396,7 +396,7 @@ mod image_settings_tests {
 			Ok(ImageProcessorSettings { mips: false, ..albedo })
 		);
 		assert_eq!(
-			settings("{ image: { compression: true } }", Semantic::Roughness),
+			settings("{ image: { compression: true } }", Semantic::Height),
 			Ok(ImageProcessorSettings {
 				mips: true,
 				compression: true

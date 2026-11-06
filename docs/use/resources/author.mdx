@@ -168,8 +168,10 @@ between them at a distance. Locked borders simplify less.
 
 ## Choose image mips and compression
 
-Every image gets a mip chain, and albedo and normal maps are also
-block-compressed. Images drawn at their authored size, such as UI art, don't
+Every image gets a mip chain, and every material map except height and
+displacement maps is also block-compressed. The engine knows a map's kind from
+its file name, such as `rock_BaseColor.png` or `rock_Roughness.png`; an image
+whose name doesn't say stays uncompressed. Images drawn at their authored size, such as UI art, don't
 need the smaller levels. To change either step for one PNG or EXR, add an
 `image` object to its BEAD file, for example `icons/heart.png.bead`:
 

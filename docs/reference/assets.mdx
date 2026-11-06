@@ -130,20 +130,81 @@ A model's BEAD file tunes the stream with a `lightmap_uvs` object:
 
 ## Image settings
 
-Every image gets a full mip chain by default, and albedo and normal maps are
-also block-compressed: normal maps to BC5, other compressed images to BC7. An
-image's BEAD file can change either step with an object of these keys:
+An image's semantic says what its texels mean. It sets the image's color space
+and its default settings. A glTF or GLB model assigns each image the semantic
+of the material input that samples it, and falls back to the image's file name
+when no input does. A standalone image, and an image a model only names, gets
+its semantic from its file name.
+
+### Semantics from file names
+
+The file name without its extension splits into words at every character that
+isn't a letter or a digit, and the last words are compared with each row below
+in order, ignoring case. The first row whose words end the name gives the
+semantic, so `rock_4K_BaseColor.jpg`, `rock_4K_Basecolor.jpg`, and
+`rock_Base_Color.png` are all albedo maps. Words in the middle of a name, and
+words joined to other letters, as in `NormalityChecker.png`, don't count. A
+name that matches no row is `other`.
+
+| Last words | Semantic |
+| --- | --- |
+| `base color`, `basecolor`, `albedo`, `diffuse` | albedo |
+| `normal` | normal |
+| `metallic` | metallic |
+| `roughness` | roughness |
+| `gloss` | gloss |
+| `specular` | specular |
+| `emissive` | emissive |
+| `height`, `bump` | height |
+| `displacement` | displacement |
+| `opacity` | opacity |
+| `ao` | ambient occlusion |
+| `cavity` | cavity |
+| `translucency` | translucency |
+| `fuzz`, `sheen` | sheen |
+
+### Semantic defaults
+
+| Semantic | Holds | Color space | Compressed by default |
+| --- | --- | --- | --- |
+| albedo | Surface color | sRGB | BC7 |
+| emissive | Emitted color | sRGB | BC7 |
+| specular | Specular reflectance color | sRGB | BC7 |
+| translucency | Color of light passing through the surface | sRGB | BC7 |
+| sheen | Color of the fuzz layer on cloth and foliage | sRGB | BC7 |
+| normal | Tangent-space normal | Linear | BC5 |
+| metallic | Metalness | Linear | BC7 |
+| roughness | Roughness | Linear | BC7 |
+| gloss | Glossiness: one minus roughness | Linear | BC7 |
+| ambient occlusion | Light that reaches the surface | Linear | BC7 |
+| cavity | Small-scale occlusion in creases | Linear | BC7 |
+| opacity | Coverage | Linear | BC7 |
+| height | Height of the surface | Linear | No |
+| displacement | Offset of the surface | Linear | No |
+| metallic-roughness | glTF metalness in blue and roughness in green | Linear | No, packed into two channels |
+| other | Unknown, such as UI art | sRGB | No |
+
+Height and displacement maps stay uncompressed because they move geometry or
+shading, where block-compression error shows as visible steps. An `other` image
+keeps its exact colors. A gloss map holds the inverse of a roughness map; a
+material that samples it computes roughness as one minus the sampled value.
+
+### Settings
+
+Every image gets a full mip chain by default, and the semantics above choose
+whether it's block-compressed: normal maps to BC5, other compressed images to
+BC7. An image's BEAD file can change either step with an object of these keys:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `mips` | `true` | `false` stores only the authored size, with no smaller levels. |
-| `compression` | `true` for albedo and normal maps, `false` otherwise | Whether the image is block-compressed. |
+| `compression` | From the image's semantic | Whether the image is block-compressed. |
 
 Every key is optional, and a key left out keeps its default. Packed
 metallic-roughness maps and half-float images, such as EXR, are never
-block-compressed, so `compression` has no effect on them. A standalone PNG or
-EXR reads the object from its `image` key. A glTF, GLB, or FBX model reads it
-from its `images` key and applies it to every image the model contains.
+block-compressed, so `compression` has no effect on them. A standalone image
+reads the object from its `image` key. A glTF, GLB, or FBX model reads it from
+its `images` key and applies it to every image the model contains.
 
 Turn `mips` off for images drawn at their authored size, such as UI art, and
 `compression` off for images whose exact colors matter more than their memory.

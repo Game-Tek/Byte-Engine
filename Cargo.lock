@@ -297,6 +297,7 @@ name = "byte-engine-ahi"
 version = "0.2.0"
 dependencies = [
  "alsa",
+ "log",
  "objc2-audio-toolbox",
  "objc2-core-audio-types",
  "windows 0.62.2",

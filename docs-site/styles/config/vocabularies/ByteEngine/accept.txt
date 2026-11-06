@@ -47,6 +47,7 @@ Hermite
 IES
 ISO
 Intel
+JPEG
 JSON5
 KiB
 LCOV

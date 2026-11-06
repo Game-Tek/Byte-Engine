@@ -64,7 +64,7 @@ use crate::{
 mod tests {
 	use super::FlipbookAssetHandler;
 	use crate::{
-		asset::{self, handler::implementations::png::PNGAssetHandler, manager::AssetManager},
+		asset::{self, handler::implementations::image::ImageAssetHandler, manager::AssetManager},
 		r#async, resource,
 		resource::resource_manager::ResourceManager,
 		resources::flipbook::Flipbook,
@@ -90,7 +90,7 @@ mod tests {
 		resources: resource::storage_backend::MemoryStorageBackend,
 	) -> AssetManager {
 		let mut asset_manager = AssetManager::new(assets, resources);
-		asset_manager.add_asset_handler(PNGAssetHandler::new());
+		asset_manager.add_asset_handler(ImageAssetHandler::new());
 		asset_manager.add_asset_handler(FlipbookAssetHandler);
 		asset_manager
 	}

@@ -17,6 +17,14 @@ pub enum Semantic {
 	Metallic,
 	/// A map whose roughness value is read from one channel; stored with all of its channels.
 	Roughness,
+	/// A map that holds one minus roughness. Materials that sample it invert the value to get roughness.
+	Gloss,
+	/// A specular reflectance color, as authored for specular-gloss workflows.
+	Specular,
+	/// The color of light that passes through a thin surface, such as a leaf.
+	Translucency,
+	/// The color of a fuzz layer on cloth and foliage.
+	Sheen,
 	/// A glTF metallic-roughness map read only through its green and blue channels.
 	///
 	/// The processor stores it as two channels through [`METALLIC_ROUGHNESS_PACKING`], and material importers move
@@ -27,6 +35,8 @@ pub enum Semantic {
 	Opacity,
 	Displacement,
 	AO,
+	/// Small-scale occlusion in creases, sampled like [`Semantic::AO`].
+	Cavity,
 	Other,
 }
 
@@ -94,12 +104,13 @@ impl ImageProcessorSettings {
 
 	/// Returns the settings a texture with `semantic` is usually stored with.
 	///
-	/// Every texture gets a mip chain. Albedo and normal maps are also block-compressed; other maps keep exact values,
-	/// because block compression visibly distorts the data channels they hold.
+	/// Every texture gets a mip chain, and every map is block-compressed except three: height and displacement maps,
+	/// whose compression error shows as visible steps in the surface, and images of unknown meaning, which keep their
+	/// exact colors. Packed semantics are never compressed; see [`Self::compression`].
 	pub fn for_semantic(semantic: Semantic) -> Self {
 		Self {
 			mips: true,
-			compression: matches!(semantic, Semantic::Albedo | Semantic::Normal),
+			compression: !matches!(semantic, Semantic::Height | Semantic::Displacement | Semantic::Other),
 		}
 	}
 }
@@ -427,21 +438,35 @@ async fn encode_levels_in<A: Allocator + Clone>(
 	Ok(data)
 }
 
-/// Guesses how a standalone texture is sampled from the last words of its file name, such as `brick_Base_Color`.
+/// Guesses how a standalone texture is sampled from the last words of its file name, such as `brick_Base_Color` or
+/// `rock_4K_BaseColor`.
+///
+/// Words are the runs of letters and digits in the file stem and compare without case. The table matches the
+/// "Semantics from file names" table of the assets reference; a name that matches none of it is [`Semantic::Other`]. Next, pick the transfer function with [`gamma_from_semantic`] and the
+/// settings with [`ImageProcessorSettings::for_semantic`].
 pub fn guess_semantic_from_name(name: ResourceIdBase) -> Semantic {
 	// The first suffix that matches wins.
-	const SUFFIXES: [(&[&str], Semantic); 11] = [
+	const SUFFIXES: [(&[&str], Semantic); 19] = [
 		(&["base", "color"], Semantic::Albedo),
+		(&["basecolor"], Semantic::Albedo),
 		(&["albedo"], Semantic::Albedo),
 		(&["diffuse"], Semantic::Albedo),
 		(&["normal"], Semantic::Normal),
 		(&["metallic"], Semantic::Metallic),
 		(&["roughness"], Semantic::Roughness),
+		(&["gloss"], Semantic::Gloss),
+		(&["specular"], Semantic::Specular),
 		(&["emissive"], Semantic::Emissive),
 		(&["height"], Semantic::Height),
-		(&["opacity"], Semantic::Opacity),
+		// A bump map is a height map authored for shading detail.
+		(&["bump"], Semantic::Height),
 		(&["displacement"], Semantic::Displacement),
+		(&["opacity"], Semantic::Opacity),
 		(&["ao"], Semantic::AO),
+		(&["cavity"], Semantic::Cavity),
+		(&["translucency"], Semantic::Translucency),
+		(&["fuzz"], Semantic::Sheen),
+		(&["sheen"], Semantic::Sheen),
 	];
 	SUFFIXES
 		.iter()
@@ -465,10 +490,25 @@ fn has_suffix_token_sequence(name: &str, sequence: &[&str]) -> bool {
 			.all(|expected| tokens.next().is_some_and(|token| token.eq_ignore_ascii_case(expected)))
 }
 
+/// Returns the transfer function a texture with `semantic` is authored in: sRGB for colors, linear for data.
 pub fn gamma_from_semantic(semantic: Semantic) -> Gamma {
 	match semantic {
-		Semantic::Albedo | Semantic::Emissive | Semantic::Other => Gamma::SRGB,
-		_ => Gamma::Linear,
+		Semantic::Albedo
+		| Semantic::Emissive
+		| Semantic::Specular
+		| Semantic::Translucency
+		| Semantic::Sheen
+		| Semantic::Other => Gamma::SRGB,
+		Semantic::Normal
+		| Semantic::Metallic
+		| Semantic::Roughness
+		| Semantic::Gloss
+		| Semantic::MetallicRoughness
+		| Semantic::Height
+		| Semantic::Opacity
+		| Semantic::Displacement
+		| Semantic::AO
+		| Semantic::Cavity => Gamma::Linear,
 	}
 }
 
@@ -506,7 +546,7 @@ mod tests {
 
 	use super::{
 		ImageProcessor, ImageProcessorSettings, ImageSource, OwnedImageSource, Semantic, SourceChannels, SourceEncoding,
-		gamma_from_semantic, guess_semantic_from_name,
+		determine_image_format, gamma_from_semantic, guess_semantic_from_name,
 	};
 	use crate::{
 		asset::ResourceId,
@@ -518,37 +558,66 @@ mod tests {
 		ImageSource::from_format(extent, format, data).expect("test format should be a supported image source")
 	}
 
-	#[test]
-	fn infers_texture_semantic_and_default_gamma_from_asset_name() {
-		let cases = [
-			("textures/brick_wall_Base_color.png", Semantic::Albedo, Gamma::SRGB),
-			("textures/brick_wall_Diffuse.png", Semantic::Albedo, Gamma::SRGB),
-			("textures/brick_wall_Albedo.png", Semantic::Albedo, Gamma::SRGB),
-			("textures/brick_wall_Normal.png", Semantic::Normal, Gamma::Linear),
-			("textures/brick_wall_Metallic.png", Semantic::Metallic, Gamma::Linear),
-			("textures/brick_wall_Roughness.png", Semantic::Roughness, Gamma::Linear),
-			("textures/brick_wall_Emissive.png", Semantic::Emissive, Gamma::SRGB),
-			("textures/brick_wall_Height.png", Semantic::Height, Gamma::Linear),
-			("textures/brick_wall_Opacity.png", Semantic::Opacity, Gamma::Linear),
-			("textures/brick_wall_Displacement.png", Semantic::Displacement, Gamma::Linear),
-			("textures/brick_wall_AO.png", Semantic::AO, Gamma::Linear),
-			("textures/brick_wall_Color.png", Semantic::Other, Gamma::SRGB),
-			("textures/diffuse_bomb_icon.png", Semantic::Other, Gamma::SRGB),
-			("textures/icon_diffuse.png", Semantic::Albedo, Gamma::SRGB),
-			("textures/DiffuseBombIcon.png", Semantic::Other, Gamma::SRGB),
-			("textures/NormalityChecker.png", Semantic::Other, Gamma::SRGB),
-			("textures/AOGenerator.png", Semantic::Other, Gamma::SRGB),
-		];
-
-		for (id, expected_semantic, expected_gamma) in cases {
+	/// Asserts the semantic a file name names and the format an eight-bit RGBA source with that name is stored in by
+	/// default.
+	fn assert_names(cases: &[(&str, Semantic, Formats)]) {
+		for &(id, expected_semantic, expected_format) in cases {
 			let semantic = guess_semantic_from_name(ResourceId::new(id).get_base());
+			let settings = ImageProcessorSettings::for_semantic(semantic);
+			let format = determine_image_format(Formats::RGBA8, semantic, gamma_from_semantic(semantic), settings.compression);
 
-			assert_eq!(
-				(semantic, gamma_from_semantic(semantic)),
-				(expected_semantic, expected_gamma),
-				"asset: {id}"
-			);
+			assert_eq!((semantic, format), (expected_semantic, expected_format), "asset: {id}");
 		}
+	}
+
+	#[test]
+	fn infers_texture_semantic_and_default_format_from_asset_name() {
+		assert_names(&[
+			("textures/brick_wall_Base_color.png", Semantic::Albedo, Formats::BC7SRGB),
+			("textures/brick_wall_Diffuse.png", Semantic::Albedo, Formats::BC7SRGB),
+			("textures/brick_wall_Albedo.png", Semantic::Albedo, Formats::BC7SRGB),
+			("textures/brick_wall_Normal.png", Semantic::Normal, Formats::BC5),
+			("textures/brick_wall_Metallic.png", Semantic::Metallic, Formats::BC7),
+			("textures/brick_wall_Roughness.png", Semantic::Roughness, Formats::BC7),
+			("textures/brick_wall_Emissive.png", Semantic::Emissive, Formats::BC7SRGB),
+			("textures/brick_wall_Height.png", Semantic::Height, Formats::RGBA8),
+			("textures/brick_wall_Sheen.png", Semantic::Sheen, Formats::BC7SRGB),
+			("textures/brick_wall_Opacity.png", Semantic::Opacity, Formats::BC7),
+			("textures/brick_wall_Displacement.png", Semantic::Displacement, Formats::RGBA8),
+			("textures/brick_wall_AO.png", Semantic::AO, Formats::BC7),
+			("textures/brick_wall_Color.png", Semantic::Other, Formats::RGBA8SRGB),
+			("textures/diffuse_bomb_icon.png", Semantic::Other, Formats::RGBA8SRGB),
+			("textures/icon_diffuse.png", Semantic::Albedo, Formats::BC7SRGB),
+			("textures/DiffuseBombIcon.png", Semantic::Other, Formats::RGBA8SRGB),
+			("textures/NormalityChecker.png", Semantic::Other, Formats::RGBA8SRGB),
+			("textures/AOGenerator.png", Semantic::Other, Formats::RGBA8SRGB),
+		]);
+	}
+
+	/// Every map name in a Megascans download, which names maps `<id>_<resolution>_<Map>` and billboard maps
+	/// `<id>_<resolution>_Billboard_<Map>`.
+	#[test]
+	fn infers_megascans_map_names() {
+		assert_names(&[
+			("quarry/xb5ebhf_4K_BaseColor.jpg", Semantic::Albedo, Formats::BC7SRGB),
+			("quarry/uddmcgbia_4K_Basecolor.jpg", Semantic::Albedo, Formats::BC7SRGB),
+			("quarry/vbuqbg3ew_4K_Albedo.jpg", Semantic::Albedo, Formats::BC7SRGB),
+			("quarry/xb5ebhf_4K_Normal.jpg", Semantic::Normal, Formats::BC5),
+			("quarry/xb5ebhf_4K_Roughness.jpg", Semantic::Roughness, Formats::BC7),
+			("quarry/xb5ebhf_4K_Gloss.jpg", Semantic::Gloss, Formats::BC7),
+			("quarry/xb5ebhf_4K_Specular.jpg", Semantic::Specular, Formats::BC7SRGB),
+			("quarry/xb5ebhf_4K_AO.jpg", Semantic::AO, Formats::BC7),
+			("quarry/xb5ebhf_4K_Cavity.jpg", Semantic::Cavity, Formats::BC7),
+			("quarry/xb5ebhf_4K_Bump.jpg", Semantic::Height, Formats::RGBA8),
+			("quarry/xb5ebhf_4K_Displacement.jpg", Semantic::Displacement, Formats::RGBA8),
+			("quarry/udlladln_4K_Opacity.jpg", Semantic::Opacity, Formats::BC7),
+			("quarry/udlladln_4K_Translucency.jpg", Semantic::Translucency, Formats::BC7SRGB),
+			("quarry/udlladln_4K_Fuzz.jpg", Semantic::Sheen, Formats::BC7SRGB),
+			("quarry/udlladln_4K_Billboard_Basecolor.jpg", Semantic::Albedo, Formats::BC7SRGB),
+			("quarry/udlladln_4K_Billboard_Normal.jpg", Semantic::Normal, Formats::BC5),
+			("quarry/udlladln_4K_Billboard_Opacity.jpg", Semantic::Opacity, Formats::BC7),
+			("quarry/udlladln_4K_Billboard_Translucency.jpg", Semantic::Translucency, Formats::BC7SRGB),
+		]);
 	}
 
 	/// Processes `source` with the usual settings for `semantic`. See [`process_with`].
@@ -721,7 +790,12 @@ mod tests {
 	async fn packed_and_unpacked(extent: Extent, format: Formats, source: &[u8]) -> (Image, Vec<u8>, Vec<u8>) {
 		let source = image_source(extent, format, source);
 		let (packed, _, packed_data) = process(Semantic::MetallicRoughness, Gamma::Linear, source).await;
-		let (_, _, unpacked_data) = process(Semantic::Metallic, Gamma::Linear, source).await;
+		// The reference keeps every channel exact, so compare against an uncompressed chain.
+		let uncompressed = ImageProcessorSettings {
+			compression: false,
+			..ImageProcessorSettings::for_semantic(Semantic::Metallic)
+		};
+		let (_, _, unpacked_data) = process_with(Semantic::Metallic, Gamma::Linear, uncompressed, source).await;
 		(packed, packed_data, unpacked_data)
 	}
 

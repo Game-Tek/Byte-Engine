@@ -89,8 +89,13 @@ impl NavigationAgent {
 ///
 /// Use [`Self::velocity`] for the desired motion. A clip-driven controller can use [`Self::following_speed`] to
 /// require enough headway for a complete start and stop before it resumes following a leader.
+///
+/// Choose the gait from the distance to the route's endpoint, and lower it only by [`Self::following_speed`], or to
+/// standing when the velocity is zero. Don't choose it from the velocity's length: path corners lie on the mesh
+/// boundary, and the boundary constraint shortens the velocity near every corner however far the endpoint is.
 pub struct NavigationSteering {
-	/// The desired velocity after passing, following, and boundary constraints.
+	/// The desired velocity after passing, following, and boundary constraints. Zero means the way forward is closed
+	/// by other agents. Its length drops near the mesh boundary, so take the direction from it, not the gait.
 	pub velocity: Vector,
 	/// The leader's forward speed plus available contact clearance over two seconds, or infinity without a leader.
 	/// This ceiling is independent of the requested speed, so a standing follower can check room before setting off.
@@ -355,8 +360,10 @@ impl Navigation {
 	/// Call after [`Self::update`] with the velocity toward the next route point at the character's gait speed, or zero
 	/// to stand. Moving agents retain their passing side and yield speed to a slower leader or a blocked forward
 	/// range. Standing agents get a separation velocity only when crowded. Mesh boundaries can also reduce speed.
-	/// With root-motion clips, choose a gait at or below the result's speed, turn toward its direction at the
-	/// character's bounded rate, then publish the root-motion transform.
+	/// With root-motion clips, choose the gait from the route's length to its endpoint, capped by
+	/// [`NavigationSteering::following_speed`], turn toward the result's direction at the character's bounded rate,
+	/// then publish the root-motion transform. Don't choose the gait from the result's speed: near each path corner
+	/// the boundary lowers it below a walk.
 	pub fn steer(&mut self, agent: Handle, velocity: Vector) -> NavigationSteering {
 		let id = agent.id();
 		let Some((placed, position)) = self.agents_by_id.get(&id).and_then(|placed| Some((placed, placed.position?))) else {

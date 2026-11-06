@@ -87,8 +87,7 @@ app.world()
 
 Each tick, pass the velocity the character means to move at: toward the path's
 next corner at its gait's speed, or zero to stand. Steering returns a direction around other characters
-and a speed ceiling for following a slower character ahead or approaching the
-mesh boundary:
+and a speed ceiling for following a slower character ahead:
 
 ```rust
 let steering = navigation.steer(character, toward_corner * WALK_SPEED);
@@ -99,12 +98,17 @@ Aim the character a little way along its path, such as 0.8 m, rather than at
 the next corner, so each turn starts before the corner. Turn its heading toward
 the result at a rate bounded by how hard it can lean into a turn, such as
 10 m/s² divided by its speed, up to 150° per second: a walk then turns on half
-a meter and a sprint on about 4 m. Choose the desired gait from route distance,
-then reduce it when steering reports a lower speed ceiling. Steering retains
-the side of a pass while the blocking character remains ahead.
+a meter and a sprint on about 4 m. Choose the gait from the distance to the
+route's endpoint, then lower it only when `steering.following_speed` is slower,
+or stand when `steering.velocity` is zero because others close the way forward.
+Don't choose the gait from the length of `steering.velocity`: route corners lie
+on the mesh boundary, and steering shortens the velocity near each corner,
+however far the endpoint is. A character gaited by it walks or stops at every
+corner. Steering retains the side of a pass while the blocking character
+remains ahead.
 A character following another in the same direction yields speed instead of
-trying to overtake it. With root-motion clips, choose a gait at or below the
-returned speed ceiling and allow room for the stopping animation. Before a
+trying to overtake it. With root-motion clips, choose a gait at or below
+`steering.following_speed` and allow room for the stopping animation. Before a
 stopped follower sets off, check `steering.following_speed`: this ceiling isn't
 limited to the requested gait speed, so you can require room for a complete
 start and stop. A character that means to stand gets a velocity only when others press on it; move it when that

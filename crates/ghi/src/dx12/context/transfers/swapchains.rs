@@ -1,7 +1,7 @@
 use super::*;
 
 impl Device {
-	/// Resizes a swapchain only after every native queue is idle, then updates its frame-local proxy through deferred tasks.
+	/// Resizes a swapchain and its proxy textures while every native queue is idle.
 	pub(crate) fn swapchain_extent(&mut self, swapchain_handle: SwapchainHandle, sequence_index: u8) -> Extent {
 		let Some(swapchain) = self.swapchains.get(swapchain_handle.index() as usize) else {
 			return Extent::rectangle(0, 0);
@@ -52,6 +52,10 @@ impl Device {
 			swapchain.next_image_index %= image_count;
 			if let Some(proxy) = proxy {
 				self.resize_image_internal(proxy, extent, None, sequence_index);
+				// Finish replacing all proxy copies before any descriptor can bind them again.
+				self.process_all_tasks_after_idle();
+				// Swapchain bindings name the swapchain rather than the proxy image handle.
+				self.mark_stale_descriptors(|descriptor, _| descriptor == WriteData::Swapchain(swapchain_handle));
 			}
 		}
 		extent

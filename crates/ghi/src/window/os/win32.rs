@@ -1,7 +1,6 @@
 use std::{
 	cell::{Cell, RefCell},
 	collections::VecDeque,
-	ffi::CString,
 	rc::Rc,
 	sync::Arc,
 	sync::mpsc,
@@ -16,11 +15,14 @@ use windows::{
 			MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW, MonitorFromWindow,
 		},
 		System::{
-			LibraryLoader::GetModuleHandleA,
+			LibraryLoader::GetModuleHandleW,
 			Threading::{CreateEventW, INFINITE, SetEvent},
 		},
 		UI::{
-			HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
+			HiDpi::{
+				AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem,
+				SetProcessDpiAwarenessContext,
+			},
 			Input::{
 				GetRawInputBuffer, GetRawInputData, HRAWINPUT,
 				KeyboardAndMouse::{GetAsyncKeyState, GetFocus, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON},
@@ -28,20 +30,21 @@ use windows::{
 				RID_INPUT, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE, RegisterRawInputDevices,
 			},
 			WindowsAndMessaging::{
-				CW_USEDEFAULT, ClipCursor, CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GWLP_USERDATA,
-				GetClientRect, GetClipCursor, GetSystemMetrics, GetWindowLongPtrA, HCURSOR, HICON, IsIconic, MSG,
-				MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageA, QS_ALLINPUT, RI_KEY_BREAK,
-				RI_MOUSE_HWHEEL, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP, RI_MOUSE_MIDDLE_BUTTON_DOWN,
-				RI_MOUSE_MIDDLE_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP, RI_MOUSE_WHEEL,
-				RegisterClassA, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN, SetWindowLongPtrA,
-				ShowCursor, TranslateMessage, UnregisterClassA, WHEEL_DELTA, WINDOW_EX_STYLE, WM_CLOSE, WM_DISPLAYCHANGE,
-				WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-				WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE,
-				WM_WINDOWPOSCHANGED, WNDCLASS_STYLES, WNDCLASSA, WS_POPUP, WS_VISIBLE,
+				CW_USEDEFAULT, ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
+				GWLP_WNDPROC, GetClientRect, GetClipCursor, GetSystemMetrics, GetWindowLongPtrW, HCURSOR, HICON, IDC_ARROW,
+				IsIconic, LoadCursorW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW,
+				QS_ALLINPUT, RI_KEY_BREAK, RI_MOUSE_HWHEEL, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP,
+				RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP,
+				RI_MOUSE_WHEEL, RegisterClassW, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
+				SetWindowLongPtrW, ShowCursor, TranslateMessage, UnregisterClassW, WHEEL_DELTA, WINDOW_EX_STYLE, WM_CHAR,
+				WM_CLOSE, WM_DISPLAYCHANGE, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
+				WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN,
+				WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_WINDOWPOSCHANGED, WNDCLASS_STYLES, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+				WS_POPUP, WS_VISIBLE,
 			},
 		},
 	},
-	core::PCSTR,
+	core::{HSTRING, PCWSTR},
 };
 
 use crate::window::{
@@ -55,8 +58,7 @@ mod dialogs;
 type EventQueue = Rc<RefCell<VecDeque<Event>>>;
 
 pub struct App {
-	class_atom: u16,
-	class_name: CString,
+	class_name: HSTRING,
 	hinstance: HINSTANCE,
 	events: EventQueue,
 	use_raw_mouse: bool,
@@ -175,6 +177,8 @@ struct WindowData {
 	cursor_position: Cell<Option<(i32, i32)>>,
 	cursor_capture: Rc<CursorCapture>,
 	absolute_mouse: Rc<AbsoluteMouse>,
+	/// The first half of a character outside the Basic Multilingual Plane, which `WM_CHAR` delivers in two messages.
+	high_surrogate: Cell<Option<u16>>,
 }
 
 impl WindowData {
@@ -187,30 +191,30 @@ impl App {
 	/// Connects to the windowing system; see [`crate::window::App::new`].
 	pub(crate) fn try_new(id_name: &str) -> Result<App, String> {
 		let hinstance = unsafe {
-			GetModuleHandleA(PCSTR(std::ptr::null()))
+			GetModuleHandleW(PCWSTR::null())
 				.map_err(|_| "Failed to acquire the module handle. The most likely cause is that the current process module handle could not be resolved.")?
 		};
 
-		// Create Cstrings becasue Win32 API uses null terminated strings
-		let class_name = CString::new(id_name).map_err(
-			|_| "Failed to build the window class name. The most likely cause is that the id string contains an interior null byte.",
-		)?;
+		// Wide-character windows receive text as UTF-16 in `WM_CHAR`, whatever the system code page.
+		let class_name = HSTRING::from(id_name);
 
 		let class_atom = unsafe {
-			let wnd_class = WNDCLASSA {
+			let wnd_class = WNDCLASSW {
 				style: WNDCLASS_STYLES::default(),
 				lpfnWndProc: Some(wnd_proc),
 				cbClsExtra: 0,
 				cbWndExtra: 0,
 				hInstance: hinstance.into(),
 				hIcon: HICON::default(),
-				hCursor: HCURSOR::default(),
+				// Without a class cursor, the cursor keeps whatever shape it had when it entered the window, such as a
+				// resize arrow from the border.
+				hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or(HCURSOR::default()),
 				hbrBackground: HBRUSH::default(),
-				lpszMenuName: PCSTR(std::ptr::null()),
-				lpszClassName: PCSTR(class_name.as_ptr() as _),
+				lpszMenuName: PCWSTR::null(),
+				lpszClassName: PCWSTR(class_name.as_ptr()),
 			};
 
-			RegisterClassA(&wnd_class)
+			RegisterClassW(&wnd_class)
 		};
 
 		if class_atom == 0 {
@@ -245,7 +249,6 @@ impl App {
 		})?;
 
 		Ok(App {
-			class_atom,
 			class_name,
 			hinstance: hinstance.into(),
 			events: EventQueue::default(),
@@ -262,29 +265,40 @@ impl App {
 
 	/// Creates and shows a native window; see [`crate::window::App::create_window`].
 	pub(crate) fn create_window(&mut self, name: &str, extent: utils::Extent, features: Features) -> Result<Window, String> {
-		let name = CString::new(name).map_err(
-			|_| "Failed to build the window title. The most likely cause is that the window name contains an interior null byte.",
-		)?;
+		let name = HSTRING::from(name);
 
-		// A background window is never shown, so it cannot take focus from the desktop.
-		let window_style = if features.contains(Features::BACKGROUND) {
-			WS_POPUP
+		// A decorated window gets a title bar, a sizing border, and the minimize, maximize, and close buttons.
+		let mut window_style = if features.contains(Features::DECORATIONS) {
+			WS_OVERLAPPEDWINDOW
 		} else {
-			WS_POPUP | WS_VISIBLE
+			WS_POPUP
 		};
+		// A background window is never shown, so it cannot take focus from the desktop.
+		if !features.contains(Features::BACKGROUND) {
+			window_style |= WS_VISIBLE;
+		}
 
-		let (width, height) = (extent.width() as i32, extent.height() as i32);
+		// `extent` sizes the client area, so the title bar and border grow the window around it.
+		let mut frame = RECT {
+			left: 0,
+			top: 0,
+			right: extent.width() as i32,
+			bottom: extent.height() as i32,
+		};
+		// A failed adjustment leaves the window at `extent`, with a client area smaller by the decorations.
+		let _ =
+			unsafe { AdjustWindowRectExForDpi(&mut frame, window_style, false, WINDOW_EX_STYLE::default(), GetDpiForSystem()) };
 
 		let hwnd = unsafe {
-			CreateWindowExA(
+			CreateWindowExW(
 				WINDOW_EX_STYLE::default(),
-				PCSTR(self.class_name.as_ptr() as _),
-				PCSTR(name.as_ptr() as _),
+				&self.class_name,
+				&name,
 				window_style,
 				CW_USEDEFAULT,
 				CW_USEDEFAULT,
-				width,
-				height,
+				frame.right - frame.left,
+				frame.bottom - frame.top,
 				None,
 				None,
 				Some(self.hinstance),
@@ -306,11 +320,12 @@ impl App {
 			cursor_position: Cell::new(None),
 			cursor_capture: self.cursor_capture.clone(),
 			absolute_mouse: self.absolute_mouse.clone(),
+			high_surrogate: Cell::new(None),
 		});
 
-		// Messages sent during creation fall through to `DefWindowProcA` because no data is attached yet.
+		// Messages sent during creation fall through to `DefWindowProcW` because no data is attached yet.
 		unsafe {
-			SetWindowLongPtrA(hwnd, GWLP_USERDATA, &*data as *const WindowData as _);
+			SetWindowLongPtrW(hwnd, GWLP_USERDATA, &*data as *const WindowData as _);
 		}
 
 		// Creation-time sizing ran before the window procedure could observe it.
@@ -358,15 +373,16 @@ impl App {
 		let mut msg = MSG::default();
 
 		// A null window filter also receives thread messages such as `WM_QUIT`.
-		while unsafe { PeekMessageA(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+		while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
 			if msg.message == WM_QUIT {
 				self.events.borrow_mut().push_back(Event::App(AppEvents::Quit));
 				continue;
 			}
 
 			unsafe {
-				let _ = TranslateMessage(&msg); // We don't care whether it translated or not
-				DispatchMessageA(&msg);
+				// Translation posts the `WM_CHAR` text of key presses, which a later peek of this loop dispatches.
+				let _ = TranslateMessage(&msg);
+				DispatchMessageW(&msg);
 			}
 		}
 
@@ -464,7 +480,7 @@ impl Drop for App {
 	fn drop(&mut self) {
 		// Drop cannot report teardown failures, and the class stays registered if a window outlived the app.
 		unsafe {
-			let _ = UnregisterClassA(PCSTR(self.class_atom as _), Some(self.hinstance));
+			let _ = UnregisterClassW(&self.class_name, Some(self.hinstance));
 		}
 	}
 }
@@ -545,8 +561,13 @@ fn focused_window_data<'a>() -> Option<&'a WindowData> {
 	if hwnd.is_invalid() || unsafe { IsIconic(hwnd) }.as_bool() {
 		return None;
 	}
-	// SAFETY: Only this module's windows run on the pump's thread, and each one's data outlives the window.
-	unsafe { (GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *const WindowData).as_ref() }
+	// Focus can rest on a window this module didn't create, such as one of another thread that shares this thread's
+	// input state while a dialog it owns is open. Only windows with this module's procedure carry a `WindowData`.
+	if unsafe { GetWindowLongPtrW(hwnd, GWLP_WNDPROC) } != wnd_proc as *const () as isize {
+		return None;
+	}
+	// SAFETY: The window runs this module's procedure, and each such window's data outlives it.
+	unsafe { (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const WindowData).as_ref() }
 }
 
 /// Returns the one-pixel rectangle at the center of the window's client area, in screen coordinates.
@@ -687,13 +708,13 @@ fn normalize_client_position(hwnd: HWND, x: f32, y: f32) -> Option<(f32, f32)> {
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
 	unsafe {
-		let window_data = GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *const WindowData;
+		let window_data = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const WindowData;
 		let Some(window_data) = window_data.as_ref() else {
-			return DefWindowProcA(hwnd, msg, wparam, lparam);
+			return DefWindowProcW(hwnd, msg, wparam, lparam);
 		};
 
 		let Some(event) = handle_event(hwnd, msg, wparam, lparam, window_data) else {
-			return DefWindowProcA(hwnd, msg, wparam, lparam);
+			return DefWindowProcW(hwnd, msg, wparam, lparam);
 		};
 		if let Some(event) = event {
 			window_data.push(event);
@@ -704,7 +725,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 
 /// Translates one window message into an event for [`wnd_proc`].
 ///
-/// Returns `None` to leave the message to `DefWindowProcA`, and `Some(None)` to consume it without an event.
+/// Returns `None` to leave the message to `DefWindowProcW`, and `Some(None)` to consume it without an event.
 fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_data: &WindowData) -> Option<Option<Events>> {
 	let seat = Seat::stub();
 	let event = match msg {
@@ -783,6 +804,25 @@ fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_dat
 			pressed: msg == WM_KEYDOWN,
 			key: wparam_to_key(wparam)?,
 		},
+		// Text arrives as UTF-16 code units. A character outside the Basic Multilingual Plane takes two messages, the
+		// high surrogate first.
+		WM_CHAR => {
+			let unit = wparam.0 as u16;
+			if (0xD800..0xDC00).contains(&unit) {
+				window_data.high_surrogate.set(Some(unit));
+				return Some(None);
+			}
+			let character = match window_data.high_surrogate.take() {
+				Some(high) => char::decode_utf16([high, unit]).next(),
+				None => char::decode_utf16([unit]).next(),
+			};
+			match character {
+				Some(Ok(character)) if !character.is_control() => Events::Character { seat, character },
+				// Keys such as Backspace and Enter also type control characters; they arrive as `Events::Key`. An
+				// unpaired surrogate carries no text.
+				_ => return Some(None),
+			}
+		}
 		WM_SIZE => Events::Resize {
 			width: (lparam.0 & 0xffff) as u32,
 			height: ((lparam.0 >> 16) & 0xffff) as u32,

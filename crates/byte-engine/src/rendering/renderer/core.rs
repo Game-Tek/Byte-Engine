@@ -723,6 +723,21 @@ impl Renderer {
 		self.app.iter_mut().flat_map(move |app| app.poll(wait))
 	}
 
+	/// Opens an operating system dialog, such as a file or color picker, without waiting for the user. The first
+	/// window owns it, so it opens attached to that window where the platform supports it.
+	///
+	/// Next, match [`ghi::window::AppEvents::Dialog`] events against the returned id. They reach the application with
+	/// the other [`ghi::window::Event`]s on its message channel, and their [`ghi::window::DialogResult`] carries what
+	/// the user chose.
+	pub fn open_dialog(&mut self, dialog: &ghi::window::Dialog) -> Result<ghi::window::DialogId, ghi::window::DialogError> {
+		// A renderer without windows connects here, as `create_window` does, since dialogs need the window system too.
+		let app = match &mut self.app {
+			Some(app) => app,
+			app => app.insert(ghi::window::App::new("main_window").map_err(ghi::window::DialogError::Os)?),
+		};
+		app.open_dialog(dialog, self.windows.first().map(|(window, ..)| window))
+	}
+
 	/// Returns the handle that interrupts a waiting [`Self::poll_windows`], once a window connected the renderer
 	/// to the window system.
 	pub(crate) fn app_waker(&self) -> Option<ghi::window::AppWaker> {

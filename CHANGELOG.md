@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Applications open operating system dialogs with `Renderer::open_dialog`, which attaches them to the first window. Their results arrive as `AppEvents::Dialog` with the other window events. Before, only the GHI app could open them, so an engine application had no way to.
+
+- Fixed (Windows): a window created with `Features::DECORATIONS` had no title bar or border. It now gets both, and its extent sizes the client area inside them. Windows show the arrow cursor instead of keeping the shape the cursor had when it entered.
+
+- Fixed (Windows): typing sent no `Events::Character`, so text fields took no input. Windows now use the wide-character API and report the text of `WM_CHAR`, characters outside the Basic Multilingual Plane included.
+
+- Fixed (Windows): the application crashed with an access violation when keyboard focus moved to a window it hadn't created, such as another application's. The pump read that window's user data as its own.
+
 - Fixed: an animation player panicked with `Only a playing clip can start a graph transition`. The panic needed an inertialized request to blend a one-shot to a new position while the one-shot's route to another state waited for that state's clips. A playing motion now holds the route it selected, so a blend can't carry one: the blend drops it, and the motion selects it again once the blend completes.
 
 - Fixed: a UI drag released over a target lost its `Dropped` and `DragEnded` events when `Engine::cancel` ran, or the viewport resized, before the next `evaluate`. `release` now sends both at once, against the frame the release was measured over, and components still hear them from the next `evaluate`.

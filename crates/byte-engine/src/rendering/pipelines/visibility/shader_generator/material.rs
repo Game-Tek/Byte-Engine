@@ -89,7 +89,12 @@ impl<'a> Stage<'a> for MaterialStage<'a> {
 					return Ok(Node::member_expression(name));
 				}
 				ParameterKind::Dynamic(declared) if parameter.name == name && declared == r#type => {
-					let block = Node::accessor(Node::member_expression("mesh"), Node::member_expression("parameter_block"));
+					// The instance's parameter block is the high half of its record's `material` word.
+					let block = Node::operator(
+						">>",
+						Node::accessor(Node::member_expression("mesh"), Node::member_expression("material")),
+						Node::literal_expression("16u"),
+					);
 					let index = Node::operator("+", block, Node::literal_expression(format!("{entry}u")));
 					let value = Node::accessor(scene_member("material_parameters"), Node::sentence(vec![index]));
 

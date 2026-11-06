@@ -145,13 +145,17 @@ the behavior; this section explains how it's built.
   larger than the new one, but it never moves geometry another frame still
   reads.
 - `PreparedLevels` names which levels of each primitive a preparation holds.
-  Meshlet records count their offsets from their primitive, and each prepared
-  primitive records its own elements of every stream, so
-  `GeometryBuffers::append_primitives` places each primitive in ranges of its
-  own. Each primitive's `MeshLods` marks the levels it can draw.
-  `MeshLods::drawn` picks the finest resident level that isn't finer than the
-  one an instance wants, and every level names its own vertex, index, and
-  meshlet bases.
+  Each held level gets a `ShaderMeshLevel` record, in a geometry stream of its
+  own, that names its meshlets, its first vertex, and the sphere its meshlets'
+  bounds are stored within. Meshlet and level records count from the start of
+  the prepared streams, and each prepared primitive records its own elements of
+  every stream, so `GeometryBuffers::append_primitives` places each primitive in
+  ranges of its own. `PreparedMesh::place_records` then rewrites the records in
+  the staging lease for where they landed, once per placement, before the copy.
+  Each primitive's `MeshLods` marks the levels it can draw and names their
+  records. `MeshLods::drawn` picks the finest resident level that isn't finer
+  than the one an instance wants, so switching an instance's level rewrites one
+  index in its instance record.
 - `MeshResidencies` decides what loads and what goes. Each followed primitive
   has a slot, which its render entities keep, so recording the level an
   instance wants is an array write. Once a frame, each mesh without a load in
@@ -168,6 +172,8 @@ A change here must keep these true:
 - A block is released only after the frames that read it finish on the GPU.
 - A resident mesh's base block is never released.
 - A mesh has at most one load of finer levels in flight.
+- A level record lives and retires with the meshlets it names, so a record an
+  instance can name always names resident geometry.
 
 The residency decisions are tested in `rendering::pipelines::visibility::residency`, and the level table in
 `rendering::pipelines::visibility::lod`.
@@ -179,6 +185,14 @@ the materials that sample them draw before their full mip chains arrive. The
 [texture readiness rules](/docs/reference/rendering#the-visibility-pipeline)
 define the behavior; this section explains how it's built.
 
+The scene set holds three texture arrays, which `TextureArray` names:
+`textures` for material textures, `ies_profiles` for lights' IES profiles, and
+`lightmaps` for baked lightmaps. Each has its own slots, and the sampler its
+`scene.besl` declaration fixes: material textures repeat and filter
+anisotropically, and the other two clamp. Fixed samplers take no slots of the
+set, which keeps the scene set within Direct3D 12's 2,048 sampler heap
+entries. IES profiles and lightmaps load their full mip chain at once.
+
 - `load_texture` takes the first mip to load and creates an image whose base
   level is that mip. A sampler picks mips from the image's own extent, so the
   smaller image samples like the full one with its finer mips missing, and
@@ -187,12 +201,13 @@ define the behavior; this section explains how it's built.
   mip no larger than 128 texels. Once that upload finishes, the lane requests
   the full chain as a separate `TextureDetail` request, so it queues behind the
   coarse mips of every texture already waiting.
-- Both loads use the same bindless slot. `VisibilityLoaderClient` keeps the
-  image in each slot and the mip it starts at. An image with more mips replaces
-  the slot's image. Once the frame's writes put the new image in the slot, the
-  old one goes to `Frame::delete_image`, which frees it when the frames in
-  flight finish. An image with fewer mips than the slot holds, such as coarse
-  mips that arrive after their full chain, is dropped before it's interned.
+- Both loads use the same slot of `textures`. `VisibilityLoaderClient` keeps
+  the image in each slot of each array and the mip it starts at. An image with
+  more mips replaces the slot's image. Once the frame's writes put the new
+  image in the slot, the old one goes to `Frame::delete_image`, which frees it
+  when the frames in flight finish. An image with fewer mips than the slot
+  holds, such as coarse mips that arrive after their full chain, is dropped
+  before it's interned.
 - A texture is available to materials from its first image, so the full chain
   doesn't change any material's readiness or rebuild the material lists.
 
@@ -367,8 +382,6 @@ that ends a batch when staging runs out.
 - Each batch costs one copy-queue round trip, about 0.75 ms on Metal. A lane that
   loads a flipbook's frames one after another pays it for every frame. Load the
   frames concurrently to let them share a batch.
-- DX12 still compiles pipelines when the render thread interns them. `todo.md`
-  tracks moving that work to the compiler threads.
 
 ## Related API
 

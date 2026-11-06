@@ -2,11 +2,12 @@
 //! geometry streams.
 
 use besl::vm::{
-	DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, TaskOutputs, Texture, Value,
-	WorkgroupState, input_slot, output_slot,
+	Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, TaskOutputs, Texture,
+	Value, WorkgroupState, input_slot, output_slot,
 };
 
 use super::geometry::{GeometryCapacity, GeometryCounts, GeometryRanges, RetiredRanges};
+use super::layout::ShaderMeshletData;
 use super::mesh_dispatch::MeshDispatchWorkItem;
 use super::render_pass::{OCCLUSION_PYRAMID_HEIGHT, OCCLUSION_PYRAMID_MIP_COUNT, OCCLUSION_PYRAMID_WIDTH, OcclusionPhase};
 use super::shader_data::{MESH_FLAG_DOUBLE_SIDED, MESH_FLAG_SKINNED};
@@ -37,7 +38,10 @@ const VERTEX_UVS: &str = "vertex_uvs";
 const VERTEX_INDICES: &str = "vertex_indices";
 const PRIMITIVE_INDICES: &str = "primitive_indices";
 const MESHLETS: &str = "meshlets";
+const MESH_LEVELS: &str = "mesh_levels";
 const FIXTURE_INSTANCE_INDEX: usize = 3;
+/// The fixture instance's level record.
+const FIXTURE_LEVEL_INDEX: usize = 2;
 /// The length of the fixtures' runtime-sized instance and work tables.
 const FIXTURE_TABLE_LENGTH: usize = 64;
 const FIXTURE_MESHLET_INDEX: usize = 5;
@@ -210,12 +214,13 @@ fn horizontally_translated_matrix(translation: f32) -> [f32; 16] {
 /// The `TaskMeshFixture` struct selects the instance and normal-cone inputs a task-culling test exercises.
 #[derive(Clone, Copy)]
 struct TaskMeshFixture {
-	/// The instance's `ShaderMesh::flags` word.
+	/// The instance's `ShaderMesh` flags, such as [`MESH_FLAG_SKINNED`].
 	flags: u32,
 	/// Gives every meshlet a narrow normal cone facing straight away from the camera at the origin. Otherwise the
 	/// cone test is disabled, so the fixture isolates frustum and skinning behavior.
 	back_facing: bool,
-	/// The instance's bounding sphere, which task shaders test before any meshlet. The fixture's model is the identity.
+	/// The sphere of the instance's level, which task shaders test before any meshlet and decode the meshlets' spheres
+	/// within. The fixture's model is the identity.
 	bounding_sphere: [f32; 4],
 }
 
@@ -270,43 +275,24 @@ fn run_meshlet_task_workgroup(
 		}
 	}
 	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
-	meshes
-		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX))
-		.expect("task mesh transform");
-	meshes
-		.write_array_member(FIXTURE_INSTANCE_INDEX, "bounding_sphere", Value::Vec4F(mesh.bounding_sphere))
-		.expect("task mesh bounds");
-	for (field, value) in [
-		("base_meshlet_index", FIXTURE_MESHLET_INDEX as u32),
-		("meshlet_count", meshlet_count),
-		("flags", mesh.flags),
-	] {
-		meshes
-			.write_array_member(FIXTURE_INSTANCE_INDEX, field, Value::U32(value))
-			.expect("task mesh field");
-	}
+	write_fixture_mesh(&mut meshes, mesh.flags, [0; 2]);
+	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
+	write_fixture_level(&mut mesh_levels, mesh.bounding_sphere, meshlet_count, 0);
 	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), FIXTURE_MESHLET_INDEX + center_radii.len());
 	for (meshlet_offset, center_radius) in center_radii.iter().copied().enumerate() {
-		let meshlet_index = FIXTURE_MESHLET_INDEX + meshlet_offset;
-		meshlets
-			.write_array_member(meshlet_index, "center_radius", Value::Vec4F(center_radius))
-			.expect("task meshlet bound");
-		// A cutoff above one disables cone rejection. The back-facing cone sits at the meshlet center and points
-		// along +Z, the octahedral center, which is the direction from the camera at the origin to the meshlet.
-		let (cone_apex_cutoff, cone_axis) = if mesh.back_facing {
-			(
-				[center_radius[0], center_radius[1], center_radius[2], 0.5],
-				[u16::MAX / 2 + 1; 2],
-			)
-		} else {
-			([0.0, 0.0, 0.0, 2.0], [0; 2])
-		};
-		meshlets
-			.write_array_member(meshlet_index, "cone_apex_cutoff", Value::Vec4F(cone_apex_cutoff))
-			.expect("task cone cutoff");
-		meshlets
-			.write_array_member(meshlet_index, "cone_axis", Value::Vec2U16(cone_axis))
-			.expect("task cone axis");
+		// A cutoff past one disables cone rejection. The back-facing cone points along +Z, the direction from the
+		// camera at the origin to the meshlet.
+		let cone_cutoff = if mesh.back_facing { 0.5 } else { 2.0 };
+		let meshlet = ShaderMeshletData::new(
+			0,
+			0,
+			[0; 2],
+			center_radius,
+			mesh.bounding_sphere,
+			[0.0, 0.0, 1.0],
+			cone_cutoff,
+		);
+		write_meshlet(&mut meshlets, FIXTURE_MESHLET_INDEX + meshlet_offset, meshlet);
 	}
 	let mut push_constant = push_constant_buffer(&program);
 	for (member, value) in [
@@ -343,6 +329,7 @@ fn run_meshlet_task_workgroup(
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
 	descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
+	descriptors.bind_buffer(slot(&program, MESH_LEVELS), &mut mesh_levels);
 	descriptors.bind_buffer(slot(&program, MESHLETS), &mut meshlets);
 	descriptors.bind_buffer(slot(&program, MESH_DISPATCH_WORK), &mut mesh_dispatch_work);
 	let record = occlusion.map(|occlusion| {
@@ -357,6 +344,49 @@ fn run_meshlet_task_workgroup(
 		*record = read_u32(&occlusion_visibility, workgroup_index as usize);
 	}
 	task_outputs
+}
+
+/// Writes the fixture instance's record: the identity model, drawing the fixture level with `flags`, material zero, and
+/// the `surface` words.
+fn write_fixture_mesh(meshes: &mut Buffer, flags: u32, surface: [u32; 2]) {
+	for (member, value) in [
+		("model", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX)),
+		("level", Value::U32(FIXTURE_LEVEL_INDEX as u32 | flags)),
+		("material", Value::U32(0)),
+		("surface", Value::Vec2U(surface)),
+	] {
+		meshes
+			.write_array_member(FIXTURE_INSTANCE_INDEX, member, value)
+			.expect("fixture mesh field");
+	}
+}
+
+/// Writes the fixture level's record: `meshlet_count` meshlets from the fixture meshlet, inside `bounding_sphere`, over
+/// vertices from `vertex_base`.
+fn write_fixture_level(mesh_levels: &mut Buffer, bounding_sphere: [f32; 4], meshlet_count: u32, vertex_base: u32) {
+	for (member, value) in [
+		("bounding_sphere", Value::Vec4F(bounding_sphere)),
+		("first_meshlet", Value::U32(FIXTURE_MESHLET_INDEX as u32)),
+		("meshlet_count", Value::U32(meshlet_count)),
+		("vertex_base", Value::U32(vertex_base)),
+	] {
+		mesh_levels
+			.write_array_member(FIXTURE_LEVEL_INDEX, member, value)
+			.expect("fixture level field");
+	}
+}
+
+/// Writes `meshlet` at `index` of a meshlet buffer.
+fn write_meshlet(meshlets: &mut Buffer, index: usize, meshlet: ShaderMeshletData) {
+	for (member, value) in [
+		("primitive_offset", Value::U32(meshlet.primitive_offset)),
+		("triangle_offset", Value::U32(meshlet.triangle_offset)),
+		("counts", Value::U32(meshlet.counts)),
+		("cone", Value::U32(meshlet.cone)),
+		("bounds", Value::Vec2U(meshlet.bounds)),
+	] {
+		meshlets.write_array_member(index, member, value).expect("fixture meshlet field");
+	}
 }
 
 /// Runs one task workgroup against the camera, view zero, and returns every payload word it emitted.
@@ -385,7 +415,7 @@ fn task_payload(outputs: &TaskOutputs) -> Vec<Value> {
 
 /// The payload a task emits for a fixture meshlet seen by the view `view_offset` steps into its batch.
 ///
-/// `relative_meshlet_index` counts from the instance's first meshlet, `base_meshlet_index`.
+/// `relative_meshlet_index` counts from the first meshlet of the instance's level.
 fn batched_meshlet_instance(relative_meshlet_index: u32, view_offset: u32) -> Value {
 	Value::U32(relative_meshlet_index | (view_offset << VIEW_OFFSET_SHIFT))
 }
@@ -876,20 +906,9 @@ fn assert_triangle_mesh_program(
 ) {
 	let mut views = buffer(&program, slot(&program, VIEWS));
 	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
-	meshes
-		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX))
-		.expect("mesh model matrix");
-	for (field, value) in [
-		("base_vertex_index", base_vertex),
-		("base_primitive_index", 0),
-		("base_triangle_index", 0),
-		("base_meshlet_index", FIXTURE_MESHLET_INDEX as u32),
-		("meshlet_count", 1),
-	] {
-		meshes
-			.write_array_member(FIXTURE_INSTANCE_INDEX, field, Value::U32(value))
-			.expect("mesh offset");
-	}
+	write_fixture_mesh(&mut meshes, 0, [0; 2]);
+	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
+	write_fixture_level(&mut mesh_levels, [0.0, 0.0, 0.0, 2.0], 1, base_vertex);
 	let vertex_count = base_vertex as usize + 3;
 	let mut positions = array_buffer(&program, slot(&program, VERTEX_POSITIONS), vertex_count);
 	for (index, position) in [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]].into_iter().enumerate() {
@@ -912,16 +931,8 @@ fn assert_triangle_mesh_program(
 			.expect("triangle index");
 	}
 	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), FIXTURE_MESHLET_INDEX + 1);
-	for (field, value) in [
-		("primitive_offset", 0),
-		("triangle_offset", 0),
-		("primitive_count", 3),
-		("triangle_count", 1),
-	] {
-		meshlets
-			.write_array_member(FIXTURE_MESHLET_INDEX, field, Value::U32(value))
-			.expect("meshlet field");
-	}
+	let meshlet = ShaderMeshletData::new(0, 0, [3, 1], [0.0; 4], [0.0, 0.0, 0.0, 2.0], [0.0, 0.0, 1.0], 2.0);
+	write_meshlet(&mut meshlets, FIXTURE_MESHLET_INDEX, meshlet);
 	let mut push_constant = push_constant_buffer(&program);
 	push_constant.write("work_item_base", Value::U32(0)).expect("mesh work base");
 	views
@@ -949,6 +960,7 @@ fn assert_triangle_mesh_program(
 		descriptors.bind_task_payload("meshlet_instances", mesh_task_payload(payload));
 		descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
 		descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
+		descriptors.bind_buffer(slot(&program, MESH_LEVELS), &mut mesh_levels);
 		descriptors.bind_buffer(slot(&program, VERTEX_POSITIONS), &mut positions);
 		descriptors.bind_buffer(slot(&program, VERTEX_UVS), &mut vertex_uvs);
 		descriptors.bind_buffer(slot(&program, VERTEX_INDICES), &mut vertex_indices);
@@ -1116,7 +1128,7 @@ fn mesh_materials_in_evaluations(
 	let mut evaluations = buffer(program, slot(program, MATERIAL_EVALUATIONS));
 	for (mesh_index, material_index) in materials.into_iter().enumerate() {
 		meshes
-			.write_array_member(mesh_index, "material_index", Value::U32(material_index))
+			.write_array_member(mesh_index, "material", Value::U32(material_index))
 			.expect("VM mesh");
 		evaluations
 			.write_array_element(material_index as usize, Value::U32(evaluation(material_index)))
@@ -2707,6 +2719,7 @@ fn sun_visibility_without_contact_shadows_reaches_no_trace() {
 struct SunVisibilityGeometry {
 	meshes: besl::vm::Buffer,
 	meshlets: besl::vm::Buffer,
+	mesh_levels: besl::vm::Buffer,
 	positions: besl::vm::Buffer,
 	vertex_indices: besl::vm::Buffer,
 	primitive_indices: besl::vm::Buffer,
@@ -2746,11 +2759,10 @@ impl SunVisibilityGeometry {
 				.expect("triangle index");
 		}
 		let mut meshlets = array_buffer(program, slot(program, MESHLETS), 1);
-		for (field, value) in [("primitive_count", 6), ("triangle_count", 2)] {
-			meshlets
-				.write_array_member(0, field, Value::U32(value))
-				.expect("meshlet field");
-		}
+		let meshlet = ShaderMeshletData::new(0, 0, [6, 2], [0.0; 4], [0.0; 4], [0.0, 0.0, 1.0], 2.0);
+		write_meshlet(&mut meshlets, 0, meshlet);
+		// The instance draws level zero, whose vertices start at the first.
+		let mesh_levels = array_buffer(program, slot(program, MESH_LEVELS), 1);
 		let mut triangle_indices = Texture::new(extent, extent).expect("triangle index fixture");
 		let instance_indices = instance_texture(extent, |_| 0);
 		for y in 0..extent {
@@ -2764,6 +2776,7 @@ impl SunVisibilityGeometry {
 		Self {
 			meshes,
 			meshlets,
+			mesh_levels,
 			positions,
 			vertex_indices,
 			primitive_indices,
@@ -2776,6 +2789,7 @@ impl SunVisibilityGeometry {
 	fn bind<'a>(&'a mut self, program: &ExecutableProgram, descriptors: &mut DescriptorBindings<'a>) {
 		descriptors.bind_buffer(slot(program, MESH_DATA), &mut self.meshes);
 		descriptors.bind_buffer(slot(program, MESHLETS), &mut self.meshlets);
+		descriptors.bind_buffer(slot(program, MESH_LEVELS), &mut self.mesh_levels);
 		descriptors.bind_buffer(slot(program, VERTEX_POSITIONS), &mut self.positions);
 		descriptors.bind_buffer(slot(program, VERTEX_INDICES), &mut self.vertex_indices);
 		descriptors.bind_buffer(slot(program, PRIMITIVE_INDICES), &mut self.primitive_indices);
@@ -3919,6 +3933,7 @@ fn two_mesh_geometry_capacity() -> GeometryCapacity {
 		vertex_indices: 400,
 		triangles: 600,
 		meshlets: 8,
+		levels: 4,
 		skinning_vertices: 100,
 	}
 }
@@ -3930,6 +3945,7 @@ fn geometry_fixture_mesh() -> GeometryCounts {
 		primitive_indices: 200,
 		triangles: 300,
 		meshlets: 4,
+		levels: 2,
 		skinning_vertices: 50,
 		flat_triangles: 300,
 	}

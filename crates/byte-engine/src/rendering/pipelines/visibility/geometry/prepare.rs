@@ -1,8 +1,9 @@
 //! Worker-side conversion of mesh sources into the exact bytes the visibility geometry buffers store.
 //!
 //! Preparation loads or generates a mesh into one leased region of the upload arena and converts attributes into
-//! the runtime formats (octahedral normals, half-float UVs, [`ShaderMeshletData`] records). It never assigns
-//! renderer slots or buffer offsets; that happens in [`GeometryBuffers::append_mesh`].
+//! the runtime formats (octahedral normals, half-float UVs, [`ShaderMeshletData`] and [`ShaderMeshLevel`] records). It
+//! never assigns renderer slots or buffer offsets; that happens in [`GeometryBuffers::append_mesh`], which moves the
+//! records to their place with [`PreparedMesh::place_records`].
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -20,8 +21,8 @@ use super::{
 };
 use crate::rendering::mesh::generator::{MeshGenerator, validate_triangle_indices};
 use crate::rendering::pipelines::visibility::layout::{
-	RuntimeUnitVector, ShaderMeshletData, TRIANGLE_COUNT, VERTEX_COUNT, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE,
-	VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
+	RuntimeUnitVector, ShaderMeshLevel, ShaderMeshletData, TRIANGLE_COUNT, VERTEX_COUNT, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE,
+	VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE, level_sphere,
 };
 use crate::rendering::pipelines::visibility::lod::{MeshLod, MeshLods};
 use crate::rendering::resource_loading::{StagingLease, UploadStagingArena};
@@ -55,6 +56,8 @@ pub(super) struct PreparedStreams {
 	pub(super) vertex_indices: Range<usize>,
 	pub(super) primitive_indices: Range<usize>,
 	pub(super) meshlets: Range<usize>,
+	/// One [`ShaderMeshLevel`] per held level of every primitive.
+	pub(super) levels: Range<usize>,
 	/// Present when the pipeline keeps flat triangle lists for ray tracing.
 	pub(super) flat_triangles: Option<Range<usize>>,
 }
@@ -107,7 +110,7 @@ impl PreparedMesh {
 		}
 		// Validation proved every index fits in 16 bits.
 		let indices = indices.iter().map(|&index| index as u16).collect::<Vec<_>>();
-		let (vertex_indices, primitive_indices, meshlets) = build_generated_meshlets(&indices, &positions);
+		let (vertex_indices, primitive_indices, meshlets, level) = build_generated_meshlets(&indices, &positions);
 
 		let mut cursor = 0;
 		let streams = PreparedStreams {
@@ -118,6 +121,7 @@ impl PreparedMesh {
 			vertex_indices: take_range(&mut cursor, vertex_indices.len() * VERTEX_INDEX_STRIDE),
 			primitive_indices: take_range(&mut cursor, primitive_indices.len() * 3),
 			meshlets: take_range(&mut cursor, meshlets.len() * std::mem::size_of::<ShaderMeshletData>()),
+			levels: take_range(&mut cursor, std::mem::size_of::<ShaderMeshLevel>()),
 			// A generated mesh is one primitive whose triangle list is already flat.
 			flat_triangles: flat_triangles.then(|| take_range(&mut cursor, indices.len() * VERTEX_INDEX_STRIDE)),
 		};
@@ -157,6 +161,7 @@ impl PreparedMesh {
 		backing[streams.vertex_indices.clone()].copy_from_slice(bytemuck::cast_slice(&vertex_indices));
 		backing[streams.primitive_indices.clone()].copy_from_slice(bytemuck::cast_slice(&primitive_indices));
 		backing[streams.meshlets.clone()].copy_from_slice(bytemuck::cast_slice(&meshlets));
+		backing[streams.levels.clone()].copy_from_slice(bytemuck::bytes_of(&level));
 		if let Some(range) = &streams.flat_triangles {
 			backing[range.clone()].copy_from_slice(bytemuck::cast_slice(&indices));
 		}
@@ -168,7 +173,7 @@ impl PreparedMesh {
 			primitives: vec![PreparedPrimitive {
 				primitive: MeshPrimitive {
 					lods: MeshLods::single(meshlets.len() as u32),
-					bounding_sphere: enclosing_sphere(&meshlets),
+					bounding_sphere: level.bounding_sphere,
 					vertex_count: positions.len() as u32,
 					flat_triangle_count,
 					..MeshPrimitive::default()
@@ -178,6 +183,7 @@ impl PreparedMesh {
 					primitive_indices: 0..vertex_indices.len() as u32,
 					triangles: 0..primitive_indices.len() as u32,
 					meshlets: 0..meshlets.len() as u32,
+					levels: 0..1,
 					..MeshRanges::default()
 				},
 				skinning: None,
@@ -187,6 +193,7 @@ impl PreparedMesh {
 				primitive_indices: vertex_indices.len() as u32,
 				triangles: primitive_indices.len() as u32,
 				meshlets: meshlets.len() as u32,
+				levels: 1,
 				skinning_vertices: 0,
 				flat_triangles: flat_triangle_count,
 			},
@@ -292,6 +299,44 @@ impl PreparedMesh {
 			)),
 			triangles: bytemuck::cast_slice(&bytes[flat.start + triangles.start * 6..][..triangles.len() * 6]),
 		})
+	}
+}
+
+impl PreparedMesh {
+	/// Rewrites the meshlet and level records of the prepared `elements` for the buffer elements `placed`, where the
+	/// geometry buffers put those elements, so the records name buffer elements instead of prepared ones.
+	///
+	/// [`super::GeometryBuffers`] calls it once per placement, before it copies the records, for the whole mesh or for
+	/// one primitive's block. Each record moves exactly once, so never pass a record's elements twice.
+	pub(crate) fn place_records(&mut self, elements: &MeshRanges, placed: &MeshRanges) {
+		let shift = |from: &Range<u32>, to: &Range<u32>| to.start.wrapping_sub(from.start);
+		let (vertex_indices, triangles) = (
+			shift(&elements.primitive_indices, &placed.primitive_indices),
+			shift(&elements.triangles, &placed.triangles),
+		);
+		let (meshlets, vertices) = (shift(&elements.meshlets, &placed.meshlets), shift(&elements.vertices, &placed.vertices));
+		let bytes = self.staging.bytes_mut();
+
+		const MESHLET_STRIDE: usize = std::mem::size_of::<ShaderMeshletData>();
+		let records = &mut bytes[self.streams.meshlets.clone()][elements.meshlets.start as usize * MESHLET_STRIDE..]
+			[..elements.meshlets.len() * MESHLET_STRIDE];
+		for record in records.as_chunks_mut::<MESHLET_STRIDE>().0 {
+			// The lease keeps no alignment for the records, so each one is read and written as bytes.
+			let mut meshlet: ShaderMeshletData = bytemuck::pod_read_unaligned(record);
+			meshlet.primitive_offset = meshlet.primitive_offset.wrapping_add(vertex_indices);
+			meshlet.triangle_offset = meshlet.triangle_offset.wrapping_add(triangles);
+			record.copy_from_slice(bytemuck::bytes_of(&meshlet));
+		}
+
+		const LEVEL_STRIDE: usize = std::mem::size_of::<ShaderMeshLevel>();
+		let records = &mut bytes[self.streams.levels.clone()][elements.levels.start as usize * LEVEL_STRIDE..]
+			[..elements.levels.len() * LEVEL_STRIDE];
+		for record in records.as_chunks_mut::<LEVEL_STRIDE>().0 {
+			let mut level: ShaderMeshLevel = bytemuck::pod_read_unaligned(record);
+			level.first_meshlet = level.first_meshlet.wrapping_add(meshlets);
+			level.vertex_base = level.vertex_base.wrapping_add(vertices);
+			record.copy_from_slice(bytemuck::bytes_of(&level));
+		}
 	}
 }
 
@@ -440,6 +485,7 @@ impl ResourcePlan {
 				vertex_levels[level] = true;
 			}
 			counts.vertices += primitive.lods[held.start].vertex_count;
+			counts.levels += held.len() as u32;
 			for level in held.clone() {
 				meshlet_levels[level] = true;
 				let count = |stream_type, name, stride| {
@@ -535,6 +581,10 @@ impl ResourcePlan {
 				&mut cursor,
 				counts.meshlets as usize * std::mem::size_of::<ShaderMeshletData>(),
 			),
+			levels: take_range(
+				&mut cursor,
+				counts.levels as usize * std::mem::size_of::<ShaderMeshLevel>(),
+			),
 			flat_triangles: (flat_triangles && !matches!(levels, PreparedLevels::Finer(_)))
 				.then(|| take_range(&mut cursor, flat_triangle_bound * 6)),
 		};
@@ -578,8 +628,8 @@ impl ResourcePlan {
 	/// after the source region, and returns the prepared primitives with the number of flat triangles written.
 	///
 	/// Each primitive's vertices follow one another, coarsest level first, the order its meshlets index them in.
-	/// Meshlet records count their offsets from their primitive's first prepared vertex index and triangle, and each
-	/// held level's bases name those, so a primitive can be placed on its own.
+	/// Meshlet and level records count from the start of the prepared streams, and each held level names its record,
+	/// so [`PreparedMesh::place_records`] can move any primitive on its own.
 	fn convert(
 		&self,
 		mesh: &Mesh,
@@ -594,6 +644,7 @@ impl ResourcePlan {
 		let mut vertex_index = 0usize;
 		let mut triangle = 0usize;
 		let mut meshlet = 0usize;
+		let mut level_record = 0usize;
 		let mut flat = 0usize;
 		let mut skinning_vertex = 0;
 		let mut primitives = Vec::with_capacity(mesh.primitives.len());
@@ -601,7 +652,8 @@ impl ResourcePlan {
 			let held = levels.of(index, primitive.lods.len());
 			let vertex_base = vertex as u32;
 			let flat_start = flat as u32;
-			let (primitive_vertex_index, primitive_triangle, primitive_meshlet) = (vertex_index, triangle, meshlet);
+			let (primitive_vertex_index, primitive_triangle, primitive_meshlet, primitive_level) =
+				(vertex_index, triangle, meshlet, level_record);
 			let mut lods = [MeshLod::default(); MAX_PRIMITIVE_LODS];
 			for (level, lod) in primitive.lods.iter().enumerate() {
 				lods[level] = MeshLod {
@@ -691,14 +743,16 @@ impl ResourcePlan {
 				let vertex_index_start = vertex_index;
 				let triangle_start = triangle;
 				const RUNTIME_MESHLET_STRIDE: usize = std::mem::size_of::<ShaderMeshletData>();
-				for bytes in source[records.clone()].as_chunks::<RESOURCE_MESHLET_STRIDE>().0 {
-					let record = read_resource_meshlet(
-						bytes,
-						(vertex_index - primitive_vertex_index) as u32,
-						(triangle - primitive_triangle) as u32,
-					);
-					vertex_index += record.primitive_count as usize;
-					triangle += record.triangle_count as usize;
+				const LEVEL_STRIDE: usize = std::mem::size_of::<ShaderMeshLevel>();
+				let resource_records = source[records.clone()].as_chunks::<RESOURCE_MESHLET_STRIDE>().0;
+				// The level's sphere comes first, since each meshlet stores its sphere within it.
+				let bounding_sphere = level_sphere(sphere_around(
+					resource_records.iter().map(|bytes| read_vec4(bytes, RESOURCE_SPHERE_OFFSET)),
+				));
+				for bytes in resource_records {
+					let record = read_resource_meshlet(bytes, vertex_index as u32, triangle as u32, bounding_sphere);
+					vertex_index += record.vertex_count() as usize;
+					triangle += record.triangle_count() as usize;
 					output[rebase(&streams.meshlets)][meshlet * RUNTIME_MESHLET_STRIDE..][..RUNTIME_MESHLET_STRIDE]
 						.copy_from_slice(bytemuck::bytes_of(&record));
 					meshlet += 1;
@@ -716,14 +770,22 @@ impl ResourcePlan {
 					.copy_from_slice(&source[vertex_indices.clone()]);
 				output[rebase(&streams.primitive_indices)][triangle_start * 3..][..triangles.len()]
 					.copy_from_slice(&source[triangles.clone()]);
-				lods[level] = MeshLod {
+				let record = ShaderMeshLevel {
+					bounding_sphere,
 					first_meshlet: first_meshlet as u32,
+					meshlet_count: (meshlet - first_meshlet) as u32,
 					vertex_base,
-					primitive_index_base: primitive_vertex_index as u32,
-					triangle_base: primitive_triangle as u32,
+					_padding: 0,
+				};
+				output[rebase(&streams.levels)][level_record * LEVEL_STRIDE..][..LEVEL_STRIDE]
+					.copy_from_slice(bytemuck::bytes_of(&record));
+				lods[level] = MeshLod {
+					level: level_record as u32,
+					vertex_base,
 					resident: true,
 					..lods[level]
 				};
+				level_record += 1;
 				// Rays hit each unskinned primitive's coarsest level, and the lightmap bake's rays its full detail.
 				if let Some(range) = &streams.flat_triangles
 					&& levels.traced(level, primitive.lods.len())
@@ -757,11 +819,7 @@ impl ResourcePlan {
 					material_index: 0,
 					lods: MeshLods::new(&lods[..primitive.lods.len()]),
 					bounding_sphere: primitive.bounding_sphere,
-					// Each level names its own bases, counted from the start of the prepared streams.
-					meshlet_offset: 0,
 					vertex_offset: vertex_base,
-					primitive_offset: 0,
-					triangle_offset: 0,
 					vertex_count: vertex as u32 - vertex_base,
 					flat_triangle_offset: flat_start,
 					flat_triangle_count: flat as u32 - flat_start,
@@ -774,6 +832,7 @@ impl ResourcePlan {
 					primitive_indices: primitive_vertex_index as u32..vertex_index as u32,
 					triangles: primitive_triangle as u32..triangle as u32,
 					meshlets: primitive_meshlet as u32..meshlet as u32,
+					levels: primitive_level as u32..level_record as u32,
 					..MeshRanges::default()
 				},
 				skinning,
@@ -826,20 +885,29 @@ fn flatten_meshlet_triangles(
 	written
 }
 
-/// Decodes one packed meshlet record into the runtime record at the given mesh-relative offsets, without assuming the
-/// resource stream is aligned.
-fn read_resource_meshlet(bytes: &[u8], primitive_offset: u32, triangle_offset: u32) -> ShaderMeshletData {
-	let read_vec4 = |offset: usize| -> [f32; 4] { std::array::from_fn(|component| read_f32(bytes, offset + 4 * component)) };
-	let [axis_x, axis_y, axis_z, _] = read_vec4(36);
-	ShaderMeshletData {
+/// Byte offsets of the bounding sphere, the cone apex and cutoff, and the cone axis in a baked meshlet record.
+const RESOURCE_SPHERE_OFFSET: usize = 4;
+const RESOURCE_CONE_CUTOFF_OFFSET: usize = 20;
+const RESOURCE_CONE_AXIS_OFFSET: usize = 36;
+
+/// Decodes one baked meshlet record into the runtime record whose indices start at `primitive_offset` and
+/// `triangle_offset`, with its sphere stored within `level_sphere`, without assuming the resource stream is aligned.
+fn read_resource_meshlet(bytes: &[u8], primitive_offset: u32, triangle_offset: u32, level_sphere: [f32; 4]) -> ShaderMeshletData {
+	let [axis_x, axis_y, axis_z, _] = read_vec4(bytes, RESOURCE_CONE_AXIS_OFFSET);
+	let [.., cutoff] = read_vec4(bytes, RESOURCE_CONE_CUTOFF_OFFSET);
+	ShaderMeshletData::new(
 		primitive_offset,
 		triangle_offset,
-		primitive_count: bytes[0] as u32,
-		triangle_count: bytes[1] as u32,
-		center_radius: read_vec4(4),
-		cone_apex_cutoff: read_vec4(20),
-		cone_axis: encode_octahedral_unit_vector((axis_x, axis_y, axis_z)),
-	}
+		[bytes[0], bytes[1]],
+		read_vec4(bytes, RESOURCE_SPHERE_OFFSET),
+		level_sphere,
+		[axis_x, axis_y, axis_z],
+		cutoff,
+	)
+}
+
+fn read_vec4(bytes: &[u8], offset: usize) -> [f32; 4] {
+	std::array::from_fn(|component| read_f32(bytes, offset + 4 * component))
 }
 
 fn read_f32(bytes: &[u8], offset: usize) -> f32 {
@@ -848,37 +916,35 @@ fn read_f32(bytes: &[u8], offset: usize) -> f32 {
 
 /* Generated meshes */
 
-/// Greedily packs a generated triangle list into meshlets that respect the shader's vertex and triangle limits.
+/// Greedily packs a generated triangle list into meshlets that respect the shader's vertex and triangle limits, and
+/// returns them with the record of the one level they make.
 fn build_generated_meshlets(
 	indices: &[u16],
 	positions: &[(f32, f32, f32)],
-) -> (Vec<u16>, Vec<[u8; 3]>, Vec<ShaderMeshletData>) {
+) -> (Vec<u16>, Vec<[u8; 3]>, Vec<ShaderMeshletData>, ShaderMeshLevel) {
 	debug_assert!(
 		indices.len().is_multiple_of(3),
 		"Generated mesh indices are not a triangle list. The most likely cause is that validate_triangle_indices was skipped."
 	);
 	let mut vertex_indices = Vec::new();
 	let mut primitive_indices = Vec::new();
-	let mut meshlets = Vec::new();
+	// Each meshlet's offsets, counts, and object-space sphere, encoded once the level's sphere is known.
+	let mut meshlets = Vec::<([u32; 2], [u8; 2], [f32; 4])>::new();
 	let mut meshlet_vertices = Vec::<u16>::new();
 	let mut meshlet_triangles = Vec::<[u8; 3]>::new();
 	let mut flush = |meshlet_vertices: &mut Vec<u16>, meshlet_triangles: &mut Vec<[u8; 3]>| {
 		if meshlet_triangles.is_empty() {
 			return;
 		}
-		meshlets.push(ShaderMeshletData {
-			primitive_offset: vertex_indices.len() as u32,
-			triangle_offset: primitive_indices.len() as u32,
-			primitive_count: meshlet_vertices.len() as u32,
-			triangle_count: meshlet_triangles.len() as u32,
+		meshlets.push((
+			[vertex_indices.len() as u32, primitive_indices.len() as u32],
+			[meshlet_vertices.len() as u8, meshlet_triangles.len() as u8],
 			// A conservative object-space bounding sphere around the meshlet's vertices.
-			center_radius: sphere_around(meshlet_vertices.iter().map(|&index| {
+			sphere_around(meshlet_vertices.iter().map(|&index| {
 				let (x, y, z) = positions[index as usize];
 				[x, y, z, 0.0]
 			})),
-			cone_apex_cutoff: [0.0, 0.0, 0.0, 2.0],
-			cone_axis: encode_octahedral_unit_vector((0.0, 0.0, 1.0)),
-		});
+		));
 		vertex_indices.append(meshlet_vertices);
 		primitive_indices.append(meshlet_triangles);
 	};
@@ -899,12 +965,21 @@ fn build_generated_meshlets(
 		meshlet_triangles.push(local_triangle);
 	}
 	flush(&mut meshlet_vertices, &mut meshlet_triangles);
-	(vertex_indices, primitive_indices, meshlets)
-}
 
-/// Returns a sphere that contains every meshlet's bounding sphere, as xyz center and w radius.
-pub(crate) fn enclosing_sphere(meshlets: &[ShaderMeshletData]) -> [f32; 4] {
-	sphere_around(meshlets.iter().map(|meshlet| meshlet.center_radius))
+	let bounding_sphere = level_sphere(sphere_around(meshlets.iter().map(|(_, _, sphere)| *sphere)));
+	let level = ShaderMeshLevel {
+		bounding_sphere,
+		meshlet_count: meshlets.len() as u32,
+		..ShaderMeshLevel::default()
+	};
+	// Generated meshes compute no normal cones, so a cutoff past one keeps every meshlet.
+	let meshlets = meshlets
+		.into_iter()
+		.map(|([primitive_offset, triangle_offset], counts, sphere)| {
+			ShaderMeshletData::new(primitive_offset, triangle_offset, counts, sphere, bounding_sphere, [0.0, 0.0, 1.0], 2.0)
+		})
+		.collect();
+	(vertex_indices, primitive_indices, meshlets, level)
 }
 
 /// Returns a sphere, as xyz center and w radius, that contains every sphere in `spheres`. Points are spheres of radius
@@ -1013,31 +1088,22 @@ mod tests {
 		assert_eq!(encode_octahedral_unit_vector((0.0, 0.0, 0.0)), [32768, 32768]);
 	}
 
-	/// Verifies a primitive's sphere contains every meshlet's sphere, so culling the instance never hides a meshlet.
+	/// Verifies a level's sphere contains every meshlet's sphere, so culling the instance never hides a meshlet.
 	#[test]
-	fn enclosing_sphere_contains_every_meshlet_sphere() {
-		let meshlet = |center_radius| ShaderMeshletData {
-			center_radius,
-			..bytemuck::Zeroable::zeroed()
-		};
-		let meshlets = [
-			meshlet([0.0, 0.0, 0.0, 1.0]),
-			meshlet([10.0, 0.0, 0.0, 0.5]),
-			meshlet([3.0, -4.0, 2.0, 2.0]),
-		];
+	fn sphere_around_contains_every_sphere() {
+		let spheres = [[0.0, 0.0, 0.0, 1.0], [10.0, 0.0, 0.0, 0.5], [3.0, -4.0, 2.0, 2.0]];
 
-		let [x, y, z, radius] = enclosing_sphere(&meshlets);
+		let [x, y, z, radius] = sphere_around(spheres.iter().copied());
 
-		for meshlet in &meshlets {
-			let [mx, my, mz, meshlet_radius] = meshlet.center_radius;
+		for [mx, my, mz, meshlet_radius] in spheres {
 			let distance = ((mx - x).powi(2) + (my - y).powi(2) + (mz - z).powi(2)).sqrt();
 			assert!(
 				distance + meshlet_radius <= radius + 1e-5,
-				"Meshlet sphere {:?} leaves the primitive sphere {:?}.",
-				meshlet.center_radius,
+				"Sphere {:?} leaves the enclosing sphere {:?}.",
+				[mx, my, mz, meshlet_radius],
 				[x, y, z, radius]
 			);
 		}
-		assert_eq!(enclosing_sphere(&[]), [0.0; 4]);
+		assert_eq!(sphere_around(std::iter::empty()), [0.0; 4]);
 	}
 }

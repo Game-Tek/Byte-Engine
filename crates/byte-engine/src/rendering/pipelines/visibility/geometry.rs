@@ -1,5 +1,5 @@
-//! GPU geometry storage for the visibility pipeline: parallel vertex streams, meshlet records, skinning sources, and,
-//! for ray tracing, flat triangle lists.
+//! GPU geometry storage for the visibility pipeline: parallel vertex streams, meshlet and detail level records, skinning
+//! sources, and, for ray tracing, flat triangle lists.
 //!
 //! [`PreparedMesh`] is built on a loader lane without touching GPU state. [`GeometryBuffers::append_mesh`] then
 //! takes a free range of every stream from [`GeometryRanges`], and returns the [`MeshData`] that owns those ranges,
@@ -23,8 +23,9 @@ pub(crate) use self::prepare::{
 	encode_octahedral_unit_vector,
 };
 use super::layout::{
-	MAX_ADDRESSABLE_MESHLETS, MAX_INSTANCE_MESHLETS, RuntimeVertexLightmapUv, RuntimeVertexNormal, RuntimeVertexUv,
-	ShaderMeshletData, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE, VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
+	MAX_ADDRESSABLE_LEVELS, MAX_ADDRESSABLE_MESHLETS, MAX_INSTANCE_MESHLETS, RuntimeVertexLightmapUv, RuntimeVertexNormal,
+	RuntimeVertexUv, ShaderMeshLevel, ShaderMeshletData, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE, VERTEX_NORMAL_BUFFER_STRIDE,
+	VERTEX_UV_BUFFER_STRIDE,
 };
 use super::lod::MeshLods;
 use crate::rendering::loading::{BufferRegion, Loader};
@@ -51,6 +52,8 @@ pub struct GeometryCapacity {
 	pub vertex_indices: u32,
 	pub triangles: u32,
 	pub meshlets: u32,
+	/// Resident detail levels across every mesh: one per level of a primitive whose geometry is in the buffers.
+	pub levels: u32,
 	/// Bind-pose vertices of meshes that use GPU skinning.
 	pub skinning_vertices: u32,
 }
@@ -63,6 +66,8 @@ impl Default for GeometryCapacity {
 			vertex_indices: 65536 * 8,
 			triangles: 65536 * 8,
 			meshlets: 1024 * 8,
+			// Half the meshlets, since most levels hold several.
+			levels: 1024 * 4,
 			skinning_vertices: 65536 * 4,
 		}
 	}
@@ -76,6 +81,7 @@ impl GeometryCapacity {
 			("vertex index", self.vertex_indices),
 			("triangle", self.triangles),
 			("meshlet", self.meshlets),
+			("level", self.levels),
 			("skinning vertex", self.skinning_vertices),
 		];
 		if let Some((stream, _)) = streams.iter().find(|(_, capacity)| *capacity == 0) {
@@ -87,6 +93,12 @@ impl GeometryCapacity {
 			return Err(format!(
 				"Geometry capacity was not set. The most likely cause is that {} meshlets exceed the {MAX_ADDRESSABLE_MESHLETS} the visibility buffer can address.",
 				self.meshlets
+			));
+		}
+		if self.levels as usize > MAX_ADDRESSABLE_LEVELS {
+			return Err(format!(
+				"Geometry capacity was not set. The most likely cause is that {} levels exceed the {MAX_ADDRESSABLE_LEVELS} an instance record can address.",
+				self.levels
 			));
 		}
 		Ok(())
@@ -101,6 +113,7 @@ pub(crate) struct GeometryCounts {
 	pub(crate) primitive_indices: u32,
 	pub(crate) triangles: u32,
 	pub(crate) meshlets: u32,
+	pub(crate) levels: u32,
 	pub(crate) skinning_vertices: u32,
 	/// Full-detail triangles of the primitives rays can hit; see [`GeometryHandles::flat_triangle_indices`].
 	pub(crate) flat_triangles: u32,
@@ -117,6 +130,8 @@ pub(crate) struct MeshRanges {
 	pub(crate) primitive_indices: Range<u32>,
 	pub(crate) triangles: Range<u32>,
 	pub(crate) meshlets: Range<u32>,
+	/// Detail level records.
+	pub(crate) levels: Range<u32>,
 	/// Bind-pose vertices in the compact skinning buffers.
 	pub(crate) skinning_vertices: Range<u32>,
 	/// Full-detail triangles in [`GeometryHandles::flat_triangle_indices`].
@@ -133,6 +148,7 @@ pub(crate) struct GeometryRanges {
 	primitive_indices: RangeAllocator,
 	triangles: RangeAllocator,
 	meshlets: RangeAllocator,
+	levels: RangeAllocator,
 	skinning_vertices: RangeAllocator,
 	flat_triangles: RangeAllocator,
 }
@@ -146,6 +162,7 @@ impl GeometryRanges {
 			primitive_indices: stream(capacity.vertex_indices),
 			triangles: stream(capacity.triangles),
 			meshlets: stream(capacity.meshlets),
+			levels: stream(capacity.levels),
 			skinning_vertices: stream(capacity.skinning_vertices),
 			// A primitive's full detail is one of its levels, so the triangle capacity bounds the flat lists too.
 			flat_triangles: stream(capacity.triangles),
@@ -163,6 +180,7 @@ impl GeometryRanges {
 			(&self.primitive_indices, counts.primitive_indices, "vertex index"),
 			(&self.triangles, counts.triangles, "triangle"),
 			(&self.meshlets, counts.meshlets, "meshlet"),
+			(&self.levels, counts.levels, "level"),
 			(&self.skinning_vertices, counts.skinning_vertices, "skinning vertex"),
 			(&self.flat_triangles, counts.flat_triangles, "flat triangle"),
 		];
@@ -184,6 +202,7 @@ impl GeometryRanges {
 			primitive_indices: take(&mut self.primitive_indices, counts.primitive_indices),
 			triangles: take(&mut self.triangles, counts.triangles),
 			meshlets: take(&mut self.meshlets, counts.meshlets),
+			levels: take(&mut self.levels, counts.levels),
 			skinning_vertices: take(&mut self.skinning_vertices, counts.skinning_vertices),
 			flat_triangles: take(&mut self.flat_triangles, counts.flat_triangles),
 		})
@@ -198,6 +217,7 @@ impl GeometryRanges {
 		give_back(&mut self.primitive_indices, ranges.primitive_indices);
 		give_back(&mut self.triangles, ranges.triangles);
 		give_back(&mut self.meshlets, ranges.meshlets);
+		give_back(&mut self.levels, ranges.levels);
 		give_back(&mut self.skinning_vertices, ranges.skinning_vertices);
 		give_back(&mut self.flat_triangles, ranges.flat_triangles);
 	}
@@ -305,13 +325,11 @@ pub(crate) struct MeshPrimitive {
 	/// The primitive's detail levels. The levels this mesh holds are resident; once the mesh is placed they name
 	/// buffer elements.
 	pub(crate) lods: MeshLods,
-	/// Object-space sphere around full detail, as xyz center and w radius. Task shaders cull whole instances with it.
+	/// Object-space sphere around full detail, as xyz center and w radius. Detail level selection measures the
+	/// instance's distance with it.
 	pub(crate) bounding_sphere: [f32; 4],
-	/// Offsets relative to the owning mesh.
-	pub(crate) meshlet_offset: u32,
+	/// The primitive's first vertex, relative to the owning mesh's.
 	pub(crate) vertex_offset: u32,
-	pub(crate) primitive_offset: u32,
-	pub(crate) triangle_offset: u32,
 	/// The primitive's vertices this mesh holds: a prefix of its baked vertices, enough for its resident levels.
 	pub(crate) vertex_count: u32,
 	/// The primitive's full-detail triangles in [`GeometryHandles::flat_triangle_indices`], relative to the mesh's
@@ -343,6 +361,8 @@ pub(crate) struct GeometryHandles {
 	/// Triangles as indices into `vertex_indices`.
 	pub(crate) primitive_indices: ghi::BufferHandle<[[u8; 3]]>,
 	pub(crate) meshlets: ghi::BufferHandle<[ShaderMeshletData]>,
+	/// One record per resident detail level, which instances name.
+	pub(crate) mesh_levels: ghi::BufferHandle<[ShaderMeshLevel]>,
 	/// Each primitive's full-detail triangles as three indices relative to its first vertex, the form acceleration
 	/// structures and hit shaders read. Present only when the pipeline traces rays.
 	pub(crate) flat_triangle_indices: Option<ghi::BufferHandle<[[u16; 3]]>>,
@@ -386,6 +406,7 @@ impl GeometryHandles {
 			vertex_indices,
 			triangles,
 			meshlets,
+			levels,
 			skinning_vertices: skinning,
 		} = capacity;
 		Self {
@@ -402,6 +423,7 @@ impl GeometryHandles {
 			vertex_indices: context.build_buffer(build("Visibility Index Buffer", indices, vertex_indices)),
 			primitive_indices: context.build_buffer(build("Visibility Primitive Indices Buffer", indices, triangles)),
 			meshlets: context.build_buffer(build("Visibility Meshlets Data", storage, meshlets)),
+			mesh_levels: context.build_buffer(build("Visibility Mesh Levels", storage, levels)),
 			flat_triangle_indices: ray_tracing
 				.then(|| context.build_buffer(build("Visibility Flat Triangle Indices", indices, triangles))),
 			skinning_rest_positions: context.build_buffer(build("Visibility Skinning Rest Positions", storage, skinning)),
@@ -433,6 +455,7 @@ impl GeometryBuffers {
 				vertex_indices: import(render, loader, handles.vertex_indices),
 				primitive_indices: import(render, loader, handles.primitive_indices),
 				meshlets: import(render, loader, handles.meshlets),
+				mesh_levels: import(render, loader, handles.mesh_levels),
 				flat_triangle_indices: handles.flat_triangle_indices.map(|buffer| import(render, loader, buffer)),
 				skinning_rest_positions: import(render, loader, handles.skinning_rest_positions),
 				skinning_rest_normals: import(render, loader, handles.skinning_rest_normals),
@@ -451,7 +474,7 @@ impl GeometryBuffers {
 	/// draw. Hand the copies to the loader with the mesh's staging lease, and publish the mesh only once they finished.
 	pub(crate) fn append_mesh(
 		&mut self,
-		prepared: &PreparedMesh,
+		prepared: &mut PreparedMesh,
 		material_indices: &[u32],
 	) -> Result<(MeshData, SmallVec<[BufferRegion; 16]>), Option<&'static str>> {
 		// Task shaders address an instance's meshlets relative to the first one of the level it draws, with a bounded
@@ -477,6 +500,16 @@ impl GeometryBuffers {
 			.unwrap_or_else(|error| error.into_inner())
 			.take(&prepared.counts)
 			.map_err(Some)?;
+		let counts = &prepared.counts;
+		let elements = MeshRanges {
+			vertices: 0..counts.vertices,
+			primitive_indices: 0..counts.primitive_indices,
+			triangles: 0..counts.triangles,
+			meshlets: 0..counts.meshlets,
+			levels: 0..counts.levels,
+			..MeshRanges::default()
+		};
+		prepared.place_records(&elements, &ranges);
 		let base_vertex = ranges.vertices.start;
 		let streams = &prepared.streams;
 		let copy =
@@ -522,6 +555,11 @@ impl GeometryBuffers {
 				self.handles.meshlets.into(),
 				ranges.meshlets.start as usize * std::mem::size_of::<ShaderMeshletData>(),
 			),
+			copy(
+				&streams.levels,
+				self.handles.mesh_levels.into(),
+				ranges.levels.start as usize * std::mem::size_of::<ShaderMeshLevel>(),
+			),
 		]);
 		if let (Some(source), Some(destination)) = (&streams.flat_triangles, self.handles.flat_triangle_indices) {
 			copies.push(copy(
@@ -538,12 +576,10 @@ impl GeometryBuffers {
 			.map(|(prepared, material_index)| {
 				let mut primitive = prepared.primitive.clone();
 				primitive.material_index = *material_index;
-				// The prepared levels count from the start of the prepared streams; the mesh starts at its ranges.
+				// The prepared levels count from the start of the prepared records; the mesh starts at its ranges.
 				for level in primitive.lods.levels_mut().iter_mut().filter(|level| level.resident) {
-					level.first_meshlet += ranges.meshlets.start + primitive.meshlet_offset;
+					level.level += ranges.levels.start;
 					level.vertex_base += ranges.vertices.start;
-					level.primitive_index_base += ranges.primitive_indices.start + primitive.primitive_offset;
-					level.triangle_base += ranges.triangles.start + primitive.triangle_offset;
 				}
 				if let (Some(skinning), Some(relative_offset)) =
 					(&prepared.skinning, primitive.skinning_source_vertex_offset.as_mut())
@@ -593,7 +629,7 @@ impl GeometryBuffers {
 	/// prepared mesh's staging lease, and publish the blocks only once they finished.
 	pub(crate) fn append_primitives(
 		&mut self,
-		prepared: &PreparedMesh,
+		prepared: &mut PreparedMesh,
 		primitives: &mut [PrimitiveLevels],
 	) -> Result<SmallVec<[BufferRegion; 16]>, u32> {
 		let unaddressable = prepared
@@ -604,14 +640,12 @@ impl GeometryBuffers {
 		if let Some(level) = unaddressable {
 			return Err(level.meshlet_count);
 		}
-		let streams = &prepared.streams;
 		let handles = &self.handles;
-		// Seven stream copies per primitive, reserved at once.
-		let mut copies = SmallVec::with_capacity(primitives.len() * 7);
+		// Eight stream copies per primitive, reserved at once.
+		let mut copies = SmallVec::with_capacity(primitives.len() * 8);
 		let mut ranges = handles.ranges.lock().unwrap_or_else(|error| error.into_inner());
 		for levels in primitives.iter_mut() {
-			let prepared = &prepared.primitives[levels.primitive as usize];
-			let elements = &prepared.elements;
+			let elements = prepared.primitives[levels.primitive as usize].elements.clone();
 			if elements.meshlets.is_empty() {
 				continue;
 			}
@@ -621,11 +655,14 @@ impl GeometryBuffers {
 				primitive_indices: length(&elements.primitive_indices),
 				triangles: length(&elements.triangles),
 				meshlets: length(&elements.meshlets),
+				levels: length(&elements.levels),
 				..GeometryCounts::default()
 			};
 			let Ok(block) = ranges.take(&counts) else {
 				continue;
 			};
+			prepared.place_records(&elements, &block);
+			let (streams, elements) = (&prepared.streams, &elements);
 			// Copies this primitive's `elements` of a prepared stream, of `stride` bytes each, to `destination`.
 			let copy = |source: &Range<usize>,
 			            elements: &Range<u32>,
@@ -689,15 +726,19 @@ impl GeometryBuffers {
 					handles.meshlets.into(),
 					block.meshlets.start,
 				),
+				copy(
+					&streams.levels,
+					&elements.levels,
+					std::mem::size_of::<ShaderMeshLevel>(),
+					handles.mesh_levels.into(),
+					block.levels.start,
+				),
 			]);
-			// The prepared levels count from the start of the prepared streams; the block starts at its ranges.
-			let mut lods = prepared.primitive.lods;
+			// The prepared levels count from the start of the prepared records; the block starts at its ranges.
+			let mut lods = prepared.primitives[levels.primitive as usize].primitive.lods;
 			for level in lods.levels_mut().iter_mut().filter(|level| level.resident) {
-				level.first_meshlet = block.meshlets.start + level.first_meshlet - elements.meshlets.start;
+				level.level = block.levels.start + level.level - elements.levels.start;
 				level.vertex_base = block.vertices.start + level.vertex_base - elements.vertices.start;
-				level.primitive_index_base =
-					block.primitive_indices.start + level.primitive_index_base - elements.primitive_indices.start;
-				level.triangle_base = block.triangles.start + level.triangle_base - elements.triangles.start;
 			}
 			levels.block = Some(PrimitiveBlock { ranges: block, lods });
 		}

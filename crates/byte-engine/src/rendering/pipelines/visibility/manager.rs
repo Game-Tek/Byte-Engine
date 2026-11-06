@@ -33,7 +33,8 @@ use super::layout::{
 };
 use super::lightmaps::Lightmaps;
 use super::loader::{
-	MaterialEvaluator, ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent,
+	MaterialEvaluator, ResidentEnvironment, ResidentMaterial, ResidentTexture, TextureArray, VisibilityLoaderClient,
+	VisibilityLoaderEvent,
 };
 use super::lod::{LodSettings, LodView, MeshLods};
 use super::material_parameters::MaterialParameters;
@@ -52,7 +53,7 @@ use super::scene::{
 	InstanceCapacity, MaterialEvaluation, PosedVertices, RenderEntity, RenderInfo, RenderSkin, SinkState, VisibilityScene,
 };
 use super::set_layouts;
-use super::shader_data::{IesProfileTexture, InstanceLightmap, MESH_FLAG_SKINNED, MaterialData, ShaderMesh, ShaderViewData};
+use super::shader_data::{IesProfileTexture, MaterialData, ShaderMesh, ShaderViewData};
 use super::shadow_selection::{
 	SHADOW_DEFAULT_EXPOSURE_SCALE, ShadowBudget, ShadowLayout, ShadowLightSelection, ShadowSlots, make_cone_shadow_view,
 	make_point_shadow_view, retain_layout, select_shadow_lights, sun_cascade_view,
@@ -192,6 +193,7 @@ impl VisibilityPipelineSettings {
 			("vertex-index", &mut geometry_capacity.vertex_indices),
 			("triangle", &mut geometry_capacity.triangles),
 			("meshlet", &mut geometry_capacity.meshlets),
+			("level", &mut geometry_capacity.levels),
 			("skinning-vertex", &mut geometry_capacity.skinning_vertices),
 		] {
 			if let Some(value) = parse(&parameters, &format!("{GEOMETRY_CAPACITY_PARAMETER_PREFIX}{stream}-capacity")) {
@@ -762,8 +764,6 @@ pub struct VisibilityPipelineManager {
 	lightmap_listener: DefaultListener<CreateMessage<Lightmap>>,
 	/// The lightmap the world names, and where each lit primitive lies in it once it loaded.
 	lightmaps: Lightmaps,
-	/// The frame's instance lightmap records, by active instance, kept to reuse their allocation.
-	instance_lightmaps: Vec<InstanceLightmap>,
 	fog_listener: DefaultListener<CreateMessage<crate::rendering::ExponentialHeightFog>>,
 	/// The newest height fog, which each sink's fog light march lights.
 	fog: Option<crate::rendering::ExponentialHeightFog>,
@@ -916,8 +916,6 @@ impl VisibilityPipelineManager {
 		let instances = settings.instance_capacity.instances as usize;
 		let meshes_buffer =
 			context.build_dynamic_buffer(host_buffer("Visibility Meshes Data", ghi::Uses::Storage).length(instances));
-		let instance_lightmaps_buffer =
-			context.build_dynamic_buffer(host_buffer("Visibility Instance Lightmaps", ghi::Uses::Storage).length(instances));
 		let lighting_buffer =
 			context.build_dynamic_buffer(host_buffer("Light Data", ghi::Uses::Storage | ghi::Uses::TransferDestination));
 		let descriptor_set = set_layouts::SCENE.create_set(context, "Scene Descriptor Set");
@@ -975,11 +973,11 @@ impl VisibilityPipelineManager {
 			scene.buffer("vertex_indices", geometry.vertex_indices),
 			scene.buffer("primitive_indices", geometry.primitive_indices),
 			scene.buffer("meshlets", geometry.meshlets),
+			scene.buffer("mesh_levels", geometry.mesh_levels),
 			scene.buffer("materials", materials_buffer),
 			scene.buffer("material_evaluations", material_evaluations_buffer),
 			scene.buffer("material_parameters", material_parameters_buffer),
 			scene.buffer("vertex_lightmap_uvs", geometry.vertex_lightmap_uvs),
-			scene.buffer("instance_lightmaps", instance_lightmaps_buffer),
 		]);
 		Self {
 			loader,
@@ -993,7 +991,6 @@ impl VisibilityPipelineManager {
 			environment_listener: world.factory::<Environment>().listener(),
 			lightmap_listener: world.factory::<Lightmap>().listener(),
 			lightmaps: Lightmaps::default(),
-			instance_lightmaps: Vec::with_capacity(instances),
 			fog_listener: world.factory::<crate::rendering::ExponentialHeightFog>().listener(),
 			fog: None,
 			pose_listener: world.channel::<UpdatePose>().listener(),
@@ -1077,7 +1074,6 @@ impl VisibilityPipelineManager {
 				descriptor_set,
 				views_buffer,
 				meshes_buffer,
-				instance_lightmaps_buffer,
 				lighting_buffer,
 				render_info: Default::default(),
 				sink_states: Vec::new(),
@@ -1114,7 +1110,7 @@ impl VisibilityPipelineManager {
 	/// Adds one light where its handle is shown and requests its optional photometric texture dependency.
 	fn create_light(&mut self, handle: Handle, light: Lights, transforms: &ShownTransforms) {
 		if let Some(profile) = light.local().and_then(LocalEmission::ies_profile) {
-			self.loader.request_texture(profile.resource_id().to_owned());
+			self.loader.request_ies_profile(profile.resource_id().to_owned());
 		}
 		self.scene.add_light(handle, light);
 		if let Some(transform) = transforms.get(handle) {
@@ -1238,10 +1234,9 @@ impl VisibilityPipelineManager {
 				VisibilityLoaderEvent::TextureReady(texture) => materials_changed |= self.adopt_texture(frame, texture),
 				VisibilityLoaderEvent::LightmapReady(lightmap) => {
 					let texture = &lightmap.texture;
-					frame.write(&[set_layouts::SCENE.binder(self.scene.descriptor_set).sampled_element(
-						"textures",
+					frame.write(&[set_layouts::SCENE.binder(self.scene.descriptor_set).texture_element(
+						texture.array.binding(),
 						texture.image,
-						texture.sampler,
 						texture.index,
 					)]);
 					if self
@@ -1308,25 +1303,49 @@ impl VisibilityPipelineManager {
 		}
 	}
 
-	/// Publishes one texture the loader already transferred, and returns whether it is the slot's first image and a
-	/// loaded material samples it.
+	/// Publishes one texture the loader already transferred, and returns whether it is a material texture slot's first
+	/// image and a loaded material samples it.
 	fn adopt_texture(&mut self, frame: &mut ghi::implementation::Frame, texture: ResidentTexture) -> bool {
 		let ResidentTexture {
 			id,
+			array,
 			index,
 			image,
-			sampler,
 			photometry,
 		} = texture;
 		frame.write(&[set_layouts::SCENE
 			.binder(self.scene.descriptor_set)
-			.sampled_element("textures", image, sampler, index)]);
+			.texture_element(array.binding(), image, index)]);
+		if array == TextureArray::IesProfile {
+			self.adopt_ies_profile(id, index, photometry);
+			return false;
+		}
+		let texture = self.availability.get_or_insert(Availability::Texture(index), false);
+		// A finer image replacing a coarse one changes no material's readiness, so the material lists stay.
+		if self.availability.is_ready(texture) {
+			return false;
+		}
+		self.availability.set_available(texture, true);
+		self.loaded_materials
+			.iter()
+			.flatten()
+			.any(|material| material.texture_indices.contains(&index))
+	}
+
+	/// Records IES profile `id`, resident in `ies_profiles` slot `index`, for the lights that name it, or reports a
+	/// profile whose calibration the loader rejected.
+	fn adopt_ies_profile(
+		&mut self,
+		id: String,
+		index: u32,
+		photometry: Option<resource_management::resources::image::ImagePhotometry>,
+	) {
 		match photometry {
 			Some(photometry) if photometry.intensity_scale_candela.is_finite() && photometry.intensity_scale_candela > 0.0 => {
 				self.loaded_ies_profiles.insert(
 					id,
 					IesProfileTexture {
-						texture_index: index,
+						profile_index: index,
 						intensity_scale_candela: photometry.intensity_scale_candela,
 					},
 				);
@@ -1345,16 +1364,6 @@ impl VisibilityPipelineManager {
 			}
 			_ => {}
 		}
-		let texture = self.availability.get_or_insert(Availability::Texture(index), false);
-		// A finer image replacing a coarse one changes no material's readiness, so the material lists stay.
-		if self.availability.is_ready(texture) {
-			return false;
-		}
-		self.availability.set_available(texture, true);
-		self.loaded_materials
-			.iter()
-			.flatten()
-			.any(|material| material.texture_indices.contains(&index))
 	}
 
 	/// Adopts material metadata and its `evaluation` into the canonical table and wires its texture dependencies. A
@@ -1599,25 +1608,14 @@ impl VisibilityPipelineManager {
 				.expect("Visibility renderable dependency could not be registered. The most likely cause is a cyclic or stale resource relationship.");
 			// The mesh may already hold finer levels another renderable asked for.
 			let lods: MeshLods = self.loader.primitive_lods(key, index).unwrap_or(primitive.lods);
-			let finest = lods.drawn(0);
 			self.scene.add_render_entity(RenderEntity {
 				handle,
 				mesh: key,
 				primitive: index as u32,
 				availability,
-				shader_mesh: ShaderMesh {
-					model,
-					material_index: primitive.material_index,
-					base_vertex_index: finest.vertex_base,
-					base_primitive_index: finest.primitive_index_base,
-					base_triangle_index: finest.triangle_base,
-					base_meshlet_index: finest.first_meshlet,
-					meshlet_count: finest.meshlet_count,
-					flags: 0,
-					// Each frame names the block the instance reads.
-					parameter_block: 0,
-					bounding_sphere: primitive.bounding_sphere,
-				},
+				// Each frame names the level and the parameter block the instance reads.
+				shader_mesh: ShaderMesh::new(model, primitive.material_index),
+				bounding_sphere: primitive.bounding_sphere,
 				lods,
 				residency: self.mesh_residencies.slot(key, index as u32),
 				lightmap: self.lightmaps.instance(handle, index as u32),
@@ -1717,12 +1715,12 @@ impl VisibilityPipelineManager {
 					return None;
 				}
 				let material = loaded_materials
-					.get(entity.shader_mesh.material_index as usize)
+					.get(entity.shader_mesh.material_index() as usize)
 					.and_then(Option::as_ref)?;
 				Some(Admission {
 					phase: instance_phase(&material.alpha_mode, material.double_sided),
 					evaluation: match material.evaluation {
-						MaterialEvaluator::Pipeline(_) => material_evaluations[entity.shader_mesh.material_index as usize],
+						MaterialEvaluator::Pipeline(_) => material_evaluations[entity.shader_mesh.material_index() as usize],
 						// Each phase's uber shader is the only evaluation of its phase.
 						MaterialEvaluator::Arm(_) => UBER_EVALUATION_INDEX,
 					},
@@ -1752,7 +1750,6 @@ impl VisibilityPipelineManager {
 			lanes,
 			InstanceOutputs {
 				meshes: mesh_data,
-				lightmaps: &mut self.instance_lightmaps,
 				traced: &mut self.traced_primitives,
 				phases: [
 					opaque_instances,
@@ -1775,7 +1772,7 @@ impl VisibilityPipelineManager {
 				.get_slot_mut(deferred.slot as usize)
 				.expect("a deferred instance's entity is in the scene");
 			let shader_mesh = &mut mesh_data[deferred.slot as usize];
-			shader_mesh.parameter_block = self.material_parameters.block(entity.handle, shader_mesh.material_index);
+			shader_mesh.set_parameter_block(self.material_parameters.block(entity.handle, shader_mesh.material_index()));
 			let Some(skin) = &mut entity.skinning else {
 				continue;
 			};
@@ -1797,7 +1794,7 @@ impl VisibilityPipelineManager {
 					let uv_stride = VERTEX_UV_BUFFER_STRIDE as usize;
 					self.scene.render_info.posed_uv_copies.push(ghi::BufferCopyDescriptor::new(
 						self.geometry.vertex_uvs.into(),
-						shader_mesh.base_vertex_index as usize * uv_stride,
+						deferred.vertex_base as usize * uv_stride,
 						self.geometry.vertex_uvs.into(),
 						range.start as usize * uv_stride,
 						skin.vertex_count as usize * uv_stride,
@@ -1815,10 +1812,7 @@ impl VisibilityPipelineManager {
 					vertex_count: skin.vertex_count,
 					palette_kind: kind as u32,
 				});
-				shader_mesh.base_vertex_index = range.start;
-				shader_mesh.flags |= MESH_FLAG_SKINNED;
-				// A posed skinned instance moved away from what its lightmap holds.
-				self.instance_lightmaps[deferred.slot as usize] = InstanceLightmap::NONE;
+				shader_mesh.set_posed_vertices(range.start);
 			}
 		}
 		crate::rendering::warn_once(&mut self.reported_limits[2], left_out > 0, || {
@@ -1827,10 +1821,6 @@ impl VisibilityPipelineManager {
 			)
 		});
 		frame.sync_buffer(self.scene.meshes_buffer);
-		// The frame's buffers can't be borrowed together, so the instances' lightmaps gather first and copy once.
-		frame.get_mut_dynamic_buffer_slice(self.scene.instance_lightmaps_buffer)[..self.instance_lightmaps.len()]
-			.copy_from_slice(&self.instance_lightmaps);
-		frame.sync_buffer(self.scene.instance_lightmaps_buffer);
 		self.skinning_pass
 			.write_palettes(frame, &self.skinning_frame.matrices, &self.skinning_frame.dual_quaternions);
 		self.mesh_residencies
@@ -2356,7 +2346,7 @@ mod tests {
 	use crate::rendering::lights::{LightColor, PhotometricIntensity, PointLight};
 
 	#[test]
-	fn resolved_ies_profile_texture_applies_the_per_light_dimmer() {
+	fn resolved_ies_profile_applies_the_per_light_dimmer() {
 		let profile_light = Lights::Point(
 			PointLight::new_ies(LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)), 0.5, "lights/office.ies")
 				.expect("physical IES point light"),
@@ -2372,7 +2362,7 @@ mod tests {
 			.expect("physical point light"),
 		);
 		let profile = IesProfileTexture {
-			texture_index: 19,
+			profile_index: 19,
 			intensity_scale_candela: 180.0,
 		};
 		let mut profiles = HashMap::default();
@@ -2386,7 +2376,7 @@ mod tests {
 			(
 				90.0,
 				Some(IesProfileTexture {
-					texture_index: 19,
+					profile_index: 19,
 					intensity_scale_candela: 90.0,
 				})
 			)

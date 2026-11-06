@@ -1,6 +1,7 @@
-// The records the visibility pipeline's shaders read from its scene buffers. Each mirrors the CPU record the pipeline
-// uploads, so every shader that lists this layer reads those buffers with one layout. This layer declares types only; a
-// shader, or a layer module that uses this one, declares the buffers that hold them.
+// The records the visibility pipeline's shaders read from its scene buffers, and the helpers that decode them. Each
+// record mirrors the CPU record the pipeline uploads, so every shader that lists this layer reads those buffers with
+// one layout. This layer declares no buffers; a shader, or a layer module that uses this one, declares the buffers that
+// hold them.
 
 View: struct {
 	view: mat4x3f,
@@ -11,27 +12,60 @@ View: struct {
 	far: f32,
 }
 
+// One instance the frame draws. `level` holds the index of the instance's `MeshLevel` in bits 0-23 and flags in bits
+// 24-31: bit 24 marks a double-sided material, bit 25 a skinned instance posed this frame, and bits 26-30 hold one plus
+// the instance's lightmap slot, or zero when no lightmap lights it. `material` holds the material table index in bits
+// 0-15 and the first entry of the instance's dynamic material parameters in `material_parameters` in bits 16-31.
+// `surface` is a skinned instance's own first vertex in `x`, which replaces its level's `vertex_base`; for a lightmapped
+// instance it is the rectangle its lightmap UVs map into, as 0.16 fixed-point fractions of the lightmap: scale U and V
+// in the low and high halves of `x`, offset U and V in the low and high halves of `y`.
 Mesh: struct {
 	model: mat4x3f,
-	material_index: u32,
-	base_vertex_index: u32,
-	base_primitive_index: u32,
-	base_triangle_index: u32,
-	base_meshlet_index: u32,
-	meshlet_count: u32,
-	flags: u32,
-	// The first entry of the instance's dynamic material parameters in `material_parameters`.
-	parameter_block: u32,
-	bounding_sphere: vec4f,
+	level: u32,
+	material: u32,
+	surface: vec2u,
 }
 
+// One resident detail level of a primitive, which every instance that draws it shares.
+MeshLevel: struct {
+	// Object-space sphere around the level's meshlets, as xyz center and w radius.
+	bounding_sphere: vec4f,
+	first_meshlet: u32,
+	meshlet_count: u32,
+	// The level's first vertex in the vertex attribute buffers.
+	vertex_base: u32,
+	_padding: u32,
+}
+
+// One meshlet of a detail level. The offsets are absolute positions in the vertex-index and primitive-index buffers.
+// `counts` holds the vertex count in bits 0-7 and the triangle count in bits 8-15. `cone` holds the normal cone's
+// object-space axis as three SNORM8 components in bits 0-23 and its cutoff as SNORM8 in bits 24-31; a cutoff of 127
+// never culls. `bounds` holds the bounding sphere as UNORM16 values relative to its level's sphere: center x and y in
+// `bounds.x`, center z and radius in `bounds.y`, each low half first. A center component `c` decodes to
+// `level_center + (c / 65535 * 2 - 1) * level_radius` and the radius `r` to `r / 65535 * level_radius`.
 Meshlet: struct {
 	primitive_offset: u32,
 	triangle_offset: u32,
-	primitive_count: u32,
-	triangle_count: u32,
-	center_radius: vec4f,
-	cone_apex_cutoff: vec4f,
-	cone_axis: vec2u16,
+	counts: u32,
+	cone: u32,
+	bounds: vec2u,
 }
 
+// Masks the `MeshLevel` index out of `Mesh::level`.
+MESH_LEVEL_MASK: const u32 = 16777215;
+// Masks the material table index out of `Mesh::material`.
+MESH_MATERIAL_MASK: const u32 = 65535;
+// `Mesh::level` flag of a double-sided material: task shaders keep its back-facing meshlets and material evaluation
+// reverses the normal of its back-facing pixels.
+MESH_FLAG_DOUBLE_SIDED: const u32 = 16777216;
+// `Mesh::level` flag of an instance skinning posed this frame: its vertices start at `Mesh::surface.x`.
+MESH_FLAG_SKINNED: const u32 = 33554432;
+
+// Returns the first vertex of an instance that draws `level`: its own posed range when skinning posed it this frame,
+// else the level's.
+instance_vertex_base: fn (mesh: Mesh, level: MeshLevel) -> u32 {
+	if ((mesh.level & MESH_FLAG_SKINNED) != 0) {
+		return mesh.surface.x;
+	}
+	return level.vertex_base;
+}

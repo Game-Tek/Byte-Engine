@@ -34,7 +34,7 @@ use super::VisibilityFeatures;
 use super::features::{MaterialEvaluationMode, UBER_MATERIAL_SHADERS};
 use super::layout::{
 	LIGHT_CLUSTER_COLUMNS, LIGHT_CLUSTER_MASK_WORD_COUNT, LIGHT_CLUSTER_ROWS, LIGHT_CLUSTER_SLICES,
-	LOCAL_SHADOW_SIZE_CLASS_COUNT, MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS,
+	LOCAL_SHADOW_SIZE_CLASS_COUNT, MAX_BINDLESS_TEXTURES, MAX_IES_PROFILES, MAX_LIGHTMAPS, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS,
 	MAX_PIXEL_MAPPING_ENTRIES, MIN_LOCAL_SHADOW_MAP_RESOLUTION, TRANSPARENT_SPECIALIZATION_ID,
 	material_variable_specialization_id,
 };
@@ -49,6 +49,8 @@ const _: () = assert!(
 		&& MAX_MATERIALS == 1024
 		&& MAX_MATERIAL_TEXTURES == 16
 		&& MAX_BINDLESS_TEXTURES == 1024
+		&& MAX_IES_PROFILES == 64
+		&& MAX_LIGHTMAPS == 16
 		&& MAX_PIXEL_MAPPING_ENTRIES == 8294400,
 	"Update the array sizes in `scene.besl`, `visibility-buffer.besl`, `material-dispatch.besl`, and `material-evaluation.besl` when visibility limits change."
 );

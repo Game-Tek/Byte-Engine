@@ -40,5 +40,5 @@ main: fn (input: StageInput, scene: Scene, ray_traced_scene: RayTracedScene, pro
 	}
 	// The geometry table leads the hit to the frame's record of the primitive it hit, which names its material.
 	let geometry: vec2u = ray_traced_scene.ray_tracing_geometries[hit.custom_index + hit.geometry_index];
-	keep_ray_hit(ray_hits, ray, scene.meshes[geometry.x].material_index, hit);
+	keep_ray_hit(ray_hits, ray, scene.meshes[geometry.x].material & MESH_MATERIAL_MASK, hit);
 }

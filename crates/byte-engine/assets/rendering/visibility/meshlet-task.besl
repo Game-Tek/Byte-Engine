@@ -33,16 +33,23 @@ MAX_TASK_VIEWS: const u32 = 6;
 // The coarsest occlusion pyramid level. Keep it one below `OCCLUSION_PYRAMID_MIP_COUNT`.
 OCCLUSION_PYRAMID_LAST_LEVEL: const f32 = 8.0;
 
-decode_octahedral_normal: fn(encoded: vec2u16) -> vec3f {
-	let octahedral: vec2f = vec2f(f32(u32(encoded.x)), f32(u32(encoded.y))) / 65535.0 * 2.0 - vec2f(1.0, 1.0);
-	let normal_z: f32 = 1.0 - abs(octahedral.x) - abs(octahedral.y);
-	let fold: f32 = max(0.0 - normal_z, 0.0);
-	// `step` returns the positive direction at zero, matching the CPU encoder's fold convention.
-	return vec3f(
-		octahedral.x - (step(0.0, octahedral.x) * 2.0 - 1.0) * fold,
-		octahedral.y - (step(0.0, octahedral.y) * 2.0 - 1.0) * fold,
-		normal_z
-	);
+// Returns an SNORM8 component of a packed word, from the byte at bit `shift`.
+decode_snorm8: fn(word: u32, shift: u32) -> f32 {
+	let byte: f32 = f32((word >> shift) & 255);
+	// Bytes from 128 up are the negative values of two's complement.
+	return (byte - step(128.0, byte) * 256.0) / 127.0;
+}
+
+// Returns a meshlet's object-space bounding sphere, which its record stores relative to its level's sphere.
+meshlet_sphere: fn(meshlet: Meshlet, level: MeshLevel) -> vec4f {
+	let level_center: vec3f = vec3f(level.bounding_sphere.x, level.bounding_sphere.y, level.bounding_sphere.z);
+	let quantized: vec3f = vec3f(
+		f32(meshlet.bounds.x & 65535),
+		f32(meshlet.bounds.x >> 16),
+		f32(meshlet.bounds.y & 65535)
+	) / 65535.0;
+	let center: vec3f = level_center + (quantized * 2.0 - vec3f(1.0, 1.0, 1.0)) * level.bounding_sphere.w;
+	return vec4f(center.x, center.y, center.z, f32(meshlet.bounds.y >> 16) / 65535.0 * level.bounding_sphere.w);
 }
 
 // Returns whether a sphere reaches the positive side of a plane, after normalizing the plane.
@@ -68,10 +75,12 @@ sphere_is_visible: fn(view: View, sphere: vec4f) -> bool {
 		&& sphere_intersects_plane(row3 - row2, sphere);
 }
 
-cone_allows_rendering: fn(mesh: Mesh, meshlet: Meshlet, view: View) -> bool {
+// Returns whether a meshlet may face a view: some triangle of it may be front-facing from the view's camera. `sphere`
+// is the meshlet's object-space bounding sphere.
+cone_allows_rendering: fn(mesh: Mesh, meshlet: Meshlet, sphere: vec4f, view: View) -> bool {
 	let determinant: f32 = dot(cross(mesh.model[0], mesh.model[1]), mesh.model[2]);
-	// Flag bit 0 marks a double-sided material. Both of its faces are visible, so no view direction culls it.
-	if ((mesh.flags & 1) != 0 || determinant <= 0.000001 || meshlet.cone_apex_cutoff.w > 1.0) {
+	// Both faces of a double-sided material are visible, so no view direction culls it.
+	if ((mesh.level & MESH_FLAG_DOUBLE_SIDED) != 0 || determinant <= 0.000001) {
 		return true;
 	}
 
@@ -84,20 +93,16 @@ cone_allows_rendering: fn(mesh: Mesh, meshlet: Meshlet, view: View) -> bool {
 		dot(cross(mesh.model[2], mesh.model[0]) * inverse_determinant, world_delta),
 		dot(cross(mesh.model[0], mesh.model[1]) * inverse_determinant, world_delta)
 	);
-	let cone_apex: vec3f = vec3f(meshlet.cone_apex_cutoff.x, meshlet.cone_apex_cutoff.y, meshlet.cone_apex_cutoff.z);
-	let cone_axis: vec3f = decode_octahedral_normal(meshlet.cone_axis);
-	let cone_view: vec3f = cone_apex - camera_position_object;
-	let cone_view_length_squared: f32 = dot(cone_view, cone_view);
-	let cone_axis_length_squared: f32 = dot(cone_axis, cone_axis);
-
-	if (cone_view_length_squared <= 0.000000000001 || cone_axis_length_squared <= 0.000000000001) {
-		return true;
-	}
-
-	return dot(
-		cone_view * inversesqrt(cone_view_length_squared),
-		cone_axis * inversesqrt(cone_axis_length_squared)
-	) < meshlet.cone_apex_cutoff.w;
+	let cone_axis: vec3f = vec3f(
+		decode_snorm8(meshlet.cone, 0),
+		decode_snorm8(meshlet.cone, 8),
+		decode_snorm8(meshlet.cone, 16)
+	);
+	let cone_cutoff: f32 = decode_snorm8(meshlet.cone, 24);
+	// Every triangle faces away from every point of the bounding sphere's view when the cone holds the whole sphere.
+	// The stored cutoff already covers the axis's rounding, and a cutoff of one never culls.
+	let center_delta: vec3f = vec3f(sphere.x, sphere.y, sphere.z) - camera_position_object;
+	return dot(center_delta, cone_axis) < cone_cutoff * length(center_delta) + sphere.w;
 }
 
 // Places an object-space sphere in the world with `model`. The radius grows by the model's largest axis scale.
@@ -169,10 +174,11 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	let phase: u32 = push_constant.occlusion_phase;
 
 	let mesh: Mesh = scene.meshes[instance_index];
+	let level: MeshLevel = scene.mesh_levels[mesh.level & MESH_LEVEL_MASK];
 	// Posed meshlets can leave their bind-pose bounds, so every view keeps a skinned instance and all its meshlets.
-	let skinned: bool = (mesh.flags & 2) != 0;
+	let skinned: bool = (mesh.level & MESH_FLAG_SKINNED) != 0;
 	let tests_occlusion: bool = (phase == OCCLUSION_LATE || phase == OCCLUSION_TEST) && skinned == false;
-	let instance_sphere: vec4f = world_sphere(mesh.model, mesh.bounding_sphere);
+	let instance_sphere: vec4f = world_sphere(mesh.model, level.bounding_sphere);
 
 	// Bit `v` marks view `view_base + v` as one the instance may show in. Every lane computes the same mask, so a
 	// workgroup whose instance no view sees returns before it reads a single meshlet.
@@ -213,7 +219,7 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	}
 
 	let first_meshlet: u32 = chunk_index * 32;
-	let chunk_meshlet_count: u32 = min(mesh.meshlet_count - first_meshlet, 32);
+	let chunk_meshlet_count: u32 = min(level.meshlet_count - first_meshlet, 32);
 
 	if (lane == 0) {
 		atomic_store(visible_count, 0);
@@ -224,18 +230,19 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 
 	if (lane < chunk_meshlet_count) {
 		let relative_meshlet_index: u32 = first_meshlet + lane;
-		let meshlet: Meshlet = scene.meshlets[mesh.base_meshlet_index + relative_meshlet_index];
-		let meshlet_sphere: vec4f = world_sphere(mesh.model, meshlet.center_radius);
+		let meshlet: Meshlet = scene.meshlets[level.first_meshlet + relative_meshlet_index];
+		let object_sphere: vec4f = meshlet_sphere(meshlet, level);
+		let world_meshlet_sphere: vec4f = world_sphere(mesh.model, object_sphere);
 		let drawn_early: bool = ((previously_unoccluded >> lane) & 1) != 0;
 		for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
 			if ((instance_views & (1 << view_offset)) != 0) {
 				let view: View = scene.views.views[push_constant.view_base + view_offset];
-				if (skinned || (sphere_is_visible(view, meshlet_sphere) && cone_allows_rendering(mesh, meshlet, view))) {
+				if (skinned || (sphere_is_visible(view, world_meshlet_sphere) && cone_allows_rendering(mesh, meshlet, object_sphere, view))) {
 					// The early pass draws only what the previous late pass found unoccluded.
 					// Occlusion-testing passes are never early, so the test decides alone.
 					let emit: bool = phase != OCCLUSION_EARLY || drawn_early;
 					if (tests_occlusion) {
-						emit = sphere_is_occluded(occlusion, view, meshlet_sphere) == false;
+						emit = sphere_is_occluded(occlusion, view, world_meshlet_sphere) == false;
 					}
 					// The late pass remembers every unoccluded meshlet, but draws only those the early pass skipped.
 					if (phase == OCCLUSION_LATE) {

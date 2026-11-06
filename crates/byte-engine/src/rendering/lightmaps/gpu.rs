@@ -591,7 +591,6 @@ struct Bake {
 	/// The images the loading timeline uploaded, which the first frame interns and binds.
 	pending_images: Vec<(u32, ghi::implementation::DetachedImage)>,
 	environment: Option<EnvironmentMaps>,
-	texture_sampler: ghi::SamplerHandle,
 	environment_sampler: ghi::SamplerHandle,
 	scene_set: ghi::DescriptorSetHandle,
 	lights_set: ghi::DescriptorSetHandle,
@@ -658,29 +657,21 @@ impl Bake {
 			// zero is reserved.
 			let handle = Handle::from_id(mesh.entity + 1);
 			for (primitive_index, primitive) in data.primitives.iter().enumerate() {
-				let record = traced.len() as u32;
-				let finest = primitive.lods.drawn(0);
-				meshes.push(ShaderMesh {
-					model,
-					material_index: primitive.material_index,
-					base_vertex_index: finest.vertex_base,
-					base_primitive_index: finest.primitive_index_base,
-					base_triangle_index: finest.triangle_base,
-					base_meshlet_index: finest.first_meshlet,
-					meshlet_count: finest.meshlet_count,
-					flags: if double_sided[primitive.material_index as usize] {
-						MESH_FLAG_DOUBLE_SIDED
-					} else {
-						0
-					},
-					parameter_block: parameters.block(handle, primitive.material_index),
-					bounding_sphere: primitive.bounding_sphere,
-				});
+				let traced_record = traced.len() as u32;
+				let mut record = ShaderMesh::new(model, primitive.material_index);
+				let flags = if double_sided[primitive.material_index as usize] {
+					MESH_FLAG_DOUBLE_SIDED
+				} else {
+					0
+				};
+				record.set_level(primitive.lods.drawn(0).level, flags);
+				record.set_parameter_block(parameters.block(handle, primitive.material_index));
+				meshes.push(record);
 				traced.push(TracedPrimitive {
 					renderable: handle,
 					mesh: key,
 					primitive: primitive_index as u32,
-					record,
+					record: traced_record,
 					model,
 				});
 			}
@@ -727,7 +718,7 @@ impl Bake {
 		);
 		*render.get_mut_buffer_slice(lighting_buffer) = *lighting;
 		render.sync_buffer(lighting_buffer);
-		// The hit shaders read no view, dispatch, evaluation, or lightmap records, but the scene set declares them.
+		// The hit shaders read no view, dispatch, or evaluation records, but the scene set declares them.
 		let unused = upload(render, host("Lightmap Bake Unused Records", 1 << 16), &vec![0u32; 1 << 16]);
 
 		let scene_set = set_layouts::SCENE.create_set(render, "Lightmap Bake Scene");
@@ -741,12 +732,12 @@ impl Bake {
 			binder.buffer("vertex_indices", handles.vertex_indices),
 			binder.buffer("primitive_indices", handles.primitive_indices),
 			binder.buffer("meshlets", handles.meshlets),
+			binder.buffer("mesh_levels", handles.mesh_levels),
 			binder.buffer("materials", materials_buffer),
 			binder.buffer("mesh_dispatch_work", unused),
 			binder.buffer("material_evaluations", unused),
 			binder.buffer("material_parameters", parameters_buffer),
 			binder.buffer("vertex_lightmap_uvs", handles.vertex_lightmap_uvs),
-			binder.buffer("instance_lightmaps", unused),
 		]);
 
 		let lights_layout = SetLayout::from_layer(
@@ -823,7 +814,6 @@ impl Bake {
 			bake_binder.buffer("lightmap_guides", guides),
 		]);
 
-		let texture_sampler = render.build_sampler(material_sampler().max_lod(ghi::sampler::UNCLAMPED_MAX_LOD));
 		let environment_sampler = render.build_sampler(material_sampler().max_lod((IBL_SPECULAR_LEVEL_COUNT - 1) as f32));
 		if loaded.environment.is_none() {
 			// Paths that leave a scene without an environment bring back no light.
@@ -847,7 +837,6 @@ impl Bake {
 			alpha_modes,
 			pending_images: loaded.textures,
 			environment: loaded.environment,
-			texture_sampler,
 			environment_sampler,
 			scene_set,
 			lights_set,
@@ -951,7 +940,6 @@ impl Bake {
 			alpha_modes,
 			pending_images,
 			environment,
-			texture_sampler,
 			environment_sampler,
 			scene_set,
 			lights_set,
@@ -968,7 +956,7 @@ impl Bake {
 					let image = frame.intern_image(image);
 					frame.write(&[set_layouts::SCENE
 						.binder(*scene_set)
-						.sampled_element("textures", image, *texture_sampler, slot)]);
+						.texture_element("textures", image, slot)]);
 				}
 				if let Some(environment) = environment.take() {
 					let specular = frame.intern_image(environment.specular_image);

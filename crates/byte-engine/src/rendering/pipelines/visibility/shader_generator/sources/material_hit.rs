@@ -10,12 +10,13 @@ material_hit_prefix: fn (input: StageInput) -> void {
 	// triangle in the flat triangle lists.
 	let geometry: vec2u = ray_traced_scene.ray_tracing_geometries[input.hit_custom_index + input.hit_geometry_index];
 	let mesh: Mesh = scene.meshes[geometry.x];
-	let material: Material = scene.materials.materials[mesh.material_index];
+	let material: Material = scene.materials.materials[mesh.material & MESH_MATERIAL_MASK];
+	let vertex_base: u32 = instance_vertex_base(mesh, scene.mesh_levels[mesh.level & MESH_LEVEL_MASK]);
 	let first_index: u32 = (geometry.y + input.hit_primitive_index) * 3;
 	let triangle_vertex_indices: u32[3] = u32[3](
-		mesh.base_vertex_index + u16_to_u32(ray_traced_scene.flat_triangle_indices[first_index]),
-		mesh.base_vertex_index + u16_to_u32(ray_traced_scene.flat_triangle_indices[first_index + 1]),
-		mesh.base_vertex_index + u16_to_u32(ray_traced_scene.flat_triangle_indices[first_index + 2])
+		vertex_base + u16_to_u32(ray_traced_scene.flat_triangle_indices[first_index]),
+		vertex_base + u16_to_u32(ray_traced_scene.flat_triangle_indices[first_index + 1]),
+		vertex_base + u16_to_u32(ray_traced_scene.flat_triangle_indices[first_index + 2])
 	);
 	let model: mat4x3f = mesh.model;
 	let position0: vec3f = scene.vertex_positions[triangle_vertex_indices[0]];
@@ -47,8 +48,8 @@ material_hit_prefix: fn (input: StageInput) -> void {
 	surface_normal = surface_normal * (front_face * 2.0 - 1.0);
 	N = N * (front_face * 2.0 - 1.0);
 	// One where the surface reflects and emits light toward the ray: its front, or either side of a double-sided
-	// surface, which flag bit 0 marks.
-	let facing: f32 = max(front_face, f32(mesh.flags & 1));
+	// surface.
+	let facing: f32 = max(front_face, f32((mesh.level >> 24) & 1));
 }
 "#;
 

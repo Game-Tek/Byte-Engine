@@ -947,11 +947,12 @@ main: fn (input: StageInput, scene: Scene, sun_visibility: SunVisibility) -> voi
 	// The low eight bits name the triangle within its meshlet, and the rest the meshlet.
 	let triangle_meshlet_indices: u32 = image_load_u32(sun_visibility.triangle_index, pixel);
 	let meshlet: Meshlet = scene.meshlets[triangle_meshlet_indices >> 8];
-	let primitive_index_base: u32 = (mesh.base_triangle_index + meshlet.triangle_offset + (triangle_meshlet_indices & 255)) * 3;
-	let vertex_index_base: u32 = mesh.base_primitive_index + meshlet.primitive_offset;
-	let position0: vec3f = scene.vertex_positions[mesh.base_vertex_index + u32(scene.vertex_indices[vertex_index_base + u32(scene.primitive_indices[primitive_index_base])])];
-	let position1: vec3f = scene.vertex_positions[mesh.base_vertex_index + u32(scene.vertex_indices[vertex_index_base + u32(scene.primitive_indices[primitive_index_base + 1])])];
-	let position2: vec3f = scene.vertex_positions[mesh.base_vertex_index + u32(scene.vertex_indices[vertex_index_base + u32(scene.primitive_indices[primitive_index_base + 2])])];
+	let primitive_index_base: u32 = (meshlet.triangle_offset + (triangle_meshlet_indices & 255)) * 3;
+	let vertex_index_base: u32 = meshlet.primitive_offset;
+	let vertex_base: u32 = instance_vertex_base(mesh, scene.mesh_levels[mesh.level & MESH_LEVEL_MASK]);
+	let position0: vec3f = scene.vertex_positions[vertex_base + u32(scene.vertex_indices[vertex_index_base + u32(scene.primitive_indices[primitive_index_base])])];
+	let position1: vec3f = scene.vertex_positions[vertex_base + u32(scene.vertex_indices[vertex_index_base + u32(scene.primitive_indices[primitive_index_base + 1])])];
+	let position2: vec3f = scene.vertex_positions[vertex_base + u32(scene.vertex_indices[vertex_index_base + u32(scene.primitive_indices[primitive_index_base + 2])])];
 	let edge0: vec3f = mesh.model * vec4f(position1.x - position0.x, position1.y - position0.y, position1.z - position0.z, 0.0);
 	let edge1: vec3f = mesh.model * vec4f(position2.x - position0.x, position2.y - position0.y, position2.z - position0.z, 0.0);
 	// The triangle's normal, turned to the camera's side, which is the side the receiver's normal offset leaves on. The

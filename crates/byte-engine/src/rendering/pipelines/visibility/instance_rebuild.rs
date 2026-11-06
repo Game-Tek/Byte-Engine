@@ -8,7 +8,6 @@
 //! can't run on a lane: the lane writes the rest of the record and lists the instance in [`LaneScratch::deferred`]
 //! for the caller to finish in order.
 
-use std::mem::MaybeUninit;
 use std::ops::Range;
 
 use resource_management::types::AlphaMode;
@@ -21,7 +20,7 @@ use super::lod::LodView;
 use super::material_parameters::MaterialParameters;
 use super::residency::MeshResidencies;
 use super::scene::{Instance, RenderEntity};
-use super::shader_data::{InstanceLightmap, MESH_FLAG_DOUBLE_SIDED, ShaderMesh};
+use super::shader_data::{MESH_FLAG_DOUBLE_SIDED, ShaderMesh};
 use crate::core::alley::Alley;
 
 /// The raster phases instances are listed by: opaque, masked, double-sided, double-sided masked, and transparent.
@@ -81,6 +80,8 @@ pub(super) struct InstanceSources<'a, A> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Deferred {
 	pub(super) slot: u32,
+	/// The first vertex of the level the instance draws, which a newly posed instance copies its UVs from.
+	pub(super) vertex_base: u32,
 }
 
 /// The `LaneScratch` struct is what one lane lists while it rebuilds, kept across frames so they reuse its room.
@@ -99,8 +100,6 @@ pub(super) struct LaneScratch {
 /// masks gain the evaluation slots of the admitted instances. `lanes` keeps one scratch per lane across frames.
 pub(super) struct InstanceOutputs<'a> {
 	pub(super) meshes: &'a mut [ShaderMesh],
-	/// One record per slot up to the capacity, [`InstanceLightmap::NONE`] for slots no instance has.
-	pub(super) lightmaps: &'a mut Vec<InstanceLightmap>,
 	/// Filled only when the sources trace rays.
 	pub(super) traced: &'a mut Vec<TracedPrimitive>,
 	/// The opaque, masked, double-sided, double-sided masked, and transparent instance lists.
@@ -114,7 +113,6 @@ pub(super) struct InstanceOutputs<'a> {
 struct Share<'a> {
 	slots: Range<usize>,
 	meshes: &'a mut [ShaderMesh],
-	lightmaps: &'a mut [MaybeUninit<InstanceLightmap>],
 	scratch: &'a mut LaneScratch,
 }
 
@@ -124,7 +122,6 @@ struct Share<'a> {
 /// Entities whose slot lies past the table are left out, so the outputs are the same for every lane count. Next,
 /// finish the instances each of `outputs.lanes` lists in [`LaneScratch::deferred`], lane by lane, which may need to
 /// write shared state.
-#[allow(unsafe_code, reason = "The lanes write the lightmap records' spare room, which is marked written after.")]
 pub(super) fn rebuild_instances<A>(
 	alley: &mut Alley,
 	sources: &InstanceSources<'_, A>,
@@ -136,7 +133,6 @@ where
 {
 	let InstanceOutputs {
 		meshes,
-		lightmaps,
 		traced,
 		phases,
 		masks,
@@ -145,23 +141,17 @@ where
 	let slots = sources.entities.slots_len().min(meshes.len());
 	scratches.resize_with(lanes, LaneScratch::default);
 
-	// Every lane takes a balanced range of the slots and the same range of the tables.
-	lightmaps.clear();
-	lightmaps.reserve(slots);
+	// Every lane takes a balanced range of the slots and the same range of the table.
 	let mut shares = SmallVec::<[Share; 16]>::new();
 	{
 		let mut meshes = &mut meshes[..slots];
-		let mut spare = &mut lightmaps.spare_capacity_mut()[..slots];
 		for (lane, scratch) in scratches.iter_mut().enumerate() {
 			let range = slots * lane / lanes..slots * (lane + 1) / lanes;
 			let share_meshes;
 			(share_meshes, meshes) = std::mem::take(&mut meshes).split_at_mut(range.len());
-			let share_lightmaps;
-			(share_lightmaps, spare) = std::mem::take(&mut spare).split_at_mut(range.len());
 			shares.push(Share {
 				slots: range,
 				meshes: share_meshes,
-				lightmaps: share_lightmaps,
 				scratch,
 			});
 		}
@@ -172,9 +162,6 @@ where
 		}
 	});
 	drop(shares);
-	// SAFETY: `write_instances` wrote the lightmap record of every slot of its share or panicked, and the shares cover
-	// the first `slots` records.
-	unsafe { lightmaps.set_len(slots) };
 
 	// Join the lanes' lists in lane order, which is slot order.
 	for (phase, list) in phases.into_iter().enumerate() {
@@ -203,7 +190,7 @@ where
 		.count()
 }
 
-/// Writes the record of every instance the slots of `share` admit, and a lightmap record for every slot.
+/// Writes the record of every instance the slots of `share` admit.
 ///
 /// Each instance draws the detail level the sources' view picks for it, and its wanted level goes to the residencies.
 fn write_instances<A>(share: &mut Share<'_>, sources: &InstanceSources<'_, A>)
@@ -223,7 +210,6 @@ where
 			.get_slot(slot)
 			.and_then(|entity| Some((entity, (sources.admit)(entity)?)));
 		let Some((entity, admission)) = admitted else {
-			share.lightmaps[offset].write(InstanceLightmap::NONE);
 			continue;
 		};
 		assert!(
@@ -232,15 +218,13 @@ where
 		);
 
 		let mut shader_mesh = entity.shader_mesh;
-		// Sidedness comes from the currently loaded material, so a reloaded material takes effect next frame.
-		shader_mesh.flags = if admission.double_sided { MESH_FLAG_DOUBLE_SIDED } else { 0 };
-		let block = sources.parameters.current_block(entity.handle, shader_mesh.material_index);
-		shader_mesh.parameter_block = block.unwrap_or(0);
-		// Naming another level's ranges is all a level switch takes. Every view of the frame, shadows included, then
+		let block = sources.parameters.current_block(entity.handle, shader_mesh.material_index());
+		shader_mesh.set_parameter_block(block.unwrap_or(0));
+		// Naming another level's record is all a level switch takes. Every view of the frame, shadows included, then
 		// draws this level.
 		let wanted = match sources.lod_view {
 			Some(view) => {
-				let wanted = view.select(&entity.lods, &shader_mesh.model, shader_mesh.bounding_sphere);
+				let wanted = view.select(&entity.lods, &shader_mesh.model, entity.bounding_sphere);
 				if let Some(slot) = entity.residency {
 					sources.residencies.want(slot, wanted as u8);
 				}
@@ -249,18 +233,18 @@ where
 			None => 0,
 		};
 		let lod = entity.lods.drawn(wanted);
-		shader_mesh.base_vertex_index = lod.vertex_base;
-		shader_mesh.base_primitive_index = lod.primitive_index_base;
-		shader_mesh.base_triangle_index = lod.triangle_base;
-		shader_mesh.base_meshlet_index = lod.first_meshlet;
-		shader_mesh.meshlet_count = lod.meshlet_count;
+		// Sidedness comes from the currently loaded material, so a reloaded material takes effect next frame.
+		shader_mesh.set_level(lod.level, if admission.double_sided { MESH_FLAG_DOUBLE_SIDED } else { 0 });
+		// A posed skinned instance gives this up when the caller finishes it.
+		shader_mesh.set_lightmap(entity.lightmap);
 		if entity.skinning.is_some() || block.is_none() {
-			scratch.deferred.push(Deferred { slot: slot as u32 });
+			scratch.deferred.push(Deferred {
+				slot: slot as u32,
+				vertex_base: lod.vertex_base,
+			});
 		}
 
 		share.meshes[offset] = shader_mesh;
-		// A posed skinned instance gives this up when the caller finishes it.
-		share.lightmaps[offset].write(entity.lightmap);
 		if sources.traces_rays {
 			scratch.traced.push(TracedPrimitive {
 				renderable: entity.handle,
@@ -272,7 +256,7 @@ where
 		}
 		scratch.phases[admission.phase].push(Instance {
 			shader_mesh_index: slot as u32,
-			meshlet_count: shader_mesh.meshlet_count,
+			meshlet_count: lod.meshlet_count,
 		});
 		let mask = &mut scratch.masks[usize::from(admission.phase == TRANSPARENT_PHASE)];
 		mask[admission.evaluation as usize / u64::BITS as usize] |= 1 << (admission.evaluation % u64::BITS);
@@ -284,6 +268,7 @@ mod tests {
 	use super::*;
 	use crate::core::factory::Handle;
 	use crate::rendering::pipelines::visibility::lod::{MeshLod, MeshLods};
+	use crate::rendering::pipelines::visibility::shader_data::InstanceLightmap;
 	use crate::rendering::renderable::mesh::MeshKey;
 
 	/// The material slots of the fixture scene: one per phase, then one whose entities never enter the frame.
@@ -300,12 +285,10 @@ mod tests {
 				mesh: MeshKey::Generated(u64::from(index % 3)),
 				primitive: 0,
 				availability: graph.get_or_insert(index, true),
-				shader_mesh: ShaderMesh {
-					material_index: index % MATERIALS,
-					..bytemuck::Zeroable::zeroed()
-				},
+				shader_mesh: ShaderMesh::new(bytemuck::Zeroable::zeroed(), index % MATERIALS),
+				bounding_sphere: [0.0; 4],
 				lods: MeshLods::new(&[MeshLod {
-					first_meshlet: index,
+					level: index,
 					meshlet_count: 1 + index % 40,
 					resident: true,
 					..MeshLod::default()
@@ -326,7 +309,7 @@ mod tests {
 
 	/// Admits an entity unless its material is the last slot; the slot picks the phase and the evaluation.
 	fn admit(entity: &RenderEntity) -> Option<Admission> {
-		let material = entity.shader_mesh.material_index;
+		let material = entity.shader_mesh.material_index();
 		(material < PHASES as u32).then_some(Admission {
 			phase: material as usize,
 			evaluation: material * 3,
@@ -356,7 +339,7 @@ mod tests {
 			traces_rays: false,
 		};
 		let mut meshes = vec![bytemuck::Zeroable::zeroed(); capacity];
-		let (mut lightmaps, mut traced, mut scratches) = (Vec::new(), Vec::new(), Vec::new());
+		let (mut traced, mut scratches) = (Vec::new(), Vec::new());
 		let mut phases: [Vec<Instance>; PHASES] = Default::default();
 		let mut masks = [EMPTY_MASK; 2];
 		let [opaque, masked, double_sided, double_sided_masked, transparent] = &mut phases;
@@ -367,7 +350,6 @@ mod tests {
 			lanes,
 			InstanceOutputs {
 				meshes: &mut meshes,
-				lightmaps: &mut lightmaps,
 				traced: &mut traced,
 				phases: [opaque, masked, double_sided, double_sided_masked, transparent],
 				masks: [opaque_mask, transparent_mask],
@@ -379,7 +361,7 @@ mod tests {
 				list.into_iter()
 					.map(|instance| {
 						let mesh: &ShaderMesh = &meshes[instance.shader_mesh_index as usize];
-						(instance, [mesh.material_index, mesh.base_meshlet_index, mesh.flags])
+						(instance, [mesh.material_index(), mesh.level(), mesh.flags()])
 					})
 					.collect()
 			}),
@@ -411,7 +393,7 @@ mod tests {
 					shader_mesh_index: slot as u32,
 					meshlet_count: lod.meshlet_count,
 				},
-				[entity.shader_mesh.material_index, lod.first_meshlet, flags],
+				[entity.shader_mesh.material_index(), lod.level, flags],
 			));
 			let mask = &mut rebuilt.masks[usize::from(admission.phase == TRANSPARENT_PHASE)];
 			mask[admission.evaluation as usize / 64] |= 1 << (admission.evaluation % 64);

@@ -9,21 +9,18 @@
 /// Error, in pixels, a level may show on screen at the default bias before a finer one is drawn.
 const LOD_PIXEL_ERROR: f32 = 1.0;
 
-/// The `MeshLod` struct names where an instance reads one detail level of its primitive from.
+/// The `MeshLod` struct names the record an instance reads one detail level of its primitive from.
 ///
-/// A prepared mesh counts the bases from the start of its own streams; [`super::geometry::GeometryBuffers::append_mesh`]
-/// turns them into buffer elements once it places the mesh. Levels that are not resident keep only their meshlet
-/// count and error.
+/// A prepared mesh counts [`Self::level`] from the start of its own level records;
+/// [`super::geometry::GeometryBuffers::append_mesh`] turns it into a buffer element once it places the mesh. Levels that
+/// are not resident keep only their meshlet count and error.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct MeshLod {
-	pub(crate) first_meshlet: u32,
+	/// The level's [`super::layout::ShaderMeshLevel`] record, which names its meshlets and vertices.
+	pub(crate) level: u32,
 	pub(crate) meshlet_count: u32,
-	/// The primitive's first vertex in the block that holds this level.
+	/// The level's first vertex, which a posed skinned instance copies its bind-pose UVs from.
 	pub(crate) vertex_base: u32,
-	/// What the level's meshlet records count their vertex-index offsets from.
-	pub(crate) primitive_index_base: u32,
-	/// What the level's meshlet records count their triangle offsets from.
-	pub(crate) triangle_base: u32,
 	/// Estimated largest distance, in model-space units, between this level's surface and full detail.
 	pub(crate) error: f32,
 	/// Whether the level's geometry is in the buffers, so an instance can draw it.
@@ -56,8 +53,8 @@ impl MeshLods {
 		}])
 	}
 
-	/// Collects a primitive's levels, finest first. Each level names its own meshlet range, so levels need not follow
-	/// one another.
+	/// Collects a primitive's levels, finest first. Each level names its own record, so levels need not follow one
+	/// another.
 	pub(crate) fn new(lods: &[MeshLod]) -> Self {
 		assert!(
 			(1..=MAX_PRIMITIVE_LODS).contains(&lods.len()),
@@ -236,11 +233,11 @@ mod tests {
 
 	const SPHERE: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
-	/// Three levels of 8, 4 and 2 meshlets with errors 0, 0.1 and 1.
+	/// Three levels of 8, 4 and 2 meshlets in records 0, 1 and 2, with errors 0, 0.1 and 1.
 	fn three_levels() -> MeshLods {
 		MeshLods::new(
-			&[(0, 8, 0.0), (8, 4, 0.1), (12, 2, 1.0)].map(|(first_meshlet, meshlet_count, error)| MeshLod {
-				first_meshlet,
+			&[(0, 8, 0.0), (1, 4, 0.1), (2, 2, 1.0)].map(|(level, meshlet_count, error)| MeshLod {
+				level,
 				meshlet_count,
 				error,
 				resident: true,
@@ -288,11 +285,11 @@ mod tests {
 	}
 
 	#[test]
-	fn the_selected_range_follows_the_finer_levels() {
+	fn the_selected_record_follows_the_finer_levels() {
 		let lods = three_levels();
 		let level = lods.drawn(perspective(LodSettings::default()).select(&lods, &instance(0.0, 51.5, 1.0), SPHERE));
 
-		assert_eq!((level.first_meshlet, level.meshlet_count), (8, 4));
+		assert_eq!((level.level, level.meshlet_count), (1, 4));
 	}
 
 	#[test]
@@ -307,11 +304,11 @@ mod tests {
 
 		let mut refined = three_levels();
 		refined.levels_mut()[2].resident = false;
-		refined.levels_mut()[1].first_meshlet = 40;
+		refined.levels_mut()[1].level = 40;
 		lods.overlay(&refined);
 
 		assert_eq!(lods.drawn(0).meshlet_count, 8);
-		assert_eq!((lods.drawn(1).first_meshlet, lods.drawn(2).first_meshlet), (40, 12));
+		assert_eq!((lods.drawn(1).level, lods.drawn(2).level), (40, 2));
 	}
 
 	#[test]

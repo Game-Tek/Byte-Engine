@@ -27,21 +27,18 @@ MaterialEvaluations: struct {
 	evaluation_indices: u32[1024],
 }
 
-// Where an instance's primitive lies in the resident lightmap: its lightmap UVs times `scale_offset.xy`, plus
-// `scale_offset.zw`, name its texels. `texture` is the lightmap's slot in `textures`, or 4294967295 for an instance no
-// lightmap lights.
-InstanceLightmap: struct {
-	scale_offset: vec4f,
-	texture: u32,
-	_padding0: u32,
-	_padding1: u32,
-	_padding2: u32,
-}
+// Material textures repeat outside their bounds. Anisotropic filtering keeps surfaces seen at grazing angles, like
+// floors, sharp instead of blurring them to the mip their steepest direction needs.
+material_texel: sampler<{ address: repeat, anisotropy: 16 }>;
+// IES profiles and lightmap rectangles end at their image's edges, which must not wrap to the opposite side.
+clamped_texel: sampler<{ address: clamp }>;
 
 Scene: layer {
 	views: descriptor<{ type: Views, binding: 0, access: read, memory: constant }>;
 	// One record per instance the frame draws, as many as the pipeline's instance capacity.
 	meshes: descriptor<{ type: Mesh[], binding: 1, access: read, memory: device }>;
+	// The resident detail levels, which instances name in `Mesh::level`.
+	mesh_levels: descriptor<{ type: MeshLevel[], binding: 14, access: read, memory: device }>;
 	vertex_positions: descriptor<{ type: vec3f[], binding: 2, access: read, memory: device }>;
 	// Octahedrally encoded unit normals.
 	vertex_normals: descriptor<{ type: vec2u16[], binding: 3, access: read, memory: device }>;
@@ -51,18 +48,20 @@ Scene: layer {
 	primitive_indices: descriptor<{ type: u8[], binding: 6, access: read, memory: device }>;
 	meshlets: descriptor<{ type: Meshlet[], binding: 7, access: read, memory: device }>;
 	// The bindless texture pool that material table entries index.
-	textures: descriptor<{ type: Texture2D, binding: 8, access: read, count: 1024 }>;
+	textures: descriptor<{ type: Texture2D, binding: 8, access: read, count: 1024, sampler: material_texel }>;
 	materials: descriptor<{ type: Materials, binding: 9, access: read, memory: device }>;
 	// One packed work item per group of meshlets a task workgroup culls: the group's chunk of 32 meshlets in the low 7
 	// bits, and the instance above them.
 	mesh_dispatch_work: descriptor<{ type: u32[], binding: 10, access: read, memory: device }>;
 	// The evaluation slot of every material table entry, which the material prepasses bucket pixels by.
 	material_evaluations: descriptor<{ type: MaterialEvaluations, binding: 11, access: read, memory: device }>;
-	// The values of dynamic material parameters, one entry per parameter. An instance's `parameter_block` names where its
-	// material's parameters start, in the order the material declares them.
+	// The values of dynamic material parameters, one entry per parameter. An instance's parameter block, in the high
+	// half of `Mesh::material`, names where its material's parameters start, in the order the material declares them.
 	material_parameters: descriptor<{ type: vec4f[], binding: 12, access: read, memory: device }>;
 	// Lightmap UVs as UNORM16 pairs, zero for vertices of primitives without them.
 	vertex_lightmap_uvs: descriptor<{ type: vec2u16[], binding: 13, access: read, memory: device }>;
-	// Each instance's lightmap, by the same index as `meshes`.
-	instance_lightmaps: descriptor<{ type: InstanceLightmap[], binding: 14, access: read, memory: device }>;
+	// The calibrated IES intensity profiles that lights' `ies_profile` index.
+	ies_profiles: descriptor<{ type: Texture2D, binding: 15, access: read, count: 64, sampler: clamped_texel }>;
+	// The baked lightmaps that instances' lightmap records index.
+	lightmaps: descriptor<{ type: Texture2D, binding: 16, access: read, count: 16, sampler: clamped_texel }>;
 }

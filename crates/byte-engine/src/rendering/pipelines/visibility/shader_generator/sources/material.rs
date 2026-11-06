@@ -101,7 +101,7 @@ material_evaluation_tile: fn (input: StageInput) -> void {
 	}
 	let mesh: Mesh = scene.meshes[instance_index];
 	// The arm key of the pixel's material, which selects its surface code below.
-	let material_arm: u32 = scene.material_evaluations.evaluation_indices[mesh.material_index];
+	let material_arm: u32 = scene.material_evaluations.evaluation_indices[mesh.material & MESH_MATERIAL_MASK];
 }
 "#;
 
@@ -116,9 +116,9 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 	let meshlet: Meshlet = scene.meshlets[meshlet_index];
 	// Materials of one slot run the same program and differ only in the textures they bind, so the texture slots come
 	// from the pixel's own material. Pixel mapping groups pixels by tile, so neighboring lanes usually share it.
-	let material: Material = scene.materials.materials[mesh.material_index];
+	let material: Material = scene.materials.materials[mesh.material & MESH_MATERIAL_MASK];
 
-	let primitive_index_base: u32 = (mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3;
+	let primitive_index_base: u32 = (meshlet.triangle_offset + meshlet_triangle_index) * 3;
 	let triangle_vertex_indices: u32[3] = compute_vertex_indices(scene, mesh, meshlet, primitive_index_base);
 	// Every lane sets up its own triangle. Lanes of one SIMD group often share a triangle, but a region that only a
 	// leader lane runs issues the same instructions as one every lane runs, so sharing the setup through ballots and
@@ -195,8 +195,8 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 	let N: vec3f = world_space_vertex_normal;
 	let camera_position: vec3f = scene.views.views[0].inverse_view * vec4f(0.0, 0.0, 0.0, 1.0);
 	let V: vec3f = normalize(camera_position - world_space_vertex_position);
-	// Flag bit 0 marks a double-sided material. Only those rasterize back faces, so only they need the check.
-	if ((mesh.flags & 1) != 0) {
+	// Only double-sided materials rasterize back faces, so only they need the check.
+	if ((mesh.level & MESH_FLAG_DOUBLE_SIDED) != 0) {
 		N = facing_normal(N, V, world_edge1, world_edge2);
 	}
 	// Shading reads the view vector and the interpolated normal at half precision. The triangle normal below stays
@@ -320,14 +320,14 @@ ies_profile_uv: fn (
 pub(crate) const IES_PROFILE_SAMPLE_SOURCE: &str = r#"
 sample_ies_profile: fn (
 	scene: Scene,
-	texture_index: u32,
+	profile_index: u32,
 	emission_direction: vec3f,
 	axis: vec3f,
 	encoded_c0_tangent: vec2u16
 ) -> f32 {
 	let uv: vec2f = ies_profile_uv(emission_direction, axis, encoded_c0_tangent);
 	return max(
-		sample_texture_2d_array_grad(scene.textures, texture_index, uv, vec2f(0.0, 0.0), vec2f(0.0, 0.0)).x,
+		sample_texture_2d_array_grad(scene.ies_profiles, profile_index, uv, vec2f(0.0, 0.0), vec2f(0.0, 0.0)).x,
 		0.0
 	);
 }
@@ -347,9 +347,9 @@ material_evaluation_suffix: fn () -> void {
 	if (!transparent) {
 		if (push_constant.indirect_diffuse == 3) {
 			// Lightmaps light the instances they give a rectangle; the rest take the environment's light alone. The
-			// record is read through `instance_lightmaps`, so a project without lightmaps drops this branch.
-			let lightmap_record: InstanceLightmap = scene.instance_lightmaps[instance_index];
-			if (lightmap_record.texture != 4294967295) {
+			// branch samples `lightmaps`, so a project without lightmaps drops it.
+			let lightmap_slot: u32 = (mesh.level >> 26) & 31;
+			if (lightmap_slot != 0) {
 				// UNORM16 lightmap UVs, interpolated like the texture coordinates, then placed in the instance's rectangle.
 				let lightmap_scale: f32 = 1.0 / 65535.0;
 				let lightmap_encoded0: vec2u16 = scene.vertex_lightmap_uvs[triangle_vertex_indices[0]];
@@ -360,13 +360,15 @@ material_evaluation_suffix: fn () -> void {
 				let lightmap_uv2: vec2f = vec2f(f32(u32(lightmap_encoded2.x)), f32(u32(lightmap_encoded2.y))) * lightmap_scale;
 				let lightmap_uv: vec2f = lightmap_uv0 + barycentric.x * (lightmap_uv1 - lightmap_uv0)
 					+ barycentric.y * (lightmap_uv2 - lightmap_uv0);
+				// The instance's rectangle, as 0.16 fixed-point scale and offset fractions of the lightmap.
+				let rectangle_scale: f32 = 1.0 / 65536.0;
 				let lightmap_texel_uv: vec2f = vec2f(
-					lightmap_uv.x * lightmap_record.scale_offset.x + lightmap_record.scale_offset.z,
-					lightmap_uv.y * lightmap_record.scale_offset.y + lightmap_record.scale_offset.w
-				);
+					lightmap_uv.x * f32(mesh.surface.x & 65535) + f32(mesh.surface.y & 65535),
+					lightmap_uv.y * f32(mesh.surface.x >> 16) + f32(mesh.surface.y >> 16)
+				) * rectangle_scale;
 				// The lightmap has one level, so zero derivatives read it.
 				let lightmap_light: vec4f = sample_texture_2d_array_grad(
-					scene.textures, lightmap_record.texture, lightmap_texel_uv, vec2f(0.0, 0.0), vec2f(0.0, 0.0)
+					scene.lightmaps, lightmap_slot - 1, lightmap_texel_uv, vec2f(0.0, 0.0), vec2f(0.0, 0.0)
 				);
 				// The bake stored irradiance over π in nits, not pre-exposed, holding the environment's light its paths
 				// reached.
@@ -581,12 +583,12 @@ material_evaluation_suffix: fn () -> void {
 					}
 					attenuation = attenuation * f32(cone_factor);
 				}
-				if (material_evaluation.lighting_data.lights[light_index].ies_profile_texture != 4294967295) {
+				if (material_evaluation.lighting_data.lights[light_index].ies_profile != 4294967295) {
 					let emission_direction: vec3f = vec3f(0.0, 0.0, 0.0) - L;
 					let profile_axis: vec3f = material_evaluation.lighting_data.lights[light_index].direction;
 					let intensity_factor: f32 = sample_ies_profile(
 						scene,
-						material_evaluation.lighting_data.lights[light_index].ies_profile_texture,
+						material_evaluation.lighting_data.lights[light_index].ies_profile,
 						emission_direction,
 						profile_axis,
 						material_evaluation.lighting_data.lights[light_index].ies_c0_tangent
@@ -747,11 +749,11 @@ pub(crate) const U16_TO_U32_SOURCE: &str = "u16_to_u32: fn (value: u16) -> u32 {
 
 pub(crate) const CONE_ATTENUATION_SOURCE: &str = "cone_attenuation: fn (cosine: f32, inner_cosine: f32, outer_cosine: f32) -> f32 { return clamp((cosine - outer_cosine) / (inner_cosine - outer_cosine), 0.0, 1.0); }";
 
-// Resolve all three triangle vertices together so mesh and meshlet offsets are computed once.
+// Resolve all three triangle vertices together so the instance's vertex base is read once.
 pub(crate) const COMPUTE_VERTEX_INDICES_SOURCE: &str = r#"
 compute_vertex_indices: fn (scene: Scene, mesh: Mesh, meshlet: Meshlet, primitive_index_base: u32) -> u32[3] {
-	let vertex_index_base: u32 = mesh.base_vertex_index;
-	let relative_index_base: u32 = mesh.base_primitive_index + meshlet.primitive_offset;
+	let vertex_index_base: u32 = instance_vertex_base(mesh, scene.mesh_levels[mesh.level & MESH_LEVEL_MASK]);
+	let relative_index_base: u32 = meshlet.primitive_offset;
 	let primitive_index0: u32 = u32(scene.primitive_indices[primitive_index_base]);
 	let primitive_index1: u32 = u32(scene.primitive_indices[primitive_index_base + 1]);
 	let primitive_index2: u32 = u32(scene.primitive_indices[primitive_index_base + 2]);

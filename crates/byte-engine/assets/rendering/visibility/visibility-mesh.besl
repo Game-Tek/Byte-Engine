@@ -23,18 +23,21 @@ main: fn(scene: Scene) -> void {
 	let instance_index: u32 = meshlet_instances[192];
 	let view_offset: u32 = (meshlet_instance >> 12) & 7;
 	let mesh: Mesh = scene.meshes[instance_index];
-	// Task shaders pack the meshlet relative to its instance's first meshlet.
-	let meshlet_index: u32 = mesh.base_meshlet_index + (meshlet_instance & 4095);
+	let level: MeshLevel = scene.mesh_levels[mesh.level & MESH_LEVEL_MASK];
+	// Task shaders pack the meshlet relative to its level's first meshlet.
+	let meshlet_index: u32 = level.first_meshlet + (meshlet_instance & 4095);
 	let view: View = scene.views.views[push_constant.view_base + view_offset];
 	let meshlet: Meshlet = scene.meshlets[meshlet_index];
 	let primitive_index: u32 = thread_idx();
 
-	set_mesh_output_counts(meshlet.primitive_count, meshlet.triangle_count);
+	let vertex_count: u32 = meshlet.counts & 255;
+	let triangle_count: u32 = (meshlet.counts >> 8) & 255;
 
-	if (primitive_index < meshlet.primitive_count) {
-		let relative_vertex_index: u32 =
-			u32(scene.vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]);
-		let vertex_index: u32 = mesh.base_vertex_index + relative_vertex_index;
+	set_mesh_output_counts(vertex_count, triangle_count);
+
+	if (primitive_index < vertex_count) {
+		let relative_vertex_index: u32 = u32(scene.vertex_indices[meshlet.primitive_offset + primitive_index]);
+		let vertex_index: u32 = instance_vertex_base(mesh, level) + relative_vertex_index;
 		// A posed instance's record points at its own range, which skinning wrote this frame.
 		let object_position: vec3f = scene.vertex_positions[vertex_index];
 		let position: vec4f = vec4f(object_position.x, object_position.y, object_position.z, 1.0);
@@ -45,8 +48,8 @@ main: fn(scene: Scene) -> void {
 		out_uv[primitive_index] = scene.vertex_uvs[vertex_index];
 	}
 
-	if (primitive_index < meshlet.triangle_count) {
-		let triangle_base_index: u32 = mesh.base_triangle_index + meshlet.triangle_offset + primitive_index;
+	if (primitive_index < triangle_count) {
+		let triangle_base_index: u32 = meshlet.triangle_offset + primitive_index;
 		set_mesh_triangle(
 			primitive_index,
 			vec3u(

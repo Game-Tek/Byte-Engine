@@ -30,7 +30,7 @@ Light: struct {
 	_padding_1: u32,
 	_padding_2: u32,
 	shadow_layer: u32,
-	ies_profile_texture: u32,
+	ies_profile: u32,
 	ies_c0_tangent: vec2u16,
 	// How far the light reaches, in meters, past which material evaluation leaves it out.
 	reach: f32,

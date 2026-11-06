@@ -8,60 +8,140 @@ use ghi::pod::{Mat4f, Mat4x3f, Vec3f};
 use super::layout::{LIGHT_CLUSTER_SLICES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, RuntimeUnitVector};
 use crate::rendering::View;
 
-/// The `ShaderMesh` struct is one entry of the per-frame instance table read by culling, rasterization, and material evaluation.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct ShaderMesh {
-	pub(crate) model: Mat4x3f,
-	pub(crate) material_index: u32,
-	/// Base position in the vertex attribute buffers: the mesh's bind pose, or a posed skinned instance's own range.
-	pub(crate) base_vertex_index: u32,
-	/// Base position in the vertex-index buffer.
-	pub(crate) base_primitive_index: u32,
-	/// Base triangle in the primitive-index buffer.
-	pub(crate) base_triangle_index: u32,
-	pub(crate) base_meshlet_index: u32,
-	pub(crate) meshlet_count: u32,
-	/// Bits such as [`MESH_FLAG_DOUBLE_SIDED`] and [`MESH_FLAG_SKINNED`].
-	pub(crate) flags: u32,
-	/// The first entry of the instance's dynamic material parameters in the material parameter buffer: its own
-	/// block when the application set a parameter on it, else its material's. See [`super::material_parameters`].
-	pub(crate) parameter_block: u32,
-	/// Object-space sphere around the primitive's meshlets, as xyz center and w radius. Task shaders place it with
-	/// `model` and skip instances no view reaches.
-	pub(crate) bounding_sphere: [f32; 4],
-}
-
-/// The `InstanceLightmap` struct is one entry of the per-frame table that tells material evaluation where an instance's
-/// light lies in the resident lightmap, indexed like [`ShaderMesh`].
+/// The `ShaderMesh` struct is one entry of the per-frame instance table read by culling, rasterization, and material
+/// evaluation.
+///
+/// Its geometry lives in the [`ShaderMeshLevel`](super::layout::ShaderMeshLevel) record it names, which every instance drawing that level shares, so
+/// the record holds only what differs between instances. Build one with [`Self::new`]; the frame's rebuild names the
+/// level and the rest each frame.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct InstanceLightmap {
-	/// Maps the instance's lightmap UVs into the lightmap: `uv * scale_offset.xy + scale_offset.zw`.
-	pub(crate) scale_offset: [f32; 4],
-	/// The lightmap's bindless texture slot, or [`NO_LIGHTMAP_TEXTURE`].
-	pub(crate) texture: u32,
-	pub(crate) padding: [u32; 3],
+pub struct ShaderMesh {
+	pub(crate) model: Mat4x3f,
+	/// The [`ShaderMeshLevel`](super::layout::ShaderMeshLevel) the instance draws in bits 0-23, and flags such as [`MESH_FLAG_DOUBLE_SIDED`] above it.
+	level: u32,
+	/// The material table index in bits 0-15, and in bits 16-31 the first entry of the instance's dynamic material
+	/// parameters in the material parameter buffer: its own block when the application set a parameter on it, else its
+	/// material's. See [`super::material_parameters`].
+	material: u32,
+	/// A posed skinned instance's first vertex in the first word, or a lightmapped instance's
+	/// [`InstanceLightmap::rectangle`].
+	surface: [u32; 2],
 }
 
-/// [`InstanceLightmap::texture`] of an instance no lightmap lights.
-pub(crate) const NO_LIGHTMAP_TEXTURE: u32 = u32::MAX;
+impl ShaderMesh {
+	/// Returns the record of an instance of the material table entry `material_index` placed by `model`.
+	pub(crate) fn new(model: Mat4x3f, material_index: u32) -> Self {
+		debug_assert!(material_index <= MESH_MATERIAL_MASK, "Material index {material_index} does not fit an instance record.");
+		Self {
+			model,
+			level: 0,
+			material: material_index,
+			surface: [0; 2],
+		}
+	}
+
+	pub(crate) fn material_index(&self) -> u32 {
+		self.material & MESH_MATERIAL_MASK
+	}
+
+	#[cfg(test)]
+	pub(crate) fn level(&self) -> u32 {
+		self.level & MESH_LEVEL_MASK
+	}
+
+	#[cfg(test)]
+	pub(crate) fn flags(&self) -> u32 {
+		self.level & !MESH_LEVEL_MASK
+	}
+
+	/// Names the level record the instance draws and its flags, and forgets its lightmap and posed vertices.
+	pub(crate) fn set_level(&mut self, level: u32, flags: u32) {
+		debug_assert!(level <= MESH_LEVEL_MASK && flags & MESH_LEVEL_MASK == 0);
+		self.level = level | flags;
+		self.surface = [0; 2];
+	}
+
+	/// Sets the first entry of the instance's dynamic material parameters.
+	pub(crate) fn set_parameter_block(&mut self, block: u32) {
+		debug_assert!(block <= u16::MAX as u32, "Parameter block {block} does not fit an instance record.");
+		self.material = self.material_index() | block << 16;
+	}
+
+	/// Lights the instance with `lightmap`, or with none for [`InstanceLightmap::NONE`].
+	pub(crate) fn set_lightmap(&mut self, lightmap: InstanceLightmap) {
+		self.level = self.level & !(MESH_LIGHTMAP_MASK << MESH_LIGHTMAP_SHIFT) | lightmap.slot << MESH_LIGHTMAP_SHIFT;
+		self.surface = lightmap.rectangle;
+	}
+
+	/// Draws the instance from its own posed vertices, which start at `first_vertex`, instead of its level's. A posed
+	/// instance moved away from what a lightmap holds, so it loses its lightmap.
+	pub(crate) fn set_posed_vertices(&mut self, first_vertex: u32) {
+		self.set_lightmap(InstanceLightmap::NONE);
+		self.level |= MESH_FLAG_SKINNED;
+		self.surface = [first_vertex, 0];
+	}
+}
+
+/// Masks the level index out of [`ShaderMesh::level`]; the shaders spell it `MESH_LEVEL_MASK`.
+const MESH_LEVEL_MASK: u32 = (1 << 24) - 1;
+/// Masks the material table index out of [`ShaderMesh::material`]; the shaders spell it `MESH_MATERIAL_MASK`.
+const MESH_MATERIAL_MASK: u32 = u16::MAX as u32;
+/// Where [`ShaderMesh::level`] holds one plus the instance's lightmap slot, or zero when no lightmap lights it.
+const MESH_LIGHTMAP_SHIFT: u32 = 26;
+const MESH_LIGHTMAP_MASK: u32 = 0b1_1111;
+const _: () = assert!(
+	super::layout::MAX_LIGHTMAPS < MESH_LIGHTMAP_MASK as usize && super::layout::MAX_ADDRESSABLE_LEVELS == MESH_LEVEL_MASK as usize + 1,
+	"Update the instance record's bit layout, and the shaders' `scene_records` layer, when the lightmap or level limits change."
+);
+
+/// [`ShaderMesh`] flag for a material with both faces visible. Task shaders keep its back-facing meshlets and material
+/// evaluation reverses the normal of its back-facing pixels.
+pub(crate) const MESH_FLAG_DOUBLE_SIDED: u32 = 1 << 24;
+/// [`ShaderMesh`] flag for an instance skinning posed this frame. Posed meshlets can leave their bind-pose bounds, so
+/// task shaders keep all of its meshlets in every view.
+pub(crate) const MESH_FLAG_SKINNED: u32 = 1 << 25;
+
+/// The `InstanceLightmap` struct says where an instance's light lies in the resident lightmaps, so material evaluation
+/// can read it.
+///
+/// [`super::lightmaps::Lightmaps::instance`] makes one per primitive of a lit renderable, and the frame's rebuild hands
+/// it to [`ShaderMesh::set_lightmap`].
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) struct InstanceLightmap {
+	/// One plus the lightmap's slot in the scene set's `lightmaps`, or zero for an instance no lightmap lights.
+	slot: u32,
+	/// Maps the instance's lightmap UVs into the lightmap, as 0.16 fixed-point fractions of its side: scale U and V
+	/// in the low and high halves of the first word, offset U and V in the second. Rectangles of a power-of-two image
+	/// of up to 65,536 texels land on exact values.
+	rectangle: [u32; 2],
+}
 
 impl InstanceLightmap {
 	/// The entry of an instance no lightmap lights.
 	pub(crate) const NONE: Self = Self {
-		scale_offset: [0.0; 4],
-		texture: NO_LIGHTMAP_TEXTURE,
-		padding: [0; 3],
+		slot: 0,
+		rectangle: [0; 2],
 	};
-}
 
-/// [`ShaderMesh::flags`] bit for a material with both faces visible. Task shaders keep its back-facing meshlets and
-/// material evaluation reverses the normal of its back-facing pixels. The shaders spell this bit as the literal `1`.
-pub(crate) const MESH_FLAG_DOUBLE_SIDED: u32 = 1;
-/// [`ShaderMesh::flags`] bit for an instance skinning posed this frame. Posed meshlets can leave their bind-pose
-/// bounds, so task shaders keep all of its meshlets in every view. The shaders spell this bit as the literal `2`.
-pub(crate) const MESH_FLAG_SKINNED: u32 = 2;
+	/// Returns the entry of an instance lit by the lightmap in slot `lightmap`, whose UVs map into it as
+	/// `uv * scale_offset.xy + scale_offset.zw`.
+	pub(crate) fn new(lightmap: u32, scale_offset: [f32; 4]) -> Self {
+		debug_assert!((lightmap as usize) < super::layout::MAX_LIGHTMAPS);
+		let fixed = |fraction: f32| (fraction.clamp(0.0, 1.0) * 65536.0).round().min(u16::MAX as f32) as u32;
+		let [scale_u, scale_v, offset_u, offset_v] = scale_offset.map(fixed);
+		Self {
+			slot: lightmap + 1,
+			rectangle: [scale_u | scale_v << 16, offset_u | offset_v << 16],
+		}
+	}
+
+	/// Returns the lightmap slot, or `None` for an instance no lightmap lights.
+	#[cfg(test)]
+	pub(crate) fn lightmap(&self) -> Option<u32> {
+		self.slot.checked_sub(1)
+	}
+}
 
 /// The `ShaderViewData` struct is one entry of the `views` buffer: the camera view followed by every shadow view.
 #[repr(C)]
@@ -88,15 +168,16 @@ impl From<View> for ShaderViewData {
 	}
 }
 
-/// Sentinel used when a local light has no resident IES profile texture.
-pub(crate) const NO_IES_PROFILE_TEXTURE: u32 = u32::MAX;
+/// Sentinel used when a local light has no resident IES profile.
+pub(crate) const NO_IES_PROFILE: u32 = u32::MAX;
 /// Octahedral encoding of the +Z axis, used where no meaningful tangent exists.
 pub(crate) const NEUTRAL_UNIT_VECTOR: RuntimeUnitVector = [32768, 32768];
 
-/// The `IesProfileTexture` struct carries a resident intensity map's bindless slot and calibrated candela scale.
+/// The `IesProfileTexture` struct carries a resident intensity map's slot in the scene set's `ies_profiles` and its
+/// calibrated candela scale.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(crate) struct IesProfileTexture {
-	pub(crate) texture_index: u32,
+	pub(crate) profile_index: u32,
 	pub(crate) intensity_scale_candela: f32,
 }
 
@@ -104,7 +185,7 @@ pub(crate) struct IesProfileTexture {
 ///
 /// `color` stores RGB illuminance in lux for directional lights and RGB luminous intensity in candela for local
 /// lights. IES-backed local lights resolve their calibrated candela scale into `color` on the CPU, so the shader
-/// only samples a normalized profile when `ies_profile_texture` is not [`NO_IES_PROFILE_TEXTURE`].
+/// only samples a normalized profile when `ies_profile` is not [`NO_IES_PROFILE`].
 ///
 /// `reach` is how far a local light visibly lights at an exposure of one. The light-cluster pass scales it by the
 /// square root of the frame's exposure and buckets the light into every cluster within that distance.
@@ -125,7 +206,7 @@ pub struct LightData {
 	pub(crate) _padding: [u32; 3],
 	/// A sun's slot, a cone's layer, or a point's cube within the image of its size class.
 	pub shadow_layer: u32,
-	pub(crate) ies_profile_texture: u32,
+	pub(crate) ies_profile: u32,
 	pub(crate) ies_c0_tangent: RuntimeUnitVector,
 	pub(crate) reach: f32,
 	/// The tangent of a directional light's angular radius, which sizes its shadow penumbrae. Other lights leave it at
@@ -136,7 +217,7 @@ pub struct LightData {
 impl Default for LightData {
 	fn default() -> Self {
 		Self {
-			ies_profile_texture: NO_IES_PROFILE_TEXTURE,
+			ies_profile: NO_IES_PROFILE,
 			ies_c0_tangent: NEUTRAL_UNIT_VECTOR,
 			..bytemuck::Zeroable::zeroed()
 		}
@@ -267,13 +348,10 @@ pub(crate) struct ReflectionShaderParameters {
 ///
 /// These are compile-time checks so a layout change fails the build at the definition rather than later
 /// in a shader that silently reads the wrong bytes.
-const _: () = assert!(std::mem::size_of::<ShaderMesh>() == 96);
-const _: () = assert!(std::mem::size_of::<InstanceLightmap>() == 32);
-const _: () = assert!(std::mem::offset_of!(InstanceLightmap, texture) == 16);
-const _: () = assert!(std::mem::offset_of!(ShaderMesh, material_index) == 48);
-const _: () = assert!(std::mem::offset_of!(ShaderMesh, flags) == 72);
-const _: () = assert!(std::mem::offset_of!(ShaderMesh, parameter_block) == 76);
-const _: () = assert!(std::mem::offset_of!(ShaderMesh, bounding_sphere) == 80);
+const _: () = assert!(std::mem::size_of::<ShaderMesh>() == 64);
+const _: () = assert!(std::mem::offset_of!(ShaderMesh, level) == 48);
+const _: () = assert!(std::mem::offset_of!(ShaderMesh, material) == 52);
+const _: () = assert!(std::mem::offset_of!(ShaderMesh, surface) == 56);
 
 const _: () = assert!(std::mem::size_of::<ShaderViewData>() == 176);
 const _: () = assert!(std::mem::offset_of!(ShaderViewData, view) == 0);
@@ -292,7 +370,7 @@ const _: () = assert!(std::mem::offset_of!(LightData, light_type) == 44);
 const _: () = assert!(std::mem::offset_of!(LightData, shadow_views) == 48);
 const _: () = assert!(std::mem::offset_of!(LightData, shadow_size_class) == 64);
 const _: () = assert!(std::mem::offset_of!(LightData, shadow_layer) == 80);
-const _: () = assert!(std::mem::offset_of!(LightData, ies_profile_texture) == 84);
+const _: () = assert!(std::mem::offset_of!(LightData, ies_profile) == 84);
 const _: () = assert!(std::mem::offset_of!(LightData, ies_c0_tangent) == 88);
 const _: () = assert!(std::mem::offset_of!(LightData, reach) == 92);
 const _: () = assert!(std::mem::offset_of!(LightData, angular_radius_tangent) == 96);

@@ -124,6 +124,7 @@ Every value here is validated, and a bad one stops startup.
 | `render.geometry.vertex-index-capacity` | Positive count | 524,288 | Meshlet-local vertex indices. |
 | `render.geometry.triangle-capacity` | Positive count | 524,288 | Triangles. |
 | `render.geometry.meshlet-capacity` | 1 through 16,777,216 | 8,192 | Meshlets. |
+| `render.geometry.level-capacity` | 1 through 16,777,216 | 4,096 | Resident detail levels: one per level of a primitive whose geometry is loaded. |
 | `render.geometry.skinning-vertex-capacity` | Positive count | 262,144 | Bind-pose vertices for GPU skinning. |
 | `render.instances.capacity` | 1 through 33,554,432 | 1,024 | Instances one frame draws, one per primitive of a renderable mesh. A primitive past it isn't drawn, with one warning. |
 | `render.instances.meshlet-group-capacity` | Positive count | 131,072 | Groups of up to 32 meshlets that one frame culls; an instance takes one per 32 meshlets of the level it draws. An instance past it isn't drawn, with one warning. |

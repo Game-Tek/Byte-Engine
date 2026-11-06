@@ -11,7 +11,7 @@ main: fn (
 	},
 	scene: Scene
 ) -> void {
-	let material_index: u32 = scene.meshes[pipeline_input.instance_index].material_index;
+	let material_index: u32 = scene.meshes[pipeline_input.instance_index].material & MESH_MATERIAL_MASK;
 	// Read only the material fields the alpha test uses, instead of copying the whole material and its texture slots.
 	let coverage: f32 = scene.materials.materials[material_index].coverage_factor;
 	let coverage_texture_slot: u32 = scene.materials.materials[material_index].coverage_texture_slot;

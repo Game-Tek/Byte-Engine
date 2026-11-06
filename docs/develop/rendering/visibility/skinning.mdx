@@ -18,12 +18,13 @@ the resident `vertex_positions`, `vertex_normals`, and `vertex_uvs` streams,
 as long as its primitive. The skinning compute pass writes the instance's
 posed positions and normals into that range every frame, with normals in the
 same octahedral UNORM16 encoding the loader writes. The instance's mesh record
-points its `base_vertex_index` at the range, so every later stage reads posed
-vertices exactly the way it reads a static mesh's. No stage branches on
-skinning to find its vertices.
+sets its `MESH_FLAG_SKINNED` bit and holds the range's first vertex in
+`surface.x`, which `instance_vertex_base` in `scene_records.besl` reads in place
+of the level's `vertex_base`. Every stage finds an instance's vertices through
+that one function, so none branches on skinning on its own.
 
-The record's `MESH_FLAG_SKINNED` bit remains, because posed meshlets can leave
-their bind-pose bounds: task shaders keep every meshlet of a skinned instance
+The flag also matters to culling, because posed meshlets can leave their
+bind-pose bounds: task shaders keep every meshlet of a skinned instance
 instead of culling it by bounds or occlusion.
 
 ## Vertex ranges come from one allocator

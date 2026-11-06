@@ -30,9 +30,9 @@ order the material declares them:
   values written over it. It's written on the first frame that draws it, and
   again after the entity's values or its material's change.
 
-Each frame, the manager writes the block an instance reads into the
-`parameter_block` field of its instance record, so material evaluation reads
-`material_parameters[mesh.parameter_block + k]` for the `k`-th dynamic
+Each frame, the manager writes the block an instance reads into the high half
+of its instance record's `material` word, so material evaluation reads
+`material_parameters[(mesh.material >> 16) + k]` for the `k`-th dynamic
 parameter. `MaterialParameters` in `visibility/material_parameters.rs` hands out
 the blocks with the visibility `RangeAllocator`.
 

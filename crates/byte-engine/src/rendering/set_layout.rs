@@ -239,6 +239,11 @@ impl SetBinder<'_> {
 		ghi::DescriptorWrite::image(self.set, self.slot(name), image, ghi::Layouts::Read)
 	}
 
+	/// Binds one element of a texture array whose sampler the shader fixes, so the set takes only the image.
+	pub fn texture_element(&self, name: &str, image: impl Into<ghi::BaseImageHandle>, index: u32) -> ghi::DescriptorWrite {
+		ghi::DescriptorWrite::image(self.set, self.slot(name), image, ghi::Layouts::Read).with_array_element(index)
+	}
+
 	/// Binds a texture a shader samples through `sampler`.
 	pub fn sampled(
 		&self,

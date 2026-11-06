@@ -31,7 +31,7 @@ use super::geometry::{
 	PrimitiveBlock, PrimitiveLevels, RetiredRanges,
 };
 use super::layout::{
-	MAX_BINDLESS_TEXTURES, MAX_INSTANCE_MESHLETS, MAX_MATERIALS, TRANSPARENT_SPECIALIZATION_ID,
+	MAX_BINDLESS_TEXTURES, MAX_IES_PROFILES, MAX_INSTANCE_MESHLETS, MAX_LIGHTMAPS, MAX_MATERIALS, TRANSPARENT_SPECIALIZATION_ID,
 	material_variable_specialization_id,
 };
 use super::lod::MeshLods;
@@ -71,6 +71,7 @@ pub(crate) enum VisibilityLoadKey {
 	Texture(String),
 	/// The full mip chain of a texture that loaded its coarse mips first.
 	TextureDetail(String),
+	IesProfile(String),
 	Environment(String),
 	Lightmap(String),
 	/// The uber material evaluation shader of the transparent phase when `true`, of the opaque phase otherwise.
@@ -86,6 +87,7 @@ impl std::fmt::Display for VisibilityLoadKey {
 			Self::Material(id) => write!(formatter, "material {id}"),
 			Self::Texture(id) => write!(formatter, "texture {id}"),
 			Self::TextureDetail(id) => write!(formatter, "full mip chain of texture {id}"),
+			Self::IesProfile(id) => write!(formatter, "IES profile {id}"),
 			Self::Environment(id) => write!(formatter, "environment {id}"),
 			Self::Lightmap(id) => write!(formatter, "lightmap {id}"),
 			Self::MeshLevels(key) => write!(formatter, "finer detail levels of mesh {key:?}"),
@@ -115,6 +117,8 @@ pub(crate) enum VisibilityLoadRequest {
 	Texture(String),
 	/// The full mip chain of a texture whose coarse mips loaded first. It replaces the coarse image in the same slot.
 	TextureDetail(String),
+	/// A light's calibrated IES intensity profile, which loads with its full mip chain.
+	IesProfile(String),
 	Environment(String),
 	/// A baked lightmap and its image.
 	Lightmap(String),
@@ -164,17 +168,58 @@ pub(crate) struct DynamicParameter {
 	pub(crate) default: bemx::Value,
 }
 
+/// The `TextureArray` enum names the texture arrays of the scene set. Each has its own slots and the sampler its
+/// shader declaration fixes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum TextureArray {
+	/// Material textures, which repeat outside their bounds.
+	Material,
+	/// Lights' calibrated IES intensity profiles.
+	IesProfile,
+	/// Baked lightmaps.
+	Lightmap,
+}
+
+impl TextureArray {
+	/// Returns the name of the array's binding in the scene set.
+	pub(crate) fn binding(self) -> &'static str {
+		match self {
+			Self::Material => "textures",
+			Self::IesProfile => "ies_profiles",
+			Self::Lightmap => "lightmaps",
+		}
+	}
+
+	/// Returns how many slots the array has.
+	fn capacity(self) -> usize {
+		match self {
+			Self::Material => MAX_BINDLESS_TEXTURES,
+			Self::IesProfile => MAX_IES_PROFILES,
+			Self::Lightmap => MAX_LIGHTMAPS,
+		}
+	}
+
+	/// Returns what the array holds, as load errors name it.
+	fn kind(self) -> &'static str {
+		match self {
+			Self::Material => "texture",
+			Self::IesProfile => "IES profile",
+			Self::Lightmap => "lightmap",
+		}
+	}
+}
+
 /// The `ResidentTexture` struct carries one upload-complete texture into renderer-owned descriptors.
 pub(crate) struct ResidentTexture {
 	pub(crate) id: String,
+	pub(crate) array: TextureArray,
 	pub(crate) index: u32,
 	pub(crate) image: ghi::BaseImageHandle,
-	pub(crate) sampler: ghi::SamplerHandle,
 	pub(crate) photometry: Option<ImagePhotometry>,
 }
 
 /// The `ResidentLightmap` struct carries an upload-complete lightmap: where each primitive of its level lies in it, and
-/// its image, which the render thread places in its bindless slot.
+/// its image, which the render thread places in its slot of the scene set's `lightmaps`.
 pub(crate) struct ResidentLightmap {
 	pub(crate) id: String,
 	/// The spawn index of the level entity that holds the `lightmap` kind.
@@ -210,6 +255,7 @@ pub(crate) enum VisibilityResident {
 	/// An upload-complete texture whose image the render thread still interns.
 	Texture {
 		id: String,
+		array: TextureArray,
 		index: u32,
 		image: ghi::implementation::DetachedImage,
 		/// The resource mip that is the image's base level: 0 for the full chain.
@@ -304,7 +350,8 @@ pub(crate) struct VisibilityLoader {
 	/// Whether a material without a closest-hit shader was reported while the pipeline traces rays.
 	reported_missing_hit_shader: std::sync::atomic::AtomicBool,
 	material_slots: Mutex<HashMap<String, u32>>,
-	texture_slots: Mutex<HashMap<String, u32>>,
+	/// The slot of each resident texture, by texture ID, in each array of [`TextureArray`] order.
+	texture_slots: [Mutex<HashMap<String, u32>>; 3],
 	/// How the project evaluates materials, which decides what a material load requests.
 	material_evaluation: MaterialEvaluationMode,
 }
@@ -325,8 +372,8 @@ pub(crate) struct VisibilityLoaderClient {
 	retired_ranges: RetiredRanges,
 	/// The first frame that has not started yet, which is the first that cannot draw a mesh released now.
 	next_frame: u64,
-	/// The image in each bindless texture slot, with the resource mip that is its base level.
-	texture_images: HashMap<u32, (ghi::ImageHandle, u32)>,
+	/// The image in each texture array slot, with the resource mip that is its base level.
+	texture_images: HashMap<(TextureArray, u32), (ghi::ImageHandle, u32)>,
 	/// Images finer ones replaced in their slots this frame, deleted once the slots name their replacements.
 	replaced_images: Vec<ghi::ImageHandle>,
 	environments: HashMap<String, ResidentEnvironment>,
@@ -336,10 +383,6 @@ pub(crate) struct VisibilityLoaderClient {
 	/// Reports rebaked material variants, so their materials load again.
 	#[cfg(debug_assertions)]
 	resource_updates: resource_management::resource::ResourceUpdateListener,
-	/// Samples material textures, which repeat outside their bounds.
-	repeat_sampler: ghi::SamplerHandle,
-	/// Samples spherical IES profiles, which must clamp instead of wrapping around the seam.
-	clamp_sampler: ghi::SamplerHandle,
 	/// Samples environment maps across their prefiltered roughness levels, and the one-level fallback environment.
 	pub(super) environment_sampler: ghi::SamplerHandle,
 }
@@ -477,9 +520,10 @@ impl VisibilityLoaderClient {
 		Some(lods)
 	}
 
-	/// Requests one material texture or photometric profile.
-	pub(crate) fn request_texture(&mut self, id: String) {
-		self.client.request(VisibilityLoadRequest::Texture(id));
+	/// Requests a light's IES intensity profile. It reaches the renderer as a [`VisibilityLoaderEvent::TextureReady`] in
+	/// [`TextureArray::IesProfile`].
+	pub(crate) fn request_ies_profile(&mut self, id: String) {
+		self.client.request(VisibilityLoadRequest::IesProfile(id));
 	}
 
 	/// Requests the uber material evaluation shader of each phase. Each reaches the renderer as
@@ -515,8 +559,8 @@ impl VisibilityLoaderClient {
 		resident
 	}
 
-	/// Interns a loaded image for bindless texture slot `index` and returns its handle, or frees it and returns `None`
-	/// when the slot already holds an image with more mips.
+	/// Interns a loaded image for slot `index` of `array` and returns its handle, or frees it and returns `None` when the
+	/// slot already holds an image with more mips.
 	///
 	/// `first_level` is the resource mip that is the image's base level. An image that replaces the slot's image
 	/// queues the old one for [`Self::delete_replaced_images`]. A coarser image than the resident one, such as coarse
@@ -524,19 +568,20 @@ impl VisibilityLoaderClient {
 	fn adopt_texture_image(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
+		array: TextureArray,
 		index: u32,
 		first_level: u32,
 		image: ghi::implementation::DetachedImage,
 	) -> Option<ghi::ImageHandle> {
 		if self
 			.texture_images
-			.get(&index)
+			.get(&(array, index))
 			.is_some_and(|&(_, resident_first_level)| resident_first_level < first_level)
 		{
 			return None;
 		}
 		let image = frame.intern_image(image);
-		if let Some((replaced, _)) = self.texture_images.insert(index, (image, first_level)) {
+		if let Some((replaced, _)) = self.texture_images.insert((array, index), (image, first_level)) {
 			self.replaced_images.push(replaced);
 		}
 		Some(image)
@@ -632,6 +677,7 @@ impl VisibilityLoaderClient {
 					resident:
 						VisibilityResident::Texture {
 							id,
+							array,
 							index,
 							image,
 							first_level,
@@ -639,18 +685,14 @@ impl VisibilityLoaderClient {
 						},
 					..
 				} => {
-					let Some(image) = self.adopt_texture_image(frame, index, first_level, image) else {
+					let Some(image) = self.adopt_texture_image(frame, array, index, first_level, image) else {
 						continue;
 					};
 					VisibilityLoaderEvent::TextureReady(ResidentTexture {
 						id,
+						array,
 						index,
 						image: image.into(),
-						sampler: if photometry.is_some() {
-							self.clamp_sampler
-						} else {
-							self.repeat_sampler
-						},
 						photometry,
 					})
 				}
@@ -667,13 +709,12 @@ impl VisibilityLoaderClient {
 				} => VisibilityLoaderEvent::LightmapReady(ResidentLightmap {
 					texture: ResidentTexture {
 						id: id.clone(),
+						array: TextureArray::Lightmap,
 						index,
 						image: self
-							.adopt_texture_image(frame, index, 0, image)
+							.adopt_texture_image(frame, TextureArray::Lightmap, index, 0, image)
 							.expect("A full mip chain always replaces the image in its slot.")
 							.into(),
-						// Rectangles end at the image's edges, which must not wrap to the opposite side.
-						sampler: self.clamp_sampler,
 						photometry: None,
 					},
 					id,
@@ -817,7 +858,7 @@ pub(crate) fn spawn(
 		flat_triangles: geometry.flat_triangle_indices.is_some(),
 		reported_missing_hit_shader: std::sync::atomic::AtomicBool::new(false),
 		material_slots: Mutex::new(HashMap::default()),
-		texture_slots: Mutex::new(HashMap::default()),
+		texture_slots: std::array::from_fn(|_| Mutex::new(HashMap::default())),
 		material_evaluation,
 	};
 	let (client, lanes) = spawn_lanes(loader, visibility_loader, VISIBILITY_LANE_COUNT, VISIBILITY_RESULT_CAPACITY);
@@ -838,12 +879,6 @@ pub(crate) fn spawn(
 			uber_shaders: [None, None],
 			#[cfg(debug_assertions)]
 			resource_updates,
-			repeat_sampler: render.build_sampler(material_sampler().max_lod(ghi::sampler::UNCLAMPED_MAX_LOD)),
-			clamp_sampler: render.build_sampler(
-				material_sampler()
-					.addressing_mode(ghi::SamplerAddressingModes::Clamp)
-					.max_lod(ghi::sampler::UNCLAMPED_MAX_LOD),
-			),
 			environment_sampler: render.build_sampler(material_sampler().max_lod((IBL_SPECULAR_LEVEL_COUNT - 1) as f32)),
 		},
 		lanes,
@@ -977,7 +1012,7 @@ impl VisibilityLoader {
 				levels.primitive
 			)));
 		}
-		let prepared = PreparedMesh::resource(resource, lane.staging().clone(), false, PreparedLevels::Finer(&primitives))
+		let mut prepared = PreparedMesh::resource(resource, lane.staging().clone(), false, PreparedLevels::Finer(&primitives))
 			.await
 			.ok_or_else(|| {
 				LoadError(format!(
@@ -988,7 +1023,7 @@ impl VisibilityLoader {
 			.geometry
 			.lock()
 			.unwrap_or_else(|error| error.into_inner())
-			.append_primitives(&prepared, &mut primitives)
+			.append_primitives(&mut prepared, &mut primitives)
 			.map_err(|meshlets| {
 				LoadError(format!(
 					"Visibility detail level placement failed for {id}. The most likely cause is that a primitive level has {meshlets} meshlets, more than the {MAX_INSTANCE_MESHLETS} one instance can address; split the primitive."
@@ -1007,7 +1042,9 @@ impl VisibilityLoader {
 			assign_slot(&mut slots, id, MAX_MATERIALS, "material")?
 		};
 		let texture_slots = {
-			let mut slots = self.texture_slots.lock().unwrap_or_else(|error| error.into_inner());
+			let mut slots = self.texture_slots[TextureArray::Material as usize]
+				.lock()
+				.unwrap_or_else(|error| error.into_inner());
 			texture_ids
 				.iter()
 				.map(|texture| match texture {
@@ -1147,14 +1184,15 @@ impl VisibilityLoader {
 		})
 	}
 
-	/// Loads one image, places it in a bindless slot, and completes its transfer before returning.
+	/// Loads one image, places it in a slot of `array`, and completes its transfer before returning.
 	///
 	/// With [`TextureMips::CoarseFirst`], an image larger than [`COARSE_TEXTURE_EXTENT`] loads only its mips from
 	/// [`coarse_first_level`] on, then requests its full chain as [`VisibilityLoadRequest::TextureDetail`], which
-	/// replaces the coarse image in the same slot.
+	/// replaces the coarse image in the same slot. Only material textures load coarse mips first.
 	async fn load_texture(
 		&self,
 		id: String,
+		array: TextureArray,
 		mips: TextureMips,
 		lane: &LoaderLane<Self>,
 	) -> Result<VisibilityResident, LoadError> {
@@ -1164,22 +1202,24 @@ impl VisibilityLoader {
 			))
 		})?;
 		let texture = resource.resource();
+		// Only an IES profile's calibration scales its light.
 		let photometry = texture
 			.photometry
 			.clone()
-			.filter(|photometry| photometric_profile_metadata_is_valid(texture, photometry));
+			.filter(|photometry| array == TextureArray::IesProfile && photometric_profile_metadata_is_valid(texture, photometry));
 		// The slot guard drops at the end of this statement, before the transfer awaits.
 		let index = assign_slot(
-			&mut self.texture_slots.lock().unwrap_or_else(|error| error.into_inner()),
+			&mut self.texture_slots[array as usize].lock().unwrap_or_else(|error| error.into_inner()),
 			&id,
-			MAX_BINDLESS_TEXTURES,
-			"texture",
+			array.capacity(),
+			array.kind(),
 		)
 		.ok_or_else(|| {
-			LoadError(
-				"Visibility texture limit exceeded. The most likely cause is that the scene referenced more textures than the visibility pipeline supports."
-					.to_string(),
-			)
+			let kind = array.kind();
+			LoadError(format!(
+				"Visibility {kind} limit exceeded. The most likely cause is that the scene referenced more than the {} {kind}s the visibility pipeline can hold at once.",
+				array.capacity()
+			))
 		})?;
 
 		let first_level = match mips {
@@ -1198,6 +1238,7 @@ impl VisibilityLoader {
 
 		Ok(VisibilityResident::Texture {
 			id,
+			array,
 			index,
 			image,
 			first_level,
@@ -1205,7 +1246,7 @@ impl VisibilityLoader {
 		})
 	}
 
-	/// Loads a baked lightmap, then its image into a bindless slot, as a material texture loads.
+	/// Loads a baked lightmap, then its image into a slot of the scene set's `lightmaps`.
 	async fn load_lightmap(&self, id: String, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
 		let docs = crate::online_docs_url("reference/assets#lightmaps");
 		let lightmap: Reference<ResourceLightmap> = self.resource_manager.request(&id).await.map_err(|error| {
@@ -1220,7 +1261,8 @@ impl VisibilityLoader {
 		} = lightmap.into_resource();
 		let image_id = image.id().to_string();
 		// Lightmap texels are lighting, so a coarse lightmap would light the scene wrongly until its chain loads.
-		let VisibilityResident::Texture { index, image, .. } = self.load_texture(image_id, TextureMips::Full, lane).await?
+		let VisibilityResident::Texture { index, image, .. } =
+			self.load_texture(image_id, TextureArray::Lightmap, TextureMips::Full, lane).await?
 		else {
 			unreachable!("a texture load returns a texture");
 		};
@@ -1464,14 +1506,14 @@ pub(crate) async fn prepare_mesh_source(
 /// through `lane`, and returns where it landed.
 pub(crate) async fn place_mesh<P: LoadPipeline>(
 	geometry: &Mutex<GeometryBuffers>,
-	prepared: PreparedMesh,
+	mut prepared: PreparedMesh,
 	slots: &[u32],
 	lane: &LoaderLane<P>,
 ) -> Result<MeshData, LoadError> {
 	let (mesh, copies) = geometry
 		.lock()
 		.unwrap_or_else(|error| error.into_inner())
-		.append_mesh(&prepared, slots)
+		.append_mesh(&mut prepared, slots)
 		.map_err(|full| {
 			LoadError(match full {
 				Some(element) => format!(
@@ -1615,6 +1657,7 @@ impl LoadPipeline for VisibilityLoader {
 			VisibilityLoadRequest::Material(id) => VisibilityLoadKey::Material(id.clone()),
 			VisibilityLoadRequest::Texture(id) => VisibilityLoadKey::Texture(id.clone()),
 			VisibilityLoadRequest::TextureDetail(id) => VisibilityLoadKey::TextureDetail(id.clone()),
+			VisibilityLoadRequest::IesProfile(id) => VisibilityLoadKey::IesProfile(id.clone()),
 			VisibilityLoadRequest::Environment(id) => VisibilityLoadKey::Environment(id.clone()),
 			VisibilityLoadRequest::Lightmap(id) => VisibilityLoadKey::Lightmap(id.clone()),
 			VisibilityLoadRequest::UberShader { transparent, .. } => VisibilityLoadKey::UberShader(*transparent),
@@ -1629,8 +1672,15 @@ impl LoadPipeline for VisibilityLoader {
 			VisibilityLoadRequest::Mesh(source) => self.load_mesh(source, lane).await,
 			VisibilityLoadRequest::MeshLevels { id, primitives } => self.load_mesh_levels(id, primitives, lane).await,
 			VisibilityLoadRequest::Material(id) => self.load_material(id, lane).await,
-			VisibilityLoadRequest::Texture(id) => self.load_texture(id, TextureMips::CoarseFirst, lane).await,
-			VisibilityLoadRequest::TextureDetail(id) => self.load_texture(id, TextureMips::Full, lane).await,
+			VisibilityLoadRequest::Texture(id) => {
+				self.load_texture(id, TextureArray::Material, TextureMips::CoarseFirst, lane).await
+			}
+			VisibilityLoadRequest::TextureDetail(id) => {
+				self.load_texture(id, TextureArray::Material, TextureMips::Full, lane).await
+			}
+			VisibilityLoadRequest::IesProfile(id) => {
+				self.load_texture(id, TextureArray::IesProfile, TextureMips::Full, lane).await
+			}
 			VisibilityLoadRequest::Environment(id) => self.load_environment(id, lane).await,
 			VisibilityLoadRequest::Lightmap(id) => self.load_lightmap(id, lane).await,
 			VisibilityLoadRequest::UberShader { transparent, rebake } => self.load_uber_shader(transparent, rebake).await,

@@ -137,7 +137,7 @@ layout!(
 mod tests {
 	use std::mem::size_of;
 
-	use super::super::layout::ShaderMeshletData;
+	use super::super::layout::{ShaderMeshLevel, ShaderMeshletData};
 	use super::super::render_pass::{FogLightShaderParameters, ScreenViewData};
 	use super::super::shader_data::{
 		LightClusterParameters, LightingData, MaterialData, ReflectionShaderParameters, ShaderMesh, ShaderViewData,
@@ -159,10 +159,7 @@ mod tests {
 		assert_eq!(stride(&SCENE, "meshes"), size_of::<ShaderMesh>());
 		assert_eq!(stride(&SCENE, "meshlets"), size_of::<ShaderMeshletData>());
 		assert_eq!(stride(&SCENE, "materials"), size_of::<MaterialData>());
-		assert_eq!(
-			stride(&SCENE, "instance_lightmaps"),
-			size_of::<super::super::shader_data::InstanceLightmap>()
-		);
+		assert_eq!(stride(&SCENE, "mesh_levels"), size_of::<ShaderMeshLevel>());
 		assert_eq!(stride(&MATERIAL_EVALUATION, "lighting_data"), size_of::<LightingData>());
 		assert_eq!(stride(&LIGHT_CLUSTERS, "lighting_data"), size_of::<LightingData>());
 		assert_eq!(stride(&FOG_LIGHT, "lighting_data"), size_of::<LightingData>());

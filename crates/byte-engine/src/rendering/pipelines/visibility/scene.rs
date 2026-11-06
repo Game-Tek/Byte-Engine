@@ -14,7 +14,7 @@ use super::lod::MeshLods;
 use super::render_pass::VisibilityRenderPass;
 use super::residency::ResidencySlot;
 use super::shader_data::{
-	IesProfileTexture, InstanceLightmap, LightData, LightingData, NEUTRAL_UNIT_VECTOR, NO_IES_PROFILE_TEXTURE, ShaderMesh,
+	IesProfileTexture, InstanceLightmap, LightData, LightingData, NEUTRAL_UNIT_VECTOR, NO_IES_PROFILE, ShaderMesh,
 	ShaderViewData,
 };
 use super::shadow_selection::{LightShadow, sun_cascade_view};
@@ -41,8 +41,12 @@ pub struct RenderEntity {
 	pub(crate) primitive: u32,
 	/// Dependency-closure handle checked during frame-local admission.
 	pub(crate) availability: AvailabilityHandle,
-	/// The record of the primitive at full detail. Each frame copies it and names the level picked for that frame.
+	/// The instance's record with its model and material. Each frame copies it and names the level picked for that
+	/// frame.
 	pub(crate) shader_mesh: ShaderMesh,
+	/// Object-space sphere around the primitive at full detail, as xyz center and w radius, which detail level
+	/// selection measures the instance's distance with.
+	pub(crate) bounding_sphere: [f32; 4],
 	/// The primitive's detail levels, with the ones it holds now marked resident.
 	pub(crate) lods: MeshLods,
 	/// Where the primitive's wanted level is recorded each frame, when it has finer levels to load.
@@ -194,8 +198,6 @@ pub struct VisibilityScene {
 	pub(crate) views_buffer: ghi::DynamicBufferHandle<[ShaderViewData; SHADOW_VIEW_COUNT]>,
 	/// One record per instance the frame draws, [`InstanceCapacity::instances`] long.
 	pub(crate) meshes_buffer: ghi::DynamicBufferHandle<[ShaderMesh]>,
-	/// Each instance's place in the resident lightmap, by the same index as [`Self::meshes_buffer`].
-	pub(crate) instance_lightmaps_buffer: ghi::DynamicBufferHandle<[InstanceLightmap]>,
 	pub(crate) lighting_buffer: ghi::DynamicBufferHandle<LightingData>,
 	pub(crate) render_info: RenderInfo,
 	pub(crate) sink_states: Vec<SinkState>,
@@ -348,17 +350,17 @@ pub(crate) fn light_data(
 		),
 		Lights::Point(light) => (light.emission.ies_profile(), [0.0; 2], 0, light.emission.color),
 	};
-	let (color, ies_profile_texture, ies_c0_tangent) = match (profile, ies_texture) {
-		(None, _) => (color, NO_IES_PROFILE_TEXTURE, NEUTRAL_UNIT_VECTOR),
+	let (color, ies_profile, ies_c0_tangent) = match (profile, ies_texture) {
+		(None, _) => (color, NO_IES_PROFILE, NEUTRAL_UNIT_VECTOR),
 		// Dimmed fallback until the profile texture is resident.
-		(Some(profile), None) => (color * profile.dimmer(), NO_IES_PROFILE_TEXTURE, NEUTRAL_UNIT_VECTOR),
+		(Some(profile), None) => (color * profile.dimmer(), NO_IES_PROFILE, NEUTRAL_UNIT_VECTOR),
 		(Some(_), Some(texture)) => {
 			let tangent = orientation
 				.rotate_vector(math::UnitVector::<math::WorldSpace>::x_axis().into_vector())
 				.into_maths();
 			(
 				color * texture.intensity_scale_candela,
-				texture.texture_index,
+				texture.profile_index,
 				encode_octahedral_unit_vector((tangent.x, tangent.y, tangent.z)),
 			)
 		}
@@ -372,7 +374,7 @@ pub(crate) fn light_data(
 		shadow_views,
 		shadow_size_class,
 		shadow_layer,
-		ies_profile_texture,
+		ies_profile,
 		ies_c0_tangent,
 		reach: light_reach(color),
 		angular_radius_tangent: 0.0,
@@ -431,7 +433,7 @@ mod tests {
 			&transform,
 			LightShadow::None,
 			Some(IesProfileTexture {
-				texture_index: 37,
+				profile_index: 37,
 				intensity_scale_candela: 45.0,
 			}),
 		);
@@ -439,7 +441,7 @@ mod tests {
 		let encoded_tangent = encode_octahedral_unit_vector((tangent.x(), tangent.y(), tangent.z()));
 
 		assert_eq!(resident.color, ghi::pod::Vec3f::splat(45.0));
-		assert_eq!(resident.ies_profile_texture, 37);
+		assert_eq!(resident.ies_profile, 37);
 		assert_eq!(resident.ies_c0_tangent, encoded_tangent);
 	}
 

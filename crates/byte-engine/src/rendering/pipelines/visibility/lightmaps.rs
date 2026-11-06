@@ -21,9 +21,9 @@ pub(crate) struct Lightmaps {
 	resident: Option<Rectangles>,
 }
 
-/// The `Rectangles` struct is a loaded lightmap's bindless slot and each lit primitive's rectangle.
+/// The `Rectangles` struct is a loaded lightmap's slot in the scene set's `lightmaps` and each lit primitive's rectangle.
 struct Rectangles {
-	texture: u32,
+	lightmap: u32,
 	/// The scale and offset of each lit primitive, by its entity's handle and its index in the entity's mesh.
 	scale_offsets: HashMap<(Handle, u32), [f32; 4]>,
 }
@@ -44,12 +44,12 @@ impl Lightmaps {
 		true
 	}
 
-	/// Adopts a lightmap the loader made resident in bindless slot `texture`, and returns whether instances must read
+	/// Adopts a lightmap the loader made resident in `lightmaps` slot `lightmap`, and returns whether instances must read
 	/// their rectangles again. A lightmap the world no longer names is ignored.
 	///
 	/// `holder` is the spawn index of the entity that holds the `lightmap` kind, which leads every instance to its
 	/// entity's handle.
-	pub(crate) fn adopt(&mut self, id: &str, holder: u32, instances: &[LightmapInstance], texture: u32) -> bool {
+	pub(crate) fn adopt(&mut self, id: &str, holder: u32, instances: &[LightmapInstance], lightmap: u32) -> bool {
 		let Some((holder_handle, _)) = self.requested.as_ref().filter(|(_, requested)| requested.as_ref() == id) else {
 			return false;
 		};
@@ -60,7 +60,7 @@ impl Lightmaps {
 				((handle, instance.primitive), instance.scale_offset)
 			})
 			.collect();
-		self.resident = Some(Rectangles { texture, scale_offsets });
+		self.resident = Some(Rectangles { lightmap, scale_offsets });
 		true
 	}
 
@@ -82,10 +82,8 @@ impl Lightmaps {
 		resident
 			.scale_offsets
 			.get(&(handle, primitive))
-			.map_or(InstanceLightmap::NONE, |&scale_offset| InstanceLightmap {
-				scale_offset,
-				texture: resident.texture,
-				padding: [0; 3],
+			.map_or(InstanceLightmap::NONE, |&scale_offset| {
+				InstanceLightmap::new(resident.lightmap, scale_offset)
 			})
 	}
 }
@@ -93,7 +91,6 @@ impl Lightmaps {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::rendering::pipelines::visibility::shader_data::NO_LIGHTMAP_TEXTURE;
 
 	fn instance(entity: u32, primitive: u32, offset: f32) -> LightmapInstance {
 		LightmapInstance {
@@ -122,11 +119,15 @@ mod tests {
 			7
 		));
 
-		let lit = lightmaps.instance(Handle::from_id(11), 1);
-		assert_eq!(lit.texture, 7);
-		assert_eq!(lit.scale_offset, [0.5, 0.5, 0.25, 0.0]);
-		assert_eq!(lightmaps.instance(Handle::from_id(15), 0).scale_offset[2], 0.5);
-		assert_eq!(lightmaps.instance(Handle::from_id(12), 0).texture, NO_LIGHTMAP_TEXTURE);
+		assert_eq!(
+			lightmaps.instance(Handle::from_id(11), 1),
+			InstanceLightmap::new(7, [0.5, 0.5, 0.25, 0.0])
+		);
+		assert_eq!(
+			lightmaps.instance(Handle::from_id(15), 0),
+			InstanceLightmap::new(7, [0.5, 0.5, 0.5, 0.0])
+		);
+		assert_eq!(lightmaps.instance(Handle::from_id(12), 0).lightmap(), None);
 	}
 
 	#[test]
@@ -138,7 +139,7 @@ mod tests {
 		assert!(!lightmaps.adopt("old.lightmap.bead", 0, &[instance(0, 0, 0.0)], 1));
 
 		assert!(lightmaps.adopt("new.lightmap.bead", 0, &[instance(0, 0, 0.0)], 2));
-		assert_eq!(lightmaps.instance(holder, 0).texture, 2);
+		assert_eq!(lightmaps.instance(holder, 0).lightmap(), Some(2));
 		assert!(lightmaps.forget(holder));
 		assert_eq!(lightmaps.instance(holder, 0), InstanceLightmap::NONE);
 	}

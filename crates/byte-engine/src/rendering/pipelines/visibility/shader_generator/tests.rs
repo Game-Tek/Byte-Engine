@@ -1507,6 +1507,7 @@ fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 		"material_count",
 		"material_offset",
 		"pixel_mapping",
+		"mesh_levels",
 	];
 	let mut inputs: Vec<_> = names
 		.iter()
@@ -1536,8 +1537,9 @@ fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 	let mut push_constant = push_constant_buffer(&executable);
 	let mut results = buffer(&executable, slot(&executable, "results"));
 	// Reversing the winding must not move the ray origin into a visible double-sided surface.
-	for (flags, indices) in [(0, [0, 1, 2]), (1, [0, 1, 2]), (1, [0, 2, 1])] {
-		inputs[1].write_array_member(0, "flags", Value::U32(flags)).unwrap();
+	let double_sided = super::super::shader_data::MESH_FLAG_DOUBLE_SIDED;
+	for (flags, indices) in [(0, [0, 1, 2]), (double_sided, [0, 1, 2]), (double_sided, [0, 2, 1])] {
+		inputs[1].write_array_member(0, "level", Value::U32(flags)).unwrap();
 		for (index, vertex) in indices.into_iter().enumerate() {
 			inputs[5].write_array_element(index, Value::U8(vertex)).unwrap();
 		}

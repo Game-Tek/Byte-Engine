@@ -205,10 +205,10 @@ impl VisibilityFeatures {
 				&[],
 				self.ssgi || self.surfel_gi || self.probe_gi || self.baked_gi,
 			),
-			// Material evaluation reads lightmaps through the instance records, and BELD bakes them with the lightmap
+			// Material evaluation samples `lightmaps` only in its lightmap branch, and BELD bakes them with the lightmap
 			// shaders.
 			(
-				"instance_lightmaps",
+				"lightmaps",
 				"lightmaps/",
 				&crate::rendering::lightmaps::LIGHTMAP_BAKE_SHADERS,
 				self.baked_gi,

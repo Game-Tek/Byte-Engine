@@ -18,7 +18,7 @@ Light: struct {
 	_padding_2: u32,
 	// A sun's slot, a cone's layer, or a point's cube within the image of its size class.
 	shadow_layer: u32,
-	ies_profile_texture: u32,
+	ies_profile: u32,
 	ies_c0_tangent: vec2u16,
 	reach: f32,
 	angular_radius_tangent: f32,

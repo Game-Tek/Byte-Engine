@@ -364,7 +364,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		extent: Extent,
 		attachments: &[graphics_hardware_interface::AttachmentInformation],
 	) -> &mut impl RasterizationRenderPassMode {
-		self.end_encoder();
+		self.end_encoder_outside_render_pass("start_render_pass");
 
 		let render_target_array_length =
 			graphics_hardware_interface::AttachmentInformation::render_pass_layer_count(attachments);
@@ -438,7 +438,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			"Metal 4 render command encoder creation failed. The most likely cause is that the command buffer could not start the render pass.",
 		);
 		self.begin_encoder(
-			ActiveEncoder::Render(rce),
+			ActiveEncoder::Render(RenderPass::new(rce, extent)),
 			"Render",
 			attachments.iter().map(|(_, surface, _)| surface.image),
 		);
@@ -448,7 +448,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				.iter()
 				.map(|(attachment, surface, _)| (*attachment, surface.image)),
 			mtl::MTLStages::Fragment,
-			extent,
 		);
 
 		let rce = self.render_encoder("start_render_pass");
@@ -480,7 +479,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		extent: Extent,
 		outputs: &[graphics_hardware_interface::AttachmentInformation],
 	) -> &mut impl BoundTilePipelineMode {
-		self.end_encoder();
+		self.end_encoder_outside_render_pass("start_tile_pass");
 		// The pipelines outlive the recording, so the tile state does not borrow it.
 		let pipelines = self.device.pipelines;
 		let tile = pipelines[pipeline_handle.index() as usize].tile().unwrap_or_else(|| {
@@ -530,7 +529,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			offset += length;
 		}
 		self.begin_encoder(
-			ActiveEncoder::Render(encoder),
+			ActiveEncoder::Render(RenderPass::new(encoder, extent)),
 			"Tile",
 			surfaces.iter().map(|surface| surface.image),
 		);
@@ -539,7 +538,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		self.track_render_attachments(
 			outputs.iter().zip(&surfaces).map(|(output, surface)| (output, surface.image)),
 			mtl::MTLStages::Fragment | mtl::MTLStages::Tile,
-			extent,
 		);
 
 		self.bind_pipeline(pipeline_handle)
@@ -564,7 +562,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			return;
 		}
 
-		self.end_encoder();
+		self.end_encoder_outside_render_pass("clear_images");
 
 		let mut batch = SmallVec::<[(ImageHandle, graphics_hardware_interface::ClearValue); 9]>::new();
 		let mut color_count = 0;
@@ -945,7 +943,14 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 			.collect::<SmallVec<[_; 8]>>();
 		if self.bound_vertex_buffers != bindings {
 			self.bound_vertex_buffers = bindings;
-			self.render_vertex_buffers_dirty = true;
+			// An open pass applies them before its next draw; a pass that begins later applies them as it begins.
+			if let Some(EncoderState {
+				encoder: ActiveEncoder::Render(pass),
+				..
+			}) = &mut self.encoder
+			{
+				pass.vertex_buffers_dirty = true;
+			}
 		}
 	}
 
@@ -958,10 +963,10 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 	}
 
 	fn set_scissor(&mut self, origin: [u32; 2], extent: Extent) {
-		let rce = self.render_encoder("set_scissor");
+		let pass = self.render_pass("set_scissor");
 		// Metal rejects scissors outside the render target, so clamp to the pass extent.
-		let (origin, extent) = crate::clamp_scissor(origin, extent, self.active_render_extent);
-		rce.setScissorRect(mtl::MTLScissorRect {
+		let (origin, extent) = crate::clamp_scissor(origin, extent, pass.extent);
+		pass.encoder.setScissorRect(mtl::MTLScissorRect {
 			x: origin[0] as _,
 			y: origin[1] as _,
 			width: extent.width() as _,
@@ -1055,7 +1060,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 				);
 		}
 		// Mesh-owned bindings replace the ordinary logical bindings even when that logical list is empty.
-		self.render_vertex_buffers_dirty = true;
+		self.render_pass_mut("draw_mesh").vertex_buffers_dirty = true;
 		self.record_render_attachment_writes();
 	}
 
@@ -1244,7 +1249,8 @@ impl BoundTilePipelineMode for CommandBufferRecording<'_> {
 			"Metal dispatch_tiles found no tile pipeline bound. The most likely cause is that another pipeline was bound after start_tile_pass. Record each tile pass with the pipeline it started with.",
 		);
 		let threads = tile.threads;
-		let extent = [self.active_render_extent.width(), self.active_render_extent.height()];
+		let extent = self.render_pass("dispatch_tiles").extent;
+		let extent = [extent.width(), extent.height()];
 		let (page, offset) = self
 			.commit
 			.upload_arena

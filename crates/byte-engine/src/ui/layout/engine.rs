@@ -14,10 +14,6 @@ pub struct Engine<C = ()> {
 	/// Presses since the last evaluation, each delivered as one [`Events::Actuated`].
 	presses: u32,
 	scrolls: Vec<UiVector>,
-	/// Released sources waiting for the next layout to resolve their drop targets.
-	drops: Vec<DragDrop>,
-	/// The captured position the source was last told about.
-	dragged: Option<UiPoint>,
 	/// The surface under the pointer after the last evaluation, for enter and exit events.
 	hovered: Option<Id>,
 	/// The ancestor chains of the previous and the new hover target, reused by every hover change.
@@ -196,8 +192,6 @@ impl<C: 'static> Engine<C> {
 			is_clicking: false,
 			presses: 0,
 			scrolls: Vec::new(),
-			drops: Vec::new(),
-			dragged: None,
 			hovered: None,
 			hover_chains: [Vec::new(), Vec::new()],
 			render_spares: Spares::default(),
@@ -293,7 +287,6 @@ impl<C: 'static> Engine<C> {
 		}
 		self.sync_pointer_state(size);
 		self.route_drag();
-		self.route_drops();
 		self.core.runtime.begin_frame();
 		self.core.tree.begin_frame();
 		poll_ready_tasks(&mut self.core);
@@ -619,46 +612,12 @@ impl<C: 'static> Engine<C> {
 		}
 	}
 
-	/// Delivers queued drops before components poll, so a component sees the drop
-	/// and the cleared capture together.
-	///
-	/// Targets come from the previous frame's hit geometry, which the caller
-	/// measured the release against. The target is any surface under the release
-	/// point other than the released source, which hears about the end after it.
-	fn route_drops(&mut self) {
-		// Taken for the walk and put back emptied, so the list keeps its storage for the next release.
-		let mut drops = std::mem::take(&mut self.drops);
-		for drop in drops.drain(..) {
-			let target = self.retained_layout.as_ref().and_then(|retained| {
-				let point = crate::ui::flow::Location::new(drop.position.x, drop.position.y);
-				retained
-					.acceleration
-					.query_excluding(point, Some(drop.source.get()))
-					.and_then(Id::new)
-			});
-			if let Some(target) = target {
-				self.route_bubbling_event(target, Events::Dropped, None, Some(drop.source));
-			}
-			self.core.runtime.push_event(UiEvent {
-				target: drop.source,
-				kind: Events::DragEnded,
-				delta: None,
-				source: target,
-			});
-		}
-		self.drops = drops;
-	}
-
 	/// Tells a dragged source where it is, once per evaluation and only after it moved.
 	fn route_drag(&mut self) {
 		let runtime = &mut self.core.runtime;
-		let Some(capture) = runtime.drag.capture().filter(|capture| capture.dragging) else {
+		let Some(capture) = runtime.drag.report_motion() else {
 			return;
 		};
-		if self.dragged == Some(capture.position) {
-			return;
-		}
-		self.dragged = Some(capture.position);
 		runtime.push_event(UiEvent {
 			target: capture.source,
 			kind: Events::Dragged,
@@ -1141,7 +1100,6 @@ impl<C: 'static> Engine<C> {
 		if !runtime.drag.press(source, point) {
 			return false;
 		}
-		self.dragged = None;
 		runtime.push_event(bare_event(source, Events::Grabbed));
 		true
 	}
@@ -1162,18 +1120,33 @@ impl<C: 'static> Engine<C> {
 	///
 	/// The release position participates in threshold detection. A click clears
 	/// capture without yielding a drop. A drop is also delivered as
-	/// [`Events::Dropped`] to the surface under the release position by the next
-	/// [`Self::evaluate`], so either the caller or a component can apply it. The
-	/// source gets [`Events::DragEnded`] either way.
+	/// [`Events::Dropped`] to the surface under the release position, so either the
+	/// caller or a component can apply it. The source gets [`Events::DragEnded`]
+	/// either way, after the drop. Components hear both from the next [`Self::evaluate`].
 	pub fn release(&mut self, position: UiPoint) -> Option<DragDrop> {
 		let point = self.layout_point(position)?;
 		let runtime = &mut self.core.runtime;
 		let held = runtime.drag.capture()?.source;
 		let dropped = runtime.drag.release(point);
-		match dropped {
-			Some(dropped) => self.drops.push(dropped),
-			None => runtime.push_event(bare_event(held, Events::DragEnded)),
+		// The target is any surface under the release point other than the source, in the frame the caller measured
+		// the release against. Both events go out now, so a cancel or resize before the next evaluation can't lose them.
+		let target = dropped.and_then(|dropped| {
+			let point = crate::ui::flow::Location::new(dropped.position.x, dropped.position.y);
+			self.retained_layout
+				.as_ref()?
+				.acceleration
+				.query_excluding(point, Some(dropped.source.get()))
+				.and_then(Id::new)
+		});
+		if let Some(target) = target {
+			self.route_bubbling_event(target, Events::Dropped, None, Some(held));
 		}
+		self.core.runtime.push_event(UiEvent {
+			target: held,
+			kind: Events::DragEnded,
+			delta: None,
+			source: target,
+		});
 		dropped
 	}
 
@@ -1189,7 +1162,7 @@ impl<C: 'static> Engine<C> {
 
 	/// Ends the interaction in progress and returns the source of a cancelled drag.
 	///
-	/// Queued clicks, scrolls, drops, key presses, and text edits are discarded,
+	/// Queued clicks, scrolls, key presses, and text edits are discarded,
 	/// held keys and the pointer are released, and a held source is restored
 	/// without a drop. The source gets [`Events::DragEnded`]. Call this when the
 	/// window loses focus or the user cancels; a changed viewport size calls it
@@ -1198,7 +1171,6 @@ impl<C: 'static> Engine<C> {
 		self.is_clicking = false;
 		self.presses = 0;
 		self.scrolls.clear();
-		self.drops.clear();
 		self.key_states.clear();
 		self.key_presses.clear();
 		self.text_edits.clear();
@@ -1709,6 +1681,32 @@ mod tests {
 		assert_eq!(observed.ended, vec![None, None]);
 		assert!(observed.dragged.is_empty());
 		assert!(observed.drops.is_empty());
+	}
+
+	#[test]
+	fn a_released_drop_reaches_its_target_and_source_despite_a_cancel_or_resize() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = drag_board();
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
+		let (_, inner, source) = engine.ctx().ids.expect("expected test value");
+
+		// A cancel between the release and the next evaluation finds nothing held.
+		assert!(engine.press(window(10.0, 10.0)));
+		assert!(engine.drag_to(window(40.0, 40.0)));
+		assert!(engine.release(window(40.0, 40.0)).is_some());
+		assert_eq!(engine.cancel(), None);
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
+
+		// A resize before the next evaluation cancels too.
+		assert!(engine.press(window(10.0, 10.0)));
+		assert!(engine.drag_to(window(40.0, 40.0)));
+		assert!(engine.release(window(40.0, 40.0)).is_some());
+		engine.evaluate(Size::new(256, 256), &allocator);
+
+		let observed = engine.ctx();
+		assert_eq!(observed.drops, vec![Some(source), Some(source)]);
+		assert_eq!(observed.ended, vec![Some(inner), Some(inner)]);
+		assert_eq!(observed.drops_before_end, vec![1, 2]);
 	}
 
 	#[test]

@@ -51,13 +51,13 @@ impl CommandBufferRecording<'_> {
 		recording
 	}
 
+	/// Ends the recording and commits the resource states it planned to the context, so a later recording of the same
+	/// execution starts from them. Returns the command buffer and its readbacks for submission.
 	pub(crate) fn into_submission(
 		mut self,
 		presentation_keys: &[graphics_hardware_interface::PresentKey],
 	) -> (
 		graphics_hardware_interface::CommandBufferHandle,
-		HashMap<Handles, TransitionState>,
-		HashMap<Handles, Vec<BufferTransitionState>>,
 		SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
 	) {
 		self.handle_swapchain_proxies(presentation_keys);
@@ -72,12 +72,11 @@ impl CommandBufferRecording<'_> {
 			);
 		}
 
-		(
-			self.command_buffer,
-			std::mem::take(&mut self.states),
-			std::mem::take(&mut self.buffer_states),
-			std::mem::take(&mut self.texture_readbacks),
-		)
+		// The recording will be submitted, so its states stop being speculative.
+		self.device.states.extend(std::mem::take(&mut self.states));
+		self.device.buffer_states.extend(std::mem::take(&mut self.buffer_states));
+
+		(self.command_buffer, std::mem::take(&mut self.texture_readbacks))
 	}
 
 	fn begin(&self) {

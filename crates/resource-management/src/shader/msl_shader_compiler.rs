@@ -488,8 +488,9 @@ async fn compile_with_prelude(msl_source: &str, prelude: Option<&str>, name: &st
 	if let Some(prelude) = prelude.filter(|_| !metal_output.status.success()) {
 		let rejection = std::mem::replace(&mut metal_output, run_metal(msl_source, &["-x", "metal"], None).await?);
 
-		// Removing the rejected prelude lets a later compile or run rebuild it. Of the concurrent compiles that
-		// meet the same rejection, only the one that removes the file reports it.
+		// Removing the rejected prelude lets it be rebuilt: by a later compile when an earlier run built it, or by the
+		// next run when this process built it, since this toolchain rejects what it builds. Of the concurrent compiles
+		// that meet the same rejection, only the one that removes the file reports it.
 		if metal_output.status.success() && fs::remove_file(prelude).is_ok() {
 			log::warn!(
 				"The Metal compiler rejected the precompiled MSL prelude header, so it was removed. The most likely cause is a toolchain or SDK update.\n{}",

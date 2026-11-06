@@ -30,8 +30,6 @@ impl<'a> Frame<'a> {
 	pub(crate) fn execute_submission(
 		&mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-		states: utils::hash::HashMap<super::Handles, super::TransitionState>,
-		buffer_states: utils::hash::HashMap<super::Handles, Vec<super::BufferTransitionState>>,
 		texture_readbacks: smallvec::SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
 		present_keys: &[graphics_hardware_interface::PresentKey],
 		synchronizer: Option<graphics_hardware_interface::SynchronizerHandle>,
@@ -121,9 +119,6 @@ impl<'a> Frame<'a> {
 		if let Some(handle) = synchronizer {
 			self.device.synchronizers[handle.index() as usize].armed = true;
 		}
-
-		self.device.states.extend(states);
-		self.device.buffer_states.extend(buffer_states);
 	}
 
 	pub(crate) fn complete_without_submissions(

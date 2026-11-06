@@ -1,6 +1,4 @@
-use utils::hash::HashMap;
-
-use super::{BufferTransitionState, Handles, TransitionState, context::Context};
+use super::context::Context;
 use crate::vulkan::Frame;
 use crate::{context::Context as _, frame::Frame as _};
 
@@ -11,15 +9,13 @@ pub struct Queue<'a> {
 }
 
 /// The `Execution` struct gathers Vulkan command-buffer recordings before queue submission.
+///
+/// Each finished recording already committed its resource states to the context, so the next recording of the same
+/// execution plans its barriers from the states the earlier one left.
 pub struct Execution<'a> {
 	frame: Option<Frame<'a>>,
 	completed_frame: Option<crate::FrameKey>,
-	command_buffers: Vec<(
-		crate::CommandBufferHandle,
-		HashMap<Handles, TransitionState>,
-		HashMap<Handles, Vec<BufferTransitionState>>,
-		smallvec::SmallVec<[crate::TextureCopyHandle; 4]>,
-	)>,
+	command_buffers: Vec<(crate::CommandBufferHandle, smallvec::SmallVec<[crate::TextureCopyHandle; 4]>)>,
 }
 
 impl Drop for Execution<'_> {
@@ -27,7 +23,7 @@ impl Drop for Execution<'_> {
 		let Some(frame) = self.frame.as_mut() else {
 			return;
 		};
-		for (_, _, _, readbacks) in &self.command_buffers {
+		for (_, readbacks) in &self.command_buffers {
 			for &handle in readbacks {
 				frame.device_mut().cancel_texture_readback(handle);
 			}
@@ -110,17 +106,10 @@ impl crate::queue::Queue for Queue<'_> {
 			return;
 		}
 		let last_index = command_buffers.len() - 1;
-		for (index, (command_buffer, states, buffer_states, texture_readbacks)) in command_buffers.into_iter().enumerate() {
+		for (index, (command_buffer, texture_readbacks)) in command_buffers.into_iter().enumerate() {
 			let last = index == last_index;
 			let present_keys = if last { present_keys } else { &[] };
-			frame.execute_submission(
-				command_buffer,
-				states,
-				buffer_states,
-				texture_readbacks,
-				present_keys,
-				last.then_some(synchronizer),
-			);
+			frame.execute_submission(command_buffer, texture_readbacks, present_keys, last.then_some(synchronizer));
 		}
 	}
 }

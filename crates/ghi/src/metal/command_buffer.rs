@@ -66,8 +66,11 @@ pub(super) struct Surface {
 
 /// The `ActiveEncoder` enum holds the one native encoder a recording writes into at a time.
 enum ActiveEncoder {
+	/// Records dispatches and copies until another kind of command needs another encoder.
 	Compute(Retained<ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>>),
-	Render(Retained<ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>>),
+	/// A render pass, started by `start_render_pass`, `start_tile_pass`, or an image clear. Only ending the pass ends
+	/// it, so a dispatch or copy recorded inside it panics instead of silently ending it.
+	Render(RenderPass),
 }
 
 impl ActiveEncoder {
@@ -75,7 +78,34 @@ impl ActiveEncoder {
 	fn common(&self) -> &ProtocolObject<dyn mtl::MTL4CommandEncoder> {
 		match self {
 			Self::Compute(encoder) => ProtocolObject::from_ref(&**encoder),
-			Self::Render(encoder) => ProtocolObject::from_ref(&**encoder),
+			Self::Render(pass) => ProtocolObject::from_ref(&*pass.encoder),
+		}
+	}
+}
+
+/// The `RenderPass` struct keeps what is local to one open render pass, so ending the pass drops all of it.
+struct RenderPass {
+	encoder: Retained<ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>>,
+	/// The pass's extent, which scissors are clamped to.
+	extent: Extent,
+	/// The attachment writes every command of the pass records, consolidated once as the pass begins.
+	attachment_writes: SmallVec<[synchronization::MetalResourceUse; 8]>,
+	/// Whether the bound vertex buffers changed since the pass's vertex argument table last held them.
+	vertex_buffers_dirty: bool,
+	/// How many leading vertex bindings the pass's argument table holds.
+	encoded_vertex_buffer_count: usize,
+}
+
+impl RenderPass {
+	/// Opens a pass over `extent` that records into `encoder`; [`CommandBufferRecording::begin_encoder`] marks the
+	/// bound vertex buffers for it.
+	fn new(encoder: Retained<ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>>, extent: Extent) -> Self {
+		Self {
+			encoder,
+			extent,
+			attachment_writes: SmallVec::new(),
+			vertex_buffers_dirty: false,
+			encoded_vertex_buffer_count: 0,
 		}
 	}
 }
@@ -427,16 +457,11 @@ pub struct CommandBufferRecording<'a> {
 	/// The frame-local sets the roots resolve to, each with the version the next command will read.
 	bound_descriptor_sets: SmallVec<[(DescriptorSetHandle, u64); 4]>,
 	bound_vertex_buffers: SmallVec<[(graphics_hardware_interface::BaseBufferHandle, usize); 8]>,
-	render_vertex_buffers_dirty: bool,
-	encoded_vertex_buffer_count: usize,
 	bound_index_buffer: Option<(graphics_hardware_interface::BaseBufferHandle, usize, crate::DataTypes)>,
 	push_constant_data: Vec<u8, &'a dyn std::alloc::Allocator>,
 	encoder: Option<EncoderState>,
-	/// Extent of the render pass being encoded; scissors are clamped to it.
-	active_render_extent: Extent,
 	next_encoder_id: u32,
 	resource_tracker: synchronization::MetalResourceTracker,
-	active_render_attachment_uses: SmallVec<[synchronization::MetalResourceUse; 8]>,
 	/// The uses of the command being prepared, besides those of its descriptor tables. Commands fill it in place and
 	/// preparing the command empties it, so no draw or dispatch moves its uses.
 	command_uses: SmallVec<[synchronization::MetalResourceUse; 8]>,

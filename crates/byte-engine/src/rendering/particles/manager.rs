@@ -65,10 +65,28 @@ struct EmitterState {
 	reported_full: bool,
 }
 
-/// The `SystemEntry` struct is one requested system, with its GPU pool once the system has loaded.
+/// The `SystemEntry` struct is one requested system and how far it got loading.
 struct SystemEntry {
 	id: String,
-	pool: Option<Box<SystemPool>>,
+	load: SystemLoad,
+}
+
+/// The `SystemLoad` enum is where a requested system is in loading. Emitters of a loading system wait for it; emitters
+/// of a failed one draw nothing until an emitter created later requests it again.
+enum SystemLoad {
+	Loading,
+	Ready(Box<SystemPool>),
+	Failed,
+}
+
+impl SystemEntry {
+	/// Returns the system's GPU pool once the system has loaded.
+	fn pool(&mut self) -> Option<&mut SystemPool> {
+		match &mut self.load {
+			SystemLoad::Ready(pool) => Some(pool),
+			SystemLoad::Loading | SystemLoad::Failed => None,
+		}
+	}
 }
 
 /// The `SystemPool` struct owns one loaded system's GPU state and emitter slots.
@@ -183,15 +201,21 @@ impl ParticleManager {
 		}
 	}
 
-	/// Returns the index of the system `id`, requesting it from the loader the first time an emitter names it.
+	/// Returns the index of the system `id`, requesting it from the loader the first time an emitter names it, and
+	/// again for an emitter that names it after it failed.
 	fn system_index(&mut self, id: &str) -> usize {
 		if let Some(index) = self.systems.iter().position(|entry| entry.id == id) {
+			let entry = &mut self.systems[index];
+			if matches!(entry.load, SystemLoad::Failed) {
+				self.systems_loader.request(id.to_string());
+				entry.load = SystemLoad::Loading;
+			}
 			return index;
 		}
 		self.systems_loader.request(id.to_string());
 		self.systems.push(SystemEntry {
 			id: id.to_string(),
-			pool: None,
+			load: SystemLoad::Loading,
 		});
 		self.systems.len() - 1
 	}
@@ -202,10 +226,13 @@ impl ParticleManager {
 			match event {
 				Event::Ready { key, resident } => {
 					if let Some(entry) = self.systems.iter_mut().find(|entry| entry.id == key) {
-						entry.pool = Some(Box::new(SystemPool::new(frame, &self.pipeline_manager, resident)));
+						entry.load = SystemLoad::Ready(Box::new(SystemPool::new(frame, &self.pipeline_manager, resident)));
 					}
 				}
 				Event::Failed { key, error } => {
+					if let Some(entry) = self.systems.iter_mut().find(|entry| entry.id == key) {
+						entry.load = SystemLoad::Failed;
+					}
 					log::warn!(
 						"Particle system '{key}' is not drawn: {error} The most likely cause is a missing or invalid `.particles` asset."
 					);
@@ -216,7 +243,7 @@ impl ParticleManager {
 
 	/// Frees slots whose last particle has died, then gives slots to emitters whose system is ready.
 	fn assign_slots(&mut self) {
-		for pool in self.systems.iter_mut().filter_map(|entry| entry.pool.as_deref_mut()) {
+		for pool in self.systems.iter_mut().filter_map(|entry| entry.pool()) {
 			for slot in &mut pool.slots {
 				if matches!(*slot, Slot::Retiring(free_at) if free_at <= self.simulated_time) {
 					*slot = Slot::Free;
@@ -225,7 +252,7 @@ impl ParticleManager {
 		}
 		for state in self.emitters.values_mut().filter(|state| state.slot.is_none()) {
 			let entry = &mut self.systems[state.system];
-			let Some(pool) = entry.pool.as_deref_mut() else {
+			let Some(pool) = entry.pool() else {
 				continue;
 			};
 			state.slot = pool.slots.iter().position(|slot| *slot == Slot::Free);
@@ -289,7 +316,7 @@ impl SystemPool {
 
 /// Gives back a removed emitter's slot. Its particles keep the slot until the last of them has died.
 fn release(systems: &mut [SystemEntry], state: EmitterState, simulated_time: f64) {
-	if let (Some(slot), Some(pool)) = (state.slot, systems[state.system].pool.as_deref_mut()) {
+	if let (Some(slot), Some(pool)) = (state.slot, systems[state.system].pool()) {
 		pool.slots[slot] = Slot::Retiring(simulated_time + f64::from(pool.system.longest_life));
 	}
 }
@@ -389,7 +416,7 @@ impl PipelineManager for ParticleManager {
 		// The frame arena holds the active pools; it allocates on the first push, so idle frames allocate nothing.
 		let mut pools = bumpalo::collections::Vec::new_in(frame_allocator);
 		for (index, entry) in self.systems.iter_mut().enumerate() {
-			let Some(pool) = entry.pool.as_deref_mut() else {
+			let Some(pool) = entry.pool() else {
 				continue;
 			};
 			let (Some(simulate), Some(draw)) = (

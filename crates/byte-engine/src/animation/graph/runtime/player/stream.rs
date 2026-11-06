@@ -294,7 +294,7 @@ impl AnimationGraphPlayer {
 		let ready = self.ready();
 		let (playing, transition) = match ready.map(|ready| &ready.playback) {
 			None | Some(Playback::AwaitingInitial) => (None, None),
-			Some(Playback::Playing(active)) => (Some(active), None),
+			Some(Playback::Playing(active, _)) => (Some(active), None),
 			Some(Playback::Transitioning(transition)) => (
 				Some(&transition.destination),
 				Some(Transition {
@@ -305,20 +305,23 @@ impl AnimationGraphPlayer {
 				}),
 			),
 		};
-		let pending = ready.and_then(|ready| {
-			let pending = ready.pending.as_ref()?;
-			// Only a state playing on its own reaches wait points.
-			let wait = match &ready.playback {
-				Playback::Playing(active) => Wait::new(graph, active, graph.points(pending.wait)),
-				_ => None,
-			};
-			Some(Pending {
-				requested: name(pending.requested),
-				target: name(pending.target),
-				blend: pending.duration.map(MediaTime::as_seconds_f32),
-				route: Route::new(graph, pending.origin),
-				wait,
-			})
+		let pending = ready.and_then(|ready| match &ready.playback {
+			// The initial state cuts in, with nothing to blend from, once its clips load.
+			Playback::AwaitingInitial => Some(Pending {
+				requested: name(graph.initial_state()),
+				target: name(graph.initial_state()),
+				blend: None,
+				route: Route::new(graph, RouteOrigin::Initial),
+				wait: None,
+			}),
+			Playback::Playing(active, Some(route)) => Some(Pending {
+				requested: name(route.requested),
+				target: name(route.target),
+				blend: Some(route.duration.as_seconds_f32()),
+				route: Route::new(graph, route.origin),
+				wait: Wait::new(graph, active, graph.points(route.wait)),
+			}),
+			Playback::Playing(_, None) | Playback::Transitioning(_) => None,
 		});
 		let root_motion = ready.map_or(RootMotionDelta::IDENTITY, |ready| ready.root_motion);
 		// Only a matched state, playing or blending in, reports its search.

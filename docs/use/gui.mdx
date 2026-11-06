@@ -307,10 +307,11 @@ follows the pointer. When scaling a preview, use
 
 The surface under the release point, and then each of its ancestors, gets
 `Events::Dropped` with `UiEvent::source` set to the released source. The source
-itself is skipped when finding that surface. The engine resolves the target at
-the start of the next `Engine::evaluate` from the previous frame's hit
-geometry, before components run, and queues the source's `DragEnded` after it,
-so a target claims the source before the source settles. A target takes a
+itself is skipped when finding that surface. `Engine::release` resolves the
+target from the last evaluated frame's hit geometry and queues the source's
+`DragEnded` after it, so a target claims the source before the source settles.
+Components hear both from the next `Engine::evaluate`, even when a cancel or a
+resize comes first. A target takes a
 dropped element into its own layout with `EvaluationContext::adopt`, which
 makes it the target's last flow child while keeping its id and properties:
 

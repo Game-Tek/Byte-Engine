@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Fixed: an animation player panicked with `Only a playing clip can start a graph transition`. The panic needed an inertialized request to blend a one-shot to a new position while the one-shot's route to another state waited for that state's clips. A playing motion now holds the route it selected, so a blend can't carry one: the blend drops it, and the motion selects it again once the blend completes.
+
+- Fixed: a UI drag released over a target lost its `Dropped` and `DragEnded` events when `Engine::cancel` ran, or the viewport resized, before the next `evaluate`. `release` now sends both at once, against the frame the release was measured over, and components still hear them from the next `evaluate`.
+
+- Fixed (Vulkan): when one execution recorded several command buffers, each later buffer planned its barriers from the layouts before the earlier ones ran. A recording now commits its resource states as it's handed to submission.
+
+- Breaking (Metal): a dispatch, copy, build, image clear, or new pass recorded inside an open render pass panics. Before, it silently ended the pass, and the pass's next draw panicked with `No active render pass`. Call `end_render_pass` first.
+
+- Fixed: when the scene selected a calibrated environment, its lux scaled the previous environment's map until the new map finished uploading. The lux now changes together with the bound map.
+
+- Fixed: renderables whose mesh failed to load waited for it forever in the simple and visibility pipelines. They're dropped with an error that says how many, and creating them again requests the mesh again. A particle system that failed to load is requested again by the next emitter that names it.
+
+- Fixed: hot reload could rebake one root twice at once when a source changed while the root's rerun was being dispatched.
+
+- Breaking: `AudioHardwareInterface::pause` is gone. Nothing called it, and on Linux it paused the stream for good, since `play` never resumed it.
+
 - Material textures load their coarse mips first: the mips from the first one no larger than 128 texels, then their full mip chains, which replace them. Materials draw as soon as every texture's coarse mips are in, where they waited for every full chain, and the full chains queue behind every texture's coarse mips. Lightmaps and IES profiles still load whole. On the model viewer with warm files on an Apple M4, every Sponza texture loads within about 0.1 s either way, so the gain shows only where texture reads are slow.
   - Breaking: `resource_loading::load_texture` takes the first mip level to load, and returns an image whose base level is that mip. Pass 0 for the whole chain.
   - Loaded images are transfer sources, so tests and tools can read them back.

@@ -179,15 +179,6 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 
 		Ok(frames)
 	}
-
-	fn pause(&self) {
-		if self.started.swap(false, Ordering::AcqRel) {
-			// SAFETY: The audio unit is initialized, owned by this device, and was marked as started.
-			unsafe {
-				let _ = AudioOutputUnitStop(self.audio_unit);
-			}
-		}
-	}
 }
 
 impl Device {

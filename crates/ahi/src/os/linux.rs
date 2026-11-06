@@ -186,10 +186,4 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 			_ => Err(AudioPlayError::UnsupportedFormat),
 		}
 	}
-
-	fn pause(&self) {
-		let pcm = &self.pcm;
-
-		pcm.pause(true).unwrap();
-	}
 }

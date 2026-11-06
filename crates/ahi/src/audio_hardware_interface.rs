@@ -113,10 +113,6 @@ pub trait AudioHardwareInterface {
 	///
 	/// Returns the number of submitted frames.
 	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError>;
-
-	/// Notifies the hardware that playback has been paused.
-	/// This may be used to improve performance by reducing CPU usage.
-	fn pause(&self);
 }
 
 /// The `HardwareParameters` struct configures the format requested from an audio device.

@@ -260,7 +260,7 @@ replaying layout.
 | Scrolled | Once per scroll recorded since the last evaluation | The surface under the cursor, then each ancestor | The scroll delta |
 | Grabbed | When a press finds a surface and no source is held | The pressed surface, at once | |
 | Dragged | At the start of an evaluation, when the capture is active and the pointer moved | The held source | The offset from the press point |
-| Dropped | At the start of the evaluation after a release that produced a drop | The surface under the release point, excluding the source, then each ancestor | The released source |
+| Dropped | When a release produces a drop | The surface under the release point in the last evaluated frame, excluding the source, then each ancestor | The released source |
 | Drag ended | After a release, after a click without activation, or on cancel | The source | The drop target, if any |
 | Pointer entered | When the surface under the pointer changes, skipping a held source | The new surface, then each ancestor that didn't already contain the pointer | |
 | Pointer exited | Before the entries of the same evaluation | The previous surface, then each ancestor that no longer contains the pointer | |

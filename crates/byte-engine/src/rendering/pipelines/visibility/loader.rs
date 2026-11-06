@@ -258,6 +258,11 @@ pub(crate) enum VisibilityLoaderEvent {
 		key: MeshKey,
 		error: LoadError,
 	},
+	/// A mesh failed to load, so the renderables waiting for it never become resident.
+	MeshUnavailable {
+		key: MeshKey,
+		error: LoadError,
+	},
 	/// A material that can be drawn, with what evaluates it: its compiled pipeline or its uber shader arm.
 	MaterialReady(ResidentMaterial, MaterialEvaluator<ghi::PipelineHandle>),
 	/// A phase's uber shader compiled: the transparent phase's when `transparent` is set. It holds the arms of `keys`,
@@ -705,6 +710,10 @@ impl VisibilityLoaderClient {
 					key: VisibilityLoadKey::MeshLevels(key),
 					error,
 				} => VisibilityLoaderEvent::MeshLevelsUnavailable { key, error },
+				LoaderEvent::Failed {
+					key: VisibilityLoadKey::Mesh(key),
+					error,
+				} => VisibilityLoaderEvent::MeshUnavailable { key, error },
 				LoaderEvent::Failed { key, error } => VisibilityLoaderEvent::Unavailable {
 					resource: key.to_string(),
 					error,

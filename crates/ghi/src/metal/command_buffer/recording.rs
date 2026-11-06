@@ -259,15 +259,11 @@ impl<'a> CommandBufferRecording<'a> {
 			bound_descriptor_set_roots: SmallVec::new(),
 			bound_descriptor_sets: SmallVec::new(),
 			bound_vertex_buffers: SmallVec::new(),
-			render_vertex_buffers_dirty: false,
-			encoded_vertex_buffer_count: 0,
 			bound_index_buffer: None,
 			push_constant_data: Vec::new_in(allocator),
 			encoder: None,
-			active_render_extent: Extent::rectangle(0, 0),
 			next_encoder_id: 0,
 			resource_tracker,
-			active_render_attachment_uses: SmallVec::new(),
 			command_uses: SmallVec::new(),
 			texture_readbacks: SmallVec::new(),
 			builds: Default::default(),
@@ -369,7 +365,7 @@ impl<'a> CommandBufferRecording<'a> {
 	/// unencoded. `kind` and `targets` label the encoder in capture tools.
 	pub(super) fn begin_encoder(
 		&mut self,
-		encoder: ActiveEncoder,
+		mut encoder: ActiveEncoder,
 		_kind: &str,
 		_targets: impl IntoIterator<Item = ImageHandle>,
 	) {
@@ -378,9 +374,8 @@ impl<'a> CommandBufferRecording<'a> {
 			"A Metal encoder is already open. The most likely cause is that a new encoder was created before end_encoder.",
 		);
 		let debug_region_depth = self.begin_encoder_debug_regions(encoder.common(), _kind, _targets);
-		if matches!(encoder, ActiveEncoder::Render(_)) {
-			self.render_vertex_buffers_dirty = !self.bound_vertex_buffers.is_empty();
-			self.encoded_vertex_buffer_count = 0;
+		if let ActiveEncoder::Render(pass) = &mut encoder {
+			pass.vertex_buffers_dirty = !self.bound_vertex_buffers.is_empty();
 		}
 		// Each encoder gets its own hazard-tracking identity within the recording.
 		let id = self.next_encoder_id;
@@ -416,11 +411,21 @@ impl<'a> CommandBufferRecording<'a> {
 		for slot in state.tail_timestamps {
 			self.write_command_buffer_timestamp(slot);
 		}
-		if let ActiveEncoder::Render(_) = state.encoder {
-			self.resource_tracker
-				.record_final(state.scope, &self.active_render_attachment_uses);
-			self.active_render_attachment_uses.clear();
+		if let ActiveEncoder::Render(pass) = &state.encoder {
+			self.resource_tracker.record_final(state.scope, &pass.attachment_writes);
 		}
+	}
+
+	/// Ends the active compute encoder before `operation` records into an encoder of its own.
+	///
+	/// A command can't end an open render pass, which only `end_render_pass` or the pass's own last command ends.
+	pub(super) fn end_encoder_outside_render_pass(&mut self, operation: &str) {
+		if let Some(ActiveEncoder::Render(_)) = self.encoder.as_ref().map(|state| &state.encoder) {
+			panic!(
+				"Metal recorded {operation} inside an open render pass. The most likely cause is a missing end_render_pass after the pass's draws. Call end_render_pass before {operation}."
+			);
+		}
+		self.end_encoder();
 	}
 
 	/// Marks that the active encoder, if any, recorded a command, so a timestamp before it is no longer its tail.
@@ -445,8 +450,14 @@ impl<'a> CommandBufferRecording<'a> {
 
 	/// Records render-target writes after a draw so a later aliased access sees the dependency.
 	pub(super) fn record_render_attachment_writes(&mut self) {
-		let scope = self.encoder_state().scope;
-		self.resource_tracker.record_final(scope, &self.active_render_attachment_uses);
+		if let Some(EncoderState {
+			encoder: ActiveEncoder::Render(pass),
+			scope,
+			..
+		}) = &self.encoder
+		{
+			self.resource_tracker.record_final(*scope, &pass.attachment_writes);
+		}
 	}
 
 	/// Returns the active encoder's local state.
@@ -465,11 +476,22 @@ impl<'a> CommandBufferRecording<'a> {
 
 	/// Returns the active render encoder, or panics naming `operation` when no render pass is open.
 	pub(super) fn render_encoder(&self, operation: &str) -> &Retained<ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>> {
+		&self.render_pass(operation).encoder
+	}
+
+	/// Returns the open render pass, or panics naming `operation` when no render pass is open.
+	pub(super) fn render_pass(&self, operation: &str) -> &RenderPass {
 		match self.encoder.as_ref().map(|state| &state.encoder) {
-			Some(ActiveEncoder::Render(encoder)) => encoder,
-			_ => {
-				panic!("No active render pass. The most likely cause is that {operation} was called outside start_render_pass.")
-			}
+			Some(ActiveEncoder::Render(pass)) => pass,
+			_ => no_render_pass(operation),
+		}
+	}
+
+	/// Returns the open render pass for updates, or panics naming `operation` when no render pass is open.
+	pub(super) fn render_pass_mut(&mut self, operation: &str) -> &mut RenderPass {
+		match self.encoder.as_mut().map(|state| &mut state.encoder) {
+			Some(ActiveEncoder::Render(pass)) => pass,
+			_ => no_render_pass(operation),
 		}
 	}
 
@@ -492,7 +514,7 @@ impl<'a> CommandBufferRecording<'a> {
 			self.encoder.as_ref().map(|state| &state.encoder),
 			Some(ActiveEncoder::Compute(_))
 		) {
-			self.end_encoder();
+			self.end_encoder_outside_render_pass("a dispatch, copy, or build");
 			// One serial MTL4 compute encoder records both copy and dispatch commands. Phase transitions add explicit visibility.
 			let encoder = self.command_buffer.computeCommandEncoder().expect(
 				"Metal compute command encoder creation failed. The most likely cause is that the command buffer could not start a compute pass.",
@@ -533,8 +555,8 @@ impl<'a> CommandBufferRecording<'a> {
 				ActiveEncoder::Compute(encoder) => {
 					encoder.writeTimestampWithGranularity_intoHeap_atIndex(mtl::MTL4TimestampGranularity::Precise, heap, index);
 				}
-				ActiveEncoder::Render(encoder) => {
-					encoder.writeTimestampWithGranularity_afterStage_intoHeap_atIndex(
+				ActiveEncoder::Render(pass) => {
+					pass.encoder.writeTimestampWithGranularity_afterStage_intoHeap_atIndex(
 						mtl::MTL4TimestampGranularity::Precise,
 						mtl::MTLRenderStages::Fragment,
 						heap,
@@ -692,7 +714,9 @@ impl<'a> CommandBufferRecording<'a> {
 			(ArgumentTableStage::Compute, ActiveEncoder::Render(_)) => panic!(
 				"No active Metal compute encoder. The most likely cause is that a compute table was updated outside dispatch preparation.",
 			),
-			(stage, ActiveEncoder::Render(encoder)) => encoder.setArgumentTable_atStages(table.as_ref(), stage.render_stage()),
+			(stage, ActiveEncoder::Render(pass)) => {
+				pass.encoder.setArgumentTable_atStages(table.as_ref(), stage.render_stage())
+			}
 			(_, ActiveEncoder::Compute(_)) => panic!(
 				"No active Metal render encoder. The most likely cause is that a render table was updated outside a render pass.",
 			),
@@ -826,7 +850,7 @@ impl<'a> CommandBufferRecording<'a> {
 
 	/// Applies changed logical vertex-buffer addresses once before the next ordinary draw.
 	pub(super) fn apply_bound_vertex_buffers(&mut self) {
-		if !self.render_vertex_buffers_dirty {
+		if !self.render_pass("a draw").vertex_buffers_dirty {
 			return;
 		}
 
@@ -847,18 +871,19 @@ impl<'a> CommandBufferRecording<'a> {
 			})
 			.collect::<SmallVec<[_; PUSH_CONSTANT_BINDING_INDEX as usize]>>();
 		self.encode_vertex_addresses(&addresses);
-		self.render_vertex_buffers_dirty = false;
+		self.render_pass_mut("a draw").vertex_buffers_dirty = false;
 	}
 
 	/// Writes `addresses` into the leading vertex argument-table bindings and zeroes bindings an earlier draw left.
 	pub(super) fn encode_vertex_addresses(&mut self, addresses: &[mtl::MTLGPUAddress]) {
+		let encoded = self.render_pass("a draw").encoded_vertex_buffer_count;
 		for (binding, &address) in addresses.iter().enumerate() {
 			self.set_stage_buffer_address(ArgumentTableStage::Vertex, binding as u32, address);
 		}
-		for binding in addresses.len()..self.encoded_vertex_buffer_count {
+		for binding in addresses.len()..encoded {
 			self.set_stage_buffer_address(ArgumentTableStage::Vertex, binding as u32, 0);
 		}
-		self.encoded_vertex_buffer_count = addresses.len();
+		self.render_pass_mut("a draw").encoded_vertex_buffer_count = addresses.len();
 	}
 
 	/// Uploads changed push constants once before the next command and binds them for the stages it runs.
@@ -906,6 +931,12 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 		self.encoder_state_mut().push_constants_dirty = false;
 	}
+}
+
+/// Panics for `operation`, which needs a render pass while none is open.
+#[cold]
+fn no_render_pass(operation: &str) -> ! {
+	panic!("No active render pass. The most likely cause is that {operation} was called outside start_render_pass.")
 }
 
 /// Retains the native allocation behind one tracked use until the command completes.

@@ -13,7 +13,17 @@ use super::{Id, UiPoint};
 /// operation allocates.
 pub(super) struct Drag {
 	threshold_squared: f32,
-	capture: Option<DragCapture>,
+	/// The held gesture; `None` while no source is held.
+	held: Option<Held>,
+}
+
+/// The `Held` struct keeps one held gesture: the capture the source and the application read, and the motion the
+/// source already heard about.
+#[derive(Clone, Copy)]
+struct Held {
+	capture: DragCapture,
+	/// The captured position the source was last told about through [`super::Events::Dragged`].
+	reported: Option<UiPoint>,
 }
 
 /// The `DragCapture` struct supports rendering feedback for the captured source.
@@ -59,41 +69,55 @@ impl Drag {
 		);
 		Self {
 			threshold_squared: threshold * threshold,
-			capture: None,
+			held: None,
 		}
 	}
 
 	/// Captures a source until release or cancellation; a held gesture refuses another.
 	pub(super) fn press(&mut self, source: Id, position: UiPoint) -> bool {
-		if self.capture.is_some() {
+		if self.held.is_some() {
 			return false;
 		}
-		self.capture = Some(DragCapture {
-			source,
-			origin: position,
-			position,
-			dragging: false,
-			over: None,
+		self.held = Some(Held {
+			capture: DragCapture {
+				source,
+				origin: position,
+				position,
+				dragging: false,
+				over: None,
+			},
+			reported: None,
 		});
 		true
 	}
 
 	pub(super) fn capture(&self) -> Option<DragCapture> {
-		self.capture
+		self.held.map(|held| held.capture)
 	}
 
 	/// Records the surface under the captured pointer for the frame just evaluated.
 	pub(super) fn set_over(&mut self, over: Option<Id>) {
-		if let Some(capture) = self.capture.as_mut() {
-			capture.over = over;
+		if let Some(held) = self.held.as_mut() {
+			held.capture.over = over;
 		}
+	}
+
+	/// Returns the active drag when its source has not heard about its latest position yet, and marks that position
+	/// as heard.
+	pub(super) fn report_motion(&mut self) -> Option<DragCapture> {
+		let held = self.held.as_mut().filter(|held| held.capture.dragging)?;
+		if held.reported == Some(held.capture.position) {
+			return None;
+		}
+		held.reported = Some(held.capture.position);
+		Some(held.capture)
 	}
 
 	/// Updates the captured pointer and reports whether a gesture is held.
 	///
 	/// Once activated, a drag stays active even if it returns to its press position.
 	pub(super) fn move_to(&mut self, position: UiPoint) -> bool {
-		let Some(capture) = self.capture.as_mut() else {
+		let Some(capture) = self.held.as_mut().map(|held| &mut held.capture) else {
 			return false;
 		};
 		capture.position = position;
@@ -112,7 +136,7 @@ impl Drag {
 		if !self.move_to(position) {
 			return None;
 		}
-		let capture = self.capture.take()?;
+		let capture = self.held.take()?.capture;
 		capture.dragging.then_some(DragDrop {
 			source: capture.source,
 			position: capture.position,
@@ -121,6 +145,6 @@ impl Drag {
 
 	/// Clears capture and returns its source without producing a drop.
 	pub(super) fn cancel(&mut self) -> Option<Id> {
-		self.capture.take().map(|capture| capture.source)
+		self.held.take().map(|held| held.capture.source)
 	}
 }

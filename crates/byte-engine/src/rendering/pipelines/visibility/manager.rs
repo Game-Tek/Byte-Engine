@@ -571,19 +571,29 @@ pub(crate) fn create_fallback_environment(context: &mut ghi::implementation::Con
 	}
 }
 
-/// Environment selection: the requested resource, every environment that finished uploading, and what is bound.
+/// The `EnvironmentState` struct keeps the environment the scene selected and the one bound, which shows the selected
+/// one once its upload finishes.
 struct EnvironmentState {
-	requested: Option<String>,
-	/// The lux the requested environment should deliver to an upward-facing surface, if it's calibrated.
-	illuminance: Option<f32>,
+	requested: Option<RequestedEnvironment>,
 	bound: ResidentEnvironment,
+	/// The lux `bound` should deliver to an upward-facing surface, if its request was calibrated. It changes only with
+	/// `bound`, so a selected environment's lux never scales the map of the one it replaces.
+	illuminance: Option<f32>,
 	/// The bound environment changed and existing sinks must be rewritten.
 	descriptors_dirty: bool,
 }
 
+/// The `RequestedEnvironment` struct is an environment the scene selected and the lux it should deliver once bound.
+struct RequestedEnvironment {
+	id: String,
+	illuminance: Option<f32>,
+}
+
 impl EnvironmentState {
+	/// Binds the resident maps of the requested environment, with the lux it was requested with.
 	fn bind(&mut self, environment: ResidentEnvironment) {
 		self.bound = environment;
+		self.illuminance = self.requested.as_ref().and_then(|requested| requested.illuminance);
 		self.descriptors_dirty = true;
 	}
 
@@ -1013,8 +1023,8 @@ impl VisibilityPipelineManager {
 			),
 			environment: EnvironmentState {
 				requested: None,
-				illuminance: None,
 				bound: environment,
+				illuminance: None,
 				descriptors_dirty: false,
 			},
 			settings,
@@ -1115,8 +1125,10 @@ impl VisibilityPipelineManager {
 	/// Selects an environment and requests its baked lighting resources.
 	fn create_environment(&mut self, environment: Environment) {
 		let id = environment.resource_id().to_owned();
-		self.environment.requested = Some(id.clone());
-		self.environment.illuminance = environment.illuminance();
+		self.environment.requested = Some(RequestedEnvironment {
+			id: id.clone(),
+			illuminance: environment.illuminance(),
+		});
 		if let Some(resident) = self.loader.request_environment(id) {
 			self.environment.bind(resident);
 		}
@@ -1240,9 +1252,23 @@ impl VisibilityPipelineManager {
 					}
 				}
 				VisibilityLoaderEvent::EnvironmentReady { id, environment } => {
-					if self.environment.requested.as_deref() == Some(id.as_str()) {
+					if self
+						.environment
+						.requested
+						.as_ref()
+						.is_some_and(|requested| requested.id == id)
+					{
 						self.environment.bind(environment);
 					}
+				}
+				VisibilityLoaderEvent::MeshUnavailable { key, error } => {
+					// Nothing will make the mesh resident, so its renderables stop waiting; creating one again requests it again.
+					let waiting = self.pending_renderables.len();
+					self.pending_renderables.retain(|pending| pending.mesh_key != key);
+					let dropped = waiting - self.pending_renderables.len();
+					warn!(
+						"Visibility mesh {key:?} could not be loaded, so its {dropped} renderables are not drawn. The most likely cause is a missing or invalid mesh asset. Fix the asset, then create the renderables again. {error}"
+					);
 				}
 				VisibilityLoaderEvent::Unavailable { resource, error } => {
 					warn!("Visibility {resource} is unavailable: {error}");

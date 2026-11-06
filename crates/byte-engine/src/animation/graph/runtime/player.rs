@@ -402,14 +402,14 @@ fn is_visual(source: &[ClipBinding], destination: &[ClipBinding]) -> bool {
 	is_matched(source) || is_matched(destination)
 }
 
-/// The `PendingPlayerTransition` struct holds a selected route while its target loads or its source plays on to a
-/// wait point.
+/// The `PendingPlayerTransition` struct holds a route the playing motion selected while its target loads or the motion
+/// plays on to a wait point.
 struct PendingPlayerTransition {
 	/// The state the client requested, which [`AnimationGraphPlayer::waiting_for`] reports.
 	requested: AnimationStateId,
 	target: AnimationStateId,
-	/// How long to blend from the source; `None` starts the target with nothing to blend from.
-	duration: Option<MediaTime>,
+	/// How long to blend from the source; zero cuts to the target.
+	duration: MediaTime,
 	/// The route's wait and entry points, which [`AnimationGraph::points`] resolves.
 	wait: RoutePoints,
 	entry: RoutePoints,
@@ -842,14 +842,6 @@ impl AnimationGraphPlayer {
 			// The canonical skeleton sizes every retained evaluation buffer, and the player starts in the initial state.
 			Ok(pose) => PlayerRuntime::Ready(ReadyAnimationGraphPlayer {
 				playback: Playback::AwaitingInitial,
-				pending: Some(PendingPlayerTransition {
-					requested: graph.initial_state(),
-					target: graph.initial_state(),
-					duration: None,
-					wait: RoutePoints::None,
-					entry: RoutePoints::None,
-					origin: RouteOrigin::Initial,
-				}),
 				positions: BlendPositions::new(&graph.spaces),
 				turns: RoundRobinTurns::new(graph.round_robins),
 				last_delta: MediaTime::ZERO,
@@ -871,7 +863,6 @@ impl AnimationGraphPlayer {
 /// on several lanes never touch the graph's shared count.
 struct ReadyAnimationGraphPlayer {
 	playback: Playback,
-	pending: Option<PendingPlayerTransition>,
 	/// Each space's position, which its looping blends follow and its blends start at.
 	positions: BlendPositions,
 	/// Which clip each round robin plays the next time this player enters it.
@@ -892,10 +883,15 @@ struct ReadyAnimationGraphPlayer {
 	pose: PlayerPose,
 }
 
-/// Playback owns either one clip or both sides of a transition, never both representations.
+/// The `Playback` enum is the phase of a player's playback. It owns either one clip or both sides of a transition,
+/// never both, and only a clip playing on its own holds a route it selected.
 enum Playback {
+	/// The initial state's clips load; the state cuts in once they are resident.
 	AwaitingInitial,
-	Playing(RuntimeMotion),
+	/// One motion plays on its own, with the route it selected toward the requested state while that route's target
+	/// loads or the motion plays on to the route's wait point.
+	Playing(RuntimeMotion, Option<PendingPlayerTransition>),
+	/// A blend from a source to a destination motion, which selects routes again once it completes.
 	Transitioning(ActiveTransition),
 }
 
@@ -929,18 +925,18 @@ struct PlayerPose {
 impl ReadyAnimationGraphPlayer {
 	/// Returns the requested state whose route waits for the playing motion to reach a wait point.
 	fn waiting_for(&self) -> Option<AnimationStateId> {
-		self.pending
-			.as_ref()
-			.filter(|pending| pending.wait != RoutePoints::None)
-			.map(|pending| pending.requested)
+		match &self.playback {
+			Playback::Playing(_, Some(route)) if route.wait != RoutePoints::None => Some(route.requested),
+			_ => None,
+		}
 	}
 
 	/// Returns how long the playing motion plays on before its route to `target` starts.
 	fn time_until_route(&self, graph: &AnimationGraph, target: AnimationStateId) -> Option<MediaTime> {
-		let Playback::Playing(active) = &self.playback else {
+		let Playback::Playing(active, _) = &self.playback else {
 			return None;
 		};
-		let route = self.playback_route(graph, active, target)?;
+		let route = Self::playback_route(graph, active, target)?;
 		if route.wait.is_empty() {
 			Some(MediaTime::ZERO)
 		} else {
@@ -952,7 +948,7 @@ impl ReadyAnimationGraphPlayer {
 	fn state(&self) -> Option<AnimationStateId> {
 		match &self.playback {
 			Playback::AwaitingInitial => None,
-			Playback::Playing(active) => Some(active.state),
+			Playback::Playing(active, _) => Some(active.state),
 			Playback::Transitioning(transition) => Some(transition.destination.state),
 		}
 	}
@@ -983,10 +979,10 @@ impl ReadyAnimationGraphPlayer {
 		self.refresh_pending_transition(graph, requested.state);
 		self.start_pending(graph, evaluation);
 
-		if let Playback::Playing(active) = &self.playback
-			&& self.pending.is_none()
+		if let Playback::Playing(active, route) = &mut self.playback
+			&& route.is_none()
 		{
-			self.pending = self.selected_transition(graph, active, requested.state);
+			*route = Self::selected_transition(graph, active, requested.state);
 			self.start_pending(graph, evaluation);
 		}
 		self.redirect_blend(graph, requested.state, evaluation);
@@ -995,22 +991,21 @@ impl ReadyAnimationGraphPlayer {
 		self.pose.begin_frame();
 		// The part of the frame left once the playing motion reaches a wait point or a one-shot's end.
 		let mut leftover = None;
-		let matched = matches!(&self.playback, Playback::Playing(active) if is_matched(active.samples(graph)));
+		let matched = matches!(&self.playback, Playback::Playing(active, _) if is_matched(active.samples(graph)));
 		let root_motion = match &mut self.playback {
 			Playback::AwaitingInitial => {
 				self.pose.write_rest_pose();
 				RootMotionDelta::IDENTITY
 			}
 			// A matched state reaches no wait point and hands over nothing: routes from it start at once.
-			Playback::Playing(_) if matched => self.advance_matched(graph, delta, evaluation),
-			Playback::Playing(active) => {
+			Playback::Playing(..) if matched => self.advance_matched(graph, delta, evaluation),
+			Playback::Playing(active, route) => {
 				if evaluation.playing_ready(graph, active) {
 					let samples = active.samples(graph);
 					// A route waiting for a moment of the clip starts there, so the motion plays only up to it.
-					let waited = self
-						.pending
+					let waited = route
 						.as_ref()
-						.and_then(|pending| active.time_until(samples, graph.points(pending.wait)))
+						.and_then(|route| active.time_until(samples, graph.points(route.wait)))
 						.map(|(time, _)| time)
 						.filter(|time| *time <= delta);
 					let played = match waited {
@@ -1041,7 +1036,7 @@ impl ReadyAnimationGraphPlayer {
 						else {
 							unreachable!("Only a transition can complete playback blending");
 						};
-						self.playback = Playback::Playing(transition.destination);
+						self.playback = Playback::Playing(transition.destination, None);
 					}
 					root_motion
 				} else {
@@ -1083,7 +1078,7 @@ impl ReadyAnimationGraphPlayer {
 		evaluation: &Evaluation<'_, '_>,
 	) {
 		let motion = match &self.playback {
-			Playback::Playing(motion) => Some(motion),
+			Playback::Playing(motion, _) => Some(motion),
 			Playback::Transitioning(transition) => Some(&transition.destination),
 			Playback::AwaitingInitial => None,
 		};
@@ -1130,7 +1125,7 @@ impl ReadyAnimationGraphPlayer {
 		delta: MediaTime,
 		evaluation: &mut Evaluation<'_, '_>,
 	) -> RootMotionDelta {
-		let Playback::Playing(active) = &mut self.playback else {
+		let Playback::Playing(active, _) = &mut self.playback else {
 			unreachable!("only a playing matched state advances on its own");
 		};
 		if !evaluation.playing_ready(graph, active) {
@@ -1150,7 +1145,11 @@ impl ReadyAnimationGraphPlayer {
 		if let Some(blend) = self.search_matched(graph, &mut motion, entering, true, evaluation) {
 			self.pose.begin_switch(&motion, samples, delta, blend, evaluation);
 		}
-		self.playback = Playback::Playing(motion);
+		// The state keeps playing, with the route it selected.
+		let Playback::Playing(active, _) = &mut self.playback else {
+			unreachable!("a matched state's search keeps it playing");
+		};
+		*active = motion;
 		root_motion
 	}
 
@@ -1284,7 +1283,6 @@ impl ReadyAnimationGraphPlayer {
 		// its root motion measures from; otherwise the next frame would measure from the old source's pose.
 		self.pose.active_current.copy_from_slice(&self.pose.destination_current);
 		self.blend_from_display(transition.destination, destination, duration, origin, evaluation);
-		self.pending = None;
 		evaluation.prefetch_neighbors(graph, target);
 	}
 
@@ -1320,7 +1318,7 @@ impl ReadyAnimationGraphPlayer {
 		};
 		match &mut self.playback {
 			Playback::AwaitingInitial => {}
-			Playback::Playing(active) => follow(active),
+			Playback::Playing(active, _) => follow(active),
 			Playback::Transitioning(transition) => {
 				// A blend to a new position keeps its source at the weights it left, so the plain requests that follow
 				// the inertialized one move only where it is heading and the root motion still ramps across the blend.
@@ -1344,7 +1342,7 @@ impl ReadyAnimationGraphPlayer {
 		duration: MediaTime,
 		evaluation: &mut Evaluation<'_, '_>,
 	) -> bool {
-		let Playback::Playing(active) = &self.playback else {
+		let Playback::Playing(active, _) = &self.playback else {
 			return false;
 		};
 		// The playing state itself, or a one-shot blend of the requested state's space, such as a start on the way to
@@ -1370,7 +1368,8 @@ impl ReadyAnimationGraphPlayer {
 		}
 		let mut destination = *active;
 		destination.weights = weights;
-		let Playback::Playing(source) = std::mem::replace(&mut self.playback, Playback::AwaitingInitial) else {
+		// The blend drops the route the motion selected; once the blend completes, the motion selects one again.
+		let Playback::Playing(source, _) = std::mem::replace(&mut self.playback, Playback::AwaitingInitial) else {
 			unreachable!("the playing motion was checked above");
 		};
 		// The playing motion's latest sample is already the active pose, which the source's root motion measures from.
@@ -1465,13 +1464,16 @@ impl ReadyAnimationGraphPlayer {
 		requested: AnimationRequest,
 		evaluation: &mut Evaluation<'_, '_>,
 	) -> RootMotionDelta {
-		let Playback::Playing(active) = &self.playback else {
+		let Playback::Playing(active, selected) = &self.playback else {
 			return RootMotionDelta::IDENTITY;
 		};
-		let route = match &self.pending {
-			Some(pending) if pending.wait != RoutePoints::None => pending
-				.duration
-				.map(|duration| (pending.target, duration, graph.points(pending.entry), pending.origin)),
+		let route = match selected {
+			Some(selected) if selected.wait != RoutePoints::None => Some((
+				selected.target,
+				selected.duration,
+				graph.points(selected.entry),
+				selected.origin,
+			)),
 			_ => graph
 				.select_transition(active.state, requested.state, true)
 				.map(|route| (route.target, route.duration, route.entry, route.origin)),
@@ -1523,7 +1525,7 @@ impl ReadyAnimationGraphPlayer {
 		};
 
 		self.playback = match std::mem::replace(&mut self.playback, Playback::AwaitingInitial) {
-			Playback::Playing(source) if blend != MediaTime::ZERO => Playback::Transitioning(ActiveTransition {
+			Playback::Playing(source, _) if blend != MediaTime::ZERO => Playback::Transitioning(ActiveTransition {
 				source,
 				destination,
 				duration: blend,
@@ -1531,29 +1533,37 @@ impl ReadyAnimationGraphPlayer {
 				begun: true,
 				origin,
 			}),
-			_ => Playback::Playing(destination),
+			_ => Playback::Playing(destination, None),
 		};
-		self.pending = None;
 		evaluation.prefetch_neighbors(graph, target);
 		root_motion
 	}
 
-	/// Starts a selected state once all of its clips are resident, preserving playback while they load.
+	/// Starts the initial state, or the playing motion's selected route, once all of the target's clips are resident,
+	/// preserving playback while they load.
 	fn start_pending(&mut self, graph: &AnimationGraph, evaluation: &mut Evaluation<'_, '_>) {
-		let Some(pending) = self.pending.as_ref() else {
-			return;
+		// The initial state cuts in with nothing to blend from.
+		let (target, wait, entry, duration, origin) = match &self.playback {
+			Playback::AwaitingInitial => (
+				graph.initial_state(),
+				RoutePoints::None,
+				RoutePoints::None,
+				MediaTime::ZERO,
+				RouteOrigin::Initial,
+			),
+			Playback::Playing(_, Some(route)) => (route.target, route.wait, route.entry, route.duration, route.origin),
+			Playback::Playing(_, None) | Playback::Transitioning(_) => return,
 		};
 		// A waiting route still loads its clips, but starts when the source reaches its wait point.
-		if !evaluation.motion_ready(&graph.state(pending.target).motion) || pending.wait != RoutePoints::None {
+		if !evaluation.motion_ready(&graph.state(target).motion) || wait != RoutePoints::None {
 			return;
 		}
-		let (target, origin, entry, duration) = (pending.target, pending.origin, graph.points(pending.entry), pending.duration);
-		let destination = self.start_motion(graph, target, entry, Entering::AtStepStart, evaluation);
+		let destination = self.start_motion(graph, target, graph.points(entry), Entering::AtStepStart, evaluation);
 
 		// A route of zero length cuts to its target, so only the target plays this frame.
-		if let Some(duration) = duration.filter(|duration| *duration > MediaTime::ZERO) {
-			let Playback::Playing(source) = std::mem::replace(&mut self.playback, Playback::AwaitingInitial) else {
-				unreachable!("Only a playing clip can start a graph transition");
+		if duration > MediaTime::ZERO {
+			let Playback::Playing(source, _) = std::mem::replace(&mut self.playback, Playback::AwaitingInitial) else {
+				unreachable!("only a playing motion selects a route");
 			};
 			// A blend into or out of a matched state starts from the pose posted last, as shown.
 			if is_visual(source.samples(graph), destination.samples(graph)) {
@@ -1585,25 +1595,23 @@ impl ReadyAnimationGraphPlayer {
 				Sampled::Active,
 			);
 			self.pose.active_previous.copy_from_slice(&self.pose.active_current);
-			self.playback = Playback::Playing(destination);
+			self.playback = Playback::Playing(destination, None);
 		}
-		self.pending = None;
 		evaluation.prefetch_neighbors(graph, target);
 	}
 
 	/// Cancels or retargets a loading state when its source's selected edge changes.
 	fn refresh_pending_transition(&mut self, graph: &AnimationGraph, requested: AnimationStateId) {
-		if let Playback::Playing(active) = &self.playback
-			&& self.pending.as_ref().is_some_and(|pending| pending.duration.is_some())
+		if let Playback::Playing(active, route) = &mut self.playback
+			&& route.is_some()
 		{
-			self.pending = self.selected_transition(graph, active, requested);
+			*route = Self::selected_transition(graph, active, requested);
 		}
 	}
 
 	/// Resolves fitted alternatives using the playing blend's retained weights and phase, keeping clip choices inside
 	/// the graph. Ordinary routes keep their authored ordering and state routes still precede space routes.
 	fn playback_route<'graph>(
-		&self,
 		graph: &'graph AnimationGraph,
 		active: &RuntimeMotion,
 		requested: AnimationStateId,
@@ -1668,20 +1676,18 @@ impl ReadyAnimationGraphPlayer {
 
 	/// Resolves the active clip toward the persistent state requested by client code.
 	fn selected_transition(
-		&self,
 		graph: &AnimationGraph,
 		active: &RuntimeMotion,
 		requested: AnimationStateId,
 	) -> Option<PendingPlayerTransition> {
-		self.playback_route(graph, active, requested)
-			.map(|route| PendingPlayerTransition {
-				requested,
-				target: route.target,
-				duration: Some(route.duration),
-				wait: route.wait_points,
-				entry: route.entry_points,
-				origin: route.origin,
-			})
+		Self::playback_route(graph, active, requested).map(|route| PendingPlayerTransition {
+			requested,
+			target: route.target,
+			duration: route.duration,
+			wait: route.wait_points,
+			entry: route.entry_points,
+			origin: route.origin,
+		})
 	}
 }
 
@@ -2657,7 +2663,7 @@ mod tests {
 		let switched = ready(player.advance(&graph, MediaTime::ZERO, run.id(), &mut pool));
 
 		assert_eq!(switched.root_motion.translation, math::Vector::zero());
-		assert_eq!(player.state(), Some(run.id()));
+		assert_eq!(player.state(), Some(run.id().into()));
 		assert_eq!(
 			ready(player.advance(&graph, MediaTime::from_millis(500), run.id(), &mut pool))
 				.root_motion
@@ -3535,6 +3541,64 @@ mod tests {
 	}
 
 	#[test]
+	fn one_shot_blends_to_a_new_position_start_routes_whose_target_loaded_meanwhile() {
+		let mut runs = vec![
+			("run-forward.animation", test_motion("run-forward", [0.0, 0.0, 3.0], 1.0)),
+			("run-right.animation", test_motion("run-right", [3.0, 0.0, 0.0], 1.0)),
+			("run-backward.animation", test_motion("run-backward", [0.0, 0.0, -3.0], 1.0)),
+		];
+		let mut clips = vec![
+			("forward.animation", test_motion("forward", [0.0, 0.0, 1.0], 1.0)),
+			("right.animation", test_motion("right", [1.0, 0.0, 0.0], 1.0)),
+			("backward.animation", test_motion("backward", [0.0, 0.0, -1.0], 1.0)),
+			("idle.animation", test_motion("idle", [0.0, 0.0, 0.0], 1.0)),
+		];
+		let budget = clips.iter().chain(&runs).map(|(_, clip)| clip.resident_bytes()).sum();
+		let mut pool = AnimationPool::detached(budget);
+		for (id, clip) in clips.drain(..) {
+			pool.admit(id.into(), clip);
+		}
+		let directions = |prefix: &str, playback: fn(String) -> AnimationClip| {
+			AnimationBlend::new()
+				.sample([0.0, 1.0], playback(format!("{prefix}forward.animation")))
+				.sample([1.0, 0.0], playback(format!("{prefix}right.animation")))
+				.sample([0.0, -1.0], playback(format!("{prefix}backward.animation")))
+		};
+		let builder = AnimationGraph::builder();
+		let moving = builder.planar_space("moving");
+		let idle = moving.state("idle").with(AnimationClip::looping("idle.animation"));
+		let walk = moving.state("walk").planar(directions("", AnimationClip::looping));
+		let run = moving.state("run").planar(directions("run-", AnimationClip::looping));
+		let start = idle
+			.to(walk)
+			.with(directions("", AnimationClip::once))
+			.anytime(MediaTime::ZERO);
+		walk.to(run).anytime(MediaTime::from_millis(200));
+		let graph = builder.build(idle).expect("graph should build");
+		let mut player = pool.create_player(&graph, None);
+		let frame = MediaTime::from_millis(100);
+
+		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&graph, MediaTime::ZERO, walk.id().at([1.0, 0.0]), &mut pool));
+		ready(player.advance(&graph, frame, walk.id().at([1.0, 0.0]), &mut pool));
+		assert_eq!(player.state(), Some(start.id()));
+
+		// The start selects its route to the run, which waits for the run's clip, and blends to the run's position.
+		let request = run.id().at([0.0, 1.0]).inertialized(MediaTime::from_millis(200));
+		ready(player.advance(&graph, frame, request, &mut pool));
+		assert_eq!(player.state(), Some(start.id()));
+
+		// The run's clips load while the start blends, and the run starts once the blend lets it.
+		for (id, clip) in runs.drain(..) {
+			pool.admit(id.into(), clip);
+		}
+		for _ in 0..8 {
+			ready(player.advance(&graph, frame, request, &mut pool));
+		}
+		assert_eq!(player.state(), Some(run.id().into()));
+	}
+
+	#[test]
 	fn routes_wait_for_the_frames_of_the_heaviest_named_clip() {
 		let mut pool = pool_with(vec![
 			("slow.animation", test_animation("slow", 1.0)),
@@ -3674,7 +3738,7 @@ mod tests {
 				.x();
 
 			if interruptible {
-				assert_eq!(player.state(), Some(run.id()));
+				assert_eq!(player.state(), Some(run.id().into()));
 				// The pose keeps moving from where it was shown, at most a few frames' travel of the fastest clip.
 				assert!(
 					(redirected - shown).abs() < 4.0 * frame.as_seconds_f32() * 3.0,
@@ -3714,7 +3778,7 @@ mod tests {
 				.x();
 			assert!(travel.abs() <= fastest, "root motion jumped {travel} in one frame");
 		}
-		assert_eq!(player.state(), Some(run.id()));
+		assert_eq!(player.state(), Some(run.id().into()));
 	}
 
 	#[test]

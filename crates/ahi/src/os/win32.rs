@@ -351,6 +351,4 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 			Err(StreamError::Format) => Err(AudioPlayError::UnsupportedFormat),
 		}
 	}
-
-	fn pause(&self) {}
 }

@@ -254,7 +254,13 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 					self.resident_meshes.insert(key, resident);
 				}
 				crate::rendering::loading::Event::Failed { key, error } => {
-					log::error!("Simple mesh '{key}' could not be loaded: {error}");
+					// Nothing will make the mesh resident, so its renderables stop waiting; creating one again requests it again.
+					let waiting = self.pending_renderables.len();
+					self.pending_renderables.retain(|pending| pending.key != key);
+					let dropped = waiting - self.pending_renderables.len();
+					log::error!(
+						"Simple mesh '{key}' could not be loaded, so its {dropped} renderables are not drawn. The most likely cause is a missing or invalid mesh asset. Fix the asset, then create the renderables again. {error}"
+					);
 				}
 			}
 		}

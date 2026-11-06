@@ -392,9 +392,19 @@ struct HotReloadState {
 	>,
 	resources_by_source: HashMap<String, std::collections::HashSet<String>>,
 	sources_by_resource: HashMap<String, Vec<String>>,
-	in_flight: std::collections::HashSet<String>,
-	pending: std::collections::HashSet<String>,
+	/// Each root being rebaked; a root missing from the map is idle.
+	reloads: HashMap<String, RootReload>,
 	updates: Option<Arc<crate::resource::resource_manager::ResourceUpdateBroadcaster>>,
+}
+
+/// The `RootReload` enum is the phase of one root's hot-reload rebake.
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RootReload {
+	/// One rebake runs and no source changed since it started.
+	Running,
+	/// A source changed while the rebake ran, so another rebake follows it.
+	Rerun,
 }
 
 /// The `LoadMessages` enum identifies failures while an asset is loaded, baked, or stored.
@@ -462,12 +472,15 @@ impl AssetManagerState {
 			roots
 				.into_iter()
 				.filter(|root| {
-					if hot_reload.in_flight.insert(root.clone()) {
-						true
-					} else {
-						hot_reload.pending.insert(root.clone());
+					// A root already rebaking reruns once it finishes instead of rebaking twice at once.
+					if let Some(reload) = hot_reload.reloads.get_mut(root) {
+						*reload = RootReload::Rerun;
 
 						false
+					} else {
+						hot_reload.reloads.insert(root.clone(), RootReload::Running);
+
+						true
 					}
 				})
 				.collect::<Vec<_>>()
@@ -478,7 +491,7 @@ impl AssetManagerState {
 		}
 	}
 
-	/// Rebakes `root` on a worker and clears its in-flight mark when no worker accepts the job.
+	/// Rebakes `root` on a worker, and returns the root to idle when no worker accepts the job.
 	#[cfg(debug_assertions)]
 	fn dispatch_reload(self: &Arc<Self>, root: String) {
 		let state = Arc::clone(self);
@@ -490,7 +503,7 @@ impl AssetManagerState {
 			.dispatch(move || async move { state.reload_resource(id).await })
 			.is_err()
 		{
-			self.hot_reload.lock().in_flight.remove(&root);
+			self.hot_reload.lock().reloads.remove(&root);
 		}
 	}
 
@@ -515,17 +528,26 @@ impl AssetManagerState {
 			}
 		}
 
-		let retry = {
+		// The root stays running across the rerun's dispatch, so a change in between marks it again instead of starting a
+		// second rebake.
+		let rerun = {
 			let mut hot_reload = self.hot_reload.lock();
 
-			hot_reload.in_flight.remove(&id);
+			match hot_reload.reloads.get(&id) {
+				Some(RootReload::Rerun) => {
+					hot_reload.reloads.insert(id.clone(), RootReload::Running);
 
-			hot_reload.pending.remove(&id)
+					true
+				}
+				Some(RootReload::Running) | None => {
+					hot_reload.reloads.remove(&id);
+
+					false
+				}
+			}
 		};
 
-		if retry {
-			self.hot_reload.lock().in_flight.insert(id.clone());
-
+		if rerun {
 			self.dispatch_reload(id);
 		}
 	}

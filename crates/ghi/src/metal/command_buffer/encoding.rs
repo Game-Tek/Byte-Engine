@@ -306,7 +306,7 @@ impl CommandBufferRecording<'_> {
 				command_buffer.retain_allocation(&**pipeline_state);
 				encoder.setComputePipelineState(pipeline_state);
 			}
-			(ActiveEncoder::Render(encoder), PipelineState::Raster(raster)) => {
+			(ActiveEncoder::Render(RenderPass { encoder, .. }), PipelineState::Raster(raster)) => {
 				command_buffer.retain_allocation(&*raster.state);
 				encoder.setFrontFacingWinding(utils::winding(raster.face_winding));
 				encoder.setCullMode(utils::cull_mode(raster.cull_mode));
@@ -314,7 +314,7 @@ impl CommandBufferRecording<'_> {
 				encoder.setDepthStencilState(raster.depth_stencil_state.as_deref());
 				encoder.setRenderPipelineState(&raster.state);
 			}
-			(ActiveEncoder::Render(encoder), PipelineState::Tile(tile)) => {
+			(ActiveEncoder::Render(RenderPass { encoder, .. }), PipelineState::Tile(tile)) => {
 				command_buffer.retain_allocation(&*tile.state);
 				encoder.setRenderPipelineState(&tile.state);
 			}
@@ -365,7 +365,7 @@ impl CommandBufferRecording<'_> {
 	}
 
 	/// Records that the render pass just begun writes `attachments`, each an attachment and the image it targets, at
-	/// `stages` over `extent`.
+	/// `stages`.
 	///
 	/// It waits for the attachments' earlier accesses, marks the image-group members the pass clears or discards as
 	/// holding new contents, and keeps the writes that every command of the pass records.
@@ -373,7 +373,6 @@ impl CommandBufferRecording<'_> {
 		&mut self,
 		attachments: impl IntoIterator<Item = (&'a graphics_hardware_interface::AttachmentInformation, ImageHandle)>,
 		stages: mtl::MTLStages,
-		extent: Extent,
 	) {
 		let mut initial_uses = SmallVec::<[synchronization::MetalResourceUse; 8]>::new();
 		let mut final_uses = SmallVec::<[synchronization::MetalResourceUse; 8]>::new();
@@ -396,8 +395,7 @@ impl CommandBufferRecording<'_> {
 		self.consume_resources(initial_uses);
 		// Every command records the same attachment writes, so they are consolidated once for the whole pass.
 		synchronization::MetalResourceTracker::consolidate_in_place(&mut final_uses);
-		self.active_render_attachment_uses = final_uses;
-		self.active_render_extent = extent;
+		self.render_pass_mut("a render pass").attachment_writes = final_uses;
 	}
 
 	/// Prepares the next draw in the open render pass; `operation` names the draw call if no pass is open.
@@ -443,8 +441,9 @@ impl CommandBufferRecording<'_> {
 		let encoder = self.command_buffer.renderCommandEncoderWithDescriptor(&rpd).expect(
 			"Metal render command encoder creation failed. The most likely cause is that the command buffer could not start an image clear pass.",
 		);
+		let extent = first_image.description.extent;
 		self.begin_encoder(
-			ActiveEncoder::Render(encoder),
+			ActiveEncoder::Render(RenderPass::new(encoder, extent)),
 			"Clear",
 			images.iter().map(|(handle, _)| *handle),
 		);

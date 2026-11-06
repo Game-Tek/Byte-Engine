@@ -930,8 +930,8 @@ mod tests {
 
 		assert_eq!((base.format, base.gamma), (Formats::BC7SRGB, Gamma::SRGB));
 		assert_eq!((normal.format, normal.gamma), (Formats::BC5, Gamma::Linear));
-		assert_eq!((rough.format, rough.gamma), (Formats::RGBA8, Gamma::Linear));
-		assert_eq!((cutout.format, cutout.gamma), (Formats::RGBA8, Gamma::Linear));
+		assert_eq!((rough.format, rough.gamma), (Formats::BC7, Gamma::Linear));
+		assert_eq!((cutout.format, cutout.gamma), (Formats::BC7, Gamma::Linear));
 	}
 
 	#[test]

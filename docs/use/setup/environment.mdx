@@ -134,8 +134,8 @@ sudo apt install renderdoc
 
 ## Windows
 
-Install the Windows development tools and configure AVX2 before you build Byte
-Engine on Windows.
+Install the Windows development tools, then configure AVX2 and the stack size
+before you build Byte Engine on Windows.
 
 ### Install Rust
 
@@ -163,15 +163,22 @@ Direct3D 12, and DXGI APIs from the Windows SDK.
 	the matching runtimes.
 </Callout>
 
-### Enable AVX2 on x64
+### Enable AVX2 and raise the stack size on x64
 
-On x64 Windows, enable AVX2 explicitly instead of using `target-cpu=native`.
-Add this configuration to your application's `.cargo/config.toml`:
+On x64 Windows, set two flags in your application's `.cargo/config.toml`:
+
+- Enable AVX2 explicitly instead of using `target-cpu=native`.
+- Raise the main thread's stack to 8 MiB, the size macOS and Linux give it.
+  Windows reserves only 1 MiB by default, which isn't enough for Byte Engine,
+  so your application crashes with a stack overflow.
 
 ```toml
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+avx2"]
+rustflags = ["-C", "target-feature=+avx2", "-C", "link-arg=/STACK:8388608"]
 ```
+
+Cargo uses these flags instead of any `rustflags` in the `[build]` table when it
+builds for Windows. Keep every flag your Windows build needs in this list.
 
 	</Tab>
 </Tabs>

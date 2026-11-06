@@ -27,10 +27,10 @@ delta since the previous tick, or the fixed step in the stepped loop.
 
 | Rule | Behavior |
 | --- | --- |
-| Display cadence | When the swapchain reports a newer presented time, the delta is the display interval, so deltas follow the display rather than CPU noise. |
+| Display cadence | When the swapchain reports a newer display time, the delta is the display interval, so deltas follow the display rather than CPU noise. The display time is the time the display shows the tick's frame when the swapchain schedules ahead, as with `render.display-link`, and otherwise the time the most recent frame was shown. |
 | Otherwise | The delta is the wall time since the last tick. After an idle wait it's capped at one skipped-frame pace. |
 | Stall cap | A delta never exceeds four skipped-frame paces, whichever cadence measured it. Elapsed time still advances by the full interval, so a stall lands in the clock but no system simulates through it. |
-| Stale present | A presented time older than one frame before the previous tick is ignored. |
+| Stale present | A presented time older than one frame before the previous tick is ignored. A scheduled display time is never stale. |
 | Skipped-frame pace | The larger of the frame-rate cap and the display refresh, 16,667 µs by default, slept when nothing presents. |
 | Unattended | The delta is exactly one frame period, and elapsed time advances by it. Neither the display nor the wall clock changes it, and the stall cap doesn't apply. |
 

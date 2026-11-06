@@ -140,7 +140,13 @@ impl crate::context::Context for Context {
 			graphics_hardware_interface::PresentationModes::FIFO => (true, 2),
 			graphics_hardware_interface::PresentationModes::Mailbox => (true, 3),
 		};
-		let drawable_count = desired_image_count.map_or(drawable_count, |count| count.clamp(2, 3) as usize);
+		// A display link is only worth running when frames wait for the display.
+		let display_linked = self.settings.display_link && display_sync_enabled;
+		// The recording thread holds a display-linked drawable from acquisition until it presents. With two drawables,
+		// one on screen and one held, the link would have none left to hand out ahead of the display.
+		let drawable_count = desired_image_count.map_or(if display_linked { 3 } else { drawable_count }, |count| {
+			count.clamp(2, 3) as usize
+		});
 		layer.setDisplaySyncEnabled(display_sync_enabled);
 		// A value other than 2 or 3 causes an exception
 		layer.setMaximumDrawableCount(drawable_count);
@@ -156,6 +162,9 @@ impl crate::context::Context for Context {
 
 		let handle = graphics_hardware_interface::SwapchainHandle::from_index(self.swapchains.len() as u64);
 
+		// The link wakes the recording thread as many refreshes ahead of the display as frames it keeps in flight.
+		let display_link = display_linked.then(|| crate::metal::display_link::DisplayLink::new(layer.clone(), self.frames));
+
 		self.swapchains.push(Swapchain {
 			layer,
 			view: window_os_handles.view.clone(),
@@ -165,6 +174,8 @@ impl crate::context::Context for Context {
 			last_presented_time: std::sync::Arc::new(AtomicU64::new(0)),
 			presented_instant: None,
 			present_interval: None,
+			display_link,
+			drawables: [const { None }; MAX_FRAMES_IN_FLIGHT],
 		});
 
 		handle
@@ -192,7 +203,12 @@ impl crate::context::Context for Context {
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 		interval: Option<std::time::Duration>,
 	) {
-		self.swapchains[swapchain_handle.index() as usize].present_interval = interval;
+		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
+		// A display link paces by its frame rate range instead of by holding presents back.
+		match &swapchain.display_link {
+			Some(display_link) => display_link.set_frame_interval(interval),
+			None => swapchain.present_interval = interval,
+		}
 	}
 
 	/// Waits for Metal work, copies one transfer result, and releases its native staging buffer.

@@ -75,6 +75,7 @@ impl Instance {
 			geometry_shader: settings.geometry_shader || self.settings.geometry_shader,
 			mesh_shading: settings.mesh_shading || self.settings.mesh_shading,
 			pipeline_cache: settings.pipeline_cache || self.settings.pipeline_cache,
+			display_link: settings.display_link || self.settings.display_link,
 		};
 
 		super::Device::new_in(merged_settings, device, queues, allocator)

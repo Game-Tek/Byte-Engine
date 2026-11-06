@@ -1,0 +1,74 @@
+---
+title: Metal presentation
+description: Understand how the Metal backend takes drawables, where each frame waits for the display, and how the optional display link hands frames to the tick loop before you change presentation.
+icon: Computer
+---
+
+Read this page before you change how the Metal backend acquires or presents a
+swapchain, or how the tick loop reads display times. The parameter is specified
+under [graphics device](/docs/reference/parameters#graphics-device), and the
+display cadence under [tick time](/docs/reference/time#tick-time).
+
+## Frames render into swapchain images
+
+A Metal frame never renders into a drawable. Each frame sequence renders into
+its own swapchain image, and presentation copies that image into a drawable
+and presents it. That keeps the drawable out of the frame's recording, so the
+frame doesn't need a drawable until the copy.
+
+## Two ways to take a drawable
+
+By default, `Frame::present` calls `nextDrawable` after it commits the frame's
+commands. `nextDrawable` blocks until the display releases a drawable, so the
+GPU renders the frame while the CPU waits, and only the copy waits on the
+display. The frame clock learns the cadence afterward, from the presented-time
+handler each drawable carries.
+
+With `render.display-link`, the swapchain owns a `DisplayLink`. Acquisition
+waits for its next update, keeps the update's drawable for the acquiring
+sequence, and reports the update's target presentation time. `Frame::present`
+then copies into that drawable and presents it without waiting. The tick waits
+before it simulates, at a fixed lead of `preferredFrameLatency` refreshes,
+which is the frames in flight, and simulates to the time the display shows
+its frame. That lead doesn't depend on the drawable count, so the layer keeps three
+drawables for headroom without queuing frames ahead of the display.
+
+## The display link thread
+
+A display link calls back from the run loop it's attached to. The thread that
+records frames turns its run loop only while it pumps window events, so each
+link runs on a thread of its own. That thread does nothing but hand updates
+over: its delegate applies a changed frame interval as the link's frame rate
+range, puts the update in the mailbox, and unparks the recording thread. It
+never touches the context. Dropping the swapchain sets a flag the thread reads
+after each update, or every 100 ms while none arrive, and the thread
+invalidates the link before it exits.
+
+The tick loop stays the owner of pacing. It pulls one update per tick at
+acquisition, so every backend keeps one loop shape and the renderer only
+reports state.
+
+## The mailbox replaces, never queues
+
+An update is a display opportunity, not work. The mailbox holds one update; a
+newer one replaces and releases an update nobody took, which returns its
+drawable to the layer. Keeping the older one would present late and report a
+display time that's already past. When the GPU is the bottleneck, the
+synchronizer wait at acquisition ends after the link published, so the tick
+finds the newest update without waiting again.
+
+## Rules a change must keep
+
+- Present a drawable taken at acquisition from the same frame sequence that
+  took it. A sequence that acquires again drops the drawable it didn't present.
+- Take a link's drawable only at the swapchain's current extent. A drawable
+  handed out before a resize is released and the next one taken, since the
+  copy needs both images at one extent.
+- Keep Core Animation calls on the link thread. The recording thread only
+  stores atomics the delegate reads, such as the frame interval.
+- Take updates from one thread. The link unparks the first thread that waited.
+- Give up after one second without an update and present nothing, as
+  `nextDrawable` does for an occluded window.
+- Report a target time only from a display-linked acquisition. A target lies
+  ahead of the previous tick, so the frame clock's stale-present rule never
+  drops one.

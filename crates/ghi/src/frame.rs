@@ -117,6 +117,8 @@ pub struct SwapchainAcquisition {
 	pub(crate) extent: Extent,
 	/// The display time of the most recently presented image of this swapchain, when the backend reports it.
 	pub(crate) present_time: Option<Instant>,
+	/// The time the display will show the image acquired here, when the backend schedules frames ahead of the display.
+	pub(crate) target_present_time: Option<Instant>,
 }
 
 impl SwapchainAcquisition {
@@ -133,5 +135,14 @@ impl SwapchainAcquisition {
 	/// Backends without presentation feedback return `None`.
 	pub fn present_time(&self) -> Option<Instant> {
 		self.present_time
+	}
+
+	/// Returns the time the display will show the image this acquisition gives, if the frame presents in time.
+	///
+	/// Only backends that schedule frames ahead of the display report it, such as Metal with
+	/// [`crate::device::Features::display_link`]; others return `None`. Use it to simulate to the moment the frame is
+	/// seen, and fall back to [`Self::present_time`] when it is missing.
+	pub fn target_present_time(&self) -> Option<Instant> {
+		self.target_present_time
 	}
 }

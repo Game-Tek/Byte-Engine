@@ -6,6 +6,7 @@
 		"lighting",
 		"visibility",
 		"shown-transforms",
+		"metal-presentation",
 		"color-correction",
 		"color-grading",
 		"pass-fusion",

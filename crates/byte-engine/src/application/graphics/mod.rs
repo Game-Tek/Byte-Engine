@@ -467,6 +467,8 @@ impl GraphicsApplication {
 	///
 	/// Presented times form the display clock: when the swapchain reports a newer one, `elapsed` lands on the
 	/// point that display interval reaches, so deltas follow the display cadence instead of CPU scheduling noise.
+	/// A swapchain that schedules frames ahead reports the time this tick's frame will be shown instead; successive
+	/// targets measure the same intervals, and since a target lies ahead of the previous tick it is never stale.
 	/// Without a newer presented time (startup, skipped frames, a window that cannot be seen, or a report that arrives
 	/// late) the tick advances by the wall-clock interval; the next presented time discounts that advance instead of
 	/// charging it twice.

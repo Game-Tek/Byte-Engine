@@ -90,6 +90,7 @@ impl<'a> Frame<'a> {
 	/// is taken. `nextDrawable` blocks the CPU until the display releases a drawable, which with two drawables is the
 	/// refresh that shows the previous frame. Taking drawables only after the commit lets the GPU render this frame
 	/// during that wait, and only the small resolve command waits on the display, through `waitForDrawable`.
+	/// A display-linked swapchain already waited for its drawable when it was acquired, so it presents without waiting.
 	pub(crate) fn execute_finished_batch(
 		&mut self,
 		command_buffers: SmallVec<[super::FinishedCommandBuffer; 4]>,
@@ -151,6 +152,7 @@ impl<'a> Frame<'a> {
 
 	/// Takes a drawable for each presented swapchain, copies the frame's swapchain image into it, and presents it.
 	///
+	/// The drawable is the one the display link handed out at acquisition, or else a new one from `nextDrawable`.
 	/// Returns the submitted resolve, or `None` when no swapchain had a drawable to present, for example while its
 	/// window is occluded and Core Animation times out.
 	fn present(&mut self, present_keys: &[graphics_hardware_interface::PresentKey]) -> Option<queue::SubmittedBatch> {
@@ -158,9 +160,13 @@ impl<'a> Frame<'a> {
 		let present_drawables = present_keys
 			.iter()
 			.filter_map(|&present_key| {
-				let swapchain = &self.device.swapchains[present_key.swapchain.index() as usize];
+				let swapchain = &mut self.device.swapchains[present_key.swapchain.index() as usize];
 				// A swapchain acquired at a zero extent has no image, so nothing was rendered for it.
 				swapchain.images[sequence_index]?;
+				// A display-linked swapchain took its drawable when the sequence acquired it.
+				if swapchain.display_link.is_some() {
+					return swapchain.drawables[sequence_index].take().map(|drawable| (present_key, drawable));
+				}
 				// `nextDrawable` blocks until the display releases a drawable, which with display sync is usually the
 				// refresh that shows the previously presented frame. It returns `None` when no drawable became available
 				// within Core Animation's one-second timeout, as happens while the window is occluded.

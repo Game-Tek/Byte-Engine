@@ -78,6 +78,8 @@ pub struct Features {
 	pub(crate) geometry_shader: bool,
 	pub(crate) mesh_shading: bool,
 	pub(crate) pipeline_cache: bool,
+	/// Whether windows that present on display refresh are paced by a display link; see [`Self::display_link`].
+	pub(crate) display_link: bool,
 }
 
 impl Default for Features {
@@ -101,6 +103,7 @@ impl Features {
 			geometry_shader: false,
 			mesh_shading: true,
 			pipeline_cache: false,
+			display_link: false,
 		}
 	}
 
@@ -174,6 +177,17 @@ impl Features {
 	/// application that enables this without saving compiles every pipeline again in each run.
 	pub fn pipeline_cache(mut self, pipeline_cache: bool) -> Self {
 		self.pipeline_cache = pipeline_cache;
+		self
+	}
+
+	/// Paces windows by the display instead of by a free swapchain image. Off by default; only Metal reads it.
+	///
+	/// With it on, [`crate::context::Context::acquire_swapchain_image`] waits until the display schedules the frame
+	/// and reports when that frame will be shown, through
+	/// [`crate::frame::SwapchainAcquisition::target_present_time`]. Swapchains bound with
+	/// [`crate::PresentationModes::Inmediate`] ignore it, since nothing waits on the display.
+	pub fn display_link(mut self, display_link: bool) -> Self {
+		self.display_link = display_link;
 		self
 	}
 }

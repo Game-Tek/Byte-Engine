@@ -278,6 +278,7 @@ impl Device {
 			},
 			extent,
 			present_time: None,
+			target_present_time: None,
 		})
 	}
 

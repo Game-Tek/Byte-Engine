@@ -1,11 +1,17 @@
+use objc2_metal::MTLTexture as _;
+
 use super::super::*;
 
 impl Context {
 	/// Prepares `swapchain_handle` for the frame of `sequence_index` and returns the key that presents it.
 	///
-	/// This does not take a drawable. `nextDrawable` blocks until the display releases one, so the drawable is taken
-	/// at submission, after the frame's commands were committed, and only the copy into it waits for the display; see
-	/// [`crate::metal::Frame::execute_finished_batch`]. Frames render into the sequence's swapchain image instead.
+	/// Without a display link this does not take a drawable. `nextDrawable` blocks until the display releases one, so
+	/// the drawable is taken at submission, after the frame's commands were committed, and only the copy into it waits
+	/// for the display; see [`crate::metal::Frame::execute_finished_batch`].
+	/// With a display link this waits here for the display's next opportunity, keeps its drawable for the sequence's
+	/// presentation, and reports when the frame will be shown. Returns `None` when the display offered none within a
+	/// second, as while the window is occluded.
+	/// Either way, frames render into the sequence's swapchain image, which presentation copies into the drawable.
 	pub(crate) fn acquire_swapchain_image_for_sequence(
 		&mut self,
 		sequence_index: u8,
@@ -23,6 +29,23 @@ impl Context {
 			self.update_swapchain_images(swapchain_handle, extent);
 		}
 
+		// A display-linked swapchain waits here for the display and keeps the drawable for the sequence's presentation.
+		// A drawable handed out before the window resized has the old extent, which the presentation copy cannot take,
+		// so it is released and the next one taken.
+		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
+		let target_present_time = match &swapchain.display_link {
+			Some(display_link) if extent.width() > 0 && extent.height() > 0 => {
+				let deadline = std::time::Instant::now() + crate::metal::display_link::UPDATE_TIMEOUT;
+				let update = std::iter::from_fn(|| display_link.take(deadline)).find(|update| {
+					let texture = update.drawable().texture();
+					texture.width() as u32 == extent.width() && texture.height() as u32 == extent.height()
+				})?;
+				swapchain.drawables[sequence_index as usize] = Some(update.drawable());
+				host_time_to_instant(update.targetPresentationTimestamp())
+			}
+			_ => None,
+		};
+
 		let present_key = graphics_hardware_interface::PresentKey {
 			image_index: 0,
 			sequence_index,
@@ -35,7 +58,11 @@ impl Context {
 			// While nothing new reaches the screen, as when the window is minimized, the presented time stays the
 			// same. Reconverting it would jitter, and the frame clock would take each jitter for a new presentation.
 			if swapchain.presented_instant.is_none_or(|(converted, _)| converted != bits) {
-				swapchain.presented_instant = presented_time_to_instant(f64::from_bits(bits)).map(|instant| (bits, instant));
+				// Metal reports zero until something was shown, and a presented time never lies ahead.
+				let presented_time = f64::from_bits(bits);
+				swapchain.presented_instant = host_time_to_instant(presented_time)
+					.filter(|instant| presented_time > 0.0 && *instant <= std::time::Instant::now())
+					.map(|instant| (bits, instant));
 			}
 			swapchain.presented_instant.map(|(_, instant)| instant)
 		};
@@ -44,6 +71,7 @@ impl Context {
 			present_key,
 			extent,
 			present_time,
+			target_present_time,
 		})
 	}
 
@@ -76,18 +104,21 @@ impl Context {
 	}
 }
 
-/// Converts a `CAMetalDrawable::presentedTime` host time into an `Instant`.
+/// Converts a Core Animation host time, such as a drawable's presented time or a display link's target time, into an
+/// `Instant`.
 ///
-/// Both clocks derive from `mach_absolute_time`, so the conversion is an offset from now.
-/// Returns `None` when nothing was shown yet (Metal reports zero) or the value lies in the future.
-fn presented_time_to_instant(presented_time: f64) -> Option<std::time::Instant> {
-	if presented_time <= 0.0 {
-		return None;
-	}
+/// Both clocks derive from `mach_absolute_time`, so the conversion is an offset from now, into the past or the future.
+/// Returns `None` when the offset does not fit an `Instant`.
+fn host_time_to_instant(host_time: f64) -> Option<std::time::Instant> {
 	let now = std::time::Instant::now();
-	let age = objc2_quartz_core::CACurrentMediaTime() - presented_time;
-	if age < 0.0 {
+	let offset = host_time - objc2_quartz_core::CACurrentMediaTime();
+	if !offset.is_finite() {
 		return None;
 	}
-	now.checked_sub(std::time::Duration::from_secs_f64(age))
+	let magnitude = std::time::Duration::try_from_secs_f64(offset.abs()).ok()?;
+	if offset >= 0.0 {
+		now.checked_add(magnitude)
+	} else {
+		now.checked_sub(magnitude)
+	}
 }

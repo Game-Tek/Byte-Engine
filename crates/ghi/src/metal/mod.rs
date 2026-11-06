@@ -30,6 +30,7 @@ use crate::{MAX_FRAMES_IN_FLIGHT, PrivateHandles};
 
 pub(crate) mod acceleration_structures;
 mod allocator;
+mod display_link;
 mod io;
 mod pipeline;
 pub mod queue;

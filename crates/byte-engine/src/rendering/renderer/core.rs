@@ -760,13 +760,14 @@ impl Renderer {
 		self.windows.iter().filter_map(|(window, ..)| window.refresh_interval()).min()
 	}
 
-	/// Acquires the swapchain image of every window for the next frame and returns the display time of the
-	/// primary window's most recently presented image, when the backend reports it.
+	/// Acquires the swapchain image of every window for the next frame and returns the primary window's display time,
+	/// when the backend reports one: the time this frame will be shown when the backend schedules ahead, as with
+	/// `render.display-link`, otherwise the time its most recent frame was shown.
 	///
 	/// Call this at the start of a tick so simulation runs after the presentation engine releases an image. Each
-	/// frame waits for the display once: here when the backend's acquisition waits for a free image, or at
-	/// submission on Metal, which takes its drawable after committing the frame. Either way the wait ends the
-	/// previous tick or starts this one, so simulation still follows the display.
+	/// frame waits for the display once: here when the backend's acquisition waits for a free image or for the
+	/// display link, or at submission on Metal without a display link, which takes its drawable after committing the
+	/// frame. Either way the wait ends the previous tick or starts this one, so simulation still follows the display.
 	/// A window that cannot be seen is skipped without acquiring: whatever the frame presented there would never be
 	/// shown, and on Metal the presentation engine stops pacing the loop for it. Pass the sinks a screenshot captures
 	/// as `captured` so those windows render anyway. An unattended renderer ([`Self::set_unattended`]) renders every
@@ -810,7 +811,9 @@ impl Renderer {
 
 			let acquisition = self.context.acquire_swapchain_image(frame, *swapchain);
 			if index == 0 {
-				present_time = acquisition.as_ref().and_then(|acquisition| acquisition.present_time());
+				present_time = acquisition.as_ref().and_then(|acquisition| {
+					acquisition.target_present_time().or_else(|| acquisition.present_time())
+				});
 			}
 
 			// A window without a usable image skips the frame. Say so once, and again only after it recovers.

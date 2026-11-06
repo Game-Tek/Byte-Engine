@@ -38,6 +38,8 @@ impl GraphicsDevice {
 	///   to `true` when `surfel-gi.enabled` or `probe-gi.enabled` is.
 	/// - `pipeline-cache.path`: When set, the application owns the compiled pipeline cache instead of the GPU
 	///   driver. The [`Renderer`](crate::rendering::Renderer) reads and writes the file. Defaults to none.
+	/// - `display-link`: Paces windows by a display link on Metal, so each tick waits for the display before it
+	///   simulates and learns when its frame will be shown. Defaults to false.
 	pub fn new(parameters: impl Parameters) -> Self {
 		Self::try_new(parameters).unwrap_or_else(|error| panic!("{error}"))
 	}
@@ -69,7 +71,8 @@ impl GraphicsDevice {
 				flag(crate::rendering::pipelines::visibility::SURFEL_GI_ENABLED_PARAMETER, false)
 					|| flag(crate::rendering::pipelines::visibility::PROBE_GI_ENABLED_PARAMETER, false),
 			))
-			.pipeline_cache(parameters.get_parameter("pipeline-cache.path").is_some());
+			.pipeline_cache(parameters.get_parameter("pipeline-cache.path").is_some())
+			.display_link(flag("display-link", false));
 
 		let mut instance = match ghi::implementation::Instance::new(features) {
 			Ok(instance) => instance,

@@ -36,7 +36,7 @@ baked, by BELD or by a development build of the application.
 
 The standard graphics setup bakes these formats:
 
-- PNG and EXR images
+- PNG, JPEG, and EXR images
 - `.environment.bead` environment maps
 - `.motion.bead` motion databases of skeletal animation clips
 - glTF and GLB meshes, embedded images, skeletons, and skeletal animation clips
@@ -128,6 +128,21 @@ A model's BEAD file tunes the stream with a `lightmap_uvs` object:
 | `enabled` | `true` | `false` leaves the stream out, so lightmaps skip the model. |
 | `resolution` | `64` | The texels per side the gap between charts is measured at, from 16 through 4,096. Set it near the texels a lightmap gives the primitive. |
 
+## Standalone images
+
+A standalone image file bakes into one image resource. The file's extension
+selects its decoder:
+
+| Extension | Accepted samples | Gamma |
+| --- | --- | --- |
+| `.png` | Grayscale, grayscale with alpha, RGB, or RGBA at 8 or 16 bits; palette and lower bit depths expand to 8 bits | The texture's role, unless the role is sRGB and the file's color metadata names linear or sRGB |
+| `.jpg`, `.jpeg` | 8-bit grayscale or color; color is stored as RGB | The texture's role |
+
+The texture's role follows the [texture conventions](/docs/reference/conventions#color):
+albedo is sRGB, and data textures, such as normal and roughness maps, are
+linear. A file that a decoder can't read fails the bake. The
+[image settings](#image-settings) apply the same way to every format.
+
 ## Image settings
 
 Every image gets a full mip chain by default, and albedo and normal maps are
@@ -141,8 +156,9 @@ image's BEAD file can change either step with an object of these keys:
 
 Every key is optional, and a key left out keeps its default. Packed
 metallic-roughness maps and half-float images, such as EXR, are never
-block-compressed, so `compression` has no effect on them. A standalone PNG or
-EXR reads the object from its `image` key. A glTF, GLB, or FBX model reads it
+block-compressed, so `compression` has no effect on them. A standalone PNG,
+JPEG, or EXR reads the object from its `image` key, in a sidecar named after the
+whole file name, such as `rock_albedo.jpg.bead`. A glTF, GLB, or FBX model reads it
 from its `images` key and applies it to every image the model contains.
 
 Turn `mips` off for images drawn at their authored size, such as UI art, and
@@ -322,7 +338,7 @@ Only these handlers read sidecars:
 | glTF, GLB, FBX | `default_resource` | `mesh` or `animation`, which the bare ID bakes as. Skeletons always need the `#skeleton` fragment. |
 | glTF, GLB, FBX | `lods` | The detail level settings listed under [Detail levels](#detail-levels). Unknown keys fail the bake. |
 | glTF, GLB, FBX | `images` | The [image settings](#image-settings) for every image the model contains. Unknown keys fail the bake. |
-| PNG, EXR | `image` | The [image settings](#image-settings) for the image. Unknown keys fail the bake. |
+| PNG, JPEG, EXR | `image` | The [image settings](#image-settings) for the image. Unknown keys fail the bake. |
 | glTF, GLB, FBX | `asset.<material name>.asset` | The ID of a `.bema` variant to use for that material. Unnamed glTF materials can't be overridden; unnamed FBX materials use the key `default`. |
 | FBX | `skeleton` | The ID of the skeleton to bake against, instead of the file's own. |
 | BESL | `stage`, `tile`, `workgroup`, `maximum_mesh_threadgroups`, `maximum_vertices`, `maximum_primitives` | The stage metadata specified in the [BESL interface](/docs/reference/besl/interface#standalone-stage-metadata). The sidecar is required. |

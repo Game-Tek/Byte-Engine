@@ -194,7 +194,7 @@ mod tests {
 	}
 
 	/// Bakes every discovered asset of the project at `root` with `roots` and `excluded`, and returns the exit code
-	/// and the stored IDs.
+	/// and the stored IDs, leaving out the coverage shaders every bake assembles.
 	fn bake_project(root: &std::path::Path, roots: &[&str], excluded: &[&str], prune: bool) -> (Result<(), i32>, Vec<String>) {
 		let resources_path = root.join("resources");
 		// The same parameters a `config.json` with `resources.roots` and `resources.exclude` arrays sets.
@@ -227,6 +227,7 @@ mod tests {
 			.unwrap()
 			.into_iter()
 			.map(|resource| resource.id().to_string())
+			.filter(|id| !id.contains("-coverage.uber"))
 			.collect::<Vec<_>>();
 		ids.sort_unstable();
 		(result, ids)

@@ -10,6 +10,7 @@ use utils::{AvailabilityHandle, StableVec, StableVecHandle};
 
 use super::geometry::encode_octahedral_unit_vector;
 use super::layout::{ActiveEvaluationMask, MAX_ADDRESSABLE_INSTANCES, MAX_LIGHTS, SHADOW_CASCADE_COUNT, SHADOW_VIEW_COUNT};
+use super::loader::CoveragePipelines;
 use super::lod::MeshLods;
 use super::render_pass::VisibilityRenderPass;
 use super::residency::ResidencySlot;
@@ -116,6 +117,8 @@ pub struct RenderInfo {
 	pub(crate) opaque_evaluation_mask: ActiveEvaluationMask,
 	/// The evaluation slots of the blend instances admitted this frame.
 	pub(crate) transparent_evaluation_mask: ActiveEvaluationMask,
+	/// The masked raster pipelines, once the coverage shaders compiled. No masked instance is admitted before.
+	pub(crate) coverage_pipelines: Option<CoveragePipelines<ghi::PipelineHandle>>,
 }
 
 impl RenderInfo {

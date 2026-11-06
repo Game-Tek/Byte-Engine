@@ -17,7 +17,7 @@ use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::{
 	image::{Image as ResourceImage, ImagePhotometry},
 	lightmap::{Lightmap as ResourceLightmap, LightmapInstance},
-	material::{AssembledShader, MaterialCoverage, Value, Variant as ResourceVariant},
+	material::{AssembledShader, Value, Variant as ResourceVariant},
 	mesh::Mesh,
 };
 use resource_management::types::AlphaMode;
@@ -25,18 +25,18 @@ use smallvec::SmallVec;
 use utils::Extent;
 use utils::hash::HashMap;
 
-use super::features::{MaterialEvaluationMode, UBER_MATERIAL_SHADERS};
+use super::features::{COVERAGE_SHADERS, MaterialEvaluationMode, UBER_MATERIAL_SHADERS};
 use super::geometry::{
 	GENERATED_MESH_MATERIAL, GeometryBuffers, GeometryHandles, GeometryRanges, MeshData, PreparedLevels, PreparedMesh,
 	PrimitiveBlock, PrimitiveLevels, RetiredRanges,
 };
 use super::layout::{
-	MAX_BINDLESS_TEXTURES, MAX_IES_PROFILES, MAX_INSTANCE_MESHLETS, MAX_LIGHTMAPS, MAX_MATERIALS, TRANSPARENT_SPECIALIZATION_ID,
-	material_variable_specialization_id,
+	MAX_BINDLESS_TEXTURES, MAX_IES_PROFILES, MAX_INSTANCE_MESHLETS, MAX_LIGHTMAPS, MAX_MATERIALS,
+	TRANSPARENT_SPECIALIZATION_ID, material_variable_specialization_id,
 };
 use super::lod::MeshLods;
 use super::render_pass::MATERIAL_EVALUATION_PUSH_CONSTANT_SIZE;
-use super::shader_generator::uber_arm_key;
+use super::shader_generator::{coverage_arm_key, uber_arm_key};
 use crate::core::EntityHandle;
 use crate::rendering::loading::{
 	Event as LoaderEvent, ImageDescription, ImageUpload, LoadError, LoadPipeline, Loader, LoaderClient, LoaderLane,
@@ -44,8 +44,8 @@ use crate::rendering::loading::{
 };
 use crate::rendering::pipeline_compilation::{HitGroupShader, SpecializedComputePipelineRequest};
 use crate::rendering::renderable::mesh::{MeshKey, MeshSource};
-use crate::rendering::resource_loading::{UploadStagingArena, load_texture};
 use crate::rendering::resource_loading::texture::{TextureUploadLayout, load_image_streams, resource_format_to_ghi};
+use crate::rendering::resource_loading::{UploadStagingArena, load_texture};
 use crate::rendering::{PipelineManagerClient, PipelineRef, PipelineState};
 use crate::rendering::{Query, Resource};
 
@@ -76,6 +76,8 @@ pub(crate) enum VisibilityLoadKey {
 	Lightmap(String),
 	/// The uber material evaluation shader of the transparent phase when `true`, of the opaque phase otherwise.
 	UberShader(bool),
+	/// Both coverage shaders and the masked raster pipelines they are the fragments of.
+	CoverageShaders,
 }
 
 impl std::fmt::Display for VisibilityLoadKey {
@@ -94,6 +96,7 @@ impl std::fmt::Display for VisibilityLoadKey {
 			Self::UberShader(transparent) => {
 				write!(formatter, "uber shader {}", UBER_MATERIAL_SHADERS[usize::from(*transparent)])
 			}
+			Self::CoverageShaders => write!(formatter, "coverage shaders {COVERAGE_SHADERS:?}"),
 		}
 	}
 }
@@ -128,6 +131,36 @@ pub(crate) enum VisibilityLoadRequest {
 		transparent: bool,
 		rebake: bool,
 	},
+	/// Both coverage shaders, and the masked raster pipelines that take them as fragments. `rebake` bakes them again
+	/// first, from every material the store now holds; only development builds can.
+	CoverageShaders {
+		rebake: bool,
+	},
+}
+
+/// The `CoveragePipelines` struct holds the masked raster pipelines: each pass's one-sided and double-sided pipeline,
+/// with a coverage shader as its fragment. The loader holds them as their requests, `PipelineRef`, and the renderer as
+/// the compiled `ghi::PipelineHandle`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CoveragePipelines<P> {
+	/// The visibility pass's masked pipelines, one-sided then double-sided.
+	pub(crate) visibility: [P; 2],
+	/// The directional shadow pass's masked pipelines, one-sided then double-sided.
+	pub(crate) directional: [P; 2],
+	/// The local shadow pass's masked pipelines, one-sided then double-sided.
+	pub(crate) local: [P; 2],
+}
+
+impl<P: Copy> CoveragePipelines<P> {
+	/// Returns the pipelines with `f` applied to each, or `None` as soon as `f` returns `None` for one.
+	fn try_map<Q>(self, mut f: impl FnMut(P) -> Option<Q>) -> Option<CoveragePipelines<Q>> {
+		let mut pair = |[one_sided, double_sided]: [P; 2]| Some([f(one_sided)?, f(double_sided)?]);
+		Some(CoveragePipelines {
+			visibility: pair(self.visibility)?,
+			directional: pair(self.directional)?,
+			local: pair(self.local)?,
+		})
+	}
 }
 
 /// The `MaterialEvaluator` enum names what evaluates a material, by the mode the project chose. The loader holds a
@@ -152,7 +185,8 @@ pub(crate) struct ResidentMaterial {
 	pub(crate) evaluation: MaterialEvaluator<PipelineRef>,
 	pub(crate) alpha_mode: AlphaMode,
 	pub(crate) double_sided: bool,
-	pub(crate) coverage: MaterialCoverage,
+	/// The material's key in the coverage shaders, when it is masked; see [`coverage_arm_key`].
+	pub(crate) coverage_arm: Option<u32>,
 	pub(crate) texture_slots: Vec<Option<u32>>,
 	/// The material's dynamic parameters with their default values, in the order its program reads them.
 	pub(crate) parameters: Arc<[DynamicParameter]>,
@@ -283,6 +317,11 @@ pub(crate) enum VisibilityResident {
 		keys: Arc<[u32]>,
 		pipeline: PipelineRef,
 	},
+	/// The coverage shaders' arm keys and the masked raster pipelines, which may still be compiling.
+	CoverageShaders {
+		keys: Arc<[u32]>,
+		pipelines: CoveragePipelines<PipelineRef>,
+	},
 }
 
 /// The `VisibilityLoaderEvent` enum is the renderer's complete view of visibility resource loading.
@@ -322,6 +361,16 @@ pub(crate) enum VisibilityLoaderEvent {
 	/// keeps the shader it had.
 	UberShaderUnavailable {
 		transparent: bool,
+		error: LoadError,
+	},
+	/// The coverage shaders compiled into every masked raster pipeline. They hold the arms of `keys`, in ascending
+	/// order.
+	CoverageShadersReady {
+		keys: Arc<[u32]>,
+		pipelines: CoveragePipelines<ghi::PipelineHandle>,
+	},
+	/// The coverage shaders failed to load or compile. The masked passes keep the pipelines they had.
+	CoverageShadersUnavailable {
 		error: LoadError,
 	},
 	MaterialUnavailable {
@@ -380,6 +429,8 @@ pub(crate) struct VisibilityLoaderClient {
 	materials: HashMap<u32, MaterialPublication>,
 	/// Each phase's latest uber shader, opaque then transparent, until its pipeline compiles.
 	uber_shaders: [Option<UberShaderPublication>; 2],
+	/// The latest coverage shaders' keys and masked pipelines, until every pipeline compiles.
+	coverage_shaders: Option<(Arc<[u32]>, CoveragePipelines<PipelineRef>)>,
 	/// Reports rebaked material variants, so their materials load again.
 	#[cfg(debug_assertions)]
 	resource_updates: resource_management::resource::ResourceUpdateListener,
@@ -537,6 +588,19 @@ impl VisibilityLoaderClient {
 		}
 	}
 
+	/// Requests both coverage shaders. They reach the renderer as [`VisibilityLoaderEvent::CoverageShadersReady`] once
+	/// every masked raster pipeline compiles.
+	pub(crate) fn request_coverage_shaders(&mut self) {
+		self.client.request(VisibilityLoadRequest::CoverageShaders { rebake: false });
+	}
+
+	/// Bakes both coverage shaders again, from every material the store now holds, and loads them. Development builds
+	/// call it when a masked material the published shaders lack is ready.
+	#[cfg(debug_assertions)]
+	pub(crate) fn rebake_coverage_shaders(&mut self) {
+		self.client.reload(VisibilityLoadRequest::CoverageShaders { rebake: true });
+	}
+
 	/// Bakes the uber material evaluation shader of one phase again, from every material the store now holds, and
 	/// loads it. Development builds call it when a material the published shader lacks is ready.
 	#[cfg(debug_assertions)]
@@ -674,6 +738,13 @@ impl VisibilityLoaderClient {
 					continue;
 				}
 				LoaderEvent::Ready {
+					resident: VisibilityResident::CoverageShaders { keys, pipelines },
+					..
+				} => {
+					self.coverage_shaders = Some((keys, pipelines));
+					continue;
+				}
+				LoaderEvent::Ready {
 					resident:
 						VisibilityResident::Texture {
 							id,
@@ -748,6 +819,10 @@ impl VisibilityLoaderClient {
 					error,
 				} => VisibilityLoaderEvent::UberShaderUnavailable { transparent, error },
 				LoaderEvent::Failed {
+					key: VisibilityLoadKey::CoverageShaders,
+					error,
+				} => VisibilityLoaderEvent::CoverageShadersUnavailable { error },
+				LoaderEvent::Failed {
 					key: VisibilityLoadKey::MeshLevels(key),
 					error,
 				} => VisibilityLoaderEvent::MeshLevelsUnavailable { key, error },
@@ -788,6 +863,29 @@ impl VisibilityLoaderClient {
 					});
 					*slot = None;
 				}
+			}
+		}
+		if let Some((keys, requested)) = &self.coverage_shaders {
+			let failed = requested
+				.try_map(|pipeline| (pipelines.state(pipeline) != PipelineState::Failed).then_some(()))
+				.is_none();
+			let ready = requested.try_map(|pipeline| match pipelines.state(pipeline) {
+				PipelineState::Ready(pipeline) => Some(pipeline),
+				PipelineState::Pending | PipelineState::Failed => None,
+			});
+			if failed {
+				events.push(VisibilityLoaderEvent::CoverageShadersUnavailable {
+					error: LoadError(
+						"A masked raster pipeline failed to compile. The most likely cause is a masked material whose opacity code the platform compiler rejects. Check the shader compilation errors logged above, fix that material, and bake again.".to_string(),
+					),
+				});
+				self.coverage_shaders = None;
+			} else if let Some(ready) = ready {
+				events.push(VisibilityLoaderEvent::CoverageShadersReady {
+					keys: keys.clone(),
+					pipelines: ready,
+				});
+				self.coverage_shaders = None;
 			}
 		}
 		for publication in self.materials.values_mut() {
@@ -877,6 +975,7 @@ pub(crate) fn spawn(
 			environments: HashMap::default(),
 			materials: HashMap::default(),
 			uber_shaders: [None, None],
+			coverage_shaders: None,
 			#[cfg(debug_assertions)]
 			resource_updates,
 			environment_sampler: render.build_sampler(material_sampler().max_lod((IBL_SPECULAR_LEVEL_COUNT - 1) as f32)),
@@ -1070,7 +1169,7 @@ impl VisibilityLoader {
 			hit_group,
 			parameters,
 			double_sided,
-			coverage,
+			coverage_arm,
 		} = describe_material(&id, variant)?;
 		let material = variant.material.resource();
 		// A material bakes its evaluation shader, then a closest-hit shader when the project traces rays.
@@ -1102,14 +1201,9 @@ impl VisibilityLoader {
 				))
 			}
 			MaterialEvaluationMode::Uber => {
-				let Some(program) = &material.program else {
-					return Err(LoadError(format!(
-						"Visibility material {id} has no program for the uber shaders. The most likely cause is that the material was baked with `render.material-evaluation` set to `pipelines`. Bake it again with `beld bake --force`."
-					)));
-				};
 				// The bake keys the material by the stored variant's static values, which solving keeps.
 				MaterialEvaluator::Arm(uber_arm_key(
-					program.identity,
+					material.program.identity,
 					variant.static_values().flatten().copied(),
 					matches!(alpha_mode, AlphaMode::Blend),
 				))
@@ -1140,7 +1234,7 @@ impl VisibilityLoader {
 			evaluation,
 			alpha_mode,
 			double_sided,
-			coverage,
+			coverage_arm,
 			texture_slots,
 			parameters,
 			hit_group,
@@ -1184,6 +1278,53 @@ impl VisibilityLoader {
 		})
 	}
 
+	/// Loads both coverage shaders, after baking them again when `rebake` is set, and requests every masked raster
+	/// pipeline: each pass's solid pipelines with a coverage shader as their fragment.
+	async fn load_coverage_shaders(&self, rebake: bool) -> Result<VisibilityResident, LoadError> {
+		#[cfg(debug_assertions)]
+		if rebake {
+			for id in COVERAGE_SHADERS {
+				self.resource_manager
+					.rebake(id)
+					.await
+					.map_err(|error| LoadError(format!("Visibility could not bake {id} again. {error}")))?;
+			}
+		}
+		#[cfg(not(debug_assertions))]
+		let _ = rebake;
+		let mut shaders = Vec::with_capacity(COVERAGE_SHADERS.len());
+		for id in COVERAGE_SHADERS {
+			let reference: Reference<AssembledShader> = self.resource_manager.request(id).await.map_err(|error| {
+				LoadError(format!(
+					"Visibility could not load {id}. The most likely cause is resources baked before masked materials were tested in coverage shaders. Bake them again with `beld bake --force`. Request error: {error}"
+				))
+			})?;
+			shaders.push(reference.resource().clone());
+		}
+		let [visibility, depth] = <[AssembledShader; 2]>::try_from(shaders).expect("Two coverage shaders were loaded.");
+		// Both shaders are baked from the same materials; a material is tested only where both hold its arm.
+		let keys = visibility
+			.keys
+			.iter()
+			.copied()
+			.filter(|key| depth.keys.binary_search(key).is_ok())
+			.collect::<Arc<[u32]>>();
+		let request = |pipelines: [&str; 2], fragment: &str| {
+			pipelines.map(|pipeline| {
+				self.pipeline_manager
+					.request_pipeline_with_fragment(&format!("byte_engine/rendering/visibility/{pipeline}.pipeline"), fragment)
+			})
+		};
+		Ok(VisibilityResident::CoverageShaders {
+			keys,
+			pipelines: CoveragePipelines {
+				visibility: request(["visibility", "double-sided-visibility"], &visibility.shader),
+				directional: request(["directional-shadow", "double-sided-directional-shadow"], &depth.shader),
+				local: request(["cone-shadow", "double-sided-cone-shadow"], &depth.shader),
+			},
+		})
+	}
+
 	/// Loads one image, places it in a slot of `array`, and completes its transfer before returning.
 	///
 	/// With [`TextureMips::CoarseFirst`], an image larger than [`COARSE_TEXTURE_EXTENT`] loads only its mips from
@@ -1203,10 +1344,9 @@ impl VisibilityLoader {
 		})?;
 		let texture = resource.resource();
 		// Only an IES profile's calibration scales its light.
-		let photometry = texture
-			.photometry
-			.clone()
-			.filter(|photometry| array == TextureArray::IesProfile && photometric_profile_metadata_is_valid(texture, photometry));
+		let photometry = texture.photometry.clone().filter(|photometry| {
+			array == TextureArray::IesProfile && photometric_profile_metadata_is_valid(texture, photometry)
+		});
 		// The slot guard drops at the end of this statement, before the transfer awaits.
 		let index = assign_slot(
 			&mut self.texture_slots[array as usize].lock().unwrap_or_else(|error| error.into_inner()),
@@ -1261,8 +1401,9 @@ impl VisibilityLoader {
 		} = lightmap.into_resource();
 		let image_id = image.id().to_string();
 		// Lightmap texels are lighting, so a coarse lightmap would light the scene wrongly until its chain loads.
-		let VisibilityResident::Texture { index, image, .. } =
-			self.load_texture(image_id, TextureArray::Lightmap, TextureMips::Full, lane).await?
+		let VisibilityResident::Texture { index, image, .. } = self
+			.load_texture(image_id, TextureArray::Lightmap, TextureMips::Full, lane)
+			.await?
 		else {
 			unreachable!("a texture load returns a texture");
 		};
@@ -1366,9 +1507,8 @@ pub(crate) async fn load_environment_maps<P: LoadPipeline>(
 		))
 	})?;
 
-	let specular_stream_names: [String; IBL_SPECULAR_LEVEL_COUNT] = std::array::from_fn(|level| {
-		resource_management::resources::image::ibl_prefiltered_specular_stream_name(level as u32)
-	});
+	let specular_stream_names: [String; IBL_SPECULAR_LEVEL_COUNT] =
+		std::array::from_fn(|level| resource_management::resources::image::ibl_prefiltered_specular_stream_name(level as u32));
 	{
 		let mut allocator = utils::BufferAllocator::new(staging.bytes_mut());
 		let mut streams = SmallVec::<[_; 16]>::new();
@@ -1539,7 +1679,8 @@ pub(crate) struct MaterialDescription {
 	pub(crate) hit_group: Option<HitGroupShader>,
 	pub(crate) parameters: Arc<[DynamicParameter]>,
 	pub(crate) double_sided: bool,
-	pub(crate) coverage: MaterialCoverage,
+	/// The material's key in the coverage shaders, when it is masked; see [`coverage_arm_key`].
+	pub(crate) coverage_arm: Option<u32>,
 }
 
 /// Reads what a material variant tells the passes that shade it, or why the visibility pipeline can't draw it.
@@ -1571,8 +1712,10 @@ pub(crate) fn describe_material(id: &str, variant: &ResourceVariant) -> Result<M
 		texture_ids,
 		hit_group,
 		parameters: dynamic_parameters(&variant.variables),
-		double_sided: material.double_sided(),
-		coverage: material.coverage,
+		double_sided: variant.double_sided,
+		// The bake keys a masked material by the stored variant's static values, which solving keeps.
+		coverage_arm: matches!(variant.alpha_mode, AlphaMode::Mask(_))
+			.then(|| coverage_arm_key(material.program.identity, variant.static_values().flatten().copied())),
 	})
 }
 
@@ -1661,6 +1804,7 @@ impl LoadPipeline for VisibilityLoader {
 			VisibilityLoadRequest::Environment(id) => VisibilityLoadKey::Environment(id.clone()),
 			VisibilityLoadRequest::Lightmap(id) => VisibilityLoadKey::Lightmap(id.clone()),
 			VisibilityLoadRequest::UberShader { transparent, .. } => VisibilityLoadKey::UberShader(*transparent),
+			VisibilityLoadRequest::CoverageShaders { .. } => VisibilityLoadKey::CoverageShaders,
 		}
 	}
 
@@ -1673,7 +1817,8 @@ impl LoadPipeline for VisibilityLoader {
 			VisibilityLoadRequest::MeshLevels { id, primitives } => self.load_mesh_levels(id, primitives, lane).await,
 			VisibilityLoadRequest::Material(id) => self.load_material(id, lane).await,
 			VisibilityLoadRequest::Texture(id) => {
-				self.load_texture(id, TextureArray::Material, TextureMips::CoarseFirst, lane).await
+				self.load_texture(id, TextureArray::Material, TextureMips::CoarseFirst, lane)
+					.await
 			}
 			VisibilityLoadRequest::TextureDetail(id) => {
 				self.load_texture(id, TextureArray::Material, TextureMips::Full, lane).await
@@ -1684,6 +1829,7 @@ impl LoadPipeline for VisibilityLoader {
 			VisibilityLoadRequest::Environment(id) => self.load_environment(id, lane).await,
 			VisibilityLoadRequest::Lightmap(id) => self.load_lightmap(id, lane).await,
 			VisibilityLoadRequest::UberShader { transparent, rebake } => self.load_uber_shader(transparent, rebake).await,
+			VisibilityLoadRequest::CoverageShaders { rebake } => self.load_coverage_shaders(rebake).await,
 		}
 	}
 }

@@ -23,7 +23,18 @@
         "variables": {
           "type": "array",
           "items": { "$ref": "#/$defs/materialVariable" }
-        }
+        },
+        "alpha_mode": {
+          "enum": ["Opaque", "Mask", "Blend"],
+          "description": "How the graph's opacity covers the surface. A variant without it keeps its parent's."
+        },
+        "alpha_cutoff": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "The opacity below which a Mask material leaves a pixel out. Defaults to 0.5."
+        },
+        "double_sided": { "type": "boolean", "description": "Whether both faces of the surface are drawn." }
       },
       "additionalProperties": false
     },
@@ -37,12 +48,17 @@
           "type": "array",
           "items": { "$ref": "#/$defs/variantVariable" }
         },
-        "transparency": {
-          "oneOf": [
-            { "type": "boolean" },
-            { "enum": ["Opaque", "Blend"] }
-          ]
-        }
+        "alpha_mode": {
+          "enum": ["Opaque", "Mask", "Blend"],
+          "description": "How the graph's opacity covers the surface. A variant without it keeps its parent's."
+        },
+        "alpha_cutoff": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "The opacity below which a Mask material leaves a pixel out. Defaults to 0.5."
+        },
+        "double_sided": { "type": "boolean", "description": "Whether both faces of the surface are drawn." }
       },
       "additionalProperties": false
     },

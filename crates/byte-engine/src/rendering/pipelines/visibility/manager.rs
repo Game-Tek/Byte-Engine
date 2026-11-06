@@ -524,6 +524,8 @@ struct LoadedMaterial {
 	name: Arc<str>,
 	alpha_mode: AlphaMode,
 	double_sided: bool,
+	/// The material's key in the coverage shaders, when it is masked.
+	coverage_arm: Option<u32>,
 	texture_indices: Vec<u32>,
 }
 
@@ -549,7 +551,10 @@ impl ResidentEnvironment {
 }
 
 /// Creates the opaque black environment sampled while no HDR environment is configured or its upload is pending.
-pub(crate) fn create_fallback_environment(context: &mut ghi::implementation::Context, sampler: ghi::SamplerHandle) -> ResidentEnvironment {
+pub(crate) fn create_fallback_environment(
+	context: &mut ghi::implementation::Context,
+	sampler: ghi::SamplerHandle,
+) -> ResidentEnvironment {
 	let image = context.build_image(
 		ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
 			.name("Visibility Environment Fallback")
@@ -800,6 +805,11 @@ pub struct VisibilityPipelineManager {
 	/// The phases whose uber shader is loading, or baking again, so materials it lacks wait for it instead of starting
 	/// another bake.
 	uber_shaders_loading: [bool; 2],
+	/// The arm keys of the published coverage shaders, in ascending order, once they compiled.
+	coverage_keys: Option<Arc<[u32]>>,
+	/// Whether the coverage shaders are loading, or baking again, so masked materials they lack wait for them instead of
+	/// starting another bake.
+	coverage_shaders_loading: bool,
 	/// Calibrated IES profile textures that completed their GPU upload, keyed by resource ID.
 	loaded_ies_profiles: HashMap<String, IesProfileTexture>,
 	availability: AvailabilityGraph<Availability>,
@@ -894,6 +904,8 @@ impl VisibilityPipelineManager {
 		if settings.features.material_evaluation == MaterialEvaluationMode::Uber {
 			loader.request_uber_shaders();
 		}
+		// Every mode tests masked materials in the coverage shaders.
+		loader.request_coverage_shaders();
 		let skinning_pass = SkinningPass::new(context, &pipeline_manager, &geometry);
 		let host_buffer = |name, uses| {
 			ghi::buffer::Builder::new(uses)
@@ -1013,6 +1025,8 @@ impl VisibilityPipelineManager {
 			loaded_materials: Vec::new(),
 			uber_shaders: [None, None],
 			uber_shaders_loading: [settings.features.material_evaluation == MaterialEvaluationMode::Uber; 2],
+			coverage_keys: None,
+			coverage_shaders_loading: true,
 			loaded_ies_profiles: HashMap::default(),
 			availability: AvailabilityGraph::with_capacity(
 				instances + MAX_MATERIALS + MAX_BINDLESS_TEXTURES,
@@ -1220,6 +1234,15 @@ impl VisibilityPipelineManager {
 					);
 					materials_changed = true;
 				}
+				VisibilityLoaderEvent::CoverageShadersReady { keys, pipelines } => {
+					self.scene.render_info.coverage_pipelines = Some(pipelines);
+					self.adopt_coverage_shaders(keys);
+					materials_changed = true;
+				}
+				VisibilityLoaderEvent::CoverageShadersUnavailable { error } => {
+					self.coverage_shaders_loading = false;
+					error!("The coverage shaders of the masked passes are unavailable: {error}");
+				}
 				VisibilityLoaderEvent::UberShaderUnavailable { transparent, error } => {
 					self.uber_shaders_loading[usize::from(transparent)] = false;
 					error!(
@@ -1376,7 +1399,7 @@ impl VisibilityPipelineManager {
 			index,
 			alpha_mode,
 			double_sided,
-			coverage,
+			coverage_arm,
 			texture_slots: textures,
 			parameters,
 			hit_group,
@@ -1385,7 +1408,7 @@ impl VisibilityPipelineManager {
 		for shading in [&mut self.surfel_shading, &mut self.probe_shading].into_iter().flatten() {
 			shading.set_material(index, hit_group.as_ref());
 		}
-		let (record, overflow) = MaterialData::describe(&textures, coverage, alpha_mode);
+		let (record, overflow) = MaterialData::describe(&textures, coverage_arm, alpha_mode);
 		if overflow {
 			warn!(
 				"Visibility material {id} has too many texture slots. The most likely cause is that the material shader expects more textures than the visibility material data supports."
@@ -1393,7 +1416,8 @@ impl VisibilityPipelineManager {
 		}
 		self.materials[index as usize] = record;
 
-		let covered = self.covers(evaluation, alpha_mode);
+		let (evaluated, tested) = (self.covers(evaluation, alpha_mode), self.tests(coverage_arm));
+		let covered = evaluated && tested;
 		let texture_indices = textures.into_iter().flatten().collect::<Vec<_>>();
 		let material = self.availability.get_or_insert(Availability::Material(index), false);
 		// Keep the material unavailable while replacing its dependency set so renderables cannot observe a
@@ -1414,8 +1438,11 @@ impl VisibilityPipelineManager {
 			self.loaded_materials.resize_with(slot + 1, || None);
 		}
 		let name: Arc<str> = id.into();
-		if !covered {
+		if !evaluated {
 			self.uncovered(matches!(alpha_mode, AlphaMode::Blend), &name);
+		}
+		if !tested {
+			self.untested(&name);
 		}
 		self.material_parameters.adopt_material(index, name.clone(), parameters);
 		self.loaded_materials[slot] = Some(LoadedMaterial {
@@ -1424,6 +1451,7 @@ impl VisibilityPipelineManager {
 			name,
 			alpha_mode,
 			double_sided,
+			coverage_arm,
 			texture_indices,
 		});
 		self.materials_copies_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
@@ -1438,6 +1466,62 @@ impl VisibilityPipelineManager {
 				.as_ref()
 				.is_some_and(|shader| shader.keys.binary_search(&key).is_ok()),
 		}
+	}
+
+	/// Returns whether the published coverage shaders test a material whose coverage key is `coverage_arm`: always for
+	/// a material they don't test, and for a masked one once they hold its arm.
+	fn tests(&self, coverage_arm: Option<u32>) -> bool {
+		coverage_arm.is_none_or(|key| {
+			self.coverage_keys
+				.as_ref()
+				.is_some_and(|keys| keys.binary_search(&key).is_ok())
+		})
+	}
+
+	/// Publishes the newly compiled coverage shaders, which hold the arms of `keys`, and makes every masked material
+	/// available exactly when they hold its arm and its evaluation can shade it.
+	///
+	/// Next, call [`Self::rebuild_material_lists`] once the frame's events are adopted.
+	fn adopt_coverage_shaders(&mut self, keys: Arc<[u32]>) {
+		self.coverage_keys = Some(keys);
+		self.coverage_shaders_loading = false;
+		for slot in 0..self.loaded_materials.len() {
+			let Some(material) = &self.loaded_materials[slot] else {
+				continue;
+			};
+			if material.coverage_arm.is_none() {
+				continue;
+			}
+			let tested = self.tests(material.coverage_arm);
+			let covered = tested && self.covers(material.evaluation, material.alpha_mode);
+			let (index, name) = (material.index, material.name.clone());
+			self.availability.set_key_available(&Availability::Material(index), covered);
+			if !tested {
+				self.untested(&name);
+			}
+		}
+	}
+
+	/// Handles a masked material whose arm the coverage shaders lack. Development builds bake them again from every
+	/// material the store holds; release builds can't, so they report the material.
+	///
+	/// While the coverage shaders are loading, or baking again for another material, their arrival checks the materials
+	/// again instead.
+	fn untested(&mut self, material: &str) {
+		if self.coverage_shaders_loading {
+			return;
+		}
+		#[cfg(debug_assertions)]
+		{
+			let _ = material;
+			self.coverage_shaders_loading = true;
+			self.loader.rebake_coverage_shaders();
+		}
+		#[cfg(not(debug_assertions))]
+		error!(
+			"Visibility material {material} is not drawn. The most likely cause is that the masked passes' coverage shaders were baked before this masked material. Bake the resources again with `beld bake`. See {}.",
+			crate::online_docs_url("use/resources/bake")
+		);
 	}
 
 	/// Publishes a phase's newly compiled uber `shader`, and makes every material of the phase available exactly when
@@ -1455,10 +1539,11 @@ impl VisibilityPipelineManager {
 			if matches!(material.alpha_mode, AlphaMode::Blend) != transparent {
 				continue;
 			}
-			let covered = self.covers(material.evaluation, material.alpha_mode);
+			let evaluated = self.covers(material.evaluation, material.alpha_mode);
+			let covered = evaluated && self.tests(material.coverage_arm);
 			let (index, name) = (material.index, material.name.clone());
 			self.availability.set_key_available(&Availability::Material(index), covered);
-			if !covered {
+			if !evaluated {
 				self.uncovered(transparent, &name);
 			}
 		}

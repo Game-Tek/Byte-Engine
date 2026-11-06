@@ -586,15 +586,15 @@ fn a_material_written_inside_a_node_graph_is_reached() {
 struct Locals;
 
 impl<'a> Stage<'a> for Locals {
-	fn geometry(&mut self, geometry: Geometry) -> Syntax<'a> {
-		Syntax::member_expression(match geometry {
+	fn geometry(&mut self, geometry: Geometry) -> Option<Syntax<'a>> {
+		Some(Syntax::member_expression(match geometry {
 			Geometry::Position => "position",
 			Geometry::Normal => "normal",
 			Geometry::Tangent => "tangent",
 			Geometry::Bitangent => "bitangent",
 			Geometry::View => "view",
 			Geometry::TexCoord => "uv",
-		})
+		}))
 	}
 
 	fn sample(&mut self, _: &'a str) -> Result<Syntax<'a>, LowerError> {

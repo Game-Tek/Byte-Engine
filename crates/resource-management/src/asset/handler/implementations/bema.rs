@@ -6,7 +6,7 @@
 pub trait ProgramGenerator: Send + Sync {
 	/// Builds the BESL program that evaluates `graph` for a material whose parameters are `parameters`, in the order
 	/// the renderer binds them, or `None` when the renderer evaluates its materials in shaders it assembles after the
-	/// bake instead. The bake then stores the material's [`MaterialProgram`] in place of a compiled shader.
+	/// bake instead. The bake stores the material's [`MaterialProgram`] either way.
 	///
 	/// Returns the error text to report when the graph needs something the renderer cannot supply, such as a
 	/// parameter `parameters` does not declare.
@@ -198,6 +198,9 @@ impl BEMAAssetHandler {
 		let graph = asset["graph"].as_str().ok_or_else(|| {
 			invalid("it names no `graph`. The most likely cause is a material written for the removed `shaders` field; point `graph` at a `.bemx` file instead.")
 		})?;
+		// A root material starts from an opaque, one-sided surface.
+		let (alpha_mode, double_sided) =
+			surface_coverage(asset, AlphaMode::Opaque, false).map_err(|problem| invalid(&problem))?;
 		let asset_variables = asset["variables"].as_array().ok_or_else(|| {
 			invalid("it has no `variables` array. The most likely cause is a missing or misspelt `variables` field.")
 		})?;
@@ -237,9 +240,8 @@ impl BEMAAssetHandler {
 		let (shaders, program) = program?;
 
 		let resource = MaterialModel {
-			double_sided: false,
-			alpha_mode: AlphaMode::Opaque,
-			coverage: MaterialCoverage::default(),
+			double_sided,
+			alpha_mode,
 			model: RenderModel {
 				name: "Visibility".to_string(),
 				pass: "MaterialEvaluation".to_string(),
@@ -290,15 +292,14 @@ impl BEMAAssetHandler {
 				dynamic: parameter.dynamic,
 			})
 			.collect();
-		let alpha_mode = match asset.get("transparency") {
-			Some(Value::Bool(true)) => AlphaMode::Blend,
-			Some(Value::String(value)) if value == "Blend" => AlphaMode::Blend,
-			_ => AlphaMode::Opaque,
-		};
+		// A variant keeps each of its material's coverage settings it leaves out.
+		let (alpha_mode, double_sided) = surface_coverage(asset, material_repr.alpha_mode, material_repr.double_sided)
+			.map_err(|problem| invalid(&problem))?;
 		let resource = VariantModel {
 			material,
 			variables,
 			alpha_mode,
+			double_sided,
 		};
 
 		context.store_primary(ProcessedAsset::new(url, resource), &[]).await
@@ -332,13 +333,7 @@ impl BEMAAssetHandler {
 			};
 			let variant: VariantModel = crate::from_slice(&variant.resource).map_err(read_error)?;
 			let material: MaterialModel = crate::from_slice(&variant.material.resource).map_err(read_error)?;
-			let Some(program) = material.program else {
-				context.warn(format_args!(
-					"Variant '{id}' is left out of '{}'. The most likely cause is that its material was baked for a renderer that compiles a shader per material. Bake it again with `beld bake --force`.",
-					url.as_ref()
-				));
-				continue;
-			};
+			let program = material.program;
 			let static_values = variant.static_values().map(<[f32]>::to_vec).collect::<Vec<_>>();
 			programs.push((
 				material.model,
@@ -396,8 +391,8 @@ impl BEMAAssetHandler {
 	}
 
 	/// Reads the material's BEMX graph, generates its programs, and compiles and stores their shaders: the material's
-	/// shader, then its closest-hit shader when the generator builds one. When the generator builds no evaluation
-	/// shader, it returns the material's [`MaterialProgram`] in its place.
+	/// shader, when the generator builds one, then its closest-hit shader, when the generator builds one. It also
+	/// returns the material's [`MaterialProgram`], which the shaders assembled at the end of the bake read.
 	///
 	/// The shaders are stored under the material's own ID with `#shader` and `#hit-shader` fragments, because the
 	/// programs depend on the material's parameters as well as on the graph, so two materials sharing a graph may still
@@ -409,7 +404,7 @@ impl BEMAAssetHandler {
 		generator: &dyn ProgramGenerator,
 		path: ResourceId<'_>,
 		parameters: &[MaterialParameter],
-	) -> Result<(Vec<ReferenceModel<Shader>>, Option<MaterialProgram>), LoadErrors> {
+	) -> Result<(Vec<ReferenceModel<Shader>>, MaterialProgram), LoadErrors> {
 		let (source, format) = context.resolve(path).await?;
 
 		if format != "bemx" {
@@ -443,12 +438,7 @@ impl BEMAAssetHandler {
 			context.error(shader_compilation_error_message(&hit_shader_id, &error));
 			LoadErrors::FailedToProcess
 		};
-		// A renderer that assembles its evaluation shaders after the bake reads the program instead of a shader.
-		let material_program = program
-			.is_none()
-			.then(|| MaterialProgram::new(&graph, parameters))
-			.transpose()
-			.map_err(compile_error)?;
+		let material_program = MaterialProgram::new(&graph, parameters).map_err(compile_error)?;
 		// The two programs don't depend on each other, so they compile together.
 		let shader = async {
 			let Some(program) = program else {
@@ -474,6 +464,55 @@ impl BEMAAssetHandler {
 
 		Ok((shader?.into_iter().chain(hit_shader?).collect(), material_program))
 	}
+}
+
+/// The cutoff a `"Mask"` material without `alpha_cutoff` tests its `opacity` against.
+const DEFAULT_ALPHA_CUTOFF: f32 = 0.5;
+
+/// Reads a `.bema` file's `alpha_mode`, `alpha_cutoff`, and `double_sided`, returning the alpha mode and sidedness the
+/// file declares. A field the file leaves out keeps the value `alpha_mode` and `double_sided` give, which are a
+/// variant's parent's, or a root material's defaults.
+fn surface_coverage(asset: &Value, alpha_mode: AlphaMode, double_sided: bool) -> Result<(AlphaMode, bool), String> {
+	let cutoff = match asset.get("alpha_cutoff") {
+		None => match alpha_mode {
+			AlphaMode::Mask(cutoff) => cutoff,
+			AlphaMode::Opaque | AlphaMode::Blend => DEFAULT_ALPHA_CUTOFF,
+		},
+		Some(cutoff) => cutoff
+			.as_f64()
+			.filter(|cutoff| (0.0..=1.0).contains(cutoff))
+			.ok_or_else(|| {
+				format!(
+					"its `alpha_cutoff` {cutoff} is not a number from 0 to 1. The most likely cause is an opacity written as a percentage or a string. Write the cutoff as a number from 0 to 1, such as 0.5."
+				)
+			})? as f32,
+	};
+	let alpha_mode = match asset.get("alpha_mode") {
+		None => match alpha_mode {
+			AlphaMode::Mask(_) => AlphaMode::Mask(cutoff),
+			other => other,
+		},
+		Some(mode) => match mode.as_str() {
+			Some("Opaque") => AlphaMode::Opaque,
+			Some("Mask") => AlphaMode::Mask(cutoff),
+			Some("Blend") => AlphaMode::Blend,
+			_ => {
+				return Err(format!(
+					"its `alpha_mode` {mode} is not `\"Opaque\"`, `\"Mask\"`, or `\"Blend\"`. The most likely cause is a misspelt mode or the removed `transparency` field's `true`. Set `alpha_mode` to one of the three."
+				));
+			}
+		},
+	};
+	let double_sided = match asset.get("double_sided") {
+		None => double_sided,
+		Some(Value::Bool(double_sided)) => *double_sided,
+		Some(value) => {
+			return Err(format!(
+				"its `double_sided` {value} is not `true` or `false`. The most likely cause is a quoted Boolean. Write `true` or `false` without quotes."
+			));
+		}
+	};
+	Ok((alpha_mode, double_sided))
 }
 
 /// Reads one entry of a `.bema` file's `variables`: the parameter it declares, its data type, and its value.
@@ -725,21 +764,20 @@ async fn store_generated_materials(
 	Ok(variants)
 }
 
-/// Stores one generated material, which evaluates with `shaders` or, without an evaluation shader, from `program`, and
-/// its variant.
+/// Stores one generated material, which evaluates with `shaders` and keeps `program` for the assembled shaders, and its
+/// variant.
 async fn store_generated_variant(
 	context: BakeContext<'_>,
 	GeneratedMaterial { base_id, material }: GeneratedMaterial,
 	shaders: Vec<ReferenceModel<Shader>>,
-	program: Option<MaterialProgram>,
+	program: MaterialProgram,
 	variables: Vec<VariantVariableModel>,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
-	let alpha_mode = material.alpha_mode;
+	let (alpha_mode, double_sided) = (material.alpha_mode, material.double_sided);
 
 	let model = MaterialModel {
-		double_sided: material.double_sided,
+		double_sided,
 		alpha_mode,
-		coverage: generated_material_coverage(&material),
 		model: RenderModel {
 			name: "Visibility".to_string(),
 			pass: "MaterialEvaluation".to_string(),
@@ -755,47 +793,10 @@ async fn store_generated_variant(
 		material: model,
 		variables,
 		alpha_mode,
+		double_sided,
 	};
 
 	store_model::<VariantModel>(context, &format!("{base_id}.variant"), variant, &[]).await
-}
-
-/// Extracts a generated material's opacity into the compact masked-raster contract: a constant factor times, at most,
-/// the alpha of one texture.
-fn generated_material_coverage(material: &ImportedMaterial) -> MaterialCoverage {
-	/// Folds the constants an opacity multiplies together and finds the texture whose alpha it reads.
-	fn collect<'a>(graph: &'a bemx::Graph, node: bemx::NodeId, factor: &mut f32, texture: &mut Option<&'a str>) {
-		match graph.node(node) {
-			bemx::Node::Constant(bemx::Value::Float(value)) => *factor *= value,
-			// A colour constant is reached through the extraction of its alpha below.
-			bemx::Node::Constant(bemx::Value::Vector4(value)) => *factor *= value[3],
-			bemx::Node::Image { texture: name, .. } => *texture = Some(name),
-			bemx::Node::Extract { value, index: 3 } => collect(graph, *value, factor, texture),
-			bemx::Node::Binary {
-				operator: bemx::BinaryOperator::Multiply,
-				left,
-				right,
-			} => {
-				collect(graph, *left, factor, texture);
-				collect(graph, *right, factor, texture);
-			}
-			_ => {}
-		}
-	}
-
-	let mut coverage = MaterialCoverage::default();
-	let mut texture = None;
-
-	if let Some(opacity) = material.graph.surface().opacity {
-		collect(&material.graph, opacity, &mut coverage.factor, &mut texture);
-	}
-
-	coverage.texture_slot = texture
-		.and_then(material_texture_slot)
-		.filter(|slot| *slot < material.images.len())
-		.map(|slot| slot as u32);
-
-	coverage
 }
 
 /// Declares the texture parameters a generated material binds: one per image, named by slot.
@@ -811,9 +812,8 @@ fn generated_material_parameters(material: &ImportedMaterial) -> Vec<MaterialPar
 /// Compiles each distinct generated shader once and stores it under an ID derived from its compile inputs, with the
 /// closest-hit shader beside it when the generator builds one.
 ///
-/// Returns the shader references of each entry in `materials`, in order: its shader, then its hit shader, if any.
-/// When the generator builds no evaluation shader, the entry has no shader of its own and carries its
-/// [`MaterialProgram`] instead.
+/// Returns the shader references of each entry in `materials`, in order: its shader, if the generator builds one, then
+/// its hit shader, if any, and the [`MaterialProgram`] the assembled shaders read.
 ///
 /// The ID hashes the lowered platform source and the compiler identity, so a later bake of the same container reuses
 /// the stored binary while a change to the graph, program generator, BESL backend, settings, or toolchain compiles
@@ -823,7 +823,7 @@ async fn store_generated_shaders(
 	generator: &dyn ProgramGenerator,
 	container_id: ResourceId<'_>,
 	materials: &[&ImportedMaterial],
-) -> Result<Vec<(Vec<ReferenceModel<Shader>>, Option<MaterialProgram>)>, LoadErrors> {
+) -> Result<Vec<(Vec<ReferenceModel<Shader>>, MaterialProgram)>, LoadErrors> {
 	// Every generated shader of a container shares one compiler name, so the name never depends on the key it feeds.
 	let compiler_name = format!("{}#shaders", container_id.as_ref());
 
@@ -854,21 +854,17 @@ async fn store_generated_shaders(
 			Entry::Occupied(entry) => *entry.get(),
 			Entry::Vacant(entry) => {
 				let parameters = generated_material_parameters(material);
-				// Without an evaluation shader, the material records its program for a renderer that assembles its shaders
-				// after the bake, and equal programs are what make two materials share an entry.
-				let (prepared, material_program, key) =
-					match generator.generate(&material.graph, &parameters).map_err(compile_error)? {
-						Some(program) => {
-							let prepared = context.prepare_shader(program, &settings).map_err(compile_error)?;
-							let key = prepared.cache_key(compiler_identity);
-							(Some(prepared), None, key)
-						}
-						None => {
-							let program = MaterialProgram::new(&material.graph, &parameters).map_err(compile_error)?;
-							let key = program.identity;
-							(None, Some(program), key)
-						}
-					};
+				// Every material keeps its program for the shaders assembled after the bake. Without an evaluation shader,
+				// equal programs are what make two materials share an entry.
+				let material_program = MaterialProgram::new(&material.graph, &parameters).map_err(compile_error)?;
+				let (prepared, key) = match generator.generate(&material.graph, &parameters).map_err(compile_error)? {
+					Some(program) => {
+						let prepared = context.prepare_shader(program, &settings).map_err(compile_error)?;
+						let key = prepared.cache_key(compiler_identity);
+						(Some(prepared), key)
+					}
+					None => (None, material_program.identity),
+				};
 				// Graphs that lower to the same evaluation source compute the same surface, so their hit shaders match too;
 				// the hit shader is generated from the same graph and parameters.
 				let hit = generator
@@ -1006,6 +1002,7 @@ pub mod tests {
 	use super::{MaterialParameter, ProgramGenerator};
 	use crate::asset::handler::implementations::besl::{PreparedBeslShader, ShaderCompiler};
 	use crate::bemx;
+	use crate::types::AlphaMode;
 	use crate::{
 		ReferenceModel,
 		asset::{
@@ -1623,6 +1620,142 @@ pub mod tests {
 		assert_eq!(solved.resource().static_values().collect::<Vec<_>>(), stored);
 	}
 
+	/// Returns an asset manager over a foliage material whose `opacity` reads its own opacity map, declared with
+	/// `material_fields`, and over each of `variants`, a name and the fields after its `parent` and `variables`.
+	fn coverage_asset_manager(material_fields: &str, variants: &[(&str, &str)]) -> (AssetManager, MemoryStorageBackend) {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+		asset_storage_backend.add_file(
+			"foliage.bema",
+			format!(
+				r#"{{
+					"domain": "World",
+					"graph": "foliage.bemx",
+					{material_fields}
+					"variables": [{{ "name": "strength", "data_type": "float", "type": "Static", "value": 1.0 }}]
+				}}"#
+			)
+			.leak()
+			.as_bytes(),
+		);
+		asset_storage_backend.add_file(
+			"foliage.bemx",
+			r#"{
+				nodes: [
+					{ name: "strength", node: "parameter", parameter: "strength", type: "float" },
+					{ name: "surface", node: "surface", opacity: "strength" },
+				],
+			}"#
+			.as_bytes(),
+		);
+		for (name, fields) in variants {
+			asset_storage_backend.add_file(
+				format!("{name}.bema").leak(),
+				format!(r#"{{ "parent": "foliage.bema", "variables": [{{ "name": "strength", "value": 0.5 }}] {fields} }}"#)
+					.leak()
+					.as_bytes(),
+			);
+		}
+		let resource_storage_backend = MemoryStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+		asset_manager.set_program_generator(MinimalTestShaderGenerator);
+		asset_manager.set_shader_compiler(TestShaderCompiler);
+		asset_manager.add_asset_handler(BEMAAssetHandler);
+		(asset_manager, resource_storage_backend)
+	}
+
+	/// Reads the stored variant `id` from `resource_storage_backend`.
+	fn stored_variant(resource_storage_backend: &MemoryStorageBackend, id: &str) -> VariantModel {
+		let stored = resource_storage_backend
+			.get_resource(ResourceId::new(id))
+			.expect("Expected the variant");
+		crate::from_slice(&stored.resource).expect("Expected a variant model")
+	}
+
+	/// A material declares its alpha mode, cutoff, and sidedness, and a variant keeps each one it leaves out and
+	/// replaces each one it sets.
+	#[r#async::test]
+	async fn variants_inherit_and_override_alpha_mode_and_sidedness() {
+		let (asset_manager, resource_storage_backend) = coverage_asset_manager(
+			r#""alpha_mode": "Mask", "alpha_cutoff": 0.3, "double_sided": true,"#,
+			&[
+				("inherits", ""),
+				("sharper", r#", "alpha_cutoff": 0.7"#),
+				("solid", r#", "alpha_mode": "Opaque", "double_sided": false"#),
+			],
+		);
+
+		let material: ReferenceModel<MaterialModel> = asset_manager
+			.bake_if_not_exists("foliage.bema")
+			.await
+			.expect("Failed to bake the material");
+		let material: MaterialModel = crate::from_slice(
+			&resource_storage_backend
+				.get_resource(material.id())
+				.expect("Expected the material")
+				.resource,
+		)
+		.expect("Expected a material model");
+		assert_eq!((material.alpha_mode, material.double_sided), (AlphaMode::Mask(0.3), true));
+
+		for (name, alpha_mode, double_sided) in [
+			("inherits", AlphaMode::Mask(0.3), true),
+			("sharper", AlphaMode::Mask(0.7), true),
+			("solid", AlphaMode::Opaque, false),
+		] {
+			let id = format!("{name}.bema");
+			let _: ReferenceModel<VariantModel> = asset_manager
+				.bake_if_not_exists(&id)
+				.await
+				.unwrap_or_else(|error| panic!("Failed to bake variant {name}: {error:?}"));
+			let variant = stored_variant(&resource_storage_backend, &id);
+			assert_eq!(
+				(variant.alpha_mode, variant.double_sided),
+				(alpha_mode, double_sided),
+				"variant {name}"
+			);
+		}
+	}
+
+	/// A root material without the fields is opaque and one-sided, and a masked one without a cutoff tests against 0.5.
+	#[r#async::test]
+	async fn materials_default_to_opaque_one_sided_and_a_half_cutoff() {
+		let (asset_manager, resource_storage_backend) = coverage_asset_manager("", &[("masked", r#", "alpha_mode": "Mask""#)]);
+
+		let _: ReferenceModel<VariantModel> = asset_manager
+			.bake_if_not_exists("masked.bema")
+			.await
+			.expect("Failed to bake the variant");
+		let material = stored_variant(&resource_storage_backend, "masked.bema").material;
+		let material: MaterialModel = crate::from_slice(
+			&resource_storage_backend
+				.get_resource(material.id())
+				.expect("Expected the material")
+				.resource,
+		)
+		.expect("Expected a material model");
+
+		assert_eq!((material.alpha_mode, material.double_sided), (AlphaMode::Opaque, false));
+		assert_eq!(
+			stored_variant(&resource_storage_backend, "masked.bema").alpha_mode,
+			AlphaMode::Mask(0.5)
+		);
+	}
+
+	/// An alpha mode, cutoff, or sidedness outside what `.bema` accepts fails the bake.
+	#[r#async::test]
+	async fn invalid_alpha_mode_cutoff_or_sidedness_fails_to_bake() {
+		for fields in [
+			r#""alpha_mode": "Cutout","#,
+			r#""alpha_mode": "Mask", "alpha_cutoff": 1.5,"#,
+			r#""alpha_cutoff": "0.5","#,
+			r#""double_sided": "true","#,
+		] {
+			let (asset_manager, _) = coverage_asset_manager(fields, &[]);
+			let baked: Result<ReferenceModel<MaterialModel>, _> = asset_manager.bake_if_not_exists("foliage.bema").await;
+			assert!(baked.is_err(), "fields {fields} should fail the bake");
+		}
+	}
+
 	/// Two different materials that hash to one key would run each other's code, so the bake fails instead.
 	#[r#async::test]
 	async fn assembled_shaders_reject_colliding_keys() {
@@ -1655,8 +1788,8 @@ use crate::{
 	r#async::spawn_cpu_task,
 	online_docs_url, resource,
 	resources::material::{
-		AssembledShader, MaterialCoverage, MaterialModel, MaterialProgram, ParameterModel, ProgramParameter, RenderModel,
-		Shader, ValueModel, VariantModel, VariantVariableModel,
+		AssembledShader, MaterialModel, MaterialProgram, ParameterModel, ProgramParameter, RenderModel, Shader, ValueModel,
+		VariantModel, VariantVariableModel,
 	},
 	shader::{besl::backends::platform::PlatformShaderCompiler, generator::ShaderGenerationSettings},
 	types::AlphaMode,

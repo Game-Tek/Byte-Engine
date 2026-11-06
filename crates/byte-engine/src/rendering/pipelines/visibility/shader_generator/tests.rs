@@ -642,6 +642,148 @@ fn uber_arm_keys_follow_program_values_and_phase() {
 	assert_ne!(key, u32::MAX);
 }
 
+/// A masked graph whose `opacity` multiplies a separate opacity texture by a static and a dynamic parameter, the way a
+/// foliage material reads its `_Opacity` map.
+const MASKED_GRAPH: &str = r#"{
+	nodes: [
+		{ name: "albedo", node: "image", texture: "base_color", type: "vector3" },
+		{ name: "mask", node: "image", texture: "opacity", type: "float" },
+		{ name: "strength", node: "parameter", parameter: "strength", type: "float" },
+		{ name: "fade", node: "parameter", parameter: "fade", type: "float" },
+		{ name: "scaled", node: "multiply", in1: "mask", in2: "strength" },
+		{ name: "faded", node: "multiply", in1: "scaled", in2: "fade" },
+		{ name: "surface", node: "surface", base_color: "albedo", opacity: "faded" },
+	],
+}"#;
+
+/// The parameters [`MASKED_GRAPH`] reads, in binding order.
+fn masked_parameters() -> Vec<MaterialParameter> {
+	vec![
+		parameter("base_color", ParameterKind::Texture),
+		parameter("opacity", ParameterKind::Texture),
+		parameter("strength", ParameterKind::Value(bemx::Type::Float)),
+		parameter("fade", ParameterKind::Dynamic(bemx::Type::Float)),
+	]
+}
+
+/// Verifies both coverage shaders link with an arm that samples a separate opacity texture and reads static and
+/// dynamic parameters, beside an arm whose graph leaves `opacity` out, and without arms.
+#[test]
+fn coverage_shaders_produce_valid_besl() {
+	let generator = material_generator();
+	let (masked, plain) = (graph(MASKED_GRAPH), graph(DYNAMIC_GRAPH));
+	let (masked_parameters, plain_parameters) = (masked_parameters(), dynamic_parameters());
+	let static_values = [vec![vec![0.5]], vec![vec![0.75]]];
+	let keys = [
+		coverage_arm_key(1, static_values[0].concat()).to_string(),
+		coverage_arm_key(2, static_values[1].concat()).to_string(),
+	];
+	let model = resource_management::resources::material::RenderModel {
+		name: "Visibility".to_string(),
+		pass: "MaterialEvaluation".to_string(),
+	};
+	let material = |graph, parameters, static_values| AssembledMaterial {
+		model: &model,
+		graph,
+		parameters,
+		identity: 0,
+		static_values,
+		alpha_mode: resource_management::types::AlphaMode::Mask(0.5),
+	};
+	let materials = [
+		material(&masked, &masked_parameters, &static_values[0]),
+		material(&plain, &plain_parameters, &static_values[1]),
+	];
+	let arms = [
+		AssembledArm {
+			key: &keys[0],
+			material: &materials[0],
+		},
+		AssembledArm {
+			key: &keys[1],
+			material: &materials[1],
+		},
+	];
+	for arms in [&arms[..], &[]] {
+		for pass in [CoveragePass::Visibility, CoveragePass::Depth] {
+			let program = generator
+				.coverage_program(pass, arms)
+				.expect("the test arms should generate a coverage program");
+			besl::lex(program).unwrap_or_else(|error| panic!("the {pass:?} coverage program should link: {error:?}"));
+		}
+	}
+}
+
+/// Verifies a masked material whose `opacity` reads the normal fails to bake, because the masked passes carry only the
+/// vertex UV.
+#[test]
+fn coverage_shaders_reject_opacity_that_reads_geometry() {
+	let graph = graph(
+		r#"{
+	nodes: [
+		{ name: "normal", node: "normal" },
+		{ name: "up", node: "extract", in: "normal", index: 1 },
+		{ name: "surface", node: "surface", opacity: "up" },
+	],
+}"#,
+	);
+	let model = resource_management::resources::material::RenderModel {
+		name: "Visibility".to_string(),
+		pass: "MaterialEvaluation".to_string(),
+	};
+	let material = AssembledMaterial {
+		model: &model,
+		graph: &graph,
+		parameters: &[],
+		identity: 0,
+		static_values: &[],
+		alpha_mode: resource_management::types::AlphaMode::Mask(0.5),
+	};
+	let arms = [AssembledArm {
+		key: "1",
+		material: &material,
+	}];
+
+	let Err(error) = material_generator().coverage_program(CoveragePass::Depth, &arms) else {
+		panic!("a masked opacity that reads the normal should fail to generate");
+	};
+	assert!(error.contains("Normal"), "{error}");
+}
+
+/// Verifies only masked materials take arms in the coverage shaders, under the same key in both.
+#[test]
+fn coverage_shaders_keep_only_masked_materials() {
+	use resource_management::types::AlphaMode;
+
+	let generator = material_generator();
+	let graph = graph(MASKED_GRAPH);
+	let parameters = masked_parameters();
+	let static_values = [vec![0.5]];
+	let model = resource_management::resources::material::RenderModel {
+		name: "Visibility".to_string(),
+		pass: "MaterialEvaluation".to_string(),
+	};
+	let material = |alpha_mode| AssembledMaterial {
+		model: &model,
+		graph: &graph,
+		parameters: &parameters,
+		identity: 3,
+		static_values: &static_values,
+		alpha_mode,
+	};
+	let key = |id, alpha_mode| {
+		generator
+			.assembled_key(id, &material(alpha_mode))
+			.expect("a coverage shader ID")
+	};
+
+	for id in COVERAGE_SHADERS {
+		assert_eq!(key(id, AlphaMode::Mask(0.25)), Some(coverage_arm_key(3, [0.5])));
+		assert_eq!(key(id, AlphaMode::Opaque), None);
+		assert_eq!(key(id, AlphaMode::Blend), None);
+	}
+}
+
 /// Builds the baking generator for a project that builds surfel GI in, which generates hit shaders.
 fn hit_generator() -> VisibilityShaderGenerator {
 	material_generator_with(VisibilityFeatures {

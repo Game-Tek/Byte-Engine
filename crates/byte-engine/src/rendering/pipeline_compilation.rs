@@ -171,7 +171,22 @@ pub struct PipelineManagerClient {
 impl PipelineManagerClient {
 	/// Requests a pipeline resource without waiting for storage or compilation.
 	pub fn request_pipeline(&self, id: &str) -> PipelineRef {
-		self.request(PipelineRequestKind::Resource { id: id.to_string() })
+		self.request(PipelineRequestKind::Resource {
+			id: id.to_string(),
+			fragment: None,
+		})
+	}
+
+	/// Requests the raster pipeline resource `id` with the fragment shader `fragment`, a shader resource ID, in place of
+	/// the fragment shader the pipeline lists, or as its fragment shader when it lists none.
+	///
+	/// Use it for a fragment shader the bake assembles, whose ID changes with what it holds. Equal requests return the
+	/// same [`PipelineRef`] and compile once.
+	pub(crate) fn request_pipeline_with_fragment(&self, id: &str, fragment: &str) -> PipelineRef {
+		self.request(PipelineRequestKind::Resource {
+			id: id.to_string(),
+			fragment: Some(fragment.to_string()),
+		})
 	}
 
 	/// Requests a specialized compute pipeline without waiting for shader loading or compilation.
@@ -329,7 +344,9 @@ impl PipelineManagerServer {
 	pub async fn run(mut self, resources: crate::core::EntityHandle<resource_management::ResourceManager>) {
 		while let Ok(PipelineRequest { key, revision, kind }) = self.requests.recv().await {
 			let result = match kind {
-				PipelineRequestKind::Resource { id } => self.compile_resource_pipeline(&resources, &id).await,
+				PipelineRequestKind::Resource { id, fragment } => {
+					self.compile_resource_pipeline(&resources, &id, fragment.as_deref()).await
+				}
 				PipelineRequestKind::SpecializedCompute(request) => {
 					self.compile_specialized_compute_pipeline(&resources, request).await
 				}
@@ -342,11 +359,13 @@ impl PipelineManagerServer {
 		}
 	}
 
-	/// Loads one complete pipeline dependency graph before performing native compilation.
+	/// Loads one complete pipeline dependency graph before performing native compilation. A raster pipeline takes
+	/// `fragment`, a shader resource ID, as its fragment shader when it is given.
 	async fn compile_resource_pipeline(
 		&mut self,
 		resources: &resource_management::ResourceManager,
 		id: &str,
+		fragment: Option<&str>,
 	) -> Result<DetachedPipeline, String> {
 		use ghi::{Device as _, pipelines::raster};
 		use resource_management::resources::pipeline::{CullMode, FaceWinding, FillMode, PipelineKind};
@@ -390,9 +409,21 @@ impl PipelineManagerServer {
 			} => {
 				// Shader reads and debug bakes are independent of mutable GHI state, so
 				// prepare every shader before adopting handles in descriptor order.
-				let prepared =
+				let mut prepared =
 					utils::r#async::try_join_all(shaders.iter().map(|shader| shared_shader(&self.shared, resources, shader)))
 						.await?;
+				// A fragment shader the request names takes the place of the one the pipeline lists.
+				if let Some(fragment) = fragment {
+					let fragment = shared_shader(&self.shared, resources, fragment).await?;
+					if !matches!(fragment.stage, ghi::ShaderTypes::Fragment) {
+						return Err(format!(
+							"Raster pipeline '{id}' was requested with shader '{}' as its fragment shader, which is another stage. The most likely cause is an assembled shader baked with the wrong generation settings. Bake it as a fragment shader.",
+							fragment.id
+						));
+					}
+					prepared.retain(|shader| !matches!(shader.stage, ghi::ShaderTypes::Fragment));
+					prepared.push(fragment);
+				}
 				let loaded = prepared
 					.iter()
 					.map(|shader| self.adopt_shader(shader))
@@ -983,7 +1014,7 @@ mod tests {
 
 		assert!(matches!(
 			resource_request.kind,
-			PipelineRequestKind::Resource { ref id } if id == "shared/id"
+			PipelineRequestKind::Resource { ref id, .. } if id == "shared/id"
 		));
 		let specialized_request = requests
 			.try_recv()
@@ -1222,7 +1253,11 @@ struct PipelineRequest {
 
 #[derive(Clone, Hash)]
 enum PipelineRequestKind {
-	Resource { id: String },
+	/// A pipeline resource, with `fragment` as its fragment shader when it is given.
+	Resource {
+		id: String,
+		fragment: Option<String>,
+	},
 	SpecializedCompute(SpecializedComputePipelineRequest),
 	RayTracing(RayTracingPipelineRequest),
 	Tile(TilePipelineRequest),
@@ -1233,7 +1268,10 @@ impl PipelineRequestKind {
 	#[cfg(debug_assertions)]
 	fn depends_on(&self, id: &str) -> bool {
 		match self {
-			Self::Resource { id: pipeline_id } => pipeline_id == id,
+			Self::Resource {
+				id: pipeline_id,
+				fragment,
+			} => pipeline_id == id || fragment.as_deref() == Some(id),
 			Self::SpecializedCompute(request) => request.shader_id == id,
 			Self::RayTracing(request) => {
 				request.ray_generation == id || request.hit_groups.iter().any(|group| group.shader_id == id)

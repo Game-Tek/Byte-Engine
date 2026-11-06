@@ -22,6 +22,9 @@ ignores any other, such as a material-level `type`:
 | `domain` | Required. The render domain, such as `World`. It's recorded in the material and not read by shader generation. |
 | `graph` | Required. The asset ID of the `.bemx` file that describes the material's surface. |
 | `variables` | Required. The material's parameters, in order. Each is an object with `name`, `data_type`, `value`, and optionally `type`. The graph's `parameter` and `image` nodes read them by name. |
+| `alpha_mode` | How the graph's `opacity` covers the surface: `"Opaque"`, `"Mask"`, or `"Blend"`. Default `"Opaque"`. See [Alpha modes](#alpha-modes). |
+| `alpha_cutoff` | A number from 0 to 1, read only when `alpha_mode` is `"Mask"`. Default 0.5. |
+| `double_sided` | `true` draws both faces of the surface; `false`, the default, draws only front faces. |
 
 A variable's `type` says how its value reaches the shader:
 
@@ -38,7 +41,22 @@ Any other `type`, or a dynamic `Texture2D`, fails the bake.
 | --- | --- |
 | `parent` | Required. The asset ID of the material this variant specializes. |
 | `variables` | Required. One object with `name` and `value` for parameters of the parent material. A static parent parameter without a value fails the bake; a dynamic one keeps the parent's default. Each value resolves with the parent parameter's `data_type`, and keeps the parent's `type`. |
-| `transparency` | `"Blend"` or `true` selects blended transparency. Any other value, or no field, selects opaque. |
+| `alpha_mode`, `alpha_cutoff`, `double_sided` | Optional. Each replaces the parent material's value of the same field, with the values the material accepts. A field left out keeps the parent's value. |
+
+## Alpha modes
+
+`alpha_mode` says what the `opacity` input of the material's
+[surface](/docs/reference/bemx#surface) does:
+
+| `alpha_mode` | Meaning |
+| --- | --- |
+| `Opaque` | The surface covers every pixel it's drawn on. `opacity` isn't read. |
+| `Mask` | The surface covers a pixel where `opacity` is at least `alpha_cutoff`, and nothing where it's less. Covered pixels shade as opaque. |
+| `Blend` | The surface draws in the transparent phase, blended over what's behind it with `opacity` as its alpha. |
+
+`alpha_cutoff` without `"Mask"` has no effect. Any other `alpha_mode`, an
+`alpha_cutoff` that isn't a number from 0 to 1, or a `double_sided` that isn't a
+Boolean fails the bake.
 
 ## Values
 

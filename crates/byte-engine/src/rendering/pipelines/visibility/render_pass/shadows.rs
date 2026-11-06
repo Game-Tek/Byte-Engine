@@ -14,12 +14,16 @@ use super::super::layout::{
 	CONE_SHADOW_MAP_FORMAT, DIRECTIONAL_SHADOW_MAP_FORMAT, LOCAL_SHADOW_SIZE_CLASS_COUNT, MAX_DIRECTIONAL_SHADOW_COUNT,
 	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_MAP_FORMAT, SHADOW_CASCADE_COUNT, local_shadow_map_resolution,
 };
+use super::super::loader::CoveragePipelines;
 use super::super::mesh_dispatch::PhaseDispatches;
 use super::super::shader_data::ShaderViewData;
 use super::super::shadow_selection::{ShadowLayout, SunShadow};
 use super::super::shadow_updates::{ShadowDraw, ShadowDraws, ShadowImage};
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
-use super::{ComputeStage, OcclusionPhase, Pipelines, StageCounters, record_compute_stages, record_meshlet_dispatches};
+use super::{
+	ComputeStage, OcclusionPhase, Pipelines, StageCounters, opaque_layer_pipelines, record_compute_stages,
+	record_meshlet_dispatches,
+};
 use crate::rendering::csm::{CASTER_REACH, CascadeFrame, EDGE_TEXELS, SIZE_STEPS_PER_OCTAVE};
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::render_pass::RenderPassFunction;
@@ -194,9 +198,9 @@ pub(crate) fn receiver_fit_shader_data(
 /// image per size class, so each light's map has the size its class gives it.
 pub(crate) struct ShadowMaps {
 	depth_pyramid_descriptor_set: ghi::DescriptorSetHandle,
-	directional_pipelines: Pipelines<4>,
+	directional_pipelines: Pipelines<2>,
 	/// Cone and point maps share one perspective depth format, so they share these pipelines.
-	local_pipelines: Pipelines<4>,
+	local_pipelines: Pipelines<2>,
 	depth_pyramid_pipeline: Pipelines<1>,
 	pub(crate) directional: ghi::BaseImageHandle,
 	/// One max-depth cell per [`DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE`] texels of each cascade, one layer's cells below
@@ -287,8 +291,8 @@ impl ShadowMaps {
 		]);
 		Self {
 			depth_pyramid_descriptor_set,
-			directional_pipelines: Pipelines::phases(pipeline_manager, "directional-shadow"),
-			local_pipelines: Pipelines::phases(pipeline_manager, "cone-shadow"),
+			directional_pipelines: Pipelines::sides(pipeline_manager, "directional-shadow"),
+			local_pipelines: Pipelines::sides(pipeline_manager, "cone-shadow"),
 			depth_pyramid_pipeline: Pipelines::request(pipeline_manager, ["directional-shadow-depth-pyramid"]),
 			directional,
 			directional_depth_pyramid,
@@ -315,11 +319,18 @@ impl ShadowMaps {
 		work: &ShadowWork,
 		descriptor_sets: [ghi::DescriptorSetHandle; 2],
 		counters: StageCounters,
+		coverage: Option<CoveragePipelines<ghi::PipelineHandle>>,
 	) -> Option<impl RenderPassFunction + use<>> {
 		use ghi::frame::Frame as _;
 
-		let directional_pipelines = self.directional_pipelines.resolve(pipeline_manager)?;
-		let local_pipelines = self.local_pipelines.resolve(pipeline_manager)?;
+		let directional_pipelines = opaque_layer_pipelines(
+			self.directional_pipelines.resolve(pipeline_manager)?,
+			coverage.map(|coverage| coverage.directional),
+		);
+		let local_pipelines = opaque_layer_pipelines(
+			self.local_pipelines.resolve(pipeline_manager)?,
+			coverage.map(|coverage| coverage.local),
+		);
 		let [depth_pyramid_pipeline] = self.depth_pyramid_pipeline.resolve(pipeline_manager)?;
 		let cascade_count = SHADOW_CASCADE_COUNT * work.suns.len();
 		let runs = shadow_runs(&work.draws);

@@ -145,6 +145,20 @@ Every graph ends in one `surface` node. An input left out takes its default.
 | `emission` | `vector3` | 0, 0, 0 |
 | `occlusion` | `float`, 0 to 1, multiplying indirect diffuse light | 1 |
 
+`opacity` means what the material's
+[alpha mode](/docs/reference/bema#alpha-modes) says:
+
+| Alpha mode | `opacity` |
+| --- | --- |
+| `Opaque` | Not read. |
+| `Mask` | Compared with the material's cutoff at every pixel the surface covers, in every pass that draws it, shadows included. The pixel is left out where `opacity` is less than the cutoff. |
+| `Blend` | The surface's alpha: 0 is fully transparent and 1 fully opaque. |
+
+In a `Mask` material, `opacity` may read `constant`, `parameter`, `image`, and
+`texcoord` nodes, and nodes computed from them. A masked graph whose `opacity`
+reads `position`, `normal`, `tangent`, `bitangent`, or `viewdirection` fails to
+bake.
+
 How the renderer shades these inputs is in
 [Rendering](/docs/reference/rendering#materials).
 

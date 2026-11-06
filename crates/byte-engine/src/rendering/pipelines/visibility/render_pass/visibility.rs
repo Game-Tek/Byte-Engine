@@ -29,8 +29,9 @@ impl VisibilityPhase {
 pub(super) struct VisibilityPass {
 	/// The base set and the sink's occlusion culling set, which the shadow maps bind too.
 	pub(super) descriptor_sets: [ghi::DescriptorSetHandle; 2],
-	/// The double-sided pipelines run without back-face culling, and only the masked ones run the alpha test.
-	pub(super) pipelines: Pipelines<4>,
+	/// The solid pipelines, one-sided then double-sided, which runs without back-face culling. The masked ones, which run
+	/// the alpha test, come from the coverage shaders.
+	pub(super) pipelines: Pipelines<2>,
 	pub(super) primitive_index: ghi::BaseImageHandle,
 	pub(super) instance_id: ghi::BaseImageHandle,
 	pub(super) depth: ghi::BaseImageHandle,
@@ -51,7 +52,7 @@ impl VisibilityPass {
 		extent: Extent,
 		phase: VisibilityPhase,
 		dispatches: PhaseDispatches,
-		pipelines: [ghi::PipelineHandle; 4],
+		pipelines: [Option<ghi::PipelineHandle>; 4],
 		occlusion: OcclusionPhase,
 	) {
 		use ghi::command_buffer::{

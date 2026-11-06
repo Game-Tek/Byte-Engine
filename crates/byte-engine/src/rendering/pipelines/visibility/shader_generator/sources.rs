@@ -1,3 +1,4 @@
+mod coverage;
 mod environment;
 mod material;
 mod material_hit;
@@ -5,6 +6,7 @@ mod reflection;
 mod shadow;
 mod ssgi;
 
+pub(crate) use coverage::*;
 pub(crate) use environment::*;
 pub(crate) use material::*;
 pub(crate) use material_hit::*;

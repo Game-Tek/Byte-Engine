@@ -581,6 +581,7 @@ mod tests {
 				material: ReferenceModel::new_serialized("materials/test.material", 0, 0, Vec::new(), None),
 				variables: Vec::new(),
 				alpha_mode: AlphaMode::Opaque,
+				double_sided: false,
 			})
 			.expect("variant should serialize"),
 			None,

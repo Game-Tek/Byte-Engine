@@ -30,8 +30,8 @@ impl<'a> MaterialStage<'a> {
 }
 
 impl<'a> Stage<'a> for MaterialStage<'a> {
-	fn geometry(&mut self, geometry: Geometry) -> Node<'a> {
-		match geometry {
+	fn geometry(&mut self, geometry: Geometry) -> Option<Node<'a>> {
+		Some(match geometry {
 			Geometry::Position => Node::member_expression("world_space_vertex_position"),
 			Geometry::Normal => Node::member_expression("N"),
 			Geometry::View => Node::member_expression("V"),
@@ -42,35 +42,19 @@ impl<'a> Stage<'a> for MaterialStage<'a> {
 
 				Node::member_expression("vertex_uv")
 			}
-		}
+		})
 	}
 
 	fn sample(&mut self, texture: &'a str) -> Result<Node<'a>, LowerError> {
-		// Texture parameters take slots in the order the material declares them, which is the order its variant binds
-		// images to `material.textures`.
-		let slot = self
-			.parameters
-			.iter()
-			.filter(|parameter| parameter.kind == ParameterKind::Texture)
-			.position(|parameter| parameter.name == texture)
-			.ok_or_else(|| LowerError::UnknownTexture {
-				name: texture.to_string(),
-			})?;
+		let slot = texture_slot(self.parameters, texture)?;
 
 		self.features.reads_uv = true;
-
-		// Index access keeps an expression on its right side so the linked AST can distinguish `textures[slot]` from
-		// `.field`.
-		let material_textures = Node::accessor(Node::member_expression("material"), Node::member_expression("textures"));
 
 		Ok(Node::call(
 			"sample_texture_2d_array_grad",
 			vec![
 				scene_member("textures"),
-				Node::accessor(
-					material_textures,
-					Node::sentence(vec![Node::literal_expression(format!("{slot}u"))]),
-				),
+				material_texture(Node::member_expression("material"), slot),
 				Node::member_expression("vertex_uv"),
 				Node::member_expression("uv_derivative_x"),
 				Node::member_expression("uv_derivative_y"),
@@ -79,39 +63,135 @@ impl<'a> Stage<'a> for MaterialStage<'a> {
 	}
 
 	fn parameter(&mut self, name: &'a str, r#type: bemx::Type) -> Result<Node<'a>, LowerError> {
-		// Dynamic parameters take entries of the instance's parameter block in the order the material declares them,
-		// which is the order the renderer writes their values in.
-		let mut entry = 0u32;
-		for parameter in self.parameters {
-			match parameter.kind {
-				// Static parameters are specialization constants the generator declares under their own names.
-				ParameterKind::Value(declared) if parameter.name == name && declared == r#type => {
-					return Ok(Node::member_expression(name));
-				}
-				ParameterKind::Dynamic(declared) if parameter.name == name && declared == r#type => {
-					// The instance's parameter block is the high half of its record's `material` word.
-					let block = Node::operator(
-						">>",
-						Node::accessor(Node::member_expression("mesh"), Node::member_expression("material")),
-						Node::literal_expression("16u"),
-					);
-					let index = Node::operator("+", block, Node::literal_expression(format!("{entry}u")));
-					let value = Node::accessor(scene_member("material_parameters"), Node::sentence(vec![index]));
-
-					return Ok(construct(
-						(0..r#type.width()).map(|index| component(&value, index, 4)).collect(),
-					));
-				}
-				ParameterKind::Dynamic(_) => entry += 1,
-				_ => {}
-			}
-		}
-
-		Err(LowerError::UnknownParameter {
-			name: name.to_string(),
+		parameter_read(
+			self.parameters,
+			name,
 			r#type,
-		})
+			Node::accessor(Node::member_expression("mesh"), Node::member_expression("material")),
+		)
 	}
+}
+
+/// The `CoverageStage` struct supplies what a BEMX graph's `opacity` reads in the masked raster passes, whose fragments
+/// carry only the vertex UV.
+///
+/// The coverage prefix declares `vertex_uv`, the instance's `material_word`, and its `material_index`, and the stage
+/// reads the material table entry's fields one at a time instead of copying the entry.
+struct CoverageStage<'a> {
+	parameters: &'a [MaterialParameter],
+}
+
+impl<'a> Stage<'a> for CoverageStage<'a> {
+	fn geometry(&mut self, geometry: Geometry) -> Option<Node<'a>> {
+		match geometry {
+			Geometry::TexCoord => Some(Node::member_expression("vertex_uv")),
+			Geometry::Position | Geometry::Normal | Geometry::Tangent | Geometry::Bitangent | Geometry::View => None,
+		}
+	}
+
+	fn sample(&mut self, texture: &'a str) -> Result<Node<'a>, LowerError> {
+		let slot = texture_slot(self.parameters, texture)?;
+		let material = Node::accessor(
+			Node::accessor(scene_member("materials"), Node::member_expression("materials")),
+			Node::sentence(vec![Node::member_expression("material_index")]),
+		);
+		// A raster fragment samples with the derivatives the rasterizer computes.
+		Ok(Node::call(
+			"sample",
+			vec![
+				Node::accessor(
+					scene_member("textures"),
+					Node::sentence(vec![material_texture(material, slot)]),
+				),
+				Node::member_expression("vertex_uv"),
+			],
+		))
+	}
+
+	fn parameter(&mut self, name: &'a str, r#type: bemx::Type) -> Result<Node<'a>, LowerError> {
+		parameter_read(self.parameters, name, r#type, Node::member_expression("material_word"))
+	}
+}
+
+/// Returns the slot of texture parameter `texture` in its material's table entry.
+///
+/// Texture parameters take slots in the order the material declares them, which is the order its variant binds images
+/// to `material.textures`.
+fn texture_slot(parameters: &[MaterialParameter], texture: &str) -> Result<usize, LowerError> {
+	parameters
+		.iter()
+		.filter(|parameter| parameter.kind == ParameterKind::Texture)
+		.position(|parameter| parameter.name == texture)
+		.ok_or_else(|| LowerError::UnknownTexture {
+			name: texture.to_string(),
+		})
+}
+
+/// Returns a read of the bindless texture index in slot `slot` of the material table entry `material`.
+fn material_texture<'a>(material: Node<'a>, slot: usize) -> Node<'a> {
+	// Index access keeps an expression on its right side so the linked AST can distinguish `textures[slot]` from
+	// `.field`.
+	let material_textures = Node::accessor(material, Node::member_expression("textures"));
+	Node::accessor(
+		material_textures,
+		Node::sentence(vec![Node::literal_expression(format!("{slot}u"))]),
+	)
+}
+
+/// Returns a read of the value parameter `name` of type `type`: the parameter's own name for a static one, which the
+/// generator declares, or the instance's entry for a dynamic one. `material_word` is the instance record's
+/// `material` word, whose high half names where its parameter block starts.
+fn parameter_read<'a>(
+	parameters: &[MaterialParameter],
+	name: &'a str,
+	r#type: bemx::Type,
+	material_word: Node<'a>,
+) -> Result<Node<'a>, LowerError> {
+	// Dynamic parameters take entries of the instance's parameter block in the order the material declares them,
+	// which is the order the renderer writes their values in.
+	let mut entry = 0u32;
+	for parameter in parameters {
+		match parameter.kind {
+			ParameterKind::Value(declared) if parameter.name == name && declared == r#type => {
+				return Ok(Node::member_expression(name));
+			}
+			ParameterKind::Dynamic(declared) if parameter.name == name && declared == r#type => {
+				let block = Node::operator(">>", material_word, Node::literal_expression("16u"));
+				let index = Node::operator("+", block, Node::literal_expression(format!("{entry}u")));
+				let value = Node::accessor(scene_member("material_parameters"), Node::sentence(vec![index]));
+
+				return Ok(construct(
+					(0..r#type.width()).map(|index| component(&value, index, 4)).collect(),
+				));
+			}
+			ParameterKind::Dynamic(_) => entry += 1,
+			_ => {}
+		}
+	}
+
+	Err(LowerError::UnknownParameter {
+		name: name.to_string(),
+		r#type,
+	})
+}
+
+/// Returns the statements that compute `graph`'s `opacity` into the `f32` local `opacity`, which the coverage prefix
+/// declares, for the masked raster passes.
+///
+/// Only the nodes `opacity` reaches are lowered. A graph whose `opacity` reads geometry other than texture coordinates
+/// fails with [`LowerError::UnavailableGeometry`].
+pub(super) fn coverage_body<'a>(
+	graph: &'a bemx::Graph,
+	parameters: &'a [MaterialParameter],
+) -> Result<Vec<Node<'a>>, LowerError> {
+	let mut lowering = Lowering::new(graph, CoverageStage { parameters });
+	let opacity = match graph.surface().opacity {
+		Some(opacity) => lowering.value(opacity)?.syntax,
+		None => bemx::besl::constant(&bemx::Surface::DEFAULT_OPACITY),
+	};
+	let (mut statements, _) = lowering.finish();
+	statements.push(Node::member_assignment("opacity", opacity));
+	Ok(statements)
 }
 
 /// Returns the statements that compute `graph`'s surface and assign it to the material outputs the lighting suffix
@@ -169,7 +249,7 @@ pub(super) fn material_body<'a>(
 				let world = lowering.addressable(world);
 				let tangent = lowering.stage().tangent_frame_axis("T");
 				let bitangent = lowering.stage().tangent_frame_axis("B");
-				let geometric = lowering.stage().geometry(Geometry::Normal);
+				let geometric = Node::member_expression("N");
 
 				Node::call(
 					"vec3f",

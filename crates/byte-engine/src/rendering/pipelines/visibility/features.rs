@@ -70,7 +70,17 @@ impl std::str::FromStr for MaterialEvaluationMode {
 /// The IDs of the uber material evaluation shaders, opaque then transparent, which only
 /// [`MaterialEvaluationMode::Uber`] uses. They are resources with no asset behind them: the bake assembles each from
 /// every material variant the store holds.
-pub(crate) const UBER_MATERIAL_SHADERS: [&str; 2] = [
+pub(crate) const UBER_MATERIAL_SHADERS: [&str; 2] = [ASSEMBLED_SHADERS[2], ASSEMBLED_SHADERS[3]];
+
+/// The IDs of the coverage shaders, the masked visibility pass's fragment then the masked shadow passes', which every
+/// mode uses. The bake assembles each from every masked material variant the store holds, with one arm per distinct
+/// `opacity` program.
+pub(crate) const COVERAGE_SHADERS: [&str; 2] = [ASSEMBLED_SHADERS[0], ASSEMBLED_SHADERS[1]];
+
+/// Every assembled shader: the [`COVERAGE_SHADERS`], which every mode bakes, then the [`UBER_MATERIAL_SHADERS`].
+const ASSEMBLED_SHADERS: [&str; 4] = [
+	"byte_engine/rendering/visibility/masked-visibility-coverage.uber",
+	"byte_engine/rendering/visibility/masked-depth-coverage.uber",
 	"byte_engine/rendering/visibility/material-evaluation-opaque.uber",
 	"byte_engine/rendering/visibility/material-evaluation-transparent.uber",
 ];
@@ -249,8 +259,8 @@ impl VisibilityFeatures {
 	/// bake after every material, and every time, because a freshness check cannot see the set of materials change.
 	pub fn assembled_resources(&self) -> &'static [&'static str] {
 		match self.material_evaluation {
-			MaterialEvaluationMode::Pipelines => &[],
-			MaterialEvaluationMode::Uber => &UBER_MATERIAL_SHADERS,
+			MaterialEvaluationMode::Pipelines => &ASSEMBLED_SHADERS[..COVERAGE_SHADERS.len()],
+			MaterialEvaluationMode::Uber => &ASSEMBLED_SHADERS,
 		}
 	}
 
@@ -435,8 +445,8 @@ mod tests {
 			assert!(!pipelines.excludes(&id), "asset: {asset}");
 			assert!(uber.excludes(&id), "asset: {asset}");
 		}
-		assert!(pipelines.assembled_resources().is_empty());
-		assert_eq!(uber.assembled_resources(), UBER_MATERIAL_SHADERS);
+		assert_eq!(pipelines.assembled_resources(), COVERAGE_SHADERS);
+		assert_eq!(uber.assembled_resources(), [COVERAGE_SHADERS, UBER_MATERIAL_SHADERS].concat());
 	}
 
 	#[test]

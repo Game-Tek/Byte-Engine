@@ -32,7 +32,10 @@ pub struct ShaderMesh {
 impl ShaderMesh {
 	/// Returns the record of an instance of the material table entry `material_index` placed by `model`.
 	pub(crate) fn new(model: Mat4x3f, material_index: u32) -> Self {
-		debug_assert!(material_index <= MESH_MATERIAL_MASK, "Material index {material_index} does not fit an instance record.");
+		debug_assert!(
+			material_index <= MESH_MATERIAL_MASK,
+			"Material index {material_index} does not fit an instance record."
+		);
 		Self {
 			model,
 			level: 0,
@@ -64,7 +67,10 @@ impl ShaderMesh {
 
 	/// Sets the first entry of the instance's dynamic material parameters.
 	pub(crate) fn set_parameter_block(&mut self, block: u32) {
-		debug_assert!(block <= u16::MAX as u32, "Parameter block {block} does not fit an instance record.");
+		debug_assert!(
+			block <= u16::MAX as u32,
+			"Parameter block {block} does not fit an instance record."
+		);
 		self.material = self.material_index() | block << 16;
 	}
 
@@ -91,7 +97,8 @@ const MESH_MATERIAL_MASK: u32 = u16::MAX as u32;
 const MESH_LIGHTMAP_SHIFT: u32 = 26;
 const MESH_LIGHTMAP_MASK: u32 = 0b1_1111;
 const _: () = assert!(
-	super::layout::MAX_LIGHTMAPS < MESH_LIGHTMAP_MASK as usize && super::layout::MAX_ADDRESSABLE_LEVELS == MESH_LEVEL_MASK as usize + 1,
+	super::layout::MAX_LIGHTMAPS < MESH_LIGHTMAP_MASK as usize
+		&& super::layout::MAX_ADDRESSABLE_LEVELS == MESH_LEVEL_MASK as usize + 1,
 	"Update the instance record's bit layout, and the shaders' `scene_records` layer, when the lightmap or level limits change."
 );
 
@@ -268,42 +275,41 @@ impl From<View> for LightClusterParameters {
 	}
 }
 
-/// The `MaterialData` struct is one entry of the material table: bindless texture slots plus coverage controls.
+/// The `MaterialData` struct is one entry of the material table: bindless texture slots, the material's arm in the
+/// coverage shaders, and the cutoff the masked passes test its opacity against.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct MaterialData {
 	pub(crate) textures: [u32; MAX_MATERIAL_TEXTURES],
-	pub(crate) coverage_factor: f32,
-	pub(crate) coverage_texture_slot: u32,
+	/// The material's key in the coverage shaders, or `u32::MAX` for a material they don't test.
+	pub(crate) coverage_arm: u32,
 	pub(crate) alpha_cutoff: f32,
-	pub(crate) _padding: u32,
+	pub(crate) _padding: [u32; 2],
 }
 
 impl Default for MaterialData {
 	fn default() -> Self {
 		Self {
 			textures: [u32::MAX; MAX_MATERIAL_TEXTURES],
-			coverage_factor: 1.0,
-			coverage_texture_slot: u32::MAX,
+			coverage_arm: u32::MAX,
 			..bytemuck::Zeroable::zeroed()
 		}
 	}
 }
 
 impl MaterialData {
-	/// Creates the record of a material whose variables take the bindless texture slots `textures`, and reports
-	/// whether it named more textures than a record holds.
+	/// Creates the record of a material whose variables take the bindless texture slots `textures`, and whose arm in the
+	/// coverage shaders is `coverage_arm`, and reports whether it named more textures than a record holds.
 	///
 	/// The visibility manager records each material it loads with it, and the lightmap bake each material its rays hit.
 	pub(crate) fn describe(
 		textures: &[Option<u32>],
-		coverage: resource_management::resources::material::MaterialCoverage,
+		coverage_arm: Option<u32>,
 		alpha_mode: resource_management::types::AlphaMode,
 	) -> (Self, bool) {
 		let mut record = Self::default();
 		let overflow = record.set_textures(textures.iter().copied());
-		record.coverage_factor = coverage.factor;
-		record.coverage_texture_slot = coverage.texture_slot.unwrap_or(u32::MAX);
+		record.coverage_arm = coverage_arm.unwrap_or(u32::MAX);
 		record.alpha_cutoff = match alpha_mode {
 			resource_management::types::AlphaMode::Mask(cutoff) => cutoff,
 			resource_management::types::AlphaMode::Opaque | resource_management::types::AlphaMode::Blend => 0.0,

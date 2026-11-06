@@ -84,15 +84,30 @@ impl<const N: usize> Pipelines<N> {
 	}
 }
 
-impl Pipelines<4> {
-	/// Requests one raster pipeline per opaque-layer work range: the solid, masked, double-sided, and double-sided masked
-	/// variants of `stem`, such as `double-sided-masked-{stem}`. The visibility and shadow passes pair them with
-	/// [`PhaseDispatches::opaque_layer`] the same way.
-	pub(super) fn phases(pipeline_manager: &PipelineManagerClient, stem: &str) -> Self {
-		Self(["", "masked-", "double-sided-", "double-sided-masked-"].map(|variant| {
+impl Pipelines<2> {
+	/// Requests the solid raster pipelines of `stem`: the one-sided one, then the double-sided one,
+	/// `double-sided-{stem}`. Pair them with the masked ones of the coverage shaders through [`opaque_layer_pipelines`].
+	pub(super) fn sides(pipeline_manager: &PipelineManagerClient, stem: &str) -> Self {
+		Self(["", "double-sided-"].map(|variant| {
 			pipeline_manager.request_pipeline(&format!("byte_engine/rendering/visibility/{variant}{stem}.pipeline"))
 		}))
 	}
+}
+
+/// Returns the pipeline of each opaque-layer work range, in the order of [`PhaseDispatches::opaque_layer`]: solid,
+/// masked, double-sided, and double-sided masked. `solid` and `masked` each hold a pass's one-sided pipeline, then its
+/// double-sided one. The masked ones are `None` until the coverage shaders compile, and no masked instance is admitted
+/// before.
+pub(super) fn opaque_layer_pipelines(
+	[solid, double_sided]: [ghi::PipelineHandle; 2],
+	masked: Option<[ghi::PipelineHandle; 2]>,
+) -> [Option<ghi::PipelineHandle>; 4] {
+	[
+		Some(solid),
+		masked.map(|[masked, _]| masked),
+		Some(double_sided),
+		masked.map(|[_, masked]| masked),
+	]
 }
 
 /// Records one mesh dispatch per non-empty work range and batch of up to [`MAX_TASK_VIEWS`] views. The batches draw
@@ -105,7 +120,7 @@ pub(super) fn record_meshlet_dispatches(
 	c: &mut impl ghi::command_buffer::RasterizationRenderPassMode,
 	descriptor_sets: [ghi::DescriptorSetHandle; 2],
 	occlusion: OcclusionPhase,
-	ranges: impl IntoIterator<Item = (MeshDispatch, ghi::PipelineHandle)>,
+	ranges: impl IntoIterator<Item = (MeshDispatch, Option<ghi::PipelineHandle>)>,
 	view_base: usize,
 	view_count: usize,
 ) {
@@ -115,6 +130,9 @@ pub(super) fn record_meshlet_dispatches(
 		if dispatch.is_empty() {
 			continue;
 		}
+		let Some(pipeline) = pipeline else {
+			unreachable!("A work range that holds instances has a pipeline: masked instances wait for the coverage shaders.");
+		};
 		let c = c.bind_raster_pipeline(pipeline);
 		c.bind_descriptor_sets(&descriptor_sets);
 		for first_layer in (0..view_count).step_by(MAX_TASK_VIEWS) {
@@ -675,7 +693,7 @@ impl VisibilityRenderPass {
 			light_clusters,
 			visibility: VisibilityPass {
 				descriptor_sets: [base_descriptor_set, occlusion.descriptor_set],
-				pipelines: Pipelines::phases(&pipeline_manager, "visibility"),
+				pipelines: Pipelines::sides(&pipeline_manager, "visibility"),
 				primitive_index: targets.primitive_index,
 				instance_id: targets.instance_id,
 				depth,
@@ -787,11 +805,15 @@ impl VisibilityRenderPass {
 					shadow_work,
 					self.visibility.descriptor_sets,
 					self.stage_counters,
+					render_info.coverage_pipelines,
 				)?),
 			),
 			None => (None, None),
 		};
-		let visibility_pipelines = self.visibility.pipelines.resolve(pipeline_manager)?;
+		let visibility_pipelines = opaque_layer_pipelines(
+			self.visibility.pipelines.resolve(pipeline_manager)?,
+			render_info.coverage_pipelines.map(|coverage| coverage.visibility),
+		);
 		let material_prepasses = match &self.material_prepasses {
 			Some(prepasses) => Some((prepasses, prepasses.pipelines.resolve(pipeline_manager)?)),
 			// Without prepasses, the opaque uber shader writes the background's zeros, so the frame waits for it as it

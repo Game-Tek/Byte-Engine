@@ -163,14 +163,24 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn build_top_level_acceleration_structure(
 		&mut self,
-		_: crate::TopLevelAccelerationStructureHandle,
-		_: &[crate::rt::Instance],
+		structure: crate::TopLevelAccelerationStructureHandle,
+		instances: &[crate::rt::Instance],
 	) {
-		crate::rt::unsupported("DX12")
+		let frame_key = self.frame_key.expect(
+			"The top-level acceleration structure build was recorded outside a frame. The most likely cause is that the recording was created from a command buffer instead of a frame. Record top-level builds in a frame's recording.",
+		);
+		self.device
+			.record_top_level_build(self.command_buffer, frame_key, structure, instances);
 	}
 
-	fn build_bottom_level_acceleration_structures(&mut self, _: &[crate::BottomLevelAccelerationStructureHandle]) {
-		crate::rt::unsupported("DX12")
+	fn build_bottom_level_acceleration_structures(&mut self, structures: &[crate::BottomLevelAccelerationStructureHandle]) {
+		let frame_sequence = self.frame_key.map(|frame_key| frame_key.sequence_index);
+		self.device.record_bottom_level_builds(
+			self.command_buffer,
+			frame_sequence,
+			self.sequence_index(),
+			structures,
+		);
 	}
 
 	#[allow(unreachable_code)]
@@ -265,10 +275,17 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	}
 
 	fn transfer_texture(&mut self, source: ImageOrSwapchain) -> Result<TextureCopyHandle, crate::TextureTransferError> {
-		let ImageOrSwapchain::Image(handle) = source else {
-			return Err(crate::TextureTransferError::Unsupported);
+		let sequence_index = self.sequence_index();
+		let handle = match source {
+			ImageOrSwapchain::Image(handle) => handle,
+			// A swapchain's frames render through its proxy image, which presentation copies into the backbuffer.
+			ImageOrSwapchain::Swapchain(swapchain) => self
+				.device
+				.get_swapchain_image_for_sequence(swapchain, crate::Uses::TransferSource, sequence_index)
+				.0
+				.into(),
 		};
-		self.transfer_image(handle, self.sequence_index())
+		self.transfer_image(handle, sequence_index)
 	}
 
 	fn transfer_texture_with_frame(
@@ -496,8 +513,10 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 }
 
 impl BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
-	fn trace_rays(&mut self, _: crate::ShaderBindingTableHandle, _: Extent) {
-		crate::rt::unsupported("DX12")
+	fn trace_rays(&mut self, table: crate::ShaderBindingTableHandle, extent: Extent) {
+		self.refresh_descriptor_tables_if_dirty();
+		self.device
+			.trace_rays_native(self.command_buffer, self.bound_pipeline, table, extent);
 	}
 }
 

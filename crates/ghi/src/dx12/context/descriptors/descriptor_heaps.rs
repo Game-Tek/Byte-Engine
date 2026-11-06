@@ -134,7 +134,7 @@ impl Device {
 
 	/// Creates the shader-visible resource and sampler heaps of a context, and writes the fixed samplers at the start
 	/// of the sampler heap, where shaders index them by their state.
-	pub(crate) fn create_shader_visible_heaps(device: &ID3D12Device10) -> ShaderVisibleHeaps {
+	pub(crate) fn create_shader_visible_heaps(device: &ID3D12Device10, resource_capacity: u32) -> ShaderVisibleHeaps {
 		let create = |heap_type, descriptor_count| {
 			let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
 				Type: heap_type,
@@ -153,7 +153,7 @@ impl Device {
 				native,
 			}
 		};
-		let resources = create(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, RESOURCE_HEAP_CAPACITY);
+		let resources = create(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, resource_capacity);
 		let samplers = create(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, SAMPLER_HEAP_CAPACITY);
 
 		let sampler_stride = unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER) } as usize;
@@ -170,39 +170,30 @@ impl Device {
 		ShaderVisibleHeaps {
 			resources,
 			samplers,
-			free_resources: ::utils::RangeAllocator::new(RESOURCE_HEAP_CAPACITY as usize, 64),
+			free_resources: ::utils::RangeAllocator::new(resource_capacity as usize, 64),
 			free_samplers,
+			resource_capacity,
 		}
 	}
 
-	/// Describes the fixed sampler at sampler heap `index`: `filter + 2 × mip filter + 4 × reduction + 12 × address`.
+	/// Describes the fixed sampler at sampler heap `index`, as [`crate::sampler::StaticSampler::fixed`] lays them out.
 	///
 	/// A fixed sampler reads every level of the image, so it doesn't clamp the level of detail.
 	fn fixed_sampler_desc(index: u32) -> D3D12_SAMPLER_DESC {
-		let filter = |bit: u32| {
-			if bit == 0 {
-				FilteringModes::Closest
-			} else {
-				FilteringModes::Linear
-			}
-		};
-		let reduction = match index / 4 % 3 {
-			0 => SamplingReductionModes::WeightedAverage,
-			1 => SamplingReductionModes::Min,
-			_ => SamplingReductionModes::Max,
-		};
-		let address = Self::sampler_address_mode(match index / 12 {
-			0 => SamplerAddressingModes::Clamp,
-			1 => SamplerAddressingModes::Repeat,
-			_ => SamplerAddressingModes::Mirror,
-		});
+		let sampler = crate::sampler::StaticSampler::fixed(index);
+		let address = Self::sampler_address_mode(sampler.addressing_mode);
 		D3D12_SAMPLER_DESC {
-			Filter: Self::sampler_filter(filter(index % 2), filter(index / 2 % 2), reduction, false),
+			Filter: Self::sampler_filter(
+				sampler.filtering_mode,
+				sampler.mip_map_mode,
+				sampler.reduction_mode,
+				sampler.max_anisotropy > 1,
+			),
 			AddressU: address,
 			AddressV: address,
 			AddressW: address,
 			MipLODBias: 0.0,
-			MaxAnisotropy: 1,
+			MaxAnisotropy: u32::from(sampler.max_anisotropy),
 			ComparisonFunc: D3D12_COMPARISON_FUNC_NEVER,
 			BorderColor: [0.0, 0.0, 0.0, 0.0],
 			MinLOD: 0.0,
@@ -221,7 +212,7 @@ impl Device {
 		let (free, capacity) = if sampler_heap {
 			(&mut heaps.free_samplers, SAMPLER_HEAP_CAPACITY)
 		} else {
-			(&mut heaps.free_resources, RESOURCE_HEAP_CAPACITY)
+			(&mut heaps.free_resources, heaps.resource_capacity)
 		};
 		let range = free.take(count as usize, 1).unwrap_or_else(|| {
 			panic!(

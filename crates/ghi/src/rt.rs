@@ -15,18 +15,6 @@ use crate::{BottomLevelAccelerationStructureHandle, BufferDescriptor, BufferStri
 /// Vulkan stores both in 24 bits, so every backend keeps them below this value.
 pub const INSTANCE_INDEX_LIMIT: u32 = 1 << 24;
 
-/// Stops a backend without ray tracing at its first acceleration structure, ray tracing pipeline, or shader binding
-/// table call.
-///
-/// [`crate::context::Context::supports_ray_tracing`] is always `false` on such a backend, so reaching this means the
-/// application skipped that check.
-#[cfg(target_os = "windows")]
-pub(crate) fn unsupported(backend: &str) -> ! {
-	panic!(
-		"{backend} cannot build acceleration structures or trace rays. The most likely cause is that the application did not check Context::supports_ray_tracing, which is always false on {backend}. Check Context::supports_ray_tracing, and use a technique without rays when it is false."
-	)
-}
-
 /// The `TriangleGeometry` struct describes one run of indexed triangles that a bottom-level acceleration structure
 /// holds, read from buffers the application already filled.
 ///

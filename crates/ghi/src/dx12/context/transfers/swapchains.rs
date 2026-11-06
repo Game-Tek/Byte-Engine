@@ -51,7 +51,7 @@ impl Device {
 			swapchain.image_count = image_count;
 			swapchain.next_image_index %= image_count;
 			if let Some(proxy) = proxy {
-				self.resize_image_internal(proxy, extent, sequence_index);
+				self.resize_image_internal(proxy, extent, None, sequence_index);
 			}
 		}
 		extent

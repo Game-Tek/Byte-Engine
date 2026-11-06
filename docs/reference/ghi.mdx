@@ -114,8 +114,8 @@ complete, cancelled, or failed.
 ## Ray tracing
 
 A context supports ray tracing when its device was created with the ray
-tracing feature and the GPU supports it. Metal and Vulkan support it; Direct3D
-12 reports no support. Rays find hits in a top-level structure, whose
+tracing feature and the GPU supports it, which on Direct3D 12 means DirectX Raytracing (DXR) tier
+1.1. Rays find hits in a top-level structure, whose
 instances place bottom-level structures in the world. A ray tracing pipeline
 launches a ray generation shader over a grid, and that shader runs the hit
 group of each hit's record, as a shader binding table maps it.
@@ -235,8 +235,8 @@ picker, keep the alpha of the starting color.
 | Feature request | Metal | Vulkan | Direct3D 12 |
 | --- | --- | --- | --- |
 | Validation, GPU validation, API dump | Not used | Validation layers, GPU-assisted validation, API dump layer | Debug layer and GPU-based validation; no dump |
-| Debug labels | Names on heaps, buffers, images, pipelines, and command buffers | Debug names | Labels on uploads |
-| Ray tracing | Supported when the GPU supports it | Supported when the GPU has the acceleration structure, ray query, ray tracing pipeline, and pipeline library extensions | Not supported; contexts report no support |
+| Debug labels | Names on heaps, buffers, images, pipelines, and command buffers | Debug names | Names on buffers, images, pipelines, and acceleration structures; labels on uploads |
+| Ray tracing | Supported when the GPU supports it | Supported when the GPU has the acceleration structure, ray query, ray tracing pipeline, and pipeline library extensions | Supported when the GPU has DXR tier 1.1 |
 | Tile functions | Always available | Not supported; contexts report no support | Not supported; contexts report no support |
 | Mesh shading | Always available | Requires the mesh shader extension | Guaranteed by the feature level |
 | Pipeline cache | Not used | Pipeline binaries, unless the driver prefers its own cache | Not used |
@@ -247,7 +247,7 @@ picker, keep the alpha of the starting color.
 | --- | --- |
 | Frame capture, pipeline statistics counters | Metal |
 | Native resource I/O, timed present, shrinking the frames in flight | Vulkan |
-| The loader-context contract and the current trait signatures, so Windows builds fail until they land; pipelines compile when interned; swapchain texture transfers; cubemap storage views; ray tracing | Direct3D 12 |
+| The loader-context contract and the current trait signatures, so Windows builds fail until they land; swapchain texture transfers; cubemap storage views | Direct3D 12 |
 | Destroying images, buffers, and shaders | All |
 
 ## Descriptor sets

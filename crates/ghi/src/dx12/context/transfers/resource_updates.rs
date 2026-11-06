@@ -61,27 +61,14 @@ impl Device {
 			self.process_all_tasks_after_idle();
 		}
 
-		let data_size = utils::texture_copy_size(format, extent);
 		let image = &mut self.images[image_handle.0.index() as usize];
 		image.extent = extent;
 		image.array_layers = array_layers;
-		if let Some(size) = data_size {
-			let data = image.data.get_or_insert_default();
-			data.resize(size, 0);
-			data.fill(0);
-			if let Some(frame_data) = image.frame_data.as_mut() {
-				frame_data.resize_with(self.frames as usize, Vec::new);
-				for data in frame_data {
-					data.resize(size, 0);
-					data.fill(0);
-				}
-			}
-		} else {
-			image.data = None;
-			if let Some(frame_data) = image.frame_data.as_mut() {
-				frame_data.clear();
-				frame_data.resize_with(self.frames as usize, Vec::new);
-			}
+		// A resized image has new, zeroed contents, so its staging copies wait for the next CPU write again.
+		image.data = None;
+		if let Some(frame_data) = image.frame_data.as_mut() {
+			frame_data.clear();
+			frame_data.resize_with(self.frames as usize, Vec::new);
 		}
 		self.pending_texture_syncs.retain(|(pending, ..)| *pending != image_handle.0);
 		self.resize_image_resource_for_sequence(image_handle, extent, sequence_index);
@@ -140,6 +127,18 @@ impl Device {
 			.zip(&requests)
 			.map(|((_, desc), request)| {
 				let info = unsafe { self.device.GetResourceAllocationInfo2(0, 1, desc, None) };
+				// D3D12 reports a description it rejects with the largest size instead of an error.
+				assert_ne!(
+					info.SizeInBytes,
+					u64::MAX,
+					"D3D12 rejected an image-group member's texture description: {}x{}x{}, {} mips, format {:?}, flags {:?}. The most likely cause is a format that doesn't support the member's uses on this device.",
+					desc.Width,
+					desc.Height,
+					desc.DepthOrArraySize,
+					desc.MipLevels,
+					desc.Format,
+					desc.Flags
+				);
 				let render_target_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET.0 | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL.0;
 				// Resource heap tier 1 keeps render-target and depth textures in heaps of their own.
 				let category = u32::from(separate_render_targets && desc.Flags.0 & render_target_flags != 0);
@@ -160,8 +159,9 @@ impl Device {
 			.heaps
 			.iter()
 			.map(|layout| {
+				// D3D12 takes no deny flag, or all but one: tier 2 heaps hold both texture kinds, so they deny nothing.
 				let flags = match (separate_render_targets, layout.category) {
-					(false, _) => D3D12_HEAP_FLAG_DENY_BUFFERS,
+					(false, _) => D3D12_HEAP_FLAG_ALLOW_ALL_BUFFERS_AND_TEXTURES,
 					(true, 1) => D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES,
 					(true, _) => D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES,
 				};
@@ -183,9 +183,14 @@ impl Device {
 					Flags: flags,
 				};
 				let mut heap: Option<ID3D12Heap> = None;
-				unsafe { self.device.CreateHeap(&heap_desc, &mut heap) }.expect(
-					"Failed to create a DX12 heap for an image group. The most likely cause is that device memory is exhausted.",
-				);
+				unsafe { self.device.CreateHeap(&heap_desc, &mut heap) }.unwrap_or_else(|error| {
+					// The debug layer says which parameter it rejected.
+					self.drain_debug_messages();
+					panic!(
+						"Failed to create a {} byte DX12 heap with alignment {} and flags {:?} for an image group. The most likely cause is that device memory is exhausted. {error}",
+						heap_desc.SizeInBytes, heap_desc.Alignment, heap_desc.Flags
+					)
+				});
 				heap.expect(
 					"Failed to create a DX12 heap for an image group. The most likely cause is that the driver reported success without returning the heap.",
 				)
@@ -194,12 +199,13 @@ impl Device {
 
 		for (((index, desc), slot), request) in members.into_iter().zip(&placement.slots).zip(&requests) {
 			let image = &self.images[index];
-			let (format, uses, array_layers, is_3d, optimized_clear_value) = (
+			let (format, uses, array_layers, is_3d, optimized_clear_value, name) = (
 				image.format,
 				image.uses,
 				image.array_layers,
 				image.is_3d,
 				image.optimized_clear_value,
+				image.name.clone(),
 			);
 			let resource = self.create_placed_image_resource(
 				&heaps[slot.heap],
@@ -207,6 +213,7 @@ impl Device {
 				&desc,
 				(format, request.extent, is_3d, uses, array_layers),
 				optimized_clear_value,
+				name.as_deref(),
 			);
 			if let Some(key) = self.images[index].resource.take().as_ref().map(Self::native_resource_key) {
 				self.invalidate_attachment_views_for_resources(&[key]);
@@ -226,12 +233,12 @@ impl Device {
 
 			let image = &mut self.images[index];
 			image.extent = request.extent;
-			image.data = utils::texture_copy_size(format, request.extent).map(|size| vec![0u8; size]);
+			image.data = None;
 			image.resource = Some(resource);
 			self.pending_texture_syncs
 				.retain(|(pending, ..)| pending.index() as usize != index);
 			let handle = crate::BaseImageHandle::from_index(index as u64);
-			self.mark_stale_descriptors(|descriptor| Self::references_image(descriptor, handle));
+			self.mark_stale_descriptors(|descriptor, _| Self::references_image(descriptor, handle));
 		}
 
 		// The queues are idle and the previous members were released above, so their heaps can go now.
@@ -259,7 +266,7 @@ impl Device {
 		let Some(image) = self.images.get(image_index) else {
 			return;
 		};
-		let (is_3d, format, uses, array_layers, mip_levels, optimized_clear_value, dynamic) = (
+		let (is_3d, format, uses, array_layers, mip_levels, optimized_clear_value, dynamic, name) = (
 			image.is_3d,
 			image.format,
 			image.uses,
@@ -267,6 +274,7 @@ impl Device {
 			image.mip_levels,
 			image.optimized_clear_value,
 			image.frame_resources.is_some(),
+			image.name.clone(),
 		);
 		let old_resource = if dynamic {
 			self.images[image_index]
@@ -283,9 +291,18 @@ impl Device {
 			self.image_states.remove(&key);
 		}
 		// Each frame copy rewrites its descriptors of the image when it next binds, which is after this sequence's fence.
-		self.mark_stale_descriptors(|descriptor| Self::references_image(descriptor, image_handle.0));
+		self.mark_stale_descriptors(|descriptor, _| Self::references_image(descriptor, image_handle.0));
 
-		let resource = self.create_image_resource(extent, is_3d, format, uses, array_layers, mip_levels, optimized_clear_value);
+		let resource = self.create_image_resource(
+			extent,
+			is_3d,
+			format,
+			uses,
+			array_layers,
+			mip_levels,
+			optimized_clear_value,
+			name.as_deref(),
+		);
 		if let Some(resource) = resource.as_ref() {
 			self.materialize_image_attachment_views(resource, format, uses, array_layers);
 		}

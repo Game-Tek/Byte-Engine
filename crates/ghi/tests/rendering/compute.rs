@@ -194,6 +194,23 @@ kernel void bound_buffer_main(constant Resources& resources [[buffer(16)]]) {
 }
 "#;
 
+/// The kernel in HLSL. See [`BOUND_BUFFER_GLSL`]. It reads the buffers as `uint` words, since their views have the
+/// layout's default four-byte stride: the first layer's `shape` starts at word 16, the second layer's `high` at word
+/// 36, and `tail` at word 40.
+const BOUND_BUFFER_HLSL: &str = r#"
+cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; };
+[numthreads(1, 1, 1)]
+void besl_main() {
+	StructuredBuffer<uint> parameters = ResourceDescriptorHeap[_besl_sets[0].x];
+	RWStructuredBuffer<uint> results = ResourceDescriptorHeap[_besl_sets[0].x + 1];
+	for (uint word = 0; word < 4; word++) {
+		results[word] = parameters[16 + word];
+		results[4 + word] = parameters[36 + word];
+		results[8 + word] = parameters[40 + word];
+	}
+}
+"#;
+
 /// A buffer's struct members read from their own offsets, past a matrix and inside an array of structs.
 ///
 /// Word `i` of the input holds `i`, so each result names the words it came from. Vulkan drivers have read such
@@ -222,7 +239,7 @@ pub(super) fn bound_buffer_struct_members_read_at_their_offsets(
 		device,
 		"Bound Buffer Members",
 		ShaderTypes::Compute,
-		(BOUND_BUFFER_GLSL, BOUND_BUFFER_MSL, "bound_buffer_main"),
+		(BOUND_BUFFER_GLSL, BOUND_BUFFER_MSL, "bound_buffer_main", BOUND_BUFFER_HLSL),
 		[ghi::ShaderDescriptorSet::new(layout.clone())],
 	);
 	let pipeline = device.create_compute_pipeline(pipelines::compute::Builder::new(

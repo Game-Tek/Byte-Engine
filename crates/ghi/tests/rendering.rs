@@ -136,8 +136,6 @@ fn unordered_dispatches_write_their_own_rows() {
 	run(|context, queue_handle| compute::unordered_dispatches_write_their_own_rows(context, queue_handle, None));
 }
 
-// The DX12 backend reads storage buffers as structured views of one element type, which this kernel's buffer isn't.
-#[cfg(not(target_os = "windows"))]
 #[test]
 fn bound_buffer_struct_members_read_at_their_offsets() {
 	run(compute::bound_buffer_struct_members_read_at_their_offsets);
@@ -274,13 +272,11 @@ fn round_trip_texture3d_lut() {
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn traced_structures_stay_resident_without_rebuilds() {
 	run_with_ray_tracing(ray_tracing::traced_structures_stay_resident_without_rebuilds);
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn counters_time_bottom_level_builds() {
 	let (_instance, _device, mut context, queue_handle) = create_default_device_setup_with_features(
 		ghi::device::Features::new().validation(true).ray_tracing(true).counters(true),
@@ -289,61 +285,51 @@ fn counters_time_bottom_level_builds() {
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn top_level_structures_have_a_copy_per_frame() {
 	run_with_ray_tracing(ray_tracing::top_level_structures_have_a_copy_per_frame);
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn instances_report_custom_indices_beyond_16_bits() {
 	run_with_ray_tracing(ray_tracing::instances_report_custom_indices_beyond_16_bits);
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn bottom_level_structures_hold_several_geometries() {
 	run_with_ray_tracing(ray_tracing::bottom_level_structures_hold_several_geometries);
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn compacted_structures_trace_like_the_original() {
 	run_with_ray_tracing(ray_tracing::compacted_structures_trace_like_the_original);
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn destroyed_structures_stay_valid_for_frames_in_flight() {
 	run_with_ray_tracing(ray_tracing::destroyed_structures_stay_valid_for_frames_in_flight);
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn stale_structure_handles_are_rejected() {
 	run_with_ray_tracing(ray_tracing::stale_structure_handles_are_rejected);
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn invoke_runs_the_hit_group_of_the_record_the_intersector_reports() {
 	run_with_ray_tracing(ray_tracing::invoke_runs_the_hit_group_of_the_record_the_intersector_reports);
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn closest_hit_reads_sets_the_ray_generation_shader_does_not_use() {
 	run_with_ray_tracing(ray_tracing::closest_hit_reads_sets_the_ray_generation_shader_does_not_use);
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn trace_rays_launches_exactly_the_requested_grid() {
 	run_with_ray_tracing(ray_tracing::trace_rays_launches_exactly_the_requested_grid);
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn rebuilt_pipeline_with_more_hit_groups_invokes_the_new_group() {
 	run_with_ray_tracing(ray_tracing::rebuilt_pipeline_with_more_hit_groups_invokes_the_new_group);
 }
@@ -379,6 +365,11 @@ fn exported_image_keeps_contents_and_mips() {
 fn imported_buffer_receives_copies() {
 	let (_instance, device, mut context, queue_handle) = create_default_device_setup();
 	resources::imported_buffer_receives_copies(&device, &mut context, queue_handle);
+}
+
+#[test]
+fn transferred_mapping_feeds_every_later_copy() {
+	run(resources::transferred_mapping_feeds_every_later_copy);
 }
 
 #[test]

@@ -17,6 +17,7 @@ impl Device {
 		// A discarded recording never executes its uploads, so make their staging data available to the next recording.
 		self.requeue_recorded_texture_syncs_for_command_buffer(command_buffer_handle);
 		self.rollback_command_buffer_resource_states(command_buffer_handle);
+		self.abandon_recorded_builds(command_buffer_handle);
 		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
 			command_buffer.lifecycle = CommandBufferLifecycle::Idle;
 		}
@@ -184,8 +185,11 @@ impl Device {
 
 	/// Gives an image new contents. Returns `false` when `image` belongs to no image group.
 	///
-	/// The image's next barrier leaves the undefined layout, discarding its contents. For an image-group member it
-	/// also waits for, and flushes, every earlier access to the members whose memory it reuses.
+	/// An image whose memory nothing else wrote since its last use keeps its state, so its next barrier waits for that
+	/// use. Otherwise, as for an image-group member whose memory other members reused, the next barrier moves the image
+	/// out of the undefined layout, discarding its contents, after deactivating those members: each deactivation flushes
+	/// the member's writes and holds back the image's first use until the member's work finishes. D3D12 global barriers
+	/// can't do this, because accesses such as depth writes belong to one layout.
 	pub(crate) fn initialize_image_contents(&mut self, image: crate::BaseImageHandle, sequence_index: u8) -> bool {
 		let overwritten = self.image_groups.initialize(image);
 		let member = overwritten.is_some();
@@ -193,31 +197,32 @@ impl Device {
 			return member;
 		};
 		let key = Self::native_resource_key(&resource);
-		let earlier_states = std::iter::once(key)
-			.chain(overwritten.into_iter().flatten().filter_map(|other| {
-				self.images
-					.get(other.index() as usize)?
-					.resource
-					.as_ref()
-					.map(Self::native_resource_key)
-			}))
-			.filter_map(|key| self.image_states.get(&key).copied())
-			.filter(|state| state.access != D3D12_BARRIER_ACCESS_NO_ACCESS)
-			.collect::<SmallVec<[_; 8]>>();
-		let sync = earlier_states
-			.iter()
-			.fold(D3D12_BARRIER_SYNC_NONE, |sync, state| sync | state.sync);
-		let access = earlier_states
-			.iter()
-			.fold(D3D12_BARRIER_ACCESS_COMMON, |access, state| access | state.access);
+		let is_active = |state: &TextureBarrierState| state.access != D3D12_BARRIER_ACCESS_NO_ACCESS;
+		let reused = overwritten
+			.into_iter()
+			.flatten()
+			.filter_map(|other| self.images.get(other.index() as usize)?.resource.clone())
+			.filter(|other| {
+				let other_key = Self::native_resource_key(other);
+				other_key != key && self.image_states.get(&other_key).is_some_and(is_active)
+			})
+			.collect::<SmallVec<[ID3D12Resource; 4]>>();
+		let own = self.image_states.get(&key).copied();
 
-		self.remember_image_state(key);
-		self.image_states.insert(
-			key,
-			TextureBarrierState::new(sync, D3D12_BARRIER_ACCESS_NO_ACCESS, D3D12_BARRIER_LAYOUT_UNDEFINED),
-		);
-		if member && sync != D3D12_BARRIER_SYNC_NONE {
-			self.image_alias_flushes.insert(key, (sync, access));
+		if !own.is_some_and(|state| is_active(&state)) {
+			// D3D12 pairs the undefined layout with no access. The image keeps the synchronization its own deactivation
+			// left it, since a barrier after one that ended in no synchronization must start from none.
+			let sync = own.map_or(D3D12_BARRIER_SYNC_NONE, |state| state.sync);
+			self.remember_image_state(key);
+			self.image_states.insert(
+				key,
+				TextureBarrierState::new(sync, D3D12_BARRIER_ACCESS_NO_ACCESS, D3D12_BARRIER_LAYOUT_UNDEFINED),
+			);
+		}
+		if reused.is_empty() {
+			self.image_deactivations.remove(&key);
+		} else {
+			self.image_deactivations.insert(key, reused);
 		}
 		member
 	}
@@ -325,7 +330,8 @@ impl Device {
 			.buffer_heap_kind_for_resource(buffer, resource)
 			.unwrap_or(BufferHeapKind::Default);
 		Self::validate_buffer_heap_access(heap_kind, after);
-		if heap_kind != BufferHeapKind::Default {
+		// Upload and readback buffers stay in the common state; only shader-writable ones take barriers.
+		if !heap_kind.shader_writable() {
 			return;
 		}
 		self.transition_buffer_resource_into(resource, after, barriers);
@@ -377,23 +383,46 @@ impl Device {
 		barriers: &mut EnhancedBarrierBatch,
 	) {
 		self.image_groups.assert_initialized(image, || None);
+		debug_assert!(
+			after.access.0 & D3D12_BARRIER_ACCESS_UNORDERED_ACCESS.0 == 0
+				// SAFETY: The resource is live for the call.
+				|| unsafe { resource.GetDesc() }.Flags.contains(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
+			"DX12 image {image:?} moves into unordered access, which it was created without. The most likely cause is that a storage view or a clear names an image built without storage usage. Build the image with `Uses::Storage`.",
+		);
 		if let Some(command_buffer) = self.active_command_buffer {
 			self.retain_command_buffer_resource(command_buffer, resource);
 		}
 		let key = Self::native_resource_key(resource);
-		if let Some((sync, access)) = self.image_alias_flushes.remove(&key) {
-			// Another member used this memory last, so its work must finish and its writes leave the caches first.
-			barriers.global.push(D3D12_GLOBAL_BARRIER {
-				SyncBefore: sync,
-				SyncAfter: after.sync,
-				AccessBefore: access,
-				AccessAfter: after.access,
-			});
+		for other in self.image_deactivations.remove(&key).into_iter().flatten() {
+			let other_key = Self::native_resource_key(&other);
+			let Some(before) = self.image_states.get(&other_key).copied() else {
+				continue;
+			};
+			// Ending in no access flushes the member's writes, and ending at the image's first synchronization makes that
+			// use wait for the member's work. D3D12 takes the undefined layout for such a barrier, which suits memory the
+			// image now overwrites.
+			// A UAV clear's synchronization only pairs with unordered access, so a deactivation waits for every stage.
+			let sync = if after.sync.0 & D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW.0 != 0 {
+				D3D12_BARRIER_SYNC_ALL
+			} else {
+				after.sync
+			};
+			let deactivated = TextureBarrierState::new(sync, D3D12_BARRIER_ACCESS_NO_ACCESS, D3D12_BARRIER_LAYOUT_UNDEFINED);
+			if before == deactivated {
+				continue;
+			}
+			if let Some(command_buffer) = self.active_command_buffer {
+				self.retain_command_buffer_resource(command_buffer, &other);
+			}
+			barriers.texture.push(Self::texture_barrier(&other, before, deactivated));
+			self.remember_image_state(other_key);
+			self.image_states.insert(other_key, deactivated);
 		}
 		let before = self.image_states.get(&key).copied().unwrap_or(TextureBarrierState::COMMON);
 		let ordered_by_group = self.unordered_group_covers(key);
 		if before == after {
-			if after.access == D3D12_BARRIER_ACCESS_UNORDERED_ACCESS && !ordered_by_group {
+			// A merged state, such as a sampled and storage alias, still writes through its unordered access.
+			if after.access.0 & D3D12_BARRIER_ACCESS_UNORDERED_ACCESS.0 != 0 && !ordered_by_group {
 				barriers.texture.push(Self::texture_barrier(resource, before, after));
 				self.native_counters.uav_barrier_count += 1;
 			}
@@ -405,6 +434,9 @@ impl Device {
 	}
 
 	/// Resolves a validated range in stable CPU-side buffer storage without copying its bytes.
+	///
+	/// A buffer whose mapping was transferred holds its bytes in the mapped memory, which is read instead. That memory
+	/// is write-combined, so reading it is slow, but its owner wrote nothing to the CPU copy.
 	pub(crate) fn buffer_range_parts_for_sequence(
 		&self,
 		buffer_handle: BaseBufferHandle,
@@ -412,7 +444,13 @@ impl Device {
 		size: usize,
 		sequence_index: u8,
 	) -> Option<(*const u8, usize)> {
-		let (data, buffer_size) = self.buffer_storage_parts_for_sequence(buffer_handle, sequence_index)?;
+		let buffer = self.buffer(buffer_handle)?;
+		let memory = buffer.memory(sequence_index);
+		let (data, buffer_size) = if memory.transferred {
+			(memory.mapped.cast_const(), buffer.size)
+		} else {
+			self.buffer_storage_parts_for_sequence(buffer_handle, sequence_index)?
+		};
 		let end = offset.checked_add(size).expect(
 			"Failed to resolve a DX12 buffer range. The most likely cause is that the requested offset and size overflow addressable memory.",
 		);

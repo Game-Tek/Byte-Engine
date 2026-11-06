@@ -1,3 +1,4 @@
+pub(crate) mod acceleration_structures;
 pub mod command_buffer;
 pub mod context;
 pub mod device;
@@ -6,6 +7,7 @@ pub mod frame;
 pub mod instance;
 mod io;
 pub mod queue;
+pub(crate) mod ray_tracing;
 
 pub use self::command_buffer::*;
 pub use self::context::*;
@@ -444,7 +446,8 @@ mod tests {
 		let layout = test_layout([crate::ShaderResourceDescriptor::new(
 			crate::ResourceSlot::new(0),
 			crate::ResourceKind::CombinedImageSampler,
-			1024,
+			// Both frame copies fit in the sampler heap after the fixed samplers.
+			1000,
 			crate::AccessPolicies::READ,
 		)]);
 		let set = device.create_descriptor_set(None, &layout);
@@ -454,8 +457,8 @@ mod tests {
 		let (first_resources, first_samplers) = device.descriptor_set_bases(copies[0]).unwrap();
 		let (second_resources, second_samplers) = device.descriptor_set_bases(copies[1]).unwrap();
 		// Each copy holds every element of the array, in the resource heap and in the sampler heap.
-		assert!(first_resources.abs_diff(second_resources) >= 1024);
-		assert!(first_samplers.abs_diff(second_samplers) >= 1024);
+		assert!(first_resources.abs_diff(second_resources) >= 1000);
+		assert!(first_samplers.abs_diff(second_samplers) >= 1000);
 		// The fixed samplers keep the start of the sampler heap.
 		assert!(first_samplers.min(second_samplers) >= 36);
 	}
@@ -602,10 +605,13 @@ mod tests {
 			[crate::shader::ShaderDescriptorSet::with_used(layout.clone(), 0b01)],
 		);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let synchronizer = device.create_synchronizer(None, false);
 
 		{
 			let mut recording = device.create_command_buffer_recording(command_buffer);
 			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+			// A recording dropped without executing restores the states it changed.
+			crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
 		}
 
 		// The set's heap range holds both images, but only the one the pipeline uses moves into its state.
@@ -868,7 +874,7 @@ mod tests {
 	}
 
 	#[test]
-	fn factory_compute_pipeline_preserves_hlsl_specialization_map() {
+	fn factory_compiles_specialized_compute_pipelines_off_the_rendering_context() {
 		use crate::Device as _;
 
 		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
@@ -902,12 +908,16 @@ mod tests {
 		));
 		let synchronizer = device.create_synchronizer(None, false);
 
+		assert_eq!(factory.context.compute_pipeline_state_create_attempt_count(), 1);
+		assert_eq!(factory.context.hlsl_specialization_compile_count(), 1);
+
 		let mut frame = device.start_frame(0, synchronizer);
 		let pipeline = frame.intern_compute_pipeline(detached_compute);
 		drop(frame);
 
-		assert_eq!(device.compute_pipeline_state_create_attempt_count(), 1);
-		assert_eq!(device.hlsl_specialization_compile_count(), 1);
+		// Interning only adds the pipeline the factory compiled.
+		assert_eq!(device.compute_pipeline_state_create_attempt_count(), 0);
+		assert_eq!(device.hlsl_specialization_compile_count(), 0);
 		assert_eq!(device.pipeline_has_native_state(pipeline), Some(true));
 	}
 
@@ -1155,7 +1165,8 @@ mod tests {
 		assert_eq!(device.depth_stencil_view_count(), 1);
 		assert_eq!(device.render_target_view_allocation_count(), 1);
 		assert_eq!(device.depth_stencil_view_allocation_count(), 1);
-		assert_eq!(device.depth_stencil_descriptor_count(), 8);
+		// Every first layer and layer count of four layers: 4 + 3 + 2 + 1 ranges.
+		assert_eq!(device.depth_stencil_descriptor_count(), 10);
 
 		for frame_index in 0..1024 {
 			let cascade = frame_index % 4;
@@ -2389,13 +2400,41 @@ void main(uint3 id : SV_DispatchThreadID) {
 	}
 
 	#[test]
+	fn storage_buffers_the_cpu_reads_live_in_shader_writable_system_memory() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let buffer = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::DeviceToHost),
+		);
+		assert_eq!(
+			device.buffer_resource_state(buffer.into()),
+			Some((crate::DeviceAccesses::DeviceToHost, BufferHeapKind::ShaderReadback, true, true))
+		);
+	}
+
+	#[test]
+	fn storage_buffers_the_cpu_writes_live_in_shader_writable_system_memory() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let buffer = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		assert_eq!(
+			device.buffer_resource_state(buffer.into()),
+			Some((crate::DeviceAccesses::HostToDevice, BufferHeapKind::ShaderUpload, true, true))
+		);
+	}
+
+	#[test]
 	fn readback_buffer_creation_rejects_every_gpu_read_or_binding_use() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
+		// A storage use moves the buffer to shader-writable system memory instead; see `BufferHeapKind::ShaderReadback`.
 		let gpu_binding_uses = [
 			crate::Uses::Uniform,
-			crate::Uses::Storage,
 			crate::Uses::Vertex,
 			crate::Uses::Index,
 			crate::Uses::Indirect,
@@ -2488,8 +2527,10 @@ void main(uint3 id : SV_DispatchThreadID) {
 		);
 	}
 
+	/// Verifies that one image bound both sampled and as a storage image, as a pass that reads one mip and writes the
+	/// next binds it, takes a single layout that serves both views.
 	#[test]
-	fn descriptor_binding_rejects_incompatible_image_layout_aliases() {
+	fn descriptor_binding_serves_sampled_and_storage_views_of_one_image() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
@@ -2506,23 +2547,68 @@ void main(uint3 id : SV_DispatchThreadID) {
 		let set = device.create_descriptor_set(None, &layout);
 		let image = device.build_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::Storage)
-				.extent(::utils::Extent::rectangle(1, 1)),
+				.extent(::utils::Extent::rectangle(2, 2))
+				.mip_levels(2),
 		);
 		device.write(&[
-			crate::DescriptorWrite::image(set, read_slot, image, crate::Layouts::Read),
-			crate::DescriptorWrite::image(set, write_slot, image, crate::Layouts::General),
+			crate::DescriptorWrite::image_mip(set, read_slot, image, crate::Layouts::Read, 0),
+			crate::DescriptorWrite::image_mip(set, write_slot, image, crate::Layouts::General, 1),
 		]);
 		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = device.create_command_buffer_recording(command_buffer);
-		recording.bind_compute_pipeline(pipeline);
+		let synchronizer = device.create_synchronizer(None, false);
 
-		let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-			recording.bind_descriptor_sets(&[set]);
-		}));
-		assert!(
-			rejected.is_err(),
-			"DX12 accepted simultaneous shader-resource and unordered-access image layouts."
+		{
+			let mut recording = device.create_command_buffer_recording(command_buffer);
+			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+			crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		}
+
+		let state = device.tracked_image_resource_state(image);
+		assert!(state.is_some());
+		assert_ne!(state, Some(TextureBarrierState::shader_resource(D3D12_BARRIER_SYNC_COMPUTE_SHADING)));
+		assert_ne!(state, Some(TextureBarrierState::unordered_access(D3D12_BARRIER_SYNC_COMPUTE_SHADING)));
+	}
+
+	/// Verifies that a pass can read and write several mips of one image through storage views, as a pyramid build does.
+	#[test]
+	fn descriptor_binding_accepts_storage_views_of_several_mips() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let source_slot = crate::ResourceSlot::new(0);
+		let destination_slot = crate::ResourceSlot::new(1);
+		let layout = test_layout([
+			crate::ShaderResourceDescriptor::single(source_slot, crate::ResourceKind::StorageImage, crate::AccessPolicies::READ),
+			crate::ShaderResourceDescriptor::single(
+				destination_slot,
+				crate::ResourceKind::StorageImage,
+				crate::AccessPolicies::WRITE,
+			),
+		]);
+		let set = device.create_descriptor_set(None, &layout);
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage)
+				.extent(::utils::Extent::rectangle(2, 2))
+				.mip_levels(2),
+		);
+		device.write(&[
+			crate::DescriptorWrite::image_mip(set, source_slot, image, crate::Layouts::General, 0),
+			crate::DescriptorWrite::image_mip(set, destination_slot, image, crate::Layouts::General, 1),
+		]);
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let synchronizer = device.create_synchronizer(None, false);
+
+		{
+			let mut recording = device.create_command_buffer_recording(command_buffer);
+			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+			crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		}
+
+		assert_eq!(
+			device.tracked_image_resource_state(image),
+			Some(TextureBarrierState::unordered_access(D3D12_BARRIER_SYNC_COMPUTE_SHADING))
 		);
 	}
 

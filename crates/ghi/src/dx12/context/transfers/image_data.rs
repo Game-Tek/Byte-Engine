@@ -69,7 +69,7 @@ impl Device {
 			return Err(crate::TextureTransferError::UnsupportedLayout);
 		}
 		let readback_size = footprint.total_size;
-		let (Some(readback), ..) = self.create_buffer_resource(readback_size, DeviceAccesses::DeviceToHost) else {
+		let (Some(readback), ..) = self.create_buffer_resource(readback_size, DeviceAccesses::DeviceToHost, Uses::TransferDestination) else {
 			return Err(crate::TextureTransferError::AllocationFailed);
 		};
 
@@ -242,13 +242,7 @@ impl Device {
 	pub(crate) fn write_image_data_for_sequence(&mut self, image_handle: ImageHandle, data: &[RGBAu8], sequence_index: u8) {
 		// Writes CPU-side image data for formats with staging storage.
 		let image = &mut self.images[image_handle.0.index() as usize];
-		let staging = if let Some(frame_data) = image.frame_data.as_mut() {
-			let index = (sequence_index as usize).min(frame_data.len().saturating_sub(1));
-			frame_data.get_mut(index)
-		} else {
-			image.data.as_mut()
-		};
-		let Some(staging) = staging else {
+		let Some(staging) = image.staging_mut(sequence_index) else {
 			return;
 		};
 
@@ -267,13 +261,8 @@ impl Device {
 		let Some(image) = self.images.get_mut(image_handle.index() as usize) else {
 			return;
 		};
-		let staging = if let Some(frame_data) = image.frame_data.as_mut() {
-			let index = (sequence_index as usize).min(frame_data.len().saturating_sub(1));
-			frame_data.get_mut(index)
-		} else {
-			image.data.as_mut()
-		};
-		let Some(staging) = staging else {
+		// The GPU clear is the image's contents; only a staging copy a CPU write created must agree with it.
+		let Some(staging) = image.existing_staging_mut(sequence_index) else {
 			return;
 		};
 

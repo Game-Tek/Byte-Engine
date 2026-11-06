@@ -4,49 +4,82 @@ use super::*;
 
 impl Device {
 	pub fn create_raster_pipeline(&mut self, builder: pipelines::raster::Builder) -> PipelineHandle {
-		let layout = self.create_pipeline_layout(builder.shaders, builder.push_constant_ranges);
-		let pipeline_state = self.create_graphics_pipeline_state(layout, &builder);
-		let shaders = builder.shaders.iter().map(|s| *s.handle).collect();
-		let has_mesh_shader = builder.shaders.iter().any(|shader| matches!(shader.stage, ShaderTypes::Mesh));
-		self.pipelines.push(Pipeline {
+		let pipeline = self.compile_raster_pipeline(builder);
+		self.intern_pipeline(pipeline)
+	}
+
+	/// Compiles a raster pipeline from this context's shaders without adding it to the context, so a factory can
+	/// compile it on its own thread and a rendering context intern it.
+	pub(crate) fn compile_raster_pipeline(&mut self, builder: pipelines::raster::Builder) -> CompiledPipeline {
+		let layout = self.pipeline_layout(builder.shaders, builder.push_constant_ranges);
+		let pipeline_state = self.create_graphics_pipeline_state(&layout.root_signature, &builder);
+		if let Some(pipeline_state) = pipeline_state.as_ref() {
+			self.name_object(pipeline_state, builder.name);
+		}
+		let mut vertex_strides = SmallVec::<[u32; 4]>::new();
+		for element in builder.vertex_elements {
+			let slot = element.binding as usize;
+			if vertex_strides.len() <= slot {
+				vertex_strides.resize(slot + 1, 0);
+			}
+			vertex_strides[slot] += element.format.size() as u32;
+		}
+		CompiledPipeline {
 			layout,
-			shaders,
 			kind: PipelineKind::Raster,
 			pipeline_state,
-			has_mesh_shader,
-		});
+			has_mesh_shader: builder.shaders.iter().any(|shader| matches!(shader.stage, ShaderTypes::Mesh)),
+			vertex_strides,
+			ray_tracing: None,
+		}
+	}
 
+	/// Adds a compiled pipeline to this context and returns the handle recordings bind it with.
+	pub(crate) fn intern_pipeline(&mut self, pipeline: CompiledPipeline) -> PipelineHandle {
+		let CompiledPipeline {
+			layout,
+			kind,
+			pipeline_state,
+			has_mesh_shader,
+			vertex_strides,
+			ray_tracing,
+		} = pipeline;
+		let layout = self.store_pipeline_layout(layout);
+		self.pipelines.push(Pipeline {
+			layout,
+			kind,
+			pipeline_state,
+			has_mesh_shader,
+			vertex_strides,
+			ray_tracing,
+		});
 		PipelineHandle::from_index((self.pipelines.len() - 1) as u64)
 	}
 
 	pub(crate) fn create_graphics_pipeline_state(
 		&mut self,
-		layout: PipelineLayoutHandle,
+		root_signature: &ID3D12RootSignature,
 		builder: &pipelines::raster::Builder,
 	) -> Option<ID3D12PipelineState> {
 		if builder.shaders.iter().any(|shader| matches!(shader.stage, ShaderTypes::Mesh)) {
-			return self.create_mesh_pipeline_state(layout, builder);
+			return self.create_mesh_pipeline_state(root_signature, builder);
 		}
 
-		let root_signature = self.root_signature(layout)?;
 		let vertex_shader = self.shader_dxil_for_stage(builder.shaders, ShaderTypes::Vertex)?;
 		let fragment_shader = self.shader_dxil_for_stage(builder.shaders, ShaderTypes::Fragment)?;
 		if vertex_shader.is_empty() || fragment_shader.is_empty() {
 			return None;
 		}
 
-		let semantic_names = builder
-			.vertex_elements
-			.iter()
-			.map(|element| std::ffi::CString::new(element.name).ok())
-			.collect::<Option<Vec<_>>>()?;
+		// Vertex attributes bind by position, as Vulkan locations and Metal attribute indices do, so element `n` feeds the
+		// `TEXCOORDn` semantic that generated HLSL declares for input location `n`.
 		let mut input_elements = Vec::with_capacity(builder.vertex_elements.len());
 		let mut byte_offsets_by_slot = HashMap::<u32, u32>::default();
 		for (index, element) in builder.vertex_elements.iter().enumerate() {
 			let offset = byte_offsets_by_slot.entry(element.binding).or_insert(0);
 			input_elements.push(D3D12_INPUT_ELEMENT_DESC {
-				SemanticName: PCSTR(semantic_names[index].as_ptr().cast()),
-				SemanticIndex: 0,
+				SemanticName: windows::core::s!("TEXCOORD"),
+				SemanticIndex: index as u32,
 				Format: Self::vertex_format(element.format)?,
 				InputSlot: element.binding,
 				AlignedByteOffset: *offset,
@@ -61,7 +94,7 @@ impl Device {
 
 		self.native_counters.graphics_pipeline_state_create_attempt_count += 1;
 		let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-			pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature)),
+			pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature.clone())),
 			VS: Self::shader_bytecode(&vertex_shader),
 			PS: Self::shader_bytecode(&fragment_shader),
 			DS: D3D12_SHADER_BYTECODE::default(),
@@ -99,10 +132,9 @@ impl Device {
 
 	pub(crate) fn create_mesh_pipeline_state(
 		&mut self,
-		layout: PipelineLayoutHandle,
+		root_signature: &ID3D12RootSignature,
 		builder: &pipelines::raster::Builder,
 	) -> Option<ID3D12PipelineState> {
-		let root_signature = self.root_signature(layout)?;
 		let has_task_shader = builder.shaders.iter().any(|shader| matches!(shader.stage, ShaderTypes::Task));
 		let task_shader = if has_task_shader {
 			self.shader_dxil_for_stage(builder.shaders, ShaderTypes::Task)?
@@ -133,7 +165,7 @@ impl Device {
 		let mut stream = MeshPipelineStateStream {
 			root_signature: PipelineStateStreamSubobject {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE,
-				value: Some(root_signature),
+				value: Some(root_signature.clone()),
 			},
 			amplification_shader: PipelineStateStreamSubobject {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS,
@@ -212,13 +244,6 @@ impl Device {
 				None
 			}
 		}
-	}
-
-	/// Returns the root signature of a pipeline layout, or `None` for an unknown layout handle.
-	fn root_signature(&self, layout: PipelineLayoutHandle) -> Option<ID3D12RootSignature> {
-		self.pipeline_layouts
-			.get(layout.index() as usize)
-			.map(|layout| layout.root_signature.clone())
 	}
 
 	/// Describes the builder's color-target blending and formats, plus its depth format, or `None` for a format
@@ -306,7 +331,7 @@ impl Device {
 	}
 
 	/// Describes DXIL bytes for a pipeline description, passing a null pointer for an absent stage.
-	fn shader_bytecode(dxil: &[u8]) -> D3D12_SHADER_BYTECODE {
+	pub(crate) fn shader_bytecode(dxil: &[u8]) -> D3D12_SHADER_BYTECODE {
 		D3D12_SHADER_BYTECODE {
 			pShaderBytecode: if dxil.is_empty() {
 				std::ptr::null()
@@ -335,7 +360,7 @@ impl Device {
 	}
 
 	/// Returns a shader's DXIL, recompiling its HLSL when the parameter carries specialization constants.
-	fn shader_dxil(&mut self, parameter: &pipelines::ShaderParameter) -> Option<Vec<u8>> {
+	pub(crate) fn shader_dxil(&mut self, parameter: &pipelines::ShaderParameter) -> Option<Vec<u8>> {
 		let shader = self.shaders.get(parameter.handle.index() as usize)?;
 		if !parameter.specialization_map.is_empty() {
 			if let Some(hlsl) = shader.hlsl.as_ref() {
@@ -412,32 +437,39 @@ impl Device {
 	}
 
 	pub fn create_compute_pipeline(&mut self, builder: pipelines::compute::Builder) -> PipelineHandle {
-		let layout = self.create_pipeline_layout(std::slice::from_ref(&builder.shader), builder.push_constant_ranges);
-		let shader_parameter = builder.shader;
-		let pipeline_state = self.create_compute_pipeline_state(layout, shader_parameter);
-		self.pipelines.push(Pipeline {
+		let pipeline = self.compile_compute_pipeline(builder);
+		self.intern_pipeline(pipeline)
+	}
+
+	/// Compiles a compute pipeline without adding it to the context. See [`Self::compile_raster_pipeline`].
+	pub(crate) fn compile_compute_pipeline(&mut self, builder: pipelines::compute::Builder) -> CompiledPipeline {
+		let layout = self.pipeline_layout(std::slice::from_ref(&builder.shader), builder.push_constant_ranges);
+		let pipeline_state = self.create_compute_pipeline_state(&layout.root_signature, builder.shader);
+		if let Some(pipeline_state) = pipeline_state.as_ref() {
+			self.name_object(pipeline_state, builder.name);
+		}
+		CompiledPipeline {
 			layout,
-			shaders: vec![*shader_parameter.handle],
 			kind: PipelineKind::Compute,
 			pipeline_state,
 			has_mesh_shader: false,
-		});
-		PipelineHandle::from_index((self.pipelines.len() - 1) as u64)
+			vertex_strides: SmallVec::new(),
+			ray_tracing: None,
+		}
 	}
 
 	pub(crate) fn create_compute_pipeline_state(
 		&mut self,
-		layout: PipelineLayoutHandle,
+		root_signature: &ID3D12RootSignature,
 		shader_parameter: pipelines::ShaderParameter,
 	) -> Option<ID3D12PipelineState> {
-		let root_signature = self.root_signature(layout)?;
 		let dxil = self.shader_dxil(&shader_parameter)?;
 		if dxil.is_empty() {
 			return None;
 		}
 		self.native_counters.compute_pipeline_state_create_attempt_count += 1;
 		let mut desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
-			pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature)),
+			pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature.clone())),
 			CS: Self::shader_bytecode(&dxil),
 			NodeMask: 0,
 			CachedPSO: D3D12_CACHED_PIPELINE_STATE::default(),

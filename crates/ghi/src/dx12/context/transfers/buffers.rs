@@ -44,7 +44,7 @@ impl Device {
 				continue;
 			};
 			if buffer.access.intersects(DeviceAccesses::GpuWrite)
-				&& buffer.heap_kind == BufferHeapKind::Default
+				&& buffer.heap_kind.shader_writable()
 				&& buffer.size != 0
 				&& buffer.size % std::mem::size_of::<u32>() == 0
 			{
@@ -67,7 +67,7 @@ impl Device {
 				continue;
 			};
 			if buffer.access.intersects(DeviceAccesses::GpuWrite)
-				&& buffer.heap_kind == BufferHeapKind::Default
+				&& buffer.heap_kind.shader_writable()
 				&& buffer.size != 0
 				&& buffer.size % std::mem::size_of::<u32>() == 0
 			{
@@ -110,6 +110,17 @@ impl Device {
 		let Some(source) = self.buffer_storage_parts_for_sequence(copy.source_buffer, sequence_index) else {
 			return;
 		};
+		self.ensure_buffer_frame_storage(copy.destination_buffer, sequence_index);
+		let Some((_, destination_length)) = self.buffer_storage_parts_for_sequence(copy.destination_buffer, sequence_index)
+		else {
+			return;
+		};
+		// A buffer imported from another context, or one whose mapping was transferred, has no CPU copy here; the GPU
+		// copy is the only one it takes. The destination is checked before it is borrowed for writing, which marks its CPU
+		// copy changed, so a later sync never uploads the CPU copy over what the GPU copied.
+		if copy.size != 0 && (source.1 == 0 || destination_length == 0) {
+			return;
+		}
 		let Some(destination) = self.buffer_storage_parts_mut_for_sequence(copy.destination_buffer, sequence_index) else {
 			return;
 		};
@@ -155,7 +166,16 @@ impl Device {
 		let Some(destination) = self.copy_buffer_info_for_sequence(copy.destination_buffer, sequence_index) else {
 			return;
 		};
-		if destination.access.intersects(DeviceAccesses::CpuWrite) {
+		// A CPU-written destination takes the copy through its CPU copy, unless one side was imported from another
+		// context and has none here.
+		let has_cpu_copy = |buffer| {
+			self.buffer_storage_parts_for_sequence(buffer, sequence_index)
+				.is_some_and(|(_, length)| length != 0)
+		};
+		if destination.access.intersects(DeviceAccesses::CpuWrite)
+			&& has_cpu_copy(copy.source_buffer)
+			&& has_cpu_copy(copy.destination_buffer)
+		{
 			return;
 		}
 
@@ -232,10 +252,10 @@ impl Device {
 			return;
 		}
 		if destination_access.intersects(DeviceAccesses::GpuWrite)
-			&& destination_heap_kind == BufferHeapKind::Default
+			&& destination_heap_kind.shader_writable()
 			&& destination_size % std::mem::size_of::<u32>() == 0
 		{
-			// Default-heap GPU-writable buffers use descriptors staged together by `clear_buffers`.
+			// Shader-writable buffers use descriptors staged together by `clear_buffers`.
 			let Some(descriptor) = self.take_prepared_clear_descriptor(command_buffer_handle, &destination) else {
 				return;
 			};
@@ -255,7 +275,9 @@ impl Device {
 			self.native_counters.buffer_clear_count += 1;
 			return;
 		}
-		let (Some(upload), mapped, _) = self.create_buffer_resource(destination_size, DeviceAccesses::HostToDevice) else {
+		let (Some(upload), mapped, _) =
+			self.create_buffer_resource(destination_size, DeviceAccesses::HostToDevice, Uses::TransferSource)
+		else {
 			return;
 		};
 		if mapped.is_null() {

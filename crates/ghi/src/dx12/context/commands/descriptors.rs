@@ -16,8 +16,13 @@ enum DescriptorAliasState {
 }
 
 impl DescriptorAliasState {
-	/// Merges compatible read aliases and rejects overlapping whole-resource writes.
-	fn merge(&mut self, other: Self) {
+	/// Merges compatible aliases: buffer reads, and texture views whose layouts one layout serves. Rejects buffer writes
+	/// alongside other views, and texture views no single layout serves.
+	///
+	/// Storage views of one texture share the unordered-access layout, so a pass may write several of its mips at once.
+	/// A texture that is also sampled, as when a pass reads one mip and writes the next, takes the direct-queue common
+	/// layout, which serves both. Every DX12 workload runs on a direct queue, so that layout is always available.
+	fn merge(&mut self, other: Self, key: impl std::fmt::Debug) {
 		match (self, other) {
 			(Self::Buffer(current), Self::Buffer(other)) => {
 				assert!(
@@ -29,12 +34,25 @@ impl DescriptorAliasState {
 				current.access |= other.access;
 			}
 			(Self::Texture(current), Self::Texture(other)) => {
+				let shader_access = |layout| {
+					matches!(
+						layout,
+						D3D12_BARRIER_LAYOUT_SHADER_RESOURCE
+							| D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS
+							| D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON
+					)
+				};
+				let compatible = current.layout == other.layout
+					|| (shader_access(current.layout) && shader_access(other.layout));
 				assert!(
-					current.layout == other.layout
-						&& current.access != D3D12_BARRIER_ACCESS_UNORDERED_ACCESS
-						&& other.access != D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,
-					"Incompatible DX12 image descriptor aliases. The most likely cause is that one whole image was bound simultaneously with incompatible shader-resource and unordered-access layouts. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#layout-access-compatibility."
+					compatible,
+					"Incompatible DX12 image descriptor aliases: {key:?} is bound in layouts {:?} and {:?}. The most likely cause is that the bound sets use one image both through shader views and in a fixed-function role. Bind it in one role per pass. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#layout-access-compatibility.",
+					current.layout,
+					other.layout,
 				);
+				if current.layout != other.layout {
+					current.layout = D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON;
+				}
 				current.sync |= other.sync;
 				current.access |= other.access;
 			}
@@ -81,7 +99,7 @@ impl DescriptorAliasCollection {
 					.flatten()
 			});
 		if let Some(existing_index) = existing_index {
-			self.entries[existing_index].state.merge(alias.state);
+			self.entries[existing_index].state.merge(alias.state, alias.key);
 			return;
 		}
 
@@ -152,7 +170,7 @@ impl DescriptorRequirementCollection {
 					.flatten()
 			});
 		if let Some(existing_index) = existing_index {
-			self.entries[existing_index].state.merge(requirement.state);
+			self.entries[existing_index].state.merge(requirement.state, requirement.key);
 			return;
 		}
 
@@ -309,9 +327,10 @@ impl Device {
 				| WriteData::CombinedImageSampler {
 					image_handle: handle, ..
 				} => {
-					let resource = self.ensure_image_resource_for_sequence(handle, resource_sequence).expect(
-						"Missing DX12 descriptor image resource. The most likely cause is that a deferred image was bound before native allocation completed.",
-					);
+					// An image without memory yet is bound as a null view, which needs no transition.
+					let Some(resource) = self.ensure_image_resource_for_sequence(handle, resource_sequence) else {
+						continue;
+					};
 					let state = Self::descriptor_image_state(resource_descriptor, pipeline_kind);
 					requirements.merge_or_insert(DescriptorRequirement {
 						key: DescriptorRequirementKey::Image(Self::native_resource_key(&resource)),
@@ -334,7 +353,13 @@ impl Device {
 						state: DescriptorAliasState::Texture(state),
 					});
 				}
-				WriteData::AccelerationStructure { .. } => crate::rt::unsupported("DX12"),
+				// Builds end with a global barrier that makes structures readable, so a structure needs no transition, only to
+				// live until the recording completes.
+				WriteData::AccelerationStructure { handle } => {
+					if let Some(resource) = self.top_level_copy_resource(handle, resource_sequence) {
+						self.retain_command_buffer_resource(command_buffer_handle, &resource);
+					}
+				}
 				_ => {}
 			}
 		}
@@ -348,7 +373,7 @@ impl Device {
 						.buffer_heap_kind_for_resource(handle, &requirement.resource)
 						.unwrap_or(BufferHeapKind::Default);
 					self.transition_tracked_buffer_into(handle, &requirement.resource, state, &mut barriers);
-					if heap_kind == BufferHeapKind::Default {
+					if heap_kind.shader_writable() {
 						self.mark_command_buffer_work(command_buffer_handle);
 					}
 				}
@@ -488,8 +513,9 @@ impl Device {
 				);
 				if shader_resource.access().intersects(crate::AccessPolicies::WRITE) {
 					assert!(
-						self.buffer_heap_kind_for_sequence(handle, sequence_index) == Some(BufferHeapKind::Default),
-						"Invalid writable DX12 storage-buffer descriptor. The most likely cause is that the buffer uses a host-visible heap that cannot provide a UAV."
+						self.buffer_heap_kind_for_sequence(handle, sequence_index)
+							.is_some_and(BufferHeapKind::shader_writable),
+						"Invalid writable DX12 storage-buffer descriptor. The most likely cause is that the buffer was created for CPU writes, and upload heaps can't provide a UAV. Create it with device-only or CPU-read access."
 					);
 				}
 			}
@@ -515,10 +541,8 @@ impl Device {
 			.images
 			.get(image_handle.index() as usize)
 			.expect("Invalid DX12 image descriptor. The most likely cause is that the retained image handle is stale.");
-		assert!(
-			image.extent.width() != 0 && image.extent.height() != 0 && (!image.is_3d || image.extent.depth() != 0),
-			"Invalid DX12 image descriptor extent. The most likely cause is that a deferred zero-sized image was bound before it was resized."
-		);
+		// A zero-sized image has no memory yet, so its descriptor is a null view that reads zeros. Passes bind such images
+		// for sources they skip this frame, behind a flag the shader reads.
 
 		if shader_resource.texture_view() == TextureViewTypes::Texture3D {
 			assert!(
@@ -637,7 +661,7 @@ impl Device {
 		}
 
 		let pipeline = &self.pipelines[pipeline_handle.index() as usize];
-		let compute_root = matches!(pipeline.kind, PipelineKind::Compute);
+		let compute_root = matches!(pipeline.kind, PipelineKind::Compute | PipelineKind::RayTracing);
 		let layout = &self.pipeline_layouts[pipeline.layout.index() as usize];
 		let mut writes = 0;
 		for stage in &layout.stages {
@@ -722,7 +746,7 @@ impl Device {
 
 		let destination_offset = offset / 4;
 		let word_count = byte_count / 4;
-		let compute_root = matches!(pipeline_kind, PipelineKind::Compute);
+		let compute_root = matches!(pipeline_kind, PipelineKind::Compute | PipelineKind::RayTracing);
 		unsafe {
 			if compute_root {
 				command_list.SetComputeRoot32BitConstants(

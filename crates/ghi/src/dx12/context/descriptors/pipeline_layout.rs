@@ -15,8 +15,8 @@ impl Device {
 			ShaderTypes::Fragment => D3D12_SHADER_VISIBILITY_PIXEL,
 			ShaderTypes::Task => D3D12_SHADER_VISIBILITY_AMPLIFICATION,
 			ShaderTypes::Mesh => D3D12_SHADER_VISIBILITY_MESH,
-			ShaderTypes::Compute => D3D12_SHADER_VISIBILITY_ALL,
-			ShaderTypes::RayGen | ShaderTypes::ClosestHit => crate::rt::unsupported("DX12"),
+			// Every shader of a DXR pipeline reads the one global root signature.
+			ShaderTypes::Compute | ShaderTypes::RayGen | ShaderTypes::ClosestHit => D3D12_SHADER_VISIBILITY_ALL,
 			ShaderTypes::Tile => crate::pipelines::tile::unsupported("DX12"),
 		}
 	}
@@ -26,17 +26,12 @@ impl Device {
 	///
 	/// Stages that declare the same layout share its set. A stage's shader reads the bases of the set at its own
 	/// position `s` from `_besl_sets[s >> 1][(s & 1) * 2]` and the component after it, so no stage needs remapping.
-	pub(crate) fn create_pipeline_layout(
+	pub(crate) fn pipeline_layout(
 		&mut self,
 		shaders: &[pipelines::ShaderParameter],
 		push_constant_ranges: &[PushConstantRange],
-	) -> PipelineLayoutHandle {
-		let push_constant_size = push_constant_ranges
-			.iter()
-			.map(|range| range.offset.saturating_add(range.size))
-			.max()
-			.unwrap_or(0);
-		let push_constant_dwords = push_constant_size.div_ceil(4);
+	) -> NativePipelineLayout {
+		let push_constant_dwords = Self::push_constant_dwords(push_constant_ranges);
 		let mut root_parameter = u32::from(push_constant_dwords != 0);
 
 		let mut sets = SmallVec::<[PipelineSet; 4]>::new();
@@ -95,6 +90,86 @@ impl Device {
 			root_parameter += 1;
 		}
 
+		self.native_pipeline_layout(key, sets, stages, push_constant_ranges)
+	}
+
+	/// Builds a ray tracing pipeline's layout: one root-constant parameter, which every shader of the pipeline reads,
+	/// with the bases of every set the ray generation shader declares, after the push constants.
+	///
+	/// A closest hit reads the global root signature too, and may read a set the ray generation shader doesn't, so the
+	/// parameter holds every declared set, used or not. A closest hit's sets are the first of the ray generation
+	/// shader's, in the same order, so it reads each set's bases at the position the ray generation shader does.
+	pub(crate) fn ray_tracing_pipeline_layout(
+		&mut self,
+		ray_generation: &pipelines::ShaderParameter,
+		hit_groups: &[pipelines::ShaderParameter],
+		push_constant_ranges: &[PushConstantRange],
+	) -> NativePipelineLayout {
+		let push_constant_dwords = Self::push_constant_dwords(push_constant_ranges);
+		let declared = &self.shaders[ray_generation.handle.index() as usize].descriptor_sets;
+		assert!(
+			declared.len() <= MAX_STAGE_SETS,
+			"Too many descriptor sets in a DX12 ray generation shader. The most likely cause is that the shader declares {} sets where the root constants hold {MAX_STAGE_SETS}. Merge layouts so the shader declares at most {MAX_STAGE_SETS} sets.",
+			declared.len(),
+		);
+		let mut sets = declared
+			.iter()
+			.map(|set| PipelineSet {
+				layout: set.layout().clone(),
+				used: set.used(),
+			})
+			.collect::<SmallVec<[PipelineSet; 4]>>();
+		for hit_group in hit_groups {
+			let hit_sets = &self.shaders[hit_group.handle.index() as usize].descriptor_sets;
+			assert!(
+				hit_sets.len() <= sets.len()
+					&& hit_sets
+						.iter()
+						.zip(&sets)
+						.all(|(hit_set, set)| hit_set.layout().identity() == set.layout.identity()),
+				"DX12 ray tracing pipeline creation failed because a closest-hit shader's descriptor sets aren't the first of the ray generation shader's. The most likely cause is a closest hit that declares a set the ray generation shader doesn't, or declares the sets in another order. Declare the ray generation shader's sets first, in the same order, in every closest hit."
+			);
+			for (set, hit_set) in sets.iter_mut().zip(hit_sets) {
+				set.used |= hit_set.used();
+			}
+		}
+
+		let mut key = RootSignatureKey {
+			push_constant_dwords,
+			stages: SmallVec::new(),
+		};
+		let mut stages = SmallVec::<[StageSets; 3]>::new();
+		if !sets.is_empty() {
+			key.stages
+				.push((D3D12_SHADER_VISIBILITY_ALL.0, Self::set_base_dwords(sets.len())));
+			stages.push(StageSets {
+				root_parameter: u32::from(push_constant_dwords != 0),
+				sets: (0..sets.len() as u8).map(Some).collect(),
+			});
+		}
+		self.native_pipeline_layout(key, sets, stages, push_constant_ranges)
+	}
+
+	/// Returns how many root constants hold push constants of `push_constant_ranges`.
+	fn push_constant_dwords(push_constant_ranges: &[PushConstantRange]) -> u32 {
+		push_constant_ranges
+			.iter()
+			.map(|range| range.offset.saturating_add(range.size))
+			.max()
+			.unwrap_or(0)
+			.div_ceil(4)
+	}
+
+	/// Returns a layout of `sets`, read by `stages`, with the root signature of shape `key`, which layouts of the same
+	/// shape share.
+	fn native_pipeline_layout(
+		&mut self,
+		key: RootSignatureKey,
+		sets: SmallVec<[PipelineSet; 4]>,
+		stages: SmallVec<[StageSets; 3]>,
+		push_constant_ranges: &[PushConstantRange],
+	) -> NativePipelineLayout {
+		let push_constant_dwords = key.push_constant_dwords;
 		let root_signature = match self.root_signatures.get(&key) {
 			Some(root_signature) => root_signature.clone(),
 			None => {
@@ -106,15 +181,19 @@ impl Device {
 			}
 		};
 
-		let handle = PipelineLayoutHandle::from_index(self.pipeline_layouts.len() as u64);
-		self.pipeline_layouts.push(NativePipelineLayout {
+		NativePipelineLayout {
 			root_signature,
 			sets,
 			stages,
 			push_constant_root: (push_constant_dwords != 0).then_some(0),
 			push_constant_ranges: push_constant_ranges.into(),
-		});
-		handle
+		}
+	}
+
+	/// Adds `layout` to the context, so pipelines and descriptor bindings can name it by handle.
+	pub(crate) fn store_pipeline_layout(&mut self, layout: NativePipelineLayout) -> PipelineLayoutHandle {
+		self.pipeline_layouts.push(layout);
+		PipelineLayoutHandle::from_index((self.pipeline_layouts.len() - 1) as u64)
 	}
 
 	/// Returns how many root constants hold the bases of `set_count` sets: two per set, in whole `uint4` vectors, as

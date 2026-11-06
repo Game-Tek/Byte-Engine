@@ -168,6 +168,15 @@ pub struct ResourceIoTicket {
 	_runtime: DirectStorageRuntime,
 }
 
+// SAFETY: The queue and ticket hold DirectStorage and D3D12 interfaces, which DirectStorage documents as free-threaded,
+// plus owned files, requests and runtime modules no other value refers to. The engine's resource loaders create and
+// submit batches away from the render thread.
+//
+// Ownership may move between threads; concurrent use may not. `Sync` is deliberately not claimed, so sharing either
+// value requires a lock that hands out one borrow at a time.
+unsafe impl Send for ResourceIoQueue {}
+unsafe impl Send for ResourceIoTicket {}
+
 impl ResourceIoQueue {
 	/// Creates a persistent DirectStorage file queue for one DX12 context.
 	fn new(context: &context::Device, descriptor: ResourceIoQueueDescriptor<'_>) -> Result<Self, ResourceIoError> {

@@ -67,7 +67,7 @@ pub(super) fn compile_shaders() -> (CompiledShaderSource, CompiledShaderSource) 
 		}
 	"#;
 	let vertex_shader_hlsl = r#"
-		struct VertexInput { float3 position : POSITION; float4 color : COLOR0; };
+		struct VertexInput { float3 position : TEXCOORD0; float4 color : TEXCOORD1; };
 		struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
 		VertexOutput vertex_main(VertexInput input) {
 			VertexOutput output;
@@ -169,7 +169,7 @@ pub(super) fn compile_shaders_with_model_matrix() -> (CompiledShaderSource, Comp
 		}
 	"#;
 	let vertex_shader_hlsl = r#"
-		struct VertexInput { float3 position : POSITION; float4 color : COLOR0; };
+		struct VertexInput { float3 position : TEXCOORD0; float4 color : TEXCOORD1; };
 		struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
 		struct PushConstant { float4x4 model_matrix; };
 		ConstantBuffer<PushConstant> push_constant : register(b0, space0);

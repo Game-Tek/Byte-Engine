@@ -51,6 +51,12 @@ impl Device {
 		if views.is_empty() {
 			return;
 		}
+		// The bound raster pipeline gives the strides; a pipeline bound later fills them in.
+		let command_buffer = &mut self.command_buffers[command_buffer_handle.index() as usize];
+		for (slot, view) in views.iter_mut().enumerate() {
+			view.StrideInBytes = command_buffer.vertex_strides.get(slot).copied().unwrap_or(0);
+		}
+		command_buffer.vertex_buffer_views = views.iter().copied().collect();
 
 		unsafe {
 			command_list.IASetVertexBuffers(0, Some(&views));
@@ -242,6 +248,8 @@ impl Device {
 			command_list.IASetIndexBuffer(Some(&index_view));
 			command_list.DrawIndexedInstanced(mesh.index_count, 1, 0, 0, 0);
 		}
+		// The mesh's view replaced the bound ones, so a later pipeline bind has none to restride.
+		self.command_buffers[command_buffer_handle.index() as usize].vertex_buffer_views.clear();
 		self.mark_command_buffer_work(command_buffer_handle);
 		self.native_counters.vertex_buffer_bind_count += 1;
 		self.native_counters.index_buffer_bind_count += 1;
@@ -360,10 +368,11 @@ impl Device {
 		uses: Uses,
 		array_layers: u32,
 	) {
-		if uses.intersects(Uses::RenderTarget) {
+		// A depth format attaches as a depth target whichever attachment use it was created with.
+		if uses.intersects(Uses::RenderTarget) && !format.is_depth() {
 			self.materialize_render_target_views(resource, format, array_layers);
 		}
-		if uses.intersects(Uses::DepthStencil) {
+		if uses.intersects(Uses::DepthStencil) || (uses.intersects(Uses::RenderTarget) && format.is_depth()) {
 			self.materialize_depth_stencil_views(resource, format, array_layers);
 		}
 	}

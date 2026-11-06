@@ -7,18 +7,84 @@ impl Device {
 			builder.resource_uses,
 			builder.device_accesses,
 			BufferStorage::Static,
+			builder.name,
 		);
 		BufferHandle(BaseBufferHandle::from_index(handle), std::marker::PhantomData)
 	}
 
-	pub fn build_dynamic_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T> {
+	pub fn build_dynamic_buffer<T: ?Sized + crate::buffer::BufferContents>(
+		&mut self,
+		builder: buffer::Builder,
+	) -> DynamicBufferHandle<T> {
 		let handle = self.create_buffer_with_layout(
 			<T as crate::buffer::BufferContents>::layout(builder.length),
 			builder.resource_uses,
 			builder.device_accesses,
 			BufferStorage::Dynamic,
+			builder.name,
 		);
 		DynamicBufferHandle(BaseBufferHandle::from_index(handle), std::marker::PhantomData)
+	}
+
+	/// Shares a buffer this context owns so another context of the same device can record copies into it.
+	///
+	/// Keep this context alive for as long as any context uses the imported buffer. Next, pass the value to
+	/// [`Self::import_buffer`] on that context.
+	///
+	/// # Panics
+	///
+	/// Panics when the handle names no buffer of this context or a buffer with one representation per frame.
+	pub fn share_buffer<T: ?Sized>(&self, buffer_handle: BufferHandle<T>) -> crate::dx12::factory::SharedBuffer<T> {
+		let buffer = self
+			.buffer(buffer_handle.0)
+			.expect("Buffer sharing failed. The most likely cause is that the handle is stale or belongs to another context.");
+		assert!(
+			buffer.frame_resources.is_none(),
+			"Buffer sharing failed. The most likely cause is that the handle names a dynamic buffer."
+		);
+		let resource = buffer
+			.memory
+			.resource
+			.clone()
+			.expect("Buffer sharing failed. The most likely cause is that the buffer is empty and has no native resource.");
+		crate::dx12::factory::SharedBuffer {
+			resource,
+			size: buffer.size,
+			uses: buffer.uses,
+			access: buffer.access,
+			heap_kind: buffer.memory.heap_kind,
+			contents: std::marker::PhantomData,
+		}
+	}
+
+	/// Imports a buffer another context shared and returns the handle this context records copies with.
+	///
+	/// This context only records GPU copies with the handle. CPU access stays with the owning context, which also
+	/// keeps the buffer alive, so the import has no CPU storage of its own.
+	pub fn import_buffer<T: ?Sized>(&mut self, buffer: crate::dx12::factory::SharedBuffer<T>) -> BufferHandle<T> {
+		let layout = Layout::new::<()>();
+		self.buffers.push(Buffer {
+			memory: BufferMemory {
+				data: std::ptr::without_provenance_mut(layout.align()),
+				layout,
+				// Equal generations mark the absent CPU storage as already uploaded, so no sync ever writes it.
+				host_generation: 0,
+				uploaded_generation: 0,
+				resource: Some(buffer.resource),
+				mapped: std::ptr::null_mut(),
+				heap_kind: buffer.heap_kind,
+				transferred: false,
+			},
+			size: buffer.size,
+			uses: buffer.uses,
+			access: buffer.access,
+			frame_resources: None,
+			name: None,
+		});
+		BufferHandle(
+			BaseBufferHandle::from_index((self.buffers.len() - 1) as u64),
+			std::marker::PhantomData,
+		)
 	}
 
 	pub fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64 {
@@ -39,8 +105,10 @@ impl Device {
 
 	pub fn get_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &T {
 		let buffer = self
-			.buffer(buffer_handle.into())
+			.buffer_mut(buffer_handle.into())
 			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another device.");
+		Self::take_gpu_writes(buffer);
+		let buffer = &*buffer;
 		let pointer = Self::typed_buffer_pointer::<T>(buffer);
 		// SAFETY: Typed handles preserve the allocation's layout; zero-sized buffers carry an aligned sentinel pointer.
 		unsafe { &*pointer }
@@ -53,10 +121,20 @@ impl Device {
 		let buffer = self
 			.buffer_mut(buffer_handle.into())
 			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another device.");
+		// A mutable view reads too, as on backends whose CPU and GPU share the buffer's memory.
+		Self::take_gpu_writes(buffer);
 		Self::mark_host_write(&mut buffer.memory);
 		let pointer = Self::typed_buffer_pointer::<T>(buffer);
 		// SAFETY: Typed handles preserve the allocation's layout and `&mut self` guarantees exclusive CPU access.
 		unsafe { &mut *pointer }
+	}
+
+	/// Copies what the GPU wrote to a CPU-readable buffer through its mapping into the CPU copy, which views read.
+	fn take_gpu_writes(buffer: &mut Buffer) {
+		if buffer.memory.heap_kind.host_readable() && !buffer.memory.mapped.is_null() && !buffer.memory.transferred {
+			// SAFETY: The mapping and the CPU copy each cover the buffer's size, and are separate allocations.
+			unsafe { std::ptr::copy_nonoverlapping(buffer.memory.mapped, buffer.memory.data, buffer.size) };
+		}
 	}
 
 	/// Returns the typed CPU view of a buffer's host storage, sized by the allocation's recorded byte count.
@@ -78,10 +156,22 @@ impl Device {
 		let buffer = self
 			.buffer_mut(buffer_handle.into())
 			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another device.");
-		Self::mark_host_write(&mut buffer.memory);
 		let pointer = Self::typed_buffer_pointer::<T>(buffer);
-		// SAFETY: The caller accepts the lifetime and exclusivity requirements documented by this method.
-		unsafe { crate::buffer::Mapping::from_raw_parts(pointer.cast::<u8>(), T::byte_count(pointer)) }
+		let byte_count = T::byte_count(pointer);
+		if buffer.memory.mapped.is_null() {
+			// Without a native mapping the owner writes the CPU copy, which every later sync uploads whole.
+			Self::mark_host_write(&mut buffer.memory);
+			// SAFETY: The caller accepts the lifetime and exclusivity requirements documented by this method.
+			return unsafe { crate::buffer::Mapping::from_raw_parts(pointer.cast::<u8>(), byte_count) };
+		}
+		// The owner writes the mapped memory from other threads, where no later sync sees its writes, so the CPU copy is
+		// uploaded one last time and retired.
+		let size = buffer.size;
+		Self::sync_buffer_memory(&mut buffer.memory, size, buffer.access);
+		buffer.memory.transferred = true;
+		// SAFETY: The mapping spans the buffer's size for as long as its resource lives, which the caller guarantees by
+		// keeping the context alive.
+		unsafe { crate::buffer::Mapping::from_raw_parts(buffer.memory.mapped, byte_count) }
 	}
 
 	pub(crate) fn buffer_resource_state(

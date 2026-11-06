@@ -1,95 +1,59 @@
-/// The `Factory` struct builds detached DX12 resources before they have public GHI handles.
-#[derive(Default)]
+//! The `factory` module holds the DX12 types that move between threads and contexts.
+//!
+//! A [`Factory`] compiles shaders and pipelines away from the render thread. A [`DetachedImage`] carries a finished
+//! image from one context to another, and a [`SharedBuffer`] lets a second context record copies into a buffer the
+//! first context owns.
+
+/// The `Factory` struct lets compiler threads build shaders and pipelines without owning render context state.
+///
+/// It wraps a context of the rendering device that never records or presents, so compiling HLSL and creating pipeline
+/// states, the slow part of making a pipeline, runs on the thread that owns the factory. Get one from
+/// [`Context::create_factory`](crate::dx12::Context::create_factory), then hand its pipelines to
+/// [`Frame::intern_raster_pipeline`](crate::dx12::Frame::intern_raster_pipeline) or the other `intern_` methods.
 pub struct Factory {
-	pub(crate) shaders: Vec<Shader>,
+	pub(crate) context: crate::dx12::Device,
 }
 
-/// The `Shader` struct carries detached DX12 metadata until a context interns it.
-#[derive(Clone)]
-pub(crate) struct Shader {
-	pub(crate) name: Option<String>,
-	pub(crate) source: ShaderSource,
-	pub(crate) stage: ShaderTypes,
-	/// The sets the shader declares, at the positions its source reads them.
-	pub(crate) descriptor_sets: Box<[crate::shader::ShaderDescriptorSet]>,
+/// The `RasterPipeline` struct is a raster pipeline a factory compiled, on its way to the context that binds it.
+pub struct RasterPipeline(pub(crate) crate::dx12::context::CompiledPipeline);
+
+/// The `ComputePipeline` struct is a compute pipeline a factory compiled, on its way to the context that binds it.
+pub struct ComputePipeline(pub(crate) crate::dx12::context::CompiledPipeline);
+
+/// The `RayTracingPipeline` struct is a ray tracing pipeline a factory linked, on its way to the context that traces
+/// with it.
+pub struct RayTracingPipeline(pub(crate) crate::dx12::context::CompiledPipeline);
+
+/// The `DetachedImage` struct is an image no context owns, on its way from one context to another.
+///
+/// A loader context fills an image, then [`Context::export_image`](crate::dx12::Context::export_image) moves it out and
+/// [`Context::intern_image`](crate::dx12::Context::intern_image) or [`Frame::intern_image`](crate::dx12::Frame::intern_image)
+/// gives it a handle in the context that renders with it. Its native resource is reference counted, so dropping it
+/// without interning it frees the image.
+pub struct DetachedImage {
+	pub(crate) image: crate::dx12::context::Image,
+	/// The barrier state the exporting context's last submission left the resource in, or `None` when it never
+	/// recorded one.
+	pub(crate) state: Option<crate::dx12::context::TextureBarrierState>,
 }
 
-/// The `ShaderSource` enum stores owned shader bytecode for detached DX12 shader creation.
-#[derive(Clone)]
-pub(crate) enum ShaderSource {
-	Spirv(Vec<u8>),
-	Dxil(Vec<u8>),
-	Hlsl { source: String, entry_point: String },
+/// The `SharedBuffer` struct lets a second context of the same device record copies into a buffer it does not own.
+///
+/// Get one from [`Context::share_buffer`](crate::dx12::Context::share_buffer) on the owning context, then pass it to
+/// [`Context::import_buffer`](crate::dx12::Context::import_buffer) on the context that records the copies. The owning
+/// context must outlive every context that imported the buffer.
+pub struct SharedBuffer<T: ?Sized> {
+	pub(crate) resource: ID3D12Resource,
+	pub(crate) size: usize,
+	pub(crate) uses: Uses,
+	pub(crate) access: DeviceAccesses,
+	pub(crate) heap_kind: crate::dx12::context::BufferHeapKind,
+	pub(crate) contents: std::marker::PhantomData<T>,
 }
 
-/// The `RasterPipeline` struct carries detached DX12 raster state until a frame interns it.
-pub struct RasterPipeline {
-	pub(crate) push_constant_ranges: Vec<pipelines::PushConstantRange>,
-	pub(crate) vertex_elements: Vec<VertexElement>,
-	pub(crate) shaders: Vec<ShaderParameter>,
-	pub(crate) render_targets: Vec<pipelines::raster::AttachmentDescriptor>,
-	pub(crate) face_winding: pipelines::raster::FaceWinding,
-	pub(crate) cull_mode: pipelines::raster::CullMode,
-	pub(crate) fill_mode: pipelines::raster::FillMode,
-	pub(crate) depth_write: bool,
-	pub(crate) factory_shaders: Vec<Shader>,
-}
-
-/// The `ComputePipeline` struct carries detached DX12 compute state until a frame interns it.
-pub struct ComputePipeline {
-	pub(crate) push_constant_ranges: Vec<pipelines::PushConstantRange>,
-	pub(crate) shader: ShaderParameter,
-	pub(crate) factory_shaders: Vec<Shader>,
-}
-
-/// The `VertexElement` struct provides owned vertex metadata to detached DX12 raster pipelines.
-pub(crate) struct VertexElement {
-	pub(crate) name: String,
-	pub(crate) format: crate::DataTypes,
-	pub(crate) binding: u32,
-}
-
-/// The `ShaderParameter` struct provides owned binding metadata to detached DX12 pipelines.
-#[derive(Clone)]
-pub(crate) struct ShaderParameter {
-	pub(crate) handle: ShaderHandle,
-	pub(crate) stage: ShaderTypes,
-	pub(crate) specialization_map: Vec<pipelines::SpecializationMapEntry>,
-}
-
-/// The `FactoryImage` struct carries DX12 image parameters until a context interns them.
-pub struct FactoryImage {
-	pub(crate) name: Option<String>,
-	pub(crate) extent: Extent,
-	pub(crate) format: Formats,
-	pub(crate) resource_uses: Uses,
-	pub(crate) device_accesses: DeviceAccesses,
-	pub(crate) use_case: UseCases,
-	pub(crate) mip_levels: u32,
-	pub(crate) array_layers: Option<std::num::NonZeroU32>,
-	pub(crate) optimized_clear_value: Option<crate::ClearValue>,
-}
-
-/// The `FactorySampler` struct carries DX12 sampler parameters until a context interns them.
-pub struct FactorySampler {
-	pub(crate) filtering_mode: FilteringModes,
-	pub(crate) reduction_mode: SamplingReductionModes,
-	pub(crate) mip_map_mode: FilteringModes,
-	pub(crate) addressing_mode: SamplerAddressingModes,
-	pub(crate) anisotropy: Option<f32>,
-	pub(crate) min_lod: f32,
-	pub(crate) max_lod: f32,
-}
-
-/// The `Image` type alias preserves the detached image name used by backend-specific factory paths.
-pub type Image = FactoryImage;
-
-/// The `Sampler` type alias preserves the detached sampler name used by backend-specific factory paths.
-pub type Sampler = FactorySampler;
-
-/// The `RayTracingPipeline` type names the ray tracing pipelines a DX12 factory builds. DX12 doesn't trace rays
-/// yet, so the type has no values.
-pub type RayTracingPipeline = std::convert::Infallible;
+// SAFETY: The shared buffer holds a reference-counted D3D12 resource, which is free-threaded, and plain metadata. `T`
+// only types the handle the importing context gets back; no `T` value is stored.
+unsafe impl<T: ?Sized> Send for SharedBuffer<T> {}
 
 impl crate::device::Device for Factory {
 	type Context = crate::dx12::Device;
@@ -97,15 +61,13 @@ impl crate::device::Device for Factory {
 	type RasterPipeline = RasterPipeline;
 	type ComputePipeline = ComputePipeline;
 	type RayTracingPipeline = RayTracingPipeline;
-	type Image = FactoryImage;
-	type Sampler = FactorySampler;
 
 	fn allocator(&self) -> &Self::Allocator {
 		&std::alloc::Global
 	}
 
 	fn has_errors(&self) -> bool {
-		false
+		self.context.has_errors()
 	}
 
 	fn create_context(&self) -> Result<Self::Context, &'static str> {
@@ -121,103 +83,22 @@ impl crate::device::Device for Factory {
 		stage: ShaderTypes,
 		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<ShaderHandle, ()> {
-		let source = match shader_source_type {
-			Sources::SPIRV(bytes) => ShaderSource::Spirv(bytes.into_owned()),
-			Sources::KeyedSPIRV { code, .. } => ShaderSource::Spirv(code.to_vec()),
-			Sources::DXIL(bytes) => ShaderSource::Dxil(bytes.to_vec()),
-			Sources::HLSL { source, entry_point } => ShaderSource::Hlsl {
-				source: source.to_string(),
-				entry_point: entry_point.to_string(),
-			},
-			Sources::MTL { .. } | Sources::MTLB { .. } => return Err(()),
-		};
-
-		self.shaders.push(Shader {
-			name: name.map(str::to_owned),
-			source,
-			stage,
-			descriptor_sets: descriptor_sets.into_iter().collect(),
-		});
-
-		Ok(ShaderHandle::from_index((self.shaders.len() - 1) as u64))
+		self.context.create_shader(name, shader_source_type, stage, descriptor_sets)
 	}
 
 	fn create_raster_pipeline(&mut self, builder: pipelines::raster::Builder) -> Self::RasterPipeline {
-		RasterPipeline {
-			push_constant_ranges: builder.push_constant_ranges.to_vec(),
-			vertex_elements: builder
-				.vertex_elements
-				.iter()
-				.map(|element| VertexElement {
-					name: element.name.to_owned(),
-					format: element.format,
-					binding: element.binding,
-				})
-				.collect(),
-			shaders: builder
-				.shaders
-				.iter()
-				.map(|shader| ShaderParameter {
-					handle: *shader.handle,
-					stage: shader.stage,
-					specialization_map: shader.specialization_map.to_vec(),
-				})
-				.collect(),
-			render_targets: builder.render_targets.to_vec(),
-			face_winding: builder.face_winding,
-			cull_mode: builder.cull_mode,
-			fill_mode: builder.fill_mode,
-			depth_write: builder.depth_write,
-			factory_shaders: self.shaders.clone(),
-		}
+		RasterPipeline(self.context.compile_raster_pipeline(builder))
 	}
 
 	fn create_compute_pipeline(&mut self, builder: pipelines::compute::Builder) -> Self::ComputePipeline {
-		ComputePipeline {
-			push_constant_ranges: builder.push_constant_ranges.to_vec(),
-			shader: ShaderParameter {
-				handle: *builder.shader.handle,
-				stage: builder.shader.stage,
-				specialization_map: builder.shader.specialization_map.to_vec(),
-			},
-			factory_shaders: self.shaders.clone(),
-		}
+		ComputePipeline(self.context.compile_compute_pipeline(builder))
 	}
 
-	fn create_ray_tracing_pipeline(&mut self, _: pipelines::ray_tracing::Builder) -> Self::RayTracingPipeline {
-		crate::rt::unsupported("DX12")
-	}
-
-	fn build_image(&mut self, builder: image::Builder) -> Self::Image {
-		FactoryImage {
-			name: builder.name.map(str::to_owned),
-			extent: builder.extent,
-			format: builder.format,
-			resource_uses: builder.resource_uses,
-			device_accesses: builder.device_accesses,
-			use_case: builder.use_case,
-			mip_levels: builder.mip_levels,
-			array_layers: builder.array_layers,
-			optimized_clear_value: builder.optimized_clear_value,
-		}
-	}
-
-	fn build_sampler(&mut self, builder: sampler::Builder) -> Self::Sampler {
-		FactorySampler {
-			filtering_mode: builder.filtering_mode,
-			reduction_mode: builder.reduction_mode,
-			mip_map_mode: builder.mip_map_mode,
-			addressing_mode: builder.addressing_mode,
-			anisotropy: builder.anisotropy,
-			min_lod: builder.min_lod,
-			max_lod: builder.max_lod,
-		}
+	fn create_ray_tracing_pipeline(&mut self, builder: pipelines::ray_tracing::Builder) -> Self::RayTracingPipeline {
+		RayTracingPipeline(self.context.compile_ray_tracing_pipeline(builder))
 	}
 }
 
-use utils::Extent;
+use windows::Win32::Graphics::Direct3D12::ID3D12Resource;
 
-use crate::{
-	DeviceAccesses, FilteringModes, Formats, SamplerAddressingModes, SamplingReductionModes, ShaderHandle, ShaderTypes,
-	UseCases, Uses, image, pipelines, sampler, shader::Sources,
-};
+use crate::{DeviceAccesses, ShaderHandle, ShaderTypes, Uses, pipelines, shader::Sources};

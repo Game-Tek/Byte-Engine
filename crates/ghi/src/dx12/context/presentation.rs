@@ -78,8 +78,21 @@ impl Device {
 		SwapchainHandle::from_index((self.swapchains.len() - 1) as u64)
 	}
 
+	/// Creates a factory that compiles shaders and pipelines for this context on another thread. See
+	/// [`crate::dx12::factory::Factory`].
 	pub fn create_factory(&mut self) -> Option<crate::dx12::factory::Factory> {
-		Some(crate::dx12::factory::Factory::default())
+		Some(crate::dx12::factory::Factory {
+			context: Device::from_native_parts(
+				self.device.clone(),
+				self.device_configuration.clone(),
+				self.dxc_compiler.clone(),
+				self.settings,
+				self.info_queue.clone(),
+				self.debug_log_function,
+				Vec::new(),
+				FACTORY_RESOURCE_HEAP_CAPACITY,
+			),
+		})
 	}
 
 	/// Returns one logical proxy whose dynamic storage resolves to the active frame sequence.
@@ -93,7 +106,10 @@ impl Device {
 		} else {
 			Uses::empty()
 		};
-		let resource_uses = swapchain.proxy_resource_uses | requested_uses | Uses::Image | presentation_copy_uses;
+		// Every proxy is a copy source, which needs no resource flag, so reading back a frame never replaces the proxy
+		// it was rendered into.
+		let resource_uses =
+			swapchain.proxy_resource_uses | requested_uses | Uses::Image | Uses::TransferSource | presentation_copy_uses;
 		let needs_new_proxy = swapchain.image.is_none() || !swapchain.proxy_resource_uses.contains(requested_uses);
 		let extent = swapchain.extent;
 
@@ -109,7 +125,7 @@ impl Device {
 			swapchain.image = Some(image);
 			swapchain.proxy_resource_uses = resource_uses;
 			// Descriptors of the swapchain now name the new proxy's resources.
-			self.mark_stale_descriptors(|descriptor| descriptor == WriteData::Swapchain(swapchain_handle));
+			self.mark_stale_descriptors(|descriptor, _| descriptor == WriteData::Swapchain(swapchain_handle));
 		}
 		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
 		swapchain.proxy_uses = requested_uses;
@@ -132,10 +148,13 @@ impl Device {
 		image
 	}
 
+	/// Waits for a recorded texture copy and returns its bytes.
 	pub fn get_image_data(
 		&mut self,
 		texture_copy_handle: TextureCopyHandle,
 	) -> Result<crate::TextureReadback, crate::TextureTransferError> {
+		self.wait_for_texture_copy_readback(texture_copy_handle);
+		self.refresh_readback_texture_copies(None);
 		// Keep native storage alive while submitted work is unresolved; only completed or failed mappings are consumed.
 		if self.texture_readbacks.submitted(texture_copy_handle)?.0.resource.is_some() {
 			return Err(crate::TextureTransferError::MappingFailed);
@@ -207,6 +226,8 @@ impl Device {
 		// The sequence's previous frame has completed, so its resolved timestamps are final.
 		self.resolve_counters(frame_key.sequence_index);
 		self.process_tasks(frame_key.sequence_index);
+		self.reset_acceleration_structure_scratch(frame_key.sequence_index);
+		self.advance_acceleration_structures();
 		super::super::Frame::new(self, frame_key, synchronizer_handle)
 	}
 
@@ -271,7 +292,8 @@ impl Device {
 		}
 
 		let layout = Layout::from_size_align(size, buffer.memory.layout.align()).unwrap();
-		let memory = self.create_buffer_memory(layout, buffer.access, buffer.uses, "resize");
+		let name = buffer.name.clone();
+		let memory = self.create_buffer_memory(layout, buffer.access, buffer.uses, name.as_deref(), "resize");
 		let frame_count = self.frames as usize;
 		let buffer = self
 			.buffer_mut(buffer_handle)
@@ -306,7 +328,7 @@ impl Device {
 		for key in retired_state_keys {
 			self.buffer_states.remove(&key);
 		}
-		self.mark_stale_descriptors(|descriptor| matches!(descriptor, WriteData::Buffer { handle } if handle == buffer_handle));
+		self.mark_stale_descriptors(|descriptor, _| matches!(descriptor, WriteData::Buffer { handle } if handle == buffer_handle));
 	}
 
 	/// Establishes and waits for one terminal fence on every distinct native queue.

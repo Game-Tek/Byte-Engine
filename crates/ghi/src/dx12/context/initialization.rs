@@ -16,6 +16,7 @@ impl Device {
 	const AGILITY_SDK_PATH_INVALID: &str = "Invalid DirectX 12 Agility SDK path. The most likely cause is that BYTE_ENGINE_D3D12_SDK_PATH is empty, is not valid Unicode, or contains an embedded NUL byte.";
 	const AGILITY_DEBUG_LAYER_UNAVAILABLE: &str = "Failed to configure the DirectX 12 Agility SDK debug layer. The most likely cause is that D3D12SDKLayers.dll from Microsoft.Direct3D.D3D12 1.619.5 is missing from the app-local SDK directory. See https://devblogs.microsoft.com/directx/gettingstarted-dx12agility/.";
 	const DEVICE_CONFIGURATION_UNAVAILABLE: &str = "Failed to acquire the DX12 independent-device configuration. The most likely cause is that the loaded Agility SDK does not expose device-scoped root-signature serialization.";
+	const NAMED_GPU_UNAVAILABLE: &str = "No DX12 adapter has the requested GPU name. The most likely cause is that Features::gpu names a GPU that isn't installed, or doesn't match the adapter description DXGI reports. Pass the exact adapter name shown in Device Manager, or leave Features::gpu unset.";
 	const DXC_UNAVAILABLE: &str = "Failed to initialize DirectX Shader Compiler 1.9.2607.13. The most likely cause is that dxcompiler.dll is missing, cannot be loaded, or predates retail Shader Model 6.9 commit 5402. See https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.9.2607.";
 	const AGILITY_SDK_VERSION: u32 = 619;
 	const DEFAULT_AGILITY_SDK_PATH: &str = ".\\D3D12\\";
@@ -27,8 +28,9 @@ impl Device {
 	/// Creates a DX12 device and initializes command queues for the requested queue types.
 	pub fn new(settings: Features, queues: &mut [(QueueSelection, &mut Option<QueueHandle>)]) -> Result<Self, &'static str> {
 		let device_factory = Self::create_agility_device_factory(settings)?;
+		let adapter = Self::select_adapter(settings.gpu)?;
 		let mut device: Option<ID3D12Device10> = None;
-		unsafe { device_factory.CreateDevice(None::<&IUnknown>, D3D_FEATURE_LEVEL_12_2, &mut device) }.map_err(|_| {
+		unsafe { device_factory.CreateDevice(adapter.as_ref(), D3D_FEATURE_LEVEL_12_2, &mut device) }.map_err(|_| {
 			"Failed to create a DX12 feature level 12_2 ID3D12Device10. The most likely cause is that the selected GPU lacks feature level 12_2 or the loaded Agility SDK does not expose the required modern device interface."
 		})?;
 		let device = device.ok_or(
@@ -55,7 +57,7 @@ impl Device {
 				..Default::default()
 			};
 
-			let queue = unsafe { device.CreateCommandQueue(&desc) }
+			let queue: ID3D12CommandQueue = unsafe { device.CreateCommandQueue(&desc) }
 				.map_err(|_| "Failed to create a D3D12 command queue. The most likely cause is that the device does not support the requested queue type.")?;
 
 			let index = queue_storage.len() as u64;
@@ -77,6 +79,7 @@ impl Device {
 			info_queue,
 			debug_log_function,
 			queue_storage,
+			RESOURCE_HEAP_CAPACITY,
 		))
 	}
 
@@ -133,6 +136,40 @@ impl Device {
 			}
 		}
 		Ok(())
+	}
+
+	/// Returns the adapter named `gpu`, or the highest-performance adapter when `gpu` is `None`, as Vulkan picks the
+	/// best-scoring GPU. `None` lets D3D12 pick its default adapter, when DXGI lists none.
+	///
+	/// Fails when no adapter has the name `gpu`.
+	fn select_adapter(gpu: Option<&str>) -> Result<Option<IUnknown>, &'static str> {
+		use windows::Win32::Graphics::Dxgi::{DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IDXGIAdapter1, IDXGIFactory6};
+
+		// SAFETY: Creating a factory has no preconditions.
+		let Ok(factory) = (unsafe { CreateDXGIFactory2::<IDXGIFactory6>(DXGI_CREATE_FACTORY_FLAGS(0)) }) else {
+			return match gpu {
+				Some(_) => Err(Self::NAMED_GPU_UNAVAILABLE),
+				None => Ok(None),
+			};
+		};
+		let Some(gpu) = gpu else {
+			// SAFETY: The factory is live; index 0 is the first adapter in the preferred order.
+			let adapter = unsafe { factory.EnumAdapterByGpuPreference::<IDXGIAdapter1>(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE) };
+			return Ok(adapter.ok().and_then(|adapter| adapter.cast().ok()));
+		};
+		// DXGI reports the end of the list as an error.
+		// SAFETY: The factory is live, and each index either names an adapter or ends the list.
+		for adapter in (0..).map_while(|index| unsafe { factory.EnumAdapters1(index) }.ok()) {
+			// SAFETY: The adapter is live.
+			let Ok(desc) = (unsafe { adapter.GetDesc1() }) else {
+				continue;
+			};
+			let length = desc.Description.iter().position(|&unit| unit == 0).unwrap_or(desc.Description.len());
+			if String::from_utf16_lossy(&desc.Description[..length]) == gpu {
+				return Ok(adapter.cast().ok());
+			}
+		}
+		Err(Self::NAMED_GPU_UNAVAILABLE)
 	}
 
 	/// Fills one D3D12 feature-support structure, or returns `None` when the runtime rejects the query.
@@ -205,7 +242,8 @@ impl Device {
 		Ok(())
 	}
 
-	/// Creates an empty DX12 context over an already-selected native device and queues.
+	/// Creates an empty DX12 context over an already-selected native device and queues, whose shader-visible resource
+	/// heap holds `resource_heap_capacity` descriptors.
 	pub(crate) fn from_native_parts(
 		device: ID3D12Device10,
 		device_configuration: ID3D12DeviceConfiguration,
@@ -214,6 +252,7 @@ impl Device {
 		info_queue: Option<ID3D12InfoQueue>,
 		debug_log_function: fn(&str),
 		queues: Vec<StoredQueue>,
+		resource_heap_capacity: u32,
 	) -> Self {
 		let descriptor_handle_increment_sizes = [
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
@@ -222,7 +261,8 @@ impl Device {
 			D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
 		]
 		.map(|heap_type| unsafe { device.GetDescriptorHandleIncrementSize(heap_type) });
-		let shader_visible_heaps = Self::create_shader_visible_heaps(&device);
+		let shader_visible_heaps = Self::create_shader_visible_heaps(&device, resource_heap_capacity);
+		let ray_tracing_supported = Self::device_supports_ray_tracing(&device, settings);
 		Self {
 			device,
 			device_configuration,
@@ -244,7 +284,7 @@ impl Device {
 			dynamic_buffers: Vec::new(),
 			images: Vec::new(),
 			image_groups: crate::image_group::ImageGroups::default(),
-			image_alias_flushes: HashMap::default(),
+			image_deactivations: HashMap::default(),
 			unordered_group: None,
 			image_group_heaps: Vec::new(),
 			samplers: Vec::new(),
@@ -277,6 +317,9 @@ impl Device {
 			buffer_states: HashMap::default(),
 			image_states: HashMap::default(),
 			native_counters: Dx12Counters::default(),
+			ray_tracing_supported,
+			acceleration_structures: Default::default(),
+			shader_binding_tables: Vec::new(),
 		}
 	}
 
@@ -529,7 +572,7 @@ impl Device {
 			}
 		}
 		// Frame offsets resolve to other sequences under the new count, so every descriptor is written again.
-		self.mark_stale_descriptors(|_| true);
+		self.mark_stale_descriptors(|_, _| true);
 	}
 
 	pub fn create_allocation(
@@ -552,9 +595,9 @@ impl Device {
 	) -> MeshHandle {
 		let vertex_size = vertex_layout.iter().map(|element| element.format.size()).sum::<usize>();
 		let (vertex_resource, vertex_pointer, _) =
-			self.create_buffer_resource(vertices.len(), DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead);
+			self.create_buffer_resource(vertices.len(), DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, Uses::Vertex);
 		let (index_resource, index_pointer, _) =
-			self.create_buffer_resource(indices.len(), DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead);
+			self.create_buffer_resource(indices.len(), DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, Uses::Index);
 		if !vertex_pointer.is_null() {
 			unsafe {
 				std::ptr::copy_nonoverlapping(vertices.as_ptr(), vertex_pointer, vertices.len());

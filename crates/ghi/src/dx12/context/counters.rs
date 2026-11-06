@@ -21,6 +21,10 @@ pub(super) struct CounterStorage {
 	mapped: *mut u8,
 }
 
+// SAFETY: `mapped` points into the persistent mapping of `readback`, which this value owns alone; the D3D12 objects
+// are free-threaded. Moving the storage to another thread shares nothing.
+unsafe impl Send for CounterStorage {}
+
 impl Device {
 	/// Returns the counter slots the frame on `sequence_index` has written so far.
 	pub(crate) fn counter_written_slots(&self, sequence_index: u8) -> std::ops::Range<u32> {
@@ -133,7 +137,7 @@ impl Device {
 				"DX12 counter query heap creation returned no heap. The most likely cause is that the device was removed.",
 			);
 			let (readback, mapped, _) =
-				self.create_buffer_resource(COUNTER_SLOT_COUNT as usize * TIMESTAMP_SIZE, crate::DeviceAccesses::CpuRead);
+				self.create_buffer_resource(COUNTER_SLOT_COUNT as usize * TIMESTAMP_SIZE, crate::DeviceAccesses::CpuRead, Uses::TransferDestination);
 			let readback = readback.expect(
 				"DX12 counter readback buffer creation failed. The most likely cause is that the device is out of memory.",
 			);

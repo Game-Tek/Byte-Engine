@@ -7,18 +7,25 @@
 //! generation shader, launched with `trace_rays`, that traces the same rays and invokes the closest hit of each hit's
 //! record.
 //!
-//! Every shader comes in MSL and GLSL. On Metal a closest hit is a visible function the kernel calls through the
-//! shader binding table; on Vulkan it is a callable shader, and the ray generation shader calls the table entry of the
-//! hit's record with `executeCallableEXT`.
+//! Every shader comes in MSL, GLSL, and HLSL. On Metal a closest hit is a visible function the kernel calls through
+//! the shader binding table; on Vulkan and DX12 it is a callable shader, and the ray generation shader calls the table
+//! entry of the hit's record with `executeCallableEXT` or `CallShader`.
+//!
+//! The HLSL shaders follow the BESL HLSL generator's conventions: the entry point is `besl_main`, set `s` keeps its heap
+//! base in `_besl_sets[s >> 1]`, and storage buffers are read as `uint` words, since their views have the layouts'
+//! default four-byte stride.
 
 use super::*;
 
-/// Creates a shader from its GLSL and MSL sources, compiled for the backend under test.
+/// The entry point every HLSL shader of these scenarios names, as the BESL HLSL generator does.
+const HLSL_ENTRY_POINT: &str = "besl_main";
+
+/// Creates a shader from its GLSL, MSL, and HLSL sources, compiled for the backend under test.
 pub(super) fn native_shader(
 	device: &mut impl ghi::context::Context,
 	name: &str,
 	stage: ShaderTypes,
-	(glsl, msl, msl_entry_point): (&str, &str, &str),
+	(glsl, msl, msl_entry_point, hlsl): (&str, &str, &str, &str),
 	sets: impl IntoIterator<Item = ghi::ShaderDescriptorSet>,
 ) -> ShaderHandle {
 	let compiled = ghi::shader::compile(
@@ -27,8 +34,8 @@ pub(super) fn native_shader(
 			glsl,
 			msl,
 			msl_entry_point,
-			hlsl: "",
-			hlsl_entry_point: "",
+			hlsl,
+			hlsl_entry_point: HLSL_ENTRY_POINT,
 		},
 	)
 	.unwrap_or_else(|error| panic!("Failed to compile shader {name:?}: {error}"));
@@ -78,6 +85,41 @@ void main() {
 		hits[base + 4u] = geometry;
 		hits[base + 5u] = uint(rayQueryGetIntersectionPrimitiveIndexEXT(query, true));
 		hits[base + 6u] = rayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetEXT(query, true) + geometry;
+	}
+}
+"#;
+
+/// The probe kernel in HLSL. See [`PROBE_GLSL`].
+const PROBE_HLSL: &str = r#"
+cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; };
+[numthreads(1, 1, 1)]
+void besl_main(uint3 id : SV_DispatchThreadID) {
+	RaytracingAccelerationStructure scene = ResourceDescriptorHeap[_besl_sets[0].x];
+	StructuredBuffer<uint> origins = ResourceDescriptorHeap[_besl_sets[0].x + 1];
+	RWStructuredBuffer<uint> hits = ResourceDescriptorHeap[_besl_sets[0].x + 2];
+	uint index = id.x;
+	RayDesc ray;
+	ray.Origin = asfloat(uint3(origins[index * 4], origins[index * 4 + 1], origins[index * 4 + 2]));
+	ray.Direction = float3(0.0, 0.0, 1.0);
+	ray.TMin = 0.0;
+	ray.TMax = 100.0;
+	RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+	query.TraceRayInline(scene, RAY_FLAG_NONE, 0xFF, ray);
+	while (query.Proceed()) {}
+	bool hit = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+	uint base = index * 8;
+	hits[base + 0] = hit ? 1u : 0u;
+	hits[base + 1] = asuint(-1.0);
+	hits[base + 7] = 0u;
+	// A query that committed no intersection reports no values.
+	if (hit) {
+		uint geometry = query.CommittedGeometryIndex();
+		hits[base + 1] = asuint(query.CommittedRayT());
+		hits[base + 2] = query.CommittedInstanceID();
+		hits[base + 3] = query.CommittedInstanceIndex();
+		hits[base + 4] = geometry;
+		hits[base + 5] = query.CommittedPrimitiveIndex();
+		hits[base + 6] = query.CommittedInstanceContributionToHitGroupIndex() + geometry;
 	}
 }
 "#;
@@ -196,7 +238,7 @@ impl Tracer {
 			device,
 			"Ray Probe",
 			ShaderTypes::Compute,
-			(PROBE_GLSL, PROBE_SHADER, "probe_main"),
+			(PROBE_GLSL, PROBE_SHADER, "probe_main", PROBE_HLSL),
 			[ghi::ShaderDescriptorSet::new(layout.clone())],
 		);
 		let pipeline = device.create_compute_pipeline(pipelines::compute::Builder::new(
@@ -850,6 +892,128 @@ void main() {
 }
 "#;
 
+/// Declarations every HLSL shader of the pipeline scenarios repeats. See [`glsl_pipeline_prelude`].
+///
+/// The call data keeps 32-bit members only: on the RTX 3060, `CallShader` returns call data that holds a 16-bit member
+/// unchanged or zeroed, which the BESL HLSL backend works around (see `CALL_PAYLOAD_STRUCT` in its `ray_tracing.rs`).
+/// Adding a `float16_t3` member to `Payload` here reproduces the issue in the hit group tests.
+macro_rules! hlsl_pipeline_prelude {
+	() => {
+		r#"
+cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; };
+struct Payload { uint group; uint value; };
+struct HitAttributes { uint record; uint custom_index; uint geometry; uint primitive; };
+struct Call { Payload payload; HitAttributes hit; };
+"#
+	};
+}
+
+/// The ray generation shader of the hit group scenarios in HLSL. See [`RAY_GENERATION_GLSL`].
+const RAY_GENERATION_HLSL: &str = concat!(
+	hlsl_pipeline_prelude!(),
+	r#"
+[shader("raygeneration")]
+void besl_main() {
+	RaytracingAccelerationStructure scene = ResourceDescriptorHeap[_besl_sets[0].x];
+	StructuredBuffer<uint> origins = ResourceDescriptorHeap[_besl_sets[0].x + 1];
+	RWStructuredBuffer<uint> payloads = ResourceDescriptorHeap[_besl_sets[0].x + 2];
+	uint index = DispatchRaysIndex().x;
+	RayDesc ray;
+	ray.Origin = asfloat(uint3(origins[index * 4], origins[index * 4 + 1], origins[index * 4 + 2]));
+	ray.Direction = float3(0.0, 0.0, 1.0);
+	ray.TMin = 0.0;
+	ray.TMax = 100.0;
+	RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+	query.TraceRayInline(scene, RAY_FLAG_NONE, 0xFF, ray);
+	while (query.Proceed()) {}
+	Payload payload;
+	payload.group = 0xffffffffu;
+	payload.value = 0u;
+	if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+		uint geometry = query.CommittedGeometryIndex();
+		Call call;
+		call.payload = payload;
+		call.hit.record = query.CommittedInstanceContributionToHitGroupIndex() + geometry;
+		call.hit.custom_index = query.CommittedInstanceID();
+		call.hit.geometry = geometry;
+		call.hit.primitive = query.CommittedPrimitiveIndex();
+		CallShader(call.hit.record, call);
+		payload = call.payload;
+	}
+	payloads[index * 2] = payload.group;
+	payloads[index * 2 + 1] = payload.value;
+}
+"#
+);
+
+/// An HLSL closest hit that reports its specialization constant 0 and the hit's record.
+const TAGGED_HIT_HLSL: &str = concat!(
+	hlsl_pipeline_prelude!(),
+	r#"
+#ifndef SPEC_CONSTANT_0
+#define SPEC_CONSTANT_0 0u
+#endif
+static const uint tag = SPEC_CONSTANT_0;
+[shader("callable")]
+void besl_main(inout Call call) {
+	call.payload.group = tag;
+	call.payload.value = call.hit.record;
+}
+"#
+);
+
+/// An HLSL closest hit that reports 30 and the hit's record.
+const OTHER_HIT_HLSL: &str = concat!(
+	hlsl_pipeline_prelude!(),
+	r#"
+[shader("callable")]
+void besl_main(inout Call call) {
+	call.payload.group = 30u;
+	call.payload.value = call.hit.record;
+}
+"#
+);
+
+/// An HLSL closest hit that reports 40 and the material value of the hit's record, from its set 1.
+const MATERIAL_HIT_HLSL: &str = concat!(
+	hlsl_pipeline_prelude!(),
+	r#"
+[shader("callable")]
+void besl_main(inout Call call) {
+	StructuredBuffer<uint> values = ResourceDescriptorHeap[_besl_sets[0].z];
+	call.payload.group = 40u;
+	call.payload.value = values[call.hit.record];
+}
+"#
+);
+
+/// An HLSL ray generation shader that counts its invocations, writes each one's launch index at its own position, and
+/// reports the launch size.
+const LAUNCH_HLSL: &str = r#"
+cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; };
+[shader("raygeneration")]
+void besl_main() {
+	RWStructuredBuffer<uint> count = ResourceDescriptorHeap[_besl_sets[0].x];
+	RWStructuredBuffer<uint> size = ResourceDescriptorHeap[_besl_sets[0].x + 1];
+	RWStructuredBuffer<uint> points = ResourceDescriptorHeap[_besl_sets[0].x + 2];
+	uint previous;
+	InterlockedAdd(count[0], 1u, previous);
+	uint3 index = DispatchRaysIndex();
+	uint3 launch = DispatchRaysDimensions();
+	uint position = (index.x + launch.x * (index.y + launch.y * index.z)) * 4;
+	points[position] = index.x;
+	points[position + 1] = index.y;
+	points[position + 2] = index.z;
+	points[position + 3] = 1u;
+	if (all(index == uint3(0, 0, 0))) {
+		size[0] = launch.x;
+		size[1] = launch.y;
+		size[2] = launch.z;
+		size[3] = 0u;
+	}
+}
+"#;
+
 /// The ray generation kernel of the hit group scenarios. Each thread traces one ray along +z from its origin with an
 /// inline intersector, runs the closest hit of the record the intersector reports through the shader binding table at
 /// buffer 14, and writes the payload. It binds the materials set at buffer 17 for its closest hits without using it.
@@ -1005,7 +1169,7 @@ impl Shading {
 			device,
 			"Ray Generation",
 			ShaderTypes::RayGen,
-			(RAY_GENERATION_GLSL, RAY_GENERATION, "ray_generation"),
+			(RAY_GENERATION_GLSL, RAY_GENERATION, "ray_generation", RAY_GENERATION_HLSL),
 			[
 				ghi::ShaderDescriptorSet::new(rays_layout.clone()),
 				ghi::ShaderDescriptorSet::with_used(materials_layout.clone(), 0),
@@ -1022,13 +1186,13 @@ impl Shading {
 		}
 	}
 
-	/// Creates a closest-hit shader from its GLSL and MSL `sources`. A shader that reads materials declares both of the
+	/// Creates a closest-hit shader from its GLSL, MSL, and HLSL `sources`. A shader that reads materials declares both of the
 	/// kernel's sets and uses only the second; any other declares none.
 	fn closest_hit(
 		&self,
 		device: &mut impl ghi::context::Context,
 		name: &str,
-		sources: (&str, &str),
+		sources: (&str, &str, &str),
 		reads_materials: bool,
 	) -> ShaderHandle {
 		let sets = if reads_materials {
@@ -1043,7 +1207,7 @@ impl Shading {
 			device,
 			name,
 			ShaderTypes::ClosestHit,
-			(sources.0, sources.1, "closest_hit"),
+			(sources.0, sources.1, "closest_hit", sources.2),
 			sets,
 		)
 	}
@@ -1153,8 +1317,8 @@ pub(super) fn invoke_runs_the_hit_group_of_the_record_the_intersector_reports(
 	queue_handle: QueueHandle,
 ) {
 	let shading = Shading::new(device, queue_handle);
-	let tagged = shading.closest_hit(device, "Tagged Hit", (TAGGED_HIT_GLSL, TAGGED_HIT), false);
-	let other = shading.closest_hit(device, "Other Hit", (OTHER_HIT_GLSL, OTHER_HIT), false);
+	let tagged = shading.closest_hit(device, "Tagged Hit", (TAGGED_HIT_GLSL, TAGGED_HIT, TAGGED_HIT_HLSL), false);
+	let other = shading.closest_hit(device, "Other Hit", (OTHER_HIT_GLSL, OTHER_HIT, OTHER_HIT_HLSL), false);
 	let ten = [pipelines::SpecializationMapEntry::new(0, 10u32)];
 	let twenty = [pipelines::SpecializationMapEntry::new(0, 20u32)];
 	let pipeline = shading.pipeline(
@@ -1208,7 +1372,12 @@ pub(super) fn closest_hit_reads_sets_the_ray_generation_shader_does_not_use(
 	queue_handle: QueueHandle,
 ) {
 	let shading = Shading::new(device, queue_handle);
-	let material = shading.closest_hit(device, "Material Hit", (MATERIAL_HIT_GLSL, MATERIAL_HIT), true);
+	let material = shading.closest_hit(
+		device,
+		"Material Hit",
+		(MATERIAL_HIT_GLSL, MATERIAL_HIT, MATERIAL_HIT_HLSL),
+		true,
+	);
 	let pipeline = shading.pipeline(device, &[ShaderParameter::new(&material, ShaderTypes::ClosestHit)]);
 	let bottom_level = geometry_per_triangle(device, &[0.0, 4.0, 8.0]);
 	let top_level = device.create_top_level_acceleration_structure(None, 1);
@@ -1261,14 +1430,14 @@ pub(super) fn trace_rays_launches_exactly_the_requested_grid(
 		device,
 		"Launch",
 		ShaderTypes::RayGen,
-		(LAUNCH_GLSL, LAUNCH, "launch"),
+		(LAUNCH_GLSL, LAUNCH, "launch", LAUNCH_HLSL),
 		[ghi::ShaderDescriptorSet::new(layout.clone())],
 	);
 	let hit = native_shader(
 		device,
 		"Tagged Hit",
 		ShaderTypes::ClosestHit,
-		(TAGGED_HIT_GLSL, TAGGED_HIT, "closest_hit"),
+		(TAGGED_HIT_GLSL, TAGGED_HIT, "closest_hit", TAGGED_HIT_HLSL),
 		[],
 	);
 	let tag = [pipelines::SpecializationMapEntry::new(0, 0u32)];
@@ -1363,8 +1532,8 @@ pub(super) fn rebuilt_pipeline_with_more_hit_groups_invokes_the_new_group(
 	queue_handle: QueueHandle,
 ) {
 	let shading = Shading::new(device, queue_handle);
-	let tagged = shading.closest_hit(device, "Tagged Hit", (TAGGED_HIT_GLSL, TAGGED_HIT), false);
-	let other = shading.closest_hit(device, "Other Hit", (OTHER_HIT_GLSL, OTHER_HIT), false);
+	let tagged = shading.closest_hit(device, "Tagged Hit", (TAGGED_HIT_GLSL, TAGGED_HIT, TAGGED_HIT_HLSL), false);
+	let other = shading.closest_hit(device, "Other Hit", (OTHER_HIT_GLSL, OTHER_HIT, OTHER_HIT_HLSL), false);
 	let ten = [pipelines::SpecializationMapEntry::new(0, 10u32)];
 	let first = shading.pipeline(
 		device,

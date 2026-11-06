@@ -9,12 +9,13 @@ pipelines, shader binding tables, or `trace_rays` in the graphics hardware
 interface (GHI), or the Metal Shading Language (MSL) and GLSL that the shader
 compiler generates for them. It explains how the Metal backend builds ray
 tracing from compute pipelines and visible function tables, how the Vulkan
-backend builds it from callable shaders and pipeline libraries, why the API has
-the shape it has, and which rules a change must keep. The
+backend builds it from callable shaders and pipeline libraries, how the DX12
+backend builds it from callable shaders in a state object, why the API has the
+shape it has, and which rules a change must keep. The
 [GHI reference](/docs/reference/ghi#ray-tracing) defines what the API accepts,
 and the [BESL compilation note](/docs/develop/besl/compilation#generate-ray-tracing-shaders)
-describes the MSL and GLSL that the shader compiler generates to follow these
-rules.
+describes the MSL, GLSL, and HLSL that the shader compiler generates to follow
+these rules.
 
 <Callout type="info" title="Change the rules on purpose">
 	The rules on this page are the contract between the GHI and the shaders it
@@ -316,6 +317,93 @@ bindings, so the backend passes no addresses.
   bottom-level structure as one resource, and each top-level copy as one. The
   barriers on them are memory barriers, which the tracker folds into one for
   each batch of accesses.
+
+## How DX12 runs a trace
+
+DX12 runs a trace the way Vulkan does: rays are found with inline ray queries
+(DirectX Raytracing (DXR) tier 1.1), and the ray generation shader runs the closest hit of each hit
+as a callable shader.
+
+| GHI object | DX12 object |
+| --- | --- |
+| Ray generation shader | A DXIL library compiled with the `lib_6_9` profile, whose `besl_main` is a `[shader("raygeneration")]` entry point. |
+| Closest-hit shader | A DXIL library whose `besl_main` is a `[shader("callable")]` entry point. |
+| Ray tracing pipeline | A state object linked from the libraries of the ray generation shader and of every distinct closest hit, with the pipeline layout's root signature as its global root signature. It has no hit groups. |
+| Shader binding table | An upload buffer that holds the ray generation record, then the callable region. Record *i* of the callable region holds the identifier of the closest hit of the hit group that record *i* names. |
+| Trace | `DispatchRays` over the launch size, with empty miss and hit group tables. |
+| Bottom-level structure | A committed buffer of the size its build needs. |
+| Top-level structure | One structure and one upload instance buffer for each frame in flight. |
+
+In HLSL, the call looks like this; the
+[BESL compilation note](/docs/develop/besl/compilation#lower-ray-tracing-to-hlsl)
+has the full lowering:
+
+```hlsl
+struct Call { Payload payload; Hit hit; };
+
+[shader("raygeneration")]
+void ray_generation() {
+	RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+	// ... TraceRayInline and Proceed find the hit ...
+	Call call;
+	call.hit.record = query.CommittedInstanceContributionToHitGroupIndex() + query.CommittedGeometryIndex();
+	CallShader(call.hit.record, call);
+}
+
+[shader("callable")]
+void closest_hit(inout Call call) {
+	call.payload.value = values[call.hit.record];
+}
+```
+
+## Rules for DX12 pipelines
+
+- **Every library exports one renamed entry point.** Each library exports its
+  `besl_main` under a name of its own, `besl_ray_generation` or
+  `besl_closest_hit_i`, and nothing else, so the helpers that every generated
+  shader defines don't collide in the state object.
+- **Closest hits are callable shaders.** No shader calls `TraceRay`, so a
+  pipeline's maximum recursion depth is 0, and its payload and attribute sizes
+  are the smallest D3D12 accepts. Callable parameters don't count toward the
+  payload size.
+- **One root parameter holds every set's bases.** DXR shaders read one global
+  root signature, so a ray tracing pipeline's layout has one root-constant
+  parameter at `b1`, visible to every shader, with the bases of every set the
+  ray generation shader declares, used or not. A closest hit's sets are a
+  prefix of the ray generation shader's, which pipeline creation checks as it
+  does on Metal and Vulkan, so each closest hit finds its sets at the same
+  positions.
+- **The stack covers one call.** The pipeline's stack size is the ray
+  generation shader's stack plus the largest closest hit's, set once when the
+  pipeline is created. The default would reserve room for two callable levels.
+- **Hit groups that share a shader and its constants share a library.**
+
+## Rules for DX12 shader binding tables and acceleration structures
+
+- **A write fills a new buffer, and recordings keep the old one alive.** Each
+  trace keeps the table's buffer until its recording completes, so a write
+  drops the old buffer at once.
+- **Regions follow the D3D12 alignments.** The ray generation record is at the
+  buffer's start, and the callable region starts at the next multiple of
+  64 bytes, with records 32 bytes apart. A record holds only a shader
+  identifier, because no shader reads a local root signature.
+- **Scratch belongs to the frame sequence**, as on Vulkan. A recording outside
+  frames gets a buffer of its own, which the recording keeps alive.
+- **Acceleration structures are ordered with global barriers.** Structures
+  never change layout, so a bottom-level build is followed by one global
+  barrier that makes it readable to builds, copies, and size queries, and a
+  top-level build by one that makes it readable to shaders.
+- **A destroyed structure lives until the frames recorded before its
+  destruction complete,** and every recording that builds a structure or binds
+  a top-level copy keeps it alive until the recording completes.
+- **A top-level copy is built once a frame at most,** as on Vulkan.
+- **Compaction works as on Vulkan.** Each bottom-level build writes the size
+  its structure compacts to into CPU-readable memory. Once the build's fence
+  passes, at the start of a frame, the context makes smaller storage for each
+  structure that shrinks, and the next recording copies the structures into
+  it. A structure takes its compacted storage when that recording is
+  submitted, and the replaced storage stays until every top-level copy was
+  built again.
 
 ## Why hits are sorted before they're shaded
 

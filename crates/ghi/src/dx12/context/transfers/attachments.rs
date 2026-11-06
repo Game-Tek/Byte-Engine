@@ -114,9 +114,8 @@ impl Device {
 			let Some(image) = self.images.get(image_handle.index() as usize) else {
 				continue;
 			};
-			let Some(format) = image
-				.uses
-				.intersects(Uses::Storage)
+			let Some(format) = Self::image_resource_flags(image.format, image.uses)
+				.contains(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
 				.then(|| Self::dxgi_shader_resource_format(image.format))
 				.flatten()
 			else {
@@ -160,9 +159,10 @@ impl Device {
 		let image_format = image.format;
 		let extent = image.extent;
 		let is_3d = image.is_3d;
-		let uses_storage = image.uses.intersects(Uses::Storage);
+		let clears_through_uav =
+			Self::image_resource_flags(image_format, image.uses).contains(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 		let array_layers = image.array_layers;
-		let Some(format) = uses_storage
+		let Some(format) = clears_through_uav
 			.then(|| Self::dxgi_shader_resource_format(image_format))
 			.flatten()
 		else {

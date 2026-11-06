@@ -6,6 +6,82 @@ impl Device {
 		crate::DynamicImageHandle(handle.0)
 	}
 
+	/// Moves a finished image out of this context so another context of the same device can intern it.
+	///
+	/// Wait for every submission that uses the image before exporting it. The handle is invalid in this context
+	/// afterwards. Next, pass the image to [`Self::intern_image`] or [`crate::dx12::Frame::intern_image`] on the
+	/// receiving context.
+	///
+	/// # Panics
+	///
+	/// Panics when the handle names no image of this context, an image with one representation per frame, or an
+	/// image-group member, whose memory belongs to this context's group heap.
+	pub fn export_image(&mut self, image_handle: ImageHandle) -> crate::dx12::factory::DetachedImage {
+		let handle = image_handle.0;
+		assert!(
+			self.image_groups.member(handle).is_none(),
+			"Image export failed. The most likely cause is that the image is an image-group member, whose memory stays with its group."
+		);
+		let slot = self
+			.images
+			.get_mut(handle.index() as usize)
+			.expect("Image export failed. The most likely cause is that the handle is stale or belongs to another context.");
+		assert!(
+			slot.frame_resources.is_none() && slot.resource.is_some(),
+			"Image export failed. The most likely cause is that the handle names a dynamic image or one already exported."
+		);
+		// The slot stays behind without a resource, so the handle reads as exported instead of naming another image.
+		let image = std::mem::replace(
+			slot,
+			Image {
+				extent: slot.extent,
+				is_3d: slot.is_3d,
+				format: slot.format,
+				uses: slot.uses,
+				access: slot.access,
+				array_layers: slot.array_layers,
+				mip_levels: slot.mip_levels,
+				resource: None,
+				data: None,
+				frame_data: None,
+				frame_resources: None,
+				optimized_clear_value: None,
+				name: None,
+			},
+		);
+		// A pending upload would read the image after it left the context.
+		self.pending_texture_syncs.retain(|&(pending, ..)| pending != handle);
+		let key = image.resource.as_ref().map(Self::native_resource_key);
+		// Views cached by resource address would otherwise outlive the resource and match a later one at that address.
+		self.invalidate_attachment_views_for_resources(key.as_slice());
+		self.invalidate_clear_uav_descriptors_for_resources(key.as_slice());
+		let state = key.and_then(|key| self.image_states.remove(&key));
+		crate::dx12::factory::DetachedImage { image, state }
+	}
+
+	/// Deletes an image once frame sequence `sequence_index` starts again, when every frame recorded so far has
+	/// completed. See [`crate::dx12::Frame::delete_image`].
+	pub(crate) fn delete_image(&mut self, image: ImageHandle, sequence_index: u8) {
+		if let Some(resource) = self.export_image(image).image.resource {
+			self.defer_task(sequence_index, DeferredTask::RetireResource(resource));
+		}
+	}
+
+	/// Interns an image another context exported and returns the handle recordings use it with.
+	///
+	/// The image keeps the barrier state its last submission left it in, so the first barrier here starts from it.
+	pub fn intern_image(&mut self, image: crate::dx12::factory::DetachedImage) -> ImageHandle {
+		let crate::dx12::factory::DetachedImage { image, state } = image;
+		if let Some(resource) = image.resource.as_ref() {
+			self.materialize_image_attachment_views(resource, image.format, image.uses, image.array_layers);
+			if let Some(state) = state {
+				self.image_states.insert(Self::native_resource_key(resource), state);
+			}
+		}
+		self.images.push(image);
+		ImageHandle(crate::BaseImageHandle::from_index((self.images.len() - 1) as u64))
+	}
+
 	pub fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &mut [u8] {
 		self.texture_slice_mut_static(texture_handle.0)
 	}
@@ -20,28 +96,19 @@ impl Device {
 		sequence_index: u8,
 	) -> &mut [u8] {
 		let image = &mut self.images[texture_handle.index() as usize];
-		let data = if let Some(frame_data) = image.frame_data.as_mut() {
-			let requested_index = usize::from(sequence_index);
-			let index = if requested_index < frame_data.len() {
-				requested_index
-			} else {
-				0
-			};
-			frame_data.get_mut(index)
-		} else {
-			image.data.as_mut()
+		let Some(data) = image.staging_mut(sequence_index) else {
+			return &mut [];
 		};
-		let Some(data) = data else { return &mut [] };
 		data.as_mut_slice()
 	}
 
 	pub fn write_texture(&mut self, texture_handle: ImageHandle, f: impl FnOnce(&mut [u8])) {
-		// Writes into CPU-side staging storage when available.
+		// Writes into CPU-side staging storage when the format has a CPU layout.
 		let Some(image) = self.images.get_mut(texture_handle.0.index() as usize) else {
 			return;
 		};
 
-		let Some(staging) = image.data.as_mut() else {
+		let Some(staging) = image.staging_mut(0) else {
 			return;
 		};
 
@@ -85,13 +152,8 @@ impl Device {
 			builder.cube_compatible || builder.cube_array_compatible,
 		);
 		self.validate_image_format_support(builder.format, builder.resource_uses, is_3d);
-		let size = utils::texture_copy_size(builder.format, builder.extent);
-		let data = size.map(|bytes| vec![0u8; bytes]);
-		let frame_data = if builder.use_case == UseCases::DYNAMIC {
-			data.as_ref().map(|data| vec![data.clone(); self.frames as usize])
-		} else {
-			None
-		};
+		// The CPU staging copies wait for the first CPU write; see `Image::staging_mut`.
+		let frame_data = (builder.use_case == UseCases::DYNAMIC).then(|| vec![Vec::new(); self.frames as usize]);
 		let initializes_frame_resources = frame_data.is_some();
 		let flags = Self::image_resource_flags(builder.format, builder.resource_uses);
 		let optimized_clear_value = builder
@@ -108,6 +170,7 @@ impl Device {
 				array_layers,
 				builder.mip_levels,
 				optimized_clear_value,
+				builder.name,
 			)
 		};
 		if let Some(resource) = resource.as_ref() {
@@ -134,10 +197,11 @@ impl Device {
 			array_layers,
 			mip_levels: builder.mip_levels,
 			resource,
-			data,
+			data: None,
 			frame_data,
 			frame_resources,
 			optimized_clear_value,
+			name: self.debug_name(builder.name),
 		});
 
 		let handle = crate::BaseImageHandle::from_index((self.images.len() - 1) as u64);
@@ -146,7 +210,7 @@ impl Device {
 			self.image_groups.add_member(group, handle);
 		}
 		if initializes_frame_resources {
-			// Committed textures have undefined contents. Upload each frame's zeroed staging image on first use.
+			// Committed textures have undefined contents. Each frame's first use uploads zeros in their place.
 			for sequence_index in 0..self.frames {
 				self.pending_texture_syncs.push((handle, sequence_index, None));
 			}
@@ -192,7 +256,7 @@ impl Device {
 		image_handle: crate::BaseImageHandle,
 		sequence_index: u8,
 	) -> Option<ID3D12Resource> {
-		let (extent, is_3d, format, uses, array_layers, mip_levels, optimized_clear_value, dynamic) = {
+		let (extent, is_3d, format, uses, array_layers, mip_levels, optimized_clear_value, dynamic, name) = {
 			let image = self.images.get(image_handle.index() as usize)?;
 			(
 				image.extent,
@@ -203,6 +267,7 @@ impl Device {
 				image.mip_levels,
 				image.optimized_clear_value,
 				image.frame_resources.is_some(),
+				image.name.clone(),
 			)
 		};
 		if !dynamic {
@@ -226,8 +291,16 @@ impl Device {
 			.is_none();
 
 		if needs_resource {
-			let resource =
-				self.create_image_resource(extent, is_3d, format, uses, array_layers, mip_levels, optimized_clear_value);
+			let resource = self.create_image_resource(
+				extent,
+				is_3d,
+				format,
+				uses,
+				array_layers,
+				mip_levels,
+				optimized_clear_value,
+				name.as_deref(),
+			);
 			if let Some(resource) = resource.as_ref() {
 				self.materialize_image_attachment_views(resource, format, uses, array_layers);
 			}

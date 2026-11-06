@@ -171,6 +171,7 @@ impl Device {
 			let command_buffer = &mut self.command_buffers[handle.index() as usize];
 			command_buffer.last_submission = Some((synchronizer_handle, sequence_index));
 			command_buffer.lifecycle = CommandBufferLifecycle::Submitted;
+			self.submit_recorded_builds(handle, completion);
 		}
 		for handle in submitted_readbacks {
 			if let Some(readback) = self.texture_readbacks.get_mut(handle) {

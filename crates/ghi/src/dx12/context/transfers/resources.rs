@@ -10,6 +10,7 @@ impl Device {
 		resource_uses: Uses,
 		device_accesses: DeviceAccesses,
 		storage_kind: BufferStorage,
+		name: Option<&str>,
 	) -> u64 {
 		Self::validate_buffer_heap_contract(resource_uses, device_accesses);
 
@@ -17,12 +18,14 @@ impl Device {
 			BufferStorage::Static => None,
 			BufferStorage::Dynamic => Some((0..self.frames as usize).map(|_| None).collect()),
 		};
+		let name = self.debug_name(name);
 		let buffer = Buffer {
-			memory: self.create_buffer_memory(layout, device_accesses, resource_uses, "allocate"),
+			memory: self.create_buffer_memory(layout, device_accesses, resource_uses, name.as_deref(), "allocate"),
 			size: layout.size(),
 			uses: resource_uses,
 			access: device_accesses,
 			frame_resources,
+			name,
 		};
 
 		let storage = match storage_kind {
@@ -40,9 +43,7 @@ impl Device {
 
 	/// Rejects buffer contracts that cannot be represented by the selected native heap.
 	fn validate_buffer_heap_contract(resource_uses: Uses, device_accesses: DeviceAccesses) {
-		let uses_readback_heap =
-			device_accesses.intersects(DeviceAccesses::CpuRead) && !device_accesses.intersects(DeviceAccesses::CpuWrite);
-		if !uses_readback_heap {
+		if Self::buffer_heap_kind(device_accesses, resource_uses) != BufferHeapKind::Readback {
 			return;
 		}
 
@@ -87,8 +88,10 @@ impl Device {
 			return;
 		}
 
-		let (layout, access, uses) = match self.buffer(buffer_handle) {
-			Some(buffer) if buffer.frame_resources.is_some() => (buffer.memory.layout, buffer.access, buffer.uses),
+		let (layout, access, uses, name) = match self.buffer(buffer_handle) {
+			Some(buffer) if buffer.frame_resources.is_some() => {
+				(buffer.memory.layout, buffer.access, buffer.uses, buffer.name.clone())
+			}
 			_ => return,
 		};
 		let frame_index = sequence_index as usize;
@@ -102,7 +105,7 @@ impl Device {
 			return;
 		}
 
-		let frame_storage = self.create_buffer_memory(layout, access, uses, "allocate");
+		let frame_storage = self.create_buffer_memory(layout, access, uses, name.as_deref(), "allocate");
 		let Some(buffer) = self.buffer_mut(buffer_handle) else {
 			return;
 		};
@@ -114,7 +117,9 @@ impl Device {
 		}
 		resources[frame_index] = Some(frame_storage);
 		// Descriptors of this sequence read the base storage until now, so they are written again at their next bind.
-		self.mark_stale_descriptors(|descriptor| matches!(descriptor, WriteData::Buffer { handle } if handle == buffer_handle));
+		self.mark_stale_descriptors(|descriptor, sequence| {
+			sequence == sequence_index && matches!(descriptor, WriteData::Buffer { handle } if handle == buffer_handle)
+		});
 	}
 
 	pub(crate) fn buffer_resource_for_sequence(
@@ -146,13 +151,19 @@ impl Device {
 			.map(|buffer| buffer.memory(sequence_index).heap_kind)
 	}
 
+	/// Returns the CPU copy of a buffer for `sequence_index` and its length, which is zero for a buffer imported from
+	/// another context, since its CPU copy stays with the owner, and for one whose mapping was transferred, since its
+	/// owner writes the mapped memory instead.
 	pub(crate) fn buffer_storage_parts_for_sequence(
 		&self,
 		buffer_handle: BaseBufferHandle,
 		sequence_index: u8,
 	) -> Option<(*const u8, usize)> {
-		self.buffer(buffer_handle)
-			.map(|buffer| (buffer.memory(sequence_index).data.cast_const(), buffer.size))
+		self.buffer(buffer_handle).map(|buffer| {
+			let memory = buffer.memory(sequence_index);
+			let length = if memory.transferred { 0 } else { memory.layout.size() };
+			(memory.data.cast_const(), length)
+		})
 	}
 
 	pub(crate) fn buffer_storage_parts_mut_for_sequence(
@@ -162,10 +173,10 @@ impl Device {
 	) -> Option<(*mut u8, usize)> {
 		self.ensure_buffer_frame_storage(buffer_handle, sequence_index);
 		let buffer = self.buffer_mut(buffer_handle)?;
-		let size = buffer.size;
 		let memory = buffer.memory_mut(sequence_index);
 		Self::mark_host_write(memory);
-		Some((memory.data, size))
+		let length = if memory.transferred { 0 } else { memory.layout.size() };
+		Some((memory.data, length))
 	}
 
 	/// Allocates zeroed CPU shadow storage and its native resource for one copy of a buffer. `action` names the caller's
@@ -175,6 +186,7 @@ impl Device {
 		layout: Layout,
 		access: DeviceAccesses,
 		uses: Uses,
+		name: Option<&str>,
 		action: &str,
 	) -> BufferMemory {
 		// A zero-sized reference still requires a non-null, aligned pointer. The address is never dereferenced for bytes.
@@ -188,15 +200,21 @@ impl Device {
 		}
 
 		let resource_size = Self::buffer_resource_size(layout.size(), uses);
-		let (resource, mapped, heap_kind) = self.create_buffer_resource(resource_size, access);
+		let (resource, mapped, heap_kind) = self.create_buffer_resource(resource_size, access, uses);
+		if let Some(resource) = resource.as_ref() {
+			self.name_object(resource, name);
+		}
 		BufferMemory {
 			data,
 			layout,
+			// D3D12 zeroes a committed resource as the CPU copy is zeroed, so the two start out agreeing. Starting clean also
+			// keeps an owner that never writes a shared buffer from copying its zeros over what another context copied in.
 			host_generation: 1,
-			uploaded_generation: 0,
+			uploaded_generation: 1,
 			resource,
 			mapped,
 			heap_kind,
+			transferred: false,
 		}
 	}
 
@@ -212,41 +230,75 @@ impl Device {
 		}
 	}
 
+	/// Returns the heap a buffer with `device_accesses` and `uses` lives in.
+	pub(crate) fn buffer_heap_kind(device_accesses: DeviceAccesses, uses: Uses) -> BufferHeapKind {
+		if device_accesses.intersects(DeviceAccesses::CpuWrite) {
+			// Shaders write storage buffers, and copies from other contexts write imported ones, which an upload heap
+			// allows neither of. The CPU reads write-combined memory back slowly and the mapping isn't read back from,
+			// so a buffer the CPU also reads takes write-back memory.
+			if !uses.intersects(Uses::Storage | Uses::TransferDestination) {
+				BufferHeapKind::Upload
+			} else if device_accesses.intersects(DeviceAccesses::CpuRead) {
+				BufferHeapKind::ShaderReadback
+			} else {
+				BufferHeapKind::ShaderUpload
+			}
+		} else if device_accesses.intersects(DeviceAccesses::CpuRead) {
+			if uses.intersects(Uses::Storage) {
+				BufferHeapKind::ShaderReadback
+			} else {
+				BufferHeapKind::Readback
+			}
+		} else {
+			BufferHeapKind::Default
+		}
+	}
+
 	pub(crate) fn create_buffer_resource(
 		&self,
 		size: usize,
 		device_accesses: DeviceAccesses,
+		uses: Uses,
 	) -> (Option<ID3D12Resource>, *mut u8, BufferHeapKind) {
 		if size == 0 {
 			return (None, std::ptr::null_mut(), BufferHeapKind::Default);
 		}
 
-		let host_write = device_accesses.intersects(DeviceAccesses::CpuWrite);
-		let host_read = device_accesses.intersects(DeviceAccesses::CpuRead);
-		let heap_kind = if host_write {
-			BufferHeapKind::Upload
-		} else if host_read {
-			BufferHeapKind::Readback
-		} else {
-			BufferHeapKind::Default
-		};
-		let heap_type = match heap_kind {
-			BufferHeapKind::Default => D3D12_HEAP_TYPE_DEFAULT,
-			BufferHeapKind::Upload => D3D12_HEAP_TYPE_UPLOAD,
-			BufferHeapKind::Readback => D3D12_HEAP_TYPE_READBACK,
-		};
-		let cpu_visible = host_write || host_read;
-		let resource_flags = if heap_kind == BufferHeapKind::Default {
+		let heap_kind = Self::buffer_heap_kind(device_accesses, uses);
+		let cpu_visible = heap_kind != BufferHeapKind::Default;
+		let resource_flags = if heap_kind.shader_writable() {
 			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
 		} else {
 			D3D12_RESOURCE_FLAG_NONE
 		};
-		let heap_properties = D3D12_HEAP_PROPERTIES {
-			Type: heap_type,
-			CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-			MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-			CreationNodeMask: 1,
-			VisibleNodeMask: 1,
+		let heap_properties = match heap_kind {
+			// CPU-cached system memory, the only memory both the CPU reads and shaders may write on a discrete GPU.
+			BufferHeapKind::ShaderReadback => D3D12_HEAP_PROPERTIES {
+				Type: d3d12::D3D12_HEAP_TYPE_CUSTOM,
+				CPUPageProperty: d3d12::D3D12_CPU_PAGE_PROPERTY_WRITE_BACK,
+				MemoryPoolPreference: d3d12::D3D12_MEMORY_POOL_L0,
+				CreationNodeMask: 1,
+				VisibleNodeMask: 1,
+			},
+			// Write-combined system memory, as an upload heap is on a discrete GPU, which shaders may also write.
+			BufferHeapKind::ShaderUpload => D3D12_HEAP_PROPERTIES {
+				Type: d3d12::D3D12_HEAP_TYPE_CUSTOM,
+				CPUPageProperty: d3d12::D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE,
+				MemoryPoolPreference: d3d12::D3D12_MEMORY_POOL_L0,
+				CreationNodeMask: 1,
+				VisibleNodeMask: 1,
+			},
+			_ => D3D12_HEAP_PROPERTIES {
+				Type: match heap_kind {
+					BufferHeapKind::Upload => D3D12_HEAP_TYPE_UPLOAD,
+					BufferHeapKind::Readback => D3D12_HEAP_TYPE_READBACK,
+					_ => D3D12_HEAP_TYPE_DEFAULT,
+				},
+				CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+				MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+				CreationNodeMask: 1,
+				VisibleNodeMask: 1,
+			},
 		};
 		let resource_desc = D3D12_RESOURCE_DESC1 {
 			Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
@@ -282,7 +334,7 @@ impl Device {
 
 		let mapped = if cpu_visible {
 			let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
-			let read_range = if heap_kind == BufferHeapKind::Readback {
+			let read_range = if heap_kind.host_readable() {
 				D3D12_RANGE { Begin: 0, End: size }
 			} else {
 				D3D12_RANGE { Begin: 0, End: 0 }
@@ -332,6 +384,7 @@ impl Device {
 		array_layers: u32,
 		mip_levels: u32,
 		optimized_clear_value: Option<D3D12_CLEAR_VALUE>,
+		name: Option<&str>,
 	) -> Option<ID3D12Resource> {
 		let resource_desc = Self::image_resource_desc(extent, is_3d, format, uses, array_layers, mip_levels)?;
 		let heap_properties = D3D12_HEAP_PROPERTIES {
@@ -354,7 +407,9 @@ impl Device {
 				&mut resource,
 			)
 		};
-		Some(self.expect_image_resource(result, resource, format, extent, is_3d, uses, array_layers))
+		let resource = self.expect_image_resource(result, resource, format, extent, is_3d, uses, array_layers);
+		self.name_object(&resource, name);
+		Some(resource)
 	}
 
 	/// Creates an image-group member at `offset` inside `heap`.
@@ -367,6 +422,7 @@ impl Device {
 		resource_desc: &D3D12_RESOURCE_DESC1,
 		(format, extent, is_3d, uses, array_layers): (Formats, Extent, bool, Uses, u32),
 		optimized_clear_value: Option<D3D12_CLEAR_VALUE>,
+		name: Option<&str>,
 	) -> ID3D12Resource {
 		let mut resource = None;
 		let result = unsafe {
@@ -380,7 +436,24 @@ impl Device {
 				&mut resource,
 			)
 		};
-		self.expect_image_resource(result, resource, format, extent, is_3d, uses, array_layers)
+		let resource = self.expect_image_resource(result, resource, format, extent, is_3d, uses, array_layers);
+		self.name_object(&resource, name);
+		resource
+	}
+
+	/// Returns the name a resource built with `name` keeps for its native copies, which is none unless debug labels are
+	/// on.
+	pub(crate) fn debug_name(&self, name: Option<&str>) -> Option<Box<str>> {
+		name.filter(|_| self.settings.debug_labels).map(Box::from)
+	}
+
+	/// Gives `object` the debug name `name`, which the debug layer and GPU captures show, when debug labels are on.
+	pub(crate) fn name_object<'a>(&self, object: impl Into<&'a d3d12::ID3D12Object>, name: Option<&str>) {
+		if let Some(name) = name.filter(|_| self.settings.debug_labels) {
+			// SAFETY: The name is a live wide string for the call, which copies it. A name is only a debugging aid, so
+			// failing to set one is ignored.
+			let _ = unsafe { object.into().SetName(&windows::core::HSTRING::from(name)) };
+		}
 	}
 
 	/// Unwraps a native image creation result, logging the device state before a failure panics.
@@ -466,9 +539,10 @@ impl Device {
 			!uses.intersects(Uses::DepthStencil) || format.is_depth(),
 			"Invalid DX12 depth-stencil image. The most likely cause is that depth-stencil usage was requested for a color format."
 		);
+		// A depth format with render-target use attaches as a depth target, so only storage use is invalid.
 		assert!(
-			!format.is_depth() || !uses.intersects(Uses::RenderTarget | Uses::Storage),
-			"Invalid DX12 depth image usage. The most likely cause is that a depth format was requested as a color render target or unordered-access image. See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_resource_flags."
+			!format.is_depth() || !uses.intersects(Uses::Storage),
+			"Invalid DX12 depth image usage. The most likely cause is that a depth format was requested as a storage image, which D3D12 depth resources can't be. Read depth through a sampled view, or copy it into a color image. See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_resource_flags."
 		);
 		assert!(
 			!is_3d || (!format.is_depth() && !uses.intersects(Uses::RenderTarget | Uses::DepthStencil)),
@@ -502,12 +576,22 @@ impl Device {
 					"Unsupported DX12 shader-resource format. The most likely cause is that {format:?} has no exact typed DXGI shader view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
 				)
 			});
-			Self::assert_format_support1(
-				self.query_format_support(shader_format),
-				d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD | d3d12::D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE,
-				format,
-				"shader-resource load and sampling",
-			);
+			// Integer formats never filter, so shaders read them with loads and D3D12 reports no sampling support.
+			if format == Formats::U32 {
+				Self::assert_format_support1(
+					self.query_format_support(shader_format),
+					d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD,
+					format,
+					"shader-resource load",
+				);
+			} else {
+				Self::assert_format_support1(
+					self.query_format_support(shader_format),
+					d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD | d3d12::D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE,
+					format,
+					"shader-resource load and sampling",
+				);
+			}
 		}
 		if uses.intersects(Uses::InputAttachment) {
 			let shader_format = Self::dxgi_shader_resource_format(format).unwrap_or_else(|| {
@@ -632,7 +716,8 @@ impl Device {
 		if uses.intersects(Uses::DepthStencil) || format.is_depth() {
 			flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
 		}
-		if uses.intersects(Uses::Storage) {
+		// Integer render targets clear through a UAV too: a float clear color can't hold every 32-bit pattern exactly.
+		if uses.intersects(Uses::Storage) || (uses.intersects(Uses::RenderTarget) && format == Formats::U32) {
 			flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 		}
 		flags
@@ -858,7 +943,7 @@ impl Device {
 
 	/// Copies a changed CPU shadow of a `size`-byte buffer into its mapped native allocation.
 	pub(crate) fn sync_buffer_memory(memory: &mut BufferMemory, size: usize, access: DeviceAccesses) {
-		if memory.mapped.is_null() || size == 0 || !access.intersects(DeviceAccesses::CpuWrite) {
+		if memory.mapped.is_null() || memory.transferred || size == 0 || !access.intersects(DeviceAccesses::CpuWrite) {
 			return;
 		}
 		if memory.host_generation == memory.uploaded_generation {

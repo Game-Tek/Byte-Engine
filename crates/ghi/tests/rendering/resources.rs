@@ -1442,6 +1442,47 @@ pub(super) fn imported_buffer_receives_copies(device: &BackendDevice, context: &
 	assert!(!ghi::context::Context::has_errors(&loader));
 }
 
+pub(super) fn transferred_mapping_feeds_every_later_copy(context: &mut BackendContext, queue_handle: QueueHandle) {
+	//! Tests that bytes written through a transferred mapping reach copies submitted after the first one.
+	//! Loaders keep writing a staging buffer through such a mapping from other threads, one batch after another.
+
+	let staging = context.build_buffer::<[u8; 64]>(
+		ghi::buffer::Builder::new(Uses::TransferSource)
+			.name("Transferred Staging")
+			.device_accesses(DeviceAccesses::HostToDevice),
+	);
+	let destination = context.build_buffer::<[u8; 128]>(
+		ghi::buffer::Builder::new(Uses::TransferDestination)
+			.name("Transferred Destination")
+			.device_accesses(DeviceAccesses::HostOnly),
+	);
+	// SAFETY: The context outlives the mapping, and the buffer is not mapped again while it exists.
+	let (address, byte_count) = unsafe { context.transfer_buffer_mapping(staging) }.into_raw_parts();
+	assert_eq!(byte_count, 64);
+	let write = |value: u8| {
+		// SAFETY: The transferred mapping covers 64 writable bytes, and no submitted copy reads them while they change.
+		unsafe { std::slice::from_raw_parts_mut(address as *mut u8, 64) }.fill(value);
+	};
+
+	for (batch, value) in [3u8, 7].into_iter().enumerate() {
+		write(value);
+		record_and_wait(context, queue_handle, |recording| {
+			recording.copy_buffers(&[ghi::BufferCopyDescriptor::new(
+				staging.into(),
+				0,
+				destination.into(),
+				batch * 64,
+				64,
+			)]);
+		});
+	}
+
+	let contents = context.get_buffer_slice(destination);
+	assert_eq!(&contents[..64], &[3; 64]);
+	assert_eq!(&contents[64..], &[7; 64]);
+	assert!(!ghi::context::Context::has_errors(context));
+}
+
 pub(super) fn polled_synchronizer_reports_completion(context: &mut BackendContext, queue_handle: QueueHandle) {
 	//! Tests that polling a synchronizer reports completion without blocking and frees it for the next submission.
 	//! A loader polls its copy batch so its thread keeps reading files while the GPU works.

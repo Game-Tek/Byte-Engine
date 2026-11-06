@@ -85,6 +85,7 @@ impl Device {
 		match pipeline_kind {
 			PipelineKind::Raster => D3D12_BARRIER_SYNC_ALL_SHADING,
 			PipelineKind::Compute => D3D12_BARRIER_SYNC_COMPUTE_SHADING,
+			PipelineKind::RayTracing => windows::Win32::Graphics::Direct3D12::D3D12_BARRIER_SYNC_RAYTRACING,
 		}
 	}
 
@@ -121,20 +122,6 @@ impl Device {
 			ResourceKind::InputAttachment => Uses::InputAttachment,
 			ResourceKind::SampledImage | ResourceKind::CombinedImageSampler => Uses::Image,
 			_ => Uses::empty(),
-		}
-	}
-
-	pub(crate) fn image_data_mut_for_sequence(
-		&mut self,
-		image_handle: crate::BaseImageHandle,
-		sequence_index: u8,
-	) -> Option<&mut [u8]> {
-		let image = self.images.get_mut(image_handle.index() as usize)?;
-		if let Some(frame_data) = image.frame_data.as_mut() {
-			let index = (sequence_index as usize).min(frame_data.len().saturating_sub(1));
-			frame_data.get_mut(index).map(Vec::as_mut_slice)
-		} else {
-			image.data.as_deref_mut()
 		}
 	}
 
@@ -222,7 +209,7 @@ impl Device {
 						},
 					};
 					unsafe {
-						if heap_kind == BufferHeapKind::Default {
+						if heap_kind.shader_writable() {
 							self.device
 								.CreateUnorderedAccessView(&resource, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
 						} else {
@@ -299,9 +286,9 @@ impl Device {
 		slot: u32,
 	) {
 		let cpu_handle = self.shader_visible_cpu_handle(false, slot);
-		let resource = self.ensure_image_resource_for_sequence(image_handle, sequence_index).expect(
-			"Missing DX12 descriptor image resource. The most likely cause is that a deferred zero-sized image was bound before it was resized or native allocation failed.",
-		);
+		// An image without memory yet, such as a zero-sized image or an unplaced group member, gets a null view of its
+		// format. Resizing or placing it marks its descriptors stale, so the view is written again when it has memory.
+		let resource = self.ensure_image_resource_for_sequence(image_handle, sequence_index);
 		let image = self
 			.images
 			.get(image_handle.index() as usize)
@@ -332,7 +319,7 @@ impl Device {
 					mip_level,
 				);
 				self.device
-					.CreateUnorderedAccessView(&resource, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
+					.CreateUnorderedAccessView(resource.as_ref(), None::<&ID3D12Resource>, Some(&desc), cpu_handle);
 				self.native_counters.image_uav_descriptor_write_count += 1;
 			} else {
 				let desc = Self::descriptor_texture_srv_desc(
@@ -344,7 +331,7 @@ impl Device {
 					image.mip_levels,
 					mip_level,
 				);
-				self.device.CreateShaderResourceView(&resource, Some(&desc), cpu_handle);
+				self.device.CreateShaderResourceView(resource.as_ref(), Some(&desc), cpu_handle);
 				self.native_counters.image_srv_descriptor_write_count += 1;
 			}
 		}

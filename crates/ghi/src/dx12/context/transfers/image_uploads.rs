@@ -47,10 +47,18 @@ impl Device {
 		}
 	}
 
+	/// Keeps the image's CPU staging copy equal to what the GPU copy writes, so a later texture sync doesn't upload stale
+	/// texels over it. The staging copy holds only the first level, and only an image a CPU write created one for has it.
 	pub(crate) fn copy_buffer_to_image(&mut self, copy: &crate::BufferImageCopyDescriptor, sequence_index: u8) {
-		let Some(image) = self.images.get(copy.destination_image.index() as usize) else {
+		if copy.destination_mip_level != 0 {
+			return;
+		}
+		let Some(image) = self.images.get_mut(copy.destination_image.index() as usize) else {
 			return;
 		};
+		if image.existing_staging_mut(sequence_index).is_none() {
+			return;
+		}
 		let Some((row_bytes, row_count, compact_bytes_per_image)) = utils::texture_copy_layout(image.format, image.extent)
 		else {
 			return;
@@ -71,7 +79,8 @@ impl Device {
 		};
 		// SAFETY: The range resolver returns a non-null pointer whose checked range lies in stable buffer storage.
 		let source_bytes = unsafe { std::slice::from_raw_parts(source_data, source_len) };
-		let Some(destination) = self.image_data_mut_for_sequence(copy.destination_image, sequence_index) else {
+		let Some(destination) = self.images[copy.destination_image.index() as usize].existing_staging_mut(sequence_index)
+		else {
 			return;
 		};
 
@@ -309,13 +318,17 @@ impl Device {
 			.frame_data
 			.as_ref()
 			.and_then(|frames| (!frames.is_empty()).then(|| (sequence_index as usize).min(frames.len() - 1)));
-		let source_bytes = if let Some(frame_data_index) = frame_data_index {
+		let staged = if let Some(frame_data_index) = frame_data_index {
 			std::mem::take(&mut self.images[image_index].frame_data.as_mut().unwrap()[frame_data_index])
 		} else {
-			let Some(source_bytes) = self.images[image_index].data.take() else {
-				return false;
-			};
-			source_bytes
+			self.images[image_index].data.take().unwrap_or_default()
+		};
+		// An image no CPU write created a staging copy for uploads zeros, which is what that copy would hold.
+		let created = !staged.is_empty();
+		let source_bytes = if created {
+			staged
+		} else {
+			vec![0; source_image_pitch * extent.depth().max(1) as usize]
 		};
 		let recorded = self.record_image_upload(
 			command_buffer_handle,
@@ -329,10 +342,12 @@ impl Device {
 			0,
 			region,
 		);
-		if let Some(frame_data_index) = frame_data_index {
-			self.images[image_index].frame_data.as_mut().unwrap()[frame_data_index] = source_bytes;
-		} else {
-			self.images[image_index].data = Some(source_bytes);
+		if created {
+			if let Some(frame_data_index) = frame_data_index {
+				self.images[image_index].frame_data.as_mut().unwrap()[frame_data_index] = source_bytes;
+			} else {
+				self.images[image_index].data = Some(source_bytes);
+			}
 		}
 		if recorded {
 			self.gpu_uploaded_images.insert(image_handle.0);
@@ -453,7 +468,7 @@ impl Device {
 		{
 			return false;
 		}
-		let (Some(upload), mapped, _) = self.create_buffer_resource(upload_size, DeviceAccesses::HostToDevice) else {
+		let (Some(upload), mapped, _) = self.create_buffer_resource(upload_size, DeviceAccesses::HostToDevice, Uses::TransferSource) else {
 			return false;
 		};
 		if mapped.is_null() {

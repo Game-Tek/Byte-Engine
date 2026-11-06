@@ -158,13 +158,20 @@ impl Device {
 	}
 
 	/// Queues for rewriting every retained descriptor for which `references` holds, in every frame copy of every set.
+	/// `references` gets the descriptor and the frame sequence whose resource it reads in that copy.
 	///
 	/// Call it when what descriptors name changes under them, such as a resized image or a recreated swapchain proxy.
 	/// Each copy rewrites them at its next bind, which records for the copy's own frame sequence.
-	pub(crate) fn mark_stale_descriptors(&mut self, references: impl Fn(WriteData) -> bool) {
+	pub(crate) fn mark_stale_descriptors(&mut self, references: impl Fn(WriteData, u8) -> bool) {
+		let frames = self.frames as usize;
 		for set in &mut self.descriptor_sets {
 			for (element, descriptor) in set.descriptors.iter().enumerate() {
-				if descriptor.is_some_and(|retained| references(retained.descriptor)) {
+				let stale = descriptor.is_some_and(|retained| {
+					let sequence =
+						crate::frame_resources::frame_index_with_offset(set.sequence_index as usize, retained.frame_offset, frames);
+					references(retained.descriptor, sequence as u8)
+				});
+				if stale {
 					set.stale.push(element as u32);
 				}
 			}
@@ -221,7 +228,13 @@ impl Device {
 		let resource_sequence = self.frame_index_with_offset(set.sequence_index, retained.frame_offset);
 
 		match retained.descriptor {
-			WriteData::Buffer { handle } => self.write_native_buffer_descriptor(resource, handle, resource_sequence, slot),
+			WriteData::Buffer { handle } => {
+				// The sequence's own storage may not exist yet, and creating it marks this element stale again. It's
+				// written with that storage here, so the mark would only rewrite it at the next bind.
+				self.ensure_buffer_frame_storage(handle, resource_sequence);
+				self.descriptor_sets[set_index].stale.retain(|&stale| stale != element);
+				self.write_native_buffer_descriptor(resource, handle, resource_sequence, slot)
+			}
 			WriteData::Image { handle, mip_level, .. } => {
 				self.write_native_image_descriptor(resource, handle, resource_sequence, None, mip_level, slot)
 			}
@@ -233,7 +246,9 @@ impl Device {
 				let image = self.get_swapchain_image_for_sequence(handle, uses, resource_sequence).0;
 				self.write_native_image_descriptor(resource, image.into(), resource_sequence, None, None, slot);
 			}
-			WriteData::AccelerationStructure { .. } => crate::rt::unsupported("DX12"),
+			WriteData::AccelerationStructure { handle } => {
+				self.write_native_acceleration_structure_descriptor(handle, resource_sequence, slot)
+			}
 			WriteData::Sampler(_) => {}
 		}
 		if let (

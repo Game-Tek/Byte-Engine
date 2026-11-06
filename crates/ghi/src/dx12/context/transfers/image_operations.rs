@@ -115,13 +115,7 @@ impl Device {
 		let Some(image) = self.images.get_mut(image_handle.index() as usize) else {
 			return;
 		};
-		let staging = if let Some(frame_data) = image.frame_data.as_mut() {
-			let index = (sequence_index as usize).min(frame_data.len().saturating_sub(1));
-			frame_data.get_mut(index)
-		} else {
-			image.data.as_mut()
-		};
-		let Some(staging) = staging else {
+		let Some(staging) = image.staging_mut(sequence_index) else {
 			return;
 		};
 

@@ -20,91 +20,35 @@ impl<'a> Frame<'a> {
 		}
 	}
 
+	/// Interns a raster pipeline a factory compiled. Interning only adds it to the context, so it doesn't stall the
+	/// frame.
 	pub fn intern_raster_pipeline(&mut self, pipeline: crate::implementation::RasterPipeline) -> crate::PipelineHandle {
-		let shader_handles = self.intern_factory_shaders(&pipeline.factory_shaders);
-		let vertex_elements = pipeline
-			.vertex_elements
-			.iter()
-			.map(|element| crate::pipelines::VertexElement::new(element.name.as_str(), element.format, element.binding))
-			.collect::<Vec<_>>();
-		let shaders = pipeline
-			.shaders
-			.iter()
-			.filter_map(|shader| {
-				shader_handles.get(shader.handle.index() as usize).map(|handle| {
-					crate::pipelines::ShaderParameter::new(handle, shader.stage)
-						.with_specialization_map(&shader.specialization_map)
-				})
-			})
-			.collect::<Vec<_>>();
-		let builder = crate::pipelines::raster::Builder::new(
-			&pipeline.push_constant_ranges,
-			&vertex_elements,
-			&shaders,
-			&pipeline.render_targets,
-		)
-		.face_winding(pipeline.face_winding)
-		.cull_mode(pipeline.cull_mode)
-		.fill_mode(pipeline.fill_mode)
-		.depth_write(pipeline.depth_write);
-
-		self.device.create_raster_pipeline(builder)
+		self.device.intern_pipeline(pipeline.0)
 	}
 
+	/// Interns a compute pipeline a factory compiled. See [`Self::intern_raster_pipeline`].
 	pub fn intern_compute_pipeline(&mut self, pipeline: crate::implementation::ComputePipeline) -> crate::PipelineHandle {
-		let shader_handles = self.intern_factory_shaders(&pipeline.factory_shaders);
-		let shader_handle = shader_handles
-			.get(pipeline.shader.handle.index() as usize)
-			.expect("Missing DX12 factory compute shader. The most likely cause is that the pipeline references a shader not created by the factory.");
-		let shader = crate::pipelines::ShaderParameter::new(shader_handle, pipeline.shader.stage)
-			.with_specialization_map(&pipeline.shader.specialization_map);
-
-		self.device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&pipeline.push_constant_ranges,
-			shader,
-		))
+		self.device.intern_pipeline(pipeline.0)
 	}
 
-	/// Interns a factory-built ray tracing pipeline, of which DX12 has none.
+	/// Interns a ray tracing pipeline a factory linked. See [`Self::intern_raster_pipeline`].
 	pub fn intern_ray_tracing_pipeline(&mut self, pipeline: crate::dx12::factory::RayTracingPipeline) -> crate::PipelineHandle {
-		match pipeline {}
+		self.device.intern_pipeline(pipeline.0)
 	}
 
-	/// Interns a factory-built image through this frame's device.
-	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> crate::ImageHandle {
+	/// Interns an image another context exported. See [`super::Device::intern_image`].
+	pub fn intern_image(&mut self, image: crate::dx12::factory::DetachedImage) -> crate::ImageHandle {
 		self.device.intern_image(image)
 	}
 
-	/// Interns a factory-built sampler through this frame's device.
-	pub fn intern_sampler(&mut self, sampler: crate::implementation::FactorySampler) -> crate::SamplerHandle {
-		self.device.intern_sampler(sampler)
-	}
-
-	fn intern_factory_shaders(&mut self, shaders: &[crate::dx12::factory::Shader]) -> Vec<crate::ShaderHandle> {
-		shaders
-			.iter()
-			.map(|shader| {
-				let source = match &shader.source {
-					crate::dx12::factory::ShaderSource::Spirv(bytes) => {
-						crate::shader::Sources::SPIRV(std::borrow::Cow::Borrowed(bytes))
-					}
-					crate::dx12::factory::ShaderSource::Dxil(bytes) => crate::shader::Sources::DXIL(bytes),
-					crate::dx12::factory::ShaderSource::Hlsl { source, entry_point } => {
-						crate::shader::Sources::HLSL { source, entry_point }
-					}
-				};
-				self.device
-					.create_shader(
-						shader.name.as_deref(),
-						source,
-						shader.stage,
-						shader.descriptor_sets.iter().cloned(),
-					)
-					.expect(
-						"Failed to intern DX12 factory shader. The most likely cause is that the factory stored an unsupported shader source.",
-					)
-			})
-			.collect()
+	/// Deletes an image once every frame started so far has completed. The handle is invalid afterwards.
+	///
+	/// # Panics
+	///
+	/// Panics when the handle names no image of this context, an image with one representation per frame, or an
+	/// image-group member.
+	pub fn delete_image(&mut self, image: crate::ImageHandle) {
+		self.device.delete_image(image, self.frame_key.sequence_index);
 	}
 
 	pub fn device(&mut self) -> &mut super::Device {
@@ -187,6 +131,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			.set_command_buffer_frame_synchronizer(command_buffer_handle, self.synchronizer);
 		self.device
 			.flush_pending_texture_syncs_for_sequence(command_buffer_handle, self.frame_key.sequence_index);
+		self.device.record_ready_compactions(command_buffer_handle);
 		super::CommandBufferRecording::new(self.device, command_buffer_handle, Some(self.frame_key))
 	}
 
@@ -210,36 +155,4 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 
 impl<'a> crate::context::ContextCreate for Frame<'a> {
 	crate::context::delegate_context_create_to_device!();
-}
-
-impl super::Device {
-	/// Interns a factory-built image into this context, for loader threads that create objects outside a frame.
-	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> crate::ImageHandle {
-		let mut builder = crate::image::Builder::new(image.format, image.resource_uses)
-			.extent(image.extent)
-			.device_accesses(image.device_accesses)
-			.use_case(image.use_case)
-			.mip_levels(image.mip_levels)
-			.array_layers(image.array_layers);
-		builder.optimized_clear_value = image.optimized_clear_value;
-		if let Some(name) = image.name.as_deref() {
-			builder = builder.name(name);
-		}
-		self.build_image(builder)
-	}
-
-	/// Interns a factory-built sampler into this context, for loader threads that create objects outside a frame.
-	pub fn intern_sampler(&mut self, sampler: crate::implementation::FactorySampler) -> crate::SamplerHandle {
-		let mut builder = crate::sampler::Builder::new()
-			.filtering_mode(sampler.filtering_mode)
-			.reduction_mode(sampler.reduction_mode)
-			.mip_map_mode(sampler.mip_map_mode)
-			.addressing_mode(sampler.addressing_mode)
-			.min_lod(sampler.min_lod)
-			.max_lod(sampler.max_lod);
-		if let Some(anisotropy) = sampler.anisotropy {
-			builder = builder.anisotropy(anisotropy);
-		}
-		self.build_sampler(builder)
-	}
 }

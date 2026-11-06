@@ -35,7 +35,10 @@ impl Device {
 			descriptor_sync_scratch: SmallVec::new(),
 			present_resources: SmallVec::new(),
 			recorded_readbacks: SmallVec::new(),
+			recorded_builds: Default::default(),
 			recorded_texture_syncs: Vec::new(),
+			vertex_buffer_views: SmallVec::new(),
+			vertex_strides: SmallVec::new(),
 			original_buffer_states: SmallVec::new(),
 			original_image_states: SmallVec::new(),
 			clear_descriptors: None,
@@ -87,6 +90,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 	) -> super::super::super::CommandBufferRecording<'a> {
 		self.begin_command_buffer(command_buffer_handle, 0);
+		self.record_ready_compactions(command_buffer_handle);
 		super::super::super::CommandBufferRecording::new(self, command_buffer_handle, None)
 	}
 }

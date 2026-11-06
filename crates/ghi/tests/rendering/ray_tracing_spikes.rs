@@ -101,12 +101,12 @@ impl Spike {
 				),
 			],
 		);
-		// The spikes measure Vulkan, so their shaders have no MSL.
+		// The spikes measure Vulkan, so their shaders have no MSL or HLSL.
 		let ray_generation = super::ray_tracing::native_shader(
 			device,
 			"Spike Ray Generation",
 			ShaderTypes::RayGen,
-			(RAY_GENERATION, "", ""),
+			(RAY_GENERATION, "", "", ""),
 			[ghi::ShaderDescriptorSet::new(layout.clone())],
 		);
 		let command_buffer = device.queue(queue_handle).create_command_buffer(None);
@@ -129,7 +129,7 @@ impl Spike {
 					device,
 					"Spike Closest Hit",
 					ShaderTypes::ClosestHit,
-					(&closest_hit(index, statements, nonce), "", ""),
+					(&closest_hit(index, statements, nonce), "", "", ""),
 					[],
 				)
 			})

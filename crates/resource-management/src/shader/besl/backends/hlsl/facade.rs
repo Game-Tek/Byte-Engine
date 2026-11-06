@@ -1,4 +1,4 @@
-use utils::hash::HashMap;
+use utils::hash::{HashMap, HashSet};
 
 use crate::shader::generator::Stages;
 
@@ -18,8 +18,14 @@ pub struct Generator {
 	pub(crate) raster_outputs: Vec<besl::NodeReference>,
 	pub(crate) user_struct_constructors: Vec<besl::NodeReference>,
 	pub(crate) packed_write_counter: u32,
-	pub(crate) atomic_temporary_counter: u32,
-	pub(crate) atomic_temporaries: HashMap<besl::NodeReference, String>,
+	pub(crate) atomic_helper_counter: u32,
+	/// The functions that run the atomics and build the arrays of the node being emitted, which go right before it.
+	/// See [`Generator::emit_hlsl_atomic_helper_call`] and [`Generator::emit_hlsl_array_constructor`].
+	pub(crate) helpers: String,
+	/// The array types whose constructor function [`Self::helpers`] already holds.
+	pub(crate) constructed_arrays: HashSet<String>,
+	/// Names written in place of nodes while an atomic helper's body is emitted: the helper's parameters.
+	pub(crate) substitutions: HashMap<besl::NodeReference, String>,
 	pub(crate) match_break_depth: Option<usize>,
 	/// The window that holds each `u8` member and the bit shift of its byte; see [`Generator::plan_byte_windows`].
 	pub(crate) byte_windows: HashMap<besl::NodeReference, (besl::NodeReference, u32)>,
@@ -46,8 +52,10 @@ impl Generator {
 			raster_outputs: Vec::new(),
 			user_struct_constructors: Vec::new(),
 			packed_write_counter: 0,
-			atomic_temporary_counter: 0,
-			atomic_temporaries: HashMap::default(),
+			atomic_helper_counter: 0,
+			helpers: String::new(),
+			constructed_arrays: HashSet::default(),
+			substitutions: HashMap::default(),
 			match_break_depth: None,
 			byte_windows: HashMap::default(),
 		}

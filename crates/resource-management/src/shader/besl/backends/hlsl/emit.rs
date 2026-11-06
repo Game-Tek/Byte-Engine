@@ -59,6 +59,15 @@ impl Generator {
 
 	/// Emits raster stage I/O as mutable entry-point parameters because HLSL semantic globals are immutable.
 	pub(crate) fn emit_raster_entry_parameters(&self, string: &mut String, mut has_previous_parameter: bool) {
+		// The vertex or mesh shader writes the position first, so a pixel shader declares it first too, read or not, and
+		// every varying after it lines up with the register the previous stage wrote it to.
+		if matches!(self.stage, Stages::Fragment) {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("float4 _besl_fragment_position : SV_Position");
+			has_previous_parameter = true;
+		}
 		for input in &self.raster_inputs {
 			let input = input.borrow();
 			let besl::Nodes::Input {
@@ -230,6 +239,24 @@ impl Generator {
 				}
 				string.push(')');
 			}
+			// Ray tracing stage values are system values, or members of the hit a closest hit shades. See
+			// `ray_tracing.rs`.
+			"launch_index" => string.push_str("DispatchRaysIndex()"),
+			"launch_size" => string.push_str("DispatchRaysDimensions()"),
+			"hit_distance"
+			| "hit_custom_index"
+			| "hit_geometry_index"
+			| "hit_primitive_index"
+			| "hit_barycentrics"
+			| "ray_origin"
+			| "ray_direction" => Self::emit_hit_value(string, name),
+			// These call the helpers the ray tracing prelude and the call struct declare. An acceleration structure
+			// binding is a global, so it passes like any other argument.
+			"intersect" | "trace_occlusion" | "invoke" => {
+				let _ = write!(string, "_besl_{name}(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
 			// Every other intrinsic with a body emits its expansion.
 			_ if has_body => {
 				for element in elements {
@@ -321,7 +348,10 @@ impl Generator {
 				self.emit_node_string(string, &arguments[3]);
 				string.push(')');
 			}
-			"image_atomic_or" => unreachable!("HLSL image atomics must be lifted before expression emission"),
+			"image_atomic_or" => {
+				let return_type = r#return.borrow().get_name().unwrap_or("u32").to_string();
+				self.emit_hlsl_atomic_helper_call(string, name, arguments, Some(&return_type));
+			}
 			"guard_image_bounds" => {
 				// HLSL has no portable image bounds guard intrinsic, so emit the guard inline at the call site.
 				string.push_str("uint2 _besl_image_size; ");
@@ -331,8 +361,30 @@ impl Generator {
 				string.push_str(" >= _besl_image_size)) { return; }");
 			}
 			"image_size" | "texture_size" => {
-				string.push_str("/* image_size requires assignment lowering for HLSL */");
+				// `GetDimensions` also writes an array texture's layer count. Both texture kinds have the type `Texture2D`,
+				// so the binding's format tells them apart, or the overload the call resolved to for a texture parameter.
+				let array_texture = match besl::referenced_binding(&arguments[0]) {
+					Some(binding) => matches!(
+						binding.borrow().node(),
+						besl::Nodes::Binding {
+							r#type: besl::BindingTypes::CombinedImageSampler { format, .. },
+							..
+						} if format == "ArrayTexture2D"
+					),
+					None => definition.iter().any(|element| {
+						matches!(
+							element.borrow().node(),
+							besl::Nodes::Parameter { r#type, .. } if r#type.borrow().get_name() == Some("ArrayTexture2D")
+						)
+					}),
+				};
+				string.push_str(if array_texture {
+					"_besl_array_texture_size("
+				} else {
+					"_besl_texture_size("
+				});
 				self.emit_node_string(string, &arguments[0]);
+				string.push(')');
 			}
 			"write" => {
 				self.emit_node_string(string, &arguments[0]);
@@ -350,22 +402,11 @@ impl Generator {
 			| "atomic_max"
 			| "atomic_and"
 			| "atomic_or"
-			| "atomic_xor" => unreachable!("HLSL value atomics must be lifted before expression emission"),
-			"atomic_store" => {
-				let temporary_id = self.atomic_temporary_counter;
-				self.atomic_temporary_counter = self.atomic_temporary_counter.checked_add(1).expect(
-					"HLSL atomic temporary count overflowed. The most likely cause is an invalid shader with billions of atomic calls.",
-				);
-				let value_type = Self::node_type_name(&arguments[1]).unwrap_or_else(|| "u32".to_string());
-				string.push('{');
-				Self::emit_type_name(string, &value_type);
-				let _ = write!(string, " besl_atomic_stored_{temporary_id};InterlockedExchange(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str(ShaderFormatting::new(self.minified).comma_str());
-				self.emit_node_string(string, &arguments[1]);
-				string.push_str(ShaderFormatting::new(self.minified).comma_str());
-				let _ = write!(string, "besl_atomic_stored_{temporary_id});}}");
+			| "atomic_xor" => {
+				let return_type = r#return.borrow().get_name().unwrap_or("u32").to_string();
+				self.emit_hlsl_atomic_helper_call(string, name, arguments, Some(&return_type));
 			}
+			"atomic_store" => self.emit_hlsl_atomic_helper_call(string, name, arguments, None),
 			"thread_id" => string.push_str("dispatch_thread_id.xy"),
 			"thread_position" => string.push_str("dispatch_thread_id.x"),
 			"thread_idx" => string.push_str("group_thread_index"),

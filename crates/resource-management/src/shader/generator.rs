@@ -177,26 +177,6 @@ pub(crate) fn ordered_shader_nodes(main_function_node: &besl::NodeReference, bac
 	ordered
 }
 
-/// Rejects a ray tracing stage, or a program that tests rays against an acceleration structure, for backends that
-/// don't lower ray tracing. A program reaches an `AccelerationStructure` descriptor only through a ray query, so a
-/// reachable one marks it.
-///
-/// [`crate::shader::besl::backends::validate_stage`] reports the same programs with a descriptive error first; this
-/// check keeps a backend called directly from emitting code it can't lower.
-pub(crate) fn validate_no_ray_tracing(stage: &Stages, order: &[besl::NodeReference]) -> Result<(), ()> {
-	let traces_rays = stage.is_ray_tracing()
-		|| order.iter().any(|node| {
-			matches!(
-				node.borrow().node(),
-				besl::Nodes::Binding {
-					r#type: besl::BindingTypes::AccelerationStructure,
-					..
-				}
-			)
-		});
-	if traces_rays { Err(()) } else { Ok(()) }
-}
-
 /// Rejects shared storage in stages that do not have workgroup execution semantics.
 pub(crate) fn validate_workgroup_storage_stage(stage: &Stages, order: &[besl::NodeReference]) -> Result<(), ()> {
 	if matches!(stage, Stages::Compute { .. } | Stages::Task { .. } | Stages::Tile { .. })
@@ -1049,7 +1029,7 @@ pub(crate) trait NodeEmitter {
 		string.push_str("else");
 
 		match else_branch {
-			besl::ElseBranch::If(conditional) if !self.else_if_needs_block(conditional) => {
+			besl::ElseBranch::If(conditional) => {
 				// Emit the link directly so backend-specific conditional rewrites never apply to an `else if`.
 				let conditional = conditional.borrow();
 				let besl::Nodes::Conditional {
@@ -1063,22 +1043,14 @@ pub(crate) trait NodeEmitter {
 				string.push(' ');
 				self.emit_conditional_node(string, condition, statements, else_branch.as_ref());
 			}
-			// A block, or an `else if` link the backend emits as `else { if ... }`.
-			else_branch => {
+			besl::ElseBranch::Block(statements) => {
 				string.push_str(formatting.space_str());
 				string.push('{');
 				string.push_str(formatting.break_str());
-				self.emit_function_statement_block(string, else_branch.statements(), 1);
+				self.emit_function_statement_block(string, statements, 1);
 				self.emit_block_end(string);
 			}
 		}
-	}
-
-	/// Reports whether an `else if` link must be emitted as `else { if ... }`, so that the
-	/// nested conditional goes through [`NodeEmitter::emit_function_statement_block`].
-	/// Override it when the backend emits extra statements before some conditionals.
-	fn else_if_needs_block(&self, _conditional: &besl::NodeReference) -> bool {
-		false
 	}
 
 	/// Emits a BESL `break`, which always leaves the innermost loop. See [`Self::match_break_depth`].

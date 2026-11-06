@@ -190,8 +190,10 @@ fn dxil_target_profile(stage: ShaderTypes) -> Result<&'static str, String> {
 		ShaderTypes::Compute | ShaderTypes::Tile => Ok("cs_6_9"),
 		ShaderTypes::Task => Ok("as_6_9"),
 		ShaderTypes::Mesh => Ok("ms_6_9"),
+		// DXR shaders compile as libraries, which a ray tracing pipeline links by their exports.
+		ShaderTypes::RayGen | ShaderTypes::ClosestHit => Ok("lib_6_9"),
 		_ => Err(
-			"Unsupported DXIL shader stage. The most likely cause is that a standalone or material shader requested a stage outside Vertex, Fragment, Compute, Task, or Mesh."
+			"Unsupported DXIL shader stage. The most likely cause is that a standalone or material shader requested a stage outside Vertex, Fragment, Compute, Task, Mesh, RayGen, or ClosestHit."
 				.to_string(),
 		),
 	}

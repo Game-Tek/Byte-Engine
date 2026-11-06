@@ -105,7 +105,7 @@ pub(crate) fn lower_for(
 	if language.is_msl() {
 		return Ok(stage);
 	}
-	super::validate_stage(language, stage, name, program)?;
+	super::validate_stage(stage, name, program)?;
 	lower_as_compute(program)?;
 	Ok(Stages::Compute { local_size })
 }
@@ -266,7 +266,7 @@ mod tests {
 			let lowered = lower_for(language, stage, "tile.besl", &program).expect("the tile shader should lower");
 
 			assert!(matches!(lowered, Stages::Compute { local_size } if local_size == Extent::square(16)));
-			super::super::validate_stage(language, lowered, "tile.besl", &program)
+			super::super::validate_stage(lowered, "tile.besl", &program)
 				.expect("the lowered shader should follow the compute stage's rules");
 			let sets = ProgramEvaluation::from_program(&program)
 				.expect("the lowered shader should reflect")

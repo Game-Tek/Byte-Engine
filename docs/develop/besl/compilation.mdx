@@ -369,17 +369,55 @@ Keep these rules when you change a backend:
 - The VM reads through the declared state in place of the sampler the test
   binds, so VM tests of reducing shaders don't depend on their fixtures.
 
+## Link raster stages in HLSL
+
+Metal and Vulkan link a vertex or mesh stage to the fragment stage by location,
+but D3D12 links them by signature register, in the order each stage declares
+its values. So the HLSL generator declares both sides in one order: the
+position first, then the varyings by location. A pixel shader declares the
+position as `_besl_fragment_position : SV_Position` even when it doesn't read
+it, so every varying lands in the register the vertex or mesh stage wrote it
+to. A pixel shader that reads only some varyings still links, as long as it
+reads a leading run of the vertex stage's locations.
+
+`pixel_inputs_line_up_with_the_vertex_outputs_they_read` guards the order.
+
+## Lower atomics and array constructors to HLSL
+
+Two BESL expressions have no HLSL expression form, so the HLSL generator turns
+each into a call to a function it writes right before the function that uses
+it:
+
+- **Atomics.** An `Interlocked` call returns the value it read through an out
+  parameter, so it's a statement. Each atomic becomes `_besl_atomic_i`, a
+  function that runs the `Interlocked` call and returns the value it read. Its
+  destination is rooted in a buffer or workgroup global, which the lexer
+  checks, so the function names the destination itself and takes only its
+  indices and the operands as parameters.
+- **Array constructors outside a `let`.** HLSL can't build or return an array
+  in an expression, but a function can return a struct that holds one. Each
+  array type gets one struct and one `_make` function, and the call reads the
+  array out of the struct with `.v`. A `let` or a constant still initializes an
+  array with braces.
+
+A call runs exactly when BESL evaluates the expression, so both work in `&&`,
+`||`, `if` values, and `for` headers, where moving the work into a statement
+before the expression would change when it runs. DXC inlines the functions.
+`atomic_calls_run_where_besl_evaluates_them` and
+`array_constructors_inside_expressions_call_a_constructor_function` guard
+them.
+
 ## Generate ray tracing shaders
 
-The MSL and GLSL generators lower ray tracing. Each follows the contract
+The MSL, GLSL, and HLSL generators lower ray tracing. Each follows the contract
 between its GHI backend and the shaders it links, which the
 [ray tracing design note](/docs/develop/rendering/ray-tracing) defines. For
 Metal, a ray generation shader becomes a compute kernel, and a closest-hit
 shader becomes a `[[visible]]` function that the kernel calls through the
-visible function table at buffer 14. For Vulkan, a ray generation shader
-becomes a `raygen` shader, and a closest-hit shader becomes a `callable` shader
-that the ray generation shader calls through the shader binding table's
-callable region.
+visible function table at buffer 14. For Vulkan and DX12, a ray generation
+shader becomes a `raygeneration` shader, and a closest-hit shader becomes a
+`callable` shader that the ray generation shader calls through the shader
+binding table's callable region.
 
 Before any generator runs, `platform::Generator::lower` checks the program with
 `validate_stage`, in
@@ -388,11 +426,9 @@ checks the `main` signature of ray tracing stages, that a closest hit declares
 no descriptors of its own, which stages call `intersect`, `trace_occlusion`,
 `invoke`, and the launch and hit values, and that ray tracing stages use no
 workgroup storage, barriers, subgroup intrinsics, compute invocation values, or
-`discard`. For HLSL, it rejects ray tracing stages and every ray tracing
-call. Each error names the stage, the shader, and the rule, and links the
-reference section that states the rule. The HLSL generator also refuses ray
-tracing stages and acceleration structures itself, for callers that skip
-`lower`.
+`discard`. The rules are the same for every output language. Each error names
+the stage, the shader, and the rule, and links the reference section that
+states the rule.
 
 | BESL | Generated MSL |
 | --- | --- |
@@ -463,8 +499,35 @@ descriptor bindings, so the GLSL lowering passes no addresses and adds no hidden
 parameters. Shaders that use no ray tracing keep `#version 450` and generate the
 same GLSL as before.
 
-These tests guard the lowering. The Metal compile tests run on macOS only, and
-the glslang compile tests on Linux only. The GPU test runs on both, with a GPU
+### Lower ray tracing to HLSL
+
+The HLSL lowering, in
+`crates/resource-management/src/shader/besl/backends/hlsl/ray_tracing.rs`,
+mirrors the GLSL one. DirectX Raytracing (DXR) has no callable data variable, so the call struct
+travels as the callable entry point's parameter instead.
+
+| BESL | Generated HLSL |
+| --- | --- |
+| `RayGeneration`, `ClosestHit` | A `[shader("raygeneration")]` or `[shader("callable")]` entry point named `besl_main`, compiled with the `lib_6_9` profile. |
+| `Hit` | A struct with the members in reference order. `distance` is reserved in HLSL, so that member is `besl_distance`. |
+| `AccelerationStructure` | A `RaytracingAccelerationStructure` read from `ResourceDescriptorHeap` at its set's base plus its slot, like every other descriptor. The helpers take the structure as a parameter. |
+| `intersect` | `_besl_intersect`: an inline `RayQuery<RAY_FLAG_FORCE_OPAQUE>`. A hit's record is the committed instance's `CommittedInstanceContributionToHitGroupIndex()` plus its geometry index. A miss returns the hit that the reference specifies for one. |
+| `trace_occlusion` | `_besl_trace_occlusion`: a ray query that also sets `RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH`, and reports whether it committed any triangle. |
+| `invoke(hit, payload)` | `_besl_invoke`, which fills a local `_besl_call` with the payload and the hit and calls `CallShader(hit.record, call)` when the hit's distance is zero or more. For a negative distance or one that isn't a number, it returns the payload unchanged. |
+| `launch_index`, `launch_size` | `DispatchRaysIndex()` and `DispatchRaysDimensions()`. |
+| Hit values | Members of the hit in the closest hit's copy of the call, `_besl_call_data.hit`. |
+
+Both stages declare `struct _besl_call { P payload; Hit hit; }` right after the
+payload's struct. A closest hit's `main` becomes `_besl_closest_hit_main`, and
+its `callable` entry point copies the call it receives into the static
+`_besl_call_data`, where helpers can read the hit, shades the payload, and
+copies the call back. Every shader of a DXR pipeline reads the descriptor heaps
+through the same global root signature, so the HLSL lowering passes no
+addresses and adds no hidden parameters.
+
+These tests guard the lowering. The Metal compile tests run on macOS only, the
+glslang compile tests on Linux only, and the DXC compile tests on Windows
+only. The GPU test runs on both, with a GPU
 that traces rays, and needs the `gpu-processing` feature, which workspace runs
 enable.
 
@@ -475,7 +538,8 @@ enable.
 | `ray_queries_compile_in_compute_shaders` | `intersect`, `trace_occlusion`, and `Hit` construction in a compute kernel. |
 | `generated_ray_tracing_shaders_match_the_vm` | Baked shaders write on the GPU what the VM writes: both hit groups, a mask that skips an instance, misses, occlusion, and a direction twice the unit length. It runs on Metal and on Vulkan. |
 | `generated_ray_generation_stage_compiles_with_glslang`, `generated_closest_hit_stage_compiles_with_glslang`, `ray_queries_compile_in_compute_shaders` | The GLSL stages, callable data, and ray query helpers, and that glslang compiles them. |
-| `calls_that_a_stage_does_not_allow_are_rejected`, and the other `stage_rules` tests | The stage rules in MSL and GLSL, and their rejection of HLSL. |
+| `ray_generation_stage_lowers_to_a_dxr_raygeneration_shader`, `closest_hit_stage_lowers_to_a_dxr_callable_shader`, `ray_queries_lower_to_inline_ray_queries_in_compute_shaders` | The HLSL stages, the call struct, and the ray query helpers, and that DXC compiles them. |
+| `calls_that_a_stage_does_not_allow_are_rejected`, and the other `stage_rules` tests | The stage rules, which hold for every output language. |
 | `lowering_reports_the_stage_rule_a_shader_breaks` | `lower` checks the stage rules before a generator runs. |
 
 ## Generate task and mesh shaders

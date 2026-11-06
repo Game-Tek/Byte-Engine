@@ -140,12 +140,7 @@ impl Generator {
 		program: &besl::NodeReference,
 	) -> Result<String, String> {
 		let language = PlatformShaderLanguage::current_platform();
-		super::validate_stage(
-			language,
-			shader_generation_settings.stage,
-			&shader_generation_settings.name,
-			program,
-		)?;
+		super::validate_stage(shader_generation_settings.stage, &shader_generation_settings.name, program)?;
 
 		match language {
 			#[cfg(target_os = "linux")]

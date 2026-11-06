@@ -108,12 +108,6 @@ ordering is relaxed, so an atomic call isn't a memory fence for nearby ordinary
 loads and stores. Use `workgroup_barrier` when workgroup invocations must make
 other shared data visible before they continue.
 
-When you target HLSL, don't put a value-returning atomic in a `for` condition,
-the `for` update expression, or either side of `&&` or `||`. The HLSL generator
-rejects these contexts because lowering an Interlocked out parameter to a
-temporary could change when the atomic runs. Move the atomic to a statement and
-use its returned value in the control-flow expression.
-
 | Name | Signature | Explanation |
 | --- | --- | --- |
 | `atomic_load` | `atomic_load(A) -> T` | Atomically reads the current value. A buffer target must come from a `read_write` descriptor because portable backends implement the load with a writable atomic operation. |

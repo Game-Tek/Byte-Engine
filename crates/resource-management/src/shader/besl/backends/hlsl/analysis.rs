@@ -122,58 +122,6 @@ impl Generator {
 				.all(|parameter| Self::node_type_name(parameter).as_deref() == Some(column_type))
 	}
 
-	pub(crate) fn image_size_arguments(expression: &besl::NodeReference) -> Option<Vec<besl::NodeReference>> {
-		let expression = expression.borrow();
-		let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
-			intrinsic, arguments, ..
-		}) = expression.node()
-		else {
-			return None;
-		};
-		let intrinsic = intrinsic.borrow();
-		let besl::Nodes::Intrinsic { name, .. } = intrinsic.node() else {
-			return None;
-		};
-		matches!(name.as_str(), "image_size" | "texture_size").then(|| arguments.clone())
-	}
-
-	/// Returns the value-producing atomic call represented by `node`.
-	pub(crate) fn hlsl_atomic_call(node: &besl::NodeReference) -> Option<(String, Vec<besl::NodeReference>, String)> {
-		let node = node.borrow();
-		let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
-			intrinsic, arguments, ..
-		}) = node.node()
-		else {
-			return None;
-		};
-		let intrinsic = intrinsic.borrow();
-		let besl::Nodes::Intrinsic { name, r#return, .. } = intrinsic.node() else {
-			return None;
-		};
-		if !matches!(
-			name.as_str(),
-			"image_atomic_or"
-				| "atomic_load"
-				| "atomic_exchange"
-				| "atomic_compare_exchange"
-				| "atomic_add"
-				| "atomic_sub"
-				| "atomic_min"
-				| "atomic_max"
-				| "atomic_and"
-				| "atomic_or"
-				| "atomic_xor"
-		) {
-			return None;
-		}
-		Some((name.clone(), arguments.clone(), r#return.borrow().get_name()?.to_string()))
-	}
-
-	/// Reports whether an expression tree contains an atomic call that returns a value.
-	pub(crate) fn contains_hlsl_value_atomic(node: &besl::NodeReference) -> bool {
-		any_code_node(node, false, &mut |node| Self::hlsl_atomic_call(node).is_some())
-	}
-
 	/// Splits a `let` with an initializer into its declaration and its initializer, or returns `None` for any other
 	/// expression.
 	pub(crate) fn declaration_with_initializer(
@@ -194,91 +142,50 @@ impl Generator {
 		.then_some((left, right))
 	}
 
-	/// Reports whether an array constructor appears anywhere except as the initializer of a `let` or a constant.
+	/// Emits an array built inside an expression, such as a function argument, as a call to a function that returns
+	/// the array wrapped in a struct, then reads the array out of it.
 	///
-	/// HLSL has no array expressions, only brace initializers in declarations, so other uses can't be lowered.
-	pub(crate) fn has_misplaced_array_constructor(node: &besl::NodeReference) -> bool {
-		let borrowed = node.borrow();
-		let initializer = match borrowed.node() {
-			besl::Nodes::Expression(expression) => {
-				Self::declaration_with_initializer(expression).map(|(_, initializer)| initializer)
-			}
-			besl::Nodes::Const { value, .. } => Some(value),
-			_ => None,
+	/// HLSL can't build an array inside an expression, nor return one, but a function can return a struct that holds
+	/// one. Each array type gets one such struct and function, in [`Generator::helpers`].
+	pub(crate) fn emit_hlsl_array_constructor(
+		&mut self,
+		string: &mut String,
+		node: &besl::NodeReference,
+		elements: &[besl::NodeReference],
+	) {
+		let type_name = {
+			let node = node.borrow();
+			let besl::Nodes::Expression(besl::Expressions::FunctionCall { function, .. }) = node.node() else {
+				unreachable!("An array constructor is a function call");
+			};
+			function.get().borrow().get_name().unwrap_or_default().to_string()
 		};
-		if let Some(elements) = initializer.and_then(crate::shader::generator::array_constructor_elements) {
-			return elements.iter().any(Self::has_misplaced_array_constructor);
-		}
-		crate::shader::generator::array_constructor_elements(node).is_some()
-			|| borrowed.node().children().any(Self::has_misplaced_array_constructor)
-	}
-
-	/// Rejects contexts where statement lifting would change when an atomic executes.
-	pub(crate) fn has_unsupported_hlsl_atomic_context(node: &besl::NodeReference) -> bool {
-		let node = node.borrow();
-		match node.node() {
-			besl::Nodes::Function { statements, .. } => statements.iter().any(Self::has_unsupported_hlsl_atomic_context),
-			branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => {
-				branch.branch_children().any(Self::has_unsupported_hlsl_atomic_context)
+		let (element_type, count) = crate::shader::generator::value_array_parts(&type_name)
+			.expect("An array constructor builds an array type");
+		// Array type names hold brackets, so the helpers are named after the element type and count.
+		let helper = format!("_besl_array_{}_{count}", element_type.replace(|c: char| !c.is_ascii_alphanumeric(), "_"));
+		if self.constructed_arrays.insert(type_name.clone()) {
+			let formatting = ShaderFormatting::new(self.minified);
+			let mut function = format!("struct {helper}{{");
+			Self::emit_c_declaration(&mut function, "v", &type_name);
+			let _ = write!(function, ";}};{helper} {helper}_make(");
+			for index in 0..elements.len() {
+				if index > 0 {
+					function.push_str(formatting.comma_str());
+				}
+				Self::emit_c_declaration(&mut function, &format!("_besl_p{index}"), element_type);
 			}
-			besl::Nodes::ForLoop {
-				initializer,
-				condition,
-				update,
-				statements,
-			} => {
-				// atomic_store lowers to a statement block, which is invalid in every
-				// for-loop header field and cannot be moved without changing timing.
-				uses_intrinsic(initializer, "atomic_store")
-					|| uses_intrinsic(condition, "atomic_store")
-					|| uses_intrinsic(update, "atomic_store")
-					|| Self::contains_hlsl_value_atomic(condition)
-					|| Self::contains_hlsl_value_atomic(update)
-					|| Self::has_unsupported_hlsl_atomic_context(initializer)
-					|| Self::has_unsupported_hlsl_atomic_context(condition)
-					|| Self::has_unsupported_hlsl_atomic_context(update)
-					|| statements.iter().any(Self::has_unsupported_hlsl_atomic_context)
+			let _ = write!(function, "){{{helper} array;");
+			for index in 0..elements.len() {
+				let _ = write!(function, "array.v[{index}]=_besl_p{index};");
 			}
-			besl::Nodes::Expression(expression) => match expression {
-				besl::Expressions::Operator { operator, left, right } => {
-					(matches!(operator, besl::Operators::LogicalAnd | besl::Operators::LogicalOr)
-						&& (Self::contains_hlsl_value_atomic(left) || Self::contains_hlsl_value_atomic(right)))
-						|| Self::has_unsupported_hlsl_atomic_context(left)
-						|| Self::has_unsupported_hlsl_atomic_context(right)
-				}
-				besl::Expressions::Unary { operand, .. } => Self::has_unsupported_hlsl_atomic_context(operand),
-				// Only the selected branch runs, so lifting an atomic out of a branch would run it unconditionally, as
-				// for `&&` and `||`. The condition always runs, so its atomics lift.
-				besl::Expressions::Ternary {
-					condition,
-					if_true,
-					if_false,
-				} => {
-					Self::contains_hlsl_value_atomic(if_true)
-						|| Self::contains_hlsl_value_atomic(if_false)
-						|| Self::has_unsupported_hlsl_atomic_context(condition)
-				}
-				besl::Expressions::Return { value } => value.as_ref().is_some_and(Self::has_unsupported_hlsl_atomic_context),
-				besl::Expressions::Expression { elements } => elements.iter().any(Self::has_unsupported_hlsl_atomic_context),
-				besl::Expressions::FunctionCall { parameters, .. } => {
-					parameters.iter().any(Self::has_unsupported_hlsl_atomic_context)
-				}
-				besl::Expressions::IntrinsicCall { arguments, .. } => {
-					arguments.iter().any(Self::has_unsupported_hlsl_atomic_context)
-				}
-				besl::Expressions::Accessor { left, right } => {
-					Self::has_unsupported_hlsl_atomic_context(left) || Self::has_unsupported_hlsl_atomic_context(right)
-				}
-				besl::Expressions::Macro { body, .. } => Self::has_unsupported_hlsl_atomic_context(body),
-				besl::Expressions::Continue
-				| besl::Expressions::Break
-				| besl::Expressions::Discard
-				| besl::Expressions::Member { .. }
-				| besl::Expressions::VariableDeclaration { .. }
-				| besl::Expressions::Literal { .. } => false,
-			},
-			_ => false,
+			function.push_str("return array;}");
+			function.push_str(formatting.break_str());
+			self.helpers.push_str(&function);
 		}
+		let _ = write!(string, "{helper}_make(");
+		self.emit_call_arguments(string, elements);
+		string.push_str(").v");
 	}
 
 	/// Emits one HLSL Interlocked call with the previous value written to `previous_value`.
@@ -340,96 +247,96 @@ impl Generator {
 		string.push(')');
 	}
 
-	/// Lifts expression-valued atomics into HLSL statements because Interlocked intrinsics return through out parameters.
-	pub(crate) fn emit_hlsl_atomic_temporaries(&mut self, string: &mut String, node: &besl::NodeReference, indent: usize) {
-		// Lift the atomics of the expression children that are evaluated before `node` first.
-		let mut lift = |child: &besl::NodeReference| self.emit_hlsl_atomic_temporaries(string, child, indent);
-		match node.borrow().node() {
-			besl::Nodes::Conditional { condition, .. }
-			| besl::Nodes::Match {
-				scrutinee: condition, ..
-			} => lift(condition),
-			// A for-loop initializer runs once, so it can be lifted before the loop.
-			// Atomics in the repeated condition or update are rejected by validation.
-			besl::Nodes::ForLoop { initializer, .. } => lift(initializer),
-			besl::Nodes::Expression(expression) => match expression {
-				besl::Expressions::Return { value } => value.iter().for_each(&mut lift),
-				besl::Expressions::Expression { elements: children }
-				| besl::Expressions::FunctionCall {
-					parameters: children, ..
-				}
-				| besl::Expressions::IntrinsicCall { arguments: children, .. } => children.iter().for_each(&mut lift),
-				besl::Expressions::Operator { left, right, .. } | besl::Expressions::Accessor { left, right } => {
-					lift(left);
-					lift(right);
-				}
-				besl::Expressions::Unary { operand, .. } => lift(operand),
-				// Validation rejects atomics in a ternary's branches, which run conditionally.
-				besl::Expressions::Ternary { condition, .. } => lift(condition),
-				besl::Expressions::Macro { body, .. } => lift(body),
-				besl::Expressions::Continue
-				| besl::Expressions::Break
-				| besl::Expressions::Discard
-				| besl::Expressions::Member { .. }
-				| besl::Expressions::VariableDeclaration { .. }
-				| besl::Expressions::Literal { .. } => {}
-			},
-			_ => {}
-		}
-		if self.atomic_temporaries.contains_key(node) {
-			return;
-		}
-		let Some((name, arguments, return_type)) = Self::hlsl_atomic_call(node) else {
-			return;
-		};
-
-		let temporary_id = self.atomic_temporary_counter;
-		self.atomic_temporary_counter = self.atomic_temporary_counter.checked_add(1).expect(
-			"HLSL atomic temporary count overflowed. The most likely cause is an invalid shader with billions of atomic calls.",
-		);
-		let temporary = format!("besl_atomic_previous_{temporary_id}");
-		let formatting = ShaderFormatting::new(self.minified);
-		formatting.push_indentation(string, indent);
-		Self::emit_type_name(string, &return_type);
-		string.push(' ');
-		string.push_str(&temporary);
-		formatting.push_statement_end(string);
-		formatting.push_indentation(string, indent);
-		self.emit_hlsl_atomic_call(string, &name, &arguments, &return_type, &temporary);
-		formatting.push_statement_end(string);
-		self.atomic_temporaries.insert(node.clone(), temporary);
-	}
-
-	pub(crate) fn emit_image_size_assignment(
+	/// Emits a call to a generated function that runs the atomic intrinsic `name` and returns the value it read, or
+	/// nothing for `atomic_store`.
+	///
+	/// HLSL's `Interlocked` functions return the value they read through an out parameter, so they are statements,
+	/// while BESL atomics are expressions that may run conditionally or repeatedly: in `&&`, `||`, an `if` value, or a
+	/// `for` condition. A function call is an expression that runs exactly when BESL evaluates the atomic, so each
+	/// atomic becomes one. Its destination is rooted in a buffer or workgroup global, which the function names
+	/// directly; the destination's indices and the operands are the function's parameters, evaluated at the call. The
+	/// function goes in [`Generator::helpers`], which the node being emitted is preceded by.
+	pub(crate) fn emit_hlsl_atomic_helper_call(
 		&mut self,
 		string: &mut String,
-		left: &besl::NodeReference,
-		right: &besl::NodeReference,
-	) -> bool {
-		let Some(arguments) = Self::image_size_arguments(right) else {
-			return false;
-		};
-		let left = left.borrow();
-		let besl::Nodes::Expression(besl::Expressions::VariableDeclaration { name, r#type }) = left.node() else {
-			return false;
-		};
-
-		// HLSL exposes texture dimensions through an out-parameter method instead of an expression value.
-		let name = Self::identifier(name);
-		let array_texture = Self::node_type_name(&arguments[0]).as_deref() == Some("ArrayTexture2D");
-		Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
-		let _ = write!(string, " {name};");
-		if array_texture {
-			// The layer count is derived from the escaped name, so it stays unique beside it.
-			let _ = write!(string, "uint {name}_layers;");
+		name: &str,
+		arguments: &[besl::NodeReference],
+		return_type: Option<&str>,
+	) {
+		let id = self.atomic_helper_counter;
+		self.atomic_helper_counter = self.atomic_helper_counter.checked_add(1).expect(
+			"HLSL atomic helper count overflowed. The most likely cause is an invalid shader with billions of atomic calls.",
+		);
+		// The destination's indices, then every operand, each with the BESL type its parameter takes.
+		let mut parameters = Vec::<(besl::NodeReference, String)>::new();
+		let destination = if name == "image_atomic_or" { None } else { Some(&arguments[0]) };
+		if let Some(destination) = destination {
+			collect_destination_indices(destination, &mut parameters);
 		}
-		self.emit_node_string(string, &arguments[0]);
-		let _ = write!(string, ".GetDimensions({name}.x, {name}.y");
-		if array_texture {
-			let _ = write!(string, ", {name}_layers");
+		let operands = &arguments[1..];
+		for (index, operand) in operands.iter().enumerate() {
+			// An image atomic's first operand is its coordinate; every other operand has the atomic's value type.
+			let r#type = if destination.is_none() && index == 0 {
+				Self::node_type_name(operand).unwrap_or_else(|| "vec2u".to_string())
+			} else {
+				return_type
+					.map(str::to_string)
+					.or_else(|| Self::node_type_name(operand))
+					.unwrap_or_else(|| "u32".to_string())
+			};
+			parameters.push((operand.clone(), r#type));
+		}
+
+		let formatting = ShaderFormatting::new(self.minified);
+		let mut helper = String::new();
+		match return_type {
+			Some(return_type) => Self::emit_type_name(&mut helper, return_type),
+			None => helper.push_str("void"),
+		}
+		let _ = write!(helper, " _besl_atomic_{id}(");
+		for (index, (node, r#type)) in parameters.iter().enumerate() {
+			if index > 0 {
+				helper.push_str(formatting.comma_str());
+			}
+			Self::emit_type_name(&mut helper, r#type);
+			let _ = write!(helper, " _besl_p{index}");
+			self.substitutions.insert(node.clone(), format!("_besl_p{index}"));
+		}
+		helper.push_str("){");
+		match return_type {
+			Some(return_type) => {
+				Self::emit_type_name(&mut helper, return_type);
+				helper.push_str(" _besl_previous;");
+				self.emit_hlsl_atomic_call(&mut helper, name, arguments, return_type, "_besl_previous");
+				helper.push_str(";return _besl_previous;}");
+			}
+			None => {
+				// A store keeps no value, but InterlockedExchange returns the replaced one.
+				let value_type = &parameters.last().expect("`atomic_store` takes a value").1;
+				Self::emit_type_name(&mut helper, value_type);
+				helper.push_str(" _besl_replaced;InterlockedExchange(");
+				self.emit_node_string(&mut helper, &arguments[0]);
+				helper.push_str(formatting.comma_str());
+				self.emit_node_string(&mut helper, &arguments[1]);
+				helper.push_str(formatting.comma_str());
+				helper.push_str("_besl_replaced);}");
+			}
+		}
+		helper.push_str(formatting.break_str());
+		for (node, _) in &parameters {
+			self.substitutions.remove(node);
+		}
+
+		// The arguments may hold atomics of their own, whose helpers then precede this one.
+		let _ = write!(string, "_besl_atomic_{id}(");
+		for (index, (node, _)) in parameters.iter().enumerate() {
+			if index > 0 {
+				string.push_str(formatting.comma_str());
+			}
+			self.emit_node_string(string, node);
 		}
 		string.push(')');
-		true
+		self.helpers.push_str(&helper);
 	}
 
 	pub(crate) fn emit_array_initializer(&mut self, string: &mut String, value: &besl::NodeReference) -> bool {
@@ -463,5 +370,25 @@ impl Generator {
 		}
 		string.push(';');
 		string.push_str(ShaderFormatting::new(self.minified).break_str());
+	}
+}
+
+/// Adds each index of the atomic destination `node` to `parameters`, as a `u32`. Constant indices stay in the
+/// destination.
+fn collect_destination_indices(node: &besl::NodeReference, parameters: &mut Vec<(besl::NodeReference, String)>) {
+	match node.borrow().node() {
+		besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) => {
+			collect_destination_indices(left, parameters);
+			let indexed = left.borrow().node().is_indexable();
+			let constant = matches!(right.borrow().node(), besl::Nodes::Expression(besl::Expressions::Literal { .. }));
+			if indexed && !constant {
+				parameters.push((right.clone(), "u32".to_string()));
+			}
+		}
+		besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => collect_destination_indices(source, parameters),
+		besl::Nodes::Expression(besl::Expressions::Expression { elements }) if elements.len() == 1 => {
+			collect_destination_indices(&elements[0], parameters)
+		}
+		_ => {}
 	}
 }

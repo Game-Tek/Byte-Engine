@@ -4,8 +4,7 @@
 //! first, each with an error that names the rule and how to fix it.
 
 use super::{
-	RAY_TRACING_STAGE_INTRINSICS, SUBGROUP_INTRINSICS, any_code_node, platform::PlatformShaderLanguage,
-	tile::TILE_ENTRY_DOCS_PATH,
+	RAY_TRACING_STAGE_INTRINSICS, SUBGROUP_INTRINSICS, any_code_node, tile::TILE_ENTRY_DOCS_PATH,
 };
 use crate::shader::generator::Stages;
 
@@ -13,18 +12,16 @@ const RAY_TRACING_ENTRY_DOCS_PATH: &str = "reference/besl/interface#ray-tracing-
 const RAY_QUERIES_DOCS_PATH: &str = "reference/besl/intrinsics#ray-queries";
 const RAY_GENERATION_DOCS_PATH: &str = "reference/besl/intrinsics#ray-generation-stage";
 const CLOSEST_HIT_DOCS_PATH: &str = "reference/besl/intrinsics#closest-hit-stage";
-const STAGE_SUPPORT_DOCS_PATH: &str = "reference/besl/interface#stage-and-backend-support";
 
 /// The calls that read compute invocation values, which ray tracing stages don't have.
 const COMPUTE_INVOCATION_INTRINSICS: [&str; 4] = ["thread_id", "thread_idx", "threadgroup_position", "thread_position"];
 
-/// Checks that `program`, lowered for `stage` in `language`, follows the rules of its stage.
+/// Checks that `program`, lowered for `stage`, follows the rules of its stage. The rules hold on every platform.
 ///
 /// A program that breaks a rule fails with an error that names the rule and the fix, instead of the generic failure
 /// a backend reports. `name` names the shader in the errors. Call it before a backend lowers `program`; next, lower
 /// the program with [`super::platform::Generator::lower`].
 pub(crate) fn validate_stage(
-	language: PlatformShaderLanguage,
 	stage: Stages,
 	name: &str,
 	program: &besl::NodeReference,
@@ -32,15 +29,6 @@ pub(crate) fn validate_stage(
 	let Some(main) = program.get_main() else {
 		return Ok(());
 	};
-
-	if stage.is_ray_tracing() && !lowers_ray_tracing(language) {
-		return Err(format!(
-			"{stage} shader `{name}` can't be generated as {language}. The most likely cause is a ray tracing shader baked for DX12, whose shader generator doesn't lower ray tracing yet. Bake ray tracing shaders only for Metal and Vulkan, and leave them out of bakes for DX12. See {docs}.",
-			stage = stage_name(stage),
-			language = language_name(language),
-			docs = crate::online_docs_url(STAGE_SUPPORT_DOCS_PATH),
-		));
-	}
 
 	validate_entry_point(stage, name, &main)?;
 	if matches!(stage, Stages::ClosestHit) {
@@ -50,7 +38,7 @@ pub(crate) fn validate_stage(
 	// The first rule the code breaks, found by one walk over `main` and every function it calls.
 	let mut violation = None;
 	any_code_node(&main, true, &mut |node| {
-		violation = code_violation(language, stage, name, node);
+		violation = code_violation(stage, name, node);
 		violation.is_some()
 	});
 	violation.map_or(Ok(()), Err)
@@ -114,7 +102,7 @@ fn validate_closest_hit_descriptors(name: &str, program: &besl::NodeReference) -
 }
 
 /// Returns the error for the stage rule that `node` breaks, or `None` when it breaks none.
-fn code_violation(language: PlatformShaderLanguage, stage: Stages, name: &str, node: &besl::NodeReference) -> Option<String> {
+fn code_violation(stage: Stages, name: &str, node: &besl::NodeReference) -> Option<String> {
 	let stage_name = stage_name(stage);
 	let ray_tracing_docs = || crate::online_docs_url(RAY_TRACING_ENTRY_DOCS_PATH);
 	let tile_docs = || crate::online_docs_url(TILE_ENTRY_DOCS_PATH);
@@ -127,7 +115,7 @@ fn code_violation(language: PlatformShaderLanguage, stage: Stages, name: &str, n
 			if call == "write" && writes_output_overload(&intrinsic) {
 				return output_write_violation(stage, name, arguments.first()?);
 			}
-			call_violation(language, stage, name, call)
+			call_violation(stage, name, call)
 		}
 		besl::Nodes::Expression(besl::Expressions::Discard) if matches!(stage, Stages::Tile { .. }) => Some(format!(
 			"Tile shader `{name}` uses `discard`. The most likely cause is fragment code moved into a tile shader, which has no fragment to discard. Remove `discard`, and skip the `write` instead. See {}.",
@@ -184,8 +172,8 @@ fn output_write_violation(stage: Stages, name: &str, target: &besl::NodeReferenc
 	}
 }
 
-/// Returns the error for a call to the intrinsic named `call` that `stage` or `language` doesn't allow, or `None`.
-fn call_violation(language: PlatformShaderLanguage, stage: Stages, name: &str, call: &str) -> Option<String> {
+/// Returns the error for a call to the intrinsic named `call` that `stage` doesn't allow, or `None`.
+fn call_violation(stage: Stages, name: &str, call: &str) -> Option<String> {
 	let stage_name = stage_name(stage);
 	let is_tile = matches!(stage, Stages::Tile { .. });
 	let tile_docs = || crate::online_docs_url(TILE_ENTRY_DOCS_PATH);
@@ -199,14 +187,6 @@ fn call_violation(language: PlatformShaderLanguage, stage: Stages, name: &str, c
 		return Some(format!(
 			"Tile shader `{name}` calls `{call}`. The most likely cause is compute or fragment code moved into a tile shader: a tile shader's lanes don't follow the same order on every platform, and it has no derivatives. Share values through `workgroup` storage instead of subgroups, and sample with `texture_lod`. See {}.",
 			tile_docs()
-		));
-	}
-	let traces_rays = matches!(call, "intersect" | "trace_occlusion" | "invoke");
-	if traces_rays && !lowers_ray_tracing(language) {
-		return Some(format!(
-			"Shader `{name}` calls `{call}`, which can't be generated as {language}. The most likely cause is a ray query or `invoke` in a shader baked for DX12, whose shader generator doesn't lower ray tracing yet. Bake shaders that trace rays only for Metal and Vulkan, and leave them out of bakes for DX12. See {docs}.",
-			language = language_name(language),
-			docs = crate::online_docs_url(STAGE_SUPPORT_DOCS_PATH),
 		));
 	}
 	match call {
@@ -245,12 +225,6 @@ fn call_violation(language: PlatformShaderLanguage, stage: Stages, name: &str, c
 	}
 }
 
-/// Reports whether the generator of `language` lowers ray tracing stages and ray queries: MSL for Metal and GLSL for
-/// Vulkan do, HLSL for DX12 doesn't yet.
-fn lowers_ray_tracing(language: PlatformShaderLanguage) -> bool {
-	!matches!(language, PlatformShaderLanguage::Hlsl)
-}
-
 /// Returns the name a `.besl.bead` file gives `stage`.
 fn stage_name(stage: Stages) -> &'static str {
 	match stage {
@@ -265,14 +239,6 @@ fn stage_name(stage: Stages) -> &'static str {
 	}
 }
 
-fn language_name(language: PlatformShaderLanguage) -> &'static str {
-	match language {
-		PlatformShaderLanguage::Glsl => "GLSL",
-		PlatformShaderLanguage::Hlsl => "HLSL",
-		PlatformShaderLanguage::Msl => "MSL",
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -281,9 +247,8 @@ mod tests {
 	/// queries test, which every fixture's `main` takes as `world`.
 	const PRELUDE: &str = "SurfaceHit: struct { albedo: vec3f, distance: f32, }\nWorld: layer { scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>; }\n";
 
-	/// Links `source` after [`PRELUDE`], with `world: World` added to its `main`, and checks it for `stage` in
-	/// `language`.
-	fn validate(language: PlatformShaderLanguage, stage: Stages, source: &str) -> Result<(), String> {
+	/// Links `source` after [`PRELUDE`], with `world: World` added to its `main`, and checks it for `stage`.
+	fn validate(stage: Stages, source: &str) -> Result<(), String> {
 		let source = source.replacen("main: fn ()", "main: fn (world: World)", 1).replacen(
 			"main: fn (input: StageInput)",
 			"main: fn (input: StageInput, world: World)",
@@ -302,13 +267,13 @@ mod tests {
 			);
 		let program = besl::compile_to_besl(&format!("{PRELUDE}{source}"), None)
 			.unwrap_or_else(|error| panic!("Expected the fixture to link ({error:?}): {source}"));
-		validate_stage(language, stage, "fixture", &program)
+		validate_stage(stage, "fixture", &program)
 	}
 
-	/// Asserts that checking `source` for `stage` in MSL fails with an error that contains `expected` and links to the
+	/// Asserts that checking `source` for `stage` fails with an error that contains `expected` and links to the
 	/// rule it breaks.
 	fn assert_rejected(stage: Stages, source: &str, expected: &str) {
-		let error = validate(PlatformShaderLanguage::Msl, stage, source).expect_err(&format!(
+		let error = validate(stage, source).expect_err(&format!(
 			"Expected `{expected}` to be rejected in {}: {source}",
 			stage_name(stage)
 		));
@@ -342,15 +307,9 @@ mod tests {
 				"main: fn () -> void { let blocked: bool = trace_occlusion(world.scene, 255, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 100.0); }",
 			),
 		];
-		for language in [PlatformShaderLanguage::Msl, PlatformShaderLanguage::Glsl] {
-			for (stage, source) in shaders {
-				if let Err(error) = validate(language, stage, source) {
-					panic!(
-						"Expected the {} shader to be accepted as {}, got: {error}",
-						stage_name(stage),
-						language_name(language)
-					);
-				}
+		for (stage, source) in shaders {
+			if let Err(error) = validate(stage, source) {
+				panic!("Expected the {} shader to be accepted, got: {error}", stage_name(stage));
 			}
 		}
 	}
@@ -432,28 +391,6 @@ mod tests {
 			Stages::ClosestHit,
 			"albedos: descriptor<{ type: vec4f[], binding: 0, access: read }>; main: fn (input: StageInput, payload: SurfaceHit) -> SurfaceHit { let surface: SurfaceHit = payload; surface.distance = albedos[input.hit_geometry_index].x; return surface; }",
 			"declares descriptor `",
-		);
-	}
-
-	#[test]
-	fn ray_tracing_is_rejected_for_hlsl() {
-		let language = PlatformShaderLanguage::Hlsl;
-		let error = validate(language, Stages::RayGeneration, "main: fn () -> void {}")
-			.expect_err("Expected a ray generation shader to be rejected");
-		assert!(error.contains("can't be generated as HLSL"), "{error}");
-
-		let compute = Stages::Compute {
-			local_size: utils::Extent::line(1),
-		};
-		let error = validate(
-			language,
-			compute,
-			"main: fn () -> void { let hit: Hit = intersect(world.scene, 255, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 1.0); }",
-		)
-		.expect_err("Expected a ray query to be rejected");
-		assert!(
-			error.contains("calls `intersect`, which can't be generated as HLSL"),
-			"{error}"
 		);
 	}
 }

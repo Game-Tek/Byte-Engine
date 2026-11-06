@@ -194,9 +194,9 @@ main: fn () -> void {
 ```
 
 BESL lowers these compact arrays to native vectors on backends that can't pass
-or return arrays directly. HLSL also can't build a larger array inside an
-expression, so use a constructor for a larger array only to initialize a `let`
-or a constant.
+or return arrays directly. A constructor for a larger array works anywhere an
+expression does, such as a function argument or the right side of an
+assignment.
 
 Value arrays such as `u32[3]`, arrays of resource descriptors, and layered
 textures such as `Texture2DArray` are separate concepts. See

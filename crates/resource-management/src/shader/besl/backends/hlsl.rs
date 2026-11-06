@@ -2,7 +2,7 @@ use std::{cell::RefCell, fmt::Write as _};
 
 use super::{
 	IntrinsicRequirements, ResourceAccessorKind, any_code_node, intrinsic_requirements, resource_accessor,
-	resource_reference_kind, runtime_buffer_element, uses_intrinsic,
+	resource_reference_kind, runtime_buffer_element,
 };
 use crate::shader::generator::{
 	NodeEmitter, ShaderFormatting, ShaderGenerationSettings, Stages, emit_statement_block, is_integer_besl_type,
@@ -15,6 +15,7 @@ mod emit;
 mod facade;
 mod generate;
 mod node_emitter;
+mod ray_tracing;
 mod reserved;
 
 pub(crate) use analysis::*;
@@ -208,94 +209,34 @@ mod tests {
 		compile_dxil(&shader, "modern-half-atomic-regression", ShaderTypes::Compute);
 	}
 
-	/// An `else if` condition's atomic runs only when that branch is reached, so it is lifted into the else block.
+	/// Atomics run exactly where BESL evaluates them: an `else if` condition only when that branch is reached, the
+	/// right side of `&&` only when the left is true, and a `for` condition and update on every iteration.
 	#[test]
-	fn atomic_value_calls_in_else_if_conditions_lift_into_the_else_block() {
+	fn atomic_calls_run_where_besl_evaluates_them() {
 		let source = r#"
 			counter: workgroup<atomicu32>;
 			main: fn () -> void {
 				let n: u32 = 0;
 				if (n == 1) { n = 2; } else if (atomic_load(counter) == 0) { n = 3; }
+				if (thread_idx() == 0 && atomic_add(counter, 1) == 0) { n = 4; }
+				for (atomic_store(counter, 0); atomic_load(counter) < 4; atomic_store(counter, n)) { n = n + 1; }
 			}
 		"#;
 		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::line(1)));
 
-		assert_string_contains!(shader, "}else{uint32_t besl_atomic_previous_0;");
-		assert_string_contains!(shader, "if(besl_atomic_previous_0==0){n=3;}");
+		assert_string_contains!(shader, "}else if(_besl_atomic_0()==0){n=3;}");
+		assert_string_contains!(shader, "&&(_besl_atomic_1(1)==0)");
+		assert_string_contains!(shader, "for(_besl_atomic_2(0);_besl_atomic_3()<4;_besl_atomic_4(n))");
+		assert_string_contains!(
+			shader,
+			"void _besl_atomic_2(uint32_t _besl_p0){uint32_t _besl_replaced;InterlockedExchange(counter,_besl_p0,_besl_replaced);}"
+		);
+		assert_string_contains!(
+			shader,
+			"uint32_t _besl_atomic_1(uint32_t _besl_p0){uint32_t _besl_previous;InterlockedAdd(counter,_besl_p0,_besl_previous);return _besl_previous;}"
+		);
 
-		compile_dxil(&shader, "besl-else-if-atomic", ShaderTypes::Compute);
-	}
-
-	#[test]
-	fn atomic_value_calls_in_order_sensitive_hlsl_contexts_are_rejected() {
-		for source in [
-			r#"
-				counter: workgroup<atomicu32>;
-				main: fn () -> void {
-					for (let index: u32 = 0; atomic_load(counter) < 4; index = index + 1) {}
-				}
-			"#,
-			r#"
-				counter: workgroup<atomicu32>;
-				main: fn () -> void {
-					if (thread_idx() == 0 && atomic_load(counter) == 0) { return; }
-				}
-			"#,
-		] {
-			let root = besl::compile_to_besl(source, None).expect("Expected order-sensitive atomic source to link");
-			let result = Generator::new().generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&root.get_main().expect("Expected main"),
-			);
-			assert!(
-				result.is_err(),
-				"HLSL generation must reject atomics where statement lifting would change evaluation order"
-			);
-		}
-	}
-
-	#[test]
-	fn atomic_store_in_hlsl_for_loop_headers_is_rejected() {
-		for (header, source) in [
-			(
-				"initializer",
-				r#"
-					counter: workgroup<atomicu32>;
-					main: fn () -> void {
-						for (atomic_store(counter, 0); true; thread_idx()) {}
-					}
-				"#,
-			),
-			(
-				"condition",
-				r#"
-					counter: workgroup<atomicu32>;
-					main: fn () -> void {
-						for (let index: u32 = 0; atomic_store(counter, 0); index = index + 1) {}
-					}
-				"#,
-			),
-			(
-				"update",
-				r#"
-					counter: workgroup<atomicu32>;
-					main: fn () -> void {
-						for (let index: u32 = 0; index < 1; atomic_store(counter, index)) {}
-					}
-				"#,
-			),
-		] {
-			let root = besl::compile_to_besl(source, None)
-				.unwrap_or_else(|error| panic!("Expected atomic_store {header} source to link: {error:?}"));
-			let result = Generator::new().generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&root.get_main().expect("Expected main"),
-			);
-			assert!(
-				result.is_err(),
-				"HLSL generation must reject atomic_store in a for-loop {header}"
-			);
-		}
+		compile_dxil(&shader, "besl-atomic-evaluation-order", ShaderTypes::Compute);
 	}
 
 	#[test]
@@ -312,8 +253,9 @@ mod tests {
 
 		assert_string_contains!(
 			shader,
-			"InterlockedAdd(signed_value,asint(0u-asuint(minimum)),besl_atomic_previous_0);"
+			"InterlockedAdd(signed_value,asint(0u-asuint(_besl_p0)),_besl_previous);"
 		);
+		assert_string_contains!(shader, "int32_t previous=_besl_atomic_0(minimum);");
 		assert_string_does_not_contain!(shader, "InterlockedAdd(signed_value,-(");
 
 		compile_dxil(&shader, "signed-atomic-sub-wrapping-regression", ShaderTypes::Compute);
@@ -428,31 +370,6 @@ mod tests {
 	}
 
 	#[test]
-	fn anisotropic_fixed_sampler_arrays_read_one_sampler_after_the_isotropic_ones() {
-		let shader = generate(
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&super::super::link_with_sample_grad(
-				r#"
-				grazing: sampler<{ address: repeat, anisotropy: 16 }>;
-				result: descriptor<{ type: f32[], binding: 0, access: write }>;
-				textures: descriptor<{ type: Texture2D, binding: 1, access: read, count: 4, sampler: grazing }>;
-				main: fn () -> void {
-					result[0] = sample_texture_2d_array_grad(textures, 2, vec2f(0.5, 0.5), vec2f(0.0, 0.0), vec2f(0.0, 0.0)).x;
-				}
-				"#,
-			),
-		);
-
-		// Anisotropic samplers follow the 36 isotropic ones: 36 + 3 × (16x is level 4 - 1) + repeat 1.
-		assert_string_contains!(
-			shader,
-			"struct _besl_array_textures_sampler { SamplerState operator[](uint i) { return SamplerDescriptorHeap[46u]; } };"
-		);
-
-		compile_dxil(&shader, "besl-anisotropic-fixed-sampler-array", ShaderTypes::Compute);
-	}
-
-	#[test]
 	fn each_set_reads_its_descriptors_from_its_own_root_constant_bases() {
 		// The shader takes a shared set, and a set it never reaches; a layer it doesn't take forms no set.
 		let shader = lower_fixture(
@@ -504,6 +421,31 @@ mod tests {
 	}
 
 	#[test]
+	fn anisotropic_fixed_sampler_arrays_read_one_sampler_after_the_isotropic_ones() {
+		let shader = generate(
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+			&super::super::link_with_sample_grad(
+				r#"
+				grazing: sampler<{ address: repeat, anisotropy: 16 }>;
+				result: descriptor<{ type: f32[], binding: 0, access: write }>;
+				textures: descriptor<{ type: Texture2D, binding: 1, access: read, count: 4, sampler: grazing }>;
+				main: fn () -> void {
+					result[0] = sample_texture_2d_array_grad(textures, 2, vec2f(0.5, 0.5), vec2f(0.0, 0.0), vec2f(0.0, 0.0)).x;
+				}
+				"#,
+			),
+		);
+
+		// Anisotropic samplers follow the 36 isotropic ones: 36 + 3 × (16x is level 4 - 1) + repeat 1.
+		assert_string_contains!(
+			shader,
+			"struct _besl_array_textures_sampler { SamplerState operator[](uint i) { return SamplerDescriptorHeap[46u]; } };"
+		);
+
+		compile_dxil(&shader, "besl-anisotropic-fixed-sampler-array", ShaderTypes::Compute);
+	}
+
+	#[test]
 	fn runtime_buffer_and_texture_array_layer_use_native_hlsl_resources() {
 		let shader = lower_fixture(super::super::RUNTIME_ARRAY_FRAGMENT, &ShaderGenerationSettings::fragment());
 
@@ -549,12 +491,43 @@ mod tests {
 	}
 
 	#[test]
+	fn size_queries_are_values_anywhere_an_expression_is() {
+		let shader = lower_fixture(
+			r#"
+			Shadows: layer {
+				cascades: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
+			}
+			depth: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+			result: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write }>;
+			texel_size: fn (extent: vec2u) -> f32 {
+				return 1.0 / f32(extent.x);
+			}
+			main: fn (shadows: Shadows) -> void {
+				let layered: vec2u = texture_size(shadows.cascades);
+				let spacing: f32 = texel_size(texture_size(depth)) + f32(image_size(result).y);
+				let last: vec2u = texture_size(depth) - vec2u(1, 1);
+				write(result, last, vec4f(spacing, f32(layered.x), 0.0, 1.0));
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
+		);
+
+		assert_string_contains!(shader, "template<typename T> uint2 _besl_array_texture_size(T texture)");
+		assert_string_contains!(shader, "uint2 layered=_besl_array_texture_size(cascades);");
+		assert_string_contains!(shader, "texel_size(_besl_texture_size(depth))");
+		assert_string_contains!(shader, "_besl_texture_size(result).y");
+		assert_string_contains!(shader, "(_besl_texture_size(depth)-uint2(1,1))");
+
+		compile_dxil(&shader, "size-query-expressions", ShaderTypes::Compute);
+	}
+
+	#[test]
 	fn descriptor_array_elements_reach_every_texture_intrinsic_in_hlsl() {
 		let shader = lower_fixture(super::super::DESCRIPTOR_ARRAY_FRAGMENT, &ShaderGenerationSettings::fragment());
 
 		assert_string_contains!(
 			shader,
-			"textures[NonUniformResourceIndex(items[index].slot)].GetDimensions(size.x, size.y);"
+			"uint2 size=_besl_texture_size(textures[NonUniformResourceIndex(items[index].slot)]);"
 		);
 		assert_string_contains!(
 			shader,
@@ -938,11 +911,48 @@ mod tests {
 		assert_string_contains!(shader, "groupshared uint32_t visible_count;");
 		assert_string_contains!(shader, "[numthreads(32, 1, 1)]");
 		assert_string_contains!(shader, "groupshared ObjectPayload payload;");
-		assert_string_contains!(shader, "InterlockedOr(visible_count,0,besl_atomic_previous_");
-		assert_string_contains!(shader, "besl_mesh_output_count = besl_atomic_previous_");
+		assert_string_contains!(shader, "InterlockedOr(visible_count,0,_besl_previous)");
+		assert_string_contains!(shader, "besl_mesh_output_count = _besl_atomic_");
 		assert_string_contains!(shader, "DispatchMesh(besl_mesh_output_count, 1, 1, payload);");
 
 		compile_dxil(&shader, "task-payload-regression", ShaderTypes::Task);
+	}
+
+	#[test]
+	fn task_shaders_that_return_early_still_dispatch_once_from_the_entry_point() {
+		let shader = lower_fixture(
+			r#"
+			meshlet_indices: task_payload<u32, 32>;
+			visible_count: workgroup<atomicu32>;
+
+			main: fn () -> void {
+				let lane: u32 = thread_idx();
+				if (thread_position() >= 64) {
+					if (lane == 0) {
+						set_task_mesh_output_count(0);
+					}
+					return;
+				}
+				if (lane == 0) {
+					atomic_store(visible_count, 1);
+					meshlet_indices[0] = lane;
+					set_task_mesh_output_count(atomic_load(visible_count));
+				}
+			}
+			"#,
+			&ShaderGenerationSettings::task(utils::Extent::line(32), 32),
+		);
+		// The early return leaves only the body helper, so the entry point's one dispatch runs on every path.
+		assert_string_contains!(
+			shader,
+			"void besl_task_body(uint3 dispatch_thread_id,uint3 group_thread_id,uint3 group_id,uint group_thread_index){"
+		);
+		assert_string_contains!(
+			shader,
+			"besl_task_body(dispatch_thread_id,group_thread_id,group_id,group_thread_index);GroupMemoryBarrierWithGroupSync();DispatchMesh(besl_mesh_output_count, 1, 1, payload);"
+		);
+
+		compile_dxil(&shader, "task-early-return", ShaderTypes::Task);
 	}
 
 	/// Verifies per-vertex mesh outputs join the interpolated vertex struct while per-primitive outputs stay flat.
@@ -1042,6 +1052,46 @@ mod tests {
 		assert_eq!(shader.matches("instance_index").count(), 4);
 		assert_string_does_not_contain!(shader, "vertex_index : TEXCOORD");
 		assert_string_does_not_contain!(shader, "instance_index : TEXCOORD");
+	}
+
+	/// Verifies a pixel shader declares the position first and its varyings by location, as the vertex shader writes
+	/// them, so D3D12 links every varying to the register the vertex shader wrote it to.
+	#[test]
+	fn pixel_inputs_line_up_with_the_vertex_outputs_they_read() {
+		let vertex = lower_fixture(
+			r#"
+			main: fn (input: StageInput) -> interface { uv: vec2f, position: vec4f, normal: vec3f } {
+				let position: vec4f = vec4f(f32(input.vertex_index), 0.0, 0.0, 1.0);
+				let uv: vec2f = vec2f(0.0, 0.0);
+				let normal: vec3f = vec3f(0.0, 0.0, 1.0);
+				return { uv, position, normal };
+			}
+			"#,
+			&ShaderGenerationSettings::vertex(),
+		);
+		let pixel = lower_fixture(
+			r#"
+			main: fn (input: interface { uv: vec2f, normal: vec3f }) -> output { color: vec4f } {
+				let color: vec4f = vec4f(input.uv.x, input.normal.z, 0.0, 1.0);
+				return { color };
+			}
+			"#,
+			&ShaderGenerationSettings::fragment(),
+		);
+
+		// Both stages declare the position first, then the varyings by location.
+		for shader in [&vertex, &pixel] {
+			let position = shader
+				.find(": SV_Position")
+				.expect("Expected each stage to declare the position");
+			let first = shader.find(": TEXCOORD0").expect("Expected each stage to declare location 0");
+			let second = shader.find(": TEXCOORD1").expect("Expected each stage to declare location 1");
+			assert!(position < first && first < second, "{shader}");
+		}
+		assert_string_contains!(pixel, "(float4 _besl_fragment_position : SV_Position,");
+
+		compile_dxil(&vertex, "linked-vertex", ShaderTypes::Vertex);
+		compile_dxil(&pixel, "linked-pixel", ShaderTypes::Fragment);
 	}
 
 	#[test]
@@ -1327,14 +1377,9 @@ mod tests {
 			"static RWStructuredBuffer<uint32_t> counter_buffer = ResourceDescriptorHeap[_besl_sets[0].x+1u];"
 		);
 		assert_string_contains!(shader, "uint32_t counter_index=item_data[item_index].counter_index;");
-		assert_string_contains!(
-			shader,
-			"InterlockedAdd(counter_buffer[counter_index],1,besl_atomic_previous_0);"
-		);
-		assert_string_contains!(
-			shader,
-			"InterlockedAdd(counter_buffer[counter_index],1,besl_atomic_previous_1);uint32_t previous_count=besl_atomic_previous_1;"
-		);
+		assert_string_contains!(shader, "InterlockedAdd(counter_buffer[_besl_p0],_besl_p1,_besl_previous);");
+		assert_string_contains!(shader, "_besl_atomic_0(counter_index,1);");
+		assert_string_contains!(shader, "uint32_t previous_count=_besl_atomic_1(counter_index,1);");
 		assert_string_does_not_contain!(shader, "item_data.items");
 		assert_string_does_not_contain!(shader, "counter_buffer.count");
 		assert_string_does_not_contain!(shader, "struct _counter_buffer");
@@ -1565,31 +1610,188 @@ mod tests {
 		compile_dxil(&shader, "local arrays", ShaderTypes::Compute);
 	}
 
-	/// Verifies HLSL generation rejects an array constructor outside a declaration, which HLSL can't express.
+	/// Verifies an array built inside an expression, here a function argument and an assignment, comes from a
+	/// constructor function, since HLSL can't build an array there.
 	#[test]
-	fn array_constructors_outside_declarations_are_rejected() {
-		let root = besl::compile_to_besl(
+	fn array_constructors_inside_expressions_call_a_constructor_function() {
+		let shader = lower_fixture(
 			r#"
 			sum: fn (values: u32[5]) -> u32 {
 				return values[0] + values[4];
 			}
 			main: fn () -> void {
-				sum(u32[5](1, 2, 3, 4, 5));
+				let total: u32 = sum(u32[5](1, 2, 3, 4, 5));
+				let values: u32[5] = u32[5](0, 0, 0, 0, 0);
+				values = u32[5](total, 1, 2, 3, 4);
 			}
 			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+
+		assert_string_contains!(shader, "struct _besl_array_u32_5{uint32_t v[5];};");
+		assert_eq!(shader.matches("struct _besl_array_u32_5").count(), 1, "{shader}");
+		assert_string_contains!(shader, "uint32_t total=sum(_besl_array_u32_5_make(1,2,3,4,5).v);");
+		assert_string_contains!(shader, "uint32_t values[5]={0,0,0,0,0};");
+		assert_string_contains!(shader, "values=_besl_array_u32_5_make(total,1,2,3,4).v;");
+
+		compile_dxil(&shader, "besl-array-constructors", ShaderTypes::Compute);
+	}
+
+	/// Links `source` after the ray tracing fixture declarations and lowers the program to minified HLSL for `settings`.
+	fn lower_ray_tracing_fixture(source: &str, settings: &ShaderGenerationSettings) -> String {
+		let program = super::super::link_ray_tracing_fixture(source);
+		generate(settings, &program.get_main().expect("Expected the fixture's main function"))
+	}
+
+	/// Verifies a ray generation shader lowers to a `raygeneration` shader that finds hits with inline ray queries,
+	/// runs closest hits through the shader binding table's callable records, and compiles.
+	#[test]
+	fn ray_generation_stage_lowers_to_a_dxr_raygeneration_shader() {
+		let shader = lower_ray_tracing_fixture(
+			super::super::RAY_GENERATION_FIXTURE,
+			&ShaderGenerationSettings::ray_generation(),
+		);
+
+		assert_string_contains!(shader, "// #pragma shader_stage(raygeneration)");
+		assert_string_contains!(
+			shader,
+			"static RaytracingAccelerationStructure scene = ResourceDescriptorHeap[_besl_sets[0].x];"
+		);
+		// The call struct carries the payload and the hit, and `invoke` calls the hit's record.
+		assert_string_contains!(shader, "struct _besl_call{_besl_call_payload payload;Hit hit;};");
+		assert_string_contains!(
+			shader,
+			"data.payload=_besl_widen_payload(value);data.hit=hit;CallShader(hit.record,data);return _besl_narrow_payload(data.payload);"
+		);
+		assert_string_contains!(shader, "RayQuery<RAY_FLAG_FORCE_OPAQUE> query;");
+		assert_string_contains!(
+			shader,
+			"query.CommittedInstanceContributionToHitGroupIndex()+query.CommittedGeometryIndex()"
+		);
+		assert_string_contains!(shader, "return _besl_invoke(hit,");
+		assert_string_contains!(shader, "_besl_trace_occlusion(scene,255,");
+		assert_string_contains!(shader, "DispatchRaysIndex().x");
+		assert_string_contains!(shader, "DispatchRaysDimensions().x");
+		assert_string_contains!(shader, "[shader(\"raygeneration\")]void besl_main(){");
+
+		compile_dxil(&shader, "besl-ray-generation", ShaderTypes::RayGen);
+	}
+
+	/// Verifies a closest hit lowers to a `callable` shader that reads the hit from its copy of the call, in `main`
+	/// and in helpers, and returns the payload through the call.
+	#[test]
+	fn closest_hit_stage_lowers_to_a_dxr_callable_shader() {
+		let shader = lower_ray_tracing_fixture(super::super::CLOSEST_HIT_FIXTURE, &ShaderGenerationSettings::closest_hit());
+
+		assert_string_contains!(shader, "// #pragma shader_stage(callable)");
+		assert_string_contains!(shader, "static _besl_call _besl_call_data;");
+		assert_string_contains!(shader, "_besl_call_data.hit.besl_distance");
+		assert_string_contains!(shader, "_besl_call_data.hit.barycentrics");
+		assert_string_contains!(shader, "SurfaceHit _besl_closest_hit_main(SurfaceHit besl_payload)");
+		assert_string_contains!(
+			shader,
+			"[shader(\"callable\")]void besl_main(inout _besl_call data){_besl_call_data=data;_besl_call_data.payload=_besl_widen_payload(_besl_closest_hit_main(_besl_narrow_payload(_besl_call_data.payload)));data=_besl_call_data;}"
+		);
+		// The prelude declares `Hit` once.
+		assert_eq!(shader.matches("struct Hit{").count(), 1, "{shader}");
+
+		compile_dxil(&shader, "besl-closest-hit", ShaderTypes::ClosestHit);
+	}
+
+	/// The payload a ray generation shader and a closest hit exchange through `CallShader` carries its 16-bit members
+	/// widened to 32 bits, since DXR returns call data with 16-bit members wrong, and both shaders convert at the call.
+	#[test]
+	fn call_data_carries_16_bit_payload_members_widened() {
+		let source = r#"
+			Shaded: struct { albedo: vec3f16, front_face: u32, emission: vec3f, roughness: f16, }
+			Scene: layer {
+				scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>;
+				shaded: descriptor<{ type: Shaded[], binding: 1, access: write }>;
+			}
+		"#;
+		let ray_generation = besl::compile_to_besl(
+			&format!(
+				"{source}{}",
+				r#"
+				main: fn (input: StageInput, scene: Scene) -> void {
+					let hit: Hit = intersect(scene.scene, 255, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 100.0);
+					scene.shaded[input.launch_index.x] = invoke(hit, Shaded(vec3f16(0.0, 0.0, 0.0), 0, vec3f(0.0, 0.0, 0.0), f16(1.0)));
+				}
+				"#
+			),
 			None,
 		)
-		.expect("Expected array argument source to link.");
+		.expect("Expected the ray generation shader to link");
+		let closest_hit = besl::compile_to_besl(
+			&format!(
+				"{source}{}",
+				r#"
+				main: fn (input: StageInput, payload: Shaded, scene: Scene) -> Shaded {
+					let shaded: Shaded = payload;
+					shaded.albedo = vec3f16(input.hit_barycentrics.x, 0.5, 0.25);
+					shaded.front_face = 1;
+					shaded.roughness = f16(0.5);
+					return shaded;
+				}
+				"#
+			),
+			None,
+		)
+		.expect("Expected the closest hit to link");
 
-		let result = Generator::new().generate(
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&root.get_main().expect("Expected main."),
+		for (program, settings, name, stage) in [
+			(
+				ray_generation,
+				ShaderGenerationSettings::ray_generation(),
+				"besl-16-bit-call-ray-generation",
+				ShaderTypes::RayGen,
+			),
+			(
+				closest_hit,
+				ShaderGenerationSettings::closest_hit(),
+				"besl-16-bit-call-closest-hit",
+				ShaderTypes::ClosestHit,
+			),
+		] {
+			let shader = generate(&settings, &program.get_main().expect("Expected the shader's main function"));
+
+			assert_string_contains!(
+				shader,
+				"struct _besl_call_payload{float3 albedo;uint32_t front_face;float3 emission;float roughness;};"
+			);
+			assert_string_contains!(shader, "struct _besl_call{_besl_call_payload payload;Hit hit;};");
+			assert_string_contains!(shader, "value.albedo=(float16_t3)wire.albedo;");
+			assert_string_contains!(shader, "value.roughness=(float16_t)wire.roughness;");
+
+			compile_dxil(&shader, name, stage);
+		}
+	}
+
+	/// Verifies a compute shader runs `intersect` and `trace_occlusion` as inline ray queries and builds a `Hit`.
+	#[test]
+	fn ray_queries_lower_to_inline_ray_queries_in_compute_shaders() {
+		let shader = lower_ray_tracing_fixture(
+			r#"
+			main: fn (input: StageInput, scene: Scene) -> void {
+				let origin: vec3f = vec3f(f32(input.thread_id.x), 0.0, 0.0);
+				let hit: Hit = intersect(scene.scene, 1, origin, vec3f(0.0, 0.0, 1.0), 0.0, 10.0);
+				let rebuilt: Hit = Hit(hit.record, hit.distance, 0, 0, 0, vec2f(0.0, 0.0), origin, vec3f(0.0, 0.0, 1.0));
+				let surface: SurfaceHit = SurfaceHit(vec3f(rebuilt.barycentrics.x, 0.0, 0.0), rebuilt.distance);
+				if (trace_occlusion(scene.scene, 255, origin, vec3f(0.0, 0.0, 1.0), 0.0, 10.0)) {
+					surface.distance = 0.0;
+				}
+				scene.surfaces[input.thread_id.x] = surface;
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(64)),
 		);
 
-		assert!(
-			result.is_err(),
-			"HLSL generation must reject an array constructor passed as an argument"
-		);
+		assert_string_contains!(shader, "// #pragma shader_stage(compute)");
+		assert_string_does_not_contain!(shader, "[shader(");
+		assert_string_contains!(shader, "Hit hit=_besl_intersect(scene,1,origin,");
+		assert_string_contains!(shader, "rebuilt.besl_distance");
+
+		compile_dxil(&shader, "besl-ray-queries", ShaderTypes::Compute);
 	}
 
 	/// Compiles generated HLSL with DXC on Windows so a lowering that DXC rejects fails the test.
@@ -1775,19 +1977,23 @@ mod tests {
 			shader,
 			"static RWStructuredBuffer<uint32_t> counter_buffer = ResourceDescriptorHeap[_besl_sets[0].x+1u];"
 		);
-		assert_string_contains!(shader, "uint2 extent;output_image.GetDimensions(extent.x, extent.y);");
+		assert_string_contains!(shader, "uint2 extent=_besl_texture_size(output_image);");
 		assert_string_contains!(shader, "float noise=frac(1.25);");
 		// HLSL `*` is component-wise, so BESL matrix-vector products must use `mul`.
 		assert_string_contains!(shader, "float4 projected=(mul(inverse_projection, clip_space));");
 		assert_string_contains!(shader, "uint32_t item_index=item_data[0].counter_index;");
 		assert_string_contains!(shader, "output_image[coord] = float4(1.0,1.0,1.0,1.0);");
-		// HLSL has no atomic store, so the store is an exchange whose previous value is discarded.
-		assert_string_contains!(shader, "InterlockedExchange(counter_buffer[item_index],2,besl_atomic_stored_");
+		// HLSL has no atomic store, so the store is an exchange whose replaced value is discarded.
+		assert_string_contains!(
+			shader,
+			"InterlockedExchange(counter_buffer[_besl_p0],_besl_p1,_besl_replaced)"
+		);
+		assert_string_contains!(shader, "_besl_atomic_0(item_index,2);");
 		assert_string_does_not_contain!(shader, "fract(");
 		assert_string_does_not_contain!(shader, "RWStructuredBuffer<Item> item_data");
 	}
 
-	/// Verifies compare-exchange returns the previous value through HLSL's out parameter, with one temporary per call.
+	/// Verifies compare-exchange returns the previous value through HLSL's out parameter, with one helper per call.
 	#[test]
 	fn atomic_compare_exchange_lowers_to_hlsl() {
 		let script = r#"
@@ -1802,13 +2008,10 @@ mod tests {
 		let shader = lower_fixture(script, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
 		assert_string_contains!(
 			shader,
-			"InterlockedCompareExchange(shared_keys[group_thread_index],4294967295,7,besl_atomic_previous_0);"
+			"uint32_t _besl_atomic_0(uint32_t _besl_p0,uint32_t _besl_p1,uint32_t _besl_p2){uint32_t _besl_previous;InterlockedCompareExchange(shared_keys[_besl_p0],_besl_p1,_besl_p2,_besl_previous);return _besl_previous;}"
 		);
-		assert_string_contains!(shader, "uint32_t previous=besl_atomic_previous_0;");
-		assert_string_contains!(
-			shader,
-			"InterlockedCompareExchange(shared_keys[group_thread_index],7,9,besl_atomic_previous_1);"
-		);
+		assert_string_contains!(shader, "uint32_t previous=_besl_atomic_0(group_thread_index,4294967295,7);");
+		assert_string_contains!(shader, "_besl_atomic_1(group_thread_index,7,9);");
 
 		compile_dxil(&shader, "besl-atomic-compare-exchange", ShaderTypes::Compute);
 	}

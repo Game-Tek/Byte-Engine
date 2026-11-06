@@ -681,16 +681,16 @@ The normal generators support these stage and output-language combinations:
 | Tile | Supported as a compute shader | Supported as a compute shader | Supported as a tile function |
 | Task | Supported through `GL_EXT_mesh_shader` | Supported as an amplification shader | Supported as an object stage |
 | Mesh | Supported through `GL_EXT_mesh_shader` | Supported | Supported |
-| RayGeneration | Supported as a `raygen` shader | Not supported | Supported as a compute kernel |
-| ClosestHit | Supported as a `callable` shader | Not supported | Supported as a visible function |
+| RayGeneration | Supported as a `raygen` shader | Supported as a DirectX Raytracing (DXR) `raygeneration` shader | Supported as a compute kernel |
+| ClosestHit | Supported as a `callable` shader | Supported as a DXR `callable` shader | Supported as a visible function |
 
 The generated language support doesn't guarantee that a device exposes the
 required shader stage or extension. Half-precision and subgroup operations also
 require their target capabilities. BESL validates subgroup intrinsics for
 compute stages only. See [compute-stage intrinsics](/docs/reference/besl/intrinsics#compute-stage).
-The [ray queries](/docs/reference/besl/intrinsics#ray-queries) follow the ray
-tracing stages: the MSL and GLSL generators support them, and the HLSL
-generator rejects them.
+Every generator supports the
+[ray queries](/docs/reference/besl/intrinsics#ray-queries): HLSL lowers them to
+inline `RayQuery` objects, which need DXR tier 1.1.
 
 Next, use [BESL intrinsics](/docs/reference/besl/intrinsics) to read and update
 the values declared by the interface.

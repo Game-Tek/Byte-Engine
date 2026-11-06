@@ -1,4 +1,15 @@
 use super::*;
+/// The helper that holds a task shader's BESL `main`; see [`Generator::emit_hlsl_task_entry`].
+const TASK_BODY_FUNCTION: &str = "besl_task_body";
+
+/// The dispatch builtins a compute-like entry point receives, as the task body helper declares them.
+const TASK_DISPATCH_BUILTINS: [&str; 4] = [
+	"uint3 dispatch_thread_id",
+	"uint3 group_thread_id",
+	"uint3 group_id",
+	"uint group_thread_index",
+];
+
 impl Generator {
 	/// Generates an HLSL shader from a BESL AST.
 	///
@@ -23,14 +34,7 @@ impl Generator {
 		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "HLSL");
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
-		crate::shader::generator::validate_no_ray_tracing(&shader_compilation_settings.stage, &order)?;
 		crate::shader::generator::validate_vertex_builtin_inputs(&shader_compilation_settings.stage, &order)?;
-		if order.iter().any(Self::has_unsupported_hlsl_atomic_context) {
-			return Err(());
-		}
-		if order.iter().any(Self::has_misplaced_array_constructor) {
-			return Err(());
-		}
 		let requirements = intrinsic_requirements(&order);
 		if requirements.uses_subgroup_intrinsics && !matches!(self.stage, Stages::Compute { .. }) {
 			return Err(());
@@ -42,8 +46,10 @@ impl Generator {
 		self.raster_outputs.clear();
 		self.user_struct_constructors.clear();
 		self.packed_write_counter = 0;
-		self.atomic_temporary_counter = 0;
-		self.atomic_temporaries.clear();
+		self.atomic_helper_counter = 0;
+		self.helpers.clear();
+		self.constructed_arrays.clear();
+		self.substitutions.clear();
 		self.plan_byte_windows(&order);
 		for node in &order {
 			match node.borrow().node() {
@@ -54,7 +60,16 @@ impl Generator {
 				_ => {}
 			}
 		}
+		// D3D12 links a stage's outputs to the next stage's inputs by signature register, in declaration order, so both
+		// stages declare the position first and the varyings by location. A pixel shader then reads every varying a
+		// vertex or mesh shader writes up to its last input, wherever each was declared.
+		self.raster_inputs.sort_by_key(|node| io_order(node));
+		self.raster_outputs.sort_by_key(|node| io_order(node));
+		self.mesh_outputs.sort_by_key(|node| io_order(node));
 		self.generate_hlsl_header_block(&mut string, shader_compilation_settings, &requirements);
+		if Self::uses_ray_tracing(self.stage, &order, &requirements) {
+			self.emit_ray_tracing_prelude(&mut string, &requirements);
+		}
 		emit_set_bases(&mut string, &order, ShaderFormatting::new(self.minified).break_str())?;
 		if matches!(self.stage, Stages::Task { .. }) {
 			string.push_str("groupshared uint32_t besl_mesh_output_count;");
@@ -64,13 +79,40 @@ impl Generator {
 			self.emit_mesh_output_structs(&mut string);
 		}
 
+		// Ray tracing stages exchange the payload in a call struct, which is declared right after the payload's struct.
+		let payload = match self.stage {
+			Stages::RayGeneration => super::super::invoke_payload(&order),
+			Stages::ClosestHit => match main_function_node.borrow().node() {
+				besl::Nodes::Function { return_type, .. } => Some(return_type.clone()),
+				_ => None,
+			},
+			_ => None,
+		};
+		let payload = payload.and_then(|payload| payload.borrow().get_name().map(str::to_owned));
+
 		// Each constructed user struct gets its factory right after its declaration. Constructor calls are emitted after
 		// the struct they construct, so the factories are inserted once emission has recorded every call.
 		let mut struct_ends = Vec::new();
 		for node in order {
-			self.emit_node_string(&mut string, &node);
-			if matches!(node.borrow().node(), besl::Nodes::Struct { .. }) {
-				struct_ends.push((string.len(), node));
+			let start = string.len();
+			if node == *main_function_node && matches!(self.stage, Stages::ClosestHit) {
+				self.emit_closest_hit_entry_point(&mut string, &node)?;
+			} else {
+				self.emit_node_string(&mut string, &node);
+			}
+			// The atomics a function runs and the arrays it builds call helpers that go right before it.
+			if !self.helpers.is_empty() {
+				string.insert_str(start, &self.helpers);
+				self.helpers.clear();
+			}
+			if node == *main_function_node && matches!(self.stage, Stages::ClosestHit) {
+				continue;
+			}
+			if let besl::Nodes::Struct { name, fields, .. } = node.borrow().node() {
+				struct_ends.push((string.len(), node.clone()));
+				if payload.as_deref() == Some(name.as_str()) {
+					self.emit_call_data(&mut string, name, fields)?;
+				}
 			}
 		}
 		for (end, node) in struct_ends.into_iter().rev() {
@@ -87,6 +129,10 @@ impl Generator {
 	}
 
 	/// Emits an amplification entry point with the group-shared payload required by `DispatchMesh`.
+	///
+	/// DXIL requires `DispatchMesh` on every path out of the entry point, but BESL lets a task shader return early, as
+	/// Metal and Vulkan do. So the BESL `main` becomes the [`TASK_BODY_FUNCTION`] helper, where a `return` only leaves
+	/// the helper, and the entry point calls it, converges every lane, and dispatches the count BESL selected.
 	pub(crate) fn emit_hlsl_task_entry(
 		&mut self,
 		string: &mut String,
@@ -96,30 +142,77 @@ impl Generator {
 		params: &[besl::NodeReference],
 	) {
 		let formatting = ShaderFormatting::new(self.minified);
-		if !self.task_payloads.is_empty() {
-			// Every amplification lane contributes to one payload, so it must use group-shared storage.
-			string.push_str("groupshared ObjectPayload payload;");
-			string.push_str(formatting.break_str());
+		let return_type_name = return_type.borrow().get_name().unwrap().to_string();
+		if self.task_payloads.is_empty() {
+			self.emit_function_attributes(string, node, "main");
+			Self::emit_type_name(string, &return_type_name);
+			string.push(' ');
+			// `main` is reserved, so the entry point is written as `besl_main` like any other escaped name.
+			Self::identifier("main").push_to(string);
+			string.push('(');
+			self.emit_call_arguments(string, params);
+			self.emit_function_extra_parameters(string, node, "main", !params.is_empty());
+			formatting.push_block_start(string);
+			self.emit_function_statement_block(string, statements, 1);
+			self.emit_block_end(string);
+			return;
 		}
+
+		// Every amplification lane contributes to one payload, so it must use group-shared storage.
+		string.push_str("groupshared ObjectPayload payload;");
+		string.push_str(formatting.break_str());
+
+		// The body takes the entry point's parameters and the dispatch builtins under the names its statements use.
+		Self::emit_type_name(string, &return_type_name);
+		let _ = write!(string, " {TASK_BODY_FUNCTION}(");
+		self.emit_call_arguments(string, params);
+		for (index, builtin) in TASK_DISPATCH_BUILTINS.iter().enumerate() {
+			if index > 0 || !params.is_empty() {
+				self.emit_separator(string);
+			}
+			string.push_str(builtin);
+		}
+		formatting.push_block_start(string);
+		self.emit_function_statement_block(string, statements, 1);
+		self.emit_block_end(string);
+
 		self.emit_function_attributes(string, node, "main");
-		Self::emit_type_name(string, return_type.borrow().get_name().unwrap());
+		Self::emit_type_name(string, &return_type_name);
 		string.push(' ');
-		// `main` is reserved, so the entry point is written as `besl_main` like any other escaped name.
 		Self::identifier("main").push_to(string);
 		string.push('(');
 		self.emit_call_arguments(string, params);
 		self.emit_function_extra_parameters(string, node, "main", !params.is_empty());
 		formatting.push_block_start(string);
-		self.emit_function_statement_block(string, statements, 1);
-		if !self.task_payloads.is_empty() {
-			// DXIL requires DispatchMesh to dominate the entry point, so every lane converges after BESL selects the count.
-			formatting.push_indentation(string, 1);
-			string.push_str("GroupMemoryBarrierWithGroupSync()");
-			formatting.push_statement_end(string);
-			formatting.push_indentation(string, 1);
-			string.push_str("DispatchMesh(besl_mesh_output_count, 1, 1, payload)");
-			formatting.push_statement_end(string);
+		formatting.push_indentation(string, 1);
+		let _ = write!(string, "{TASK_BODY_FUNCTION}(");
+		let mut forwarded = params
+			.iter()
+			.filter_map(|param| match param.borrow().node() {
+				besl::Nodes::Parameter { name, .. } => Some(Self::identifier(name).to_string()),
+				_ => None,
+			})
+			.collect::<Vec<_>>();
+		forwarded.extend(
+			TASK_DISPATCH_BUILTINS
+				.iter()
+				.map(|builtin| builtin.rsplit(' ').next().unwrap().to_string()),
+		);
+		for (index, argument) in forwarded.iter().enumerate() {
+			if index > 0 {
+				self.emit_separator(string);
+			}
+			string.push_str(argument);
 		}
+		string.push(')');
+		formatting.push_statement_end(string);
+		// Lanes that returned early wait here with the rest, so every lane reaches the one dispatch.
+		formatting.push_indentation(string, 1);
+		string.push_str("GroupMemoryBarrierWithGroupSync()");
+		formatting.push_statement_end(string);
+		formatting.push_indentation(string, 1);
+		string.push_str("DispatchMesh(besl_mesh_output_count, 1, 1, payload)");
+		formatting.push_statement_end(string);
 		self.emit_block_end(string);
 	}
 
@@ -232,8 +325,14 @@ impl Generator {
 	// Keep the exhaustive node-to-HLSL mapping together so adding a BESL node requires handling its backend contract here.
 	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 	pub(crate) fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeReference) {
-		if let Some(temporary) = self.atomic_temporaries.get(this_node) {
-			string.push_str(temporary);
+		if let Some(substitute) = self.substitutions.get(this_node) {
+			string.push_str(substitute);
+			return;
+		}
+		// A `let` or a constant initializes an array with braces; an array built anywhere else calls a constructor.
+		if let Some(elements) = crate::shader::generator::array_constructor_elements(this_node) {
+			let elements = elements.to_vec();
+			self.emit_hlsl_array_constructor(string, this_node, &elements);
 			return;
 		}
 
@@ -256,18 +355,20 @@ impl Generator {
 				// The shared emitter escapes the reserved `main` to the `besl_main` entry point.
 				if name == "main" && matches!(self.stage, Stages::Task { .. }) {
 					self.emit_hlsl_task_entry(string, this_node, statements, return_type, params);
+				} else if name == "main" && matches!(self.stage, Stages::RayGeneration) {
+					self.emit_ray_generation_entry_point(string, statements);
 				} else {
 					self.emit_function_node(string, this_node, name, statements, return_type, params);
 				}
 			}
+			// The ray tracing prelude declares `Hit` before the helpers that return it.
+			besl::Nodes::Struct { name, .. } if name == besl::HIT_STRUCT => {}
 			besl::Nodes::Struct {
 				name, fields, template, ..
 			} => {
 				let fields = self.windowed_members(fields);
 				self.emit_struct_node(string, name, &fields, template)
 			}
-			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
-				if *operator == besl::Operators::Assignment && self.emit_image_size_assignment(string, left, right) => {}
 			besl::Nodes::PushConstant { members } => {
 				// Push constants are the root constants at b0; the set bases follow at b1 and descriptors take no register.
 				if !self.minified {
@@ -505,7 +606,14 @@ impl Generator {
 						);
 					}
 					besl::BindingTypes::AccelerationStructure => {
-						unreachable!("HLSL generation rejects ray tracing programs before it emits their bindings")
+						emit_descriptor_declaration(
+							string,
+							break_char,
+							"RaytracingAccelerationStructure",
+							Self::identifier(name),
+							resource,
+							count,
+						);
 					}
 				}
 			}
@@ -539,9 +647,9 @@ impl Generator {
 			),
 			Stages::Task { .. } => ("amplification", "// Requires: Amplification shader support\n"),
 			Stages::Mesh { .. } => ("mesh", "// Requires: Mesh shader support\n"),
-			Stages::RayGeneration | Stages::ClosestHit => {
-				unreachable!("`validate_no_ray_tracing` rejects ray tracing stages before HLSL emits a header.")
-			}
+			// DXR shaders compile as libraries, and a closest hit runs as a callable shader. See `ray_tracing.rs`.
+			Stages::RayGeneration => ("raygeneration", "// Requires: Ray tracing tier 1.1\n"),
+			Stages::ClosestHit => ("callable", "// Requires: Ray tracing tier 1.1\n"),
 			Stages::Tile { .. } => {
 				unreachable!(
 					"A tile shader reaches HLSL already rewritten into a compute shader by `backends::tile::lower_for`."
@@ -558,6 +666,14 @@ impl Generator {
 		hlsl_block.push_str("#pragma pack_matrix(column_major)\nstatic const float PI = 3.14159265359;");
 
 		hlsl_block.push_str(ShaderFormatting::new(self.minified).break_str());
+		if requirements.uses_texture_size {
+			// `GetDimensions` writes the size through out-parameters, so these return it as a value a size query can be
+			// used as anywhere. An array texture writes its layer count too, which the size leaves out.
+			hlsl_block.push_str(
+				"template<typename T> uint2 _besl_texture_size(T texture) { uint2 size; texture.GetDimensions(size.x, size.y); return size; }\n\
+				 template<typename T> uint2 _besl_array_texture_size(T texture) { uint3 size; texture.GetDimensions(size.x, size.y, size.z); return size.xy; }\n",
+			);
+		}
 		if requirements.uses_subgroup_intrinsics {
 			hlsl_block.push_str(
 				"bool _besl_subgroup_ballot_any(uint4 mask) { return any(mask); }\n\
@@ -670,4 +786,14 @@ fn emit_descriptor_declaration(
 		}
 	}
 	let _ = write!(string, "; }} }};{break_char}static _besl_array_{name} {name};{break_char}");
+}
+
+/// Returns where raster stage input or output `node` goes in its stage's signature: the position first, then the rest
+/// by location.
+fn io_order(node: &besl::NodeReference) -> (bool, u8) {
+	match node.borrow().node() {
+		besl::Nodes::Input { name, location, .. } => (!crate::shader::generator::is_vertex_builtin_input(name), *location),
+		besl::Nodes::Output { name, location, .. } => (!besl::is_position_output(name), *location),
+		_ => (true, u8::MAX),
+	}
 }

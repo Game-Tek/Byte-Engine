@@ -480,24 +480,6 @@ fn any_code_node<F: FnMut(&besl::NodeReference) -> bool>(
 	}
 }
 
-/// Reports whether `node`, or code nested in it, calls the intrinsic named `intrinsic_name`.
-///
-/// Backends use it to enable extensions or declare helpers only for shaders that need them. It does not search the
-/// bodies of called functions, so pass every emitted function, as [`crate::shader::generator::ordered_shader_nodes`]
-/// returns them, to cover a whole shader.
-fn uses_intrinsic(node: &besl::NodeReference, intrinsic_name: &str) -> bool {
-	any_code_node(node, false, &mut |node| is_intrinsic_call(node, intrinsic_name))
-}
-
-/// Reports whether `node` is a call to the intrinsic named `intrinsic_name`.
-fn is_intrinsic_call(node: &besl::NodeReference, intrinsic_name: &str) -> bool {
-	matches!(
-		node.borrow().node(),
-		besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. })
-			if intrinsic.borrow().get_name() == Some(intrinsic_name)
-	)
-}
-
 /// The BESL subgroup operations, which every backend supports only in compute shaders.
 const SUBGROUP_INTRINSICS: [&str; 9] = [
 	"subgroup_lane_index",
@@ -592,6 +574,8 @@ pub(crate) struct IntrinsicRequirements {
 	pub(crate) uses_render_target_array_index: bool,
 	pub(crate) uses_intersect: bool,
 	pub(crate) uses_trace_occlusion: bool,
+	/// The shader reads a texture's or an image's size with `texture_size` or `image_size`.
+	pub(crate) uses_texture_size: bool,
 }
 
 /// Records the intrinsics that the code of every node in `order` calls, walking each body once.
@@ -633,6 +617,7 @@ fn intrinsic_requirements(order: &[besl::NodeReference]) -> IntrinsicRequirement
 					"set_mesh_primitive_render_target_array_index" => requirements.uses_render_target_array_index = true,
 					"intersect" => requirements.uses_intersect = true,
 					"trace_occlusion" => requirements.uses_trace_occlusion = true,
+					"texture_size" | "image_size" => requirements.uses_texture_size = true,
 					_ => {}
 				}
 			}

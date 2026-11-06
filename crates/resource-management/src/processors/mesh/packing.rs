@@ -888,14 +888,10 @@ fn bounding_sphere(bounds: &AABB<ModelSpace>, positions: &[[f32; 3]]) -> [f32; 4
 /// Reports whether `starts` splits `index_count` triangle indices into full detail and coarser levels that each hold
 /// at least one whole triangle, and whether the levels fit in a primitive.
 fn authored_level_starts_are_valid(starts: &[usize], index_count: usize) -> bool {
+	// Every range holding at least one index also keeps the starts in order and inside the list.
 	starts.len() < MAX_PRIMITIVE_LODS
 		&& starts.iter().all(|start| start.is_multiple_of(3))
-		&& std::iter::once(0)
-			.chain(starts.iter().copied())
-			.chain([index_count])
-			.collect::<Vec<_>>()
-			.windows(2)
-			.all(|pair| pair[0] < pair[1])
+		&& level_ranges(starts, index_count).all(|range| !range.is_empty())
 }
 
 /// Yields the index range of full detail, then of each authored level, from the level starts of a primitive with

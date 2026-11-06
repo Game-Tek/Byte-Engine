@@ -72,8 +72,7 @@ struct MeshLodsManifest {
 	max_levels: u8,
 	max_error: f32,
 	lock_borders: bool,
-	/// Read by [`authored_level_pattern`] for the model handlers that support authored levels.
-	#[allow(dead_code)]
+	/// Validated here for every model; handlers that support authored levels read it with [`authored_level_pattern`].
 	authored: Option<String>,
 }
 
@@ -146,6 +145,9 @@ fn mesh_lod_settings(spec: Option<&BEADType>) -> Result<MeshLodSettings, String>
 	}
 	if !(manifest.max_error > 0.0 && manifest.max_error <= 1.0) {
 		return Err("`lods.max_error` must be above 0 and at most 1".to_string());
+	}
+	if let Some(pattern) = &manifest.authored {
+		AuthoredLevelPattern::parse(pattern)?;
 	}
 	Ok(MeshLodSettings {
 		// One level is full detail alone.

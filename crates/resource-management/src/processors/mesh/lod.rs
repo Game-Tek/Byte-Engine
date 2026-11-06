@@ -162,25 +162,26 @@ impl<'a> TriangleGrid<'a> {
 			origin: min,
 			cell,
 			dimensions,
-			starts: vec![0; dimensions.iter().product::<usize>() + 1],
+			starts: Vec::new(),
 			triangles: Vec::new(),
 		};
 		// Counts each cell's triangles, turns the counts into starts, then fills the cells.
+		let mut starts = vec![0u32; dimensions.iter().product::<usize>() + 1];
 		for triangle in 0..triangle_count {
-			grid.for_each_cell_of(triangle, |cell, starts| starts[cell + 1] += 1);
+			grid.for_each_cell_of(triangle, |cell| starts[cell + 1] += 1);
 		}
-		for cell in 1..grid.starts.len() {
-			grid.starts[cell] += grid.starts[cell - 1];
+		for cell in 1..starts.len() {
+			starts[cell] += starts[cell - 1];
 		}
-		let mut cursor = grid.starts.clone();
-		grid.triangles = vec![0; *grid.starts.last().unwrap_or(&0) as usize];
-		let mut triangles = std::mem::take(&mut grid.triangles);
+		let mut cursor = starts.clone();
+		let mut triangles = vec![0u32; *starts.last().unwrap_or(&0) as usize];
 		for triangle in 0..triangle_count {
-			grid.for_each_cell_of(triangle, |cell, _| {
+			grid.for_each_cell_of(triangle, |cell| {
 				triangles[cursor[cell] as usize] = triangle as u32;
 				cursor[cell] += 1;
 			});
 		}
+		grid.starts = starts;
 		grid.triangles = triangles;
 		grid
 	}
@@ -200,16 +201,16 @@ impl<'a> TriangleGrid<'a> {
 	}
 
 	/// Calls `visit` with every cell the triangle's bounding box overlaps.
-	fn for_each_cell_of(&mut self, triangle: usize, mut visit: impl FnMut(usize, &mut Vec<u32>)) {
+	fn for_each_cell_of(&self, triangle: usize, mut visit: impl FnMut(usize)) {
 		let corners = self.corners(triangle);
-		let low = self.cell_of(std::array::from_fn(|axis| corners.iter().map(|c| c[axis]).fold(f32::INFINITY, f32::min)));
-		let high =
-			self.cell_of(std::array::from_fn(|axis| corners.iter().map(|c| c[axis]).fold(f32::NEG_INFINITY, f32::max)));
+		let bound = |pick: fn(f32, f32) -> f32, start: f32| {
+			std::array::from_fn(|axis| corners.iter().map(|corner| corner[axis]).fold(start, pick))
+		};
+		let (low, high) = (self.cell_of(bound(f32::min, f32::INFINITY)), self.cell_of(bound(f32::max, f32::NEG_INFINITY)));
 		for z in low[2]..=high[2] {
 			for y in low[1]..=high[1] {
 				for x in low[0]..=high[0] {
-					let cell = self.cell_index([x, y, z]);
-					visit(cell, &mut self.starts);
+					visit(self.cell_index([x, y, z]));
 				}
 			}
 		}

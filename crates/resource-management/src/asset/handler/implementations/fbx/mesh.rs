@@ -600,25 +600,12 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 
 		// Triangulates the visible faces of one material part and processes them before the next part reuses the
 		// corner storage.
-		let mut import_part = |part: usize, faces: &mut dyn Iterator<Item = usize>, triangles: usize| {
+		for_each_material_part(mesh, |part, faces, triangles| {
 			corners.clear();
 
 			corners.reserve(triangles.saturating_mul(3));
 
-			for face_index in faces {
-				let face = mesh.faces.get(face_index).copied().ok_or(FbxImportError::InvalidFaceIndex)?;
-
-				if is_visible_polygon_face(mesh, face_index)
-					&& append_triangulated_face(mesh, face, &mut scratch, &mut corners)?
-				{
-					culled_polygons.record(face.num_indices);
-				}
-			}
-
-			// Corners that repeat another corner's vertex data index that corner instead, so they become one vertex.
-			for corner in corners.iter_mut() {
-				*corner = weld[*corner as usize];
-			}
+			append_welded_corners(mesh, faces, &weld, &mut scratch, &mut corners, culled_polygons)?;
 
 			primitive_count += import_fbx_material_corners(
 				&context,
@@ -633,16 +620,7 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 			)?;
 
 			Ok::<_, FbxMeshProcessingError>(())
-		};
-
-		if mesh.material_parts.is_empty() {
-			import_part(0, &mut (0..mesh.faces.len()), mesh.num_triangles)?;
-		} else {
-			for part in &mesh.material_parts {
-				let faces = &mut part.face_indices.iter().map(|&face_index| face_index as usize);
-				import_part(part.index as usize, faces, part.num_triangles)?;
-			}
-		}
+		})?;
 	}
 
 	if primitive_count == 0 {
@@ -678,66 +656,21 @@ pub(crate) fn import_fbx_material_corners(
 		.ok_or(FbxImportError::MissingMaterial)?;
 	remap_triangle_corners(context.mesh.num_indices, corners, remap, remapped)?;
 	let primitive_count = remapped.ends.len();
-	if primitive_count == 1
-		&& let Some(first_level) = chain.first()
-	{
-		let name = part_material_name(context.material_node, context.mesh, part);
+	let name = || part_material_name(context.material_node, context.mesh, part);
+	if primitive_count == 1 && !chain.is_empty() {
 		let (source_corners, indices) = remapped.primitives().next().ok_or(FbxImportError::EmptyPrimitive)?;
-		let allocator = *first_level.parts.allocator();
-		// Each level's corners remapped into one primitive's vertices, kept until the primitive is pushed.
-		let mut levels = Vec::with_capacity_in(chain.len(), allocator);
-		let mut vertices = source_corners.len();
-		for file in chain {
-			let level_corners = file
-				.parts
-				.iter()
-				.find(|(part_name, _)| *part_name == name)
-				.map(|(_, corners)| &corners[..])
-				.ok_or(FbxImportError::MissingMaterial)?;
-			let mut level_remap = Vec::with_capacity_in(file.context.mesh.num_indices, allocator);
-			level_remap.resize(file.context.mesh.num_indices, u32::MAX);
-			let mut level_remapped = RemappedCorners::with_capacity_in(level_corners.len(), allocator);
-			remap_triangle_corners(file.context.mesh.num_indices, level_corners, &mut level_remap, &mut level_remapped)?;
-			let added = level_remapped.source_corners.len();
-			if level_remapped.ends.len() != 1 || vertices + added > MAX_PRIMITIVE_VERTICES {
-				notes.warnings.push(format!(
-					"Authored level '{}' adds {added} vertices to the {vertices} of material '{name}', more than the 65,536 a primitive holds, so the bake generates that level and the coarser ones instead.",
-					file.id
-				));
-				break;
-			}
-			vertices += added;
-			levels.push(level_remapped);
-		}
-		let mut segments = Vec::with_capacity_in(1 + levels.len(), allocator);
-		segments.push(FbxSegment {
+		let full_detail = FbxSegment {
 			context,
 			source_corners,
 			indices,
-		});
-		let mut level_starts = Vec::with_capacity_in(levels.len(), allocator);
-		let mut index_count = indices.len();
-		for (file, level) in chain.iter().zip(&levels) {
-			let (source_corners, indices) = level.primitives().next().ok_or(FbxImportError::EmptyPrimitive)?;
-			level_starts.push(index_count);
-			index_count += indices.len();
-			segments.push(FbxSegment {
-				context: &file.context,
-				source_corners,
-				indices,
-			});
-		}
-		processor.push_primitive(&FbxPrimitiveSource {
-			material_slot,
-			segments: &segments,
-			level_starts: &level_starts,
-		})?;
+		};
+		push_with_authored_levels(full_detail, material_slot, &name(), chain, notes, processor)?;
 		return Ok(1);
 	}
 	if !chain.is_empty() {
 		notes.warnings.push(format!(
 			"Material '{}' splits into {primitive_count} primitives, but authored levels follow a material that fits in one, so the bake generates its levels instead.",
-			part_material_name(context.material_node, context.mesh, part)
+			name()
 		));
 	}
 	for (source_corners, indices) in remapped.primitives() {
@@ -756,6 +689,71 @@ pub(crate) fn import_fbx_material_corners(
 		})?;
 	}
 	Ok(primitive_count)
+}
+
+/// Pushes one primitive of `full_detail` followed by the part named `name` of each file in `chain`, as long as the
+/// levels fit beside it in one primitive's vertices.
+fn push_with_authored_levels(
+	full_detail: FbxSegment<'_, '_, '_>,
+	material_slot: usize,
+	name: &str,
+	chain: &[FbxLevelFile<'_, '_>],
+	notes: &mut FbxAuthoredLevelNotes,
+	processor: &mut MeshProcessorSession,
+) -> Result<(), FbxMeshProcessingError> {
+	let allocator = *chain[0].parts.allocator();
+	// Each level's corners remapped into one primitive's vertices, kept until the primitive is pushed.
+	let mut levels = Vec::with_capacity_in(chain.len(), allocator);
+	let mut vertices = full_detail.source_corners.len();
+	for file in chain {
+		let level_corners = file
+			.parts
+			.iter()
+			.find(|(part_name, _)| *part_name == name)
+			.map(|(_, corners)| &corners[..])
+			.ok_or(FbxImportError::MissingMaterial)?;
+		let mut level_remap = Vec::with_capacity_in(file.context.mesh.num_indices, allocator);
+		level_remap.resize(file.context.mesh.num_indices, u32::MAX);
+		let mut level_remapped = RemappedCorners::with_capacity_in(level_corners.len(), allocator);
+		remap_triangle_corners(file.context.mesh.num_indices, level_corners, &mut level_remap, &mut level_remapped)?;
+		if level_remapped.ends.is_empty() {
+			notes.info.push(format!(
+				"Authored level '{}' has no triangles left for material '{name}' once its degenerate polygons are culled, so the authored levels end before it.",
+				file.id
+			));
+			break;
+		}
+		let added = level_remapped.source_corners.len();
+		if level_remapped.ends.len() != 1 || vertices + added > MAX_PRIMITIVE_VERTICES {
+			notes.warnings.push(format!(
+				"Authored level '{}' adds {added} vertices to the {vertices} of material '{name}', more than the 65,536 a primitive holds, so the bake generates that level and the coarser ones instead.",
+				file.id
+			));
+			break;
+		}
+		vertices += added;
+		levels.push(level_remapped);
+	}
+	let mut index_count = full_detail.indices.len();
+	let mut segments = Vec::with_capacity_in(1 + levels.len(), allocator);
+	segments.push(full_detail);
+	let mut level_starts = Vec::with_capacity_in(levels.len(), allocator);
+	for (file, level) in chain.iter().zip(&levels) {
+		let (source_corners, indices) = level.primitives().next().ok_or(FbxImportError::EmptyPrimitive)?;
+		level_starts.push(index_count);
+		index_count += indices.len();
+		segments.push(FbxSegment {
+			context: &file.context,
+			source_corners,
+			indices,
+		});
+	}
+	processor.push_primitive(&FbxPrimitiveSource {
+		material_slot,
+		segments: &segments,
+		level_starts: &level_starts,
+	})?;
+	Ok(())
 }
 
 /// The `FbxAuthoredLevelNotes` struct collects what a mesh import decided about the model's authored levels, so the
@@ -797,8 +795,7 @@ fn authored_level_chain<'scene, 'a>(
 		return Ok(chain);
 	};
 	let base = FbxMeshImportContext::new(node, mesh, None, None, None, None)?;
-	let base_parts = welded_material_parts(&base, allocator)?;
-	let base_names = sorted_part_names(&base_parts);
+	let base_names = visible_part_names(&base);
 	for &(id, level_scene) in levels {
 		let level_instances = fbx_mesh_instances(level_scene).count();
 		let Some((node, mesh)) = fbx_mesh_instances(level_scene).next().filter(|_| level_instances == 1) else {
@@ -808,8 +805,7 @@ fn authored_level_chain<'scene, 'a>(
 			break;
 		};
 		let context = FbxMeshImportContext::new(node, mesh, None, None, None, None)?;
-		let parts = welded_material_parts(&context, allocator)?;
-		let names = sorted_part_names(&parts);
+		let names = visible_part_names(&context);
 		if names != base_names {
 			notes.info.push(format!(
 				"Authored level '{id}' uses the materials {names:?} instead of the model's {base_names:?}, so the authored levels end before it."
@@ -822,56 +818,91 @@ fn authored_level_chain<'scene, 'a>(
 			));
 			break;
 		}
+		let parts = welded_material_parts(&context, allocator)?;
 		chain.push(FbxLevelFile { id, context, parts });
 	}
 	Ok(chain)
 }
 
-/// Triangulates and welds each visible material part of the context's mesh, keyed by material name.
+/// Triangulates and welds each material part of the context's mesh that has a visible face, keyed by material name.
 fn welded_material_parts<'a>(
 	context: &FbxMeshImportContext<'_>,
 	allocator: &'a dyn Allocator,
 ) -> Result<Vec<(String, Vec<u32, &'a dyn Allocator>), &'a dyn Allocator>, FbxImportError> {
 	let mesh = context.mesh;
 	let mut weld = Vec::new_in(allocator);
-	let mut table = Vec::new_in(allocator);
-	weld_fbx_corners(mesh, false, &mut table, &mut weld)?;
-	let mut scratch = Vec::with_capacity_in(mesh.max_face_triangles.saturating_mul(3).max(3), allocator);
+	weld_fbx_corners(mesh, false, &mut Vec::new_in(allocator), &mut weld)?;
+	let mut scratch = Vec::new_in(allocator);
 	scratch.resize(mesh.max_face_triangles.saturating_mul(3).max(3), 0u32);
-	let part_faces: Vec<(usize, Vec<usize>)> = if mesh.material_parts.is_empty() {
-		vec![(0, (0..mesh.faces.len()).collect())]
-	} else {
-		mesh.material_parts
-			.iter()
-			.map(|part| (part.index as usize, part.face_indices.iter().map(|&face| face as usize).collect()))
-			.collect()
-	};
+	// A level's culled polygons go unreported; the model's own count covers what its author sees.
+	let mut culled = FbxCulledPolygonCounts::default();
 	let mut parts = Vec::new_in(allocator);
-	for (part, faces) in part_faces {
-		let mut corners = Vec::new_in(allocator);
-		for face_index in faces {
-			let face = mesh.faces.get(face_index).copied().ok_or(FbxImportError::InvalidFaceIndex)?;
-			if is_visible_polygon_face(mesh, face_index) {
-				// A level's culled polygons are not reported; the model's own count covers what the author sees.
-				append_triangulated_face(mesh, face, &mut scratch, &mut corners)?;
-			}
+	for_each_material_part(mesh, |part, faces, triangles| {
+		let mut faces = faces.filter(|&face| is_visible_polygon_face(mesh, face)).peekable();
+		if faces.peek().is_some() {
+			let mut corners = Vec::with_capacity_in(triangles.saturating_mul(3), allocator);
+			append_welded_corners(mesh, &mut faces, &weld, &mut scratch, &mut corners, &mut culled)?;
+			parts.push((part_material_name(context.material_node, mesh, part), corners));
 		}
-		if corners.is_empty() {
-			continue;
-		}
-		for corner in corners.iter_mut() {
-			*corner = weld[*corner as usize];
-		}
-		parts.push((part_material_name(context.material_node, mesh, part), corners));
-	}
+		Ok::<_, FbxImportError>(())
+	})?;
 	Ok(parts)
 }
 
-fn sorted_part_names(parts: &[(String, Vec<u32, &dyn Allocator>)]) -> Vec<String> {
-	let mut names: Vec<String> = parts.iter().map(|(name, _)| name.clone()).collect();
+/// Returns the sorted names of the materials of the context's mesh that have a visible face.
+fn visible_part_names(context: &FbxMeshImportContext<'_>) -> Vec<String> {
+	let mesh = context.mesh;
+	let mut names = Vec::new();
+	let _ = for_each_material_part(mesh, |part, mut faces, _| {
+		if Iterator::any(&mut faces, |face| is_visible_polygon_face(mesh, face)) {
+			names.push(part_material_name(context.material_node, mesh, part));
+		}
+		Ok::<_, ()>(())
+	});
 	names.sort();
 	names.dedup();
 	names
+}
+
+/// Calls `visit` with each material part's index, faces, and triangle count. A mesh without parts is one part.
+fn for_each_material_part<E>(
+	mesh: &ufbx::Mesh,
+	mut visit: impl FnMut(usize, &mut dyn Iterator<Item = usize>, usize) -> Result<(), E>,
+) -> Result<(), E> {
+	if mesh.material_parts.is_empty() {
+		return visit(0, &mut (0..mesh.faces.len()), mesh.num_triangles);
+	}
+	for part in &mesh.material_parts {
+		visit(
+			part.index as usize,
+			&mut part.face_indices.iter().map(|&face| face as usize),
+			part.num_triangles,
+		)?;
+	}
+	Ok(())
+}
+
+/// Triangulates the visible faces among `faces` into `corners`, each corner replaced by its weld representative so
+/// corners that repeat a vertex become one, and records the polygons culled as degenerate.
+fn append_welded_corners<A: Allocator>(
+	mesh: &ufbx::Mesh,
+	faces: &mut dyn Iterator<Item = usize>,
+	weld: &[u32],
+	scratch: &mut [u32],
+	corners: &mut Vec<u32, A>,
+	culled: &mut FbxCulledPolygonCounts,
+) -> Result<(), FbxImportError> {
+	let start = corners.len();
+	for face_index in faces {
+		let face = mesh.faces.get(face_index).copied().ok_or(FbxImportError::InvalidFaceIndex)?;
+		if is_visible_polygon_face(mesh, face_index) && append_triangulated_face(mesh, face, scratch, corners)? {
+			culled.record(face.num_indices);
+		}
+	}
+	for corner in &mut corners[start..] {
+		*corner = weld[*corner as usize];
+	}
+	Ok(())
 }
 
 /// Returns which optional vertex streams a mesh stores: normals, tangents, bitangents, colors, and UVs.

@@ -28,17 +28,12 @@ pub(crate) fn material_from_gltf(material: &gltf::Material) -> Result<ImportedMa
 		.metallic_roughness_texture()
 		.map(|texture| graph.image(image_index(&texture.texture()), Type::Vector4))
 		.transpose()?;
-	let metalness = factor_times_channel(&mut graph, pbr.metallic_factor(), metallic_roughness, METALNESS_CHANNEL)?;
-	let roughness = factor_times_channel(&mut graph, pbr.roughness_factor(), metallic_roughness, ROUGHNESS_CHANNEL)?;
+	let metalness = graph.factor_times_channel(pbr.metallic_factor(), metallic_roughness, METALNESS_CHANNEL)?;
+	let roughness = graph.factor_times_channel(pbr.roughness_factor(), metallic_roughness, ROUGHNESS_CHANNEL)?;
 
 	let normal = material
 		.normal_texture()
-		.map(|texture| {
-			let value = graph.image(image_index(&texture.texture()), Type::Vector3)?;
-			let scale = graph.builder.constant(Value::Float(texture.scale()));
-
-			graph.builder.add(Node::NormalMap { value, scale })
-		})
+		.map(|texture| graph.normal_map(image_index(&texture.texture()), texture.scale()))
 		.transpose()?;
 
 	let occlusion = material
@@ -82,31 +77,6 @@ pub(crate) fn material_from_gltf(material: &gltf::Material) -> Result<ImportedMa
 		material.double_sided(),
 		alpha_mode(material),
 	)
-}
-
-/// Adds a scalar factor, multiplied by one channel of a texture when the material has one.
-fn factor_times_channel(
-	graph: &mut ImportedGraphBuilder,
-	factor: f32,
-	texture: Option<NodeId>,
-	channel: u8,
-) -> Result<NodeId, GraphError> {
-	let factor = graph.builder.constant(Value::Float(factor));
-
-	let Some(texture) = texture else {
-		return Ok(factor);
-	};
-
-	let channel = graph.builder.add(Node::Extract {
-		value: texture,
-		index: channel,
-	})?;
-
-	graph.builder.add(Node::Binary {
-		operator: BinaryOperator::Multiply,
-		left: factor,
-		right: channel,
-	})
 }
 
 /// Returns the container image a glTF texture samples.

@@ -244,76 +244,171 @@ pub(crate) fn fbx_image_fragment_texture_index(fragment: &str) -> Option<usize> 
 	fragment.strip_prefix(FBX_IMAGE_FRAGMENT_PREFIX)?.parse().ok()
 }
 
-/// Converts ufbx's normalized PBR values into a BEMX metallic-roughness graph.
+/// Converts ufbx's normalized PBR values and texture maps into a BEMX metallic-roughness graph.
+///
+/// Every texture multiplies the value of the input it maps, the way glTF factors scale their textures, so FBX and glTF
+/// materials build the same graph shapes. The input that samples a texture also decides how the texture bakes; see
+/// [`fbx_image_semantics`].
 pub(crate) fn fbx_material(material: Option<&ufbx::Material>) -> Result<ImportedMaterial, bemx::GraphError> {
 	let mut graph = ImportedGraphBuilder::new();
 
-	let (name, base_color, base_color_texture, metallic, roughness, emission, double_sided) = if let Some(material) = material {
-		let base_factor = material_map_scalar(&material.pbr.base_factor, 1.0).clamp(0.0, 1.0);
+	let Some(material) = material else {
+		let base_color = graph.builder.constant(bemx::Value::Vector4([1.0; 4]));
+		let (rgb, opacity) = graph.color_and_opacity(base_color)?;
+		let metalness = graph.builder.constant(bemx::Value::Float(0.0));
+		let roughness = graph.builder.constant(bemx::Value::Float(1.0));
+		let emission = graph.builder.constant(bemx::Value::Vector3([0.0; 3]));
 
-		let mut base_color = material_map_vec(
-			&material.pbr.base_color,
-			material_map_vec(&material.fbx.diffuse_color, [1.0; 4]),
+		return graph.finish(
+			None,
+			bemx::Surface {
+				base_color: Some(rgb),
+				opacity: Some(opacity),
+				metalness: Some(metalness),
+				roughness: Some(roughness),
+				emission: Some(emission),
+				..bemx::Surface::default()
+			},
+			false,
+			AlphaMode::Opaque,
 		);
-
-		for component in &mut base_color[..3] {
-			*component = finite_material_product(component.clamp(0.0, 1.0), base_factor, 1.0);
-		}
-
-		base_color[3] = finite_material_product(base_color[3].clamp(0.0, 1.0), material_opacity(material), 1.0);
-
-		let emission_factor = material_map_scalar(&material.pbr.emission_factor, 1.0).max(0.0);
-
-		let emission = multiply_vec3(
-			material_map_vec(
-				&material.pbr.emission_color,
-				material_map_vec(&material.fbx.emission_color, [0.0; 3]),
-			),
-			[emission_factor; 3],
-		);
-
-		(
-			non_empty_name(&material.element.name),
-			base_color,
-			// Prefer the normalized PBR map, then its legacy FBX diffuse fallback.
-			material_map_texture(&material.pbr.base_color).or_else(|| material_map_texture(&material.fbx.diffuse_color)),
-			material_map_scalar(&material.pbr.metalness, 0.0).clamp(0.0, 1.0),
-			material_map_scalar(&material.pbr.roughness, 1.0).clamp(0.0, 1.0),
-			emission,
-			material.features.double_sided.enabled,
-		)
-	} else {
-		(None, [1.0; 4], None, 0.0, 1.0, [0.0; 3], false)
 	};
 
-	let base_color_node = graph.factor_times_image(
-		bemx::Value::Vector4(base_color),
-		base_color_texture.map(|texture| texture.element.typed_id),
-	)?;
-	let (rgb, opacity) = graph.color_and_opacity(base_color_node)?;
-	let metalness = graph.builder.constant(bemx::Value::Float(metallic));
-	let roughness = graph.builder.constant(bemx::Value::Float(roughness));
-	let emission = graph.builder.constant(bemx::Value::Vector3(emission));
+	let base_factor = material_map_scalar(&material.pbr.base_factor, 1.0).clamp(0.0, 1.0);
 
-	let alpha_mode = if base_color[3] < 0.999 {
+	let mut base_color = material_map_vec(
+		&material.pbr.base_color,
+		material_map_vec(&material.fbx.diffuse_color, [1.0; 4]),
+	);
+
+	for component in &mut base_color[..3] {
+		*component = finite_material_product(component.clamp(0.0, 1.0), base_factor, 1.0);
+	}
+
+	base_color[3] = finite_material_product(base_color[3].clamp(0.0, 1.0), material_opacity(material), 1.0);
+
+	let emission_factor = material_map_scalar(&material.pbr.emission_factor, 1.0).max(0.0);
+
+	let emission = multiply_vec3(
+		material_map_vec(
+			&material.pbr.emission_color,
+			material_map_vec(&material.fbx.emission_color, [0.0; 3]),
+		),
+		[emission_factor; 3],
+	);
+
+	// Prefer each normalized PBR map, then its legacy FBX fallback.
+	let base_color_texture =
+		material_map_texture(&material.pbr.base_color).or_else(|| material_map_texture(&material.fbx.diffuse_color));
+	let emission_texture =
+		material_map_texture(&material.pbr.emission_color).or_else(|| material_map_texture(&material.fbx.emission_color));
+	let normal_texture =
+		material_map_texture(&material.pbr.normal_map).or_else(|| material_map_texture(&material.fbx.normal_map));
+	let opacity_texture = material_map_texture(&material.pbr.opacity);
+	let occlusion_texture = material_map_texture(&material.pbr.ambient_occlusion);
+
+	// Lambert and Phong materials map shininess, a glossiness-like value, into ufbx's roughness, so only PBR shading
+	// models read roughness and metalness maps.
+	let is_pbr = material.features.pbr.enabled;
+	let metalness_texture = material_map_texture(&material.pbr.metalness).filter(|_| is_pbr);
+	let roughness_texture = material_map_texture(&material.pbr.roughness).filter(|_| is_pbr);
+
+	let base_color_node = graph.factor_times_image(bemx::Value::Vector4(base_color), base_color_texture.map(texture_image))?;
+	let (rgb, mut opacity) = graph.color_and_opacity(base_color_node)?;
+
+	if let Some(texture) = opacity_texture {
+		let sample = graph.image(texture_image(texture), bemx::Type::Vector4)?;
+		let coverage = graph.builder.add(bemx::Node::Extract { value: sample, index: 0 })?;
+
+		opacity = graph.builder.add(bemx::Node::Binary {
+			operator: bemx::BinaryOperator::Multiply,
+			left: opacity,
+			right: coverage,
+		})?;
+	}
+
+	let metalness = red_channel_times_factor(
+		&mut graph,
+		material_map_scalar(&material.pbr.metalness, 0.0).clamp(0.0, 1.0),
+		metalness_texture,
+	)?;
+	let roughness = red_channel_times_factor(
+		&mut graph,
+		material_map_scalar(&material.pbr.roughness, 1.0).clamp(0.0, 1.0),
+		roughness_texture,
+	)?;
+	let normal = normal_texture
+		.map(|texture| graph.normal_map(texture_image(texture), 1.0))
+		.transpose()?;
+	let occlusion = occlusion_texture
+		.map(|texture| {
+			let sample = graph.image(texture_image(texture), bemx::Type::Vector4)?;
+
+			graph.builder.add(bemx::Node::Extract { value: sample, index: 0 })
+		})
+		.transpose()?;
+	let emission = graph.factor_times_image(bemx::Value::Vector3(emission), emission_texture.map(texture_image))?;
+
+	// An opacity map is a cutout: FBX has no alpha mode, and sorting blended geometry per texel is not possible.
+	let alpha_mode = if opacity_texture.is_some() {
+		AlphaMode::Mask(0.5)
+	} else if base_color[3] < 0.999 {
 		AlphaMode::Blend
 	} else {
 		AlphaMode::Opaque
 	};
 
 	graph.finish(
-		name,
+		non_empty_name(&material.element.name),
 		bemx::Surface {
 			base_color: Some(rgb),
 			opacity: Some(opacity),
 			metalness: Some(metalness),
 			roughness: Some(roughness),
+			normal,
 			emission: Some(emission),
-			..bemx::Surface::default()
+			occlusion,
 		},
-		double_sided,
+		material.features.double_sided.enabled,
 		alpha_mode,
 	)
+}
+
+/// Adds a scalar factor, multiplied by the red channel of `texture` when the material has one, which is where FBX
+/// grayscale maps store their value.
+fn red_channel_times_factor(
+	graph: &mut ImportedGraphBuilder,
+	factor: f32,
+	texture: Option<&ufbx::Texture>,
+) -> Result<bemx::NodeId, bemx::GraphError> {
+	let sample = texture
+		.map(|texture| graph.image(texture_image(texture), bemx::Type::Vector4))
+		.transpose()?;
+
+	graph.factor_times_channel(factor, sample, 0)
+}
+
+/// Returns the container image an FBX texture bakes as: its position in the scene's texture list.
+fn texture_image(texture: &ufbx::Texture) -> u32 {
+	texture.element.typed_id
+}
+
+/// Returns how the scene's materials sample each texture, by texture index, merged across every material that
+/// references it.
+///
+/// Texture fragments bake with these semantics, so a texture decodes the same way whether a material or a direct
+/// request bakes it. A texture no material samples is `None`.
+pub(crate) fn fbx_image_semantics(scene: &ufbx::Scene) -> Vec<Option<Semantic>> {
+	let mut semantics = vec![None; scene.textures.len()];
+
+	for material in &scene.materials {
+		// A material that fails to convert is reported when it is generated, so here it simply samples nothing.
+		if let Ok(material) = fbx_material(Some(material)) {
+			material.merge_image_semantics(&mut semantics);
+		}
+	}
+
+	semantics
 }
 
 /// Returns a material texture only when ufbx reports its source map as enabled.

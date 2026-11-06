@@ -554,8 +554,35 @@ The importer normalizes axes and authored units, triangulates polygon faces, pre
 Meshes without authored UVs receive a zero-filled UV stream because the visibility renderer requires that stream even for untextured materials.
 
 FBX material names can be mapped to existing variants in a sibling `.fbx.bead` file, using the same `asset.<material-name>.asset` shape as other model overrides.
-Without an override, the importer generates a material variant from constant base color, opacity, metalness, roughness, emission, and double-sided values.
-FBX material texture maps aren't imported yet.
+Without an override, the importer generates a material variant whose [surface](/docs/reference/bemx) inputs come from the FBX material:
+
+| Surface input | FBX value | FBX texture |
+| --- | --- | --- |
+| `base_color` | Base color, or diffuse color for Lambert and Phong, times the base or diffuse factor | Base color or diffuse map, red, green, and blue, multiplied with the value |
+| `opacity` | Base color alpha times the opacity; without an opacity, one minus the transparency or transmission factor | Base color or diffuse map alpha, and the opacity map's red channel, both multiplied with the value |
+| `metalness` | Metalness, 0 by default | Metalness map's red channel, multiplied with the value, read only for PBR shading models |
+| `roughness` | Roughness, which Phong derives from shininess, 1 by default | Roughness map's red channel, multiplied with the value, read only for PBR shading models |
+| `normal` | None | Normal map, tangent space, scale 1. Bump and height maps aren't read. |
+| `occlusion` | None | Ambient occlusion map's red channel |
+| `emission` | Emission color times the emission factor | Emission map, multiplied with the value |
+
+Lambert and Phong materials keep no metalness or roughness maps, so their metalness and roughness are always the value.
+Legacy transparent-color maps aren't read, because exporters disagree on whether white means opaque or transparent.
+
+The material's alpha mode follows from its opacity:
+
+| Condition | Alpha mode |
+| --- | --- |
+| The material has an opacity map | Masked, with a cutoff of 0.5 |
+| Otherwise, opacity before textures is below 0.999 | Blended |
+| Otherwise | Opaque |
+
+A material is double-sided when its shading model marks it so.
+
+Each texture bakes as an image named by its `#images/<index>` fragment, with the semantic of the surface input that samples it, never a semantic guessed from its file name.
+Base color maps bake as albedo and emission maps as emissive, both sRGB; opacity, normal, metalness, roughness, and occlusion maps bake as their own linear semantics.
+A texture that several inputs sample bakes once, with the first semantic in this order: albedo, emissive, opacity, normal, occlusion, metalness, roughness.
+A texture no generated material samples bakes as albedo.
 
 FBX animation stacks are baked through the format's pivot, layer, and rotation-order rules before becoming engine curves:
 

@@ -1,0 +1,172 @@
+FBXHeaderExtension:  {
+    FBXHeaderVersion: 1003
+    FBXVersion: 7400
+}
+
+GlobalSettings:  {
+    Version: 1000
+    Properties70:  {
+        P: "UpAxis", "int", "Integer", "",1
+        P: "UpAxisSign", "int", "Integer", "",1
+        P: "FrontAxis", "int", "Integer", "",2
+        P: "FrontAxisSign", "int", "Integer", "",-1
+        P: "CoordAxis", "int", "Integer", "",0
+        P: "CoordAxisSign", "int", "Integer", "",1
+        P: "UnitScaleFactor", "double", "Number", "",1
+        P: "OriginalUnitScaleFactor", "double", "Number", "",1
+    }
+}
+
+Objects:  {
+    Geometry: 1001, "Geometry::TexturedTriangles", "Mesh" {
+        Vertices: *12 {
+            a: 0,0,0,1,0,0,0,1,0,1,1,0
+        }
+        PolygonVertexIndex: *6 {
+            a: 0,1,-3,1,3,-3
+        }
+        LayerElementMaterial: 0 {
+            Version: 101
+            Name: ""
+            MappingInformationType: "ByPolygon"
+            ReferenceInformationType: "IndexToDirect"
+            Materials: *2 {
+                a: 0,0
+            }
+        }
+        Layer: 0 {
+            Version: 100
+            LayerElement: {
+                Type: "LayerElementMaterial"
+                TypedIndex: 0
+            }
+        }
+    }
+
+    Model: 1002, "Model::TexturedTriangles", "Mesh" {
+        Version: 232
+        Properties70:  {
+            P: "Lcl Translation", "Lcl Translation", "", "A",0,0,0
+            P: "Lcl Rotation", "Lcl Rotation", "", "A",0,0,0
+            P: "Lcl Scaling", "Lcl Scaling", "", "A",1,1,1
+        }
+        Shading: T
+        Culling: "CullingOff"
+    }
+
+    Material: 3001, "Material::TexturedMetalRough", "" {
+        Version: 102
+        ShadingModel: "PBR Metal/Rough"
+        MultiLayer: 0
+        Properties70:  {
+            P: "3dsMax|ClassIDa", "int", "Integer", "",3490651648
+            P: "3dsMax|ClassIDb", "int", "Integer", "",3195528448
+            P: "3dsMax|main|base_color", "Color", "", "A",1,1,1
+            P: "3dsMax|main|roughness", "Number", "", "A",0.8
+            P: "3dsMax|main|metalness", "Number", "", "A",0.25
+            P: "3dsMax|main|opacity", "Number", "", "A",1
+            P: "3dsMax|main|base_color_map", "Reference", "", "A"
+            P: "3dsMax|main|norm_map", "Reference", "", "A"
+            P: "3dsMax|main|roughness_map", "Reference", "", "A"
+            P: "3dsMax|main|opacity_map", "Reference", "", "A"
+        }
+    }
+
+    Video: 4001, "Video::Base", "Clip" {
+        Type: "Clip"
+        Properties70:  {
+            P: "Path", "KString", "XRefUrl", "", "textures/base.png"
+            P: "RelativeFilename", "KString", "XRefUrl", "", "textures/base.png"
+        }
+    }
+
+    Texture: 4002, "Texture::Base", "" {
+        Type: "TextureVideoClip"
+        Version: 202
+        TextureName: "Texture::Base"
+        Media: "Video::Base"
+        FileName: "textures/base.png"
+        RelativeFilename: "textures/base.png"
+        ModelUVTranslation: 0,0
+        ModelUVScaling: 1,1
+        Texture_Alpha_Source: "None"
+        Cropping: 0,0,0,0
+    }
+
+    Video: 4011, "Video::Normal", "Clip" {
+        Type: "Clip"
+        Properties70:  {
+            P: "Path", "KString", "XRefUrl", "", "textures/normal.png"
+            P: "RelativeFilename", "KString", "XRefUrl", "", "textures/normal.png"
+        }
+    }
+
+    Texture: 4012, "Texture::Normal", "" {
+        Type: "TextureVideoClip"
+        Version: 202
+        TextureName: "Texture::Normal"
+        Media: "Video::Normal"
+        FileName: "textures/normal.png"
+        RelativeFilename: "textures/normal.png"
+        ModelUVTranslation: 0,0
+        ModelUVScaling: 1,1
+        Texture_Alpha_Source: "None"
+        Cropping: 0,0,0,0
+    }
+
+    Video: 4021, "Video::Rough", "Clip" {
+        Type: "Clip"
+        Properties70:  {
+            P: "Path", "KString", "XRefUrl", "", "textures/rough.png"
+            P: "RelativeFilename", "KString", "XRefUrl", "", "textures/rough.png"
+        }
+    }
+
+    Texture: 4022, "Texture::Rough", "" {
+        Type: "TextureVideoClip"
+        Version: 202
+        TextureName: "Texture::Rough"
+        Media: "Video::Rough"
+        FileName: "textures/rough.png"
+        RelativeFilename: "textures/rough.png"
+        ModelUVTranslation: 0,0
+        ModelUVScaling: 1,1
+        Texture_Alpha_Source: "None"
+        Cropping: 0,0,0,0
+    }
+
+    Video: 4031, "Video::Cutout", "Clip" {
+        Type: "Clip"
+        Properties70:  {
+            P: "Path", "KString", "XRefUrl", "", "textures/cutout.png"
+            P: "RelativeFilename", "KString", "XRefUrl", "", "textures/cutout.png"
+        }
+    }
+
+    Texture: 4032, "Texture::Cutout", "" {
+        Type: "TextureVideoClip"
+        Version: 202
+        TextureName: "Texture::Cutout"
+        Media: "Video::Cutout"
+        FileName: "textures/cutout.png"
+        RelativeFilename: "textures/cutout.png"
+        ModelUVTranslation: 0,0
+        ModelUVScaling: 1,1
+        Texture_Alpha_Source: "None"
+        Cropping: 0,0,0,0
+    }
+}
+
+Connections:  {
+    C: "OO",1001,1002
+    C: "OO",1002,0
+    C: "OO",3001,1002
+    C: "OO",4001,4002
+    C: "OP",4002,3001,"3dsMax|main|base_color_map"
+    C: "OO",4011,4012
+    C: "OP",4012,3001,"3dsMax|main|norm_map"
+    C: "OO",4021,4022
+    C: "OP",4022,3001,"3dsMax|main|roughness_map"
+    C: "OO",4031,4032
+    C: "OP",4032,3001,"3dsMax|main|opacity_map"
+}

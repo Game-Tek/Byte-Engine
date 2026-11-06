@@ -180,81 +180,6 @@ pub(crate) fn gltf_image_source_layout(format: gltf::image::Format) -> Result<(S
 	}
 }
 
-/// Merges how one material samples each image into `semantics`, which is indexed by container image.
-///
-/// Images outside `semantics` are ignored.
-pub(crate) fn merge_gltf_texture_semantics(material: &ImportedMaterial, semantics: &mut [Option<Semantic>]) {
-	let surface = material.graph.surface();
-
-	for (node, semantic) in [
-		(surface.base_color, Semantic::Albedo),
-		(surface.opacity, Semantic::Albedo),
-		(surface.metalness, Semantic::Metallic),
-		(surface.roughness, Semantic::Roughness),
-		(surface.normal, Semantic::Normal),
-		(surface.occlusion, Semantic::AO),
-		(surface.emission, Semantic::Emissive),
-	] {
-		if let Some(node) = node {
-			merge_texture_semantics_from_node(material, node, semantic, semantics);
-		}
-	}
-}
-
-/// Merges the semantic every image `node` reaches is sampled with, reading it as `semantic` unless the path to the
-/// image says otherwise.
-pub(crate) fn merge_texture_semantics_from_node(
-	material: &ImportedMaterial,
-	node: bemx::NodeId,
-	semantic: Semantic,
-	semantics: &mut [Option<Semantic>],
-) {
-	let graph = &material.graph;
-
-	match graph.node(node) {
-		bemx::Node::Image { texture, .. } => {
-			if let Some(merged) = material.image(texture).and_then(|image| semantics.get_mut(image as usize)) {
-				*merged = Some(merged.map_or(semantic, |merged| merge_texture_semantics(merged, semantic)));
-			}
-		}
-		bemx::Node::Extract { value, index } => {
-			// A metallic or roughness read of a channel the packing keeps lets the image bake as a two-channel map. Any
-			// other read of the image outranks it in `merge_texture_semantics`, so only fully packable images pack.
-			let packable = matches!(semantic, Semantic::Metallic | Semantic::Roughness)
-				&& METALLIC_ROUGHNESS_PACKING.stored_channel(usize::from(*index)).is_some()
-				&& matches!(graph.node(*value), bemx::Node::Image { .. });
-			let semantic = if packable { Semantic::MetallicRoughness } else { semantic };
-
-			merge_texture_semantics_from_node(material, *value, semantic, semantics);
-		}
-		bemx::Node::NormalMap { value, scale } => {
-			merge_texture_semantics_from_node(material, *value, Semantic::Normal, semantics);
-			merge_texture_semantics_from_node(material, *scale, semantic, semantics);
-		}
-		other => other.visit_inputs(|input| merge_texture_semantics_from_node(material, input, semantic, semantics)),
-	}
-}
-
-/// Picks the semantic an image bakes with when materials sample it in more than one way.
-///
-/// For the semantics glTF materials read with, the pick is a fixed priority, so the order in which reads merge does not
-/// change the result.
-pub(crate) fn merge_texture_semantics(left: Semantic, right: Semantic) -> Semantic {
-	// Prefer color semantics when an unusual glTF reuses the same image for color and data textures.
-	// This avoids accidentally sampling an albedo texture as linear data after processing.
-	match (left, right) {
-		(Semantic::Albedo, _) | (_, Semantic::Albedo) => Semantic::Albedo,
-		(Semantic::Emissive, _) | (_, Semantic::Emissive) => Semantic::Emissive,
-		(Semantic::Normal, _) | (_, Semantic::Normal) => Semantic::Normal,
-		(Semantic::AO, _) | (_, Semantic::AO) => Semantic::AO,
-		(Semantic::Metallic, _) | (_, Semantic::Metallic) => Semantic::Metallic,
-		(Semantic::Roughness, _) | (_, Semantic::Roughness) => Semantic::Roughness,
-		// A packed map drops channels, so any other use of the image keeps all of them.
-		(Semantic::MetallicRoughness, other) | (other, Semantic::MetallicRoughness) => other,
-		_ => left,
-	}
-}
-
 /// Returns how the glTF's materials sample each image, by image index, merged across every material that references
 /// it.
 ///
@@ -266,7 +191,7 @@ pub(crate) fn gltf_image_semantics(gltf: &gltf::Gltf) -> Vec<Option<Semantic>> {
 	for material in gltf.materials() {
 		// A material that fails to convert is reported when it is generated, so here it simply samples nothing.
 		if let Ok(material) = material_from_gltf(&material) {
-			merge_gltf_texture_semantics(&material, &mut semantics);
+			material.merge_image_semantics(&mut semantics);
 		}
 	}
 	semantics

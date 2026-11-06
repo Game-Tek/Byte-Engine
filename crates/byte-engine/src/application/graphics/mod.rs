@@ -965,6 +965,18 @@ impl GraphicsApplication {
 		&self.input
 	}
 
+	/// Returns the collector with the sink that resolves the world's declared [`Action`] values.
+	///
+	/// Use the sink to change what drives those actions: apply a player's saved
+	/// [`Bindings`](input::Bindings) with [`InputSink::apply`](input::InputSink::apply),
+	/// replace one action with [`InputSink::rebind`](input::InputSink::rebind), and take
+	/// the replacements to save with [`InputSink::bindings`](input::InputSink::bindings).
+	/// The collector is mutable so you can add a sink of your own, such as one a
+	/// controls screen reads presses through.
+	pub fn actions_mut(&mut self) -> (&mut input::InputCollector, &mut input::InputSink) {
+		(&mut self.input, &mut self.actions)
+	}
+
 	/// Returns the renderer used by setup functions and advanced render integrations.
 	pub fn renderer(&self) -> &Renderer {
 		&self.renderer

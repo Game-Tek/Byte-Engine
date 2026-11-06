@@ -1,0 +1,94 @@
+---
+title: Input bindings
+description: Look up the bindings document that replaces an action's default triggers, the fields of each binding, and how a sink applies, keeps, and resets the replacements.
+icon: Keyboard
+---
+
+A bindings document lists the actions whose triggers the player changed, and
+the triggers each one uses instead. Actions keep the bindings your application
+declares in code as their defaults; a document only holds the replacements.
+This page defines the document, its fields, and the rules a sink follows when
+it applies one. To load, change, and save a document from your application,
+follow [Let players rebind controls](/docs/use/input#let-players-rebind-controls).
+For actions, triggers, and value mappings, see [Input](/docs/reference/input).
+
+## Document
+
+A bindings document is JSON text whose top level is an object.
+
+| Member | Value | Required | Meaning |
+| --- | --- | --- | --- |
+| `actions` | Object | No; absent means no replacements | One member per replaced action. The member name is the action's name, and the value is an array of [bindings](#binding). |
+
+Any other top-level member is an error. Action names are matched exactly and
+are case-sensitive. A document may name actions that no sink declares yet; see
+[Applying](#applying).
+
+An action whose array is empty has no bindings, so no trigger drives it. An
+action absent from the document keeps its default bindings.
+
+## Binding
+
+A binding is either a string or an object. A string is the same as an object
+whose only member is `source` with that string.
+
+| Member | Value | Default | Meaning |
+| --- | --- | --- | --- |
+| `source` | Trigger name | Required | The trigger whose value the binding contributes, written `Class.Trigger`, such as `Keyboard.Space` or `Gamepad.LeftStick`. |
+| `triggered_by` | Trigger name | None | A button that decides when the binding publishes the source's value. It must be a Boolean trigger on the source's device class. |
+| `on` | `release`, `press`, or `drag` | `release` | When `triggered_by` drives the binding: on the button's release, on its press, or from press through movement to release. A `drag` button must not be transient. Ignored without `triggered_by`. |
+| `function` | `linear` or `sphere` | `linear` | The value mapping's function. See [Value mapping](/docs/reference/input#value-mapping). |
+| `value` | Boolean, number, or array of 2, 3, or 4 numbers | `false` | The value mapping's value. |
+
+Any other member is an error.
+
+The `value` member's JSON type selects the mapping value's type:
+
+| JSON value | Mapping value |
+| --- | --- |
+| `true` or `false` | Boolean |
+| A number | Float |
+| An array of 2 numbers | Vector2, as `x`, `y` |
+| An array of 3 numbers | Vector3, as `x`, `y`, `z` |
+| An array of 4 numbers | Quaternion, as `x`, `y`, `z`, `w` |
+
+A document can't hold an Integer, Unicode, or RGBA mapping value. When a sink
+writes a binding whose mapping holds one, it writes the number a Float action
+would read from it: an Integer as that number, an RGBA value as its red
+channel, and a Unicode value as `0`.
+
+## Trigger names
+
+A trigger name is a registered device class name, a `.`, and a trigger name on
+that class, matched exactly. The standard names are listed under
+[Device classes](/docs/reference/input#device-classes). A name that no
+registered trigger has is an error when the document is applied, not when it's
+read, because applications register their own triggers.
+
+## Applying
+
+A sink keeps one set of replacements, keyed by action name.
+
+| Operation | Effect |
+| --- | --- |
+| Apply a document | Every binding is checked against the collector first. If any trigger name is unknown, or a `triggered_by` button breaks a rule in [Binding](#binding), nothing changes and the error names the action and the binding's position. Otherwise each action in the document gets its replacement, and actions not in the document keep their current bindings. |
+| Rebind one action | Sets that action's replacement, under the same checks. |
+| Reset one action | Removes its replacement, so the action uses its defaults again. |
+| Declare an action | An action declared after its replacement was set starts with the replacement. |
+| Write a document | Produces a document with every replacement the sink holds, including replacements for actions it hasn't declared. Actions using their defaults aren't written. Bindings appear in their stored order, and a binding with only a source is written as a string. |
+
+Changing the bindings of an action ends any interaction it holds, as
+cancelling the action does: a held value publishes its neutral value and a
+drag publishes its last value, both marked as cancelled.
+
+Replacements belong to one sink. An application with several sinks applies a
+document to each one, and each sink ignores the actions it doesn't declare.
+
+## Location
+
+The `input.bindings` [startup parameter](/docs/reference/parameters#application)
+names the file an application reads and writes its document at. Its value is a
+path used as given; without it, the file is `bindings.json` in the directory
+`config.json` is found in. When the file is missing, reading it gives an empty
+document. Writing replaces the whole file at once, so a reader
+never sees part of a write.

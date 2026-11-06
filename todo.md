@@ -70,6 +70,8 @@
 
 - Resolve named input triggers to handles during action registration and index device classes and triggers by name.
 - Decide how modifier keys behave across input sinks: a sink that captures `Ctrl` currently claims it, so a later sink's `Ctrl+S` no longer resolves. Consider modifier-only controls that sinks read without claiming.
+- Input bindings: add action sets or contexts with priorities beyond one sink per consumer, composites (four keys to one 2D vector), hold and tap interactions, dead-zone processors, per-seat bindings for local multiplayer, and a warning when two actions in one sink share a trigger.
+- Input bindings: give a controls screen a way to read the next pressed trigger without keeping an extra sink that must pull every tick.
 
 ## Metal-specific
 

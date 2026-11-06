@@ -8,12 +8,15 @@
 //! Pull sinks in priority order, once per tick each.
 
 use std::alloc::{Allocator, Global};
+use std::borrow::Cow;
+
+use log::warn;
 
 use super::collector::{InputCollector, SinkHandle};
 use super::gesture::{self, Mode, TriggerMapping};
 use super::{
-	Action, ActionBindingDescription, ActionEvent, ActionHandle, ActionPhase, DeviceHandle, SeatHandle, TickPolicy, Types,
-	Value,
+	Action, ActionBindingDescription, ActionEvent, ActionHandle, ActionPhase, Binding, Bindings, DeviceHandle, SeatHandle,
+	TickPolicy, Types, Value,
 };
 use crate::core::channel::{Channel as _, DefaultChannel};
 use crate::core::factory::{CreateMessage, Handle};
@@ -56,7 +59,9 @@ impl Capture {
 /// [`Self::create_action`] or [`Self::with_declarations`], then call
 /// [`Self::pull`] once per tick before lower-priority sinks pull. Use
 /// [`Self::cancel_action`], [`Self::cancel_seat`], or [`Self::cancel_device`]
-/// when the consumer loses focus while holding a control.
+/// when the consumer loses focus while holding a control. To let players
+/// change controls, replace bindings with [`Self::apply`] or [`Self::rebind`],
+/// and save [`Self::bindings`].
 /// See [Respond to input](/docs/use/input) for the layered input workflow.
 pub struct InputSink<A: Allocator + Clone = Global> {
 	handle: SinkHandle,
@@ -69,6 +74,22 @@ pub struct InputSink<A: Allocator + Clone = Global> {
 	drags: bool,
 	/// Every (control, action) pair a record can drive, sorted, so a record only visits its actions.
 	interest: Vec<(u32, u32), A>,
+	/// What rebinding reads, kept apart from `actions` so the record loop doesn't stride over it.
+	rebinding: Rebinding<A>,
+}
+
+/// The `Rebinding` struct keeps what a sink needs to replace and restore bindings by action name.
+struct Rebinding<A: Allocator> {
+	/// Each action's declaration, by action index.
+	declared: Vec<Declared<A>, A>,
+	/// The replaced bindings, by action name, kept for actions declared later and for saving.
+	overrides: Vec<Override>,
+}
+
+/// The `Override` struct keeps one action's replacement bindings until it is reset.
+struct Override {
+	action: Box<str>,
+	bindings: Box<[ActionBindingDescription]>,
 }
 
 impl InputSink {
@@ -95,7 +116,11 @@ impl<A: Allocator + Clone> InputSink<A> {
 			channel,
 			tick: 0,
 			drags: false,
-			interest: Vec::new_in(allocator),
+			interest: Vec::new_in(allocator.clone()),
+			rebinding: Rebinding {
+				declared: Vec::new_in(allocator),
+				overrides: Vec::new(),
+			},
 		}
 	}
 
@@ -110,37 +135,187 @@ impl<A: Allocator + Clone> InputSink<A> {
 
 	/// Adds an action that only this sink resolves.
 	///
-	/// The returned handle identifies the action in every [`ResolvedAction`] this
+	/// `name` identifies the action to [`Self::rebind`] and in a [`Bindings`]
+	/// document, and `bindings` are its defaults. When a replacement for `name`
+	/// was already applied, the action starts with the replacement. A binding
+	/// whose trigger is unknown or invalid is left out with a warning. The
+	/// returned handle identifies the action in every [`ResolvedAction`] this
 	/// sink produces.
 	pub fn create_action<E: Allocator + Clone>(
 		&mut self,
 		collector: &InputCollector<E>,
+		name: impl Into<Cow<'static, str>>,
 		r#type: Types,
 		bindings: &[ActionBindingDescription],
 		tick_policy: TickPolicy,
 	) -> ActionHandle {
 		let allocator = self.actions.allocator().clone();
-		let mut mappings = Vec::with_capacity_in(bindings.len(), allocator.clone());
-		mappings.extend(bindings.iter().filter_map(|binding| collector.resolve_binding(binding)));
 		let handle = ActionHandle::from_index(self.actions.len() as u32);
-		let mode = gesture::mode_for(&mappings, tick_policy, allocator.clone());
-		self.drags |= matches!(mode, Mode::Drag(_));
+		let mut defaults = Vec::with_capacity_in(bindings.len(), allocator.clone());
+		defaults.extend_from_slice(bindings);
+		let name = name.into();
+		// A replacement applied before the action existed wins over its defaults.
+		let replacement = self.replacement(&name).map(<[_]>::to_vec);
+		self.rebinding.declared.push(Declared {
+			name,
+			tick_policy,
+			defaults: defaults.into_boxed_slice(),
+		});
+		self.actions.push(SinkAction {
+			mode: Mode::Direct(tick_policy),
+			r#type,
+			mappings: Vec::new_in(allocator.clone()).into_boxed_slice(),
+			handle: None,
+			values: Vec::new_in(allocator),
+		});
+		self.install(collector, handle.index(), replacement.as_deref().unwrap_or(bindings));
+		handle
+	}
+
+	/// Replaces the bindings of every action in `bindings`, as a player's saved controls.
+	///
+	/// Every binding is checked first, so an unknown trigger or an invalid button
+	/// leaves this sink unchanged and returns an error that names the action and
+	/// the binding. Actions this sink declares later start with their replacement,
+	/// and actions the document leaves out keep their current bindings. Read a
+	/// document with [`Bindings::read`] or [`Bindings::from_json`].
+	pub fn apply<E: Allocator + Clone>(&mut self, collector: &InputCollector<E>, bindings: &Bindings) -> Result<(), String> {
+		let mut resolved = Vec::with_capacity(bindings.actions.len());
+		for (action, list) in &bindings.actions {
+			let descriptions = list
+				.iter()
+				.enumerate()
+				.map(|(position, binding)| {
+					binding
+						.description(collector)
+						.map_err(|error| describe(action, position, &error))
+				})
+				.collect::<Result<Vec<_>, _>>()?;
+			check(collector, action, &descriptions)?;
+			resolved.push((action, descriptions));
+		}
+		for (action, descriptions) in resolved {
+			self.replace(collector, action, &descriptions);
+		}
+		Ok(())
+	}
+
+	/// Replaces one action's bindings, for example with the control a player just pressed.
+	///
+	/// The replacement also applies to an action named `action` that this sink
+	/// declares later. Any interaction the action holds ends as a cancellation.
+	/// Next, save the replacements with [`Self::bindings`].
+	///
+	/// # Errors
+	///
+	/// Returns an error naming the binding when a trigger is unknown or a button is invalid, and changes nothing.
+	pub fn rebind<E: Allocator + Clone>(
+		&mut self,
+		collector: &InputCollector<E>,
+		action: &str,
+		bindings: &[ActionBindingDescription],
+	) -> Result<(), String> {
+		check(collector, action, bindings)?;
+		self.replace(collector, action, bindings);
+		Ok(())
+	}
+
+	/// Restores one action's default bindings and forgets its replacement.
+	pub fn reset<E: Allocator + Clone>(&mut self, collector: &InputCollector<E>, action: &str) {
+		self.rebinding.overrides.retain(|replacement| &*replacement.action != action);
+		for id in 0..self.actions.len() {
+			if self.rebinding.declared[id].name != action {
+				continue;
+			}
+			let defaults = self.rebinding.declared[id].defaults.to_vec();
+			self.install(collector, id as u32, &defaults);
+		}
+	}
+
+	/// Returns every replacement this sink holds, as a document to save.
+	///
+	/// Actions that use their defaults are left out, so the document only holds
+	/// what the player changed. Write it with [`Bindings::write`] or
+	/// [`Bindings::to_json`].
+	pub fn bindings<E: Allocator + Clone>(&self, collector: &InputCollector<E>) -> Bindings {
+		let mut document = Bindings::default();
+		for replacement in &self.rebinding.overrides {
+			let list = replacement
+				.bindings
+				.iter()
+				.filter_map(|binding| Binding::from_description(binding, collector))
+				.collect();
+			document.actions.insert(replacement.action.to_string(), list);
+		}
+		document
+	}
+
+	/// Stores a checked replacement and installs it on every action with that name.
+	fn replace<E: Allocator + Clone>(
+		&mut self,
+		collector: &InputCollector<E>,
+		action: &str,
+		bindings: &[ActionBindingDescription],
+	) {
+		match self
+			.rebinding
+			.overrides
+			.iter_mut()
+			.find(|replacement| &*replacement.action == action)
+		{
+			Some(replacement) => replacement.bindings = bindings.into(),
+			None => self.rebinding.overrides.push(Override {
+				action: action.into(),
+				bindings: bindings.into(),
+			}),
+		}
+		for id in 0..self.actions.len() {
+			if self.rebinding.declared[id].name == action {
+				self.install(collector, id as u32, bindings);
+			}
+		}
+	}
+
+	/// Returns the replacement bindings set for an action name, if any.
+	fn replacement(&self, action: &str) -> Option<&[ActionBindingDescription]> {
+		self.rebinding
+			.overrides
+			.iter()
+			.find(|replacement| &*replacement.action == action)
+			.map(|replacement| &*replacement.bindings)
+	}
+
+	/// Resolves `bindings` into one action's mappings and indexes the controls that drive it.
+	///
+	/// Ends the action's held interactions first, so a control that no longer
+	/// drives it can't leave a press or a drag active.
+	// Declaring and rebinding are cold; keeping them out of line keeps `pull`'s record loop as compact as before.
+	#[cold]
+	#[inline(never)]
+	fn install<E: Allocator + Clone>(&mut self, collector: &InputCollector<E>, id: u32, bindings: &[ActionBindingDescription]) {
+		let allocator = self.actions.allocator().clone();
+		let declared = &self.rebinding.declared[id as usize];
+		let action = &mut self.actions[id as usize];
+		action.cancel(&self.channel, |_, _| true);
+		let mut mappings = Vec::with_capacity_in(bindings.len(), allocator.clone());
+		for binding in bindings {
+			match collector.resolve_binding(binding) {
+				Ok(mapping) => mappings.push(mapping),
+				Err(error) => warn!("{error} Action: '{}'.", declared.name),
+			}
+		}
+		action.mode = gesture::mode_for(&mappings, declared.tick_policy, allocator);
+		self.interest.retain(|&(_, owner)| owner != id);
 		for mapping in &mappings {
 			for trigger in mapping.controls() {
-				let entry = (trigger, handle.index());
+				let entry = (trigger, id);
 				if let Err(position) = self.interest.binary_search(&entry) {
 					self.interest.insert(position, entry);
 				}
 			}
 		}
-		self.actions.push(SinkAction {
-			mode,
-			r#type,
-			mappings: mappings.into_boxed_slice(),
-			handle: None,
-			values: Vec::new_in(allocator),
-		});
-		handle
+		action.mappings = mappings.into_boxed_slice();
+		self.drags = self.actions.iter().any(|action| matches!(action.mode, Mode::Drag(_)));
 	}
 
 	/// Returns the channel this sink publishes its action events through.
@@ -296,12 +471,13 @@ impl<A: Allocator + Clone> InputSink<A> {
 	}
 
 	/// Adds the actions declared since the last pull.
+	#[inline(never)]
 	fn adopt_declarations<E: Allocator + Clone>(&mut self, collector: &InputCollector<E>) {
 		while let Some(message) = self.declarations.as_mut().and_then(Listener::read) {
 			let handle = message.handle();
 			let action = message.into_data();
 
-			let index = self.create_action(collector, action.r#type, &action.bindings, action.tick_policy);
+			let index = self.create_action(collector, action.name, action.r#type, &action.bindings, action.tick_policy);
 			self.actions[index.index() as usize].handle = Some(handle);
 		}
 	}
@@ -315,6 +491,33 @@ struct SinkAction<A: Allocator> {
 	handle: Option<Handle>,
 	/// Values retain capacity between ticks in the action's allocator.
 	values: Vec<Held, A>,
+}
+
+/// Checks that every binding of `action` resolves against `collector`'s triggers.
+fn check<E: Allocator + Clone>(
+	collector: &InputCollector<E>,
+	action: &str,
+	bindings: &[ActionBindingDescription],
+) -> Result<(), String> {
+	for (position, binding) in bindings.iter().enumerate() {
+		collector
+			.resolve_binding(binding)
+			.map_err(|error| describe(action, position, &error))?;
+	}
+	Ok(())
+}
+
+/// Places a binding error in the action and the one-based binding position it came from.
+fn describe(action: &str, position: usize, error: &str) -> String {
+	format!("Action '{action}', binding {}: {error}", position + 1)
+}
+
+/// The `Declared` struct keeps what an action was declared with, for rebinding it by name and resetting it.
+struct Declared<A: Allocator> {
+	name: Cow<'static, str>,
+	tick_policy: TickPolicy,
+	/// The declared bindings, restored by [`InputSink::reset`].
+	defaults: Box<[ActionBindingDescription], A>,
 }
 
 /// The `Held` struct is one device's last value of an action.

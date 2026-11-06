@@ -51,6 +51,7 @@ release:
 
 ```rust
 let drag = Action::new(
+    "Select",
     &[ActionBindingDescription::new("Pointer.Position").dragged_by("Pointer.LeftButton")],
     Types::Vector2,
 );
@@ -86,7 +87,7 @@ let mut window = Window::new("Game", Extent::rectangle(1920, 1080))
 window.attach(camera);
 app.create(window);
 
-let look = Action::new(&[ActionBindingDescription::new("Mouse.Movement")], Types::Vector2);
+let look = Action::new("Look", &[ActionBindingDescription::new("Mouse.Movement")], Types::Vector2);
 ```
 
 Bind `Mouse`, not `Pointer`: it reports the mouse before pointer acceleration,
@@ -248,6 +249,80 @@ Choose one of the two paths per application. The application's sink pulls its
 whole collector before your callback runs, so a sink placed beside it can't
 capture anything from it.
 
+## Let players rebind controls
+
+Every action has a name, such as `Jump`, and the bindings you declare in code
+are its defaults. A player's changes live apart from your code, in a bindings
+document that replaces only the actions the player changed. Your application
+decides where that document is stored: the engine reads and writes the text
+but doesn't choose a location for you.
+
+1. At startup, read the player's document and apply it to the sink that owns
+   the actions. Actions the world declares later still pick up their
+   replacement.
+
+   ```rust
+   let bindings = Bindings::read(&Bindings::path(&app)).unwrap_or_else(|error| {
+       log::warn!("{error}");
+       Bindings::default()
+   });
+   let (input, actions) = app.actions_mut();
+   if let Err(error) = actions.apply(input, &bindings) {
+       log::warn!("{error}");
+   }
+   ```
+
+   `Bindings::path` returns the `input.bindings` parameter, or `bindings.json`
+   in the application directory. A missing file reads as an empty document, so
+   a first run uses the defaults. When the document names a trigger the
+   application doesn't register, `apply` changes nothing and the error names
+   the action and the binding.
+
+2. In your controls screen, wait for the player to press something. The
+   application's sink pulls every sample before your tick callback runs, so
+   add a sink of your own that holds samples until you have read them. Create
+   it once, and pull it every tick, even while the screen is closed: samples
+   stay queued until every sink has pulled past them.
+
+   ```rust
+   let (input, _) = app.actions_mut();
+   let mut watcher = InputSink::new(input.add_sink(), DefaultChannel::new());
+
+   // In the tick callback:
+   let (input, _) = app.actions_mut();
+   let pressed = input.source_events()
+       .find(|event| event.value == Value::Bool(true))
+       .map(|event| event.trigger_handle);
+   watcher.pull(input, |_| Capture::Passed);
+   ```
+
+   Show the player `input.trigger_name(trigger)`, such as `Keyboard.Space`.
+
+3. Replace the action's bindings with the pressed trigger. The action ends
+   anything it holds as a cancellation, so a held key can't stay pressed.
+
+   ```rust
+   let (input, actions) = app.actions_mut();
+   actions.rebind(input, "Jump", &[ActionBindingDescription::new(trigger)])?;
+   ```
+
+   Call `actions.reset(input, "Jump")` to give the action back its defaults.
+
+4. Save the document the sink returns. It holds only what the player changed.
+
+   ```rust
+   let (input, actions) = app.actions_mut();
+   actions.bindings(input).write(&Bindings::path(&app))?;
+   ```
+
+To keep the document in your own settings storage instead of a file, store the
+text from `Bindings::to_json` and read it back with `Bindings::from_json`. The
+document's members are listed in the [input bindings reference](/docs/reference/input-bindings).
+
+With several sinks, apply the same document to each one. A sink ignores
+the actions it doesn't declare, and `bindings` on each sink returns only that
+sink's replacements, so merge them before you save.
+
 ## Practical guidance
 
 Name actions after intent, not hardware.
@@ -274,4 +349,5 @@ Input is hot-path code, so prefer compact values and local state over allocating
 - [`InputSink`](/docs/api/latest/byte_engine/input/InputSink)
 - [`Action`](/docs/api/latest/byte_engine/input)
 - [`ActionEvent`](/docs/api/latest/byte_engine/input/ActionEvent)
+- [`Bindings`](/docs/api/latest/byte_engine/input/Bindings)
 - [`process_default_window_input`](/docs/api/latest/byte_engine/application/graphics#fn.process_default_window_input)

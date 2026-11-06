@@ -7,8 +7,6 @@
 
 use std::alloc::Allocator;
 
-use log::warn;
-
 use super::device::{Device, DeviceClass, DeviceClassHandle};
 use super::gesture::{Gate, TriggerMapping};
 use super::trigger::{Trigger, TriggerDescription, TriggerReference};
@@ -110,28 +108,44 @@ impl<A: Allocator + Clone> Registry<A> {
 		let index = match reference {
 			TriggerReference::Handle(handle) => handle.index(),
 			// Registration bounds the index, so name lookup needs no temporary opaque handle.
-			TriggerReference::Name(name) => self.triggers.iter().position(|trigger| trigger.name.as_ref() == *name)? as u32,
+			TriggerReference::Name(name) => self.find(name)?,
 		};
 		self.triggers.get(index as usize).map(|trigger| (index, trigger))
 	}
 
+	/// Returns the dense index of the trigger registered under the full `Class.Trigger` name.
+	pub(super) fn find(&self, name: &str) -> Option<u32> {
+		self.triggers
+			.iter()
+			.position(|trigger| trigger.name.as_ref() == name)
+			.map(|index| index as u32)
+	}
+
+	/// Returns the full `Class.Trigger` name of a trigger, or `None` for a reference to an unknown trigger.
+	pub(super) fn name(&self, reference: &TriggerReference) -> Option<&str> {
+		self.resolve(reference).map(|(_, trigger)| trigger.name.as_ref())
+	}
+
 	/// Resolves one binding's value source and its optional gating button.
 	///
-	/// Returns `None` for an unknown name, or for a button that is not a retained
-	/// boolean control of the value source's own device class.
-	pub(super) fn resolve_binding(&self, binding: &ActionBindingDescription) -> Option<TriggerMapping> {
-		let (source, source_trigger) = self.resolve(&binding.input_source)?;
+	/// Fails for an unknown trigger, or for a button that is not a retained
+	/// boolean control of the value source's own device class. The error
+	/// explains which rule the binding breaks and how to fix it.
+	pub(super) fn resolve_binding(&self, binding: &ActionBindingDescription) -> Result<TriggerMapping, String> {
+		let (source, source_trigger) = self
+			.resolve(&binding.input_source)
+			.ok_or_else(|| unknown_trigger(&binding.input_source))?;
 		let gate = match &binding.trigger {
 			Some(reference) => {
-				let (button, gate) = self.resolve(reference)?;
+				let (button, gate) = self.resolve(reference).ok_or_else(|| unknown_trigger(reference))?;
 				if gate.r#type != Types::Boolean
 					|| gate.device_class_handle != source_trigger.device_class_handle
 					|| (binding.trigger_mode == TriggerMode::Drag && gate.transient)
 				{
-					warn!(
-						"Input binding is invalid. The trigger must be boolean, share the value source's device class, and be retained for drags."
-					);
-					return None;
+					return Err(format!(
+						"Input binding button '{}' can't drive source '{}'. A button must be a Boolean trigger on the source's device class, and a drag button must not be transient. Choose a retained Boolean button of the source's device class.",
+						gate.name, source_trigger.name,
+					));
 				}
 				match binding.trigger_mode {
 					TriggerMode::Press => Gate::Press(button),
@@ -142,7 +156,7 @@ impl<A: Allocator + Clone> Registry<A> {
 			None => Gate::None,
 		};
 
-		Some(TriggerMapping {
+		Ok(TriggerMapping {
 			source,
 			gate,
 			mapping: binding.mapping,
@@ -163,4 +177,19 @@ impl<A: Allocator + Clone> Registry<A> {
 			.position(|class| class.name.as_ref() == name)
 			.map(|index| DeviceClassHandle::from_index(index as u32))
 	}
+}
+
+/// Describes a binding that names a trigger nobody registered.
+fn unknown_trigger(reference: &TriggerReference) -> String {
+	match reference {
+		TriggerReference::Name(name) => unknown_trigger_name(name),
+		TriggerReference::Handle(_) => "Input trigger handle is unknown. The most likely cause is a handle from another input collector. Take trigger handles from the collector the sink pulls from.".to_string(),
+	}
+}
+
+/// Describes a trigger name nobody registered, such as one misspelled in a bindings document.
+pub(super) fn unknown_trigger_name(name: &str) -> String {
+	format!(
+		"Input trigger '{name}' is unknown. The most likely cause is a misspelled name or a device class that isn't registered yet. Use a `Class.Trigger` name from the input reference, and register custom classes before binding them."
+	)
 }

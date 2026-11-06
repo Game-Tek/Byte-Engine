@@ -101,7 +101,7 @@ impl<A: Allocator + Clone> InputCollector<A> {
 	/// let keyboard = utils::register_keyboard_device_class(&mut collector);
 	/// let device = collector.create_device(&keyboard);
 	/// let mut sink = InputSink::new_in(collector.add_sink(), DefaultChannel::new(), &arena);
-	/// let action = sink.create_action(&collector, Types::Boolean,
+	/// let action = sink.create_action(&collector, "Forward", Types::Boolean,
 	///     &[ActionBindingDescription::new("Keyboard.W")], TickPolicy::WhileActive);
 	/// collector.record(SeatHandle::stub(), device, TriggerReference::Name("Keyboard.W"), Value::Bool(true));
 	/// sink.pull(&mut collector, |_| Capture::Captured);
@@ -227,8 +227,26 @@ impl<A: Allocator + Clone> InputCollector<A> {
 			.map(|(index, _)| TriggerHandle(super::HANDLE_TAG | index))
 	}
 
+	/// Returns a trigger's full `Class.Trigger` name, such as `Keyboard.Space`.
+	///
+	/// Use it to show a player which control a binding uses, for example the
+	/// trigger a [`SourceEvent`] reports while a rebinding screen waits for a press.
+	pub fn trigger_name(&self, trigger: impl Into<TriggerReference>) -> Option<&str> {
+		self.registry.name(&trigger.into())
+	}
+
+	/// Finds the trigger registered under a full `Class.Trigger` name read at run time.
+	///
+	/// Fails with an error that names the unknown trigger.
+	pub(super) fn find_trigger(&self, name: &str) -> Result<TriggerHandle, String> {
+		self.registry
+			.find(name)
+			.map(|index| TriggerHandle(super::HANDLE_TAG | index))
+			.ok_or_else(|| super::registry::unknown_trigger_name(name))
+	}
+
 	/// Resolves one binding's names into handles for a sink's action.
-	pub(super) fn resolve_binding(&self, binding: &ActionBindingDescription) -> Option<TriggerMapping> {
+	pub(super) fn resolve_binding(&self, binding: &ActionBindingDescription) -> Result<TriggerMapping, String> {
 		self.registry.resolve_binding(binding)
 	}
 

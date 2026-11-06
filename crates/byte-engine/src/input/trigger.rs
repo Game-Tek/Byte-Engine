@@ -7,6 +7,18 @@ pub enum TriggerReference {
 	Name(&'static str),
 }
 
+impl From<&'static str> for TriggerReference {
+	fn from(name: &'static str) -> Self {
+		Self::Name(name)
+	}
+}
+
+impl From<TriggerHandle> for TriggerReference {
+	fn from(handle: TriggerHandle) -> Self {
+		Self::Handle(handle)
+	}
+}
+
 /// The `Trigger` struct stores one input source defined by a device class.
 ///
 /// A trigger can represent a keyboard key, a gamepad control, or another named

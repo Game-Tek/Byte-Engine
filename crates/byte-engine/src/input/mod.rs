@@ -29,6 +29,7 @@ use super::utils::RGBA;
 use crate::core::factory::Handle;
 
 mod axis;
+mod bindings;
 mod collector;
 // Gamepads are read through the window system, which only headed builds have.
 #[cfg(feature = "headed")]
@@ -50,6 +51,7 @@ pub use action::ActionBindingDescription;
 pub use action::ActionHandle;
 pub use action::TriggerMode;
 pub use axis::{Axis2, Axis3};
+pub use bindings::{Binding, Bindings};
 pub use collector::{InputCollector, SinkHandle, SourceEvent};
 pub use device::DeviceHandle;
 use math::Quaternion;

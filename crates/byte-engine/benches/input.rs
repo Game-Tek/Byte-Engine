@@ -95,8 +95,8 @@ fn single_sink_in<A: Allocator + Clone>(bencher: divan::Bencher, allocator: A) {
 	let devices = window(&mut collector);
 	let mut world = Consumer::new(&mut collector, allocator);
 	let binding = ActionBindingDescription::new("Pointer.Position").triggered_by("Pointer.LeftButton");
-	world.actions.create(Action::new(&[binding], Types::Vector2));
-	world.actions.create(Action::new(&[binding], Types::Vector2));
+	world.actions.create(Action::new("Action", &[binding], Types::Vector2));
+	world.actions.create(Action::new("Action", &[binding], Types::Vector2));
 	world.sink.pull(&mut collector, |_| Capture::Passed);
 
 	bencher.bench_local(|| {
@@ -130,7 +130,7 @@ fn two_sinks_in<A: Allocator + Clone>(bencher: divan::Bencher, allocator: A) {
 	let binding = ActionBindingDescription::new("Pointer.Position").triggered_by("Pointer.LeftButton");
 	let mut sinks = [(); 2].map(|()| {
 		let consumer = Consumer::new(&mut collector, allocator.clone());
-		consumer.actions.create(Action::new(&[binding], Types::Vector2));
+		consumer.actions.create(Action::new("Action", &[binding], Types::Vector2));
 		consumer
 	});
 
@@ -173,6 +173,7 @@ fn held_directions_in<A: Allocator + Clone>(bencher: divan::Bencher, action_coun
 	for _ in 0..action_count {
 		sink.create_action(
 			&collector,
+			"Action",
 			Types::Vector2,
 			&[
 				ActionBindingDescription::new("Keyboard.W").mapped(Axis2::new(0.0, 1.0).into()),
@@ -213,6 +214,7 @@ fn bound_keys(bencher: divan::Bencher) {
 		let name: &'static str = Box::leak(name.clone().into_boxed_str());
 		sink.create_action(
 			&collector,
+			"Action",
 			Types::Boolean,
 			&[ActionBindingDescription::new(name)],
 			TickPolicy::OnChange,
@@ -258,29 +260,38 @@ fn drag_capture_in<A: Allocator + Clone>(bencher: divan::Bencher, allocator: A) 
 	let devices = window(&mut collector);
 	let mut interface = Consumer::new(&mut collector, allocator.clone());
 	let card = interface.actions.create(Action::new(
+		"Action",
 		&[ActionBindingDescription::new("Pointer.Position").dragged_by("Pointer.LeftButton")],
 		Types::Vector2,
 	));
 	interface.actions.create(Action::new(
+		"Action",
 		&[ActionBindingDescription::new("Pointer.Position")],
 		Types::Vector2,
 	));
-	interface
-		.actions
-		.create(Action::new(&[ActionBindingDescription::new("Pointer.Scroll")], Types::Float));
 	interface.actions.create(Action::new(
+		"Action",
+		&[ActionBindingDescription::new("Pointer.Scroll")],
+		Types::Float,
+	));
+	interface.actions.create(Action::new(
+		"Action",
 		&[ActionBindingDescription::new("Keyboard.Escape")],
 		Types::Boolean,
 	));
 	let mut scene = Consumer::new(&mut collector, allocator);
 	scene.actions.create(Action::new(
+		"Action",
 		&[ActionBindingDescription::new("Pointer.Position").triggered_by("Pointer.LeftButton")],
 		Types::Vector2,
 	));
-	scene
-		.actions
-		.create(Action::new(&[ActionBindingDescription::new("Pointer.Scroll")], Types::Float));
 	scene.actions.create(Action::new(
+		"Action",
+		&[ActionBindingDescription::new("Pointer.Scroll")],
+		Types::Float,
+	));
+	scene.actions.create(Action::new(
+		"Action",
 		&[ActionBindingDescription::new("Keyboard.Space")],
 		Types::Boolean,
 	));

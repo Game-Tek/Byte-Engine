@@ -10,9 +10,9 @@ use crate::{
 		listener::{DefaultListener, Listener as _},
 	},
 	input::{
-		Action, ActionBindingDescription, ActionEvent, ActionHandle, ActionPhase, Axis2, Axis3, Capture, DeviceHandle,
-		Function, InputCollector, InputSink, ResolvedAction, SeatHandle, TickPolicy, TriggerMode, TriggerReference, Types,
-		Value, ValueMapping,
+		Action, ActionBindingDescription, ActionEvent, ActionHandle, ActionPhase, Axis2, Axis3, Bindings, Capture,
+		DeviceHandle, Function, InputCollector, InputSink, ResolvedAction, SeatHandle, TickPolicy, TriggerMode,
+		TriggerReference, Types, Value, ValueMapping,
 		device::DeviceClassHandle,
 		trigger::TriggerDescription,
 		utils::{register_gamepad_device_class, register_keyboard_device_class, register_pointer_device_class},
@@ -101,7 +101,7 @@ impl Fixture {
 impl Sink {
 	fn button(&mut self, trigger: &'static str, policy: TickPolicy) -> Handle {
 		self.actions
-			.create(Action::new(&[ActionBindingDescription::new(trigger)], Types::Boolean).tick_policy(policy))
+			.create(Action::new("Action", &[ActionBindingDescription::new(trigger)], Types::Boolean).tick_policy(policy))
 	}
 
 	fn published(&mut self) -> Vec<ActionEvent> {
@@ -227,6 +227,7 @@ fn opposing_scalar_bindings_follow_the_most_recent_press() {
 	let mut sink = InputSink::new(fixture.collector.add_sink(), DefaultChannel::new());
 	let action = sink.create_action(
 		&fixture.collector,
+		"Action",
 		Types::Float,
 		&[
 			ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Linear, 1f32)),
@@ -260,6 +261,7 @@ fn directional_bindings_sum_and_normalize_the_active_keys() {
 	let mut sink = InputSink::new(fixture.collector.add_sink(), DefaultChannel::new());
 	let action = sink.create_action(
 		&fixture.collector,
+		"Action",
 		Types::Vector2,
 		&[
 			ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Linear, Axis2::new(0.0, 1.0))),
@@ -298,6 +300,7 @@ fn tick_policies_decide_how_held_values_repeat() {
 		let mut sink = fixture.sink();
 		sink.actions.create(
 			Action::new(
+				"Action",
 				&[ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Linear, 1f32))],
 				Types::Float,
 			)
@@ -378,8 +381,8 @@ fn a_capturing_sink_keeps_the_same_input_from_reaching_the_next_sink() {
 	let mut ui = fixture.sink();
 	let mut game = fixture.sink();
 	let binding = ActionBindingDescription::new("Pointer.Position").triggered_by("Pointer.LeftButton");
-	let panel = ui.actions.create(Action::new(&[binding], Types::Vector2));
-	let shoot = game.actions.create(Action::new(&[binding], Types::Vector2));
+	let panel = ui.actions.create(Action::new("Action", &[binding], Types::Vector2));
+	let shoot = game.actions.create(Action::new("Action", &[binding], Types::Vector2));
 
 	// The UI only handles clicks on its own half of the window.
 	let inside_panel = |resolved: &ResolvedAction| matches!(resolved.value, Value::Vector2(position) if position.x < 0.0);
@@ -509,6 +512,7 @@ fn a_captured_key_does_not_contribute_to_another_sinks_direction() {
 	let mut game = fixture.sink();
 	let typing = ui.button("Keyboard.W", TickPolicy::OnChange);
 	game.actions.create(Action::new(
+		"Action",
 		&[
 			ActionBindingDescription::new("Keyboard.W").mapped(Axis2::new(0.0, 1.0).into()),
 			ActionBindingDescription::new("Keyboard.D").mapped(Axis2::new(1.0, 0.0).into()),
@@ -532,11 +536,16 @@ fn a_captured_key_does_not_contribute_to_another_sinks_direction() {
 fn impulses_keep_their_order_and_never_repeat_on_later_ticks() {
 	let mut fixture = Fixture::new();
 	let mut sink = fixture.sink();
-	sink.actions
-		.create(Action::new(&[ActionBindingDescription::new("Pointer.Scroll")], Types::Float).tick_policy(TickPolicy::Always));
 	sink.actions.create(
-		Action::new(&[ActionBindingDescription::new("Keyboard.Character")], Types::Unicode)
-			.tick_policy(TickPolicy::WhileActive),
+		Action::new("Action", &[ActionBindingDescription::new("Pointer.Scroll")], Types::Float).tick_policy(TickPolicy::Always),
+	);
+	sink.actions.create(
+		Action::new(
+			"Action",
+			&[ActionBindingDescription::new("Keyboard.Character")],
+			Types::Unicode,
+		)
+		.tick_policy(TickPolicy::WhileActive),
 	);
 
 	fixture.record("Pointer.Scroll", 1.0f32);
@@ -611,6 +620,7 @@ fn a_later_capture_cannot_change_an_earlier_direction_in_the_same_tick() {
 	let mut game = fixture.sink();
 	ui.button("Keyboard.W", TickPolicy::OnChange);
 	game.actions.create(Action::new(
+		"Action",
 		&[
 			ActionBindingDescription::new("Keyboard.W").mapped(Axis2::new(0.0, 1.0).into()),
 			ActionBindingDescription::new("Keyboard.D").mapped(Axis2::new(1.0, 0.0).into()),
@@ -714,6 +724,7 @@ fn snapshot_bindings_sample_each_press_in_queue_order() {
 	let other_mouse = fixture.collector.create_device(&fixture.mouse_class);
 	sink.actions.create(
 		Action::new(
+			"Action",
 			&[ActionBindingDescription::new("Pointer.Position")
 				.triggered_by("Pointer.LeftButton")
 				.trigger_on(TriggerMode::Press)],
@@ -775,10 +786,12 @@ fn click_phase_selects_the_snapshot_across_ticks() {
 	let binding = ActionBindingDescription::new("Pointer.Position").triggered_by("Pointer.LeftButton");
 	let release = sink
 		.actions
-		.create(Action::new(&[binding], Types::Vector2).tick_policy(TickPolicy::Always));
-	let press = sink
-		.actions
-		.create(Action::new(&[binding.trigger_on(TriggerMode::Press)], Types::Vector2));
+		.create(Action::new("Action", &[binding], Types::Vector2).tick_policy(TickPolicy::Always));
+	let press = sink.actions.create(Action::new(
+		"Action",
+		&[binding.trigger_on(TriggerMode::Press)],
+		Types::Vector2,
+	));
 	fixture.record("Pointer.Position", Axis2::new(1.0, 2.0));
 	fixture.record("Pointer.LeftButton", true);
 	let actions = fixture.pull(&mut sink, pass);
@@ -802,6 +815,7 @@ fn drag_events_preserve_queue_order_and_do_not_repeat_when_held() {
 	let mut sink = fixture.sink();
 	sink.actions.create(
 		Action::new(
+			"Action",
 			&[ActionBindingDescription::new("Pointer.Position").dragged_by("Pointer.LeftButton")],
 			Types::Vector2,
 		)
@@ -853,9 +867,10 @@ fn a_drag_captures_movement_until_release_and_then_allows_other_input() {
 	let binding = ActionBindingDescription::new("Pointer.Position").dragged_by("Pointer.LeftButton");
 	let drag = ui
 		.actions
-		.create(Action::new(&[binding], Types::Vector2).tick_policy(TickPolicy::Always));
-	game.actions.create(Action::new(&[binding], Types::Vector2));
+		.create(Action::new("Action", &[binding], Types::Vector2).tick_policy(TickPolicy::Always));
+	game.actions.create(Action::new("Action", &[binding], Types::Vector2));
 	let game_motion = game.actions.create(Action::new(
+		"Action",
 		&[ActionBindingDescription::new("Pointer.Position")],
 		Types::Vector2,
 	));
@@ -900,6 +915,7 @@ fn cancelling_a_drag_at_the_origin_does_not_end_or_restart_it() {
 	let mut fixture = Fixture::new();
 	let mut sink = fixture.sink();
 	sink.actions.create(Action::new(
+		"Action",
 		&[ActionBindingDescription::new("Pointer.Position").dragged_by("Pointer.LeftButton")],
 		Types::Vector2,
 	));
@@ -928,6 +944,7 @@ fn drags_require_a_sample_at_press_and_keep_devices_and_seats_separate() {
 	let mut fixture = Fixture::new();
 	let mut sink = fixture.sink();
 	sink.actions.create(Action::new(
+		"Action",
 		&[ActionBindingDescription::new("Pointer.Position").dragged_by("Pointer.LeftButton")],
 		Types::Vector2,
 	));
@@ -1037,6 +1054,7 @@ fn repeated_actions_keep_the_registered_identity() {
 	let mut sink = InputSink::new(fixture.collector.add_sink(), DefaultChannel::new());
 	let action = sink.create_action(
 		&fixture.collector,
+		"Action",
 		Types::Boolean,
 		&[ActionBindingDescription::new("Keyboard.Up")],
 		TickPolicy::WhileActive,
@@ -1049,5 +1067,161 @@ fn repeated_actions_keep_the_registered_identity() {
 			Capture::Passed
 		});
 		assert_eq!(identities, [action]);
+	}
+}
+
+impl Sink {
+	/// Declares a Boolean action under `name` with one default binding.
+	fn named(&mut self, name: &'static str, trigger: &'static str) -> Handle {
+		self.actions
+			.create(Action::new(name, &[ActionBindingDescription::new(trigger)], Types::Boolean))
+	}
+}
+
+/// Records a press and release of `trigger`, then returns the events `sink` published for `action`.
+fn tap(fixture: &mut Fixture, sink: &mut Sink, trigger: &'static str, action: Handle) -> Vec<ActionEvent> {
+	fixture.record(trigger, true);
+	fixture.record(trigger, false);
+	fixture.pull(sink, pass);
+	sink.published()
+		.into_iter()
+		.filter(|event| event.handle() == action)
+		.collect()
+}
+
+#[test]
+fn applied_bindings_replace_an_actions_defaults() {
+	let mut fixture = Fixture::new();
+	let mut game = fixture.sink();
+	let jump = game.named("Jump", "Keyboard.Space");
+	fixture.pull(&mut game, pass);
+
+	let document = Bindings::from_json(r#"{ "actions": { "Jump": ["Keyboard.W"] } }"#).unwrap();
+	game.sink.apply(&fixture.collector, &document).unwrap();
+
+	assert!(tap(&mut fixture, &mut game, "Keyboard.Space", jump).is_empty());
+	assert_eq!(tap(&mut fixture, &mut game, "Keyboard.W", jump).len(), 2);
+}
+
+#[test]
+fn bindings_applied_before_an_action_is_declared_replace_its_defaults() {
+	let mut fixture = Fixture::new();
+	let mut game = fixture.sink();
+	let document = Bindings::from_json(r#"{ "actions": { "Jump": ["Keyboard.W"] } }"#).unwrap();
+	game.sink.apply(&fixture.collector, &document).unwrap();
+
+	let jump = game.named("Jump", "Keyboard.Space");
+	fixture.pull(&mut game, pass);
+
+	assert!(tap(&mut fixture, &mut game, "Keyboard.Space", jump).is_empty());
+	assert_eq!(tap(&mut fixture, &mut game, "Keyboard.W", jump).len(), 2);
+}
+
+#[test]
+fn bindings_with_an_unknown_trigger_change_nothing() {
+	let mut fixture = Fixture::new();
+	let mut game = fixture.sink();
+	let jump = game.named("Jump", "Keyboard.Space");
+	let fire = game.named("Fire", "Keyboard.Up");
+	fixture.pull(&mut game, pass);
+
+	let document = Bindings::from_json(r#"{ "actions": { "Fire": ["Keyboard.W"], "Jump": ["Keyboard.Nowhere"] } }"#).unwrap();
+	let error = game.sink.apply(&fixture.collector, &document).unwrap_err();
+
+	assert!(error.contains("'Jump'") && error.contains("Keyboard.Nowhere"), "{error}");
+	assert_eq!(tap(&mut fixture, &mut game, "Keyboard.Space", jump).len(), 2);
+	assert_eq!(tap(&mut fixture, &mut game, "Keyboard.Up", fire).len(), 2);
+}
+
+#[test]
+fn reset_restores_an_actions_defaults() {
+	let mut fixture = Fixture::new();
+	let mut game = fixture.sink();
+	let jump = game.named("Jump", "Keyboard.Space");
+	fixture.pull(&mut game, pass);
+	let w = fixture.collector.trigger(TriggerReference::Name("Keyboard.W")).unwrap();
+	game.sink
+		.rebind(&fixture.collector, "Jump", &[ActionBindingDescription::new(w)])
+		.unwrap();
+
+	game.sink.reset(&fixture.collector, "Jump");
+
+	assert!(tap(&mut fixture, &mut game, "Keyboard.W", jump).is_empty());
+	assert_eq!(tap(&mut fixture, &mut game, "Keyboard.Space", jump).len(), 2);
+	assert_eq!(game.sink.bindings(&fixture.collector), Bindings::default());
+}
+
+#[test]
+fn rebinding_a_held_action_cancels_its_press() {
+	let mut fixture = Fixture::new();
+	let mut game = fixture.sink();
+	let jump = game.named("Jump", "Keyboard.Space");
+	fixture.record("Keyboard.Space", true);
+	fixture.pull(&mut game, pass);
+	game.published();
+
+	game.sink
+		.rebind(&fixture.collector, "Jump", &[ActionBindingDescription::new("Keyboard.W")])
+		.unwrap();
+
+	let events = game.published();
+	assert_eq!(events.len(), 1);
+	assert_eq!(events[0].handle(), jump);
+	assert!(events[0].is_cancelled());
+	assert_eq!(events[0].value(), Value::Bool(false));
+}
+
+#[test]
+fn saved_bindings_read_back_as_the_same_document() {
+	let mut fixture = Fixture::new();
+	let mut game = fixture.sink();
+	game.actions.create(Action::new(
+		"Move",
+		&[ActionBindingDescription::new("Keyboard.Up").mapped(Axis3::new(0.0, 0.0, 1.0).into())],
+		Types::Vector3,
+	));
+	game.actions.create(Action::new(
+		"Select",
+		&[ActionBindingDescription::new("Pointer.Position").dragged_by("Pointer.LeftButton")],
+		Types::Vector2,
+	));
+	game.named("Jump", "Keyboard.Space");
+	fixture.pull(&mut game, pass);
+	let document = Bindings::from_json(
+		r#"{ "actions": {
+			"Jump": [],
+			"Move": ["Keyboard.Down", { "source": "Keyboard.W", "value": [0, 0, 1] }],
+			"Select": [{ "source": "Pointer.Position", "triggered_by": "Pointer.LeftButton", "on": "drag" }]
+		} }"#,
+	)
+	.unwrap();
+
+	game.sink.apply(&fixture.collector, &document).unwrap();
+	let saved = game.sink.bindings(&fixture.collector);
+
+	assert_eq!(saved, document);
+	assert_eq!(Bindings::from_json(&saved.to_json()).unwrap(), document);
+}
+
+#[test]
+fn bindings_documents_reject_unknown_members() {
+	for (source, member) in [
+		(r#"{ "binds": {} }"#, "'binds'"),
+		(
+			r#"{ "actions": { "Jump": [{ "source": "Keyboard.W", "key": "W" }] } }"#,
+			"'key'",
+		),
+		(r#"{ "actions": { "Jump": [{ "triggered_by": "Keyboard.W" }] } }"#, "`source`"),
+		(
+			r#"{ "actions": { "Jump": [{ "source": "Keyboard.W", "on": "hold" }] } }"#,
+			"`on`",
+		),
+		(
+			r#"{ "actions": { "Jump": [{ "source": "Keyboard.W", "value": [1] }] } }"#,
+			"`value`",
+		),
+	] {
+		let error = Bindings::from_json(source).unwrap_err();
+		assert!(error.contains(member), "{source}: {error}");
 	}
 }

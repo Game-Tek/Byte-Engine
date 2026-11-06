@@ -10,6 +10,8 @@
 /// The [`Action`] struct describes an application-level input value and the
 /// physical trigger bindings that can produce it.
 pub struct Action {
+	/// The stable name a [`Bindings`](super::Bindings) document replaces this action's bindings under.
+	pub(crate) name: Cow<'static, str>,
 	pub(crate) bindings: SmallVec<[ActionBindingDescription; 8]>,
 	pub(crate) r#type: Types,
 	pub(crate) tick_policy: TickPolicy,
@@ -40,9 +42,14 @@ impl InputValue for Quaternion {}
 impl InputValue for RGBA {}
 
 impl Action {
-	/// Creates an action from its physical trigger bindings and output type.
-	pub fn new(bindings: &[ActionBindingDescription], r#type: Types) -> Action {
+	/// Creates an action from its name, its default trigger bindings, and its output type.
+	///
+	/// `name` identifies the action in a [`Bindings`](super::Bindings) document, so keep it
+	/// stable across releases: players' saved bindings refer to it. The bindings are the
+	/// defaults a sink restores with [`InputSink::reset`](super::InputSink::reset).
+	pub fn new(name: impl Into<Cow<'static, str>>, bindings: &[ActionBindingDescription], r#type: Types) -> Action {
 		Action {
+			name: name.into(),
 			bindings: bindings.into(),
 			r#type,
 			tick_policy: TickPolicy::default(),
@@ -67,9 +74,13 @@ pub struct ActionBindingDescription {
 }
 
 impl ActionBindingDescription {
-	pub fn new(input_source: &'static str) -> Self {
+	/// Binds a trigger, by its `Class.Trigger` name or its handle, to an action.
+	///
+	/// Pass a [`TriggerHandle`](super::TriggerHandle) to bind a trigger found at run time,
+	/// such as the one a player pressed in a rebinding screen.
+	pub fn new(input_source: impl Into<TriggerReference>) -> Self {
 		ActionBindingDescription {
-			input_source: TriggerReference::Name(input_source),
+			input_source: input_source.into(),
 			trigger: None,
 			trigger_mode: TriggerMode::default(),
 			mapping: false.into(),
@@ -81,8 +92,8 @@ impl ActionBindingDescription {
 	/// to choose presses instead. Triggered bindings bypass the action's tick
 	/// policy: each matching record emits one snapshot.
 	/// Next, pass this binding to [`Action::new`].
-	pub fn triggered_by(mut self, trigger: &'static str) -> Self {
-		self.trigger = Some(TriggerReference::Name(trigger));
+	pub fn triggered_by(mut self, trigger: impl Into<TriggerReference>) -> Self {
+		self.trigger = Some(trigger.into());
 		self
 	}
 
@@ -93,7 +104,7 @@ impl ActionBindingDescription {
 	/// carry [`super::ActionPhase::Started`], [`super::ActionPhase::Updated`], or
 	/// [`super::ActionPhase::Ended`] with the current source value.
 	/// Next, pass this binding to [`Action::new`] and handle [`super::ActionEvent::phase`].
-	pub fn dragged_by(self, button: &'static str) -> Self {
+	pub fn dragged_by(self, button: impl Into<TriggerReference>) -> Self {
 		self.triggered_by(button).trigger_on(TriggerMode::Drag)
 	}
 
@@ -141,6 +152,8 @@ impl ActionHandle {
 	}
 }
 const _: () = assert!(size_of::<Option<ActionHandle>>() == size_of::<u32>());
+
+use std::borrow::Cow;
 
 use math::Quaternion;
 use smallvec::SmallVec;

@@ -64,6 +64,7 @@ A value is text that the reader converts:
 | `inspector.address` | IPv4 or IPv6 address | Both loopback addresses | The only address the HTTP inspector serves on. Set `0.0.0.0` or `::` to reach it from another machine. The inspector has no authentication, so an address that isn't loopback logs a warning. |
 | `inspector.port` | Port number | 6680 | The HTTP inspector's port on each of its addresses. When the default is in use, the inspector serves on a free port the system picks and logs it as a warning; a port you set that's in use stops startup. |
 | `physics.step-lanes` | `bodies:lanes` pairs separated by commas, each lane count at least 1 | 2 lanes from 512 bodies and up to 4 from 4,000, never more than the fastest cores' threads | How many lanes a physics step runs on, by body count. `0:1` keeps every step on the calling thread. See [Physics](/docs/reference/physics). |
+| `input.bindings` | Path | `bindings.json` under the application directory | The file the application reads and writes its [input bindings](/docs/reference/input-bindings) at. Read only when the application loads or saves its bindings. |
 | `artnet.bind-address` | IPv4 address; invalid keeps the default | `0.0.0.0` | The Art-Net worker's bind address, with the `dmx` feature. |
 | `artnet.poll-target` | IPv4 address; invalid keeps the default | `255.255.255.255` | Where Art-Net polls and output go. |
 

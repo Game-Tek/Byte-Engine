@@ -49,7 +49,7 @@ Platform requirements:
 
 | Platform | Required setup |
 | --- | --- |
-| Linux | Vulkan development packages, Wayland/X11 packages, ALSA, CMake |
+| Linux | Vulkan development packages, Wayland/X11 packages, ALSA, libudev, CMake |
 | macOS | Full Xcode with the Metal Toolchain component, plus CMake and `pkg-config` |
 | Windows | Visual Studio Build Tools with the MSVC C++ toolchain and Windows SDK |
 

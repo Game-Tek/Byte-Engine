@@ -24,9 +24,9 @@ mod tests {
 		GLTFAssetHandler, GltfImportError, generated_gltf_image_id, generated_gltf_material, generated_image_fragment_index,
 		generated_material_base_id, gltf_image_semantics, gltf_normal_transform, gltf_transform_orientation, gltf_vertex_skin,
 		has_vertex_component, import_gltf_animation, import_gltf_node_graph, import_gltf_skin_binding, load_gltf_buffers,
-		merge_gltf_texture_semantics, normalize_vertex_layouts, sanitize_material_name, transform_gltf_tangent,
-		transform_gltf_unit_direction, unique_gltf_materials, validate_affine_matrix,
-		validate_gltf_flattened_animation_transform, validate_gltf_skin_attribute_sets,
+		normalize_vertex_layouts, sanitize_material_name, transform_gltf_tangent, transform_gltf_unit_direction,
+		unique_gltf_materials, validate_affine_matrix, validate_gltf_flattened_animation_transform,
+		validate_gltf_skin_attribute_sets,
 	};
 	use crate::r#async;
 	use crate::{
@@ -915,7 +915,7 @@ mod tests {
 
 		let mut semantics = vec![None; 11];
 
-		merge_gltf_texture_semantics(&material, &mut semantics);
+		material.merge_image_semantics(&mut semantics);
 
 		assert_eq!(
 			semantics

@@ -4,7 +4,7 @@ use std::fmt::{Display, Formatter};
 
 use super::graph::{BinaryOperator, Channel, Graph, GraphBuilder, GraphError, Node, NodeId, Surface, Type, Value};
 use super::{material_texture_parameter_name, material_texture_slot};
-use crate::processors::image::ChannelPacking;
+use crate::processors::image::{ChannelPacking, METALLIC_ROUGHNESS_PACKING, Semantic};
 use crate::types::AlphaMode;
 
 /// The `ImportedMaterial` struct holds one material a container importer read: its graph, the container images its
@@ -50,6 +50,79 @@ impl ImportedMaterial {
 					channel,
 				})
 		})
+	}
+
+	/// Merges the semantic each container image is sampled with into `semantics`, which is indexed by container image.
+	///
+	/// The semantic comes from the surface input that reads the image, never from the image's name, so every importer
+	/// bakes a texture the way its material uses it. Importers call this for every material of a container, then bake
+	/// each image with its merged semantic. Images outside `semantics` are ignored.
+	pub fn merge_image_semantics(&self, semantics: &mut [Option<Semantic>]) {
+		let surface = self.graph.surface();
+
+		for (node, semantic) in [
+			(surface.base_color, Semantic::Albedo),
+			// A base color texture's alpha is also read as opacity, and its albedo read outranks that one.
+			(surface.opacity, Semantic::Opacity),
+			(surface.metalness, Semantic::Metallic),
+			(surface.roughness, Semantic::Roughness),
+			(surface.normal, Semantic::Normal),
+			(surface.occlusion, Semantic::AO),
+			(surface.emission, Semantic::Emissive),
+		] {
+			if let Some(node) = node {
+				self.merge_node_image_semantics(node, semantic, semantics);
+			}
+		}
+	}
+
+	/// Merges the semantic every image `node` reaches is sampled with, reading it as `semantic` unless the path to the
+	/// image says otherwise.
+	fn merge_node_image_semantics(&self, node: NodeId, semantic: Semantic, semantics: &mut [Option<Semantic>]) {
+		let graph = &self.graph;
+
+		match graph.node(node) {
+			Node::Image { texture, .. } => {
+				if let Some(merged) = self.image(texture).and_then(|image| semantics.get_mut(image as usize)) {
+					*merged = Some(merged.map_or(semantic, |merged| merge_semantics(merged, semantic)));
+				}
+			}
+			Node::Extract { value, index } => {
+				// A metallic or roughness read of a channel the packing keeps lets the image bake as a two-channel map. Any
+				// other read of the image outranks it in `merge_semantics`, so only fully packable images pack.
+				let packable = matches!(semantic, Semantic::Metallic | Semantic::Roughness)
+					&& METALLIC_ROUGHNESS_PACKING.stored_channel(usize::from(*index)).is_some()
+					&& matches!(graph.node(*value), Node::Image { .. });
+				let semantic = if packable { Semantic::MetallicRoughness } else { semantic };
+
+				self.merge_node_image_semantics(*value, semantic, semantics);
+			}
+			Node::NormalMap { value, scale } => {
+				self.merge_node_image_semantics(*value, Semantic::Normal, semantics);
+				self.merge_node_image_semantics(*scale, semantic, semantics);
+			}
+			other => other.visit_inputs(|input| self.merge_node_image_semantics(input, semantic, semantics)),
+		}
+	}
+}
+
+/// Picks the semantic an image bakes with when materials sample it in more than one way.
+///
+/// The pick is a fixed priority, so the order in which reads merge does not change the result.
+fn merge_semantics(left: Semantic, right: Semantic) -> Semantic {
+	// Prefer color semantics when an unusual asset reuses the same image for color and data textures.
+	// This avoids accidentally sampling an albedo texture as linear data after processing.
+	match (left, right) {
+		(Semantic::Albedo, _) | (_, Semantic::Albedo) => Semantic::Albedo,
+		(Semantic::Emissive, _) | (_, Semantic::Emissive) => Semantic::Emissive,
+		(Semantic::Opacity, _) | (_, Semantic::Opacity) => Semantic::Opacity,
+		(Semantic::Normal, _) | (_, Semantic::Normal) => Semantic::Normal,
+		(Semantic::AO, _) | (_, Semantic::AO) => Semantic::AO,
+		(Semantic::Metallic, _) | (_, Semantic::Metallic) => Semantic::Metallic,
+		(Semantic::Roughness, _) | (_, Semantic::Roughness) => Semantic::Roughness,
+		// A packed map drops channels, so any other use of the image keeps all of them.
+		(Semantic::MetallicRoughness, other) | (other, Semantic::MetallicRoughness) => other,
+		_ => left,
 	}
 }
 
@@ -105,6 +178,36 @@ impl ImportedGraphBuilder {
 			left: factor,
 			right: texture,
 		})
+	}
+
+	/// Adds a scalar factor, multiplied by channel `channel` of `texture` when the material has one.
+	///
+	/// glTF reads metalness and roughness from two channels of one texture; FBX reads each from the red channel of its own.
+	pub fn factor_times_channel(&mut self, factor: f32, texture: Option<NodeId>, channel: u8) -> Result<NodeId, GraphError> {
+		let factor = self.builder.constant(Value::Float(factor));
+
+		let Some(texture) = texture else {
+			return Ok(factor);
+		};
+
+		let channel = self.builder.add(Node::Extract {
+			value: texture,
+			index: channel,
+		})?;
+
+		self.builder.add(Node::Binary {
+			operator: BinaryOperator::Multiply,
+			left: factor,
+			right: channel,
+		})
+	}
+
+	/// Adds a tangent-space normal map that samples container image `image`, scaled by `scale`.
+	pub fn normal_map(&mut self, image: u32, scale: f32) -> Result<NodeId, GraphError> {
+		let value = self.image(image, Type::Vector3)?;
+		let scale = self.builder.constant(Value::Float(scale));
+
+		self.builder.add(Node::NormalMap { value, scale })
 	}
 
 	/// Splits a `vector4` colour into the base colour and the opacity a surface reads.

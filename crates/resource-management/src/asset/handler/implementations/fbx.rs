@@ -47,7 +47,7 @@ mod tests {
 			mesh::MeshModel,
 			skeleton::{LocalTransform, SkeletonModel, SkeletonNode, SkinJoint},
 		},
-		types::{AlphaMode, IndexStreamTypes, Streams, VertexSemantics},
+		types::{AlphaMode, Formats, Gamma, IndexStreamTypes, Streams, VertexSemantics},
 	};
 
 	const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("../../test_data/triangle_move_ascii.fbx");
@@ -57,6 +57,8 @@ mod tests {
 	const DEGENERATE_QUAD_FBX: &[u8] = include_bytes!("../../test_data/degenerate_quad_ascii.fbx");
 
 	const MATERIAL_FACTORS_FBX: &[u8] = include_bytes!("../../test_data/material_factors_ascii.fbx");
+
+	const TEXTURED_MATERIAL_FBX: &[u8] = include_bytes!("../../test_data/textured_material_ascii.fbx");
 
 	const SKINNED_TRIANGLE_FBX: &[u8] = include_bytes!("../../test_data/skinned_triangle_ascii.fbx");
 
@@ -739,6 +741,127 @@ mod tests {
 
 		assert_eq!(image_resource.class, "Image");
 		assert_eq!(image.extent, [1, 1, 0]);
+	}
+
+	#[test]
+	fn pbr_texture_maps_feed_their_surface_inputs() {
+		let scene = load_fbx_scene(TEXTURED_MATERIAL_FBX, "textured_material.fbx").expect("textured fixture should parse");
+		let source = ufbx::find_material(&scene, "TexturedMetalRough").expect("textured material should exist");
+		let texture = |name: &str| {
+			scene
+				.textures
+				.iter()
+				.find(|texture| texture.element.name.as_ref() == name)
+				.unwrap_or_else(|| panic!("texture '{name}' should exist"))
+				.element
+				.typed_id
+		};
+
+		let material = fbx_material(Some(source)).expect("textured material should convert");
+		let graph = &material.graph;
+		let surface = graph.surface();
+		// Returns the container image an image node samples.
+		let image = |node: bemx::NodeId| match graph.node(node) {
+			bemx::Node::Image { texture, .. } => material.image(texture),
+			other => panic!("Expected an image node, got {other:#?}"),
+		};
+		// Returns the constant and the image read of a `factor * texture.x` product.
+		let factor_times_red = |node: bemx::NodeId| {
+			let bemx::Node::Binary {
+				operator: bemx::BinaryOperator::Multiply,
+				left,
+				right,
+			} = graph.node(node)
+			else {
+				panic!("Expected a factor product, got {:#?}", graph.node(node));
+			};
+			let bemx::Node::Extract { value, index: 0 } = graph.node(*right) else {
+				panic!("Expected a red channel read, got {:#?}", graph.node(*right));
+			};
+
+			(graph.node(*left).clone(), image(*value))
+		};
+
+		assert_eq!(material.alpha_mode, AlphaMode::Mask(0.5));
+
+		let bemx::Node::NormalMap { value, .. } = graph.node(surface.normal.expect("normal map should feed the surface"))
+		else {
+			panic!("A normal map should become a normal map node.");
+		};
+		assert_eq!(image(*value), Some(texture("Normal")));
+
+		assert_eq!(
+			factor_times_red(surface.roughness.unwrap()),
+			(bemx::Node::Constant(bemx::Value::Float(0.8)), Some(texture("Rough")))
+		);
+
+		let (_, cutout) = factor_times_red(surface.opacity.unwrap());
+		assert_eq!(cutout, Some(texture("Cutout")));
+
+		assert_eq!(constant_value(graph, surface.metalness), bemx::Value::Float(0.25));
+		assert!(surface.occlusion.is_none());
+	}
+
+	#[r#async::test]
+	async fn fbx_textures_bake_with_the_semantic_of_the_input_that_samples_them() {
+		let asset_storage = AssetTestStorageBackend::new();
+		let pixels = [128u8; 4 * 4 * 4];
+		let png = generated_rgba8_png(4, 4, &pixels);
+
+		asset_storage.add_file("textured_material.fbx", TEXTURED_MATERIAL_FBX);
+		for path in [
+			"textures/base.png",
+			"textures/normal.png",
+			"textures/rough.png",
+			"textures/cutout.png",
+		] {
+			asset_storage.add_file(path, &png);
+		}
+
+		let resource_storage = MemoryStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
+		asset_manager.set_program_generator(MinimalTestShaderGenerator);
+		asset_manager.add_asset_handler(FBXAssetHandler::default());
+
+		asset_manager
+			.bake("textured_material.fbx")
+			.await
+			.expect("FBX with PBR texture maps should bake");
+
+		let resources = resource_storage.get_resources();
+		let variant = resources
+			.iter()
+			.find(|resource| resource.class == "Variant")
+			.expect("the generated variant should be stored");
+		let variant: VariantModel = crate::from_slice(&variant.resource).expect("variant should deserialize");
+
+		assert_eq!(variant.alpha_mode, AlphaMode::Mask(0.5));
+		assert_eq!(variant.variables.len(), 4, "every texture map should bind an image");
+
+		let scene = load_fbx_scene(TEXTURED_MATERIAL_FBX, "textured_material.fbx").expect("textured fixture should parse");
+		let image = |name: &str| -> Image {
+			let texture = scene
+				.textures
+				.iter()
+				.find(|texture| texture.element.name.as_ref() == name)
+				.unwrap_or_else(|| panic!("texture '{name}' should exist"));
+			let id = format!("textured_material.fbx#images/{}", texture.element.typed_id);
+			let resource = resource_storage
+				.get_resource(ResourceId::new(&id))
+				.unwrap_or_else(|| panic!("image '{id}' should bake with the material"));
+
+			crate::from_slice(&resource.resource).expect("image should deserialize")
+		};
+
+		let base = image("Base");
+		let normal = image("Normal");
+		let rough = image("Rough");
+		let cutout = image("Cutout");
+
+		assert_eq!((base.format, base.gamma), (Formats::BC7SRGB, Gamma::SRGB));
+		assert_eq!((normal.format, normal.gamma), (Formats::BC5, Gamma::Linear));
+		assert_eq!((rough.format, rough.gamma), (Formats::RGBA8, Gamma::Linear));
+		assert_eq!((cutout.format, cutout.gamma), (Formats::RGBA8, Gamma::Linear));
 	}
 
 	#[test]

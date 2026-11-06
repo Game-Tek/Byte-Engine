@@ -108,8 +108,9 @@ impl FBXAssetHandler {
 
 	/// Bakes one texture of an FBX as its own image resource.
 	///
-	/// Materials request these as dependencies, so the scene is parsed without geometry or animation data. `spec` is
-	/// the FBX's BEAD manifest, whose `images` object applies to every texture.
+	/// Materials request these as dependencies, so the scene is parsed without geometry or animation data. The texture
+	/// bakes with the semantic of the material input that samples it, from [`fbx_image_semantics`]. `spec` is the FBX's
+	/// BEAD manifest, whose `images` object applies to every texture.
 	async fn store_texture(
 		&self,
 		context: BakeContext<'_>,
@@ -142,7 +143,14 @@ impl FBXAssetHandler {
 			&pixels,
 		);
 
-		store_imported_image(context, url, Semantic::Albedo, spec, source).await
+		// The surface input that samples the texture picks its semantic; an unsampled texture keeps all of its color.
+		let semantic = fbx_image_semantics(&scene)
+			.get(texture_index)
+			.copied()
+			.flatten()
+			.unwrap_or(Semantic::Albedo);
+
+		store_imported_image(context, url, semantic, spec, source).await
 	}
 }
 

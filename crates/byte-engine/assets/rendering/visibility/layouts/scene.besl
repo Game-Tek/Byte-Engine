@@ -9,12 +9,13 @@ Views: struct {
 	views: View[129],
 }
 
+// A material's bindless texture slots, its arm in the coverage shaders, and the opacity below which the masked passes
+// leave out its fragments. A material the coverage shaders don't test has the arm 4294967295.
 Material: struct {
 	textures: u32[16],
-	coverage_factor: f32,
-	coverage_texture_slot: u32,
+	coverage_arm: u32,
 	alpha_cutoff: f32,
-	padding: u32,
+	padding: vec2u,
 }
 
 Materials: struct {

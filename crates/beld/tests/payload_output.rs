@@ -246,10 +246,18 @@ fn an_intercepted_dry_run_prints_the_besl_of_every_shader_it_compiles() {
 		!intercepted.is_empty(),
 		"the FBX's generated material should compile a shader"
 	);
+	assert!(
+		intercepted
+			.iter()
+			.any(|product| product["name"].as_str().unwrap().starts_with("triangle_move.fbx#shaders/")),
+		"the FBX's generated material should compile its own shader"
+	);
 	for product in intercepted {
 		let name = product["name"].as_str().unwrap();
+		// Every bake also assembles the masked passes' coverage shaders from the baked materials.
 		assert!(
-			name.starts_with("triangle_move.fbx#shaders/") && name.ends_with(".besl"),
+			(name.starts_with("triangle_move.fbx#shaders/") || name.contains("-coverage.uber#shaders/"))
+				&& name.ends_with(".besl"),
 			"unexpected product {name}"
 		);
 		assert_eq!(product["encoding"], "utf-8");

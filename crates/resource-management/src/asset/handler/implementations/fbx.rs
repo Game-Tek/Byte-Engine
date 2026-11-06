@@ -115,6 +115,7 @@ mod tests {
 							),
 							variables: Vec::new(),
 							alpha_mode: AlphaMode::Opaque,
+							double_sided: false,
 						},
 					),
 					&[],
@@ -1091,6 +1092,7 @@ mod tests {
 				material: ReferenceModel::<MaterialModel>::new_serialized("materials/test.material", 0, 0, Vec::new(), None),
 				variables: Vec::new(),
 				alpha_mode: AlphaMode::Opaque,
+				double_sided: false,
 			})
 			.expect("test material should serialize"),
 			None,

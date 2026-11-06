@@ -2455,19 +2455,23 @@ mod tests {
 		let material = MaterialModel {
 			double_sided: false,
 			alpha_mode: crate::types::AlphaMode::Opaque,
-			coverage: Default::default(),
 			shaders: Vec::new(),
 			model: RenderModel {
 				name: render_model.to_string(),
 				pass: "MaterialEvaluation".to_string(),
 			},
 			parameters: Vec::new(),
-			program: None,
+			program: crate::resources::material::MaterialProgram {
+				graph: String::new(),
+				parameters: Vec::new(),
+				identity: 0,
+			},
 		};
 		VariantModel {
 			material: crate::ReferenceModel::new("materials/shared.material", 0, 0, &material, None),
 			variables: Vec::new(),
 			alpha_mode: crate::types::AlphaMode::Opaque,
+			double_sided: false,
 		}
 	}
 

@@ -307,7 +307,7 @@ impl BakeLoad {
 				None => None,
 			});
 		}
-		let (record, overflow) = MaterialData::describe(&textures, description.coverage, description.alpha_mode);
+		let (record, overflow) = MaterialData::describe(&textures, description.coverage_arm, description.alpha_mode);
 		if overflow {
 			log::warn!(
 				"Material '{id}' names more textures than a material record holds, so the lightmap bake leaves the last ones out. The most likely cause is a material with more image variables than the visibility pipeline supports. Use fewer images in the material."

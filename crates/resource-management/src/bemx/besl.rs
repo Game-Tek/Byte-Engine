@@ -15,15 +15,15 @@
 //! struct Variables;
 //!
 //! impl<'a> Stage<'a> for Variables {
-//! 	fn geometry(&mut self, geometry: Geometry) -> Node<'a> {
-//! 		Node::member_expression(match geometry {
+//! 	fn geometry(&mut self, geometry: Geometry) -> Option<Node<'a>> {
+//! 		Some(Node::member_expression(match geometry {
 //! 			Geometry::Position => "position",
 //! 			Geometry::Normal => "normal",
 //! 			Geometry::Tangent => "tangent",
 //! 			Geometry::Bitangent => "bitangent",
 //! 			Geometry::View => "view",
 //! 			Geometry::TexCoord => "uv",
-//! 		})
+//! 		}))
 //! 	}
 //!
 //! 	fn sample(&mut self, texture: &'a str) -> Result<Node<'a>, LowerError> {
@@ -80,8 +80,9 @@ pub enum Geometry {
 /// Implement it on the generator's per-program state, which can also record what the graph used, such as whether it
 /// samples textures, while [`Lowering`] asks for each value.
 pub trait Stage<'a> {
-	/// Returns an `f32` BESL expression reading `geometry` at the shaded point.
-	fn geometry(&mut self, geometry: Geometry) -> Node<'a>;
+	/// Returns an `f32` BESL expression reading `geometry` at the shaded point, or `None` when the stage doesn't carry
+	/// it, which fails the lowering with [`LowerError::UnavailableGeometry`].
+	fn geometry(&mut self, geometry: Geometry) -> Option<Node<'a>>;
 
 	/// Returns a `vec4f` BESL expression sampling the texture parameter named `texture` at texture coordinate set zero.
 	///
@@ -256,6 +257,13 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 		result
 	}
 
+	/// Returns the stage's read of `geometry` for node `node`, failing when the stage doesn't carry it.
+	fn geometry(&mut self, node: NodeId, geometry: Geometry) -> Result<Node<'a>, LowerError> {
+		self.stage
+			.geometry(geometry)
+			.ok_or(LowerError::UnavailableGeometry { node, geometry })
+	}
+
 	/// Returns the already lowered value of an input.
 	fn input(&self, node: NodeId) -> Expression<'a> {
 		self.values[node.index()]
@@ -275,14 +283,14 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 		Ok(match graph.node(id) {
 			GraphNode::Constant(value) => Expression::new(constant(value), result),
 			GraphNode::Parameter { name, r#type } => self.parameter(name, *r#type)?,
-			GraphNode::Position => Expression::new(self.stage.geometry(Geometry::Position), result),
-			GraphNode::Normal => Expression::new(self.stage.geometry(Geometry::Normal), result),
-			GraphNode::Tangent => Expression::new(self.stage.geometry(Geometry::Tangent), result),
-			GraphNode::Bitangent => Expression::new(self.stage.geometry(Geometry::Bitangent), result),
+			GraphNode::Position => Expression::new(self.geometry(id, Geometry::Position)?, result),
+			GraphNode::Normal => Expression::new(self.geometry(id, Geometry::Normal)?, result),
+			GraphNode::Tangent => Expression::new(self.geometry(id, Geometry::Tangent)?, result),
+			GraphNode::Bitangent => Expression::new(self.geometry(id, Geometry::Bitangent)?, result),
 			GraphNode::ViewDirection => {
 				// BEMX points the view direction from the viewer at the surface, as MaterialX does; stages carry the
 				// opposite.
-				let view = self.stage.geometry(Geometry::View);
+				let view = self.geometry(id, Geometry::View)?;
 
 				self.bind(result, Node::operator("-", splat_literal(0.0, 3), view))
 			}
@@ -291,7 +299,7 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 					return Err(LowerError::UnsupportedTexCoord { node: id, index: *index });
 				}
 
-				Expression::new(self.stage.geometry(Geometry::TexCoord), result)
+				Expression::new(self.geometry(id, Geometry::TexCoord)?, result)
 			}
 			GraphNode::Image { texture, texcoord, .. } => {
 				// Stages sample with the mesh's own texture coordinates, so a transformed set cannot be honoured.
@@ -507,12 +515,15 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 			GraphNode::NormalMap { value, scale } => {
 				let tangent = self.tangent(id, *value, *scale)?;
 				let axes = [Geometry::Tangent, Geometry::Bitangent, Geometry::Normal];
-				let world = axes
-					.into_iter()
-					.enumerate()
-					.map(|(index, axis)| Node::operator("*", self.stage.geometry(axis), tangent.component(index)))
-					.reduce(|total, term| Node::operator("+", total, term))
-					.expect("A frame has three axes.");
+				let mut world = None;
+				for (index, axis) in axes.into_iter().enumerate() {
+					let term = Node::operator("*", self.geometry(id, axis)?, tangent.component(index));
+					world = Some(match world {
+						Some(total) => Node::operator("+", total, term),
+						None => term,
+					});
+				}
+				let world = world.expect("A frame has three axes.");
 
 				self.bind(result, Node::call("normalize", vec![world]))
 			}
@@ -904,6 +915,9 @@ pub enum LowerError {
 	UnknownParameter { name: String, r#type: Type },
 	/// An image node names a texture the material does not declare.
 	UnknownTexture { name: String },
+	/// A node reads geometry the stage doesn't carry, such as the normal in a pass that only interpolates texture
+	/// coordinates.
+	UnavailableGeometry { node: NodeId, geometry: Geometry },
 }
 
 impl Display for LowerError {
@@ -934,6 +948,11 @@ impl Display for LowerError {
 			LowerError::UnknownTexture { name } => write!(
 				f,
 				"Material texture '{name}' is not declared. The most likely cause is a BEMX image node whose texture is missing from the material's Texture2D variables. See {docs}."
+			),
+			LowerError::UnavailableGeometry { node, geometry } => write!(
+				f,
+				"BEMX node #{} reads the {geometry:?} geometry, which this shader stage doesn't carry. The most likely cause is a masked material whose `opacity` reads geometry other than texture coordinates; the masked passes carry only those. Compute `opacity` from constants, parameters, images, and texture coordinates. See {docs}.",
+				node.index()
 			),
 		}
 	}

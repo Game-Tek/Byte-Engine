@@ -1,11 +1,12 @@
 ---
 title: Material evaluation modes
-description: Understand how the uber mode bakes one material evaluation shader per phase and shades the screen in tiles, and the rules a change to either mode must keep.
+description: Understand how the uber mode bakes one material evaluation shader per phase and shades the screen in tiles, how the masked passes test opacity in coverage shaders, and the rules a change must keep.
 icon: LayoutGrid
 ---
 
 Read this page before you change material evaluation, the shaders the
-visibility generator builds for it, or how a bake assembles the uber shaders.
+visibility generator builds for it, how a bake assembles the uber shaders, or
+how the masked passes test opacity.
 What each mode accepts and draws is specified under
 [materials](/docs/reference/rendering#materials) in the rendering reference,
 and how a project picks a mode is in
@@ -33,11 +34,11 @@ shapes, not code.
 
 ## The bake assembles the uber shaders
 
-In the uber mode, the visibility generator returns no evaluation program for a
-material. The material handler then stores the material's `MaterialProgram`, its
-BEMX graph and parameter declarations, in place of a compiled shader.
-`identity` hashes both, which is everything the generated code depends on
-besides static values.
+Every material keeps its `MaterialProgram`, its BEMX graph and parameter
+declarations, because the coverage shaders read it in both modes. In the uber
+mode, the visibility generator returns no evaluation program for a material, so
+the program is all the material stores. `identity` hashes both, which is
+everything the generated code depends on besides static values.
 
 The uber shaders are resources with no asset behind them. Their IDs are
 `UBER_MATERIAL_SHADERS` in `visibility/features.rs`. The material handler bakes
@@ -59,6 +60,31 @@ phase's shader through `ResourceManager::rebake` when a ready material's arm is
 missing. Only one rebake per phase runs at a time, and the shader's arrival
 checks the materials again.
 
+## Masked coverage shaders
+
+Masked materials draw in the opaque layer, and the visibility and shadow passes
+leave out each fragment whose `opacity` falls below the material's cutoff. The
+masked raster passes can't run one pipeline per material, so the bake
+assembles two coverage shaders the same way it assembles the uber shaders,
+in both modes. Their IDs are `COVERAGE_SHADERS` in `visibility/features.rs`:
+one fragment for the masked visibility pass and one for the masked shadow
+passes.
+
+`coverage_program` in `visibility/shader_generator.rs` splices a `match` on the
+material table entry's `coverage_arm` into the fragment sources in
+`shader_generator/sources/coverage.rs`. Each arm lowers only what `opacity`
+reaches, through `CoverageStage` in `shader_generator/material.rs`, which
+supplies the vertex UV and refuses every other geometry. Samples use the
+rasterizer's derivatives. A material without an arm keeps an `opacity` of 1.
+
+The masked pipelines are the solid `.pipeline` assets with a coverage shader as
+their fragment: the loader requests each through
+`PipelineManagerClient::request_pipeline_with_fragment`, because the compiled
+shader's ID changes with what it holds. The manager publishes them in
+`RenderInfo::coverage_pipelines`, and keeps a masked material unavailable until
+both coverage shaders hold its arm. A development build rebakes both when one
+is missing, as it does for an uber shader.
+
 ## Arm keys
 
 `uber_arm_key` in `visibility/shader_generator.rs` hashes the program identity,
@@ -68,6 +94,11 @@ that nothing evaluates. The bake writes the keys into the shader, and the loader
 writes each material's key into the `material_evaluations` table. Keys depend on
 the material only, not on which bake revision is published, so only coverage
 changes when a rebake lands.
+
+`coverage_arm_key` hashes the same inputs with a salt of its own, so a masked
+material's coverage key never equals an evaluation key. Both coverage shaders
+key a material alike, and the cutoff stays in the material table entry, so
+variants that differ only in their cutoff share an arm.
 
 ## The tile pass
 
@@ -103,8 +134,12 @@ drawn.
 - **Keep every tap in the window.** A change to the upsample's footprint must
   change the window's size and origin with it.
 - **Draw only covered materials.** A material in the uber mode stays unavailable
-  until its phase's shader holds its arm, so no instance is admitted against a
-  shader that can't shade it.
+  until its phase's shader holds its arm, and a masked material until both
+  coverage shaders hold its arm, so no instance is admitted against a shader
+  that can't shade or test it.
+- **Keep one masking mechanism.** Imported and authored materials reach the
+  masked passes only through their graph's `opacity`. Don't add a second
+  path, such as a coverage texture slot, for one kind of material.
 
 ## Tests that guard it
 
@@ -116,5 +151,9 @@ drawn.
   distinct material and grows when a material is added, that colliding keys
   fail the bake, and that a stored and a solved variant list the same static
   values.
+- The visibility generator tests also check that both coverage shaders link
+  with arms that sample a separate opacity texture and read static and dynamic
+  values, that an `opacity` that reads the normal fails, and that only masked
+  materials take coverage arms.
 - The features tests check that each mode keeps its own engine assets and names
   its assembled resources, and that an unknown mode is rejected.

@@ -155,17 +155,6 @@ fn read_vec2u16(buffer: &besl::vm::Buffer, index: usize) -> [u16; 2] {
 	}
 }
 
-/// Verifies both masked fragment assets parse and link through the source-owned BESL seam.
-#[test]
-fn masked_fragment_assets_parse_and_link_with_structural_interfaces() {
-	for source in [
-		asset_source!("masked-fragment.besl"),
-		asset_source!("masked-depth-fragment.besl"),
-	] {
-		asset_program(source);
-	}
-}
-
 /// Verifies the visibility fragment preserves the mesh-stage identifiers consumed by later compute passes.
 #[test]
 fn visibility_fragment_main_forwards_primitive_and_instance_identifiers() {
@@ -385,7 +374,9 @@ fn write_meshlet(meshlets: &mut Buffer, index: usize, meshlet: ShaderMeshletData
 		("cone", Value::U32(meshlet.cone)),
 		("bounds", Value::Vec2U(meshlet.bounds)),
 	] {
-		meshlets.write_array_member(index, member, value).expect("fixture meshlet field");
+		meshlets
+			.write_array_member(index, member, value)
+			.expect("fixture meshlet field");
 	}
 }
 
@@ -3079,12 +3070,6 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 		(
 			"visibility_fragment",
 			asset_source!("visibility-fragment.besl"),
-			Settings::fragment(),
-		),
-		("masked_fragment", asset_source!("masked-fragment.besl"), Settings::fragment()),
-		(
-			"masked_depth_fragment",
-			asset_source!("masked-depth-fragment.besl"),
 			Settings::fragment(),
 		),
 		(

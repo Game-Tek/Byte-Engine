@@ -69,8 +69,7 @@ A variant names its parent material and replaces the values it changes:
 			"name": "color",
 			"value": "Red"
 		}
-	],
-	"transparency": "Opaque"
+	]
 }
 ```
 
@@ -78,6 +77,43 @@ Baking a material generates its shader from the graph for the active render
 pipeline and bakes the textures its variables reference. Variants share their
 parent's shader. At runtime, request the processed `Material`, `Variant`,
 `Shader`, and `Image` resources rather than the `.bema` file.
+
+### Cut out a surface with an opacity map
+
+Leaves, grass, and fences look solid only where their opacity map is white. To
+draw only those parts, and to show both faces of the thin surface, drive the
+graph's `opacity` from the map:
+
+```json5
+{
+	nodes: [
+		{ name: "albedo", node: "image", texture: "albedo_map", type: "vector3" },
+		{ name: "mask", node: "image", texture: "opacity_map", type: "float" },
+		{ name: "surface", node: "surface", base_color: "albedo", opacity: "mask" },
+	],
+}
+```
+
+Then mark the material masked and two-sided:
+
+```json
+{
+	"domain": "World",
+	"graph": "materials/leaves.bemx",
+	"alpha_mode": "Mask",
+	"alpha_cutoff": 0.5,
+	"double_sided": true,
+	"variables": [
+		{ "name": "albedo_map", "data_type": "Texture2D", "value": "textures/leaves_albedo.jpg" },
+		{ "name": "opacity_map", "data_type": "Texture2D", "value": "textures/leaves_opacity.jpg" }
+	]
+}
+```
+
+The surface covers a pixel where `opacity` is at least the cutoff, in its
+shadows too. A masked `opacity` can read images, parameters, and texture
+coordinates, but not the position, normal, or view direction. A variant can set
+`alpha_mode`, `alpha_cutoff`, or `double_sided` to change its parent's.
 
 ### Change a parameter at runtime
 

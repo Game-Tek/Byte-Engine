@@ -16,14 +16,14 @@ const ALBEDO: [f32; 4] = [0.2, 0.4, 0.6, 0.8];
 struct FixedPoint;
 
 impl<'a> Stage<'a> for FixedPoint {
-	fn geometry(&mut self, geometry: Geometry) -> Node<'a> {
-		match geometry {
+	fn geometry(&mut self, geometry: Geometry) -> Option<Node<'a>> {
+		Some(match geometry {
 			Geometry::Position => vector(&["1.0", "2.0", "3.0"]),
 			Geometry::Normal | Geometry::View => vector(&["0.0", "0.0", "1.0"]),
 			Geometry::Tangent => vector(&["1.0", "0.0", "0.0"]),
 			Geometry::Bitangent => vector(&["0.0", "1.0", "0.0"]),
 			Geometry::TexCoord => vector(&["0.25", "0.75"]),
-		}
+		})
 	}
 
 	fn sample(&mut self, texture: &'a str) -> Result<Node<'a>, LowerError> {

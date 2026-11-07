@@ -7,6 +7,7 @@
 		"visibility",
 		"shown-transforms",
 		"metal-presentation",
+		"vulkan-presentation",
 		"color-correction",
 		"color-grading",
 		"pass-fusion",

@@ -1,4 +1,4 @@
-use ash::vk;
+use ash::vk::{self, TaggedStructure as _};
 use utils::Extent;
 
 use super::{command_buffer::CommandBufferRecording, context::Context};
@@ -97,12 +97,33 @@ impl<'a> Frame<'a> {
 		// Binary semaphores are consumed by one wait, so each present waits only on its own image's render semaphore.
 		for (presentation, signal) in present_keys.iter().zip(&signal_semaphores) {
 			let wait_semaphores = [signal.semaphore];
-			let swapchains = [self.get_swapchain(presentation.swapchain).swapchain];
+			let swapchain = &mut self.device.swapchains[presentation.swapchain.index() as usize];
+			let swapchains = [swapchain.swapchain];
 			let image_indices = [presentation.image_index as u32];
-			let present_info = vk::PresentInfoKHR::default()
+			// Identifiers rise by one per present, so acquisition can wait for the present the frames in flight back.
+			if swapchain.feedback.waits_for_presents {
+				swapchain.present_id += 1;
+			}
+			let present_ids = [swapchain.present_id];
+			let mut present_id = vk::PresentId2KHR::default().present_ids(&present_ids);
+			// The present asks when its first pixel goes out; acquisition reads the answer.
+			let timing_infos = swapchain.present_time_domain.map(|(_, time_domain)| {
+				[vk::PresentTimingInfoEXT::default()
+					.time_domain_id(time_domain)
+					.present_stage_queries(vk::PresentStageFlagsEXT::IMAGE_FIRST_PIXEL_OUT)]
+			});
+			let mut present_timings =
+				vk::PresentTimingsInfoEXT::default().timing_infos(timing_infos.as_ref().map_or(&[], |infos| infos));
+			let mut present_info = vk::PresentInfoKHR::default()
 				.swapchains(&swapchains)
 				.wait_semaphores(&wait_semaphores)
 				.image_indices(&image_indices);
+			if swapchain.feedback.waits_for_presents {
+				present_info = present_info.push(&mut present_id);
+			}
+			if timing_infos.is_some() {
+				present_info = present_info.push(&mut present_timings);
+			}
 
 			match unsafe { self.device.swapchain.queue_present(*vk_queue, &present_info) } {
 				Ok(false) => {}

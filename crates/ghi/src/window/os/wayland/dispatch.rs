@@ -38,6 +38,9 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_registry::WlRegistry,
 				"zwp_pointer_constraints_v1" => {
 					this.zwp_pointer_constraints = Some(registry.bind(name, version, qh, ()));
 				}
+				"zxdg_decoration_manager_v1" => {
+					this.decoration_manager = Some(registry.bind(name, version.min(1), qh, ()));
+				}
 				_ => {}
 			},
 			wayland_client::protocol::wl_registry::Event::GlobalRemove { .. } => {}
@@ -119,6 +122,8 @@ impl wayland_client::Dispatch<wl_surface::WlSurface, WindowId> for AppData {
 				window.scale = window.scale.max(factor as _);
 				surface.set_buffer_scale(factor);
 				surface.commit();
+				// The same size in surface units now takes a different number of pixels.
+				this.resize_toplevel(*id, 0, 0);
 			}
 			wl_surface::Event::PreferredBufferTransform { .. } => {}
 			_ => {}
@@ -180,29 +185,39 @@ impl wayland_client::Dispatch<xdg_toplevel::XdgToplevel, WindowId> for AppData {
 				// Suggested size
 			}
 			xdg_toplevel::Event::Configure { width, height, .. } => {
-				let Some(window) = this.window_mut(*id) else {
-					return;
-				};
-
-				if width != 0 && height != 0 {
-					let extent = Extent::rectangle(
-						(width * (window.scale as i32)) as u32,
-						(height * (window.scale as i32)) as u32,
-					);
-					window.extent = Some(extent);
-					this.push(
-						*id,
-						Events::Resize {
-							width: extent.width(),
-							height: extent.height(),
-						},
-					);
-				}
+				this.resize_toplevel(*id, width, height);
 			}
 			xdg_toplevel::Event::Close => {
 				this.push(*id, Events::Close);
 			}
 			_ => {}
 		}
+	}
+}
+
+impl wayland_client::Dispatch<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1, ()> for AppData {
+	/// The manager sends no events.
+	fn event(
+		_: &mut Self,
+		_: &zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
+		_: zxdg_decoration_manager_v1::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
+	}
+}
+
+impl wayland_client::Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, WindowId> for AppData {
+	/// The compositor may still choose client-side decorations, which leaves the window undecorated, since the
+	/// toplevel can't be handed to libdecor after it was created.
+	fn event(
+		_: &mut Self,
+		_: &zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
+		_: zxdg_toplevel_decoration_v1::Event,
+		_: &WindowId,
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
 	}
 }

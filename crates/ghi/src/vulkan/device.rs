@@ -101,6 +101,12 @@ pub struct InnerDevice {
 	/// `None` unless the device traces rays. See [`RayTracing`]. It sits behind a pointer, so the device state every
 	/// command reads stays as compact as it is without ray tracing.
 	pub(crate) ray_tracing: Option<std::sync::Arc<RayTracing>>,
+	/// `None` unless the driver supports `VK_KHR_present_wait2`. Swapchains whose surface supports it wait for the
+	/// display at acquisition; see [`crate::vulkan::swapchain::DisplayFeedback`].
+	pub(super) present_wait: Option<ash::khr::present_wait2::Device>,
+	/// `None` unless the driver supports `VK_EXT_present_timing` along with present waits. Swapchains whose surface
+	/// reports display times use it; see [`crate::vulkan::swapchain::Swapchain::present_time_domain`].
+	pub(super) present_timing: Option<PresentTiming>,
 	pub(super) surface_capabilities: ash::khr::get_surface_capabilities2::Instance,
 	pub(super) wayland_surface: ash::khr::wayland_surface::Instance,
 	pub(super) memory_properties: vk::PhysicalDeviceMemoryProperties,
@@ -136,6 +142,15 @@ impl std::ops::Deref for InnerDevice {
 	fn deref(&self) -> &Self::Target {
 		&self.device
 	}
+}
+
+/// The `PresentTiming` struct holds the functions that read when presented images reached the display and convert
+/// those times to the clock [`std::time::Instant`] reads.
+#[derive(Clone)]
+pub(crate) struct PresentTiming {
+	pub(crate) timing: ash::ext::present_timing::Device,
+	/// Converts times from a swapchain's own time domain, which is all some drivers report in.
+	pub(crate) calibration: ash::khr::calibrated_timestamps::Device,
 }
 
 /// The `ComputePipeline` struct carries a Vulkan compute pipeline before it has a public GHI handle.

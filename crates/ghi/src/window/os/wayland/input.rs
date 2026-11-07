@@ -171,19 +171,38 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 					xkb::KeyDirection::Up
 				};
 
+				// The text a press types depends on the modifiers before this key changes them, so read it first. Wayland
+				// leaves text to the client, unlike AppKit and Win32, which report it themselves.
+				let character = pressed
+					.then(|| char::from_u32(keyboard_state.state.key_get_utf32(keycode)))
+					.flatten()
+					.filter(|character| *character != '\0' && !character.is_control());
+
 				// XKB state tracks the physical keyboard, so it updates even without a focused window.
 				keyboard_state.state.update_key(keycode, direction);
 
 				let key = keysym_to_key(keyboard_state.state.key_get_one_sym(keycode));
 
-				if let (Some(key), Some((_, id))) = (key, this.keyboard_focus.as_ref()) {
-					let id = *id;
+				let Some(&(_, id)) = this.keyboard_focus.as_ref() else {
+					return;
+				};
+				if let Some(key) = key {
 					this.push(
 						id,
 						Events::Key {
 							seat: Seat::stub(),
 							pressed,
 							key,
+						},
+					);
+				}
+				// Keys such as Backspace and Enter type control characters; they arrive only as `Events::Key`.
+				if let Some(character) = character {
+					this.push(
+						id,
+						Events::Character {
+							seat: Seat::stub(),
+							character,
 						},
 					);
 				}

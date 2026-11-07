@@ -340,9 +340,7 @@ pub trait Context: ContextCreate {
 	///
 	/// A pass that writes a swapchain image as a color attachment, such as a tile pass, declares this format in its
 	/// pipeline, since a pipeline's attachment formats must match the images it renders to.
-	fn swapchain_format(&self) -> crate::Formats {
-		crate::Formats::BGRAsRGB
-	}
+	fn swapchain_format(&self) -> crate::Formats;
 
 	/// Returns the bytes a bottom-level acceleration structure occupies.
 	///

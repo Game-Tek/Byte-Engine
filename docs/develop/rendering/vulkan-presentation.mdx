@@ -1,0 +1,102 @@
+---
+title: Vulkan presentation
+description: Understand how the Vulkan backend keeps a swapchain a fixed number of frames ahead of the display, learns when frames reach it, and sizes and formats its images, and what a change to acquisition or presentation must keep.
+icon: Computer
+---
+
+Read this page before you change how the Vulkan backend acquires or presents
+a swapchain image. The Metal backend's counterpart is
+[Metal presentation](/docs/develop/rendering/metal-presentation), and the
+display cadence the tick follows is specified under
+[tick time](/docs/reference/time#tick-time).
+
+## FIFO queues frames ahead of the display
+
+A FIFO swapchain shows every presented image, one per refresh, in order.
+`vkAcquireNextImageKHR` blocks only when every image is presented or held.
+Frames in flight bound how far the CPU runs ahead of the GPU, not how far it
+runs ahead of the display, so a loop the GPU keeps up with fills the present
+queue, and every queued image adds a refresh of latency between input and the
+screen.
+
+## Acquisition waits for the display
+
+When the driver offers `VK_KHR_present_id2` and `VK_KHR_present_wait2`, the
+device enables them, and a FIFO swapchain whose surface supports both is
+created to accept present identifiers. Each present carries the next
+identifier of its swapchain, starting at 1. Before acquisition, the context
+waits with `vkWaitForPresent2KHR` until the display shows the present that
+came the frames in flight before the frame it acquires for. With two frames
+in flight, frame n waits for frame n − 2 to reach the screen, so at most one
+frame waits in the queue, and frame n is shown about two refreshes after the
+wait ends. That's the same lead the Metal display link keeps.
+
+The wait sits at acquisition, at the start of the tick, so simulation runs
+right after the display advanced, and the tick loop stays the owner of
+pacing. A `max-frame-rate` cap sleeps first, and the wait then aligns the
+frame to the display.
+
+Mailbox and immediate swapchains don't wait: they exist to run ahead of the
+display. A device or surface without the extensions keeps the presentation
+engine's own blocking.
+
+Because the wait bounds the queue, a swapchain has 3 images unless the
+application asks for a count: one the display shows, one waiting, and one the
+GPU renders.
+
+## Display times come from presentation timings
+
+When the driver also offers `VK_EXT_present_timing` and the surface reports
+the time an image's first pixel goes out, the swapchain is created with
+present timing. Each present asks for that stage, and each acquisition reads
+every completed timing, which empties the swapchain's timing queue, and keeps
+the newest: its present identifier and when it was shown. That time is the
+acquisition's present time, the counterpart of Metal's `presentedTime`.
+
+A swapchain reports times in `CLOCK_MONOTONIC`, which `Instant` reads, when
+it offers that domain. Otherwise it reports them in its own present-stage
+clock, which `vkGetCalibratedTimestampsKHR` samples together with
+`CLOCK_MONOTONIC` at each read to move the time by their offset. NVIDIA's
+driver on GNOME offers only the present-stage clock.
+
+With `render.display-link`, acquisition also reports when the display shows
+the acquired image: the newest shown time plus one refresh, from
+`vkGetSwapchainTimingPropertiesEXT`, for each present after the shown one.
+That holds while the GPU keeps up, since the wait keeps that many queued.
+
+Present timing can also schedule a present for a time, which could replace
+the `max-frame-rate` sleep. Wayland compositors without `commit-timing`, such
+as GNOME 46, don't support it, so the backend doesn't use it.
+
+## Images hold display-encoded color
+
+Swapchain images are `B8G8R8A8_UNORM`. The engine's last pass writes
+display-encoded color, so an sRGB format would encode it a second time and
+wash the picture out. Metal and DX12 use the same format.
+
+## A Wayland surface takes the window's size
+
+A Wayland surface reports no current extent, so the window shares its size in
+pixels with the swapchain through its handles. Acquisition compares the
+swapchain's extent with the surface's, or with the window's when the surface
+reports none, and recreates the swapchain when they differ.
+
+## Rules a change must keep
+
+- Number a swapchain's presents from 1, one more for each present, and
+  restart at 0 when the swapchain is recreated. Identifiers belong to one
+  `VkSwapchainKHR`, and so does what the swapchain last showed.
+- Wait only for an identifier the swapchain already presented. The first
+  frames of a swapchain, whose wait would name identifier 0, don't wait.
+- Give the wait a timeout and start the frame when it expires. A compositor
+  stops showing a window it hides, and the wait would otherwise never end.
+  The timeout is 67 ms, four refreshes at 60 Hz.
+- Treat an out-of-date or suboptimal wait like one from acquisition: mark the
+  swapchain for recreation and carry on.
+- Report no display time from the wait. The moment it returns is when the
+  thread woke, not when the display showed the frame.
+- Read completed timings at every acquisition of a swapchain that asks for
+  them. A present fails when the timing queue is full.
+- Project a target time from the newest shown present at each acquisition,
+  even when no new timing completed, so a target always lies ahead.
+- Keep swapchain images in a format without sRGB encoding.

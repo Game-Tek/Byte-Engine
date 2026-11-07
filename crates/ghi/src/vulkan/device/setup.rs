@@ -272,6 +272,26 @@ impl InnerDevice {
 		if shader_identifiers {
 			device_extension_names.push(ash::ext::shader_module_identifier::NAME.as_ptr());
 		}
+		// Waiting for presents paces windows by the display, so a driver without it still creates the device and
+		// windows fall back to the presentation engine's own blocking.
+		let present_wait = supports_present_wait(vk_instance, physical_device, &available_device_extensions);
+		if present_wait {
+			device_extension_names.extend([ash::khr::present_id2::NAME.as_ptr(), ash::khr::present_wait2::NAME.as_ptr()]);
+		}
+		// Presentation timestamps tell the frame clock when frames reached the display. They name presents by their
+		// identifiers, so they need present waits too.
+		let present_timing =
+			present_wait && supports_present_timing(vk_instance, physical_device, &available_device_extensions);
+		if present_timing {
+			// Present timing reports times in domains that calibrated timestamps define.
+			device_extension_names.extend([
+				ash::ext::present_timing::NAME.as_ptr(),
+				ash::khr::calibrated_timestamps::NAME.as_ptr(),
+			]);
+		}
+		let mut present_timing_features = vk::PhysicalDevicePresentTimingFeaturesEXT::default().present_timing(true);
+		let mut present_id_features = vk::PhysicalDevicePresentId2FeaturesKHR::default().present_id2(true);
+		let mut present_wait_features = vk::PhysicalDevicePresentWait2FeaturesKHR::default().present_wait2(true);
 		let mut shader_identifier_features =
 			vk::PhysicalDeviceShaderModuleIdentifierFeaturesEXT::default().shader_module_identifier(true);
 		let mut pipeline_binary_features = vk::PhysicalDevicePipelineBinaryFeaturesKHR::default().pipeline_binaries(true);
@@ -292,6 +312,14 @@ impl InnerDevice {
 		}
 		if shader_identifiers {
 			device_create_info = device_create_info.push(&mut shader_identifier_features);
+		}
+		if present_wait {
+			device_create_info = device_create_info
+				.push(&mut present_id_features)
+				.push(&mut present_wait_features);
+		}
+		if present_timing {
+			device_create_info = device_create_info.push(&mut present_timing_features);
 		}
 
 		let device = unsafe { vk_instance.create_device(physical_device, &device_create_info, None) }
@@ -345,6 +373,11 @@ impl InnerDevice {
 					),
 				})
 			}),
+			present_wait: present_wait.then(|| ash::khr::present_wait2::Device::load(vk_instance, &device)),
+			present_timing: present_timing.then(|| super::PresentTiming {
+				timing: ash::ext::present_timing::Device::load(vk_instance, &device),
+				calibration: ash::khr::calibrated_timestamps::Device::load(vk_instance, &device),
+			}),
 			surface_capabilities: ash::khr::get_surface_capabilities2::Instance::load(vk_entry, vk_instance),
 			wayland_surface: ash::khr::wayland_surface::Instance::load(vk_entry, vk_instance),
 			memory_properties: unsafe { vk_instance.get_physical_device_memory_properties(physical_device) },
@@ -352,7 +385,7 @@ impl InnerDevice {
 			timestamp_valid_bits,
 			settings,
 			queues: stored_queues,
-			swapchain_native_supports_formatless_storage_write: supports_formatless_storage_write(vk::Format::B8G8R8A8_SRGB),
+			swapchain_native_supports_formatless_storage_write: supports_formatless_storage_write(vk::Format::B8G8R8A8_UNORM),
 			swapchain_proxy_supports_formatless_storage_write: supports_formatless_storage_write(vk::Format::B8G8R8A8_UNORM),
 			device,
 		})
@@ -493,6 +526,46 @@ fn supports_shader_module_identifiers(
 	let mut device_features = vk::PhysicalDeviceFeatures2::default().push(&mut features);
 	unsafe { vk_instance.get_physical_device_features2(physical_device, &mut device_features) };
 	features.shader_module_identifier == vk::TRUE
+}
+
+/// Returns whether the device can tag presents with identifiers and wait until the display shows one, through
+/// `VK_KHR_present_id2` and `VK_KHR_present_wait2`.
+fn supports_present_wait(
+	vk_instance: &ash::Instance,
+	physical_device: vk::PhysicalDevice,
+	available_extensions: &[vk::ExtensionProperties],
+) -> bool {
+	if !has_extension(available_extensions, ash::khr::present_id2::NAME)
+		|| !has_extension(available_extensions, ash::khr::present_wait2::NAME)
+	{
+		return false;
+	}
+
+	let mut present_id = vk::PhysicalDevicePresentId2FeaturesKHR::default();
+	let mut present_wait = vk::PhysicalDevicePresentWait2FeaturesKHR::default();
+	let mut device_features = vk::PhysicalDeviceFeatures2::default()
+		.push(&mut present_id)
+		.push(&mut present_wait);
+	unsafe { vk_instance.get_physical_device_features2(physical_device, &mut device_features) };
+	present_id.present_id2 == vk::TRUE && present_wait.present_wait2 == vk::TRUE
+}
+
+/// Returns whether the device can report when presented images reached the display, through `VK_EXT_present_timing`.
+fn supports_present_timing(
+	vk_instance: &ash::Instance,
+	physical_device: vk::PhysicalDevice,
+	available_extensions: &[vk::ExtensionProperties],
+) -> bool {
+	if !has_extension(available_extensions, ash::ext::present_timing::NAME)
+		|| !has_extension(available_extensions, ash::khr::calibrated_timestamps::NAME)
+	{
+		return false;
+	}
+
+	let mut present_timing = vk::PhysicalDevicePresentTimingFeaturesEXT::default();
+	let mut device_features = vk::PhysicalDeviceFeatures2::default().push(&mut present_timing);
+	unsafe { vk_instance.get_physical_device_features2(physical_device, &mut device_features) };
+	present_timing.present_timing == vk::TRUE
 }
 
 /// The extensions a device that traces rays enables: acceleration structures, inline ray queries, ray tracing

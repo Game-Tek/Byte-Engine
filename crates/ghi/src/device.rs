@@ -180,7 +180,11 @@ impl Features {
 		self
 	}
 
-	/// Paces windows by the display instead of by a free swapchain image. Off by default; only Metal reads it.
+	/// Paces windows by the display instead of by a free swapchain image. Off by default; Metal and Vulkan read it.
+	///
+	/// Metal waits for a display link. Vulkan already waits for the display when the driver supports present waits,
+	/// and with this on it also projects when the frame will be shown from the swapchain's presentation timings, when
+	/// the surface reports them.
 	///
 	/// With it on, [`crate::context::Context::acquire_swapchain_image`] waits until the display schedules the frame
 	/// and reports when that frame will be shown, through

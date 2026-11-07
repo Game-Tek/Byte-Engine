@@ -49,6 +49,10 @@ impl crate::context::Context for Context {
 		self.device.ray_tracing.is_some()
 	}
 
+	fn swapchain_format(&self) -> crate::Formats {
+		crate::vulkan::swapchain::SWAPCHAIN_FORMAT
+	}
+
 	fn bottom_level_acceleration_structure_size(
 		&self,
 		handle: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
@@ -212,7 +216,10 @@ impl crate::context::Context for Context {
 	) -> graphics_hardware_interface::SwapchainHandle {
 		let vk_surface = self.create_vulkan_surface(window_os_handles);
 		let vk_present_mode = self.surface_present_mode(vk_surface, presentation_mode);
+		let feedback = self.display_feedback(vk_surface, vk_present_mode);
 		let vk_surface_capabilities = self.query_swapchain_surface_capabilities(vk_surface, vk_present_mode);
+		// A surface that reports no size takes the window's, once the window knows it.
+		let fallback_extent = window_os_handles.extent.get().unwrap_or(fallback_extent);
 		let extent = InnerDevice::swapchain_extent(
 			&vk_surface_capabilities,
 			vk::Extent2D::default()
@@ -221,7 +228,7 @@ impl crate::context::Context for Context {
 		);
 
 		// Native images that cannot take the requested uses are written through proxy images and copied before present.
-		let requested_image_usage = into_vk_image_usage_flags(uses, crate::Formats::BGRAsRGB);
+		let requested_image_usage = into_vk_image_usage_flags(uses, crate::vulkan::swapchain::SWAPCHAIN_FORMAT);
 		let supported_image_usage = vk_surface_capabilities.supported_usage_flags;
 		let uses_storage = uses.contains(crate::Uses::Storage);
 		let uses_proxy_images = !supported_image_usage.contains(requested_image_usage)
@@ -242,6 +249,7 @@ impl crate::context::Context for Context {
 		let vk_swapchain = self.create_vulkan_swapchain(
 			vk_surface,
 			vk_present_mode,
+			feedback,
 			&vk_surface_capabilities,
 			extent,
 			native_image_usage,
@@ -281,8 +289,13 @@ impl crate::context::Context for Context {
 		let mut native_images = [ImageHandle::from_index(u64::MAX - 1); MAX_SWAPCHAIN_IMAGES];
 		for (i, &vk_image) in vk_images.iter().enumerate() {
 			let previous = i.checked_sub(1).map(|previous| native_images[previous]);
-			native_images[i] =
-				self.create_swapchain_image(vk_image, crate::Formats::BGRAsRGB, native_uses, native_image_usage, previous);
+			native_images[i] = self.create_swapchain_image(
+				vk_image,
+				crate::vulkan::swapchain::SWAPCHAIN_FORMAT,
+				native_uses,
+				native_image_usage,
+				previous,
+			);
 		}
 
 		let mut images = native_images;
@@ -319,6 +332,14 @@ impl crate::context::Context for Context {
 			vk_present_mode,
 			present_interval: None,
 			next_present_slot: None,
+			feedback,
+			present_id: 0,
+			present_time_domain: feedback
+				.reports_present_times
+				.then(|| self.configure_present_timing(vk_swapchain))
+				.flatten(),
+			shown_present: None,
+			window_extent: window_os_handles.extent.clone(),
 		});
 
 		swapchain_handle

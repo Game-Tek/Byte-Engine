@@ -28,6 +28,7 @@ use wayland_protocols::{
 		zwp_relative_pointer_manager_v1::{self},
 		zwp_relative_pointer_v1,
 	},
+	xdg::decoration::zv1::client::{zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1},
 	xdg::shell::client::{
 		xdg_surface, xdg_toplevel,
 		xdg_wm_base::{self, XdgWmBase},
@@ -53,6 +54,9 @@ pub struct App {
 	watched: Vec<OwnedFd>,
 	/// The desktop portal connection dialogs go through, opened by the first dialog.
 	portal: Option<dialogs::Portal>,
+	/// The libdecor context that draws decorations when the compositor draws none, loaded by the first decorated
+	/// window that needs it. It holds `None` when libdecor couldn't be loaded, so later windows don't try again.
+	libdecor: std::cell::OnceCell<Option<libdecor::Libdecor>>,
 }
 
 /// The `AppWaker` struct writes to the eventfd a waiting poll watches.
@@ -74,9 +78,24 @@ pub struct Window {
 	surface: wl_surface::WlSurface,
 	/// The toplevel role that makes the compositor show the surface. A [`Features::BACKGROUND`] window has none, so
 	/// it is never mapped.
-	role: Option<(xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel)>,
+	role: Option<Role>,
 	/// The refresh interval the event queue last reported for this window.
 	refresh: SharedRefresh,
+	/// The window's size in pixels, which its swapchain follows.
+	extent: WindowExtent,
+}
+
+/// The `Role` enum holds the protocol objects that make a surface a toplevel window.
+enum Role {
+	/// A toplevel the backend drives itself, decorated by the compositor when it asked for server-side decorations.
+	Xdg {
+		xdg_surface: xdg_surface::XdgSurface,
+		toplevel: xdg_toplevel::XdgToplevel,
+		decoration: Option<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1>,
+	},
+	/// A toplevel libdecor drives and decorates, on compositors that draw no decorations. The frame is held so
+	/// dropping the window destroys it.
+	Libdecor { _frame: libdecor::Frame },
 }
 
 /// A refresh interval in nanoseconds, where `0` means unknown, shared between a window and the event queue.
@@ -85,6 +104,31 @@ type SharedRefresh = Arc<AtomicU64>; // TODO: hmmmmm
 pub struct Handles {
 	pub display: *mut c_void,
 	pub surface: *mut c_void,
+	/// The window's size in pixels. A Wayland surface reports no size of its own, so a swapchain on it reads this one.
+	pub extent: WindowExtent,
+}
+
+/// The `WindowExtent` struct shares a Wayland window's size in pixels between the event queue, which learns it from
+/// the compositor, and the swapchain that presents to the window, which must match it.
+///
+/// Other platforms' surfaces report their own size to the graphics API. A Wayland surface leaves the size to the
+/// client, so the swapchain reads it here and is recreated when it changes.
+#[derive(Clone, Debug, Default)]
+pub struct WindowExtent(Arc<AtomicU64>);
+
+impl WindowExtent {
+	/// Returns the window's size in pixels, or `None` before the compositor configured it.
+	pub fn get(&self) -> Option<Extent> {
+		let packed = self.0.load(Ordering::Relaxed);
+		(packed != 0).then(|| Extent::rectangle((packed >> 32) as u32, packed as u32))
+	}
+
+	fn set(&self, extent: Extent) {
+		self.0.store(
+			u64::from(extent.width()) << 32 | u64::from(extent.height()),
+			Ordering::Relaxed,
+		);
+	}
 }
 
 /// The `Configuration` struct provides Wayland registry state while the connection starts.
@@ -98,6 +142,8 @@ struct Configuration {
 	zwp_relative_pointer_manager: Option<zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1>,
 	/// Optional: without it, windows that capture the cursor only hide it.
 	zwp_pointer_constraints: Option<zwp_pointer_constraints_v1::ZwpPointerConstraintsV1>,
+	/// Optional: without it, decorated windows fall back to libdecor.
+	decoration_manager: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
 
 	app_data_queue: wayland_client::QueueHandle<AppData>,
 }
@@ -110,6 +156,8 @@ struct AppData {
 	zwp_relative_pointer_manager: zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
 	/// Locks the pointer for windows that capture the cursor, when the compositor supports it.
 	zwp_pointer_constraints: Option<zwp_pointer_constraints_v1::ZwpPointerConstraintsV1>,
+	/// Draws decorations around windows that ask for them, when the compositor supports server-side decorations.
+	decoration_manager: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
 
 	windows: Vec<WindowState>,
 
@@ -138,8 +186,12 @@ struct WindowState {
 	surface: wl_surface::WlSurface,
 	/// The scale factor of the window.
 	scale: u32,
-	/// The extent of the window.
+	/// The extent of the window in pixels.
 	extent: Option<Extent>,
+	/// The window's content size in surface units, which the scale turns into `extent`.
+	size: (i32, i32),
+	/// The extent shared with the window's swapchain.
+	shared_extent: WindowExtent,
 	/// Whether the initial xdg_surface configuration has been acknowledged.
 	configured: bool,
 	/// The outputs the surface is shown on.
@@ -161,6 +213,7 @@ mod dialogs;
 mod dispatch;
 mod input;
 mod key_translation;
+mod libdecor;
 mod lifecycle;
 
 use key_translation::{KeyboardState, keysym_to_key};

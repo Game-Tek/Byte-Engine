@@ -82,7 +82,7 @@ Booleans here are lenient.
 | `render.ghi.features.mesh-shading` | `true` | Requests mesh shading from the device. |
 | `render.ghi.features.ray-tracing` | `true` when `render.surfel-gi.enabled` or `render.probe-gi.enabled` is | Requests ray tracing from the device. The Metal and Vulkan backends trace rays on a GPU that supports it; elsewhere the device reports none. |
 | `render.pipeline-cache.path` | None, so the driver manages its cache | A pipeline cache file. A missing file is fine; pipelines compiled during the run are appended when the renderer closes. |
-| `render.display-link` | `false` | Paces each window by a display link on Metal. A tick waits for the display before its simulation and samples the time the display shows its frame; see [display cadence](/docs/reference/time#tick-time). Windows keep three swapchain images unless `render.swapchain.images` sets a count. Other backends and `unattended` runs ignore it. |
+| `render.display-link` | `false` | Paces each window by the display on Metal and Vulkan. A tick waits for the display before its simulation and samples the time the display shows its frame; see [display cadence](/docs/reference/time#tick-time). Windows keep three swapchain images unless `render.swapchain.images` sets a count. Vulkan reports the time only when the surface reports presentation timings. DX12 and `unattended` runs ignore it. |
 
 ## Renderer and loader
 

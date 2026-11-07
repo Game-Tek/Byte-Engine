@@ -25,7 +25,18 @@ contract of the visibility pipeline. The design notes behind it are under
 | Debug mesh | A retained wireframe sphere, box, capsule, segment, or circle with a color, tested against scene depth or drawn over it. |
 
 Scene color is linear HDR in the packed `RGBu11u11u10` format. Tone-mapping
-passes write 16-bit float display color. The window's swapchain is `BGRAsRGB`.
+passes write 16-bit float display color. The window's swapchain is `BGRAu8`
+and stores display-encoded color as the last pass wrote it, without encoding it
+again.
+
+### Windows
+
+| Rule | Behavior |
+| --- | --- |
+| Extent | The extent a window asks for is in points on macOS and in surface units on Wayland, so a 1920 × 1080 window covers 3840 × 2160 pixels at scale 2. The sink's extent is in pixels. |
+| Size changes | The sink follows the window's size in pixels when the user resizes it or the display's scale changes. |
+| Decorations on Wayland | A window with decorations asks the compositor to draw them. When the compositor draws none, as GNOME's doesn't, libdecor draws them, in the dark theme variant when the desktop prefers dark. Without libdecor, the window opens undecorated and one warning is logged. |
+| Text on Wayland | A key press that types a printable character reports it as `Keyboard.Character`. Holding a key doesn't repeat it. |
 
 ## Camera
 
@@ -111,7 +122,7 @@ animation steps once per frame.
 | Targets | A pass declares named, sink-scoped targets: full-size, scaled by a divisor, persistent, or history targets whose previous frame can be read. Reading a target that nothing creates fails at setup. |
 | Clears | A node that records nothing has its first-use targets cleared; one that records has them discarded. |
 | Frame-wide work | Detail levels, shadow views, and exposure follow the first sink. |
-| Swapchain | FIFO presentation with 2 frames in flight. |
+| Swapchain | FIFO presentation with 2 frames in flight. On Vulkan, a swapchain has 3 images unless `render.swapchain.images` sets a count, and when the driver and surface support waiting for presents, a frame starts only after the display shows the frame presented 2 frames before it, or after 67 ms. |
 
 ### Passes
 

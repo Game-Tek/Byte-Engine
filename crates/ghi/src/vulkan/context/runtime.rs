@@ -188,12 +188,13 @@ impl Context {
 		capabilities: &vk::SurfaceCapabilitiesKHR,
 	) -> bool {
 		let swapchain = &self.swapchains[swapchain_handle.index() as usize];
-		let extent = InnerDevice::swapchain_extent(capabilities, swapchain.extent);
+		let extent = swapchain.target_extent(capabilities);
 		if extent.width == 0 || extent.height == 0 {
 			return false;
 		}
 
 		let (surface, present_mode, old_swapchain) = (swapchain.surface, swapchain.vk_present_mode, swapchain.swapchain);
+		let feedback = swapchain.feedback;
 		let native_image_usage = swapchain.native_image_usage;
 		let desired_image_count = swapchain.desired_image_count;
 		let uses_proxy_images = swapchain.uses_proxy_images;
@@ -213,6 +214,7 @@ impl Context {
 		let new_swapchain = self.device.create_vulkan_swapchain(
 			surface,
 			present_mode,
+			feedback,
 			capabilities,
 			extent,
 			native_image_usage,
@@ -240,7 +242,12 @@ impl Context {
 			if index < old_image_count {
 				let native = native_images[index];
 				self.destroy_swapchain_image_views(native);
-				let mut image = self.swapchain_image(vk_image, crate::Formats::BGRAsRGB, native_uses, native_image_usage);
+				let mut image = self.swapchain_image(
+					vk_image,
+					crate::vulkan::swapchain::SWAPCHAIN_FORMAT,
+					native_uses,
+					native_image_usage,
+				);
 				image.next = self.images[native.index() as usize].next;
 				self.images[native.index() as usize] = image;
 
@@ -250,7 +257,7 @@ impl Context {
 			} else {
 				native_images[index] = self.create_swapchain_image(
 					vk_image,
-					crate::Formats::BGRAsRGB,
+					crate::vulkan::swapchain::SWAPCHAIN_FORMAT,
 					native_uses,
 					native_image_usage,
 					Some(native_images[index - 1]),
@@ -289,6 +296,14 @@ impl Context {
 		swapchain.acquired_image_indices = [0; MAX_FRAMES_IN_FLIGHT];
 		swapchain.acquire_wait_stages = [vk::PipelineStageFlags2::NONE; MAX_FRAMES_IN_FLIGHT];
 		swapchain.needs_recreation = false;
+		// Present identifiers and timings belong to one swapchain, so the new one starts again.
+		swapchain.present_id = 0;
+		swapchain.shown_present = None;
+		let present_time_domain = feedback
+			.reports_present_times
+			.then(|| self.device.configure_present_timing(new_swapchain))
+			.flatten();
+		self.swapchains[swapchain_handle.index() as usize].present_time_domain = present_time_domain;
 
 		true
 	}
@@ -375,6 +390,10 @@ impl Context {
 		crate::queue::StartedFrame::new(Frame::new(self, frame_key), completed_frame)
 	}
 
+	/// How long acquisition waits for the display before it starts the frame anyway. A compositor stops showing a
+	/// hidden window's frames, and four refreshes at 60 Hz keep such a window's loop running without a noticeable stall.
+	const PRESENT_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(67);
+
 	/// Acquires the next image of `swapchain_handle` with the acquire synchronizer of `sequence_index`, recreating the
 	/// swapchain when it no longer matches its surface.
 	///
@@ -388,10 +407,12 @@ impl Context {
 		// Vulkan has no timed present in the extensions we enable, so the cap paces acquisition instead.
 		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
 		crate::swapchain::pace_present(&mut swapchain.next_present_slot, swapchain.present_interval);
+		self.wait_for_display(swapchain_handle);
+		let (present_time, target_present_time) = self.read_present_times(swapchain_handle);
 
 		let capabilities = self.query_swapchain_capabilities(swapchain_handle);
 		let swapchain = &self.swapchains[swapchain_handle.index() as usize];
-		let extent_changed = capabilities.current_extent.width != u32::MAX && capabilities.current_extent != swapchain.extent;
+		let extent_changed = swapchain.target_extent(&capabilities) != swapchain.extent;
 		if (swapchain.needs_recreation || extent_changed) && !self.recreate_swapchain(swapchain_handle, &capabilities) {
 			return None;
 		}
@@ -455,9 +476,86 @@ impl Context {
 				swapchain: swapchain_handle,
 			},
 			extent,
-			present_time: None,
-			target_present_time: None,
+			present_time,
+			target_present_time,
 		})
+	}
+
+	/// Waits until the display shows the frame presented the frames in flight before the one about to be acquired, when
+	/// the swapchain waits for presents.
+	///
+	/// The presentation engine otherwise blocks only when it runs out of images, so a FIFO swapchain with more images
+	/// than frames in flight lets the CPU queue frames ahead of the display, each a refresh of latency. Waiting here
+	/// keeps a fixed lead of the frames in flight, as the Metal display link does, and the tick that follows simulates
+	/// right after the display advanced. A wait that times out, such as for a window the compositor stopped showing,
+	/// lets the frame start anyway.
+	fn wait_for_display(&mut self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) {
+		let swapchain = &self.swapchains[swapchain_handle.index() as usize];
+		let Some(present_wait) = self
+			.device
+			.present_wait
+			.as_ref()
+			.filter(|_| swapchain.feedback.waits_for_presents)
+		else {
+			return;
+		};
+		// With `frames` in flight, the frames presented after the one waited for, plus the one acquired now, fill them.
+		let present_id = swapchain.present_id.saturating_sub(u64::from(self.frames) - 1);
+		if present_id == 0 {
+			return;
+		}
+
+		let wait_info = vk::PresentWait2InfoKHR::default()
+			.present_id(present_id)
+			.timeout(Self::PRESENT_WAIT_TIMEOUT.as_nanos() as u64);
+		match unsafe { present_wait.wait_for_present2(swapchain.swapchain, &wait_info) } {
+			Ok(()) | Err(vk::Result::TIMEOUT) => {}
+			Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => {
+				self.swapchains[swapchain_handle.index() as usize].needs_recreation = true;
+			}
+			Err(error) => panic!(
+				"Failed to wait for a Vulkan present ({error:?}). The most likely cause is that the surface or the device was lost."
+			),
+		}
+	}
+
+	/// Records the newest present the display showed, from the timings the swapchain's presents completed, when it
+	/// reports them, and returns when it was shown and, with [`crate::device::Features::display_link`], when the display
+	/// will show the image acquired next.
+	///
+	/// Reading every completed timing also empties the swapchain's timing queue, which a present fails to join when full.
+	/// The target counts one refresh for each present after the newest shown one, which holds while the GPU keeps up
+	/// with the display, since [`Self::wait_for_display`] keeps a fixed number of presents queued.
+	fn read_present_times(
+		&mut self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+	) -> (Option<std::time::Instant>, Option<std::time::Instant>) {
+		let swapchain = &self.swapchains[swapchain_handle.index() as usize];
+		let Some(time_domain) = swapchain.present_time_domain else {
+			return (None, None);
+		};
+		let newest = self
+			.device
+			.newest_present_time(swapchain.swapchain, time_domain)
+			.map(|(present_id, nanoseconds)| (present_id, monotonic_instant(nanoseconds)));
+		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
+		if newest.is_some() {
+			swapchain.shown_present = newest;
+		}
+		let Some((shown_id, shown)) = swapchain.shown_present else {
+			return (None, None);
+		};
+
+		// The image acquired now goes out with the next identifier.
+		let refreshes_ahead = (swapchain.present_id + 1).saturating_sub(shown_id) as u32;
+		let target = self
+			.device
+			.settings
+			.display_link
+			.then(|| self.device.refresh_duration(swapchain.swapchain))
+			.flatten()
+			.map(|refresh| shown + refresh * refreshes_ahead);
+		(Some(shown), target)
 	}
 
 	fn query_swapchain_capabilities(
@@ -676,4 +774,14 @@ impl Context {
 				.reset_query_pool(self.counter_query_pool, slots.start, slots.len() as u32)
 		};
 	}
+}
+
+/// Converts a `CLOCK_MONOTONIC` time in nanoseconds into an [`std::time::Instant`], which reads the same clock on
+/// Linux, by its distance from now.
+fn monotonic_instant(nanoseconds: u64) -> std::time::Instant {
+	let now = std::time::Instant::now();
+	let clock = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+	let clock = clock.tv_sec as u64 * 1_000_000_000 + clock.tv_nsec as u64;
+	let age = std::time::Duration::from_nanos(clock.saturating_sub(nanoseconds));
+	now.checked_sub(age).unwrap_or(now)
 }

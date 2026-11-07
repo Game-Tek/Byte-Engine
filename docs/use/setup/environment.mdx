@@ -103,7 +103,15 @@ Install the build, windowing, audio, input, and Vulkan packages that Byte
 Engine's Linux backend uses.
 
 ```bash
-sudo apt install -y cmake libwayland-dev libasound2-dev libx11-xcb-dev libxkbcommon-dev libudev-dev libvulkan-dev vulkan-tools vulkan-validationlayers
+sudo apt install -y cmake libwayland-dev libasound2-dev libx11-xcb-dev libxkbcommon-dev libudev-dev libdbus-1-dev libvulkan-dev vulkan-tools vulkan-validationlayers
+```
+
+On GNOME, windows get their title bar from libdecor, which loads when the
+application runs. Building doesn't need it. Install it so your windows have
+decorations:
+
+```bash
+sudo apt install -y libdecor-0-0 libdecor-0-plugin-1-gtk
 ```
 
 ### Enable AVX2 on x64

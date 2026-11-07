@@ -103,7 +103,7 @@ success "Package manager updated."
 
 # Keep this list in sync with README requirements and Linux CI needs:
 # Vulkan development/linker files, Wayland/X11 development packages, ALSA,
-# CMake, pkg-config, udev, Mesa GL, Vulkan loader/runtime tools, and validation layers.
+# CMake, pkg-config, udev, D-Bus, Mesa GL, Vulkan loader/runtime tools, and validation layers.
 if [ "$PKG_MANAGER" == "apt" ]; then
     DEPENDENCIES=(
         cmake
@@ -116,6 +116,9 @@ if [ "$PKG_MANAGER" == "apt" ]; then
         libxi-dev
         libgl1-mesa-dev
         libudev-dev
+        libdbus-1-dev
+        libdecor-0-0
+        libdecor-0-plugin-1-gtk
         libxkbcommon-dev
         libwayland-dev
         libvulkan-dev
@@ -135,6 +138,8 @@ elif [ "$PKG_MANAGER" == "dnf" ] || [ "$PKG_MANAGER" == "yum" ]; then
         libXi-devel
         mesa-libGL-devel
         systemd-devel
+        dbus-devel
+        libdecor
         libxkbcommon-devel
         wayland-devel
         vulkan-loader-devel

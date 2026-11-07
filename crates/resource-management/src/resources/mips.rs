@@ -26,10 +26,10 @@ pub(crate) struct MipLevel<'a> {
 
 /// The `MipGenerator` enum selects where the image processor filters and block-compresses texture mip chains.
 ///
-/// An asset manager's [`crate::processors::image::ImageProcessor`] owns one generator and calls
-/// [`Self::encode_mip_chain`] once per image whose [`crate::processors::image::ImageProcessorSettings::mips`] is set,
-/// after sizing the stored chain. `Cpu` filters and encodes on the calling thread. `Gpu` submits to the offline GPU worker and falls back to the CPU
-/// path for requests it can't serve or whose GPU work fails.
+/// An asset manager's [`crate::processors::image::ImageProcessor`] owns one generator and filters the chain of every
+/// image whose [`crate::processors::image::ImageProcessorSettings::mips`] is set with it. `Cpu` filters and encodes on
+/// the calling thread. `Gpu` submits to the offline GPU worker and falls back to the CPU path for requests it can't
+/// serve or whose GPU work fails.
 pub enum MipGenerator {
 	/// Filters and encodes every level on the CPU.
 	///
@@ -42,15 +42,44 @@ pub enum MipGenerator {
 	Gpu(gpu::MaterialMipGenerator),
 }
 
+/// The `MipClaim` struct holds an image's place at its [`MipGenerator`], from before the image's pixels exist until its
+/// chain is encoded.
+///
+/// The image processor takes one with [`MipGenerator::claim`] before it allocates an image, so images wait for the GPU
+/// while they hold no memory, instead of queueing at the GPU with their pixels decoded. The CPU generator has no queue,
+/// so its claims never wait.
+pub(crate) struct MipClaim {
+	#[cfg(feature = "gpu-mips")]
+	gpu: Option<crate::gpu_worker::GpuClaim>,
+}
+
 impl MipGenerator {
+	/// Waits until the generator can take another image soon, and returns the claim its chain is encoded under.
+	///
+	/// Claim before allocating the image's pixels, and keep the claim until the chain is encoded. Never await another
+	/// bake while holding it.
+	pub(crate) async fn claim(&self) -> MipClaim {
+		match self {
+			Self::Cpu => MipClaim {
+				#[cfg(feature = "gpu-mips")]
+				gpu: None,
+			},
+			#[cfg(feature = "gpu-mips")]
+			Self::Gpu(generator) => MipClaim {
+				gpu: Some(generator.claim().await),
+			},
+		}
+	}
+
 	/// Filters `base_level` down to one texel and writes every level, base level first, into `output` encoded as
 	/// `output_format`.
 	///
 	/// `base_level` holds `width` by `height` texels in the [`filtering_format`] of `output_format`. `output` holds
-	/// exactly [`encoded_mip_chain_size`] bytes, and each level directly follows the one before it. The GPU path awaits
-	/// its worker without blocking the calling runtime thread.
-	pub async fn encode_mip_chain(
+	/// exactly [`encoded_mip_chain_size`] bytes, and each level directly follows the one before it. `claim` comes from
+	/// [`Self::claim`]. The GPU path awaits its worker without blocking the calling runtime thread.
+	pub(crate) async fn encode_mip_chain(
 		&self,
+		claim: &MipClaim,
 		output_format: Formats,
 		gamma: Gamma,
 		width: u32,
@@ -58,10 +87,13 @@ impl MipGenerator {
 		base_level: &[u8],
 		output: &mut [u8],
 	) -> Result<(), MipGenerationError> {
+		// The CPU path has no queue, so only the GPU path reads the claim.
+		#[cfg(not(feature = "gpu-mips"))]
+		let _ = claim;
 		#[cfg(feature = "gpu-mips")]
-		if let Self::Gpu(generator) = self {
+		if let (Self::Gpu(generator), Some(claim)) = (self, &claim.gpu) {
 			match generator
-				.encode_mip_chain(output_format, gamma, width, height, base_level, output)
+				.encode_mip_chain(claim, output_format, gamma, width, height, base_level, output)
 				.await
 			{
 				Ok(()) => return Ok(()),
@@ -103,9 +135,10 @@ impl MipGenerator {
 	/// This is the copy-free form of [`Self::encode_mip_chain`] for formats that [`stores_filtering_texels`]: the
 	/// stored base level is the filtering surface, so each level filters straight from the previous one in place, with
 	/// no separate base or lower-level buffers. `chain` holds exactly [`encoded_mip_chain_size`] bytes, and only its
-	/// base level needs to be written.
-	pub async fn filter_mip_chain_in_place(
+	/// base level needs to be written. `claim` comes from [`Self::claim`].
+	pub(crate) async fn filter_mip_chain_in_place(
 		&self,
+		claim: &MipClaim,
 		format: Formats,
 		gamma: Gamma,
 		width: u32,
@@ -124,9 +157,11 @@ impl MipGenerator {
 			});
 		}
 
+		#[cfg(not(feature = "gpu-mips"))]
+		let _ = claim;
 		#[cfg(feature = "gpu-mips")]
-		if let Self::Gpu(generator) = self {
-			match generator.filter_mip_chain_in_place(format, gamma, width, height, chain).await {
+		if let (Self::Gpu(generator), Some(claim)) = (self, &claim.gpu) {
+			match generator.filter_mip_chain_in_place(claim, format, gamma, width, height, chain).await {
 				Ok(()) => return Ok(()),
 				// Requests outside the GPU path's formats are expected and take the CPU path quietly.
 				Err(gpu::GPUMipError::UnsupportedRequest) => {}
@@ -270,8 +305,8 @@ pub(crate) fn mip_extents(width: u32, height: u32) -> impl Iterator<Item = (u32,
 /// Returns the format mip levels are filtered in before they are encoded as `output_format`.
 ///
 /// Block-compressed outputs, sRGB RGBA8, and packed RG8 filter as RGBA8 texels, so the GPU path can filter them.
-/// Packed RG16 filters as RGBA16. Every other format, including the half-float ones, filters in place. Convert the base level to this format before
-/// passing it to [`MipGenerator::encode_mip_chain`].
+/// Packed RG16 filters as RGBA16. Every other format, including the half-float ones, filters in place. Convert the
+/// base level to this format before a [`MipGenerator`] encodes its chain.
 pub fn filtering_format(output_format: Formats) -> Formats {
 	match output_format {
 		Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB | Formats::RGBA8SRGB | Formats::RG8 => {
@@ -285,7 +320,7 @@ pub fn filtering_format(output_format: Formats) -> Formats {
 /// Returns the exact stored size of a complete mip chain encoded as `format`, or `None` for formats images can't be
 /// stored in.
 ///
-/// Size the output of [`MipGenerator::encode_mip_chain`] with it.
+/// Size the buffer a [`MipGenerator`] encodes a chain into with it.
 pub fn encoded_mip_chain_size(format: Formats, extent: Extent) -> Option<usize> {
 	mip_extents(extent.width(), extent.height()).try_fold(0usize, |total, (width, height)| {
 		total.checked_add(encoded_mip_level_size(format, Extent::rectangle(width, height))?)

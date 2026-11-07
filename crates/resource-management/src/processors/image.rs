@@ -150,7 +150,7 @@ impl ImageProcessor {
 	/// serves the request. Name the result with [`ProcessedImage::into_asset`] and store it.
 	///
 	/// A decoder that owns its pixel buffer should call [`Self::process_owned_in`] instead, which can store the image
-	/// in that buffer without copying it.
+	/// in that buffer without copying it, and decodes only once the image can be processed soon.
 	pub async fn process_in<A: Allocator + Clone>(
 		&self,
 		semantic: Semantic,
@@ -159,35 +159,35 @@ impl ImageProcessor {
 		source: ImageSource<'_>,
 		allocator: A,
 	) -> Result<ProcessedImage<A>, LoadErrors> {
-		let layout = SourceLayout::of(source);
-		self.process(
-			semantic,
-			gamma,
-			settings,
-			layout,
-			SourceBytes::Borrowed(source.data),
-			allocator,
-		)
-		.await
+		// The source exists already, but the copies the processor makes of it wait for the mip generator.
+		let borrowed = || Ok((SourceLayout::of(source), SourceBytes::Borrowed(source.data)));
+		self.process(semantic, gamma, settings, borrowed, allocator).await
 	}
 
-	/// Processes decoded pixels the caller hands over, storing the image in their buffer when it can.
+	/// Processes the pixels `decode` hands over, storing the image in their buffer when it can.
 	///
-	/// When the source's bytes already are the stored base level, the processor keeps `source.data` as the stored
-	/// image and filters the mip chain into it after the base level, so the pixels are never copied. Decode into a
-	/// buffer with [`Self::in_place_capacity`] bytes of capacity so that also never reallocates. Any other source is
+	/// The processor calls `decode` once the image can be processed soon: images that get a mip chain wait for a place
+	/// at the [`MipGenerator`] first. So decode the pixels inside `decode`, not before the call, and many images
+	/// waiting for the GPU hold no decoded pixels. Read the source's header beforehand when its gamma or size is needed
+	/// for the call.
+	///
+	/// When the source's bytes already are the stored base level, the processor keeps the returned buffer as the
+	/// stored image and filters the mip chain into it after the base level, so the pixels are never copied. Decode into
+	/// a buffer with [`Self::in_place_capacity`] bytes of capacity so that also never reallocates. Any other source is
 	/// processed as [`Self::process_in`] would, reading the buffer, and allocating from `allocator`.
 	pub async fn process_owned_in<A: Allocator + Clone>(
 		&self,
 		semantic: Semantic,
 		gamma: Gamma,
 		settings: ImageProcessorSettings,
-		source: OwnedImageSource<A>,
+		decode: impl FnOnce() -> Result<OwnedImageSource<A>, LoadErrors>,
 		allocator: A,
 	) -> Result<ProcessedImage<A>, LoadErrors> {
-		let layout = SourceLayout::of(source.as_source());
-		self.process(semantic, gamma, settings, layout, SourceBytes::Owned(source.data), allocator)
-			.await
+		let decoded = || {
+			let source = decode()?;
+			Ok((SourceLayout::of(source.as_source()), SourceBytes::Owned(source.data)))
+		};
+		self.process(semantic, gamma, settings, decoded, allocator).await
 	}
 
 	/// Returns the capacity a decoder should reserve for an owned source so [`Self::process_owned_in`] stores the
@@ -215,26 +215,30 @@ impl ImageProcessor {
 			.flatten()
 	}
 
-	/// Processes one source after the entry points have described it.
+	/// Processes the source that `source` describes and hands over, once the image can be processed soon.
 	///
-	/// Uncompressed, unpacked images store their base level as converted from the source, or as the owned source
-	/// itself, and filter every lower level from the one before it inside the stored buffer. Packed and
-	/// block-compressed images filter a canonical copy of the source and encode each level into the stored buffer.
-	async fn process<A: Allocator + Clone>(
+	/// An image that gets a mip chain first waits for a place at the mip generator, and `source` runs only once it
+	/// holds one, so the pixels it decodes or the copies the processor makes never wait for the GPU. Uncompressed,
+	/// unpacked images store their base level as converted from the source, or as the owned source itself, and filter
+	/// every lower level from the one before it inside the stored buffer. Packed and block-compressed images filter a
+	/// canonical copy of the source and encode each level into the stored buffer.
+	async fn process<'a, A: Allocator + Clone>(
 		&self,
 		semantic: Semantic,
 		gamma: Gamma,
 		settings: ImageProcessorSettings,
-		layout: SourceLayout,
-		bytes: SourceBytes<'_, A>,
+		source: impl FnOnce() -> Result<(SourceLayout, SourceBytes<'a, A>), LoadErrors>,
 		allocator: A,
 	) -> Result<ProcessedImage<A>, LoadErrors> {
+		// The image keeps the claim until its payload is stored; see `ImagePayload`.
+		let claim = if settings.mips { Some(self.mips.claim().await) } else { None };
+		let (layout, bytes) = source()?;
 		let extent = layout.extent;
 		let output_format = layout
 			.output_format(semantic, gamma, settings.compression)
 			.ok_or(LoadErrors::FailedToProcess)?;
 		let (streams, size) = stored_levels(output_format, extent, settings.mips).ok_or(LoadErrors::FailedToProcess)?;
-		let mips = settings.mips.then_some(&self.mips);
+		let mips = claim.as_ref().map(|claim| (&self.mips, claim));
 
 		let data = if layout.stores_in_place(semantic, output_format) {
 			let mut data = match bytes {
@@ -249,8 +253,8 @@ impl ImageProcessor {
 			};
 			// Only the lower levels are new bytes; they reuse the reserved capacity after the base level.
 			data.resize(size, 0);
-			if let Some(mips) = mips {
-				mips.filter_mip_chain_in_place(output_format, gamma, extent.width(), extent.height(), &mut data)
+			if let Some((mips, claim)) = mips {
+				mips.filter_mip_chain_in_place(claim, output_format, gamma, extent.width(), extent.height(), &mut data)
 					.await
 					.map_err(|_| LoadErrors::FailedToProcess)?;
 			}
@@ -276,7 +280,12 @@ impl ImageProcessor {
 			ibl: None,
 			photometry: None,
 		};
-		Ok(ProcessedImage { image, streams, data })
+		Ok(ProcessedImage {
+			image,
+			streams,
+			data,
+			claim,
+		})
 	}
 }
 
@@ -290,7 +299,9 @@ impl Default for ImageProcessor {
 /// The `ProcessedImage` struct holds a processed image before a handler names and stores it.
 ///
 /// Handlers that know more about the image than its pixels, such as the photometric scale of an IES profile, set
-/// those [`Image`] fields before calling [`Self::into_asset`].
+/// those [`Image`] fields before calling [`Self::into_asset`]. Store each image before waiting for another one: an
+/// image with a mip chain holds a place at the [`MipGenerator`] until its payload is dropped, and images held while
+/// others wait for a place can stall them.
 pub struct ProcessedImage<A: Allocator> {
 	pub image: Image,
 	/// One stream per stored level, base level first.
@@ -298,13 +309,37 @@ pub struct ProcessedImage<A: Allocator> {
 	/// The stored levels back to back. It's a vector, not a boxed slice, so a buffer reserved larger than the image
 	/// isn't shrunk, which would copy it in the bake arena.
 	pub data: Vec<u8, A>,
+	/// The image's place at the mip generator, kept until its payload is stored.
+	claim: Option<MipClaim>,
 }
 
 impl<A: Allocator> ProcessedImage<A> {
 	/// Names the image `id` and returns the asset and payload to pass to a [`crate::asset::handler::BakeContext`]
 	/// store call.
-	pub fn into_asset(self, id: ResourceId<'_>) -> (ProcessedAsset, Vec<u8, A>) {
-		(ProcessedAsset::new(id, self.image).with_streams(self.streams), self.data)
+	pub fn into_asset(self, id: ResourceId<'_>) -> (ProcessedAsset, ImagePayload<A>) {
+		let payload = ImagePayload {
+			data: self.data,
+			_claim: self.claim,
+		};
+		(ProcessedAsset::new(id, self.image).with_streams(self.streams), payload)
+	}
+}
+
+/// The `ImagePayload` struct holds a processed image's stored levels until a handler has stored them.
+///
+/// Pass it to a [`crate::asset::handler::BakeContext`] store call as `&payload`, and drop it once the call returns.
+/// It keeps the image's place at the [`MipGenerator`] until then, so images waiting to be stored still count against
+/// the images in flight, and memory stays bounded when storing is slower than encoding.
+pub struct ImagePayload<A: Allocator> {
+	data: Vec<u8, A>,
+	_claim: Option<MipClaim>,
+}
+
+impl<A: Allocator> std::ops::Deref for ImagePayload<A> {
+	type Target = [u8];
+
+	fn deref(&self) -> &[u8] {
+		&self.data
 	}
 }
 
@@ -397,8 +432,8 @@ fn stored_levels(format: Formats, extent: Extent, mips: bool) -> Option<(Vec<Str
 	Some((streams, size))
 }
 
-/// Encodes a packed or block-compressed image of `size` stored bytes, filtering a full mip chain with `mips` when one
-/// is given.
+/// Encodes a packed or block-compressed image of `size` stored bytes, filtering a full mip chain with `mips` under its
+/// claim when one is given.
 ///
 /// Packed semantics move their kept channels to the front of the filtering surface first, so every level filters and
 /// stores the same texels the unpacked image would. A single level is encoded on the CPU.
@@ -409,7 +444,7 @@ async fn encode_levels_in<A: Allocator + Clone>(
 	output_format: Formats,
 	size: usize,
 	allocator: A,
-	mips: Option<&MipGenerator>,
+	mips: Option<(&MipGenerator, &MipClaim)>,
 ) -> Result<Vec<u8, A>, LoadErrors> {
 	let extent = source.extent;
 	// Filtering, block compression, and packing all read a canonical copy of the source.
@@ -428,8 +463,8 @@ async fn encode_levels_in<A: Allocator + Clone>(
 
 	let mut data = Vec::with_capacity_in(size, allocator.clone());
 	data.resize(size, 0);
-	if let Some(mips) = mips {
-		mips.encode_mip_chain(output_format, gamma, extent.width(), extent.height(), intermediate, &mut data)
+	if let Some((mips, claim)) = mips {
+		mips.encode_mip_chain(claim, output_format, gamma, extent.width(), extent.height(), intermediate, &mut data)
 			.await
 			.map_err(|_| LoadErrors::FailedToProcess)?;
 	} else {
@@ -642,7 +677,7 @@ mod tests {
 		assert_eq!(asset.class, "Image");
 		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
 		let offsets = asset.streams.iter().flatten().map(|stream| stream.offset()).collect();
-		(image, offsets, data)
+		(image, offsets, data.to_vec())
 	}
 
 	#[crate::r#async::test]
@@ -681,7 +716,7 @@ mod tests {
 			data,
 		};
 		let image = ImageProcessor::default()
-			.process_owned_in(semantic, gamma, settings, source, Global)
+			.process_owned_in(semantic, gamma, settings, || Ok(source), Global)
 			.await
 			.expect("Image processing should succeed");
 		(image.image, image.data.as_ptr() == source_buffer, image.data)
@@ -918,7 +953,10 @@ use crate::{
 	ibl::IBLGenerator,
 	resources::{
 		image::Image,
-		mips::{MipGenerator, encode_level_in, encoded_mip_level_size, filtering_format, mip_extents, stores_filtering_texels},
+		mips::{
+			MipClaim, MipGenerator, encode_level_in, encoded_mip_level_size, filtering_format, mip_extents,
+			stores_filtering_texels,
+		},
 	},
 	types::{Formats, Gamma},
 };

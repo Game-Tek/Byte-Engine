@@ -74,8 +74,11 @@ impl IBLGenerator {
 		#[cfg(feature = "gpu-ibl")]
 		if let Some(worker) = &self.gpu_worker {
 			// The worker owns a copy of the source while the bake is in flight. The baked maps come back in the result.
-			let baked = (worker.submit(extent, rgba16f.to_vec()).await)
+			let claim = worker.claim().await;
+			let baked = (worker.submit(&claim, extent, rgba16f.to_vec()).await)
 				.unwrap_or_else(|_| Err(crate::GpuWorkerError::Unavailable.into()));
+			// The result has left the worker, so its place can serve another bake while this one is stored.
+			drop(claim);
 			match baked {
 				Ok(baked) => {
 					context.info("Generated environment maps on the GPU.");

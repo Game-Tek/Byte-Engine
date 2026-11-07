@@ -54,6 +54,13 @@ impl MaterialMipGenerator {
 		})
 	}
 
+	/// Waits for a place at the worker, which an image holds from before its pixels exist until its chain is encoded.
+	///
+	/// Pass the claim to [`Self::encode_mip_chain`] or [`Self::filter_mip_chain_in_place`].
+	pub(super) async fn claim(&self) -> GpuClaim {
+		self.worker.claim().await
+	}
+
 	/// Filters `base_level` on the GPU and writes the chain, encoded as `output_format`, into `output`.
 	///
 	/// The contract is that of [`crate::resources::mips::MipGenerator::encode_mip_chain`]. The GPU filters RGBA8
@@ -62,6 +69,7 @@ impl MaterialMipGenerator {
 	/// suspends while the worker serves the request instead of blocking the runtime thread.
 	pub(super) async fn encode_mip_chain(
 		&self,
+		claim: &GpuClaim,
 		output_format: Formats,
 		gamma: Gamma,
 		width: u32,
@@ -87,7 +95,7 @@ impl MaterialMipGenerator {
 		// worker thread.
 		let bytes = self
 			.worker
-			.submit((width, height, gamma, output_format), base_level.to_vec())
+			.submit(claim, (width, height, gamma, output_format), base_level.to_vec())
 			.await
 			.map_err(|_| GpuWorkerError::Unavailable)??;
 		if gpu_encodes {
@@ -108,6 +116,7 @@ impl MaterialMipGenerator {
 	/// into place.
 	pub(super) async fn filter_mip_chain_in_place(
 		&self,
+		claim: &GpuClaim,
 		format: Formats,
 		gamma: Gamma,
 		width: u32,
@@ -127,7 +136,7 @@ impl MaterialMipGenerator {
 		let (base_level, lower_levels) = chain.split_at_mut(base_size);
 		let bytes = self
 			.worker
-			.submit((width, height, gamma, format), base_level.to_vec())
+			.submit(claim, (width, height, gamma, format), base_level.to_vec())
 			.await
 			.map_err(|_| GpuWorkerError::Unavailable)??;
 		if bytes.len() != lower_levels.len() {
@@ -625,8 +634,9 @@ mod tests {
 	) -> Vec<u8> {
 		let size = encoded_mip_chain_size(format, Extent::rectangle(width, height)).expect("the format should be storable");
 		let mut output = vec![0; size];
+		let claim = generator.claim().await;
 		generator
-			.encode_mip_chain(format, gamma, width, height, base, &mut output)
+			.encode_mip_chain(&claim, format, gamma, width, height, base, &mut output)
 			.await
 			.expect("GPU mip chain encoding should succeed");
 		output
@@ -649,7 +659,7 @@ mod tests {
 			chain[..base.len()].copy_from_slice(&base);
 
 			generator
-				.filter_mip_chain_in_place(format, gamma, width, height, &mut chain)
+				.filter_mip_chain_in_place(&generator.claim().await, format, gamma, width, height, &mut chain)
 				.await
 				.expect("GPU in-place filtering should succeed");
 
@@ -726,15 +736,15 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn gpu_bc7_chain_matches_the_cpu_fast_profile_on_every_level() {
+	async fn gpu_bc7_chain_matches_the_cpu_profile_on_every_level() {
 		let generator = generator();
 		let (width, height) = (32, 24);
 		let base = test_image(width, height, false);
 
 		let chain = encode_chain(&generator, Formats::BC7, Gamma::Linear, width, height, &base).await;
 		let mut reference = vec![0; chain.len()];
-		MipGenerator::Cpu
-			.encode_mip_chain(Formats::BC7, Gamma::Linear, width, height, &base, &mut reference)
+		let cpu = MipGenerator::Cpu;
+		cpu.encode_mip_chain(&cpu.claim().await, Formats::BC7, Gamma::Linear, width, height, &base, &mut reference)
 			.await
 			.expect("CPU mip chain encoding should succeed");
 
@@ -751,19 +761,25 @@ mod tests {
 			let size = encoded_mip_level_size(Formats::BC7, extent).unwrap();
 			let texel_size = encoded_mip_level_size(Formats::RGBA8, extent).unwrap();
 			let gpu_source = &gpu_levels[texel_offset..texel_offset + texel_size];
-			let gpu = psnr(
-				gpu_source,
-				&decode_image(level_width, level_height, chain[offset..offset + size].as_chunks().0),
-				3,
-			);
+			let gpu_decoded = decode_image(level_width, level_height, chain[offset..offset + size].as_chunks().0);
+			let gpu = psnr(gpu_source, &gpu_decoded, 3);
 			let cpu = psnr(
 				cpu_source,
 				&decode_image(level_width, level_height, reference[offset..offset + size].as_chunks().0),
 				3,
 			);
 			eprintln!("level {level_width}x{level_height}: GPU {gpu:.2} dB, CPU {cpu:.2} dB");
+			// Opaque blocks keep their alpha exact, which leaves the GPU only odd color endpoints. A level of a few flat
+			// colors, such as the smallest ones, can then trail a CPU that stores them exactly, but by at most one step
+			// per texel.
+			let within_one_step = gpu_source
+				.as_chunks::<4>()
+				.0
+				.iter()
+				.zip(gpu_decoded.as_chunks::<4>().0)
+				.all(|(source, decoded)| (0..3).all(|channel| source[channel].abs_diff(decoded[channel]) <= 1));
 			assert!(
-				gpu > cpu - 0.5,
+				gpu > cpu - 0.5 || within_one_step,
 				"level {level_width}x{level_height}: GPU {gpu:.2} dB, CPU {cpu:.2} dB"
 			);
 			offset += size;
@@ -818,6 +834,60 @@ mod tests {
 		.await;
 
 		assert_eq!(concurrent, sequential);
+	}
+
+	#[crate::r#async::test]
+	async fn images_decode_only_once_the_gpu_can_take_them_soon() {
+		use std::cell::Cell;
+
+		use crate::{
+			ibl::IBLGenerator,
+			processors::image::{
+				ImageProcessor, ImageProcessorSettings, OwnedImageSource, Semantic, SourceChannels, SourceEncoding,
+			},
+		};
+
+		let processor = ImageProcessor::new(MipGenerator::Gpu(generator()), IBLGenerator::new());
+		let (width, height) = (64, 64);
+		let pixels = test_image(width, height, false);
+		// Counts the images whose pixels exist, from their decode until the processor returns them.
+		let (decoded, peak) = (Cell::new(0_usize), Cell::new(0_usize));
+		let images = (0..3 * GpuWorker::<GPUMipProcessor>::CLAIMS).map(|_| async {
+			let decode = || {
+				decoded.set(decoded.get() + 1);
+				peak.set(peak.get().max(decoded.get()));
+				Ok(OwnedImageSource {
+					extent: Extent::rectangle(width, height),
+					channels: SourceChannels::RGBA,
+					encoding: SourceEncoding::U8,
+					data: pixels.clone(),
+				})
+			};
+			let image = processor
+				.process_owned_in(
+					Semantic::Albedo,
+					Gamma::SRGB,
+					ImageProcessorSettings::for_semantic(Semantic::Albedo),
+					decode,
+					std::alloc::Global,
+				)
+				.await;
+			// The image's pixels and claim go away together once it's stored, as a handler stores it.
+			let processed = image.is_ok();
+			drop(image);
+			decoded.set(decoded.get() - 1);
+			processed
+		});
+
+		// Every image is requested at once, as a bake's materials request their textures.
+		let processed = utils::r#async::join_all(images).await;
+
+		assert!(processed.into_iter().all(|processed| processed), "every image should process");
+		assert_eq!(
+			peak.get(),
+			GpuWorker::<GPUMipProcessor>::CLAIMS,
+			"images should decode as far ahead of the GPU as its claims allow, and no further"
+		);
 	}
 
 	/// Times a bake-sized batch submitted from eight runtime threads. Run it by hand to compare worker changes:
@@ -980,7 +1050,7 @@ use super::{
 };
 use crate::{
 	gpu_worker::{
-		ComputeKernel, GpuProcessor, GpuWorker, GpuWorkerError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT, Submission,
+		ComputeKernel, GpuClaim, GpuProcessor, GpuWorker, GpuWorkerError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT, Submission,
 		create_besl_compute_kernel, create_compute_context, create_compute_kernel,
 	},
 	types::{Formats, Gamma},

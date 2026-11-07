@@ -36,25 +36,34 @@ impl AssetHandler for ImageAssetHandler {
 			);
 		})?;
 
-		// The decode buffer reserves the whole stored chain when the processor can keep the decoded pixels as the
-		// stored image, so they're never copied.
-		let capacity =
-			ImageProcessor::in_place_capacity(semantic, header.gamma, settings, header.extent, header.channels, header.encoding)
-				.unwrap_or(0);
-		let mut buffer = Vec::with_capacity_in(header.size.max(capacity), allocator);
-		buffer.resize(header.size, 0);
-		let written = decoder.read(&mut buffer)?;
-		buffer.truncate(written);
+		// The processor decodes once it can take the image soon, so images waiting for the GPU hold no pixels.
+		let decode = || {
+			// The decode buffer reserves the whole stored chain when the processor can keep the decoded pixels as the
+			// stored image, so they're never copied.
+			let capacity = ImageProcessor::in_place_capacity(
+				semantic,
+				header.gamma,
+				settings,
+				header.extent,
+				header.channels,
+				header.encoding,
+			)
+			.unwrap_or(0);
+			let mut buffer = Vec::with_capacity_in(header.size.max(capacity), allocator);
+			buffer.resize(header.size, 0);
+			let written = decoder.read(&mut buffer)?;
+			buffer.truncate(written);
 
-		let source = OwnedImageSource {
-			extent: header.extent,
-			channels: header.channels,
-			encoding: header.encoding,
-			data: buffer,
+			Ok(OwnedImageSource {
+				extent: header.extent,
+				channels: header.channels,
+				encoding: header.encoding,
+				data: buffer,
+			})
 		};
 		let image = context
 			.image_processor()
-			.process_owned_in(semantic, header.gamma, settings, source, allocator)
+			.process_owned_in(semantic, header.gamma, settings, decode, allocator)
 			.await?;
 		let (asset, data) = image.into_asset(url);
 

@@ -1,6 +1,6 @@
 //! Provide the BESL BC7 block encoder that the GPU material mip worker runs after filtering.
 //!
-//! The kernel encodes one 4x4 block per invocation with the search of the `fast` profile of Intel's ISPC texture
+//! The kernel encodes one 4x4 block per invocation with the search of the `ultra_fast` profile of Intel's ISPC texture
 //! compressor. [`crate::resources::mips::gpu::MaterialMipGenerator`] compiles it for the active graphics backend and
 //! dispatches it over every level of a material texture's mip chain.
 
@@ -17,7 +17,7 @@ pub(crate) mod tests {
 
 	use super::BC7_ENCODER;
 
-	/// Instructions one invocation may execute. Encoding a block with partition ranking takes a few million.
+	/// Instructions one invocation may execute, well above what encoding one block takes.
 	const INSTRUCTION_LIMIT: usize = 200_000_000;
 
 	/// Encodes an RGBA8 image by running the BC7 kernel once per block in the BESL VM.
@@ -267,8 +267,8 @@ pub(crate) mod tests {
 		rgba
 	}
 
-	/// Encodes an RGBA8 image with the CPU encoder, which uses the same `fast` profile and repeats edge texels into
-	/// partial blocks.
+	/// Encodes an RGBA8 image with the CPU encoder, which uses the same `ultra_fast` profile and repeats edge texels
+	/// into partial blocks.
 	pub(crate) fn encode_on_cpu(width: u32, height: u32, rgba: &[u8]) -> Vec<[u8; 16]> {
 		let mut blocks = vec![[0; 16]; (width.div_ceil(4) * height.div_ceil(4)) as usize];
 		crate::resources::mips::encode_level_in(
@@ -281,8 +281,8 @@ pub(crate) mod tests {
 		blocks
 	}
 
-	/// Asserts that the kernel encodes `rgba` at least as well as the CPU `fast` profile, within a small tolerance.
-	fn assert_matches_cpu_fast_profile(width: u32, height: u32, rgba: &[u8], channels: usize) {
+	/// Asserts that the kernel encodes `rgba` at least as well as the CPU `ultra_fast` profile, within a small tolerance.
+	fn assert_matches_cpu_profile(width: u32, height: u32, rgba: &[u8], channels: usize) {
 		let kernel = psnr(
 			rgba,
 			&decode_image(width, height, &encode_in_vm(width, height, rgba)),
@@ -296,7 +296,7 @@ pub(crate) mod tests {
 
 		assert!(
 			kernel > cpu - 0.25,
-			"the kernel reached {kernel:.2} dB where the CPU fast profile reached {cpu:.2} dB"
+			"the kernel reached {kernel:.2} dB where the CPU ultra_fast profile reached {cpu:.2} dB"
 		);
 	}
 
@@ -329,22 +329,22 @@ pub(crate) mod tests {
 	}
 
 	#[test]
-	fn opaque_image_matches_the_cpu_fast_profile_and_stays_opaque() {
+	fn opaque_image_matches_the_cpu_profile_and_stays_opaque() {
 		let (width, height) = (16, 8);
 		let rgba = test_image(width, height, false);
 
 		let decoded = decode_image(width, height, &encode_in_vm(width, height, &rgba));
 
 		assert!(decoded.as_chunks::<4>().0.iter().all(|texel| texel[3] == 255));
-		assert_matches_cpu_fast_profile(width, height, &rgba, 3);
+		assert_matches_cpu_profile(width, height, &rgba, 3);
 	}
 
 	#[test]
-	fn transparent_image_matches_the_cpu_fast_profile() {
+	fn transparent_image_matches_the_cpu_profile() {
 		let (width, height) = (16, 16);
 		let rgba = test_image(width, height, true);
 
-		assert_matches_cpu_fast_profile(width, height, &rgba, 4);
+		assert_matches_cpu_profile(width, height, &rgba, 4);
 	}
 
 	#[test]
@@ -353,6 +353,6 @@ pub(crate) mod tests {
 		let rgba = test_image(width, height, false);
 
 		assert_eq!(encode_in_vm(width, height, &rgba).len(), 2);
-		assert_matches_cpu_fast_profile(width, height, &rgba, 3);
+		assert_matches_cpu_profile(width, height, &rgba, 3);
 	}
 }

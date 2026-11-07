@@ -57,22 +57,15 @@ pub(crate) fn encode_level_in<A: Allocator + Clone>(
 				height,
 				stride: width * 4,
 			};
-			intel_tex_2::bc7::compress_blocks_into(&bc7_settings(data), &surface, output);
+			// The profile's opaque settings encode only mode 6 and leave alpha out of the error, so about half of an
+			// opaque image's texels would decode with alpha 254. Counting alpha in every image keeps opaque texels
+			// opaque far more often, at about five times the cost. The GPU encoder in `super::bc7` runs the same
+			// profile at comparable quality.
+			intel_tex_2::bc7::compress_blocks_into(&intel_tex_2::bc7::alpha_ultra_fast_settings(), &surface, output);
 		}
 		Formats::RG8 => truncate_texels::<4, 2>(data, output),
 		Formats::RG16 => truncate_texels::<8, 4>(data, output),
 		_ => output.copy_from_slice(data),
-	}
-}
-
-/// Selects the `fast` BC7 profile, with alpha modes only when a texel is not fully opaque.
-///
-/// The GPU encoder in [`super::bc7`] implements the same search, so both backends produce comparable quality.
-fn bc7_settings(data: &[u8]) -> intel_tex_2::bc7::EncodeSettings {
-	if data.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0xFF) {
-		intel_tex_2::bc7::alpha_fast_settings()
-	} else {
-		intel_tex_2::bc7::opaque_fast_settings()
 	}
 }
 

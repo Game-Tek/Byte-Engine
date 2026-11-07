@@ -40,40 +40,43 @@ impl AssetHandler for EXRAssetHandler {
 		let spec = context.load_sidecar(url).await?;
 		let settings = image_settings(&context, url, spec.as_ref(), IMAGE_SETTINGS_KEY, semantic)?;
 
-		// Decoding reserves the whole stored chain, so the processor keeps the decoded pixels as the stored image.
-		let capacity = |extent| {
-			ImageProcessor::in_place_capacity(
-				semantic,
-				Gamma::Linear,
-				settings,
-				extent,
-				SourceChannels::RGBA,
-				SourceEncoding::F16LittleEndian,
-			)
-			.unwrap_or(0)
-		};
-		let decoded = decode_rgba16f_in(source.as_slice(), context.allocator(), capacity).map_err(|error| {
-			context.error(format_args!(
-				"EXR image '{}' could not be decoded. The most likely cause is invalid or unsupported EXR data. Decoder: {error}",
-				url.as_ref()
-			));
+		// The processor decodes once it can take the image soon, so images waiting for the GPU hold no pixels.
+		let decode = || {
+			// Decoding reserves the whole stored chain, so the processor keeps the decoded pixels as the stored image.
+			let capacity = |extent| {
+				ImageProcessor::in_place_capacity(
+					semantic,
+					Gamma::Linear,
+					settings,
+					extent,
+					SourceChannels::RGBA,
+					SourceEncoding::F16LittleEndian,
+				)
+				.unwrap_or(0)
+			};
+			let decoded = decode_rgba16f_in(source.as_slice(), context.allocator(), capacity).map_err(|error| {
+				context.error(format_args!(
+					"EXR image '{}' could not be decoded. The most likely cause is invalid or unsupported EXR data. Decoder: {error}",
+					url.as_ref()
+				));
 
-			LoadErrors::FailedToProcess
-		})?;
+				LoadErrors::FailedToProcess
+			})?;
 
-		if decoded.format() != image::ImageFormat::OpenExr {
-			return Err(LoadErrors::UnsupportedType);
-		}
+			if decoded.format() != image::ImageFormat::OpenExr {
+				return Err(LoadErrors::UnsupportedType);
+			}
 
-		let source = OwnedImageSource {
-			extent: decoded.extent(),
-			channels: SourceChannels::RGBA,
-			encoding: SourceEncoding::F16LittleEndian,
-			data: decoded.into_data(),
+			Ok(OwnedImageSource {
+				extent: decoded.extent(),
+				channels: SourceChannels::RGBA,
+				encoding: SourceEncoding::F16LittleEndian,
+				data: decoded.into_data(),
+			})
 		};
 		let image = context
 			.image_processor()
-			.process_owned_in(semantic, Gamma::Linear, settings, source, context.allocator())
+			.process_owned_in(semantic, Gamma::Linear, settings, decode, context.allocator())
 			.await?;
 		let (asset, data) = image.into_asset(url);
 

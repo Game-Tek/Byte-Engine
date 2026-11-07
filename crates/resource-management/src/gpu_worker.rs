@@ -2,20 +2,27 @@
 //!
 //! The environment-map generator ([`crate::ibl::IBLGenerator`]) and the material mip generator
 //! ([`crate::resources::mips::gpu::MaterialMipGenerator`]) share this worker thread, device setup, and kernel setup.
-//! Asset bakes submit requests from the shared worker pool and await the reply, so no pool thread blocks while the
-//! GPU works, and the worker keeps several requests in flight at once.
+//! Asset bakes claim a place at the worker before they produce a request's input, then submit the request from the
+//! shared worker pool and await the reply. No pool thread blocks while the GPU works, the worker keeps several requests
+//! in flight at once, and work waits for the GPU before it allocates rather than after.
 
 use std::{
 	any::Any,
 	collections::VecDeque,
 	fmt,
-	sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
+	future::Future,
+	pin::Pin,
+	sync::{
+		Arc,
+		mpsc::{self, Receiver, RecvTimeoutError, Sender},
+	},
+	task::{Context, Poll, ready},
 	thread::JoinHandle,
 	time::Duration,
 };
 
 use ghi::{context::ContextCreate as _, device::Device as _};
-use utils::r#async::oneshot;
+use utils::{r#async::oneshot, sync::Mutex};
 
 /// The slot every offline kernel samples its source image from.
 pub(crate) const SOURCE_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
@@ -69,13 +76,79 @@ pub(crate) enum Submission<T, R> {
 
 /// The `GpuWorker` struct lets asset handlers on the shared worker pool use a GHI processor that must stay on one thread.
 ///
-/// Spawn it with the processor factory, then call [`Self::submit`] once per image and await the returned receiver.
-/// Requests own their input bytes until they are uploaded, so a caller that stops awaiting never leaves the worker
-/// with dangling memory.
+/// Spawn it with the processor factory. For each image, await [`Self::claim`] before producing the input, then call
+/// [`Self::submit`] with the claim and await the returned receiver. Requests own their input bytes until they are
+/// uploaded, so a caller that stops awaiting never leaves the worker with dangling memory.
 pub(crate) struct GpuWorker<P: GpuProcessor> {
 	/// `None` once the worker was asked to shut down, or when it never started.
 	sender: Option<Sender<Request<P>>>,
 	worker: Option<JoinHandle<()>>,
+	claims: Arc<Mutex<Claims>>,
+}
+
+/// The `GpuClaim` struct holds one of a [`GpuWorker`]'s places, from before a request's input exists until the caller
+/// has used its result.
+///
+/// Get one with [`GpuWorker::claim`] before allocating the input, and keep it until the memory the request needs is
+/// released. Work then waits for the GPU while it holds nothing, instead of queueing up with its input allocated.
+/// Never await another bake or another claim while holding one: a holder waits only on its own work, such as the GPU,
+/// encoding, and storing, so every claim returns in bounded time. Dropping the claim hands the place to the oldest
+/// caller still waiting.
+pub(crate) struct GpuClaim {
+	claims: Arc<Mutex<Claims>>,
+}
+
+/// The `Claims` struct counts a worker's free places and queues the callers that wait for one, oldest first.
+struct Claims {
+	free: usize,
+	waiting: VecDeque<oneshot::Sender<()>>,
+}
+
+impl Drop for GpuClaim {
+	fn drop(&mut self) {
+		let mut claims = self.claims.lock();
+		// Hand the place straight to the oldest caller still waiting, so no new claim overtakes one that waits. A send
+		// fails only for a caller that stopped waiting, so the place goes on to the next one.
+		while let Some(waiter) = claims.waiting.pop_front() {
+			if waiter.send(()).is_ok() {
+				return;
+			}
+		}
+		claims.free += 1;
+	}
+}
+
+/// The `ClaimWait` struct is the future of a claim that found every place taken; it resolves once a dropped claim hands
+/// it one.
+struct ClaimWait {
+	granted: oneshot::Receiver<()>,
+	claims: Arc<Mutex<Claims>>,
+}
+
+impl Future for ClaimWait {
+	type Output = GpuClaim;
+
+	fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<GpuClaim> {
+		// The sender sits in the queue that this future's `claims` keeps alive, and it's only taken out to send.
+		ready!(Pin::new(&mut self.granted).poll(context)).expect("A waiting claim's sender is only dropped after sending");
+		Poll::Ready(GpuClaim {
+			claims: Arc::clone(&self.claims),
+		})
+	}
+}
+
+impl Drop for ClaimWait {
+	fn drop(&mut self) {
+		// A caller that stops waiting may have been handed a place meanwhile. Closing first makes every later hand-off
+		// skip this caller, and a place that already arrived goes on to the next waiter instead of being lost. A place
+		// this future already returned was taken out of the channel, so it isn't released twice.
+		self.granted.close();
+		if let Ok(Some(())) = self.granted.try_recv() {
+			drop(GpuClaim {
+				claims: Arc::clone(&self.claims),
+			});
+		}
+	}
 }
 
 /// The `GpuWorkerError` enum reports why the shared GPU worker could not set up a processor or serve a request.
@@ -131,6 +204,10 @@ impl GpuWorkerError {
 }
 
 impl<P: GpuProcessor + 'static> GpuWorker<P> {
+	/// How many claims the worker hands out: the requests its processor runs at once, and as many again preparing their
+	/// input, so a request that finishes is replaced without waiting for the next input to be produced.
+	pub(crate) const CLAIMS: usize = 2 * P::MAX_IN_FLIGHT;
+
 	/// Runs `initialize` on a new thread named `name` and returns once the processor it creates is ready.
 	///
 	/// Create every thread-affine GHI device and context inside `initialize`. The processor stays on the worker for its
@@ -162,6 +239,7 @@ impl<P: GpuProcessor + 'static> GpuWorker<P> {
 			Ok(()) => Ok(Self {
 				sender: Some(sender),
 				worker: Some(worker),
+				claims: Self::fresh_claims(),
 			}),
 			Err(error) => {
 				let _ = worker.join();
@@ -170,11 +248,43 @@ impl<P: GpuProcessor + 'static> GpuWorker<P> {
 		}
 	}
 
-	/// Queues one request and returns the receiver that resolves to its result.
+	fn fresh_claims() -> Arc<Mutex<Claims>> {
+		Arc::new(Mutex::new(Claims {
+			free: Self::CLAIMS,
+			waiting: VecDeque::new(),
+		}))
+	}
+
+	/// Waits for one of the worker's [`Self::CLAIMS`] places, in arrival order, and returns it.
+	///
+	/// Call this before producing a request's input, then pass the claim to [`Self::submit`]. The wait suspends the
+	/// caller, so pool threads keep running other bakes while every place is taken.
+	pub(crate) async fn claim(&self) -> GpuClaim {
+		let granted = {
+			let mut claims = self.claims.lock();
+			if claims.free > 0 {
+				claims.free -= 1;
+				None
+			} else {
+				let (grant, granted) = oneshot::channel();
+				claims.waiting.push_back(grant);
+				Some(granted)
+			}
+		};
+		let claims = Arc::clone(&self.claims);
+		match granted {
+			Some(granted) => ClaimWait { granted, claims }.await,
+			None => GpuClaim { claims },
+		}
+	}
+
+	/// Queues one request under `claim` and returns the receiver that resolves to its result.
 	///
 	/// The worker uploads `input`. The receiver reports cancellation when the worker stopped before serving the
 	/// request. Dropping it does not cancel the GPU work; the worker finishes the request and discards the result.
-	pub(crate) fn submit(&self, parameters: P::Request, input: Vec<u8>) -> oneshot::Receiver<P::Result> {
+	pub(crate) fn submit(&self, claim: &GpuClaim, parameters: P::Request, input: Vec<u8>) -> oneshot::Receiver<P::Result> {
+		// Each claim covers this worker's requests only, which is what bounds its queue.
+		debug_assert!(Arc::ptr_eq(&claim.claims, &self.claims), "A claim must come from the worker it submits to");
 		let (reply, receiver) = oneshot::channel();
 		if let Some(sender) = &self.sender {
 			// A failed send drops the request and its reply sender, which cancels the receiver.
@@ -189,6 +299,7 @@ impl<P: GpuProcessor + 'static> GpuWorker<P> {
 		Self {
 			sender: None,
 			worker: None,
+			claims: Self::fresh_claims(),
 		}
 	}
 }
@@ -431,6 +542,8 @@ mod tests {
 		atomic::{AtomicUsize, Ordering},
 	};
 
+	use utils::r#async::FutureExt as _;
+
 	use super::*;
 
 	/// A processor whose requests complete after `polls_to_complete` polls.
@@ -492,11 +605,21 @@ mod tests {
 		(worker, peak)
 	}
 
+	/// Claims a place, serves one request under it, and releases the place with the reply.
+	async fn serve<const CAPACITY: usize>(
+		worker: &GpuWorker<FakeProcessor<CAPACITY>>,
+		request: u8,
+		input: Vec<u8>,
+	) -> Result<(u8, usize), oneshot::Canceled> {
+		let claim = worker.claim().await;
+		worker.submit(&claim, request, input).await
+	}
+
 	#[crate::r#async::test]
 	async fn concurrent_requests_overlap_on_the_worker() {
 		let (worker, peak) = worker::<3>(4);
 
-		let results = utils::r#async::join_all((0..6_u8).map(|request| worker.submit(request, vec![0; 4]))).await;
+		let results = utils::r#async::join_all((0..6_u8).map(|request| serve(&worker, request, vec![0; 4]))).await;
 
 		for (request, result) in (0..6_u8).zip(results) {
 			let (served, _) = result.expect("the worker should serve every request");
@@ -512,21 +635,62 @@ mod tests {
 	async fn requests_past_capacity_wait_for_a_slot_and_keep_their_order() {
 		let (worker, peak) = worker::<1>(2);
 
-		let results = utils::r#async::join_all((0..4_u8).map(|request| worker.submit(request, vec![0; 1])))
+		let results = utils::r#async::join_all((0..6_u8).map(|request| serve(&worker, request, vec![0; 1])))
 			.await
 			.into_iter()
 			.map(|reply| reply.expect("the worker should serve every request").0)
 			.collect::<Vec<_>>();
 
-		assert_eq!(results, [0, 1, 2, 3]);
+		assert_eq!(results, [0, 1, 2, 3, 4, 5]);
 		assert_eq!(peak.load(Ordering::SeqCst), 1);
+	}
+
+	#[crate::r#async::test]
+	async fn claims_past_capacity_wait_and_are_granted_in_arrival_order() {
+		let (worker, _) = worker::<1>(2);
+		let [released, kept] = [worker.claim().await, worker.claim().await];
+		let mut first = std::pin::pin!(worker.claim());
+		let mut second = std::pin::pin!(worker.claim());
+
+		assert!(first.as_mut().now_or_never().is_none(), "every place is taken");
+		assert!(second.as_mut().now_or_never().is_none(), "every place is taken");
+
+		drop(released);
+
+		assert!(
+			second.as_mut().now_or_never().is_none(),
+			"a released place goes to the oldest waiter"
+		);
+		let _first = first.now_or_never().expect("the oldest waiter should hold the released place");
+
+		drop(kept);
+
+		assert!(second.now_or_never().is_some(), "the next release should reach the next waiter");
+	}
+
+	#[crate::r#async::test]
+	async fn a_waiter_that_stops_waiting_passes_its_place_on() {
+		let (worker, _) = worker::<1>(2);
+		let [released, kept] = [worker.claim().await, worker.claim().await];
+		let mut abandoned = Box::pin(worker.claim());
+		assert!(abandoned.as_mut().now_or_never().is_none(), "every place is taken");
+
+		// The released place reaches the waiter, which stops waiting before it takes it.
+		drop(released);
+		drop(abandoned);
+
+		assert!(
+			worker.claim().now_or_never().is_some(),
+			"the abandoned place should be free again"
+		);
+		drop(kept);
 	}
 
 	#[crate::r#async::test]
 	async fn requests_without_gpu_work_complete_inline() {
 		let (worker, _) = worker::<1>(2);
 
-		let (served, in_flight) = worker.submit(9, Vec::new()).await.expect("the worker should reply");
+		let (served, in_flight) = serve(&worker, 9, Vec::new()).await.expect("the worker should reply");
 
 		assert_eq!((served, in_flight), (9, 0));
 	}
@@ -535,8 +699,10 @@ mod tests {
 	async fn a_dropped_reply_does_not_disturb_later_requests() {
 		let (worker, _) = worker::<1>(3);
 
-		drop(worker.submit(1, vec![0; 1]));
-		let (served, _) = worker.submit(2, vec![0; 1]).await.expect("the worker should reply");
+		let claim = worker.claim().await;
+		drop(worker.submit(&claim, 1, vec![0; 1]));
+		drop(claim);
+		let (served, _) = serve(&worker, 2, vec![0; 1]).await.expect("the worker should reply");
 
 		assert_eq!(served, 2);
 	}
@@ -545,11 +711,12 @@ mod tests {
 	async fn a_stopped_worker_cancels_replies() {
 		let stopped = GpuWorker::<FakeProcessor<1>>::unavailable();
 
-		assert!(stopped.submit(1, vec![0; 1]).await.is_err());
+		assert!(serve(&stopped, 1, vec![0; 1]).await.is_err());
 
 		let (worker, _) = worker::<1>(50);
-		let in_flight = worker.submit(1, vec![0; 1]);
-		let queued = worker.submit(2, vec![0; 1]);
+		let [first, second] = [worker.claim().await, worker.claim().await];
+		let in_flight = worker.submit(&first, 1, vec![0; 1]);
+		let queued = worker.submit(&second, 2, vec![0; 1]);
 		drop(worker);
 
 		assert!(in_flight.await.is_ok(), "work the GPU already runs still completes");

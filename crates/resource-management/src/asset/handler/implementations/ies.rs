@@ -76,7 +76,7 @@ impl AssetHandler for IESAssetHandler {
 				Semantic::Other,
 				Gamma::Linear,
 				ImageProcessorSettings::LOOKUP,
-				source,
+				|| Ok(source),
 				context.allocator(),
 			)
 			.await?;

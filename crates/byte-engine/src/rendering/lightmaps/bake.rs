@@ -155,11 +155,13 @@ impl AssetHandler for LightmapAssetHandler {
 				Semantic::Other,
 				Gamma::Linear,
 				ImageProcessorSettings::LOOKUP,
-				OwnedImageSource {
-					extent: Extent::square(traced.extent),
-					channels: SourceChannels::RGBA,
-					encoding: SourceEncoding::F16LittleEndian,
-					data,
+				|| {
+					Ok(OwnedImageSource {
+						extent: Extent::square(traced.extent),
+						channels: SourceChannels::RGBA,
+						encoding: SourceEncoding::F16LittleEndian,
+						data,
+					})
 				},
 				context.allocator(),
 			)

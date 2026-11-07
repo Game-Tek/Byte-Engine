@@ -59,7 +59,7 @@ pub trait WriteStorageBackend: Sync + Send {
 	/// Call [`ReadStorageBackend::list`] next to verify that the store is empty.
 	fn clear(&self) -> impl Future<Output = Result<(), String>>;
 
-	fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String>;
+	fn delete<'a>(&'a self, id: ResourceId<'a>) -> impl Future<Output = Result<(), String>> + 'a;
 
 	/// Reserves exact payload storage before a processor starts writing.
 	///
@@ -127,17 +127,18 @@ pub trait WriteStorageBackend: Sync + Send {
 
 	/// Makes every resource committed so far survive a crash or power loss.
 	///
-	/// Backends may publish individual resources without waiting for the disk so a bake with many outputs does not
-	/// flush once per resource. Call this once a batch of writes is complete, such as when a root bake finishes.
-	fn persist(&self) -> Result<(), String> {
-		Ok(())
+	/// Backends may publish individual resources and their payloads without waiting for the disk, so a bake with many
+	/// outputs does not flush once per resource. Call this once a batch of writes is complete, such as when no bake is
+	/// left in flight.
+	fn persist(&self) -> impl Future<Output = Result<(), String>> {
+		async { Ok(()) }
 	}
 }
 
 /// The `DynWriteStorageBackend` trait provides object-safe resource authoring for runtime-selected storage.
 pub trait DynWriteStorageBackend: Send + Sync {
 	fn clear(&self) -> BoxedFuture<'_, Result<(), String>>;
-	fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String>;
+	fn delete<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<(), String>>;
 	fn begin_resource<'a>(&'a self, id: ResourceId<'_>, size: usize) -> BoxedFuture<'a, Result<ResourceTransaction<'a>, ()>>;
 	fn cpu_compression_policy(&self, resource: &ProcessedAsset) -> crate::resource::ResourceCompressionPolicy;
 	fn store<'a>(&'a self, resource: ProcessedAsset, data: &'a [u8]) -> BoxedFuture<'a, Result<SerializableResource, ()>>;
@@ -151,8 +152,8 @@ pub trait DynWriteStorageBackend: Send + Sync {
 	fn replace_trace(&self, _: ResourceId<'_>, _: &[crate::ResourceTraceItem]) -> Result<(), String> {
 		Ok(())
 	}
-	fn persist(&self) -> Result<(), String> {
-		Ok(())
+	fn persist(&self) -> BoxedFuture<'_, Result<(), String>> {
+		Box::pin(async { Ok(()) })
 	}
 }
 
@@ -294,8 +295,8 @@ impl<T: WriteStorageBackend> DynWriteStorageBackend for T {
 		Box::pin(self.clear())
 	}
 
-	fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String> {
-		self.delete(id)
+	fn delete<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<(), String>> {
+		Box::pin(WriteStorageBackend::delete(self, id))
 	}
 
 	fn begin_resource<'a>(&'a self, id: ResourceId<'_>, size: usize) -> BoxedFuture<'a, Result<ResourceTransaction<'a>, ()>> {
@@ -324,8 +325,8 @@ impl<T: WriteStorageBackend> DynWriteStorageBackend for T {
 		self.replace_trace(id, items)
 	}
 
-	fn persist(&self) -> Result<(), String> {
-		WriteStorageBackend::persist(self)
+	fn persist(&self) -> BoxedFuture<'_, Result<(), String>> {
+		Box::pin(WriteStorageBackend::persist(self))
 	}
 }
 

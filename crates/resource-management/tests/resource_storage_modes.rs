@@ -433,7 +433,7 @@ async fn packed_mode_recovers_reusable_ranges_after_reopen() {
 			.store(ProcessedAsset::new(retained_id, StoredFixture), b"kept")
 			.await
 			.unwrap();
-		storage.delete(deleted_id).unwrap();
+		storage.delete(deleted_id).await.unwrap();
 	}
 
 	assert_eq!(std::fs::metadata(path.join("resources.pack")).unwrap().len(), 8);
@@ -559,7 +559,7 @@ async fn usage_reports_the_pack_range_a_deleted_resource_frees() {
 			.await
 			.unwrap();
 	}
-	storage.delete(ResourceId::new("middle.fixture")).unwrap();
+	storage.delete(ResourceId::new("middle.fixture")).await.unwrap();
 
 	let usage = storage.usage().unwrap();
 	let pack = usage.pack.unwrap();

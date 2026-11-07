@@ -208,7 +208,7 @@ impl WriteStorageBackend for MemoryStorageBackend {
 		Ok(())
 	}
 
-	fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String> {
+	async fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String> {
 		self.resources.lock().remove(id.as_ref());
 		#[cfg(debug_assertions)]
 		self.traces.lock().remove(id.as_ref());

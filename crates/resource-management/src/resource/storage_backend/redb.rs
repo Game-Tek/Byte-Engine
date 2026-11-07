@@ -24,6 +24,9 @@ pub struct ReDBStorageBackend {
 	/// Suffix for the next staging file name. Name clashes with other processes or
 	/// backends sharing the directory are resolved by retrying with the next value.
 	next_staging_file: AtomicU64,
+	/// Payload files published since the last durable commit. [`Self::sync_payloads`] writes them to the disk right
+	/// before that commit, so a bake syncs its payloads once per flush instead of once per resource.
+	unsynced_payloads: Mutex<Vec<std::path::PathBuf>>,
 }
 
 /// The `RedbDatabase` enum lets applications read compatible stores without writes while tools and cache recovery can update them.
@@ -70,6 +73,7 @@ impl ReDBStorageBackend {
 			packed_allocator: None,
 			opened_empty: false,
 			next_staging_file: AtomicU64::new(0),
+			unsynced_payloads: Mutex::new(Vec::new()),
 		};
 		let settings = backend.persisted_settings()?;
 		backend.storage_mode = settings.storage_mode;
@@ -203,6 +207,7 @@ impl ReDBStorageBackend {
 			packed_allocator,
 			opened_empty,
 			next_staging_file: AtomicU64::new(0),
+			unsynced_payloads: Mutex::new(Vec::new()),
 		})
 	}
 
@@ -211,6 +216,37 @@ impl ReDBStorageBackend {
 			RedbDatabase::Writable(db) => db.begin_read(),
 			RedbDatabase::ReadOnly(db) => db.begin_read(),
 		}
+	}
+
+	/// Writes every payload published since the last durable commit to the disk.
+	///
+	/// Call it right before each durable commit. That commit flushes the drive's cache, which makes these writes
+	/// permanent first, so no durable record can name a payload that a crash would lose.
+	async fn sync_payloads(&self) -> Result<(), String> {
+		use utils::r#async::stream::{self, TryStreamExt as _};
+
+		let mut paths = std::mem::take(&mut *self.unsynced_payloads.lock().unwrap());
+		// Packed payloads all live in the pack, which one sync covers. Syncing an unchanged pack costs almost nothing.
+		if self.storage_mode == ResourceStorageMode::Packed {
+			paths.push(self.base_path.join(PACKED_RESOURCES_FILE));
+		}
+
+		let synced = stream::iter(paths.iter().map(Ok))
+			.try_for_each_concurrent(PAYLOAD_SYNCS_IN_FLIGHT, |path| async move {
+				sync_payload(path).await.map_err(|error| (path, error))
+			})
+			.await;
+		if let Err((path, error)) = synced {
+			let message = format!(
+				"Failed to sync resource payload '{}'. The most likely cause is that the disk is full or unavailable. Free disk space or check the resource directory, then bake again. Error: {error}",
+				path.display()
+			);
+			// Keep every payload so the next durable commit syncs them again. A file that did sync syncs again almost
+			// for free.
+			self.unsynced_payloads.lock().unwrap().extend(paths);
+			return Err(message);
+		}
+		Ok(())
 	}
 
 	/// Creates and pre-sizes a unique staging file before returning it to a processor.
@@ -870,7 +906,9 @@ impl WriteStorageBackend for ReDBStorageBackend {
 		Ok(())
 	}
 
-	fn delete<'a>(&'a self, id: asset::ResourceId<'a>) -> Result<(), String> {
+	async fn delete<'a>(&'a self, id: asset::ResourceId<'a>) -> Result<(), String> {
+		// The delete commits durably, which also makes every deferred commit before it durable.
+		self.sync_payloads().await?;
 		if let Some(payload_path) = self.remove_resource_record(id)? {
 			let _ = remove_file(payload_path);
 		}
@@ -943,12 +981,13 @@ impl WriteStorageBackend for ReDBStorageBackend {
 
 	/// Flushes every deferred commit to disk with one durable commit.
 	///
-	/// Payload files are synchronized before their metadata is committed, so the flush never publishes a record whose
-	/// payload could be missing after a crash.
-	fn persist(&self) -> Result<(), String> {
+	/// The payloads of those commits are synced first, so the flush never publishes a record whose payload could be
+	/// missing after a crash.
+	async fn persist(&self) -> Result<(), String> {
 		let RedbDatabase::Writable(db) = &self.db else {
 			return Ok(());
 		};
+		self.sync_payloads().await?;
 		let write = db.begin_write().map_err(|error| {
 			format!("Failed to persist baked resources. The resource database could not begin a write. Error: {error}")
 		})?;
@@ -988,13 +1027,15 @@ impl ResourceTransactionCommit for ReDBStorageBackend {
 					return Err(());
 				}
 				let destination = resource_payload_path(&self.base_path, resource_id.0, hash, encoding);
-				match encoding {
+				let stored_size = match encoding {
 					ResourcePayloadEncoding::MetalIoLz4 => output.persist_compressed_file(&destination, encoding)?,
 					ResourcePayloadEncoding::Raw | ResourcePayloadEncoding::CpuLz4 => {
 						output.persist_staged_file(&destination)?;
 						prepared_stored_size
 					}
-				}
+				};
+				self.unsynced_payloads.lock().unwrap().push(destination);
+				stored_size
 			}
 			ResourceStorageMode::Packed => {
 				if packed_range.is_none() || encoding.is_gpu_backed() {
@@ -2038,7 +2079,7 @@ mod tests {
 		assert_eq!(backing.as_slice(), b"last");
 		drop(backing);
 
-		backend.delete(id).unwrap();
+		backend.delete(id).await.unwrap();
 		backend
 			.store(
 				ProcessedAsset::new(
@@ -2532,6 +2573,7 @@ mod tests {
 
 		backend
 			.delete(crate::asset::ResourceId::new("pipelines/replaced.pipeline"))
+			.await
 			.unwrap();
 		assert_eq!(backend.references().unwrap().len(), 2);
 
@@ -2575,7 +2617,7 @@ mod tests {
 		assert!(backend.read(id).await.is_none());
 		assert!(backend.list().await.unwrap().is_empty());
 
-		backend.delete(id).unwrap();
+		backend.delete(id).await.unwrap();
 
 		assert!(backend.read_trace(id).await.unwrap().is_empty());
 		assert!(backend.traces().unwrap().is_empty());
@@ -2593,7 +2635,7 @@ mod tests {
 			},
 		)
 		.await;
-		backend.delete(crate::asset::ResourceId::new("materials/a")).unwrap();
+		backend.delete(crate::asset::ResourceId::new("materials/a")).await.unwrap();
 
 		let (ids, _) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/a").limit(10)).await;
 
@@ -2627,11 +2669,33 @@ mod tests {
 	}
 }
 
+/// How many payload syncs a flush runs at once. Each sync opens and closes its file, and running several hides those
+/// round trips, while the bound keeps the blocking pool's threads free for other work.
+const PAYLOAD_SYNCS_IN_FLIGHT: usize = 16;
+
+/// Writes one payload file's data to the drive.
+///
+/// Compio syncs with a plain `fsync` on Apple platforms, where the standard library's `sync_data` also flushes the
+/// whole drive cache, once per payload. The durable commit that follows flushes that cache once for every payload.
+async fn sync_payload(path: &std::path::Path) -> std::io::Result<()> {
+	let file = match compio::fs::File::open(path).await {
+		Ok(file) => file,
+		// The resource was replaced or deleted after it was published, so no record names this file anymore.
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+		Err(error) => return Err(error),
+	};
+	file.sync_data().await?;
+	file.close().await
+}
+
 use std::{
 	future::Future,
 	io::Write as _,
 	path::Path,
-	sync::atomic::{AtomicU64, Ordering},
+	sync::{
+		Mutex,
+		atomic::{AtomicU64, Ordering},
+	},
 };
 
 use redb::{ReadableDatabase as _, ReadableTable, ReadableTableMetadata as _};

@@ -17,7 +17,7 @@ use std::{
 		mpsc::{self, Receiver, RecvTimeoutError, Sender},
 	},
 	task::{Context, Poll, ready},
-	thread::JoinHandle,
+	thread::{JoinHandle, ThreadId},
 	time::Duration,
 };
 
@@ -92,25 +92,47 @@ pub(crate) struct GpuWorker<P: GpuProcessor> {
 /// Get one with [`GpuWorker::claim`] before allocating the input, and keep it until the memory the request needs is
 /// released. Work then waits for the GPU while it holds nothing, instead of queueing up with its input allocated.
 /// Never await another bake or another claim while holding one: a holder waits only on its own work, such as the GPU,
-/// encoding, and storing, so every claim returns in bounded time. Dropping the claim hands the place to the oldest
-/// caller still waiting.
+/// encoding, and storing, so every claim returns in bounded time. Dropping the claim hands the place to a caller still
+/// waiting; see [`GpuWorker::claim`] for which one.
 pub(crate) struct GpuClaim {
 	claims: Arc<Mutex<Claims>>,
+	/// The thread the claim's work runs on, which is the thread that asked for it.
+	thread: ThreadId,
 }
 
 /// The `Claims` struct counts a worker's free places and queues the callers that wait for one, oldest first.
 struct Claims {
 	free: usize,
-	waiting: VecDeque<oneshot::Sender<()>>,
+	/// The thread of each claim taken, once per claim.
+	holders: Vec<ThreadId>,
+	waiting: VecDeque<(ThreadId, oneshot::Sender<()>)>,
 }
 
 impl Drop for GpuClaim {
 	fn drop(&mut self) {
-		let mut claims = self.claims.lock();
-		// Hand the place straight to the oldest caller still waiting, so no new claim overtakes one that waits. A send
-		// fails only for a caller that stopped waiting, so the place goes on to the next one.
-		while let Some(waiter) = claims.waiting.pop_front() {
+		let mut guard = self.claims.lock();
+		let claims = &mut *guard;
+		let holder = claims.holders.iter().position(|thread| *thread == self.thread);
+		claims
+			.holders
+			.swap_remove(holder.expect("A claim's thread is recorded until the claim is dropped"));
+
+		// An async task stays on the thread that first polled it, so the CPU work of two claims on one thread takes
+		// turns, and every wait of one, for the GPU or for storage, ends only once the other yields. The place therefore
+		// goes to the oldest caller on a thread that holds no claim, or to the oldest caller when every waiting thread
+		// holds one, so a place never idles while someone waits. A send fails only for a caller that stopped waiting,
+		// so the place goes on to the next one.
+		loop {
+			let next = claims
+				.waiting
+				.iter()
+				.position(|(thread, _)| !claims.holders.contains(thread))
+				.unwrap_or(0);
+			let Some((thread, waiter)) = claims.waiting.remove(next) else {
+				break;
+			};
 			if waiter.send(()).is_ok() {
+				claims.holders.push(thread);
 				return;
 			}
 		}
@@ -123,6 +145,7 @@ impl Drop for GpuClaim {
 struct ClaimWait {
 	granted: oneshot::Receiver<()>,
 	claims: Arc<Mutex<Claims>>,
+	thread: ThreadId,
 }
 
 impl Future for ClaimWait {
@@ -133,6 +156,7 @@ impl Future for ClaimWait {
 		ready!(Pin::new(&mut self.granted).poll(context)).expect("A waiting claim's sender is only dropped after sending");
 		Poll::Ready(GpuClaim {
 			claims: Arc::clone(&self.claims),
+			thread: self.thread,
 		})
 	}
 }
@@ -146,6 +170,7 @@ impl Drop for ClaimWait {
 		if let Ok(Some(())) = self.granted.try_recv() {
 			drop(GpuClaim {
 				claims: Arc::clone(&self.claims),
+				thread: self.thread,
 			});
 		}
 	}
@@ -251,30 +276,35 @@ impl<P: GpuProcessor + 'static> GpuWorker<P> {
 	fn fresh_claims() -> Arc<Mutex<Claims>> {
 		Arc::new(Mutex::new(Claims {
 			free: Self::CLAIMS,
+			holders: Vec::with_capacity(Self::CLAIMS),
 			waiting: VecDeque::new(),
 		}))
 	}
 
-	/// Waits for one of the worker's [`Self::CLAIMS`] places, in arrival order, and returns it.
+	/// Waits for one of the worker's [`Self::CLAIMS`] places and returns it.
 	///
 	/// Call this before producing a request's input, then pass the claim to [`Self::submit`]. The wait suspends the
-	/// caller, so pool threads keep running other bakes while every place is taken.
+	/// caller, so pool threads keep running other bakes while every place is taken. A freed place goes to the oldest
+	/// caller whose thread holds no claim, and to the oldest caller when every waiting thread holds one; callers on
+	/// different threads then run their claims' work side by side.
 	pub(crate) async fn claim(&self) -> GpuClaim {
+		let thread = std::thread::current().id();
 		let granted = {
 			let mut claims = self.claims.lock();
 			if claims.free > 0 {
 				claims.free -= 1;
+				claims.holders.push(thread);
 				None
 			} else {
 				let (grant, granted) = oneshot::channel();
-				claims.waiting.push_back(grant);
+				claims.waiting.push_back((thread, grant));
 				Some(granted)
 			}
 		};
 		let claims = Arc::clone(&self.claims);
 		match granted {
-			Some(granted) => ClaimWait { granted, claims }.await,
-			None => GpuClaim { claims },
+			Some(granted) => ClaimWait { granted, claims, thread }.await,
+			None => GpuClaim { claims, thread },
 		}
 	}
 
@@ -666,6 +696,51 @@ mod tests {
 		drop(kept);
 
 		assert!(second.now_or_never().is_some(), "the next release should reach the next waiter");
+	}
+
+	#[crate::r#async::test]
+	async fn a_freed_place_goes_first_to_a_waiter_whose_thread_holds_no_claim() {
+		let (worker, _) = worker::<1>(2);
+		let worker = &worker;
+		// This thread holds one place and another thread holds the other.
+		let kept = worker.claim().await;
+		let released = std::thread::scope(|scope| {
+			let other = scope.spawn(|| worker.claim().now_or_never().expect("one place is still free"));
+			other.join().expect("the claiming thread should finish")
+		});
+		// This thread starts waiting while it holds a claim, before a thread that holds none.
+		let mut older = std::pin::pin!(worker.claim());
+		assert!(older.as_mut().now_or_never().is_none(), "every place is taken");
+
+		let taken = std::thread::scope(|scope| {
+			let (registered, wait_until_registered) = mpsc::channel();
+			let (freed, wait_until_freed) = mpsc::channel::<()>();
+			let younger = scope.spawn(move || {
+				let mut younger = std::pin::pin!(worker.claim());
+				assert!(younger.as_mut().now_or_never().is_none(), "every place is taken");
+				registered.send(()).expect("the test thread should wait for the registration");
+				wait_until_freed.recv().expect("the test thread should free a place");
+				younger.now_or_never()
+			});
+			wait_until_registered.recv().expect("the waiting thread should register");
+			drop(released);
+			freed.send(()).expect("the waiting thread should wait for the freed place");
+			younger.join().expect("the waiting thread should finish")
+		});
+
+		assert!(
+			taken.is_some(),
+			"the waiter on a thread without a claim should get the freed place"
+		);
+		assert!(
+			older.as_mut().now_or_never().is_none(),
+			"the older waiter's thread still holds a claim"
+		);
+		drop(kept);
+		assert!(
+			older.now_or_never().is_some(),
+			"the older waiter should get the next place once its thread holds no claim"
+		);
 	}
 
 	#[crate::r#async::test]

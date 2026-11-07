@@ -101,6 +101,14 @@ resource state.
 
 Packed replacements use copy-on-write publication so an interrupted bake can't replace valid metadata with partial bytes. After publication, the backend reuses the old range when no mapped reader still owns it. Deletion also returns its range. The allocator merges adjacent free ranges, chooses the smallest range that fits, and grows `resources.pack` only when no free range is large enough. When you reopen the store, it reconstructs free ranges from the live offsets in `resources.db`, which also recovers space left by an interrupted bake.
 
+The backend publishes each resource with a commit that doesn't wait for the disk, and writes its payload without syncing it. `WriteStorageBackend::persist` makes everything stored so far durable at once: it syncs every payload file published since the last durable commit, then commits durably. Deleting a resource commits durably too, so it syncs those payloads first. A crash before a flush rolls the store back to its last durable commit, which loses only resources that the next bake rebuilds. The asset manager calls `persist` on an asset worker once the last root bake that callers wait on finishes, and that root returns once the flush is done. A bake of many assets therefore waits for the disk once, at the end.
+
+A change must keep these rules true:
+
+- Sync a payload before any durable commit that could make a record naming it durable, so a durable record never names a payload that a crash would lose.
+- Sync payloads through Compio, which uses a plain `fsync` on Apple platforms. The standard library's `File::sync_data` flushes the whole drive cache there for each file, and the durable commit after the syncs already flushes it once for all of them.
+- Flush only when no root bake is in flight. Syncs and durable commits issued in the middle of a bake queue behind each other on the disk, and every texture that waits on them keeps its GPU claim; see [GPU claims](/docs/develop/resource-management/assets#gpu-claims).
+
 Use one ReDB backend instance for a resource directory while it can be updated.
 Drop read-only ReDB backends and their mapped resource backings before reopening
 the directory for writing.

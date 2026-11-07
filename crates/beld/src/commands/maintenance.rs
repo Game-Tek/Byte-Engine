@@ -61,27 +61,24 @@ pub async fn delete(destination_path: String, ids: Vec<String>) -> Result<(), i3
 		return Ok(());
 	}
 
-	offload_file_operation(move || {
-		let storage_backend = ReDBStorageBackend::new_writable(destination_path.into());
-		let mut ok = true;
+	let storage_backend = offload_file_operation(move || ReDBStorageBackend::new_writable(destination_path.into())).await;
+	let mut ok = true;
 
-		for id in ids {
-			match storage_backend.delete(ResourceId::new(&id)) {
-				Ok(()) => {
-					log::info!("Deleted resource '{}'", id);
-				}
-				Err(error) => {
-					log::error!(
-						"Failed to delete '{}'. The most likely cause is that the resource store could not be updated. Error: {}",
-						id,
-						error
-					);
-					ok = false;
-				}
+	for id in ids {
+		match storage_backend.delete(ResourceId::new(&id)).await {
+			Ok(()) => {
+				log::info!("Deleted resource '{}'", id);
+			}
+			Err(error) => {
+				log::error!(
+					"Failed to delete '{}'. The most likely cause is that the resource store could not be updated. Error: {}",
+					id,
+					error
+				);
+				ok = false;
 			}
 		}
+	}
 
-		if ok { Ok(()) } else { Err(1) }
-	})
-	.await
+	if ok { Ok(()) } else { Err(1) }
 }

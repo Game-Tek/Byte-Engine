@@ -26,6 +26,11 @@ pub(crate) struct AssetManagerState {
 	pub(in crate::asset) resource_storage_backend: Arc<dyn DynResourceStorageBackend>,
 	in_flight_bakes: Arc<Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>>,
 	bake_memory_budget: Option<Arc<BakeMemoryBudget>>,
+	/// The root bakes callers are waiting on, whether admitted yet or not. The last one to finish makes what they
+	/// stored durable with one flush; see [`RootInFlight`].
+	roots_in_flight: AtomicUsize,
+	/// Whether a root stored anything since the last flush, so a bake that reused every resource doesn't flush.
+	unflushed: AtomicBool,
 	/// Resources stored before this time, in nanoseconds since the Unix epoch, count as stale.
 	rebuild_cutoff: Option<u64>,
 	/// The patterns of asset IDs that are never baked, from the project's `resources.exclude`.
@@ -43,6 +48,49 @@ pub(crate) enum BakeOrigin {
 	Root,
 	/// A dependency of a running bake; it shares the parent's memory scope and leaves durability to the root.
 	Dependency(Option<Arc<BakeMemoryScope>>),
+}
+
+/// The `RootInFlight` struct counts one root bake as in flight for as long as its caller waits on it.
+///
+/// A durable flush waits for the disk, and on some systems for the whole drive cache, so the manager flushes once
+/// when the last root a caller requested finishes, rather than once per root. Flushing per root stalled concurrent
+/// bakes behind flushes of the payloads other roots were still writing.
+struct RootInFlight<'a> {
+	state: &'a Arc<AssetManagerState>,
+	/// Whether the root left through [`Self::leave`], whose caller waits for the flush.
+	left: bool,
+}
+
+impl<'a> RootInFlight<'a> {
+	fn enter(state: &'a Arc<AssetManagerState>) -> Self {
+		state.roots_in_flight.fetch_add(1, Ordering::AcqRel);
+		Self { state, left: false }
+	}
+
+	/// Leaves, and returns the flush to wait for when this root left last with stored resources unflushed.
+	fn leave(mut self) -> Option<utils::r#async::oneshot::Receiver<()>> {
+		self.left = true;
+		self.flush_if_last()
+	}
+
+	fn flush_if_last(&self) -> Option<utils::r#async::oneshot::Receiver<()>> {
+		// A root marks its output before it leaves, so the root that leaves last sees every mark.
+		let last = self.state.roots_in_flight.fetch_sub(1, Ordering::AcqRel) == 1;
+		if last && self.state.unflushed.swap(false, Ordering::AcqRel) {
+			self.state.flush()
+		} else {
+			None
+		}
+	}
+}
+
+impl Drop for RootInFlight<'_> {
+	fn drop(&mut self) {
+		// A root whose caller stopped waiting can't wait for the flush either, so the flush runs with nobody waiting.
+		if !self.left {
+			drop(self.flush_if_last());
+		}
+	}
 }
 
 /// The `BakeOutcome` enum reports whether a freshness-checked bake wrote anything.
@@ -103,6 +151,8 @@ impl AssetManager {
 				resource_storage_backend,
 				in_flight_bakes: Arc::new(Mutex::new(HashMap::with_capacity_and_hasher(32, Default::default()))),
 				bake_memory_budget: None,
+				roots_in_flight: AtomicUsize::new(0),
+				unflushed: AtomicBool::new(false),
 				rebuild_cutoff: None,
 				excluded: Vec::new(),
 				dispatcher,
@@ -589,6 +639,20 @@ impl AssetManagerState {
 			return notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?;
 		}
 
+		// Counting starts before admission, so roots still waiting for memory keep the flush from running early.
+		let root = matches!(origin, BakeOrigin::Root).then(|| RootInFlight::enter(self));
+		let result = self.admit_and_bake(id, only_when_stale, origin).await;
+
+		// The root that leaves last returns once the flush is done, so its caller finds every stored resource durable.
+		if let Some(flushed) = root.and_then(RootInFlight::leave) {
+			let _ = flushed.await;
+		}
+
+		result
+	}
+
+	/// Admits a bake and runs it as the leader, or waits for the leader that already runs it.
+	async fn admit_and_bake(self: &Arc<Self>, id: &str, only_when_stale: bool, origin: BakeOrigin) -> Result<(), LoadMessages> {
 		let is_root = matches!(origin, BakeOrigin::Root);
 
 		// Independent roots wait before becoming leaders. This lets an admitted parent claim and run a dependency
@@ -627,9 +691,9 @@ impl AssetManagerState {
 					state.bake_uncoalesced(&id, &allocator).await.map(|()| BakeOutcome::Baked)
 				};
 
-				// A root that reused a current resource wrote nothing, so it skips the flush.
+				// A root that reused a current resource wrote nothing, so it doesn't ask for the flush.
 				if is_root && !matches!(result, Ok(BakeOutcome::Current)) {
-					state.persist_resources();
+					state.unflushed.store(true, Ordering::Release);
 				}
 
 				let result = result.map(|_| ());
@@ -645,11 +709,20 @@ impl AssetManagerState {
 
 	/// Makes every resource stored so far durable with one flush, instead of one flush per stored resource.
 	///
+	/// The flush runs on an asset worker, because it does file I/O through the workers' runtime while a root's caller
+	/// may wait on any executor. Await the returned receiver to wait for it; it's `None` once the workers stopped.
 	/// A failure leaves this bake's resources usable in this process; they may only be lost if the process then crashes.
-	fn persist_resources(&self) {
-		if let Err(error) = self.resource_storage_backend.persist() {
-			log::warn!("{error}");
-		}
+	/// A crash before the flush loses only resources that the next bake rebuilds, because storage rolls back to its
+	/// last durable state.
+	fn flush(self: &Arc<Self>) -> Option<utils::r#async::oneshot::Receiver<()>> {
+		let state = Arc::clone(self);
+		self.dispatcher
+			.dispatch(move || async move {
+				if let Err(error) = state.resource_storage_backend.persist().await {
+					log::warn!("{error}");
+				}
+			})
+			.ok()
 	}
 
 	/// Returns whether an excluded pattern matches the asset ID.
@@ -1836,7 +1909,10 @@ use std::{
 	collections::hash_map::Entry::{Occupied, Vacant},
 	num::NonZeroUsize,
 	ops::Deref,
-	sync::Arc,
+	sync::{
+		Arc,
+		atomic::{AtomicBool, AtomicUsize, Ordering},
+	},
 };
 
 use announcement;

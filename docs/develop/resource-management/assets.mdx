@@ -145,7 +145,9 @@ decode and import data long-lived.
 
 ## GPU claims
 
-A bake starts every requested asset at once, while the GPU worker and the stages after it take textures a few at a time. So work that waits for the GPU claims a place at the GPU worker before it allocates what it waits with. A `GpuWorker` hands out `GpuWorker::CLAIMS` places, twice the requests its processor runs at once: while those run, as many again prepare their input. Further claims wait in arrival order, and the wait suspends their bake, so pool threads keep running other assets.
+A bake starts every requested asset at once, while the GPU worker and the stages after it take textures a few at a time. So work that waits for the GPU claims a place at the GPU worker before it allocates what it waits with. A `GpuWorker` hands out `GpuWorker::CLAIMS` places, twice the requests its processor runs at once: while those run, as many again prepare their input. Further claims wait, and the wait suspends their bake, so pool threads keep running other assets.
+
+A bake stays on the worker thread that first polls it. Two claims held on one thread therefore take turns at its CPU work, such as decoding and compressing, and each one's waits for the GPU and the disk end only once the other yields. So a freed place goes to the oldest bake waiting on a thread that holds no claim, and to the oldest waiting bake when every waiting thread holds one.
 
 The image processor claims a place for every image that gets a mip chain, and calls the handler's decode closure only once it holds the claim. Images queued behind the GPU therefore hold no decoded pixels. The image keeps the claim until it's stored: `ProcessedImage::into_asset` returns an `ImagePayload` that holds the claim, so images waiting to be compressed and written still count against the claims, and memory stays bounded when storing is slower than encoding. The [bake memory budget](/docs/use/resources/beld#control-bake-memory) admits root bakes; claims bound the images inside them.
 
@@ -155,8 +157,9 @@ A change must keep these rules true:
 - Never await another bake, or another image's claim, while holding a claim. A holder waits only on its own decode, the GPU, CPU encoding, and the store, so every claim returns in bounded time, and claims can't deadlock with the bake tree. So store each processed image before processing the next one.
 - Keep the claim until the image's memory is released. A claim dropped earlier lets decoded images pile up at whichever later stage is slowest.
 - `GpuWorker::submit` takes a claim, so the worker's queue never holds more requests than it has claims.
+- A freed place never stays free while a bake waits for one, even when every waiting bake's thread already holds a claim.
 
-The `claims_past_capacity_wait_and_are_granted_in_arrival_order` and `a_waiter_that_stops_waiting_passes_its_place_on` tests in `gpu_worker` guard the queue. The GPU mip generator's `images_decode_only_once_the_gpu_can_take_them_soon` test guards that images decode no further ahead of the GPU than its claims allow.
+The `claims_past_capacity_wait_and_are_granted_in_arrival_order`, `a_waiter_that_stops_waiting_passes_its_place_on`, and `a_freed_place_goes_first_to_a_waiter_whose_thread_holds_no_claim` tests in `gpu_worker` guard the queue. The GPU mip generator's `images_decode_only_once_the_gpu_can_take_them_soon` test guards that images decode no further ahead of the GPU than its claims allow.
 
 ## Rust API
 

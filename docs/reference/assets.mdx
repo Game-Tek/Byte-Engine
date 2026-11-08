@@ -14,6 +14,9 @@ format or change a handler, read
 ## Asset IDs
 
 Asset IDs are written as resource-style paths.
+Asset IDs are case-sensitive on every platform: each directory and file name in an ID must match the file's spelling
+exactly. On a case-insensitive file system, such as the default ones on macOS and Windows, an ID that differs from a
+file only in case still names no file, so it fails to read and counts as missing.
 The file extension is part of the ID when selecting an asset handler, and a fragment can identify a sub-asset when a container format exposes many resources.
 For example, a glTF asset can produce mesh, skeleton, animation, material, image, and generated shader resources.
 

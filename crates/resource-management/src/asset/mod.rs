@@ -512,10 +512,54 @@ pub async fn read_asset_from_source<'a>(
 		return Err(());
 	}
 
-	let path = base_path.unwrap_or(std::path::Path::new("")).join(base.as_ref());
+	let base_path = base_path.unwrap_or(std::path::Path::new(""));
+	// Asset IDs are case-sensitive on every platform, so a case-insensitive file system doesn't read a file whose name
+	// only differs in case.
+	if !path_has_exact_case(base_path, base.as_ref()) {
+		return Err(());
+	}
+	let path = base_path.join(base.as_ref());
 	let source_bytes = read_asset_bytes(&path, allocator).await?;
 
 	Ok((source_bytes, url.get_asset_type().to_string()))
+}
+
+/// Returns whether every component of `relative`, under `base`, names a directory entry spelled exactly as written.
+///
+/// Case-insensitive file systems, such as the default ones on macOS and Windows, open `rock_basecolor.jpg` for
+/// `rock_BaseColor.jpg`. Checking each component against its directory's listing keeps asset IDs case-sensitive there
+/// too, so the same ID finds the same file, or none, on every platform. Returns `false` when a component doesn't exist.
+pub(crate) fn path_has_exact_case(base: &std::path::Path, relative: &str) -> bool {
+	use std::path::Component;
+
+	let mut directory = base.to_path_buf();
+
+	for component in std::path::Path::new(relative).components() {
+		match component {
+			Component::Normal(name) => {
+				let listed = if directory.as_os_str().is_empty() {
+					std::fs::read_dir(".")
+				} else {
+					std::fs::read_dir(&directory)
+				};
+				let Ok(mut entries) = listed else {
+					return false;
+				};
+				if !entries.any(|entry| entry.is_ok_and(|entry| entry.file_name() == name)) {
+					return false;
+				}
+				directory.push(name);
+			}
+			Component::ParentDir => {
+				directory.pop();
+			}
+			Component::CurDir => {}
+			// An absolute ID starts from its own root.
+			Component::RootDir | Component::Prefix(_) => directory = std::path::PathBuf::from(component.as_os_str()),
+		}
+	}
+
+	true
 }
 
 /// Maps source bytes when possible, falling back to an allocated asynchronous read.

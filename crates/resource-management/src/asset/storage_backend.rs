@@ -388,8 +388,11 @@ impl StorageBackend for FileStorageBackend {
 
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, ()>> + 'a {
 		future(async move {
-			let path = self.base_path.join(url.get_base().as_ref());
+			let base = url.get_base();
+			let path = self.base_path.join(base.as_ref());
 			match AsyncFile::open(path).await {
+				// A file whose name differs only in case is another asset, so it's missing here, as `resolve` agrees.
+				Ok(_) if !super::path_has_exact_case(&self.base_path, base.as_ref()) => Ok(AssetVersion::missing()),
 				Ok(file) => Ok(AssetVersion::from_metadata(&file.metadata().await.map_err(|_| ())?)),
 				Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(AssetVersion::missing()),
 				Err(_) => Err(()),
@@ -533,7 +536,7 @@ pub mod tests {
 		time::{Duration, SystemTime, UNIX_EPOCH},
 	};
 
-	use super::{AssetSource, AssetStorageBytes, FileStorageBackend, ResolveResult, StorageBackend};
+	use super::{AssetSource, AssetStorageBytes, AssetVersion, FileStorageBackend, ResolveResult, StorageBackend};
 	use crate::{asset::ResourceId, tests::ASSETS_PATH};
 
 	/// The `TestStorageBackend` struct provides in-memory source files with an asset-directory fallback for tests.
@@ -628,6 +631,28 @@ pub mod tests {
 				AssetSource::new("root.test".to_string(), false),
 			]
 		);
+
+		fs::remove_dir_all(directory).unwrap();
+	}
+
+	/// Asset IDs are case-sensitive on every platform: an ID whose case differs from the file's, in its name or in a
+	/// directory, is missing, even where the file system would open it.
+	#[crate::r#async::test]
+	async fn file_storage_backend_ids_are_case_sensitive() {
+		let directory = temporary_asset_directory();
+		fs::create_dir_all(directory.join("Rocks")).unwrap();
+		fs::write(directory.join("Rocks/rock_Basecolor.jpg"), b"pixels").unwrap();
+
+		let storage_backend = FileStorageBackend::new(directory.clone());
+		let exact = ResourceId::new("Rocks/rock_Basecolor.jpg");
+		assert_ne!(storage_backend.version(exact).await, Ok(AssetVersion::missing()));
+		assert!(storage_backend.resolve(exact).await.is_ok());
+
+		for id in ["Rocks/rock_BaseColor.jpg", "rocks/rock_Basecolor.jpg"] {
+			let id = ResourceId::new(id);
+			assert_eq!(storage_backend.version(id).await, Ok(AssetVersion::missing()), "{id:?}");
+			assert!(storage_backend.resolve(id).await.is_err(), "{id:?}");
+		}
 
 		fs::remove_dir_all(directory).unwrap();
 	}

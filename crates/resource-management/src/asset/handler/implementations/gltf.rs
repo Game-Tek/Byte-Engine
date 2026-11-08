@@ -1630,7 +1630,7 @@ use super::{
 	store_imported_image, store_model,
 };
 use crate::asset::handler::implementations::bema::{
-	GeneratedMaterial, MaterialSource, TemplateScope, binds_variant_asset, material_binding, resolve_container_materials,
+	GeneratedMaterial, MaterialBinding, MaterialSource, TemplateScope, material_binding, resolve_container_materials,
 };
 use crate::{
 	ProcessedAsset, ReferenceModel,

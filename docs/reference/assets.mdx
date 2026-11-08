@@ -431,39 +431,28 @@ Only these handlers read sidecars:
 ### Material bindings
 
 `asset` in a glTF, GLB, or FBX model's settings binds the model's materials to
-variants. It's read after the directory defaults and the sidecar are merged, so
-a directory `.bead` can bind every model below it, and a deeper file can
-replace one key or one variable.
+variants. It's read after the directory defaults and the sidecar merge, so a
+directory `.bead` can bind every model below it. A sidecar's entry merges field
+by field over its directory's entry of the same key. A `null` key, field, or
+variable counts as left out, which lets a deeper file drop one it inherits,
+such as `select`.
 
 | Key | Binds |
 | --- | --- |
 | The material's name | That material. Unnamed FBX materials use the name `default`. |
 | `"*"` | Every material of the model without a key of its own, unnamed glTF and FBX materials included. A named key is used on its own, never merged with `"*"`. |
 
-A key that's `null`, or absent along with `"*"`, leaves the material
-generated from the model. Bindings merge like other settings, so a sidecar's
-`"*"` merges field by field over its directory's `"*"`. A field or variable
-that's `null` counts as left out, which lets a deeper file drop one it inherits,
-such as `select`.
-
-A binding has one of these forms:
-
-| Form | Meaning |
-| --- | --- |
-| `{ asset }` | The ID of an authored `.bema` variant, which bakes as a dependency. With `asset` present, every other field is ignored. |
-| `{ parent, variables, alpha_mode, alpha_cutoff, double_sided }` | An inline variant of the material `parent`. |
-| `{ select, variables, alpha_mode, alpha_cutoff, double_sided }` | An inline variant whose parent comes from the first matching rule of `select`. |
-
-Fields of an inline variant:
+A material without a key, and without `"*"`, is generated from the model. A
+binding is either `{ asset }`, the ID of an authored `.bema` variant that bakes
+as a dependency, or an inline variant with these fields. With `asset` present,
+every other field is ignored.
 
 | Field | Value |
 | --- | --- |
-| `parent` | The parent material's asset ID, a [template](#binding-templates). Required without `select`. |
-| `select` | A non-empty array of rules, tried in order. A rule is `{ requires, parent, alpha_mode, alpha_cutoff, double_sided }`: `requires` is an optional array of variable names, and `parent` is a template. A rule matches when every variable it requires resolved; a rule without `requires` always matches. With `select`, the block's `parent` is ignored. |
-| `variables` | Optional. An object keyed by the parent's parameter names. A value is a template, an array of templates, a number, or an array of numbers. |
-| `alpha_mode`, `alpha_cutoff`, `double_sided` | Optional, with the values a [`.bema` variant](/docs/reference/bema#variant-files) accepts. A field left out keeps the parent's value. A matching rule's fields replace the block's, field by field. |
-
-Any other field fails the bake.
+| `parent` | The parent material's asset ID, a [template](#binding-templates). Required without `select`, and ignored with it. |
+| `select` | A non-empty array of rules `{ requires, parent, alpha_mode, alpha_cutoff, double_sided }`. `requires` is an optional array of variable names, and `parent` is a template. |
+| `variables` | Optional. An object keyed by the parent's parameter names, whose values are templates, arrays of templates, numbers, or arrays of numbers. |
+| `alpha_mode`, `alpha_cutoff`, `double_sided` | Optional, with the values a [`.bema` variant](/docs/reference/bema#variant-files) accepts. A field left out keeps the parent's value. |
 
 #### Binding templates
 
@@ -487,19 +476,25 @@ directory. Any other value is an asset ID from the asset root.
    A template, or an array of templates, resolves to the first whose source
    asset exists. When none exists, the variable is unresolved, which isn't an
    error.
-2. The parent is the block's `parent`, or that of the first `select` rule that
-   matches. A `select` with no matching rule fails the bake.
+2. Without `select`, the parent is `parent`. With it, the parent comes from the
+   first rule whose `requires` variables all resolved; a rule without
+   `requires` always matches. The rule's coverage fields replace the block's,
+   field by field.
 3. Each of the parent's parameters takes its variable's value. A parameter
    whose variable is unresolved or absent keeps the parent's value, static or
    dynamic. Variables the parent doesn't declare are ignored.
 4. Values resolve with the parent parameter's `data_type`, as in a variant
-   file. A resolved asset ID for a `Texture2D` parameter bakes as an image. A
-   string is always an asset ID, never a named color, so a resolved asset ID for
-   any other data type fails the bake; write colors as arrays of numbers.
+   file. A string is always an asset ID, never a named color: it bakes as an
+   image for a `Texture2D` parameter, so write colors as arrays of numbers.
 
-The bake fails when a binding isn't an object, a template has an unknown
-variable, an operator such as `{+dir}`, or an unmatched `{` or `}`, or a
-`variables` value mixes strings and numbers.
+The bake fails when:
+
+- A binding or a rule isn't an object, or has a field not listed here.
+- A template has an unknown variable, an operator such as `{+dir}`, or an
+  unmatched `{` or `}`.
+- A `variables` value mixes strings and numbers.
+- No `select` rule matches.
+- A resolved asset ID is given to a parameter that isn't `Texture2D`.
 
 An inline variant is stored as the model's resource
 `<model ID>#materials/<material>.variant`, with `<material>` named as under

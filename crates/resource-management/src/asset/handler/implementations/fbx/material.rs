@@ -20,15 +20,11 @@ pub(crate) async fn resolve_fbx_materials(
 		.iter()
 		.map(|&key| {
 			let (material, name) = fbx_material_for_key(scene, key);
-			let scope = TemplateScope {
-				model_id: url.as_ref(),
-				material: name,
-			};
 
 			MaterialSource::new(
 				context,
 				url,
-				material_binding(spec, Some(name), &scope),
+				fbx_material_binding(spec, url, name),
 				generated_fbx_material_base_id(url, key, material),
 				|base_id| {
 					let material = fbx_material(material).map_err(|error| {
@@ -69,9 +65,20 @@ pub(crate) fn generated_material_key_for_id(
 	used_material_keys(scene, allocator).into_iter().find(|&key| {
 		let (material, name) = fbx_material_for_key(scene, key);
 
-		!binds_variant_asset(spec, Some(name))
-			&& names_generated_material(url, &generated_fbx_material_base_id(source_id, key, material))
+		!matches!(
+			fbx_material_binding(spec, source_id, name),
+			Ok(Some(MaterialBinding::Asset(_)))
+		) && names_generated_material(url, &generated_fbx_material_base_id(source_id, key, material))
 	})
+}
+
+/// Reads what the sidecar settings `spec` of the model `url` bind its material `name` to.
+fn fbx_material_binding(spec: Option<&Value>, url: ResourceId<'_>, name: &str) -> Result<Option<MaterialBinding>, String> {
+	let scope = TemplateScope {
+		model_id: url.as_ref(),
+		material: name,
+	};
+	material_binding(spec, Some(name), &scope)
 }
 
 /// Returns the material `key` names in `scene`, if any, and the name a BEAD sidecar overrides it by. Unnamed materials

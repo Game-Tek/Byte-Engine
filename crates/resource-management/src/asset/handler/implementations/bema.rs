@@ -1062,12 +1062,17 @@ async fn bake_inline_variant(
 		resolved.push((name.as_str(), value));
 	}
 
-	let is_resolved = |name: &str| resolved.iter().any(|(variable, value)| *variable == name && value.is_some());
+	let value_of = |name: &str| {
+		resolved
+			.iter()
+			.find(|(variable, _)| *variable == name)
+			.and_then(|(_, value)| value.as_ref())
+	};
 
 	let Some(rule) = binding
 		.rules
 		.iter()
-		.find(|rule| rule.requires.iter().all(|name| is_resolved(name)))
+		.find(|rule| rule.requires.iter().all(|name| value_of(name).is_some()))
 	else {
 		context.error(format_args!(
 			"No `select` rule of `asset.\"{}\"` matches material '{id}' of '{}'. The most likely cause is that every rule `requires` a variable whose files don't exist next to the model. Add a last rule without `requires`. See {}.",
@@ -1079,12 +1084,6 @@ async fn bake_inline_variant(
 	};
 
 	let material = context.bake_dependency(&rule.parent).await?;
-	let value_of = |name: &str| {
-		resolved
-			.iter()
-			.find(|(variable, _)| *variable == name)
-			.and_then(|(_, value)| value.as_ref())
-	};
 	let invalid = |problem: &str| {
 		context.error(format_args!(
 			"Invalid inline variant `asset.\"{}\"` for material '{id}' of '{}': {problem} See {}.",
@@ -1989,7 +1988,7 @@ use utils::Extent;
 mod binding;
 
 use binding::{BindingValue, InlineBinding, MATERIAL_BINDINGS_DOCS_PATH};
-pub(crate) use binding::{MaterialBinding, TemplateScope, binds_variant_asset, material_binding};
+pub(crate) use binding::{MaterialBinding, TemplateScope, material_binding};
 
 use super::{
 	ResourceId,

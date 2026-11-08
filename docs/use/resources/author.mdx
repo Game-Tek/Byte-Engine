@@ -185,9 +185,9 @@ as the world environment and the visibility renderer loads the complete set.
 
 A collection exported with one texture set per model, such as a scan library,
 doesn't need a `.bema` file per model. Write one parent material whose
-variables have neutral default textures, then bind every model below a
-directory to it from that directory's `.bead`. Each model then finds its
-textures next to itself:
+variables have neutral default textures, which a model keeps for any map it
+lacks. Then bind every model below a directory to it from that directory's
+`.bead`:
 
 ```json5
 // rocks/.bead
@@ -210,14 +210,10 @@ textures next to itself:
 }
 ```
 
-A model in `rocks/granite/` reads `rocks/granite/granite_BaseColor.jpg`. A
-model with an opacity map uses the masked parent; the rest use the surface
-parent. A texture that's missing keeps the parent's default, so leave out
-nothing the parent needs a value for. To bind one material differently, give it
-its own key, such as `Billboard: { parent: ..., variables: { ... } }`, in the
-same file or in the model's own sidecar. The named key replaces `"*"` for that
-material instead of merging with it. Adding a texture later rebakes the models
-that look for it.
+A model in `rocks/granite/` reads `rocks/granite/granite_BaseColor.jpg`, and a
+model with an opacity map uses the masked parent. To bind one material
+differently, give it its own key, such as `Billboard`, in the same file or in
+the model's own sidecar.
 
 The [material bindings reference](/docs/reference/assets#material-bindings)
 lists every field, template variable, and rule.

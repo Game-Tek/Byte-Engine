@@ -538,11 +538,11 @@ pub(crate) fn path_has_exact_case(base: &std::path::Path, relative: &str) -> boo
 		match component {
 			Component::Normal(name) => {
 				let listed = if directory.as_os_str().is_empty() {
-					std::fs::read_dir(".")
+					std::path::Path::new(".")
 				} else {
-					std::fs::read_dir(&directory)
+					&directory
 				};
-				let Ok(mut entries) = listed else {
+				let Ok(mut entries) = std::fs::read_dir(listed) else {
 					return false;
 				};
 				if !entries.any(|entry| entry.is_ok_and(|entry| entry.file_name() == name)) {

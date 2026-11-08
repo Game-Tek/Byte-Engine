@@ -350,7 +350,7 @@ fn images_sample_at_computed_coordinates_with_how_they_change_across_the_pixel()
 }
 
 #[test]
-fn only_position_and_texture_coordinates_move_a_coordinate() {
+fn texels_and_parameters_hold_still_across_the_pixel() {
 	let flowed = evaluate(&surface(
 		r#"{ name: "flow", node: "image", texture: "albedo", type: "vector2" },
 		{ name: "uv", node: "texcoord" },

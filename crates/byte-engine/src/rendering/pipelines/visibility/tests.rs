@@ -2006,7 +2006,6 @@ fn gtao_half_resolution_blur_preserves_uniform_ao_and_smooths_horizontally() {
 	);
 }
 
-/// Verifies full-resolution reconstruction preserves uniform input and rejects AO across depth discontinuities.
 /// Verifies the backdrop copy keeps the opaque scene's light as it is and turns reversed device depth into linear view
 /// depth, with the sky at the view's far depth, which `sceneposition` rebuilds positions from.
 #[test]
@@ -2047,6 +2046,7 @@ fn backdrop_copies_light_and_linearizes_depth() {
 	);
 }
 
+/// Verifies full-resolution reconstruction preserves uniform input and rejects AO across depth discontinuities.
 #[test]
 fn gtao_upscale_is_depth_aware_and_preserves_uniform_ao() {
 	let upscale = asset!("gtao-upscale.besl");

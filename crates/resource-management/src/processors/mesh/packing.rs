@@ -880,11 +880,6 @@ fn bounding_sphere(bounds: &AABB<ModelSpace>, positions: &[[f32; 3]]) -> [f32; 4
 	[center[0], center[1], center[2], radius]
 }
 
-/// Copies the normals just packed for one primitive into `scratch`, three components per vertex. Leaves it empty
-/// when the primitive has no normals.
-///
-/// Attributes stream from the source straight into their blocks, so the packed bytes are the only copy the simplifier
-/// can read at random.
 /// Reports whether `starts` splits `index_count` triangle indices into full detail and coarser levels that each hold
 /// at least one whole triangle, and whether the levels fit in a primitive.
 fn authored_level_starts_are_valid(starts: &[usize], index_count: usize) -> bool {
@@ -903,6 +898,11 @@ fn level_ranges(starts: &[usize], index_count: usize) -> impl Iterator<Item = st
 		.map(|(start, end)| start..end)
 }
 
+/// Copies the normals just packed for one primitive into `scratch`, three components per vertex. Leaves it empty
+/// when the primitive has no normals.
+///
+/// Attributes stream from the source straight into their blocks, so the packed bytes are the only copy the simplifier
+/// can read at random.
 fn read_normals(blocks: &[PackedStreamBlock], primitive_streams: &[Stream], scratch: &mut Vec<f32>) {
 	let stream_type = Streams::Vertices(VertexSemantics::Normal);
 	scratch.clear();

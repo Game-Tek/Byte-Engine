@@ -1,13 +1,15 @@
 ---
 title: Vulkan presentation
-description: Understand how the Vulkan backend keeps a swapchain a fixed number of frames ahead of the display, learns when frames reach it, and sizes and formats its images, and what a change to acquisition or presentation must keep.
+description: Understand how the Vulkan backend paces a swapchain by the display, learns when frames reach it, and sizes and formats its images before you change acquisition or presentation.
 icon: Computer
 ---
 
 Read this page before you change how the Vulkan backend acquires or presents
 a swapchain image. The Metal backend's counterpart is
-[Metal presentation](/docs/develop/rendering/metal-presentation), and the
-display cadence the tick follows is specified under
+[Metal presentation](/docs/develop/rendering/metal-presentation). The
+parameters are specified under
+[graphics device](/docs/reference/parameters#graphics-device), and the
+display cadence the tick follows under
 [tick time](/docs/reference/time#tick-time).
 
 ## FIFO queues frames ahead of the display
@@ -25,8 +27,8 @@ When the driver offers `VK_KHR_present_id2` and `VK_KHR_present_wait2`, the
 device enables them, and a FIFO swapchain whose surface supports both is
 created to accept present identifiers. Each present carries the next
 identifier of its swapchain, starting at 1. Before acquisition, the context
-waits with `vkWaitForPresent2KHR` until the display shows the present that
-came the frames in flight before the frame it acquires for. With two frames
+waits with `vkWaitForPresent2KHR` until the display shows the present made
+as many frames back as there are frames in flight. With two frames
 in flight, frame n waits for frame n − 2 to reach the screen, so at most one
 frame waits in the queue, and frame n is shown about two refreshes after the
 wait ends. That's the same lead the Metal display link keeps.

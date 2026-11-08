@@ -1791,7 +1791,7 @@ pub mod tests {
 		assert_eq!(solved.resource().static_values().collect::<Vec<_>>(), stored);
 	}
 
-	/// The graph of [`coverage_asset_manager`]'s material: an `opacity` read from its `strength` parameter.
+	/// A foliage graph for [`coverage_asset_manager`]: an `opacity` read from its `strength` parameter.
 	const COVERAGE_GRAPH: &str = r#"{
 		nodes: [
 			{ name: "strength", node: "parameter", parameter: "strength", type: "float" },
@@ -1799,14 +1799,9 @@ pub mod tests {
 		],
 	}"#;
 
-	/// Returns an asset manager over a foliage material whose `opacity` reads its `strength` parameter, declared with
+	/// Returns an asset manager over a foliage material with `graph`, such as [`COVERAGE_GRAPH`], declared with
 	/// `material_fields`, and over each of `variants`, a name and the fields after its `parent` and `variables`.
-	fn coverage_asset_manager(material_fields: &str, variants: &[(&str, &str)]) -> (AssetManager, MemoryStorageBackend) {
-		coverage_asset_manager_with_graph(COVERAGE_GRAPH, material_fields, variants)
-	}
-
-	/// Returns [`coverage_asset_manager`]'s asset manager with `graph` as the material's graph.
-	fn coverage_asset_manager_with_graph(
+	fn coverage_asset_manager(
 		graph: &'static str,
 		material_fields: &str,
 		variants: &[(&str, &str)],
@@ -1855,6 +1850,7 @@ pub mod tests {
 	#[r#async::test]
 	async fn variants_inherit_and_override_alpha_mode_and_sidedness() {
 		let (asset_manager, resource_storage_backend) = coverage_asset_manager(
+			COVERAGE_GRAPH,
 			r#""alpha_mode": "Mask", "alpha_cutoff": 0.3, "double_sided": true,"#,
 			&[
 				("inherits", ""),
@@ -1898,7 +1894,7 @@ pub mod tests {
 	/// A root material without the fields is opaque and one-sided, and a masked one without a cutoff tests against 0.5.
 	#[r#async::test]
 	async fn materials_default_to_opaque_one_sided_and_a_half_cutoff() {
-		let (asset_manager, resource_storage_backend) = coverage_asset_manager("", &[("masked", r#", "alpha_mode": "Mask""#)]);
+		let (asset_manager, resource_storage_backend) = coverage_asset_manager(COVERAGE_GRAPH, "", &[("masked", r#", "alpha_mode": "Mask""#)]);
 
 		let _: ReferenceModel<VariantModel> = asset_manager
 			.bake_if_not_exists("masked.bema")
@@ -1929,7 +1925,7 @@ pub mod tests {
 			r#""alpha_cutoff": "0.5","#,
 			r#""double_sided": "true","#,
 		] {
-			let (asset_manager, _) = coverage_asset_manager(fields, &[]);
+			let (asset_manager, _) = coverage_asset_manager(COVERAGE_GRAPH, fields, &[]);
 			let baked: Result<ReferenceModel<MaterialModel>, _> = asset_manager.bake_if_not_exists("foliage.bema").await;
 			assert!(baked.is_err(), "fields {fields} should fail the bake");
 		}
@@ -1948,7 +1944,7 @@ pub mod tests {
 			],
 		}"#;
 
-		let (asset_manager, _) = coverage_asset_manager_with_graph(
+		let (asset_manager, _) = coverage_asset_manager(
 			BACKDROP_GRAPH,
 			r#""alpha_mode": "Blend","#,
 			&[("clear", ""), ("solid", r#", "alpha_mode": "Opaque""#)],
@@ -1961,7 +1957,7 @@ pub mod tests {
 		assert!(solid.is_err(), "A variant that turns a blended parent opaque should fail the bake");
 
 		for fields in ["", r#""alpha_mode": "Mask","#] {
-			let (asset_manager, _) = coverage_asset_manager_with_graph(BACKDROP_GRAPH, fields, &[]);
+			let (asset_manager, _) = coverage_asset_manager(BACKDROP_GRAPH, fields, &[]);
 			let baked: Result<ReferenceModel<MaterialModel>, _> = asset_manager.bake_if_not_exists("foliage.bema").await;
 			assert!(baked.is_err(), "fields {fields:?} should fail the bake");
 		}

@@ -197,7 +197,7 @@ fn field<'a>(object: &'a Map<String, Value>, name: &str) -> Option<&'a Value> {
 
 /// Fails with the first field of `object` that is neither one of `allowed` nor a coverage field.
 fn reject_unknown_fields(object: &Map<String, Value>, allowed: &[&str]) -> Result<(), String> {
-	let mut allowed = allowed.iter().chain(&COVERAGE_FIELDS);
+	let allowed = allowed.iter().chain(&COVERAGE_FIELDS);
 	match object.keys().find(|key| !allowed.clone().any(|allowed| allowed == key)) {
 		None => Ok(()),
 		Some(unknown) => Err(format!(
@@ -404,7 +404,7 @@ mod tests {
 	fn an_asset_takes_precedence_over_inline_fields() {
 		let spec = serde_json::json!({ "asset": { "MatID_1": { "asset": "rock.bema", "parent": "ignored.bema" } } });
 		assert!(
-			matches!(binding(spec.clone(), Some("MatID_1")), Ok(Some(MaterialBinding::Asset(asset))) if asset == "rock.bema")
+			matches!(binding(spec, Some("MatID_1")), Ok(Some(MaterialBinding::Asset(asset))) if asset == "rock.bema")
 		);
 	}
 

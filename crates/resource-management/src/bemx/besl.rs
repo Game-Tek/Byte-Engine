@@ -106,8 +106,8 @@ pub trait Stage<'a> {
 	/// Returns a BESL expression of the change of `input` from the shaded pixel to its neighbour along `axis`, of the
 	/// type [`Stage::input`] gives it.
 	///
-	/// [`Lowering`] asks for [`Input::Position`] and [`Input::TexCoord`] alone, and only to measure an image
-	/// coordinate a graph computes. Return `None`, as the default does, when the stage samples with derivatives the
+	/// [`Lowering`] asks for [`Input::Position`], [`Input::TexCoord`], and [`Input::ScreenPosition`] alone, and only
+	/// to measure an image coordinate a graph computes. Return `None`, as the default does, when the stage samples with derivatives the
 	/// hardware takes, such as a raster fragment, or carries no neighbours; images then get [`Coordinates`] without
 	/// differences.
 	fn difference(&mut self, input: Input, axis: ScreenAxis) -> Option<Node<'a>> {
@@ -198,13 +198,14 @@ pub struct Lowering<'a, S> {
 	/// The raw sample of each texture at each coordinate, shared by every image node that samples it there. A `None`
 	/// coordinate is the mesh's own.
 	samples: Vec<((&'a str, Option<NodeId>), Expression<'a>)>,
-	/// Whether each node's value moves when `position` and `texcoord` move. Empty until an image samples at a computed
-	/// coordinate.
+	/// Whether each node's value moves when `position`, `texcoord`, and `screenposition` move. Empty until an image
+	/// samples at a computed coordinate.
 	varying: Vec<bool>,
-	/// The value of each node with `position` and `texcoord` moved to the neighbouring pixel along x and along y.
-	/// Empty until an image samples at a computed coordinate.
+	/// The value of each node with `position`, `texcoord`, and `screenposition` moved to the neighbouring pixel along
+	/// x and along y. Empty until an image samples at a computed coordinate.
 	shifted: [Vec<Option<Expression<'a>>>; 2],
-	/// The axis `position` and `texcoord` are moved along while a computed coordinate is lowered again, if any.
+	/// The axis `position`, `texcoord`, and `screenposition` are moved along while a computed coordinate is lowered
+	/// again, if any.
 	shift: Option<ScreenAxis>,
 	/// The read of each parameter, shared by every parameter node that reads it.
 	parameters: Vec<(&'a str, Expression<'a>)>,
@@ -693,7 +694,7 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 	/// `None` when the stage carries no differences.
 	///
 	/// The change is a finite difference, the measure a fragment shader's derivative instructions take: the nodes
-	/// between `position` or `texcoord` and the coordinate are lowered again with those moved by
+	/// between `position`, `texcoord`, or `screenposition` and the coordinate are lowered again with those moved by
 	/// [`Stage::difference`], and the coordinate at the pixel is subtracted.
 	fn differences(&mut self, coordinate: NodeId) -> Result<Option<[Node<'a>; 2]>, LowerError> {
 		self.mark_varying();
@@ -704,26 +705,25 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 		}
 
 		let center = self.input(coordinate).syntax;
-		let mut differences = [ScreenAxis::X, ScreenAxis::Y].map(|_| None);
-
-		for (axis, difference) in [ScreenAxis::X, ScreenAxis::Y].into_iter().zip(&mut differences) {
-			let shifted = match self.shifted(coordinate, axis) {
-				Ok(shifted) => shifted,
-				// Only moving `position` and `texcoord` is new to a coordinate lowered once already, so a missing
-				// input here is a stage that measures no differences.
-				Err(LowerError::UnavailableInput { .. }) => return Ok(None),
-				Err(error) => return Err(error),
-			};
-
-			*difference = Some(
+		let mut difference = |axis| match self.shifted(coordinate, axis) {
+			Ok(shifted) => Ok(Some(
 				self.bind(Type::Vector2, Node::operator("-", shifted.syntax, center.clone()))
 					.syntax,
-			);
-		}
+			)),
+			// Only moving the inputs is new to a coordinate lowered once already, so a missing input here is a stage
+			// that measures no differences.
+			Err(LowerError::UnavailableInput { .. }) => Ok(None),
+			Err(error) => Err(error),
+		};
 
-		let [x, y] = differences;
+		let Some(x) = difference(ScreenAxis::X)? else {
+			return Ok(None);
+		};
+		let Some(y) = difference(ScreenAxis::Y)? else {
+			return Ok(None);
+		};
 
-		Ok(x.zip(y).map(|(x, y)| [x, y]))
+		Ok(Some([x, y]))
 	}
 
 	/// Records, once per lowering, which nodes move with `position`, `texcoord`, and `screenposition`.
@@ -760,7 +760,7 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 	/// Returns the value of `coordinate` at the neighbouring pixel along `axis`.
 	///
 	/// The shifted values stand in for `values` while [`Lowering::lower_reaching`] lowers the coordinate again, with
-	/// `position` and `texcoord` moved by [`Lowering::moving_input`]. Every node that holds still keeps its value at
+	/// `position`, `texcoord`, and `screenposition` moved by [`Lowering::moving_input`]. Every node that holds still keeps its value at
 	/// the pixel, which is lowered already because `coordinate` is, so the walk lowers again only the nodes that move.
 	fn shifted(&mut self, coordinate: NodeId, axis: ScreenAxis) -> Result<Expression<'a>, LowerError> {
 		let lane = axis as usize;

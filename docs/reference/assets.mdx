@@ -114,12 +114,12 @@ every model below it.
 | --- | --- |
 | Pattern | Text with placeholders, such as `{name}_LOD{level}`. `{level}` is a decimal number and appears exactly once. Every other placeholder, `{` and a name of letters, digits, and underscores, then `}`, matches any text that isn't empty. Two placeholders can't touch. |
 | Match | The pattern must match the model's file name without its extension. A model whose name doesn't match has no authored levels. |
-| Level files | The model's directory and extension, with the pattern's placeholders as the model's name filled them and the level one higher, then two higher, and so on. A number keeps the model's zero padding, so `LOD01` is followed by `LOD02`. |
+| Level files | The model's directory and extension, with the pattern's placeholders as the model's name filled them and each level number above the model's in turn. A number keeps the model's zero padding, so `LOD01` is followed by `LOD02`. |
 | Chain end | The first level file that doesn't exist, or that holds other than one mesh instance, other material names, or other vertex streams than the model. A model that holds other than one mesh instance uses none. Adding a missing file later rebakes the model. |
 | Count | At most `max_levels` levels, counting full detail. |
 | Primitive | Each material's triangles in a level file become that level of the primitive with the same material, and its vertices are added to the primitive's. A level whose vertices don't fit in the 65,536 a primitive holds, a material that doesn't fit in one primitive at full detail, a skinned model, and a bake with lightmap UVs fall back to simplified levels, with a warning in the model's trace. |
 | Error | Measured against full detail: the farthest a vertex of either lies from the other's triangles. A level's error is at least the error of the level before it. |
-| Coarser levels | Simplified from the last authored level as described above, each with that level's error added to its own. |
+| Coarser levels | Simplified from the last authored level as [Detail levels](#detail-levels) specifies, each with that level's error added to its own. |
 | Baking | The level files are read as sources of the model and don't need to be baked themselves, so [excluded assets](#excluded-assets) can hold them. |
 
 ## Lightmap UVs
@@ -653,8 +653,8 @@ The importer normalizes axes and authored units, triangulates polygon faces, pre
 Meshes without authored UVs receive a zero-filled UV stream because the visibility renderer requires that stream even for untextured materials.
 Polygon corners of one mesh whose position, normal, tangent, bitangent, UV, and color are exactly equal, and in a skinned mesh share a control point, become one vertex. Corners that differ in any of them, as along a UV or normal seam, stay separate vertices.
 
-FBX material names can be mapped to existing variants in a sibling `.fbx.bead` file, using the same `asset.<material-name>.asset` shape as other model overrides.
-Without an override, the importer generates a material variant whose [surface](/docs/reference/bemx) inputs come from the FBX material:
+An FBX model's sidecar binds its materials to variants as [Material bindings](#material-bindings) specifies.
+Without a binding, the importer generates a material variant whose [surface](/docs/reference/bemx) inputs come from the FBX material:
 
 | Surface input | FBX value | FBX texture |
 | --- | --- | --- |

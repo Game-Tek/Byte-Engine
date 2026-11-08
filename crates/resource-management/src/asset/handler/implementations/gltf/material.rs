@@ -36,7 +36,7 @@ pub(crate) async fn resolve_gltf_materials(
 			let base_id = generated_material_base_id(mesh_url, material);
 			let binding = gltf_material_binding(spec, mesh_url, material, &base_id);
 
-			MaterialSource::new(context, mesh_url, binding, base_id.clone(), |base_id| {
+			MaterialSource::new(context, mesh_url, binding, base_id, |base_id| {
 				let material = generated_gltf_material(material, &image_semantics).map_err(|error| {
 					log::error!("Failed to generate the glTF material '{base_id}': {error}");
 					LoadErrors::FailedToProcess

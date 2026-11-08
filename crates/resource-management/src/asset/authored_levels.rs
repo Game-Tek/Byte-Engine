@@ -1,5 +1,7 @@
 //! Find the files that hold a model's authored detail levels from the `lods.authored` pattern of its BEAD settings.
 
+use std::fmt::Write as _;
+
 use super::BEADType;
 
 /// The `AuthoredLevelPattern` struct lets a directory of models name, once, which files hold each model's coarser
@@ -95,7 +97,9 @@ impl AuthoredLevelPattern {
 						id.push_str(value.map_or("", String::as_str));
 					}
 					// Keeps the model's zero padding, so `LOD01` is followed by `LOD02`.
-					PatternPart::Level => id.push_str(&format!("{level:0width$}")),
+					PatternPart::Level => {
+						let _ = write!(id, "{level:0width$}");
+					}
 				}
 			}
 			if let Some(extension) = &extension {
@@ -133,20 +137,20 @@ fn match_parts<'p, 't>(
 			let ends = text.char_indices().map(|(index, _)| index).skip(1).chain([text.len()]);
 			for end in ends.filter(|&end| end > 0) {
 				let value = &text[..end];
-				if let Some(&(_, earlier)) = captures.iter().find(|(captured, _)| captured == name) {
-					if earlier != value {
-						continue;
+				match captures.iter().find(|(captured, _)| captured == name) {
+					Some(&(_, earlier)) => {
+						if earlier == value && match_parts(rest, &text[end..], captures, level) {
+							return true;
+						}
 					}
-					if match_parts(rest, &text[end..], captures, level) {
-						return true;
+					None => {
+						captures.push((name.as_str(), value));
+						if match_parts(rest, &text[end..], captures, level) {
+							return true;
+						}
+						captures.pop();
 					}
-					continue;
 				}
-				captures.push((name.as_str(), value));
-				if match_parts(rest, &text[end..], captures, level) {
-					return true;
-				}
-				captures.pop();
 			}
 			false
 		}

@@ -477,8 +477,9 @@ async fn encode_levels_in<A: Allocator + Clone>(
 /// `rock_4K_BaseColor`.
 ///
 /// Words are the runs of letters and digits in the file stem and compare without case. The table matches the
-/// "Semantics from file names" table of the assets reference; a name that matches none of it is [`Semantic::Other`]. Next, pick the transfer function with [`gamma_from_semantic`] and the
-/// settings with [`ImageProcessorSettings::for_semantic`].
+/// "Semantics from file names" table of the assets reference; a name that matches none of it is [`Semantic::Other`].
+/// Next, pick the transfer function with [`gamma_from_semantic`] and the settings with
+/// [`ImageProcessorSettings::for_semantic`].
 pub fn guess_semantic_from_name(name: ResourceIdBase) -> Semantic {
 	// The first suffix that matches wins.
 	const SUFFIXES: [(&[&str], Semantic); 19] = [

@@ -396,28 +396,29 @@ impl ShadowMaps {
 			// workgroup culls its meshlets against a batch of views, so each instance's data is read once per batch instead
 			// of once per view. Only the run's layers are cleared, so every other map keeps what it holds.
 			let record_run = |c: &mut ghi::implementation::CommandBufferRecording, run: &ShadowRun| {
-				let (name, target, extent, pipelines) = match run.image {
+				// Only orthographic cascades skip small casters; a perspective map's widths change with distance.
+				let (name, target, extent, pipelines, minimum_caster_extent) = match run.image {
 					ShadowImage::Directional => (
 						"Directional Shadow Map",
 						directional,
 						directional_extent,
 						directional_pipelines,
+						minimum_cascade_caster_extent,
 					),
-					ShadowImage::Cone(size_class) => {
-						("Cone Shadow Map", cone[size_class], class_extent(size_class), local_pipelines)
-					}
+					ShadowImage::Cone(size_class) => (
+						"Cone Shadow Map",
+						cone[size_class],
+						class_extent(size_class),
+						local_pipelines,
+						0.0,
+					),
 					ShadowImage::Point(size_class) => (
 						"Point Shadow Map",
 						point[size_class],
 						class_extent(size_class),
 						local_pipelines,
+						0.0,
 					),
-				};
-				// Only orthographic cascades skip small casters; a perspective map's widths change with distance.
-				let minimum_caster_extent = if run.image == ShadowImage::Directional {
-					minimum_cascade_caster_extent
-				} else {
-					0.0
 				};
 				c.start_region(|label| label.write_str(name));
 				let attachments = [ghi::AttachmentInformation::new(

@@ -865,7 +865,10 @@ fn backdrop_position_rebuilds_world_positions_in_the_besl_vm() {
 			panic!("Unexpected backdrop position type.");
 		};
 		assert!(
-			actual.iter().zip(expected).all(|(actual, expected)| (actual - expected).abs() < 0.001),
+			actual
+				.iter()
+				.zip(expected)
+				.all(|(actual, expected)| (actual - expected).abs() < 0.001),
 			"Expected the {name} backdrop at {expected:?}, found {actual:?}. The most likely cause is a view ray built from the wrong field of view or screen axis."
 		);
 	}

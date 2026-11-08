@@ -277,18 +277,7 @@ impl VisibilityShaderGenerator {
 
 		Ok(root)
 	}
-}
 
-/// The `CoveragePass` enum names the masked raster passes a coverage shader is the fragment of.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CoveragePass {
-	/// The masked visibility pass, whose fragment writes the primitive and instance it keeps.
-	Visibility,
-	/// The masked shadow passes, whose fragment writes only depth.
-	Depth,
-}
-
-impl VisibilityShaderGenerator {
 	/// Builds the coverage shader of `pass`: one fragment program that leaves out each fragment of a masked material whose
 	/// `opacity` falls below the material's cutoff, with one arm per material of `arms`.
 	///
@@ -320,27 +309,29 @@ impl VisibilityShaderGenerator {
 			patterns: vec![MatchPattern::Wildcard],
 			statements: Vec::new(),
 		});
-		let coverage_arm = Node::accessor(
-			Node::accessor(
-				Node::accessor(
-					Node::accessor(Node::member_expression("scene"), Node::member_expression("materials")),
-					Node::member_expression("materials"),
-				),
-				Node::sentence(vec![Node::member_expression("material_index")]),
-			),
-			Node::member_expression("coverage_arm"),
-		);
 
 		let besl::parser::Nodes::Function { name, statements, .. } = main.node_mut() else {
 			unreachable!("The coverage sources define functions.");
 		};
 		*name = "main";
-		statements.insert(COVERAGE_ARMS_POSITION, Node::r#match(coverage_arm, material_arms));
+		statements.insert(
+			COVERAGE_ARMS_POSITION,
+			Node::r#match(Node::member_expression("coverage_arm"), material_arms),
+		);
 
 		let mut root = layered_program(main, &COVERAGE_LAYERS, &COVERAGE_MODULES, &COVERAGE_MODULE_FILES)?;
 		root.add(self.common.to_vec());
 		Ok(root)
 	}
+}
+
+/// The `CoveragePass` enum names the masked raster passes a coverage shader is the fragment of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CoveragePass {
+	/// The masked visibility pass, whose fragment writes the primitive and instance it keeps.
+	Visibility,
+	/// The masked shadow passes, whose fragment writes only depth.
+	Depth,
 }
 
 /// The workgroup of uber material evaluation shaders: one 8 x 8-pixel tile of the sink.

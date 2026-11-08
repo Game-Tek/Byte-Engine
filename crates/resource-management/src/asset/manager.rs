@@ -53,8 +53,8 @@ pub(crate) enum BakeOrigin {
 /// The `RootInFlight` struct counts one root bake as in flight for as long as its caller waits on it.
 ///
 /// A durable flush waits for the disk, and on some systems for the whole drive cache, so the manager flushes once
-/// when the last root a caller requested finishes, rather than once per root. Flushing per root stalled concurrent
-/// bakes behind flushes of the payloads other roots were still writing.
+/// when the last root a caller requested finishes, rather than once per root, so concurrent bakes don't stall behind
+/// flushes of payloads other roots are still writing.
 struct RootInFlight<'a> {
 	state: &'a Arc<AssetManagerState>,
 	/// Whether the root left through [`Self::leave`], whose caller waits for the flush.

@@ -62,8 +62,11 @@ const SCENE: u32 = 0;
 /// The slot of the surfaces the ray generation shader writes, which the `scene` layer declares too.
 const SURFACES: u32 = 1;
 
-/// The slot of the albedos, which the `materials` layer declares and only the material hit reads.
-const ALBEDOS: u32 = 2;
+/// The set of the `materials` layer, the second one every shader takes.
+const MATERIALS_SET: u32 = 1;
+
+/// The slot of the albedos in [`MATERIALS_SET`], which the `materials` layer declares and only the material hit reads.
+const ALBEDOS: u32 = 0;
 
 /// The push constant's scale, which spaces the rays' origins and scales the material hit's distances.
 const SCALE: f32 = 10.0;
@@ -223,7 +226,7 @@ fn trace_in_the_vm(ray_generation: &besl::NodeReference, hit_groups: &[besl::Nod
 	let mut surfaces = Buffer::new_array(surfaces_layout, RAYS as usize).expect("Expected surface storage");
 	// Only the material hit reads the albedos, so only its program describes them.
 	let albedos_layout = hit_groups[0]
-		.buffer_layout(ResourceSlot::new(ALBEDOS))
+		.buffer_layout(ResourceSlot::in_set(MATERIALS_SET, ALBEDOS))
 		.expect("Expected the albedos buffer")
 		.clone();
 	let mut albedos = Buffer::new_array(albedos_layout, GEOMETRY_ALBEDOS.len()).expect("Expected albedo storage");
@@ -260,7 +263,7 @@ fn trace_in_the_vm(ray_generation: &besl::NodeReference, hit_groups: &[besl::Nod
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_acceleration_structure(ResourceSlot::new(SCENE), &scene);
 	descriptors.bind_buffer(ResourceSlot::new(SURFACES), &mut surfaces);
-	descriptors.bind_buffer(ResourceSlot::new(ALBEDOS), &mut albedos);
+	descriptors.bind_buffer(ResourceSlot::in_set(MATERIALS_SET, ALBEDOS), &mut albedos);
 	descriptors.bind_push_constant(&mut push_constant);
 	pipeline
 		.trace_rays(&mut descriptors, &RECORDS, [RAYS, 1, 1])

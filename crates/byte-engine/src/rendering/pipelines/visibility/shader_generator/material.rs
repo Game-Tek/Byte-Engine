@@ -189,9 +189,7 @@ impl<'a> Stage<'a> for CoverageStage<'a> {
 		match input {
 			Input::TexCoord => Some(Node::member_expression("vertex_uv")),
 			Input::Time => Some(frame_time()),
-			Input::Position | Input::Normal | Input::Tangent | Input::Bitangent | Input::View | Input::ScreenPosition => {
-				None
-			}
+			Input::Position | Input::Normal | Input::Tangent | Input::Bitangent | Input::View | Input::ScreenPosition => None,
 		}
 	}
 

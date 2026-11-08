@@ -57,8 +57,8 @@
 //! Anything else is reported rather than approximated, because a material that renders wrong is
 //! harder to notice than one that fails to bake. A node graph BEMX cannot describe, such as one
 //! built from individual scattering closures, is best baked into a texture with the MaterialX tools
-//! first. A network whose node
-//! types disagree is reported as [`ConvertError::Graph`], naming the MaterialX node.
+//! first. A network whose node types disagree is reported as [`ConvertError::Graph`], naming the
+//! MaterialX node.
 //!
 //! Two properties of the graph differ from what MaterialX describes:
 //!

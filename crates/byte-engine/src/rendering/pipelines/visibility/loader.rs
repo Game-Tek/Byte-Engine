@@ -869,12 +869,15 @@ impl VisibilityLoaderClient {
 			}
 		}
 		if let Some((keys, requested)) = &self.coverage_shaders {
-			let failed = requested
-				.try_map(|pipeline| (pipelines.state(pipeline) != PipelineState::Failed).then_some(()))
-				.is_none();
+			// The scan stops at the first pipeline that isn't ready, so a failure reports once the ones before it resolve.
+			let mut failed = false;
 			let ready = requested.try_map(|pipeline| match pipelines.state(pipeline) {
 				PipelineState::Ready(pipeline) => Some(pipeline),
-				PipelineState::Pending | PipelineState::Failed => None,
+				PipelineState::Pending => None,
+				PipelineState::Failed => {
+					failed = true;
+					None
+				}
 			});
 			if failed {
 				events.push(VisibilityLoaderEvent::CoverageShadersUnavailable {

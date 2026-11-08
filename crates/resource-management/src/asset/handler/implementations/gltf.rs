@@ -749,6 +749,238 @@ mod tests {
 		assert_eq!(mesh.primitives[1].skin, None);
 	}
 
+	/// A graph that samples `base_color` and, when `masked`, reads the `opacity` texture's red channel as opacity.
+	fn binding_graph(masked: bool) -> &'static str {
+		if masked {
+			r#"{ nodes: [
+				{ name: "base", node: "image", texture: "base_color", type: "color3" },
+				{ name: "mask", node: "image", texture: "opacity", type: "vector4" },
+				{ name: "alpha", node: "swizzle", in: "mask", channels: "r" },
+				{ name: "surface", node: "surface", base_color: "base", opacity: "alpha" },
+			] }"#
+		} else {
+			r#"{ nodes: [
+				{ name: "base", node: "image", texture: "base_color", type: "color3" },
+				{ name: "surface", node: "surface", base_color: "base" },
+			] }"#
+		}
+	}
+
+	/// Builds a collection laid out like a Megascans export: one directory `.bead` binds every model below it to a
+	/// surface or masked parent, from texture files named after each model's directory. The rock has only an albedo
+	/// texture, the fern a base color and an opacity texture.
+	fn bound_collection() -> AssetTestStorageBackend {
+		let assets = AssetTestStorageBackend::new();
+		let png = generated_rgba8_png(4, 4, &[200, 200, 200, 255].repeat(16));
+
+		assets.add_file("defaults/white.png", &png);
+		for (name, masked) in [("surface", false), ("masked", true)] {
+			let mut variables =
+				vec![r#"{ "name": "base_color", "data_type": "Texture2D", "type": "Static", "value": "defaults/white.png" }"#];
+			if masked {
+				variables.push(
+					r#"{ "name": "opacity", "data_type": "Texture2D", "type": "Static", "value": "defaults/white.png" }"#,
+				);
+			}
+			let alpha = if masked {
+				r#""alpha_mode": "Mask", "double_sided": true,"#
+			} else {
+				""
+			};
+			assets.add_file(
+				format!("materials/{name}.bema").leak(),
+				format!(
+					r#"{{ "domain": "World", "graph": "materials/{name}.bemx", {alpha} "variables": [{}] }}"#,
+					variables.join(",")
+				)
+				.leak()
+				.as_bytes(),
+			);
+			assets.add_file(format!("materials/{name}.bemx").leak(), binding_graph(masked).as_bytes());
+		}
+
+		assets.add_file(
+			"quarry/.bead",
+			br#"{ asset: { "*": {
+				select: [
+					{ requires: ["opacity"], parent: "materials/masked.bema", alpha_cutoff: 0.25 },
+					{ parent: "materials/surface.bema" },
+				],
+				variables: {
+					base_color: ["./{dir}_BaseColor.png", "./{dir}_Albedo.png"],
+					opacity: "./{dir}_Opacity.png",
+					roughness: "./{dir}_Roughness.png",
+				},
+			} } }"#,
+		);
+		assets.add_file("quarry/rock/rock_LOD0.glb", &generated_textured_triangle_glb_named("Rock"));
+		assets.add_file("quarry/rock/rock_Albedo.png", &png);
+		assets.add_file("quarry/fern/fern_LOD0.glb", &generated_textured_triangle_glb_named("Fern"));
+		assets.add_file("quarry/fern/fern_BaseColor.png", &png);
+		assets.add_file("quarry/fern/fern_Opacity.png", &png);
+
+		assets
+	}
+
+	/// Builds an asset manager that bakes glTF models, `.bema` materials, and PNG images.
+	fn binding_asset_manager(assets: AssetTestStorageBackend, resources: MemoryStorageBackend) -> AssetManager {
+		let mut asset_manager = gltf_asset_manager(assets, resources);
+		asset_manager.add_asset_handler(crate::asset::handler::implementations::BEMAAssetHandler);
+		asset_manager.add_asset_handler(crate::asset::handler::implementations::ImageAssetHandler);
+		asset_manager
+	}
+
+	/// Returns the stored variant `id` and the IDs of its parent material and of each texture it binds, by name.
+	fn stored_binding(resources: &MemoryStorageBackend, id: &str) -> (VariantModel, String, Vec<(String, String)>) {
+		let stored = resources
+			.get_resource(ResourceId::new(id))
+			.unwrap_or_else(|| panic!("Expected the inline variant '{id}'"));
+		let variant: VariantModel = crate::from_slice(&stored.resource).expect("Expected a variant model");
+		let parent = variant.material.id().as_ref().to_string();
+		let images = variant
+			.variables
+			.iter()
+			.filter_map(|variable| match &variable.value {
+				ValueModel::Image(image) => Some((variable.name.clone(), image.id().as_ref().to_string())),
+				_ => None,
+			})
+			.collect();
+		(variant, parent, images)
+	}
+
+	/// One directory `.bead` binds every model below it: each material picks its parent by the files next to its model,
+	/// takes the first candidate file that exists, and keeps the parent's value where no file exists.
+	#[r#async::test]
+	async fn a_directory_bead_binds_every_model_to_files_next_to_it() {
+		let resources = MemoryStorageBackend::new();
+		let asset_manager = binding_asset_manager(bound_collection(), resources.clone());
+
+		for id in ["quarry/rock/rock_LOD0.glb", "quarry/fern/fern_LOD0.glb"] {
+			let _: ReferenceModel<MeshModel> = asset_manager
+				.bake_if_not_exists(id)
+				.await
+				.unwrap_or_else(|error| panic!("Failed to bake '{id}': {error:?}"));
+		}
+
+		let (rock, parent, images) = stored_binding(&resources, "quarry/rock/rock_LOD0.glb#materials/Test_Material.variant");
+		assert_eq!(parent, "materials/surface.bema");
+		assert_eq!(
+			images,
+			[("base_color".to_string(), "quarry/rock/rock_Albedo.png".to_string())]
+		);
+		assert_eq!((rock.alpha_mode, rock.double_sided), (AlphaMode::Opaque, false));
+
+		let (fern, parent, images) = stored_binding(&resources, "quarry/fern/fern_LOD0.glb#materials/Test_Material.variant");
+		assert_eq!(parent, "materials/masked.bema");
+		assert_eq!(
+			images,
+			[
+				("base_color".to_string(), "quarry/fern/fern_BaseColor.png".to_string()),
+				("opacity".to_string(), "quarry/fern/fern_Opacity.png".to_string()),
+			]
+		);
+		assert_eq!(
+			(fern.alpha_mode, fern.double_sided),
+			(AlphaMode::Mask(0.25), true),
+			"the rule's cutoff over the parent's sidedness"
+		);
+	}
+
+	/// Adding a file that an earlier candidate names makes the model stale, so the next bake picks it up.
+	#[r#async::test]
+	async fn an_earlier_candidate_appearing_makes_the_model_stale() {
+		let assets = bound_collection();
+		let resources = MemoryStorageBackend::new();
+		let asset_manager = binding_asset_manager(assets.clone(), resources.clone());
+
+		let _: ReferenceModel<MeshModel> = asset_manager
+			.bake_if_not_exists("quarry/rock/rock_LOD0.glb")
+			.await
+			.expect("Failed to bake the rock");
+		let (stored, _) = crate::resource::ReadStorageBackend::read(&resources, ResourceId::new("quarry/rock/rock_LOD0.glb"))
+			.await
+			.expect("Expected the rock mesh");
+		assert!(crate::asset::manager::stale_sources(&stored, &assets).await.is_empty());
+
+		assets.add_file(
+			"quarry/rock/rock_BaseColor.png",
+			&generated_rgba8_png(4, 4, &[9, 9, 9, 255].repeat(16)),
+		);
+		assert_eq!(
+			crate::asset::manager::stale_sources(&stored, &assets).await,
+			["quarry/rock/rock_BaseColor.png"]
+		);
+	}
+
+	/// A model sidecar's named key replaces `"*"` for that material, without merging with it.
+	#[r#async::test]
+	async fn a_named_binding_replaces_the_wildcard() {
+		let assets = bound_collection();
+		assets.add_file(
+			"quarry/fern/fern_LOD0.glb.bead",
+			br#"{ asset: { "Test Material": { parent: "materials/surface.bema", variables: { base_color: "./{stem}.png" } } } }"#,
+		);
+		let png = generated_rgba8_png(4, 4, &[1, 2, 3, 255].repeat(16));
+		assets.add_file("quarry/fern/fern_LOD0.png", &png);
+		let resources = MemoryStorageBackend::new();
+		let asset_manager = binding_asset_manager(assets, resources.clone());
+
+		let _: ReferenceModel<MeshModel> = asset_manager
+			.bake_if_not_exists("quarry/fern/fern_LOD0.glb")
+			.await
+			.expect("Failed to bake the fern");
+
+		let (_, parent, images) = stored_binding(&resources, "quarry/fern/fern_LOD0.glb#materials/Test_Material.variant");
+		assert_eq!(parent, "materials/surface.bema");
+		assert_eq!(images, [("base_color".to_string(), "quarry/fern/fern_LOD0.png".to_string())]);
+	}
+
+	/// A binding whose `select` rules all require files that don't exist fails the model's bake.
+	#[r#async::test]
+	async fn a_binding_without_a_matching_rule_fails_the_bake() {
+		let assets = bound_collection();
+		assets.add_file(
+			"quarry/rock/rock_LOD0.glb.bead",
+			br#"{ asset: { "*": { select: [{ requires: ["opacity"], parent: "materials/masked.bema" }], variables: { opacity: "./missing.png" } } } }"#,
+		);
+		let asset_manager = binding_asset_manager(assets, MemoryStorageBackend::new());
+
+		let mesh: Result<ReferenceModel<MeshModel>, _> = asset_manager.bake_if_not_exists("quarry/rock/rock_LOD0.glb").await;
+		assert!(mesh.is_err());
+	}
+
+	/// An inline variant reads every string as a file, so a file bound to a parameter that isn't a texture fails the bake,
+	/// while a number array sets it. The model's sidecar drops the directory's `select` and variables with `null`.
+	#[r#async::test]
+	async fn inline_value_parameters_take_numbers_not_files() {
+		for (tint, bakes) in [(r#""./rock_Albedo.png""#, false), ("[0.5, 0.5, 0.5, 1.0]", true)] {
+			let assets = bound_collection();
+			assets.add_file(
+				"materials/tinted.bema",
+				br#"{ "domain": "World", "graph": "materials/tinted.bemx", "variables": [{ "name": "tint", "data_type": "vec4f", "type": "Static", "value": "White" }] }"#,
+			);
+			assets.add_file(
+				"materials/tinted.bemx",
+				br#"{ nodes: [
+					{ name: "tint", node: "parameter", parameter: "tint", type: "vector4" },
+					{ name: "rgb", node: "swizzle", in: "tint", channels: "rgb" },
+					{ name: "surface", node: "surface", base_color: "rgb" },
+				] }"#,
+			);
+			assets.add_file(
+				"quarry/rock/rock_LOD0.glb.bead",
+				format!(r#"{{ asset: {{ "*": {{ select: null, parent: "materials/tinted.bema", variables: {{ base_color: null, opacity: null, roughness: null, tint: {tint} }} }} }} }}"#)
+					.leak()
+					.as_bytes(),
+			);
+			let asset_manager = binding_asset_manager(assets, MemoryStorageBackend::new());
+
+			let mesh: Result<ReferenceModel<MeshModel>, _> =
+				asset_manager.bake_if_not_exists("quarry/rock/rock_LOD0.glb").await;
+			assert_eq!(mesh.is_ok(), bakes, "tint {tint}");
+		}
+	}
+
 	#[r#async::test]
 	async fn a_mistyped_bead_lods_key_fails_the_mesh_bake() {
 		let asset_storage_backend = AssetTestStorageBackend::new();
@@ -1398,7 +1630,7 @@ use super::{
 	store_imported_image, store_model,
 };
 use crate::asset::handler::implementations::bema::{
-	GeneratedMaterial, MaterialSource, bead_material_override, resolve_container_materials,
+	GeneratedMaterial, MaterialSource, TemplateScope, binds_variant_asset, material_binding, resolve_container_materials,
 };
 use crate::{
 	ProcessedAsset, ReferenceModel,

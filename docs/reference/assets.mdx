@@ -421,9 +421,89 @@ Only these handlers read sidecars:
 | glTF, GLB, FBX | `lods` | The detail level settings listed under [Detail levels](#detail-levels). Unknown keys fail the bake. |
 | glTF, GLB, FBX | `images` | The [image settings](#image-settings) for every image the model contains. Unknown keys fail the bake. |
 | PNG, JPEG, EXR | `image` | The [image settings](#image-settings) for the image. Unknown keys fail the bake. |
-| glTF, GLB, FBX | `asset.<material name>.asset` | The ID of a `.bema` variant to use for that material. Unnamed glTF materials can't be overridden; unnamed FBX materials use the key `default`. |
+| glTF, GLB, FBX | `asset.<material name>` | The variant to use for that material: an authored `.bema` variant or one written in the sidecar, as listed under [Material bindings](#material-bindings). |
 | FBX | `skeleton` | The ID of the skeleton to bake against, instead of the file's own. |
 | BESL | `stage`, `tile`, `workgroup`, `maximum_mesh_threadgroups`, `maximum_vertices`, `maximum_primitives` | The stage metadata specified in the [BESL interface](/docs/reference/besl/interface#standalone-stage-metadata). The sidecar is required. |
+
+### Material bindings
+
+`asset` in a glTF, GLB, or FBX model's settings binds the model's materials to
+variants. It's read after the directory defaults and the sidecar are merged, so
+a directory `.bead` can bind every model below it, and a deeper file can
+replace one key or one variable.
+
+| Key | Binds |
+| --- | --- |
+| The material's name | That material. Unnamed FBX materials use the name `default`. |
+| `"*"` | Every material of the model without a key of its own, unnamed glTF and FBX materials included. A named key is used on its own, never merged with `"*"`. |
+
+A key that's `null`, or absent along with `"*"`, leaves the material
+generated from the model. Bindings merge like other settings, so a sidecar's
+`"*"` merges field by field over its directory's `"*"`. A field or variable
+that's `null` counts as left out, which lets a deeper file drop one it inherits,
+such as `select`.
+
+A binding has one of these forms:
+
+| Form | Meaning |
+| --- | --- |
+| `{ asset }` | The ID of an authored `.bema` variant, which bakes as a dependency. With `asset` present, every other field is ignored. |
+| `{ parent, variables, alpha_mode, alpha_cutoff, double_sided }` | An inline variant of the material `parent`. |
+| `{ select, variables, alpha_mode, alpha_cutoff, double_sided }` | An inline variant whose parent comes from the first matching rule of `select`. |
+
+Fields of an inline variant:
+
+| Field | Value |
+| --- | --- |
+| `parent` | The parent material's asset ID, a [template](#binding-templates). Required without `select`. |
+| `select` | A non-empty array of rules, tried in order. A rule is `{ requires, parent, alpha_mode, alpha_cutoff, double_sided }`: `requires` is an optional array of variable names, and `parent` is a template. A rule matches when every variable it requires resolved; a rule without `requires` always matches. With `select`, the block's `parent` is ignored. |
+| `variables` | Optional. An object keyed by the parent's parameter names. A value is a template, an array of templates, a number, or an array of numbers. |
+| `alpha_mode`, `alpha_cutoff`, `double_sided` | Optional, with the values a [`.bema` variant](/docs/reference/bema#variant-files) accepts. A field left out keeps the parent's value. A matching rule's fields replace the block's, field by field. |
+
+Any other field fails the bake.
+
+#### Binding templates
+
+`parent`, `select[].parent`, and every string in `variables` are level 1
+templates of the URI Template standard, Request for Comments (RFC) 6570: each
+`{name}` is replaced by the variable's value, unchanged and without URI
+escaping. Only these variables exist:
+
+| Variable | Value |
+| --- | --- |
+| `{dir}` | The name of the directory that holds the model, such as `xb5ebhf`; empty for a model at the asset root. |
+| `{stem}` | The model's file name without its last extension, such as `xb5ebhf_LOD0`. |
+| `{material}` | The material's name; `default` for an unnamed FBX material, and `material_<index>` or `material_default` for an unnamed glTF material. |
+
+After expansion, a value that starts with `./` is relative to the model's
+directory. Any other value is an asset ID from the asset root.
+
+#### Resolution
+
+1. Each variable resolves. A number or an array of numbers resolves to itself.
+   A template, or an array of templates, resolves to the first whose source
+   asset exists. When none exists, the variable is unresolved, which isn't an
+   error.
+2. The parent is the block's `parent`, or that of the first `select` rule that
+   matches. A `select` with no matching rule fails the bake.
+3. Each of the parent's parameters takes its variable's value. A parameter
+   whose variable is unresolved or absent keeps the parent's value, static or
+   dynamic. Variables the parent doesn't declare are ignored.
+4. Values resolve with the parent parameter's `data_type`, as in a variant
+   file. A resolved asset ID for a `Texture2D` parameter bakes as an image. A
+   string is always an asset ID, never a named color, so a resolved asset ID for
+   any other data type fails the bake; write colors as arrays of numbers.
+
+The bake fails when a binding isn't an object, a template has an unknown
+variable, an operator such as `{+dir}`, or an unmatched `{` or `}`, or a
+`variables` value mixes strings and numbers.
+
+An inline variant is stored as the model's resource
+`<model ID>#materials/<material>.variant`, with `<material>` named as under
+[Container fragments](#container-fragments). It refers to its parent `Material`,
+which every model that names that parent shares. The model's bake depends on
+every candidate it checked: on each file it chose, and on the absence of each
+earlier candidate, so creating one rebakes the model.
 
 Every hand-written format has a JSON schema under the engine's
 `assets/schemas` directory: `bema.schema.json`, `bemx.schema.json`, `besl.bead.schema.json`,
@@ -526,7 +606,7 @@ in a resource ID names which one. The same fragments work in debug baking and in
 | glTF and GLB | The material's sanitized name, with each character other than a letter, digit, `_`, or `-` replaced by `_`; `material_<index>` for an unnamed material; `material_default` for primitives without one. |
 | FBX | `<index>_<sanitized name>`, where `<index>` is the material's index in the file; `<index>_material` for an unnamed material; `default_material` for polygons without one. |
 
-A material that a sidecar overrides isn't generated, so it has no `materials/` resource; bake the override's own ID.
+A material that a sidecar binds to an inline variant keeps its `materials/<material>.variant` ID, which then bakes the inline variant. A material bound to an authored `.bema` variant with `{ asset }` has no `materials/` resource; bake the variant's own ID.
 A `materials/` fragment that matches no generated material fails to bake.
 
 ## Skeletal models

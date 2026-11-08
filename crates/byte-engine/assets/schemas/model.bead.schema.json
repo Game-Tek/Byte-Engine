@@ -68,16 +68,71 @@
     },
     "asset": {
       "type": "object",
-      "description": "FBX material-name overrides. Use default for an unassigned material slot.",
-      "additionalProperties": {
-        "type": "object",
-        "required": ["asset"],
-        "properties": {
-          "asset": { "type": "string", "pattern": "\\.bema$", "description": "The material variant asset ID." }
-        },
-        "additionalProperties": false
-      }
+      "description": "Material bindings, keyed by the model's material name. Unnamed FBX materials use the key default; \"*\" binds every material without a key of its own.",
+      "additionalProperties": { "$ref": "#/$defs/materialBinding" }
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "template": {
+      "type": "string",
+      "description": "An asset ID, as an RFC 6570 level 1 template over {dir}, {stem}, and {material}. A leading ./ is the model's directory."
+    },
+    "alphaMode": { "enum": ["Opaque", "Mask", "Blend"], "description": "Replaces the parent's alpha mode. Left out, the parent's applies." },
+    "alphaCutoff": { "type": "number", "minimum": 0, "maximum": 1, "description": "Replaces the parent's cutoff for Mask. Left out, the parent's applies." },
+    "doubleSided": { "type": "boolean", "description": "Replaces the parent's sidedness. Left out, the parent's applies." },
+    "materialBinding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["asset"],
+          "properties": {
+            "asset": { "type": "string", "pattern": "\\.bema$", "description": "The ID of an authored .bema variant." }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "description": "An inline variant, stored as <model id>#materials/<material>.variant.",
+          "properties": {
+            "parent": { "$ref": "#/$defs/template", "description": "The parent material's asset ID." },
+            "select": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Parents to choose from; the first rule whose required variables all resolve is used.",
+              "items": {
+                "type": "object",
+                "required": ["parent"],
+                "properties": {
+                  "requires": { "type": "array", "items": { "type": "string" }, "description": "Variables that must resolve for the rule to match." },
+                  "parent": { "$ref": "#/$defs/template" },
+                  "alpha_mode": { "$ref": "#/$defs/alphaMode" },
+                  "alpha_cutoff": { "$ref": "#/$defs/alphaCutoff" },
+                  "double_sided": { "$ref": "#/$defs/doubleSided" }
+                },
+                "additionalProperties": false
+              }
+            },
+            "variables": {
+              "type": "object",
+              "description": "Values keyed by the parent's parameter names. A variable that doesn't resolve keeps the parent's value.",
+              "additionalProperties": {
+                "oneOf": [
+                  { "$ref": "#/$defs/template" },
+                  { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/template" }, "description": "Candidates; the first that exists is used." },
+                  { "type": "number" },
+                  { "type": "array", "minItems": 1, "items": { "type": "number" } }
+                ]
+              }
+            },
+            "alpha_mode": { "$ref": "#/$defs/alphaMode" },
+            "alpha_cutoff": { "$ref": "#/$defs/alphaCutoff" },
+            "double_sided": { "$ref": "#/$defs/doubleSided" }
+          },
+          "anyOf": [{ "required": ["parent"] }, { "required": ["select"] }],
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
 }

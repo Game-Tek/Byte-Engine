@@ -4,11 +4,11 @@ pub(crate) enum MaterialKey {
 	Material(u32),
 }
 
-/// Resolves each used FBX material exactly once, honoring `.fbx.bead` overrides before generating a fallback.
+/// Resolves each used FBX material exactly once, honoring sidecar material bindings before generating a fallback.
 ///
-/// Maps each material to a BEAD override or a generated BEMX graph, then resolves them all through
-/// [`resolve_container_materials`], which bakes overrides as dependencies and generates the rest. Returns the variants
-/// in the order of `keys`, which [`used_material_keys`] returns.
+/// Maps each material to what its sidecar binds it to, an authored or inline variant, or else a generated BEMX graph,
+/// then resolves them all through [`resolve_container_materials`]. Returns the variants in the order of `keys`, which
+/// [`used_material_keys`] returns.
 pub(crate) async fn resolve_fbx_materials(
 	context: BakeContext<'_>,
 	spec: Option<&Value>,
@@ -20,19 +20,25 @@ pub(crate) async fn resolve_fbx_materials(
 		.iter()
 		.map(|&key| {
 			let (material, name) = fbx_material_for_key(scene, key);
+			let scope = TemplateScope {
+				model_id: url.as_ref(),
+				material: name,
+			};
 
-			match bead_material_override(spec, name) {
-				Some(override_id) => Ok(MaterialSource::Override(override_id)),
-				None => {
-					let base_id = generated_fbx_material_base_id(url, key, material);
+			MaterialSource::new(
+				context,
+				url,
+				material_binding(spec, Some(name), &scope),
+				generated_fbx_material_base_id(url, key, material),
+				|base_id| {
 					let material = fbx_material(material).map_err(|error| {
 						log::error!("Failed to generate the FBX material '{base_id}': {error}");
 						LoadErrors::FailedToProcess
 					})?;
 
 					Ok(MaterialSource::Generated(GeneratedMaterial { base_id, material }))
-				}
-			}
+				},
+			)
 		})
 		.collect::<Result<Vec<_>, LoadErrors>>()?;
 
@@ -46,10 +52,11 @@ pub(crate) async fn resolve_fbx_materials(
 	resolve_container_materials(context, url, &image_ids, sources).await
 }
 
-/// Finds the generated material that `url`, a `#materials/<index>_<name>.variant` or `.material` ID, names among the
-/// materials the scene's meshes use.
+/// Finds the material that `url`, a `#materials/<index>_<name>.variant` or `.material` ID, names among the materials
+/// the scene's meshes use: a generated material, or an inline variant from the sidecar, which shares its ID.
 ///
-/// Materials a BEAD sidecar overrides are left out, because the container never generates them.
+/// Materials a sidecar binds to an authored `.bema` variant are left out, because the container stores nothing for
+/// them.
 pub(crate) fn generated_material_key_for_id(
 	scene: &ufbx::Scene,
 	spec: Option<&Value>,
@@ -62,7 +69,7 @@ pub(crate) fn generated_material_key_for_id(
 	used_material_keys(scene, allocator).into_iter().find(|&key| {
 		let (material, name) = fbx_material_for_key(scene, key);
 
-		bead_material_override(spec, name).is_none()
+		!binds_variant_asset(spec, Some(name))
 			&& names_generated_material(url, &generated_fbx_material_base_id(source_id, key, material))
 	})
 }

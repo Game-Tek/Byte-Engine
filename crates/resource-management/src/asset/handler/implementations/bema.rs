@@ -261,50 +261,16 @@ impl BEMAAssetHandler {
 	async fn bake_variant<'a>(context: BakeContext<'a>, url: ResourceId<'a>, asset: &Value) -> Result<(), LoadErrors> {
 		let parent_material_url = asset["parent"].as_str().ok_or(LoadErrors::FailedToProcess)?;
 		let material = context.bake_dependency(parent_material_url).await?;
-		let material_repr: MaterialModel = crate::from_slice(&material.resource).map_err(|_| LoadErrors::FailedToProcess)?;
 		let authored_variables = asset["variables"].as_array().ok_or(LoadErrors::FailedToProcess)?;
 		let invalid = |problem: &str| report_invalid(context, "material variant", url, problem);
-		let invalid = &invalid;
-		let value_requests = material_repr.parameters.iter().map(|parameter| async move {
-			let value = authored_variables
+		let value_of = |name: &str| {
+			authored_variables
 				.iter()
-				.find(|variable| variable["name"].as_str() == Some(parameter.name.as_str()))
+				.find(|variable| variable["name"].as_str() == Some(name))
 				.map(|variable| &variable["value"])
-				.filter(|value| !value.is_null());
-			// A dynamic value the variant leaves out starts at the parent's default.
-			if value.is_none() && parameter.dynamic {
-				return Ok(parameter.value.clone());
-			}
-			let value = value.ok_or_else(|| {
-				invalid(&format!(
-					"it gives no `value` for the parent's static variable '{}'. The most likely cause is a variable left out of the variant or written without a value.",
-					parameter.name
-				))
-			})?;
-			resolve_value(context, &parameter.r#type, value, invalid).await
-		});
-		let values = buffered_in_order(value_requests, 8).await?;
-		let variables = material_repr
-			.parameters
-			.iter()
-			.zip(values)
-			.map(|(parameter, value)| VariantVariableModel {
-				value,
-				name: parameter.name.clone(),
-				r#type: parameter.r#type.clone(),
-				dynamic: parameter.dynamic,
-			})
-			.collect();
-		// A variant keeps each of its material's coverage settings it leaves out.
-		let (alpha_mode, double_sided) = surface_coverage(asset, material_repr.alpha_mode, material_repr.double_sided)
-			.map_err(|problem| invalid(&problem))?;
-		backdrop_needs_blending(material_repr.program.reads_backdrop, alpha_mode).map_err(|problem| invalid(&problem))?;
-		let resource = VariantModel {
-			material,
-			variables,
-			alpha_mode,
-			double_sided,
+				.filter(|value| !value.is_null())
 		};
+		let resource = variant_model(context, material, &value_of, asset, VariantSource::File, &invalid).await?;
 
 		context.store_primary(ProcessedAsset::new(url, resource), &[]).await
 	}
@@ -639,8 +605,42 @@ pub(crate) struct GeneratedMaterial {
 pub(crate) enum MaterialSource {
 	/// A BEAD sidecar names an authored variant, which bakes as a dependency.
 	Override(String),
+	/// A BEAD sidecar describes the variant itself. It is stored as `id`, the ID the generated material's variant would
+	/// have.
+	Inline { id: String, binding: InlineBinding },
 	/// The importer describes the material as a BEMX graph, which is generated.
 	Generated(GeneratedMaterial),
+}
+
+impl MaterialSource {
+	/// Maps what a sidecar binds a material to into its source, generating the material with `generate` when nothing
+	/// binds it. `base_id` is the generated material's ID without the `.variant` suffix, which inline variants share.
+	///
+	/// `binding` comes from [`material_binding`]; a malformed binding is reported with `container_id` and fails.
+	pub(crate) fn new(
+		context: BakeContext<'_>,
+		container_id: ResourceId<'_>,
+		binding: Result<Option<MaterialBinding>, String>,
+		base_id: String,
+		generate: impl FnOnce(String) -> Result<Self, LoadErrors>,
+	) -> Result<Self, LoadErrors> {
+		match binding {
+			Ok(Some(MaterialBinding::Asset(id))) => Ok(Self::Override(id)),
+			Ok(Some(MaterialBinding::Inline(binding))) => Ok(Self::Inline {
+				id: format!("{base_id}.variant"),
+				binding,
+			}),
+			Ok(None) => generate(base_id),
+			Err(problem) => {
+				context.error(format_args!(
+					"Invalid material binding in the sidecar settings of '{}': {problem} See {}.",
+					container_id.as_ref(),
+					online_docs_url(MATERIAL_BINDINGS_DOCS_PATH)
+				));
+				Err(LoadErrors::FailedToProcess)
+			}
+		}
+	}
 }
 
 /// Bounds concurrent BEAD material override bakes.
@@ -648,9 +648,9 @@ const OVERRIDE_BAKE_CONCURRENCY: usize = 8;
 
 /// Resolves the variants of a container's materials, in the order given.
 ///
-/// glTF and FBX importers call this once per container. Overrides bake as dependencies while the other materials are
-/// generated through [`store_generated_materials`]; both run concurrently. `image_ids` holds the resource ID of each
-/// container image, indexed by the materials' `images`.
+/// glTF and FBX importers call this once per container. Overrides bake as dependencies, inline variants resolve their
+/// files and bake their parents, and the other materials are generated through [`store_generated_materials`]; all three
+/// run concurrently. `image_ids` holds the resource ID of each container image, indexed by the materials' `images`.
 ///
 /// Next, reference the returned variants from the container's mesh primitives.
 pub(crate) async fn resolve_container_materials(
@@ -659,38 +659,59 @@ pub(crate) async fn resolve_container_materials(
 	image_ids: &[String],
 	materials: Vec<MaterialSource>,
 ) -> Result<Vec<ReferenceModel<VariantModel>>, LoadErrors> {
-	let mut is_override = Vec::with_capacity(materials.len());
+	/// Which of the three lists below holds each material, in material order.
+	#[derive(Clone, Copy)]
+	enum Origin {
+		Override,
+		Inline,
+		Generated,
+	}
+
+	let mut origins = Vec::with_capacity(materials.len());
 	let mut overrides = Vec::new();
+	let mut inline = Vec::new();
 	let mut generated = Vec::new();
 
 	for material in materials {
-		is_override.push(matches!(material, MaterialSource::Override(_)));
-
 		match material {
-			MaterialSource::Override(id) => overrides.push(id),
-			MaterialSource::Generated(material) => generated.push(material),
+			MaterialSource::Override(id) => {
+				origins.push(Origin::Override);
+				overrides.push(id);
+			}
+			MaterialSource::Inline { id, binding } => {
+				origins.push(Origin::Inline);
+				inline.push((id, binding));
+			}
+			MaterialSource::Generated(material) => {
+				origins.push(Origin::Generated);
+				generated.push(material);
+			}
 		}
 	}
 
-	let (overridden, generated) = std::future::join!(
+	let inline_requests = inline
+		.iter()
+		.map(|(id, binding)| bake_inline_variant(context, container_id, id, binding));
+
+	let (overridden, inline, generated) = std::future::join!(
 		context.bake_dependencies::<VariantModel>(&overrides, OVERRIDE_BAKE_CONCURRENCY),
+		buffered_in_order(inline_requests, OVERRIDE_BAKE_CONCURRENCY),
 		store_generated_materials(context, container_id, image_ids, generated),
 	)
 	.await;
 
-	let (mut overridden, mut generated) = (overridden?.into_iter(), generated?.into_iter());
+	let (mut overridden, mut inline, mut generated) = (overridden?.into_iter(), inline?.into_iter(), generated?.into_iter());
 
-	// Put overridden and generated variants back in material order.
-	is_override
+	// Put the variants back in material order.
+	origins
 		.into_iter()
-		.map(|is_override| if is_override { overridden.next() } else { generated.next() })
+		.map(|origin| match origin {
+			Origin::Override => overridden.next(),
+			Origin::Inline => inline.next(),
+			Origin::Generated => generated.next(),
+		})
 		.collect::<Option<Vec<_>>>()
 		.ok_or(LoadErrors::FailedToProcess)
-}
-
-/// Reads the variant a BEAD sidecar assigns to the container material `name`, from `asset.<name>.asset`.
-pub(crate) fn bead_material_override(spec: Option<&serde_json::Value>, name: &str) -> Option<String> {
-	spec?["asset"][name]["asset"].as_str().map(ToString::to_string)
 }
 
 /// Generates and stores the variants of a container's generated materials, in the order given.
@@ -939,6 +960,143 @@ fn backdrop_needs_blending(reads_backdrop: bool, alpha_mode: AlphaMode) -> Resul
 	}
 
 	Err("its graph reads `scenecolor` or `sceneposition`, but its `alpha_mode` isn't `\"Blend\"`. The most likely cause is a water or glass graph given to an opaque material, or a variant that turns a blended parent opaque. Set `alpha_mode` to `\"Blend\"`.".to_string())
+}
+
+/// The `VariantSource` enum is where a variant [`variant_model`] builds is written, which sets the rules its values
+/// follow.
+#[derive(Clone, Copy, PartialEq)]
+enum VariantSource {
+	/// A `.bema` variant file, which must list every static parameter.
+	File,
+	/// An inline variant in a model sidecar. A static parameter without a value keeps the parent's, and a string is
+	/// always an asset ID, so it is only a value for a `Texture2D` parameter.
+	Inline,
+}
+
+/// Builds the variant of `material` whose values `value_of` gives by parameter name, and whose coverage fields `asset`
+/// holds, as `.bema` variant files and inline sidecar variants both describe them.
+///
+/// A dynamic parameter without a value keeps the parent's default; a static one follows the rules of `source`.
+/// Problems are reported through `invalid`.
+async fn variant_model<'v>(
+	context: BakeContext<'_>,
+	material: ReferenceModel<MaterialModel>,
+	value_of: &dyn Fn(&str) -> Option<&'v Value>,
+	asset: &Value,
+	source: VariantSource,
+	invalid: &dyn Fn(&str) -> LoadErrors,
+) -> Result<VariantModel, LoadErrors> {
+	let material_repr: MaterialModel = crate::from_slice(&material.resource).map_err(|_| LoadErrors::FailedToProcess)?;
+	let value_requests = material_repr.parameters.iter().map(|parameter| async move {
+		let value = value_of(&parameter.name);
+		if value.is_none() && (parameter.dynamic || source == VariantSource::Inline) {
+			return Ok(parameter.value.clone());
+		}
+		if source == VariantSource::Inline && parameter.r#type != "Texture2D" && value.is_some_and(Value::is_string) {
+			return Err(invalid(&format!(
+				"its variable '{}' names a file, but the parent's parameter is a `{}`, not a `Texture2D`. The most likely cause is a texture bound to a value parameter, or a named color, which inline variants read as a file name. Write the value as a number or an array of numbers.",
+				parameter.name, parameter.r#type
+			)));
+		}
+		let value = value.ok_or_else(|| {
+			invalid(&format!(
+				"it gives no `value` for the parent's static variable '{}'. The most likely cause is a variable left out of the variant or written without a value.",
+				parameter.name
+			))
+		})?;
+		resolve_value(context, &parameter.r#type, value, invalid).await
+	});
+	let values = buffered_in_order(value_requests, 8).await?;
+	let variables = material_repr
+		.parameters
+		.iter()
+		.zip(values)
+		.map(|(parameter, value)| VariantVariableModel {
+			value,
+			name: parameter.name.clone(),
+			r#type: parameter.r#type.clone(),
+			dynamic: parameter.dynamic,
+		})
+		.collect();
+	// A variant keeps each of its material's coverage settings it leaves out.
+	let (alpha_mode, double_sided) =
+		surface_coverage(asset, material_repr.alpha_mode, material_repr.double_sided).map_err(|problem| invalid(&problem))?;
+	backdrop_needs_blending(material_repr.program.reads_backdrop, alpha_mode).map_err(|problem| invalid(&problem))?;
+
+	Ok(VariantModel {
+		material,
+		variables,
+		alpha_mode,
+		double_sided,
+	})
+}
+
+/// Resolves an inline sidecar variant and stores it as `id`: looks up each variable's candidate files, picks the first
+/// `select` rule whose required variables resolved, and builds the variant of that rule's parent.
+///
+/// Every candidate it looks up becomes a bake dependency, present or missing, so adding an earlier candidate later
+/// rebakes the container. Variables that don't resolve keep the parent's value.
+async fn bake_inline_variant(
+	context: BakeContext<'_>,
+	container_id: ResourceId<'_>,
+	id: &str,
+	binding: &InlineBinding,
+) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
+	let mut resolved = Vec::with_capacity(binding.variables.len());
+
+	for (name, value) in &binding.variables {
+		let value = match value {
+			BindingValue::Literal(value) => Some(value.clone()),
+			BindingValue::Candidates(candidates) => {
+				let mut chosen = None;
+				for candidate in candidates {
+					if context.source_exists(ResourceId::new(candidate)).await? {
+						chosen = Some(Value::String(candidate.clone()));
+						break;
+					}
+				}
+				log::trace!("Material '{id}' variable '{name}' resolved to {chosen:?} from {candidates:?}.");
+				chosen
+			}
+		};
+		resolved.push((name.as_str(), value));
+	}
+
+	let is_resolved = |name: &str| resolved.iter().any(|(variable, value)| *variable == name && value.is_some());
+
+	let Some(rule) = binding
+		.rules
+		.iter()
+		.find(|rule| rule.requires.iter().all(|name| is_resolved(name)))
+	else {
+		context.error(format_args!(
+			"No `select` rule of `asset.\"{}\"` matches material '{id}' of '{}'. The most likely cause is that every rule `requires` a variable whose files don't exist next to the model. Add a last rule without `requires`. See {}.",
+			binding.key,
+			container_id.as_ref(),
+			online_docs_url(MATERIAL_BINDINGS_DOCS_PATH)
+		));
+		return Err(LoadErrors::FailedToProcess);
+	};
+
+	let material = context.bake_dependency(&rule.parent).await?;
+	let value_of = |name: &str| {
+		resolved
+			.iter()
+			.find(|(variable, _)| *variable == name)
+			.and_then(|(_, value)| value.as_ref())
+	};
+	let invalid = |problem: &str| {
+		context.error(format_args!(
+			"Invalid inline variant `asset.\"{}\"` for material '{id}' of '{}': {problem} See {}.",
+			binding.key,
+			container_id.as_ref(),
+			online_docs_url(MATERIAL_BINDINGS_DOCS_PATH)
+		));
+		LoadErrors::FailedToProcess
+	};
+	let variant = variant_model(context, material, &value_of, &rule.coverage, VariantSource::Inline, &invalid).await?;
+
+	store_model::<VariantModel>(context, id, variant, &[]).await
 }
 
 /// Reports why a `.bema` file of the given `kind`, such as `"material"`, can't bake, and returns the load error.
@@ -1827,6 +1985,11 @@ use std::{collections::HashMap, sync::Arc};
 
 use serde_json::Value;
 use utils::Extent;
+
+mod binding;
+
+use binding::{BindingValue, InlineBinding, MATERIAL_BINDINGS_DOCS_PATH};
+pub(crate) use binding::{MaterialBinding, TemplateScope, binds_variant_asset, material_binding};
 
 use super::{
 	ResourceId,

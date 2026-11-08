@@ -232,6 +232,25 @@ impl<'a> BakeContext<'a> {
 			.map_err(|_| LoadErrors::AssetCouldNotBeRead)
 	}
 
+	/// Returns whether the source asset `id` exists, without reading it, and records its version as a bake dependency.
+	///
+	/// Use it to choose among optional files: an absent file is recorded as missing, so creating it later makes the
+	/// resource stale, and a present one rebakes the resource when it changes.
+	pub async fn source_exists(&self, id: ResourceId<'_>) -> Result<bool, LoadErrors> {
+		let version = self
+			.asset_storage_backend
+			.inner
+			.version(id)
+			.await
+			.map_err(|_| LoadErrors::AssetCouldNotBeRead)?;
+		let exists = version != AssetVersion::missing();
+		upsert_dependency(
+			&mut self.asset_storage_backend.dependencies.lock(),
+			AssetDependency::new(id, version),
+		);
+		Ok(exists)
+	}
+
 	/// Returns the IDs of every stored resource `query` matches, as the resource store holds them now.
 	///
 	/// The bake records no dependency on what it finds, so a resource built from a query is stale only when it is baked

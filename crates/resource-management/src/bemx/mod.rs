@@ -64,6 +64,9 @@ pub const COMBINE_INPUTS: usize = 4;
 /// The names MaterialX gives numbered inputs, `in1` up to `in10`, as switch and combine nodes read them.
 pub const NUMBERED_INPUTS: [&str; SWITCH_INPUTS] = ["in1", "in2", "in3", "in4", "in5", "in6", "in7", "in8", "in9", "in10"];
 
+/// The input names of a [`Node::NormalMap`] frame, in the order its `frame` lists the axes.
+pub const NORMAL_MAP_FRAME_INPUTS: [&str; 3] = ["tangent", "bitangent", "normal"];
+
 /// The prefix of the texture parameters importers number by slot.
 const MATERIAL_TEXTURE_PREFIX: &str = "material_texture_";
 

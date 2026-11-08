@@ -9,25 +9,27 @@
 //!
 //! ```
 //! use besl::parser::Node;
-//! use resource_management::bemx::{self, besl::{Geometry, LowerError, Lowering, Stage}};
+//! use resource_management::bemx::{self, besl::{Coordinates, Input, LowerError, Lowering, Stage}};
 //!
-//! /// A stage whose shaded point exposes its geometry as plain variables.
+//! /// A stage whose shaded point exposes its inputs as plain variables.
 //! struct Variables;
 //!
 //! impl<'a> Stage<'a> for Variables {
-//! 	fn geometry(&mut self, geometry: Geometry) -> Option<Node<'a>> {
-//! 		Some(Node::member_expression(match geometry {
-//! 			Geometry::Position => "position",
-//! 			Geometry::Normal => "normal",
-//! 			Geometry::Tangent => "tangent",
-//! 			Geometry::Bitangent => "bitangent",
-//! 			Geometry::View => "view",
-//! 			Geometry::TexCoord => "uv",
+//! 	fn input(&mut self, input: Input) -> Option<Node<'a>> {
+//! 		Some(Node::member_expression(match input {
+//! 			Input::Position => "position",
+//! 			Input::Normal => "normal",
+//! 			Input::Tangent => "tangent",
+//! 			Input::Bitangent => "bitangent",
+//! 			Input::View => "view",
+//! 			Input::TexCoord => "uv",
+//! 			Input::Time => "time",
+//! 			Input::ScreenPosition => "screen_position",
 //! 		}))
 //! 	}
 //!
-//! 	fn sample(&mut self, texture: &'a str) -> Result<Node<'a>, LowerError> {
-//! 		Ok(Node::call("sample", vec![Node::member_expression(texture), Node::member_expression("uv")]))
+//! 	fn sample(&mut self, texture: &'a str, coordinates: Coordinates<'a>) -> Result<Node<'a>, LowerError> {
+//! 		Ok(Node::call("sample", vec![Node::member_expression(texture), coordinates.value]))
 //! 	}
 //!
 //! 	fn parameter(&mut self, name: &'a str, _: bemx::Type) -> Result<Node<'a>, LowerError> {
@@ -55,24 +57,41 @@ use super::BEMX_DOCS_PATH;
 use super::graph::{BinaryOperator, Channel, Comparison, Graph, Node as GraphNode, NodeId, Type, UnaryOperator, Value};
 use crate::online_docs_url;
 
+/// The input each axis of a [`GraphNode::NormalMap`] frame defaults to, in the order the frame lists them.
+const NORMAL_MAP_FRAME: [Input; 3] = [Input::Tangent, Input::Bitangent, Input::Normal];
+
 /// The smallest alpha [`GraphNode::Unpremultiply`] divides by, so a fully transparent texel does not divide by zero.
 const MINIMUM_ALPHA: f32 = 1.0e-6;
 
-/// The `Geometry` enum names the values of the shaded point a [`Stage`] supplies.
+/// The `Input` enum names the values a [`Stage`] supplies about the shaded point and the frame it is shaded in.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Geometry {
+pub enum Input {
 	/// The world-space position, a `vec3f`.
 	Position,
 	/// The unit world-space geometric normal, a `vec3f`.
 	Normal,
 	/// The unit world-space tangent, along increasing texture coordinate `u`, a `vec3f`.
 	Tangent,
-	/// The unit world-space bitangent, along increasing texture coordinate `v`, a `vec3f`.
+	/// The unit world-space bitangent, toward decreasing texture coordinate `v`, a `vec3f`.
 	Bitangent,
 	/// The unit world-space direction from the shaded point toward the viewer, a `vec3f`.
 	View,
 	/// Texture coordinate set zero, a `vec2f`.
 	TexCoord,
+	/// The frame clock's elapsed time in seconds, an `f32`.
+	Time,
+	/// Where the shaded point lies on the screen, from zero at the top-left corner to one at the bottom-right one, a
+	/// `vec2f`.
+	ScreenPosition,
+}
+
+/// The `Backdrop` enum names what [`Stage::backdrop`] reads of the opaque scene behind a blended surface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Backdrop {
+	/// The scene's light in the units of emission, a `vec3f`.
+	Color,
+	/// The world-space position of the nearest opaque surface, a `vec3f`.
+	Position,
 }
 
 /// The `Stage` trait lets a program generator supply the values of a BEMX graph that depend on its renderer.
@@ -80,14 +99,38 @@ pub enum Geometry {
 /// Implement it on the generator's per-program state, which can also record what the graph used, such as whether it
 /// samples textures, while [`Lowering`] asks for each value.
 pub trait Stage<'a> {
-	/// Returns an `f32` BESL expression reading `geometry` at the shaded point, or `None` when the stage doesn't carry
-	/// it, which fails the lowering with [`LowerError::UnavailableGeometry`].
-	fn geometry(&mut self, geometry: Geometry) -> Option<Node<'a>>;
+	/// Returns an `f32` BESL expression reading `input` at the shaded point or for its frame, or `None` when the stage
+	/// doesn't carry it, which fails the lowering with [`LowerError::UnavailableInput`].
+	fn input(&mut self, input: Input) -> Option<Node<'a>>;
 
-	/// Returns a `vec4f` BESL expression sampling the texture parameter named `texture` at texture coordinate set zero.
+	/// Returns a BESL expression of the change of `input` from the shaded pixel to its neighbour along `axis`, of the
+	/// type [`Stage::input`] gives it.
+	///
+	/// [`Lowering`] asks for [`Input::Position`] and [`Input::TexCoord`] alone, and only to measure an image
+	/// coordinate a graph computes. Return `None`, as the default does, when the stage samples with derivatives the
+	/// hardware takes, such as a raster fragment, or carries no neighbours; images then get [`Coordinates`] without
+	/// differences.
+	fn difference(&mut self, input: Input, axis: ScreenAxis) -> Option<Node<'a>> {
+		let _ = (input, axis);
+
+		None
+	}
+
+	/// Returns a BESL expression reading `backdrop` of the opaque scene behind the surface at the `vec2f` screen
+	/// position `at`.
+	///
+	/// Return `None`, as the default does, when the stage draws its surfaces before the scene behind them, such as a
+	/// masked coverage pass; the lowering then fails with [`LowerError::UnavailableBackdrop`].
+	fn backdrop(&mut self, backdrop: Backdrop, at: Node<'a>) -> Option<Node<'a>> {
+		let _ = (backdrop, at);
+
+		None
+	}
+
+	/// Returns a `vec4f` BESL expression sampling the texture parameter named `texture` at `coordinates`.
 	///
 	/// Return [`LowerError::UnknownTexture`] when the material declares no such texture.
-	fn sample(&mut self, texture: &'a str) -> Result<Node<'a>, LowerError>;
+	fn sample(&mut self, texture: &'a str, coordinates: Coordinates<'a>) -> Result<Node<'a>, LowerError>;
 
 	/// Returns a BESL expression reading the parameter named `name`, as the `f32` type of the same width as `type`.
 	///
@@ -96,6 +139,23 @@ pub trait Stage<'a> {
 	///
 	/// Return [`LowerError::UnknownParameter`] when the material declares no such parameter with that type.
 	fn parameter(&mut self, name: &'a str, r#type: Type) -> Result<Node<'a>, LowerError>;
+}
+
+/// The `ScreenAxis` enum names the screen direction [`Stage::difference`] steps toward the neighbouring pixel in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScreenAxis {
+	X,
+	Y,
+}
+
+/// The `Coordinates` struct hands [`Stage::sample`] the coordinate an image samples at, so the stage can pick the
+/// texture's level of detail from how the coordinate changes across the pixel.
+pub struct Coordinates<'a> {
+	/// The `vec2f` coordinate at the shaded pixel.
+	pub value: Node<'a>,
+	/// The `vec2f` change of the coordinate to the neighbouring pixel along x and along y, or `None` when the stage
+	/// carries no [`Stage::difference`].
+	pub differences: Option<[Node<'a>; 2]>,
 }
 
 /// The `Expression` struct carries one lowered value: its BESL syntax and the BEMX type it holds.
@@ -135,8 +195,17 @@ pub struct Lowering<'a, S> {
 	values: Vec<Option<Expression<'a>>>,
 	/// The tangent-space normal of each normal-map node, once it has been asked for.
 	tangent_normals: Vec<(NodeId, Expression<'a>)>,
-	/// The raw sample of each texture, shared by every image node that samples it.
-	samples: Vec<(&'a str, Expression<'a>)>,
+	/// The raw sample of each texture at each coordinate, shared by every image node that samples it there. A `None`
+	/// coordinate is the mesh's own.
+	samples: Vec<((&'a str, Option<NodeId>), Expression<'a>)>,
+	/// Whether each node's value moves when `position` and `texcoord` move. Empty until an image samples at a computed
+	/// coordinate.
+	varying: Vec<bool>,
+	/// The value of each node with `position` and `texcoord` moved to the neighbouring pixel along x and along y.
+	/// Empty until an image samples at a computed coordinate.
+	shifted: [Vec<Option<Expression<'a>>>; 2],
+	/// The axis `position` and `texcoord` are moved along while a computed coordinate is lowered again, if any.
+	shift: Option<ScreenAxis>,
 	/// The read of each parameter, shared by every parameter node that reads it.
 	parameters: Vec<(&'a str, Expression<'a>)>,
 	/// Which nodes the current request reaches, kept between requests so each one reuses the allocation.
@@ -153,6 +222,9 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 			values: vec![None; graph.nodes().len()],
 			tangent_normals: Vec::new(),
 			samples: Vec::new(),
+			varying: Vec::new(),
+			shifted: [Vec::new(), Vec::new()],
+			shift: None,
 			parameters: Vec::new(),
 			needed: vec![false; graph.nodes().len()],
 			locals: 0,
@@ -177,9 +249,27 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 	/// A renderer that shades in the tangent frame reads this instead of [`Lowering::value`], which turns the same
 	/// normal into world space only to have the renderer turn it back. The result is not normalized.
 	pub fn tangent_normal(&mut self, node: NodeId) -> Result<Option<Expression<'a>>, LowerError> {
-		let GraphNode::NormalMap { value, scale } = *self.graph.node(node) else {
+		let GraphNode::NormalMap { value, scale, frame } = *self.graph.node(node) else {
 			return Ok(None);
 		};
+
+		// A map turned out of a frame of its own has no normal in the geometry's tangent frame to hand over. An axis
+		// that reads the geometry's own is no frame of its own, as MaterialX writes the defaults.
+		let graph = self.graph;
+		let own_frame = frame.iter().zip(NORMAL_MAP_FRAME).any(|(axis, input)| {
+			axis.is_some_and(|axis| {
+				!matches!(
+					(graph.node(axis), input),
+					(GraphNode::Tangent, Input::Tangent)
+						| (GraphNode::Bitangent, Input::Bitangent)
+						| (GraphNode::Normal, Input::Normal)
+				)
+			})
+		});
+
+		if own_frame {
+			return Ok(None);
+		}
 
 		self.lower_reaching([value, scale])?;
 
@@ -220,8 +310,10 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 	/// Graph order puts each node after the nodes it reads, so a single pass in that order never meets an input that
 	/// is not lowered yet, and no recursion is needed however deep the graph is.
 	fn lower_reaching(&mut self, roots: impl IntoIterator<Item = NodeId>) -> Result<(), LowerError> {
-		// Taken out of `self` so lowering can borrow `self` while the marks are read.
+		// Taken out of `self` so lowering can borrow `self` while the marks are read. An image's computed coordinate is
+		// lowered again while the request that reached the image holds the marks, and that nested request starts its own.
 		let mut needed = std::mem::take(&mut self.needed);
+		needed.resize(self.graph.nodes().len(), false);
 		let mut last = 0;
 
 		for root in roots {
@@ -257,11 +349,9 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 		result
 	}
 
-	/// Returns the stage's read of `geometry` for node `node`, failing when the stage doesn't carry it.
-	fn geometry(&mut self, node: NodeId, geometry: Geometry) -> Result<Node<'a>, LowerError> {
-		self.stage
-			.geometry(geometry)
-			.ok_or(LowerError::UnavailableGeometry { node, geometry })
+	/// Returns the stage's read of `input` for node `node`, failing when the stage doesn't carry it.
+	fn stage_input(&mut self, node: NodeId, input: Input) -> Result<Node<'a>, LowerError> {
+		self.stage.input(input).ok_or(LowerError::UnavailableInput { node, input })
 	}
 
 	/// Returns the already lowered value of an input.
@@ -283,14 +373,14 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 		Ok(match graph.node(id) {
 			GraphNode::Constant(value) => Expression::new(constant(value), result),
 			GraphNode::Parameter { name, r#type } => self.parameter(name, *r#type)?,
-			GraphNode::Position => Expression::new(self.geometry(id, Geometry::Position)?, result),
-			GraphNode::Normal => Expression::new(self.geometry(id, Geometry::Normal)?, result),
-			GraphNode::Tangent => Expression::new(self.geometry(id, Geometry::Tangent)?, result),
-			GraphNode::Bitangent => Expression::new(self.geometry(id, Geometry::Bitangent)?, result),
+			GraphNode::Position => self.moving_input(id, Input::Position, result)?,
+			GraphNode::Normal => Expression::new(self.stage_input(id, Input::Normal)?, result),
+			GraphNode::Tangent => Expression::new(self.stage_input(id, Input::Tangent)?, result),
+			GraphNode::Bitangent => Expression::new(self.stage_input(id, Input::Bitangent)?, result),
 			GraphNode::ViewDirection => {
 				// BEMX points the view direction from the viewer at the surface, as MaterialX does; stages carry the
 				// opposite.
-				let view = self.geometry(id, Geometry::View)?;
+				let view = self.stage_input(id, Input::View)?;
 
 				self.bind(result, Node::operator("-", splat_literal(0.0, 3), view))
 			}
@@ -299,17 +389,17 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 					return Err(LowerError::UnsupportedTexCoord { node: id, index: *index });
 				}
 
-				Expression::new(self.geometry(id, Geometry::TexCoord)?, result)
+				self.moving_input(id, Input::TexCoord, result)?
 			}
+			GraphNode::Time => Expression::new(self.stage_input(id, Input::Time)?, result),
+			GraphNode::ScreenPosition => self.moving_input(id, Input::ScreenPosition, result)?,
+			GraphNode::SceneColor { texcoord } => self.backdrop(id, Backdrop::Color, *texcoord, result)?,
+			GraphNode::ScenePosition { texcoord } => self.backdrop(id, Backdrop::Position, *texcoord, result)?,
 			GraphNode::Image { texture, texcoord, .. } => {
-				// Stages sample with the mesh's own texture coordinates, so a transformed set cannot be honoured.
-				if let Some(texcoord) = texcoord
-					&& !matches!(graph.node(*texcoord), GraphNode::TexCoord { index: 0 })
-				{
-					return Err(LowerError::UnsupportedTextureCoordinates { node: id });
-				}
-
-				let sample = self.sample(texture)?;
+				// The mesh's own coordinates sample the way the stage always does, with the differences it carries.
+				let coordinate =
+					texcoord.filter(|texcoord| !matches!(graph.node(*texcoord), GraphNode::TexCoord { index: 0 }));
+				let sample = self.sample(id, texture, coordinate)?;
 
 				self.convert(sample, result)
 			}
@@ -512,12 +602,16 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 
 				self.bind(result, total)
 			}
-			GraphNode::NormalMap { value, scale } => {
+			GraphNode::NormalMap { value, scale, frame } => {
 				let tangent = self.tangent(id, *value, *scale)?;
-				let axes = [Geometry::Tangent, Geometry::Bitangent, Geometry::Normal];
 				let mut world = None;
-				for (index, axis) in axes.into_iter().enumerate() {
-					let term = Node::operator("*", self.geometry(id, axis)?, tangent.component(index));
+				// Axes the graph leaves out are the geometry's own.
+				for (index, (axis, default)) in frame.iter().copied().zip(NORMAL_MAP_FRAME).enumerate() {
+					let axis = match axis {
+						Some(axis) => self.input(axis).syntax,
+						None => self.stage_input(id, default)?,
+					};
+					let term = Node::operator("*", axis, tangent.component(index));
 					world = Some(match world {
 						Some(total) => Node::operator("+", total, term),
 						None => term,
@@ -563,18 +657,172 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 		Ok(read)
 	}
 
-	/// Returns the raw `vec4f` sample of a texture, sampling it on first use.
-	fn sample(&mut self, texture: &'a str) -> Result<Expression<'a>, LowerError> {
-		if let Some((_, sample)) = self.samples.iter().find(|(sampled, _)| *sampled == texture) {
+	/// Returns the raw `vec4f` sample of a texture at `coordinate`, or at the mesh's own coordinates when it is `None`,
+	/// sampling it on first use.
+	fn sample(&mut self, node: NodeId, texture: &'a str, coordinate: Option<NodeId>) -> Result<Expression<'a>, LowerError> {
+		let key = (texture, coordinate);
+
+		if let Some((_, sample)) = self.samples.iter().find(|(sampled, _)| *sampled == key) {
 			return Ok(sample.clone());
 		}
 
-		let syntax = self.stage.sample(texture)?;
+		let coordinates = match coordinate {
+			Some(coordinate) => Coordinates {
+				value: self.input(coordinate).syntax,
+				differences: self.differences(coordinate)?,
+			},
+			// The mesh's own coordinates change across the pixel by what the stage measures for them.
+			None => Coordinates {
+				value: self.stage_input(node, Input::TexCoord)?,
+				differences: self
+					.stage
+					.difference(Input::TexCoord, ScreenAxis::X)
+					.zip(self.stage.difference(Input::TexCoord, ScreenAxis::Y))
+					.map(|(x, y)| [x, y]),
+			},
+		};
+		let syntax = self.stage.sample(texture, coordinates)?;
 		let sample = self.bind(Type::Vector4, syntax);
 
-		self.samples.push((texture, sample.clone()));
+		self.samples.push((key, sample.clone()));
 
 		Ok(sample)
+	}
+
+	/// Returns how the lowered `vec2f` value of `coordinate` changes to the neighbouring pixel along x and along y, or
+	/// `None` when the stage carries no differences.
+	///
+	/// The change is a finite difference, the measure a fragment shader's derivative instructions take: the nodes
+	/// between `position` or `texcoord` and the coordinate are lowered again with those moved by
+	/// [`Stage::difference`], and the coordinate at the pixel is subtracted.
+	fn differences(&mut self, coordinate: NodeId) -> Result<Option<[Node<'a>; 2]>, LowerError> {
+		self.mark_varying();
+
+		if !self.varying[coordinate.index()] {
+			// Nothing moves a coordinate such as one a parameter sets, so it stays put across the pixel.
+			return Ok(Some([splat_literal(0.0, 2), splat_literal(0.0, 2)]));
+		}
+
+		let center = self.input(coordinate).syntax;
+		let mut differences = [ScreenAxis::X, ScreenAxis::Y].map(|_| None);
+
+		for (axis, difference) in [ScreenAxis::X, ScreenAxis::Y].into_iter().zip(&mut differences) {
+			let shifted = match self.shifted(coordinate, axis) {
+				Ok(shifted) => shifted,
+				// Only moving `position` and `texcoord` is new to a coordinate lowered once already, so a missing
+				// input here is a stage that measures no differences.
+				Err(LowerError::UnavailableInput { .. }) => return Ok(None),
+				Err(error) => return Err(error),
+			};
+
+			*difference = Some(
+				self.bind(Type::Vector2, Node::operator("-", shifted.syntax, center.clone()))
+					.syntax,
+			);
+		}
+
+		let [x, y] = differences;
+
+		Ok(x.zip(y).map(|(x, y)| [x, y]))
+	}
+
+	/// Records, once per lowering, which nodes move with `position`, `texcoord`, and `screenposition`.
+	///
+	/// A texel, a decoded normal, and a read of the backdrop are held at their value at the pixel: differencing through
+	/// them would sample again at each neighbour, which costs more than the level of detail it refines.
+	fn mark_varying(&mut self) {
+		if !self.varying.is_empty() {
+			return;
+		}
+
+		let mut varying = Vec::with_capacity(self.graph.nodes().len());
+
+		for node in self.graph.nodes() {
+			let moves = match node {
+				GraphNode::Position | GraphNode::TexCoord { .. } | GraphNode::ScreenPosition => true,
+				GraphNode::Image { .. }
+				| GraphNode::NormalMap { .. }
+				| GraphNode::SceneColor { .. }
+				| GraphNode::ScenePosition { .. } => false,
+				node => {
+					let mut moves = false;
+					node.visit_inputs(|input| moves |= varying[input.index()]);
+					moves
+				}
+			};
+
+			varying.push(moves);
+		}
+
+		self.varying = varying;
+	}
+
+	/// Returns the value of `coordinate` at the neighbouring pixel along `axis`.
+	///
+	/// The shifted values stand in for `values` while [`Lowering::lower_reaching`] lowers the coordinate again, with
+	/// `position` and `texcoord` moved by [`Lowering::moving_input`]. Every node that holds still keeps its value at
+	/// the pixel, which is lowered already because `coordinate` is, so the walk lowers again only the nodes that move.
+	fn shifted(&mut self, coordinate: NodeId, axis: ScreenAxis) -> Result<Expression<'a>, LowerError> {
+		let lane = axis as usize;
+
+		if self.shifted[lane].is_empty() {
+			self.shifted[lane] = vec![None; self.graph.nodes().len()];
+		}
+
+		for index in 0..=coordinate.index() {
+			if !self.varying[index] && self.shifted[lane][index].is_none() {
+				self.shifted[lane][index] = self.values[index].clone();
+			}
+		}
+
+		std::mem::swap(&mut self.values, &mut self.shifted[lane]);
+		self.shift = Some(axis);
+		let lowered = self.lower_reaching([coordinate]);
+		self.shift = None;
+		std::mem::swap(&mut self.values, &mut self.shifted[lane]);
+		lowered?;
+
+		Ok(self.shifted[lane][coordinate.index()]
+			.clone()
+			.expect("The coordinate was lowered above."))
+	}
+
+	/// Returns node `node`'s read of `backdrop` at the screen position `texcoord` gives, or at the shaded point's own
+	/// when it is `None`.
+	fn backdrop(
+		&mut self,
+		node: NodeId,
+		backdrop: Backdrop,
+		texcoord: Option<NodeId>,
+		result: Type,
+	) -> Result<Expression<'a>, LowerError> {
+		let at = match texcoord {
+			Some(texcoord) => self.input(texcoord).syntax,
+			None => self.stage_input(node, Input::ScreenPosition)?,
+		};
+		let read = self
+			.stage
+			.backdrop(backdrop, at)
+			.ok_or(LowerError::UnavailableBackdrop { node })?;
+
+		Ok(self.bind(result, read))
+	}
+
+	/// Returns the stage's read of `input` for node `node`, moved to the neighbouring pixel while a computed coordinate
+	/// is lowered again.
+	fn moving_input(&mut self, node: NodeId, input: Input, result: Type) -> Result<Expression<'a>, LowerError> {
+		let at = self.stage_input(node, input)?;
+
+		let Some(axis) = self.shift else {
+			return Ok(Expression::new(at, result));
+		};
+
+		let difference = self
+			.stage
+			.difference(input, axis)
+			.ok_or(LowerError::UnavailableInput { node, input })?;
+
+		Ok(self.bind(result, Node::operator("+", at, difference)))
 	}
 
 	/// Returns the tangent-space normal a normal-map node decodes, decoding it on first use.
@@ -909,15 +1157,15 @@ pub enum LowerError {
 	NotAValue { node: NodeId },
 	/// A texture coordinate set other than zero was read.
 	UnsupportedTexCoord { node: NodeId, index: u32 },
-	/// An image samples with coordinates other than the mesh's own.
-	UnsupportedTextureCoordinates { node: NodeId },
 	/// A parameter node names a parameter the material does not declare with that type.
 	UnknownParameter { name: String, r#type: Type },
 	/// An image node names a texture the material does not declare.
 	UnknownTexture { name: String },
-	/// A node reads geometry the stage doesn't carry, such as the normal in a pass that only interpolates texture
+	/// A node reads an input the stage doesn't carry, such as the normal in a pass that only interpolates texture
 	/// coordinates.
-	UnavailableGeometry { node: NodeId, geometry: Geometry },
+	UnavailableInput { node: NodeId, input: Input },
+	/// A node reads the scene behind the surface in a stage whose surfaces have none drawn behind them.
+	UnavailableBackdrop { node: NodeId },
 }
 
 impl Display for LowerError {
@@ -935,11 +1183,6 @@ impl Display for LowerError {
 				"BEMX node #{} reads texture coordinate set {index}. The most likely cause is a material written for meshes with several coordinate sets; the material stage carries set zero only. See {docs}.",
 				node.index()
 			),
-			LowerError::UnsupportedTextureCoordinates { node } => write!(
-				f,
-				"BEMX image node #{} samples with transformed coordinates. The most likely cause is a 'texcoord' input driven by anything but a 'texcoord' node; the material stage samples with the mesh's own coordinates only. See {docs}.",
-				node.index()
-			),
 			LowerError::UnknownParameter { name, r#type } => write!(
 				f,
 				"Material parameter '{name}' of type {} is not declared. The most likely cause is a BEMX parameter node whose name or type differs from the material's variables. See {docs}.",
@@ -949,9 +1192,14 @@ impl Display for LowerError {
 				f,
 				"Material texture '{name}' is not declared. The most likely cause is a BEMX image node whose texture is missing from the material's Texture2D variables. See {docs}."
 			),
-			LowerError::UnavailableGeometry { node, geometry } => write!(
+			LowerError::UnavailableInput { node, input } => write!(
 				f,
-				"BEMX node #{} reads the {geometry:?} geometry, which this shader stage doesn't carry. The most likely cause is a masked material whose `opacity` reads geometry other than texture coordinates; the masked passes carry only those. Compute `opacity` from constants, parameters, images, and texture coordinates. See {docs}.",
+				"BEMX node #{} reads the {input:?} input, which this shader stage doesn't carry. The most likely cause is a masked material whose `opacity` reads geometry other than texture coordinates; the masked passes carry only those and the time. Compute `opacity` from constants, parameters, images, texture coordinates, and time. See {docs}.",
+				node.index()
+			),
+			LowerError::UnavailableBackdrop { node } => write!(
+				f,
+				"BEMX node #{} reads the scene behind the surface, which this shader stage draws before that scene exists. The most likely cause is a `scenecolor` or `sceneposition` node that a value of this stage, such as a masked `opacity`, depends on. Compute that value without those nodes. See {docs}.",
 				node.index()
 			),
 		}

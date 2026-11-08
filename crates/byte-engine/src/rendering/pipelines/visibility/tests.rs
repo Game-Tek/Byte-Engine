@@ -1927,6 +1927,46 @@ fn gtao_half_resolution_blur_preserves_uniform_ao_and_smooths_horizontally() {
 }
 
 /// Verifies full-resolution reconstruction preserves uniform input and rejects AO across depth discontinuities.
+/// Verifies the backdrop copy keeps the opaque scene's light as it is and turns reversed device depth into linear view
+/// depth, with the sky at the view's far depth, which `sceneposition` rebuilds positions from.
+#[test]
+fn backdrop_copies_light_and_linearizes_depth() {
+	let program = asset!("backdrop.besl");
+	let surface_depth = 3.0;
+	let lit = [[0.25, 0.5, 2.0, 1.0], [4.0, 3.0, 1.0, 1.0]];
+	let depth = [[gtao_fixture_device_depth(surface_depth), 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]];
+
+	let mut view = gtao_view_data(&program, 2, 1);
+	let mut source_lit = texture_2d(2, 1, &lit);
+	let mut source_depth = texture_2d(2, 1, &depth);
+	let mut color = empty_image(2, 1);
+	let mut linear_depth = empty_image(2, 1);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(slot(&program, GTAO_VIEW), &mut view);
+	descriptors.bind_texture(slot(&program, "source_lit"), &mut source_lit);
+	descriptors.bind_texture(slot(&program, "source_depth"), &mut source_depth);
+	descriptors.bind_image(slot(&program, "color"), &mut color);
+	descriptors.bind_image(slot(&program, "depth"), &mut linear_depth);
+	for pixel in [[0, 0], [1, 0]] {
+		run_at(&program, &mut descriptors, pixel);
+	}
+	drop(descriptors);
+
+	for x in 0..2 {
+		assert_rgba_close(rgba(&color, [x, 0]), lit[x as usize], 0.00001);
+	}
+	assert!(
+		(rgba(&linear_depth, [0, 0])[0] - surface_depth).abs() < 0.001,
+		"Expected the surface's linear depth {surface_depth}, found {:?}",
+		rgba(&linear_depth, [0, 0])
+	);
+	assert!(
+		(rgba(&linear_depth, [1, 0])[0] - GTAO_FAR).abs() < 0.01,
+		"Expected the sky at the far depth {GTAO_FAR}, found {:?}",
+		rgba(&linear_depth, [1, 0])
+	);
+}
+
 #[test]
 fn gtao_upscale_is_depth_aware_and_preserves_uniform_ao() {
 	let upscale = asset!("gtao-upscale.besl");

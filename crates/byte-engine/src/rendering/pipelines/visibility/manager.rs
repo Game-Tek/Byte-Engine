@@ -45,7 +45,8 @@ use super::render_pass::{
 	FrameWork, GiSettings, GtaoSettings, IndirectDiffuseSource, MAX_SURFEL_RAY_BUDGET, PROBE_RAY_BUDGET_RANGE, PROBE_RAYS,
 	PROBE_SPACING_RANGE, ProbeGiSettings, ProbeVolume, RayHits, RayTracing, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
 	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool,
-	VisibilityRenderPass, create_fog_light_target, create_gtao_targets, create_ssgi_targets, create_sun_visibility_targets,
+	VisibilityRenderPass, create_backdrop_targets, create_fog_light_target, create_gtao_targets, create_ssgi_targets,
+	create_sun_visibility_targets,
 	create_surfel_targets,
 };
 use super::residency::MeshResidencies;
@@ -53,7 +54,7 @@ use super::scene::{
 	InstanceCapacity, MaterialEvaluation, PosedVertices, RenderEntity, RenderInfo, RenderSkin, SinkState, VisibilityScene,
 };
 use super::set_layouts;
-use super::shader_data::{IesProfileTexture, MaterialData, ShaderMesh, ShaderViewData};
+use super::shader_data::{IesProfileTexture, MaterialData, ShaderFrame, ShaderMesh, ShaderViewData};
 use super::shadow_selection::{
 	SHADOW_DEFAULT_EXPOSURE_SCALE, ShadowBudget, ShadowLayout, ShadowLightSelection, ShadowSlots, make_cone_shadow_view,
 	make_point_shadow_view, retain_layout, select_shadow_lights, sun_cascade_view,
@@ -527,6 +528,8 @@ struct LoadedMaterial {
 	/// The material's key in the coverage shaders, when it is masked.
 	coverage_arm: Option<u32>,
 	texture_indices: Vec<u32>,
+	/// Whether the material's graph reads the opaque scene behind its surface.
+	reads_backdrop: bool,
 }
 
 /// The `UberShader` struct is one phase's compiled uber material evaluation shader, which evaluates the materials whose
@@ -925,6 +928,7 @@ impl VisibilityPipelineManager {
 			ghi::Uses::Storage | ghi::Uses::TransferDestination,
 		));
 		let views_buffer = context.build_dynamic_buffer(host_buffer("Visibility Views Data", ghi::Uses::Storage));
+		let frame_buffer = context.build_dynamic_buffer(host_buffer("Visibility Frame Data", ghi::Uses::Storage));
 		let instances = settings.instance_capacity.instances as usize;
 		let meshes_buffer =
 			context.build_dynamic_buffer(host_buffer("Visibility Meshes Data", ghi::Uses::Storage).length(instances));
@@ -978,6 +982,7 @@ impl VisibilityPipelineManager {
 		let scene = set_layouts::SCENE.binder(descriptor_set);
 		context.write(&[
 			scene.buffer("views", views_buffer),
+			scene.buffer("frame", frame_buffer),
 			scene.buffer("meshes", meshes_buffer),
 			scene.buffer("vertex_positions", geometry.vertex_positions),
 			scene.buffer("vertex_normals", geometry.vertex_normals),
@@ -1087,6 +1092,7 @@ impl VisibilityPipelineManager {
 				light_handles: HashMap::default(),
 				descriptor_set,
 				views_buffer,
+				frame_buffer,
 				meshes_buffer,
 				lighting_buffer,
 				render_info: Default::default(),
@@ -1403,6 +1409,7 @@ impl VisibilityPipelineManager {
 			texture_slots: textures,
 			parameters,
 			hit_group,
+			reads_backdrop,
 			..
 		} = material;
 		for shading in [&mut self.surfel_shading, &mut self.probe_shading].into_iter().flatten() {
@@ -1453,6 +1460,7 @@ impl VisibilityPipelineManager {
 			double_sided,
 			coverage_arm,
 			texture_indices,
+			reads_backdrop,
 		});
 		self.materials_copies_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
 	}
@@ -1589,6 +1597,16 @@ impl VisibilityPipelineManager {
 		self.material_evaluations.fill(NO_EVALUATION);
 		self.materials_copies_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
 		if self.settings.features.material_evaluation == MaterialEvaluationMode::Uber {
+			// Each phase's uber shader evaluates every ready material, so it reads the backdrop when any of them does.
+			let mut reads_backdrop = false;
+			for material in self.loaded_materials.iter().flatten() {
+				if let MaterialEvaluator::Arm(key) = material.evaluation
+					&& self.availability.is_key_ready(&Availability::Material(material.index))
+				{
+					self.material_evaluations[material.index as usize] = key;
+					reads_backdrop |= material.reads_backdrop;
+				}
+			}
 			for (evaluations, shader) in [&mut render_info.opaque_evaluations, &mut render_info.transparent_evaluations]
 				.into_iter()
 				.zip(&self.uber_shaders)
@@ -1598,14 +1616,8 @@ impl VisibilityPipelineManager {
 						name: shader.name.clone(),
 						index: UBER_EVALUATION_INDEX,
 						pipeline: shader.pipeline,
+						reads_backdrop,
 					});
-				}
-			}
-			for material in self.loaded_materials.iter().flatten() {
-				if let MaterialEvaluator::Arm(key) = material.evaluation
-					&& self.availability.is_key_ready(&Availability::Material(material.index))
-				{
-					self.material_evaluations[material.index as usize] = key;
 				}
 			}
 			return;
@@ -1641,6 +1653,8 @@ impl VisibilityPipelineManager {
 				},
 				index: evaluation_index,
 				pipeline,
+				// Materials that share a pipeline share their program, so the first one speaks for the slot.
+				reads_backdrop: first.reads_backdrop,
 			});
 		}
 	}
@@ -2051,11 +2065,15 @@ impl PipelineManager for VisibilityPipelineManager {
 		frame_allocator: &'a bumpalo::Bump,
 		transforms: &ShownTransforms,
 		alley: &mut Alley,
-		_time: crate::time::MediaTime,
+		time: crate::time::MediaTime,
 	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]> {
 		debug_span!("Visibility::adopt_scene_updates").in_scope(|| self.adopt_scene_updates(transforms));
 		self.apply_runtime_settings();
 		debug_span!("Visibility::adopt_resource_completions").in_scope(|| self.adopt_resource_completions(frame, transforms));
+		*frame.get_mut_dynamic_buffer_slice(self.scene.frame_buffer) = ShaderFrame {
+			time: time.as_seconds_f32(),
+		};
+		frame.sync_buffer(self.scene.frame_buffer);
 		// Each frame sequence has its own buffers, so changed tables are copied into each one on its own frame.
 		let sequence = frame.key().sequence_index() as usize;
 		if !self.materials_copies_current[sequence] {
@@ -2370,6 +2388,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let sun_visibility = create_sun_visibility_targets(render_pass_builder);
 		let gtao = create_gtao_targets(render_pass_builder);
 		let fog_light = create_fog_light_target(render_pass_builder);
+		let backdrop = create_backdrop_targets(render_pass_builder);
 		let stage_counters = super::render_pass::StageCounters::new(render_pass_builder);
 		let surfel_gi = self.surfel_pool.is_some();
 		let surfels = surfel_gi.then(|| create_surfel_targets(render_pass_builder));
@@ -2401,6 +2420,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				sun_visibility,
 				gtao,
 				fog_light,
+				backdrop,
 			},
 			&self.shadow_maps,
 			stage_counters,

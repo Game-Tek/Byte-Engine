@@ -329,6 +329,9 @@ pub struct Surface {
 	pub emission: Option<NodeId>,
 	/// How much ambient light reaches the surface, a `float` from zero to one. Defaults to one.
 	pub occlusion: Option<NodeId>,
+	/// The light that passes through the surface toward the viewer, a `vector3` in the units of `emission`, such as
+	/// the scene behind water tinted by the water it crossed. Defaults to none.
+	pub transmission: Option<NodeId>,
 }
 
 impl Surface {
@@ -340,10 +343,11 @@ impl Surface {
 	pub const DEFAULT_ROUGHNESS: Value = Value::Float(0.5);
 	pub const DEFAULT_EMISSION: Value = Value::Vector3([0.0, 0.0, 0.0]);
 	pub const DEFAULT_OCCLUSION: Value = Value::Float(1.0);
+	pub const DEFAULT_TRANSMISSION: Value = Value::Vector3([0.0, 0.0, 0.0]);
 
 	/// Lists every input with its name, the type it has to carry, and the value it takes when the graph leaves it
 	/// out, in declaration order. The normal has no constant default: it falls back to the geometric normal.
-	pub fn inputs(&self) -> [(&'static str, Option<NodeId>, Type, Option<Value>); 7] {
+	pub fn inputs(&self) -> [(&'static str, Option<NodeId>, Type, Option<Value>); 8] {
 		[
 			("base_color", self.base_color, Type::Vector3, Some(Self::DEFAULT_BASE_COLOR)),
 			("opacity", self.opacity, Type::Float, Some(Self::DEFAULT_OPACITY)),
@@ -352,6 +356,7 @@ impl Surface {
 			("normal", self.normal, Type::Vector3, None),
 			("emission", self.emission, Type::Vector3, Some(Self::DEFAULT_EMISSION)),
 			("occlusion", self.occlusion, Type::Float, Some(Self::DEFAULT_OCCLUSION)),
+			("transmission", self.transmission, Type::Vector3, Some(Self::DEFAULT_TRANSMISSION)),
 		]
 	}
 }
@@ -372,12 +377,23 @@ pub enum Node {
 	Normal,
 	/// The tangent of the shaded point, unit length, pointing along increasing texture coordinate `u`.
 	Tangent,
-	/// The bitangent of the shaded point, unit length, pointing along increasing texture coordinate `v`.
+	/// The bitangent of the shaded point, unit length, pointing toward decreasing texture coordinate `v`.
 	Bitangent,
 	/// The direction from the viewer toward the shaded point, unit length, as MaterialX defines it.
 	ViewDirection,
 	/// One texture coordinate set of the mesh, a `vector2`.
 	TexCoord { index: u32 },
+	/// The frame clock's elapsed time in seconds, a `float` that drives motion such as scrolling coordinates.
+	Time,
+	/// Where the shaded point lies on the screen, a `vector2` from zero at the top-left corner to one at the
+	/// bottom-right one.
+	ScreenPosition,
+	/// The light of the opaque scene behind the surface, a `vector3` in the units of emission, at the screen position
+	/// `texcoord` gives, which defaults to [`Node::ScreenPosition`]. Only blended materials can read it.
+	SceneColor { texcoord: Option<NodeId> },
+	/// The world-space position of the nearest opaque surface behind the shaded one, a `vector3`, at the screen
+	/// position `texcoord` gives, which defaults to [`Node::ScreenPosition`]. Only blended materials can read it.
+	ScenePosition { texcoord: Option<NodeId> },
 	/// A texture sample. `texture` names the material texture parameter to sample, `type` how many of its channels
 	/// to keep, and `texcoord` the coordinates, which default to set zero.
 	Image {
@@ -449,7 +465,15 @@ pub enum Node {
 	/// `value` holds the map's texel in the zero-to-one range. Only its first two channels are read: the third is
 	/// rebuilt from them, so maps stored with two channels decode the same as maps stored with three. `scale` scales
 	/// the tangent-plane components, as glTF's normal scale does.
-	NormalMap { value: NodeId, scale: NodeId },
+	///
+	/// `frame` holds the world-space tangent, bitangent and normal the texel is turned out of, each defaulting to the
+	/// geometry's own axis when `None`. A map sampled at world-space coordinates names the world axes those coordinates
+	/// follow, so its normals turn with the coordinates instead of with the mesh's texture layout.
+	NormalMap {
+		value: NodeId,
+		scale: NodeId,
+		frame: [Option<NodeId>; 3],
+	},
 	/// The surface the graph shades with.
 	Surface(Surface),
 }
@@ -465,8 +489,12 @@ impl Node {
 			| Node::Tangent
 			| Node::Bitangent
 			| Node::ViewDirection
-			| Node::TexCoord { .. } => {}
-			Node::Image { texcoord, .. } => texcoord.iter().copied().for_each(visit),
+			| Node::TexCoord { .. }
+			| Node::Time
+			| Node::ScreenPosition => {}
+			Node::Image { texcoord, .. } | Node::SceneColor { texcoord } | Node::ScenePosition { texcoord } => {
+				texcoord.iter().copied().for_each(visit);
+			}
 			Node::Unary { value, .. }
 			| Node::Magnitude { value }
 			| Node::Extract { value, .. }
@@ -483,9 +511,10 @@ impl Node {
 				visit(*value);
 				visit(*amount);
 			}
-			Node::NormalMap { value, scale } => {
+			Node::NormalMap { value, scale, frame } => {
 				visit(*value);
 				visit(*scale);
+				frame.iter().flatten().copied().for_each(&mut visit);
 			}
 			Node::Clamp { value, low, high } | Node::Smoothstep { value, low, high } => {
 				visit(*value);
@@ -558,6 +587,14 @@ pub struct Graph {
 }
 
 impl Graph {
+	/// Reports whether a node reads the opaque scene behind the surface, which only a blended surface has drawn
+	/// behind it.
+	pub fn reads_backdrop(&self) -> bool {
+		self.nodes
+			.iter()
+			.any(|node| matches!(node, Node::SceneColor { .. } | Node::ScenePosition { .. }))
+	}
+
 	/// Returns every node, in an order in which each node comes after the nodes it reads.
 	pub fn nodes(&self) -> &[Node] {
 		&self.nodes
@@ -750,6 +787,15 @@ fn infer(id: NodeId, node: &Node, types: &[Option<Type>]) -> Result<Option<Type>
 		}
 		Node::Position | Node::Normal | Node::Tangent | Node::Bitangent | Node::ViewDirection => Type::Vector3,
 		Node::TexCoord { .. } => Type::Vector2,
+		Node::Time => Type::Float,
+		Node::ScreenPosition => Type::Vector2,
+		Node::SceneColor { texcoord } | Node::ScenePosition { texcoord } => {
+			if let Some(texcoord) = texcoord {
+				exactly(*texcoord, "texcoord", Type::Vector2)?;
+			}
+
+			Type::Vector3
+		}
 		Node::Image {
 			texture,
 			r#type,
@@ -915,9 +961,15 @@ fn infer(id: NodeId, node: &Node, types: &[Option<Type>]) -> Result<Option<Type>
 
 			r#type
 		}
-		Node::NormalMap { value, scale } => {
+		Node::NormalMap { value, scale, frame } => {
 			exactly(*value, "in", Type::Vector3)?;
 			exactly(*scale, "scale", Type::Float)?;
+
+			for (axis, name) in frame.iter().zip(super::NORMAL_MAP_FRAME_INPUTS) {
+				if let Some(axis) = axis {
+					exactly(*axis, name, Type::Vector3)?;
+				}
+			}
 
 			Type::Vector3
 		}

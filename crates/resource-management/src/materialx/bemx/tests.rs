@@ -1,7 +1,7 @@
 use besl::parser::Node as Syntax;
 
 use super::{Conversion, ConvertError};
-use crate::bemx::besl::{Geometry, LowerError, Lowering, Stage, literal};
+use crate::bemx::besl::{Coordinates, Input, LowerError, Lowering, Stage, literal};
 use crate::bemx::{BinaryOperator, Channel, Graph, GraphError, Node, NodeId, Type};
 use crate::materialx;
 
@@ -218,6 +218,29 @@ fn image_nodes_become_texture_slots() {
 }
 
 #[test]
+fn time_converts_to_the_frame_time() {
+	with_conversion(
+		&material(
+			r#"<time name="clock" type="float"/>
+			<sin name="wave" type="float">
+				<input name="in" type="float" nodename="clock"/>
+			</sin>
+			<standard_surface name="shader" type="surfaceshader">
+				<input name="specular_roughness" type="float" nodename="wave"/>
+			</standard_surface>"#,
+		),
+		|conversion| {
+			let graph = &conversion.graph;
+
+			assert!(reaches(graph, graph.surface().roughness.unwrap(), &|node| matches!(
+				node,
+				Node::Time
+			)));
+		},
+	);
+}
+
+#[test]
 fn connection_channels_select_components() {
 	with_conversion(
 		&material(
@@ -313,7 +336,7 @@ fn a_normal_map_drives_the_world_space_normal() {
 		),
 		|conversion| {
 			let graph = &conversion.graph;
-			let Node::NormalMap { value, scale } = graph.node(graph.surface().normal.unwrap()) else {
+			let Node::NormalMap { value, scale, .. } = graph.node(graph.surface().normal.unwrap()) else {
 				panic!("The surface normal should be the normal map's world-space normal.");
 			};
 
@@ -474,8 +497,8 @@ fn mismatched_input_types_name_the_node() {
 }
 
 #[test]
-fn transformed_texture_coordinates_are_reported() {
-	with_failure(
+fn transformed_texture_coordinates_drive_the_image() {
+	with_conversion(
 		&material(
 			r#"<texcoord name="uv" type="vector2"/>
 			<multiply name="scaled" type="vector2">
@@ -490,13 +513,15 @@ fn transformed_texture_coordinates_are_reported() {
 				<input name="base_color" type="color3" nodename="base"/>
 			</standard_surface>"#,
 		),
-		|error| {
-			assert_eq!(
-				error,
-				ConvertError::UnsupportedTextureCoordinates {
-					node: "base".to_string(),
-				}
-			);
+		|conversion| {
+			let graph = &conversion.graph;
+
+			// The image samples at the doubled coordinates, not the mesh's own.
+			assert!(reaches(graph, graph.surface().base_color.unwrap(), &|node| matches!(
+				node,
+				Node::Image { texcoord: Some(texcoord), .. }
+					if matches!(graph.node(*texcoord), Node::Binary { operator: BinaryOperator::Multiply, .. })
+			)));
 		},
 	);
 }
@@ -586,18 +611,20 @@ fn a_material_written_inside_a_node_graph_is_reached() {
 struct Locals;
 
 impl<'a> Stage<'a> for Locals {
-	fn geometry(&mut self, geometry: Geometry) -> Option<Syntax<'a>> {
-		Some(Syntax::member_expression(match geometry {
-			Geometry::Position => "position",
-			Geometry::Normal => "normal",
-			Geometry::Tangent => "tangent",
-			Geometry::Bitangent => "bitangent",
-			Geometry::View => "view",
-			Geometry::TexCoord => "uv",
+	fn input(&mut self, input: Input) -> Option<Syntax<'a>> {
+		Some(Syntax::member_expression(match input {
+			Input::Position => "position",
+			Input::Normal => "normal",
+			Input::Tangent => "tangent",
+			Input::Bitangent => "bitangent",
+			Input::View => "view",
+			Input::TexCoord => "uv",
+			Input::Time => "time",
+			Input::ScreenPosition => "screen_position",
 		}))
 	}
 
-	fn sample(&mut self, _: &'a str) -> Result<Syntax<'a>, LowerError> {
+	fn sample(&mut self, _: &'a str, _: Coordinates<'a>) -> Result<Syntax<'a>, LowerError> {
 		Ok(Syntax::member_expression("texel"))
 	}
 

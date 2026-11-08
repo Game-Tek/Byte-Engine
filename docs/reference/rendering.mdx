@@ -519,11 +519,17 @@ and a graph without a normal keeps the geometric one:
 | `emission` | Three half floats, added to the diffuse light | 0, 0, 0 |
 
 The surface's world-space normal is converted to the tangent frame. A BEMX
-`image` node samples its texture at the
-vertex UV with the derivatives the pipeline computed. Writing a normal or
-reading the tangent or bitangent makes the pipeline build the tangent frame for
-that material, and sampling a texture or reading texture coordinates makes it
-reconstruct the UV.
+`image` node samples its texture at its coordinates with the level of detail
+their change across the pixel selects: the derivatives the pipeline computed
+for the vertex UV, or the [measured change](/docs/reference/bemx#values-and-geometry)
+of coordinates the graph computes. A closest-hit shader sizes both from the
+ray's footprint. Writing a normal or reading the tangent or bitangent makes the
+pipeline build the tangent frame for that material, and sampling a texture at
+the vertex UV or reading texture coordinates makes it reconstruct the UV.
+
+A BEMX `time` node reads the frame clock's elapsed time in seconds, the clock
+every pipeline manager receives for the frame. Every pass of a frame reads the
+same time.
 
 ### Indirect diffuse light
 
@@ -673,11 +679,12 @@ metric when it runs: `skinning`, `shadow-maps`, `shadow-depth-pyramid`,
 `surfel-validate`, `surfel-integrate`, `probe-schedule`, `probe-trace`, `probe-update`,
 `visibility-early`, `occlusion-pyramid`, `visibility-late`,
 `material-prepasses`, `depth-pyramid`, `cascade-fit`, `screen-space`,
-`fog-light`, `material-evaluation`, `background`, and `transparent`. Only the first sink
+`fog-light`, `material-evaluation`, `background`, `backdrop`, and `transparent`. Only the first sink
 records the ray tracing, surfel, and probe stages: the surfel stages in a frame
 that surfel GI lights, the probe stages in a frame that probe GI lights, and
 `acceleration-structures` in either. `material-prepasses` runs only when `render.material-evaluation` is
-`pipelines`.
+`pipelines`. `backdrop` runs only in a frame that draws transparent surfaces
+while a loaded blended material reads `scenecolor` or `sceneposition`.
 
 Inside `screen-space`, each dispatch also reports its own metric, when the
 technique it belongs to runs: `sun-visibility-trace`, `gtao-evaluate`,
@@ -690,6 +697,7 @@ its cost alone: it can include time other dispatches ran alongside it.
 | --- | --- |
 | `Lit`, aliased `main` | Scene color, full size. Reflections read the previous frame's copy. |
 | `Depth`, aliased `depth` | Reversed depth, full size. Reflections read the previous frame's copy. |
+| `Backdrop Color`, `Backdrop Depth` | The opaque scene's light and positive linear view depth, full size, as they stood before the transparent phase, which `scenecolor` and `sceneposition` read. |
 | `primitive index`, `instance_id` | 32-bit IDs per pixel. |
 | `Sun Visibility`, `Contact Shadow Trace` | Sun visibility per shadow slot, full size, and its half-size contact trace. |
 | `SSGI Raw`, `SSGI Normals`, `SSGI History`, `Diffuse Radiance History` | Half-size indirect lighting and its history. |

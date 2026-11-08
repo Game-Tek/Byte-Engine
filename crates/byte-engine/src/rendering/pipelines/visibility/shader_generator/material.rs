@@ -5,7 +5,7 @@ use besl::parser::Node;
 use resource_management::asset::handler::implementations::bema::{MaterialParameter, ParameterKind};
 use resource_management::bemx::{
 	self,
-	besl::{Expression, Geometry, LowerError, Lowering, Stage, component, construct},
+	besl::{Backdrop, Coordinates, Expression, Input, LowerError, Lowering, ScreenAxis, Stage, component, construct},
 };
 
 use super::ast::MaterialReconstructionFeatures;
@@ -14,10 +14,13 @@ use super::ast::MaterialReconstructionFeatures;
 /// records which optional attributes it reached.
 ///
 /// The prefix only reconstructs texture coordinates and the tangent frame for a material that reads them, so the
-/// stage notes every read while the graph is lowered.
+/// stage notes every read while the graph is lowered. A ray tracing hit has no screen, so it supplies fixed values for
+/// what material evaluation reads of the screen and the scene behind the surface.
 struct MaterialStage<'a> {
 	parameters: &'a [MaterialParameter],
 	features: MaterialReconstructionFeatures,
+	/// Whether the stage shades a ray tracing hit rather than a pixel.
+	hit: bool,
 }
 
 impl<'a> MaterialStage<'a> {
@@ -30,34 +33,134 @@ impl<'a> MaterialStage<'a> {
 }
 
 impl<'a> Stage<'a> for MaterialStage<'a> {
-	fn geometry(&mut self, geometry: Geometry) -> Option<Node<'a>> {
-		Some(match geometry {
-			Geometry::Position => Node::member_expression("world_space_vertex_position"),
-			Geometry::Normal => Node::member_expression("N"),
-			Geometry::View => Node::member_expression("V"),
-			Geometry::Tangent => self.tangent_frame_axis("T"),
-			Geometry::Bitangent => self.tangent_frame_axis("B"),
-			Geometry::TexCoord => {
+	fn input(&mut self, input: Input) -> Option<Node<'a>> {
+		Some(match input {
+			Input::Position => Node::member_expression("world_space_vertex_position"),
+			Input::Normal => Node::member_expression("N"),
+			Input::View => Node::member_expression("V"),
+			Input::Tangent => self.tangent_frame_axis("T"),
+			Input::Bitangent => self.tangent_frame_axis("B"),
+			Input::TexCoord => {
 				self.features.reads_uv = true;
 
 				Node::member_expression("vertex_uv")
 			}
+			Input::Time => frame_time(),
+			// A hit lies at no place on the screen, so it reads the screen's middle.
+			Input::ScreenPosition if self.hit => bemx::besl::constant(&bemx::Value::Vector2([0.5, 0.5])),
+			// The prefix's normalized device coordinates of the pixel's centre, moved to run from zero at the top-left
+			// corner to one at the bottom-right one.
+			Input::ScreenPosition => Node::call(
+				"vec2f",
+				[("x", "+"), ("y", "-")]
+					.into_iter()
+					.map(|(lane, sign)| {
+						let half = Node::operator(
+							"*",
+							Node::accessor(Node::member_expression("nc"), Node::member_expression(lane)),
+							Node::literal_expression("0.5"),
+						);
+
+						Node::operator(sign, Node::literal_expression("0.5"), half)
+					})
+					.collect(),
+			),
 		})
 	}
 
-	fn sample(&mut self, texture: &'a str) -> Result<Node<'a>, LowerError> {
-		let slot = texture_slot(self.parameters, texture)?;
+	fn difference(&mut self, input: Input, axis: ScreenAxis) -> Option<Node<'a>> {
+		let name = match input {
+			Input::Position => {
+				self.features.reads_position_difference = true;
 
-		self.features.reads_uv = true;
+				["position_derivative_x", "position_derivative_y"]
+			}
+			Input::TexCoord => {
+				self.features.reads_uv = true;
+
+				["uv_derivative_x", "uv_derivative_y"]
+			}
+			// A hit's screen position holds still, and a pixel's moves by one pixel to its neighbour: half the prefix's
+			// step in normalized device coordinates, which span two units across the screen.
+			Input::ScreenPosition => {
+				let step = if self.hit {
+					Node::literal_expression("0.0")
+				} else {
+					let ndc_step = Node::member_expression(["ndc_step_x", "ndc_step_y"][axis as usize]);
+
+					Node::operator("*", ndc_step, Node::literal_expression("0.5"))
+				};
+				let zero = Node::literal_expression("0.0");
+
+				return Some(Node::call(
+					"vec2f",
+					match axis {
+						ScreenAxis::X => vec![step, zero],
+						ScreenAxis::Y => vec![zero, step],
+					},
+				));
+			}
+			Input::Normal | Input::Tangent | Input::Bitangent | Input::View | Input::Time => return None,
+		};
+
+		Some(Node::member_expression(name[axis as usize]))
+	}
+
+	fn backdrop(&mut self, backdrop: Backdrop, at: Node<'a>) -> Option<Node<'a>> {
+		let evaluation = || Node::member_expression("material_evaluation");
+		let camera = || {
+			let views = Node::accessor(scene_member("views"), Node::member_expression("views"));
+			Node::accessor(views, Node::sentence(vec![Node::literal_expression("0")]))
+		};
+
+		Some(match (backdrop, self.hit) {
+			// Rays see no scene behind the surfaces they hit.
+			(Backdrop::Color, true) => bemx::besl::constant(&bemx::Value::Vector3([0.0, 0.0, 0.0])),
+			(Backdrop::Position, true) => Node::operator(
+				"-",
+				Node::member_expression("world_space_vertex_position"),
+				Node::operator(
+					"*",
+					Node::member_expression("V"),
+					Node::accessor(camera(), Node::member_expression("far")),
+				),
+			),
+			// The copy holds light multiplied by exposure, and emission is light before it.
+			(Backdrop::Color, false) => {
+				let texel = Node::call(
+					"texture_lod",
+					vec![
+						Node::accessor(evaluation(), Node::member_expression("backdrop_color")),
+						at,
+						Node::literal_expression("0.0"),
+					],
+				);
+				let light = construct((0..3).map(|lane| component(&texel, lane, 4)).collect());
+				let exposure = Node::accessor(
+					Node::accessor(evaluation(), Node::member_expression("lighting_data")),
+					Node::member_expression("exposure"),
+				);
+
+				Node::operator("/", light, exposure)
+			}
+			(Backdrop::Position, false) => Node::call("backdrop_position", vec![evaluation(), camera(), at]),
+		})
+	}
+
+	fn sample(&mut self, texture: &'a str, coordinates: Coordinates<'a>) -> Result<Node<'a>, LowerError> {
+		let slot = texture_slot(self.parameters, texture)?;
+		let [along_x, along_y] = coordinates
+			.differences
+			.expect("The material stage measures how position and texture coordinates change across the pixel.");
 
 		Ok(Node::call(
 			"sample_texture_2d_array_grad",
 			vec![
 				scene_member("textures"),
 				material_texture(Node::member_expression("material"), slot),
-				Node::member_expression("vertex_uv"),
-				Node::member_expression("uv_derivative_x"),
-				Node::member_expression("uv_derivative_y"),
+				coordinates.value,
+				along_x,
+				along_y,
 			],
 		))
 	}
@@ -82,14 +185,17 @@ struct CoverageStage<'a> {
 }
 
 impl<'a> Stage<'a> for CoverageStage<'a> {
-	fn geometry(&mut self, geometry: Geometry) -> Option<Node<'a>> {
-		match geometry {
-			Geometry::TexCoord => Some(Node::member_expression("vertex_uv")),
-			Geometry::Position | Geometry::Normal | Geometry::Tangent | Geometry::Bitangent | Geometry::View => None,
+	fn input(&mut self, input: Input) -> Option<Node<'a>> {
+		match input {
+			Input::TexCoord => Some(Node::member_expression("vertex_uv")),
+			Input::Time => Some(frame_time()),
+			Input::Position | Input::Normal | Input::Tangent | Input::Bitangent | Input::View | Input::ScreenPosition => {
+				None
+			}
 		}
 	}
 
-	fn sample(&mut self, texture: &'a str) -> Result<Node<'a>, LowerError> {
+	fn sample(&mut self, texture: &'a str, coordinates: Coordinates<'a>) -> Result<Node<'a>, LowerError> {
 		let slot = texture_slot(self.parameters, texture)?;
 		let material = Node::accessor(
 			Node::accessor(scene_member("materials"), Node::member_expression("materials")),
@@ -103,7 +209,7 @@ impl<'a> Stage<'a> for CoverageStage<'a> {
 					scene_member("textures"),
 					Node::sentence(vec![material_texture(material, slot)]),
 				),
-				Node::member_expression("vertex_uv"),
+				coordinates.value,
 			],
 		))
 	}
@@ -179,7 +285,7 @@ fn parameter_read<'a>(
 /// declares, for the masked raster passes.
 ///
 /// Only the nodes `opacity` reaches are lowered. A graph whose `opacity` reads geometry other than texture coordinates
-/// fails with [`LowerError::UnavailableGeometry`].
+/// fails with [`LowerError::UnavailableInput`].
 pub(super) fn coverage_body<'a>(
 	graph: &'a bemx::Graph,
 	parameters: &'a [MaterialParameter],
@@ -211,6 +317,7 @@ pub(super) fn material_body<'a>(
 		MaterialStage {
 			parameters,
 			features: MaterialReconstructionFeatures::default(),
+			hit: false,
 		},
 	);
 	let mut statements = Vec::with_capacity(graph.nodes().len() + 6);
@@ -237,6 +344,16 @@ pub(super) fn material_body<'a>(
 	] {
 		let value = value_or_default(&mut lowering, input, default)?;
 		assign(&mut statements, &mut lowering, name, narrow, value.syntax);
+	}
+
+	// Transmitted light can exceed half-float range before exposure scales it, so it stays in full precision, and only a
+	// material that writes it makes the suffix add it.
+	if let Some(transmission) = surface.transmission {
+		let value = lowering.value(transmission)?;
+		lowering.stage().features.writes_transmission = true;
+		// The value is already a full-precision `vec3f`, and BESL converts only from other widths.
+		lowering.drain_statements_into(&mut statements);
+		statements.push(Node::member_assignment("transmission", value.syntax));
 	}
 
 	if let Some(normal) = surface.normal {
@@ -287,6 +404,7 @@ pub(super) fn material_hit_body<'a>(
 		MaterialStage {
 			parameters,
 			features: MaterialReconstructionFeatures::default(),
+			hit: true,
 		},
 	);
 	let mut statements = Vec::with_capacity(graph.nodes().len() + 3);
@@ -337,4 +455,9 @@ fn assign<'a>(
 /// Returns a read of the scene layer's member `name` through the `scene` parameter every generated `main` takes.
 fn scene_member<'a>(name: &'a str) -> Node<'a> {
 	Node::accessor(Node::member_expression("scene"), Node::member_expression(name))
+}
+
+/// Returns a read of the frame's time from the scene layer's frame record.
+fn frame_time<'a>() -> Node<'a> {
+	Node::accessor(scene_member("frame"), Node::member_expression("time"))
 }

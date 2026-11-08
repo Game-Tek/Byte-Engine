@@ -54,11 +54,39 @@ A graph that breaks a rule fails to load and names the node at fault.
 | `bitangent` | None | `vector3`: the unit bitangent, the normal crossed with the tangent, negated when needed so it points toward decreasing texture coordinate v |
 | `viewdirection` | None | `vector3`: the unit direction from the viewer toward the shaded point |
 | `texcoord` | `index`: the coordinate set, default 0 | `vector2` |
+| `time` | None | `float`: the seconds the frame clock has counted since the application started |
+| `screenposition` | None | `vector2`: where the shaded point lies on the screen, from 0, 0 at the top-left corner to 1, 1 at the bottom-right corner |
+| `scenecolor` | `texcoord`: a `vector2` screen position, default `screenposition` | `vector3`: the light of the opaque scene at that screen position, in the units of the surface's `emission` |
+| `sceneposition` | `texcoord`: a `vector2` screen position, default `screenposition` | `vector3`: the position of the nearest opaque surface at that screen position, or, where the sky lies there, the point on the view ray at the view's far depth |
 | `image` | `texture`: the name of a material texture parameter. `type`: how many channels to keep, default `vector4`. `texcoord`: a `vector2`, default coordinate set 0 | `type`: the first channels of the texel |
 
-The material stage carries texture coordinate set 0 only, and samples every
-image at those coordinates. A graph that reads another set, or samples an image
-at coordinates computed from them, fails to bake.
+The material stage carries texture coordinate set 0 only. A graph that reads
+another set fails to bake.
+
+`scenecolor` and `sceneposition` read the scene behind the surface: what the
+opaque layer and the sky drew, never another blended surface. Only a material
+whose `alpha_mode` is `Blend` can read them; any other material that reads
+them fails to bake. A screen position outside 0 to 1 reads the nearest edge of
+the screen. Ray tracing hits have no screen: they read `screenposition` as
+0.5, 0.5, `scenecolor` as 0, 0, 0, and `sceneposition` as the point the view's
+far distance away along the ray. [Make a water surface](/docs/use/resources/water)
+builds a graph from these nodes.
+
+`time` holds one value for the whole frame, so it doesn't change across a
+pixel. It's a 32-bit float: after 8,192 seconds, about two and a quarter hours,
+it advances in steps of about a millisecond, so a motion it drives moves in
+steps of its speed times that millisecond.
+
+An image samples at the value of its `texcoord` input, which can be computed
+from any nodes, such as a `position` swizzled to world-space coordinates. The
+level of detail follows how that value changes from the shaded pixel to its
+neighbours, measured through the nodes that compute it. `position`,
+`texcoord`, and `screenposition` change across a pixel. Every other node that
+sets no value of its own, including `image`, `normalmap`, `scenecolor`,
+`sceneposition`, `normal`, `tangent`, `bitangent`, and `viewdirection`, is held
+at its value at the shaded pixel. A coordinate that
+jumps between neighbouring pixels, such as a `modulo` at the seam where it
+wraps, picks a blurrier level of detail along that seam.
 
 ## Math
 
@@ -122,14 +150,19 @@ them is a `float`.
 
 | Kind | Inputs, with defaults | Produces |
 | --- | --- | --- |
-| `normalmap` | `in`, a `vector3` texel in the 0 to 1 range. `scale` = 1 | `vector3`: the world-space normal the tangent-space texel encodes |
+| `normalmap` | `in`, a `vector3` texel in the 0 to 1 range. `scale` = 1. `normal`, `tangent`, `bitangent`: `vector3`, default the `normal`, `tangent`, and `bitangent` nodes | `vector3`: the world-space normal the tangent-space texel encodes |
 
 Only the first two channels of the texel are read. Each maps from the 0 to 1
 range to the −1 to 1 range, the third component is rebuilt so the normal has
 unit length, and `scale` then scales the first two. A normal map stored with two
 channels decodes the same as one stored with three. The first channel runs
-along the `tangent` and the second along the `bitangent`, so green points up
-the image, the convention of glTF normal textures and MikkTSpace bakes.
+along the `tangent` input and the second along the `bitangent` input, so green
+points up the image, the convention of glTF normal textures and MikkTSpace
+bakes, and the rebuilt third component runs along the `normal` input. A map
+sampled at world-space coordinates takes the world axes those coordinates follow
+as its frame instead of the mesh's: for coordinates from the x and z components
+of `position`, the frame is a `tangent` of 1, 0, 0, a `bitangent` of 0, 0, −1, and a
+`normal` of 0, 1, 0.
 
 ## Surface
 
@@ -143,6 +176,7 @@ Every graph ends in one `surface` node. An input left out takes its default.
 | `roughness` | `float`, 0 to 1 | 0.5 |
 | `normal` | `vector3`, in world space | The geometric normal |
 | `emission` | `vector3` | 0, 0, 0 |
+| `transmission` | `vector3`, in the units of `emission` | 0, 0, 0 |
 | `occlusion` | `float`, 0 to 1, multiplying indirect diffuse light | 1 |
 
 `opacity` means what the material's
@@ -154,10 +188,17 @@ Every graph ends in one `surface` node. An input left out takes its default.
 | `Mask` | Compared with the material's cutoff at every pixel the surface covers, in every pass that draws it, shadows included. The pixel is left out where `opacity` is less than the cutoff. |
 | `Blend` | The surface's alpha: 0 is fully transparent and 1 fully opaque. |
 
-In a `Mask` material, `opacity` may read `constant`, `parameter`, `image`, and
-`texcoord` nodes, and nodes computed from them. A masked graph whose `opacity`
-reads `position`, `normal`, `tangent`, `bitangent`, or `viewdirection` fails to
-bake.
+In a `Mask` material, `opacity` may read `constant`, `parameter`, `image`,
+`texcoord`, and `time` nodes, and nodes computed from them. A masked graph whose
+`opacity` reads `position`, `normal`, `tangent`, `bitangent`, `viewdirection`,
+or `screenposition` fails to bake.
+
+`transmission` is light that passes through the surface toward the viewer, such
+as the `scenecolor` behind water or glass, tinted by what it crossed. It's
+added where the surface doesn't reflect: weighted by one minus the surface's
+reflectance toward the viewer, so a surface seen head-on shows what's behind it
+and one seen at a grazing angle shows its reflection. Ray tracing hits leave it
+out.
 
 How the renderer shades these inputs is in
 [Rendering](/docs/reference/rendering#materials).

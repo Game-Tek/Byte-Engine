@@ -169,11 +169,11 @@ The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves th
 ## Shader behavior
 
 - Implement Metal interpolation and metadata-driven push-constant mapping without hardcoded backend conventions.
+- Add a BEMX `surface.displacement` input that moves vertices, so water, cloth or terrain can ripple. The visibility mesh, shadow, material-evaluation prefix and BLAS stages all read the resident vertex streams, so evaluate the displacement once per frame in a compute pass that writes an instance-owned vertex range, the way skinning does, and point every stage at that range. Deferred from the water-material plan: the slate quarry's still pit doesn't need it.
 
 ## MaterialX conversion
 
 - Reduce MaterialX scattering closures onto a BEMX `Surface`, so a `<surface>` node built from `oren_nayar_diffuse_bsdf`, `dielectric_bsdf`, `conductor_bsdf`, `layer` and `mix` converts instead of reporting an unsupported shading model. This is most of the MaterialX pbrlib test suite and the pbrlib-native way to write a surface.
-- Let a MaterialX `<image>` sample with transformed texture coordinates. BEMX image nodes already take a `texcoord` input; the visibility shader generator needs to honour it, sampling with the given coordinate and carrying the matching texture-coordinate derivatives, otherwise a tiled or placed image picks the wrong mip level. Until then `place2d`, `tiledimage` and `hextiledimage` are reported as unsupported.
 - Add BEMX nodes for the MaterialX procedural and colour-conversion nodes the standard library defines with source code rather than node graphs, and map them in `materialx::bemx`: `noise2d`, `noise3d`, `fractal3d`, `cellnoise2d`, `worleynoise2d`, `flake2d`, `flake3d`, `hsvtorgb`, `rgbtohsv` and `blackbody`.
 
 # P2 - BESL architecture

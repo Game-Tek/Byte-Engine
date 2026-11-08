@@ -41,6 +41,7 @@ pub(crate) static ENGINE_MODULES: &[(&str, &str)] = engine_modules![
 	"ui/layouts/backdrop_blur.besl",
 	"ui/layouts/composite.besl",
 	"ui/layouts/ui.besl",
+	"visibility/layouts/backdrop.besl",
 	"visibility/layouts/cascade_fit.besl",
 	"visibility/layouts/contact_shadows.besl",
 	"visibility/layouts/depth_pyramid.besl",

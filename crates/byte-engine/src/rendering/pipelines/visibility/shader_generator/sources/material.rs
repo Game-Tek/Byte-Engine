@@ -277,6 +277,7 @@ material_evaluation_defaults: fn () -> void {
 	let roughness: f16 = 0.5;
 	let occlusion: f16 = 1.0;
 	let emission: vec3f16 = vec3f16(0.0, 0.0, 0.0);
+	let transmission: vec3f = vec3f(0.0, 0.0, 0.0);
 }
 "#;
 
@@ -699,8 +700,10 @@ material_evaluation_suffix: fn () -> void {
 	let r: vec4f16 = roughness * c0 + c1;
 	let a004: f16 = min(r.x * r.x, pow(f16(2.0), (f16(0.0) - f16(9.28)) * NdotV)) * r.x + r.y;
 	let env_brdf: vec2f16 = vec2f16(0.0 - 1.04, 1.04) * a004 + vec2f16(r.z, r.w);
-	// The split-sum weight of reflected light, with the material occlusion that applies to indirect light.
-	let specular_weight: vec3f = vec3f(F0 * env_brdf.x + env_brdf.y) * f32(occlusion);
+	// The split-sum reflectance toward the viewer, and the weight of reflected light, with the material occlusion that
+	// applies to indirect light.
+	let specular_reflectance: vec3f = vec3f(F0 * env_brdf.x + env_brdf.y);
+	let specular_weight: vec3f = specular_reflectance * f32(occlusion);
 	// Everything but the reflected light is known before the trace, so only these sums stay live through the march.
 	let direct_and_diffuse: vec3f = diffuse + specular;
 	// Screen-space reflections replace the environment where the mirror ray finds visible geometry. One mirror ray
@@ -726,6 +729,11 @@ material_evaluation_suffix: fn () -> void {
 	// Pre-expose: store light already multiplied by the camera exposure, so real-world intensities such as a
 	// 100,000 lux sun on a glossy surface stay within the half-float range of the lit map.
 	let lit: vec3f = (direct_and_diffuse + specular_weight * specular_radiance) * material_evaluation.lighting_data.exposure;
+	// Light crossing the surface reaches the viewer where the surface reflects none, so the reflected and the
+	// transmitted light never add to more than the light they share. A material that writes no transmission drops this
+	// statement.
+	lit = lit
+		+ transmission * (vec3f(1.0, 1.0, 1.0) - specular_reflectance) * material_evaluation.lighting_data.exposure;
 	// Only the irradiance debug view reads this; a bake without debug views leaves it dead.
 	let exposed_irradiance: vec3f = total_irradiance * material_evaluation.lighting_data.exposure;
 	let output_color: vec4f = vec4f(lit.x, lit.y, lit.z, 1.0);

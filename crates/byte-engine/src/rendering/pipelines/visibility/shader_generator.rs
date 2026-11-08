@@ -724,6 +724,7 @@ pub(super) fn visibility_shader_module<'a>(tile: bool) -> [Node<'a>; 2] {
 		(POINT_SHADOW_SOURCE, "sample_point_shadow"),
 		(ENVIRONMENT_IRRADIANCE_SOURCE, "sample_environment_irradiance"),
 		(ENVIRONMENT_SPECULAR_SOURCE, "sample_environment_specular"),
+		(BACKDROP_POSITION_SOURCE, "backdrop_position"),
 	];
 
 	let mut children = structs;

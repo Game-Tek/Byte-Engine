@@ -56,17 +56,14 @@
 //!
 //! Anything else is reported rather than approximated, because a material that renders wrong is
 //! harder to notice than one that fails to bake. A node graph BEMX cannot describe, such as one
-//! built from individual scattering closures or one that samples a texture with transformed
-//! coordinates, is best baked into a texture with the MaterialX tools first. A network whose node
+//! built from individual scattering closures, is best baked into a texture with the MaterialX tools
+//! first. A network whose node
 //! types disagree is reported as [`ConvertError::Graph`], naming the MaterialX node.
 //!
-//! Three properties of the graph differ from what MaterialX describes:
+//! Two properties of the graph differ from what MaterialX describes:
 //!
 //! - Object-space and model-space geometric properties read their world-space value, since BEMX
 //!   describes geometry in world space alone.
-//! - Images sample with the mesh's own texture coordinates. An `<image>` whose `texcoord` is driven
-//!   by anything else is reported as [`ConvertError::UnsupportedTextureCoordinates`] instead of being
-//!   sampled at the wrong place.
 //! - A `texcoord` node that reads a set other than zero converts to a
 //!   [`TexCoord`](crate::bemx::Node::TexCoord) node of that set, which a renderer that carries set
 //!   zero alone reports when it lowers the graph.
@@ -78,7 +75,7 @@
 //!
 //! Measured against the 198 documents of the upstream MaterialX resource library, 108 of their 355
 //! materials converted when this module still lowered to BESL directly; conversion accepts the same
-//! nodes. The three gaps below account for the rest, in the order they are worth closing. They are
+//! nodes. The two gaps below account for the rest, in the order they are worth closing. They are
 //! also listed under "MaterialX conversion" in `todo.md`.
 //!
 //! ## Scattering closures
@@ -96,21 +93,6 @@
 //! its own pass over the closure subtree rather than as more arms of `nodes.rs`, because the rules
 //! are approximations of a renderer's behaviour and belong next to a comment saying which behaviour,
 //! unlike the value nodes, which are exact.
-//!
-//! ## Transformed texture coordinates
-//!
-//! 18 materials place, tile or rotate the coordinates an `<image>` samples with, which
-//! [`ConvertError::UnsupportedTextureCoordinates`] reports. BEMX can already describe them: an
-//! [`Image`](crate::bemx::Node::Image) node takes a `texcoord` input. What is missing is a renderer
-//! that honours it. The visibility shader generator samples every material texture with `vertex_uv`
-//! together with `uv_derivative_x` and `uv_derivative_y`, and passing a transformed coordinate
-//! without transforming the derivatives to match picks the wrong mip level, which is a quality bug
-//! that renders rather than fails.
-//!
-//! So this needs the generator to accept a coordinate per sample, derivatives carried alongside
-//! every coordinate value, and a rule for what to do when a coordinate comes from something with no
-//! analytic derivative. Once it does, pass the converted coordinate as the image node's `texcoord`.
-//! Until then, `place2d`, `tiledimage` and `hextiledimage` are honestly reported.
 //!
 //! ## Standard library nodes written in source code
 //!

@@ -55,6 +55,9 @@ pub struct MaterialProgram {
 	/// A hash of the graph and the parameters. Materials with equal identities generate the same code for equal static
 	/// values, so a renderer can share one copy of it.
 	pub identity: u64,
+	/// Whether the graph reads the scene behind the surface, which only a blended material may. A renderer copies that
+	/// scene only for the frames that draw such a material.
+	pub reads_backdrop: bool,
 }
 
 /// The `ProgramParameter` struct declares one parameter of a [`MaterialProgram`], as a `.bema` variable declares it.

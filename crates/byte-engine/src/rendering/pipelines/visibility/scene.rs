@@ -16,7 +16,7 @@ use super::render_pass::VisibilityRenderPass;
 use super::residency::ResidencySlot;
 use super::shader_data::{
 	IesProfileTexture, InstanceLightmap, LightData, LightingData, NEUTRAL_UNIT_VECTOR, NO_IES_PROFILE, ShaderMesh,
-	ShaderViewData,
+	ShaderFrame, ShaderViewData,
 };
 use super::shadow_selection::{LightShadow, sun_cascade_view};
 use super::skinning::SkinningDispatch;
@@ -94,6 +94,9 @@ pub(crate) struct MaterialEvaluation {
 	/// The evaluation slot, which indexes the pixel counts, offsets, and indirect dispatches.
 	pub(crate) index: u32,
 	pub(crate) pipeline: ghi::PipelineHandle,
+	/// Whether a material of the slot reads the opaque scene behind its surface, so a frame that draws it copies that
+	/// scene first.
+	pub(crate) reads_backdrop: bool,
 }
 
 /// The `RenderInfo` struct groups frame-local visibility work by the phase that consumes it.
@@ -199,6 +202,8 @@ pub struct VisibilityScene {
 	/// The scene descriptor set every visibility pass binds, created from [`super::set_layouts::SCENE`].
 	pub(crate) descriptor_set: ghi::DescriptorSetHandle,
 	pub(crate) views_buffer: ghi::DynamicBufferHandle<[ShaderViewData; SHADOW_VIEW_COUNT]>,
+	/// The frame record every pass shares, such as the time materials read.
+	pub(crate) frame_buffer: ghi::DynamicBufferHandle<ShaderFrame>,
 	/// One record per instance the frame draws, [`InstanceCapacity::instances`] long.
 	pub(crate) meshes_buffer: ghi::DynamicBufferHandle<[ShaderMesh]>,
 	pub(crate) lighting_buffer: ghi::DynamicBufferHandle<LightingData>,

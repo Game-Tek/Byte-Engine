@@ -103,6 +103,12 @@ pub(super) struct MaterialReconstructionFeatures {
 	pub reads_tangent_frame: bool,
 	/// The material writes a tangent-space normal, which the suffix turns out of the tangent frame.
 	pub writes_normal: bool,
+	/// The material samples an image at coordinates computed from the position, so it reads how the position changes
+	/// across the pixel. Material evaluation always has that change; a ray tracing hit sizes it from the ray cone.
+	pub reads_position_difference: bool,
+	/// The material writes light that passes through its surface, which the suffix adds where the surface doesn't
+	/// reflect.
+	pub writes_transmission: bool,
 }
 
 impl MaterialReconstructionFeatures {
@@ -124,6 +130,8 @@ impl MaterialReconstructionFeatures {
 			reads_uv: all.reads_uv || features.reads_uv,
 			reads_tangent_frame: all.reads_tangent_frame || features.reads_tangent_frame,
 			writes_normal: all.writes_normal || features.writes_normal,
+			reads_position_difference: all.reads_position_difference || features.reads_position_difference,
+			writes_transmission: all.writes_transmission || features.writes_transmission,
 		})
 	}
 }
@@ -182,8 +190,17 @@ pub(super) fn material_surface_statements(features: MaterialReconstructionFeatur
 /// only for a material that reads them.
 pub(super) fn material_hit_prefix_statements(features: MaterialReconstructionFeatures) -> Vec<Node<'static>> {
 	let mut statements = parse_besl_statements(MATERIAL_HIT_PREFIX_SOURCE, "material_hit_prefix");
+	if features.needs_uv() || features.reads_position_difference {
+		statements.extend(parse_besl_statements(MATERIAL_HIT_FOOTPRINT_SOURCE, "material_hit_footprint"));
+	}
 	if features.needs_uv() {
 		statements.extend(parse_besl_statements(MATERIAL_HIT_UV_SOURCE, "material_hit_uv"));
+	}
+	if features.reads_position_difference {
+		statements.extend(parse_besl_statements(
+			MATERIAL_HIT_POSITION_DIFFERENCE_SOURCE,
+			"material_hit_position_difference",
+		));
 	}
 	if features.needs_tangent_frame() {
 		statements.extend(parse_besl_statements(MATERIAL_HIT_TANGENT_SOURCE, "material_hit_tangent"));
@@ -206,6 +223,9 @@ pub(super) fn material_evaluation_suffix_statements(
 ) -> Vec<Node<'static>> {
 	let mut statements = material_normal_statements(features);
 	statements.extend(material_lighting_statements(visibility_features));
+	if !features.writes_transmission {
+		remove_statements_reading(&mut statements, "transmission");
+	}
 	statements
 }
 

@@ -192,6 +192,9 @@ pub(crate) struct ResidentMaterial {
 	pub(crate) parameters: Arc<[DynamicParameter]>,
 	/// The hit group rays that hit the material run, when its bake built a closest-hit shader.
 	pub(crate) hit_group: Option<HitGroupShader>,
+	/// Whether the material's graph reads the opaque scene behind its surface, which the transparent phase copies only
+	/// for such materials.
+	pub(crate) reads_backdrop: bool,
 }
 
 /// The `DynamicParameter` struct is one value parameter of a material that the application can change at runtime.
@@ -1172,6 +1175,7 @@ impl VisibilityLoader {
 			coverage_arm,
 		} = describe_material(&id, variant)?;
 		let material = variant.material.resource();
+		let reads_backdrop = material.program.reads_backdrop;
 		// A material bakes its evaluation shader, then a closest-hit shader when the project traces rays.
 		let shader_of = |stage| {
 			material
@@ -1238,6 +1242,7 @@ impl VisibilityLoader {
 			texture_slots,
 			parameters,
 			hit_group,
+			reads_backdrop,
 		}))
 	}
 

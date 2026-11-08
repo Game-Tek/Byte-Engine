@@ -7,6 +7,7 @@
 //! [`VisibilityRenderPass::prepare`] turns the frame's [`RenderInfo`] into one ordered recording, timing each stage
 //! with the sink's [`StageCounters`] so the inspector reports where the pass's GPU time goes.
 
+mod backdrop;
 mod depth_pyramid;
 mod fog_light;
 mod gtao;
@@ -152,6 +153,8 @@ pub(super) fn record_meshlet_dispatches(
 	}
 }
 
+use self::backdrop::BackdropPass;
+pub(crate) use self::backdrop::{BackdropTargets, create_backdrop_targets};
 use self::depth_pyramid::DepthPyramidPass;
 // Only the layout tests compare the record with the stride its layer reflects.
 #[cfg(test)]
@@ -165,7 +168,7 @@ use self::gtao::{GtaoPass, GtaoTargets};
 pub(crate) use self::gtao::{GtaoSettings, create_gtao_targets};
 use self::light_clusters::LightClusterPass;
 pub(super) use self::materials::{MATERIAL_EVALUATION_PUSH_CONSTANT_SIZE, MATERIAL_PREPASS_PIPELINES};
-use self::materials::{MaterialEvaluationPass, MaterialPrepasses, ScreenSpaceLighting};
+use self::materials::{MaterialEvaluationPass, MaterialPrepasses, ScreenSpaceLighting, evaluation_is_active};
 use self::occlusion::OcclusionCulling;
 pub(crate) use self::occlusion::OcclusionPhase;
 pub(super) use self::probe_gi::PROBE_GI_PIPELINES;
@@ -270,6 +273,8 @@ pub(crate) struct StageCounters {
 	/// Opaque material evaluation.
 	material_evaluation: ghi::CounterHandle,
 	background: ghi::CounterHandle,
+	/// The copy of the opaque scene that blended materials read behind their surfaces.
+	backdrop: ghi::CounterHandle,
 	/// The transparent layer's visibility draw, material prepasses, and material evaluation.
 	transparent: ghi::CounterHandle,
 }
@@ -313,6 +318,7 @@ impl StageCounters {
 			fog_light: builder.create_gpu_counter("fog-light"),
 			material_evaluation: builder.create_gpu_counter("material-evaluation"),
 			background: builder.create_gpu_counter("background"),
+			backdrop: builder.create_gpu_counter("backdrop"),
 			transparent: builder.create_gpu_counter("transparent"),
 		}
 	}
@@ -356,6 +362,8 @@ pub(crate) struct SinkTargets {
 	pub(crate) gtao: GtaoTargets,
 	/// The half-resolution light of the height fog, which the height fog pass reads.
 	pub(crate) fog_light: ghi::BaseImageHandle,
+	/// The copy of the opaque scene that blended materials read behind their surfaces.
+	pub(crate) backdrop: BackdropTargets,
 }
 
 /// The `IndirectDiffuseSource` enum names the pass that lights a frame's indirect diffuse light, so the frame runs only
@@ -548,6 +556,7 @@ pub(crate) struct VisibilityRenderPass {
 	/// Absent when the frame has no probe volume to light this sink from.
 	probe_resolve: Option<ProbeResolvePass>,
 	reflections: ScreenSpaceReflections,
+	backdrop: BackdropPass,
 	material_evaluation: MaterialEvaluationPass,
 	fog_light: FogLightPass,
 	stage_counters: StageCounters,
@@ -651,6 +660,16 @@ impl VisibilityRenderPass {
 			targets.lit,
 			targets.depth,
 		);
+		let backdrop = BackdropPass::new(
+			context,
+			&pipeline_manager,
+			depth_pyramid.view_descriptor_set,
+			material_evaluation_descriptor_set,
+			depth_sampler,
+			targets.lit,
+			depth,
+			targets.backdrop,
+		);
 		let visibility = set_layouts::VISIBILITY_BUFFER.binder(visibility_buffer_descriptor_set);
 		let evaluation = set_layouts::MATERIAL_EVALUATION.binder(material_evaluation_descriptor_set);
 		// The debug target pool, which the shown views write; see `MATERIAL_DEBUG_VIEWS`.
@@ -742,6 +761,7 @@ impl VisibilityRenderPass {
 			surfel_resolve,
 			probe_resolve,
 			reflections,
+			backdrop,
 			stage_counters,
 			pipeline_manager,
 			debug_views,
@@ -942,6 +962,14 @@ impl VisibilityRenderPass {
 		// frame instead of holding the scene back.
 		let background = background.and_then(|background| background.prepare(frame, sink, frame_allocator));
 		let extent = sink.extent();
+		// Blended materials read the scene behind them only from the copy, so it runs only in frames that draw one.
+		let reads_backdrop = !dispatches.transparent.is_empty()
+			&& render_info.transparent_evaluations.iter().any(|evaluation| {
+				evaluation.reads_backdrop && evaluation_is_active(&render_info.transparent_evaluation_mask, evaluation.index)
+			});
+		let backdrop = reads_backdrop.then(|| self.backdrop.prepare(pipeline_manager, extent)).flatten();
+		// The transparent phase waits for the copy it reads while the copy's pipeline compiles, as it waits for its own.
+		let draws_transparent = !dispatches.transparent.is_empty() && (backdrop.is_some() || !reads_backdrop);
 		// Each stage records its counter only when it records commands, so an idle stage reports no time.
 		let counters = self.stage_counters;
 		let skinning = skinning.filter(|_| !render_info.skinning_dispatches.is_empty());
@@ -1078,9 +1106,13 @@ impl VisibilityRenderPass {
 				c.counter(counters.background, background);
 			}
 
+			// The copy reads the opaque layer and the background, before the transparent draw overwrites the depth.
+			if let Some(stage) = &backdrop {
+				c.counter(counters.backdrop, |c| record_compute_stages(c, None, std::slice::from_ref(stage)));
+			}
 			// The visibility buffer holds one transparent layer. Resolving every blend primitive together lets
 			// normal depth testing select the nearest surface before source-over evaluation.
-			if !dispatches.transparent.is_empty() {
+			if draws_transparent {
 				c.counter(counters.transparent, |c| {
 					draw(c, VisibilityPhase::Transparent, OcclusionPhase::Test);
 					if let Some((prepasses, pipelines)) = material_prepasses {

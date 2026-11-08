@@ -3,7 +3,7 @@
 use besl::parser::Node;
 use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Texture, Value, output_slot};
 
-use super::{Geometry, LowerError, Lowering, Stage};
+use super::{Backdrop, Coordinates, Input, LowerError, Lowering, ScreenAxis, Stage};
 use crate::bemx::{self, NodeId, Type};
 
 /// The texel the `albedo` test texture holds everywhere.
@@ -12,30 +12,72 @@ const ALBEDO: [f32; 4] = [0.2, 0.4, 0.6, 0.8];
 /// The `FixedPoint` struct is a stage whose shaded point has fixed geometry, one `albedo` texture, and one `half`
 /// parameter.
 ///
-/// The frame is the identity: the tangent is X, the bitangent Y, and the normal and view direction Z.
+/// The frame is the identity: the tangent is X, the bitangent Y, and the normal and view direction Z. The time is 4,
+/// and the shaded point lies at (0.4, 0.6) on the screen, which moves by 0.001 along x and 0.002 along y across a pixel.
+/// The backdrop at screen position (u, v) has the colour (u, v, 0.5) and the position (u, 9, v). Across one pixel
+/// along x, the position moves by (0.1, 0, 0.2) and the texture coordinates by (0.01, 0); along y, by (0, 0.3, 0.4)
+/// and (0, 0.02).
+///
+/// A sample of `albedo` reads its texel. A sample of `probe` instead reports where it was asked to sample, as
+/// (coordinate x, coordinate y, change of x along x, change of y along y), so a test reads back the coordinate and the
+/// differences the lowering handed the stage.
 struct FixedPoint;
 
 impl<'a> Stage<'a> for FixedPoint {
-	fn geometry(&mut self, geometry: Geometry) -> Option<Node<'a>> {
-		Some(match geometry {
-			Geometry::Position => vector(&["1.0", "2.0", "3.0"]),
-			Geometry::Normal | Geometry::View => vector(&["0.0", "0.0", "1.0"]),
-			Geometry::Tangent => vector(&["1.0", "0.0", "0.0"]),
-			Geometry::Bitangent => vector(&["0.0", "1.0", "0.0"]),
-			Geometry::TexCoord => vector(&["0.25", "0.75"]),
+	fn input(&mut self, input: Input) -> Option<Node<'a>> {
+		Some(match input {
+			Input::Position => vector(&["1.0", "2.0", "3.0"]),
+			Input::Normal | Input::View => vector(&["0.0", "0.0", "1.0"]),
+			Input::Tangent => vector(&["1.0", "0.0", "0.0"]),
+			Input::Bitangent => vector(&["0.0", "1.0", "0.0"]),
+			Input::TexCoord => vector(&["0.25", "0.75"]),
+			Input::Time => Node::literal_expression("4.0"),
+			Input::ScreenPosition => vector(&["0.4", "0.6"]),
 		})
 	}
 
-	fn sample(&mut self, texture: &'a str) -> Result<Node<'a>, LowerError> {
-		if texture != "albedo" {
-			return Err(LowerError::UnknownTexture {
-				name: texture.to_string(),
-			});
+	fn difference(&mut self, input: Input, axis: ScreenAxis) -> Option<Node<'a>> {
+		match (input, axis) {
+			(Input::Position, ScreenAxis::X) => Some(vector(&["0.1", "0.0", "0.2"])),
+			(Input::Position, ScreenAxis::Y) => Some(vector(&["0.0", "0.3", "0.4"])),
+			(Input::TexCoord, ScreenAxis::X) => Some(vector(&["0.01", "0.0"])),
+			(Input::TexCoord, ScreenAxis::Y) => Some(vector(&["0.0", "0.02"])),
+			(Input::ScreenPosition, ScreenAxis::X) => Some(vector(&["0.001", "0.0"])),
+			(Input::ScreenPosition, ScreenAxis::Y) => Some(vector(&["0.0", "0.002"])),
+			_ => None,
+		}
+	}
+
+	fn backdrop(&mut self, backdrop: Backdrop, at: Node<'a>) -> Option<Node<'a>> {
+		let lane = |lane: &'static str| Node::accessor(at.clone(), Node::member_expression(lane));
+
+		Some(Node::call(
+			"vec3f",
+			match backdrop {
+				Backdrop::Color => vec![lane("x"), lane("y"), Node::literal_expression("0.5")],
+				Backdrop::Position => vec![lane("x"), Node::literal_expression("9.0"), lane("y")],
+			},
+		))
+	}
+
+	fn sample(&mut self, texture: &'a str, coordinates: Coordinates<'a>) -> Result<Node<'a>, LowerError> {
+		match texture {
+			"albedo" => return Ok(Node::call("sample", vec![Node::member_expression("albedo"), coordinates.value])),
+			"probe" => {}
+			_ => {
+				return Err(LowerError::UnknownTexture {
+					name: texture.to_string(),
+				});
+			}
 		}
 
+		let Coordinates { value, differences } = coordinates;
+		let [along_x, along_y] = differences.expect("The fixed point carries differences.");
+		let lane = |value: &Node<'a>, lane: &'static str| Node::accessor(value.clone(), Node::member_expression(lane));
+
 		Ok(Node::call(
-			"sample",
-			vec![Node::member_expression("albedo"), vector(&["0.5", "0.5"])],
+			"vec4f",
+			vec![lane(&value, "x"), lane(&value, "y"), lane(&along_x, "x"), lane(&along_y, "y")],
 		))
 	}
 
@@ -281,6 +323,106 @@ fn normal_maps_decode_into_world_space() {
 }
 
 #[test]
+fn normal_maps_turn_out_of_the_frame_they_are_given() {
+	let values = evaluate(&surface(
+		r#"{ name: "base", node: "normalmap", in: [0.5, 1.0, 1.0], tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, -1.0], normal: [0.0, 1.0, 0.0] },
+		{ name: "rough", node: "extract", in: "base", index: 2 },"#,
+	));
+
+	// The texel points straight along the bitangent, which this frame lays along negative z.
+	assert_close(values, ([0.0, 0.0, -1.0], -1.0));
+}
+
+#[test]
+fn images_sample_at_computed_coordinates_with_how_they_change_across_the_pixel() {
+	let values = evaluate(&surface(
+		r#"{ name: "position", node: "position" },
+		{ name: "ground", node: "swizzle", in: "position", channels: "xz" },
+		{ name: "tiled", node: "multiply", in1: "ground", in2: 2.0 },
+		{ name: "image", node: "image", texture: "probe", texcoord: "tiled" },
+		{ name: "base", node: "swizzle", in: "image", channels: "xyz" },
+		{ name: "rough", node: "extract", in: "image", index: 3 },"#,
+	));
+
+	// The position (1, 2, 3) maps to (2, 6). Along x the position moves by (0.1, 0, 0.2), so x changes by 0.2; along y it
+	// moves by (0, 0.3, 0.4), so y changes by 0.8.
+	assert_close(values, ([2.0, 6.0, 0.2], 0.8));
+}
+
+#[test]
+fn only_position_and_texture_coordinates_move_a_coordinate() {
+	let flowed = evaluate(&surface(
+		r#"{ name: "flow", node: "image", texture: "albedo", type: "vector2" },
+		{ name: "uv", node: "texcoord" },
+		{ name: "half", node: "parameter", parameter: "half", type: "float" },
+		{ name: "scaled", node: "multiply", in1: "uv", in2: 4.0 },
+		{ name: "offset", node: "add", in1: "scaled", in2: "half" },
+		{ name: "flowed", node: "add", in1: "offset", in2: "flow" },
+		{ name: "image", node: "image", texture: "probe", texcoord: "flowed" },
+		{ name: "base", node: "swizzle", in: "image", channels: "xyz" },
+		{ name: "rough", node: "extract", in: "image", index: 3 },"#,
+	));
+
+	// (0.25, 0.75) × 4 + 0.5 + the texel's (0.2, 0.4). The texel and the parameter hold still, so only the texture
+	// coordinates' change of (0.01, 0.02) counts, four times over.
+	assert_close(flowed, ([1.7, 3.9, 0.04], 0.08));
+
+	let still = evaluate(&surface(
+		r#"{ name: "half", node: "parameter", parameter: "half", type: "float" },
+		{ name: "at", node: "combine", in1: "half", in2: 0.25 },
+		{ name: "image", node: "image", texture: "probe", texcoord: "at" },
+		{ name: "base", node: "swizzle", in: "image", channels: "xyz" },
+		{ name: "rough", node: "extract", in: "image", index: 3 },"#,
+	));
+
+	assert_close(still, ([0.5, 0.25, 0.0], 0.0));
+}
+
+#[test]
+fn time_comes_from_the_stage_and_holds_still_across_the_pixel() {
+	let values = evaluate(&surface(
+		r#"{ name: "time", node: "time" },
+		{ name: "uv", node: "texcoord" },
+		{ name: "scrolled", node: "add", in1: "uv", in2: "time" },
+		{ name: "image", node: "image", texture: "probe", texcoord: "scrolled" },
+		{ name: "base", node: "swizzle", in: "image", channels: "xyz" },
+		{ name: "rough", node: "extract", in: "image", index: 3 },"#,
+	));
+
+	// (0.25, 0.75) scrolled by 4 seconds, and only the texture coordinates change across the pixel.
+	assert_close(values, ([4.25, 4.75, 0.01], 0.02));
+}
+
+#[test]
+fn the_backdrop_reads_at_the_shaded_point_or_where_the_graph_asks() {
+	let values = evaluate(&surface(
+		r#"{ name: "behind", node: "scenecolor" },
+		{ name: "base", node: "swizzle", in: "behind", channels: "xyz" },
+		{ name: "screen", node: "screenposition" },
+		{ name: "shifted", node: "add", in1: "screen", in2: [0.1, 0.0] },
+		{ name: "floor", node: "sceneposition", texcoord: "shifted" },
+		{ name: "rough", node: "extract", in: "floor", index: 0 },"#,
+	));
+
+	// The colour reads at the shaded point's (0.4, 0.6); the position at (0.5, 0.6), whose x it keeps.
+	assert_close(values, ([0.4, 0.6, 0.5], 0.5));
+}
+
+#[test]
+fn screen_positions_change_by_a_pixel_across_the_pixel() {
+	let values = evaluate(&surface(
+		r#"{ name: "screen", node: "screenposition" },
+		{ name: "tiled", node: "multiply", in1: "screen", in2: 3.0 },
+		{ name: "image", node: "image", texture: "probe", texcoord: "tiled" },
+		{ name: "base", node: "swizzle", in: "image", channels: "xyz" },
+		{ name: "rough", node: "extract", in: "image", index: 3 },"#,
+	));
+
+	// (0.4, 0.6) × 3, changing by three pixels' 0.001 along x and 0.002 along y.
+	assert_close(values, ([1.2, 1.8, 0.003], 0.006));
+}
+
+#[test]
 fn geometry_and_parameters_come_from_the_stage() {
 	let values = evaluate(&surface(
 		r#"{ name: "base", node: "viewdirection" },
@@ -316,16 +458,6 @@ fn what_the_stage_cannot_supply_is_reported() {
 			roughness
 		),
 		LowerError::UnsupportedTexCoord { index: 1, .. }
-	));
-	assert!(matches!(
-		failure(
-			&surface_with(
-				r#"{ name: "uv", node: "texcoord" }, { name: "tiled", node: "multiply", in1: "uv", in2: 4.0 },
-				{ name: "image", node: "image", texture: "albedo", texcoord: "tiled" }, { name: "rough", node: "extract", in: "image" },"#
-			),
-			roughness
-		),
-		LowerError::UnsupportedTextureCoordinates { .. }
 	));
 	assert_eq!(
 		failure(

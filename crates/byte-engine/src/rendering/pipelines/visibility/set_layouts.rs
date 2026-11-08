@@ -53,6 +53,7 @@ layout!(GTAO, "layouts::gtao::Gtao");
 layout!(GTAO_BLUR, "layouts::gtao_blur::GtaoBlur");
 layout!(GTAO_UPSCALE, "layouts::gtao_upscale::GtaoUpscale");
 layout!(DEPTH_PYRAMID, "layouts::depth_pyramid::DepthPyramid");
+layout!(BACKDROP, "layouts::backdrop::Backdrop");
 layout!(HIZ_BASE, "layouts::hiz_base::HizBase");
 layout!(HIZ_TAIL, "layouts::hiz_tail::HizTail");
 layout!(SHADOW_DEPTH_PYRAMID, "layouts::shadow_depth_pyramid::ShadowDepthPyramid");
@@ -140,7 +141,8 @@ mod tests {
 	use super::super::layout::{ShaderMeshLevel, ShaderMeshletData};
 	use super::super::render_pass::{FogLightShaderParameters, ScreenViewData};
 	use super::super::shader_data::{
-		LightClusterParameters, LightingData, MaterialData, ReflectionShaderParameters, ShaderMesh, ShaderViewData,
+		LightClusterParameters, LightingData, MaterialData, ReflectionShaderParameters, ShaderFrame, ShaderMesh,
+		ShaderViewData,
 	};
 	use super::*;
 
@@ -156,6 +158,7 @@ mod tests {
 
 		// A table reflects the stride of one record, and a single record reflects its own size.
 		assert_eq!(stride(&SCENE, "views"), size_of::<ShaderViewData>());
+		assert_eq!(stride(&SCENE, "frame"), size_of::<ShaderFrame>());
 		assert_eq!(stride(&SCENE, "meshes"), size_of::<ShaderMesh>());
 		assert_eq!(stride(&SCENE, "meshlets"), size_of::<ShaderMeshletData>());
 		assert_eq!(stride(&SCENE, "materials"), size_of::<MaterialData>());
@@ -190,6 +193,7 @@ mod tests {
 			&GTAO_BLUR,
 			&GTAO_UPSCALE,
 			&DEPTH_PYRAMID,
+			&BACKDROP,
 			&HIZ_BASE,
 			&HIZ_TAIL,
 			&SHADOW_DEPTH_PYRAMID,

@@ -7,6 +7,7 @@
 		"material-parameters",
 		"shadow-maps",
 		"skinning",
-		"surfel-gi"
+		"surfel-gi",
+		"transparent-phase"
 	]
 }

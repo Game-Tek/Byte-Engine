@@ -884,6 +884,7 @@ mod tests {
 			.add(bemx::Node::NormalMap {
 				value: normal_texture,
 				scale,
+				frame: [None; 3],
 			})
 			.unwrap();
 		let occlusion_texture = graph.image(10, bemx::Type::Vector4).unwrap();

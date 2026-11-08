@@ -73,6 +73,7 @@ pub(crate) fn material_from_gltf(material: &gltf::Material) -> Result<ImportedMa
 			normal,
 			emission: Some(emission),
 			occlusion,
+			transmission: None,
 		},
 		material.double_sided(),
 		alpha_mode(material),
@@ -195,7 +196,7 @@ mod tests {
 
 		assert_eq!(material.alpha_mode, AlphaMode::Blend);
 
-		let Node::NormalMap { value, scale } = graph.node(surface.normal.unwrap()) else {
+		let Node::NormalMap { value, scale, .. } = graph.node(surface.normal.unwrap()) else {
 			panic!("A normal texture should become a normal map.");
 		};
 		assert_eq!(image(graph, *value), Some((0, Type::Vector3)));

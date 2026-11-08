@@ -40,6 +40,56 @@ const TEXTURED_GRAPH: &str = r#"{
 	],
 }"#;
 
+/// A graph that samples every image at coordinates it computes: two normal maps at world-space coordinates from the
+/// position, scrolled by the time and turned out of the world frame those coordinates follow, and a base colour tiled
+/// from the mesh's own coordinates. It reads [`textured_parameters`].
+const WORLD_MAPPED_GRAPH: &str = r#"{
+	nodes: [
+		{ name: "position", node: "position" },
+		{ name: "ground", node: "swizzle", in: "position", channels: "xz" },
+		{ name: "time", node: "time" },
+		{ name: "drift", node: "multiply", in1: "time", in2: [0.03, 0.02] },
+		{ name: "scaled", node: "multiply", in1: "ground", in2: 0.5 },
+		{ name: "near", node: "add", in1: "scaled", in2: "drift" },
+		{ name: "far", node: "multiply", in1: "ground", in2: [0.13, 0.11] },
+		{ name: "near_texel", node: "image", texture: "normal_map", type: "vector3", texcoord: "near" },
+		{ name: "far_texel", node: "image", texture: "normal_map", type: "vector3", texcoord: "far" },
+		{ name: "near_normal", node: "normalmap", in: "near_texel", tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, -1.0], normal: [0.0, 1.0, 0.0] },
+		{ name: "far_normal", node: "normalmap", in: "far_texel", tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, -1.0], normal: [0.0, 1.0, 0.0] },
+		{ name: "both", node: "add", in1: "near_normal", in2: "far_normal" },
+		{ name: "blended", node: "normalize", in: "both" },
+		{ name: "uv", node: "texcoord" },
+		{ name: "tiled", node: "multiply", in1: "uv", in2: 4.0 },
+		{ name: "albedo", node: "image", texture: "base_color", type: "vector3", texcoord: "tiled" },
+		{ name: "surface", node: "surface", base_color: "albedo", normal: "blended", roughness: 0.05 },
+	],
+}"#;
+
+/// A blended graph that reads the scene behind its surface the way water does: it bends the screen position by a normal
+/// map, reads the backdrop's light and position there, dims the light by the distance it crosses, and writes it as
+/// transmission. It reads [`textured_parameters`].
+const BACKDROP_GRAPH: &str = r#"{
+	nodes: [
+		{ name: "position", node: "position" },
+		{ name: "ground", node: "swizzle", in: "position", channels: "xz" },
+		{ name: "texel", node: "image", texture: "normal_map", type: "vector3", texcoord: "ground" },
+		{ name: "bumped", node: "normalmap", in: "texel" },
+		{ name: "bend", node: "swizzle", in: "bumped", channels: "xz" },
+		{ name: "offset", node: "multiply", in1: "bend", in2: 0.02 },
+		{ name: "screen", node: "screenposition" },
+		{ name: "refracted", node: "add", in1: "screen", in2: "offset" },
+		{ name: "behind", node: "scenecolor", texcoord: "refracted" },
+		{ name: "floor", node: "sceneposition", texcoord: "refracted" },
+		{ name: "path", node: "subtract", in1: "floor", in2: "position" },
+		{ name: "length", node: "magnitude", in: "path" },
+		{ name: "absorbed", node: "multiply", in1: "length", in2: -0.4 },
+		{ name: "kept", node: "exp", in: "absorbed" },
+		{ name: "transmitted", node: "multiply", in1: "behind", in2: "kept" },
+		{ name: "albedo", node: "image", texture: "base_color", type: "vector3" },
+		{ name: "surface", node: "surface", base_color: "albedo", normal: "bumped", roughness: 0.05, transmission: "transmitted" },
+	],
+}"#;
+
 /// The parameters [`TEXTURED_GRAPH`] reads, in binding order.
 fn textured_parameters() -> Vec<MaterialParameter> {
 	vec![
@@ -373,13 +423,15 @@ fn a_dynamic_parameter_read_with_another_type_is_reported() {
 
 #[test]
 fn material_evaluation_of_a_textured_graph_produces_valid_besl() {
-	let graph = graph(TEXTURED_GRAPH);
-	let parameters = textured_parameters();
-	let shader = material_generator()
-		.generate(&graph, &parameters)
-		.expect("textured graph should generate")
-		.expect("the pipelines mode builds an evaluation shader");
-	besl::lex(shader).expect("generated normal-mapped program should link");
+	for source in [TEXTURED_GRAPH, WORLD_MAPPED_GRAPH, BACKDROP_GRAPH] {
+		let graph = graph(source);
+		let parameters = textured_parameters();
+		let shader = material_generator()
+			.generate(&graph, &parameters)
+			.expect("textured graph should generate")
+			.expect("the pipelines mode builds an evaluation shader");
+		besl::lex(shader).expect("generated normal-mapped program should link");
+	}
 }
 
 /// A world-space normal that is not a normal map is projected onto the tangent frame, which has to link as well.
@@ -519,8 +571,14 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
 
 	// The textured graph reaches every optional reconstruction: texture coordinates, the tangent frame, and samples.
-	// The dynamic graph reads the parameter buffer at every value width.
-	for (source, parameters) in [(TEXTURED_GRAPH, textured_parameters()), (DYNAMIC_GRAPH, dynamic_parameters())] {
+	// The world-mapped graph samples at computed coordinates. The dynamic graph reads the parameter buffer at every
+	// value width.
+	for (source, parameters) in [
+		(TEXTURED_GRAPH, textured_parameters()),
+		(WORLD_MAPPED_GRAPH, textured_parameters()),
+		(BACKDROP_GRAPH, textured_parameters()),
+		(DYNAMIC_GRAPH, dynamic_parameters()),
+	] {
 		let graph = graph(source);
 		let shader = material_generator()
 			.generate(&graph, &parameters)
@@ -647,7 +705,11 @@ fn uber_arm_keys_follow_program_values_and_phase() {
 const MASKED_GRAPH: &str = r#"{
 	nodes: [
 		{ name: "albedo", node: "image", texture: "base_color", type: "vector3" },
-		{ name: "mask", node: "image", texture: "opacity", type: "float" },
+		{ name: "uv", node: "texcoord" },
+		{ name: "tiled", node: "multiply", in1: "uv", in2: 2.0 },
+		{ name: "time", node: "time" },
+		{ name: "scrolled", node: "add", in1: "tiled", in2: "time" },
+		{ name: "mask", node: "image", texture: "opacity", type: "float", texcoord: "scrolled" },
 		{ name: "strength", node: "parameter", parameter: "strength", type: "float" },
 		{ name: "fade", node: "parameter", parameter: "fade", type: "float" },
 		{ name: "scaled", node: "multiply", in1: "mask", in2: "strength" },
@@ -666,8 +728,9 @@ fn masked_parameters() -> Vec<MaterialParameter> {
 	]
 }
 
-/// Verifies both coverage shaders link with an arm that samples a separate opacity texture and reads static and
-/// dynamic parameters, beside an arm whose graph leaves `opacity` out, and without arms.
+/// Verifies both coverage shaders link with an arm that samples a separate opacity texture at tiled coordinates
+/// scrolled by the time and reads static and dynamic parameters, beside an arm whose graph leaves `opacity` out, and
+/// without arms.
 #[test]
 fn coverage_shaders_produce_valid_besl() {
 	let generator = material_generator();
@@ -714,40 +777,98 @@ fn coverage_shaders_produce_valid_besl() {
 	}
 }
 
-/// Verifies a masked material whose `opacity` reads the normal fails to bake, because the masked passes carry only the
-/// vertex UV.
+/// Verifies a masked material whose `opacity` reads what the masked passes lack fails to bake: the normal, because
+/// they carry only the vertex UV, and the scene behind the surface, because they draw before it exists.
 #[test]
-fn coverage_shaders_reject_opacity_that_reads_geometry() {
-	let graph = graph(
-		r#"{
-	nodes: [
-		{ name: "normal", node: "normal" },
-		{ name: "up", node: "extract", in: "normal", index: 1 },
-		{ name: "surface", node: "surface", opacity: "up" },
-	],
-}"#,
-	);
+fn coverage_shaders_reject_opacity_that_reads_unavailable_values() {
 	let model = resource_management::resources::material::RenderModel {
 		name: "Visibility".to_string(),
 		pass: "MaterialEvaluation".to_string(),
 	};
-	let material = AssembledMaterial {
-		model: &model,
-		graph: &graph,
-		parameters: &[],
-		identity: 0,
-		static_values: &[],
-		alpha_mode: resource_management::types::AlphaMode::Mask(0.5),
-	};
-	let arms = [AssembledArm {
-		key: "1",
-		material: &material,
-	}];
+	for (reads, expected) in [
+		(r#"{ name: "read", node: "normal" }"#, "Normal"),
+		(
+			r#"{ name: "uv", node: "texcoord" }, { name: "read", node: "scenecolor", texcoord: "uv" }"#,
+			"scene behind the surface",
+		),
+	] {
+		let graph = graph(&format!(
+			r#"{{ nodes: [
+				{reads},
+				{{ name: "first", node: "extract", in: "read", index: 0 }},
+				{{ name: "surface", node: "surface", opacity: "first" }},
+			] }}"#
+		));
+		let material = AssembledMaterial {
+			model: &model,
+			graph: &graph,
+			parameters: &[],
+			identity: 0,
+			static_values: &[],
+			alpha_mode: resource_management::types::AlphaMode::Mask(0.5),
+		};
+		let arms = [AssembledArm {
+			key: "1",
+			material: &material,
+		}];
 
-	let Err(error) = material_generator().coverage_program(CoveragePass::Depth, &arms) else {
-		panic!("a masked opacity that reads the normal should fail to generate");
-	};
-	assert!(error.contains("Normal"), "{error}");
+		let Err(error) = material_generator().coverage_program(CoveragePass::Depth, &arms) else {
+			panic!("a masked opacity that reads {reads} should fail to generate");
+		};
+		assert!(error.contains(expected), "{error}");
+	}
+}
+
+/// Verifies `sceneposition` rebuilds the world position of the backdrop from its linear depth through the screen view
+/// constants and the camera's inverse view, at the screen's middle and off it, and at a wide aspect ratio.
+#[test]
+fn backdrop_position_rebuilds_world_positions_in_the_besl_vm() {
+	let executable = compile_with(
+		r#"
+		main: fn (input: StageInput, material_evaluation: MaterialEvaluation, scene: Scene) -> void {
+			results.centre = backdrop_position(material_evaluation, scene.views.views[0], vec2f(0.5, 0.5));
+			results.corner = backdrop_position(material_evaluation, scene.views.views[0], vec2f(0.75, 0.25));
+		}
+		"#,
+		vec![
+			parse_besl_function(BACKDROP_POSITION_SOURCE, "backdrop_position"),
+			results_binding(members("vec3f", &["centre", "corner"]), 0),
+		],
+	);
+	// A vertical field of view of 90 degrees reaches one unit up per unit of depth, and an aspect ratio of two twice as
+	// far across, so the projection's scales are 0.5 and 1. These are the constants `screen_view_data` builds from them
+	// for a 4 by 2 pixel pyramid. The camera stands ten units along x.
+	let mut screen_view = buffer(&executable, slot(&executable, "ssgi_view"));
+	screen_view.write("pixel_to_ray_mul", Value::Vec2F([1.0, -1.0])).unwrap();
+	screen_view.write("pixel_to_ray_add", Value::Vec2F([-1.5, 0.5])).unwrap();
+	screen_view.write("view_z_sign", Value::F32(1.0)).unwrap();
+	let mut views = buffer(&executable, slot(&executable, "views"));
+	views
+		.write_array_member(
+			0,
+			"inverse_view",
+			Value::Mat4x3F([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 10.0, 0.0, 0.0]),
+		)
+		.unwrap();
+	let mut depth = texture_2d(2, 2, &[[4.0, 0.0, 0.0, 1.0]; 4]);
+	let mut results = buffer(&executable, slot(&executable, "results"));
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(slot(&executable, "views"), &mut views);
+	descriptors.bind_buffer(slot(&executable, "ssgi_view"), &mut screen_view);
+	descriptors.bind_texture(slot(&executable, "backdrop_depth"), &mut depth);
+	descriptors.bind_buffer(slot(&executable, "results"), &mut results);
+	run_at(&executable, &mut descriptors, [0, 0]);
+	drop(descriptors);
+
+	for (name, expected) in [("centre", [10.0, 0.0, 4.0]), ("corner", [14.0, 2.0, 4.0])] {
+		let Value::Vec3F(actual) = results.read(name).expect("backdrop position") else {
+			panic!("Unexpected backdrop position type.");
+		};
+		assert!(
+			actual.iter().zip(expected).all(|(actual, expected)| (actual - expected).abs() < 0.001),
+			"Expected the {name} backdrop at {expected:?}, found {actual:?}. The most likely cause is a view ray built from the wrong field of view or screen axis."
+		);
+	}
 }
 
 /// Verifies only masked materials take arms in the coverage shaders, under the same key in both.
@@ -792,11 +913,17 @@ fn hit_generator() -> VisibilityShaderGenerator {
 	})
 }
 
-/// A material's closest-hit shader links for every input its body reaches: textures sampled through ray cones, a
-/// tangent frame, static and dynamic parameters, and emission.
+/// A material's closest-hit shader links for every input its body reaches: textures sampled through ray cones, at the
+/// mesh's coordinates and at coordinates computed from the position, a tangent frame, static and dynamic parameters,
+/// and emission.
 #[test]
 fn material_hit_shaders_produce_valid_besl() {
-	for (source, parameters) in [(TEXTURED_GRAPH, textured_parameters()), (DYNAMIC_GRAPH, dynamic_parameters())] {
+	for (source, parameters) in [
+		(TEXTURED_GRAPH, textured_parameters()),
+		(WORLD_MAPPED_GRAPH, textured_parameters()),
+		(BACKDROP_GRAPH, textured_parameters()),
+		(DYNAMIC_GRAPH, dynamic_parameters()),
+	] {
 		let graph = graph(source);
 		let shader = hit_generator()
 			.generate_hit(&graph, &parameters)

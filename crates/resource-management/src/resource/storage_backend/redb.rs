@@ -2506,6 +2506,7 @@ mod tests {
 				graph: String::new(),
 				parameters: Vec::new(),
 				identity: 0,
+				reads_backdrop: false,
 			},
 		};
 		VariantModel {

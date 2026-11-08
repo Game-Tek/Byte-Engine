@@ -67,11 +67,33 @@ material_hit_uv: fn (input: StageInput) -> void {
 	let vertex_uv: vec2f = vertex_uv0 + barycentric.x * uv_edge1 + barycentric.y * uv_edge2;
 	let world_area: f32 = length(cross(world_edge1, world_edge2));
 	let uv_area: f32 = abs(uv_edge1.x * uv_edge2.y - uv_edge2.x * uv_edge1.y);
-	let cone_width: f32 = HIT_CONE_SPREAD * input.hit_distance * length(input.ray_direction);
-	let footprint: f32 = cone_width / max(dot(surface_normal, V), 0.01)
-		* sqrt(uv_area / max(world_area, 0.000000000001));
+	let footprint: f32 = surface_footprint * sqrt(uv_area / max(world_area, 0.000000000001));
 	let uv_derivative_x: vec2f = vec2f(footprint, 0.0);
 	let uv_derivative_y: vec2f = vec2f(0.0, footprint);
+}
+"#;
+
+/// Sizes the ray's footprint along the surface, which both [`MATERIAL_HIT_UV_SOURCE`] and
+/// [`MATERIAL_HIT_POSITION_DIFFERENCE_SOURCE`] scale: the cone's width at the hit, divided by the cosine it meets the
+/// surface at.
+pub(crate) const MATERIAL_HIT_FOOTPRINT_SOURCE: &str = r#"
+material_hit_footprint: fn (input: StageInput) -> void {
+	let surface_footprint: f32 = HIT_CONE_SPREAD * input.hit_distance * length(input.ray_direction)
+		/ max(dot(surface_normal, V), 0.01);
+}
+"#;
+
+/// Sizes how the hit point moves across the ray's footprint, for a material that samples at coordinates computed from
+/// the position, the way [`MATERIAL_HIT_UV_SOURCE`] sizes the texture coordinates' change.
+///
+/// Two perpendicular unit axes in the surface's plane carry the footprint, so a sample at world-space coordinates picks
+/// the level of detail the ray sees, whichever way the coordinates run.
+pub(crate) const MATERIAL_HIT_POSITION_DIFFERENCE_SOURCE: &str = r#"
+material_hit_position_difference: fn (input: StageInput) -> void {
+	let position_axis: vec3f = normalize(world_edge1);
+	let position_derivative_x: vec3f = position_axis * surface_footprint;
+	// Both factors are unit length and perpendicular, so their cross product is too.
+	let position_derivative_y: vec3f = cross(surface_normal, position_axis) * surface_footprint;
 }
 "#;
 

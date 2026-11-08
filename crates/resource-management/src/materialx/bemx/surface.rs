@@ -173,6 +173,9 @@ pub(super) fn convert(
 		normal,
 		emission,
 		occlusion,
+		// Transmission inputs aren't converted, because a shading model's transmission is a closure BEMX can't
+		// describe.
+		transmission: None,
 	})
 }
 

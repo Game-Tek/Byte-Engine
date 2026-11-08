@@ -162,6 +162,15 @@ pub(crate) struct ShaderViewData {
 	pub(crate) far: f32,
 }
 
+/// The `ShaderFrame` struct is the scene layer's `frame` record: what every pass of a frame shares, written once a
+/// frame.
+#[repr(C)]
+#[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct ShaderFrame {
+	/// The frame clock's elapsed seconds, which a material's `time` node reads.
+	pub(crate) time: f32,
+}
+
 impl From<View> for ShaderViewData {
 	fn from(view: View) -> Self {
 		Self {

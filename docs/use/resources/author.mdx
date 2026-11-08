@@ -111,8 +111,9 @@ Then mark the material masked and two-sided:
 ```
 
 The surface covers a pixel where `opacity` is at least the cutoff, in its
-shadows too. A masked `opacity` can read images, parameters, and texture
-coordinates, but not the position, normal, or view direction. A variant can set
+shadows too. A masked `opacity` can read images, parameters, texture
+coordinates, and the time, but not the position, normal, view direction, or
+anything on the screen. A variant can set
 `alpha_mode`, `alpha_cutoff`, or `double_sided` to change its parent's.
 
 ### Change a parameter at runtime

@@ -33,7 +33,7 @@ use serde_json::{Map, Value as Json};
 use super::graph::{
 	BinaryOperator, Channel, Comparison, Graph, GraphBuilder, GraphError, Node, NodeId, Surface, Type, UnaryOperator, Value,
 };
-use super::{BEMX_DOCS_PATH, COMBINE_INPUTS, DEFAULT_LUMINANCE_WEIGHTS, NUMBERED_INPUTS};
+use super::{BEMX_DOCS_PATH, COMBINE_INPUTS, DEFAULT_LUMINANCE_WEIGHTS, NORMAL_MAP_FRAME_INPUTS, NUMBERED_INPUTS};
 use crate::online_docs_url;
 
 /// The fields every node carries regardless of its kind.
@@ -235,7 +235,7 @@ impl<'d> Reader<'d, '_> {
 					r#type: field.r#type("type")?.ok_or_else(|| field.missing("type"))?,
 				}
 			}
-			"position" | "normal" | "tangent" | "bitangent" | "viewdirection" => {
+			"position" | "normal" | "tangent" | "bitangent" | "viewdirection" | "time" | "screenposition" => {
 				field.only(&[])?;
 
 				match kind {
@@ -243,6 +243,8 @@ impl<'d> Reader<'d, '_> {
 					"normal" => Node::Normal,
 					"tangent" => Node::Tangent,
 					"bitangent" => Node::Bitangent,
+					"time" => Node::Time,
+					"screenposition" => Node::ScreenPosition,
 					_ => Node::ViewDirection,
 				}
 			}
@@ -251,6 +253,16 @@ impl<'d> Reader<'d, '_> {
 
 				Node::TexCoord {
 					index: field.integer("index")?.unwrap_or(0),
+				}
+			}
+			"scenecolor" | "sceneposition" => {
+				field.only(&["texcoord"])?;
+
+				let texcoord = self.input(field, "texcoord")?;
+
+				match kind {
+					"scenecolor" => Node::SceneColor { texcoord },
+					_ => Node::ScenePosition { texcoord },
 				}
 			}
 			"image" => {
@@ -397,11 +409,16 @@ impl<'d> Reader<'d, '_> {
 				}
 			}
 			"normalmap" => {
-				field.only(&["in", "scale"])?;
+				field.only(&["in", "scale", "normal", "tangent", "bitangent"])?;
 
 				Node::NormalMap {
 					value: self.required(field, "in")?,
 					scale: self.or(field, "scale", 1.0)?,
+					frame: [
+						self.input(field, NORMAL_MAP_FRAME_INPUTS[0])?,
+						self.input(field, NORMAL_MAP_FRAME_INPUTS[1])?,
+						self.input(field, NORMAL_MAP_FRAME_INPUTS[2])?,
+					],
 				}
 			}
 			"surface" => {
@@ -413,6 +430,7 @@ impl<'d> Reader<'d, '_> {
 					"normal",
 					"emission",
 					"occlusion",
+					"transmission",
 				])?;
 
 				Node::Surface(Surface {
@@ -423,6 +441,7 @@ impl<'d> Reader<'d, '_> {
 					normal: self.input(field, "normal")?,
 					emission: self.input(field, "emission")?,
 					occlusion: self.input(field, "occlusion")?,
+					transmission: self.input(field, "transmission")?,
 				})
 			}
 			_ => {

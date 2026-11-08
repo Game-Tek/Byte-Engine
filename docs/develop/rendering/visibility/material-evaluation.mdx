@@ -1,12 +1,13 @@
 ---
 title: Material evaluation modes
-description: Understand how the uber mode bakes one material evaluation shader per phase and shades the screen in tiles, how the masked passes test opacity in coverage shaders, and the rules a change must keep.
+description: Understand how the uber mode bakes one material evaluation shader per phase and shades the screen in tiles, how the masked passes test opacity in coverage shaders, how images sample at computed coordinates, where materials read the time, and the rules a change must keep.
 icon: LayoutGrid
 ---
 
 Read this page before you change material evaluation, the shaders the
-visibility generator builds for it, how a bake assembles the uber shaders, or
-how the masked passes test opacity.
+visibility generator builds for it, how a bake assembles the uber shaders,
+how the masked passes test opacity, or how images sample at computed
+coordinates.
 What each mode accepts and draws is specified under
 [materials](/docs/reference/rendering#materials) in the rendering reference,
 and how a project picks a mode is in
@@ -85,6 +86,42 @@ shader's ID changes with what it holds. The manager publishes them in
 both coverage shaders hold its arm. A development build rebakes both when one
 is missing, as it does for an uber shader.
 
+## Sampling at computed coordinates
+
+A compute shader has no derivative instructions, so the material prefix builds
+its own: `compute_triangle_interpolation` differentiates the barycentrics
+analytically, and the prefix turns them into `position_derivative_x` and
+`_y` and `uv_derivative_x` and `_y`, the change of each across one pixel.
+A sample at the mesh's coordinates passes `uv_derivative_x` and `_y` straight
+to `sample_texture_2d_array_grad`.
+
+An image whose `texcoord` input is computed needs the change of that value
+instead. `Lowering` in `resource-management/src/bemx/besl.rs` gets it by finite
+differences, the measure a fragment shader's derivative instructions take:
+it lowers the coordinate's nodes a second and a third time, with `position`
+and `texcoord` moved one pixel along x and along y by `Stage::difference`, and
+subtracts the coordinate at the pixel. Only the nodes on a path from `position`
+or `texcoord` to the coordinate are lowered again. Every other input, an `image`
+or a `normalmap` included, keeps its value at the pixel, so a flow map costs
+one sample and not three. A stage without differences, such as the masked
+coverage fragments, returns `None` from `Stage::difference` and samples with
+the rasterizer's derivatives.
+
+Ray tracing hits have no pixel neighbours. The hit prefix sizes the change of
+both from the ray cone instead: `MATERIAL_HIT_UV_SOURCE` for texture
+coordinates, and `MATERIAL_HIT_POSITION_DIFFERENCE_SOURCE` for the position,
+which the hit shader emits only for a material whose coordinates are computed
+from the position.
+
+## Time
+
+A graph's `time` node reads `time` in the `Frame` record of
+`layouts/scene.besl`, the scene layer's `frame` buffer. `prepare` in
+`visibility/manager.rs` writes the `MediaTime` that `PipelineManager::prepare`
+receives into it once a frame, so a pass that later reads `time`, such as a
+vertex displacement, finds it in the scene layer every visibility shader takes.
+A material that reads no `time` lowers to no read of it.
+
 ## Arm keys
 
 `uber_arm_key` in `visibility/shader_generator.rs` hashes the program identity,
@@ -137,6 +174,14 @@ drawn.
   until its phase's shader holds its arm, and a masked material until both
   coverage shaders hold its arm, so no instance is admitted against a shader
   that can't shade or test it.
+- **Measure computed coordinates, don't assume them.** A stage samples an image
+  at a computed coordinate with the differences the lowering hands it. Don't
+  reuse `uv_derivative_x` and `_y` for it: a coordinate that tiles four times
+  needs four times the change, or the sample picks too sharp a level of detail
+  and shimmers.
+- **Keep frame values out of `View`.** A value the whole frame shares, such
+  as `time`, goes in `Frame`, which is written once, and not into each of the
+  views.
 - **Keep one masking mechanism.** Imported and authored materials reach the
   masked passes only through their graph's `opacity`. Don't add a second
   path, such as a coverage texture slot, for one kind of material.
@@ -155,5 +200,10 @@ drawn.
   with arms that sample a separate opacity texture and read static and dynamic
   values, that an `opacity` that reads the normal fails, and that only masked
   materials take coverage arms.
+- The BEMX lowering tests check, in the BESL VM, that an image samples at its
+  computed coordinate with the change that coordinate makes across a pixel,
+  that only `position` and `texcoord` change it, that a coordinate set
+  from a parameter changes by nothing, and that `time` reads the stage's
+  value.
 - The features tests check that each mode keeps its own engine assets and names
   its assembled resources, and that an unknown mode is rejected.

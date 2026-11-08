@@ -132,6 +132,7 @@ impl ParameterKind {
 impl MaterialProgram {
 	/// Keeps `graph` and `parameters` so a renderer can generate the material's surface code after the bake.
 	pub(crate) fn new(graph: &bemx::Graph, parameters: &[MaterialParameter]) -> Result<Self, String> {
+		let reads_backdrop = graph.reads_backdrop();
 		let graph = serde_json::to_string(graph).map_err(|error| {
 			format!("Failed to store the material graph: {error}. The most likely cause is a non-finite constant in it.")
 		})?;
@@ -154,6 +155,7 @@ impl MaterialProgram {
 			identity: crate::resource::compression::payload_hash(&identity),
 			graph,
 			parameters,
+			reads_backdrop,
 		})
 	}
 
@@ -238,6 +240,7 @@ impl BEMAAssetHandler {
 			})
 			.collect();
 		let (shaders, program) = program?;
+		backdrop_needs_blending(program.reads_backdrop, alpha_mode).map_err(|problem| invalid(&problem))?;
 
 		let resource = MaterialModel {
 			double_sided,
@@ -295,6 +298,7 @@ impl BEMAAssetHandler {
 		// A variant keeps each of its material's coverage settings it leaves out.
 		let (alpha_mode, double_sided) = surface_coverage(asset, material_repr.alpha_mode, material_repr.double_sided)
 			.map_err(|problem| invalid(&problem))?;
+		backdrop_needs_blending(material_repr.program.reads_backdrop, alpha_mode).map_err(|problem| invalid(&problem))?;
 		let resource = VariantModel {
 			material,
 			variables,
@@ -925,6 +929,16 @@ async fn store_generated_shader(
 	})?;
 
 	store_model_owned::<Shader, _>(context, shader_id, shader, shader_bytes).await
+}
+
+/// Fails a material of `alpha_mode` whose graph `reads_backdrop`, the scene behind its surface, unless it blends: only
+/// the transparent phase has the opaque scene drawn behind its surfaces.
+fn backdrop_needs_blending(reads_backdrop: bool, alpha_mode: AlphaMode) -> Result<(), String> {
+	if !reads_backdrop || matches!(alpha_mode, AlphaMode::Blend) {
+		return Ok(());
+	}
+
+	Err("its graph reads `scenecolor` or `sceneposition`, but its `alpha_mode` isn't `\"Blend\"`. The most likely cause is a water or glass graph given to an opaque material, or a variant that turns a blended parent opaque. Set `alpha_mode` to `\"Blend\"`.".to_string())
 }
 
 /// Reports why a `.bema` file of the given `kind`, such as `"material"`, can't bake, and returns the load error.
@@ -1620,9 +1634,26 @@ pub mod tests {
 		assert_eq!(solved.resource().static_values().collect::<Vec<_>>(), stored);
 	}
 
-	/// Returns an asset manager over a foliage material whose `opacity` reads its own opacity map, declared with
+	/// The graph of [`coverage_asset_manager`]'s material: an `opacity` read from its `strength` parameter.
+	const COVERAGE_GRAPH: &str = r#"{
+		nodes: [
+			{ name: "strength", node: "parameter", parameter: "strength", type: "float" },
+			{ name: "surface", node: "surface", opacity: "strength" },
+		],
+	}"#;
+
+	/// Returns an asset manager over a foliage material whose `opacity` reads its `strength` parameter, declared with
 	/// `material_fields`, and over each of `variants`, a name and the fields after its `parent` and `variables`.
 	fn coverage_asset_manager(material_fields: &str, variants: &[(&str, &str)]) -> (AssetManager, MemoryStorageBackend) {
+		coverage_asset_manager_with_graph(COVERAGE_GRAPH, material_fields, variants)
+	}
+
+	/// Returns [`coverage_asset_manager`]'s asset manager with `graph` as the material's graph.
+	fn coverage_asset_manager_with_graph(
+		graph: &'static str,
+		material_fields: &str,
+		variants: &[(&str, &str)],
+	) -> (AssetManager, MemoryStorageBackend) {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 		asset_storage_backend.add_file(
 			"foliage.bema",
@@ -1637,16 +1668,7 @@ pub mod tests {
 			.leak()
 			.as_bytes(),
 		);
-		asset_storage_backend.add_file(
-			"foliage.bemx",
-			r#"{
-				nodes: [
-					{ name: "strength", node: "parameter", parameter: "strength", type: "float" },
-					{ name: "surface", node: "surface", opacity: "strength" },
-				],
-			}"#
-			.as_bytes(),
-		);
+		asset_storage_backend.add_file("foliage.bemx", graph.as_bytes());
 		for (name, fields) in variants {
 			asset_storage_backend.add_file(
 				format!("{name}.bema").leak(),
@@ -1753,6 +1775,38 @@ pub mod tests {
 			let (asset_manager, _) = coverage_asset_manager(fields, &[]);
 			let baked: Result<ReferenceModel<MaterialModel>, _> = asset_manager.bake_if_not_exists("foliage.bema").await;
 			assert!(baked.is_err(), "fields {fields} should fail the bake");
+		}
+	}
+
+	/// Only a blended surface has the opaque scene drawn behind it, so a material that reads the backdrop bakes only
+	/// while it blends, whether its own `alpha_mode` or a variant's decides that.
+	#[r#async::test]
+	async fn reading_the_backdrop_needs_a_blended_material() {
+		const BACKDROP_GRAPH: &str = r#"{
+			nodes: [
+				{ name: "strength", node: "parameter", parameter: "strength", type: "float" },
+				{ name: "behind", node: "scenecolor" },
+				{ name: "tinted", node: "multiply", in1: "behind", in2: "strength" },
+				{ name: "surface", node: "surface", transmission: "tinted" },
+			],
+		}"#;
+
+		let (asset_manager, _) = coverage_asset_manager_with_graph(
+			BACKDROP_GRAPH,
+			r#""alpha_mode": "Blend","#,
+			&[("clear", ""), ("solid", r#", "alpha_mode": "Opaque""#)],
+		);
+		let _: ReferenceModel<VariantModel> = asset_manager
+			.bake_if_not_exists("clear.bema")
+			.await
+			.expect("A variant that keeps its parent's blending should bake");
+		let solid: Result<ReferenceModel<VariantModel>, _> = asset_manager.bake_if_not_exists("solid.bema").await;
+		assert!(solid.is_err(), "A variant that turns a blended parent opaque should fail the bake");
+
+		for fields in ["", r#""alpha_mode": "Mask","#] {
+			let (asset_manager, _) = coverage_asset_manager_with_graph(BACKDROP_GRAPH, fields, &[]);
+			let baked: Result<ReferenceModel<MaterialModel>, _> = asset_manager.bake_if_not_exists("foliage.bema").await;
+			assert!(baked.is_err(), "fields {fields:?} should fail the bake");
 		}
 	}
 

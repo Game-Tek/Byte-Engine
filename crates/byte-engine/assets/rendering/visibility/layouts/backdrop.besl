@@ -1,0 +1,9 @@
+// The descriptor set of the backdrop pass: the opaque scene's light and depth it reads, and the copies of them the
+// transparent phase's materials read the scene behind their surfaces from.
+
+Backdrop: layer {
+	source_lit: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+	source_depth: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+	color: descriptor<{ type: StorageImage<r11f_g11f_b10f>, binding: 2, access: write }>;
+	depth: descriptor<{ type: StorageImage<r32f>, binding: 3, access: write }>;
+}

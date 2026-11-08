@@ -9,6 +9,11 @@ Views: struct {
 	views: View[129],
 }
 
+// What every pass of a frame shares: the frame clock's elapsed seconds, which a material's `time` node reads.
+Frame: struct {
+	time: f32,
+}
+
 // A material's bindless texture slots, its arm in the coverage shaders, and the opacity below which the masked passes
 // leave out its fragments. A material the coverage shaders don't test has the arm 4294967295.
 Material: struct {
@@ -65,4 +70,5 @@ Scene: layer {
 	ies_profiles: descriptor<{ type: Texture2D, binding: 15, access: read, count: 64, sampler: clamped_texel }>;
 	// The baked lightmaps that instances' lightmap records index.
 	lightmaps: descriptor<{ type: Texture2D, binding: 16, access: read, count: 16, sampler: clamped_texel }>;
+	frame: descriptor<{ type: Frame, binding: 17, access: read, memory: constant }>;
 }

@@ -116,6 +116,20 @@ coordinates, and the time, but not the position, normal, view direction, or
 anything on the screen. A variant can set
 `alpha_mode`, `alpha_cutoff`, or `double_sided` to change its parent's.
 
+Thin cut-outs, such as grass blades, fade below the cutoff in an image's
+smaller mip levels and disappear at a distance. An opacity map keeps its
+coverage at a cutoff of 0.5 in every level. When your material uses another
+cutoff, set the same value as the image's `coverage` in its sidecar, such as
+`leaves_opacity.jpg.bead`:
+
+```json
+{ "image": { "coverage": 0.3 } }
+```
+
+An opacity held in another image's alpha channel, such as an albedo map's, keeps
+its coverage only when you set `coverage` for that image. See
+[coverage](/docs/reference/assets#coverage).
+
 ### Change a parameter at runtime
 
 A `Static` variable's value is compiled into the material's shader. To change a

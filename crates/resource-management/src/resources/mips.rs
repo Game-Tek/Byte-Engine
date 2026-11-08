@@ -24,6 +24,20 @@ pub(crate) struct MipLevel<'a> {
 	pub(crate) data: &'a [u8],
 }
 
+/// The `Coverage` struct asks a mip chain to keep an alpha-tested image's coverage in every level, so cut-outs thinner
+/// than a texel of a smaller level don't average below the cutoff and disappear at a distance.
+///
+/// The image processor builds one from [`crate::processors::image::ImageProcessorSettings::coverage`] and passes it to
+/// [`MipGenerator::encode_mip_chain`] or [`MipGenerator::filter_mip_chain_in_place`]. The reference's
+/// [coverage](/docs/reference/assets#coverage) section specifies the result.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Coverage {
+	/// The channel that holds opacity.
+	pub(crate) channel: usize,
+	/// The opacity, from 0 to 1, at or above which a material keeps a texel.
+	pub(crate) cutoff: f32,
+}
+
 /// The `MipGenerator` enum selects where the image processor filters and block-compresses texture mip chains.
 ///
 /// An asset manager's [`crate::processors::image::ImageProcessor`] owns one generator and filters the chain of every
@@ -76,7 +90,8 @@ impl MipGenerator {
 	///
 	/// `base_level` holds `width` by `height` texels in the [`filtering_format`] of `output_format`. `output` holds
 	/// exactly [`encoded_mip_chain_size`] bytes, and each level directly follows the one before it. `claim` comes from
-	/// [`Self::claim`]. The GPU path awaits its worker without blocking the calling runtime thread.
+	/// [`Self::claim`]. With `coverage`, each level below the base keeps the base level's coverage. The GPU path awaits
+	/// its worker without blocking the calling runtime thread.
 	pub(crate) async fn encode_mip_chain(
 		&self,
 		claim: &MipClaim,
@@ -86,12 +101,15 @@ impl MipGenerator {
 		height: u32,
 		base_level: &[u8],
 		output: &mut [u8],
+		coverage: Option<Coverage>,
 	) -> Result<(), MipGenerationError> {
 		// The CPU path has no queue, so only the GPU path reads the claim.
 		#[cfg(not(feature = "gpu-mips"))]
 		let _ = claim;
+		// The GPU encodes the levels it filters before the CPU could scale them, so chains that keep coverage stay on the
+		// CPU.
 		#[cfg(feature = "gpu-mips")]
-		if let (Self::Gpu(generator), Some(claim)) = (self, &claim.gpu) {
+		if let (Self::Gpu(generator), Some(claim), None) = (self, &claim.gpu, coverage) {
 			match generator
 				.encode_mip_chain(claim, output_format, gamma, width, height, base_level, output)
 				.await
@@ -115,8 +133,11 @@ impl MipGenerator {
 			});
 		}
 
-		let (bytes_per_pixel, lower_levels) =
-			generate_lower_levels(filtering_format(output_format), gamma, width, height, base_level)?;
+		let filtering_format = filtering_format(output_format);
+		let (bytes_per_pixel, mut lower_levels) = generate_lower_levels(filtering_format, gamma, width, height, base_level)?;
+		if let Some(coverage) = coverage {
+			keep_coverage(filtering_format, width, height, base_level, &mut lower_levels, coverage)?;
+		}
 		encode_levels(
 			output_format,
 			width,
@@ -135,7 +156,8 @@ impl MipGenerator {
 	/// This is the copy-free form of [`Self::encode_mip_chain`] for formats that [`stores_filtering_texels`]: the
 	/// stored base level is the filtering surface, so each level filters straight from the previous one in place, with
 	/// no separate base or lower-level buffers. `chain` holds exactly [`encoded_mip_chain_size`] bytes, and only its
-	/// base level needs to be written. `claim` comes from [`Self::claim`].
+	/// base level needs to be written. `claim` comes from [`Self::claim`]. With `coverage`, each level below the base
+	/// keeps the base level's coverage.
 	pub(crate) async fn filter_mip_chain_in_place(
 		&self,
 		claim: &MipClaim,
@@ -144,6 +166,7 @@ impl MipGenerator {
 		width: u32,
 		height: u32,
 		chain: &mut [u8],
+		coverage: Option<Coverage>,
 	) -> Result<(), MipGenerationError> {
 		if !stores_filtering_texels(format) {
 			return Err(MipGenerationError::UnsupportedFormat(format));
@@ -160,20 +183,35 @@ impl MipGenerator {
 		#[cfg(not(feature = "gpu-mips"))]
 		let _ = claim;
 		#[cfg(feature = "gpu-mips")]
-		if let (Self::Gpu(generator), Some(claim)) = (self, &claim.gpu) {
-			match generator.filter_mip_chain_in_place(claim, format, gamma, width, height, chain).await {
-				Ok(()) => return Ok(()),
-				// Requests outside the GPU path's formats are expected and take the CPU path quietly.
-				Err(gpu::GPUMipError::UnsupportedRequest) => {}
-				Err(error) => log::warn!(
-					"GPU texture mip generation failed; using the CPU fallback. The most likely cause is an unavailable or unsupported GPU path. Error: {error}"
-				),
+		let filtered = match (self, &claim.gpu) {
+			(Self::Gpu(generator), Some(claim)) => {
+				match generator.filter_mip_chain_in_place(claim, format, gamma, width, height, chain).await {
+					Ok(()) => true,
+					// Requests outside the GPU path's formats are expected and take the CPU path quietly.
+					Err(gpu::GPUMipError::UnsupportedRequest) => false,
+					Err(error) => {
+						log::warn!(
+							"GPU texture mip generation failed; using the CPU fallback. The most likely cause is an unavailable or unsupported GPU path. Error: {error}"
+						);
+						false
+					}
+				}
 			}
-		}
+			_ => false,
+		};
+		#[cfg(not(feature = "gpu-mips"))]
+		let filtered = false;
 
 		let bytes_per_pixel = format.texel_bytes().ok_or(MipGenerationError::UnsupportedFormat(format))?;
 		let (base_level, lower_levels) = chain.split_at_mut(width as usize * height as usize * bytes_per_pixel);
-		filter_lower_levels(format, gamma, width, height, base_level, lower_levels)
+		if !filtered {
+			filter_lower_levels(format, gamma, width, height, base_level, lower_levels)?;
+		}
+		// Coverage scales levels that are already filtered, so it applies the same way to either filter's output.
+		if let Some(coverage) = coverage {
+			keep_coverage(format, width, height, base_level, lower_levels, coverage)?;
+		}
+		Ok(())
 	}
 }
 
@@ -414,6 +452,96 @@ fn downsample_level(
 	}
 
 	Ok(())
+}
+
+/// Scales the opacity channel of every level in `lower_levels`, laid out as [`packed_lower_levels`] reads them, so each
+/// level's coverage comes as close as its texels allow to `base_level`'s.
+///
+/// A level's coverage is the share of its texels whose opacity channel, as stored, is at or above the cutoff. Each
+/// level is scaled on its own from its filtered values, so a level's scale never compounds into the next one; filter
+/// the whole chain before calling this. Eight- and sixteen-bit unsigned formats are scaled; half-float levels keep
+/// their values.
+fn keep_coverage(
+	format: Formats,
+	width: u32,
+	height: u32,
+	base_level: &[u8],
+	lower_levels: &mut [u8],
+	coverage: Coverage,
+) -> Result<(), MipGenerationError> {
+	match format {
+		Formats::RGBA8 | Formats::RGBA8SRGB => keep_unorm_coverage::<1>(width, height, base_level, lower_levels, coverage),
+		Formats::RGBA16 => keep_unorm_coverage::<2>(width, height, base_level, lower_levels, coverage),
+		Formats::R16F | Formats::RGBA16F => {}
+		_ => return Err(MipGenerationError::UnsupportedFormat(format)),
+	}
+	Ok(())
+}
+
+/// Keeps coverage for RGBA levels of `BYTES`-wide unsigned-normalized samples. See [`keep_coverage`].
+fn keep_unorm_coverage<const BYTES: usize>(
+	width: u32,
+	height: u32,
+	base_level: &[u8],
+	lower_levels: &mut [u8],
+	coverage: Coverage,
+) {
+	let texel_bytes = 4 * BYTES;
+	let max = (1_u32 << (8 * BYTES)) - 1;
+	// The smallest stored value that passes: value / max >= cutoff.
+	let cutoff = ((coverage.cutoff * max as f32).ceil() as u32).min(max);
+	if cutoff == 0 {
+		return;
+	}
+	// The opacity sample's bytes within a texel, little-endian.
+	let opacity = coverage.channel * BYTES..(coverage.channel + 1) * BYTES;
+	let sample = |texel: &[u8]| -> u32 {
+		let mut bytes = [0; 4];
+		bytes[..BYTES].copy_from_slice(&texel[opacity.clone()]);
+		u32::from_le_bytes(bytes)
+	};
+	// Counts the texels of `level` whose opacity is at or above `threshold`.
+	let passing = |level: &[u8], threshold: u32| -> usize {
+		level.chunks_exact(texel_bytes).filter(|texel| sample(texel) >= threshold).count()
+	};
+	let base_texels = base_level.len() / texel_bytes;
+	let share = passing(base_level, cutoff) as f64 / base_texels as f64;
+
+	let mut remaining = lower_levels;
+	for (level_width, level_height) in mip_extents(width, height).skip(1) {
+		let (level, rest) =
+			std::mem::take(&mut remaining).split_at_mut(level_width as usize * level_height as usize * texel_bytes);
+		remaining = rest;
+		let target = (share * (level.len() / texel_bytes) as f64).round() as usize;
+
+		// The passing count falls as the threshold rises, so the smallest threshold whose count is at most the target
+		// is found by bisection over 1 to max + 1. Zero is never a candidate: no factor makes a zero opacity pass.
+		let (mut low, mut high) = (1, max + 1);
+		while low < high {
+			let middle = low + (high - low) / 2;
+			if passing(level, middle) <= target {
+				high = middle;
+			} else {
+				low = middle + 1;
+			}
+		}
+		// The threshold below it passes more than the target; keep whichever count is closer.
+		let short = target - passing(level, low);
+		let threshold = if low > 1 && passing(level, low - 1) - target < short {
+			low - 1
+		} else {
+			low
+		};
+
+		// Values at or above the threshold land at or above the cutoff, and the rest below it, whatever the rounding.
+		let factor = cutoff as f32 / threshold as f32;
+		for texel in level.chunks_exact_mut(texel_bytes) {
+			let value = sample(texel);
+			let scaled = ((value as f32 * factor).round() as u32).min(max);
+			let scaled = if value >= threshold { scaled.max(cutoff) } else { scaled.min(cutoff - 1) };
+			texel[opacity.clone()].copy_from_slice(&scaled.to_le_bytes()[..BYTES]);
+		}
+	}
 }
 
 // The kernels below box-filter each 2x2 footprint into one texel. A level halves each side and floors it, so a

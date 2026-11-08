@@ -238,6 +238,7 @@ BC7. An image's BEAD file can change either step with an object of these keys:
 | --- | --- | --- |
 | `mips` | `true` | `false` stores only the authored size, with no smaller levels. |
 | `compression` | From the image's semantic | Whether the image is block-compressed. |
+| `coverage` | `0.5` for opacity maps, `false` for other images | The alpha cutoff, from 0 to 1, whose coverage every smaller level keeps, as [coverage](#coverage) defines; `false` averages the levels without scaling them. |
 
 Every key is optional, and a key left out keeps its default. Packed
 metallic-roughness maps and half-float images, such as EXR, are never
@@ -248,6 +249,32 @@ from its `images` key and applies it to every image the model contains.
 
 Turn `mips` off for images drawn at their authored size, such as UI art, and
 `compression` off for images whose exact colors matter more than their memory.
+
+### Coverage
+
+An alpha-tested material keeps a texel where its opacity is at or above the
+material's `alpha_cutoff`. A level's coverage is the share of its texels whose
+opacity channel, as stored, is at or above the image's `coverage` cutoff. An
+opacity map holds opacity in its first channel; any other image holds it in its
+alpha channel.
+
+With a cutoff, each level below the authored size multiplies its opacity
+channel by one factor, chosen so the level's coverage comes as close as its
+texels allow to the authored size's coverage. A texel that reaches the cutoff
+before the factor applies reaches it after, and one that doesn't, doesn't.
+Results above 1 store 1. The other channels, and the authored size, keep their
+values.
+
+| Case | Result |
+| --- | --- |
+| Cutoff of 0 | Every texel passes; the levels keep their values. |
+| Authored size with no passing texel | No level has a passing texel. |
+| Texel of opacity 0 | It never passes, whatever the factor. |
+| Half-float image, such as EXR | The levels keep their values. |
+| `mips` set to `false` | No smaller levels exist, so the cutoff has no effect. |
+
+The cutoff matches a material's only when it equals that material's
+`alpha_cutoff`.
 
 ## Environment maps
 

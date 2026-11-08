@@ -84,7 +84,7 @@ pub fn channel_packing_for_semantic(semantic: Semantic) -> Option<ChannelPacking
 /// A sampled material texture wants a mip chain so it doesn't alias when minified, and block compression to save
 /// memory; a lookup table read at exact coordinates, such as an IES intensity map, wants neither. Start from
 /// [`Self::for_semantic`] or [`Self::LOOKUP`] and pass the result to [`ImageProcessor::process_in`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImageProcessorSettings {
 	/// Stores a full mip chain down to one texel after the base level. Without it, the image keeps only its base level.
 	pub mips: bool,
@@ -93,6 +93,14 @@ pub struct ImageProcessorSettings {
 	/// Packed semantics, such as [`Semantic::MetallicRoughness`], and half-float sources are never block-compressed, so
 	/// the processor ignores this for them.
 	pub compression: bool,
+	/// The alpha cutoff, from 0 to 1, whose coverage every level below the base keeps, or `None` for plain averaged
+	/// levels.
+	///
+	/// Set it to the `alpha_cutoff` of the alpha-tested materials that sample the image, so thin cut-outs such as grass
+	/// blades don't average below the cutoff and disappear at a distance. An [`Semantic::Opacity`] map holds opacity in
+	/// its first channel, and any other image in its alpha channel. Chains that keep coverage filter and compress on
+	/// the CPU when they are block-compressed.
+	pub coverage: Option<f32>,
 }
 
 impl ImageProcessorSettings {
@@ -100,19 +108,33 @@ impl ImageProcessorSettings {
 	pub const LOOKUP: Self = Self {
 		mips: false,
 		compression: false,
+		coverage: None,
 	};
 
 	/// Returns the settings a texture with `semantic` is usually stored with.
 	///
 	/// Every texture gets a mip chain, and every map is block-compressed except three: height and displacement maps,
 	/// whose compression error shows as visible steps in the surface, and images of unknown meaning, which keep their
-	/// exact colors. Packed semantics are never compressed; see [`Self::compression`].
+	/// exact colors. Packed semantics are never compressed; see [`Self::compression`]. Opacity maps keep their
+	/// coverage at the usual alpha cutoff of 0.5; see [`Self::coverage`].
 	pub fn for_semantic(semantic: Semantic) -> Self {
 		Self {
 			mips: true,
 			compression: !matches!(semantic, Semantic::Height | Semantic::Displacement | Semantic::Other),
+			coverage: (semantic == Semantic::Opacity).then_some(DEFAULT_COVERAGE_CUTOFF),
 		}
 	}
+}
+
+/// The alpha cutoff opacity maps keep their coverage at by default: the cutoff materials and glTF use by default.
+const DEFAULT_COVERAGE_CUTOFF: f32 = 0.5;
+
+/// Returns the coverage request an image with `semantic` and `settings` passes to its mip chain.
+fn coverage_request(semantic: Semantic, settings: ImageProcessorSettings) -> Option<Coverage> {
+	settings.coverage.map(|cutoff| Coverage {
+		channel: if semantic == Semantic::Opacity { 0 } else { 3 },
+		cutoff,
+	})
 }
 
 /// The `ImageProcessor` struct is the one image pipeline an asset manager shares between every source format.
@@ -239,6 +261,7 @@ impl ImageProcessor {
 			.ok_or(LoadErrors::FailedToProcess)?;
 		let (streams, size) = stored_levels(output_format, extent, settings.mips).ok_or(LoadErrors::FailedToProcess)?;
 		let mips = claim.as_ref().map(|claim| (&self.mips, claim));
+		let coverage = coverage_request(semantic, settings);
 
 		let data = if layout.stores_in_place(semantic, output_format) {
 			let mut data = match bytes {
@@ -254,7 +277,7 @@ impl ImageProcessor {
 			// Only the lower levels are new bytes; they reuse the reserved capacity after the base level.
 			data.resize(size, 0);
 			if let Some((mips, claim)) = mips {
-				mips.filter_mip_chain_in_place(claim, output_format, gamma, extent.width(), extent.height(), &mut data)
+				mips.filter_mip_chain_in_place(claim, output_format, gamma, extent.width(), extent.height(), &mut data, coverage)
 					.await
 					.map_err(|_| LoadErrors::FailedToProcess)?;
 			}
@@ -268,6 +291,7 @@ impl ImageProcessor {
 				size,
 				allocator,
 				mips,
+				coverage,
 			)
 			.await?
 		};
@@ -445,6 +469,7 @@ async fn encode_levels_in<A: Allocator + Clone>(
 	size: usize,
 	allocator: A,
 	mips: Option<(&MipGenerator, &MipClaim)>,
+	coverage: Option<Coverage>,
 ) -> Result<Vec<u8, A>, LoadErrors> {
 	let extent = source.extent;
 	// Filtering, block compression, and packing all read a canonical copy of the source.
@@ -464,7 +489,7 @@ async fn encode_levels_in<A: Allocator + Clone>(
 	let mut data = Vec::with_capacity_in(size, allocator.clone());
 	data.resize(size, 0);
 	if let Some((mips, claim)) = mips {
-		mips.encode_mip_chain(claim, output_format, gamma, extent.width(), extent.height(), intermediate, &mut data)
+		mips.encode_mip_chain(claim, output_format, gamma, extent.width(), extent.height(), intermediate, &mut data, coverage)
 			.await
 			.map_err(|_| LoadErrors::FailedToProcess)?;
 	} else {
@@ -584,6 +609,7 @@ mod tests {
 		ImageProcessor, ImageProcessorSettings, ImageSource, OwnedImageSource, Semantic, SourceChannels, SourceEncoding,
 		determine_image_format, gamma_from_semantic, guess_semantic_from_name,
 	};
+	use crate::resources::mips::{bc7::tests::decode_image, mip_extents};
 	use crate::{
 		asset::ResourceId,
 		resources::image::Image,
@@ -767,6 +793,103 @@ mod tests {
 
 		assert_eq!((image.format, image.mip_count), (Formats::BC7SRGB, 3));
 		assert_eq!(data, expected);
+	}
+
+	/// Returns a `size` by `size` opacity map of thin lines, one texel wide, that grow sparser down the image, so its
+	/// smaller levels average them below a cutoff of 0.5 at different rates. Opacities vary along the lines and in the
+	/// faint background between them, as in a scanned cut-out, so averaged levels hold many distinct values.
+	fn thin_lines(size: u32) -> Vec<u8> {
+		(0..size)
+			.flat_map(|y| {
+				(0..size).flat_map(move |x| {
+					let period = 3 + y * 4 / size;
+					let opacity = if (x + y) % period == 0 {
+						128 + (x * 7 + y * 13) % 128
+					} else {
+						(x * 5 + y * 3) % 100
+					} as u8;
+					[opacity, opacity, opacity, 255]
+				})
+			})
+			.collect()
+	}
+
+	/// Returns the share of an RGBA8 level's texels whose first channel reaches a cutoff of 0.5.
+	fn coverage(level: &[u8]) -> f64 {
+		let passing = level.chunks_exact(4).filter(|texel| texel[0] >= 128).count();
+		passing as f64 / (level.len() / 4) as f64
+	}
+
+	/// Returns the coverage of each level of an RGBA8 chain of a `size` by `size` image, base level first.
+	fn chain_coverage(size: u32, chain: &[u8]) -> Vec<f64> {
+		let mut offset = 0;
+		mip_extents(size, size)
+			.map(|(width, height)| {
+				let level = &chain[offset..offset + width as usize * height as usize * 4];
+				offset += level.len();
+				coverage(level)
+			})
+			.collect()
+	}
+
+	/// Asserts that every level of at least 64 texels has the base level's coverage, within `tolerance`.
+	fn assert_keeps_coverage(size: u32, coverages: &[f64], tolerance: f64) {
+		let levels = mip_extents(size, size).map(|(width, height)| width * height);
+		for (level, (coverage, texels)) in coverages.iter().zip(levels).enumerate().skip(1) {
+			if texels >= 64 {
+				assert!(
+					(coverage - coverages[0]).abs() <= tolerance,
+					"level {level} covers {coverage:.3}, the base level {:.3}; all levels: {coverages:.3?}",
+					coverages[0]
+				);
+			}
+		}
+	}
+
+	#[crate::r#async::test]
+	async fn opacity_maps_keep_their_coverage_in_every_level() {
+		let size = 64;
+		let pixels = thin_lines(size);
+		let source = image_source(Extent::square(size), Formats::RGBA8, &pixels);
+		let uncompressed = ImageProcessorSettings {
+			compression: false,
+			..ImageProcessorSettings::for_semantic(Semantic::Opacity)
+		};
+		let averaged = ImageProcessorSettings {
+			coverage: None,
+			..uncompressed
+		};
+
+		let (_, _, kept) = process_with(Semantic::Opacity, Gamma::Linear, uncompressed, source).await;
+		let (_, _, plain) = process_with(Semantic::Opacity, Gamma::Linear, averaged, source).await;
+
+		assert_keeps_coverage(size, &chain_coverage(size, &kept), 0.02);
+		let plain_coverage = chain_coverage(size, &plain);
+		assert!(plain_coverage[3] < plain_coverage[0] / 2.0, "plain averaging should lose the lines: {plain_coverage:.3?}");
+		// Only the opacity channel of the smaller levels changes.
+		assert_eq!(kept[..pixels.len()], pixels[..]);
+		let other_channels = |chain: &[u8]| chain.chunks_exact(4).map(|texel| [texel[1], texel[2], texel[3]]).collect::<Vec<_>>();
+		assert_eq!(other_channels(&kept), other_channels(&plain));
+	}
+
+	#[crate::r#async::test]
+	async fn compressed_opacity_maps_keep_their_coverage_in_every_level() {
+		let size = 64;
+		let pixels = thin_lines(size);
+		let source = image_source(Extent::square(size), Formats::RGBA8, &pixels);
+
+		let (image, offsets, data) = process(Semantic::Opacity, Gamma::Linear, source).await;
+
+		assert_eq!(image.format, Formats::BC7);
+		let decoded = mip_extents(size, size)
+			.zip(&offsets)
+			.flat_map(|((width, height), &offset)| {
+				let blocks = (width.div_ceil(4) * height.div_ceil(4)) as usize;
+				let level = data[offset..offset + blocks * 16].as_chunks::<16>().0;
+				decode_image(width, height, level)
+			})
+			.collect::<Vec<_>>();
+		assert_keeps_coverage(size, &chain_coverage(size, &decoded), 0.05);
 	}
 
 	#[crate::r#async::test]
@@ -955,7 +1078,7 @@ use crate::{
 	resources::{
 		image::Image,
 		mips::{
-			MipClaim, MipGenerator, encode_level_in, encoded_mip_level_size, filtering_format, mip_extents,
+			Coverage, MipClaim, MipGenerator, encode_level_in, encoded_mip_level_size, filtering_format, mip_extents,
 			stores_filtering_texels,
 		},
 	},

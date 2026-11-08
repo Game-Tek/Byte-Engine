@@ -744,7 +744,7 @@ mod tests {
 		let chain = encode_chain(&generator, Formats::BC7, Gamma::Linear, width, height, &base).await;
 		let mut reference = vec![0; chain.len()];
 		let cpu = MipGenerator::Cpu;
-		cpu.encode_mip_chain(&cpu.claim().await, Formats::BC7, Gamma::Linear, width, height, &base, &mut reference)
+		cpu.encode_mip_chain(&cpu.claim().await, Formats::BC7, Gamma::Linear, width, height, &base, &mut reference, None)
 			.await
 			.expect("CPU mip chain encoding should succeed");
 

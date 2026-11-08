@@ -79,8 +79,9 @@ sphere_is_visible: fn(view: View, sphere: vec4f) -> bool {
 // is the meshlet's object-space bounding sphere.
 cone_allows_rendering: fn(mesh: Mesh, meshlet: Meshlet, sphere: vec4f, view: View) -> bool {
 	let determinant: f32 = dot(cross(mesh.model[0], mesh.model[1]), mesh.model[2]);
-	// Both faces of a double-sided material are visible, so no view direction culls it.
-	if ((mesh.level & MESH_FLAG_DOUBLE_SIDED) != 0 || determinant <= 0.000001) {
+	// Both faces of a double-sided material are visible, so no view direction culls it. A mirroring model keeps its
+	// faces' sides, since the mesh shader swaps its triangles' winding, so only a degenerate one skips the test.
+	if ((mesh.level & MESH_FLAG_DOUBLE_SIDED) != 0 || abs(determinant) <= 0.000001) {
 		return true;
 	}
 

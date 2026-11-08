@@ -69,3 +69,13 @@ instance_vertex_base: fn (mesh: Mesh, level: MeshLevel) -> u32 {
 	}
 	return level.vertex_base;
 }
+
+// Returns a triangle's meshlet vertices in the order `mesh` draws them. A mirroring model, one whose determinant is
+// negative, reverses every triangle's winding on screen, so swapping two vertices keeps the mesh's outside facing front
+// and back-face culling still hides its inside.
+instance_triangle: fn (mesh: Mesh, triangle: vec3u) -> vec3u {
+	if (dot(cross(mesh.model[0], mesh.model[1]), mesh.model[2]) < 0.0) {
+		return vec3u(triangle.x, triangle.z, triangle.y);
+	}
+	return triangle;
+}

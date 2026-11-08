@@ -194,7 +194,7 @@ fn visibility_fragment_main_forwards_primitive_and_instance_identifiers() {
 const IDENTITY_AFFINE_MATRIX: [f32; 12] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
 
 /// Returns a view-projection matrix that moves identity geometry outside the horizontal clip range.
-fn horizontally_translated_matrix(translation: f32) -> [f32; 16] {
+const fn horizontally_translated_matrix(translation: f32) -> [f32; 16] {
 	let mut matrix = IDENTITY_MATRIX;
 	matrix[12] = translation;
 	matrix
@@ -885,12 +885,22 @@ impl MeshView {
 		view_offset: 0,
 		view_projection: IDENTITY_MATRIX,
 	};
+
+	/// The third view of a shadow batch that starts at view five and layer one, shifted right by two.
+	const SHADOW: Self = Self {
+		view_base: 5,
+		layer_base: 1,
+		view_offset: 2,
+		view_projection: horizontally_translated_matrix(2.0),
+	};
 }
 
-/// Executes one production mesh main over one identity triangle meshlet and verifies its complete output contract.
+/// Executes one production mesh main over one triangle meshlet placed by `model` and verifies its complete output
+/// contract, including that the triangle winds on screen as it does under an identity model.
 fn assert_triangle_mesh_program(
 	program: ExecutableProgram,
 	view: MeshView,
+	model: [f32; 12],
 	base_vertex: u32,
 	expected_clip_positions: [[f32; 4]; 3],
 	expected_render_target_array_index: Option<u32>,
@@ -898,6 +908,9 @@ fn assert_triangle_mesh_program(
 	let mut views = buffer(&program, slot(&program, VIEWS));
 	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
 	write_fixture_mesh(&mut meshes, 0, [0; 2]);
+	meshes
+		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(model))
+		.expect("fixture mesh model");
 	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
 	write_fixture_level(&mut mesh_levels, [0.0, 0.0, 0.0, 2.0], 1, base_vertex);
 	let vertex_count = base_vertex as usize + 3;
@@ -979,7 +992,16 @@ fn assert_triangle_mesh_program(
 			0.00001,
 		);
 	}
-	assert_eq!(mesh_outputs.triangle(0), Some([0, 1, 2]));
+	// The fixture triangle winds counterclockwise as an identity model shows it. Back-face culling decides by winding, so
+	// a model that changes the winding on screen would hide the other side.
+	let triangle = mesh_outputs.triangle(0).expect("mesh triangle output");
+	let mut sorted = triangle;
+	sorted.sort_unstable();
+	assert_eq!(sorted, [0, 1, 2]);
+	let [a, b, c] = triangle.map(|index| mesh_outputs.vertex_position(index as usize).expect("mesh vertex output"));
+	let screen_area = (b[0] / b[3] - a[0] / a[3]) * (c[1] / c[3] - a[1] / a[3])
+		- (c[0] / c[3] - a[0] / a[3]) * (b[1] / b[3] - a[1] / a[3]);
+	assert!(screen_area > 0.0, "the triangle {triangle:?} winds clockwise on screen");
 	if let Some(expected) = expected_render_target_array_index {
 		assert_eq!(mesh_outputs.render_target_array_index(0), Some(expected));
 	}
@@ -1003,6 +1025,7 @@ fn visibility_mesh_main_emits_identity_triangle_and_metadata() {
 	assert_triangle_mesh_program(
 		asset!("visibility-mesh.besl"),
 		MeshView::CAMERA,
+		IDENTITY_AFFINE_MATRIX,
 		0,
 		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
@@ -1015,6 +1038,7 @@ fn visibility_mesh_main_reads_vertices_from_its_base_vertex() {
 	assert_triangle_mesh_program(
 		asset!("visibility-mesh.besl"),
 		MeshView::CAMERA,
+		IDENTITY_AFFINE_MATRIX,
 		7,
 		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
@@ -1027,14 +1051,40 @@ fn visibility_mesh_main_reads_vertices_from_its_base_vertex() {
 fn shadow_mesh_main_emits_selected_view_triangle_and_metadata() {
 	assert_triangle_mesh_program(
 		asset!("shadow-mesh.besl"),
-		MeshView {
-			view_base: 5,
-			layer_base: 1,
-			view_offset: 2,
-			view_projection: horizontally_translated_matrix(2.0),
-		},
+		MeshView::SHADOW,
+		IDENTITY_AFFINE_MATRIX,
 		0,
 		[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
+		Some(3),
+	);
+}
+
+/// A model that mirrors x, as a scale of -1 along it does.
+const MIRRORING_AFFINE_MATRIX: [f32; 12] = [-1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+
+/// Verifies that a mirrored instance's triangles keep facing front in the visibility pass, so back-face culling hides
+/// the same faces it hides when the instance isn't mirrored.
+#[test]
+fn visibility_mesh_main_keeps_a_mirrored_instance_facing_front() {
+	assert_triangle_mesh_program(
+		asset!("visibility-mesh.besl"),
+		MeshView::CAMERA,
+		MIRRORING_AFFINE_MATRIX,
+		0,
+		[[1.0, -1.0, 0.0, 1.0], [-1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
+		None,
+	);
+}
+
+/// Verifies that a mirrored instance's triangles keep facing front in the shadow passes.
+#[test]
+fn shadow_mesh_main_keeps_a_mirrored_instance_facing_front() {
+	assert_triangle_mesh_program(
+		asset!("shadow-mesh.besl"),
+		MeshView::SHADOW,
+		MIRRORING_AFFINE_MATRIX,
+		0,
+		[[3.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
 		Some(3),
 	);
 }

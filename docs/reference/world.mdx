@@ -93,6 +93,7 @@ A transform is a world location, scale, and orientation.
 | Fields | Position, scale, orientation. The identity is the default. |
 | Serialized form | `position` and `scale` as three numbers, `orientation` as four in x, y, z, w order. A missing field takes the identity's value. Unknown fields, non-finite components, and invalid quaternions are rejected. |
 | Matrix | Translation times rotation times scale: scale applies first. |
+| Mirroring | A scale with one or three negative components mirrors the entity. A mirrored mesh shows its outside, as the unmirrored mesh does. |
 | Interpolation | Position and scale interpolate linearly, orientation along the shorter arc. |
 | Update | A transformation update is a creation message carrying a transform under the entity's handle, on the world's transform route. Creation and replacement travel on that one route. |
 | Shown | Frames show an update read during a simulation step as a sample and any other update as a placement; see [shown transforms](/docs/reference/rendering#shown-transforms). |

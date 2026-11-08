@@ -46,8 +46,7 @@ use super::render_pass::{
 	PROBE_SPACING_RANGE, ProbeGiSettings, ProbeVolume, RayHits, RayTracing, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
 	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool,
 	VisibilityRenderPass, create_backdrop_targets, create_fog_light_target, create_gtao_targets, create_ssgi_targets,
-	create_sun_visibility_targets,
-	create_surfel_targets,
+	create_sun_visibility_targets, create_surfel_targets,
 };
 use super::residency::MeshResidencies;
 use super::scene::{
@@ -507,12 +506,6 @@ enum Availability {
 	Texture(u32),
 }
 
-/// A renderable waiting for its mesh resource.
-struct PendingRenderable {
-	handle: Handle,
-	mesh_key: MeshKey,
-}
-
 /// The evaluation slot of each phase's uber shader, which is the only evaluation of its phase in the uber material
 /// evaluation mode.
 const UBER_EVALUATION_INDEX: u32 = 0;
@@ -799,7 +792,6 @@ pub struct VisibilityPipelineManager {
 	geometry: GeometryHandles,
 	/// Whether the last frame recorded the pending UV copies of new posed ranges, so the next one drops them.
 	posed_uv_copies_recorded: bool,
-	pending_renderables: Vec<PendingRenderable>,
 	/// Adopted materials indexed by material table slot.
 	loaded_materials: Vec<Option<LoadedMaterial>>,
 	/// The uber material evaluation shader of each phase, opaque then transparent, once one compiled. Only the uber
@@ -1026,7 +1018,6 @@ impl VisibilityPipelineManager {
 			skinning_frame: SkinningFrame::default(),
 			geometry,
 			posed_uv_copies_recorded: false,
-			pending_renderables: Vec::new(),
 			loaded_materials: Vec::new(),
 			uber_shaders: [None, None],
 			uber_shaders_loading: [settings.features.material_evaluation == MaterialEvaluationMode::Uber; 2],
@@ -1087,7 +1078,7 @@ impl VisibilityPipelineManager {
 			scene: VisibilityScene {
 				render_entities: StableVec::new(),
 				skinning_poses: HashMap::default(),
-				render_entity_handles: HashMap::default(),
+				renderables: Default::default(),
 				lights: StableVec::new(),
 				light_handles: HashMap::default(),
 				descriptor_set,
@@ -1157,24 +1148,27 @@ impl VisibilityPipelineManager {
 		let source = renderable.source().clone();
 		let (mesh_key, resident) = self.loader.request_mesh(source);
 		if let Some(mesh) = resident {
+			self.scene.renderables.insert_resident(handle);
 			self.add_renderable(handle, mesh_key, &mesh, transforms);
 		} else {
-			self.pending_renderables.push(PendingRenderable { handle, mesh_key });
+			self.scene.renderables.wait(handle, mesh_key);
 		}
 	}
 
+	/// Removes only the lifecycle state this handle owns; new handles need no cleanup.
 	fn remove_mesh_instance(&mut self, handle: Handle) {
-		self.pending_renderables.retain(|pending| pending.handle != handle);
-		self.material_parameters.release_entity(handle);
 		let ranges = &self.geometry.ranges;
 		// Nothing reads a range after its instance leaves the frame, except frames still in flight, and the backends
 		// order the next owner's writes after those reads.
-		self.scene.remove_renderable(handle, |range| {
+		if !self.scene.remove_renderable(handle, |range| {
 			ranges
 				.lock()
 				.unwrap_or_else(|error| error.into_inner())
 				.give_back_vertices(range);
-		});
+		}) {
+			return;
+		}
+		self.material_parameters.release_entity(handle);
 		self.availability.remove(&Availability::Renderable(handle)).expect(
 			"Visibility renderable availability could not be removed. The most likely cause is that another graph node depends on a renderable.",
 		);
@@ -1198,7 +1192,9 @@ impl VisibilityPipelineManager {
 							.iter()
 							.map(|primitive| (primitive.lods.levels().len() - 1) as u8),
 					);
-					self.resolve_pending_renderables(key, &mesh, transforms);
+					for handle in self.scene.renderables.mesh_ready(key) {
+						self.add_renderable(handle, key, &mesh, transforms);
+					}
 				}
 				VisibilityLoaderEvent::MeshLevelsLoaded { key, primitives } => {
 					for levels in &primitives {
@@ -1287,9 +1283,11 @@ impl VisibilityPipelineManager {
 				}
 				VisibilityLoaderEvent::MeshUnavailable { key, error } => {
 					// Nothing will make the mesh resident, so its renderables stop waiting; creating one again requests it again.
-					let waiting = self.pending_renderables.len();
-					self.pending_renderables.retain(|pending| pending.mesh_key != key);
-					let dropped = waiting - self.pending_renderables.len();
+					let mut dropped = 0;
+					while let Some(handle) = self.scene.renderables.waiter(key) {
+						self.remove_mesh_instance(handle);
+						dropped += 1;
+					}
 					warn!(
 						"Visibility mesh {key:?} could not be loaded, so its {dropped} renderables are not drawn. The most likely cause is a missing or invalid mesh asset. Fix the asset, then create the renderables again. {error}"
 					);
@@ -1657,19 +1655,6 @@ impl VisibilityPipelineManager {
 				reads_backdrop: first.reads_backdrop,
 			});
 		}
-	}
-
-	/// Creates scene instances for every pending renderable whose mesh is now resident.
-	fn resolve_pending_renderables(&mut self, key: MeshKey, mesh: &MeshData, transforms: &ShownTransforms) {
-		let mut pending = std::mem::take(&mut self.pending_renderables);
-		pending.retain(|renderable| {
-			if renderable.mesh_key != key {
-				return true;
-			}
-			self.add_renderable(renderable.handle, key, mesh, transforms);
-			false
-		});
-		self.pending_renderables = pending;
 	}
 
 	/// Gives every render entity of one primitive of `key` the detail levels it holds now, after finer levels arrived

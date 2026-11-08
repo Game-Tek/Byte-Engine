@@ -13,10 +13,11 @@ use super::layout::{ActiveEvaluationMask, MAX_ADDRESSABLE_INSTANCES, MAX_LIGHTS,
 use super::loader::CoveragePipelines;
 use super::lod::MeshLods;
 use super::render_pass::VisibilityRenderPass;
+use super::renderables::Renderables;
 use super::residency::ResidencySlot;
 use super::shader_data::{
-	IesProfileTexture, InstanceLightmap, LightData, LightingData, NEUTRAL_UNIT_VECTOR, NO_IES_PROFILE, ShaderMesh,
-	ShaderFrame, ShaderViewData,
+	IesProfileTexture, InstanceLightmap, LightData, LightingData, NEUTRAL_UNIT_VECTOR, NO_IES_PROFILE, ShaderFrame, ShaderMesh,
+	ShaderViewData,
 };
 use super::shadow_selection::{LightShadow, sun_cascade_view};
 use super::skinning::SkinningDispatch;
@@ -194,8 +195,8 @@ pub struct VisibilityScene {
 	pub(crate) render_entities: StableVec<RenderEntity>,
 	/// Retained global poses keyed by renderable handle.
 	pub(crate) skinning_poses: HashMap<Handle, Vec<math::AffineMatrix>>,
-	/// Scene-instance slots grouped by renderable handle.
-	pub(crate) render_entity_handles: HashMap<Handle, SmallVec<[StableVecHandle; 1]>>,
+	/// Each instance's lifecycle, owning its mesh wait or its resident primitive slots.
+	pub(crate) renderables: Renderables,
 	pub(crate) lights: StableVec<(Handle, Lights, Transform)>,
 	/// Light slots grouped by light handle.
 	pub(crate) light_handles: HashMap<Handle, SmallVec<[StableVecHandle; 1]>>,
@@ -216,19 +217,17 @@ impl VisibilityScene {
 	pub(crate) fn add_render_entity(&mut self, render_entity: RenderEntity) {
 		let renderable_handle = render_entity.handle;
 		let scene_handle = self.render_entities.push(render_entity);
-		self.render_entity_handles
-			.entry(renderable_handle)
-			.or_default()
-			.push(scene_handle);
+		self.renderables.add_primitive(renderable_handle, scene_handle);
 	}
 
 	/// Applies the latest transform update to every primitive and light owned by `handle`.
 	pub(crate) fn update_transform(&mut self, handle: Handle, transform: &Transform) {
 		let model: ghi::pod::Mat4x3f = transform.get_matrix().into();
-		update_renderable_instances(&self.render_entity_handles, &mut self.render_entities, handle, |entity| {
+		update_instances(self.renderables.primitives(handle), &mut self.render_entities, |entity| {
 			entity.shader_mesh.model = model;
 		});
-		update_renderable_instances(&self.light_handles, &mut self.lights, handle, |(_, _, light_transform)| {
+		let lights = self.light_handles.get(&handle).map_or(&[][..], |slots| slots.as_slice());
+		update_instances(lights, &mut self.lights, |(_, _, light_transform)| {
 			*light_transform = transform.clone();
 		});
 	}
@@ -251,9 +250,12 @@ impl VisibilityScene {
 	/// Removes all scene state owned by the renderable identified by `handle`, handing each posed instance's vertex
 	/// range to `release`. A UV copy into the range that no frame recorded yet is dropped, so it can't overwrite the
 	/// range's next owner.
-	pub(crate) fn remove_renderable(&mut self, handle: Handle, mut release: impl FnMut(std::ops::Range<u32>)) {
+	pub(crate) fn remove_renderable(&mut self, handle: Handle, mut release: impl FnMut(std::ops::Range<u32>)) -> bool {
+		let Some(primitives) = self.renderables.remove(handle) else {
+			return false;
+		};
 		self.skinning_poses.remove(&handle);
-		for render_entity_handle in self.render_entity_handles.remove(&handle).into_iter().flatten() {
+		for render_entity_handle in primitives {
 			if let Some(entity) = self.render_entities.remove(render_entity_handle)
 				&& let Some(RenderSkin {
 					posed_vertices: PosedVertices::Allocated(range),
@@ -267,6 +269,7 @@ impl VisibilityScene {
 				release(range);
 			}
 		}
+		true
 	}
 
 	/// Removes every light registered for `handle`.
@@ -405,15 +408,10 @@ fn light_reach(color: maths_rs::Vec3f) -> f32 {
 }
 
 /// Applies one update to every live scene slot registered for one handle.
-fn update_renderable_instances<T>(
-	render_entity_handles: &HashMap<Handle, SmallVec<[StableVecHandle; 1]>>,
-	render_entities: &mut StableVec<T>,
-	handle: Handle,
-	mut update: impl FnMut(&mut T),
-) {
-	for scene_handle in render_entity_handles.get(&handle).into_iter().flatten() {
-		if let Some(render_entity) = render_entities.get_mut(*scene_handle) {
-			update(render_entity);
+fn update_instances<T>(slots: &[StableVecHandle], instances: &mut StableVec<T>, mut update: impl FnMut(&mut T)) {
+	for &slot in slots {
+		if let Some(instance) = instances.get_mut(slot) {
+			update(instance);
 		}
 	}
 }

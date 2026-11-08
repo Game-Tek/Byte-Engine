@@ -122,6 +122,26 @@ sequenceDiagram
    render context, and writes descriptors with samplers it owns. Resources can
    become ready in any order, so adopt each one on its own.
 
+## How visibility instances wait for meshes
+
+Each renderable handle has one lifecycle record: waiting for a mesh, or
+resident and owning its primitive slots. The scene indexes records by handle
+and waiting instances by mesh. Creation replaces only that handle's existing
+state; a new handle needs no cleanup. Mesh completion transitions only its
+waiters to resident. Deletion removes the record and releases its primitive
+slots and any posed vertex ranges. A failed mesh load removes its waiters
+through the same cleanup path.
+
+Removing a waiter swaps the last handle into its place and updates that
+handle's index. This keeps insertion and removal independent of the number
+of waiting instances. Don't scan all waiting instances on creation: a scene
+with many instances of a shared mesh would take quadratic time to start.
+
+This lifecycle doesn't duplicate resource state. Materials still determine
+draw readiness through the availability graph, and mesh detail residency stays
+shared across instances. The transition tests live in
+`rendering::pipelines::visibility::renderables`.
+
 ## How mesh detail levels stream
 
 The visibility pipeline loads each mesh's detail levels from coarse to fine as

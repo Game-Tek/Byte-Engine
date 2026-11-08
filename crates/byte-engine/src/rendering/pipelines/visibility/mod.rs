@@ -30,6 +30,7 @@ pub(crate) mod material_parameters;
 mod mesh_dispatch;
 pub(crate) mod ray_tracing;
 mod render_pass;
+mod renderables;
 mod residency;
 pub(crate) mod scene;
 pub(crate) mod set_layouts;

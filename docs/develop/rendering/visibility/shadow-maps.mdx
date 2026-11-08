@@ -101,6 +101,37 @@ A change to the updates must keep:
   checks the shader's side, and the `shadow_updates` tests the scheduler and
   states.
 
+## Cascades skip small casters
+
+Drawing a shadow caster costs about the same at any size, because the shadow
+pass is bound by the meshlets it emits, not by the texels it fills. The coarse
+cascades hold thousands of small instances, such as grass clumps, that each
+cover a few texels. The [casters](/docs/reference/rendering#the-visibility-pipeline)
+rule drops them: the task shader skips an instance whose bounding sphere spans
+fewer than `MIN_CASTER_TEXELS` texels of a directional cascade.
+
+The shadow pass hands the limit to the task shader as the push constant
+`minimum_caster_extent`: the narrowest width, in normalized device units, that
+a view draws, which is 2 × 32 / resolution for a cascade. Camera, cone, and
+point dispatches pass zero. An orthographic view maps every distance to the
+same scale, so the test reads only the length of the view-projection's first
+row.
+
+On the slate quarry, skipping casters narrower than 32 texels cut the shadow
+pass from about 15 ms to 8 ms. At 8 texels it saved about 1 ms. The cost is
+lighter shading inside dense grass, where many small shadows add up; supply
+that darkening another way, such as ambient occlusion, instead of lowering the
+limit.
+
+A change to the cull must keep:
+
+- The limit at zero for perspective views. Their widths change with distance,
+  and the test doesn't account for it.
+- Skinned instances in every view, since a pose can move them past their
+  bounds.
+- The VM test `task_main_skips_casters_narrower_than_the_minimum_extent`
+  passing.
+
 ## Sun penumbrae read every texel under their filter
 
 A sun's penumbra is as wide as its occluder is far above the receiver, times

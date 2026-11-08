@@ -227,11 +227,13 @@ impl Default for TaskMeshFixture {
 /// Executes one exact production task workgroup at its global dispatch position over consecutive meshlets, culling
 /// against `view_count` views from `view_base`.
 ///
-/// View `i` draws with `view_projections[i]`. With `occlusion`, the workgroup also culls by occlusion as the camera's
-/// passes do, and view zero is [`fixture_camera`] at an aspect ratio of two.
+/// View `i` draws with `view_projections[i]`, and only instances at least `minimum_caster_extent` normalized device
+/// units across. With `occlusion`, the workgroup also culls by occlusion as the camera's passes do, and view zero is
+/// [`fixture_camera`] at an aspect ratio of two.
 fn run_meshlet_task_workgroup(
 	view_projections: &[[f32; 16]],
 	[view_base, view_count]: [u32; 2],
+	minimum_caster_extent: f32,
 	center_radii: &[[f32; 4]],
 	mesh: TaskMeshFixture,
 	workgroup_index: u32,
@@ -298,6 +300,9 @@ fn run_meshlet_task_workgroup(
 	] {
 		push_constant.write(member, Value::U32(value)).expect("task push constant");
 	}
+	push_constant
+		.write("minimum_caster_extent", Value::F32(minimum_caster_extent))
+		.expect("task minimum caster extent");
 	let mut mesh_dispatch_work = array_buffer(&program, slot(&program, MESH_DISPATCH_WORK), FIXTURE_TABLE_LENGTH);
 	let packed_work = MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed;
 	mesh_dispatch_work
@@ -385,6 +390,7 @@ fn camera_task_payload(center_radii: &[[f32; 4]], mesh: TaskMeshFixture, workgro
 	task_payload(&run_meshlet_task_workgroup(
 		&[IDENTITY_MATRIX],
 		[0, 1],
+		0.0,
 		center_radii,
 		mesh,
 		workgroup_index,
@@ -425,6 +431,7 @@ fn task_main_hands_its_instance_to_the_mesh_stage() {
 	let outputs = run_meshlet_task_workgroup(
 		&[IDENTITY_MATRIX],
 		[0, 1],
+		0.0,
 		&[[0.0, 0.0, 0.5, 0.1]],
 		TaskMeshFixture::default(),
 		0,
@@ -454,7 +461,7 @@ fn task_main_culls_instances_outside_every_view() {
 		bounding_sphere: [4.0, 0.0, 0.5, 0.1],
 		..Default::default()
 	};
-	let output = run_meshlet_task_workgroup(&[IDENTITY_MATRIX; 2], [0, 2], &[[0.0, 0.0, 0.5, 0.1]], outside, 0, None);
+	let output = run_meshlet_task_workgroup(&[IDENTITY_MATRIX; 2], [0, 2], 0.0, &[[0.0, 0.0, 0.5, 0.1]], outside, 0, None);
 	assert_eq!(task_payload(&output), []);
 }
 
@@ -485,12 +492,33 @@ fn task_main_keeps_skinned_meshlets_in_every_view() {
 		bounding_sphere: [4.0, 0.0, 0.5, 0.1],
 		..Default::default()
 	};
-	let output = run_meshlet_task_workgroup(&[IDENTITY_MATRIX; 2], [0, 2], &[[4.0, 0.0, 0.5, 0.1]], skinned, 0, None);
+	let output = run_meshlet_task_workgroup(&[IDENTITY_MATRIX; 2], [0, 2], 0.0, &[[4.0, 0.0, 0.5, 0.1]], skinned, 0, None);
 
 	assert_eq!(
 		task_payload(&output),
 		[batched_meshlet_instance(0, 0), batched_meshlet_instance(0, 1)]
 	);
+}
+
+/// Verifies an orthographic view skips an instance narrower than the minimum caster extent and keeps one at least that
+/// wide, while a skinned instance reaches the view whatever its size.
+#[test]
+fn task_main_skips_casters_narrower_than_the_minimum_extent() {
+	// The identity view-projection is orthographic at one normalized device unit per meter, so a sphere of radius r is
+	// 2r across.
+	let payload = |radius: f32, flags| {
+		let mesh = TaskMeshFixture {
+			flags,
+			bounding_sphere: [0.0, 0.0, 0.5, radius],
+			..Default::default()
+		};
+		let center_radius = [0.0, 0.0, 0.5, radius];
+		task_payload(&run_meshlet_task_workgroup(&[IDENTITY_MATRIX], [0, 1], 0.5, &[center_radius], mesh, 0, None))
+	};
+
+	assert_eq!(payload(0.2, 0), []);
+	assert_eq!(payload(0.25, 0), [batched_meshlet_instance(0, 0)]);
+	assert_eq!(payload(0.2, MESH_FLAG_SKINNED), [batched_meshlet_instance(0, 0)]);
 }
 
 /// Verifies the task rejects a meshlet facing away from the view unless its material is double-sided.
@@ -520,6 +548,7 @@ fn task_main_emits_one_meshlet_copy_per_view_that_sees_it() {
 	let output = run_meshlet_task_workgroup(
 		&view_projections,
 		[2, 4],
+		0.0,
 		&[[0.0, 0.0, 0.5, 0.1]],
 		TaskMeshFixture::default(),
 		0,
@@ -604,6 +633,7 @@ fn camera_occlusion_meshlets(
 	task_payload(&run_meshlet_task_workgroup(
 		&[],
 		[0, 1],
+		0.0,
 		center_radii,
 		mesh,
 		0,
@@ -729,7 +759,7 @@ fn late_pass_clears_the_record_of_instances_outside_the_view() {
 		record: &mut record,
 	};
 
-	run_meshlet_task_workgroup(&[], [0, 1], &[[100.0, 0.0, 10.0, 0.5]], outside, 0, Some(occlusion));
+	run_meshlet_task_workgroup(&[], [0, 1], 0.0, &[[100.0, 0.0, 10.0, 0.5]], outside, 0, Some(occlusion));
 
 	assert_eq!(record, 0);
 }

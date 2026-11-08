@@ -388,6 +388,7 @@ error for it.
 | Cascades | Four, splitting the range from the camera to `render.directional-shadows.distance` by the split blend between logarithmic and even. |
 | Fitting | With receivers fitting, each cascade shrinks to the surfaces the camera sees, after two small depth passes. With frustum fitting, it covers the whole slice without them. |
 | Stability | Each cascade is the smallest light-space square around its slice, padded by 17 texels, rounded in 8 steps per doubling, and snapped to a world-fixed texel grid. Casters start 100 m toward the light. |
+| Casters | A cascade draws an instance only when its bounding sphere is at least 32 of the cascade's texels across. Skinned instances always draw. Cone and point maps draw instances of every size. |
 | Holding a receiver | A cascade holds a receiver that lies inside its square, at least 10 texels from its edge, and inside its depth range, from where its casters start to its far side, give or take one depth step of 1/65535. With receivers fitting, a cascade's far side is the surface farthest from the light that the camera sees in that cascade's slice, so a cascade often doesn't hold a receiver of another slice. |
 | Beyond the last cascade | No sun shadow. |
 | Receiver | The surface point, moved off its triangle along the triangle's normal on the camera's side by sin θ texels of the cascade it's tested in, where θ is the angle between that normal and the direction toward the sun. |

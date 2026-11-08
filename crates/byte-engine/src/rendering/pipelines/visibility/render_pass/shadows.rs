@@ -24,7 +24,7 @@ use super::{
 	ComputeStage, OcclusionPhase, Pipelines, StageCounters, opaque_layer_pipelines, record_compute_stages,
 	record_meshlet_dispatches,
 };
-use crate::rendering::csm::{CASTER_REACH, CascadeFrame, EDGE_TEXELS, SIZE_STEPS_PER_OCTAVE};
+use crate::rendering::csm::{CASTER_REACH, CascadeFrame, EDGE_TEXELS, MIN_CASTER_TEXELS, SIZE_STEPS_PER_OCTAVE};
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
@@ -347,6 +347,8 @@ impl ShadowMaps {
 		};
 		let (directional, cone, point) = (self.directional, self.cone, self.point);
 		let directional_extent = Extent::square(work.cascade_resolution);
+		// Normalized device x spans two units across a map.
+		let minimum_cascade_caster_extent = 2.0 * MIN_CASTER_TEXELS / work.cascade_resolution as f32;
 		let class_extent = |size_class| Extent::square(local_shadow_map_resolution(size_class));
 
 		// An image without maps drops its memory; one with maps holds every map the budget kept for its kind. Every image
@@ -411,6 +413,12 @@ impl ShadowMaps {
 						local_pipelines,
 					),
 				};
+				// Only orthographic cascades skip small casters; a perspective map's widths change with distance.
+				let minimum_caster_extent = if run.image == ShadowImage::Directional {
+					minimum_cascade_caster_extent
+				} else {
+					0.0
+				};
 				c.start_region(|label| label.write_str(name));
 				let attachments = [ghi::AttachmentInformation::new(
 					target,
@@ -422,7 +430,15 @@ impl ShadowMaps {
 				let c = c.start_render_pass(extent, &attachments);
 				let ranges = dispatches.opaque_layer.into_iter().zip(pipelines);
 				let (first_view, count) = (run.first_view as usize, run.count as usize);
-				record_meshlet_dispatches(c, descriptor_sets, OcclusionPhase::Disabled, ranges, first_view, count);
+				record_meshlet_dispatches(
+					c,
+					descriptor_sets,
+					OcclusionPhase::Disabled,
+					ranges,
+					first_view,
+					count,
+					minimum_caster_extent,
+				);
 				c.end_render_pass();
 				c.end_region();
 			};

@@ -12,13 +12,16 @@ unoccluded_meshlets: workgroup<atomicu32>;
 
 // One dispatch draws `view_count` consecutive views, from `view_base`, into layers from `layer_base`. The camera's
 // visibility pass is a batch of one view. `occlusion_phase` selects one of the `OCCLUSION_*` culling phases, or zero to
-// cull by frustum and normal cone only, as the shadow views do.
+// cull by frustum and normal cone only, as the shadow views do. `minimum_caster_extent` is the narrowest instance, in
+// normalized device units across x, that the views draw: directional cascades skip small casters with it, and every
+// other dispatch passes zero, since a perspective view's widths change with distance.
 push_constant: push_constant {
 	work_item_base: u32,
 	view_base: u32,
 	layer_base: u32,
 	view_count: u32,
 	occlusion_phase: u32,
+	minimum_caster_extent: f32,
 }
 
 // Draws the meshlets the previous late pass found unoccluded. Their depth builds this frame's occlusion pyramid.
@@ -73,6 +76,14 @@ sphere_is_visible: fn(view: View, sphere: vec4f) -> bool {
 		&& sphere_intersects_plane(row3 + row1, sphere)
 		&& sphere_intersects_plane(row2, sphere)
 		&& sphere_intersects_plane(row3 - row2, sphere);
+}
+
+// Returns whether a world-space sphere spans at least `minimum_extent` of an orthographic view's normalized device x.
+// Such a view maps every distance to the same scale: the length of its projection's first row, in units per meter.
+sphere_is_wide_enough: fn(view: View, sphere: vec4f, minimum_extent: f32) -> bool {
+	let matrix: mat4f = view.view_projection;
+	let row0: vec3f = vec3f(matrix[0].x, matrix[1].x, matrix[2].x);
+	return 2.0 * sphere.w * sqrt(dot(row0, row0)) >= minimum_extent;
 }
 
 // Returns whether a meshlet may face a view: some triangle of it may be front-facing from the view's camera. `sphere`
@@ -186,7 +197,9 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	let instance_views: u32 = 0;
 	for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
 		let view: View = scene.views.views[push_constant.view_base + view_offset];
-		if (skinned || sphere_is_visible(view, instance_sphere)) {
+		let shows: bool = sphere_is_visible(view, instance_sphere)
+			&& sphere_is_wide_enough(view, instance_sphere, push_constant.minimum_caster_extent);
+		if (skinned || shows) {
 			instance_views = instance_views | (1 << view_offset);
 		}
 	}

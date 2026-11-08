@@ -487,6 +487,7 @@ in `pipelines` mode, and into the shader of its phase in `uber` mode.
 | Alpha mode | Opaque, masked with a cutoff, or blended; see [alpha modes](/docs/reference/bema#alpha-modes). Blended materials draw in the transparent phase. |
 | Masked coverage | The masked visibility and shadow passes evaluate each masked material's `opacity` in one coverage shader per pass kind, which holds one arm per distinct program and set of static values, in both evaluation modes. A masked material is drawn once both coverage shaders hold its arm, with the same development and release rules as uber `Coverage`. |
 | Double-sided | Draws without back-face culling, in the visibility and shadow passes. |
+| Mirrored | An instance whose [transform mirrors it](/docs/reference/world#transforms) culls the same faces as when it isn't mirrored, in the visibility and shadow passes. |
 | Variables | Programs that differ only in textures or dynamic values share one pipeline and one dispatch; each distinct set of static scalar and vector values takes its own. Texture variables take slots in declaration order, up to 16. Dynamic values number at most 16384 in all, counting every loaded material's and every entity's own. |
 | Layers | Every material evaluation shader takes the scene, visibility buffer, and material evaluation layers, and every closest-hit shader the scene and ray-traced scene layers. |
 

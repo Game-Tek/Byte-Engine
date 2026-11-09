@@ -82,7 +82,7 @@ pub async fn bake(
 		),
 		None => match storage_mode {
 			Some(mode) => ReDBStorageBackend::new_writable_with_mode(destination_path, mode),
-			None => Ok(ReDBStorageBackend::new_writable(destination_path)),
+			None => ReDBStorageBackend::new_writable(destination_path),
 		},
 	})
 	.await

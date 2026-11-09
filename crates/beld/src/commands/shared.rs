@@ -1,3 +1,4 @@
+use clap::builder::styling::{AnsiColor, Style};
 use resource_management::inspect::PayloadFormat;
 use resource_management::{
 	QueryableValue, SerializableResource,
@@ -6,14 +7,12 @@ use resource_management::{
 		resource_handler::MultiResourceReader,
 	},
 };
-use serde_json::Value;
 // Resource traces exist only in debug builds.
 #[cfg(debug_assertions)]
 use resource_management::{ResourceTraceItem, asset::ResourceId};
+use serde_json::Value;
 #[cfg(debug_assertions)]
 use serde_json::json;
-
-use clap::builder::styling::{AnsiColor, Style};
 
 use crate::{
 	OutputFormat, Payload,
@@ -193,11 +192,9 @@ where
 pub(super) async fn open_read_only_storage(destination_path: String, operation: &str) -> Result<ReDBStorageBackend, String> {
 	let storage = offload_file_operation(move || ReDBStorageBackend::open_read_only(destination_path.into())).await;
 
-	storage.map_err(|error| {
-		format!(
-			"Failed to {operation} resources. The most likely cause is that they were baked by a different engine revision or the bake is incomplete. BELD did not modify the resources directory. Use a matching BELD build, or run `beld bake` when you are ready to replace the resources. Error: {error}"
-		)
-	})
+	// The open error already names the store, its cause, and the fix, so an in-use or corrupt store is not reported
+	// as one from another engine revision.
+	storage.map_err(|error| format!("Failed to {operation} resources; BELD did not modify the resources directory. {error}"))
 }
 
 /// Logs an error message and returns the exit code of a failed command.

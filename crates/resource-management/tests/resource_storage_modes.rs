@@ -5,7 +5,7 @@ use resource_management::{
 	asset::ResourceId,
 	resource::{
 		self, ReDBStorageBackend, ReadStorageBackend as _, ResourceCompressionPolicy, ResourcePayloadEncoding,
-		ResourceStorageMode, WriteStorageBackend as _,
+		ResourceStorageMode, ResourceStoreOpenError, WriteStorageBackend as _,
 	},
 };
 
@@ -262,7 +262,7 @@ fn application_opener_discards_a_store_with_a_mismatched_resource_management_sig
 
 	// This is the public opener used by applications. It must synchronize the marker before any stale value can be read.
 	{
-		let _storage = ReDBStorageBackend::new(path.clone());
+		let _storage = ReDBStorageBackend::new(path.clone()).unwrap();
 	}
 
 	assert!(
@@ -401,7 +401,7 @@ async fn packed_mode_persists_across_writable_and_read_only_reopens() {
 	// The default writable opener discovers the packed mode instead of reverting the existing store to separate files.
 	let second_id = ResourceId::new("second.fixture");
 	{
-		let storage = ReDBStorageBackend::new_writable(path.clone());
+		let storage = ReDBStorageBackend::new_writable(path.clone()).unwrap();
 		storage
 			.store(ProcessedAsset::new(second_id, StoredFixture), b"second payload")
 			.await
@@ -440,7 +440,7 @@ async fn packed_mode_recovers_reusable_ranges_after_reopen() {
 
 	let reused_id = ResourceId::new("reused.fixture");
 	{
-		let storage = ReDBStorageBackend::new_writable(path.clone());
+		let storage = ReDBStorageBackend::new_writable(path.clone()).unwrap();
 		storage
 			.store(ProcessedAsset::new(reused_id, StoredFixture), b"free")
 			.await
@@ -487,7 +487,7 @@ async fn clear_persists_an_empty_reusable_store_without_changing_its_payload_mod
 
 		let rebuilt_id = ResourceId::new("rebuilt.fixture");
 		{
-			let storage = ReDBStorageBackend::new_writable(path.clone());
+			let storage = ReDBStorageBackend::new_writable(path.clone()).unwrap();
 			storage
 				.store(ProcessedAsset::new(rebuilt_id, StoredFixture), b"rebuilt")
 				.await
@@ -572,5 +572,97 @@ async fn usage_reports_the_pack_range_a_deleted_resource_frees() {
 	assert!(!pack.is_excessive());
 
 	drop(storage);
+	std::fs::remove_dir_all(path).unwrap();
+}
+
+/// Returns the error of an open that must fail, so a test can assert on its variant.
+fn open_error(opened: Result<ReDBStorageBackend, ResourceStoreOpenError>) -> ResourceStoreOpenError {
+	match opened {
+		Ok(_) => panic!("The resource store opened. The most likely cause is that the open fell back to another store."),
+		Err(error) => error,
+	}
+}
+
+#[resource_management::r#async::test]
+async fn a_second_handle_on_an_open_store_reports_that_the_store_is_in_use() {
+	let path = temporary_store();
+	let id = ResourceId::new("held.fixture");
+	let storage = ReDBStorageBackend::new_writable(path.clone()).unwrap();
+	storage.store(ProcessedAsset::new(id, StoredFixture), b"held").await.unwrap();
+
+	for second in [
+		ReDBStorageBackend::new_writable(path.clone()),
+		ReDBStorageBackend::open_read_only(path.clone()),
+	] {
+		let error = open_error(second);
+		assert!(
+			matches!(&error, ResourceStoreOpenError::InUse { path: error_path } if *error_path == path),
+			"expected an in-use error for '{}', got: {error}",
+			path.display()
+		);
+	}
+
+	// The rejected opens did not touch the store the first handle holds.
+	drop(storage);
+	let storage = ReDBStorageBackend::new_writable(path.clone()).unwrap();
+	let (_, reader) = storage.read(id).await.unwrap();
+	assert_eq!(reader.into_backing_storage().await.unwrap().as_slice(), b"held");
+
+	drop(storage);
+	std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn a_corrupt_database_is_reported_and_left_unchanged() {
+	let path = temporary_store();
+	// A store this engine baked, so the resource-management signature matches and no open resets the directory.
+	drop(ReDBStorageBackend::new_writable(path.clone()).unwrap());
+	let corrupt = vec![0xa5_u8; 4096];
+	std::fs::write(path.join("resources.db"), &corrupt).unwrap();
+
+	for opened in [
+		ReDBStorageBackend::new_writable(path.clone()),
+		ReDBStorageBackend::open_read_only(path.clone()),
+	] {
+		let error = open_error(opened);
+		assert!(
+			matches!(&error, ResourceStoreOpenError::Corrupt { path: error_path, .. } if *error_path == path),
+			"expected a corrupt-store error for '{}', got: {error}",
+			path.display()
+		);
+		assert_eq!(
+			std::fs::read(path.join("resources.db")).unwrap(),
+			corrupt,
+			"a rejected open must not repair, replace, or delete the database"
+		);
+	}
+
+	std::fs::remove_dir_all(path).unwrap();
+}
+
+#[resource_management::r#async::test]
+async fn a_fresh_path_opens_and_a_persisted_store_reopens() {
+	let path = temporary_store();
+	assert!(!path.exists());
+	let id = ResourceId::new("persisted.fixture");
+	{
+		let storage = ReDBStorageBackend::new_writable(path.clone()).unwrap();
+		storage
+			.store(ProcessedAsset::new(id, StoredFixture), b"persisted")
+			.await
+			.unwrap();
+	}
+
+	{
+		let storage = ReDBStorageBackend::new_writable(path.clone()).unwrap();
+		let (_, reader) = storage.read(id).await.unwrap();
+		assert_eq!(reader.into_backing_storage().await.unwrap().as_slice(), b"persisted");
+	}
+	{
+		let storage = ReDBStorageBackend::open_read_only(path.clone()).unwrap();
+		let (_, reader) = storage.read(id).await.unwrap();
+		assert_eq!(reader.into_backing_storage().await.unwrap().as_slice(), b"persisted");
+	}
+
 	std::fs::remove_dir_all(path).unwrap();
 }

@@ -45,7 +45,6 @@ mod tests {
 
 	use std::time::{SystemTime, UNIX_EPOCH};
 
-	use super::configure_cpu_baking;
 	use resource_management::{
 		ReferenceModel,
 		asset::{ResourceId, storage_backend::FileStorageBackend},
@@ -54,6 +53,7 @@ mod tests {
 		resources::mesh::MeshModel,
 	};
 
+	use super::configure_cpu_baking;
 	use super::get_asset_manager;
 
 	const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("../../resource-management/src/asset/test_data/triangle_move_ascii.fbx");
@@ -86,7 +86,7 @@ mod tests {
 
 			let asset_manager = get_asset_manager(
 				FileStorageBackend::new(assets_path),
-				ReDBStorageBackend::new(resources_path.clone()),
+				ReDBStorageBackend::new(resources_path.clone()).unwrap(),
 				&[],
 				configure_cpu_baking,
 			);
@@ -97,7 +97,7 @@ mod tests {
 
 			drop(asset_manager);
 
-			let resource_storage = ReDBStorageBackend::new(resources_path);
+			let resource_storage = ReDBStorageBackend::new(resources_path).unwrap();
 
 			let (serialized, _) = resource_storage
 				.read(ResourceId::new("triangle_move.fbx"))

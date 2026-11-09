@@ -240,7 +240,8 @@ impl GraphicsApplication {
 								ResourceStorageSettings::new(ResourceStorageMode::Files)
 									.image_compression(ResourceGpuCompressionPolicy::native()),
 							)
-							.unwrap(),
+							// The message names the store, the cause, and the fix; startup has no caller to return it to.
+							.unwrap_or_else(|error| panic!("{error}")),
 						);
 					});
 					lane.only_one_runs_mut(services, |services| {

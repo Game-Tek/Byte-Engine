@@ -176,7 +176,7 @@ fn inspect_prints_the_frames_of_a_stored_audio_payload() {
 	let samples: [i16; 4] = [1, -2, 300, i16::MIN];
 	let executor = beld::Executor::new().unwrap();
 	executor.block_on(async {
-		let storage = ReDBStorageBackend::new_writable(root.join("resources"));
+		let storage = ReDBStorageBackend::new_writable(root.join("resources")).unwrap();
 		let bytes = samples.iter().flat_map(|sample| sample.to_le_bytes()).collect::<Vec<_>>();
 		let audio = Audio {
 			bit_depth: BitDepths::Sixteen,

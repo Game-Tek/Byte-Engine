@@ -9,7 +9,7 @@ use crate::commands::shared::{log_failure, offload_file_operation, open_read_onl
 ///
 /// Call [`crate::bake`] next to populate the empty store.
 pub async fn wipe(destination_path: String) -> Result<(), i32> {
-	let storage_backend = offload_file_operation(move || ReDBStorageBackend::new_writable(destination_path.into())).await;
+	let storage_backend = open_writable_storage(destination_path, "wipe").await?;
 
 	storage_backend.clear().await.map_err(|error| {
 		log::error!(
@@ -61,7 +61,7 @@ pub async fn delete(destination_path: String, ids: Vec<String>) -> Result<(), i3
 		return Ok(());
 	}
 
-	let storage_backend = offload_file_operation(move || ReDBStorageBackend::new_writable(destination_path.into())).await;
+	let storage_backend = open_writable_storage(destination_path, "delete").await?;
 	let mut ok = true;
 
 	for id in ids {
@@ -81,4 +81,14 @@ pub async fn delete(destination_path: String, ids: Vec<String>) -> Result<(), i3
 	}
 
 	if ok { Ok(()) } else { Err(1) }
+}
+
+/// Opens the store a maintenance command updates, logging the open error and returning exit code 1 on failure.
+async fn open_writable_storage(destination_path: String, operation: &str) -> Result<ReDBStorageBackend, i32> {
+	offload_file_operation(move || ReDBStorageBackend::new_writable(destination_path.into()))
+		.await
+		.map_err(|error| {
+			log::error!("Failed to {operation} resources. {error}");
+			1
+		})
 }

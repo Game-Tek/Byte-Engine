@@ -113,6 +113,39 @@ Use one ReDB backend instance for a resource directory while it can be updated.
 Drop read-only ReDB backends and their mapped resource backings before reopening
 the directory for writing.
 
+### Open failures
+
+Every ReDB constructor returns a `ResourceStoreOpenError` instead of a degraded
+backend. There is no in-memory fallback, not even in tests: a fallback would let
+a bake report success and lose its output, or let an application run on an empty
+store. Code that must not persist resources uses `MemoryStorageBackend`
+explicitly.
+
+The error names the resources directory and sorts the failure into the cause a
+caller acts on:
+
+- `InUse`: another backend, in this process or another one, holds the database lock.
+- `Corrupt`: `resources.db` or `resources.pack` isn't a valid store, such as a file with an invalid header, damaged pages, an unrecognized persisted setting, or packed ranges that overlap.
+- `Io`: the file system refused an operation the open needs. The variant records the action and the `std::io::Error`.
+- `Incompatible`: the store or the requested settings don't fit this build, such as a different resource-management signature or payload mode.
+
+Its `Display` output is the complete message: what happened, the most likely
+cause, and the fix, with a link to
+[Fix a resource store that doesn't open](/docs/use/resources/bake#fix-a-resource-store-that-doesnt-open).
+BELD commands log it and exit with code 1; `GraphicsApplication::new` panics with
+it, because startup has no caller to return it to.
+
+A change must keep these rules true:
+
+- Return every open failure; never substitute another store.
+- Never repair, replace, or delete a store that an open rejects. A rejected writable open drops its write transaction uncommitted. The only deletion is the documented reset of a store whose resource-management signature is missing or changed, which happens before the database is read.
+- Classify a redb lock failure as `InUse` and an invalid-data failure as `Corrupt`, so neither is reported as the other.
+
+The black-box tests in `crates/resource-management/tests/resource_storage_modes.rs`
+guard this contract through the public constructors: a second handle reports
+`InUse`, a corrupt `resources.db` reports `Corrupt` and keeps its bytes, and a
+fresh path opens and reopens with its resources.
+
 Repeated rebuilds with changing payload sizes can split free space into many small ranges. The backend warns you when a pack of at least 64 MiB has at least 32 free ranges, at least 25 percent of the file is free, and no single range holds half of that free space. Delete the resource directory and [bake the application resources again](/docs/use/resources/bake) when you see this warning.
 
 The ReDB implementation converts resource URLs into stable resource IDs for

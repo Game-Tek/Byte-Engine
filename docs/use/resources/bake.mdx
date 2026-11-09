@@ -234,6 +234,28 @@ beld --destination "$PWD/resources" inspect scene.glb
 
 Run `beld bake` again after changing a source asset. BELD rebakes only the assets whose source files changed. After updating an engine asset processor or a feature in `config.json`, run `beld bake --force` instead, because those changes don't change source file versions. Baking requested IDs updates their generated output but doesn't remove unrelated old resources. Use `beld clear` only when you intentionally want to discard the entire resource directory.
 
+## Fix a resource store that doesn't open
+
+When BELD or your application can't open the resources directory, it stops and
+reports the directory, the most likely cause, and the fix. It never switches to
+a temporary store, so a bake can't report success without writing its output.
+
+Find the cause in the message, then apply its fix:
+
+| The message says the store | Do this |
+| --- | --- |
+| Is already open | Close the application or the other BELD command that uses the directory, then run your command again. Only one program at a time can open a resources directory. |
+| Is corrupt or unreadable | Delete the resources directory and bake again. BELD and your application leave a corrupt store exactly as they found it, so you can copy it first if you want to keep it. |
+| Didn't open because a file couldn't be created, read, or written | Make sure you can write to the directory and that the disk has free space, then run your command again. |
+| Can't be opened | Follow the fix in the message: bake with the `--storage-mode` it names, or bake again with the BELD build that matches your engine. |
+
+To rebuild a corrupt store, delete it and bake again:
+
+```bash
+rm -rf "$PWD/resources"
+beld --source "$PWD/assets" --destination "$PWD/resources" bake
+```
+
 ## Use resources in development and release
 
 Debug applications can install an `AssetManager` and bake missing assets on demand. Release applications have no asset-processing fallback: they read the complete `resources/` directory prepared by BELD and fail when a requested shader is absent. Keeping baking as an explicit pre-package step makes releases reproducible and avoids shipping source assets solely for runtime processing.

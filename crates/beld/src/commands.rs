@@ -20,8 +20,6 @@ mod tests {
 	use std::time::{SystemTime, UNIX_EPOCH};
 
 	use byte_engine::application::Parameter;
-
-	use crate::utils::configure_cpu_baking;
 	#[cfg(debug_assertions)]
 	use resource_management::{
 		ProcessedAsset, ResourceTraceItem, ResourceTraceLevel,
@@ -38,6 +36,7 @@ mod tests {
 	use super::{bake, inspect, query};
 	#[cfg(debug_assertions)]
 	use crate::OutputFormat;
+	use crate::utils::configure_cpu_baking;
 	use crate::utils::get_asset_manager;
 
 	#[cfg(debug_assertions)]
@@ -79,7 +78,7 @@ mod tests {
 
 		let asset_manager = get_asset_manager(
 			FileStorageBackend::new(root.clone()),
-			ReDBStorageBackend::new(root.join("test-resources")),
+			ReDBStorageBackend::new(root.join("test-resources")).unwrap(),
 			&[],
 			configure_cpu_baking,
 		);
@@ -108,7 +107,7 @@ mod tests {
 
 		let asset_manager = get_asset_manager(
 			FileStorageBackend::new(root.clone()),
-			ReDBStorageBackend::new(root.join("test-resources")),
+			ReDBStorageBackend::new(root.join("test-resources")).unwrap(),
 			&[],
 			configure_cpu_baking,
 		);
@@ -141,7 +140,7 @@ mod tests {
 
 		let asset_manager = get_asset_manager(
 			FileStorageBackend::new(root.clone()),
-			ReDBStorageBackend::new(root.join("test-resources")),
+			ReDBStorageBackend::new(root.join("test-resources")).unwrap(),
 			&[],
 			configure_cpu_baking,
 		);
@@ -222,7 +221,7 @@ mod tests {
 		));
 		let mut ids = executor
 			.block_on(resource_management::resource::ReadStorageBackend::list(
-				&ReDBStorageBackend::new(resources_path),
+				&ReDBStorageBackend::new(resources_path).unwrap(),
 			))
 			.unwrap()
 			.into_iter()
@@ -317,7 +316,7 @@ mod tests {
 			Err(1)
 		);
 
-		let resource_storage = ReDBStorageBackend::new(resources_path.clone());
+		let resource_storage = ReDBStorageBackend::new(resources_path.clone()).unwrap();
 		let failed_trace = executor
 			.block_on(resource_storage.read_trace(ResourceId::new("broken.png")))
 			.unwrap();

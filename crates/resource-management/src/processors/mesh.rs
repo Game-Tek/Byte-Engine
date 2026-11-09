@@ -440,7 +440,7 @@ mod tests {
 	}
 
 	#[test]
-	fn authored_levels_follow_full_detail_and_seed_the_generated_ones() {
+	fn authored_levels_follow_their_gap_levels_and_seed_the_generated_ones() {
 		// Full detail is a 32 by 32 rippled grid; the authored level samples the same surface with 4 by 4 quads and
 		// appends its own vertices.
 		let full = TestPrimitive::wavy_grid(32);
@@ -462,9 +462,23 @@ mod tests {
 		let lods = &processed.mesh.primitives[0].lods;
 
 		// The authored level draws only its own 25 vertices, which sort ahead of full detail's.
-		assert_eq!(lods[1].vertex_count, 25);
-		assert_eq!(stream_bytes(&processed, Streams::Indices(IndexStreamTypes::Meshlets), 1).len(), 32 * 3);
-		assert!(lods[1].error > 0.0 && lods[1].error.is_finite());
+		let authored_level = lods
+			.iter()
+			.position(|lod| lod.vertex_count == 25)
+			.expect("the authored level should bake");
+		assert_eq!(
+			stream_bytes(&processed, Streams::Indices(IndexStreamTypes::Meshlets), authored_level as u8).len(),
+			32 * 3
+		);
+		let authored_error = lods[authored_level].error;
+		assert!(authored_error > 0.0 && authored_error.is_finite());
+		// The authored level removes 98% of full detail's triangles, so levels simplified from full detail fill the gap,
+		// each with less error than the authored level and at least a third more triangles.
+		assert!(authored_level > 1, "levels simplified from full detail should fill the gap");
+		for level in 1..authored_level as u8 {
+			assert!(lods[level as usize].error < authored_error);
+			assert!(stream_bytes(&processed, Streams::Indices(IndexStreamTypes::Meshlets), level).len() * 3 >= 32 * 3 * 4);
+		}
 		assert!(lods.windows(2).all(|pair| pair[0].error <= pair[1].error));
 		assert_eq!(lods[0].vertex_count as usize, 33 * 33 + 25);
 	}

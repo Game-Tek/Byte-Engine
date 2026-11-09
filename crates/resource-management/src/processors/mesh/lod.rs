@@ -323,7 +323,7 @@ fn point_triangle_distance(point: [f32; 3], [a, b, c]: [[f32; 3]; 3]) -> f32 {
 /// Share of the previous level's triangles that each level aims to keep.
 const LOD_TRIANGLE_RATIO: f32 = 0.5;
 /// Smallest share of the previous level's triangles a level must remove to be kept.
-const LOD_MIN_REDUCTION: f32 = 0.25;
+pub(super) const LOD_MIN_REDUCTION: f32 = 0.25;
 /// Triangle count at or below which a level gets no coarser one, because it already fits in about two meshlets.
 const LOD_MIN_TRIANGLES: usize = 2 * MESHLET_MAX_TRIANGLES;
 /// Weight of each normal component against position error, which is measured relative to the mesh extent.

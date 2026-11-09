@@ -233,15 +233,46 @@ impl MeshProcessorSession {
 			let full = &self.scratch.indices[..full_end];
 			let max_levels = (self.settings.lods.max_levels as usize).clamp(1, MAX_PRIMITIVE_LODS);
 			// Authored levels come first, each measured against full detail since it carries no error of its own.
-			// Selection assumes error never falls as levels get coarser.
-			let mut levels: Vec<LodLevel> = Vec::with_capacity(level_starts.len());
-			for range in level_ranges(level_starts, index_count).skip(1).take(max_levels - 1) {
-				let indices = &self.scratch.indices[range];
-				let error = level_distance(&self.scratch.positions, full, indices);
-				levels.push(LodLevel {
-					indices: indices.to_vec(),
-					error: error.max(levels.last().map_or(0.0, |level| level.error)),
-				});
+			let authored: Vec<LodLevel> = level_ranges(level_starts, index_count)
+				.skip(1)
+				.take(max_levels - 1)
+				.map(|range| {
+					let indices = self.scratch.indices[range].to_vec();
+					let error = level_distance(&self.scratch.positions, full, &indices);
+					LodLevel { indices, error }
+				})
+				.collect();
+			// An artist's level often removes most of the triangles of the level before it, which leaves instances on
+			// the finer level until the coarser one's large error fits. Levels simplified from the finer one fill that
+			// gap while slots remain, each kept only while its error stays below the authored level's and the
+			// authored level still removes its share of the fill's triangles.
+			let mut levels: Vec<LodLevel> = Vec::with_capacity(max_levels - 1);
+			let authored_count = authored.len();
+			for (position, level) in authored.into_iter().enumerate() {
+				let room = (max_levels - 1).saturating_sub(levels.len() + authored_count - position);
+				if room > 0 {
+					let (finer, finer_error) =
+						levels.last().map_or((full, 0.0), |level| (&level.indices[..], level.error));
+					let fill = simplify_levels(
+						finer,
+						finer_error,
+						&positions,
+						&self.scratch.normals,
+						&mut self.scratch.vertex_locks,
+						MeshLodSettings {
+							max_levels: (room + 1) as u8,
+							..self.settings.lods
+						},
+					);
+					let coarser_triangles = level.indices.len() / 3;
+					levels.extend(fill.into_iter().take_while(|fill| {
+						fill.error < level.error
+							&& coarser_triangles as f32 <= (fill.indices.len() / 3) as f32 * (1.0 - LOD_MIN_REDUCTION)
+					}));
+				}
+				// Selection assumes error never falls as levels get coarser.
+				let error = level.error.max(levels.last().map_or(0.0, |level| level.error));
+				levels.push(LodLevel { error, ..level });
 			}
 			// The levels the authored ones leave room for simplify the coarsest of them.
 			let (coarsest, base_error) = levels.last().map_or((full, 0.0), |level| (&level.indices[..], level.error));
@@ -1017,7 +1048,7 @@ use math::{AABB, Point, Vector};
 use super::{
 	MeshSettings,
 	lightmap_uvs::{LightmapUvScratch, generate_lightmap_uvs},
-	lod::{LodLevel, MeshLodSettings, level_distance, simplify_levels},
+	lod::{LOD_MIN_REDUCTION, LodLevel, MeshLodSettings, level_distance, simplify_levels},
 	source::{MeshPrimitiveSource, VertexSkin},
 	validation::{
 		MeshProcessingError, skeleton_node_count, validate_primitive_metadata, validate_skin_binding, validate_vertex_layout,
@@ -1034,3 +1065,4 @@ use crate::{
 	},
 	types::{IndexStreamTypes, Stream, Streams, VertexComponent, VertexSemantics},
 };
+

@@ -116,9 +116,10 @@ every model below it.
 | Match | The pattern must match the model's file name without its extension. A model whose name doesn't match has no authored levels. |
 | Level files | The model's directory and extension, with the pattern's placeholders as the model's name filled them and each level number above the model's in turn. A number keeps the model's zero padding, so `LOD01` is followed by `LOD02`. |
 | Chain end | The first level file that doesn't exist, or that holds other than one mesh instance, other material names, or other vertex streams than the model. A model that holds other than one mesh instance uses none. Adding a missing file later rebakes the model. |
-| Count | At most `max_levels` levels, counting full detail. |
+| Count | At most `max_levels` levels, counting full detail. Authored levels take their places first, and gap levels and coarser levels take what's left. |
 | Primitive | Each material's triangles in a level file become that level of the primitive with the same material, and its vertices are added to the primitive's. A level whose vertices don't fit in the 65,536 a primitive holds, a material that doesn't fit in one primitive at full detail, a skinned model, and a bake with lightmap UVs fall back to simplified levels, with a warning in the model's trace. |
 | Error | Measured against full detail: the farthest a vertex of either lies from the other's triangles. A level's error is at least the error of the level before it. |
+| Gap levels | Before each authored level, while `max_levels` leaves a level for it and every authored level after it, levels simplified from the level before it as [Detail levels](#detail-levels) specifies, each with that level's error added to its own. A gap level is kept while its error is less than the authored level's and the authored level has at most 75% of its triangles; the first that isn't ends the gap. |
 | Coarser levels | Simplified from the last authored level as [Detail levels](#detail-levels) specifies, each with that level's error added to its own. |
 | Baking | The level files are read as sources of the model and don't need to be baked themselves, so [excluded assets](#excluded-assets) can hold them. |
 

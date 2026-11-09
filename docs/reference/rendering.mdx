@@ -396,7 +396,7 @@ error for it.
 | Penumbra width | On each side of an occluder's edge, the occluder's distance above the receiver along the light times the tangent of the light's angular radius. |
 | Penumbra cascade | Among the cascades from the receiver's own up to the one after the cascade its occluders are searched in that hold the receiver, the one where the penumbra's width w, in its texels, makes the larger of 2 / w and w / 6 least; the lower-numbered one where two tie. A penumbra of no width counts as 0.1 millimeters. |
 | Penumbra filter | A tent over every texel whose center lies within the radius of the receiver on both axes. The radius is the penumbra's width in the penumbra cascade's texels, at least 2 and at most 8. Each texel weighs the radius less its center's distance from the receiver, on each axis, and the weights are normalized to sum to 1. |
-| Cascade fade | Where the next best of those cascades has less than 1.5 times the penumbra cascade's larger of 2 / w and w / 6, the result mixes the two cascades' results. The penumbra cascade's share is that ratio less 0.5: half where the two are equal, all of it at 1.5. |
+| Cascade fade | The candidates split at a width of √12 texels, where 2 / w and w / 6 are equal: those narrower and those at least that wide. Where the best candidate of the other side than the penumbra cascade's has less than 1.5 times the penumbra cascade's larger of 2 / w and w / 6, the result mixes the two cascades' results. The penumbra cascade's share is that ratio less 0.5: half where the two are equal, all of it at 1.5. Candidates on the penumbra cascade's own side never mix with it. |
 
 ### Shadow maps
 

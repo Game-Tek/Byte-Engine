@@ -925,6 +925,18 @@ impl MeshView {
 	};
 }
 
+/// The `MeshAttributes` enum names the attributes a mesh stage passes to its fragment stage, which a mesh-shader test
+/// checks as part of the stage's output contract.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MeshAttributes {
+	/// Nothing, for a stage no fragment stage follows, as for opaque shadow casters.
+	None,
+	/// The instance at location 0 and the UV at location 1, which the masked shadow passes' alpha test reads.
+	Instance,
+	/// The instance, the primitive, and the UV at locations 0, 1, and 2, which the visibility pass writes.
+	InstanceAndPrimitive,
+}
+
 /// Executes one production mesh main over one triangle meshlet placed by `model` and verifies its complete output
 /// contract, including that the triangle winds on screen as it does under an identity model.
 fn assert_triangle_mesh_program(
@@ -934,6 +946,7 @@ fn assert_triangle_mesh_program(
 	base_vertex: u32,
 	expected_clip_positions: [[f32; 4]; 3],
 	expected_render_target_array_index: Option<u32>,
+	attributes: MeshAttributes,
 ) {
 	let mut views = buffer(&program, slot(&program, VIEWS));
 	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
@@ -950,13 +963,17 @@ fn assert_triangle_mesh_program(
 			.write_array_element(base_vertex as usize + index, Value::Vec3F(position))
 			.expect("mesh vertex");
 	}
-	let mut vertex_uvs = array_buffer(&program, slot(&program, VERTEX_UVS), vertex_count);
+	// A stage that passes no attributes reads no UVs, so its program keeps no UV binding.
+	let mut vertex_uvs = (attributes != MeshAttributes::None)
+		.then(|| array_buffer(&program, slot(&program, VERTEX_UVS), vertex_count));
 	let mut vertex_indices = array_buffer(&program, slot(&program, VERTEX_INDICES), 3);
 	let mut primitive_indices = array_buffer(&program, slot(&program, PRIMITIVE_INDICES), 3);
 	for index in 0..3 {
-		vertex_uvs
-			.write_array_element(base_vertex as usize + index, Value::Vec2F16([besl::vm::f16::ZERO; 2]))
-			.expect("mesh UV");
+		if let Some(vertex_uvs) = &mut vertex_uvs {
+			vertex_uvs
+				.write_array_element(base_vertex as usize + index, Value::Vec2F16([besl::vm::f16::ZERO; 2]))
+				.expect("mesh UV");
+		}
 		vertex_indices
 			.write_array_element(index, Value::U16(index as u16))
 			.expect("vertex index");
@@ -985,9 +1002,15 @@ fn assert_triangle_mesh_program(
 	}
 	let payload = batched_meshlet_instance(0, view.view_offset);
 
-	let mut out_instance_indices = buffer(&program, output_slot(0));
-	let mut out_primitive_indices = buffer(&program, output_slot(1));
-	let mut out_uvs = buffer(&program, output_slot(2));
+	// One buffer per attribute location the stage writes.
+	let locations: u8 = match attributes {
+		MeshAttributes::None => 0,
+		MeshAttributes::Instance => 2,
+		MeshAttributes::InstanceAndPrimitive => 3,
+	};
+	let mut out_attributes = (0..locations)
+		.map(|location| buffer(&program, output_slot(location)))
+		.collect::<Vec<_>>();
 	let mut mesh_outputs = MeshOutputs::new();
 	{
 		let mut descriptors = DescriptorBindings::new();
@@ -996,13 +1019,15 @@ fn assert_triangle_mesh_program(
 		descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
 		descriptors.bind_buffer(slot(&program, MESH_LEVELS), &mut mesh_levels);
 		descriptors.bind_buffer(slot(&program, VERTEX_POSITIONS), &mut positions);
-		descriptors.bind_buffer(slot(&program, VERTEX_UVS), &mut vertex_uvs);
+		if let Some(vertex_uvs) = &mut vertex_uvs {
+			descriptors.bind_buffer(slot(&program, VERTEX_UVS), vertex_uvs);
+		}
 		descriptors.bind_buffer(slot(&program, VERTEX_INDICES), &mut vertex_indices);
 		descriptors.bind_buffer(slot(&program, PRIMITIVE_INDICES), &mut primitive_indices);
 		descriptors.bind_buffer(slot(&program, MESHLETS), &mut meshlets);
-		descriptors.bind_buffer(output_slot(0), &mut out_instance_indices);
-		descriptors.bind_buffer(output_slot(1), &mut out_primitive_indices);
-		descriptors.bind_buffer(output_slot(2), &mut out_uvs);
+		for (location, attribute) in out_attributes.iter_mut().enumerate() {
+			descriptors.bind_buffer(output_slot(location as u8), attribute);
+		}
 		descriptors.bind_push_constant(&mut push_constant);
 		descriptors.bind_mesh_outputs(&mut mesh_outputs);
 		// Mesh invocations share their capture just as lanes in one production mesh workgroup share output arrays.
@@ -1035,18 +1060,18 @@ fn assert_triangle_mesh_program(
 	if let Some(expected) = expected_render_target_array_index {
 		assert_eq!(mesh_outputs.render_target_array_index(0), Some(expected));
 	}
-	assert_eq!(
-		out_instance_indices
-			.read_indexed("out_instance_index", 0)
-			.expect("mesh output"),
-		Value::U32(FIXTURE_INSTANCE_INDEX as u32)
-	);
-	assert_eq!(
-		out_primitive_indices
-			.read_indexed("out_primitive_index", 0)
-			.expect("mesh output"),
-		Value::U32((FIXTURE_MESHLET_INDEX as u32) << 8)
-	);
+	if attributes != MeshAttributes::None {
+		assert_eq!(
+			out_attributes[0].read_indexed("out_instance_index", 0).expect("mesh output"),
+			Value::U32(FIXTURE_INSTANCE_INDEX as u32)
+		);
+	}
+	if attributes == MeshAttributes::InstanceAndPrimitive {
+		assert_eq!(
+			out_attributes[1].read_indexed("out_primitive_index", 0).expect("mesh output"),
+			Value::U32((FIXTURE_MESHLET_INDEX as u32) << 8)
+		);
+	}
 }
 
 /// Verifies visibility mesh output geometry and metadata through the BESL VM.
@@ -1059,6 +1084,7 @@ fn visibility_mesh_main_emits_identity_triangle_and_metadata() {
 		0,
 		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
+		MeshAttributes::InstanceAndPrimitive,
 	);
 }
 
@@ -1072,6 +1098,7 @@ fn visibility_mesh_main_reads_vertices_from_its_base_vertex() {
 		7,
 		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
+		MeshAttributes::InstanceAndPrimitive,
 	);
 }
 
@@ -1086,6 +1113,21 @@ fn shadow_mesh_main_emits_selected_view_triangle_and_metadata() {
 		0,
 		[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
 		Some(3),
+		MeshAttributes::None,
+	);
+}
+
+/// Verifies masked shadow mesh output draws the same triangle and passes the instance its alpha test reads.
+#[test]
+fn masked_shadow_mesh_main_emits_selected_view_triangle_and_instance() {
+	assert_triangle_mesh_program(
+		asset!("masked-shadow-mesh.besl"),
+		MeshView::SHADOW,
+		IDENTITY_AFFINE_MATRIX,
+		0,
+		[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
+		Some(3),
+		MeshAttributes::Instance,
 	);
 }
 
@@ -1103,6 +1145,7 @@ fn visibility_mesh_main_keeps_a_mirrored_instance_facing_front() {
 		0,
 		[[1.0, -1.0, 0.0, 1.0], [-1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
+		MeshAttributes::InstanceAndPrimitive,
 	);
 }
 
@@ -1116,6 +1159,7 @@ fn shadow_mesh_main_keeps_a_mirrored_instance_facing_front() {
 		0,
 		[[3.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
 		Some(3),
+		MeshAttributes::None,
 	);
 }
 
@@ -3187,6 +3231,7 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 		),
 		("visibility_mesh", asset_source!("visibility-mesh.besl"), mesh()),
 		("shadow_mesh", asset_source!("shadow-mesh.besl"), mesh()),
+		("masked_shadow_mesh", asset_source!("masked-shadow-mesh.besl"), mesh()),
 		(
 			"visibility_fragment",
 			asset_source!("visibility-fragment.besl"),

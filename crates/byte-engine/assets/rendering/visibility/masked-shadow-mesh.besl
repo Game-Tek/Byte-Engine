@@ -1,0 +1,62 @@
+// Draws the meshlets the task stage kept into the shadow map layers of their views, for masked casters. It passes the
+// instance and the UV the coverage shader's alpha test reads; opaque casters draw with `shadow-mesh.besl`, which passes
+// nothing.
+
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+
+meshlet_instances: task_payload<u32, 193>;
+// The coverage shader's interface sorts its fields by name: `instance_index` then `uv`.
+out_instance_index: output<u32, 0, 126>;
+// One UV per meshlet vertex, interpolated across each triangle for the alpha test.
+out_uv: vertex_output<vec2f16, 1, 64>;
+
+// One dispatch draws `view_count` consecutive views, from `view_base`, into layers from `layer_base`.
+push_constant: push_constant {
+	work_item_base: u32,
+	view_base: u32,
+	layer_base: u32,
+	view_count: u32,
+}
+
+main: fn(scene: Scene) -> void {
+	let payload_index: u32 = threadgroup_position();
+	// Decode the meshlet and view from the same payload read so a meshlet cannot be paired with another grid's view.
+	let meshlet_instance: u32 = meshlet_instances[payload_index];
+	// The task stage wrote its one instance after every meshlet word.
+	let instance_index: u32 = meshlet_instances[192];
+	let view_offset: u32 = (meshlet_instance >> 12) & 7;
+	let mesh: Mesh = scene.meshes[instance_index];
+	let level: MeshLevel = scene.mesh_levels[mesh.level & MESH_LEVEL_MASK];
+	// Task shaders pack the meshlet relative to its level's first meshlet.
+	let meshlet: Meshlet = scene.meshlets[level.first_meshlet + (meshlet_instance & 4095)];
+	let view: View = scene.views.views[push_constant.view_base + view_offset];
+	let primitive_index: u32 = thread_idx();
+
+	let vertex_count: u32 = meshlet.counts & 255;
+	let triangle_count: u32 = (meshlet.counts >> 8) & 255;
+
+	set_mesh_output_counts(vertex_count, triangle_count);
+
+	if (primitive_index < vertex_count) {
+		let relative_vertex_index: u32 = u32(scene.vertex_indices[meshlet.primitive_offset + primitive_index]);
+		let vertex_index: u32 = instance_vertex_base(mesh, level) + relative_vertex_index;
+		// A posed instance's record points at its own range, which skinning wrote this frame.
+		let object_position: vec3f = scene.vertex_positions[vertex_index];
+		let world_position: vec3f = mesh.model * vec4f(object_position.x, object_position.y, object_position.z, 1.0);
+		set_mesh_vertex_position(primitive_index, view.view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0));
+		out_uv[primitive_index] = scene.vertex_uvs[vertex_index];
+	}
+
+	if (primitive_index < triangle_count) {
+		let first_index: u32 = (meshlet.triangle_offset + primitive_index) * 3;
+		let triangle: vec3u = vec3u(
+			u32(scene.primitive_indices[first_index]),
+			u32(scene.primitive_indices[first_index + 1]),
+			u32(scene.primitive_indices[first_index + 2])
+		);
+		set_mesh_triangle(primitive_index, instance_triangle(mesh, triangle));
+		set_mesh_primitive_render_target_array_index(primitive_index, push_constant.layer_base + view_offset);
+		out_instance_index[primitive_index] = instance_index;
+	}
+}

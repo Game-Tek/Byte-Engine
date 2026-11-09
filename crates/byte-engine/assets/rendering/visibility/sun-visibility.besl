@@ -294,20 +294,9 @@ directional_shadow_blocker_depth: fn (
 		let pyramid_extent: vec2u = texture_size(sun_visibility.directional_shadow_depth_cells);
 		let pyramid_extent_f: vec2f = vec2f(f32(pyramid_extent.x), f32(pyramid_extent.y));
 		// The first cell's center lies between two and one cells before the receiver on each axis, so the four tent
-		// weights per axis, 2 - |offset|, sum to four.
+		// weights per axis, 2 - |offset|, sum to four. Each quad works out its own, since an array indexed by the loop
+		// would be kept in stack memory instead of registers.
 		let first_offset: vec2f = first_cell + vec2f(0.5, 0.5) - grid_position;
-		let weight_x: f32[4] = f32[4](
-			2.0 - abs(first_offset.x),
-			2.0 - abs(first_offset.x + 1.0),
-			2.0 - abs(first_offset.x + 2.0),
-			2.0 - abs(first_offset.x + 3.0)
-		);
-		let weight_y: f32[4] = f32[4](
-			2.0 - abs(first_offset.y),
-			2.0 - abs(first_offset.y + 1.0),
-			2.0 - abs(first_offset.y + 2.0),
-			2.0 - abs(first_offset.y + 3.0)
-		);
 		// The receiver plane's depth at the first cell's center; each cell to the right or down adds eight texels of
 		// slope.
 		let cell_step: vec2f = depth_gradient_per_texel * 8.0;
@@ -322,18 +311,22 @@ directional_shadow_blocker_depth: fn (
 				let corner_uv: vec2f = (first_cell + vec2f(f32(next_column), f32(next_row) + layer_offset)) / pyramid_extent_f;
 				let quad: vec4f = gather(sun_visibility.directional_shadow_depth_cells, corner_uv);
 				let depth: f32 = first_depth + cell_step.x * f32(column) + cell_step.y * f32(row);
+				let weight_x: f32 = 2.0 - abs(first_offset.x + f32(column));
+				let next_weight_x: f32 = 2.0 - abs(first_offset.x + f32(next_column));
+				let weight_y: f32 = 2.0 - abs(first_offset.y + f32(row));
+				let next_weight_y: f32 = 2.0 - abs(first_offset.y + f32(next_row));
 				sums = sums
-					+ directional_shadow_blocker_cell(quad.w, depth, weight_x[column] * weight_y[row], cell_plane_rise, fade_depth)
+					+ directional_shadow_blocker_cell(quad.w, depth, weight_x * weight_y, cell_plane_rise, fade_depth)
 					+ directional_shadow_blocker_cell(
-						quad.z, depth + cell_step.x, weight_x[next_column] * weight_y[row], cell_plane_rise, fade_depth
+						quad.z, depth + cell_step.x, next_weight_x * weight_y, cell_plane_rise, fade_depth
 					)
 					+ directional_shadow_blocker_cell(
-						quad.x, depth + cell_step.y, weight_x[column] * weight_y[next_row], cell_plane_rise, fade_depth
+						quad.x, depth + cell_step.y, weight_x * next_weight_y, cell_plane_rise, fade_depth
 					)
 					+ directional_shadow_blocker_cell(
 						quad.y,
 						depth + cell_step.x + cell_step.y,
-						weight_x[next_column] * weight_y[next_row],
+						next_weight_x * next_weight_y,
 						cell_plane_rise,
 						fade_depth
 					);
@@ -691,13 +684,18 @@ sample_directional_shadow: fn (
 	// and must hold the receiver, so the filter stays inside the map: the surface's own cascade and the search cascade
 	// do, but another fitted to its own surfaces often doesn't. A penumbra of no width counts as a tenth of a
 	// millimeter, so the finest candidate filters it.
+	//
+	// The misfit is least at a width of sqrt(12) texels: 2 / w is the larger below it and w / 6 above it. Among the
+	// candidates narrower than that, the widest fits best, and among the wider ones, the narrowest. Penumbra widths
+	// scale every candidate alike, so the choice can only flip between the best of each side. Each side therefore keeps
+	// its best candidate, and the better of the two filters.
 	let penumbra_meters: f32 = max(occluder_distance, 0.0) * angular_radius_tangent;
 	let fitted_penumbra_meters: f32 = max(penumbra_meters, 0.0001);
 	let last_filter_cascade: u32 = min(search_cascade + 1, 3);
-	let filter_cascade: u32 = 4;
-	let filter_misfit: f32 = 100000000.0;
-	let runner_up_cascade: u32 = 4;
-	let runner_up_misfit: f32 = 100000000.0;
+	let narrow_cascade: u32 = 4;
+	let narrow_misfit: f32 = 100000000.0;
+	let wide_cascade: u32 = 4;
+	let wide_misfit: f32 = 100000000.0;
 	for (let cascade: u32 = depth_cascade; cascade <= last_filter_cascade; cascade = cascade + 1) {
 		let cascade_view: u32 = directional_shadow_cascade_view(cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
 		if (cascade == depth_cascade
@@ -705,74 +703,75 @@ sample_directional_shadow: fn (
 			|| directional_shadow_cascade_holds(scene.views.views[cascade_view].view_projection, world_space_position, shadow_map_width)) {
 			let width: f32 = fitted_penumbra_meters * directional_shadow_cascade_scale(cascade, texels_per_meter);
 			let misfit: f32 = max(2.0 / width, width / 6.0);
-			if (misfit < filter_misfit) {
-				runner_up_cascade = filter_cascade;
-				runner_up_misfit = filter_misfit;
-				filter_cascade = cascade;
-				filter_misfit = misfit;
-			} else if (misfit < runner_up_misfit) {
-				runner_up_cascade = cascade;
-				runner_up_misfit = misfit;
+			// The loop runs in cascade order, so a strict comparison keeps the lower-numbered one of a tie.
+			if (width * width < 12.0) {
+				if (misfit < narrow_misfit) {
+					narrow_cascade = cascade;
+					narrow_misfit = misfit;
+				}
+			} else if (misfit < wide_misfit) {
+				wide_cascade = cascade;
+				wide_misfit = misfit;
 			}
 		}
 	}
-	let filter_receiver: vec4f = search_receiver;
-	let filter_gradient: vec2f = search_gradient;
-	if (filter_cascade != search_cascade) {
-		let filter_view: u32 = directional_shadow_cascade_view(filter_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
-		let filter_view_projection: mat4f = scene.views.views[filter_view].view_projection;
-		filter_receiver = directional_shadow_receiver(
-			filter_view_projection,
-			filter_cascade,
-			world_space_position + normal_offset / directional_shadow_cascade_scale(filter_cascade, texels_per_meter)
-		);
-		filter_gradient = directional_shadow_receiver_gradient(filter_view_projection, surface_vector0, surface_vector1);
+	// The lower-numbered side's best filters where the two tie.
+	let filter_cascade: u32 = wide_cascade;
+	let filter_misfit: f32 = wide_misfit;
+	let partner_cascade: u32 = narrow_cascade;
+	let partner_misfit: f32 = narrow_misfit;
+	if (narrow_misfit < wide_misfit || (narrow_misfit == wide_misfit && narrow_cascade < wide_cascade)) {
+		filter_cascade = narrow_cascade;
+		filter_misfit = narrow_misfit;
+		partner_cascade = wide_cascade;
+		partner_misfit = wide_misfit;
 	}
-	let lit: f32 = sample_directional_shadow_cascade(
-		sun_visibility,
-		shadow_map,
-		first_layer + filter_cascade,
-		filter_receiver,
-		filter_gradient,
-		shadow_map_extent,
-		penumbra_meters * directional_shadow_cascade_scale(filter_cascade, texels_per_meter),
-		occluder_distance <= 0.0 && filter_cascade != search_cascade
-	);
 
 	// Two cascades sample the scene at different resolutions, so where the choice between them flips they can disagree.
-	// Where the runner-up's misfit is less than 1.5 times the chosen one's, the result mixes the two: half and half where
-	// they fit equally well, so the flip leaves no seam, and all the chosen cascade's at 1.5 times.
-	let filter_share: f32 = min(runner_up_misfit / filter_misfit - 0.5, 1.0);
-	if (runner_up_cascade == 4 || filter_share >= 1.0) {
-		return lit;
+	// Where the other side's best misfit is less than 1.5 times the chosen one's, the result mixes the two: half and half
+	// where they fit equally well, so the flip leaves no seam, and all the chosen cascade's at 1.5 times. One loop samples
+	// both, so the filter is compiled once.
+	let filter_share: f32 = 1.0;
+	let sampled_cascades: u32 = 1;
+	if (partner_cascade != 4) {
+		filter_share = min(partner_misfit / filter_misfit - 0.5, 1.0);
+		if (filter_share < 1.0) {
+			sampled_cascades = 2;
+		}
 	}
-	let runner_up_receiver: vec4f = search_receiver;
-	let runner_up_gradient: vec2f = search_gradient;
-	if (runner_up_cascade != search_cascade) {
-		let runner_up_view: u32 = directional_shadow_cascade_view(
-			runner_up_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3
-		);
-		let runner_up_view_projection: mat4f = scene.views.views[runner_up_view].view_projection;
-		runner_up_receiver = directional_shadow_receiver(
-			runner_up_view_projection,
-			runner_up_cascade,
-			world_space_position + normal_offset / directional_shadow_cascade_scale(runner_up_cascade, texels_per_meter)
-		);
-		runner_up_gradient = directional_shadow_receiver_gradient(
-			runner_up_view_projection, surface_vector0, surface_vector1
+	let lit: f32 = 0.0;
+	for (let sampled: u32 = 0; sampled < sampled_cascades; sampled = sampled + 1) {
+		let cascade: u32 = filter_cascade;
+		let share: f32 = filter_share;
+		if (sampled == 1) {
+			cascade = partner_cascade;
+			share = 1.0 - filter_share;
+		}
+		let receiver: vec4f = search_receiver;
+		let gradient: vec2f = search_gradient;
+		if (cascade != search_cascade) {
+			let view_projection: mat4f = scene.views.views[
+				directional_shadow_cascade_view(cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3)
+			].view_projection;
+			receiver = directional_shadow_receiver(
+				view_projection,
+				cascade,
+				world_space_position + normal_offset / directional_shadow_cascade_scale(cascade, texels_per_meter)
+			);
+			gradient = directional_shadow_receiver_gradient(view_projection, surface_vector0, surface_vector1);
+		}
+		lit = lit + share * sample_directional_shadow_cascade(
+			sun_visibility,
+			shadow_map,
+			first_layer + cascade,
+			receiver,
+			gradient,
+			shadow_map_extent,
+			penumbra_meters * directional_shadow_cascade_scale(cascade, texels_per_meter),
+			occluder_distance <= 0.0 && cascade != search_cascade
 		);
 	}
-	let runner_up_lit: f32 = sample_directional_shadow_cascade(
-		sun_visibility,
-		shadow_map,
-		first_layer + runner_up_cascade,
-		runner_up_receiver,
-		runner_up_gradient,
-		shadow_map_extent,
-		penumbra_meters * directional_shadow_cascade_scale(runner_up_cascade, texels_per_meter),
-		occluder_distance <= 0.0 && runner_up_cascade != search_cascade
-	);
-	return mix(runner_up_lit, lit, filter_share);
+	return lit;
 }
 
 // Per tile texel: 1/z of the view depth, which every use of depth below needs, or zero without a surface; and every
@@ -965,16 +964,10 @@ main: fn (input: StageInput, scene: Scene, sun_visibility: SunVisibility) -> voi
 	}
 	// Each sun's shadow-map visibility in its channel. Material evaluation never reads an unused slot's channel, so
 	// it stays zero and leaves the fully-shadowed test below to the used ones.
+	// One loop resolves every sun, so the resolve is compiled once instead of once per sun slot.
 	let suns: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
-	suns.x = resolve_sun_shadow(scene, sun_visibility, 0, world_position, view_position, edge0, edge1, normal, view_normal);
-	if (sun_count > 1) {
-		suns.y = resolve_sun_shadow(scene, sun_visibility, 1, world_position, view_position, edge0, edge1, normal, view_normal);
-		if (sun_count > 2) {
-			suns.z = resolve_sun_shadow(scene, sun_visibility, 2, world_position, view_position, edge0, edge1, normal, view_normal);
-			if (sun_count > 3) {
-				suns.w = resolve_sun_shadow(scene, sun_visibility, 3, world_position, view_position, edge0, edge1, normal, view_normal);
-			}
-		}
+	for (let sun: u32 = 0; sun < sun_count; sun = sun + 1) {
+		suns[sun] = resolve_sun_shadow(scene, sun_visibility, sun, world_position, view_position, edge0, edge1, normal, view_normal);
 	}
 	// A pixel every shadow map fully shadows needs no contact shadow.
 	if (max(max(suns.x, suns.y), max(suns.z, suns.w)) <= 0.0) {
@@ -1001,26 +994,28 @@ main: fn (input: StageInput, scene: Scene, sun_visibility: SunVisibility) -> voi
 			inverse_depth_gradient(center_inverse_z, center_index, CONTACT_SHADOW_FILTER_TILE_WIDTH)
 		);
 		// The first tap lies the filter radius above and left of the center texel. Its offset from the pixel, in trace
-		// texels, gives every tap's offset, and the Gaussian is separable, so the 25 taps need ten exponentials instead
-		// of one each.
+		// texels, gives every tap's offset, and the Gaussian is separable, so each tap weighs its column's weight times
+		// its row's.
 		let first_tap_index: u32 = center_index - CONTACT_SHADOW_FILTER_RADIUS * CONTACT_SHADOW_FILTER_TILE_WIDTH - CONTACT_SHADOW_FILTER_RADIUS;
 		let first_offset: vec2f = vec2f(
 			f32(tile_origin.x + center_texel.x - CONTACT_SHADOW_FILTER_RADIUS),
 			f32(tile_origin.y + center_texel.y - CONTACT_SHADOW_FILTER_RADIUS)
 		) - position;
-		let column_weights: f32[5] = f32[5](0.0, 0.0, 0.0, 0.0, 0.0);
-		let row_weights: f32[5] = f32[5](0.0, 0.0, 0.0, 0.0, 0.0);
-		for (let tap: u32 = 0; tap <= 2 * CONTACT_SHADOW_FILTER_RADIUS; tap = tap + 1) {
-			let column_offset: f32 = first_offset.x + f32(tap);
-			let row_offset: f32 = first_offset.y + f32(tap);
-			column_weights[tap] = exp(0.0 - column_offset * column_offset * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
-			row_weights[tap] = exp(0.0 - row_offset * row_offset * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
-		}
+		// Along one axis, with w(o) = exp(-k o^2), the next tap's weight is w(o + 1) = w(o) r(o), where
+		// r(o) = exp(-k (2 o + 1)), and each ratio is the one before it times exp(-2 k). The weights then follow from
+		// four exponentials by products, and no array holds them, which the loops' indices would keep in stack memory.
+		let ratio_step: f32 = exp(0.0 - 2.0 * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
+		let first_column_weight: f32 = exp(0.0 - first_offset.x * first_offset.x * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
+		let first_column_ratio: f32 = exp(0.0 - (2.0 * first_offset.x + 1.0) * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
+		let row_weight: f32 = exp(0.0 - first_offset.y * first_offset.y * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
+		let row_ratio: f32 = exp(0.0 - (2.0 * first_offset.y + 1.0) * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
 
 		// The taps' weights depend only on the surface, so one pass filters every sun's trace together.
 		let lit: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 		let total_weight: f32 = 0.0;
 		for (let tap_row: u32 = 0; tap_row <= 2 * CONTACT_SHADOW_FILTER_RADIUS; tap_row = tap_row + 1) {
+			let column_weight: f32 = first_column_weight;
+			let column_ratio: f32 = first_column_ratio;
 			for (let tap_column: u32 = 0; tap_column <= 2 * CONTACT_SHADOW_FILTER_RADIUS; tap_column = tap_column + 1) {
 				let tap_index: u32 = first_tap_index + tap_row * CONTACT_SHADOW_FILTER_TILE_WIDTH + tap_column;
 				let tap_inverse_z: f32 = shared_inverse_depth[tap_index];
@@ -1028,12 +1023,16 @@ main: fn (input: StageInput, scene: Scene, sun_visibility: SunVisibility) -> voi
 					let offset: vec2f = first_offset + vec2f(f32(tap_column), f32(tap_row));
 					let predicted_inverse_z: f32 = center_inverse_z + dot(surface_gradient, offset);
 					let plane_error: f32 = abs(tap_inverse_z - predicted_inverse_z) / center_inverse_z;
-					let weight: f32 = column_weights[tap_column] * row_weights[tap_row]
+					let weight: f32 = column_weight * row_weight
 						* clamp(1.0 - plane_error / CONTACT_SHADOW_FILTER_PLANE_TOLERANCE, 0.0, 1.0);
 					lit = lit + shared_trace[tap_index] * weight;
 					total_weight = total_weight + weight;
 				}
+				column_weight = column_weight * column_ratio;
+				column_ratio = column_ratio * ratio_step;
 			}
+			row_weight = row_weight * row_ratio;
+			row_ratio = row_ratio * ratio_step;
 		}
 		// A thin surface may have no trace texel on its plane, since each texel keeps the nearest of its pixels. The
 		// shadow map alone shadows it.

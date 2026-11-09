@@ -38,10 +38,9 @@ coverage_visibility: fn (
 pub(crate) const COVERAGE_DEPTH_SOURCE: &str = r#"
 coverage_depth: fn (
 	input: StageInput,
-	// The mesh stage writes the instance and primitive once per primitive, and the UV per vertex.
+	// The mesh stage writes the instance once per primitive and the UV per vertex.
 	pipeline_input: interface {
 		instance_index: primitive<u32>,
-		primitive_index: primitive<u32>,
 		uv: vec2f16,
 	},
 ) -> void {

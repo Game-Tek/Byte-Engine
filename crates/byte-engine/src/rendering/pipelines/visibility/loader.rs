@@ -1336,8 +1336,12 @@ impl VisibilityLoader {
 			keys,
 			pipelines: CoveragePipelines {
 				visibility: request(["visibility", "double-sided-visibility"], &visibility.shader),
-				directional: request(["directional-shadow", "double-sided-directional-shadow"], &depth.shader),
-				local: request(["cone-shadow", "double-sided-cone-shadow"], &depth.shader),
+				// Masked casters draw with their own mesh stage, which passes the alpha test its UV and instance.
+				directional: request(
+					["masked-directional-shadow", "double-sided-masked-directional-shadow"],
+					&depth.shader,
+				),
+				local: request(["masked-cone-shadow", "double-sided-masked-cone-shadow"], &depth.shader),
 			},
 		})
 	}

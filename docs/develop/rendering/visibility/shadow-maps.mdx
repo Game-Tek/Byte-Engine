@@ -153,7 +153,13 @@ penumbra's width in that cascade's texels: 2 / w is how far a 2-texel tent
 widens a narrower penumbra, and w / 6 weighs the reads a wider one costs.
 Between cascades whose texels differ by a factor of 2, the coarser one takes
 over at 4.9 of the finer one's texels, and the fade mixes the two from 4 to 6
-of them. Receivers fitting doesn't keep the cascades in order of texel size: on
+of them. The choice can only flip between the best cascade on each side of
+√12 texels, where 2 / w and w / 6 meet, since a penumbra's width scales every
+candidate alike. So the fade mixes only those two. It used to mix the two best
+cascades wherever they were, and on the slate quarry, where receivers fitting
+leaves cascades 2 and 3 only 1.3 times apart in texel size, nearly every
+penumbra pixel in cascade 2 filtered cascade 3 as well, at a constant 80 to 20
+mix that no flip called for. Receivers fitting doesn't keep the cascades in order of texel size: on
 Sponza, cascade 2 can have finer texels than cascade 1, and cascade 3 sixteen
 times coarser ones than cascade 2. With receivers fitting, a coarser cascade
 also often doesn't hold a nearby receiver, since it's fitted to farther
@@ -191,6 +197,9 @@ A change to the penumbra filter must keep:
   penumbra's width in meters, not by a texel count alone, so the blur stays the
   same width where the cascade changes. Cascades don't nest under receivers
   fitting, so neither their order nor a fixed ratio between them may be assumed.
+- The fade only between the best candidates on either side of √12 texels.
+  Candidates on the same side never trade places as the penumbra widens, so
+  mixing them doubles the filter's reads for no seam.
 - Every texel under the tent read. A filter that reaches further with the same
   taps undersamples the map and brings the staircase back.
 - The filter's reach of 8 texels, plus the receiver's move off its surface,

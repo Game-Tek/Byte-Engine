@@ -257,6 +257,9 @@ impl CommandBufferRecording<'_> {
 			for set in &self.bound_descriptor_set_handles {
 				let set = &self.device.descriptor_sets[set.index() as usize];
 				for consumption in &set.copies[self.copy_key().index()].consumptions {
+					// The dedupe scans the consumptions planned so far. A set holds at most MAX_LAYOUT_RESOURCES
+					// resources, so the list stays in the tens, and this fan-out runs only on the first draw of a
+					// render pass.
 					if consumptions.iter().any(|planned| planned.handle == consumption.handle) {
 						continue;
 					}

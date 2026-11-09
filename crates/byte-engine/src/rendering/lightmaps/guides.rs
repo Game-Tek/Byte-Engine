@@ -66,6 +66,8 @@ pub(crate) fn group_texels(texels: &[LightmapTexel], cell: f32) -> GuideGroups {
 			let facing = texels[seed as usize].normal;
 			let group = result.groups.len() as u32;
 			let first = result.texels.len() as u32;
+			// Each pass removes at least the seed, and a group stops at MOST_TEXELS, so `retain` runs at most 32 times
+			// over a cube's texels: quadratic in a fixed bound, not in the lightmap's size.
 			waiting.retain(|&texel| {
 				let normal = texels[texel as usize].normal;
 				let same = result.texels.len() as u32 - first < MOST_TEXELS

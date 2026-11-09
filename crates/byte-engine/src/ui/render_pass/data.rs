@@ -853,6 +853,7 @@ pub(super) fn clear_primitive(viewport: Extent) -> UiPrimitive {
 
 /// Reports whether an element with these pixel bounds must be drawn for the damage; no damage list means everything.
 pub(super) fn damage_intersects(damage: Option<&[UiPixelRegion]>, bounds: [f32; 4]) -> bool {
+	// `merge_damage` caps the list at MAX_UI_DAMAGE_REGIONS, so this scans at most four regions per draw element.
 	damage.is_none_or(|damage| damage.iter().any(|region| region.intersects_bounds(bounds)))
 }
 
@@ -895,6 +896,9 @@ pub(super) fn blur_footprints(draw_list: &UiDrawList, viewport: Extent, out: &mu
 /// Merges overlapping regions, bounds the count, and promotes large damage to one full-viewport region.
 pub(super) fn merge_damage(damage: &mut Vec<UiPixelRegion>, viewport: Extent) {
 	damage.retain(|region| !region.is_empty());
+	// Restarting the pairwise scan after each union makes the worst case cubic. Damage is one frame's changed geometry,
+	// typically a handful of regions, and the result is capped at MAX_UI_DAMAGE_REGIONS below; a spatial index would
+	// allocate every frame to save a few comparisons.
 	let mut merged = true;
 	while merged {
 		merged = false;

@@ -1301,6 +1301,9 @@ fn inheritance_chain<'a, T: Named>(
 
 	chain.push(start);
 
+	// Each level scans the whole document for the parent and the chain so far for a cycle. Authored MaterialX
+	// inheritance chains are a few levels deep, so the depth multiplies the document scan by a handful; a deep
+	// generated chain is the case that would need an index.
 	while let Some(parent) = inherit(&elements[current]) {
 		let name = elements[current].name();
 

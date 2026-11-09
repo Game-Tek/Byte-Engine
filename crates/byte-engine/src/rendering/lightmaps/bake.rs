@@ -65,6 +65,8 @@ impl AssetHandler for LightmapAssetHandler {
 		let scene = collect_level(id.as_ref(), &level, &payload).map_err(|cause| invalid(&cause))?;
 		let mut meshes = Vec::new();
 		let mut materials = Vec::new();
+		// These dedupe distinct mesh and material IDs, not entities: a level's thousands of props reuse a few dozen
+		// meshes and materials, and the loop runs once per lightmap bake.
 		for mesh in &scene.meshes {
 			match &mesh.source {
 				MeshSource::Resource(mesh) if !meshes.iter().any(|known: &String| known == mesh.as_ref()) => {

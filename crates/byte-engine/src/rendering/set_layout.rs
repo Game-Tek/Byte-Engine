@@ -139,6 +139,8 @@ impl SetLayout {
 	///
 	/// A pipeline's stages each declare the layouts they list; this is the pipeline's view of them.
 	pub fn merged<'a>(sets: impl IntoIterator<Item = &'a SetLayout>) -> Arc<[SetLayout]> {
+		// A pipeline lists at most MAX_DESCRIPTOR_SETS layouts, so the linear scan over the merged list is a scan of at
+		// most fifteen entries.
 		let mut merged = Vec::<SetLayout>::new();
 		for set in sets {
 			match merged
@@ -414,6 +416,9 @@ pub fn create_sets(
 		*slot = Some(descriptor_set);
 		for binding in &set.interface().bindings {
 			// A binding the pipeline does not reach may be left without a resource.
+			//
+			// The lookup scans the pipeline's own resources, at most MAX_LAYOUT_RESOURCES, and a set is created once per
+			// pipeline publish, not per frame.
 			if let Some(resource) = resources.iter().find(|resource| resource.name() == binding.name) {
 				resource.descriptor_writes(descriptor_set, ghi::ResourceSlot::new(binding.slot), &mut writes);
 			}

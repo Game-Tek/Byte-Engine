@@ -156,6 +156,10 @@ pub struct AnimationSystem {
 	/// The playing animators' entities, in the order of `players`.
 	handles: Vec<Handle>,
 	players: Vec<AnimationGraphPlayer>,
+	/// Each animator's entity to its index in `handles` and `players`.
+	player_indices: std::collections::HashMap<Handle, usize>,
+	/// Each DDS writer's owner to its index in `streams`.
+	stream_indices: std::collections::HashMap<Handle, usize>,
 }
 
 impl AnimationSystem {
@@ -194,6 +198,8 @@ impl AnimationSystem {
 			root_motion: scope.channel::<RootMotionUpdate>(),
 			handles: Vec::new(),
 			players: Vec::new(),
+			player_indices: std::collections::HashMap::new(),
+			stream_indices: std::collections::HashMap::new(),
 		}
 	}
 
@@ -243,7 +249,15 @@ impl AnimationSystem {
 	}
 
 	fn index_of(&self, handle: Handle) -> Option<usize> {
-		self.handles.iter().position(|&known| known == handle)
+		self.player_indices.get(&handle).copied()
+	}
+
+	/// Points `stream_indices` at the stream that `swap_remove` moved into `index`.
+	fn reindex_stream(&mut self, index: usize) {
+		let moved = self.streams.get(index).map(|(owner, _)| *owner);
+		if let Some(owner) = moved {
+			self.stream_indices.insert(owner, index);
+		}
 	}
 
 	/// Removes the animators of deleted entities.
@@ -253,13 +267,22 @@ impl AnimationSystem {
 			if let Some(index) = self.index_of(deleted) {
 				self.handles.swap_remove(index);
 				self.players.swap_remove(index);
+				self.player_indices.remove(&deleted);
+				if index < self.handles.len() {
+					self.player_indices.insert(self.handles[index], index);
+				}
 			}
 			// A DDS has its own entity lifetime; deleting it detaches its writer even when its target remains alive.
 			let mut index = 0;
 			while index < self.streams.len() {
-				let (owner, stream) = &self.streams[index];
-				if *owner == deleted || stream.entity() == deleted {
-					let (_, removed) = self.streams.remove(index);
+				let removed_here = {
+					let (owner, stream) = &self.streams[index];
+					*owner == deleted || stream.entity() == deleted
+				};
+				if removed_here {
+					let (owner, removed) = self.streams.swap_remove(index);
+					self.stream_indices.remove(&owner);
+					self.reindex_stream(index);
 					if let Some(player) = self.index_of(removed.entity()) {
 						let replacement = self
 							.streams
@@ -281,8 +304,9 @@ impl AnimationSystem {
 		while let Some(created) = self.stream_creations.read() {
 			let owner = created.handle();
 			let stream = created.data().clone();
-			if let Some(index) = self.streams.iter().position(|(known, _)| *known == owner) {
-				let previous = self.streams.remove(index).1;
+			if let Some(index) = self.stream_indices.remove(&owner) {
+				let previous = self.streams.swap_remove(index).1;
+				self.reindex_stream(index);
 				if previous.entity() != stream.entity()
 					&& let Some(player) = self.index_of(previous.entity())
 				{
@@ -292,6 +316,7 @@ impl AnimationSystem {
 			if let Some(index) = self.index_of(stream.entity()) {
 				self.players[index].set_stream(Some(stream.clone()));
 			}
+			self.stream_indices.insert(owner, self.streams.len());
 			self.streams.push((owner, stream));
 		}
 	}
@@ -322,6 +347,7 @@ impl AnimationSystem {
 			match self.index_of(created.handle()) {
 				Some(index) => self.players[index] = player,
 				None => {
+					self.player_indices.insert(created.handle(), self.handles.len());
 					self.handles.push(created.handle());
 					self.players.push(player);
 				}

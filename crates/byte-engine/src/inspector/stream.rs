@@ -77,6 +77,9 @@ impl DebugDataStreams {
 		while let Some(created) = self.creations.read() {
 			let Some(output) = &self.output else { continue };
 			let request = created.data();
+			// This scans the frame's deletions for every creation. It runs only in development builds with stream
+			// output enabled, and a frame that deletes many entities, such as a level unload, creates almost none, so
+			// the two lists rarely grow together.
 			if self.deleted.contains(&created.handle()) {
 				continue;
 			}

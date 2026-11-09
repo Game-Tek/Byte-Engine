@@ -101,6 +101,7 @@ async fn clip_ids(context: &BakeContext<'_>, entries: &[String]) -> Result<Vec<S
 			vec![entry.clone()]
 		};
 		for id in named {
+			// The list is the clip entries of one motion database, typically a handful, and this runs once per bake.
 			if !ids.contains(&id) {
 				ids.push(id);
 			}

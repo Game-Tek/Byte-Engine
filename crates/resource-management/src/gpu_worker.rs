@@ -122,6 +122,10 @@ impl Drop for GpuClaim {
 		// goes to the oldest caller on a thread that holds no claim, or to the oldest caller when every waiting thread
 		// holds one, so a place never idles while someone waits. A send fails only for a caller that stopped waiting,
 		// so the place goes on to the next one.
+		//
+		// Each waiter is matched by scanning the queue and, per waiter, the holders. `holders` is capped at CLAIMS,
+		// two per in-flight request, and `waiting` holds only the callers blocked on a place, so both lists stay small
+		// and a claim returns in bounded time by contract.
 		loop {
 			let next = claims
 				.waiting

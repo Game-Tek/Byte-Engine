@@ -286,7 +286,7 @@ fn layout_elements<'a>(
 		next: &mut u32,
 		slots: &[usize],
 		siblings: &mut Vec<(i32, usize), &bumpalo::Bump>,
-		layers: &mut Vec<(i32, usize), &bumpalo::Bump>,
+		layers: &mut Layers<'_>,
 		output: &mut [LayoutElement],
 	) {
 		let position = &mut output[slots[index]].position;
@@ -301,7 +301,7 @@ fn layout_elements<'a>(
 			match &tree.elements[child].primitive {
 				Primitives::Container(container) => match container.depth {
 					Depth::Relative(depth) => siblings.push((depth, child)),
-					Depth::Absolute(depth) => layers.push((depth, child)),
+					Depth::Absolute(depth) => layers.push(depth, child),
 				},
 				_ => siblings.push((1, child)),
 			}
@@ -318,6 +318,60 @@ fn layout_elements<'a>(
 			rank(tree, child, next, slots, siblings, layers, output);
 		}
 		siblings.truncate(start);
+	}
+
+	/// The `Layers` struct queues the absolute-depth layers that wait to be ranked, lowest depth first and in the
+	/// order they were found among equals.
+	///
+	/// It is a binary min-heap in the frame allocator, which `std::collections::BinaryHeap` can't use.
+	struct Layers<'a> {
+		/// Each layer's depth, the order it was found in, and its element.
+		heap: Vec<(i32, usize, usize), &'a bumpalo::Bump>,
+		found: usize,
+	}
+
+	impl Layers<'_> {
+		fn push(&mut self, depth: i32, index: usize) {
+			self.heap.push((depth, self.found, index));
+			self.found += 1;
+			let heap = &mut self.heap;
+			let mut child = heap.len() - 1;
+			while child > 0 {
+				let parent = (child - 1) / 2;
+				if heap[parent] <= heap[child] {
+					break;
+				}
+				heap.swap(parent, child);
+				child = parent;
+			}
+		}
+
+		/// Removes the lowest layer and returns its element.
+		fn pop(&mut self) -> Option<usize> {
+			let heap = &mut self.heap;
+			let last = heap.len().checked_sub(1)?;
+			heap.swap(0, last);
+			let (_, _, lowest) = heap.pop()?;
+			let mut parent = 0;
+			loop {
+				let left = parent * 2 + 1;
+				if left >= heap.len() {
+					break;
+				}
+				let right = left + 1;
+				let child = if right < heap.len() && heap[right] < heap[left] {
+					right
+				} else {
+					left
+				};
+				if heap[parent] <= heap[child] {
+					break;
+				}
+				heap.swap(parent, child);
+				parent = child;
+			}
+			Some(lowest)
+		}
 	}
 
 	// The viewport parents every root: each element declared directly in a mount, and each one whose parent was
@@ -359,13 +413,16 @@ fn layout_elements<'a>(
 
 	let mut next = 0;
 	let mut siblings = Vec::new_in(frame_allocator);
-	let mut layers = Vec::new_in(frame_allocator);
+	let mut layers = Layers {
+		heap: Vec::new_in(frame_allocator),
+		found: 0,
+	};
 	// Roots order among themselves like siblings: by relative depth, then in tree order.
 	for &root in &roots {
 		match &tree.elements[root].primitive {
 			Primitives::Container(container) => match container.depth {
 				Depth::Relative(depth) => siblings.push((depth, root)),
-				Depth::Absolute(depth) => layers.push((depth, root)),
+				Depth::Absolute(depth) => layers.push(depth, root),
 			},
 			_ => siblings.push((1, root)),
 		}
@@ -380,8 +437,7 @@ fn layout_elements<'a>(
 	// Absolute-depth layers leave their parent and paint above all ordinary content, lowest first and
 	// in tree order among equals. A layer found inside another one is ranked after it, which keeps it
 	// above the layer that opened it.
-	while let Some(lowest) = (0..layers.len()).min_by_key(|&layer| layers[layer].0) {
-		let (_, index) = layers.remove(lowest);
+	while let Some(index) = layers.pop() {
 		rank(tree, index, &mut next, &slots, &mut siblings, &mut layers, &mut elements);
 	}
 	elements

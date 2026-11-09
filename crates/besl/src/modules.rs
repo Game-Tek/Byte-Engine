@@ -248,41 +248,78 @@ pub(crate) fn order_root_modules(program: &mut Node<'_>) -> Result<(), LexError>
 		return Ok(());
 	};
 
-	// The modules each module needs, by index.
+	// The modules each module needs, by index. Index the names so a `use` path finds the modules it starts with
+	// through one lookup per `::` prefix instead of a scan of every module.
 	let names = modules
 		.iter()
 		.map(|module| module.name().unwrap_or_default())
 		.collect::<Vec<_>>();
+	let mut modules_by_name = std::collections::HashMap::<&str, Vec<usize>>::with_capacity(names.len());
+	for (index, name) in names.iter().enumerate() {
+		modules_by_name.entry(*name).or_default().push(index);
+	}
 	let needs = modules
 		.iter()
 		.enumerate()
 		.map(|(index, module)| {
 			let mut paths = Vec::new();
 			root_uses(module, &mut paths);
-			(0..names.len())
-				.filter(|other| *other != index && paths.iter().any(|path| names_module(path, names[*other])))
-				.collect::<Vec<_>>()
+			let mut needs = Vec::new();
+			for path in &paths {
+				// A module is needed when its name is the whole path or a `::`-prefix of it.
+				let mut end = path.len();
+				loop {
+					if let Some(indices) = modules_by_name.get(&path[..end]) {
+						needs.extend(indices.iter().copied().filter(|&other| other != index));
+					}
+					match path[..end].rfind("::") {
+						Some(separator) => end = separator,
+						None => break,
+					}
+				}
+			}
+			needs.sort_unstable();
+			needs.dedup();
+			needs
 		})
 		.collect::<Vec<_>>();
 
-	// Kahn's algorithm, keeping the attach order among modules that don't depend on each other.
+	// Kahn's algorithm, keeping the attach order among modules that don't depend on each other. A min-heap of ready
+	// indices takes the lowest index first, as scanning the list would, and each module is placed once.
+	let mut dependents = vec![Vec::new(); names.len()];
+	let mut remaining = vec![0usize; names.len()];
+	for (index, module_needs) in needs.iter().enumerate() {
+		remaining[index] = module_needs.len();
+		for &need in module_needs {
+			dependents[need].push(index);
+		}
+	}
+	let mut ready = std::collections::BinaryHeap::new();
+	for (index, &pending) in remaining.iter().enumerate() {
+		if pending == 0 {
+			ready.push(std::cmp::Reverse(index));
+		}
+	}
 	let mut order = Vec::with_capacity(names.len());
-	let mut placed = vec![false; names.len()];
-	while order.len() < names.len() {
-		let Some(next) = (0..names.len()).find(|index| !placed[*index] && needs[*index].iter().all(|need| placed[*need]))
-		else {
-			let cycle = (0..names.len())
-				.filter(|index| !placed[*index])
-				.map(|index| format!("`::{}`", names[index]))
-				.collect::<Vec<_>>()
-				.join(", ");
-			return Err(LexError::invalid(format!(
-				"Modules {cycle} name each other. The most likely cause is two shared modules that each `use` the other, but each one links after the modules it names. Move what both need into a third module. See {}.",
-				crate::online_docs_url(MODULES_DOCS_PATH)
-			)));
-		};
-		placed[next] = true;
+	while let Some(std::cmp::Reverse(next)) = ready.pop() {
 		order.push(next);
+		for &dependent in &dependents[next] {
+			remaining[dependent] -= 1;
+			if remaining[dependent] == 0 {
+				ready.push(std::cmp::Reverse(dependent));
+			}
+		}
+	}
+	if order.len() < names.len() {
+		let cycle = (0..names.len())
+			.filter(|&index| remaining[index] > 0)
+			.map(|index| format!("`::{}`", names[index]))
+			.collect::<Vec<_>>()
+			.join(", ");
+		return Err(LexError::invalid(format!(
+			"Modules {cycle} name each other. The most likely cause is two shared modules that each `use` the other, but each one links after the modules it names. Move what both need into a third module. See {}.",
+			crate::online_docs_url(MODULES_DOCS_PATH)
+		)));
 	}
 
 	let mut taken = std::mem::take(modules).into_iter().map(Some).collect::<Vec<_>>();

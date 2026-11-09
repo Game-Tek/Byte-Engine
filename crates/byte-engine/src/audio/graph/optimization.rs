@@ -9,6 +9,9 @@ pub(super) fn optimize(graph: &mut AudioGraph) {
 
 /// Removes nodes whose output is identical to their input.
 fn eliminate_identity_nodes(graph: &mut AudioGraph) {
+	// Optimization runs once when an authored graph is built, not per frame, and a mix graph holds tens of nodes, so
+	// the rescan from index zero and the removal shift are cheap. A graph large enough to notice would need an index
+	// that a single authoring pass does not amortize.
 	while let Some((removed, replacement)) = graph.nodes.iter().enumerate().find_map(|(index, node)| {
 		let replacement = match &**node {
 			AudioNode::RoundRobin(node) if node.inputs.len() == 1 => node.inputs[0],

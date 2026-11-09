@@ -961,6 +961,11 @@ impl MetalResourceTracker {
 			if kept == resource_start || uses[resource_start].key != resource_use.key {
 				resource_start = kept;
 			}
+			// The search and shift below are quadratic only when one resource keeps many disjoint uses in this command.
+			// A command usually names each resource once, so its kept list holds one use and both cost O(1); a table
+			// that repeats one resource, such as a texture array filled with a placeholder, has overlapping uses that
+			// merge away instead of growing the list.
+			//
 			// Merging widens the use, which can make it reach kept uses it did not reach before.
 			while let Some(overlapped) =
 				(resource_start..kept).find(|&position| uses[position].region.overlaps(resource_use.region))

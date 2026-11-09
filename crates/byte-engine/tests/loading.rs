@@ -225,7 +225,7 @@ fn uploads_are_visible_when_ready_even_beyond_staging_capacity() {
 	);
 	let mut loader = Loader::new(&device, &NoParameters);
 	let imported = loader.import_buffer(render.share_buffer(destination)).into();
-	let (mut client, lanes) = spawn(&loader, ChunkPipeline { destination: imported }, 3, UPLOADS);
+	let (mut client, lanes) = spawn(&loader, ChunkPipeline { destination: imported }, 3, 1, UPLOADS);
 
 	let stop = Arc::new(AtomicBool::new(false));
 	let thread = run_loading_thread(loader, lanes, stop.clone());
@@ -256,7 +256,7 @@ fn dependencies_load_once_without_render_requests() {
 	let device = GraphicsDevice::new(&NoParameters);
 	let loader = Loader::new(&device, &NoParameters);
 	let loads = Arc::new(Mutex::new(Vec::new()));
-	let (mut client, lanes) = spawn(&loader, TreePipeline { loads: loads.clone() }, 2, NODES);
+	let (mut client, lanes) = spawn(&loader, TreePipeline { loads: loads.clone() }, 2, 1, NODES);
 
 	let stop = Arc::new(AtomicBool::new(false));
 	let thread = run_loading_thread(loader, lanes, stop.clone());
@@ -295,6 +295,7 @@ fn textures_load_from_a_first_mip_level() {
 			resources: ResourceManager::new(storage),
 		},
 		2,
+		1,
 		first_levels.len(),
 	);
 
@@ -350,7 +351,7 @@ fn reloads_load_a_resident_resource_again() {
 	let device = GraphicsDevice::new(&NoParameters);
 	let loader = Loader::new(&device, &NoParameters);
 	let loads = Arc::new(Mutex::new(Vec::new()));
-	let (mut client, lanes) = spawn(&loader, TreePipeline { loads: loads.clone() }, 2, 8);
+	let (mut client, lanes) = spawn(&loader, TreePipeline { loads: loads.clone() }, 2, 1, 8);
 
 	let stop = Arc::new(AtomicBool::new(false));
 	let thread = run_loading_thread(loader, lanes, stop.clone());

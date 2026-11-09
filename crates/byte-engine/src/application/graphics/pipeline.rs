@@ -196,9 +196,9 @@ pub fn setup_particles(application: &mut GraphicsApplication) {
 	let resources = application.resource_manager_handle();
 	let (loader, renderer) = application.loader_and_renderer_mut();
 	let pipeline_manager = renderer.pipeline_manager_client();
-	// Systems are small records read once each, so one lane keeps up.
+	// Systems are small records read once each, so one general lane keeps up.
 	let (systems_loader, lanes) =
-		rendering::loading::spawn(loader, rendering::particles::ParticleSystemLoader { resources }, 1, 16);
+		rendering::loading::spawn(loader, rendering::particles::ParticleSystemLoader { resources }, 1, 1, 16);
 	let particle_manager = rendering::particles::ParticleManager::new(&application.world, pipeline_manager, systems_loader);
 	application.renderer.add_pipeline_manager(particle_manager);
 	run_on_loading_thread(application, lanes.into_iter().map(|lane| lane.run()));

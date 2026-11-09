@@ -23,12 +23,13 @@
 //! # Build an integration
 //!
 //! 1. Implement [`LoadPipeline`] once for one rendering pipeline. [`LoadPipeline::key`] derives the
-//!    pipeline-wide identity used to coalesce each owned [`LoadPipeline::Request`], and
-//!    [`LoadPipeline::Resident`] is the finished value the render thread adopts.
+//!    pipeline-wide identity used to coalesce each owned [`LoadPipeline::Request`], [`LoadPipeline::priority`]
+//!    ranks it as [`Priority::Needed`] or [`Priority::Background`], and [`LoadPipeline::Resident`] is the finished
+//!    value the render thread adopts.
 //! 2. Share every render buffer the lanes append to with
 //!    [`share_buffer`](ghi::implementation::Context::share_buffer), import it with [`Loader::import_buffer`], and
-//!    call [`spawn`] with the loader and a lane count. Keep the [`LoaderClient`] on the render thread and run every
-//!    [`LoaderLane`] on the loading thread.
+//!    call [`spawn`] with the loader, a lane count, and how many of those lanes may load background requests. Keep
+//!    the [`LoaderClient`] on the render thread and run every [`LoaderLane`] on the loading thread.
 //! 3. Poll [`LoaderClient::poll`] until it returns `None` once per frame, intern the detached images each
 //!    [`Event`] carries, and publish it to scene state.
 //!
@@ -45,5 +46,5 @@ mod lane;
 mod loader;
 
 pub use client::{Event, LoaderClient};
-pub use lane::{LoadError, LoadPipeline, LoaderLane, spawn};
+pub use lane::{LoadError, LoadPipeline, LoaderLane, Priority, spawn};
 pub use loader::{BufferRegion, ImageDescription, ImageRegion, ImageUpload, Loader, NativeImageRegion, NativeImageUpload};

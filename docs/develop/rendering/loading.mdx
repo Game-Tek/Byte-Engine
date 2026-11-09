@@ -107,7 +107,8 @@ sequenceDiagram
 2. A lane on the loading thread picks up the request and reads the resource's
    metadata. It requests every resource that metadata names, such as a mesh's
    materials or a material's textures, with `LoaderLane::request`. Other lanes
-   start loading those right away.
+   start loading those right away, in the order their
+   [priorities](#how-lanes-prioritize-requests) set.
 3. The lane reads and decodes the resource, and writes its bytes into a
    `StagingLease`.
 4. The lane hands the loader an upload as plain data through
@@ -121,6 +122,77 @@ sequenceDiagram
 8. On its next frame, the pipeline polls its client, interns the images into the
    render context, and writes descriptors with samplers it owns. Resources can
    become ready in any order, so adopt each one on its own.
+
+## How lanes prioritize requests
+
+Lanes load what keeps something from drawing before what only refines it.
+`LoadPipeline::priority` ranks every request as one of two `Priority` values,
+and ranks it `Needed` unless the pipeline overrides it:
+
+- `Needed`: something can't draw until the request loads.
+- `Background`: the request improves something that already draws, such as a
+  finer detail level or a full mip chain.
+
+A dependency that a lane requests takes its own priority, not the priority of
+the load that requested it.
+
+Each priority has its own queue. Every submission goes through one path,
+whether it comes from `LoaderClient::request`, `LoaderClient::reload`, or
+`LoaderLane::request`: it joins the queue of its priority, then rings a
+doorbell, which is a queue of empty tokens.
+
+`loading::spawn` takes a `lane_count` and a `background_lane_count`, and splits
+the lanes into two kinds:
+
+| Lane | Count | Takes |
+|---|---|---|
+| Needed lane | `lane_count - background_lane_count` | Needed requests only. It waits on the needed queue. |
+| General lane | `background_lane_count` | A needed request when one waits, and a background request otherwise. It waits on the doorbell only after it found both queues empty. |
+
+A pool of one lane has one general lane. `spawn` panics on a split that leaves
+no general lane, or, with more than one lane, no needed lane.
+
+The visibility pipeline runs four lanes, two of them general, and ranks these
+requests as background:
+
+| Request | Why it can wait |
+|---|---|
+| `MeshLevels` | The mesh already draws with its coarsest levels, which load with it. |
+| `TextureDetail` | The texture already draws with its coarse mips. |
+| `Lightmap` | An instance draws once its renderable, materials, and textures are ready, and adopts its lightmap whenever it arrives. |
+
+Every other visibility request is needed. The other pipelines rank every
+request as needed and use one general lane, so every lane takes every request.
+
+A change here must keep these true:
+
+- A needed request never queues behind a background one. A free lane of either
+  kind takes it first, and a burst of needed requests can use every lane that
+  isn't already loading background work.
+- At most `background_lane_count` background loads run at once.
+- Background requests always load: a general lane takes one whenever no needed
+  request waits.
+- No submission goes unseen. Its token joins the doorbell after the submission
+  joins its queue, and a general lane checks both queues before it waits.
+- Dropping the `LoaderClient` closes every queue, so idle lanes stop even though
+  each lane can still request dependencies.
+- A request is background only when nothing waits for it to draw. If instances
+  ever wait for their lightmaps before they draw, rank `Lightmap` as needed.
+
+The default test run covers these rules:
+
+| Test | What it checks |
+|---|---|
+| `needed_requests_start_before_queued_background_requests` | A needed request starts on a needed lane while background requests queue, and a free general lane takes a needed request before a background one. |
+| `background_loads_never_exceed_the_background_lane_count` | A backlog of background requests never runs on more lanes than the general lanes, and all of it loads. |
+| `needed_bursts_use_every_lane` | A burst of needed requests runs on every lane at once. |
+| `background_requests_drain_without_needed_work` | Background requests load when no needed request waits, on a pool of one lane. |
+| `dependencies_queue_by_their_own_priority` | A lane's dependency takes its own priority, not the priority of the load that requested it. |
+| `dropping_the_client_stops_needed_and_general_lanes` | Every lane of both kinds stops once the client is dropped. |
+
+`a_split_without_a_general_lane_panics` and
+`a_split_without_a_needed_lane_panics` check that `spawn` rejects a split that
+would starve one priority.
 
 ## How visibility instances wait for meshes
 
@@ -219,8 +291,9 @@ entries. IES profiles and lightmaps load their full mip chain at once.
   shaders need no change.
 - A `Texture` request loads the mips from `coarse_first_level` on: the first
   mip no larger than 128 texels. Once that upload finishes, the lane requests
-  the full chain as a separate `TextureDetail` request, so it queues behind the
-  coarse mips of every texture already waiting.
+  the full chain as a separate `TextureDetail` request. It's a
+  [background request](#how-lanes-prioritize-requests), so it waits for every
+  needed request, including the coarse mips of every texture already waiting.
 - Both loads use the same slot of `textures`. `VisibilityLoaderClient` keeps
   the image in each slot of each array and the mip it starts at. An image with
   more mips replaces the slot's image. Once the frame's writes put the new
@@ -393,12 +466,16 @@ cargo nextest run --ignore-default-filter -p byte-engine --test loading
 
 The default test run also covers
 `full_arena_reports_exhaustion_until_a_lease_returns`, which checks the signal
-that ends a batch when staging runs out.
+that ends a batch when staging runs out, and the
+[lane priority tests](#how-lanes-prioritize-requests).
 
 ## Known limits
 
 - Lanes are cooperative tasks on one thread. A long synchronous decode step
   delays batch submission and completion checks.
+- A background load that started keeps its general lane until it finishes. While
+  every general lane loads background work, needed requests have only the needed
+  lanes.
 - Each batch costs one copy-queue round trip, about 0.75 ms on Metal. A lane that
   loads a flipbook's frames one after another pays it for every frame. Load the
   frames concurrently to let them share a batch.

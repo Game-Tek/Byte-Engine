@@ -54,6 +54,8 @@ pub(super) const SIMPLE_INDEX_CAPACITY: usize = 1024 * 1024;
 const POSITION_STRIDE: usize = std::mem::size_of::<(f32, f32, f32)>();
 const INDEX_STRIDE: usize = std::mem::size_of::<u16>();
 const SIMPLE_LOADER_LANE_COUNT: usize = 1;
+/// A single lane is a general lane, which takes needed requests first.
+const SIMPLE_LOADER_BACKGROUND_LANE_COUNT: usize = 1;
 const SIMPLE_LOADER_RESULT_CAPACITY: usize = 64;
 
 /// The `PreparedSimpleMesh` struct keeps Simple-formatted transfer bytes alive until its lane finishes the copies.
@@ -119,6 +121,7 @@ impl SimpleLoader {
 				indices,
 			},
 			SIMPLE_LOADER_LANE_COUNT,
+			SIMPLE_LOADER_BACKGROUND_LANE_COUNT,
 			SIMPLE_LOADER_RESULT_CAPACITY,
 		)
 	}

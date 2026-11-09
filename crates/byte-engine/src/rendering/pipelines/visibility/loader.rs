@@ -39,7 +39,7 @@ use super::render_pass::MATERIAL_EVALUATION_PUSH_CONSTANT_SIZE;
 use super::shader_generator::{coverage_arm_key, uber_arm_key};
 use crate::core::EntityHandle;
 use crate::rendering::loading::{
-	Event as LoaderEvent, ImageDescription, ImageUpload, LoadError, LoadPipeline, Loader, LoaderClient, LoaderLane,
+	Event as LoaderEvent, ImageDescription, ImageUpload, LoadError, LoadPipeline, Loader, LoaderClient, LoaderLane, Priority,
 	spawn as spawn_lanes,
 };
 use crate::rendering::pipeline_compilation::{HitGroupShader, SpecializedComputePipelineRequest};
@@ -54,6 +54,9 @@ pub(crate) const IBL_SPECULAR_LEVEL_COUNT: usize =
 	resource_management::resources::image::IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize;
 
 const VISIBILITY_LANE_COUNT: usize = 4;
+/// How many of the [`VISIBILITY_LANE_COUNT`] lanes also load finer mesh levels, full mip chains, and lightmaps, so
+/// the other two are always free for what a scene can't draw without.
+const VISIBILITY_BACKGROUND_LANE_COUNT: usize = 2;
 /// The largest side, in texels, of the mips a material texture loads before its full chain, so its materials draw
 /// while full chains load. See [`coarse_first_level`].
 const COARSE_TEXTURE_EXTENT: u32 = 128;
@@ -965,7 +968,13 @@ pub(crate) fn spawn(
 		texture_slots: std::array::from_fn(|_| Mutex::new(HashMap::default())),
 		material_evaluation,
 	};
-	let (client, lanes) = spawn_lanes(loader, visibility_loader, VISIBILITY_LANE_COUNT, VISIBILITY_RESULT_CAPACITY);
+	let (client, lanes) = spawn_lanes(
+		loader,
+		visibility_loader,
+		VISIBILITY_LANE_COUNT,
+		VISIBILITY_BACKGROUND_LANE_COUNT,
+		VISIBILITY_RESULT_CAPACITY,
+	);
 	(
 		VisibilityLoaderClient {
 			client,
@@ -1813,6 +1822,28 @@ impl LoadPipeline for VisibilityLoader {
 			VisibilityLoadRequest::Lightmap(id) => VisibilityLoadKey::Lightmap(id.clone()),
 			VisibilityLoadRequest::UberShader { transparent, .. } => VisibilityLoadKey::UberShader(*transparent),
 			VisibilityLoadRequest::CoverageShaders { .. } => VisibilityLoadKey::CoverageShaders,
+		}
+	}
+
+	/// Ranks the requests that only refine something that already draws as background.
+	///
+	/// A mesh draws with its coarsest levels and a texture with its coarse mips, so their finer levels and full mip
+	/// chains wait. An instance draws once its renderable, materials, and textures are ready, and adopts its lightmap
+	/// whenever it arrives, so lightmaps wait too.
+	fn priority(request: &Self::Request) -> Priority {
+		match request {
+			VisibilityLoadRequest::MeshLevels { .. }
+			| VisibilityLoadRequest::TextureDetail(_)
+			| VisibilityLoadRequest::Lightmap(_) => Priority::Background,
+			VisibilityLoadRequest::Resource(_)
+			| VisibilityLoadRequest::Query(_)
+			| VisibilityLoadRequest::Mesh(_)
+			| VisibilityLoadRequest::Material(_)
+			| VisibilityLoadRequest::Texture(_)
+			| VisibilityLoadRequest::IesProfile(_)
+			| VisibilityLoadRequest::Environment(_)
+			| VisibilityLoadRequest::UberShader { .. }
+			| VisibilityLoadRequest::CoverageShaders { .. } => Priority::Needed,
 		}
 	}
 

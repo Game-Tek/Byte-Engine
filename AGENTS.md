@@ -57,7 +57,6 @@ When the problem has a documented recovery workflow, end with a direct link to t
 - If I ask you to defer any task, write that into the todo.md file
 - Always leave comments for any non-trivial code
 - Always prefer breaking APIs to ad-hoc changes. The app is not shipped yet. We can make all breaking changes.
-- If modifying performance sensitive code, run any existing benchmarks and ensure they do not regress (or they improve) before and after your changes.
 
 # Tests
 - Use `cargo nextest run --workspace` as the default test command. Run documentation tests separately with `cargo test --doc --workspace`.

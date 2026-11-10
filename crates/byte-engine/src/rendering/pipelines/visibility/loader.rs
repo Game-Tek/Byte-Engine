@@ -1426,8 +1426,8 @@ impl VisibilityLoader {
 		Ok(VisibilityResident::CoverageShaders {
 			keys,
 			pipelines: CoveragePipelines {
-				visibility: request(["visibility", "double-sided-visibility"], &visibility.shader),
-				// Masked casters draw with their own mesh stage, which passes the alpha test its UV and instance.
+				// Masked materials draw with their own mesh stages, which pass the alpha test its UV.
+				visibility: request(["masked-visibility", "double-sided-masked-visibility"], &visibility.shader),
 				directional: request(
 					["masked-directional-shadow", "double-sided-masked-directional-shadow"],
 					&depth.shader,

@@ -45,15 +45,23 @@ level and each view's culling.
    then reads that entry's instance and meshlet through the work items.
 
 `layouts/scene_records.besl` specifies the payload words and holds the
-functions that decode them, which the task shader and the three mesh shaders
+functions that decode them, which the task shader and the four mesh shaders
 share.
 
 ## Rules a change must keep
 
-- **A triangle keeps its identity.** A mesh shader writes each triangle's own
-  instance, meshlet, and index in that meshlet, whatever grid draws it.
-  Material evaluation finds the triangle from those, so it doesn't know about
-  groups.
+- **A triangle keeps its identity.** A mesh shader marks each triangle with
+  its own meshlet and index in that meshlet, and each vertex with its
+  instance, whatever grid draws it. Material evaluation finds the triangle
+  from those, so it doesn't know about groups.
+- **The instance is written per vertex.** Every vertex of a meshlet belongs to
+  one instance, and a grid has half as many vertices as triangles, so the
+  instance costs less there. Integers aren't interpolated, so the fragment
+  stage reads it whole.
+- **Only masked stages pass UVs.** `masked-visibility-mesh.besl` and
+  `masked-shadow-mesh.besl` write the UV the alpha test reads.
+  `visibility-mesh.besl` and `shadow-mesh.besl` don't, and each pair must
+  otherwise stay the same.
 - **A group fits one grid.** `MAX_GROUP_VERTICES` and `MAX_GROUP_TRIANGLES` in
   `scene_records.besl` must equal `maximum_vertices` and `maximum_primitives`
   in the mesh shaders' `.bead` files.

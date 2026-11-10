@@ -1,15 +1,16 @@
 // Draws the groups of meshlets the task stage kept into the visibility buffer: each triangle's instance, and its
-// meshlet and place in it.
+// meshlet and place in it. Masked materials draw with `masked-visibility-mesh.besl`, which also passes the UV their
+// alpha test reads.
 
 use ::byte_engine::rendering::visibility::layouts::scene_records::*;
 use ::byte_engine::rendering::visibility::layouts::scene::*;
 
 // The task stage's kept meshlets, in groups that each fill one mesh grid. `scene_records` gives the format.
 meshlet_instances: task_payload<u32, 193>;
-out_instance_index: output<u32, 0, 126>;
+// The instance, once per vertex: every vertex of a meshlet shares it, and a grid has half as many vertices as
+// triangles. Integers aren't interpolated, so each triangle reads it whole.
+out_instance_index: vertex_output<u32, 0, 64>;
 out_primitive_index: output<u32, 1, 126>;
-// One UV per vertex, interpolated across each triangle for the alpha test.
-out_uv: vertex_output<vec2f16, 2, 64>;
 
 // The task stage's batch layout. The camera's visibility pass draws one view into an unlayered target.
 push_constant: push_constant {
@@ -68,7 +69,7 @@ main: fn(scene: Scene) -> void {
 		let object_position: vec3f = scene.vertex_positions[vertex_index];
 		let world_position: vec3f = mesh.model * vec4f(object_position.x, object_position.y, object_position.z, 1.0);
 		set_mesh_vertex_position(thread, view.view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0));
-		out_uv[thread] = scene.vertex_uvs[vertex_index];
+		out_instance_index[thread] = instance_index;
 	}
 
 	if (thread < triangle_count) {
@@ -88,7 +89,6 @@ main: fn(scene: Scene) -> void {
 			u32(scene.primitive_indices[first_index + 2])
 		) + vec3u(triangle_vertex_start, triangle_vertex_start, triangle_vertex_start);
 		set_mesh_triangle(thread, instance_triangle(mesh, triangle));
-		out_instance_index[thread] = instance_index;
 		out_primitive_index[thread] = (meshlet_index << 8) | ((thread - triangle_start) & 255);
 	}
 }

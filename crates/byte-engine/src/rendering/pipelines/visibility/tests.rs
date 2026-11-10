@@ -1094,8 +1094,22 @@ enum MeshAttributes {
 	None,
 	/// The instance at location 0 and the UV at location 1, which the masked shadow passes' alpha test reads.
 	Instance,
-	/// The instance, the primitive, and the UV at locations 0, 1, and 2, which the visibility pass writes.
+	/// The instance and the primitive at locations 0 and 1, which the visibility pass writes.
 	InstanceAndPrimitive,
+	/// The instance, the primitive, and the UV at locations 0, 1, and 2, which the masked visibility pass writes.
+	InstancePrimitiveAndUv,
+}
+
+impl MeshAttributes {
+	/// Returns whether the stage reads UVs to pass on.
+	fn has_uv(self) -> bool {
+		matches!(self, Self::Instance | Self::InstancePrimitiveAndUv)
+	}
+
+	/// Returns whether the stage marks each triangle with its meshlet and place in it.
+	fn has_primitive(self) -> bool {
+		matches!(self, Self::InstanceAndPrimitive | Self::InstancePrimitiveAndUv)
+	}
 }
 
 /// Executes one production mesh main over one triangle meshlet placed by `model` and verifies its complete output
@@ -1125,8 +1139,9 @@ fn assert_triangle_mesh_program(
 			.expect("mesh vertex");
 	}
 	// A stage that passes no attributes reads no UVs, so its program keeps no UV binding.
-	let mut vertex_uvs =
-		(attributes != MeshAttributes::None).then(|| array_buffer(&program, slot(&program, VERTEX_UVS), vertex_count));
+	let mut vertex_uvs = attributes
+		.has_uv()
+		.then(|| array_buffer(&program, slot(&program, VERTEX_UVS), vertex_count));
 	let mut vertex_indices = array_buffer(&program, slot(&program, VERTEX_INDICES), 3);
 	let mut primitive_indices = array_buffer(&program, slot(&program, PRIMITIVE_INDICES), 3);
 	for index in 0..3 {
@@ -1174,8 +1189,8 @@ fn assert_triangle_mesh_program(
 	// One buffer per attribute location the stage writes.
 	let locations: u8 = match attributes {
 		MeshAttributes::None => 0,
-		MeshAttributes::Instance => 2,
-		MeshAttributes::InstanceAndPrimitive => 3,
+		MeshAttributes::Instance | MeshAttributes::InstanceAndPrimitive => 2,
+		MeshAttributes::InstancePrimitiveAndUv => 3,
 	};
 	let mut out_attributes = (0..locations)
 		.map(|location| buffer(&program, output_slot(location)))
@@ -1236,7 +1251,7 @@ fn assert_triangle_mesh_program(
 			Value::U32(FIXTURE_INSTANCE_INDEX as u32)
 		);
 	}
-	if attributes == MeshAttributes::InstanceAndPrimitive {
+	if attributes.has_primitive() {
 		assert_eq!(
 			out_attributes[1].read_indexed("out_primitive_index", 0).expect("mesh output"),
 			Value::U32((FIXTURE_MESHLET_INDEX as u32) << 8)
@@ -1258,11 +1273,25 @@ fn visibility_mesh_main_emits_identity_triangle_and_metadata() {
 	);
 }
 
+/// Verifies the masked visibility mesh stage also passes its fragment stage the UV, at a location of its own.
+#[test]
+fn masked_visibility_mesh_main_emits_identity_triangle_and_metadata() {
+	assert_triangle_mesh_program(
+		asset!("masked-visibility-mesh.besl"),
+		MeshView::CAMERA,
+		IDENTITY_AFFINE_MATRIX,
+		0,
+		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
+		None,
+		MeshAttributes::InstancePrimitiveAndUv,
+	);
+}
+
 /// Verifies one mesh grid draws every meshlet of its group: each one's vertices after the earlier ones', its triangles
 /// naming them there, and each triangle marked with its own meshlet and its place in it.
 #[test]
 fn visibility_mesh_main_draws_every_meshlet_of_its_group() {
-	let program = asset!("visibility-mesh.besl");
+	let program = asset!("masked-visibility-mesh.besl");
 	let mut views = buffer(&program, slot(&program, VIEWS));
 	views
 		.write_array_member(0, "view_projection", Value::Mat4F(IDENTITY_MATRIX))
@@ -3524,6 +3553,7 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 			Settings::task(Extent::line(32), 192),
 		),
 		("visibility_mesh", asset_source!("visibility-mesh.besl"), mesh()),
+		("masked_visibility_mesh", asset_source!("masked-visibility-mesh.besl"), mesh()),
 		("shadow_mesh", asset_source!("shadow-mesh.besl"), mesh()),
 		("masked_shadow_mesh", asset_source!("masked-shadow-mesh.besl"), mesh()),
 		(

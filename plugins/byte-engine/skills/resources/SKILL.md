@@ -232,6 +232,15 @@ Check these in order:
    every failure.
 3. That the store wasn't cleared by a signature change. The store is wiped when the resource code changes.
 4. That the requested resource type matches the class stored for that ID: `beld query <id>`.
+5. That what it was built from is still there. A material variant (`model.fbx#materials/<name>.variant`) loads
+   through its parent material's shaders. Deleting a shader or material resource leaves the model counting as
+   current, so neither the debug asset manager nor `beld bake <id>` rebakes it, and the variant reports "variant
+   request failed". Delete the model's own resource too (its ID with no fragment), then bake the model and
+   material IDs.
+
+A read-only command such as `beld query` can report a store "corrupt or unreadable" with "Database repair aborted"
+after an application crashed while it baked. Any command that opens the store for writing repairs it: bake one
+small asset, then query again.
 
 ## Exit codes
 

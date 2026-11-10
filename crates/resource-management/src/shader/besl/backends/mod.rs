@@ -199,6 +199,26 @@ const STRUCTURAL_POSITION_VERTEX: &str = r#"
 	}
 "#;
 
+/// Picks the render target array layer from the instance, with a varying whose name sorts after the layer.
+#[cfg(test)]
+const LAYERED_VERTEX: &str = r#"
+	main: fn (input: StageInput) -> interface { position: vec4f, render_target_array_index: u32, uv: vec2f } {
+		let position: vec4f = vec4f(0.0, 0.0, 0.0, 1.0);
+		let layer: u32 = input.instance_index;
+		let uv: vec2f = vec2f(0.0, 0.0);
+		return { position, render_target_array_index: layer, uv };
+	}
+"#;
+
+/// Reads the index of the primitive it shades next to a varying.
+#[cfg(test)]
+const PRIMITIVE_INDEX_FRAGMENT: &str = r#"
+	main: fn (input: StageInput, pipeline_input: interface { uv: vec2f }) -> output { color: vec4f } {
+		let color: vec4f = vec4f(pipeline_input.uv.x, pipeline_input.uv.y, f32(input.primitive_index), 1.0);
+		return { color };
+	}
+"#;
+
 #[cfg(test)]
 const DESCRIPTOR_ARRAY_FRAGMENT: &str = r#"
 	Item: struct { slot: u32 }
@@ -260,15 +280,18 @@ const SUBGROUP_COMPUTE: &str = r#"
 	}
 "#;
 
-/// Reads the vertex invocation indices inside a helper function.
+/// Reads the vertex invocation indices into locals named like the `StageInput` fields, and passes them to a helper
+/// whose parameters take the same names, so a backend that bound the builtins by those names would redeclare them.
 #[cfg(test)]
-const VERTEX_BUILTIN_HELPER: &str = r#"
-	invocation_sum: fn () -> u32 {
+const STAGE_INPUT_NAMESAKES_VERTEX: &str = r#"
+	invocation_sum: fn (vertex_index: u32, instance_index: u32) -> u32 {
 		return vertex_index + instance_index;
 	}
-	out_value: output<u32, 0>;
-	main: fn () -> void {
-		out_value = invocation_sum();
+	main: fn (input: StageInput) -> interface { position: vec4f, value: u32 } {
+		let vertex_index: u32 = input.vertex_index;
+		let instance_index: u32 = input.instance_index;
+		let position: vec4f = vec4f(f32(vertex_index), 0.0, 0.0, 1.0);
+		return { position, value: invocation_sum(vertex_index, instance_index) };
 	}
 "#;
 

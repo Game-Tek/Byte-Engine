@@ -168,6 +168,11 @@ Check each of these once per session, before the first build or run:
   `GET /entities?name=Move` for the movement action. The inspector listens on `127.0.0.1:6680`. Startup parameters
   override as `--name=value`: `render.directional-shadows.resolution`, `render.ssgi.enabled`, `render.gtao.*`,
   `render.contact-shadows.*`, `kill-after`, `metrics-out`.
+- `metrics-out` writes once, when the viewer closes: every retained tick as NDJSON only when the path ends in
+  `.ndjson`, and one summary JSON object otherwise (a `.jsonl` path gets the summary). `kill-after` counts ticks,
+  not seconds, and a run that isn't loaded yet reaches it at full rate. For settled per-tick rows of a long load,
+  run without `kill-after`, wait for the geometry, then save `GET /metrics/frames?since=0&presented=true` (the latest
+  1,024 ticks) and summarize its last rows.
 - `--resources.path=<dir>` gives a variant its own baked resources. A descriptor-set layout change needs a fresh
   directory; an edit to one `.besl` asset rebakes its pipeline on its own, so an A/B of one asset swaps the file
   between runs and keeps the directory.
@@ -257,6 +262,24 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
   directory per variant. Pair each snapshot with a binary built from the same Rust tree, because set layouts are
   reflected at build time. Without this, a BESL edit made mid-A/B pairs an old binary with new shaders and panics with
   "Missing descriptor set for layout".
+- Editing a layer module (`layouts/*.besl`) doesn't rebake the material shaders that import it. `.pipeline` assets
+  rebake, but `materials/*.bema#shader` and `#hit-shader` keep the old layout, and Metal then fails ray tracing
+  pipeline creation ("declares descriptor set 0 as layout ...Scene, which the ray generation shader doesn't
+  declare") and panics with "Missing descriptor set for layout". Deleting only the Shader resources doesn't help:
+  the source assets still count as current, so neither `beld bake <id>` nor the runtime rebakes them, and model
+  variants (`*.fbx#materials/*.variant`) fail with "Visibility material variant request failed". What worked on
+  2026-11-09, in a clone of the store (`cp -cR resources <scratch>/store`):
+  1. `beld -d <store> query class=<C> --format json` for `Shader`, `Pipeline`, `AssembledShader`, `Material`, and
+     `Variant`, and collect the IDs.
+  2. `beld delete` those IDs, plus the Mesh resource of every model that owns a variant (the `.fbx` ID itself).
+  3. `beld -d <store> bake <every .bema and model ID>`. This bakes in seconds and leaves textures alone.
+
+  Don't run `beld bake` without IDs on such a store: it rebakes every asset, every texture included. `beld bake --force <ids>` also rebakes the selection's dependencies,
+  textures included; it wasn't tried here. Run the viewer with `--resources.path=<store>` and check its log for
+  "variant request failed" before measuring.
+- A run that crashes while it bakes can leave the store unreadable to read-only commands: `beld query` reports it
+  "corrupt or unreadable" with "Database repair aborted". Opening it for writing repairs it, so bake one small
+  asset before querying. Don't delete the store for this.
 - Any edit to `crates/resource-management`, even rustfmt, changes the resource-management signature. A binary with
   another signature deletes the whole resources directory at startup and re-bakes it during the run. Bake with the
   binary that reads the resources, and wait for the bake before capturing.
@@ -395,6 +418,9 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
   reads to `ENGINE_MODULES` in `set_layout.rs`.
 - A layer module has no `main`, so test its helpers through `with_engine_modules(stand_in)`, whose stand-in `use`s
   the modules and takes their layers in its own `main`; give the stand-in's own bindings numbers no layer takes.
+
+- A draw's first instance doesn't reach `input.instance_index` on every backend (DX12 leaves it out), so push the
+  offset as a constant and add it in the shader; draw at instance zero.
 
 ## Working agreement with the user
 

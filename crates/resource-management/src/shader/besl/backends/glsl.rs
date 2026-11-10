@@ -38,10 +38,7 @@ mod tests {
 		);
 		assert_string_contains!(shader, "layout(descriptor_heap)uniform sampler _besl_samplers[];");
 		assert_string_contains!(shader, "layout(constant_id=1984)const uint _besl_set0=0u;");
-		assert_string_contains!(
-			shader,
-			"layout(set=0,binding=0,scalar) buffer _buff{float member;}buff;"
-		);
+		assert_string_contains!(shader, "layout(set=0,binding=0,scalar) buffer _buff{float member;}buff;");
 		assert_string_contains!(
 			shader,
 			"layout(descriptor_heap,descriptor_stride=64,r8) writeonly uniform image2D image[];"
@@ -112,10 +109,7 @@ mod tests {
 			shader,
 			"layout(descriptor_heap,descriptor_stride=64) uniform texture2DArray sprites[];"
 		);
-		assert_string_contains!(
-			shader,
-			"Instance instance=instances.instances["
-		);
+		assert_string_contains!(shader, "Instance instance=instances.instances[");
 		assert_string_contains!(
 			shader,
 			"texture(sampler2DArray(sprites[push_constant._besl_sets[_besl_set0].x+0u],_besl_samplers[push_constant._besl_sets[_besl_set0].y+0u]),vec3("
@@ -305,6 +299,58 @@ mod tests {
 		assert!(!shader.contains("out vec4 _besl_interface_position"));
 	}
 
+	/// Verifies the vertex layer lowers to `gl_Layer`, which is an `int` and needs the viewport-layer extension in a
+	/// vertex shader, and that it leaves the varying at location 0.
+	#[test]
+	fn render_target_array_index_lowers_to_gl_layer() {
+		let shader = lower_fixture(super::super::LAYERED_VERTEX, &ShaderGenerationSettings::vertex());
+
+		assert_string_contains!(shader, "#extension GL_ARB_shader_viewport_layer_array:require");
+		assert_string_contains!(shader, "gl_Layer=int(layer);");
+		assert_string_contains!(shader, "layout(location=0)out vec2 _besl_interface_uv;");
+		assert!(!shader.contains("_besl_interface_render_target_array_index"));
+
+		compile(&shader, "besl-render-target-array-index");
+	}
+
+	#[test]
+	fn primitive_index_lowers_to_gl_primitive_id() {
+		let shader = lower_fixture(super::super::PRIMITIVE_INDEX_FRAGMENT, &ShaderGenerationSettings::fragment());
+
+		assert_string_contains!(shader, "float(uint(gl_PrimitiveID))");
+		assert_string_contains!(shader, "layout(location=0)in vec2 _besl_interface_uv;");
+		assert!(!shader.contains("in uint32_t primitive_index"));
+
+		compile(&shader, "besl-primitive-index");
+	}
+
+	/// Verifies a stage that can't produce a raster builtin rejects it instead of emitting GLSL glslang refuses.
+	#[test]
+	fn raster_builtins_are_rejected_outside_their_stage() {
+		for (source, settings) in [
+			(
+				r#"main: fn (input: StageInput) -> interface { position: vec4f } {
+					return { position: vec4f(f32(input.primitive_index), 0.0, 0.0, 1.0) };
+				}"#,
+				ShaderGenerationSettings::vertex(),
+			),
+			(
+				r#"main: fn () -> interface { render_target_array_index: u32 } {
+					let layer: u32 = 1;
+					return { render_target_array_index: layer };
+				}"#,
+				ShaderGenerationSettings::fragment(),
+			),
+		] {
+			let root = besl::compile_to_besl(source, None).expect("Expected fixture source to link");
+			let main = root.get_main().expect("Expected fixture main function");
+			Generator::new()
+				.minified(true)
+				.generate(&settings, &main)
+				.expect_err("Expected a raster builtin outside its stage to fail generation");
+		}
+	}
+
 	#[test]
 	fn names_reserved_by_glsl_are_prefixed_at_declarations_and_uses() {
 		let shader = lower_fixture(
@@ -327,10 +373,7 @@ mod tests {
 		);
 
 		assert_string_contains!(shader, "buffer _buffer{float besl_half;uint32_t besl_output;}besl_buffer;");
-		assert_string_contains!(
-			shader,
-			"besl_buffer.besl_half=besl_float;"
-		);
+		assert_string_contains!(shader, "besl_buffer.besl_half=besl_float;");
 		assert_string_contains!(shader, "float besl_texture(float besl_input,float besl_besl_float)");
 		assert_string_contains!(shader, "float besl_min=min(besl_input,besl_besl_float);");
 		assert_string_contains!(shader, "struct besl_sampler{float besl_half;uint32_t besl_output;};");
@@ -391,10 +434,7 @@ mod tests {
 			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
 			&generator::tests::same_named_buffer_member_access(),
 		);
-		assert_string_contains!(
-			shader,
-			"pixel_mapping.pixel_mapping[0]=meshes.meshes[1];"
-		);
+		assert_string_contains!(shader, "pixel_mapping.pixel_mapping[0]=meshes.meshes[1];");
 	}
 
 	/// Verifies each specialization becomes a constant at its declared id with a typed default.
@@ -458,8 +498,11 @@ mod tests {
 	}
 
 	#[test]
-	fn vertex_invocation_indices_lower_to_vulkan_builtins_inside_helpers() {
-		let shader = lower_fixture(super::super::VERTEX_BUILTIN_HELPER, &ShaderGenerationSettings::vertex());
+	fn vertex_invocation_indices_lower_to_vulkan_builtins_beside_locals_of_the_same_name() {
+		let shader = lower_fixture(
+			super::super::STAGE_INPUT_NAMESAKES_VERTEX,
+			&ShaderGenerationSettings::vertex(),
+		);
 
 		assert_string_contains!(shader, "uint(gl_VertexIndex)");
 		assert_string_contains!(shader, "uint(gl_InstanceIndex)");
@@ -469,8 +512,11 @@ mod tests {
 
 	#[test]
 	fn vertex_invocation_indices_are_rejected_outside_the_vertex_stage() {
-		let root = besl::compile_to_besl("main: fn () -> void { vertex_index; }", None)
-			.expect("Expected implicit vertex builtin to link");
+		let root = besl::compile_to_besl(
+			"main: fn (input: StageInput) -> output { color: vec4f } { let color: vec4f = vec4f(f32(input.vertex_index), 0.0, 0.0, 1.0); return { color }; }",
+			None,
+		)
+		.expect("Expected the vertex index to link");
 		assert!(
 			Generator::new()
 				.generate(
@@ -900,10 +946,7 @@ mod tests {
 		// Signed atomics must stay signed so `atomic_min` compares as signed integers.
 		assert_string_contains!(shader, "shared int32_t signed_value;");
 		// GLSL has no atomic load, so a load is an add of zero.
-		assert_string_contains!(
-			shader,
-			"atomicAdd(counters.buffer_value,0u)"
-		);
+		assert_string_contains!(shader, "atomicAdd(counters.buffer_value,0u)");
 		for operation in [
 			"atomicExchange(",
 			"atomicAdd(",

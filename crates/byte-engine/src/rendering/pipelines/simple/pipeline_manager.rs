@@ -463,7 +463,7 @@ mod tests {
 			.expect("Failed to seed vertex position. The most likely cause is an interface type mismatch.");
 
 		input_instance
-			.write("instance_index", Value::U32(3))
+			.write(besl::INSTANCE_INDEX_BUILTIN, Value::U32(3))
 			.expect("Failed to seed instance ID. The most likely cause is an interface type mismatch.");
 
 		{

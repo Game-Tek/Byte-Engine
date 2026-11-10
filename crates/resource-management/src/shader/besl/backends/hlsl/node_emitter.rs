@@ -59,9 +59,6 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		has_previous_parameter: bool,
 	) {
 		if name != "main" {
-			if matches!(self.stage, Stages::Vertex) {
-				self.emit_vertex_builtin_helper_list(string, has_previous_parameter, true);
-			}
 			return;
 		}
 		if matches!(self.stage, Stages::Vertex | Stages::Fragment) {
@@ -97,20 +94,6 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			let _ = write!(string, "out primitives PrimitiveOutput besl_primitives[{maximum_primitives}]");
 			self.emit_separator(string);
 			let _ = write!(string, "out indices uint3 besl_triangles[{maximum_primitives}]");
-		}
-	}
-	fn emit_function_call_extra_arguments(
-		&mut self,
-		string: &mut String,
-		function: &besl::NodeReference,
-		has_previous_argument: bool,
-	) {
-		if !matches!(self.stage, Stages::Vertex) {
-			return;
-		}
-		let function = function.borrow();
-		if matches!(function.node(), besl::Nodes::Function { name, .. } if name != "main") {
-			self.emit_vertex_builtin_helper_list(string, has_previous_argument, false);
 		}
 	}
 	// HLSL textures carry no sampler, so a texture parameter is paired with one named after it, as bindings are.

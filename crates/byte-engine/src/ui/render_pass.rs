@@ -1336,7 +1336,7 @@ mod tests {
 			push_constant.write("viewport", Value::Vec2F(self.viewport)).unwrap();
 			push_constant.write("first", Value::U32(first)).unwrap();
 			let mut vertex = Buffer::new(self.executable.builtin_vertex_index_layout().unwrap().clone());
-			vertex.write("vertex_index", Value::U32(vertex_index)).unwrap();
+			vertex.write(besl::VERTEX_INDEX_BUILTIN, Value::U32(vertex_index)).unwrap();
 			let mut position = Buffer::new(self.executable.builtin_position_layout().unwrap().clone());
 			let mut outputs: Vec<_> = (0..6)
 				.map(|index| Buffer::new(self.executable.output_layout(index).unwrap().clone()))

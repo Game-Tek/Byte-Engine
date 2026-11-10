@@ -7,7 +7,9 @@ use super::{RAY_TRACING_STAGE_INTRINSICS, any_code_node};
 /// Raster-stage IO uses conventional BESL names for Metal semantics. The implicit vertex values
 /// `vertex_index` and `instance_index` are emitted as entry-point parameters with `[[vertex_id]]`
 /// and `[[instance_id]]` instead of vertex-attribute struct fields. Fragment inputs named
-/// `front_facing` are emitted as a `[[front_facing]]` entry-point parameter. Fragment outputs named
+/// `front_facing` are emitted as a `[[front_facing]]` entry-point parameter, and the implicit fragment value
+/// `primitive_index` as a `[[primitive_id]]` one. A vertex `render_target_array_index` output is emitted as the
+/// `[[render_target_array_index]]` member of `VertexOutput`. Fragment outputs named
 /// `depth`, `stencil`, and `sample_mask` are emitted with their matching Metal attributes; other
 /// fragment outputs are emitted as color attachments by location. Fragment shaders may also return
 /// an explicit output struct directly. Integer user varyings are emitted as `[[flat]]` user attributes.
@@ -170,19 +172,15 @@ pub(crate) struct RayTracingStageContext {
 	pub(crate) invokes: bool,
 }
 
-/// The `RasterStageContext` struct carries the flat argument buffer into binding-dependent raster helpers.
+/// The `RasterStageContext` struct carries the flat argument buffer and the push constants into binding-dependent raster
+/// helpers, and tells the entry point which invocation indices it binds. Only `main` reads the indices: `StageInput`
+/// fields are reachable only through its parameter.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RasterStageContext {
 	pub(crate) has_resources: bool,
 	pub(crate) has_push_constant: bool,
 	pub(crate) has_vertex_index: bool,
 	pub(crate) has_instance_index: bool,
-}
-
-impl RasterStageContext {
-	pub(crate) fn has_hidden_inputs(&self) -> bool {
-		self.has_push_constant || self.has_vertex_index || self.has_instance_index
-	}
 }
 
 #[derive(Default)]

@@ -218,14 +218,29 @@ pub(crate) fn is_vertex_builtin_input(name: &str) -> bool {
 	matches!(name, besl::VERTEX_INDEX_BUILTIN | besl::INSTANCE_INDEX_BUILTIN)
 }
 
-/// Rejects vertex invocation indices outside the vertex stage or with a non-`u32` representation.
-pub(crate) fn validate_vertex_builtin_inputs(stage: &Stages, order: &[besl::NodeReference]) -> Result<(), ()> {
+/// Reports whether a BESL input is an implicit raster value, which backends read from a native builtin instead of a
+/// stage attribute.
+pub(crate) fn is_raster_builtin_input(name: &str) -> bool {
+	is_vertex_builtin_input(name) || name == besl::PRIMITIVE_INDEX_BUILTIN
+}
+
+/// Rejects raster builtins outside the stage that supplies them or with a non-`u32` representation.
+///
+/// Vertex invocation indices and the layer output belong to the vertex stage, and the primitive index to the fragment
+/// stage.
+pub(crate) fn validate_raster_builtins(stage: &Stages, order: &[besl::NodeReference]) -> Result<(), ()> {
 	for node in order {
 		let node = node.borrow();
-		let besl::Nodes::Input { name, format, .. } = node.node() else {
-			continue;
+		let vertex = matches!(stage, Stages::Vertex);
+		let (in_stage, format) = match node.node() {
+			besl::Nodes::Input { name, format, .. } if is_vertex_builtin_input(name) => (vertex, format),
+			besl::Nodes::Input { name, format, .. } if name == besl::PRIMITIVE_INDEX_BUILTIN => {
+				(matches!(stage, Stages::Fragment), format)
+			}
+			besl::Nodes::Output { name, format, .. } if besl::is_render_target_array_index_output(name) => (vertex, format),
+			_ => continue,
 		};
-		if is_vertex_builtin_input(name) && (!matches!(stage, Stages::Vertex) || format.borrow().get_name() != Some("u32")) {
+		if !in_stage || format.borrow().get_name() != Some("u32") {
 			return Err(());
 		}
 	}

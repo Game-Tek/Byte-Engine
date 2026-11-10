@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed: a BESL vertex or fragment shader that declared a variable or parameter named like a `StageInput` field, such as `let instance_index: u32 = input.instance_index;`, failed to compile for Metal, because the backend bound the builtin under the same name; the HLSL backend bound it the same way. `StageInput` fields now lower to `_besl_stage_` symbols, so their names stay free. The bare globals `vertex_index`, `instance_index`, and `primitive_index`, which the language reference never specified, no longer resolve; read them through a `StageInput` parameter. VM tests write the builtins under `besl::VERTEX_INDEX_BUILTIN`, `INSTANCE_INDEX_BUILTIN`, and `PRIMITIVE_INDEX_BUILTIN`.
+
 - Applications open operating system dialogs with `Renderer::open_dialog`, which attaches them to the first window. Their results arrive as `AppEvents::Dialog` with the other window events. Before, only the GHI app could open them, so an engine application had no way to.
 
 - Fixed (Windows): a window created with `Features::DECORATIONS` had no title bar or border. It now gets both, and its extent sizes the client area inside them. Windows show the arrow cursor instead of keeping the shape the cursor had when it entered.

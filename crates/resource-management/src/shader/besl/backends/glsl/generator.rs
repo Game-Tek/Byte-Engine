@@ -39,6 +39,8 @@ struct Features {
 	ray_tracing: bool,
 	/// Fragment inputs that a mesh stage writes once per primitive.
 	primitive_inputs: bool,
+	/// A vertex shader writes `gl_Layer`, which core GLSL only lets a geometry shader write.
+	layer_output: bool,
 	/// The shader reads a descriptor, so it declares heap aliases and the sets' base indices.
 	descriptors: bool,
 	/// The shader samples a texture, so it declares the sampler heap alias.
@@ -127,7 +129,7 @@ impl Generator {
 			.filter(|node| matches!(node.borrow().node(), besl::Nodes::TaskPayload { .. }))
 			.cloned()
 			.collect();
-		crate::shader::generator::validate_vertex_builtin_inputs(&shader_compilation_settings.stage, &order)?;
+		crate::shader::generator::validate_raster_builtins(&shader_compilation_settings.stage, &order)?;
 		let requirements = intrinsic_requirements(&order);
 		let ray_queries = Self::uses_ray_queries(&order, &requirements);
 		let features = Features {
@@ -142,6 +144,9 @@ impl Generator {
 			primitive_inputs: order
 				.iter()
 				.any(|node| matches!(node.borrow().node(), besl::Nodes::Input { per_primitive: true, .. })),
+			layer_output: order.iter().any(
+				|node| matches!(node.borrow().node(), besl::Nodes::Output { name, .. } if besl::is_render_target_array_index_output(name)),
+			),
 			descriptors,
 			samplers,
 			push_constants,
@@ -280,6 +285,9 @@ impl Generator {
 		if matches!(compilation_settings.stage, Stages::Task { .. } | Stages::Mesh { .. }) || features.primitive_inputs {
 			glsl_block.push_str("#extension GL_EXT_mesh_shader:require\n");
 		}
+		if features.layer_output {
+			glsl_block.push_str("#extension GL_ARB_shader_viewport_layer_array:require\n");
+		}
 
 		match compilation_settings.stage {
 			Stages::Compute { .. } if features.subgroups => {
@@ -400,7 +408,9 @@ impl Generator {
 				string.push(')');
 			}
 			// Structures and buffers are variables of their own, which the pipeline maps to their heap slots.
-			besl::BindingTypes::AccelerationStructure | besl::BindingTypes::Buffer { .. } | besl::BindingTypes::BufferArray { .. } => {
+			besl::BindingTypes::AccelerationStructure
+			| besl::BindingTypes::Buffer { .. }
+			| besl::BindingTypes::BufferArray { .. } => {
 				Self::identifier(name).push_to(string);
 				if let Some(index) = index {
 					string.push_str("[nonuniformEXT(");
@@ -609,6 +619,21 @@ fn direct_binding(node: &besl::NodeReference) -> Option<besl::NodeReference> {
 			Some(source.clone())
 		}
 		_ => None,
+	}
+}
+
+/// Reports whether the assignment target `target` names the vertex layer output, which GLSL writes through
+/// `gl_Layer`.
+fn writes_render_target_array_index(target: &besl::NodeReference) -> bool {
+	match target.borrow().node() {
+		besl::Nodes::Expression(besl::Expressions::Expression { elements }) if elements.len() == 1 => {
+			writes_render_target_array_index(&elements[0])
+		}
+		besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => matches!(
+			source.borrow().node(),
+			besl::Nodes::Output { name, count: None, .. } if besl::is_render_target_array_index_output(name)
+		),
+		_ => false,
 	}
 }
 
@@ -1148,6 +1173,25 @@ impl NodeEmitter for Generator {
 		string.push(')');
 		true
 	}
+	fn emit_expression_override(&mut self, string: &mut String, expression: &besl::Expressions) -> bool {
+		let besl::Expressions::Operator {
+			operator: besl::Operators::Assignment,
+			left,
+			right,
+		} = expression
+		else {
+			return false;
+		};
+		if !writes_render_target_array_index(left) {
+			return false;
+		}
+		// `gl_Layer` is an `int`, and GLSL doesn't convert the `u32` layer a vertex shader returns implicitly.
+		let space = ShaderFormatting::new(self.minified).space_str();
+		let _ = write!(string, "gl_Layer{space}={space}int(");
+		self.emit_node(string, right);
+		string.push(')');
+		true
+	}
 	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeReference) -> bool {
 		// A descriptor lives in the heap, at its set's base index plus its offset in the set.
 		if matches!(source.borrow().node(), besl::Nodes::Binding { .. }) {
@@ -1178,6 +1222,7 @@ impl NodeEmitter for Generator {
 			} if name == input_name => match name {
 				besl::VERTEX_INDEX_BUILTIN => string.push_str("uint(gl_VertexIndex)"),
 				besl::INSTANCE_INDEX_BUILTIN => string.push_str("uint(gl_InstanceIndex)"),
+				besl::PRIMITIVE_INDEX_BUILTIN => string.push_str("uint(gl_PrimitiveID)"),
 				_ => {
 					// A narrow input arrives widened, so reading it narrows it back to the type the shader declared.
 					let format = format.borrow();
@@ -1308,7 +1353,7 @@ impl NodeEmitter for Generator {
 				format,
 				per_primitive,
 			} => {
-				if crate::shader::generator::is_vertex_builtin_input(name) {
+				if crate::shader::generator::is_raster_builtin_input(name) {
 					return;
 				}
 				let format = format.borrow();
@@ -1334,7 +1379,11 @@ impl NodeEmitter for Generator {
 				count,
 				per_vertex,
 			} => {
-				if count.is_none() && self.stage.interpolates_outputs() && besl::is_position_output(name) {
+				// The position and the layer are written to `gl_Position` and `gl_Layer`, which need no declaration.
+				if count.is_none()
+					&& self.stage.interpolates_outputs()
+					&& (besl::is_position_output(name) || besl::is_render_target_array_index_output(name))
+				{
 					return;
 				}
 				let format = format.borrow();

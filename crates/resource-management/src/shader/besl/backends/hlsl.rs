@@ -590,9 +590,49 @@ mod tests {
 		let shader = lower_fixture(super::super::STRUCTURAL_POSITION_VERTEX, &ShaderGenerationSettings::vertex());
 
 		assert_string_contains!(shader, "out float4 _besl_interface_position : SV_Position");
-		assert_string_contains!(shader, "float4 position=float4(float(vertex_index),0.0,0.0,1.0);");
+		assert_string_contains!(shader, "float4 position=float4(float(_besl_stage_vertex_index),0.0,0.0,1.0);");
 		assert_string_contains!(shader, "_besl_interface_position=position;");
 		assert!(!shader.contains("_besl_interface_position : TEXCOORD"));
+	}
+
+	/// Verifies the vertex layer lowers to `SV_RenderTargetArrayIndex` after the varyings, so it doesn't take the
+	/// register a pixel shader reads the first varying from.
+	#[test]
+	fn render_target_array_index_lowers_to_sv_render_target_array_index_after_the_varyings() {
+		let shader = lower_fixture(super::super::LAYERED_VERTEX, &ShaderGenerationSettings::vertex());
+
+		assert_string_contains!(
+			shader,
+			"out uint32_t _besl_interface_render_target_array_index : SV_RenderTargetArrayIndex"
+		);
+		assert_string_contains!(shader, "_besl_interface_render_target_array_index=layer;");
+		assert_string_contains!(shader, "_besl_interface_uv : TEXCOORD0");
+		assert_string_does_not_contain!(shader, "_besl_interface_render_target_array_index : TEXCOORD");
+		assert_string_does_not_contain!(
+			shader,
+			"nointerpolation out uint32_t _besl_interface_render_target_array_index"
+		);
+		let varying = shader.find(": TEXCOORD0").expect("Expected the varying at location 0");
+		let layer = shader.find(": SV_RenderTargetArrayIndex").expect("Expected the layer output");
+		assert!(varying < layer, "{shader}");
+
+		compile_dxil(&shader, "render-target-array-index", ShaderTypes::Vertex);
+	}
+
+	/// Verifies the fragment primitive index lowers to `SV_PrimitiveID` after the varyings, so the varyings keep the
+	/// registers the vertex shader wrote them to.
+	#[test]
+	fn primitive_index_lowers_to_sv_primitive_id_after_the_varyings() {
+		let shader = lower_fixture(super::super::PRIMITIVE_INDEX_FRAGMENT, &ShaderGenerationSettings::fragment());
+
+		assert_string_contains!(shader, "uint32_t _besl_stage_primitive_index : SV_PrimitiveID");
+		assert_string_contains!(shader, "float(_besl_stage_primitive_index)");
+		assert_string_does_not_contain!(shader, "primitive_index : TEXCOORD");
+		let varying = shader.find(": TEXCOORD0").expect("Expected the varying at location 0");
+		let primitive_index = shader.find(": SV_PrimitiveID").expect("Expected the primitive index input");
+		assert!(varying < primitive_index, "{shader}");
+
+		compile_dxil(&shader, "primitive-index", ShaderTypes::Fragment);
 	}
 
 	#[test]
@@ -1041,17 +1081,20 @@ mod tests {
 	}
 
 	#[test]
-	fn vertex_invocation_indices_lower_to_system_semantics_and_reach_helpers() {
-		let shader = lower_fixture(super::super::VERTEX_BUILTIN_HELPER, &ShaderGenerationSettings::vertex());
+	fn vertex_invocation_indices_lower_to_system_semantics_beside_locals_of_the_same_name() {
+		let shader = lower_fixture(
+			super::super::STAGE_INPUT_NAMESAKES_VERTEX,
+			&ShaderGenerationSettings::vertex(),
+		);
 
-		assert_string_contains!(shader, "vertex_index : SV_VertexID");
-		assert_string_contains!(shader, "instance_index : SV_InstanceID");
-		assert_string_contains!(shader, "uint32_t invocation_sum(");
-		assert_string_contains!(shader, "out_value=invocation_sum(");
-		assert_eq!(shader.matches("vertex_index").count(), 4);
-		assert_eq!(shader.matches("instance_index").count(), 4);
+		assert_string_contains!(shader, "uint32_t _besl_stage_vertex_index : SV_VertexID");
+		assert_string_contains!(shader, "uint32_t _besl_stage_instance_index : SV_InstanceID");
+		assert_string_contains!(shader, "uint32_t vertex_index=_besl_stage_vertex_index;");
+		assert_string_contains!(shader, "uint32_t instance_index=_besl_stage_instance_index;");
 		assert_string_does_not_contain!(shader, "vertex_index : TEXCOORD");
 		assert_string_does_not_contain!(shader, "instance_index : TEXCOORD");
+
+		compile_dxil(&shader, "stage-input-namesakes", ShaderTypes::Vertex);
 	}
 
 	/// Verifies a pixel shader declares the position first and its varyings by location, as the vertex shader writes

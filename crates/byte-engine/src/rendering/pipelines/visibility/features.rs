@@ -31,6 +31,9 @@ pub const BAKED_GI_ENABLED_PARAMETER: &str = "baked-gi.enabled";
 /// The startup parameter, inside [`RENDER_PARAMETERS`], that builds contact shadows into the project. Its runtime
 /// value also turns them on and off.
 pub const CONTACT_SHADOWS_ENABLED_PARAMETER: &str = "contact-shadows.enabled";
+/// The startup parameter, inside [`RENDER_PARAMETERS`], that caps how many directional lights the project uses. When
+/// it is `1` or less, the project builds the `single_directional_light` feature in. No shader reads that feature yet.
+pub const DIRECTIONAL_LIGHTS_MAX_PARAMETER: &str = "lights.directional.max";
 /// The startup parameter, inside [`RENDER_PARAMETERS`], that builds debug views into the project. Absent, debug
 /// builds have them and release builds do not. See [`crate::rendering::DebugViews`].
 pub const DEBUG_VIEWS_ENABLED_PARAMETER: &str = "debug-views.enabled";
@@ -112,6 +115,9 @@ pub struct VisibilityFeatures {
 	pub baked_gi: bool,
 	/// Whether the sun visibility resolve multiplies in the contact-shadow trace.
 	pub contact_shadows: bool,
+	/// Whether the project uses at most one directional light. No shader reads it yet; it exists so the baked shaders
+	/// can skip their multi-light loops.
+	pub single_directional_light: bool,
 	/// Whether passes can show their debug views; see [`crate::rendering::DebugViews`].
 	pub debug_views: bool,
 	/// How material evaluation runs, which decides what material bakes store.
@@ -128,6 +134,7 @@ impl Default for VisibilityFeatures {
 			probe_gi: false,
 			baked_gi: false,
 			contact_shadows: true,
+			single_directional_light: false,
 			debug_views: cfg!(debug_assertions),
 			material_evaluation: MaterialEvaluationMode::default(),
 		}
@@ -161,6 +168,14 @@ impl VisibilityFeatures {
 			probe_gi: built_in(PROBE_GI_ENABLED_PARAMETER, defaults.probe_gi),
 			baked_gi: built_in(BAKED_GI_ENABLED_PARAMETER, defaults.baked_gi),
 			contact_shadows: built_in(CONTACT_SHADOWS_ENABLED_PARAMETER, defaults.contact_shadows),
+			single_directional_light: parameters.get_parameter(DIRECTIONAL_LIGHTS_MAX_PARAMETER).map_or(
+				defaults.single_directional_light,
+				|parameter| {
+					parameter
+						.parse::<usize>()
+						.map_or(defaults.single_directional_light, |max| max <= 1)
+				},
+			),
 			debug_views: built_in(DEBUG_VIEWS_ENABLED_PARAMETER, defaults.debug_views),
 			material_evaluation: parameters
 				.get_parameter(MATERIAL_EVALUATION_PARAMETER)
@@ -186,7 +201,7 @@ impl VisibilityFeatures {
 	/// `byte_engine/rendering/` and the stems of the engine assets only it uses, and whether the project builds it in.
 	/// Each stem names a pipeline and its shader, or a shader the engine assembles a pipeline from, which takes a row of
 	/// its own.
-	fn table(&self) -> [(&'static str, &'static str, &'static [&'static str], bool); 13] {
+	fn table(&self) -> [(&'static str, &'static str, &'static [&'static str], bool); 14] {
 		use super::ray_tracing::{DEFAULT_HIT_SHADERS, PROBE_SHADING_SHADERS, SURFEL_SHADING_SHADERS};
 		use super::render_pass::{
 			CONTACT_SHADOW_PIPELINES, GTAO_PIPELINES, MATERIAL_PREPASS_PIPELINES, PROBE_GI_PIPELINES, RAY_HIT_PIPELINES,
@@ -229,6 +244,7 @@ impl VisibilityFeatures {
 				&CONTACT_SHADOW_PIPELINES,
 				self.contact_shadows,
 			),
+			("single_directional_light", "visibility/", &[], self.single_directional_light),
 			("debug_view_", "debug-view/", &DEBUG_VIEW_PIPELINES, self.debug_views),
 			// Only per-material evaluation shaders read the pixel lists the prepasses write.
 			(
@@ -420,6 +436,7 @@ mod tests {
 			probe_gi: false,
 			baked_gi: false,
 			contact_shadows: false,
+			single_directional_light: false,
 			debug_views: false,
 			material_evaluation: MaterialEvaluationMode::Pipelines,
 		};

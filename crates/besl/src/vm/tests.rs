@@ -960,9 +960,9 @@ fn executable_program_reads_implicit_vertex_invocation_indices() {
 	let script = r#"
 	out_vertex_index: output<u32, 0>;
 	out_instance_index: output<u32, 1>;
-	main: fn () -> void {
-		out_vertex_index = vertex_index;
-		out_instance_index = instance_index;
+	main: fn (input: StageInput) -> void {
+		out_vertex_index = input.vertex_index;
+		out_instance_index = input.instance_index;
 	}
 	"#;
 
@@ -972,10 +972,10 @@ fn executable_program_reads_implicit_vertex_invocation_indices() {
 	let mut out_vertex_index = interface_buffer(executable.output_layout(0));
 	let mut out_instance_index = interface_buffer(executable.output_layout(1));
 	vertex_index
-		.write("vertex_index", Value::U32(17))
+		.write(crate::VERTEX_INDEX_BUILTIN, Value::U32(17))
 		.expect("Expected vertex index write to succeed");
 	instance_index
-		.write("instance_index", Value::U32(23))
+		.write(crate::INSTANCE_INDEX_BUILTIN, Value::U32(23))
 		.expect("Expected instance index write to succeed");
 
 	{

@@ -393,4 +393,14 @@ impl ExecutableProgram {
 	pub fn builtin_instance_index_layout(&self) -> Option<&BufferLayout> {
 		self.buffer_layout(builtin_instance_index_slot())
 	}
+
+	/// Returns the layout required to bind the implicit fragment `primitive_index` value.
+	pub fn builtin_primitive_index_layout(&self) -> Option<&BufferLayout> {
+		self.buffer_layout(builtin_primitive_index_slot())
+	}
+
+	/// Returns the layout of the vertex `render_target_array_index` output, which a test reads back after a run.
+	pub fn builtin_render_target_array_index_layout(&self) -> Option<&BufferLayout> {
+		self.buffer_layout(builtin_render_target_array_index_slot())
+	}
 }

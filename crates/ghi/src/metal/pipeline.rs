@@ -977,9 +977,37 @@ impl crate::device::Device for Factory {
 		let ray_generation_function =
 			build_metal4_function_descriptor(ray_generation, builder.ray_generation.specialization_map);
 		let layout = build_ray_tracing_layout(&self.shaders, &builder);
+		// The capture layer fails to wrap Metal 4 binary functions before linking them. Link IR during
+		// capture launches instead; retain binary compilation caching for ordinary launches.
+		// Xcode can inject capture support without setting MTL_CAPTURE_ENABLED in the process environment.
+		// SAFETY: The process-wide capture manager is available on every supported macOS version.
+		let capturing = unsafe { mtl::MTLCaptureManager::sharedCaptureManager() }
+			.supportsDestination(mtl::MTLCaptureDestination::GPUTraceDocument);
+		let mut captured_names = Vec::new();
+		let mut captured_functions = Vec::new();
+		if capturing {
+			for (record, hit_group) in builder.hit_groups.iter().enumerate() {
+				let shader = &self.shaders[hit_group.handle.index() as usize];
+				let base = build_metal4_function_descriptor(shader, hit_group.specialization_map);
+				let function = if hit_group.specialization_map.is_empty() {
+					let function = mtl::MTL4SpecializedFunctionDescriptor::new();
+					function.setFunctionDescriptor(Some(&base));
+					function
+				} else {
+					// SAFETY: Nonempty constants produce a specialized descriptor in the builder above.
+					unsafe { Retained::cast_unchecked::<mtl::MTL4SpecializedFunctionDescriptor>(base) }
+				};
+				let name = NSString::from_str(&format!("closest_hit_{record}"));
+				function.setSpecializedName(Some(&name));
+				captured_names.push(name);
+				// SAFETY: The specialized descriptor inherits from MTL4FunctionDescriptor.
+				captured_functions.push(unsafe { Retained::cast_unchecked::<mtl::MTL4FunctionDescriptor>(function) });
+			}
+		}
 		let functions: Vec<BinaryFunction> = builder
 			.hit_groups
 			.iter()
+			.filter(|_| !capturing)
 			.map(|hit_group| self.closest_hit_function(hit_group))
 			.collect();
 
@@ -995,6 +1023,11 @@ impl crate::device::Device for Factory {
 		descriptor.setLabel(name.map(NSString::from_str).as_deref());
 		descriptor.setComputeFunctionDescriptor(Some(&ray_generation_function));
 		descriptor.setSupportBinaryLinking(true);
+		if capturing {
+			let static_linking = mtl::MTL4StaticLinkingDescriptor::new();
+			static_linking.setFunctionDescriptors(Some(&NSArray::from_retained_slice(&captured_functions)));
+			descriptor.setStaticLinkingDescriptor(Some(&static_linking));
+		}
 		let linking = mtl::MTL4PipelineStageDynamicLinkingDescriptor::new();
 		linking.setBinaryLinkedFunctions(Some(&NSArray::from_slice(&linked)));
 		// The kernel calls closest hits, and closest hits call nothing.
@@ -1013,14 +1046,20 @@ impl crate::device::Device for Factory {
 					command_buffer::SHADER_BINDING_TABLE_BINDING_INDEX,
 				)
 			});
-		let hit_groups = functions
+		let hit_groups = if capturing {
+			captured_names.iter().map(|name| state.functionHandleWithName(name).expect(
+				"Metal capture pipeline has no closest-hit handle. The compiler did not export the linked function. Update Xcode and macOS, then retry the capture."
+			)).collect()
+		} else {
+			functions
 			.iter()
 			.map(|function| {
 				state.functionHandleWithBinaryFunction(function).expect(
 					"Metal ray tracing pipeline linking returned no handle for a closest hit it links. The most likely cause is a fault in the Metal compiler. Update macOS, and report the pipeline if the fault persists.",
 				)
 			})
-			.collect();
+			.collect()
+		};
 
 		Pipeline {
 			pipeline: PipelineState::RayTracing { state, hit_groups },

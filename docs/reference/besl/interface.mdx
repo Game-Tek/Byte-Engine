@@ -40,6 +40,30 @@ locations, so the two examples agree even though they list `uv` and
 `position: vec4f` field is the native clip-space position, doesn't consume a
 varying location, and isn't a fragment input.
 
+A vertex `render_target_array_index: u32` field picks the layer of a layered
+render target, such as a texture array, that the primitive rasterizes into:
+
+```rust
+main: fn (input: StageInput) -> interface { position: vec4f, render_target_array_index: u32 } {
+	let position: vec4f = vec4f(0.0, 0.0, 0.0, 1.0);
+	return { position, render_target_array_index: input.instance_index };
+}
+```
+
+Like `position`, it doesn't consume a varying location and isn't a fragment
+input. Its type is `u32`; another type is an error. Write the same layer for
+every vertex of a primitive. BESL maps it to the matching system value on each
+backend:
+
+| Interface field | Vulkan GLSL | HLSL | MSL |
+| --- | --- | --- | --- |
+| `position` | `gl_Position` | `SV_Position` | `[[position]]` |
+| `render_target_array_index` | `gl_Layer` | `SV_RenderTargetArrayIndex` | `[[render_target_array_index]]` |
+
+Only a vertex stage returns `render_target_array_index`. On Vulkan, it needs the
+`shaderOutputLayer` device feature. In VM tests, read it through
+`builtin_render_target_array_index_slot()`.
+
 An `output` record describes final fragment attachments. Declaration order sets
 the color attachment locations, starting at `0`.
 
@@ -256,7 +280,31 @@ BESL maps both indices to the matching system values on each backend:
 | `instance_index` | `gl_InstanceIndex` | `SV_InstanceID` | `[[instance_id]]` |
 
 These values are available only in the vertex stage. In VM tests, bind them
-through `builtin_vertex_index_slot()` and `builtin_instance_index_slot()`.
+through `builtin_vertex_index_slot()` and `builtin_instance_index_slot()`, and
+write each one under the member name `VERTEX_INDEX_BUILTIN` or
+`INSTANCE_INDEX_BUILTIN` gives.
+
+A `StageInput` field is reachable only through the parameter, so its name
+stays free: a shader can declare its own `vertex_index`, `instance_index`, or
+`primitive_index` variable or parameter beside the field.
+
+Fragment shaders can read `input.primitive_index`, the `u32` index of the
+primitive that produced the fragment, counted from `0` for each instance of a
+draw. It doesn't consume an interface location:
+
+```rust
+main: fn (input: StageInput) -> output { primitive_id: u32 } {
+	return { primitive_id: input.primitive_index };
+}
+```
+
+| `StageInput` field | Vulkan GLSL | HLSL | MSL |
+| --- | --- | --- | --- |
+| `primitive_index` | `gl_PrimitiveID` | `SV_PrimitiveID` | `[[primitive_id]]` |
+
+This value is available only in the fragment stage. In VM tests, bind it
+through `builtin_primitive_index_slot()` and write it under the member name
+`PRIMITIVE_INDEX_BUILTIN` gives.
 
 Compute shaders can read their dispatch and lane values from the same parameter:
 

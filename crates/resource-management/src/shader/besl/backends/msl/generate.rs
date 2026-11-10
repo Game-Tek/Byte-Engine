@@ -179,7 +179,7 @@ impl Generator {
 		order: &[besl::NodeReference],
 	) -> Result<String, ()> {
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, order)?;
-		crate::shader::generator::validate_vertex_builtin_inputs(&shader_compilation_settings.stage, order)?;
+		crate::shader::generator::validate_raster_builtins(&shader_compilation_settings.stage, order)?;
 		let intrinsic_requirements = intrinsic_requirements(order);
 		if intrinsic_requirements.uses_subgroup_intrinsics
 			&& !matches!(shader_compilation_settings.stage, Stages::Compute { .. })

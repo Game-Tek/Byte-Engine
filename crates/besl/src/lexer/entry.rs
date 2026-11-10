@@ -165,10 +165,11 @@ fn normalize_parameters<'tree, 'source>(
 					return Err(entry_error("main can declare only one interface parameter"));
 				}
 				validate_unique_type_fields(fields, "interface")?;
-				if fields.iter().any(|field| field.name == "position") {
-					return Err(entry_error(
-						"position is a vertex interface output and cannot be an interface parameter",
-					));
+				if let Some(field) = fields.iter().find(|field| is_builtin_interface_field(field.name)) {
+					return Err(entry_error(&format!(
+						"{} is a vertex interface output and cannot be an interface parameter",
+						field.name
+					)));
 				}
 				for field in fields {
 					declarations.push(Node {
@@ -222,9 +223,23 @@ fn normalize_return_type<'tree, 'source>(
 			docs = crate::online_docs_url(RASTER_ENTRY_DOCS_PATH)
 		)));
 	}
+	if *role == parser::RecordRole::Interface
+		&& let Some(field) = fields
+			.iter()
+			.find(|field| field.name == crate::RENDER_TARGET_ARRAY_INDEX_FIELD)
+		&& !matches!(field.type_name, parser::TypeName::Named("u32"))
+	{
+		return Err(LexError::invalid(format!(
+			"main returns `{name}: {type_name}`. The most likely cause is a layer index declared with another type, but `{name}` picks the render target array layer, which every backend reads as a `u32`. Declare `{name}` as `u32`. See {docs}.",
+			name = field.name,
+			type_name = field.type_name,
+			docs = crate::online_docs_url(RASTER_ENTRY_DOCS_PATH)
+		)));
+	}
 	for (attachment, field) in fields.iter().enumerate() {
 		let location = match role {
-			parser::RecordRole::Interface if field.name == "position" => 0,
+			// Builtin fields write native outputs, which take no varying location; the VM routes them by name.
+			parser::RecordRole::Interface if is_builtin_interface_field(field.name) => 0,
 			parser::RecordRole::Interface => interface_location(fields, field.name, true)?,
 			parser::RecordRole::Output => {
 				u8::try_from(attachment).map_err(|_| entry_error("An output record cannot contain more than 256 fields"))?
@@ -250,12 +265,20 @@ fn resolve_entry_field_type(types: &[NodeReference], type_name: &parser::TypeNam
 }
 
 /// Assigns one interface location by name so declaration order cannot break stage linkage.
-fn interface_location(fields: &[parser::TypeField<'_>], name: &str, exclude_position: bool) -> Result<u8, LexError> {
+///
+/// A vertex return passes `exclude_builtins`, so its builtin fields don't shift the locations of the varyings the next
+/// stage declares without them.
+fn interface_location(fields: &[parser::TypeField<'_>], name: &str, exclude_builtins: bool) -> Result<u8, LexError> {
 	let location = fields
 		.iter()
-		.filter(|field| (!exclude_position || field.name != "position") && field.name < name)
+		.filter(|field| (!exclude_builtins || !is_builtin_interface_field(field.name)) && field.name < name)
 		.count();
 	u8::try_from(location).map_err(|_| entry_error("An interface cannot contain more than 256 fields"))
+}
+
+/// Reports whether a vertex interface field writes a native raster output instead of a varying.
+fn is_builtin_interface_field(name: &str) -> bool {
+	matches!(name, "position" | crate::RENDER_TARGET_ARRAY_INDEX_FIELD)
 }
 
 fn validate_unique_type_fields(fields: &[parser::TypeField<'_>], context: &str) -> Result<(), LexError> {
@@ -451,8 +474,11 @@ fn contextual_access<'a>(
 	if context.stage_input_parameter == Some(parameter.as_ref()) {
 		// Compute fields reuse the intrinsic nodes that already carry backend and VM semantics.
 		return match field.as_ref() {
-			crate::VERTEX_INDEX_BUILTIN => Ok(Some(parser::Node::member_expression(crate::VERTEX_INDEX_BUILTIN))),
-			crate::INSTANCE_INDEX_BUILTIN => Ok(Some(parser::Node::member_expression(crate::INSTANCE_INDEX_BUILTIN))),
+			// Raster fields lower to their namespaced builtin inputs, so the field names stay free for the shader's own
+			// variables.
+			"vertex_index" => Ok(Some(parser::Node::member_expression(crate::VERTEX_INDEX_BUILTIN))),
+			"instance_index" => Ok(Some(parser::Node::member_expression(crate::INSTANCE_INDEX_BUILTIN))),
+			"primitive_index" => Ok(Some(parser::Node::member_expression(crate::PRIMITIVE_INDEX_BUILTIN))),
 			"thread_id" => Ok(Some(parser::Node::call("thread_id", Vec::new()))),
 			"thread_idx" => Ok(Some(parser::Node::call("thread_idx", Vec::new()))),
 			"threadgroup_position" => Ok(Some(parser::Node::call("threadgroup_position", Vec::new()))),
@@ -487,6 +513,9 @@ fn interface_symbol(field_name: &str) -> String {
 fn output_symbol(role: parser::RecordRole, field_name: &str) -> String {
 	match (role, field_name) {
 		(parser::RecordRole::Interface, "position") => crate::STRUCTURAL_POSITION_OUTPUT.to_string(),
+		(parser::RecordRole::Interface, crate::RENDER_TARGET_ARRAY_INDEX_FIELD) => {
+			crate::STRUCTURAL_RENDER_TARGET_ARRAY_INDEX_OUTPUT.to_string()
+		}
 		(parser::RecordRole::Interface, _) => interface_symbol(field_name),
 		(parser::RecordRole::Output, _) => format!("{OUTPUT_SYMBOL_PREFIX}{field_name}"),
 	}

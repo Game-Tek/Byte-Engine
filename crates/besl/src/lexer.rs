@@ -241,6 +241,62 @@ mod tests {
 		assert_eq!(input("_besl_interface_uv"), (Some("vec2f".to_owned()), 1, false));
 	}
 
+	/// Verifies a vertex `render_target_array_index` field lowers to the reserved `u32` layer output, and that it and
+	/// `position` leave the varying locations as a fragment stage that declares only the varyings sees them.
+	#[test]
+	fn render_target_array_index_lowers_to_a_layer_output_that_takes_no_varying_location() {
+		let vertex = crate::compile_to_besl(
+			r#"
+				main: fn (input: StageInput) -> interface { position: vec4f, render_target_array_index: u32, uv: vec2f } {
+					let layer: u32 = input.instance_index;
+					return { position: vec4f(0.0, 0.0, 0.0, 1.0), render_target_array_index: layer, uv: vec2f(0.0, 1.0) };
+				}
+			"#,
+			None,
+		)
+		.expect("a vertex stage that picks its layer should link");
+		let fragment = crate::compile_to_besl(
+			r#"
+				main: fn (pipeline_input: interface { uv: vec2f }) -> output { color: vec4f } {
+					return { color: vec4f(pipeline_input.uv.x, pipeline_input.uv.y, 0.0, 1.0) };
+				}
+			"#,
+			None,
+		)
+		.expect("a fragment stage that reads only the varyings should link");
+
+		let output = |root: &NodeReference, name: &str| {
+			let node = root.borrow().get_child(name).expect("the interface field should exist");
+			let node = node.borrow();
+			match node.node() {
+				Nodes::Input { format, location, .. } | Nodes::Output { format, location, .. } => {
+					(format.borrow().get_name().map(str::to_owned), *location)
+				}
+				_ => panic!("the interface field should be stage I/O"),
+			}
+		};
+		assert_eq!(
+			output(&vertex, crate::STRUCTURAL_RENDER_TARGET_ARRAY_INDEX_OUTPUT).0,
+			Some("u32".to_owned())
+		);
+		assert_eq!(output(&vertex, "_besl_interface_uv"), (Some("vec2f".to_owned()), 0));
+		assert_eq!(output(&fragment, "_besl_interface_uv"), (Some("vec2f".to_owned()), 0));
+	}
+
+	/// Verifies a fragment stage reads the index of the primitive it shades through `StageInput`.
+	#[test]
+	fn stage_input_exposes_the_fragment_primitive_index() {
+		crate::compile_to_besl(
+			r#"
+				main: fn (input: StageInput) -> output { id: u32 } {
+					return { id: input.primitive_index };
+				}
+			"#,
+			None,
+		)
+		.expect("a fragment stage that reads its primitive index should link");
+	}
+
 	#[test]
 	fn structural_entry_rejects_invalid_record_shapes() {
 		for (source, expected) in [
@@ -256,6 +312,18 @@ mod tests {
 					return { color: input.position };
 				}"#,
 				"cannot be an interface parameter",
+			),
+			(
+				r#"main: fn (input: interface { render_target_array_index: u32 }) -> output { color: vec4f } {
+					return { color: vec4f(f32(input.render_target_array_index), 0.0, 0.0, 1.0) };
+				}"#,
+				"cannot be an interface parameter",
+			),
+			(
+				r#"main: fn () -> interface { position: vec4f, render_target_array_index: f32 } {
+					return { position: vec4f(0.0, 0.0, 0.0, 1.0), render_target_array_index: 1.0 };
+				}"#,
+				"every backend reads as a `u32`",
 			),
 			(
 				r#"main: fn () -> interface { position: vec4f, instance_index: primitive<u32> } {

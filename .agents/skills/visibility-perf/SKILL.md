@@ -1,6 +1,6 @@
 ---
 name: visibility-perf
-description: "Cut GPU frame time in a real-time renderer: how to measure so a number means something, and the shader and pass techniques that reduced run time in practice (per-stage counters, hoisting work out of low-occupancy kernels, batching fetches, conservative pyramid probes, gathers, grid-anchored tent filters, half-resolution tracing with edge-aware upsampling, pass fusion, clear removal, read-once reductions, several reads per thread combined with subgroup shuffles, a thread's chain of atomics split across lanes). Use when the user asks what is slow in a render pipeline, where to start optimizing, how to A/B a rendering change, or to continue frame-time work; for Byte-Engine's visibility renderer also read reference/byte-engine.md. Not for CPU-side, asset-bake, or startup performance."
+description: "Cut GPU frame time in a real-time renderer: how to measure so a number means something, and the shader and pass techniques that reduced run time in practice (per-stage counters, hoisting work out of low-occupancy kernels, batching fetches, conservative pyramid probes, gathers, grid-anchored tent filters, half-resolution tracing with edge-aware upsampling, pass fusion, clear removal, read-once reductions, several reads per thread combined with subgroup shuffles, a thread's chain of atomics split across lanes). Use when the user asks what is slow in a render pipeline, why frame time rose after a change, where to start optimizing, how to A/B a rendering change, or to continue frame-time work; for Byte-Engine's visibility renderer also read reference/byte-engine.md. Not for gameplay CPU work, asset-bake, or startup performance."
 ---
 
 ## Method
@@ -289,6 +289,16 @@ keep on.
   showed 0.79 ms of trace and 0.67 ms of denoise, which changed what was worth doing. Split before designing.
 - **Each precise timestamp may split a compute encoder**; thirteen stage boundaries are themselves part of the gaps
   between passes. Measure with the counters off once.
+- **When the GPU idles, its pass spans describe the CPU.** A Metal System Trace that shows the GPU busy for a few
+  percent of the recording means the frame is bound by command recording, and per-pass timestamp spans then include
+  gaps and overlap, so a long raster span can be a pass made of many tiny draws. Read the CPU span that records and submits (`Renderer::queue_execute` in Byte-Engine) beside the GPU spans, and
+  count the draws each pass records, before profiling shaders.
+- **A run that suddenly got fast may draw less.** A store with stale or missing shaders, a material that failed to
+  load, or a scene that hasn't streamed in renders a near-empty frame at a fraction of the cost. Read the run's log
+  for load warnings and look at the lit image before believing a number.
+- **Debug builds inflate CPU-side culling and sorting** far more than GPU work, because the Rust runs unoptimized.
+  A debug frame finds where the time goes; confirm a CPU-side span's size in a release build before optimizing it
+  further.
 - **Check compression before blaming bandwidth.** GPUs store private render targets losslessly compressed by
   default (Apple does for depth and color attachments without shader-write usage), so a pass can read far fewer
   bytes than its texel count. Divide the bytes the pass reads by its time and compare that with a plain buffer read

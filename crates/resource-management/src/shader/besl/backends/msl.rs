@@ -294,11 +294,41 @@ mod tests {
 			shader,
 			"struct VertexOutput{float4 position [[position]];float2 _besl_interface_uv"
 		);
-		assert_string_contains!(shader, "float4 position=float4(float(vertex_index),0.0,0.0,1.0);");
+		assert_string_contains!(shader, "float4 position=float4(float(_besl_stage_vertex_index),0.0,0.0,1.0);");
 		assert_string_contains!(shader, "out.position=_besl_interface_position;");
 		assert!(!shader.contains("_besl_interface_position [[user("));
 
 		compile_natively(&shader, "besl-structural-position").await;
+	}
+
+	/// Verifies the vertex layer lowers to the `[[render_target_array_index]]` member of `VertexOutput` instead of a
+	/// user attribute.
+	#[compio::test]
+	async fn render_target_array_index_lowers_to_the_metal_layer_attribute() {
+		let shader = lower_fixture(super::super::LAYERED_VERTEX, &ShaderGenerationSettings::vertex());
+
+		assert_string_contains!(shader, "uint render_target_array_index [[render_target_array_index]];");
+		assert_string_contains!(
+			shader,
+			"out.render_target_array_index=_besl_interface_render_target_array_index;"
+		);
+		assert!(!shader.contains("_besl_interface_render_target_array_index [[user("));
+
+		compile_natively(&shader, "besl-render-target-array-index").await;
+	}
+
+	/// Verifies the fragment primitive index arrives as a `[[primitive_id]]` entry-point parameter that code reads by its
+	/// stage-input symbol, instead of a `FragmentInput` attribute.
+	#[compio::test]
+	async fn primitive_index_lowers_to_a_metal_primitive_id_parameter() {
+		let shader = lower_fixture(super::super::PRIMITIVE_INDEX_FRAGMENT, &ShaderGenerationSettings::fragment());
+
+		assert_string_contains!(shader, "uint _besl_stage_primitive_index [[primitive_id]]");
+		assert_string_contains!(shader, "float(_besl_stage_primitive_index)");
+		assert!(!shader.contains("primitive_index [[user("));
+		assert!(!shader.contains("_besl_stage_primitive_index=_besl_stage_primitive_index;"));
+
+		compile_natively(&shader, "besl-primitive-index").await;
 	}
 
 	#[test]
@@ -1159,29 +1189,21 @@ mod tests {
 	}
 
 	#[compio::test]
-	async fn vertex_builtin_stage_inputs_lower_to_msl_semantics() {
-		let root = besl::compile_to_besl(
-			r#"
-			invocation_sum: fn () -> u32 {
-				return vertex_index + instance_index;
-			}
-			position: output<vec4f, 255>;
-			out_value: output<u32, 0>;
-			main: fn () -> void {
-				position = vec4f(f32(vertex_index), 0.0, 0.0, 1.0);
-				out_value = invocation_sum();
-			}
-			"#,
-			None,
-		)
-		.expect("Expected implicit vertex builtins to link");
-		let main = root.borrow().get_child("main").unwrap();
-		let shader = generate(&ShaderGenerationSettings::vertex(), &main);
+	/// Verifies the vertex invocation indices arrive as `[[vertex_id]]` and `[[instance_id]]` parameters named by their
+	/// stage-input symbols, so locals and helper parameters named `vertex_index` and `instance_index` compile beside
+	/// them.
+	async fn vertex_builtin_stage_inputs_lower_to_msl_semantics_beside_locals_of_the_same_name() {
+		let shader = lower_fixture(
+			super::super::STAGE_INPUT_NAMESAKES_VERTEX,
+			&ShaderGenerationSettings::vertex(),
+		);
 		assert_string_contains!(shader, "struct VertexInput{};");
-		assert_string_contains!(shader, "uint vertex_index [[vertex_id]],uint instance_index [[instance_id]]");
-		assert_string_contains!(shader, "invocation_sum(vertex_index,instance_index)");
-		assert!(!shader.contains("uint vertex_index=vertex_index;"));
-		assert!(!shader.contains("uint instance_index=instance_index;"));
+		assert_string_contains!(
+			shader,
+			"uint _besl_stage_vertex_index [[vertex_id]],uint _besl_stage_instance_index [[instance_id]]"
+		);
+		assert_string_contains!(shader, "uint vertex_index=_besl_stage_vertex_index;");
+		assert_string_contains!(shader, "uint instance_index=_besl_stage_instance_index;");
 
 		compile_natively(&shader, "besl-vertex-invocation-indices").await;
 	}

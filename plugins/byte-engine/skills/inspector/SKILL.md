@@ -208,6 +208,8 @@ jq -c 'select(.name == "Character") | .data' streams.ndjson | tail -20
 | A wait on `/events` returns `503` | Four other requests already wait. Close the extra wait loops, or retry without `wait`. |
 | Startup stops with "The `unattended` parameter has no valid rendering rate" | `--unattended` needs a positive rate, such as `--unattended=30`. |
 | A setting has no effect | `GET /configuration` lists it as pending or not set, with the reason. Some settings keep their startup value. |
+| The `metrics-out` file holds one JSON object instead of a row per tick | Only a path ending in `.ndjson` gets every retained tick; any other extension, `.jsonl` included, gets the summary. |
+| A run reports a much shorter frame than expected | Something it should draw didn't load. Read the log for load warnings and capture a screenshot before trusting the number. |
 | An entity query returns `[]` | Names are exact and case-sensitive, and `type` needs the full Rust path, such as `byte_engine::rendering::window::Window`. |
 
 ## Reference

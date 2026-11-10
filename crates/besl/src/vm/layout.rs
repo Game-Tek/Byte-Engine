@@ -22,8 +22,10 @@ enum ResourceSlotKind {
 	PushConstant,
 	DynamicResource,
 	BuiltinPosition,
+	BuiltinRenderTargetArrayIndex,
 	BuiltinVertexIndex,
 	BuiltinInstanceIndex,
+	BuiltinPrimitiveIndex,
 	Input,
 	Output,
 }
@@ -88,6 +90,16 @@ pub const fn output_slot(location: u8) -> ResourceSlot {
 /// Returns the interface slot reserved for the vertex position builtin.
 pub const fn builtin_position_slot() -> ResourceSlot {
 	ResourceSlot::virtual_slot(0, ResourceSlotKind::BuiltinPosition)
+}
+
+/// Returns the interface slot reserved for the vertex `render_target_array_index` builtin.
+pub const fn builtin_render_target_array_index_slot() -> ResourceSlot {
+	ResourceSlot::virtual_slot(0, ResourceSlotKind::BuiltinRenderTargetArrayIndex)
+}
+
+/// Returns the VM slot that supplies the implicit fragment `primitive_index` value.
+pub const fn builtin_primitive_index_slot() -> ResourceSlot {
+	ResourceSlot::virtual_slot(0, ResourceSlotKind::BuiltinPrimitiveIndex)
 }
 
 /// Returns the VM slot that supplies the implicit `vertex_index` value.

@@ -689,7 +689,7 @@ impl Generator {
 				push(string, format_args!("uint2 "), &"output_extent");
 			}
 		} else if let Some(raster) = &self.raster_stage_context {
-			if !raster.has_hidden_inputs() && !self.hidden_context(function).requires_resources {
+			if !raster.has_push_constant && !self.hidden_context(function).requires_resources {
 				return;
 			}
 			if raster.has_push_constant {
@@ -701,12 +701,6 @@ impl Generator {
 						push(string, format_args!("constant _set{set}& "), &SetArgument(set));
 					}
 				}
-			}
-			if raster.has_vertex_index {
-				push(string, format_args!("uint "), &besl::VERTEX_INDEX_BUILTIN);
-			}
-			if raster.has_instance_index {
-				push(string, format_args!("uint "), &besl::INSTANCE_INDEX_BUILTIN);
 			}
 		}
 	}

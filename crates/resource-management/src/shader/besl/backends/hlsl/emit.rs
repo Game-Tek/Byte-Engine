@@ -92,6 +92,11 @@ impl Generator {
 				has_previous_parameter = true;
 				continue;
 			}
+			if matches!(self.stage, Stages::Fragment) && name == besl::PRIMITIVE_INDEX_BUILTIN {
+				let _ = write!(string, "{} {} : SV_PrimitiveID", type_name, Self::identifier(name));
+				has_previous_parameter = true;
+				continue;
+			}
 			if self.stage.interpolates_inputs() && is_integer_besl_type(besl_type) {
 				string.push_str("nointerpolation ");
 			}
@@ -117,13 +122,18 @@ impl Generator {
 			let format = format.borrow();
 			let besl_type = format.get_name().unwrap();
 			let type_name = Self::translate_type(besl_type);
-			if self.stage.interpolates_outputs() && is_integer_besl_type(besl_type) {
+			let vertex = matches!(self.stage, Stages::Vertex);
+			let layer = vertex && besl::is_render_target_array_index_output(name);
+			// The layer is a system value the rasterizer reads, never interpolates, so it takes no interpolation mode.
+			if !layer && self.stage.interpolates_outputs() && is_integer_besl_type(besl_type) {
 				string.push_str("nointerpolation ");
 			}
 			string.push_str("out ");
 			let _ = write!(string, "{} {}", type_name, Self::identifier(name));
-			if matches!(self.stage, Stages::Vertex) && besl::is_position_output(name) {
+			if vertex && besl::is_position_output(name) {
 				string.push_str(" : SV_Position");
+			} else if layer {
+				string.push_str(" : SV_RenderTargetArrayIndex");
 			} else {
 				let semantic = if matches!(self.stage, Stages::Fragment) {
 					"SV_Target"
@@ -133,29 +143,6 @@ impl Generator {
 				let _ = write!(string, " : {semantic}{location}");
 			}
 			has_previous_parameter = true;
-		}
-	}
-
-	/// Adds the vertex invocation indices to helper signatures when the shader uses them, or forwards them through
-	/// nested BESL helper calls when `with_types` is false.
-	pub(crate) fn emit_vertex_builtin_helper_list(&self, string: &mut String, mut has_previous: bool, with_types: bool) {
-		for input in &self.raster_inputs {
-			let input = input.borrow();
-			let besl::Nodes::Input { name, format, .. } = input.node() else {
-				continue;
-			};
-			if !crate::shader::generator::is_vertex_builtin_input(name) {
-				continue;
-			}
-			if has_previous {
-				self.emit_separator(string);
-			}
-			if with_types {
-				string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
-				string.push(' ');
-			}
-			Self::identifier(name).push_to(string);
-			has_previous = true;
 		}
 	}
 

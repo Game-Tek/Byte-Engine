@@ -613,15 +613,17 @@ mod tests {
 			probe_gi: true,
 			baked_gi: true,
 			contact_shadows: true,
+			single_directional_light: true,
 			debug_views: true,
 			material_evaluation: MaterialEvaluationMode::Pipelines,
 		};
-		let left_out: [fn(&mut VisibilityFeatures); 6] = [
+		let left_out: [fn(&mut VisibilityFeatures); 7] = [
 			|features| features.gtao = false,
 			|features| features.ssgi = false,
 			|features| features.surfel_gi = false,
 			|features| features.probe_gi = false,
 			|features| features.contact_shadows = false,
+			|features| features.single_directional_light = false,
 			|features| features.debug_views = false,
 		];
 

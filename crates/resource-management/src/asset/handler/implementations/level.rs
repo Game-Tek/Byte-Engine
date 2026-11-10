@@ -3,6 +3,11 @@
 //! Baking does everything that doesn't need the application's component types: it parses the JSON5 text, checks
 //! ids, parents, and references, orders entities parents first, and groups the payloads by kind as parsed tokens.
 //! What's left for spawning is decoding each kind's tokens into its type and publishing it.
+//!
+//! The one kind pair baking reads is `mesh` with `transform`: the entities that place one mesh more than
+//! [`MERGE_THRESHOLD`] times become a few entities, each a cluster of neighboring placements that a renderer builds
+//! one merged mesh from. [`repeated_placements`] finds those entities, the handler reads how many copies of the mesh
+//! fit a cluster, and [`cluster_entities`] rewrites them. Nothing merged is stored.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -12,8 +17,15 @@ use super::{
 };
 use crate::{
 	ProcessedAsset,
-	resources::level::{Level, LevelKind, NO_PARENT, RUN, Section, Token, TokenWriter},
+	processors::mesh::{cluster_placements, copies_that_fit},
+	resources::{
+		level::{Level, LevelKind, NO_PARENT, RUN, Section, Token, TokenWriter},
+		mesh::{Mesh, MeshModel},
+	},
 };
+
+/// A mesh resource that a level places more often than this is drawn as merged clusters of its placements.
+pub const MERGE_THRESHOLD: usize = 128;
 
 /// The `LevelAssetHandler` struct exists to bake `.level` files into levels that spawn without parsing text.
 pub struct LevelAssetHandler;
@@ -30,25 +42,252 @@ impl AssetHandler for LevelAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		let (level, payload) = bake_level(&source).map_err(|cause| {
+		let report = |cause: String| {
 			log::error!("Level '{}' could not be baked. {cause}", id.as_ref());
 			LoadErrors::FailedToProcess
-		})?;
+		};
+		let entities = parse(&source).map_err(report)?;
+
+		// Each mesh placed often enough merges, as many copies to a cluster as fit one primitive of the mesh.
+		let mut merges = Vec::new();
+		for group in repeated_placements(&entities) {
+			if let Some(capacity) = cluster_capacity(&context, &group).await {
+				merges.push((group, capacity));
+			}
+		}
+		let entities = cluster_entities(entities, &merges);
+
+		let (level, payload) = lay_out(&entities).map_err(report)?;
 
 		context.store_primary_owned(ProcessedAsset::new(id, level), payload).await
 	}
 }
 
+/// Returns how many placements of `group`'s mesh one cluster holds, or `None` for a mesh that can't merge.
+///
+/// A mesh that can't merge is reported and left to its entities, since the level still draws without the merge.
+async fn cluster_capacity(context: &BakeContext<'_>, group: &MergeGroup) -> Option<usize> {
+	let leave = |cause: &str| {
+		log::warn!(
+			"Mesh '{}' is not merged, so its {} placements draw one by one. {cause}",
+			group.mesh,
+			group.entities.len()
+		);
+		None
+	};
+	const UNBAKED: &str =
+		"The most likely cause is that the mesh doesn't bake. Fix the mesh's `resource` ID or the errors its bake reports.";
+
+	// Baking the mesh as a dependency also bakes the level again when the mesh changes, and with it the clusters.
+	if context.bake_dependency::<MeshModel>(&group.mesh).await.is_err() {
+		return leave(UNBAKED);
+	}
+	let Ok(mesh) = context.resource_manager().request::<Mesh>(&group.mesh).await else {
+		return leave(UNBAKED);
+	};
+	let primitives = &mesh.resource().primitives;
+	if primitives
+		.iter()
+		.any(|primitive| primitive.skin.is_some() || primitive.transform_node.is_some())
+	{
+		return leave(
+			"The most likely cause is that the mesh is skinned or animated, and merged geometry never moves. Place fewer copies, or use a static mesh.",
+		);
+	}
+	// A cluster repeats every primitive of the mesh, so the primitive that fits the fewest copies bounds it.
+	match primitives.iter().map(copies_that_fit).min() {
+		Some(capacity) if capacity > 0 => Some(capacity),
+		_ => leave("The most likely cause is that the mesh has no primitives. Fix the mesh, or place another one."),
+	}
+}
+
+/// The `MergeGroup` struct is one mesh that a level places often enough to merge, and where.
+struct MergeGroup {
+	/// The mesh resource every entity of the group draws.
+	mesh: String,
+	/// The file position of each entity of the group, ascending.
+	entities: Vec<usize>,
+	/// Where each entity places the mesh, in the order of `entities`.
+	positions: Vec<[f32; 3]>,
+}
+
+/// Finds the meshes that `entities` place more than [`MERGE_THRESHOLD`] times, with the entities that place them.
+///
+/// Only an entity that nothing can refer to and that holds nothing but the placement counts: no `id`, and no
+/// component besides `mesh` with a `resource` source and `transform`. Entities group by mesh and parent, so a merged
+/// group still belongs to one parent.
+fn repeated_placements(entities: &[EntitySource]) -> Vec<MergeGroup> {
+	let mut groups = Vec::<MergeGroup>::new();
+	// Where each mesh and parent pair's group is, so groups keep the order their first entity has in the file.
+	let mut indices = HashMap::<(&str, Option<&str>), usize>::new();
+	for (position, entity) in entities.iter().enumerate() {
+		let Some((mesh, placed)) = static_placement(entity) else {
+			continue;
+		};
+		let index = *indices.entry((mesh, entity.parent.as_deref())).or_insert_with(|| {
+			groups.push(MergeGroup {
+				mesh: mesh.to_string(),
+				entities: Vec::new(),
+				positions: Vec::new(),
+			});
+			groups.len() - 1
+		});
+		groups[index].entities.push(position);
+		groups[index].positions.push(placed);
+	}
+	groups.retain(|group| group.entities.len() > MERGE_THRESHOLD);
+	groups
+}
+
+/// Replaces the entities of each group in `merges` with one entity for each cluster of up to the paired number of
+/// neighboring placements, and returns the level's entities.
+///
+/// A cluster entity holds a `mesh` with the `merged` source: the group's mesh and its placements' transforms. The
+/// clusters take the place of the group's first entity, and belong to the group's parent.
+fn cluster_entities(mut entities: Vec<EntitySource>, merges: &[(MergeGroup, usize)]) -> Vec<EntitySource> {
+	// The cluster entities that take each entity's place, and whether the entity itself leaves.
+	let mut clusters_at: Vec<Vec<EntitySource>> = entities.iter().map(|_| Vec::new()).collect();
+	let mut merged = vec![false; entities.len()];
+	for (group, capacity) in merges {
+		let (order, clusters) = cluster_placements(&group.positions, *capacity);
+		let first = group.entities[0];
+		for cluster in clusters {
+			let placements = order[cluster]
+				.iter()
+				.map(|&member| {
+					// A placement moves its transform into the cluster. One without a transform stands at the origin.
+					let entity = &mut entities[group.entities[member as usize]];
+					entity
+						.components
+						.0
+						.iter_mut()
+						.find(|(kind, _)| kind == "transform")
+						.map_or_else(
+							|| Value::Object(Object::default()),
+							|(_, transform)| std::mem::replace(transform, Value::Null),
+						)
+				})
+				.collect();
+			let source = Object(vec![
+				("resource".to_string(), Value::String(group.mesh.clone())),
+				("placements".to_string(), Value::Sequence(placements)),
+			]);
+			clusters_at[first].push(EntitySource {
+				id: None,
+				parent: entities[first].parent.clone(),
+				components: Object(vec![(
+					"mesh".to_string(),
+					Value::Object(Object(vec![("merged".to_string(), Value::Object(source))])),
+				)]),
+			});
+		}
+		for &entity in &group.entities {
+			merged[entity] = true;
+		}
+	}
+
+	let mut result = Vec::with_capacity(entities.len());
+	for ((entity, clusters), merged) in entities.into_iter().zip(clusters_at).zip(merged) {
+		result.extend(clusters);
+		if !merged {
+			result.push(entity);
+		}
+	}
+	result
+}
+
+/// Returns the mesh resource `entity` places and where, when the entity is nothing but that placement.
+fn static_placement(entity: &EntitySource) -> Option<(&str, [f32; 3])> {
+	if entity.id.is_some() {
+		return None;
+	}
+	let (mut mesh, mut transform) = (None, None);
+	for (kind, value) in &entity.components.0 {
+		match kind.as_str() {
+			"mesh" => mesh = Some(value),
+			"transform" => transform = Some(value),
+			_ => return None,
+		}
+	}
+	let Value::Object(Object(source)) = mesh? else {
+		return None;
+	};
+	let [(source, Value::String(resource))] = source.as_slice() else {
+		return None;
+	};
+	(source == "resource").then_some((resource.as_str(), placed_position(transform)?))
+}
+
+/// Returns the position a `transform` payload places its entity at, where a missing payload or field takes the
+/// identity's value.
+///
+/// Returns `None` for a payload the `transform` kind rejects, so its entity stays and the spawn reports it, and for
+/// a zero scale, which leaves no surface to merge.
+fn placed_position(transform: Option<&Value>) -> Option<[f32; 3]> {
+	let (mut position, mut scale, mut orientation) = ([0.0; 3], [1.0; 3], [0.0, 0.0, 0.0, 1.0]);
+	match transform {
+		None => {}
+		Some(Value::Object(Object(fields))) => {
+			for (field, value) in fields {
+				match field.as_str() {
+					"position" => position = numbers(value)?,
+					"scale" => scale = numbers(value)?,
+					"orientation" => orientation = numbers(value)?,
+					_ => return None,
+				}
+			}
+		}
+		Some(_) => return None,
+	}
+	if scale.contains(&0.0) {
+		return None;
+	}
+	math::Orientation::try_from_array(orientation).ok()?;
+	Some(position)
+}
+
+/// Reads a sequence of exactly `N` finite numbers.
+fn numbers<const N: usize>(value: &Value) -> Option<[f32; N]> {
+	let Value::Sequence(values) = value else {
+		return None;
+	};
+	let values: &[Value; N] = values.as_slice().try_into().ok()?;
+	let mut numbers = [0.0; N];
+	for (number, value) in numbers.iter_mut().zip(values) {
+		*number = match value {
+			Value::Unsigned(value) => *value as f32,
+			Value::Signed(value) => *value as f32,
+			Value::Float(value) => *value as f32,
+			_ => return None,
+		};
+		if !number.is_finite() {
+			return None;
+		}
+	}
+	Some(numbers)
+}
+
 /// Parses a `.level` source, checks it, and lays it out as the level's model and payload.
 ///
-/// The bake handler stores the result; tools and tests that spawn a level from memory call it directly. Returns the
-/// cause and fix of the first problem found, ready to follow a statement of what failed.
+/// Tools and tests that spawn a level from memory call it directly. It clusters no placements, which needs the baked
+/// meshes: bake the level through its asset handler for that. Returns the cause and fix of the first problem found,
+/// ready to follow a statement of what failed.
 pub fn bake_level(source: &[u8]) -> Result<(Level, Vec<u8>), String> {
+	lay_out(&parse(source)?)
+}
+
+/// Parses a `.level` source into its entities, in file order.
+fn parse(source: &[u8]) -> Result<Vec<EntitySource>, String> {
 	let text = std::str::from_utf8(source)
 		.map_err(|_| "The most likely cause is that the file isn't UTF-8 text. Save it as UTF-8.".to_string())?;
 	let LevelSource { entities, .. } = json5::from_str(text).map_err(|error| {
 		format!("The most likely cause is that the file doesn't hold a level: {error}. Fix the reported field.")
 	})?;
+	Ok(entities)
+}
+
+/// Checks `entities` and lays them out as the level's model and payload.
+fn lay_out(entities: &[EntitySource]) -> Result<(Level, Vec<u8>), String> {
 	let count = u32::try_from(entities.len())
 		.ok()
 		.filter(|&count| count < NO_PARENT)
@@ -59,7 +298,7 @@ pub fn bake_level(source: &[u8]) -> Result<(Level, Vec<u8>), String> {
 			)
 		})?;
 
-	let ids = index_ids(&entities)?;
+	let ids = index_ids(entities)?;
 	let parents = entities
 		.iter()
 		.enumerate()
@@ -71,7 +310,7 @@ pub fn bake_level(source: &[u8]) -> Result<(Level, Vec<u8>), String> {
 					ids.get(parent).copied().ok_or_else(|| {
 						format!(
 							"The most likely cause is that {} names parent '{parent}', which no entity has as its id. Fix the parent or add an entity with that id.",
-							describe(&entities, index)
+							describe(entities, index)
 						)
 					})
 				})
@@ -81,7 +320,7 @@ pub fn bake_level(source: &[u8]) -> Result<(Level, Vec<u8>), String> {
 	let order = parents_first(&parents).map_err(|index| {
 		format!(
 			"The most likely cause is that the parents of {} lead back to it. Remove one parent of the cycle.",
-			describe(&entities, index)
+			describe(entities, index)
 		)
 	})?;
 	// The index each entity spawns at, by its position in the file.
@@ -90,7 +329,7 @@ pub fn bake_level(source: &[u8]) -> Result<(Level, Vec<u8>), String> {
 		spawn_index[index] = position as u32;
 	}
 
-	let kinds = group_kinds(&entities, &order, |id| ids.get(id).map(|&index| spawn_index[index]))?;
+	let kinds = group_kinds(entities, &order, |id| ids.get(id).map(|&index| spawn_index[index]))?;
 
 	let mut payload = Vec::new();
 	let parents = append(&mut payload, |bytes| {
@@ -480,6 +719,203 @@ mod tests {
 			.expect("a level payload is one buffer")
 			.to_vec();
 		Ok((level.into_resource(), payload))
+	}
+
+	/// The triangles of the mesh a `.leaf` file bakes into. None share a vertex, so 36 copies fit one primitive.
+	const LEAF_TRIANGLES: u32 = 600;
+
+	/// The `LeafHandler` struct bakes any `.leaf` file into a mesh of separate triangles, for levels to place.
+	struct LeafHandler;
+
+	impl asset::handler::AssetHandler for LeafHandler {
+		fn can_handle(&self, r#type: &str) -> bool {
+			r#type == "leaf"
+		}
+
+		async fn bake<'a>(
+			&'a self,
+			context: asset::handler::BakeContext<'a>,
+			id: asset::ResourceId<'a>,
+		) -> Result<(), asset::handler::LoadErrors> {
+			use crate::processors::mesh::{MeshPrimitiveSource, MeshProcessorSession, MeshSettings};
+			use crate::types::{VertexComponent, VertexSemantics};
+
+			struct Triangle;
+			impl MeshPrimitiveSource for Triangle {
+				type Error = std::convert::Infallible;
+
+				fn material_slot(&self) -> usize {
+					0
+				}
+
+				fn indices(&self) -> Result<impl ExactSizeIterator<Item = Result<u32, Self::Error>> + '_, Self::Error> {
+					Ok((0..LEAF_TRIANGLES * 3).map(Ok))
+				}
+
+				fn positions(
+					&self,
+				) -> Result<
+					impl ExactSizeIterator<Item = Result<math::Point<crate::resources::ModelSpace>, Self::Error>> + '_,
+					Self::Error,
+				> {
+					Ok((0..LEAF_TRIANGLES * 3).map(|vertex| {
+						// Each triangle stands a little higher than the last.
+						let [x, y] = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]][vertex as usize % 3];
+						Ok(math::Point::new(x, y, (vertex / 3) as f32 * 0.01))
+					}))
+				}
+			}
+
+			let layout = vec![VertexComponent::canonical(VertexSemantics::Position)];
+			let mut session = MeshProcessorSession::new(layout, None, Vec::new(), MeshSettings::default())
+				.map_err(|_| asset::handler::LoadErrors::FailedToProcess)?;
+			session
+				.push_primitive(&Triangle)
+				.map_err(|_| asset::handler::LoadErrors::FailedToProcess)?;
+			let material = crate::ReferenceModel::new_serialized(
+				"leaf.variant",
+				0,
+				0,
+				crate::to_vec(&crate::resources::material::VariantModel {
+					material: crate::ReferenceModel::new_serialized("leaf.material", 0, 0, Vec::new(), None),
+					variables: Vec::new(),
+					alpha_mode: crate::types::AlphaMode::Mask(0.5),
+					double_sided: true,
+				})
+				.expect("variant should serialize"),
+				None,
+			);
+			asset::commit_mesh(context, id, session, &[material]).await
+		}
+	}
+
+	/// Bakes a level that places `leaf.leaf` `count` times along x, one unit apart, beside one entity with an `id`
+	/// and one with a `name`, which also place it. Returns the level, its payload, and the baked resources.
+	async fn bake_placements(count: usize) -> (Level, Vec<u8>, ResourceManager) {
+		let assets = asset::storage_backend::tests::TestStorageBackend::new();
+		let resources = resource::storage_backend::MemoryStorageBackend::new();
+		let mut source = String::from("{ entities: [\n");
+		for index in 0..count {
+			source += &format!(
+				"{{ components: {{ mesh: {{ resource: \"leaf.leaf\" }}, transform: {{ position: [{index}, 0, 0] }} }} }},\n"
+			);
+		}
+		source += "{ id: \"marked\", components: { mesh: { resource: \"leaf.leaf\" } } },\n";
+		source += "{ components: { mesh: { resource: \"leaf.leaf\" }, name: \"named\" } },\n] }";
+		assets.add_file("arena.level", source.as_bytes());
+		assets.add_file("leaf.leaf", b"");
+		let mut asset_manager = asset_manager(assets, resources.clone());
+		asset_manager.add_asset_handler(LeafHandler);
+		asset_manager.bake("arena.level").await.expect("the level should bake");
+		let resources = ResourceManager::new(resources);
+		let mut level = resources
+			.request::<Level>("arena.level")
+			.await
+			.expect("a baked level should be requested");
+		let payload = level
+			.load(ReadTargetsMut::backing_storage())
+			.await
+			.expect("a baked level's payload should load")
+			.buffer()
+			.expect("a level payload is one buffer")
+			.to_vec();
+		(level.into_resource(), payload, resources)
+	}
+
+	/// Returns the tokens of each `mesh` component of `level`, in entity order.
+	fn mesh_payloads<'p>(level: &Level, payload: &'p [u8]) -> Vec<Vec<Token<'p>>> {
+		let kind = level
+			.kinds
+			.iter()
+			.find(|kind| kind.name == "mesh")
+			.expect("the level places meshes");
+		let strings = kind.strings(payload).expect("the kind's strings should read");
+		let tokens = (0..kind.run_count())
+			.flat_map(|run| read_all(kind.run(payload, &strings, run).expect("a run should read")))
+			.take_while({
+				// A run's tokens continue past it, so stop after the kind's last payload.
+				let (mut depth, mut payloads) = (0, 0);
+				move |token| {
+					let more = payloads < kind.count;
+					match token {
+						Token::ObjectStart | Token::SequenceStart => depth += 1,
+						Token::ObjectEnd | Token::SequenceEnd => depth -= 1,
+						_ => {}
+					}
+					if depth == 0 {
+						payloads += 1;
+					}
+					more
+				}
+			});
+		// Each payload is one object, so it ends where the nesting closes.
+		let mut payloads = vec![Vec::new()];
+		let mut depth = 0;
+		for token in tokens {
+			match token {
+				Token::ObjectStart | Token::SequenceStart => depth += 1,
+				Token::ObjectEnd | Token::SequenceEnd => depth -= 1,
+				_ => {}
+			}
+			payloads.last_mut().expect("a payload is open").push(token);
+			if depth == 0 {
+				payloads.push(Vec::new());
+			}
+		}
+		payloads.pop();
+		payloads
+	}
+
+	/// Returns how many placements a `mesh` payload with the `merged` source holds, or `None` for another source.
+	fn merged_placements(payload: &[Token<'_>]) -> Option<usize> {
+		let [
+			Token::ObjectStart,
+			Token::Key("merged"),
+			Token::ObjectStart,
+			Token::Key("resource"),
+			Token::String("leaf.leaf"),
+			Token::Key("placements"),
+			Token::SequenceStart,
+			placements @ ..,
+		] = payload
+		else {
+			return None;
+		};
+		// Every placement of the test level names its position.
+		Some(placements.iter().filter(|token| **token == Token::Key("position")).count())
+	}
+
+	#[r#async::test]
+	async fn a_mesh_placed_past_the_threshold_bakes_into_clusters_of_its_placements() {
+		let (level, payload, _) = bake_placements(super::MERGE_THRESHOLD + 1).await;
+
+		let payloads = mesh_payloads(&level, &payload);
+		// The clusters, then the two entities that hold more than a placement.
+		let (others, clusters): (Vec<_>, Vec<_>) = payloads.iter().partition(|payload| merged_placements(payload).is_none());
+		assert_eq!(others.len(), 2);
+		assert_eq!(level.entities as usize, payloads.len());
+		let sizes: Vec<usize> = clusters.iter().map(|cluster| merged_placements(cluster).unwrap()).collect();
+		// 36 copies of the leaf fit one primitive, so 129 placements need four clusters.
+		assert_eq!(sizes.len(), 4);
+		assert!(
+			sizes.iter().all(|&size| size <= 36),
+			"A cluster holds more copies than fit one primitive: {sizes:?}."
+		);
+		assert_eq!(sizes.iter().sum::<usize>(), super::MERGE_THRESHOLD + 1);
+		// The placements moved into the clusters, and the other two entities never had a transform.
+		assert!(level.kinds.iter().all(|kind| kind.name != "transform"));
+	}
+
+	#[r#async::test]
+	async fn a_mesh_placed_up_to_the_threshold_keeps_its_entities() {
+		let (level, payload, _) = bake_placements(super::MERGE_THRESHOLD).await;
+
+		assert_eq!(level.entities as usize, super::MERGE_THRESHOLD + 2);
+		assert!(
+			mesh_payloads(&level, &payload)
+				.iter()
+				.all(|payload| merged_placements(payload).is_none())
+		);
 	}
 
 	/// Reads every token of `tokens`.

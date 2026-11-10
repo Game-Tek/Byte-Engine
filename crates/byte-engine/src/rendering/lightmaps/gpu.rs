@@ -696,7 +696,10 @@ impl Bake {
 				} else {
 					0
 				};
-				record.set_level(primitive.lods.drawn(0).level, flags);
+				let level = primitive.lods.drawn(0).expect(
+					"Lightmap bake mesh has no resident detail level. The most likely cause is a mesh that was placed without its full detail.",
+				);
+				record.set_level(level.level, flags);
 				record.set_parameter_block(parameters.block(handle, primitive.material_index));
 				meshes.push(record);
 				traced.push(TracedPrimitive {

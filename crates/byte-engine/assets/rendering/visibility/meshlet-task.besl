@@ -191,6 +191,10 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	let skinned: bool = (mesh.level & MESH_FLAG_SKINNED) != 0;
 	let tests_occlusion: bool = (phase == OCCLUSION_LATE || phase == OCCLUSION_TEST) && skinned == false;
 	let instance_sphere: vec4f = world_sphere(mesh.model, level.bounding_sphere);
+	// A merged mesh's sphere spans many copies, each a caster of its own, so the small-caster test measures one copy.
+	let caster_sphere: vec4f = world_sphere(mesh.model, vec4f(
+		level.bounding_sphere.x, level.bounding_sphere.y, level.bounding_sphere.z, level.caster_radius
+	));
 
 	// Bit `v` marks view `view_base + v` as one the instance may show in. Every lane computes the same mask, so a
 	// workgroup whose instance no view sees returns before it reads a single meshlet.
@@ -198,7 +202,7 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
 		let view: View = scene.views.views[push_constant.view_base + view_offset];
 		let shows: bool = sphere_is_visible(view, instance_sphere)
-			&& sphere_is_wide_enough(view, instance_sphere, push_constant.minimum_caster_extent);
+			&& sphere_is_wide_enough(view, caster_sphere, push_constant.minimum_caster_extent);
 		if (skinned || shows) {
 			instance_views = instance_views | (1 << view_offset);
 		}

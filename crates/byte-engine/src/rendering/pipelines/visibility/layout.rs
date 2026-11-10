@@ -201,10 +201,7 @@ impl ShaderMeshletData {
 			triangle_offset,
 			counts: u32::from(vertex_count) | u32::from(triangle_count) << 8,
 			cone: encode_cone(cone_axis, cone_cutoff),
-			bounds: [
-				quantized[0] | quantized[1] << 16,
-				quantized[2] | quantized_radius << 16,
-			],
+			bounds: [quantized[0] | quantized[1] << 16, quantized[2] | quantized_radius << 16],
 		}
 	}
 
@@ -236,7 +233,9 @@ impl ShaderMeshletData {
 fn encode_cone(axis: [f32; 3], cutoff: f32) -> u32 {
 	let snorm8 = |value: f32| (value.clamp(-1.0, 1.0) * 127.0).round() as i8;
 	let quantized_axis = axis.map(snorm8);
-	let error: f32 = (0..3).map(|index| (quantized_axis[index] as f32 / 127.0 - axis[index]).abs()).sum();
+	let error: f32 = (0..3)
+		.map(|index| (quantized_axis[index] as f32 / 127.0 - axis[index]).abs())
+		.sum();
 	let quantized_cutoff = if cutoff >= 1.0 || !cutoff.is_finite() {
 		127
 	} else {
@@ -273,7 +272,10 @@ pub(crate) struct ShaderMeshLevel {
 	pub(crate) meshlet_count: u32,
 	/// The level's first vertex in the vertex attribute buffers.
 	pub(crate) vertex_base: u32,
-	pub(crate) _padding: u32,
+	/// Object-space radius of the largest part of the level that casts a shadow as one object. It is the sphere's
+	/// own radius, except for a merged mesh, whose sphere spans many copies: there it is the largest copy's. Cascades
+	/// that skip small casters measure it, so merging copies doesn't draw shadows the copies alone would skip.
+	pub(crate) caster_radius: f32,
 }
 
 /// The [`super::set_layouts::SCENE`] `material_evaluations` entry of a material that no evaluation dispatch shades. The
@@ -319,12 +321,18 @@ mod tests {
 			for sphere in spheres.into_iter().filter(|&sphere| contains(level, sphere)) {
 				let stored = ShaderMeshletData::new(0, 0, [0; 2], sphere, level, [0.0, 0.0, 1.0], 2.0).sphere(level);
 				assert!(contains(stored, sphere), "{stored:?} leaves out {sphere:?} in {level:?}");
-				assert!(stored[3] <= sphere[3] + level[3] / 1000.0, "{stored:?} grew too much for {sphere:?}");
+				assert!(
+					stored[3] <= sphere[3] + level[3] / 1000.0,
+					"{stored:?} grew too much for {sphere:?}"
+				);
 			}
 		}
 		// A level without extent holds only meshlets at its center, which decode exactly.
 		let point = [2.0, 3.0, 4.0, 0.0];
-		assert_eq!(ShaderMeshletData::new(0, 0, [0; 2], point, point, [0.0, 0.0, 1.0], 2.0).sphere(point), point);
+		assert_eq!(
+			ShaderMeshletData::new(0, 0, [0; 2], point, point, [0.0, 0.0, 1.0], 2.0).sphere(point),
+			point
+		);
 	}
 
 	/// Verifies the stored cone culls no more than the exact cone: its cutoff, read back, is at least the exact cutoff
@@ -335,11 +343,13 @@ mod tests {
 		for (axis, cutoff) in [([0.0, 0.0, 1.0], 0.5), ([0.6, 0.0, 0.8], 0.9), ([0.577, -0.577, 0.577], -0.2)] {
 			let [x, y, z, stored_cutoff] = decode(encode_cone(axis, cutoff));
 			let error = (x - axis[0]).abs() + (y - axis[1]).abs() + (z - axis[2]).abs();
-			assert!(stored_cutoff >= cutoff + error, "{stored_cutoff} is narrower than {cutoff} + {error}");
+			assert!(
+				stored_cutoff >= cutoff + error,
+				"{stored_cutoff} is narrower than {cutoff} + {error}"
+			);
 		}
 		// A cone that keeps every view stays that way.
 		assert_eq!(decode(encode_cone([0.0, 0.0, 1.0], 1.0))[3], 1.0);
 		assert_eq!(decode(encode_cone([0.0, 0.0, 1.0], 2.0))[3], 1.0);
 	}
-
 }

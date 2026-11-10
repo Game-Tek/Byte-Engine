@@ -52,6 +52,21 @@ entity refers to it or belongs to it:
 A `parent` only groups entities: deleting the frame deletes the door, but moving the frame doesn't move the door.
 Every transform is a world transform. The [.level reference](/docs/reference/levels) lists every field and kind.
 
+### Place many copies of a mesh
+
+To scatter a mesh that never moves, such as grass or rocks, write one entity for each copy with only `mesh` and
+`transform`, and no `id`:
+
+```json5
+{ components: { mesh: { resource: "grass.glb" }, transform: { position: [12, 0, 4], scale: [1.2, 1.2, 1.2] } } },
+```
+
+When a level places the same mesh resource more than 128 times this way, baking groups nearby copies into clusters,
+and the renderer draws each cluster as one mesh, so the scene doesn't pay for an instance per copy. The merged
+geometry is built in memory and isn't stored. To keep a copy as its own entity, so that
+you can move or delete it, give it an `id`. The
+[merged placements rules](/docs/reference/levels#merged-placements) list what merges.
+
 ## Spawn a level
 
 Create the systems that follow the level's components first, such as `Physics`, `Navigation`, and the renderer's

@@ -29,6 +29,9 @@ pub struct Primitive {
 /// The most detail levels one primitive stores, counting full detail. Renderers size fixed level tables with it.
 pub const MAX_PRIMITIVE_LODS: usize = 8;
 
+/// The most vertices one primitive holds: its index streams store 16-bit indices.
+pub const MAX_PRIMITIVE_VERTICES: usize = 1 << 16;
+
 /// The most meshlets one detail level of a primitive holds. Renderers address a level's meshlets with 12 bits,
 /// relative to its first meshlet, so baking fails for a level with more and loading rejects one.
 pub const MAX_LEVEL_MESHLETS: usize = 1 << 12;

@@ -370,9 +370,9 @@ error for it.
 | Allowed error | One pixel times `render.lod.bias`, converted to world units from the first sink's projection. |
 | Instance error | The level's error per distance times the straight-line distance from the camera to the nearest point of the bounding sphere, plus its constant error, divided by the largest model axis. Turning the camera never switches levels. |
 | Wanted level | The coarsest level whose error is within the allowed error; the finest otherwise. An instance around the camera, with zero scale, or without a finite error wants full detail. |
-| Drawn level | The wanted level when it's resident; otherwise the mesh's finest resident level. |
+| Drawn level | The wanted level when it's resident; otherwise the mesh's finest resident level. An instance of a merged mesh with no resident level isn't drawn. |
 | Shadows | Draw the same level as the camera. |
-| Ray tracing | Rays hit each primitive's coarsest level. |
+| Ray tracing | Rays hit each primitive's coarsest level. Rays never hit a merged mesh. |
 
 | Detail level residency rule | Value |
 | --- | --- |
@@ -383,12 +383,26 @@ error for it.
 | Release | When a primitive's finer levels don't fit the geometry capacity, the primitive whose finer levels no instance has wanted for the longest releases them all and goes back to its base level, and the load tries again once that room frees. Levels an instance wanted in the last frame, and base levels, are never released. |
 | No room | When nothing can be released, the load waits and tries again on a later frame. Instances keep drawing their finest resident level. Other primitives of the same load that fit become resident. |
 
+| Merged mesh rule | Value |
+| --- | --- |
+| Geometry | A merged mesh repeats each primitive of its resource mesh once at each placement, with positions and normals transformed. It's built in memory and never stored. |
+| Meshlets | The copies' meshlets are listed copy by copy, in the order of the placements. Consecutive meshlets pack into one while it stays within 64 vertices and 126 triangles. A packed meshlet's sphere contains its meshlets' spheres. A meshlet packed from several, or from a copy whose scale isn't uniform, has no normal cone, so it's never culled for facing away. |
+| Source | The resource mesh is read whole, once, and kept in memory for every merged mesh that repeats it. |
+| Bounds | Each primitive's bounding sphere contains every copy's. |
+| Level error | The resource mesh's, times the largest scale component of any placement. |
+| Residency | A merged mesh holds no geometry when it loads. Each primitive holds one level: the level its instances want. When they want another level, finer or coarser, that level is built and replaces the one held. |
+| In view | An instance of a merged mesh wants a level only while it's in view: its bounding sphere, or that sphere carried any distance along the direction a directional light's light travels, isn't wholly behind one plane of the first sink's camera frustum. The first four directional lights count. An instance out of view wants nothing, keeps drawing the level its primitive holds, and is the first to release it. |
+| Release | When a primitive's level doesn't fit the geometry capacity, the release and no-room rules above apply, and a released primitive holds nothing until its level is built again. The pipeline logs one warning the first time a merged primitive finds no room and nothing to release. |
+| Limits | The copies must fit one primitive: 65,536 vertices, and 4,096 meshlets at full detail. A mesh that doesn't, or whose resource mesh is skinned or animated by a node, fails to load. |
+| Lightmap UVs | None. |
+| Simple pipeline | Doesn't draw merged meshes. |
+
 | Directional shadow rule | Value |
 | --- | --- |
 | Cascades | Four, splitting the range from the camera to `render.directional-shadows.distance` by the split blend between logarithmic and even. |
 | Fitting | With receivers fitting, each cascade shrinks to the surfaces the camera sees, after two small depth passes. With frustum fitting, it covers the whole slice without them. |
 | Stability | Each cascade is the smallest light-space square around its slice, padded by 17 texels, rounded in 8 steps per doubling, and snapped to a world-fixed texel grid. Casters start 100 m toward the light. |
-| Casters | A cascade draws an instance only when its bounding sphere is at least 32 of the cascade's texels across. Skinned instances always draw. Cone and point maps draw instances of every size. |
+| Casters | A cascade draws an instance only when its bounding sphere is at least 32 of the cascade's texels across. An instance of a merged mesh is measured by the bounding sphere of its largest copy, not by the sphere around all of them. Skinned instances always draw. Cone and point maps draw instances of every size. |
 | Holding a receiver | A cascade holds a receiver that lies inside its square, at least 10 texels from its edge, and inside its depth range, from where its casters start to its far side, give or take one depth step of 1/65535. With receivers fitting, a cascade's far side is the surface farthest from the light that the camera sees in that cascade's slice, so a cascade often doesn't hold a receiver of another slice. |
 | Beyond the last cascade | No sun shadow. |
 | Receiver | The surface point, moved off its triangle along the triangle's normal on the camera's side by sin θ texels of the cascade it's tested in, where θ is the angle between that normal and the direction toward the sun. |

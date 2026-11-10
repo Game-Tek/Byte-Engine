@@ -1,9 +1,11 @@
+mod clusters;
 mod lightmap_uvs;
 mod lod;
 mod packing;
 mod source;
 mod validation;
 
+pub use clusters::{cluster_placements, copies_that_fit};
 pub use lightmap_uvs::{LightmapUvSettings, inset_lightmap_uv, place_lightmap_charts, place_lightmap_rectangles};
 pub use lod::MeshLodSettings;
 pub(crate) use packing::MESHLET_STREAM_STRIDE;

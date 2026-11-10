@@ -270,6 +270,69 @@ A change here must keep these true:
 The residency decisions are tested in `rendering::pipelines::visibility::residency`, and the level table in
 `rendering::pipelines::visibility::lod`.
 
+## How merged meshes build
+
+A merged mesh draws many static copies of one resource mesh as one mesh, so
+the renderer handles a patch of grass instead of each tuft. The level bake
+[clusters the placements](/docs/develop/resource-management/level-merging) and
+the [merged mesh rules](/docs/reference/rendering#the-visibility-pipeline)
+define the behavior. Storing merged geometry would repeat the mesh once per
+copy on disk, which took 5 GiB for one test scene, so it's built in memory
+instead.
+
+- `MeshSource::Merged` names the resource mesh and the placements. Its key
+  hashes both, once, when the source is made.
+- `MergedSource`, in `geometry/prepare/merged.rs`, is the resource mesh read
+  whole into memory: every vertex, and every level's meshlets. The loader reads
+  it once per resource mesh and keeps it, so building a level reads nothing
+  from the store.
+- The base load places no geometry. It publishes each primitive's bounds and
+  level table with no level resident, so the mesh costs nothing until it's
+  drawn.
+- `MeshResidencies::add_merged_mesh` follows the mesh in exact mode: each
+  primitive asks for the level its instances want whenever it holds another or
+  none. The request reuses `PrimitiveLevels`, where `finest` names the one
+  level to build.
+- `PreparedMesh::merged` builds that level by repeating the source level once
+  for each copy. It transforms positions and normals, offsets each copy's
+  meshlet vertex indices, and copies each meshlet with its sphere and cone
+  transformed. It clusters nothing, so a build is a straight copy.
+  `GeometryBuffers::append_primitives` then places it like any block.
+- `SourceLevel::pack` joins consecutive meshlets, of one copy and of the
+  copies after it, into one while they fit a meshlet. A small mesh bakes into
+  meshlets far below a meshlet's size, so without packing a patch of small
+  tufts draws one meshlet for each tuft. Only neighbors in the list join, which
+  keeps the build a copy; the level bake lists a cluster's placements along a
+  Z-order curve so that neighbors in the list are neighbors in space.
+- `LodView::sees` decides whether a merged instance is in view, from the
+  camera frustum and the directions the suns' light travels. The instance
+  rebuild records a wanted level only for an instance in view, so a cluster
+  nothing can see builds nothing, and its level becomes the first to release.
+
+A change here must keep these true:
+
+- A merged primitive holds one level, so a block's vertices are that level's
+  alone and each copy's meshlets index its own run of them.
+- A mirrored copy swaps two corners of each triangle, and a copy with a
+  non-uniform scale gets a cone that never culls.
+- The level bake and `MergedSource::primitives` agree on how many copies fit
+  one primitive, so a baked cluster always loads.
+- A merged mesh keeps no flat triangles, so rays and the lightmap bake skip it.
+- A merged level's record holds the radius of its largest copy as its
+  `caster_radius`, so cascades skip a patch of small copies as they would skip
+  each copy; see [shadow maps](/docs/develop/rendering/visibility/shadow-maps).
+- Packing depends only on the meshlets' counts and order, so the meshlet count
+  a level table reports before a build matches what the build writes.
+- The in-view test never rules out what the camera sees. It may keep an
+  instance that isn't visible, never the reverse. Shadows that point and cone
+  lights cast from clusters outside the camera's view aren't followed.
+
+`geometry/prepare/merged.rs` tests the builder and the packing,
+`a_merged_mesh_loads_exactly_the_level_wanted_finer_or_coarser` in
+`residency.rs` tests the residency rule, and
+`an_instance_is_seen_in_the_frustum_or_when_a_sun_carries_its_shadow_there` in
+`lod.rs` tests the in-view rule.
+
 ## How texture mips load
 
 Material textures in the visibility pipeline load their coarse mips first, so

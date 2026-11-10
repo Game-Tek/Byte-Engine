@@ -72,7 +72,8 @@ impl AssetHandler for LightmapAssetHandler {
 				MeshSource::Resource(mesh) if !meshes.iter().any(|known: &String| known == mesh.as_ref()) => {
 					meshes.push(mesh.to_string());
 				}
-				MeshSource::Resource(_) => {}
+				// The scene leaves merged meshes out, and one that got through has nothing to bake.
+				MeshSource::Resource(_) | MeshSource::Merged(_) => {}
 				MeshSource::Generated(generator) => {
 					let material = generator.material().unwrap_or(GENERATED_MESH_MATERIAL).to_string();
 					if !materials.contains(&material) {

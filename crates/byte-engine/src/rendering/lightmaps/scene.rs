@@ -14,9 +14,7 @@ use crate::core::{
 };
 use crate::gameplay::{Spawner, Transform};
 use crate::rendering::lights::Lights;
-use crate::rendering::pipelines::visibility::{
-	scene::light_data, shader_data::LightData, shadow_selection::LightShadow,
-};
+use crate::rendering::pipelines::visibility::{scene::light_data, shader_data::LightData, shadow_selection::LightShadow};
 use crate::rendering::renderable::mesh::{MeshSource, RenderableMesh};
 use crate::rendering::{ConeLight, DirectionalLight, Lightmap, PointLight};
 
@@ -112,8 +110,11 @@ pub(crate) fn collect_level(lightmap_id: &str, level: &Level, payload: &[u8]) ->
 		}
 	};
 
+	// A merged mesh has no lightmap UVs, since its copies would share them, and its geometry exists only in the
+	// renderer, so the bake neither lights it nor traces it.
 	let meshes = drain(&mut meshes)
 		.into_iter()
+		.filter(|(_, mesh)| !matches!(mesh.source(), MeshSource::Merged(_)))
 		.map(|(handle, mesh)| SceneMesh {
 			entity: entity(handle),
 			source: mesh.source().clone(),
@@ -147,9 +148,8 @@ fn drain<T: Clone + Send + Sync + 'static>(listener: &mut DefaultListener<Create
 
 #[cfg(test)]
 mod tests {
-	use resource_management::asset::handler::implementations::level::bake_level;
-
 	use math::Point;
+	use resource_management::asset::handler::implementations::level::bake_level;
 
 	use super::collect_level;
 	use crate::gameplay::Transform;

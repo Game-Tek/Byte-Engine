@@ -5,9 +5,12 @@
 //! never assigns renderer slots or buffer offsets; that happens in [`GeometryBuffers::append_mesh`], which moves the
 //! records to their place with [`PreparedMesh::place_records`].
 
+mod merged;
+
 use std::ops::Range;
 use std::sync::Arc;
 
+pub(crate) use merged::MergedSource;
 use resource_management::Reference;
 use resource_management::resources::mesh::MAX_PRIMITIVE_LODS;
 use resource_management::resources::mesh::Mesh;
@@ -288,15 +291,14 @@ impl PreparedMesh {
 		}
 		let bytes = self.staging.bytes();
 		let vertices = prepared.elements.vertices.start as usize..prepared.elements.vertices.end as usize;
-		let stream = |range: &Range<usize>, stride: usize| &bytes[range.start + vertices.start * stride..][..vertices.len() * stride];
-		let triangles = primitive.flat_triangle_offset as usize..(primitive.flat_triangle_offset + primitive.flat_triangle_count) as usize;
+		let stream =
+			|range: &Range<usize>, stride: usize| &bytes[range.start + vertices.start * stride..][..vertices.len() * stride];
+		let triangles =
+			primitive.flat_triangle_offset as usize..(primitive.flat_triangle_offset + primitive.flat_triangle_count) as usize;
 		Some(PreparedSurface {
 			positions: bytemuck::cast_slice(stream(&self.streams.positions, 12)),
 			normals: bytemuck::cast_slice(stream(&self.streams.normals, VERTEX_NORMAL_BUFFER_STRIDE as usize)),
-			lightmap_uvs: bytemuck::cast_slice(stream(
-				&self.streams.lightmap_uvs,
-				VERTEX_LIGHTMAP_UV_BUFFER_STRIDE as usize,
-			)),
+			lightmap_uvs: bytemuck::cast_slice(stream(&self.streams.lightmap_uvs, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE as usize)),
 			triangles: bytemuck::cast_slice(&bytes[flat.start + triangles.start * 6..][..triangles.len() * 6]),
 		})
 	}
@@ -314,7 +316,10 @@ impl PreparedMesh {
 			shift(&elements.primitive_indices, &placed.primitive_indices),
 			shift(&elements.triangles, &placed.triangles),
 		);
-		let (meshlets, vertices) = (shift(&elements.meshlets, &placed.meshlets), shift(&elements.vertices, &placed.vertices));
+		let (meshlets, vertices) = (
+			shift(&elements.meshlets, &placed.meshlets),
+			shift(&elements.vertices, &placed.vertices),
+		);
 		let bytes = self.staging.bytes_mut();
 
 		const MESHLET_STRIDE: usize = std::mem::size_of::<ShaderMeshletData>();
@@ -581,10 +586,7 @@ impl ResourcePlan {
 				&mut cursor,
 				counts.meshlets as usize * std::mem::size_of::<ShaderMeshletData>(),
 			),
-			levels: take_range(
-				&mut cursor,
-				counts.levels as usize * std::mem::size_of::<ShaderMeshLevel>(),
-			),
+			levels: take_range(&mut cursor, counts.levels as usize * std::mem::size_of::<ShaderMeshLevel>()),
 			flat_triangles: (flat_triangles && !matches!(levels, PreparedLevels::Finer(_)))
 				.then(|| take_range(&mut cursor, flat_triangle_bound * 6)),
 		};
@@ -775,7 +777,7 @@ impl ResourcePlan {
 					first_meshlet: first_meshlet as u32,
 					meshlet_count: (meshlet - first_meshlet) as u32,
 					vertex_base,
-					_padding: 0,
+					caster_radius: bounding_sphere[3],
 				};
 				output[rebase(&streams.levels)][level_record * LEVEL_STRIDE..][..LEVEL_STRIDE]
 					.copy_from_slice(bytemuck::bytes_of(&record));
@@ -892,7 +894,12 @@ const RESOURCE_CONE_AXIS_OFFSET: usize = 36;
 
 /// Decodes one baked meshlet record into the runtime record whose indices start at `primitive_offset` and
 /// `triangle_offset`, with its sphere stored within `level_sphere`, without assuming the resource stream is aligned.
-fn read_resource_meshlet(bytes: &[u8], primitive_offset: u32, triangle_offset: u32, level_sphere: [f32; 4]) -> ShaderMeshletData {
+fn read_resource_meshlet(
+	bytes: &[u8],
+	primitive_offset: u32,
+	triangle_offset: u32,
+	level_sphere: [f32; 4],
+) -> ShaderMeshletData {
 	let [axis_x, axis_y, axis_z, _] = read_vec4(bytes, RESOURCE_CONE_AXIS_OFFSET);
 	let [.., cutoff] = read_vec4(bytes, RESOURCE_CONE_CUTOFF_OFFSET);
 	ShaderMeshletData::new(
@@ -970,13 +977,22 @@ fn build_generated_meshlets(
 	let level = ShaderMeshLevel {
 		bounding_sphere,
 		meshlet_count: meshlets.len() as u32,
+		caster_radius: bounding_sphere[3],
 		..ShaderMeshLevel::default()
 	};
 	// Generated meshes compute no normal cones, so a cutoff past one keeps every meshlet.
 	let meshlets = meshlets
 		.into_iter()
 		.map(|([primitive_offset, triangle_offset], counts, sphere)| {
-			ShaderMeshletData::new(primitive_offset, triangle_offset, counts, sphere, bounding_sphere, [0.0, 0.0, 1.0], 2.0)
+			ShaderMeshletData::new(
+				primitive_offset,
+				triangle_offset,
+				counts,
+				sphere,
+				bounding_sphere,
+				[0.0, 0.0, 1.0],
+				2.0,
+			)
 		})
 		.collect();
 	(vertex_indices, primitive_indices, meshlets, level)

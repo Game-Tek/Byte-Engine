@@ -34,7 +34,9 @@ MeshLevel: struct {
 	meshlet_count: u32,
 	// The level's first vertex in the vertex attribute buffers.
 	vertex_base: u32,
-	_padding: u32,
+	// Object-space radius of the largest part of the level that casts a shadow as one object: the sphere's own, or one
+	// copy's for a merged mesh, whose sphere spans many copies. Cascades that skip small casters measure it.
+	caster_radius: f32,
 }
 
 // One meshlet of a detail level. The offsets are absolute positions in the vertex-index and primitive-index buffers.

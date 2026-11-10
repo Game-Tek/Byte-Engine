@@ -22,6 +22,7 @@ use super::residency::MeshResidencies;
 use super::scene::{Instance, RenderEntity};
 use super::shader_data::{MESH_FLAG_DOUBLE_SIDED, ShaderMesh};
 use crate::core::alley::Alley;
+use crate::rendering::renderable::mesh::MeshKey;
 
 /// The raster phases instances are listed by: opaque, masked, double-sided, double-sided masked, and transparent.
 pub(super) const PHASES: usize = 5;
@@ -225,14 +226,21 @@ where
 		let wanted = match sources.lod_view {
 			Some(view) => {
 				let wanted = view.select(&entity.lods, &shader_mesh.model, entity.bounding_sphere);
-				if let Some(slot) = entity.residency {
+				// A merged mesh builds the level it's asked for, so one wholly out of view asks for none. It still
+				// draws the level it holds, which other views may see, until that level's room is needed.
+				let unseen =
+					matches!(entity.mesh, MeshKey::Merged(_)) && !view.sees(&shader_mesh.model, entity.bounding_sphere);
+				if let Some(slot) = entity.residency.filter(|_| !unseen) {
 					sources.residencies.want(slot, wanted as u8);
 				}
 				wanted
 			}
 			None => 0,
 		};
-		let lod = entity.lods.drawn(wanted);
+		// A merged mesh holds no level until the one it wants is built, so its instance waits out the frame.
+		let Some(lod) = entity.lods.drawn(wanted) else {
+			continue;
+		};
 		// Sidedness comes from the currently loaded material, so a reloaded material takes effect next frame.
 		shader_mesh.set_level(lod.level, if admission.double_sided { MESH_FLAG_DOUBLE_SIDED } else { 0 });
 		// A posed skinned instance gives this up when the caller finishes it.
@@ -387,7 +395,9 @@ mod tests {
 				continue;
 			}
 			let flags = if admission.double_sided { MESH_FLAG_DOUBLE_SIDED } else { 0 };
-			let lod = entity.lods.drawn(0);
+			let Some(lod) = entity.lods.drawn(0) else {
+				continue;
+			};
 			rebuilt.phases[admission.phase].push((
 				Instance {
 					shader_mesh_index: slot as u32,
@@ -407,7 +417,11 @@ mod tests {
 		let capacity = 50_000;
 
 		for lanes in [1, 2, 4, 8] {
-			assert_eq!(rebuild(&entities, lanes, capacity), expected(&entities, capacity), "{lanes} lanes");
+			assert_eq!(
+				rebuild(&entities, lanes, capacity),
+				expected(&entities, capacity),
+				"{lanes} lanes"
+			);
 		}
 	}
 

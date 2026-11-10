@@ -77,15 +77,18 @@ impl MeshLods {
 	}
 
 	/// Returns the level an instance that wants `wanted` draws: that level when it is resident, or else the finest
-	/// resident level coarser than it. The coarsest levels are always resident while the mesh is.
-	pub(crate) fn drawn(&self, wanted: usize) -> MeshLod {
+	/// resident level coarser than it, or else the coarsest resident level finer than it.
+	///
+	/// A resource mesh always holds its coarsest levels, so its instances always draw. A merged mesh holds only the
+	/// level it was last drawn at, and none until that level is built: `None` then, and the instance waits.
+	pub(crate) fn drawn(&self, wanted: usize) -> Option<MeshLod> {
 		let levels = self.levels();
 		let wanted = wanted.min(levels.len() - 1);
-		*levels[wanted..]
+		levels[wanted..]
 			.iter()
 			.find(|level| level.resident)
-			.or_else(|| levels.iter().rev().find(|level| level.resident))
-			.expect("Mesh primitive has no resident detail level. The most likely cause is a render entity whose mesh was released while it was still in the scene.")
+			.or_else(|| levels[..wanted].iter().rev().find(|level| level.resident))
+			.copied()
 	}
 
 	/// Overlays every resident level of `other`, a block holding other levels of the same primitive, onto this table.
@@ -171,7 +174,16 @@ pub(crate) struct LodView {
 	/// World-space error allowed at any distance. Zero for a perspective view.
 	constant_error: f32,
 	force: Option<u32>,
+	/// The camera frustum's planes in world space, each as its xyz normal, which points inside, and w distance.
+	frustum: [[f32; 4]; 6],
+	/// The direction each sun's light travels, which is the way shadows fall. Only the first `sun_count` are set.
+	sun_travel: [Vec3f; MAX_FOLLOWED_SUNS],
+	sun_count: u8,
 }
+
+/// The most suns whose shadows [`LodView::sees`] follows. Further suns' shadows of instances outside the camera's
+/// view may go missing.
+const MAX_FOLLOWED_SUNS: usize = 4;
 
 impl LodView {
 	/// Works out how much world-space error stays within the allowed pixels for `sink`'s camera.
@@ -190,7 +202,50 @@ impl LodView {
 			error_per_distance: if perspective { error } else { 0.0 },
 			constant_error: if perspective { 0.0 } else { error },
 			force: settings.force,
+			frustum: view.get_frustum_planes().map(|plane| {
+				let normal = plane.normal().into_vector().to_array();
+				[normal[0], normal[1], normal[2], plane.distance()]
+			}),
+			sun_travel: [Vec3f::new(0.0, 0.0, 0.0); MAX_FOLLOWED_SUNS],
+			sun_count: 0,
 		}
+	}
+
+	/// Follows the shadows of suns whose light travels along `directions`, so [`Self::sees`] counts an instance whose
+	/// shadow reaches the camera's view.
+	pub(crate) fn with_suns(mut self, directions: impl IntoIterator<Item = Vec3f>) -> Self {
+		for direction in directions.into_iter().take(MAX_FOLLOWED_SUNS) {
+			self.sun_travel[self.sun_count as usize] = direction;
+			self.sun_count += 1;
+		}
+		self
+	}
+
+	/// Returns whether the camera can see an instance or a shadow a followed sun casts from it, given its `model`
+	/// matrix and its object-space bounding `sphere` as xyz center and w radius.
+	///
+	/// The test never misses what is in view: it keeps an instance unless its sphere, and the sphere carried any
+	/// distance along a sun's light, lies wholly behind one plane of the camera's frustum. A merged mesh builds its
+	/// geometry only while this holds.
+	pub(crate) fn sees(&self, model: &Mat4x3f, sphere: [f32; 4]) -> bool {
+		let [x_axis, y_axis, z_axis, translation] = <[[f32; 3]; 4]>::from(*model).map(|[x, y, z]| Vec3f::new(x, y, z));
+		let scale = dot(x_axis, x_axis).max(dot(y_axis, y_axis)).max(dot(z_axis, z_axis)).sqrt();
+		let center = x_axis * sphere[0] + y_axis * sphere[1] + z_axis * sphere[2] + translation;
+		let radius = sphere[3] * scale;
+		// A sphere that isn't finite can't be ruled out.
+		if !(radius.is_finite() && center.x.is_finite() && center.y.is_finite() && center.z.is_finite()) {
+			return true;
+		}
+		let behind = |[x, y, z, distance]: [f32; 4], direction: Option<Vec3f>| {
+			let normal = Vec3f::new(x, y, z);
+			// Carried along `direction`, the sphere stays behind the plane only if the direction leads no closer.
+			dot(normal, center) + distance < -radius && direction.is_none_or(|direction| dot(normal, direction) <= 0.0)
+		};
+		let outside = |direction: Option<Vec3f>| self.frustum.iter().any(|&plane| behind(plane, direction));
+		!outside(None)
+			|| self.sun_travel[..self.sun_count as usize]
+				.iter()
+				.any(|&sun| !outside(Some(sun)))
 	}
 
 	/// Returns the level an instance wants, given its `model` matrix and its object-space bounding `sphere` as xyz
@@ -251,6 +306,28 @@ mod tests {
 		[[scale, 0.0, 0.0], [0.0, scale, 0.0], [0.0, 0.0, scale], [x, 0.0, z]].into()
 	}
 
+	#[test]
+	fn an_instance_is_seen_in_the_frustum_or_when_a_sun_carries_its_shadow_there() {
+		use maths_rs::Vec3f;
+
+		let view = perspective(LodSettings::default());
+		// Ahead of the camera, and far to its side but still touching the frustum's edge.
+		assert!(view.sees(&instance(0.0, 10.0, 1.0), SPHERE));
+		assert!(view.sees(&instance(10.5, 10.0, 1.0), SPHERE));
+		// Behind the camera, and beside it past the frustum's edge.
+		assert!(!view.sees(&instance(0.0, -10.0, 1.0), SPHERE));
+		assert!(!view.sees(&instance(20.0, 10.0, 1.0), SPHERE));
+		// A larger instance reaches into view from the same place.
+		assert!(view.sees(&instance(20.0, 10.0, 10.0), SPHERE));
+
+		// A sun that shines forward carries the shadow of what is behind the camera into view; one that shines
+		// backward carries it away.
+		let forward = view.with_suns([Vec3f::new(0.0, 0.0, 1.0)]);
+		assert!(forward.sees(&instance(0.0, -10.0, 1.0), SPHERE));
+		let backward = view.with_suns([Vec3f::new(0.0, 0.0, -1.0)]);
+		assert!(!backward.sees(&instance(0.0, -10.0, 1.0), SPHERE));
+	}
+
 	/// Selection for a camera at the origin looking down +Z, 90 degrees tall, into a 1000 pixel square: one unit at
 	/// unit depth covers 500 pixels.
 	fn perspective(settings: LodSettings) -> LodView {
@@ -268,7 +345,7 @@ mod tests {
 	#[test]
 	fn instances_draw_the_coarsest_level_whose_error_stays_within_a_pixel() {
 		let (lods, view) = (three_levels(), perspective(LodSettings::default()));
-		let meshlets = |model| lods.drawn(view.select(&lods, &model, SPHERE)).meshlet_count;
+		let meshlets = |model| lods.drawn(view.select(&lods, &model, SPHERE)).unwrap().meshlet_count;
 
 		// 51 units away with a unit radius leaves 50 units to the nearest point, where a pixel spans 0.1 units.
 		assert_eq!(meshlets(instance(0.0, 50.0, 1.0)), 8);
@@ -287,7 +364,9 @@ mod tests {
 	#[test]
 	fn the_selected_record_follows_the_finer_levels() {
 		let lods = three_levels();
-		let level = lods.drawn(perspective(LodSettings::default()).select(&lods, &instance(0.0, 51.5, 1.0), SPHERE));
+		let level = lods
+			.drawn(perspective(LodSettings::default()).select(&lods, &instance(0.0, 51.5, 1.0), SPHERE))
+			.unwrap();
 
 		assert_eq!((level.level, level.meshlet_count), (1, 4));
 	}
@@ -299,16 +378,16 @@ mod tests {
 		lods.levels_mut()[1].resident = false;
 
 		// Wanting a level that isn't resident draws the next coarser resident one.
-		assert_eq!(lods.drawn(0).meshlet_count, 2);
-		assert_eq!(lods.drawn(1).meshlet_count, 2);
+		assert_eq!(lods.drawn(0).unwrap().meshlet_count, 2);
+		assert_eq!(lods.drawn(1).unwrap().meshlet_count, 2);
 
 		let mut refined = three_levels();
 		refined.levels_mut()[2].resident = false;
 		refined.levels_mut()[1].level = 40;
 		lods.overlay(&refined);
 
-		assert_eq!(lods.drawn(0).meshlet_count, 8);
-		assert_eq!((lods.drawn(1).level, lods.drawn(2).level), (40, 2));
+		assert_eq!(lods.drawn(0).unwrap().meshlet_count, 8);
+		assert_eq!((lods.drawn(1).unwrap().level, lods.drawn(2).unwrap().level), (40, 2));
 	}
 
 	#[test]
@@ -316,6 +395,7 @@ mod tests {
 		let (lods, model) = (three_levels(), instance(0.0, 51.5, 1.0));
 		let meshlets = |bias, force| {
 			lods.drawn(perspective(LodSettings { bias, force }).select(&lods, &model, SPHERE))
+				.unwrap()
 				.meshlet_count
 		};
 
@@ -348,6 +428,7 @@ mod tests {
 		let lods = three_levels();
 		let meshlets = |bias, z| {
 			lods.drawn(LodView::new(&sink, LodSettings { bias, force: None }).select(&lods, &instance(0.0, z, 1.0), SPHERE))
+				.unwrap()
 				.meshlet_count
 		};
 

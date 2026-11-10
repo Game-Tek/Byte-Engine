@@ -110,6 +110,14 @@ cover a few texels. The [casters](/docs/reference/rendering#the-visibility-pipel
 rule drops them: the task shader skips an instance whose bounding sphere spans
 fewer than `MIN_CASTER_TEXELS` texels of a directional cascade.
 
+The test measures `caster_radius` of the instance's level record, not the
+level's sphere. For an ordinary mesh the two are the same. A merged mesh's
+sphere spans many copies, so its record holds the radius of its largest copy.
+Without that, a merged patch of grass always passed the test and drew every
+clump into every cascade: on the slate quarry that took the shadow pass from
+4.6 ms to 15.5 ms. `task_main_skips_a_wide_level_whose_copies_are_narrower_than_the_minimum_extent`
+guards it.
+
 The shadow pass hands the limit to the task shader as the push constant
 `minimum_caster_extent`: the narrowest width, in normalized device units, that
 a view draws, which is 2 × 32 / resolution for a cascade. Camera, cone, and

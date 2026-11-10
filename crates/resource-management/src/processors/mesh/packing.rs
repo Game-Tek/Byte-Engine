@@ -1036,8 +1036,7 @@ fn stream_name(stream_type: Streams) -> &'static str {
 }
 
 const MESHLET_MAX_VERTICES: usize = 64;
-/// The most vertices a primitive holds: its index streams store 16-bit indices.
-const MAX_PRIMITIVE_VERTICES: usize = 1 << 16;
+use crate::resources::mesh::MAX_PRIMITIVE_VERTICES;
 pub(super) const MESHLET_MAX_TRIANGLES: usize = 124;
 const MESHLET_CONE_WEIGHT: f32 = 0.25;
 /// The byte size of one record in a mesh's `Meshlets` stream. [`crate::inspect`] decodes the same layout.

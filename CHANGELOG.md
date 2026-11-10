@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A level that places one mesh resource more than 128 times bakes those placements into clusters of nearby copies, and the visibility pipeline draws each cluster as one merged mesh, so scenes with tens of thousands of static copies, such as grass, no longer pay for an instance per copy. The merged geometry is built in memory from the mesh and the placements, never stored, and each cluster holds only the detail level it's drawn at, and nothing while it's out of view. Small copies share meshlets, so a patch of small tufts doesn't draw a meshlet for each. Only entities with no `id` and nothing but `mesh` and `transform` merge; give a placement an `id` to keep its entity. Applications make such a mesh themselves with `RenderableMesh::merged`, or with the `merged` mesh source in a level.
+
 - Fixed: a BESL vertex or fragment shader that declared a variable or parameter named like a `StageInput` field, such as `let instance_index: u32 = input.instance_index;`, failed to compile for Metal, because the backend bound the builtin under the same name; the HLSL backend bound it the same way. `StageInput` fields now lower to `_besl_stage_` symbols, so their names stay free. The bare globals `vertex_index`, `instance_index`, and `primitive_index`, which the language reference never specified, no longer resolve; read them through a `StageInput` parameter. VM tests write the builtins under `besl::VERTEX_INDEX_BUILTIN`, `INSTANCE_INDEX_BUILTIN`, and `PRIMITIVE_INDEX_BUILTIN`.
 
 - Applications open operating system dialogs with `Renderer::open_dialog`, which attaches them to the first window. Their results arrive as `AppEvents::Dialog` with the other window events. Before, only the GHI app could open them, so an engine application had no way to.

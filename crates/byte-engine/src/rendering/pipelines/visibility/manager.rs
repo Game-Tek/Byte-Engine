@@ -873,6 +873,9 @@ pub struct VisibilityPipelineManager {
 	recorded_indirect_diffuse: Option<IndirectDiffuseSource>,
 	/// Whether the light-count and shadow-budget warnings were reported while their limit stays exceeded.
 	reported_limits: [bool; 3],
+	/// Whether a merged mesh that found no room for its geometry was reported. Capacities are set at startup, so one
+	/// report covers the run.
+	reported_merged_room: bool,
 	pub(crate) scene: VisibilityScene,
 }
 
@@ -1075,6 +1078,7 @@ impl VisibilityPipelineManager {
 			surfel_exposure: 1.0,
 			recorded_indirect_diffuse: None,
 			reported_limits: [false; 3],
+			reported_merged_room: false,
 			scene: VisibilityScene {
 				render_entities: StableVec::new(),
 				skinning_poses: HashMap::default(),
@@ -1185,13 +1189,14 @@ impl VisibilityPipelineManager {
 		for event in events.drain(..) {
 			match event {
 				VisibilityLoaderEvent::MeshReady { key, mesh } => {
-					// The base block holds each primitive's coarsest level.
-					self.mesh_residencies.add_mesh(
-						key,
-						mesh.primitives
-							.iter()
-							.map(|primitive| (primitive.lods.levels().len() - 1) as u8),
-					);
+					let level_counts = mesh.primitives.iter().map(|primitive| primitive.lods.levels().len() as u8);
+					if matches!(key, MeshKey::Merged(_)) {
+						// A merged mesh holds nothing yet: each primitive builds the level its instances want.
+						self.mesh_residencies.add_merged_mesh(key, level_counts);
+					} else {
+						// The base block holds each primitive's coarsest level.
+						self.mesh_residencies.add_mesh(key, level_counts.map(|levels| levels - 1));
+					}
 					for handle in self.scene.renderables.mesh_ready(key) {
 						self.add_renderable(handle, key, &mesh, transforms);
 					}
@@ -1207,6 +1212,13 @@ impl VisibilityPipelineManager {
 						{
 							self.loader.release_mesh_levels(released, released_primitive);
 							self.refresh_entity_lods(released, released_primitive);
+						} else if matches!(key, MeshKey::Merged(_)) && !self.reported_merged_room {
+							// A resource mesh without room still draws its coarsest level; a merged mesh draws nothing.
+							self.reported_merged_room = true;
+							warn!(
+								"Visibility merged mesh {key} has no room for its geometry, so it is not drawn. The most likely cause is that the merged meshes in view need more of the {} stream than the geometry capacity holds. Raise the matching capacity among `render.geometry.vertex-capacity`, `render.geometry.vertex-index-capacity`, `render.geometry.triangle-capacity`, `render.geometry.meshlet-capacity`, and `render.geometry.level-capacity`.",
+								levels.full.unwrap_or("geometry")
+							);
 						}
 					}
 					self.mesh_residencies.load_finished(key, primitives);
@@ -2073,7 +2085,14 @@ impl PipelineManager for VisibilityPipelineManager {
 			frame.sync_buffer(self.material_evaluations_buffer);
 		}
 		// Detail levels follow the first sink's camera, like the views and exposure below.
-		let lod_view = sinks.first().map(|sink| LodView::new(sink, self.lod_settings));
+		let lod_view = sinks.first().map(|sink| {
+			// A sun's light travels along its transform's facing, which is the way its shadows fall.
+			let suns = self.scene.lights.iter().filter_map(|(_, light, transform)| {
+				matches!(light, Lights::Direction(_))
+					.then(|| math::direction_from_orientation(transform.get_orientation()).into_maths())
+			});
+			LodView::new(sink, self.lod_settings).with_suns(suns)
+		});
 		self.rebuild_active_instances(frame, lod_view, alley);
 		// Instances write their own parameter blocks as the frame names them, so the changes are copied after.
 		if let Some((first, changes)) = self.material_parameters.take_changes(sequence) {

@@ -2,8 +2,8 @@
 //! geometry streams.
 
 use besl::vm::{
-	Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, TaskOutputs, Texture,
-	Value, WorkgroupState, input_slot, output_slot,
+	Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, TaskOutputs, Texture, Value,
+	WorkgroupState, input_slot, output_slot,
 };
 
 use super::geometry::{GeometryCapacity, GeometryCounts, GeometryRanges, RetiredRanges};
@@ -211,6 +211,8 @@ struct TaskMeshFixture {
 	/// The sphere of the instance's level, which task shaders test before any meshlet and decode the meshlets' spheres
 	/// within. The fixture's model is the identity.
 	bounding_sphere: [f32; 4],
+	/// The radius the level casts shadows with, when it differs from its sphere's: one copy's, for a merged mesh.
+	caster_radius: Option<f32>,
 }
 
 impl Default for TaskMeshFixture {
@@ -220,6 +222,7 @@ impl Default for TaskMeshFixture {
 			back_facing: false,
 			// Wide enough to reach every fixture meshlet, so the instance test passes unless a test moves it.
 			bounding_sphere: [0.0, 0.0, 0.5, 8.0],
+			caster_radius: None,
 		}
 	}
 }
@@ -268,7 +271,13 @@ fn run_meshlet_task_workgroup(
 	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
 	write_fixture_mesh(&mut meshes, mesh.flags, [0; 2]);
 	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
-	write_fixture_level(&mut mesh_levels, mesh.bounding_sphere, meshlet_count, 0);
+	write_fixture_level_caster(
+		&mut mesh_levels,
+		mesh.bounding_sphere,
+		mesh.caster_radius.unwrap_or(mesh.bounding_sphere[3]),
+		meshlet_count,
+		0,
+	);
 	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), FIXTURE_MESHLET_INDEX + center_radii.len());
 	for (meshlet_offset, center_radius) in center_radii.iter().copied().enumerate() {
 		// A cutoff past one disables cone rejection. The back-facing cone points along +Z, the direction from the
@@ -358,8 +367,21 @@ fn write_fixture_mesh(meshes: &mut Buffer, flags: u32, surface: [u32; 2]) {
 /// Writes the fixture level's record: `meshlet_count` meshlets from the fixture meshlet, inside `bounding_sphere`, over
 /// vertices from `vertex_base`.
 fn write_fixture_level(mesh_levels: &mut Buffer, bounding_sphere: [f32; 4], meshlet_count: u32, vertex_base: u32) {
+	write_fixture_level_caster(mesh_levels, bounding_sphere, bounding_sphere[3], meshlet_count, vertex_base);
+}
+
+/// Writes the fixture level's record as [`write_fixture_level`] does, casting shadows with `caster_radius` where one
+/// object casts with its whole sphere.
+fn write_fixture_level_caster(
+	mesh_levels: &mut Buffer,
+	bounding_sphere: [f32; 4],
+	caster_radius: f32,
+	meshlet_count: u32,
+	vertex_base: u32,
+) {
 	for (member, value) in [
 		("bounding_sphere", Value::Vec4F(bounding_sphere)),
+		("caster_radius", Value::F32(caster_radius)),
 		("first_meshlet", Value::U32(FIXTURE_MESHLET_INDEX as u32)),
 		("meshlet_count", Value::U32(meshlet_count)),
 		("vertex_base", Value::U32(vertex_base)),
@@ -513,12 +535,46 @@ fn task_main_skips_casters_narrower_than_the_minimum_extent() {
 			..Default::default()
 		};
 		let center_radius = [0.0, 0.0, 0.5, radius];
-		task_payload(&run_meshlet_task_workgroup(&[IDENTITY_MATRIX], [0, 1], 0.5, &[center_radius], mesh, 0, None))
+		task_payload(&run_meshlet_task_workgroup(
+			&[IDENTITY_MATRIX],
+			[0, 1],
+			0.5,
+			&[center_radius],
+			mesh,
+			0,
+			None,
+		))
 	};
 
 	assert_eq!(payload(0.2, 0), []);
 	assert_eq!(payload(0.25, 0), [batched_meshlet_instance(0, 0)]);
 	assert_eq!(payload(0.2, MESH_FLAG_SKINNED), [batched_meshlet_instance(0, 0)]);
+}
+
+/// Verifies an orthographic view measures a merged level by one of its copies: a level whose sphere is wide, because it
+/// spans many copies, is skipped when a copy is narrower than the minimum caster extent.
+#[test]
+fn task_main_skips_a_wide_level_whose_copies_are_narrower_than_the_minimum_extent() {
+	let payload = |caster_radius: f32| {
+		let mesh = TaskMeshFixture {
+			// Two units across, well past the half unit the view asks for.
+			bounding_sphere: [0.0, 0.0, 0.5, 1.0],
+			caster_radius: Some(caster_radius),
+			..Default::default()
+		};
+		task_payload(&run_meshlet_task_workgroup(
+			&[IDENTITY_MATRIX],
+			[0, 1],
+			0.5,
+			&[[0.0, 0.0, 0.5, 0.1]],
+			mesh,
+			0,
+			None,
+		))
+	};
+
+	assert_eq!(payload(0.2), []);
+	assert_eq!(payload(0.25), [batched_meshlet_instance(0, 0)]);
 }
 
 /// Verifies the task rejects a meshlet facing away from the view unless its material is double-sided.
@@ -964,8 +1020,8 @@ fn assert_triangle_mesh_program(
 			.expect("mesh vertex");
 	}
 	// A stage that passes no attributes reads no UVs, so its program keeps no UV binding.
-	let mut vertex_uvs = (attributes != MeshAttributes::None)
-		.then(|| array_buffer(&program, slot(&program, VERTEX_UVS), vertex_count));
+	let mut vertex_uvs =
+		(attributes != MeshAttributes::None).then(|| array_buffer(&program, slot(&program, VERTEX_UVS), vertex_count));
 	let mut vertex_indices = array_buffer(&program, slot(&program, VERTEX_INDICES), 3);
 	let mut primitive_indices = array_buffer(&program, slot(&program, PRIMITIVE_INDICES), 3);
 	for index in 0..3 {
@@ -1054,8 +1110,8 @@ fn assert_triangle_mesh_program(
 	sorted.sort_unstable();
 	assert_eq!(sorted, [0, 1, 2]);
 	let [a, b, c] = triangle.map(|index| mesh_outputs.vertex_position(index as usize).expect("mesh vertex output"));
-	let screen_area = (b[0] / b[3] - a[0] / a[3]) * (c[1] / c[3] - a[1] / a[3])
-		- (c[0] / c[3] - a[0] / a[3]) * (b[1] / b[3] - a[1] / a[3]);
+	let screen_area =
+		(b[0] / b[3] - a[0] / a[3]) * (c[1] / c[3] - a[1] / a[3]) - (c[0] / c[3] - a[0] / a[3]) * (b[1] / b[3] - a[1] / a[3]);
 	assert!(screen_area > 0.0, "the triangle {triangle:?} winds clockwise on screen");
 	if let Some(expected) = expected_render_target_array_index {
 		assert_eq!(mesh_outputs.render_target_array_index(0), Some(expected));
@@ -2057,7 +2113,10 @@ fn backdrop_copies_light_and_linearizes_depth() {
 	let program = asset!("backdrop.besl");
 	let surface_depth = 3.0;
 	let lit = [[0.25, 0.5, 2.0, 1.0], [4.0, 3.0, 1.0, 1.0]];
-	let depth = [[gtao_fixture_device_depth(surface_depth), 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]];
+	let depth = [
+		[gtao_fixture_device_depth(surface_depth), 0.0, 0.0, 1.0],
+		[0.0, 0.0, 0.0, 1.0],
+	];
 
 	let mut view = gtao_view_data(&program, 2, 1);
 	let mut source_lit = texture_2d(2, 1, &lit);

@@ -141,6 +141,12 @@ impl LoadPipeline for SimpleLoader {
 		let staging = lane.staging().clone();
 		let prepared = match request {
 			MeshSource::Generated(generator) => prepare_generated_mesh(generator.as_ref(), staging).await,
+			MeshSource::Merged(_) => {
+				return Err(LoadError(
+					"Simple pipeline mesh was not loaded. The most likely cause is a merged mesh, which only the visibility pipeline builds. Draw the copies as separate resource meshes instead."
+						.to_string(),
+				));
+			}
 			MeshSource::Resource(id) => {
 				let resource = self
 					.resources

@@ -418,8 +418,102 @@ impl MeshProcessorSession {
 			bounding_sphere: bounding_sphere(&bounds, &self.scratch.positions),
 			vertex_count: vertex_count as u32,
 			lods,
+			replaced_at: None,
 		});
 		Ok(())
+	}
+
+	/// Returns how many primitives the session holds, which is the index the next pushed primitive gets.
+	pub fn primitive_count(&self) -> usize {
+		self.primitives.len()
+	}
+
+	/// Makes the primitives `by` take the place of the primitives `replaced` from a distance on, as a billboard takes
+	/// the place of the model it was made from.
+	///
+	/// The error between the two sets, measured at their full detail, becomes the error `replaced` ends at and the
+	/// error `by` starts at, and every level of `by` adds it to its own. All of them get one bounding sphere, so a
+	/// renderer that measures distance with it switches both sets together. Call it once both sets are pushed.
+	pub fn replace_primitives(&mut self, replaced: std::ops::Range<usize>, by: std::ops::Range<usize>) {
+		let surface = |primitives: std::ops::Range<usize>, positions: &mut Vec<[f32; 3]>| {
+			let mut indices = Vec::new();
+			for primitive in &self.primitives[primitives] {
+				self.append_full_detail(primitive, positions, &mut indices);
+			}
+			indices
+		};
+		// Both surfaces index one list of positions, which is what the level measure takes.
+		let mut positions = Vec::new();
+		let replaced_indices = surface(replaced.clone(), &mut positions);
+		let by_indices = surface(by.clone(), &mut positions);
+		// The takeover can't come before the last level it replaces, and an error of zero would hide neither side.
+		let error = self.primitives[replaced.clone()]
+			.iter()
+			.filter_map(|primitive| primitive.lods.last())
+			.map(|lod| lod.error)
+			.fold(level_distance(&positions, &replaced_indices, &by_indices), f32::max)
+			.max(f32::MIN_POSITIVE);
+
+		// A sphere around every primitive's sphere, centered on the box around their boxes.
+		let involved = || replaced.clone().chain(by.clone());
+		let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+		for primitive in involved().map(|index| &self.primitives[index]) {
+			let [x, y, z, radius] = primitive.bounding_sphere;
+			for (axis, center) in [x, y, z].into_iter().enumerate() {
+				min[axis] = min[axis].min(center - radius);
+				max[axis] = max[axis].max(center + radius);
+			}
+		}
+		let center: [f32; 3] = std::array::from_fn(|axis| (min[axis] + max[axis]) * 0.5);
+		let radius = involved()
+			.map(|index| {
+				let [x, y, z, radius] = self.primitives[index].bounding_sphere;
+				let offset = [x - center[0], y - center[1], z - center[2]];
+				offset.iter().map(|component| component * component).sum::<f32>().sqrt() + radius
+			})
+			.fold(0.0, f32::max);
+
+		for index in involved() {
+			self.primitives[index].bounding_sphere = [center[0], center[1], center[2], radius];
+		}
+		for primitive in &mut self.primitives[replaced] {
+			primitive.replaced_at = Some(error);
+		}
+		for lod in self.primitives[by].iter_mut().flat_map(|primitive| &mut primitive.lods) {
+			lod.error += error;
+		}
+	}
+
+	/// Appends the full-detail surface of a processed `primitive`, read back from the payload blocks: its vertices to
+	/// `positions` and its triangles, as indices of `positions`, to `indices`.
+	fn append_full_detail(&self, primitive: &Primitive, positions: &mut Vec<[f32; 3]>, indices: &mut Vec<u32>) {
+		let bytes = |stream_type: Streams, level: u8| {
+			let stream = primitive.stream(stream_type, level)?;
+			let block = self
+				.blocks
+				.iter()
+				.find(|block| block.stream_type == stream_type && block.level == level)?;
+			block.bytes.get(stream.offset..stream.offset + stream.size)
+		};
+		let first = positions.len() as u32;
+		// Each level's stream holds the vertices it adds to the coarser levels, so they are read coarsest first.
+		for level in (0..primitive.lods.len() as u8).rev() {
+			if let Some(level_positions) = bytes(Streams::Vertices(VertexSemantics::Position), level) {
+				positions.extend(level_positions.as_chunks::<12>().0.iter().map(|position| {
+					let components: &[[u8; 4]; 3] = bytemuck::cast_ref(position);
+					components.map(f32::from_le_bytes)
+				}));
+			}
+		}
+		if let Some(triangles) = bytes(Streams::Indices(IndexStreamTypes::Triangles), 0) {
+			indices.extend(
+				triangles
+					.as_chunks::<2>()
+					.0
+					.iter()
+					.map(|index| first + u32::from(u16::from_le_bytes(*index))),
+			);
+		}
 	}
 
 	/// Validates and appends the authored vertex streams for one primitive.

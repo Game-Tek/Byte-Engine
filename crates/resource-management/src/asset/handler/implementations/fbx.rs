@@ -17,11 +17,11 @@ mod tests {
 	use std::alloc::{Allocator, Global};
 
 	use super::{
-		FBXAssetHandler, FbxAuthoredLevelNotes, FbxCulledPolygonCounts, FbxImportError, FbxMeshProcessingError, MaterialKey, RemappedCorners,
-		canonical_animation_node_map, decode_fbx_texture_image, fbx_material, fbx_texture_source_path,
-		finite_material_component, finite_material_product, import_fbx_animation, import_fbx_mesh_session, import_fbx_skeleton,
-		import_fbx_skin_binding, load_fbx_scene, matrix_to_affine, remap_triangle_corners, resolve_fbx_texture_path,
-		select_fbx_skin, skin_weights, used_material_keys,
+		FBXAssetHandler, FbxAuthoredLevelNotes, FbxCulledPolygonCounts, FbxImportError, FbxMeshProcessingError, MaterialKey,
+		RemappedCorners, authored_stage_starts, canonical_animation_node_map, decode_fbx_texture_image, fbx_material,
+		fbx_stage_scenes, fbx_stages, fbx_texture_source_path, finite_material_component, finite_material_product,
+		import_fbx_animation, import_fbx_mesh_session, import_fbx_skeleton, import_fbx_skin_binding, load_fbx_scene,
+		matrix_to_affine, remap_triangle_corners, resolve_fbx_texture_path, select_fbx_skin, skin_weights, used_material_keys,
 	};
 	#[cfg(debug_assertions)]
 	use crate::{
@@ -91,23 +91,26 @@ mod tests {
 		allocator: &'a dyn Allocator,
 	) -> Result<(ProcessedMesh, FbxAuthoredLevelNotes), FbxMeshProcessingError> {
 		let mut notes = FbxAuthoredLevelNotes::default();
-		let keys = used_material_keys(scene, allocator);
-		let materials = keys
+		let starts = authored_stage_starts(scene, levels)?;
+		let scenes = fbx_stage_scenes("model.fbx", scene, levels, &starts);
+		let keys: Vec<_> = scenes.iter().map(|(_, scene)| used_material_keys(scene, allocator)).collect();
+		let materials = scenes
 			.iter()
-			.map(|key| match key {
-				MaterialKey::Default => test_material("default"),
-				MaterialKey::Material(id) => test_material(scene.materials[*id as usize].element.name.as_ref()),
+			.zip(&keys)
+			.flat_map(|((_, scene), keys)| {
+				keys.iter().map(move |&key| match key {
+					MaterialKey::Default => test_material("default"),
+					MaterialKey::Material(id) => test_material(scene.materials[id as usize].element.name.as_ref()),
+				})
 			})
 			.collect::<Vec<_>>();
 		let session = import_fbx_mesh_session(
-			scene,
-			&keys,
+			&fbx_stages(&scenes, levels, &starts, &keys),
 			skeleton,
 			source_to_skeleton,
 			allocator,
 			&mut FbxCulledPolygonCounts::default(),
 			crate::processors::mesh::MeshSettings::default(),
-			levels,
 			&mut notes,
 		)?;
 		Ok((session.finish(&materials), notes))
@@ -215,7 +218,7 @@ mod tests {
 	}
 
 	#[test]
-	fn authored_levels_follow_full_detail_until_a_file_with_other_materials() {
+	fn a_level_file_with_other_materials_takes_over_from_the_levels_before_it() {
 		let scene = load_fbx_scene(LEAF_LOD0_FBX, "leaf_LOD0.fbx").expect("fixture FBX should parse");
 		let lod1 = load_fbx_scene(LEAF_LOD1_FBX, "leaf_LOD1.fbx").expect("fixture FBX should parse");
 		let lod2 = load_fbx_scene(LEAF_LOD2_FBX, "leaf_LOD2.fbx").expect("fixture FBX should parse");
@@ -233,14 +236,39 @@ mod tests {
 
 		// The flat quad's 4 vertices follow full detail's in the primitive, and sort first.
 		assert_eq!(primitive.vertex_count, alone.mesh.primitives[0].vertex_count + 4);
-		assert_eq!(primitive.lods.len(), 2, "the billboard file ends the chain, and one quad is too small to simplify");
+		assert_eq!(
+			primitive.lods.len(),
+			2,
+			"the billboard file ends the leaf's levels, and one quad is too small to simplify"
+		);
 		assert_eq!(primitive.lods[1].vertex_count, 4);
 		// The raised center lies 0.2 centimeters from the flat quad.
 		assert_close([primitive.lods[1].error], [0.002]);
 		assert!(notes.warnings.is_empty(), "unexpected warnings: {:?}", notes.warnings);
+
+		// The billboard file is a primitive of its own, with its own material, that starts where the leaf ends.
+		let [leaf, billboard] = &processed.mesh.primitives[..] else {
+			panic!(
+				"the billboard should be a second primitive: {:?}",
+				processed.mesh.primitives.len()
+			);
+		};
+		assert_ne!(leaf.material, billboard.material);
+		let takeover = leaf.replaced_at.expect("the billboard should replace the leaf");
 		assert!(
-			notes.info.iter().any(|note| note.contains("leaf_LOD2.fbx") && note.contains("Billboard")),
-			"the chain should end at the billboard: {:?}",
+			takeover >= leaf.lods[1].error,
+			"the takeover comes after the leaf's last level"
+		);
+		assert_eq!(billboard.replaced_at, None);
+		assert_eq!(billboard.lods[0].error, takeover);
+		// Both measure distance with one sphere, so they switch together.
+		assert_eq!(leaf.bounding_sphere, billboard.bounding_sphere);
+		assert!(
+			notes
+				.info
+				.iter()
+				.any(|note| note.contains("leaf_LOD2.fbx") && note.contains("take over")),
+			"the billboard should be noted as taking over: {:?}",
 			notes.info
 		);
 	}

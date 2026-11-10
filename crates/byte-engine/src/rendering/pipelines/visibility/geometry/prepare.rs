@@ -819,7 +819,7 @@ impl ResourcePlan {
 			primitives.push(PreparedPrimitive {
 				primitive: MeshPrimitive {
 					material_index: 0,
-					lods: MeshLods::new(&lods[..primitive.lods.len()]),
+					lods: MeshLods::new(&lods[..primitive.lods.len()]).replaced_at(primitive.replaced_at),
 					bounding_sphere: primitive.bounding_sphere,
 					vertex_offset: vertex_base,
 					vertex_count: vertex as u32 - vertex_base,

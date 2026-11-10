@@ -537,24 +537,150 @@ pub(crate) fn fbx_vertex_layout(scene: &ufbx::Scene) -> Vec<VertexComponent> {
 	.collect()
 }
 
+/// The `FbxStage` struct is one set of primitives of a model: the model's own, or those of an authored level file
+/// that uses other materials, which take the place of the set before them from a distance on.
+///
+/// Split a model's level files into stages with [`authored_stage_starts`].
+pub(crate) struct FbxStage<'s, 'k> {
+	/// The model's ID, or the level file's.
+	pub(crate) id: &'s str,
+	/// The model's scene, or the level file's.
+	pub(crate) scene: &'s ufbx::Scene,
+	/// The materials the stage's scene uses, which [`used_material_keys`] returns.
+	pub(crate) material_keys: &'k [MaterialKey],
+	/// The level files that follow the stage's scene, finest first, up to the next stage's.
+	pub(crate) levels: &'k [(&'s str, &'s ufbx::Scene)],
+}
+
+/// Returns the index in `levels` of each level file that starts a stage of its own: one that uses other materials than
+/// the stage before it, holds one mesh instance, and stores the model's vertex streams.
+///
+/// A file that can't follow the model at all ends the search, as it ends the model's authored levels.
+pub(crate) fn authored_stage_starts(
+	scene: &ufbx::Scene,
+	levels: &[(&str, &ufbx::Scene)],
+) -> Result<Vec<usize>, FbxImportError> {
+	let mut starts = Vec::new();
+	let instances = fbx_mesh_instances(scene).count();
+	let Some((node, mesh)) = fbx_mesh_instances(scene).next().filter(|_| instances == 1) else {
+		return Ok(starts);
+	};
+	let base = FbxMeshImportContext::new(node, mesh, None, None, None, None)?;
+	let mut names = visible_part_names(&base);
+	for (index, (_, level_scene)) in levels.iter().enumerate() {
+		let level_instances = fbx_mesh_instances(level_scene).count();
+		let Some((node, level_mesh)) = fbx_mesh_instances(level_scene).next().filter(|_| level_instances == 1) else {
+			break;
+		};
+		if vertex_streams(level_mesh) != vertex_streams(mesh) {
+			break;
+		}
+		let level_names = visible_part_names(&FbxMeshImportContext::new(node, level_mesh, None, None, None, None)?);
+		if level_names != names {
+			starts.push(index);
+			names = level_names;
+		}
+	}
+	Ok(starts)
+}
+
+/// Returns the ID and scene of each stage: the model `scene` named `id`, then each of `levels` that `starts` lists.
+pub(crate) fn fbx_stage_scenes<'s>(
+	id: &'s str,
+	scene: &'s ufbx::Scene,
+	levels: &[(&'s str, &'s ufbx::Scene)],
+	starts: &[usize],
+) -> Vec<(&'s str, &'s ufbx::Scene)> {
+	std::iter::once((id, scene))
+		.chain(starts.iter().map(|&start| levels[start]))
+		.collect()
+}
+
+/// Lays out the stages of a model: each of `scenes`, which [`fbx_stage_scenes`] returns, with its entry of `keys`,
+/// the materials [`used_material_keys`] returns for it, and the level files that follow it up to the next of `starts`.
+pub(crate) fn fbx_stages<'s, 'k, A: Allocator>(
+	scenes: &[(&'s str, &'s ufbx::Scene)],
+	levels: &'k [(&'s str, &'s ufbx::Scene)],
+	starts: &[usize],
+	keys: &'k [Vec<MaterialKey, A>],
+) -> Vec<FbxStage<'s, 'k>> {
+	let firsts = std::iter::once(0).chain(starts.iter().map(|&start| start + 1));
+	let ends = starts.iter().copied().chain([levels.len()]);
+	scenes
+		.iter()
+		.zip(keys)
+		.zip(firsts.zip(ends))
+		.map(|((&(id, scene), material_keys), (first, end))| FbxStage {
+			id,
+			scene,
+			material_keys,
+			levels: &levels[first..end],
+		})
+		.collect()
+}
+
 /// Streams FBX primitives into a session that can write its final blocks directly to resource storage.
 ///
-/// Each primitive names its material by its key's position in `material_keys`, the list [`used_material_keys`]
-/// returns, so the geometry can be processed while those materials still bake.
+/// `stages` holds the model, then each level file that starts a stage, as [`fbx_stages`] lays them out. Each
+/// primitive names its material by its key's position among the keys of every stage, in stage order, so the geometry
+/// can be processed while those materials still bake. Each stage after the first replaces the primitives of the one
+/// before it.
 pub(crate) fn import_fbx_mesh_session<'a>(
-	scene: &ufbx::Scene,
-	material_keys: &[MaterialKey],
+	stages: &[FbxStage<'_, '_>],
 	skeleton: Option<ReferenceModel<SkeletonModel>>,
 	source_to_skeleton: &[u32],
 	allocator: &'a dyn Allocator,
 	culled_polygons: &mut FbxCulledPolygonCounts,
 	settings: MeshSettings,
-	levels: &[(&str, &ufbx::Scene)],
 	notes: &mut FbxAuthoredLevelNotes,
 ) -> Result<MeshProcessorSession, FbxMeshProcessingError> {
-	let chain = authored_level_chain(scene, levels, allocator, notes)?;
+	let model = stages[0].scene;
+	let mut processor = MeshProcessorSession::new(fbx_vertex_layout(model), skeleton, Vec::new(), settings)?;
+	let mut material_base = 0;
+	let mut previous = 0..0;
+	for (index, stage) in stages.iter().enumerate() {
+		let first = processor.primitive_count();
+		// A level file has no skeleton of its own: authored levels follow rigid models only.
+		let source_to_skeleton = if index == 0 { source_to_skeleton } else { &[] };
+		import_fbx_stage(
+			stage,
+			material_base,
+			source_to_skeleton,
+			allocator,
+			culled_polygons,
+			notes,
+			&mut processor,
+		)?;
+		let primitives = first..processor.primitive_count();
+		if index > 0 {
+			notes.info.push(format!(
+				"Authored level '{}' uses other materials than the level before it, so its {} primitives take over from the {} before them.",
+				stage.id,
+				primitives.len(),
+				previous.len()
+			));
+			processor.replace_primitives(previous, primitives.clone());
+		}
+		previous = primitives;
+		material_base += stage.material_keys.len();
+	}
+	Ok(processor)
+}
+
+/// Streams the primitives of one stage into `processor`, each with the matching parts of the stage's level files as
+/// its authored coarser levels. Its material slots start at `material_base`.
+fn import_fbx_stage<'a>(
+	stage: &FbxStage<'_, '_>,
+	material_base: usize,
+	source_to_skeleton: &[u32],
+	allocator: &'a dyn Allocator,
+	culled_polygons: &mut FbxCulledPolygonCounts,
+	notes: &mut FbxAuthoredLevelNotes,
+	mut processor: &mut MeshProcessorSession,
+) -> Result<(), FbxMeshProcessingError> {
+	let (scene, material_keys) = (stage.scene, stage.material_keys);
+	let chain = authored_level_chain(scene, stage.levels, allocator, notes)?;
 	let (scratch_capacity, corner_capacity, remap_capacity) = fbx_mesh_allocation_estimates(scene);
-	let mut processor = MeshProcessorSession::new(fbx_vertex_layout(scene), skeleton, Vec::new(), settings)?;
 	let mut primitive_count = 0usize;
 
 	// Reuse triangulation and corner-remap storage across mesh instances and material parts to bound import allocations.
@@ -614,6 +740,7 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 				&mut remap,
 				&mut remapped,
 				material_keys,
+				material_base,
 				&chain,
 				notes,
 				&mut processor,
@@ -626,13 +753,14 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 	if primitive_count == 0 {
 		return Err(FbxImportError::NoMesh.into());
 	}
-	Ok(processor)
+	Ok(())
 }
 
 /// Processes one triangulated material part immediately so source-corner storage can be reused by the next part.
 ///
 /// `part` is the part's material index within its FBX mesh, and `material_keys` lists the materials the whole mesh
-/// uses, in the order the finished mesh receives them. A part that fits in one primitive takes the matching part of
+/// uses, which the finished mesh receives in that order from slot `material_base` on. A part that fits in one
+/// primitive takes the matching part of
 /// each file in `chain` as its authored coarser levels, as long as they fit beside it.
 pub(crate) fn import_fbx_material_corners(
 	context: &FbxMeshImportContext<'_>,
@@ -641,6 +769,7 @@ pub(crate) fn import_fbx_material_corners(
 	remap: &mut [u32],
 	remapped: &mut RemappedCorners<'_>,
 	material_keys: &[MaterialKey],
+	material_base: usize,
 	chain: &[FbxLevelFile<'_, '_>],
 	notes: &mut FbxAuthoredLevelNotes,
 	processor: &mut MeshProcessorSession,
@@ -650,10 +779,11 @@ pub(crate) fn import_fbx_material_corners(
 	}
 
 	let key = material_key_for_slot(context.material_node, context.mesh, part);
-	let material_slot = material_keys
-		.iter()
-		.position(|used| *used == key)
-		.ok_or(FbxImportError::MissingMaterial)?;
+	let material_slot = material_base
+		+ material_keys
+			.iter()
+			.position(|used| *used == key)
+			.ok_or(FbxImportError::MissingMaterial)?;
 	remap_triangle_corners(context.mesh.num_indices, corners, remap, remapped)?;
 	let primitive_count = remapped.ends.len();
 	let name = || part_material_name(context.material_node, context.mesh, part);

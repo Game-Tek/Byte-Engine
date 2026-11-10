@@ -31,10 +31,17 @@ pub(crate) struct MeshLod {
 ///
 /// A fixed table avoids a heap allocation per render entity. Build one with [`Self::new`] for a baked primitive or
 /// [`Self::single`] for geometry without coarser levels, then let [`LodView::select`] choose from it.
+///
+/// A primitive isn't always drawn. One that other primitives of its mesh replace past an error, set with
+/// [`Self::replaced_at`], is hidden once that error is allowed. One whose finest level has an error, such as a
+/// billboard, [takes over](Self::takes_over) from others and is hidden until that error is allowed. The two errors are
+/// equal, so exactly one side shows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct MeshLods {
 	levels: [MeshLod; MAX_PRIMITIVE_LODS],
 	count: u8,
+	/// The error from which other primitives of the mesh take this one's place, or infinity when none does.
+	replaced_at: f32,
 }
 
 impl Default for MeshLods {
@@ -65,7 +72,21 @@ impl MeshLods {
 		Self {
 			levels,
 			count: lods.len() as u8,
+			replaced_at: f32::INFINITY,
 		}
+	}
+
+	/// Returns the table of a primitive that other primitives of its mesh replace once `error` is allowed, or never
+	/// for `None`.
+	pub(crate) fn replaced_at(mut self, error: Option<f32>) -> Self {
+		self.replaced_at = error.unwrap_or(f32::INFINITY);
+		self
+	}
+
+	/// Returns whether the primitive takes the place of other primitives of its mesh: its finest level has an error,
+	/// so it's drawn only once that error is allowed.
+	pub(crate) fn takes_over(&self) -> bool {
+		self.levels[0].error > 0.0
 	}
 
 	pub(crate) fn levels(&self) -> &[MeshLod] {
@@ -100,15 +121,19 @@ impl MeshLods {
 		}
 	}
 
-	/// Returns the coarsest level whose error is at most `allowed_error`, or full detail when none is.
+	/// Returns the coarsest level whose error is at most `allowed_error`, or full detail when none is. Returns `None`
+	/// when the primitive isn't drawn at that allowance: others have replaced it, or it hasn't taken over yet.
 	///
 	/// Errors never fall as levels get coarser, so the first match from the coarse end is the answer. A NaN allowance
-	/// matches nothing and gives full detail.
-	fn select(&self, allowed_error: f32) -> usize {
-		self.levels()
-			.iter()
-			.rposition(|level| level.error <= allowed_error)
-			.unwrap_or(0)
+	/// matches nothing: it gives full detail, and hides a primitive that takes over.
+	fn select(&self, allowed_error: f32) -> Option<usize> {
+		if self.replaced_at <= allowed_error {
+			return None;
+		}
+		match self.levels().iter().rposition(|level| level.error <= allowed_error) {
+			None if self.takes_over() => None,
+			level => Some(level.unwrap_or(0)),
+		}
 	}
 }
 
@@ -118,7 +143,7 @@ pub(crate) struct LodSettings {
 	/// Multiplies the on-screen error a level may show. Above one draws coarser levels sooner; zero allows no error.
 	pub(crate) bias: f32,
 	/// Draws this level for every instance instead of selecting by distance. Primitives with fewer levels draw their
-	/// coarsest one.
+	/// coarsest one, and primitives that take over from others aren't drawn.
 	pub(crate) force: Option<u32>,
 }
 
@@ -249,10 +274,12 @@ impl LodView {
 	}
 
 	/// Returns the level an instance wants, given its `model` matrix and its object-space bounding `sphere` as xyz
-	/// center and w radius. Pass it to [`MeshLods::drawn`] for the level the instance can draw now.
-	pub(crate) fn select(&self, lods: &MeshLods, model: &Mat4x3f, sphere: [f32; 4]) -> usize {
+	/// center and w radius, or `None` when the instance isn't drawn from here: other primitives of its mesh have
+	/// replaced it, or it hasn't taken over from them yet. Pass the level to [`MeshLods::drawn`] for the level the
+	/// instance can draw now.
+	pub(crate) fn select(&self, lods: &MeshLods, model: &Mat4x3f, sphere: [f32; 4]) -> Option<usize> {
 		match self.force {
-			Some(level) => (level as usize).min(lods.levels().len() - 1),
+			Some(level) => (!lods.takes_over()).then_some((level as usize).min(lods.levels().len() - 1)),
 			None => lods.select(self.allowed_error(model, sphere)),
 		}
 	}
@@ -345,7 +372,7 @@ mod tests {
 	#[test]
 	fn instances_draw_the_coarsest_level_whose_error_stays_within_a_pixel() {
 		let (lods, view) = (three_levels(), perspective(LodSettings::default()));
-		let meshlets = |model| lods.drawn(view.select(&lods, &model, SPHERE)).unwrap().meshlet_count;
+		let meshlets = |model| lods.drawn(view.select(&lods, &model, SPHERE).unwrap()).unwrap().meshlet_count;
 
 		// 51 units away with a unit radius leaves 50 units to the nearest point, where a pixel spans 0.1 units.
 		assert_eq!(meshlets(instance(0.0, 50.0, 1.0)), 8);
@@ -362,10 +389,51 @@ mod tests {
 	}
 
 	#[test]
+	fn a_primitive_gives_way_to_the_one_that_replaces_it_at_one_distance() {
+		let view = perspective(LodSettings::default());
+		// A plant that a billboard replaces once an error of half a unit is allowed.
+		let plant = three_levels().replaced_at(Some(0.5));
+		let billboard = MeshLods::new(&[MeshLod {
+			error: 0.5,
+			meshlet_count: 1,
+			resident: true,
+			..MeshLod::default()
+		}]);
+		let shown = |z| {
+			let model = instance(0.0, z, 1.0);
+			[&plant, &billboard].map(|lods| view.select(lods, &model, SPHERE))
+		};
+
+		// A pixel spans half a unit 250 units past the sphere. Up to there the plant draws, on its own levels.
+		assert_eq!(shown(51.5), [Some(1), None]);
+		assert_eq!(shown(250.0), [Some(1), None]);
+		// From there on the billboard draws alone, so the plant never reaches its own coarsest level.
+		assert_eq!(shown(252.0), [None, Some(0)]);
+		assert_eq!(shown(2000.0), [None, Some(0)]);
+		// Around the camera nothing is allowed, which is the plant's full detail.
+		assert_eq!(shown(0.5), [Some(0), None]);
+
+		// A forced level draws the plant and never the billboard.
+		let forced = perspective(LodSettings {
+			force: Some(7),
+			..LodSettings::default()
+		});
+		let model = instance(0.0, 2000.0, 1.0);
+		assert_eq!(
+			[&plant, &billboard].map(|lods| forced.select(lods, &model, SPHERE)),
+			[Some(2), None]
+		);
+	}
+
+	#[test]
 	fn the_selected_record_follows_the_finer_levels() {
 		let lods = three_levels();
 		let level = lods
-			.drawn(perspective(LodSettings::default()).select(&lods, &instance(0.0, 51.5, 1.0), SPHERE))
+			.drawn(
+				perspective(LodSettings::default())
+					.select(&lods, &instance(0.0, 51.5, 1.0), SPHERE)
+					.unwrap(),
+			)
 			.unwrap();
 
 		assert_eq!((level.level, level.meshlet_count), (1, 4));
@@ -394,9 +462,13 @@ mod tests {
 	fn bias_scales_the_allowed_error_and_force_overrides_distance() {
 		let (lods, model) = (three_levels(), instance(0.0, 51.5, 1.0));
 		let meshlets = |bias, force| {
-			lods.drawn(perspective(LodSettings { bias, force }).select(&lods, &model, SPHERE))
-				.unwrap()
-				.meshlet_count
+			lods.drawn(
+				perspective(LodSettings { bias, force })
+					.select(&lods, &model, SPHERE)
+					.unwrap(),
+			)
+			.unwrap()
+			.meshlet_count
 		};
 
 		assert_eq!(meshlets(1.0, None), 4);
@@ -427,9 +499,13 @@ mod tests {
 		let sink = Sink::new(view, Extent::square(1000), 0);
 		let lods = three_levels();
 		let meshlets = |bias, z| {
-			lods.drawn(LodView::new(&sink, LodSettings { bias, force: None }).select(&lods, &instance(0.0, z, 1.0), SPHERE))
-				.unwrap()
-				.meshlet_count
+			lods.drawn(
+				LodView::new(&sink, LodSettings { bias, force: None })
+					.select(&lods, &instance(0.0, z, 1.0), SPHERE)
+					.unwrap(),
+			)
+			.unwrap()
+			.meshlet_count
 		};
 
 		assert_eq!((meshlets(1.0, 5.0), meshlets(1.0, 80.0)), (8, 8));

@@ -331,7 +331,6 @@ impl AssetHandler for FBXAssetHandler {
 
 		// Geometry doesn't depend on material contents, so it is processed while the material textures and shaders
 		// bake on the worker pool, and the resolved materials are attached when the mesh is committed.
-		let material_keys = used_material_keys(&scene, allocator);
 		let settings = mesh_settings(spec.as_ref(), self.lightmap_uvs).map_err(|error| {
 			context.error(format_args!(
 				"Failed to read FBX mesh settings '{}': {error}. The most likely cause is a mistyped `lods` or `lightmap_uvs` object in the asset's BEAD file.",
@@ -341,20 +340,42 @@ impl AssetHandler for FBXAssetHandler {
 		})?;
 		let level_scenes = load_authored_levels(context, spec.as_ref(), base.as_ref(), settings, skeleton.is_some()).await?;
 		let levels: Vec<(&str, &ufbx::Scene)> = level_scenes.iter().map(|(id, scene)| (id.as_str(), &**scene)).collect();
+		// A level file that uses other materials starts a stage: primitives of its own, which take over from the
+		// model's. Each stage's scene is followed by the level files up to the next stage's.
+		let starts = authored_stage_starts(&scene, &levels).map_err(|error| {
+			context.error(format_args!(
+				"Failed to read the authored detail levels of FBX mesh '{}': {error}",
+				url.as_ref()
+			));
+			LoadErrors::FailedToProcess
+		})?;
+		let stage_scenes = fbx_stage_scenes(base.as_ref(), &scene, &levels, &starts);
+		let stage_keys: Vec<_> = stage_scenes
+			.iter()
+			.map(|(_, scene)| used_material_keys(scene, allocator))
+			.collect();
+		let stages = fbx_stages(&stage_scenes, &levels, &starts, &stage_keys);
 		let mut level_notes = FbxAuthoredLevelNotes::default();
 		let mut culled_polygons = FbxCulledPolygonCounts::default();
 		let (materials, mesh) = std::future::join!(
-			resolve_fbx_materials(context, spec.as_ref(), source_id, &scene, &material_keys,),
+			async {
+				// Every stage's materials, in stage order, which is the order the primitives' slots follow.
+				let mut materials = Vec::new();
+				for stage in &stages {
+					materials.extend(
+						resolve_fbx_materials(context, spec.as_ref(), source_id, stage.scene, stage.material_keys).await?,
+					);
+				}
+				Ok::<_, LoadErrors>(materials)
+			},
 			async {
 				import_fbx_mesh_session(
-					&scene,
-					&material_keys,
+					&stages,
 					skeleton,
 					&source_to_skeleton,
 					allocator,
 					&mut culled_polygons,
 					settings,
-					&levels,
 					&mut level_notes,
 				)
 			},

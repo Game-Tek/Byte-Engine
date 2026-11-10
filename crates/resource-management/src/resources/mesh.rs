@@ -22,8 +22,15 @@ pub struct Primitive {
 	/// culls the primitive with it whatever level it has loaded.
 	pub bounding_sphere: [f32; 4],
 	pub vertex_count: u32,
-	/// The detail levels of this primitive, finest first. Level 0 is full detail and is always present.
+	/// The detail levels of this primitive, finest first. Level 0 is always present. It is full detail, with an error
+	/// of zero, unless this primitive takes the place of others of its mesh, as a billboard does: then its error is
+	/// the one those primitives are [replaced at](Self::replaced_at), and a renderer draws this primitive only where
+	/// that error stays invisible.
 	pub lods: Vec<PrimitiveLod>,
+	/// The error from which other primitives of the mesh take this one's place, when any do. A renderer draws this
+	/// primitive only where that error would show. The primitives on both sides share one [`Self::bounding_sphere`],
+	/// so a renderer that measures distance with it switches them together.
+	pub replaced_at: Option<f32>,
 }
 
 /// The most detail levels one primitive stores, counting full detail. Renderers size fixed level tables with it.
@@ -201,7 +208,8 @@ fn validate_material_indices(material_count: usize, primitives: &[Primitive]) ->
 	}
 }
 
-/// Rejects a primitive whose detail levels do not match its streams or do not rise in error.
+/// Rejects a primitive whose detail levels do not match its streams or do not rise in error. The finest level's error
+/// is zero, or more for a primitive that takes over from others.
 ///
 /// Renderers read each level's meshlets and vertices straight from these counts, so a level that claims more than its
 /// streams hold would draw another primitive's geometry.
@@ -220,8 +228,13 @@ fn validate_lods(primitives: &[Primitive]) -> Result<(), SolveError> {
 		};
 		let reason = if lods.is_empty() || lods.len() > MAX_PRIMITIVE_LODS {
 			format!("it stores {} levels, outside 1..={MAX_PRIMITIVE_LODS}", lods.len())
-		} else if lods[0].error != 0.0 || !errors_rise || !lods[lods.len() - 1].error.is_finite() {
-			"the level errors do not rise from zero through finite values".to_string()
+		} else if !(lods[0].error >= 0.0) || !errors_rise || !lods[lods.len() - 1].error.is_finite() {
+			"the level errors do not rise from zero or more through finite values".to_string()
+		} else if primitive
+			.replaced_at
+			.is_some_and(|error| !(error.is_finite() && error >= lods[lods.len() - 1].error))
+		{
+			"the error it is replaced at is not finite or comes before its coarsest level's".to_string()
 		} else if let Some(level) = lods.iter().position(|lod| lod.meshlet_count as usize > MAX_LEVEL_MESHLETS) {
 			format!(
 				"level {level} holds {} meshlets, more than the {MAX_LEVEL_MESHLETS} a level can hold",
@@ -492,6 +505,7 @@ mod tests {
 			bounding_sphere: [0.0; 4],
 			vertex_count: 1,
 			lods: vec![lod(0, 1, 0.0)],
+			replaced_at: None,
 		}
 	}
 
@@ -542,8 +556,17 @@ mod tests {
 			&[(1, 1); MAX_PRIMITIVE_LODS + 1],
 			vec![lod(1, 1, 0.0); MAX_PRIMITIVE_LODS + 1]
 		));
-		// Full detail has no error to speak of.
-		assert!(!valid(&[(4, 3)], vec![lod(4, 3, 0.25)]));
+		// A primitive that takes over from others starts at their error, which is never negative.
+		assert!(valid(&[(4, 3)], vec![lod(4, 3, 0.25)]));
+		assert!(!valid(&[(4, 3)], vec![lod(4, 3, -0.25)]));
+		// A primitive is replaced after its coarsest level, never before.
+		let replaced = |replaced_at| {
+			let mut primitive = leveled_primitive(&three_levels, vec![lod(4, 12, 0.0), lod(2, 7, 0.5), lod(1, 4, 0.5)]);
+			primitive.replaced_at = Some(replaced_at);
+			validate_lods(&[primitive]).is_ok()
+		};
+		assert!(replaced(0.5) && replaced(2.0));
+		assert!(!replaced(0.25) && !replaced(f32::INFINITY));
 		// Levels may not be empty, and each holds exactly the meshlets its stream stores.
 		assert!(!valid(&[(4, 3), (0, 0)], vec![lod(4, 3, 0.0), lod(0, 0, 0.5)]));
 		assert!(!valid(&[(4, 3), (2, 0)], vec![lod(4, 3, 0.0), lod(1, 0, 0.5)]));

@@ -371,8 +371,10 @@ error for it.
 | Instance error | The level's error per distance times the straight-line distance from the camera to the nearest point of the bounding sphere, plus its constant error, divided by the largest model axis. Turning the camera never switches levels. |
 | Wanted level | The coarsest level whose error is within the allowed error; the finest otherwise. An instance around the camera, with zero scale, or without a finite error wants full detail. |
 | Drawn level | The wanted level when it's resident; otherwise the mesh's finest resident level. An instance of a merged mesh with no resident level isn't drawn. |
+| Replaced primitives | A primitive that [others of its mesh take over from](/docs/reference/assets#authored-detail-levels), as a billboard does from a plant, isn't drawn once the error they take over at is within the allowed error. Those others aren't drawn until then. Both sides measure distance with one bounding sphere, so exactly one of them is drawn. |
+| Forced level | With `render.lod.force` set, a primitive that takes over from others isn't drawn, and the primitives it would replace are. |
 | Shadows | Draw the same level as the camera. |
-| Ray tracing | Rays hit each primitive's coarsest level. Rays never hit a merged mesh. |
+| Ray tracing | Rays hit each primitive's coarsest level. Rays never hit a merged mesh or a primitive that takes over from others; they hit the primitives it replaces instead, at any distance. |
 
 | Detail level residency rule | Value |
 | --- | --- |

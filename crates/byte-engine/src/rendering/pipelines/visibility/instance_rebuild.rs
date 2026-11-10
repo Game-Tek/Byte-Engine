@@ -223,6 +223,8 @@ where
 		shader_mesh.set_parameter_block(block.unwrap_or(0));
 		// Naming another level's record is all a level switch takes. Every view of the frame, shadows included, then
 		// draws this level.
+		// A primitive that takes over from others of its mesh, such as a billboard, shows only past their range.
+		let takes_over = entity.lods.takes_over();
 		let wanted = match sources.lod_view {
 			Some(view) => {
 				let wanted = view.select(&entity.lods, &shader_mesh.model, entity.bounding_sphere);
@@ -230,15 +232,22 @@ where
 				// draws the level it holds, which other views may see, until that level's room is needed.
 				let unseen =
 					matches!(entity.mesh, MeshKey::Merged(_)) && !view.sees(&shader_mesh.model, entity.bounding_sphere);
-				if let Some(slot) = entity.residency.filter(|_| !unseen) {
+				if let (Some(wanted), Some(slot)) = (wanted, entity.residency.filter(|_| !unseen)) {
 					sources.residencies.want(slot, wanted as u8);
 				}
 				wanted
 			}
-			None => 0,
+			None => (!takes_over).then_some(0),
 		};
+		// Rays hit a primitive that others replace, at its coarsest level, wherever it is and never the ones that
+		// replace it, so an object is hit once whichever of them is drawn. Such a primitive keeps its record while
+		// it's hidden.
+		let traced = sources.traces_rays && !takes_over;
+		if wanted.is_none() && !traced {
+			continue;
+		}
 		// A merged mesh holds no level until the one it wants is built, so its instance waits out the frame.
-		let Some(lod) = entity.lods.drawn(wanted) else {
+		let Some(lod) = entity.lods.drawn(wanted.unwrap_or(usize::MAX)) else {
 			continue;
 		};
 		// Sidedness comes from the currently loaded material, so a reloaded material takes effect next frame.
@@ -253,7 +262,7 @@ where
 		}
 
 		share.meshes[offset] = shader_mesh;
-		if sources.traces_rays {
+		if traced {
 			scratch.traced.push(TracedPrimitive {
 				renderable: entity.handle,
 				mesh: entity.mesh,
@@ -261,6 +270,9 @@ where
 				record: slot as u32,
 				model: shader_mesh.model,
 			});
+		}
+		if wanted.is_none() {
+			continue;
 		}
 		scratch.phases[admission.phase].push(Instance {
 			shader_mesh_index: slot as u32,

@@ -91,6 +91,9 @@ pub const SHADOW_UPDATE_TEXELS_PARAMETER: &str = "shadow-maps.update-texels";
 /// The prefix, inside the `render` subtree, of the startup parameters that set each scene-wide geometry buffer's
 /// element count, such as `render.geometry.triangle-capacity`. See [`GeometryCapacity`].
 pub const GEOMETRY_CAPACITY_PARAMETER_PREFIX: &str = "geometry.";
+/// The startup parameter, inside [`RENDER_PARAMETERS`], that turns the meshlet vertex stream on or off:
+/// `render.geometry.meshlet-vertices`. See [`GeometryCapacity::meshlet_vertices`].
+pub const MESHLET_VERTICES_PARAMETER: &str = "geometry.meshlet-vertices";
 /// The prefix, inside the `render` subtree, of the startup parameters that size the per-frame instance tables:
 /// `render.instances.capacity` and `render.instances.meshlet-group-capacity`. See [`InstanceCapacity`].
 pub const INSTANCE_CAPACITY_PARAMETER_PREFIX: &str = "instances.";
@@ -199,6 +202,9 @@ impl VisibilityPipelineSettings {
 			if let Some(value) = parse(&parameters, &format!("{GEOMETRY_CAPACITY_PARAMETER_PREFIX}{stream}-capacity")) {
 				*capacity = value;
 			}
+		}
+		if let Some(kept) = parse(&parameters, MESHLET_VERTICES_PARAMETER) {
+			geometry_capacity.meshlet_vertices = kept;
 		}
 		settings = settings
 			.with_geometry_capacity(geometry_capacity)
@@ -983,6 +989,7 @@ impl VisibilityPipelineManager {
 			scene.buffer("vertex_normals", geometry.vertex_normals),
 			scene.buffer("vertex_uvs", geometry.vertex_uvs),
 			scene.buffer("vertex_indices", geometry.vertex_indices),
+			scene.buffer("meshlet_vertices", geometry.meshlet_vertices),
 			scene.buffer("primitive_indices", geometry.primitive_indices),
 			scene.buffer("meshlets", geometry.meshlets),
 			scene.buffer("mesh_levels", geometry.mesh_levels),

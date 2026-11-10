@@ -357,6 +357,7 @@ impl PreparedMesh {
 		source: &MergedSource,
 		placements: &[Transform],
 		upload_staging: Arc<UploadStagingArena>,
+		meshlet_vertices: bool,
 		levels: &[PrimitiveLevels],
 	) -> Option<Self> {
 		let copies: Vec<Copy> = placements.iter().map(Copy::new).collect();
@@ -394,6 +395,7 @@ impl PreparedMesh {
 				counts.vertices as usize * VERTEX_LIGHTMAP_UV_BUFFER_STRIDE as usize,
 			),
 			vertex_indices: take_range(&mut cursor, counts.primitive_indices as usize * VERTEX_INDEX_STRIDE),
+			meshlet_vertices: take_meshlet_vertices(&mut cursor, counts.primitive_indices as usize, meshlet_vertices),
 			primitive_indices: take_range(&mut cursor, counts.triangles as usize * 3),
 			meshlets: take_range(&mut cursor, counts.meshlets as usize * MESHLET_STRIDE),
 			levels: take_range(&mut cursor, counts.levels as usize * LEVEL_STRIDE),
@@ -560,6 +562,7 @@ impl PreparedMesh {
 			});
 			level_record += 1;
 		}
+		write_meshlet_vertices(backing, &streams);
 
 		Some(Self {
 			staging,
@@ -695,7 +698,7 @@ mod tests {
 				block: None,
 				full: None,
 			}];
-			let prepared = PreparedMesh::merged(source, placements, staging, &levels)
+			let prepared = PreparedMesh::merged(source, placements, staging, true, &levels)
 				.await
 				.expect("a merged level should build");
 			check(&prepared);

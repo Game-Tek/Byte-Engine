@@ -404,6 +404,8 @@ pub(crate) struct VisibilityLoader {
 	geometry: Mutex<GeometryBuffers>,
 	/// Whether meshes keep flat triangle lists for ray tracing; see [`GeometryHandles::flat_triangle_indices`].
 	flat_triangles: bool,
+	/// Whether prepared meshes fill the meshlet vertex stream, which the geometry capacity decides.
+	meshlet_vertices: bool,
 	/// Whether a material without a closest-hit shader was reported while the pipeline traces rays.
 	reported_missing_hit_shader: std::sync::atomic::AtomicBool,
 	material_slots: Mutex<HashMap<String, u32>>,
@@ -971,6 +973,7 @@ pub(crate) fn spawn(
 		pipeline_manager: pipeline_manager.clone(),
 		geometry: Mutex::new(GeometryBuffers::import(geometry, render, loader)),
 		flat_triangles: geometry.flat_triangle_indices.is_some(),
+		meshlet_vertices: geometry.capacity.meshlet_vertices,
 		reported_missing_hit_shader: std::sync::atomic::AtomicBool::new(false),
 		material_slots: Mutex::new(HashMap::default()),
 		merged_sources: Mutex::new(HashMap::default()),
@@ -1099,6 +1102,7 @@ impl VisibilityLoader {
 			&source,
 			lane.staging().clone(),
 			self.flat_triangles,
+			self.meshlet_vertices,
 			PreparedLevels::Coarsest,
 			|id| {
 				lane.request(VisibilityLoadRequest::Material(id.to_string()));
@@ -1172,7 +1176,13 @@ impl VisibilityLoader {
 			MeshSource::Merged(merged) => {
 				let id = merged.resource();
 				let merged_source = self.merged_source(id).await?;
-				let prepared = PreparedMesh::merged(&merged_source, merged.placements(), lane.staging().clone(), &primitives)
+				let prepared = PreparedMesh::merged(
+					&merged_source,
+					merged.placements(),
+					lane.staging().clone(),
+					self.meshlet_vertices,
+					&primitives,
+				)
 					.await
 					.ok_or_else(|| {
 						LoadError(format!(
@@ -1204,13 +1214,19 @@ impl VisibilityLoader {
 				levels.primitive
 			)));
 		}
-		let prepared = PreparedMesh::resource(resource, lane.staging().clone(), false, PreparedLevels::Finer(&primitives))
-			.await
-			.ok_or_else(|| {
-				LoadError(format!(
-					"Visibility detail level conversion failed for {id}. The most likely cause is an unsupported or malformed vertex stream."
-				))
-			})?;
+		let prepared = PreparedMesh::resource(
+			resource,
+			lane.staging().clone(),
+			false,
+			self.meshlet_vertices,
+			PreparedLevels::Finer(&primitives),
+		)
+		.await
+		.ok_or_else(|| {
+			LoadError(format!(
+				"Visibility detail level conversion failed for {id}. The most likely cause is an unsupported or malformed vertex stream."
+			))
+		})?;
 		self.place_mesh_levels(key, &id, prepared, primitives, lane).await
 	}
 
@@ -1715,7 +1731,8 @@ fn specialization_entries(
 }
 
 /// Reads or generates the geometry of `source` and converts it into the visibility geometry formats, holding the
-/// detail `levels` and the flat triangle lists rays hit when `flat_triangles` is set.
+/// detail `levels`, the flat triangle lists rays hit when `flat_triangles` is set, and the meshlet vertex stream the
+/// mesh stages read when `meshlet_vertices` is.
 ///
 /// Calls `material` with the material ID of each primitive, in primitive order, before the geometry loads, so the
 /// caller can assign table slots and start loading the materials. The visibility loader and the lightmap bake both
@@ -1725,6 +1742,7 @@ pub(crate) async fn prepare_mesh_source(
 	source: &MeshSource,
 	staging: Arc<UploadStagingArena>,
 	flat_triangles: bool,
+	meshlet_vertices: bool,
 	levels: PreparedLevels<'_>,
 	mut material: impl FnMut(&str) -> Result<(), LoadError>,
 ) -> Result<PreparedMesh, LoadError> {
@@ -1739,11 +1757,11 @@ pub(crate) async fn prepare_mesh_source(
 			for primitive in &mesh.primitives {
 				material(mesh.material(primitive).id().as_ref())?;
 			}
-			PreparedMesh::resource(resource, staging, flat_triangles, levels).await
+			PreparedMesh::resource(resource, staging, flat_triangles, meshlet_vertices, levels).await
 		}
 		MeshSource::Generated(generator) => {
 			material(generator.material().unwrap_or(GENERATED_MESH_MATERIAL))?;
-			PreparedMesh::generated(generator.as_ref(), staging, flat_triangles).await
+			PreparedMesh::generated(generator.as_ref(), staging, flat_triangles, meshlet_vertices).await
 		}
 		MeshSource::Merged(_) => {
 			return Err(LoadError(

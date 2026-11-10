@@ -24,8 +24,8 @@ use super::{
 };
 use crate::rendering::mesh::generator::{MeshGenerator, validate_triangle_indices};
 use crate::rendering::pipelines::visibility::layout::{
-	RuntimeUnitVector, ShaderMeshLevel, ShaderMeshletData, TRIANGLE_COUNT, VERTEX_COUNT, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE,
-	VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE, level_sphere,
+	MESHLET_LOCAL_VERTICES, RuntimeUnitVector, ShaderMeshLevel, ShaderMeshletData, ShaderMeshletVertex, TRIANGLE_COUNT,
+	VERTEX_COUNT, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE, VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE, level_sphere,
 };
 use crate::rendering::pipelines::visibility::lod::{MeshLod, MeshLods};
 use crate::rendering::resource_loading::{StagingLease, UploadStagingArena};
@@ -57,6 +57,8 @@ pub(super) struct PreparedStreams {
 	/// Zero for every vertex of a primitive without lightmap UVs.
 	pub(super) lightmap_uvs: Range<usize>,
 	pub(super) vertex_indices: Range<usize>,
+	/// One [`ShaderMeshletVertex`] for each vertex index, or empty when the pipeline keeps no meshlet vertices.
+	pub(super) meshlet_vertices: Range<usize>,
 	pub(super) primitive_indices: Range<usize>,
 	pub(super) meshlets: Range<usize>,
 	/// One [`ShaderMeshLevel`] per held level of every primitive.
@@ -96,6 +98,7 @@ impl PreparedMesh {
 		generator: &dyn MeshGenerator,
 		upload_staging: Arc<UploadStagingArena>,
 		flat_triangles: bool,
+		meshlet_vertices: bool,
 	) -> Option<Self> {
 		let positions = generator.positions();
 		let normals = generator.normals();
@@ -122,6 +125,7 @@ impl PreparedMesh {
 			uvs: take_range(&mut cursor, uvs.len() * VERTEX_UV_BUFFER_STRIDE as usize),
 			lightmap_uvs: take_range(&mut cursor, uvs.len() * VERTEX_LIGHTMAP_UV_BUFFER_STRIDE as usize),
 			vertex_indices: take_range(&mut cursor, vertex_indices.len() * VERTEX_INDEX_STRIDE),
+			meshlet_vertices: take_meshlet_vertices(&mut cursor, vertex_indices.len(), meshlet_vertices),
 			primitive_indices: take_range(&mut cursor, primitive_indices.len() * 3),
 			meshlets: take_range(&mut cursor, meshlets.len() * std::mem::size_of::<ShaderMeshletData>()),
 			levels: take_range(&mut cursor, std::mem::size_of::<ShaderMeshLevel>()),
@@ -168,6 +172,7 @@ impl PreparedMesh {
 		if let Some(range) = &streams.flat_triangles {
 			backing[range.clone()].copy_from_slice(bytemuck::cast_slice(&indices));
 		}
+		write_meshlet_vertices(backing, &streams);
 		let flat_triangle_count = streams.flat_triangles.as_ref().map_or(0, |_| (indices.len() / 3) as u32);
 
 		Some(Self {
@@ -216,10 +221,11 @@ impl PreparedMesh {
 		mut resource: Reference<Mesh>,
 		upload_staging: Arc<UploadStagingArena>,
 		flat_triangles: bool,
+		meshlet_vertices: bool,
 		levels: PreparedLevels<'_>,
 	) -> Option<Self> {
 		let mesh = resource.resource();
-		let plan = ResourcePlan::new(mesh, levels, flat_triangles)?;
+		let plan = ResourcePlan::new(mesh, levels, flat_triangles, meshlet_vertices)?;
 		let skeleton_node_count = mesh
 			.skeleton
 			.as_ref()
@@ -250,6 +256,7 @@ impl PreparedMesh {
 			range.end = range.start + flat_triangle_count as usize * 6;
 			counts.flat_triangles = flat_triangle_count;
 		}
+		write_meshlet_vertices(staging.bytes_mut(), &streams);
 
 		Some(Self {
 			staging,
@@ -454,8 +461,8 @@ struct ResourcePlan {
 
 impl ResourcePlan {
 	/// Validates the streams of `mesh` that `levels` needs and lays out the preparation, with room for each primitive's
-	/// coarsest triangles when `flat_triangles` is set.
-	fn new(mesh: &Mesh, levels: PreparedLevels<'_>, flat_triangles: bool) -> Option<Self> {
+	/// coarsest triangles when `flat_triangles` is set, and for the meshlet vertex stream when `meshlet_vertices` is.
+	fn new(mesh: &Mesh, levels: PreparedLevels<'_>, flat_triangles: bool, meshlet_vertices: bool) -> Option<Self> {
 		let uvs_are_f32 = match mesh
 			.vertex_components
 			.iter()
@@ -581,6 +588,7 @@ impl ResourcePlan {
 			uvs: take_range(&mut cursor, vertices * VERTEX_UV_BUFFER_STRIDE as usize),
 			lightmap_uvs: take_range(&mut cursor, vertices * VERTEX_LIGHTMAP_UV_BUFFER_STRIDE as usize),
 			vertex_indices: take_range(&mut cursor, counts.primitive_indices as usize * VERTEX_INDEX_STRIDE),
+			meshlet_vertices: take_meshlet_vertices(&mut cursor, counts.primitive_indices as usize, meshlet_vertices),
 			primitive_indices: take_range(&mut cursor, counts.triangles as usize * 3),
 			meshlets: take_range(
 				&mut cursor,
@@ -844,6 +852,57 @@ impl ResourcePlan {
 			}
 		}
 		Some((primitives, flat as u32))
+	}
+}
+
+/// Reserves the meshlet vertex stream of a mesh with `vertex_indices` meshlet vertices, or nothing when the pipeline
+/// keeps none.
+fn take_meshlet_vertices(cursor: &mut usize, vertex_indices: usize, kept: bool) -> Range<usize> {
+	take_range(
+		cursor,
+		if kept {
+			vertex_indices * std::mem::size_of::<ShaderMeshletVertex>()
+		} else {
+			0
+		},
+	)
+}
+
+/// Fills the meshlet vertex stream of a prepared mesh from its other streams, and marks every meshlet that has its
+/// vertices there. Does nothing when the stream is empty.
+///
+/// Each meshlet vertex takes the position and UV of the vertex its index names, with the position stored within its
+/// level's sphere. The records count from the start of the prepared streams, as they do until the mesh is placed.
+fn write_meshlet_vertices(backing: &mut [u8], streams: &PreparedStreams) {
+	const LEVEL_STRIDE: usize = std::mem::size_of::<ShaderMeshLevel>();
+	const MESHLET_STRIDE: usize = std::mem::size_of::<ShaderMeshletData>();
+	const VERTEX_STRIDE: usize = std::mem::size_of::<ShaderMeshletVertex>();
+	if streams.meshlet_vertices.is_empty() {
+		return;
+	}
+	for level in 0..streams.levels.len() / LEVEL_STRIDE {
+		let level: ShaderMeshLevel =
+			bytemuck::pod_read_unaligned(&backing[streams.levels.start + level * LEVEL_STRIDE..][..LEVEL_STRIDE]);
+		for meshlet in level.first_meshlet..level.first_meshlet + level.meshlet_count {
+			let record = streams.meshlets.start + meshlet as usize * MESHLET_STRIDE;
+			let mut meshlet: ShaderMeshletData = bytemuck::pod_read_unaligned(&backing[record..][..MESHLET_STRIDE]);
+			for entry in meshlet.primitive_offset..meshlet.primitive_offset + meshlet.vertex_count() {
+				let entry = entry as usize;
+				let index: [u8; VERTEX_INDEX_STRIDE] = bytemuck::pod_read_unaligned(
+					&backing[streams.vertex_indices.start + entry * VERTEX_INDEX_STRIDE..][..VERTEX_INDEX_STRIDE],
+				);
+				let vertex = level.vertex_base as usize + usize::from(u16::from_le_bytes(index));
+				let position: [f32; 3] = bytemuck::pod_read_unaligned(&backing[streams.positions.start + vertex * 12..][..12]);
+				let uv: [u8; 4] = bytemuck::pod_read_unaligned(
+					&backing[streams.uvs.start + vertex * VERTEX_UV_BUFFER_STRIDE as usize..][..4],
+				);
+				let local = ShaderMeshletVertex::new(position, level.bounding_sphere, uv);
+				backing[streams.meshlet_vertices.start + entry * VERTEX_STRIDE..][..VERTEX_STRIDE]
+					.copy_from_slice(bytemuck::bytes_of(&local));
+			}
+			meshlet.counts |= MESHLET_LOCAL_VERTICES;
+			backing[record..][..MESHLET_STRIDE].copy_from_slice(bytemuck::bytes_of(&meshlet));
+		}
 	}
 }
 
@@ -1121,5 +1180,66 @@ mod tests {
 			);
 		}
 		assert_eq!(sphere_around(std::iter::empty()), [0.0; 4]);
+	}
+	/// Prepares a generated sphere with or without the meshlet vertex stream, on a staging arena of its own.
+	fn prepared_sphere(meshlet_vertices: bool, check: impl FnOnce(&PreparedMesh)) {
+		use crate::rendering::mesh::generator::SphereMeshGenerator;
+
+		let mut bytes = vec![0u8; 1 << 20];
+		let executor = resource_management::r#async::Executor::new().expect("preparation test executor");
+		executor.block_on(async {
+			let (staging, worker) = UploadStagingArena::new_for_test(&mut bytes);
+			resource_management::r#async::spawn(worker.run()).detach();
+			let prepared = PreparedMesh::generated(&SphereMeshGenerator::from_radius(2.0), staging, false, meshlet_vertices)
+				.await
+				.expect("a generated sphere should prepare");
+			check(&prepared);
+		});
+	}
+
+	#[test]
+	fn meshlet_vertices_repeat_each_meshlets_vertices_in_its_own_order() {
+		prepared_sphere(true, |prepared| {
+			let (bytes, streams) = (prepared.staging.bytes(), &prepared.streams);
+			let level: ShaderMeshLevel = bytemuck::pod_read_unaligned(&bytes[streams.levels.clone()]);
+			let [cx, cy, cz, radius] = level.bounding_sphere;
+			let meshlets: Vec<ShaderMeshletData> = bytemuck::pod_collect_to_vec(&bytes[streams.meshlets.clone()]);
+			let indices: Vec<u16> = bytemuck::pod_collect_to_vec(&bytes[streams.vertex_indices.clone()]);
+			let positions: Vec<[f32; 3]> = bytemuck::pod_collect_to_vec(&bytes[streams.positions.clone()]);
+			let uvs: Vec<[u8; 4]> = bytemuck::pod_collect_to_vec(&bytes[streams.uvs.clone()]);
+			let local: Vec<ShaderMeshletVertex> = bytemuck::pod_collect_to_vec(&bytes[streams.meshlet_vertices.clone()]);
+
+			assert_eq!(local.len(), indices.len());
+			assert!(meshlets.len() > 1, "the sphere should need several meshlets");
+			// A stored component is at most half a 16-bit step of the sphere's diameter from its vertex's.
+			let tolerance = radius / 65535.0 * 1.01;
+			for meshlet in &meshlets {
+				assert_ne!(meshlet.counts & MESHLET_LOCAL_VERTICES, 0);
+				for entry in meshlet.primitive_offset..meshlet.primitive_offset + meshlet.vertex_count() {
+					let (vertex, source) = (local[entry as usize], indices[entry as usize] as usize);
+					let [x, y, z] = [
+						vertex.position[0] & 0xFFFF,
+						vertex.position[0] >> 16,
+						vertex.position[1] & 0xFFFF,
+					]
+					.map(|component| (component as f32 / 65535.0 * 2.0 - 1.0) * radius);
+					for (decoded, exact) in [x + cx, y + cy, z + cz].into_iter().zip(positions[source]) {
+						assert!((decoded - exact).abs() <= tolerance, "{decoded} is not {exact}");
+					}
+					assert_eq!(vertex.uv, uvs[source]);
+				}
+			}
+		});
+	}
+
+	#[test]
+	fn a_mesh_prepared_without_meshlet_vertices_marks_no_meshlet() {
+		prepared_sphere(false, |prepared| {
+			let (bytes, streams) = (prepared.staging.bytes(), &prepared.streams);
+			let meshlets: Vec<ShaderMeshletData> = bytemuck::pod_collect_to_vec(&bytes[streams.meshlets.clone()]);
+
+			assert!(streams.meshlet_vertices.is_empty());
+			assert!(meshlets.iter().all(|meshlet| meshlet.counts & MESHLET_LOCAL_VERTICES == 0));
+		});
 	}
 }

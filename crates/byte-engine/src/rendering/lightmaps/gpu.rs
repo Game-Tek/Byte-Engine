@@ -130,7 +130,12 @@ pub(crate) fn trace(
 	if !render.supports_ray_tracing() {
 		return Err("that the GPU can't trace rays".to_string());
 	}
-	let handles = GeometryHandles::new(&mut render, GeometryCapacity::default(), true);
+	// The bake traces rays and draws no meshlets, so it keeps no meshlet vertices.
+	let capacity = GeometryCapacity {
+		meshlet_vertices: false,
+		..GeometryCapacity::default()
+	};
+	let handles = GeometryHandles::new(&mut render, capacity, true);
 	let mut loader = Loader::new(&device, [].as_slice());
 	let geometry = GeometryBuffers::import(&handles, &render, &mut loader);
 	let (mut client, lanes) = spawn(
@@ -281,6 +286,7 @@ impl BakeLoad {
 			&source,
 			lane.staging().clone(),
 			true,
+			false,
 			PreparedLevels::Finest,
 			|id| {
 				lane.request(BakeRequest::Material(id.to_string()));
@@ -765,6 +771,7 @@ impl Bake {
 			binder.buffer("vertex_normals", handles.vertex_normals),
 			binder.buffer("vertex_uvs", handles.vertex_uvs),
 			binder.buffer("vertex_indices", handles.vertex_indices),
+			binder.buffer("meshlet_vertices", handles.meshlet_vertices),
 			binder.buffer("primitive_indices", handles.primitive_indices),
 			binder.buffer("meshlets", handles.meshlets),
 			binder.buffer("mesh_levels", handles.mesh_levels),

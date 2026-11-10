@@ -48,6 +48,22 @@ level and each view's culling.
 functions that decode them, which the task shader and the four mesh shaders
 share.
 
+## Meshlet vertices
+
+A mesh thread used to reach its vertex in two steps: the meshlet's vertex
+index, then the position that index names. With
+`GeometryCapacity::meshlet_vertices` on, which is the default, the loader also
+writes each meshlet's vertices in the meshlet's own order, as one
+`ShaderMeshletVertex` for each vertex index: the position, rounded to 16 bits
+within the level's sphere, and the UV. A mesh thread then reads its vertex
+directly, and a meshlet's vertices lie in a row.
+
+`write_meshlet_vertices`, in `geometry/prepare.rs`, fills the stream from the
+prepared mesh's other streams, so resource, generated, and merged meshes all
+get it from one place and no baked mesh changes. It marks each meshlet it
+covers with `MESHLET_LOCAL_VERTICES`, and the mesh shaders fall back to the
+indexed vertices for a meshlet without the mark and for a posed instance.
+
 ## Rules a change must keep
 
 - **A triangle keeps its identity.** A mesh shader marks each triangle with
@@ -70,6 +86,10 @@ share.
 - **A group starts at or after the entry of its own index.** The task shader
   stores group `g`'s first entry in word `g` after it has rewritten that word,
   which holds only because every group has at least one entry.
+- **Meshlet vertices are a copy for drawing only.** Material evaluation, rays,
+  skinning, and lightmaps read the indexed vertices. A meshlet vertex lies at
+  the element its index has in the vertex-index stream, so both streams share
+  one range and one capacity.
 - **One occlusion record per workgroup.** The record is keyed by the
   workgroup's first work item and holds one bit per lane, in both kinds of
   workgroup.
@@ -88,5 +108,9 @@ share.
   grouping and shared lanes, and
   `visibility_mesh_main_draws_every_meshlet_of_its_group` covers a grid that
   draws two meshlets.
+- `meshlet_vertices_repeat_each_meshlets_vertices_in_its_own_order`, in
+  `geometry/prepare.rs`, covers the stream, and
+  `mesh_stages_read_a_meshlets_own_vertices` covers the four mesh shaders
+  reading it.
 - `visibility_assets_lower_to_the_platform_shader_language` compiles the
   shaders with the platform compiler.

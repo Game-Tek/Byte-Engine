@@ -63,10 +63,18 @@ main: fn(scene: Scene) -> void {
 		let level: MeshLevel = scene.mesh_levels[mesh.level & MESH_LEVEL_MASK];
 		let meshlet: Meshlet = scene.meshlets[level.first_meshlet + lane_meshlet(work, item, lane)];
 		let view: View = scene.views.views[push_constant.view_base + entry_view_offset(vertex_entry)];
-		let relative_vertex_index: u32 = u32(scene.vertex_indices[meshlet.primitive_offset + thread - vertex_start]);
-		// A posed instance's record points at its own range, which skinning wrote this frame.
-		let vertex_index: u32 = instance_vertex_base(mesh, level) + relative_vertex_index;
-		let object_position: vec3f = scene.vertex_positions[vertex_index];
+		// A meshlet's vertices lie in a row in the meshlet vertex buffer when it keeps them there. Otherwise, and for a
+		// posed instance, each is looked up through its index.
+		let meshlet_vertex: u32 = meshlet.primitive_offset + thread - vertex_start;
+		let object_position: vec3f = vec3f(0.0, 0.0, 0.0);
+		if (draws_local_vertices(mesh, meshlet)) {
+			let local: MeshletVertex = scene.meshlet_vertices[meshlet_vertex];
+			object_position = meshlet_vertex_position(local, level);
+		} else {
+			// A posed instance's record points at its own range, which skinning wrote this frame.
+			let vertex_index: u32 = instance_vertex_base(mesh, level) + u32(scene.vertex_indices[meshlet_vertex]);
+			object_position = scene.vertex_positions[vertex_index];
+		}
 		let world_position: vec3f = mesh.model * vec4f(object_position.x, object_position.y, object_position.z, 1.0);
 		set_mesh_vertex_position(thread, view.view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0));
 		out_instance_index[thread] = instance_index;

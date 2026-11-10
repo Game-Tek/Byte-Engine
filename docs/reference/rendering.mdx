@@ -405,6 +405,7 @@ error for it.
 | Culling groups | Meshlets are culled 32 at a time. An instance that draws more than 8 meshlets has groups of its own, one for each 32 of its meshlets. The meshlets of smaller instances fill groups together, in instance order. |
 | Shared draws | The meshlets a group keeps are drawn together while they fit: consecutive kept meshlets share one draw of up to 64 vertices and 126 triangles. They may belong to different instances, and to different views of one shadow batch. A meshlet that doesn't fit starts the next draw. |
 | Capacity | Each culling group of a large instance, and each meshlet of a small one, takes one of the `render.instances.meshlet-group-capacity` groups. |
+| Meshlet vertices | With `render.geometry.meshlet-vertices` on, the camera and shadow passes draw each meshlet from its own copy of its vertices' positions and UVs. A position there is rounded to 16 bits on each axis within its detail level's bounding sphere, so it lies within the sphere's radius over 65,535 of the vertex. Shading, rays, and lightmaps read the exact vertices. An instance that receives poses is drawn from its own posed vertices. |
 
 | Directional shadow rule | Value |
 | --- | --- |

@@ -7,7 +7,7 @@ use besl::vm::{
 };
 
 use super::geometry::{GeometryCapacity, GeometryCounts, GeometryRanges, RetiredRanges};
-use super::layout::ShaderMeshletData;
+use super::layout::{MESHLET_LOCAL_VERTICES, ShaderMeshletData, ShaderMeshletVertex};
 use super::mesh_dispatch::MeshDispatchWorkItem;
 use super::render_pass::{OCCLUSION_PYRAMID_HEIGHT, OCCLUSION_PYRAMID_MIP_COUNT, OCCLUSION_PYRAMID_WIDTH, OcclusionPhase};
 use super::shader_data::{MESH_FLAG_DOUBLE_SIDED, MESH_FLAG_SKINNED};
@@ -38,6 +38,7 @@ const VERTEX_UVS: &str = "vertex_uvs";
 const VERTEX_INDICES: &str = "vertex_indices";
 const PRIMITIVE_INDICES: &str = "primitive_indices";
 const MESHLETS: &str = "meshlets";
+const MESHLET_VERTICES: &str = "meshlet_vertices";
 const MESH_LEVELS: &str = "mesh_levels";
 const FIXTURE_INSTANCE_INDEX: usize = 3;
 /// The fixture instance's level record.
@@ -1114,6 +1115,9 @@ impl MeshAttributes {
 
 /// Executes one production mesh main over one triangle meshlet placed by `model` and verifies its complete output
 /// contract, including that the triangle winds on screen as it does under an identity model.
+///
+/// With `local_vertices`, the meshlet keeps its vertices in the meshlet vertex buffer and the indexed vertices hold
+/// other positions, so the stage must read the meshlet's own.
 fn assert_triangle_mesh_program(
 	program: ExecutableProgram,
 	view: MeshView,
@@ -1122,6 +1126,7 @@ fn assert_triangle_mesh_program(
 	expected_clip_positions: [[f32; 4]; 3],
 	expected_render_target_array_index: Option<u32>,
 	attributes: MeshAttributes,
+	local_vertices: bool,
 ) {
 	let mut views = buffer(&program, slot(&program, VIEWS));
 	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
@@ -1133,10 +1138,22 @@ fn assert_triangle_mesh_program(
 	write_fixture_level(&mut mesh_levels, [0.0, 0.0, 0.0, 2.0], 1, base_vertex);
 	let vertex_count = base_vertex as usize + 3;
 	let mut positions = array_buffer(&program, slot(&program, VERTEX_POSITIONS), vertex_count);
-	for (index, position) in [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]].into_iter().enumerate() {
+	const LEVEL_SPHERE: [f32; 4] = [0.0, 0.0, 0.0, 2.0];
+	let corners = [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]];
+	let mut meshlet_vertices =
+		local_vertices.then(|| array_buffer(&program, slot(&program, MESHLET_VERTICES), FIXTURE_TABLE_LENGTH));
+	for (index, position) in corners.into_iter().enumerate() {
+		// The indexed vertices lie elsewhere when the meshlet keeps its own.
+		let indexed = if local_vertices { [9.0, 9.0, 9.0] } else { position };
 		positions
-			.write_array_element(base_vertex as usize + index, Value::Vec3F(position))
+			.write_array_element(base_vertex as usize + index, Value::Vec3F(indexed))
 			.expect("mesh vertex");
+		if let Some(meshlet_vertices) = &mut meshlet_vertices {
+			let vertex = ShaderMeshletVertex::new(position, LEVEL_SPHERE, [0; 4]);
+			meshlet_vertices
+				.write_array_member(index, "position", Value::Vec2U(vertex.position))
+				.expect("meshlet vertex");
+		}
 	}
 	// A stage that passes no attributes reads no UVs, so its program keeps no UV binding.
 	let mut vertex_uvs = attributes
@@ -1158,7 +1175,10 @@ fn assert_triangle_mesh_program(
 			.expect("triangle index");
 	}
 	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), FIXTURE_MESHLET_INDEX + 1);
-	let meshlet = ShaderMeshletData::new(0, 0, [3, 1], [0.0; 4], [0.0, 0.0, 0.0, 2.0], [0.0, 0.0, 1.0], 2.0);
+	let mut meshlet = ShaderMeshletData::new(0, 0, [3, 1], [0.0; 4], LEVEL_SPHERE, [0.0, 0.0, 1.0], 2.0);
+	if local_vertices {
+		meshlet.counts |= MESHLET_LOCAL_VERTICES;
+	}
 	write_meshlet(&mut meshlets, FIXTURE_MESHLET_INDEX, meshlet);
 	let mut push_constant = push_constant_buffer(&program);
 	push_constant.write("work_item_base", Value::U32(0)).expect("mesh work base");
@@ -1204,6 +1224,9 @@ fn assert_triangle_mesh_program(
 		descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
 		descriptors.bind_buffer(slot(&program, MESH_LEVELS), &mut mesh_levels);
 		descriptors.bind_buffer(slot(&program, VERTEX_POSITIONS), &mut positions);
+		if let Some(meshlet_vertices) = &mut meshlet_vertices {
+			descriptors.bind_buffer(slot(&program, MESHLET_VERTICES), meshlet_vertices);
+		}
 		if let Some(vertex_uvs) = &mut vertex_uvs {
 			descriptors.bind_buffer(slot(&program, VERTEX_UVS), vertex_uvs);
 		}
@@ -1229,7 +1252,8 @@ fn assert_triangle_mesh_program(
 		assert_rgba_close(
 			mesh_outputs.vertex_position(index).expect("mesh vertex output"),
 			expected,
-			0.00001,
+			// A meshlet vertex stores its position to 16 bits of its level's sphere.
+			if local_vertices { 0.0001 } else { 0.00001 },
 		);
 	}
 	// The fixture triangle winds counterclockwise as an identity model shows it. Back-face culling decides by winding, so
@@ -1270,7 +1294,34 @@ fn visibility_mesh_main_emits_identity_triangle_and_metadata() {
 		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
 		MeshAttributes::InstanceAndPrimitive,
+		false,
 	);
+}
+
+/// Verifies the mesh stages draw a meshlet from the meshlet vertex buffer when it keeps its vertices there.
+#[test]
+fn mesh_stages_read_a_meshlets_own_vertices() {
+	for (program, attributes, layer) in [
+		(asset!("visibility-mesh.besl"), MeshAttributes::InstanceAndPrimitive, None),
+		(
+			asset!("masked-visibility-mesh.besl"),
+			MeshAttributes::InstancePrimitiveAndUv,
+			None,
+		),
+		(asset!("shadow-mesh.besl"), MeshAttributes::None, Some(0)),
+		(asset!("masked-shadow-mesh.besl"), MeshAttributes::Instance, Some(0)),
+	] {
+		assert_triangle_mesh_program(
+			program,
+			MeshView::CAMERA,
+			IDENTITY_AFFINE_MATRIX,
+			0,
+			[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
+			layer,
+			attributes,
+			true,
+		);
+	}
 }
 
 /// Verifies the masked visibility mesh stage also passes its fragment stage the UV, at a location of its own.
@@ -1284,6 +1335,7 @@ fn masked_visibility_mesh_main_emits_identity_triangle_and_metadata() {
 		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
 		MeshAttributes::InstancePrimitiveAndUv,
+		false,
 	);
 }
 
@@ -1419,6 +1471,7 @@ fn visibility_mesh_main_reads_vertices_from_its_base_vertex() {
 		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
 		MeshAttributes::InstanceAndPrimitive,
+		false,
 	);
 }
 
@@ -1434,6 +1487,7 @@ fn shadow_mesh_main_emits_selected_view_triangle_and_metadata() {
 		[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
 		Some(3),
 		MeshAttributes::None,
+		false,
 	);
 }
 
@@ -1448,6 +1502,7 @@ fn masked_shadow_mesh_main_emits_selected_view_triangle_and_instance() {
 		[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
 		Some(3),
 		MeshAttributes::Instance,
+		false,
 	);
 }
 
@@ -1466,6 +1521,7 @@ fn visibility_mesh_main_keeps_a_mirrored_instance_facing_front() {
 		[[1.0, -1.0, 0.0, 1.0], [-1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
 		MeshAttributes::InstanceAndPrimitive,
+		false,
 	);
 }
 
@@ -1480,6 +1536,7 @@ fn shadow_mesh_main_keeps_a_mirrored_instance_facing_front() {
 		[[3.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
 		Some(3),
 		MeshAttributes::None,
+		false,
 	);
 }
 
@@ -4409,6 +4466,7 @@ fn two_mesh_geometry_capacity() -> GeometryCapacity {
 		meshlets: 8,
 		levels: 4,
 		skinning_vertices: 100,
+		meshlet_vertices: true,
 	}
 }
 

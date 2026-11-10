@@ -50,6 +50,9 @@ Scene: layer {
 	vertex_normals: descriptor<{ type: vec2u16[], binding: 3, access: read, memory: device }>;
 	vertex_uvs: descriptor<{ type: vec2f16[], binding: 4, access: read, memory: device }>;
 	vertex_indices: descriptor<{ type: u16[], binding: 5, access: read, memory: device }>;
+	// Each meshlet vertex's position and UV, at the element its index has in `vertex_indices`. Only meshlets marked
+	// `MESHLET_LOCAL_VERTICES` have theirs here.
+	meshlet_vertices: descriptor<{ type: MeshletVertex[], binding: 18, access: read, memory: device }>;
 	// Three meshlet-local vertex indices per triangle.
 	primitive_indices: descriptor<{ type: u8[], binding: 6, access: read, memory: device }>;
 	meshlets: descriptor<{ type: Meshlet[], binding: 7, access: read, memory: device }>;

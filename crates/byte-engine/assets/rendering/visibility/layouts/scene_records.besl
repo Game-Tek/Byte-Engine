@@ -63,6 +63,34 @@ MESH_FLAG_DOUBLE_SIDED: const u32 = 16777216;
 // `Mesh::level` flag of an instance skinning posed this frame: its vertices start at `Mesh::surface.x`.
 MESH_FLAG_SKINNED: const u32 = 33554432;
 
+// One vertex of a meshlet, stored in the meshlet's own order so a mesh stage reads a meshlet's vertices in a row.
+// `position` holds the object-space position as UNORM16 components within the level's sphere: x and y in
+// `position.x`, low half first, and z in the low half of `position.y`. `uv` is the vertex's UV.
+MeshletVertex: struct {
+	position: vec2u,
+	uv: vec2f16,
+}
+
+// `Meshlet::counts` flag of a meshlet whose vertices are in the meshlet vertex buffer.
+MESHLET_LOCAL_VERTICES: const u32 = 65536;
+
+// Returns the object-space position a meshlet vertex stores within its level's sphere.
+meshlet_vertex_position: fn (vertex: MeshletVertex, level: MeshLevel) -> vec3f {
+	let quantized: vec3f = vec3f(
+		f32(vertex.position.x & 65535),
+		f32(vertex.position.x >> 16),
+		f32(vertex.position.y & 65535)
+	) / 65535.0;
+	let center: vec3f = vec3f(level.bounding_sphere.x, level.bounding_sphere.y, level.bounding_sphere.z);
+	return center + (quantized * 2.0 - vec3f(1.0, 1.0, 1.0)) * level.bounding_sphere.w;
+}
+
+// Returns whether an instance draws `meshlet` from the meshlet vertex buffer. A posed instance never does: its
+// vertices are its own, which skinning wrote this frame.
+draws_local_vertices: fn (mesh: Mesh, meshlet: Meshlet) -> bool {
+	return (meshlet.counts & MESHLET_LOCAL_VERTICES) != 0 && (mesh.level & MESH_FLAG_SKINNED) == 0;
+}
+
 // Returns the first vertex of an instance that draws `level`: its own posed range when skinning posed it this frame,
 // else the level's.
 instance_vertex_base: fn (mesh: Mesh, level: MeshLevel) -> u32 {

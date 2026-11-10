@@ -158,6 +158,44 @@ pub(crate) struct ShaderMeshletData {
 	pub(crate) bounds: [u32; 2],
 }
 
+/// The flag of [`ShaderMeshletData::counts`] of a meshlet whose vertices are also stored in the meshlet vertex
+/// stream, which the mesh stages then read in place of the indexed vertices. `scene_records.besl` spells it too.
+pub(crate) const MESHLET_LOCAL_VERTICES: u32 = 1 << 16;
+
+/// The `ShaderMeshletVertex` struct is one vertex of a meshlet as the mesh stages read it: its position and UV, stored
+/// in the meshlet's own order, so drawing a meshlet reads its vertices in a row without looking each one up through
+/// the vertex-index stream.
+///
+/// It lies at the same element of its stream as the vertex's index does in the vertex-index stream. Material
+/// evaluation, rays, and skinning keep reading the indexed vertices, which stay exact.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct ShaderMeshletVertex {
+	/// The position as UNORM16 components within the level's sphere: x and y in the first word, low half first, and z
+	/// in the low half of the second. A component `c` decodes to `center + (c / 65535 * 2 - 1) * radius`.
+	pub(crate) position: [u32; 2],
+	/// The UV as the half-float pair the vertex UV stream stores.
+	pub(crate) uv: [u8; 4],
+}
+
+impl ShaderMeshletVertex {
+	/// Packs `position`, which lies within `level_sphere`, and `uv`. The stored position is at most half a step,
+	/// the sphere's radius over 65,535, from `position` on each axis.
+	pub(crate) fn new(position: [f32; 3], [cx, cy, cz, radius]: [f32; 4], uv: [u8; 4]) -> Self {
+		let [x, y, z] = [(position[0], cx), (position[1], cy), (position[2], cz)].map(|(component, center)| {
+			if radius > 0.0 {
+				(((component - center) / radius * 0.5 + 0.5).clamp(0.0, 1.0) * 65535.0).round() as u32
+			} else {
+				32768
+			}
+		});
+		Self {
+			position: [x | y << 16, z],
+			uv,
+		}
+	}
+}
+
 impl ShaderMeshletData {
 	/// Packs a meshlet whose indices start at `primitive_offset` and `triangle_offset`.
 	///

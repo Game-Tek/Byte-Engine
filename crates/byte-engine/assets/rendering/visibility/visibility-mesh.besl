@@ -1,10 +1,14 @@
+// Draws the groups of meshlets the task stage kept into the visibility buffer: each triangle's instance, and its
+// meshlet and place in it.
+
 use ::byte_engine::rendering::visibility::layouts::scene_records::*;
 use ::byte_engine::rendering::visibility::layouts::scene::*;
 
+// The task stage's kept meshlets, in groups that each fill one mesh grid. `scene_records` gives the format.
 meshlet_instances: task_payload<u32, 193>;
 out_instance_index: output<u32, 0, 126>;
 out_primitive_index: output<u32, 1, 126>;
-// One UV per meshlet vertex, interpolated across each triangle for the alpha test.
+// One UV per vertex, interpolated across each triangle for the alpha test.
 out_uv: vertex_output<vec2f16, 2, 64>;
 
 // The task stage's batch layout. The camera's visibility pass draws one view into an unlayered target.
@@ -16,47 +20,75 @@ push_constant: push_constant {
 }
 
 main: fn(scene: Scene) -> void {
-	let payload_index: u32 = threadgroup_position();
-	// Decode the meshlet and view from the same payload read so a meshlet cannot be paired with another grid's view.
-	let meshlet_instance: u32 = meshlet_instances[payload_index];
-	// The task stage wrote its one instance after every meshlet word.
-	let instance_index: u32 = meshlet_instances[192];
-	let view_offset: u32 = (meshlet_instance >> 12) & 7;
-	let mesh: Mesh = scene.meshes[instance_index];
-	let level: MeshLevel = scene.mesh_levels[mesh.level & MESH_LEVEL_MASK];
-	// Task shaders pack the meshlet relative to its level's first meshlet.
-	let meshlet_index: u32 = level.first_meshlet + (meshlet_instance & 4095);
-	let view: View = scene.views.views[push_constant.view_base + view_offset];
-	let meshlet: Meshlet = scene.meshlets[meshlet_index];
-	let primitive_index: u32 = thread_idx();
+	let group: u32 = threadgroup_position();
+	let work: u32 = meshlet_instances[MESHLET_PAYLOAD_WORK];
+	let thread: u32 = thread_idx();
 
-	let vertex_count: u32 = meshlet.counts & 255;
-	let triangle_count: u32 = (meshlet.counts >> 8) & 255;
+	// Find the entries that hold this thread's vertex and triangle among the group's, and the group's totals. Each
+	// entry's vertices and triangles follow those of the entries before it, and its triangles name its own vertices.
+	let vertex_entry: u32 = 0;
+	let vertex_start: u32 = 0;
+	let triangle_entry: u32 = 0;
+	let triangle_start: u32 = 0;
+	let triangle_vertex_start: u32 = 0;
+	let vertex_count: u32 = 0;
+	let triangle_count: u32 = 0;
+	for (let index: u32 = group_first_entry(meshlet_instances[group]); index < MESHLET_PAYLOAD_WORK; index = index + 1) {
+		let entry: u32 = meshlet_instances[index];
+		if (thread >= vertex_count && thread < entry_vertex_end(entry)) {
+			vertex_entry = entry;
+			vertex_start = vertex_count;
+		}
+		if (thread >= triangle_count && thread < entry_triangle_end(entry)) {
+			triangle_entry = entry;
+			triangle_start = triangle_count;
+			triangle_vertex_start = vertex_count;
+		}
+		vertex_count = entry_vertex_end(entry);
+		triangle_count = entry_triangle_end(entry);
+		if ((entry & MESHLET_ENTRY_ENDS_GROUP) != 0) {
+			break;
+		}
+	}
 
 	set_mesh_output_counts(vertex_count, triangle_count);
 
-	if (primitive_index < vertex_count) {
-		let relative_vertex_index: u32 = u32(scene.vertex_indices[meshlet.primitive_offset + primitive_index]);
-		let vertex_index: u32 = instance_vertex_base(mesh, level) + relative_vertex_index;
+	if (thread < vertex_count) {
+		// The entry's lane names its instance and meshlet through the workgroup's work items.
+		let lane: u32 = entry_lane(vertex_entry);
+		let item: u32 = scene.mesh_dispatch_work[lane_work_index(work, lane)];
+		let instance_index: u32 = item >> 7;
+		let mesh: Mesh = scene.meshes[instance_index];
+		let level: MeshLevel = scene.mesh_levels[mesh.level & MESH_LEVEL_MASK];
+		let meshlet: Meshlet = scene.meshlets[level.first_meshlet + lane_meshlet(work, item, lane)];
+		let view: View = scene.views.views[push_constant.view_base + entry_view_offset(vertex_entry)];
+		let relative_vertex_index: u32 = u32(scene.vertex_indices[meshlet.primitive_offset + thread - vertex_start]);
 		// A posed instance's record points at its own range, which skinning wrote this frame.
+		let vertex_index: u32 = instance_vertex_base(mesh, level) + relative_vertex_index;
 		let object_position: vec3f = scene.vertex_positions[vertex_index];
-		let position: vec4f = vec4f(object_position.x, object_position.y, object_position.z, 1.0);
-
-		let world_position: vec3f = mesh.model * position;
-		let clip_position: vec4f = view.view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0);
-		set_mesh_vertex_position(primitive_index, clip_position);
-		out_uv[primitive_index] = scene.vertex_uvs[vertex_index];
+		let world_position: vec3f = mesh.model * vec4f(object_position.x, object_position.y, object_position.z, 1.0);
+		set_mesh_vertex_position(thread, view.view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0));
+		out_uv[thread] = scene.vertex_uvs[vertex_index];
 	}
 
-	if (primitive_index < triangle_count) {
-		let first_index: u32 = (meshlet.triangle_offset + primitive_index) * 3;
+	if (thread < triangle_count) {
+		// The entry's lane names its instance and meshlet through the workgroup's work items.
+		let lane: u32 = entry_lane(triangle_entry);
+		let item: u32 = scene.mesh_dispatch_work[lane_work_index(work, lane)];
+		let instance_index: u32 = item >> 7;
+		let mesh: Mesh = scene.meshes[instance_index];
+		let level: MeshLevel = scene.mesh_levels[mesh.level & MESH_LEVEL_MASK];
+		let meshlet_index: u32 = level.first_meshlet + lane_meshlet(work, item, lane);
+		let meshlet: Meshlet = scene.meshlets[meshlet_index];
+		let first_index: u32 = (meshlet.triangle_offset + thread - triangle_start) * 3;
+		// A triangle names its meshlet's vertices, which follow the vertices of the group's earlier entries.
 		let triangle: vec3u = vec3u(
 			u32(scene.primitive_indices[first_index]),
 			u32(scene.primitive_indices[first_index + 1]),
 			u32(scene.primitive_indices[first_index + 2])
-		);
-		set_mesh_triangle(primitive_index, instance_triangle(mesh, triangle));
-		out_instance_index[primitive_index] = instance_index;
-		out_primitive_index[primitive_index] = (meshlet_index << 8) | (primitive_index & 255);
+		) + vec3u(triangle_vertex_start, triangle_vertex_start, triangle_vertex_start);
+		set_mesh_triangle(thread, instance_triangle(mesh, triangle));
+		out_instance_index[thread] = instance_index;
+		out_primitive_index[thread] = (meshlet_index << 8) | ((thread - triangle_start) & 255);
 	}
 }

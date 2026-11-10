@@ -139,20 +139,27 @@ pub(super) fn record_meshlet_dispatches(
 		};
 		let c = c.bind_raster_pipeline(pipeline);
 		c.bind_descriptor_sets(&descriptor_sets);
-		for first_layer in (0..view_count).step_by(MAX_TASK_VIEWS) {
-			let batch_views = (view_count - first_layer).min(MAX_TASK_VIEWS);
-			c.write_push_constant(
-				0,
-				[
-					dispatch.work_item_base,
-					(view_base + first_layer) as u32,
-					first_layer as u32,
-					batch_views as u32,
-					occlusion as u32,
-					minimum_caster_extent.to_bits(),
-				],
-			);
-			c.dispatch_meshes(dispatch.workgroup_count, 1, 1);
+		// The large instances' workgroups, then the ones small instances' meshlets share.
+		for (range, shared_lanes) in [(dispatch.chunks, 0), (dispatch.shared, 1)] {
+			if range.workgroup_count == 0 {
+				continue;
+			}
+			for first_layer in (0..view_count).step_by(MAX_TASK_VIEWS) {
+				let batch_views = (view_count - first_layer).min(MAX_TASK_VIEWS);
+				c.write_push_constant(
+					0,
+					[
+						range.work_item_base,
+						(view_base + first_layer) as u32,
+						first_layer as u32,
+						batch_views as u32,
+						occlusion as u32,
+						minimum_caster_extent.to_bits(),
+						shared_lanes,
+					],
+				);
+				c.dispatch_meshes(range.workgroup_count, 1, 1);
+			}
 		}
 	}
 }
@@ -971,7 +978,9 @@ impl VisibilityRenderPass {
 			&& render_info.transparent_evaluations.iter().any(|evaluation| {
 				evaluation.reads_backdrop && evaluation_is_active(&render_info.transparent_evaluation_mask, evaluation.index)
 			});
-		let backdrop = reads_backdrop.then(|| self.backdrop.prepare(pipeline_manager, extent)).flatten();
+		let backdrop = reads_backdrop
+			.then(|| self.backdrop.prepare(pipeline_manager, extent))
+			.flatten();
 		// The transparent phase waits for the copy it reads while the copy's pipeline compiles, as it waits for its own.
 		let draws_transparent = !dispatches.transparent.is_empty() && (backdrop.is_some() || !reads_backdrop);
 		// Each stage records its counter only when it records commands, so an idle stage reports no time.
@@ -1112,7 +1121,9 @@ impl VisibilityRenderPass {
 
 			// The copy reads the opaque layer and the background, before the transparent draw overwrites the depth.
 			if let Some(stage) = &backdrop {
-				c.counter(counters.backdrop, |c| record_compute_stages(c, None, std::slice::from_ref(stage)));
+				c.counter(counters.backdrop, |c| {
+					record_compute_stages(c, None, std::slice::from_ref(stage))
+				});
 			}
 			// The visibility buffer holds one transparent layer. Resolving every blend primitive together lets
 			// normal depth testing select the nearest surface before source-over evaluation.

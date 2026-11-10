@@ -5,6 +5,7 @@
 		"lightmaps",
 		"material-evaluation",
 		"material-parameters",
+		"meshlet-dispatch",
 		"shadow-maps",
 		"skinning",
 		"surfel-gi",

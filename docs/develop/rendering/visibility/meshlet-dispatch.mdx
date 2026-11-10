@@ -1,0 +1,84 @@
+---
+title: Meshlet dispatch
+description: Understand how the visibility pipeline hands meshlets to task workgroups and packs the kept ones into mesh grids before you change the work items, the task payload, or a mesh shader.
+icon: Boxes
+---
+
+Read this page before you change the mesh dispatch work items, the task
+shader, its payload, or any mesh shader. What an application can rely on is
+specified under [the visibility pipeline](/docs/reference/rendering#the-visibility-pipeline)
+in the rendering reference.
+
+## Why small meshlets are packed
+
+A task workgroup culls 32 meshlets, one on each lane, and a mesh grid draws up
+to 64 vertices and 126 triangles. A scene of many small meshes fills neither
+when every instance has workgroups and grids of its own: a grass tuft of one
+20-vertex meshlet would run a workgroup with 31 idle lanes, then a grid a
+third full. So the pipeline packs twice, every frame, from what's drawn:
+
+- **Small instances share workgroups.** The meshlets of instances that draw
+  `SHARED_INSTANCE_MESHLETS` meshlets or fewer fill workgroups together.
+- **Kept meshlets share grids.** The task shader groups the meshlets it keeps,
+  and one mesh grid draws a whole group.
+
+Nothing is baked or stored for this, so it follows each instance's detail
+level and each view's culling.
+
+## How it's built
+
+1. `mesh_dispatch.rs` writes the frame's work items for each raster phase: a
+   chunk item for every 32 meshlets of each large instance, then an item for
+   every meshlet of each small instance, padded with empty items to whole
+   workgroups. `MeshDispatch` holds the two ranges.
+2. `record_meshlet_dispatches`, in `render_pass.rs`, dispatches each range.
+   The `shared_lanes` push constant tells the task shader which kind it reads.
+3. `meshlet-task.besl` culls one meshlet on each lane. Each kept meshlet and
+   view becomes a payload entry that names its lane, its view, and its vertex
+   and triangle counts.
+4. After the lanes finish, lane 0 forms the groups: each takes the next entry
+   while the group stays within one grid's vertices and triangles. It rewrites
+   the counts as the group's running totals, marks each group's last entry,
+   and stores each group's first entry.
+5. A mesh shader draws one group. Each thread walks the group's entries to
+   find the one that holds its vertex and the one that holds its triangle,
+   then reads that entry's instance and meshlet through the work items.
+
+`layouts/scene_records.besl` specifies the payload words and holds the
+functions that decode them, which the task shader and the three mesh shaders
+share.
+
+## Rules a change must keep
+
+- **A triangle keeps its identity.** A mesh shader writes each triangle's own
+  instance, meshlet, and index in that meshlet, whatever grid draws it.
+  Material evaluation finds the triangle from those, so it doesn't know about
+  groups.
+- **A group fits one grid.** `MAX_GROUP_VERTICES` and `MAX_GROUP_TRIANGLES` in
+  `scene_records.besl` must equal `maximum_vertices` and `maximum_primitives`
+  in the mesh shaders' `.bead` files.
+- **An entry never holds a count of zero.** The payload stores counts minus
+  one, so the task shader keeps no meshlet without a vertex or a triangle.
+- **A group starts at or after the entry of its own index.** The task shader
+  stores group `g`'s first entry in word `g` after it has rewritten that word,
+  which holds only because every group has at least one entry.
+- **One occlusion record per workgroup.** The record is keyed by the
+  workgroup's first work item and holds one bit per lane, in both kinds of
+  workgroup.
+- **Shared workgroups end whole.** The work list pads the last one with empty
+  items, and a lane with an empty item reads instance zero and emits nothing.
+- **Every meshlet pipeline declares the task shader's push constants.** The
+  `.pipeline` files give their size.
+
+## Tests
+
+- `mesh_dispatch.rs` tests the work list: which instances share workgroups,
+  the padding, and what's left out when the list is full.
+- `visibility/tests.rs` runs the shaders in the BESL VM.
+  `task_main_groups_small_meshlets_into_full_mesh_grids` and
+  `task_main_culls_the_meshlet_each_shared_lane_names` cover the task shader's
+  grouping and shared lanes, and
+  `visibility_mesh_main_draws_every_meshlet_of_its_group` covers a grid that
+  draws two meshlets.
+- `visibility_assets_lower_to_the_platform_shader_language` compiles the
+  shaders with the platform compiler.

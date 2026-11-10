@@ -325,7 +325,7 @@ impl std::fmt::Display for VmError {
 			),
 			VmError::MissingTaskPayload { name } => write!(
 				f,
-				"Missing task payload `{name}`. The most likely cause is that the BESL mesh shader read a task-payload array that the host did not bind before execution."
+				"Missing task payload `{name}`. The most likely cause is that a BESL mesh shader read a task-payload array that the host did not bind before execution, or that a task shader read an element before it wrote it."
 			),
 			VmError::TaskPayloadIndexOutOfBounds { name, index, count } => write!(
 				f,

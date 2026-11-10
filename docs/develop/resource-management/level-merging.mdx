@@ -8,6 +8,19 @@ Read this page before you change how a level bake clusters repeated mesh
 placements. The [levels reference](/docs/reference/levels#merged-placements)
 specifies what merges; this page covers how and why.
 
+## Merging is off by default
+
+`LevelAssetHandler::default()` keeps every entity, and the engine's default
+asset handlers register that one. `LevelAssetHandler::merging(threshold)`
+clusters the meshes a level places more than `threshold` times.
+
+It's off because a cluster picks one detail level for all its copies, so they
+change level together, which shows as popping in a field of grass. Separate
+instances don't pop that way, and the visibility pipeline now
+[draws small instances together](/docs/develop/rendering/visibility/meshlet-dispatch),
+which recovers most of what merging saved on the GPU. Merging still saves the
+per-instance work on the CPU, so the code stays for scenes that need that more.
+
 ## Why the level bake clusters
 
 A scene with tens of thousands of copies of a few small meshes, such as grass,

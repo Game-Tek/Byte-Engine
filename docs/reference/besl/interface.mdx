@@ -361,6 +361,8 @@ scratch: workgroup<f32, 64>;
 
 Omit the count for one shared value. Add a positive count for shared arrays.
 Use `workgroup_barrier()` before reading values written by other invocations.
+A task stage can read back the payload elements its workgroup wrote. Reading an
+element that none of its invocations wrote gives an undefined value.
 
 ## Push constants
 

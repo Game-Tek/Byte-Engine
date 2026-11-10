@@ -2714,6 +2714,31 @@ fn task_payload_writes_respect_the_declared_count() {
 }
 
 #[test]
+fn a_task_shader_reads_back_the_payload_elements_it_wrote() {
+	let executable = compile_test_program(
+		r#"
+		visible_meshlets: task_payload<u32, 4>;
+
+		main: fn () -> void {
+			visible_meshlets[0] = 5;
+			visible_meshlets[1] = visible_meshlets[0] | 16;
+		}
+		"#,
+		None,
+	);
+	let mut outputs = TaskOutputs::new();
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_task_outputs(&mut outputs);
+		executable
+			.run_main(&mut descriptors)
+			.expect("a task shader should read the payload element it wrote");
+	}
+
+	assert_eq!(outputs.payload_value("visible_meshlets", 1), Some(&Value::U32(21)));
+}
+
+#[test]
 fn mesh_output_counts_clear_reused_capture_ranges() {
 	let mut outputs = MeshOutputs::new();
 	outputs.set_counts(2, 2, 2, 2, false).expect("Expected bounded mesh outputs");

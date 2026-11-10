@@ -150,8 +150,9 @@ impl RenderInfo {
 pub struct InstanceCapacity {
 	/// Instances one frame draws, each one primitive of a renderable mesh.
 	pub instances: u32,
-	/// Groups of up to 32 meshlets of one instance, which is what one task workgroup culls. Each instance takes one
-	/// group per 32 meshlets of the detail level it draws, so a scene of small meshes needs about as many as instances.
+	/// Work items for the task workgroups that cull meshlets, 32 to a workgroup. An instance takes one item per 32
+	/// meshlets of the detail level it draws, or one per meshlet when the level has 8 or fewer, so a scene of small
+	/// meshes needs up to 8 for each instance.
 	pub meshlet_groups: u32,
 }
 

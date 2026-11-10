@@ -397,6 +397,13 @@ error for it.
 | Lightmap UVs | None. |
 | Simple pipeline | Doesn't draw merged meshes. |
 
+| Meshlet drawing rule | Value |
+| --- | --- |
+| Culling | Each view culls every meshlet of an instance it may show: by the view's frustum, by the meshlet's normal cone unless the material is double-sided, and, for the camera, by occlusion. The meshlets of a skinned instance that receives poses are never culled. |
+| Culling groups | Meshlets are culled 32 at a time. An instance that draws more than 8 meshlets has groups of its own, one for each 32 of its meshlets. The meshlets of smaller instances fill groups together, in instance order. |
+| Shared draws | The meshlets a group keeps are drawn together while they fit: consecutive kept meshlets share one draw of up to 64 vertices and 126 triangles. They may belong to different instances, and to different views of one shadow batch. A meshlet that doesn't fit starts the next draw. |
+| Capacity | Each culling group of a large instance, and each meshlet of a small one, takes one of the `render.instances.meshlet-group-capacity` groups. |
+
 | Directional shadow rule | Value |
 | --- | --- |
 | Cascades | Four, splitting the range from the camera to `render.directional-shadows.distance` by the split blend between logarithmic and even. |

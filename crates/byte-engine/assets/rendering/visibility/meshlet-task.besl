@@ -1,10 +1,12 @@
-// Up to six views of each of the workgroup's 32 meshlets.
+// Culls the meshlets of one workgroup's lanes against up to six views, and hands the mesh stage the ones it keeps in
+// groups that each fill one mesh grid. Small meshlets share a grid, whatever instances they belong to.
 
 use ::byte_engine::rendering::visibility::layouts::scene_records::*;
 use ::byte_engine::rendering::visibility::layouts::scene::*;
 use ::byte_engine::rendering::visibility::layouts::occlusion::*;
 
-// Up to six views of each of the workgroup's 32 meshlets, then the workgroup's instance in the last word.
+// Up to six views of each of the workgroup's 32 meshlets, then the workgroup's work in the last word. `scene_records`
+// gives the format.
 meshlet_instances: task_payload<u32, 193>;
 visible_count: workgroup<atomicu32>;
 // The late pass's unoccluded meshlets, one bit per lane.
@@ -14,7 +16,9 @@ unoccluded_meshlets: workgroup<atomicu32>;
 // visibility pass is a batch of one view. `occlusion_phase` selects one of the `OCCLUSION_*` culling phases, or zero to
 // cull by frustum and normal cone only, as the shadow views do. `minimum_caster_extent` is the narrowest instance, in
 // normalized device units across x, that the views draw: directional cascades skip small casters with it, and every
-// other dispatch passes zero, since a perspective view's widths change with distance.
+// other dispatch passes zero, since a perspective view's widths change with distance. `shared_lanes` is nonzero when
+// every lane has a work item of its own, 32 to a workgroup from `work_item_base`: the meshlets of small instances,
+// which share workgroups. Otherwise each workgroup has one item: an instance and a chunk of 32 of its meshlets.
 push_constant: push_constant {
 	work_item_base: u32,
 	view_base: u32,
@@ -22,6 +26,7 @@ push_constant: push_constant {
 	view_count: u32,
 	occlusion_phase: u32,
 	minimum_caster_extent: f32,
+	shared_lanes: u32,
 }
 
 // Draws the meshlets the previous late pass found unoccluded. Their depth builds this frame's occlusion pyramid.
@@ -177,11 +182,23 @@ sphere_is_occluded: fn(occlusion: Occlusion, view: View, sphere: vec4f) -> bool 
 
 main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	let workgroup_index: u32 = thread_position() / 32;
-	let work_index: u32 = push_constant.work_item_base + workgroup_index;
-	let work: u32 = scene.mesh_dispatch_work[work_index];
-	let chunk_index: u32 = work & 127;
-	let instance_index: u32 = work >> 7;
 	let lane: u32 = thread_idx();
+	let shared: bool = push_constant.shared_lanes != 0;
+	// The workgroup's first work item, which also keys its occlusion record.
+	let work_index: u32 = push_constant.work_item_base + workgroup_index;
+	let work: u32 = work_index;
+	if (shared) {
+		work_index = push_constant.work_item_base + workgroup_index * 32;
+		work = work_index | MESHLET_WORK_SHARED;
+	}
+	let item: u32 = scene.mesh_dispatch_work[lane_work_index(work, lane)];
+	// A lane past the last shared item has no meshlet. It reads instance zero, and emits nothing.
+	let has_item: bool = shared == false || item != EMPTY_WORK_ITEM;
+	if (has_item == false) {
+		item = 0;
+	}
+	let instance_index: u32 = item >> 7;
+	let relative_meshlet_index: u32 = lane_meshlet(work, item, lane);
 	let view_count: u32 = min(push_constant.view_count, MAX_TASK_VIEWS);
 	let phase: u32 = push_constant.occlusion_phase;
 
@@ -196,8 +213,8 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 		level.bounding_sphere.x, level.bounding_sphere.y, level.bounding_sphere.z, level.caster_radius
 	));
 
-	// Bit `v` marks view `view_base + v` as one the instance may show in. Every lane computes the same mask, so a
-	// workgroup whose instance no view sees returns before it reads a single meshlet.
+	// Bit `v` marks view `view_base + v` as one the lane's instance may show in. Lanes of one instance compute the
+	// same mask, so a workgroup whose one instance no view sees returns before it reads a single meshlet.
 	let instance_views: u32 = 0;
 	for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
 		let view: View = scene.views.views[push_constant.view_base + view_offset];
@@ -210,14 +227,14 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 
 	// Every view of a phase reads the same work range, so both camera passes read the same word and agree on what the
 	// early pass drew whatever the word holds. Instances keep their order between frames, so a word mostly stays with
-	// its chunk.
+	// its lanes' meshlets.
 	let previously_unoccluded: u32 = 0;
 	if (phase == OCCLUSION_EARLY || phase == OCCLUSION_LATE) {
 		previously_unoccluded = occlusion.occlusion_visibility[work_index];
 	}
-	if (phase == OCCLUSION_EARLY && previously_unoccluded == 0) {
-		instance_views = 0;
-	}
+	// The early pass draws only what the previous late pass found unoccluded.
+	let drawn_early: bool = ((previously_unoccluded >> lane) & 1) != 0;
+	let draws: bool = phase != OCCLUSION_EARLY || drawn_early;
 	// Only the camera's batch of one view culls by occlusion, so one test covers every view in the mask. The nested
 	// condition skips the pyramid read entirely when it cannot matter, since shader languages need not short-circuit.
 	// A hidden instance hides every meshlet, and the early pass already drew any it had to.
@@ -226,7 +243,9 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 			instance_views = 0;
 		}
 	}
-	if (instance_views == 0) {
+	// Lanes that share one instance agree, so they all leave here. Lanes with instances of their own go on, since
+	// another lane may still draw.
+	if (shared == false && (instance_views == 0 || (phase == OCCLUSION_EARLY && previously_unoccluded == 0))) {
 		if (lane == 0) {
 			if (phase == OCCLUSION_LATE) {
 				occlusion.occlusion_visibility[work_index] = 0;
@@ -236,29 +255,26 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 		return;
 	}
 
-	let first_meshlet: u32 = chunk_index * 32;
-	let chunk_meshlet_count: u32 = min(level.meshlet_count - first_meshlet, 32);
-
 	if (lane == 0) {
 		atomic_store(visible_count, 0);
 		atomic_store(unoccluded_meshlets, 0);
-		meshlet_instances[192] = instance_index;
+		meshlet_instances[MESHLET_PAYLOAD_WORK] = work;
 	}
 	workgroup_barrier();
 
-	if (lane < chunk_meshlet_count) {
-		let relative_meshlet_index: u32 = first_meshlet + lane;
+	if (has_item && draws && instance_views != 0 && relative_meshlet_index < level.meshlet_count) {
 		let meshlet: Meshlet = scene.meshlets[level.first_meshlet + relative_meshlet_index];
+		let vertex_count: u32 = meshlet.counts & 255;
+		let triangle_count: u32 = (meshlet.counts >> 8) & 255;
 		let object_sphere: vec4f = meshlet_sphere(meshlet, level);
 		let world_meshlet_sphere: vec4f = world_sphere(mesh.model, object_sphere);
-		let drawn_early: bool = ((previously_unoccluded >> lane) & 1) != 0;
 		for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
-			if ((instance_views & (1 << view_offset)) != 0) {
+			// A meshlet without a triangle draws nothing, and an entry can't hold a count of zero.
+			if ((instance_views & (1 << view_offset)) != 0 && vertex_count != 0 && triangle_count != 0) {
 				let view: View = scene.views.views[push_constant.view_base + view_offset];
 				if (skinned || (sphere_is_visible(view, world_meshlet_sphere) && cone_allows_rendering(mesh, meshlet, object_sphere, view))) {
-					// The early pass draws only what the previous late pass found unoccluded.
 					// Occlusion-testing passes are never early, so the test decides alone.
-					let emit: bool = phase != OCCLUSION_EARLY || drawn_early;
+					let emit: bool = true;
 					if (tests_occlusion) {
 						emit = sphere_is_occluded(occlusion, view, world_meshlet_sphere) == false;
 					}
@@ -271,10 +287,8 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 					}
 					if (emit) {
 						let payload_index: u32 = atomic_add(visible_count, 1);
-						// One payload word keeps the meshlet and its view indivisible across emitted mesh grids. The
-						// meshlet index is relative to the instance's first meshlet, so scene-wide meshlet capacity is
-						// not limited by its 12 bits. Every grid shares the workgroup's instance.
-						meshlet_instances[payload_index] = relative_meshlet_index | (view_offset << 12);
+						// One payload word keeps the meshlet and its view indivisible across emitted mesh grids.
+						meshlet_instances[payload_index] = meshlet_entry(lane, view_offset, vertex_count, triangle_count);
 					}
 				}
 			}
@@ -286,6 +300,39 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 		if (phase == OCCLUSION_LATE) {
 			occlusion.occlusion_visibility[work_index] = atomic_load(unoccluded_meshlets);
 		}
-		set_task_mesh_output_count(atomic_load(visible_count));
+
+		// Form the groups: each takes the next entry while it stays within what one mesh grid emits. A full meshlet
+		// is a group of its own, and small ones share a grid whichever lanes and views they came from.
+		let entry_count: u32 = atomic_load(visible_count);
+		let group: u32 = 0;
+		let vertices: u32 = 0;
+		let triangles: u32 = 0;
+		for (let index: u32 = 0; index < entry_count; index = index + 1) {
+			let entry: u32 = meshlet_instances[index];
+			let entry_vertices: u32 = entry_vertex_end(entry);
+			let entry_triangles: u32 = entry_triangle_end(entry);
+			let starts_group: bool = index > 0
+				&& (vertices + entry_vertices > MAX_GROUP_VERTICES || triangles + entry_triangles > MAX_GROUP_TRIANGLES);
+			if (starts_group) {
+				meshlet_instances[index - 1] = meshlet_instances[index - 1] | MESHLET_ENTRY_ENDS_GROUP;
+				group = group + 1;
+				vertices = 0;
+				triangles = 0;
+			}
+			vertices = vertices + entry_vertices;
+			triangles = triangles + entry_triangles;
+			// The entry's own counts give way to the group's running totals.
+			meshlet_instances[index] = (entry & 255) | ((vertices - 1) << 8) | ((triangles - 1) << 14);
+			// A group never starts before the entry of its own index, so that word is already in its final form.
+			if (starts_group) {
+				meshlet_instances[group] = meshlet_instances[group] | (index << 22);
+			}
+		}
+		if (entry_count == 0) {
+			set_task_mesh_output_count(0);
+		} else {
+			meshlet_instances[entry_count - 1] = meshlet_instances[entry_count - 1] | MESHLET_ENTRY_ENDS_GROUP;
+			set_task_mesh_output_count(group + 1);
+		}
 	}
 }

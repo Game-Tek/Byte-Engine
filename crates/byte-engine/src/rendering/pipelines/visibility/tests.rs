@@ -48,8 +48,12 @@ const FIXTURE_MESHLET_INDEX: usize = 5;
 const MESHLET_INSTANCE_BITS: u32 = 12;
 /// Task payload words keep the view's offset into its batch above the meshlet index.
 const VIEW_OFFSET_SHIFT: u32 = MESHLET_INSTANCE_BITS;
-/// The task payload word that holds the workgroup's instance, after the six views of 32 meshlets.
-const PAYLOAD_INSTANCE_WORD: usize = 192;
+/// The task payload word that holds the workgroup's work, after the six views of 32 meshlets.
+const PAYLOAD_WORK_WORD: usize = 192;
+/// The flag of a payload's work word whose lanes each have a work item of their own.
+const PAYLOAD_WORK_SHARED: u32 = 1 << 31;
+/// The flag of the last payload entry of a group.
+const ENTRY_ENDS_GROUP: u32 = 1 << 21;
 const TASK_WORKGROUP_SIZE: u32 = 32;
 const GTAO_WORKGROUP_WIDTH: u32 = 16;
 const GTAO_WORKGROUP_SIZE: usize = 128;
@@ -213,6 +217,11 @@ struct TaskMeshFixture {
 	bounding_sphere: [f32; 4],
 	/// The radius the level casts shadows with, when it differs from its sphere's: one copy's, for a merged mesh.
 	caster_radius: Option<f32>,
+	/// Every meshlet's vertex and triangle counts. The default fills a mesh grid, so each meshlet draws alone.
+	counts: [u8; 2],
+	/// The meshlet each lane's own work item names, counted from the level's first, for a workgroup whose lanes
+	/// have items of their own. `None` runs a workgroup with one item: the instance's first chunk of meshlets.
+	lane_meshlets: Option<&'static [u32]>,
 }
 
 impl Default for TaskMeshFixture {
@@ -223,6 +232,8 @@ impl Default for TaskMeshFixture {
 			// Wide enough to reach every fixture meshlet, so the instance test passes unless a test moves it.
 			bounding_sphere: [0.0, 0.0, 0.5, 8.0],
 			caster_radius: None,
+			counts: [64, 126],
+			lane_meshlets: None,
 		}
 	}
 }
@@ -286,7 +297,7 @@ fn run_meshlet_task_workgroup(
 		let meshlet = ShaderMeshletData::new(
 			0,
 			0,
-			[0; 2],
+			mesh.counts,
 			center_radius,
 			mesh.bounding_sphere,
 			[0.0, 0.0, 1.0],
@@ -306,6 +317,7 @@ fn run_meshlet_task_workgroup(
 				.as_ref()
 				.map_or(OcclusionPhase::Disabled, |occlusion| occlusion.phase) as u32,
 		),
+		("shared_lanes", u32::from(mesh.lane_meshlets.is_some())),
 	] {
 		push_constant.write(member, Value::U32(value)).expect("task push constant");
 	}
@@ -313,10 +325,28 @@ fn run_meshlet_task_workgroup(
 		.write("minimum_caster_extent", Value::F32(minimum_caster_extent))
 		.expect("task minimum caster extent");
 	let mut mesh_dispatch_work = array_buffer(&program, slot(&program, MESH_DISPATCH_WORK), FIXTURE_TABLE_LENGTH);
-	let packed_work = MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed;
-	mesh_dispatch_work
-		.write_array_element(workgroup_index as usize, Value::U32(packed_work))
-		.expect("compact mesh dispatch work");
+	match mesh.lane_meshlets {
+		None => {
+			let packed_work = MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed;
+			mesh_dispatch_work
+				.write_array_element(workgroup_index as usize, Value::U32(packed_work))
+				.expect("compact mesh dispatch work");
+		}
+		// Each lane's item, then empty items for the lanes without one.
+		Some(lane_meshlets) => {
+			for lane in 0..TASK_WORKGROUP_SIZE as usize {
+				let item = lane_meshlets.get(lane).map_or(MeshDispatchWorkItem::EMPTY, |&meshlet| {
+					MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, meshlet)
+				});
+				mesh_dispatch_work
+					.write_array_element(
+						(workgroup_index * TASK_WORKGROUP_SIZE) as usize + lane,
+						Value::U32(item.packed),
+					)
+					.expect("shared mesh dispatch work");
+			}
+		}
+	}
 	// The record is keyed by the work item's position in the work buffer.
 	let mut occlusion_visibility = array_buffer(&program, slot(&program, OCCLUSION_VISIBILITY), FIXTURE_TABLE_LENGTH);
 	if let Some(occlusion) = &occlusion {
@@ -420,50 +450,125 @@ fn camera_task_payload(center_radii: &[[f32; 4]], mesh: TaskMeshFixture, workgro
 	))
 }
 
-/// Reads every payload word a task workgroup emitted, in emission order.
-fn task_payload(outputs: &TaskOutputs) -> Vec<Value> {
+/// Reads the groups a task workgroup handed its mesh grids, in grid order: each group's entries as the lane that kept
+/// the meshlet and the view's offset into the batch.
+fn task_groups(outputs: &TaskOutputs) -> Vec<Vec<[u32; 2]>> {
+	let word = |index: usize| match outputs.payload_value("meshlet_instances", index) {
+		Some(Value::U32(word)) => *word,
+		word => panic!("Unexpected task payload word: {word:?}."),
+	};
 	(0..outputs.mesh_output_count().expect("task mesh output count") as usize)
-		.map(|index| {
-			outputs
-				.payload_value("meshlet_instances", index)
-				.expect("emitted task payload word")
-				.clone()
+		.map(|group| {
+			let first = (word(group) >> 22 & 255) as usize;
+			let last = (first..)
+				.find(|&index| word(index) & ENTRY_ENDS_GROUP != 0)
+				.expect("a group ends");
+			(first..=last).map(|index| [word(index) & 31, word(index) >> 5 & 7]).collect()
 		})
 		.collect()
 }
 
-/// The payload a task emits for a fixture meshlet seen by the view `view_offset` steps into its batch.
+/// Reads every meshlet a task workgroup emitted, in emission order, each as [`batched_meshlet_instance`] writes it.
+fn task_payload(outputs: &TaskOutputs) -> Vec<Value> {
+	task_groups(outputs)
+		.into_iter()
+		.flatten()
+		.map(|[lane, view_offset]| batched_meshlet_instance(lane, view_offset))
+		.collect()
+}
+
+/// What [`task_payload`] reads for a fixture meshlet seen by the view `view_offset` steps into its batch.
 ///
-/// `relative_meshlet_index` counts from the first meshlet of the instance's level.
+/// `relative_meshlet_index` counts from the first meshlet of the instance's level, which is the lane that culls it.
 fn batched_meshlet_instance(relative_meshlet_index: u32, view_offset: u32) -> Value {
 	Value::U32(relative_meshlet_index | (view_offset << VIEW_OFFSET_SHIFT))
 }
 
-/// Returns the payload a task workgroup of the fixture instance hands its mesh grids, with `first` as grid zero's word.
-fn mesh_task_payload(first: Value) -> Vec<Value> {
-	let mut payload = vec![Value::U32(0); PAYLOAD_INSTANCE_WORD + 1];
-	payload[0] = first;
-	payload[PAYLOAD_INSTANCE_WORD] = Value::U32(FIXTURE_INSTANCE_INDEX as u32);
+/// Returns the payload entry of `lane`'s meshlet in the view `view_offset` steps into its batch, as the last entry of
+/// a group that holds `vertices` vertices and `triangles` triangles up to and including it.
+fn group_entry(lane: u32, view_offset: u32, [vertices, triangles]: [u32; 2], ends_group: bool) -> Value {
+	let ends = if ends_group { ENTRY_ENDS_GROUP } else { 0 };
+	Value::U32(lane | (view_offset << 5) | ((vertices - 1) << 8) | ((triangles - 1) << 14) | ends)
+}
+
+/// Returns the payload a task workgroup hands its mesh grids: `entries`, which form group zero, and `work`.
+fn mesh_task_payload(entries: &[Value], work: u32) -> Vec<Value> {
+	let mut payload = vec![Value::U32(0); PAYLOAD_WORK_WORD + 1];
+	payload[..entries.len()].clone_from_slice(entries);
+	payload[PAYLOAD_WORK_WORD] = Value::U32(work);
 	payload
 }
 
-/// Verifies the task stage hands every mesh grid its workgroup's instance in the payload's last word.
+/// Verifies the task stage hands every mesh grid its workgroup's first work item in the payload's last word.
 #[test]
-fn task_main_hands_its_instance_to_the_mesh_stage() {
+fn task_main_hands_its_work_to_the_mesh_stage() {
+	let work = |mesh| {
+		let outputs = run_meshlet_task_workgroup(&[IDENTITY_MATRIX], [0, 1], 0.0, &[[0.0, 0.0, 0.5, 0.1]], mesh, 1, None);
+		outputs.payload_value("meshlet_instances", PAYLOAD_WORK_WORD).cloned()
+	};
+
+	assert_eq!(work(TaskMeshFixture::default()), Some(Value::U32(1)));
+	// Lanes with items of their own take 32 of them to a workgroup.
+	let shared = TaskMeshFixture {
+		lane_meshlets: Some(&[0]),
+		..Default::default()
+	};
+	assert_eq!(work(shared), Some(Value::U32(TASK_WORKGROUP_SIZE | PAYLOAD_WORK_SHARED)));
+}
+
+/// Verifies small meshlets share a mesh grid while its vertices and triangles hold them, and start another when not.
+#[test]
+fn task_main_groups_small_meshlets_into_full_mesh_grids() {
+	let groups = |counts| {
+		let mesh = TaskMeshFixture {
+			counts,
+			..Default::default()
+		};
+		task_groups(&run_meshlet_task_workgroup(
+			&[IDENTITY_MATRIX],
+			[0, 1],
+			0.0,
+			&[[0.0, 0.0, 0.5, 0.1]; 5],
+			mesh,
+			0,
+			None,
+		))
+	};
+	let lanes = |groups: Vec<Vec<[u32; 2]>>| -> Vec<Vec<u32>> {
+		groups
+			.into_iter()
+			.map(|group| group.into_iter().map(|[lane, _]| lane).collect())
+			.collect()
+	};
+
+	// Three meshlets of 20 vertices fit the 64 a grid emits, and a fourth doesn't.
+	assert_eq!(lanes(groups([20, 10])), [vec![0, 1, 2], vec![3, 4]]);
+	// Triangles bound a group as well: two meshlets of 50 fit the 126 a grid emits.
+	assert_eq!(lanes(groups([8, 50])), [vec![0, 1], vec![2, 3], vec![4]]);
+	// A meshlet that fills a grid draws alone.
+	assert_eq!(lanes(groups([64, 126])), [[0], [1], [2], [3], [4]]);
+}
+
+/// Verifies lanes with work items of their own cull the meshlets their items name, and lanes without one emit nothing.
+#[test]
+fn task_main_culls_the_meshlet_each_shared_lane_names() {
+	let mesh = TaskMeshFixture {
+		counts: [20, 10],
+		// The second lane's meshlet lies outside the frustum.
+		lane_meshlets: Some(&[2, 1, 0]),
+		..Default::default()
+	};
 	let outputs = run_meshlet_task_workgroup(
 		&[IDENTITY_MATRIX],
 		[0, 1],
 		0.0,
-		&[[0.0, 0.0, 0.5, 0.1]],
-		TaskMeshFixture::default(),
+		&[[0.0, 0.0, 0.5, 0.1], [4.0, 0.0, 0.5, 0.1], [0.5, 0.0, 0.5, 0.1]],
+		mesh,
 		0,
 		None,
 	);
 
-	assert_eq!(
-		outputs.payload_value("meshlet_instances", PAYLOAD_INSTANCE_WORD),
-		Some(&Value::U32(FIXTURE_INSTANCE_INDEX as u32))
-	);
+	assert_eq!(task_groups(&outputs), [[[0, 0], [2, 0]]]);
 }
 
 /// Verifies camera culling retains an intersecting meshlet and rejects one outside the frustum.
@@ -1056,7 +1161,15 @@ fn assert_triangle_mesh_program(
 	] {
 		push_constant.write(member, Value::U32(value)).expect("mesh view batch");
 	}
-	let payload = batched_meshlet_instance(0, view.view_offset);
+	let payload = [group_entry(0, view.view_offset, [3, 1], true)];
+	// The workgroup's one work item names the fixture instance's first chunk of meshlets.
+	let mut mesh_dispatch_work = array_buffer(&program, slot(&program, MESH_DISPATCH_WORK), FIXTURE_TABLE_LENGTH);
+	mesh_dispatch_work
+		.write_array_element(
+			0,
+			Value::U32(MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed),
+		)
+		.expect("mesh dispatch work");
 
 	// One buffer per attribute location the stage writes.
 	let locations: u8 = match attributes {
@@ -1070,7 +1183,8 @@ fn assert_triangle_mesh_program(
 	let mut mesh_outputs = MeshOutputs::new();
 	{
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_task_payload("meshlet_instances", mesh_task_payload(payload));
+		descriptors.bind_task_payload("meshlet_instances", mesh_task_payload(&payload, 0));
+		descriptors.bind_buffer(slot(&program, MESH_DISPATCH_WORK), &mut mesh_dispatch_work);
 		descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
 		descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
 		descriptors.bind_buffer(slot(&program, MESH_LEVELS), &mut mesh_levels);
@@ -1142,6 +1256,127 @@ fn visibility_mesh_main_emits_identity_triangle_and_metadata() {
 		None,
 		MeshAttributes::InstanceAndPrimitive,
 	);
+}
+
+/// Verifies one mesh grid draws every meshlet of its group: each one's vertices after the earlier ones', its triangles
+/// naming them there, and each triangle marked with its own meshlet and its place in it.
+#[test]
+fn visibility_mesh_main_draws_every_meshlet_of_its_group() {
+	let program = asset!("visibility-mesh.besl");
+	let mut views = buffer(&program, slot(&program, VIEWS));
+	views
+		.write_array_member(0, "view_projection", Value::Mat4F(IDENTITY_MATRIX))
+		.expect("mesh view");
+	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
+	write_fixture_mesh(&mut meshes, 0, [0; 2]);
+	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
+	write_fixture_level(&mut mesh_levels, [0.0, 0.0, 0.0, 2.0], 2, 0);
+	// Two triangle meshlets, the second beside the first, each over three vertices of its own.
+	let mut positions = array_buffer(&program, slot(&program, VERTEX_POSITIONS), 6);
+	let mut vertex_uvs = array_buffer(&program, slot(&program, VERTEX_UVS), 6);
+	let mut vertex_indices = array_buffer(&program, slot(&program, VERTEX_INDICES), 6);
+	let mut primitive_indices = array_buffer(&program, slot(&program, PRIMITIVE_INDICES), 6);
+	let corners = [[-1.0, -1.0], [1.0, -1.0], [0.0, 1.0]];
+	for index in 0..6 {
+		let [x, y] = corners[index % 3];
+		positions
+			.write_array_element(index, Value::Vec3F([x + 4.0 * (index / 3) as f32, y, 0.0]))
+			.expect("mesh vertex");
+		vertex_uvs
+			.write_array_element(index, Value::Vec2F16([besl::vm::f16::ZERO; 2]))
+			.expect("mesh UV");
+		vertex_indices
+			.write_array_element(index, Value::U16(index as u16))
+			.expect("vertex index");
+		// Each triangle names the three vertices of its own meshlet.
+		primitive_indices
+			.write_array_element(index, Value::U8((index % 3) as u8))
+			.expect("triangle index");
+	}
+	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), FIXTURE_MESHLET_INDEX + 2);
+	for meshlet in 0..2 {
+		let record = ShaderMeshletData::new(
+			meshlet * 3,
+			meshlet,
+			[3, 1],
+			[0.0; 4],
+			[0.0, 0.0, 0.0, 2.0],
+			[0.0, 0.0, 1.0],
+			2.0,
+		);
+		write_meshlet(&mut meshlets, FIXTURE_MESHLET_INDEX + meshlet as usize, record);
+	}
+	let mut mesh_dispatch_work = array_buffer(&program, slot(&program, MESH_DISPATCH_WORK), FIXTURE_TABLE_LENGTH);
+	mesh_dispatch_work
+		.write_array_element(
+			0,
+			Value::U32(MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed),
+		)
+		.expect("mesh dispatch work");
+	let mut push_constant = push_constant_buffer(&program);
+	for member in ["work_item_base", "view_base", "layer_base"] {
+		push_constant.write(member, Value::U32(0)).expect("mesh push constant");
+	}
+	push_constant.write("view_count", Value::U32(1)).expect("mesh view count");
+	// The lanes that kept the two meshlets, as one group.
+	let payload = [group_entry(0, 0, [3, 1], false), group_entry(1, 0, [6, 2], true)];
+
+	let mut out_attributes = (0..3)
+		.map(|location| buffer(&program, output_slot(location)))
+		.collect::<Vec<_>>();
+	let mut mesh_outputs = MeshOutputs::new();
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_task_payload("meshlet_instances", mesh_task_payload(&payload, 0));
+		descriptors.bind_buffer(slot(&program, MESH_DISPATCH_WORK), &mut mesh_dispatch_work);
+		descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
+		descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
+		descriptors.bind_buffer(slot(&program, MESH_LEVELS), &mut mesh_levels);
+		descriptors.bind_buffer(slot(&program, VERTEX_POSITIONS), &mut positions);
+		descriptors.bind_buffer(slot(&program, VERTEX_UVS), &mut vertex_uvs);
+		descriptors.bind_buffer(slot(&program, VERTEX_INDICES), &mut vertex_indices);
+		descriptors.bind_buffer(slot(&program, PRIMITIVE_INDICES), &mut primitive_indices);
+		descriptors.bind_buffer(slot(&program, MESHLETS), &mut meshlets);
+		for (location, attribute) in out_attributes.iter_mut().enumerate() {
+			descriptors.bind_buffer(output_slot(location as u8), attribute);
+		}
+		descriptors.bind_push_constant(&mut push_constant);
+		descriptors.bind_mesh_outputs(&mut mesh_outputs);
+		for thread_idx in 0..6 {
+			program
+				.run_main_with_config(&mut descriptors, &lane_config(thread_idx).with_threadgroup_position(0))
+				.expect("production mesh shader execution");
+		}
+	}
+
+	assert_eq!((mesh_outputs.vertex_count(), mesh_outputs.primitive_count()), (6, 2));
+	for index in 0..6 {
+		let [x, y] = corners[index % 3];
+		assert_rgba_close(
+			mesh_outputs.vertex_position(index).expect("mesh vertex output"),
+			[x + 4.0 * (index / 3) as f32, y, 0.0, 1.0],
+			0.00001,
+		);
+	}
+	assert_eq!(
+		[0, 1].map(|triangle| mesh_outputs.triangle(triangle).expect("mesh triangle output")),
+		[[0, 1, 2], [3, 4, 5]]
+	);
+	for triangle in 0..2 {
+		assert_eq!(
+			out_attributes[0]
+				.read_indexed("out_instance_index", triangle)
+				.expect("mesh output"),
+			Value::U32(FIXTURE_INSTANCE_INDEX as u32)
+		);
+		// Each triangle is the first of its own meshlet.
+		assert_eq!(
+			out_attributes[1]
+				.read_indexed("out_primitive_index", triangle)
+				.expect("mesh output"),
+			Value::U32((FIXTURE_MESHLET_INDEX as u32 + triangle as u32) << 8)
+		);
+	}
 }
 
 /// Verifies that an instance reads its vertices from the range its record names, as a posed instance's own range is.

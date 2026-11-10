@@ -127,7 +127,7 @@ Every value here is validated, and a bad one stops startup.
 | `render.geometry.level-capacity` | 1 through 16,777,216 | 4,096 | Resident detail levels: one per level of a primitive whose geometry is loaded. |
 | `render.geometry.skinning-vertex-capacity` | Positive count | 262,144 | Bind-pose vertices for GPU skinning. |
 | `render.instances.capacity` | 1 through 33,554,432 | 1,024 | Instances one frame draws, one per primitive of a renderable mesh. A primitive past it isn't drawn, with one warning. |
-| `render.instances.meshlet-group-capacity` | Positive count | 131,072 | Groups of up to 32 meshlets that one frame culls; an instance takes one per 32 meshlets of the level it draws. An instance past it isn't drawn, with one warning. |
+| `render.instances.meshlet-group-capacity` | Positive count | 131,072 | Groups of meshlets that one frame culls. An instance takes one per 32 meshlets of the level it draws, or one per meshlet when the level has 8 meshlets or fewer. An instance past it isn't drawn, with one warning. |
 | `render.instances.rebuild-lanes` | Positive count | The performance cores | The most lanes that rebuild the frame's instances; `1` rebuilds them on the render thread. A lane takes at least 8,192 primitives. |
 | `render.directional-shadows.distance` | Positive meters | 100 | How far directional shadow cascades reach. |
 | `render.directional-shadows.split-blend` | 0 through 1 | 0.8 | The share of logarithmic versus even cascade splits. |

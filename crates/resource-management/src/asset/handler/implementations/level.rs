@@ -4,10 +4,11 @@
 //! ids, parents, and references, orders entities parents first, and groups the payloads by kind as parsed tokens.
 //! What's left for spawning is decoding each kind's tokens into its type and publishing it.
 //!
-//! The one kind pair baking reads is `mesh` with `transform`: the entities that place one mesh more than
-//! [`MERGE_THRESHOLD`] times become a few entities, each a cluster of neighboring placements that a renderer builds
-//! one merged mesh from. [`repeated_placements`] finds those entities, the handler reads how many copies of the mesh
-//! fit a cluster, and [`cluster_entities`] rewrites them. Nothing merged is stored.
+//! A handler made with [`LevelAssetHandler::merging`] also reads one kind pair, `mesh` with `transform`: the
+//! entities that place one mesh more often than its threshold become a few entities, each a cluster of neighboring
+//! placements that a renderer builds one merged mesh from. [`repeated_placements`] finds those entities, the handler
+//! reads how many copies of the mesh fit a cluster, and [`cluster_entities`] rewrites them. Nothing merged is stored.
+//! The default handler merges nothing: a cluster picks one detail level for all its copies, which shows as popping.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -24,11 +25,28 @@ use crate::{
 	},
 };
 
-/// A mesh resource that a level places more often than this is drawn as merged clusters of its placements.
-pub const MERGE_THRESHOLD: usize = 128;
-
 /// The `LevelAssetHandler` struct exists to bake `.level` files into levels that spawn without parsing text.
-pub struct LevelAssetHandler;
+///
+/// The default handler keeps every entity. Register one made with [`Self::merging`] to draw heavily repeated
+/// placements as merged clusters.
+#[derive(Default)]
+pub struct LevelAssetHandler {
+	/// A mesh resource that a level places more often than this bakes into merged clusters of its placements.
+	merge_threshold: Option<usize>,
+}
+
+impl LevelAssetHandler {
+	/// Creates a handler that bakes each mesh resource a level places more than `threshold` times into clusters of
+	/// its placements, which the visibility pipeline draws as one merged mesh each.
+	///
+	/// Use it for scenes whose per-instance cost matters more than smooth detail changes: every copy of a cluster
+	/// changes detail level together. Register it with the asset manager in place of the default handler.
+	pub fn merging(threshold: usize) -> Self {
+		Self {
+			merge_threshold: Some(threshold),
+		}
+	}
+}
 
 impl AssetHandler for LevelAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
@@ -50,7 +68,10 @@ impl AssetHandler for LevelAssetHandler {
 
 		// Each mesh placed often enough merges, as many copies to a cluster as fit one primitive of the mesh.
 		let mut merges = Vec::new();
-		for group in repeated_placements(&entities) {
+		let groups = self
+			.merge_threshold
+			.map_or_else(Vec::new, |threshold| repeated_placements(&entities, threshold));
+		for group in groups {
 			if let Some(capacity) = cluster_capacity(&context, &group).await {
 				merges.push((group, capacity));
 			}
@@ -111,12 +132,12 @@ struct MergeGroup {
 	positions: Vec<[f32; 3]>,
 }
 
-/// Finds the meshes that `entities` place more than [`MERGE_THRESHOLD`] times, with the entities that place them.
+/// Finds the meshes that `entities` place more than `threshold` times, with the entities that place them.
 ///
 /// Only an entity that nothing can refer to and that holds nothing but the placement counts: no `id`, and no
 /// component besides `mesh` with a `resource` source and `transform`. Entities group by mesh and parent, so a merged
 /// group still belongs to one parent.
-fn repeated_placements(entities: &[EntitySource]) -> Vec<MergeGroup> {
+fn repeated_placements(entities: &[EntitySource], threshold: usize) -> Vec<MergeGroup> {
 	let mut groups = Vec::<MergeGroup>::new();
 	// Where each mesh and parent pair's group is, so groups keep the order their first entity has in the file.
 	let mut indices = HashMap::<(&str, Option<&str>), usize>::new();
@@ -135,7 +156,7 @@ fn repeated_placements(entities: &[EntitySource]) -> Vec<MergeGroup> {
 		groups[index].entities.push(position);
 		groups[index].positions.push(placed);
 	}
-	groups.retain(|group| group.entities.len() > MERGE_THRESHOLD);
+	groups.retain(|group| group.entities.len() > threshold);
 	groups
 }
 
@@ -689,12 +710,15 @@ mod tests {
 		resources::level::{Level, Token, Tokens},
 	};
 
+	/// The threshold the fixture handler merges past.
+	const MERGE_THRESHOLD: usize = 128;
+
 	fn asset_manager(
 		assets: asset::storage_backend::tests::TestStorageBackend,
 		resources: resource::storage_backend::MemoryStorageBackend,
 	) -> AssetManager {
 		let mut asset_manager = AssetManager::new(assets, resources);
-		asset_manager.add_asset_handler(LevelAssetHandler);
+		asset_manager.add_asset_handler(LevelAssetHandler::merging(MERGE_THRESHOLD));
 		asset_manager
 	}
 
@@ -887,7 +911,7 @@ mod tests {
 
 	#[r#async::test]
 	async fn a_mesh_placed_past_the_threshold_bakes_into_clusters_of_its_placements() {
-		let (level, payload, _) = bake_placements(super::MERGE_THRESHOLD + 1).await;
+		let (level, payload, _) = bake_placements(MERGE_THRESHOLD + 1).await;
 
 		let payloads = mesh_payloads(&level, &payload);
 		// The clusters, then the two entities that hold more than a placement.
@@ -901,16 +925,16 @@ mod tests {
 			sizes.iter().all(|&size| size <= 36),
 			"A cluster holds more copies than fit one primitive: {sizes:?}."
 		);
-		assert_eq!(sizes.iter().sum::<usize>(), super::MERGE_THRESHOLD + 1);
+		assert_eq!(sizes.iter().sum::<usize>(), MERGE_THRESHOLD + 1);
 		// The placements moved into the clusters, and the other two entities never had a transform.
 		assert!(level.kinds.iter().all(|kind| kind.name != "transform"));
 	}
 
 	#[r#async::test]
 	async fn a_mesh_placed_up_to_the_threshold_keeps_its_entities() {
-		let (level, payload, _) = bake_placements(super::MERGE_THRESHOLD).await;
+		let (level, payload, _) = bake_placements(MERGE_THRESHOLD).await;
 
-		assert_eq!(level.entities as usize, super::MERGE_THRESHOLD + 2);
+		assert_eq!(level.entities as usize, MERGE_THRESHOLD + 2);
 		assert!(
 			mesh_payloads(&level, &payload)
 				.iter()

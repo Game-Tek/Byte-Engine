@@ -154,7 +154,7 @@ pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[
 	asset_manager.add_asset_handler(PipelineAssetHandler);
 	asset_manager.add_asset_handler(FusionAssetHandler);
 	asset_manager.add_asset_handler(FlipbookAssetHandler);
-	asset_manager.add_asset_handler(LevelAssetHandler);
+	asset_manager.add_asset_handler(LevelAssetHandler::default());
 	asset_manager.add_asset_handler(AudioGraphAssetHandler);
 	asset_manager.add_asset_handler(ParticleSystemAssetHandler);
 	asset_manager.add_asset_handler(EXRAssetHandler::new());

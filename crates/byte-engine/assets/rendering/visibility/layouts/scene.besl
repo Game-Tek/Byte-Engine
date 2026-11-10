@@ -56,8 +56,9 @@ Scene: layer {
 	// The bindless texture pool that material table entries index.
 	textures: descriptor<{ type: Texture2D, binding: 8, access: read, count: 1024, sampler: material_texel }>;
 	materials: descriptor<{ type: Materials, binding: 9, access: read, memory: device }>;
-	// One packed work item per group of meshlets a task workgroup culls: the group's chunk of 32 meshlets in the low 7
-	// bits, and the instance above them.
+	// The work items task workgroups cull, each an instance above its low 7 bits. An item of a large instance has a
+	// workgroup to itself and names a chunk of 32 of the instance's meshlets in those bits. An item of a small
+	// instance is one lane of a workgroup that 32 such items share, and names one meshlet.
 	mesh_dispatch_work: descriptor<{ type: u32[], binding: 10, access: read, memory: device }>;
 	// The evaluation slot of every material table entry, which the material prepasses bucket pixels by.
 	material_evaluations: descriptor<{ type: MaterialEvaluations, binding: 11, access: read, memory: device }>;

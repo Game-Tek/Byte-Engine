@@ -15,7 +15,7 @@ use resource_management::resources::skeleton::SkinBinding;
 use resource_management::types::AlphaMode;
 use smallvec::SmallVec;
 use tracing::debug_span;
-use utils::hash::HashMap;
+use utils::hash::{HashMap, HashSet};
 use utils::{AvailabilityGraph, Extent, StableVec};
 
 use super::acceleration_structures::{SceneAccelerationStructures, TracedPrimitive};
@@ -800,9 +800,11 @@ pub struct VisibilityPipelineManager {
 	/// Whether something the instances are rebuilt from changed, other than where the camera is: the scene, the
 	/// loaded resources, the materials, or the detail view's error scale. The next frame rebuilds them.
 	instances_stale: bool,
-	/// Whether a primitive moved since the instances were last brought up to date. The next frame follows them, which
-	/// picks the moved ones again.
+	/// Whether a primitive moved, or its mesh's resident detail levels changed, since the instances were last brought
+	/// up to date. The next frame follows them, which picks those primitives again.
 	instances_moved: bool,
+	/// The mesh primitives whose resident detail levels changed this frame, kept across frames to reuse its room.
+	refreshed_lods: HashSet<(MeshKey, u32)>,
 	/// The slots of the instance table that changed since each frame sequence's copy was last brought up to date.
 	stale_records: [std::ops::Range<usize>; ghi::MAX_FRAMES_IN_FLIGHT],
 	/// Which frame sequences' copies of the phases' instance lists are older than the lists.
@@ -1053,6 +1055,7 @@ impl VisibilityPipelineManager {
 			instance_kept: Vec::new(),
 			instances_stale: true,
 			instances_moved: false,
+			refreshed_lods: HashSet::default(),
 			stale_records: std::array::from_fn(|_| 0..0),
 			stale_work: [true; ghi::MAX_FRAMES_IN_FLIGHT],
 			instances_lod_view: None,
@@ -1249,8 +1252,14 @@ impl VisibilityPipelineManager {
 	fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame, transforms: &ShownTransforms) {
 		let mut events = std::mem::take(&mut self.resource_events);
 		self.loader.update(frame, &mut events);
-		// Every event changes what some instance draws: a mesh, a level, a material, a texture, or a lightmap.
-		if !events.is_empty() {
+		// Every event changes what some instance draws: a mesh, a level, a material, a texture, or a lightmap. A level
+		// that arrives or leaves changes only its own primitive's instances, which are picked again without a rebuild.
+		if events.iter().any(|event| {
+			!matches!(
+				event,
+				VisibilityLoaderEvent::MeshLevelsLoaded { .. } | VisibilityLoaderEvent::MeshLevelsUnavailable { .. }
+			)
+		}) {
 			self.instances_changed();
 		}
 		// Material readiness changes rebuild the material lists once, after every event of the frame.
@@ -1274,13 +1283,13 @@ impl VisibilityPipelineManager {
 					for levels in &primitives {
 						if levels.block.is_some() {
 							self.mesh_residencies.loaded(key, levels.primitive, levels.finest);
-							self.refresh_entity_lods(key, levels.primitive);
+							self.refreshed_lods.insert((key, levels.primitive));
 						} else if let Some((released, released_primitive)) =
 							self.mesh_residencies
 								.without_room(key, levels.primitive, ghi::MAX_FRAMES_IN_FLIGHT as u64)
 						{
 							self.loader.release_mesh_levels(released, released_primitive);
-							self.refresh_entity_lods(released, released_primitive);
+							self.refreshed_lods.insert((released, released_primitive));
 						} else if matches!(key, MeshKey::Merged(_)) && !self.reported_merged_room {
 							// A resource mesh without room still draws its coarsest level; a merged mesh draws nothing.
 							self.reported_merged_room = true;
@@ -1379,6 +1388,7 @@ impl VisibilityPipelineManager {
 			}
 		}
 		self.resource_events = events;
+		self.refresh_entity_lods();
 		// Every replacement is in its slot now, so nothing binds the images it replaced.
 		self.loader.delete_replaced_images(frame);
 		if materials_changed {
@@ -1741,21 +1751,29 @@ impl VisibilityPipelineManager {
 		}
 	}
 
-	/// Gives every render entity of one primitive of `key` the detail levels it holds now, after finer levels arrived
-	/// or left.
-	fn refresh_entity_lods(&mut self, key: MeshKey, primitive: u32) {
-		let Some(lods) = self.loader.primitive_lods(key, primitive as usize) else {
+	/// Gives the render entities of every primitive in `refreshed_lods` the detail levels they hold now, after finer
+	/// levels arrived or left, and has the next frame pick those entities again.
+	fn refresh_entity_lods(&mut self) {
+		if self.refreshed_lods.is_empty() {
 			return;
-		};
-		for entity in self
-			.scene
-			.render_entities
-			.iter_mut()
-			.filter(|entity| entity.mesh == key && entity.primitive == primitive)
-		{
-			entity.lods = lods;
 		}
-		self.instances_changed();
+		// One pass over the entities serves every primitive refreshed this frame. Each refreshed entity gives up its
+		// pick, so the next frame follows it like a moved one and rewrites only its record.
+		let (refreshed, loader, kept) = (&self.refreshed_lods, &self.loader, &mut self.instance_kept);
+		for (slot, entity) in self.scene.render_entities.indexed_iter_mut() {
+			if !refreshed.contains(&(entity.mesh, entity.primitive)) {
+				continue;
+			}
+			if let Some(lods) = loader.primitive_lods(entity.mesh, entity.primitive as usize) {
+				entity.lods = lods;
+			}
+			// An entity added since the last rebuild has no kept slot yet, and the rebuild it waits for picks it.
+			if let Some(kept) = kept.get_mut(slot) {
+				kept.release();
+			}
+		}
+		self.refreshed_lods.clear();
+		self.instances_moved = true;
 	}
 
 	/// Adds one resident renderable where its handle is shown.
@@ -2219,8 +2237,8 @@ impl PipelineManager for VisibilityPipelineManager {
 			});
 			LodView::new(sink, self.lod_settings).with_suns(suns)
 		});
-		// A camera that only moved leaves most instances as they are, so they are followed, not rebuilt. A view with
-		// another error scale, as after a resize or a new detail bias, picks every level anew.
+		// A camera that only moved, zoomed, or changed size leaves most instances as they are, so they are followed,
+		// not rebuilt. A forced level or a switch of projection picks every level anew.
 		let moved = lod_view != self.instances_lod_view;
 		self.instances_stale |= match (&lod_view, &self.instances_lod_view) {
 			(Some(view), Some(last)) => !view.scales_alike(last),

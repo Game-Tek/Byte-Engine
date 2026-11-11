@@ -161,16 +161,20 @@ impl MeshLods {
 
 /// The `Held` struct is the level an instance wants and how far the camera can move before it wants another.
 ///
-/// [`LodView::held`] makes one when it picks an instance's level. While [`Self::holds`] for a later view with the same
-/// error scale, the pick stands, so following a moving camera costs one distance for each instance.
+/// [`LodView::held`] makes one when it picks an instance's level. While [`Self::holds`] for a later view that
+/// [`LodView::scales_alike`], the pick stands, so following a camera that moves or zooms costs one distance for each
+/// instance.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Held {
 	/// What [`LodView::select`] returned.
 	pub(crate) wanted: Option<usize>,
 	/// The world-space center of the instance's bounding sphere.
 	center: [f32; 3],
-	/// The squared distances from the camera to `center` between which `wanted` holds: at least the first, less than
-	/// the second.
+	/// The world-space radius of the bounding sphere, which the allowed error's distance starts from.
+	reach: f32,
+	/// The world-space errors, allowed per unit of distance from the sphere's surface times that distance, between
+	/// which `wanted` holds: more than the first, less than the second. Storing errors instead of distances keeps the
+	/// pick valid when the field of view or the sink's size changes the error allowed per unit of distance.
 	range: [f32; 2],
 }
 
@@ -180,7 +184,8 @@ impl Held {
 		Self {
 			wanted,
 			center: [0.0; 3],
-			range: [0.0; 2],
+			reach: 0.0,
+			range: [f32::INFINITY, 0.0],
 		}
 	}
 
@@ -189,17 +194,21 @@ impl Held {
 		Self {
 			wanted,
 			center: [0.0; 3],
-			range: [0.0, f32::INFINITY],
+			reach: 0.0,
+			range: [f32::NEG_INFINITY, f32::INFINITY],
 		}
 	}
 
-	/// Returns whether the instance still wants the same level from `view`, which has the error scale of the view
-	/// that made this pick; see [`LodView::scales_alike`].
+	/// Returns whether the instance still wants the same level from `view`, which
+	/// [`LodView::scales_alike`] the view that made this pick.
 	pub(crate) fn holds(&self, view: &LodView) -> bool {
 		let [x, y, z] = self.center;
 		let offset = Vec3f::new(x, y, z) - view.eye;
-		let distance = dot(offset, offset);
-		distance >= self.range[0] && distance < self.range[1]
+		let squared = dot(offset, offset);
+		// The distances at which this view's allowed error crosses each end of the range. Infinite ends stay infinite.
+		let [near, far] = self.range.map(|error| error / view.error_per_distance + self.reach);
+		let near = near.max(0.0);
+		squared >= near * near && squared < far * far
 	}
 }
 
@@ -371,10 +380,12 @@ impl LodView {
 		}
 	}
 
-	/// Returns whether `other` turns distance into allowed error as this view does, so a [`Held`] pick made for one
-	/// can be tested against the other. Views that differ only in where the camera is and faces scale alike.
+	/// Returns whether a [`Held`] pick made for `other` can be tested against this view. Perspective views that
+	/// differ in where the camera is, where it faces, its field of view, or the sink's size scale alike: a pick
+	/// stores errors, which [`Held::holds`] turns into distances for the view it tests. A forced level, a switch
+	/// between perspective and orthographic, or another orthographic error picks every level anew.
 	pub(crate) fn scales_alike(&self, other: &Self) -> bool {
-		self.error_per_distance == other.error_per_distance
+		(self.error_per_distance > 0.0) == (other.error_per_distance > 0.0)
 			&& self.constant_error == other.constant_error
 			&& self.force == other.force
 	}
@@ -403,25 +414,26 @@ impl LodView {
 			return Held::always(wanted);
 		}
 		let [low, high] = lods.held_errors(self.allowed_error(model, sphere));
-		// The inverse of `allowed_error`, which allows nothing up to the sphere's surface.
-		let distance = |error: f32| (error * scale - self.constant_error) / self.error_per_distance + reach;
-		// The range stops a little short of each switch: there the inverse and `allowed_error` can round to different
-		// sides, and an instance that close is picked again, so following always agrees with picking.
+		// `allowed_error` is the error per unit of distance times the distance from the sphere's surface, divided by
+		// the scale, so the scaled errors bound that product. The range stops a little short of each switch: there
+		// the inverse and `allowed_error` can round to different sides, and an instance that close is picked again,
+		// so following always agrees with picking.
 		const MARGIN: f32 = 1e-4;
-		let near = if low * scale <= self.constant_error {
-			0.0
+		let near = if low * scale <= 0.0 {
+			f32::NEG_INFINITY
 		} else {
-			distance(low) * (1.0 + MARGIN)
+			low * scale * (1.0 + MARGIN)
 		};
 		let far = if high == f32::INFINITY {
 			f32::INFINITY
 		} else {
-			distance(high) * (1.0 - MARGIN)
+			high * scale * (1.0 - MARGIN)
 		};
 		Held {
 			wanted,
 			center,
-			range: [near * near, far * far],
+			reach,
+			range: [near, far],
 		}
 	}
 
@@ -588,18 +600,26 @@ mod tests {
 				if picks.last() != Some(&held.wanted) {
 					picks.push(held.wanted);
 				}
-				// The camera is at the origin, so an instance at another depth is the camera at another distance.
-				for other in distances.clone() {
-					let moved = LodView {
-						eye: Vec3f::new(0.0, 0.0, z - other),
+				// The camera is at the origin, so an instance at another depth is the camera at another distance. A
+				// zoomed view allows another error per unit of distance.
+				for zoom in [0.25, 1.0, 3.0] {
+					let zoomed = LodView {
+						error_per_distance: view.error_per_distance * zoom,
 						..view
 					};
-					if held.holds(&moved) {
-						assert_eq!(
-							view.select(&lods, &instance(0.0, other, 1.0), SPHERE),
-							held.wanted,
-							"picked at {z}, tested at {other}"
-						);
+					assert!(zoomed.scales_alike(&view));
+					for other in distances.clone() {
+						let moved = LodView {
+							eye: Vec3f::new(0.0, 0.0, z - other),
+							..zoomed
+						};
+						if held.holds(&moved) {
+							assert_eq!(
+								zoomed.select(&lods, &instance(0.0, other, 1.0), SPHERE),
+								held.wanted,
+								"picked at {z}, tested at {other} zoomed {zoom}"
+							);
+						}
 					}
 				}
 			}

@@ -154,6 +154,8 @@ fatal, and the inspector can change them while the application runs.
 | `render.gtao.radial-rays` | An even number from 2 through 32 | 6 | Ray directions. |
 | `render.contact-shadows.distance` | Finite number, zero or more | 0.1 | The reach of each contact-shadow ray in world units. |
 | `render.lod.bias` | Finite number, zero or more | 1 | Scales the on-screen error allowed when selecting a detail level. |
+| `render.lod.small-radius` | Finite number of pixels, zero or more | 6 | The on-screen radius of an instance's bounding sphere under which the instance is small. Zero makes no instance small. |
+| `render.lod.small-bias` | Finite number, one or more | 2 | Scales the on-screen error allowed for a small instance, on top of `render.lod.bias`. |
 | `render.lod.force` | A level number, or `off` | `off` | Draws one detail level for every mesh. |
 | `render.motion-blur.taps` | 1 through 32 | 8 | Motion blur sample taps. |
 

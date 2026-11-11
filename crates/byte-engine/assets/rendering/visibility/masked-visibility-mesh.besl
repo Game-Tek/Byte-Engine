@@ -1,5 +1,5 @@
 // Draws the groups of meshlets the task stage kept into the visibility buffer, for masked materials: each triangle's
-// instance, its meshlet and place in it, and the UV the coverage shader's alpha test reads. Other materials draw with
+// instance, its meshlet and place in it, and the material word and UV the coverage shader's alpha test reads. Other materials draw with
 // `visibility-mesh.besl`, which passes no UV.
 
 use ::byte_engine::rendering::visibility::layouts::scene_records::*;
@@ -10,9 +10,12 @@ meshlet_instances: task_payload<u32, 193>;
 // The instance, once per vertex: every vertex of a meshlet shares it, and a grid has half as many vertices as
 // triangles. Integers aren't interpolated, so each triangle reads it whole.
 out_instance_index: vertex_output<u32, 0, 128>;
-out_primitive_index: output<u32, 1, 252>;
+// The instance's material word, the same way, so the fragments find their material without reading the instance
+// record. The coverage shader's interface sorts its fields by name, which sets these locations.
+out_material_word: vertex_output<u32, 1, 128>;
+out_primitive_index: output<u32, 2, 252>;
 // One UV per vertex, interpolated across each triangle for the alpha test.
-out_uv: vertex_output<vec2f16, 2, 128>;
+out_uv: vertex_output<vec2f16, 3, 128>;
 
 // The task stage's batch layout. The camera's visibility pass draws one view into an unlayered target.
 push_constant: push_constant {
@@ -95,6 +98,7 @@ main: fn(scene: Scene) -> void {
 		set_mesh_vertex_position(thread, view.view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0));
 		out_uv[thread] = uv;
 		out_instance_index[thread] = instance_index;
+		out_material_word[thread] = mesh.material;
 	}
 
 	for (let slot: u32 = 0; slot < 2; slot = slot + 1) {

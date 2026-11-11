@@ -1107,25 +1107,57 @@ impl MeshView {
 enum MeshAttributes {
 	/// Nothing, for a stage no fragment stage follows, as for opaque shadow casters.
 	None,
-	/// The instance at location 0 and the UV at location 1, which the masked shadow passes' alpha test reads.
-	Instance,
+	/// The instance's material word at location 0 and the UV at location 1, which the masked shadow passes' alpha test
+	/// reads.
+	MaterialAndUv,
 	/// The instance and the primitive at locations 0 and 1, which the visibility pass writes.
 	InstanceAndPrimitive,
-	/// The instance, the primitive, and the UV at locations 0, 1, and 2, which the masked visibility pass writes.
-	InstancePrimitiveAndUv,
+	/// The instance, its material word, the primitive, and the UV at locations 0 to 3, which the masked visibility pass
+	/// writes and tests.
+	InstanceMaterialPrimitiveAndUv,
 }
 
 impl MeshAttributes {
 	/// Returns whether the stage reads UVs to pass on.
 	fn has_uv(self) -> bool {
-		matches!(self, Self::Instance | Self::InstancePrimitiveAndUv)
+		matches!(self, Self::MaterialAndUv | Self::InstanceMaterialPrimitiveAndUv)
 	}
 
-	/// Returns whether the stage marks each triangle with its meshlet and place in it.
-	fn has_primitive(self) -> bool {
-		matches!(self, Self::InstanceAndPrimitive | Self::InstancePrimitiveAndUv)
+	/// Returns how many attribute locations the stage writes.
+	fn locations(self) -> u8 {
+		match self {
+			Self::None => 0,
+			Self::MaterialAndUv | Self::InstanceAndPrimitive => 2,
+			Self::InstanceMaterialPrimitiveAndUv => 4,
+		}
+	}
+
+	/// Returns the location of the instance, if the stage passes it.
+	fn instance_location(self) -> Option<usize> {
+		matches!(self, Self::InstanceAndPrimitive | Self::InstanceMaterialPrimitiveAndUv).then_some(0)
+	}
+
+	/// Returns the location of the instance's material word, if the stage passes it.
+	fn material_location(self) -> Option<usize> {
+		match self {
+			Self::MaterialAndUv => Some(0),
+			Self::InstanceMaterialPrimitiveAndUv => Some(1),
+			Self::None | Self::InstanceAndPrimitive => None,
+		}
+	}
+
+	/// Returns the location of each triangle's meshlet and place in it, if the stage marks them.
+	fn primitive_location(self) -> Option<usize> {
+		match self {
+			Self::InstanceAndPrimitive => Some(1),
+			Self::InstanceMaterialPrimitiveAndUv => Some(2),
+			Self::None | Self::MaterialAndUv => None,
+		}
 	}
 }
+
+/// The material word of the fixture instance in mesh-stage tests, which the masked stages pass on unchanged.
+const FIXTURE_MATERIAL_WORD: u32 = 0x8000_0005;
 
 /// Executes one production mesh main over one triangle meshlet placed by `model` and verifies its complete output
 /// contract, including that the triangle winds on screen as it does under an identity model.
@@ -1148,6 +1180,9 @@ fn assert_triangle_mesh_program(
 	meshes
 		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(model))
 		.expect("fixture mesh model");
+	meshes
+		.write_array_member(FIXTURE_INSTANCE_INDEX, "material", Value::U32(FIXTURE_MATERIAL_WORD))
+		.expect("fixture mesh material");
 	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
 	write_fixture_level(&mut mesh_levels, [0.0, 0.0, 0.0, 2.0], 1, base_vertex);
 	let vertex_count = base_vertex as usize + 3;
@@ -1221,12 +1256,7 @@ fn assert_triangle_mesh_program(
 		.expect("mesh dispatch work");
 
 	// One buffer per attribute location the stage writes.
-	let locations: u8 = match attributes {
-		MeshAttributes::None => 0,
-		MeshAttributes::Instance | MeshAttributes::InstanceAndPrimitive => 2,
-		MeshAttributes::InstancePrimitiveAndUv => 3,
-	};
-	let mut out_attributes = (0..locations)
+	let mut out_attributes = (0..attributes.locations())
 		.map(|location| buffer(&program, output_slot(location)))
 		.collect::<Vec<_>>();
 	let mut mesh_outputs = MeshOutputs::new();
@@ -1283,15 +1313,27 @@ fn assert_triangle_mesh_program(
 	if let Some(expected) = expected_render_target_array_index {
 		assert_eq!(mesh_outputs.render_target_array_index(0), Some(expected));
 	}
-	if attributes != MeshAttributes::None {
+	if let Some(location) = attributes.instance_location() {
 		assert_eq!(
-			out_attributes[0].read_indexed("out_instance_index", 0).expect("mesh output"),
+			out_attributes[location]
+				.read_indexed("out_instance_index", 0)
+				.expect("mesh output"),
 			Value::U32(FIXTURE_INSTANCE_INDEX as u32)
 		);
 	}
-	if attributes.has_primitive() {
+	if let Some(location) = attributes.material_location() {
 		assert_eq!(
-			out_attributes[1].read_indexed("out_primitive_index", 0).expect("mesh output"),
+			out_attributes[location]
+				.read_indexed("out_material_word", 0)
+				.expect("mesh output"),
+			Value::U32(FIXTURE_MATERIAL_WORD)
+		);
+	}
+	if let Some(location) = attributes.primitive_location() {
+		assert_eq!(
+			out_attributes[location]
+				.read_indexed("out_primitive_index", 0)
+				.expect("mesh output"),
 			Value::U32((FIXTURE_MESHLET_INDEX as u32) << 8)
 		);
 	}
@@ -1319,11 +1361,11 @@ fn mesh_stages_read_a_meshlets_own_vertices() {
 		(asset!("visibility-mesh.besl"), MeshAttributes::InstanceAndPrimitive, None),
 		(
 			asset!("masked-visibility-mesh.besl"),
-			MeshAttributes::InstancePrimitiveAndUv,
+			MeshAttributes::InstanceMaterialPrimitiveAndUv,
 			None,
 		),
 		(asset!("shadow-mesh.besl"), MeshAttributes::None, Some(0)),
-		(asset!("masked-shadow-mesh.besl"), MeshAttributes::Instance, Some(0)),
+		(asset!("masked-shadow-mesh.besl"), MeshAttributes::MaterialAndUv, Some(0)),
 	] {
 		assert_triangle_mesh_program(
 			program,
@@ -1338,7 +1380,8 @@ fn mesh_stages_read_a_meshlets_own_vertices() {
 	}
 }
 
-/// Verifies the masked visibility mesh stage also passes its fragment stage the UV, at a location of its own.
+/// Verifies the masked visibility mesh stage also passes its fragment stage the material word and the UV, at locations
+/// of their own.
 #[test]
 fn masked_visibility_mesh_main_emits_identity_triangle_and_metadata() {
 	assert_triangle_mesh_program(
@@ -1348,7 +1391,7 @@ fn masked_visibility_mesh_main_emits_identity_triangle_and_metadata() {
 		0,
 		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
-		MeshAttributes::InstancePrimitiveAndUv,
+		MeshAttributes::InstanceMaterialPrimitiveAndUv,
 		false,
 	);
 }
@@ -1416,7 +1459,7 @@ fn visibility_mesh_main_draws_every_meshlet_of_its_group() {
 	// The lanes that kept the two meshlets, as one group.
 	let payload = [group_entry(0, 0, [3, 1], false), group_entry(1, 0, [6, 2], true)];
 
-	let mut out_attributes = (0..3)
+	let mut out_attributes = (0..MeshAttributes::InstanceMaterialPrimitiveAndUv.locations())
 		.map(|location| buffer(&program, output_slot(location)))
 		.collect::<Vec<_>>();
 	let mut mesh_outputs = MeshOutputs::new();
@@ -1466,7 +1509,7 @@ fn visibility_mesh_main_draws_every_meshlet_of_its_group() {
 		);
 		// Each triangle is the first of its own meshlet.
 		assert_eq!(
-			out_attributes[1]
+			out_attributes[2]
 				.read_indexed("out_primitive_index", triangle)
 				.expect("mesh output"),
 			Value::U32((FIXTURE_MESHLET_INDEX as u32 + triangle as u32) << 8)
@@ -1546,7 +1589,7 @@ fn visibility_mesh_main_draws_triangles_past_its_thread_count() {
 		group_entry(1, 0, [6, TRIANGLES as u32], true),
 	];
 
-	let mut out_attributes = (0..3)
+	let mut out_attributes = (0..MeshAttributes::InstanceMaterialPrimitiveAndUv.locations())
 		.map(|location| buffer(&program, output_slot(location)))
 		.collect::<Vec<_>>();
 	let mut mesh_outputs = MeshOutputs::new();
@@ -1582,7 +1625,7 @@ fn visibility_mesh_main_draws_triangles_past_its_thread_count() {
 	for triangle in FULL + 2..TRIANGLES {
 		assert_eq!(mesh_outputs.triangle(triangle).expect("mesh triangle output"), [3, 4, 5]);
 		assert_eq!(
-			out_attributes[1]
+			out_attributes[2]
 				.read_indexed("out_primitive_index", triangle)
 				.expect("mesh output"),
 			Value::U32(((FIXTURE_MESHLET_INDEX as u32 + 1) << 8) | (triangle - FULL) as u32)
@@ -1621,7 +1664,7 @@ fn shadow_mesh_main_emits_selected_view_triangle_and_metadata() {
 	);
 }
 
-/// Verifies masked shadow mesh output draws the same triangle and passes the instance its alpha test reads.
+/// Verifies masked shadow mesh output draws the same triangle and passes the material word its alpha test reads.
 #[test]
 fn masked_shadow_mesh_main_emits_selected_view_triangle_and_instance() {
 	assert_triangle_mesh_program(
@@ -1631,7 +1674,7 @@ fn masked_shadow_mesh_main_emits_selected_view_triangle_and_instance() {
 		0,
 		[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
 		Some(3),
-		MeshAttributes::Instance,
+		MeshAttributes::MaterialAndUv,
 		false,
 	);
 }

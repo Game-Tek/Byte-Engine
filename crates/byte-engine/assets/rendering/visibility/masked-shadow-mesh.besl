@@ -1,5 +1,5 @@
 // Draws the groups of meshlets the task stage kept into the shadow map layers of their views, for masked casters. It
-// passes the instance and the UV the coverage shader's alpha test reads; opaque casters draw with `shadow-mesh.besl`,
+// passes the instance's material word and the UV the coverage shader's alpha test reads; opaque casters draw with `shadow-mesh.besl`,
 // which passes nothing.
 
 use ::byte_engine::rendering::visibility::layouts::scene_records::*;
@@ -7,9 +7,10 @@ use ::byte_engine::rendering::visibility::layouts::scene::*;
 
 // The task stage's kept meshlets, in groups that each fill one mesh grid. `scene_records` gives the format.
 meshlet_instances: task_payload<u32, 193>;
-// The coverage shader's interface sorts its fields by name: `instance_index` then `uv`. The instance is written once
-// per vertex: every vertex of a meshlet shares it, and a grid has half as many vertices as triangles.
-out_instance_index: vertex_output<u32, 0, 128>;
+// The coverage shader's interface sorts its fields by name: `material_word` then `uv`. The instance's material word is
+// written once per vertex, so the fragments find their material without reading the instance record: every vertex of
+// a meshlet shares it, and a grid has half as many vertices as triangles.
+out_material_word: vertex_output<u32, 0, 128>;
 // One UV per vertex, interpolated across each triangle for the alpha test.
 out_uv: vertex_output<vec2f16, 1, 128>;
 
@@ -93,7 +94,7 @@ main: fn(scene: Scene) -> void {
 		let world_position: vec3f = mesh.model * vec4f(object_position.x, object_position.y, object_position.z, 1.0);
 		set_mesh_vertex_position(thread, view.view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0));
 		out_uv[thread] = uv;
-		out_instance_index[thread] = instance_index;
+		out_material_word[thread] = mesh.material;
 	}
 
 	for (let slot: u32 = 0; slot < 2; slot = slot + 1) {

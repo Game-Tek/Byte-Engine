@@ -379,6 +379,10 @@ impl Window {
 	pub(crate) fn is_visible(&self) -> bool {
 		true
 	}
+
+	/// Wayland windows are shown when they are created, even a [`Features::HIDDEN`] one, since a surface without a
+	/// role can't be presented to.
+	pub(crate) fn show(&self) {}
 }
 
 impl Drop for Window {

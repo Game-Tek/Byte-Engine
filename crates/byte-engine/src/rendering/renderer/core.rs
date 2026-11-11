@@ -180,6 +180,8 @@ pub struct Renderer {
 	/// Display windows, their swapchains, and whether the latest acquisition warned that the window cannot render.
 	/// Declared after `context`, because destroying a swapchain's surface may still talk to its window.
 	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle, bool); 16]>,
+	/// When each window of `windows`, at the same index, is shown. See [`Reveal`].
+	reveals: SmallVec<[Reveal; 16]>,
 	/// The windowing connection that pumps every window's events. Declared after `windows` so they drop first.
 	app: Option<ghi::window::App>,
 }
@@ -315,6 +317,7 @@ impl Renderer {
 			started_frame_count: 0,
 
 			windows: SmallVec::with_capacity(16),
+			reveals: SmallVec::new(),
 			app: None,
 			acquisitions: (0, SmallVec::with_capacity(16)),
 			present_interval: None,
@@ -819,7 +822,9 @@ impl Renderer {
 			if !undecided(&self.acquisitions.1, index) {
 				continue;
 			}
-			if !self.unattended && !captured(index) && !window.is_visible() {
+			// A window waiting to be revealed can't be seen yet, but its first frames are what it waits for.
+			let revealing = !matches!(self.reveals[index], Reveal::Shown);
+			if !self.unattended && !captured(index) && !revealing && !window.is_visible() {
 				self.acquisitions.1.push(WindowFrame::Hidden);
 				continue;
 			}
@@ -959,6 +964,10 @@ impl Renderer {
 		{
 			for sink_id in std::mem::take(&mut self.pending_sink_initializations) {
 				self.initialize_scene_sink(sink_id);
+				// This frame is the sink's first scene frame, so the window shows once the GPU finished it.
+				if matches!(self.reveals[sink_id], Reveal::AfterSinkSetup { .. }) {
+					self.reveals[sink_id] = Reveal::AfterFrame(self.started_frame_count);
+				}
 			}
 		}
 		// Queued render-pass configuration applies after passes exist and before they prepare frame work.
@@ -1204,6 +1213,7 @@ impl Renderer {
 		if let Some(completed_frame) = completed_frame {
 			self.publish_gpu_metrics(completed_frame.frame_index());
 		}
+		self.reveal_windows(completed_frame.map(|frame| frame.frame_index()));
 
 		if screenshot_transfers.iter().any(|transfer| matches!(transfer, Some(Ok(_)))) {
 			self.context.wait_for_synchronizer(self.render_finished_synchronizer);
@@ -1305,6 +1315,16 @@ impl Renderer {
 		} else {
 			ghi::PresentationModes::FIFO
 		};
+		// A window that shows a scene opens hidden and shows once its first scene frame is done, so the one-time work
+		// of that frame, and of the windowing system's first frames, happens before anyone sees it.
+		let reveal = if self.unattended || camera.is_none() {
+			Reveal::Shown
+		} else {
+			features |= ghi::window::Features::HIDDEN;
+			Reveal::AfterSinkSetup {
+				created: self.started_frame_count,
+			}
+		};
 
 		// Connect on first use so headless renderers never touch the windowing system.
 		let app = self.app.take().map_or_else(|| ghi::window::App::new("main_window"), Ok);
@@ -1329,6 +1349,7 @@ impl Renderer {
 
 				let sink_id = self.windows.len();
 				self.windows.push((window, swapchain_handle, false));
+				self.reveals.push(reveal);
 				self.redraw_requested = true;
 
 				// The first window closes the render graph, so the fusions its steps group with can be read.
@@ -1353,6 +1374,23 @@ impl Renderer {
 		}
 	}
 
+	/// Shows the hidden windows whose first scene frame the GPU finished, now that frame `completed` is done, and any
+	/// that waited [`REVEAL_FRAME_LIMIT`] frames, so a sink that never sets up can't keep its window hidden.
+	fn reveal_windows(&mut self, completed: Option<u64>) {
+		for ((window, ..), reveal) in self.windows.iter().zip(self.reveals.iter_mut()) {
+			let due = match *reveal {
+				Reveal::Shown => false,
+				Reveal::AfterSinkSetup { created } => self.started_frame_count >= created + REVEAL_FRAME_LIMIT,
+				Reveal::AfterFrame(frame) => completed.is_some_and(|completed| completed >= frame),
+			};
+			if due {
+				window.show();
+				*reveal = Reveal::Shown;
+				self.redraw_requested = true;
+			}
+		}
+	}
+
 	pub fn create_camera(&mut self, handle: Handle, camera: Camera) {
 		if let Some((_, existing_camera)) = self
 			.cameras
@@ -1368,6 +1406,21 @@ impl Renderer {
 }
 /// Names the GPU metric one counter reports to: `<kind>.<name>`, with `@<sink>` appended on every sink after the
 /// first so one name stays one column while the usual single-sink application reads plain names.
+/// The `Reveal` enum tracks when a window the renderer opened hidden is shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reveal {
+	/// The window is shown, or was never hidden.
+	Shown,
+	/// The window waits for its scene sink, which sets up after the window's first frame. `created` is the frame count
+	/// when the window was created.
+	AfterSinkSetup { created: u64 },
+	/// The window shows once the GPU finished this frame, its first scene frame.
+	AfterFrame(u64),
+}
+
+/// How many frames a window waits for its scene sink before it shows anyway.
+const REVEAL_FRAME_LIMIT: u64 = 120;
+
 fn gpu_metric_name(kind: &str, name: &str, sink_id: SinkId) -> String {
 	if sink_id == 0 {
 		format!("{kind}.{name}")

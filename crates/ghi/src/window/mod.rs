@@ -164,5 +164,10 @@ bitflags::bitflags! {
 		/// end and [`Events::MouseMove`] keeps reporting motion; [`Events::PointerPosition`] isn't sent meanwhile. Use
 		/// it for camera control in games. A [`Features::BACKGROUND`] window never captures the cursor.
 		const CAPTURE_CURSOR = 0b0100;
+		/// The window opens without being shown, so a renderer can do its first frames' one-time work, such as
+		/// creating its targets and compiling the driver's first shaders, before anyone sees the window. Call
+		/// [`Window::show`](crate::window::Window::show) once those frames are done. Frames still present to it
+		/// meanwhile. Wayland shows the window at once, since it can't present to a surface it doesn't show.
+		const HIDDEN = 0b1000;
 	}
 }

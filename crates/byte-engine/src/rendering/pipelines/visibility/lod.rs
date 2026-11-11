@@ -259,7 +259,7 @@ impl LodSettings {
 			}
 			"small-radius" => {
 				let small_radius = value.to_f64().filter(|radius| *radius >= 0.0 && *radius <= f32::MAX as f64).ok_or(
-					"Small instance radius was not set. The most likely cause is that the value is not a finite nonnegative number of pixels.",
+					"Small instance radius was not set. The most likely cause is that the value is not a finite nonnegative number of pixels. Set `render.lod.small-radius` to a radius in pixels such as 6, or to 0 to make no instance small.",
 				)? as f32;
 				Ok((
 					Self { small_radius, ..self },
@@ -268,7 +268,7 @@ impl LodSettings {
 			}
 			"small-bias" => {
 				let small_bias = value.to_f64().filter(|bias| *bias >= 1.0 && *bias <= f32::MAX as f64).ok_or(
-					"Small instance detail bias was not set. The most likely cause is that the value is not a finite number of at least 1.",
+					"Small instance detail bias was not set. The most likely cause is that the value is not a finite number of at least 1. Set `render.lod.small-bias` to a number such as 2, or to 1 to give small instances no extra error.",
 				)? as f32;
 				Ok((Self { small_bias, ..self }, ConfigurationValue::Float(f64::from(small_bias))))
 			}

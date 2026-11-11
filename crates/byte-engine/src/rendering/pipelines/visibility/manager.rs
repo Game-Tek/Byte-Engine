@@ -366,8 +366,9 @@ impl VisibilityPipelineSettings {
 	/// cube face its size class's texels per side squared.
 	///
 	/// Cascades 0 and 1 of every shadowed sun draw every frame and count first. The other cascades, cone maps, and point
-	/// cube faces then draw by need within what's left, so a smaller budget spreads their updates over more frames. The
-	/// rules are specified in the [shadow map updates](/docs/reference/rendering#shadow-map-updates) of the visibility
+	/// cube faces then draw by need within what's left, so a smaller budget spreads their updates over more frames.
+	/// Texels a frame leaves unspent carry over to the next, so a budget that leaves half a map draws it every other
+	/// frame. The rules are specified in the [shadow map updates](/docs/reference/rendering#shadow-map-updates) of the visibility
 	/// pipeline reference.
 	///
 	/// # Errors

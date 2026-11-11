@@ -459,8 +459,9 @@ shadows, with one warning in the log. At most 4 directional, 16 cone, and 16 poi
 ### Shadow map updates
 
 A shadow map isn't drawn again every frame. Each frame draws a set of updates
-chosen within an update budget, `render.shadow-maps.update-texels`, 16,777,216
-texels by default. One update draws one of these:
+chosen within an update budget, `render.shadow-maps.update-texels`, 10,485,760
+texels by default: two and a half cascades at 2,048 texels per side. One update
+draws one of these:
 
 | Update | Texels |
 | --- | --- |
@@ -470,7 +471,9 @@ texels by default. One update draws one of these:
 
 Every frame draws cascades 0 and 1 of every shadowed directional light. Their
 texels count against the budget first, even when they exceed it. Every other
-update is a candidate: cascades 2 and 3, cone maps, and point cube faces.
+update is a candidate: cascades 2 and 3, cone maps, and point cube faces. The
+candidates share what's left of the budget, plus the budget that earlier frames
+carried over.
 
 Candidates are ordered in three tiers:
 
@@ -484,8 +487,17 @@ Age is the number of frames since the map was drawn. Importance is the largest
 number of sink pixels the light's shadow range covers in any sink, and for a
 cascade, the pixel count of the largest sink. Candidates draw in that order
 while their texels fit in what's left of the budget. A candidate that doesn't
-fit is skipped, and later candidates can still draw. When no candidate fits,
-the first one draws anyway.
+fit is skipped, and later candidates can still draw.
+
+The texels the candidates leave unspent carry over to the next frame, up to the
+texels of the largest candidate. A candidate that doesn't fit this frame draws
+once enough has carried over. With the default budget and one shadowed
+directional light, half a cascade is left each frame, so one of cascades 2 and 3
+draws every other frame, and each one every fourth frame.
+
+When no candidate fits, the first one draws anyway, past the budget, if it
+hasn't been drawn yet, or if cascades 0 and 1 take the whole budget, so that
+nothing carries over. A frame that draws past the budget carries nothing over.
 
 Until a map has been drawn, its light is lit without that shadow. A map that
 isn't drawn this frame keeps the view it was drawn with, and receivers sample

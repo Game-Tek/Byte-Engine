@@ -125,7 +125,7 @@ impl std::fmt::Display for MeshProcessingError {
 			),
 			Self::TooManyLevelMeshlets { primitive, level, meshlets } => write!(
 				f,
-				"Detail level {level} of primitive {primitive} needs {meshlets} meshlets, more than the {} one level holds. The most likely cause is a primitive whose triangles share few vertices, so each meshlet fills its 64 vertices long before its 124 triangles. Weld the primitive's duplicate vertices or split it in the source model. See {}.",
+				"Detail level {level} of primitive {primitive} needs {meshlets} meshlets, more than the {} one level holds. The most likely cause is a primitive whose triangles share few vertices, so each meshlet fills its 128 vertices long before its 124 triangles. Weld the primitive's duplicate vertices or split it in the source model. See {}.",
 				crate::resources::mesh::MAX_LEVEL_MESHLETS,
 				crate::online_docs_url("reference/assets#detail-levels")
 			),

@@ -1004,7 +1004,10 @@ fn stream_name(stream_type: Streams) -> &'static str {
 	}
 }
 
-const MESHLET_MAX_VERTICES: usize = 64;
+/// The most vertices one meshlet holds, which is one per thread of the mesh stage. Foliage and other loose cards share
+/// few vertices, so a meshlet of them runs out of vertices long before triangles: at 64 vertices the slate quarry's
+/// grass filled 53 of a meshlet's 124 triangles, and every meshlet costs the GPU a mesh threadgroup.
+const MESHLET_MAX_VERTICES: usize = 128;
 /// The most vertices a primitive holds: its index streams store 16-bit indices.
 const MAX_PRIMITIVE_VERTICES: usize = 1 << 16;
 pub(super) const MESHLET_MAX_TRIANGLES: usize = 124;

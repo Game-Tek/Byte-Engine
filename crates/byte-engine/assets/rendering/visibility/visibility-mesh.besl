@@ -5,14 +5,55 @@ meshlet_instances: task_payload<u32, 193>;
 out_instance_index: output<u32, 0, 126>;
 out_primitive_index: output<u32, 1, 126>;
 // One UV per meshlet vertex, interpolated across each triangle for the alpha test.
-out_uv: vertex_output<vec2f16, 2, 64>;
+out_uv: vertex_output<vec2f16, 2, 128>;
 
-// The task stage's batch layout. The camera's visibility pass draws one view into an unlayered target.
+// The meshlet batch layout every meshlet pass pushes. The camera's visibility pass draws one view into an unlayered
+// target. `occlusion_phase` and `minimum_caster_extent` are the task stage's. `target_width` and `target_height` are
+// the render target's extent in pixels.
 push_constant: push_constant {
 	work_item_base: u32,
 	view_base: u32,
 	layer_base: u32,
 	view_count: u32,
+	occlusion_phase: u32,
+	minimum_caster_extent: f32,
+	target_width: f32,
+	target_height: f32,
+}
+
+// How far outside a triangle, in pixels, a pixel center must lie before the triangle is known to miss it. The
+// rasterizer snaps vertices to a sub-pixel grid and this stage rounds differently than it does, both by far less.
+COVERAGE_MARGIN: const f32 = 0.125;
+
+// Returns where an object-space position lands on a render target `width` by `height` pixels, in pixels from its
+// top-left corner, as x and y, and its clip-space w as z.
+pixel_position: fn(mesh: Mesh, view: View, object_position: vec3f, width: f32, height: f32) -> vec3f {
+	let world_position: vec3f = mesh.model * vec4f(object_position.x, object_position.y, object_position.z, 1.0);
+	let clip_position: vec4f = view.view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0);
+	// Normalized device Y points up and pixel rows run down.
+	return vec3f(
+		(clip_position.x / clip_position.w * 0.5 + 0.5) * width,
+		(0.5 - clip_position.y / clip_position.w * 0.5) * height,
+		clip_position.w
+	);
+}
+
+// Returns whether a triangle with the corners `a`, `b`, and `c`, each from `pixel_position`, is known to cover no pixel
+// center, so the rasterizer would draw nothing of it: its bounds, widened by the margin, pass between the columns or
+// between the rows of centers. Grass and other fine geometry seen from afar is mostly such triangles, and leaving
+// them out spares the rasterizer their setup.
+//
+// The answer must never be true for a triangle that covers a center, so it is false for a corner at or behind the eye,
+// whose pixel position means nothing, and every comparison is false for values that aren't numbers. It is one
+// expression because a branch here costs more than the arithmetic it would skip.
+covers_no_pixel_center: fn(a: vec3f, b: vec3f, c: vec3f) -> bool {
+	// A center sits half a pixel into its pixel, so the last column of centers at or before `x` is `floor(x - 0.5)`.
+	// No center lies between the bounds when that column, for the upper bound, is still before the lower bound.
+	let low_x: f32 = min(a.x, min(b.x, c.x)) - 0.5 - COVERAGE_MARGIN;
+	let low_y: f32 = min(a.y, min(b.y, c.y)) - 0.5 - COVERAGE_MARGIN;
+	let last_x: f32 = floor(max(a.x, max(b.x, c.x)) - 0.5 + COVERAGE_MARGIN);
+	let last_y: f32 = floor(max(a.y, max(b.y, c.y)) - 0.5 + COVERAGE_MARGIN);
+	return min(a.z, min(b.z, c.z)) > 0.0 && (last_x < low_x || last_y < low_y);
 }
 
 main: fn(scene: Scene) -> void {
@@ -55,7 +96,21 @@ main: fn(scene: Scene) -> void {
 			u32(scene.primitive_indices[first_index + 1]),
 			u32(scene.primitive_indices[first_index + 2])
 		);
-		set_mesh_triangle(primitive_index, instance_triangle(mesh, triangle));
+		// Each triangle thread places its own corners: mesh stages share no memory between threads, and the vertex
+		// threads' outputs can't be read back.
+		let first_vertex: u32 = instance_vertex_base(mesh, level);
+		let a_position: vec3f = scene.vertex_positions[first_vertex + u32(scene.vertex_indices[meshlet.primitive_offset + triangle.x])];
+		let b_position: vec3f = scene.vertex_positions[first_vertex + u32(scene.vertex_indices[meshlet.primitive_offset + triangle.y])];
+		let c_position: vec3f = scene.vertex_positions[first_vertex + u32(scene.vertex_indices[meshlet.primitive_offset + triangle.z])];
+		let a: vec3f = pixel_position(mesh, view, a_position, push_constant.target_width, push_constant.target_height);
+		let b: vec3f = pixel_position(mesh, view, b_position, push_constant.target_width, push_constant.target_height);
+		let c: vec3f = pixel_position(mesh, view, c_position, push_constant.target_width, push_constant.target_height);
+		if (covers_no_pixel_center(a, b, c)) {
+			// A triangle of one repeated vertex has no area, so the rasterizer drops it before it reaches a tile.
+			set_mesh_triangle(primitive_index, vec3u(0, 0, 0));
+		} else {
+			set_mesh_triangle(primitive_index, instance_triangle(mesh, triangle));
+		}
 		out_instance_index[primitive_index] = instance_index;
 		out_primitive_index[primitive_index] = (meshlet_index << 8) | (primitive_index & 255);
 	}

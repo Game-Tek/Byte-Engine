@@ -51,7 +51,7 @@ pub(crate) const fn material_variable_specialization_id(variable_index: u32) -> 
 }
 
 /// Vertices and triangles one meshlet can hold.
-pub(crate) const VERTEX_COUNT: u32 = 64;
+pub(crate) const VERTEX_COUNT: u32 = 128;
 pub(crate) const TRIANGLE_COUNT: u32 = 126;
 /// Meshlets culled by one task workgroup.
 pub(crate) const MESHLET_CULLING_TASK_GROUP_SIZE: u32 = 32;

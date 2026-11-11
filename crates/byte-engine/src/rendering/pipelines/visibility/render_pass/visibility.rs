@@ -104,7 +104,7 @@ impl VisibilityPass {
 		};
 		let ranges = ranges.iter().copied().zip(pipelines);
 		// The camera is view zero.
-		record_meshlet_dispatches(c, self.descriptor_sets, occlusion, ranges, 0, 1, 0.0);
+		record_meshlet_dispatches(c, self.descriptor_sets, occlusion, ranges, 0, 1, 0.0, extent);
 		c.end_render_pass();
 		c.end_region();
 	}

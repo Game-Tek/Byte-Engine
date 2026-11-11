@@ -439,6 +439,7 @@ impl ShadowMaps {
 					first_view,
 					count,
 					minimum_caster_extent,
+					extent,
 				);
 				c.end_render_pass();
 				c.end_region();

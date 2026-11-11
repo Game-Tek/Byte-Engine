@@ -373,8 +373,8 @@ mod tests {
 
 	#[test]
 	fn a_level_with_more_meshlets_than_a_level_holds_fails_to_bake() {
-		// Triangles over scattered vertices share few of them, so meshlets fill on vertices at about 31 triangles each.
-		// 200,000 such triangles need over 6,000 meshlets while staying under the vertex limit.
+		// Triangles over scattered vertices share few of them, so meshlets fill on vertices at about 62 triangles each.
+		// 400,000 such triangles need over 6,000 meshlets while staying under the vertex limit.
 		let vertex_count = 1u32 << 16;
 		let mut state = 0x9E37_79B9u32;
 		let mut next = || {
@@ -386,7 +386,7 @@ mod tests {
 		let positions = (0..vertex_count)
 			.map(|vertex| [(vertex % 256) as f32, (vertex / 256) as f32, ((vertex * 7) % 13) as f32])
 			.collect();
-		let indices = (0..200_000).flat_map(|_| [next(), next(), next()]).collect();
+		let indices = (0..400_000).flat_map(|_| [next(), next(), next()]).collect();
 		let scattered = TestPrimitive {
 			indices,
 			positions,

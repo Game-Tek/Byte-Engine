@@ -117,8 +117,9 @@ pub(super) fn opaque_layer_pipelines(
 /// `descriptor_sets` are the base set and a sink's [`OcclusionCulling::descriptor_set`]. The shared task shader declares
 /// the occlusion resources, so every pass binds them, but only `occlusion` other than [`OcclusionPhase::Disabled`] uses
 /// them. `minimum_caster_extent` is the narrowest instance, in normalized device units across x, that orthographic views
-/// draw; pass zero for perspective views and to draw every size. Call it inside a render pass whose attachments hold
-/// `view_count` layers, or one unlayered target for one view.
+/// draw; pass zero for perspective views and to draw every size. `target_extent` is the extent of the render pass's
+/// attachments, which the visibility mesh stage needs to leave out triangles that cover no pixel center. Call it inside
+/// a render pass whose attachments hold `view_count` layers, or one unlayered target for one view.
 pub(super) fn record_meshlet_dispatches(
 	c: &mut impl ghi::command_buffer::RasterizationRenderPassMode,
 	descriptor_sets: [ghi::DescriptorSetHandle; 2],
@@ -127,6 +128,7 @@ pub(super) fn record_meshlet_dispatches(
 	view_base: usize,
 	view_count: usize,
 	minimum_caster_extent: f32,
+	target_extent: Extent,
 ) {
 	use ghi::command_buffer::{BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _};
 
@@ -150,6 +152,8 @@ pub(super) fn record_meshlet_dispatches(
 					batch_views as u32,
 					occlusion as u32,
 					minimum_caster_extent.to_bits(),
+					(target_extent.width() as f32).to_bits(),
+					(target_extent.height() as f32).to_bits(),
 				],
 			);
 			c.dispatch_meshes(dispatch.workgroup_count, 1, 1);

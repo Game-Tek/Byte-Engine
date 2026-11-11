@@ -925,34 +925,42 @@ impl MeshView {
 	};
 }
 
-/// Executes one production mesh main over one triangle meshlet placed by `model` and verifies its complete output
-/// contract, including that the triangle winds on screen as it does under an identity model.
-fn assert_triangle_mesh_program(
-	program: ExecutableProgram,
+/// The extent of the render target the mesh fixtures draw into, in pixels.
+const FIXTURE_TARGET_EXTENT: f32 = 1024.0;
+
+/// The `TriangleMeshRun` struct holds what one production mesh main wrote for the fixture's one-triangle meshlet.
+struct TriangleMeshRun {
+	mesh_outputs: MeshOutputs,
+	out_instance_indices: Buffer,
+	out_primitive_indices: Buffer,
+}
+
+/// Executes one production mesh main over one triangle meshlet placed by `model`, drawn into a square target of
+/// [`FIXTURE_TARGET_EXTENT`] pixels, and returns its outputs.
+fn run_triangle_mesh_program(
+	program: &ExecutableProgram,
 	view: MeshView,
 	model: [f32; 12],
 	base_vertex: u32,
-	expected_clip_positions: [[f32; 4]; 3],
-	expected_render_target_array_index: Option<u32>,
-) {
-	let mut views = buffer(&program, slot(&program, VIEWS));
-	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
+) -> TriangleMeshRun {
+	let mut views = buffer(program, slot(program, VIEWS));
+	let mut meshes = array_buffer(program, slot(program, MESH_DATA), FIXTURE_TABLE_LENGTH);
 	write_fixture_mesh(&mut meshes, 0, [0; 2]);
 	meshes
 		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(model))
 		.expect("fixture mesh model");
-	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
+	let mut mesh_levels = array_buffer(program, slot(program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
 	write_fixture_level(&mut mesh_levels, [0.0, 0.0, 0.0, 2.0], 1, base_vertex);
 	let vertex_count = base_vertex as usize + 3;
-	let mut positions = array_buffer(&program, slot(&program, VERTEX_POSITIONS), vertex_count);
+	let mut positions = array_buffer(program, slot(program, VERTEX_POSITIONS), vertex_count);
 	for (index, position) in [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]].into_iter().enumerate() {
 		positions
 			.write_array_element(base_vertex as usize + index, Value::Vec3F(position))
 			.expect("mesh vertex");
 	}
-	let mut vertex_uvs = array_buffer(&program, slot(&program, VERTEX_UVS), vertex_count);
-	let mut vertex_indices = array_buffer(&program, slot(&program, VERTEX_INDICES), 3);
-	let mut primitive_indices = array_buffer(&program, slot(&program, PRIMITIVE_INDICES), 3);
+	let mut vertex_uvs = array_buffer(program, slot(program, VERTEX_UVS), vertex_count);
+	let mut vertex_indices = array_buffer(program, slot(program, VERTEX_INDICES), 3);
+	let mut primitive_indices = array_buffer(program, slot(program, PRIMITIVE_INDICES), 3);
 	for index in 0..3 {
 		vertex_uvs
 			.write_array_element(base_vertex as usize + index, Value::Vec2F16([besl::vm::f16::ZERO; 2]))
@@ -964,11 +972,15 @@ fn assert_triangle_mesh_program(
 			.write_array_element(index, Value::U8(index as u8))
 			.expect("triangle index");
 	}
-	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), FIXTURE_MESHLET_INDEX + 1);
+	let mut meshlets = array_buffer(program, slot(program, MESHLETS), FIXTURE_MESHLET_INDEX + 1);
 	let meshlet = ShaderMeshletData::new(0, 0, [3, 1], [0.0; 4], [0.0, 0.0, 0.0, 2.0], [0.0, 0.0, 1.0], 2.0);
 	write_meshlet(&mut meshlets, FIXTURE_MESHLET_INDEX, meshlet);
-	let mut push_constant = push_constant_buffer(&program);
+	let mut push_constant = push_constant_buffer(program);
 	push_constant.write("work_item_base", Value::U32(0)).expect("mesh work base");
+	// Only the visibility mesh stage reads the target's extent, to leave out triangles that cover no pixel center.
+	for member in ["target_width", "target_height"] {
+		let _ = push_constant.write(member, Value::F32(FIXTURE_TARGET_EXTENT));
+	}
 	views
 		.write_array_member(
 			(view.view_base + view.view_offset) as usize,
@@ -985,21 +997,21 @@ fn assert_triangle_mesh_program(
 	}
 	let payload = batched_meshlet_instance(0, view.view_offset);
 
-	let mut out_instance_indices = buffer(&program, output_slot(0));
-	let mut out_primitive_indices = buffer(&program, output_slot(1));
-	let mut out_uvs = buffer(&program, output_slot(2));
+	let mut out_instance_indices = buffer(program, output_slot(0));
+	let mut out_primitive_indices = buffer(program, output_slot(1));
+	let mut out_uvs = buffer(program, output_slot(2));
 	let mut mesh_outputs = MeshOutputs::new();
 	{
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_task_payload("meshlet_instances", mesh_task_payload(payload));
-		descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
-		descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
-		descriptors.bind_buffer(slot(&program, MESH_LEVELS), &mut mesh_levels);
-		descriptors.bind_buffer(slot(&program, VERTEX_POSITIONS), &mut positions);
-		descriptors.bind_buffer(slot(&program, VERTEX_UVS), &mut vertex_uvs);
-		descriptors.bind_buffer(slot(&program, VERTEX_INDICES), &mut vertex_indices);
-		descriptors.bind_buffer(slot(&program, PRIMITIVE_INDICES), &mut primitive_indices);
-		descriptors.bind_buffer(slot(&program, MESHLETS), &mut meshlets);
+		descriptors.bind_buffer(slot(program, VIEWS), &mut views);
+		descriptors.bind_buffer(slot(program, MESH_DATA), &mut meshes);
+		descriptors.bind_buffer(slot(program, MESH_LEVELS), &mut mesh_levels);
+		descriptors.bind_buffer(slot(program, VERTEX_POSITIONS), &mut positions);
+		descriptors.bind_buffer(slot(program, VERTEX_UVS), &mut vertex_uvs);
+		descriptors.bind_buffer(slot(program, VERTEX_INDICES), &mut vertex_indices);
+		descriptors.bind_buffer(slot(program, PRIMITIVE_INDICES), &mut primitive_indices);
+		descriptors.bind_buffer(slot(program, MESHLETS), &mut meshlets);
 		descriptors.bind_buffer(output_slot(0), &mut out_instance_indices);
 		descriptors.bind_buffer(output_slot(1), &mut out_primitive_indices);
 		descriptors.bind_buffer(output_slot(2), &mut out_uvs);
@@ -1012,6 +1024,28 @@ fn assert_triangle_mesh_program(
 				.expect("production mesh shader execution");
 		}
 	}
+	TriangleMeshRun {
+		mesh_outputs,
+		out_instance_indices,
+		out_primitive_indices,
+	}
+}
+
+/// Executes one production mesh main over one triangle meshlet placed by `model` and verifies its complete output
+/// contract, including that the triangle winds on screen as it does under an identity model.
+fn assert_triangle_mesh_program(
+	program: ExecutableProgram,
+	view: MeshView,
+	model: [f32; 12],
+	base_vertex: u32,
+	expected_clip_positions: [[f32; 4]; 3],
+	expected_render_target_array_index: Option<u32>,
+) {
+	let TriangleMeshRun {
+		mesh_outputs,
+		out_instance_indices,
+		out_primitive_indices,
+	} = run_triangle_mesh_program(&program, view, model, base_vertex);
 
 	assert_eq!(mesh_outputs.vertex_count(), 3);
 	assert_eq!(mesh_outputs.primitive_count(), 1);
@@ -1060,6 +1094,37 @@ fn visibility_mesh_main_emits_identity_triangle_and_metadata() {
 		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
 	);
+}
+
+/// Verifies that the visibility pass leaves out a triangle that passes between pixel centers, which the rasterizer
+/// would draw nothing of, by writing it as a triangle of one repeated vertex.
+#[test]
+fn visibility_mesh_main_leaves_out_a_triangle_between_pixel_centers() {
+	// The fixture triangle spans two clip units, 1024 pixels. This model shrinks it to a fifth of a pixel and centers
+	// it 0.15 pixels right of and above the corner four pixels share at the middle of the target, clear of every center.
+	let scale = 0.1 / (FIXTURE_TARGET_EXTENT / 2.0);
+	let offset = 0.15 / (FIXTURE_TARGET_EXTENT / 2.0);
+	let model = [scale, 0.0, 0.0, 0.0, scale, 0.0, 0.0, 0.0, scale, offset, offset, 0.0];
+
+	let run = run_triangle_mesh_program(&asset!("visibility-mesh.besl"), MeshView::CAMERA, model, 0);
+
+	assert_eq!(run.mesh_outputs.primitive_count(), 1);
+	assert_eq!(run.mesh_outputs.triangle(0), Some([0, 0, 0]));
+}
+
+/// Verifies that the visibility pass keeps a triangle as small as the one it leaves out when it covers a pixel center.
+#[test]
+fn visibility_mesh_main_keeps_a_small_triangle_over_a_pixel_center() {
+	// A fifth of a pixel across, centered on the pixel center half a pixel right of and above the middle of the target.
+	let scale = 0.1 / (FIXTURE_TARGET_EXTENT / 2.0);
+	let offset = 0.5 / (FIXTURE_TARGET_EXTENT / 2.0);
+	let model = [scale, 0.0, 0.0, 0.0, scale, 0.0, 0.0, 0.0, scale, offset, offset, 0.0];
+
+	let run = run_triangle_mesh_program(&asset!("visibility-mesh.besl"), MeshView::CAMERA, model, 0);
+
+	let mut triangle = run.mesh_outputs.triangle(0).expect("mesh triangle output");
+	triangle.sort_unstable();
+	assert_eq!(triangle, [0, 1, 2]);
 }
 
 /// Verifies that an instance reads its vertices from the range its record names, as a posed instance's own range is.

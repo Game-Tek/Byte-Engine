@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The visibility pipeline rebuilds a frame's instances only after something they are made from changed: a renderable, a transform, a loaded mesh, level, material, texture or lightmap, a material parameter, or the camera and suns that detail levels follow. A scene that stands still under a still camera keeps the last frame's instance table and mesh dispatch work. A scene with a posed skinned instance still rebuilds every frame.
+
+- Ray tracing preparation lists only the primitives rays can hit. It used to list, sort, and look up every instance the frame draws, though rays pass through masked and blended materials and no acceleration structure holds them. A scene of 61,000 masked plants and 1,570 opaque instances spent 2.8 ms a frame on it, 33 ms in an unoptimized build, and now spends too little to show among the frame's stages.
 - `BakeContext::debug` adds a detail item to a resource's development trace and logs it at the debug level, for what a bake did as expected.
 
 - The visibility pipeline keeps each meshlet's vertex positions and UVs in the meshlet's own order and draws from them, so a mesh thread reads its vertex directly where it looked it up through a vertex index. The copy takes 12 bytes for each element of `render.geometry.vertex-index-capacity`, and stores positions rounded to 16 bits within their detail level's bounds; shading, rays, and lightmaps keep the exact vertices. `render.geometry.meshlet-vertices=false`, or `GeometryCapacity::meshlet_vertices`, turns it off. On the quarry scene it takes about 2% off the shadow passes and leaves the camera pass unchanged.

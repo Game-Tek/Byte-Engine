@@ -221,16 +221,21 @@ impl VisibilityScene {
 		self.renderables.add_primitive(renderable_handle, scene_handle);
 	}
 
-	/// Applies the latest transform update to every primitive and light owned by `handle`.
-	pub(crate) fn update_transform(&mut self, handle: Handle, transform: &Transform) {
+	/// Applies the latest transform update to every primitive and light owned by `handle`, and returns whether it
+	/// moved a primitive, which is what the frame's instances are rebuilt for. A light's move reaches them through the
+	/// detail view instead, and an update that repeats the transform a primitive has moves nothing.
+	pub(crate) fn update_transform(&mut self, handle: Handle, transform: &Transform) -> bool {
 		let model: ghi::pod::Mat4x3f = transform.get_matrix().into();
+		let mut moved = false;
 		update_instances(self.renderables.primitives(handle), &mut self.render_entities, |entity| {
+			moved |= entity.shader_mesh.model != model;
 			entity.shader_mesh.model = model;
 		});
 		let lights = self.light_handles.get(&handle).map_or(&[][..], |slots| slots.as_slice());
 		update_instances(lights, &mut self.lights, |(_, _, light_transform)| {
 			*light_transform = transform.clone();
 		});
+		moved
 	}
 
 	/// Registers a light and records its slot.

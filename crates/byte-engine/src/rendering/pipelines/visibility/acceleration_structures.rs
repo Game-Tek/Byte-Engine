@@ -30,10 +30,11 @@ pub(crate) const BOTTOM_LEVEL_BUILD_TRIANGLES_PER_FRAME: u32 = 262_144;
 /// The bits of every instance's mask: rays that trace the scene use them all.
 const SCENE_MASK: u8 = 0xFF;
 
-/// The `TracedPrimitive` struct is one primitive the frame draws, as the acceleration structures need it.
+/// The `TracedPrimitive` struct is one primitive of the frame that rays can hit, as the acceleration structures need it.
 ///
-/// The visibility pipeline manager lists one per admitted primitive while it rebuilds the frame's instances, and hands
-/// the list to [`SceneAccelerationStructures::prepare`].
+/// The visibility pipeline manager lists one per admitted opaque primitive while it rebuilds the frame's instances,
+/// and hands the list to [`SceneAccelerationStructures::prepare`]. Masked and blended primitives aren't listed: no
+/// bottom level holds them.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TracedPrimitive {
 	pub(crate) renderable: Handle,

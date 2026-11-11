@@ -38,7 +38,7 @@ use super::loader::{
 };
 use super::lod::{LodSettings, LodView, MeshLods};
 use super::material_parameters::MaterialParameters;
-use super::mesh_dispatch::MeshDispatchWorkBuffer;
+use super::mesh_dispatch::{MeshDispatchWorkBuffer, PhaseDispatches};
 use super::ray_tracing::{HitShading, PROBE_SHADE_SHADER, SURFEL_SHADE_SHADER};
 use super::render_pass::{
 	ContactShadowSettings, DEFAULT_PROBE_RAY_BUDGET, DEFAULT_PROBE_SPACING, DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET,
@@ -791,6 +791,14 @@ pub struct VisibilityPipelineManager {
 	/// Which frame sequences' copies of the material and evaluation buffers hold the current tables. Every frame
 	/// sequence keeps its own copy, so a change reaches each copy on a frame of that copy's sequence.
 	materials_copies_current: [bool; ghi::MAX_FRAMES_IN_FLIGHT],
+	/// Which frame sequences' copies of the instance table and the mesh dispatch work hold the current instances.
+	/// A frame whose copy is current rebuilds nothing: its instances are the last rebuilt frame's. Anything a rebuild
+	/// reads clears it: the scene, the loaded resources, the materials, and the detail view.
+	instances_current: [bool; ghi::MAX_FRAMES_IN_FLIGHT],
+	/// The detail view the current instances were rebuilt for.
+	instances_lod_view: Option<LodView>,
+	/// The work ranges of the current instances.
+	instance_dispatches: PhaseDispatches,
 	mesh_dispatch_work: MeshDispatchWorkBuffer,
 	skinning_pass: SkinningPass,
 	skinning_frame: SkinningFrame,
@@ -1023,6 +1031,9 @@ impl VisibilityPipelineManager {
 			material_evaluations_buffer,
 			// The default tables must reach every frame sequence too.
 			materials_copies_current: [false; ghi::MAX_FRAMES_IN_FLIGHT],
+			instances_current: [false; ghi::MAX_FRAMES_IN_FLIGHT],
+			instances_lod_view: None,
+			instance_dispatches: PhaseDispatches::default(),
 			mesh_dispatch_work,
 			skinning_pass,
 			skinning_frame: SkinningFrame::default(),
@@ -1108,16 +1119,21 @@ impl VisibilityPipelineManager {
 	/// Applies the frame's scene edits before anything is drawn: poses, then the transforms the frame shows, then
 	/// deletions.
 	fn adopt_scene_updates(&mut self, transforms: &ShownTransforms) {
+		// Whether anything the instances are rebuilt from changed.
+		let mut changed = false;
 		while let Some(message) = self.pose_listener.read() {
 			self.scene.write_skinned_pose(message.handle(), message.global_matrices());
+			changed = true;
 		}
 		while let Some(message) = self.material_parameter_listener.read() {
 			self.material_parameters.receive(message);
+			changed = true;
 		}
 		for (handle, transform) in transforms.changed() {
-			self.scene.update_transform(*handle, transform);
+			changed |= self.scene.update_transform(*handle, transform);
 		}
 		while let Some(message) = self.deletions_listener.read() {
+			changed = true;
 			let handle = message.into_handle();
 			self.scene.remove_light(handle);
 			// A deleted renderable also drops the material parameters set on it.
@@ -1127,6 +1143,15 @@ impl VisibilityPipelineManager {
 				self.refresh_instance_lightmaps();
 			}
 		}
+		if changed {
+			self.instances_changed();
+		}
+	}
+
+	/// Records that something the frame's instances are rebuilt from changed, so every frame sequence rebuilds them
+	/// once more. Call it wherever the scene's entities, their resources, or their materials change.
+	fn instances_changed(&mut self) {
+		self.instances_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
 	}
 
 	/// Adds one light where its handle is shown and requests its optional photometric texture dependency.
@@ -1191,6 +1216,10 @@ impl VisibilityPipelineManager {
 	fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame, transforms: &ShownTransforms) {
 		let mut events = std::mem::take(&mut self.resource_events);
 		self.loader.update(frame, &mut events);
+		// Every event changes what some instance draws: a mesh, a level, a material, a texture, or a lightmap.
+		if !events.is_empty() {
+			self.instances_changed();
+		}
 		// Material readiness changes rebuild the material lists once, after every event of the frame.
 		let mut materials_changed = false;
 		for event in events.drain(..) {
@@ -1613,6 +1642,8 @@ impl VisibilityPipelineManager {
 		render_info.transparent_evaluations.clear();
 		self.material_evaluations.fill(NO_EVALUATION);
 		self.materials_copies_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
+		// An instance's evaluation slot comes from these lists.
+		self.instances_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
 		if self.settings.features.material_evaluation == MaterialEvaluationMode::Uber {
 			// Each phase's uber shader evaluates every ready material, so it reads the backdrop when any of them does.
 			let mut reads_backdrop = false;
@@ -1787,12 +1818,15 @@ impl VisibilityPipelineManager {
 	/// coarser than it. Without a camera it draws the finest resident level. The levels instances want go to
 	/// [`MeshResidencies`], which decides what loads next. Large scenes rebuild on several of `alley`'s lanes, with the
 	/// same result as one; see [`super::instance_rebuild`].
+	///
+	/// Returns whether a frame can repeat these instances while nothing they are rebuilt from changes: whether none
+	/// had to be finished in order, as a posed skinned instance is every frame.
 	fn rebuild_active_instances(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
 		lod_view: Option<LodView>,
 		alley: &mut Alley,
-	) {
+	) -> bool {
 		let _span = debug_span!(
 			"Visibility::rebuild_active_instances",
 			entities = self.scene.render_entities.len()
@@ -1928,6 +1962,9 @@ impl VisibilityPipelineManager {
 			.write_palettes(frame, &self.skinning_frame.matrices, &self.skinning_frame.dual_quaternions);
 		self.mesh_residencies
 			.end_frame(|key, primitives| self.loader.request_mesh_levels(key, primitives));
+		// An instance finished here changes every frame, as a posed one does, or was given its parameter block just
+		// now, which the next rebuild records. Either way the next frame can't repeat this one.
+		self.rebuild_scratch.iter().all(|lane| lane.deferred.is_empty())
 	}
 
 	/// Returns each shadowed sun's cascades, fitted to the camera frustum, by sun slot, and the view every map of
@@ -2100,15 +2137,31 @@ impl PipelineManager for VisibilityPipelineManager {
 			});
 			LodView::new(sink, self.lod_settings).with_suns(suns)
 		});
-		self.rebuild_active_instances(frame, lod_view, alley);
+		if lod_view != self.instances_lod_view {
+			self.instances_lod_view = lod_view;
+			self.instances_changed();
+		}
+		// A frame whose copy of the instance table already holds the current instances rebuilds nothing: nothing they
+		// are made from changed since a frame of this sequence last rebuilt them.
+		let rebuilds = !self.instances_current[sequence];
+		if rebuilds {
+			self.instances_current[sequence] = self.rebuild_active_instances(frame, lod_view, alley);
+		} else {
+			self.mesh_residencies
+				.repeat_frame(|key, primitives| self.loader.request_mesh_levels(key, primitives));
+		}
 		// Instances write their own parameter blocks as the frame names them, so the changes are copied after.
 		if let Some((first, changes)) = self.material_parameters.take_changes(sequence) {
 			frame.get_mut_dynamic_buffer_slice(self.material_parameters_buffer)[first..first + changes.len()]
 				.copy_from_slice(changes);
 			frame.sync_buffer(self.material_parameters_buffer);
 		}
-		let dispatches = debug_span!("Visibility::write_mesh_dispatch_work")
-			.in_scope(|| self.mesh_dispatch_work.write_phases(frame, &self.scene.render_info));
+		// The work items list the instances, so they are written with them.
+		if rebuilds {
+			self.instance_dispatches = debug_span!("Visibility::write_mesh_dispatch_work")
+				.in_scope(|| self.mesh_dispatch_work.write_phases(frame, &self.scene.render_info));
+		}
+		let dispatches = self.instance_dispatches;
 
 		crate::rendering::warn_once(&mut self.reported_limits[0], self.scene.lights.len() > MAX_LIGHTS, || {
 			format!(

@@ -7,6 +7,10 @@
 //! that changes shared state, a skinned instance's vertices and palette or a parameter block that must be written,
 //! can't run on a lane: the lane writes the rest of the record and lists the instance in [`LaneScratch::deferred`]
 //! for the caller to finish in order.
+//!
+//! A rebuild reads the scene's entities, their loaded resources and materials, and the detail view. The visibility
+//! manager rebuilds only on a frame after one of those changed, once for each frame sequence's copy of the instance
+//! table, and otherwise draws the instances it has. A frame that defers an instance is never repeated.
 
 use std::ops::Range;
 
@@ -49,6 +53,12 @@ pub(super) fn instance_phase(alpha_mode: &AlphaMode, double_sided: bool) -> usiz
 		AlphaMode::Mask(_) => 1,
 		AlphaMode::Blend => TRANSPARENT_PHASE,
 	}
+}
+
+/// Returns whether rays hit the instances of raster phase `phase`: the opaque ones. Rays pass through masked and
+/// blended materials, whose primitives no bottom-level acceleration structure holds.
+pub(super) fn rays_hit_phase(phase: usize) -> bool {
+	matches!(phase, 0 | 2)
 }
 
 /// Returns how many lanes rebuild `entities` render entities, at most `max_lanes`.
@@ -241,8 +251,9 @@ where
 		};
 		// Rays hit a primitive that others replace, at its coarsest level, wherever it is and never the ones that
 		// replace it, so an object is hit once whichever of them is drawn. Such a primitive keeps its record while
-		// it's hidden.
-		let traced = sources.traces_rays && !takes_over;
+		// it's hidden. Only opaque primitives are listed: rays pass through the rest, so listing them would make the
+		// acceleration structures sort and look up instances they never place.
+		let traced = sources.traces_rays && !takes_over && rays_hit_phase(admission.phase);
 		if wanted.is_none() && !traced {
 			continue;
 		}
@@ -342,6 +353,8 @@ mod tests {
 	struct Rebuilt {
 		phases: [Vec<(Instance, [u32; 3])>; PHASES],
 		masks: [ActiveEvaluationMask; 2],
+		/// The record of each primitive listed for the acceleration structures.
+		traced: Vec<u32>,
 		left_out: usize,
 	}
 
@@ -356,7 +369,7 @@ mod tests {
 			lod_view: None,
 			residencies: &residencies,
 			parameters: &parameters,
-			traces_rays: false,
+			traces_rays: true,
 		};
 		let mut meshes = vec![bytemuck::Zeroable::zeroed(); capacity];
 		let (mut traced, mut scratches) = (Vec::new(), Vec::new());
@@ -386,6 +399,7 @@ mod tests {
 					.collect()
 			}),
 			masks,
+			traced: traced.iter().map(|primitive: &TracedPrimitive| primitive.record).collect(),
 			left_out,
 		}
 	}
@@ -396,6 +410,7 @@ mod tests {
 		let mut rebuilt = Rebuilt {
 			phases: Default::default(),
 			masks: [EMPTY_MASK; 2],
+			traced: Vec::new(),
 			left_out: 0,
 		};
 		for (slot, entity) in entities.indexed_iter() {
@@ -419,6 +434,10 @@ mod tests {
 			));
 			let mask = &mut rebuilt.masks[usize::from(admission.phase == TRANSPARENT_PHASE)];
 			mask[admission.evaluation as usize / 64] |= 1 << (admission.evaluation % 64);
+			// Rays hit the opaque phases only: solid and double-sided.
+			if admission.phase == 0 || admission.phase == 2 {
+				rebuilt.traced.push(slot as u32);
+			}
 		}
 		rebuilt
 	}

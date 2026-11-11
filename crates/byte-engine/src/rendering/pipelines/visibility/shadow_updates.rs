@@ -19,9 +19,15 @@ use super::shadow_selection::{
 
 /// The cascades of every shadowed sun that draw every frame, counted against the budget first.
 pub(crate) const ALWAYS_DRAWN_CASCADES: usize = 2;
-/// The texels a frame draws unless the application sets `render.shadow-maps.update-texels`: the four cascades of one
-/// sun at 2,048 texels per side.
-pub(crate) const DEFAULT_SHADOW_UPDATE_TEXELS: u64 = 16_777_216;
+/// The texels a frame draws unless the application sets `render.shadow-maps.update-texels`: two and a half cascades of
+/// one sun at 2,048 texels per side. Cascades 0 and 1 take two of them every frame, so cascades 2 and 3 share the half
+/// that's left: one of them draws every other frame, and each one every fourth frame.
+///
+/// The far cascades are most of the shadow work: their slices reach far, so they hold many more casters than the near
+/// ones. On the model viewer's slate quarry they took about 90 % of the shadow maps' time, and redrawing them every
+/// fourth frame took 13 % to 19 % off the frame. A still scene under a still camera looks the same, since a map that
+/// doesn't draw keeps what it holds; a moving caster's shadow in a far cascade follows it four times less often.
+pub(crate) const DEFAULT_SHADOW_UPDATE_TEXELS: u64 = 10_485_760;
 /// The most maps that compete for one frame's budget: two cascades per sun, every cone map, and every point cube face.
 pub(crate) const MAX_UPDATE_CANDIDATES: usize = (SHADOW_CASCADE_COUNT - ALWAYS_DRAWN_CASCADES) * MAX_DIRECTIONAL_SHADOW_COUNT
 	+ MAX_CONE_SHADOW_COUNT
@@ -57,8 +63,13 @@ pub(crate) struct UpdateCandidate {
 ///
 /// Candidates are taken by tier, then by age times importance, highest first; equal ones keep their order. Each one
 /// draws while its texels fit what's left of the budget, and one that doesn't fit is skipped. When none fits, the first
-/// draws anyway, so every map draws eventually.
-pub(crate) fn schedule_updates(candidates: &[UpdateCandidate], budget: u64) -> SmallVec<[bool; SHADOW_MAPS_INLINE]> {
+/// draws anyway if it has never been drawn, or if `budget_grows` is false: no later frame would have more to spend on
+/// it, so only drawing past the budget gets every map drawn eventually.
+pub(crate) fn schedule_updates(
+	candidates: &[UpdateCandidate],
+	budget: u64,
+	budget_grows: bool,
+) -> SmallVec<[bool; SHADOW_MAPS_INLINE]> {
 	let mut drawn = SmallVec::from_elem(false, candidates.len());
 	let priority = |candidate: &UpdateCandidate| candidate.age as f32 * candidate.importance;
 	let mut order = (0..candidates.len()).collect::<SmallVec<[usize; SHADOW_MAPS_INLINE]>>();
@@ -76,6 +87,7 @@ pub(crate) fn schedule_updates(candidates: &[UpdateCandidate], budget: u64) -> S
 	}
 	if let Some(&first) = order.first()
 		&& !drawn.contains(&true)
+		&& (!budget_grows || candidates[first].tier == UpdateTier::NotDrawn)
 	{
 		drawn[first] = true;
 	}
@@ -247,11 +259,18 @@ pub(crate) struct ShadowMapStates {
 	points: SmallVec<[(ShadowSlot, [MapState; POINT_SHADOW_FACE_COUNT]); MAX_POINT_SHADOW_COUNT]>,
 	/// The layout of the images the maps were drawn into.
 	layout: ShadowLayout,
+	/// The budget earlier frames left unspent, which this frame may spend. It never exceeds the largest map that
+	/// competed, so a budget smaller than one map still draws that map every few frames, and an idle stretch can't save
+	/// up a burst of draws.
+	carried_texels: u64,
 }
 
 impl ShadowMapStates {
 	/// Matches the maps to `selection`, chooses the ones that draw this frame within `budget` texels, and records them.
 	/// Returns the maps to draw.
+	///
+	/// Texels the competing maps leave unspent carry over to the next frame, up to the largest of them, so a budget
+	/// that holds half a map draws that map every other frame.
 	///
 	/// `layout` is the layout the images take this frame; an image whose size changes loses its maps. `views` holds
 	/// every map's view this frame. A sun's cascades count the pixels of `sink_pixels`, the largest sink, as their
@@ -294,7 +313,18 @@ impl ShadowMapStates {
 			.map(|&(unit, importance, texels)| self.state(unit).candidate(unit.view(views), importance, texels))
 			.collect::<SmallVec<[_; SHADOW_MAPS_INLINE]>>();
 		let always_drawn_texels = cascade_texels * always_drawn.len() as u64;
-		let drawn = schedule_updates(&candidates, budget.saturating_sub(always_drawn_texels));
+		let frame_share = budget.saturating_sub(always_drawn_texels);
+		let available = frame_share.saturating_add(self.carried_texels);
+		let drawn = schedule_updates(&candidates, available, frame_share > 0);
+		// A candidate drawn past the budget spends everything, so nothing carries over from that frame.
+		let spent = candidates
+			.iter()
+			.zip(&drawn)
+			.filter(|(_, drawn)| **drawn)
+			.map(|(candidate, _)| candidate.texels)
+			.sum::<u64>();
+		let largest = candidates.iter().map(|candidate| candidate.texels).max().unwrap_or(0);
+		self.carried_texels = available.saturating_sub(spent).min(largest);
 
 		let mut draws = ShadowDraws::new();
 		let competing = competing.iter().map(|(unit, ..)| *unit).zip(drawn);
@@ -425,7 +455,7 @@ mod tests {
 	}
 
 	fn schedule(candidates: &[UpdateCandidate], budget: u64) -> Vec<bool> {
-		schedule_updates(candidates, budget).to_vec()
+		schedule_updates(candidates, budget, false).to_vec()
 	}
 
 	use crate::gameplay::Transform;
@@ -616,6 +646,54 @@ mod tests {
 		assert_eq!(cascades[..2], [0, 1]);
 		// Nothing is left, so only the first candidate draws past the budget: one cascade or the cone.
 		assert_eq!(draws.len(), 3);
+	}
+
+	#[test]
+	fn unspent_budget_carries_over_so_the_far_cascades_take_turns_every_other_frame() {
+		let (light, transform) = (cone(), Transform::default());
+		let selection = selection(&light, &transform, 0, 0, 1);
+		let mut states = ShadowMapStates::default();
+		let far_cascades = |draws: &ShadowDraws| {
+			draws
+				.iter()
+				.filter(|draw| draw.image == ShadowImage::Directional && draw.layer >= 2)
+				.map(|draw| draw.layer)
+				.collect::<Vec<_>>()
+		};
+
+		// Two and a half cascades of 64 by 64 texels: the first two, and half of one of the others.
+		let budget = 5 * 64 * 64 / 2;
+		let mut frames = Vec::new();
+		for _ in 0..10 {
+			frames.push(far_cascades(&states.update(
+				&selection,
+				layout_of(&selection),
+				&views(&[], 1),
+				1.0,
+				64,
+				budget,
+			)));
+		}
+
+		// Neither far cascade holds a map at first, so each draws at once; from then on one draws every other frame,
+		// and each every fourth.
+		assert_eq!(frames[..2], [vec![2], vec![3]]);
+		let steady = &frames[2..];
+		assert!(
+			steady.iter().step_by(2).all(Vec::is_empty) && steady.iter().skip(1).step_by(2).all(|far| far.len() == 1),
+			"The half cascade left each frame should add up to one far cascade every other frame: {steady:?}"
+		);
+		let drawn_once_each = steady.iter().skip(1).step_by(2).flatten().copied().collect::<Vec<_>>();
+		assert_eq!(drawn_once_each, [2, 3, 2, 3]);
+	}
+
+	#[test]
+	fn a_drawn_map_waits_for_a_growing_budget_but_a_new_map_draws_at_once() {
+		let waiting = [candidate(UpdateTier::Current, 1, 1.0, 16)];
+		let new = [candidate(UpdateTier::NotDrawn, 0, 1.0, 16)];
+
+		assert_eq!(schedule_updates(&waiting, 8, true).to_vec(), [false]);
+		assert_eq!(schedule_updates(&new, 8, true).to_vec(), [true]);
 	}
 
 	#[test]

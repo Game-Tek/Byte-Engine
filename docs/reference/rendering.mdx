@@ -404,7 +404,7 @@ error for it.
 | --- | --- |
 | Culling | Each view culls every meshlet of an instance it may show: by the view's frustum, by the meshlet's normal cone unless the material is double-sided, and, for the camera, by occlusion. The meshlets of a skinned instance that receives poses are never culled. |
 | Culling groups | Meshlets are culled 32 at a time. An instance that draws more than 8 meshlets has groups of its own, one for each 32 of its meshlets. The meshlets of smaller instances fill groups together, in instance order. |
-| Shared draws | The meshlets a group keeps are drawn together while they fit: consecutive kept meshlets share one draw of up to 64 vertices and 126 triangles. They may belong to different instances, and to different views of one shadow batch. A meshlet that doesn't fit starts the next draw. |
+| Shared draws | The meshlets a group keeps are drawn together while they fit: consecutive kept meshlets share one draw of up to 128 vertices and 252 triangles, two full meshlets. They may belong to different instances, and to different views of one shadow batch. A meshlet that doesn't fit starts the next draw. |
 | Capacity | Each culling group of a large instance, and each meshlet of a small one, takes one of the `render.instances.meshlet-group-capacity` groups. |
 | Meshlet vertices | With `render.geometry.meshlet-vertices` on, the camera and shadow passes draw each meshlet from its own copy of its vertices' positions and UVs. A position there is rounded to 16 bits on each axis within its detail level's bounding sphere, so it lies within the sphere's radius over 65,535 of the vertex. Shading, rays, and lightmaps read the exact vertices. An instance that receives poses is drawn from its own posed vertices. |
 
@@ -459,8 +459,9 @@ shadows, with one warning in the log. At most 4 directional, 16 cone, and 16 poi
 ### Shadow map updates
 
 A shadow map isn't drawn again every frame. Each frame draws a set of updates
-chosen within an update budget, `render.shadow-maps.update-texels`, 16,777,216
-texels by default. One update draws one of these:
+chosen within an update budget, `render.shadow-maps.update-texels`, 10,485,760
+texels by default: two and a half cascades at 2,048 texels per side. One update
+draws one of these:
 
 | Update | Texels |
 | --- | --- |
@@ -470,7 +471,9 @@ texels by default. One update draws one of these:
 
 Every frame draws cascades 0 and 1 of every shadowed directional light. Their
 texels count against the budget first, even when they exceed it. Every other
-update is a candidate: cascades 2 and 3, cone maps, and point cube faces.
+update is a candidate: cascades 2 and 3, cone maps, and point cube faces. The
+candidates share what's left of the budget, plus the budget that earlier frames
+carried over.
 
 Candidates are ordered in three tiers:
 
@@ -484,8 +487,17 @@ Age is the number of frames since the map was drawn. Importance is the largest
 number of sink pixels the light's shadow range covers in any sink, and for a
 cascade, the pixel count of the largest sink. Candidates draw in that order
 while their texels fit in what's left of the budget. A candidate that doesn't
-fit is skipped, and later candidates can still draw. When no candidate fits,
-the first one draws anyway.
+fit is skipped, and later candidates can still draw.
+
+The texels the candidates leave unspent carry over to the next frame, up to the
+texels of the largest candidate. A candidate that doesn't fit this frame draws
+once enough has carried over. With the default budget and one shadowed
+directional light, half a cascade is left each frame, so one of cascades 2 and 3
+draws every other frame, and each one every fourth frame.
+
+When no candidate fits, the first one draws anyway, past the budget, if it
+hasn't been drawn yet, or if cascades 0 and 1 take the whole budget, so that
+nothing carries over. A frame that draws past the budget carries nothing over.
 
 Until a map has been drawn, its light is lit without that shadow. A map that
 isn't drawn this frame keeps the view it was drawn with, and receivers sample

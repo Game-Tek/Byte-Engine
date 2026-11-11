@@ -12,15 +12,20 @@ in the rendering reference.
 ## Why small meshlets are packed
 
 A task workgroup culls 32 meshlets, one on each lane, and a mesh grid draws up
-to 64 vertices and 126 triangles. A scene of many small meshes fills neither
-when every instance has workgroups and grids of its own: a grass tuft of one
-20-vertex meshlet would run a workgroup with 31 idle lanes, then a grid a
-third full. So the pipeline packs twice, every frame, from what's drawn:
+to 128 vertices and 252 triangles, two full meshlets. A scene of many small
+meshes fills neither when every instance has workgroups and grids of its own: a
+grass tuft of one 20-vertex meshlet would run a workgroup with 31 idle lanes,
+then a grid a sixth full. So the pipeline packs twice, every frame, from what's
+drawn:
 
 - **Small instances share workgroups.** The meshlets of instances that draw
   `SHARED_INSTANCE_MESHLETS` meshlets or fewer fill workgroups together.
 - **Kept meshlets share grids.** The task shader groups the meshlets it keeps,
-  and one mesh grid draws a whole group.
+  and one mesh grid draws a whole group. A grid holds two full meshlets, so a
+  meshlet that several shadow cascades keep, or two neighboring full
+  meshlets, take one grid instead of two: launching grids costs more than
+  filling them. On the slate quarry this took 1.6 % off the frame, from both
+  the shadow maps and the camera's visibility pass.
 
 Nothing is baked or stored for this, so it follows each instance's detail
 level and each view's culling.
@@ -48,9 +53,10 @@ level and each view's culling.
    while the group stays within one grid's vertices and triangles. It rewrites
    the counts as the group's running totals, marks each group's last entry,
    and stores each group's first entry.
-5. A mesh shader draws one group. Each thread walks the group's entries to
-   find the one that holds its vertex and the one that holds its triangle,
-   then reads that entry's instance and meshlet through the work items.
+5. A mesh shader draws one group with 128 threads. Each thread walks the
+   group's entries to find the one that holds its vertex and the ones that
+   hold its two triangles, the triangle of its index and the one 128 after
+   it, then reads each entry's instance and meshlet through the work items.
 
 `layouts/scene_records.besl` specifies the payload words and holds the
 functions that decode them, which the task shader and the four mesh shaders
@@ -83,9 +89,13 @@ indexed vertices for a meshlet without the mark and for a posed instance.
   instance costs less there. Integers aren't interpolated, so the fragment
   stage reads it whole.
 - **Only masked stages pass UVs.** `masked-visibility-mesh.besl` and
-  `masked-shadow-mesh.besl` write the UV the alpha test reads.
-  `visibility-mesh.besl` and `shadow-mesh.besl` don't, and each pair must
-  otherwise stay the same.
+  `masked-shadow-mesh.besl` write the UV the alpha test reads, and the
+  instance's material word once per vertex, so the coverage fragment finds its
+  material without reading the instance record: that dependent read cost the
+  masked pass more than the extra output. `visibility-mesh.besl` and
+  `shadow-mesh.besl` don't, and each pair must otherwise stay the same. The
+  coverage fragment's interface sorts its fields by name, which sets the mesh
+  stage's output locations.
 - **A group fits one grid.** `MAX_GROUP_VERTICES` and `MAX_GROUP_TRIANGLES` in
   `scene_records.besl` must equal `maximum_vertices` and `maximum_primitives`
   in the mesh shaders' `.bead` files.

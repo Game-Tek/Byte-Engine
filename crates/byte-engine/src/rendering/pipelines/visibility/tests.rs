@@ -56,8 +56,10 @@ const PAYLOAD_WORK_WORD: usize = 192;
 /// The flag of a payload's work word whose lanes each have a work item of their own.
 const PAYLOAD_WORK_SHARED: u32 = 1 << 31;
 /// The flag of the last payload entry of a group.
-const ENTRY_ENDS_GROUP: u32 = 1 << 21;
+const ENTRY_ENDS_GROUP: u32 = 1 << 23;
 const TASK_WORKGROUP_SIZE: u32 = 32;
+/// The threads of one mesh grid, as the mesh shaders' `.bead` files declare them.
+const MESH_THREADS: u32 = 128;
 const GTAO_WORKGROUP_WIDTH: u32 = 16;
 const GTAO_WORKGROUP_SIZE: usize = 128;
 /// The 8x4 workgroup of the GTAO and directional-shadow depth pyramids.
@@ -467,7 +469,7 @@ fn task_groups(outputs: &TaskOutputs) -> Vec<Vec<[u32; 2]>> {
 	};
 	(0..outputs.mesh_output_count().expect("task mesh output count") as usize)
 		.map(|group| {
-			let first = (word(group) >> 22 & 255) as usize;
+			let first = (word(group) >> 24 & 255) as usize;
 			let last = (first..)
 				.find(|&index| word(index) & ENTRY_ENDS_GROUP != 0)
 				.expect("a group ends");
@@ -496,7 +498,7 @@ fn batched_meshlet_instance(relative_meshlet_index: u32, view_offset: u32) -> Va
 /// a group that holds `vertices` vertices and `triangles` triangles up to and including it.
 fn group_entry(lane: u32, view_offset: u32, [vertices, triangles]: [u32; 2], ends_group: bool) -> Value {
 	let ends = if ends_group { ENTRY_ENDS_GROUP } else { 0 };
-	Value::U32(lane | (view_offset << 5) | ((vertices - 1) << 8) | ((triangles - 1) << 14) | ends)
+	Value::U32(lane | (view_offset << 5) | ((vertices - 1) << 8) | ((triangles - 1) << 15) | ends)
 }
 
 /// Returns the payload a task workgroup hands its mesh grids: `entries`, which form group zero, and `work`.
@@ -554,12 +556,12 @@ fn task_main_groups_small_meshlets_into_full_mesh_grids() {
 			.collect()
 	};
 
-	// Three meshlets of 20 vertices fit the 64 a grid emits, and a fourth doesn't.
-	assert_eq!(lanes(groups([20, 10])), [vec![0, 1, 2], vec![3, 4]]);
-	// Triangles bound a group as well: two meshlets of 50 fit the 126 a grid emits.
-	assert_eq!(lanes(groups([8, 50])), [vec![0, 1], vec![2, 3], vec![4]]);
-	// A meshlet that fills a grid draws alone.
-	assert_eq!(lanes(groups([64, 126])), [[0], [1], [2], [3], [4]]);
+	// Four meshlets of 30 vertices fit the 128 a grid emits, and a fifth doesn't.
+	assert_eq!(lanes(groups([30, 10])), [vec![0, 1, 2, 3], vec![4]]);
+	// Triangles bound a group as well: two meshlets of 100 fit the 252 a grid emits.
+	assert_eq!(lanes(groups([8, 100])), [vec![0, 1], vec![2, 3], vec![4]]);
+	// Two full meshlets share a grid.
+	assert_eq!(lanes(groups([64, 126])), [vec![0, 1], vec![2, 3], vec![4]]);
 }
 
 /// Verifies lanes with work items of their own cull the meshlets their items name, and lanes without one emit nothing.
@@ -1105,25 +1107,57 @@ impl MeshView {
 enum MeshAttributes {
 	/// Nothing, for a stage no fragment stage follows, as for opaque shadow casters.
 	None,
-	/// The instance at location 0 and the UV at location 1, which the masked shadow passes' alpha test reads.
-	Instance,
+	/// The instance's material word at location 0 and the UV at location 1, which the masked shadow passes' alpha test
+	/// reads.
+	MaterialAndUv,
 	/// The instance and the primitive at locations 0 and 1, which the visibility pass writes.
 	InstanceAndPrimitive,
-	/// The instance, the primitive, and the UV at locations 0, 1, and 2, which the masked visibility pass writes.
-	InstancePrimitiveAndUv,
+	/// The instance, its material word, the primitive, and the UV at locations 0 to 3, which the masked visibility pass
+	/// writes and tests.
+	InstanceMaterialPrimitiveAndUv,
 }
 
 impl MeshAttributes {
 	/// Returns whether the stage reads UVs to pass on.
 	fn has_uv(self) -> bool {
-		matches!(self, Self::Instance | Self::InstancePrimitiveAndUv)
+		matches!(self, Self::MaterialAndUv | Self::InstanceMaterialPrimitiveAndUv)
 	}
 
-	/// Returns whether the stage marks each triangle with its meshlet and place in it.
-	fn has_primitive(self) -> bool {
-		matches!(self, Self::InstanceAndPrimitive | Self::InstancePrimitiveAndUv)
+	/// Returns how many attribute locations the stage writes.
+	fn locations(self) -> u8 {
+		match self {
+			Self::None => 0,
+			Self::MaterialAndUv | Self::InstanceAndPrimitive => 2,
+			Self::InstanceMaterialPrimitiveAndUv => 4,
+		}
+	}
+
+	/// Returns the location of the instance, if the stage passes it.
+	fn instance_location(self) -> Option<usize> {
+		matches!(self, Self::InstanceAndPrimitive | Self::InstanceMaterialPrimitiveAndUv).then_some(0)
+	}
+
+	/// Returns the location of the instance's material word, if the stage passes it.
+	fn material_location(self) -> Option<usize> {
+		match self {
+			Self::MaterialAndUv => Some(0),
+			Self::InstanceMaterialPrimitiveAndUv => Some(1),
+			Self::None | Self::InstanceAndPrimitive => None,
+		}
+	}
+
+	/// Returns the location of each triangle's meshlet and place in it, if the stage marks them.
+	fn primitive_location(self) -> Option<usize> {
+		match self {
+			Self::InstanceAndPrimitive => Some(1),
+			Self::InstanceMaterialPrimitiveAndUv => Some(2),
+			Self::None | Self::MaterialAndUv => None,
+		}
 	}
 }
+
+/// The material word of the fixture instance in mesh-stage tests, which the masked stages pass on unchanged.
+const FIXTURE_MATERIAL_WORD: u32 = 0x8000_0005;
 
 /// Executes one production mesh main over one triangle meshlet placed by `model` and verifies its complete output
 /// contract, including that the triangle winds on screen as it does under an identity model.
@@ -1146,6 +1180,9 @@ fn assert_triangle_mesh_program(
 	meshes
 		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(model))
 		.expect("fixture mesh model");
+	meshes
+		.write_array_member(FIXTURE_INSTANCE_INDEX, "material", Value::U32(FIXTURE_MATERIAL_WORD))
+		.expect("fixture mesh material");
 	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
 	write_fixture_level(&mut mesh_levels, [0.0, 0.0, 0.0, 2.0], 1, base_vertex);
 	let vertex_count = base_vertex as usize + 3;
@@ -1219,12 +1256,7 @@ fn assert_triangle_mesh_program(
 		.expect("mesh dispatch work");
 
 	// One buffer per attribute location the stage writes.
-	let locations: u8 = match attributes {
-		MeshAttributes::None => 0,
-		MeshAttributes::Instance | MeshAttributes::InstanceAndPrimitive => 2,
-		MeshAttributes::InstancePrimitiveAndUv => 3,
-	};
-	let mut out_attributes = (0..locations)
+	let mut out_attributes = (0..attributes.locations())
 		.map(|location| buffer(&program, output_slot(location)))
 		.collect::<Vec<_>>();
 	let mut mesh_outputs = MeshOutputs::new();
@@ -1281,15 +1313,27 @@ fn assert_triangle_mesh_program(
 	if let Some(expected) = expected_render_target_array_index {
 		assert_eq!(mesh_outputs.render_target_array_index(0), Some(expected));
 	}
-	if attributes != MeshAttributes::None {
+	if let Some(location) = attributes.instance_location() {
 		assert_eq!(
-			out_attributes[0].read_indexed("out_instance_index", 0).expect("mesh output"),
+			out_attributes[location]
+				.read_indexed("out_instance_index", 0)
+				.expect("mesh output"),
 			Value::U32(FIXTURE_INSTANCE_INDEX as u32)
 		);
 	}
-	if attributes.has_primitive() {
+	if let Some(location) = attributes.material_location() {
 		assert_eq!(
-			out_attributes[1].read_indexed("out_primitive_index", 0).expect("mesh output"),
+			out_attributes[location]
+				.read_indexed("out_material_word", 0)
+				.expect("mesh output"),
+			Value::U32(FIXTURE_MATERIAL_WORD)
+		);
+	}
+	if let Some(location) = attributes.primitive_location() {
+		assert_eq!(
+			out_attributes[location]
+				.read_indexed("out_primitive_index", 0)
+				.expect("mesh output"),
 			Value::U32((FIXTURE_MESHLET_INDEX as u32) << 8)
 		);
 	}
@@ -1317,11 +1361,11 @@ fn mesh_stages_read_a_meshlets_own_vertices() {
 		(asset!("visibility-mesh.besl"), MeshAttributes::InstanceAndPrimitive, None),
 		(
 			asset!("masked-visibility-mesh.besl"),
-			MeshAttributes::InstancePrimitiveAndUv,
+			MeshAttributes::InstanceMaterialPrimitiveAndUv,
 			None,
 		),
 		(asset!("shadow-mesh.besl"), MeshAttributes::None, Some(0)),
-		(asset!("masked-shadow-mesh.besl"), MeshAttributes::Instance, Some(0)),
+		(asset!("masked-shadow-mesh.besl"), MeshAttributes::MaterialAndUv, Some(0)),
 	] {
 		assert_triangle_mesh_program(
 			program,
@@ -1336,7 +1380,8 @@ fn mesh_stages_read_a_meshlets_own_vertices() {
 	}
 }
 
-/// Verifies the masked visibility mesh stage also passes its fragment stage the UV, at a location of its own.
+/// Verifies the masked visibility mesh stage also passes its fragment stage the material word and the UV, at locations
+/// of their own.
 #[test]
 fn masked_visibility_mesh_main_emits_identity_triangle_and_metadata() {
 	assert_triangle_mesh_program(
@@ -1346,7 +1391,7 @@ fn masked_visibility_mesh_main_emits_identity_triangle_and_metadata() {
 		0,
 		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
-		MeshAttributes::InstancePrimitiveAndUv,
+		MeshAttributes::InstanceMaterialPrimitiveAndUv,
 		false,
 	);
 }
@@ -1414,7 +1459,7 @@ fn visibility_mesh_main_draws_every_meshlet_of_its_group() {
 	// The lanes that kept the two meshlets, as one group.
 	let payload = [group_entry(0, 0, [3, 1], false), group_entry(1, 0, [6, 2], true)];
 
-	let mut out_attributes = (0..3)
+	let mut out_attributes = (0..MeshAttributes::InstanceMaterialPrimitiveAndUv.locations())
 		.map(|location| buffer(&program, output_slot(location)))
 		.collect::<Vec<_>>();
 	let mut mesh_outputs = MeshOutputs::new();
@@ -1464,10 +1509,126 @@ fn visibility_mesh_main_draws_every_meshlet_of_its_group() {
 		);
 		// Each triangle is the first of its own meshlet.
 		assert_eq!(
-			out_attributes[1]
+			out_attributes[2]
 				.read_indexed("out_primitive_index", triangle)
 				.expect("mesh output"),
 			Value::U32((FIXTURE_MESHLET_INDEX as u32 + triangle as u32) << 8)
+		);
+	}
+}
+
+/// Verifies a mesh grid draws the triangles past its thread count, which each thread draws after the triangle of its
+/// own index.
+#[test]
+fn visibility_mesh_main_draws_triangles_past_its_thread_count() {
+	// A full meshlet, and the whole group.
+	const FULL: usize = 126;
+	const TRIANGLES: usize = 131;
+	let program = asset!("masked-visibility-mesh.besl");
+	let mut views = buffer(&program, slot(&program, VIEWS));
+	views
+		.write_array_member(0, "view_projection", Value::Mat4F(IDENTITY_MATRIX))
+		.expect("mesh view");
+	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
+	write_fixture_mesh(&mut meshes, 0, [0; 2]);
+	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
+	write_fixture_level(&mut mesh_levels, [0.0, 0.0, 0.0, 2.0], 2, 0);
+	// Two meshlets, the second beside the first, each over three vertices of its own: a full meshlet of 126 triangles,
+	// then one of 5, whose triangles are the group's 127th to 131st.
+	let mut positions = array_buffer(&program, slot(&program, VERTEX_POSITIONS), 6);
+	let mut vertex_uvs = array_buffer(&program, slot(&program, VERTEX_UVS), 6);
+	let mut vertex_indices = array_buffer(&program, slot(&program, VERTEX_INDICES), 6);
+	let mut primitive_indices = array_buffer(&program, slot(&program, PRIMITIVE_INDICES), TRIANGLES * 3);
+	let corners = [[-1.0, -1.0], [1.0, -1.0], [0.0, 1.0]];
+	for index in 0..6 {
+		let [x, y] = corners[index % 3];
+		positions
+			.write_array_element(index, Value::Vec3F([x + 4.0 * (index / 3) as f32, y, 0.0]))
+			.expect("mesh vertex");
+		vertex_uvs
+			.write_array_element(index, Value::Vec2F16([besl::vm::f16::ZERO; 2]))
+			.expect("mesh UV");
+		vertex_indices
+			.write_array_element(index, Value::U16(index as u16))
+			.expect("vertex index");
+	}
+	// Each triangle names the three vertices of its own meshlet.
+	for index in 0..TRIANGLES * 3 {
+		primitive_indices
+			.write_array_element(index, Value::U8((index % 3) as u8))
+			.expect("triangle index");
+	}
+	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), FIXTURE_MESHLET_INDEX + 2);
+	for (meshlet, (first_triangle, triangles)) in [(0, FULL), (FULL, TRIANGLES - FULL)].into_iter().enumerate() {
+		let record = ShaderMeshletData::new(
+			meshlet as u32 * 3,
+			first_triangle as u32,
+			[3, triangles as u8],
+			[0.0; 4],
+			[0.0, 0.0, 0.0, 2.0],
+			[0.0, 0.0, 1.0],
+			2.0,
+		);
+		write_meshlet(&mut meshlets, FIXTURE_MESHLET_INDEX + meshlet, record);
+	}
+	let mut mesh_dispatch_work = array_buffer(&program, slot(&program, MESH_DISPATCH_WORK), FIXTURE_TABLE_LENGTH);
+	mesh_dispatch_work
+		.write_array_element(
+			0,
+			Value::U32(MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed),
+		)
+		.expect("mesh dispatch work");
+	let mut push_constant = push_constant_buffer(&program);
+	for member in ["work_range", "view_base", "layer_base"] {
+		push_constant.write(member, Value::U32(0)).expect("mesh push constant");
+	}
+	push_constant.write("view_count", Value::U32(1)).expect("mesh view count");
+	// The lanes that kept the two meshlets, as one group.
+	let payload = [
+		group_entry(0, 0, [3, FULL as u32], false),
+		group_entry(1, 0, [6, TRIANGLES as u32], true),
+	];
+
+	let mut out_attributes = (0..MeshAttributes::InstanceMaterialPrimitiveAndUv.locations())
+		.map(|location| buffer(&program, output_slot(location)))
+		.collect::<Vec<_>>();
+	let mut mesh_outputs = MeshOutputs::new();
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_task_payload("meshlet_instances", mesh_task_payload(&payload, 0));
+		descriptors.bind_buffer(slot(&program, MESH_DISPATCH_WORK), &mut mesh_dispatch_work);
+		descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
+		descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
+		descriptors.bind_buffer(slot(&program, MESH_LEVELS), &mut mesh_levels);
+		descriptors.bind_buffer(slot(&program, VERTEX_POSITIONS), &mut positions);
+		descriptors.bind_buffer(slot(&program, VERTEX_UVS), &mut vertex_uvs);
+		descriptors.bind_buffer(slot(&program, VERTEX_INDICES), &mut vertex_indices);
+		descriptors.bind_buffer(slot(&program, PRIMITIVE_INDICES), &mut primitive_indices);
+		descriptors.bind_buffer(slot(&program, MESHLETS), &mut meshlets);
+		for (location, attribute) in out_attributes.iter_mut().enumerate() {
+			descriptors.bind_buffer(output_slot(location as u8), attribute);
+		}
+		descriptors.bind_push_constant(&mut push_constant);
+		descriptors.bind_mesh_outputs(&mut mesh_outputs);
+		for thread_idx in 0..TRIANGLES as u32 - MESH_THREADS {
+			program
+				.run_main_with_config(&mut descriptors, &lane_config(thread_idx).with_threadgroup_position(0))
+				.expect("production mesh shader execution");
+		}
+	}
+
+	assert_eq!(
+		(mesh_outputs.vertex_count(), mesh_outputs.primitive_count()),
+		(6, TRIANGLES as u32)
+	);
+	// The threads that ran drew the triangle MESH_THREADS past their own: the second meshlet's last three.
+	for triangle in FULL + 2..TRIANGLES {
+		assert_eq!(mesh_outputs.triangle(triangle).expect("mesh triangle output"), [3, 4, 5]);
+		assert_eq!(
+			out_attributes[2]
+				.read_indexed("out_primitive_index", triangle)
+				.expect("mesh output"),
+			Value::U32(((FIXTURE_MESHLET_INDEX as u32 + 1) << 8) | (triangle - FULL) as u32)
 		);
 	}
 }
@@ -1503,7 +1664,7 @@ fn shadow_mesh_main_emits_selected_view_triangle_and_metadata() {
 	);
 }
 
-/// Verifies masked shadow mesh output draws the same triangle and passes the instance its alpha test reads.
+/// Verifies masked shadow mesh output draws the same triangle and passes the material word its alpha test reads.
 #[test]
 fn masked_shadow_mesh_main_emits_selected_view_triangle_and_instance() {
 	assert_triangle_mesh_program(
@@ -1513,7 +1674,7 @@ fn masked_shadow_mesh_main_emits_selected_view_triangle_and_instance() {
 		0,
 		[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
 		Some(3),
-		MeshAttributes::Instance,
+		MeshAttributes::MaterialAndUv,
 		false,
 	);
 }

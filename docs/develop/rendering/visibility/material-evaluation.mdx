@@ -75,7 +75,9 @@ passes.
 material table entry's `coverage_arm` into the fragment sources in
 `shader_generator/sources/coverage.rs`. Each arm lowers only what `opacity`
 reaches, through `CoverageStage` in `shader_generator/material.rs`, which
-supplies the vertex UV and refuses every other geometry. Samples use the
+supplies the vertex UV and refuses every other geometry. The mesh stage passes
+the instance's material word with the UV, so a fragment reads only its
+material table entry and textures. Samples use the
 rasterizer's derivatives. A material without an arm keeps an `opacity` of 1.
 
 The masked pipelines are the solid `.pipeline` assets with a coverage shader as

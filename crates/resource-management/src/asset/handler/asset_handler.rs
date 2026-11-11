@@ -176,6 +176,15 @@ pub struct BakeContext<'a> {
 }
 
 impl<'a> BakeContext<'a> {
+	/// Adds a detail item to this resource's development trace, and to the terminal log at the debug level, which
+	/// most runs leave hidden.
+	///
+	/// Use it for what a bake did as expected and only someone studying that bake wants to read. The trace keeps it as
+	/// an informational item.
+	pub fn debug(&self, message: impl fmt::Display) {
+		self.log(log::Level::Debug, message);
+	}
+
 	/// Adds an informational item to this resource's development trace and terminal log.
 	pub fn info(&self, message: impl fmt::Display) {
 		self.log(log::Level::Info, message);

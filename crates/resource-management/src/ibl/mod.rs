@@ -81,7 +81,7 @@ impl IBLGenerator {
 			drop(claim);
 			match baked {
 				Ok(baked) => {
-					context.info("Generated environment maps on the GPU.");
+					context.debug("Generated environment maps on the GPU.");
 					return store_baked_image(context, url, baked).await;
 				}
 				Err(error) => context.warn(format!(

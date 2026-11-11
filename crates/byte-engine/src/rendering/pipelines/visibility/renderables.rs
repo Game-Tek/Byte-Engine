@@ -23,8 +23,8 @@ pub(crate) struct Renderables {
 }
 
 impl Renderables {
-	/// Inserts a new instance waiting for `mesh`.
-	pub(crate) fn wait(&mut self, handle: Handle, mesh: MeshKey) {
+	/// Inserts a new instance waiting for `mesh`, and returns whether it is the mesh's only waiter.
+	pub(crate) fn wait(&mut self, handle: Handle, mesh: MeshKey) -> bool {
 		let waiting = self.waiting.entry(mesh).or_default();
 		let state = RenderableState::Waiting {
 			mesh,
@@ -35,30 +35,29 @@ impl Renderables {
 			"Remove an instance before replacing it."
 		);
 		waiting.push(handle);
+		waiting.len() == 1
 	}
 
-	/// Inserts an instance whose mesh is already resident, before registering its primitives.
-	pub(crate) fn insert_resident(&mut self, handle: Handle) {
-		assert!(
-			self.instances
-				.insert(handle, RenderableState::Resident(SmallVec::new()))
-				.is_none(),
-			"Remove an instance before replacing it."
-		);
-	}
-
-	/// Makes this mesh's waiting instances resident and returns the handles whose primitives must be registered.
-	pub(crate) fn mesh_ready(&mut self, mesh: MeshKey) -> Vec<Handle> {
-		let waiting = self.waiting.remove(&mesh).unwrap_or_default();
-		for handle in &waiting {
-			let state = self
-				.instances
-				.get_mut(handle)
-				.expect("A mesh waiter must have an instance record.");
-			assert!(matches!(state, RenderableState::Waiting { mesh: key, .. } if *key == mesh));
-			*state = RenderableState::Resident(SmallVec::new());
+	/// Makes one of this mesh's waiting instances resident and returns its handle, whose primitives must be registered
+	/// next, or `None` once no instance waits for the mesh.
+	///
+	/// A resident mesh's waiters are adopted a few at a time, so a mesh that tens of thousands of instances wait for
+	/// doesn't hold one frame for all of them. Each call takes the last waiter, so no other waiter moves.
+	pub(crate) fn adopt_waiter(&mut self, mesh: MeshKey) -> Option<Handle> {
+		let waiting = self.waiting.get_mut(&mesh)?;
+		let handle = waiting
+			.pop()
+			.expect("A mesh's waiter list is removed when its last waiter leaves.");
+		if waiting.is_empty() {
+			self.waiting.remove(&mesh);
 		}
-		waiting
+		let state = self
+			.instances
+			.get_mut(&handle)
+			.expect("A mesh waiter must have an instance record.");
+		assert!(matches!(state, RenderableState::Waiting { mesh: key, .. } if *key == mesh));
+		*state = RenderableState::Resident(SmallVec::new());
+		Some(handle)
 	}
 
 	/// Returns one instance to remove through normal cleanup after its mesh fails to load.
@@ -113,8 +112,16 @@ mod tests {
 
 	use super::*;
 
+	/// Adopts every waiter of `mesh`, in the order they started waiting.
+	fn mesh_ready(instances: &mut Renderables, mesh: MeshKey) -> Vec<Handle> {
+		let mut adopted = std::iter::from_fn(|| instances.adopt_waiter(mesh)).collect::<Vec<_>>();
+		adopted.reverse();
+		adopted
+	}
+
 	const FIRST: MeshKey = MeshKey::Resource(1);
 	const SECOND: MeshKey = MeshKey::Resource(2);
+	const THIRD: MeshKey = MeshKey::Resource(3);
 
 	#[test]
 	fn completion_adopts_only_instances_waiting_for_its_mesh() {
@@ -123,14 +130,14 @@ mod tests {
 		instances.wait(a, FIRST);
 		instances.wait(b, SECOND);
 		instances.wait(c, FIRST);
-		assert_eq!(instances.mesh_ready(FIRST), [a, c]);
+		assert_eq!(mesh_ready(&mut instances, FIRST), [a, c]);
 		let mut slots = StableVec::<()>::default();
 		let slot = slots.push(());
 		instances.add_primitive(a, slot);
 		assert_eq!(instances.primitives(a), [slot]);
 		assert!(instances.primitives(b).is_empty());
-		assert_eq!(instances.mesh_ready(SECOND), [b]);
-		assert!(instances.mesh_ready(FIRST).is_empty());
+		assert_eq!(mesh_ready(&mut instances, SECOND), [b]);
+		assert!(mesh_ready(&mut instances, FIRST).is_empty());
 	}
 
 	#[test]
@@ -144,8 +151,8 @@ mod tests {
 		instances.wait(a, SECOND);
 		// Removing the waiter moved into the vacated slot must also work.
 		assert!(instances.remove(c).unwrap().is_empty());
-		assert_eq!(instances.mesh_ready(FIRST), [b]);
-		assert_eq!(instances.mesh_ready(SECOND), [a]);
+		assert_eq!(mesh_ready(&mut instances, FIRST), [b]);
+		assert_eq!(mesh_ready(&mut instances, SECOND), [a]);
 	}
 
 	#[test]
@@ -154,14 +161,15 @@ mod tests {
 		let handle = Handle::new();
 		let mut slots = StableVec::<()>::default();
 		let owned = [slots.push(()), slots.push(())];
-		instances.insert_resident(handle);
+		instances.wait(handle, FIRST);
+		assert_eq!(instances.adopt_waiter(FIRST), Some(handle));
 		for slot in owned {
 			instances.add_primitive(handle, slot);
 		}
 		assert_eq!(instances.remove(handle).unwrap().as_slice(), owned);
 		instances.wait(handle, SECOND);
 		assert!(instances.primitives(handle).is_empty());
-		assert_eq!(instances.mesh_ready(SECOND), [handle]);
+		assert_eq!(mesh_ready(&mut instances, SECOND), [handle]);
 		assert!(instances.remove(handle).unwrap().is_empty());
 		assert!(instances.remove(handle).is_none());
 	}
@@ -172,7 +180,7 @@ mod tests {
 		let handle = Handle::new();
 		instances.wait(handle, FIRST);
 		instances.remove(handle).unwrap();
-		assert!(instances.mesh_ready(FIRST).is_empty());
+		assert!(mesh_ready(&mut instances, FIRST).is_empty());
 		assert!(instances.remove(handle).is_none());
 	}
 
@@ -182,7 +190,8 @@ mod tests {
 		let [a, b, resident] = std::array::from_fn(|_| Handle::new());
 		instances.wait(a, FIRST);
 		instances.wait(b, SECOND);
-		instances.insert_resident(resident);
+		instances.wait(resident, THIRD);
+		assert_eq!(instances.adopt_waiter(THIRD), Some(resident));
 		let mut dropped = 0;
 		while let Some(handle) = instances.waiter(FIRST) {
 			instances.remove(handle).unwrap();
@@ -191,9 +200,9 @@ mod tests {
 		assert_eq!(dropped, 1);
 		assert!(instances.remove(a).is_none());
 		assert!(instances.remove(resident).is_some());
-		assert_eq!(instances.mesh_ready(SECOND), [b]);
+		assert_eq!(mesh_ready(&mut instances, SECOND), [b]);
 		instances.wait(a, FIRST);
-		assert_eq!(instances.mesh_ready(FIRST), [a]);
+		assert_eq!(mesh_ready(&mut instances, FIRST), [a]);
 	}
 
 	#[test]
@@ -209,7 +218,7 @@ mod tests {
 			instances.wait(handle, SECOND);
 		}
 		for mesh in [FIRST, SECOND] {
-			let ready = instances.mesh_ready(mesh);
+			let ready = mesh_ready(&mut instances, mesh);
 			assert_eq!(ready.len(), handles.len() / 2);
 			for handle in ready {
 				assert!(instances.remove(handle).is_some());

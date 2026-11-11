@@ -394,3 +394,14 @@ fn a_failure_far_into_a_level_names_its_entity() {
 	assert!(error.contains("`team` component of entity 'late'"), "{error}");
 	assert!(drain(&mut teams).is_empty());
 }
+
+#[test]
+fn kinds_register_only_before_the_spawner_is_shared() {
+	let mut spawner = spawner();
+	// A spawn takes a clone of the spawner to its thread, so a clone stands for a spawn in flight.
+	let shared = spawner.clone();
+	let error = spawner.register::<Team>("late_team").unwrap_err();
+	assert!(error.contains("before the first spawn"), "{error}");
+	drop(shared);
+	spawner.register::<Team>("late_team").unwrap();
+}

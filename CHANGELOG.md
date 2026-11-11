@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Large scenes load without stalling frames. On the model viewer's slate quarry on an Apple M4, the worst frame after startup went from 95 ms to about 25 ms.
+  - Breaking: `Spawner::spawn_resource` loads and spawns the level on a thread of its own and returns a `LevelSpawn` at once, instead of a future the application had to block on. Poll it, or call `LevelSpawn::wait` in tools and tests. It takes the resource manager as `EntityHandle<ResourceManager>`, from `GraphicsApplication::resource_manager_handle`. Register every kind before the first spawn: a spawner shares its kinds with the spawns it starts.
+  - The visibility pipeline adds renderables whose mesh became resident at most 2,048 render entities a frame, instead of every waiting renderable in the frame the mesh arrived.
+  - A window that shows a scene opens hidden and shows once its first scene frame is done, so window creation and the first frame's setup don't stall frames the window already shows. GHI windows take `Features::HIDDEN` and `Window::show`.
+- Fixed (Metal): building a top-level acceleration structure with no instances faulted the GPU, which happened on the first frames of a scene before any mesh was resident.
+
 - The visibility pipeline rebuilds a frame's instances only after something they are made from changed: a renderable, a loaded mesh, level, material, texture or lightmap, or a material parameter. A scene that stands still under a still camera keeps the last frame's instance table. When only the camera moves or zooms, the window resizes, a renderable moves, or a mesh's finer detail levels arrive or leave, the pipeline picks again just the instances whose detail level can have changed and rewrites their records. The GPU now builds the mesh dispatch work from those records each frame, and the meshlet passes dispatch the workgroups it counted with the new `dispatch_meshes_indirect` command. A scene with a posed skinned instance still rebuilds every frame.
 
 - Ray tracing preparation lists only the primitives rays can hit. It used to list, sort, and look up every instance the frame draws, though rays pass through masked and blended materials and no acceleration structure holds them. A scene of 61,000 masked plants and 1,570 opaque instances spent 2.8 ms a frame on it, 33 ms in an unoptimized build, and now spends too little to show among the frame's stages.

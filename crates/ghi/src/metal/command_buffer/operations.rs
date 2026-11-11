@@ -245,7 +245,9 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let descriptor = structures::instance_descriptor(
 			mtl::MTL4BufferRange {
 				bufferAddress: page.gpu_address + offset as u64,
-				length: (instances.len() * INSTANCE_DESCRIPTOR_SIZE) as u64,
+				// Metal rejects an empty range even when no instance is read, so an empty build names the one record the
+				// allocation always holds.
+				length: (instances.len().max(1) * INSTANCE_DESCRIPTOR_SIZE) as u64,
 			},
 			instances.len(),
 		);

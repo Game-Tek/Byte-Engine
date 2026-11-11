@@ -2,7 +2,7 @@
 //!
 //! A [`Spawner`] maps each kind name a level uses to the component type it publishes. Register your application's
 //! kinds next to the engine's ([`Spawner::with_engine_kinds`]), create the systems that follow those components,
-//! then request the [`Level`] resource, load its payload, and call [`Spawner::spawn`]. Delete the returned handle to
+//! then call [`Spawner::spawn_resource`], which loads and spawns the level off the frame. Delete the returned handle to
 //! unload the level through the [`SceneGraph`](crate::gameplay::SceneGraph).
 //!
 //! Spawning is built to be fast: baking already parsed the text, ordered the entities, and grouped the components by
@@ -15,6 +15,7 @@ use std::{
 	borrow::Cow,
 	collections::{HashMap, hash_map::Entry},
 	marker::PhantomData,
+	sync::Arc,
 	num::NonZeroU32,
 	sync::atomic::{AtomicUsize, Ordering},
 };
@@ -26,7 +27,7 @@ use serde::de::DeserializeOwned;
 use tokens::TokenDeserializer;
 
 use crate::{
-	core::{factory::Handle, machine::performance_parallelism, message_bus::MessageScope},
+	core::{EntityHandle, factory::Handle, machine::performance_parallelism, message_bus::MessageScope},
 	gameplay::{Scene, SceneNode},
 };
 
@@ -36,10 +37,14 @@ const ENTITY_REFERENCE: &str = "$entity";
 /// The `Spawner` struct is the registry of everything a level can place, and the one place that spawns levels.
 ///
 /// Build it once at startup: start from [`Self::with_engine_kinds`], add your application's kinds with
-/// [`Self::register`] or [`Self::register_with`], then call [`Self::spawn`] for each level. Next, have each of your
-/// systems listen on its kind's factory, `world.factory::<T>().listener()`, before the spawn.
+/// [`Self::register`] or [`Self::register_with`], then call [`Self::spawn_resource`] for each level. Next, have each
+/// of your systems listen on its kind's factory, `world.factory::<T>().listener()`, before the spawn.
+///
+/// Cloning a spawner shares its kinds, which is how a spawn takes them to its own thread. Register every kind before
+/// the first clone or spawn.
+#[derive(Clone)]
 pub struct Spawner {
-	kinds: HashMap<Cow<'static, str>, Box<dyn Kind>>,
+	kinds: Arc<HashMap<Cow<'static, str>, Box<dyn Kind>>>,
 }
 
 /// Returns the handle a spawn gave entity `entity` of its level, from the handle `known` it gave entity `known_index`.
@@ -78,7 +83,9 @@ impl Default for Spawner {
 impl Spawner {
 	/// Creates a spawner that knows no kinds. Most applications start from [`Self::with_engine_kinds`] instead.
 	pub fn new() -> Self {
-		Self { kinds: HashMap::new() }
+		Self {
+			kinds: Arc::new(HashMap::new()),
+		}
 	}
 
 	/// Registers `kind`, whose payloads decode straight into `T` and are published as they are.
@@ -132,7 +139,12 @@ impl Spawner {
 					.to_string(),
 			);
 		}
-		match self.kinds.entry(kind) {
+		let kinds = Arc::get_mut(&mut self.kinds).ok_or_else(|| {
+			format!(
+				"Level kind '{kind}' could not be registered. The most likely cause is that the spawner was cloned or already spawns a level, which shares its kinds. Register every kind before the first spawn."
+			)
+		})?;
+		match kinds.entry(kind) {
 			Entry::Occupied(entry) => Err(format!(
 				"Level kind could not be registered. The most likely cause is that '{}' is already registered. Register each kind once, or pick another name.",
 				entry.key()
@@ -144,11 +156,43 @@ impl Spawner {
 		}
 	}
 
+	/// Loads the level `id` from `resources` and spawns it on a thread of its own, so no frame waits for it.
+	///
+	/// Reading the baked level, decoding its components, and publishing them all happen off the calling thread. The
+	/// level's entities reach the systems that listen for them on a later frame, the same way loaded meshes and
+	/// textures do. Keep the returned [`LevelSpawn`] to learn the level's root handle, or why it couldn't spawn, with
+	/// [`LevelSpawn::poll`]; dropping it lets the spawn finish anyway.
+	///
+	/// Create the systems and listeners that follow the level's kinds before you call it, since they only see what is
+	/// published after they exist. Next, read their listeners each frame as usual.
+	pub fn spawn_resource(&self, world: &MessageScope, resources: EntityHandle<ResourceManager>, id: &str) -> LevelSpawn {
+		let (sender, receiver) = std::sync::mpsc::channel();
+		let spawner = self.clone();
+		let world = world.clone();
+		let id = id.to_owned();
+		let spawned = std::thread::Builder::new().name(format!("Level spawn {id}")).spawn(move || {
+			let result = match compio::runtime::Runtime::new() {
+				Ok(runtime) => runtime.block_on(spawner.load_and_spawn(&world, &resources, &id)),
+				Err(error) => Err(format!(
+					"Level '{id}' could not be loaded. The most likely cause is that the system ran out of file descriptors or threads ({error}). Close other applications, or raise the open file limit."
+				)),
+			};
+			// The caller may have dropped its LevelSpawn; the level spawned anyway.
+			let _ = sender.send(result);
+		});
+		// The closure that held the sender is gone when the thread didn't start, so the failure is kept up front.
+		let result = spawned.err().map(|error| {
+			Err(format!(
+				"Level spawn could not start. The most likely cause is that the system ran out of threads ({error}). Close other applications and try again."
+			))
+		});
+		LevelSpawn { receiver, result }
+	}
+
 	/// Requests the level `id` from `resources`, loads its payload, and spawns it with [`Self::spawn`].
 	///
-	/// The payload is read in place where the store maps its files, so it isn't copied. Await it on the thread that
-	/// owns the world, for example with `build_single_threaded_async_runtime().block_on(..)` at startup.
-	pub async fn spawn_resource(&self, world: &MessageScope, resources: &ResourceManager, id: &str) -> Result<Handle, String> {
+	/// The payload is read in place where the store maps its files, so it isn't copied.
+	async fn load_and_spawn(&self, world: &MessageScope, resources: &ResourceManager, id: &str) -> Result<Handle, String> {
 		let unavailable = |cause: String| {
 			format!(
 				"Level '{id}' could not be loaded. The most likely cause is that {cause}. Check that the ID is the level file's path under the assets directory, and bake it."
@@ -237,6 +281,44 @@ impl Spawner {
 			components.publish(world, &mut entities.by_ref().take(length).map(handle));
 		}
 		Ok(root)
+	}
+}
+
+/// The `LevelSpawn` struct follows one level that [`Spawner::spawn_resource`] loads and spawns off the frame.
+///
+/// Poll it once a frame to learn when the level's entities were published, and under which root handle. Delete that
+/// handle to unload the level.
+pub struct LevelSpawn {
+	receiver: std::sync::mpsc::Receiver<Result<Handle, String>>,
+	result: Option<Result<Handle, String>>,
+}
+
+impl LevelSpawn {
+	/// Returns the level's root handle once every entity was published, the reason it couldn't spawn, or `None` while
+	/// it still loads. It never blocks.
+	pub fn poll(&mut self) -> Option<&Result<Handle, String>> {
+		if self.result.is_none() {
+			self.result = match self.receiver.try_recv() {
+				Ok(result) => Some(result),
+				Err(std::sync::mpsc::TryRecvError::Empty) => None,
+				Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(
+					"Level spawn stopped before it finished. The most likely cause is a panic while decoding the level, which the log shows. Fix the level or the kind that panicked, and bake again.".to_string(),
+				)),
+			};
+		}
+		self.result.as_ref()
+	}
+
+	/// Blocks until the level spawned and returns its root handle, or the reason it couldn't spawn.
+	///
+	/// Use it in tools and tests that have no frames to keep running. An application calls [`Self::poll`] instead.
+	pub fn wait(mut self) -> Result<Handle, String> {
+		if let Some(result) = self.result.take() {
+			return result;
+		}
+		self.receiver.recv().unwrap_or_else(|_| {
+			Err("Level spawn stopped before it finished. The most likely cause is a panic while decoding the level, which the log shows. Fix the level or the kind that panicked, and bake again.".to_string())
+		})
 	}
 }
 

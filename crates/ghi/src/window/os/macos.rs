@@ -597,7 +597,7 @@ impl App {
 			// The window is never ordered in and the app never activates, so nothing on the desktop moves. An accessory
 			// app also has no Dock icon or menu bar to take over.
 			app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-		} else {
+		} else if !features.contains(Features::HIDDEN) {
 			window.makeKeyAndOrderFront(None);
 			app.activate();
 		}
@@ -816,6 +816,14 @@ impl Window {
 
 	pub(crate) fn is_visible(&self) -> bool {
 		window_is_visible(&self.window)
+	}
+
+	pub(crate) fn show(&self) {
+		if self.window.isVisible() {
+			return;
+		}
+		self.window.makeKeyAndOrderFront(None);
+		NSApp(self.window.mtm()).activate();
 	}
 }
 

@@ -54,6 +54,12 @@ impl Window {
 		self.os_window.is_visible()
 	}
 
+	/// Shows a window created with [`crate::window::Features::HIDDEN`] and gives it focus. Showing a shown window
+	/// does nothing.
+	pub fn show(&self) {
+		self.os_window.show();
+	}
+
 	pub fn name(&self) -> &str {
 		&self.name
 	}

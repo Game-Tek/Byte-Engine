@@ -381,6 +381,39 @@ A change here must keep these true:
 creates, and `coarse_mips_start_at_the_first_level_no_larger_than_the_coarse_extent`
 tests the policy.
 
+## How a large scene joins without stalling a frame
+
+Loading runs on its own timeline, but a few steps of bringing a scene in still
+run on the render or world thread. Each one is bounded per frame, so a level
+of tens of thousands of entities joins over several frames instead of holding
+one. On an Apple M4, the slate quarry's 62,658 renderables used to stall one
+frame by 22 ms to spawn and another by 18 ms to adopt.
+
+- **Spawning a level.** `Spawner::spawn_resource` reads, decodes, and
+  publishes a level on a thread of its own and returns a `LevelSpawn` to poll.
+  Its entities reach the systems on a later frame, like any loaded resource.
+- **Adopting renderables.** Every new renderable waits for adoption, even when
+  its mesh is already resident. The visibility pipeline adds the waiters of
+  resident meshes at most `ADOPTED_ENTITIES_PER_FRAME` render entities a frame,
+  oldest mesh first. The
+  budget counts entities rather than time, so unattended runs adopt the same
+  instances on the same frames every time.
+- **Showing the window.** A window that shows a scene opens hidden, with
+  `Features::HIDDEN`, and the renderer shows it once the GPU finished the frame
+  that first recorded its scene sink. The window system's and the sink's
+  one-time setup happen before anyone sees the window. A window whose sink never
+  sets up shows after `REVEAL_FRAME_LIMIT` frames.
+
+A change here must keep these true:
+
+- No step that scales with the number of entities in a level runs unbounded in
+  one frame.
+- A renderable that's deleted or created again while it waits for adoption is
+  never added for its old mesh.
+
+`Renderables` is tested in `rendering::pipelines::visibility::renderables`, and
+spawning in `gameplay::level`.
+
 ## Rules that keep rendering independent
 
 Keep these rules when you change loading. Each one prevents a regression that

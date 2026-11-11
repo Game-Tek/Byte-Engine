@@ -32,11 +32,11 @@ use windows::{
 			WindowsAndMessaging::{
 				CW_USEDEFAULT, ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
 				GWLP_WNDPROC, GetClientRect, GetClipCursor, GetSystemMetrics, GetWindowLongPtrW, HCURSOR, HICON, IDC_ARROW,
-				IsIconic, LoadCursorW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW,
+				IsIconic, IsWindowVisible, LoadCursorW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW,
 				QS_ALLINPUT, RI_KEY_BREAK, RI_MOUSE_HWHEEL, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP,
 				RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP,
 				RI_MOUSE_WHEEL, RegisterClassW, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
-				SetWindowLongPtrW, ShowCursor, TranslateMessage, UnregisterClassW, WHEEL_DELTA, WINDOW_EX_STYLE, WM_CHAR,
+				SW_SHOW, SetForegroundWindow, SetWindowLongPtrW, ShowCursor, ShowWindow, TranslateMessage, UnregisterClassW, WHEEL_DELTA, WINDOW_EX_STYLE, WM_CHAR,
 				WM_CLOSE, WM_DISPLAYCHANGE, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
 				WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN,
 				WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_WINDOWPOSCHANGED, WNDCLASS_STYLES, WNDCLASSW, WS_OVERLAPPEDWINDOW,
@@ -273,8 +273,8 @@ impl App {
 		} else {
 			WS_POPUP
 		};
-		// A background window is never shown, so it cannot take focus from the desktop.
-		if !features.contains(Features::BACKGROUND) {
+		// A background window is never shown, so it cannot take focus from the desktop. A hidden one is shown later.
+		if !features.intersects(Features::BACKGROUND | Features::HIDDEN) {
 			window_style |= WS_VISIBLE;
 		}
 
@@ -499,6 +499,16 @@ impl Window {
 
 	pub(crate) fn refresh_interval(&self) -> Option<std::time::Duration> {
 		monitor_refresh_interval(unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST) })
+	}
+
+	pub(crate) fn show(&self) {
+		// SAFETY: The window handle is valid while `self` lives; both calls only change its visibility and focus.
+		unsafe {
+			if !IsWindowVisible(self.hwnd).as_bool() {
+				let _ = ShowWindow(self.hwnd, SW_SHOW);
+				let _ = SetForegroundWindow(self.hwnd);
+			}
+		}
 	}
 
 	/// Reports minimized windows only; Windows offers no cheap query for a window that others fully cover.

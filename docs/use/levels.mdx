@@ -78,12 +78,25 @@ pipeline, because they see only what's published after them. Then spawn the leve
 
 ```rust
 let spawner = Spawner::with_engine_kinds();
-let level = build_single_threaded_async_runtime()
-	.block_on(spawner.spawn_resource(app.world(), app.resource_manager(), "levels/courtyard.level"))?;
+let mut courtyard = spawner.spawn_resource(app.world(), app.resource_manager_handle(), "levels/courtyard.level");
 ```
 
-`spawn_resource` waits for the baked level, then publishes every entity. A level that can't spawn, such as one that
-names a kind the spawner doesn't know, publishes nothing and returns a message that names the entity and kind.
+`spawn_resource` returns at once. It reads the baked level, decodes it, and publishes every entity on a thread of
+its own, so the frames keep their pace while a large level loads. The entities reach your systems on a later frame,
+like loaded meshes and textures.
+
+To learn when the level is in, or why it isn't, poll the returned `LevelSpawn` once a frame:
+
+```rust
+match courtyard.poll() {
+	Some(Ok(root)) => { /* Every entity is published. Delete `root` to unload the level. */ }
+	Some(Err(error)) => log::error!("{error}"),
+	None => { /* Still loading. */ }
+}
+```
+
+A level that can't spawn, such as one that names a kind the spawner doesn't know, publishes nothing, and its error
+names the entity and kind. Tools and tests without frames to keep running can call `LevelSpawn::wait` instead.
 
 ## Add your own kinds
 

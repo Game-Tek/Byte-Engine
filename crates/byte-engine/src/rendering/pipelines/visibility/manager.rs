@@ -513,6 +513,11 @@ enum Availability {
 	Texture(u32),
 }
 
+/// How many render entities, one per primitive of a renderable, join the scene each frame once their mesh is
+/// resident. Adding one costs about a microsecond on an Apple M4, so this keeps adoption near 2 ms a frame; the slate
+/// quarry's 62,658 renderables join over about half a second instead of holding a frame for 18 ms.
+const ADOPTED_ENTITIES_PER_FRAME: usize = 2048;
+
 /// The evaluation slot of each phase's uber shader, which is the only evaluation of its phase in the uber material
 /// evaluation mode.
 const UBER_EVALUATION_INDEX: u32 = 0;
@@ -805,6 +810,10 @@ pub struct VisibilityPipelineManager {
 	instances_moved: bool,
 	/// The mesh primitives whose resident detail levels changed this frame, kept across frames to reuse its room.
 	refreshed_lods: HashSet<(MeshKey, u32)>,
+	/// The resident meshes that instances may still wait for, oldest first. Each frame adopts at most
+	/// [`ADOPTED_ENTITIES_PER_FRAME`] of their waiters' primitives, so a mesh that tens of thousands of instances
+	/// share joins the scene over a few frames instead of holding one.
+	adopting: std::collections::VecDeque<(MeshKey, Arc<MeshData>)>,
 	/// The slots of the instance table that changed since each frame sequence's copy was last brought up to date.
 	stale_records: [std::ops::Range<usize>; ghi::MAX_FRAMES_IN_FLIGHT],
 	/// Which frame sequences' copies of the phases' instance lists are older than the lists.
@@ -1056,6 +1065,7 @@ impl VisibilityPipelineManager {
 			instances_stale: true,
 			instances_moved: false,
 			refreshed_lods: HashSet::default(),
+			adopting: std::collections::VecDeque::new(),
 			stale_records: std::array::from_fn(|_| 0..0),
 			stale_work: [true; ghi::MAX_FRAMES_IN_FLIGHT],
 			instances_lod_view: None,
@@ -1275,9 +1285,7 @@ impl VisibilityPipelineManager {
 						// The base block holds each primitive's coarsest level.
 						self.mesh_residencies.add_mesh(key, level_counts.map(|levels| levels - 1));
 					}
-					for handle in self.scene.renderables.mesh_ready(key) {
-						self.add_renderable(handle, key, &mesh, transforms);
-					}
+					self.adopting.push_back((key, mesh));
 				}
 				VisibilityLoaderEvent::MeshLevelsLoaded { key, primitives } => {
 					for levels in &primitives {
@@ -1388,6 +1396,7 @@ impl VisibilityPipelineManager {
 			}
 		}
 		self.resource_events = events;
+		self.adopt_waiting_renderables(transforms);
 		self.refresh_entity_lods();
 		// Every replacement is in its slot now, so nothing binds the images it replaced.
 		self.loader.delete_replaced_images(frame);
@@ -1774,6 +1783,27 @@ impl VisibilityPipelineManager {
 		}
 		self.refreshed_lods.clear();
 		self.instances_moved = true;
+	}
+
+	/// Adds the renderables that wait for resident meshes to the scene, up to [`ADOPTED_ENTITIES_PER_FRAME`] render
+	/// entities this frame, oldest mesh first. The rest join on the next frames.
+	///
+	/// The budget counts entities rather than time, so an unattended run adopts the same instances on the same frames
+	/// every time. Each renderable is adopted whole, so the budget can be exceeded by one renderable's primitives.
+	fn adopt_waiting_renderables(&mut self, transforms: &ShownTransforms) {
+		let mut adopted = 0;
+		while adopted < ADOPTED_ENTITIES_PER_FRAME {
+			let Some((key, mesh)) = self.adopting.front() else {
+				break;
+			};
+			let (key, mesh) = (*key, Arc::clone(mesh));
+			let Some(handle) = self.scene.renderables.adopt_waiter(key) else {
+				self.adopting.pop_front();
+				continue;
+			};
+			self.add_renderable(handle, key, &mesh, transforms);
+			adopted += mesh.primitives.len().max(1);
+		}
 	}
 
 	/// Adds one resident renderable where its handle is shown.

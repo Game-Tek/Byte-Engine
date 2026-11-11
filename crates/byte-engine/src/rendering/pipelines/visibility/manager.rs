@@ -1222,17 +1222,20 @@ impl VisibilityPipelineManager {
 		}
 	}
 
-	/// Requests the renderable's mesh and keeps the scene instance pending until the mesh is resident.
-	fn request_mesh(&mut self, handle: Handle, renderable: RenderableMesh, transforms: &ShownTransforms) {
+	/// Requests the renderable's mesh and keeps the scene instance pending until the mesh is resident and the instance's
+	/// turn to be adopted comes.
+	fn request_mesh(&mut self, handle: Handle, renderable: RenderableMesh) {
 		// Creation messages are upserts; the replacement starts where the handle is shown.
 		self.remove_mesh_instance(handle);
 		let source = renderable.source().clone();
 		let (mesh_key, resident) = self.loader.request_mesh(source);
-		if let Some(mesh) = resident {
-			self.scene.renderables.insert_resident(handle);
-			self.add_renderable(handle, mesh_key, &mesh, transforms);
-		} else {
-			self.scene.renderables.wait(handle, mesh_key);
+		// Instances of a resident mesh wait for adoption too, so a level that reuses resident meshes joins the scene
+		// within the same per-frame budget as one whose meshes load.
+		let first_waiter = self.scene.renderables.wait(handle, mesh_key);
+		if let Some(mesh) = resident
+			&& first_waiter
+		{
+			self.adopting.push_back((mesh_key, mesh));
 		}
 	}
 
@@ -2212,7 +2215,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			self.create_light(message.handle(), message.into_data().into(), transforms);
 		}
 		while let Some(message) = self.mesh_listener.read() {
-			self.request_mesh(message.handle(), message.into_data(), transforms);
+			self.request_mesh(message.handle(), message.into_data());
 		}
 		while let Some(message) = self.fog_listener.read() {
 			self.fog = Some(*message.data());

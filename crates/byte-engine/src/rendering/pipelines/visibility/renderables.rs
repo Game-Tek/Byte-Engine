@@ -23,8 +23,8 @@ pub(crate) struct Renderables {
 }
 
 impl Renderables {
-	/// Inserts a new instance waiting for `mesh`.
-	pub(crate) fn wait(&mut self, handle: Handle, mesh: MeshKey) {
+	/// Inserts a new instance waiting for `mesh`, and returns whether it is the mesh's only waiter.
+	pub(crate) fn wait(&mut self, handle: Handle, mesh: MeshKey) -> bool {
 		let waiting = self.waiting.entry(mesh).or_default();
 		let state = RenderableState::Waiting {
 			mesh,
@@ -35,16 +35,7 @@ impl Renderables {
 			"Remove an instance before replacing it."
 		);
 		waiting.push(handle);
-	}
-
-	/// Inserts an instance whose mesh is already resident, before registering its primitives.
-	pub(crate) fn insert_resident(&mut self, handle: Handle) {
-		assert!(
-			self.instances
-				.insert(handle, RenderableState::Resident(SmallVec::new()))
-				.is_none(),
-			"Remove an instance before replacing it."
-		);
+		waiting.len() == 1
 	}
 
 	/// Makes one of this mesh's waiting instances resident and returns its handle, whose primitives must be registered
@@ -130,6 +121,7 @@ mod tests {
 
 	const FIRST: MeshKey = MeshKey::Resource(1);
 	const SECOND: MeshKey = MeshKey::Resource(2);
+	const THIRD: MeshKey = MeshKey::Resource(3);
 
 	#[test]
 	fn completion_adopts_only_instances_waiting_for_its_mesh() {
@@ -169,7 +161,8 @@ mod tests {
 		let handle = Handle::new();
 		let mut slots = StableVec::<()>::default();
 		let owned = [slots.push(()), slots.push(())];
-		instances.insert_resident(handle);
+		instances.wait(handle, FIRST);
+		assert_eq!(instances.adopt_waiter(FIRST), Some(handle));
 		for slot in owned {
 			instances.add_primitive(handle, slot);
 		}
@@ -197,7 +190,8 @@ mod tests {
 		let [a, b, resident] = std::array::from_fn(|_| Handle::new());
 		instances.wait(a, FIRST);
 		instances.wait(b, SECOND);
-		instances.insert_resident(resident);
+		instances.wait(resident, THIRD);
+		assert_eq!(instances.adopt_waiter(THIRD), Some(resident));
 		let mut dropped = 0;
 		while let Some(handle) = instances.waiter(FIRST) {
 			instances.remove(handle).unwrap();

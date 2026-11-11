@@ -392,9 +392,10 @@ frame by 22 ms to spawn and another by 18 ms to adopt.
 - **Spawning a level.** `Spawner::spawn_resource` reads, decodes, and
   publishes a level on a thread of its own and returns a `LevelSpawn` to poll.
   Its entities reach the systems on a later frame, like any loaded resource.
-- **Adopting renderables.** When a mesh becomes resident, the visibility
-  pipeline adds the renderables that wait for it at most
-  `ADOPTED_ENTITIES_PER_FRAME` render entities a frame, oldest mesh first. The
+- **Adopting renderables.** Every new renderable waits for adoption, even when
+  its mesh is already resident. The visibility pipeline adds the waiters of
+  resident meshes at most `ADOPTED_ENTITIES_PER_FRAME` render entities a frame,
+  oldest mesh first. The
   budget counts entities rather than time, so unattended runs adopt the same
   instances on the same frames every time.
 - **Showing the window.** A window that shows a scene opens hidden, with

@@ -1362,6 +1362,10 @@ impl Renderer {
 						self.pending_sink_initializations.push(sink_id);
 					} else {
 						self.initialize_scene_sink(sink_id);
+						// The next frame is the sink's first scene frame, so the window shows once the GPU finished it.
+						if matches!(self.reveals[sink_id], Reveal::AfterSinkSetup { .. }) {
+							self.reveals[sink_id] = Reveal::AfterFrame(self.started_frame_count);
+						}
 					}
 				}
 			}

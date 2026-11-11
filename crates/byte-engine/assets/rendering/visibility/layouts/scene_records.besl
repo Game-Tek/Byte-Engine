@@ -126,27 +126,30 @@ instance_triangle: fn (mesh: Mesh, triangle: vec3u) -> vec3u {
 //
 // Words 0 to 191 are entries, one for each kept meshlet and view. An entry names its lane of the task workgroup in
 // bits 0-4 and its view, as an offset into the dispatch's batch, in bits 5-7. Consecutive entries form a group, which
-// one mesh grid draws: as many entries as stay within the vertices and triangles one grid emits. Bits 8-13 hold the
-// group's vertices up to and including the entry's, minus one, bits 14-20 the same for its triangles, and bit 21
-// marks the group's last entry. Word `g` also holds, in bits 22-29, the index of the first entry of group `g`.
+// one mesh grid draws: as many entries as stay within the vertices and triangles one grid emits. Bits 8-14 hold the
+// group's vertices up to and including the entry's, minus one, bits 15-22 the same for its triangles, and bit 23
+// marks the group's last entry. Word `g` also holds, in bits 24-31, the index of the first entry of group `g`.
 //
 // Word 192 is the workgroup's work: the index of its first work item in bits 0-30, and bit 31 set when each lane has a
 // work item of its own, which names the lane's instance above its low 7 bits and its meshlet in them. Otherwise the
 // workgroup has one item, which names an instance and a chunk of 32 of its meshlets, one for each lane.
 MESHLET_PAYLOAD_WORK: const u32 = 192;
 MESHLET_WORK_SHARED: const u32 = 2147483648;
-MESHLET_ENTRY_ENDS_GROUP: const u32 = 2097152;
-// The vertices and triangles one mesh grid emits. Keep them equal to the mesh stages' `maximum_vertices` and
-// `maximum_primitives`.
-MAX_GROUP_VERTICES: const u32 = 64;
-MAX_GROUP_TRIANGLES: const u32 = 126;
+MESHLET_ENTRY_ENDS_GROUP: const u32 = 8388608;
+// The vertices and triangles one mesh grid emits: two full meshlets, so one meshlet that two views keep, or the
+// meshlets of two neighboring lanes, draw from one grid instead of two. Launching grids costs more than filling them.
+// Keep them equal to the mesh stages' `maximum_vertices` and `maximum_primitives`.
+MAX_GROUP_VERTICES: const u32 = 128;
+MAX_GROUP_TRIANGLES: const u32 = 252;
+// The threads of one mesh grid. Each draws a vertex and up to two triangles.
+MESH_THREADS: const u32 = 128;
 // The work item of a lane that has no meshlet, which pads a workgroup whose lanes have items of their own.
 EMPTY_WORK_ITEM: const u32 = 4294967295;
 
 // Returns the entry of a kept meshlet with `vertex_count` vertices and `triangle_count` triangles, neither zero, before
 // the task stage forms groups: the counts take the place of the group's running totals.
 meshlet_entry: fn (lane: u32, view_offset: u32, vertex_count: u32, triangle_count: u32) -> u32 {
-	return lane | (view_offset << 5) | ((vertex_count - 1) << 8) | ((triangle_count - 1) << 14);
+	return lane | (view_offset << 5) | ((vertex_count - 1) << 8) | ((triangle_count - 1) << 15);
 }
 
 entry_lane: fn (entry: u32) -> u32 {
@@ -159,17 +162,17 @@ entry_view_offset: fn (entry: u32) -> u32 {
 
 // Returns how many of its group's vertices come up to and including the entry's.
 entry_vertex_end: fn (entry: u32) -> u32 {
-	return ((entry >> 8) & 63) + 1;
+	return ((entry >> 8) & 127) + 1;
 }
 
 // Returns how many of its group's triangles come up to and including the entry's.
 entry_triangle_end: fn (entry: u32) -> u32 {
-	return ((entry >> 14) & 127) + 1;
+	return ((entry >> 15) & 255) + 1;
 }
 
 // Returns the index of the first entry of group `g`, from payload word `g`.
 group_first_entry: fn (word: u32) -> u32 {
-	return (word >> 22) & 255;
+	return (word >> 24) & 255;
 }
 
 // Returns the index of the work item that names `lane`'s meshlet, from the payload's work word.

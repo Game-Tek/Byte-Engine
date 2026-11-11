@@ -326,10 +326,10 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 			vertices = vertices + entry_vertices;
 			triangles = triangles + entry_triangles;
 			// The entry's own counts give way to the group's running totals.
-			meshlet_instances[index] = (entry & 255) | ((vertices - 1) << 8) | ((triangles - 1) << 14);
+			meshlet_instances[index] = (entry & 255) | ((vertices - 1) << 8) | ((triangles - 1) << 15);
 			// A group never starts before the entry of its own index, so that word is already in its final form.
 			if (starts_group) {
-				meshlet_instances[group] = meshlet_instances[group] | (index << 22);
+				meshlet_instances[group] = meshlet_instances[group] | (index << 24);
 			}
 		}
 		if (entry_count == 0) {

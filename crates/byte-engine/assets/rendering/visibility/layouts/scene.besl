@@ -61,7 +61,8 @@ Scene: layer {
 	materials: descriptor<{ type: Materials, binding: 9, access: read, memory: device }>;
 	// The work items task workgroups cull, each an instance above its low 7 bits. An item of a large instance has a
 	// workgroup to itself and names a chunk of 32 of the instance's meshlets in those bits. An item of a small
-	// instance is one lane of a workgroup that 32 such items share, and names one meshlet.
+	// instance is one lane of a workgroup that 32 such items share, and names one meshlet. The first `WORK_HEADER`
+	// words hold each work range's first item and workgroup count instead, two words a range; see `WORK_RANGES`.
 	mesh_dispatch_work: descriptor<{ type: u32[], binding: 10, access: read, memory: device }>;
 	// The evaluation slot of every material table entry, which the material prepasses bucket pixels by.
 	material_evaluations: descriptor<{ type: MaterialEvaluations, binding: 11, access: read, memory: device }>;

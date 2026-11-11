@@ -17,10 +17,11 @@ unoccluded_meshlets: workgroup<atomicu32>;
 // cull by frustum and normal cone only, as the shadow views do. `minimum_caster_extent` is the narrowest instance, in
 // normalized device units across x, that the views draw: directional cascades skip small casters with it, and every
 // other dispatch passes zero, since a perspective view's widths change with distance. `shared_lanes` is nonzero when
-// every lane has a work item of its own, 32 to a workgroup from `work_item_base`: the meshlets of small instances,
-// which share workgroups. Otherwise each workgroup has one item: an instance and a chunk of 32 of its meshlets.
+// every lane has a work item of its own, 32 to a workgroup: the meshlets of small instances, which share workgroups.
+// Otherwise each workgroup has one item: an instance and a chunk of 32 of its meshlets. `work_range` is the range of
+// work the dispatch draws, whose first item the start of `scene.mesh_dispatch_work` gives.
 push_constant: push_constant {
-	work_item_base: u32,
+	work_range: u32,
 	view_base: u32,
 	layer_base: u32,
 	view_count: u32,
@@ -184,13 +185,16 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	let workgroup_index: u32 = thread_position() / 32;
 	let lane: u32 = thread_idx();
 	let shared: bool = push_constant.shared_lanes != 0;
-	// The workgroup's first work item, which also keys its occlusion record.
-	let work_index: u32 = push_constant.work_item_base + workgroup_index;
+	// The workgroup's first work item. The GPU laid the range out this frame.
+	let range_base: u32 = scene.mesh_dispatch_work[push_constant.work_range * 2];
+	let work_index: u32 = range_base + workgroup_index;
 	let work: u32 = work_index;
 	if (shared) {
-		work_index = push_constant.work_item_base + workgroup_index * 32;
+		work_index = range_base + workgroup_index * 32;
 		work = work_index | MESHLET_WORK_SHARED;
 	}
+	// The workgroup's occlusion record is keyed by its first item, counted from the first item of the frame.
+	let occlusion_record: u32 = work_index - WORK_HEADER;
 	let item: u32 = scene.mesh_dispatch_work[lane_work_index(work, lane)];
 	// A lane past the last shared item has no meshlet. It reads instance zero, and emits nothing.
 	let has_item: bool = shared == false || item != EMPTY_WORK_ITEM;
@@ -230,7 +234,7 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	// its lanes' meshlets.
 	let previously_unoccluded: u32 = 0;
 	if (phase == OCCLUSION_EARLY || phase == OCCLUSION_LATE) {
-		previously_unoccluded = occlusion.occlusion_visibility[work_index];
+		previously_unoccluded = occlusion.occlusion_visibility[occlusion_record];
 	}
 	// The early pass draws only what the previous late pass found unoccluded.
 	let drawn_early: bool = ((previously_unoccluded >> lane) & 1) != 0;
@@ -248,7 +252,7 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	if (shared == false && (instance_views == 0 || (phase == OCCLUSION_EARLY && previously_unoccluded == 0))) {
 		if (lane == 0) {
 			if (phase == OCCLUSION_LATE) {
-				occlusion.occlusion_visibility[work_index] = 0;
+				occlusion.occlusion_visibility[occlusion_record] = 0;
 			}
 			set_task_mesh_output_count(0);
 		}
@@ -298,7 +302,7 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	workgroup_barrier();
 	if (lane == 0) {
 		if (phase == OCCLUSION_LATE) {
-			occlusion.occlusion_visibility[work_index] = atomic_load(unoccluded_meshlets);
+			occlusion.occlusion_visibility[occlusion_record] = atomic_load(unoccluded_meshlets);
 		}
 
 		// Form the groups: each takes the next entry while it stays within what one mesh grid emits. A full meshlet

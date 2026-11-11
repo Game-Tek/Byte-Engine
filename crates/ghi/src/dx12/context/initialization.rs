@@ -295,6 +295,7 @@ impl Device {
 			pipelines: Vec::new(),
 			indirect_dispatch_signature: None,
 			indirect_draw_signature: None,
+			indirect_mesh_dispatch_signature: None,
 			shaders: Vec::new(),
 			meshes: Vec::new(),
 			swapchains: Vec::new(),

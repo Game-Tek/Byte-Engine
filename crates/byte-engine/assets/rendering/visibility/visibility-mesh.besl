@@ -14,7 +14,7 @@ out_primitive_index: output<u32, 1, 126>;
 
 // The task stage's batch layout. The camera's visibility pass draws one view into an unlayered target.
 push_constant: push_constant {
-	work_item_base: u32,
+	work_range: u32,
 	view_base: u32,
 	layer_base: u32,
 	view_count: u32,

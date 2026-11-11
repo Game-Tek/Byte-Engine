@@ -483,6 +483,17 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 			.dispatch_meshes_native(self.command_buffer, self.bound_pipeline, x, y, z);
 	}
 
+	fn dispatch_meshes_indirect<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 3]; N]>, entry_index: usize) {
+		self.refresh_descriptor_tables_if_dirty();
+		self.device.dispatch_meshes_indirect_native::<N>(
+			self.command_buffer,
+			self.bound_pipeline,
+			buffer.into(),
+			entry_index,
+			self.sequence_index(),
+		);
+	}
+
 	fn draw_indirect<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 4]; N]>, entry_index: usize) {
 		self.refresh_descriptor_tables_if_dirty();
 		self.device

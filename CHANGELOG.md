@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- The visibility pipeline rebuilds a frame's instances only after something they are made from changed: a renderable, a transform, a loaded mesh, level, material, texture or lightmap, a material parameter, or the camera and suns that detail levels follow. A scene that stands still under a still camera keeps the last frame's instance table and mesh dispatch work. A scene with a posed skinned instance still rebuilds every frame.
+- The visibility pipeline rebuilds a frame's instances only after something they are made from changed: a renderable, a loaded mesh, level, material, texture or lightmap, or a material parameter. A scene that stands still under a still camera keeps the last frame's instance table. When only the camera or a renderable moves, the pipeline picks again just the instances whose detail level can have changed and rewrites their records. The GPU now builds the mesh dispatch work from those records each frame, and the meshlet passes dispatch the workgroups it counted with the new `dispatch_meshes_indirect` command. A scene with a posed skinned instance still rebuilds every frame.
 
 - Ray tracing preparation lists only the primitives rays can hit. It used to list, sort, and look up every instance the frame draws, though rays pass through masked and blended materials and no acceleration structure holds them. A scene of 61,000 masked plants and 1,570 opaque instances spent 2.8 ms a frame on it, 33 ms in an unoptimized build, and now spends too little to show among the frame's stages.
 - `BakeContext::debug` adds a detail item to a resource's development trace and logs it at the debug level, for what a bake did as expected.

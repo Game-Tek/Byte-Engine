@@ -27,10 +27,11 @@ use crate::rendering::lights::Lights;
 use crate::rendering::renderable::mesh::MeshKey;
 use crate::space::{Orientable as _, Positionable as _};
 
-/// The `Instance` struct identifies one dense shader mesh and the work needed to rasterize it.
+/// The `Instance` struct identifies one dense shader mesh a raster phase lists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Instance {
 	pub shader_mesh_index: u32,
+	/// The meshlets it drew when the instances were last rebuilt. The GPU counts what it draws each frame.
 	pub meshlet_count: u32,
 }
 
@@ -221,21 +222,24 @@ impl VisibilityScene {
 		self.renderables.add_primitive(renderable_handle, scene_handle);
 	}
 
-	/// Applies the latest transform update to every primitive and light owned by `handle`, and returns whether it
-	/// moved a primitive, which is what the frame's instances are rebuilt for. A light's move reaches them through the
-	/// detail view instead, and an update that repeats the transform a primitive has moves nothing.
-	pub(crate) fn update_transform(&mut self, handle: Handle, transform: &Transform) -> bool {
+	/// Applies the latest transform update to every primitive and light owned by `handle`, and calls `moved` with the
+	/// slot of each primitive it moved, whose instance the frame then picks again. A light's move reaches the
+	/// instances through the detail view instead, and an update that repeats the transform a primitive has moves
+	/// nothing.
+	pub(crate) fn update_transform(&mut self, handle: Handle, transform: &Transform, mut moved: impl FnMut(usize)) {
 		let model: ghi::pod::Mat4x3f = transform.get_matrix().into();
-		let mut moved = false;
-		update_instances(self.renderables.primitives(handle), &mut self.render_entities, |entity| {
-			moved |= entity.shader_mesh.model != model;
-			entity.shader_mesh.model = model;
-		});
+		for &slot in self.renderables.primitives(handle) {
+			if let Some(entity) = self.render_entities.get_mut(slot)
+				&& entity.shader_mesh.model != model
+			{
+				entity.shader_mesh.model = model;
+				moved(slot.index());
+			}
+		}
 		let lights = self.light_handles.get(&handle).map_or(&[][..], |slots| slots.as_slice());
 		update_instances(lights, &mut self.lights, |(_, _, light_transform)| {
 			*light_transform = transform.clone();
 		});
-		moved
 	}
 
 	/// Registers a light and records its slot.

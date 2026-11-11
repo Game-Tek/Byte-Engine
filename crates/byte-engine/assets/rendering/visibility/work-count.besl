@@ -1,0 +1,49 @@
+// Counts the work items each listed instance takes this frame, and each group of entries' totals.
+
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::work_build::*;
+
+// The group's chunk items, then its shared items.
+group_totals: workgroup<atomicu32, 2>;
+
+push_constant: push_constant {
+	// The entries of the instance list.
+	entry_count: u32,
+}
+
+main: fn (input: StageInput, work_build: WorkBuild) -> void {
+	let group: u32 = threadgroup_position();
+	let lane: u32 = input.thread_idx;
+	let entry: u32 = group * WORK_GROUP_ENTRIES + lane;
+	if (lane == 0) {
+		atomic_store(group_totals[0], 0);
+		atomic_store(group_totals[1], 0);
+	}
+	workgroup_barrier();
+
+	if (entry < push_constant.entry_count) {
+		let items: u32 = 0;
+		let instance: u32 = work_build.instance_list[entry];
+		if (instance != EMPTY_WORK_ITEM) {
+			let mesh: Mesh = work_build.meshes[instance];
+			if ((mesh.level & MESH_FLAG_HIDDEN) == 0) {
+				let meshlets: u32 = work_build.mesh_levels[mesh.level & MESH_LEVEL_MASK].meshlet_count;
+				if (meshlets > SHARED_INSTANCE_MESHLETS) {
+					// A large instance takes a workgroup for every 32 of its meshlets.
+					items = (meshlets + 31) / 32;
+					atomic_add(group_totals[0], items);
+				} else {
+					// A small instance's meshlets each take a lane of a workgroup they share.
+					items = meshlets << 16;
+					atomic_add(group_totals[1], meshlets);
+				}
+			}
+		}
+		work_build.entry_items[entry] = items;
+	}
+
+	workgroup_barrier();
+	if (lane == 0) {
+		work_build.group_items[group] = vec2u(atomic_load(group_totals[0]), atomic_load(group_totals[1]));
+	}
+}

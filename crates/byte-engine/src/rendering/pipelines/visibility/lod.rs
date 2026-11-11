@@ -135,6 +135,72 @@ impl MeshLods {
 			level => Some(level.unwrap_or(0)),
 		}
 	}
+
+	/// Returns the allowed errors between which [`Self::select`] gives what it gives for `allowed_error`: at least the
+	/// first, less than the second.
+	fn held_errors(&self, allowed_error: f32) -> [f32; 2] {
+		if self.replaced_at <= allowed_error {
+			return [self.replaced_at, f32::INFINITY];
+		}
+		let levels = self.levels();
+		let next = |level: usize| {
+			levels
+				.get(level + 1)
+				.map_or(f32::INFINITY, |level| level.error)
+				.min(self.replaced_at)
+		};
+		match levels.iter().rposition(|level| level.error <= allowed_error) {
+			// Not taken over yet.
+			None if self.takes_over() => [f32::NEG_INFINITY, levels[0].error],
+			None => [f32::NEG_INFINITY, next(0)],
+			Some(0) if !self.takes_over() => [f32::NEG_INFINITY, next(0)],
+			Some(level) => [levels[level].error, next(level)],
+		}
+	}
+}
+
+/// The `Held` struct is the level an instance wants and how far the camera can move before it wants another.
+///
+/// [`LodView::held`] makes one when it picks an instance's level. While [`Self::holds`] for a later view with the same
+/// error scale, the pick stands, so following a moving camera costs one distance for each instance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Held {
+	/// What [`LodView::select`] returned.
+	pub(crate) wanted: Option<usize>,
+	/// The world-space center of the instance's bounding sphere.
+	center: [f32; 3],
+	/// The squared distances from the camera to `center` between which `wanted` holds: at least the first, less than
+	/// the second.
+	range: [f32; 2],
+}
+
+impl Held {
+	/// Returns a pick of `wanted` that never holds, so its instance is picked again every time it's followed.
+	pub(crate) const fn never(wanted: Option<usize>) -> Self {
+		Self {
+			wanted,
+			center: [0.0; 3],
+			range: [0.0; 2],
+		}
+	}
+
+	/// Returns a pick of `wanted` that holds from anywhere.
+	pub(crate) const fn always(wanted: Option<usize>) -> Self {
+		Self {
+			wanted,
+			center: [0.0; 3],
+			range: [0.0, f32::INFINITY],
+		}
+	}
+
+	/// Returns whether the instance still wants the same level from `view`, which has the error scale of the view
+	/// that made this pick; see [`LodView::scales_alike`].
+	pub(crate) fn holds(&self, view: &LodView) -> bool {
+		let [x, y, z] = self.center;
+		let offset = Vec3f::new(x, y, z) - view.eye;
+		let distance = dot(offset, offset);
+		distance >= self.range[0] && distance < self.range[1]
+	}
 }
 
 /// The `LodSettings` struct holds the runtime controls for detail level selection.
@@ -284,6 +350,81 @@ impl LodView {
 		}
 	}
 
+	/// Returns this view from a camera at `eye`, for tests that move the camera.
+	#[cfg(test)]
+	pub(crate) fn moved_to(self, eye: Vec3f) -> Self {
+		Self { eye, ..self }
+	}
+
+	/// Returns a perspective view, for tests, from a camera at the origin whose pixel covers `error_per_distance`
+	/// units at each unit of distance.
+	#[cfg(test)]
+	pub(crate) fn for_test(error_per_distance: f32) -> Self {
+		Self {
+			eye: Vec3f::new(0.0, 0.0, 0.0),
+			error_per_distance,
+			constant_error: 0.0,
+			force: None,
+			frustum: [[0.0; 4]; 6],
+			sun_travel: [Vec3f::new(0.0, 0.0, 0.0); MAX_FOLLOWED_SUNS],
+			sun_count: 0,
+		}
+	}
+
+	/// Returns whether `other` turns distance into allowed error as this view does, so a [`Held`] pick made for one
+	/// can be tested against the other. Views that differ only in where the camera is and faces scale alike.
+	pub(crate) fn scales_alike(&self, other: &Self) -> bool {
+		self.error_per_distance == other.error_per_distance
+			&& self.constant_error == other.constant_error
+			&& self.force == other.force
+	}
+
+	/// Returns the level an instance wants, as [`Self::select`] does, with the camera distances over which it keeps
+	/// wanting it.
+	///
+	/// The allowed error grows with the distance from the camera to the instance's bounding sphere, so each pick holds
+	/// between two distances. A forced level and an orthographic view pick the same level from anywhere.
+	pub(crate) fn held(&self, lods: &MeshLods, model: &Mat4x3f, sphere: [f32; 4]) -> Held {
+		let wanted = self.select(lods, model, sphere);
+		let [x_axis, y_axis, z_axis, translation] = <[[f32; 3]; 4]>::from(*model).map(|[x, y, z]| Vec3f::new(x, y, z));
+		let scale = dot(x_axis, x_axis).max(dot(y_axis, y_axis)).max(dot(z_axis, z_axis)).sqrt();
+		let center = x_axis * sphere[0] + y_axis * sphere[1] + z_axis * sphere[2] + translation;
+		let reach = sphere[3] * scale;
+		let center = [center.x, center.y, center.z];
+		// The pick doesn't follow distance: it's forced, the view is orthographic, or the instance has no usable
+		// scale or place and allows no error wherever the camera is.
+		let follows_distance = self.force.is_none()
+			&& self.error_per_distance > 0.0
+			&& scale > 0.0
+			&& scale.is_finite()
+			&& reach.is_finite()
+			&& center.iter().all(|component| component.is_finite());
+		if !follows_distance {
+			return Held::always(wanted);
+		}
+		let [low, high] = lods.held_errors(self.allowed_error(model, sphere));
+		// The inverse of `allowed_error`, which allows nothing up to the sphere's surface.
+		let distance = |error: f32| (error * scale - self.constant_error) / self.error_per_distance + reach;
+		// The range stops a little short of each switch: there the inverse and `allowed_error` can round to different
+		// sides, and an instance that close is picked again, so following always agrees with picking.
+		const MARGIN: f32 = 1e-4;
+		let near = if low * scale <= self.constant_error {
+			0.0
+		} else {
+			distance(low) * (1.0 + MARGIN)
+		};
+		let far = if high == f32::INFINITY {
+			f32::INFINITY
+		} else {
+			distance(high) * (1.0 - MARGIN)
+		};
+		Held {
+			wanted,
+			center,
+			range: [near * near, far * far],
+		}
+	}
+
 	/// Returns the largest model-space error that stays within the allowed pixels for an instance.
 	///
 	/// The distance runs from the camera to the nearest point of the instance's bounding sphere, so the level suits
@@ -307,9 +448,10 @@ impl LodView {
 #[cfg(test)]
 mod tests {
 	use math::{Degrees, Point, UnitVector};
+	use maths_rs::Vec3f;
 	use utils::Extent;
 
-	use super::{LodSettings, LodView, MeshLod, MeshLods};
+	use super::{Held, LodSettings, LodView, MeshLod, MeshLods};
 	use crate::configuration::ConfigurationValue;
 	use crate::rendering::{Sink, view::View};
 
@@ -423,6 +565,64 @@ mod tests {
 			[&plant, &billboard].map(|lods| forced.select(lods, &model, SPHERE)),
 			[Some(2), None]
 		);
+	}
+
+	#[test]
+	fn a_held_pick_stands_exactly_while_it_holds() {
+		let view = perspective(LodSettings::default());
+		let plant = three_levels().replaced_at(Some(0.5));
+		let billboard = MeshLods::new(&[MeshLod {
+			error: 0.5,
+			meshlet_count: 1,
+			resident: true,
+			..MeshLod::default()
+		}]);
+		// Distances on both sides of every switch: the plant's levels at errors 0.1 and 1, and the takeover at 0.5.
+		let distances = (1..400).map(|step| step as f32 * 1.5);
+
+		for lods in [three_levels(), plant, billboard] {
+			let mut picks = Vec::new();
+			for z in distances.clone() {
+				let held = view.held(&lods, &instance(0.0, z, 1.0), SPHERE);
+				assert_eq!(held.wanted, view.select(&lods, &instance(0.0, z, 1.0), SPHERE));
+				if picks.last() != Some(&held.wanted) {
+					picks.push(held.wanted);
+				}
+				// The camera is at the origin, so an instance at another depth is the camera at another distance.
+				for other in distances.clone() {
+					let moved = LodView {
+						eye: Vec3f::new(0.0, 0.0, z - other),
+						..view
+					};
+					if held.holds(&moved) {
+						assert_eq!(
+							view.select(&lods, &instance(0.0, other, 1.0), SPHERE),
+							held.wanted,
+							"picked at {z}, tested at {other}"
+						);
+					}
+				}
+			}
+			assert!(picks.len() > 1, "the distances should cross a switch: {picks:?}");
+		}
+
+		// A forced level holds from anywhere, and a pick that never holds is always made again.
+		let forced = perspective(LodSettings {
+			force: Some(1),
+			..LodSettings::default()
+		});
+		let held = forced.held(&three_levels(), &instance(0.0, 5.0, 1.0), SPHERE);
+		assert!(held.holds(&LodView {
+			eye: Vec3f::new(0.0, 0.0, -9000.0),
+			..forced
+		}));
+		assert!(!Held::never(Some(0)).holds(&view));
+		assert!(Held::always(None).holds(&view));
+		assert!(view.scales_alike(&LodView {
+			eye: Vec3f::new(3.0, 0.0, 0.0),
+			..view
+		}));
+		assert!(!view.scales_alike(&forced));
 	}
 
 	#[test]

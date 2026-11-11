@@ -70,6 +70,12 @@ layout!(
 );
 layout!(SKINNING, "layouts::skinning::Skinning");
 layout!(
+	/// The set the passes that build the frame's mesh work read the instance list and write the work items through.
+	/// See [`super::mesh_dispatch::MeshWork`].
+	WORK_BUILD,
+	"layouts::work_build::WorkBuild"
+);
+layout!(
 	/// The screen view constants and linear depth pyramid a pass that marches screen-space rays reads.
 	SCREEN_TRACE,
 	"layouts::screen_trace::ScreenTrace"
@@ -141,8 +147,7 @@ mod tests {
 	use super::super::layout::{ShaderMeshLevel, ShaderMeshletData};
 	use super::super::render_pass::{FogLightShaderParameters, ScreenViewData};
 	use super::super::shader_data::{
-		LightClusterParameters, LightingData, MaterialData, ReflectionShaderParameters, ShaderFrame, ShaderMesh,
-		ShaderViewData,
+		LightClusterParameters, LightingData, MaterialData, ReflectionShaderParameters, ShaderFrame, ShaderMesh, ShaderViewData,
 	};
 	use super::*;
 

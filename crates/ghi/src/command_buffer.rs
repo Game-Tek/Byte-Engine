@@ -297,6 +297,13 @@ pub trait BoundRasterizationPipelineMode: BoundPipelineLayoutMode + Rasterizatio
 	/// Dispatches mesh shading workgroups.
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32);
 
+	/// Dispatches the mesh shading workgroups whose counts the GPU reads from `buffer` at `entry_index`.
+	///
+	/// Use this when earlier GPU work, such as a compute pass that lists what to draw, decides how many workgroups
+	/// run, so the CPU needn't know the count. Each record is `[x, y, z]` workgroups, which is the native layout on
+	/// every backend. Next, write the record from a compute pass that runs before the render pass starts.
+	fn dispatch_meshes_indirect<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 3]; N]>, entry_index: usize);
+
 	/// Records one non-indexed draw whose vertex and instance counts the GPU reads from `buffer` at `entry_index`.
 	///
 	/// Use this when earlier GPU work, such as a compute pass, decides how much to draw, so a pass draws only what

@@ -15,7 +15,7 @@ out_uv: vertex_output<vec2f16, 1, 64>;
 
 // One dispatch draws `view_count` consecutive views, from `view_base`, into layers from `layer_base`.
 push_constant: push_constant {
-	work_item_base: u32,
+	work_range: u32,
 	view_base: u32,
 	layer_base: u32,
 	view_count: u32,

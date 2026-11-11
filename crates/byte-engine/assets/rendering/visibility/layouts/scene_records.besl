@@ -62,6 +62,18 @@ MESH_MATERIAL_MASK: const u32 = 65535;
 MESH_FLAG_DOUBLE_SIDED: const u32 = 16777216;
 // `Mesh::level` flag of an instance skinning posed this frame: its vertices start at `Mesh::surface.x`.
 MESH_FLAG_SKINNED: const u32 = 33554432;
+// `Mesh::level` flag of an instance that isn't drawn from where the camera is: another primitive of its mesh has
+// taken its place, or it hasn't taken over yet. It gets no work items. Rays still read its record.
+MESH_FLAG_HIDDEN: const u32 = 2147483648;
+// The most meshlets an instance draws for them to share task workgroups with other instances' meshlets, one work
+// item each. A larger instance takes an item for every 32 of its meshlets.
+SHARED_INSTANCE_MESHLETS: const u32 = 8;
+// The work ranges a frame has: for each of the five raster phases, the items of its large instances, then the items
+// its small instances share. Each range is one record of three words in `work_dispatches`, and two of the first
+// words of the work buffer: its first item and its workgroup count.
+WORK_RANGES: const u32 = 10;
+// The words that hold the ranges at the start of the work buffer, before the first work item.
+WORK_HEADER: const u32 = 20;
 
 // One vertex of a meshlet, stored in the meshlet's own order so a mesh stage reads a meshlet's vertices in a row.
 // `position` holds the object-space position as UNORM16 components within the level's sphere: x and y in

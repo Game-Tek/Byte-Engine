@@ -108,6 +108,9 @@ pub(crate) const MESH_FLAG_DOUBLE_SIDED: u32 = 1 << 24;
 /// [`ShaderMesh`] flag for an instance skinning posed this frame. Posed meshlets can leave their bind-pose bounds, so
 /// task shaders keep all of its meshlets in every view.
 pub(crate) const MESH_FLAG_SKINNED: u32 = 1 << 25;
+/// [`ShaderMesh`] flag for a listed instance that draws nothing from where the camera is, such as one out of its
+/// primitive's range or one only rays hit. The passes that build the frame's mesh work give it no work items.
+pub(crate) const MESH_FLAG_HIDDEN: u32 = 1 << 31;
 
 /// The `InstanceLightmap` struct says where an instance's light lies in the resident lightmaps, so material evaluation
 /// can read it.

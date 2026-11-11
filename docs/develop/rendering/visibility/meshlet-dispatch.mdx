@@ -27,12 +27,20 @@ level and each view's culling.
 
 ## How it's built
 
-1. `mesh_dispatch.rs` writes the frame's work items for each raster phase: a
-   chunk item for every 32 meshlets of each large instance, then an item for
-   every meshlet of each small instance, padded with empty items to whole
-   workgroups. `MeshDispatch` holds the two ranges.
-2. `record_meshlet_dispatches`, in `render_pass.rs`, dispatches each range.
-   The `shared_lanes` push constant tells the task shader which kind it reads.
+1. The GPU builds the frame's work items, because how many meshlets an
+   instance draws follows the camera. `MeshWork`, in `mesh_dispatch.rs`,
+   keeps only the list of instances each raster phase draws, and writes it
+   when the scene changes. Three compute passes turn it into work each frame.
+   `work-count.besl` counts each listed instance's items from its record.
+   `work-ranges.besl` lays out two ranges for each phase: a chunk item for
+   every 32 meshlets of each large instance, then an item for every meshlet
+   of each small instance, padded with empty items to whole workgroups.
+   `work-scatter.besl` writes the items.
+2. `record_meshlet_dispatches`, in `render_pass.rs`, dispatches each range
+   with `dispatch_meshes_indirect`, which reads the workgroup count the
+   ranges pass wrote. The `work_range` push constant names the range, whose
+   first item the task shader reads from the start of the work buffer, and
+   `shared_lanes` tells it which kind it reads.
 3. `meshlet-task.besl` culls one meshlet on each lane. Each kept meshlet and
    view becomes a payload entry that names its lane, its view, and its vertex
    and triangle counts.
@@ -93,15 +101,35 @@ indexed vertices for a meshlet without the mark and for a posed instance.
 - **One occlusion record per workgroup.** The record is keyed by the
   workgroup's first work item and holds one bit per lane, in both kinds of
   workgroup.
-- **Shared workgroups end whole.** The work list pads the last one with empty
-  items, and a lane with an empty item reads instance zero and emits nothing.
+- **Shared workgroups end whole.** The ranges pass pads the last one with
+  empty items, and a lane with an empty item reads instance zero and emits
+  nothing.
+- **A listed instance always has a record.** The count pass reads the record
+  of every instance a phase lists, so an instance that draws nothing from
+  where the camera is keeps its place and carries `MESH_FLAG_HIDDEN`.
+- **Every phase starts on a group of 32 entries.** The count and scatter
+  passes take 32 entries of the instance list to a workgroup, and the ranges
+  pass sums whole groups for each phase.
+- **The work is built before any meshlet pass.** The sink that records the
+  frame-wide work records the build first, after the frame's instance records
+  are written.
+- **A camera move rewrites records, not lists.** `follow_instances`, in
+  `instance_rebuild.rs`, picks again only the instances whose kept pick no
+  longer holds and rewrites their records. An instance that moved gives up
+  its pick with `Kept::release`. Only a rebuild changes the lists.
 - **Every meshlet pipeline declares the task shader's push constants.** The
   `.pipeline` files give their size.
 
 ## Tests
 
-- `mesh_dispatch.rs` tests the work list: which instances share workgroups,
-  the padding, and what's left out when the list is full.
+- `mesh_work_lists_each_phases_chunks_then_its_shared_meshlets` and
+  `mesh_work_draws_what_fits_the_work_buffer`, in `visibility/tests.rs`, run
+  the three build passes in the BESL VM: which instances share workgroups,
+  the padding, hidden instances, and what's left out when the work is full.
+- `following_the_camera_leaves_what_a_rebuild_from_there_would` and
+  `following_a_moved_entity_leaves_what_a_rebuild_would`, in
+  `instance_rebuild.rs`, compare a followed instance table with a rebuilt
+  one.
 - `visibility/tests.rs` runs the shaders in the BESL VM.
   `task_main_groups_small_meshlets_into_full_mesh_grids` and
   `task_main_culls_the_meshlet_each_shared_lane_names` cover the task shader's

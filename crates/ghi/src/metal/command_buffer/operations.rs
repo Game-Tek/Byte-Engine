@@ -1179,6 +1179,36 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		self.record_render_attachment_writes();
 	}
 
+	fn dispatch_meshes_indirect<const N: usize>(
+		&mut self,
+		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 3]; N]>,
+		entry_index: usize,
+	) {
+		self.note_command();
+		let entry = crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index);
+		// The object stage starts as many threadgroups as the record says, so it must wait for whichever GPU work
+		// wrote the counts.
+		let (indirect_buffer_address, record_use) =
+			self.resolve_indirect_record(buffer_handle.into(), entry, mtl::MTLStages::Object);
+		self.prepare_draw("dispatch_meshes_indirect", [record_use]);
+		let bound_pipeline = self.bound_pipeline.expect(
+			"No pipeline bound. The most likely cause is that dispatch_meshes_indirect was called before bind_raster_pipeline.",
+		);
+		let raster = self.device.pipelines[bound_pipeline.index() as usize].raster();
+		let mesh_threadgroup_size = raster.mesh_threadgroup_size.expect(
+			"Metal mesh dispatch requires mesh threadgroup metadata. The most likely cause is that the mesh shader was not generated with Metal mesh threadgroup size metadata.",
+		);
+		let object_threadgroup_size = raster.object_threadgroup_size.unwrap_or(Extent::new(1, 1, 1));
+
+		self.render_encoder("dispatch_meshes_indirect")
+			.drawMeshThreadgroupsWithIndirectBuffer_threadsPerObjectThreadgroup_threadsPerMeshThreadgroup(
+				indirect_buffer_address,
+				utils::mtl_size(object_threadgroup_size),
+				utils::mtl_size(mesh_threadgroup_size),
+			);
+		self.record_render_attachment_writes();
+	}
+
 	fn draw_indirect<const N: usize>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 4]; N]>,

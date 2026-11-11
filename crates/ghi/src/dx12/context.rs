@@ -35,6 +35,7 @@ pub struct Device {
 	pub(crate) pipelines: Vec<Pipeline>,
 	indirect_dispatch_signature: Option<ID3D12CommandSignature>,
 	indirect_draw_signature: Option<ID3D12CommandSignature>,
+	indirect_mesh_dispatch_signature: Option<ID3D12CommandSignature>,
 	shaders: Vec<Shader>,
 	meshes: Vec<Mesh>,
 	pub(crate) swapchains: Vec<Swapchain>,
@@ -177,6 +178,7 @@ impl Device {
 		retain_field!(pipelines);
 		retain_field!(indirect_dispatch_signature);
 		retain_field!(indirect_draw_signature);
+		retain_field!(indirect_mesh_dispatch_signature);
 		retain_field!(shaders);
 		retain_field!(meshes);
 		retain_field!(swapchains);

@@ -31,6 +31,8 @@ const INSTANCE_INDEX: &str = "instance_index_render_target";
 const LIT: &str = "lit_map";
 const DIFFUSE_RADIANCE_HISTORY: &str = "diffuse_radiance_map";
 const MESH_DISPATCH_WORK: &str = "mesh_dispatch_work";
+/// The words of ranges at the start of the work buffer, which `scene_records.besl` spells `WORK_HEADER`.
+const WORK_HEADER: usize = 20;
 const OCCLUSION_PYRAMID: &str = "occlusion_pyramid";
 const OCCLUSION_VISIBILITY: &str = "occlusion_visibility";
 const VERTEX_POSITIONS: &str = "vertex_positions";
@@ -308,7 +310,7 @@ fn run_meshlet_task_workgroup(
 	}
 	let mut push_constant = push_constant_buffer(&program);
 	for (member, value) in [
-		("work_item_base", 0),
+		("work_range", 0),
 		("view_base", view_base),
 		("layer_base", 0),
 		("view_count", view_count),
@@ -325,12 +327,17 @@ fn run_meshlet_task_workgroup(
 	push_constant
 		.write("minimum_caster_extent", Value::F32(minimum_caster_extent))
 		.expect("task minimum caster extent");
-	let mut mesh_dispatch_work = array_buffer(&program, slot(&program, MESH_DISPATCH_WORK), FIXTURE_TABLE_LENGTH);
+	let work_length = WORK_HEADER + FIXTURE_TABLE_LENGTH;
+	let mut mesh_dispatch_work = array_buffer(&program, slot(&program, MESH_DISPATCH_WORK), work_length);
+	// The dispatch draws the first work range, whose items follow the ranges.
+	mesh_dispatch_work
+		.write_array_element(0, Value::U32(WORK_HEADER as u32))
+		.expect("first work range");
 	match mesh.lane_meshlets {
 		None => {
 			let packed_work = MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed;
 			mesh_dispatch_work
-				.write_array_element(workgroup_index as usize, Value::U32(packed_work))
+				.write_array_element(WORK_HEADER + workgroup_index as usize, Value::U32(packed_work))
 				.expect("compact mesh dispatch work");
 		}
 		// Each lane's item, then empty items for the lanes without one.
@@ -341,14 +348,14 @@ fn run_meshlet_task_workgroup(
 				});
 				mesh_dispatch_work
 					.write_array_element(
-						(workgroup_index * TASK_WORKGROUP_SIZE) as usize + lane,
+						WORK_HEADER + (workgroup_index * TASK_WORKGROUP_SIZE) as usize + lane,
 						Value::U32(item.packed),
 					)
 					.expect("shared mesh dispatch work");
 			}
 		}
 	}
-	// The record is keyed by the work item's position in the work buffer.
+	// The record is keyed by the work item's position among the frame's items.
 	let mut occlusion_visibility = array_buffer(&program, slot(&program, OCCLUSION_VISIBILITY), FIXTURE_TABLE_LENGTH);
 	if let Some(occlusion) = &occlusion {
 		occlusion_visibility
@@ -508,13 +515,18 @@ fn task_main_hands_its_work_to_the_mesh_stage() {
 		outputs.payload_value("meshlet_instances", PAYLOAD_WORK_WORD).cloned()
 	};
 
-	assert_eq!(work(TaskMeshFixture::default()), Some(Value::U32(1)));
+	// The range's items follow the ranges at the start of the work buffer.
+	let first = WORK_HEADER as u32;
+	assert_eq!(work(TaskMeshFixture::default()), Some(Value::U32(first + 1)));
 	// Lanes with items of their own take 32 of them to a workgroup.
 	let shared = TaskMeshFixture {
 		lane_meshlets: Some(&[0]),
 		..Default::default()
 	};
-	assert_eq!(work(shared), Some(Value::U32(TASK_WORKGROUP_SIZE | PAYLOAD_WORK_SHARED)));
+	assert_eq!(
+		work(shared),
+		Some(Value::U32((first + TASK_WORKGROUP_SIZE) | PAYLOAD_WORK_SHARED))
+	);
 }
 
 /// Verifies small meshlets share a mesh grid while its vertices and triangles hold them, and start another when not.
@@ -1181,7 +1193,7 @@ fn assert_triangle_mesh_program(
 	}
 	write_meshlet(&mut meshlets, FIXTURE_MESHLET_INDEX, meshlet);
 	let mut push_constant = push_constant_buffer(&program);
-	push_constant.write("work_item_base", Value::U32(0)).expect("mesh work base");
+	push_constant.write("work_range", Value::U32(0)).expect("mesh work range");
 	views
 		.write_array_member(
 			(view.view_base + view.view_offset) as usize,
@@ -1395,7 +1407,7 @@ fn visibility_mesh_main_draws_every_meshlet_of_its_group() {
 		)
 		.expect("mesh dispatch work");
 	let mut push_constant = push_constant_buffer(&program);
-	for member in ["work_item_base", "view_base", "layer_base"] {
+	for member in ["work_range", "view_base", "layer_base"] {
 		push_constant.write(member, Value::U32(0)).expect("mesh push constant");
 	}
 	push_constant.write("view_count", Value::U32(1)).expect("mesh view count");
@@ -4908,4 +4920,159 @@ fn fog_light_of_a_cone_light_stays_inside_its_cone() {
 		"The march's cone light estimate is off. The most likely cause is a wrong cone clip: marched {marched:?}, expected {expected}"
 	);
 	assert_rgba_close(away, [0.0, 0.0, 0.0, away[3]], 1e-6);
+}
+
+/// Runs the three passes that build a frame's mesh work over `phases`, each a raster phase's listed instances as
+/// their meshlet counts, or `None` for one that is hidden. Instances are numbered in the order they are listed.
+///
+/// Returns the work buffer's items, its ranges' first items and workgroup counts, and the dispatch records, of a
+/// work buffer with room for `capacity` items after its ranges.
+fn build_mesh_work(phases: [&[Option<u32>]; 5], capacity: u32) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+	use super::shader_data::MESH_FLAG_HIDDEN;
+
+	const GROUP: usize = 32;
+	let count = asset!("work-count.besl");
+	let ranges = asset!("work-ranges.besl");
+	let scatter = asset!("work-scatter.besl");
+
+	let instances = phases.iter().map(|phase| phase.len()).sum::<usize>();
+	let mut meshes = array_buffer(&count, slot(&count, MESH_DATA), instances.max(1));
+	let mut mesh_levels = array_buffer(&count, slot(&count, MESH_LEVELS), instances.max(1));
+	// Each phase's entries, padded to whole groups with empty ones.
+	let mut list = Vec::new();
+	let mut phase_ends = [0; 5];
+	for (phase, listed) in phases.into_iter().enumerate() {
+		for &meshlets in listed {
+			let instance = list.iter().filter(|&&entry| entry != u32::MAX).count();
+			// Every instance draws a level of its own, which holds its meshlets.
+			let flags = if meshlets.is_some() { 0 } else { MESH_FLAG_HIDDEN };
+			meshes
+				.write_array_member(instance, "level", Value::U32(instance as u32 | flags))
+				.expect("listed mesh level");
+			mesh_levels
+				.write_array_member(instance, "meshlet_count", Value::U32(meshlets.unwrap_or(77)))
+				.expect("listed level meshlets");
+			list.push(instance as u32);
+		}
+		list.resize(list.len().next_multiple_of(GROUP), u32::MAX);
+		phase_ends[phase] = (list.len() / GROUP) as u32;
+	}
+	let groups = list.len() / GROUP;
+	let mut instance_list = array_buffer(&count, slot(&count, "instance_list"), list.len().max(1));
+	for (entry, &instance) in list.iter().enumerate() {
+		instance_list
+			.write_array_element(entry, Value::U32(instance))
+			.expect("instance list entry");
+	}
+	let mut entry_items = array_buffer(&count, slot(&count, "entry_items"), list.len().max(1));
+	let mut group_items = array_buffer(&count, slot(&count, "group_items"), groups.max(1));
+	let capacity = capacity + WORK_HEADER as u32;
+	let mut work_items = array_buffer(&ranges, slot(&ranges, "work_items"), capacity as usize);
+	let mut work_dispatches = array_buffer(&ranges, slot(&ranges, "work_dispatches"), 30);
+	let group_lanes = |group: usize| -> [ExecutionConfig; GROUP] {
+		std::array::from_fn(|lane| lane_config(lane as u32).with_threadgroup_position(group as u32))
+	};
+
+	let mut push_constant = push_constant_buffer(&count);
+	push_constant
+		.write("entry_count", Value::U32(list.len() as u32))
+		.expect("count entries");
+	for group in 0..groups {
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(slot(&count, MESH_DATA), &mut meshes);
+		descriptors.bind_buffer(slot(&count, MESH_LEVELS), &mut mesh_levels);
+		descriptors.bind_buffer(slot(&count, "instance_list"), &mut instance_list);
+		descriptors.bind_buffer(slot(&count, "entry_items"), &mut entry_items);
+		descriptors.bind_buffer(slot(&count, "group_items"), &mut group_items);
+		descriptors.bind_push_constant(&mut push_constant);
+		run_workgroup(&count, descriptors, &group_lanes(group));
+	}
+
+	let mut push_constant = push_constant_buffer(&ranges);
+	let ends = [
+		"opaque_end",
+		"masked_end",
+		"double_sided_end",
+		"double_sided_masked_end",
+		"transparent_end",
+	];
+	for (member, end) in ends.into_iter().zip(phase_ends) {
+		push_constant.write(member, Value::U32(end)).expect("phase end");
+	}
+	push_constant
+		.write("capacity", Value::U32(capacity))
+		.expect("ranges capacity");
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(slot(&ranges, "group_items"), &mut group_items);
+	descriptors.bind_buffer(slot(&ranges, "work_items"), &mut work_items);
+	descriptors.bind_buffer(slot(&ranges, "work_dispatches"), &mut work_dispatches);
+	descriptors.bind_push_constant(&mut push_constant);
+	run_workgroup(&ranges, descriptors, &[lane_config(0).with_threadgroup_position(0)]);
+
+	let mut push_constant = push_constant_buffer(&scatter);
+	push_constant
+		.write("entry_count", Value::U32(list.len() as u32))
+		.expect("scatter entries");
+	push_constant
+		.write("capacity", Value::U32(capacity))
+		.expect("scatter capacity");
+	for group in 0..groups {
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(slot(&scatter, "instance_list"), &mut instance_list);
+		descriptors.bind_buffer(slot(&scatter, "entry_items"), &mut entry_items);
+		descriptors.bind_buffer(slot(&scatter, "group_items"), &mut group_items);
+		descriptors.bind_buffer(slot(&scatter, "work_items"), &mut work_items);
+		descriptors.bind_push_constant(&mut push_constant);
+		run_workgroup(&scatter, descriptors, &group_lanes(group));
+	}
+
+	let read = |buffer: &Buffer, length: usize| (0..length).map(|index| read_u32(buffer, index)).collect::<Vec<_>>();
+	let work = read(&work_items, capacity as usize);
+	// The ranges name items by their place in the buffer, so they are returned from the first item instead.
+	let ranges = work[..WORK_HEADER]
+		.chunks(2)
+		.flat_map(|range| [range[0] - WORK_HEADER as u32, range[1]])
+		.collect();
+	(work[WORK_HEADER..].to_vec(), ranges, read(&work_dispatches, 30))
+}
+
+/// Verifies the frame's work lists each phase's large instances by chunk and then its small instances' meshlets in
+/// shared workgroups, in list order, skips hidden instances, and counts the workgroups each range dispatches.
+#[test]
+fn mesh_work_lists_each_phases_chunks_then_its_shared_meshlets() {
+	let item = |instance: u32, index: u32| MeshDispatchWorkItem::new(instance, index).packed;
+	let empty = MeshDispatchWorkItem::EMPTY.packed;
+	// Instance 0 takes two chunks, 1 is hidden, 2 and 3 share a workgroup; instance 4 takes two chunks and 5 shares.
+	let opaque = [Some(33), None, Some(2), Some(1)];
+	let masked = [Some(40), Some(8)];
+
+	let (items, ranges, dispatches) = build_mesh_work([&opaque, &masked, &[], &[], &[]], 80);
+
+	let mut expected = vec![item(0, 0), item(0, 1), item(2, 0), item(2, 1), item(3, 0)];
+	expected.resize(34, empty);
+	expected.extend([item(4, 0), item(4, 1)]);
+	expected.extend((0..8).map(|meshlet| item(5, meshlet)));
+	expected.resize(68, empty);
+	assert_eq!(items[..68], expected);
+	// Each range's first item and workgroups: a phase's chunks, then its shared workgroups.
+	assert_eq!(ranges[..8], [0, 2, 2, 1, 34, 2, 36, 1]);
+	assert!(ranges[8..].chunks(2).all(|range| range == [68, 0]));
+	assert_eq!(dispatches[..12], [2, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1]);
+	assert!(dispatches[12..].chunks(3).all(|record| record == [0, 1, 1]));
+}
+
+/// Verifies work that doesn't fit the work buffer draws the instances that do: the range that crosses the capacity
+/// dispatches the workgroups whose items fit, and the ranges after it none.
+#[test]
+fn mesh_work_draws_what_fits_the_work_buffer() {
+	let item = |instance: u32, index: u32| MeshDispatchWorkItem::new(instance, index).packed;
+	// The masked phase's 60 chunks start after the opaque phase's two, and 38 of them fit.
+	let (items, ranges, dispatches) = build_mesh_work([&[Some(33)], &[Some(60 * 32)], &[], &[], &[Some(1)]], 40);
+
+	assert_eq!(items[..2], [item(0, 0), item(0, 1)]);
+	assert!(items[2..].iter().copied().eq((0..38).map(|chunk| item(1, chunk))));
+	assert_eq!(ranges[..8], [0, 2, 2, 0, 2, 38, 62, 0]);
+	assert!(ranges[8..].chunks(2).all(|range| range == [40, 0]));
+	assert_eq!(dispatches[..12], [2, 1, 1, 0, 1, 1, 38, 1, 1, 0, 1, 1]);
+	assert!(dispatches[12..].chunks(3).all(|record| record == [0, 1, 1]));
 }

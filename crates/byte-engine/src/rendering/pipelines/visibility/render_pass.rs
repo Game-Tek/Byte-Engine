@@ -139,17 +139,16 @@ pub(super) fn record_meshlet_dispatches(
 		};
 		let c = c.bind_raster_pipeline(pipeline);
 		c.bind_descriptor_sets(&descriptor_sets);
-		// The large instances' workgroups, then the ones small instances' meshlets share.
-		for (range, shared_lanes) in [(dispatch.chunks, 0), (dispatch.shared, 1)] {
-			if range.workgroup_count == 0 {
-				continue;
-			}
+		// The large instances' workgroups, then the ones small instances' meshlets share. The GPU counted both, so a
+		// range without work dispatches no workgroups.
+		for shared_lanes in [0, 1] {
+			let range = dispatch.phase * 2 + shared_lanes;
 			for first_layer in (0..view_count).step_by(MAX_TASK_VIEWS) {
 				let batch_views = (view_count - first_layer).min(MAX_TASK_VIEWS);
 				c.write_push_constant(
 					0,
 					[
-						range.work_item_base,
+						range,
 						(view_base + first_layer) as u32,
 						first_layer as u32,
 						batch_views as u32,
@@ -158,7 +157,7 @@ pub(super) fn record_meshlet_dispatches(
 						shared_lanes,
 					],
 				);
-				c.dispatch_meshes(range.workgroup_count, 1, 1);
+				c.dispatch_meshes_indirect(dispatch.records, range as usize);
 			}
 		}
 	}
@@ -215,7 +214,7 @@ pub(crate) use self::{
 use super::acceleration_structures::AccelerationStructureWork;
 use super::features::{MaterialEvaluationMode, VisibilityFeatures};
 use super::layout::MAX_TASK_VIEWS;
-use super::mesh_dispatch::{MeshDispatch, PhaseDispatches};
+use super::mesh_dispatch::{MeshDispatch, MeshWork, PhaseDispatches};
 use super::scene::RenderInfo;
 use super::set_layouts;
 use super::shader_data::LightingData;
@@ -231,6 +230,8 @@ use crate::rendering::{PipelineManagerClient, ShownDebugViews, Sink, View};
 pub(crate) struct FrameWork<'a> {
 	/// Deforms the frame's skinned meshes.
 	pub(crate) skinning: &'a SkinningPass,
+	/// Builds the mesh work every pass that draws meshlets dispatches.
+	pub(crate) mesh_work: &'a MeshWork,
 	/// Draws the shadow maps every sink samples.
 	pub(crate) shadows: &'a ShadowMaps,
 	/// Builds the acceleration structures surfel GI or probe GI traces, in frames they light.
@@ -822,13 +823,15 @@ impl VisibilityRenderPass {
 			Some(_) => shadow_work.receiver_fit.as_slice(),
 			None => &[],
 		};
-		let (skinning, shadows) = match frame_work {
+		let (skinning, mesh_work, shadows) = match frame_work {
 			Some(FrameWork {
 				skinning,
+				mesh_work,
 				shadows: shadow_maps,
 				..
 			}) => (
 				Some((skinning, pipeline_manager.pipeline(skinning.pipeline)?)),
+				Some((mesh_work, mesh_work.pipelines(pipeline_manager)?)),
 				Some(shadow_maps.prepare(
 					frame,
 					pipeline_manager,
@@ -839,7 +842,7 @@ impl VisibilityRenderPass {
 					render_info.coverage_pipelines,
 				)?),
 			),
-			None => (None, None),
+			None => (None, None, None),
 		};
 		let visibility_pipelines = opaque_layer_pipelines(
 			self.visibility.pipelines.resolve(pipeline_manager)?,
@@ -997,6 +1000,10 @@ impl VisibilityRenderPass {
 					ghi::command_buffer::CommandBufferRecording::copy_buffers(c, &render_info.posed_uv_copies);
 					pass.record(c, &render_info.skinning_dispatches, pipeline)
 				});
+			}
+			// Every pass below that draws meshlets dispatches the work this builds.
+			if let Some((work, pipelines)) = mesh_work {
+				work.record(c, pipelines);
 			}
 			// Cascades fitted to the camera's surfaces are drawn once the opaque layer's depth exists. The shadow
 			// recording times its maps and pyramid with this sink's counters itself.

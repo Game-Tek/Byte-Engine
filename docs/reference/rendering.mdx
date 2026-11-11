@@ -368,6 +368,7 @@ error for it.
 | Detail level rule | Value |
 | --- | --- |
 | Allowed error | One pixel times `render.lod.bias`, converted to world units from the first sink's projection. |
+| Small instances | An instance is small while its bounding sphere's radius covers fewer than `render.lod.small-radius` pixels, measured at the sphere's nearest point to the camera. A small instance is allowed `render.lod.small-bias` times the error. |
 | Instance error | The level's error per distance times the straight-line distance from the camera to the nearest point of the bounding sphere, plus its constant error, divided by the largest model axis. Turning the camera never switches levels. |
 | Wanted level | The coarsest level whose error is within the allowed error; the finest otherwise. An instance around the camera, with zero scale, or without a finite error wants full detail. |
 | Drawn level | The wanted level when it's resident; otherwise the mesh's finest resident level. An instance of a merged mesh with no resident level isn't drawn. |

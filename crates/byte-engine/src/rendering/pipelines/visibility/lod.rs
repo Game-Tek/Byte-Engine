@@ -220,11 +220,26 @@ pub(crate) struct LodSettings {
 	/// Draws this level for every instance instead of selecting by distance. Primitives with fewer levels draw their
 	/// coarsest one, and primitives that take over from others aren't drawn.
 	pub(crate) force: Option<u32>,
+	/// The radius, in pixels, under which an instance's bounding sphere makes it a small instance. Zero makes none
+	/// small.
+	pub(crate) small_radius: f32,
+	/// Multiplies the error a small instance may show, on top of `bias`. Never below one, so an instance never gets
+	/// finer as it shrinks on screen.
+	pub(crate) small_bias: f32,
 }
 
 impl Default for LodSettings {
+	/// One pixel of error, and two for instances under 6 pixels in radius. Scenes scatter grass and shrubs by the
+	/// tens of thousands, and each covers a handful of pixels from most of the scene: on the slate quarry they were
+	/// most of the camera's meshlets, and twice the error for them cut the early visibility pass by 22 % to 42 %
+	/// while changing under 1 % of the pixels.
 	fn default() -> Self {
-		Self { bias: 1.0, force: None }
+		Self {
+			bias: 1.0,
+			force: None,
+			small_radius: 6.0,
+			small_bias: 2.0,
+		}
 	}
 }
 
@@ -241,6 +256,21 @@ impl LodSettings {
 					"Detail level bias was not set. The most likely cause is that the value is not a finite nonnegative number.",
 				)? as f32;
 				Ok((Self { bias, ..self }, ConfigurationValue::Float(f64::from(bias))))
+			}
+			"small-radius" => {
+				let small_radius = value.to_f64().filter(|radius| *radius >= 0.0 && *radius <= f32::MAX as f64).ok_or(
+					"Small instance radius was not set. The most likely cause is that the value is not a finite nonnegative number of pixels. Set `render.lod.small-radius` to a radius in pixels such as 6, or to 0 to make no instance small.",
+				)? as f32;
+				Ok((
+					Self { small_radius, ..self },
+					ConfigurationValue::Float(f64::from(small_radius)),
+				))
+			}
+			"small-bias" => {
+				let small_bias = value.to_f64().filter(|bias| *bias >= 1.0 && *bias <= f32::MAX as f64).ok_or(
+					"Small instance detail bias was not set. The most likely cause is that the value is not a finite number of at least 1. Set `render.lod.small-bias` to a number such as 2, or to 1 to give small instances no extra error.",
+				)? as f32;
+				Ok((Self { small_bias, ..self }, ConfigurationValue::Float(f64::from(small_bias))))
 			}
 			"force" if value.as_text() == Some("off") => Ok((Self { force: None, ..self }, value.clone())),
 			"force" => {
@@ -273,6 +303,11 @@ pub(crate) struct LodView {
 	error_per_distance: f32,
 	/// World-space error allowed at any distance. Zero for a perspective view.
 	constant_error: f32,
+	/// The world-space error, per unit of an instance's world-space radius, past which the instance is small: its
+	/// radius then covers fewer pixels than the small radius. Infinite when no instance is small.
+	small_error_per_reach: f32,
+	/// Multiplies the error a small instance is allowed. At least one.
+	small_bias: f32,
 	force: Option<u32>,
 	/// The camera frustum's planes in world space, each as its xyz normal, which points inside, and w distance.
 	frustum: [[f32; 4]; 6],
@@ -301,6 +336,14 @@ impl LodView {
 			eye: Vec3f::from(math::inverse(view.view()).get_column(3)),
 			error_per_distance: if perspective { error } else { 0.0 },
 			constant_error: if perspective { 0.0 } else { error },
+			// A pixel spans `error / bias` here, so the radius covers fewer than `small_radius` pixels once the
+			// allowed error passes `bias / small_radius` of it. A bias of zero allows no error, and nothing is small.
+			small_error_per_reach: if settings.small_radius > 0.0 && settings.bias > 0.0 {
+				LOD_PIXEL_ERROR * settings.bias / settings.small_radius
+			} else {
+				f32::INFINITY
+			},
+			small_bias: settings.small_bias.max(1.0),
 			force: settings.force,
 			frustum: view.get_frustum_planes().map(|plane| {
 				let normal = plane.normal().into_vector().to_array();
@@ -373,6 +416,8 @@ impl LodView {
 			eye: Vec3f::new(0.0, 0.0, 0.0),
 			error_per_distance,
 			constant_error: 0.0,
+			small_error_per_reach: f32::INFINITY,
+			small_bias: 1.0,
 			force: None,
 			frustum: [[0.0; 4]; 6],
 			sun_travel: [Vec3f::new(0.0, 0.0, 0.0); MAX_FOLLOWED_SUNS],
@@ -387,6 +432,9 @@ impl LodView {
 	pub(crate) fn scales_alike(&self, other: &Self) -> bool {
 		(self.error_per_distance > 0.0) == (other.error_per_distance > 0.0)
 			&& self.constant_error == other.constant_error
+			// A pick's range is worked out with these, so it means nothing under others.
+			&& self.small_error_per_reach == other.small_error_per_reach
+			&& self.small_bias == other.small_bias
 			&& self.force == other.force
 	}
 
@@ -414,20 +462,21 @@ impl LodView {
 			return Held::always(wanted);
 		}
 		let [low, high] = lods.held_errors(self.allowed_error(model, sphere));
-		// `allowed_error` is the error per unit of distance times the distance from the sphere's surface, divided by
-		// the scale, so the scaled errors bound that product. The range stops a little short of each switch: there
+		// `allowed_error` is the error per unit of distance times the distance from the sphere's surface, raised for
+		// a small instance and divided by the scale, so the scaled errors bound that product through
+		// `error_reaching`. The range stops a little short of each switch: there
 		// the inverse and `allowed_error` can round to different sides, and an instance that close is picked again,
 		// so following always agrees with picking.
 		const MARGIN: f32 = 1e-4;
 		let near = if low * scale <= 0.0 {
 			f32::NEG_INFINITY
 		} else {
-			low * scale * (1.0 + MARGIN)
+			self.error_reaching(low * scale, reach) * (1.0 + MARGIN)
 		};
 		let far = if high == f32::INFINITY {
 			f32::INFINITY
 		} else {
-			high * scale * (1.0 - MARGIN)
+			self.error_reaching(high * scale, reach) * (1.0 - MARGIN)
 		};
 		Held {
 			wanted,
@@ -453,7 +502,35 @@ impl LodView {
 		if !(distance > 0.0 && scale > 0.0 && scale.is_finite()) {
 			return 0.0;
 		}
-		(self.error_per_distance * distance + self.constant_error) / scale
+		self.allowed_world_error(self.error_per_distance * distance + self.constant_error, sphere[3] * scale) / scale
+	}
+
+	/// Returns the world-space error allowed for an instance of world-space radius `reach` where a level may show
+	/// `error` at the default allowance: `error` itself, or the small instance bias times it once the instance is
+	/// small. It never falls as `error` grows, and jumps where the instance becomes small.
+	fn allowed_world_error(&self, error: f32, reach: f32) -> f32 {
+		// Written so that a NaN, as a zero radius gives when nothing is small, counts as not small.
+		if error > reach * self.small_error_per_reach {
+			error * self.small_bias
+		} else {
+			error
+		}
+	}
+
+	/// Returns the smallest default allowance at which [`Self::allowed_world_error`] reaches `allowed` for an instance
+	/// of world-space radius `reach`. [`Self::held`] turns the errors a pick holds between into the allowances, and
+	/// so the distances, it holds between.
+	fn error_reaching(&self, allowed: f32, reach: f32) -> f32 {
+		let small_from = reach * self.small_error_per_reach;
+		if !(allowed > small_from) {
+			// Reached before the instance is small.
+			allowed
+		} else if allowed <= small_from * self.small_bias {
+			// Reached by the jump where the instance becomes small.
+			small_from
+		} else {
+			allowed / self.small_bias
+		}
 	}
 }
 
@@ -481,6 +558,14 @@ mod tests {
 			}),
 		)
 	}
+
+	/// Settings under which no instance is small, so every instance is allowed the same error on screen.
+	const NO_SMALL_INSTANCES: LodSettings = LodSettings {
+		bias: 1.0,
+		force: None,
+		small_radius: 0.0,
+		small_bias: 1.0,
+	};
 
 	/// A uniformly scaled instance at `z` along the camera's view direction.
 	fn instance(x: f32, z: f32, scale: f32) -> ghi::pod::Mat4x3f {
@@ -544,7 +629,7 @@ mod tests {
 
 	#[test]
 	fn a_primitive_gives_way_to_the_one_that_replaces_it_at_one_distance() {
-		let view = perspective(LodSettings::default());
+		let view = perspective(NO_SMALL_INSTANCES);
 		// A plant that a billboard replaces once an error of half a unit is allowed.
 		let plant = three_levels().replaced_at(Some(0.5));
 		let billboard = MeshLods::new(&[MeshLod {
@@ -577,6 +662,33 @@ mod tests {
 			[&plant, &billboard].map(|lods| forced.select(lods, &model, SPHERE)),
 			[Some(2), None]
 		);
+	}
+
+	#[test]
+	fn small_instances_draw_coarser_levels_sooner() {
+		let lods = three_levels();
+		let meshlets = |settings, z| {
+			let view = perspective(settings);
+			lods.drawn(view.select(&lods, &instance(0.0, z, 1.0), SPHERE).unwrap())
+				.unwrap()
+				.meshlet_count
+		};
+		// A unit sphere 250 units away covers 2 pixels of radius. Its pixel spans half a unit there, short of the
+		// coarsest level's error of one unit, which twice the error allows.
+		assert_eq!(meshlets(NO_SMALL_INSTANCES, 251.0), 4);
+		assert_eq!(meshlets(LodSettings::default(), 251.0), 2);
+		// At 70 units it covers 7 pixels of radius, which is not small.
+		assert_eq!(meshlets(NO_SMALL_INSTANCES, 71.0), 4);
+		assert_eq!(meshlets(LodSettings::default(), 71.0), 4);
+		// A wider small radius takes it in, but its allowance of 0.28 units still falls short of the coarsest level.
+		let wide = LodSettings {
+			small_radius: 10.0,
+			..LodSettings::default()
+		};
+		assert_eq!(meshlets(wide, 71.0), 4);
+		// A stronger bias for small instances reaches it.
+		let strong = LodSettings { small_bias: 8.0, ..wide };
+		assert_eq!(meshlets(strong, 71.0), 2);
 	}
 
 	#[test]
@@ -683,9 +795,13 @@ mod tests {
 		let (lods, model) = (three_levels(), instance(0.0, 51.5, 1.0));
 		let meshlets = |bias, force| {
 			lods.drawn(
-				perspective(LodSettings { bias, force })
-					.select(&lods, &model, SPHERE)
-					.unwrap(),
+				perspective(LodSettings {
+					bias,
+					force,
+					..NO_SMALL_INSTANCES
+				})
+				.select(&lods, &model, SPHERE)
+				.unwrap(),
 			)
 			.unwrap()
 			.meshlet_count
@@ -720,9 +836,15 @@ mod tests {
 		let lods = three_levels();
 		let meshlets = |bias, z| {
 			lods.drawn(
-				LodView::new(&sink, LodSettings { bias, force: None })
-					.select(&lods, &instance(0.0, z, 1.0), SPHERE)
-					.unwrap(),
+				LodView::new(
+					&sink,
+					LodSettings {
+						bias,
+						..NO_SMALL_INSTANCES
+					},
+				)
+				.select(&lods, &instance(0.0, z, 1.0), SPHERE)
+				.unwrap(),
 			)
 			.unwrap()
 			.meshlet_count
@@ -746,6 +868,22 @@ mod tests {
 		let (released, effective) = forced.with_parameter("force", &text("off")).unwrap();
 		assert_eq!((released.force, effective), (None, text("off")));
 		assert!(settings.with_parameter("force", &text("coarse")).is_err());
+
+		let (small, effective) = settings.with_parameter("small-radius", &text("12")).unwrap();
+		assert_eq!((small.small_radius, effective), (12.0, ConfigurationValue::Float(12.0)));
+		assert!(
+			settings
+				.with_parameter("small-radius", &ConfigurationValue::Float(-1.0))
+				.is_err()
+		);
+		let (small, effective) = settings.with_parameter("small-bias", &text("3")).unwrap();
+		assert_eq!((small.small_bias, effective), (3.0, ConfigurationValue::Float(3.0)));
+		// A small instance never gets finer than a large one.
+		assert!(
+			settings
+				.with_parameter("small-bias", &ConfigurationValue::Float(0.5))
+				.is_err()
+		);
 
 		assert!(settings.with_parameter("distance", &ConfigurationValue::Float(1.0)).is_err());
 	}

@@ -30,6 +30,10 @@ application does.
    Add `--metrics-out=metrics.json` (summary) or `--metrics-out=metrics.ndjson` (every retained tick) to keep
    metrics after the application closes, and `--debug.streams=streams.ndjson` to collect debug data streams.
    Any startup parameter can be passed as `--name=value`.
+
+   To measure GPU time, also pass `--render.ghi.features.counters=true`. Release builds leave GPU counters off, and
+   without them `/metrics` and `gpu` events carry CPU spans only. Check that the first sample has GPU times before
+   timing anything.
 3. Wait until the inspector answers before you send anything. This is the only wait that needs a retry loop: once
    the inspector answers, wait with `GET /events` instead (see [Wait for something to happen](#wait-for-something-to-happen)):
 
@@ -178,7 +182,8 @@ release build only when `config.json` sets `render.debug-views.enabled` and the 
   passes for cost, not `dt`. To measure the fastest a frame can go, pass a rate above what the machine reaches,
   such as `--unattended=1000`.
 - GPU metrics are `frame`, `scene.<pipeline>`, `pass.<name>`, and `stage.<name>`, with `@<sink>` on sinks after
-  the first. CPU metrics are named after `tracing` spans, such as `GraphicsApplication::tick`. Every time is in
+  the first. They exist only while `render.ghi.features.counters` is on, which is the default in debug builds only.
+  CPU metrics are named after `tracing` spans, such as `GraphicsApplication::tick`. Every time is in
   milliseconds.
 - Only the latest 1,024 ticks are kept. To follow a long run, loop on `GET /events?events=tick,gpu` instead of
   polling `/metrics/frames`. Each `tick` event is a row as soon as the tick ends, and no rows are lost between

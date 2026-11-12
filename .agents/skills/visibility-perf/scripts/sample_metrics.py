@@ -60,6 +60,12 @@ for _ in range(rounds):
         if row["presented"]:
             for name, value in row["gpu"].items():
                 samples.setdefault(name, []).append(value)
+    # Without GPU counters every row's `gpu` is empty; stop now instead of after the whole run.
+    if not samples:
+        sys.exit(
+            "No GPU times were reported. The most likely cause is that GPU counters are off, which is the release default. "
+            "Restart the viewer with --render.ghi.features.counters=true."
+        )
 
 for name in sorted(samples, key=lambda key: -statistics.median(samples[key])):
     values = samples[name]

@@ -169,8 +169,8 @@ impl std::fmt::Display for RequestError {
 					LoadMessages::Excluded { asset } => (
 						"Could not bake asset.",
 						asset.as_str(),
-						"A `resources.exclude` pattern matches the asset, so it is never baked.",
-						"Stop requesting the asset, or remove its pattern from `resources.exclude` in config.json.",
+						"A `assets.exclude` pattern matches the asset, so it is never baked.",
+						"Stop requesting the asset, or remove its pattern from `assets.exclude` in config.json.",
 					),
 					LoadMessages::ExecutionUnavailable => (
 						"Could not bake asset.",

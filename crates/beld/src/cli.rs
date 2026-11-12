@@ -47,16 +47,18 @@ fn run_cli(parameters: &[Parameter], configure: impl FnOnce(&mut AssetManager, &
 
 /// Dispatches one parsed command through BELD's asynchronous library API.
 ///
-/// Only the commands that read the project resolve its parameters, so a broken `config.json` doesn't stop `list`.
+/// Every command resolves the project's parameters first, because the asset and resource directories come from them.
 async fn dispatch(
 	cli: Cli,
 	defaults: &[Parameter],
 	configure: impl FnOnce(&mut AssetManager, &[Parameter]),
 ) -> Result<(), i32> {
+	let parameters = read_parameters(&cli.config, defaults)?;
+	let (source, destination) = directories(cli.source, cli.destination, &parameters);
 	match cli.command {
-		Commands::Wipe {} => crate::wipe(cli.destination).await,
-		Commands::Clear {} => crate::clear(cli.destination).await,
-		Commands::List {} => crate::list(cli.destination).await,
+		Commands::Wipe {} => crate::wipe(destination).await,
+		Commands::Clear {} => crate::clear(destination).await,
+		Commands::List {} => crate::list(destination).await,
 		Commands::Query {
 			terms,
 			group,
@@ -65,13 +67,13 @@ async fn dispatch(
 			limit,
 			format,
 		} => {
-			let roots = globs(&read_parameters(&cli.config, defaults)?, "resources.roots");
-			crate::query(cli.source, cli.destination, roots, terms, group, sort, reverse, limit, format).await
+			let roots = globs(parameters.scope("resources"), "roots");
+			crate::query(source, destination, roots, terms, group, sort, reverse, limit, format).await
 		}
-		Commands::Inspect { id, format, payload } => crate::inspect(cli.destination, id, format, payload).await,
+		Commands::Inspect { id, format, payload } => crate::inspect(destination, id, format, payload).await,
 		Commands::Browse {} => {
-			let roots = globs(&read_parameters(&cli.config, defaults)?, "resources.roots");
-			crate::browse(cli.source, cli.destination, roots).await
+			let roots = globs(parameters.scope("resources"), "roots");
+			crate::browse(source, destination, roots).await
 		}
 		Commands::Bake {
 			ids,
@@ -85,10 +87,9 @@ async fn dispatch(
 			format,
 			payload,
 		} => {
-			let parameters = read_parameters(&cli.config, defaults)?;
 			if dry_run {
 				return crate::bake_dry_run(
-					cli.source,
+					source,
 					ids,
 					bake_memory_budget(memory_budget),
 					&parameters,
@@ -102,8 +103,8 @@ async fn dispatch(
 				.await;
 			}
 			crate::bake(
-				cli.source,
-				cli.destination,
+				source,
+				destination,
 				ids,
 				cli.storage_mode.map(Into::into),
 				texture_compression.map(Into::into),
@@ -115,8 +116,27 @@ async fn dispatch(
 			)
 			.await
 		}
-		Commands::Delete { ids } => crate::delete(cli.destination, ids).await,
+		Commands::Delete { ids } => crate::delete(destination, ids).await,
 	}
+}
+
+/// Returns the source and destination directories: the command-line flag when given, then the `assets.path` and
+/// `resources.path` parameters, then `assets` and `resources` in the package directory.
+///
+/// The package directory is `CARGO_MANIFEST_DIR` while Cargo runs BELD (`cargo run --bin beld`), which is where the
+/// application's own debug runs look. Otherwise it is the working directory, not the executable's directory as for the
+/// application, because an installed or prebuilt BELD lives apart from the project it bakes.
+fn directories(source: Option<String>, destination: Option<String>, parameters: &[Parameter]) -> (String, String) {
+	let package = std::env::var_os("CARGO_MANIFEST_DIR").map_or_else(PathBuf::new, PathBuf::from);
+	// Each manager's `path` option lives in its own scope: `assets.path` and `resources.path`.
+	let resolve = |flag: Option<String>, scope: &str, default_path: &str| {
+		flag.or_else(|| parameters.scope(scope).get_parameter("path").map(|parameter| parameter.value().to_owned()))
+			.unwrap_or_else(|| package.join(default_path).to_string_lossy().into_owned())
+	};
+	(
+		resolve(source, "assets", "assets"),
+		resolve(destination, "resources", "resources"),
+	)
 }
 
 /// Returns the application's `defaults` overridden by the project configuration at `path` and by `BE_*` variables, as
@@ -191,15 +211,15 @@ const CLAP_STYLING: Styles = Styles::styled()
 #[derive(Parser)]
 #[command(version, about, long_about = None, color = clap::ColorChoice::Auto, styles = CLAP_STYLING)]
 struct Cli {
-	/// The path to the source assets directory.
+	/// The path to the source assets directory. Defaults to the `assets.path` parameter, then `assets`.
 	/// Example: `beld --source assets`
-	#[arg(short, long, default_value = "assets")]
-	source: String,
+	#[arg(short, long)]
+	source: Option<String>,
 
-	/// The path to the baked resources directory.
+	/// The path to the baked resources directory. Defaults to the `resources.path` parameter, then `resources`.
 	/// Example: `beld --destination resources`
-	#[arg(short, long, default_value = "resources")]
-	destination: String,
+	#[arg(short, long)]
+	destination: Option<String>,
 
 	/// When to use terminal colors.
 	#[arg(long, global = true, value_enum, default_value_t = clap::ColorChoice::Auto)]
@@ -356,11 +376,11 @@ impl From<StorageMode> for resource_management::resource::ResourceStorageMode {
 	}
 }
 
-use std::{num::NonZeroUsize, process::ExitCode};
+use std::{num::NonZeroUsize, path::PathBuf, process::ExitCode};
 
 use byte_engine::application::{
 	Parameter,
-	parameters::{layer_parameters, read_configuration_file},
+	parameters::{Parameters as _, layer_parameters, read_configuration_file},
 };
 use clap::{
 	CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,

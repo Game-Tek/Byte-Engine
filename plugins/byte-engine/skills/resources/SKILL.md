@@ -220,7 +220,7 @@ beld query is:dangling                            # resources that use an ID the
 ## Commands that change or remove resources
 
 Ask the user before running `beld delete`, `beld clear`, `beld wipe`, or `beld bake --prune`. They remove
-resources, and `clear` and `wipe` remove the whole store. To stop baking an asset, add it to `resources.exclude`
+resources, and `clear` and `wipe` remove the whole store. To stop baking an asset, add it to `assets.exclude`
 in `config.json`; an exclusion doesn't delete a resource that is already baked.
 
 ## When a resource doesn't load in a debug build

@@ -38,7 +38,7 @@ use crate::{
 /// `texture_compression`, or a baked parameter, because source versions don't record those.
 ///
 /// These parameters also select what bakes. The `render` scope selects the visibility features, and discovery skips
-/// the engine assets only left-out features use. Discovery skips assets that match a `resources.exclude` pattern, and a
+/// the engine assets only left-out features use. Discovery skips assets that match a `assets.exclude` pattern, and a
 /// bake of one, or of an asset that needs one, fails. When there are `resources.roots` patterns, discovery keeps only
 /// matching assets, which bake with what they need. Roots don't apply to explicit `ids`. `prune` deletes every stored
 /// resource no root reaches once every asset baked; it needs roots, no `ids`, and a debug build, which records
@@ -62,7 +62,7 @@ pub async fn bake(
 	prune: bool,
 ) -> Result<(), i32> {
 	let features = VisibilityFeatures::from_parameters(parameters.scope(RENDER_PARAMETERS));
-	let roots = globs(parameters, "resources.roots");
+	let roots = globs(parameters.scope("resources"), "roots");
 	if prune {
 		check_prune(&ids, &roots).map_err(|error| {
 			log::error!("{error}");
@@ -92,7 +92,7 @@ pub async fn bake(
 	})?;
 
 	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend, parameters, configure);
-	asset_manager.set_excluded_assets(globs(parameters, "resources.exclude"));
+	asset_manager.set_excluded_assets(globs(parameters.scope("assets"), "exclude"));
 
 	// A forced run treats everything stored before it started as stale, so shared dependencies rebuild once.
 	if force {
@@ -193,7 +193,7 @@ fn select_discovered(
 		.collect::<Vec<_>>();
 	if !conflicts.is_empty() {
 		return Err(format!(
-			"The bake stopped before baking anything, because these assets match both `resources.roots` and `resources.exclude`: {}. The most likely cause is that a root pattern and an exclude pattern overlap. Remove each of these assets from one of the two lists in the configuration. See {}.",
+			"The bake stopped before baking anything, because these assets match both `resources.roots` and `assets.exclude`: {}. The most likely cause is that a root pattern and an exclude pattern overlap. Remove each of these assets from one of the two lists in the configuration. See {}.",
 			conflicts.join(", "),
 			utils::online_docs_url("api/beld#commands")
 		));
@@ -207,7 +207,7 @@ fn select_discovered(
 /// `output`, leaving the destination directory untouched.
 ///
 /// The document lists each stored resource in [`crate::inspect`]'s shape, ordered by ID, then each requested ID that
-/// failed. `parameters` and `configure` are the application's, as in [`bake`], which also apply `resources.exclude`.
+/// failed. `parameters` and `configure` are the application's, as in [`bake`], which also apply `assets.exclude`.
 /// Pass `payload` to add the decoded stream bytes, which needs [`OutputFormat::JSON`]. The resources the visibility
 /// features assemble from every material bake after `ids`, from the materials `ids` reach. Without `ids` nothing bakes,
 /// because a dry run doesn't discover assets. Run [`bake`] next to write the same resources to a store.
@@ -235,7 +235,7 @@ pub async fn bake_dry_run(
 	// The manager owns one clone; this one reads back what it baked once it is done.
 	let resource_storage_backend = MemoryStorageBackend::new();
 	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend.clone(), parameters, configure);
-	asset_manager.set_excluded_assets(globs(parameters, "resources.exclude"));
+	asset_manager.set_excluded_assets(globs(parameters.scope("assets"), "exclude"));
 	let interception = (!intercept.is_empty()).then(|| {
 		Arc::new(Interception {
 			globs: intercept.iter().map(|pattern| Glob::new(pattern)).collect(),

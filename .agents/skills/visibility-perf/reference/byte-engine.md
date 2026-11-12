@@ -84,6 +84,12 @@ To time single dispatches inside a stage, add temporary handles to `StageCounter
 
 Check each of these once per session, before the first build or run:
 
+- **GPU counters are off unless you turn them on.** `render.ghi.features.counters` defaults to `false` in release
+  builds, and a release run without it reports no `frame`, `scene`, `pass`, or `stage` GPU time: `/metrics` and the
+  `gpu` events hold CPU spans only. Pass `--render.ghi.features.counters=true` to every timing run, release or debug,
+  and check that the first sample has GPU stage times before running more. `measure.sh` and `ab.py` pass it, and
+  `sample_metrics.py` stops when a round has no GPU times.
+
 - **The target directory resolves.** `~/development/sandbox/target` is a symlink into mbx's cache, and mbx deletes
   whole target directories when disk runs low. If `test -e ~/development/sandbox/target` fails, remove the dangling
   link (`rm ~/development/sandbox/target`) and build again. Don't point the sandbox at the engine's `target/`: the
@@ -256,7 +262,7 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
 ### Assets and bakes
 
 - Each viewer run re-bakes the resources whose sources changed. Give every variant its own asset snapshot and pass
-  `--assets-path=<snapshot>` to both its bake and its runs: a directory of symlinks to
+  it to both its bake (`beld --source <snapshot>`) and its runs (`--assets.path=<snapshot>`): a directory of symlinks to
   `~/development/sandbox/model_viewer/assets/*` plus `byte-engine` pointing at a `cp -Rp` copy of
   `crates/byte-engine/assets` (`-p` keeps mtimes, so only changed shaders re-bake), and a `cp -R` of the resources
   directory per variant. Pair each snapshot with a binary built from the same Rust tree, because set layouts are
@@ -271,7 +277,7 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
   2026-11-09, in a clone of the store (`cp -cR resources <scratch>/store`):
   1. `beld -d <store> query class=<C> --format json` for `Shader`, `Pipeline`, `AssembledShader`, `Material`, and
      `Variant`, and collect the IDs.
-  2. `beld delete` those IDs, plus the Mesh resource of every model that owns a variant (the `.fbx` ID itself).
+  2. `beld -d <store> delete` those IDs, plus the Mesh resource of every model that owns a variant (the `.fbx` ID itself).
   3. `beld -d <store> bake <every .bema and model ID>`. This bakes in seconds and leaves textures alone.
 
   Don't run `beld bake` without IDs on such a store: it rebakes every asset, every texture included. `beld bake --force <ids>` also rebakes the selection's dependencies,
@@ -292,7 +298,7 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
 
 - The release `model-viewer` reads only a BELD-baked store. From `~/development/sandbox/model_viewer`, bake with
   `target/release/model-viewer-beld --source "$PWD/assets" --destination <store> --config <config.json> bake`, then
-  run `model-viewer --unattended=60 --inspector.port=<port> --resources.path=<store>`.
+  run `model-viewer --unattended=60 --inspector.port=<port> --resources.path=<store> --render.ghi.features.counters=true`.
 - GPU stage metrics need `--render.ghi.features.counters=true` in release; otherwise `/metrics` holds only CPU spans.
 - Pass `--unattended=<hz>` to release runs as well. Without it, a locked screen renders frames only on capture
   requests and temporal histories reset.

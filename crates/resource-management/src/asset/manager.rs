@@ -33,7 +33,7 @@ pub(crate) struct AssetManagerState {
 	unflushed: AtomicBool,
 	/// Resources stored before this time, in nanoseconds since the Unix epoch, count as stale.
 	rebuild_cutoff: Option<u64>,
-	/// The patterns of asset IDs that are never baked, from the project's `resources.exclude`.
+	/// The patterns of asset IDs that are never baked, from the project's `assets.exclude`.
 	excluded: Vec<Glob>,
 	dispatcher: compio::dispatcher::Dispatcher,
 	#[cfg(debug_assertions)]
@@ -188,7 +188,7 @@ impl AssetManager {
 		self.configurable_state().rebuild_cutoff = Some(cutoff);
 	}
 
-	/// Sets the patterns of asset IDs that are never baked, usually the project's `resources.exclude`.
+	/// Sets the patterns of asset IDs that are never baked, usually the project's `assets.exclude`.
 	///
 	/// Every bake request for a matching ID fails with [`LoadMessages::Excluded`], including a dependency of another
 	/// asset. [`Self::discover`] still lists matching assets, so a caller can check them against its own selection
@@ -612,7 +612,7 @@ impl AssetManagerState {
 		// An excluded asset fails before any freshness check, so even a stored resource is never rebaked or reused.
 		if self.is_excluded(id) {
 			let message = format!(
-				"Asset '{id}' is excluded from baking. The most likely cause is that a `resources.exclude` pattern matches it while an application or another asset still uses it. Stop using the asset, or remove its pattern from `resources.exclude`. See {}.",
+				"Asset '{id}' is excluded from baking. The most likely cause is that a `assets.exclude` pattern matches it while an application or another asset still uses it. Stop using the asset, or remove its pattern from `assets.exclude`. See {}.",
 				online_docs_url(EXCLUDED_ASSETS_DOCS_PATH)
 			);
 

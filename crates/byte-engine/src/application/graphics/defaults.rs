@@ -102,19 +102,20 @@ pub fn setup_default_resource_and_asset_management(
 	{
 		use crate::application::application::resolve_application_path;
 
-		let assets_path = resolve_application_path(application.get_parameter("assets-path"), "assets");
+		use crate::application::parameters::Parameters as _;
+
+		// The asset manager's own options live in the `assets` scope; asset handlers still read the whole set.
+		let options = application.parameters().scope("assets");
+		let assets_path = resolve_application_path(options.get_parameter("path"), "assets");
 
 		let storage_backend = FileStorageBackend::new(assets_path);
 
 		let mut asset_manager = AssetManager::new_shared(storage_backend, application.resource_manager.storage_backend());
 
-		use crate::application::parameters::Parameters as _;
-
 		// The same patterns BELD reads, so a debug run never bakes what a release bake leaves out.
 		asset_manager.set_excluded_assets(
-			application
-				.parameters()
-				.get_elements("resources.exclude")
+			options
+				.get_elements("exclude")
 				.map(|pattern| utils::Glob::new(pattern.value()))
 				.collect(),
 		);

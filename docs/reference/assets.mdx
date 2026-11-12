@@ -22,7 +22,7 @@ For example, a glTF asset can produce mesh, skeleton, animation, material, image
 
 ## Excluded assets
 
-The `resources.exclude` [parameter](/docs/reference/parameters#application)
+The `assets.exclude` [parameter](/docs/reference/parameters#application)
 is an array of glob patterns. An asset whose ID matches a pattern is never
 baked, by BELD or by a development build of the application.
 
@@ -33,7 +33,7 @@ baked, by BELD or by a development build of the application.
 | Requested ID | A bake request for a matching ID fails with an error that names the asset as excluded, whether BELD, an application, or another asset made it, and even when the store already has a resource for the ID. |
 | Dependency | An asset that needs an excluded asset fails to bake, with the same error for the excluded asset. |
 | Stored resources | Excluding an asset doesn't remove a resource baked before. A release build, which never bakes, still loads it. |
-| No patterns | Without `resources.exclude`, or with an empty array, nothing is excluded. |
+| No patterns | Without `assets.exclude`, or with an empty array, nothing is excluded. |
 
 ## Source formats
 

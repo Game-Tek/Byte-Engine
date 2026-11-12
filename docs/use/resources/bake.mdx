@@ -196,20 +196,20 @@ If any asset fails to bake, `--prune` deletes nothing. To review what it would
 delete first, follow
 [Find resources nothing uses](/docs/use/resources/beld#find-resources-nothing-uses).
 
-If an asset matches both a root and a pattern in `resources.exclude`, BELD
+If an asset matches both a root and a pattern in `assets.exclude`, BELD
 stops before it bakes anything and names the asset. Remove it from one of the
 two lists. The [Roots reference](/docs/api/beld#roots) specifies how roots
 select assets.
 
 ## Keep assets out of the bake
 
-Use `resources.exclude` in your project's `config.json` to keep work-in-progress
+Use `assets.exclude` in your project's `config.json` to keep work-in-progress
 or source-only files out of every bake. List them as glob patterns, where `*`
 matches any run of characters, including `/`:
 
 ```json
 {
-  "resources": {
+  "assets": {
     "exclude": ["textures/wip/*", "*.blend1", "audio/raw/*"]
   }
 }

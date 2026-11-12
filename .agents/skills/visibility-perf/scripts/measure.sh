@@ -25,7 +25,8 @@ pkill -x "$(basename "$binary")" 2>/dev/null; sleep 1
 if [[ ${REBAKE:-0} == 1 ]]; then rm -rf "$sandbox/model_viewer/resources"; fi
 # The viewer resolves assets relative to its crate directory.
 cd "$sandbox/model_viewer" || exit 1
-( "$binary" --unattended="${RATE:-60}" "$@" > "$out/$name.log" 2>&1 & )
+# Release builds leave GPU counters off, and without them no stage time is sampled.
+( "$binary" --unattended="${RATE:-60}" --render.ghi.features.counters=true "$@" > "$out/$name.log" 2>&1 & )
 # The inspector answers once the viewer runs; the first bake can take a while after that.
 until curl -sf 'http://127.0.0.1:6680/configuration' > /dev/null; do sleep 1; done
 cursor=$(curl -s 'http://127.0.0.1:6680/events' | jq -r .cursor)

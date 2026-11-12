@@ -28,10 +28,12 @@ fn temporary_root(name: &str) -> PathBuf {
 	root
 }
 
-/// Runs BELD in `root`, so it finds no project configuration, and returns its exit code and parsed standard output.
+/// Runs BELD in `root`, so it finds no project configuration, with `root/assets` and `root/resources` as its
+/// directories, and returns its exit code and parsed standard output.
 fn run_beld(root: &PathBuf, arguments: &[&str]) -> (Option<i32>, Option<Value>) {
 	let output = Command::new(env!("CARGO_BIN_EXE_beld"))
 		.current_dir(root)
+		.args(["--source", "assets", "--destination", "resources"])
 		.args(arguments)
 		.output()
 		.expect("BELD could not be started. The most likely cause is that the test binary was not built.");
@@ -57,10 +59,6 @@ fn dry_run_prints_every_baked_resource_with_typed_streams_and_writes_no_store() 
 	let (code, output) = run_beld(
 		&root,
 		&[
-			"--source",
-			"assets",
-			"--destination",
-			"resources",
 			"bake",
 			"--dry-run",
 			"--format",
@@ -219,10 +217,6 @@ fn an_intercepted_dry_run_prints_the_besl_of_every_shader_it_compiles() {
 	let (code, output) = run_beld(
 		&root,
 		&[
-			"--source",
-			"assets",
-			"--destination",
-			"resources",
 			"bake",
 			"--dry-run",
 			"--intercept",

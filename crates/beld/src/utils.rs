@@ -1,4 +1,4 @@
-use byte_engine::application::{Parameter, parameters::Parameters as _};
+use byte_engine::application::{Parameter, parameters::Parameters};
 use resource_management::asset::{StorageBackend, manager::AssetManager};
 use utils::Glob;
 
@@ -33,7 +33,7 @@ pub(crate) fn configure_cpu_baking(asset_manager: &mut AssetManager, parameters:
 }
 
 /// Returns the glob patterns of the array parameter `name`, such as `resources.roots`.
-pub fn globs(parameters: &[Parameter], name: &str) -> Vec<Glob> {
+pub fn globs(parameters: impl Parameters, name: &str) -> Vec<Glob> {
 	parameters
 		.get_elements(name)
 		.map(|pattern| Glob::new(pattern.value()))

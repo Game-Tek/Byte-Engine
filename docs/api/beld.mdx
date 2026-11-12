@@ -18,12 +18,14 @@ services and [handlers](#handlers). To add one, follow
 
 | Option | Default | Effect |
 | --- | --- | --- |
-| `-s`, `--source <path>` | `assets` | The source asset directory. |
-| `-d`, `--destination <path>` | `resources` | The resource store directory. |
+| `-s`, `--source <path>` | The [`assets.path` parameter](/docs/reference/parameters#application), otherwise `assets` in the package directory | The source asset directory. |
+| `-d`, `--destination <path>` | The [`resources.path` parameter](/docs/reference/parameters#application), otherwise `resources` in the package directory | The resource store directory. |
 | `--color auto`, `always`, or `never` | `auto` | Terminal color; see [Color](#color). |
 | `--storage-mode files` or `packed` | A new store uses files; an existing store keeps its mode | The persistence mode. A value that differs from an existing store's mode is an error. |
 | `--config <path>` | `config.json` in the working directory | The project's [configuration file](/docs/reference/parameters#sources), which the application also reads. It overrides the application's own parameters, and `BE_` environment variables override it, as at startup. `bake` reads the render feature flags and the [excluded assets](/docs/reference/assets#excluded-assets) from the result, and `query` and `browse` read the [roots](#roots). A missing file sets nothing. |
 | `-V`, `--version`; `-h`, `--help` | | |
+
+The package directory is your application's package when Cargo runs BELD, as `cargo run --bin beld` does, and the working directory otherwise. A relative path is relative to the working directory.
 
 BELD reads the `RUST_LOG` environment variable for its log filter.
 

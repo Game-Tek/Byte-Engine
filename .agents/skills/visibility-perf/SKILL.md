@@ -7,6 +7,8 @@ description: "Cut GPU frame time in a real-time renderer: how to measure so a nu
 
 1. **Attribute before you optimize.** Put a GPU timestamp counter around every pass and read the per-stage times
    in-engine. Estimates from reading shaders were wrong by 2x in both directions; the counters were right.
+   Engines often ship with GPU counters off: confirm the first sample of a run reports per-stage GPU times before
+   you start timing, not after a batch of runs that measured only CPU spans.
 2. **Pick the technique by what bounds the stage.** Latency-bound (few threads, dependent fetches): hoist, batch,
    fuse, gather. Bandwidth-bound (cost tracks bytes read): shrink the data, read it once, skip it with a probe.
    Fixed-overhead-bound (tiny dispatches, clears, encoder switches): remove passes, overlap them. Before you call a

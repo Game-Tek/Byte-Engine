@@ -196,7 +196,7 @@ mod tests {
 	/// and the stored IDs, leaving out the coverage shaders every bake assembles.
 	fn bake_project(root: &std::path::Path, roots: &[&str], excluded: &[&str], prune: bool) -> (Result<(), i32>, Vec<String>) {
 		let resources_path = root.join("resources");
-		// The same parameters a `config.json` with `resources.roots` and `resources.exclude` arrays sets.
+		// The same parameters a `config.json` with `resources.roots` and `assets.exclude` arrays sets.
 		let elements = |name: &str, patterns: &[&str]| {
 			patterns
 				.iter()
@@ -204,7 +204,7 @@ mod tests {
 				.map(|(index, pattern)| Parameter::new(&format!("{name}.{index}"), pattern))
 				.collect::<Vec<_>>()
 		};
-		let parameters = [elements("resources.roots", roots), elements("resources.exclude", excluded)].concat();
+		let parameters = [elements("resources.roots", roots), elements("assets.exclude", excluded)].concat();
 		let executor = resource_management::r#async::Executor::new().unwrap();
 
 		let result = executor.block_on(super::bake(

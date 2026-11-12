@@ -49,10 +49,10 @@ A value is text that the reader converts:
 | `log.level` | A filter in `RUST_LOG` syntax: a level such as `debug`, or directives such as `info,byte_engine::physics=trace` | `RUST_LOG` when set, otherwise only errors print | Sets which log records print. |
 | `trace` | Presence only; the value is ignored | Absent | Prints every tracing span and event at debug level or above to standard output. |
 | `messages.capacity` | Bytes | 67,108,864 | The message bus storage. |
-| `resources.path` | Path, relative to the working directory | `resources` under the application directory | Where the resource store lives. |
+| `resources.path` | Path, relative to the working directory | `resources` under the application directory | Where the resource store lives. BELD's default `--destination`. |
 | `resources.roots` | Array of glob patterns | None | The resources the application loads by ID. Read by BELD only: a full bake bakes only these and what they need, and `query` and `browse` find resources nothing needs. See [Roots](/docs/api/beld#roots). |
-| `resources.exclude` | Array of glob patterns | None | The assets that are never baked, by BELD or by a debug build. See [Excluded assets](/docs/reference/assets#excluded-assets). |
-| `assets-path` | Path | `assets` under the application directory | The source asset directory for on-demand baking. Debug builds only. |
+| `assets.exclude` | Array of glob patterns | None | The assets that are never baked, by BELD or by a debug build. See [Excluded assets](/docs/reference/assets#excluded-assets). |
+| `assets.path` | Path, relative to the working directory | `assets` under the application directory | The source asset directory for on-demand baking. Debug builds only. BELD's default `--source`. |
 | `max-frame-rate` | Positive frames per second; invalid is ignored | None, uncapped | The minimum interval between presented frames. |
 | `simulation-rate` | Positive steps per second; invalid is ignored | None; the stepped loop uses 60 | The fixed simulation step. See [Time and ticks](/docs/reference/time). |
 | `render-on-demand` | Lenient boolean | `false` | Renders only when something changed and waits in the window system while idle. |

@@ -65,7 +65,7 @@ impl LoadErrors {
 			Self::FailedToStore => "The baked resource could not be stored.",
 			Self::PrimaryResourceIdMismatch => "The asset handler stored the primary resource under a different ID.",
 			Self::PrimaryResourceNotStored => "The asset handler did not store the primary resource.",
-			Self::DependencyExcluded => "A dependency of the source asset matches `resources.exclude`, so it is never baked.",
+			Self::DependencyExcluded => "A dependency of the source asset matches `assets.exclude`, so it is never baked.",
 		}
 	}
 
@@ -83,7 +83,7 @@ impl LoadErrors {
 			Self::PrimaryResourceIdMismatch => "Store the primary resource under the requested asset ID.",
 			Self::PrimaryResourceNotStored => "Make the asset handler store its primary resource before returning.",
 			Self::DependencyExcluded => {
-				"Stop using the excluded dependency, which the warning before this error names, or remove its pattern from `resources.exclude`."
+				"Stop using the excluded dependency, which the warning before this error names, or remove its pattern from `assets.exclude`."
 			}
 		}
 	}

@@ -23,6 +23,15 @@ const MULTIPLE_SCATTERING_LUT_EXTENT: Extent = Extent::square(32);
 /// so it's capped at half the limit, which leaves room for passes that add samples together.
 const SUN_DISK_MAX_RADIANCE: f32 = 32_768.0;
 
+/// Returns the top `screen_height` of `extent`'s rows, rounded up, for the sky composite to dispatch over.
+///
+/// Each composite thread writes its own pixel, so dispatching only these rows launches only the workgroups that
+/// cover the sky.
+fn sky_composite_extent(extent: Extent, screen_height: f32) -> Extent {
+	let rows = (extent.height() as f32 * screen_height.clamp(0.0, 1.0)).ceil() as u32;
+	Extent::rectangle(extent.width(), rows)
+}
+
 /// Returns the radiance of a sun disk that delivers `illuminance` from a disk of `angular_radius` radians.
 ///
 /// A disk's radiance is its illuminance divided by its solid angle, `π r²`, so the disk brightens with the sun light.
@@ -51,6 +60,9 @@ pub struct AtmosphereSkyRenderPassSettings {
 	pub ground_albedo: f32,
 	pub skip_below_horizon: bool,
 	pub planet_center: Point,
+	/// The fraction of the screen's height, from the top, that the sky covers, clamped to `0.0..=1.0`. The default,
+	/// `0.5`, covers the upper half; use `1.0` for cameras that look up or down. Rows below keep the scene's clear color.
+	pub screen_height: f32,
 }
 
 impl Default for AtmosphereSkyRenderPassSettings {
@@ -68,6 +80,7 @@ impl Default for AtmosphereSkyRenderPassSettings {
 			ground_albedo: 0.3,
 			skip_below_horizon: true,
 			planet_center: Point::new(0.0, -6_360_000.0, 0.0),
+			screen_height: 0.5,
 		}
 	}
 }
@@ -107,15 +120,17 @@ pub struct AtmosphereSkyRenderPass {
 impl Entity for AtmosphereSkyRenderPass {}
 
 impl AtmosphereSkyRenderPass {
-	/// Creates a sky pass with default atmosphere settings and world-light listeners.
+	/// Creates a sky pass with `settings` and world-light listeners.
 	///
 	/// The newest directional light is the sky's sun: its illuminance sets the sky's brightness and color, and its
 	/// transform sets the sun's direction. Publish that light's transform next so the sky can use its orientation.
 	/// Without a directional light, the sky stays black. The sky writes `targets.color` in place wherever
-	/// `targets.depth` holds no surface and leaves every other pixel untouched.
+	/// `targets.depth` holds no surface, within the top [`AtmosphereSkyRenderPassSettings::screen_height`] of the
+	/// screen, and leaves every other pixel untouched.
 	pub fn new(
 		render_pass_builder: &mut RenderPassBuilder,
 		targets: SceneBackgroundTargets,
+		settings: AtmosphereSkyRenderPassSettings,
 		directional_lights: DefaultListener<CreateMessage<DirectionalLight>>,
 		transform_listener: DefaultListener<TransformationUpdate>,
 	) -> Self {
@@ -213,7 +228,7 @@ impl AtmosphereSkyRenderPass {
 			composite_pass,
 			counters,
 			parameters,
-			settings: AtmosphereSkyRenderPassSettings::default(),
+			settings,
 			sun: Sun::new(directional_lights, transform_listener),
 			transmittance_valid: false,
 			sky_view_camera_height: None,
@@ -304,7 +319,7 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		self.transmittance_valid = true;
 		self.sky_view_camera_height = Some(camera_height);
 
-		let extent = sink.extent();
+		let composite_extent = sky_composite_extent(sink.extent(), self.settings.screen_height);
 		let [
 			transmittance_counter,
 			multiple_scattering_counter,
@@ -332,9 +347,12 @@ impl RenderPass for AtmosphereSkyRenderPass {
 							sky_view_pass.record(command_buffer, SKY_VIEW_LUT_EXTENT)
 						});
 					}
-					command_buffer.counter(composite_counter, |command_buffer| {
-						composite_pass.record(command_buffer, extent)
-					});
+					// A sky that covers no rows dispatches nothing.
+					if composite_extent.height() > 0 {
+						command_buffer.counter(composite_counter, |command_buffer| {
+							composite_pass.record(command_buffer, composite_extent)
+						});
+					}
 				},
 			);
 		}))
@@ -575,6 +593,16 @@ mod tests {
 			],
 			1e-6,
 		);
+	}
+
+	/// Verifies that the sky composite dispatches only the rows its screen height covers, rounding a partial row up.
+	#[test]
+	fn sky_composite_covers_only_its_screen_height() {
+		let extent = utils::Extent::rectangle(1920, 1081);
+		assert_eq!(super::sky_composite_extent(extent, 0.5), utils::Extent::rectangle(1920, 541));
+		assert_eq!(super::sky_composite_extent(extent, 1.0), extent);
+		assert_eq!(super::sky_composite_extent(extent, 2.0), extent);
+		assert_eq!(super::sky_composite_extent(extent, 0.0).height(), 0);
 	}
 
 	/// Verifies that the sun disk carries the light's illuminance over its solid angle until the half-float cap.

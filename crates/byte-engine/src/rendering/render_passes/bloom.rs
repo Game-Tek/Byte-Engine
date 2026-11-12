@@ -140,8 +140,8 @@ fn level_weights(settings: BloomPassSettings, level_count: usize, sink_height: u
 /// It models the lens's point spread function: it moves a share of every pixel's light into a long, faint tail and
 /// adds none, so highlights glow over darker neighbors instead of growing brighter. Film halation, a halo of a set
 /// radius per channel, rides the same pyramid as per-channel level weights, so it costs no extra pass. The pass prefilters the HDR `main`
-/// target into a half-resolution pyramid with Jimenez's 13-tap filter, using a brightness-weighted average on the
-/// first level so single bright texels do not flicker, then climbs back up with a tent blur per level, weighting each
+/// target into a half-resolution pyramid with Jimenez's 13-tap filter, reading each 2x2 block with one bilinear tap and
+/// weighting the blocks by brightness on the first level so single bright texels do not flicker, then climbs back up with a tent blur per level, weighting each
 /// level by its share of the tail and halo. The last climb and the blend into the scene share one dispatch, so the top level never
 /// reaches memory. The prefilter and the composite, the two steps at the sink's half and full resolution, are tile
 /// shaders, so where the platform runs tile functions their targets stay losslessly compressed. The smaller levels run
@@ -608,27 +608,36 @@ mod tests {
 	}
 
 	/// Verifies that the prefilter holds a single bright texel, a firefly, under one half whatever its brightness, a
-	/// saturated one as hard as a white one, while a uniform block keeps all its light. The clamp-addressed 2x2 source
-	/// repeats the firefly in the filter's edge blocks, so it lands above the third a truly lone texel would.
+	/// saturated one as hard as a white one, while a uniform field keeps all its light. Each group of blocks holds the
+	/// firefly in one block only, so the destination texels around it stay under a half.
 	#[test]
 	fn bloom_extract_besl_vm_suppresses_fireflies() {
-		// One texel lit in a block of four.
-		let lone = |color: [f32; 3]| {
-			[
-				[color[0], color[1], color[2], 1.0],
-				[0.0, 0.0, 0.0, 1.0],
-				[0.0, 0.0, 0.0, 1.0],
-				[0.0, 0.0, 0.0, 1.0],
-			]
+		const SIZE: u32 = 32;
+		// One texel lit in a dark field.
+		let lone = |color: [f32; 3]| -> Vec<[f32; 4]> {
+			(0..SIZE * SIZE)
+				.map(|index| {
+					if [index % SIZE, index / SIZE] == [17, 14] {
+						[color[0], color[1], color[2], 1.0]
+					} else {
+						[0.0, 0.0, 0.0, 1.0]
+					}
+				})
+				.collect()
 		};
-		let uniform = [[1.0, 1.0, 1.0, 1.0]; 4];
+		let uniform = vec![[1.0, 1.0, 1.0, 1.0]; (SIZE * SIZE) as usize];
 
-		let white = extract(&lone([1024.0, 1024.0, 1024.0]), 0.0, 0.0, NO_CEILING);
-		let blue = extract(&lone([0.0, 0.0, 1024.0]), 0.0, 0.0, NO_CEILING);
+		let white = extract_image(SIZE, &lone([1024.0, 1024.0, 1024.0]));
+		let blue = extract_image(SIZE, &lone([0.0, 0.0, 1024.0]));
 
-		assert_rgba_close(extract(&uniform, 0.0, 0.0, NO_CEILING), [1.0, 1.0, 1.0, 1.0], 1e-5);
-		assert!(white[0] > 0.0 && white[0] < 0.5, "{white:?}");
-		assert!((blue[2] - white[2]).abs() < 1e-4, "{blue:?} {white:?}");
+		assert_rgba_close(rgba(&extract_image(SIZE, &uniform), [5, 9]), [1.0, 1.0, 1.0, 1.0], 1e-3);
+		// The destination texels whose filters reach the firefly.
+		for coordinate in [[7, 6], [8, 6], [9, 6], [7, 7], [8, 7], [9, 7], [8, 8]] {
+			let (white, blue) = (rgba(&white, coordinate), rgba(&blue, coordinate));
+			assert!(white[0] < 0.5, "{coordinate:?}: {white:?}");
+			assert!((blue[2] - white[2]).abs() < 1e-3, "{coordinate:?}: {blue:?} {white:?}");
+		}
+		assert!(rgba(&white, [8, 7])[0] > 0.0, "{:?}", rgba(&white, [8, 7]));
 	}
 
 	/// Runs the pyramid downsample over a 2x2 source into one texel.
@@ -1061,8 +1070,10 @@ mod tests {
 			settings(0.5, 3.0, [0.3, 0.1, 0.0], [0.1, 0.05, 0.2]),
 		] {
 			let result = bloom(SIZE, &scene, settings, 4);
+			// The prefilter keeps its blocks in half floats, about three significant digits, so 30 can come back a few
+			// thousandths off.
 			for coordinate in [[0, 0], [17, 40], [63, 63]] {
-				assert_rgba_close(rgba(&result, coordinate), [0.5, 2.0, 30.0, 1.0], 1e-3);
+				assert_rgba_close(rgba(&result, coordinate), [0.5, 2.0, 30.0, 1.0], 1e-2);
 			}
 		}
 	}

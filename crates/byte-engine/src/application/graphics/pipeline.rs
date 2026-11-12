@@ -463,13 +463,15 @@ fn setup_image_transform_render_pass(
 /// The pass moves `settings.scatter` of every pixel's scene-linear light into a faint tail
 /// around it within `main`, adding no light, so call it after the passes that write scene light, such as the visibility
 /// pipeline and the atmosphere sky, and before tone mapping. Later passes consume its
-/// remapped `main` output. Use `render.pass.bloom` to enable or bypass it at runtime.
+/// remapped `main` output. Use `render.pass.bloom` to enable or bypass it at runtime, and `render.bloom.pixel-weights`
+/// to choose how its prefilter averages the scene.
 pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: BloomPassSettings) {
-	let renderer = &mut application.renderer;
-
-	renderer.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
-		Box::new(BloomPass::with_settings(render_pass_builder, settings))
-	});
+	let controls = BloomControls::new(settings, application.configure("render.bloom."));
+	application
+		.renderer
+		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+			Box::new(BloomPass::new(render_pass_builder, controls.clone()))
+		});
 }
 
 /// Installs depth of field for every current and future render sink.

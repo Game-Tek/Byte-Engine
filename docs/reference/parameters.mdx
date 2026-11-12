@@ -147,7 +147,7 @@ fatal, and the inspector can change them while the application runs.
 | Name | Accepts | Default | Effect |
 | --- | --- | --- | --- |
 | `render.pass.<name>` | `enabled` or `bypassed` | `enabled` | Switches a render pass between its prepare and bypass paths. An update for a pass not installed yet waits for it. |
-| `render.gi.enabled` | Strict boolean | `true` | Whether a global illumination technique lights indirect diffuse light. Off, the environment lights it alone. |
+| `render.gi.enabled` | Strict boolean | `false` | Whether a global illumination technique lights indirect diffuse light. Off, the environment lights it alone. |
 | `render.gi.technique` | `ssgi`, `surfels`, `probes`, or `baked`, in any letter case | The first built in of `ssgi`, `probes`, `surfels`, and `baked` | The technique that lights indirect diffuse light. A technique left out of the bake is rejected. |
 | `render.gtao.radius` | Finite number, zero or more | 1 | The ambient occlusion search radius in world units. |
 | `render.gtao.samples-per-ray` | 1 through 32 | 4 | Samples along each ray. |
@@ -158,6 +158,7 @@ fatal, and the inspector can change them while the application runs.
 | `render.lod.small-bias` | Finite number, one or more | 2 | Scales the on-screen error allowed for a small instance, on top of `render.lod.bias`. |
 | `render.lod.force` | A level number, or `off` | `off` | Draws one detail level for every mesh. |
 | `render.motion-blur.taps` | 1 through 32 | 8 | Motion blur sample taps. |
+| `render.bloom.pixel-weights` | Strict boolean | `false` | Whether bloom weighs each pixel of a 2 × 2 block by its brightness before averaging the block. Off, each block is one bilinear read: cheaper, but a cluster of bright pixels glows more. |
 
 The `enabled` names of GTAO and contact shadows double as runtime settings
 with the same meaning. `render.ssgi.enabled`, `render.surfel-gi.enabled`,

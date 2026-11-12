@@ -1,164 +1,18 @@
-// Prefilters the HDR scene into the first, half-resolution level of the bloom pyramid. One dispatch both
-// downsamples and thresholds, following Jimenez's "Next Generation Post Processing in Call of Duty: Advanced
-// Warfare" (2014): a 13-tap filter of five overlapping 2x2 blocks. Every tap lands on a texel corner, so each block is
-// one bilinear read of its center corner. Each group of four blocks averages its blocks weighted by the inverse of their
-// brightness (a Karis average), so one very bright texel, a firefly, sits in one block of each group and cannot flicker
-// the whole glow; brightness is the largest channel, so a saturated firefly is held back as hard as a white one. Where
-// every texel is alike the weights cancel, so a large highlight keeps all its light. A soft-knee threshold then keeps
-// only light above `prefilter.x`, fading in over `prefilter.y` of that threshold; bloom passes zero and keeps everything,
-// and the lens flare thresholds its highlights. No block contributes more than `prefilter.w`, which bounds how far a
-// highlight far above display white can glow.
+// Prefilters the HDR scene into the first, half-resolution level of the bloom pyramid, reading each 2x2 block with one
+// bilinear tap on its center corner, a quarter of the texture reads `extract-pixels.besl` makes. It is the default prefilter, and the lens flare's. The filter and its tile live in
+// `layouts/prefilter.besl`. The groups still Karis-average their blocks, so a lone firefly sits in one block of each
+// group and can't flicker the glow, but a cluster of fireflies inside one block is held back less than when each pixel
+// is weighted.
 //
 // The sampler averages a block with equal weights, so an infinite texel averages to infinity, which the ceiling holds;
 // a NaN texel averages to NaN, which the clamp reads as zero, so neither smears through the pyramid.
-//
-// It is a tile shader: each of a tile's 8x8 lanes filters a 2x2 block of destination texels, so a tile is 16x16 of
-// them. A wider tile shares more of the blocks under its filters, and each lane keeps ten block reads in flight instead
-// of three.
 
 use ::byte_engine::rendering::bloom::layouts::parameters::*;
+use ::byte_engine::rendering::bloom::layouts::prefilter::*;
 
 source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 bloom_parameters: descriptor<{ type: BloomParameters, binding: 1, access: read, memory: constant }>;
 result: output<vec4f, 0>;
-
-// The 2x2 block averages under one tile's filters, each scaled by its Karis weight, with the weight in `w`. Every tap
-// of the 13-tap filter is one block, and neighboring destination texels share most of them, so each block is averaged
-// once and read from here. The even blocks start on the destination grid, one under each destination texel of the
-// 16x16 tile plus a ring of one around it; the odd blocks start one scene texel later, on the corners between them.
-// The weighted colors stay at or below one, so half floats keep three significant digits. Halving the tile's workgroup
-// memory lets more tiles run at once: in single floats the prefilter took 74 microseconds instead of 35 on the slate
-// quarry at 1024 x 1024 on an Apple M4.
-shared_even_blocks: workgroup<vec4f16, 324>;
-shared_odd_blocks: workgroup<vec4f16, 289>;
-
-BLOOM_WORKGROUP_WIDTH: const u32 = 8;
-BLOOM_WORKGROUP_LANES: const u32 = 64;
-// Destination texels each lane filters along each axis.
-BLOOM_LANE_WIDTH: const u32 = 2;
-BLOOM_EVEN_WIDTH: const u32 = 18;
-BLOOM_ODD_WIDTH: const u32 = 17;
-// The even ring around the tile's 16x16 blocks: eighteen along the top and the bottom, sixteen down each side.
-BLOOM_EVEN_RING_BLOCKS: const u32 = 68;
-// The even ring's last block coordinate, one past the tile's own blocks.
-BLOOM_EVEN_RING_LAST: const u32 = 17;
-// Every block no lane owns: the even ring, then the odd blocks' left column and top row, seventeen and sixteen.
-BLOOM_RING_BLOCKS: const u32 = 101;
-// The filter reaches two texels before the block under the destination texel.
-BLOOM_TAP_REACH: const u32 = 2;
-
-// Returns the Karis weight of `color`: the inverse of one plus its largest channel.
-karis_weight: fn (color: vec3f) -> f32 {
-	return 1.0 / (1.0 + max(max(color.x, color.y), color.z));
-}
-
-// Returns a block's average scaled by its own Karis weight, with the weight in `w`. A group of blocks then
-// Karis-averages them by adding them up and dividing by the summed weight, so each block's weight is computed once, not
-// once for every group and destination texel that reads it.
-weighted_block: fn (average: vec3f) -> vec4f {
-	let weight: f32 = karis_weight(average);
-	return vec4f(average.x * weight, average.y * weight, average.z * weight, weight);
-}
-
-// Reads one weighted even block, `x`, `y` blocks into the shared grid.
-even: fn (x: u32, y: u32) -> vec4f {
-	return vec4f(shared_even_blocks[y * BLOOM_EVEN_WIDTH + x]);
-}
-
-// Reads one weighted odd block, `x`, `y` blocks into the shared grid.
-odd: fn (x: u32, y: u32) -> vec4f {
-	return vec4f(shared_odd_blocks[y * BLOOM_ODD_WIDTH + x]);
-}
-
-// Returns the Karis average of four weighted blocks: their weighted colors over their summed weight.
-weighted_average: fn (a: vec4f, b: vec4f, c: vec4f, d: vec4f) -> vec3f {
-	let sum: vec4f = a + b + c + d;
-	return vec3f(sum.x, sum.y, sum.z) * (1.0 / sum.w);
-}
-
-// Returns the tile coordinate of ring block `index`: the even ring's top row, bottom row, left column, and right column,
-// then the odd blocks' left column and top row.
-ring_tile: fn (index: u32) -> vec2u {
-	if (index < 18) {
-		return vec2u(index * 2, 0);
-	}
-	if (index < 36) {
-		return vec2u((index - 18) * 2, BLOOM_EVEN_RING_LAST * 2);
-	}
-	if (index < 52) {
-		return vec2u(0, (index - 35) * 2);
-	}
-	if (index < 68) {
-		return vec2u(BLOOM_EVEN_RING_LAST * 2, (index - 51) * 2);
-	}
-	if (index < 85) {
-		return vec2u(1, (index - 68) * 2 + 1);
-	}
-	return vec2u((index - 84) * 2 + 1, 1);
-}
-
-// Stores ring block `index`, whose tile coordinate is `tile`, into the even or odd grid.
-store_ring: fn (index: u32, tile: vec2u, block: vec4f) -> void {
-	if (index < BLOOM_EVEN_RING_BLOCKS) {
-		shared_even_blocks[(tile.y / 2) * BLOOM_EVEN_WIDTH + tile.x / 2] = vec4f16(block);
-	} else {
-		shared_odd_blocks[(tile.y / 2) * BLOOM_ODD_WIDTH + tile.x / 2] = vec4f16(block);
-	}
-}
-
-// Stores a lane's own blocks: the four even blocks under its destination texels, whose first is `own` blocks into the
-// even grid, and the four odd blocks at their bottom-right corners.
-store_own: fn (own: vec2u, even_00: vec4f, even_10: vec4f, even_01: vec4f, even_11: vec4f, odd_00: vec4f, odd_10: vec4f, odd_01: vec4f, odd_11: vec4f) -> void {
-	shared_even_blocks[own.y * BLOOM_EVEN_WIDTH + own.x] = vec4f16(even_00);
-	shared_even_blocks[own.y * BLOOM_EVEN_WIDTH + own.x + 1] = vec4f16(even_10);
-	shared_even_blocks[(own.y + 1) * BLOOM_EVEN_WIDTH + own.x] = vec4f16(even_01);
-	shared_even_blocks[(own.y + 1) * BLOOM_EVEN_WIDTH + own.x + 1] = vec4f16(even_11);
-	shared_odd_blocks[own.y * BLOOM_ODD_WIDTH + own.x] = vec4f16(odd_00);
-	shared_odd_blocks[own.y * BLOOM_ODD_WIDTH + own.x + 1] = vec4f16(odd_10);
-	shared_odd_blocks[(own.y + 1) * BLOOM_ODD_WIDTH + own.x] = vec4f16(odd_01);
-	shared_odd_blocks[(own.y + 1) * BLOOM_ODD_WIDTH + own.x + 1] = vec4f16(odd_11);
-}
-
-// Filters destination texel `local`, counted from the tile's first, and keeps only the light above `threshold`, fading in
-// over `soft_knee` of it.
-//
-// Tap layout in source texels, with `e` the block under the destination texel. Even offsets are the outer taps two
-// texels apart, the even blocks around this texel's own; odd offsets are the inner taps one texel apart, the odd blocks
-// on its corners.
-//   a . b . c
-//   . j . k .
-//   d . e . f
-//   . l . m .
-//   g . h . i
-filtered: fn (local: vec2u, threshold: f32, soft_knee: f32) -> vec4f {
-	let a: vec4f = even(local.x, local.y);
-	let b: vec4f = even(local.x + 1, local.y);
-	let c: vec4f = even(local.x + 2, local.y);
-	let d: vec4f = even(local.x, local.y + 1);
-	let e: vec4f = even(local.x + 1, local.y + 1);
-	let f: vec4f = even(local.x + 2, local.y + 1);
-	let g: vec4f = even(local.x, local.y + 2);
-	let h: vec4f = even(local.x + 1, local.y + 2);
-	let i: vec4f = even(local.x + 2, local.y + 2);
-	let j: vec4f = odd(local.x, local.y);
-	let k: vec4f = odd(local.x + 1, local.y);
-	let l: vec4f = odd(local.x, local.y + 1);
-	let m: vec4f = odd(local.x + 1, local.y + 1);
-	// The inner group carries half the weight and each of the four outer groups an eighth.
-	let averaged: vec3f = weighted_average(j, k, l, m) * 0.5
-		+ weighted_average(a, b, d, e) * 0.125
-		+ weighted_average(b, c, e, f) * 0.125
-		+ weighted_average(d, e, g, h) * 0.125
-		+ weighted_average(e, f, h, i) * 0.125;
-	let brightness: f32 = max(max(averaged.x, averaged.y), averaged.z);
-	let knee: f32 = max(threshold * soft_knee, 0.00001);
-	let soft: f32 = clamp(brightness - threshold + knee, 0.0, 2.0 * knee);
-	soft = (soft * soft) / (4.0 * knee + 0.00001);
-	let contribution: f32 = max(soft, brightness - threshold);
-	contribution = contribution / max(brightness, 0.00001);
-	let bloom_color: vec3f = averaged * contribution;
-	return vec4f(bloom_color.x, bloom_color.y, bloom_color.z, 1.0);
-}
 
 // Reads the 2x2 block of scene texels whose top-left texel is `tile` texels into the tile that starts `BLOOM_TAP_REACH`
 // texels before `origin` with one bilinear tap on its center corner, holds each channel between zero and

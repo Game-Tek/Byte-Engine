@@ -1,0 +1,6 @@
+{
+	"$schema": "../../schemas/besl.bead.schema.json",
+	"stage": "Tile",
+	"tile": 16,
+	"workgroup": [8, 8, 1]
+}

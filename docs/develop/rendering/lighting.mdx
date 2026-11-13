@@ -307,6 +307,38 @@ A change to the sky environment must keep these true:
 `uniform_environment_prefilters_to_itself` in `render_passes/sky.rs` guard the
 capture, the pyramid, and the prefilter's normalization.
 
+## Ambient occlusion doesn't darken traced light twice
+
+Surfel GI, probe GI, and lightmaps trace rays, so their light already holds the
+occlusion those rays found. GTAO estimates the same occlusion again from the
+depth buffer, within its radius. Multiplying the two darkens every occluder both
+see twice. How much depends on how much GTAO finds: on the slate quarry's far
+cliffs, where its one-meter radius spans a few pixels, its visibility averaged
+0.96 on shaded rock, so the product cost about 4 % of the surfels' light
+(2026-11-13). Close surfaces lose more.
+
+Material evaluation instead multiplies a traced source's light by
+`traced_light_occlusion`: GTAO's visibility divided by the share of the
+source's rays that reached the environment, at most one. It's the rule the
+[environment's visibility](/docs/reference/rendering#indirect-diffuse-light)
+follows, the smaller of the two estimates, applied to light that already
+carries one of them. It's this engine's own rule, not a published method.
+Short-range ambient occlusion, as Unreal Engine's Lumen applies it, is the
+published alternative: it needs a GTAO radius tied to each source's own
+resolution, which a surfel's distance-scaled radius doesn't give.
+
+A change to it must keep these true:
+
+- GTAO never darkens traced light where it finds no more occlusion than the
+  source's rays did.
+- Where no ray reached the environment, as indoors, GTAO leaves the light
+  alone. The source's own resolution is all the occlusion that light has.
+- The environment's visibility, which reflections read, stays the smaller of
+  the two estimates.
+
+`gtao_darkens_traced_light_only_beyond_the_occlusion_its_rays_found_in_the_besl_vm`
+in `shader_generator/tests.rs` guards the rule.
+
 ## Shadow maps belong to the visibility pipeline
 
 The visibility pipeline selects, sizes, and updates the shadow maps lights cast.

@@ -710,6 +710,7 @@ pub(super) fn visibility_shader_module<'a>(tile: bool) -> [Node<'a>; 2] {
 		(HORIZON_OCCLUSION_SOURCE, "horizon_occlusion"),
 		(FAST_ACOS_SOURCE, "fast_acos"),
 		(CONE_SPECULAR_OCCLUSION_SOURCE, "cone_specular_occlusion"),
+		(TRACED_LIGHT_OCCLUSION_SOURCE, "traced_light_occlusion"),
 		(BURLEY_DISTANCE_SOURCE, "burley_distance"),
 		(BURLEY_TRANSMITTANCE_SOURCE, "burley_transmittance"),
 		(TROWBRIDGE_REITZ_SOURCE, "trowbridge_reitz"),

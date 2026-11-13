@@ -280,6 +280,19 @@ horizon_occlusion: fn (reflection: vec3f, geometric_normal: vec3f) -> f32 {
 }
 "#;
 
+/// Returns the share of a traced source's light that GTAO leaves: `gtao_visibility / source_visibility`, at most one.
+///
+/// Surfel GI, probe GI, and lightmaps trace rays, so their light already holds the occlusion those rays found, and
+/// `source_visibility` is the share of them that reached the environment. Multiplying that light by GTAO's visibility
+/// would darken an occluder both saw twice. This is the rule the environment's visibility follows, the smaller of the
+/// two estimates, applied to light that already carries one of them; it is this engine's own rule, not a published
+/// one. See the lighting design note.
+pub(crate) const TRACED_LIGHT_OCCLUSION_SOURCE: &str = r#"
+traced_light_occlusion: fn (gtao_visibility: f32, source_visibility: f32) -> f32 {
+	return min(gtao_visibility / max(source_visibility, 0.0001), 1.0);
+}
+"#;
+
 /// Returns an arc cosine accurate to about 0.007 radians with one square root, Lagarde's fit as Intel's XeGTAO and
 /// Unity's HDRP use it, for [`CONE_SPECULAR_OCCLUSION_SOURCE`]'s cone angles.
 pub(crate) const FAST_ACOS_SOURCE: &str = r#"
@@ -602,16 +615,16 @@ material_evaluation_suffix: fn () -> void {
 			bent_normal = normalize(
 				frame_t * bent_x + frame_b * bent_y + V * sqrt(max(1.0 - bent_x * bent_x - bent_y * bent_y, 0.0))
 			);
+			// Surfel, probe, and lightmap light already holds the occlusion their rays found, and `environment_visibility`
+			// is still the share of them that reached the environment, so GTAO adds only what it finds beyond that.
+			if (push_constant.indirect_diffuse == 2 || !adds_environment_diffuse) {
+				screen_space_irradiance = screen_space_irradiance
+					* traced_light_occlusion(gtao_visibility, environment_visibility);
+			}
 			// Both passes estimate the same visibility, so multiplying them would darken an occluder they both see
 			// twice. The smaller one keeps an occluder that only one of them resolves, such as a crease below SSGI's
 			// half resolution.
 			environment_visibility = min(environment_visibility, gtao_visibility);
-			// Surfels, probes, and lightmap texels resolve occlusion only down to their own size, 20 centimeters or
-			// more, so their light misses the creases a smaller GTAO radius finds, and the product adds what they
-			// can't see.
-			if (push_constant.indirect_diffuse == 2 || !adds_environment_diffuse) {
-				screen_space_irradiance = screen_space_irradiance * gtao_visibility;
-			}
 		}
 	}
 	// Environment maps store arbitrary units; the intensity calibrates them to the lux their Environment requests.

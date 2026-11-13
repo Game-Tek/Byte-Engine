@@ -2180,6 +2180,38 @@ fn cone_specular_occlusion_keeps_the_lobe_share_inside_the_visibility_cone_in_th
 	}
 }
 
+/// Verifies that GTAO darkens a traced source's light only by the occlusion it finds beyond the source's own: not at
+/// all where it finds less or where no ray reached the environment, and by the ratio of the two where it finds more.
+#[test]
+fn gtao_darkens_traced_light_only_beyond_the_occlusion_its_rays_found_in_the_besl_vm() {
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			results.same = traced_light_occlusion(0.5, 0.5);
+			results.gtao_sees_less = traced_light_occlusion(0.8, 0.5);
+			results.gtao_sees_more = traced_light_occlusion(0.4, 0.8);
+			results.enclosed = traced_light_occlusion(0.6, 0.0);
+		}
+		"#,
+		&mut [],
+		&[(TRACED_LIGHT_OCCLUSION_SOURCE, "traced_light_occlusion")],
+		members("f32", &["same", "gtao_sees_less", "gtao_sees_more", "enclosed"]),
+	);
+	for (name, expected) in [
+		("same", 1.0),
+		("gtao_sees_less", 1.0),
+		("gtao_sees_more", 0.5),
+		("enclosed", 1.0),
+	] {
+		let value = read_f32(&results, name);
+		assert!(
+			(value - expected).abs() < 0.001,
+			"The {name} case kept {value} of the traced light, not {expected}. The most likely cause is GTAO's \
+			 visibility multiplying light that already holds the occlusion its rays found."
+		);
+	}
+}
+
 #[test]
 fn trowbridge_reitz_peaks_finitely_and_integrates_to_one_in_the_besl_vm() {
 	let results = run_helper_test(

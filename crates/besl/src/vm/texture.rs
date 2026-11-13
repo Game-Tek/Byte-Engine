@@ -1,7 +1,7 @@
 //! Deterministic CPU texture and sampler fixtures for VM resource operations.
 
 use super::*;
-use crate::sampler::{Filter, Reduction, SamplerState};
+use crate::sampler::{Address, Filter, Reduction, SamplerState};
 
 /// The `Texture` struct provides deterministic CPU texels for shader sampling, image access, and atomic assertions.
 #[derive(Debug)]
@@ -57,6 +57,7 @@ impl Texel {
 pub struct Sampler {
 	reduction_mode: Reduction,
 	nearest: bool,
+	address: Address,
 }
 
 impl Sampler {
@@ -65,6 +66,7 @@ impl Sampler {
 		Self {
 			reduction_mode,
 			nearest: false,
+			address: Address::Clamp,
 		}
 	}
 
@@ -74,24 +76,52 @@ impl Sampler {
 		Self {
 			reduction_mode: Reduction::Average,
 			nearest: true,
+			address: Address::Clamp,
 		}
 	}
 }
 
-/// Samples with the filter and reduction a BESL `sampler` declaration fixes. The VM always clamps coordinates and
-/// reads one level, so it leaves the address and mip filter to the shader compiler, which rejects what it can't run.
+/// Samples with the filter, reduction, and address a BESL `sampler` declaration fixes. The VM reads one level, so it
+/// leaves the mip filter to the shader compiler.
 impl From<SamplerState> for Sampler {
 	fn from(state: SamplerState) -> Self {
 		Self {
 			reduction_mode: state.reduction,
 			nearest: state.filter == Filter::Nearest,
+			address: state.address,
 		}
 	}
 }
 
-/// Returns the texel a point sampler with clamp addressing selects on one axis of `size` texels.
-fn nearest_axis(uv: f32, size: u32) -> u32 {
-	((uv.clamp(0.0, 1.0) * size as f32).floor() as u32).min(size.saturating_sub(1))
+/// Returns the texel that texel `index` of one axis of `size` texels reads under `address`, as GPU samplers resolve
+/// indices outside the image: clamp to the edge, wrap around, or wrap with every other repetition reversed.
+fn address_texel(index: i64, size: u32, address: Address) -> u32 {
+	let size = i64::from(size.max(1));
+	let texel = match address {
+		Address::Clamp => index.clamp(0, size - 1),
+		Address::Repeat => index.rem_euclid(size),
+		Address::Mirror => {
+			let period_texel = index.rem_euclid(2 * size);
+			if period_texel < size { period_texel } else { 2 * size - 1 - period_texel }
+		}
+	};
+	texel as u32
+}
+
+/// Returns the texel a point sampler selects on one axis of `size` texels.
+fn nearest_axis(uv: f32, size: u32, address: Address) -> u32 {
+	address_texel((uv * size as f32).floor() as i64, size, address)
+}
+
+/// Returns the two texels a linear sampler blends on one axis of `size` texels, and the weight of the second.
+fn linear_axis(uv: f32, size: u32, address: Address) -> (u32, u32, f32) {
+	let coordinate = uv * size as f32 - 0.5;
+	let low = coordinate.floor();
+	(
+		address_texel(low as i64, size, address),
+		address_texel(low as i64 + 1, size, address),
+		coordinate - low,
+	)
 }
 
 fn reduce_rgba(samples: [[f32; 4]; 4], reduce: fn(f32, f32) -> f32) -> [f32; 4] {
@@ -201,11 +231,15 @@ impl Texture {
 	/// Samples one texel using the sampler state attached to a combined texture binding.
 	pub(super) fn sample_with_sampler(&self, uv: [f32; 2], sampler: Sampler) -> Result<Value, VmError> {
 		if sampler.nearest {
-			let texel = [nearest_axis(uv[0], self.width), nearest_axis(uv[1], self.height), 0];
+			let texel = [
+				nearest_axis(uv[0], self.width, sampler.address),
+				nearest_axis(uv[1], self.height, sampler.address),
+				0,
+			];
 			return Ok(Value::Vec4F(self.fetch_texel(texel)?));
 		}
-		let (x0, x1, tx) = normalized_linear_axis(uv[0], self.width);
-		let (y0, y1, ty) = normalized_linear_axis(uv[1], self.height);
+		let (x0, x1, tx) = linear_axis(uv[0], self.width, sampler.address);
+		let (y0, y1, ty) = linear_axis(uv[1], self.height, sampler.address);
 		let samples = [
 			self.fetch_texel([x0, y0, 0])?,
 			self.fetch_texel([x1, y0, 0])?,
@@ -255,11 +289,15 @@ impl Texture {
 			self.mips.get(level - 1).unwrap_or_else(|| self.mips.last().unwrap_or(self))
 		};
 		if sampler.nearest {
-			let texel = [nearest_axis(uv[0], texture.width), nearest_axis(uv[1], texture.height), layer];
+			let texel = [
+				nearest_axis(uv[0], texture.width, sampler.address),
+				nearest_axis(uv[1], texture.height, sampler.address),
+				layer,
+			];
 			return Ok(Value::Vec4F(texture.fetch_texel(texel)?));
 		}
-		let (x0, x1, tx) = normalized_linear_axis(uv[0], texture.width);
-		let (y0, y1, ty) = normalized_linear_axis(uv[1], texture.height);
+		let (x0, x1, tx) = linear_axis(uv[0], texture.width, sampler.address);
+		let (y0, y1, ty) = linear_axis(uv[1], texture.height, sampler.address);
 		let samples = [
 			texture.fetch_texel([x0, y0, layer])?,
 			texture.fetch_texel([x1, y0, layer])?,

@@ -244,6 +244,12 @@ impl SetBinder<'_> {
 		ghi::DescriptorWrite::image(self.set, self.slot(name), image, ghi::Layouts::Read)
 	}
 
+	/// Binds the copy of a per-frame texture whose sampler the shader fixes that belongs to a relative frame, such as
+	/// `-1` for the previous frame.
+	pub fn texture_with_frame(&self, name: &str, image: ghi::DynamicImageHandle, frame_offset: i32) -> ghi::DescriptorWrite {
+		ghi::DescriptorWrite::image_with_frame(self.set, self.slot(name), image, ghi::Layouts::Read, frame_offset)
+	}
+
 	/// Binds one element of a texture array whose sampler the shader fixes, so the set takes only the image.
 	pub fn texture_element(&self, name: &str, image: impl Into<ghi::BaseImageHandle>, index: u32) -> ghi::DescriptorWrite {
 		ghi::DescriptorWrite::image(self.set, self.slot(name), image, ghi::Layouts::Read).with_array_element(index)

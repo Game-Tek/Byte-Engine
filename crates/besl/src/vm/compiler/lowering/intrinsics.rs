@@ -1,5 +1,5 @@
 use super::*;
-use crate::sampler::{Address, Reduction};
+use crate::sampler::Reduction;
 
 impl<'a> Compiler<'a> {
 	// Intrinsic names form one exhaustive VM dispatch table whose arms document the portable instruction semantics.
@@ -815,13 +815,6 @@ impl<'a> Compiler<'a> {
 /// downsample intrinsic names. `None` reads through the sampler the application bound.
 fn fixed_sampler(texture: &NodeReference, intrinsic: &str) -> Result<Option<Sampler>, VmError> {
 	if let Some(state) = crate::lexer::binding_sampler(texture) {
-		if state.address != Address::Clamp {
-			return Err(VmError::UnsupportedExpression {
-				message: format!(
-					"`{intrinsic}` reads through a sampler whose address isn't `clamp`. The most likely cause is a VM test of a shader that wraps texture coordinates; the VM only clamps them. Use `address: clamp` in the tested sampler."
-				),
-			});
-		}
 		return Ok(Some(Sampler::from(state)));
 	}
 	Ok(match intrinsic {

@@ -69,6 +69,10 @@ nearest_occluder: sampler<{ filter: linear, mip_filter: nearest, reduction: max 
 // in, since depths on either side of an edge belong to different surfaces. Both stop at the screen's edges.
 backdrop_light: sampler<{ filter: linear, mip_filter: nearest, address: clamp }>;
 backdrop_texel: sampler<{ filter: nearest, mip_filter: nearest, address: clamp }>;
+// Reflection rays read the texel under each step, so a hit's light never blends with the background beside it. Past
+// the screen's edge the image repeats mirrored, so a ray that leaves the screen keeps finding plausible depth instead
+// of the edge texel smeared outward.
+reflection_texel: sampler<{ filter: nearest, mip_filter: nearest, address: mirror }>;
 
 MaterialEvaluation: layer {
 	lit_map: descriptor<{ type: StorageImage<r11f_g11f_b10f>, binding: 0, access: read_write }>;
@@ -88,10 +92,10 @@ MaterialEvaluation: layer {
 	sun_visibility: descriptor<{ type: Texture2D, binding: 11, access: read }>;
 	reflection_parameters: descriptor<{ type: ReflectionParameters, binding: 12, access: read, memory: constant }>;
 	// Mip zero of the linear depth pyramid, which reflection rays march and the indirect diffuse upsample reads.
-	depth_pyramid: descriptor<{ type: Texture2D, binding: 13, access: read }>;
+	depth_pyramid: descriptor<{ type: Texture2D, binding: 13, access: read, sampler: reflection_texel }>;
 	// The previous frame's lit image and reverse-Z depth, which reflection rays read the light at their hit from.
-	previous_lit: descriptor<{ type: Texture2D, binding: 14, access: read }>;
-	previous_depth: descriptor<{ type: Texture2D, binding: 15, access: read }>;
+	previous_lit: descriptor<{ type: Texture2D, binding: 14, access: read, sampler: reflection_texel }>;
+	previous_depth: descriptor<{ type: Texture2D, binding: 15, access: read, sampler: reflection_texel }>;
 	light_cluster_masks: descriptor<{ type: LightClusterMasks, binding: 16, access: read, memory: device }>;
 	light_cluster_parameters: descriptor<{ type: LightClusterParameters, binding: 17, access: read, memory: constant }>;
 	// The opaque scene's light and positive linear view depth as they stood before the transparent phase, which blended

@@ -617,6 +617,55 @@ fn declared_samplers_replace_the_sampler_the_application_binds() {
 }
 
 #[test]
+fn declared_sampler_addresses_resolve_coordinates_outside_the_image() {
+	let script = r#"
+	clamped: sampler<{ filter: nearest, address: clamp }>;
+	repeated: sampler<{ filter: nearest, address: repeat }>;
+	mirrored: sampler<{ filter: nearest, address: mirror }>;
+	clamp_texture: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: clamped }>;
+	repeat_texture: descriptor<{ type: Texture2D, binding: 1, access: read, sampler: repeated }>;
+	mirror_texture: descriptor<{ type: Texture2D, binding: 2, access: read, sampler: mirrored }>;
+	main: fn () -> void {
+		buff.clamp = texture_lod(clamp_texture, vec2f(1.125, 0.5), 0.0).x;
+		buff.repeat = texture_lod(repeat_texture, vec2f(1.125, 0.5), 0.0).x;
+		buff.mirror = texture_lod(mirror_texture, vec2f(1.125, 0.5), 0.0).x;
+		buff.mirror_below = texture_lod(mirror_texture, vec2f(-0.375, 0.5), 0.0).x;
+	}
+	"#;
+	let root = buffer_root(
+		"buff",
+		3,
+		&[
+			("clamp", "f32"),
+			("repeat", "f32"),
+			("mirror", "f32"),
+			("mirror_below", "f32"),
+		],
+	);
+	let executable = compile_test_program(script, Some(root));
+	let buffer_slot = ResourceSlot::new(3);
+	// One row of four texels, numbered by their column.
+	let texels = [0, 1, 2, 3].map(|x| ([x, 0], [x as f32, 0.0, 0.0, 1.0]));
+	let mut textures = [0; 3].map(|_| Texture::new(4, 1).expect("Expected texture allocation"));
+	for texture in &mut textures {
+		write_texture(texture, &texels);
+	}
+	let mut buffer = buffer_for_slot(&executable, buffer_slot);
+	let mut descriptors = DescriptorBindings::new();
+	for (slot, texture) in textures.iter_mut().enumerate() {
+		descriptors.bind_texture_with_sampler(ResourceSlot::new(slot as u32), texture, Sampler::nearest());
+	}
+	descriptors.bind_buffer(buffer_slot, &mut buffer);
+	executable
+		.run_main(&mut descriptors)
+		.expect("Expected addressed reads to succeed");
+
+	// 1.125 lies half a texel past the right edge, in texel 4. Clamp reads the edge texel 3, repeat wraps to texel 0,
+	// and mirror reflects to texel 3. -0.375 lies in texel -2, which mirror reflects to texel 1.
+	assert_eq!(read_f32s(&buffer, 4), vec![3.0, 0.0, 3.0, 1.0]);
+}
+
+#[test]
 fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_state() {
 	let script = r#"
 	main: fn () -> void {

@@ -122,6 +122,24 @@ instance_triangle: fn (mesh: Mesh, triangle: vec3u) -> vec3u {
 	return triangle;
 }
 
+// Returns `normal` turned by the linear part of a model or joint matrix, given as its three columns. Normals turn by
+// the inverse transpose, the cofactor matrix over the determinant, so they stay square to their surface under a
+// non-uniform scale. The determinant's sign also keeps them pointing out of a mirroring model, whose cofactors alone
+// point in.
+transform_normal: fn (column0: vec3f, column1: vec3f, column2: vec3f, normal: vec3f) -> vec3f {
+	let cofactor0: vec3f = cross(column1, column2);
+	let cofactor1: vec3f = cross(column2, column0);
+	let cofactor2: vec3f = cross(column0, column1);
+	let determinant: f32 = dot(column0, cofactor0);
+	if (abs(determinant) > 0.00000001) {
+		return (cofactor0 * normal.x + cofactor1 * normal.y + cofactor2 * normal.z) / determinant;
+	}
+
+	// A singular matrix has no inverse, so it turns the normal like a direction, which keeps its usable axes instead of
+	// producing NaNs.
+	return column0 * normal.x + column1 * normal.y + column2 * normal.z;
+}
+
 // How the meshlet task stage hands a workgroup's kept meshlets to its mesh stage, through a payload of 193 words.
 //
 // Words 0 to 191 are entries, one for each kept meshlet and view. An entry names its lane of the task workgroup in

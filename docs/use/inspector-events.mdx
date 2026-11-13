@@ -1,6 +1,6 @@
 ---
 title: Inspector events
-description: Wait for ticks, GPU times, configuration changes, and the application closing from a tool or script, instead of polling the inspector.
+description: Change runtime settings, and wait for ticks, GPU times, configuration changes, and the application closing from a tool or script, instead of polling the inspector.
 icon: MessagesSquare
 ---
 
@@ -49,6 +49,29 @@ curl -s "localhost:6680/events?after=$cursor&wait=10000&events=configuration"
 
 `lagged` and `closing` events always arrive.
 
+## Change a setting and wait for it
+
+Post a runtime setting to `/configuration` with its full name and the new value. The response is the update's event,
+with its `id`:
+
+```bash
+id=$(curl -s -X POST localhost:6680/configuration \
+  -d '{"parameter": "render.lod.force", "value": 0}' | jq .id)
+```
+
+The system that owns the setting applies it on a later tick. Wait for the `configuration` event with that `id` whose
+`state.status` isn't `pending`: `set` carries the value in effect, and `not-set` carries the reason it was refused.
+
+```bash
+until echo "$batch" | jq -e --argjson id "$id" \
+  'any(.events[]; .event == "configuration" and .id == $id and .state.status != "pending")' >/dev/null; do
+  batch=$(curl -s "localhost:6680/events?after=$cursor&wait=10000&events=configuration") || break
+  cursor=$(echo "$batch" | jq -r .cursor)
+done
+```
+
+[Runtime settings](/docs/reference/parameters#runtime-settings) lists the settings you can change this way.
+
 ## Handle what you missed
 
 A `tick` event carries the same row `GET /metrics/frames` returns, often with empty GPU times. When the frame that tick
@@ -65,4 +88,5 @@ At most four requests can wait at once. A request beyond that gets `503`: use on
 
 - [Inspector events](/docs/reference/inspector#events) specifies every event, its data, and the rules for cursors,
   waits, and filters.
-- [HTTP API](/docs/api/inspector/waitForEvents) lists the route's parameters and status codes.
+- [HTTP API](/docs/api/inspector/waitForEvents) lists the route's parameters and status codes, and
+  [Update a configuration parameter](/docs/api/inspector/updateConfiguration) the setting route's.

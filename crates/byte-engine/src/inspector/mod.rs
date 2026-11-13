@@ -15,7 +15,7 @@ use utils::sync::Mutex;
 
 use crate::{
 	application::Events,
-	configuration::{Configuration, ConfigurationEvent},
+	configuration::{Configuration, ConfigurationEvent, ConfigurationValue},
 	core::{
 		channel::{Channel, DefaultChannel},
 		factory::{CreateMessage, Handle},
@@ -273,6 +273,17 @@ impl DefaultInspector {
 	/// Returns the latest configuration event states for protocol adapters.
 	pub fn configuration_events(&self) -> Vec<ConfigurationEvent> {
 		self.configuration.events()
+	}
+
+	/// Queues `value` for the system that owns `parameter` and returns the event that reports whether it was set.
+	///
+	/// The owning system applies it on a later tick. Follow the event's state through
+	/// [`Self::configuration_events`] or the `configuration` events of [`Self::wait_for_events`].
+	pub fn update_configuration(&self, parameter: &str, value: ConfigurationValue) -> ConfigurationEvent {
+		let id = self.configuration.update(parameter, value);
+		self.configuration.event(id).expect(
+			"Configuration event is missing right after it was queued. The most likely cause is an event history that drops new events. Keep the newest events when trimming the history.",
+		)
 	}
 
 	/// Connects the catalog the renderer publishes its debug views to, which `GET /debug-views` serves.

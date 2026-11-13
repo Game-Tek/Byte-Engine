@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::application::parameters::Parameters;
 use crate::{
 	application::LoopWaker,
+	configuration::ConfigurationValue,
 	core::{EntityHandle, factory::Handle},
 	inspector::{
 		DefaultInspector, EventCursor, EventFilter, EventWaitError, MAX_EVENT_WAIT, MAX_SCREENSHOT_CAPTURES, ScreenshotCapture,
@@ -45,6 +46,11 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// [`GraphicsApplication::world`](crate::application::graphics::GraphicsApplication::world),
 /// resolve its target with `GET /entities?name=<action>` and send `type:
 /// "TriggerAction"` with a reflected [`Value`](crate::input::Value).
+///
+/// `POST /configuration` changes a runtime setting while the application runs. Send a JSON object with the full
+/// `parameter` name, such as `render.lod.force`, and its `value`; the response is the update's event, and
+/// `GET /configuration` or the `configuration` events of `GET /events` report when the owning system set or refused
+/// it.
 ///
 /// The server shares the [`DefaultInspector`] handle, so another transport can
 /// serve a second protocol surface from the same handle.
@@ -186,6 +192,7 @@ fn handle_request(inspector: &DefaultInspector, waker: &LoopWaker, request: &mut
 		(&Method::GET, "/messages/types") => message_types_response(inspector),
 		(&Method::POST, "/messages") => message_response(inspector, request.body_mut()),
 		(&Method::GET, "/configuration") => json_response(&inspector.configuration_events()),
+		(&Method::POST, "/configuration") => configuration_response(inspector, request.body_mut()),
 		#[cfg(feature = "headed")]
 		(&Method::GET, "/debug-views") => json_response(&inspector.debug_views()),
 		(&Method::GET, "/metrics") => metrics_response(inspector, request.uri().query()),
@@ -403,6 +410,40 @@ fn message_response(inspector: &DefaultInspector, body: &mut Body) -> Response<B
 	match inspector.post_message(&request.message_type, Handle::from_id(request.target), request.payload.get()) {
 		Ok(()) => response(StatusCode::NO_CONTENT, Body::empty()),
 		Err(error) => response(StatusCode::BAD_REQUEST, error),
+	}
+}
+
+/// The `ConfigurationRequest` struct is the body of `POST /configuration`: one startup parameter to change while the
+/// application runs.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigurationRequest {
+	/// The full parameter name, as on the command line without the leading dashes, such as `render.lod.force`.
+	parameter: String,
+	value: ConfigurationValue,
+}
+
+/// Queues one configuration update and answers with its event, which starts pending unless no system owns the
+/// parameter.
+fn configuration_response(inspector: &DefaultInspector, body: &mut Body) -> Response<Body> {
+	let request: ConfigurationRequest = match serde_json::from_reader(body) {
+		Ok(request) => request,
+		Err(error) => {
+			return response(
+				StatusCode::BAD_REQUEST,
+				format!(
+					"Configuration request is invalid. The most likely cause is a body other than `{{\"parameter\": <name>, \"value\": <boolean, number, or text>}}`: {error}"
+				),
+			);
+		}
+	};
+	let event = inspector.update_configuration(&request.parameter, request.value);
+	match json_response(&event) {
+		mut accepted if accepted.status() == StatusCode::OK => {
+			*accepted.status_mut() = StatusCode::ACCEPTED;
+			accepted
+		}
+		failed => failed,
 	}
 }
 
@@ -1640,5 +1681,50 @@ mod tests {
 		assert_eq!(body[0]["parameter"], "render.pass.bloom");
 		assert_eq!(body[0]["requested"], "bypassed");
 		assert_eq!(body[0]["state"]["status"], "pending");
+	}
+
+	#[test]
+	fn posted_configuration_reaches_the_system_that_owns_its_prefix() {
+		let configuration = Configuration::new();
+		let port = configuration.register("render.lod.");
+		let (inspector, _events, _transforms) = test_inspector(configuration);
+		let server = TestServer::new(inspector);
+
+		let response = server.request("POST", "/configuration", r#"{"parameter":"render.lod.force","value":0}"#);
+		assert!(response.starts_with(b"HTTP/1.1 202"), "unexpected response: {response:?}");
+		let event: serde_json::Value = serde_json::from_slice(response_body(&response)).expect("parse configuration event");
+		assert_eq!(event["parameter"], "render.lod.force");
+		assert_eq!(event["state"]["status"], "pending");
+
+		let update = port.read().expect("the owning port receives the posted update");
+		assert_eq!(update.parameter(), "force");
+		assert_eq!(update.value(), &crate::configuration::ConfigurationValue::Integer(0));
+		port.set(update.id(), update.value().clone());
+		let events = server.get_json("/configuration");
+		assert_eq!(events[0]["state"], serde_json::json!({ "status": "set", "value": 0 }));
+	}
+
+	#[test]
+	fn posted_configuration_without_an_owner_is_not_set() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let response = TestServer::new(inspector).request(
+			"POST",
+			"/configuration",
+			r#"{"parameter":"render.unknown.knob","value":"on"}"#,
+		);
+		assert!(response.starts_with(b"HTTP/1.1 202"), "unexpected response: {response:?}");
+		let event: serde_json::Value = serde_json::from_slice(response_body(&response)).expect("parse configuration event");
+		assert_eq!(event["state"]["status"], "not-set");
+	}
+
+	#[test]
+	fn configuration_request_rejects_unknown_fields() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let response = TestServer::new(inspector).request(
+			"POST",
+			"/configuration",
+			r#"{"parameter":"render.lod.force","value":0,"when":"now"}"#,
+		);
+		assert!(response.starts_with(b"HTTP/1.1 400"), "unexpected response: {response:?}");
 	}
 }

@@ -38,7 +38,7 @@ material_hit_prefix: fn (input: StageInput) -> void {
 	let model_space_normal: vec3f = model_space_vertex_normal0
 		+ barycentric.x * (model_space_vertex_normal1 - model_space_vertex_normal0)
 		+ barycentric.y * (model_space_vertex_normal2 - model_space_vertex_normal0);
-	let N: vec3f = normalize(model * vec4f(model_space_normal.x, model_space_normal.y, model_space_normal.z, 0.0));
+	let N: vec3f = normalize(transform_normal(model[0], model[1], model[2], model_space_normal));
 	let V: vec3f = normalize(vec3f(0.0, 0.0, 0.0) - input.ray_direction);
 	// The triangle's plane, turned to the side its vertex normals face, tells the front of the surface from its back
 	// for any winding. Both normals then turn to the side the ray came from.

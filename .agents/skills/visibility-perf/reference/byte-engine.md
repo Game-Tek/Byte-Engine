@@ -173,7 +173,10 @@ Check each of these once per session, before the first build or run:
   `{"type":"TriggerAction","target":1,"payload":{"type":"Vector3","value":[lx,ly,lz]}}` to pin the look,
   `GET /entities?name=Move` for the movement action. The inspector listens on `127.0.0.1:6680`. Startup parameters
   override as `--name=value`: `render.directional-shadows.resolution`, `render.ssgi.enabled`, `render.gtao.*`,
-  `render.contact-shadows.*`, `kill-after`, `metrics-out`.
+  `render.contact-shadows.*`, `kill-after`, `metrics-out`. Runtime settings (`render.lod.*`, `render.gtao.*`,
+  `render.gi.*`, `render.pass.<name>`, `render.debug.view.*`) also change live with `POST /configuration` and
+  `{"parameter":"render.lod.force","value":0}`; wait for its `configuration` event to leave `pending` before you
+  sample, so an A/B of a runtime setting needs no restart and keeps the same camera and warm caches.
 - `metrics-out` writes once, when the viewer closes: every retained tick as NDJSON only when the path ends in
   `.ndjson`, and one summary JSON object otherwise (a `.jsonl` path gets the summary). `kill-after` counts ticks,
   not seconds, and a run that isn't loaded yet reaches it at full rate. For settled per-tick rows of a long load,

@@ -66,6 +66,20 @@ The configuration route lists every runtime setting update with its parameter,
 the requested value, and its state: pending until the pass it targets is
 installed, set with the value in effect, or not set with the reason.
 
+An update request names one parameter and the value to give it. It answers
+with the update's event, and the owning system applies it on a later tick.
+
+| Field | Accepts |
+| --- | --- |
+| `parameter` | The full parameter name, as on the command line without the leading dashes, such as `render.lod.force`. |
+| `value` | A Boolean, a whole number, a number with a fraction, or text. |
+
+| Outcome | Result |
+| --- | --- |
+| A system owns the parameter's prefix | The event is pending until that system sets it or refuses it. |
+| No system owns the parameter's prefix | The event comes back not set. |
+| A field is missing or unknown | The request is refused, and no event is created. |
+
 ## Events
 
 The events route reports what changed in the application since a cursor, so

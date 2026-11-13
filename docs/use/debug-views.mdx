@@ -41,6 +41,13 @@ app.configuration()
     .update("render.debug.view.VisibilityPipelineManager.normals", "true");
 ```
 
+From a tool or script, post the same parameter to the inspector:
+
+```bash
+curl -s -X POST localhost:6680/configuration \
+  -d '{"parameter": "render.debug.view.VisibilityPipelineManager.normals", "value": true}'
+```
+
 `GET /configuration` on the inspector reports whether each request was applied, and why not when it was refused.
 
 Shown views tile over the window: one fills it, two sit side by side, up to four take a 2×2 grid, and up to nine a

@@ -279,13 +279,63 @@
 						}
 					}
 				}
+			},
+			"post": {
+				"operationId": "updateConfiguration",
+				"summary": "Update a configuration parameter",
+				"description": "Queues a new value for a parameter while the application runs, as if it had been passed at startup. The system that owns the parameter's prefix applies it on a later tick. Follow the returned event through `GET /configuration` or the `configuration` events of `GET /events` until it is set or not set.",
+				"tags": ["Control"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ConfigurationRequest"
+							},
+							"example": {
+								"parameter": "render.lod.force",
+								"value": 0
+							}
+						}
+					}
+				},
+				"responses": {
+					"202": {
+						"description": "The update was queued. Its event is pending, or not set when no system owns the parameter.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConfigurationEvent"
+								},
+								"example": {
+									"id": 2,
+									"parameter": "render.lod.force",
+									"requested": 0,
+									"state": {
+										"status": "pending"
+									}
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "The body is not an object with exactly `parameter` and `value`.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
 			}
 		},
 		"/debug-views": {
 			"get": {
 				"operationId": "listDebugViews",
 				"summary": "List debug views",
-				"description": "Returns every debug view the render passes and scene pipelines declared, as `<pass>.<view>`, with the debug target slot each shown view holds, how many views can be shown at once, and whether this build has debug views. Show or hide a view with the `render.debug.view.<pass>.<view>` configuration parameter.",
+				"description": "Returns every debug view the render passes and scene pipelines declared, as `<pass>.<view>`, with the debug target slot each shown view holds, how many views can be shown at once, and whether this build has debug views. Show or hide a view by setting the `render.debug.view.<pass>.<view>` parameter with `POST /configuration`.",
 				"tags": ["Inspection"],
 				"responses": {
 					"200": {
@@ -1345,6 +1395,20 @@
 					},
 					"state": {
 						"$ref": "#/components/schemas/ConfigurationState"
+					}
+				}
+			},
+			"ConfigurationRequest": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["parameter", "value"],
+				"properties": {
+					"parameter": {
+						"description": "The full parameter name, as on the command line without the leading dashes.",
+						"type": "string"
+					},
+					"value": {
+						"$ref": "#/components/schemas/ConfigurationValue"
 					}
 				}
 			},

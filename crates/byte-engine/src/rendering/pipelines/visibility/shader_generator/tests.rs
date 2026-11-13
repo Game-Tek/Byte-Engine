@@ -1971,6 +1971,39 @@ fn facing_normal_reverses_only_back_facing_normals_in_the_besl_vm() {
 	);
 }
 
+/// Verifies a mirroring, non-uniformly scaled model keeps a slanted normal square to its surface and pointing out of it,
+/// as the quarry's flipped rocks need to be lit like their unflipped copies.
+#[test]
+fn transform_normal_stays_square_and_outward_under_a_mirroring_non_uniform_scale_in_the_besl_vm() {
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			// The surface spans (1, 1, 0) and z; its outward normal is (1, -1, 0). The model mirrors x and stretches it.
+			let normal: vec3f = normalize(transform_normal(
+				vec3f(0.0 - 3.0, 0.0, 0.0),
+				vec3f(0.0, 2.0, 0.0),
+				vec3f(0.0, 0.0, 2.0),
+				normalize(vec3f(1.0, 0.0 - 1.0, 0.0))
+			));
+			results.x = normal.x;
+			results.y = normal.y;
+			results.z = normal.z;
+		}
+		"#,
+		&mut [],
+		&[],
+		members("f32", &["x", "y", "z"]),
+	);
+	// The world surface spans (-3, 2, 0) and z, so its normal is (-2, -3, 0) or its opposite. The outward one agrees with
+	// the model's image of the outward normal, (-3, -2, 0).
+	let length = 13f32.sqrt();
+	assert_f32_results(
+		&results,
+		&[("x", -2.0 / length), ("y", -3.0 / length), ("z", 0.0)],
+		"transform_normal does not turn normals by the model's inverse transpose",
+	);
+}
+
 /// Verifies the coupled diffuse term keeps the two rules of the lighting design note: diffuse and specular together never
 /// reflect more than arrives, and a rough surface keeps its diffuse light at a grazing view.
 #[test]

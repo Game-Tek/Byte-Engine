@@ -195,12 +195,12 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 		+ barycentric.y * world_edge2;
 	let position_derivative_x: vec3f = barycentric_dx.x * world_edge1 + barycentric_dx.y * world_edge2;
 	let position_derivative_y: vec3f = barycentric_dy.x * world_edge1 + barycentric_dy.y * world_edge2;
-	// The normal is interpolated in model space and turned into world space once, instead of turning all three. For a
-	// model matrix with uniform scale, the direction is the same as turning each unit vertex normal first.
+	// The normal is interpolated in model space and turned into world space once, instead of turning all three. The
+	// turn is linear, so the direction is the same as turning each vertex normal first.
 	let model_space_normal: vec3f = model_space_vertex_normals[0]
 		+ barycentric.x * (model_space_vertex_normals[1] - model_space_vertex_normals[0])
 		+ barycentric.y * (model_space_vertex_normals[2] - model_space_vertex_normals[0]);
-	let world_space_normal: vec3f = model * vec4f(model_space_normal.x, model_space_normal.y, model_space_normal.z, 0.0);
+	let world_space_normal: vec3f = transform_normal(model[0], model[1], model[2], model_space_normal);
 	let world_space_vertex_normal: vec3f = normalize(world_space_normal);
 	let N: vec3f = world_space_vertex_normal;
 	let camera_position: vec3f = scene.views.views[0].inverse_view * vec4f(0.0, 0.0, 0.0, 1.0);

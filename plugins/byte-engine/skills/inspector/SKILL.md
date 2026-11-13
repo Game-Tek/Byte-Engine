@@ -1,6 +1,6 @@
 ---
 name: inspector
-description: "Drive and observe a running Byte Engine application through its HTTP inspector: find entities, post messages such as TriggerAction to play-test input, wait for ticks, GPU times, or settings to take effect without sleeping, capture screenshots of the window or of any render target, show debug views, read CPU and GPU metrics, read debug data streams, and close the app. Start it with `--unattended=<frames per second>` so it renders on its own in the background without disturbing the desktop. Use when the user wants to check what a Byte Engine app does at runtime, test gameplay or input without a human at the keyboard, see a frame or an intermediate render target, or measure frame time."
+description: "Drive and observe a running Byte Engine application through its HTTP inspector: find entities, post messages such as TriggerAction to play-test input, change runtime settings such as detail levels, debug views, or render passes without restarting, wait for ticks, GPU times, or settings to take effect without sleeping, capture screenshots of the window or of any render target, show debug views, read CPU and GPU metrics, read debug data streams, and close the app. Start it with `--unattended=<frames per second>` so it renders on its own in the background without disturbing the desktop. Use when the user wants to check what a Byte Engine app does at runtime, test gameplay or input without a human at the keyboard, see a frame or an intermediate render target, or measure frame time."
 ---
 
 # Drive a running Byte Engine application
@@ -59,6 +59,7 @@ application does.
 | See a render target, or a target right after one pass | `GET /screenshots?sink=0&target=<name>[&pass=<pass>]` |
 | Capture several images from the same frame | `POST /screenshots` |
 | List debug views and the slot each shown view holds | `GET /debug-views` |
+| Change a runtime setting without restarting | `POST /configuration` |
 | Check whether a runtime setting took effect, and why not | `GET /configuration` |
 | Get frame-time percentiles per CPU span and GPU pass | `GET /metrics?presented=true` |
 | Get per-tick rows | `GET /metrics/frames?since=<tick>&limit=<n>` |
@@ -108,6 +109,30 @@ longer than needed, and you can't read a stale row.
 - At most four requests can wait at once, and a fifth gets `503`. Keep one wait loop per tool.
 - Waiting doesn't wake the application. An attended app that renders on demand and has nothing to draw ends no
   ticks, so the wait ends empty. Unattended runs end a tick at every period.
+
+## Change a setting while the app runs
+
+Runtime settings, such as `render.lod.*`, `render.gtao.*`, `render.gi.*`, `render.pass.<name>`, and
+`render.debug.view.<pass>.<view>`, change without a restart. Use this instead of restarting with a new
+`--name=value` when you compare settings on the same frame or camera.
+
+1. Post the full parameter name and the new value. A boolean, a number, or text, as the parameter accepts:
+
+   ```bash
+   id=$(curl -s -X POST http://127.0.0.1:6699/configuration \
+     -H 'content-type: application/json' \
+     -d '{"parameter":"render.lod.force","value":0}' | jq .id)
+   ```
+
+   The response is `202` with the update's event. Its state is `pending`, or `not-set` at once when no system owns
+   the parameter, which usually means a typo.
+2. Wait for the `configuration` event with that `id` to leave `pending`, as in
+   [Wait for something to happen](#wait-for-something-to-happen). `set` carries the value in effect; `not-set`
+   carries the reason. Settings apply on a later tick, so capture or measure only after this.
+3. Set it back when you are done, such as `"value":"off"` for `render.lod.force`. Settings that only take effect at
+   startup, such as `render.ssgi.enabled`, come back `not-set`; restart with `--name=value` for those.
+
+The parameters reference lists every runtime setting and the values it accepts.
 
 ## Play-test input
 
@@ -166,8 +191,9 @@ release build only when `config.json` sets `render.debug-views.enabled` and the 
 
 1. `GET /debug-views` lists the views as `<pass>.<view>`, and says whether the build has them and how many can
    be shown at once.
-2. Start the application with `--render.debug.view.<pass>.<view>=true`. Add `--render.debug.targets=<n>` to
-   show more than four at once.
+2. Show it with `POST /configuration` and `{"parameter":"render.debug.view.<pass>.<view>","value":true}`, or
+   start the application with `--render.debug.view.<pass>.<view>=true`. `false` hides it again. The number that
+   can be shown at once is fixed at startup: pass `--render.debug.targets=<n>` to show more than four.
 3. `GET /configuration` reports whether the request was applied, and the reason when it was refused. To know the
    moment it settles, wait for its `configuration` event with `GET /events?events=configuration`.
 4. Capture one view at full resolution by the slot `/debug-views` lists:
@@ -212,7 +238,8 @@ jq -c 'select(.name == "Character") | .data' streams.ndjson | tail -20
 | The first message of a run takes about a second | On macOS, a covered window in an attended run can block the first frame it presents. Start it with `--unattended=<rate>`, or send a warm-up message and wait for its `tick` event before a timed sequence. |
 | A wait on `/events` returns `503` | Four other requests already wait. Close the extra wait loops, or retry without `wait`. |
 | Startup stops with "The `unattended` parameter has no valid rendering rate" | `--unattended` needs a positive rate, such as `--unattended=30`. |
-| A setting has no effect | `GET /configuration` lists it as pending or not set, with the reason. Some settings keep their startup value. |
+| A setting has no effect | `GET /configuration` lists it as pending or not set, with the reason. Some settings keep their startup value; restart with `--name=value` for those. |
+| `POST /configuration` returns `not-set` at once | No system owns that parameter: check its full name against the parameters reference. |
 | The `metrics-out` file holds one JSON object instead of a row per tick | Only a path ending in `.ndjson` gets every retained tick; any other extension, `.jsonl` included, gets the summary. |
 | A run reports a much shorter frame than expected | Something it should draw didn't load. Read the log for load warnings and capture a screenshot before trusting the number. |
 | An entity query returns `[]` | Names are exact and case-sensitive, and `type` needs the full Rust path, such as `byte_engine::rendering::window::Window`. |
@@ -223,7 +250,7 @@ Read these pages for the exact rules. Each is served as Markdown:
 
 - Inspector, metrics, messages, events, and screenshots: https://byte-engine.0x44491229.dev/docs/reference/inspector.md
 - Waiting for inspector events from a script: https://byte-engine.0x44491229.dev/docs/use/inspector-events.md
-- Every startup parameter: https://byte-engine.0x44491229.dev/docs/reference/parameters.md
+- Every startup parameter, and which ones change at runtime: https://byte-engine.0x44491229.dev/docs/reference/parameters.md
 - Unattended runs, pacing, and tick time: https://byte-engine.0x44491229.dev/docs/reference/time.md
 - Debug views: https://byte-engine.0x44491229.dev/docs/use/debug-views.md
 - Debug data streams: https://byte-engine.0x44491229.dev/docs/use/debug-data-streams.md and https://byte-engine.0x44491229.dev/docs/reference/debug-data-streams.md

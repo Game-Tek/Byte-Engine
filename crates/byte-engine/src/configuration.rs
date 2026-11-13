@@ -13,7 +13,7 @@ use std::{
 	},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utils::sync::Mutex;
 
 const CONFIGURATION_PORT_CAPACITY: usize = 64;
@@ -27,7 +27,10 @@ pub struct ConfigurationEventId(std::num::NonZeroU64);
 const _: () = assert!(size_of::<Option<ConfigurationEventId>>() == size_of::<u64>());
 
 /// The `ConfigurationValue` enum carries the small set of values shared by configuration adapters and systems.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+///
+/// Untagged JSON reads in variant order, so a whole number becomes an [`Self::Integer`] and only a number with a
+/// fraction or exponent becomes a [`Self::Float`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ConfigurationValue {
 	/// A Boolean configuration value.

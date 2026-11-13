@@ -1,12 +1,13 @@
 ---
 title: Console
-description: Look up when the engine's terminal console runs, what its screen shows, the keys and commands it accepts, how it reads a value, and what it reports back.
+description: Look up when the engine's terminal console runs, what its screen shows, the keys and commands it accepts, what Tab completes, how it reads a value, and what it reports back.
 icon: Terminal
 ---
 
 A headed application takes over the terminal that started it while it runs:
 the screen shows the application's log above a command line. This page
-specifies when the console runs, its screen, its keys, and its commands. To
+specifies when the console runs, its screen, its keys, its commands, and its
+completion. To
 change a setting with it, follow
 [Change settings from the terminal](/docs/use/console).
 
@@ -33,9 +34,10 @@ While the console runs, it owns the whole terminal.
 
 | Part | Shows |
 | --- | --- |
-| Pane | One view at a time, named in its title. Tab shows the next view. |
+| Pane | One view at a time, named in its title. F2 shows the next view. |
 | Log view | Every log record that passes the `log.level` filter, newest at the bottom, with each command and its result between them. A record's level is colored by severity and the rest of it isn't. A record longer than the pane wraps. The pane keeps the latest 10,000 records and results. |
 | Bakes view | The latest record of the [bake stream](/docs/reference/resource-management#bake-stream): how many bakes are running, have stored their resource, and have failed; each running bake with how long it has run; and the latest bakes to end, each marked as stored or failed, with how long it took. In both lists a bake sits under the ID that asked for it, joined to it by a dim tree line: `├─` before a bake with more below it under the same ID, `╰─` before the last, and `│` running on past the bakes nested in between. A bake shows only the part of its ID that differs from that ID's: a subresource shows its `#fragment`, and a file shows its path after the directories both IDs share. A requester that isn't in the list, such as a resource whose freshness is being checked, shows dim and without a time. A row longer than the pane is cut. Before the first record, the view says no bake was reported. |
+| Completion list | While Tab offers more than one candidate: up to 8 candidates over the bottom rows of the pane, the one in the command line highlighted, then `… N more` when there are more, then what the setting takes when completing a value. See [Completion](#completion). |
 | Command line | What you're typing. |
 | Status line | The latest result and the keys. |
 
@@ -55,7 +57,9 @@ itself draws over the screen.
 | Enter | Run the command line. |
 | Esc | Clear the command line. |
 | Up, Down | Recall earlier commands, newest first. |
-| Tab | Show the next view: the log, then the bakes. |
+| Tab | Complete the word before the cursor; with the completion list open, put the next candidate in the command line. See [Completion](#completion). |
+| Shift+Tab | With the completion list open, put the previous candidate in the command line. |
+| F2 | Show the next view: the log, then the bakes. |
 | Page Up, Page Down | Scroll the log view by a page. The view follows new lines again once scrolled back to the bottom. |
 | Ctrl+C | Close the application. |
 
@@ -93,6 +97,33 @@ The value is the rest of the line after the name.
 | A number with a fraction or an exponent, such as `0.5` | A number with a fraction. |
 | Text in double quotes, such as `"enabled"` | The text between the quotes. |
 | Anything else, such as `off` or `ssgi` | The text as typed. |
+
+## Completion
+
+Tab completes the word that ends at the cursor. What it completes depends on
+the words before it:
+
+| Word | Candidates | Note beside each |
+| --- | --- | --- |
+| First | The commands starting with the word. | What the command does. |
+| After `set` | The declared parameter names starting with the word, up to and including the next `.` after it, so `render.` offers `render.gi.` and `render.lod.` before their settings. A whole name is a candidate on its own. Names with a space in them aren't offered. | For a whole name, the values it takes. |
+| After `set` and a declared name | The words that setting takes, matched in any letter case: `true` and `false`, the setting's choices, or the word it takes beside a number, such as `off`. | None. |
+| Any other | None. | None. |
+
+A parameter is declared while the system that owns it runs: a render
+pass's `render.pass.<name>` once the pass is installed, and a debug view's
+`render.debug.view.<pass>.<view>` once its pass has registered it. Every
+[runtime setting](/docs/reference/parameters#runtime-settings) is declared
+while its system runs.
+
+| Candidates | Tab |
+| --- | --- |
+| None | Changes nothing. After `set` and a declared name, the list shows only what the setting takes, such as `render.lod.bias takes a number of 0 or more`. |
+| One | Replaces the word with it. A whole word gets a space after it; a name segment ending in `.` doesn't. |
+| More than one | Replaces the word with the text every candidate starts with and opens the list. Each further Tab replaces the word with the next candidate, from the first, and wraps around; Shift+Tab goes back. |
+
+Any key other than Tab and Shift+Tab closes the list and keeps the command
+line as it is.
 
 ## Results
 

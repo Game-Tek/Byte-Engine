@@ -927,6 +927,13 @@ impl VisibilityPipelineManager {
 		lod_configuration: crate::configuration::ConfigurationPort,
 		settings: VisibilityPipelineSettings,
 	) -> Self {
+		use crate::configuration::Setting;
+		gtao_configuration.declare(GtaoSettings::SETTINGS.iter().map(Setting::parameter));
+		gi_configuration.declare(GiSettings::SETTINGS.iter().map(Setting::parameter));
+		surfel_gi_configuration.declare(SurfelGiSettings::SETTINGS.iter().map(Setting::parameter));
+		probe_gi_configuration.declare(ProbeGiSettings::SETTINGS.iter().map(Setting::parameter));
+		contact_shadow_configuration.declare(ContactShadowSettings::SETTINGS.iter().map(Setting::parameter));
+		lod_configuration.declare(LodSettings::SETTINGS.iter().map(Setting::parameter));
 		let environment = create_fallback_environment(context, loader.environment_sampler);
 		if settings.features.material_evaluation == MaterialEvaluationMode::Uber {
 			loader.request_uber_shaders();
@@ -1861,24 +1868,16 @@ impl VisibilityPipelineManager {
 	/// Applies queued GTAO, GI, surfel GI, probe GI, contact-shadow, and detail level controls before any sink records
 	/// this frame's commands.
 	fn apply_runtime_settings(&mut self) {
-		self.lod_configuration
-			.drain(&mut self.lod_settings, LodSettings::with_parameter);
-		self.gtao_configuration
-			.drain(&mut self.gtao_settings, GtaoSettings::with_parameter);
-		let features = self.settings.features;
-		// A technique left out of the shaders is not selected; the log says so, as for the features below.
-		self.gi_configuration
-			.drain(&mut self.gi_settings, |settings, parameter, value| {
-				settings
-					.with_parameter(parameter, value, features)
-					.inspect_err(|reason| log::warn!("{reason}"))
-			});
+		self.lod_configuration.drain(&mut self.lod_settings, LodSettings::SETTINGS);
+		self.gtao_configuration.drain(&mut self.gtao_settings, GtaoSettings::SETTINGS);
+		self.gi_configuration.drain(&mut self.gi_settings, GiSettings::SETTINGS);
 		self.surfel_gi_configuration
-			.drain(&mut self.surfel_gi_settings, SurfelGiSettings::with_parameter);
+			.drain(&mut self.surfel_gi_settings, SurfelGiSettings::SETTINGS);
 		self.probe_gi_configuration
-			.drain(&mut self.probe_gi_settings, ProbeGiSettings::with_parameter);
+			.drain(&mut self.probe_gi_settings, ProbeGiSettings::SETTINGS);
 		self.contact_shadow_configuration
-			.drain(&mut self.contact_shadow_settings, ContactShadowSettings::with_parameter);
+			.drain(&mut self.contact_shadow_settings, ContactShadowSettings::SETTINGS);
+		let features = self.settings.features;
 		// A feature left out of the shaders stays off, whatever the runtime asks for.
 		self.gtao_settings.enabled = built_in_or_off(self.gtao_settings.enabled, features.gtao, GTAO_ENABLED_PARAMETER);
 		self.contact_shadow_settings.enabled = built_in_or_off(
@@ -2736,7 +2735,11 @@ mod tests {
 			probe_gi,
 			..VisibilityFeatures::default()
 		};
-		let gi = |enabled, technique| GiSettings { enabled, technique };
+		let gi = |enabled, technique| GiSettings {
+			enabled,
+			technique,
+			..GiSettings::new(VisibilityFeatures::default())
+		};
 		// (GI settings, built-in SSGI, surfel GI, and probe GI, ray tracing) and the source that lights the frame.
 		let cases = [
 			((gi(true, Surfels), (true, true, false), true), Some(Surfels)),

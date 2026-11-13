@@ -24,7 +24,7 @@ use super::super::shader_data::LightingData;
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::ray_hits::{RayHits, RayStages, RayTracing, ShadeStage};
 use super::{ComputeStage, Pipelines, SsgiTargets};
-use crate::configuration::ConfigurationValue;
+use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
@@ -590,49 +590,55 @@ impl ProbeGiSettings {
 		}
 	}
 
-	/// Applies one runtime parameter, returning the updated settings and the effective value, or leaves them unchanged.
+	/// The runtime settings, named inside the `render.probe-gi.` port.
 	///
 	/// Whether probe GI is built in, the ray budget, and the spacing are decided once, at startup. Their startup values,
 	/// which every port receives, are accepted as they are; any other value is not set.
-	pub(crate) fn with_parameter(
-		self,
-		parameter: &str,
-		value: &ConfigurationValue,
-	) -> Result<(Self, ConfigurationValue), String> {
-		match parameter {
-			"enabled" => {
-				if value.to_bool() == Some(self.built_in) {
-					return Ok((self, ConfigurationValue::Bool(self.built_in)));
+	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[
+		Setting {
+			name: "enabled",
+			accepts: Accepts::Bool,
+			apply: |settings, read| {
+				if read == Read::Bool(settings.built_in) {
+					return Ok(settings);
 				}
 				Err(format!(
 					"Probe GI enabled was not changed from `{}`. The most likely cause is that it decides once, at startup, whether probe GI is built into the shaders. Select a technique at runtime with `render.gi.technique` instead, or set `render.probe-gi.enabled` in `config.json` and restart the application.",
-					self.built_in
+					settings.built_in
 				))
-			}
-			"ray-budget" => {
-				if value.to_u32() == Some(self.ray_budget) {
-					return Ok((self, ConfigurationValue::Integer(i64::from(self.ray_budget))));
+			},
+		},
+		Setting {
+			name: "ray-budget",
+			accepts: Accepts::Whole {
+				min: 0,
+				max: u32::MAX,
+				step: 1,
+			},
+			apply: |settings, read| {
+				if read == Read::Whole(settings.ray_budget) {
+					return Ok(settings);
 				}
 				Err(format!(
 					"Probe ray budget was not changed from {}. The most likely cause is that it sizes the probe ray buffers once, when the renderer starts. Set `render.probe-gi.ray-budget` in `config.json` and restart the application.",
-					self.ray_budget
+					settings.ray_budget
 				))
-			}
-			"spacing" => {
-				if value.to_f64().map(|spacing| spacing as f32) == Some(self.spacing) {
-					return Ok((self, ConfigurationValue::Float(f64::from(self.spacing))));
+			},
+		},
+		Setting {
+			name: "spacing",
+			accepts: Accepts::Number { min: 0.0 },
+			apply: |settings, read| {
+				if matches!(read, Read::Number(spacing) if spacing as f32 == settings.spacing) {
+					return Ok(settings);
 				}
 				Err(format!(
 					"Probe spacing was not changed from {} meters. The most likely cause is that it places the probe cascades once, when the renderer starts. Set `render.probe-gi.spacing` in `config.json` and restart the application.",
-					self.spacing
+					settings.spacing
 				))
-			}
-			_ => Err(
-				"Probe GI parameter was not set. The most likely cause is that the parameter name is unsupported. Use `enabled`, `ray-budget`, or `spacing`."
-					.to_string(),
-			),
-		}
-	}
+			},
+		},
+	];
 }
 
 #[cfg(test)]
@@ -640,6 +646,7 @@ mod tests {
 	use std::mem::size_of;
 
 	use super::*;
+	use crate::configuration::{ConfigurationValue, apply_setting};
 	use crate::rendering::SetLayout;
 
 	#[test]
@@ -680,23 +687,65 @@ mod tests {
 	fn startup_values_keep_their_settings() {
 		let settings = ProbeGiSettings::new(true, DEFAULT_PROBE_RAY_BUDGET, 0.5);
 
-		let (kept, effective) = settings
-			.with_parameter("ray-budget", &ConfigurationValue::Text(DEFAULT_PROBE_RAY_BUDGET.to_string()))
-			.unwrap();
+		let (kept, effective) = apply_setting(
+			settings,
+			ProbeGiSettings::SETTINGS,
+			"",
+			"ray-budget",
+			&ConfigurationValue::Text(DEFAULT_PROBE_RAY_BUDGET.to_string()),
+		)
+		.unwrap();
 		assert_eq!(kept, settings);
 		assert_eq!(effective, ConfigurationValue::Integer(i64::from(DEFAULT_PROBE_RAY_BUDGET)));
 		assert!(
-			settings
-				.with_parameter("spacing", &ConfigurationValue::Text("0.5".to_string()))
-				.is_ok()
+			apply_setting(
+				settings,
+				ProbeGiSettings::SETTINGS,
+				"",
+				"spacing",
+				&ConfigurationValue::Text("0.5".to_string())
+			)
+			.is_ok()
 		);
-		assert!(settings.with_parameter("enabled", &ConfigurationValue::Bool(true)).is_ok());
-		assert!(settings.with_parameter("enabled", &ConfigurationValue::Bool(false)).is_err());
+		assert!(
+			apply_setting(
+				settings,
+				ProbeGiSettings::SETTINGS,
+				"",
+				"enabled",
+				&ConfigurationValue::Bool(true)
+			)
+			.is_ok()
+		);
+		assert!(
+			apply_setting(
+				settings,
+				ProbeGiSettings::SETTINGS,
+				"",
+				"enabled",
+				&ConfigurationValue::Bool(false)
+			)
+			.is_err()
+		);
 
-		let reason = settings
-			.with_parameter("spacing", &ConfigurationValue::Float(1.0))
-			.unwrap_err();
+		let reason = apply_setting(
+			settings,
+			ProbeGiSettings::SETTINGS,
+			"",
+			"spacing",
+			&ConfigurationValue::Float(1.0),
+		)
+		.unwrap_err();
 		assert!(reason.contains("`render.probe-gi.spacing` in `config.json`"), "{reason}");
-		assert!(settings.with_parameter("cascades", &ConfigurationValue::Integer(2)).is_err());
+		assert!(
+			apply_setting(
+				settings,
+				ProbeGiSettings::SETTINGS,
+				"",
+				"cascades",
+				&ConfigurationValue::Integer(2)
+			)
+			.is_err()
+		);
 	}
 }

@@ -19,7 +19,7 @@ use ratatui::{
 	layout::{Constraint, Layout, Position, Rect},
 	style::{Color, Style, Stylize as _},
 	text::{Line, Span},
-	widgets::{Block, Paragraph},
+	widgets::{Block, Clear, Paragraph},
 };
 use resource_management::asset::bake_state::BakeState;
 
@@ -30,7 +30,7 @@ use crate::{
 		parameters::Parameters,
 		thread::Thread,
 	},
-	configuration::{ConfigurationEventId, ConfigurationUpdateState, ConfigurationValue},
+	configuration::{Accepts, ConfigurationEventId, ConfigurationUpdateState, ConfigurationValue},
 	core::{EntityHandle, listener::DefaultListener, listener::Listener as _},
 	inspector::DefaultInspector,
 };
@@ -41,11 +41,31 @@ const RESULT_WAIT: Duration = Duration::from_secs(1);
 /// How long the console waits for a key before it looks for new log lines, results, and the application closing.
 const POLL: Duration = Duration::from_millis(50);
 
-const HELP: &str = "\
-set <parameter> <value>  Changes a runtime setting, such as `set render.lod.force 2`.
-help                     Lists the commands.";
+/// The `CommandSpec` struct is one console command as `help` lists it and completion offers it.
+struct CommandSpec {
+	name: &'static str,
+	usage: &'static str,
+	summary: &'static str,
+}
 
-const KEYS: &str = "Tab view · ↑↓ history · PgUp/PgDn log · Ctrl+C quit";
+/// Every command [`parse_line`] runs, in the order `help` lists them.
+const COMMANDS: [CommandSpec; 2] = [
+	CommandSpec {
+		name: "set",
+		usage: "set <parameter> <value>",
+		summary: "Changes a runtime setting, such as `set render.lod.force 2`.",
+	},
+	CommandSpec {
+		name: "help",
+		usage: "help",
+		summary: "Lists the commands.",
+	},
+];
+
+const KEYS: &str = "Tab complete · F2 view · ↑↓ history · PgUp/PgDn log · Ctrl+C quit";
+
+/// The most candidate rows the completion list shows above the command line.
+const COMPLETION_ROWS: usize = 8;
 
 /// The stream the asset manager reports its bakes on; see the
 /// [bake stream reference](/docs/reference/resource-management#bake-stream).
@@ -147,6 +167,7 @@ fn run(
 		match event::read()? {
 			Event::Key(key) if key.kind == KeyEventKind::Press => match console.handle(key) {
 				Some(Action::Run(line)) => console.run_line(&line, inspector, waker, Instant::now()),
+				Some(Action::Complete { forward }) => console.complete(&inspector.configuration.parameters(), forward),
 				Some(Action::Quit) => {
 					inspector.close_application();
 					waker.wake();
@@ -166,7 +187,7 @@ fn latest_bakes(inspector: &DefaultInspector) -> Option<(Instant, BakeState)> {
 	Some((received, state))
 }
 
-/// The `View` enum is what the console's pane shows; Tab shows the next one.
+/// The `View` enum is what the console's pane shows; F2 shows the next one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum View {
 	#[default]
@@ -195,6 +216,8 @@ impl View {
 enum Action {
 	/// Run this command line.
 	Run(String),
+	/// Complete the word before the cursor, or select the next candidate, or the previous one when not `forward`.
+	Complete { forward: bool },
 	/// Close the application.
 	Quit,
 }
@@ -232,12 +255,43 @@ struct Console {
 	view: View,
 	/// Whether the last draw showed bakes running, whose times advance each second.
 	shows_running_bakes: bool,
+	/// The candidates the last Tab offered, while no other key has been pressed since.
+	completion: Option<Completion>,
+}
+
+/// The `Completion` struct is the list Tab opened over the command line, which further presses of Tab cycle through.
+#[derive(Debug, Default)]
+struct Completion {
+	/// The character index in the command line where the completed word starts. A candidate replaces the line from
+	/// here to the cursor.
+	start: usize,
+	candidates: Vec<Candidate>,
+	/// The candidate in the command line, once Tab has cycled to one.
+	selected: Option<usize>,
+	/// What the word accepts, such as "render.motion-blur.taps takes a whole number from 1 through 32".
+	hint: Option<String>,
+}
+
+/// The `Candidate` struct is one word the completed word can become.
+#[derive(Debug, PartialEq)]
+struct Candidate {
+	text: String,
+	/// What the candidate is or accepts, shown dim beside it.
+	note: String,
+	/// Whether the word is whole, so a space follows it, rather than a name segment the next Tab continues.
+	whole: bool,
 }
 
 impl Console {
 	/// Applies one key press to the command line, the history, or the log pane, and returns what the loop must do.
 	fn handle(&mut self, key: KeyEvent) -> Option<Action> {
 		self.revision += 1;
+		match key.code {
+			KeyCode::Tab => return Some(Action::Complete { forward: true }),
+			KeyCode::BackTab => return Some(Action::Complete { forward: false }),
+			// Any other key changes the line or leaves it, so the list no longer matches it.
+			_ => self.completion = None,
+		}
 		if key.modifiers.contains(KeyModifiers::CONTROL) {
 			return (key.code == KeyCode::Char('c')).then_some(Action::Quit);
 		}
@@ -276,7 +330,7 @@ impl Console {
 					self.replace_line(self.history.get(next).cloned().unwrap_or_default());
 				}
 			}
-			KeyCode::Tab => self.view = self.view.next(),
+			KeyCode::F(2) => self.view = self.view.next(),
 			KeyCode::PageUp => self.scroll += self.page.max(1),
 			KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(self.page.max(1)),
 			KeyCode::Enter => {
@@ -292,6 +346,71 @@ impl Console {
 		None
 	}
 
+	/// Completes the word before the cursor from the commands and the declared `parameters`.
+	///
+	/// One candidate replaces the word. Several replace it with the text they all start with and open the list; while
+	/// the list is open, each further call puts the next candidate, or the previous one when not `forward`, in the line.
+	fn complete(&mut self, parameters: &[(String, Accepts)], forward: bool) {
+		self.revision += 1;
+		if let Some(completion) = self.completion.as_mut().filter(|completion| completion.candidates.len() > 1) {
+			let count = completion.candidates.len();
+			let selected = match (completion.selected, forward) {
+				(None, true) => 0,
+				(None, false) => count - 1,
+				(Some(index), true) => (index + 1) % count,
+				(Some(index), false) => (index + count - 1) % count,
+			};
+			completion.selected = Some(selected);
+			let start = completion.start;
+			let replacement = completion.candidates[selected].insertion();
+			self.replace_word(start, &replacement);
+			return;
+		}
+
+		let before: String = self.line.chars().take(self.cursor).collect();
+		let (start, candidates, hint) = candidates(&before, parameters);
+		match candidates.as_slice() {
+			[only] => {
+				let replacement = only.insertion();
+				self.replace_word(start, &replacement);
+				self.completion = None;
+			}
+			[] => {
+				self.completion = hint.map(|hint| Completion {
+					start,
+					hint: Some(hint),
+					..Completion::default()
+				});
+			}
+			[first, rest @ ..] => {
+				// Every candidate starts with the typed word, so the text they share never shortens it.
+				let shared = rest.iter().fold(first.text.as_str(), |shared, candidate| {
+					let length = shared
+						.char_indices()
+						.zip(candidate.text.chars())
+						.find(|((_, a), b)| a != b)
+						.map_or(shared.len().min(candidate.text.len()), |((at, _), _)| at);
+					&shared[..length]
+				});
+				let shared = shared.to_string();
+				self.replace_word(start, &shared);
+				self.completion = Some(Completion {
+					start,
+					candidates,
+					selected: None,
+					hint,
+				});
+			}
+		}
+	}
+
+	/// Replaces the command line from character `start` to the cursor with `text` and puts the cursor after it.
+	fn replace_word(&mut self, start: usize, text: &str) {
+		let (from, to) = (self.byte_index(start), self.byte_index(self.cursor));
+		self.line.replace_range(from..to, text);
+		self.cursor = start + text.chars().count();
+	}
+
 	/// Runs one command line and reports its result, or queues a `set` whose result [`Self::collect_results`] reports.
 	fn run_line(&mut self, line: &str, inspector: &DefaultInspector, waker: &LoopWaker, now: Instant) {
 		let line = line.trim();
@@ -303,7 +422,7 @@ impl Console {
 		}
 		log_capture::push(LineKind::Console, format!("> {line}"));
 		match parse_line(line) {
-			Ok(Command::Help) => self.report(HELP.to_string()),
+			Ok(Command::Help) => self.report(help()),
 			Ok(Command::Set { parameter, value }) => {
 				let id = inspector.update_configuration(parameter, value).id();
 				// An idle application waits for input; the update is input, so it runs a tick that applies it.
@@ -361,7 +480,7 @@ impl Console {
 		let [pane_area, command_area, status_area] =
 			Layout::vertical([Constraint::Min(3), Constraint::Length(1), Constraint::Length(1)]).areas(frame.area());
 
-		let block = Block::bordered().title(format!(" {} · Tab: {} ", self.view.title(), self.view.next().title()));
+		let block = Block::bordered().title(format!(" {} · F2: {} ", self.view.title(), self.view.next().title()));
 		let inner = block.inner(pane_area);
 		frame.render_widget(block, pane_area);
 		self.shows_running_bakes = false;
@@ -376,6 +495,10 @@ impl Console {
 				// Rows longer than the pane are cut, since a paragraph without wrapping clips them.
 				frame.render_widget(Paragraph::new(bake_rows(bakes, now)), inner);
 			}
+		}
+
+		if let Some(completion) = &self.completion {
+			draw_completion(frame, completion, inner);
 		}
 
 		// Keep the cursor on screen by showing the end of a line longer than the area.
@@ -695,6 +818,137 @@ fn show_value(value: &ConfigurationValue) -> String {
 	}
 }
 
+/// Returns the `help` text: each command's usage and what it does.
+fn help() -> String {
+	let width = COMMANDS.iter().map(|command| command.usage.len()).max().unwrap_or(0);
+	COMMANDS
+		.iter()
+		.map(|command| format!("{:width$}  {}", command.usage, command.summary))
+		.collect::<Vec<_>>()
+		.join("\n")
+}
+
+impl Candidate {
+	/// Returns the text that replaces the completed word: a whole word with a space after it.
+	fn insertion(&self) -> String {
+		if self.whole {
+			format!("{} ", self.text)
+		} else {
+			self.text.clone()
+		}
+	}
+}
+
+/// Returns what the last word of `before`, the command line up to the cursor, can become: the character index where
+/// the word starts, the candidates in order, and what the word accepts when it's a value.
+///
+/// The first word completes to a command. The name after `set` completes to a declared parameter one dotted segment at
+/// a time, so `render.` offers `render.gi.` and `render.lod.` before their settings. The value after a name completes
+/// to the words its setting accepts.
+fn candidates(before: &str, parameters: &[(String, Accepts)]) -> (usize, Vec<Candidate>, Option<String>) {
+	let word = before.rsplit(char::is_whitespace).next().unwrap_or_default();
+	let start = before.chars().count() - word.chars().count();
+	let previous: Vec<&str> = before[..before.len() - word.len()].split_whitespace().collect();
+
+	match previous.as_slice() {
+		[] => {
+			let candidates = COMMANDS
+				.iter()
+				.filter(|command| command.name.starts_with(word))
+				.map(|command| Candidate {
+					text: command.name.to_string(),
+					note: command.summary.to_string(),
+					whole: true,
+				})
+				.collect();
+			(start, candidates, None)
+		}
+		["set"] => {
+			let mut candidates: Vec<Candidate> = Vec::new();
+			// A name with a space in it can't be typed as one word, so it isn't offered.
+			for (name, accepts) in parameters
+				.iter()
+				.filter(|(name, _)| name.starts_with(word) && !name.contains(' '))
+			{
+				let candidate = match name[word.len()..].find('.') {
+					Some(dot) => Candidate {
+						text: name[..word.len() + dot + 1].to_string(),
+						note: String::new(),
+						whole: false,
+					},
+					None => Candidate {
+						text: name.clone(),
+						note: accepts.describe(),
+						whole: true,
+					},
+				};
+				// Names arrive sorted, so the names under one segment are next to each other.
+				if candidates.last().is_none_or(|last| *last != candidate) {
+					candidates.push(candidate);
+				}
+			}
+			(start, candidates, None)
+		}
+		["set", name] => {
+			let Some((_, accepts)) = parameters.iter().find(|(declared, _)| declared == name) else {
+				return (start, Vec::new(), None);
+			};
+			let lowered = word.to_ascii_lowercase();
+			let candidates = accepts
+				.words()
+				.iter()
+				.filter(|accepted| accepted.to_ascii_lowercase().starts_with(&lowered))
+				.map(|accepted| Candidate {
+					text: accepted.to_string(),
+					note: String::new(),
+					whole: true,
+				})
+				.collect();
+			(start, candidates, Some(format!("{name} takes {}", accepts.describe())))
+		}
+		_ => (start, Vec::new(), None),
+	}
+}
+
+/// Draws the completion list over the bottom rows of `pane`, the pane's inside, just above the command line: the
+/// candidates, the one in the line highlighted, then what the word accepts.
+fn draw_completion(frame: &mut Frame, completion: &Completion, pane: Rect) {
+	// Scroll the list so the selected candidate stays among the shown rows.
+	let first = completion
+		.selected
+		.map_or(0, |selected| (selected + 1).saturating_sub(COMPLETION_ROWS));
+	let mut rows: Vec<Line> = completion
+		.candidates
+		.iter()
+		.enumerate()
+		.skip(first)
+		.take(COMPLETION_ROWS)
+		.map(|(index, candidate)| {
+			let mut spans = vec![Span::raw(candidate.text.as_str())];
+			if !candidate.note.is_empty() {
+				spans.push(Span::raw(format!("  {}", candidate.note)).dim());
+			}
+			let line = Line::from(spans);
+			if completion.selected == Some(index) {
+				line.reversed()
+			} else {
+				line
+			}
+		})
+		.collect();
+	let hidden = completion.candidates.len() - rows.len();
+	if hidden > 0 {
+		rows.push(Line::from(format!("… {hidden} more")).dim());
+	}
+	if let Some(hint) = &completion.hint {
+		rows.push(Line::from(hint.as_str()).dim());
+	}
+	let height = (rows.len() as u16).min(pane.height);
+	let area = Rect::new(pane.x, pane.bottom() - height, pane.width, height);
+	frame.render_widget(Clear, area);
+	frame.render_widget(Paragraph::new(rows), area);
+}
+
 /// The `Command` enum is one parsed command line, borrowing its names from the line.
 #[derive(Debug, PartialEq)]
 enum Command<'a> {
@@ -974,17 +1228,103 @@ mod tests {
 	}
 
 	#[test]
-	fn tab_switches_between_the_log_and_the_bakes() {
+	fn f2_switches_between_the_log_and_the_bakes() {
 		let mut console = Console::default();
-		assert!(draw(&mut console, &VecDeque::new(), 40, 6)[0].contains("Log · Tab: Bakes"));
+		assert!(draw(&mut console, &VecDeque::new(), 40, 6)[0].contains("Log · F2: Bakes"));
 
-		console.handle(key(KeyCode::Tab));
+		console.handle(key(KeyCode::F(2)));
 		let shown = draw(&mut console, &VecDeque::new(), 40, 6);
-		assert!(shown[0].contains("Bakes · Tab: Log"), "{shown:?}");
+		assert!(shown[0].contains("Bakes · F2: Log"), "{shown:?}");
 		assert!(shown[1].contains("No bake was reported yet."), "{shown:?}");
 
+		console.handle(key(KeyCode::F(2)));
+		assert!(draw(&mut console, &VecDeque::new(), 40, 6)[0].contains("Log · F2: Bakes"));
+	}
+
+	/// The parameters a renderer might declare, sorted as [`Configuration::parameters`] returns them.
+	fn parameters() -> Vec<(String, Accepts)> {
+		[
+			("render.gi.enabled", Accepts::Bool),
+			("render.gi.technique", Accepts::Choice(&["ssgi", "surfels"])),
+			("render.lod.bias", Accepts::Number { min: 0.0 }),
+			("render.lod.force", Accepts::WholeOr("off")),
+			("render.pass.atmosphere sky", Accepts::Choice(&["enabled", "bypassed"])),
+		]
+		.into_iter()
+		.map(|(name, accepts)| (name.to_string(), accepts))
+		.collect()
+	}
+
+	/// Types `text`, presses Tab, and returns the command line.
+	fn tab(console: &mut Console, text: &str) -> String {
+		type_text(console, text);
+		assert_eq!(console.handle(key(KeyCode::Tab)), Some(Action::Complete { forward: true }));
+		console.complete(&parameters(), true);
+		console.line.clone()
+	}
+
+	#[test]
+	fn tab_completes_a_command() {
+		let mut console = Console::default();
+		assert_eq!(tab(&mut console, "se"), "set ");
+	}
+
+	#[test]
+	fn tab_completes_a_parameter_name_one_segment_at_a_time() {
+		let mut console = Console::default();
+		assert_eq!(tab(&mut console, "set re"), "set render.");
+		assert_eq!(tab(&mut console, "l"), "set render.lod.");
+		assert_eq!(tab(&mut console, "f"), "set render.lod.force ");
+		assert_eq!(tab(&mut console, "o"), "set render.lod.force off ");
+	}
+
+	#[test]
+	fn tab_lists_the_candidates_and_cycles_through_them() {
+		let mut console = Console::default();
+		assert_eq!(tab(&mut console, "set render."), "set render.");
+		let rows = draw(&mut console, &VecDeque::new(), 60, 8);
+		// The list sits on the pane's bottom rows, above the command line. A name with a space can't be typed, so the
+		// `atmosphere sky` pass isn't offered.
+		assert_eq!(
+			rows[3..5].iter().map(|row| row.trim_matches(['│', ' '])).collect::<Vec<_>>(),
+			["render.gi.", "render.lod.",]
+		);
+
 		console.handle(key(KeyCode::Tab));
-		assert!(draw(&mut console, &VecDeque::new(), 40, 6)[0].contains("Log · Tab: Bakes"));
+		console.complete(&parameters(), true);
+		assert_eq!(console.line, "set render.gi.");
+		console.complete(&parameters(), true);
+		assert_eq!(console.line, "set render.lod.");
+		console.complete(&parameters(), false);
+		assert_eq!(console.line, "set render.gi.");
+
+		// Any other key closes the list.
+		type_text(&mut console, "t");
+		assert!(console.completion.is_none());
+	}
+
+	#[test]
+	fn tab_completes_a_value_to_the_words_its_setting_accepts() {
+		let mut console = Console::default();
+		assert_eq!(
+			tab(&mut console, "set render.gi.technique SU"),
+			"set render.gi.technique surfels "
+		);
+
+		let mut console = Console::default();
+		// Both words start with `s`, so Tab types it and lists them.
+		assert_eq!(tab(&mut console, "set render.gi.technique "), "set render.gi.technique s");
+		let rows = draw(&mut console, &VecDeque::new(), 80, 8);
+		assert!(rows[2].contains("ssgi") && rows[3].contains("surfels"), "{rows:?}");
+		assert!(rows[4].contains("render.gi.technique takes `ssgi` or `surfels`"), "{rows:?}");
+	}
+
+	#[test]
+	fn tab_describes_a_number_it_cannot_list() {
+		let mut console = Console::default();
+		assert_eq!(tab(&mut console, "set render.lod.bias "), "set render.lod.bias ");
+		let rows = draw(&mut console, &VecDeque::new(), 80, 6);
+		assert!(rows[2].contains("render.lod.bias takes a number of 0 or more"), "{rows:?}");
 	}
 
 	#[test]
@@ -1015,7 +1355,7 @@ mod tests {
 			],
 		};
 		let mut console = Console::default();
-		console.handle(key(KeyCode::Tab));
+		console.handle(key(KeyCode::F(2)));
 		let buffer = draw_with(&mut console, &VecDeque::new(), Some(&(Instant::now(), state)), 48, 10);
 		let shown = rows(&buffer);
 
@@ -1066,7 +1406,7 @@ mod tests {
 			..BakeState::default()
 		};
 		let mut console = Console::default();
-		console.handle(key(KeyCode::Tab));
+		console.handle(key(KeyCode::F(2)));
 		let buffer = draw_with(&mut console, &VecDeque::new(), Some(&(Instant::now(), state)), 60, 16);
 		let shown = rows(&buffer);
 

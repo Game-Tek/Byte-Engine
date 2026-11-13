@@ -22,7 +22,7 @@ use super::super::shadow_selection::SunShadow;
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
 use super::shadows::ShadowMaps;
 use super::{ComputeStage, Pipelines};
-use crate::configuration::ConfigurationValue;
+use crate::configuration::{Accepts, Setting};
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
@@ -45,38 +45,28 @@ impl Default for ContactShadowSettings {
 }
 
 impl ContactShadowSettings {
-	/// Applies one runtime parameter, returning the updated settings and the effective value, or leaves them unchanged.
-	pub(crate) fn with_parameter(
-		self,
-		parameter: &str,
-		value: &ConfigurationValue,
-	) -> Result<(Self, ConfigurationValue), String> {
-		match parameter {
-			"enabled" => {
-				let enabled = value.to_bool().ok_or(
-					"Contact shadows enabled was not set. The most likely cause is that the value is neither `true` nor `false`.",
-				)?;
-				Ok((Self { enabled, ..self }, ConfigurationValue::Bool(enabled)))
-			}
-			"distance" => {
-				let max_distance = value
-					.to_f64()
-					.filter(|distance| *distance >= 0.0 && *distance <= f32::MAX as f64)
-					.ok_or(
-						"Contact shadow distance was not set. The most likely cause is that the value is not a finite nonnegative number.",
-					)?;
-				let settings = Self {
-					max_distance: max_distance as f32,
-					..self
-				};
-				Ok((settings, ConfigurationValue::Float(f64::from(settings.max_distance))))
-			}
-			_ => Err(
-				"Contact shadow parameter was not set. The most likely cause is that the parameter name is unsupported."
-					.to_string(),
-			),
-		}
-	}
+	/// The runtime settings, named inside the `render.contact-shadows.` port.
+	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[
+		Setting {
+			name: "enabled",
+			accepts: Accepts::Bool,
+			apply: |settings, read| {
+				let enabled = read.bool();
+				Ok(Self { enabled, ..settings })
+			},
+		},
+		Setting {
+			name: "distance",
+			accepts: Accepts::Number { min: 0.0 },
+			apply: |settings, read| {
+				let distance = read.number();
+				Ok(Self {
+					max_distance: distance as f32,
+					..settings
+				})
+			},
+		},
+	];
 }
 
 /// The render-graph name of the full-resolution result: per sun slot, one where that sun reaches the pixel, falling

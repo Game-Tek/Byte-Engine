@@ -6,7 +6,7 @@ use maths_rs::Vec3f;
 use utils::Extent;
 
 use crate::{
-	configuration::{ConfigurationPort, ConfigurationValue},
+	configuration::{Accepts, ConfigurationPort, Setting},
 	core::Entity,
 	rendering::{
 		DirectionalLight, Sink, Sun,
@@ -90,32 +90,18 @@ impl Default for AtmosphereSkyRenderPassSettings {
 }
 
 impl AtmosphereSkyRenderPassSettings {
-	/// Applies one runtime parameter, named inside the controls' configuration port, returning the updated settings and
-	/// the effective value, or leaves them unchanged. `haze` takes a number of 0 or more.
-	pub(crate) fn with_parameter(
-		self,
-		parameter: &str,
-		value: &ConfigurationValue,
-	) -> Result<(Self, ConfigurationValue), String> {
-		match parameter {
-			"haze" => {
-				let haze = value.to_f64().filter(|haze| *haze >= 0.0).ok_or(
-					"Sky haze was not set. The most likely cause is that the value is not a number of 0 or more. Set `render.sky.haze` to the aerosol optical depth, such as `0.05` for a clear day.",
-				)?;
-				Ok((
-					Self {
-						haze: haze as f32,
-						..self
-					},
-					ConfigurationValue::Float(haze),
-				))
-			}
-			_ => Err(
-				"Sky parameter was not set. The most likely cause is that the parameter name is unsupported. Use `render.sky.haze`."
-					.to_string(),
-			),
-		}
-	}
+	/// The runtime settings, named inside the controls' configuration port.
+	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[Setting {
+		name: "haze",
+		accepts: Accepts::Number { min: 0.0 },
+		apply: |settings, read| {
+			let haze = read.number();
+			Ok(Self {
+				haze: haze as f32,
+				..settings
+			})
+		},
+	}];
 }
 
 /// The `AtmosphereSkyControls` struct shares one set of settings between every sink's [`AtmosphereSkyRenderPass`], so
@@ -131,6 +117,7 @@ pub struct AtmosphereSkyControls {
 impl AtmosphereSkyControls {
 	/// Creates controls that start at `settings` and apply the runtime updates queued on `configuration`.
 	pub fn new(settings: AtmosphereSkyRenderPassSettings, configuration: ConfigurationPort) -> Rc<Self> {
+		configuration.declare(AtmosphereSkyRenderPassSettings::SETTINGS.iter().map(Setting::parameter));
 		Rc::new(Self {
 			settings: Cell::new(settings),
 			configuration,
@@ -141,7 +128,7 @@ impl AtmosphereSkyControls {
 	pub fn settings(&self) -> AtmosphereSkyRenderPassSettings {
 		let mut settings = self.settings.get();
 		self.configuration
-			.drain(&mut settings, AtmosphereSkyRenderPassSettings::with_parameter);
+			.drain(&mut settings, AtmosphereSkyRenderPassSettings::SETTINGS);
 		self.settings.set(settings);
 		settings
 	}
@@ -750,7 +737,7 @@ mod tests {
 	use maths_rs::Vec3f;
 
 	use super::simple_compute;
-	use crate::configuration::ConfigurationValue;
+	use crate::configuration::{ConfigurationValue, apply_setting};
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, slot, texture_2d};
 
 	static SKY_SHADER_BESL: std::sync::LazyLock<&str> =
@@ -925,7 +912,9 @@ mod tests {
 	#[test]
 	fn haze_parameter_takes_numbers_of_zero_or_more() {
 		let settings = super::AtmosphereSkyRenderPassSettings::default();
-		let set = |value: ConfigurationValue| settings.with_parameter("haze", &value);
+		let set = |value: ConfigurationValue| {
+			apply_setting(settings, super::AtmosphereSkyRenderPassSettings::SETTINGS, "", "haze", &value)
+		};
 
 		for value in [ConfigurationValue::Float(0.25), ConfigurationValue::Text("0.25".to_string())] {
 			let (updated, effective) = set(value).expect("a haze of 0.25 is valid");
@@ -935,7 +924,16 @@ mod tests {
 		assert_eq!(set(ConfigurationValue::Integer(0)).unwrap().0.haze, 0.0);
 		assert!(set(ConfigurationValue::Float(-0.1)).is_err());
 		assert!(set(ConfigurationValue::Bool(true)).is_err());
-		assert!(settings.with_parameter("fog", &ConfigurationValue::Float(0.1)).is_err());
+		assert!(
+			apply_setting(
+				settings,
+				super::AtmosphereSkyRenderPassSettings::SETTINGS,
+				"",
+				"fog",
+				&ConfigurationValue::Float(0.1)
+			)
+			.is_err()
+		);
 	}
 
 	/// Builds the multiple-scattering LUT texel for a sun straight overhead at ground level, under full transmittance.

@@ -405,6 +405,7 @@ impl Renderer {
 	fn register_debug_views(&mut self, name: &str, views: Option<(&'static [&'static str], Arc<AtomicU32>)>) {
 		if let Some((views, cell)) = views {
 			self.debug_views.register(name, views, cell);
+			self.debug_view_configuration.declare(self.debug_views.parameters());
 		}
 	}
 
@@ -741,6 +742,7 @@ impl Renderer {
 		}
 		self.registrations = registrations;
 		self.fusions = FusionCatalog::Planned(planned);
+		declare_render_passes(&self.configuration, &self.render_pass_states);
 
 		// A scene-only graph has no terminal pass that can receive the swapchain directly. An empty graph also has
 		// no scene color to copy, so presenting the acquired swapchain is the complete frame operation in that case.
@@ -1545,7 +1547,9 @@ use tracing::debug_span;
 use utils::{Box, Extent};
 
 use super::{
-	configuration::{PendingRenderPassConfiguration, apply_render_pass_configuration, set_render_pass_state},
+	configuration::{
+		PendingRenderPassConfiguration, apply_render_pass_configuration, declare_render_passes, set_render_pass_state,
+	},
 	targets::{FirstUse, RenderNode, RenderTargets},
 };
 use crate::rendering::{

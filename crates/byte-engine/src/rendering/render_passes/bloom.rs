@@ -4,7 +4,7 @@ use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate a
 use utils::Extent;
 
 use crate::{
-	configuration::{ConfigurationPort, ConfigurationValue},
+	configuration::{Accepts, ConfigurationPort, Setting},
 	core::Entity,
 	rendering::{
 		Sink,
@@ -67,26 +67,18 @@ impl BloomPassSettings {
 		self.levels.clamp(1, MAX_BLOOM_LEVELS) as usize
 	}
 
-	/// Applies one runtime parameter, named inside the controls' configuration port, returning the updated settings and
-	/// the effective value, or leaves them unchanged. `pixel-weights` takes `true` or `false`.
-	pub(crate) fn with_parameter(
-		self,
-		parameter: &str,
-		value: &ConfigurationValue,
-	) -> Result<(Self, ConfigurationValue), String> {
-		match parameter {
-			"pixel-weights" => {
-				let pixel_weights = value.to_bool().ok_or(
-					"Bloom pixel weights were not set. The most likely cause is that the value is not `true` or `false`. Set `render.bloom.pixel-weights` to `true` to weigh each pixel, or `false` to read each block with one bilinear tap.",
-				)?;
-				Ok((Self { pixel_weights, ..self }, ConfigurationValue::Bool(pixel_weights)))
-			}
-			_ => Err(
-				"Bloom parameter was not set. The most likely cause is that the parameter name is unsupported. Use `render.bloom.pixel-weights`."
-					.to_string(),
-			),
-		}
-	}
+	/// The runtime settings, named inside the controls' configuration port.
+	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[Setting {
+		name: "pixel-weights",
+		accepts: Accepts::Bool,
+		apply: |settings, read| {
+			let pixel_weights = read.bool();
+			Ok(Self {
+				pixel_weights,
+				..settings
+			})
+		},
+	}];
 }
 
 /// The `BloomControls` struct shares one set of settings between every sink's [`BloomPass`], so a runtime parameter
@@ -103,6 +95,7 @@ impl BloomControls {
 	/// Creates controls that start at `settings` and apply the runtime updates queued on `configuration`. The pyramid
 	/// depth keeps its starting value, because each pass sizes its levels once.
 	pub fn new(settings: BloomPassSettings, configuration: ConfigurationPort) -> Rc<Self> {
+		configuration.declare(BloomPassSettings::SETTINGS.iter().map(Setting::parameter));
 		Rc::new(Self {
 			settings: Cell::new(settings),
 			configuration,
@@ -112,7 +105,7 @@ impl BloomControls {
 	/// Applies the queued runtime updates and returns the settings every pass draws with this frame.
 	pub fn settings(&self) -> BloomPassSettings {
 		let mut settings = self.settings.get();
-		self.configuration.drain(&mut settings, BloomPassSettings::with_parameter);
+		self.configuration.drain(&mut settings, BloomPassSettings::SETTINGS);
 		self.settings.set(settings);
 		settings
 	}

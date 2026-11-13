@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, rc::Rc};
 
 use crate::{
-	configuration::{ConfigurationEventId, ConfigurationPort, ConfigurationUpdate, ConfigurationValue},
+	configuration::{Accepts, ConfigurationEventId, ConfigurationPort, ConfigurationUpdate, ConfigurationValue},
 	rendering::render_pass::{RenderPassState, RenderPassStates},
 };
 
@@ -24,6 +24,17 @@ pub(super) fn set_render_pass_state(states: &mut RenderPassStates, name: &str, s
 /// Counts the pass instances holding a shared state; the map holds the only other reference.
 fn instance_count(shared: &Rc<std::cell::Cell<RenderPassState>>) -> usize {
 	Rc::strong_count(shared) - 1
+}
+
+/// Declares a `render.pass.<name>` parameter on `configuration` for every installed pass in `states`, so adapters such
+/// as the console list the passes this application has. Call it again whenever passes are installed.
+pub(super) fn declare_render_passes(configuration: &ConfigurationPort, states: &RenderPassStates) {
+	configuration.declare(
+		states
+			.iter()
+			.filter(|(_, shared)| instance_count(shared) > 0)
+			.map(|(name, _)| (name.as_str(), Accepts::Choice(&["enabled", "bypassed"]))),
+	);
 }
 
 /// Applies valid queued states and retains updates whose named pass has not been installed yet.

@@ -14,7 +14,7 @@ use maths_rs::Vec4f;
 use utils::Extent;
 
 use crate::{
-	configuration::{ConfigurationPort, ConfigurationValue},
+	configuration::{Accepts, ConfigurationPort, Setting},
 	core::Entity,
 	rendering::{
 		DebugViews, ShownDebugViews, Sink, View,
@@ -25,7 +25,6 @@ use crate::{
 	time::MediaTime,
 };
 
-/// Configuration namespace of the runtime motion blur controls; see [`MotionBlurPassSettings::with_parameter`].
 /// The most taps one pixel gathers; the blur shader loops to this many.
 const MAX_TAPS: u32 = 32;
 
@@ -57,26 +56,19 @@ impl Default for MotionBlurPassSettings {
 }
 
 impl MotionBlurPassSettings {
-	/// Applies one runtime parameter, named inside the controls' configuration port, returning the updated
-	/// settings and the effective value, or leaves them unchanged. `taps` takes a whole number from `1` to `32`.
-	pub(crate) fn with_parameter(
-		self,
-		parameter: &str,
-		value: &ConfigurationValue,
-	) -> Result<(Self, ConfigurationValue), String> {
-		match parameter {
-			"taps" => {
-				let taps = value.to_u32().filter(|taps| (1..=MAX_TAPS).contains(taps)).ok_or(
-					"Motion blur taps were not set. The most likely cause is that the value is not a whole number from 1 to 32.",
-				)?;
-				Ok((Self { taps, ..self }, ConfigurationValue::Integer(i64::from(taps))))
-			}
-			_ => Err(
-				"Motion blur parameter was not set. The most likely cause is that the parameter name is unsupported."
-					.to_string(),
-			),
-		}
-	}
+	/// The runtime settings, named inside the controls' configuration port.
+	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[Setting {
+		name: "taps",
+		accepts: Accepts::Whole {
+			min: 1,
+			max: MAX_TAPS,
+			step: 1,
+		},
+		apply: |settings, read| {
+			let taps = read.whole();
+			Ok(Self { taps, ..settings })
+		},
+	}];
 }
 
 /// The `MotionBlurControls` struct shares one set of settings between every sink's [`MotionBlurPass`], so a
@@ -92,6 +84,7 @@ pub struct MotionBlurControls {
 impl MotionBlurControls {
 	/// Creates controls that start at `settings` and apply the runtime updates queued on `configuration`.
 	pub fn new(settings: MotionBlurPassSettings, configuration: ConfigurationPort) -> Rc<Self> {
+		configuration.declare(MotionBlurPassSettings::SETTINGS.iter().map(Setting::parameter));
 		Rc::new(Self {
 			settings: Cell::new(settings),
 			configuration,
@@ -101,8 +94,7 @@ impl MotionBlurControls {
 	/// Applies the queued runtime updates and returns the settings every pass draws with this frame.
 	pub fn settings(&self) -> MotionBlurPassSettings {
 		let mut settings = self.settings.get();
-		self.configuration
-			.drain(&mut settings, MotionBlurPassSettings::with_parameter);
+		self.configuration.drain(&mut settings, MotionBlurPassSettings::SETTINGS);
 		self.settings.set(settings);
 		settings
 	}
@@ -341,6 +333,7 @@ mod tests {
 	use math::{Degrees, Point, UnitVector, Vector};
 
 	use super::*;
+	use crate::configuration::{ConfigurationValue, apply_setting};
 	use crate::rendering::render_pass::simple_compute;
 	use crate::rendering::shader_vm_test::{
 		PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_pixel, slot, texture_2d,
@@ -432,9 +425,16 @@ mod tests {
 		let settings = MotionBlurPassSettings::default();
 		let text = |value: &str| ConfigurationValue::Text(value.to_string());
 
-		let (updated, effective) = settings.with_parameter("taps", &ConfigurationValue::Integer(16)).unwrap();
+		let (updated, effective) = apply_setting(
+			settings,
+			MotionBlurPassSettings::SETTINGS,
+			"",
+			"taps",
+			&ConfigurationValue::Integer(16),
+		)
+		.unwrap();
 		assert_eq!((updated.taps, effective), (16, ConfigurationValue::Integer(16)));
-		let (updated, effective) = settings.with_parameter("taps", &text("4")).unwrap();
+		let (updated, effective) = apply_setting(settings, MotionBlurPassSettings::SETTINGS, "", "taps", &text("4")).unwrap();
 		assert_eq!((updated.taps, effective), (4, ConfigurationValue::Integer(4)));
 		for value in [
 			ConfigurationValue::Integer(0),
@@ -442,9 +442,21 @@ mod tests {
 			ConfigurationValue::Float(2.5),
 			text("many"),
 		] {
-			assert!(settings.with_parameter("taps", &value).is_err(), "{value:?}");
+			assert!(
+				apply_setting(settings, MotionBlurPassSettings::SETTINGS, "", "taps", &value).is_err(),
+				"{value:?}"
+			);
 		}
-		assert!(settings.with_parameter("shutter", &ConfigurationValue::Float(0.01)).is_err());
+		assert!(
+			apply_setting(
+				settings,
+				MotionBlurPassSettings::SETTINGS,
+				"",
+				"shutter",
+				&ConfigurationValue::Float(0.01)
+			)
+			.is_err()
+		);
 	}
 
 	#[test]

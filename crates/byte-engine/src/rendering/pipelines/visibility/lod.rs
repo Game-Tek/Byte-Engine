@@ -244,51 +244,54 @@ impl Default for LodSettings {
 }
 
 impl LodSettings {
-	/// Applies one runtime parameter, returning the updated settings and the effective value, or leaves them unchanged.
-	pub(crate) fn with_parameter(
-		self,
-		parameter: &str,
-		value: &ConfigurationValue,
-	) -> Result<(Self, ConfigurationValue), String> {
-		match parameter {
-			"bias" => {
-				let bias = value.to_f64().filter(|bias| *bias >= 0.0 && *bias <= f32::MAX as f64).ok_or(
-					"Detail level bias was not set. The most likely cause is that the value is not a finite nonnegative number.",
-				)? as f32;
-				Ok((Self { bias, ..self }, ConfigurationValue::Float(f64::from(bias))))
-			}
-			"small-radius" => {
-				let small_radius = value.to_f64().filter(|radius| *radius >= 0.0 && *radius <= f32::MAX as f64).ok_or(
-					"Small instance radius was not set. The most likely cause is that the value is not a finite nonnegative number of pixels. Set `render.lod.small-radius` to a radius in pixels such as 6, or to 0 to make no instance small.",
-				)? as f32;
-				Ok((
-					Self { small_radius, ..self },
-					ConfigurationValue::Float(f64::from(small_radius)),
-				))
-			}
-			"small-bias" => {
-				let small_bias = value.to_f64().filter(|bias| *bias >= 1.0 && *bias <= f32::MAX as f64).ok_or(
-					"Small instance detail bias was not set. The most likely cause is that the value is not a finite number of at least 1. Set `render.lod.small-bias` to a number such as 2, or to 1 to give small instances no extra error.",
-				)? as f32;
-				Ok((Self { small_bias, ..self }, ConfigurationValue::Float(f64::from(small_bias))))
-			}
-			"force" if value.as_text() == Some("off") => Ok((Self { force: None, ..self }, value.clone())),
-			"force" => {
-				let level = value.to_u32().ok_or(
-					"Detail level force was not set. The most likely cause is that the value is neither a whole level number nor `off`.",
-				)?;
-				let settings = Self {
-					force: Some(level),
-					..self
-				};
-				Ok((settings, ConfigurationValue::Integer(i64::from(level))))
-			}
-			_ => Err(
-				"Detail level parameter was not set. The most likely cause is that the parameter name is unsupported."
-					.to_string(),
-			),
-		}
-	}
+	/// The runtime settings, named inside the `render.lod.` port.
+	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[
+		Setting {
+			name: "bias",
+			accepts: Accepts::Number { min: 0.0 },
+			apply: |settings, read| {
+				let bias = read.number();
+				Ok(Self {
+					bias: bias as f32,
+					..settings
+				})
+			},
+		},
+		Setting {
+			name: "force",
+			accepts: Accepts::WholeOr("off"),
+			// `off` reads as the word, and draws by distance again.
+			apply: |settings, read| match read {
+				Read::Word => Ok(Self { force: None, ..settings }),
+				level => Ok(Self {
+					force: Some(level.whole()),
+					..settings
+				}),
+			},
+		},
+		Setting {
+			name: "small-radius",
+			accepts: Accepts::Number { min: 0.0 },
+			apply: |settings, read| {
+				let small_radius = read.number();
+				Ok(Self {
+					small_radius: small_radius as f32,
+					..settings
+				})
+			},
+		},
+		Setting {
+			name: "small-bias",
+			accepts: Accepts::Number { min: 1.0 },
+			apply: |settings, read| {
+				let small_bias = read.number();
+				Ok(Self {
+					small_bias: small_bias as f32,
+					..settings
+				})
+			},
+		},
+	];
 }
 
 /// The `LodView` struct holds what detail level selection needs for one frame: the camera terms, worked out once, and
@@ -541,7 +544,7 @@ mod tests {
 	use utils::Extent;
 
 	use super::{Held, LodSettings, LodView, MeshLod, MeshLods};
-	use crate::configuration::ConfigurationValue;
+	use crate::configuration::{ConfigurationValue, apply_setting};
 	use crate::rendering::{Sink, view::View};
 
 	const SPHERE: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -859,33 +862,53 @@ mod tests {
 		let settings = LodSettings::default();
 		let text = |text: &str| ConfigurationValue::Text(text.to_string());
 
-		let (biased, effective) = settings.with_parameter("bias", &text("2.5")).unwrap();
+		let (biased, effective) = apply_setting(settings, LodSettings::SETTINGS, "", "bias", &text("2.5")).unwrap();
 		assert_eq!((biased.bias, effective), (2.5, ConfigurationValue::Float(2.5)));
-		assert!(settings.with_parameter("bias", &ConfigurationValue::Float(-1.0)).is_err());
+		assert!(apply_setting(settings, LodSettings::SETTINGS, "", "bias", &ConfigurationValue::Float(-1.0)).is_err());
 
-		let (forced, effective) = settings.with_parameter("force", &ConfigurationValue::Integer(2)).unwrap();
+		let (forced, effective) =
+			apply_setting(settings, LodSettings::SETTINGS, "", "force", &ConfigurationValue::Integer(2)).unwrap();
 		assert_eq!((forced.force, effective), (Some(2), ConfigurationValue::Integer(2)));
-		let (released, effective) = forced.with_parameter("force", &text("off")).unwrap();
+		let (released, effective) = apply_setting(forced, LodSettings::SETTINGS, "", "force", &text("off")).unwrap();
 		assert_eq!((released.force, effective), (None, text("off")));
-		assert!(settings.with_parameter("force", &text("coarse")).is_err());
+		assert!(apply_setting(settings, LodSettings::SETTINGS, "", "force", &text("coarse")).is_err());
 
-		let (small, effective) = settings.with_parameter("small-radius", &text("12")).unwrap();
+		let (small, effective) = apply_setting(settings, LodSettings::SETTINGS, "", "small-radius", &text("12")).unwrap();
 		assert_eq!((small.small_radius, effective), (12.0, ConfigurationValue::Float(12.0)));
 		assert!(
-			settings
-				.with_parameter("small-radius", &ConfigurationValue::Float(-1.0))
-				.is_err()
+			apply_setting(
+				settings,
+				LodSettings::SETTINGS,
+				"",
+				"small-radius",
+				&ConfigurationValue::Float(-1.0)
+			)
+			.is_err()
 		);
-		let (small, effective) = settings.with_parameter("small-bias", &text("3")).unwrap();
+		let (small, effective) = apply_setting(settings, LodSettings::SETTINGS, "", "small-bias", &text("3")).unwrap();
 		assert_eq!((small.small_bias, effective), (3.0, ConfigurationValue::Float(3.0)));
 		// A small instance never gets finer than a large one.
 		assert!(
-			settings
-				.with_parameter("small-bias", &ConfigurationValue::Float(0.5))
-				.is_err()
+			apply_setting(
+				settings,
+				LodSettings::SETTINGS,
+				"",
+				"small-bias",
+				&ConfigurationValue::Float(0.5)
+			)
+			.is_err()
 		);
 
-		assert!(settings.with_parameter("distance", &ConfigurationValue::Float(1.0)).is_err());
+		assert!(
+			apply_setting(
+				settings,
+				LodSettings::SETTINGS,
+				"",
+				"distance",
+				&ConfigurationValue::Float(1.0)
+			)
+			.is_err()
+		);
 	}
 }
 
@@ -893,5 +916,5 @@ use ghi::pod::Mat4x3f;
 use maths_rs::{Vec3f, dist, dot};
 use resource_management::resources::mesh::MAX_PRIMITIVE_LODS;
 
-use crate::configuration::ConfigurationValue;
+use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::Sink;

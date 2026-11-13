@@ -11,7 +11,7 @@ use utils::Extent;
 
 use super::depth_pyramid::DEPTH_PYRAMID_MIP_COUNT;
 use super::{ComputeStage, Pipelines};
-use crate::configuration::ConfigurationValue;
+use crate::configuration::{Accepts, Setting};
 use crate::rendering::lookup_textures::create_blue_noise_texture;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink};
@@ -91,59 +91,55 @@ impl Default for GtaoSettings {
 }
 
 impl GtaoSettings {
-	/// Applies one runtime parameter, returning the updated settings and the effective value, or leaves them unchanged.
-	pub(crate) fn with_parameter(
-		self,
-		parameter: &str,
-		value: &ConfigurationValue,
-	) -> Result<(Self, ConfigurationValue), String> {
-		match parameter {
-			"enabled" => {
-				let enabled = value.to_bool().ok_or(
-					"GTAO enabled was not set. The most likely cause is that the value is neither `true` nor `false`.",
-				)?;
-				Ok((Self { enabled, ..self }, ConfigurationValue::Bool(enabled)))
-			}
-			"radius" => {
-				let radius = value
-					.to_f64()
-					.filter(|radius| *radius >= 0.0 && *radius <= f32::MAX as f64)
-					.ok_or(
-						"GTAO radius was not set. The most likely cause is that the value is not a finite nonnegative number.",
-					)?;
-				let settings = Self {
+	/// The runtime settings, named inside the `render.gtao.` port.
+	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[
+		Setting {
+			name: "enabled",
+			accepts: Accepts::Bool,
+			apply: |settings, read| {
+				let enabled = read.bool();
+				Ok(Self { enabled, ..settings })
+			},
+		},
+		Setting {
+			name: "radius",
+			accepts: Accepts::Number { min: 0.0 },
+			apply: |settings, read| {
+				let radius = read.number();
+				Ok(Self {
 					radius: radius as f32,
-					..self
-				};
-				Ok((settings, ConfigurationValue::Float(f64::from(settings.radius))))
-			}
-			"samples-per-ray" => {
-				let samples_per_ray = value.to_u32()
-					.filter(|samples| (MIN_SAMPLES_PER_RAY..=MAX_SAMPLES_PER_RAY).contains(samples))
-					.ok_or(format!(
-						"GTAO samples-per-ray was not set. The most likely cause is that the value is not a whole number in the range {MIN_SAMPLES_PER_RAY}..={MAX_SAMPLES_PER_RAY}."
-					))?;
-				Ok((
-					Self { samples_per_ray, ..self },
-					ConfigurationValue::Integer(i64::from(samples_per_ray)),
-				))
-			}
-			"radial-rays" => {
-				let radial_rays = value.to_u32()
-					.filter(|rays| (MIN_RADIAL_RAYS..=MAX_RADIAL_RAYS).contains(rays) && rays % 2 == 0)
-					.ok_or(format!(
-						"GTAO radial-rays was not set. The most likely cause is that the value is not an even whole number in the range {MIN_RADIAL_RAYS}..={MAX_RADIAL_RAYS}."
-					))?;
-				Ok((
-					Self { radial_rays, ..self },
-					ConfigurationValue::Integer(i64::from(radial_rays)),
-				))
-			}
-			_ => {
-				Err("GTAO parameter was not set. The most likely cause is that the parameter name is unsupported.".to_string())
-			}
-		}
-	}
+					..settings
+				})
+			},
+		},
+		Setting {
+			name: "samples-per-ray",
+			accepts: Accepts::Whole {
+				min: MIN_SAMPLES_PER_RAY,
+				max: MAX_SAMPLES_PER_RAY,
+				step: 1,
+			},
+			apply: |settings, read| {
+				let samples_per_ray = read.whole();
+				Ok(Self {
+					samples_per_ray,
+					..settings
+				})
+			},
+		},
+		Setting {
+			name: "radial-rays",
+			accepts: Accepts::Whole {
+				min: MIN_RADIAL_RAYS,
+				max: MAX_RADIAL_RAYS,
+				step: 2,
+			},
+			apply: |settings, read| {
+				let radial_rays = read.whole();
+				Ok(Self { radial_rays, ..settings })
+			},
+		},
+	];
 }
 
 #[repr(C)]
@@ -293,13 +289,19 @@ pub(super) struct GtaoStages {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::configuration::{ConfigurationValue, apply_setting};
 
 	#[test]
 	fn enabled_toggles_only_whether_the_pass_runs() {
 		let settings = GtaoSettings::default();
-		let (disabled, effective) = settings
-			.with_parameter("enabled", &ConfigurationValue::Text("false".to_string()))
-			.unwrap();
+		let (disabled, effective) = apply_setting(
+			settings,
+			GtaoSettings::SETTINGS,
+			"",
+			"enabled",
+			&ConfigurationValue::Text("false".to_string()),
+		)
+		.unwrap();
 		assert_eq!(effective, ConfigurationValue::Bool(false));
 		assert_eq!(
 			disabled,
@@ -308,6 +310,15 @@ mod tests {
 				..settings
 			}
 		);
-		assert!(disabled.with_parameter("enabled", &ConfigurationValue::Integer(1)).is_err());
+		assert!(
+			apply_setting(
+				disabled,
+				GtaoSettings::SETTINGS,
+				"",
+				"enabled",
+				&ConfigurationValue::Integer(1)
+			)
+			.is_err()
+		);
 	}
 }

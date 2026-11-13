@@ -27,7 +27,7 @@ use super::super::shader_data::LightingData;
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::ray_hits::{RayHits, RayStages, RayTracing, ShadeStage};
 use super::{ComputeStage, Pipelines, SinkHistory, SsgiTargets};
-use crate::configuration::ConfigurationValue;
+use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
@@ -778,44 +778,42 @@ impl SurfelGiSettings {
 		}
 	}
 
-	/// Applies one runtime parameter, returning the updated settings and the effective value, or leaves them unchanged.
+	/// The runtime settings, named inside the `render.surfel-gi.` port.
 	///
 	/// Whether surfel GI is built in, the surfel capacity, and the ray budget are decided once, at startup. Their
 	/// startup values, which every port receives, are accepted as they are; any other value is not set.
-	pub(crate) fn with_parameter(
-		self,
-		parameter: &str,
-		value: &ConfigurationValue,
-	) -> Result<(Self, ConfigurationValue), String> {
-		match parameter {
-			"enabled" => {
-				if value.to_bool() == Some(self.built_in) {
-					return Ok((self, ConfigurationValue::Bool(self.built_in)));
+	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[
+		Setting {
+			name: "enabled",
+			accepts: Accepts::Bool,
+			apply: |settings, read| {
+				if read == Read::Bool(settings.built_in) {
+					return Ok(settings);
 				}
 				Err(format!(
 					"Surfel GI enabled was not changed from `{}`. The most likely cause is that it decides once, at startup, whether surfel GI is built into the shaders. Select a technique at runtime with `render.gi.technique` instead, or set `render.surfel-gi.enabled` in `config.json` and restart the application.",
-					self.built_in
+					settings.built_in
 				))
-			}
-			"surfel-capacity" => self.with_startup_size(value, self.surfel_capacity, "Surfel capacity", parameter),
-			"ray-budget" => self.with_startup_size(value, self.ray_budget, "Surfel ray budget", parameter),
-			_ => Err(
-				"Surfel GI parameter was not set. The most likely cause is that the parameter name is unsupported. Use `enabled`, `surfel-capacity`, or `ray-budget`."
-					.to_string(),
-			),
-		}
-	}
+			},
+		},
+		Setting {
+			name: "surfel-capacity",
+			accepts: STARTUP_SIZE,
+			apply: |settings, read| {
+				settings.with_startup_size(read, settings.surfel_capacity, "Surfel capacity", "surfel-capacity")
+			},
+		},
+		Setting {
+			name: "ray-budget",
+			accepts: STARTUP_SIZE,
+			apply: |settings, read| settings.with_startup_size(read, settings.ray_budget, "Surfel ray budget", "ray-budget"),
+		},
+	];
 
-	/// Accepts `value` for the startup size `size` only when it doesn't change it.
-	fn with_startup_size(
-		self,
-		value: &ConfigurationValue,
-		size: u32,
-		label: &str,
-		parameter: &str,
-	) -> Result<(Self, ConfigurationValue), String> {
-		if value.to_u32() == Some(size) {
-			return Ok((self, ConfigurationValue::Integer(i64::from(size))));
+	/// Accepts `read` for the startup size `size` only when it doesn't change it.
+	fn with_startup_size(self, read: Read, size: u32, label: &str, parameter: &str) -> Result<Self, String> {
+		if read == Read::Whole(size) {
+			return Ok(self);
 		}
 		Err(format!(
 			"{label} was not changed from {size}. The most likely cause is that it sizes surfel buffers once, when the renderer starts. Set `render.surfel-gi.{parameter}` in `config.json` and restart the application."
@@ -823,11 +821,19 @@ impl SurfelGiSettings {
 	}
 }
 
+/// The values a startup-only size reads: any whole number, so a change is reported as such rather than as a bad value.
+const STARTUP_SIZE: Accepts = Accepts::Whole {
+	min: 0,
+	max: u32::MAX,
+	step: 1,
+};
+
 #[cfg(test)]
 mod tests {
 	use std::mem::size_of;
 
 	use super::*;
+	use crate::configuration::{ConfigurationValue, apply_setting};
 	use crate::rendering::SetLayout;
 
 	#[test]
@@ -882,27 +888,56 @@ mod tests {
 		let settings = SurfelGiSettings::new(true, 65_536, 8_192);
 
 		// Startup parameters reach the port as text, and keep the settings as they are.
-		let (kept, effective) = settings
-			.with_parameter("surfel-capacity", &ConfigurationValue::Text("65536".to_string()))
-			.unwrap();
+		let (kept, effective) = apply_setting(
+			settings,
+			SurfelGiSettings::SETTINGS,
+			"",
+			"surfel-capacity",
+			&ConfigurationValue::Text("65536".to_string()),
+		)
+		.unwrap();
 		assert_eq!(kept, settings);
 		assert_eq!(effective, ConfigurationValue::Integer(65_536));
 		assert!(
-			settings
-				.with_parameter("ray-budget", &ConfigurationValue::Integer(8_192))
-				.is_ok()
+			apply_setting(
+				settings,
+				SurfelGiSettings::SETTINGS,
+				"",
+				"ray-budget",
+				&ConfigurationValue::Integer(8_192)
+			)
+			.is_ok()
 		);
 		assert!(
-			settings
-				.with_parameter("enabled", &ConfigurationValue::Text("true".to_string()))
-				.is_ok()
+			apply_setting(
+				settings,
+				SurfelGiSettings::SETTINGS,
+				"",
+				"enabled",
+				&ConfigurationValue::Text("true".to_string())
+			)
+			.is_ok()
 		);
-		assert!(settings.with_parameter("enabled", &ConfigurationValue::Bool(false)).is_err());
+		assert!(
+			apply_setting(
+				settings,
+				SurfelGiSettings::SETTINGS,
+				"",
+				"enabled",
+				&ConfigurationValue::Bool(false)
+			)
+			.is_err()
+		);
 
 		for (parameter, value) in [("surfel-capacity", 32_768), ("ray-budget", 16_384)] {
-			let reason = settings
-				.with_parameter(parameter, &ConfigurationValue::Integer(value))
-				.unwrap_err();
+			let reason = apply_setting(
+				settings,
+				SurfelGiSettings::SETTINGS,
+				"",
+				parameter,
+				&ConfigurationValue::Integer(value),
+			)
+			.unwrap_err();
 			assert!(
 				reason.contains(&format!("`render.surfel-gi.{parameter}` in `config.json`")),
 				"{reason}"

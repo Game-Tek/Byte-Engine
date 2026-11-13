@@ -223,7 +223,7 @@ use super::scene::RenderInfo;
 use super::set_layouts;
 use super::shader_data::LightingData;
 use super::skinning::SkinningPass;
-use crate::configuration::ConfigurationValue;
+use crate::configuration::{Accepts, Setting};
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassFunction};
 use crate::rendering::{PipelineManagerClient, ShownDebugViews, Sink, View};
 
@@ -426,6 +426,9 @@ impl IndirectDiffuseSource {
 		}
 	}
 
+	/// Every source, in the order of the `render.gi.technique` words in [`GiSettings::SETTINGS`].
+	const ALL: [Self; 4] = [Self::ScreenSpace, Self::Surfels, Self::Probes, Self::Baked];
+
 	/// Returns the `gi.technique` value that selects this source, and the startup parameter that builds it in.
 	fn names(self) -> (&'static str, &'static str) {
 		match self {
@@ -463,6 +466,8 @@ pub(crate) struct GiSettings {
 	pub(crate) enabled: bool,
 	/// The technique that lights indirect diffuse light while `enabled`.
 	pub(crate) technique: IndirectDiffuseSource,
+	/// The techniques the project built into its shaders, the only ones `technique` can select.
+	pub(crate) features: VisibilityFeatures,
 }
 
 impl GiSettings {
@@ -483,55 +488,40 @@ impl GiSettings {
 		Self {
 			enabled: true,
 			technique,
+			features,
 		}
 	}
 
-	/// Applies one runtime parameter, returning the updated settings and the effective value, or leaves them unchanged.
-	///
-	/// A technique the project left out of its shaders, `features`, is not selected.
-	pub(crate) fn with_parameter(
-		self,
-		parameter: &str,
-		value: &ConfigurationValue,
-		features: VisibilityFeatures,
-	) -> Result<(Self, ConfigurationValue), String> {
-		match parameter {
-			"enabled" => {
-				let enabled = value.to_bool().ok_or(
-					"GI enabled was not set. The most likely cause is that the value is neither `true` nor `false`. Set it to `true` or `false`.",
-				)?;
-				Ok((Self { enabled, ..self }, ConfigurationValue::Bool(enabled)))
-			}
-			"technique" => {
-				// Technique names match in any letter case, so `SSGI` selects SSGI too.
-				let technique = value
-					.as_text()
-					.and_then(|text| {
-						[
-							IndirectDiffuseSource::ScreenSpace,
-							IndirectDiffuseSource::Surfels,
-							IndirectDiffuseSource::Probes,
-							IndirectDiffuseSource::Baked,
-						]
-						.into_iter()
-						.find(|technique| text.eq_ignore_ascii_case(technique.names().0))
-					})
-					.ok_or("GI technique was not set. The most likely cause is that the value is not `ssgi`, `surfels`, `probes`, or `baked`. Set it to one of the four.")?;
+	/// The runtime settings, named inside the `render.gi.` port. A technique the project left out of its shaders is
+	/// not selected, and the log says so.
+	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[
+		Setting {
+			name: "enabled",
+			accepts: Accepts::Bool,
+			apply: |settings, read| {
+				let enabled = read.bool();
+				Ok(Self { enabled, ..settings })
+			},
+		},
+		Setting {
+			name: "technique",
+			// Listed in `IndirectDiffuseSource::ALL` order, which `apply` indexes.
+			accepts: Accepts::Choice(&["ssgi", "surfels", "probes", "baked"]),
+			apply: |settings, read| {
+				let technique = IndirectDiffuseSource::ALL[read.choice()];
 				let (name, feature) = technique.names();
-				if !technique.built_in(features) {
-					return Err(format!(
+				if !technique.built_in(settings.features) {
+					let reason = format!(
 						"GI technique `{name}` was not selected. The most likely cause is that `render.{feature}` was `false` at startup, so the technique was left out of the project's shaders. Set it to `true` in `config.json`, then rebake with `beld bake --force`. See {}.",
 						crate::online_docs_url("use/resources/bake#leave-render-features-out-of-the-bake")
-					));
+					);
+					log::warn!("{reason}");
+					return Err(reason);
 				}
-				Ok((Self { technique, ..self }, ConfigurationValue::Text(name.to_string())))
-			}
-			_ => Err(
-				"GI parameter was not set. The most likely cause is that the parameter name is unsupported. Use `enabled` or `technique`."
-					.to_string(),
-			),
-		}
-	}
+				Ok(Self { technique, ..settings })
+			},
+		},
+	];
 }
 
 /// The `SinkHistory` struct describes what the previous frame's history images hold for one sink.
@@ -1204,6 +1194,7 @@ impl VisibilityRenderPass {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::configuration::{ConfigurationValue, apply_setting};
 
 	fn text(value: &str) -> ConfigurationValue {
 		ConfigurationValue::Text(value.to_string())
@@ -1233,19 +1224,25 @@ mod tests {
 		assert!(GiSettings::new(features(true, false, false)).enabled);
 	}
 
+	/// Applies one `render.gi.` update to the settings of a project built with `features`.
+	fn set(
+		features: VisibilityFeatures,
+		name: &str,
+		value: ConfigurationValue,
+	) -> Result<(GiSettings, ConfigurationValue), String> {
+		apply_setting(GiSettings::new(features), GiSettings::SETTINGS, "", name, &value)
+	}
+
 	#[test]
 	fn gi_enabled_accepts_booleans_and_startup_text() {
 		let features = VisibilityFeatures::default();
-		let (disabled, effective) = GiSettings::new(features)
-			.with_parameter("enabled", &text("false"), features)
-			.unwrap();
+		let (disabled, effective) = set(features, "enabled", text("false")).unwrap();
 		assert!(!disabled.enabled);
 		assert_eq!(effective, ConfigurationValue::Bool(false));
-		let (enabled, _) = disabled
-			.with_parameter("enabled", &ConfigurationValue::Bool(true), features)
-			.unwrap();
+		let (enabled, _) =
+			apply_setting(disabled, GiSettings::SETTINGS, "", "enabled", &ConfigurationValue::Bool(true)).unwrap();
 		assert!(enabled.enabled);
-		assert!(enabled.with_parameter("enabled", &text("off"), features).is_err());
+		assert!(set(features, "enabled", text("off")).is_err());
 	}
 
 	#[test]
@@ -1254,28 +1251,23 @@ mod tests {
 			surfel_gi: true,
 			..VisibilityFeatures::default()
 		};
-		let settings = GiSettings::new(both);
 
-		let (surfels, effective) = settings.with_parameter("technique", &text("surfels"), both).unwrap();
+		let (surfels, effective) = set(both, "technique", text("surfels")).unwrap();
 		assert_eq!(surfels.technique, IndirectDiffuseSource::Surfels);
 		assert_eq!(effective, text("surfels"));
-		let (ssgi, effective) = surfels.with_parameter("technique", &text("SSGI"), both).unwrap();
+		let (ssgi, effective) = apply_setting(surfels, GiSettings::SETTINGS, "", "technique", &text("SSGI")).unwrap();
 		assert_eq!(ssgi.technique, IndirectDiffuseSource::ScreenSpace);
 		assert_eq!(effective, text("ssgi"));
-		assert!(settings.with_parameter("technique", &text("voxels"), both).is_err());
+		assert!(set(both, "technique", text("voxels")).is_err());
 
 		// A technique left out of the shaders can't be selected, and the reason names the parameter that builds it in.
-		let reason = settings
-			.with_parameter("technique", &text("surfels"), VisibilityFeatures::default())
-			.unwrap_err();
+		let reason = set(VisibilityFeatures::default(), "technique", text("surfels")).unwrap_err();
 		assert!(reason.contains("`render.surfel-gi.enabled`"), "{reason}");
-		let reason = settings.with_parameter("technique", &text("probes"), both).unwrap_err();
+		let reason = set(both, "technique", text("probes")).unwrap_err();
 		assert!(reason.contains("`render.probe-gi.enabled`"), "{reason}");
 
 		let probes_built_in = VisibilityFeatures { probe_gi: true, ..both };
-		let (probes, effective) = settings
-			.with_parameter("technique", &text("Probes"), probes_built_in)
-			.unwrap();
+		let (probes, effective) = set(probes_built_in, "technique", text("Probes")).unwrap();
 		assert_eq!(probes.technique, IndirectDiffuseSource::Probes);
 		assert_eq!(effective, text("probes"));
 	}
@@ -1289,13 +1281,10 @@ mod tests {
 		};
 		assert_eq!(GiSettings::new(baked).technique, IndirectDiffuseSource::Baked);
 
-		let settings = GiSettings::new(VisibilityFeatures::default());
-		let (lightmaps, effective) = settings.with_parameter("technique", &text("Baked"), baked).unwrap();
+		let (lightmaps, effective) = set(baked, "technique", text("Baked")).unwrap();
 		assert_eq!(lightmaps.technique, IndirectDiffuseSource::Baked);
 		assert_eq!(effective, text("baked"));
-		let reason = settings
-			.with_parameter("technique", &text("baked"), VisibilityFeatures::default())
-			.unwrap_err();
+		let reason = set(VisibilityFeatures::default(), "technique", text("baked")).unwrap_err();
 		assert!(reason.contains("`render.baked-gi.enabled`"), "{reason}");
 	}
 }

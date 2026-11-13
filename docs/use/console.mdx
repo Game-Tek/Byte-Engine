@@ -20,7 +20,8 @@ terminal shows its log with a command line under it.
 
 2. Click the terminal, so your keys go to it instead of the application's window.
 
-3. Type `set`, the setting's name, and the value, then press Enter:
+3. Type `set`, the setting's name, and the value, then press Enter. Press Tab to complete the name or the value: the
+   console lists the settings your application has, one dotted part at a time, and the values each one takes.
 
    ```text
    set render.lod.force 2
@@ -40,9 +41,9 @@ and press Page Up to read older log lines.
 
 ## See what's baking
 
-A debug build bakes assets the first time it needs them. To watch those bakes, press Tab: the pane switches from the log
+A debug build bakes assets the first time it needs them. To watch those bakes, press F2: the pane switches from the log
 to the bakes. It shows how many assets are baking, have baked, and have failed; each asset baking now with how long it
-has run; and the latest assets to finish, marked ✓ or ✗ with how long each took. Each asset sits indented under the asset that needed it, named by what differs from that asset's ID, so you can see why it bakes. Press Tab again to return to the log.
+has run; and the latest assets to finish, marked ✓ or ✗ with how long each took. Each asset sits indented under the asset that needed it, named by what differs from that asset's ID, so you can see why it bakes. Press F2 again to return to the log.
 
 ## Close the application
 

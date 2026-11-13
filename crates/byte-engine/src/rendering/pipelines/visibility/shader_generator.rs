@@ -701,6 +701,7 @@ pub(super) fn visibility_shader_module<'a>(tile: bool) -> [Node<'a>; 2] {
 		(ENVIRONMENT_BRDF_SOURCE, "environment_brdf"),
 		(DIFFUSE_TRANSMISSION_SOURCE, "diffuse_transmission"),
 		(AVERAGE_SPECULAR_ALBEDO_SOURCE, "average_specular_albedo"),
+		(TROWBRIDGE_REITZ_SOURCE, "trowbridge_reitz"),
 		(IES_PROFILE_UV_SOURCE, "ies_profile_uv"),
 		(IES_PROFILE_SAMPLE_SOURCE, "sample_ies_profile"),
 		(SHADOW_RECEIVER_PLANE_SOURCE, "shadow_receiver_plane_depth_gradient"),

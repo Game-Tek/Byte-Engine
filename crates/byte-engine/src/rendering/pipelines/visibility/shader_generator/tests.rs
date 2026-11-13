@@ -2056,6 +2056,58 @@ fn coupled_diffuse_conserves_energy_and_lights_rough_surfaces_at_grazing_views_i
 	);
 }
 
+/// Verifies the light lobe peaks at its analytic value `1 / (π α²)` for the smoothest lobe material evaluation allows,
+/// where the half vector meets the normal, and stays a distribution: its projected integral over the hemisphere is one.
+#[test]
+fn trowbridge_reitz_peaks_finitely_and_integrates_to_one_in_the_besl_vm() {
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			let normal: vec3f = vec3f(0.0, 0.0, 1.0);
+			results.peak = trowbridge_reitz(normal, normal, 0.002025);
+			// A half vector 0.001 radians off the normal, where (n·h)² rounds to one in single precision.
+			results.near_peak = trowbridge_reitz(normal, normalize(vec3f(0.001, 0.0, 1.0)), 0.002025);
+			// The integral of D(h) (n·h) over the hemisphere, by the midpoint rule over the polar angle.
+			let integral: f32 = 0.0;
+			let steps: u32 = 2048;
+			let step: f32 = 1.57079632679 / f32(steps);
+			for (let i: u32 = 0; i < steps; i = i + 1) {
+				let theta: f32 = (f32(i) + 0.5) * step;
+				let half_vector: vec3f = vec3f(sin(theta), 0.0, cos(theta));
+				integral = integral + trowbridge_reitz(normal, half_vector, 0.25) * cos(theta) * sin(theta) * 6.28318530718 * step;
+			}
+			results.integral = integral;
+		}
+		"#,
+		&mut [],
+		&[(TROWBRIDGE_REITZ_SOURCE, "trowbridge_reitz")],
+		members("f32", &["peak", "near_peak", "integral"]),
+	);
+	let alpha = 0.002025f64;
+	let peak = f64::from(read_f32(&results, "peak"));
+	let expected_peak = 1.0 / (std::f64::consts::PI * alpha * alpha);
+	assert!(
+		(peak - expected_peak).abs() < expected_peak * 0.001,
+		"The lobe peaks at {peak}, not {expected_peak}. The most likely cause is a distribution that cancels or \
+		 overflows where the half vector meets the normal."
+	);
+	// The textbook form, in f64, at the same angle.
+	let cosine = 1.0 / (1.0f64 + 0.001 * 0.001).sqrt();
+	let base = cosine * cosine * (alpha * alpha - 1.0) + 1.0;
+	let expected_near_peak = alpha * alpha / (std::f64::consts::PI * base * base);
+	let near_peak = f64::from(read_f32(&results, "near_peak"));
+	assert!(
+		(near_peak - expected_near_peak).abs() < expected_near_peak * 0.001,
+		"The lobe reads {near_peak} 0.001 radians off its peak, not {expected_near_peak}. The most likely cause is \
+		 that 1 - (n·h)² is computed by subtraction, which cancels near the peak."
+	);
+	let integral = read_f32(&results, "integral");
+	assert!(
+		(integral - 1.0).abs() < 0.001,
+		"The lobe's projected integral is {integral}, not 1. The most likely cause is a wrong normalization constant."
+	);
+}
+
 /// Verifies point receivers use the perspective depth stored by the selected cube face.
 #[test]
 fn point_shadow_receiver_depth_uses_the_dominant_cube_axis_in_the_besl_vm() {

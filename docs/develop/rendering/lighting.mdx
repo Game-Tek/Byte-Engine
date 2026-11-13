@@ -65,6 +65,25 @@ A change here must keep these rules:
   at or below one.
 - Diffuse light stays above zero at a grazing view on a rough surface.
 
+## Smooth highlights stay finite
+
+Material evaluation keeps most of its BRDF in half floats, but not the
+Trowbridge-Reitz distribution of the light lobe. A smooth lobe peaks at
+`1 / (π α²)`, with `α` the roughness squared: about 390,000 for calm water at
+roughness 0.03, far past the half-float maximum of 65,504. The textbook
+denominator `(n·h)² (α² − 1) + 1` also cancels to zero where `n·h` rounds to one.
+The infinities and NaNs that result reach `Lit`, and bloom's prefilter reads NaN
+as zero, so the highlight shows white but doesn't glow.
+
+Material evaluation follows Filament (*Physically Based Rendering in Filament*,
+"Specular D"): it writes `1 − (n·h)²` as `|n × h|²`, evaluates the lobe in single
+precision, and holds the lights' `α` at or above `0.045²`, which bounds the peak
+at about 77,600. Reflected light takes the roughness as written.
+
+A change here must keep the lobe's peak finite at that floor and its projected
+integral over the hemisphere at one, which
+`trowbridge_reitz_peaks_finitely_and_integrates_to_one_in_the_besl_vm` checks.
+
 ## Thin surfaces pass light to their far side
 
 A leaf is a thin sheet: part of the light that enters one face scatters out of

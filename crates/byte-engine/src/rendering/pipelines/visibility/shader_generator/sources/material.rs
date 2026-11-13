@@ -277,6 +277,21 @@ average_specular_albedo: fn (roughness: f16) -> f16 {
 }
 "#;
 
+/// Returns the Trowbridge-Reitz (GGX) distribution toward `half_vector` for the lobe width `alpha`, roughness squared,
+/// which lights the direct specular lobe.
+///
+/// It follows Filament: `1 - (n·h)²` is written as `|n × h|²`, which doesn't cancel near the peak, and it runs in f32,
+/// because a smooth lobe peaks far past the half-float range. See "Smooth highlights stay finite" in the lighting design
+/// note.
+pub(crate) const TROWBRIDGE_REITZ_SOURCE: &str = r#"
+trowbridge_reitz: fn (normal: vec3f, half_vector: vec3f, alpha: f32) -> f32 {
+	let normal_cross_half: vec3f = cross(normal, half_vector);
+	let alpha_n_dot_h: f32 = max(dot(normal, half_vector), 0.0) * alpha;
+	let root: f32 = alpha / (dot(normal_cross_half, normal_cross_half) + alpha_n_dot_h * alpha_n_dot_h);
+	return root * root * 0.31830988618;
+}
+"#;
+
 pub(crate) const MATERIAL_EVALUATION_UV_SOURCE: &str = r#"
 material_evaluation_uv: fn () -> void {
 	// Runtime UVs use half-float storage and are expanded only for materials that sample them. They are interpolated,
@@ -503,7 +518,9 @@ material_evaluation_suffix: fn () -> void {
 	let F0: vec3f16 = vec3f16(0.04, 0.04, 0.04) * one_minus_metalness + albedo_rgb * metalness;
 	let NdotV: f16 = max(dot(normal, V_material), f16(0.0));
 	let roughness_alpha: f16 = roughness * roughness;
-	let roughness_alpha_squared: f16 = roughness_alpha * roughness_alpha;
+	// The α lights see, at least Filament's single-precision floor of 0.045², so a mirror-smooth lobe, such as calm
+	// water's, peaks at a finite value. See `trowbridge_reitz`.
+	let light_lobe_alpha: f32 = max(f32(roughness) * f32(roughness), 0.002025);
 	let adjusted_roughness: f16 = roughness + 1.0;
 	let geometry_k: f16 = adjusted_roughness * adjusted_roughness / 8.0;
 	// These terms depend only on the shaded pixel. Evaluate them once instead of once per light.
@@ -720,16 +737,15 @@ material_evaluation_suffix: fn () -> void {
 			// Schlick's F0 + (1 - F0) f, written so that 1 - F0 is not kept live through the loop.
 			let F: vec3f16 = F0 * (f16(1.0) - half_view_fresnel_factor)
 				+ vec3f16(half_view_fresnel_factor, half_view_fresnel_factor, half_view_fresnel_factor);
-			let NdotH: f16 = max(dot(normal, H), f16(0.0));
-			let denominator_base: f16 = NdotH * NdotH * (roughness_alpha_squared - 1.0) + 1.0;
-			let NDF: f16 = roughness_alpha_squared / (3.14159265359 * denominator_base * denominator_base);
+			let NDF: f32 = trowbridge_reitz(vec3f(normal), vec3f(H), light_lobe_alpha);
 			let geometry_light: f16 = NdotL / (NdotL * (1.0 - geometry_k) + geometry_k);
-			let local_specular: vec3f16 = (NDF * geometry_view * geometry_light * F) / (4.0 * NdotV * NdotL + 0.000001);
+			let local_specular: vec3f = vec3f(F)
+				* (NDF * f32(geometry_view * geometry_light) / (4.0 * f32(NdotV) * f32(NdotL) + 0.000001));
 			let local_diffuse: vec3f16 = direct_diffuse_albedo * diffuse_transmission(NdotL, roughness);
 			let light_color: vec3f = material_evaluation.lighting_data.lights[light_index].color;
 			let irradiance: vec3f = light_color * (attenuation * f32(NdotL * occlusion_factor));
 			diffuse = diffuse + vec3f(local_diffuse) * irradiance;
-			specular = specular + vec3f(local_specular) * irradiance;
+			specular = specular + local_specular * irradiance;
 			// The irradiance view of `MATERIAL_DEBUG_VIEWS`.
 			if (push_constant.debug_view_irradiance) {
 				total_irradiance = total_irradiance + irradiance;

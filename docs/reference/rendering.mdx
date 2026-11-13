@@ -580,6 +580,10 @@ and a graph without a normal keeps the geometric one:
 | `emission` | Three half floats, added to the diffuse light | 0, 0, 0 |
 | `translucency` | Three half floats, in translucent materials only | 0, 0, 0 |
 
+Lights reflect off a surface as if its roughness were at least 0.045, so the
+highlight of a smoother surface, such as calm water, stays finite. Reflected
+environment and screen-space light use the roughness as written.
+
 The surface's world-space normal is converted to the tangent frame. A BEMX
 `image` node samples its texture at its coordinates with the level of detail
 their change across the pixel selects: the derivatives the pipeline computed

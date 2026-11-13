@@ -168,10 +168,10 @@ after that change.
 
 | Field of `data` | Type | Meaning |
 | --- | --- | --- |
-| `baking` | Array | The bakes running, oldest first. Each has the resource `id` and `elapsed_ms`, the milliseconds since it started. |
+| `baking` | Array | The bakes running, oldest first. Each has the resource `id`, `requested_by`, the IDs waiting on it outermost first (empty for a bake requested directly), and `elapsed_ms`, the milliseconds since it started. |
 | `baked` | Integer | The bakes that stored their resource since the application started. |
 | `failed` | Integer | The bakes that ended without storing their resource since the application started. |
-| `finished` | Array | The latest 16 bakes to end, newest first. Each has the resource `id`, `ok`, which is `true` when it stored its resource, and `duration_ms`. |
+| `finished` | Array | The latest 16 bakes to end, newest first. Each has the resource `id`, `requested_by` as in `baking`, `ok`, which is `true` when it stored its resource, and `duration_ms`. |
 
 The key is the `id` of every bake in `baking`, with `baked` and `failed`; a
 record where only times changed has the same key.

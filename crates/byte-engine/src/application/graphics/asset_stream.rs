@@ -113,6 +113,7 @@ mod tests {
 		BakeState {
 			baking: vec![BakingAsset {
 				id: "models/tree.glb".to_string(),
+				requested_by: Vec::new(),
 				elapsed_ms: 1.0,
 			}],
 			baked,

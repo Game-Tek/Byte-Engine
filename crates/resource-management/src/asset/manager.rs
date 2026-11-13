@@ -1105,7 +1105,8 @@ impl AssetManagerState {
 
 		let start_time = std::time::Instant::now();
 		// Every return from here on is the end of a bake; the run records it as failed unless it succeeded below.
-		let run = self.bakes.begin(id.as_ref());
+		// `ancestors` ends with `id`; the rest are the IDs waiting on this bake.
+		let run = self.bakes.begin(id.as_ref(), &ancestors[..ancestors.len().saturating_sub(1)]);
 
 		self.begin_provenance(id.as_ref());
 

@@ -427,6 +427,10 @@ impl Console {
 
 /// Returns the bakes view's rows for `bakes`, the latest bake state and when it arrived, as of `now`: the totals, the
 /// running bakes with how long each has run, and the latest bakes to end.
+///
+/// Both lists are trees: each bake sits under the ID that asked for it, named relative to that ID, so a row says why
+/// its asset bakes. A requester that isn't in the list, such as a resource whose freshness is being checked, is a
+/// dim row without a time.
 fn bake_rows(bakes: Option<&(Instant, BakeState)>, now: Instant) -> Vec<Line<'_>> {
 	let Some((received, state)) = bakes else {
 		return vec![Line::raw("No bake was reported yet.").dim()];
@@ -442,30 +446,147 @@ fn bake_rows(bakes: Option<&(Instant, BakeState)>, now: Instant) -> Vec<Line<'_>
 	)));
 	if !state.baking.is_empty() {
 		rows.push(Line::raw("Baking").bold());
-		rows.extend(state.baking.iter().map(|bake| {
-			Line::raw(format!(
-				"  {:>7} {}",
-				show_milliseconds(bake.elapsed_ms + since_received),
-				bake.id
-			))
-		}));
+		push_tree(
+			&mut rows,
+			state
+				.baking
+				.iter()
+				.map(|bake| (bake.requested_by.as_slice(), bake.id.as_str(), bake.elapsed_ms)),
+			|elapsed_ms| vec![Span::raw(format!("  {:>7}", show_milliseconds(elapsed_ms + since_received)))],
+		);
 	}
 	if !state.finished.is_empty() {
 		rows.push(Line::raw("Finished").bold());
-		rows.extend(state.finished.iter().map(|bake| {
-			let mark = if bake.ok {
-				Span::styled("✓", Style::new().fg(Color::Green))
-			} else {
-				Span::styled("✗", Style::new().fg(Color::Red))
-			};
-			Line::from(vec![
-				mark,
-				Span::raw(format!(" {:>7} ", show_milliseconds(bake.duration_ms))),
-				Span::raw(bake.id.as_str()),
-			])
-		}));
+		push_tree(
+			&mut rows,
+			state
+				.finished
+				.iter()
+				.map(|bake| (bake.requested_by.as_slice(), bake.id.as_str(), (bake.ok, bake.duration_ms))),
+			|(ok, duration_ms)| {
+				let mark = if ok {
+					Span::styled("✓", Style::new().fg(Color::Green))
+				} else {
+					Span::styled("✗", Style::new().fg(Color::Red))
+				};
+				vec![mark, Span::raw(format!(" {:>7}", show_milliseconds(duration_ms)))]
+			},
+		);
 	}
 	rows
+}
+
+/// Pushes a row for each of `bakes`, its requesters outermost first, its ID, and its value, nested under its
+/// requesters. `columns` draws a bake's value as the nine columns before its ID; a requester that isn't in `bakes`
+/// leaves them blank and shows dim.
+fn push_tree<'a, T: Copy>(
+	rows: &mut Vec<Line<'a>>,
+	bakes: impl Iterator<Item = (&'a [String], &'a str, T)>,
+	columns: impl Fn(T) -> Vec<Span<'a>>,
+) {
+	BakeTree::new(bakes).visit(|depth, label, value| {
+		let name = Span::raw(format!(" {:indent$}{label}", "", indent = depth * 2));
+		rows.push(match value {
+			Some(value) => {
+				let mut spans = columns(value);
+				spans.push(name);
+				Line::from(spans)
+			}
+			None => Line::from(vec![Span::raw(" ".repeat(9)), name]).dim(),
+		});
+	});
+}
+
+/// The `BakeTree` struct arranges a list of bakes under the IDs that asked for them, for the bakes view to draw.
+///
+/// Build it with [`BakeTree::new`], then walk it in drawing order with [`BakeTree::visit`].
+struct BakeTree<'a, T> {
+	nodes: Vec<BakeNode<'a, T>>,
+	/// The nodes without a requester, in the order of the list.
+	roots: Vec<usize>,
+}
+
+/// One ID in a [`BakeTree`]: a bake from the list, or a requester the list doesn't hold.
+struct BakeNode<'a, T> {
+	id: &'a str,
+	/// The bake's value, or `None` for a requester that isn't in the list.
+	value: Option<T>,
+	children: Vec<usize>,
+}
+
+impl<'a, T: Copy> BakeTree<'a, T> {
+	/// Arranges `bakes`, each its requesters outermost first, its ID, and its value, keeping the list's order among
+	/// siblings.
+	fn new(bakes: impl Iterator<Item = (&'a [String], &'a str, T)>) -> Self {
+		let mut tree = Self {
+			nodes: Vec::new(),
+			roots: Vec::new(),
+		};
+		for (requested_by, id, value) in bakes {
+			// Walk down the requesters, adding the ones no earlier bake brought in.
+			let mut parent = None;
+			for requester in requested_by {
+				parent = Some(tree.child(parent, requester, |node| node.id == requester));
+			}
+			// An ID can be in the list twice, such as a bake that ended and ran again, so each bake gets its own row.
+			let leaf = tree.child(parent, id, |node| node.id == id && node.value.is_none());
+			tree.nodes[leaf].value = Some(value);
+		}
+		tree
+	}
+
+	/// Returns the child of `parent`, or the root when `parent` is `None`, that `matches`, adding one for `id` when none
+	/// does.
+	fn child(&mut self, parent: Option<usize>, id: &'a str, matches: impl Fn(&BakeNode<'a, T>) -> bool) -> usize {
+		let siblings = match parent {
+			Some(parent) => &self.nodes[parent].children,
+			None => &self.roots,
+		};
+		if let Some(&found) = siblings.iter().find(|&&index| matches(&self.nodes[index])) {
+			return found;
+		}
+		let index = self.nodes.len();
+		self.nodes.push(BakeNode {
+			id,
+			value: None,
+			children: Vec::new(),
+		});
+		match parent {
+			Some(parent) => self.nodes[parent].children.push(index),
+			None => self.roots.push(index),
+		}
+		index
+	}
+
+	/// Calls `row` for each node, parents before their children: with its depth, its ID relative to its parent's, and
+	/// its value.
+	fn visit(&self, mut row: impl FnMut(usize, &'a str, Option<T>)) {
+		let mut stack: Vec<(usize, usize, Option<&'a str>)> = self.roots.iter().rev().map(|&index| (index, 0, None)).collect();
+		while let Some((index, depth, parent)) = stack.pop() {
+			let node = &self.nodes[index];
+			row(
+				depth,
+				parent.map_or(node.id, |parent| relative_id(parent, node.id)),
+				node.value,
+			);
+			stack.extend(node.children.iter().rev().map(|&child| (child, depth + 1, Some(node.id))));
+		}
+	}
+}
+
+/// Returns `id` without the part it shares with `parent`, so a row under its requester names only what differs: a
+/// subresource keeps its `#fragment`, and a file keeps the path after the directories both share.
+fn relative_id<'a>(parent: &str, id: &'a str) -> &'a str {
+	let shared = parent
+		.char_indices()
+		.zip(id.chars())
+		.find(|((_, a), b)| a != b)
+		.map_or(parent.len().min(id.len()), |((at, _), _)| at);
+	if shared == parent.len() && id[shared..].starts_with('#') {
+		return &id[shared..];
+	}
+	// Cut after the last directory both IDs share, never inside a name.
+	id[..shared].rfind('/').map_or(id, |slash| &id[slash + 1..])
 }
 
 /// Shows a time in milliseconds below a second and in seconds from there.
@@ -848,6 +969,7 @@ mod tests {
 		let state = BakeState {
 			baking: vec![BakingAsset {
 				id: "models/tree.glb".to_string(),
+				requested_by: Vec::new(),
 				elapsed_ms: 2400.0,
 			}],
 			baked: 41,
@@ -855,11 +977,13 @@ mod tests {
 			finished: vec![
 				FinishedBake {
 					id: "materials/bark.bema".to_string(),
+					requested_by: Vec::new(),
 					ok: true,
 					duration_ms: 120.0,
 				},
 				FinishedBake {
 					id: "shaders/broken.besl".to_string(),
+					requested_by: Vec::new(),
 					ok: false,
 					duration_ms: 15.0,
 				},
@@ -878,5 +1002,52 @@ mod tests {
 		assert!(shown[6].contains("✗    15ms shaders/broken.besl"), "{shown:?}");
 		assert_eq!(buffer[(1, 5)].fg, Color::Green);
 		assert_eq!(buffer[(1, 6)].fg, Color::Red);
+	}
+
+	#[test]
+	fn the_bakes_view_nests_each_bake_under_its_requesters_relative_to_them() {
+		use resource_management::asset::bake_state::{BakingAsset, FinishedBake};
+
+		let ids = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+		let state = BakeState {
+			baking: vec![
+				BakingAsset {
+					id: "models/tree.glb".to_string(),
+					requested_by: ids(&["levels/forest.bel"]),
+					elapsed_ms: 2400.0,
+				},
+				BakingAsset {
+					id: "models/tree.glb#bark".to_string(),
+					requested_by: ids(&["levels/forest.bel", "models/tree.glb"]),
+					elapsed_ms: 300.0,
+				},
+				BakingAsset {
+					id: "models/textures/bark.png".to_string(),
+					requested_by: ids(&["levels/forest.bel", "models/tree.glb", "models/tree.glb#bark"]),
+					elapsed_ms: 100.0,
+				},
+			],
+			finished: vec![FinishedBake {
+				id: "models/leaf.png".to_string(),
+				requested_by: ids(&["models/tree.glb"]),
+				ok: true,
+				duration_ms: 50.0,
+			}],
+			..BakeState::default()
+		};
+		let mut console = Console::default();
+		console.handle(key(KeyCode::Tab));
+		let buffer = draw_with(&mut console, &VecDeque::new(), Some(&(Instant::now(), state)), 60, 14);
+		let shown = rows(&buffer);
+
+		// The level only waits on the model, so it's a dim row without a time.
+		assert!(shown[3].contains("│          levels/forest.bel "), "{shown:?}");
+		assert!(buffer[(11, 3)].modifier.contains(ratatui::style::Modifier::DIM));
+		// The model shares no directory with the level, so it keeps its whole ID.
+		assert!(shown[4].contains("2.4s   models/tree.glb"), "{shown:?}");
+		assert!(shown[5].contains("300ms     #bark"), "{shown:?}");
+		assert!(shown[6].contains("100ms       textures/bark.png"), "{shown:?}");
+		assert!(shown[8].contains("models/tree.glb"), "{shown:?}");
+		assert!(shown[9].contains("✓    50ms   leaf.png"), "{shown:?}");
 	}
 }

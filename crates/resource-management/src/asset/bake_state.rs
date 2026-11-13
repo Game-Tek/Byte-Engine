@@ -38,6 +38,9 @@ pub struct BakeState {
 pub struct BakingAsset {
 	/// The ID of the resource being baked.
 	pub id: String,
+	/// The IDs waiting on this bake, outermost first: the request that started the chain, then each ID that asked for
+	/// the next. Empty for a bake requested directly.
+	pub requested_by: Vec<String>,
 	/// The milliseconds since the bake started, when the state was reported.
 	pub elapsed_ms: f64,
 }
@@ -47,6 +50,8 @@ pub struct BakingAsset {
 pub struct FinishedBake {
 	/// The ID of the resource that was baked.
 	pub id: String,
+	/// The IDs that waited on this bake, outermost first, as in [`BakingAsset::requested_by`].
+	pub requested_by: Vec<String>,
 	/// Whether the bake stored its resource.
 	pub ok: bool,
 	/// How long the bake ran, in milliseconds.
@@ -73,8 +78,8 @@ pub(crate) struct BakeTracker {
 /// The bakes a tracker keeps between reports.
 #[derive(Default)]
 struct Tracked {
-	/// The bakes running, oldest first, each with its run number and when it started.
-	baking: Vec<(u64, String, Instant)>,
+	/// The bakes running, oldest first, each with its run number, the IDs waiting on it, and when it started.
+	baking: Vec<(u64, String, Vec<String>, Instant)>,
 	/// The run number the next bake gets, which tells two bakes of one ID apart.
 	next_run: u64,
 	baked: u64,
@@ -94,11 +99,12 @@ impl BakeTracker {
 		}
 	}
 
-	/// Records that the bake of `id` started, and returns the run that records its end when dropped.
+	/// Records that the bake of `id` started at the request of `requested_by`, the IDs waiting on it outermost first,
+	/// and returns the run that records its end when dropped.
 	///
 	/// Call [`BakeRun::succeeded`] once the bake stored its resource; a run dropped without it counts as failed, so
 	/// every early return of a bake counts. Without a reporter this does nothing.
-	pub(crate) fn begin(&self, id: &str) -> BakeRun<'_> {
+	pub(crate) fn begin(&self, id: &str, requested_by: &[String]) -> BakeRun<'_> {
 		let mut run = BakeRun {
 			tracker: self,
 			number: 0,
@@ -109,7 +115,9 @@ impl BakeTracker {
 			let mut tracked = self.tracked.lock();
 			run.number = tracked.next_run;
 			tracked.next_run += 1;
-			tracked.baking.push((run.number, id.to_string(), started));
+			tracked
+				.baking
+				.push((run.number, id.to_string(), requested_by.to_vec(), started));
 			tracked.report(reporter.as_ref(), started);
 		}
 		run
@@ -123,7 +131,7 @@ impl BakeTracker {
 		let Some(index) = tracked.baking.iter().position(|(run, ..)| *run == number) else {
 			return;
 		};
-		let (_, id, started) = tracked.baking.remove(index);
+		let (_, id, requested_by, started) = tracked.baking.remove(index);
 		if succeeded {
 			tracked.baked += 1;
 		} else {
@@ -134,6 +142,7 @@ impl BakeTracker {
 		}
 		tracked.finished.push_front(FinishedBake {
 			id,
+			requested_by,
 			ok: succeeded,
 			duration_ms: milliseconds(now - started),
 		});
@@ -146,10 +155,13 @@ impl Tracked {
 	fn report(&mut self, reporter: &dyn BakeReporter, now: Instant) {
 		let mut state = std::mem::take(&mut self.state);
 		state.baking.clear();
-		state.baking.extend(self.baking.iter().map(|(_, id, started)| BakingAsset {
-			id: id.clone(),
-			elapsed_ms: milliseconds(now.saturating_duration_since(*started)),
-		}));
+		state
+			.baking
+			.extend(self.baking.iter().map(|(_, id, requested_by, started)| BakingAsset {
+				id: id.clone(),
+				requested_by: requested_by.clone(),
+				elapsed_ms: milliseconds(now.saturating_duration_since(*started)),
+			}));
 		state.baked = self.baked;
 		state.failed = self.failed;
 		state.finished.clear();
@@ -209,7 +221,7 @@ mod tests {
 	fn a_bake_is_reported_running_then_finished() {
 		let (tracker, captured) = tracker();
 
-		tracker.begin("models/tree.glb").succeeded();
+		tracker.begin("models/tree.glb", &[]).succeeded();
 
 		let states = captured.0.lock();
 		assert_eq!(states.len(), 2);
@@ -227,7 +239,7 @@ mod tests {
 	fn a_bake_dropped_without_success_counts_as_failed() {
 		let (tracker, captured) = tracker();
 
-		drop(tracker.begin("shaders/broken.besl"));
+		drop(tracker.begin("shaders/broken.besl", &[]));
 
 		let last = captured.0.lock().last().cloned().expect("a report");
 		assert_eq!(last.failed, 1);
@@ -239,8 +251,8 @@ mod tests {
 	fn running_bakes_are_oldest_first_and_finished_bakes_newest_first() {
 		let (tracker, captured) = tracker();
 
-		let first = tracker.begin("a");
-		let second = tracker.begin("b");
+		let first = tracker.begin("a", &[]);
+		let second = tracker.begin("b", &[]);
 		assert_eq!(
 			captured
 				.0
@@ -264,11 +276,23 @@ mod tests {
 	}
 
 	#[test]
+	fn a_bake_reports_the_ids_waiting_on_it() {
+		let (tracker, captured) = tracker();
+		let requested_by = ["levels/forest.bel".to_string(), "models/tree.glb".to_string()];
+
+		tracker.begin("models/bark.png", &requested_by).succeeded();
+
+		let states = captured.0.lock();
+		assert_eq!(states[0].baking[0].requested_by, requested_by);
+		assert_eq!(states[1].finished[0].requested_by, requested_by);
+	}
+
+	#[test]
 	fn only_the_latest_finished_bakes_are_kept() {
 		let (tracker, captured) = tracker();
 
 		for index in 0..FINISHED_KEPT + 4 {
-			tracker.begin(&index.to_string()).succeeded();
+			tracker.begin(&index.to_string(), &[]).succeeded();
 		}
 
 		let last = captured.0.lock().last().cloned().unwrap();
@@ -280,7 +304,7 @@ mod tests {
 	#[test]
 	fn the_state_round_trips_through_json() {
 		let (tracker, captured) = tracker();
-		tracker.begin("a").succeeded();
+		tracker.begin("a", &[]).succeeded();
 
 		let state = captured.0.lock().last().cloned().unwrap();
 		let text = serde_json::to_string(&state).unwrap();

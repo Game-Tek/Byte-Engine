@@ -58,7 +58,6 @@ pub(crate) struct SsgiTargets {
 	pub(crate) normals: ghi::DynamicImageHandle,
 	/// Named [`SSGI_HISTORY_TARGET`]. Bind it in material evaluation, which upsamples it with its pixels' surfaces.
 	pub(crate) history: ghi::DynamicImageHandle,
-	pub(crate) diffuse_radiance_history: ghi::DynamicImageHandle,
 }
 
 /// Creates the SSGI render-graph targets for the sink that `render_pass_builder` sets up.
@@ -79,13 +78,25 @@ pub(crate) fn create_ssgi_targets(
 			.into(),
 		normals: render_pass_builder.create_history_target(image(SSGI_NORMALS_TARGET, NORMAL_FORMAT), SSGI_RESOLUTION_DIVISOR),
 		history: render_pass_builder.create_history_target(radiance_image(SSGI_HISTORY_TARGET), SSGI_RESOLUTION_DIVISOR),
-		// Clear use lets the renderer clear it on frames the scene records nothing.
-		diffuse_radiance_history: render_pass_builder.create_history_target(
-			radiance_image(DIFFUSE_RADIANCE_HISTORY_TARGET).additional_uses(ghi::Uses::Clear),
-			1,
-		),
 	}
 }
+
+/// Creates [`DIFFUSE_RADIANCE_HISTORY_TARGET`], the diffuse light opaque material evaluation leaves for SSGI's rays.
+///
+/// Create it only for a project that builds SSGI in: without SSGI, the shaders drop every statement that writes it.
+/// Next, bind it in material evaluation and pass it to [`SsgiPass::new`].
+pub(crate) fn create_diffuse_radiance_history_target(
+	render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>,
+) -> ghi::DynamicImageHandle {
+	// Clear use lets the renderer clear it on frames the scene records nothing.
+	render_pass_builder.create_history_target(
+		ghi::image::Builder::new(RADIANCE_FORMAT, ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::Clear)
+			.name(DIFFUSE_RADIANCE_HISTORY_TARGET)
+			.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+		1,
+	)
+}
+
 /// The format of the SSGI radiance images: HDR radiance in RGB and the ray hit fraction in alpha.
 const RADIANCE_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
 /// The format of the SSGI normals: an octahedral pair, at half the bandwidth of a three-component normal in
@@ -126,14 +137,15 @@ impl SsgiPass {
 	/// Wires the trace and temporal descriptor sets.
 	///
 	/// `depth_pyramid` and `view_data` come from [`super::depth_pyramid::DepthPyramidPass`]. Create `targets` with
-	/// [`create_ssgi_targets`]. Next, bind [`SsgiTargets::history`], [`SsgiTargets::normals`], the pyramid, and
-	/// `view_data` in material evaluation.
+	/// [`create_ssgi_targets`], and `diffuse_radiance_history` with [`create_diffuse_radiance_history_target`]. Next,
+	/// bind [`SsgiTargets::history`], [`SsgiTargets::normals`], the pyramid, and `view_data` in material evaluation.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		depth_pyramid: ghi::DynamicImageHandle,
 		view_data: ghi::DynamicBufferHandle<ScreenViewData>,
 		targets: SsgiTargets,
+		diffuse_radiance_history: ghi::DynamicImageHandle,
 	) -> Self {
 		let screen_trace_descriptor_set = set_layouts::SCREEN_TRACE.create_set(context, "SSGI Screen Trace Descriptor Set");
 		let parameters_descriptor_set = set_layouts::SSGI.create_set(context, "SSGI Parameters Descriptor Set");
@@ -151,12 +163,7 @@ impl SsgiPass {
 				.max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
 		let blue_noise = create_blue_noise_texture(context);
-		let SsgiTargets {
-			raw,
-			normals,
-			history,
-			diffuse_radiance_history,
-		} = targets;
+		let SsgiTargets { raw, normals, history } = targets;
 		let screen_trace = set_layouts::SCREEN_TRACE.binder(screen_trace_descriptor_set);
 		let trace = set_layouts::SSGI_TRACE.binder(trace_descriptor_set);
 		let temporal = set_layouts::SSGI_TEMPORAL.binder(temporal_descriptor_set);

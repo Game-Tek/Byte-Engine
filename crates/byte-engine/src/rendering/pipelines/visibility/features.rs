@@ -285,7 +285,7 @@ impl VisibilityFeatures {
 	/// `byte_engine/rendering/` and the stems of the engine assets only it uses, and whether the project builds it in.
 	/// Each stem names a pipeline and its shader, or a shader the engine assembles a pipeline from, which takes a row of
 	/// its own.
-	fn table(&self) -> [(&'static str, &'static str, &'static [&'static str], bool); 14] {
+	fn table(&self) -> [(&'static str, &'static str, &'static [&'static str], bool); 15] {
 		use super::ray_tracing::{DEFAULT_HIT_SHADERS, PROBE_SHADING_SHADERS, SURFEL_SHADING_SHADERS};
 		use super::render_pass::{
 			CONTACT_SHADOW_PIPELINES, GTAO_PIPELINES, MATERIAL_PREPASS_PIPELINES, PROBE_GI_PIPELINES, RAY_HIT_PIPELINES,
@@ -294,6 +294,8 @@ impl VisibilityFeatures {
 		[
 			("gtao", "visibility/", &GTAO_PIPELINES, self.gtao),
 			("ssgi", "visibility/", &SSGI_PIPELINES, self.ssgi),
+			// Only SSGI rays read the diffuse light opaque surfaces leave, so its writes and image go with SSGI.
+			("diffuse_radiance_map", "visibility/", &[], self.ssgi),
 			("surfel_gi", "visibility/", &SURFEL_GI_PIPELINES, self.surfel_gi),
 			("surfel_gi", "visibility/", &SURFEL_SHADING_SHADERS, self.surfel_gi),
 			("probe_gi", "visibility/", &PROBE_GI_PIPELINES, self.probe_gi),

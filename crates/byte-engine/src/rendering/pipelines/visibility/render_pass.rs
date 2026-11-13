@@ -194,7 +194,7 @@ use self::shadows::CascadeFitPass;
 pub(crate) use self::shadows::{ShadowMaps, ShadowWork, SunCascades};
 pub(super) use self::ssgi::SSGI_PIPELINES;
 use self::ssgi::SsgiPass;
-pub(crate) use self::ssgi::{SsgiTargets, create_ssgi_targets};
+pub(crate) use self::ssgi::{SsgiTargets, create_diffuse_radiance_history_target, create_ssgi_targets};
 pub(super) use self::sun_visibility::CONTACT_SHADOW_PIPELINES;
 use self::sun_visibility::SunVisibilityPass;
 pub(crate) use self::sun_visibility::{ContactShadowSettings, SunVisibilityTargets, create_sun_visibility_targets};
@@ -363,9 +363,11 @@ pub(crate) struct SinkTargets {
 	pub(crate) depth: ghi::DynamicImageHandle,
 	pub(crate) primitive_index: ghi::BaseImageHandle,
 	pub(crate) instance_id: ghi::BaseImageHandle,
-	/// The SSGI images, including the diffuse light that opaque material evaluation writes for next frame's rays. Surfel
-	/// GI and probe GI write the same images in SSGI's place.
+	/// The SSGI images. Surfel GI and probe GI write the same images in SSGI's place.
 	pub(crate) ssgi: SsgiTargets,
+	/// The diffuse light that opaque material evaluation writes for next frame's SSGI rays, present when the project
+	/// builds SSGI in.
+	pub(crate) diffuse_radiance_history: Option<ghi::DynamicImageHandle>,
 	/// Surfel GI's own images, present when the frame has a [`SurfelPool`] that surfel GI can light this sink from.
 	pub(crate) surfels: Option<SurfelTargets>,
 	/// The sun's contact shadows, which opaque material evaluation multiplies into the sun's shadow.
@@ -631,13 +633,15 @@ impl VisibilityRenderPass {
 			cascade_fit.receiver_fit_parameters(),
 		);
 		let occlusion = OcclusionCulling::new(context, &pipeline_manager, depth, meshlet_groups);
-		let ssgi = features.ssgi.then(|| {
+		// The diffuse radiance history exists exactly when the project builds SSGI in.
+		let ssgi = targets.diffuse_radiance_history.map(|diffuse_radiance_history| {
 			SsgiPass::new(
 				context,
 				&pipeline_manager,
 				depth_pyramid.depth_pyramid,
 				depth_pyramid.view_data,
 				targets.ssgi,
+				diffuse_radiance_history,
 			)
 		});
 		let surfel_resolve = targets.surfels.map(|surfels| {
@@ -695,7 +699,6 @@ impl VisibilityRenderPass {
 			.collect::<Vec<_>>();
 		writes.extend([
 			evaluation.image("lit_map", targets.lit),
-			evaluation.image("diffuse_radiance_map", targets.ssgi.diffuse_radiance_history),
 			evaluation.buffer("lighting_data", lighting_buffer),
 			evaluation.sampled("ao", targets.gtao.ambient_occlusion, linear_sampler),
 			// Material evaluation upsamples the half-resolution SSGI result itself. It fetches texels at edges, and filters the
@@ -710,6 +713,12 @@ impl VisibilityRenderPass {
 			visibility.image("triangle_index", targets.primitive_index),
 			visibility.image("instance_index_render_target", targets.instance_id),
 		]);
+		// Without SSGI the shaders leave out `diffuse_radiance_map`, so nothing is bound there.
+		writes.extend(
+			targets
+				.diffuse_radiance_history
+				.map(|image| evaluation.image("diffuse_radiance_map", image)),
+		);
 		// One image of each local shadow-map size class, which a light picks by its class.
 		for (size_class, (cone, point)) in shadow_maps.cone.iter().zip(&shadow_maps.point).enumerate() {
 			writes.extend([

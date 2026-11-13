@@ -47,6 +47,8 @@ main: fn (input: StageInput) -> void {
 		);
 		optical_depth = optical_depth + density * (t1 - t0);
 	}
-	let transmittance: vec3f = exp(vec3f(0.0, 0.0, 0.0) - atmosphere_extinction_from_density(optical_depth));
+	// Sunlight the haze throws forward still arrives with the sun, so the haze dims it by its delta-Eddington scaled
+	// scattering only.
+	let transmittance: vec3f = exp(vec3f(0.0, 0.0, 0.0) - atmosphere_extinction_from_density(optical_depth, parameters.haze.y));
 	write(transmittance_lut, pixel, vec4f(transmittance.x, transmittance.y, transmittance.z, 1.0));
 }

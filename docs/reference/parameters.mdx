@@ -158,6 +158,7 @@ fatal, and the inspector can change them while the application runs.
 | `render.lod.small-bias` | Finite number, one or more | 2 | Scales the on-screen error allowed for a small instance, on top of `render.lod.bias`. |
 | `render.lod.force` | A level number, or `off` | `off` | Draws one detail level for every mesh. |
 | `render.motion-blur.taps` | 1 through 32 | 8 | Motion blur sample taps. |
+| `render.sky.haze` | Finite number, zero or more | The sky's `haze` setting, 0.05 by default | The atmosphere sky's haze, as the aerosol optical depth looking straight up from the ground. More haze brightens and whitens the sky. |
 | `render.bloom.pixel-weights` | Strict boolean | `false` | Whether bloom weighs each pixel of a 2 × 2 block by its brightness before averaging the block. Off, each block is one bilinear read: cheaper, but a cluster of bright pixels glows more. |
 
 The `enabled` names of GTAO and contact shadows double as runtime settings

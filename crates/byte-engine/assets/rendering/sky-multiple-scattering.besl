@@ -16,6 +16,10 @@ get_planet_center: fn () -> vec3f {
 get_ground_radius: fn () -> f32 { return parameters.atmosphere.x; }
 get_atmosphere_radius: fn () -> f32 { return parameters.atmosphere.y; }
 get_ground_albedo: fn () -> f32 { return parameters.misc.z; }
+// The haze scattering that dims and diffuses light, per meter at ground level and the same for every color. Haze
+// throws most of its light forward, and the delta-Eddington approximation counts that part as never scattered, so the
+// rest scatters evenly enough for this table's isotropic phase function.
+get_haze_transport_scattering: fn () -> f32 { return parameters.haze.y; }
 
 main: fn (input: StageInput) -> void {
 	let pixel: vec2u = input.thread_id;
@@ -36,7 +40,7 @@ main: fn (input: StageInput) -> void {
 	let pi: f32 = 3.14159265359;
 	let isotropic_phase: f32 = 1.0 / (4.0 * pi);
 	let beta_rayleigh: vec3f = vec3f(0.000005802, 0.000013558, 0.000033100);
-	let beta_mie: vec3f = vec3f(0.000003996, 0.000003996, 0.000003996);
+	let beta_mie: vec3f = vec3f(get_haze_transport_scattering(), get_haze_transport_scattering(), get_haze_transport_scattering());
 	let minimum_extinction: vec3f = vec3f(0.000000000001, 0.000000000001, 0.000000000001);
 	let second_order: vec3f = vec3f(0.0, 0.0, 0.0);
 	let scattered_fraction: vec3f = vec3f(0.0, 0.0, 0.0);
@@ -69,7 +73,7 @@ main: fn (input: StageInput) -> void {
 					parameters.atmosphere.w,
 					parameters.misc.x
 				);
-				let extinction: vec3f = max(atmosphere_extinction_from_density(density), minimum_extinction);
+				let extinction: vec3f = max(atmosphere_extinction_from_density(density, get_haze_transport_scattering()), minimum_extinction);
 				let scattering: vec3f = density.x * beta_rayleigh + density.y * beta_mie;
 				let step_transmittance: vec3f = exp(vec3f(0.0, 0.0, 0.0) - extinction * step_length);
 				// Shared atmosphere helpers only resolve from `main`, so the sun's transmittance is read inline.

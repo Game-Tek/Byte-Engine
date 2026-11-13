@@ -732,6 +732,7 @@ pub fn setup_exponential_height_fog_render_pass(application: &mut GraphicsApplic
 ///
 /// `settings` sets the atmosphere and how much of the screen the sky covers. The default draws the upper half of
 /// the screen; set [`AtmosphereSkyRenderPassSettings::screen_height`] to `1.0` for cameras that look up or down.
+/// Use `render.sky.haze` to change [`AtmosphereSkyRenderPassSettings::haze`] at runtime.
 ///
 /// Each window's sky subscribes to lights when the renderer adopts the window, at the end of the tick that creates it,
 /// and doesn't see lights created before then. Create the window in one tick and the light in a later one.
@@ -739,13 +740,14 @@ pub fn setup_atmosphere_sky_render_pass(application: &mut GraphicsApplication, s
 	// Keep producer handles in the sink factory instead of template listeners, which would retain unread broadcast messages.
 	let light_factory = application.world().factory::<DirectionalLight>();
 	let transform_channel = application.world().channel::<TransformationUpdate>();
+	let controls = AtmosphereSkyControls::new(settings, application.configure("render.sky."));
 	let renderer = &mut application.renderer;
 
 	renderer.set_scene_background_for_all_sinks(move |render_pass_builder, targets| {
 		Box::new(AtmosphereSkyRenderPass::new(
 			render_pass_builder,
 			targets,
-			settings,
+			controls.clone(),
 			light_factory.listener(),
 			transform_channel.listener(),
 		))

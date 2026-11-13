@@ -141,7 +141,41 @@ If you install the atmosphere sky with `setup_atmosphere_sky_render_pass`, the n
 light is also the sky's sun. Its lux and color set how bright and what color the sky is, so a
 brighter sun brightens the sky too. Without a directional light, the sky is black. The sky includes
 light that scatters more than once in the air, and sunlight the ground reflects back up, so a
-100,000 lux sun gives a clear sky of about 2,000 to 8,000 nits, brightest near the horizon. The sky is drawn after opaque surfaces
+100,000 lux sun high in the sky gives, at the default haze and away from the sun, a clear sky of
+about 3,400 nits well above the horizon and 6,500 near it, and several times more around the sun.
+
+Haze is the aerosol optical depth looking straight up from the ground. It scatters every color
+alike and mostly forward, so more haze puts a white glow around the sun and pales the rest of the
+sky a little, most near the horizon:
+
+| Haze | Air |
+| --- | --- |
+| 0 | No aerosols, only air molecules and ozone |
+| 0.02 | Very clean air |
+| 0.05 | A clear day; the default |
+| 0.15 | An average day over land |
+| 0.4 | A hazy day |
+
+Haze takes any number of 0 or more. It thins with altitude over the Mie scale height, so its
+scattering at the ground is the haze divided by that height. For a Mie anisotropy `g`:
+
+| Light | Haze scattering it meets |
+| --- | --- |
+| Scattered once by the haze toward the eye | The full haze, with the Cornette-Shanks phase function |
+| Sunlight on its way down, the view, and light scattered more than once | The haze × (1 − g²), scattered evenly |
+
+The light's illuminance is the sunlight that reaches the camera, the same light that surfaces
+receive. The sunlight that enters the atmosphere is that illuminance divided, for each color
+channel, by the atmosphere's transmittance from the camera toward the sun:
+
+| Quantity | Value |
+| --- | --- |
+| Sunlight entering the atmosphere | Illuminance ÷ max(transmittance toward the sun, 1/16), for each color channel |
+| Sky radiance | Scattering for each lux entering the atmosphere × the sunlight entering the atmosphere |
+| Sun disk radiance | Illuminance ÷ the disk's solid angle, while the transmittance is 1/16 or more; below that, multiplied by 16 × transmittance |
+| Sun below the horizon | Transmittance 0, so the sky is 16 times its scattering for each lux and the disk is black |
+
+The sky is drawn after opaque surfaces
 and before transparent ones, so glass and other blended surfaces show the sky behind them. By
 default the sky covers the upper half of the screen; its `screen_height` setting changes how much.
 

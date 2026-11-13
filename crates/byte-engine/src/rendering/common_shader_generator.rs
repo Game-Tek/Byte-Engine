@@ -108,9 +108,9 @@ const COMMON_SHADER_SOURCE: &str = r#"
 		return vec3f(rayleigh, mie, ozone);
 	}
 
-	atmosphere_extinction_from_density: fn (density: vec3f) -> vec3f {
+	atmosphere_extinction_from_density: fn (density: vec3f, haze_scattering: f32) -> vec3f {
 		let beta_rayleigh: vec3f = vec3f(0.000005802, 0.000013558, 0.000033100);
-		let beta_mie: vec3f = vec3f(0.000003996, 0.000003996, 0.000003996);
+		let beta_mie: vec3f = vec3f(haze_scattering, haze_scattering, haze_scattering);
 		let beta_ozone: vec3f = vec3f(0.000000650, 0.000001881, 0.000000085);
 		return density.x * beta_rayleigh + density.y * beta_mie + density.z * beta_ozone;
 	}

@@ -1,5 +1,9 @@
-// The atmosphere and camera constants every sky pass reads. This layer declares the type only, because each pass binds
-// the buffer at its own slot.
+// The atmosphere and camera constants every sky pass reads. This layer declares the type and the limits the passes
+// share, because each pass binds the buffer at its own slot.
+
+// The least transmittance toward the sun the sky divides the light's illuminance by, so a light left bright while its
+// sun sets, or one below the horizon, brightens the sky at most 16 times per channel.
+SKY_MIN_SUN_TRANSMITTANCE: const f32 = 0.0625;
 
 SkyParameters: struct {
 	inverse_view_projection: mat4f,
@@ -8,6 +12,9 @@ SkyParameters: struct {
 	planet_center: vec4f,
 	atmosphere: vec4f,
 	misc: vec4f,
+	// The haze's scattering per meter at ground level: `x` for the light it scatters once toward the eye, and `y`,
+	// reduced by the delta-Eddington scaling, for how it dims and diffuses light.
+	haze: vec4f,
 	sun_illuminance: vec4f,
 	sun_disk_radiance: vec4f,
 }

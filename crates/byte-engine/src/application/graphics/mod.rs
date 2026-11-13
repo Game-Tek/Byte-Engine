@@ -1468,7 +1468,7 @@ use crate::{
 			bloom::{BloomControls, BloomPass, BloomPassSettings},
 			image_transform::ImageTransformStep,
 			lut::{LutPass, LutWorkflow},
-			sky::{AtmosphereSkyRenderPass, AtmosphereSkyRenderPassSettings},
+			sky::{AtmosphereSkyControls, AtmosphereSkyRenderPass, AtmosphereSkyRenderPassSettings},
 			smaa::SmaaPass,
 		},
 	},

@@ -1,9 +1,12 @@
+use std::{cell::Cell, rc::Rc};
+
 use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _, frame::Frame as _};
 use math::{Point, Radians, UnitVector, inverse};
 use maths_rs::Vec3f;
 use utils::Extent;
 
 use crate::{
+	configuration::{ConfigurationPort, ConfigurationValue},
 	core::{Entity, factory::CreateMessage, listener::DefaultListener},
 	gameplay::transform::TransformationUpdate,
 	rendering::{
@@ -54,6 +57,11 @@ pub struct AtmosphereSkyRenderPassSettings {
 	pub rayleigh_scale_height: f32,
 	pub mie_scale_height: f32,
 	pub mie_anisotropy: f32,
+	/// How much haze the air holds: the aerosol optical depth looking straight up from the ground. Haze scatters every
+	/// color alike and mostly forward, so more of it puts a white glow around the sun and pales the rest of the sky a
+	/// little, most near the horizon. The default, `0.05`, is a clear day; `0.02` is very clean air, `0.15` an
+	/// average day over land, and `0.4` a hazy day. The `render.sky.haze` parameter changes it at runtime.
+	pub haze: f32,
 	pub ozone_strength: f32,
 	/// The fraction of sunlight the planet's surface reflects back into the atmosphere. Multiple scattering adds that
 	/// light to the sky.
@@ -76,12 +84,71 @@ impl Default for AtmosphereSkyRenderPassSettings {
 			rayleigh_scale_height: 8_000.0,
 			mie_scale_height: 1_200.0,
 			mie_anisotropy: 0.76,
+			haze: 0.05,
 			ozone_strength: 1.0,
 			ground_albedo: 0.3,
 			skip_below_horizon: true,
 			planet_center: Point::new(0.0, -6_360_000.0, 0.0),
 			screen_height: 0.5,
 		}
+	}
+}
+
+impl AtmosphereSkyRenderPassSettings {
+	/// Applies one runtime parameter, named inside the controls' configuration port, returning the updated settings and
+	/// the effective value, or leaves them unchanged. `haze` takes a number of 0 or more.
+	pub(crate) fn with_parameter(
+		self,
+		parameter: &str,
+		value: &ConfigurationValue,
+	) -> Result<(Self, ConfigurationValue), String> {
+		match parameter {
+			"haze" => {
+				let haze = value.to_f64().filter(|haze| *haze >= 0.0).ok_or(
+					"Sky haze was not set. The most likely cause is that the value is not a number of 0 or more. Set `render.sky.haze` to the aerosol optical depth, such as `0.05` for a clear day.",
+				)?;
+				Ok((
+					Self {
+						haze: haze as f32,
+						..self
+					},
+					ConfigurationValue::Float(haze),
+				))
+			}
+			_ => Err(
+				"Sky parameter was not set. The most likely cause is that the parameter name is unsupported. Use `render.sky.haze`."
+					.to_string(),
+			),
+		}
+	}
+}
+
+/// The `AtmosphereSkyControls` struct shares one set of settings between every sink's [`AtmosphereSkyRenderPass`], so
+/// a runtime parameter changes the sky of every window at once.
+///
+/// Create it with [`Self::new`] from a [`ConfigurationPort`] registered for the prefix the application gives the sky,
+/// and hand the same `Rc` to each pass with [`AtmosphereSkyRenderPass::new`].
+pub struct AtmosphereSkyControls {
+	settings: Cell<AtmosphereSkyRenderPassSettings>,
+	configuration: ConfigurationPort,
+}
+
+impl AtmosphereSkyControls {
+	/// Creates controls that start at `settings` and apply the runtime updates queued on `configuration`.
+	pub fn new(settings: AtmosphereSkyRenderPassSettings, configuration: ConfigurationPort) -> Rc<Self> {
+		Rc::new(Self {
+			settings: Cell::new(settings),
+			configuration,
+		})
+	}
+
+	/// Applies the queued runtime updates and returns the settings every pass draws with this frame.
+	pub fn settings(&self) -> AtmosphereSkyRenderPassSettings {
+		let mut settings = self.settings.get();
+		self.configuration
+			.drain(&mut settings, AtmosphereSkyRenderPassSettings::with_parameter);
+		self.settings.set(settings);
+		settings
 	}
 }
 
@@ -94,6 +161,7 @@ struct SkyShaderData {
 	planet_center: [f32; 4],
 	atmosphere: [f32; 4],
 	misc: [f32; 4],
+	haze: [f32; 4],
 	sun_illuminance: [f32; 4],
 	sun_disk_radiance: [f32; 4],
 }
@@ -111,26 +179,31 @@ pub struct AtmosphereSkyRenderPass {
 	/// `stage.sky-<stage>`.
 	counters: [ghi::CounterHandle; 4],
 	parameters: ghi::DynamicBufferHandle<SkyShaderData>,
+	controls: Rc<AtmosphereSkyControls>,
+	/// The settings the lookup tables were last built for, with the sun's direction taken from its light.
 	settings: AtmosphereSkyRenderPassSettings,
 	sun: Sun,
-	transmittance_valid: bool,
+	/// The haze the transmittance and multiple-scattering tables were built for, or `None` before their first build.
+	tables_haze: Option<f32>,
 	sky_view_camera_height: Option<u32>,
 }
 
 impl Entity for AtmosphereSkyRenderPass {}
 
 impl AtmosphereSkyRenderPass {
-	/// Creates a sky pass with `settings` and world-light listeners.
+	/// Creates a sky pass that draws with the settings `controls` holds, and world-light listeners.
 	///
 	/// The newest directional light is the sky's sun: its illuminance sets the sky's brightness and color, and its
-	/// transform sets the sun's direction. Publish that light's transform next so the sky can use its orientation.
+	/// transform sets the sun's direction. That illuminance is the sunlight that reaches the camera, as it is for the
+	/// surfaces the light shines on, so author it as measured on the ground: dimmer and warmer as the sun gets low.
+	/// Publish that light's transform next so the sky can use its orientation.
 	/// Without a directional light, the sky stays black. The sky writes `targets.color` in place wherever
 	/// `targets.depth` holds no surface, within the top [`AtmosphereSkyRenderPassSettings::screen_height`] of the
 	/// screen, and leaves every other pixel untouched.
 	pub fn new(
 		render_pass_builder: &mut RenderPassBuilder,
 		targets: SceneBackgroundTargets,
-		settings: AtmosphereSkyRenderPassSettings,
+		controls: Rc<AtmosphereSkyControls>,
 		directional_lights: DefaultListener<CreateMessage<DirectionalLight>>,
 		transform_listener: DefaultListener<TransformationUpdate>,
 	) -> Self {
@@ -228,9 +301,10 @@ impl AtmosphereSkyRenderPass {
 			composite_pass,
 			counters,
 			parameters,
-			settings,
+			settings: controls.settings(),
+			controls,
 			sun: Sun::new(directional_lights, transform_listener),
-			transmittance_valid: false,
+			tables_haze: None,
 			sky_view_camera_height: None,
 		}
 	}
@@ -247,8 +321,18 @@ impl AtmosphereSkyRenderPass {
 	}
 }
 
-/// Builds one sink's sky constants from the atmosphere settings, the sun light's RGB illuminance in lux, and its disk's
-/// angular radius.
+/// Returns the share of the haze's scattering that dims and diffuses light, `1 - g²` for a phase function of
+/// anisotropy `g`.
+///
+/// This is the delta-Eddington approximation (Joseph, Wiscombe and Weinman, 1976): the fraction `g²` of the light a
+/// forward-scattering medium scatters goes so nearly straight on that it counts as never scattered, and the rest
+/// scatters about evenly. The sky's lookup tables assume even scattering, so they take the haze scaled by this.
+fn haze_transport_scale(anisotropy: f32) -> f32 {
+	1.0 - anisotropy * anisotropy
+}
+
+/// Builds one sink's sky constants from the atmosphere settings, the sun light's RGB illuminance in lux as it reaches
+/// the camera, and its disk's angular radius.
 ///
 /// The sky is written pre-exposed like the scene: the shaders multiply by the uploaded illuminance and disk radiance,
 /// so both include the sink's camera exposure.
@@ -264,6 +348,9 @@ fn sky_shader_data(
 	let sun_direction = settings.sun_direction;
 	let planet_center = settings.planet_center.into_maths();
 	let exposed_illuminance = sun_illuminance * sink.exposure_scale();
+	// Haze thins with height like `exp(-altitude / mie_scale_height)`, so its optical depth straight up is its
+	// scattering per meter at the ground times that height.
+	let haze_scattering = settings.haze / settings.mie_scale_height;
 	let disk_radiance = sun_disk_radiance(exposed_illuminance, sun_angular_radius.value());
 
 	SkyShaderData {
@@ -288,6 +375,12 @@ fn sky_shader_data(
 			settings.ground_albedo,
 			0.0,
 		],
+		haze: [
+			haze_scattering,
+			haze_scattering * haze_transport_scale(settings.mie_anisotropy),
+			0.0,
+			0.0,
+		],
 		sun_illuminance: [exposed_illuminance.x, exposed_illuminance.y, exposed_illuminance.z, 0.0],
 		sun_disk_radiance: [disk_radiance.x, disk_radiance.y, disk_radiance.z, 0.0],
 	}
@@ -305,6 +398,7 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		self.update_sun();
+		self.settings.haze = self.controls.settings().haze;
 		let transmittance_pass = self.transmittance_pass.ready(frame)?;
 		let multiple_scattering_pass = self.multiple_scattering_pass.ready(frame)?;
 		let sky_view_pass = self.sky_view_pass.ready(frame)?;
@@ -313,10 +407,11 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		let data = sky_shader_data(&self.settings, self.sun.illuminance, self.sun.angular_radius, sink);
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = data;
 		let camera_height = data.camera_position[1].to_bits();
-		let rebuild_transmittance = !self.transmittance_valid;
+		// Haze changes how the air dims and scatters light, so a new amount rebuilds every table.
+		let rebuild_transmittance = self.tables_haze != Some(self.settings.haze);
 		// Horizontal movement leaves the camera-to-planet vector unchanged because the planet center follows the camera in X/Z.
 		let rebuild_sky_view = rebuild_transmittance || self.sky_view_camera_height != Some(camera_height);
-		self.transmittance_valid = true;
+		self.tables_haze = Some(self.settings.haze);
 		self.sky_view_camera_height = Some(camera_height);
 
 		let composite_extent = sky_composite_extent(sink.extent(), self.settings.screen_height);
@@ -383,12 +478,15 @@ mod tests {
 	use maths_rs::Vec3f;
 
 	use super::simple_compute;
+	use crate::configuration::ConfigurationValue;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, slot, texture_2d};
 
 	static SKY_SHADER_BESL: std::sync::LazyLock<&str> =
 		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("sky.besl"));
 	static SKY_VIEW_SHADER_BESL: std::sync::LazyLock<&str> =
 		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("sky-view.besl"));
+	static SKY_TRANSMITTANCE_SHADER_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("sky-transmittance.besl"));
 	static SKY_MULTIPLE_SCATTERING_SHADER_BESL: std::sync::LazyLock<&str> =
 		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("sky-multiple-scattering.besl"));
 
@@ -430,6 +528,7 @@ mod tests {
 			("planet_center", Value::Vec4F(data.planet_center)),
 			("atmosphere", Value::Vec4F(data.atmosphere)),
 			("misc", Value::Vec4F(data.misc)),
+			("haze", Value::Vec4F(data.haze)),
 			("sun_illuminance", Value::Vec4F(data.sun_illuminance)),
 			("sun_disk_radiance", Value::Vec4F(data.sun_disk_radiance)),
 		] {
@@ -440,12 +539,18 @@ mod tests {
 		parameters
 	}
 
-	/// Runs one sky-view texel with full sun transmittance and a multiple-scattering LUT holding `higher_orders`.
-	fn run_sky_view(higher_orders: [f32; 4]) -> [f32; 4] {
+	/// Runs one sky-view texel under `settings`, through air whose transmittance toward the sun is `sun_transmittance`
+	/// everywhere, with a multiple-scattering LUT holding `higher_orders`.
+	fn run_sky_view(
+		settings: &super::AtmosphereSkyRenderPassSettings,
+		sun_transmittance: [f32; 3],
+		higher_orders: [f32; 4],
+	) -> [f32; 4] {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*SKY_VIEW_SHADER_BESL));
 		let parameter_slot = slot(&program, "parameters");
-		let mut parameters = sky_parameters(&program, parameter_slot, &Default::default(), TEST_SUN_ILLUMINANCE, 1.0);
-		let mut transmittance = texture_2d(1, 1, &[[1.0, 1.0, 1.0, 1.0]]);
+		let mut parameters = sky_parameters(&program, parameter_slot, settings, TEST_SUN_ILLUMINANCE, 1.0);
+		let [r, g, b] = sun_transmittance;
+		let mut transmittance = texture_2d(1, 1, &[[r, g, b, 1.0]]);
 		let mut multiple_scattering = texture_2d(1, 1, &[higher_orders]);
 		let mut output = empty_image(1, 1);
 		let mut descriptors = DescriptorBindings::new();
@@ -461,13 +566,91 @@ mod tests {
 	/// Verifies that the sky-view LUT adds the light from the multiple-scattering LUT to single scattering.
 	#[test]
 	fn sky_view_adds_light_scattered_more_than_once() {
-		let single = run_sky_view([0.0, 0.0, 0.0, 1.0]);
-		let multiple = run_sky_view([0.01, 0.02, 0.04, 1.0]);
+		let single = run_sky_view(&Default::default(), [1.0; 3], [0.0, 0.0, 0.0, 1.0]);
+		let multiple = run_sky_view(&Default::default(), [1.0; 3], [0.01, 0.02, 0.04, 1.0]);
 
 		assert!(
 			(0..3).all(|channel| multiple[channel] > single[channel]),
 			"Multiple scattering added no light. The most likely cause is that the sky-view LUT ignores its multiple-scattering binding: single {single:?}, with multiple scattering {multiple:?}"
 		);
+	}
+
+	/// Verifies that haze glows around the sun: it scatters sunlight mostly forward, so a view toward the sun
+	/// brightens in every color.
+	#[test]
+	fn haze_glows_around_the_sun() {
+		let sky = |haze| {
+			let settings = super::AtmosphereSkyRenderPassSettings {
+				haze,
+				// The lone texel of a 1 × 1 sky-view LUT looks along +Z.
+				sun_direction: UnitVector::z_axis(),
+				..Default::default()
+			};
+			run_sky_view(&settings, [1.0; 3], [0.0, 0.0, 0.0, 1.0])
+		};
+		let clean = sky(0.0);
+		let hazy = sky(0.1);
+
+		assert!(
+			(0..3).all(|channel| hazy[channel] > 2.0 * clean[channel]),
+			"Haze didn't glow around the sun. The most likely cause is that the sky-view LUT ignores the haze: clean {clean:?}, hazy {hazy:?}"
+		);
+	}
+
+	/// Builds the transmittance LUT texel for a sun nearly overhead, seen from the table's lowest altitude.
+	fn overhead_sun_transmittance(haze: f32, mie_anisotropy: f32) -> [f32; 4] {
+		let program =
+			crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*SKY_TRANSMITTANCE_SHADER_BESL));
+		let parameter_slot = slot(&program, "parameters");
+		let settings = super::AtmosphereSkyRenderPassSettings {
+			haze,
+			mie_anisotropy,
+			..Default::default()
+		};
+		let mut parameters = sky_parameters(&program, parameter_slot, &settings, TEST_SUN_ILLUMINANCE, 1.0);
+		let extent = super::TRANSMITTANCE_LUT_EXTENT;
+		let mut output = empty_image(extent.width(), extent.height());
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_image(slot(&program, "transmittance_lut"), &mut output);
+		descriptors.bind_buffer(parameter_slot, &mut parameters);
+		// The last column is the highest sun and the first row the lowest altitude.
+		let texel = [extent.width() - 1, 0];
+		run_at(&program, &mut descriptors, texel);
+		drop(descriptors);
+		rgba(&output, texel)
+	}
+
+	/// Verifies the delta-Eddington scaling: haze that scatters forward with anisotropy `g` dims the sun like evenly
+	/// scattering haze `1 - g²` times as thick, because the light it throws forward still arrives with the sun.
+	#[test]
+	fn forward_scattering_haze_dims_the_sun_like_thinner_even_haze() {
+		let clean = overhead_sun_transmittance(0.0, 0.76);
+		let forward = overhead_sun_transmittance(0.1, 0.76);
+		let even = overhead_sun_transmittance(0.1 * (1.0 - 0.76 * 0.76), 0.0);
+
+		assert_rgba_close(forward, even, 1e-5);
+		assert!(
+			(0..3).all(|channel| forward[channel] < clean[channel]),
+			"Haze didn't dim the sun. The most likely cause is that the transmittance LUT ignores the haze: clean {clean:?}, hazy {forward:?}"
+		);
+	}
+
+	/// Verifies that the `haze` runtime parameter takes numbers of 0 or more, as numbers or as startup text, and
+	/// refuses anything else.
+	#[test]
+	fn haze_parameter_takes_numbers_of_zero_or_more() {
+		let settings = super::AtmosphereSkyRenderPassSettings::default();
+		let set = |value: ConfigurationValue| settings.with_parameter("haze", &value);
+
+		for value in [ConfigurationValue::Float(0.25), ConfigurationValue::Text("0.25".to_string())] {
+			let (updated, effective) = set(value).expect("a haze of 0.25 is valid");
+			assert_eq!(updated.haze, 0.25);
+			assert_eq!(effective, ConfigurationValue::Float(0.25));
+		}
+		assert_eq!(set(ConfigurationValue::Integer(0)).unwrap().0.haze, 0.0);
+		assert!(set(ConfigurationValue::Float(-0.1)).is_err());
+		assert!(set(ConfigurationValue::Bool(true)).is_err());
+		assert!(settings.with_parameter("fog", &ConfigurationValue::Float(0.1)).is_err());
 	}
 
 	/// Builds the multiple-scattering LUT texel for a sun straight overhead at ground level, under full transmittance.
@@ -539,13 +722,33 @@ mod tests {
 		);
 	}
 
-	/// Composites one background pixel whose view misses the sun disk, over a sky-view LUT of `sky_scattering` per lux.
+	/// Composites one background pixel whose view misses the sun disk, over a sky-view LUT of `sky_scattering` per lux,
+	/// through air that lets all of the sunlight reach the camera.
 	fn composite_background(sky_scattering: [f32; 4], sun_illuminance: [f32; 3], exposure_scale: f32) -> [f32; 4] {
+		composite(
+			&Default::default(),
+			sky_scattering,
+			[1.0, 1.0, 1.0],
+			sun_illuminance,
+			exposure_scale,
+		)
+	}
+
+	/// Composites one background pixel under `settings`, over a sky-view LUT of `sky_scattering` per lux, through air
+	/// whose transmittance from the camera toward the sun is `sun_transmittance`.
+	fn composite(
+		settings: &super::AtmosphereSkyRenderPassSettings,
+		sky_scattering: [f32; 4],
+		sun_transmittance: [f32; 3],
+		sun_illuminance: [f32; 3],
+		exposure_scale: f32,
+	) -> [f32; 4] {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*SKY_SHADER_BESL));
 		let parameter_slot = slot(&program, "parameters");
-		let mut parameters = sky_parameters(&program, parameter_slot, &Default::default(), sun_illuminance, exposure_scale);
+		let mut parameters = sky_parameters(&program, parameter_slot, settings, sun_illuminance, exposure_scale);
 		let mut sky_view = texture_2d(1, 1, &[sky_scattering]);
-		let mut transmittance = texture_2d(1, 1, &[[1.0, 1.0, 1.0, 1.0]]);
+		let [r, g, b] = sun_transmittance;
+		let mut transmittance = texture_2d(1, 1, &[[r, g, b, 1.0]]);
 		let mut depth = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
 		let mut result = empty_image(1, 1);
 		let mut descriptors = DescriptorBindings::new();
@@ -574,6 +777,52 @@ mod tests {
 			[0.0, 0.0, 0.0, 1.0],
 			0.0,
 		);
+	}
+
+	/// Verifies that the light's illuminance is the sunlight that reaches the camera. Light scattered once reaches the
+	/// eye from sunlight the same air dimmed, so it doesn't change with that air. Light scattered more than once is
+	/// stored per lux entering the atmosphere, so it brightens by as much as the air dims the sun, at most 16 times.
+	#[test]
+	fn sky_view_takes_the_light_as_the_sunlight_that_reaches_the_camera() {
+		let higher_orders = [0.01, 0.02, 0.04, 1.0];
+		let sky = |sun_transmittance, higher_orders| run_sky_view(&Default::default(), sun_transmittance, higher_orders);
+		let once = sky([1.0; 3], [0.0, 0.0, 0.0, 1.0]);
+		let more_than_once: [f32; 3] = std::array::from_fn(|channel| sky([1.0; 3], higher_orders)[channel] - once[channel]);
+
+		assert_rgba_close(sky([0.5, 0.25, 0.125], [0.0, 0.0, 0.0, 1.0]), once, 1e-5);
+		let dimmed = sky([0.5, 0.25, 0.125], higher_orders);
+		let blocked = sky([0.0; 3], higher_orders);
+		for (channel, gain) in [2.0, 4.0, 8.0].into_iter().enumerate() {
+			let expected = once[channel] + gain * more_than_once[channel];
+			assert!(
+				(dimmed[channel] - expected).abs() <= 1e-4 * expected,
+				"channel {channel}: {dimmed:?}, expected {expected}"
+			);
+			let expected = 16.0 * more_than_once[channel];
+			assert!(
+				(blocked[channel] - expected).abs() <= 1e-4 * expected,
+				"channel {channel}: {blocked:?}, expected {expected}"
+			);
+		}
+	}
+
+	/// Verifies that the sun disk shows the light's own radiance through air that dims the sun, since the light is
+	/// already what reaches the camera.
+	#[test]
+	fn sun_disk_keeps_the_light_radiance_through_dimming_air() {
+		// The test camera looks along +Z, so this sun sits at the center of the view.
+		let settings = super::AtmosphereSkyRenderPassSettings {
+			sun_direction: UnitVector::z_axis(),
+			skip_below_horizon: false,
+			..Default::default()
+		};
+		let illuminance = [0.4, 0.2, 0.1];
+		let radius = crate::rendering::DirectionalLight::SUN_ANGULAR_RADIUS.value();
+		let radiance = super::sun_disk_radiance(Vec3f::new(illuminance[0], illuminance[1], illuminance[2]), radius);
+
+		let disk = composite(&settings, [0.0, 0.0, 0.0, 1.0], [0.5, 0.25, 0.125], illuminance, 1.0);
+
+		assert_rgba_close(disk, [radiance.x, radiance.y, radiance.z, 1.0], 1e-2);
 	}
 
 	/// Verifies that the sky is written pre-exposed, like the scene it's composited behind.

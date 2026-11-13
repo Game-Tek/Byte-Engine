@@ -168,6 +168,50 @@ the `fog_light_of_*` tests guard the culling, the closed form, the shadow
 lookup, and the point and cone estimates against reference integrals. The
 height fog tests guard the blend.
 
+## The sky's haze uses the delta-Eddington approximation
+
+The atmosphere sky builds three lookup tables: transmittance, multiple
+scattering, and the sky view. The multiple-scattering table sums every
+scattering order after the first in closed form, which only works if light
+leaves each scattering event evenly in all directions. Air nearly does. Haze
+doesn't: with the default anisotropy of 0.76 it throws most of its light
+forward. Fed to the table unchanged, a clear day's haze spreads that light over
+the whole sky and turns it white.
+
+The sky therefore scales the haze with the delta-Eddington approximation
+(Joseph, Wiscombe, and Weinman, 1976, *The Delta-Eddington Approximation for
+Radiative Flux Transfer*). For a phase function of anisotropy `g`, the fraction
+`g²` of the scattered light counts as a forward peak that was never scattered,
+and the remaining `1 − g²` scatters with the much lower anisotropy
+`g / (1 + g)`. `haze_transport_scale` in `render_passes/sky.rs` returns that
+`1 − g²`, and the pass uploads both the full and the scaled haze scattering:
+
+| Where | Haze it uses |
+| --- | --- |
+| Transmittance table, which dims sunlight and the view | Scaled |
+| Multiple-scattering table | Scaled, as an even scatterer |
+| Sky view, light the haze scatters once toward the eye | Full, with the Cornette-Shanks phase function |
+| Sky view, everything else | Scaled |
+
+The once-scattered term keeps the true phase function because that light is
+what draws the glow around the sun, and the scaled haze has no forward peak
+left to draw it with. This follows the single-scattering correction of Nakajima
+and Tanaka (1988), which adds exact single scattering to a solution computed
+with a truncated phase function.
+
+A change to the sky must keep these true:
+
+- Every table reads the scaled haze. A table that reads the full haze whitens
+  the sky again.
+- Only the once-scattered haze term reads the full haze and the anisotropy.
+- The multiple-scattering table still treats the scaled haze as an even
+  scatterer, though its anisotropy is `g / (1 + g)`, not zero. That's the
+  table's own approximation, not part of delta-Eddington.
+
+`forward_scattering_haze_dims_the_sun_like_thinner_even_haze` and
+`haze_glows_around_the_sun` in `render_passes/sky.rs` guard the scaling and the
+glow.
+
 ## Shadow maps belong to the visibility pipeline
 
 The visibility pipeline selects, sizes, and updates the shadow maps lights cast.

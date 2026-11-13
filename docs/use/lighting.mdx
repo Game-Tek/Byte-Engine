@@ -46,6 +46,12 @@ world.create(sunlight);
 Light constructors return `PhotometricError` when a color, magnitude, distance, or area is zero,
 negative, or not finite. A Kelvin value must be from 1,000 K through 40,000 K.
 
+Give a sun the lux and color it has on the ground, where a light meter would read it: about
+100,000 lux at 5,500 to 6,000 K at noon, and far less and warmer near sunset. The
+[atmosphere sky](/docs/reference/lighting#sky-and-calibration) works out the sunlight above the air
+from that, so lower and warm the light as the sun sets. A low sun left at noon values gives a sky
+that's too bright and too blue.
+
 ## Choose a color
 
 Use `LightColor::TemperatureKelvin` for a blackbody-style illuminant such as daylight, a tungsten

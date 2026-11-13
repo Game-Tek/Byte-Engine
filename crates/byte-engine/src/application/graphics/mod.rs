@@ -25,6 +25,7 @@
 /// - `kill-after`: Closes the application after this number of ticks. The default is `None`.
 /// - `inspector.address`: Serves the HTTP inspector on this IPv4 or IPv6 address only, such as `0.0.0.0` to reach it from another machine. The default is both loopback addresses. An address that isn't loopback is logged as a warning, because anyone who reaches the inspector can close the application or send it messages.
 /// - `inspector.port`: Serves the HTTP inspector on this port. The default is `6680`, or a free port the system picks, logged as a warning, when another application uses it. A port set here that is in use stops startup.
+/// - `console.enabled`: Takes over the terminal that started the application with a full-screen console: the log, and a command line for commands such as `set render.lod.force 2`. The console starts only when standard input and standard output are both terminals; set this to `false` when the application reads standard input or writes standard output itself. See the [console reference](/docs/reference/console). The default is `true`.
 /// - `metrics-out`: Writes the performance metrics the inspector serves to this file when the application closes: the `GET /metrics` summary as JSON, or every retained tick as NDJSON, one `GET /metrics/frames` row per line, when the path ends in `.ndjson`. Combine it with `kill-after` to measure a run without polling. The default is `None`.
 /// - `debug.streams`: Writes every entity data stream that world-spawned [`DebugDataStream`](crate::inspector::DebugDataStream) requests to `log`, `stdout`, `stderr`, or the file at this path, such as `/dev/fd/3`, as NDJSON. The default is `None`, which opens no stream.
 /// - `debug.streams.changes-only`: Writes a data stream record only when the system's key for it changed, leaving out records where only progress like a phase moved. The default is `false`.
@@ -195,6 +196,8 @@ struct Services {
 	fogs_listener: DefaultListener<CreateMessage<rendering::ExponentialHeightFog>>,
 	shown_transforms: ShownTransforms,
 	http_inspector: HttpInspectorServer,
+	/// The console's thread, when the terminal console started; it joins the application's workers.
+	console: Option<Thread>,
 	screenshot_broker: std::sync::Arc<crate::inspector::screenshot::ScreenshotBroker>,
 	inspector_events: std::sync::Arc<crate::inspector::EventSignal>,
 	waker: LoopWaker,
@@ -286,6 +289,12 @@ impl GraphicsApplication {
 						let screenshot_broker = inspector.screenshot_broker();
 						let inspector_events = inspector.event_signal();
 						let waker = LoopWaker::default();
+						let console = crate::inspector::console::spawn(
+							inspector.clone(),
+							waker.clone(),
+							application_events.listener(),
+							parameters.scope("console"),
+						);
 						let http_inspector = HttpInspectorServer::new(inspector, waker.clone(), parameters.scope("inspector"));
 
 						let window_factory = messages.factory();
@@ -302,6 +311,7 @@ impl GraphicsApplication {
 							fogs_listener,
 							shown_transforms,
 							http_inspector,
+							console,
 							screenshot_broker,
 							inspector_events,
 							waker,
@@ -334,6 +344,8 @@ impl GraphicsApplication {
 		renderer.set_resource_manager(&resource_manager);
 		// Every server compiles from the first request on, so no setup function has to start them.
 		let mut threads = SmallVec::new();
+		// The console restores the terminal when it ends, so it is joined on close like every other worker.
+		threads.extend(services.console);
 		for server in pipeline_compilation_servers {
 			let resources = resource_manager.clone();
 			threads.push(Thread::new(application.events().listener(), move |mut events| {

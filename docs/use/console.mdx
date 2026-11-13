@@ -1,0 +1,61 @@
+---
+title: Change settings from the terminal
+description: Type commands into the terminal that runs your application to change runtime settings, such as the forced detail level or a debug view, while you watch its log.
+icon: Terminal
+---
+
+Use the console when you run your application from a terminal and want to try a setting without restarting it, such
+as forcing a mesh detail level or switching the global illumination technique. While your application runs, the
+terminal shows its log with a command line under it.
+
+## Change a setting
+
+1. Run your application from a terminal:
+
+   ```bash
+   cargo run
+   ```
+
+   The terminal switches to the console: the log fills the screen, and the command line waits at the bottom.
+
+2. Click the terminal, so your keys go to it instead of the application's window.
+
+3. Type `set`, the setting's name, and the value, then press Enter:
+
+   ```text
+   set render.lod.force 2
+   ```
+
+4. Read the result in the log and in the status line under the command line. It shows the value in effect, or why
+   the setting wasn't changed:
+
+   ```text
+   render.lod.force set to 2
+   ```
+
+Every setting the [runtime settings](/docs/reference/parameters#runtime-settings) table lists works, and so does every
+debug view: `set render.debug.view.motion-blur.velocity true` shows motion blur's velocity over the window; see
+[Show a debug view](/docs/use/debug-views). Type `help` to list the commands, press Up to run an earlier command again,
+and press Page Up to read older log lines.
+
+Press Ctrl+C to close the application. The terminal returns to how it was, with the run's log in its history.
+
+## Turn the console off
+
+The console starts only when standard input and standard output are both terminals, so piped runs, test harnesses, CI,
+and agents never have it. When your application reads standard input or writes to standard output itself, turn the
+console off with the `console.enabled` parameter, in `config.json`, as `BE_CONSOLE__ENABLED=false`, or on the command
+line:
+
+```bash
+cargo run -- --console.enabled=false
+```
+
+## Rust API
+
+- [`inspector::console::spawn`](/docs/api/latest/byte_engine/inspector/console): starts the console; the
+  application calls it for you.
+- [`DefaultInspector::update_configuration`](/docs/api/latest/byte_engine/inspector/DefaultInspector): changes a
+  runtime setting from your own code or tool.
+
+See the [console reference](/docs/reference/console) for the screen, every key, and every command.

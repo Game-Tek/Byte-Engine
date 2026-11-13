@@ -216,7 +216,11 @@ fn install_subscriber(metrics: Arc<Metrics>, trace: bool, log_filter: Option<&st
 		}
 		#[cfg(not(feature = "tracy"))]
 		{
-			logger.try_init().is_ok()
+			let logger = logger.build();
+			let max_level = logger.filter();
+			log::set_boxed_logger(Box::new(EngineLogger(logger)))
+				.map(|()| log::set_max_level(max_level))
+				.is_ok()
 		}
 	};
 
@@ -229,6 +233,33 @@ fn install_subscriber(metrics: Arc<Metrics>, trace: bool, log_filter: Option<&st
 		log::warn!(
 			"Byte-Engine could not install its logger. The most likely cause is that the application installed another logger before creating the application."
 		);
+	}
+}
+
+/// The `EngineLogger` struct lets the [console](crate::inspector::console) take log records while it owns the
+/// terminal, where writing them to standard error would draw over its screen.
+#[cfg(not(feature = "tracy"))]
+struct EngineLogger(env_logger::Logger);
+
+#[cfg(not(feature = "tracy"))]
+impl log::Log for EngineLogger {
+	fn enabled(&self, metadata: &log::Metadata) -> bool {
+		self.0.enabled(metadata)
+	}
+
+	fn log(&self, record: &log::Record) {
+		if !self.0.matches(record) {
+			return;
+		}
+		if super::log_capture::is_active() {
+			super::log_capture::push_record(record);
+		} else {
+			self.0.log(record);
+		}
+	}
+
+	fn flush(&self) {
+		self.0.flush();
 	}
 }
 

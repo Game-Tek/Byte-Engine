@@ -1,0 +1,102 @@
+---
+title: Console
+description: Look up when the engine's terminal console runs, what its screen shows, the keys and commands it accepts, how it reads a value, and what it reports back.
+icon: Terminal
+---
+
+A headed application takes over the terminal that started it while it runs:
+the screen shows the application's log above a command line. This page
+specifies when the console runs, its screen, its keys, and its commands. To
+change a setting with it, follow
+[Change settings from the terminal](/docs/use/console).
+
+## When it runs
+
+The console runs when both of these hold at startup:
+
+| Condition | Rule |
+| --- | --- |
+| `console.enabled` | Not `false`. A lenient boolean; see [Parameters](/docs/reference/parameters#application). |
+| Standard input and standard output | Both are terminals. |
+
+Otherwise the console doesn't start, reads nothing from standard input, and
+logs nothing. A run in a pipeline, under a test harness, or from an agent
+therefore has no console without setting anything.
+
+## Screen
+
+While the console runs, it owns the whole terminal.
+
+| Part | Shows |
+| --- | --- |
+| Log | Every log record that passes the `log.level` filter, newest at the bottom, with each command and its result between them. A record's level is colored by severity and the rest of it isn't. A record longer than the pane wraps. The pane keeps the latest 10,000 records and results. |
+| Command line | What you're typing. |
+| Status line | The latest result and the keys. |
+
+Log records go to the log pane instead of standard error while the console
+runs. When the console ends, the terminal returns to how it was, and every
+line the pane kept is written to standard error, so the run's log stays in
+the terminal's history. Anything the application writes to standard output
+itself draws over the screen.
+
+## Keys
+
+| Key | Effect |
+| --- | --- |
+| Characters | Type into the command line. |
+| Left, Right, Home, End | Move in the command line. |
+| Backspace, Delete | Erase in the command line. |
+| Enter | Run the command line. |
+| Esc | Clear the command line. |
+| Up, Down | Recall earlier commands, newest first. |
+| Page Up, Page Down | Scroll the log pane by a page. The pane follows new lines again once scrolled back to the bottom. |
+| Ctrl+C | Close the application. |
+
+The console ends when the application closes, whatever closed it.
+
+## Commands
+
+Leading and trailing spaces are ignored, and an empty command line does
+nothing. The first word names the command; the words after it are its
+arguments, separated by spaces.
+
+| Command | Arguments | Effect |
+| --- | --- | --- |
+| `set` | A parameter name, then a value | Changes a [runtime setting](/docs/reference/parameters#runtime-settings), as the inspector's [configuration route](/docs/reference/inspector#configuration) does. |
+| `help` | None | Lists every command. |
+
+Any other command, or a `set` without a name and a value, reports an error and
+changes nothing.
+
+### Parameter names
+
+The name is the full parameter name, as on the command line without the
+leading dashes, such as `render.lod.force`. It ends at the first space, so a
+name with a space in it, such as the `atmosphere sky` pass, can't be set from
+the console.
+
+### Values
+
+The value is the rest of the line after the name.
+
+| Text | Reads as |
+| --- | --- |
+| `true` or `false` | A Boolean. |
+| A whole number, such as `2` | A whole number. |
+| A number with a fraction or an exponent, such as `0.5` | A number with a fraction. |
+| Text in double quotes, such as `"enabled"` | The text between the quotes. |
+| Anything else, such as `off` or `ssgi` | The text as typed. |
+
+## Results
+
+A `set` reports once the system that owns the parameter answers, and the
+console keeps taking keys meanwhile:
+
+| Outcome | Report |
+| --- | --- |
+| The system applied the value | The name and the value in effect. |
+| The system refused the value, or no system owns the name | The name and the reason. |
+| The system didn't answer within a second | The name and that the update is pending. The update still applies when the system takes it, such as when the pass it names is installed, and the console then reports it. |
+
+Every update the console makes is also an inspector configuration event, so
+the inspector's configuration and events routes report it.

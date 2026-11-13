@@ -11,6 +11,9 @@
 use crate::time::MediaTime;
 
 pub mod application;
+// Only the headed console reads the kept lines, and a Tracy build sends records to Tracy instead.
+#[cfg_attr(any(not(feature = "headed"), feature = "tracy"), allow(dead_code))]
+pub(crate) mod log_capture;
 
 pub mod parameters;
 pub mod thread;

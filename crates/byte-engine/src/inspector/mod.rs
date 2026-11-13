@@ -29,6 +29,8 @@ use crate::{
 
 // Only the graphics application raises the event signal and the HTTP inspector reads events; headless builds leave both
 // sides unused.
+#[cfg(feature = "headed")]
+pub mod console;
 #[cfg_attr(not(feature = "headed"), allow(dead_code))]
 mod events;
 #[cfg_attr(not(feature = "headed"), allow(unused_imports))]

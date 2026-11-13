@@ -20,7 +20,7 @@ rustdoc-args = ["-C", "target-feature=+aes,+sse2"]
 
 [features]
 default = ["headed", "network"]
-headed = ["dep:ahi", "dep:ghi", "dep:besl", "dep:base64", "dep:exr", "dep:flate2", "dep:png", "resource-management/gpu-ibl", "resource-management/gpu-mips"]
+headed = ["dep:ratatui", "dep:ahi", "dep:ghi", "dep:besl", "dep:base64", "dep:exr", "dep:flate2", "dep:png", "resource-management/gpu-ibl", "resource-management/gpu-mips"]
 network = ["client"]
 client = ["dep:betp"]
 dmx = ["dep:artnet_protocol"]
@@ -135,6 +135,7 @@ betp = { package = "byte-engine-betp", path = "../betp", version = "0.2.0", opti
 serde = { version = "1.0.219", features = ["derive"] }
 log = "0.4.26"
 env_logger = "0.11.10"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"], optional = true }
 oxhttp = { version = "0.3.1", default-features = false, features = ["server"] }
 tracing = { version = "0.1.41" }
 tracing-log = { version = "0.2.0", optional = true }

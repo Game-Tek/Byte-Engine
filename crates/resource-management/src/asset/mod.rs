@@ -14,6 +14,7 @@ use crate::{
 
 mod authored_levels;
 mod bake_memory;
+pub mod bake_state;
 pub mod handler;
 pub mod intercept;
 pub mod manager;

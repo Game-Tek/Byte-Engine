@@ -1,4 +1,4 @@
-//! The terminal console: a full-screen view of the application's log with a command line under it.
+//! The terminal console: a full-screen view of the application's log or its bakes, with a command line under it.
 //!
 //! The console is a second transport over the [`DefaultInspector`], beside the
 //! [`HttpInspectorServer`](super::http::HttpInspectorServer). [`GraphicsApplication`] starts it with [`spawn`]. Its
@@ -21,6 +21,7 @@ use ratatui::{
 	text::{Line, Span},
 	widgets::{Block, Paragraph},
 };
+use resource_management::asset::bake_state::BakeState;
 
 use crate::{
 	application::{
@@ -44,7 +45,11 @@ const HELP: &str = "\
 set <parameter> <value>  Changes a runtime setting, such as `set render.lod.force 2`.
 help                     Lists the commands.";
 
-const KEYS: &str = "↑↓ history · PgUp/PgDn log · Ctrl+C quit";
+const KEYS: &str = "Tab view · ↑↓ history · PgUp/PgDn log · Ctrl+C quit";
+
+/// The stream the asset manager reports its bakes on; see the
+/// [bake stream reference](/docs/reference/resource-management#bake-stream).
+const BAKES_STREAM: &str = "bakes";
 
 /// Starts the console on an application thread when the `enabled` parameter isn't `false` and both standard input and
 /// standard output are terminals. Otherwise it returns `None` and never touches the terminal, so runs in pipelines,
@@ -111,17 +116,29 @@ fn run(
 ) -> io::Result<()> {
 	let mut console = Console::default();
 	let mut drawn = None;
+	let start = Instant::now();
 	loop {
 		while let Some(event) = events.read() {
 			if event == Events::Close {
 				return Ok(());
 			}
 		}
-		console.collect_results(inspector, Instant::now());
-		// Redraw only when a line arrived, a key or resize changed the screen, or a result came in.
-		let revision = (log_capture::revision(), console.revision);
+		let now = Instant::now();
+		console.collect_results(inspector, now);
+		// Redraw only when a line arrived, a key or resize changed the screen, a result came in, a stream record
+		// arrived for the bakes view, or a second passed while it shows bakes running.
+		let revision = (
+			log_capture::revision(),
+			console.revision,
+			(console.view == View::Bakes).then(|| inspector.streams().revision()),
+			console
+				.shows_running_bakes
+				.then(|| now.saturating_duration_since(start).as_secs()),
+		);
 		if drawn != Some(revision) {
-			terminal.draw(|frame| log_capture::with_entries(|entries| console.draw(frame, entries)))?;
+			// Only the bakes view reads the record, so the log view never parses one.
+			let bakes = (console.view == View::Bakes).then(|| latest_bakes(inspector)).flatten();
+			terminal.draw(|frame| log_capture::with_entries(|entries| console.draw(frame, entries, bakes.as_ref(), now)))?;
 			drawn = Some(revision);
 		}
 		if !event::poll(POLL)? {
@@ -138,6 +155,37 @@ fn run(
 			},
 			Event::Resize(..) => console.revision += 1,
 			_ => {}
+		}
+	}
+}
+
+/// Returns the asset manager's latest bake state the inspector kept, with when it arrived.
+fn latest_bakes(inspector: &DefaultInspector) -> Option<(Instant, BakeState)> {
+	let (received, mut record) = inspector.streams().latest(BAKES_STREAM)?;
+	let state = serde_json::from_value(record["data"].take()).ok()?;
+	Some((received, state))
+}
+
+/// The `View` enum is what the console's pane shows; Tab shows the next one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum View {
+	#[default]
+	Log,
+	Bakes,
+}
+
+impl View {
+	fn next(self) -> Self {
+		match self {
+			Self::Log => Self::Bakes,
+			Self::Bakes => Self::Log,
+		}
+	}
+
+	fn title(self) -> &'static str {
+		match self {
+			Self::Log => "Log",
+			Self::Bakes => "Bakes",
 		}
 	}
 }
@@ -181,6 +229,9 @@ struct Console {
 	awaiting: Vec<Awaiting>,
 	/// Counts changes to what the console shows apart from the log lines.
 	revision: u64,
+	view: View,
+	/// Whether the last draw showed bakes running, whose times advance each second.
+	shows_running_bakes: bool,
 }
 
 impl Console {
@@ -225,6 +276,7 @@ impl Console {
 					self.replace_line(self.history.get(next).cloned().unwrap_or_default());
 				}
 			}
+			KeyCode::Tab => self.view = self.view.next(),
 			KeyCode::PageUp => self.scroll += self.page.max(1),
 			KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(self.page.max(1)),
 			KeyCode::Enter => {
@@ -303,17 +355,28 @@ impl Console {
 		self.revision += 1;
 	}
 
-	/// Draws the log pane, the command line, and the status line.
-	fn draw(&mut self, frame: &mut Frame, entries: &VecDeque<Entry>) {
-		let [log_area, command_area, status_area] =
+	/// Draws the pane's view, the command line, and the status line. `bakes` is the latest bake state with when it
+	/// arrived, and `now` is when the frame is drawn, which running bakes' times count to.
+	fn draw(&mut self, frame: &mut Frame, entries: &VecDeque<Entry>, bakes: Option<&(Instant, BakeState)>, now: Instant) {
+		let [pane_area, command_area, status_area] =
 			Layout::vertical([Constraint::Min(3), Constraint::Length(1), Constraint::Length(1)]).areas(frame.area());
 
-		let block = Block::bordered().title(" Log ");
-		let inner = block.inner(log_area);
-		frame.render_widget(block, log_area);
-		self.page = inner.height as usize;
-		let rows = self.log_rows(entries, inner);
-		frame.render_widget(Paragraph::new(rows), inner);
+		let block = Block::bordered().title(format!(" {} · Tab: {} ", self.view.title(), self.view.next().title()));
+		let inner = block.inner(pane_area);
+		frame.render_widget(block, pane_area);
+		self.shows_running_bakes = false;
+		match self.view {
+			View::Log => {
+				self.page = inner.height as usize;
+				let rows = self.log_rows(entries, inner);
+				frame.render_widget(Paragraph::new(rows), inner);
+			}
+			View::Bakes => {
+				self.shows_running_bakes = bakes.is_some_and(|(_, state)| !state.baking.is_empty());
+				// Rows longer than the pane are cut, since a paragraph without wrapping clips them.
+				frame.render_widget(Paragraph::new(bake_rows(bakes, now)), inner);
+			}
+		}
 
 		// Keep the cursor on screen by showing the end of a line longer than the area.
 		let width = (command_area.width as usize).saturating_sub(3);
@@ -359,6 +422,58 @@ impl Console {
 	/// Returns the byte offset of character `index` in the command line.
 	fn byte_index(&self, index: usize) -> usize {
 		self.line.char_indices().nth(index).map_or(self.line.len(), |(at, _)| at)
+	}
+}
+
+/// Returns the bakes view's rows for `bakes`, the latest bake state and when it arrived, as of `now`: the totals, the
+/// running bakes with how long each has run, and the latest bakes to end.
+fn bake_rows(bakes: Option<&(Instant, BakeState)>, now: Instant) -> Vec<Line<'_>> {
+	let Some((received, state)) = bakes else {
+		return vec![Line::raw("No bake was reported yet.").dim()];
+	};
+	// A record holds each bake's time when it was written; the bake kept running since.
+	let since_received = now.saturating_duration_since(*received).as_secs_f64() * 1000.0;
+	let mut rows = Vec::with_capacity(state.baking.len() + state.finished.len() + 4);
+	rows.push(Line::raw(format!(
+		"{} baking · {} baked · {} failed",
+		state.baking.len(),
+		state.baked,
+		state.failed
+	)));
+	if !state.baking.is_empty() {
+		rows.push(Line::raw("Baking").bold());
+		rows.extend(state.baking.iter().map(|bake| {
+			Line::raw(format!(
+				"  {:>7} {}",
+				show_milliseconds(bake.elapsed_ms + since_received),
+				bake.id
+			))
+		}));
+	}
+	if !state.finished.is_empty() {
+		rows.push(Line::raw("Finished").bold());
+		rows.extend(state.finished.iter().map(|bake| {
+			let mark = if bake.ok {
+				Span::styled("✓", Style::new().fg(Color::Green))
+			} else {
+				Span::styled("✗", Style::new().fg(Color::Red))
+			};
+			Line::from(vec![
+				mark,
+				Span::raw(format!(" {:>7} ", show_milliseconds(bake.duration_ms))),
+				Span::raw(bake.id.as_str()),
+			])
+		}));
+	}
+	rows
+}
+
+/// Shows a time in milliseconds below a second and in seconds from there.
+fn show_milliseconds(milliseconds: f64) -> String {
+	if milliseconds < 1000.0 {
+		format!("{milliseconds:.0}ms")
+	} else {
+		format!("{:.1}s", milliseconds / 1000.0)
 	}
 }
 
@@ -518,8 +633,20 @@ mod tests {
 
 	/// Draws `console` over `entries` on a terminal of `width` by `height` cells and returns its buffer.
 	fn draw_buffer(console: &mut Console, entries: &VecDeque<Entry>, width: u16, height: u16) -> ratatui::buffer::Buffer {
+		draw_with(console, entries, None, width, height)
+	}
+
+	/// Draws `console` over `entries` and `bakes` and returns its buffer.
+	fn draw_with(
+		console: &mut Console,
+		entries: &VecDeque<Entry>,
+		bakes: Option<&(Instant, BakeState)>,
+		width: u16,
+		height: u16,
+	) -> ratatui::buffer::Buffer {
 		let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
-		terminal.draw(|frame| console.draw(frame, entries)).expect("draw");
+		let now = bakes.map_or_else(Instant::now, |(received, _)| *received);
+		terminal.draw(|frame| console.draw(frame, entries, bakes, now)).expect("draw");
 		terminal.backend().buffer().clone()
 	}
 
@@ -699,5 +826,65 @@ mod tests {
 		assert!((15..40 - 2).all(|x| color(x, 1) == Color::Reset), "target and message");
 		assert!((0..40 - 2).all(|x| color(x, 2) == Color::Reset), "continuation line");
 		assert_eq!(buffer[(1, 2)].symbol(), "s");
+	}
+
+	/// Returns the text of each row of `buffer`.
+	fn rows(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+		(0..buffer.area.height)
+			.map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+			.collect()
+	}
+
+	#[test]
+	fn tab_switches_between_the_log_and_the_bakes() {
+		let mut console = Console::default();
+		assert!(draw(&mut console, &VecDeque::new(), 40, 6)[0].contains("Log · Tab: Bakes"));
+
+		console.handle(key(KeyCode::Tab));
+		let shown = draw(&mut console, &VecDeque::new(), 40, 6);
+		assert!(shown[0].contains("Bakes · Tab: Log"), "{shown:?}");
+		assert!(shown[1].contains("No bake was reported yet."), "{shown:?}");
+
+		console.handle(key(KeyCode::Tab));
+		assert!(draw(&mut console, &VecDeque::new(), 40, 6)[0].contains("Log · Tab: Bakes"));
+	}
+
+	#[test]
+	fn the_bakes_view_shows_the_totals_running_bakes_and_finished_bakes() {
+		use resource_management::asset::bake_state::{BakingAsset, FinishedBake};
+
+		let state = BakeState {
+			baking: vec![BakingAsset {
+				id: "models/tree.glb".to_string(),
+				elapsed_ms: 2400.0,
+			}],
+			baked: 41,
+			failed: 1,
+			finished: vec![
+				FinishedBake {
+					id: "materials/bark.bema".to_string(),
+					ok: true,
+					duration_ms: 120.0,
+				},
+				FinishedBake {
+					id: "shaders/broken.besl".to_string(),
+					ok: false,
+					duration_ms: 15.0,
+				},
+			],
+		};
+		let mut console = Console::default();
+		console.handle(key(KeyCode::Tab));
+		let buffer = draw_with(&mut console, &VecDeque::new(), Some(&(Instant::now(), state)), 48, 10);
+		let shown = rows(&buffer);
+
+		assert!(shown[1].contains("1 baking · 41 baked · 1 failed"), "{shown:?}");
+		assert!(shown[2].contains("Baking"), "{shown:?}");
+		assert!(shown[3].contains("2.4s models/tree.glb"), "{shown:?}");
+		assert!(shown[4].contains("Finished"), "{shown:?}");
+		assert!(shown[5].contains("✓   120ms materials/bark.bema"), "{shown:?}");
+		assert!(shown[6].contains("✗    15ms shaders/broken.besl"), "{shown:?}");
+		assert_eq!(buffer[(1, 5)].fg, Color::Green);
+		assert_eq!(buffer[(1, 6)].fg, Color::Red);
 	}
 }

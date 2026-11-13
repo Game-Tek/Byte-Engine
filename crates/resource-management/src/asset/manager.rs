@@ -26,6 +26,8 @@ pub(crate) struct AssetManagerState {
 	pub(in crate::asset) resource_storage_backend: Arc<dyn DynResourceStorageBackend>,
 	in_flight_bakes: Arc<Mutex<HashMap<String, announcement::Announcement<Result<BakeOutcome, LoadMessages>>>>>,
 	bake_memory_budget: Option<Arc<BakeMemoryBudget>>,
+	/// The bakes running and ended, reported to the reporter set with [`AssetManager::set_bake_reporter`].
+	bakes: BakeTracker,
 	/// The root bakes callers are waiting on, whether admitted yet or not. The last one to finish makes what they
 	/// stored durable with one flush; see [`RootInFlight`].
 	roots_in_flight: AtomicUsize,
@@ -199,6 +201,7 @@ impl AssetManager {
 				resource_storage_backend,
 				in_flight_bakes: Arc::new(Mutex::new(HashMap::with_capacity_and_hasher(32, Default::default()))),
 				bake_memory_budget: None,
+				bakes: BakeTracker::default(),
 				roots_in_flight: AtomicUsize::new(0),
 				unflushed: AtomicBool::new(false),
 				settings: HashMap::from_iter([(SHADER_CODE_SETTING.to_owned(), shader_code_fingerprint())]),
@@ -226,6 +229,14 @@ impl AssetManager {
 	/// Configure the budget before calling [`Self::bake`] or sharing the manager.
 	pub fn set_bake_memory_budget(&mut self, byte_budget: NonZeroUsize) {
 		self.configurable_state().bake_memory_budget = Some(Arc::new(BakeMemoryBudget::new(byte_budget.get())));
+	}
+
+	/// Reports this manager's bakes to `reporter`: its [`BakeState`](super::bake_state::BakeState) each time a bake starts or ends.
+	///
+	/// Set it before calling [`Self::bake`] or sharing the manager. The engine sets one in debug builds, which turns
+	/// bakes into the `bakes` [debug data stream](/docs/reference/resource-management#bake-stream).
+	pub fn set_bake_reporter(&mut self, reporter: Arc<dyn BakeReporter>) {
+		self.configurable_state().bakes = BakeTracker::new(reporter);
 	}
 
 	/// Declares the fingerprint of a setting that shapes bakes and isn't a file or a stored resource, such as the
@@ -1093,6 +1104,8 @@ impl AssetManagerState {
 		};
 
 		let start_time = std::time::Instant::now();
+		// Every return from here on is the end of a bake; the run records it as failed unless it succeeded below.
+		let run = self.bakes.begin(id.as_ref());
 
 		self.begin_provenance(id.as_ref());
 
@@ -1206,6 +1219,7 @@ impl AssetManagerState {
 		}
 
 		log::trace!("Baked '{:#?}' resource in {:#?}", id, start_time.elapsed());
+		run.succeeded();
 
 		Ok(())
 	}
@@ -2782,6 +2796,44 @@ pub mod tests {
 		assert_eq!(asset_manager.resource_trace().resource_ids(), vec!["failed.test"]);
 	}
 
+	/// The `ReportedBakes` struct keeps every bake state a manager reported.
+	#[derive(Default)]
+	struct ReportedBakes(Mutex<Vec<crate::asset::bake_state::BakeState>>);
+
+	impl crate::asset::bake_state::BakeReporter for ReportedBakes {
+		fn report(&self, state: &crate::asset::bake_state::BakeState) {
+			self.0.lock().push(state.clone());
+		}
+	}
+
+	#[r#async::test]
+	async fn bakes_that_store_or_fail_reach_the_bake_reporter() {
+		let reported = Arc::new(ReportedBakes::default());
+
+		let asset_storage = TestStorageBackend::new();
+		asset_storage.add_file("kept.test", b"kept");
+		let (mut stores, _) = versioned_asset_manager(asset_storage, MemoryStorageBackend::new());
+		stores.set_bake_reporter(reported.clone());
+		stores.bake("kept.test").await.expect("the asset bakes");
+		{
+			let states = reported.0.lock();
+			assert_eq!(states.first().map(|state| state.baking[0].id.as_str()), Some("kept.test"));
+			let last = states.last().expect("a report");
+			assert!(last.baking.is_empty());
+			assert_eq!((last.baked, last.failed), (1, 0));
+			assert_eq!(last.finished[0].id, "kept.test");
+			assert!(last.finished[0].ok);
+		}
+
+		let (mut fails, _) = test_asset_manager(TestStorageBackend::new());
+		fails.set_bake_reporter(reported.clone());
+		assert!(fails.bake("failed.test").await.is_err());
+		let last = reported.0.lock().last().cloned().expect("a report");
+		assert_eq!((last.baked, last.failed), (0, 1));
+		assert_eq!(last.finished[0].id, "failed.test");
+		assert!(!last.finished[0].ok);
+	}
+
 	#[r#async::test]
 	async fn successful_handler_must_store_the_requested_primary_resource() {
 		let (asset_manager, _) = test_asset_manager(TestStorageBackend::new());
@@ -2830,6 +2882,7 @@ use utils::{Glob, hash::HashMap, sync::Mutex};
 
 #[cfg(debug_assertions)]
 use super::resource_trace::{ResourceTrace, ResourceTraceLevel};
+use super::bake_state::{BakeReporter, BakeTracker};
 use super::{
 	StorageBackend,
 	bake_memory::{BakeAllocator, BakeMemoryBudget, BakeMemoryScope},

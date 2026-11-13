@@ -27,7 +27,7 @@
 /// - `inspector.port`: Serves the HTTP inspector on this port. The default is `6680`, or a free port the system picks, logged as a warning, when another application uses it. A port set here that is in use stops startup.
 /// - `console.enabled`: Takes over the terminal that started the application with a full-screen console: the log, and a command line for commands such as `set render.lod.force 2`. The console starts only when standard input and standard output are both terminals; set this to `false` when the application reads standard input or writes standard output itself. See the [console reference](/docs/reference/console). The default is `true`.
 /// - `metrics-out`: Writes the performance metrics the inspector serves to this file when the application closes: the `GET /metrics` summary as JSON, or every retained tick as NDJSON, one `GET /metrics/frames` row per line, when the path ends in `.ndjson`. Combine it with `kill-after` to measure a run without polling. The default is `None`.
-/// - `debug.streams`: Writes every entity data stream that world-spawned [`DebugDataStream`](crate::inspector::DebugDataStream) requests to `log`, `stdout`, `stderr`, or the file at this path, such as `/dev/fd/3`, as NDJSON. The default is `None`, which opens no stream.
+/// - `debug.streams`: Writes every entity data stream that world-spawned [`DebugDataStream`](crate::inspector::DebugDataStream) requests to `log`, `stdout`, `stderr`, or the file at this path, such as `/dev/fd/3`, as NDJSON. The default is `None`, which opens no stream unless the console runs; the console reads streams, so they open for it with no destination.
 /// - `debug.streams.changes-only`: Writes a data stream record only when the system's key for it changed, leaving out records where only progress like a phase moved. The default is `false`.
 /// - `max-frame-rate`: Caps presentation at this many frames per second; frames land on even refreshes. The default is uncapped.
 /// - `simulation-rate`: Steps simulation this many times per second, independent of how often frames are presented. [`Self::tick_stepped_with`] paces its steps on it and defaults to `60`. [`Self::tick_with`] simulates once per frame and panics when this rate disagrees with the rate frames are presented at.
@@ -198,6 +198,8 @@ struct Services {
 	http_inspector: HttpInspectorServer,
 	/// The console's thread, when the terminal console started; it joins the application's workers.
 	console: Option<Thread>,
+	/// Where the inspector keeps each debug data stream's latest record.
+	retained_streams: std::sync::Arc<crate::inspector::RetainedStreams>,
 	screenshot_broker: std::sync::Arc<crate::inspector::screenshot::ScreenshotBroker>,
 	inspector_events: std::sync::Arc<crate::inspector::EventSignal>,
 	waker: LoopWaker,
@@ -288,6 +290,7 @@ impl GraphicsApplication {
 						let inspector = EntityHandle::from(inspector);
 						let screenshot_broker = inspector.screenshot_broker();
 						let inspector_events = inspector.event_signal();
+						let retained_streams = std::sync::Arc::clone(inspector.streams());
 						let waker = LoopWaker::default();
 						let console = crate::inspector::console::spawn(
 							inspector.clone(),
@@ -312,6 +315,7 @@ impl GraphicsApplication {
 							shown_transforms,
 							http_inspector,
 							console,
+							retained_streams,
 							screenshot_broker,
 							inspector_events,
 							waker,
@@ -345,6 +349,8 @@ impl GraphicsApplication {
 		// Every server compiles from the first request on, so no setup function has to start them.
 		let mut threads = SmallVec::new();
 		// The console restores the terminal when it ends, so it is joined on close like every other worker.
+		// The console reads debug data streams, so its presence opens them like a `debug.streams` destination does.
+		let console_running = services.console.is_some();
 		threads.extend(services.console);
 		for server in pipeline_compilation_servers {
 			let resources = resource_manager.clone();
@@ -383,16 +389,18 @@ impl GraphicsApplication {
 		let metrics_out = application
 			.get_parameter("metrics-out")
 			.map(|parameter| std::path::PathBuf::from(parameter.value()));
-		let streams = application.get_parameter("debug.streams").map(|parameter| {
+		let destination = application.get_parameter("debug.streams").map(|parameter| parameter.value());
+		let streams = (destination.is_some() || console_running).then(|| {
 			let changes_only = application
 				.get_parameter("debug.streams.changes-only")
 				.is_some_and(|parameter| parameter.as_bool_simple());
-			let output = crate::inspector::StreamOutput::open(parameter.value(), changes_only, start_time).unwrap_or_else(|error| {
-				panic!(
-					"Data stream destination could not be opened. The most likely cause is that the `debug.streams` path '{}' names a directory that does not exist: {error}",
-					parameter.value()
-				)
-			});
+			let output = crate::inspector::StreamOutput::open(destination, changes_only, start_time, services.retained_streams)
+				.unwrap_or_else(|error| {
+					panic!(
+						"Data stream destination could not be opened. The most likely cause is that the `debug.streams` path '{}' names a directory that does not exist: {error}",
+						destination.unwrap_or_default()
+					)
+				});
 			Arc::new(output)
 		});
 
@@ -1519,6 +1527,9 @@ use crate::{
 	input,
 	rendering::{self, Camera, renderer::Renderer, window::Window},
 };
+// Only debug builds bake on demand, so only they report bakes.
+#[cfg(debug_assertions)]
+mod asset_stream;
 pub mod defaults;
 mod integrations;
 

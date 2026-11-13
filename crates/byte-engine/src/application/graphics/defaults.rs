@@ -121,6 +121,8 @@ pub fn setup_default_resource_and_asset_management(
 
 		configure(&mut asset_manager, application.parameters());
 
+		super::asset_stream::open(&mut asset_manager, application.world());
+
 		application.resource_manager.set_asset_manager(asset_manager);
 	}
 }

@@ -486,7 +486,7 @@ mod tests {
 			let graph = system.register(builder.build(idle).expect("graph builds"));
 			let entity = Handle::new();
 			let path = std::env::temp_dir().join(format!("animation-dds-{}-{}.ndjson", std::process::id(), entity.id()));
-			let output = Arc::new(StreamOutput::open(path.to_str().unwrap(), false, Instant::now()).unwrap());
+			let output = Arc::new(StreamOutput::open(path.to_str(), false, Instant::now(), Arc::default()).unwrap());
 			let mut debug = DebugDataStreams::new(&scope, Some(output));
 			let mut alley = Alley::new();
 			let mut publish_stream = || {

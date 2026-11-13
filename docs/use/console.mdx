@@ -38,6 +38,14 @@ debug view: `set render.debug.view.motion-blur.velocity true` shows motion blur'
 [Show a debug view](/docs/use/debug-views). Type `help` to list the commands, press Up to run an earlier command again,
 and press Page Up to read older log lines.
 
+## See what's baking
+
+A debug build bakes assets the first time it needs them. To watch those bakes, press Tab: the pane switches from the log
+to the bakes. It shows how many assets are baking, have baked, and have failed; each asset baking now with how long it
+has run; and the latest assets to finish, marked ✓ or ✗ with how long each took. Press Tab again to return to the log.
+
+## Close the application
+
 Press Ctrl+C to close the application. The terminal returns to how it was, with the run's log in its history.
 
 ## Turn the console off

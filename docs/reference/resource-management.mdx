@@ -157,6 +157,25 @@ deterministic and keeps authoring dependencies out of the application.
 Both workflows produce the same resource model. The difference is when the
 asset is processed, not what runtime systems consume.
 
+### Bake stream
+
+A debug application that bakes on demand reports its bakes as a
+[debug data stream](/docs/reference/debug-data-streams) named `Assets`, whose
+records have the stream `bakes`. A bake is one run of an asset's processor; a
+request that finds the resource current bakes nothing and changes no record.
+A record is written when a bake starts and when it ends, and carries the state
+after that change.
+
+| Field of `data` | Type | Meaning |
+| --- | --- | --- |
+| `baking` | Array | The bakes running, oldest first. Each has the resource `id` and `elapsed_ms`, the milliseconds since it started. |
+| `baked` | Integer | The bakes that stored their resource since the application started. |
+| `failed` | Integer | The bakes that ended without storing their resource since the application started. |
+| `finished` | Array | The latest 16 bakes to end, newest first. Each has the resource `id`, `ok`, which is `true` when it stored its resource, and `duration_ms`. |
+
+The key is the `id` of every bake in `baking`, with `baked` and `failed`; a
+record where only times changed has the same key.
+
 ## Put it to work
 
 - To bake and ship an application's resources, follow

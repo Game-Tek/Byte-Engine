@@ -95,6 +95,13 @@ Read the trace through `AssetManager::resource_trace` or, after installing the a
 Call `ResourceTrace::items` for one ID or `ResourceTrace::resource_ids` to find IDs with messages.
 The trace is an in-memory development tool: release builds don't expose it, and trace items are never stored as production resources.
 
+## Report bakes while they run
+
+`AssetManager::set_bake_reporter` gives the manager a `BakeReporter`. From then on, `bake_uncoalesced` records a run as soon as it finds the asset's handler and reports the manager's `BakeState` when the run starts and when it ends.
+The run is a guard: a bake ends `ok` only through `BakeRun::succeeded`, and dropping the guard any other way, through an error, an early return, or a cancelled future, counts the bake as failed. Keep every new return path between the guard and `succeeded`, so no bake is lost from the totals.
+Reports go out while the tracker's lock is held, so they arrive in order; a slow reporter stalls bakes rather than skipping a state. Without a reporter, the tracker does nothing, so BELD and tests pay nothing.
+The engine's reporter writes each state to the `bakes` [debug data stream](/docs/reference/resource-management#bake-stream), which the console's bakes view reads. Its tests check the states a capturing reporter receives, not the tracker's internals.
+
 ## Processing
 
 Asset processing turns source data into engine data.

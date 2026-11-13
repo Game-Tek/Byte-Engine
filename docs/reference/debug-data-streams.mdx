@@ -15,7 +15,7 @@ share the one destination.
 
 | Value | Records go to |
 | --- | --- |
-| Not set | Nowhere. No stream opens, and systems write nothing. |
+| Not set | Nowhere. No stream opens and systems write nothing, unless the [console](/docs/reference/console) runs: it reads streams, so they open, and records reach only the inspector. |
 | `log` | The log, at the info level with the target `byte_engine::stream`, one record per log line. A `log.level` that leaves out info records of `byte_engine::stream` hides them. |
 | `stdout` | Standard output, one record per line. |
 | `stderr` | Standard error, one record per line. |
@@ -28,6 +28,7 @@ share the one destination.
 | Delivery | Every record is written as the system writes it. A writer that can't keep up stalls the system; no record is dropped. |
 | Changes only | With `debug.streams.changes-only` set to `true`, a system writes a record only when its key differs from the key of the last record it wrote to that stream. A stream's first record is always written. The Reference page of each system that writes records specifies its key. The default is `false`, which writes every record. |
 | Encoding | UTF-8. Numbers are JSON numbers; non-finite numbers are `null`. |
+| Retention | While streams are open, the inspector keeps the latest record of each entity's stream, whatever the destination. The console shows what it keeps. |
 
 ## Record
 

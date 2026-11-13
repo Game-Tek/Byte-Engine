@@ -20,8 +20,11 @@ let dds = world.create(DebugDataStream::new(entity, "Character")).handle();
 Systems that support debug data streams start reporting during a normal update. You can spawn the debug data stream before or after its animator. Create the systems before the debug data stream so their listeners
 observe it. No extra animation step or direct system reference is needed.
 
-Without a `debug.streams` destination, the debug data stream remains a request and writes no records. Delete the debug data stream entity when
+Without a `debug.streams` destination, and without the [console](/docs/use/console) running, the debug data stream remains a request and writes no records. Delete the debug data stream entity when
 you want to stop reporting without deleting the character.
+
+Debug builds that bake on demand open one stream themselves: the asset manager's, named `Assets`, which reports its
+[bakes](/docs/reference/resource-management#bake-stream).
 
 ## Choose where the records go
 

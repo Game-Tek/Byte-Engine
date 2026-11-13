@@ -56,7 +56,7 @@ mod shape;
 mod stream;
 pub use stream::{DebugDataStream, DebugDataStreamWriter};
 #[cfg_attr(not(feature = "headed"), allow(unused_imports))]
-pub(crate) use stream::{DebugDataStreams, StreamOutput};
+pub(crate) use stream::{DebugDataStreams, RetainedStreams, StreamOutput};
 
 /// The [`Inspectable`] trait defines the read and mutation surface exposed to
 /// external engine tooling.
@@ -197,6 +197,8 @@ pub struct DefaultInspector {
 	metrics: Arc<Metrics>,
 	/// Wakes requests waiting in [`Self::wait_for_events`]; the application loop raises it.
 	event_signal: Arc<EventSignal>,
+	/// The latest record of each debug data stream, which the console shows.
+	streams: Arc<RetainedStreams>,
 }
 
 impl DefaultInspector {
@@ -236,7 +238,15 @@ impl DefaultInspector {
 			debug_views: None,
 			metrics,
 			event_signal: Arc::new(EventSignal::new()),
+			streams: Arc::default(),
 		}
+	}
+
+	/// Returns the latest record of each debug data stream. Give it to the application's stream output so records
+	/// reach it.
+	#[cfg_attr(not(feature = "headed"), allow(dead_code))]
+	pub(crate) fn streams(&self) -> &Arc<RetainedStreams> {
+		&self.streams
 	}
 
 	/// Returns the per-tick CPU and GPU timings of the application.

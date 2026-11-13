@@ -15,7 +15,7 @@ use std::{
 };
 
 use serde::Serialize;
-use utils::sync::Mutex;
+use utils::{hash::HashMap, sync::Mutex};
 
 use crate::core::{
 	factory::{CreateMessage, Factory, Handle},
@@ -98,11 +98,13 @@ impl DebugDataStreams {
 	}
 }
 
-/// The `StreamOutput` struct is the one destination every data stream of an application shares.
+/// The `StreamOutput` struct is where every data stream of an application writes: the inspector, which keeps each
+/// stream's latest record, and the `debug.streams` destination, when one is set.
 pub(crate) struct StreamOutput {
-	/// `None` writes to the log; otherwise the writer is locked so lines from streams on different threads never
-	/// interleave, which a pipe only guarantees for short writes.
-	writer: Option<Mutex<Box<dyn Write + Send>>>,
+	/// The `debug.streams` destination; `None` when only the inspector reads the streams, such as for the console.
+	destination: Option<Destination>,
+	/// Keeps each stream's latest record for the inspector.
+	retained: Arc<RetainedStreams>,
 	/// Whether streams skip records whose key matches the last one they wrote, from `debug.streams.changes-only`.
 	changes_only: bool,
 	/// The application tick in progress, which every record carries; see [`Self::set_tick`].
@@ -111,18 +113,33 @@ pub(crate) struct StreamOutput {
 	start: Instant,
 }
 
+/// The `Destination` enum is where a `debug.streams` value sends records.
+enum Destination {
+	Log,
+	/// Locked so lines from streams on different threads never interleave, which a pipe only guarantees for short
+	/// writes.
+	Writer(Mutex<Box<dyn Write + Send>>),
+}
+
 impl StreamOutput {
-	/// Opens the destination a `debug.streams` value names: `log`, `stdout`, `stderr`, or a file path, which it creates
-	/// or truncates.
-	pub(crate) fn open(destination: &str, changes_only: bool, start: Instant) -> std::io::Result<Self> {
-		let writer: Option<Box<dyn Write + Send>> = match destination {
-			"log" => None,
-			"stdout" => Some(Box::new(std::io::stdout())),
-			"stderr" => Some(Box::new(std::io::stderr())),
-			path => Some(Box::new(std::fs::File::create(path)?)),
+	/// Opens the destination a `debug.streams` value names, if any: `log`, `stdout`, `stderr`, or a file path, which it
+	/// creates or truncates. Every record also reaches `retained`.
+	pub(crate) fn open(
+		destination: Option<&str>,
+		changes_only: bool,
+		start: Instant,
+		retained: Arc<RetainedStreams>,
+	) -> std::io::Result<Self> {
+		let destination = match destination {
+			None => None,
+			Some("log") => Some(Destination::Log),
+			Some("stdout") => Some(Destination::Writer(Mutex::new(Box::new(std::io::stdout())))),
+			Some("stderr") => Some(Destination::Writer(Mutex::new(Box::new(std::io::stderr())))),
+			Some(path) => Some(Destination::Writer(Mutex::new(Box::new(std::fs::File::create(path)?)))),
 		};
 		Ok(Self {
-			writer: writer.map(Mutex::new),
+			destination,
+			retained,
 			changes_only,
 			tick: AtomicU64::new(0),
 			start,
@@ -209,10 +226,15 @@ impl DebugDataStreamWriter {
 			data,
 		};
 		serde_json::to_writer(&mut self.line, &record).expect("stream records serialize to JSON");
-		let Some(writer) = &self.output.writer else {
-			let line = std::str::from_utf8(&self.line).expect("serde_json writes UTF-8");
-			log::info!(target: "byte_engine::stream", "{line}");
-			return;
+		self.output.retained.retain(self.entity.id(), stream, &self.line);
+		let writer = match &self.output.destination {
+			None => return,
+			Some(Destination::Log) => {
+				let line = std::str::from_utf8(&self.line).expect("serde_json writes UTF-8");
+				log::info!(target: "byte_engine::stream", "{line}");
+				return;
+			}
+			Some(Destination::Writer(writer)) => writer,
 		};
 		self.line.push(b'\n');
 		if let Err(error) = writer.lock().write_all(&self.line) {
@@ -220,6 +242,68 @@ impl DebugDataStreamWriter {
 				"Data stream record could not be written. The most likely cause is that the reader of `debug.streams` closed it: {error}"
 			);
 		}
+	}
+}
+
+/// The `RetainedStreams` struct keeps the latest record of each entity's stream, so the inspector can show the state
+/// systems last reported, such as the console's bakes view.
+#[derive(Default)]
+pub(crate) struct RetainedStreams {
+	/// Each entity's streams, by entity handle; an entity has a few streams at most, so they're searched in order.
+	records: Mutex<HashMap<u32, Vec<RetainedRecord>>>,
+	/// Counts every record retained, so readers redraw only when one arrived.
+	revision: AtomicU64,
+}
+
+/// One stream's latest record.
+struct RetainedRecord {
+	stream: String,
+	/// The whole record, as the destination receives it, without its line feed. Reused, so steady state allocates
+	/// nothing.
+	line: Vec<u8>,
+	received: Instant,
+}
+
+impl RetainedStreams {
+	/// Keeps `line` as the latest record of `entity`'s `stream`.
+	fn retain(&self, entity: u32, stream: &str, line: &[u8]) {
+		let mut records = self.records.lock();
+		let streams = records.entry(entity).or_default();
+		let index = match streams.iter().position(|record| record.stream == stream) {
+			Some(index) => index,
+			None => {
+				streams.push(RetainedRecord {
+					stream: stream.to_string(),
+					line: Vec::new(),
+					received: Instant::now(),
+				});
+				streams.len() - 1
+			}
+		};
+		let record = &mut streams[index];
+		record.line.clear();
+		record.line.extend_from_slice(line);
+		record.received = Instant::now();
+		self.revision.fetch_add(1, Ordering::SeqCst);
+	}
+
+	/// Returns the newest record any entity wrote to `stream`, parsed, with when it arrived.
+	#[cfg_attr(not(feature = "headed"), allow(dead_code))]
+	pub(crate) fn latest(&self, stream: &str) -> Option<(Instant, serde_json::Value)> {
+		let records = self.records.lock();
+		let newest = records
+			.values()
+			.flatten()
+			.filter(|record| record.stream == stream)
+			.max_by_key(|record| record.received)?;
+		let value = serde_json::from_slice(&newest.line).expect("retained records are the JSON the writer serialized");
+		Some((newest.received, value))
+	}
+
+	/// Returns a number that changes whenever a record is retained.
+	#[cfg_attr(not(feature = "headed"), allow(dead_code))]
+	pub(crate) fn revision(&self) -> u64 {
+		self.revision.load(Ordering::SeqCst)
 	}
 }
 
@@ -233,7 +317,8 @@ mod tests {
 	fn stream(changes_only: bool) -> (DebugDataStreamWriter, Arc<StreamOutput>, PathBuf) {
 		let entity = Handle::new();
 		let path = std::env::temp_dir().join(format!("byte-engine-stream-{}-{}.ndjson", std::process::id(), entity.id()));
-		let output = Arc::new(StreamOutput::open(path.to_str().unwrap(), changes_only, Instant::now()).expect("file opens"));
+		let output =
+			Arc::new(StreamOutput::open(path.to_str(), changes_only, Instant::now(), Arc::default()).expect("file opens"));
 		(
 			DebugDataStreamWriter::new(Arc::clone(&output), entity, "Box".into()),
 			output,
@@ -283,5 +368,38 @@ mod tests {
 			.map(|record| record["data"]["speed"].as_f64().unwrap())
 			.collect();
 		assert_eq!(speeds, [0.0, 0.2, 0.4]);
+	}
+
+	#[test]
+	fn the_latest_record_of_each_stream_is_retained_without_a_destination() {
+		let retained = Arc::new(RetainedStreams::default());
+		let output = Arc::new(StreamOutput::open(None, false, Instant::now(), Arc::clone(&retained)).expect("opens"));
+		let mut first = DebugDataStreamWriter::new(Arc::clone(&output), Handle::new(), "A".into());
+		let mut second = DebugDataStreamWriter::new(Arc::clone(&output), Handle::new(), "B".into());
+		assert!(retained.latest("bakes").is_none());
+
+		first.write("bakes", &(), &serde_json::json!({ "baked": 1 }));
+		first.write("bakes", &(), &serde_json::json!({ "baked": 2 }));
+		first.write("physics", &(), &serde_json::json!({ "speed": 0.5 }));
+		let revision = retained.revision();
+		second.write("bakes", &(), &serde_json::json!({ "baked": 7 }));
+
+		assert!(retained.revision() > revision);
+		let (_, latest) = retained.latest("bakes").expect("a retained record");
+		assert_eq!(latest["name"], "B");
+		assert_eq!(latest["data"]["baked"], 7);
+		assert_eq!(retained.latest("physics").expect("a retained record").1["data"]["speed"], 0.5);
+	}
+
+	#[test]
+	fn changes_only_streams_retain_only_records_whose_key_changed() {
+		let retained = Arc::new(RetainedStreams::default());
+		let output = Arc::new(StreamOutput::open(None, true, Instant::now(), Arc::clone(&retained)).expect("opens"));
+		let mut stream = DebugDataStreamWriter::new(output, Handle::new(), "A".into());
+
+		stream.write("bakes", &"idle", &serde_json::json!({ "elapsed": 1 }));
+		stream.write("bakes", &"idle", &serde_json::json!({ "elapsed": 2 }));
+
+		assert_eq!(retained.latest("bakes").expect("a retained record").1["data"]["elapsed"], 1);
 	}
 }

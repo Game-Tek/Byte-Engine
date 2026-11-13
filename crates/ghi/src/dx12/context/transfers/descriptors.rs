@@ -331,7 +331,8 @@ impl Device {
 					image.mip_levels,
 					mip_level,
 				);
-				self.device.CreateShaderResourceView(resource.as_ref(), Some(&desc), cpu_handle);
+				self.device
+					.CreateShaderResourceView(resource.as_ref(), Some(&desc), cpu_handle);
 				self.native_counters.image_srv_descriptor_write_count += 1;
 			}
 		}

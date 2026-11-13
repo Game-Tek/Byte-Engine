@@ -278,7 +278,9 @@ impl Device {
 			command_list.DrawIndexedInstanced(mesh.index_count, 1, 0, 0, 0);
 		}
 		// The mesh's view replaced the bound ones, so a later pipeline bind has none to restride.
-		self.command_buffers[command_buffer_handle.index() as usize].vertex_buffer_views.clear();
+		self.command_buffers[command_buffer_handle.index() as usize]
+			.vertex_buffer_views
+			.clear();
 		self.mark_command_buffer_work(command_buffer_handle);
 		self.native_counters.vertex_buffer_bind_count += 1;
 		self.native_counters.index_buffer_bind_count += 1;

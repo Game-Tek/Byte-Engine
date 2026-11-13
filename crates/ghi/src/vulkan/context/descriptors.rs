@@ -866,8 +866,7 @@ impl Context {
 		base_mip_level: u32,
 		level_count: u32,
 	) -> Option<vk::ImageViewCreateInfo<'static>> {
-		(!image.image.is_null())
-			.then(|| self.descriptor_image_view_create_info(image, view_type, base_mip_level, level_count))
+		(!image.image.is_null()).then(|| self.descriptor_image_view_create_info(image, view_type, base_mip_level, level_count))
 	}
 
 	#[inline]

@@ -154,7 +154,8 @@ impl Device {
 		};
 		let Some(gpu) = gpu else {
 			// SAFETY: The factory is live; index 0 is the first adapter in the preferred order.
-			let adapter = unsafe { factory.EnumAdapterByGpuPreference::<IDXGIAdapter1>(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE) };
+			let adapter =
+				unsafe { factory.EnumAdapterByGpuPreference::<IDXGIAdapter1>(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE) };
 			return Ok(adapter.ok().and_then(|adapter| adapter.cast().ok()));
 		};
 		// DXGI reports the end of the list as an error.
@@ -164,7 +165,11 @@ impl Device {
 			let Ok(desc) = (unsafe { adapter.GetDesc1() }) else {
 				continue;
 			};
-			let length = desc.Description.iter().position(|&unit| unit == 0).unwrap_or(desc.Description.len());
+			let length = desc
+				.Description
+				.iter()
+				.position(|&unit| unit == 0)
+				.unwrap_or(desc.Description.len());
 			if String::from_utf16_lossy(&desc.Description[..length]) == gpu {
 				return Ok(adapter.cast().ok());
 			}
@@ -595,8 +600,11 @@ impl Device {
 		vertex_layout: &[VertexElement],
 	) -> MeshHandle {
 		let vertex_size = vertex_layout.iter().map(|element| element.format.size()).sum::<usize>();
-		let (vertex_resource, vertex_pointer, _) =
-			self.create_buffer_resource(vertices.len(), DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, Uses::Vertex);
+		let (vertex_resource, vertex_pointer, _) = self.create_buffer_resource(
+			vertices.len(),
+			DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,
+			Uses::Vertex,
+		);
 		let (index_resource, index_pointer, _) =
 			self.create_buffer_resource(indices.len(), DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, Uses::Index);
 		if !vertex_pointer.is_null() {

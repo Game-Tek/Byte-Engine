@@ -1896,7 +1896,8 @@ pub mod tests {
 	/// A root material without the fields is opaque and one-sided, and a masked one without a cutoff tests against 0.5.
 	#[r#async::test]
 	async fn materials_default_to_opaque_one_sided_and_a_half_cutoff() {
-		let (asset_manager, resource_storage_backend) = coverage_asset_manager(COVERAGE_GRAPH, "", &[("masked", r#", "alpha_mode": "Mask""#)]);
+		let (asset_manager, resource_storage_backend) =
+			coverage_asset_manager(COVERAGE_GRAPH, "", &[("masked", r#", "alpha_mode": "Mask""#)]);
 
 		let _: ReferenceModel<VariantModel> = asset_manager
 			.bake_if_not_exists("masked.bema")
@@ -1956,7 +1957,10 @@ pub mod tests {
 			.await
 			.expect("A variant that keeps its parent's blending should bake");
 		let solid: Result<ReferenceModel<VariantModel>, _> = asset_manager.bake_if_not_exists("solid.bema").await;
-		assert!(solid.is_err(), "A variant that turns a blended parent opaque should fail the bake");
+		assert!(
+			solid.is_err(),
+			"A variant that turns a blended parent opaque should fail the bake"
+		);
 
 		for fields in ["", r#""alpha_mode": "Mask","#] {
 			let (asset_manager, _) = coverage_asset_manager(BACKDROP_GRAPH, fields, &[]);

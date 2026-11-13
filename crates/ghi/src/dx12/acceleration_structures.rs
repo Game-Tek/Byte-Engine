@@ -208,7 +208,9 @@ impl AccelerationStructures {
 	}
 
 	pub(crate) fn top_level(&self, handle: TopLevelAccelerationStructureHandle) -> &TopLevel {
-		self.top_levels.get(handle.bits()).unwrap_or_else(|| stale_handle("top-level"))
+		self.top_levels
+			.get(handle.bits())
+			.unwrap_or_else(|| stale_handle("top-level"))
 	}
 
 	/// Moves the structure `copy` compacts into its compacted storage, keeping the storage it replaces until every
@@ -308,7 +310,9 @@ pub(crate) fn build_inputs(
 			Flags: fast_trace,
 			NumDescs: instance_count,
 			DescsLayout: d3d12::D3D12_ELEMENTS_LAYOUT_ARRAY,
-			Anonymous: d3d12::D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0 { InstanceDescs: instances },
+			Anonymous: d3d12::D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0 {
+				InstanceDescs: instances,
+			},
 		};
 	}
 	d3d12::D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS {

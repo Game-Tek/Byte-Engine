@@ -175,12 +175,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn build_bottom_level_acceleration_structures(&mut self, structures: &[crate::BottomLevelAccelerationStructureHandle]) {
 		let frame_sequence = self.frame_key.map(|frame_key| frame_key.sequence_index);
-		self.device.record_bottom_level_builds(
-			self.command_buffer,
-			frame_sequence,
-			self.sequence_index(),
-			structures,
-		);
+		self.device
+			.record_bottom_level_builds(self.command_buffer, frame_sequence, self.sequence_index(), structures);
 	}
 
 	#[allow(unreachable_code)]

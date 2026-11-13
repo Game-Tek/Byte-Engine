@@ -687,7 +687,10 @@ impl crate::context::ContextCreate for Context {
 		)
 	}
 
-	fn build_dynamic_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
+	fn build_dynamic_buffer<T: ?Sized + crate::buffer::BufferContents>(
+		&mut self,
+		builder: crate::buffer::Builder,
+	) -> crate::DynamicBufferHandle<T> {
 		let size = <T as crate::buffer::BufferContents>::layout(builder.length).size();
 
 		// Create every frame sequence's copy up front, so a buffer created mid-frame never shares a copy with another

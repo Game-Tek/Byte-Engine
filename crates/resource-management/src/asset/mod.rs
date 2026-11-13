@@ -21,10 +21,9 @@ pub mod manager;
 #[cfg(debug_assertions)]
 pub mod resource_trace;
 
+pub(crate) use authored_levels::{AuthoredLevelPattern, authored_level_pattern};
 #[cfg(debug_assertions)]
 pub use resource_trace::{ResourceTrace, ResourceTraceItem, ResourceTraceLevel};
-
-pub(crate) use authored_levels::{AuthoredLevelPattern, authored_level_pattern};
 
 pub type BEADType = Value;
 
@@ -456,7 +455,11 @@ mod image_settings_tests {
 		assert_eq!(coverage("{ image: { coverage: 0.3 } }", Semantic::Opacity), Ok(Some(0.3)));
 		assert_eq!(coverage("{ image: { coverage: 0.5 } }", Semantic::Albedo), Ok(Some(0.5)));
 		assert_eq!(coverage("{ image: { coverage: false } }", Semantic::Opacity), Ok(None));
-		for invalid in ["{ image: { coverage: true } }", "{ image: { coverage: 1.5 } }", "{ image: { coverage: -0.1 } }"] {
+		for invalid in [
+			"{ image: { coverage: true } }",
+			"{ image: { coverage: 1.5 } }",
+			"{ image: { coverage: -0.1 } }",
+		] {
 			assert!(coverage(invalid, Semantic::Opacity).is_err(), "{invalid}");
 		}
 	}

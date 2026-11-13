@@ -30,8 +30,6 @@ pub mod timer;
 pub mod transform;
 pub mod watch;
 
-pub use font::load_font;
-
 pub use animation::{
 	Animation, AnimationDriver, BackOut, Curves, Easing, Interpolate, Smoothing, Spring, Track, animate, back_out, ease_in,
 	ease_in_out, ease_out, ease_out_cubic, ease_out_quart, emphasized_out, smooth, spring,
@@ -46,6 +44,7 @@ pub use components::{
 pub use drag::{DragCapture, DragDrop};
 pub use element::Id;
 pub use flow::{FlowFunction, FlowInput, FlowOutput, Location, Location3, Offset, Size};
+pub use font::load_font;
 pub use layout::{
 	Anchor, Depth, Geometry, Position, Sizing,
 	context::{ContainerContext, Context, ElementContext, ElementKey, ElementSlot},

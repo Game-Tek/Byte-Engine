@@ -167,8 +167,11 @@ impl Device {
 		for set in &mut self.descriptor_sets {
 			for (element, descriptor) in set.descriptors.iter().enumerate() {
 				let stale = descriptor.is_some_and(|retained| {
-					let sequence =
-						crate::frame_resources::frame_index_with_offset(set.sequence_index as usize, retained.frame_offset, frames);
+					let sequence = crate::frame_resources::frame_index_with_offset(
+						set.sequence_index as usize,
+						retained.frame_offset,
+						frames,
+					);
 					references(retained.descriptor, sequence as u8)
 				});
 				if stale {

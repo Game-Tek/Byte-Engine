@@ -2409,7 +2409,12 @@ void main(uint3 id : SV_DispatchThreadID) {
 		);
 		assert_eq!(
 			device.buffer_resource_state(buffer.into()),
-			Some((crate::DeviceAccesses::DeviceToHost, BufferHeapKind::ShaderReadback, true, true))
+			Some((
+				crate::DeviceAccesses::DeviceToHost,
+				BufferHeapKind::ShaderReadback,
+				true,
+				true
+			))
 		);
 	}
 
@@ -2566,8 +2571,14 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 		let state = device.tracked_image_resource_state(image);
 		assert!(state.is_some());
-		assert_ne!(state, Some(TextureBarrierState::shader_resource(D3D12_BARRIER_SYNC_COMPUTE_SHADING)));
-		assert_ne!(state, Some(TextureBarrierState::unordered_access(D3D12_BARRIER_SYNC_COMPUTE_SHADING)));
+		assert_ne!(
+			state,
+			Some(TextureBarrierState::shader_resource(D3D12_BARRIER_SYNC_COMPUTE_SHADING))
+		);
+		assert_ne!(
+			state,
+			Some(TextureBarrierState::unordered_access(D3D12_BARRIER_SYNC_COMPUTE_SHADING))
+		);
 	}
 
 	/// Verifies that a pass can read and write several mips of one image through storage views, as a pyramid build does.
@@ -2579,7 +2590,11 @@ void main(uint3 id : SV_DispatchThreadID) {
 		let source_slot = crate::ResourceSlot::new(0);
 		let destination_slot = crate::ResourceSlot::new(1);
 		let layout = test_layout([
-			crate::ShaderResourceDescriptor::single(source_slot, crate::ResourceKind::StorageImage, crate::AccessPolicies::READ),
+			crate::ShaderResourceDescriptor::single(
+				source_slot,
+				crate::ResourceKind::StorageImage,
+				crate::AccessPolicies::READ,
+			),
 			crate::ShaderResourceDescriptor::single(
 				destination_slot,
 				crate::ResourceKind::StorageImage,

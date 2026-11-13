@@ -31,9 +31,15 @@ impl AuthoredLevelPattern {
 		while !rest.is_empty() {
 			match rest.find('{') {
 				Some(0) => {
-					let end = rest.find('}').ok_or_else(|| format!("`lods.authored` '{pattern}' has a `{{` without a closing `}}`"))?;
+					let end = rest
+						.find('}')
+						.ok_or_else(|| format!("`lods.authored` '{pattern}' has a `{{` without a closing `}}`"))?;
 					let name = &rest[1..end];
-					if name.is_empty() || !name.chars().all(|character| character.is_ascii_alphanumeric() || character == '_') {
+					if name.is_empty()
+						|| !name
+							.chars()
+							.all(|character| character.is_ascii_alphanumeric() || character == '_')
+					{
 						return Err(format!(
 							"`lods.authored` '{pattern}' has the placeholder `{{{name}}}`, but a placeholder name holds only letters, digits, and underscores"
 						));
@@ -43,7 +49,11 @@ impl AuthoredLevelPattern {
 							"`lods.authored` '{pattern}' puts two placeholders next to each other, so the file names can't say where one ends"
 						));
 					}
-					parts.push(if name == "level" { PatternPart::Level } else { PatternPart::Any(name.to_string()) });
+					parts.push(if name == "level" {
+						PatternPart::Level
+					} else {
+						PatternPart::Any(name.to_string())
+					});
 					rest = &rest[end + 1..];
 				}
 				Some(start) => {
@@ -68,8 +78,12 @@ impl AuthoredLevelPattern {
 	/// Returns `None` when the model's file name, without its extension, doesn't match the pattern. The caller stops
 	/// at the first file that doesn't exist.
 	pub(crate) fn coarser_level_ids(&self, model_id: &str) -> Option<impl Iterator<Item = String> + '_> {
-		let (directory, file) = model_id.rsplit_once('/').map_or(("", model_id), |(directory, file)| (directory, file));
-		let (stem, extension) = file.rsplit_once('.').map_or((file, None), |(stem, extension)| (stem, Some(extension)));
+		let (directory, file) = model_id
+			.rsplit_once('/')
+			.map_or(("", model_id), |(directory, file)| (directory, file));
+		let (stem, extension) = file
+			.rsplit_once('.')
+			.map_or((file, None), |(stem, extension)| (stem, Some(extension)));
 		let mut captures = Vec::new();
 		let mut level = None;
 		if !match_parts(&self.parts, stem, &mut captures, &mut level) {
@@ -183,10 +197,20 @@ mod tests {
 	fn a_model_whose_name_matches_lists_its_coarser_level_files_in_its_directory() {
 		assert_eq!(
 			levels("{name}_LOD{level}", "plants/fern/fern_VarA_LOD0.fbx").unwrap(),
-			["plants/fern/fern_VarA_LOD1.fbx", "plants/fern/fern_VarA_LOD2.fbx", "plants/fern/fern_VarA_LOD3.fbx"]
+			[
+				"plants/fern/fern_VarA_LOD1.fbx",
+				"plants/fern/fern_VarA_LOD2.fbx",
+				"plants/fern/fern_VarA_LOD3.fbx"
+			]
 		);
-		assert_eq!(levels("{name}_LOD{level}", "fern_LOD1.fbx").unwrap(), ["fern_LOD2.fbx", "fern_LOD3.fbx", "fern_LOD4.fbx"]);
-		assert_eq!(levels("{name}_lod{level}", "rock_lod08.fbx").unwrap()[..2], ["rock_lod09.fbx", "rock_lod10.fbx"]);
+		assert_eq!(
+			levels("{name}_LOD{level}", "fern_LOD1.fbx").unwrap(),
+			["fern_LOD2.fbx", "fern_LOD3.fbx", "fern_LOD4.fbx"]
+		);
+		assert_eq!(
+			levels("{name}_lod{level}", "rock_lod08.fbx").unwrap()[..2],
+			["rock_lod09.fbx", "rock_lod10.fbx"]
+		);
 	}
 
 	#[test]
@@ -197,8 +221,17 @@ mod tests {
 
 	#[test]
 	fn patterns_need_one_level_and_separable_placeholders() {
-		for pattern in ["{name}_LOD", "{level}_{level}", "{name}{level}", "{name_LOD{level}", "{na-me}_{level}"] {
-			assert!(AuthoredLevelPattern::parse(pattern).is_err(), "'{pattern}' should be rejected");
+		for pattern in [
+			"{name}_LOD",
+			"{level}_{level}",
+			"{name}{level}",
+			"{name_LOD{level}",
+			"{na-me}_{level}",
+		] {
+			assert!(
+				AuthoredLevelPattern::parse(pattern).is_err(),
+				"'{pattern}' should be rejected"
+			);
 		}
 	}
 }

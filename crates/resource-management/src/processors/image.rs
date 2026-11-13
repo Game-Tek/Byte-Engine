@@ -282,9 +282,17 @@ impl ImageProcessor {
 			// Only the lower levels are new bytes; they reuse the reserved capacity after the base level.
 			data.resize(size, 0);
 			if let Some((mips, claim)) = mips {
-				mips.filter_mip_chain_in_place(claim, output_format, gamma, extent.width(), extent.height(), &mut data, coverage)
-					.await
-					.map_err(|_| LoadErrors::FailedToProcess)?;
+				mips.filter_mip_chain_in_place(
+					claim,
+					output_format,
+					gamma,
+					extent.width(),
+					extent.height(),
+					&mut data,
+					coverage,
+				)
+				.await
+				.map_err(|_| LoadErrors::FailedToProcess)?;
 			}
 			data
 		} else {
@@ -495,9 +503,18 @@ async fn encode_levels_in<A: Allocator + Clone>(
 	let mut data = Vec::with_capacity_in(size, allocator.clone());
 	data.resize(size, 0);
 	if let Some((mips, claim)) = mips {
-		mips.encode_mip_chain(claim, output_format, gamma, extent.width(), extent.height(), intermediate, &mut data, coverage)
-			.await
-			.map_err(|_| LoadErrors::FailedToProcess)?;
+		mips.encode_mip_chain(
+			claim,
+			output_format,
+			gamma,
+			extent.width(),
+			extent.height(),
+			intermediate,
+			&mut data,
+			coverage,
+		)
+		.await
+		.map_err(|_| LoadErrors::FailedToProcess)?;
 	} else {
 		encode_level_in(output_format, extent, intermediate, &mut data, allocator);
 	}
@@ -679,12 +696,24 @@ mod tests {
 			("quarry/xb5ebhf_4K_Bump.jpg", Semantic::Height, Formats::RGBA8),
 			("quarry/xb5ebhf_4K_Displacement.jpg", Semantic::Displacement, Formats::RGBA8),
 			("quarry/udlladln_4K_Opacity.jpg", Semantic::Opacity, Formats::BC7),
-			("quarry/udlladln_4K_Translucency.jpg", Semantic::Translucency, Formats::BC7SRGB),
+			(
+				"quarry/udlladln_4K_Translucency.jpg",
+				Semantic::Translucency,
+				Formats::BC7SRGB,
+			),
 			("quarry/udlladln_4K_Fuzz.jpg", Semantic::Sheen, Formats::BC7SRGB),
-			("quarry/udlladln_4K_Billboard_Basecolor.jpg", Semantic::Albedo, Formats::BC7SRGB),
+			(
+				"quarry/udlladln_4K_Billboard_Basecolor.jpg",
+				Semantic::Albedo,
+				Formats::BC7SRGB,
+			),
 			("quarry/udlladln_4K_Billboard_Normal.jpg", Semantic::Normal, Formats::BC5),
 			("quarry/udlladln_4K_Billboard_Opacity.jpg", Semantic::Opacity, Formats::BC7),
-			("quarry/udlladln_4K_Billboard_Translucency.jpg", Semantic::Translucency, Formats::BC7SRGB),
+			(
+				"quarry/udlladln_4K_Billboard_Translucency.jpg",
+				Semantic::Translucency,
+				Formats::BC7SRGB,
+			),
 		]);
 	}
 
@@ -871,10 +900,18 @@ mod tests {
 
 		assert_keeps_coverage(size, &chain_coverage(size, &kept), 0.02);
 		let plain_coverage = chain_coverage(size, &plain);
-		assert!(plain_coverage[3] < plain_coverage[0] / 2.0, "plain averaging should lose the lines: {plain_coverage:.3?}");
+		assert!(
+			plain_coverage[3] < plain_coverage[0] / 2.0,
+			"plain averaging should lose the lines: {plain_coverage:.3?}"
+		);
 		// Only the opacity channel of the smaller levels changes.
 		assert_eq!(kept[..pixels.len()], pixels[..]);
-		let other_channels = |chain: &[u8]| chain.chunks_exact(4).map(|texel| [texel[1], texel[2], texel[3]]).collect::<Vec<_>>();
+		let other_channels = |chain: &[u8]| {
+			chain
+				.chunks_exact(4)
+				.map(|texel| [texel[1], texel[2], texel[3]])
+				.collect::<Vec<_>>()
+		};
 		assert_eq!(other_channels(&kept), other_channels(&plain));
 	}
 

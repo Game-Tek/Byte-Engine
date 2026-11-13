@@ -13,10 +13,7 @@ impl ImageAssetHandler {
 
 impl AssetHandler for ImageAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
-		matches!(
-			r#type,
-			"png" | "jpg" | "jpeg" | "Image" | "image/png" | "image/jpeg"
-		)
+		matches!(r#type, "png" | "jpg" | "jpeg" | "Image" | "image/png" | "image/jpeg")
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {

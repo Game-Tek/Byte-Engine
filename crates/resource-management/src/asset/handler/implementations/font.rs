@@ -89,7 +89,10 @@ mod tests {
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
 		asset_manager.add_asset_handler(FontAssetHandler::new());
 
-		asset_manager.bake("fonts/display.ttf").await.expect("a valid font should bake");
+		asset_manager
+			.bake("fonts/display.ttf")
+			.await
+			.expect("a valid font should bake");
 
 		let resource = resource_storage_backend
 			.get_resource(ResourceId::new("fonts/display.ttf"))

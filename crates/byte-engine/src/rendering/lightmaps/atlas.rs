@@ -40,7 +40,12 @@ impl Atlas {
 	pub(crate) fn scale_offset(&self, index: usize) -> [f32; 4] {
 		let Rectangle { x, y, side } = self.rectangles[index];
 		let extent = self.extent as f32;
-		[side as f32 / extent, side as f32 / extent, x as f32 / extent, y as f32 / extent]
+		[
+			side as f32 / extent,
+			side as f32 / extent,
+			x as f32 / extent,
+			y as f32 / extent,
+		]
 	}
 }
 
@@ -124,13 +129,22 @@ mod tests {
 		assert!(atlas.extent.is_power_of_two());
 		assert!(atlas.extent >= 64 + 2 && atlas.extent <= 256);
 		for (index, rectangle) in atlas.rectangles.iter().enumerate() {
-			assert!(rectangle.x >= 1 && rectangle.y >= 1, "rectangle {index} keeps a texel from the edges");
+			assert!(
+				rectangle.x >= 1 && rectangle.y >= 1,
+				"rectangle {index} keeps a texel from the edges"
+			);
 			assert!(rectangle.x + rectangle.side < atlas.extent && rectangle.y + rectangle.side < atlas.extent);
 		}
 		assert_eq!(atlas.rectangles[1].side, 16);
 		let [scale_u, scale_v, offset_u, offset_v] = atlas.scale_offset(0);
 		assert_eq!([scale_u, scale_v], [64.0 / atlas.extent as f32; 2]);
-		assert_eq!([offset_u, offset_v], [atlas.rectangles[0].x as f32 / atlas.extent as f32, atlas.rectangles[0].y as f32 / atlas.extent as f32]);
+		assert_eq!(
+			[offset_u, offset_v],
+			[
+				atlas.rectangles[0].x as f32 / atlas.extent as f32,
+				atlas.rectangles[0].y as f32 / atlas.extent as f32
+			]
+		);
 	}
 
 	#[test]

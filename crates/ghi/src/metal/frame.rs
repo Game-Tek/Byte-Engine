@@ -165,7 +165,9 @@ impl<'a> Frame<'a> {
 				swapchain.images[sequence_index]?;
 				// A display-linked swapchain took its drawable when the sequence acquired it.
 				if swapchain.display_link.is_some() {
-					return swapchain.drawables[sequence_index].take().map(|drawable| (present_key, drawable));
+					return swapchain.drawables[sequence_index]
+						.take()
+						.map(|drawable| (present_key, drawable));
 				}
 				// `nextDrawable` blocks until the display releases a drawable, which with display sync is usually the
 				// refresh that shows the previously presented frame. It returns `None` when no drawable became available

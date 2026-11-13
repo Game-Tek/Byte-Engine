@@ -3,9 +3,7 @@
 //! Backends report a failed lowering without saying why, so the rules a shader author can break are checked here
 //! first, each with an error that names the rule and how to fix it.
 
-use super::{
-	RAY_TRACING_STAGE_INTRINSICS, SUBGROUP_INTRINSICS, any_code_node, tile::TILE_ENTRY_DOCS_PATH,
-};
+use super::{RAY_TRACING_STAGE_INTRINSICS, SUBGROUP_INTRINSICS, any_code_node, tile::TILE_ENTRY_DOCS_PATH};
 use crate::shader::generator::Stages;
 
 const RAY_TRACING_ENTRY_DOCS_PATH: &str = "reference/besl/interface#ray-tracing-entry-points";
@@ -21,11 +19,7 @@ const COMPUTE_INVOCATION_INTRINSICS: [&str; 4] = ["thread_id", "thread_idx", "th
 /// A program that breaks a rule fails with an error that names the rule and the fix, instead of the generic failure
 /// a backend reports. `name` names the shader in the errors. Call it before a backend lowers `program`; next, lower
 /// the program with [`super::platform::Generator::lower`].
-pub(crate) fn validate_stage(
-	stage: Stages,
-	name: &str,
-	program: &besl::NodeReference,
-) -> Result<(), String> {
+pub(crate) fn validate_stage(stage: Stages, name: &str, program: &besl::NodeReference) -> Result<(), String> {
 	let Some(main) = program.get_main() else {
 		return Ok(());
 	};

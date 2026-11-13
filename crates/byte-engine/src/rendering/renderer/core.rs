@@ -826,9 +826,9 @@ impl Renderer {
 
 			let acquisition = self.context.acquire_swapchain_image(frame, *swapchain);
 			if index == 0 {
-				present_time = acquisition.as_ref().and_then(|acquisition| {
-					acquisition.target_present_time().or_else(|| acquisition.present_time())
-				});
+				present_time = acquisition
+					.as_ref()
+					.and_then(|acquisition| acquisition.target_present_time().or_else(|| acquisition.present_time()));
 			}
 
 			// A window without a usable image skips the frame. Say so once, and again only after it recovers.

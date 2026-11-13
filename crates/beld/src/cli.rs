@@ -130,8 +130,13 @@ fn directories(source: Option<String>, destination: Option<String>, parameters: 
 	let package = std::env::var_os("CARGO_MANIFEST_DIR").map_or_else(PathBuf::new, PathBuf::from);
 	// Each manager's `path` option lives in its own scope: `assets.path` and `resources.path`.
 	let resolve = |flag: Option<String>, scope: &str, default_path: &str| {
-		flag.or_else(|| parameters.scope(scope).get_parameter("path").map(|parameter| parameter.value().to_owned()))
-			.unwrap_or_else(|| package.join(default_path).to_string_lossy().into_owned())
+		flag.or_else(|| {
+			parameters
+				.scope(scope)
+				.get_parameter("path")
+				.map(|parameter| parameter.value().to_owned())
+		})
+		.unwrap_or_else(|| package.join(default_path).to_string_lossy().into_owned())
 	};
 	(
 		resolve(source, "assets", "assets"),

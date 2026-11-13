@@ -48,14 +48,22 @@ impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'
 
 	fn start_counter(&mut self, counter: crate::CounterHandle) {
 		// The start marks when the GPU reaches the command, before any later work has to complete.
-		if let Some(slot) = self.device.counters.start(crate::counters::frame_sequence(self.frame_key), counter) {
+		if let Some(slot) = self
+			.device
+			.counters
+			.start(crate::counters::frame_sequence(self.frame_key), counter)
+		{
 			self.write_timestamp(vk::PipelineStageFlags2::TOP_OF_PIPE, slot);
 		}
 	}
 
 	fn end_counter(&mut self, counter: crate::CounterHandle) {
 		// The end waits for every earlier command to finish, so the span covers the measured work's completion.
-		if let Some(slot) = self.device.counters.end(crate::counters::frame_sequence(self.frame_key), counter) {
+		if let Some(slot) = self
+			.device
+			.counters
+			.end(crate::counters::frame_sequence(self.frame_key), counter)
+		{
 			self.write_timestamp(vk::PipelineStageFlags2::BOTTOM_OF_PIPE, slot);
 		}
 	}

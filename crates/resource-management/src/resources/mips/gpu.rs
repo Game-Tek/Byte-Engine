@@ -744,9 +744,18 @@ mod tests {
 		let chain = encode_chain(&generator, Formats::BC7, Gamma::Linear, width, height, &base).await;
 		let mut reference = vec![0; chain.len()];
 		let cpu = MipGenerator::Cpu;
-		cpu.encode_mip_chain(&cpu.claim().await, Formats::BC7, Gamma::Linear, width, height, &base, &mut reference, None)
-			.await
-			.expect("CPU mip chain encoding should succeed");
+		cpu.encode_mip_chain(
+			&cpu.claim().await,
+			Formats::BC7,
+			Gamma::Linear,
+			width,
+			height,
+			&base,
+			&mut reference,
+			None,
+		)
+		.await
+		.expect("CPU mip chain encoding should succeed");
 
 		// Each encoder is measured against the levels its own path filtered. The GPU filter can round a texel
 		// differently from the CPU filter, and that difference isn't compression error.

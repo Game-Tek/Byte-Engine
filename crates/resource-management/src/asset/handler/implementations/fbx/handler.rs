@@ -112,7 +112,11 @@ async fn load_authored_levels(
 		return Ok(Vec::new());
 	}
 	if skinned || settings.lightmap_uvs.is_some() {
-		let reason = if skinned { "it has a skeleton" } else { "the bake gives it lightmap UVs" };
+		let reason = if skinned {
+			"it has a skeleton"
+		} else {
+			"the bake gives it lightmap UVs"
+		};
 		context.warn(format_args!(
 			"FBX asset '{base}' leaves its authored detail levels out because {reason}, which authored levels don't support. Its levels are generated instead. See {}.",
 			crate::online_docs_url(AUTHORED_LEVELS_DOCS_PATH)

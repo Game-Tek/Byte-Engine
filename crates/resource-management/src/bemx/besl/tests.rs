@@ -62,7 +62,12 @@ impl<'a> Stage<'a> for FixedPoint {
 
 	fn sample(&mut self, texture: &'a str, coordinates: Coordinates<'a>) -> Result<Node<'a>, LowerError> {
 		match texture {
-			"albedo" => return Ok(Node::call("sample", vec![Node::member_expression("albedo"), coordinates.value])),
+			"albedo" => {
+				return Ok(Node::call(
+					"sample",
+					vec![Node::member_expression("albedo"), coordinates.value],
+				));
+			}
 			"probe" => {}
 			_ => {
 				return Err(LowerError::UnknownTexture {

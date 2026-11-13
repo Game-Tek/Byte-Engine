@@ -185,7 +185,10 @@ impl MipGenerator {
 		#[cfg(feature = "gpu-mips")]
 		let filtered = match (self, &claim.gpu) {
 			(Self::Gpu(generator), Some(claim)) => {
-				match generator.filter_mip_chain_in_place(claim, format, gamma, width, height, chain).await {
+				match generator
+					.filter_mip_chain_in_place(claim, format, gamma, width, height, chain)
+					.await
+				{
 					Ok(()) => true,
 					// Requests outside the GPU path's formats are expected and take the CPU path quietly.
 					Err(gpu::GPUMipError::UnsupportedRequest) => false,
@@ -502,7 +505,10 @@ fn keep_unorm_coverage<const BYTES: usize>(
 	};
 	// Counts the texels of `level` whose opacity is at or above `threshold`.
 	let passing = |level: &[u8], threshold: u32| -> usize {
-		level.chunks_exact(texel_bytes).filter(|texel| sample(texel) >= threshold).count()
+		level
+			.chunks_exact(texel_bytes)
+			.filter(|texel| sample(texel) >= threshold)
+			.count()
 	};
 	let base_texels = base_level.len() / texel_bytes;
 	let share = passing(base_level, cutoff) as f64 / base_texels as f64;
@@ -538,7 +544,11 @@ fn keep_unorm_coverage<const BYTES: usize>(
 		for texel in level.chunks_exact_mut(texel_bytes) {
 			let value = sample(texel);
 			let scaled = ((value as f32 * factor).round() as u32).min(max);
-			let scaled = if value >= threshold { scaled.max(cutoff) } else { scaled.min(cutoff - 1) };
+			let scaled = if value >= threshold {
+				scaled.max(cutoff)
+			} else {
+				scaled.min(cutoff - 1)
+			};
 			texel[opacity.clone()].copy_from_slice(&scaled.to_le_bytes()[..BYTES]);
 		}
 	}

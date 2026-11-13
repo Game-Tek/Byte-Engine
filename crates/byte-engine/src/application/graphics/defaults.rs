@@ -101,7 +101,6 @@ pub fn setup_default_resource_and_asset_management(
 	#[cfg(debug_assertions)]
 	{
 		use crate::application::application::resolve_application_path;
-
 		use crate::application::parameters::Parameters as _;
 
 		// The asset manager's own options live in the `assets` scope; asset handlers still read the whole set.
@@ -357,9 +356,9 @@ use resource_management::{
 		handler::implementations::{
 			audio_graph::AudioGraphAssetHandler, bema::BEMAAssetHandler, besl::BESLShaderAssetHandler,
 			environment::EnvironmentMapAssetHandler, exr::EXRAssetHandler, fbx::FBXAssetHandler,
-			flipbook::FlipbookAssetHandler, font::FontAssetHandler, fusion::FusionAssetHandler, gltf::GLTFAssetHandler, ies::IESAssetHandler,
-			image::ImageAssetHandler, level::LevelAssetHandler, lut::LUTAssetHandler, ogg::OGGAssetHandler,
-			particles::ParticleSystemAssetHandler, pipeline::PipelineAssetHandler, wav::WAVAssetHandler,
+			flipbook::FlipbookAssetHandler, font::FontAssetHandler, fusion::FusionAssetHandler, gltf::GLTFAssetHandler,
+			ies::IESAssetHandler, image::ImageAssetHandler, level::LevelAssetHandler, lut::LUTAssetHandler,
+			ogg::OGGAssetHandler, particles::ParticleSystemAssetHandler, pipeline::PipelineAssetHandler, wav::WAVAssetHandler,
 		},
 		manager::AssetManager,
 	},

@@ -251,8 +251,7 @@ impl MeshProcessorSession {
 			for (position, level) in authored.into_iter().enumerate() {
 				let room = (max_levels - 1).saturating_sub(levels.len() + authored_count - position);
 				if room > 0 {
-					let (finer, finer_error) =
-						levels.last().map_or((full, 0.0), |level| (&level.indices[..], level.error));
+					let (finer, finer_error) = levels.last().map_or((full, 0.0), |level| (&level.indices[..], level.error));
 					let fill = simplify_levels(
 						finer,
 						finer_error,
@@ -1158,4 +1157,3 @@ use crate::{
 	},
 	types::{IndexStreamTypes, Stream, Streams, VertexComponent, VertexSemantics},
 };
-

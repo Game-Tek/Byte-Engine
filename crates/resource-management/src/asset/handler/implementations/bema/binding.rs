@@ -403,9 +403,7 @@ mod tests {
 	#[test]
 	fn an_asset_takes_precedence_over_inline_fields() {
 		let spec = serde_json::json!({ "asset": { "MatID_1": { "asset": "rock.bema", "parent": "ignored.bema" } } });
-		assert!(
-			matches!(binding(spec, Some("MatID_1")), Ok(Some(MaterialBinding::Asset(asset))) if asset == "rock.bema")
-		);
+		assert!(matches!(binding(spec, Some("MatID_1")), Ok(Some(MaterialBinding::Asset(asset))) if asset == "rock.bema"));
 	}
 
 	#[test]

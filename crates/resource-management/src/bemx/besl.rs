@@ -398,8 +398,7 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 			GraphNode::ScenePosition { texcoord } => self.backdrop(id, Backdrop::Position, *texcoord, result)?,
 			GraphNode::Image { texture, texcoord, .. } => {
 				// The mesh's own coordinates sample the way the stage always does, with the differences it carries.
-				let coordinate =
-					texcoord.filter(|texcoord| !matches!(graph.node(*texcoord), GraphNode::TexCoord { index: 0 }));
+				let coordinate = texcoord.filter(|texcoord| !matches!(graph.node(*texcoord), GraphNode::TexCoord { index: 0 }));
 				let sample = self.sample(id, texture, coordinate)?;
 
 				self.convert(sample, result)

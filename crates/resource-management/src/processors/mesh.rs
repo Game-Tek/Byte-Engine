@@ -451,7 +451,9 @@ mod tests {
 		let full_indices = full.indices.len();
 		let mut authored = full;
 		authored.positions.extend(&coarse.positions);
-		authored.indices.extend(coarse.indices.iter().map(|index| index + full_vertices));
+		authored
+			.indices
+			.extend(coarse.indices.iter().map(|index| index + full_vertices));
 		authored.level_starts = vec![full_indices];
 
 		let processed = process(

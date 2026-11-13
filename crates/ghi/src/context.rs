@@ -275,7 +275,10 @@ impl<T> TextureReadbackRegistry<T> {
 		Some(value)
 	}
 
-	#[cfg_attr(not(test), allow(dead_code, reason = "Only tests and the DX12 backend read every readback."))]
+	#[cfg_attr(
+		not(test),
+		allow(dead_code, reason = "Only tests and the DX12 backend read every readback.")
+	)]
 	pub(crate) fn values(&self) -> impl Iterator<Item = &T> {
 		self.slots.iter().filter_map(|slot| slot.state.value())
 	}
@@ -602,7 +605,10 @@ pub trait ContextCreate {
 	///
 	/// `T` must implement [`Pod`] so zero initialization and later GPU-written bytes always form a valid value.
 	/// Dynamic buffers can be resized with [`Context::resize_buffer`].
-	fn build_dynamic_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T>;
+	fn build_dynamic_buffer<T: ?Sized + crate::buffer::BufferContents>(
+		&mut self,
+		builder: buffer::Builder,
+	) -> DynamicBufferHandle<T>;
 
 	/// Creates a dynamic image from a builder.
 	///
@@ -773,7 +779,10 @@ macro_rules! delegate_context_create_to_device {
 			self.device.build_buffer(builder)
 		}
 
-		fn build_dynamic_buffer<T: ?Sized + $crate::buffer::BufferContents>(&mut self, builder: $crate::buffer::Builder) -> $crate::DynamicBufferHandle<T> {
+		fn build_dynamic_buffer<T: ?Sized + $crate::buffer::BufferContents>(
+			&mut self,
+			builder: $crate::buffer::Builder,
+		) -> $crate::DynamicBufferHandle<T> {
 			self.device.build_dynamic_buffer(builder)
 		}
 

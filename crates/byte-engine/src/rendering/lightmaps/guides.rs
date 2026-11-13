@@ -46,7 +46,9 @@ pub(crate) fn group_texels(texels: &[LightmapTexel], cell: f32) -> GuideGroups {
 	let cube = |texel: &LightmapTexel| {
 		let [x, y, z] = texel.position.map(|coordinate| (coordinate / cell).floor() as i32);
 		let normal = texel.normal;
-		let axis = (0..3).max_by(|&a, &b| normal[a].abs().total_cmp(&normal[b].abs())).unwrap_or(0);
+		let axis = (0..3)
+			.max_by(|&a, &b| normal[a].abs().total_cmp(&normal[b].abs()))
+			.unwrap_or(0);
 		(x, y, z, axis * 2 + usize::from(normal[axis] < 0.0))
 	};
 	let mut order: Vec<u32> = (0..texels.len() as u32).collect();
@@ -78,7 +80,9 @@ pub(crate) fn group_texels(texels: &[LightmapTexel], cell: f32) -> GuideGroups {
 				}
 				!same
 			});
-			let axis = (0..3).min_by(|&a, &b| facing[a].abs().total_cmp(&facing[b].abs())).unwrap_or(0) as u32;
+			let axis = (0..3)
+				.min_by(|&a, &b| facing[a].abs().total_cmp(&facing[b].abs()))
+				.unwrap_or(0) as u32;
 			result.groups.push(LightmapGuideGroup {
 				first,
 				count: result.texels.len() as u32 - first,
@@ -107,7 +111,12 @@ mod tests {
 		let up = [0.0, 1.0, 0.0];
 		let side = [1.0, 0.0, 0.0];
 		// Two texels facing up in the first cube, one facing sideways there, and one facing up in the next cube.
-		let texels = [texel([0.1, 0.0, 0.1], up), texel([1.2, 0.0, 0.1], up), texel([0.2, 0.0, 0.1], side), texel([0.4, 0.0, 0.3], up)];
+		let texels = [
+			texel([0.1, 0.0, 0.1], up),
+			texel([1.2, 0.0, 0.1], up),
+			texel([0.2, 0.0, 0.1], side),
+			texel([0.4, 0.0, 0.3], up),
+		];
 
 		let grouped = group_texels(&texels, 0.5);
 
@@ -116,13 +125,20 @@ mod tests {
 		assert_ne!(grouped.texel_groups[0], grouped.texel_groups[2], "same cube, another facing");
 		assert_ne!(grouped.texel_groups[0], grouped.texel_groups[1], "another cube");
 		let up_group = grouped.groups[grouped.texel_groups[0] as usize];
-		assert_ne!(up_group.axis, 1, "an upward group's frames turn around an axis its normals don't lie along");
+		assert_ne!(
+			up_group.axis, 1,
+			"an upward group's frames turn around an axis its normals don't lie along"
+		);
 		let mut listed = grouped.texels.clone();
 		listed.sort();
 		assert_eq!(listed, [0, 1, 2, 3], "every texel lies in exactly one group");
 		for (index, group) in grouped.groups.iter().enumerate() {
 			let members = &grouped.texels[group.first as usize..(group.first + group.count) as usize];
-			assert!(members.iter().all(|&texel| grouped.texel_groups[texel as usize] == index as u32));
+			assert!(
+				members
+					.iter()
+					.all(|&texel| grouped.texel_groups[texel as usize] == index as u32)
+			);
 		}
 	}
 

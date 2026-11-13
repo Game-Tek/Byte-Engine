@@ -69,7 +69,9 @@ impl Device {
 			return Err(crate::TextureTransferError::UnsupportedLayout);
 		}
 		let readback_size = footprint.total_size;
-		let (Some(readback), ..) = self.create_buffer_resource(readback_size, DeviceAccesses::DeviceToHost, Uses::TransferDestination) else {
+		let (Some(readback), ..) =
+			self.create_buffer_resource(readback_size, DeviceAccesses::DeviceToHost, Uses::TransferDestination)
+		else {
 			return Err(crate::TextureTransferError::AllocationFailed);
 		};
 

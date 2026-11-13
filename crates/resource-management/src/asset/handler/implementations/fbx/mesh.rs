@@ -239,15 +239,17 @@ impl MeshPrimitiveSource for FbxPrimitiveSource<'_, '_, '_> {
 		if !self.full_detail().context.mesh.vertex_bitangent.exists {
 			return Ok(None);
 		}
-		Ok(Some(self.per_vertex(|segment, corner| match segment.tangent_frame(corner)? {
-			[Some(normal), Some(tangent), Some(bitangent)] => {
-				let handedness = tangent_handedness(normal, tangent, bitangent);
-				Ok(normal.cross(tangent) * handedness)
-			}
-			[Some(normal), None, Some(bitangent)] => orthogonalized_direction(bitangent, normal),
-			[_, _, Some(bitangent)] => Ok(bitangent),
-			[_, _, None] => Err(FbxImportError::ZeroDirection),
-		})))
+		Ok(Some(self.per_vertex(
+			|segment, corner| match segment.tangent_frame(corner)? {
+				[Some(normal), Some(tangent), Some(bitangent)] => {
+					let handedness = tangent_handedness(normal, tangent, bitangent);
+					Ok(normal.cross(tangent) * handedness)
+				}
+				[Some(normal), None, Some(bitangent)] => orthogonalized_direction(bitangent, normal),
+				[_, _, Some(bitangent)] => Ok(bitangent),
+				[_, _, None] => Err(FbxImportError::ZeroDirection),
+			},
+		)))
 	}
 
 	fn uvs(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 2], Self::Error>> + '_>, Self::Error> {
@@ -845,7 +847,12 @@ fn push_with_authored_levels(
 		let mut level_remap = Vec::with_capacity_in(file.context.mesh.num_indices, allocator);
 		level_remap.resize(file.context.mesh.num_indices, u32::MAX);
 		let mut level_remapped = RemappedCorners::with_capacity_in(level_corners.len(), allocator);
-		remap_triangle_corners(file.context.mesh.num_indices, level_corners, &mut level_remap, &mut level_remapped)?;
+		remap_triangle_corners(
+			file.context.mesh.num_indices,
+			level_corners,
+			&mut level_remap,
+			&mut level_remapped,
+		)?;
 		if level_remapped.ends.is_empty() {
 			notes.info.push(format!(
 				"Authored level '{}' has no triangles left for material '{name}' once its degenerate polygons are culled, so the authored levels end before it.",
@@ -1113,7 +1120,11 @@ fn corner_weld_key(mesh: &ufbx::Mesh, skinned: bool, corner: usize) -> [u64; 19]
 	};
 	let position = mesh.vertex_position[corner];
 	write(0, &[position.x, position.y, position.z]);
-	for (offset, attribute) in [(3, &mesh.vertex_normal), (6, &mesh.vertex_tangent), (9, &mesh.vertex_bitangent)] {
+	for (offset, attribute) in [
+		(3, &mesh.vertex_normal),
+		(6, &mesh.vertex_tangent),
+		(9, &mesh.vertex_bitangent),
+	] {
 		if attribute.exists {
 			let value = attribute[corner];
 			write(offset, &[value.x, value.y, value.z]);

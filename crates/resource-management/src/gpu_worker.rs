@@ -318,7 +318,10 @@ impl<P: GpuProcessor + 'static> GpuWorker<P> {
 	/// request. Dropping it does not cancel the GPU work; the worker finishes the request and discards the result.
 	pub(crate) fn submit(&self, claim: &GpuClaim, parameters: P::Request, input: Vec<u8>) -> oneshot::Receiver<P::Result> {
 		// Each claim covers this worker's requests only, which is what bounds its queue.
-		debug_assert!(Arc::ptr_eq(&claim.claims, &self.claims), "A claim must come from the worker it submits to");
+		debug_assert!(
+			Arc::ptr_eq(&claim.claims, &self.claims),
+			"A claim must come from the worker it submits to"
+		);
 		let (reply, receiver) = oneshot::channel();
 		if let Some(sender) = &self.sender {
 			// A failed send drops the request and its reply sender, which cancels the receiver.
@@ -695,11 +698,16 @@ mod tests {
 			second.as_mut().now_or_never().is_none(),
 			"a released place goes to the oldest waiter"
 		);
-		let _first = first.now_or_never().expect("the oldest waiter should hold the released place");
+		let _first = first
+			.now_or_never()
+			.expect("the oldest waiter should hold the released place");
 
 		drop(kept);
 
-		assert!(second.now_or_never().is_some(), "the next release should reach the next waiter");
+		assert!(
+			second.now_or_never().is_some(),
+			"the next release should reach the next waiter"
+		);
 	}
 
 	#[crate::r#async::test]

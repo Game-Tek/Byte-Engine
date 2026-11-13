@@ -62,9 +62,9 @@ pub(super) fn simplify_levels(
 
 	let mut levels: Vec<LodLevel> = Vec::new();
 	while levels.len() + 1 < max_levels {
-		let (triangles, error) = levels
-			.last()
-			.map_or((indices.len() / 3, base_error), |level| (level.indices.len() / 3, level.error));
+		let (triangles, error) = levels.last().map_or((indices.len() / 3, base_error), |level| {
+			(level.indices.len() / 3, level.error)
+		});
 		if triangles <= LOD_MIN_TRIANGLES {
 			break;
 		}
@@ -112,7 +112,11 @@ pub(super) fn simplify_levels(
 /// unseen. Returns infinity when exactly one list has no triangles.
 pub(super) fn level_distance(positions: &[[f32; 3]], full: &[u32], level: &[u32]) -> f32 {
 	if full.is_empty() || level.is_empty() {
-		return if full.is_empty() && level.is_empty() { 0.0 } else { f32::INFINITY };
+		return if full.is_empty() && level.is_empty() {
+			0.0
+		} else {
+			f32::INFINITY
+		};
 	}
 	let one_way = |from: &[u32], to: &[u32]| {
 		let grid = TriangleGrid::new(positions, to);
@@ -206,7 +210,10 @@ impl<'a> TriangleGrid<'a> {
 		let bound = |pick: fn(f32, f32) -> f32, start: f32| {
 			std::array::from_fn(|axis| corners.iter().map(|corner| corner[axis]).fold(start, pick))
 		};
-		let (low, high) = (self.cell_of(bound(f32::min, f32::INFINITY)), self.cell_of(bound(f32::max, f32::NEG_INFINITY)));
+		let (low, high) = (
+			self.cell_of(bound(f32::min, f32::INFINITY)),
+			self.cell_of(bound(f32::max, f32::NEG_INFINITY)),
+		);
 		for z in low[2]..=high[2] {
 			for y in low[1]..=high[1] {
 				for x in low[0]..=high[0] {
@@ -282,7 +289,11 @@ fn point_triangle_distance(point: [f32; 3], [a, b, c]: [[f32; 3]; 3]) -> f32 {
 	let sub = |u: [f32; 3], v: [f32; 3]| [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
 	let dot = |u: [f32; 3], v: [f32; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
 	let along = |origin: [f32; 3], direction: [f32; 3], t: f32| {
-		[origin[0] + direction[0] * t, origin[1] + direction[1] * t, origin[2] + direction[2] * t]
+		[
+			origin[0] + direction[0] * t,
+			origin[1] + direction[1] * t,
+			origin[2] + direction[2] * t,
+		]
 	};
 	// Closest point by Voronoi region, after Ericson's Real-Time Collision Detection, section 5.1.5.
 	let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(point, a));

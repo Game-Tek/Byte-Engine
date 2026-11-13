@@ -236,6 +236,9 @@ pub mod tests {
 			"motion.bead"
 		);
 		assert_eq!(ResourceId::new("characters/emotion.bead").get_asset_type(), "bead");
-		assert_eq!(ResourceId::new("levels/arena.lightmap.bead").get_asset_type(), "lightmap.bead");
+		assert_eq!(
+			ResourceId::new("levels/arena.lightmap.bead").get_asset_type(),
+			"lightmap.bead"
+		);
 	}
 }

@@ -289,7 +289,9 @@ impl AccelerationStructures {
 
 	/// Returns the top-level structure `handle` names, or panics when it was destroyed.
 	pub(crate) fn top_level(&self, handle: TopLevelAccelerationStructureHandle) -> &TopLevel {
-		self.top_levels.get(handle.bits()).unwrap_or_else(|| stale_handle("top-level"))
+		self.top_levels
+			.get(handle.bits())
+			.unwrap_or_else(|| stale_handle("top-level"))
 	}
 
 	/// Puts the compacted storage of `copy` in place of the storage of the structure it compacts, and keeps the

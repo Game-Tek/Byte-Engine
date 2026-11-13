@@ -505,7 +505,14 @@ mod tests {
 
 	#[test]
 	fn rectangles_keep_their_border_from_the_edges_and_twice_it_from_each_other() {
-		let extents = [[16.0, 16.0], [40.0, 40.0], [16.0, 16.0], [24.0, 24.0], [100.0, 100.0], [16.0, 16.0]];
+		let extents = [
+			[16.0, 16.0],
+			[40.0, 40.0],
+			[16.0, 16.0],
+			[24.0, 24.0],
+			[100.0, 100.0],
+			[16.0, 16.0],
+		];
 		let (placed, side) = place_lightmap_rectangles(&extents, 1.0);
 
 		let rectangles: Vec<[f32; 4]> = placed
@@ -514,8 +521,15 @@ mod tests {
 			.map(|(&[x, y], [width, height])| [x, y, x + width, y + height])
 			.collect();
 		for (index, &[x0, y0, x1, y1]) in rectangles.iter().enumerate() {
-			assert!(x0 >= 1.0 && y0 >= 1.0 && x1 <= side - 1.0 && y1 <= side - 1.0, "rectangle {index} keeps 1 from the edges");
-			assert_eq!([x0.fract(), y0.fract()], [0.0, 0.0], "whole extents and borders land on whole texels");
+			assert!(
+				x0 >= 1.0 && y0 >= 1.0 && x1 <= side - 1.0 && y1 <= side - 1.0,
+				"rectangle {index} keeps 1 from the edges"
+			);
+			assert_eq!(
+				[x0.fract(), y0.fract()],
+				[0.0, 0.0],
+				"whole extents and borders land on whole texels"
+			);
 			for &[u0, v0, u1, v1] in &rectangles[index + 1..] {
 				let apart = u0 >= x1 + 2.0 || x0 >= u1 + 2.0 || v0 >= y1 + 2.0 || y0 >= v1 + 2.0;
 				assert!(apart, "rectangles keep 2 apart");

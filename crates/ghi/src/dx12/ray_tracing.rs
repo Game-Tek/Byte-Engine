@@ -17,8 +17,8 @@ pub(crate) const IDENTIFIER_SIZE: usize = d3d12::D3D12_SHADER_IDENTIFIER_SIZE_IN
 pub(crate) const CALLABLE_OFFSET: u64 = (IDENTIFIER_SIZE as u64).next_multiple_of(TABLE_ALIGNMENT);
 
 /// The distance between two callable records.
-pub(crate) const RECORD_STRIDE: u64 = (IDENTIFIER_SIZE as u64)
-	.next_multiple_of(d3d12::D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT as u64);
+pub(crate) const RECORD_STRIDE: u64 =
+	(IDENTIFIER_SIZE as u64).next_multiple_of(d3d12::D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT as u64);
 
 /// The alignment of each region of a table.
 const TABLE_ALIGNMENT: u64 = d3d12::D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT as u64;

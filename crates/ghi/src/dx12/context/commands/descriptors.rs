@@ -42,13 +42,12 @@ impl DescriptorAliasState {
 							| D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON
 					)
 				};
-				let compatible = current.layout == other.layout
-					|| (shader_access(current.layout) && shader_access(other.layout));
+				let compatible =
+					current.layout == other.layout || (shader_access(current.layout) && shader_access(other.layout));
 				assert!(
 					compatible,
 					"Incompatible DX12 image descriptor aliases: {key:?} is bound in layouts {:?} and {:?}. The most likely cause is that the bound sets use one image both through shader views and in a fixed-function role. Bind it in one role per pass. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#layout-access-compatibility.",
-					current.layout,
-					other.layout,
+					current.layout, other.layout,
 				);
 				if current.layout != other.layout {
 					current.layout = D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON;

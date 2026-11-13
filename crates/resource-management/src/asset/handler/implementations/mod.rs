@@ -37,10 +37,11 @@ pub use font::*;
 pub use fusion::*;
 pub use gltf::*;
 pub use ies::*;
-pub use self::image::*;
 pub use level::*;
 pub use lut::*;
 pub use ogg::*;
 pub use particles::*;
 pub use pipeline::*;
 pub use wav::*;
+
+pub use self::image::*;

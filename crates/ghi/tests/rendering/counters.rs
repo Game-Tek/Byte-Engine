@@ -25,12 +25,15 @@ pub(super) fn disabled_counters_report_no_duration(device: &mut impl ghi::contex
 			|execution| {
 				execution.record(command_buffer, |recording| {
 					recording.counter(counter, |recording| {
-						recording.clear_images(&[(image.into(), ClearValue::Color(RGBA {
-							r: 0.0,
-							g: 0.0,
-							b: 0.0,
-							a: 1.0,
-						}))]);
+						recording.clear_images(&[(
+							image.into(),
+							ClearValue::Color(RGBA {
+								r: 0.0,
+								g: 0.0,
+								b: 0.0,
+								a: 1.0,
+							}),
+						)]);
 					});
 				});
 				[]

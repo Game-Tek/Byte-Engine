@@ -228,6 +228,45 @@ facing_normal: fn (normal: vec3f, to_camera: vec3f, surface_vector0: vec3f, surf
 }
 "#;
 
+/// Returns the scale and bias of `F0` in a GGX lobe's directional albedo at `cosine`, the share of arriving light it
+/// reflects: `E = F0 · scale + bias`. Material evaluation weighs reflected light with it, and the diffuse terms take
+/// what it leaves.
+///
+/// It is Brian Karis's fit of the split-sum environment BRDF, based on Dimitar Lazarov's work. Epic permits use
+/// without attribution: https://www.unrealengine.com/en-US/blog/physically-based-shading-on-mobile
+pub(crate) const ENVIRONMENT_BRDF_SOURCE: &str = r#"
+environment_brdf: fn (cosine: f16, roughness: f16) -> vec2f16 {
+	let c0: vec4f16 = vec4f16(0.0 - 1.0, 0.0 - 0.0275, 0.0 - 0.572, 0.022);
+	let c1: vec4f16 = vec4f16(1.0, 0.0425, 1.04, 0.0 - 0.04);
+	let r: vec4f16 = roughness * c0 + c1;
+	let a004: f16 = min(r.x * r.x, pow(f16(2.0), (f16(0.0) - f16(9.28)) * cosine)) * r.x + r.y;
+	return vec2f16(0.0 - 1.04, 1.04) * a004 + vec2f16(r.z, r.w);
+}
+"#;
+
+/// Returns the share of light arriving at `cosine` that a dielectric surface's specular lobe leaves to diffuse, one
+/// minus its directional albedo with `F0` 0.04.
+///
+/// Diffuse light belongs to the dielectric layer, so metalness scales it apart from this. The fit overshoots one at
+/// grazing angles on mirror-smooth surfaces, which the clamp absorbs.
+pub(crate) const DIFFUSE_TRANSMISSION_SOURCE: &str = r#"
+diffuse_transmission: fn (cosine: f16, roughness: f16) -> f16 {
+	let brdf: vec2f16 = environment_brdf(cosine, roughness);
+	return clamp(f16(1.0) - (f16(0.04) * brdf.x + brdf.y), f16(0.0), f16(1.0));
+}
+"#;
+
+/// Returns the cosine-weighted average over the hemisphere of a dielectric GGX lobe's directional albedo, `E_avg`.
+///
+/// Direct diffuse light divides by `1 - E_avg`, so a surface lit evenly from every direction diffuses exactly the share
+/// [`DIFFUSE_TRANSMISSION_SOURCE`] leaves toward the viewer. The quadratic fits the average of
+/// [`ENVIRONMENT_BRDF_SOURCE`], integrated numerically, within 0.004 for every roughness.
+pub(crate) const AVERAGE_SPECULAR_ALBEDO_SOURCE: &str = r#"
+average_specular_albedo: fn (roughness: f16) -> f16 {
+	return f16(0.0939) + roughness * (f16(0.0146) * roughness - f16(0.0962));
+}
+"#;
+
 pub(crate) const MATERIAL_EVALUATION_UV_SOURCE: &str = r#"
 material_evaluation_uv: fn () -> void {
 	// Runtime UVs use half-float storage and are expanded only for materials that sample them. They are interpolated,
@@ -451,30 +490,25 @@ material_evaluation_suffix: fn () -> void {
 	let albedo_rgb: vec3f16 = vec3f16(albedo.x, albedo.y, albedo.z);
 	let one_minus_metalness: f16 = f16(1.0) - metalness;
 	let F0: vec3f16 = vec3f16(0.04, 0.04, 0.04) * one_minus_metalness + albedo_rgb * metalness;
-	let one_minus_f0: vec3f16 = vec3f16(1.0, 1.0, 1.0) - F0;
 	let NdotV: f16 = max(dot(normal, V_material), f16(0.0));
 	let roughness_alpha: f16 = roughness * roughness;
 	let roughness_alpha_squared: f16 = roughness_alpha * roughness_alpha;
 	let adjusted_roughness: f16 = roughness + 1.0;
 	let geometry_k: f16 = adjusted_roughness * adjusted_roughness / 8.0;
-	let view_fresnel_base: f16 = clamp(f16(1.0) - NdotV, f16(0.0), f16(1.0));
-	let view_fresnel_squared: f16 = view_fresnel_base * view_fresnel_base;
-	let view_fresnel_factor: f16 = view_fresnel_squared * view_fresnel_squared * view_fresnel_base;
-	let one_minus_fresnel_n_dot_v: vec3f16 = one_minus_f0 * (f16(1.0) - view_fresnel_factor);
 	// These terms depend only on the shaded pixel. Evaluate them once instead of once per light.
 	let geometry_view: f16 = NdotV / (NdotV * (1.0 - geometry_k) + geometry_k);
-	// Every factor of the direct diffuse weight except the Fresnel factor of each light's angle. Folding them here keeps
-	// the albedo, metalness, and view Fresnel terms out of the light loop: of the shader's regions, the loop slows down
-	// the most for every value held live across it (2026-10-05).
-	let direct_diffuse_albedo: vec3f16 = one_minus_fresnel_n_dot_v * one_minus_f0 * one_minus_metalness * albedo_rgb
-		/ f16(3.14159265359);
+	// Diffuse light takes the share the specular lobe leaves on the way out toward the viewer, and indirect light, which
+	// arrives from the whole hemisphere, the average share on the way in. See the lighting design note.
+	let indirect_diffuse_albedo: vec3f16 = one_minus_metalness * diffuse_transmission(NdotV, roughness) * albedo_rgb;
+	// Every factor of the direct diffuse weight except the share each light's angle leaves. Folding them here keeps
+	// the albedo, metalness, and view terms out of the light loop: of the shader's regions, the loop slows down the most
+	// for every value held live across it (2026-10-05).
+	let direct_diffuse_albedo: vec3f16 = indirect_diffuse_albedo
+		/ (f16(3.14159265359) * (f16(1.0) - average_specular_albedo(roughness)));
 	// Indirect diffuse light and emission seed the diffuse sum, so neither they nor the material terms that weight them
 	// stay live through the loop. Material occlusion, like baked AO, applies to indirect light only. Direct light has
 	// its own shadows.
-	let one_minus_roughness: f16 = f16(1.0) - roughness;
-	let grazing: vec3f16 = vec3f16(max(one_minus_roughness, F0.x), max(one_minus_roughness, F0.y), max(one_minus_roughness, F0.z));
-	let kD_ibl: vec3f16 = (one_minus_f0 - (grazing - F0) * view_fresnel_factor) * one_minus_metalness;
-	let diffuse: vec3f = vec3f(kD_ibl * albedo_rgb) * indirect_diffuse_radiance * f32(occlusion) + vec3f(emission);
+	let diffuse: vec3f = vec3f(indirect_diffuse_albedo) * indirect_diffuse_radiance * f32(occlusion) + vec3f(emission);
 	let specular: vec3f = vec3f(0.0, 0.0, 0.0);
 	let light_count: u32 = material_evaluation.lighting_data.light_count;
 
@@ -645,10 +679,7 @@ material_evaluation_suffix: fn () -> void {
 			let NDF: f16 = roughness_alpha_squared / (3.14159265359 * denominator_base * denominator_base);
 			let geometry_light: f16 = NdotL / (NdotL * (1.0 - geometry_k) + geometry_k);
 			let local_specular: vec3f16 = (NDF * geometry_view * geometry_light * F) / (4.0 * NdotV * NdotL + 0.000001);
-			let light_fresnel_base: f16 = clamp(f16(1.0) - NdotL, f16(0.0), f16(1.0));
-			let light_fresnel_squared: f16 = light_fresnel_base * light_fresnel_base;
-			let light_fresnel_factor: f16 = light_fresnel_squared * light_fresnel_squared * light_fresnel_base;
-			let local_diffuse: vec3f16 = direct_diffuse_albedo * (f16(1.0) - light_fresnel_factor);
+			let local_diffuse: vec3f16 = direct_diffuse_albedo * diffuse_transmission(NdotL, roughness);
 			let light_color: vec3f = material_evaluation.lighting_data.lights[light_index].color;
 			let irradiance: vec3f = light_color * (attenuation * f32(NdotL * occlusion_factor));
 			diffuse = diffuse + vec3f(local_diffuse) * irradiance;
@@ -693,13 +724,7 @@ material_evaluation_suffix: fn () -> void {
 		0.0,
 		1.0
 	);
-	// Brian Karis's environment BRDF fit, based on Dimitar Lazarov's work. Epic permits use without attribution:
-	// https://www.unrealengine.com/en-US/blog/physically-based-shading-on-mobile
-	let c0: vec4f16 = vec4f16(0.0 - 1.0, 0.0 - 0.0275, 0.0 - 0.572, 0.022);
-	let c1: vec4f16 = vec4f16(1.0, 0.0425, 1.04, 0.0 - 0.04);
-	let r: vec4f16 = roughness * c0 + c1;
-	let a004: f16 = min(r.x * r.x, pow(f16(2.0), (f16(0.0) - f16(9.28)) * NdotV)) * r.x + r.y;
-	let env_brdf: vec2f16 = vec2f16(0.0 - 1.04, 1.04) * a004 + vec2f16(r.z, r.w);
+	let env_brdf: vec2f16 = environment_brdf(NdotV, roughness);
 	// The split-sum reflectance toward the viewer, and the weight of reflected light, with the material occlusion that
 	// applies to indirect light.
 	let specular_reflectance: vec3f = vec3f(F0 * env_brdf.x + env_brdf.y);

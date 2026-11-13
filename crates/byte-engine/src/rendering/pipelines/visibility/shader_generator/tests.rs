@@ -1941,6 +1941,58 @@ fn facing_normal_reverses_only_back_facing_normals_in_the_besl_vm() {
 	);
 }
 
+/// Verifies the coupled diffuse term keeps the two rules of the lighting design note: diffuse and specular together never
+/// reflect more than arrives, and a rough surface keeps its diffuse light at a grazing view.
+#[test]
+fn coupled_diffuse_conserves_energy_and_lights_rough_surfaces_at_grazing_views_in_the_besl_vm() {
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			// For each roughness and view cosine, the specular albedo toward the viewer plus the diffuse albedo of a white
+			// surface over every light direction: (1 - E(μv)) / (1 - E_avg) times the cosine-weighted integral of
+			// 1 - E(μl), taken with the midpoint rule.
+			let worst_total: f32 = 0.0;
+			for (let r: u32 = 0; r < 11; r = r + 1) {
+				let roughness: f16 = f16(f32(r) / 10.0);
+				let average: f32 = f32(average_specular_albedo(roughness));
+				let integral: f32 = 0.0;
+				for (let l: u32 = 0; l < 64; l = l + 1) {
+					let cosine: f32 = (f32(l) + 0.5) / 64.0;
+					integral = integral + 2.0 * cosine * f32(diffuse_transmission(f16(cosine), roughness)) / 64.0;
+				}
+				for (let v: u32 = 0; v < 9; v = v + 1) {
+					let view: f16 = f16(f32(v) / 8.0);
+					let leaves: f32 = f32(diffuse_transmission(view, roughness));
+					worst_total = max(worst_total, (1.0 - leaves) + leaves * integral / (1.0 - average));
+				}
+			}
+			results.worst_total = worst_total;
+			results.rough_grazing = f32(diffuse_transmission(f16(0.0), f16(0.87)));
+		}
+		"#,
+		&mut [],
+		&[
+			(ENVIRONMENT_BRDF_SOURCE, "environment_brdf"),
+			(DIFFUSE_TRANSMISSION_SOURCE, "diffuse_transmission"),
+			(AVERAGE_SPECULAR_ALBEDO_SOURCE, "average_specular_albedo"),
+		],
+		members("f32", &["worst_total", "rough_grazing"]),
+	);
+	let worst_total = read_f32(&results, "worst_total");
+	// Half precision and the quadratic's fit leave about a percent of slack.
+	assert!(
+		worst_total <= 1.01,
+		"Diffuse and specular together reflect {worst_total} of the arriving light. The most likely cause is an average \
+		 specular albedo that no longer matches the environment BRDF fit."
+	);
+	let rough_grazing = read_f32(&results, "rough_grazing");
+	assert!(
+		rough_grazing > 0.9,
+		"A rough surface seen edge-on keeps only {rough_grazing} of its diffuse light. The most likely cause is a \
+		 diffuse weight that follows the Fresnel factor of the macroscopic normal instead of the specular lobe."
+	);
+}
+
 /// Verifies point receivers use the perspective depth stored by the selected cube face.
 #[test]
 fn point_shadow_receiver_depth_uses_the_dominant_cube_axis_in_the_besl_vm() {

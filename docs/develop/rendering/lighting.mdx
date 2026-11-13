@@ -14,8 +14,9 @@ limits an application sees are specified in the
 Byte Engine resolves authoring units on the CPU. The GPU receives RGB lux for
 directional lights and RGB candela for point and cone lights. Local lights use
 inverse-square attenuation, and the physically based (PBR) material evaluation
-applies diffuse `albedo / π` and specular bidirectional reflectance distribution
-function (BRDF) terms.
+applies the diffuse and specular bidirectional reflectance distribution function
+(BRDF) terms that [diffuse takes what specular leaves](#diffuse-takes-what-specular-leaves)
+describes.
 
 For a local light, the incident RGB quantity at a surface is
 `candela / distance²`, multiplied by the cone factor when applicable. For a
@@ -26,6 +27,43 @@ don't change the authored unit conversion.
 The PBR visibility pipeline and the atmosphere sky apply the camera exposure as
 they write scene light, so later passes such as bloom and tone mapping receive
 exposed light. Scenes drawn with other pipelines ignore exposure.
+
+## Diffuse takes what specular leaves
+
+Light that reaches a surface either reflects off its specular lobe or enters
+the surface and scatters out as diffuse light. The specular lobe's directional
+albedo `E(μ)` is the share of light arriving at cosine `μ` that it reflects. The
+diffuse term takes the rest of the light on the way in and on the way out, after
+Kelemen and Szirmay-Kalos (A Microfacet Based Coupled Specular-Matte BRDF Model
+with Importance Sampling, 2001):
+
+`f_d = (1 − metalness) · albedo / π · (1 − E(μl)) · (1 − E(μv)) / (1 − E_avg)`
+
+- `μl` and `μv` are the cosines between the shading normal and the light and
+  view directions.
+- `E(μ) = F0 · A + B`, where `A` and `B` come from Karis's fit of the split-sum
+  environment BRDF, the same one that weighs reflected light. The diffuse part
+  belongs to the dielectric layer, so it uses the dielectric `F0` of 0.04.
+- `E_avg` is the cosine-weighted average of `E(μ)` over the hemisphere. A
+  quadratic in roughness fits it within 0.004, so shaders don't integrate it.
+  Dividing by `1 − E_avg` keeps a surface lit from every direction as bright as
+  `(1 − E(μv)) · albedo`.
+
+Indirect diffuse light arrives from the whole hemisphere, so its weight is that
+average: `(1 − metalness) · (1 − E(μv)) · albedo`.
+
+A rough surface's lobe reflects little light at any angle, so its diffuse light
+stays close to Lambert's even at a grazing view. A smooth surface's lobe reflects
+nearly everything at grazing angles, so its diffuse light fades there. A Fresnel
+factor of the macroscopic normal alone, `1 − F(μ)`, assumes a mirror-smooth
+surface and darkens rough surfaces seen edge-on.
+
+A change here must keep these rules:
+
+- Diffuse and specular together never reflect more than the light that arrives:
+  for any view, `E(μv)` plus the diffuse albedo over every light direction stays
+  at or below one.
+- Diffuse light stays above zero at a grazing view on a rough surface.
 
 ## Lights are culled per cluster
 

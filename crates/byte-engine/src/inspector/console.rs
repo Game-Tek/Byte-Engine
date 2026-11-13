@@ -485,27 +485,14 @@ fn push_tree<'a, T: Copy>(
 	columns: impl Fn(T) -> Vec<Span<'a>>,
 ) {
 	BakeTree::new(bakes).visit(|guide, label, value| {
+		// A requester that isn't in the list has no value: blank columns, and the whole row dim.
+		let mut spans = value.map_or_else(|| vec![Span::raw(" ".repeat(9))], &columns);
 		// The guide is dim, so the tree's lines lead the eye without competing with the names.
-		let name = [Span::raw(" "), Span::raw(guide.to_string()).dim(), Span::raw(label)];
-		rows.push(match value {
-			Some(value) => {
-				let mut spans = columns(value);
-				spans.extend(name);
-				Line::from(spans)
-			}
-			None => Line::from([Span::raw(" ".repeat(9))].into_iter().chain(name).collect::<Vec<_>>()).dim(),
-		});
+		spans.extend([Span::raw(" "), Span::raw(guide.to_string()).dim(), Span::raw(label)]);
+		let line = Line::from(spans);
+		rows.push(if value.is_some() { line } else { line.dim() });
 	});
 }
-
-/// The guide before a bake with more siblings below it.
-const BRANCH: &str = "├─ ";
-/// The guide before the last of its siblings, rounded where the line ends.
-const BRANCH_LAST: &str = "╰─ ";
-/// The guide under a branch whose siblings continue below.
-const CONTINUES: &str = "│  ";
-/// The guide under the last sibling, where the line already ended.
-const ENDED: &str = "   ";
 
 /// The `BakeTree` struct arranges a list of bakes under the IDs that asked for them, for the bakes view to draw.
 ///
@@ -571,44 +558,44 @@ impl<'a, T: Copy> BakeTree<'a, T> {
 	/// Calls `row` for each node, parents before their children: with its guide, the tree's lines from the root down to
 	/// it, its ID relative to its parent's, and its value.
 	fn visit(&self, mut row: impl FnMut(&str, &'a str, Option<T>)) {
-		// Each entry is a node, the guide its children continue, and its parent's ID; roots have no guide.
-		let mut stack: Vec<(usize, String, Option<&'a str>)> =
-			self.roots.iter().rev().map(|&index| (index, String::new(), None)).collect();
-		// Each node is its own entry, so its row's guide is its parent's plus its branch.
-		let mut branch_of = vec![""; self.nodes.len()];
-		for node in &self.nodes {
-			if let Some((&last, others)) = node.children.split_last() {
-				branch_of[last] = BRANCH_LAST;
-				for &child in others {
-					branch_of[child] = BRANCH;
-				}
-			}
-		}
+		// One guide is grown and cut back as the walk goes down and up, so no row copies its parent's.
 		let mut guide = String::new();
-		while let Some((index, inherited, parent)) = stack.pop() {
-			let node = &self.nodes[index];
-			guide.clear();
-			guide.push_str(&inherited);
-			guide.push_str(branch_of[index]);
-			row(
-				&guide,
-				parent.map_or(node.id, |parent| relative_id(parent, node.id)),
-				node.value,
-			);
-			// Below a branch that continues, the line runs on past this node's children; below the last, it stops.
-			let mut continued = inherited;
-			match branch_of[index] {
-				BRANCH => continued.push_str(CONTINUES),
-				BRANCH_LAST => continued.push_str(ENDED),
-				_ => {}
-			}
-			stack.extend(
-				node.children
-					.iter()
-					.rev()
-					.map(|&child| (child, continued.clone(), Some(node.id))),
-			);
+		for &root in &self.roots {
+			self.visit_node(root, None, None, &mut guide, &mut row);
 		}
+	}
+
+	/// Visits node `index` and the nodes under it. `last` is whether the node is the last of its siblings, or `None`
+	/// for a root, which hangs from no line.
+	fn visit_node(
+		&self,
+		index: usize,
+		parent: Option<&'a str>,
+		last: Option<bool>,
+		guide: &mut String,
+		row: &mut impl FnMut(&str, &'a str, Option<T>),
+	) {
+		let node = &self.nodes[index];
+		let inherited = guide.len();
+		// `├─` leads to a node with siblings below it; `╰─` to the last, rounded where the line ends.
+		if let Some(last) = last {
+			guide.push_str(if last { "╰─ " } else { "├─ " });
+		}
+		row(
+			guide,
+			parent.map_or(node.id, |parent| relative_id(parent, node.id)),
+			node.value,
+		);
+		guide.truncate(inherited);
+		// Under a node with siblings below it, the line runs on past its children; under the last, it already ended.
+		if let Some(last) = last {
+			guide.push_str(if last { "   " } else { "│  " });
+		}
+		for (position, &child) in node.children.iter().enumerate() {
+			let last = position + 1 == node.children.len();
+			self.visit_node(child, Some(node.id), Some(last), guide, row);
+		}
+		guide.truncate(inherited);
 	}
 }
 

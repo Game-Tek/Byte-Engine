@@ -1,6 +1,6 @@
 ---
 title: Change settings from the terminal
-description: Type commands into the terminal that runs your application to change runtime settings, such as the forced detail level or a debug view, while you watch its log.
+description: Type commands into the terminal that runs your application to change runtime settings, such as the forced detail level or a debug view, and to find and change entities while you watch its log.
 icon: Terminal
 ---
 
@@ -41,9 +41,42 @@ and press Page Up to read older log lines.
 
 ## See what's baking
 
-A debug build bakes assets the first time it needs them. To watch those bakes, press F2: the pane switches from the log
+A debug build bakes assets the first time it needs them. To watch those bakes, press Cmd+2: the pane switches from the log
 to the bakes. It shows how many assets are baking, have baked, and have failed; each asset baking now with how long it
-has run; and the latest assets to finish, marked ✓ or ✗ with how long each took. Each asset sits indented under the asset that needed it, named by what differs from that asset's ID, so you can see why it bakes. Press F2 again to return to the log.
+has run; and the latest assets to finish, marked ✓ or ✗ with how long each took. Each asset sits indented under the asset that needed it, named by what differs from that asset's ID, so you can see why it bakes. Press Cmd+1 to return to the log. Press Cmd+3 for the entities.
+
+If your terminal keeps Cmd+number for its own tabs, press F2 instead: it shows the next view.
+
+## Find and change an entity
+
+1. Type `entities` and part of the entity's name. The pane switches to the entities and narrows the list as you type,
+   best match first; each row shows the entity's handle, name, position, and types.
+
+   ```text
+   entities crate
+   ```
+
+   Add `type:` and part of a type name to keep only entities of that type, such as `entities type:camera`. Press Enter
+   to keep the search.
+
+2. Type `post`, the message to send, and the entity, then press Tab after the entity's name: the console replaces the
+   name with the entity's handle. Press Tab again after the handle to see the payload the message takes.
+
+   ```text
+   post Delete crate
+   ```
+
+3. Add the payload as JSON, then press Enter. To move an entity, post its new transform:
+
+   ```text
+   post TransformationUpdate 12 {"position":[0,1,0]}
+   ```
+
+   A transform replaces the whole transform: a field you leave out, such as `orientation` or `scale`, resets to its
+   identity value.
+
+The status line says whether the message was posted, or why it wasn't. See the messages each application accepts in
+[Entities and messages](/docs/reference/inspector#entities-and-messages).
 
 ## Close the application
 

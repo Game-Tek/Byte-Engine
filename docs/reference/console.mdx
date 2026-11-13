@@ -1,15 +1,14 @@
 ---
 title: Console
-description: Look up when the engine's terminal console runs, what its screen shows, the keys and commands it accepts, what Tab completes, how it reads a value, and what it reports back.
+description: Look up when the engine's terminal console runs, what its screen shows, the keys and commands it accepts, how it finds entities, what Tab completes, how it reads a value, and what it reports back.
 icon: Terminal
 ---
 
 A headed application takes over the terminal that started it while it runs:
 the screen shows the application's log above a command line. This page
-specifies when the console runs, its screen, its keys, its commands, and its
-completion. To
-change a setting with it, follow
-[Change settings from the terminal](/docs/use/console).
+specifies when the console runs, its screen, its keys, its commands, its
+entity search, and its completion. To change a setting or an entity with it,
+follow [Change settings from the terminal](/docs/use/console).
 
 ## When it runs
 
@@ -34,9 +33,10 @@ While the console runs, it owns the whole terminal.
 
 | Part | Shows |
 | --- | --- |
-| Pane | One view at a time, named in its title. F2 shows the next view. |
+| Pane | One view at a time. Its title lists the views as tabs, each with its number: 1 the log, 2 the bakes, 3 the entities. The shown view's tab is highlighted. |
 | Log view | Every log record that passes the `log.level` filter, newest at the bottom, with each command and its result between them. A record's level is colored by severity and the rest of it isn't. A record longer than the pane wraps. The pane keeps the latest 10,000 records and results. |
 | Bakes view | The latest record of the [bake stream](/docs/reference/resource-management#bake-stream): how many bakes are running, have stored their resource, and have failed; each running bake with how long it has run; and the latest bakes to end, each marked as stored or failed, with how long it took. In both lists a bake sits under the ID that asked for it, joined to it by a dim tree line: `├─` before a bake with more below it under the same ID, `╰─` before the last, and `│` running on past the bakes nested in between. A bake shows only the part of its ID that differs from that ID's: a subresource shows its `#fragment`, and a file shows its path after the directories both IDs share. A requester that isn't in the list, such as a resource whose freshness is being checked, shows dim and without a time. A row longer than the pane is cut. Before the first record, the view says no bake was reported. |
+| Entities view | The entities the [entity query](/docs/reference/inspector#entities-and-messages) lists, filtered by the [entity search](#entity-search): first how many match and how many exist, then one row per match with its handle, its name, its position, and its types without their module paths. Without a name word, rows are in handle order; with one, best match first. Rows past the pane's bottom aren't shown. The view refreshes four times a second. |
 | Completion list | While Tab offers more than one candidate: up to 8 candidates over the bottom rows of the pane, the one in the command line highlighted, then `… N more` when there are more, then what the setting takes when completing a value. See [Completion](#completion). |
 | Command line | What you're typing. |
 | Status line | The latest result and the keys. |
@@ -59,7 +59,8 @@ itself draws over the screen.
 | Up, Down | Recall earlier commands, newest first. |
 | Tab | Complete the word before the cursor; with the completion list open, put the next candidate in the command line. See [Completion](#completion). |
 | Shift+Tab | With the completion list open, put the previous candidate in the command line. |
-| F2 | Show the next view: the log, then the bakes. |
+| Cmd+1, Cmd+2, Cmd+3 | Show the view with that number. Only in a terminal that reports Cmd to applications through the kitty keyboard protocol and doesn't keep Cmd+number for itself; elsewhere, use F2. |
+| F2 | Show the next view: the log, the bakes, then the entities. |
 | Page Up, Page Down | Scroll the log view by a page. The view follows new lines again once scrolled back to the bottom. |
 | Ctrl+C | Close the application. |
 
@@ -74,10 +75,12 @@ arguments, separated by spaces.
 | Command | Arguments | Effect |
 | --- | --- | --- |
 | `set` | A parameter name, then a value | Changes a [runtime setting](/docs/reference/parameters#runtime-settings), as the inspector's [configuration route](/docs/reference/inspector#configuration) does. |
+| `entities` | An [entity search](#entity-search), or none | Shows the entities view, filtered by the search. Without a search, it lists every entity. |
+| `post` | A message type, a target handle, then a payload | Posts the message to the entity, as the inspector's [message route](/docs/reference/inspector#entities-and-messages) does. The payload is JSON in the message type's shape; without one, it's `null`. |
 | `help` | None | Lists every command. |
 
-Any other command, or a `set` without a name and a value, reports an error and
-changes nothing.
+Any other command, a `set` without a name and a value, or a `post` without a
+type and a target reports an error and changes nothing.
 
 ### Parameter names
 
@@ -98,6 +101,31 @@ The value is the rest of the line after the name.
 | Text in double quotes, such as `"enabled"` | The text between the quotes. |
 | Anything else, such as `off` or `ssgi` | The text as typed. |
 
+## Entity search
+
+A search is words separated by spaces.
+
+| Word | Keeps the entities |
+| --- | --- |
+| `type:` and text, such as `type:camera` | That have a type whose full name contains the text, in any letter case. |
+| Anything else | Whose name fuzzy-matches the word: its characters appear in the name in order, possibly with others between them. |
+
+An entity must pass every word. Name words also take these forms:
+
+| Form | Matches names that |
+| --- | --- |
+| `'text` | Contain the text. |
+| `^text` | Start with the text. |
+| `text$` | End with the text. |
+| `!` before any form | Don't match it. |
+
+A name word matches without regard to letter case unless it has an uppercase
+letter. An entity without a name never matches a name word.
+
+While the command line starts with `entities`, the pane shows the entities
+view, filtered by the rest of the line as you type. Otherwise the entities
+view filters by the search of the last `entities` command.
+
 ## Completion
 
 Tab completes the word that ends at the cursor. What it completes depends on
@@ -108,6 +136,9 @@ the words before it:
 | First | The commands starting with the word. | What the command does. |
 | After `set` | The declared parameter names starting with the word, up to and including the next `.` after it, so `render.` offers `render.gi.` and `render.lod.` before their settings. A whole name is a candidate on its own. Names with a space in them aren't offered. | For a whole name, the values it takes. |
 | After `set` and a declared name | The words that setting takes, matched in any letter case: `true` and `false`, the setting's choices, or the word it takes beside a number, such as `off`. | None. |
+| After `post` | The registered message types starting with the word, in any letter case. | None. |
+| After `post` and a type | The handles of the entities whose name the word fuzzy-matches, as a name word of the [entity search](#entity-search) does, best match first; every entity's handle for an empty word. | The entity's name and types. |
+| After `post`, a type, and a target | None. | None. |
 | Any other | None. | None. |
 
 A parameter is declared while the system that owns it runs: a render
@@ -118,9 +149,9 @@ while its system runs.
 
 | Candidates | Tab |
 | --- | --- |
-| None | Changes nothing. After `set` and a declared name, the list shows only what the setting takes, such as `render.lod.bias takes a number of 0 or more`. |
+| None | Changes nothing. After `set` and a declared name, the list shows only what the setting takes, such as `render.lod.bias takes a number of 0 or more`. After `post`, a type, and a target, the list shows only the shape of the type's payload. |
 | One | Replaces the word with it. A whole word gets a space after it; a name segment ending in `.` doesn't. |
-| More than one | Replaces the word with the text every candidate starts with and opens the list. Each further Tab replaces the word with the next candidate, from the first, and wraps around; Shift+Tab goes back. |
+| More than one | Replaces the word with the text every candidate starts with, when that text starts with the word, and opens the list. Each further Tab replaces the word with the next candidate, from the first, and wraps around; Shift+Tab goes back. |
 
 Any key other than Tab and Shift+Tab closes the list and keeps the command
 line as it is.
@@ -138,3 +169,8 @@ console keeps taking keys meanwhile:
 
 Every update the console makes is also an inspector configuration event, so
 the inspector's configuration and events routes report it.
+
+A `post` reports at once: the message type and the target when the message
+was posted, or why it wasn't, such as a type that isn't registered or a
+payload that doesn't match the type's shape. The entity changes on a later
+tick.

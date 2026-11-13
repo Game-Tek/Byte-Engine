@@ -2,7 +2,8 @@
 //!
 //! The console is a second transport over the [`DefaultInspector`], beside the
 //! [`HttpInspectorServer`](super::http::HttpInspectorServer). [`GraphicsApplication`] starts it with [`spawn`]. Its
-//! first command, `set`, changes a runtime setting through [`DefaultInspector::update_configuration`].
+//! `set` command changes a runtime setting through [`DefaultInspector::update_configuration`]; `entities` finds
+//! entities through [`DefaultInspector::entities`], and `post` changes one through [`DefaultInspector::post_message`].
 //! See the [console reference](/docs/reference/console) for the screen, the keys, and the commands.
 //!
 //! [`GraphicsApplication`]: crate::application::graphics::GraphicsApplication
@@ -13,9 +14,16 @@ use std::{
 	time::{Duration, Instant},
 };
 
+use neo_frizbee::{Config, Matcher, Pattern};
 use ratatui::{
 	DefaultTerminal, Frame,
-	crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+	crossterm::{
+		event::{
+			self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+			PushKeyboardEnhancementFlags,
+		},
+		execute, terminal,
+	},
 	layout::{Constraint, Layout, Position, Rect},
 	style::{Color, Style, Stylize as _},
 	text::{Line, Span},
@@ -31,8 +39,8 @@ use crate::{
 		thread::Thread,
 	},
 	configuration::{Accepts, ConfigurationEventId, ConfigurationUpdateState, ConfigurationValue},
-	core::{EntityHandle, listener::DefaultListener, listener::Listener as _},
-	inspector::DefaultInspector,
+	core::{EntityHandle, factory::Handle, listener::DefaultListener, listener::Listener as _},
+	inspector::{DefaultInspector, InspectedEntity, InspectedValue, RegisteredMessageType},
 };
 
 /// How long `set` waits for the owning system before it reports the update as pending.
@@ -49,11 +57,21 @@ struct CommandSpec {
 }
 
 /// Every command [`parse_line`] runs, in the order `help` lists them.
-const COMMANDS: [CommandSpec; 2] = [
+const COMMANDS: [CommandSpec; 4] = [
 	CommandSpec {
 		name: "set",
 		usage: "set <parameter> <value>",
 		summary: "Changes a runtime setting, such as `set render.lod.force 2`.",
+	},
+	CommandSpec {
+		name: "entities",
+		usage: "entities [search]",
+		summary: "Shows the entities whose name matches the search, such as `entities crate type:camera`.",
+	},
+	CommandSpec {
+		name: "post",
+		usage: "post <type> <target> [payload]",
+		summary: "Posts a message to an entity, such as `post TransformationUpdate 12 {\"position\":[0,1,0]}`.",
 	},
 	CommandSpec {
 		name: "help",
@@ -62,10 +80,13 @@ const COMMANDS: [CommandSpec; 2] = [
 	},
 ];
 
-const KEYS: &str = "Tab complete · F2 view · ↑↓ history · PgUp/PgDn log · Ctrl+C quit";
+const KEYS: &str = "Tab complete · ⌘1-3 or F2 view · ↑↓ history · PgUp/PgDn log · Ctrl+C quit";
 
 /// The most candidate rows the completion list shows above the command line.
 const COMPLETION_ROWS: usize = 8;
+
+/// How often the entities view refreshes, since entities move and spawn without the console hearing of it.
+const ENTITIES_REFRESH: Duration = Duration::from_millis(250);
 
 /// The stream the asset manager reports its bakes on; see the
 /// [bake stream reference](/docs/reference/resource-management#bake-stream).
@@ -107,8 +128,18 @@ pub fn spawn(
 				return;
 			}
 		};
+		// A terminal reports Cmd with a key only once asked to; one that can't keeps F2 for switching views.
+		let enhanced = terminal::supports_keyboard_enhancement().unwrap_or(false)
+			&& execute!(
+				io::stdout(),
+				PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+			)
+			.is_ok();
 		log_capture::begin();
 		let result = run(&mut terminal, &inspector, &waker, &mut events);
+		if enhanced {
+			let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+		}
 		ratatui::restore();
 
 		// The screen the log was drawn on is gone; write the log where it would have gone without the console, so it
@@ -146,19 +177,28 @@ fn run(
 		let now = Instant::now();
 		console.collect_results(inspector, now);
 		// Redraw only when a line arrived, a key or resize changed the screen, a result came in, a stream record
-		// arrived for the bakes view, or a second passed while it shows bakes running.
+		// arrived for the bakes view, a second passed while it shows bakes running, or the entities view is due to
+		// refresh.
+		let elapsed = now.saturating_duration_since(start);
+		let view = console.shown_view();
 		let revision = (
 			log_capture::revision(),
 			console.revision,
-			(console.view == View::Bakes).then(|| inspector.streams().revision()),
-			console
-				.shows_running_bakes
-				.then(|| now.saturating_duration_since(start).as_secs()),
+			(view == View::Bakes).then(|| inspector.streams().revision()),
+			console.shows_running_bakes.then_some(elapsed.as_secs()),
+			(view == View::Entities).then(|| elapsed.as_millis() / ENTITIES_REFRESH.as_millis()),
 		);
 		if drawn != Some(revision) {
-			// Only the bakes view reads the record, so the log view never parses one.
-			let bakes = (console.view == View::Bakes).then(|| latest_bakes(inspector)).flatten();
-			terminal.draw(|frame| log_capture::with_entries(|entries| console.draw(frame, entries, bakes.as_ref(), now)))?;
+			// Each view reads only its own source, so the log view never parses a record or lists entities.
+			let bakes = (view == View::Bakes).then(|| latest_bakes(inspector)).flatten();
+			let entities = if view == View::Entities {
+				inspector.entities(None, None)
+			} else {
+				Vec::new()
+			};
+			terminal.draw(|frame| {
+				log_capture::with_entries(|entries| console.draw(frame, entries, bakes.as_ref(), &entities, now))
+			})?;
 			drawn = Some(revision);
 		}
 		if !event::poll(POLL)? {
@@ -167,7 +207,17 @@ fn run(
 		match event::read()? {
 			Event::Key(key) if key.kind == KeyEventKind::Press => match console.handle(key) {
 				Some(Action::Run(line)) => console.run_line(&line, inspector, waker, Instant::now()),
-				Some(Action::Complete { forward }) => console.complete(&inspector.configuration.parameters(), forward),
+				Some(Action::Complete { forward }) => {
+					let parameters = inspector.configuration.parameters();
+					let entities = inspector.entities(None, None);
+					let messages = inspector.message_types();
+					let sources = Sources {
+						parameters: &parameters,
+						entities: &entities,
+						messages: &messages,
+					};
+					console.complete(&sources, forward);
+				}
 				Some(Action::Quit) => {
 					inspector.close_application();
 					waker.wake();
@@ -187,28 +237,46 @@ fn latest_bakes(inspector: &DefaultInspector) -> Option<(Instant, BakeState)> {
 	Some((received, state))
 }
 
-/// The `View` enum is what the console's pane shows; F2 shows the next one.
+/// The `View` enum is what the console's pane shows; Cmd and a view's number shows it, and F2 shows the next one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum View {
 	#[default]
 	Log,
 	Bakes,
+	Entities,
 }
 
 impl View {
+	/// Every view in the order of their numbers, from 1.
+	const ALL: [Self; 3] = [Self::Log, Self::Bakes, Self::Entities];
+
+	/// Returns the view a digit key names, such as `2` for the bakes.
+	fn numbered(digit: char) -> Option<Self> {
+		let index = digit.to_digit(10)?.checked_sub(1)?;
+		Self::ALL.get(index as usize).copied()
+	}
+
+	/// Returns the view after this one in [`Self::ALL`], wrapping around.
 	fn next(self) -> Self {
-		match self {
-			Self::Log => Self::Bakes,
-			Self::Bakes => Self::Log,
-		}
+		Self::ALL[(self as usize + 1) % Self::ALL.len()]
 	}
 
 	fn title(self) -> &'static str {
 		match self {
 			Self::Log => "Log",
 			Self::Bakes => "Bakes",
+			Self::Entities => "Entities",
 		}
 	}
+}
+
+/// The `Sources` struct is what Tab completes from: the application's state at the moment Tab is pressed.
+struct Sources<'a> {
+	/// The declared runtime settings, sorted by name.
+	parameters: &'a [(String, Accepts)],
+	entities: &'a [InspectedEntity],
+	/// The message types `post` accepts.
+	messages: &'a [RegisteredMessageType<'a>],
 }
 
 /// The `Action` enum is what a key asks of the console loop.
@@ -257,6 +325,8 @@ struct Console {
 	shows_running_bakes: bool,
 	/// The candidates the last Tab offered, while no other key has been pressed since.
 	completion: Option<Completion>,
+	/// The search of the last `entities` command, which filters the entities view.
+	entity_search: String,
 }
 
 /// The `Completion` struct is the list Tab opened over the command line, which further presses of Tab cycle through.
@@ -291,6 +361,15 @@ impl Console {
 			KeyCode::BackTab => return Some(Action::Complete { forward: false }),
 			// Any other key changes the line or leaves it, so the list no longer matches it.
 			_ => self.completion = None,
+		}
+		if key.modifiers.contains(KeyModifiers::SUPER) {
+			// Cmd keys never type: Cmd and a view's number shows that view, and the rest do nothing.
+			if let KeyCode::Char(digit) = key.code
+				&& let Some(view) = View::numbered(digit)
+			{
+				self.view = view;
+			}
+			return None;
 		}
 		if key.modifiers.contains(KeyModifiers::CONTROL) {
 			return (key.code == KeyCode::Char('c')).then_some(Action::Quit);
@@ -330,7 +409,7 @@ impl Console {
 					self.replace_line(self.history.get(next).cloned().unwrap_or_default());
 				}
 			}
-			KeyCode::F(2) => self.view = self.view.next(),
+			KeyCode::F(2) => self.view = self.shown_view().next(),
 			KeyCode::PageUp => self.scroll += self.page.max(1),
 			KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(self.page.max(1)),
 			KeyCode::Enter => {
@@ -350,7 +429,7 @@ impl Console {
 	///
 	/// One candidate replaces the word. Several replace it with the text they all start with and open the list; while
 	/// the list is open, each further call puts the next candidate, or the previous one when not `forward`, in the line.
-	fn complete(&mut self, parameters: &[(String, Accepts)], forward: bool) {
+	fn complete(&mut self, sources: &Sources, forward: bool) {
 		self.revision += 1;
 		if let Some(completion) = self.completion.as_mut().filter(|completion| completion.candidates.len() > 1) {
 			let count = completion.candidates.len();
@@ -368,7 +447,7 @@ impl Console {
 		}
 
 		let before: String = self.line.chars().take(self.cursor).collect();
-		let (start, candidates, hint) = candidates(&before, parameters);
+		let (start, candidates, hint) = candidates(&before, sources);
 		match candidates.as_slice() {
 			[only] => {
 				let replacement = only.insertion();
@@ -383,7 +462,6 @@ impl Console {
 				});
 			}
 			[first, rest @ ..] => {
-				// Every candidate starts with the typed word, so the text they share never shortens it.
 				let shared = rest.iter().fold(first.text.as_str(), |shared, candidate| {
 					let length = shared
 						.char_indices()
@@ -392,8 +470,12 @@ impl Console {
 						.map_or(shared.len().min(candidate.text.len()), |((at, _), _)| at);
 					&shared[..length]
 				});
-				let shared = shared.to_string();
-				self.replace_word(start, &shared);
+				// A fuzzy candidate, such as a handle found by name, needn't start with the word; the text the
+				// candidates share then isn't the word made longer, so the word stays as typed.
+				let word: String = before.chars().skip(start).collect();
+				if starts_with_ignore_case(shared, &word) {
+					self.replace_word(start, shared);
+				}
 				self.completion = Some(Completion {
 					start,
 					candidates,
@@ -435,7 +517,41 @@ impl Console {
 				});
 				self.collect_results(inspector, now);
 			}
+			Ok(Command::Entities { search }) => {
+				self.entity_search = search.to_string();
+				self.view = View::Entities;
+			}
+			Ok(Command::Post {
+				message_type,
+				target,
+				payload,
+			}) => match inspector.post_message(message_type, target, payload) {
+				Ok(()) => {
+					// The world handles the message on a tick, which an idle application only runs when woken.
+					waker.wake();
+					self.report(format!("Posted {message_type} to {}", target.id()));
+				}
+				Err(error) => self.report(error),
+			},
 			Err(error) => self.report(error),
+		}
+	}
+
+	/// Returns the rest of the command line when it's an `entities` command being typed.
+	fn typed_entity_search(&self) -> Option<&str> {
+		match split_word(self.line.trim_start()) {
+			("entities", search) => Some(search),
+			_ => None,
+		}
+	}
+
+	/// Returns the view the pane shows: the entities while an `entities` command is being typed, so the lookup shows
+	/// each key's result, and otherwise the view F2 chose.
+	fn shown_view(&self) -> View {
+		if self.typed_entity_search().is_some() {
+			View::Entities
+		} else {
+			self.view
 		}
 	}
 
@@ -475,16 +591,34 @@ impl Console {
 	}
 
 	/// Draws the pane's view, the command line, and the status line. `bakes` is the latest bake state with when it
-	/// arrived, and `now` is when the frame is drawn, which running bakes' times count to.
-	fn draw(&mut self, frame: &mut Frame, entries: &VecDeque<Entry>, bakes: Option<&(Instant, BakeState)>, now: Instant) {
+	/// arrived, `entities` are the entities the entities view filters, and `now` is when the frame is drawn, which
+	/// running bakes' times count to.
+	fn draw(
+		&mut self,
+		frame: &mut Frame,
+		entries: &VecDeque<Entry>,
+		bakes: Option<&(Instant, BakeState)>,
+		entities: &[InspectedEntity],
+		now: Instant,
+	) {
 		let [pane_area, command_area, status_area] =
 			Layout::vertical([Constraint::Min(3), Constraint::Length(1), Constraint::Length(1)]).areas(frame.area());
 
-		let block = Block::bordered().title(format!(" {} · F2: {} ", self.view.title(), self.view.next().title()));
+		let view = self.shown_view();
+		// The title lists every view with its number, like tabs, and marks the one shown.
+		let tabs: Vec<Span> = View::ALL
+			.iter()
+			.enumerate()
+			.map(|(index, &tab)| {
+				let label = Span::raw(format!(" ⌘{} {} ", index + 1, tab.title()));
+				if tab == view { label.reversed() } else { label.dim() }
+			})
+			.collect();
+		let block = Block::bordered().title(Line::from(tabs));
 		let inner = block.inner(pane_area);
 		frame.render_widget(block, pane_area);
 		self.shows_running_bakes = false;
-		match self.view {
+		match view {
 			View::Log => {
 				self.page = inner.height as usize;
 				let rows = self.log_rows(entries, inner);
@@ -494,6 +628,15 @@ impl Console {
 				self.shows_running_bakes = bakes.is_some_and(|(_, state)| !state.baking.is_empty());
 				// Rows longer than the pane are cut, since a paragraph without wrapping clips them.
 				frame.render_widget(Paragraph::new(bake_rows(bakes, now)), inner);
+			}
+			View::Entities => {
+				// While an `entities` command is being typed, the view follows each key; otherwise it keeps the last
+				// command's search.
+				let search = self.typed_entity_search().unwrap_or(&self.entity_search);
+				let found = find_entities(entities, search);
+				// Rows past the pane's bottom are cut; a narrower search brings an entity into view.
+				let rows = entity_rows(&found, entities.len(), search, inner.height as usize);
+				frame.render_widget(Paragraph::new(rows), inner);
 			}
 		}
 
@@ -844,8 +987,10 @@ impl Candidate {
 ///
 /// The first word completes to a command. The name after `set` completes to a declared parameter one dotted segment at
 /// a time, so `render.` offers `render.gi.` and `render.lod.` before their settings. The value after a name completes
-/// to the words its setting accepts.
-fn candidates(before: &str, parameters: &[(String, Accepts)]) -> (usize, Vec<Candidate>, Option<String>) {
+/// to the words its setting accepts. The word after `post` completes to a message type, and the next one looks up an
+/// entity by name and completes to its handle.
+fn candidates(before: &str, sources: &Sources) -> (usize, Vec<Candidate>, Option<String>) {
+	let parameters = sources.parameters;
 	let word = before.rsplit(char::is_whitespace).next().unwrap_or_default();
 	let start = before.chars().count() - word.chars().count();
 	let previous: Vec<&str> = before[..before.len() - word.len()].split_whitespace().collect();
@@ -906,6 +1051,38 @@ fn candidates(before: &str, parameters: &[(String, Accepts)]) -> (usize, Vec<Can
 				.collect();
 			(start, candidates, Some(format!("{name} takes {}", accepts.describe())))
 		}
+		["post"] => {
+			let candidates = sources
+				.messages
+				.iter()
+				.filter(|message| starts_with_ignore_case(message.message_type, word))
+				.map(|message| Candidate {
+					text: message.message_type.to_string(),
+					note: String::new(),
+					whole: true,
+				})
+				.collect();
+			(start, candidates, None)
+		}
+		["post", _] => {
+			let candidates = find_entities(sources.entities, word)
+				.into_iter()
+				.map(|entity| Candidate {
+					text: entity.handle().id().to_string(),
+					note: format!("{}  {}", entity_name(entity), short_types(entity)),
+					whole: true,
+				})
+				.collect();
+			(start, candidates, None)
+		}
+		["post", message_type, _] => {
+			let hint = sources
+				.messages
+				.iter()
+				.find(|message| message.message_type == *message_type)
+				.map(|message| format!("{message_type} takes {}", message.payload_shape));
+			(start, Vec::new(), hint)
+		}
 		_ => (start, Vec::new(), None),
 	}
 }
@@ -949,11 +1126,142 @@ fn draw_completion(frame: &mut Frame, completion: &Completion, pane: Rect) {
 	frame.render_widget(Paragraph::new(rows), area);
 }
 
+/// Returns the entities that pass every word of `search`, an [entity search](/docs/reference/console#entity-search):
+/// in handle order without a name word, and best match first with one.
+///
+/// A `type:` word keeps the entities with a type whose name contains its text; any other word fuzzy-matches names.
+fn find_entities<'a>(entities: &'a [InspectedEntity], search: &str) -> Vec<&'a InspectedEntity> {
+	let mut patterns = Vec::new();
+	let mut types = Vec::new();
+	for word in search.split_whitespace() {
+		match word.strip_prefix("type:") {
+			Some(text) => types.push(text),
+			None => patterns.push(Pattern::parse(word)),
+		}
+	}
+	let mut kept: Vec<&InspectedEntity> = entities
+		.iter()
+		.filter(|entity| {
+			types
+				.iter()
+				.all(|text| entity.types().iter().any(|name| contains_ignore_case(name, text)))
+		})
+		.collect();
+	kept.sort_unstable_by_key(|entity| entity.handle().id());
+	if patterns.is_empty() {
+		return kept;
+	}
+	let names: Vec<&str> = kept.iter().map(|entity| entity_name(entity)).collect();
+	// The matcher sorts best match first, then by position in `names`, so equal scores stay in handle order.
+	Matcher::from_patterns(&patterns, &Config::default())
+		.match_list(&names)
+		.into_iter()
+		// An entity without a name has nothing to match, so only the negated forms could keep it; none does.
+		.filter(|found| !names[found.index as usize].is_empty())
+		.map(|found| kept[found.index as usize])
+		.collect()
+}
+
+/// Returns the entities view's rows: how many entities `found` holds of `total`, then up to `height - 1` entities
+/// with their handle, name, position, and types.
+fn entity_rows<'a>(found: &[&'a InspectedEntity], total: usize, search: &str, height: usize) -> Vec<Line<'a>> {
+	let mut rows = Vec::with_capacity(height.min(found.len() + 1));
+	let summary = if search.trim().is_empty() {
+		format!("{total} entities")
+	} else {
+		format!("{} of {total} entities match `{}`", found.len(), search.trim())
+	};
+	rows.push(Line::raw(summary).bold());
+	let shown = &found[..found.len().min(height.saturating_sub(1))];
+	// The name column is as wide as the longest shown name, up to a limit so the types stay on screen.
+	let name_width = shown
+		.iter()
+		.map(|entity| entity_name(entity).chars().count())
+		.max()
+		.unwrap_or(0)
+		.clamp(4, 32);
+	for entity in shown {
+		let position = match entity.property("position") {
+			Some(InspectedValue::Point(point)) => format!("{:.2}, {:.2}, {:.2}", point.x(), point.y(), point.z()),
+			_ => "-".to_string(),
+		};
+		rows.push(Line::from(vec![
+			Span::raw(format!("{:>6}  ", entity.handle().id())),
+			Span::raw(format!("{:<name_width$}  ", entity_name(entity))),
+			Span::raw(format!("{position:<26}")),
+			Span::raw(short_types(entity)).dim(),
+		]));
+	}
+	rows
+}
+
+/// Returns the entity's name, or empty text when it has none.
+fn entity_name(entity: &InspectedEntity) -> &str {
+	match entity.property("name") {
+		Some(InspectedValue::Text(name)) => name,
+		_ => "",
+	}
+}
+
+/// Returns the entity's types without their module paths, joined by commas, such as `Camera, Name`.
+fn short_types(entity: &InspectedEntity) -> String {
+	let mut shown = String::new();
+	for (index, name) in entity.types().iter().enumerate() {
+		if index > 0 {
+			shown.push_str(", ");
+		}
+		push_short_type(&mut shown, name);
+	}
+	shown
+}
+
+/// Pushes the Rust type `name` with every path cut to its last segment, so `alloc::vec::Vec<core::option::Option<u8>>`
+/// becomes `Vec<Option<u8>>`.
+fn push_short_type(shown: &mut String, name: &str) {
+	let mut path_start = 0;
+	for (at, character) in name.char_indices() {
+		// Paths end at the punctuation that separates them inside generic, tuple, array, and reference types.
+		if matches!(character, '<' | '>' | ',' | ' ' | '(' | ')' | '[' | ']' | '&' | ';') {
+			shown.push_str(last_segment(&name[path_start..at]));
+			shown.push(character);
+			path_start = at + character.len_utf8();
+		}
+	}
+	shown.push_str(last_segment(&name[path_start..]));
+}
+
+/// Returns the last `::` segment of a path.
+fn last_segment(path: &str) -> &str {
+	path.rsplit("::").next().unwrap_or(path)
+}
+
+/// Returns whether `text` contains `part`, comparing ASCII letters in any case.
+fn contains_ignore_case(text: &str, part: &str) -> bool {
+	part.is_empty()
+		|| text
+			.as_bytes()
+			.windows(part.len())
+			.any(|window| window.eq_ignore_ascii_case(part.as_bytes()))
+}
+
+/// Returns whether `text` starts with `prefix`, comparing ASCII letters in any case.
+fn starts_with_ignore_case(text: &str, prefix: &str) -> bool {
+	text.len() >= prefix.len() && text.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+}
+
 /// The `Command` enum is one parsed command line, borrowing its names from the line.
 #[derive(Debug, PartialEq)]
 enum Command<'a> {
 	/// Changes the runtime setting named `parameter`.
 	Set { parameter: &'a str, value: ConfigurationValue },
+	/// Shows the entities view, filtered by `search`.
+	Entities { search: &'a str },
+	/// Posts a registered message to `target`, with `payload` as JSON.
+	Post {
+		message_type: &'a str,
+		target: Handle,
+		payload: &'a str,
+	},
 	/// Lists the commands.
 	Help,
 }
@@ -972,6 +1280,27 @@ fn parse_line(line: &str) -> Result<Command<'_>, String> {
 					.to_string(),
 			),
 		},
+		"entities" => Ok(Command::Entities { search: arguments }),
+		"post" => {
+			let (message_type, rest) = split_word(arguments);
+			let (target, payload) = split_word(rest);
+			if message_type.is_empty() || target.is_empty() {
+				return Err(
+					"`post` needs a message type and a target. The most likely cause is that one of them is missing. Type `post <type> <target> [payload]`, such as `post Delete 12`."
+						.to_string(),
+				);
+			}
+			let target = target.parse::<u32>().ok().filter(|id| *id != 0).ok_or_else(|| {
+				format!(
+					"`post` target `{target}` isn't an entity handle. The most likely cause is a name typed where the handle goes. Press Tab after the name to replace it with the entity's handle."
+				)
+			})?;
+			Ok(Command::Post {
+				message_type,
+				target: Handle::from_id(target),
+				payload: if payload.is_empty() { "null" } else { payload },
+			})
+		}
 		"help" => Ok(Command::Help),
 		_ => Err(format!(
 			"Console command `{command}` is unknown. The most likely cause is a typo. Type `help` to list the commands."
@@ -1041,7 +1370,9 @@ mod tests {
 	) -> ratatui::buffer::Buffer {
 		let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
 		let now = bakes.map_or_else(Instant::now, |(received, _)| *received);
-		terminal.draw(|frame| console.draw(frame, entries, bakes, now)).expect("draw");
+		terminal
+			.draw(|frame| console.draw(frame, entries, bakes, &[], now))
+			.expect("draw");
 		terminal.backend().buffer().clone()
 	}
 
@@ -1228,17 +1559,43 @@ mod tests {
 	}
 
 	#[test]
-	fn f2_switches_between_the_log_and_the_bakes() {
+	fn f2_switches_between_the_log_the_bakes_and_the_entities() {
 		let mut console = Console::default();
-		assert!(draw(&mut console, &VecDeque::new(), 40, 6)[0].contains("Log · F2: Bakes"));
+		assert_eq!(console.view, View::Log);
 
 		console.handle(key(KeyCode::F(2)));
 		let shown = draw(&mut console, &VecDeque::new(), 40, 6);
-		assert!(shown[0].contains("Bakes · F2: Log"), "{shown:?}");
 		assert!(shown[1].contains("No bake was reported yet."), "{shown:?}");
 
 		console.handle(key(KeyCode::F(2)));
-		assert!(draw(&mut console, &VecDeque::new(), 40, 6)[0].contains("Log · F2: Bakes"));
+		let shown = draw(&mut console, &VecDeque::new(), 40, 6);
+		assert!(shown[1].contains("0 entities"), "{shown:?}");
+
+		console.handle(key(KeyCode::F(2)));
+		assert_eq!(console.view, View::Log);
+	}
+
+	#[test]
+	fn cmd_and_a_number_shows_that_view_and_types_nothing() {
+		let cmd = |digit| KeyEvent::new(KeyCode::Char(digit), KeyModifiers::SUPER);
+		let mut console = Console::default();
+		console.handle(cmd('3'));
+		let buffer = draw_with(&mut console, &VecDeque::new(), None, 60, 6);
+		let shown = rows(&buffer);
+		assert!(shown[0].contains("⌘1 Log") && shown[0].contains("⌘3 Entities"), "{shown:?}");
+		assert!(shown[1].contains("0 entities"), "{shown:?}");
+		// The shown view's tab is marked.
+		let tab = shown[0]
+			.find("⌘3")
+			.map(|at| shown[0][..at].chars().count() as u16)
+			.expect("a tab");
+		assert!(buffer[(tab, 0)].modifier.contains(ratatui::style::Modifier::REVERSED));
+
+		console.handle(cmd('2'));
+		assert!(draw(&mut console, &VecDeque::new(), 60, 6)[1].contains("No bake was reported yet."));
+		console.handle(cmd('9'));
+		assert_eq!(console.view, View::Bakes);
+		assert_eq!(console.line, "");
 	}
 
 	/// The parameters a renderer might declare, sorted as [`Configuration::parameters`] returns them.
@@ -1255,11 +1612,22 @@ mod tests {
 		.collect()
 	}
 
+	/// Completes `console`'s command line from [`parameters`] alone.
+	fn complete(console: &mut Console, forward: bool) {
+		let parameters = parameters();
+		let sources = Sources {
+			parameters: &parameters,
+			entities: &[],
+			messages: &[],
+		};
+		console.complete(&sources, forward);
+	}
+
 	/// Types `text`, presses Tab, and returns the command line.
 	fn tab(console: &mut Console, text: &str) -> String {
 		type_text(console, text);
 		assert_eq!(console.handle(key(KeyCode::Tab)), Some(Action::Complete { forward: true }));
-		console.complete(&parameters(), true);
+		complete(console, true);
 		console.line.clone()
 	}
 
@@ -1291,11 +1659,11 @@ mod tests {
 		);
 
 		console.handle(key(KeyCode::Tab));
-		console.complete(&parameters(), true);
+		complete(&mut console, true);
 		assert_eq!(console.line, "set render.gi.");
-		console.complete(&parameters(), true);
+		complete(&mut console, true);
 		assert_eq!(console.line, "set render.lod.");
-		console.complete(&parameters(), false);
+		complete(&mut console, false);
 		assert_eq!(console.line, "set render.gi.");
 
 		// Any other key closes the list.
@@ -1429,5 +1797,202 @@ mod tests {
 		assert!(!buffer[(guide + 3, 5)].modifier.contains(ratatui::style::Modifier::DIM));
 		assert!(shown[9].contains("models/tree.glb"), "{shown:?}");
 		assert!(shown[10].contains("✓    50ms ╰─ leaf.png"), "{shown:?}");
+	}
+
+	/// The `World` struct is an inspector over a world scope that tests spawn entities into and whose
+	/// `TransformationUpdate` messages `post` can send.
+	struct World {
+		inspector: DefaultInspector,
+		scope: crate::core::message_bus::MessageScope,
+	}
+
+	impl World {
+		fn new() -> Self {
+			let message_bus = MessageBus::default();
+			message_bus.observe().expect("attach test message observer");
+			let scope = message_bus.new_scope("console-entities-test-world");
+			let mut inspector = DefaultInspector::new(
+				crate::core::channel::DefaultChannel::new(),
+				Configuration::new(),
+				scope.clone(),
+				Arc::new(Metrics::new()),
+			);
+			inspector
+				.register_message(
+					crate::inspector::TRANSFORMATION_UPDATE_MESSAGE_TYPE,
+					scope.channel::<crate::gameplay::TransformationUpdate>(),
+				)
+				.expect("register transformation updates");
+			Self { inspector, scope }
+		}
+
+		/// Spawns an entity with `name` at `position` and returns its handle.
+		fn spawn(&self, name: &str, position: [f32; 3]) -> Handle {
+			use crate::core::Creator as _;
+			let [x, y, z] = position;
+			self.scope
+				.create(String::from("model"))
+				.with(crate::gameplay::Name::new(name.to_string()))
+				.with(crate::gameplay::Transform::from_position(math::Point::new(x, y, z)))
+				.into()
+		}
+
+		/// Types `text` into `console`, presses Tab, completes from this world, and returns the command line.
+		fn tab(&self, console: &mut Console, text: &str) -> String {
+			type_text(console, text);
+			console.handle(key(KeyCode::Tab));
+			let entities = self.inspector.entities(None, None);
+			let messages = self.inspector.message_types();
+			let sources = Sources {
+				parameters: &[],
+				entities: &entities,
+				messages: &messages,
+			};
+			console.complete(&sources, true);
+			console.line.clone()
+		}
+
+		/// Draws `console` with this world's entities and returns the text of each row.
+		fn draw(&self, console: &mut Console, width: u16, height: u16) -> Vec<String> {
+			let entities = self.inspector.entities(None, None);
+			let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+			terminal
+				.draw(|frame| console.draw(frame, &VecDeque::new(), None, &entities, Instant::now()))
+				.expect("draw");
+			rows(terminal.backend().buffer())
+		}
+	}
+
+	#[test]
+	fn the_entities_view_filters_by_name_as_the_search_is_typed() {
+		let world = World::new();
+		let crate_handle = world.spawn("shipping crate", [1.0, 2.0, 3.0]);
+		world.spawn("main camera", [0.0, 0.0, 0.0]);
+		world.spawn("barrel", [0.0, 0.0, 0.0]);
+		let mut console = Console::default();
+
+		type_text(&mut console, "entities shpcrt");
+		let shown = world.draw(&mut console, 80, 8);
+		assert!(shown[0].contains("Entities"), "{shown:?}");
+		assert!(shown[1].contains("1 of 3 entities match `shpcrt`"), "{shown:?}");
+		let id = crate_handle.id().to_string();
+		assert!(
+			shown[2].contains(&id) && shown[2].contains("shipping crate") && shown[2].contains("1.00, 2.00, 3.00"),
+			"{shown:?}"
+		);
+		assert!(shown[2].contains("String"), "types lose their module paths: {shown:?}");
+		assert!(!shown.iter().any(|row| row.contains("barrel")), "{shown:?}");
+
+		// Enter keeps the search once the command line is empty again.
+		assert_eq!(
+			console.handle(key(KeyCode::Enter)),
+			Some(Action::Run("entities shpcrt".to_string()))
+		);
+		console.run_line("entities shpcrt", &world.inspector, &LoopWaker::default(), Instant::now());
+		assert!(world.draw(&mut console, 80, 8)[1].contains("1 of 3 entities match"));
+
+		console.run_line("entities", &world.inspector, &LoopWaker::default(), Instant::now());
+		let shown = world.draw(&mut console, 80, 8);
+		assert!(shown[1].contains("3 entities"), "{shown:?}");
+		assert!(
+			shown[2].contains("shipping crate"),
+			"handle order puts the first spawn first: {shown:?}"
+		);
+	}
+
+	#[test]
+	fn a_type_word_keeps_entities_with_a_matching_type() {
+		let world = World::new();
+		world.spawn("crate", [0.0; 3]);
+		let mut console = Console::default();
+		type_text(&mut console, "entities type:string");
+		assert!(world.draw(&mut console, 80, 6)[1].contains("1 of 1 entities match"));
+
+		let mut console = Console::default();
+		type_text(&mut console, "entities type:camera");
+		assert!(world.draw(&mut console, 80, 6)[1].contains("0 of 1 entities match"));
+	}
+
+	#[test]
+	fn post_completes_a_target_by_name_and_moves_the_entity() {
+		let world = World::new();
+		let handle = world.spawn("shipping crate", [1.0, 2.0, 3.0]);
+		world.spawn("barrel", [0.0; 3]);
+		let mut console = Console::default();
+
+		assert_eq!(world.tab(&mut console, "post tra"), "post TransformationUpdate ");
+		let line = world.tab(&mut console, "crate");
+		assert_eq!(line, format!("post TransformationUpdate {} ", handle.id()));
+
+		// With the target typed, Tab shows the payload's shape.
+		world.tab(&mut console, "");
+		let shown = world.draw(&mut console, 120, 8);
+		assert!(
+			shown.iter().any(|row| row.contains("TransformationUpdate takes")),
+			"{shown:?}"
+		);
+
+		type_text(&mut console, r#"{"position":[4,5,6]}"#);
+		let Some(Action::Run(line)) = console.handle(key(KeyCode::Enter)) else {
+			panic!("Enter runs the line");
+		};
+		console.run_line(&line, &world.inspector, &LoopWaker::default(), Instant::now());
+		assert_eq!(console.status, format!("Posted TransformationUpdate to {}", handle.id()));
+		let moved = world.inspector.entities(None, Some("shipping crate"));
+		assert_eq!(
+			moved[0].property("position"),
+			Some(InspectedValue::Point(math::Point::new(4.0, 5.0, 6.0)))
+		);
+	}
+
+	#[test]
+	fn tab_after_a_name_matching_several_entities_keeps_the_name_and_lists_them() {
+		let world = World::new();
+		world.spawn("crate a", [0.0; 3]);
+		world.spawn("crate b", [0.0; 3]);
+		let mut console = Console::default();
+		assert_eq!(
+			world.tab(&mut console, "post TransformationUpdate crate"),
+			"post TransformationUpdate crate"
+		);
+		let shown = world.draw(&mut console, 80, 8);
+		assert!(shown.iter().any(|row| row.contains("crate a")), "{shown:?}");
+		assert!(shown.iter().any(|row| row.contains("crate b")), "{shown:?}");
+	}
+
+	#[test]
+	fn post_reports_a_payload_that_does_not_match_its_shape() {
+		let world = World::new();
+		let handle = world.spawn("crate", [0.0; 3]);
+		let mut console = Console::default();
+		let line = format!("post TransformationUpdate {} {{\"speed\":1}}", handle.id());
+		console.run_line(&line, &world.inspector, &LoopWaker::default(), Instant::now());
+		assert!(
+			console.status.starts_with("Inspector message payload is invalid."),
+			"{}",
+			console.status
+		);
+	}
+
+	#[test]
+	fn post_needs_a_type_and_a_numeric_target() {
+		assert!(parse_line("post Delete").is_err());
+		assert!(
+			parse_line("post Delete crate")
+				.unwrap_err()
+				.contains("isn't an entity handle")
+		);
+		assert!(parse_line("post Delete 0").is_err());
+		assert!(matches!(
+			parse_line("post Delete 7"),
+			Ok(Command::Post { payload: "null", .. })
+		));
+	}
+
+	#[test]
+	fn short_types_drop_module_paths_inside_generics() {
+		let mut shown = String::new();
+		push_short_type(&mut shown, "alloc::vec::Vec<core::option::Option<(u8, my::Thing)>>");
+		assert_eq!(shown, "Vec<Option<(u8, Thing)>>");
 	}
 }

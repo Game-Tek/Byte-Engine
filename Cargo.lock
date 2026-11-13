@@ -257,6 +257,7 @@ dependencies = [
  "libc",
  "log",
  "maths-rs",
+ "neo_frizbee",
  "oxhttp",
  "png",
  "ratatui",
@@ -2076,6 +2077,15 @@ name = "mutants"
 version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc0287524726960e07b119cebd01678f852f147742ae0d925e6a520dca956126"
+
+[[package]]
+name = "neo_frizbee"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb0dd0e69b342eaddb657120a21a56f3e887ddc505fac780cf430dbbbb3aed26"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "nix"

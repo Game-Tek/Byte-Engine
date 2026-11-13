@@ -11,15 +11,21 @@ configures baking the way your application does, and builds from its
 
 ## Add the dependency
 
-Add `beld` from the same source as `byte-engine`. For a registry dependency,
-run:
+BELD is the `beld` feature of `byte-engine-resource-management`. Add the crate
+from the same source as `byte-engine`, with the feature on. For a registry
+dependency, run:
 
 ```bash
-cargo add beld
+cargo add byte-engine-resource-management --rename resource-management --features beld
 ```
 
-For a checkout, use `--path ../Byte-Engine/crates/beld` or the same `--git`
-URL as the engine.
+For a checkout, use `--path ../Byte-Engine/crates/resource-management` or the
+same `--git` URL as the engine.
+
+If your package also builds a dedicated server, turn the feature on only in the
+feature that builds your windowed game, such as
+`headed = ["byte-engine/headed", "resource-management/beld"]`, so the server
+leaves BELD out.
 
 Your package now has two binaries, so name the one `cargo run` starts in
 `Cargo.toml`:
@@ -86,14 +92,14 @@ pub fn configure_baking(asset_manager: &mut AssetManager, parameters: &[Paramete
 
 ## Add the binary
 
-Create `src/bin/beld.rs`, and pass `beld::run` your parameters and the same
-configuration function:
+Create `src/bin/beld.rs`, and pass `resource_management::beld::run` your
+parameters and the same configuration function:
 
 ```rust
 use byte_engine::application::graphics::configure_default_baking;
 
 fn main() -> std::process::ExitCode {
-	beld::run(&my_game::parameters(), configure_default_baking)
+	resource_management::beld::run(&my_game::parameters(), configure_default_baking)
 }
 ```
 
@@ -109,14 +115,6 @@ cargo run --release --bin beld -- --help
 
 The other BELD pages write the command as `beld`. Run your application's BELD
 with `cargo run --release --bin beld --` followed by the same arguments.
-
-An application that passes no parameters in code and bakes only the engine's
-formats can instead install the standalone BELD from a Byte Engine checkout,
-and reinstall it after each engine update:
-
-```bash
-cargo install --path crates/beld --locked
-```
 
 Next, [use BELD](/docs/use/resources/beld) to bake or inspect resources.
 

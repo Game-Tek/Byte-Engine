@@ -15,11 +15,13 @@ pub mod application;
 #[cfg_attr(any(not(feature = "headed"), feature = "tracy"), allow(dead_code))]
 pub(crate) mod log_capture;
 
-pub mod parameters;
 pub mod thread;
 pub mod waker;
 pub use application::BaseApplication;
-pub use parameters::ParameterError;
+// The parameters live with the asset pipeline, so BELD resolves them the same way without the engine. Inline them so
+// the engine's API documents them where applications read them.
+#[doc(inline)]
+pub use resource_management::parameters::{self, Parameter, ParameterError};
 pub use waker::LoopWaker;
 
 #[cfg(feature = "headed")]
@@ -47,83 +49,6 @@ impl Time {
 	/// Returns the time since the previous application tick.
 	pub fn delta(&self) -> MediaTime {
 		self.delta
-	}
-}
-
-/// The [`Parameter`] struct represents one application configuration value from
-/// code, the environment, or command-line arguments.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Parameter {
-	name: String,
-	value: String,
-}
-
-impl Parameter {
-	/// Creates a parameter from borrowed name and value strings.
-	pub fn new(name: &str, value: &str) -> Self {
-		Parameter {
-			name: name.into(),
-			value: value.into(),
-		}
-	}
-
-	/// Creates a parameter from owned name and value strings.
-	pub fn new_string(name: String, value: String) -> Self {
-		Parameter { name, value }
-	}
-
-	/// Returns whether this parameter has the requested name.
-	pub fn is(&self, name: &str) -> bool {
-		self.name == name
-	}
-
-	/// Parses the parameter's value as a bool.
-	///
-	/// Returns `Some(true)` for `true`, `TRUE`, or `1`. Returns `Some(false)` for
-	/// `false`, `FALSE`, or `0`. Returns `None` for all other values.
-	pub fn as_bool(&self) -> Option<bool> {
-		match self.value.as_str() {
-			"true" | "TRUE" | "1" => Some(true),
-			"false" | "FALSE" | "0" => Some(false),
-			_ => None,
-		}
-	}
-
-	/// Parses the parameter as a Boolean value and returns `false` if parsing fails.
-	///
-	/// Use [`Self::as_bool`] when the caller must distinguish `false` from an
-	/// invalid value.
-	pub fn as_bool_simple(&self) -> bool {
-		self.as_bool().unwrap_or(false)
-	}
-
-	/// Parses the parameter's value for a setting of type `T`.
-	///
-	/// Each caller chooses its own policy for an invalid value: ignore it with `.ok()`, or stop with
-	/// `.unwrap_or_else(|error| panic!("{error}"))`.
-	///
-	/// # Errors
-	///
-	/// Returns [`ParameterError`] naming the parameter and the rejected value when `T` cannot parse it.
-	pub fn parse<T: std::str::FromStr>(&self) -> Result<T, ParameterError>
-	where
-		T::Err: std::fmt::Display,
-	{
-		self.value.parse::<T>().map_err(|error| ParameterError {
-			name: self.name.clone(),
-			value: self.value.clone(),
-			reason: error.to_string(),
-		})
-	}
-
-	/// Returns the parameter name used by application configuration lookup.
-	pub fn name(&self) -> &str {
-		&self.name
-	}
-
-	/// Returns the raw parameter value before caller-specific parsing.
-	pub fn value(&self) -> &str {
-		&self.value
 	}
 }
 

@@ -1,14 +1,14 @@
-use resource_management::types::Formats;
 use serde_json::{Value as Json, json};
 
 use super::{parse_selection, write_query};
-use crate::{
+use crate::beld::{
 	OutputFormat,
 	commands::catalog::{
 		Catalog,
 		tests::{catalog, image},
 	},
 };
+use crate::types::Formats;
 
 /// Runs a query over the fixture catalog and returns what it prints.
 fn run(terms: &[&str], group: Option<&str>, sort: Option<&str>, limit: Option<usize>, format: OutputFormat) -> String {
@@ -194,7 +194,7 @@ fn color_marks_the_header_and_stale_lines_and_no_color_writes_no_escape_codes() 
 			Some(vec![Vec::new(), vec!["old.png".to_string()]]),
 			Vec::new(),
 			&[],
-			resource_management::resource::StorageUsage::default(),
+			crate::resource::StorageUsage::default(),
 			0,
 		)
 	};

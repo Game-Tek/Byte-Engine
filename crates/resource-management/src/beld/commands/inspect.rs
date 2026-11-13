@@ -1,28 +1,34 @@
 #[cfg(debug_assertions)]
-use resource_management::ResourceTraceItem;
-use resource_management::{
-	asset::ResourceId,
-	inspect::{ResourceDocument, inspect_payload},
-	resource::{ReDBStorageBackend, ReadStorageBackend, ResourceId as ResourceUid, resource_handler::MultiResourceReader},
-};
-#[cfg(debug_assertions)]
 use serde_json::{Value, json};
 
 #[cfg(debug_assertions)]
-use crate::commands::shared::{insert_trace_json, read_resource_trace};
-use crate::{
+use crate::ResourceTraceItem;
+#[cfg(debug_assertions)]
+use crate::beld::commands::shared::{insert_trace_json, read_resource_trace};
+use crate::beld::{
 	OutputFormat, Payload,
 	commands::shared::{
 		attach_trace, log_failure, open_read_only_storage, payload_format, print_human, read_payload, write_json,
 	},
 };
+use crate::{
+	asset::ResourceId,
+	inspect::{ResourceDocument, inspect_payload},
+	resource::{ReDBStorageBackend, ReadStorageBackend, ResourceId as ResourceUid, resource_handler::MultiResourceReader},
+};
 
-/// Inspects one resource by ID or UID and writes it in the selected format.
+/// Inspects one resource by ID or UID and writes it in the selected format, the JSON format to `output`.
 ///
-/// Pass `payload` to add the decoded stream bytes, which needs [`OutputFormat::JSON`]. Call [`crate::query`] when you
-/// need to find resources by class or indexed properties first, or [`crate::bake_dry_run`] to see what a bake would
+/// Pass `payload` to add the decoded stream bytes, which needs [`OutputFormat::JSON`]. Call [`crate::beld::query`] when you
+/// need to find resources by class or indexed properties first, or [`crate::beld::bake_dry_run`] to see what a bake would
 /// produce without a store.
-pub async fn inspect(destination_path: String, id: String, format: OutputFormat, payload: Payload) -> Result<(), i32> {
+pub async fn inspect(
+	destination_path: String,
+	id: String,
+	format: OutputFormat,
+	payload: Payload,
+	output: &mut impl std::io::Write,
+) -> Result<(), i32> {
 	let payload = payload_format(payload, format)?;
 	let storage_backend = open_read_only_storage(destination_path, "inspect")
 		.await
@@ -33,7 +39,7 @@ pub async fn inspect(destination_path: String, id: String, format: OutputFormat,
 		{
 			let trace = read_resource_trace(&storage_backend, &id).await?;
 			if !trace.is_empty() {
-				return print_trace_only_inspection(&id, &trace, format);
+				return print_trace_only_inspection(&id, &trace, format, output);
 			}
 		}
 		log::error!(
@@ -43,7 +49,7 @@ pub async fn inspect(destination_path: String, id: String, format: OutputFormat,
 		return Err(1);
 	};
 
-	let inspection = resource_management::inspect::inspect_resource(&resource).map_err(|error| {
+	let inspection = crate::inspect::inspect_resource(&resource).map_err(|error| {
 		log::error!("{}", error);
 		1
 	})?;
@@ -54,9 +60,9 @@ pub async fn inspect(destination_path: String, id: String, format: OutputFormat,
 			resource.class()
 		);
 	}
-	let mut output = inspection.json;
-	attach_provenance(&mut output, &storage_backend, resource.id())?;
-	attach_trace(&mut output, &storage_backend, resource.id()).await?;
+	let mut document = inspection.json;
+	attach_provenance(&mut document, &storage_backend, resource.id())?;
+	attach_trace(&mut document, &storage_backend, resource.id()).await?;
 
 	let payload_bytes = match payload {
 		Some(_) => Some(read_payload(&resource, reader).await?),
@@ -71,11 +77,11 @@ pub async fn inspect(destination_path: String, id: String, format: OutputFormat,
 	};
 
 	match format {
-		OutputFormat::Human => print_human(&output),
+		OutputFormat::Human => print_human(&document),
 		OutputFormat::JSON => write_json(
-			&mut std::io::stdout().lock(),
+			output,
 			&ResourceDocument {
-				json: &output,
+				json: &document,
 				payload: payload.as_ref(),
 			},
 		)?,
@@ -108,16 +114,21 @@ fn attach_provenance(output: &mut serde_json::Value, storage_backend: &ReDBStora
 
 /// Prints diagnostics for an ID whose resource bake failed completely.
 #[cfg(debug_assertions)]
-pub(super) fn print_trace_only_inspection(id: &str, trace: &[ResourceTraceItem], format: OutputFormat) -> Result<(), i32> {
-	let mut output = json!({
+pub(super) fn print_trace_only_inspection(
+	id: &str,
+	trace: &[ResourceTraceItem],
+	format: OutputFormat,
+	output: &mut impl std::io::Write,
+) -> Result<(), i32> {
+	let mut document = json!({
 		"id": id,
 		"resource": Value::Null,
 	});
-	insert_trace_json(&mut output, trace);
+	insert_trace_json(&mut document, trace);
 
 	match format {
-		OutputFormat::Human => print_human(&output),
-		OutputFormat::JSON => write_json(&mut std::io::stdout().lock(), &output)?,
+		OutputFormat::Human => print_human(&document),
+		OutputFormat::JSON => write_json(output, &document)?,
 	}
 
 	Ok(())
@@ -126,7 +137,7 @@ pub(super) fn print_trace_only_inspection(id: &str, trace: &[ResourceTraceItem],
 async fn read_resource(
 	storage_backend: &ReDBStorageBackend,
 	id: &str,
-) -> Option<(resource_management::SerializableResource, MultiResourceReader)> {
+) -> Option<(crate::SerializableResource, MultiResourceReader)> {
 	if let Some(uid) = ResourceUid::from_uid_hex(id)
 		&& let Some(resource) = storage_backend.read_uid(uid).await
 	{

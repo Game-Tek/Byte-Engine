@@ -61,7 +61,7 @@ impl BaseApplication {
 		let parameters = layer_parameters(parameters, configuration, std::env::vars(), std::env::args());
 
 		let metrics = Arc::new(Metrics::new());
-		let trace = parameters.iter().any(|parameter| parameter.name == "trace");
+		let trace = parameters.iter().any(|parameter| parameter.is("trace"));
 		install_subscriber(
 			Arc::clone(&metrics),
 			trace,
@@ -96,7 +96,7 @@ impl BaseApplication {
 			application
 				.parameters
 				.iter()
-				.map(|p| format!("{}={}", p.name, p.value))
+				.map(|p| format!("{}={}", p.name(), p.value()))
 				.collect::<Vec<String>>()
 				.join(", ")
 		);

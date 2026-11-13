@@ -148,7 +148,7 @@ Check each of these once per session, before the first build or run:
 - `scripts/sample_metrics.py [host:port] [rounds] [shots]` is the forced-frame sampler on its own. It reads rows
   from `GET /events`, so it misses no tick between rounds and waits for each round's GPU times instead of sleeping.
 - To read the BESL or MSL of any shader without launching the viewer or instrumenting the engine, intercept it from a
-  dry-run bake: `cd ~/development/sandbox/model_viewer && <engine>/target/debug/beld --source assets bake --dry-run
+  dry-run bake: `cd ~/development/sandbox/model_viewer && ../target/debug/model-viewer-beld --source assets bake --dry-run
   --intercept '*.besl' --intercept '*.msl' <id> 2>/dev/null`, where `<id>` is a `.bema`, a `.glb`, or a
   `byte_engine/rendering/visibility/<pass>.pipeline`. Products are named `<shader ID>.besl`, `<shader ID>.msl`, and
   `<shader ID>.metallib`; `--intercept '*' --format json | jq -r '.intercepted[].name'` lists them. Add
@@ -205,7 +205,7 @@ Check each of these once per session, before the first build or run:
 - Useful pinned looks from the spawn point: `1,0,0` (hall), `-1,0,0` (back down the hall), `0.2,-0.5,1` (floor and
   courtyard side). The viewer integrates camera velocity with frame time, so walks never repeat.
 - To study one kernel outside the engine, bake its pipeline without opening the viewer:
-  `cd ~/development/sandbox/model_viewer && <engine>/target/debug/beld --source assets bake --dry-run
+  `cd ~/development/sandbox/model_viewer && ../target/debug/model-viewer-beld --source assets bake --dry-run
   --intercept '*.metallib' --intercept-out <scratch dir> byte_engine/rendering/visibility/<pass>.pipeline`.
   Each metallib is named after its shader, so there is no need to `grep` the store's `*-raw` files, and
   `xcrun metal-source --extract=raw <file>` writes the MSL the engine compiled. A small Swift harness that renders the

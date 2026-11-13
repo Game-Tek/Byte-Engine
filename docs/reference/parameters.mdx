@@ -25,7 +25,7 @@ value with the same name:
 | 4 | Process arguments starting with `--` | The text after the dashes splits on `=`: the name is the first part and the value is the second part only, so `--a=b=c` sets `a` to `b`. Without `=` the value is empty. Every such argument becomes a parameter, and unknown names are accepted. |
 
 BELD resolves sources 1 to 3. Source 1 is the parameters its application
-passes it, or none for the standalone `beld`, and source 2 is the file its
+passes it, and source 2 is the file its
 `--config` option names, `config.json` in the working directory by default.
 Its own arguments are commands, not parameters.
 

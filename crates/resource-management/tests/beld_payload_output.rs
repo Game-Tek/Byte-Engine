@@ -1,18 +1,20 @@
-//! Black-box tests of the `beld` binary's dry-run bake, payload, and intercept output, as specified in the BELD
-//! command-line reference.
+//! Black-box tests of BELD's dry-run bake, payload, and intercept output, as specified in the BELD command-line
+//! reference.
 
-use std::{path::PathBuf, process::Command};
+use std::path::{Path, PathBuf};
 
+use byte_engine::application::graphics::configure_default_baking;
 use resource_management::{
 	ProcessedAsset,
 	asset::ResourceId,
+	beld::{self, OutputFormat, Payload},
 	resource::{ReDBStorageBackend, WriteStorageBackend as _},
 	resources::audio::Audio,
 	types::BitDepths,
 };
 use serde_json::Value;
 
-const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("../../resource-management/src/asset/test_data/triangle_move_ascii.fbx");
+const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("../src/asset/test_data/triangle_move_ascii.fbx");
 
 /// Creates an empty, uniquely named directory for one test.
 fn temporary_root(name: &str) -> PathBuf {
@@ -48,17 +50,50 @@ fn copy_engine_layer_modules(assets: &std::path::Path) {
 	copy(engine, &assets.join("byte_engine/rendering"), false);
 }
 
-/// Runs BELD in `root`, so it finds no project configuration, with `root/assets` and `root/resources` as its
-/// directories, and returns its exit code and parsed standard output.
-fn run_beld(root: &PathBuf, arguments: &[&str]) -> (Option<i32>, Option<Value>) {
-	let output = Command::new(env!("CARGO_BIN_EXE_beld"))
-		.current_dir(root)
-		.args(["--source", "assets", "--destination", "resources"])
-		.args(arguments)
-		.output()
-		.expect("BELD could not be started. The most likely cause is that the test binary was not built.");
-	let stdout = serde_json::from_slice(&output.stdout).ok();
-	(output.status.code(), stdout)
+/// Bakes `ids` from `root/assets` without a store, as `beld bake --dry-run` does, and returns the exit code and what
+/// the dry run wrote.
+fn dry_run(
+	root: &Path,
+	ids: &[&str],
+	intercept: &[&str],
+	intercept_out: Option<&Path>,
+	format: OutputFormat,
+	payload: Payload,
+) -> (Result<(), i32>, Vec<u8>) {
+	let mut output = Vec::new();
+	let result = beld::Executor::new().unwrap().block_on(beld::bake_dry_run(
+		root.join("assets").to_string_lossy().into_owned(),
+		ids.iter().map(|id| id.to_string()).collect(),
+		std::num::NonZeroUsize::new(1024 * 1024 * 1024).unwrap(),
+		&[],
+		configure_default_baking,
+		intercept.iter().map(|pattern| pattern.to_string()).collect(),
+		intercept_out,
+		format,
+		payload,
+		&mut output,
+	));
+	(result, output)
+}
+
+/// Bakes `ids` as [`dry_run`] does in the JSON format, and returns the exit code and the parsed document.
+fn dry_run_json(root: &Path, ids: &[&str], intercept: &[&str], payload: Payload) -> (Result<(), i32>, Option<Value>) {
+	let (result, output) = dry_run(root, ids, intercept, None, OutputFormat::JSON, payload);
+	(result, serde_json::from_slice(&output).ok())
+}
+
+/// Inspects `id` in the store at `root/resources`, as `beld inspect` does, and returns the exit code and the parsed
+/// document.
+fn inspect(root: &Path, id: &str, format: OutputFormat, payload: Payload) -> (Result<(), i32>, Option<Value>) {
+	let mut output = Vec::new();
+	let result = beld::Executor::new().unwrap().block_on(beld::inspect(
+		root.join("resources").to_string_lossy().into_owned(),
+		id.to_string(),
+		format,
+		payload,
+		&mut output,
+	));
+	(result, serde_json::from_slice(&output).ok())
 }
 
 fn stream<'a>(resource: &'a Value, name: &str) -> &'a Value {
@@ -77,21 +112,14 @@ fn dry_run_prints_every_baked_resource_with_typed_streams_and_writes_no_store() 
 	copy_engine_layer_modules(&root.join("assets"));
 	std::fs::write(root.join("assets/triangle_move.fbx"), TRIANGLE_MOVE_FBX).unwrap();
 
-	let (code, output) = run_beld(
+	let (code, output) = dry_run_json(
 		&root,
-		&[
-			"bake",
-			"--dry-run",
-			"--format",
-			"json",
-			"--payload",
-			"typed",
-			"triangle_move.fbx",
-			"triangle_move.fbx#animations/MoveX",
-		],
+		&["triangle_move.fbx", "triangle_move.fbx#animations/MoveX"],
+		&[],
+		Payload::Typed,
 	);
 
-	assert_eq!(code, Some(0));
+	assert_eq!(code, Ok(()));
 	assert!(!root.join("resources").exists(), "a dry run must not create the destination");
 	let output = output.expect("standard output should hold exactly one JSON document");
 	assert_eq!(output["failed"], Value::Array(Vec::new()));
@@ -146,11 +174,8 @@ fn dry_run_prints_a_lut_payload_as_values_or_as_its_exact_bytes() {
 	let entries = [[0.0f32, 0.25, 0.5], [1.0, 0.75, 0.1]];
 	std::fs::write(root.join("assets/ramp.cube"), "LUT_1D_SIZE 2\n0 0.25 0.5\n1 0.75 0.1\n").unwrap();
 	let dry_run = |payload| {
-		let (code, output) = run_beld(
-			&root,
-			&["bake", "--dry-run", "--format", "json", "--payload", payload, "ramp.cube"],
-		);
-		assert_eq!(code, Some(0));
+		let (code, output) = dry_run_json(&root, &["ramp.cube"], &[], payload);
+		assert_eq!(code, Ok(()));
 		let output = output.unwrap();
 		let lut = output["resources"]
 			.as_array()
@@ -162,7 +187,7 @@ fn dry_run_prints_a_lut_payload_as_values_or_as_its_exact_bytes() {
 		stream(&lut, "payload").clone()
 	};
 
-	let typed = dry_run("typed");
+	let typed = dry_run(Payload::Typed);
 	assert_eq!((&typed["encoding"], &typed["element"]), (&"json".into(), &"rgb".into()));
 	let values = typed["data"]
 		.as_array()
@@ -175,7 +200,7 @@ fn dry_run_prints_a_lut_payload_as_values_or_as_its_exact_bytes() {
 		.collect::<Vec<[f32; 3]>>();
 	assert_eq!(values, entries);
 
-	let exact = dry_run("base64");
+	let exact = dry_run(Payload::Base64);
 	assert_eq!(exact["encoding"], "base64");
 	let bytes = base64::decode(exact["data"].as_str().unwrap()).unwrap();
 	assert_eq!(
@@ -210,9 +235,9 @@ fn inspect_prints_the_frames_of_a_stored_audio_payload() {
 			.unwrap();
 	});
 
-	let (code, output) = run_beld(&root, &["inspect", "tone.wav", "--format", "json", "--payload", "typed"]);
+	let (code, output) = inspect(&root, "tone.wav", OutputFormat::JSON, Payload::Typed);
 
-	assert_eq!(code, Some(0));
+	assert_eq!(code, Ok(()));
 	let payload = stream(output.as_ref().unwrap(), "payload");
 	assert_eq!(payload["element"], "frame");
 	assert_eq!(payload["data"], serde_json::json!([[1, -2], [300, -32768]]));
@@ -224,9 +249,9 @@ fn inspect_prints_the_frames_of_a_stored_audio_payload() {
 fn payload_output_needs_the_json_format() {
 	let root = temporary_root("payload-format");
 
-	let (code, _) = run_beld(&root, &["inspect", "tone.wav", "--payload", "typed"]);
+	let (code, _) = inspect(&root, "tone.wav", OutputFormat::Human, Payload::Typed);
 
-	assert_eq!(code, Some(2));
+	assert_eq!(code, Err(2));
 	std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -237,20 +262,9 @@ fn an_intercepted_dry_run_prints_the_besl_of_every_shader_it_compiles() {
 	copy_engine_layer_modules(&root.join("assets"));
 	std::fs::write(root.join("assets/triangle_move.fbx"), TRIANGLE_MOVE_FBX).unwrap();
 
-	let (code, output) = run_beld(
-		&root,
-		&[
-			"bake",
-			"--dry-run",
-			"--intercept",
-			"*.besl",
-			"--format",
-			"json",
-			"triangle_move.fbx",
-		],
-	);
+	let (code, output) = dry_run_json(&root, &["triangle_move.fbx"], &["*.besl"], Payload::None);
 
-	assert_eq!(code, Some(0));
+	assert_eq!(code, Ok(()));
 	assert!(!root.join("resources").exists(), "a dry run must not create the destination");
 	let output = output.expect("standard output should hold exactly one JSON document");
 	assert_eq!(output["failed"], Value::Array(Vec::new()));
@@ -292,24 +306,17 @@ fn an_intercept_out_directory_receives_every_product_as_a_file() {
 	copy_engine_layer_modules(&root.join("assets"));
 	std::fs::write(root.join("assets/triangle_move.fbx"), TRIANGLE_MOVE_FBX).unwrap();
 
-	let output = Command::new(env!("CARGO_BIN_EXE_beld"))
-		.current_dir(&root)
-		.args([
-			"--source",
-			"assets",
-			"bake",
-			"--dry-run",
-			"--intercept",
-			"*",
-			"--intercept-out",
-			"products",
-			"triangle_move.fbx",
-		])
-		.output()
-		.expect("BELD could not be started. The most likely cause is that the test binary was not built.");
+	let (code, output) = dry_run(
+		&root,
+		&["triangle_move.fbx"],
+		&["*"],
+		Some(&root.join("products")),
+		OutputFormat::Human,
+		Payload::None,
+	);
 
-	assert_eq!(output.status.code(), Some(0));
-	let paths = String::from_utf8(output.stdout)
+	assert_eq!(code, Ok(()));
+	let paths = String::from_utf8(output)
 		.unwrap()
 		.lines()
 		.map(|line| root.join(line))
@@ -334,15 +341,5 @@ fn an_intercept_out_directory_receives_every_product_as_a_file() {
 		assert!(std::fs::read(binary).unwrap().starts_with(b"MTLB"));
 	}
 
-	std::fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn intercept_needs_a_dry_run() {
-	let root = temporary_root("intercept-dry-run");
-
-	let (code, _) = run_beld(&root, &["bake", "--intercept", "*.besl", "triangle_move.fbx"]);
-
-	assert_eq!(code, Some(2));
 	std::fs::remove_dir_all(root).unwrap();
 }

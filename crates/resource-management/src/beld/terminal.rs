@@ -17,7 +17,7 @@ static STATUS: Mutex<String> = Mutex::new(String::new());
 /// Installs BELD's logger, which writes to standard error, reads its filter from `RUST_LOG`, and colors level names.
 ///
 /// Set the process's color choice with [`anstream::ColorChoice::write_global`] first, because the logger reads it
-/// once. Commands that show a progress line, such as [`crate::bake`], need this logger to keep log messages above it.
+/// once. Commands that show a progress line, such as [`crate::beld::bake`], need this logger to keep log messages above it.
 pub fn init_logging() {
 	let color = has_color(&std::io::stderr());
 	// `colored`, which colors the level names, checks the terminal on its own; BELD's decision replaces that check.

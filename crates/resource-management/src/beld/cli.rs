@@ -8,8 +8,8 @@
 /// does, with the same bake services. An application without parameters or formats of its own passes `&[]` and
 /// [`configure_default_baking`]. Invalid arguments exit with 2, and a failed command with 1.
 ///
-/// [`setup_default_resource_and_asset_management`]: byte_engine::application::graphics::setup_default_resource_and_asset_management
-/// [`configure_default_baking`]: byte_engine::application::graphics::configure_default_baking
+/// [`setup_default_resource_and_asset_management`]: /docs/api/latest/byte_engine/application/graphics/defaults#fn.setup_default_resource_and_asset_management
+/// [`configure_default_baking`]: /docs/api/latest/byte_engine/application/graphics/defaults#fn.configure_default_baking
 pub fn run(parameters: &[Parameter], configure: impl FnOnce(&mut AssetManager, &[Parameter])) -> ExitCode {
 	match run_cli(parameters, configure) {
 		Ok(()) => ExitCode::SUCCESS,
@@ -26,7 +26,7 @@ fn run_cli(parameters: &[Parameter], configure: impl FnOnce(&mut AssetManager, &
 		clap::ColorChoice::Always => anstream::ColorChoice::Always,
 		clap::ColorChoice::Never => anstream::ColorChoice::Never,
 	});
-	crate::init_logging();
+	crate::beld::init_logging();
 
 	let matches = Cli::command().color(color).get_matches();
 
@@ -35,7 +35,7 @@ fn run_cli(parameters: &[Parameter], configure: impl FnOnce(&mut AssetManager, &
 		2
 	})?;
 
-	let executor = resource_management::r#async::Executor::new().map_err(|error| {
+	let executor = crate::r#async::Executor::new().map_err(|error| {
 		log::error!(
 			"Failed to start BELD asynchronous resource access. The most likely cause is that the platform I/O driver could not be initialized. Error: {error}"
 		);
@@ -56,9 +56,9 @@ async fn dispatch(
 	let parameters = read_parameters(&cli.config, defaults)?;
 	let (source, destination) = directories(cli.source, cli.destination, &parameters);
 	match cli.command {
-		Commands::Wipe {} => crate::wipe(destination).await,
-		Commands::Clear {} => crate::clear(destination).await,
-		Commands::List {} => crate::list(destination).await,
+		Commands::Wipe {} => crate::beld::wipe(destination).await,
+		Commands::Clear {} => crate::beld::clear(destination).await,
+		Commands::List {} => crate::beld::list(destination).await,
 		Commands::Query {
 			terms,
 			group,
@@ -68,12 +68,14 @@ async fn dispatch(
 			format,
 		} => {
 			let roots = globs(parameters.scope("resources"), "roots");
-			crate::query(source, destination, roots, terms, group, sort, reverse, limit, format).await
+			crate::beld::query(source, destination, roots, terms, group, sort, reverse, limit, format).await
 		}
-		Commands::Inspect { id, format, payload } => crate::inspect(destination, id, format, payload).await,
+		Commands::Inspect { id, format, payload } => {
+			crate::beld::inspect(destination, id, format, payload, &mut std::io::stdout().lock()).await
+		}
 		Commands::Browse {} => {
 			let roots = globs(parameters.scope("resources"), "roots");
-			crate::browse(source, destination, roots).await
+			crate::beld::browse(source, destination, roots).await
 		}
 		Commands::Bake {
 			ids,
@@ -88,7 +90,7 @@ async fn dispatch(
 			payload,
 		} => {
 			if dry_run {
-				return crate::bake_dry_run(
+				return crate::beld::bake_dry_run(
 					source,
 					ids,
 					bake_memory_budget(memory_budget),
@@ -102,7 +104,7 @@ async fn dispatch(
 				)
 				.await;
 			}
-			crate::bake(
+			crate::beld::bake(
 				source,
 				destination,
 				ids,
@@ -116,7 +118,7 @@ async fn dispatch(
 			)
 			.await
 		}
-		Commands::Delete { ids } => crate::delete(destination, ids).await,
+		Commands::Delete { ids } => crate::beld::delete(destination, ids).await,
 	}
 }
 
@@ -362,7 +364,7 @@ enum TextureCompression {
 	MetalIoLz4,
 }
 
-impl From<TextureCompression> for resource_management::resource::ResourceGpuCompressionPolicy {
+impl From<TextureCompression> for crate::resource::ResourceGpuCompressionPolicy {
 	fn from(value: TextureCompression) -> Self {
 		match value {
 			TextureCompression::None => Self::Disabled,
@@ -371,7 +373,7 @@ impl From<TextureCompression> for resource_management::resource::ResourceGpuComp
 	}
 }
 
-impl From<StorageMode> for resource_management::resource::ResourceStorageMode {
+impl From<StorageMode> for crate::resource::ResourceStorageMode {
 	fn from(value: StorageMode) -> Self {
 		match value {
 			StorageMode::Files => Self::Files,
@@ -382,14 +384,24 @@ impl From<StorageMode> for resource_management::resource::ResourceStorageMode {
 
 use std::{num::NonZeroUsize, path::PathBuf, process::ExitCode};
 
-use byte_engine::application::{
-	Parameter,
-	parameters::{Parameters as _, layer_parameters, read_configuration_file},
-};
 use clap::{
 	CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,
 	builder::styling::{AnsiColor, Effects, Styles},
 };
-use resource_management::asset::manager::AssetManager;
 
-use crate::{OutputFormat, Payload, utils::globs};
+use crate::asset::manager::AssetManager;
+use crate::beld::{OutputFormat, Payload, utils::globs};
+use crate::parameters::{Parameter, Parameters as _, layer_parameters, read_configuration_file};
+
+#[cfg(test)]
+mod tests {
+	use clap::Parser as _;
+
+	use super::Cli;
+
+	#[test]
+	fn intercept_needs_a_dry_run() {
+		assert!(Cli::try_parse_from(["beld", "bake", "--intercept", "*.besl", "triangle_move.fbx"]).is_err());
+		assert!(Cli::try_parse_from(["beld", "bake", "--dry-run", "--intercept", "*.besl", "triangle_move.fbx"]).is_ok());
+	}
+}

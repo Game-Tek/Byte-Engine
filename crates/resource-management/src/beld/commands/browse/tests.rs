@@ -3,13 +3,13 @@ use ratatui::{
 	backend::TestBackend,
 	crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
 };
-use resource_management::types::Formats;
 
 use super::ui::State;
-use crate::commands::catalog::{
+use crate::beld::commands::catalog::{
 	Catalog,
 	tests::{catalog, image},
 };
+use crate::types::Formats;
 
 #[test]
 fn typing_a_filter_shows_only_the_matching_resources() {
@@ -80,7 +80,7 @@ fn the_view_still_draws_after_the_selected_line_is_filtered_away_or_reloaded_awa
 		None,
 		Vec::new(),
 		&[],
-		resource_management::resource::StorageUsage::default(),
+		crate::resource::StorageUsage::default(),
 		0,
 	);
 	state.reload(&mut catalog, smaller);

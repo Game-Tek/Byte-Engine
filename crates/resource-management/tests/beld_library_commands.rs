@@ -1,6 +1,7 @@
 use resource_management::{
 	ProcessedAsset,
 	asset::ResourceId,
+	beld,
 	resource::{ReDBStorageBackend, ReadStorageBackend as _, ResourceStorageMode, WriteStorageBackend as _},
 	resources::audio::Audio,
 	types::BitDepths,

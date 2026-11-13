@@ -14,8 +14,9 @@ mod utils;
 
 pub use cli::run;
 pub use commands::{bake, bake_dry_run, browse, clear, delete, inspect, list, query, wipe};
-pub use resource_management::r#async::Executor;
 pub use terminal::init_logging;
+
+pub use crate::r#async::Executor;
 
 /// Selects the representation written by commands that return structured output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]

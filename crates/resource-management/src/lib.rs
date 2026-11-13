@@ -67,6 +67,11 @@ pub mod processors;
 
 pub mod inspect;
 
+pub mod parameters;
+
+#[cfg(feature = "beld")]
+pub mod beld;
+
 pub mod r#async;
 
 pub use asset::handler::{AssetHandler, BakeContext};

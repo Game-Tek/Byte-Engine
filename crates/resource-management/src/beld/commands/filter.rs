@@ -2,12 +2,12 @@
 //!
 //! The grammar and every rule are specified in the BELD command-line reference, under Filter, group, and sort.
 
-#[cfg(debug_assertions)]
-use resource_management::ResourceTraceLevel;
-use resource_management::resource::ResourcePayloadEncoding;
 use utils::Glob;
 
 use super::catalog::{Catalog, Field, FieldKind, Status, Value};
+#[cfg(debug_assertions)]
+use crate::ResourceTraceLevel;
+use crate::resource::ResourcePayloadEncoding;
 
 /// The `Filter` struct is a parsed filter: a row matches when it matches every term.
 #[derive(Debug, Default)]

@@ -1,13 +1,12 @@
-use resource_management::{
+use crate::beld::commands::shared::{log_failure, offload_file_operation, open_read_only_storage};
+use crate::{
 	asset::ResourceId,
 	resource::{ReDBStorageBackend, ReadStorageBackend, WriteStorageBackend},
 };
 
-use crate::commands::shared::{log_failure, offload_file_operation, open_read_only_storage};
-
 /// Removes every baked resource through the configured resource storage backend.
 ///
-/// Call [`crate::bake`] next to populate the empty store.
+/// Call [`crate::beld::bake`] next to populate the empty store.
 pub async fn wipe(destination_path: String) -> Result<(), i32> {
 	let storage_backend = open_writable_storage(destination_path, "wipe").await?;
 
@@ -22,14 +21,14 @@ pub async fn wipe(destination_path: String) -> Result<(), i32> {
 /// Removes every baked resource through the configured resource storage backend.
 ///
 /// This function is the library equivalent of BELD's `clear` alias. Call
-/// [`crate::bake`] next to populate the empty store.
+/// [`crate::beld::bake`] next to populate the empty store.
 pub async fn clear(destination_path: String) -> Result<(), i32> {
 	wipe(destination_path).await
 }
 
 /// Lists every resource ID in a compatible store.
 ///
-/// Pass an ID to [`crate::inspect`] to read its metadata.
+/// Pass an ID to [`crate::beld::inspect`] to read its metadata.
 pub async fn list(destination_path: String) -> Result<(), i32> {
 	let storage_backend = open_read_only_storage(destination_path, "list").await.map_err(log_failure)?;
 
@@ -54,7 +53,7 @@ pub async fn list(destination_path: String) -> Result<(), i32> {
 
 /// Deletes the selected resource IDs from a writable store.
 ///
-/// Call [`crate::list`] next to verify the remaining resource IDs.
+/// Call [`crate::beld::list`] next to verify the remaining resource IDs.
 pub async fn delete(destination_path: String, ids: Vec<String>) -> Result<(), i32> {
 	if ids.is_empty() {
 		log::info!("No resources to delete.");

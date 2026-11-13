@@ -6,11 +6,18 @@ use std::{
 	time::Instant,
 };
 
-use byte_engine::{
-	application::{Parameter, parameters::Parameters as _},
-	rendering::pipelines::visibility::{RENDER_PARAMETERS, VisibilityFeatures},
+use serde::Serialize;
+use serde_json::{Value, json};
+use utils::{Glob, r#async::StreamExt, sync::Mutex};
+
+use crate::beld::{
+	OutputFormat, Payload,
+	commands::shared::{attach_trace, offload_file_operation, payload_format, plural, print_human, read_payload, write_json},
+	terminal,
+	utils::{get_asset_manager, globs},
 };
-use resource_management::{
+use crate::parameters::{Parameter, Parameters as _};
+use crate::{
 	asset::{FileStorageBackend, ResourceId, intercept::BakeInterceptor, manager::AssetManager, manager::LoadMessages},
 	inspect::{Base64View, ResourceDocument, inspect_payload, inspect_resource},
 	resource::{
@@ -18,36 +25,26 @@ use resource_management::{
 		ResourceStorageSettings,
 	},
 };
-use serde::Serialize;
-use serde_json::{Value, json};
-use utils::{Glob, r#async::StreamExt, sync::Mutex};
-
-use crate::{
-	OutputFormat, Payload,
-	commands::shared::{attach_trace, offload_file_operation, payload_format, plural, print_human, read_payload, write_json},
-	terminal,
-	utils::{get_asset_manager, globs},
-};
 
 /// Bakes selected source assets, or every discoverable asset when `ids` is empty.
 ///
 /// `parameters` are the application's, resolved with
-/// [`layer_parameters`](byte_engine::application::parameters::layer_parameters), and `configure` installs the
+/// [`layer_parameters`](crate::parameters::layer_parameters), and `configure` installs the
 /// application's bake services and asset handlers for them, as its debug runtime does. Assets whose stored resource is
 /// [current](/docs/reference/resource-management#freshness) are skipped. With `force`, each selected asset and
 /// everything it is baked from is rebuilt once, whatever the store holds.
 ///
-/// These parameters also select what bakes. The `render` scope selects the visibility features, and discovery skips
-/// the engine assets only left-out features use. Discovery skips assets that match a `assets.exclude` pattern, and a
+/// These parameters also select what bakes. Discovery lists what the
+/// [discovery filter](AssetManager::set_discovery_filter) `configure` installs lets through, and skips assets that match a `assets.exclude` pattern, and a
 /// bake of one, or of an asset that needs one, fails. When there are `resources.roots` patterns, discovery keeps only
 /// matching assets, which bake with what they need. Roots don't apply to explicit `ids`. `prune` deletes every stored
 /// resource no root reaches once every asset baked; it needs roots, no `ids`, and a debug build, which records
 /// references.
 ///
-/// On a terminal, a progress line shows on standard error; install the logger with [`crate::init_logging`] so log
+/// On a terminal, a progress line shows on standard error; install the logger with [`crate::beld::init_logging`] so log
 /// messages print above it.
 ///
-/// Call [`crate::list`] next to inspect the resource IDs written to the destination.
+/// Call [`crate::beld::list`] next to inspect the resource IDs written to the destination.
 #[allow(clippy::too_many_arguments)]
 pub async fn bake(
 	source_path: String,
@@ -61,7 +58,6 @@ pub async fn bake(
 	configure: impl FnOnce(&mut AssetManager, &[Parameter]),
 	prune: bool,
 ) -> Result<(), i32> {
-	let features = VisibilityFeatures::from_parameters(parameters.scope(RENDER_PARAMETERS));
 	let roots = globs(parameters.scope("resources"), "roots");
 	if prune {
 		check_prune(&ids, &roots).map_err(|error| {
@@ -92,17 +88,14 @@ pub async fn bake(
 	})?;
 
 	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend, parameters, configure);
-	asset_manager.set_excluded_assets(globs(parameters.scope("assets"), "exclude"));
 	// Nothing edits the sources during one run, so a resource many assets use is checked once.
 	asset_manager.verify_once();
 
 	let ids = if ids.is_empty() {
-		let mut ids = asset_manager.discover().await.map_err(|error| {
+		let ids = asset_manager.discover().await.map_err(|error| {
 			log::error!("Failed to discover assets. {error}");
 			1
 		})?;
-		// Explicitly requested IDs still bake; only discovery skips what the project left out.
-		ids.retain(|id| !features.excludes(id));
 		select_discovered(ids, &roots, |id| asset_manager.is_excluded(id)).map_err(|error| {
 			log::error!("{error}");
 			1
@@ -118,7 +111,7 @@ pub async fn bake(
 	}
 
 	let mut failures = bake_ids(&mut asset_manager, ids, memory_budget, force).await;
-	failures.extend(bake_assembled(&asset_manager, &features).await);
+	failures.extend(bake_assembled(&asset_manager).await);
 
 	if !failures.is_empty() {
 		if prune {
@@ -203,14 +196,14 @@ fn select_discovered(
 /// Bakes `ids` and every resource they depend on into memory, and writes everything produced as one document to
 /// `output`, leaving the destination directory untouched.
 ///
-/// The document lists each stored resource in [`crate::inspect`]'s shape, ordered by ID, then each requested ID that
+/// The document lists each stored resource in [`crate::beld::inspect`]'s shape, ordered by ID, then each requested ID that
 /// failed. `parameters` and `configure` are the application's, as in [`bake`], which also apply `assets.exclude`.
-/// Pass `payload` to add the decoded stream bytes, which needs [`OutputFormat::JSON`]. The resources the visibility
-/// features assemble from every material bake after `ids`, from the materials `ids` reach. Without `ids` nothing bakes,
-/// because a dry run doesn't discover assets. Run [`bake`] next to write the same resources to a store.
+/// Pass `payload` to add the decoded stream bytes, which needs [`OutputFormat::JSON`]. The
+/// [assembled resources](AssetManager::set_assembled_resources) bake after `ids`, from the materials `ids` reach.
+/// Without `ids` nothing bakes, because a dry run doesn't discover assets. Run [`bake`] next to write the same resources to a store.
 ///
 /// With `intercept` patterns, the document lists instead the intermediate products of the bake whose names match one
-/// of them, such as `*.besl` for the BESL source of every shader; see [`resource_management::asset::intercept`] for how
+/// of them, such as `*.besl` for the BESL source of every shader; see [`crate::asset::intercept`] for how
 /// products are named. With `intercept_out`, each product is written to a file under that directory, named after it, and
 /// the human format lists the written paths instead of the products.
 #[allow(clippy::too_many_arguments)]
@@ -232,7 +225,6 @@ pub async fn bake_dry_run(
 	// The manager owns one clone; this one reads back what it baked once it is done.
 	let resource_storage_backend = MemoryStorageBackend::new();
 	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend.clone(), parameters, configure);
-	asset_manager.set_excluded_assets(globs(parameters.scope("assets"), "exclude"));
 	let interception = (!intercept.is_empty()).then(|| {
 		Arc::new(Interception {
 			globs: intercept.iter().map(|pattern| Glob::new(pattern)).collect(),
@@ -245,8 +237,7 @@ pub async fn bake_dry_run(
 	let bakes_anything = !ids.is_empty();
 	let mut failures = bake_ids(&mut asset_manager, ids, memory_budget, false).await;
 	if bakes_anything {
-		let features = VisibilityFeatures::from_parameters(parameters.scope(RENDER_PARAMETERS));
-		failures.extend(bake_assembled(&asset_manager, &features).await);
+		failures.extend(bake_assembled(&asset_manager).await);
 	}
 	drop(asset_manager);
 
@@ -500,20 +491,20 @@ async fn open_asset_storage(source_path: String) -> Result<FileStorageBackend, i
 	})
 }
 
-/// Bakes the resources `features` assembles from every baked material, such as the uber material evaluation shaders,
+/// Bakes the resources the manager assembles from what the store holds, such as the uber material evaluation shaders,
 /// and returns the ones that failed with their errors.
 ///
-/// Call it after every other bake, so the materials those stored are there to gather. The set of materials is an
-/// input of each resource, so one whose materials didn't change is current and skipped. The resources gather
-/// independently, so they bake together.
-async fn bake_assembled(asset_manager: &AssetManager, features: &VisibilityFeatures) -> Vec<(String, LoadMessages)> {
-	let resources = features.assembled_resources();
+/// The application's `configure` names them with [`AssetManager::set_assembled_resources`]. Call it after every other
+/// bake, so the materials those stored are there to gather. The set of materials is an input of each resource, so one
+/// whose materials didn't change is current and skipped. The resources gather independently, so they bake together.
+async fn bake_assembled(asset_manager: &AssetManager) -> Vec<(String, LoadMessages)> {
+	let resources = asset_manager.assembled_resources();
 	utils::r#async::stream::iter(resources)
 		.map(|id| async move {
 			log::info!("Baking resource '{id}' from every baked material");
 			let error = asset_manager.bake_if_stale(id).await.err()?;
 			log::error!("Failed to bake '{id}'. Error: {error:#?}");
-			Some((id.to_string(), error))
+			Some((id.clone(), error))
 		})
 		.buffer_unordered(resources.len().max(1))
 		.filter_map(async |failure| failure)

@@ -1,4 +1,9 @@
-use resource_management::{
+use super::{Catalog, Field};
+use crate::beld::commands::{
+	filter::Filter,
+	view::{Sort, view},
+};
+use crate::{
 	ProcessedAsset, SerializableResource,
 	asset::ResourceId,
 	resource::{ResourcePayloadEncoding, StorageUsage},
@@ -6,13 +11,13 @@ use resource_management::{
 	types::{BitDepths, Formats, Gamma},
 };
 
-use super::{Catalog, Field};
-use crate::commands::{
-	filter::Filter,
-	view::{Sort, view},
-};
-
-pub(in crate::commands) fn image(id: &str, format: Formats, hash: u64, size: usize, stored: usize) -> SerializableResource {
+pub(in crate::beld::commands) fn image(
+	id: &str,
+	format: Formats,
+	hash: u64,
+	size: usize,
+	stored: usize,
+) -> SerializableResource {
 	let image = Image {
 		format,
 		gamma: Gamma::SRGB,
@@ -36,7 +41,7 @@ fn audio(id: &str, hash: u64, size: usize) -> SerializableResource {
 }
 
 /// Two hero images, a crate image with the same payload as the first hero image, and a sound.
-pub(in crate::commands) fn catalog(references: Vec<(String, Vec<String>)>) -> Catalog {
+pub(in crate::beld::commands) fn catalog(references: Vec<(String, Vec<String>)>) -> Catalog {
 	rooted_catalog(references, &[])
 }
 
@@ -225,7 +230,7 @@ fn dangling_resources_reference_an_id_the_store_does_not_have() {
 #[cfg(debug_assertions)]
 #[test]
 fn a_trace_without_a_resource_is_a_failed_row() {
-	use resource_management::{ResourceTraceItem, ResourceTraceLevel};
+	use crate::{ResourceTraceItem, ResourceTraceLevel};
 
 	let trace = vec![ResourceTraceItem::new(ResourceTraceLevel::Error, "Bad PNG.".to_string())];
 	let mut catalog = Catalog::new(

@@ -173,26 +173,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
-name = "beld"
-version = "0.2.0"
-dependencies = [
- "anstream",
- "base64",
- "byte-engine",
- "byte-engine-besl",
- "byte-engine-resource-management",
- "byte-engine-utils",
- "clap",
- "colored",
- "log",
- "ratatui",
- "serde",
- "serde_json",
- "simple_logger",
- "sysinfo",
-]
-
-[[package]]
 name = "bit_field"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -373,13 +353,16 @@ version = "0.2.0"
 dependencies = [
  "announcement",
  "base64",
+ "anstream",
  "bumpalo",
  "byte-engine-besl",
+ "byte-engine",
  "byte-engine-ghi",
  "byte-engine-math",
  "byte-engine-utils",
  "bytemuck",
  "colored",
+ "clap",
  "compio",
  "exr",
  "gltf",
@@ -396,11 +379,15 @@ dependencies = [
  "png",
  "rapidhash",
  "redb",
+ "ratatui",
  "rkyv",
  "serde",
  "serde_json",
  "shaderc",
  "ttf-parser",
+ "simple_logger",
+ "smallvec 1.15.2",
+ "sysinfo",
  "ufbx",
  "urlencoding",
  "vorbis_rs",

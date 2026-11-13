@@ -19,7 +19,7 @@ use super::{
 	shared::{log_failure, plural, queryable_properties_json, write_json},
 	view::{Group, Sort, view},
 };
-use crate::{
+use crate::beld::{
 	OutputFormat,
 	terminal::{self, paint},
 };
@@ -28,7 +28,7 @@ use crate::{
 /// `sort`, which defaults to `stored`.
 ///
 /// Statuses compare each resource with the sources at `source_path`, and `roots`, the project's `resources.roots`
-/// glob patterns, decide what `is:unreachable` matches. Pass a printed ID to [`crate::inspect`] to read that
+/// glob patterns, decide what `is:unreachable` matches. Pass a printed ID to [`crate::beld::inspect`] to read that
 /// resource's model and streams.
 #[allow(clippy::too_many_arguments)]
 pub async fn query(

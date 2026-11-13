@@ -10,16 +10,16 @@ use ratatui::{
 	text::{Line, Span},
 	widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Row as TableRow, Table},
 };
-#[cfg(debug_assertions)]
-use resource_management::{ResourceTraceItem, ResourceTraceLevel};
 use serde_json::Value as Json;
 
-use crate::commands::{
+use crate::beld::commands::{
 	catalog::{Catalog, Field, SHOWN_FIELDS, Status, ratio, share},
 	filter::Filter,
 	shared::plural,
 	view::{Group, NO_VALUE_GROUP, Sort, view},
 };
+#[cfg(debug_assertions)]
+use crate::{ResourceTraceItem, ResourceTraceLevel};
 
 /// The `Exit` enum tells the command loop what to do after the browser returns.
 #[derive(Debug, PartialEq, Eq)]
@@ -935,7 +935,7 @@ fn detail_lines(catalog: &Catalog, row: usize, width: usize) -> Vec<DetailLine> 
 	trace_lines(&entry.trace, width, &mut lines);
 
 	if let Some(resource) = &entry.resource
-		&& let Ok(Json::Object(model)) = resource_management::inspect::inspect_model(resource)
+		&& let Ok(Json::Object(model)) = crate::inspect::inspect_model(resource)
 	{
 		section(&mut lines, "model");
 		let mut model_lines = Vec::new();

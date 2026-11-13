@@ -90,9 +90,9 @@ pub fn setup_default_window(application: &mut GraphicsApplication) {
 /// In debug builds, connects the asset directory to the resource manager, with the bake services and asset handlers
 /// `configure` installs for the application's parameters.
 ///
-/// Pass the function the application's own BELD passes to `beld::run`, such as [`configure_default_baking`], so a debug
-/// run and a release bake produce the same resources. Release builds intentionally leave the manager without asset
-/// processors and must receive their complete resource store from BELD.
+/// Pass the function the application's own BELD passes to `resource_management::beld::run`, such as
+/// [`configure_default_baking`], so a debug run and a release bake produce the same resources. Release builds
+/// intentionally leave the manager without asset processors and must receive their complete resource store from BELD.
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub fn setup_default_resource_and_asset_management(
 	application: &mut GraphicsApplication,
@@ -131,9 +131,10 @@ pub fn setup_default_resource_and_asset_management(
 /// shares, then the material, model, image, font, audio, and standalone-shader handlers, for the visibility renderer
 /// configured by the `render` scope of `parameters`.
 ///
-/// Pass it to [`setup_default_resource_and_asset_management`] and to `beld::run`, so a debug run and a baked store
-/// produce the same resources from the same assets with the same services. An application with its own formats calls
-/// it, then adds its handlers with [`AssetManager::add_asset_handler`], in one function it passes to both.
+/// Pass it to [`setup_default_resource_and_asset_management`] and to `resource_management::beld::run`, so a debug run
+/// and a baked store produce the same resources from the same assets with the same services. An application with its
+/// own formats calls it, then adds its handlers with [`AssetManager::add_asset_handler`], in one function it passes to
+/// both.
 ///
 /// The services are [`default_image_processor`], one [`VisibilityShaderGenerator`] that `.bema`, glTF, and FBX
 /// materials all target, and the [`CommonShaderGenerator`] transform, which leaves out of standalone shaders the
@@ -141,6 +142,10 @@ pub fn setup_default_resource_and_asset_management(
 pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[Parameter]) {
 	let features = VisibilityFeatures::from_parameters(parameters.scope(RENDER_PARAMETERS));
 
+	// A full bake skips the engine assets only left-out features use, and assembles the shaders gathered from every
+	// material last.
+	asset_manager.set_discovery_filter(move |id| !features.excludes(id));
+	asset_manager.set_assembled_resources(features.assembled_resources().iter().map(|id| (*id).to_string()).collect());
 	asset_manager.set_image_processor(default_image_processor());
 	asset_manager.set_program_generator(VisibilityShaderGenerator::with_features(features));
 	asset_manager.set_program_transform(CommonShaderGenerator::with_features(features));

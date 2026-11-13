@@ -1,6 +1,14 @@
 use clap::builder::styling::{AnsiColor, Style};
-use resource_management::inspect::PayloadFormat;
-use resource_management::{
+use serde_json::Value;
+#[cfg(debug_assertions)]
+use serde_json::json;
+
+use crate::beld::{
+	OutputFormat, Payload,
+	terminal::{has_color, paint},
+};
+use crate::inspect::PayloadFormat;
+use crate::{
 	QueryableValue, SerializableResource,
 	resource::{
 		ReDBStorageBackend, ReadStorageBackend, ReadTargets, ReadTargetsMut, ResourcePayloadEncoding,
@@ -9,15 +17,7 @@ use resource_management::{
 };
 // Resource traces exist only in debug builds.
 #[cfg(debug_assertions)]
-use resource_management::{ResourceTraceItem, asset::ResourceId};
-use serde_json::Value;
-#[cfg(debug_assertions)]
-use serde_json::json;
-
-use crate::{
-	OutputFormat, Payload,
-	terminal::{has_color, paint},
-};
+use crate::{ResourceTraceItem, asset::ResourceId};
 
 /// Reads persisted development messages for one resource ID.
 #[cfg(debug_assertions)]
@@ -61,7 +61,7 @@ pub(super) fn insert_trace_json(value: &mut Value, items: &[ResourceTraceItem]) 
 }
 
 /// Converts indexed properties to JSON without reading the resource body.
-pub(super) fn queryable_properties_json(properties: &[resource_management::QueryableProperty]) -> Value {
+pub(super) fn queryable_properties_json(properties: &[crate::QueryableProperty]) -> Value {
 	let properties = properties
 		.iter()
 		.map(|property| {
@@ -177,7 +177,7 @@ where
 	T: Send + 'static,
 	F: FnOnce() -> T + Send + 'static,
 {
-	match resource_management::r#async::offload(operation).await {
+	match crate::r#async::offload(operation).await {
 		Ok(output) => output,
 		Err(error) => {
 			error.resume_unwind();

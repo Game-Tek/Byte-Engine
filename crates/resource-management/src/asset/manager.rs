@@ -53,6 +53,11 @@ pub(crate) struct AssetManagerState {
 	sources: Mutex<Option<(u64, Arc<Vec<String>>)>>,
 	/// The patterns of asset IDs that are never baked, from the project's `assets.exclude`.
 	excluded: Vec<Glob>,
+	/// Whether discovery lists an asset, from [`AssetManager::set_discovery_filter`]. Without one it lists every asset.
+	discovery_filter: Option<Box<dyn Fn(&str) -> bool + Send + Sync>>,
+	/// The resources assembled from what the store holds, which a full bake bakes last. See
+	/// [`AssetManager::set_assembled_resources`].
+	assembled_resources: Vec<String>,
 	dispatcher: compio::dispatcher::Dispatcher,
 	#[cfg(debug_assertions)]
 	pub(in crate::asset) resource_trace: ResourceTrace,
@@ -213,6 +218,8 @@ impl AssetManager {
 				stored: Mutex::new(Default::default()),
 				sources: Mutex::new(None),
 				excluded: Vec::new(),
+				discovery_filter: None,
+				assembled_resources: Vec::new(),
 				dispatcher,
 				#[cfg(debug_assertions)]
 				resource_trace: ResourceTrace::default(),
@@ -266,6 +273,29 @@ impl AssetManager {
 	/// with [`Self::is_excluded`] before baking. Configure it before calling [`Self::bake`] or sharing the manager.
 	pub fn set_excluded_assets(&mut self, patterns: Vec<Glob>) {
 		self.configurable_state().excluded = patterns;
+	}
+
+	/// Sets which assets [`Self::discover`] lists: those for which `filter` returns `true`.
+	///
+	/// A renderer installs one when its configuration leaves out a feature, so a full bake skips the engine assets
+	/// only that feature uses. Unlike [`Self::set_excluded_assets`], an asset the filter rejects still bakes when it is
+	/// asked for by ID or another asset needs it. Configure it before calling [`Self::bake`] or sharing the manager.
+	pub fn set_discovery_filter(&mut self, filter: impl Fn(&str) -> bool + Send + Sync + 'static) {
+		self.configurable_state().discovery_filter = Some(Box::new(filter));
+	}
+
+	/// Sets the resources assembled from what the store holds, such as shaders gathered from every baked material.
+	///
+	/// A tool that bakes a whole project, such as BELD, bakes them with [`Self::bake_if_stale`] after every other bake,
+	/// so what they gather is stored. Each one's handler must record the set it gathers as an input, so a resource whose
+	/// set didn't change stays current. Configure them before calling [`Self::bake`] or sharing the manager.
+	pub fn set_assembled_resources(&mut self, ids: Vec<String>) {
+		self.configurable_state().assembled_resources = ids;
+	}
+
+	/// Returns the resources set with [`Self::set_assembled_resources`], which a full bake bakes last.
+	pub fn assembled_resources(&self) -> &[String] {
+		&self.state.assembled_resources
 	}
 
 	/// Returns whether a pattern set with [`Self::set_excluded_assets`] matches the asset ID.
@@ -357,6 +387,12 @@ impl AssetManager {
 
 	/// Returns whether recursive discovery should include the given supported source asset.
 	pub fn should_discover(&self, id: &str, has_sidecar: bool) -> bool {
+		if let Some(filter) = &self.state.discovery_filter
+			&& !filter(id)
+		{
+			return false;
+		}
+
 		let id = ResourceId::new(id);
 		let asset_type = id.get_asset_type();
 

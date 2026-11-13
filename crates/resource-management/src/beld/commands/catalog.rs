@@ -5,17 +5,17 @@ use std::{
 	collections::{BTreeSet, HashMap, HashSet},
 };
 
+use serde_json::Value as Json;
+use utils::Glob;
+
 #[cfg(debug_assertions)]
-use resource_management::ResourceTraceItem;
-use resource_management::{
+use crate::ResourceTraceItem;
+use crate::beld::commands::shared::open_read_only_storage;
+use crate::{
 	QueryableValue, SerializableResource,
 	asset::{FileStorageBackend, Provenance, manager::stale_sources},
 	resource::{ReadStorageBackend as _, ResourceId as ResourceUid, StorageUsage},
 };
-use serde_json::Value as Json;
-use utils::Glob;
-
-use crate::commands::shared::open_read_only_storage;
 
 #[cfg(test)]
 pub(super) mod tests;
@@ -459,7 +459,7 @@ impl Catalog {
 			let model = row
 				.resource
 				.as_ref()
-				.and_then(|resource| resource_management::inspect::inspect_model(resource).ok());
+				.and_then(|resource| crate::inspect::inspect_model(resource).ok());
 			for (column, path) in columns.iter_mut().zip(&paths) {
 				column.push(model.as_ref().and_then(|model| model_value(model, path)));
 			}
@@ -537,7 +537,7 @@ pub(super) async fn load(source_path: &str, destination_path: &str, roots: &[Glo
 	let provenances = storage.provenances()?.into_iter().collect::<HashMap<_, _>>();
 	drop(storage);
 
-	let read_at = resource_management::unix_time_nanos();
+	let read_at = crate::unix_time_nanos();
 	// Each resource is judged by the bake that stored it: its own, or the bake of the ID that produces it.
 	let provenances = resources
 		.iter()

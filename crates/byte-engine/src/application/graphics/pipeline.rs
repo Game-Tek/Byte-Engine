@@ -216,10 +216,9 @@ fn run_on_loading_thread<F: Future<Output = ()> + 'static>(
 ///
 /// Register this pass before publishing renders that every sink must observe.
 /// The source subscribes immediately and retains the latest render for sinks
-/// initialized later. `font` is the file text is drawn with, or `None` for a system font;
-/// pass the same file to [`crate::ui::Engine::with_font`] so layout and drawing agree.
-pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<Render>, font: Option<&std::path::Path>) {
-	let font = font.map(std::path::Path::to_path_buf);
+/// initialized later. `font` is the font file text is drawn with, from [`crate::ui::load_font`], or `None` for a
+/// system font; pass the same bytes to [`crate::ui::Engine::with_font`] so layout and drawing agree.
+pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<Render>, font: Option<std::sync::Arc<[u8]>>) {
 	UiRenderPass::request_pipelines(&application.renderer.pipeline_manager_client());
 	let source = std::rc::Rc::new(std::cell::RefCell::new(UiRenderSource::new(ui.listener())));
 	let renderer = &mut application.renderer;
@@ -278,7 +277,7 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<
 		Box::new(CustomRenderPass {
 			source: std::rc::Rc::clone(&source),
 			revision: 0,
-			render_pass: UiRenderPass::new(render_pass_builder, font.as_deref()),
+			render_pass: UiRenderPass::new(render_pass_builder, font.clone()),
 		})
 	});
 }

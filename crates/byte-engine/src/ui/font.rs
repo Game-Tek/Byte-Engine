@@ -1,6 +1,7 @@
 use std::{
 	fs,
 	path::{Path, PathBuf},
+	sync::Arc,
 };
 
 use fontdue::{Font, FontSettings};
@@ -19,8 +20,7 @@ struct LoadedFont {
 	rasterizer: Rasterizer,
 	glyph_indices: HashMap<char, u16>,
 	/// The font file, kept because outlines are read from it on a character's first use.
-	data: Vec<u8>,
-	path: PathBuf,
+	data: Arc<[u8]>,
 }
 
 /// The `Rasterizer` enum records whether the bitmap rasterizer was built from the font data yet.
@@ -137,8 +137,8 @@ const MEASURE_CACHE_BYTES: usize = 512 * 1024;
 /// drawing never disagree and neither rasterizes anything. Glyph bitmaps exist only for the
 /// atlas renderer, which rasterizes them once per character and pixel size.
 pub(crate) struct TextSystem {
-	/// The font file to load instead of a system font, when the application chose one.
-	font_path: Option<PathBuf>,
+	/// The font file to use instead of a system font, when the application chose one.
+	preferred_font: Option<Arc<[u8]>>,
 	font_state: FontState,
 	measure_cache: HashMap<u32, HashMap<String, Size>>,
 	previous_measure_cache: HashMap<u32, HashMap<String, Size>>,
@@ -159,11 +159,11 @@ impl TextSystem {
 		Self::with_font(None)
 	}
 
-	/// Creates a text system that loads the font at `path`, falling back to a system font
-	/// when it is missing or unreadable.
-	pub fn with_font(path: Option<PathBuf>) -> Self {
+	/// Creates a text system that uses the font file `font`, falling back to a system font
+	/// when it is `None` or doesn't parse.
+	pub fn with_font(font: Option<Arc<[u8]>>) -> Self {
 		Self {
-			font_path: path,
+			preferred_font: font,
 			font_state: FontState::Uninitialized,
 			measure_cache: HashMap::default(),
 			previous_measure_cache: HashMap::default(),
@@ -320,7 +320,7 @@ impl TextSystem {
 		};
 		// Bitmap consumers build the rasterizer once; layout and GPU outlines never need it.
 		if matches!(font.rasterizer, Rasterizer::Unbuilt) {
-			font.rasterizer = match Font::from_bytes(font.data.as_slice(), FontSettings::default()) {
+			font.rasterizer = match Font::from_bytes(&*font.data, FontSettings::default()) {
 				Ok(rasterizer) => Rasterizer::Ready(rasterizer),
 				Err(_) => Rasterizer::Unavailable,
 			};
@@ -422,11 +422,8 @@ impl TextSystem {
 	/// Loads font tables on first use without preparing every glyph for CPU rasterization.
 	fn font(&mut self) -> Option<&LoadedFont> {
 		if matches!(self.font_state, FontState::Uninitialized) {
-			self.font_state = match load_font(self.font_path.as_deref()) {
-				Ok(font) => {
-					log::debug!("Loaded UI font from '{}'.", font.path.display());
-					FontState::Ready(font)
-				}
+			self.font_state = match open_font(self.preferred_font.as_ref()) {
+				Ok(font) => FontState::Ready(font),
 				Err(error) => {
 					if !self.reported_unavailable {
 						log::warn!("{error}");
@@ -660,23 +657,20 @@ fn read_outline(font: &LoadedFont, glyph: u16) -> GlyphOutline {
 	outline
 }
 
-/// Finds a readable font and validates its tables before retaining its bytes.
-fn load_font(preferred: Option<&Path>) -> Result<LoadedFont, String> {
-	if let Some(path) = preferred {
-		match fs::read(path) {
-			Ok(bytes) if ttf_parser::Face::parse(&bytes, 0).is_ok() => {
-				return Ok(LoadedFont {
-					rasterizer: Rasterizer::Unbuilt,
-					glyph_indices: HashMap::default(),
-					data: bytes,
-					path: path.to_path_buf(),
-				});
-			}
-			_ => log::warn!(
-				"The UI font at '{}' could not be used; falling back to a system font. The most likely cause is a missing or corrupt font file.",
-				path.display()
-			),
+/// Uses the application's font when it parses, else finds a readable system font, and validates its tables before
+/// retaining its bytes.
+fn open_font(preferred: Option<&Arc<[u8]>>) -> Result<LoadedFont, String> {
+	if let Some(data) = preferred {
+		if ttf_parser::Face::parse(data, 0).is_ok() {
+			return Ok(LoadedFont {
+				rasterizer: Rasterizer::Unbuilt,
+				glyph_indices: HashMap::default(),
+				data: data.clone(),
+			});
 		}
+		log::warn!(
+			"The application's UI font could not be parsed, so text uses a system font. The most likely cause is font data that isn't a TrueType or OpenType file. Pass the payload of a `Font` resource, as `load_font` returns it."
+		);
 	}
 	for path in explicit_font_candidates().into_iter().chain(
 		font_search_roots()
@@ -695,11 +689,11 @@ fn load_font(preferred: Option<&Path>) -> Result<LoadedFont, String> {
 			continue;
 		};
 
+		log::debug!("Loaded the UI system font from '{}'.", path.display());
 		return Ok(LoadedFont {
 			rasterizer: Rasterizer::Unbuilt,
 			glyph_indices: HashMap::default(),
-			data: bytes,
-			path,
+			data: bytes.into(),
 		});
 	}
 
@@ -707,6 +701,38 @@ fn load_font(preferred: Option<&Path>) -> Result<LoadedFont, String> {
 		"Failed to load a system UI font. The most likely cause is that no readable TrueType or OpenType font was found in the supported OS font directories."
 			.into(),
 	)
+}
+
+/// Reads the payload of the `Font` resource `id`, the font file the UI draws text with.
+///
+/// Call it once at startup, then pass the result to [`crate::ui::Engine::with_font`] and to
+/// [`crate::application::graphics::setup_ui_render_pass`], so layout and drawing use the same font. Cloning the
+/// result shares the bytes instead of copying them.
+pub async fn load_font(resource_manager: &resource_management::ResourceManager, id: &str) -> Result<Arc<[u8]>, String> {
+	use resource_management::resource::ReadTargetsMut;
+
+	let mut reference: resource_management::Reference<resource_management::resources::font::Font> =
+		resource_manager.request(id).await.map_err(|error| {
+			format!(
+				"Font '{id}' could not be loaded. The most likely cause is a missing or unbaked `.ttf` or `.otf` asset. Check the font's asset ID: {error}"
+			)
+		})?;
+	let read_target = ReadTargetsMut::Box {
+		buffer: vec![0_u8; reference.size].into_boxed_slice(),
+		offset: 0,
+		size: None,
+	};
+	let read = reference.load(read_target).await.map_err(|_| {
+		format!(
+			"Font '{id}' could not be read. The most likely cause is a missing or unreadable payload in the resource store. Rebake the font."
+		)
+	})?;
+
+	read.buffer().map(Arc::from).ok_or_else(|| {
+		format!(
+			"Font '{id}' was stored as streams. The most likely cause is a resource store baked by a different engine version. Rebake the font."
+		)
+	})
 }
 
 fn collect_font_files(path: &Path, depth: usize) -> Vec<PathBuf> {

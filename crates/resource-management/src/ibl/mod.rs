@@ -119,6 +119,7 @@ async fn store_baked_image(
 		gamma: Gamma::Linear,
 		extent: baked.root_extent,
 		mip_count: 1,
+		cpu_readable: false,
 		ibl: Some(baked.ibl),
 		photometry: None,
 	};

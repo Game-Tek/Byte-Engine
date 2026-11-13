@@ -332,6 +332,7 @@ async fn metal_texture_compression_persists_across_read_only_reopen() {
 				gamma: Gamma::Linear,
 				extent: [32, 32, 0],
 				mip_count: 1,
+				cpu_readable: false,
 				ibl: None,
 				photometry: None,
 			},
@@ -372,6 +373,48 @@ async fn metal_texture_compression_persists_across_read_only_reopen() {
 		storage.read(id).await.is_none(),
 		"A GPU container whose physical extent disagrees with its resource metadata must not be opened."
 	);
+	drop(storage);
+	std::fs::remove_dir_all(path).unwrap();
+}
+
+#[cfg(all(target_os = "macos", feature = "gpu-processing"))]
+#[resource_management::r#async::test]
+async fn cpu_readable_images_stay_readable_in_a_metal_compressed_store() {
+	use resource_management::{
+		StreamDescription,
+		resource::{ResourceGpuCompressionPolicy, ResourcePayloadEncoding, ResourceStorageSettings},
+		resources::image::Image,
+		types::{Formats, Gamma},
+	};
+
+	let path = temporary_store();
+	let id = ResourceId::new("portrait.png");
+	let decoded = [7_u8; 16 * 16 * 4];
+	let storage = ReDBStorageBackend::new_writable_with_settings(
+		path.clone(),
+		ResourceStorageSettings::new(ResourceStorageMode::Files).image_compression(ResourceGpuCompressionPolicy::MetalIoLz4),
+	)
+	.unwrap();
+	let image = ProcessedAsset::new(
+		id,
+		Image {
+			format: Formats::RGBA8,
+			gamma: Gamma::SRGB,
+			extent: [16, 16, 0],
+			mip_count: 1,
+			cpu_readable: true,
+			ibl: None,
+			photometry: None,
+		},
+	)
+	.with_streams(vec![StreamDescription::new("mip[0]", decoded.len(), 0)]);
+	storage.store(image, &decoded).await.unwrap();
+
+	let (stored, reader) = storage.read(id).await.unwrap();
+	assert_ne!(stored.encoding(), ResourcePayloadEncoding::MetalIoLz4);
+	let backing = reader.into_backing_storage().await.unwrap();
+	assert_eq!(backing.try_as_slice(), Some(decoded.as_slice()));
+	drop(backing);
 	drop(storage);
 	std::fs::remove_dir_all(path).unwrap();
 }

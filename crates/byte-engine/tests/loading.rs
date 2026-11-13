@@ -159,6 +159,7 @@ async fn store_level_numbered_texture(storage: &MemoryStorageBackend) {
 		gamma: Gamma::Linear,
 		extent: [TEXTURE_SIDE, TEXTURE_SIDE, 0],
 		mip_count: TEXTURE_MIPS,
+		cpu_readable: false,
 		ibl: None,
 		photometry: None,
 	};

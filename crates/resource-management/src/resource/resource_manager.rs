@@ -485,6 +485,7 @@ mod tests {
 			gamma: Gamma::Linear,
 			extent: [1, 1, 0],
 			mip_count: 1,
+			cpu_readable: false,
 			ibl: None,
 			photometry: None,
 		};

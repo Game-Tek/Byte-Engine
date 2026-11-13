@@ -99,6 +99,7 @@ pub mod animation;
 pub mod audio;
 pub mod audio_graph;
 pub mod flipbook;
+pub mod font;
 pub mod image;
 pub mod level;
 pub mod lightmap;

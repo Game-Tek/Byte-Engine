@@ -384,7 +384,9 @@ intersected with the clip, and the rotated bounds of turned elements.
 
 ## Text
 
-Text is drawn from glyph outlines, and measurement and placement use the same
+Text uses the font of the [`Font` resource](/docs/reference/assets#fonts) the
+application gives the UI, or a system font when it gives none or the font
+doesn't parse. Text is drawn from glyph outlines, and measurement and placement use the same
 size-independent advances, so layout and drawing never disagree. Text has these
 guarantees:
 

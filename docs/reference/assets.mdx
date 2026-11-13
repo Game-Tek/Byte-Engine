@@ -51,6 +51,7 @@ The standard graphics setup bakes these formats:
 - `.flipbook` image sequences with a playback rate
 - `.particles` [GPU particle systems](/docs/reference/particles), which bake into generated shaders and pipelines
 - LUT assets
+- TrueType and OpenType fonts
 - WAV and OGG audio
 - standalone `.besl` shaders with `.besl.bead` stage metadata
 
@@ -242,6 +243,7 @@ BC7. An image's BEAD file can change either step with an object of these keys:
 | `mips` | `true` | `false` stores only the authored size, with no smaller levels. |
 | `compression` | From the image's semantic | Whether the image is block-compressed. |
 | `coverage` | `0.5` for opacity maps, `false` for other images | The alpha cutoff, from 0 to 1, whose coverage every smaller level keeps, as [coverage](#coverage) defines; `false` averages the levels without scaling them. |
+| `cpu_readable` | `false` | `true` keeps the stored texels readable by the application. A resource store that encodes images for GPU-only reading, such as one with Metal I/O compression, stores this image without that encoding. |
 
 Every key is optional, and a key left out keeps its default. Packed
 metallic-roughness maps and half-float images, such as EXR, are never
@@ -251,7 +253,8 @@ whole file name, such as `rock_albedo.jpg.bead`. A glTF, GLB, or FBX model reads
 from its `images` key and applies it to every image the model contains.
 
 Turn `mips` off for images drawn at their authored size, such as UI art, and
-`compression` off for images whose exact colors matter more than their memory.
+`compression` off for images whose exact colors matter more than their memory. Turn `cpu_readable` on for images the application reads
+itself, such as UI art it crops or tints.
 
 ### Coverage
 
@@ -609,6 +612,12 @@ A `.lut` or `.cube` file is a text table with `TITLE`, `LUT_1D_SIZE` or
 `LUT_3D_SIZE`, optional `DOMAIN_MIN` and `DOMAIN_MAX`, and comments starting
 with `#`. It bakes to a one- or three-dimensional LUT whose entry count is the
 size or the size cubed.
+
+## Fonts
+
+A `.ttf` or `.otf` file bakes into one `Font` resource whose payload is the
+file's bytes, unchanged. A file that doesn't parse as a TrueType or OpenType
+font fails the bake. A font collection, such as a `.ttc` file, isn't accepted.
 
 ## Container fragments
 

@@ -166,6 +166,7 @@ struct ImageSettingsManifest {
 	mips: Option<bool>,
 	compression: Option<bool>,
 	coverage: Option<CoverageManifest>,
+	cpu_readable: Option<bool>,
 }
 
 /// The `CoverageManifest` enum is the `coverage` key of an image settings object: an alpha cutoff from 0 to 1, or
@@ -207,6 +208,7 @@ fn parse_image_settings(spec: Option<&BEADType>, key: &str, semantic: Semantic) 
 		mips: manifest.mips.unwrap_or(defaults.mips),
 		compression: manifest.compression.unwrap_or(defaults.compression),
 		coverage: manifest.coverage.map_or(Ok(defaults.coverage), CoverageManifest::cutoff)?,
+		cpu_readable: manifest.cpu_readable.unwrap_or(defaults.cpu_readable),
 	})
 }
 
@@ -433,6 +435,14 @@ mod image_settings_tests {
 				mips: true,
 				compression: true,
 				coverage: None,
+				cpu_readable: false,
+			})
+		);
+		assert_eq!(
+			settings("{ image: { cpu_readable: true } }", Semantic::Other),
+			Ok(ImageProcessorSettings {
+				cpu_readable: true,
+				..ImageProcessorSettings::for_semantic(Semantic::Other)
 			})
 		);
 	}

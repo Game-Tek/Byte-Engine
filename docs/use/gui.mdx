@@ -48,6 +48,24 @@ A transform applies to the whole subtree: a scaled container scales its
 descendants' rectangles, hit bounds, clipping, curve points, stroke widths, and
 font sizes together, so one transform on a content layer zooms a canvas.
 
+## Draw text with your own font
+
+Without a font of its own, the UI draws text with a system font. To ship your
+own, put a `.ttf` or `.otf` file in your assets directory, load it once at
+startup, and give the same bytes to the engine and to the render pass, so text
+is measured and drawn alike:
+
+```rust
+let font = build_single_threaded_async_runtime()
+    .block_on(byte_engine::ui::load_font(app.resource_manager(), "PirataOne-Regular.ttf"))
+    .unwrap_or_else(|error| panic!("{error}"));
+setup_ui_render_pass(&mut app, &ui_renders, Some(font.clone()));
+let mut engine = Engine::with_context(model).with_font(font);
+```
+
+The font bakes into a [`Font` resource](/docs/reference/assets#fonts) like any
+other asset, so a release build reads it from the resource store.
+
 ## Pin an element to an edge or the center
 
 To keep an element in a corner or centered however its parent resizes, anchor
@@ -393,3 +411,4 @@ input outside the tree, and both evaluation and rendering key on it.
 - [`Engine`](/docs/api/latest/byte_engine/ui)
 - [`UiRenderPass`](/docs/api/latest/byte_engine/ui)
 - [`setup_ui_render_pass`](/docs/api/latest/byte_engine/application/graphics#fn.setup_ui_render_pass)
+- [`load_font`](/docs/api/latest/byte_engine/ui#fn.load_font)

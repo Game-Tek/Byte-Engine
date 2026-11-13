@@ -1630,7 +1630,9 @@ fn parse_payload_name(name: &str) -> Option<(ResourceId, u64, ResourcePayloadEnc
 
 /// Selects ordinary textures while environment images retain their existing multi-image CPU upload path.
 fn is_direct_texture(class: &str, metadata: &[u8]) -> bool {
-	class == "Image" && crate::from_slice::<crate::resources::image::Image>(metadata).is_ok_and(|image| image.ibl.is_none())
+	class == "Image"
+		&& crate::from_slice::<crate::resources::image::Image>(metadata)
+			.is_ok_and(|image| image.ibl.is_none() && !image.cpu_readable)
 }
 
 /// Encodes the class and fixed-width UID directly into the persisted index key.
@@ -1925,6 +1927,7 @@ mod tests {
 			gamma: Gamma::Linear,
 			extent: [4, 4, 0],
 			mip_count: 1,
+			cpu_readable: false,
 			ibl: None,
 			photometry: None,
 		};

@@ -18,6 +18,7 @@ pub(in crate::commands) fn image(id: &str, format: Formats, hash: u64, size: usi
 		gamma: Gamma::SRGB,
 		extent: [4, 4, 1],
 		mip_count: 1,
+		cpu_readable: false,
 		ibl: None,
 		photometry: None,
 	};

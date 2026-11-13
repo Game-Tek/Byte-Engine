@@ -285,9 +285,9 @@ impl UiRenderPass {
 	// Keep the UI pipeline and fixed buffer setup together because every handle is required by frame preparation.
 	#[allow(clippy::too_many_lines)]
 	///
-	/// `font` is the file to draw text with, or `None` for a system font. It must match the
-	/// font the UI [`crate::ui::Engine`] measured with.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, font: Option<&std::path::Path>) -> Self {
+	/// `font` is the font file to draw text with, from [`crate::ui::load_font`], or `None` for a system font. It must
+	/// match the font the UI [`crate::ui::Engine`] measured with.
+	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, font: Option<std::sync::Arc<[u8]>>) -> Self {
 		// A sink without a scene pipeline has no `main`; the UI then composites over black.
 		let scene = render_pass_builder.try_read_from("main");
 		// The layer outlives frames: damaged regions are redrawn into it and the scene is composited under it every frame.
@@ -546,7 +546,7 @@ impl UiRenderPass {
 			reported_dropped_glyphs: false,
 			reported_image_limit: false,
 			reported_dropped_paths: false,
-			text_system: TextSystem::with_font(font.map(std::path::Path::to_path_buf)),
+			text_system: TextSystem::with_font(font),
 		}
 	}
 

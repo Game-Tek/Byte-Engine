@@ -399,6 +399,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shaderc",
+ "ttf-parser",
  "ufbx",
  "urlencoding",
  "vorbis_rs",

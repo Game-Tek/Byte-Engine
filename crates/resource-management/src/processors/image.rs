@@ -101,6 +101,9 @@ pub struct ImageProcessorSettings {
 	/// its first channel, and any other image in its alpha channel. Chains that keep coverage filter and compress on
 	/// the CPU when they are block-compressed.
 	pub coverage: Option<f32>,
+	/// Keeps the stored texels readable on the CPU, for images the application reads itself, such as UI art. See
+	/// [`Image::cpu_readable`].
+	pub cpu_readable: bool,
 }
 
 impl ImageProcessorSettings {
@@ -109,6 +112,7 @@ impl ImageProcessorSettings {
 		mips: false,
 		compression: false,
 		coverage: None,
+		cpu_readable: false,
 	};
 
 	/// Returns the settings a texture with `semantic` is usually stored with.
@@ -122,6 +126,7 @@ impl ImageProcessorSettings {
 			mips: true,
 			compression: !matches!(semantic, Semantic::Height | Semantic::Displacement | Semantic::Other),
 			coverage: (semantic == Semantic::Opacity).then_some(DEFAULT_COVERAGE_CUTOFF),
+			cpu_readable: false,
 		}
 	}
 }
@@ -301,6 +306,7 @@ impl ImageProcessor {
 			extent: extent.as_array(),
 			gamma,
 			mip_count: streams.len() as u32,
+			cpu_readable: settings.cpu_readable,
 			ibl: None,
 			photometry: None,
 		};

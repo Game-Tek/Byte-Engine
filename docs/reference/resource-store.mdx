@@ -91,7 +91,8 @@ A `cpu-lz4` payload holds these parts in order, with no padding:
 
 A resource written through a transaction, in partial writes, stays raw. When
 the store's image compression is on, a plain image resource, one without
-image-based lighting data, skips CPU compression and is stored as Metal I/O
+image-based lighting data and not marked
+[`cpu_readable`](/docs/reference/assets#settings), skips CPU compression and is stored as Metal I/O
 LZ4 instead. Reading such a resource through a CPU target fails. In files
 mode, a payload file whose length differs from the recorded stored size is
 treated as corrupt and isn't read.
@@ -166,7 +167,8 @@ the mismatch without touching the directory.
 | Class | Model | Payload | Streams | Dependencies |
 | --- | --- | --- | --- | --- |
 | `Audio` | Bit depth of 8, 16, 24, or 32; channel count; sample rate; frame count. | Interleaved little-endian PCM. | None | None |
-| `Image` | Format, gamma, extent, mip count, optional image-based lighting maps, optional photometry. | Texels. | `mip[N]` per level; `ibl.diffuse_irradiance.mip[0]` and `ibl.prefiltered_specular.mip[0..8)` for environment maps. | None |
+| `Image` | Format, gamma, extent, mip count, whether the texels stay readable by the application, optional image-based lighting maps, optional photometry. | Texels. | `mip[N]` per level; `ibl.diffuse_irradiance.mip[0]` and `ibl.prefiltered_specular.mip[0..8)` for environment maps. | None |
+| `Font` | None. | The TrueType or OpenType font file. | None | None |
 | `Lut` | One- or three-dimensional, size, domain minimum and maximum. | Little-endian float RGB triplets, `size` or `size³` of them. | None | None |
 | `Pipeline` | Name and kind: `compute`, `raster`, `tile`, or `fused`, which also lists its step pipelines. | None | None | Its shaders, by ID. |
 | `ParticleSystem` | Capacity, longest life, rate, burst, simulate and draw pipeline IDs. | None | None | Its pipelines and shaders. |

@@ -1,20 +1,18 @@
 use std::{cell::Cell, rc::Rc};
 
 use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _, frame::Frame as _};
-use math::{Point, Radians, UnitVector, inverse};
+use math::{Point, UnitVector, inverse};
 use maths_rs::Vec3f;
 use utils::Extent;
 
 use crate::{
 	configuration::{ConfigurationPort, ConfigurationValue},
-	core::{Entity, factory::CreateMessage, listener::DefaultListener},
-	gameplay::transform::TransformationUpdate,
+	core::Entity,
 	rendering::{
-		DirectionalLight, Sink,
+		DirectionalLight, Sink, Sun,
 		render_pass::{
 			RenderPass, RenderPassBuilder, RenderPassReturn, SceneBackgroundTargets, allocate_render_command, simple_compute,
 		},
-		render_passes::sun::Sun,
 	},
 };
 
@@ -48,10 +46,10 @@ fn sun_disk_radiance(illuminance: Vec3f, angular_radius: f32) -> Vec3f {
 
 /// The `AtmosphereSkyRenderPassSettings` struct configures the physical atmosphere and sun disk for the sky pass.
 ///
-/// The sun's brightness, color, and disk size come from the scene's [`DirectionalLight`], not from these settings.
+/// The sun's brightness, color, direction, and disk size come from the scene's [`DirectionalLight`], not from these
+/// settings.
 #[derive(Clone, Copy, Debug)]
 pub struct AtmosphereSkyRenderPassSettings {
-	pub sun_direction: UnitVector,
 	pub ground_radius: f32,
 	pub atmosphere_radius: f32,
 	pub rayleigh_scale_height: f32,
@@ -76,9 +74,6 @@ pub struct AtmosphereSkyRenderPassSettings {
 impl Default for AtmosphereSkyRenderPassSettings {
 	fn default() -> Self {
 		Self {
-			sun_direction: math::Vector::new(0.35, 0.85, 0.4)
-				.normalized()
-				.expect("default sun direction is nonzero"),
 			ground_radius: 6_360_000.0,
 			atmosphere_radius: 6_460_000.0,
 			rayleigh_scale_height: 8_000.0,
@@ -180,32 +175,30 @@ pub struct AtmosphereSkyRenderPass {
 	counters: [ghi::CounterHandle; 4],
 	parameters: ghi::DynamicBufferHandle<SkyShaderData>,
 	controls: Rc<AtmosphereSkyControls>,
-	/// The settings the lookup tables were last built for, with the sun's direction taken from its light.
+	/// The settings the lookup tables were last built for.
 	settings: AtmosphereSkyRenderPassSettings,
-	sun: Sun,
 	/// The haze the transmittance and multiple-scattering tables were built for, or `None` before their first build.
 	tables_haze: Option<f32>,
-	sky_view_camera_height: Option<u32>,
+	/// The camera height, as bits, and the direction toward the sun that the sky-view table was built for, or `None`
+	/// before its first build.
+	sky_view_key: Option<(u32, [f32; 3])>,
 }
 
 impl Entity for AtmosphereSkyRenderPass {}
 
 impl AtmosphereSkyRenderPass {
-	/// Creates a sky pass that draws with the settings `controls` holds, and world-light listeners.
+	/// Creates a sky pass that draws with the settings `controls` holds.
 	///
-	/// The newest directional light is the sky's sun: its illuminance sets the sky's brightness and color, and its
-	/// transform sets the sun's direction. That illuminance is the sunlight that reaches the camera, as it is for the
-	/// surfaces the light shines on, so author it as measured on the ground: dimmer and warmer as the sun gets low.
-	/// Publish that light's transform next so the sky can use its orientation.
-	/// Without a directional light, the sky stays black. The sky writes `targets.color` in place wherever
+	/// The sky's sun is the sink's [`Sun`], the scene's newest directional light: its illuminance sets the sky's
+	/// brightness and color, and its transform sets the sun's direction. That illuminance is the sunlight that reaches
+	/// the camera, as it is for the surfaces the light shines on, so author it as measured on the ground: dimmer and
+	/// warmer as the sun gets low. Without a directional light, the sky stays black. The sky writes `targets.color` in place wherever
 	/// `targets.depth` holds no surface, within the top [`AtmosphereSkyRenderPassSettings::screen_height`] of the
 	/// screen, and leaves every other pixel untouched.
 	pub fn new(
 		render_pass_builder: &mut RenderPassBuilder,
 		targets: SceneBackgroundTargets,
 		controls: Rc<AtmosphereSkyControls>,
-		directional_lights: DefaultListener<CreateMessage<DirectionalLight>>,
-		transform_listener: DefaultListener<TransformationUpdate>,
 	) -> Self {
 		let SceneBackgroundTargets { color, depth } = targets;
 		let [
@@ -303,21 +296,9 @@ impl AtmosphereSkyRenderPass {
 			parameters,
 			settings: controls.settings(),
 			controls,
-			sun: Sun::new(directional_lights, transform_listener),
 			tables_haze: None,
-			sky_view_camera_height: None,
+			sky_view_key: None,
 		}
-	}
-
-	/// Adopts the newest directional light as the sun and applies its latest illuminance, disk size, and orientation to the sky.
-	/// Returns whether the sun moved.
-	fn update_sun(&mut self) -> bool {
-		let Some(direction) = self.sun.update() else {
-			return false;
-		};
-		self.settings.sun_direction = direction;
-		self.sky_view_camera_height = None;
-		true
 	}
 }
 
@@ -331,21 +312,24 @@ fn haze_transport_scale(anisotropy: f32) -> f32 {
 	1.0 - anisotropy * anisotropy
 }
 
-/// Builds one sink's sky constants from the atmosphere settings, the sun light's RGB illuminance in lux as it reaches
-/// the camera, and its disk's angular radius.
+/// Builds one sink's sky constants from the atmosphere settings and the sun, whose illuminance is the sunlight that
+/// reaches the camera.
 ///
 /// The sky is written pre-exposed like the scene: the shaders multiply by the uploaded illuminance and disk radiance,
 /// so both include the sink's camera exposure.
 fn sky_shader_data(
 	settings: &AtmosphereSkyRenderPassSettings,
-	sun_illuminance: Vec3f,
-	sun_angular_radius: Radians,
+	sun: &Sun,
 	sink: &Sink,
 ) -> SkyShaderData {
+	let Sun {
+		illuminance: sun_illuminance,
+		angular_radius: sun_angular_radius,
+		direction: sun_direction,
+	} = *sun;
 	let view = sink.view();
 	// The translation column of the inverse view is the camera's world position.
 	let camera_position = inverse(view.view()).get_column(3);
-	let sun_direction = settings.sun_direction;
 	let planet_center = settings.planet_center.into_maths();
 	let exposed_illuminance = sun_illuminance * sink.exposure_scale();
 	// Haze thins with height like `exp(-altitude / mie_scale_height)`, so its optical depth straight up is its
@@ -397,22 +381,31 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		self.update_sun();
 		self.settings.haze = self.controls.settings().haze;
 		let transmittance_pass = self.transmittance_pass.ready(frame)?;
 		let multiple_scattering_pass = self.multiple_scattering_pass.ready(frame)?;
 		let sky_view_pass = self.sky_view_pass.ready(frame)?;
 		let composite_pass = self.composite_pass.ready(frame)?;
 		// Per-view sky constants come from the active camera before dispatch.
-		let data = sky_shader_data(&self.settings, self.sun.illuminance, self.sun.angular_radius, sink);
+		// Without a sun the sky gets no light, so it stays black whatever direction the tables take.
+		let sun = sink.sun().unwrap_or(Sun {
+			illuminance: Vec3f::new(0.0, 0.0, 0.0),
+			angular_radius: DirectionalLight::SUN_ANGULAR_RADIUS,
+			direction: UnitVector::z_axis(),
+		});
+		let data = sky_shader_data(&self.settings, &sun, sink);
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = data;
-		let camera_height = data.camera_position[1].to_bits();
+		// Horizontal movement leaves the camera-to-planet vector unchanged because the planet center follows the camera
+		// in X/Z, so only the camera's height and the sun's direction rebuild the sky-view table.
+		let sky_view_key = (
+			data.camera_position[1].to_bits(),
+			[sun.direction.x(), sun.direction.y(), sun.direction.z()],
+		);
 		// Haze changes how the air dims and scatters light, so a new amount rebuilds every table.
 		let rebuild_transmittance = self.tables_haze != Some(self.settings.haze);
-		// Horizontal movement leaves the camera-to-planet vector unchanged because the planet center follows the camera in X/Z.
-		let rebuild_sky_view = rebuild_transmittance || self.sky_view_camera_height != Some(camera_height);
+		let rebuild_sky_view = rebuild_transmittance || self.sky_view_key != Some(sky_view_key);
 		self.tables_haze = Some(self.settings.haze);
-		self.sky_view_camera_height = Some(camera_height);
+		self.sky_view_key = Some(sky_view_key);
 
 		let composite_extent = sky_composite_extent(sink.extent(), self.settings.screen_height);
 		let [
@@ -452,23 +445,6 @@ impl RenderPass for AtmosphereSkyRenderPass {
 			);
 		}))
 	}
-
-	fn bypass<'a>(
-		&mut self,
-		_frame: &mut ghi::implementation::Frame,
-		_sink: &Sink,
-		_frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
-		// Bypassed, the background stays the black the scene cleared it to.
-		self.update_sun();
-		None
-	}
-
-	/// Adopts the sun every tick, since frames that render no sink, such as while the window is hidden, prepare
-	/// nothing. Otherwise the sun's transform listener would fill and block whoever publishes transforms.
-	fn needs_frame(&mut self) -> bool {
-		self.update_sun()
-	}
 }
 
 #[cfg(test)]
@@ -493,13 +469,29 @@ mod tests {
 	/// Sunlight used by tests that don't depend on the sun's brightness.
 	const TEST_SUN_ILLUMINANCE: [f32; 3] = [10.0, 10.0, 10.0];
 
-	/// Uploads the production sky constants for `settings`, a sun of `sun_illuminance` lux, and a camera with
-	/// `exposure_scale`, so every shader test reads exactly what the pass writes.
+	/// Returns the direction toward a sun high in the sky, for tests that don't depend on where the sun stands.
+	fn test_sun_direction() -> UnitVector {
+		math::Vector::new(0.35, 0.85, 0.4)
+			.normalized()
+			.expect("The test sun direction is nonzero.")
+	}
+
+	/// Returns a sun of `illuminance` lux toward `direction`, with the real sun's disk.
+	fn test_sun(illuminance: [f32; 3], direction: UnitVector) -> crate::rendering::Sun {
+		crate::rendering::Sun {
+			illuminance: Vec3f::new(illuminance[0], illuminance[1], illuminance[2]),
+			angular_radius: crate::rendering::DirectionalLight::SUN_ANGULAR_RADIUS,
+			direction,
+		}
+	}
+
+	/// Uploads the production sky constants for `settings`, `sun`, and a camera with `exposure_scale`, so every shader
+	/// test reads exactly what the pass writes.
 	fn sky_parameters(
 		program: &besl::vm::ExecutableProgram,
 		parameter_slot: ResourceSlot,
 		settings: &super::AtmosphereSkyRenderPassSettings,
-		sun_illuminance: [f32; 3],
+		sun: crate::rendering::Sun,
 		exposure_scale: f32,
 	) -> Buffer {
 		let view = crate::rendering::View::new_perspective(
@@ -511,12 +503,7 @@ mod tests {
 			UnitVector::z_axis(),
 		);
 		let sink = crate::rendering::Sink::new(view, utils::Extent::square(1), 0).with_exposure_scale(exposure_scale);
-		let data = super::sky_shader_data(
-			settings,
-			Vec3f::new(sun_illuminance[0], sun_illuminance[1], sun_illuminance[2]),
-			crate::rendering::DirectionalLight::SUN_ANGULAR_RADIUS,
-			&sink,
-		);
+		let data = super::sky_shader_data(settings, &sun, &sink);
 		let mut parameters = buffer(program, parameter_slot);
 		for (name, value) in [
 			(
@@ -539,16 +526,18 @@ mod tests {
 		parameters
 	}
 
-	/// Runs one sky-view texel under `settings`, through air whose transmittance toward the sun is `sun_transmittance`
-	/// everywhere, with a multiple-scattering LUT holding `higher_orders`.
+	/// Runs one sky-view texel under `settings` and a sun toward `sun_direction`, through air whose transmittance toward
+	/// the sun is `sun_transmittance` everywhere, with a multiple-scattering LUT holding `higher_orders`.
 	fn run_sky_view(
 		settings: &super::AtmosphereSkyRenderPassSettings,
+		sun_direction: UnitVector,
 		sun_transmittance: [f32; 3],
 		higher_orders: [f32; 4],
 	) -> [f32; 4] {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*SKY_VIEW_SHADER_BESL));
 		let parameter_slot = slot(&program, "parameters");
-		let mut parameters = sky_parameters(&program, parameter_slot, settings, TEST_SUN_ILLUMINANCE, 1.0);
+		let sun = test_sun(TEST_SUN_ILLUMINANCE, sun_direction);
+		let mut parameters = sky_parameters(&program, parameter_slot, settings, sun, 1.0);
 		let [r, g, b] = sun_transmittance;
 		let mut transmittance = texture_2d(1, 1, &[[r, g, b, 1.0]]);
 		let mut multiple_scattering = texture_2d(1, 1, &[higher_orders]);
@@ -566,8 +555,8 @@ mod tests {
 	/// Verifies that the sky-view LUT adds the light from the multiple-scattering LUT to single scattering.
 	#[test]
 	fn sky_view_adds_light_scattered_more_than_once() {
-		let single = run_sky_view(&Default::default(), [1.0; 3], [0.0, 0.0, 0.0, 1.0]);
-		let multiple = run_sky_view(&Default::default(), [1.0; 3], [0.01, 0.02, 0.04, 1.0]);
+		let single = run_sky_view(&Default::default(), test_sun_direction(), [1.0; 3], [0.0, 0.0, 0.0, 1.0]);
+		let multiple = run_sky_view(&Default::default(), test_sun_direction(), [1.0; 3], [0.01, 0.02, 0.04, 1.0]);
 
 		assert!(
 			(0..3).all(|channel| multiple[channel] > single[channel]),
@@ -582,11 +571,10 @@ mod tests {
 		let sky = |haze| {
 			let settings = super::AtmosphereSkyRenderPassSettings {
 				haze,
-				// The lone texel of a 1 × 1 sky-view LUT looks along +Z.
-				sun_direction: UnitVector::z_axis(),
 				..Default::default()
 			};
-			run_sky_view(&settings, [1.0; 3], [0.0, 0.0, 0.0, 1.0])
+			// The lone texel of a 1 × 1 sky-view LUT looks along +Z.
+			run_sky_view(&settings, UnitVector::z_axis(), [1.0; 3], [0.0, 0.0, 0.0, 1.0])
 		};
 		let clean = sky(0.0);
 		let hazy = sky(0.1);
@@ -607,7 +595,8 @@ mod tests {
 			mie_anisotropy,
 			..Default::default()
 		};
-		let mut parameters = sky_parameters(&program, parameter_slot, &settings, TEST_SUN_ILLUMINANCE, 1.0);
+		let sun = test_sun(TEST_SUN_ILLUMINANCE, test_sun_direction());
+		let mut parameters = sky_parameters(&program, parameter_slot, &settings, sun, 1.0);
 		let extent = super::TRANSMITTANCE_LUT_EXTENT;
 		let mut output = empty_image(extent.width(), extent.height());
 		let mut descriptors = DescriptorBindings::new();
@@ -663,7 +652,8 @@ mod tests {
 			ground_albedo,
 			..super::AtmosphereSkyRenderPassSettings::default()
 		};
-		let mut parameters = sky_parameters(&program, parameter_slot, &settings, TEST_SUN_ILLUMINANCE, 1.0);
+		let sun = test_sun(TEST_SUN_ILLUMINANCE, test_sun_direction());
+		let mut parameters = sky_parameters(&program, parameter_slot, &settings, sun, 1.0);
 		let mut transmittance = texture_2d(1, 1, &[[1.0, 1.0, 1.0, 1.0]]);
 		let size = super::MULTIPLE_SCATTERING_LUT_EXTENT.width();
 		let mut output = empty_image(size, size);
@@ -727,6 +717,7 @@ mod tests {
 	fn composite_background(sky_scattering: [f32; 4], sun_illuminance: [f32; 3], exposure_scale: f32) -> [f32; 4] {
 		composite(
 			&Default::default(),
+			test_sun_direction(),
 			sky_scattering,
 			[1.0, 1.0, 1.0],
 			sun_illuminance,
@@ -734,10 +725,11 @@ mod tests {
 		)
 	}
 
-	/// Composites one background pixel under `settings`, over a sky-view LUT of `sky_scattering` per lux, through air
-	/// whose transmittance from the camera toward the sun is `sun_transmittance`.
+	/// Composites one background pixel under `settings` and a sun toward `sun_direction`, over a sky-view LUT of
+	/// `sky_scattering` per lux, through air whose transmittance from the camera toward the sun is `sun_transmittance`.
 	fn composite(
 		settings: &super::AtmosphereSkyRenderPassSettings,
+		sun_direction: UnitVector,
 		sky_scattering: [f32; 4],
 		sun_transmittance: [f32; 3],
 		sun_illuminance: [f32; 3],
@@ -745,7 +737,8 @@ mod tests {
 	) -> [f32; 4] {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*SKY_SHADER_BESL));
 		let parameter_slot = slot(&program, "parameters");
-		let mut parameters = sky_parameters(&program, parameter_slot, settings, sun_illuminance, exposure_scale);
+		let sun = test_sun(sun_illuminance, sun_direction);
+		let mut parameters = sky_parameters(&program, parameter_slot, settings, sun, exposure_scale);
 		let mut sky_view = texture_2d(1, 1, &[sky_scattering]);
 		let [r, g, b] = sun_transmittance;
 		let mut transmittance = texture_2d(1, 1, &[[r, g, b, 1.0]]);
@@ -785,7 +778,9 @@ mod tests {
 	#[test]
 	fn sky_view_takes_the_light_as_the_sunlight_that_reaches_the_camera() {
 		let higher_orders = [0.01, 0.02, 0.04, 1.0];
-		let sky = |sun_transmittance, higher_orders| run_sky_view(&Default::default(), sun_transmittance, higher_orders);
+		let sky = |sun_transmittance, higher_orders| {
+			run_sky_view(&Default::default(), test_sun_direction(), sun_transmittance, higher_orders)
+		};
 		let once = sky([1.0; 3], [0.0, 0.0, 0.0, 1.0]);
 		let more_than_once: [f32; 3] = std::array::from_fn(|channel| sky([1.0; 3], higher_orders)[channel] - once[channel]);
 
@@ -812,7 +807,6 @@ mod tests {
 	fn sun_disk_keeps_the_light_radiance_through_dimming_air() {
 		// The test camera looks along +Z, so this sun sits at the center of the view.
 		let settings = super::AtmosphereSkyRenderPassSettings {
-			sun_direction: UnitVector::z_axis(),
 			skip_below_horizon: false,
 			..Default::default()
 		};
@@ -820,7 +814,7 @@ mod tests {
 		let radius = crate::rendering::DirectionalLight::SUN_ANGULAR_RADIUS.value();
 		let radiance = super::sun_disk_radiance(Vec3f::new(illuminance[0], illuminance[1], illuminance[2]), radius);
 
-		let disk = composite(&settings, [0.0, 0.0, 0.0, 1.0], [0.5, 0.25, 0.125], illuminance, 1.0);
+		let disk = composite(&settings, UnitVector::z_axis(), [0.0, 0.0, 0.0, 1.0], [0.5, 0.25, 0.125], illuminance, 1.0);
 
 		assert_rgba_close(disk, [radiance.x, radiance.y, radiance.z, 1.0], 1e-2);
 	}

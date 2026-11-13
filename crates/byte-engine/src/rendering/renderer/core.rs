@@ -115,6 +115,11 @@ pub struct Renderer {
 	sink_cameras: SmallVec<[(SinkId, Handle); 16]>,
 	/// Cameras and their stable handles. Each one is placed at its handle's shown transform.
 	cameras: SmallVec<[(Handle, Camera); 16]>,
+	/// The newest directional light, which every sink carries to its passes as the sun; see
+	/// [`Self::create_directional_light`].
+	sun_light: Option<(Handle, DirectionalLight)>,
+	/// The newest fog, which every sink carries to its passes; see [`Self::create_fog`].
+	fog: Option<ExponentialHeightFog>,
 
 	render_targets: RenderTargets,
 	#[cfg(debug_assertions)]
@@ -322,6 +327,8 @@ impl Renderer {
 			swapchain_images,
 			sink_cameras: SmallVec::with_capacity(16),
 			cameras: SmallVec::with_capacity(16),
+			sun_light: None,
+			fog: None,
 
 			render_targets: RenderTargets::new(),
 			#[cfg(debug_assertions)]
@@ -1029,6 +1036,16 @@ impl Renderer {
 							.with_exposure_scale(camera.exposure_scale())
 							.with_lens(camera.f_number(), camera.focus_distance(), camera.sensor_height())
 							.with_frame_interval(frame_interval);
+						let sink = match &self.sun_light {
+							Some((handle, light)) => {
+								sink.with_sun(Sun::new(light, &transforms.get(*handle).cloned().unwrap_or_default()))
+							}
+							None => sink,
+						};
+						let sink = match self.fog {
+							Some(fog) => sink.with_fog(fog),
+							None => sink,
+						};
 						let samples_lens = self
 							.render_passes
 							.iter()
@@ -1365,6 +1382,24 @@ impl Renderer {
 		}
 		self.redraw_requested = true;
 	}
+
+	/// Makes `light` the sun, replacing the previous one: the newest directional light is the sun.
+	///
+	/// Every sink then carries it to its passes through [`Sink::sun`], placed with the transform each frame shows,
+	/// so a window's sky and fog see the sun however late the window's passes were built.
+	pub fn create_directional_light(&mut self, handle: Handle, light: DirectionalLight) {
+		self.sun_light = Some((handle, light));
+		self.redraw_requested = true;
+	}
+
+	/// Makes `fog` the scene's fog, replacing the previous one: the newest fog is the one shown.
+	///
+	/// Every sink then carries it to its passes through [`Sink::fog`], so a window's fog pass sees it however late the
+	/// window's passes were built.
+	pub fn create_fog(&mut self, fog: ExponentialHeightFog) {
+		self.fog = Some(fog);
+		self.redraw_requested = true;
+	}
 }
 /// Names the GPU metric one counter reports to: `<kind>.<name>`, with `@<sink>` appended on every sink after the
 /// first so one name stays one column while the usual single-sink application reads plain names.
@@ -1485,7 +1520,7 @@ use crate::{
 	core::{EntityHandle, factory::Handle},
 	metrics::{MetricId, MetricKind, Metrics},
 	rendering::{
-		Camera, PipelineManagerServer, ShownTransforms, Sink, make_perspective_view_from_camera,
+		Camera, DirectionalLight, ExponentialHeightFog, PipelineManagerServer, ShownTransforms, Sink, Sun, make_perspective_view_from_camera,
 		pipeline_manager::PipelineManager,
 		render_pass::RenderPassReturn,
 		window::{self, Window},

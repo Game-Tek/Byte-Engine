@@ -1,7 +1,6 @@
 //! Graphics pipeline and render-pass setup.
 
 use super::*;
-use crate::rendering::DirectionalLight;
 
 /// Installs the retained wireframe debug scene after the render passes registered before this call.
 ///
@@ -694,30 +693,20 @@ pub fn setup_smaa_render_pass(application: &mut GraphicsApplication) {
 /// Installs exponential height fog for every current and future render sink.
 ///
 /// The fog hides distant surfaces and the horizon behind mist that thins with altitude, lit by the sky and the
-/// newest [`DirectionalLight`]. Call it after the scene pipeline and [`setup_particles`], and before
+/// newest [`DirectionalLight`](rendering::DirectionalLight). Call it after the scene pipeline and [`setup_particles`], and before
 /// [`setup_lens_flare_render_pass`], [`setup_bloom_render_pass`], and tone mapping, so bright light glows through the
 /// fog. Use `render.pass.exponential-height-fog` to enable or bypass it at runtime.
 ///
 /// The pass draws nothing until a fog exists. Next, create an [`rendering::ExponentialHeightFog`] through
-/// [`MessageScope::factory`](crate::core::message_bus::MessageScope::factory). Like the atmosphere sky, each window's fog subscribes to fogs and lights when the
-/// renderer adopts the window, so create them in a tick after the one that creates the window.
+/// [`MessageScope::factory`](crate::core::message_bus::MessageScope::factory), in any tick, before or after the window:
+/// the pass reads the newest fog and sun from [`rendering::Sink`].
 pub fn setup_exponential_height_fog_render_pass(application: &mut GraphicsApplication) {
-	// Keep producer handles in the sink factory instead of template listeners, which would retain unread broadcast messages.
-	let fog_factory = application.world().factory::<rendering::ExponentialHeightFog>();
-	let light_factory = application.world().factory::<DirectionalLight>();
-	let transform_channel = application.world().channel::<TransformationUpdate>();
-
 	use rendering::render_passes::height_fog::ExponentialHeightFogRenderPass;
 
 	application
 		.renderer
-		.add_pixel_step_for_all_sinks(ExponentialHeightFogRenderPass::PIPELINE, move |render_pass_builder| {
-			Box::new(ExponentialHeightFogRenderPass::new(
-				render_pass_builder,
-				fog_factory.listener(),
-				light_factory.listener(),
-				transform_channel.listener(),
-			))
+		.add_pixel_step_for_all_sinks(ExponentialHeightFogRenderPass::PIPELINE, |render_pass_builder| {
+			Box::new(ExponentialHeightFogRenderPass::new(render_pass_builder))
 		});
 }
 
@@ -726,29 +715,20 @@ pub fn setup_exponential_height_fog_render_pass(application: &mut GraphicsApplic
 /// Scene pipelines draw it after opaque surfaces and before transparent ones, so transparent surfaces blend over
 /// the sky. Use `render.pass.atmosphere sky` to enable or bypass it at runtime; bypassed, the background is black.
 ///
-/// The newest [`DirectionalLight`] is the sky's sun: its illuminance sets the sky's brightness and color, and its
+/// The newest [`DirectionalLight`](rendering::DirectionalLight) is the sky's sun: its illuminance sets the sky's brightness and color, and its
 /// transform sets the sun's direction. Without one, the sky stays black.
 ///
 /// `settings` sets the atmosphere and how much of the screen the sky covers. The default draws the upper half of
 /// the screen; set [`AtmosphereSkyRenderPassSettings::screen_height`] to `1.0` for cameras that look up or down.
 /// Use `render.sky.haze` to change [`AtmosphereSkyRenderPassSettings::haze`] at runtime.
 ///
-/// Each window's sky subscribes to lights when the renderer adopts the window, at the end of the tick that creates it,
-/// and doesn't see lights created before then. Create the window in one tick and the light in a later one.
+/// The sky reads its sun from [`rendering::Sink::sun`], so a light created in any tick, before or after the window,
+/// lights it.
 pub fn setup_atmosphere_sky_render_pass(application: &mut GraphicsApplication, settings: AtmosphereSkyRenderPassSettings) {
-	// Keep producer handles in the sink factory instead of template listeners, which would retain unread broadcast messages.
-	let light_factory = application.world().factory::<DirectionalLight>();
-	let transform_channel = application.world().channel::<TransformationUpdate>();
 	let controls = AtmosphereSkyControls::new(settings, application.configure("render.sky."));
 	let renderer = &mut application.renderer;
 
 	renderer.set_scene_background_for_all_sinks(move |render_pass_builder, targets| {
-		Box::new(AtmosphereSkyRenderPass::new(
-			render_pass_builder,
-			targets,
-			controls.clone(),
-			light_factory.listener(),
-			transform_channel.listener(),
-		))
+		Box::new(AtmosphereSkyRenderPass::new(render_pass_builder, targets, controls.clone()))
 	});
 }

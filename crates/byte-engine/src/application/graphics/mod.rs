@@ -126,6 +126,11 @@ pub struct GraphicsApplication {
 	/// application code that steps them.
 	world: MessageScope,
 	cameras_listener: DefaultListener<crate::core::factory::CreateMessage<Camera>>,
+	/// Directional lights, the newest of which the renderer shows as the sun. It subscribes at startup, so a light
+	/// created before a window's passes exist still reaches them.
+	directional_lights_listener: DefaultListener<CreateMessage<rendering::DirectionalLight>>,
+	/// Fogs, the newest of which the renderer shows. It subscribes at startup for the same reason.
+	fogs_listener: DefaultListener<CreateMessage<rendering::ExponentialHeightFog>>,
 	/// The transforms every frame shows, sampled after each simulation step and resolved before each frame.
 	shown_transforms: ShownTransforms,
 
@@ -186,6 +191,8 @@ struct Services {
 	input: input::InputCollector,
 	actions: input::InputSink,
 	cameras_listener: DefaultListener<CreateMessage<Camera>>,
+	directional_lights_listener: DefaultListener<CreateMessage<rendering::DirectionalLight>>,
+	fogs_listener: DefaultListener<CreateMessage<rendering::ExponentialHeightFog>>,
 	shown_transforms: ShownTransforms,
 	http_inspector: HttpInspectorServer,
 	screenshot_broker: std::sync::Arc<crate::inspector::screenshot::ScreenshotBroker>,
@@ -252,6 +259,8 @@ impl GraphicsApplication {
 						let actions = input::InputSink::new(input.add_sink(), action_events.clone())
 							.with_declarations(world_messages.factory::<Action>().listener());
 						let cameras_listener = world_messages.factory::<Camera>().listener();
+						let directional_lights_listener = world_messages.factory::<rendering::DirectionalLight>().listener();
+						let fogs_listener = world_messages.factory::<rendering::ExponentialHeightFog>().listener();
 						let shown_transforms = ShownTransforms::new(&world_messages);
 
 						// Register reflected posts after the shown transforms' future-only listener exists.
@@ -289,6 +298,8 @@ impl GraphicsApplication {
 							input,
 							actions,
 							cameras_listener,
+							directional_lights_listener,
+							fogs_listener,
 							shown_transforms,
 							http_inspector,
 							screenshot_broker,
@@ -391,6 +402,8 @@ impl GraphicsApplication {
 
 			world: world_messages,
 			cameras_listener: services.cameras_listener,
+			directional_lights_listener: services.directional_lights_listener,
+			fogs_listener: services.fogs_listener,
 			shown_transforms: services.shown_transforms,
 
 			input: services.input,
@@ -604,7 +617,7 @@ impl GraphicsApplication {
 		self.gamepad_system.poll(&mut self.input, self.gamepad_device_class_handle);
 	}
 
-	/// Adopts newly created windows and cameras before renderer preparation.
+	/// Adopts newly created windows, cameras, directional lights, and fogs before renderer preparation.
 	fn prepare_renderer_state(&mut self) {
 		let _span = debug_span!("GraphicsApplication::prepare_renderer_state").entered();
 		while let Some(message) = self.window_factory.1.read() {
@@ -612,6 +625,12 @@ impl GraphicsApplication {
 		}
 		while let Some(message) = self.cameras_listener.read() {
 			self.renderer.create_camera(message.handle(), message.into_data());
+		}
+		while let Some(message) = self.directional_lights_listener.read() {
+			self.renderer.create_directional_light(message.handle(), message.into_data());
+		}
+		while let Some(message) = self.fogs_listener.read() {
+			self.renderer.create_fog(message.into_data());
 		}
 	}
 

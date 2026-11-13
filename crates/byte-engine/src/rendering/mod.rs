@@ -60,6 +60,7 @@ pub mod pipelines;
 
 /// Per-output render target state passed to render passes.
 pub mod sink;
+pub mod sun;
 /// Projection and view matrix construction for cameras and lights.
 pub mod view;
 
@@ -92,6 +93,7 @@ pub use resource::{Query, Resource};
 pub use set_layout::{SetBinder, SetLayout};
 pub use shown_transforms::ShownTransforms;
 pub use sink::Sink;
+pub use sun::Sun;
 pub use view::View;
 pub use window::{Features, Window};
 

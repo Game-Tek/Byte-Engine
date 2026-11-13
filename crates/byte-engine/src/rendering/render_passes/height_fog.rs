@@ -5,17 +5,11 @@ use maths_rs::Vec3f;
 use utils::Extent;
 
 use crate::{
-	core::{
-		Entity,
-		factory::CreateMessage,
-		listener::{DefaultListener, Listener},
-	},
-	gameplay::transform::TransformationUpdate,
+	core::Entity,
 	rendering::{
-		DirectionalLight, ExponentialHeightFog, Sink,
+		ExponentialHeightFog, Sink,
 		fog::{FOG_LIGHT_TARGET, FogLayerShaderData, pixel_to_camera_offset},
 		render_pass::{RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
-		render_passes::sun::Sun,
 	},
 };
 
@@ -44,9 +38,6 @@ struct FogShaderData {
 pub struct ExponentialHeightFogRenderPass {
 	resources: [simple_tile::Resource; 3],
 	parameters: ghi::DynamicBufferHandle<FogShaderData>,
-	fogs: DefaultListener<CreateMessage<ExponentialHeightFog>>,
-	fog: Option<ExponentialHeightFog>,
-	sun: Sun,
 }
 
 impl Entity for ExponentialHeightFogRenderPass {}
@@ -57,15 +48,9 @@ impl ExponentialHeightFogRenderPass {
 
 	/// Creates the fog step, which reads the scene's depth and the marched fog light.
 	///
-	/// The step applies nothing until a fog arrives through `fogs`. The newest directional light from
-	/// `directional_lights` is the sun that lights the fog, and its transform from `transform_listener` sets the sun's
-	/// direction.
-	pub fn new(
-		render_pass_builder: &mut RenderPassBuilder,
-		fogs: DefaultListener<CreateMessage<ExponentialHeightFog>>,
-		directional_lights: DefaultListener<CreateMessage<DirectionalLight>>,
-		transform_listener: DefaultListener<TransformationUpdate>,
-	) -> Self {
+	/// The step applies the sink's [`Sink::fog`], the scene's newest fog, and nothing while there is none. The sink's
+	/// [`crate::rendering::Sun`], the scene's newest directional light, lights the fog.
+	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
 		let depth = render_pass_builder.read_from("depth");
 		// The scene pipeline's marched fog light, if it marches one. A black texel with no distance stands in otherwise,
 		// which the shader reads as no march.
@@ -99,21 +84,7 @@ impl ExponentialHeightFogRenderPass {
 				simple_tile::Resource::buffer("fog_parameters", parameters),
 			],
 			parameters,
-			fogs,
-			fog: None,
-			sun: Sun::new(directional_lights, transform_listener),
 		}
-	}
-
-	/// Adopts the newest fog and sun. Returns whether the fog changed.
-	fn update(&mut self) -> bool {
-		self.sun.update();
-		let mut changed = false;
-		while let Some(message) = self.fogs.read() {
-			self.fog = Some(*message.data());
-			changed = true;
-		}
-		changed
 	}
 }
 
@@ -178,17 +149,14 @@ impl PixelStep for ExponentialHeightFogRenderPass {
 	}
 
 	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> bool {
-		self.update();
-		let Some(fog) = self.fog else {
+		let Some(fog) = sink.fog() else {
 			return false;
 		};
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) =
-			fog_shader_data(&fog, self.sun.illuminance, self.sun.direction, sink);
+		let (sun_illuminance, sun_direction) = sink
+			.sun()
+			.map_or((Vec3f::new(0.0, 0.0, 0.0), None), |sun| (sun.illuminance, Some(sun.direction)));
+		*frame.get_mut_dynamic_buffer_slice(self.parameters) = fog_shader_data(&fog, sun_illuminance, sun_direction, sink);
 		true
-	}
-
-	fn needs_frame(&mut self) -> bool {
-		self.update()
 	}
 }
 

@@ -503,14 +503,14 @@ Vulkan. The application that reads the lightmap doesn't.
 Height fog fills the scene with mist that's thickest near the ground and thins out with altitude,
 like rain mist, an overcast day, or haze in a valley. Install the fog pass after the scene pipeline
 and particles, and before antialiasing, lens flare, bloom, and tone mapping, so bright light glows
-through the mist. Then create a fog in a tick after the one that creates the window:
+through the mist. Then create a fog, in any tick:
 
 ```rust
 use byte_engine::rendering::{ExponentialHeightFog, FogLayer};
 
 byte_engine::application::graphics::setup_exponential_height_fog_render_pass(&mut app);
 
-// Later, once the window exists: rain mist that hides about 40 % of a surface 10 m away.
+// Rain mist that hides about 40 % of a surface 10 m away. The newest fog is the one shown.
 app.world().factory::<ExponentialHeightFog>().create(
 	ExponentialHeightFog::new(FogLayer::new(0.06).with_height_falloff(0.1))
 		.with_ambient_illuminance(15_000.0),

@@ -302,7 +302,8 @@ pub(super) fn coverage_body<'a>(
 /// reads, with the pixel attributes they need reconstructed.
 ///
 /// The outputs are the half-precision locals the prefix declares: `albedo`, `metalness`, `roughness`, `occlusion`,
-/// `emission`, and `normal` in the tangent frame. Every output but the normal is written, with BEMX's default for a
+/// `emission`, and `normal` in the tangent frame, and `translucency` for a graph that sets it. Every output but the
+/// normal, `transmission`, and `translucency` is written, with BEMX's default for a
 /// surface input the graph leaves out, so the prefix's own defaults never decide what a material shades with. Each
 /// output's statements come right before its assignment, so a sampled texel lives no longer than its first use needs.
 pub(super) fn material_body<'a>(
@@ -352,6 +353,14 @@ pub(super) fn material_body<'a>(
 		// The value is already a full-precision `vec3f`, and BESL converts only from other widths.
 		lowering.drain_statements_into(&mut statements);
 		statements.push(Node::member_assignment("transmission", value.syntax));
+	}
+
+	// Only a translucent material declares this output's readers, so only it writes the output: the suffix of any
+	// other material holds no far-side lighting.
+	if let Some(translucency) = surface.translucency {
+		let value = lowering.value(translucency)?;
+		lowering.stage().features.writes_translucency = true;
+		assign(&mut statements, &mut lowering, "translucency", "vec3f16", value.syntax);
 	}
 
 	if let Some(normal) = surface.normal {

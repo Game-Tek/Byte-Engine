@@ -90,6 +90,16 @@ const BACKDROP_GRAPH: &str = r#"{
 	],
 }"#;
 
+/// A translucent graph, the way a leaf reads its translucency map: the share of light that crosses the surface is the
+/// base colour, tinted toward green. It reads [`textured_parameters`].
+const TRANSLUCENT_GRAPH: &str = r#"{
+	nodes: [
+		{ name: "albedo", node: "image", texture: "base_color", type: "vector3" },
+		{ name: "crossed", node: "multiply", in1: "albedo", in2: [0.5, 0.9, 0.3] },
+		{ name: "surface", node: "surface", base_color: "albedo", translucency: "crossed" },
+	],
+}"#;
+
 /// The parameters [`TEXTURED_GRAPH`] reads, in binding order.
 fn textured_parameters() -> Vec<MaterialParameter> {
 	vec![
@@ -423,7 +433,7 @@ fn a_dynamic_parameter_read_with_another_type_is_reported() {
 
 #[test]
 fn material_evaluation_of_a_textured_graph_produces_valid_besl() {
-	for source in [TEXTURED_GRAPH, WORLD_MAPPED_GRAPH, BACKDROP_GRAPH] {
+	for source in [TEXTURED_GRAPH, WORLD_MAPPED_GRAPH, BACKDROP_GRAPH, TRANSLUCENT_GRAPH] {
 		let graph = graph(source);
 		let parameters = textured_parameters();
 		let shader = material_generator()
@@ -578,6 +588,7 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 		(TEXTURED_GRAPH, textured_parameters()),
 		(WORLD_MAPPED_GRAPH, textured_parameters()),
 		(BACKDROP_GRAPH, textured_parameters()),
+		(TRANSLUCENT_GRAPH, textured_parameters()),
 		(DYNAMIC_GRAPH, dynamic_parameters()),
 	] {
 		let graph = graph(source);
@@ -597,20 +608,22 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 }
 
 /// Builds an uber generator's arms for the textured graph at two static tints, which declare the same static parameter
-/// in two arms, and the dynamic graph, and runs `check` on each phase's program.
-fn with_uber_programs(check: impl Fn(bool, Node<'_>)) {
+/// in two arms, the dynamic graph, and the translucent graph, and runs `check` on each variant's program.
+fn with_uber_programs(check: impl Fn(UberVariant, Node<'_>)) {
 	let generator = material_generator_with(VisibilityFeatures {
 		material_evaluation: MaterialEvaluationMode::Uber,
 		..Default::default()
 	});
-	let (textured, dynamic) = (graph(TEXTURED_GRAPH), graph(DYNAMIC_GRAPH));
+	let (textured, dynamic, translucent) = (graph(TEXTURED_GRAPH), graph(DYNAMIC_GRAPH), graph(TRANSLUCENT_GRAPH));
 	let (textured_parameters, dynamic_parameters) = (textured_parameters(), dynamic_parameters());
 	let tints = [vec![vec![1.0, 0.5, 0.25, 1.0]], vec![vec![-0.5, 0.0, 2.0, 0.5]]];
 	let roughness = [vec![0.75]];
+	let opaque = UberVariant::new(false, false);
 	let keys = [
-		uber_arm_key(1, tints[0].concat(), false).to_string(),
-		uber_arm_key(1, tints[1].concat(), false).to_string(),
-		uber_arm_key(2, roughness.concat(), false).to_string(),
+		uber_arm_key(1, tints[0].concat(), opaque).to_string(),
+		uber_arm_key(1, tints[1].concat(), opaque).to_string(),
+		uber_arm_key(2, roughness.concat(), opaque).to_string(),
+		uber_arm_key(3, tints[0].concat(), UberVariant::new(false, true)).to_string(),
 	];
 	let model = resource_management::resources::material::RenderModel {
 		name: "Visibility".to_string(),
@@ -628,6 +641,7 @@ fn with_uber_programs(check: impl Fn(bool, Node<'_>)) {
 		material(&textured, &textured_parameters, &tints[0]),
 		material(&textured, &textured_parameters, &tints[1]),
 		material(&dynamic, &dynamic_parameters, &roughness),
+		material(&translucent, &textured_parameters, &tints[0]),
 	];
 	let arms = [
 		AssembledArm {
@@ -642,26 +656,32 @@ fn with_uber_programs(check: impl Fn(bool, Node<'_>)) {
 			key: &keys[2],
 			material: &materials[2],
 		},
+		AssembledArm {
+			key: &keys[3],
+			material: &materials[3],
+		},
 	];
-	// A fresh development store holds no material yet, so its first bake assembles shaders without arms.
-	for arms in [&arms[..], &[]] {
-		for transparent in [false, true] {
+	for variant in UberVariant::ALL {
+		// A variant's shader holds the arms of its kind: the translucent arm, or the others.
+		let arms = if variant.translucent { &arms[3..] } else { &arms[..3] };
+		// A fresh development store holds no material yet, so its first bake assembles shaders without arms.
+		for arms in [arms, &[]] {
 			check(
-				transparent,
+				variant,
 				generator
-					.uber_program(transparent, arms)
+					.uber_program(variant, arms)
 					.expect("the test arms should generate an uber program"),
 			);
 		}
 	}
 }
 
-/// Verifies an uber material evaluation program links in both phases, with arms that declare the same static parameter.
+/// Verifies an uber material evaluation program links for every variant, with arms that declare the same static
+/// parameter.
 #[test]
 fn uber_material_evaluation_produces_valid_besl() {
-	with_uber_programs(|transparent, program| {
-		besl::lex(program)
-			.unwrap_or_else(|error| panic!("the uber program should link (transparent: {transparent}): {error:?}"));
+	with_uber_programs(|variant, program| {
+		besl::lex(program).unwrap_or_else(|error| panic!("the uber program should link ({variant:?}): {error:?}"));
 	});
 }
 
@@ -673,32 +693,42 @@ async fn uber_material_evaluation_lowers_to_the_platform_shader_language() {
 	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
 
 	let programs = std::cell::RefCell::new(Vec::new());
-	with_uber_programs(|transparent, program| {
+	with_uber_programs(|variant, program| {
 		programs
 			.borrow_mut()
-			.push((transparent, besl::lex(program).expect("the uber program should link")));
+			.push((variant, besl::lex(program).expect("the uber program should link")));
 	});
-	for (transparent, root) in programs.into_inner() {
+	for (variant, root) in programs.into_inner() {
 		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8)).name("uber_material_evaluation".to_string());
 		PlatformShaderCompiler::new()
 			.generate(&settings, &root)
 			.await
 			.unwrap_or_else(|error| {
-				panic!("the uber program should compile for the platform shader language (transparent: {transparent}): {error}")
+				panic!("the uber program should compile for the platform shader language ({variant:?}): {error}")
 			});
 	}
 }
 
-/// Verifies arm keys separate what changes a material's code: its program, its static values, and its phase.
+/// Verifies arm keys separate what changes a material's code: its program, its static values, and its phase, and
+/// that a key names the variant whose shader holds its arm.
 #[test]
-fn uber_arm_keys_follow_program_values_and_phase() {
-	let key = uber_arm_key(7, [0.5, 1.0], false);
+fn uber_arm_keys_follow_program_values_and_variant() {
+	let opaque = UberVariant::new(false, false);
+	let key = uber_arm_key(7, [0.5, 1.0], opaque);
 
-	assert_eq!(key, uber_arm_key(7, [0.5, 1.0], false));
-	assert_ne!(key, uber_arm_key(8, [0.5, 1.0], false));
-	assert_ne!(key, uber_arm_key(7, [0.5, 2.0], false));
-	assert_ne!(key, uber_arm_key(7, [0.5, 1.0], true));
-	assert_ne!(key, u32::MAX);
+	assert_eq!(key, uber_arm_key(7, [0.5, 1.0], opaque));
+	assert_ne!(key, uber_arm_key(8, [0.5, 1.0], opaque));
+	assert_ne!(key, uber_arm_key(7, [0.5, 2.0], opaque));
+	for variant in UberVariant::ALL {
+		for identity in 0..64 {
+			let key = uber_arm_key(identity, [0.5, 1.0], variant);
+			assert_ne!(key, u32::MAX);
+			assert_eq!(UberVariant::of_arm(key, variant.transparent), variant);
+			if variant != opaque {
+				assert_ne!(key, uber_arm_key(identity, [0.5, 1.0], opaque));
+			}
+		}
+	}
 }
 
 /// A masked graph whose `opacity` multiplies a separate opacity texture by a static and a dynamic parameter, the way a

@@ -833,8 +833,8 @@ trace_position: fn (pixel: vec2u, full_to_trace_scale: vec2f) -> vec2f {
 }
 
 // Resolves one sun's shadow map at the pixel's receiver, from its four cascades after the camera's view. `edge0` and
-// `edge1` are the receiver's world-space triangle edges, and `normal` and `view_normal` its unit triangle normal on the
-// camera's side, in world and view space.
+// `edge1` are the receiver's world-space triangle edges, and `normal` and `view_normal` its unit triangle normal, in
+// world and view space; either side of the triangle serves.
 resolve_sun_shadow: fn (
 	scene: Scene,
 	sun_visibility: SunVisibility,
@@ -851,10 +851,15 @@ resolve_sun_shadow: fn (
 	// below the receiver instead of shadowing it. Seen along the light, a point that far off the plane lies tan(theta)
 	// texels of slope above it, so the margin grows where the light grazes the surface and errors grow with it, and
 	// vanishes where the sun shines straight on. The receiver moves by at most one texel, so shadows move by at most one.
+	// It leaves on the sun's side of the triangle: on the camera's side, a surface the sun lights from behind, as it
+	// does a translucent leaf, would move behind its own depth in the map and shadow itself.
 	let sun_cosine: f32 = dot(view_normal, vec3f(
 		sun_visibility.sun_visibility_parameters.suns[sun].x, sun_visibility.sun_visibility_parameters.suns[sun].y, sun_visibility.sun_visibility_parameters.suns[sun].z
 	));
 	let normal_offset: vec3f = normal * sqrt(max(1.0 - sun_cosine * sun_cosine, 0.0));
+	if (sun_cosine < 0.0) {
+		normal_offset = normal_offset * (0.0 - 1.0);
+	}
 	let first_cascade: u32 = sun * 4;
 	return sample_directional_shadow(
 		scene, sun_visibility,
@@ -954,14 +959,9 @@ main: fn (input: StageInput, scene: Scene, sun_visibility: SunVisibility) -> voi
 	let position2: vec3f = scene.vertex_positions[vertex_base + u32(scene.vertex_indices[vertex_index_base + u32(scene.primitive_indices[primitive_index_base + 2])])];
 	let edge0: vec3f = mesh.model * vec4f(position1.x - position0.x, position1.y - position0.y, position1.z - position0.z, 0.0);
 	let edge1: vec3f = mesh.model * vec4f(position2.x - position0.x, position2.y - position0.y, position2.z - position0.z, 0.0);
-	// The triangle's normal, turned to the camera's side, which is the side the receiver's normal offset leaves on. The
-	// camera lies at the view-space origin, so the receiver's view-space position points away from it.
+	// The triangle's normal. Each sun's resolve turns it to that sun's side, which the receiver's normal offset leaves on.
 	let normal: vec3f = normalize(cross(edge0, edge1));
 	let view_normal: vec3f = scene.views.views[0].view * vec4f(normal.x, normal.y, normal.z, 0.0);
-	if (dot(view_normal, view_position) > 0.0) {
-		normal = normal * (0.0 - 1.0);
-		view_normal = view_normal * (0.0 - 1.0);
-	}
 	// Each sun's shadow-map visibility in its channel. Material evaluation never reads an unused slot's channel, so
 	// it stays zero and leaves the fully-shadowed test below to the used ones.
 	// One loop resolves every sun, so the resolve is compiled once instead of once per sun slot.

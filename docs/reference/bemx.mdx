@@ -177,6 +177,7 @@ Every graph ends in one `surface` node. An input left out takes its default.
 | `normal` | `vector3`, in world space | The geometric normal |
 | `emission` | `vector3` | 0, 0, 0 |
 | `transmission` | `vector3`, in the units of `emission` | 0, 0, 0 |
+| `translucency` | `vector3`, 0 to 1 | Not translucent |
 | `occlusion` | `float`, 0 to 1, multiplying indirect diffuse light | 1 |
 
 `opacity` means what the material's
@@ -199,6 +200,18 @@ added where the surface doesn't reflect: weighted by one minus the surface's
 reflectance toward the viewer, so a surface seen head-on shows what's behind it
 and one seen at a grazing angle shows its reflection. Ray tracing hits leave it
 out.
+
+`translucency` makes the surface a thin sheet that light crosses, such as a
+leaf, paper, or cloth. It's the share of the light entering one face that
+leaves the other, for each color channel, as `base_color` is the share that
+leaves the face it entered. A light on the far side of the surface from the
+viewer then lights it with diffuse light of that color. `base_color` plus
+`translucency` should stay at or under one in every channel; the renderer
+doesn't limit the sum, and a larger one gives off more light than arrives.
+A graph that sets `translucency`, even to zero, is a translucent material,
+which the renderer
+[evaluates apart](/docs/reference/rendering#translucent-materials) from the
+others. Ray tracing hits leave it out.
 
 How the renderer shades these inputs is in
 [Rendering](/docs/reference/rendering#materials).

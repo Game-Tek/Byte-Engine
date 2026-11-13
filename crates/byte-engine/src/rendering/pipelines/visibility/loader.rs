@@ -26,7 +26,7 @@ use smallvec::SmallVec;
 use utils::Extent;
 use utils::hash::HashMap;
 
-use super::features::{COVERAGE_SHADERS, MaterialEvaluationMode, UBER_MATERIAL_SHADERS};
+use super::features::{COVERAGE_SHADERS, MaterialEvaluationMode, UberVariant};
 use super::geometry::{
 	GENERATED_MESH_MATERIAL, GeometryBuffers, GeometryHandles, GeometryRanges, MergedSource, MeshData, MeshRanges,
 	PreparedLevels, PreparedMesh, PrimitiveBlock, PrimitiveLevels, RetiredRanges,
@@ -78,8 +78,8 @@ pub(crate) enum VisibilityLoadKey {
 	IesProfile(String),
 	Environment(String),
 	Lightmap(String),
-	/// The uber material evaluation shader of the transparent phase when `true`, of the opaque phase otherwise.
-	UberShader(bool),
+	/// One of the uber material evaluation shaders.
+	UberShader(UberVariant),
 	/// Both coverage shaders and the masked raster pipelines they are the fragments of.
 	CoverageShaders,
 }
@@ -97,9 +97,7 @@ impl std::fmt::Display for VisibilityLoadKey {
 			Self::Environment(id) => write!(formatter, "environment {id}"),
 			Self::Lightmap(id) => write!(formatter, "lightmap {id}"),
 			Self::MeshLevels(key) => write!(formatter, "finer detail levels of mesh {key:?}"),
-			Self::UberShader(transparent) => {
-				write!(formatter, "uber shader {}", UBER_MATERIAL_SHADERS[usize::from(*transparent)])
-			}
+			Self::UberShader(variant) => write!(formatter, "uber shader {}", variant.shader()),
 			Self::CoverageShaders => write!(formatter, "coverage shaders {COVERAGE_SHADERS:?}"),
 		}
 	}
@@ -130,10 +128,10 @@ pub(crate) enum VisibilityLoadRequest {
 	Environment(String),
 	/// A baked lightmap and its image.
 	Lightmap(String),
-	/// The uber material evaluation shader of one phase, the transparent one when `transparent` is set. `rebake` bakes
-	/// it again first, from every material the store now holds; only development builds can.
+	/// One of the uber material evaluation shaders. `rebake` bakes it again first, from every material the store now
+	/// holds; only development builds can.
 	UberShader {
-		transparent: bool,
+		variant: UberVariant,
 		rebake: bool,
 	},
 	/// Both coverage shaders, and the masked raster pipelines that take them as fragments. `rebake` bakes them again
@@ -319,9 +317,9 @@ pub(crate) enum VisibilityResident {
 		specular_image: ghi::implementation::DetachedImage,
 		upward_illuminance: f32,
 	},
-	/// A phase's uber shader, whose pipeline may still be compiling, and the arm keys it holds.
+	/// An uber shader, whose pipeline may still be compiling, and the arm keys it holds.
 	UberShader {
-		transparent: bool,
+		variant: UberVariant,
 		keys: Arc<[u32]>,
 		pipeline: PipelineRef,
 	},
@@ -358,17 +356,15 @@ pub(crate) enum VisibilityLoaderEvent {
 	},
 	/// A material that can be drawn, with what evaluates it: its compiled pipeline or its uber shader arm.
 	MaterialReady(ResidentMaterial, MaterialEvaluator<ghi::PipelineHandle>),
-	/// A phase's uber shader compiled: the transparent phase's when `transparent` is set. It holds the arms of `keys`,
-	/// in ascending order.
+	/// An uber shader compiled. It holds the arms of `keys`, in ascending order.
 	UberShaderReady {
-		transparent: bool,
+		variant: UberVariant,
 		keys: Arc<[u32]>,
 		pipeline: ghi::PipelineHandle,
 	},
-	/// A phase's uber shader failed to load or compile; the transparent phase's when `transparent` is set. The phase
-	/// keeps the shader it had.
+	/// An uber shader failed to load or compile. Its materials keep the shader they had.
 	UberShaderUnavailable {
-		transparent: bool,
+		variant: UberVariant,
 		error: LoadError,
 	},
 	/// The coverage shaders compiled into every masked raster pipeline. They hold the arms of `keys`, in ascending
@@ -440,8 +436,8 @@ pub(crate) struct VisibilityLoaderClient {
 	replaced_images: Vec<ghi::ImageHandle>,
 	environments: HashMap<String, ResidentEnvironment>,
 	materials: HashMap<u32, MaterialPublication>,
-	/// Each phase's latest uber shader, opaque then transparent, until its pipeline compiles.
-	uber_shaders: [Option<UberShaderPublication>; 2],
+	/// Each variant's latest uber shader, in the order of [`UberVariant::ALL`], until its pipeline compiles.
+	uber_shaders: [Option<UberShaderPublication>; 4],
 	/// The latest coverage shaders' keys and masked pipelines, until every pipeline compiles.
 	coverage_shaders: Option<(Arc<[u32]>, CoveragePipelines<PipelineRef>)>,
 	/// Reports rebaked material variants, so their materials load again.
@@ -457,7 +453,7 @@ struct MaterialPublication {
 	published: Option<PipelineState>,
 }
 
-/// The `UberShaderPublication` struct holds a phase's uber shader until its pipeline compiles.
+/// The `UberShaderPublication` struct holds one uber shader until its pipeline compiles.
 struct UberShaderPublication {
 	keys: Arc<[u32]>,
 	pipeline: PipelineRef,
@@ -593,14 +589,12 @@ impl VisibilityLoaderClient {
 		self.client.request(VisibilityLoadRequest::IesProfile(id));
 	}
 
-	/// Requests the uber material evaluation shader of each phase. Each reaches the renderer as
+	/// Requests every uber material evaluation shader. Each reaches the renderer as
 	/// [`VisibilityLoaderEvent::UberShaderReady`] once its pipeline compiles.
 	pub(crate) fn request_uber_shaders(&mut self) {
-		for transparent in [false, true] {
-			self.client.request(VisibilityLoadRequest::UberShader {
-				transparent,
-				rebake: false,
-			});
+		for variant in UberVariant::ALL {
+			self.client
+				.request(VisibilityLoadRequest::UberShader { variant, rebake: false });
 		}
 	}
 
@@ -617,14 +611,12 @@ impl VisibilityLoaderClient {
 		self.client.reload(VisibilityLoadRequest::CoverageShaders { rebake: true });
 	}
 
-	/// Bakes the uber material evaluation shader of one phase again, from every material the store now holds, and
+	/// Bakes one uber material evaluation shader again, from every material the store now holds, and
 	/// loads it. Development builds call it when a material the published shader lacks is ready.
 	#[cfg(debug_assertions)]
-	pub(crate) fn rebake_uber_shader(&mut self, transparent: bool) {
-		self.client.reload(VisibilityLoadRequest::UberShader {
-			transparent,
-			rebake: true,
-		});
+	pub(crate) fn rebake_uber_shader(&mut self, variant: UberVariant) {
+		self.client
+			.reload(VisibilityLoadRequest::UberShader { variant, rebake: true });
 	}
 
 	/// Requests one baked lightmap and its image.
@@ -743,14 +735,10 @@ impl VisibilityLoaderClient {
 					}
 				}
 				LoaderEvent::Ready {
-					resident: VisibilityResident::UberShader {
-						transparent,
-						keys,
-						pipeline,
-					},
+					resident: VisibilityResident::UberShader { variant, keys, pipeline },
 					..
 				} => {
-					self.uber_shaders[usize::from(transparent)] = Some(UberShaderPublication { keys, pipeline });
+					self.uber_shaders[variant.index()] = Some(UberShaderPublication { keys, pipeline });
 					continue;
 				}
 				LoaderEvent::Ready {
@@ -831,9 +819,9 @@ impl VisibilityLoaderClient {
 					}
 				}
 				LoaderEvent::Failed {
-					key: VisibilityLoadKey::UberShader(transparent),
+					key: VisibilityLoadKey::UberShader(variant),
 					error,
-				} => VisibilityLoaderEvent::UberShaderUnavailable { transparent, error },
+				} => VisibilityLoaderEvent::UberShaderUnavailable { variant, error },
 				LoaderEvent::Failed {
 					key: VisibilityLoadKey::CoverageShaders,
 					error,
@@ -856,7 +844,7 @@ impl VisibilityLoaderClient {
 		// Visit each material once, even when many compilation results arrive together. A reloaded material replaced
 		// its publication, so it reports its new state here too. One read lock covers every material's poll.
 		let pipelines = self.pipeline_manager.compute_pipelines();
-		for (transparent, slot) in [false, true].into_iter().zip(&mut self.uber_shaders) {
+		for (variant, slot) in UberVariant::ALL.into_iter().zip(&mut self.uber_shaders) {
 			let Some(publication) = slot else {
 				continue;
 			};
@@ -864,7 +852,7 @@ impl VisibilityLoaderClient {
 				PipelineState::Pending => {}
 				PipelineState::Ready(pipeline) => {
 					events.push(VisibilityLoaderEvent::UberShaderReady {
-						transparent,
+						variant,
 						keys: publication.keys.clone(),
 						pipeline,
 					});
@@ -872,7 +860,7 @@ impl VisibilityLoaderClient {
 				}
 				PipelineState::Failed => {
 					events.push(VisibilityLoaderEvent::UberShaderUnavailable {
-						transparent,
+						variant,
 						error: LoadError(
 							"Its pipeline failed to compile. The most likely cause is a material whose surface code the platform compiler rejects. Check the shader compilation errors logged above, fix that material, and bake again.".to_string(),
 						),
@@ -1001,7 +989,7 @@ pub(crate) fn spawn(
 			replaced_images: Vec::new(),
 			environments: HashMap::default(),
 			materials: HashMap::default(),
-			uber_shaders: [None, None],
+			uber_shaders: [None, None, None, None],
 			coverage_shaders: None,
 			#[cfg(debug_assertions)]
 			resource_updates,
@@ -1328,7 +1316,7 @@ impl VisibilityLoader {
 				MaterialEvaluator::Arm(uber_arm_key(
 					material.program.identity,
 					variant.static_values().flatten().copied(),
-					matches!(alpha_mode, AlphaMode::Blend),
+					UberVariant::new(matches!(alpha_mode, AlphaMode::Blend), material.program.translucent),
 				))
 			}
 		};
@@ -1365,10 +1353,10 @@ impl VisibilityLoader {
 		}))
 	}
 
-	/// Loads the uber material evaluation shader of one phase, after baking it again when `rebake` is set, and requests
-	/// its pipeline.
-	async fn load_uber_shader(&self, transparent: bool, rebake: bool) -> Result<VisibilityResident, LoadError> {
-		let id = UBER_MATERIAL_SHADERS[usize::from(transparent)];
+	/// Loads one uber material evaluation shader, after baking it again when `rebake` is set, and requests its
+	/// pipeline.
+	async fn load_uber_shader(&self, variant: UberVariant, rebake: bool) -> Result<VisibilityResident, LoadError> {
+		let id = variant.shader();
 		#[cfg(debug_assertions)]
 		if rebake {
 			self.resource_manager
@@ -1396,7 +1384,7 @@ impl VisibilityLoader {
 				)],
 			));
 		Ok(VisibilityResident::UberShader {
-			transparent,
+			variant,
 			keys: assembled.keys.as_slice().into(),
 			pipeline,
 		})
@@ -1937,7 +1925,7 @@ impl LoadPipeline for VisibilityLoader {
 			VisibilityLoadRequest::IesProfile(id) => VisibilityLoadKey::IesProfile(id.clone()),
 			VisibilityLoadRequest::Environment(id) => VisibilityLoadKey::Environment(id.clone()),
 			VisibilityLoadRequest::Lightmap(id) => VisibilityLoadKey::Lightmap(id.clone()),
-			VisibilityLoadRequest::UberShader { transparent, .. } => VisibilityLoadKey::UberShader(*transparent),
+			VisibilityLoadRequest::UberShader { variant, .. } => VisibilityLoadKey::UberShader(*variant),
 			VisibilityLoadRequest::CoverageShaders { .. } => VisibilityLoadKey::CoverageShaders,
 		}
 	}
@@ -1984,7 +1972,7 @@ impl LoadPipeline for VisibilityLoader {
 			}
 			VisibilityLoadRequest::Environment(id) => self.load_environment(id, lane).await,
 			VisibilityLoadRequest::Lightmap(id) => self.load_lightmap(id, lane).await,
-			VisibilityLoadRequest::UberShader { transparent, rebake } => self.load_uber_shader(transparent, rebake).await,
+			VisibilityLoadRequest::UberShader { variant, rebake } => self.load_uber_shader(variant, rebake).await,
 			VisibilityLoadRequest::CoverageShaders { rebake } => self.load_coverage_shaders(rebake).await,
 		}
 	}

@@ -58,6 +58,9 @@ pub struct MaterialProgram {
 	/// Whether the graph reads the scene behind the surface, which only a blended material may. A renderer copies that
 	/// scene only for the frames that draw such a material.
 	pub reads_backdrop: bool,
+	/// Whether the graph sets the surface's translucency, see [`crate::bemx::Graph::is_translucent`]. A renderer
+	/// evaluates such a material with code that lights its far side, apart from the materials that carry none.
+	pub translucent: bool,
 }
 
 /// The `ProgramParameter` struct declares one parameter of a [`MaterialProgram`], as a `.bema` variable declares it.

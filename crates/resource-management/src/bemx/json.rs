@@ -431,6 +431,7 @@ impl<'d> Reader<'d, '_> {
 					"emission",
 					"occlusion",
 					"transmission",
+					"translucency",
 				])?;
 
 				Node::Surface(Surface {
@@ -442,6 +443,7 @@ impl<'d> Reader<'d, '_> {
 					emission: self.input(field, "emission")?,
 					occlusion: self.input(field, "occlusion")?,
 					transmission: self.input(field, "transmission")?,
+					translucency: self.input(field, "translucency")?,
 				})
 			}
 			_ => {

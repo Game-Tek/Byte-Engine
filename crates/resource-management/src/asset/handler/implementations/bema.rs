@@ -133,6 +133,7 @@ impl MaterialProgram {
 	/// Keeps `graph` and `parameters` so a renderer can generate the material's surface code after the bake.
 	pub(crate) fn new(graph: &bemx::Graph, parameters: &[MaterialParameter]) -> Result<Self, String> {
 		let reads_backdrop = graph.reads_backdrop();
+		let translucent = graph.is_translucent();
 		let graph = serde_json::to_string(graph).map_err(|error| {
 			format!("Failed to store the material graph: {error}. The most likely cause is a non-finite constant in it.")
 		})?;
@@ -156,6 +157,7 @@ impl MaterialProgram {
 			graph,
 			parameters,
 			reads_backdrop,
+			translucent,
 		})
 	}
 

@@ -1,6 +1,6 @@
 ---
 title: Material evaluation modes
-description: Understand how the uber mode bakes one material evaluation shader per phase and shades the screen in tiles, how the masked passes test opacity in coverage shaders, how images sample at computed coordinates, where materials read the time, and the rules a change must keep.
+description: Understand how the uber mode bakes its material evaluation shaders and shades the screen in tiles, why translucent materials take shaders of their own, how the masked passes test opacity in coverage shaders, how images sample at computed coordinates, where materials read the time, and the rules a change must keep.
 icon: LayoutGrid
 ---
 
@@ -23,9 +23,10 @@ splits material evaluation into pieces, and each mode takes the pieces it needs:
   compiles its own shader, and each set of static values specializes it. Each
   slot runs one indirect dispatch.
 - **Uber.** The tile source reads the pixel from the thread's position in an
-  8 × 8 workgroup and the material from the pixel's instance. One shader per
-  phase holds a `match` with one arm per material, and one dispatch covers the
-  sink.
+  8 × 8 workgroup and the material from the pixel's instance. Each shader
+  holds a `match` with one arm per material, and one dispatch of it covers the
+  sink. A phase has two shaders: one for its translucent materials and one for
+  the rest.
 
 The surface prefix, the texture coordinates and tangent frame, and the lighting
 suffix are shared. An arm holds the material's surface body and normal, and
@@ -46,8 +47,9 @@ The uber shaders are resources with no asset behind them. Their IDs are
 an ID that ends in `.uber` without reading a source file:
 
 1. It lists every `Variant` in the store and bakes each one as a dependency.
-2. It asks the generator for each variant's arm key in that phase's shader. The
-   generator leaves out other render models and the other phase.
+2. It asks the generator for each variant's arm key in that shader. The
+   generator leaves out other render models, the other phase, and the other
+   kind.
 3. It keeps one material per key, and the generator builds the program with one
    arm per key, in key order.
 4. It stores the compiled shader under an ID derived from its platform source,
@@ -57,9 +59,34 @@ What a shader gathers isn't one of its sources, so a freshness check can't see
 the set of materials change. BELD therefore bakes
 `VisibilityFeatures::assembled_resources` after every other ID, every time. A
 development build bakes materials on first request, so the manager rebakes a
-phase's shader through `ResourceManager::rebake` when a ready material's arm is
-missing. Only one rebake per phase runs at a time, and the shader's arrival
+shader through `ResourceManager::rebake` when a ready material's arm is
+missing. Only one rebake per shader runs at a time, and the shader's arrival
 checks the materials again.
+
+## Translucent materials take their own shaders
+
+A material whose graph sets `translucency` lights its surface from the far
+side too: every light behind the surface runs the shadow filter, and the
+environment is sampled a second time. In the pipelines mode only that
+material's shader holds the code. An uber shader runs one lighting suffix for
+all its arms, so sharing a shader would make every material of the phase pay.
+
+`UberVariant` in `visibility/features.rs` therefore names four shaders: each
+phase's, for translucent materials and for the others. `uber_arm_key` sets the
+lowest bit of a translucent material's key and clears it for any other, so:
+
+- The bake's `assembled_key` puts a material's arm in one shader only.
+- The manager finds a material's shader from its key and alpha mode with
+  `UberVariant::of_arm`, without storing the kind.
+- The two opaque shaders run over the same tiles, and each returns at the
+  other's pixels by testing that bit, before it rebuilds the surface. The
+  transparent shaders return by their arms, as before.
+
+A phase's material list holds its two shaders in slots 0 and 1, and an
+instance activates the slot of its material's shader. A frame with no
+translucent instance in view therefore never dispatches a translucent shader.
+The opaque shader in slot 0 writes the background and runs every frame; the
+translucent one writes nothing where no surface was drawn.
 
 ## Masked coverage shaders
 
@@ -151,9 +178,10 @@ per-material one but reads its 12 taps from that window, so both modes share
 the lighting suffix. The window origin is the first tap of the tile's first pixel, so every
 tap of every pixel in the tile lands inside it.
 
-The opaque pass writes zero to the lit target and the diffuse radiance history
-where no surface was drawn, as pixel mapping does in the pipelines mode. It
-therefore runs on every frame, even with no opaque instance. The transparent
+The opaque shader of the materials that aren't translucent writes zero to the
+lit target and the diffuse radiance history where no surface was drawn, as
+pixel mapping does in the pipelines mode. It therefore runs on every frame,
+even with no opaque instance. The transparent
 pass returns early for a pixel whose key isn't one of its arms, because the
 instance target still holds the opaque layer where no blended surface was
 drawn.
@@ -172,8 +200,14 @@ drawn.
   `workgroup_barrier`, including threads outside the image.
 - **Keep every tap in the window.** A change to the upsample's footprint must
   change the window's size and origin with it.
+- **Keep far-side lighting out of the other shaders.** A cost only translucent
+  materials need belongs in the translucent variants. Don't merge the
+  variants' features into one shader.
+- **Write each pixel once.** Material evaluation records a phase's dispatches
+  unordered, so exactly one of them may write a pixel: one shader clears the
+  background, and each opaque shader returns at the other's pixels.
 - **Draw only covered materials.** A material in the uber mode stays unavailable
-  until its phase's shader holds its arm, and a masked material until both
+  until the shader of its phase and kind holds its arm, and a masked material until both
   coverage shaders hold its arm, so no instance is admitted against a shader
   that can't shade or test it.
 - **Measure computed coordinates, don't assume them.** A stage samples an image
@@ -192,8 +226,8 @@ drawn.
 
 - The visibility generator tests check that the tile upsample returns what the
   global upsample returns at even and odd extents, that an uber program links
-  and lowers to the platform shader language in both phases, with arms and
-  without any, and that arm keys follow program, values, and phase.
+  and lowers to the platform shader language for every variant, with arms and
+  without any, and that arm keys follow program, values, and variant.
 - The material handler tests check that an assembled shader holds one arm per
   distinct material and grows when a material is added, that colliding keys
   fail the bake, and that a stored and a solved variant list the same static

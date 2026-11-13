@@ -193,6 +193,27 @@ fn json_documents_pick_their_surface() {
 	assert_eq!(graph.surface().roughness, None);
 }
 
+/// A graph is translucent when its surface sets `translucency`, whatever the input computes, and not otherwise.
+#[test]
+fn a_surface_that_sets_translucency_makes_a_translucent_graph() {
+	let leaf = json::parse(
+		r#"{ nodes: [
+			{ name: "albedo", node: "image", texture: "base_color", type: "vector3" },
+			{ name: "surface", node: "surface", base_color: "albedo", translucency: [0.0, 0.0, 0.0] },
+		] }"#,
+	)
+	.expect("a surface with translucency should parse");
+	assert!(leaf.is_translucent());
+
+	let stone = json::parse(r#"{ nodes: [{ name: "surface", node: "surface", roughness: 0.9 }] }"#)
+		.expect("a surface without translucency should parse");
+	assert!(!stone.is_translucent());
+
+	// `translucency` is a colour, as `base_color` is.
+	json::parse(r#"{ nodes: [{ name: "surface", node: "surface", translucency: 0.5 }] }"#)
+		.expect_err("a float translucency should not parse");
+}
+
 #[test]
 fn json_error_messages_name_the_node_and_the_likely_cause() {
 	let error = json::parse(r#"{ nodes: [{ name: "surface", node: "surface", metalness: [1.0, 0.0] }] }"#)

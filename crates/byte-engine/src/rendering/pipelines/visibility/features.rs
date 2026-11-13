@@ -70,10 +70,74 @@ impl std::str::FromStr for MaterialEvaluationMode {
 	}
 }
 
-/// The IDs of the uber material evaluation shaders, opaque then transparent, which only
+/// The IDs of the uber material evaluation shaders, in the order of [`UberVariant::ALL`], which only
 /// [`MaterialEvaluationMode::Uber`] uses. They are resources with no asset behind them: the bake assembles each from
-/// every material variant the store holds.
-pub(crate) const UBER_MATERIAL_SHADERS: [&str; 2] = [ASSEMBLED_SHADERS[2], ASSEMBLED_SHADERS[3]];
+/// every material variant of its kind the store holds.
+pub(crate) const UBER_MATERIAL_SHADERS: [&str; 4] = [
+	ASSEMBLED_SHADERS[2],
+	ASSEMBLED_SHADERS[3],
+	ASSEMBLED_SHADERS[4],
+	ASSEMBLED_SHADERS[5],
+];
+
+/// The `UberVariant` struct names one uber material evaluation shader: the phase it shades, and whether it holds the
+/// translucent materials of that phase or the others.
+///
+/// Translucent materials light their surface from its far side too, which costs every pixel a shader shades, so they
+/// get shaders of their own and no other material runs that code. Use it to index the per-shader state of the bake,
+/// the loader, and the renderer with [`Self::index`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct UberVariant {
+	/// The transparent phase's shader when set, the opaque phase's otherwise.
+	pub transparent: bool,
+	/// The shader of the phase's translucent materials when set, see
+	/// [`resource_management::bemx::Graph::is_translucent`].
+	pub translucent: bool,
+}
+
+impl UberVariant {
+	/// Every variant, in the order of [`UBER_MATERIAL_SHADERS`] and of [`Self::index`].
+	pub(crate) const ALL: [Self; 4] = [
+		Self::new(false, false),
+		Self::new(true, false),
+		Self::new(false, true),
+		Self::new(true, true),
+	];
+
+	pub(crate) const fn new(transparent: bool, translucent: bool) -> Self {
+		Self {
+			transparent,
+			translucent,
+		}
+	}
+
+	/// Returns the variant whose shader holds the arm `key` of a material of the transparent phase when `transparent`
+	/// is set, of the opaque one otherwise. The key's lowest bit marks a translucent material; see
+	/// [`super::shader_generator::uber_arm_key`].
+	pub(crate) const fn of_arm(key: u32, transparent: bool) -> Self {
+		Self::new(transparent, key & 1 != 0)
+	}
+
+	/// Returns the variant's position in [`Self::ALL`].
+	pub(crate) const fn index(self) -> usize {
+		self.transparent as usize + 2 * self.translucent as usize
+	}
+
+	/// The shader that writes the background: the opaque phase's shader of the materials that are not translucent.
+	/// Material evaluation dispatches it every frame.
+	pub(crate) const BACKGROUND: Self = Self::new(false, false);
+
+	/// Returns the variant's evaluation slot in its phase's material list. A phase lists at most its two shaders, and
+	/// an instance activates the slot of its material's, so a frame without translucent instances skips their shader.
+	pub(crate) const fn evaluation_index(self) -> u32 {
+		self.translucent as u32
+	}
+
+	/// Returns the variant's shader ID.
+	pub(crate) const fn shader(self) -> &'static str {
+		UBER_MATERIAL_SHADERS[self.index()]
+	}
+}
 
 /// The IDs of the coverage shaders, the masked visibility pass's fragment then the masked shadow passes', which every
 /// mode uses. The bake assembles each from every masked material variant the store holds, with one arm per distinct
@@ -81,11 +145,13 @@ pub(crate) const UBER_MATERIAL_SHADERS: [&str; 2] = [ASSEMBLED_SHADERS[2], ASSEM
 pub(crate) const COVERAGE_SHADERS: [&str; 2] = [ASSEMBLED_SHADERS[0], ASSEMBLED_SHADERS[1]];
 
 /// Every assembled shader: the [`COVERAGE_SHADERS`], which every mode bakes, then the [`UBER_MATERIAL_SHADERS`].
-const ASSEMBLED_SHADERS: [&str; 4] = [
+const ASSEMBLED_SHADERS: [&str; 6] = [
 	"byte_engine/rendering/visibility/masked-visibility-coverage.uber",
 	"byte_engine/rendering/visibility/masked-depth-coverage.uber",
 	"byte_engine/rendering/visibility/material-evaluation-opaque.uber",
 	"byte_engine/rendering/visibility/material-evaluation-transparent.uber",
+	"byte_engine/rendering/visibility/material-evaluation-opaque-translucent.uber",
+	"byte_engine/rendering/visibility/material-evaluation-transparent-translucent.uber",
 ];
 
 /// The `VisibilityFeatures` struct records which optional visibility features a project builds into its shaders.
@@ -463,7 +529,10 @@ mod tests {
 			assert!(uber.excludes(&id), "asset: {asset}");
 		}
 		assert_eq!(pipelines.assembled_resources(), COVERAGE_SHADERS);
-		assert_eq!(uber.assembled_resources(), [COVERAGE_SHADERS, UBER_MATERIAL_SHADERS].concat());
+		assert_eq!(
+			uber.assembled_resources(),
+			[&COVERAGE_SHADERS[..], &UBER_MATERIAL_SHADERS[..]].concat()
+		);
 	}
 
 	#[test]

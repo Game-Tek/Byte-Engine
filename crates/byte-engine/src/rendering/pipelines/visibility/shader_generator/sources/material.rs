@@ -80,9 +80,9 @@ material_evaluation_tile_window: fn (input: StageInput) -> void {
 "#;
 
 /// Picks the pixel a thread of an uber evaluation shader shades: its own pixel of the 8 x 8 tile its workgroup
-/// covers. A pixel no surface covers returns; in the opaque phase it first writes the zeros the per-material mode's
-/// pixel mapping writes, so the background and the next frame's rays never read light of an older frame there. The
-/// surface prefix follows.
+/// covers. A pixel no surface covers returns; the shader that sets `clears_background`, one of the opaque phase's,
+/// first writes the zeros the per-material mode's pixel mapping writes, so the background and the next frame's rays
+/// never read light of an older frame there. The surface prefix follows.
 pub(crate) const MATERIAL_EVALUATION_TILE_SOURCE: &str = r#"
 material_evaluation_tile: fn (input: StageInput) -> void {
 	let pixel_coordinates: vec2u = input.thread_id;
@@ -92,7 +92,7 @@ material_evaluation_tile: fn (input: StageInput) -> void {
 	}
 	let instance_index: u32 = image_load_u32(visibility_buffer.instance_index_render_target, pixel_coordinates);
 	if (instance_index == 4294967295) {
-		if (!transparent) {
+		if (clears_background) {
 			let zero: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 			write(material_evaluation.lit_map, pixel_coordinates, zero);
 			write(material_evaluation.diffuse_radiance_map, pixel_coordinates, zero);
@@ -102,6 +102,16 @@ material_evaluation_tile: fn (input: StageInput) -> void {
 	let mesh: Mesh = scene.meshes[instance_index];
 	// The arm key of the pixel's material, which selects its surface code below.
 	let material_arm: u32 = scene.material_evaluations.evaluation_indices[mesh.material & MESH_MATERIAL_MASK];
+}
+"#;
+
+/// Leaves an opaque uber shader's thread at a pixel the phase's other shader shades: `translucent_arm_bit` is the
+/// lowest bit of this shader's arm keys, which `uber_arm_key` sets for translucent materials alone.
+pub(crate) const MATERIAL_EVALUATION_TILE_KIND_SOURCE: &str = r#"
+material_evaluation_tile_kind: fn () -> void {
+	if ((material_arm & 1) != translucent_arm_bit) {
+		return;
+	}
 }
 "#;
 
@@ -317,6 +327,7 @@ material_evaluation_defaults: fn () -> void {
 	let occlusion: f16 = 1.0;
 	let emission: vec3f16 = vec3f16(0.0, 0.0, 0.0);
 	let transmission: vec3f = vec3f(0.0, 0.0, 0.0);
+	let translucency: vec3f16 = vec3f16(0.0, 0.0, 0.0);
 }
 "#;
 
@@ -509,6 +520,23 @@ material_evaluation_suffix: fn () -> void {
 	// stay live through the loop. Material occlusion, like baked AO, applies to indirect light only. Direct light has
 	// its own shadows.
 	let diffuse: vec3f = vec3f(indirect_diffuse_albedo) * indirect_diffuse_radiance * f32(occlusion) + vec3f(emission);
+	// A translucent surface is a thin sheet: `translucency` is the share of the light entering one face that leaves
+	// the other, as the albedo is the share that leaves the face it entered. Light on the far side of the surface
+	// therefore takes the diffuse weights with that share in place of the albedo. See the lighting design note.
+	// A material that is not translucent drops every statement that reads these locals.
+	let indirect_translucency: vec3f16 = one_minus_metalness * diffuse_transmission(NdotV, roughness) * translucency;
+	let direct_translucency: vec3f16 = indirect_translucency
+		/ (f16(3.14159265359) * (f16(1.0) - average_specular_albedo(roughness)));
+	// Where the surface passes no light, such as a stem in a leaf atlas, far-side lights are skipped before their
+	// shadows are filtered.
+	let passes_light: bool = max(max(translucency.x, translucency.y), translucency.z) > 0.0;
+	// The environment lights the far side too. Screen-space and ray-traced light and lightmaps are gathered on the
+	// near side only, so they add nothing here.
+	if (passes_light && adds_environment_diffuse) {
+		diffuse = diffuse + vec3f(indirect_translucency)
+			* sample_environment_irradiance(material_evaluation, vec3f(0.0, 0.0, 0.0) - vec3f(normal))
+			* (material_evaluation.lighting_data.environment_intensity * environment_visibility * f32(occlusion));
+	}
 	let specular: vec3f = vec3f(0.0, 0.0, 0.0);
 	let light_count: u32 = material_evaluation.lighting_data.light_count;
 
@@ -549,7 +577,13 @@ material_evaluation_suffix: fn () -> void {
 			}
 
 			let L_material: vec3f16 = vec3f16(L);
-			let NdotL: f16 = max(dot(normal, L_material), f16(0.0));
+			// The cosine of the light on the side of the surface it lights. A negative cosine puts the light on the far
+			// side, where it lights only a surface that passes light.
+			let light_cosine: f16 = dot(normal, L_material);
+			let NdotL: f16 = max(light_cosine, f16(0.0));
+			if (passes_light && light_cosine < 0.0) {
+				NdotL = f16(0.0) - light_cosine;
+			}
 			if (NdotL <= 0.0) {
 				continue;
 			}
@@ -579,9 +613,13 @@ material_evaluation_suffix: fn () -> void {
 						let shadow_view2: u32 = material_evaluation.lighting_data.lights[light_index].shadow_views[2];
 						let shadow_view3: u32 = material_evaluation.lighting_data.lights[light_index].shadow_views[3];
 						// The same normal offset as the resolve's: sin(theta) texels along the triangle normal on the
-						// camera's side, where theta lies between that normal and the direction toward the sun.
+						// sun's side, where theta lies between that normal and the direction toward the sun. On the
+						// camera's side, a surface lit from behind would move behind its own depth in the map.
 						let sun_cosine: f32 = dot(geometric_normal, L);
 						let normal_offset: vec3f = geometric_normal * sqrt(max(1.0 - sun_cosine * sun_cosine, 0.0));
+						if (sun_cosine < 0.0) {
+							normal_offset = normal_offset * (0.0 - 1.0);
+						}
 						occlusion_factor = f16(sample_directional_shadow(
 							scene, material_evaluation,
 							material_evaluation.depth_shadow_map,
@@ -665,6 +703,14 @@ material_evaluation_suffix: fn () -> void {
 						continue;
 					}
 				}
+			}
+
+			// Light that crossed the surface left its specular share on the far face, so it adds diffuse light only.
+			if (passes_light && light_cosine < 0.0) {
+				diffuse = diffuse + vec3f(direct_translucency * diffuse_transmission(NdotL, roughness))
+					* material_evaluation.lighting_data.lights[light_index].color
+					* (attenuation * f32(NdotL * occlusion_factor));
+				continue;
 			}
 
 			let H: vec3f16 = normalize(V_material + L_material);

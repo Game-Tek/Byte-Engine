@@ -417,7 +417,7 @@ error for it.
 | Casters | A cascade draws an instance only when its bounding sphere is at least 32 of the cascade's texels across. An instance of a merged mesh is measured by the bounding sphere of its largest copy, not by the sphere around all of them. Skinned instances always draw. Cone and point maps draw instances of every size. |
 | Holding a receiver | A cascade holds a receiver that lies inside its square, at least 10 texels from its edge, and inside its depth range, from where its casters start to its far side, give or take one depth step of 1/65535. With receivers fitting, a cascade's far side is the surface farthest from the light that the camera sees in that cascade's slice, so a cascade often doesn't hold a receiver of another slice. |
 | Beyond the last cascade | No sun shadow. |
-| Receiver | The surface point, moved off its triangle along the triangle's normal on the camera's side by sin θ texels of the cascade it's tested in, where θ is the angle between that normal and the direction toward the sun. |
+| Receiver | The surface point, moved off its triangle along the triangle's normal on the sun's side by sin θ texels of the cascade it's tested in, where θ is the angle between that normal and the direction toward the sun. |
 | Receiver plane | Each filter tap compares the stored depth with the depth of the receiver's triangle plane at the tap's texel center, moved toward the sun by 1.5 depth steps of 1/65535 per cascade, from cascade 0 at 1.5 to cascade 3 at 6. Where the sun is within about 3° of the plane, the plane's depth changes across the map as it would at that angle, a slope of 20. |
 | Penumbra width | On each side of an occluder's edge, the occluder's distance above the receiver along the light times the tangent of the light's angular radius. |
 | Penumbra cascade | Among the cascades from the receiver's own up to the one after the cascade its occluders are searched in that hold the receiver, the one where the penumbra's width w, in its texels, makes the larger of 2 / w and w / 6 least; the lower-numbered one where two tie. A penumbra of no width counts as 0.1 millimeters. |
@@ -519,7 +519,7 @@ The pipeline accepts a material whose render model is `Visibility` with the
 `MaterialEvaluation` pass, which is what every `.bema` file and imported model
 bakes to. Its surface code is generated from the material's
 [BEMX graph](/docs/reference/bemx): into the material's own evaluation shader
-in `pipelines` mode, and into the shader of its phase in `uber` mode.
+in `pipelines` mode, and into the shader of its phase and kind in `uber` mode.
 
 | Rule | Value |
 | --- | --- |
@@ -536,14 +536,16 @@ shade every pixel with the same surface and lighting:
 | Mode | Shaders | Work per phase |
 | --- | --- | --- |
 | `pipelines` | One evaluation shader per material program, specialized per set of static values | The material prepasses list each pipeline's pixels, then each pipeline shades its list. |
-| `uber` | One shader per phase that holds every material variant in the bake as one arm | One pass over the sink in 8 × 8-pixel tiles, without material prepasses. |
+| `uber` | One shader per phase and kind that holds every material variant of that phase and kind in the bake as one arm | One pass over the sink in 8 × 8-pixel tiles for each shader the frame uses, without material prepasses. |
 
 | Uber rule | Value |
 | --- | --- |
-| Arms | One per distinct program, set of static values, and phase. Variants that differ only in textures or dynamic values share an arm. |
-| Coverage | A material is drawn once the published shader of its phase holds its arm. A development build rebakes the shader when a material baked after it arrives; a release build logs one error for each material missing from the bake and doesn't draw it. |
-| Background | The opaque pass writes zero to `Lit` and `Diffuse Radiance History` at every pixel no opaque surface covers. |
-| Baked shaders | Material resources keep their graph instead of an evaluation shader. Every bake assembles both phases' shaders last, from every material variant in the store; they have no asset of their own. Changing the mode needs a forced rebake. |
+| Kinds | Each phase has two shaders: one for [translucent materials](#translucent-materials) and one for the rest. A material has an arm in exactly one of the four. |
+| Arms | One per distinct program, set of static values, phase, and kind. Variants that differ only in textures or dynamic values share an arm. |
+| Coverage | A material is drawn once the published shader of its phase and kind holds its arm. A development build rebakes the shader when a material baked after it arrives; a release build logs one error for each material missing from the bake and doesn't draw it. |
+| Background | The opaque pass of the materials that aren't translucent writes zero to `Lit` and `Diffuse Radiance History` at every pixel no opaque surface covers. It runs every frame. |
+| Unused shaders | A shader other than the one that writes the background runs only in a frame that draws an instance whose material has an arm in it. |
+| Baked shaders | Material resources keep their graph instead of an evaluation shader. Every bake assembles the four shaders last, from every material variant in the store; they have no asset of their own. Changing the mode needs a forced rebake. |
 
 The evaluation shader writes the graph's surface into these properties. A surface
 input the graph leaves out takes its [BEMX default](/docs/reference/bemx#surface),
@@ -557,6 +559,7 @@ and a graph without a normal keeps the geometric one:
 | `roughness` | Half float | 0.5 |
 | `occlusion` | Half float, multiplying indirect diffuse light | 1 |
 | `emission` | Three half floats, added to the diffuse light | 0, 0, 0 |
+| `translucency` | Three half floats, in translucent materials only | 0, 0, 0 |
 
 The surface's world-space normal is converted to the tangent frame. A BEMX
 `image` node samples its texture at its coordinates with the level of detail
@@ -570,6 +573,27 @@ the vertex UV or reading texture coordinates makes it reconstruct the UV.
 A BEMX `time` node reads the frame clock's elapsed time in seconds, the clock
 every pipeline manager receives for the frame. Every pass of a frame reads the
 same time.
+
+### Translucent materials
+
+A material whose graph sets the BEMX
+[`translucency`](/docs/reference/bemx#surface) input is translucent, whatever
+value the input computes. Its evaluation shader lights the surface from both
+sides. No other material's shader holds that code: in `pipelines` mode each
+material has its own shader, and in `uber` mode translucent materials have a
+shader of their own in each phase.
+
+The far side of a surface is the side its shading normal points away from. A
+double-sided surface's normal points to the viewer's side.
+
+| Light | On a translucent surface |
+| --- | --- |
+| A light on the near side | Lights the surface as it does any other. |
+| A light on the far side | Adds diffuse light and no specular light. The diffuse light is the near side's, with `translucency` in place of the base color and the angle the light makes with the far side in place of the angle with the near side. |
+| Shadows | A light on the far side is shadowed by what lies between it and the surface, as a light on the near side is. The surface doesn't shadow itself. |
+| Environment | With environment diffuse light, the surface adds the environment's irradiance on its far side, weighted as indirect diffuse light is, with `translucency` in place of the base color. |
+| Other indirect diffuse light | Screen-space and ray-traced indirect light and lightmaps light the near side only. |
+| Ray tracing | Rays that hit the surface read no `translucency`. |
 
 ### Indirect diffuse light
 

@@ -31,7 +31,7 @@ use self::ast::*;
 pub(crate) use self::ast::{MATERIAL_DEBUG_VIEW_NAMES, remove_statements_reading};
 use self::sources::*;
 use super::VisibilityFeatures;
-use super::features::{COVERAGE_SHADERS, MaterialEvaluationMode, UBER_MATERIAL_SHADERS};
+use super::features::{COVERAGE_SHADERS, MaterialEvaluationMode, UBER_MATERIAL_SHADERS, UberVariant};
 use super::layout::{
 	LIGHT_CLUSTER_COLUMNS, LIGHT_CLUSTER_MASK_WORD_COUNT, LIGHT_CLUSTER_ROWS, LIGHT_CLUSTER_SLICES,
 	LOCAL_SHADOW_SIZE_CLASS_COUNT, MAX_BINDLESS_TEXTURES, MAX_IES_PROFILES, MAX_LIGHTMAPS, MAX_LIGHTS, MAX_MATERIAL_TEXTURES,
@@ -190,8 +190,11 @@ impl VisibilityShaderGenerator {
 		}
 	}
 
-	/// Builds the uber material evaluation shader of one phase: one compute program that shades every pixel of the
-	/// phase whose material has one of `arms`, in 8 x 8-pixel tiles.
+	/// Builds the uber material evaluation shader of `variant`: one compute program that shades every pixel of the
+	/// variant's phase whose material has one of `arms`, in 8 x 8-pixel tiles.
+	///
+	/// A phase's translucent materials have a shader apart from its other materials, so only their pixels run the code
+	/// that lights a surface from its far side. Pass each shader the arms [`uber_arm_key`] keys for its variant.
 	///
 	/// Each thread reconstructs its pixel's surface once, runs the arm of its material's key, and lights the result
 	/// with the same suffix as a per-material shader. A material's static values are literals in its arm, so the arm
@@ -200,7 +203,8 @@ impl VisibilityShaderGenerator {
 	///
 	/// Call it on a generator built for [`MaterialEvaluationMode::Uber`], whose scope declares the tile window. Compile it
 	/// with 8 × 8-thread workgroups; the bake does so through [`ProgramGenerator::generate_assembled`].
-	pub fn uber_program<'a>(&self, transparent: bool, arms: &'a [AssembledArm<'a>]) -> Result<Node<'a>, String> {
+	pub(crate) fn uber_program<'a>(&self, variant: UberVariant, arms: &'a [AssembledArm<'a>]) -> Result<Node<'a>, String> {
+		let transparent = variant.transparent;
 		let bodies = arms
 			.iter()
 			.map(|arm| {
@@ -219,12 +223,22 @@ impl VisibilityShaderGenerator {
 				.collect::<Vec<_>>()
 		};
 
-		// The phase is a literal, so each phase's shader compiles only its own path of the shared sources.
-		let mut statements = vec![Node::let_assignment(
-			"transparent",
-			"bool",
-			Node::literal_expression(if transparent { "true" } else { "false" }),
-		)];
+		let literal = |value: bool| Node::literal_expression(if value { "true" } else { "false" });
+		// The phase is a literal, so each phase's shader compiles only its own path of the shared sources. Of the opaque
+		// phase's two shaders, the one every frame runs writes the background, so no pixel is written twice.
+		let mut statements = vec![
+			Node::let_assignment("transparent", "bool", literal(transparent)),
+			Node::let_assignment("clears_background", "bool", literal(!transparent && !variant.translucent)),
+		];
+		if !transparent {
+			// Both opaque shaders run over the same pixels, and the lowest bit of a pixel's arm key says which one shades
+			// it, so the other returns before it rebuilds the surface.
+			statements.push(Node::let_assignment(
+				"translucent_arm_bit",
+				"u32",
+				Node::literal_expression(if variant.translucent { "1" } else { "0" }),
+			));
+		}
 		statements.extend(material_evaluation_tile_statements(transparent));
 		if transparent {
 			// The instance target still holds the opaque layer where no blend surface was drawn. Those pixels return before
@@ -340,9 +354,8 @@ pub(crate) const UBER_WORKGROUP: utils::Extent = utils::Extent::square(8);
 /// The `AssembledShader` enum names what one assembled shader the visibility renderer bakes is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AssembledShader {
-	/// The uber material evaluation shader of the transparent phase when `transparent` is set, of the opaque one
-	/// otherwise; see [`UBER_MATERIAL_SHADERS`].
-	Evaluation { transparent: bool },
+	/// One of the uber material evaluation shaders; see [`UBER_MATERIAL_SHADERS`].
+	Evaluation(UberVariant),
 	/// The coverage shader of a masked raster pass; see [`COVERAGE_SHADERS`].
 	Coverage(CoveragePass),
 }
@@ -350,8 +363,8 @@ enum AssembledShader {
 impl AssembledShader {
 	/// Returns what the assembled shader `id` is for, or the error to report when the renderer names no such shader.
 	fn of(id: &str) -> Result<Self, String> {
-		if let Some(phase) = UBER_MATERIAL_SHADERS.iter().position(|shader| *shader == id) {
-			return Ok(Self::Evaluation { transparent: phase == 1 });
+		if let Some(variant) = UberVariant::ALL.into_iter().find(|variant| variant.shader() == id) {
+			return Ok(Self::Evaluation(variant));
 		}
 		match COVERAGE_SHADERS.iter().position(|shader| *shader == id) {
 			Some(0) => Ok(Self::Coverage(CoveragePass::Visibility)),
@@ -364,13 +377,20 @@ impl AssembledShader {
 }
 
 /// Returns the uber shader arm key of a material: the hash of its program's `identity`, the components of its static
-/// values, and its phase.
+/// values, and its phase, with the lowest bit set for a translucent material and clear for any other.
 ///
-/// Materials with equal keys run the same code, so they share an arm. The bake writes the key into the uber shader,
-/// and the runtime into the material's entry of the evaluation table, so both must call this function. The key is
-/// never `u32::MAX`, which marks a material no evaluation shades.
-pub fn uber_arm_key(identity: u64, static_values: impl IntoIterator<Item = f32>, transparent: bool) -> u32 {
-	arm_key(identity, static_values, u8::from(transparent))
+/// Materials with equal keys run the same code, so they share an arm. The bake writes the key into the uber shader
+/// of `variant`, and the runtime into the material's entry of the evaluation table, so both must call this function.
+/// The opaque phase's two shaders tell their pixels apart by the lowest bit alone, before they rebuild a surface.
+/// The key is never `u32::MAX`, which marks a material no evaluation shades.
+pub(crate) fn uber_arm_key(identity: u64, static_values: impl IntoIterator<Item = f32>, variant: UberVariant) -> u32 {
+	let key = arm_key(identity, static_values, u8::from(variant.transparent));
+	if variant.translucent {
+		// `arm_key` returns at most `u32::MAX - 1`, whose lowest bit is clear, so only that key would become `u32::MAX`.
+		(key | 1).min(u32::MAX - 2)
+	} else {
+		key & !1
+	}
 }
 
 /// Returns the coverage shader arm key of a masked material: the hash of its program's `identity` and the components
@@ -483,7 +503,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		Ok(Some(root))
 	}
 
-	/// Keeps a material in the uber shader of its phase, under the key [`uber_arm_key`] gives it, and a masked material in
+	/// Keeps a material in the uber shader of its phase and kind, under the key [`uber_arm_key`] gives it, and a masked material in
 	/// both coverage shaders, under the key [`coverage_arm_key`] gives it.
 	fn assembled_key(&self, id: &str, material: &AssembledMaterial<'_>) -> Result<Option<u32>, String> {
 		let shader = AssembledShader::of(id)?;
@@ -492,9 +512,10 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		}
 		let static_values = material.static_values.iter().flatten().copied();
 		Ok(match shader {
-			// Each phase's shader evaluates the materials of its own alpha mode.
-			AssembledShader::Evaluation { transparent } => (transparent == matches!(material.alpha_mode, AlphaMode::Blend))
-				.then(|| uber_arm_key(material.identity, static_values, transparent)),
+			// Each shader evaluates the materials of its own alpha mode that are translucent, or those that are not.
+			AssembledShader::Evaluation(variant) => (variant.transparent == matches!(material.alpha_mode, AlphaMode::Blend)
+				&& variant.translucent == material.graph.is_translucent())
+			.then(|| uber_arm_key(material.identity, static_values, variant)),
 			AssembledShader::Coverage(_) => {
 				matches!(material.alpha_mode, AlphaMode::Mask(_)).then(|| coverage_arm_key(material.identity, static_values))
 			}
@@ -509,15 +530,15 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		arms: &'a [AssembledArm<'a>],
 	) -> Result<(Node<'a>, ShaderGenerationSettings), String> {
 		Ok(match AssembledShader::of(id)? {
-			AssembledShader::Evaluation { transparent } => {
-				let name = if transparent {
-					"transparent_uber_material_evaluation"
-				} else {
-					"opaque_uber_material_evaluation"
-				};
+			AssembledShader::Evaluation(variant) => {
+				let name = format!(
+					"{}{}_uber_material_evaluation",
+					if variant.transparent { "transparent" } else { "opaque" },
+					if variant.translucent { "_translucent" } else { "" }
+				);
 				(
-					self.uber_program(transparent, arms)?,
-					ShaderGenerationSettings::compute(UBER_WORKGROUP).name(name.to_string()),
+					self.uber_program(variant, arms)?,
+					ShaderGenerationSettings::compute(UBER_WORKGROUP).name(name),
 				)
 			}
 			AssembledShader::Coverage(pass) => {

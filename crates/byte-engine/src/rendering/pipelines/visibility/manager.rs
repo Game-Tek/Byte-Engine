@@ -20,7 +20,8 @@ use utils::{AvailabilityGraph, Extent, StableVec};
 
 use super::acceleration_structures::{SceneAccelerationStructures, TracedPrimitive};
 use super::features::{
-	CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, MaterialEvaluationMode, RENDER_PARAMETERS, VisibilityFeatures,
+	CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, MaterialEvaluationMode, RENDER_PARAMETERS, UberVariant,
+	VisibilityFeatures,
 };
 use super::geometry::{GeometryCapacity, GeometryHandles, MeshData, allocate_vertices};
 use super::instance_rebuild::{
@@ -514,10 +515,6 @@ enum Availability {
 	Texture(u32),
 }
 
-/// The evaluation slot of each phase's uber shader, which is the only evaluation of its phase in the uber material
-/// evaluation mode.
-const UBER_EVALUATION_INDEX: u32 = 0;
-
 /// One material's render-thread pipeline and authored alpha and sidedness contract.
 struct LoadedMaterial {
 	index: u32,
@@ -822,12 +819,12 @@ pub struct VisibilityPipelineManager {
 	posed_uv_copies_recorded: bool,
 	/// Adopted materials indexed by material table slot.
 	loaded_materials: Vec<Option<LoadedMaterial>>,
-	/// The uber material evaluation shader of each phase, opaque then transparent, once one compiled. Only the uber
+	/// Each uber material evaluation shader, in the order of [`UberVariant::ALL`], once one compiled. Only the uber
 	/// material evaluation mode loads them.
-	uber_shaders: [Option<UberShader>; 2],
-	/// The phases whose uber shader is loading, or baking again, so materials it lacks wait for it instead of starting
+	uber_shaders: [Option<UberShader>; 4],
+	/// The variants whose uber shader is loading, or baking again, so materials it lacks wait for it instead of starting
 	/// another bake.
-	uber_shaders_loading: [bool; 2],
+	uber_shaders_loading: [bool; 4],
 	/// The arm keys of the published coverage shaders, in ascending order, once they compiled.
 	coverage_keys: Option<Arc<[u32]>>,
 	/// Whether the coverage shaders are loading, or baking again, so masked materials they lack wait for them instead of
@@ -1066,8 +1063,8 @@ impl VisibilityPipelineManager {
 			geometry,
 			posed_uv_copies_recorded: false,
 			loaded_materials: Vec::new(),
-			uber_shaders: [None, None],
-			uber_shaders_loading: [settings.features.material_evaluation == MaterialEvaluationMode::Uber; 2],
+			uber_shaders: [None, None, None, None],
+			uber_shaders_loading: [settings.features.material_evaluation == MaterialEvaluationMode::Uber; 4],
 			coverage_keys: None,
 			coverage_shaders_loading: true,
 			loaded_ies_profiles: HashMap::default(),
@@ -1312,17 +1309,17 @@ impl VisibilityPipelineManager {
 					self.adopt_material(material, evaluation);
 					materials_changed = true;
 				}
-				VisibilityLoaderEvent::UberShaderReady {
-					transparent,
-					keys,
-					pipeline,
-				} => {
+				VisibilityLoaderEvent::UberShaderReady { variant, keys, pipeline } => {
 					self.adopt_uber_shader(
-						transparent,
+						variant,
 						UberShader {
 							keys,
 							pipeline,
-							name: "Uber Shader".into(),
+							name: if variant.translucent {
+								"Translucent Uber Shader".into()
+							} else {
+								"Uber Shader".into()
+							},
 						},
 					);
 					materials_changed = true;
@@ -1336,11 +1333,11 @@ impl VisibilityPipelineManager {
 					self.coverage_shaders_loading = false;
 					error!("The coverage shaders of the masked passes are unavailable: {error}");
 				}
-				VisibilityLoaderEvent::UberShaderUnavailable { transparent, error } => {
-					self.uber_shaders_loading[usize::from(transparent)] = false;
+				VisibilityLoaderEvent::UberShaderUnavailable { variant, error } => {
+					self.uber_shaders_loading[variant.index()] = false;
 					error!(
-						"The {} uber material evaluation shader is unavailable: {error}",
-						if transparent { "transparent" } else { "opaque" }
+						"The uber material evaluation shader {} is unavailable: {error}",
+						variant.shader()
 					);
 				}
 				VisibilityLoaderEvent::MaterialUnavailable { index } => {
@@ -1537,7 +1534,10 @@ impl VisibilityPipelineManager {
 		}
 		let name: Arc<str> = id.into();
 		if !evaluated {
-			self.uncovered(matches!(alpha_mode, AlphaMode::Blend), &name);
+			// Only an arm can be uncovered: a material's own pipeline always shades it.
+			if let MaterialEvaluator::Arm(key) = evaluation {
+				self.uncovered(UberVariant::of_arm(key, matches!(alpha_mode, AlphaMode::Blend)), &name);
+			}
 		}
 		if !tested {
 			self.untested(&name);
@@ -1557,13 +1557,14 @@ impl VisibilityPipelineManager {
 	}
 
 	/// Returns whether `evaluation` can shade a material of `alpha_mode` now: always for its own pipeline, and for an arm
-	/// once its phase's uber shader holds it.
+	/// once the uber shader of its phase and kind holds it.
 	fn covers(&self, evaluation: MaterialEvaluator<ghi::PipelineHandle>, alpha_mode: AlphaMode) -> bool {
 		match evaluation {
 			MaterialEvaluator::Pipeline(_) => true,
-			MaterialEvaluator::Arm(key) => self.uber_shaders[usize::from(matches!(alpha_mode, AlphaMode::Blend))]
-				.as_ref()
-				.is_some_and(|shader| shader.keys.binary_search(&key).is_ok()),
+			MaterialEvaluator::Arm(key) => self.uber_shaders
+				[UberVariant::of_arm(key, matches!(alpha_mode, AlphaMode::Blend)).index()]
+			.as_ref()
+			.is_some_and(|shader| shader.keys.binary_search(&key).is_ok()),
 		}
 	}
 
@@ -1623,19 +1624,21 @@ impl VisibilityPipelineManager {
 		);
 	}
 
-	/// Publishes a phase's newly compiled uber `shader`, and makes every material of the phase available exactly when
-	/// the shader holds its arm.
+	/// Publishes the newly compiled uber `shader` of `variant`, and makes every material of the variant available
+	/// exactly when the shader holds its arm.
 	///
 	/// Next, call [`Self::rebuild_material_lists`] once the frame's events are adopted.
-	fn adopt_uber_shader(&mut self, transparent: bool, shader: UberShader) {
-		let phase = usize::from(transparent);
-		self.uber_shaders[phase] = Some(shader);
-		self.uber_shaders_loading[phase] = false;
+	fn adopt_uber_shader(&mut self, variant: UberVariant, shader: UberShader) {
+		self.uber_shaders[variant.index()] = Some(shader);
+		self.uber_shaders_loading[variant.index()] = false;
 		for slot in 0..self.loaded_materials.len() {
 			let Some(material) = &self.loaded_materials[slot] else {
 				continue;
 			};
-			if matches!(material.alpha_mode, AlphaMode::Blend) != transparent {
+			let MaterialEvaluator::Arm(key) = material.evaluation else {
+				continue;
+			};
+			if UberVariant::of_arm(key, matches!(material.alpha_mode, AlphaMode::Blend)) != variant {
 				continue;
 			}
 			let evaluated = self.covers(material.evaluation, material.alpha_mode);
@@ -1643,18 +1646,18 @@ impl VisibilityPipelineManager {
 			let (index, name) = (material.index, material.name.clone());
 			self.availability.set_key_available(&Availability::Material(index), covered);
 			if !evaluated {
-				self.uncovered(transparent, &name);
+				self.uncovered(variant, &name);
 			}
 		}
 	}
 
-	/// Handles a material of one phase whose arm the phase's uber shader lacks. Development builds bake the shader
+	/// Handles a material whose arm the uber shader of its `variant` lacks. Development builds bake the shader
 	/// again from every material the store holds; release builds can't, so they report the material.
 	///
-	/// While the phase's shader is loading, or baking again for another material, its arrival checks the materials
+	/// While the variant's shader is loading, or baking again for another material, its arrival checks the materials
 	/// again instead.
-	fn uncovered(&mut self, transparent: bool, material: &str) {
-		let phase = usize::from(transparent);
+	fn uncovered(&mut self, variant: UberVariant, material: &str) {
+		let phase = variant.index();
 		if self.uber_shaders_loading[phase] {
 			return;
 		}
@@ -1662,7 +1665,7 @@ impl VisibilityPipelineManager {
 		{
 			let _ = material;
 			self.uber_shaders_loading[phase] = true;
-			self.loader.rebake_uber_shader(transparent);
+			self.loader.rebake_uber_shader(variant);
 		}
 		#[cfg(not(debug_assertions))]
 		error!(
@@ -1679,8 +1682,8 @@ impl VisibilityPipelineManager {
 	/// one per material. A
 	/// material that isn't ready keeps [`NO_EVALUATION`]; no admitted instance uses it.
 	///
-	/// In the uber mode, each phase's list holds its uber shader alone, and a ready material's table entry holds its arm
-	/// key, which the shader matches.
+	/// In the uber mode, each phase's list holds its uber shaders alone, the translucent materials' after the others',
+	/// and a ready material's table entry holds its arm key, which its shader matches.
 	fn rebuild_material_lists(&mut self) {
 		let render_info = &mut self.scene.render_info;
 		render_info.opaque_evaluations.clear();
@@ -1700,18 +1703,26 @@ impl VisibilityPipelineManager {
 					reads_backdrop |= material.reads_backdrop;
 				}
 			}
-			for (evaluations, shader) in [&mut render_info.opaque_evaluations, &mut render_info.transparent_evaluations]
-				.into_iter()
-				.zip(&self.uber_shaders)
-			{
-				if let Some(shader) = shader {
-					evaluations.push(MaterialEvaluation {
-						name: shader.name.clone(),
-						index: UBER_EVALUATION_INDEX,
-						pipeline: shader.pipeline,
-						reads_backdrop,
-					});
+			// `UberVariant::ALL` lists each phase's translucent shader after its other one.
+			for variant in UberVariant::ALL {
+				let Some(shader) = &self.uber_shaders[variant.index()] else {
+					continue;
+				};
+				// The opaque phase's translucent shader leaves the background to the other one, so it waits for it.
+				if variant.translucent && !variant.transparent && self.uber_shaders[UberVariant::BACKGROUND.index()].is_none() {
+					continue;
 				}
+				let evaluations = if variant.transparent {
+					&mut render_info.transparent_evaluations
+				} else {
+					&mut render_info.opaque_evaluations
+				};
+				evaluations.push(MaterialEvaluation {
+					name: shader.name.clone(),
+					index: variant.evaluation_index(),
+					pipeline: shader.pipeline,
+					reads_backdrop,
+				});
 			}
 			return;
 		}
@@ -1913,8 +1924,10 @@ impl VisibilityPipelineManager {
 					phase: instance_phase(&material.alpha_mode, material.double_sided),
 					evaluation: match material.evaluation {
 						MaterialEvaluator::Pipeline(_) => material_evaluations[entity.shader_mesh.material_index() as usize],
-						// Each phase's uber shader is the only evaluation of its phase.
-						MaterialEvaluator::Arm(_) => UBER_EVALUATION_INDEX,
+						// The phase has one uber shader for its translucent materials and one for the others.
+						MaterialEvaluator::Arm(key) => {
+							UberVariant::of_arm(key, matches!(material.alpha_mode, AlphaMode::Blend)).evaluation_index()
+						}
 					},
 					double_sided: material.double_sided,
 				})

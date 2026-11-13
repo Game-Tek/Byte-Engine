@@ -65,6 +65,51 @@ A change here must keep these rules:
   at or below one.
 - Diffuse light stays above zero at a grazing view on a rough surface.
 
+## Thin surfaces pass light to their far side
+
+A leaf is a thin sheet: part of the light that enters one face scatters out of
+the other. A material says how much with the BEMX `translucency` input, and
+the [rendering reference](/docs/reference/rendering#translucent-materials)
+specifies what it adds. This isn't subsurface scattering in the sense of light
+spreading sideways under skin: nothing is blurred across pixels, and the pixel
+only gains light from lights behind it.
+
+The light loop of `MATERIAL_EVALUATION_SUFFIX_SOURCE` drops a light whose
+cosine with the shading normal isn't positive. For a translucent material it
+keeps a light with a negative cosine, takes the cosine on the far side, runs
+the same attenuation and shadow code, and then adds diffuse light only:
+
+`f_t = (1 − metalness) · translucency / π · (1 − E(μl)) · (1 − E(μv)) / (1 − E_avg)`
+
+That's the coupled diffuse term with `translucency` for the albedo and `μl`
+measured on the far side, so the specular lobe takes its share on the way in
+and on the way out exactly as it does for near-side light.
+
+The far-side code reads `translucency` or a local computed from it, and
+`material_evaluation_suffix_statements` in `shader_generator/ast.rs` removes
+every such statement from a material that doesn't set the input. In the uber
+mode, translucent materials have
+[shaders of their own](/docs/develop/rendering/visibility/material-evaluation#translucent-materials-take-their-own-shaders).
+
+A light behind a leaf must still reach it through the shadow map. Both sun
+shadow sites, `resolve_sun_shadow` in `sun-visibility.besl` and the transparent
+path of the light loop, move the receiver off its triangle on the sun's side.
+On the camera's side, a back-lit leaf would move behind its own depth in the
+map and shadow itself.
+
+A change here must keep these rules:
+
+- **Pay only where it's used.** Every far-side statement reads `translucency`
+  or a local computed from it, so a material without the input compiles none
+  of them.
+- **Share the light's path.** Far-side light uses the loop's attenuation,
+  cone, IES, and shadow code. Don't copy them into a second loop.
+- **Leave the receiver on the light's side.** A normal offset moves the
+  receiver toward the light it's tested against, never toward the camera.
+- **Keep the energy rule.** With `base_color` plus `translucency` at or under
+  one, near-side and far-side diffuse light plus specular light never exceed
+  the light that arrives.
+
 ## Lights are culled per cluster
 
 Every frame, the renderer splits each camera's view into a grid of clusters on

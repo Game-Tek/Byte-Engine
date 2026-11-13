@@ -383,6 +383,7 @@ pub(crate) fn fbx_material(material: Option<&ufbx::Material>) -> Result<Imported
 			emission: Some(emission),
 			occlusion,
 			transmission: None,
+			translucency: None,
 		},
 		material.features.double_sided.enabled,
 		alpha_mode,

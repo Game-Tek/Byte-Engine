@@ -332,6 +332,10 @@ pub struct Surface {
 	/// The light that passes through the surface toward the viewer, a `vector3` in the units of `emission`, such as
 	/// the scene behind water tinted by the water it crossed. Defaults to none.
 	pub transmission: Option<NodeId>,
+	/// The share of the light entering one face of the surface that leaves the other, a `vector3` from zero to one
+	/// per channel, such as a leaf's. A graph that sets it makes a translucent material, which a renderer may shade
+	/// with code other materials don't carry. Defaults to none.
+	pub translucency: Option<NodeId>,
 }
 
 impl Surface {
@@ -344,10 +348,11 @@ impl Surface {
 	pub const DEFAULT_EMISSION: Value = Value::Vector3([0.0, 0.0, 0.0]);
 	pub const DEFAULT_OCCLUSION: Value = Value::Float(1.0);
 	pub const DEFAULT_TRANSMISSION: Value = Value::Vector3([0.0, 0.0, 0.0]);
+	pub const DEFAULT_TRANSLUCENCY: Value = Value::Vector3([0.0, 0.0, 0.0]);
 
 	/// Lists every input with its name, the type it has to carry, and the value it takes when the graph leaves it
 	/// out, in declaration order. The normal has no constant default: it falls back to the geometric normal.
-	pub fn inputs(&self) -> [(&'static str, Option<NodeId>, Type, Option<Value>); 8] {
+	pub fn inputs(&self) -> [(&'static str, Option<NodeId>, Type, Option<Value>); 9] {
 		[
 			("base_color", self.base_color, Type::Vector3, Some(Self::DEFAULT_BASE_COLOR)),
 			("opacity", self.opacity, Type::Float, Some(Self::DEFAULT_OPACITY)),
@@ -356,7 +361,18 @@ impl Surface {
 			("normal", self.normal, Type::Vector3, None),
 			("emission", self.emission, Type::Vector3, Some(Self::DEFAULT_EMISSION)),
 			("occlusion", self.occlusion, Type::Float, Some(Self::DEFAULT_OCCLUSION)),
-			("transmission", self.transmission, Type::Vector3, Some(Self::DEFAULT_TRANSMISSION)),
+			(
+				"transmission",
+				self.transmission,
+				Type::Vector3,
+				Some(Self::DEFAULT_TRANSMISSION),
+			),
+			(
+				"translucency",
+				self.translucency,
+				Type::Vector3,
+				Some(Self::DEFAULT_TRANSLUCENCY),
+			),
 		]
 	}
 }
@@ -587,6 +603,12 @@ pub struct Graph {
 }
 
 impl Graph {
+	/// Reports whether the surface sets [`Surface::translucency`], whatever it computes. A renderer keeps the code that
+	/// lights a surface from its far side to the materials this reports, so the others don't pay for it.
+	pub fn is_translucent(&self) -> bool {
+		self.surface().translucency.is_some()
+	}
+
 	/// Reports whether a node reads the opaque scene behind the surface, which only a blended surface has drawn
 	/// behind it.
 	pub fn reads_backdrop(&self) -> bool {

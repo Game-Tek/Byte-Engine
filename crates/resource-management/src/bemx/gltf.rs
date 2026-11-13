@@ -74,6 +74,7 @@ pub(crate) fn material_from_gltf(material: &gltf::Material) -> Result<ImportedMa
 			emission: Some(emission),
 			occlusion,
 			transmission: None,
+			translucency: None,
 		},
 		material.double_sided(),
 		alpha_mode(material),

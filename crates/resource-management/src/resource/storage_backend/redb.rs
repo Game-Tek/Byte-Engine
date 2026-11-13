@@ -2657,6 +2657,7 @@ mod tests {
 				parameters: Vec::new(),
 				identity: 0,
 				reads_backdrop: false,
+				translucent: false,
 			},
 		};
 		VariantModel {

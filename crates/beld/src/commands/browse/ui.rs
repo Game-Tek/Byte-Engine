@@ -887,17 +887,17 @@ fn detail_lines(catalog: &Catalog, row: usize, width: usize) -> Vec<DetailLine> 
 			}
 		}
 
-		if !resource.asset_dependencies().is_empty() {
+		if !entry.sources.is_empty() {
 			section(&mut lines, "sources");
-			for dependency in resource.asset_dependencies() {
+			for source in &entry.sources {
 				let mark = if !catalog.sources_checked {
 					"?"
-				} else if entry.stale_sources.iter().any(|stale| stale == dependency.id()) {
+				} else if entry.stale_sources.contains(source) {
 					"changed"
 				} else {
 					"current"
 				};
-				lines.push(DetailLine::plain(format!("  {} · {mark}", dependency.id())));
+				lines.push(DetailLine::plain(format!("  {source} · {mark}")));
 			}
 		}
 

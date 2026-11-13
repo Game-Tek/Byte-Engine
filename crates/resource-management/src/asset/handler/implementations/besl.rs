@@ -7,6 +7,12 @@
 pub trait ProgramTransform: Send + Sync {
 	/// Returns `program` adapted to the renderer, before it links.
 	fn transform<'a>(&self, program: besl::parser::Node<'a>) -> besl::parser::Node<'a>;
+
+	/// Returns a fingerprint of everything that decides what [`Self::transform`] returns for a program: the
+	/// transform's code and its configuration, such as the features it builds in.
+	///
+	/// The asset manager records it with every standalone shader it bakes, so a changed transform makes them stale.
+	fn identity(&self) -> u64;
 }
 
 /// The `BESLShaderAssetHandler` struct exists to bake standalone BESL programs into runtime shader resources.
@@ -149,12 +155,22 @@ pub(crate) trait ShaderCompiler: Send + Sync {
 		shader: PreparedBeslShader,
 		id: &'a str,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>>;
+
+	/// Describes the toolchain, with its version and flags, so a shader compiled by another one is stale. A compiler
+	/// that runs no toolchain, such as a test double, keeps the default.
+	fn identity(&self) -> crate::r#async::BoxedFuture<'_, Result<&'static str, String>> {
+		Box::pin(async { Ok("no toolchain") })
+	}
 }
 
 /// The `PlatformShaderCompilerAdapter` struct keeps asset baking on the platform compiler selected by resource management.
 pub(crate) struct PlatformShaderCompilerAdapter;
 
 impl ShaderCompiler for PlatformShaderCompilerAdapter {
+	fn identity(&self) -> crate::r#async::BoxedFuture<'_, Result<&'static str, String>> {
+		Box::pin(PlatformShaderCompiler::compiler_identity())
+	}
+
 	fn compile<'a>(
 		&'a self,
 		shader: PreparedBeslShader,
@@ -194,7 +210,7 @@ pub(crate) fn parse_besl_source(source: &str) -> Result<besl::parser::Node<'_>, 
 /// modules from the asset root relative to the asset root. Every file it names is read through `context`, which records
 /// each one as a bake dependency even when it is missing, so editing, creating, or deleting any of them rebakes the
 /// shader.
-async fn read_module_files(
+pub(crate) async fn read_module_files(
 	context: &BakeContext<'_>,
 	id: ResourceId<'_>,
 	source: &str,
@@ -644,6 +660,10 @@ mod tests {
 	struct TestStandaloneTransform;
 
 	impl ProgramTransform for TestStandaloneTransform {
+		fn identity(&self) -> u64 {
+			0
+		}
+
 		fn transform<'a>(&self, mut node: besl::parser::Node<'a>) -> besl::parser::Node<'a> {
 			let mut helper_scope = besl::parse("shared_value: fn () -> f32 { return 0.5; }")
 				.expect("Failed to parse the standalone transform fixture. The most likely cause is invalid BESL test syntax.");
@@ -822,10 +842,12 @@ mod tests {
 			.await
 			.expect("Failed to bake a shader with a module. The most likely cause is that its module file was not attached.");
 
-		let (stored, _) = resource_storage
-			.read(crate::ResourceId::new("passes/resolve.besl"))
-			.await
-			.unwrap();
+		let stored = crate::resource::ReadStorageBackend::read_provenance(
+			&resource_storage,
+			crate::ResourceId::new("passes/resolve.besl"),
+		)
+		.unwrap()
+		.expect("a baked shader should record its provenance");
 		assert!(stale_sources(&stored, &asset_storage).await.is_empty());
 
 		asset_storage.add_file("passes/noise.besl", b"scaled: fn (value: f32) -> f32 { return value * 3.0; }");
@@ -861,10 +883,12 @@ mod tests {
 			.await
 			.expect("Failed to bake a shader that implements a shared signature. The most likely cause is that its module from the asset root was not attached.");
 
-		let (stored, _) = resource_storage
-			.read(crate::ResourceId::new("passes/resolve.besl"))
-			.await
-			.unwrap();
+		let stored = crate::resource::ReadStorageBackend::read_provenance(
+			&resource_storage,
+			crate::ResourceId::new("passes/resolve.besl"),
+		)
+		.unwrap()
+		.expect("a baked shader should record its provenance");
 		assert!(stale_sources(&stored, &asset_storage).await.is_empty());
 
 		asset_storage.add_file("shared/output.besl", format!("{shared}\n").as_bytes());

@@ -189,6 +189,8 @@ mod tests {
 		for name in ["music.wav", "voice.wav", "unused.wav"] {
 			std::fs::write(root.join("assets").join(name), wav()).unwrap();
 		}
+		// Every bake assembles the coverage shaders, which read the engine's layer modules from the project.
+		crate::utils::tests::copy_engine_layer_modules(&root.join("assets"));
 		root
 	}
 

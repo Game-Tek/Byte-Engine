@@ -41,7 +41,7 @@ pub fn globs(parameters: impl Parameters, name: &str) -> Vec<Glob> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
 
 	use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -55,6 +55,26 @@ mod tests {
 
 	use super::configure_cpu_baking;
 	use super::get_asset_manager;
+
+	/// Copies the engine's layer modules into the project at `assets`, where a project that links the engine's assets
+	/// has them, so material bakes and the shaders assembled from them can read them. Only the `layouts` directories are
+	/// copied, which hold no asset a bake would discover.
+	pub(crate) fn copy_engine_layer_modules(assets: &std::path::Path) {
+		fn copy(from: &std::path::Path, to: &std::path::Path, inside_layouts: bool) {
+			for entry in std::fs::read_dir(from).unwrap().map(Result::unwrap) {
+				let (from, to) = (entry.path(), to.join(entry.file_name()));
+				if entry.file_type().unwrap().is_dir() {
+					copy(&from, &to, inside_layouts || entry.file_name() == "layouts");
+				} else if inside_layouts && from.extension().is_some_and(|extension| extension == "besl") {
+					std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+					std::fs::copy(&from, &to).unwrap();
+				}
+			}
+		}
+
+		let engine = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../byte-engine/assets/rendering"));
+		copy(engine, &assets.join("byte_engine/rendering"), false);
+	}
 
 	const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("../../resource-management/src/asset/test_data/triangle_move_ascii.fbx");
 
@@ -83,6 +103,7 @@ mod tests {
 
 			std::fs::write(assets_path.join("triangle_move.fbx"), TRIANGLE_MOVE_FBX)
 				.expect("FBX test asset could not be written. The most likely cause is an unwritable temporary directory.");
+			copy_engine_layer_modules(&assets_path);
 
 			let asset_manager = get_asset_manager(
 				FileStorageBackend::new(assets_path),

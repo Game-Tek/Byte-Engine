@@ -370,7 +370,7 @@ The `clips` entries name the database's clips:
 | Entry | Names |
 | --- | --- |
 | ID | An entry without `*` or `?` names one clip by asset ID, fragment included, as in `character.fbx#animations/Walk`. |
-| Pattern | An entry with `*` or `?` matches the IDs of source files, with the syntax of [excluded assets](#excluded-assets). Each match names the file's default resource, which must be an animation clip. Matches follow one another in ascending ID order. |
+| Pattern | An entry with `*` or `?` matches the IDs of source files, with the syntax of [excluded assets](#excluded-assets). Each match names the file's default resource, which must be an animation clip. Matches follow one another in ascending ID order. A source file that starts or stops matching makes the database [stale](/docs/reference/resource-management#freshness). |
 | Order | Clips follow the order of their entries. A clip that several entries name keeps the place of the first. |
 | Later sources | A pattern matches the sources there are when the database bakes. A matching source added later joins the database the next time the database bakes. |
 

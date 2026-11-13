@@ -129,10 +129,11 @@ Check each of these once per session, before the first build or run:
 
 ## Measuring here
 
-- Build from the sandbox workspace: `cd ~/development/sandbox && cargo build -p model-viewer`. After a change to a
-  shader generator or a BESL backend, delete `~/development/sandbox/model_viewer/resources` before launching, or the
-  viewer runs the stale baked shader. An edit to a `.besl` asset rebakes on its own, because baked resources record
-  their assets' content hashes, so an A/B can swap one asset file between runs. Launch from the crate directory, or
+- Build from the sandbox workspace: `cd ~/development/sandbox && cargo build -p model-viewer`. A change to a
+  shader generator (anything under `crates/byte-engine/src/rendering`), to the BESL crate, to a render feature, or to
+  a `.besl` asset, layer modules included, rebakes the shaders it shaped on the next launch or `beld bake`: each bake
+  records those as inputs. An edit under `crates/resource-management` still resets the whole store. An A/B can swap
+  one asset file between runs. Launch from the crate directory, or
   assets silently fail to resolve.
 - `scripts/measure.sh <name> [viewer params]` does the whole run: launch unattended at `RATE` (default 60), wait for
   the inspector and then for the look action, pacing on `GET /events` tick events instead of sleeping, pin the look (`LOOK=lx,ly,lz`, default the hall view from the spawn point), sample `stage.*`, capture the lit image and `TARGET="<render target>"`, stop the viewer. `REBAKE=1` deletes the
@@ -271,21 +272,12 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
   directory per variant. Pair each snapshot with a binary built from the same Rust tree, because set layouts are
   reflected at build time. Without this, a BESL edit made mid-A/B pairs an old binary with new shaders and panics with
   "Missing descriptor set for layout".
-- Editing a layer module (`layouts/*.besl`) doesn't rebake the material shaders that import it. `.pipeline` assets
-  rebake, but `materials/*.bema#shader` and `#hit-shader` keep the old layout, and Metal then fails ray tracing
-  pipeline creation ("declares descriptor set 0 as layout ...Scene, which the ray generation shader doesn't
-  declare") and panics with "Missing descriptor set for layout". Deleting only the Shader resources doesn't help:
-  the source assets still count as current, so neither `beld bake <id>` nor the runtime rebakes them, and model
-  variants (`*.fbx#materials/*.variant`) fail with "Visibility material variant request failed". What worked on
-  2026-11-09, in a clone of the store (`cp -cR resources <scratch>/store`):
-  1. `beld -d <store> query class=<C> --format json` for `Shader`, `Pipeline`, `AssembledShader`, `Material`, and
-     `Variant`, and collect the IDs.
-  2. `beld -d <store> delete` those IDs, plus the Mesh resource of every model that owns a variant (the `.fbx` ID itself).
-  3. `beld -d <store> bake <every .bema and model ID>`. This bakes in seconds and leaves textures alone.
-
-  Don't run `beld bake` without IDs on such a store: it rebakes every asset, every texture included. `beld bake --force <ids>` also rebakes the selection's dependencies,
-  textures included; it wasn't tried here. Run the viewer with `--resources.path=<store>` and check its log for
-  "variant request failed" before measuring.
+- Editing a layer module (`layouts/*.besl`) rebakes the material shaders that bring it in, because a material's
+  bake reads the module files from the assets. The runtime builds its descriptor sets from the copies embedded in the
+  binary, so rebuild the viewer too, or the new shaders meet old sets and it panics with "Missing descriptor set for
+  layout".
+- `beld bake --force <ids>` rebakes the given IDs and everything they're baked from, textures included, and nothing
+  else. A plain `beld bake <ids>` after a shader or feature change rebakes only the stale shaders.
 - A run that crashes while it bakes can leave the store unreadable to read-only commands: `beld query` reports it
   "corrupt or unreadable" with "Database repair aborted". Opening it for writing repairs it, so bake one small
   asset before querying. Don't delete the store for this.

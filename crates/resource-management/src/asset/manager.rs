@@ -24,15 +24,31 @@ pub(crate) struct AssetManagerState {
 	pub(in crate::asset) interceptor: Option<Arc<dyn BakeInterceptor>>,
 	storage_backend: Box<dyn DynStorageBackend>,
 	pub(in crate::asset) resource_storage_backend: Arc<dyn DynResourceStorageBackend>,
-	in_flight_bakes: Arc<Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>>,
+	in_flight_bakes: Arc<Mutex<HashMap<String, announcement::Announcement<Result<BakeOutcome, LoadMessages>>>>>,
 	bake_memory_budget: Option<Arc<BakeMemoryBudget>>,
 	/// The root bakes callers are waiting on, whether admitted yet or not. The last one to finish makes what they
 	/// stored durable with one flush; see [`RootInFlight`].
 	roots_in_flight: AtomicUsize,
 	/// Whether a root stored anything since the last flush, so a bake that reused every resource doesn't flush.
 	unflushed: AtomicBool,
-	/// Resources stored before this time, in nanoseconds since the Unix epoch, count as stale.
-	rebuild_cutoff: Option<u64>,
+	/// The fingerprint of every declared setting, by name. See [`AssetManager::declare_setting`].
+	settings: HashMap<String, u64>,
+	/// Serializes the records of which bake stores which resource, which several bakes can change at once.
+	provenance_lock: Mutex<()>,
+	/// Counts the times source files may have changed. A freshness check holds until the count moves.
+	epoch: AtomicU64,
+	/// Whether sources hold still for this manager's whole life, so no request discards earlier checks.
+	verify_once: bool,
+	/// Counts the resources stored and removed. A freshness check of a bake that ran a query holds until the count
+	/// moves, because what the query matches may have changed.
+	store_generation: AtomicU64,
+	/// The epoch each ID was last made current in and how that went, so a resource many others use is checked once.
+	/// A check that depends on what the store holds also keeps the store generation it was made at.
+	checked: Mutex<HashMap<String, (u64, Option<u64>, Result<(), LoadMessages>)>>,
+	/// The IDs of the resources this manager stored, so a forced rebuild builds each only once.
+	stored: Mutex<std::collections::HashSet<String>>,
+	/// The source IDs the asset storage listed, and the epoch it listed them in.
+	sources: Mutex<Option<(u64, Arc<Vec<String>>)>>,
 	/// The patterns of asset IDs that are never baked, from the project's `assets.exclude`.
 	excluded: Vec<Glob>,
 	dispatcher: compio::dispatcher::Dispatcher,
@@ -43,11 +59,39 @@ pub(crate) struct AssetManagerState {
 }
 
 /// The `BakeOrigin` enum tells a dispatched bake whether it answers a caller directly or runs inside a parent bake.
+#[derive(Clone)]
 pub(crate) enum BakeOrigin {
 	/// A bake requested through [`AssetManager`]; it waits for memory admission and makes its outputs durable.
 	Root,
-	/// A dependency of a running bake; it shares the parent's memory scope and leaves durability to the root.
-	Dependency(Option<Arc<BakeMemoryScope>>),
+	/// A root the manager checks again after source files changed. It is a [`Self::Root`], except that the change that
+	/// asked for it already discarded the earlier freshness checks, once for every root it checks. Only development
+	/// builds watch sources.
+	#[cfg_attr(not(debug_assertions), allow(dead_code))]
+	Recheck,
+	/// A dependency of a running bake or freshness check; it shares the parent's memory scope and leaves durability
+	/// to the root. `ancestors` are the IDs waiting on it, outermost first, which it never waits on in turn.
+	Dependency {
+		memory_scope: Option<Arc<BakeMemoryScope>>,
+		ancestors: Vec<String>,
+	},
+}
+
+impl BakeOrigin {
+	/// Returns whether `id` is waiting on this bake, so this bake must not wait on `id`.
+	fn waits_on(&self, id: &str) -> bool {
+		matches!(self, BakeOrigin::Dependency { ancestors, .. } if ancestors.iter().any(|ancestor| ancestor == id))
+	}
+}
+
+/// The `BakeMode` enum tells a dispatched bake how much the stored resource counts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BakeMode {
+	/// Bake only when the resource is missing or an input of its latest bake changed.
+	IfStale,
+	/// Bake the resource whatever its record says, and its dependencies only when stale.
+	Always,
+	/// Bake the resource and everything it is baked from, each once per manager.
+	Forced,
 }
 
 /// The `RootInFlight` struct counts one root bake as in flight for as long as its caller waits on it.
@@ -94,9 +138,13 @@ impl Drop for RootInFlight<'_> {
 }
 
 /// The `BakeOutcome` enum reports whether a freshness-checked bake wrote anything.
-enum BakeOutcome {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BakeOutcome {
 	/// The stored resource was current and reused.
 	Current,
+	/// The stored resource was reused, and is current if the bake waiting on this check finds itself current: the
+	/// resource, or one it is baked from, is stored by that bake, whose own freshness is still being decided.
+	Provisional,
 	/// The resource was baked and stored.
 	Baked,
 }
@@ -153,7 +201,14 @@ impl AssetManager {
 				bake_memory_budget: None,
 				roots_in_flight: AtomicUsize::new(0),
 				unflushed: AtomicBool::new(false),
-				rebuild_cutoff: None,
+				settings: HashMap::from_iter([(SHADER_CODE_SETTING.to_owned(), shader_code_fingerprint())]),
+				provenance_lock: Mutex::new(()),
+				epoch: AtomicU64::new(0),
+				verify_once: false,
+				store_generation: AtomicU64::new(0),
+				checked: Mutex::new(HashMap::default()),
+				stored: Mutex::new(Default::default()),
+				sources: Mutex::new(None),
 				excluded: Vec::new(),
 				dispatcher,
 				#[cfg(debug_assertions)]
@@ -173,19 +228,24 @@ impl AssetManager {
 		self.configurable_state().bake_memory_budget = Some(Arc::new(BakeMemoryBudget::new(byte_budget.get())));
 	}
 
-	/// Makes every resource stored before `time` stale, so the next bakes rebuild it once.
+	/// Declares the fingerprint of a setting that shapes bakes and isn't a file or a stored resource, such as the
+	/// identity of a bake service or a store option.
 	///
-	/// Use it when stored output must be rebuilt although its sources did not change, such as after an asset
-	/// processor or a storage setting changed. Dependencies shared by several roots are rebuilt only once, because a
-	/// rebuilt resource is newer than the cutoff.
-	///
-	/// Next, call [`Self::bake_if_stale`] for each root.
-	pub fn rebuild_resources_baked_before(&mut self, time: std::time::SystemTime) {
-		let cutoff = time
-			.duration_since(std::time::UNIX_EPOCH)
-			.map_or(0, |elapsed| u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX));
+	/// A bake that reads the setting through [`BakeContext::setting`] records the fingerprint, so its resources go stale
+	/// when a later manager declares another one. Declare every setting before calling [`Self::bake`] or sharing the
+	/// manager. The installers of bake services, such as [`Self::set_program_generator`], declare the service's identity
+	/// themselves.
+	pub fn declare_setting(&mut self, name: &str, fingerprint: u64) {
+		self.configurable_state().settings.insert(name.to_owned(), fingerprint);
+	}
 
-		self.configurable_state().rebuild_cutoff = Some(cutoff);
+	/// Promises that no source file changes while this manager lives, so each resource is checked for freshness once
+	/// however many roots use it.
+	///
+	/// A tool that bakes a project in one run, such as BELD, calls it. A manager that serves requests while sources
+	/// are edited must not.
+	pub fn verify_once(&mut self) {
+		self.configurable_state().verify_once = true;
 	}
 
 	/// Sets the patterns of asset IDs that are never baked, usually the project's `assets.exclude`.
@@ -207,7 +267,10 @@ impl AssetManager {
 	/// After all handlers are registered, install this manager on a
 	/// [`crate::ResourceManager`] in a debug build or call [`Self::bake`].
 	pub fn add_asset_handler<T: AssetHandler + Send + Sync + 'static>(&mut self, asset_handler: T) {
-		self.configurable_state().asset_handlers.push(Box::new(asset_handler));
+		let asset_handler: Box<dyn DynAssetHandler> = Box::new(asset_handler);
+		// The handler's options are an input of every bake it runs.
+		self.declare_setting(&asset_handler.setting_name(), asset_handler.identity());
+		self.configurable_state().asset_handlers.push(asset_handler);
 	}
 
 	/// Replaces the image processor every handler that produces images bakes with.
@@ -223,12 +286,14 @@ impl AssetManager {
 	/// Install the renderer's generator here once, so `.bema`, glTF, and FBX materials all target it with one instance.
 	/// Without one, materials fail to bake.
 	pub fn set_program_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
+		self.declare_setting(PROGRAM_GENERATOR_SETTING, generator.identity());
 		self.configurable_state().program_generator = Some(Box::new(generator));
 	}
 
 	/// Installs the transform every standalone BESL program goes through after its modules attach and before it
 	/// links.
 	pub fn set_program_transform<T: ProgramTransform + 'static>(&mut self, transform: T) {
+		self.declare_setting(PROGRAM_TRANSFORM_SETTING, transform.identity());
 		self.configurable_state().program_transform = Some(Box::new(transform));
 	}
 
@@ -311,26 +376,45 @@ impl AssetManager {
 
 	/// Bakes the asset at `id` without checking for an existing stored resource.
 	///
-	/// Its dependencies are still reused when current. To rebuild a whole tree, call
-	/// [`Self::rebuild_resources_baked_before`] and then [`Self::bake_if_stale`].
+	/// Its dependencies are still reused when current. To rebuild them too, call [`Self::rebuild`].
 	///
 	/// Next, await [`crate::ResourceManager::request`] for the stored output or
 	/// inspect it through the storage backend.
 	pub async fn bake(&self, id: &str) -> Result<(), LoadMessages> {
-		self.state.dispatch_bake_in_scope(id, false, BakeOrigin::Root).await
+		self.state
+			.dispatch_bake_in_scope(id, BakeMode::Always, BakeOrigin::Root)
+			.await
+			.map(|_| ())
 	}
 
-	/// Bakes the asset at `id` only when its resource is missing or its recorded source versions changed.
+	/// Bakes the asset at `id` only when its resource is missing or an input of its latest bake changed.
 	///
-	/// Freshness only covers source files and the cutoff set by [`Self::rebuild_resources_baked_before`], which
-	/// is how a changed asset processor or storage setting is picked up.
+	/// The inputs are everything the bake observed: source files, the resources it was baked from, queries, source
+	/// listings, and declared settings. The [freshness reference](/docs/reference/resource-management#freshness) lists
+	/// them.
 	///
 	/// Next, await [`crate::ResourceManager::request`] for the stored output.
 	pub async fn bake_if_stale(&self, id: &str) -> Result<(), LoadMessages> {
-		self.state.dispatch_bake_in_scope(id, true, BakeOrigin::Root).await
+		self.state
+			.dispatch_bake_in_scope(id, BakeMode::IfStale, BakeOrigin::Root)
+			.await
+			.map(|_| ())
 	}
 
-	/// Returns the stored asset, or bakes it when it is missing or its recorded source versions changed.
+	/// Bakes the asset at `id` and every resource it is baked from, whatever the store holds.
+	///
+	/// Each resource is rebuilt once per manager, so roots that share dependencies don't rebuild them twice. Nothing
+	/// outside the root's dependencies is rebuilt.
+	///
+	/// Next, await [`crate::ResourceManager::request`] for the stored output.
+	pub async fn rebuild(&self, id: &str) -> Result<(), LoadMessages> {
+		self.state
+			.dispatch_bake_in_scope(id, BakeMode::Forced, BakeOrigin::Root)
+			.await
+			.map(|_| ())
+	}
+
+	/// Returns the stored asset, after baking it when it is missing or stale; see [`Self::bake_if_stale`].
 	pub async fn bake_if_not_exists<M: Model>(&self, id: &str) -> Result<ReferenceModel<M>, LoadMessages> {
 		self.bake_if_not_exists_serialized(id).await.map(Into::into)
 	}
@@ -347,39 +431,34 @@ impl AssetManager {
 			.ok_or(LoadMessages::NoAsset)
 	}
 
-	/// Adds a requested root resource to the development dependency index.
+	/// Adds a requested root resource to the ones checked again when source files change.
 	#[cfg(debug_assertions)]
-	pub(crate) fn track_resource(&self, resource: &crate::SerializableResource) {
-		self.state.track_resource(resource);
+	pub(crate) fn track_resource(&self, id: &str) {
+		let mut hot_reload = self.state.hot_reload.lock();
+
+		if !hot_reload.tracked.contains(id) {
+			hot_reload.tracked.insert(id.to_owned());
+		}
 	}
 
 	/// Starts recursive debounced watching when the source backend exposes a local root.
 	#[cfg(debug_assertions)]
 	pub(crate) fn start_watching(&self, updates: Arc<crate::resource::resource_manager::ResourceUpdateBroadcaster>) {
-		let Some(root) = self.state.storage_backend.watch_root() else {
+		let roots = self.state.storage_backend.watch_roots();
+		if roots.is_empty() {
 			return;
-		};
+		}
 
 		let weak = Arc::downgrade(&self.state);
-
-		let watched_root = root.clone();
 
 		let mut watcher = match notify_debouncer_full::new_debouncer(
 			std::time::Duration::from_millis(250),
 			None,
 			move |result: notify_debouncer_full::DebounceEventResult| match result {
-				Ok(events) => {
+				Ok(_) => {
 					let Some(state) = weak.upgrade() else { return };
 
-					// A BEAD path also reports the source it may configure.
-					let sources = events
-						.iter()
-						.flat_map(|event| &event.paths)
-						.filter_map(|path| source_ids_from_path(&watched_root, path))
-						.flat_map(|(id, sidecar_source)| std::iter::once(id).chain(sidecar_source))
-						.collect();
-
-					state.reload_sources(sources);
+					state.reload_changed();
 				}
 				Err(errors) => log::warn!(
 					"Asset watching reported an error. The most likely cause is that the development asset directory became inaccessible: {errors:?}"
@@ -396,13 +475,15 @@ impl AssetManager {
 			}
 		};
 
-		if let Err(error) = watcher.watch(&root, notify_debouncer_full::notify::RecursiveMode::Recursive) {
-			log::warn!(
-				"Asset watching could not watch '{}'. The most likely cause is that the directory is inaccessible: {error}",
-				root.display()
-			);
+		for root in &roots {
+			if let Err(error) = watcher.watch(root, notify_debouncer_full::notify::RecursiveMode::Recursive) {
+				log::warn!(
+					"Asset watching could not watch '{}'. The most likely cause is that the directory is inaccessible: {error}",
+					root.display()
+				);
 
-			return;
+				return;
+			}
 		}
 
 		let mut hot_reload = self.state.hot_reload.lock();
@@ -415,13 +496,16 @@ impl AssetManager {
 
 enum InFlightBakeRole {
 	/// The caller runs the bake, announces its result, and drops the cleanup guard once it finishes.
-	Leader(announcement::Announcer<Result<(), LoadMessages>>, InFlightBakeCleanup),
-	Follower(announcement::Listener<Result<(), LoadMessages>>),
+	Leader(
+		announcement::Announcer<Result<BakeOutcome, LoadMessages>>,
+		InFlightBakeCleanup,
+	),
+	Follower(announcement::Listener<Result<BakeOutcome, LoadMessages>>),
 }
 
 /// The `InFlightBakeCleanup` struct removes a leader entry when its future completes, is canceled, or unwinds.
 struct InFlightBakeCleanup {
-	registry: Arc<Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>>,
+	registry: Arc<Mutex<HashMap<String, announcement::Announcement<Result<BakeOutcome, LoadMessages>>>>>,
 	id: String,
 }
 
@@ -440,9 +524,9 @@ struct HotReloadState {
 			notify_debouncer_full::RecommendedCache,
 		>,
 	>,
-	resources_by_source: HashMap<String, std::collections::HashSet<String>>,
-	sources_by_resource: HashMap<String, Vec<String>>,
-	/// Each root being rebaked; a root missing from the map is idle.
+	/// The roots requested so far, each checked again when source files change.
+	tracked: std::collections::HashSet<String>,
+	/// Each root being checked; a root missing from the map is idle.
 	reloads: HashMap<String, RootReload>,
 	updates: Option<Arc<crate::resource::resource_manager::ResourceUpdateBroadcaster>>,
 }
@@ -475,64 +559,35 @@ pub enum LoadMessages {
 }
 
 impl AssetManagerState {
-	/// Replaces one root resource's entries in the inverse source dependency index.
+	/// Marks every tracked root for one freshness check after source files changed.
+	///
+	/// A watcher batch only says that something changed. Which resources that makes stale is decided by the same
+	/// check every request runs, so no path has to be matched to an asset.
 	#[cfg(debug_assertions)]
-	fn track_resource(&self, resource: &crate::SerializableResource) {
-		let mut hot_reload = self.hot_reload.lock();
+	fn reload_changed(self: &Arc<Self>) {
+		// The checks made before the change no longer hold.
+		self.epoch.fetch_add(1, Ordering::AcqRel);
 
-		for source in hot_reload.sources_by_resource.remove(resource.id()).into_iter().flatten() {
-			if let Some(resources) = hot_reload.resources_by_source.get_mut(&source) {
-				resources.remove(resource.id());
-
-				if resources.is_empty() {
-					hot_reload.resources_by_source.remove(&source);
-				}
-			}
-		}
-
-		let sources = resource
-			.asset_dependencies()
-			.iter()
-			.map(|dependency| dependency.id().to_string())
-			.collect::<Vec<_>>();
-
-		for source in &sources {
-			hot_reload
-				.resources_by_source
-				.entry(source.clone())
-				.or_default()
-				.insert(resource.id().to_string());
-		}
-
-		hot_reload.sources_by_resource.insert(resource.id().to_string(), sources);
-	}
-
-	/// Schedules one rebake for every tracked root affected by a debounced source batch.
-	#[cfg(debug_assertions)]
-	fn reload_sources(self: &Arc<Self>, sources: std::collections::HashSet<String>) {
 		let roots = {
 			let mut hot_reload = self.hot_reload.lock();
+			let hot_reload = &mut *hot_reload;
 
-			let roots = sources
+			hot_reload
+				.tracked
 				.iter()
-				.flat_map(|source| hot_reload.resources_by_source.get(source).into_iter().flatten())
-				.cloned()
-				.collect::<std::collections::HashSet<_>>();
-
-			roots
-				.into_iter()
 				.filter(|root| {
-					// A root already rebaking reruns once it finishes instead of rebaking twice at once.
-					if let Some(reload) = hot_reload.reloads.get_mut(root) {
+					// A root already being checked is checked again once it finishes instead of twice at once.
+					if let Some(reload) = hot_reload.reloads.get_mut(*root) {
 						*reload = RootReload::Rerun;
 
 						false
 					} else {
-						hot_reload.reloads.insert(root.clone(), RootReload::Running);
+						hot_reload.reloads.insert((*root).clone(), RootReload::Running);
 
 						true
 					}
 				})
+				.cloned()
 				.collect::<Vec<_>>()
 		};
 
@@ -541,7 +596,7 @@ impl AssetManagerState {
 		}
 	}
 
-	/// Rebakes `root` on a worker, and returns the root to idle when no worker accepts the job.
+	/// Checks `root` on a worker, and returns the root to idle when no worker accepts the job.
 	#[cfg(debug_assertions)]
 	fn dispatch_reload(self: &Arc<Self>, root: String) {
 		let state = Arc::clone(self);
@@ -557,20 +612,16 @@ impl AssetManagerState {
 		}
 	}
 
-	/// Rebakes one affected root and publishes it only after replacement storage succeeds.
+	/// Makes one tracked root current and publishes it only when that stored it again.
 	#[cfg(debug_assertions)]
 	async fn reload_resource(self: Arc<Self>, id: String) {
-		let stale = match self.resource_storage_backend.read(ResourceId::new(&id)).await {
-			Some((resource, _)) => self.resource_is_stale(&resource).await,
-			None => true,
-		};
-
-		// Enter the shared bake registry so one source referenced by several changed roots is rebuilt once.
-		let rebaked = stale && self.dispatch_bake_in_scope(&id, true, BakeOrigin::Root).await.is_ok();
+		// Enter the shared bake registry so a resource several changed roots use is rebuilt once.
+		let rebaked = matches!(
+			self.dispatch_bake_in_scope(&id, BakeMode::IfStale, BakeOrigin::Recheck).await,
+			Ok(BakeOutcome::Baked)
+		);
 
 		if rebaked && let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(&id)).await {
-			self.track_resource(&resource);
-
 			let update = crate::resource::resource_manager::ResourceUpdate::new(id.clone(), resource.class().to_string());
 
 			if let Some(updates) = self.hot_reload.lock().updates.clone() {
@@ -579,7 +630,7 @@ impl AssetManagerState {
 		}
 
 		// The root stays running across the rerun's dispatch, so a change in between marks it again instead of starting a
-		// second rebake.
+		// second check.
 		let rerun = {
 			let mut hot_reload = self.hot_reload.lock();
 
@@ -606,9 +657,9 @@ impl AssetManagerState {
 	pub(super) async fn dispatch_bake_in_scope(
 		self: &Arc<Self>,
 		id: &str,
-		only_when_stale: bool,
+		mode: BakeMode,
 		origin: BakeOrigin,
-	) -> Result<(), LoadMessages> {
+	) -> Result<BakeOutcome, LoadMessages> {
 		// An excluded asset fails before any freshness check, so even a stored resource is never rebaked or reused.
 		if self.is_excluded(id) {
 			let message = format!(
@@ -632,6 +683,18 @@ impl AssetManagerState {
 			return Err(LoadMessages::Excluded { asset: id.to_owned() });
 		}
 
+		// Waiting on a bake that waits on this one would never end.
+		if origin.waits_on(id) {
+			log::warn!(
+				"Asset '{id}' depends on itself through another asset. The most likely cause is a reference that leads back to it, such as a material that names itself as its parent. Remove one reference of the cycle."
+			);
+
+			return Err(LoadMessages::FailedToBake {
+				asset: id.to_owned(),
+				error: LoadErrors::DependencyCycle,
+			});
+		}
+
 		// Bind the listener first so the registry lock is released before waiting on the leader.
 		let listener = self.in_flight_bakes.lock().get(id).map(announcement::Announcement::listener);
 
@@ -639,9 +702,17 @@ impl AssetManagerState {
 			return notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?;
 		}
 
+		let is_root = matches!(origin, BakeOrigin::Root | BakeOrigin::Recheck);
+
+		// Without a caller's promise that sources hold still, each root request starts from fresh checks. A running
+		// watcher is no such promise: it only brings a check forward, so the next request finds a change it missed.
+		if matches!(origin, BakeOrigin::Root) && !self.verify_once {
+			self.epoch.fetch_add(1, Ordering::AcqRel);
+		}
+
 		// Counting starts before admission, so roots still waiting for memory keep the flush from running early.
-		let root = matches!(origin, BakeOrigin::Root).then(|| RootInFlight::enter(self));
-		let result = self.admit_and_bake(id, only_when_stale, origin).await;
+		let root = is_root.then(|| RootInFlight::enter(self));
+		let result = self.admit_and_bake(id, mode, origin).await;
 
 		// The root that leaves last returns once the flush is done, so its caller finds every stored resource durable.
 		if let Some(flushed) = root.and_then(RootInFlight::leave) {
@@ -652,16 +723,23 @@ impl AssetManagerState {
 	}
 
 	/// Admits a bake and runs it as the leader, or waits for the leader that already runs it.
-	async fn admit_and_bake(self: &Arc<Self>, id: &str, only_when_stale: bool, origin: BakeOrigin) -> Result<(), LoadMessages> {
-		let is_root = matches!(origin, BakeOrigin::Root);
+	async fn admit_and_bake(
+		self: &Arc<Self>,
+		id: &str,
+		mode: BakeMode,
+		origin: BakeOrigin,
+	) -> Result<BakeOutcome, LoadMessages> {
+		let is_root = matches!(origin, BakeOrigin::Root | BakeOrigin::Recheck);
 
 		// Independent roots wait before becoming leaders. This lets an admitted parent claim and run a dependency
 		// instead of following a root that cannot start until the parent releases memory.
-		let memory_scope = match (origin, &self.bake_memory_budget) {
-			(BakeOrigin::Dependency(memory_scope), _) => memory_scope,
-			(BakeOrigin::Root, Some(memory_budget)) => Some(memory_budget.acquire().await),
-			(BakeOrigin::Root, None) => None,
+		let (memory_scope, mut ancestors) = match (origin, &self.bake_memory_budget) {
+			(BakeOrigin::Dependency { memory_scope, ancestors }, _) => (memory_scope, ancestors),
+			(BakeOrigin::Root | BakeOrigin::Recheck, Some(memory_budget)) => (Some(memory_budget.acquire().await), Vec::new()),
+			(BakeOrigin::Root | BakeOrigin::Recheck, None) => (None, Vec::new()),
 		};
+		// Everything this bake asks for must not wait on it.
+		ancestors.push(id.to_owned());
 
 		let (notification, registry_cleanup) = match self.register_bake(id) {
 			InFlightBakeRole::Leader(notification, registry_cleanup) => (notification, registry_cleanup),
@@ -685,18 +763,12 @@ impl AssetManagerState {
 				// Dependencies inherit their admitted root scope and use separate arenas without another admission wait.
 				let allocator = BakeAllocator::in_scope(memory_scope);
 
-				let result = if only_when_stale {
-					state.ensure_baked_uncoalesced(&id, &allocator).await
-				} else {
-					state.bake_uncoalesced(&id, &allocator).await.map(|()| BakeOutcome::Baked)
-				};
+				let result = state.ensure_baked_uncoalesced(&id, mode, &ancestors, &allocator).await;
 
 				// A root that reused a current resource wrote nothing, so it doesn't ask for the flush.
-				if is_root && !matches!(result, Ok(BakeOutcome::Current)) {
+				if is_root && matches!(result, Ok(BakeOutcome::Baked) | Err(_)) {
 					state.unflushed.store(true, Ordering::Release);
 				}
-
-				let result = result.map(|_| ());
 
 				let _ = notification.announce(result.clone());
 
@@ -725,9 +797,143 @@ impl AssetManagerState {
 			.ok()
 	}
 
-	/// Returns whether an excluded pattern matches the asset ID.
+	/// Returns whether an excluded pattern matches the asset ID, or the asset a fragment of it belongs to.
 	pub(super) fn is_excluded(&self, id: &str) -> bool {
-		self.excluded.iter().any(|pattern| pattern.matches(id))
+		let base = asset::resource_id::get_base(id).unwrap_or(id);
+
+		self.excluded
+			.iter()
+			.any(|pattern| pattern.matches(id) || pattern.matches(base))
+	}
+
+	/// Returns the fingerprint of the setting `name`: the store's own for [`STORE_SETTING`], else the declared one, or
+	/// `0` when nobody declared it.
+	pub(in crate::asset) fn setting(&self, name: &str) -> u64 {
+		if name == STORE_SETTING {
+			return self.resource_storage_backend.settings_fingerprint();
+		}
+
+		self.settings.get(name).copied().unwrap_or(0)
+	}
+
+	/// Returns the fingerprint of the toolchain shaders compile with, or `0` when it can't be identified.
+	///
+	/// It isn't declared like other settings because identifying the toolchain may run it, which a bake that compiles
+	/// no shader shouldn't wait for.
+	pub(in crate::asset) async fn shader_compiler_fingerprint(&self) -> u64 {
+		use std::hash::Hasher as _;
+
+		let Ok(identity) = self.shader_compiler.identity().await else {
+			return 0;
+		};
+		let mut hasher = crate::asset::provenance::fingerprint_hasher();
+		hasher.write(identity.as_bytes());
+
+		// Zero is reserved for an unidentified toolchain.
+		hasher.finish().max(1)
+	}
+
+	/// Returns whether this manager stored the resource `id` since it was created.
+	pub(in crate::asset) fn stored_in_process(&self, id: &str) -> bool {
+		self.stored.lock().contains(id)
+	}
+
+	/// Records that this manager stored the resource `id`, so a forced rebuild builds it only once.
+	pub(in crate::asset) fn mark_stored_in_process(&self, id: &str) {
+		self.stored.lock().insert(id.to_owned());
+		self.store_generation.fetch_add(1, Ordering::AcqRel);
+	}
+
+	/// Returns the IDs of the stored resources `query` matches, sorted, and the fingerprint of the match set, after
+	/// making each match current.
+	///
+	/// A match that fails to bake stays in the list with the fingerprint of a missing resource. A match its bake no
+	/// longer stores, and a resource of an excluded asset, are left out.
+	pub(in crate::asset) async fn query_matches(
+		self: &Arc<Self>,
+		query: &crate::resource::storage_backend::Query,
+		origin: BakeOrigin,
+	) -> Result<(Vec<String>, u64), ()> {
+		use utils::r#async::StreamExt as _;
+
+		let page = self.resource_storage_backend.query(query.clone()).await.map_err(|_| ())?;
+		let mut ids = page
+			.items
+			.into_iter()
+			.map(|(stored, _)| stored.id().to_owned())
+			// The bake that asks never matches itself: making itself current would wait on its own bake.
+			.filter(|id| !self.is_excluded(id) && !origin.waits_on(id))
+			.collect::<Vec<_>>();
+		ids.sort_unstable();
+
+		let checks = ids.into_iter().map(|id| {
+			let origin = origin.clone();
+
+			async move {
+				// The dispatch is boxed because a freshness check that runs a query re-enters the dispatcher.
+				let baked = Box::pin(self.dispatch_bake_in_scope(&id, BakeMode::IfStale, origin)).await;
+				let stored = self.resource_storage_backend.read(ResourceId::new(&id)).await;
+
+				match (baked, stored) {
+					(Ok(_), Some((resource, _))) => Some((id, resource_fingerprint(&resource))),
+					(Ok(_), None) => None,
+					(Err(_), _) => Some((id, MISSING_RESOURCE)),
+				}
+			}
+		});
+
+		let matches = utils::r#async::stream::iter(checks)
+			.buffered(INPUT_CHECK_CONCURRENCY)
+			.filter_map(|entry| async move { entry })
+			.collect::<Vec<_>>()
+			.await;
+
+		let fingerprint = set_fingerprint(matches.iter().map(|(id, fingerprint)| (id.as_str(), *fingerprint)));
+
+		Ok((matches.into_iter().map(|(id, _)| id).collect(), fingerprint))
+	}
+
+	/// Returns the IDs of the source assets the glob `pattern` matches, sorted, and the fingerprint of that list.
+	pub(in crate::asset) async fn source_listing(&self, pattern: &str) -> Result<(Vec<String>, u64), ()> {
+		let epoch = self.epoch.load(Ordering::Acquire);
+
+		let cached = self
+			.sources
+			.lock()
+			.as_ref()
+			.filter(|(listed_at, _)| *listed_at == epoch)
+			.map(|(_, sources)| Arc::clone(sources));
+
+		// Walking the asset directory is costly, so every listing between two source changes shares one walk.
+		let sources = match cached {
+			Some(sources) => sources,
+			None => {
+				let mut sources = self
+					.storage_backend
+					.discover()
+					.await
+					.map_err(|_| ())?
+					.into_iter()
+					.map(crate::asset::AssetSource::into_id)
+					.collect::<Vec<_>>();
+				sources.sort_unstable();
+
+				let sources = Arc::new(sources);
+				*self.sources.lock() = Some((epoch, Arc::clone(&sources)));
+
+				sources
+			}
+		};
+
+		let pattern = Glob::new(pattern);
+		let ids = sources
+			.iter()
+			.filter(|source| pattern.matches(source))
+			.cloned()
+			.collect::<Vec<_>>();
+		let fingerprint = set_fingerprint(ids.iter().map(|id| (id.as_str(), 0)));
+
+		Ok((ids, fingerprint))
 	}
 
 	/// Registers one requested resource before it is submitted to a worker.
@@ -766,10 +972,96 @@ impl AssetManagerState {
 		}
 	}
 
+	/// Reads what the store remembers about how `id` came to be stored. A record that can't be read counts as none,
+	/// so the resource bakes again.
+	fn read_provenance(&self, id: &str) -> Option<Provenance> {
+		match self.resource_storage_backend.read_provenance(ResourceId::new(id)) {
+			Ok(provenance) => provenance,
+			Err(error) => {
+				log::warn!("{error}");
+
+				None
+			}
+		}
+	}
+
+	/// Writes what the store remembers about how `id` came to be stored.
+	fn write_provenance(&self, id: &str, provenance: &Provenance) {
+		if let Err(error) = self
+			.resource_storage_backend
+			.write_provenance(ResourceId::new(id), provenance)
+		{
+			log::warn!("{error}");
+		}
+	}
+
+	/// Marks the bake of `id` as unfinished before its handler runs, so a bake that fails or is interrupted after
+	/// storing some of its resources leaves `id` stale instead of a mix that counts as current.
+	fn begin_provenance(&self, id: &str) {
+		let _guard = self.provenance_lock.lock();
+
+		if let Some(mut provenance) = self.read_provenance(id)
+			&& provenance.inputs.take().is_some()
+		{
+			self.write_provenance(id, &provenance);
+		}
+	}
+
+	/// Records the finished bake of `id`: what it observed and which other resources it stored. Returns the resources
+	/// the previous bake of `id` stored that no bake stores anymore, for the caller to remove.
+	fn commit_provenance(&self, id: &str, inputs: Vec<BakeInput>, outputs: Vec<String>) -> Vec<String> {
+		// Several bakes can store the same resource, such as a skeleton a mesh and its clips share, so their records of
+		// who stores it change under one lock.
+		let _guard = self.provenance_lock.lock();
+
+		let previous = self.read_provenance(id).unwrap_or_default();
+		let mut orphans = Vec::new();
+
+		for output in outputs.iter().filter(|output| !previous.outputs.contains(output)) {
+			let mut record = self.read_provenance(output).unwrap_or_default();
+
+			if let Err(index) = record.producers.binary_search_by(|producer| producer.as_str().cmp(id)) {
+				record.producers.insert(index, id.to_owned());
+
+				self.write_provenance(output, &record);
+			}
+		}
+
+		for output in previous.outputs.iter().filter(|output| !outputs.contains(output)) {
+			let mut record = self.read_provenance(output).unwrap_or_default();
+
+			record.producers.retain(|producer| producer != id);
+
+			// A resource that was also baked by request keeps its own record and stays.
+			if record.producers.is_empty() && record.inputs.is_none() {
+				orphans.push(output.clone());
+			} else {
+				self.write_provenance(output, &record);
+			}
+		}
+
+		self.write_provenance(
+			id,
+			&Provenance {
+				inputs: Some(inputs),
+				outputs,
+				producers: previous.producers,
+			},
+		);
+
+		orphans
+	}
+
 	/// Runs one asset handler invocation without consulting the in-flight registry.
 	///
 	/// Call this method directly when no coalescing is desired.
-	async fn bake_uncoalesced(self: &Arc<Self>, id: &str, allocator: &BakeAllocator) -> Result<(), LoadMessages> {
+	async fn bake_uncoalesced(
+		self: &Arc<Self>,
+		id: &str,
+		forced: bool,
+		ancestors: &[String],
+		allocator: &BakeAllocator,
+	) -> Result<(), LoadMessages> {
 		let id = ResourceId::new(id);
 
 		#[cfg(debug_assertions)]
@@ -802,16 +1094,19 @@ impl AssetManagerState {
 
 		let start_time = std::time::Instant::now();
 
+		self.begin_provenance(id.as_ref());
+
 		// The shared flag enforces the primary-write contract without rereading potentially expensive storage.
 		// TODO: replace the flag when storage can confirm the primary write without a second read.
 		let primary_stored = Cell::new(false);
 
-		// Every resolution during this handler invocation contributes to the provenance attached to stored outputs.
-		let asset_dependencies = Mutex::new(Vec::new());
+		// Everything the handler observes during this invocation becomes the provenance of what it stores.
+		let inputs = Arc::new(Mutex::new(Vec::new()));
+		let outputs = Mutex::new(Vec::new());
 
 		let tracking_storage_backend = TrackingStorageBackend {
 			inner: self.storage_backend.as_ref(),
-			dependencies: &asset_dependencies,
+			inputs: &inputs,
 		};
 
 		let context = BakeContext {
@@ -820,7 +1115,12 @@ impl AssetManagerState {
 			allocator,
 			primary_id: id,
 			primary_stored: &primary_stored,
+			outputs: &outputs,
+			ancestors,
+			forced,
 		};
+
+		context.setting(&asset_handler.setting_name());
 
 		let result = match asset_handler.bake(context, id).await {
 			Ok(()) if primary_stored.get() => Ok(()),
@@ -883,109 +1183,277 @@ impl AssetManagerState {
 
 		result?;
 
+		let outputs = outputs.into_inner();
+		let mut inputs = std::mem::take(&mut *inputs.lock());
+		// What the bake read back of its own resources is no input: it is the result.
+		inputs.retain(
+			|input| !matches!(input, BakeInput::Resource { id: read, .. } if read == id.as_ref() || outputs.contains(read)),
+		);
+
+		// The record is written last, so only a bake that stored everything counts as current.
+		let orphans = self.commit_provenance(id.as_ref(), inputs, outputs);
+
+		for orphan in orphans {
+			log::info!(
+				"Removing resource '{orphan}'. The latest bake of '{}' no longer stores it.",
+				id.as_ref()
+			);
+
+			if let Err(error) = self.resource_storage_backend.delete(ResourceId::new(&orphan)).await {
+				log::warn!("{error}");
+			}
+			self.store_generation.fetch_add(1, Ordering::AcqRel);
+		}
+
 		log::trace!("Baked '{:#?}' resource in {:#?}", id, start_time.elapsed());
 
 		Ok(())
 	}
 
-	/// Checks freshness and runs one bake without consulting the in-flight registry.
+	/// Makes `id` current, baking what the mode and the freshness check call for, without consulting the in-flight
+	/// registry.
+	///
+	/// `ancestors` are the IDs waiting on this one, outermost first and ending with `id`.
 	async fn ensure_baked_uncoalesced(
 		self: &Arc<Self>,
 		id: &str,
+		mode: BakeMode,
+		ancestors: &[String],
 		allocator: &BakeAllocator,
 	) -> Result<BakeOutcome, LoadMessages> {
-		let id = ResourceId::new(id);
+		let epoch = self.epoch.load(Ordering::Acquire);
 
-		if let Some((resource, _)) = self.resource_storage_backend.read(id).await {
-			if !self.resource_is_stale(&resource).await {
-				return Ok(BakeOutcome::Current);
-			}
+		// A forced rebuild builds each resource once per process, then treats it like any other.
+		let forced = mode == BakeMode::Forced && !self.stored_in_process(id);
+		let check = mode == BakeMode::IfStale || (mode == BakeMode::Forced && !forced);
 
-			log::info!(
-				"Re-baking stale asset '{}'. One or more source files changed after the stored resource was produced.",
-				id.as_ref()
-			);
+		if check
+			&& let Some((checked_at, store_generation, result)) = self.checked.lock().get(id)
+			&& *checked_at == epoch
+			&& store_generation.is_none_or(|generation| generation == self.store_generation.load(Ordering::Acquire))
+		{
+			return result.clone().map(|()| BakeOutcome::Current);
 		}
 
-		self.bake_uncoalesced(id.as_ref(), allocator)
+		let result = self
+			.ensure_baked_unchecked(id, mode, forced, check, ancestors, allocator)
+			.await;
+
+		// A provisional answer depends on a bake that hasn't decided its own freshness, so it isn't remembered.
+		if matches!(result, Ok(BakeOutcome::Provisional)) {
+			return result;
+		}
+
+		// A bake that ran a query observed the store, so its check only holds while the store holds the same resources.
+		// The generation is read after the bake, which counts what the bake itself stored.
+		let observes_store = self
+			.read_provenance(id)
+			.as_ref()
+			.and_then(Provenance::inputs)
+			.is_some_and(|inputs| inputs.iter().any(|input| matches!(input, BakeInput::Query { .. })));
+		let store_generation = observes_store.then(|| self.store_generation.load(Ordering::Acquire));
+
+		self.checked
+			.lock()
+			.insert(id.to_owned(), (epoch, store_generation, result.clone().map(|_| ())));
+
+		result
+	}
+
+	/// Does the work of [`Self::ensure_baked_uncoalesced`] once no earlier check of `id` in this epoch answers it.
+	async fn ensure_baked_unchecked(
+		self: &Arc<Self>,
+		id: &str,
+		mode: BakeMode,
+		forced: bool,
+		check: bool,
+		ancestors: &[String],
+		allocator: &BakeAllocator,
+	) -> Result<BakeOutcome, LoadMessages> {
+		let provenance = self.read_provenance(id);
+		let origin = || BakeOrigin::Dependency {
+			memory_scope: allocator.memory_scope().cloned(),
+			ancestors: ancestors.to_vec(),
+		};
+
+		// A resource that only another ID's bake stores is made current by that bake: its own ID may not be enough to
+		// rebuild it, such as a material a model takes from one of its detail-level files.
+		if let Some(provenance) = &provenance
+			&& provenance.inputs.is_none()
+			&& !provenance.producers.is_empty()
+		{
+			let stored = async || self.resource_storage_backend.read(ResourceId::new(id)).await.is_some();
+
+			match provenance.producers.iter().find(|producer| !ancestors.contains(producer)) {
+				Some(producer) => {
+					// The dispatch is boxed because the producer's bake re-enters this function for its own dependencies.
+					let outcome = Box::pin(self.dispatch_bake_in_scope(producer, mode, origin())).await?;
+
+					if stored().await {
+						return Ok(outcome);
+					}
+				}
+				// Every producer waits on this check, so what it stored stands until its own freshness is decided. If it
+				// then bakes, it stores the resource again and asks for whatever is baked from it again.
+				None if stored().await => return Ok(BakeOutcome::Provisional),
+				None => {}
+			}
+			// No producer stores the resource anymore, so only a bake of the ID itself can.
+		}
+
+		if check
+			&& let Some(inputs) = provenance.as_ref().and_then(Provenance::inputs)
+			&& self.resource_storage_backend.read(ResourceId::new(id)).await.is_some()
+		{
+			match self.first_changed_input(inputs, origin).await {
+				Ok(outcome) => return Ok(outcome),
+				Err(changed) => log::info!(
+					"Re-baking stale asset '{id}'. Its input '{changed}' changed since the stored resource was produced."
+				),
+			}
+		}
+
+		self.bake_uncoalesced(id, forced, ancestors, allocator)
 			.await
 			.map(|()| BakeOutcome::Baked)
 	}
 
-	/// Returns whether a forced rebuild requested through [`AssetManager::rebuild_resources_baked_before`] covers `resource`.
-	pub(crate) fn precedes_rebuild_cutoff(&self, resource: &crate::SerializableResource) -> bool {
-		self.rebuild_cutoff.is_some_and(|cutoff| resource.baked_at() < cutoff)
-	}
-
-	/// Returns whether any source version recorded by a stored resource differs from the current asset backend.
-	async fn resource_is_stale(&self, resource: &crate::SerializableResource) -> bool {
+	/// Returns how the inputs of a bake stand: current, provisionally current, or the key of the first input found to
+	/// have changed. `origin` builds the origin of the checks that make the resources an input names current.
+	async fn first_changed_input(
+		self: &Arc<Self>,
+		inputs: &[BakeInput],
+		origin: impl Fn() -> BakeOrigin,
+	) -> Result<BakeOutcome, String> {
 		use utils::r#async::StreamExt as _;
 
-		if self.precedes_rebuild_cutoff(resource) {
-			return true;
+		let checks = inputs.iter().map(|input| {
+			let origin = origin();
+
+			async move { (input, self.input_changed(input, origin).await) }
+		});
+
+		// Inputs are independent; bound the pressure on metadata and workers, and stop after the first change.
+		let mut checks = std::pin::pin!(utils::r#async::stream::iter(checks).buffer_unordered(INPUT_CHECK_CONCURRENCY));
+
+		let mut outcome = BakeOutcome::Current;
+		while let Some((input, check)) = checks.next().await {
+			match check {
+				InputCheck::Unchanged => {}
+				InputCheck::Provisional => outcome = BakeOutcome::Provisional,
+				InputCheck::Changed => return Err(input.key()),
+			}
 		}
 
-		let storage_backend = self.storage_backend.as_ref();
-		let checks = resource
-			.asset_dependencies()
-			.iter()
-			.map(|dependency| source_changed(dependency, storage_backend));
+		Ok(outcome)
+	}
 
-		// Provenance entries are independent; bound metadata pressure and stop after the first stale source.
-		utils::r#async::stream::iter(checks)
-			.buffer_unordered(SOURCE_VERSION_CONCURRENCY)
-			.any(|stale| async move { stale })
-			.await
+	/// Returns whether one recorded input still has the fingerprint the bake recorded.
+	///
+	/// Checking an input that names stored resources first makes those resources current, which may bake them.
+	async fn input_changed(self: &Arc<Self>, input: &BakeInput, origin: BakeOrigin) -> InputCheck {
+		let changed = match input {
+			BakeInput::Source { id, version } => source_changed(id, version, self.storage_backend.as_ref()).await,
+			BakeInput::Resource { id, fingerprint } => {
+				// The dispatch is boxed because the dependency's own check re-enters this function.
+				let baked = Box::pin(self.dispatch_bake_in_scope(id, BakeMode::IfStale, origin)).await;
+				let current = match baked {
+					Ok(_) => self
+						.resource_storage_backend
+						.read(ResourceId::new(id))
+						.await
+						.map_or(MISSING_RESOURCE, |(resource, _)| resource_fingerprint(&resource)),
+					Err(_) => MISSING_RESOURCE,
+				};
+
+				if current == *fingerprint && baked == Ok(BakeOutcome::Provisional) {
+					return InputCheck::Provisional;
+				}
+
+				current != *fingerprint
+			}
+			BakeInput::Query {
+				class,
+				predicates,
+				fingerprint,
+			} => {
+				let query = BakeInput::recorded_query(class, predicates);
+
+				!matches!(self.query_matches(&query, origin).await, Ok((_, current)) if current == *fingerprint)
+			}
+			BakeInput::Listing { pattern, fingerprint } => {
+				!matches!(self.source_listing(pattern).await, Ok((_, current)) if current == *fingerprint)
+			}
+			BakeInput::Setting { name, fingerprint } if name == SHADER_COMPILER_SETTING => {
+				self.shader_compiler_fingerprint().await != *fingerprint
+			}
+			BakeInput::Setting { name, fingerprint } => self.setting(name) != *fingerprint,
+		};
+
+		if changed { InputCheck::Changed } else { InputCheck::Unchanged }
 	}
 }
 
-/// Returns the IDs of the source files a stored resource records that changed or no longer exist.
+/// The `InputCheck` enum says how one recorded input of a bake stands now.
+enum InputCheck {
+	Unchanged,
+	/// Unchanged if the bake waiting on this check finds itself current; see [`BakeOutcome::Provisional`].
+	Provisional,
+	Changed,
+}
+
+/// Returns the IDs of the source files a bake recorded that changed or no longer exist.
 ///
-/// A resource without stale sources is current, so a bake keeps it. Pass the asset storage backend of the source
-/// directory the resource was baked from, such as a [`FileStorageBackend`](crate::asset::FileStorageBackend). The IDs
-/// keep the order of [`SerializableResource::asset_dependencies`](crate::SerializableResource::asset_dependencies).
-pub async fn stale_sources<'a>(
-	resource: &'a crate::SerializableResource,
-	storage_backend: &dyn DynStorageBackend,
-) -> Vec<&'a str> {
+/// A resource is stale when any input of its bake changed; this checks the source files among them, which a tool can
+/// do without the bake's settings. Pass the provenance of the resource, from
+/// [`ReadStorageBackend::read_provenance`](crate::resource::ReadStorageBackend::read_provenance), and the asset storage
+/// backend of the source directory it was baked from, such as a
+/// [`FileStorageBackend`](crate::asset::FileStorageBackend). The IDs keep the order of [`Provenance::inputs`].
+pub async fn stale_sources<'a>(provenance: &'a Provenance, storage_backend: &dyn DynStorageBackend) -> Vec<&'a str> {
 	use utils::r#async::StreamExt as _;
 
-	let checks = resource
-		.asset_dependencies()
+	let checks = provenance
+		.inputs()
+		.unwrap_or_default()
 		.iter()
-		.map(|dependency| async move { source_changed(dependency, storage_backend).await.then_some(dependency.id()) });
+		.filter_map(|input| Some((input.source_id()?, input.source_version()?)))
+		.map(|(id, version)| async move { source_changed(id, version, storage_backend).await.then_some(id) });
 
 	utils::r#async::stream::iter(checks)
-		.buffered(SOURCE_VERSION_CONCURRENCY)
+		.buffered(INPUT_CHECK_CONCURRENCY)
 		.filter_map(|stale| async move { stale })
 		.collect()
 		.await
 }
 
-/// Returns whether one recorded source version differs from the asset backend's current version.
-async fn source_changed(dependency: &AssetDependency, storage_backend: &dyn DynStorageBackend) -> bool {
-	let current = storage_backend.version(ResourceId::new(dependency.id())).await;
+/// Returns whether the source file `id` differs from the `recorded` version of it.
+///
+/// The file's content is only read when its metadata changed and its size didn't.
+async fn source_changed(id: &str, recorded: &AssetVersion, storage_backend: &dyn DynStorageBackend) -> bool {
+	let id = ResourceId::new(id);
 
-	current.as_ref().ok() != Some(dependency.version())
+	let Ok(current) = storage_backend.version(id).await else {
+		return true;
+	};
+
+	match recorded.compare(&current) {
+		VersionChange::Unchanged => false,
+		VersionChange::Changed => true,
+		VersionChange::ContentDecides(recorded) => storage_backend.content_hash(id).await != Ok(recorded),
+	}
 }
 
-/// Bounds how many source versions one staleness check reads at once.
-const SOURCE_VERSION_CONCURRENCY: usize = 8;
+/// Returns the fingerprint of the BESL code this crate was built with.
+fn shader_code_fingerprint() -> u64 {
+	use std::hash::Hasher as _;
 
-/// Converts a watcher path into its raw asset ID and, for BEAD files, its possible sidecar source ID.
-#[cfg(debug_assertions)]
-fn source_ids_from_path(root: &std::path::Path, path: &std::path::Path) -> Option<(String, Option<String>)> {
-	let relative = path.strip_prefix(root).ok()?;
-
-	let id = relative.to_str()?.replace(std::path::MAIN_SEPARATOR, "/");
-	let resource_id = ResourceId::new(&id);
-	let extension = resource_id.get_extension();
-	let sidecar_source = extension
-		.eq_ignore_ascii_case("bead")
-		.then(|| id[..id.len() - extension.len() - 1].to_string());
-
-	Some((id, sidecar_source))
+	let mut hasher = crate::asset::provenance::fingerprint_hasher();
+	hasher.write(env!("BESL_CODE_HASH").as_bytes());
+	hasher.finish()
 }
+
+/// Bounds how many inputs one freshness check examines at once.
+const INPUT_CHECK_CONCURRENCY: usize = 8;
 
 const ASSETS_DOCS_PATH: &str = "reference/assets";
 const EXCLUDED_ASSETS_DOCS_PATH: &str = "reference/assets#excluded-assets";
@@ -1366,31 +1834,6 @@ pub mod tests {
 	}
 
 	#[cfg(debug_assertions)]
-	#[test]
-	fn watcher_paths_preserve_bead_assets_and_also_report_possible_sidecar_sources() {
-		let root = std::path::Path::new("/assets");
-
-		assert_eq!(
-			source_ids_from_path(root, std::path::Path::new("/assets/rendering/pass.pipeline")),
-			Some(("rendering/pass.pipeline".to_string(), None))
-		);
-		assert_eq!(
-			source_ids_from_path(root, std::path::Path::new("/assets/rendering/pass.besl.bead")),
-			Some((
-				"rendering/pass.besl.bead".to_string(),
-				Some("rendering/pass.besl".to_string())
-			))
-		);
-		assert_eq!(
-			source_ids_from_path(root, std::path::Path::new("/assets/lighting/studio.environment.BEAD")),
-			Some((
-				"lighting/studio.environment.BEAD".to_string(),
-				Some("lighting/studio.environment".to_string())
-			))
-		);
-	}
-
-	#[cfg(debug_assertions)]
 	#[r#async::test]
 	async fn tracked_transitive_sources_publish_the_requested_root_after_rebaking() {
 		let asset_storage = TestStorageBackend::new();
@@ -1411,10 +1854,12 @@ pub mod tests {
 
 		let resource = manager.bake_if_not_exists_serialized("parent.test").await.unwrap();
 
-		manager.track_resource(&resource);
+		manager.track_resource(resource.id());
 
 		asset_storage.add_file("child.test", b"changed child");
 
+		// A watcher batch discards the earlier checks once, then checks each tracked root.
+		manager.state.epoch.fetch_add(1, Ordering::AcqRel);
 		manager.state.clone().reload_resource("parent.test".to_string()).await;
 
 		assert_eq!(
@@ -1445,7 +1890,7 @@ pub mod tests {
 
 		let resource = manager.bake_if_not_exists_serialized("stable.test").await.unwrap();
 
-		manager.track_resource(&resource);
+		manager.track_resource(resource.id());
 
 		manager.state.clone().reload_resource("stable.test".to_string()).await;
 
@@ -1590,7 +2035,7 @@ pub mod tests {
 	}
 
 	#[r#async::test]
-	async fn rebuild_cutoff_rebakes_current_dependencies_once() {
+	async fn a_forced_rebuild_rebakes_current_dependencies_once() {
 		let asset_storage = TestStorageBackend::new();
 
 		asset_storage.add_file("parent.test", b"parent");
@@ -1608,13 +2053,11 @@ pub mod tests {
 
 		assert_eq!(invocations.load(Ordering::SeqCst), 2);
 
-		let (mut forced_run, invocations) = versioned_asset_manager(asset_storage, resource_storage);
+		let (forced_run, invocations) = versioned_asset_manager(asset_storage, resource_storage);
 
-		forced_run.rebuild_resources_baked_before(std::time::SystemTime::now());
-
-		forced_run.bake_if_stale("parent.test").await.expect("parent should rebuild");
+		forced_run.rebuild("parent.test").await.expect("parent should rebuild");
 		forced_run
-			.bake_if_stale("child.test")
+			.rebuild("child.test")
 			.await
 			.expect("child should already be rebuilt");
 
@@ -1666,8 +2109,14 @@ pub mod tests {
 				.expect("fixture source should bake");
 		}
 
-		let (external, _) = resource_storage.read(ResourceId::new("external.test")).await.unwrap();
-		let (removed, _) = resource_storage.read(ResourceId::new("removed.test")).await.unwrap();
+		let external = resource_storage
+			.read_provenance(ResourceId::new("external.test"))
+			.unwrap()
+			.unwrap();
+		let removed = resource_storage
+			.read_provenance(ResourceId::new("removed.test"))
+			.unwrap()
+			.unwrap();
 
 		assert!(stale_sources(&external, &asset_storage).await.is_empty());
 
@@ -1676,6 +2125,467 @@ pub mod tests {
 
 		assert_eq!(stale_sources(&external, &asset_storage).await, ["external.bin"]);
 		assert_eq!(stale_sources(&removed, &asset_storage).await, ["removed.test"]);
+	}
+
+	/// The `ScriptedAssetHandler` struct bakes `.script` sources whose lines say what the bake does, so a test builds
+	/// any bake graph from source files: `dep <id>` bakes a dependency, `try <id>` bakes one and carries on when it
+	/// fails, `setting <name>` reads a setting, `query` gathers every stored `TestVariant`, `list <pattern>` lists
+	/// sources, `load <id>` reads a stored resource through the bake's resource manager, `out <fragment>` stores
+	/// another resource, `variant` stores the primary as a `TestVariant`,
+	/// `payload <text>` sets the stored bytes, and `fail` fails the bake. A line that starts with `at <fragment>` only
+	/// runs for the ID with that fragment, or with `at -` for the ID without one. Other lines do nothing.
+	struct ScriptedAssetHandler {
+		/// How many times each ID was baked.
+		invocations: Arc<Mutex<HashMap<String, usize>>>,
+	}
+
+	#[derive(serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+	struct TestVariant {}
+
+	impl Model for TestVariant {
+		fn get_class() -> &'static str {
+			"TestVariant"
+		}
+	}
+
+	impl AssetHandler for ScriptedAssetHandler {
+		fn can_handle(&self, id: &str) -> bool {
+			id == "script"
+		}
+
+		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+			*self.invocations.lock().entry(id.to_string()).or_default() += 1;
+
+			let base = id.get_base();
+			let (source, ..) = context.resolve(ResourceId::new(base.as_ref())).await?;
+			let script = String::from_utf8(source.to_vec()).map_err(|_| LoadErrors::FailedToProcess)?;
+			let mut payload = String::new();
+			let mut variant = false;
+
+			let fragment = id.get_fragment();
+			let fragment = fragment.as_ref().map_or("-", |fragment| fragment.as_ref());
+
+			for line in script.lines() {
+				let line = match line.strip_prefix("at ").and_then(|rest| rest.split_once(' ')) {
+					Some((at, _)) if at != fragment => continue,
+					Some((_, rest)) => rest,
+					None => line,
+				};
+				let (command, argument) = line.split_once(' ').unwrap_or((line, ""));
+				match command {
+					"dep" => {
+						context.bake_dependency::<TestResource>(argument).await?;
+					}
+					"try" => {
+						let _ = context.bake_dependency::<TestResource>(argument).await;
+					}
+					"setting" => {
+						context.setting(argument);
+					}
+					"query" => {
+						let ids = context
+							.query_resources(crate::resource::storage_backend::Query::new("TestVariant"))
+							.await?;
+						context.bake_dependencies::<TestVariant>(&ids, 4).await?;
+						payload.push_str(&ids.join(","));
+					}
+					"list" => {
+						payload.push_str(&context.source_ids(argument).await?.join(","));
+					}
+					"load" => {
+						// The request fails to solve a test resource as audio, after it read the resource.
+						let _ = context
+							.resource_manager()
+							.request::<crate::resources::audio::Audio>(argument)
+							.await;
+					}
+					"out" => {
+						let output = format!("{}#{argument}", base.as_ref());
+						context
+							.store_resource(
+								ProcessedAsset::new(ResourceId::new(&output), TestResource {}),
+								argument.as_bytes(),
+							)
+							.await?;
+					}
+					"variant" => variant = true,
+					"payload" => payload.push_str(argument),
+					"fail" => return Err(LoadErrors::FailedToProcess),
+					_ => {}
+				}
+			}
+
+			let asset = if variant {
+				ProcessedAsset::new(id, TestVariant {})
+			} else {
+				ProcessedAsset::new(id, TestResource {})
+			};
+			context.store_primary(asset, payload.as_bytes()).await
+		}
+	}
+
+	/// The `Scripted` struct is a manager with a [`ScriptedAssetHandler`] and the stores and bake counts a test
+	/// reads back.
+	struct Scripted {
+		manager: AssetManager,
+		invocations: Arc<Mutex<HashMap<String, usize>>>,
+		sources: TestStorageBackend,
+		resources: MemoryStorageBackend,
+	}
+
+	impl Scripted {
+		/// Builds a manager over `sources` and `resources`, which another manager may share, after `configure`.
+		fn over(
+			sources: TestStorageBackend,
+			resources: MemoryStorageBackend,
+			configure: impl FnOnce(&mut AssetManager),
+		) -> Self {
+			let invocations = Arc::new(Mutex::new(HashMap::default()));
+			let mut manager = AssetManager::new(sources.clone(), resources.clone());
+			manager.add_asset_handler(ScriptedAssetHandler {
+				invocations: Arc::clone(&invocations),
+			});
+			configure(&mut manager);
+			Scripted {
+				manager,
+				invocations,
+				sources,
+				resources,
+			}
+		}
+
+		fn new() -> Self {
+			Self::over(TestStorageBackend::new(), MemoryStorageBackend::new(), |_| {})
+		}
+
+		/// Returns how many times `id` was baked.
+		fn bakes(&self, id: &str) -> usize {
+			self.invocations.lock().get(id).copied().unwrap_or(0)
+		}
+
+		async fn stored(&self, id: &str) -> bool {
+			self.resources.read(ResourceId::new(id)).await.is_some()
+		}
+	}
+
+	#[r#async::test]
+	async fn a_dependency_baked_again_to_the_same_result_leaves_its_parent_current() {
+		let scripted = Scripted::new();
+		scripted.sources.add_file("parent.script", b"dep child.script");
+		scripted.sources.add_file("child.script", b"payload same\nfirst");
+
+		scripted.manager.bake_if_stale("parent.script").await.unwrap();
+
+		scripted.sources.add_file("child.script", b"payload same\nsecond");
+		scripted.manager.bake_if_stale("parent.script").await.unwrap();
+
+		assert_eq!(scripted.bakes("child.script"), 2, "the edited child should bake again");
+		assert_eq!(scripted.bakes("parent.script"), 1, "the child's result didn't change");
+
+		scripted.sources.add_file("child.script", b"payload other");
+		scripted.manager.bake_if_stale("parent.script").await.unwrap();
+
+		assert_eq!(scripted.bakes("parent.script"), 2, "the child's result changed");
+	}
+
+	#[r#async::test]
+	async fn a_changed_setting_rebakes_only_the_resources_that_read_it() {
+		let (sources, resources) = (TestStorageBackend::new(), MemoryStorageBackend::new());
+		sources.add_file("reader.script", b"setting quality");
+		sources.add_file("other.script", b"payload other");
+
+		let run = async |quality: u64| {
+			let scripted = Scripted::over(sources.clone(), resources.clone(), |manager| {
+				manager.declare_setting("quality", quality);
+			});
+			scripted.manager.bake_if_stale("reader.script").await.unwrap();
+			scripted.manager.bake_if_stale("other.script").await.unwrap();
+			(scripted.bakes("reader.script"), scripted.bakes("other.script"))
+		};
+
+		assert_eq!(run(1).await, (1, 1));
+		assert_eq!(run(1).await, (0, 0), "the same setting should leave both current");
+		assert_eq!(run(2).await, (1, 0), "only the reader should bake again");
+	}
+
+	#[r#async::test]
+	async fn a_setting_nobody_declares_anymore_rebakes_its_readers() {
+		let (sources, resources) = (TestStorageBackend::new(), MemoryStorageBackend::new());
+		sources.add_file("reader.script", b"setting quality");
+
+		let declared = Scripted::over(sources.clone(), resources.clone(), |manager| {
+			manager.declare_setting("quality", 1);
+		});
+		declared.manager.bake_if_stale("reader.script").await.unwrap();
+
+		let undeclared = Scripted::over(sources, resources, |_| {});
+		undeclared.manager.bake_if_stale("reader.script").await.unwrap();
+
+		assert_eq!(undeclared.bakes("reader.script"), 1);
+	}
+
+	#[r#async::test]
+	async fn a_resource_another_bake_stores_is_made_current_by_that_bake() {
+		let scripted = Scripted::new();
+		scripted.sources.add_file("container.script", b"out first");
+
+		scripted.manager.bake_if_stale("container.script").await.unwrap();
+		scripted.manager.bake_if_stale("container.script#first").await.unwrap();
+
+		assert_eq!(scripted.bakes("container.script"), 1);
+		assert_eq!(
+			scripted.bakes("container.script#first"),
+			0,
+			"the fragment is never baked on its own"
+		);
+
+		scripted.sources.add_file("container.script", b"out first\nedited");
+		scripted.manager.bake_if_stale("container.script#first").await.unwrap();
+
+		assert_eq!(scripted.bakes("container.script"), 2, "the stale container should bake again");
+		assert_eq!(scripted.bakes("container.script#first"), 0);
+	}
+
+	#[r#async::test]
+	async fn a_resource_its_bake_no_longer_stores_is_removed() {
+		let scripted = Scripted::new();
+		scripted.sources.add_file("container.script", b"out first\nout second");
+
+		scripted.manager.bake_if_stale("container.script").await.unwrap();
+		assert!(scripted.stored("container.script#second").await);
+
+		scripted.sources.add_file("container.script", b"out first");
+		scripted.manager.bake_if_stale("container.script").await.unwrap();
+
+		assert!(scripted.stored("container.script#first").await);
+		assert!(!scripted.stored("container.script#second").await);
+	}
+
+	#[r#async::test]
+	async fn a_resource_two_bakes_store_stays_until_neither_stores_it() {
+		let scripted = Scripted::new();
+		scripted.sources.add_file("shared.script", b"out skeleton");
+		// Both IDs name the same source, as a model and one of its clips do, and both store its skeleton.
+		scripted.manager.bake_if_stale("shared.script").await.unwrap();
+		scripted.manager.bake_if_stale("shared.script#clip").await.unwrap();
+
+		scripted.sources.add_file("shared.script", b"edited");
+		scripted.manager.bake_if_stale("shared.script").await.unwrap();
+		assert!(
+			scripted.stored("shared.script#skeleton").await,
+			"the clip's bake still stores it"
+		);
+
+		scripted.manager.bake_if_stale("shared.script#clip").await.unwrap();
+		assert!(!scripted.stored("shared.script#skeleton").await);
+	}
+
+	#[r#async::test]
+	async fn a_bake_checks_a_dependency_that_reads_what_the_bake_itself_stores() {
+		let scripted = Scripted::new();
+		scripted.sources.add_file("container.script", b"at - out shared");
+		scripted.manager.bake_if_stale("container.script").await.unwrap();
+
+		// The container now bakes a part of itself, and the part reads a resource only the container stores.
+		scripted.sources.add_file(
+			"container.script",
+			b"at - out shared\nat - dep container.script#part\nat part dep container.script#shared",
+		);
+		scripted.manager.bake_if_stale("container.script").await.unwrap();
+		assert_eq!(scripted.bakes("container.script"), 2);
+		assert_eq!(scripted.bakes("container.script#part"), 1);
+
+		// Checking the container checks the part, which must not wait for the container to check what it stored.
+		scripted.manager.bake_if_stale("container.script").await.unwrap();
+		assert_eq!(scripted.bakes("container.script"), 2, "nothing changed");
+		assert_eq!(scripted.bakes("container.script#shared"), 0, "only the container stores it");
+	}
+
+	#[r#async::test]
+	async fn assets_baked_from_each_other_fail_instead_of_waiting_forever() {
+		let scripted = Scripted::new();
+		scripted.sources.add_file("first.script", b"dep second.script");
+		scripted.sources.add_file("second.script", b"dep first.script");
+
+		assert_eq!(
+			scripted.manager.bake_if_stale("first.script").await,
+			Err(LoadMessages::FailedToBake {
+				asset: "first.script".to_string(),
+				error: LoadErrors::DependencyCycle,
+			})
+		);
+	}
+
+	#[r#async::test]
+	async fn a_resource_read_through_the_bakes_resource_manager_is_an_input() {
+		let scripted = Scripted::new();
+		scripted.sources.add_file("reader.script", b"load read.script");
+		scripted.sources.add_file("read.script", b"payload first");
+
+		scripted.manager.bake_if_stale("read.script").await.unwrap();
+		scripted.manager.bake_if_stale("reader.script").await.unwrap();
+		scripted.manager.bake_if_stale("reader.script").await.unwrap();
+		assert_eq!(scripted.bakes("reader.script"), 1);
+
+		scripted.sources.add_file("read.script", b"payload second");
+		scripted.manager.bake_if_stale("reader.script").await.unwrap();
+
+		assert_eq!(
+			scripted.bakes("read.script"),
+			2,
+			"checking the reader makes what it read current"
+		);
+		assert_eq!(scripted.bakes("reader.script"), 2);
+	}
+
+	#[r#async::test]
+	async fn a_failed_bake_leaves_the_asset_stale_even_once_its_sources_are_restored() {
+		let scripted = Scripted::new();
+		scripted.sources.add_file("asset.script", b"out first");
+		scripted.manager.bake_if_stale("asset.script").await.unwrap();
+
+		scripted.sources.add_file("asset.script", b"out other\nfail");
+		assert!(scripted.manager.bake_if_stale("asset.script").await.is_err());
+
+		// The failed bake stored `other`, so the store no longer holds what the first bake recorded.
+		scripted.sources.add_file("asset.script", b"out first");
+		scripted.manager.bake_if_stale("asset.script").await.unwrap();
+
+		assert_eq!(scripted.bakes("asset.script"), 3);
+	}
+
+	#[r#async::test]
+	async fn a_dependency_that_failed_rebakes_its_parent_once_it_works() {
+		let scripted = Scripted::new();
+		scripted.sources.add_file("parent.script", b"try child.script");
+		scripted.sources.add_file("child.script", b"fail");
+
+		scripted.manager.bake_if_stale("parent.script").await.unwrap();
+		scripted.manager.bake_if_stale("parent.script").await.unwrap();
+		assert_eq!(
+			scripted.bakes("parent.script"),
+			1,
+			"a dependency that still fails changes nothing"
+		);
+
+		scripted.sources.add_file("child.script", b"payload fixed");
+		scripted.manager.bake_if_stale("parent.script").await.unwrap();
+
+		assert_eq!(scripted.bakes("parent.script"), 2);
+	}
+
+	#[r#async::test]
+	async fn a_forced_rebuild_bakes_the_root_and_what_it_is_baked_from_and_nothing_else() {
+		let (sources, resources) = (TestStorageBackend::new(), MemoryStorageBackend::new());
+		sources.add_file("root.script", b"dep shared.script");
+		sources.add_file("shared.script", b"payload shared");
+		sources.add_file("unrelated.script", b"payload unrelated");
+
+		let first = Scripted::over(sources.clone(), resources.clone(), |_| {});
+		for id in ["root.script", "unrelated.script"] {
+			first.manager.bake_if_stale(id).await.unwrap();
+		}
+
+		let forced = Scripted::over(sources, resources, |_| {});
+		forced.manager.rebuild("root.script").await.unwrap();
+		forced.manager.bake_if_stale("unrelated.script").await.unwrap();
+
+		assert_eq!(forced.bakes("root.script"), 1);
+		assert_eq!(forced.bakes("shared.script"), 1);
+		assert_eq!(forced.bakes("unrelated.script"), 0);
+	}
+
+	#[r#async::test]
+	async fn a_query_bake_goes_stale_when_a_match_appears_changes_or_disappears() {
+		let scripted = Scripted::new();
+		scripted.sources.add_file("gather.script", b"query");
+		scripted.sources.add_file("a.script", b"variant\npayload a");
+
+		scripted.manager.bake_if_stale("a.script").await.unwrap();
+		scripted.manager.bake_if_stale("gather.script").await.unwrap();
+		scripted.manager.bake_if_stale("gather.script").await.unwrap();
+		assert_eq!(scripted.bakes("gather.script"), 1, "an unchanged match set is current");
+
+		scripted.sources.add_file("b.script", b"variant\npayload b");
+		scripted.manager.bake_if_stale("b.script").await.unwrap();
+		scripted.manager.bake_if_stale("gather.script").await.unwrap();
+		assert_eq!(scripted.bakes("gather.script"), 2, "a new match");
+
+		// The gathering bake makes its matches current, so the edit reaches it without a request for the match.
+		scripted.sources.add_file("a.script", b"variant\npayload edited");
+		scripted.manager.bake_if_stale("gather.script").await.unwrap();
+		assert_eq!(scripted.bakes("a.script"), 2);
+		assert_eq!(scripted.bakes("gather.script"), 3, "a changed match");
+
+		crate::resource::WriteStorageBackend::delete(&scripted.resources, ResourceId::new("b.script"))
+			.await
+			.unwrap();
+		scripted.manager.bake_if_stale("gather.script").await.unwrap();
+		assert_eq!(scripted.bakes("gather.script"), 4, "a removed match");
+	}
+
+	#[r#async::test]
+	async fn a_listing_bake_goes_stale_when_a_matching_source_appears() {
+		let scripted = Scripted::new();
+		scripted.sources.add_file("database.script", b"list clips/*");
+		scripted.sources.add_file("clips/walk.script", b"");
+
+		scripted.manager.bake_if_stale("database.script").await.unwrap();
+
+		scripted.sources.add_file("other/run.script", b"");
+		scripted.manager.bake_if_stale("database.script").await.unwrap();
+		assert_eq!(
+			scripted.bakes("database.script"),
+			1,
+			"a source the pattern doesn't match changes nothing"
+		);
+
+		scripted.sources.add_file("clips/run.script", b"");
+		scripted.manager.bake_if_stale("database.script").await.unwrap();
+		assert_eq!(scripted.bakes("database.script"), 2);
+	}
+
+	#[r#async::test]
+	async fn a_file_whose_modification_time_changed_but_not_its_content_stays_current() {
+		let directory = std::env::temp_dir().join(format!("byte-engine-freshness-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&directory);
+		std::fs::create_dir_all(&directory).unwrap();
+		let source = directory.join("asset.script");
+		std::fs::write(&source, b"payload first").unwrap();
+
+		let invocations = Arc::new(Mutex::new(HashMap::default()));
+		let mut manager = AssetManager::new(
+			crate::asset::FileStorageBackend::new(directory.clone()),
+			MemoryStorageBackend::new(),
+		);
+		manager.add_asset_handler(ScriptedAssetHandler {
+			invocations: Arc::clone(&invocations),
+		});
+		let bakes = || invocations.lock().get("asset.script").copied().unwrap_or(0);
+		let touch = |seconds: u64| {
+			let modified = std::time::UNIX_EPOCH + Duration::from_secs(seconds);
+			std::fs::File::options()
+				.write(true)
+				.open(&source)
+				.unwrap()
+				.set_modified(modified)
+				.unwrap();
+		};
+
+		touch(1_000_000);
+		manager.bake_if_stale("asset.script").await.unwrap();
+
+		touch(2_000_000);
+		manager.bake_if_stale("asset.script").await.unwrap();
+		assert_eq!(bakes(), 1, "the same content with a new modification time is unchanged");
+
+		// The same size, so only the content tells the edit apart.
+		std::fs::write(&source, b"payload other").unwrap();
+		touch(3_000_000);
+		manager.bake_if_stale("asset.script").await.unwrap();
+		assert_eq!(bakes(), 2);
+
+		let _ = std::fs::remove_dir_all(&directory);
 	}
 
 	#[r#async::test]
@@ -1911,7 +2821,7 @@ use std::{
 	ops::Deref,
 	sync::{
 		Arc,
-		atomic::{AtomicBool, AtomicUsize, Ordering},
+		atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 	},
 };
 
@@ -1930,14 +2840,16 @@ use crate::{
 	asset::{
 		self, DynStorageBackend, ResourceId,
 		handler::{
-			DynAssetHandler, LoadErrors,
+			DynAssetHandler, LoadErrors, PROGRAM_GENERATOR_SETTING, PROGRAM_TRANSFORM_SETTING, SHADER_CODE_SETTING,
+			SHADER_COMPILER_SETTING, STORE_SETTING,
 			implementations::{
 				ProgramGenerator, ProgramTransform,
 				besl::{PlatformShaderCompilerAdapter, ShaderCompiler},
 			},
 		},
 		intercept::BakeInterceptor,
-		storage_backend::AssetDependency,
+		provenance::{BakeInput, MISSING_RESOURCE, Provenance, resource_fingerprint, set_fingerprint},
+		storage_backend::{AssetVersion, VersionChange},
 	},
 	online_docs_url,
 	processors::image::ImageProcessor,

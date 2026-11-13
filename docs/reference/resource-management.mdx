@@ -83,17 +83,23 @@ the fingerprint the bake recorded. Otherwise it's **stale**, and the next
 request for it bakes it again. No other rule decides whether a resource is
 baked again.
 
-### Units
+### Bakes and provenance
 
 | Term | Definition |
 | --- | --- |
-| Unit | One asset, named by an ID without a fragment, and every resource its bake stores: the resource with that ID and the resources with a fragment of it. |
-| Owner | The unit a resource with a fragment belongs to. A request for the resource is a request for its owner. |
-| Trace | The record of one unit's latest successful bake: the inputs it observed, each with a fingerprint, and the IDs of the resources it stored. |
-| Root | A unit a tool or application asks for by ID. |
+| Bake | One run of an asset handler for one requested ID. It stores the resource with that ID, and can store others, such as the materials and the skeleton of a model. |
+| Provenance | What the store records for a resource ID: the inputs its latest finished bake observed, the other resources that bake stored, and the IDs whose bakes store the resource. |
+| Producer | An ID whose bake stores a resource with another ID. |
 
-A unit without a trace is stale. A bake that fails or is interrupted leaves no
-trace. A resource that a unit's latest bake didn't store again is removed.
+| Resource | Made current by |
+| --- | --- |
+| A resource whose ID was baked by request | Checking the inputs of its own bake. |
+| A resource only a producer stores | Making the producer current. |
+| A resource the store has no provenance for | Baking its ID. |
+
+A bake that fails or is interrupted leaves its ID stale, whatever it stored
+before it stopped. When a bake finishes, each resource its previous bake stored
+and it didn't store again is removed, unless another bake stores it too.
 
 ### Inputs
 
@@ -101,34 +107,43 @@ An input is a key and a fingerprint. The key's prefix names its kind.
 
 | Key | Recorded when a bake | Fingerprint | Changes when |
 | --- | --- | --- | --- |
-| `source:<asset ID>` | Reads a source file, a sidecar, or a directory default, or checks whether one exists. | The file's size, modification time, and content hash, or a record that the file is absent. | The content changes, or the file appears or disappears. A file with a new modification time and the same content is unchanged. |
-| `resource:<resource ID>` | Uses another unit's stored resource. | The hash of that resource's metadata and decoded payload, or a record that it's absent or failed to bake. | The resource bakes to a different result, appears, or disappears. A unit that bakes again to the same result leaves the units that use it current. |
-| `query:<query>` | Lists the stored resources a [query](/docs/reference/resource-store#queries) matches. | The hash of every match's ID and resource fingerprint. | A match appears, disappears, or bakes to a different result. |
+| `source:<asset ID>` | Reads a source file, a sidecar, or a directory default, or checks whether one exists. | The file's size and modification time and, for a file the bake read, its content hash; or a record that the file is absent. | The content changes, or the file appears or disappears. A file the bake read that has a new modification time and the same content is unchanged. |
+| `resource:<resource ID>` | Uses another bake's stored resource. | The hash of that resource's metadata and decoded payload, or a record that it's absent or failed to bake. | The resource bakes to a different result, appears, or disappears. A resource that bakes again to the same result leaves the resources baked from it current. |
+| `query:<class>,<property>=<value>` | Lists the stored resources a [query](/docs/reference/resource-store#queries) matches. | The hash of every match's ID and resource fingerprint. | A match appears, disappears, or bakes to a different result. |
 | `listing:<pattern>` | Lists the source files whose ID matches a pattern. | The hash of the matching IDs. | A matching file appears or disappears. |
-| `setting:<name>` | Reads a declared setting. | The value the baking tool or application declared under that name. | The declared value changes, or the name is no longer declared. |
+| `setting:<name>` | Reads a setting. | The value declared under that name, or zero when none is. | The declared value changes, or the name is no longer declared. |
+
+Checking a `resource` or `query` input first makes the resources it names
+current, which can bake them.
 
 ### Settings
 
 Everything that shapes a bake and isn't a file or a resource is a setting.
 
-| Setting | Covers |
-| --- | --- |
-| A handler's identity | The code of the asset handler that bakes the unit. |
-| A bake service's identity | The code and configuration of the image processor, the program generator, or the program transform, including the [render features](/docs/reference/parameters) a generator was built with and whether the build is a debug build. |
-| Store settings | Settings of the resource store that change a stored resource, such as texture compression. |
+| Setting | Read by | Covers |
+| --- | --- | --- |
+| `handler:<type>` | Every bake of that handler. | The handler's options, such as lightmap UVs for models or the merge threshold for levels. |
+| `program-generator` | Every bake that generates a material program. | The generator's code, the [render features](/docs/reference/parameters) it was built with, and whether the build is a debug build. |
+| `program-transform` | Every bake of a standalone shader. | The same, for the transform standalone shaders go through. |
+| `shader-code` | Every bake that links a shader. | The BESL code that links and lowers shaders. |
+| `shader-compiler` | Every bake that compiles a shader. | The platform shader toolchain, its version, and the flags it runs with. |
+| `store` | Every bake that stores an image. | The store's texture compression. |
 
 A change to `config.json`, an environment variable, or a command-line argument
 makes a resource stale only through a setting the resource's bake read.
+
+A change to the code that defines the store's layout, the engine's
+resource-management source, isn't a setting. It resets the whole store through
+the [version marker](/docs/reference/resource-store#version-marker).
 
 ### Requests
 
 | Request | Result |
 | --- | --- |
-| A current root | Nothing is baked. Every unit the root's inputs name, and every resource its stored resources [reference](/docs/reference/resource-store#development-records), is also made current. |
-| A stale root | The root bakes after the units its inputs name are current. |
-| A stale referenced resource | Its owner bakes. The resource that references it stays current. |
-| A forced root | The root, the units its inputs name, and the resources they reference bake once, whatever their traces say. No other unit bakes. |
-| An [excluded](/docs/reference/assets#excluded-assets) unit | The request fails. A query doesn't match an excluded unit's resources. |
+| A current resource | Nothing is baked. |
+| A stale resource | The resources its inputs name are made current, then it bakes. |
+| A forced resource | It bakes, and so does every resource its bake uses, each once for the run, whatever their provenance says. No other resource bakes. |
+| A resource of an [excluded](/docs/reference/assets#excluded-assets) asset | The request fails. A query doesn't match the resource. |
 
 ## Development and release
 

@@ -29,12 +29,15 @@ directory cycles. BELD ignores `.bead` sidecars and unknown files. A standalone
 the discovered IDs in deterministic path order and runs independent asset work
 concurrently.
 
-BELD skips an asset when its stored resource is current with every source file
-it was baked from, so running `beld bake` again only processes what changed.
+BELD skips an asset when its stored resource is
+[current](/docs/reference/resource-management#freshness), so running
+`beld bake` again only processes what changed. That covers more than source
+files: a changed render feature in `config.json`, a changed
+`--texture-compression`, an edited shader module, or a new engine build all
+make the resources they shaped stale, and the next bake processes those.
+
 Use `--force` to rebake the selected assets anyway, together with the textures,
-materials, and other resources they depend on. Force a bake after you update
-BELD's asset processors or change `--texture-compression`, because BELD only
-tracks source file versions:
+materials, and other resources they're baked from. Nothing else is rebaked:
 
 ```bash
 beld --source assets --destination resources bake --force

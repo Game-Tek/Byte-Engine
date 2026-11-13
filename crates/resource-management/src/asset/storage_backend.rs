@@ -42,10 +42,13 @@ pub trait StorageBackend: Send + Sync {
 		}
 	}
 
-	/// Returns the local directory that can be watched for development asset changes.
+	/// Returns the local directories to watch, each with everything below it, for development asset changes.
+	///
+	/// A watcher doesn't follow links, so a backend whose sources reach through directory links lists each link's
+	/// target as well. A backend without local directories keeps the default and is never watched.
 	#[cfg(debug_assertions)]
-	fn watch_root(&self) -> Option<PathBuf> {
-		None
+	fn watch_roots(&self) -> Vec<PathBuf> {
+		Vec::new()
 	}
 
 	/// Reports whether a source directory exists and can be read when the backend exposes paths.
@@ -107,19 +110,31 @@ pub trait StorageBackend: Send + Sync {
 	///
 	/// Return [`AssetVersion::missing`] only for missing files; propagate other access errors.
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, ()>> + 'a;
+
+	/// Returns the hash of the exact file's content, which decides whether a file whose modification time changed
+	/// really changed.
+	///
+	/// The asset manager calls it only when a file's metadata differs from what a bake recorded.
+	fn content_hash<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<u64, ()>> + 'a {
+		async move {
+			let (bytes, _) = self.resolve(url).await?;
+			Ok(super::provenance::content_fingerprint(&bytes))
+		}
+	}
 }
 
 /// The `DynStorageBackend` trait provides object-safe asset source resolution and version checks.
 pub trait DynStorageBackend: Send + Sync {
 	fn discover(&self) -> BoxedFuture<'_, Result<Vec<AssetSource>, String>>;
 	#[cfg(debug_assertions)]
-	fn watch_root(&self) -> Option<PathBuf>;
+	fn watch_roots(&self) -> Vec<PathBuf>;
 	fn directory_accessible(&self, path: &Path) -> Option<bool>;
 	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>>;
 	fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>>;
 	fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<Option<BEADType>, ()>>;
 	fn load_bead<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<Option<BEADType>, ()>>;
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>>;
+	fn content_hash<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<u64, ()>>;
 }
 
 impl<T: StorageBackend> DynStorageBackend for T {
@@ -128,8 +143,8 @@ impl<T: StorageBackend> DynStorageBackend for T {
 	}
 
 	#[cfg(debug_assertions)]
-	fn watch_root(&self) -> Option<PathBuf> {
-		self.watch_root()
+	fn watch_roots(&self) -> Vec<PathBuf> {
+		self.watch_roots()
 	}
 
 	fn directory_accessible(&self, path: &Path) -> Option<bool> {
@@ -154,6 +169,10 @@ impl<T: StorageBackend> DynStorageBackend for T {
 
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>> {
 		Box::pin(self.version(url))
+	}
+
+	fn content_hash<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<u64, ()>> {
+		Box::pin(self.content_hash(url))
 	}
 }
 
@@ -248,14 +267,10 @@ impl AssetFileVersion {
 
 	/// Creates a content-backed version for storage backends that do not expose file metadata.
 	fn from_bytes(bytes: &[u8]) -> Self {
-		// Changing the content hasher makes older stored freshness hashes stale on the next comparison.
-		let mut hasher = FxHasher::with_seed(961961961961961);
-		hasher.write(bytes);
-
 		Self {
 			size: bytes.len() as u64,
 			modified: None,
-			content_hash: Some(hasher.finish()),
+			content_hash: Some(super::provenance::content_fingerprint(bytes)),
 		}
 	}
 }
@@ -289,38 +304,48 @@ impl AssetVersion {
 	pub fn missing() -> Self {
 		Self { source: None }
 	}
-}
 
-/// The `AssetDependency` struct records one source asset and the version used by a baked resource.
-///
-/// Read a resource's dependencies with [`crate::SerializableResource::asset_dependencies`], and check which changed
-/// with [`crate::asset::manager::stale_sources`].
-#[derive(
-	Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-pub struct AssetDependency {
-	id: String,
-	version: AssetVersion,
-}
+	/// Adds the hash of the file's content to a version read from metadata, so a later change of the modification
+	/// time alone doesn't count as a change. A version that already carries a content hash keeps it.
+	pub(crate) fn with_content(mut self, bytes: &[u8]) -> Self {
+		if let Some(source) = &mut self.source
+			&& source.content_hash.is_none()
+		{
+			source.content_hash = Some(super::provenance::content_fingerprint(bytes));
+		}
+		self
+	}
 
-impl AssetDependency {
-	/// Creates persisted provenance for one resolved source asset.
-	pub(crate) fn new(id: ResourceId<'_>, version: AssetVersion) -> Self {
-		Self {
-			id: id.get_base().as_ref().to_string(),
-			version,
+	/// Compares this recorded version with the file's `current` one, using only what both already hold.
+	pub(crate) fn compare(&self, current: &AssetVersion) -> VersionChange {
+		match (&self.source, &current.source) {
+			(None, None) => VersionChange::Unchanged,
+			(None, Some(_)) | (Some(_), None) => VersionChange::Changed,
+			(Some(recorded), Some(current)) => {
+				if recorded.size != current.size {
+					return VersionChange::Changed;
+				}
+				// The same size and modification time is trusted without reading the file.
+				if recorded.modified.is_some() && recorded.modified == current.modified {
+					return VersionChange::Unchanged;
+				}
+				match (recorded.content_hash, current.content_hash) {
+					(Some(recorded), Some(current)) if recorded == current => VersionChange::Unchanged,
+					(Some(recorded), None) => VersionChange::ContentDecides(recorded),
+					_ => VersionChange::Changed,
+				}
+			}
 		}
 	}
+}
 
-	/// Returns the source ID used for a freshness check.
-	pub fn id(&self) -> &str {
-		&self.id
-	}
-
-	/// Returns the recorded source version.
-	pub(crate) fn version(&self) -> &AssetVersion {
-		&self.version
-	}
+/// The `VersionChange` enum is the result of comparing a recorded source version with the current one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VersionChange {
+	Unchanged,
+	Changed,
+	/// The metadata differs but the size doesn't, so the file is unchanged only if its content still hashes to this.
+	ContentDecides(u64),
 }
 
 type ResolveResult<'a> = Result<(AssetStorageBytes<'a>, String), ()>;
@@ -365,8 +390,12 @@ impl StorageBackend for FileStorageBackend {
 	}
 
 	#[cfg(debug_assertions)]
-	fn watch_root(&self) -> Option<PathBuf> {
-		Some(self.base_path.clone())
+	fn watch_roots(&self) -> Vec<PathBuf> {
+		// The base directory, then the target of every directory link below it, such as the link to the engine's assets.
+		let mut roots = vec![std::fs::canonicalize(&self.base_path).unwrap_or_else(|_| self.base_path.clone())];
+		let mut visited = std::collections::HashSet::from([roots[0].clone()]);
+		linked_directories_in(&self.base_path, &mut visited, &mut roots);
+		roots
 	}
 
 	fn directory_accessible(&self, path: &Path) -> Option<bool> {
@@ -398,6 +427,38 @@ impl StorageBackend for FileStorageBackend {
 				Err(_) => Err(()),
 			}
 		})
+	}
+}
+
+/// Adds to `roots` the target of every directory link at or below `directory`, and of the links below those targets.
+///
+/// `visited` holds the resolved directories walked so far, so a link cycle ends. A directory that can't be read is
+/// skipped: discovery reports it, and the watcher covers what is left.
+#[cfg(debug_assertions)]
+fn linked_directories_in(directory: &Path, visited: &mut std::collections::HashSet<PathBuf>, roots: &mut Vec<PathBuf>) {
+	let Ok(entries) = std::fs::read_dir(directory) else {
+		return;
+	};
+
+	for entry in entries.flatten() {
+		let path = directory.join(entry.file_name());
+		let Ok(file_type) = entry.file_type() else {
+			continue;
+		};
+		let linked = file_type.is_symlink();
+		if !(file_type.is_dir() || (linked && path.is_dir())) {
+			continue;
+		}
+		let Ok(resolved) = std::fs::canonicalize(&path) else {
+			continue;
+		};
+		if !visited.insert(resolved.clone()) {
+			continue;
+		}
+		if linked {
+			roots.push(resolved.clone());
+		}
+		linked_directories_in(&resolved, visited, roots);
 	}
 }
 
@@ -789,6 +850,30 @@ pub mod tests {
 		);
 		backend.add_file("anims/.bead", b"invalid json5");
 		assert!(backend.load_sidecar(id).await.is_err());
+	}
+	/// A watcher doesn't follow links, so the engine's assets, which a project links, need a root of their own.
+	#[cfg(all(unix, debug_assertions))]
+	#[test]
+	fn the_targets_of_directory_links_are_watched_too() {
+		let nonce = format!(
+			"{}-{}",
+			std::process::id(),
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+		);
+		let root = std::env::temp_dir().join(format!("watch-roots-test-{nonce}"));
+		let engine = std::env::temp_dir().join(format!("watch-roots-engine-test-{nonce}"));
+		fs::create_dir_all(root.join("materials")).unwrap();
+		fs::create_dir_all(engine.join("rendering")).unwrap();
+		std::os::unix::fs::symlink(&engine, root.join("byte_engine")).unwrap();
+		// A link back into the project must not be walked forever.
+		std::os::unix::fs::symlink(&root, engine.join("project")).unwrap();
+
+		let roots = FileStorageBackend::new(root.clone()).watch_roots();
+
+		assert_eq!(roots, [fs::canonicalize(&root).unwrap(), fs::canonicalize(&engine).unwrap()]);
+
+		fs::remove_dir_all(root).unwrap();
+		fs::remove_dir_all(engine).unwrap();
 	}
 }
 

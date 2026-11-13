@@ -54,7 +54,9 @@ files. It then selects what to bake from the discovered assets:
 | Explicit IDs | Roots don't apply; the given IDs bake. |
 
 Up to 16 assets bake at once, and each is skipped when its stored resource is
-current with every source file it was baked from. Without `--prune`, a bake
+[current](/docs/reference/resource-management#freshness). With `--force`, each
+selected asset and every resource it's baked from bakes once, and nothing else
+does. Without `--prune`, a bake
 never deletes a resource, so resources that earlier bakes stored stay in the
 store, reachable or not.
 
@@ -290,8 +292,8 @@ A failed bake has only `id`, `source`, and `status`.
 
 | Status | Meaning |
 | --- | --- |
-| `current` | Every source file version the resource records matches the source directory. |
-| `stale` | At least one source file the resource records changed or no longer exists, so the next `bake` processes it again. |
+| `current` | Every source file the resource's bake read matches the source directory. A resource another ID's bake stores is judged by that bake. |
+| `stale` | At least one source file the resource's bake read changed or no longer exists, so the next `bake` processes it again. A changed setting or resource also makes a resource stale; only `bake` checks those. |
 | `unknown` | The source directory couldn't be read. |
 | `failed` | The latest bake of the ID stored no resource and left a trace. Debug. |
 
@@ -316,7 +318,7 @@ A failed bake has only `id`, `source`, and `status`.
 
 | Output | Shape |
 | --- | --- |
-| `inspect`, JSON | An object with `id`, `uid`, `class`, `hash`, `size`, `stored_size`, `encoding`, `serialized_resource_size`, `baked_at`, in nanoseconds since the Unix epoch, `properties`, `streams`, and `resource`, the model as JSON. Each stream has `name`, `size`, and `offset`. Debug builds add `trace`, the bake messages. A failed asset with only a trace prints `resource` as null. |
+| `inspect`, JSON | An object with `id`, `uid`, `class`, `hash`, `size`, `stored_size`, `encoding`, `serialized_resource_size`, `baked_at`, in nanoseconds since the Unix epoch, `properties`, `streams`, and `resource`, the model as JSON. Each stream has `name`, `size`, and `offset`. A resource with [provenance](/docs/reference/resource-store#provenance) adds `provenance`, an object with `inputs`, the keys of the inputs its latest finished bake observed, absent when it has none; `outputs`, the IDs of the other resources that bake stored; and `producers`, the IDs whose bakes store the resource. Debug builds add `trace`, the bake messages. A failed asset with only a trace prints `resource` as null. |
 | `inspect`, human | `key: value` lines, nested objects indented by two spaces, arrays as dashed items. |
 | `bake --dry-run`, JSON | An object with `resources`, every stored resource in the `inspect` JSON shape ordered by ID, and `failed`, one object per requested ID that failed, with `id` and `error`. Debug builds add `trace` to both. |
 | `bake --dry-run`, human | The same object in the `inspect` human layout. |

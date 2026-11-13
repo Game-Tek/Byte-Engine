@@ -33,9 +33,9 @@ use crate::{
 ///
 /// `parameters` are the application's, resolved with
 /// [`layer_parameters`](byte_engine::application::parameters::layer_parameters), and `configure` installs the
-/// application's bake services and asset handlers for them, as its debug runtime does. Assets whose stored resource is current with its
-/// source files are skipped unless `force` is set. Force a bake after changing an asset processor,
-/// `texture_compression`, or a baked parameter, because source versions don't record those.
+/// application's bake services and asset handlers for them, as its debug runtime does. Assets whose stored resource is
+/// [current](/docs/reference/resource-management#freshness) are skipped. With `force`, each selected asset and
+/// everything it is baked from is rebuilt once, whatever the store holds.
 ///
 /// These parameters also select what bakes. The `render` scope selects the visibility features, and discovery skips
 /// the engine assets only left-out features use. Discovery skips assets that match a `assets.exclude` pattern, and a
@@ -93,11 +93,8 @@ pub async fn bake(
 
 	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend, parameters, configure);
 	asset_manager.set_excluded_assets(globs(parameters.scope("assets"), "exclude"));
-
-	// A forced run treats everything stored before it started as stale, so shared dependencies rebuild once.
-	if force {
-		asset_manager.rebuild_resources_baked_before(std::time::SystemTime::now());
-	}
+	// Nothing edits the sources during one run, so a resource many assets use is checked once.
+	asset_manager.verify_once();
 
 	let ids = if ids.is_empty() {
 		let mut ids = asset_manager.discover().await.map_err(|error| {
@@ -120,7 +117,7 @@ pub async fn bake(
 		return Ok(());
 	}
 
-	let mut failures = bake_ids(&mut asset_manager, ids, memory_budget).await;
+	let mut failures = bake_ids(&mut asset_manager, ids, memory_budget, force).await;
 	failures.extend(bake_assembled(&asset_manager, &features).await);
 
 	if !failures.is_empty() {
@@ -246,7 +243,7 @@ pub async fn bake_dry_run(
 		asset_manager.set_interceptor(interception.clone());
 	}
 	let bakes_anything = !ids.is_empty();
-	let mut failures = bake_ids(&mut asset_manager, ids, memory_budget).await;
+	let mut failures = bake_ids(&mut asset_manager, ids, memory_budget, false).await;
 	if bakes_anything {
 		let features = VisibilityFeatures::from_parameters(parameters.scope(RENDER_PARAMETERS));
 		failures.extend(bake_assembled(&asset_manager, &features).await);
@@ -506,15 +503,15 @@ async fn open_asset_storage(source_path: String) -> Result<FileStorageBackend, i
 /// Bakes the resources `features` assembles from every baked material, such as the uber material evaluation shaders,
 /// and returns the ones that failed with their errors.
 ///
-/// Call it after every other bake. It bakes each resource every time, because the set of materials it gathers is not
-/// one of its sources, so a freshness check cannot see it change. The resources gather independently, so they bake
-/// together.
+/// Call it after every other bake, so the materials those stored are there to gather. The set of materials is an
+/// input of each resource, so one whose materials didn't change is current and skipped. The resources gather
+/// independently, so they bake together.
 async fn bake_assembled(asset_manager: &AssetManager, features: &VisibilityFeatures) -> Vec<(String, LoadMessages)> {
 	let resources = features.assembled_resources();
 	utils::r#async::stream::iter(resources)
 		.map(|id| async move {
 			log::info!("Baking resource '{id}' from every baked material");
-			let error = asset_manager.bake(id).await.err()?;
+			let error = asset_manager.bake_if_stale(id).await.err()?;
 			log::error!("Failed to bake '{id}'. Error: {error:#?}");
 			Some((id.to_string(), error))
 		})
@@ -524,7 +521,8 @@ async fn bake_assembled(asset_manager: &AssetManager, features: &VisibilityFeatu
 		.await
 }
 
-/// Bakes every ID that is stale, reports progress, and returns the IDs that failed with their errors.
+/// Bakes every ID that is stale, or every ID and what it is baked from when `force` is set, reports progress, and
+/// returns the IDs that failed with their errors.
 ///
 /// Every ID starts at once, and `memory_budget` decides how many run: a fixed cap left the cores idle while the last
 /// containers, which sort late, baked their images and shaders.
@@ -534,6 +532,7 @@ async fn bake_ids(
 	asset_manager: &mut AssetManager,
 	ids: Vec<String>,
 	memory_budget: NonZeroUsize,
+	force: bool,
 ) -> Vec<(String, LoadMessages)> {
 	asset_manager.set_bake_memory_budget(memory_budget);
 	let asset_manager = &*asset_manager;
@@ -561,7 +560,11 @@ async fn bake_ids(
 			None => log::info!("Baking resource '{}'", id),
 		}
 
-		let result = asset_manager.bake_if_stale(id).await;
+		let result = if force {
+			asset_manager.rebuild(id).await
+		} else {
+			asset_manager.bake_if_stale(id).await
+		};
 		if let Some(progress) = &progress {
 			progress.borrow_mut().finish(id, result.is_err());
 		}

@@ -17,6 +17,7 @@ mod bake_memory;
 pub mod handler;
 pub mod intercept;
 pub mod manager;
+pub mod provenance;
 
 #[cfg(debug_assertions)]
 pub mod resource_trace;
@@ -541,6 +542,7 @@ mod mesh_lod_settings_tests {
 pub mod resource_id;
 pub mod storage_backend;
 
+pub use provenance::{BakeInput, Provenance};
 pub use resource_id::ResourceId;
 pub use storage_backend::{
 	AssetSource, AssetStorageBytes, AssetVersion, DynStorageBackend, FileStorageBackend, StorageBackend,

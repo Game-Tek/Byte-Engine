@@ -55,6 +55,7 @@ pub async fn inspect(destination_path: String, id: String, format: OutputFormat,
 		);
 	}
 	let mut output = inspection.json;
+	attach_provenance(&mut output, &storage_backend, resource.id())?;
 	attach_trace(&mut output, &storage_backend, resource.id()).await?;
 
 	let payload_bytes = match payload {
@@ -79,6 +80,28 @@ pub async fn inspect(destination_path: String, id: String, format: OutputFormat,
 			},
 		)?,
 	}
+
+	Ok(())
+}
+
+/// Adds what the store remembers about how `id` came to be stored, so a reader can see what its bake observed and
+/// which bake stores it. A resource without a record gets nothing.
+fn attach_provenance(output: &mut serde_json::Value, storage_backend: &ReDBStorageBackend, id: &str) -> Result<(), i32> {
+	let provenance = storage_backend.read_provenance(ResourceId::new(id)).map_err(|error| {
+		log::error!("{error}");
+		1
+	})?;
+	let (Some(provenance), Some(output)) = (provenance, output.as_object_mut()) else {
+		return Ok(());
+	};
+
+	let mut record = serde_json::Map::new();
+	if let Some(inputs) = provenance.inputs() {
+		record.insert("inputs".into(), inputs.iter().map(|input| input.key()).collect());
+	}
+	record.insert("outputs".into(), provenance.outputs().to_vec().into());
+	record.insert("producers".into(), provenance.producers().to_vec().into());
+	output.insert("provenance".into(), record.into());
 
 	Ok(())
 }

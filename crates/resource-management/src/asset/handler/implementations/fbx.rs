@@ -777,6 +777,55 @@ mod tests {
 		assert!(result.is_err(), "a material fragment without its suffix names no resource");
 	}
 
+	/// Guards a report: a forced bake made every assembled shader fail, because it asked for each stored variant by its
+	/// own ID, and a variant whose material comes from a detail-level file can't be rebuilt from the model's first file.
+	#[r#async::test]
+	async fn a_material_from_a_detail_level_file_is_made_current_through_its_model() {
+		let asset_storage = AssetTestStorageBackend::new();
+		asset_storage.add_file("leaf_LOD0.fbx", LEAF_LOD0_FBX);
+		asset_storage.add_file("leaf_LOD1.fbx", LEAF_LOD1_FBX);
+		asset_storage.add_file("leaf_LOD2.fbx", LEAF_LOD2_FBX);
+		asset_storage.add_file("leaf_LOD0.fbx.bead", br#"{ "lods": { "authored": "{name}_LOD{level}" } }"#);
+		let resource_storage = MemoryStorageBackend::new();
+
+		let manager = || {
+			let mut asset_manager = AssetManager::new(asset_storage.clone(), resource_storage.clone());
+			asset_manager.set_program_generator(MinimalTestShaderGenerator);
+			asset_manager.add_asset_handler(FBXAssetHandler::default());
+			asset_manager
+		};
+
+		manager()
+			.bake_if_stale("leaf_LOD0.fbx")
+			.await
+			.expect("the model with authored levels should bake");
+		let billboard = resource_storage
+			.get_resources()
+			.into_iter()
+			.find(|resource| resource.class == "Variant" && resource.id.contains("Billboard"))
+			.expect("the model should store the variant of its last level file's material")
+			.id;
+
+		// Each run is a new manager, as each BELD run is.
+		manager()
+			.bake_if_stale(&billboard)
+			.await
+			.expect("a current model should answer for the variant it stores");
+		manager()
+			.rebuild(&billboard)
+			.await
+			.expect("a forced rebuild of the variant should rebuild its model");
+
+		asset_storage.add_file(
+			"leaf_LOD0.fbx.bead",
+			br#"{ "lods": { "authored": "{name}_LOD{level}" }, "edited": true }"#,
+		);
+		manager()
+			.bake_if_stale(&billboard)
+			.await
+			.expect("a stale model should bake again for the variant it stores");
+	}
+
 	#[r#async::test]
 	async fn bakes_fbx_diffuse_textures_into_opaque_material_variants() {
 		let asset_storage = AssetTestStorageBackend::new();

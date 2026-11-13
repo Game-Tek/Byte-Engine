@@ -73,26 +73,14 @@ impl AssetHandler for MotionDatabaseAssetHandler {
 ///
 /// Returns why an entry names nothing.
 async fn clip_ids(context: &BakeContext<'_>, entries: &[String]) -> Result<Vec<String>, String> {
-	// Only patterns need the source list, so a database of plain IDs never enumerates the sources.
-	let mut sources: Option<Vec<String>> = None;
 	let mut ids: Vec<String> = Vec::with_capacity(entries.len());
 	for entry in entries {
 		let named = if entry.contains(['*', '?']) {
-			if sources.is_none() {
-				let mut discovered = context
-					.source_ids()
-					.await
-					.map_err(|_| format!("that the sources could not be listed to match '{entry}'"))?;
-				discovered.sort_unstable();
-				sources = Some(discovered);
-			}
-			let pattern = utils::glob::Glob::new(entry);
-			let matches: Vec<String> = sources
-				.iter()
-				.flatten()
-				.filter(|source| pattern.matches(source))
-				.cloned()
-				.collect();
+			// The listing is recorded as an input of the bake, so a clip added later rebakes the database.
+			let matches = context
+				.source_ids(entry)
+				.await
+				.map_err(|_| format!("that the sources could not be listed to match '{entry}'"))?;
 			if matches.is_empty() {
 				return Err(format!("that the pattern '{entry}' in `clips` matches no source file"));
 			}

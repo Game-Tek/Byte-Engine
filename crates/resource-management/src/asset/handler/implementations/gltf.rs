@@ -897,9 +897,10 @@ mod tests {
 			.bake_if_not_exists("quarry/rock/rock_LOD0.glb")
 			.await
 			.expect("Failed to bake the rock");
-		let (stored, _) = crate::resource::ReadStorageBackend::read(&resources, ResourceId::new("quarry/rock/rock_LOD0.glb"))
-			.await
-			.expect("Expected the rock mesh");
+		let stored =
+			crate::resource::ReadStorageBackend::read_provenance(&resources, ResourceId::new("quarry/rock/rock_LOD0.glb"))
+				.unwrap()
+				.expect("Expected the rock mesh's provenance");
 		assert!(crate::asset::manager::stale_sources(&stored, &assets).await.is_empty());
 
 		assets.add_file(
@@ -1552,12 +1553,10 @@ mod tests {
 		let shader_id =
 			bake_textured_triangle_and_mark_its_shader(&asset_storage_backend, &resource_storage_backend, b"stale").await;
 
-		let mut asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
-
-		asset_manager.rebuild_resources_baked_before(std::time::SystemTime::now());
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
 		asset_manager
-			.bake_if_stale("iterated.glb")
+			.rebuild("iterated.glb")
 			.await
 			.expect("the forced rebuild should rebake");
 

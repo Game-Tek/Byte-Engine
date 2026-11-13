@@ -214,8 +214,7 @@ impl ReDBStorageBackend {
 		let _ = write.open_table(RESOURCE_CLASS_INDEX_TABLE);
 		let _ = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE);
 		let _ = write.open_table(PACKED_RESOURCE_OFFSETS_TABLE);
-		#[cfg(debug_assertions)]
-		for table in DEVELOPMENT_TABLES {
+		for table in RECORD_TABLES {
 			let _ = write.open_table(table);
 		}
 		let settings = {
@@ -626,7 +625,7 @@ impl ReDBStorageBackend {
 	/// [`ReadStorageBackend::read_trace`] for one ID.
 	#[cfg(debug_assertions)]
 	pub fn traces(&self) -> Result<Vec<(String, Vec<ResourceTraceItem>)>, String> {
-		self.development_records(RESOURCE_TRACES_TABLE, "traces", crate::from_slice)
+		self.records(RESOURCE_TRACES_TABLE, "traces", crate::from_slice)
 	}
 
 	/// Returns the IDs each stored resource's model names, by resource ID, for tools that follow them.
@@ -635,12 +634,18 @@ impl ReDBStorageBackend {
 	/// resource isn't listed.
 	#[cfg(debug_assertions)]
 	pub fn references(&self) -> Result<Vec<(String, Vec<String>)>, String> {
-		self.development_records(RESOURCE_REFERENCES_TABLE, "references", crate::from_slice)
+		self.records(RESOURCE_REFERENCES_TABLE, "references", crate::from_slice)
 	}
 
-	/// Decodes every value of a debug-only table. A missing table, as in a store baked by a release build, has none.
-	#[cfg(debug_assertions)]
-	fn development_records<T>(
+	/// Returns the provenance of every resource ID that has one, by ID, for tools that explain freshness.
+	///
+	/// Next, pass a record to [`stale_sources`](crate::asset::manager::stale_sources) to find the sources that changed.
+	pub fn provenances(&self) -> Result<Vec<(String, Provenance)>, String> {
+		self.records(RESOURCE_PROVENANCE_TABLE, "provenance", crate::from_slice)
+	}
+
+	/// Decodes every value of a per-resource record table. A missing table has none.
+	fn records<T>(
 		&self,
 		table: redb::TableDefinition<[u8; 16], &[u8]>,
 		name: &str,
@@ -712,8 +717,7 @@ impl ReDBStorageBackend {
 			}
 			let _ = resources_table.remove(&id);
 			let _ = packed_offsets.remove(&id);
-			#[cfg(debug_assertions)]
-			for table in DEVELOPMENT_TABLES {
+			for table in RECORD_TABLES {
 				let _ = write.open_table(table).unwrap().remove(&id);
 			}
 		}
@@ -805,8 +809,7 @@ impl ReDBStorageBackend {
 			packed_offsets
 				.retain(|_, _| false)
 				.map_err(|error| resource_clear_error("clear the packed resource offsets", error))?;
-			#[cfg(debug_assertions)]
-			for table in DEVELOPMENT_TABLES {
+			for table in RECORD_TABLES {
 				use redb::TableHandle as _;
 
 				write
@@ -966,6 +969,26 @@ impl ReadStorageBackend for ReDBStorageBackend {
 		})
 	}
 
+	fn read_provenance(&self, id: asset::ResourceId<'_>) -> Result<Option<Provenance>, String> {
+		let read = self.begin_read().map_err(|error| provenance_error("read", &error))?;
+		let table = match read.open_table(RESOURCE_PROVENANCE_TABLE) {
+			Ok(table) => table,
+			// A store written before any bake recorded provenance has no table yet.
+			Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+			Err(error) => return Err(provenance_error("read", &error)),
+		};
+		let Some(record) = table
+			.get(&ResourceId::from(id.as_ref()))
+			.map_err(|error| provenance_error("read", &error))?
+		else {
+			return Ok(None);
+		};
+
+		crate::from_slice::<(String, Provenance)>(record.value())
+			.map(|(_, provenance)| Some(provenance))
+			.map_err(|error| provenance_error("read", &error))
+	}
+
 	#[cfg(debug_assertions)]
 	fn read_trace<'a>(
 		&'a self,
@@ -1053,6 +1076,50 @@ impl WriteStorageBackend for ReDBStorageBackend {
 
 			Ok(ResourceTransaction::new(self, resource_id, reservation, writer))
 		}
+	}
+
+	fn settings_fingerprint(&self) -> u64 {
+		use std::hash::Hasher as _;
+
+		// Texture compression decides the encoding of every direct texture's payload. The storage mode only decides
+		// where a payload lives, and a store can't change it.
+		let mut hasher = utils::hash::FxHasher::with_seed(961961961961961);
+		hasher.write(self.image_compression.as_bytes());
+		hasher.finish()
+	}
+
+	fn write_provenance(&self, id: asset::ResourceId<'_>, provenance: &Provenance) -> Result<(), String> {
+		let mut write = match &self.db {
+			RedbDatabase::Writable(db) => db.begin_write().map_err(|error| provenance_error("write", &error))?,
+			RedbDatabase::ReadOnly(_) => {
+				return Err(
+					"Cannot write provenance to a read-only resources database. The most likely cause is that the backend was opened with `ReDBStorageBackend::open_read_only`. Open it with `ReDBStorageBackend::new_writable`."
+						.to_string(),
+				);
+			}
+		};
+		// Provenance is made durable with the resources of the same bake by `persist`.
+		write
+			.set_durability(redb::Durability::None)
+			.map_err(|error| provenance_error("write", &error))?;
+		let key = ResourceId::from(id.as_ref());
+		{
+			let mut table = write
+				.open_table(RESOURCE_PROVENANCE_TABLE)
+				.map_err(|error| provenance_error("write", &error))?;
+			if provenance.is_empty() {
+				table.remove(&key).map_err(|error| provenance_error("write", &error))?;
+			} else {
+				// The ID is kept with the record because a bake that didn't finish has no resource record to name it.
+				let serialized =
+					crate::to_vec(&(id.to_string(), provenance.clone())).map_err(|error| provenance_error("write", &error))?;
+				table
+					.insert(&key, serialized.as_slice())
+					.map_err(|error| provenance_error("write", &error))?;
+			}
+		}
+
+		write.commit().map_err(|error| provenance_error("write", &error))
 	}
 
 	#[cfg(debug_assertions)]
@@ -1540,6 +1607,13 @@ fn store_open_error(base_path: &Path, action: &'static str, error: impl Into<red
 }
 
 /// Creates a consistent storage error for one REDB clear step.
+/// Builds the error for a provenance record that couldn't be read or written.
+fn provenance_error(action: &str, error: &dyn std::fmt::Display) -> String {
+	format!(
+		"Failed to {action} resource provenance. The most likely cause is a corrupt or unwritable resources database. Delete the resources directory and bake again. Error: {error}"
+	)
+}
+
 fn resource_list_error(error: &dyn std::fmt::Display) -> String {
 	format!(
 		"Failed to list resources. The most likely cause is a corrupt resources database. Delete the resources directory and bake again. Error: {error}"
@@ -1706,9 +1780,15 @@ const RESOURCE_PROPERTY_INDEX_TABLE: redb::TableDefinition<&[u8], [u8; 16]> =
 const RESOURCE_TRACES_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefinition::new("resource-traces");
 #[cfg(debug_assertions)]
 const RESOURCE_REFERENCES_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefinition::new("resource-references");
-/// The debug-only tables, which hold at most one record per resource UID and lose it when the resource is deleted.
+/// What the store remembers about how each resource ID came to be stored: its ID and its [`Provenance`].
+const RESOURCE_PROVENANCE_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefinition::new("resource-provenance");
+/// The tables besides the resources table that hold at most one record per resource UID and lose it when the resource
+/// is deleted.
 #[cfg(debug_assertions)]
-const DEVELOPMENT_TABLES: [redb::TableDefinition<[u8; 16], &[u8]>; 2] = [RESOURCE_TRACES_TABLE, RESOURCE_REFERENCES_TABLE];
+const RECORD_TABLES: [redb::TableDefinition<[u8; 16], &[u8]>; 3] =
+	[RESOURCE_PROVENANCE_TABLE, RESOURCE_TRACES_TABLE, RESOURCE_REFERENCES_TABLE];
+#[cfg(not(debug_assertions))]
+const RECORD_TABLES: [redb::TableDefinition<[u8; 16], &[u8]>; 1] = [RESOURCE_PROVENANCE_TABLE];
 
 const RESOURCE_MANAGEMENT_CODE_HASH: &str = env!("RESOURCE_MANAGEMENT_CODE_HASH");
 const RESOURCE_MANAGEMENT_SIGNATURE_FILE: &str = ".resource-management-version";
@@ -2866,6 +2946,7 @@ use super::{
 use crate::ResourceTraceItem;
 use crate::{
 	ProcessedAsset, QueryableProperty, QueryableValue, SerializableResource, asset,
+	asset::Provenance,
 	r#async::{self, BoxedFuture, File as AsyncFile},
 	resource::{
 		ResourceCompressionPolicy, ResourceId, ResourcePayloadEncoding, ResourceReaderBacking, reader::StoredResourceReader,

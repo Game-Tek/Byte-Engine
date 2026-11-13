@@ -9,7 +9,7 @@ use std::{
 use resource_management::ResourceTraceItem;
 use resource_management::{
 	QueryableValue, SerializableResource,
-	asset::{FileStorageBackend, manager::stale_sources},
+	asset::{FileStorageBackend, Provenance, manager::stale_sources},
 	resource::{ReadStorageBackend as _, ResourceId as ResourceUid, StorageUsage},
 };
 use serde_json::Value as Json;
@@ -46,6 +46,8 @@ pub(super) struct Row {
 	/// The resource's metadata, or `None` for a failed bake, which stored no resource.
 	pub(super) resource: Option<SerializableResource>,
 	pub(super) status: Status,
+	/// The source files the resource's bake read, or, for a resource another ID's bake stores, that bake's.
+	pub(super) sources: Vec<String>,
 	/// The recorded source files that changed or no longer exist.
 	pub(super) stale_sources: Vec<String>,
 	/// The messages of the latest bake.
@@ -310,6 +312,7 @@ impl Catalog {
 				id,
 				resource: Some(resource),
 				status,
+				sources: Vec::new(),
 				stale_sources,
 				used_by: Vec::new(),
 				reachable: false,
@@ -340,6 +343,14 @@ impl Catalog {
 		}
 	}
 
+	/// Gives each resource the source files its bake read, in the order of the resources passed to [`Self::new`].
+	pub(super) fn with_sources(mut self, sources: Vec<Vec<String>>) -> Catalog {
+		for (row, sources) in self.rows.iter_mut().zip(sources) {
+			row.sources = sources;
+		}
+		self
+	}
+
 	/// Gives each resource the trace of its latest bake, and adds a failed row for each trace without a resource.
 	#[cfg(debug_assertions)]
 	pub(super) fn with_traces(mut self, traces: Vec<(String, Vec<ResourceTraceItem>)>) -> Catalog {
@@ -353,6 +364,7 @@ impl Catalog {
 						id,
 						resource: None,
 						status: Status::Failed,
+						sources: Vec::new(),
 						stale_sources: Vec::new(),
 						trace,
 						references: Vec::new(),
@@ -522,12 +534,29 @@ pub(super) async fn load(source_path: &str, destination_path: &str, roots: &[Glo
 	let (traces, references) = (storage.traces()?, storage.references()?);
 	#[cfg(not(debug_assertions))]
 	let references = Vec::new();
+	let provenances = storage.provenances()?.into_iter().collect::<HashMap<_, _>>();
 	drop(storage);
 
 	let read_at = resource_management::unix_time_nanos();
-	let stale = check_sources(source_path, &resources).await;
+	// Each resource is judged by the bake that stored it: its own, or the bake of the ID that produces it.
+	let provenances = resources
+		.iter()
+		.map(|resource| baking_provenance(resource.id(), &provenances))
+		.collect::<Vec<_>>();
+	let stale = check_sources(source_path, &provenances).await;
+	let sources = provenances
+		.iter()
+		.map(|provenance| {
+			provenance
+				.and_then(Provenance::inputs)
+				.unwrap_or_default()
+				.iter()
+				.filter_map(|input| input.source_id().map(str::to_string))
+				.collect()
+		})
+		.collect();
 
-	let catalog = Catalog::new(resources, stale, references, roots, usage, read_at);
+	let catalog = Catalog::new(resources, stale, references, roots, usage, read_at).with_sources(sources);
 	#[cfg(debug_assertions)]
 	let catalog = catalog.with_traces(traces);
 	Ok(catalog)
@@ -552,10 +581,25 @@ pub(super) async fn unreachable_ids(destination_path: &str, roots: &[Glob]) -> R
 		.collect())
 }
 
-/// Returns each resource's changed sources, or `None` when `source_path` isn't a readable directory.
+/// Returns the record of the bake that stored the resource `id`: its own when it was baked by request, else the
+/// record of the first ID whose bake produces it, or `None` when the store remembers neither.
+fn baking_provenance<'a>(id: &str, provenances: &'a HashMap<String, Provenance>) -> Option<&'a Provenance> {
+	let mut provenance = provenances.get(id)?;
+	// A producer is itself baked by request, so one step reaches it; the bound only guards against a corrupt store.
+	for _ in 0..4 {
+		if provenance.inputs().is_some() {
+			return Some(provenance);
+		}
+		provenance = provenances.get(provenance.producers().first()?)?;
+	}
+	None
+}
+
+/// Returns the changed sources of each resource's bake, or `None` when `source_path` isn't a readable directory.
 ///
-/// The source directory is only read, never created, unlike a bake.
-async fn check_sources(source_path: &str, resources: &[SerializableResource]) -> Option<Vec<Vec<String>>> {
+/// A resource without a record has no changed sources. The source directory is only read, never created, unlike a
+/// bake.
+async fn check_sources(source_path: &str, provenances: &[Option<&Provenance>]) -> Option<Vec<Vec<String>>> {
 	use utils::r#async::StreamExt as _;
 
 	let source_path = std::path::PathBuf::from(source_path);
@@ -566,12 +610,15 @@ async fn check_sources(source_path: &str, resources: &[SerializableResource]) ->
 	let sources = &sources;
 
 	// Resources are independent, so their version reads overlap.
-	let checks = resources.iter().map(|resource| async move {
-		stale_sources(resource, sources)
-			.await
-			.into_iter()
-			.map(str::to_string)
-			.collect::<Vec<_>>()
+	let checks = provenances.iter().map(|provenance| async move {
+		match provenance {
+			Some(provenance) => stale_sources(provenance, sources)
+				.await
+				.into_iter()
+				.map(str::to_string)
+				.collect::<Vec<_>>(),
+			None => Vec::new(),
+		}
 	});
 	Some(utils::r#async::stream::iter(checks).buffered(16).collect().await)
 }

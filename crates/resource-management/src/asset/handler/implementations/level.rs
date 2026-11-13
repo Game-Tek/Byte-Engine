@@ -53,6 +53,11 @@ impl AssetHandler for LevelAssetHandler {
 		r#type == "level"
 	}
 
+	fn identity(&self) -> u64 {
+		// The threshold decides which placements a level stores as merged clusters. No threshold is zero.
+		self.merge_threshold.map_or(0, |threshold| threshold as u64 + 1)
+	}
+
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
 		let (source, format) = context.resolve(id).await?;
 

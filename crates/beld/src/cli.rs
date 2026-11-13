@@ -326,9 +326,8 @@ enum Commands {
 		/// `--format json`.
 		#[arg(long, value_enum, requires = "dry_run")]
 		payload: Option<Payload>,
-		/// Rebake every selected asset, even when its resource is current with its source files.
-		/// Use it after changing an asset processor, `--texture-compression`, or a baked setting in `--config`, which
-		/// source versions don't track.
+		/// Rebake every selected asset and everything it is baked from, even when their resources are current.
+		/// A bake without it already rebakes what a changed source, setting, or shader generator made stale.
 		/// Example: `beld bake --force`
 		#[arg(long)]
 		force: bool,

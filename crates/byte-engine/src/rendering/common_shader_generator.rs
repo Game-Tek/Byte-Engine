@@ -580,6 +580,10 @@ impl CommonShaderGenerator {
 }
 
 impl ProgramTransform for CommonShaderGenerator {
+	fn identity(&self) -> u64 {
+		self.features.generator_identity()
+	}
+
 	fn transform<'a>(&self, mut root: besl::parser::Node<'a>) -> besl::parser::Node<'a> {
 		// A feature's code sits in `main`; helpers it alone calls drop out because backends emit only what `main` reaches.
 		if let Some(besl::parser::Nodes::Function { statements, .. }) = root.get_mut("main").map(|main| main.node_mut()) {

@@ -19,7 +19,7 @@ When you request a resource, Byte Engine follows this path:
 
 1. The caller asks the resource manager for a typed resource ID.
 2. The storage backend tries to read the processed resource.
-3. If an asset manager exists, it compares the stored source versions with the current assets.
+3. If an asset manager exists, it checks whether every input the resource's bake recorded is unchanged.
 4. If the resource is missing or stale, the asset manager bakes the source asset.
 5. The baked resource is stored, read back, and solved into a typed `Reference<T>`.
 6. The caller loads payload bytes when it's ready.
@@ -33,15 +33,16 @@ The caller receives a resource tree that's already connected through typed refer
 
 The ReDB storage backend writes a `.resource-management-version` marker in the resources directory.
 That marker is derived from the resource-management code hash.
-When the signature changes, the backend deletes stale resources so old processed data doesn't silently survive processor changes.
-Release applications open a matching store without writing to it.
+When the signature changes, the backend deletes every resource, because that code defines how stored records are laid out.
 If the marker doesn't match, the application clears the store before it reads resources.
 Rebuild the directory with the matching BELD build before packaging.
 
-Each baked resource also records the source versions used to produce it.
-For local files, a version includes the file size and modification time.
-It covers the source asset, its optional `.bead` file, directly loaded files such as glTF buffers and images, and transitive asset dependencies.
-During a debug request, Byte Engine re-bakes only the resource whose recorded versions changed.
+Each bake also records everything it observed: the source files it read, the resources it was baked from, and the settings that shaped it, such as the render features.
+A resource is current while all of those are unchanged; see [freshness](/docs/reference/resource-management#freshness).
+During a debug request, Byte Engine checks the requested resource and bakes again only what a changed input reaches.
+
+While a debug application runs, it watches the assets directory, and the directories it links to, such as the engine's assets.
+When a file changes, it checks every resource it loaded so far and publishes an update for each one that baked again.
 
 The payload hash remains separate.
 It identifies the baked resource data and doesn't decide whether a source asset is stale.

@@ -4,16 +4,34 @@
 /// Install one on the material, glTF, and FBX asset handlers so every material they bake targets that renderer.
 /// Generators write node values with [`bemx::besl::Lowering`].
 pub trait ProgramGenerator: Send + Sync {
+	/// Returns a fingerprint of everything that decides what the generator builds besides a material's graph and
+	/// parameters and the module files it brings in: its code and its configuration, such as the features it builds in.
+	///
+	/// The asset manager records it with every material it bakes, so a changed generator makes them stale.
+	fn identity(&self) -> u64;
+
+	/// Returns the sets of modules the generator's programs bring in, each module as a path from the asset root such
+	/// as `::byte_engine::rendering::visibility::layouts::scene`.
+	///
+	/// The bake reads each set's files, and the files of the modules those use, from the assets, and passes them to
+	/// the `generate` methods as [`ProgramModules`]. Reading them there records each file as a source of the material,
+	/// so editing a module bakes the materials that bring it in again. A generator whose programs bring in no modules
+	/// keeps the default.
+	fn module_sets(&self) -> &[&[&str]] {
+		&[]
+	}
+
 	/// Builds the BESL program that evaluates `graph` for a material whose parameters are `parameters`, in the order
 	/// the renderer binds them, or `None` when the renderer evaluates its materials in shaders it assembles after the
 	/// bake instead. The bake stores the material's [`MaterialProgram`] either way.
 	///
-	/// Returns the error text to report when the graph needs something the renderer cannot supply, such as a
-	/// parameter `parameters` does not declare.
+	/// `modules` holds the files of [`Self::module_sets`]. Returns the error text to report when the graph needs
+	/// something the renderer cannot supply, such as a parameter `parameters` does not declare.
 	fn generate<'a>(
 		&self,
 		graph: &'a bemx::Graph,
 		parameters: &'a [MaterialParameter],
+		modules: &'a ProgramModules,
 	) -> Result<Option<besl::parser::Node<'a>>, String>;
 
 	/// Builds the closest-hit BESL program that reports `graph`'s surface to the rays that hit it, or `None` when the
@@ -25,8 +43,9 @@ pub trait ProgramGenerator: Send + Sync {
 		&self,
 		graph: &'a bemx::Graph,
 		parameters: &'a [MaterialParameter],
+		modules: &'a ProgramModules,
 	) -> Result<Option<besl::parser::Node<'a>>, String> {
-		let _ = (graph, parameters);
+		let _ = (graph, parameters, modules);
 		Ok(None)
 	}
 
@@ -47,10 +66,63 @@ pub trait ProgramGenerator: Send + Sync {
 		&self,
 		id: &str,
 		arms: &'a [AssembledArm<'a>],
+		modules: &'a ProgramModules,
 	) -> Result<(besl::parser::Node<'a>, ShaderGenerationSettings), String> {
-		let _ = (id, arms);
+		let _ = (id, arms, modules);
 		Err(NO_ASSEMBLED_SHADERS.to_string())
 	}
+}
+
+/// The `ProgramModules` struct holds the module files a [`ProgramGenerator`]'s programs bring in, one list per set
+/// of [`ProgramGenerator::module_sets`].
+///
+/// A bake loads them from the asset files and passes them to the generator, which attaches the list of the set a
+/// program brings in with [`besl::attach_modules`]. Outside a bake, build one with [`Self::load`].
+#[derive(Default)]
+pub struct ProgramModules {
+	sets: Vec<(Vec<String>, Vec<besl::LoadedModule>)>,
+}
+
+impl ProgramModules {
+	/// Loads every set of `sets`, and the modules they use, with `read`, which returns the source of a module file
+	/// named by its path from the asset root, or `None` when the file doesn't exist.
+	pub fn load(sets: &[&[&str]], mut read: impl FnMut(&str) -> Option<String>) -> Result<Self, besl::CompilationError> {
+		let mut modules = Self::default();
+		for set in sets {
+			let files = besl::ModuleLoader::load(&uses(set), &mut read)?;
+			modules
+				.sets
+				.push((set.iter().map(|module| module.to_string()).collect(), files));
+		}
+		Ok(modules)
+	}
+
+	/// Returns the files of the set `modules` names, or none when the bake loaded no such set.
+	pub fn get(&self, modules: &[&str]) -> &[besl::LoadedModule] {
+		self.sets
+			.iter()
+			.find(|(set, _)| set.iter().map(String::as_str).eq(modules.iter().copied()))
+			.map_or(&[], |(_, files)| files)
+	}
+}
+
+/// Returns BESL source that brings in every one of `modules`.
+fn uses(modules: &[&str]) -> String {
+	modules.iter().map(|module| format!("use {module}::*;")).collect()
+}
+
+/// Reads the files of every module set `generator` names through `context`, which records each file, and each file a
+/// module could live in but doesn't, as a source of the bake.
+async fn load_program_modules(context: &BakeContext<'_>, generator: &dyn ProgramGenerator) -> Result<ProgramModules, String> {
+	let mut modules = ProgramModules::default();
+	for set in generator.module_sets() {
+		// The sets name modules from the asset root, so the ID they would be relative to is never used.
+		let files = super::besl::read_module_files(context, ResourceId::new(""), &uses(set)).await?;
+		modules
+			.sets
+			.push((set.iter().map(|module| module.to_string()).collect(), files));
+	}
+	Ok(modules)
 }
 
 /// The error [`ProgramGenerator`]'s assembled-shader methods report for a renderer that assembles no shaders.
@@ -352,7 +424,8 @@ impl BEMAAssetHandler {
 			.map(|(key, material)| AssembledArm { key, material })
 			.collect::<Vec<_>>();
 
-		let (program, settings) = generator.generate_assembled(url.as_ref(), &arms).map_err(fail)?;
+		let modules = load_program_modules(&context, generator).await.map_err(fail)?;
+		let (program, settings) = generator.generate_assembled(url.as_ref(), &arms, &modules).map_err(fail)?;
 		let prepared = context.prepare_shader(program, &settings).map_err(fail)?;
 		let compiler_identity = PlatformShaderCompiler::compiler_identity().await.map_err(fail)?;
 		let shader_id = format!("{}#shaders/{:016x}", url.as_ref(), prepared.cache_key(compiler_identity));
@@ -402,8 +475,9 @@ impl BEMAAssetHandler {
 		})?;
 		let graph = bemx::json::parse(source)
 			.map_err(|error| compile_error(format!("Failed to read material graph '{}': {error}", path.as_ref())))?;
-		let program = generator.generate(&graph, parameters).map_err(compile_error)?;
-		let hit_program = generator.generate_hit(&graph, parameters).map_err(compile_error)?;
+		let modules = load_program_modules(&context, generator).await.map_err(compile_error)?;
+		let program = generator.generate(&graph, parameters, &modules).map_err(compile_error)?;
+		let hit_program = generator.generate_hit(&graph, parameters, &modules).map_err(compile_error)?;
 
 		let hit_shader_id = format!("{}#hit-shader", material.as_ref());
 		let hit_compile_error = |error: String| {
@@ -860,6 +934,7 @@ async fn store_generated_shaders(
 	};
 
 	let compiler_identity = PlatformShaderCompiler::compiler_identity().await.map_err(compile_error)?;
+	let modules = load_program_modules(&context, generator).await.map_err(compile_error)?;
 
 	// Generated materials evaluate in the same compute stage as authored material shaders, and are hit the same way.
 	let settings = compute_material_stage(&compiler_name);
@@ -884,7 +959,10 @@ async fn store_generated_shaders(
 				// Every material keeps its program for the shaders assembled after the bake. Without an evaluation shader,
 				// equal programs are what make two materials share an entry.
 				let material_program = MaterialProgram::new(&material.graph, &parameters).map_err(compile_error)?;
-				let (prepared, key) = match generator.generate(&material.graph, &parameters).map_err(compile_error)? {
+				let (prepared, key) = match generator
+					.generate(&material.graph, &parameters, &modules)
+					.map_err(compile_error)?
+				{
 					Some(program) => {
 						let prepared = context.prepare_shader(program, &settings).map_err(compile_error)?;
 						let key = prepared.cache_key(compiler_identity);
@@ -895,7 +973,7 @@ async fn store_generated_shaders(
 				// Graphs that lower to the same evaluation source compute the same surface, so their hit shaders match too;
 				// the hit shader is generated from the same graph and parameters.
 				let hit = generator
-					.generate_hit(&material.graph, &parameters)
+					.generate_hit(&material.graph, &parameters, &modules)
 					.map_err(compile_error)?
 					.map(|program| context.prepare_shader(program, &hit_settings))
 					.transpose()
@@ -1227,10 +1305,15 @@ pub mod tests {
 	pub struct MinimalTestShaderGenerator;
 
 	impl ProgramGenerator for MinimalTestShaderGenerator {
+		fn identity(&self) -> u64 {
+			0
+		}
+
 		fn generate<'a>(
 			&self,
 			_: &'a bemx::Graph,
 			_: &'a [MaterialParameter],
+			_modules: &'a super::ProgramModules,
 		) -> Result<Option<besl::parser::Node<'a>>, String> {
 			Ok(Some(besl::parser::Node::root_with_children(vec![
 				besl::parser::Node::main_function(Vec::new()),
@@ -1426,18 +1509,24 @@ pub mod tests {
 		"SurfaceHit: struct { distance: f32 }\nmain: fn (payload: SurfaceHit) -> SurfaceHit { return payload; }";
 
 	impl ProgramGenerator for HitTestShaderGenerator {
+		fn identity(&self) -> u64 {
+			0
+		}
+
 		fn generate<'a>(
 			&self,
 			graph: &'a bemx::Graph,
 			parameters: &'a [MaterialParameter],
+			_modules: &'a super::ProgramModules,
 		) -> Result<Option<besl::parser::Node<'a>>, String> {
-			MinimalTestShaderGenerator.generate(graph, parameters)
+			MinimalTestShaderGenerator.generate(graph, parameters, _modules)
 		}
 
 		fn generate_hit<'a>(
 			&self,
 			_: &'a bemx::Graph,
 			_: &'a [MaterialParameter],
+			_modules: &'a super::ProgramModules,
 		) -> Result<Option<besl::parser::Node<'a>>, String> {
 			besl::parse(HIT_PROGRAM).map(Some).map_err(|error| format!("{error:?}"))
 		}
@@ -1610,10 +1699,15 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for AssemblingTestGenerator {
+		fn identity(&self) -> u64 {
+			0
+		}
+
 		fn generate<'a>(
 			&self,
 			_: &'a bemx::Graph,
 			_: &'a [MaterialParameter],
+			_modules: &'a super::ProgramModules,
 		) -> Result<Option<besl::parser::Node<'a>>, String> {
 			Ok(None)
 		}
@@ -1632,6 +1726,7 @@ pub mod tests {
 			&self,
 			_: &str,
 			_: &'a [super::AssembledArm<'a>],
+			_: &'a super::ProgramModules,
 		) -> Result<(besl::parser::Node<'a>, ShaderGenerationSettings), String> {
 			Ok((
 				besl::parser::Node::root_with_children(vec![besl::parser::Node::main_function(Vec::new())]),

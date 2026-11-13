@@ -28,6 +28,26 @@ fn temporary_root(name: &str) -> PathBuf {
 	root
 }
 
+/// Copies the engine's layer modules into the project at `assets`, where a project that links the engine's assets
+/// has them, so material bakes and the shaders assembled from them can read them. Only the `layouts` directories are
+/// copied, which hold no asset a bake would discover.
+fn copy_engine_layer_modules(assets: &std::path::Path) {
+	fn copy(from: &std::path::Path, to: &std::path::Path, inside_layouts: bool) {
+		for entry in std::fs::read_dir(from).unwrap().map(Result::unwrap) {
+			let (from, to) = (entry.path(), to.join(entry.file_name()));
+			if entry.file_type().unwrap().is_dir() {
+				copy(&from, &to, inside_layouts || entry.file_name() == "layouts");
+			} else if inside_layouts && from.extension().is_some_and(|extension| extension == "besl") {
+				std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+				std::fs::copy(&from, &to).unwrap();
+			}
+		}
+	}
+
+	let engine = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../byte-engine/assets/rendering"));
+	copy(engine, &assets.join("byte_engine/rendering"), false);
+}
+
 /// Runs BELD in `root`, so it finds no project configuration, with `root/assets` and `root/resources` as its
 /// directories, and returns its exit code and parsed standard output.
 fn run_beld(root: &PathBuf, arguments: &[&str]) -> (Option<i32>, Option<Value>) {
@@ -54,6 +74,7 @@ fn stream<'a>(resource: &'a Value, name: &str) -> &'a Value {
 fn dry_run_prints_every_baked_resource_with_typed_streams_and_writes_no_store() {
 	let root = temporary_root("dry-run-fbx");
 	std::fs::create_dir_all(root.join("assets")).unwrap();
+	copy_engine_layer_modules(&root.join("assets"));
 	std::fs::write(root.join("assets/triangle_move.fbx"), TRIANGLE_MOVE_FBX).unwrap();
 
 	let (code, output) = run_beld(
@@ -121,6 +142,7 @@ fn dry_run_prints_every_baked_resource_with_typed_streams_and_writes_no_store() 
 fn dry_run_prints_a_lut_payload_as_values_or_as_its_exact_bytes() {
 	let root = temporary_root("dry-run-lut");
 	std::fs::create_dir_all(root.join("assets")).unwrap();
+	copy_engine_layer_modules(&root.join("assets"));
 	let entries = [[0.0f32, 0.25, 0.5], [1.0, 0.75, 0.1]];
 	std::fs::write(root.join("assets/ramp.cube"), "LUT_1D_SIZE 2\n0 0.25 0.5\n1 0.75 0.1\n").unwrap();
 	let dry_run = |payload| {
@@ -212,6 +234,7 @@ fn payload_output_needs_the_json_format() {
 fn an_intercepted_dry_run_prints_the_besl_of_every_shader_it_compiles() {
 	let root = temporary_root("intercept-besl");
 	std::fs::create_dir_all(root.join("assets")).unwrap();
+	copy_engine_layer_modules(&root.join("assets"));
 	std::fs::write(root.join("assets/triangle_move.fbx"), TRIANGLE_MOVE_FBX).unwrap();
 
 	let (code, output) = run_beld(
@@ -266,6 +289,7 @@ fn an_intercepted_dry_run_prints_the_besl_of_every_shader_it_compiles() {
 fn an_intercept_out_directory_receives_every_product_as_a_file() {
 	let root = temporary_root("intercept-out");
 	std::fs::create_dir_all(root.join("assets")).unwrap();
+	copy_engine_layer_modules(&root.join("assets"));
 	std::fs::write(root.join("assets/triangle_move.fbx"), TRIANGLE_MOVE_FBX).unwrap();
 
 	let output = Command::new(env!("CARGO_BIN_EXE_beld"))

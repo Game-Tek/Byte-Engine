@@ -701,7 +701,7 @@ fn resolve_ies_profile(light: &Lights, profiles: &HashMap<String, IesProfileText
 fn built_in_or_off(enabled: bool, built_in: bool, parameter: &str) -> bool {
 	if enabled && !built_in {
 		log::warn!(
-			"`{RENDER_PARAMETERS}.{parameter}` was not enabled. The most likely cause is that it was `false` at startup, so its feature was left out of the project's shaders. Set it to `true` in `config.json`, then rebake with `beld bake --force`. See {}.",
+			"`{RENDER_PARAMETERS}.{parameter}` was not enabled. The most likely cause is that it was `false` at startup, so its feature was left out of the project's shaders. Set it to `true` in `config.json`, then bake again with `beld bake`. See {}.",
 			crate::online_docs_url("use/resources/bake#leave-render-features-out-of-the-bake")
 		);
 	}

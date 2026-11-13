@@ -216,6 +216,11 @@ impl AssetHandler for FBXAssetHandler {
 		r#type.eq_ignore_ascii_case("fbx")
 	}
 
+	fn identity(&self) -> u64 {
+		// Lightmap UVs add a vertex stream to every mesh the handler bakes.
+		u64::from(self.lightmap_uvs)
+	}
+
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
 		let allocator = context.allocator();
 

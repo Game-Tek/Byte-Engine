@@ -18,6 +18,8 @@ use crate::resource::reader::{ResourceReaderBacking, StoredResourceReader};
 pub struct MemoryStorageBackend {
 	/// Serialized resource metadata and stored payload bytes by resource ID.
 	resources: Arc<Mutex<HashMap<String, (Box<[u8]>, Box<[u8]>)>>>,
+	/// What each resource ID's bake observed and stored, by ID.
+	provenance: Arc<Mutex<HashMap<String, Provenance>>>,
 	#[cfg(debug_assertions)]
 	traces: Arc<Mutex<HashMap<String, Vec<crate::ResourceTraceItem>>>>,
 }
@@ -28,6 +30,7 @@ impl MemoryStorageBackend {
 	pub fn new() -> Self {
 		Self {
 			resources: Arc::new(Mutex::new(HashMap::default())),
+			provenance: Arc::new(Mutex::new(HashMap::default())),
 			#[cfg(debug_assertions)]
 			traces: Arc::new(Mutex::new(HashMap::default())),
 		}
@@ -52,7 +55,6 @@ impl MemoryStorageBackend {
 				ProcessedAsset {
 					id: resource.id,
 					class: resource.class,
-					asset_dependencies: resource.asset_dependencies,
 					resource: resource.resource,
 					streams: resource.streams,
 					queryable_properties: resource.queryable_properties,
@@ -77,7 +79,6 @@ impl MemoryStorageBackend {
 				ProcessedAsset {
 					id: resource.id,
 					class: resource.class,
-					asset_dependencies: resource.asset_dependencies,
 					resource: resource.resource,
 					streams: resource.streams,
 					queryable_properties: resource.queryable_properties,
@@ -191,6 +192,10 @@ impl ReadStorageBackend for MemoryStorageBackend {
 		})
 	}
 
+	fn read_provenance(&self, id: ResourceId<'_>) -> Result<Option<Provenance>, String> {
+		Ok(self.provenance.lock().get(id.as_ref()).cloned())
+	}
+
 	#[cfg(debug_assertions)]
 	fn read_trace<'a>(
 		&'a self,
@@ -203,6 +208,7 @@ impl ReadStorageBackend for MemoryStorageBackend {
 impl WriteStorageBackend for MemoryStorageBackend {
 	async fn clear(&self) -> Result<(), String> {
 		self.resources.lock().clear();
+		self.provenance.lock().clear();
 		#[cfg(debug_assertions)]
 		self.traces.lock().clear();
 		Ok(())
@@ -210,6 +216,7 @@ impl WriteStorageBackend for MemoryStorageBackend {
 
 	async fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String> {
 		self.resources.lock().remove(id.as_ref());
+		self.provenance.lock().remove(id.as_ref());
 		#[cfg(debug_assertions)]
 		self.traces.lock().remove(id.as_ref());
 		Ok(())
@@ -225,6 +232,16 @@ impl WriteStorageBackend for MemoryStorageBackend {
 			let writer = ResourceWriter::memory(size)?;
 			Ok(ResourceTransaction::new(self, resource_id, None, writer))
 		}
+	}
+
+	fn write_provenance(&self, id: ResourceId<'_>, provenance: &Provenance) -> Result<(), String> {
+		let mut records = self.provenance.lock();
+		if provenance.is_empty() {
+			records.remove(id.as_ref());
+		} else {
+			records.insert(id.to_string(), provenance.clone());
+		}
+		Ok(())
 	}
 
 	#[cfg(debug_assertions)]

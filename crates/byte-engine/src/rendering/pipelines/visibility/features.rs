@@ -45,7 +45,7 @@ pub const MATERIAL_EVALUATION_PARAMETER: &str = "material-evaluation";
 /// recorded. The bake and the runtime must agree on it, so it is part of [`VisibilityFeatures`].
 ///
 /// Set it with [`MATERIAL_EVALUATION_PARAMETER`] in `config.json`, then rebake every material.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum MaterialEvaluationMode {
 	/// Each material program bakes its own evaluation shader. Three prepasses list each pipeline's pixels, and each
 	/// pipeline shades its own list.
@@ -165,7 +165,7 @@ const ASSEMBLED_SHADERS: [&str; 6] = [
 /// so the bindings only they use are left out too.
 /// Code that serves every source of indirect diffuse light, SSGI, surfel GI, probe GI, or lightmaps, reads
 /// `indirect_diffuse` and stays while any of them is built in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct VisibilityFeatures {
 	/// Whether GTAO occlusion reaches material evaluation.
 	pub gtao: bool,
@@ -188,6 +188,24 @@ pub struct VisibilityFeatures {
 	pub debug_views: bool,
 	/// How material evaluation runs, which decides what material bakes store.
 	pub material_evaluation: MaterialEvaluationMode,
+}
+
+impl VisibilityFeatures {
+	/// Returns the fingerprint of the shader generators built with these features: the features themselves, the
+	/// generators' code, and whether this is a debug build, which decides how shaders are generated and compiled.
+	///
+	/// [`VisibilityShaderGenerator`](super::VisibilityShaderGenerator) and
+	/// [`CommonShaderGenerator`](crate::rendering::common_shader_generator::CommonShaderGenerator) report it as their
+	/// identity, so the asset manager bakes a shader again when any of the three changes.
+	pub(crate) fn generator_identity(&self) -> u64 {
+		use std::hash::{Hash as _, Hasher as _};
+
+		let mut hasher = utils::hash::FxHasher::with_seed(961961961961961);
+		self.hash(&mut hasher);
+		env!("BYTE_ENGINE_RENDERING_CODE_HASH").hash(&mut hasher);
+		cfg!(debug_assertions).hash(&mut hasher);
+		hasher.finish()
+	}
 }
 
 impl Default for VisibilityFeatures {

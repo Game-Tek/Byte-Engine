@@ -12,11 +12,9 @@ mod sources;
 #[cfg(test)]
 mod tests;
 
-use std::sync::LazyLock;
-
 use besl::parser::{MatchArm, MatchPattern, Node};
 use resource_management::asset::handler::implementations::bema::{
-	AssembledArm, AssembledMaterial, MaterialParameter, ParameterKind, ProgramGenerator,
+	AssembledArm, AssembledMaterial, MaterialParameter, ParameterKind, ProgramGenerator, ProgramModules,
 };
 use resource_management::bemx;
 use resource_management::shader::generator::ShaderGenerationSettings;
@@ -40,7 +38,6 @@ use super::layout::{
 };
 use crate::application::parameters::Parameters;
 use crate::rendering::common_shader_generator::common_shader_module;
-use crate::rendering::set_layout::{ENGINE_MODULES, module_source};
 
 // The layer modules spell out their array sizes; these guards catch limit changes.
 const _: () = assert!(
@@ -98,10 +95,6 @@ pub(super) const MATERIAL_HIT_MODULES: [&str; 3] = [
 	"::byte_engine::rendering::visibility::layouts::ray_traced_scene",
 ];
 
-/// The module files of [`MATERIAL_EVALUATION_MODULES`], loaded once from the embedded engine modules.
-static MATERIAL_EVALUATION_MODULE_FILES: LazyLock<Vec<besl::LoadedModule>> =
-	LazyLock::new(|| load_engine_modules(&MATERIAL_EVALUATION_MODULES));
-
 /// The layer every coverage shader's `main` takes: the scene set, which the masked raster passes bind first.
 const COVERAGE_LAYERS: [(&str, &str); 1] = [("scene", "Scene")];
 
@@ -111,27 +104,19 @@ const COVERAGE_MODULES: [&str; 2] = [
 	"::byte_engine::rendering::visibility::layouts::scene",
 ];
 
-/// The module files of [`COVERAGE_MODULES`], loaded once from the embedded engine modules.
-static COVERAGE_MODULE_FILES: LazyLock<Vec<besl::LoadedModule>> = LazyLock::new(|| load_engine_modules(&COVERAGE_MODULES));
+/// The module sets the generator's programs bring in, which a bake reads from the project's assets; see
+/// [`ProgramGenerator::module_sets`].
+const MODULE_SETS: [&[&str]; 3] = [&MATERIAL_EVALUATION_MODULES, &COVERAGE_MODULES, &MATERIAL_HIT_MODULES];
 
-/// The module files of [`MATERIAL_HIT_MODULES`], loaded once from the embedded engine modules.
-pub(super) static MATERIAL_HIT_MODULE_FILES: LazyLock<Vec<besl::LoadedModule>> =
-	LazyLock::new(|| load_engine_modules(&MATERIAL_HIT_MODULES));
+/// The generator's module sets, loaded from the modules embedded for the runtime, for tests that generate programs
+/// without a bake to read the files.
+#[cfg(test)]
+pub(super) static EMBEDDED_MODULES: std::sync::LazyLock<ProgramModules> = std::sync::LazyLock::new(|| {
+	use crate::rendering::set_layout::{ENGINE_MODULES, module_source};
 
-/// Loads `modules`, paths from the asset root, and the modules they use from [`ENGINE_MODULES`].
-///
-/// # Panics
-///
-/// Panics when a module doesn't load, which is an error in the engine's own assets.
-fn load_engine_modules(modules: &[&str]) -> Vec<besl::LoadedModule> {
-	let source = modules.iter().map(|module| format!("use {module}::*;")).collect::<String>();
-	let failed = |error: besl::CompilationError| -> ! {
-		panic!(
-			"The visibility layer modules failed to load ({error:?}). The most likely cause is an engine layer module that is missing from `ENGINE_MODULES` or doesn't parse. Add the module to the table, or fix its source."
-		)
-	};
-	besl::ModuleLoader::load(&source, |file| module_source(ENGINE_MODULES, file)).unwrap_or_else(|error| failed(error))
-}
+	ProgramModules::load(&MODULE_SETS, |file| module_source(ENGINE_MODULES, file))
+		.expect("The visibility layer modules failed to load. The most likely cause is a layer module that is missing from `ENGINE_MODULES` or doesn't parse.")
+});
 
 /// Returns a program whose `main` takes `layers` after its own parameters, and which brings in `modules`, whose loaded
 /// files are `files`.
@@ -203,7 +188,12 @@ impl VisibilityShaderGenerator {
 	///
 	/// Call it on a generator built for [`MaterialEvaluationMode::Uber`], whose scope declares the tile window. Compile it
 	/// with 8 × 8-thread workgroups; the bake does so through [`ProgramGenerator::generate_assembled`].
-	pub(crate) fn uber_program<'a>(&self, variant: UberVariant, arms: &'a [AssembledArm<'a>]) -> Result<Node<'a>, String> {
+	pub(crate) fn uber_program<'a>(
+		&self,
+		variant: UberVariant,
+		arms: &'a [AssembledArm<'a>],
+		modules: &'a ProgramModules,
+	) -> Result<Node<'a>, String> {
 		let transparent = variant.transparent;
 		let bodies = arms
 			.iter()
@@ -285,7 +275,7 @@ impl VisibilityShaderGenerator {
 			main,
 			&MATERIAL_EVALUATION_LAYERS,
 			&MATERIAL_EVALUATION_MODULES,
-			&MATERIAL_EVALUATION_MODULE_FILES,
+			modules.get(&MATERIAL_EVALUATION_MODULES),
 		)?;
 		root.add(self.common.iter().chain(&self.scope).cloned().collect());
 
@@ -298,7 +288,12 @@ impl VisibilityShaderGenerator {
 	/// The arms compute only `opacity`, from the material's static values, its dynamic values, its textures, and the vertex
 	/// UV, and a fragment whose material has no arm keeps an `opacity` of 1. Compile it as a fragment shader; the bake does
 	/// so through [`ProgramGenerator::generate_assembled`].
-	pub(crate) fn coverage_program<'a>(&self, pass: CoveragePass, arms: &'a [AssembledArm<'a>]) -> Result<Node<'a>, String> {
+	pub(crate) fn coverage_program<'a>(
+		&self,
+		pass: CoveragePass,
+		arms: &'a [AssembledArm<'a>],
+		modules: &'a ProgramModules,
+	) -> Result<Node<'a>, String> {
 		let mut main = match pass {
 			CoveragePass::Visibility => parse_besl_function(COVERAGE_VISIBILITY_SOURCE, "coverage_visibility"),
 			CoveragePass::Depth => parse_besl_function(COVERAGE_DEPTH_SOURCE, "coverage_depth"),
@@ -333,7 +328,7 @@ impl VisibilityShaderGenerator {
 			Node::r#match(Node::member_expression("coverage_arm"), material_arms),
 		);
 
-		let mut root = layered_program(main, &COVERAGE_LAYERS, &COVERAGE_MODULES, &COVERAGE_MODULE_FILES)?;
+		let mut root = layered_program(main, &COVERAGE_LAYERS, &COVERAGE_MODULES, modules.get(&COVERAGE_MODULES))?;
 		root.add(self.common.to_vec());
 		Ok(root)
 	}
@@ -458,7 +453,20 @@ fn static_value_declarations<'a>(arm: &AssembledArm<'a>) -> Result<Vec<Node<'a>>
 }
 
 impl ProgramGenerator for VisibilityShaderGenerator {
-	fn generate<'a>(&self, graph: &'a bemx::Graph, parameters: &'a [MaterialParameter]) -> Result<Option<Node<'a>>, String> {
+	fn identity(&self) -> u64 {
+		self.features.generator_identity()
+	}
+
+	fn module_sets(&self) -> &[&[&str]] {
+		&MODULE_SETS
+	}
+
+	fn generate<'a>(
+		&self,
+		graph: &'a bemx::Graph,
+		parameters: &'a [MaterialParameter],
+		modules: &'a ProgramModules,
+	) -> Result<Option<Node<'a>>, String> {
 		// The uber mode bakes no shader per material; the bake keeps the material's program for the uber shaders.
 		if self.features.material_evaluation == MaterialEvaluationMode::Uber {
 			return Ok(None);
@@ -480,7 +488,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			main,
 			&MATERIAL_EVALUATION_LAYERS,
 			&MATERIAL_EVALUATION_MODULES,
-			&MATERIAL_EVALUATION_MODULE_FILES,
+			modules.get(&MATERIAL_EVALUATION_MODULES),
 		)?;
 
 		// The suffix branches on `transparent`; each phase's pipeline compiles only its own path. Static value parameters
@@ -528,6 +536,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		&self,
 		id: &str,
 		arms: &'a [AssembledArm<'a>],
+		modules: &'a ProgramModules,
 	) -> Result<(Node<'a>, ShaderGenerationSettings), String> {
 		Ok(match AssembledShader::of(id)? {
 			AssembledShader::Evaluation(variant) => {
@@ -537,7 +546,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					if variant.translucent { "_translucent" } else { "" }
 				);
 				(
-					self.uber_program(variant, arms)?,
+					self.uber_program(variant, arms, modules)?,
 					ShaderGenerationSettings::compute(UBER_WORKGROUP).name(name),
 				)
 			}
@@ -547,7 +556,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					CoveragePass::Depth => "masked_depth_coverage",
 				};
 				(
-					self.coverage_program(pass, arms)?,
+					self.coverage_program(pass, arms, modules)?,
 					ShaderGenerationSettings::fragment().name(name.to_string()),
 				)
 			}
@@ -564,6 +573,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		&self,
 		graph: &'a bemx::Graph,
 		parameters: &'a [MaterialParameter],
+		modules: &'a ProgramModules,
 	) -> Result<Option<Node<'a>>, String> {
 		if !self.features.generates_hit_shaders() {
 			return Ok(None);
@@ -583,7 +593,12 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			statements,
 		);
 
-		let mut root = layered_program(main, &MATERIAL_HIT_LAYERS, &MATERIAL_HIT_MODULES, &MATERIAL_HIT_MODULE_FILES)?;
+		let mut root = layered_program(
+			main,
+			&MATERIAL_HIT_LAYERS,
+			&MATERIAL_HIT_MODULES,
+			modules.get(&MATERIAL_HIT_MODULES),
+		)?;
 		let declarations = (0u32..)
 			.zip(parameters)
 			.filter_map(|(index, parameter)| match parameter.kind {

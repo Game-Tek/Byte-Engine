@@ -113,11 +113,22 @@ Every resource records:
 | --- | --- |
 | `id`, `class` | The public ID and the class name. |
 | `hash`, `size`, `stored_size`, `encoding` | The payload's identity, decoded size, stored size, and encoding. |
-| `asset_dependencies` | The source files the resource was baked from, each with its ID without a fragment and its version: the file's size and modification time for local files, or a content hash for content-backed sources, or a record that an optional file was absent. |
 | `resource` | The class's typed model. |
 | `streams` | Optional named byte ranges inside the decoded payload. |
 | `queryable_properties` | String properties the query index covers. |
 | `baked_at` | Nanoseconds since the Unix epoch. |
+
+## Provenance
+
+The store keeps one provenance record per resource ID, in every build. A record
+needs no resource: an ID whose latest bake didn't finish has a record and can
+have no resource. Deleting a resource deletes its record.
+
+| Field | Content |
+| --- | --- |
+| Inputs | The [inputs](/docs/reference/resource-management#inputs) the ID's latest finished bake observed, sorted by key. Absent when the ID was never baked by request or its latest bake didn't finish. |
+| Outputs | The IDs of the other resources that bake stored, sorted. |
+| Producers | The IDs whose bakes store this resource, sorted. |
 
 ## Queries
 
@@ -156,11 +167,12 @@ has none.
 ## Version marker
 
 The marker holds a signature derived from the engine's resource-management
-source. A writable open with a different or missing marker beside an existing
-database deletes the whole directory, recreates it, and writes the marker.
-Debug builds open the store writable, so a stale store resets itself; release
-builds open read-only and fail on a mismatch. BELD's read-only commands report
-the mismatch without touching the directory.
+source, which defines the layout of every stored record. A writable open with a
+different or missing marker beside an existing database deletes the whole
+directory, recreates it, and writes the marker. Applications and `beld bake`
+open the store writable, so a store written by another engine revision resets
+itself. BELD's read-only commands report the mismatch without touching the
+directory.
 
 ## Resource classes
 

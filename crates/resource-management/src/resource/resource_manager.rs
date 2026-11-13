@@ -319,21 +319,6 @@ impl ResourceManager {
 			})
 	}
 
-	/// Bakes `id` again from its asset, even when its sources did not change, and returns once it is stored.
-	///
-	/// Development builds call this for a resource gathered from other resources rather than from its own sources, such
-	/// as an assembled evaluation shader, once what it gathers changed. Next, [`Self::request`] it again.
-	#[cfg(debug_assertions)]
-	pub async fn rebake(&self, id: &str) -> Result<(), RequestError> {
-		let Some(asset_manager) = self.asset_manager.get() else {
-			return Err(RequestError::Missing { id: id.to_owned() });
-		};
-		asset_manager
-			.bake(id)
-			.await
-			.map_err(|source| RequestError::bake(id, source, asset_manager))
-	}
-
 	/// Bakes every discoverable source asset of `asset_type`, such as `fusion`, whose resource is missing or stale, so a
 	/// following [`Self::query_ids`] finds them as it would in a baked store.
 	///
@@ -413,7 +398,7 @@ impl ResourceManager {
 
 		#[cfg(debug_assertions)]
 		if let Some(asset_manager) = asset_manager {
-			asset_manager.track_resource(&stored);
+			asset_manager.track_resource(stored.id());
 		}
 
 		Ok((stored, reader))

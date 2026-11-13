@@ -14,7 +14,32 @@ settings, are listed in the [asset formats reference](/docs/reference/assets).
 
 When you edit a glTF or FBX file and rebake it, unchanged generated shaders are reused instead of compiled again.
 A generated shader compiles again only when its material graph, the render pipeline's shader generator, the shader backend, or the installed shader compiler changes.
-To force every stored shader to compile again, call `AssetManager::rebuild_resources_baked_before` and then `AssetManager::bake_if_stale`.
+To compile an asset's shaders again whatever the store holds, call `AssetManager::rebuild`.
+
+## Freshness
+
+The [freshness reference](/docs/reference/resource-management#freshness) defines when a resource is current. This section says how the asset manager keeps that definition true, and what your change must keep.
+
+One function decides: `AssetManagerState::ensure_baked_uncoalesced`. It reads the ID's `Provenance` from the resource store and takes the first of these that applies:
+
+1. The record has no inputs but names producers, so another ID's bake stores the resource. The manager makes the first producer current and returns. A model's material variant works this way: only the model's bake can rebuild a material that comes from one of its detail-level files.
+2. The record has inputs and the resource exists. `first_changed_input` checks each input, and the resource is current when none changed.
+3. Otherwise the handler runs for the ID.
+
+`BakeContext` records the inputs while the handler runs: `resolve`, `load_sidecar`, and `source_exists` record source files; `bake_dependency` records the resource it read; `query_resources` and `source_ids` record what they listed; `setting` records a declared value. `bake_uncoalesced` writes the record last, through `commit_provenance`, so a bake that fails leaves the ID stale.
+
+Keep these rules when you change a handler or the manager:
+
+- Everything a handler reads that could change the result goes through `BakeContext`. A handler that reads a file with `std::fs`, embeds one with `include_str!`, or reads a parameter it was built with records nothing, and its resources stay current when that input changes. Read files through `resolve`. Give a handler option a place in `AssetHandler::identity`. Give a bake service an `identity` and record it where the context hands the service out, as `BakeContext::program_generator` does.
+- A dependency is recorded by the fingerprint of what the bake read, `resource_fingerprint`, never by the dependency's own sources. That lets a resource baked again to the same bytes leave its dependents current, which is what keeps a code fingerprint as coarse as a whole directory affordable.
+- A resource a bake stores besides the requested one has no inputs of its own. Never give a handler a second code path that rebuilds such a resource from its ID alone unless that path reads everything the first one does.
+- Checks are remembered per epoch in `checked`. The epoch advances with every root request, unless the caller promised with `AssetManager::verify_once` that sources hold still, and when a watcher reports a change. A watcher only brings a check forward; a change it misses is found by the next request. A check of a bake that ran a query also expires when the store's contents change. Don't cache a freshness result anywhere else.
+- A freshness check that re-enters the dispatcher boxes the call, and passes the ID that asks as `BakeOrigin::Dependency::parent`, so a resource is never asked to wait for its own bake.
+- Hot reload doesn't map changed paths to assets. A watcher batch advances the epoch and checks every tracked root with the same function. `FileStorageBackend::watch_roots` lists the target of every directory link, because a watcher doesn't follow links.
+
+The engine's layer modules are an example of the first rule. The material generator names the modules its programs bring in through `ProgramGenerator::module_sets`, and the `.bema` handler reads them from the assets with `load_program_modules`, so each module file is a source of every material. Only the runtime embeds them, in `ENGINE_MODULES`, to build descriptor sets without reading assets. After you edit a layer module, materials bake again at once, and the runtime's sets follow when the engine is rebuilt.
+
+The tests named `a_…` after `ScriptedAssetHandler` in `manager.rs` guard each input kind, producers, removal of resources a bake stops storing, failed bakes, and forced rebuilds. Add a line to a script there before you add a special case to the manager.
 
 ## Asset handlers
 
@@ -34,7 +59,7 @@ let settings = context.load_sidecar(id).await?;
 ```
 
 The sidecar helper parses JSON5, merges the [directory defaults](/docs/reference/assets#sidecars) under the sidecar, and returns `None` when none of those files exist.
-It records each file's ID as a dependency, including its absence, so creating, editing, or removing any of them makes the resource stale.
+It records each file's ID as an input, including its absence, so creating, editing, or removing any of them makes the resource stale.
 A sidecar that your handler doesn't request has no effect on baking or freshness.
 Custom source backends provide the same utility through `StorageBackend::load_sidecar`, which reads each file with `StorageBackend::load_bead`; implement `version` for individual files and return `AssetVersion::missing()` only when a file doesn't exist.
 
@@ -49,7 +74,7 @@ Handlers see one merged object and can't tell which file a key came from, so a k
 
 Keep these rules when you change it:
 
-- Every file the merge consults is a bake dependency, present or absent. `TrackingStorageBackend` overrides `load_bead`, not `load_sidecar`, so each layer goes through `tracked` on its own. The watcher needs nothing extra, since a change to `anims/.bead` reports that ID and the resources that depend on it rebake.
+- Every file the merge consults is an input of the bake, present or absent. `TrackingStorageBackend` overrides `load_bead`, not `load_sidecar`, so each layer goes through `tracked` on its own. The watcher needs nothing extra, since any change under the assets directory checks every loaded resource again.
 - The more specific file wins. Don't stop at the first file found; layers combine, so a sidecar can override one key of its directory's `images` object and keep the rest.
 - Directory defaults configure assets; they don't select them. Discovery still asks for an adjacent sidecar, through `AssetSource::has_sidecar`, so a folder default doesn't turn every `.besl` below it into a standalone shader. A `.bead` file has no asset type, so discovery never offers it as an asset.
 - Handlers read keys by name and ignore keys they don't know, which a folder shared by different formats relies on. Strict parsing belongs to each key's value, such as `lods` or `images`, never the whole object.

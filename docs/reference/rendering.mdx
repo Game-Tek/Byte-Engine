@@ -542,10 +542,10 @@ shade every pixel with the same surface and lighting:
 | --- | --- |
 | Kinds | Each phase has two shaders: one for [translucent materials](#translucent-materials) and one for the rest. A material has an arm in exactly one of the four. |
 | Arms | One per distinct program, set of static values, phase, and kind. Variants that differ only in textures or dynamic values share an arm. |
-| Coverage | A material is drawn once the published shader of its phase and kind holds its arm. A development build rebakes the shader when a material baked after it arrives; a release build logs one error for each material missing from the bake and doesn't draw it. |
+| Coverage | A material is drawn once the published shader of its phase and kind holds its arm. A development build bakes the shader again when a material baked after it arrives, because the stored materials are an input of the shader; a release build logs one error for each material missing from the bake and doesn't draw it. |
 | Background | The opaque pass of the materials that aren't translucent writes zero to `Lit` and `Diffuse Radiance History` at every pixel no opaque surface covers. It runs every frame. |
 | Unused shaders | A shader other than the one that writes the background runs only in a frame that draws an instance whose material has an arm in it. |
-| Baked shaders | Material resources keep their graph instead of an evaluation shader. Every bake assembles the four shaders last, from every material variant in the store; they have no asset of their own. Changing the mode needs a forced rebake. |
+| Baked shaders | Material resources keep their graph instead of an evaluation shader. Every bake assembles the four shaders last, from every material variant in the store, and skips a shader whose materials didn't change; they have no asset of their own. Changing the mode makes every material stale, so the next bake processes them. |
 
 The evaluation shader writes the graph's surface into these properties. A surface
 input the graph leaves out takes its [BEMX default](/docs/reference/bemx#surface),

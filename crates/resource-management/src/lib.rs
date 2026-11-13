@@ -146,8 +146,6 @@ pub struct ProcessedAsset {
 	id: String,
 	/// The resource class, such as `Texture`, `Mesh`, or `Material`.
 	class: String,
-	/// Source versions that must still match before this baked resource can be reused.
-	asset_dependencies: Vec<asset::storage_backend::AssetDependency>,
 	/// The serialized resource metadata.
 	resource: DataStorage,
 	streams: Option<Vec<StreamDescription>>,
@@ -168,7 +166,6 @@ impl ProcessedAsset {
 		ProcessedAsset {
 			id: id.to_string(),
 			class: T::get_class().to_string(),
-			asset_dependencies: Vec::new(),
 			resource: to_vec(&resource).unwrap(),
 			streams: None,
 			queryable_properties: resource.queryable_properties(id.as_ref()),
@@ -203,13 +200,6 @@ impl ProcessedAsset {
 		self.compression
 	}
 
-	/// Attaches the source versions observed while the asset handler produced this resource.
-	pub(crate) fn with_asset_dependencies(mut self, asset_dependencies: Vec<asset::storage_backend::AssetDependency>) -> Self {
-		self.asset_dependencies = asset_dependencies;
-
-		self
-	}
-
 	/// Moves processed metadata into a serializable resource container.
 	pub fn into_serializable(
 		self,
@@ -222,7 +212,6 @@ impl ProcessedAsset {
 			id: self.id,
 			hash,
 			class: self.class,
-			asset_dependencies: self.asset_dependencies,
 			size,
 			stored_size,
 			encoding,
@@ -239,7 +228,6 @@ impl ProcessedAsset {
 		ProcessedAsset {
 			id: id.to_string(),
 			class: class.to_string(),
-			asset_dependencies: Vec::new(),
 			resource,
 			streams: None,
 			queryable_properties: vec![QueryableProperty {
@@ -311,7 +299,6 @@ pub struct SerializableResource {
 	hash: u64,
 	/// The resource class, such as `Texture`, `Mesh`, or `Material`.
 	class: String,
-	asset_dependencies: Vec<asset::storage_backend::AssetDependency>,
 	/// Number of bytes clients receive after CPU decompression.
 	size: usize,
 	/// Number of bytes occupied by the encoded payload in storage.
@@ -361,13 +348,6 @@ impl SerializableResource {
 
 	pub fn hash(&self) -> u64 {
 		self.hash
-	}
-
-	/// Returns the source versions that determine whether this resource needs to be baked again.
-	///
-	/// Pass the resource to [`asset::manager::stale_sources`] to find the ones that changed.
-	pub fn asset_dependencies(&self) -> &[asset::storage_backend::AssetDependency] {
-		&self.asset_dependencies
 	}
 
 	pub fn class(&self) -> &str {

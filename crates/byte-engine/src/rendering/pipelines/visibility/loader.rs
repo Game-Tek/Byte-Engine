@@ -128,17 +128,14 @@ pub(crate) enum VisibilityLoadRequest {
 	Environment(String),
 	/// A baked lightmap and its image.
 	Lightmap(String),
-	/// One of the uber material evaluation shaders. `rebake` bakes it again first, from every material the store now
-	/// holds; only development builds can.
+	/// One of the uber material evaluation shaders. Requested again once a material the published shader lacks
+	/// arrived, a development build bakes it from every material the store now holds.
 	UberShader {
 		variant: UberVariant,
-		rebake: bool,
 	},
-	/// Both coverage shaders, and the masked raster pipelines that take them as fragments. `rebake` bakes them again
-	/// first, from every material the store now holds; only development builds can.
-	CoverageShaders {
-		rebake: bool,
-	},
+	/// Both coverage shaders, and the masked raster pipelines that take them as fragments. Requested again, they bake
+	/// again as [`Self::UberShader`] does.
+	CoverageShaders,
 }
 
 /// The `CoveragePipelines` struct holds the masked raster pipelines: each pass's one-sided and double-sided pipeline,
@@ -593,30 +590,28 @@ impl VisibilityLoaderClient {
 	/// [`VisibilityLoaderEvent::UberShaderReady`] once its pipeline compiles.
 	pub(crate) fn request_uber_shaders(&mut self) {
 		for variant in UberVariant::ALL {
-			self.client
-				.request(VisibilityLoadRequest::UberShader { variant, rebake: false });
+			self.client.request(VisibilityLoadRequest::UberShader { variant });
 		}
 	}
 
 	/// Requests both coverage shaders. They reach the renderer as [`VisibilityLoaderEvent::CoverageShadersReady`] once
 	/// every masked raster pipeline compiles.
 	pub(crate) fn request_coverage_shaders(&mut self) {
-		self.client.request(VisibilityLoadRequest::CoverageShaders { rebake: false });
+		self.client.request(VisibilityLoadRequest::CoverageShaders);
 	}
 
-	/// Bakes both coverage shaders again, from every material the store now holds, and loads them. Development builds
-	/// call it when a masked material the published shaders lack is ready.
+	/// Requests both coverage shaders again, which bakes them from every material the store now holds. Development
+	/// builds call it when a masked material the published shaders lack is ready.
 	#[cfg(debug_assertions)]
 	pub(crate) fn rebake_coverage_shaders(&mut self) {
-		self.client.reload(VisibilityLoadRequest::CoverageShaders { rebake: true });
+		self.client.reload(VisibilityLoadRequest::CoverageShaders);
 	}
 
-	/// Bakes one uber material evaluation shader again, from every material the store now holds, and
-	/// loads it. Development builds call it when a material the published shader lacks is ready.
+	/// Requests one uber material evaluation shader again, which bakes it from every material the store now holds.
+	/// Development builds call it when a material the published shader lacks is ready.
 	#[cfg(debug_assertions)]
 	pub(crate) fn rebake_uber_shader(&mut self, variant: UberVariant) {
-		self.client
-			.reload(VisibilityLoadRequest::UberShader { variant, rebake: true });
+		self.client.reload(VisibilityLoadRequest::UberShader { variant });
 	}
 
 	/// Requests one baked lightmap and its image.
@@ -1353,22 +1348,15 @@ impl VisibilityLoader {
 		}))
 	}
 
-	/// Loads one uber material evaluation shader, after baking it again when `rebake` is set, and requests its
-	/// pipeline.
-	async fn load_uber_shader(&self, variant: UberVariant, rebake: bool) -> Result<VisibilityResident, LoadError> {
+	/// Loads one uber material evaluation shader and requests its pipeline.
+	///
+	/// The stored materials are an input of the shader's bake, so in a development build the request bakes it again
+	/// when a material was baked after it.
+	async fn load_uber_shader(&self, variant: UberVariant) -> Result<VisibilityResident, LoadError> {
 		let id = variant.shader();
-		#[cfg(debug_assertions)]
-		if rebake {
-			self.resource_manager
-				.rebake(id)
-				.await
-				.map_err(|error| LoadError(format!("Visibility could not bake {id} again. {error}")))?;
-		}
-		#[cfg(not(debug_assertions))]
-		let _ = rebake;
 		let reference: Reference<AssembledShader> = self.resource_manager.request(id).await.map_err(|error| {
 			LoadError(format!(
-				"Visibility could not load {id}. The most likely cause is resources baked with `render.material-evaluation` set to `pipelines`. Bake them again with `beld bake --force`. Request error: {error}"
+				"Visibility could not load {id}. The most likely cause is resources baked with `render.material-evaluation` set to `pipelines`. Bake them again with `beld bake`. Request error: {error}"
 			))
 		})?;
 		let assembled = reference.resource();
@@ -1390,25 +1378,17 @@ impl VisibilityLoader {
 		})
 	}
 
-	/// Loads both coverage shaders, after baking them again when `rebake` is set, and requests every masked raster
-	/// pipeline: each pass's solid pipelines with a coverage shader as their fragment.
-	async fn load_coverage_shaders(&self, rebake: bool) -> Result<VisibilityResident, LoadError> {
-		#[cfg(debug_assertions)]
-		if rebake {
-			for id in COVERAGE_SHADERS {
-				self.resource_manager
-					.rebake(id)
-					.await
-					.map_err(|error| LoadError(format!("Visibility could not bake {id} again. {error}")))?;
-			}
-		}
-		#[cfg(not(debug_assertions))]
-		let _ = rebake;
+	/// Loads both coverage shaders and requests every masked raster pipeline: each pass's solid pipelines with a
+	/// coverage shader as their fragment.
+	///
+	/// As with [`Self::load_uber_shader`], a development build's requests bake the shaders again when a material was
+	/// baked after them.
+	async fn load_coverage_shaders(&self) -> Result<VisibilityResident, LoadError> {
 		let mut shaders = Vec::with_capacity(COVERAGE_SHADERS.len());
 		for id in COVERAGE_SHADERS {
 			let reference: Reference<AssembledShader> = self.resource_manager.request(id).await.map_err(|error| {
 				LoadError(format!(
-					"Visibility could not load {id}. The most likely cause is resources baked before masked materials were tested in coverage shaders. Bake them again with `beld bake --force`. Request error: {error}"
+					"Visibility could not load {id}. The most likely cause is resources baked before masked materials were tested in coverage shaders. Bake them again with `beld bake`. Request error: {error}"
 				))
 			})?;
 			shaders.push(reference.resource().clone());
@@ -1972,8 +1952,8 @@ impl LoadPipeline for VisibilityLoader {
 			}
 			VisibilityLoadRequest::Environment(id) => self.load_environment(id, lane).await,
 			VisibilityLoadRequest::Lightmap(id) => self.load_lightmap(id, lane).await,
-			VisibilityLoadRequest::UberShader { variant, rebake } => self.load_uber_shader(variant, rebake).await,
-			VisibilityLoadRequest::CoverageShaders { rebake } => self.load_coverage_shaders(rebake).await,
+			VisibilityLoadRequest::UberShader { variant } => self.load_uber_shader(variant).await,
+			VisibilityLoadRequest::CoverageShaders => self.load_coverage_shaders().await,
 		}
 	}
 }

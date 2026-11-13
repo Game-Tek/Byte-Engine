@@ -28,6 +28,12 @@ pub trait ReadStorageBackend: Sync + Send {
 		query: Query,
 	) -> impl Future<Output = Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>>;
 
+	/// Returns what the store remembers about how `id` came to be stored, or `None` when it remembers nothing.
+	///
+	/// The asset manager reads it to decide whether to bake `id` again. A record can exist without a resource, when
+	/// the ID's latest bake didn't finish.
+	fn read_provenance(&self, id: ResourceId<'_>) -> Result<Option<Provenance>, String>;
+
 	/// Returns development-time bake messages even when the requested resource was not stored.
 	#[cfg(debug_assertions)]
 	fn read_trace<'a>(&'a self, _: ResourceId<'a>) -> impl Future<Output = Result<Vec<crate::ResourceTraceItem>, String>> + 'a {
@@ -43,6 +49,7 @@ pub trait DynReadStorageBackend: Send + Sync {
 		&self,
 		query: Query,
 	) -> BoxedFuture<'_, Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>>;
+	fn read_provenance(&self, id: ResourceId<'_>) -> Result<Option<Provenance>, String>;
 	#[cfg(debug_assertions)]
 	fn read_trace<'a>(&'a self, _id: ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<crate::ResourceTraceItem>, String>> {
 		Box::pin(async { Ok(Vec::new()) })
@@ -119,6 +126,19 @@ pub trait WriteStorageBackend: Sync + Send {
 		}
 	}
 
+	/// Returns a fingerprint of the options of this store that change a stored payload, such as texture compression.
+	///
+	/// The asset manager records it with every image it stores, so reopening the store with other options makes them
+	/// stale. A store without such options keeps the default.
+	fn settings_fingerprint(&self) -> u64 {
+		0
+	}
+
+	/// Replaces what the store remembers about how `id` came to be stored. An empty record removes it.
+	///
+	/// The record needs no resource with that ID. [`Self::delete`] removes it with the resource.
+	fn write_provenance(&self, id: ResourceId<'_>, provenance: &Provenance) -> Result<(), String>;
+
 	/// Replaces development-time bake messages without creating a resource entry.
 	#[cfg(debug_assertions)]
 	fn replace_trace(&self, _: ResourceId<'_>, _: &[crate::ResourceTraceItem]) -> Result<(), String> {
@@ -148,6 +168,8 @@ pub trait DynWriteStorageBackend: Send + Sync {
 		data: &'a [u8],
 		allocator: &'a dyn std::alloc::Allocator,
 	) -> BoxedFuture<'a, Result<SerializableResource, ()>>;
+	fn write_provenance(&self, id: ResourceId<'_>, provenance: &Provenance) -> Result<(), String>;
+	fn settings_fingerprint(&self) -> u64;
 	#[cfg(debug_assertions)]
 	fn replace_trace(&self, _: ResourceId<'_>, _: &[crate::ResourceTraceItem]) -> Result<(), String> {
 		Ok(())
@@ -284,6 +306,10 @@ impl<T: ReadStorageBackend> DynReadStorageBackend for T {
 		Box::pin(self.query(query))
 	}
 
+	fn read_provenance(&self, id: ResourceId<'_>) -> Result<Option<Provenance>, String> {
+		ReadStorageBackend::read_provenance(self, id)
+	}
+
 	#[cfg(debug_assertions)]
 	fn read_trace<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<crate::ResourceTraceItem>, String>> {
 		Box::pin(self.read_trace(id))
@@ -320,6 +346,14 @@ impl<T: WriteStorageBackend> DynWriteStorageBackend for T {
 		Box::pin(WriteStorageBackend::store_in(self, resource, data, allocator))
 	}
 
+	fn write_provenance(&self, id: ResourceId<'_>, provenance: &Provenance) -> Result<(), String> {
+		WriteStorageBackend::write_provenance(self, id, provenance)
+	}
+
+	fn settings_fingerprint(&self) -> u64 {
+		WriteStorageBackend::settings_fingerprint(self)
+	}
+
 	#[cfg(debug_assertions)]
 	fn replace_trace(&self, id: ResourceId<'_>, items: &[crate::ResourceTraceItem]) -> Result<(), String> {
 		self.replace_trace(id, items)
@@ -338,4 +372,4 @@ use super::resource_handler::MultiResourceReader;
 use crate::{
 	ArchivedSerializableResource, ProcessedAsset, SerializableResource, asset::ResourceId, model::ArchivedQueryableValue,
 };
-use crate::{QueryableValue, r#async::BoxedFuture};
+use crate::{QueryableValue, asset::Provenance, r#async::BoxedFuture};

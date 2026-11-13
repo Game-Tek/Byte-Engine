@@ -138,6 +138,9 @@ pub struct Renderer {
 	resource_manager: Option<EntityHandle<ResourceManager>>,
 	scene_background_factory: Option<Box<crate::rendering::render_pass::SceneBackgroundFactory>>,
 	scene_backgrounds: SmallVec<[crate::rendering::render_pass::SceneBackground; 16]>,
+	scene_environment_factory: Option<Box<crate::rendering::render_pass::SceneEnvironmentFactory>>,
+	/// The generated environment, built with the first scene sink and shared by every sink after it.
+	scene_environment: Option<crate::rendering::render_pass::SceneEnvironment>,
 	scene_presentation_copies: SmallVec<[(SinkId, ImageBypassPass); 16]>,
 	pending_sink_initializations: SmallVec<[SinkId; 16]>,
 	configuration: ConfigurationPort,
@@ -341,6 +344,8 @@ impl Renderer {
 			resource_manager: None,
 			scene_background_factory: None,
 			scene_backgrounds: SmallVec::new(),
+			scene_environment_factory: None,
+			scene_environment: None,
 			scene_presentation_copies: SmallVec::with_capacity(16),
 			pending_sink_initializations: SmallVec::with_capacity(16),
 			configuration: render_pass_configuration,
@@ -468,9 +473,9 @@ impl Renderer {
 	/// Only scene nodes get the scene background factory, because only their backgrounds reach
 	/// `self.scene_backgrounds`, where the renderer asks them for frames.
 	fn sink_builder(&mut self, sink_id: SinkId, node: RenderNode, final_output: bool) -> RenderPassBuilder<'_> {
-		let scene_background_factory = match node {
-			RenderNode::Scene(_) => self.scene_background_factory.as_deref(),
-			RenderNode::Pass(_) | RenderNode::Presentation | RenderNode::DebugView => None,
+		let (scene_background_factory, scene_environment) = match node {
+			RenderNode::Scene(_) => (self.scene_background_factory.as_deref(), self.scene_environment.clone()),
+			RenderNode::Pass(_) | RenderNode::Presentation | RenderNode::DebugView => (None, None),
 		};
 		RenderPassBuilder::new(
 			&mut self.context,
@@ -480,6 +485,7 @@ impl Renderer {
 			self.windows[sink_id].1,
 			self.pipeline_compilation_client.clone(),
 			scene_background_factory,
+			scene_environment,
 			node,
 			final_output,
 			self.debug_view_settings,
@@ -493,6 +499,7 @@ impl Renderer {
 		pipeline_manager_id: PipelineManagerId,
 		sink_id: SinkId,
 	) {
+		self.create_scene_environment(pipeline_manager_id, sink_id);
 		let mut builder = self.sink_builder(sink_id, RenderNode::Scene(pipeline_manager_id), false);
 		pipeline_manager.create_sink(sink_id, &mut builder);
 		builder.record_node();
@@ -505,6 +512,21 @@ impl Renderer {
 		if let Some(counter) = self.create_gpu_counter("scene", pipeline_manager.name(), sink_id) {
 			self.scene_counters.push((pipeline_manager_id, sink_id, counter));
 		}
+	}
+
+	/// Builds the registered scene environment the first time a scene node needs it, so every sink after shares it.
+	///
+	/// It builds with the scene node's builder, so its counters report next to that node's stages.
+	fn create_scene_environment(&mut self, pipeline_manager_id: PipelineManagerId, sink_id: SinkId) {
+		// The factory runs once; taking it leaves later sinks the environment it built.
+		let Some(factory) = self.scene_environment_factory.take() else {
+			return;
+		};
+		let mut builder = self.sink_builder(sink_id, RenderNode::Scene(pipeline_manager_id), false);
+		let environment = factory(&mut builder);
+		let stage_counters = builder.take_gpu_counters();
+		self.adopt_stage_counters(stage_counters, sink_id);
+		self.scene_environment = Some(environment);
 	}
 
 	fn initialize_scene_sink(&mut self, sink_id: SinkId) {
@@ -545,6 +567,26 @@ impl Renderer {
 			"Render graph is already closed. The most likely cause is that a scene background was registered after creating a window. Register it before creating the first window."
 		);
 		self.scene_background_factory = Some(Box::new(factory));
+	}
+
+	/// Registers the environment the scene lights with while it selects no [`crate::rendering::Environment`], such as
+	/// one the atmosphere sky generates.
+	///
+	/// Register it before creating a window. The renderer builds it once, with the first scene sink, and every scene
+	/// pipeline takes it with [`RenderPassBuilder::scene_environment`]. Its [`RenderPass::name`] controls it like a
+	/// post-scene pass. A later registration replaces an earlier one.
+	pub fn set_scene_environment<F>(&mut self, factory: F)
+	where
+		F: for<'builder, 'resources> Fn(
+				&'builder mut RenderPassBuilder<'resources>,
+			) -> crate::rendering::render_pass::SceneEnvironment
+			+ 'static,
+	{
+		assert!(
+			self.windows.is_empty(),
+			"Render graph is already closed. The most likely cause is that a scene environment was registered after creating a window. Register it before creating the first window."
+		);
+		self.scene_environment_factory = Some(Box::new(factory));
 	}
 
 	/// Registers a render pass factory that will be instantiated for every future sink.
@@ -888,6 +930,9 @@ impl Renderer {
 		}
 		for background in &self.scene_backgrounds {
 			needs_frame |= background.needs_frame();
+		}
+		if let Some(environment) = &self.scene_environment {
+			needs_frame |= environment.needs_frame();
 		}
 		needs_frame
 	}
@@ -1520,7 +1565,8 @@ use crate::{
 	core::{EntityHandle, factory::Handle},
 	metrics::{MetricId, MetricKind, Metrics},
 	rendering::{
-		Camera, DirectionalLight, ExponentialHeightFog, PipelineManagerServer, ShownTransforms, Sink, Sun, make_perspective_view_from_camera,
+		Camera, DirectionalLight, ExponentialHeightFog, PipelineManagerServer, ShownTransforms, Sink, Sun,
+		make_perspective_view_from_camera,
 		pipeline_manager::PipelineManager,
 		render_pass::RenderPassReturn,
 		window::{self, Window},

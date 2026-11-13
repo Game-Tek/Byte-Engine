@@ -177,18 +177,29 @@ impl DescriptorSet {
 				self.words[word] = buffer.gpu_address;
 				pin(allocation(&*buffer.buffer));
 			}
-			Some(Descriptor::Image { image, mip_level, .. }) => {
+			Some(Descriptor::Image {
+				image,
+				mip_level,
+				array_layer,
+				..
+			}) => {
 				let image = resources.images.resource(image);
 				pin(allocation(&*image.texture));
-				self.words[word] = match mip_level {
-					Some(mip_level) => {
-						let view = command_buffer::texture_view_2d(&image.texture, image.description.format, mip_level, 0);
+				// A chosen mip or layer, such as one cube face's mip, is a 2D view of that subresource.
+				self.words[word] = match (mip_level, array_layer) {
+					(None, None) => resource_id(image.texture.gpuResourceID()),
+					(mip_level, array_layer) => {
+						let view = command_buffer::texture_view_2d(
+							&image.texture,
+							image.description.format,
+							mip_level.unwrap_or(0),
+							array_layer.unwrap_or(0),
+						);
 						let id = resource_id(view.gpuResourceID());
 						pin(allocation(&*view));
 						self.texture_views.push((element, view));
 						id
 					}
-					None => resource_id(image.texture.gpuResourceID()),
 				};
 			}
 			Some(Descriptor::CombinedImageSampler { image, sampler, .. }) => {

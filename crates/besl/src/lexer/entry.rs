@@ -481,6 +481,7 @@ fn contextual_access<'a>(
 			"primitive_index" => Ok(Some(parser::Node::member_expression(crate::PRIMITIVE_INDEX_BUILTIN))),
 			"thread_id" => Ok(Some(parser::Node::call("thread_id", Vec::new()))),
 			"thread_idx" => Ok(Some(parser::Node::call("thread_idx", Vec::new()))),
+			"thread_layer" => Ok(Some(parser::Node::call("thread_layer", Vec::new()))),
 			"threadgroup_position" => Ok(Some(parser::Node::call("threadgroup_position", Vec::new()))),
 			"subgroup_lane_index" => Ok(Some(parser::Node::call("subgroup_lane_index", Vec::new()))),
 			// The tile field: the size of the tile stage's outputs.

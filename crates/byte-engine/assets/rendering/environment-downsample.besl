@@ -1,0 +1,16 @@
+// Builds one level of every cube face, a face per `thread_layer`, from the level above it: each texel is the plain average of the 2 × 2 texels it
+// covers, the box-filtered pyramid that filtered importance sampling reads.
+source: descriptor<{ type: StorageImage<rgba16f>, binding: 0, access: read, count: 6 }>;
+result: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write, count: 6 }>;
+
+main: fn (input: StageInput) -> void {
+	let texel: vec2u = input.thread_id;
+	let face: u32 = input.thread_layer;
+	guard_image_bounds(result[face], texel);
+	let corner: vec2u = vec2u(texel.x * 2, texel.y * 2);
+	let sum: vec4f = image_load(source[face], corner)
+		+ image_load(source[face], corner + vec2u(1, 0))
+		+ image_load(source[face], corner + vec2u(0, 1))
+		+ image_load(source[face], corner + vec2u(1, 1));
+	write(result[face], texel, vec4f(sum.x * 0.25, sum.y * 0.25, sum.z * 0.25, 1.0));
+}

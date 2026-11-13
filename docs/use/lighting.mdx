@@ -282,6 +282,10 @@ pipelines ignore exposure. The camera's f-number doesn't change it.
 
 ## Calibrate the environment map
 
+A scene with the atmosphere sky and no `Environment` takes its sky light from the sky itself, in the
+sky's own units, so it needs no calibration. Create an `Environment` when you want a baked map to
+light the scene instead.
+
 Environment maps store light in arbitrary units. Give the environment the illuminance it should
 deliver to an upward-facing surface, so it lights the scene in the same units as your lights:
 

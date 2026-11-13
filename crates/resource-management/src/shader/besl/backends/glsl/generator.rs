@@ -1069,6 +1069,7 @@ impl NodeEmitter for Generator {
 				string.push(')');
 			}
 			"thread_id" => string.push_str("uvec2(gl_GlobalInvocationID.xy)"),
+			"thread_layer" => string.push_str("uint(gl_GlobalInvocationID.z)"),
 			"thread_position" => string.push_str("uint(gl_GlobalInvocationID.x)"),
 			"thread_idx" => string.push_str("uint(gl_LocalInvocationIndex)"),
 			"subgroup_lane_index" => string.push_str("gl_SubgroupInvocationID"),

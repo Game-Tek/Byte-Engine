@@ -150,6 +150,7 @@ stage input parameter.
 | Name | Signature | Explanation |
 | --- | --- | --- |
 | `thread_id` | `thread_id() -> vec2u` | Returns the global two-dimensional compute invocation coordinate. |
+| `thread_layer` | `thread_layer() -> u32` | Returns the third coordinate of the global compute invocation, such as the layer or cube face a dispatch with a depth fills. |
 | `thread_idx` | `thread_idx() -> u32` | Returns the linear invocation index inside the local workgroup. |
 | `threadgroup_position` | `threadgroup_position() -> u32` | Returns the workgroup position. |
 | `workgroup_barrier` | `workgroup_barrier() -> void` | Synchronizes workgroup-shared reads and writes across participating invocations. |

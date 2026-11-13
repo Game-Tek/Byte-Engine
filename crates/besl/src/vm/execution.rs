@@ -1613,6 +1613,7 @@ impl InvocationBuiltin {
 			InvocationBuiltin::ThreadIdx => Value::U32(config.thread_idx()),
 			InvocationBuiltin::ThreadPosition => Value::U32(config.thread_position()),
 			InvocationBuiltin::ThreadId => Value::Vec2U(config.thread_id()),
+			InvocationBuiltin::ThreadLayer => Value::U32(config.thread_layer()),
 			InvocationBuiltin::ThreadgroupPosition => Value::U32(config.threadgroup_position()),
 			InvocationBuiltin::SubgroupLaneIndex => Value::U32(config.thread_idx() % config.subgroup_size()),
 			InvocationBuiltin::OutputExtent => Value::Vec2U(config.tile().ok_or_else(tile_unavailable)?.extent),

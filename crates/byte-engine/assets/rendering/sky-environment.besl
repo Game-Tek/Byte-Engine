@@ -1,0 +1,23 @@
+// Fills the six faces of the sky environment's radiance cube, a face per `thread_layer`, from the sky-view LUT: the sky's radiance in the texel's
+// direction, per lux of sunlight, times the sun's unexposed illuminance. It's black below the horizon wherever the
+// LUT is, and holds no sun disk, since the directional light already carries the sun.
+use ::byte_engine::rendering::layouts::sky_parameters::*;
+use ::byte_engine::rendering::layouts::environment_cube::*;
+
+sky_view_lut: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+parameters: descriptor<{ type: SkyParameters, binding: 1, access: read, memory: constant }>;
+result: descriptor<{ type: StorageImage<rgba16f>, binding: 2, access: write, count: 6 }>;
+
+main: fn (input: StageInput) -> void {
+	let texel: vec2u = input.thread_id;
+	let face: u32 = input.thread_layer;
+	guard_image_bounds(result[face], texel);
+	let direction: vec3f = environment_cube_direction(face, texel, image_size(result[face]));
+	let sky: vec4f = texture_lod(sky_view_lut, octahedral_encode(direction));
+	write(result[face], texel, vec4f(
+		sky.x * parameters.sun_illuminance.x,
+		sky.y * parameters.sun_illuminance.y,
+		sky.z * parameters.sun_illuminance.z,
+		1.0
+	));
+}

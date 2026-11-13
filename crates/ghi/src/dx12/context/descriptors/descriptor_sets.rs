@@ -238,9 +238,12 @@ impl Device {
 				self.descriptor_sets[set_index].stale.retain(|&stale| stale != element);
 				self.write_native_buffer_descriptor(resource, handle, resource_sequence, slot)
 			}
-			WriteData::Image { handle, mip_level, .. } => {
-				self.write_native_image_descriptor(resource, handle, resource_sequence, None, mip_level, slot)
-			}
+			WriteData::Image {
+				handle,
+				mip_level,
+				array_layer,
+				..
+			} => self.write_native_image_descriptor(resource, handle, resource_sequence, array_layer, mip_level, slot),
 			WriteData::CombinedImageSampler { image_handle, .. } => {
 				self.write_native_image_descriptor(resource, image_handle, resource_sequence, None, None, slot)
 			}

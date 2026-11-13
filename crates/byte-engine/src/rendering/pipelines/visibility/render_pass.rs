@@ -236,6 +236,8 @@ pub(crate) struct FrameWork<'a> {
 	pub(crate) shadows: &'a ShadowMaps,
 	/// Builds the acceleration structures surfel GI or probe GI traces, in frames they light.
 	pub(crate) acceleration_structures: Option<AccelerationStructureWork<'a>>,
+	/// Brings the generated environment up to date before any ray reads it.
+	pub(crate) environment: Option<&'a crate::rendering::render_pass::SceneEnvironment>,
 }
 
 /// The `StageCounters` struct holds the GPU timing counters one sink's visibility pass records around each of its
@@ -984,6 +986,11 @@ impl VisibilityRenderPass {
 		// lost if this pass gave up on the frame after it. A background still compiling leaves the sky black for this
 		// frame instead of holding the scene back.
 		let background = background.and_then(|background| background.prepare(frame, sink, frame_allocator));
+		// The generated environment is prepared last for the same reason, and recorded first: surfel and probe rays and
+		// material evaluation all read it.
+		let environment = frame_work
+			.and_then(|work| work.environment)
+			.and_then(|environment| environment.prepare(frame, sink, frame_allocator));
 		let extent = sink.extent();
 		// Blended materials read the scene behind them only from the copy, so it runs only in frames that draw one.
 		let reads_backdrop = !dispatches.transparent.is_empty()
@@ -1003,6 +1010,9 @@ impl VisibilityRenderPass {
 			use ghi::command_buffer::CommonCommandBufferMode as _;
 
 			c.start_region(|label| label.write_str("Visibility Render Model"));
+			if let Some(environment) = environment {
+				environment(c);
+			}
 			if let Some((pass, pipeline)) = skinning {
 				c.counter(counters.skinning, |c| {
 					// New ranges get their UVs beside the positions and normals skinning writes, before any stage reads them.

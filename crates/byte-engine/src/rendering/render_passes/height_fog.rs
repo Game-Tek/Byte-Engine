@@ -152,9 +152,9 @@ impl PixelStep for ExponentialHeightFogRenderPass {
 		let Some(fog) = sink.fog() else {
 			return false;
 		};
-		let (sun_illuminance, sun_direction) = sink
-			.sun()
-			.map_or((Vec3f::new(0.0, 0.0, 0.0), None), |sun| (sun.illuminance, Some(sun.direction)));
+		let (sun_illuminance, sun_direction) = sink.sun().map_or((Vec3f::new(0.0, 0.0, 0.0), None), |sun| {
+			(sun.illuminance, Some(sun.direction))
+		});
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = fog_shader_data(&fog, sun_illuminance, sun_direction, sink);
 		true
 	}

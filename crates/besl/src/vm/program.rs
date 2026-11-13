@@ -36,6 +36,8 @@ pub struct ExecutionConfig {
 	max_mesh_primitive_count: u32,
 	max_task_mesh_output_count: u32,
 	thread_id: [u32; 2],
+	/// The invocation's third grid coordinate, which `thread_layer` reads.
+	thread_layer: u32,
 	thread_idx: u32,
 	thread_position: u32,
 	threadgroup_position: u32,
@@ -65,6 +67,7 @@ impl Default for ExecutionConfig {
 			max_mesh_primitive_count: 256,
 			max_task_mesh_output_count: 256,
 			thread_id: [0, 0],
+			thread_layer: 0,
 			thread_idx: 0,
 			thread_position: 0,
 			threadgroup_position: 0,
@@ -116,6 +119,11 @@ impl ExecutionConfig {
 	/// Returns the mesh or workgroup-local invocation index.
 	pub const fn thread_idx(&self) -> u32 {
 		self.thread_idx
+	}
+
+	/// Returns the invocation's third coordinate in the dispatched grid, such as the cube face it fills.
+	pub const fn thread_layer(&self) -> u32 {
+		self.thread_layer
 	}
 
 	/// Returns the task invocation's scalar position in the dispatched grid.
@@ -171,6 +179,12 @@ impl ExecutionConfig {
 	/// Selects the mesh or workgroup-local invocation index.
 	pub fn with_thread_idx(mut self, thread_idx: u32) -> Self {
 		self.thread_idx = thread_idx;
+		self
+	}
+
+	/// Selects the invocation's third coordinate in the dispatched grid.
+	pub fn with_thread_layer(mut self, layer: u32) -> Self {
+		self.thread_layer = layer;
 		self
 	}
 

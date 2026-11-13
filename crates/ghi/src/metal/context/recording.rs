@@ -321,12 +321,14 @@ impl Context {
 				handle,
 				layout,
 				mip_level,
+				array_layer,
 			} => {
 				let handle = self.images.nth_handle(handle, resource_frame_index)?;
 				Some(Descriptor::Image {
 					image: handle,
 					layout,
 					mip_level,
+					array_layer,
 				})
 			}
 			crate::descriptors::WriteData::CombinedImageSampler {

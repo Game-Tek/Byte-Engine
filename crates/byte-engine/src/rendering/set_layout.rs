@@ -33,6 +33,7 @@ pub(crate) static ENGINE_MODULES: &[(&str, &str)] = engine_modules![
 	"layouts/aces2_rec709_100nit.besl",
 	"layouts/acescct.besl",
 	"layouts/color.besl",
+	"layouts/environment_cube.besl",
 	"layouts/fog.besl",
 	"layouts/lut.besl",
 	"layouts/sky_parameters.besl",
@@ -228,12 +229,12 @@ impl SetBinder<'_> {
 		ghi::DescriptorWrite::image(self.set, self.slot(name), image, ghi::Layouts::General)
 	}
 
-	/// Binds one mip of a storage image.
 	/// Binds one element of an arrayed storage image, such as a debug target pool slot.
 	pub fn image_element(&self, name: &str, image: impl Into<ghi::BaseImageHandle>, index: u32) -> ghi::DescriptorWrite {
 		ghi::DescriptorWrite::image(self.set, self.slot(name), image, ghi::Layouts::General).with_array_element(index)
 	}
 
+	/// Binds one mip of a storage image.
 	pub fn image_mip(&self, name: &str, image: impl Into<ghi::BaseImageHandle>, mip_level: u32) -> ghi::DescriptorWrite {
 		ghi::DescriptorWrite::image_mip(self.set, self.slot(name), image, ghi::Layouts::General, mip_level)
 	}
@@ -433,12 +434,18 @@ pub fn create_sets(
 /// The most elements [`Resource::image_array`] binds, which is the most debug targets a sink's pool holds.
 pub const MAX_IMAGE_ARRAY_ELEMENTS: usize = 15;
 
+/// The faces of a cube image, in the native order (+X, −X, +Y, −Y, +Z, −Z), and the elements a
+/// [`Resource::cube_mip`] binding declares.
+pub const CUBE_FACES: u32 = 6;
+
 /// The `Resource` enum names one concrete resource for a BESL binding, for [`create_sets`] to bind by name.
 #[derive(Clone, Copy)]
 pub enum Resource {
 	Buffer(&'static str, ghi::BaseBufferHandle),
 	PlannedBuffer(&'static str, ghi::BaseBufferHandle),
 	Image(&'static str, ghi::ImageOrSwapchain),
+	/// One mip of a cube's six faces, element by element; see [`Resource::cube_mip`].
+	CubeMip(&'static str, ghi::BaseImageHandle, u32),
 	/// The first `count` images of an arrayed storage-image binding, element by element.
 	ImageArray(&'static str, [Option<ghi::BaseImageHandle>; MAX_IMAGE_ARRAY_ELEMENTS]),
 	CombinedImageSampler(&'static str, ghi::BaseImageHandle, ghi::SamplerHandle, ghi::Layouts),
@@ -457,6 +464,13 @@ impl Resource {
 	/// Binds a storage-image destination without exposing whether it is an image or swapchain.
 	pub fn image(name: &'static str, image: impl Into<ghi::ImageOrSwapchain>) -> Self {
 		Self::Image(name, image.into())
+	}
+
+	/// Binds mip `mip_level` of each face of the cube `image` to the element of the same index of a storage-image
+	/// binding of [`CUBE_FACES`] elements, so one dispatch fills a level of every face, picking the face by
+	/// `thread_layer`.
+	pub fn cube_mip(name: &'static str, image: impl Into<ghi::BaseImageHandle>, mip_level: u32) -> Self {
+		Self::CubeMip(name, image.into(), mip_level)
 	}
 
 	/// Binds `images` to the first elements of an arrayed storage-image binding, such as the debug target pool a
@@ -492,6 +506,7 @@ impl Resource {
 			Self::Buffer(name, ..)
 			| Self::PlannedBuffer(name, ..)
 			| Self::Image(name, ..)
+			| Self::CubeMip(name, ..)
 			| Self::ImageArray(name, ..)
 			| Self::CombinedImageSampler(name, ..) => name,
 		}
@@ -504,6 +519,8 @@ impl Resource {
 			(BindingKind::StorageImage | BindingKind::SampledImage, Self::ImageArray(_, images)) => {
 				count > 1 && images.iter().flatten().count() <= count as usize
 			}
+			// A storage image the shader only reads binds as a sampled image.
+			(BindingKind::StorageImage | BindingKind::SampledImage, Self::CubeMip(..)) => count == CUBE_FACES,
 			(BindingKind::StorageBuffer, Self::Buffer(..) | Self::PlannedBuffer(..))
 			// A texture whose sampler the shader fixes binds only its image.
 			| (
@@ -531,6 +548,14 @@ impl Resource {
 			}
 			Self::Image(_, ghi::ImageOrSwapchain::Swapchain(swapchain)) => {
 				writes.push(ghi::DescriptorWrite::swapchain(set, slot, swapchain));
+			}
+			Self::CubeMip(_, image, mip_level) => {
+				for face in 0..CUBE_FACES {
+					writes.push(
+						ghi::DescriptorWrite::image_layer_mip(set, slot, image, ghi::Layouts::General, face, mip_level)
+							.with_array_element(face),
+					);
+				}
 			}
 			Self::ImageArray(_, images) => {
 				for (element, image) in images.iter().enumerate() {

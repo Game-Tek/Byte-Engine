@@ -212,6 +212,80 @@ A change to the sky must keep these true:
 `haze_glows_around_the_sun` in `render_passes/sky.rs` guard the scaling and the
 glow.
 
+## The sky is the environment
+
+Surfel GI, probe GI, and material evaluation take the sky's light from the
+environment: rays that miss read its specular cube, and pixels read its
+irradiance cube. A scene lit by the atmosphere sky alone used to have no
+environment, so none of them saw any sky. `AtmosphereSkyEnvironment` in
+`render_passes/sky.rs` now generates one from the sky the camera sees, in the
+layout a baked environment has, so every reader works unchanged.
+
+It's a scene environment, a mechanism next to the scene background: the
+renderer builds it once from the factory `Renderer::set_scene_environment`
+registers, every scene pipeline takes it with
+`RenderPassBuilder::scene_environment`, and the visibility pipeline binds its
+maps through the same `EnvironmentState::bind` a baked map uses, until the
+scene creates an `Environment`.
+
+Each regeneration has these stages:
+
+1. Build its own atmosphere tables, the same transmittance, multiple-scattering,
+   and sky-view passes as the sky (Hillaire 2020), for the first sink's camera
+   height rounded to a meter, with the sun's unexposed illuminance.
+2. Capture: `sky-environment.besl` resamples the octahedral sky-view table into
+   level 0 of a 128-texel radiance cube, times the sunlight.
+3. `environment-downsample.besl` box-filters the radiance cube's levels, one
+   face and level at a time.
+4. `environment-prefilter.besl` writes the specular cube with the split-sum
+   prefilter for the Trowbridge-Reitz (GGX) lobe of Karis (*Real Shading in Unreal Engine 4*, 2013), and the
+   8 × 8 irradiance cube with cosine-weighted samples. Both read each sample at
+   the radiance level that filtered importance sampling (Křivánek and Colbert,
+   *Real-time Shading with Filtered Importance Sampling*, 2008) picks for its
+   solid angle.
+
+The prefilter is the offline bake's in `resource-management/src/ibl/cpu.rs`,
+ported: the same Hammersley points, α = roughness², level-of-detail rule, face
+orientation, and irradiance over π. The judgment calls that depart from it:
+
+- Each specular texel takes 64 samples and each irradiance texel 256, where
+  the bake takes 1,024. Filtered importance sampling reads each sample at the
+  level its solid angle covers, which keeps the result smooth with fewer.
+- The cubes are 128 texels wide, the smallest that holds the eight levels the
+  visibility loader requires of baked maps.
+- The camera height is rounded to a meter, so a camera that bobs doesn't
+  regenerate the environment every frame.
+- The sun's disk is left out, since the directional light already carries it.
+
+The environment's tables are separate from each sink's sky tables: they
+rebuild only when the haze changes and cost a few hundred microseconds then,
+so sharing them wasn't worth tying the sinks' passes to the environment's.
+
+The visibility pipeline records the environment first in the first sink's
+frame-wide work, before surfel and probe tracing, and prepares it last, after
+every step that can give up on the frame. A regeneration on the slate quarry at
+1024 × 1024 on an Apple M4 takes about 0.5 ms; steady frames record nothing.
+
+Each pass fills one level of all six faces in a single dispatch with a depth of
+six: the shader binds the level's faces as a six-element storage image array,
+`Resource::cube_mip`, and picks its face with `thread_layer`. Each element is a
+2D view of one layer, `DescriptorWrite::image_layer_mip`, which Vulkan and
+Metal support.
+DX12 doesn't yet: a 2D view of an array slice must be a one-slice array view,
+which the HLSL generator's `RWTexture2D` declarations can't take.
+
+A change to the sky environment must keep these true:
+
+- Its maps hold unexposed physical radiance, as baked maps do, and its
+  intensity is 1.
+- It regenerates before any of the frame's work that reads the environment.
+- Its face orientation matches `cubemap_texel_direction` in the offline bake.
+
+`sky_environment_holds_the_sky_view_light_times_the_sunlight`,
+`environment_downsample_averages_each_two_by_two_block`, and
+`uniform_environment_prefilters_to_itself` in `render_passes/sky.rs` guard the
+capture, the pyramid, and the prefilter's normalization.
+
 ## Shadow maps belong to the visibility pipeline
 
 The visibility pipeline selects, sizes, and updates the shadow maps lights cast.

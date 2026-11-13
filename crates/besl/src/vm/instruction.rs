@@ -494,6 +494,7 @@ pub(super) enum InvocationBuiltin {
 	ThreadIdx,
 	ThreadPosition,
 	ThreadId,
+	ThreadLayer,
 	ThreadgroupPosition,
 	SubgroupLaneIndex,
 	OutputExtent,
@@ -515,6 +516,7 @@ impl InvocationBuiltin {
 			InvocationBuiltin::ThreadIdx => "thread_idx",
 			InvocationBuiltin::ThreadPosition => "thread_position",
 			InvocationBuiltin::ThreadId => "thread_id",
+			InvocationBuiltin::ThreadLayer => "thread_layer",
 			InvocationBuiltin::ThreadgroupPosition => "threadgroup_position",
 			InvocationBuiltin::SubgroupLaneIndex => "subgroup_lane_index",
 			InvocationBuiltin::OutputExtent => "output_extent",
@@ -532,10 +534,11 @@ impl InvocationBuiltin {
 
 	/// Returns the builtin that a zero-argument intrinsic call named `name` reads, if it reads one.
 	pub(super) fn from_name(name: &str) -> Option<Self> {
-		const ALL: [InvocationBuiltin; 15] = [
+		const ALL: [InvocationBuiltin; 16] = [
 			InvocationBuiltin::ThreadIdx,
 			InvocationBuiltin::ThreadPosition,
 			InvocationBuiltin::ThreadId,
+			InvocationBuiltin::ThreadLayer,
 			InvocationBuiltin::ThreadgroupPosition,
 			InvocationBuiltin::SubgroupLaneIndex,
 			InvocationBuiltin::OutputExtent,

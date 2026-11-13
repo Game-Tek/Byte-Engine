@@ -432,8 +432,8 @@ impl RenderPass for BloomPass {
 	) -> Option<RenderPassReturn<'a>> {
 		let settings = self.controls.settings();
 		let extract_pass = self.extract_passes[usize::from(!settings.pixel_weights)].ready(frame)?;
-		let downsample_passes = ready_in(&mut self.downsample_passes, frame, frame_allocator)?;
-		let upsample_passes = ready_in(&mut self.upsample_passes, frame, frame_allocator)?;
+		let downsample_passes = simple_compute::ready_all(&mut self.downsample_passes, frame, frame_allocator)?;
+		let upsample_passes = simple_compute::ready_all(&mut self.upsample_passes, frame, frame_allocator)?;
 		let composite_pass = self.composite_pass.ready(frame)?;
 		let extent = sink.extent();
 
@@ -483,19 +483,6 @@ impl RenderPass for BloomPass {
 /// Returns the resolution divisor of a pyramid level: level 0 is half the sink resolution.
 fn level_divisor(level: usize) -> u32 {
 	2 << level
-}
-
-/// Readies every pass into the frame allocator, or returns `None` while any of their pipelines is unavailable.
-fn ready_in<'a>(
-	passes: &mut [simple_compute::Pass],
-	frame: &mut ghi::implementation::Frame,
-	frame_allocator: &'a bumpalo::Bump,
-) -> Option<&'a [simple_compute::ReadyPass]> {
-	let mut ready = bumpalo::collections::Vec::with_capacity_in(passes.len(), frame_allocator);
-	for pass in passes {
-		ready.push(pass.ready(frame)?);
-	}
-	Some(ready.into_bump_slice())
 }
 
 /// Returns the extent of a pyramid level, matching the size the renderer gives its render target.

@@ -786,6 +786,53 @@ fn executable_program_writes_through_an_indexed_storage_image_array() {
 }
 
 #[test]
+fn thread_layer_reads_the_invocation_third_grid_coordinate() {
+	let script = r#"
+	main: fn () -> void {
+		write(images[thread_layer()], vec2u(0, 0), vec4f(0.25, 0.5, 0.75, 1.0));
+	}
+	"#;
+
+	let mut root = Node::root();
+	root.add_child(
+		Node::binding_array(
+			"images",
+			BindingTypes::Image {
+				format: Some("rgba8".to_string()),
+			},
+			0,
+			false,
+			true,
+			2,
+		)
+		.into(),
+	);
+	let executable = compile_test_program(script, Some(root));
+	let mut images = [
+		Texture::new(1, 1).expect("Expected texture allocation"),
+		Texture::new(1, 1).expect("Expected texture allocation"),
+	];
+	{
+		let mut descriptors = DescriptorBindings::new();
+		for (element, image) in images.iter_mut().enumerate() {
+			descriptors.bind_image(ResourceSlot::new(element as u32), image);
+		}
+		executable
+			.run_main_with_config(&mut descriptors, &ExecutionConfig::default().with_thread_layer(1))
+			.expect("Expected execution to succeed");
+	}
+
+	assert_eq!(
+		images[1].fetch([0, 0]).expect("Expected image fetch"),
+		Value::Vec4F([0.25, 0.5, 0.75, 1.0])
+	);
+	assert_ne!(
+		images[0].fetch([0, 0]).expect("Expected image fetch"),
+		Value::Vec4F([0.25, 0.5, 0.75, 1.0])
+	);
+}
+
+#[test]
 fn executable_program_writes_a_pixel_to_a_bound_image() {
 	let script = r#"
 	main: fn () -> void {

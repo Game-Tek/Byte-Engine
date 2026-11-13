@@ -518,9 +518,12 @@ impl Device {
 					);
 				}
 			}
-			WriteData::Image { handle, mip_level, .. } => {
-				self.validate_image_descriptor_resource(shader_resource, handle, None, mip_level)
-			}
+			WriteData::Image {
+				handle,
+				mip_level,
+				array_layer,
+				..
+			} => self.validate_image_descriptor_resource(shader_resource, handle, array_layer, mip_level),
 			WriteData::CombinedImageSampler { image_handle, .. } => {
 				self.validate_image_descriptor_resource(shader_resource, image_handle, None, None)
 			}

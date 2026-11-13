@@ -161,22 +161,22 @@ struct SkyShaderData {
 	sun_disk_radiance: [f32; 4],
 }
 
-/// The `AtmosphereSkyRenderPass` struct fills scene color with an atmosphere wherever opaque depth remains at infinity.
+/// The `AtmosphereTables` struct holds the lookup tables one view of the atmosphere reads: the transmittance and
+/// multiple-scattering tables, which depend on the air alone, and the sky-view table, which depends on where the view
+/// stands and where the sun is. Each user rebuilds them only when their inputs change.
 ///
-/// It is a scene background: scene pipelines record it after opaque surfaces and before transparent ones, so
-/// transparent surfaces composite over the sky and scene color needs no coverage channel.
-pub struct AtmosphereSkyRenderPass {
+/// The sky pass keeps one for its sink's camera, and the sky environment one for the view it captures.
+struct AtmosphereTables {
 	transmittance_pass: simple_compute::Pass,
 	multiple_scattering_pass: simple_compute::Pass,
 	sky_view_pass: simple_compute::Pass,
-	composite_pass: simple_compute::Pass,
-	/// The GPU counters of the transmittance, multiple scattering, sky view, and composite stages, reported as
-	/// `stage.sky-<stage>`.
-	counters: [ghi::CounterHandle; 4],
+	transmittance_lut: ghi::ImageHandle,
+	sky_view_lut: ghi::ImageHandle,
+	sampler: ghi::SamplerHandle,
+	/// The constants every table pass reads, and the user's own passes with them; the user uploads them each frame.
 	parameters: ghi::DynamicBufferHandle<SkyShaderData>,
-	controls: Rc<AtmosphereSkyControls>,
-	/// The settings the lookup tables were last built for.
-	settings: AtmosphereSkyRenderPassSettings,
+	/// The GPU counters of the transmittance, multiple scattering, and sky view stages.
+	counters: [ghi::CounterHandle; 3],
 	/// The haze the transmittance and multiple-scattering tables were built for, or `None` before their first build.
 	tables_haze: Option<f32>,
 	/// The camera height, as bits, and the direction toward the sun that the sky-view table was built for, or `None`
@@ -184,46 +184,39 @@ pub struct AtmosphereSkyRenderPass {
 	sky_view_key: Option<(u32, [f32; 3])>,
 }
 
-impl Entity for AtmosphereSkyRenderPass {}
+/// The `ReadyTables` struct is one frame's recording state for [`AtmosphereTables`]: the compiled passes and which
+/// tables the frame rebuilds.
+#[derive(Clone, Copy)]
+struct ReadyTables {
+	transmittance_pass: simple_compute::ReadyPass,
+	multiple_scattering_pass: simple_compute::ReadyPass,
+	sky_view_pass: simple_compute::ReadyPass,
+	counters: [ghi::CounterHandle; 3],
+	rebuild_transmittance: bool,
+	rebuild_sky_view: bool,
+}
 
-impl AtmosphereSkyRenderPass {
-	/// Creates a sky pass that draws with the settings `controls` holds.
-	///
-	/// The sky's sun is the sink's [`Sun`], the scene's newest directional light: its illuminance sets the sky's
-	/// brightness and color, and its transform sets the sun's direction. That illuminance is the sunlight that reaches
-	/// the camera, as it is for the surfaces the light shines on, so author it as measured on the ground: dimmer and
-	/// warmer as the sun gets low. Without a directional light, the sky stays black. The sky writes `targets.color` in place wherever
-	/// `targets.depth` holds no surface, within the top [`AtmosphereSkyRenderPassSettings::screen_height`] of the
-	/// screen, and leaves every other pixel untouched.
-	pub fn new(
-		render_pass_builder: &mut RenderPassBuilder,
-		targets: SceneBackgroundTargets,
-		controls: Rc<AtmosphereSkyControls>,
-	) -> Self {
-		let SceneBackgroundTargets { color, depth } = targets;
-		let [
-			transmittance_pipeline,
-			multiple_scattering_pipeline,
-			sky_view_pipeline,
-			composite_pipeline,
-		] = [
+impl AtmosphereTables {
+	/// Creates the tables, with a constants buffer named `parameters_name`, and names their counters
+	/// `stage.<counter_prefix>-<table>`.
+	fn new(render_pass_builder: &mut RenderPassBuilder, parameters_name: &str, counter_prefix: &str) -> Self {
+		let [transmittance_pipeline, multiple_scattering_pipeline, sky_view_pipeline] = [
 			("Sky Transmittance LUT", "byte_engine/rendering/sky-transmittance.pipeline"),
 			(
 				"Sky Multiple Scattering LUT",
 				"byte_engine/rendering/sky-multiple-scattering.pipeline",
 			),
 			("Sky View LUT", "byte_engine/rendering/sky-view.pipeline"),
-			("Sky Composite", "byte_engine/rendering/sky.pipeline"),
 		]
 		.map(|(label, pipeline_id)| {
 			simple_compute::Pipeline::compile(render_pass_builder, simple_compute::Descriptor::new(label, pipeline_id))
 		});
-		let counters = ["sky-transmittance", "sky-multiple-scattering", "sky-view", "sky-composite"]
-			.map(|name| render_pass_builder.create_gpu_counter(name));
+		let counters = ["transmittance", "multiple-scattering", "view"]
+			.map(|name| render_pass_builder.create_gpu_counter(&format!("{counter_prefix}-{name}")));
 		let context = render_pass_builder.context();
 		let parameters = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Sky Render Pass Parameters")
+				.name(parameters_name)
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 		let [transmittance_lut, multiple_scattering_lut, sky_view_lut] = [
@@ -240,7 +233,7 @@ impl AtmosphereSkyRenderPass {
 			)
 		});
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
-		// The multiple-scattering, sky-view, and composite passes all sample the transmittance LUT.
+		// The multiple-scattering and sky-view passes, and the sky's composite, sample the transmittance LUT.
 		let transmittance = simple_compute::Resource::combined_image_sampler(
 			"transmittance_lut",
 			transmittance_lut,
@@ -276,28 +269,145 @@ impl AtmosphereSkyRenderPass {
 				),
 			],
 		);
+		Self {
+			transmittance_pass,
+			multiple_scattering_pass,
+			sky_view_pass,
+			transmittance_lut,
+			sky_view_lut,
+			sampler,
+			parameters,
+			counters,
+			tables_haze: None,
+			sky_view_key: None,
+		}
+	}
+
+	/// Returns the passes for a frame whose air holds `haze` and whose sky-view table is for `data`, and which of the
+	/// tables the frame rebuilds, or `None` while a table's pipeline compiles.
+	///
+	/// Horizontal movement leaves the camera-to-planet vector nearly unchanged at Earth's scale, so only the camera's
+	/// height and the sun's direction rebuild the sky-view table. A change of haze rebuilds every table.
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, haze: f32, data: &SkyShaderData) -> Option<ReadyTables> {
+		let transmittance_pass = self.transmittance_pass.ready(frame)?;
+		let multiple_scattering_pass = self.multiple_scattering_pass.ready(frame)?;
+		let sky_view_pass = self.sky_view_pass.ready(frame)?;
+		let sky_view_key = (
+			data.camera_position[1].to_bits(),
+			[data.sun_direction[0], data.sun_direction[1], data.sun_direction[2]],
+		);
+		let rebuild_transmittance = self.tables_haze != Some(haze);
+		let rebuild_sky_view = rebuild_transmittance || self.sky_view_key != Some(sky_view_key);
+		self.tables_haze = Some(haze);
+		self.sky_view_key = Some(sky_view_key);
+		Some(ReadyTables {
+			transmittance_pass,
+			multiple_scattering_pass,
+			sky_view_pass,
+			counters: self.counters,
+			rebuild_transmittance,
+			rebuild_sky_view,
+		})
+	}
+}
+
+impl ReadyTables {
+	/// Records the rebuilds this frame needs. A table times itself only in frames that rebuild it, so a cached table
+	/// reports no time.
+	fn record(&self, command_buffer: &mut ghi::implementation::CommandBufferRecording) {
+		let [transmittance_counter, multiple_scattering_counter, sky_view_counter] = self.counters;
+		// Multiple scattering reads the transmittance LUT and depends only on the atmosphere, so both rebuild together.
+		if self.rebuild_transmittance {
+			command_buffer.counter(transmittance_counter, |command_buffer| {
+				self.transmittance_pass.record(command_buffer, TRANSMITTANCE_LUT_EXTENT)
+			});
+			command_buffer.counter(multiple_scattering_counter, |command_buffer| {
+				self.multiple_scattering_pass
+					.record(command_buffer, MULTIPLE_SCATTERING_LUT_EXTENT)
+			});
+		}
+		if self.rebuild_sky_view {
+			command_buffer.counter(sky_view_counter, |command_buffer| {
+				self.sky_view_pass.record(command_buffer, SKY_VIEW_LUT_EXTENT)
+			});
+		}
+	}
+}
+
+/// Returns the sink's sun, or a dark one when the scene has no directional light, which leaves the sky black whatever
+/// direction the tables take.
+fn sink_sun(sink: &Sink) -> Sun {
+	sink.sun().unwrap_or(Sun {
+		illuminance: Vec3f::new(0.0, 0.0, 0.0),
+		angular_radius: DirectionalLight::SUN_ANGULAR_RADIUS,
+		direction: UnitVector::z_axis(),
+	})
+}
+
+/// The `AtmosphereSkyRenderPass` struct fills scene color with an atmosphere wherever opaque depth remains at infinity.
+///
+/// It is a scene background: scene pipelines record it after opaque surfaces and before transparent ones, so
+/// transparent surfaces composite over the sky and scene color needs no coverage channel.
+pub struct AtmosphereSkyRenderPass {
+	tables: AtmosphereTables,
+	composite_pass: simple_compute::Pass,
+	/// The GPU counter of the composite, reported as `stage.sky-composite`.
+	composite_counter: ghi::CounterHandle,
+	controls: Rc<AtmosphereSkyControls>,
+	settings: AtmosphereSkyRenderPassSettings,
+}
+
+impl Entity for AtmosphereSkyRenderPass {}
+
+impl AtmosphereSkyRenderPass {
+	/// Creates a sky pass that draws with the settings `controls` holds.
+	///
+	/// The sky's sun is the sink's [`Sun`], the scene's newest directional light: its illuminance sets the sky's
+	/// brightness and color, and its transform sets the sun's direction. That illuminance is the sunlight that reaches
+	/// the camera, as it is for the surfaces the light shines on, so author it as measured on the ground: dimmer and
+	/// warmer as the sun gets low. Without a directional light, the sky stays black. The sky writes `targets.color` in
+	/// place wherever `targets.depth` holds no surface, within the top
+	/// [`AtmosphereSkyRenderPassSettings::screen_height`] of the screen, and leaves every other pixel untouched.
+	pub fn new(
+		render_pass_builder: &mut RenderPassBuilder,
+		targets: SceneBackgroundTargets,
+		controls: Rc<AtmosphereSkyControls>,
+	) -> Self {
+		let SceneBackgroundTargets { color, depth } = targets;
+		let composite_pipeline = simple_compute::Pipeline::compile(
+			render_pass_builder,
+			simple_compute::Descriptor::new("Sky Composite", "byte_engine/rendering/sky.pipeline"),
+		);
+		let composite_counter = render_pass_builder.create_gpu_counter("sky-composite");
+		let tables = AtmosphereTables::new(render_pass_builder, "Sky Render Pass Parameters", "sky");
+		let (sampler, parameters) = (tables.sampler, tables.parameters);
 		let composite_pass = composite_pipeline.bind(
 			"Sky Render Pass Descriptor Set",
 			&[
 				simple_compute::Resource::combined_image_sampler("depth_texture", depth, sampler, ghi::Layouts::Read),
 				simple_compute::Resource::image("result", color),
-				simple_compute::Resource::combined_image_sampler("sky_view_lut", sky_view_lut, sampler, ghi::Layouts::Read),
-				transmittance,
+				simple_compute::Resource::combined_image_sampler(
+					"sky_view_lut",
+					tables.sky_view_lut,
+					sampler,
+					ghi::Layouts::Read,
+				),
+				simple_compute::Resource::combined_image_sampler(
+					"transmittance_lut",
+					tables.transmittance_lut,
+					sampler,
+					ghi::Layouts::Read,
+				),
 				simple_compute::Resource::buffer("parameters", parameters),
 			],
 		);
 
 		Self {
-			transmittance_pass,
-			multiple_scattering_pass,
-			sky_view_pass,
+			tables,
 			composite_pass,
-			counters,
-			parameters,
+			composite_counter,
 			settings: controls.settings(),
 			controls,
-			tables_haze: None,
-			sky_view_key: None,
 		}
 	}
 }
@@ -317,11 +427,7 @@ fn haze_transport_scale(anisotropy: f32) -> f32 {
 ///
 /// The sky is written pre-exposed like the scene: the shaders multiply by the uploaded illuminance and disk radiance,
 /// so both include the sink's camera exposure.
-fn sky_shader_data(
-	settings: &AtmosphereSkyRenderPassSettings,
-	sun: &Sun,
-	sink: &Sink,
-) -> SkyShaderData {
+fn sky_shader_data(settings: &AtmosphereSkyRenderPassSettings, sun: &Sun, sink: &Sink) -> SkyShaderData {
 	let Sun {
 		illuminance: sun_illuminance,
 		angular_radius: sun_angular_radius,
@@ -382,65 +488,255 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		self.settings.haze = self.controls.settings().haze;
-		let transmittance_pass = self.transmittance_pass.ready(frame)?;
-		let multiple_scattering_pass = self.multiple_scattering_pass.ready(frame)?;
-		let sky_view_pass = self.sky_view_pass.ready(frame)?;
 		let composite_pass = self.composite_pass.ready(frame)?;
 		// Per-view sky constants come from the active camera before dispatch.
-		// Without a sun the sky gets no light, so it stays black whatever direction the tables take.
-		let sun = sink.sun().unwrap_or(Sun {
-			illuminance: Vec3f::new(0.0, 0.0, 0.0),
-			angular_radius: DirectionalLight::SUN_ANGULAR_RADIUS,
-			direction: UnitVector::z_axis(),
-		});
-		let data = sky_shader_data(&self.settings, &sun, sink);
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = data;
-		// Horizontal movement leaves the camera-to-planet vector unchanged because the planet center follows the camera
-		// in X/Z, so only the camera's height and the sun's direction rebuild the sky-view table.
-		let sky_view_key = (
-			data.camera_position[1].to_bits(),
-			[sun.direction.x(), sun.direction.y(), sun.direction.z()],
-		);
-		// Haze changes how the air dims and scatters light, so a new amount rebuilds every table.
-		let rebuild_transmittance = self.tables_haze != Some(self.settings.haze);
-		let rebuild_sky_view = rebuild_transmittance || self.sky_view_key != Some(sky_view_key);
-		self.tables_haze = Some(self.settings.haze);
-		self.sky_view_key = Some(sky_view_key);
-
+		let data = sky_shader_data(&self.settings, &sink_sun(sink), sink);
+		let tables = self.tables.prepare(frame, self.settings.haze, &data)?;
+		*frame.get_mut_dynamic_buffer_slice(self.tables.parameters) = data;
 		let composite_extent = sky_composite_extent(sink.extent(), self.settings.screen_height);
-		let [
-			transmittance_counter,
-			multiple_scattering_counter,
-			sky_view_counter,
-			composite_counter,
-		] = self.counters;
+		let composite_counter = self.composite_counter;
 
 		Some(allocate_render_command(frame_allocator, move |command_buffer| {
 			command_buffer.region(
 				|label| label.write_str("Sky"),
 				|command_buffer| {
-					// Multiple scattering reads the transmittance LUT and only depends on the atmosphere, not on the sun's
-					// angle, so both rebuild together. A lookup table times itself only in frames that rebuild it, so a
-					// cached table reports no time.
-					if rebuild_transmittance {
-						command_buffer.counter(transmittance_counter, |command_buffer| {
-							transmittance_pass.record(command_buffer, TRANSMITTANCE_LUT_EXTENT)
-						});
-						command_buffer.counter(multiple_scattering_counter, |command_buffer| {
-							multiple_scattering_pass.record(command_buffer, MULTIPLE_SCATTERING_LUT_EXTENT)
-						});
-					}
-					if rebuild_sky_view {
-						command_buffer.counter(sky_view_counter, |command_buffer| {
-							sky_view_pass.record(command_buffer, SKY_VIEW_LUT_EXTENT)
-						});
-					}
+					tables.record(command_buffer);
 					// A sky that covers no rows dispatches nothing.
 					if composite_extent.height() > 0 {
 						command_buffer.counter(composite_counter, |command_buffer| {
 							composite_pass.record(command_buffer, composite_extent)
 						});
 					}
+				},
+			);
+		}))
+	}
+}
+
+use crate::rendering::set_layout::CUBE_FACES;
+
+/// The face size, in texels, of the sky environment's radiance and specular cubes: the smallest that holds the eight
+/// specular levels the visibility pipeline reads, one per roughness step of 1/7.
+const SKY_ENVIRONMENT_FACE_SIZE: u32 = 128;
+/// The specular cube's levels, and the radiance cube's, which the prefilter reads: as many as a baked environment has.
+const SKY_ENVIRONMENT_LEVELS: u32 = crate::rendering::pipelines::visibility::loader::IBL_SPECULAR_LEVEL_COUNT as u32;
+/// The face size of the irradiance cube, as the offline bake makes it.
+const SKY_ENVIRONMENT_IRRADIANCE_FACE_SIZE: u32 = 8;
+/// The Hammersley samples each specular texel takes, and each irradiance texel. The offline bake takes 1,024; filtered
+/// importance sampling reads each sample from the pyramid level its solid angle covers, which keeps fewer smooth.
+const SKY_ENVIRONMENT_SPECULAR_SAMPLES: u32 = 64;
+const SKY_ENVIRONMENT_DIFFUSE_SAMPLES: u32 = 256;
+
+/// The push constant the prefilter shader takes: the level a dispatch fills on every face, the mode, `0` for specular
+/// and `1` for irradiance, and the samples per texel.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct EnvironmentDispatch {
+	level: u32,
+	mode: u32,
+	sample_count: u32,
+}
+
+/// The `AtmosphereSkyEnvironment` struct generates the scene's environment from the atmosphere sky, so global
+/// illumination, reflections, and every other user of the environment see the sky the camera sees.
+///
+/// [`crate::application::graphics::setup_atmosphere_sky_render_pass`] registers it with
+/// [`crate::rendering::Renderer::set_scene_environment`]; scene pipelines light with it while the scene selects no
+/// [`crate::rendering::Environment`]. It captures the sky from the first sink's camera height into a radiance cube, in
+/// unexposed physical units and without the sun's disk, then prefilters it into the layout a baked environment has. It
+/// does all of that in a frame where the sun, the haze, or that height changes, and nothing in the frames between.
+pub struct AtmosphereSkyEnvironment {
+	tables: AtmosphereTables,
+	controls: Rc<AtmosphereSkyControls>,
+	settings: AtmosphereSkyRenderPassSettings,
+	/// Fills level 0 of the radiance cube. Each pass fills a level of all six faces in one dispatch, a face per
+	/// `thread_layer`.
+	capture: simple_compute::Pass,
+	/// One pass per radiance level after the first, by `level - 1`.
+	downsample: [simple_compute::Pass; SKY_ENVIRONMENT_LEVELS as usize - 1],
+	/// One pass per specular level.
+	specular: [simple_compute::Pass; SKY_ENVIRONMENT_LEVELS as usize],
+	/// Fills the irradiance cube.
+	diffuse: simple_compute::Pass,
+	/// The GPU counters of the capture, with its downsampling, and of the prefilter.
+	counters: [ghi::CounterHandle; 2],
+	/// The camera height, the sun's direction and illuminance, and the haze, as bits, that the maps hold, or `None`
+	/// before their first build.
+	key: Option<(u32, [u32; 3], [u32; 3], u32)>,
+}
+
+impl Entity for AtmosphereSkyEnvironment {}
+
+impl AtmosphereSkyEnvironment {
+	/// Creates the sky environment that draws with the settings `controls` holds, as a scene environment.
+	pub fn scene_environment(
+		render_pass_builder: &mut RenderPassBuilder,
+		controls: Rc<AtmosphereSkyControls>,
+	) -> crate::rendering::render_pass::SceneEnvironment {
+		let tables = AtmosphereTables::new(render_pass_builder, "Sky Environment Parameters", "sky-environment");
+		let [capture_pipeline, downsample_pipeline, prefilter_pipeline] = [
+			("Sky Environment Capture", "byte_engine/rendering/sky-environment.pipeline"),
+			(
+				"Environment Downsample",
+				"byte_engine/rendering/environment-downsample.pipeline",
+			),
+			(
+				"Environment Prefilter",
+				"byte_engine/rendering/environment-prefilter.pipeline",
+			),
+		]
+		.map(|(label, pipeline_id)| {
+			simple_compute::Pipeline::compile(render_pass_builder, simple_compute::Descriptor::new(label, pipeline_id))
+		});
+		let counters =
+			["sky-environment-capture", "sky-environment-prefilter"].map(|name| render_pass_builder.create_gpu_counter(name));
+		let context = render_pass_builder.context();
+		let mut cube = |name: &str, size: u32, levels: u32| {
+			context.build_image(
+				ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image | ghi::Uses::Storage)
+					.name(name)
+					.extent(Extent::square(size))
+					.mip_levels(levels)
+					.cube_compatible()
+					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+			)
+		};
+		let radiance = cube("Sky Environment Radiance", SKY_ENVIRONMENT_FACE_SIZE, SKY_ENVIRONMENT_LEVELS);
+		let specular = cube("Sky Environment Specular", SKY_ENVIRONMENT_FACE_SIZE, SKY_ENVIRONMENT_LEVELS);
+		let irradiance = cube("Sky Environment Irradiance", SKY_ENVIRONMENT_IRRADIANCE_FACE_SIZE, 1);
+		// The prefilter reads every radiance level.
+		let sampler = context.build_sampler(ghi::sampler::Builder::new().max_lod((SKY_ENVIRONMENT_LEVELS - 1) as f32));
+		let radiance_texture =
+			simple_compute::Resource::combined_image_sampler("radiance", radiance, sampler, ghi::Layouts::Read);
+
+		let capture = capture_pipeline.bind(
+			"Sky Environment Capture Descriptor Set",
+			&[
+				simple_compute::Resource::combined_image_sampler(
+					"sky_view_lut",
+					tables.sky_view_lut,
+					tables.sampler,
+					ghi::Layouts::Read,
+				),
+				simple_compute::Resource::buffer("parameters", tables.parameters),
+				simple_compute::Resource::cube_mip("result", radiance, 0),
+			],
+		);
+		let downsample = std::array::from_fn(|index| {
+			let level = index as u32 + 1;
+			downsample_pipeline.bind(
+				"Environment Downsample Descriptor Set",
+				&[
+					simple_compute::Resource::cube_mip("source", radiance, level - 1),
+					simple_compute::Resource::cube_mip("result", radiance, level),
+				],
+			)
+		});
+		let specular_passes = std::array::from_fn(|level| {
+			prefilter_pipeline.bind(
+				"Environment Prefilter Descriptor Set",
+				&[
+					radiance_texture,
+					simple_compute::Resource::cube_mip("result", specular, level as u32),
+				],
+			)
+		});
+		let diffuse = prefilter_pipeline.bind(
+			"Environment Prefilter Descriptor Set",
+			&[radiance_texture, simple_compute::Resource::cube_mip("result", irradiance, 0)],
+		);
+
+		let environment = Self {
+			tables,
+			settings: controls.settings(),
+			controls,
+			capture,
+			downsample,
+			specular: specular_passes,
+			diffuse,
+			counters,
+			key: None,
+		};
+		crate::rendering::render_pass::SceneEnvironment::new(
+			render_pass_builder,
+			utils::Box::new(environment),
+			irradiance,
+			specular,
+		)
+	}
+}
+
+impl RenderPass for AtmosphereSkyEnvironment {
+	fn name(&self) -> &'static str {
+		"atmosphere sky environment"
+	}
+
+	/// Prepares the capture and prefilter in a frame whose inputs differ from those the maps hold, and nothing otherwise.
+	fn prepare<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		self.settings.haze = self.controls.settings().haze;
+		let sun = sink_sun(sink);
+		// The environment holds physical light, as a baked one does: its readers apply the exposure.
+		let mut data = sky_shader_data(&self.settings, &sun, &sink.with_exposure_scale(1.0));
+		// The sky barely changes over a meter of height, so the capture follows the camera in whole meters and a camera
+		// that bobs doesn't regenerate the environment every frame.
+		data.camera_position[1] = data.camera_position[1].round();
+		let key = (
+			data.camera_position[1].to_bits(),
+			[data.sun_direction[0], data.sun_direction[1], data.sun_direction[2]].map(f32::to_bits),
+			[data.sun_illuminance[0], data.sun_illuminance[1], data.sun_illuminance[2]].map(f32::to_bits),
+			self.settings.haze.to_bits(),
+		);
+		if self.key == Some(key) {
+			return None;
+		}
+		let capture = self.capture.ready(frame)?;
+		let downsample = simple_compute::ready_all(&mut self.downsample, frame, frame_allocator)?;
+		let specular = simple_compute::ready_all(&mut self.specular, frame, frame_allocator)?;
+		let diffuse = self.diffuse.ready(frame)?;
+		let tables = self.tables.prepare(frame, self.settings.haze, &data)?;
+		*frame.get_mut_dynamic_buffer_slice(self.tables.parameters) = data;
+		self.key = Some(key);
+		let [capture_counter, prefilter_counter] = self.counters;
+
+		Some(allocate_render_command(frame_allocator, move |command_buffer| {
+			command_buffer.region(
+				|label| label.write_str("Sky Environment"),
+				|command_buffer| {
+					tables.record(command_buffer);
+					// Each dispatch fills a level of all six faces, a face per layer of its grid.
+					let faces = |size: u32| Extent::new(size, size, CUBE_FACES);
+					command_buffer.counter(capture_counter, |command_buffer| {
+						capture.record(command_buffer, faces(SKY_ENVIRONMENT_FACE_SIZE));
+						// Each level averages the one above it, so the levels build in order.
+						for (index, pass) in downsample.iter().enumerate() {
+							pass.record(command_buffer, faces(SKY_ENVIRONMENT_FACE_SIZE >> (index + 1)));
+						}
+					});
+					command_buffer.counter(prefilter_counter, |command_buffer| {
+						for (level, pass) in specular.iter().enumerate() {
+							let dispatch = EnvironmentDispatch {
+								level: level as u32,
+								mode: 0,
+								sample_count: SKY_ENVIRONMENT_SPECULAR_SAMPLES,
+							};
+							pass.record_with_push_constant(command_buffer, faces(SKY_ENVIRONMENT_FACE_SIZE >> level), dispatch);
+						}
+						let dispatch = EnvironmentDispatch {
+							level: 0,
+							mode: 1,
+							sample_count: SKY_ENVIRONMENT_DIFFUSE_SAMPLES,
+						};
+						diffuse.record_with_push_constant(
+							command_buffer,
+							faces(SKY_ENVIRONMENT_IRRADIANCE_FACE_SIZE),
+							dispatch,
+						);
+					});
 				},
 			);
 		}))
@@ -814,7 +1110,14 @@ mod tests {
 		let radius = crate::rendering::DirectionalLight::SUN_ANGULAR_RADIUS.value();
 		let radiance = super::sun_disk_radiance(Vec3f::new(illuminance[0], illuminance[1], illuminance[2]), radius);
 
-		let disk = composite(&settings, UnitVector::z_axis(), [0.0, 0.0, 0.0, 1.0], [0.5, 0.25, 0.125], illuminance, 1.0);
+		let disk = composite(
+			&settings,
+			UnitVector::z_axis(),
+			[0.0, 0.0, 0.0, 1.0],
+			[0.5, 0.25, 0.125],
+			illuminance,
+			1.0,
+		);
 
 		assert_rgba_close(disk, [radiance.x, radiance.y, radiance.z, 1.0], 1e-2);
 	}
@@ -846,6 +1149,140 @@ mod tests {
 		assert_eq!(super::sky_composite_extent(extent, 1.0), extent);
 		assert_eq!(super::sky_composite_extent(extent, 2.0), extent);
 		assert_eq!(super::sky_composite_extent(extent, 0.0).height(), 0);
+	}
+
+	static SKY_ENVIRONMENT_SHADER_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("sky-environment.besl"));
+	static ENVIRONMENT_DOWNSAMPLE_SHADER_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("environment-downsample.besl"));
+	static ENVIRONMENT_PREFILTER_SHADER_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("environment-prefilter.besl"));
+
+	/// Verifies that the sky environment holds the sky's light: the sky-view LUT's light per lux in a texel's
+	/// direction, times the sunlight, unexposed.
+	#[test]
+	fn sky_environment_holds_the_sky_view_light_times_the_sunlight() {
+		let program =
+			crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*SKY_ENVIRONMENT_SHADER_BESL));
+		let parameter_slot = slot(&program, "parameters");
+		let mut parameters = sky_parameters(
+			&program,
+			parameter_slot,
+			&Default::default(),
+			test_sun([400.0, 200.0, 100.0], test_sun_direction()),
+			1.0,
+		);
+		// One texel, so every direction reads it.
+		let mut sky_view = texture_2d(1, 1, &[[0.02, 0.03, 0.04, 1.0]]);
+		let mut result = empty_image(2, 2);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture(slot(&program, "sky_view_lut"), &mut sky_view);
+		descriptors.bind_buffer(parameter_slot, &mut parameters);
+		descriptors.bind_image(slot(&program, "result").offset(2), &mut result);
+		run_on_face(&program, &mut descriptors, [1, 0], 2);
+		drop(descriptors);
+
+		assert_rgba_close(rgba(&result, [1, 0]), [8.0, 6.0, 4.0, 1.0], 1e-3);
+	}
+
+	/// Verifies that the environment shaders, which index six-face storage arrays by `thread_layer`, compile with the
+	/// platform's shader compiler, since a mismatch between grid coordinate widths only surfaces there.
+	#[cfg(target_os = "macos")]
+	#[compio::test]
+	async fn environment_programs_lower_to_the_platform_shader_language() {
+		use resource_management::shader::ShaderGenerationSettings;
+		use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+
+		for (name, source) in [
+			("sky_environment", *SKY_ENVIRONMENT_SHADER_BESL),
+			("environment_downsample", *ENVIRONMENT_DOWNSAMPLE_SHADER_BESL),
+			("environment_prefilter", *ENVIRONMENT_PREFILTER_SHADER_BESL),
+		] {
+			let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
+			root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
+			let root = besl::lex(root).expect("environment shader should link");
+			let settings = ShaderGenerationSettings::compute(utils::Extent::rectangle(8, 8)).name(name.to_string());
+			PlatformShaderCompiler::new()
+				.generate(&settings, &root)
+				.await
+				.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error}"));
+		}
+	}
+
+	/// Runs `program` at `texel` of cube face `face`, the dispatch's `thread_layer`.
+	fn run_on_face(
+		program: &besl::vm::ExecutableProgram,
+		descriptors: &mut DescriptorBindings<'_>,
+		texel: [u32; 2],
+		face: u32,
+	) {
+		let config = crate::rendering::shader_vm_test::lane_config(0)
+			.with_thread_id(texel)
+			.with_thread_layer(face);
+		program
+			.run_main_with_config(descriptors, &config)
+			.expect("Failed to run an environment shader in the BESL VM. The most likely cause is an unbound face.");
+	}
+
+	/// Verifies that each level of the radiance pyramid is the plain average of the 2 × 2 texels above it.
+	#[test]
+	fn environment_downsample_averages_each_two_by_two_block() {
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(
+			*ENVIRONMENT_DOWNSAMPLE_SHADER_BESL,
+		));
+		let mut source = texture_2d(
+			2,
+			2,
+			&[
+				[1.0, 0.0, 4.0, 1.0],
+				[3.0, 2.0, 0.0, 1.0],
+				[0.0, 4.0, 8.0, 1.0],
+				[4.0, 6.0, 0.0, 1.0],
+			],
+		);
+		let mut result = empty_image(1, 1);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_image(slot(&program, "source").offset(3), &mut source);
+		descriptors.bind_image(slot(&program, "result").offset(3), &mut result);
+		run_on_face(&program, &mut descriptors, [0, 0], 3);
+		drop(descriptors);
+
+		assert_rgba_close(rgba(&result, [0, 0]), [2.0, 3.0, 3.0, 1.0], 1e-6);
+	}
+
+	/// Prefilters one texel of face 2 of an environment whose radiance is `radiance` in every direction, in `mode`
+	/// (`0` for a specular `level`, `1` for irradiance) with `sample_count` samples.
+	fn prefilter_uniform_environment(radiance: [f32; 4], mode: u32, level: u32, sample_count: u32) -> [f32; 4] {
+		let program =
+			crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*ENVIRONMENT_PREFILTER_SHADER_BESL));
+		// The VM reads a cube at its direction as a volume, so a one-texel volume is a uniform environment.
+		let mut environment = besl::vm::Texture::new_3d(1, 1, 1).expect("uniform environment");
+		environment.write_3d([0, 0, 0], radiance).expect("uniform environment texel");
+		let mut result = empty_image(4, 4);
+		let mut push_constant = crate::rendering::shader_vm_test::push_constant_buffer(&program);
+		for (member, value) in [("level", level), ("mode", mode), ("sample_count", sample_count)] {
+			push_constant
+				.write(member, Value::U32(value))
+				.expect("prefilter push constant");
+		}
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture(slot(&program, "radiance"), &mut environment);
+		descriptors.bind_image(slot(&program, "result").offset(2), &mut result);
+		descriptors.bind_push_constant(&mut push_constant);
+		run_on_face(&program, &mut descriptors, [1, 2], 2);
+		drop(descriptors);
+		rgba(&result, [1, 2])
+	}
+
+	/// Verifies that an environment of the same radiance everywhere prefilters to that radiance at every specular level,
+	/// and to irradiance over π equal to it, as a lobe or a cosine that integrates to one must.
+	#[test]
+	fn uniform_environment_prefilters_to_itself() {
+		let radiance = [3.0, 2.0, 1.0, 1.0];
+		for level in [0, 1, 4, 7] {
+			assert_rgba_close(prefilter_uniform_environment(radiance, 0, level, 64), radiance, 1e-3);
+		}
+		assert_rgba_close(prefilter_uniform_environment(radiance, 1, 0, 256), radiance, 1e-3);
 	}
 
 	/// Verifies that the sun disk carries the light's illuminance over its solid angle until the half-float cap.

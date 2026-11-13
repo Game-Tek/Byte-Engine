@@ -49,7 +49,11 @@ mod tests {
 		let rays: UnitVector = Vector::new(-0.5f32, -1.0, 0.25).normalized().unwrap();
 		let sun = super::Sun::new(&light, &Transform::from_rotation(math::orientation_from_direction(rays)));
 
-		for (toward, ray) in [(sun.direction.x(), rays.x()), (sun.direction.y(), rays.y()), (sun.direction.z(), rays.z())] {
+		for (toward, ray) in [
+			(sun.direction.x(), rays.x()),
+			(sun.direction.y(), rays.y()),
+			(sun.direction.z(), rays.z()),
+		] {
 			assert!((toward + ray).abs() < 1e-5, "sun {:?}, rays {rays:?}", sun.direction);
 		}
 		assert_eq!(sun.illuminance, light.color);

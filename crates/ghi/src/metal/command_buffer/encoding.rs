@@ -248,9 +248,12 @@ impl CommandBufferRecording<'_> {
 						let size = self.device.buffers.resource(buffer).size;
 						synchronization::MetalResourceUse::buffer(buffer, 0, size, stages, access)
 					}
-					Descriptor::Image { image, mip_level, .. } => {
-						synchronization::MetalResourceUse::image(image, mip_level, None, stages, access)
-					}
+					Descriptor::Image {
+						image,
+						mip_level,
+						array_layer,
+						..
+					} => synchronization::MetalResourceUse::image(image, mip_level, array_layer, stages, access),
 					Descriptor::CombinedImageSampler { image, .. } => {
 						synchronization::MetalResourceUse::image(image, None, None, stages, access)
 					}

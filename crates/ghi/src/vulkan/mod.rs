@@ -48,6 +48,7 @@ pub(super) enum Descriptor {
 		image: ImageHandle,
 		layout: crate::Layouts,
 		mip_level: Option<u32>,
+		array_layer: Option<u32>,
 	},
 	CombinedImageSampler {
 		image: ImageHandle,

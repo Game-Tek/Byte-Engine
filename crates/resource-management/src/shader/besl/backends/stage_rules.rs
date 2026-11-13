@@ -12,7 +12,13 @@ const RAY_GENERATION_DOCS_PATH: &str = "reference/besl/intrinsics#ray-generation
 const CLOSEST_HIT_DOCS_PATH: &str = "reference/besl/intrinsics#closest-hit-stage";
 
 /// The calls that read compute invocation values, which ray tracing stages don't have.
-const COMPUTE_INVOCATION_INTRINSICS: [&str; 4] = ["thread_id", "thread_idx", "threadgroup_position", "thread_position"];
+const COMPUTE_INVOCATION_INTRINSICS: [&str; 5] = [
+	"thread_id",
+	"thread_layer",
+	"thread_idx",
+	"threadgroup_position",
+	"thread_position",
+];
 
 /// Checks that `program`, lowered for `stage`, follows the rules of its stage. The rules hold on every platform.
 ///

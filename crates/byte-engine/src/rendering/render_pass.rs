@@ -286,6 +286,74 @@ impl SceneBackground {
 	}
 }
 
+/// Builds the scene's generated environment, once for the whole renderer; see [`RenderPassBuilder::scene_environment`].
+pub type SceneEnvironmentFactory =
+	dyn for<'builder, 'resources> Fn(&'builder mut RenderPassBuilder<'resources>) -> SceneEnvironment;
+
+/// The `SceneEnvironment` struct is an environment that a render pass generates on the GPU, such as the atmosphere sky's,
+/// which scene pipelines light with while the scene selects no [`crate::rendering::Environment`].
+///
+/// Register its factory with [`crate::rendering::Renderer::set_scene_environment`]. A scene pipeline takes it with
+/// [`RenderPassBuilder::scene_environment`], records it once per frame before any work that reads the environment, such
+/// as global illumination's rays, and binds its maps as it binds a baked environment's, with its own environment sampler. The maps hold unexposed
+/// radiance in the baked maps' layout: a cube of irradiance over π, and a cube of radiance prefiltered for roughness
+/// `level / 7` over eight levels.
+#[derive(Clone)]
+pub struct SceneEnvironment {
+	pass: Rc<RefCell<RenderPassHarness>>,
+	diffuse: ghi::BaseImageHandle,
+	specular: ghi::BaseImageHandle,
+	/// Whether the pass has recorded its first fill, so the maps hold light rather than whatever memory they started
+	/// with.
+	filled: Rc<Cell<bool>>,
+}
+
+impl SceneEnvironment {
+	/// Creates the environment that `render_pass` fills: the irradiance cube `diffuse` and the prefiltered radiance cube
+	/// `specular`.
+	pub fn new(
+		render_pass_builder: &mut RenderPassBuilder,
+		render_pass: Box<dyn RenderPass>,
+		diffuse: impl Into<ghi::BaseImageHandle>,
+		specular: impl Into<ghi::BaseImageHandle>,
+	) -> Self {
+		Self {
+			pass: Rc::new(RefCell::new(RenderPassHarness::new(
+				render_pass,
+				render_pass_builder.render_pass_states,
+			))),
+			diffuse: diffuse.into(),
+			specular: specular.into(),
+			filled: Rc::new(Cell::new(false)),
+		}
+	}
+
+	/// Prepares the commands that bring the maps up to date for `sink`'s frame, or `None` when they already are.
+	pub(crate) fn prepare<'a>(
+		&self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		let command = self.pass.borrow_mut().prepare(frame, sink, frame_allocator);
+		if command.is_some() {
+			self.filled.set(true);
+		}
+		command
+	}
+
+	/// Reports whether the environment asks for a new frame; see [`RenderPass::needs_frame`].
+	pub(crate) fn needs_frame(&self) -> bool {
+		self.pass.borrow_mut().needs_frame()
+	}
+
+	/// Returns the irradiance cube and the prefiltered radiance cube once a frame has recorded their first fill, so a
+	/// reader binds them from the next frame on, or `None` before.
+	pub(crate) fn maps(&self) -> Option<(ghi::BaseImageHandle, ghi::BaseImageHandle)> {
+		self.filled.get().then_some((self.diffuse, self.specular))
+	}
+}
+
 /// The [`RenderPassBuilder`] struct provides sink resources and records the
 /// dependencies of a render pass.
 ///
@@ -310,6 +378,8 @@ pub struct RenderPassBuilder<'a> {
 	pipeline_manager: crate::rendering::PipelineManagerClient,
 	scene_background_factory: Option<&'a SceneBackgroundFactory>,
 	created_scene_backgrounds: Vec<SceneBackground>,
+	/// The renderer's generated environment, handed to scene nodes; see [`Self::scene_environment`].
+	scene_environment: Option<SceneEnvironment>,
 	/// The copy that forwards the incoming `main` into this pass's replacement while the pass is bypassed.
 	main_copy: Option<ImageBypassPass>,
 	/// Every stage counter this node created, with the name the renderer reports it under.
@@ -325,7 +395,8 @@ impl<'a> RenderPassBuilder<'a> {
 	///
 	/// `node` is the step of the sink's frame the pass records as. `final_output` marks the terminal post-scene pass,
 	/// whose replacement `main` is the sink swapchain. `scene_background_factory` is what
-	/// [`Self::create_scene_background`] builds from; pass it only for scene nodes.
+	/// [`Self::create_scene_background`] builds from and `scene_environment` what [`Self::scene_environment`] returns;
+	/// pass them only for scene nodes.
 	#[allow(clippy::too_many_arguments)]
 	pub(crate) fn new(
 		context: &'a mut ghi::implementation::Context,
@@ -335,6 +406,7 @@ impl<'a> RenderPassBuilder<'a> {
 		swapchain: ghi::SwapchainHandle,
 		pipeline_manager: crate::rendering::PipelineManagerClient,
 		scene_background_factory: Option<&'a SceneBackgroundFactory>,
+		scene_environment: Option<SceneEnvironment>,
 		node: crate::rendering::renderer::RenderNode,
 		final_output: bool,
 		debug_view_settings: DebugViewSettings,
@@ -353,6 +425,7 @@ impl<'a> RenderPassBuilder<'a> {
 			pipeline_manager,
 			scene_background_factory,
 			created_scene_backgrounds: Vec::new(),
+			scene_environment,
 			main_copy: None,
 			gpu_counters: Vec::new(),
 			debug_view_settings,
@@ -446,6 +519,14 @@ impl<'a> RenderPassBuilder<'a> {
 		))));
 		self.created_scene_backgrounds.push(background.clone());
 		Some(background)
+	}
+
+	/// Returns the scene's generated environment, or `None` when the application registered none.
+	///
+	/// Every sink gets the same environment. Scene pipelines record it once per frame, before any work that reads the
+	/// environment, and light with its maps while the scene selects no [`crate::rendering::Environment`].
+	pub fn scene_environment(&self) -> Option<SceneEnvironment> {
+		self.scene_environment.clone()
 	}
 
 	/// Returns the state every pass named `name` shares, adding it when it is new, for a run of pixel steps that follows

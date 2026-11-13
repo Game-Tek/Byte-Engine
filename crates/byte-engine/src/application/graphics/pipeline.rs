@@ -728,7 +728,15 @@ pub fn setup_atmosphere_sky_render_pass(application: &mut GraphicsApplication, s
 	let controls = AtmosphereSkyControls::new(settings, application.configure("render.sky."));
 	let renderer = &mut application.renderer;
 
+	let environment_controls = controls.clone();
 	renderer.set_scene_background_for_all_sinks(move |render_pass_builder, targets| {
 		Box::new(AtmosphereSkyRenderPass::new(render_pass_builder, targets, controls.clone()))
+	});
+	// The same sky lights the scene while it selects no `Environment`.
+	renderer.set_scene_environment(move |render_pass_builder| {
+		rendering::render_passes::sky::AtmosphereSkyEnvironment::scene_environment(
+			render_pass_builder,
+			environment_controls.clone(),
+		)
 	});
 }

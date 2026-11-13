@@ -395,6 +395,7 @@ impl Generator {
 			}
 			"atomic_store" => self.emit_hlsl_atomic_helper_call(string, name, arguments, None),
 			"thread_id" => string.push_str("dispatch_thread_id.xy"),
+			"thread_layer" => string.push_str("dispatch_thread_id.z"),
 			"thread_position" => string.push_str("dispatch_thread_id.x"),
 			"thread_idx" => string.push_str("group_thread_index"),
 			"subgroup_lane_index" => string.push_str("WaveGetLaneIndex()"),

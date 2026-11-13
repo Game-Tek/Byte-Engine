@@ -8,6 +8,8 @@ pub(crate) enum WriteData {
 		handle: BaseImageHandle,
 		layout: Layouts,
 		mip_level: Option<u32>,
+		/// The one layer of a layered image, such as a cube face, that a 2D shader resource sees.
+		array_layer: Option<u32>,
 	},
 	CombinedImageSampler {
 		image_handle: BaseImageHandle,
@@ -31,14 +33,21 @@ impl WriteData {
 			handle: handle.into(),
 			layout,
 			mip_level: None,
+			array_layer: None,
 		}
 	}
 
-	pub(crate) fn image_mip(handle: impl Into<BaseImageHandle>, layout: Layouts, mip_level: u32) -> Self {
+	pub(crate) fn image_mip(
+		handle: impl Into<BaseImageHandle>,
+		layout: Layouts,
+		mip_level: u32,
+		array_layer: Option<u32>,
+	) -> Self {
 		Self::Image {
 			handle: handle.into(),
 			layout,
 			mip_level: Some(mip_level),
+			array_layer,
 		}
 	}
 
@@ -122,7 +131,28 @@ impl DescriptorWrite {
 		layout: Layouts,
 		mip_level: u32,
 	) -> Self {
-		Self::new(descriptor_set, slot, WriteData::image_mip(image_handle, layout, mip_level))
+		Self::new(
+			descriptor_set,
+			slot,
+			WriteData::image_mip(image_handle, layout, mip_level, None),
+		)
+	}
+
+	/// Binds mip `mip_level` of layer `layer` of a layered image, such as one level of one cube face, to a 2D shader
+	/// resource, so a compute shader writes that face's level as a GPU-generated environment fills its cube.
+	pub fn image_layer_mip(
+		descriptor_set: PublicDescriptorSetHandle,
+		slot: ResourceSlot,
+		image_handle: impl Into<BaseImageHandle>,
+		layout: Layouts,
+		layer: u32,
+		mip_level: u32,
+	) -> Self {
+		Self::new(
+			descriptor_set,
+			slot,
+			WriteData::image_mip(image_handle, layout, mip_level, Some(layer)),
+		)
 	}
 
 	/// Binds the copy of a per-frame image that belongs to a relative frame. Use `-1` for the previous frame.

@@ -1,0 +1,83 @@
+// Prefilters every face of a generated environment, a face per `thread_layer`, as the offline bake prefilters a baked one
+// (`resource-management/src/ibl/cpu.rs`). Mode 0 writes the specular cube's level `level`: the radiance around the
+// texel's direction weighted by the GGX lobe of roughness `level / 7` seen along that direction, the split-sum
+// prefiltered environment of Karis ("Real Shading in Unreal Engine 4", 2013). Mode 1 writes the irradiance cube: the
+// cosine-weighted mean radiance, which is irradiance over π. Both take `sample_count` Hammersley samples and read
+// each at the radiance cube's level that filtered importance sampling picks for it, so few samples stay smooth.
+use ::byte_engine::rendering::layouts::environment_cube::*;
+use ::byte_engine::rendering::visibility::layouts::sampling::*;
+
+radiance: descriptor<{ type: TextureCube, binding: 0, access: read }>;
+result: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write, count: 6 }>;
+
+push_constant: push_constant {
+	level: u32,
+	mode: u32,
+	sample_count: u32,
+}
+
+read_radiance: fn (direction: vec3f, level: f32) -> vec3f {
+	let sampled: vec4f = texture_lod(radiance, direction, level);
+	return vec3f(sampled.x, sampled.y, sampled.z);
+}
+
+// The GGX-weighted radiance around `normal`, viewed along it, as `prefiltered_radiance` bakes it.
+prefilter_specular: fn (normal: vec3f, roughness: f32, count: u32) -> vec3f {
+	let basis: Basis = orthonormal_basis(normal);
+	let alpha: f32 = roughness * roughness;
+	let alpha_squared: f32 = alpha * alpha;
+	let sum: vec3f = vec3f(0.0, 0.0, 0.0);
+	let total_weight: f32 = 0.0;
+	for (let index: u32 = 0; index < count; index = index + 1) {
+		let point: vec2f = sample_hammersley(index, count);
+		let angle: f32 = 6.28318530718 * point.x;
+		let cos_theta: f32 = sqrt(max((1.0 - point.y) / (1.0 + (alpha_squared - 1.0) * point.y), 0.0));
+		let sin_theta: f32 = sqrt(max(1.0 - cos_theta * cos_theta, 0.0));
+		let half_vector: vec3f = normalize(basis_to_world(basis, normal, vec3f(sin_theta * cos(angle), sin_theta * sin(angle), cos_theta)));
+		// The view is the normal, so this cosine is also the normal-half cosine the density needs.
+		let view_dot_half: f32 = max(dot(normal, half_vector), 0.0);
+		let light: vec3f = normalize(half_vector * (2.0 * view_dot_half) - normal);
+		let normal_dot_light: f32 = dot(normal, light);
+		if (normal_dot_light > 0.0) {
+			let denominator: f32 = view_dot_half * view_dot_half * (alpha_squared - 1.0) + 1.0;
+			let distribution: f32 = alpha_squared / max(3.14159265359 * denominator * denominator, 0.0000001);
+			// The half-vector density D·cos θh turns into a light-direction density over 4 (v·h), which is D / 4 here.
+			let pdf: f32 = distribution * 0.25;
+			sum = sum + read_radiance(light, environment_sample_level(pdf, count)) * normal_dot_light;
+			total_weight = total_weight + normal_dot_light;
+		}
+	}
+	if (total_weight > 0.0) {
+		return sum * (1.0 / total_weight);
+	}
+	return read_radiance(normal, 0.0);
+}
+
+// The cosine-weighted mean radiance around `normal`, irradiance over π, as `diffuse_irradiance` bakes it.
+prefilter_diffuse: fn (normal: vec3f, count: u32) -> vec3f {
+	let basis: Basis = orthonormal_basis(normal);
+	let sum: vec3f = vec3f(0.0, 0.0, 0.0);
+	for (let index: u32 = 0; index < count; index = index + 1) {
+		let local: vec3f = square_to_cosine(sample_hammersley(index, count));
+		let direction: vec3f = basis_to_world(basis, normal, local);
+		sum = sum + read_radiance(direction, environment_sample_level(local.z / 3.14159265359, count));
+	}
+	return sum * (1.0 / f32(count));
+}
+
+main: fn (input: StageInput) -> void {
+	let texel: vec2u = input.thread_id;
+	let face: u32 = input.thread_layer;
+	guard_image_bounds(result[face], texel);
+	let normal: vec3f = environment_cube_direction(face, texel, image_size(result[face]));
+	let light: vec3f = vec3f(0.0, 0.0, 0.0);
+	if (push_constant.mode == 1) {
+		light = prefilter_diffuse(normal, push_constant.sample_count);
+	} else if (push_constant.level == 0) {
+		// A mirror reflects the radiance itself.
+		light = read_radiance(normal, 0.0);
+	} else {
+		light = prefilter_specular(normal, f32(push_constant.level) / (ENVIRONMENT_LEVEL_COUNT - 1.0), push_constant.sample_count);
+	}
+	write(result[face], texel, vec4f(light.x, light.y, light.z, 1.0));
+}

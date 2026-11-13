@@ -144,6 +144,10 @@ light that scatters more than once in the air, and sunlight the ground reflects 
 100,000 lux sun high in the sky gives, at the default haze and away from the sun, a clear sky of
 about 3,400 nits well above the horizon and 6,500 near it, and several times more around the sun.
 
+The same sky is the scene's environment while the scene has no `Environment`: global illumination,
+reflections, and the rest of the environment's light take the sky's light in the same units, with
+no calibration. See [sky environment](/docs/reference/rendering#sky-environment).
+
 Haze is the aerosol optical depth looking straight up from the ground. It scatters every color
 alike and mostly forward, so more haze puts a white glow around the sun and pales the rest of the
 sky a little, most near the horizon:

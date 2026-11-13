@@ -1,0 +1,36 @@
+// The cube layout and sampling an environment generated on the GPU shares with the baked ones: faces in the native
+// order (+X, −X, +Y, −Y, +Z, −Z), oriented as `cubemap_texel_direction` in `resource-management/src/ibl/cpu.rs` bakes
+// them, and the same filtering the offline bake prefilters with.
+
+// The radiance and specular cubes' face size in texels and their levels, as many as the loader requires of baked maps.
+// `SKY_ENVIRONMENT_FACE_SIZE` and `IBL_SPECULAR_LEVEL_COUNT` in Rust hold the same values.
+ENVIRONMENT_FACE_SIZE: const f32 = 128.0;
+ENVIRONMENT_LEVEL_COUNT: const f32 = 8.0;
+
+// Returns the unit direction through the center of `texel` on `face` of a cube whose faces are `size` texels wide.
+environment_cube_direction: fn (face: u32, texel: vec2u, size: vec2u) -> vec3f {
+	let u: f32 = 2.0 * (f32(texel.x) + 0.5) / f32(size.x) - 1.0;
+	let v: f32 = 2.0 * (f32(texel.y) + 0.5) / f32(size.y) - 1.0;
+	let direction: vec3f = vec3f(0.0 - u, 0.0 - v, 0.0 - 1.0);
+	if (face == 0) {
+		direction = vec3f(1.0, 0.0 - v, 0.0 - u);
+	} else if (face == 1) {
+		direction = vec3f(0.0 - 1.0, 0.0 - v, u);
+	} else if (face == 2) {
+		direction = vec3f(u, 1.0, v);
+	} else if (face == 3) {
+		direction = vec3f(u, 0.0 - 1.0, 0.0 - v);
+	} else if (face == 4) {
+		direction = vec3f(u, 0.0 - v, 1.0);
+	}
+	return normalize(direction);
+}
+
+// Returns the radiance cube's level that holds the light one of `count` samples of density `pdf` stands for, the
+// filtered importance sampling of Křivánek and Colbert ("Real-time Shading with Filtered Importance Sampling", 2008):
+// half the base-2 logarithm of the sample's solid angle over a base texel's.
+environment_sample_level: fn (pdf: f32, count: u32) -> f32 {
+	let sample_solid_angle: f32 = 1.0 / (f32(count) * max(pdf, 0.0000001));
+	let texel_solid_angle: f32 = 4.0 * 3.14159265359 / (6.0 * ENVIRONMENT_FACE_SIZE * ENVIRONMENT_FACE_SIZE);
+	return clamp(0.5 * log2(max(sample_solid_angle / texel_solid_angle, 1.0)), 0.0, ENVIRONMENT_LEVEL_COUNT - 1.0);
+}

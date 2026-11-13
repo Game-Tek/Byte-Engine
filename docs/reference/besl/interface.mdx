@@ -320,6 +320,7 @@ main: fn (input: StageInput) -> void {
 | `StageInput` field | Type | Value |
 | --- | --- | --- |
 | `thread_id` | `vec2u` | Global two-dimensional compute invocation coordinate. |
+| `thread_layer` | `u32` | Third coordinate of the global compute invocation, such as the cube face a dispatch with a depth of six fills. |
 | `thread_idx` | `u32` | Linear invocation index inside the local workgroup. |
 | `threadgroup_position` | `u32` | Workgroup position. |
 | `subgroup_lane_index` | `u32` | Lane index inside the current subgroup. |

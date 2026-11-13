@@ -532,7 +532,7 @@ mod tests {
 		);
 		assert_string_contains!(
 			shader,
-			"kernel void besl_main(uint2 gid [[thread_position_in_grid]],uint thread_index [[thread_index_in_threadgroup]],uint2 threadgroup_position [[threadgroup_position_in_grid]],constant _set0& set0 [[buffer(16)]])"
+			"kernel void besl_main(uint3 gid [[thread_position_in_grid]],uint thread_index [[thread_index_in_threadgroup]],uint3 threadgroup_position [[threadgroup_position_in_grid]],constant _set0& set0 [[buffer(16)]])"
 		);
 		assert_string_contains!(shader, "set0.buff;set0.image;set0.texture;");
 	}
@@ -847,7 +847,7 @@ mod tests {
 		);
 		assert_string_contains!(
 			shader,
-			"uint lane(uint2 gid,uint thread_index,uint2 threadgroup_position,uint simd_lane_id)"
+			"uint lane(uint3 gid,uint thread_index,uint3 threadgroup_position,uint simd_lane_id)"
 		);
 		assert_string_contains!(shader, "lane(gid,thread_index,threadgroup_position,simd_lane_id)");
 		assert_string_contains!(shader, "uint ordinary()");
@@ -1076,9 +1076,9 @@ mod tests {
 			"kernel void besl_main(imageblock<_besl_tile_outputs, imageblock_layout_implicit> tile_block"
 		);
 		assert_string_contains!(shader, "constant uint2& output_extent [[buffer(13)]]");
-		assert_string_contains!(shader, "uint2 gid=threadgroup_position*8u+uint2(_besl_tile_thread)");
+		assert_string_contains!(shader, "uint3 gid=uint3(_besl_tile_group*8u+uint2(_besl_tile_thread),0u)");
 		assert_string_contains!(shader, "threadgroup float4* shared_texels [[threadgroup(0)]]");
-		assert_string_contains!(shader, "_besl_offset=_besl_pixel-threadgroup_position*16u");
+		assert_string_contains!(shader, "_besl_offset=_besl_pixel-threadgroup_position.xy*16u");
 		assert_string_contains!(shader, "_besl_outputs=tile_block.read(ushort2(_besl_offset))");
 		assert_string_contains!(
 			shader,
@@ -1166,10 +1166,10 @@ mod tests {
 
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(128)), &main_node);
 		assert_string_contains!(shader, "// besl-threadgroup-size:128,1,1");
-		assert_string_contains!(shader, "uint2 gid [[thread_position_in_grid]]");
+		assert_string_contains!(shader, "uint3 gid [[thread_position_in_grid]]");
 		assert_string_contains!(shader, "uint simd_lane_id [[thread_index_in_simdgroup]]");
 		assert_string_contains!(shader, "uint thread_index [[thread_index_in_threadgroup]]");
-		assert_string_contains!(shader, "uint2 threadgroup_position [[threadgroup_position_in_grid]]");
+		assert_string_contains!(shader, "uint3 threadgroup_position [[threadgroup_position_in_grid]]");
 
 		compile_natively(&shader, "besl-compute-stage-inputs").await;
 	}

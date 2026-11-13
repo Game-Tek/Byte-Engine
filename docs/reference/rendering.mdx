@@ -20,7 +20,7 @@ contract of the visibility pipeline. The design notes behind it are under
 | Sink | The per-frame destination the renderer builds from a window's extent and camera: the view, the extent, the exposure scale, and the frame interval. |
 | View | Projection and view matrices with near, far, vertical field of view, and aspect ratio, perspective or orthographic. |
 | Renderable mesh | An entity's geometry: a baked mesh by ID, a generated mesh, a sphere, or a box. A generated mesh may name its material; otherwise it takes the pipeline's default. |
-| Environment | A baked environment map, optionally scaled to deliver a given illuminance. Without one, the visibility pipeline uses an opaque black fallback. |
+| Environment | A baked environment map, optionally scaled to deliver a given illuminance. The newest one lights the scene. Without one, the visibility pipeline lights with the [sky environment](#sky-environment) when the atmosphere sky is installed, and with an opaque black fallback otherwise. |
 | Fog, lights, particle emitters | Specified with their own pages: [Light a scene](/docs/use/lighting), [lighting](/docs/reference/lighting), [particles](/docs/reference/particles). The newest fog wins. |
 | Debug mesh | A retained wireframe sphere, box, capsule, segment, or circle with a color, tested against scene depth or drawn over it. |
 
@@ -132,6 +132,7 @@ animation steps once per frame.
 | Visibility scene pipeline | `VisibilityPipelineManager` | `main`, `depth`, primitive and instance IDs | Before the deferred tasks thread starts. |
 | Particles | `ParticleManager` | `main` | After the scene pipeline, before the deferred tasks thread starts. |
 | Atmosphere sky | `atmosphere sky` | The scene color where depth is 0, in the top `screen_height` of the rows | As the scene background. Black when bypassed or without a directional light. |
+| Sky environment | `atmosphere sky environment` | The [sky environment](#sky-environment)'s cubes | With the atmosphere sky, as the scene environment. Holds its last maps when bypassed. |
 | Height fog | `exponential-height-fog` | `Exponential Height Fog` | After the scene and particles, before lens flare, bloom, and tone mapping. |
 | Depth-of-field reference | `depth-of-field-reference` | `Depth of Field Reference`, and its mean as `Depth of Field Reference Red`, `Green`, and `Blue` | In place of depth of field. Its setup function installs it bypassed. |
 | Depth of field | `depth-of-field` | `Depth of Field`, and the unfiltered blur as `Depth of Field Gathered` | After scene light and fog, before motion blur, lens flare, bloom, and tone mapping. |
@@ -153,6 +154,7 @@ a `stage.<name>` metric for each stage they record in a frame:
 | Pass | Stages |
 | --- | --- |
 | Atmosphere sky | `sky-transmittance` and `sky-multiple-scattering` in frames that rebuild the atmosphere, `sky-view` in frames that rebuild the view, and `sky-composite` |
+| Sky environment | In frames that regenerate it: `sky-environment-transmittance` and `sky-environment-multiple-scattering` when the atmosphere changed, `sky-environment-view`, `sky-environment-capture`, and `sky-environment-prefilter` |
 | Depth of field | `depth-of-field-prepare`, `depth-of-field-gather`, `depth-of-field-filter` |
 | Lens flare | `lens-flare-extract`, `lens-flare-downsample`, `lens-flare-features`, `lens-flare-composite` |
 | Bloom | `bloom-extract`, `bloom-downsample` and `bloom-upsample` when the levels need them, `bloom-composite` |
@@ -161,6 +163,23 @@ a `stage.<name>` metric for each stage they record in a frame:
 The default setup installs the visibility pipeline, particles, and a 1920 by
 1080 window, and no post-scene pass, so the scene reaches the swapchain through
 the copy.
+
+### Sky environment
+
+The atmosphere sky also generates the scene's environment, which the visibility pipeline lights
+with while the scene has no `Environment`. It holds the sky the first sink's camera sees, in the
+layout of a baked environment:
+
+| Property | Value |
+| --- | --- |
+| Radiance | The sky's radiance in each direction: the sky-view light for each lux of sunlight, times the sun's illuminance, unexposed, in nits. Black below the horizon wherever the sky is, and without the sun's disk, which the directional light carries. |
+| Specular cube | Six faces of 128 × 128 texels, RGBA16F, 8 levels. Level `l` holds the radiance prefiltered with the Trowbridge-Reitz (GGX) lobe of roughness `l / 7`, viewed along the texel's direction; level 0 holds the radiance. Each texel takes 64 samples. |
+| Irradiance cube | Six faces of 8 × 8 texels, RGBA16F, 1 level: the cosine-weighted mean radiance around the texel's direction, which is irradiance over π. Each texel takes 256 samples. |
+| Faces | +X, −X, +Y, −Y, +Z, −Z, oriented as a baked environment's. |
+| Intensity | 1. The sky is already in physical units, so no illuminance rescales it. |
+| Viewpoint | The first sink's camera height, rounded to the nearest meter. |
+| Regenerated | In full, before any of the frame's work that reads the environment, in each frame where the sun's direction or illuminance, the rounded height, or the haze changes. Other frames record nothing. |
+| Without a directional light | Black. |
 
 ### Pixel steps and fusion
 

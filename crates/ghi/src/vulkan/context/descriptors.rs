@@ -486,6 +486,7 @@ impl Context {
 					image,
 					layout: image_layout,
 					mip_level,
+					array_layer,
 				} => {
 					let descriptor_type = crate::vulkan::descriptor_type(resource.kind()).unwrap();
 					if descriptor_type == vk::DescriptorType::SAMPLED_IMAGE {
@@ -500,7 +501,7 @@ impl Context {
 					};
 					image_writes.push((
 						descriptor_type,
-						self.descriptor_image_view(image, resource.texture_view(), base_mip_level, level_count),
+						self.descriptor_image_view(image, resource.texture_view(), base_mip_level, level_count, array_layer),
 						texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None),
 						slot,
 						properties.image_descriptor_size,
@@ -515,7 +516,7 @@ impl Context {
 					let image = &self.images[image.index() as usize];
 					image_writes.push((
 						vk::DescriptorType::SAMPLED_IMAGE,
-						self.descriptor_image_view(image, resource.texture_view(), 0, image.mip_levels),
+						self.descriptor_image_view(image, resource.texture_view(), 0, image.mip_levels, None),
 						texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None),
 						slot,
 						properties.image_descriptor_size,
@@ -733,10 +734,12 @@ impl Context {
 				handle,
 				layout,
 				mip_level,
+				array_layer,
 			} => Descriptor::Image {
 				image: image(handle),
 				layout,
 				mip_level,
+				array_layer,
 			},
 			WriteData::CombinedImageSampler {
 				image_handle,
@@ -759,6 +762,7 @@ impl Context {
 					image: swapchain.images[swapchain.acquired_image_indices[resource_sequence] as usize],
 					layout: crate::Layouts::General,
 					mip_level: None,
+					array_layer: None,
 				}
 			}
 		}
@@ -770,6 +774,7 @@ impl Context {
 		view_type: crate::TextureViewTypes,
 		base_mip_level: u32,
 		level_count: u32,
+		array_layer: Option<u32>,
 	) -> vk::ImageViewCreateInfo<'static> {
 		assert!(
 			base_mip_level < image.mip_levels,
@@ -783,6 +788,14 @@ impl Context {
 		);
 		let array_layer_count = image.layers.map_or(1, NonZeroU32::get);
 		let (vk_view_type, base_array_layer, layer_count) = match view_type {
+			// A selected layer of a layered image, such as one cube face, is a 2D view of that layer.
+			crate::TextureViewTypes::Texture2D if let Some(layer) = array_layer => {
+				assert!(
+					layer < array_layer_count,
+					"Vulkan descriptor layer is out of range. The most likely cause is that the selected layer exceeds the image's layers. layer={layer}, layers={array_layer_count}"
+				);
+				(vk::ImageViewType::TYPE_2D, layer, 1)
+			}
 			crate::TextureViewTypes::Texture2D => {
 				assert!(
 					image.layers.is_none() && image.extent.depth().max(1) == 1,
@@ -865,8 +878,10 @@ impl Context {
 		view_type: crate::TextureViewTypes,
 		base_mip_level: u32,
 		level_count: u32,
+		array_layer: Option<u32>,
 	) -> Option<vk::ImageViewCreateInfo<'static>> {
-		(!image.image.is_null()).then(|| self.descriptor_image_view_create_info(image, view_type, base_mip_level, level_count))
+		(!image.image.is_null())
+			.then(|| self.descriptor_image_view_create_info(image, view_type, base_mip_level, level_count, array_layer))
 	}
 
 	#[inline]

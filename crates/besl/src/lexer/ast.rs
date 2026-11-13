@@ -646,7 +646,13 @@ impl Node {
 			[&u32_t, &u8_t, &u16_t, &i32_t, &f16_t, &f32_t].map(|source| (source, &u32_t)),
 		));
 		// Invocation builtins take no arguments and read the invocation's coordinates.
-		for name in ["thread_idx", "subgroup_lane_index", "threadgroup_position", "thread_position"] {
+		for name in [
+			"thread_idx",
+			"subgroup_lane_index",
+			"threadgroup_position",
+			"thread_position",
+			"thread_layer",
+		] {
 			builtins.push(builtin_intrinsic(name, vec![], u32_t.clone()));
 		}
 		// Ray queries share one signature and differ in what they report. `invoke` isn't registered here: its payload

@@ -834,6 +834,9 @@ pub struct VisibilityPipelineManager {
 	loaded_ies_profiles: HashMap<String, IesProfileTexture>,
 	availability: AvailabilityGraph<Availability>,
 	environment: EnvironmentState,
+	/// The environment the renderer generates, such as the atmosphere sky's. It lights the scene while the scene selects
+	/// no [`Environment`], and the first sink records it before the frame-wide work that reads it.
+	scene_environment: Option<crate::rendering::render_pass::SceneEnvironment>,
 	/// The startup limits and shadow coverage.
 	settings: VisibilityPipelineSettings,
 	/// The shadow maps every sink samples. The first recorded sink renders them each frame.
@@ -1078,6 +1081,7 @@ impl VisibilityPipelineManager {
 				illuminance: None,
 				descriptors_dirty: false,
 			},
+			scene_environment: None,
 			settings,
 			shadow_maps,
 			shadow_layout: ShadowLayout::default(),
@@ -1391,6 +1395,24 @@ impl VisibilityPipelineManager {
 		self.loader.delete_replaced_images(frame);
 		if materials_changed {
 			self.rebuild_material_lists();
+		}
+		// The generated environment lights the scene until the scene selects one, from the frame after its first fill, so
+		// nothing reads its maps before they hold light.
+		if self.environment.requested.is_none()
+			&& let Some((diffuse_image, specular_image)) = self
+				.scene_environment
+				.as_ref()
+				.and_then(crate::rendering::render_pass::SceneEnvironment::maps)
+		{
+			if self.environment.bound.specular_image != specular_image {
+				self.environment.bind(ResidentEnvironment {
+					diffuse_image,
+					specular_image,
+					sampler: self.loader.environment_sampler,
+					// Generated light is physical already, so no requested lux rescales it.
+					upward_illuminance: 0.0,
+				});
+			}
 		}
 		if self.environment.descriptors_dirty {
 			self.environment.descriptors_dirty = false;
@@ -2485,6 +2507,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			mesh_work: &self.mesh_work,
 			shadows: &self.shadow_maps,
 			acceleration_structures,
+			environment: self.scene_environment.as_ref(),
 		};
 		let render_info = &self.scene.render_info;
 		let previously_recorded_sinks = &self.recorded_sinks;
@@ -2579,6 +2602,8 @@ impl PipelineManager for VisibilityPipelineManager {
 		);
 		render_pass_builder.alias("Depth", "depth");
 		render_pass_builder.alias("Lit", "main");
+		// Every sink hands over the same environment.
+		self.scene_environment = render_pass_builder.scene_environment();
 		let background = render_pass_builder.create_scene_background(crate::rendering::render_pass::SceneBackgroundTargets {
 			color: lit.into(),
 			depth: depth.into(),

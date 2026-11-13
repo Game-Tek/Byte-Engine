@@ -27,17 +27,7 @@ const STREAM_NAME: &str = "Assets";
 /// Call it while configuring the asset manager, before it is shared. The stream writes once the application's
 /// streams are open, which a `debug.streams` destination or the console does.
 pub(crate) fn open(asset_manager: &mut AssetManager, world: &MessageScope) {
-	let entity = Handle::new();
-	// The listener subscribes before the stream is spawned, so it sees the writer the application derives for it.
-	let reporter = StreamBakeReporter {
-		entity,
-		writer: Mutex::new(WriterSlot {
-			writer: None,
-			creations: world.factory().listener(),
-		}),
-	};
-	asset_manager.set_bake_reporter(std::sync::Arc::new(reporter));
-	world.create(DebugDataStream::new(entity, STREAM_NAME));
+	asset_manager.set_bake_reporter(std::sync::Arc::new(StreamBakeReporter::open(world)));
 }
 
 /// The `StreamBakeReporter` struct writes an asset manager's [`BakeState`] to the stream of the entity that stands for
@@ -47,18 +37,48 @@ struct StreamBakeReporter {
 	writer: Mutex<WriterSlot>,
 }
 
+impl StreamBakeReporter {
+	/// Spawns the stream of a new entity that stands for the asset manager, and returns the reporter that writes to it.
+	fn open(world: &MessageScope) -> Self {
+		let entity = Handle::new();
+		// The listener subscribes before the stream is spawned, so it sees the writer the application derives for it.
+		let reporter = Self {
+			entity,
+			writer: Mutex::new(WriterSlot {
+				writer: None,
+				creations: world.factory().listener(),
+			}),
+		};
+		world.create(DebugDataStream::new(entity, STREAM_NAME));
+		reporter
+	}
+}
+
 /// The writer for the asset manager's stream, once the application derived it.
 struct WriterSlot {
 	writer: Option<DebugDataStreamWriter>,
 	creations: DefaultListener<CreateMessage<DebugDataStreamWriter>>,
 }
 
-/// The part of a [`BakeState`] whose change warrants a record: the running bakes and the totals, not their times.
-#[derive(serde::Serialize)]
-struct Key<'a> {
-	baking: Vec<&'a str>,
-	baked: u64,
-	failed: u64,
+/// The part of a [`BakeState`] whose change warrants a record: the IDs of the running bakes and the totals, not times.
+struct Key<'a>(&'a BakeState);
+
+impl serde::Serialize for Key<'_> {
+	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		use serde::ser::SerializeTuple as _;
+		/// The running bakes' IDs, serialized straight from the state so a report collects nothing.
+		struct Ids<'a>(&'a [resource_management::asset::bake_state::BakingAsset]);
+		impl serde::Serialize for Ids<'_> {
+			fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+				serializer.collect_seq(self.0.iter().map(|bake| bake.id.as_str()))
+			}
+		}
+		let mut key = serializer.serialize_tuple(3)?;
+		key.serialize_element(&Ids(&self.0.baking))?;
+		key.serialize_element(&self.0.baked)?;
+		key.serialize_element(&self.0.failed)?;
+		key.end()
+	}
 }
 
 impl BakeReporter for StreamBakeReporter {
@@ -73,12 +93,7 @@ impl BakeReporter for StreamBakeReporter {
 			}
 		}
 		let Some(writer) = writer else { return };
-		let key = Key {
-			baking: state.baking.iter().map(|bake| bake.id.as_str()).collect(),
-			baked: state.baked,
-			failed: state.failed,
-		};
-		writer.write("bakes", &key, state);
+		writer.write("bakes", &Key(state), state);
 	}
 }
 
@@ -113,15 +128,7 @@ mod tests {
 		let output = Arc::new(StreamOutput::open(None, false, Instant::now(), Arc::clone(&retained)).expect("opens"));
 		let mut streams = DebugDataStreams::new(&world, Some(output));
 
-		let entity = Handle::new();
-		let reporter = StreamBakeReporter {
-			entity,
-			writer: Mutex::new(WriterSlot {
-				writer: None,
-				creations: world.factory().listener(),
-			}),
-		};
-		world.create(DebugDataStream::new(entity, STREAM_NAME));
+		let reporter = StreamBakeReporter::open(&world);
 
 		reporter.report(&state(1));
 		assert!(
@@ -134,7 +141,7 @@ mod tests {
 
 		let (_, record) = retained.latest("bakes").expect("a retained record");
 		assert_eq!(record["name"], STREAM_NAME);
-		assert_eq!(record["entity"], entity.id());
+		assert_eq!(record["entity"], reporter.entity.id());
 		let reported: BakeState = serde_json::from_value(record["data"].clone()).expect("the data is a bake state");
 		assert_eq!(reported, state(2));
 	}

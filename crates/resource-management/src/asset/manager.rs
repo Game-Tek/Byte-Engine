@@ -2796,19 +2796,9 @@ pub mod tests {
 		assert_eq!(asset_manager.resource_trace().resource_ids(), vec!["failed.test"]);
 	}
 
-	/// The `ReportedBakes` struct keeps every bake state a manager reported.
-	#[derive(Default)]
-	struct ReportedBakes(Mutex<Vec<crate::asset::bake_state::BakeState>>);
-
-	impl crate::asset::bake_state::BakeReporter for ReportedBakes {
-		fn report(&self, state: &crate::asset::bake_state::BakeState) {
-			self.0.lock().push(state.clone());
-		}
-	}
-
 	#[r#async::test]
 	async fn bakes_that_store_or_fail_reach_the_bake_reporter() {
-		let reported = Arc::new(ReportedBakes::default());
+		let reported = Arc::new(crate::asset::bake_state::CapturedBakes::default());
 
 		let asset_storage = TestStorageBackend::new();
 		asset_storage.add_file("kept.test", b"kept");

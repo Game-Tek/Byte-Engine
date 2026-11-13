@@ -631,11 +631,6 @@ mod tests {
 		}
 	}
 
-	/// Draws `console` over `entries` on a terminal of `width` by `height` cells and returns its buffer.
-	fn draw_buffer(console: &mut Console, entries: &VecDeque<Entry>, width: u16, height: u16) -> ratatui::buffer::Buffer {
-		draw_with(console, entries, None, width, height)
-	}
-
 	/// Draws `console` over `entries` and `bakes` and returns its buffer.
 	fn draw_with(
 		console: &mut Console,
@@ -652,10 +647,7 @@ mod tests {
 
 	/// Draws `console` over `entries` and returns the text of each row.
 	fn draw(console: &mut Console, entries: &VecDeque<Entry>, width: u16, height: u16) -> Vec<String> {
-		let buffer = draw_buffer(console, entries, width, height);
-		(0..height)
-			.map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect::<String>())
-			.collect()
+		rows(&draw_with(console, entries, None, width, height))
 	}
 
 	#[test]
@@ -818,7 +810,7 @@ mod tests {
 			text: "12:00:00 ERROR app  it broke\nsecond line".to_string(),
 		};
 		let mut console = Console::default();
-		let buffer = draw_buffer(&mut console, &VecDeque::from([record]), 40, 6);
+		let buffer = draw_with(&mut console, &VecDeque::from([record]), None, 40, 6);
 		// Row 1 is the record's first row inside the border; column 1 is its first character.
 		let color = |x: u16, y: u16| buffer[(x + 1, y)].fg;
 		assert_eq!(color(0, 1), Color::Reset, "time");

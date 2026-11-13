@@ -184,22 +184,24 @@ fn milliseconds(duration: Duration) -> f64 {
 	duration.as_secs_f64() * 1000.0
 }
 
+/// The `CapturedBakes` struct keeps every state a manager reported, for tests that check what reporters receive.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct CapturedBakes(pub(crate) Mutex<Vec<BakeState>>);
+
+#[cfg(test)]
+impl BakeReporter for CapturedBakes {
+	fn report(&self, state: &BakeState) {
+		self.0.lock().push(state.clone());
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
 
-	/// The `Captured` struct keeps every state a tracker reported.
-	#[derive(Default)]
-	struct Captured(Mutex<Vec<BakeState>>);
-
-	impl BakeReporter for Captured {
-		fn report(&self, state: &BakeState) {
-			self.0.lock().push(state.clone());
-		}
-	}
-
-	fn tracker() -> (BakeTracker, Arc<Captured>) {
-		let captured = Arc::new(Captured::default());
+	fn tracker() -> (BakeTracker, Arc<CapturedBakes>) {
+		let captured = Arc::new(CapturedBakes::default());
 		(BakeTracker::new(captured.clone()), captured)
 	}
 

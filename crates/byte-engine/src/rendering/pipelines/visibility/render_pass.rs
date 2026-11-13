@@ -19,6 +19,7 @@ mod ray_hits;
 mod reflections;
 mod shadows;
 mod ssgi;
+mod subsurface;
 mod sun_visibility;
 mod surfel_gi;
 mod visibility;
@@ -195,6 +196,9 @@ pub(crate) use self::shadows::{ShadowMaps, ShadowWork, SunCascades};
 pub(super) use self::ssgi::SSGI_PIPELINES;
 use self::ssgi::SsgiPass;
 pub(crate) use self::ssgi::{SsgiTargets, create_diffuse_radiance_history_target, create_ssgi_targets};
+pub(super) use self::subsurface::SUBSURFACE_PIPELINES;
+use self::subsurface::SubsurfacePass;
+pub(crate) use self::subsurface::{SubsurfaceTargets, create_subsurface_targets};
 pub(super) use self::sun_visibility::CONTACT_SHADOW_PIPELINES;
 use self::sun_visibility::SunVisibilityPass;
 pub(crate) use self::sun_visibility::{ContactShadowSettings, SunVisibilityTargets, create_sun_visibility_targets};
@@ -286,6 +290,8 @@ pub(crate) struct StageCounters {
 	fog_light: ghi::CounterHandle,
 	/// Opaque material evaluation.
 	material_evaluation: ghi::CounterHandle,
+	/// The spread of subsurface pixels' diffuse light.
+	subsurface: ghi::CounterHandle,
 	background: ghi::CounterHandle,
 	/// The copy of the opaque scene that blended materials read behind their surfaces.
 	backdrop: ghi::CounterHandle,
@@ -331,6 +337,7 @@ impl StageCounters {
 			},
 			fog_light: builder.create_gpu_counter("fog-light"),
 			material_evaluation: builder.create_gpu_counter("material-evaluation"),
+			subsurface: builder.create_gpu_counter("subsurface"),
 			background: builder.create_gpu_counter("background"),
 			backdrop: builder.create_gpu_counter("backdrop"),
 			transparent: builder.create_gpu_counter("transparent"),
@@ -380,6 +387,9 @@ pub(crate) struct SinkTargets {
 	pub(crate) fog_light: ghi::BaseImageHandle,
 	/// The copy of the opaque scene that blended materials read behind their surfaces.
 	pub(crate) backdrop: BackdropTargets,
+	/// What opaque material evaluation leaves at subsurface pixels, present when the project builds subsurface
+	/// scattering in.
+	pub(crate) subsurface: Option<SubsurfaceTargets>,
 }
 
 /// The `IndirectDiffuseSource` enum names the pass that lights a frame's indirect diffuse light, so the frame runs only
@@ -571,6 +581,8 @@ pub(crate) struct VisibilityRenderPass {
 	surfel_resolve: Option<SurfelResolvePass>,
 	/// Absent when the frame has no probe volume to light this sink from.
 	probe_resolve: Option<ProbeResolvePass>,
+	/// Absent when the project left subsurface scattering out of its shaders.
+	subsurface: Option<SubsurfacePass>,
 	reflections: ScreenSpaceReflections,
 	backdrop: BackdropPass,
 	material_evaluation: MaterialEvaluationPass,
@@ -703,6 +715,7 @@ impl VisibilityRenderPass {
 			evaluation.image("lit_map", targets.lit),
 			evaluation.buffer("lighting_data", lighting_buffer),
 			evaluation.sampled("ao", targets.gtao.ambient_occlusion, linear_sampler),
+			evaluation.sampled("gtao_bent_normal", targets.gtao.bent_normal, linear_sampler),
 			// Material evaluation upsamples the half-resolution SSGI result itself. It fetches texels at edges, and filters the
 			// history in one read where all four texels lie on the pixel's plane.
 			evaluation.sampled("ssgi_history", targets.ssgi.history, linear_sampler),
@@ -721,6 +734,14 @@ impl VisibilityRenderPass {
 				.diffuse_radiance_history
 				.map(|image| evaluation.image("diffuse_radiance_map", image)),
 		);
+		// Without subsurface scattering the shaders leave out its images, so nothing is bound there.
+		if let Some(subsurface) = targets.subsurface {
+			writes.extend([
+				evaluation.image("subsurface_diffuse", subsurface.diffuse),
+				evaluation.image("subsurface_shape", subsurface.shape),
+				evaluation.image("subsurface_albedo", subsurface.albedo),
+			]);
+		}
 		// One image of each local shadow-map size class, which a light picks by its class.
 		for (size_class, (cone, point)) in shadow_maps.cone.iter().zip(&shadow_maps.point).enumerate() {
 			writes.extend([
@@ -783,6 +804,9 @@ impl VisibilityRenderPass {
 			ssgi,
 			surfel_resolve,
 			probe_resolve,
+			subsurface: targets
+				.subsurface
+				.map(|subsurface| SubsurfacePass::new(context, &pipeline_manager, depth, targets.lit, subsurface)),
 			reflections,
 			backdrop,
 			stage_counters,
@@ -890,6 +914,10 @@ impl VisibilityRenderPass {
 			Some(gtao) => Some((gtao, gtao.pipelines.resolve(pipeline_manager)?)),
 			None => None,
 		};
+		let subsurface_pipelines = match &self.subsurface {
+			Some(subsurface) => Some((subsurface, subsurface.pipelines.resolve(pipeline_manager)?)),
+			None => None,
+		};
 		let lit_by_ssgi = indirect_diffuse == Some(IndirectDiffuseSource::ScreenSpace);
 		let ssgi_pipelines = match self.ssgi.as_ref().filter(|_| lit_by_ssgi) {
 			Some(ssgi) => Some((ssgi, ssgi.pipelines.resolve(pipeline_manager)?)),
@@ -906,6 +934,7 @@ impl VisibilityRenderPass {
 			sun_visibility_pipeline,
 		);
 		let gtao = gtao_pipelines.map(|(gtao, pipelines)| gtao.prepare(frame, sink, gtao_settings, pipelines));
+		let subsurface = subsurface_pipelines.map(|(subsurface, pipelines)| subsurface.prepare(frame, sink, pipelines));
 		// SSGI history exists only if SSGI also lit last frame: another source leaves no diffuse radiance for its rays.
 		let ssgi_history = history.filter(|history| history.indirect_diffuse == Some(IndirectDiffuseSource::ScreenSpace));
 		let ssgi = ssgi_pipelines.map(|(ssgi, pipelines)| ssgi.prepare(frame, sink, ssgi_history, exposure, pipelines));
@@ -1140,6 +1169,11 @@ impl VisibilityRenderPass {
 				c.counter(counters.fog_light, |c| record_compute_stages(c, None, stages));
 			}
 			c.counter(counters.material_evaluation, &opaque_materials);
+			// Subsurface pixels add their spread diffuse light before the background and the backdrop copy, so blended
+			// surfaces see it behind them.
+			if let Some(stage) = &subsurface {
+				c.counter(counters.subsurface, |c| record_compute_stages(c, None, std::slice::from_ref(stage)));
+			}
 			// The background fills pixels no opaque surface covered, so transparent surfaces composite over it.
 			if let Some(background) = background {
 				c.counter(counters.background, background);

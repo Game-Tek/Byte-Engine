@@ -178,6 +178,8 @@ Every graph ends in one `surface` node. An input left out takes its default.
 | `emission` | `vector3` | 0, 0, 0 |
 | `transmission` | `vector3`, in the units of `emission` | 0, 0, 0 |
 | `translucency` | `vector3`, 0 to 1 | Not translucent |
+| `subsurface_radius` | `vector3`, meters, 0 or more | Doesn't scatter |
+| `thickness` | `float`, meters, 0 or more | No light passes through |
 | `occlusion` | `float`, 0 to 1, multiplying indirect diffuse light | 1 |
 
 `opacity` means what the material's
@@ -212,6 +214,26 @@ A graph that sets `translucency`, even to zero, is a translucent material,
 which the renderer
 [evaluates apart](/docs/reference/rendering#translucent-materials) from the
 others. Ray tracing hits leave it out.
+
+`subsurface_radius` makes the surface scatter light beneath it, as skin, wax,
+or marble does: diffuse light that enters at one point leaves the surface
+around it, so lit areas bleed into shadowed ones and fine shading softens. It's
+the mean free path of each color channel, the average distance light travels
+under the surface before it scatters, in meters. Human skin is about 3.7, 1.4,
+and 0.7 millimeters. `base_color` is the share of the light that leaves the
+surface after scattering, its multiple-scattering albedo. A graph that sets
+`subsurface_radius`, even to zero, is a subsurface material. A radius of zero
+scatters no light sideways, so the pixel shades as if the surface didn't
+scatter.
+
+`thickness` is the distance light crosses through a subsurface material, from
+the face a light reaches to the face the viewer sees, such as the width of an
+ear. Light on the far side of the surface passes through it, attenuated over
+that distance by the same profile that spreads the light sideways. Setting it
+makes the graph a
+[translucent material](/docs/reference/rendering#translucent-materials). A graph
+that sets `thickness` without `subsurface_radius`, or together with
+`translucency`, fails to bake.
 
 How the renderer shades these inputs is in
 [Rendering](/docs/reference/rendering#materials).

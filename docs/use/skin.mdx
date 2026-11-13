@@ -1,0 +1,112 @@
+---
+title: Render skin
+description: Make skin, wax, and other soft materials scatter light beneath their surface, and let light through thin parts such as ears.
+icon: Droplet
+---
+
+Use subsurface scattering when a material should look soft and lit from
+within, such as skin, wax, marble, or jade. Light that enters the surface
+spreads beneath it before it leaves, so shadows get a warm edge and fine
+shading softens.
+
+## Build subsurface scattering in
+
+Subsurface scattering is off by default, because its images and its pass cost
+every frame. Turn it on in your project's `config.json`:
+
+```json
+{
+	"render": {
+		"subsurface": {
+			"enabled": true
+		}
+	}
+}
+```
+
+The setting is read at startup and by the bake, so bake again after you change
+it. Without it, subsurface materials shade like any other material.
+
+## Write a subsurface material
+
+Set `subsurface_radius` on the surface of the material's
+[BEMX graph](/docs/reference/bemx#surface). It's how far light travels under
+the surface in each color channel, in meters. Red travels furthest in skin,
+which is what gives shadow edges their red tint.
+
+Write the radius as a material parameter, so each variant can tune it. This
+graph, `materials/skin.bemx`, scatters a textured skin:
+
+```json5
+{
+	nodes: [
+		{ name: "base_color_texel", node: "image", texture: "base_color", type: "vector3" },
+		{ name: "normal_texel", node: "image", texture: "normal", type: "vector3" },
+		{ name: "world_normal", node: "normalmap", in: "normal_texel" },
+		{ name: "gloss_texel", node: "image", texture: "gloss", type: "float" },
+		{ name: "roughness", node: "invert", in: "gloss_texel" },
+		{ name: "radius", node: "parameter", parameter: "subsurface_radius", type: "vector3" },
+		{
+			name: "surface",
+			node: "surface",
+			base_color: "base_color_texel",
+			normal: "world_normal",
+			roughness: "roughness",
+			subsurface_radius: "radius",
+		},
+	],
+}
+```
+
+Declare the parameter in the material, `materials/skin.bema`. Human skin's
+mean free path is about 3.7, 1.4, and 0.7 millimeters:
+
+```json5
+{
+	domain: "World",
+	type: "Surface",
+	graph: "materials/skin.bemx",
+	variables: [
+		{ name: "base_color", data_type: "Texture2D", type: "Static", value: "textures/skin_diffuse.png" },
+		{ name: "normal", data_type: "Texture2D", type: "Static", value: "textures/skin_normal.png" },
+		{ name: "gloss", data_type: "Texture2D", type: "Static", value: "textures/skin_gloss.png" },
+		{ name: "subsurface_radius", data_type: "vec3f", type: "Static", value: [0.0037, 0.0014, 0.0007] },
+	],
+}
+```
+
+Scale the radius with the subject: a larger radius looks like wax, and a
+smaller one like a tight, dry surface. Keep `base_color` the color the surface
+shows when lit evenly; scattering moves light around, but doesn't change how
+much the surface reflects overall.
+
+To use the material on a model, bind it in the model's
+[sidecar](/docs/reference/assets#material-bindings), as with any other material.
+
+## Let light through thin parts
+
+Ears, nostrils, and fingers glow when a light is behind them. Set the
+surface's `thickness`, in meters, to how much of the surface light crosses
+there. A thickness map works best, since a constant makes the whole surface as
+thin as its ears:
+
+```json5
+{ name: "thickness_texel", node: "image", texture: "thickness", type: "float" },
+{ name: "thickness", node: "multiply", in1: "thickness_texel", in2: 0.02 },
+```
+
+Then add `thickness: "thickness"` to the surface. `thickness` needs
+`subsurface_radius`, and replaces `translucency`: a graph can't set both.
+
+## Check the result
+
+Run your application and compare the material with
+`render.subsurface.enabled` on and off. With the
+[inspector](/docs/reference/inspector), capture the `Subsurface Diffuse` target
+to see the light that spreads.
+
+## Related
+
+- [Subsurface scattering reference](/docs/reference/rendering#subsurface-scattering)
+- [BEMX surface inputs](/docs/reference/bemx#surface)
+- [Light a scene](/docs/use/lighting)

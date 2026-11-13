@@ -96,6 +96,7 @@ material_evaluation_tile: fn (input: StageInput) -> void {
 			let zero: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 			write(material_evaluation.lit_map, pixel_coordinates, zero);
 			write(material_evaluation.diffuse_radiance_map, pixel_coordinates, zero);
+			write(material_evaluation.subsurface_albedo, pixel_coordinates, zero);
 		}
 		return;
 	}
@@ -266,6 +267,91 @@ diffuse_transmission: fn (cosine: f16, roughness: f16) -> f16 {
 }
 "#;
 
+/// Returns the share of the environment's reflection a mirror direction `reflection` keeps above the geometric surface
+/// whose normal is `geometric_normal`, `clamp(1 + 1.3·dot(R, Ng), 0, 1)²`.
+///
+/// Russell's horizon occlusion, "Horizon Occlusion for Normal Mapped Reflections" (Marmoset, 2015). A normal map can
+/// tilt the shading normal so its mirror direction points toward or into the surface, where the environment can't be
+/// seen; the share falls to zero once the direction is 0.77 below the surface's plane.
+pub(crate) const HORIZON_OCCLUSION_SOURCE: &str = r#"
+horizon_occlusion: fn (reflection: vec3f, geometric_normal: vec3f) -> f32 {
+	let horizon: f32 = clamp(1.0 + 1.3 * dot(reflection, geometric_normal), 0.0, 1.0);
+	return horizon * horizon;
+}
+"#;
+
+/// Returns an arc cosine accurate to about 0.007 radians with one square root, Lagarde's fit as Intel's XeGTAO and
+/// Unity's HDRP use it, for [`CONE_SPECULAR_OCCLUSION_SOURCE`]'s cone angles.
+pub(crate) const FAST_ACOS_SOURCE: &str = r#"
+fast_acos: fn (x: f32) -> f32 {
+	let magnitude: f32 = abs(x);
+	let result: f32 = (1.57079632679 - 0.156583 * magnitude) * sqrt(1.0 - magnitude);
+	if (x < 0.0) {
+		return 3.14159265359 - result;
+	}
+	return result;
+}
+"#;
+
+/// Returns the share of a reflection's lobe that the open directions around a pixel let through.
+///
+/// Jimenez, Wu, Pesce, and Jarabo's cone-cone specular occlusion, "Practical Realtime Strategies for Accurate Indirect
+/// Occlusion" (2016), as Unity's HDRP writes it in `GetSpecularOcclusionFromBentAO`. The open directions form a cone
+/// around `bent_normal` whose cosine `√(1 − visibility)` holds the cosine-weighted `visibility`; the lobe is a cone
+/// around `reflection` with a cosine of `2^(−3.32193·α²)`, where `alpha` is the roughness squared. The share is the
+/// cones' intersection, by a smoothstep fit of the solid angle two caps share, divided by the lobe's solid angle.
+pub(crate) const CONE_SPECULAR_OCCLUSION_SOURCE: &str = r#"
+cone_specular_occlusion: fn (bent_normal: vec3f, reflection: vec3f, visibility: f32, alpha: f32) -> f32 {
+	let visibility_cos: f32 = sqrt(clamp(1.0 - visibility, 0.0, 1.0));
+	let clamped_alpha: f32 = max(alpha, 0.01);
+	let lobe_cos: f32 = pow(2.0, 0.0 - 3.32192809489 * clamped_alpha * clamped_alpha);
+	let visibility_angle: f32 = fast_acos(visibility_cos);
+	let lobe_angle: f32 = fast_acos(lobe_cos);
+	let separation: f32 = fast_acos(clamp(dot(bent_normal, reflection), -1.0, 1.0));
+	let difference: f32 = abs(visibility_angle - lobe_angle);
+	// The cap of the smaller cone, which is all the two can share.
+	let smaller_cap: f32 = 6.28318530718 * (1.0 - max(visibility_cos, lobe_cos));
+	let shared: f32 = 0.0;
+	if (separation <= difference) {
+		shared = smaller_cap;
+	} else {
+		if (separation < visibility_angle + lobe_angle) {
+			let overlap: f32 = 1.0 - clamp((separation - difference) / max(visibility_angle + lobe_angle - difference, 0.0001), 0.0, 1.0);
+			shared = smoothstep(0.0, 1.0, overlap) * smaller_cap;
+		}
+	}
+	return clamp(shared / (6.28318530718 * (1.0 - lobe_cos)), 0.0, 1.0);
+}
+"#;
+
+/// Returns Christensen and Burley's per-channel profile scale `d = ℓ / s` for the mean free path `radius`, in meters,
+/// and the multiple-scattering `albedo`, with their searchlight fit `s = 1.85 − A + 7·|A − 0.8|³`.
+///
+/// "Approximate Reflectance Profiles for Efficient Subsurface Scattering", Christensen and Burley, 2015.
+pub(crate) const BURLEY_DISTANCE_SOURCE: &str = r#"
+burley_distance: fn (radius: vec3f16, albedo: vec3f16) -> vec3f16 {
+	let offset: vec3f16 = albedo - vec3f16(0.8, 0.8, 0.8);
+	let magnitude: vec3f16 = vec3f16(abs(offset.x), abs(offset.y), abs(offset.z));
+	let shape: vec3f16 = vec3f16(1.85, 1.85, 1.85) - albedo + f16(7.0) * magnitude * magnitude * magnitude;
+	return radius / shape;
+}
+"#;
+
+/// Returns the share of light per channel that crosses `thickness` meters of a material whose profile scale is
+/// `distance`, `¼·e^(−t/d) + ¾·e^(−t/(3d))`, the transmittance of Christensen and Burley's profile that Golubev's
+/// "Efficient Screen-Space Subsurface Scattering" (2018) uses for thin geometry.
+pub(crate) const BURLEY_TRANSMITTANCE_SOURCE: &str = r#"
+burley_transmittance: fn (thickness: f16, distance: vec3f16) -> vec3f16 {
+	let t: vec3f = vec3f(f32(thickness), f32(thickness), f32(thickness))
+		/ max(vec3f(distance), vec3f(0.000001, 0.000001, 0.000001));
+	return vec3f16(
+		0.25 * exp(0.0 - t.x) + 0.75 * exp(0.0 - t.x / 3.0),
+		0.25 * exp(0.0 - t.y) + 0.75 * exp(0.0 - t.y / 3.0),
+		0.25 * exp(0.0 - t.z) + 0.75 * exp(0.0 - t.z / 3.0)
+	);
+}
+"#;
+
 /// Returns the cosine-weighted average over the hemisphere of a dielectric GGX lobe's directional albedo, `E_avg`.
 ///
 /// Direct diffuse light divides by `1 - E_avg`, so a surface lit evenly from every direction diffuses exactly the share
@@ -343,6 +429,10 @@ material_evaluation_defaults: fn () -> void {
 	let emission: vec3f16 = vec3f16(0.0, 0.0, 0.0);
 	let transmission: vec3f = vec3f(0.0, 0.0, 0.0);
 	let translucency: vec3f16 = vec3f16(0.0, 0.0, 0.0);
+	// Below zero, the material sets no `subsurface_radius` or `thickness`: it doesn't scatter, or passes no light
+	// through its thickness.
+	let subsurface_radius: vec3f16 = vec3f16(-1.0, -1.0, -1.0);
+	let subsurface_thickness: f16 = -1.0;
 }
 "#;
 
@@ -410,6 +500,9 @@ material_evaluation_suffix: fn () -> void {
 	let screen_space_irradiance: vec3f = vec3f(0.0, 0.0, 0.0);
 	// Whether the pixel adds the environment's diffuse light itself, which surfel GI's light already holds.
 	let adds_environment_diffuse: bool = true;
+	// The mean direction of the open part of the hemisphere, which specular occlusion centers its visibility cone on.
+	// Without GTAO, the shading normal stands in.
+	let bent_normal: vec3f = vec3f(normal);
 	if (!transparent) {
 		if (push_constant.indirect_diffuse == 3) {
 			// Lightmaps light the instances they give a rectangle; the rest take the environment's light alone. The
@@ -489,6 +582,26 @@ material_evaluation_suffix: fn () -> void {
 		}
 		if (push_constant.gtao != 0) {
 			let gtao_visibility: f32 = fetch(material_evaluation.ao, pixel_coordinates).x;
+			// The half-resolution bent normal blends between texels. GTAO stores its two components across the view
+			// vector in the frame t = normalize(up × V), b = V × t; the view's rotation carries that frame to world
+			// space, where the view's up axis and V rebuild it. The bent normal lies in the hemisphere around V, which
+			// gives its third component.
+			let encoded_bent_normal: vec4f = texture_lod(
+				material_evaluation.gtao_bent_normal,
+				vec2f(
+					(f32(pixel_coordinates.x) + 0.5) / f32(image_extent.x),
+					(f32(pixel_coordinates.y) + 0.5) / f32(image_extent.y)
+				),
+				0.0
+			);
+			let bent_x: f32 = encoded_bent_normal.x * 2.0 - 1.0;
+			let bent_y: f32 = encoded_bent_normal.y * 2.0 - 1.0;
+			let view_up: vec3f = scene.views.views[0].inverse_view * vec4f(0.0, 1.0, 0.0, 0.0);
+			let frame_t: vec3f = normalize(cross(view_up, V));
+			let frame_b: vec3f = cross(V, frame_t);
+			bent_normal = normalize(
+				frame_t * bent_x + frame_b * bent_y + V * sqrt(max(1.0 - bent_x * bent_x - bent_y * bent_y, 0.0))
+			);
 			// Both passes estimate the same visibility, so multiplying them would darken an occluder they both see
 			// twice. The smaller one keeps an occluder that only one of them resolves, such as a crease below SSGI's
 			// half resolution.
@@ -527,7 +640,23 @@ material_evaluation_suffix: fn () -> void {
 	let geometry_view: f16 = NdotV / (NdotV * (1.0 - geometry_k) + geometry_k);
 	// Diffuse light takes the share the specular lobe leaves on the way out toward the viewer, and indirect light, which
 	// arrives from the whole hemisphere, the average share on the way in. See the lighting design note.
-	let indirect_diffuse_albedo: vec3f16 = one_minus_metalness * diffuse_transmission(NdotV, roughness) * albedo_rgb;
+	// A subsurface material weights its diffuse light by the square root of its albedo where the light enters, and the
+	// subsurface pass applies the other square root where the light leaves, after spreading it. Both halves keep the
+	// albedo's detail while the light bleeds. See the subsurface scattering design note.
+	// Whether this pixel's diffuse light scatters; a transparent subsurface material doesn't.
+	let subsurface_scatters: bool = !transparent && subsurface_radius.x >= f16(0.0);
+	let diffuse_albedo_rgb: vec3f16 = albedo_rgb;
+	if (subsurface_scatters) {
+		diffuse_albedo_rgb = vec3f16(sqrt(albedo_rgb.x), sqrt(albedo_rgb.y), sqrt(albedo_rgb.z));
+	}
+	// Light on the far side of a subsurface material crosses its thickness, losing what the scattering profile
+	// carries elsewhere, and enters weighted like the near side's light. A transparent subsurface material doesn't
+	// scatter, so the share it passes is the full albedo's.
+	if (subsurface_thickness >= f16(0.0)) {
+		translucency = diffuse_albedo_rgb
+			* burley_transmittance(subsurface_thickness, burley_distance(subsurface_radius, albedo_rgb));
+	}
+	let indirect_diffuse_albedo: vec3f16 = one_minus_metalness * diffuse_transmission(NdotV, roughness) * diffuse_albedo_rgb;
 	// Every factor of the direct diffuse weight except the share each light's angle leaves. Folding them here keeps
 	// the albedo, metalness, and view terms out of the light loop: of the shader's regions, the loop slows down the most
 	// for every value held live across it (2026-10-05).
@@ -765,6 +894,35 @@ material_evaluation_suffix: fn () -> void {
 	// Alpha keeps the view depth, the clip w of this pixel, so a ray can tell which pixel belongs to the surface it hit.
 	// It is written before the reflection trace, which cannot change it, so the diffuse sum does not stay live through
 	// the ray march. Only SSGI reads the diffuse light, so it is written only in frames that SSGI lights.
+	// A subsurface pixel leaves its diffuse light, less emission, for the subsurface pass to spread, with what the pass
+	// needs to shape the spread and color the result. Every other opaque pixel marks itself as not scattering, so the
+	// pass needs no clear. SSGI rays then read the light the pixel would leave unscattered: the other square root of
+	// the albedo, applied in place.
+	if (subsurface_scatters) {
+		let subsurface_light: vec3f = diffuse - vec3f(emission);
+		let subsurface_exposed: vec3f = subsurface_light * material_evaluation.lighting_data.exposure;
+		write(
+			material_evaluation.subsurface_diffuse,
+			pixel_coordinates,
+			vec4f(subsurface_exposed.x, subsurface_exposed.y, subsurface_exposed.z, 1.0)
+		);
+		let subsurface_distance: vec3f16 = burley_distance(subsurface_radius, albedo_rgb);
+		write(
+			material_evaluation.subsurface_shape,
+			pixel_coordinates,
+			vec4f(f32(subsurface_distance.x), f32(subsurface_distance.y), f32(subsurface_distance.z), 0.0)
+		);
+		write(
+			material_evaluation.subsurface_albedo,
+			pixel_coordinates,
+			vec4f(f32(diffuse_albedo_rgb.x), f32(diffuse_albedo_rgb.y), f32(diffuse_albedo_rgb.z), 1.0)
+		);
+		diffuse = vec3f(emission) + subsurface_light * vec3f(diffuse_albedo_rgb);
+	} else {
+		if (!transparent) {
+			write(material_evaluation.subsurface_albedo, pixel_coordinates, vec4f(0.0, 0.0, 0.0, 0.0));
+		}
+	}
 	if (!transparent) {
 		if (push_constant.ssgi != 0) {
 			let diffuse_radiance: vec3f = diffuse * material_evaluation.lighting_data.exposure;
@@ -776,21 +934,19 @@ material_evaluation_suffix: fn () -> void {
 		}
 	}
 	// Visibility covers the cosine-weighted hemisphere, but a reflection gathers light from a lobe around the mirror
-	// direction that narrows as roughness falls. Lagarde and de Rousiers' fit ("Moving Frostbite to PBR", 2014)
-	// converts one to the other: smooth surfaces seen head-on keep more of their reflection, and grazing views lose it.
-	// Reflection rays stop at nearby geometry, so the light they find carries its own occlusion.
-	let specular_occlusion: f32 = clamp(
-		pow(f32(NdotV) + environment_visibility, pow(2.0, 0.0 - 16.0 * f32(roughness_alpha) - 1.0))
-			- 1.0
-			+ environment_visibility,
-		0.0,
-		1.0
-	);
+	// direction that narrows as roughness falls: keep the share of that lobe the open directions let through. See
+	// `cone_specular_occlusion`. Reflection rays stop at nearby geometry, so the light they find carries its own occlusion.
+	let specular_occlusion: f32 = cone_specular_occlusion(bent_normal, reflection_direction, environment_visibility, f32(roughness_alpha));
 	let env_brdf: vec2f16 = environment_brdf(NdotV, roughness);
 	// The split-sum reflectance toward the viewer, and the weight of reflected light, with the material occlusion that
 	// applies to indirect light.
 	let specular_reflectance: vec3f = vec3f(F0 * env_brdf.x + env_brdf.y);
 	let specular_weight: vec3f = specular_reflectance * f32(occlusion);
+	// The subsurface pass adds a subsurface pixel's diffuse light once it has spread it, so the lit image holds only
+	// the light that doesn't scatter.
+	if (subsurface_scatters) {
+		diffuse = vec3f(emission);
+	}
 	// Everything but the reflected light is known before the trace, so only these sums stay live through the march.
 	let direct_and_diffuse: vec3f = diffuse + specular;
 	// Screen-space reflections replace the environment where the mirror ray finds visible geometry. One mirror ray
@@ -810,7 +966,10 @@ material_evaluation_suffix: fn () -> void {
 	// Sample the environment after the screen-space trace so its radiance does not stay live through the march.
 	let reflection_radiance: vec3f = sample_environment_specular(material_evaluation, reflection_direction, f32(roughness))
 		* material_evaluation.lighting_data.environment_intensity;
-	let environment_specular: vec3f = reflection_radiance * specular_occlusion;
+	// A normal map can tilt the mirror direction toward or past the surface the geometry has, where the environment
+	// can't be seen. See `horizon_occlusion`.
+	let environment_specular: vec3f = reflection_radiance
+		* (specular_occlusion * horizon_occlusion(reflection_direction, geometric_normal));
 	let specular_radiance: vec3f = environment_specular * (1.0 - reflection_weight)
 		+ vec3f(screen_space_reflection.x, screen_space_reflection.y, screen_space_reflection.z) * reflection_weight;
 	// Pre-expose: store light already multiplied by the camera exposure, so real-world intensities such as a

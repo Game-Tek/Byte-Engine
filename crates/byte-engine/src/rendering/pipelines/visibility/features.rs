@@ -31,6 +31,9 @@ pub const BAKED_GI_ENABLED_PARAMETER: &str = "baked-gi.enabled";
 /// The startup parameter, inside [`RENDER_PARAMETERS`], that builds contact shadows into the project. Its runtime
 /// value also turns them on and off.
 pub const CONTACT_SHADOWS_ENABLED_PARAMETER: &str = "contact-shadows.enabled";
+/// The startup parameter, inside [`RENDER_PARAMETERS`], that builds subsurface scattering into the project: the
+/// diffuse split in material evaluation, its targets, and the pass that spreads the light.
+pub const SUBSURFACE_ENABLED_PARAMETER: &str = "subsurface.enabled";
 /// The startup parameter, inside [`RENDER_PARAMETERS`], that caps how many directional lights the project uses. When
 /// it is `1` or less, the project builds the `single_directional_light` feature in. No shader reads that feature yet.
 pub const DIRECTIONAL_LIGHTS_MAX_PARAMETER: &str = "lights.directional.max";
@@ -181,6 +184,9 @@ pub struct VisibilityFeatures {
 	pub baked_gi: bool,
 	/// Whether the sun visibility resolve multiplies in the contact-shadow trace.
 	pub contact_shadows: bool,
+	/// Whether subsurface materials spread their diffuse light beneath their surface, through material evaluation's
+	/// subsurface outputs and the subsurface pass after it.
+	pub subsurface: bool,
 	/// Whether the project uses at most one directional light. No shader reads it yet; it exists so the baked shaders
 	/// can skip their multi-light loops.
 	pub single_directional_light: bool,
@@ -218,6 +224,8 @@ impl Default for VisibilityFeatures {
 			probe_gi: false,
 			baked_gi: false,
 			contact_shadows: true,
+			// Its targets and pass cost every frame, so only projects that draw skin or wax build it in.
+			subsurface: false,
 			single_directional_light: false,
 			debug_views: cfg!(debug_assertions),
 			material_evaluation: MaterialEvaluationMode::default(),
@@ -252,6 +260,7 @@ impl VisibilityFeatures {
 			probe_gi: built_in(PROBE_GI_ENABLED_PARAMETER, defaults.probe_gi),
 			baked_gi: built_in(BAKED_GI_ENABLED_PARAMETER, defaults.baked_gi),
 			contact_shadows: built_in(CONTACT_SHADOWS_ENABLED_PARAMETER, defaults.contact_shadows),
+			subsurface: built_in(SUBSURFACE_ENABLED_PARAMETER, defaults.subsurface),
 			single_directional_light: parameters.get_parameter(DIRECTIONAL_LIGHTS_MAX_PARAMETER).map_or(
 				defaults.single_directional_light,
 				|parameter| {
@@ -285,11 +294,11 @@ impl VisibilityFeatures {
 	/// `byte_engine/rendering/` and the stems of the engine assets only it uses, and whether the project builds it in.
 	/// Each stem names a pipeline and its shader, or a shader the engine assembles a pipeline from, which takes a row of
 	/// its own.
-	fn table(&self) -> [(&'static str, &'static str, &'static [&'static str], bool); 15] {
+	fn table(&self) -> [(&'static str, &'static str, &'static [&'static str], bool); 16] {
 		use super::ray_tracing::{DEFAULT_HIT_SHADERS, PROBE_SHADING_SHADERS, SURFEL_SHADING_SHADERS};
 		use super::render_pass::{
 			CONTACT_SHADOW_PIPELINES, GTAO_PIPELINES, MATERIAL_PREPASS_PIPELINES, PROBE_GI_PIPELINES, RAY_HIT_PIPELINES,
-			SSGI_PIPELINES, SURFEL_GI_PIPELINES,
+			SSGI_PIPELINES, SUBSURFACE_PIPELINES, SURFEL_GI_PIPELINES,
 		};
 		[
 			("gtao", "visibility/", &GTAO_PIPELINES, self.gtao),
@@ -330,6 +339,8 @@ impl VisibilityFeatures {
 				&CONTACT_SHADOW_PIPELINES,
 				self.contact_shadows,
 			),
+			// Material evaluation's subsurface outputs and images all start with this prefix.
+			("subsurface_", "visibility/", &SUBSURFACE_PIPELINES, self.subsurface),
 			("single_directional_light", "visibility/", &[], self.single_directional_light),
 			("debug_view_", "debug-view/", &DEBUG_VIEW_PIPELINES, self.debug_views),
 			// Only per-material evaluation shaders read the pixel lists the prepasses write.
@@ -514,6 +525,16 @@ mod tests {
 	}
 
 	#[test]
+	fn subsurface_is_left_out_unless_its_parameter_builds_it_in() {
+		let pipeline = "byte_engine/rendering/visibility/subsurface.pipeline";
+		assert!(VisibilityFeatures::from_parameters(&[][..]).excludes(pipeline));
+		let enabled = VisibilityFeatures::from_parameters(&[Parameter::new(SUBSURFACE_ENABLED_PARAMETER, "true")][..]);
+		assert!(enabled.subsurface);
+		assert!(!enabled.excludes(pipeline));
+		assert!(!enabled.excludes("byte_engine/rendering/visibility/subsurface.besl"));
+	}
+
+	#[test]
 	fn shared_assets_stay_when_every_feature_is_left_out() {
 		let features = VisibilityFeatures {
 			gtao: false,
@@ -522,6 +543,7 @@ mod tests {
 			probe_gi: false,
 			baked_gi: false,
 			contact_shadows: false,
+			subsurface: false,
 			single_directional_light: false,
 			debug_views: false,
 			material_evaluation: MaterialEvaluationMode::Pipelines,

@@ -1,0 +1,129 @@
+---
+title: Ambient occlusion
+description: Understand how GTAO finds horizons, integrates visibility and the bent normal, and feeds specular occlusion before you change its passes or their tuning.
+icon: CircleDashed
+---
+
+Read this page before you change GTAO's evaluate, blur, or upscale shaders, or
+how material evaluation occludes reflections. What an application can rely on
+is specified under
+[ambient occlusion](/docs/reference/rendering#ambient-occlusion) and
+[reflections](/docs/reference/rendering#reflections) in the rendering
+reference.
+
+## Three passes at half resolution
+
+GTAO runs in three compute passes before material evaluation:
+
+| Pass | Shader | Writes |
+| --- | --- | --- |
+| Evaluate | `gtao.besl` | `GTAO Raw` (visibility, R8) and `GTAO Bent Normal` (RG8), half size |
+| Denoise | `gtao-blur-x.besl` | `GTAO Blur` and `GTAO Bent Normal Blur`, half size |
+| Upscale | `gtao-upscale.besl` | `Ambient Occlusion`, full size |
+
+Material evaluation reads the full-size visibility texel by texel, and the
+half-size bent normal with bilinear filtering. The bent normal feeds only
+specular occlusion, a smooth term, so it skips the depth-aware upscale.
+
+## Two channels for the bent normal
+
+Every slice's visible arc holds the view vector `V`, because the camera sees
+the pixel, so the bent normal lies in the hemisphere around `V`. Its two
+components across `V`, in the frame `t = normalize(up × V)` and `b = V × t`,
+hold all of it: material evaluation rebuilds the same frame in world space from
+the view's up axis and its own `V`, and the third component as
+`√(1 − x² − y²)`. That map of the hemisphere has no folds, so the denoise's
+averages and the bilinear read stay valid, which an octahedral map's seams
+wouldn't allow. RG8 keeps it to about half a degree near `V`, coarser toward
+the horizon, finer than the cone-cone fit can show. A pixel with no
+reconstructed normal stores zero, the view vector.
+
+## Horizons, not maximum cosines
+
+The evaluation follows Jimenez and others' "Practical Realtime Strategies for
+Accurate Indirect Occlusion" (2016), with the falloff, arc cosine, and bent
+normal integral of Intel's XeGTAO, keeping their constants. Each slice is the
+plane through the view vector and one screen direction:
+
+1. Each side of the slice starts at the surface's tangent, `cos(n ± π/2)`,
+   where `n` is the angle of the normal projected onto the slice.
+2. Every sample raises its side's horizon cosine to the cosine between the
+   view vector and the direction to the sample. Past 38.5 % of the radius, the
+   sample's horizon fades back to the tangent, and past the radius it counts
+   for nothing.
+3. The two horizon angles, clamped to the hemisphere around the projected
+   normal, bound the visible arc. Integrating the arc against the cosine around
+   the normal gives the slice's visibility, and against the slice's direction
+   its bent normal.
+
+The slice's view-space direction is the direction a positive screen step takes
+at constant depth, `(d.x · pixel_to_ray_mul.x, d.y · pixel_to_ray_mul.y, 0)`
+times `view_z_sign`. Positive samples raise the horizon on that side, and the
+integrals measure angles toward it, so a sign error there turns the bent
+normal toward occluders instead of away from them.
+
+Each horizon cosine is lowered by `GTAO_BIAS`, 0.05. That constant isn't part
+of the published method: it predates the horizon integral, where it offset the
+old estimator's elevation, and keeps flat surfaces open despite the depth
+error of the pyramid's conservative coarse mips.
+
+## Keep the tuned sample loop
+
+The evaluation's sample loop is tuned for occupancy and memory latency. A
+change to the occlusion math must keep:
+
+- The rolled slice and sample loops. Unrolling the sample set raises the
+  backend's register tier and lowers occupancy.
+- The paired positive and negative reads, issued before either result is
+  used.
+- Mip selection by step length, which sends steps of 8 and 16 half-size pixels
+  or more to pyramid mips 1 and 2.
+- One fetch of the engine's static 64 × 64 blue noise per pixel. Its first
+  channel turns the slices by up to one slice spacing; a turn of up to π gives
+  the same slice sets but folds the noise over itself once per slice, which
+  spoils its spectrum. Its second channel offsets the samples, shifted along
+  the golden-ratio sequence for each side and each step. Nothing accumulates
+  GTAO over frames, so the noise doesn't animate.
+- Per-slice trigonometry only, and as little of it as the integrals allow. The
+  sample loop does one inverse square root and no trigonometry. Each slice
+  takes `sincos` of its two horizon angles and `sin n` from `cos n`, and
+  expands every other angle the integrals need, multiples of `h` plus or minus
+  `n`, with the double-angle, triple-angle, and angle-addition identities.
+
+The denoise shares its occlusion and depth tiles in workgroup memory. The bent
+normal takes the occlusion's weights but reads its taps from the image, since a
+shared tile of two-channel texels would double the workgroup memory.
+
+## Specular occlusion from the bent cone
+
+Material evaluation dims the environment's reflection by Jimenez and others'
+cone-cone approximation, as Unity's High Definition Render Pipeline (HDRP) writes it in
+`GetSpecularOcclusionFromBentAO`. The open directions form a cone around the
+bent normal whose cosine `√(1 − v)` holds the cosine-weighted visibility `v`,
+and the reflection's lobe is a cone around the mirror direction. The share of
+the lobe inside the visibility cone is the occlusion. Russell's horizon
+occlusion still multiplies on top, because the bent normal comes from depth
+and doesn't see the shading normal's normal map.
+
+Without GTAO, the shading normal stands in for the bent normal, and the cone
+still narrows with the indirect diffuse source's visibility.
+
+## Tests
+
+The BESL VM tests in `pipelines/visibility/tests.rs` run the production
+shaders:
+
+- `gtao_bends_the_normal_away_from_an_occluder`: an open plane keeps a
+  visibility of 1 and its own normal, and a wall beside it occludes it and
+  tilts the bent normal away.
+- `gtao_writes_white_for_background_and_expected_recessed_foreground_ao`: the
+  sky's visibility and bent normal, and a pit's near-total occlusion.
+- `gtao_uses_depth_pyramid_for_distant_samples` and
+  `gtao_floor_has_no_scale_dependent_normal_seam`: mip selection and normal
+  reconstruction.
+- `gtao_half_resolution_blur_preserves_uniform_ao_and_smooths_horizontally`:
+  the denoise keeps uniform input in both images and mixes columns.
+
+`cone_specular_occlusion_keeps_the_lobe_share_inside_the_visibility_cone_in_the_besl_vm`
+in `shader_generator/tests.rs` checks the specular occlusion helper's limits
+and its cap ratio.

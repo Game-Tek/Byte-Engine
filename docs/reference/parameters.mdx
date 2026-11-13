@@ -111,6 +111,7 @@ two names.
 | `render.probe-gi.enabled` | `false` | Ray-traced probe global illumination, its pipelines, and its ray tracing shaders, which makes `probes` a `render.gi.technique` value. See [probe GI](/docs/reference/rendering#probe-gi). |
 | `render.baked-gi.enabled` | `false` | [Lightmap UVs](/docs/reference/assets#lightmap-uvs) in mesh bakes, closest-hit shaders for the [lightmap bake](/docs/reference/assets#lightmaps), and lightmap reads in material shaders, which makes `baked` a `render.gi.technique` value. See [lightmaps](/docs/reference/rendering#lightmaps). |
 | `render.contact-shadows.enabled` | `true` | The contact-shadow trace in the sun visibility resolve and its pipeline. |
+| `render.subsurface.enabled` | `false` | Subsurface scattering in material shaders, its targets, its pipeline, and its pass. See [subsurface scattering](/docs/reference/rendering#subsurface-scattering). |
 | `render.material-evaluation` | `pipelines` | How material evaluation runs: `pipelines` or `uber`. Any other value stops the application at startup. See [materials](/docs/reference/rendering#materials). |
 
 ## Visibility pipeline

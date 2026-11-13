@@ -48,7 +48,8 @@ use super::render_pass::{
 	PROBE_SPACING_RANGE, ProbeGiSettings, ProbeVolume, RayHits, RayTracing, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
 	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool,
 	VisibilityRenderPass, create_backdrop_targets, create_diffuse_radiance_history_target, create_fog_light_target,
-	create_gtao_targets, create_ssgi_targets, create_sun_visibility_targets, create_surfel_targets,
+	create_gtao_targets, create_ssgi_targets, create_subsurface_targets, create_sun_visibility_targets,
+	create_surfel_targets,
 };
 use super::residency::MeshResidencies;
 use super::scene::{
@@ -2618,6 +2619,11 @@ impl PipelineManager for VisibilityPipelineManager {
 		let gtao = create_gtao_targets(render_pass_builder);
 		let fog_light = create_fog_light_target(render_pass_builder);
 		let backdrop = create_backdrop_targets(render_pass_builder);
+		let subsurface = self
+			.settings
+			.features
+			.subsurface
+			.then(|| create_subsurface_targets(render_pass_builder));
 		let stage_counters = super::render_pass::StageCounters::new(render_pass_builder);
 		let surfel_gi = self.surfel_pool.is_some();
 		let surfels = surfel_gi.then(|| create_surfel_targets(render_pass_builder));
@@ -2651,6 +2657,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				gtao,
 				fog_light,
 				backdrop,
+				subsurface,
 			},
 			&self.shadow_maps,
 			stage_counters,

@@ -214,6 +214,43 @@ fn a_surface_that_sets_translucency_makes_a_translucent_graph() {
 		.expect_err("a float translucency should not parse");
 }
 
+/// A graph scatters when its surface sets `subsurface_radius`, a colour of mean free paths, and `thickness` makes it
+/// translucent only together with that radius and without `translucency`.
+#[test]
+fn subsurface_inputs_make_subsurface_and_translucent_graphs() {
+	let skin = json::parse(
+		r#"{ nodes: [
+			{ name: "radius", node: "parameter", parameter: "radius", type: "vector3" },
+			{ name: "surface", node: "surface", subsurface_radius: "radius" },
+		] }"#,
+	)
+	.expect("a surface with a subsurface radius should parse");
+	assert!(skin.is_subsurface());
+	assert!(!skin.is_translucent());
+
+	let ear = json::parse(
+		r#"{ nodes: [{ name: "surface", node: "surface", subsurface_radius: [0.004, 0.0014, 0.0007], thickness: 0.01 }] }"#,
+	)
+	.expect("a subsurface surface with a thickness should parse");
+	assert!(ear.is_subsurface());
+	assert!(ear.is_translucent());
+
+	let stone = json::parse(r#"{ nodes: [{ name: "surface", node: "surface", roughness: 0.9 }] }"#)
+		.expect("a surface without subsurface inputs should parse");
+	assert!(!stone.is_subsurface());
+
+	// The radius is a colour, as `translucency` is.
+	json::parse(r#"{ nodes: [{ name: "surface", node: "surface", subsurface_radius: 0.004 }] }"#)
+		.expect_err("a float subsurface radius should not parse");
+	let lone = json::parse(r#"{ nodes: [{ name: "surface", node: "surface", thickness: 0.01 }] }"#)
+		.expect_err("a thickness without a subsurface radius should not parse");
+	assert!(lone.to_string().contains("subsurface_radius"), "{lone}");
+	json::parse(
+		r#"{ nodes: [{ name: "surface", node: "surface", subsurface_radius: [0.004, 0.0014, 0.0007], thickness: 0.01, translucency: [0.5, 0.5, 0.5] }] }"#,
+	)
+	.expect_err("a thickness together with a translucency should not parse");
+}
+
 #[test]
 fn json_error_messages_name_the_node_and_the_likely_cause() {
 	let error = json::parse(r#"{ nodes: [{ name: "surface", node: "surface", metalness: [1.0, 0.0] }] }"#)

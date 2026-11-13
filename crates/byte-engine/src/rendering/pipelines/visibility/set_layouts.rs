@@ -52,6 +52,11 @@ layout!(
 layout!(GTAO, "layouts::gtao::Gtao");
 layout!(GTAO_BLUR, "layouts::gtao_blur::GtaoBlur");
 layout!(GTAO_UPSCALE, "layouts::gtao_upscale::GtaoUpscale");
+layout!(
+	/// The per-sink set of the subsurface pass, which spreads subsurface pixels' diffuse light.
+	SUBSURFACE,
+	"layouts::subsurface::Subsurface"
+);
 layout!(DEPTH_PYRAMID, "layouts::depth_pyramid::DepthPyramid");
 layout!(BACKDROP, "layouts::backdrop::Backdrop");
 layout!(HIZ_BASE, "layouts::hiz_base::HizBase");
@@ -197,6 +202,7 @@ mod tests {
 			&GTAO,
 			&GTAO_BLUR,
 			&GTAO_UPSCALE,
+			&SUBSURFACE,
 			&DEPTH_PYRAMID,
 			&BACKDROP,
 			&HIZ_BASE,

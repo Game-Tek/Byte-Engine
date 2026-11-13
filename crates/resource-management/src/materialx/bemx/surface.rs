@@ -177,6 +177,8 @@ pub(super) fn convert(
 		// describe.
 		transmission: None,
 		translucency: None,
+		subsurface_radius: None,
+		thickness: None,
 	})
 }
 

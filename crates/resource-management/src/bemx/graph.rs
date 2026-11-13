@@ -336,6 +336,15 @@ pub struct Surface {
 	/// per channel, such as a leaf's. A graph that sets it makes a translucent material, which a renderer may shade
 	/// with code other materials don't carry. Defaults to none.
 	pub translucency: Option<NodeId>,
+	/// The mean free path of light under the surface, a `vector3` in meters per channel, such as skin's. A graph that
+	/// sets it makes a subsurface material, whose diffuse light a renderer spreads around where it entered. Defaults
+	/// to none.
+	pub subsurface_radius: Option<NodeId>,
+	/// The distance light crosses through a subsurface material, a `float` in meters, such as an ear's width. A graph
+	/// that sets it makes a translucent material whose far-side light is attenuated over this distance by the
+	/// subsurface profile. It needs [`Surface::subsurface_radius`] and excludes [`Surface::translucency`]. Defaults
+	/// to none.
+	pub thickness: Option<NodeId>,
 }
 
 impl Surface {
@@ -349,10 +358,12 @@ impl Surface {
 	pub const DEFAULT_OCCLUSION: Value = Value::Float(1.0);
 	pub const DEFAULT_TRANSMISSION: Value = Value::Vector3([0.0, 0.0, 0.0]);
 	pub const DEFAULT_TRANSLUCENCY: Value = Value::Vector3([0.0, 0.0, 0.0]);
+	pub const DEFAULT_SUBSURFACE_RADIUS: Value = Value::Vector3([0.0, 0.0, 0.0]);
+	pub const DEFAULT_THICKNESS: Value = Value::Float(0.0);
 
 	/// Lists every input with its name, the type it has to carry, and the value it takes when the graph leaves it
 	/// out, in declaration order. The normal has no constant default: it falls back to the geometric normal.
-	pub fn inputs(&self) -> [(&'static str, Option<NodeId>, Type, Option<Value>); 9] {
+	pub fn inputs(&self) -> [(&'static str, Option<NodeId>, Type, Option<Value>); 11] {
 		[
 			("base_color", self.base_color, Type::Vector3, Some(Self::DEFAULT_BASE_COLOR)),
 			("opacity", self.opacity, Type::Float, Some(Self::DEFAULT_OPACITY)),
@@ -373,6 +384,13 @@ impl Surface {
 				Type::Vector3,
 				Some(Self::DEFAULT_TRANSLUCENCY),
 			),
+			(
+				"subsurface_radius",
+				self.subsurface_radius,
+				Type::Vector3,
+				Some(Self::DEFAULT_SUBSURFACE_RADIUS),
+			),
+			("thickness", self.thickness, Type::Float, Some(Self::DEFAULT_THICKNESS)),
 		]
 	}
 }
@@ -606,7 +624,14 @@ impl Graph {
 	/// Reports whether the surface sets [`Surface::translucency`], whatever it computes. A renderer keeps the code that
 	/// lights a surface from its far side to the materials this reports, so the others don't pay for it.
 	pub fn is_translucent(&self) -> bool {
-		self.surface().translucency.is_some()
+		let surface = self.surface();
+		surface.translucency.is_some() || surface.thickness.is_some()
+	}
+
+	/// Reports whether the surface sets [`Surface::subsurface_radius`], whatever it computes. A renderer spreads the
+	/// diffuse light of the materials this reports beneath their surface.
+	pub fn is_subsurface(&self) -> bool {
+		self.surface().subsurface_radius.is_some()
 	}
 
 	/// Reports whether a node reads the opaque scene behind the surface, which only a blended surface has drawn
@@ -1001,6 +1026,11 @@ fn infer(id: NodeId, node: &Node, types: &[Option<Type>]) -> Result<Option<Type>
 					exactly(value, name, r#type)?;
 				}
 			}
+			// Thickness attenuates light by the subsurface profile and stands in for `translucency`, so it needs the
+			// one and excludes the other.
+			if surface.thickness.is_some() && (surface.subsurface_radius.is_none() || surface.translucency.is_some()) {
+				return Err(GraphError::LoneThickness { node: id });
+			}
 
 			return Ok(None);
 		}
@@ -1054,6 +1084,8 @@ pub enum GraphError {
 	UnnamedParameter { node: NodeId },
 	/// The node a graph finishes with is not a surface.
 	NotASurface { node: NodeId },
+	/// A surface sets `thickness` without `subsurface_radius`, or together with `translucency`.
+	LoneThickness { node: NodeId },
 	/// The graph has more nodes than an identifier can number.
 	TooManyNodes,
 }
@@ -1069,7 +1101,8 @@ impl GraphError {
 			| GraphError::InvalidWidth { node, .. }
 			| GraphError::EmptySwitch { node }
 			| GraphError::UnnamedParameter { node }
-			| GraphError::NotASurface { node } => Some(node),
+			| GraphError::NotASurface { node }
+			| GraphError::LoneThickness { node } => Some(node),
 			GraphError::TooManyNodes => None,
 		}
 	}
@@ -1113,6 +1146,10 @@ impl GraphError {
 			GraphError::NotASurface { .. } => write!(
 				f,
 				"Node {node} is not a surface. The most likely cause is a graph whose 'surface' names a node of another kind. See {docs}."
+			),
+			GraphError::LoneThickness { .. } => write!(
+				f,
+				"Surface {node} sets 'thickness' without 'subsurface_radius', or together with 'translucency'. The most likely cause is a thickness map wired to a surface that doesn't scatter, or one that already sets its translucency. Set 'subsurface_radius' and remove 'translucency'. See {docs}."
 			),
 			GraphError::TooManyNodes => write!(
 				f,

@@ -100,6 +100,15 @@ const TRANSLUCENT_GRAPH: &str = r#"{
 	],
 }"#;
 
+/// A skin with a scattering radius per channel and a thickness light crosses, which scatters its diffuse light and
+/// lights its far side through the thickness.
+const SKIN_GRAPH: &str = r#"{
+	nodes: [
+		{ name: "albedo", node: "image", texture: "base_color", type: "vector3" },
+		{ name: "surface", node: "surface", base_color: "albedo", subsurface_radius: [0.0037, 0.0014, 0.0007], thickness: 0.01 },
+	],
+}"#;
+
 /// The parameters [`TEXTURED_GRAPH`] reads, in binding order.
 fn textured_parameters() -> Vec<MaterialParameter> {
 	vec![
@@ -530,6 +539,13 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 			},
 			"debug_view_targets",
 		),
+		(
+			VisibilityFeatures {
+				subsurface: false,
+				..Default::default()
+			},
+			"subsurface_diffuse",
+		),
 	];
 	let every_feature = VisibilityFeatures {
 		gtao: true,
@@ -538,6 +554,7 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 		probe_gi: true,
 		baked_gi: true,
 		contact_shadows: true,
+		subsurface: true,
 		single_directional_light: true,
 		debug_views: true,
 		material_evaluation: Default::default(),
@@ -570,6 +587,34 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 	);
 }
 
+/// A skin material's shader writes the images the subsurface pass reads only when the project builds subsurface
+/// scattering in, and its thickness keeps the far-side lighting a translucent material has.
+#[test]
+fn skin_material_writes_subsurface_images_only_when_built_in() {
+	let skin = graph(SKIN_GRAPH);
+	let parameters = textured_parameters();
+	let reaches = |subsurface, binding: &str| {
+		let shader = material_generator_with(VisibilityFeatures {
+			subsurface,
+			..Default::default()
+		})
+		.generate(&skin, &parameters, &EMBEDDED_MODULES)
+		.expect("the skin graph should generate")
+		.expect("the pipelines mode builds an evaluation shader");
+		let root = besl::lex(shader).expect("generated program should link");
+		let main = root.get_main().expect("generated program should contain main");
+		resource_management::shader::besl::graph::dependency_order(&main)
+			.iter()
+			.any(|node| node.borrow().get_name() == Some(binding))
+	};
+	for binding in ["subsurface_diffuse", "subsurface_shape", "subsurface_albedo"] {
+		assert!(reaches(true, binding), "a skin material should write `{binding}`");
+		assert!(!reaches(false, binding), "`{binding}` was written without subsurface scattering");
+	}
+	// The thickness weights the far side's light by the profile's transmittance.
+	assert!(reaches(true, "burley_transmittance"));
+}
+
 /// Verifies the generated material evaluation program lowers to the running platform's shader language.
 ///
 /// Linking only proves the BESL is well formed. The generated program reaches the GPU through a platform
@@ -589,10 +634,15 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 		(WORLD_MAPPED_GRAPH, textured_parameters()),
 		(BACKDROP_GRAPH, textured_parameters()),
 		(TRANSLUCENT_GRAPH, textured_parameters()),
+		(SKIN_GRAPH, textured_parameters()),
 		(DYNAMIC_GRAPH, dynamic_parameters()),
 	] {
 		let graph = graph(source);
-		let shader = material_generator()
+		// Subsurface scattering is left out by default; build it in so its writes reach the platform compiler too.
+		let shader = material_generator_with(VisibilityFeatures {
+			subsurface: true,
+			..Default::default()
+		})
 			.generate(&graph, &parameters, &EMBEDDED_MODULES)
 			.expect("test graph should generate")
 			.expect("the pipelines mode builds an evaluation shader");
@@ -612,6 +662,7 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 fn with_uber_programs(check: impl Fn(UberVariant, Node<'_>)) {
 	let generator = material_generator_with(VisibilityFeatures {
 		material_evaluation: MaterialEvaluationMode::Uber,
+		subsurface: true,
 		..Default::default()
 	});
 	let (textured, dynamic, translucent) = (graph(TEXTURED_GRAPH), graph(DYNAMIC_GRAPH), graph(TRANSLUCENT_GRAPH));
@@ -2058,6 +2109,77 @@ fn coupled_diffuse_conserves_energy_and_lights_rough_surfaces_at_grazing_views_i
 
 /// Verifies the light lobe peaks at its analytic value `1 / (π α²)` for the smoothest lobe material evaluation allows,
 /// where the half vector meets the normal, and stays a distribution: its projected integral over the hemisphere is one.
+/// A mirror direction above the geometric surface keeps its whole reflection, one that dips below it keeps less, and
+/// one 0.77 or more below the surface's plane keeps none.
+#[test]
+fn horizon_occlusion_fades_reflections_below_the_geometric_surface_in_the_besl_vm() {
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			let up: vec3f = vec3f(0.0, 1.0, 0.0);
+			results.above = horizon_occlusion(normalize(vec3f(1.0, 1.0, 0.0)), up);
+			results.along = horizon_occlusion(vec3f(1.0, 0.0, 0.0), up);
+			results.below = horizon_occlusion(normalize(vec3f(1.0, 0.0 - 0.3, 0.0)), up);
+			results.under = horizon_occlusion(normalize(vec3f(0.5, 0.0 - 1.0, 0.0)), up);
+		}
+		"#,
+		&mut [],
+		&[(HORIZON_OCCLUSION_SOURCE, "horizon_occlusion")],
+		members("f32", &["above", "along", "below", "under"]),
+	);
+	let below = 1.0 - 1.3 * 0.3 / (1.0f32 + 0.09).sqrt();
+	for (name, expected) in [("above", 1.0), ("along", 1.0), ("below", below * below), ("under", 0.0)] {
+		let value = read_f32(&results, name);
+		assert!(
+			(value - expected).abs() < 0.0001,
+			"A reflection {name} the surface kept {value}, not {expected}. The most likely cause is a fade other than \
+			 Russell's squared fit."
+		);
+	}
+}
+
+/// Verifies cone-cone specular occlusion keeps a whole reflection the open directions hold, none of one they can't, and,
+/// for a lobe wider than the open cone, the share of the lobe's solid angle the cone covers.
+#[test]
+fn cone_specular_occlusion_keeps_the_lobe_share_inside_the_visibility_cone_in_the_besl_vm() {
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			let up: vec3f = vec3f(0.0, 1.0, 0.0);
+			let side: vec3f = vec3f(1.0, 0.0, 0.0);
+			results.open = cone_specular_occlusion(up, normalize(vec3f(1.0, 1.0, 0.0)), 1.0, 0.3);
+			results.closed = cone_specular_occlusion(up, up, 0.0, 0.3);
+			results.smooth_inside = cone_specular_occlusion(up, up, 0.5, 0.1);
+			results.smooth_outside = cone_specular_occlusion(up, side, 0.5, 0.1);
+			results.rough_inside = cone_specular_occlusion(up, up, 0.5, 1.0);
+		}
+		"#,
+		&mut [],
+		&[
+			(FAST_ACOS_SOURCE, "fast_acos"),
+			(CONE_SPECULAR_OCCLUSION_SOURCE, "cone_specular_occlusion"),
+		],
+		members("f32", &["open", "closed", "smooth_inside", "smooth_outside", "rough_inside"]),
+	);
+	// A visibility of one half opens a cone whose cosine is √0.5. A lobe of α = 1 has a cosine of 0.1 and holds that
+	// whole cone, so it keeps the ratio of the two caps.
+	let rough_inside = (1.0 - 0.5f32.sqrt()) / (1.0 - 0.1);
+	for (name, expected) in [
+		("open", 1.0),
+		("closed", 0.0),
+		("smooth_inside", 1.0),
+		("smooth_outside", 0.0),
+		("rough_inside", rough_inside),
+	] {
+		let value = read_f32(&results, name);
+		assert!(
+			(value - expected).abs() < 0.001,
+			"The {name} reflection kept {value}, not {expected}. The most likely cause is a cone angle or cap ratio \
+			 other than the cone-cone approximation's."
+		);
+	}
+}
+
 #[test]
 fn trowbridge_reitz_peaks_finitely_and_integrates_to_one_in_the_besl_vm() {
 	let results = run_helper_test(

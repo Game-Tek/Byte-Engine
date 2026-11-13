@@ -1,3 +1,8 @@
+// Ground-truth ambient occlusion: Jimenez, Wu, Pesce, and Jarabo, "Practical Realtime Strategies for Accurate Indirect
+// Occlusion" (2016), with the falloff, arc-cosine, and bent normal of Intel's XeGTAO. Each slice through the view
+// direction keeps the highest horizon on either side of the pixel, then integrates the visible arc between the two
+// horizons against the cosine around the normal, for visibility, and against the slice's direction, for the bent normal.
+//
 // depth_pyramid stores conservative nearest-nonzero positive view-space distance.
 // GTAO reads mip levels zero through two. Mip zero matches the half-resolution
 // AO output, and later mips serve distant samples.
@@ -13,7 +18,7 @@ NormalDelta: struct {
 
 RadiusData: struct {
 	screen_radius: f32,
-	inverse_world_radius_sq: f32,
+	inverse_world_radius: f32,
 	fade: f32,
 }
 
@@ -39,7 +44,10 @@ SamplePoint: struct {
 	level: f32,
 }
 
+// Lowers every horizon cosine, so depth error in the pyramid's conservative mips doesn't occlude flat surfaces.
 GTAO_BIAS: const f32 = 0.05;
+// XeGTAO fades a sample's horizon to the tangent over the outer 61.5 % of the radius: one over 0.615.
+GTAO_FALLOFF_SCALE: const f32 = 1.6260162602;
 GTAO_STRENGTH: const f32 = 1.0;
 GTAO_MIN_RADIUS_PIXELS: const f32 = 4.0;
 // Half-resolution pixels cover two sink pixels, so 32 preserves the original
@@ -51,16 +59,14 @@ GTAO_MAX_SAMPLES_PER_RAY: const u32 = 32;
 GTAO_MIN_RADIAL_RAYS: const u32 = 2;
 GTAO_MAX_RADIAL_RAYS: const u32 = 32;
 GTAO_PI: const f32 = 3.14159265359;
+GTAO_HALF_PI: const f32 = 1.57079632679;
 GTAO_GOLDEN: const f32 = 0.618033988749;
 // This threshold tests sin squared between the finite-difference tangents.
 // Unlike a world-space area threshold, it is invariant under projection scale.
 GTAO_NORMAL_SIN_SQ_EPSILON: const f32 = 0.00000001;
 
-// Jorge Jimenez's interleaved gradient noise:
-// https://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare/
-interleaved_gradient_noise: fn (pixel: vec2u) -> f32 {
-	return fract(52.9829189 * fract(0.06711056 * f32(pixel.x) + 0.00583715 * f32(pixel.y)));
-}
+// The side of the tiling blue-noise texture, `BLUE_NOISE_SIDE` in `lookup_textures.rs`.
+GTAO_BLUE_NOISE_SIDE: const u32 = 64;
 
 // Reads the depth of the mip `level` texel that covers the integer-valued half-resolution `position`. Scaling by the
 // texel size puts the position's texel coordinate in the mip at `position >> level` plus a fraction, whether or not
@@ -185,10 +191,9 @@ compute_radius_data: fn (gtao_view: GtaoView, gtao_set: Gtao, linear_depth: f32)
 	let pixels_per_unit: f32 = gtao_view.gtao_view.projection_pixels_y / max(linear_depth, 0.0001);
 	let ideal_screen_radius: f32 = gtao_set.gtao_parameters.radius * pixels_per_unit;
 	let screen_radius: f32 = clamp(ideal_screen_radius, GTAO_MIN_EFFECTIVE_RADIUS_PIXELS, GTAO_MAX_RADIUS_PIXELS);
-	let inverse_world_radius: f32 = pixels_per_unit / screen_radius;
 	return RadiusData(
 		screen_radius,
-		inverse_world_radius * inverse_world_radius,
+		pixels_per_unit / screen_radius,
 		smoothstep(0.0, GTAO_MIN_RADIUS_PIXELS, ideal_screen_radius)
 	);
 }
@@ -210,31 +215,45 @@ sample_point: fn (
 	return SamplePoint(position, level);
 }
 
-update_direction_occlusion: fn (
+// XeGTAO's arc cosine, accurate to about 0.007 radians with one square root.
+fast_acos: fn (x: f32) -> f32 {
+	let magnitude: f32 = abs(x);
+	let result: f32 = (GTAO_HALF_PI - 0.156583 * magnitude) * sqrt(1.0 - magnitude);
+	if (x < 0.0) {
+		return GTAO_PI - result;
+	}
+	return result;
+}
+
+// Returns the higher of `previous_horizon` and the sample's horizon: the cosine of the angle between the view vector and
+// the direction to the sample, faded to `low_horizon`, the surface's tangent, as the sample nears the radius.
+update_horizon: fn (
 	gtao_view: GtaoView,
-	previous_occlusion: f32,
+	previous_horizon: f32,
+	low_horizon: f32,
 	sample_position: vec2f,
 	sample_linear_depth: f32,
 	pixel_position: vec2f,
 	center_ray: vec2f,
 	center_z: f32,
-	normal: vec3f,
-	inverse_radius_sq: f32
+	view_vector: vec3f,
+	inverse_radius: f32
 ) -> f32 {
 	if (sample_linear_depth == 0.0 || (sample_position.x == pixel_position.x && sample_position.y == pixel_position.y)) {
-		return previous_occlusion;
+		return previous_horizon;
 	}
 
 	let delta: vec3f = view_position_delta(gtao_view, sample_position - pixel_position, sample_linear_depth, center_ray, center_z);
 	let distance_sq: f32 = dot(delta, delta);
-	let normalized_distance_sq: f32 = distance_sq * inverse_radius_sq;
-	if (distance_sq <= 0.00001 || normalized_distance_sq > 1.0) {
-		return previous_occlusion;
+	let inverse_distance: f32 = inversesqrt(distance_sq);
+	let normalized_distance: f32 = distance_sq * inverse_distance * inverse_radius;
+	if (distance_sq <= 0.00001 || normalized_distance > 1.0) {
+		return previous_horizon;
 	}
 
-	let alignment: f32 = max(dot(normal, delta) * inversesqrt(distance_sq) - GTAO_BIAS, 0.0);
-	let falloff: f32 = 1.0 - normalized_distance_sq;
-	return max(previous_occlusion, alignment * falloff * falloff);
+	let horizon: f32 = dot(delta, view_vector) * inverse_distance - GTAO_BIAS;
+	let weight: f32 = clamp((1.0 - normalized_distance) * GTAO_FALLOFF_SCALE, 0.0, 1.0);
+	return max(previous_horizon, mix(low_horizon, horizon, weight));
 }
 
 main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
@@ -252,6 +271,7 @@ main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
 	let center_linear_depth: f32 = upper_left.y;
 	if (center_linear_depth == 0.0) {
 		write(gtao_set.ao_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
+		write(gtao_set.bent_normal_output, pixel, vec4f(0.5, 0.5, 0.0, 0.0));
 		return;
 	}
 
@@ -265,8 +285,10 @@ main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
 		center_ray,
 		center_z
 	);
+	// Without a normal, the bent normal is the view vector: zero across it.
 	if (dot(normal, normal) == 0.0) {
 		write(gtao_set.ao_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
+		write(gtao_set.bent_normal_output, pixel, vec4f(0.5, 0.5, 0.0, 0.0));
 		return;
 	}
 	let radius: RadiusData = compute_radius_data(gtao_view, gtao_set, center_linear_depth);
@@ -274,11 +296,18 @@ main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
 	let radial_rays: u32 = clamp(gtao_set.gtao_parameters.radial_rays, GTAO_MIN_RADIAL_RAYS, GTAO_MAX_RADIAL_RAYS);
 	let ray_pairs: u32 = radial_rays / 2;
 	let inverse_samples_per_ray: f32 = 1.0 / f32(samples_per_ray);
-	let rotation: f32 = interleaved_gradient_noise(pixel) * GTAO_PI;
+	// Two channels of the engine's tiling blue noise: the slices' turn and the samples' offset along each side. Turning
+	// by less than one slice spacing reaches every slice set, and keeps neighboring pixels' turns blue, which a turn of
+	// up to π would fold over itself once per slice.
+	let noise: vec4f = fetch(gtao_set.blue_noise, vec2u(pixel.x % GTAO_BLUE_NOISE_SIDE, pixel.y % GTAO_BLUE_NOISE_SIDE));
+	let rotation: f32 = noise.x * GTAO_PI / f32(ray_pairs);
 	let rotation_trigonometry: vec2f = sincos(rotation);
 	let axis_direction: vec2f = vec2f(rotation_trigonometry.y, rotation_trigonometry.x);
 	let axis_rotation: vec2f = sincos(GTAO_PI / f32(ray_pairs));
-	let total_occlusion: f32 = 0.0;
+	let total_visibility: f32 = 0.0;
+	let bent_normal: vec3f = vec3f(0.0, 0.0, 0.0);
+	// The unit vector from the pixel's surface point toward the camera, which every slice contains.
+	let view_vector: vec3f = normalize(vec3f(0.0 - center_ray.x * center_z, 0.0 - center_ray.y * center_z, 0.0 - center_z));
 	let maximum_position: vec2f = vec2f(f32(extent.x - 1), f32(extent.y - 1));
 	let level_scales: LevelScales = LevelScales(
 		level_position_scale(extent, 0),
@@ -290,11 +319,41 @@ main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
 	// backend's register-allocation tier and reduce occupancy.
 	for (let axis_index: u32 = 0; axis_index < ray_pairs; axis_index = axis_index + 1) {
 		let negative_index: u32 = axis_index + ray_pairs;
-		let positive_noise: f32 = interleaved_gradient_noise(pixel + vec2u(axis_index * 7, axis_index * 13));
-		let negative_noise: f32 = interleaved_gradient_noise(pixel + vec2u(negative_index * 7, negative_index * 13));
-		let positive_maximum: f32 = 0.0;
-		let negative_maximum: f32 = 0.0;
+		// Each side shifts the sample offset along the golden-ratio sequence, which keeps it blue across the image and
+		// decorrelates the sides.
+		let positive_noise: f32 = fract(noise.y + f32(axis_index) * GTAO_GOLDEN);
+		let negative_noise: f32 = fract(noise.y + f32(negative_index) * GTAO_GOLDEN);
 		let scaled_axis_direction: vec2f = axis_direction * radius.screen_radius;
+
+		// The slice is the plane through the view vector and the view-space direction a positive screen step takes at
+		// constant depth. Angles in it run from the view vector, positive toward that direction.
+		let slice_direction: vec3f = vec3f(
+			axis_direction.x * gtao_view.gtao_view.pixel_to_ray_mul.x,
+			axis_direction.y * gtao_view.gtao_view.pixel_to_ray_mul.y,
+			0.0
+		) * gtao_view.gtao_view.view_z_sign;
+		let orthogonal_direction: vec3f = normalize(slice_direction - view_vector * dot(slice_direction, view_vector));
+		let slice_axis: vec3f = cross(orthogonal_direction, view_vector);
+		let projected_normal: vec3f = normal - slice_axis * dot(normal, slice_axis);
+		let projected_length_sq: f32 = max(dot(projected_normal, projected_normal), 0.000000000001);
+		let inverse_projected_length: f32 = inversesqrt(projected_length_sq);
+		let projected_length: f32 = projected_length_sq * inverse_projected_length;
+		// The projected normal's angle `n` from the view vector.
+		let cos_n: f32 = clamp(dot(projected_normal, view_vector) * inverse_projected_length, 0.0, 1.0);
+		let n: f32 = fast_acos(cos_n);
+		if (dot(orthogonal_direction, projected_normal) < 0.0) {
+			n = 0.0 - n;
+		}
+		// sin n from cos n, which avoids a sine; n and sin n share the sign of the normal's lean.
+		let sin_n: f32 = sqrt(1.0 - cos_n * cos_n);
+		if (n < 0.0) {
+			sin_n = 0.0 - sin_n;
+		}
+		// Each side starts at the surface's tangent, a quarter turn from the normal: cos(n + π/2) and cos(n − π/2).
+		let positive_low: f32 = 0.0 - sin_n;
+		let negative_low: f32 = sin_n;
+		let positive_horizon: f32 = positive_low;
+		let negative_horizon: f32 = negative_low;
 
 		for (let step: u32 = 1; step <= samples_per_ray; step = step + 1) {
 			let step_f: f32 = f32(step);
@@ -311,41 +370,91 @@ main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
 			);
 
 			// Issue both reads before consuming either result. A step that lands on the previous step's texel repeats
-			// its occlusion, which leaves the maximum unchanged, so every step evaluates without checking for repeats.
+			// its horizon, which leaves the maximum unchanged, so every step evaluates without checking for repeats.
 			let positive_depth: f32 = hierarchical_depth(gtao_set, positive_sample.position, positive_sample.level, level_scales);
 			let negative_depth: f32 = hierarchical_depth(gtao_set, negative_sample.position, negative_sample.level, level_scales);
-			positive_maximum = update_direction_occlusion(
+			positive_horizon = update_horizon(
 				gtao_view,
-				positive_maximum,
+				positive_horizon,
+				positive_low,
 				positive_sample.position,
 				positive_depth,
 				pixel_position,
 				center_ray,
 				center_z,
-				normal,
-				radius.inverse_world_radius_sq
+				view_vector,
+				radius.inverse_world_radius
 			);
-			negative_maximum = update_direction_occlusion(
+			negative_horizon = update_horizon(
 				gtao_view,
-				negative_maximum,
+				negative_horizon,
+				negative_low,
 				negative_sample.position,
 				negative_depth,
 				pixel_position,
 				center_ray,
 				center_z,
-				normal,
-				radius.inverse_world_radius_sq
+				view_vector,
+				radius.inverse_world_radius
 			);
 		}
 
-		total_occlusion = total_occlusion + positive_maximum + negative_maximum;
+		// The horizon angles, kept within the hemisphere around the projected normal.
+		let h0: f32 = n + max(0.0 - fast_acos(negative_horizon) - n, 0.0 - GTAO_HALF_PI);
+		let h1: f32 = n + min(fast_acos(positive_horizon) - n, GTAO_HALF_PI);
+		// Every angle the integrals take is a multiple of h plus or minus n, so the sines and cosines of h0 and h1, with
+		// those of n, give them all through the double- and triple-angle and angle-addition identities. That replaces
+		// nine trigonometric calls per slice with two.
+		let horizon_0: vec2f = sincos(h0);
+		let horizon_1: vec2f = sincos(h1);
+		let s0: f32 = horizon_0.x;
+		let c0: f32 = horizon_0.y;
+		let s1: f32 = horizon_1.x;
+		let c1: f32 = horizon_1.y;
+		// sin 2h = 2 s c and cos 2h = c² − s²; sin 3h = s (3 − 4 s²) and cos 3h = c (4 c² − 3).
+		let double_sin_0: f32 = 2.0 * s0 * c0;
+		let double_cos_0: f32 = c0 * c0 - s0 * s0;
+		let double_sin_1: f32 = 2.0 * s1 * c1;
+		let double_cos_1: f32 = c1 * c1 - s1 * s1;
+		let triple_sin_0: f32 = s0 * (3.0 - 4.0 * s0 * s0);
+		let triple_cos_0: f32 = c0 * (4.0 * c0 * c0 - 3.0);
+		let triple_sin_1: f32 = s1 * (3.0 - 4.0 * s1 * s1);
+		let triple_cos_1: f32 = c1 * (4.0 * c1 * c1 - 3.0);
+		// The cosine-weighted visible arc on each side, the paper's equation 10, with cos(2h − n) expanded.
+		let arc_0: f32 = (cos_n + 2.0 * h0 * sin_n - (double_cos_0 * cos_n + double_sin_0 * sin_n)) * 0.25;
+		let arc_1: f32 = (cos_n + 2.0 * h1 * sin_n - (double_cos_1 * cos_n + double_sin_1 * sin_n)) * 0.25;
+		total_visibility = total_visibility + projected_length * (arc_0 + arc_1);
+		// The visible arc's mean direction in the slice, XeGTAO's integral: `t0` along the slice's direction and `t1`
+		// along the view vector. sin(h − n), sin(3h − n), cos(3h − n), sin(h + n), and cos(h + n) expanded.
+		let difference_sin: f32 = (s0 + s1) * cos_n - (c0 + c1) * sin_n;
+		let triple_difference_sin: f32 = (triple_sin_0 + triple_sin_1) * cos_n - (triple_cos_0 + triple_cos_1) * sin_n;
+		let triple_difference_cos: f32 = (triple_cos_0 + triple_cos_1) * cos_n + (triple_sin_0 + triple_sin_1) * sin_n;
+		let sum_sin: f32 = (s0 + s1) * cos_n + (c0 + c1) * sin_n;
+		let sum_cos: f32 = (c0 + c1) * cos_n - (s0 + s1) * sin_n;
+		let t0: f32 = (6.0 * difference_sin - triple_difference_sin + 16.0 * sin_n - 3.0 * sum_sin) / 12.0;
+		let t1: f32 = (8.0 * cos_n - triple_difference_cos - 3.0 * sum_cos) / 12.0;
+		bent_normal = bent_normal + (orthogonal_direction * t0 + view_vector * t1) * projected_length;
+
 		axis_direction = vec2f(
 			axis_direction.x * axis_rotation.y - axis_direction.y * axis_rotation.x,
 			axis_direction.x * axis_rotation.x + axis_direction.y * axis_rotation.y
 		);
 	}
 
-	let average_occlusion: f32 = clamp(total_occlusion / f32(radial_rays) * GTAO_STRENGTH, 0.0, 1.0);
+	let average_occlusion: f32 = clamp((1.0 - total_visibility / f32(ray_pairs)) * GTAO_STRENGTH, 0.0, 1.0);
 	let ao: f32 = 1.0 - average_occlusion * radius.fade;
 	write(gtao_set.ao_output, pixel, vec4f(ao, ao, ao, 1.0));
+	// A radius too small to resolve fades the bent normal back to the normal along with the occlusion.
+	let unit_bent_normal: vec3f = bent_normal * inversesqrt(max(dot(bent_normal, bent_normal), 0.000000000001));
+	let faded_bent_normal: vec3f = normalize(mix(normal, unit_bent_normal, radius.fade));
+	// Every slice's visible arc holds the view vector, so the bent normal lies in the hemisphere around it, and its
+	// two components across the view vector hold all of it. The frame is the one material evaluation rebuilds:
+	// t = normalize(up × V) and b = V × t, with the view's up axis.
+	let frame_t: vec3f = normalize(cross(vec3f(0.0, 1.0, 0.0), view_vector));
+	let frame_b: vec3f = cross(view_vector, frame_t);
+	write(
+		gtao_set.bent_normal_output,
+		pixel,
+		vec4f(dot(faded_bent_normal, frame_t) * 0.5 + 0.5, dot(faded_bent_normal, frame_b) * 0.5 + 0.5, 0.0, 1.0)
+	);
 }

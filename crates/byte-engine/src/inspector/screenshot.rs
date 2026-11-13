@@ -232,6 +232,7 @@ fn encode_png(readback: &ghi::TextureReadback) -> Result<Vec<u8>, String> {
 	if !matches!(
 		readback.format,
 		ghi::Formats::R8UNORM
+			| ghi::Formats::RG8UNORM
 			| ghi::Formats::RGBA8UNORM
 			| ghi::Formats::BGRAu8
 			| ghi::Formats::BGRAsRGB
@@ -252,6 +253,12 @@ fn encode_png(readback: &ghi::TextureReadback) -> Result<Vec<u8>, String> {
 			ghi::Formats::R8UNORM => {
 				for &value in row {
 					rgba.extend_from_slice(&[value, value, value, 255]);
+				}
+			}
+			// Two-channel images, such as GTAO's bent normal, keep red and green and leave blue empty.
+			ghi::Formats::RG8UNORM => {
+				for pixel in row.as_chunks::<2>().0 {
+					rgba.extend_from_slice(&[pixel[0], pixel[1], 0, 255]);
 				}
 			}
 			// Packed masks, such as one sun's visibility per channel, keep their channels.
@@ -522,8 +529,14 @@ mod tests {
 	}
 
 	#[test]
+	fn png_keeps_rg8_unorm_channels_with_empty_blue_and_ignores_pitched_padding() {
+		let png = encode_png(&readback(vec![64, 192, 99, 99], ghi::Formats::RG8UNORM, 4)).expect("encode PNG");
+		assert_eq!(decode_png(&png), [64, 192, 0, 255]);
+	}
+
+	#[test]
 	fn png_rejects_invalid_readbacks() {
-		let error = encode_png(&readback(vec![0; 4], ghi::Formats::RG8UNORM, 4)).expect_err("reject RG readback");
+		let error = encode_png(&readback(vec![0; 4], ghi::Formats::RG16SNORM, 4)).expect_err("reject RG16 readback");
 		assert!(error.starts_with("Texture transfer format is unsupported."));
 
 		let error = encode_png(&readback(vec![0; 3], ghi::Formats::BGRAu8, 4)).expect_err("reject incomplete row");

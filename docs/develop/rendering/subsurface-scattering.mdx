@@ -1,0 +1,124 @@
+---
+title: Subsurface scattering
+description: Understand how material evaluation and the subsurface pass spread skin's diffuse light, and the rules a change to them must keep.
+icon: Droplet
+---
+
+Read this page before you change how subsurface materials are shaded: the
+diffuse split in material evaluation, the subsurface pass, or the profile they
+share. What a material sets and what the renderer produces are specified in the
+[rendering reference](/docs/reference/rendering#subsurface-scattering) and the
+[BEMX surface](/docs/reference/bemx#surface).
+
+## Light spreads along Burley's profile
+
+Light that enters skin scatters beneath it and leaves around the point it
+entered, so lit areas bleed into shadowed ones and fine shading softens. The
+engine models where it leaves with Christensen and Burley's normalized
+diffusion profile, from "Approximate Reflectance Profiles for Efficient
+Subsurface Scattering" (2015), with their own fit for the profile's shape:
+
+| Term | Value |
+| --- | --- |
+| Profile | `R(r) = (e^(−r/d) + e^(−r/(3d))) / (8π·d·r)` |
+| Scale | `d = ℓ / s`, with the mean free path `ℓ` the material sets |
+| Shape | `s = 1.85 − A + 7·|A − 0.8|³`, Christensen and Burley's searchlight fit |
+| Transmittance through `t` | `¼·e^(−t/d) + ¾·e^(−t/(3d))` |
+
+The profile integrates to one over the plane. That makes the spread an
+energy-conserving blur: it moves light, never adds it. The same profile gives
+the light that crosses a thickness, so the light a surface spreads and the
+light it lets through come from one model.
+
+The screen-space form follows Golubev's "Efficient Screen-Space Subsurface
+Scattering Using Burley's Normalized Diffusion in Real-Time" (SIGGRAPH 2018),
+which Unity's High Definition Render Pipeline ships, and Unreal's subsurface
+profiles follow the same profile.
+
+## Material evaluation splits the diffuse light out
+
+Material evaluation lights each pixel in one pass and writes only the lit
+image, so the spread needs the diffuse light kept apart. For a pixel whose
+material sets `subsurface_radius`, the suffix in
+`shader_generator/sources/material.rs`:
+
+1. Weights diffuse light by `√A` where it enters, in place of `A`.
+2. Writes that diffuse light, without emission, to `Subsurface Diffuse`, `d`
+   per channel to `Subsurface Shape`, and `√A` to `Subsurface Albedo` with
+   alpha 1.
+3. Hands SSGI the light the pixel would leave unscattered, then leaves
+   diffuse light out of `Lit`.
+
+Every other opaque pixel, and every background pixel, writes alpha 0 to
+`Subsurface Albedo`. The pass reads that alpha to find subsurface pixels, so no
+target needs a clear and no per-material flag reaches the pass.
+
+Splitting the albedo into two square roots, one before the spread and one
+after, is how Golubev textures scattered light on both sides of the spread. Applying all of it after
+the spread keeps pores sharp but colors bled light with the wrong pixel's
+albedo; applying all of it before blurs the albedo's detail away.
+
+The material body writes `subsurface_radius` and `subsurface_thickness` only
+when the graph sets those inputs. Their defaults are below zero, which means
+unset, so an uber shader's arms share the code and the arms that don't scatter
+skip it at run time. Every statement that reads them starts with
+`subsurface_`, so a project without `render.subsurface.enabled` drops all of
+it, and the images with it, through the feature table in `features.rs`.
+
+`thickness` doesn't add a light path of its own. It computes `translucency`
+from the transmittance, and the
+[far-side lighting](/docs/develop/rendering/lighting#thin-surfaces-pass-light-to-their-far-side)
+carries the rest. Its light enters weighted by `√A` like near-side light, so
+the pass spreads it too.
+
+## The pass samples a fixed disk
+
+`subsurface.besl` runs after opaque material evaluation and before the
+background, the backdrop copy, and the transparent phase, so blended surfaces
+see the spread light behind them. For each subsurface pixel it:
+
+1. Converts the widest channel's `d` to pixels at the pixel's depth. A disk
+   under half a pixel wide keeps the pixel's own light.
+2. Reads 32 samples on a golden-angle spiral. Their radii split the widest
+   channel's light, out to 99.7 %, into equal shares, through Golubev's analytic
+   inverse of the profile's distribution.
+3. Weights each sample, per channel, by that channel's profile at the 3D
+   distance over the widest channel's profile at the drawn radius, its density.
+   The 3D distance adds the depth step to the drawn radius, so light crosses an
+   edge in depth only as far as the profile allows.
+4. Skips samples off screen or on pixels that don't scatter, divides by the
+   summed weights, multiplies by `√A`, and adds the result to `Lit`.
+
+The pattern is the same every frame. Golubev rotates it per pixel and frame
+and lets temporal anti-aliasing average the noise, but the engine has no
+temporal anti-aliasing, so a fixed pattern trades noise for faint structure at
+large radii.
+
+## Rules a change must keep
+
+- **Conserve energy.** The pass divides by its summed weights, so a surface lit
+  evenly keeps its brightness whatever its radius.
+- **Spread only diffuse light.** Emission, specular light, reflections, and
+  transmission never enter `Subsurface Diffuse`.
+- **Keep both square roots.** `√A` before and after the spread multiply to the
+  albedo, so a pixel that doesn't spread shades as it would without scattering.
+- **Spread only between subsurface pixels.** Pixels of other materials and the
+  background neither give nor take scattered light.
+- **Pay only where it's built in.** Every subsurface statement reads a
+  `subsurface_` name, so a project without the feature compiles none of it and
+  creates none of its targets.
+
+## Tests that guard it
+
+The BESL VM tests in `pipelines/visibility/tests.rs` run `subsurface.besl` on
+fixtures:
+
+- `subsurface_keeps_the_brightness_of_evenly_lit_skin`
+- `subsurface_spreads_light_only_between_subsurface_pixels`
+- `subsurface_bleeds_less_across_a_step_in_depth`
+- `subsurface_with_a_zero_radius_keeps_the_pixel_light`
+
+`skin_material_writes_subsurface_images_only_when_built_in` and the
+platform-lowering tests in `shader_generator/tests.rs` check the generated
+material shaders. `subsurface_inputs_make_subsurface_and_translucent_graphs` in
+`bemx/tests.rs` checks the inputs a graph accepts.

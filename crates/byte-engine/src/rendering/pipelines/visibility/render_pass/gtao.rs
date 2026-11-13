@@ -1,7 +1,9 @@
-//! Ground-truth ambient occlusion computed at half resolution from the linear depth pyramid, then denoised and upscaled.
+//! Ground-truth ambient occlusion and its bent normal, computed at half resolution from the linear depth pyramid, then
+//! denoised, and the occlusion upscaled.
 //!
-//! Material evaluation combines the result with the hit fraction of the indirect diffuse source when both run, and
-//! darkens environment diffuse and specular light by it. Turn it off with `render.gtao.enabled`.
+//! Material evaluation combines the occlusion with the hit fraction of the indirect diffuse source when both run, and
+//! darkens environment diffuse light by it. Specular occlusion intersects the reflection's lobe with the cone of open
+//! directions around the bent normal. Turn it off with `render.gtao.enabled`.
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
@@ -10,6 +12,7 @@ use utils::Extent;
 use super::depth_pyramid::DEPTH_PYRAMID_MIP_COUNT;
 use super::{ComputeStage, Pipelines};
 use crate::configuration::ConfigurationValue;
+use crate::rendering::lookup_textures::create_blue_noise_texture;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink};
 
@@ -33,6 +36,10 @@ pub(crate) struct GtaoTargets {
 	pub(crate) blurred: ghi::BaseImageHandle,
 	/// The full-resolution result material evaluation reads, named `Ambient Occlusion`.
 	pub(crate) ambient_occlusion: ghi::BaseImageHandle,
+	/// The noisy half-resolution bent normal, as its two components across the view vector, named `GTAO Bent Normal`.
+	pub(crate) raw_bent_normal: ghi::BaseImageHandle,
+	/// The horizontally denoised bent normal material evaluation reads, named `GTAO Bent Normal Blur`.
+	pub(crate) bent_normal: ghi::BaseImageHandle,
 }
 
 /// Creates the GTAO render targets for the sink that `render_pass_builder` sets up.
@@ -42,10 +49,10 @@ pub(crate) struct GtaoTargets {
 pub(crate) fn create_gtao_targets(
 	render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>,
 ) -> GtaoTargets {
-	let mut target = |name, resolution_divisor| {
+	let mut target = |name, format, resolution_divisor| {
 		render_pass_builder
 			.create_scaled_render_target(
-				ghi::image::Builder::new(ghi::Formats::R8UNORM, ghi::Uses::Storage | ghi::Uses::Image)
+				ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image)
 					.name(name)
 					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 				resolution_divisor,
@@ -53,9 +60,11 @@ pub(crate) fn create_gtao_targets(
 			.into()
 	};
 	GtaoTargets {
-		raw: target("GTAO Raw", GTAO_RESOLUTION_DIVISOR),
-		blurred: target("GTAO Blur", GTAO_RESOLUTION_DIVISOR),
-		ambient_occlusion: target("Ambient Occlusion", 1),
+		raw: target("GTAO Raw", ghi::Formats::R8UNORM, GTAO_RESOLUTION_DIVISOR),
+		blurred: target("GTAO Blur", ghi::Formats::R8UNORM, GTAO_RESOLUTION_DIVISOR),
+		ambient_occlusion: target("Ambient Occlusion", ghi::Formats::R8UNORM, 1),
+		raw_bent_normal: target("GTAO Bent Normal", ghi::Formats::RG8UNORM, GTAO_RESOLUTION_DIVISOR),
+		bent_normal: target("GTAO Bent Normal Blur", ghi::Formats::RG8UNORM, GTAO_RESOLUTION_DIVISOR),
 	}
 }
 
@@ -192,6 +201,9 @@ impl GtaoPass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
 		);
+		// The evaluation reads it texel by texel at the pixel modulo its side, the same pattern every frame: nothing
+		// accumulates GTAO over frames, so animating it would only flicker.
+		let blue_noise = create_blue_noise_texture(context);
 		let evaluate = set_layouts::GTAO.binder(gtao_descriptor_set);
 		let blur = set_layouts::GTAO_BLUR.binder(blur_descriptor_set);
 		let upscale = set_layouts::GTAO_UPSCALE.binder(upscale_descriptor_set);
@@ -199,9 +211,13 @@ impl GtaoPass {
 			evaluate.buffer("gtao_parameters", parameters),
 			evaluate.texture("depth_pyramid", depth_pyramid),
 			evaluate.image("ao_output", targets.raw),
+			evaluate.image("bent_normal_output", targets.raw_bent_normal),
+			evaluate.sampled("blue_noise", blue_noise, ao_sampler),
 			blur.sampled("linear_depth", depth_pyramid, depth_sampler),
 			blur.sampled("ao_source", targets.raw, ao_sampler),
 			blur.image("ao_output", targets.blurred),
+			blur.sampled("bent_normal_source", targets.raw_bent_normal, ao_sampler),
+			blur.image("bent_normal_output", targets.bent_normal),
 			upscale.sampled("visibility_depth", depth, depth_sampler),
 			upscale.texture("ao_source", targets.blurred),
 			upscale.image("ao_output", targets.ambient_occlusion),

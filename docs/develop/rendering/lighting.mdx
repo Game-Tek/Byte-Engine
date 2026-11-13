@@ -91,7 +91,9 @@ the other. A material says how much with the BEMX `translucency` input, and
 the [rendering reference](/docs/reference/rendering#translucent-materials)
 specifies what it adds. This isn't subsurface scattering in the sense of light
 spreading sideways under skin: nothing is blurred across pixels, and the pixel
-only gains light from lights behind it.
+only gains light from lights behind it. Skin's sideways spread is in
+[subsurface scattering](/docs/develop/rendering/subsurface-scattering), whose
+`thickness` input feeds this far-side path.
 
 The light loop of `MATERIAL_EVALUATION_SUFFIX_SOURCE` drops a light whose
 cosine with the shading normal isn't positive. For a translucent material it

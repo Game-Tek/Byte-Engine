@@ -579,6 +579,7 @@ and a graph without a normal keeps the geometric one:
 | `occlusion` | Half float, multiplying indirect diffuse light | 1 |
 | `emission` | Three half floats, added to the diffuse light | 0, 0, 0 |
 | `translucency` | Three half floats, in translucent materials only | 0, 0, 0 |
+| `subsurface_radius` | Three half floats, meters, in subsurface materials only | 0, 0, 0 |
 
 Lights reflect off a surface as if its roughness were at least 0.045, so the
 highlight of a smoother surface, such as calm water, stays finite. Reflected
@@ -617,6 +618,72 @@ double-sided surface's normal points to the viewer's side.
 | Environment | With environment diffuse light, the surface adds the environment's irradiance on its far side, weighted as indirect diffuse light is, with `translucency` in place of the base color. |
 | Other indirect diffuse light | Screen-space and ray-traced indirect light and lightmaps light the near side only. |
 | Ray tracing | Rays that hit the surface read no `translucency`. |
+
+A graph that sets BEMX `thickness` is translucent with a `translucency`, in each
+channel, of `base_color` times the share of light that crosses the thickness
+`t` under that channel's [scattering profile](#subsurface-scattering):
+`¼·e^(−t/d) + ¾·e^(−t/(3d))`.
+
+### Subsurface scattering
+
+A material whose graph sets BEMX
+[`subsurface_radius`](/docs/reference/bemx#surface) is a subsurface material
+when `render.subsurface.enabled` was `true` at startup. Otherwise, and in the
+transparent phase, it shades as if it didn't scatter.
+
+Light spreads under the surface along Christensen and Burley's normalized
+diffusion profile. For a channel with albedo `A`, the `base_color` channel, and
+mean free path `ℓ`, the `subsurface_radius` channel, the light that leaves the
+surface a distance `r` from where it entered is:
+
+| Term | Value |
+| --- | --- |
+| Shape | `s = 1.85 − A + 7·|A − 0.8|³` |
+| Scale | `d = ℓ / s` |
+| Profile | `R(r) = (e^(−r/d) + e^(−r/(3d))) / (8π·d·r)`, which integrates to one over the plane |
+
+| Rule | Value |
+| --- | --- |
+| Scattered light | The diffuse light the surface receives: indirect, environment, and direct light, and the light crossing a translucent surface. Emission, specular light, reflections, and transmission don't scatter. |
+| Color | The scattered light is weighted by the square root of `base_color` where it enters and again where it leaves, so each pixel's diffuse light is `√A` times the profile-weighted average of `√A` times the light received around it. |
+| Neighbors | Light spreads between pixels of subsurface materials only. Pixels of other materials, and the background, neither give nor take scattered light. |
+| Distance | `r` is the distance in view space between the two surface points, depth included, so light crosses a step in depth only as far as the profile allows. |
+| Samples | The pass reads 32 points around each pixel, placed in the same pattern every frame. The pattern spreads them where the profile of the channel with the largest `d` is largest, out to the radius that holds 99.7 % of its light. |
+| Radius of zero | A pixel whose largest `d` covers less than one pixel keeps its own diffuse light. |
+| Normalization | Each pixel's result is divided by the sum of its samples' weights, so a surface lit evenly keeps its brightness. |
+| Ray tracing | Rays that hit the surface read no `subsurface_radius`; GI shades the surface as if it didn't scatter. |
+
+### Ambient occlusion
+
+GTAO, Jimenez and others' ground-truth ambient occlusion, estimates two values
+for each opaque pixel from the depth around it: its visibility, the
+cosine-weighted fraction of the hemisphere around its normal that nearby
+geometry leaves open, and its bent normal, the mean direction of that open
+part.
+
+| Rule | Value |
+| --- | --- |
+| Resolution | GTAO evaluates and filters at half the sink's size. Material evaluation reads the visibility at full size, and the bent normal filtered from the half-size image. |
+| Slices | `render.gtao.radial-rays` directions split into half as many slices. Each slice is the plane through the view direction and one screen direction. Each pixel turns its slices by its own angle, up to the spacing between them, and offsets its samples along each side by its own fraction of a step; both come from a fixed 64 × 64 blue-noise pattern tiled over the half-size image, the same in every frame. |
+| Horizons | Each slice finds the highest horizon on either side of the pixel among `render.gtao.samples-per-ray` depth samples per side, within `render.gtao.radius` world units. A sample's horizon fades to the lowest one, the surface's own tangent, over the outer 61.5 % of the radius. A horizon never drops below the tangent. |
+| Visibility | The slices' horizon arcs, integrated against the cosine around the normal and averaged, weighted by the length of the normal's projection onto each slice. |
+| Bent normal | The slices' arcs integrated against their direction, summed with the same weights and normalized. It lies within a quarter turn of the view vector, since every slice's visible arc holds the view vector. At a pixel where GTAO finds no surface normal in the depth, the bent normal is the view vector. |
+| Small radius | As the radius shrinks below 4 half-size pixels, the occlusion and the bent normal's tilt away from the normal fade to none. |
+| Sky | Pixels with no geometry have a visibility of 1. |
+
+### Reflections
+
+An opaque pixel reflects the environment and, below a roughness of 0.4, the
+screen around it. Light a screen-space reflection finds carries its own
+occlusion. Two terms, multiplied together, dim the environment's reflection:
+
+| Term | Value |
+| --- | --- |
+| Specular occlusion | The fraction of the reflection's lobe that falls inside the visibility cone, Jimenez and others' cone-cone approximation. The visibility cone is centered on the pixel's bent normal and has a cosine of `√(1 − v)`, where `v` is the pixel's environment visibility, as [indirect diffuse light](#indirect-diffuse-light) defines it. The reflection's lobe is a cone around the mirror direction with a cosine of `2^(−3.32193·α²)`, where `α` is the roughness squared, at least 0.01. The fraction is the cones' intersection, by the smoothstep fit of their solid angles, divided by the lobe's solid angle. Without GTAO, the bent normal is the shading normal. |
+| Horizon occlusion | `clamp(1 + 1.3 · dot(R, Ng), 0, 1)²`, Russell's fit, where `R` is the mirror direction of the shading normal and `Ng` the geometric normal. A shading normal that tilts the mirror direction toward or below the surface, as a normal map does near creases and silhouettes, fades the reflection to nothing at 0.77 below the surface's plane. |
+
+A mirror direction that points below the geometric surface finds no
+screen-space reflection, only the faded environment.
 
 ### Indirect diffuse light
 
@@ -766,11 +833,12 @@ metric when it runs: `skinning`, `shadow-maps`, `shadow-depth-pyramid`,
 `surfel-validate`, `surfel-integrate`, `probe-schedule`, `probe-trace`, `probe-update`,
 `visibility-early`, `occlusion-pyramid`, `visibility-late`,
 `material-prepasses`, `depth-pyramid`, `cascade-fit`, `screen-space`,
-`fog-light`, `material-evaluation`, `background`, `backdrop`, and `transparent`. Only the first sink
+`fog-light`, `material-evaluation`, `subsurface`, `background`, `backdrop`, and `transparent`. Only the first sink
 records the ray tracing, surfel, and probe stages: the surfel stages in a frame
 that surfel GI lights, the probe stages in a frame that probe GI lights, and
 `acceleration-structures` in either. `material-prepasses` runs only when `render.material-evaluation` is
-`pipelines`. `backdrop` runs only in a frame that draws transparent surfaces
+`pipelines`. `subsurface` runs only when `render.subsurface.enabled` was `true`
+at startup. `backdrop` runs only in a frame that draws transparent surfaces
 while a loaded blended material reads `scenecolor` or `sceneposition`.
 
 Inside `screen-space`, each dispatch also reports its own metric, when the
@@ -790,6 +858,8 @@ its cost alone: it can include time other dispatches ran alongside it.
 | `SSGI Raw`, `SSGI Normals`, `SSGI History` | Half-size indirect lighting and its history. |
 | `Diffuse Radiance History` | Full-size diffuse light that opaque surfaces leave for the next frame's SSGI rays. It exists only when `render.ssgi.enabled` is `true`. |
 | `Ambient Occlusion`, `GTAO Raw`, `GTAO Blur` | Ambient occlusion, full size, and its half-size evaluation and denoised intermediate; no usable data on frames GTAO doesn't run. |
+| `GTAO Bent Normal`, `GTAO Bent Normal Blur` | The half-size bent normal, as GTAO evaluates it and as material evaluation reads it after the denoise; no usable data on frames GTAO doesn't run. Red and green hold its components along `t = normalize(up × V)` and `b = V × t`, mapped from −1 through 1 to 0 through 1, where `V` is the view vector and `up` the view's up axis; its component along `V` is `√(1 − x² − y²)`. |
+| `Subsurface Diffuse`, `Subsurface Shape`, `Subsurface Albedo` | Full size, only when `render.subsurface.enabled` is `true`. At each pixel of a subsurface material: the diffuse light before scattering, times `√A` and the exposure; `d` per channel, in meters; and `√A`. `Subsurface Albedo`'s alpha is 1 at those pixels and 0 at every other pixel opaque material evaluation writes. |
 | `Surfel History`, `Surfel History Weights` | Half-size history of surfel GI's light, and its confidence and luminance variance; only when surfel GI is built in. |
 
 These names, with a pass's outputs, select a screenshot through the inspector;

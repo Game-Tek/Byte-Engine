@@ -384,6 +384,8 @@ pub(crate) fn fbx_material(material: Option<&ufbx::Material>) -> Result<Imported
 			occlusion,
 			transmission: None,
 			translucency: None,
+			subsurface_radius: None,
+			thickness: None,
 		},
 		material.features.double_sided.enabled,
 		alpha_mode,

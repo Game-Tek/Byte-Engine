@@ -293,3 +293,11 @@ The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves th
 - Attach Linux portal dialogs to their parent window: export the toplevel with `zxdg_exporter_v2` and pass `wayland:<handle>` as the portal's parent window. Today they open on their own.
 - Offer message boxes on Linux, which has no portal for them; `App::open_dialog` returns `DialogError::Unsupported` there.
 - Compile and run the Wayland portal backend (`crates/ghi/src/window/os/wayland/dialogs.rs`) on Linux: it was written on the Mac and never compiled.
+
+## Subsurface scattering (deferred)
+
+- Bake local thickness offline so meshes get transmission through ears and nostrils without an authored map: cast rays inward from each vertex or texel at mesh bake, or bake inverted ambient occlusion (Barré-Brisebois and Bouchard, GDC 2011), and expose it to BEMX graphs as a `thickness` source. Deferred on 2026-11-13 in favor of the authored `thickness` input.
+- Convert MaterialX `standard_surface` subsurface inputs to BEMX: `subsurface_radius × subsurface_scale` to `subsurface_radius`, gated by `subsurface` weight. `docs/reference/materialx.mdx` still lists them as not converted.
+- Dispatch the subsurface pass only over subsurface pixels, through the material pixel lists or tiles marked during material evaluation, instead of over the whole screen, and skip it in frames that draw no subsurface material.
+- Shade subsurface materials in surfel and probe GI hits; `material_hit_body` only reads albedo and emission.
+- Rotate the subsurface sample disk per pixel once the engine has temporal anti-aliasing, as Golubev does, to trade the fixed pattern's faint structure at large radii for noise TAA removes.

@@ -95,6 +95,7 @@ main: fn (input: StageInput, gtao_blur: GtaoBlur) -> void {
 	let center_linear_depth: f32 = shared_linear_depth[depth_index];
 	if (center_linear_depth == 0.0) {
 		write(gtao_blur.ao_output, coord, vec4f(1.0, 1.0, 1.0, 1.0));
+		write(gtao_blur.bent_normal_output, coord, vec4f(0.5, 0.5, 0.0, 0.0));
 		return;
 	}
 
@@ -108,6 +109,11 @@ main: fn (input: StageInput, gtao_blur: GtaoBlur) -> void {
 
 	let filtered_ao: f32 = center_ao * GTAO_BLUR_SPATIAL_WEIGHTS[0];
 	let total_weight: f32 = GTAO_BLUR_SPATIAL_WEIGHTS[0];
+	// The bent normal's two components across the view vector take the occlusion's weights. Its taps read the image
+	// directly rather than a shared tile, which would double the workgroup memory the occlusion's tile needs. Averaging
+	// the components is sound because each lies on a smooth hemisphere map around the view vector.
+	let center_bent_normal: vec4f = fetch(gtao_blur.bent_normal_source, coord);
+	let filtered_bent_normal: vec4f = center_bent_normal * GTAO_BLUR_SPATIAL_WEIGHTS[0];
 
 	for (let offset: u32 = 1; offset <= GTAO_BLUR_RADIUS; offset = offset + 1) {
 		let spatial_weight: f32 = GTAO_BLUR_SPATIAL_WEIGHTS[offset];
@@ -118,6 +124,8 @@ main: fn (input: StageInput, gtao_blur: GtaoBlur) -> void {
 				let difference: f32 = abs(relative_depth_delta(center_linear_depth, sample_linear_depth));
 				let weight: f32 = spatial_weight * exp(0.0 - difference * difference * inverse_depth_variance_scale);
 				filtered_ao = filtered_ao + shared_ao[ao_index + offset - 2 * offset * side] * weight;
+				let tap: vec2u = vec2u(tiled_source_coordinate(coord.x, offset, 2 * offset * side, extent.x), coord.y);
+				filtered_bent_normal = filtered_bent_normal + fetch(gtao_blur.bent_normal_source, tap) * weight;
 				total_weight = total_weight + weight;
 			}
 		}
@@ -126,4 +134,6 @@ main: fn (input: StageInput, gtao_blur: GtaoBlur) -> void {
 	let blurred_ao: f32 = filtered_ao / max(total_weight, 0.00001);
 	let final_ao: f32 = mix(center_ao, blurred_ao, blur_mix);
 	write(gtao_blur.ao_output, coord, vec4f(final_ao, 0.0, 0.0, 1.0));
+	let blurred_bent_normal: vec4f = filtered_bent_normal / max(total_weight, 0.00001);
+	write(gtao_blur.bent_normal_output, coord, center_bent_normal + (blurred_bent_normal - center_bent_normal) * blur_mix);
 }

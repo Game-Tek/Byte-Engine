@@ -102,13 +102,23 @@ MaterialEvaluation: layer {
 	// materials read the scene behind their surfaces from. See `backdrop.besl`.
 	backdrop_color: descriptor<{ type: Texture2D, binding: 18, access: read, sampler: backdrop_light }>;
 	backdrop_depth: descriptor<{ type: Texture2D, binding: 19, access: read, sampler: backdrop_texel }>;
+	// What a subsurface pixel leaves for the subsurface pass, which spreads its diffuse light: that light before
+	// scattering, weighted by the square root of the albedo and pre-exposed; the profile scale `d` per channel, in
+	// meters; and the square root of the albedo, whose alpha is 1 at a subsurface pixel and 0 at any other opaque or
+	// background pixel. See `subsurface.besl`.
+	subsurface_diffuse: descriptor<{ type: StorageImage<rgba16f>, binding: 20, access: write }>;
+	subsurface_shape: descriptor<{ type: StorageImage<rgba16f>, binding: 21, access: write }>;
+	subsurface_albedo: descriptor<{ type: StorageImage<rgba8>, binding: 22, access: write }>;
+	// GTAO's half-resolution bent normal, which specular occlusion centers the visibility cone on: its two components
+	// across the view vector, mapped from -1..1 to 0..1. See `gtao.besl`.
+	gtao_bent_normal: descriptor<{ type: Texture2D, binding: 23, access: read }>;
 	// One image per power-of-two size class of cone maps and point cube faces, from 128 texels per side up to 2048. A
 	// light reads the image of its `shadow_size_class`. Arrayed bindings take `count` flat slots, so they sit past every
 	// other binding of the layers a shader takes with this one.
-	cone_shadow_maps: descriptor<{ type: Texture2DArray, binding: 20, access: read, count: 5 }>;
-	point_shadow_maps: descriptor<{ type: TextureCubeArray, binding: 21, access: read, count: 5 }>;
+	cone_shadow_maps: descriptor<{ type: Texture2DArray, binding: 24, access: read, count: 5 }>;
+	point_shadow_maps: descriptor<{ type: TextureCubeArray, binding: 25, access: read, count: 5 }>;
 	// The renderer's debug target pool, which the shown debug views of material evaluation write; see `debug_views.rs`.
 	// An arrayed binding takes `count` flat slots, so it sits past every other binding of the layers a
 	// shader takes with this one.
-	debug_view_targets: descriptor<{ type: StorageImage, binding: 22, access: write, count: 15 }>;
+	debug_view_targets: descriptor<{ type: StorageImage, binding: 26, access: write, count: 15 }>;
 }

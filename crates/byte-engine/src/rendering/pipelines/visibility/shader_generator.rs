@@ -269,6 +269,9 @@ impl VisibilityShaderGenerator {
 		});
 		statements.push(Node::r#match(Node::member_expression("material_arm"), material_arms));
 		statements.extend(material_lighting_statements(self.features));
+		// The arms and the outputs' defaults name the outputs of features too, such as `subsurface_radius`, so the code
+		// of a left-out feature goes from the whole program.
+		self.features.remove_left_out_code(&mut statements);
 
 		let main = Node::function("main", vec![Node::parameter("input", "StageInput")], "void", statements);
 		let mut root = layered_program(
@@ -476,6 +479,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		let mut statements = material_evaluation_prefix_statements(features);
 		statements.extend(body);
 		statements.extend(material_evaluation_suffix_statements(features, self.features));
+		// The body and the outputs' defaults name the outputs of features too, such as `subsurface_radius`, so the code
+		// of a left-out feature goes from the whole program.
+		self.features.remove_left_out_code(&mut statements);
 
 		let mut main = Node::main_function(statements);
 		if let besl::parser::Nodes::Function { params, .. } = main.node_mut() {
@@ -701,6 +707,11 @@ pub(super) fn visibility_shader_module<'a>(tile: bool) -> [Node<'a>; 2] {
 		(ENVIRONMENT_BRDF_SOURCE, "environment_brdf"),
 		(DIFFUSE_TRANSMISSION_SOURCE, "diffuse_transmission"),
 		(AVERAGE_SPECULAR_ALBEDO_SOURCE, "average_specular_albedo"),
+		(HORIZON_OCCLUSION_SOURCE, "horizon_occlusion"),
+		(FAST_ACOS_SOURCE, "fast_acos"),
+		(CONE_SPECULAR_OCCLUSION_SOURCE, "cone_specular_occlusion"),
+		(BURLEY_DISTANCE_SOURCE, "burley_distance"),
+		(BURLEY_TRANSMITTANCE_SOURCE, "burley_transmittance"),
 		(TROWBRIDGE_REITZ_SOURCE, "trowbridge_reitz"),
 		(IES_PROFILE_UV_SOURCE, "ies_profile_uv"),
 		(IES_PROFILE_SAMPLE_SOURCE, "sample_ies_profile"),

@@ -30,6 +30,7 @@ const PIXEL_MAPPING: &str = "pixel_mapping_buffer";
 const INSTANCE_INDEX: &str = "instance_index_render_target";
 const LIT: &str = "lit_map";
 const DIFFUSE_RADIANCE_HISTORY: &str = "diffuse_radiance_map";
+const SUBSURFACE_ALBEDO: &str = "subsurface_albedo";
 const MESH_DISPATCH_WORK: &str = "mesh_dispatch_work";
 /// The words of ranges at the start of the work buffer, which `scene_records.besl` spells `WORK_HEADER`.
 const WORK_HEADER: usize = 20;
@@ -1732,12 +1733,13 @@ fn run_material_count(
 	material_counts
 }
 
-/// The light an older frame left in the lit target and the diffuse radiance history before pixel mapping runs.
+/// The light an older frame left in the lit target, the diffuse radiance history, and the subsurface albedo before
+/// pixel mapping runs.
 const STALE_LIGHT: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
 
 /// Runs one 16x16 pixel-mapping workgroup over the square instance-index image of `width` texels in visibility
-/// `phase`, zero for opaque and one for transparent. Returns the mapping, the lit target, and the diffuse radiance
-/// history, which started full of [`STALE_LIGHT`] at the instance image's size.
+/// `phase`, zero for opaque and one for transparent. Returns the mapping, the lit target, the diffuse radiance history,
+/// and the subsurface albedo, which started full of [`STALE_LIGHT`] at the instance image's size.
 fn run_pixel_mapping(
 	program: &ExecutableProgram,
 	tables: &mut PrepassTables,
@@ -1745,7 +1747,7 @@ fn run_pixel_mapping(
 	instance_indices: &mut Texture,
 	width: u32,
 	phase: u32,
-) -> (besl::vm::Buffer, [Texture; 2]) {
+) -> (besl::vm::Buffer, [Texture; 3]) {
 	let mut pixel_mapping = buffer(program, slot(program, PIXEL_MAPPING));
 	let mut push_constant = push_constant_buffer(program);
 	push_constant.write("phase", Value::U32(phase)).expect("pixel mapping phase");
@@ -1756,7 +1758,7 @@ fn run_pixel_mapping(
 		}
 		texture
 	});
-	let [lit, diffuse_radiance_history] = &mut images;
+	let [lit, diffuse_radiance_history, subsurface_albedo] = &mut images;
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(slot(program, MESH_DATA), &mut tables.meshes);
 	descriptors.bind_buffer(slot(program, MATERIAL_EVALUATIONS), &mut tables.evaluations);
@@ -1765,6 +1767,7 @@ fn run_pixel_mapping(
 	descriptors.bind_image(slot(program, INSTANCE_INDEX), instance_indices);
 	descriptors.bind_image(slot(program, LIT), lit);
 	descriptors.bind_image(slot(program, DIFFUSE_RADIANCE_HISTORY), diffuse_radiance_history);
+	descriptors.bind_image(slot(program, SUBSURFACE_ALBEDO), subsurface_albedo);
 	descriptors.bind_push_constant(&mut push_constant);
 	run_workgroup_containing::<PIXEL_MAPPING_WORKGROUP_SIZE>(program, descriptors, PIXEL_MAPPING_WORKGROUP_WIDTH, [0, 0]);
 	(pixel_mapping, images)
@@ -2236,14 +2239,15 @@ fn reduce_nearest_nonzero_depth(source: &[[f32; 4]], width: u32, height: u32) ->
 /// Runs the GTAO workgroup containing `coordinate` over a `width` by `height` image and reads that pixel.
 ///
 /// `levels` holds the linear depth of the pyramid's first three mips, each half as wide and high as the one before.
-/// `controls` holds the radius, the samples per ray, and the radial ray count.
+/// `controls` holds the radius, the samples per ray, and the radial ray count. Returns the occlusion and the encoded
+/// view-space bent normal at `coordinate`.
 fn run_gtao(
 	program: &ExecutableProgram,
 	[width, height]: [u32; 2],
 	levels: [&[[f32; 4]]; 3],
 	coordinate: [u32; 2],
 	(radius, samples_per_ray, radial_rays): (f32, u32, u32),
-) -> [f32; 4] {
+) -> GtaoOutput {
 	let mut view = gtao_view_data(program, width, height);
 	let mut parameters = buffer(program, slot(program, GTAO_PARAMETERS));
 	for (member, value) in [
@@ -2258,17 +2262,63 @@ fn run_gtao(
 		depth_pyramid.add_mip(texture_2d((width / divisor).max(1), (height / divisor).max(1), texels));
 	}
 	let mut output = empty_image(width, height);
+	let mut bent_normal = empty_image(width, height);
+	let mut blue_noise = blue_noise_texture();
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(slot(program, GTAO_VIEW), &mut view);
 	descriptors.bind_buffer(slot(program, GTAO_PARAMETERS), &mut parameters);
 	descriptors.bind_texture(slot(program, "depth_pyramid"), &mut depth_pyramid);
 	descriptors.bind_image(slot(program, "ao_output"), &mut output);
+	descriptors.bind_image(slot(program, "bent_normal_output"), &mut bent_normal);
+	descriptors.bind_texture(slot(program, "blue_noise"), &mut blue_noise);
 	run_workgroup_containing::<GTAO_WORKGROUP_SIZE>(program, descriptors, GTAO_WORKGROUP_WIDTH, coordinate);
-	rgba(&output, coordinate)
+	GtaoOutput {
+		ao: rgba(&output, coordinate),
+		bent_normal: rgba(&bent_normal, coordinate),
+		view_vector: gtao_fixture_view_vector([width, height], coordinate, levels[0][(coordinate[1] * width + coordinate[0]) as usize][0]),
+	}
+}
+
+/// Returns the unit vector from the surface `linear_depth` units in front of the camera at `pixel` toward the camera,
+/// in the fixture's view space, rebuilt the way GTAO rebuilds positions from [`screen_view_buffer`]'s constants.
+fn gtao_fixture_view_vector([width, height]: [u32; 2], pixel: [u32; 2], linear_depth: f32) -> [f32; 3] {
+	let projection = math::projection_matrix(math::Degrees::new(60.0), width as f32 / height as f32, GTAO_NEAR, GTAO_FAR);
+	let ray_x = pixel[0] as f32 * 2.0 / (width as f32 * projection[0]) + (1.0 / width as f32 - 1.0) / projection[0];
+	let ray_y = pixel[1] as f32 * -2.0 / (height as f32 * projection[5]) + (1.0 - 1.0 / height as f32) / projection[5];
+	let toward_camera = [-ray_x * linear_depth, -ray_y * linear_depth, -linear_depth];
+	let length = toward_camera.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+	toward_camera.map(|axis| axis / length)
+}
+
+/// What GTAO writes at one pixel.
+#[derive(Debug, Clone, Copy)]
+struct GtaoOutput {
+	ao: [f32; 4],
+	/// The bent normal's components across the view vector, mapped from -1..1 to 0..1.
+	bent_normal: [f32; 4],
+	/// The pixel's view vector, whose frame the bent normal is stored in.
+	view_vector: [f32; 3],
+}
+
+impl GtaoOutput {
+	/// Returns the bent normal in view space, rebuilt from its components in the frame `t = normalize(up × V)`,
+	/// `b = V × t` and the hemisphere around `V`.
+	fn decoded_bent_normal(&self) -> [f32; 3] {
+		let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+		let view = self.view_vector;
+		let t = cross([0.0, 1.0, 0.0], view);
+		let t_length = t.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+		let t = t.map(|axis| axis / t_length);
+		let b = cross(view, t);
+		let x = self.bent_normal[0] * 2.0 - 1.0;
+		let y = self.bent_normal[1] * 2.0 - 1.0;
+		let z = (1.0 - x * x - y * y).max(0.0).sqrt();
+		std::array::from_fn(|axis| t[axis] * x + b[axis] * y + view[axis] * z)
+	}
 }
 
 /// Executes GTAO over a flat floor whose pixel footprint crosses the former absolute normal cutoff.
-fn run_gtao_floor_fixture(program: &ExecutableProgram, camera_height: f32, coordinate: [u32; 2]) -> [f32; 4] {
+fn run_gtao_floor_fixture(program: &ExecutableProgram, camera_height: f32, coordinate: [u32; 2]) -> GtaoOutput {
 	const EXTENT: u32 = 64;
 	let projection = math::projection_matrix(math::Degrees::new(60.0), 1.0, GTAO_NEAR, GTAO_FAR);
 	let ray_mul_y = -2.0 / (EXTENT as f32 * projection[5]);
@@ -2306,7 +2356,7 @@ fn run_gtao_fixture(
 	depth_texels: &[[f32; 4]],
 	coordinate: [u32; 2],
 	controls: (f32, u32, u32),
-) -> [f32; 4] {
+) -> GtaoOutput {
 	let linear_depth_texels = depth_texels
 		.iter()
 		.map(|texel| [gtao_fixture_linear_depth(texel[0]), 0.0, 0.0, 1.0])
@@ -2322,7 +2372,7 @@ fn run_gtao_fixture(
 }
 
 /// Runs the production GTAO shader with uniform coarse levels so a fixture can isolate hierarchical sampling.
-fn run_gtao_hierarchical_fixture(program: &ExecutableProgram, coarse_linear_depth: f32) -> [f32; 4] {
+fn run_gtao_hierarchical_fixture(program: &ExecutableProgram, coarse_linear_depth: f32) -> GtaoOutput {
 	const EXTENT: u32 = 129;
 	const CENTER: [u32; 2] = [64, 64];
 	let linear_depth_texels = vec![[gtao_fixture_linear_depth(0.35), 0.0, 0.0, 1.0]; (EXTENT * EXTENT) as usize];
@@ -2492,8 +2542,8 @@ fn directional_shadow_depth_pyramid_combines_each_cells_four_blocks_in_every_cas
 #[test]
 fn gtao_uses_depth_pyramid_for_distant_samples() {
 	let program = asset!("gtao.besl");
-	let empty_coarse_depth = run_gtao_hierarchical_fixture(&program, 0.0);
-	let occupied_coarse_depth = run_gtao_hierarchical_fixture(&program, gtao_fixture_linear_depth(0.4));
+	let empty_coarse_depth = run_gtao_hierarchical_fixture(&program, 0.0).ao;
+	let occupied_coarse_depth = run_gtao_hierarchical_fixture(&program, gtao_fixture_linear_depth(0.4)).ao;
 	assert!(
 		occupied_coarse_depth[0] < empty_coarse_depth[0],
 		"Expected populated coarse depth to increase distant occlusion, found empty={empty_coarse_depth:?} and occupied={occupied_coarse_depth:?}. The most likely cause is that GTAO stopped selecting hierarchy levels."
@@ -2505,30 +2555,90 @@ fn gtao_uses_depth_pyramid_for_distant_samples() {
 fn gtao_writes_white_for_background_and_expected_recessed_foreground_ao() {
 	let program = asset!("gtao.besl");
 	let background = run_gtao_fixture(&program, 1, 1, &[[0.0, 0.0, 0.0, 1.0]], [0, 0], (1.0, 6, 8));
-	assert_rgba_close(background, [1.0, 1.0, 1.0, 1.0], 0.00001);
+	assert_rgba_close(background.ao, [1.0, 1.0, 1.0, 1.0], 0.00001);
+	assert_rgba_close(background.bent_normal, [0.5, 0.5, 0.0, 0.0], 0.00001);
 
 	// A recessed center surrounded by nearer depth exercises reconstruction, normal estimation, and the
-	// adaptive bounded AO integral.
+	// adaptive bounded AO integral. The center lies at the bottom of a one-pixel pit about as deep as its distance from
+	// the camera, so the horizons on every side stand nearly overhead and close almost the whole hemisphere.
 	let mut foreground_depth = [[0.75, 0.0, 0.0, 1.0]; 25];
 	foreground_depth[12] = [0.35, 0.0, 0.0, 1.0];
 	let foreground = run_gtao_fixture(&program, 5, 5, &foreground_depth, [2, 2], (1.0, 6, 8));
-	assert_rgba_close(foreground, [0.8315444, 0.8315444, 0.8315444, 1.0], 0.00001);
+	assert_rgba_close(foreground.ao, [0.040486574, 0.040486574, 0.040486574, 1.0], 0.00001);
 
 	let disabled = run_gtao_fixture(&program, 5, 5, &foreground_depth, [2, 2], (0.0, 1, 2));
-	assert_rgba_close(disabled, [1.0, 1.0, 1.0, 1.0], 0.00001);
+	assert_rgba_close(disabled.ao, [1.0, 1.0, 1.0, 1.0], 0.00001);
 }
 
 /// Verifies flat-floor normals remain valid when their world-space finite differences become very small.
 #[test]
 fn gtao_floor_has_no_scale_dependent_normal_seam() {
 	let program = asset!("gtao.besl");
-	let larger_floor = run_gtao_floor_fixture(&program, 0.1, [32, 63]);
-	let scaled_floor = run_gtao_floor_fixture(&program, 0.06, [32, 63]);
+	let larger_floor = run_gtao_floor_fixture(&program, 0.1, [32, 63]).ao;
+	let scaled_floor = run_gtao_floor_fixture(&program, 0.06, [32, 63]).ao;
 	assert!(
 		(larger_floor[0] - scaled_floor[0]).abs() < 0.0005,
 		"Expected geometrically identical floors to preserve AO across world scales, got large={} and scaled={}. The most likely cause is a scale-dependent normal fallback.",
 		larger_floor[0],
 		scaled_floor[0]
+	);
+}
+
+/// Runs GTAO at `coordinate` over a 64 by 64 image of positive linear depths, with the pyramid's coarser levels reduced
+/// from it, a radius of one world unit, 4 samples per ray, and 6 rays.
+fn run_gtao_linear_fixture(program: &ExecutableProgram, linear_depth: &[[f32; 4]], coordinate: [u32; 2]) -> GtaoOutput {
+	const EXTENT: u32 = 64;
+	let (linear_depth_1, width_1, height_1) = reduce_nearest_nonzero_depth(linear_depth, EXTENT, EXTENT);
+	let (linear_depth_2, ..) = reduce_nearest_nonzero_depth(&linear_depth_1, width_1, height_1);
+	run_gtao(
+		program,
+		[EXTENT, EXTENT],
+		[linear_depth, &linear_depth_1, &linear_depth_2],
+		coordinate,
+		(1.0, 4, 6),
+	)
+}
+
+/// Returns a 64 by 64 depth image of a plane two units from the camera that faces it, with a wall rising toward the
+/// camera from column `wall_column` on, each column 0.1 units nearer than the one before.
+fn gtao_wall_depths(wall_column: u32) -> Vec<[f32; 4]> {
+	(0..64 * 64)
+		.map(|index| {
+			let column = index % 64;
+			let depth = if column >= wall_column { 2.0 - 0.1 * (column - wall_column + 1) as f32 } else { 2.0 };
+			[depth.max(0.5), 0.0, 0.0, 1.0]
+		})
+		.collect()
+}
+
+/// Verifies an open plane keeps its visibility and its bent normal is its normal, and that a wall beside it occludes it
+/// and bends its normal away from the wall.
+#[test]
+fn gtao_bends_the_normal_away_from_an_occluder() {
+	let program = asset!("gtao.besl");
+	let open = run_gtao_linear_fixture(&program, &gtao_wall_depths(64), [32, 32]);
+	let open_bent_normal = open.decoded_bent_normal();
+	assert!(
+		open.ao[0] > 0.999,
+		"Expected an open plane to see its whole hemisphere, found {open:?}. The most likely cause is a horizon that starts above the surface's tangent."
+	);
+	// The fixture's view space looks down positive z, so a plane facing the camera has the normal (0, 0, -1).
+	assert!(
+		open_bent_normal[0].abs() < 0.001 && open_bent_normal[1].abs() < 0.001 && open_bent_normal[2] < -0.999,
+		"Expected an open plane's bent normal to be its normal, found {open_bent_normal:?}."
+	);
+
+	// The wall stands to the right, toward positive screen and view x.
+	let walled = run_gtao_linear_fixture(&program, &gtao_wall_depths(36), [32, 32]);
+	let walled_bent_normal = walled.decoded_bent_normal();
+	assert!(
+		walled.ao[0] < open.ao[0] - 0.03,
+		"Expected the wall to occlude the plane beside it, found open={open:?} and walled={walled:?}."
+	);
+	// Three slices see the wall at angles the pixel's noise picks, so the lean carries some y as well, less than its x.
+	assert!(
+		walled_bent_normal[0] < -0.02 && walled_bent_normal[1].abs() < walled_bent_normal[0].abs(),
+		"Expected the bent normal to lean left, away from the wall, found {walled_bent_normal:?}. The most likely cause is a slice direction whose sign doesn't match its screen direction."
 	);
 }
 
@@ -2539,17 +2649,27 @@ fn run_gtao_blur_fixture(
 	height: u32,
 	depth_texels: &[[f32; 4]],
 	ao_texels: &[[f32; 4]],
+	bent_normal_texels: &[[f32; 4]],
 	coordinate: [u32; 2],
-) -> [f32; 4] {
+) -> GtaoOutput {
 	let mut depth = texture_2d(width, height, depth_texels);
 	let mut ao = texture_2d(width, height, ao_texels);
+	let mut bent_normal = texture_2d(width, height, bent_normal_texels);
 	let mut output = empty_image(width, height);
+	let mut bent_normal_output = empty_image(width, height);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_texture(slot(program, "linear_depth"), &mut depth);
 	descriptors.bind_texture(slot(program, "ao_source"), &mut ao);
 	descriptors.bind_image(slot(program, "ao_output"), &mut output);
+	descriptors.bind_texture(slot(program, "bent_normal_source"), &mut bent_normal);
+	descriptors.bind_image(slot(program, "bent_normal_output"), &mut bent_normal_output);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, coordinate);
-	rgba(&output, coordinate)
+	GtaoOutput {
+		ao: rgba(&output, coordinate),
+		bent_normal: rgba(&bent_normal_output, coordinate),
+		// The blur filters the stored components as they are and never decodes them.
+		view_vector: [0.0, 0.0, -1.0],
+	}
 }
 
 /// Runs the production depth-aware upscale workgroup whose 2x2 output quads include `coordinate`, and reads that
@@ -2585,17 +2705,16 @@ fn gtao_half_resolution_blur_preserves_uniform_ao_and_smooths_horizontally() {
 	let blur_x = asset!("gtao-blur-x.besl");
 	let depth = [[0.5, 0.0, 0.0, 1.0]; 25];
 	let uniform_ao = [[0.37, 0.0, 0.0, 1.0]; 25];
-	assert_rgba_close(
-		run_gtao_blur_fixture(&blur_x, 5, 5, &depth, &uniform_ao, [2, 2]),
-		[0.37, 0.0, 0.0, 1.0],
-		0.00001,
-	);
+	let uniform_bent_normal = [[0.25, 0.75, 0.0, 1.0]; 25];
+	let uniform = run_gtao_blur_fixture(&blur_x, 5, 5, &depth, &uniform_ao, &uniform_bent_normal, [2, 2]);
+	assert_rgba_close(uniform.ao, [0.37, 0.0, 0.0, 1.0], 0.00001);
+	assert_rgba_close(uniform.bent_normal, [0.25, 0.75, 0.0, 1.0], 0.00001);
 
-	// Horizontal variation must be reduced before the final reconstruction stage.
+	// Horizontal variation must be reduced before the final reconstruction stage, in the bent normal as in the occlusion.
 	let directional_ao: [[f32; 4]; 25] = std::array::from_fn(|index| [if index % 5 == 2 { 1.0 } else { 0.0 }, 0.0, 0.0, 1.0]);
-	let horizontal = run_gtao_blur_fixture(&blur_x, 5, 5, &depth, &directional_ao, [2, 2]);
+	let horizontal = run_gtao_blur_fixture(&blur_x, 5, 5, &depth, &directional_ao, &directional_ao, [2, 2]);
 	assert!(
-		horizontal[0] < 0.8,
+		horizontal.ao[0] < 0.8 && horizontal.bent_normal[0] < 0.8,
 		"Expected X blur to mix neighboring columns, found {horizontal:?}"
 	);
 }
@@ -2721,8 +2840,8 @@ fn ssgi_parameters(program: &ExecutableProgram, previous_clip: Option<maths_rs::
 	parameters
 }
 
-/// Returns the engine's blue noise as the RG8 texture the SSGI trace reads, each byte `k` as `k / 255`.
-fn ssgi_blue_noise() -> Texture {
+/// Returns the engine's blue noise as the RG8 texture the SSGI trace and GTAO read, each byte `k` as `k / 255`.
+fn blue_noise_texture() -> Texture {
 	use crate::rendering::lookup_textures::{BLUE_NOISE, BLUE_NOISE_SIDE};
 
 	let texels: Vec<[f32; 4]> = BLUE_NOISE
@@ -2802,7 +2921,7 @@ fn run_ssgi_trace_outputs(
 		.unwrap();
 	let mut depth_pyramid = texture_2d(extent, extent, depth);
 	let mut previous_lit = texture_2d(extent * 2, extent * 2, radiance);
-	let mut blue_noise = ssgi_blue_noise();
+	let mut blue_noise = blue_noise_texture();
 	let mut output = empty_image(extent, extent);
 	let mut normals = empty_image(extent, extent);
 	let mut workgroups: Vec<[u32; 2]> = pixels
@@ -5236,4 +5355,138 @@ fn mesh_work_draws_what_fits_the_work_buffer() {
 	assert!(ranges[8..].chunks(2).all(|range| range == [40, 0]));
 	assert_eq!(dispatches[..12], [2, 1, 1, 0, 1, 1, 38, 1, 1, 0, 1, 1]);
 	assert!(dispatches[12..].chunks(3).all(|record| record == [0, 1, 1]));
+}
+
+/// The side of the square image the subsurface fixtures shade.
+const SUBSURFACE_FIXTURE_SIDE: u32 = 16;
+
+/// The `SubsurfaceFixture` struct holds what material evaluation leaves for the subsurface pass, one entry per pixel
+/// of a [`SUBSURFACE_FIXTURE_SIDE`]-wide square, and the lit image before the pass.
+#[derive(Clone)]
+struct SubsurfaceFixture {
+	/// Positive view depth, in meters.
+	depth: Vec<f32>,
+	diffuse: Vec<[f32; 3]>,
+	scale: Vec<[f32; 3]>,
+	/// The square root of the albedo, and whether the pixel scatters.
+	albedo_root: Vec<([f32; 3], bool)>,
+	lit: Vec<[f32; 3]>,
+}
+
+impl SubsurfaceFixture {
+	/// A flat surface 1 m away whose every pixel scatters with `diffuse` light, profile scale `scale`, and an albedo
+	/// root of `albedo_root`, over a lit image of `lit`.
+	fn uniform(diffuse: [f32; 3], scale: [f32; 3], albedo_root: [f32; 3], lit: [f32; 3]) -> Self {
+		let pixels = (SUBSURFACE_FIXTURE_SIDE * SUBSURFACE_FIXTURE_SIDE) as usize;
+		Self {
+			depth: vec![1.0; pixels],
+			diffuse: vec![diffuse; pixels],
+			scale: vec![scale; pixels],
+			albedo_root: vec![(albedo_root, true); pixels],
+			lit: vec![lit; pixels],
+		}
+	}
+
+	/// Returns the index of every pixel left of column `column`.
+	fn left_of(column: u32) -> impl Iterator<Item = usize> {
+		(0..SUBSURFACE_FIXTURE_SIDE * SUBSURFACE_FIXTURE_SIDE)
+			.filter(move |index| index % SUBSURFACE_FIXTURE_SIDE < column)
+			.map(|index| index as usize)
+	}
+
+	/// Runs the subsurface pass over the workgroup holding `coordinate` and reads the lit image there.
+	fn run(&self, program: &ExecutableProgram, coordinate: [u32; 2]) -> [f32; 3] {
+		let side = SUBSURFACE_FIXTURE_SIDE;
+		let texels = |values: &[[f32; 3]], alpha: f32| values.iter().map(|[r, g, b]| [*r, *g, *b, alpha]).collect::<Vec<_>>();
+		let device_depth = self
+			.depth
+			.iter()
+			.map(|z| [GTAO_DEPTH_NUMERATOR / z - GTAO_DEPTH_OFFSET, 0.0, 0.0, 1.0])
+			.collect::<Vec<_>>();
+		let albedo_root = self
+			.albedo_root
+			.iter()
+			.map(|([r, g, b], scatters)| [*r, *g, *b, if *scatters { 1.0 } else { 0.0 }])
+			.collect::<Vec<_>>();
+		let mut view = screen_view_buffer(program, slot(program, "view"), side, side);
+		let mut depth = texture_2d(side, side, &device_depth);
+		let mut diffuse = texture_2d(side, side, &texels(&self.diffuse, 1.0));
+		let mut scale = texture_2d(side, side, &texels(&self.scale, 0.0));
+		let mut albedo = texture_2d(side, side, &albedo_root);
+		let mut lit = texture_2d(side, side, &texels(&self.lit, 1.0));
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(slot(program, "view"), &mut view);
+		descriptors.bind_texture(slot(program, "depth"), &mut depth);
+		descriptors.bind_texture(slot(program, "diffuse_light"), &mut diffuse);
+		descriptors.bind_texture(slot(program, "profile_scale"), &mut scale);
+		descriptors.bind_texture(slot(program, "albedo_root"), &mut albedo);
+		descriptors.bind_image(slot(program, "lit_map"), &mut lit);
+		run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, coordinate);
+		let [r, g, b, _] = rgba(&lit, coordinate);
+		[r, g, b]
+	}
+}
+
+/// Asserts each channel of `actual` is within `tolerance` of `expected`.
+fn assert_rgb_close(actual: [f32; 3], expected: [f32; 3], tolerance: f32) {
+	for (channel, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+		assert!(
+			(actual - expected).abs() <= tolerance,
+			"channel {channel}: expected {expected}, found {actual}"
+		);
+	}
+}
+
+/// Evenly lit skin keeps its brightness: the spread light, weighted by the albedo's other root, adds to the lit image
+/// exactly what the pixel's own diffuse light would.
+#[test]
+fn subsurface_keeps_the_brightness_of_evenly_lit_skin() {
+	let program = asset!("subsurface.besl");
+	let fixture = SubsurfaceFixture::uniform([0.4, 0.2, 0.1], [0.05, 0.03, 0.01], [0.5, 0.6, 0.7], [0.1, 0.1, 0.1]);
+	assert_rgb_close(fixture.run(&program, [8, 8]), [0.1 + 0.2, 0.1 + 0.12, 0.1 + 0.07], 0.001);
+}
+
+/// Pixels of other materials neither give scattered light nor take it.
+#[test]
+fn subsurface_spreads_light_only_between_subsurface_pixels() {
+	let program = asset!("subsurface.besl");
+	let mut fixture = SubsurfaceFixture::uniform([0.4, 0.4, 0.4], [0.05, 0.05, 0.05], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
+	// The left half is a bright surface that doesn't scatter, with its own light already in the lit image.
+	for index in SubsurfaceFixture::left_of(8) {
+		fixture.diffuse[index] = [100.0, 100.0, 100.0];
+		fixture.albedo_root[index].1 = false;
+		fixture.lit[index] = [7.0, 7.0, 7.0];
+	}
+	assert_rgb_close(fixture.run(&program, [8, 8]), [0.4, 0.4, 0.4], 0.001);
+	assert_rgb_close(fixture.run(&program, [7, 8]), [7.0, 7.0, 7.0], 0.0);
+}
+
+/// Light bleeds across an edge in the image, but much less across one that is also a step in depth.
+#[test]
+fn subsurface_bleeds_less_across_a_step_in_depth() {
+	let program = asset!("subsurface.besl");
+	let mut flat = SubsurfaceFixture::uniform([0.0, 0.0, 0.0], [0.05, 0.05, 0.05], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
+	for index in SubsurfaceFixture::left_of(8) {
+		flat.diffuse[index] = [1.0, 1.0, 1.0];
+	}
+	let mut stepped = flat.clone();
+	for index in SubsurfaceFixture::left_of(8) {
+		stepped.depth[index] = 1.5;
+	}
+	let across_flat = flat.run(&program, [8, 8])[0];
+	let across_step = stepped.run(&program, [8, 8])[0];
+	assert!(across_flat > 0.05, "expected light to bleed across a flat edge, found {across_flat}");
+	assert!(
+		across_step < across_flat * 0.25,
+		"expected a step in depth to cut the bleed, found {across_step} against {across_flat}"
+	);
+}
+
+/// A profile scale of zero spreads nothing: the pixel keeps its own diffuse light, whatever its neighbors hold.
+#[test]
+fn subsurface_with_a_zero_radius_keeps_the_pixel_light() {
+	let program = asset!("subsurface.besl");
+	let mut fixture = SubsurfaceFixture::uniform([5.0, 5.0, 5.0], [0.0, 0.0, 0.0], [0.5, 0.5, 0.5], [0.0, 0.0, 0.0]);
+	fixture.diffuse[(8 * SUBSURFACE_FIXTURE_SIDE + 8) as usize] = [0.2, 0.4, 0.6];
+	assert_rgb_close(fixture.run(&program, [8, 8]), [0.1, 0.2, 0.3], 0.0001);
 }

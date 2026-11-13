@@ -484,18 +484,28 @@ fn push_tree<'a, T: Copy>(
 	bakes: impl Iterator<Item = (&'a [String], &'a str, T)>,
 	columns: impl Fn(T) -> Vec<Span<'a>>,
 ) {
-	BakeTree::new(bakes).visit(|depth, label, value| {
-		let name = Span::raw(format!(" {:indent$}{label}", "", indent = depth * 2));
+	BakeTree::new(bakes).visit(|guide, label, value| {
+		// The guide is dim, so the tree's lines lead the eye without competing with the names.
+		let name = [Span::raw(" "), Span::raw(guide.to_string()).dim(), Span::raw(label)];
 		rows.push(match value {
 			Some(value) => {
 				let mut spans = columns(value);
-				spans.push(name);
+				spans.extend(name);
 				Line::from(spans)
 			}
-			None => Line::from(vec![Span::raw(" ".repeat(9)), name]).dim(),
+			None => Line::from([Span::raw(" ".repeat(9))].into_iter().chain(name).collect::<Vec<_>>()).dim(),
 		});
 	});
 }
+
+/// The guide before a bake with more siblings below it.
+const BRANCH: &str = "├─ ";
+/// The guide before the last of its siblings, rounded where the line ends.
+const BRANCH_LAST: &str = "╰─ ";
+/// The guide under a branch whose siblings continue below.
+const CONTINUES: &str = "│  ";
+/// The guide under the last sibling, where the line already ended.
+const ENDED: &str = "   ";
 
 /// The `BakeTree` struct arranges a list of bakes under the IDs that asked for them, for the bakes view to draw.
 ///
@@ -558,18 +568,46 @@ impl<'a, T: Copy> BakeTree<'a, T> {
 		index
 	}
 
-	/// Calls `row` for each node, parents before their children: with its depth, its ID relative to its parent's, and
-	/// its value.
-	fn visit(&self, mut row: impl FnMut(usize, &'a str, Option<T>)) {
-		let mut stack: Vec<(usize, usize, Option<&'a str>)> = self.roots.iter().rev().map(|&index| (index, 0, None)).collect();
-		while let Some((index, depth, parent)) = stack.pop() {
+	/// Calls `row` for each node, parents before their children: with its guide, the tree's lines from the root down to
+	/// it, its ID relative to its parent's, and its value.
+	fn visit(&self, mut row: impl FnMut(&str, &'a str, Option<T>)) {
+		// Each entry is a node, the guide its children continue, and its parent's ID; roots have no guide.
+		let mut stack: Vec<(usize, String, Option<&'a str>)> =
+			self.roots.iter().rev().map(|&index| (index, String::new(), None)).collect();
+		// Each node is its own entry, so its row's guide is its parent's plus its branch.
+		let mut branch_of = vec![""; self.nodes.len()];
+		for node in &self.nodes {
+			if let Some((&last, others)) = node.children.split_last() {
+				branch_of[last] = BRANCH_LAST;
+				for &child in others {
+					branch_of[child] = BRANCH;
+				}
+			}
+		}
+		let mut guide = String::new();
+		while let Some((index, inherited, parent)) = stack.pop() {
 			let node = &self.nodes[index];
+			guide.clear();
+			guide.push_str(&inherited);
+			guide.push_str(branch_of[index]);
 			row(
-				depth,
+				&guide,
 				parent.map_or(node.id, |parent| relative_id(parent, node.id)),
 				node.value,
 			);
-			stack.extend(node.children.iter().rev().map(|&child| (child, depth + 1, Some(node.id))));
+			// Below a branch that continues, the line runs on past this node's children; below the last, it stops.
+			let mut continued = inherited;
+			match branch_of[index] {
+				BRANCH => continued.push_str(CONTINUES),
+				BRANCH_LAST => continued.push_str(ENDED),
+				_ => {}
+			}
+			stack.extend(
+				node.children
+					.iter()
+					.rev()
+					.map(|&child| (child, continued.clone(), Some(node.id))),
+			);
 		}
 	}
 }
@@ -1026,6 +1064,11 @@ mod tests {
 					requested_by: ids(&["levels/forest.bel", "models/tree.glb", "models/tree.glb#bark"]),
 					elapsed_ms: 100.0,
 				},
+				BakingAsset {
+					id: "models/tree.glb#leaves".to_string(),
+					requested_by: ids(&["levels/forest.bel", "models/tree.glb"]),
+					elapsed_ms: 80.0,
+				},
 			],
 			finished: vec![FinishedBake {
 				id: "models/leaf.png".to_string(),
@@ -1037,17 +1080,27 @@ mod tests {
 		};
 		let mut console = Console::default();
 		console.handle(key(KeyCode::Tab));
-		let buffer = draw_with(&mut console, &VecDeque::new(), Some(&(Instant::now(), state)), 60, 14);
+		let buffer = draw_with(&mut console, &VecDeque::new(), Some(&(Instant::now(), state)), 60, 16);
 		let shown = rows(&buffer);
 
 		// The level only waits on the model, so it's a dim row without a time.
 		assert!(shown[3].contains("│          levels/forest.bel "), "{shown:?}");
 		assert!(buffer[(11, 3)].modifier.contains(ratatui::style::Modifier::DIM));
-		// The model shares no directory with the level, so it keeps its whole ID.
-		assert!(shown[4].contains("2.4s   models/tree.glb"), "{shown:?}");
-		assert!(shown[5].contains("300ms     #bark"), "{shown:?}");
-		assert!(shown[6].contains("100ms       textures/bark.png"), "{shown:?}");
-		assert!(shown[8].contains("models/tree.glb"), "{shown:?}");
-		assert!(shown[9].contains("✓    50ms   leaf.png"), "{shown:?}");
+		// The model shares no directory with the level, so it keeps its whole ID; it's the level's only bake, so its
+		// branch ends there.
+		assert!(shown[4].contains("2.4s ╰─ models/tree.glb"), "{shown:?}");
+		// The bark has a sibling below it, so its line runs on past the bark's own bakes to the leaves.
+		assert!(shown[5].contains("300ms    ├─ #bark"), "{shown:?}");
+		assert!(shown[6].contains("100ms    │  ╰─ textures/bark.png"), "{shown:?}");
+		assert!(shown[7].contains("80ms    ╰─ #leaves"), "{shown:?}");
+		// The guides are dim; the names aren't.
+		let guide = shown[5]
+			.find('├')
+			.map(|at| shown[5][..at].chars().count() as u16)
+			.expect("a branch");
+		assert!(buffer[(guide, 5)].modifier.contains(ratatui::style::Modifier::DIM));
+		assert!(!buffer[(guide + 3, 5)].modifier.contains(ratatui::style::Modifier::DIM));
+		assert!(shown[9].contains("models/tree.glb"), "{shown:?}");
+		assert!(shown[10].contains("✓    50ms ╰─ leaf.png"), "{shown:?}");
 	}
 }

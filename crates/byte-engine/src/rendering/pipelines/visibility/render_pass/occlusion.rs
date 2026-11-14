@@ -96,7 +96,6 @@ impl OcclusionCulling {
 			ghi::image::Builder::new(ghi::Formats::R16F, ghi::Uses::Storage | ghi::Uses::Image)
 				.name("Occlusion Pyramid")
 				.extent(Extent::rectangle(OCCLUSION_PYRAMID_WIDTH, OCCLUSION_PYRAMID_HEIGHT))
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.mip_levels(OCCLUSION_PYRAMID_MIP_COUNT),
 		);
 		// The seed fetches exact texels, so the sampler only completes the descriptor.
@@ -108,8 +107,7 @@ impl OcclusionCulling {
 		let visibility = context.build_buffer::<[u32]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Occlusion Visibility")
-				.length(meshlet_groups as usize)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+				.length(meshlet_groups as usize),
 		);
 		let [base_set, tail_set] = build_descriptor_sets;
 		let culling = set_layouts::OCCLUSION.binder(descriptor_set);

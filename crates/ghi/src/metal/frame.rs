@@ -239,60 +239,49 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.frame_key
 	}
 
-	fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
-		&mut self,
-		buffer_handle: crate::BufferHandle<T>,
-	) -> &mut T {
-		self.device.get_mut_buffer_slice(buffer_handle)
+	fn map<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: crate::BufferHandle<T>) -> &mut T {
+		let buffer = self
+			.device
+			.buffers
+			.get_single(buffer_handle.into())
+			.expect("Missing Metal buffer. The most likely cause is that the buffer handle came from another context.");
+		crate::buffer::assert_frame_mappable(buffer.host_access, buffer.copies);
+		let pointer = self
+			.device
+			.typed_buffer_pointer::<T>(buffer_handle, self.frame_key.sequence_index);
+		// SAFETY: The pointer addresses initialized POD storage, and starting this frame waited for the last frame that
+		// used its sequence's copy, so the CPU has it to itself.
+		unsafe { &mut *pointer }
 	}
 
-	/// Queues the upload of this frame's copy of the buffer, so a dynamic buffer uploads the copy this frame wrote.
-	fn sync_buffer(&mut self, buffer_handle: impl Into<crate::BaseBufferHandle>) {
-		self.device
-			.sync_buffer_copy(buffer_handle.into(), self.frame_key.sequence_index);
-	}
-
-	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &mut [u8] {
-		let handle = self.get_current_image_handle(texture_handle);
-		self.device.images.resource_mut(handle).staging.as_deref_mut().expect(
-			"Missing Metal texture staging data. The most likely cause is that CPU texture access was requested for a device-only image.",
-		)
-	}
-
-	fn sync_texture(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle) {
-		let handle = self.get_current_image_handle(image_handle);
-		self.device.pending_image_syncs.push_back((handle, None));
-	}
-
-	/// Schedules a rectangular upload from this frame's image staging storage.
-	fn sync_texture_region(
-		&mut self,
-		image_handle: graphics_hardware_interface::BaseImageHandle,
-		region: crate::image::Region,
-	) {
-		let handle = self.get_current_image_handle(image_handle);
-		let image = self.device.images.resource(handle);
-		region.validate(
-			image.description.extent,
-			image.description.format,
-			image.description.array_layers,
-		);
-		self.device.pending_image_syncs.push_back((handle, Some(region)));
+	fn read<T: ?Sized + crate::buffer::BufferContents>(&self, buffer_handle: crate::BufferHandle<T>) -> Option<&T> {
+		let buffer = self
+			.device
+			.buffers
+			.get_single(buffer_handle.into())
+			.expect("Missing Metal buffer. The most likely cause is that the buffer handle came from another context.");
+		crate::buffer::assert_frame_readable(buffer.host_access, buffer.copies);
+		// The frame that completed when this one started is the one before it in this frame's sequence.
+		if self.frame_key.frame_index < u64::from(self.device.frames) {
+			return None;
+		}
+		let pointer = self
+			.device
+			.typed_buffer_pointer::<T>(buffer_handle, self.frame_key.sequence_index);
+		// SAFETY: That frame completed, and this frame's commands, the next to use its copy, haven't run.
+		Some(unsafe { &*pointer })
 	}
 
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		self.device.write(descriptor_set_writes);
 	}
 
-	fn get_mut_dynamic_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
+	fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
-		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
-	) -> &mut T {
-		let pointer = self
-			.device
-			.typed_buffer_pointer::<T>(buffer_handle, self.frame_key.sequence_index);
-		// SAFETY: The validated pointer addresses initialized POD storage and the frame owns exclusive access to its sequence resource.
-		unsafe { &mut *pointer }
+		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+		length: usize,
+	) {
+		crate::context::Context::resize_buffer(&mut *self.device, buffer_handle, length);
 	}
 
 	fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {
@@ -324,11 +313,16 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		&'record mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	) -> Self::CBR<'record> {
-		self.device.create_command_buffer_recording_with_frame_key_in(
-			command_buffer_handle,
-			Some(self.frame_key),
-			self.allocator,
-		)
+		let command_buffer = &self.device.command_buffers[command_buffer_handle.index() as usize];
+		let queue_handle = command_buffer.queue_handle;
+		let name = self
+			.device
+			.settings
+			.debug_labels
+			.then(|| command_buffer.name.clone())
+			.flatten();
+		self.device
+			.start_recording(queue_handle, name.as_deref(), Some(self.frame_key), self.allocator)
 	}
 
 	/// Prepares the swapchain image from inside the started frame. The sequence synchronizer was already waited by `start_frame`.

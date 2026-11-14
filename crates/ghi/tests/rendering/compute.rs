@@ -95,8 +95,7 @@ pub(super) fn unordered_dispatches_write_their_own_rows(
 	let image = device.build_image(
 		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage | Uses::TransferSource | Uses::Clear)
 			.name("Unordered Dispatch Target")
-			.extent(extent)
-			.device_accesses(DeviceAccesses::DeviceToHost),
+			.extent(extent),
 	);
 	let descriptor_set = device.create_descriptor_set(None, &layout);
 	device.write(&[ghi::DescriptorWrite::image(
@@ -250,17 +249,16 @@ pub(super) fn bound_buffer_struct_members_read_at_their_offsets(
 		ghi::buffer::Builder::new(Uses::Storage)
 			.name("Bound Buffer Parameters")
 			.length(44)
-			.device_accesses(DeviceAccesses::HostToDevice),
+			.host_access(HostAccess::Write),
 	);
-	for (index, word) in device.get_mut_buffer_slice(parameters).iter_mut().enumerate() {
+	for (index, word) in buffer_contents(device, parameters).iter_mut().enumerate() {
 		*word = index as f32;
 	}
-	device.sync_buffer(parameters);
 	let results = device.build_buffer::<[[f32; 4]]>(
 		ghi::buffer::Builder::new(Uses::Storage)
 			.name("Bound Buffer Results")
 			.length(3)
-			.device_accesses(DeviceAccesses::DeviceToHost),
+			.host_access(HostAccess::Read),
 	);
 	let set = device.create_descriptor_set(None, &layout);
 	device.write(&[
@@ -286,7 +284,7 @@ pub(super) fn bound_buffer_struct_members_read_at_their_offsets(
 
 	// The layers start after the 16-word matrix and take 12 words each; the tail follows them at word 40.
 	assert_eq!(
-		device.get_buffer_slice(results),
+		buffer_contents(device, results),
 		&[[16.0, 17.0, 18.0, 19.0], [36.0, 37.0, 38.0, 39.0], [40.0, 41.0, 42.0, 43.0]]
 	);
 }

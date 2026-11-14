@@ -206,7 +206,7 @@ pub struct FilmGrainPass {
 	apply_pass: simple_tile::Pass,
 	/// Forwards `main` unchanged while the grain is off or its shaders are still compiling.
 	main_copy: ImageBypassPass,
-	parameters: ghi::DynamicBufferHandle<FilmGrainShaderData>,
+	parameters: ghi::BufferHandle<FilmGrainShaderData>,
 	frame: u32,
 }
 
@@ -225,10 +225,11 @@ impl FilmGrainPass {
 		);
 
 		let context = render_pass_builder.context();
-		let parameters = context.build_dynamic_buffer(
+		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Film Grain Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 
@@ -281,8 +282,7 @@ impl RenderPass for FilmGrainPass {
 		};
 		let extent = sink.extent();
 		self.frame = self.frame.wrapping_add(1);
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) =
-			film_grain_shader_data(&self.settings, extent.height(), self.frame);
+		*frame.map(self.parameters) = film_grain_shader_data(&self.settings, extent.height(), self.frame);
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,

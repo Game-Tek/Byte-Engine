@@ -73,16 +73,16 @@ impl FrameKey {
 	/// Returns the monotonically increasing index of this frame.
 	///
 	/// Use it to seed per-frame noise or other state that must change every frame. Use
-	/// [`crate::DescriptorWrite::image_with_frame`] to address another frame's resources instead.
+	/// [`crate::DescriptorWrite::with_frame_offset`] to address another frame's resources instead.
 	pub fn frame_index(&self) -> u64 {
 		self.frame_index
 	}
 
-	/// Returns which per-frame copy of a dynamic resource this frame reads and writes, below
+	/// Returns which copy of a resource with [`crate::Copies::PerFrame`] this frame reads and writes, below
 	/// [`crate::MAX_FRAMES_IN_FLIGHT`].
 	///
 	/// Use it to track which copies already hold data that changed, so a copy is rewritten only on a frame that owns
-	/// it. [`crate::frame::Frame::get_mut_dynamic_buffer_slice`] already resolves this frame's copy.
+	/// it. [`crate::frame::Frame::map`] already resolves this frame's copy.
 	pub fn sequence_index(&self) -> u8 {
 		self.sequence_index
 	}
@@ -138,12 +138,6 @@ impl From<BaseImageHandle> for ImageOrSwapchain {
 
 impl From<ImageHandle> for ImageOrSwapchain {
 	fn from(value: ImageHandle) -> Self {
-		Self::Image(value.into())
-	}
-}
-
-impl From<DynamicImageHandle> for ImageOrSwapchain {
-	fn from(value: DynamicImageHandle) -> Self {
 		Self::Image(value.into())
 	}
 }

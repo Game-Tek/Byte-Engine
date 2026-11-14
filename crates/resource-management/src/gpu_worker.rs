@@ -3,8 +3,9 @@
 //! The environment-map generator ([`crate::ibl::IBLGenerator`]) and the material mip generator
 //! ([`crate::resources::mips::gpu::MaterialMipGenerator`]) share this worker thread, device setup, and kernel setup.
 //! Asset bakes claim a place at the worker before they produce a request's input, then submit the request from the
-//! shared worker pool and await the reply. No pool thread blocks while the GPU works, the worker keeps several requests
-//! in flight at once, and work waits for the GPU before it allocates rather than after.
+//! shared worker pool and await the reply. No pool thread blocks while the GPU works: the worker records the requests
+//! that arrived together as one workload and waits for it, while pool threads prepare the next inputs, and work waits
+//! for the GPU before it allocates rather than after.
 
 use std::{
 	any::Any,
@@ -14,14 +15,14 @@ use std::{
 	pin::Pin,
 	sync::{
 		Arc,
-		mpsc::{self, Receiver, RecvTimeoutError, Sender},
+		mpsc::{self, Receiver, Sender},
 	},
 	task::{Context, Poll, ready},
 	thread::{JoinHandle, ThreadId},
-	time::Duration,
 };
 
 use ghi::{context::ContextCreate as _, device::Device as _};
+use smallvec::SmallVec;
 use utils::{r#async::oneshot, sync::Mutex};
 
 /// The slot every offline kernel samples its source image from.
@@ -30,48 +31,29 @@ pub(crate) const SOURCE_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
 /// The slot every offline kernel writes its output image or buffer to.
 pub(crate) const OUTPUT_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(1);
 
-/// How long the worker sleeps between completion polls while requests are in flight.
-///
-/// Bakes last milliseconds to seconds, so one millisecond of completion latency is invisible next to the GPU time it
-/// lets the worker overlap. A backend wake-up primitive can replace the interval if profiling ever shows it matters.
-const POLL_INTERVAL: Duration = Duration::from_millis(1);
+/// The results of one batch, which holds at most [`GpuProcessor::MAX_BATCH`] requests.
+pub(crate) type BatchResults<R> = SmallVec<[R; 4]>;
 
-/// The `GpuProcessor` trait lets a thread-confined GHI processor keep several requests in flight on one [`GpuWorker`].
+/// The `GpuProcessor` trait lets a thread-confined GHI processor serve batches of requests on one [`GpuWorker`].
 ///
-/// Implement it on the type that owns a compute context. [`Self::submit`] uploads and records one request without
-/// waiting for the GPU, and [`Self::poll`] finishes it once its synchronizer has signaled. The worker calls both from
-/// the thread the processor was created on, so the context never crosses threads, and it never has more than
-/// [`Self::MAX_IN_FLIGHT`] requests submitted at once. Create the worker with [`GpuWorker::spawn`].
+/// Implement it on the type that owns a compute context. The worker calls [`Self::process`] from the thread the
+/// processor was created on, so the context never crosses threads, with at most [`Self::MAX_BATCH`] requests at once.
+/// Create the worker with [`GpuWorker::spawn`].
 pub(crate) trait GpuProcessor {
 	/// The parameters of one request, next to its input bytes.
 	type Request: Send + 'static;
 	/// The value a request resolves to, including any bytes it produced.
 	type Result: Send + 'static;
-	/// Identifies one in-flight request to [`Self::poll`], such as the scratch it occupies.
-	type Ticket: Copy;
 
-	/// The most requests the worker submits before one completes, which bounds the scratch the processor needs.
-	const MAX_IN_FLIGHT: usize;
+	/// The most requests one batch holds, which bounds the scratch the processor needs.
+	const MAX_BATCH: usize;
 
-	/// Uploads `input`, records the GPU work for `request`, and submits it.
+	/// Uploads every request's input, records their GPU work as one workload with
+	/// [`record`](ghi::context::Context::record), and returns one result per request, in batch order, once the GPU
+	/// finished it.
 	///
-	/// Return [`Submission::InFlight`] with the ticket [`Self::poll`] finishes it with, or [`Submission::Complete`]
-	/// when the request needed no GPU work.
-	fn submit(&mut self, request: &Self::Request, input: &[u8]) -> Submission<Self::Ticket, Self::Result>;
-
-	/// Checks one in-flight request without blocking.
-	///
-	/// Return `None` while its GPU work runs. Once the work completed, release the ticket's scratch and return the
-	/// result.
-	fn poll(&mut self, ticket: Self::Ticket) -> Option<Self::Result>;
-}
-
-/// The `Submission` enum reports how a [`GpuProcessor`] took one request.
-pub(crate) enum Submission<T, R> {
-	/// The GPU runs the request; finish it by polling `T`.
-	InFlight(T),
-	/// The request needed no GPU work and its result is final.
-	Complete(R),
+	/// A request that needs no GPU work, or that the processor can't serve, gets its result without recording.
+	fn process(&mut self, batch: &[(Self::Request, Vec<u8>)]) -> BatchResults<Self::Result>;
 }
 
 /// The `GpuWorker` struct lets asset handlers on the shared worker pool use a GHI processor that must stay on one thread.
@@ -124,7 +106,7 @@ impl Drop for GpuClaim {
 		// so the place goes on to the next one.
 		//
 		// Each waiter is matched by scanning the queue and, per waiter, the holders. `holders` is capped at CLAIMS,
-		// two per in-flight request, and `waiting` holds only the callers blocked on a place, so both lists stay small
+		// two per request a batch holds, and `waiting` holds only the callers blocked on a place, so both lists stay small
 		// and a claim returns in bounded time by contract.
 		loop {
 			let next = claims
@@ -233,9 +215,9 @@ impl GpuWorkerError {
 }
 
 impl<P: GpuProcessor + 'static> GpuWorker<P> {
-	/// How many claims the worker hands out: the requests its processor runs at once, and as many again preparing their
-	/// input, so a request that finishes is replaced without waiting for the next input to be produced.
-	pub(crate) const CLAIMS: usize = 2 * P::MAX_IN_FLIGHT;
+	/// How many claims the worker hands out: one batch the GPU runs, and as many requests again preparing their
+	/// input, so the next batch is ready when the GPU finishes.
+	pub(crate) const CLAIMS: usize = 2 * P::MAX_BATCH;
 
 	/// Runs `initialize` on a new thread named `name` and returns once the processor it creates is ready.
 	///
@@ -314,8 +296,9 @@ impl<P: GpuProcessor + 'static> GpuWorker<P> {
 
 	/// Queues one request under `claim` and returns the receiver that resolves to its result.
 	///
-	/// The worker uploads `input`. The receiver reports cancellation when the worker stopped before serving the
-	/// request. Dropping it does not cancel the GPU work; the worker finishes the request and discards the result.
+	/// The worker batches it with the requests queued next to it and uploads `input`. The receiver reports
+	/// cancellation when the worker stopped before serving the request. Dropping it does not cancel the GPU work; the
+	/// worker finishes the request and discards the result.
 	pub(crate) fn submit(&self, claim: &GpuClaim, parameters: P::Request, input: Vec<u8>) -> oneshot::Receiver<P::Result> {
 		// Each claim covers this worker's requests only, which is what bounds its queue.
 		debug_assert!(
@@ -343,7 +326,7 @@ impl<P: GpuProcessor + 'static> GpuWorker<P> {
 
 impl<P: GpuProcessor> Drop for GpuWorker<P> {
 	fn drop(&mut self) {
-		// Closing the channel asks the worker to finish its in-flight work and stop.
+		// Closing the channel asks the worker to finish the requests already queued and stop.
 		drop(self.sender.take());
 		if let Some(worker) = self.worker.take() {
 			let _ = worker.join();
@@ -358,66 +341,26 @@ type Request<P> = (
 	oneshot::Sender<<P as GpuProcessor>::Result>,
 );
 
-/// Serves requests on the worker thread until the channel closes, keeping as many in flight as the processor allows.
+/// Serves requests on the worker thread in batches until the channel closes.
 ///
-/// Queued requests are admitted in arrival order and complete in whatever order the GPU finishes them. Once the
-/// channel closes, requests the GPU already runs still complete, and queued ones drop, which cancels their receivers.
+/// Each batch takes the oldest request and those queued behind it, up to [`GpuProcessor::MAX_BATCH`], so requests are
+/// served in arrival order. Requests queued before the channel closed are still served.
 fn serve<P: GpuProcessor>(mut processor: P, receiver: Receiver<Request<P>>) {
-	let mut queued = VecDeque::new();
-	// The replies of the requests the GPU runs, next to the tickets that finish them.
-	let mut in_flight = Vec::new();
-	loop {
-		// Park while idle; otherwise take what arrived and return to polling after one interval.
-		let received = if queued.is_empty() && in_flight.is_empty() {
-			receiver.recv().map_err(|_| RecvTimeoutError::Disconnected)
-		} else {
-			receiver.recv_timeout(POLL_INTERVAL)
-		};
-		match received {
-			Ok(request) => {
-				queued.push_back(request);
-				queued.extend(receiver.try_iter());
-			}
-			Err(RecvTimeoutError::Timeout) => {}
-			// Dropping the queue cancels its receivers; the worker stops once the GPU finished what it runs.
-			Err(RecvTimeoutError::Disconnected) => {
-				queued.clear();
-				loop {
-					finish_completed(&mut processor, &mut in_flight);
-					if in_flight.is_empty() {
-						return;
-					}
-					std::thread::sleep(POLL_INTERVAL);
-				}
-			}
+	let mut batch = Vec::with_capacity(P::MAX_BATCH);
+	let mut replies = Vec::with_capacity(P::MAX_BATCH);
+	// Parks while idle, and stops once the channel closed and every queued request was taken.
+	while let Ok(first) = receiver.recv() {
+		for (parameters, input, reply) in std::iter::once(first).chain(receiver.try_iter().take(P::MAX_BATCH - 1)) {
+			batch.push((parameters, input));
+			replies.push(reply);
 		}
-
-		// Finish completed work first so the scratch it held can serve the queue.
-		finish_completed(&mut processor, &mut in_flight);
-		while in_flight.len() < P::MAX_IN_FLIGHT
-			&& let Some((parameters, input, reply)) = queued.pop_front()
-		{
-			// The input is uploaded once submitted, so only the reply waits for the GPU.
-			match processor.submit(&parameters, &input) {
-				Submission::InFlight(ticket) => in_flight.push((ticket, reply)),
-				Submission::Complete(result) => {
-					let _ = reply.send(result);
-				}
-			}
+		let results = processor.process(&batch);
+		debug_assert_eq!(results.len(), batch.len(), "A processor returns one result per request");
+		for (reply, result) in replies.drain(..).zip(results) {
+			let _ = reply.send(result);
 		}
-	}
-}
-
-/// Polls every in-flight request once and replies to those that completed.
-fn finish_completed<P: GpuProcessor>(processor: &mut P, in_flight: &mut Vec<(P::Ticket, oneshot::Sender<P::Result>)>) {
-	let mut index = 0;
-	while index < in_flight.len() {
-		match processor.poll(in_flight[index].0) {
-			Some(result) => {
-				let _ = in_flight.swap_remove(index).1.send(result);
-			}
-			None => index += 1,
-		}
+		// The inputs were uploaded, so they're freed before the worker waits for the next batch.
+		batch.clear();
 	}
 }
 
@@ -583,59 +526,39 @@ mod tests {
 
 	use super::*;
 
-	/// A processor whose requests complete after `polls_to_complete` polls.
+	/// A processor whose batches take `batch_time` on the "GPU".
 	///
-	/// Each result reports how many requests were in flight when it completed, which is the observable that proves
-	/// the worker overlaps requests.
+	/// Each result reports the size of the batch that carried it, which is the observable that proves the worker
+	/// batches requests.
 	struct FakeProcessor<const CAPACITY: usize> {
-		polls_to_complete: u32,
-		slots: [Option<(u32, u8)>; CAPACITY],
-		peak_in_flight: Arc<AtomicUsize>,
+		batch_time: std::time::Duration,
+		peak_batch: Arc<AtomicUsize>,
 	}
 
 	impl<const CAPACITY: usize> GpuProcessor for FakeProcessor<CAPACITY> {
 		type Request = u8;
 		type Result = (u8, usize);
-		type Ticket = usize;
 
-		const MAX_IN_FLIGHT: usize = CAPACITY;
+		const MAX_BATCH: usize = CAPACITY;
 
-		fn submit(&mut self, request: &u8, input: &[u8]) -> Submission<usize, (u8, usize)> {
-			if input.is_empty() {
-				return Submission::Complete((*request, 0));
-			}
-			let slot = self
-				.slots
-				.iter()
-				.position(Option::is_none)
-				.expect("the worker never submits past the processor's capacity");
-			self.slots[slot] = Some((0, *request));
-			let in_flight = self.slots.iter().filter(|slot| slot.is_some()).count();
-			self.peak_in_flight.fetch_max(in_flight, Ordering::SeqCst);
-			Submission::InFlight(slot)
-		}
-
-		fn poll(&mut self, ticket: usize) -> Option<(u8, usize)> {
-			let (polls, request) = self.slots[ticket].as_mut().expect("polled a free slot");
-			*polls += 1;
-			if *polls < self.polls_to_complete {
-				return None;
-			}
-			let request = *request;
-			let in_flight = self.slots.iter().filter(|slot| slot.is_some()).count();
-			self.slots[ticket] = None;
-			Some((request, in_flight))
+		fn process(&mut self, batch: &[(u8, Vec<u8>)]) -> BatchResults<(u8, usize)> {
+			assert!(
+				batch.len() <= CAPACITY,
+				"the worker never batches past the processor's capacity"
+			);
+			self.peak_batch.fetch_max(batch.len(), Ordering::SeqCst);
+			std::thread::sleep(self.batch_time);
+			batch.iter().map(|(request, _)| (*request, batch.len())).collect()
 		}
 	}
 
-	fn worker<const CAPACITY: usize>(polls_to_complete: u32) -> (GpuWorker<FakeProcessor<CAPACITY>>, Arc<AtomicUsize>) {
+	fn worker<const CAPACITY: usize>(batch_milliseconds: u64) -> (GpuWorker<FakeProcessor<CAPACITY>>, Arc<AtomicUsize>) {
 		let peak = Arc::new(AtomicUsize::new(0));
 		let peak_for_worker = peak.clone();
 		let worker = GpuWorker::spawn("Fake GPU Worker", move || {
 			Ok::<_, GpuWorkerError>(FakeProcessor::<CAPACITY> {
-				polls_to_complete,
-				slots: [None; CAPACITY],
-				peak_in_flight: peak_for_worker,
+				batch_time: std::time::Duration::from_millis(batch_milliseconds),
+				peak_batch: peak_for_worker,
 			})
 		})
 		.expect("the fake worker should start");
@@ -653,8 +576,8 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn concurrent_requests_overlap_on_the_worker() {
-		let (worker, peak) = worker::<3>(4);
+	async fn concurrent_requests_share_a_batch() {
+		let (worker, peak) = worker::<3>(20);
 
 		let results = utils::r#async::join_all((0..6_u8).map(|request| serve(&worker, request, vec![0; 4]))).await;
 
@@ -664,12 +587,12 @@ mod tests {
 		}
 		assert!(
 			peak.load(Ordering::SeqCst) >= 2,
-			"several requests should be in flight at once"
+			"requests queued together should run as one batch"
 		);
 	}
 
 	#[crate::r#async::test]
-	async fn requests_past_capacity_wait_for_a_slot_and_keep_their_order() {
+	async fn requests_past_capacity_wait_for_the_next_batch_and_keep_their_order() {
 		let (worker, peak) = worker::<1>(2);
 
 		let results = utils::r#async::join_all((0..6_u8).map(|request| serve(&worker, request, vec![0; 1])))
@@ -774,15 +697,6 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn requests_without_gpu_work_complete_inline() {
-		let (worker, _) = worker::<1>(2);
-
-		let (served, in_flight) = serve(&worker, 9, Vec::new()).await.expect("the worker should reply");
-
-		assert_eq!((served, in_flight), (9, 0));
-	}
-
-	#[crate::r#async::test]
 	async fn a_dropped_reply_does_not_disturb_later_requests() {
 		let (worker, _) = worker::<1>(3);
 
@@ -795,18 +709,18 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn a_stopped_worker_cancels_replies() {
+	async fn a_stopped_worker_cancels_replies_but_finishes_queued_work() {
 		let stopped = GpuWorker::<FakeProcessor<1>>::unavailable();
 
 		assert!(serve(&stopped, 1, vec![0; 1]).await.is_err());
 
-		let (worker, _) = worker::<1>(50);
+		let (worker, _) = worker::<1>(20);
 		let [first, second] = [worker.claim().await, worker.claim().await];
-		let in_flight = worker.submit(&first, 1, vec![0; 1]);
+		let running = worker.submit(&first, 1, vec![0; 1]);
 		let queued = worker.submit(&second, 2, vec![0; 1]);
 		drop(worker);
 
-		assert!(in_flight.await.is_ok(), "work the GPU already runs still completes");
-		assert!(queued.await.is_err(), "queued work is abandoned at shutdown");
+		assert!(running.await.is_ok(), "work the GPU already runs still completes");
+		assert!(queued.await.is_ok(), "work queued before shutdown still completes");
 	}
 }

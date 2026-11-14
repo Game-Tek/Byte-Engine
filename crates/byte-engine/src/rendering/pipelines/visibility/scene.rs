@@ -204,12 +204,12 @@ pub struct VisibilityScene {
 	pub(crate) light_handles: HashMap<Handle, SmallVec<[StableVecHandle; 1]>>,
 	/// The scene descriptor set every visibility pass binds, created from [`super::set_layouts::SCENE`].
 	pub(crate) descriptor_set: ghi::DescriptorSetHandle,
-	pub(crate) views_buffer: ghi::DynamicBufferHandle<[ShaderViewData; SHADOW_VIEW_COUNT]>,
+	pub(crate) views_buffer: ghi::BufferHandle<[ShaderViewData; SHADOW_VIEW_COUNT]>,
 	/// The frame record every pass shares, such as the time materials read.
-	pub(crate) frame_buffer: ghi::DynamicBufferHandle<ShaderFrame>,
+	pub(crate) frame_buffer: ghi::BufferHandle<ShaderFrame>,
 	/// One record per instance the frame draws, [`InstanceCapacity::instances`] long.
-	pub(crate) meshes_buffer: ghi::DynamicBufferHandle<[ShaderMesh]>,
-	pub(crate) lighting_buffer: ghi::DynamicBufferHandle<LightingData>,
+	pub(crate) meshes_buffer: ghi::BufferHandle<[ShaderMesh]>,
+	pub(crate) lighting_buffer: ghi::BufferHandle<LightingData>,
 	pub(crate) render_info: RenderInfo,
 	pub(crate) sink_states: Vec<SinkState>,
 }
@@ -301,7 +301,7 @@ impl VisibilityScene {
 		environment_intensity: f32,
 		ies_profiles: &[(f32, Option<IesProfileTexture>)],
 	) {
-		let lighting_data = frame.get_mut_dynamic_buffer_slice(self.lighting_buffer);
+		let lighting_data = frame.map(self.lighting_buffer);
 		// Rewrite the header and every current light, so a recycled frame sequence cannot retain a stale count or
 		// light. Entries past the count are never read, so they are left as they are. The loop writes exactly `count`
 		// lights, so the count is written once instead of after each light.
@@ -311,7 +311,6 @@ impl VisibilityScene {
 		for (index, (_, light, transform)) in self.lights.iter().take(MAX_LIGHTS).enumerate() {
 			lighting_data.lights[index] = light_data(light, transform, shadow_for(index), ies_profiles[index].1);
 		}
-		frame.sync_buffer(self.lighting_buffer);
 	}
 }
 

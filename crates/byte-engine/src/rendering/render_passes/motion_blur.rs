@@ -133,7 +133,7 @@ const MOTION_BLUR_DEBUG_VIEWS: [&str; 2] = ["velocity", "blur-length"];
 /// first frame after it starts, after a bypass, or after a resize passes the scene through.
 pub struct MotionBlurPass {
 	controls: Rc<MotionBlurControls>,
-	parameters: ghi::DynamicBufferHandle<MotionBlurShaderData>,
+	parameters: ghi::BufferHandle<MotionBlurShaderData>,
 	blur_pass: simple_tile::Pass,
 	/// Which debug views to write this frame.
 	debug_views: DebugViews,
@@ -171,10 +171,11 @@ impl MotionBlurPass {
 		);
 		let debug_views = render_pass_builder.debug_views(&MOTION_BLUR_DEBUG_VIEWS);
 		let context = render_pass_builder.context();
-		let parameters = context.build_dynamic_buffer(
+		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Motion Blur Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		// The taps land between texels, so the sampler's linear filter blends them; its clamp keeps a blur that
 		// leaves the image on the edge texels.
@@ -230,7 +231,7 @@ impl RenderPass for MotionBlurPass {
 		let Some(command) = self.blur_pass.prepare(frame, sink, frame_allocator) else {
 			return self.main_copy.prepare(frame, sink, frame_allocator);
 		};
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = motion_blur_shader_data(
+		*frame.map(self.parameters) = motion_blur_shader_data(
 			&settings,
 			previous,
 			sink,

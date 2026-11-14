@@ -1,6 +1,6 @@
 use std::alloc::Layout;
 
-use crate::{DeviceAccesses, PrivateHandle, PrivateHandles, Uses};
+use crate::{Copies, HostAccess, PrivateHandle, PrivateHandles, Uses};
 
 /// The `BufferContents` trait lets one typed buffer API cover both fixed-size values and runtime-length arrays.
 ///
@@ -132,25 +132,67 @@ impl Mapping {
 	pub fn into_raw_parts(self) -> (usize, usize) {
 		(self.address, self.byte_count)
 	}
+
+	/// Consumes the mapping and returns its bytes, valid while the contract of the call that mapped them holds.
+	pub fn into_bytes<'a>(self) -> &'a mut [u8] {
+		// SAFETY: The mapping covers `byte_count` mapped bytes, and its creator promised them to this owner alone.
+		unsafe { std::slice::from_raw_parts_mut(self.address as *mut u8, self.byte_count) }
+	}
 }
 
-/// The `Builder` struct configures buffer creation parameters that can be shared across static and dynamic buffer constructors.
+/// Checks that a buffer can be mapped in a frame: the CPU writes it and every frame in flight has its own copy.
+pub(crate) fn assert_frame_mappable(host_access: HostAccess, copies: Copies) {
+	assert!(
+		host_access == HostAccess::Write && copies == Copies::PerFrame,
+		"Buffer cannot be mapped in a frame. The most likely cause is that it was built without HostAccess::Write and Copies::PerFrame. Build it with both, or fill a one-copy buffer through Context::map_unsynchronized."
+	);
+}
+
+/// Checks that a buffer can be read in a frame: the CPU reads it and every frame in flight has its own copy.
+pub(crate) fn assert_frame_readable(host_access: HostAccess, copies: Copies) {
+	assert!(
+		host_access == HostAccess::Read && copies == Copies::PerFrame,
+		"Buffer cannot be read in a frame. The most likely cause is that it was built without HostAccess::Read and Copies::PerFrame. Build it with both."
+	);
+}
+
+/// Checks that a buffer can be mapped without synchronization: the CPU accesses it and it has one copy.
+pub(crate) fn assert_unsynchronized_mappable(host_access: HostAccess, copies: Copies) {
+	assert!(
+		host_access != HostAccess::None && copies == Copies::One,
+		"Buffer cannot be mapped without synchronization. The most likely cause is that it has no host access or has a copy per frame. Build it with host access and Copies::One, or map a per-frame buffer with Frame::map."
+	);
+}
+
+/// Checks that a buffer takes initial contents from the CPU.
+pub(crate) fn assert_initializable(host_access: HostAccess) {
+	assert!(
+		host_access == HostAccess::Write,
+		"Buffer cannot be initialized from the CPU. The most likely cause is that it was built without HostAccess::Write. Build it with HostAccess::Write, or fill it with GPU commands."
+	);
+}
+
+/// The `Builder` struct configures a buffer's uses, CPU access, and copies before
+/// [`crate::context::ContextCreate::build_buffer`] creates it.
 pub struct Builder<'a> {
 	pub(crate) name: Option<&'a str>,
 	pub(crate) resource_uses: Uses,
-	pub(crate) device_accesses: DeviceAccesses,
+	pub(crate) host_access: HostAccess,
+	pub(crate) copies: Copies,
 	pub(crate) length: Option<usize>,
 }
 
 impl<'a> Builder<'a> {
-	/// Creates a buffer builder with GPU read and write access.
+	/// Creates a buffer builder for a buffer only GPU commands access, with one copy.
 	///
-	/// The default name is `None`.
+	/// The default name is `None`. Next, declare CPU access with [`Self::host_access`] and frame copies with
+	/// [`Self::copies`].
 	pub fn new(resource_uses: Uses) -> Self {
 		Self {
 			name: None,
 			resource_uses,
-			device_accesses: DeviceAccesses::DeviceOnly,
+			host_access: HostAccess::None,
+			copies: Copies::One,
 			length: None,
 		}
 	}
@@ -160,8 +202,15 @@ impl<'a> Builder<'a> {
 		self
 	}
 
-	pub fn device_accesses(mut self, device_accesses: DeviceAccesses) -> Self {
-		self.device_accesses = device_accesses;
+	/// Declares how the CPU accesses the buffer. See [`HostAccess`].
+	pub fn host_access(mut self, host_access: HostAccess) -> Self {
+		self.host_access = host_access;
+		self
+	}
+
+	/// Declares how many copies the buffer has. See [`Copies`].
+	pub fn copies(mut self, copies: Copies) -> Self {
+		self.copies = copies;
 		self
 	}
 

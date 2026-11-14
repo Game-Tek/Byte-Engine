@@ -39,9 +39,7 @@ pub(crate) fn create_subsurface_targets(
 	let mut target = |name, format| {
 		render_pass_builder
 			.create_scaled_render_target(
-				ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image)
-					.name(name)
-					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+				ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image).name(name),
 				1,
 			)
 			.into()
@@ -58,7 +56,7 @@ pub(crate) fn create_subsurface_targets(
 pub(super) struct SubsurfacePass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	/// The full-resolution camera constants the pass rebuilds view-space distances with.
-	view_data: ghi::DynamicBufferHandle<ScreenViewData>,
+	view_data: ghi::BufferHandle<ScreenViewData>,
 	pub(super) pipelines: Pipelines<1>,
 }
 
@@ -68,14 +66,15 @@ impl SubsurfacePass {
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		depth: ghi::BaseImageHandle,
-		lit: ghi::DynamicImageHandle,
+		lit: ghi::ImageHandle,
 		targets: SubsurfaceTargets,
 	) -> Self {
 		let descriptor_set = set_layouts::SUBSURFACE.create_set(context, "Subsurface Descriptor Set");
-		let view_data = context.build_dynamic_buffer(
+		let view_data = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Subsurface View Data")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let binder = set_layouts::SUBSURFACE.binder(descriptor_set);
 		context.write(&[
@@ -103,8 +102,7 @@ impl SubsurfacePass {
 		[pipeline]: [ghi::PipelineHandle; 1],
 	) -> ComputeStage<1> {
 		let extent = sink.extent();
-		*frame.get_mut_dynamic_buffer_slice(self.view_data) = screen_view_data(sink, extent);
-		frame.sync_buffer(self.view_data);
+		*frame.map(self.view_data) = screen_view_data(sink, extent);
 
 		ComputeStage {
 			label: "Subsurface",

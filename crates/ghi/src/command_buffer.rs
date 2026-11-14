@@ -3,26 +3,9 @@ use utils::Extent;
 
 use crate::{
 	AttachmentInformation, BaseBufferHandle, BaseImageHandle, BufferCopyDescriptor, BufferDescriptor, BufferHandle,
-	BufferImageCopyDescriptor, ClearValue, CounterHandle, DescriptorSetHandle, DispatchExtent, DynamicBufferHandle,
-	DynamicImageHandle, FrameKey, ImageOrSwapchain, Layouts, MeshHandle, PipelineHandle, Pod, RGBAu8, ShaderBindingTableHandle,
-	SynchronizerHandle, TextureCopyHandle, TextureTransferError, rt,
+	BufferImageCopyDescriptor, ClearValue, CounterHandle, DescriptorSetHandle, DispatchExtent, FrameKey, ImageOrSwapchain,
+	Layouts, MeshHandle, PipelineHandle, Pod, ShaderBindingTableHandle, TextureCopyHandle, TextureTransferError, rt,
 };
-
-/// The `IndirectDispatchBuffer` struct preserves the typed dispatch-record count for either static or frame-local buffers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct IndirectDispatchBuffer<const N: usize>(pub(crate) BaseBufferHandle);
-
-impl<const N: usize> From<BufferHandle<[[u32; 3]; N]>> for IndirectDispatchBuffer<N> {
-	fn from(buffer: BufferHandle<[[u32; 3]; N]>) -> Self {
-		Self(buffer.into())
-	}
-}
-
-impl<const N: usize> From<DynamicBufferHandle<[[u32; 3]; N]>> for IndirectDispatchBuffer<N> {
-	fn from(buffer: DynamicBufferHandle<[[u32; 3]; N]>) -> Self {
-		Self(buffer.into())
-	}
-}
 
 /// Returns the byte range of record `entry_index` in an indirect buffer that holds `N` records of type `R`.
 pub(crate) fn indirect_entry_range<R, const N: usize>(entry_index: usize) -> std::ops::Range<usize> {
@@ -141,11 +124,11 @@ pub trait CommandBufferRecording: Sized {
 
 	/// Copies byte ranges between buffers.
 	fn copy_buffers(&mut self, copies: &[BufferCopyDescriptor]);
-	/// Copies buffer byte ranges into images.
+	/// Copies buffer byte ranges into whole mips of images, or into regions of them.
+	///
+	/// Use it to update images that GPU work already uses, from a buffer the CPU writes, such as a buffer with
+	/// [`crate::Copies::PerFrame`] mapped with [`crate::frame::Frame::map`].
 	fn copy_buffer_to_images(&mut self, copies: &[BufferImageCopyDescriptor]);
-	/// Synchronizes CPU-written buffer data before later commands read it.
-	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>);
-
 	/// Records one copy into backend-owned CPU-readable staging.
 	///
 	/// Each successful call returns a distinct handle, including repeated transfers from the same source.
@@ -155,16 +138,13 @@ pub trait CommandBufferRecording: Sized {
 	/// Records one copy of another frame's copy of a per-frame image into backend-owned CPU-readable staging.
 	///
 	/// Use this to read history images, such as the copy the previous frame wrote with an offset of `-1`. The offset
-	/// selects a frame the same way [`crate::DescriptorWrite::image_with_frame`] does, and it wraps around the
+	/// selects a frame the same way [`crate::DescriptorWrite::with_frame_offset`] does, and it wraps around the
 	/// frames in flight. Submit the command before mapping the handle with [`crate::Context::get_image_data`].
 	fn transfer_texture_with_frame(
 		&mut self,
-		image: DynamicImageHandle,
+		image: BaseImageHandle,
 		frame_offset: i32,
 	) -> Result<TextureCopyHandle, TextureTransferError>;
-
-	/// Copies image data from a CPU accessible buffer to a GPU accessible image.
-	fn write_image_data(&mut self, image_handle: BaseImageHandle, data: &[RGBAu8]);
 
 	/// Records an image blit between two images and layouts.
 	fn blit_image(
@@ -182,9 +162,6 @@ pub trait CommandBufferRecording: Sized {
 	/// of a visibility buffer, where every pixel belongs to one material. The first command in the group still waits
 	/// for earlier work, and commands after the group wait for every command in it. Do not nest groups.
 	fn unordered(&mut self, f: impl FnOnce(&mut Self));
-
-	/// Submits the recorded commands for execution.
-	fn execute(self, synchronizer: SynchronizerHandle);
 }
 
 /// The `CommonCommandBufferMode` trait exposes commands that stay valid across multiple command-buffer recording states.
@@ -318,7 +295,7 @@ pub trait BoundComputePipelineMode: BoundPipelineLayoutMode + CommandBufferRecor
 	fn dispatch(&mut self, dispatch: DispatchExtent);
 
 	/// Dispatches compute workgroups using parameters stored in a buffer.
-	fn indirect_dispatch<const N: usize>(&mut self, buffer: impl Into<IndirectDispatchBuffer<N>>, entry_index: usize);
+	fn indirect_dispatch<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 3]; N]>, entry_index: usize);
 }
 
 /// The `BoundTilePipelineMode` trait runs the tile pipeline of a tile pass that

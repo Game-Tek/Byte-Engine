@@ -155,20 +155,6 @@ impl DescriptorWrite {
 		)
 	}
 
-	/// Binds the copy of a per-frame image that belongs to a relative frame. Use `-1` for the previous frame.
-	///
-	/// Only a [`DynamicImageHandle`] has one copy per frame in flight, so only it can name another frame's contents.
-	/// Create one with [`crate::context::ContextCreate::build_dynamic_image`].
-	pub fn image_with_frame(
-		descriptor_set: PublicDescriptorSetHandle,
-		slot: ResourceSlot,
-		image_handle: DynamicImageHandle,
-		layout: Layouts,
-		frame_offset: i32,
-	) -> Self {
-		Self::image(descriptor_set, slot, image_handle, layout).with_frame_offset(frame_offset)
-	}
-
 	pub fn sampler(descriptor_set: PublicDescriptorSetHandle, slot: ResourceSlot, sampler_handle: SamplerHandle) -> Self {
 		Self::new(descriptor_set, slot, WriteData::Sampler(sampler_handle))
 	}
@@ -189,20 +175,6 @@ impl DescriptorWrite {
 			slot,
 			WriteData::combined_image_sampler(image_handle, sampler_handle, layout),
 		)
-	}
-
-	/// Binds the sampled copy of a per-frame image that belongs to a relative frame. Use `-1` for the previous frame.
-	///
-	/// Only a [`DynamicImageHandle`] has one copy per frame in flight; see [`Self::image_with_frame`].
-	pub fn combined_image_sampler_with_frame(
-		descriptor_set: PublicDescriptorSetHandle,
-		slot: ResourceSlot,
-		image_handle: DynamicImageHandle,
-		sampler_handle: SamplerHandle,
-		layout: Layouts,
-		frame_offset: i32,
-	) -> Self {
-		Self::combined_image_sampler(descriptor_set, slot, image_handle, sampler_handle, layout).with_frame_offset(frame_offset)
 	}
 
 	pub fn combined_image_sampler_array(
@@ -233,14 +205,26 @@ impl DescriptorWrite {
 		self
 	}
 
-	/// Selects a relative frame resource. Use `-1` for the previous frame.
+	/// Names, in each frame, the copy of the frame `frame_offset` frames away. Use `-1` for the previous frame.
 	///
-	/// This stays crate-private because a frame offset on a single-copy resource silently resolves to the current
-	/// frame. Public callers go through the `*_with_frame` constructors, which only accept per-frame images.
-	pub(crate) fn with_frame_offset(mut self, frame_offset: i32) -> Self {
+	/// Use it to read history, such as the image the previous frame rendered, from a resource with
+	/// [`crate::Copies::PerFrame`]. The magnitude of the offset must be below the resource's copy count;
+	/// [`crate::context::Context::write`] panics otherwise.
+	pub fn with_frame_offset(mut self, frame_offset: i32) -> Self {
 		self.frame_offset = Some(frame_offset);
 		self
 	}
+}
+
+/// Checks that a frame offset names a copy of a resource that has `copies` copies: its magnitude is below the copy
+/// count.
+///
+/// Backends call this when they resolve a descriptor write or a transfer with a frame offset.
+pub(crate) fn assert_frame_offset(copies: usize, frame_offset: i32) {
+	assert!(
+		(frame_offset.unsigned_abs() as usize) < copies,
+		"Frame offset {frame_offset} names a copy the resource doesn't have. The most likely cause is a resource with {copies} copies, such as one built without per-frame copies. Build it with `copies(Copies::PerFrame)`, or use an offset whose magnitude is below {copies}."
+	);
 }
 
 crate::handle::index_handle! {
@@ -282,8 +266,8 @@ impl HandleLike for DescriptorSetHandle {
 }
 
 use crate::{
-	BaseBufferHandle, BaseImageHandle, DescriptorSetHandle as PublicDescriptorSetHandle, DynamicImageHandle, Layouts,
-	SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle,
+	BaseBufferHandle, BaseImageHandle, DescriptorSetHandle as PublicDescriptorSetHandle, Layouts, SamplerHandle,
+	SwapchainHandle, TopLevelAccelerationStructureHandle,
 	shader::{ResourceKind, ResourceSlot},
 };
 #[cfg(not(target_os = "macos"))]

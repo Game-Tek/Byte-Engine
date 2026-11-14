@@ -8,7 +8,7 @@ crate::handle::index_handle! {
 }
 
 crate::handle::index_handle! {
-	/// The `BaseBufferHandle` struct identifies a static buffer without exposing its element type.
+	/// The `BaseBufferHandle` struct identifies a buffer without exposing its element type.
 	#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug, PartialOrd, Ord)]
 	pub struct BaseBufferHandle;
 }
@@ -23,7 +23,7 @@ impl MasterHandle for BaseBufferHandle {
 	}
 }
 
-/// The `BufferHandle` struct identifies a static buffer together with the type of its contents.
+/// The `BufferHandle` struct identifies a buffer together with the type of its contents.
 ///
 /// `T` is either one [`bytemuck::Pod`] value or a slice `[E]` whose length is chosen at creation with
 /// [`crate::buffer::Builder::length`]. See [`crate::buffer::BufferContents`].
@@ -60,43 +60,6 @@ impl<T: ?Sized> std::fmt::Debug for BufferHandle<T> {
 	}
 }
 
-/// The `DynamicBufferHandle` struct identifies a buffer with one copy per frame in flight, together with the type of
-/// its contents.
-///
-/// Like [`BufferHandle`], `T` is either one [`bytemuck::Pod`] value or a slice `[E]` whose length is chosen at creation
-/// with [`crate::buffer::Builder::length`], so a table can be sized from a runtime setting.
-#[repr(transparent)]
-pub struct DynamicBufferHandle<T: ?Sized>(pub(crate) BaseBufferHandle, pub(crate) std::marker::PhantomData<T>);
-
-// Manual impls for the same reason as `BufferHandle`'s: derives would reject slice contents.
-impl<T: ?Sized> Clone for DynamicBufferHandle<T> {
-	fn clone(&self) -> Self {
-		*self
-	}
-}
-
-impl<T: ?Sized> Copy for DynamicBufferHandle<T> {}
-
-impl<T: ?Sized> PartialEq for DynamicBufferHandle<T> {
-	fn eq(&self, other: &Self) -> bool {
-		self.0 == other.0
-	}
-}
-
-impl<T: ?Sized> Eq for DynamicBufferHandle<T> {}
-
-impl<T: ?Sized> std::hash::Hash for DynamicBufferHandle<T> {
-	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-		self.0.hash(state);
-	}
-}
-
-impl<T: ?Sized> std::fmt::Debug for DynamicBufferHandle<T> {
-	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		formatter.debug_tuple("DynamicBufferHandle").field(&self.0).finish()
-	}
-}
-
 crate::handle::index_handle! {
 	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 	pub struct BaseImageHandle;
@@ -130,17 +93,6 @@ crate::handle::index_handle! {
 	/// [`crate::frame::Frame::place_image_group`].
 	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 	pub struct ImageGroupHandle;
-}
-
-/// The `DynamicImageHandle` struct addresses a frame-local image that can be written independently for each frame in flight.
-#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
-#[repr(transparent)]
-pub struct DynamicImageHandle(pub(crate) BaseImageHandle);
-
-impl From<DynamicImageHandle> for BaseImageHandle {
-	fn from(value: DynamicImageHandle) -> Self {
-		value.0
-	}
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
@@ -266,11 +218,6 @@ crate::handle::index_handle! {
 }
 
 crate::handle::index_handle! {
-	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-	pub struct AllocationHandle;
-}
-
-crate::handle::index_handle! {
 	/// The `CounterHandle` struct identifies a GPU timing counter of the context that created it.
 	///
 	/// Create one with [`crate::context::ContextCreate::create_counter`], bracket the frame work it measures with
@@ -326,7 +273,6 @@ pub enum Handles {
 	PipelineLayout(PipelineLayoutHandle),
 	Sampler(SamplerHandle),
 	Swapchain(SwapchainHandle),
-	Allocation(AllocationHandle),
 	TextureCopy(TextureCopyHandle),
 }
 
@@ -357,12 +303,6 @@ impl<T: ?Sized> From<BufferHandle<T>> for BaseBufferHandle {
 	}
 }
 
-impl<T: ?Sized> From<DynamicBufferHandle<T>> for BaseBufferHandle {
-	fn from(val: DynamicBufferHandle<T>) -> Self {
-		val.0
-	}
-}
-
 pub(crate) trait MasterHandle: Sized + Copy {
 	fn new(i: u64) -> Self;
 	fn index(&self) -> u64;
@@ -385,7 +325,5 @@ pub(crate) trait PrivateHandle: Copy {
 
 const _: () = {
 	assert!(size_of::<Option<BufferHandle<[u32]>>>() == size_of::<u64>());
-	assert!(size_of::<Option<DynamicBufferHandle<u32>>>() == size_of::<u64>());
 	assert!(size_of::<Option<ImageHandle>>() == size_of::<u64>());
-	assert!(size_of::<Option<DynamicImageHandle>>() == size_of::<u64>());
 };

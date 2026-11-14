@@ -116,7 +116,7 @@ pub(crate) struct MeshWork {
 	descriptor_set: ghi::DescriptorSetHandle,
 	pipelines: [PipelineRef; 3],
 	/// Each listed instance's slot, phase by phase, each phase padded to whole groups with empty entries.
-	instance_list: ghi::DynamicBufferHandle<[u32]>,
+	instance_list: ghi::BufferHandle<[u32]>,
 	records: ghi::BufferHandle<[[u32; 3]; WORK_RANGES]>,
 	/// The words the work buffer holds: the ranges, then the work items.
 	capacity: u32,
@@ -136,24 +136,21 @@ impl MeshWork {
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		scene_set: ghi::DescriptorSetHandle,
-		meshes: ghi::DynamicBufferHandle<[ShaderMesh]>,
+		meshes: ghi::BufferHandle<[ShaderMesh]>,
 		mesh_levels: ghi::BufferHandle<[ShaderMeshLevel]>,
 		instances: u32,
 		meshlet_groups: u32,
 	) -> Self {
-		let fixed = |name, uses| {
-			ghi::buffer::Builder::new(uses)
-				.name(name)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-		};
+		let fixed = |name, uses| ghi::buffer::Builder::new(uses).name(name);
 		let device = |name, uses, length: usize| fixed(name, uses).length(length);
 		// Room for every instance, with each phase padded to whole groups.
 		let entries = (instances as usize).next_multiple_of(GROUP_ENTRIES) + PHASES * GROUP_ENTRIES;
-		let instance_list = context.build_dynamic_buffer(
+		let instance_list = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Visibility Mesh Work Instances")
 				.length(entries)
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let entry_items =
 			context.build_buffer::<[u32]>(device("Visibility Mesh Work Entry Items", ghi::Uses::Storage, entries));
@@ -204,7 +201,7 @@ impl MeshWork {
 	/// work buffer, at the detail its instances draw when it's written, logs one warning. The GPU draws the
 	/// instances whose work fits and leaves out the ones after them, whenever that happens.
 	pub(crate) fn write_lists(&mut self, frame: &mut ghi::implementation::Frame, render_info: &RenderInfo) {
-		let entries = frame.get_mut_dynamic_buffer_slice(self.instance_list);
+		let entries = frame.map(self.instance_list);
 		let lists = [
 			&render_info.opaque_instances,
 			&render_info.masked_instances,
@@ -225,7 +222,6 @@ impl MeshWork {
 			self.phase_ends[phase] = (end / GROUP_ENTRIES) as u32;
 			self.listed[phase] = list.len() as u32;
 		}
-		frame.sync_buffer(self.instance_list);
 		let capacity = self.capacity as usize - WORK_HEADER;
 		crate::rendering::warn_once(&mut self.reported_overflow, items > capacity, || {
 			format!(

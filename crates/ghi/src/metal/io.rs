@@ -411,13 +411,11 @@ mod tests {
 
 	/// Transfers one test image through the public per-invocation readback API.
 	fn read_image(context: &mut context::Context, image: crate::ImageHandle) -> Vec<u8> {
-		let synchronizer = context.create_synchronizer(None, false);
-		let command_buffer = context.create_command_buffer(None, crate::QueueHandle::from_index(0));
-		let mut recording = context.create_command_buffer_recording(command_buffer);
-		let copy = recording.transfer_texture(image.into()).expect(
-			"Metal test texture transfer failed. The most likely cause is that the image lacks transfer-source support.",
-		);
-		recording.execute(synchronizer);
+		let copy = context.record(crate::QueueHandle::from_index(0), None, |recording| {
+			recording.transfer_texture(image.into()).expect(
+				"Metal test texture transfer failed. The most likely cause is that the image lacks transfer-source support.",
+			)
+		});
 		context
 			.get_image_data(copy)
 			.expect("Metal test texture mapping failed. The most likely cause is that the transfer command did not complete.")
@@ -445,7 +443,7 @@ mod tests {
 		let destination = context.build_buffer::<[u8; BYTES.len()]>(
 			crate::buffer::Builder::new(crate::Uses::TransferDestination)
 				.name("Metal I/O Raw Buffer")
-				.device_accesses(crate::DeviceAccesses::HostOnly),
+				.host_access(crate::HostAccess::Write),
 		);
 		let mut queue = context
 			.create_resource_io_queue(ResourceIoQueueDescriptor::new().name("Metal I/O Test"))
@@ -461,7 +459,7 @@ mod tests {
 		ticket.wait().expect("raw Metal I/O completion");
 		drop(ticket);
 		drop(queue);
-		assert_eq!(context.get_buffer_slice(destination), BYTES);
+		assert_eq!(context.test_buffer(destination), BYTES);
 		fs::remove_file(path).expect("remove raw resource-I/O test file");
 	}
 
@@ -477,8 +475,7 @@ mod tests {
 				crate::Uses::Image | crate::Uses::TransferSource | crate::Uses::TransferDestination,
 			)
 			.name("Metal I/O Compressed Image")
-			.extent(utils::Extent::rectangle(2, 2))
-			.device_accesses(crate::DeviceAccesses::HostToDevice),
+			.extent(utils::Extent::rectangle(2, 2)),
 		);
 		let mut queue = context
 			.create_resource_io_queue(ResourceIoQueueDescriptor::new())

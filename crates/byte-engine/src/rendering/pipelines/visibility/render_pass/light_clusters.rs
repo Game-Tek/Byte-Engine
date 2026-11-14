@@ -22,7 +22,7 @@ use crate::rendering::{PipelineManagerClient, Sink};
 pub(super) struct LightClusterPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	pub(super) pipelines: Pipelines<1>,
-	parameters: ghi::DynamicBufferHandle<LightClusterParameters>,
+	parameters: ghi::BufferHandle<LightClusterParameters>,
 }
 
 impl LightClusterPass {
@@ -30,20 +30,18 @@ impl LightClusterPass {
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
-		lighting_buffer: ghi::DynamicBufferHandle<LightingData>,
+		lighting_buffer: ghi::BufferHandle<LightingData>,
 		material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
 	) -> Self {
 		let descriptor_set = set_layouts::LIGHT_CLUSTERS.create_set(context, "Light Cluster Descriptor Set");
-		let parameters = context.build_dynamic_buffer(
+		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Light Cluster Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
-		let masks: ghi::BufferHandle<[u32; LIGHT_CLUSTER_MASK_WORD_COUNT]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Light Cluster Masks")
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
-		);
+		let masks: ghi::BufferHandle<[u32; LIGHT_CLUSTER_MASK_WORD_COUNT]> =
+			context.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage).name("Light Cluster Masks"));
 		let clusters = set_layouts::LIGHT_CLUSTERS.binder(descriptor_set);
 		let evaluation = set_layouts::MATERIAL_EVALUATION.binder(material_evaluation_descriptor_set);
 		context.write(&[
@@ -68,8 +66,7 @@ impl LightClusterPass {
 		sink: &Sink,
 		pipeline: ghi::PipelineHandle,
 	) -> impl RenderPassFunction + use<> {
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = LightClusterParameters::from(sink.view());
-		frame.sync_buffer(self.parameters);
+		*frame.map(self.parameters) = LightClusterParameters::from(sink.view());
 		// One workgroup per cluster, and one thread per mask word of 32 lights.
 		let workgroup_size = LIGHT_CLUSTER_MASK_WORDS as u32;
 		let stage = super::ComputeStage {

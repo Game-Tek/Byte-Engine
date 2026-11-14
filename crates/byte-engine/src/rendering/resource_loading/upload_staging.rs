@@ -74,12 +74,12 @@ impl UploadStagingArena {
 			ghi::buffer::Builder::new(ghi::Uses::TransferSource)
 				.name(name)
 				.length(byte_count)
-				.device_accesses(ghi::DeviceAccesses::HostOnly),
+				.host_access(ghi::HostAccess::Write),
 		);
 		// SAFETY: The arena becomes the only CPU owner of this mapping and keeps
 		// each leased region exclusive until its GPU transfer completes.
 		#[allow(unsafe_code)]
-		let mapping = unsafe { context.transfer_buffer_mapping(buffer) };
+		let mapping = unsafe { context.map_unsynchronized(buffer) };
 		let (arena, worker) = Self::new(mapping);
 		(buffer.into(), arena, worker)
 	}

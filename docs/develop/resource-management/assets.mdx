@@ -178,7 +178,7 @@ decode and import data long-lived.
 
 ## GPU claims
 
-A bake starts every requested asset at once, while the GPU worker and the stages after it take textures a few at a time. So work that waits for the GPU claims a place at the GPU worker before it allocates what it waits with. A `GpuWorker` hands out `GpuWorker::CLAIMS` places, twice the requests its processor runs at once: while those run, as many again prepare their input. Further claims wait, and the wait suspends their bake, so pool threads keep running other assets.
+A bake starts every requested asset at once, while the GPU worker and the stages after it take textures a few at a time. So work that waits for the GPU claims a place at the GPU worker before it allocates what it waits with. A `GpuWorker` hands out `GpuWorker::CLAIMS` places, twice the requests its processor records as one batch: while the GPU runs a batch, as many again prepare their input. Further claims wait, and the wait suspends their bake, so pool threads keep running other assets.
 
 A bake stays on the worker thread that first polls it. Two claims held on one thread therefore take turns at its CPU work, such as decoding and compressing, and each one's waits for the GPU and the disk end only once the other yields. So a freed place goes to the oldest bake waiting on a thread that holds no claim, and to the oldest waiting bake when every waiting thread holds one.
 

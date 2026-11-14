@@ -223,60 +223,24 @@ impl NativeTextureUpload {
 #[derive(Clone, Copy)]
 pub(crate) struct TextureUploadLayout {
 	pub(crate) offset: usize,
-	pub(crate) compact_bytes_per_row: usize,
-	pub(crate) row_count: usize,
-	pub(crate) compact_bytes_per_image: usize,
-	pub(crate) compact_size: usize,
-	pub(crate) source_bytes_per_row: usize,
-	pub(crate) source_bytes_per_image: usize,
-	pub(crate) padded_size: usize,
+	pub(crate) copy: ghi::ImageCopyLayout,
 }
 
 impl TextureUploadLayout {
 	/// Computes one GPU-row-aligned staging range and rejects arithmetic overflow.
 	pub(crate) fn new(format: ghi::Formats, extent: Extent, layer_count: usize, offset: usize) -> Option<Self> {
-		let (compact_bytes_per_row, row_count, compact_bytes_per_image) = format.copy_layout(extent)?;
-		let compact_size = compact_bytes_per_image.checked_mul(layer_count)?;
-		// Rows are padded the way every backend's buffer-to-texture copy reads them.
-		let (source_bytes_per_row, source_bytes_per_image) = ghi::aligned_copy_pitches(compact_bytes_per_row, row_count)?;
-		let padded_size = source_bytes_per_image.checked_mul(layer_count)?;
 		Some(Self {
 			offset,
-			compact_bytes_per_row,
-			row_count,
-			compact_bytes_per_image,
-			compact_size,
-			source_bytes_per_row,
-			source_bytes_per_image,
-			padded_size,
+			copy: ghi::ImageCopyLayout::new(format, extent, layer_count)?,
 		})
-	}
-
-	/// Expands compact rows backward inside one final padded staging range.
-	pub(crate) fn pack_rows(&self, bytes: &mut [u8]) {
-		assert_eq!(bytes.len(), self.padded_size);
-		// Compact rows already on the copy pitch sit where the GPU reads them, so every move would be onto itself.
-		if self.source_bytes_per_row == self.compact_bytes_per_row
-			&& self.source_bytes_per_image == self.compact_bytes_per_image
-		{
-			return;
-		}
-		let layer_count = self.compact_size / self.compact_bytes_per_image;
-		for layer in (0..layer_count).rev() {
-			for row in (0..self.row_count).rev() {
-				let source = layer * self.compact_bytes_per_image + row * self.compact_bytes_per_row;
-				let destination = layer * self.source_bytes_per_image + row * self.source_bytes_per_row;
-				bytes.copy_within(source..source + self.compact_bytes_per_row, destination);
-			}
-		}
 	}
 
 	/// Places this layout inside its staging lease as the full subresource of one mip.
 	pub(crate) fn region(&self, mip_level: u32) -> ImageRegion {
 		ImageRegion {
 			offset: self.offset,
-			bytes_per_row: self.source_bytes_per_row,
-			bytes_per_image: self.source_bytes_per_image,
+			bytes_per_row: self.copy.padded_bytes_per_row,
+			bytes_per_image: self.copy.padded_bytes_per_image,
 			mip_level,
 		}
 	}
@@ -392,7 +356,7 @@ async fn prepare_staged_texture(
 		let layout = TextureUploadLayout::new(metadata.format, metadata.extent.mip(level), 1, upload_byte_count)
 			.ok_or(TexturePreparationError::Layout)?;
 		upload_byte_count = upload_byte_count
-			.checked_add(layout.padded_size)
+			.checked_add(layout.copy.padded_size)
 			.ok_or(TexturePreparationError::Layout)?;
 		layouts.push(layout);
 	}
@@ -402,8 +366,8 @@ async fn prepare_staged_texture(
 		.ok_or(TexturePreparationError::StagingCapacity)?;
 	load_texture_bytes(reference, &mut staging, &layouts, metadata.first_level).await?;
 	for layout in &layouts {
-		let range = layout.offset..layout.offset + layout.padded_size;
-		layout.pack_rows(&mut staging.bytes_mut()[range]);
+		let range = layout.offset..layout.offset + layout.copy.padded_size;
+		layout.copy.pack_rows(&mut staging.bytes_mut()[range]);
 	}
 	Ok(StagedTextureUpload { staging, layouts })
 }
@@ -418,10 +382,10 @@ fn texture_payload_is_compact(
 	let end = descriptions.and_then(|descriptions| {
 		stream_names.iter().zip(layouts).try_fold(0usize, |offset, (name, layout)| {
 			let description = descriptions.iter().find(|description| description.name() == name.as_str())?;
-			if description.offset() != offset || description.size() != layout.compact_size {
+			if description.offset() != offset || description.size() != layout.copy.compact_size {
 				return None;
 			}
-			offset.checked_add(layout.compact_size)
+			offset.checked_add(layout.copy.compact_size)
 		})
 	});
 	end == Some(decoded_size)
@@ -435,11 +399,11 @@ fn expand_compact_texture_levels(
 	let mut source_end = decoded_size;
 	for layout in layouts.iter().rev() {
 		let source_start = source_end
-			.checked_sub(layout.compact_size)
+			.checked_sub(layout.copy.compact_size)
 			.ok_or(TexturePreparationError::Layout)?;
 		let destination_end = layout
 			.offset
-			.checked_add(layout.compact_size)
+			.checked_add(layout.copy.compact_size)
 			.ok_or(TexturePreparationError::Layout)?;
 		if layout.offset < source_start || destination_end > bytes.len() {
 			return Err(TexturePreparationError::Layout);
@@ -477,9 +441,9 @@ async fn load_texture_bytes(
 	// A single-level resource's payload is that level, so it reads whole. A later level alone must read its stream.
 	if let [layout] = layouts
 		&& first_level == 0
-		&& (!reference.requires_cpu_decompression() || reference.size == layout.compact_size)
+		&& (!reference.requires_cpu_decompression() || reference.size == layout.copy.compact_size)
 	{
-		return load_texture_into(reference, &mut staging.bytes_mut()[..layout.compact_size]).await;
+		return load_texture_into(reference, &mut staging.bytes_mut()[..layout.copy.compact_size]).await;
 	}
 
 	let stream_names: [MipStreamName; u32::BITS as usize] =
@@ -499,8 +463,8 @@ async fn load_texture_bytes(
 	let mut streams = SmallVec::new();
 	let mut allocator = utils::BufferAllocator::new(staging.bytes_mut());
 	for (name, layout) in stream_names.iter().zip(layouts) {
-		let region = allocator.take(layout.padded_size);
-		streams.push(StreamMut::new(name.as_str(), &mut region[..layout.compact_size]));
+		let region = allocator.take(layout.copy.padded_size);
+		streams.push(StreamMut::new(name.as_str(), &mut region[..layout.copy.compact_size]));
 	}
 	load_image_streams(reference, streams).await
 }
@@ -540,17 +504,17 @@ mod tests {
 			.map(|level| {
 				let layout = TextureUploadLayout::new(metadata.format, metadata.extent.mip(level), 1, offset)
 					.expect("valid texture layout");
-				offset += layout.padded_size;
+				offset += layout.copy.padded_size;
 				layout
 			})
 			.collect::<SmallVec<[_; 16]>>();
 
 		assert_eq!(layouts.len(), 3);
-		assert_eq!(layouts[0].compact_bytes_per_row, 68);
-		assert_eq!(layouts[0].source_bytes_per_row, 256);
-		assert_eq!(layouts[0].source_bytes_per_image, 768);
-		assert_eq!(layouts[1].offset, layouts[0].padded_size);
-		assert_eq!(layouts[2].offset, layouts[0].padded_size + layouts[1].padded_size);
+		assert_eq!(layouts[0].copy.compact_bytes_per_row, 68);
+		assert_eq!(layouts[0].copy.padded_bytes_per_row, 256);
+		assert_eq!(layouts[0].copy.padded_bytes_per_image, 768);
+		assert_eq!(layouts[1].offset, layouts[0].copy.padded_size);
+		assert_eq!(layouts[2].offset, layouts[0].copy.padded_size + layouts[1].copy.padded_size);
 	}
 
 	#[test]
@@ -558,23 +522,27 @@ mod tests {
 		let layouts = [
 			TextureUploadLayout {
 				offset: 0,
-				compact_bytes_per_row: 4,
-				row_count: 1,
-				compact_bytes_per_image: 4,
-				compact_size: 4,
-				source_bytes_per_row: 8,
-				source_bytes_per_image: 8,
-				padded_size: 8,
+				copy: ghi::ImageCopyLayout {
+					compact_bytes_per_row: 4,
+					row_count: 1,
+					compact_bytes_per_image: 4,
+					compact_size: 4,
+					padded_bytes_per_row: 8,
+					padded_bytes_per_image: 8,
+					padded_size: 8,
+				},
 			},
 			TextureUploadLayout {
 				offset: 8,
-				compact_bytes_per_row: 2,
-				row_count: 1,
-				compact_bytes_per_image: 2,
-				compact_size: 2,
-				source_bytes_per_row: 4,
-				source_bytes_per_image: 4,
-				padded_size: 4,
+				copy: ghi::ImageCopyLayout {
+					compact_bytes_per_row: 2,
+					row_count: 1,
+					compact_bytes_per_image: 2,
+					compact_size: 2,
+					padded_bytes_per_row: 4,
+					padded_bytes_per_image: 4,
+					padded_size: 4,
+				},
 			},
 		];
 		let names = [MipStreamName::new(0), MipStreamName::new(1)];
@@ -595,10 +563,10 @@ mod tests {
 		source: &[u8],
 	) -> (Vec<u8>, TextureUploadLayout) {
 		let layout = TextureUploadLayout::new(format, extent, layer_count, 0).expect("texture layout");
-		assert_eq!(source.len(), layout.compact_size);
-		let mut bytes = vec![0u8; layout.padded_size];
+		assert_eq!(source.len(), layout.copy.compact_size);
+		let mut bytes = vec![0u8; layout.copy.padded_size];
 		bytes[..source.len()].copy_from_slice(source);
-		layout.pack_rows(&mut bytes);
+		layout.copy.pack_rows(&mut bytes);
 		(bytes, layout)
 	}
 
@@ -608,15 +576,15 @@ mod tests {
 		let source = (0..(compact_row * 2)).map(|value| value as u8).collect::<Vec<_>>();
 		let (data, upload) = staged_texture_bytes(ghi::Formats::BC7, Extent::rectangle(5, 7), 1, &source);
 
-		assert_eq!(upload.source_bytes_per_row, 256);
-		assert_eq!(upload.source_bytes_per_image, 256 * 2);
+		assert_eq!(upload.copy.padded_bytes_per_row, 256);
+		assert_eq!(upload.copy.padded_bytes_per_image, 256 * 2);
 		assert_eq!(&data[0..compact_row], &source[0..compact_row]);
 		assert_eq!(&data[256..256 + compact_row], &source[compact_row..compact_row * 2]);
 
 		let (zero_data, zero_extent) =
 			staged_texture_bytes(ghi::Formats::RGBA8UNORM, Extent::rectangle(0, 0), 1, &[1, 2, 3, 4]);
-		assert_eq!(zero_extent.source_bytes_per_row, 256);
-		assert_eq!(zero_extent.source_bytes_per_image, 256);
+		assert_eq!(zero_extent.copy.padded_bytes_per_row, 256);
+		assert_eq!(zero_extent.copy.padded_bytes_per_image, 256);
 		assert_eq!(&zero_data[..4], &[1, 2, 3, 4]);
 	}
 
@@ -626,7 +594,7 @@ mod tests {
 		let source = (0..compact_face_size * 6).map(|value| value as u8).collect::<Vec<_>>();
 		let (data, upload) = staged_texture_bytes(ghi::Formats::RGBA16F, Extent::square(2), 6, &source);
 
-		assert_eq!(upload.source_bytes_per_image, 512);
+		assert_eq!(upload.copy.padded_bytes_per_image, 512);
 		assert_eq!(data.len(), 512 * 6);
 		for face in 0..6 {
 			for row in 0..2 {

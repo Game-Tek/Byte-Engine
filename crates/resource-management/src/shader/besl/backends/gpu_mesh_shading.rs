@@ -239,9 +239,7 @@ fn draw_on_the_gpu(task: &[u8], mesh: &[u8], fragment: &[u8]) -> (Vec<u32>, Vec<
 	);
 	let extent = Extent::rectangle(COLUMNS, ROWS);
 	let target = context.build_image(
-		ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::TransferSource)
-			.extent(extent)
-			.device_accesses(ghi::DeviceAccesses::DeviceToHost),
+		ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::TransferSource).extent(extent),
 	);
 
 	let keep = upload(
@@ -253,7 +251,7 @@ fn draw_on_the_gpu(task: &[u8], mesh: &[u8], fragment: &[u8]) -> (Vec<u32>, Vec<
 	let kept = context.build_buffer::<[u32]>(
 		ghi::buffer::Builder::new(ghi::Uses::Storage)
 			.length(TASK_WORKGROUPS as usize)
-			.device_accesses(ghi::DeviceAccesses::DeviceToHost),
+			.host_access(ghi::HostAccess::Read),
 	);
 	let set = context.create_descriptor_set(None, &layout);
 	context.write(&[
@@ -294,7 +292,7 @@ fn draw_on_the_gpu(task: &[u8], mesh: &[u8], fragment: &[u8]) -> (Vec<u32>, Vec<
 		"The mesh shading draw broke a GPU validation rule. The most likely cause is a lowering that links the stages wrongly; the validation messages above name it."
 	);
 
-	let kept = context.get_buffer_slice(kept).to_vec();
+	let kept = super::gpu_harness::download(&mut context, kept);
 	let pixels = context
 		.get_image_data(readback.expect("The recording must have queued the readback."))
 		.expect("Failed to map the readback. The most likely cause is incomplete GPU readback.");

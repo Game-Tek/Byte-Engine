@@ -52,12 +52,6 @@ pub enum SamplerAddressingModes {
 	Border {},
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum UseCases {
-	STATIC,
-	DYNAMIC,
-}
-
 bitflags::bitflags! {
 	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 	/// Bit flags for the available resource uses.
@@ -248,9 +242,98 @@ pub const TEXTURE_COPY_PITCH_ALIGNMENT: usize = 256;
 /// Returns the row and image pitches of a copy whose compact rows are padded to [`TEXTURE_COPY_PITCH_ALIGNMENT`].
 ///
 /// Take `bytes_per_row` and `row_count` from [`Formats::copy_layout`]. Returns `None` when a pitch overflows.
-pub fn aligned_copy_pitches(bytes_per_row: usize, row_count: usize) -> Option<(usize, usize)> {
+pub(crate) fn aligned_copy_pitches(bytes_per_row: usize, row_count: usize) -> Option<(usize, usize)> {
 	let aligned_bytes_per_row = bytes_per_row.checked_next_multiple_of(TEXTURE_COPY_PITCH_ALIGNMENT)?;
 	Some((aligned_bytes_per_row, aligned_bytes_per_row.checked_mul(row_count)?))
+}
+
+/// The `ImageCopyLayout` struct keeps the compact CPU rows of an image level and the padded rows a copy from a buffer
+/// reads in agreement, so every caller that stages pixels derives the same pitches.
+///
+/// Size a staging buffer with [`Self::padded_size`], fill it with [`Self::write_rows`], or expand rows already read
+/// into it with [`Self::pack_rows`]. Next, record [`Self::copy`] with
+/// [`crate::command_buffer::CommonCommandBufferMode::copy_buffer_to_images`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageCopyLayout {
+	/// The bytes of one row without padding.
+	pub compact_bytes_per_row: usize,
+	/// The rows of one image, which are block rows for a compressed format.
+	pub row_count: usize,
+	/// The bytes of one image without padding.
+	pub compact_bytes_per_image: usize,
+	/// The bytes of every image without padding.
+	pub compact_size: usize,
+	/// The bytes from one staged row to the next, a multiple of [`TEXTURE_COPY_PITCH_ALIGNMENT`].
+	pub padded_bytes_per_row: usize,
+	/// The bytes from one staged image to the next.
+	pub padded_bytes_per_image: usize,
+	/// The staging bytes of every image.
+	pub padded_size: usize,
+}
+
+impl ImageCopyLayout {
+	/// Returns the layout of `image_count` images of `extent` in `format`, or `None` when a size overflows.
+	///
+	/// `image_count` counts every 2D image the copy writes: the array layers times the depth slices of a volume.
+	pub fn new(format: Formats, extent: utils::Extent, image_count: usize) -> Option<Self> {
+		let (compact_bytes_per_row, row_count, compact_bytes_per_image) = format.copy_layout(extent)?;
+		let (padded_bytes_per_row, padded_bytes_per_image) = aligned_copy_pitches(compact_bytes_per_row, row_count)?;
+		Some(Self {
+			compact_bytes_per_row,
+			row_count,
+			compact_bytes_per_image,
+			compact_size: compact_bytes_per_image.checked_mul(image_count)?,
+			padded_bytes_per_row,
+			padded_bytes_per_image,
+			padded_size: padded_bytes_per_image.checked_mul(image_count)?,
+		})
+	}
+
+	/// Copies every row of every image from `source` into the padded rows of `destination`.
+	///
+	/// Source rows start `source_bytes_per_row` apart, so `source` can be a rectangle inside a larger CPU image; pass
+	/// [`Self::compact_bytes_per_row`] for compact pixels. `destination` holds at least [`Self::padded_size`] bytes.
+	pub fn write_rows(&self, destination: &mut [u8], source: &[u8], source_bytes_per_row: usize) {
+		let rows = destination[..self.padded_size].chunks_exact_mut(self.padded_bytes_per_row);
+		// Images follow each other without padding between them, so every staged row follows the previous one.
+		for (destination, source) in rows.zip(source.chunks(source_bytes_per_row)) {
+			destination[..self.compact_bytes_per_row].copy_from_slice(&source[..self.compact_bytes_per_row]);
+		}
+	}
+
+	/// Expands compact rows at the start of `bytes` into their padded places in the same range.
+	///
+	/// Use it when pixels are read straight into staging. `bytes` holds exactly [`Self::padded_size`] bytes.
+	pub fn pack_rows(&self, bytes: &mut [u8]) {
+		assert_eq!(bytes.len(), self.padded_size);
+		// Compact rows already on the copy pitch sit where the GPU reads them, so every move would be onto itself.
+		if self.padded_bytes_per_row == self.compact_bytes_per_row {
+			return;
+		}
+		// Rows move toward the end, so walking backward never overwrites a row before it moved.
+		for row in (0..self.compact_size / self.compact_bytes_per_row).rev() {
+			let source = row * self.compact_bytes_per_row;
+			bytes.copy_within(source..source + self.compact_bytes_per_row, row * self.padded_bytes_per_row);
+		}
+	}
+
+	/// Returns the copy of the staged images at `source_offset` of `source_buffer` into a mip of `destination_image`.
+	pub fn copy(
+		&self,
+		source_buffer: BaseBufferHandle,
+		source_offset: usize,
+		destination_image: crate::BaseImageHandle,
+		destination_mip_level: u32,
+	) -> BufferImageCopyDescriptor {
+		BufferImageCopyDescriptor::new(
+			source_buffer,
+			source_offset,
+			self.padded_bytes_per_row,
+			self.padded_bytes_per_image,
+			destination_image,
+			destination_mip_level,
+		)
+	}
 }
 
 impl Formats {
@@ -556,19 +639,36 @@ impl Size for DataTypes {
 	}
 }
 
-bitflags::bitflags! {
-	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-	pub struct DeviceAccesses: u16 {
-		const CpuRead = 1 << 0;
-		const CpuWrite = 1 << 1;
-		const GpuRead = 1 << 2;
-		const GpuWrite = 1 << 3;
+/// The `HostAccess` enum declares how the CPU accesses a buffer, so the backend can place its memory without the
+/// application knowing the GPU's memory architecture.
+///
+/// Pass it to [`crate::buffer::Builder::host_access`]. Next, choose the buffer's [`Copies`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum HostAccess {
+	/// Only GPU commands read and write the buffer.
+	#[default]
+	None,
+	/// The CPU writes the buffer. With [`Copies::PerFrame`], map each frame's copy with
+	/// [`crate::frame::Frame::map`]; with one copy, use [`crate::context::Context::map_unsynchronized`].
+	Write,
+	/// The CPU reads what GPU commands wrote. With [`Copies::PerFrame`], read a completed frame's copy with
+	/// [`crate::frame::Frame::read`].
+	Read,
+}
 
-		const DeviceOnly = 1 << 2 | 1 << 3;
-		const HostOnly = 1 << 0 | 1 << 1;
-		const HostToDevice = 1 << 1 | 1 << 2;
-		const DeviceToHost = 1 << 0 | 1 << 3;
-	}
+/// The `Copies` enum declares how many copies of a buffer or image exist, so frames in flight never share data the
+/// CPU or a later frame rewrites.
+///
+/// Copy `i` belongs to the frames whose sequence index is `i`. Pass it to [`crate::buffer::Builder::copies`] or
+/// [`crate::image::Builder::copies`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum Copies {
+	/// One copy that every frame uses.
+	#[default]
+	One,
+	/// One copy per frame in flight. A frame's commands use its copy, and a descriptor written with a frame offset
+	/// names another frame's copy.
+	PerFrame,
 }
 
 /// A programmable shader stage.
@@ -652,6 +752,7 @@ pub enum ChannelBitSize {
 }
 
 /// The `BufferCopyDescriptor` struct configures one byte-range copy between buffers.
+#[derive(Clone, Copy, Debug)]
 pub struct BufferCopyDescriptor {
 	pub source_buffer: BaseBufferHandle,
 	pub source_offset: usize,
@@ -679,7 +780,12 @@ impl BufferCopyDescriptor {
 	}
 }
 
-/// The `BufferImageCopyDescriptor` struct configures one image upload from a buffer.
+/// The `BufferImageCopyDescriptor` struct configures one copy from a buffer into a mip of an image, or into a region
+/// of its base level.
+///
+/// Pass it to [`crate::command_buffer::CommonCommandBufferMode::copy_buffer_to_images`]. Build a whole-mip copy with
+/// [`ImageCopyLayout::copy`], which also pads each source row to [`TEXTURE_COPY_PITCH_ALIGNMENT`].
+#[derive(Clone, Copy, Debug)]
 pub struct BufferImageCopyDescriptor {
 	pub source_buffer: BaseBufferHandle,
 	pub source_offset: usize,
@@ -687,6 +793,8 @@ pub struct BufferImageCopyDescriptor {
 	pub source_bytes_per_image: usize,
 	pub destination_image: crate::BaseImageHandle,
 	pub destination_mip_level: u32,
+	/// The rectangle of the base level the copy writes, or `None` for the whole mip.
+	pub destination_region: Option<crate::image::Region>,
 }
 
 impl BufferImageCopyDescriptor {
@@ -706,7 +814,21 @@ impl BufferImageCopyDescriptor {
 			source_bytes_per_image,
 			destination_image,
 			destination_mip_level,
+			destination_region: None,
 		}
+	}
+
+	/// Restricts the copy to `region` of the base level, so it updates part of an image and keeps the rest.
+	///
+	/// The source then holds only the region's rows, and its pitches follow the region's width and height.
+	pub fn region(mut self, region: crate::image::Region) -> Self {
+		assert_eq!(
+			self.destination_mip_level, 0,
+			"Image region copy names mip {}. The most likely cause is a region copy into a mip other than the base level. Copy into mip 0, or copy the whole mip.",
+			self.destination_mip_level
+		);
+		self.destination_region = Some(region);
+		self
 	}
 }
 

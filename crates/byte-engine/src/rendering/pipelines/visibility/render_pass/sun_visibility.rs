@@ -102,9 +102,7 @@ pub(crate) fn create_sun_visibility_targets(
 		render_pass_builder
 			.create_scaled_render_target(
 				// One channel per sun slot, so every shadowed sun resolves in one dispatch that shares its tile loads.
-				ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::Image)
-					.name(name)
-					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+				ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::Image).name(name),
 				resolution_divisor,
 			)
 			.into()
@@ -156,7 +154,7 @@ pub(super) struct SunVisibilityPass {
 	/// The contact-shadow trace pipeline, absent when contact shadows are left out.
 	pub(super) trace_pipelines: Option<Pipelines<1>>,
 	pub(super) resolve_pipelines: Pipelines<1>,
-	parameters: ghi::DynamicBufferHandle<SunVisibilityShaderParameters>,
+	parameters: ghi::BufferHandle<SunVisibilityShaderParameters>,
 }
 
 impl SunVisibilityPass {
@@ -175,8 +173,8 @@ impl SunVisibilityPass {
 		depth: ghi::BaseImageHandle,
 		primitive_index: ghi::BaseImageHandle,
 		instance_id: ghi::BaseImageHandle,
-		depth_pyramid: ghi::DynamicImageHandle,
-		view_data: ghi::DynamicBufferHandle<ScreenViewData>,
+		depth_pyramid: ghi::ImageHandle,
+		view_data: ghi::BufferHandle<ScreenViewData>,
 		shadow_maps: &ShadowMaps,
 		targets: SunVisibilityTargets,
 		contact_shadows: bool,
@@ -185,10 +183,11 @@ impl SunVisibilityPass {
 			set_layouts::SCREEN_TRACE.create_set(context, "Contact Shadow Screen Trace Descriptor Set");
 		let trace_descriptor_set = set_layouts::CONTACT_SHADOWS.create_set(context, "Contact Shadow Trace Descriptor Set");
 		let resolve_descriptor_set = set_layouts::SUN_VISIBILITY.create_set(context, "Sun Visibility Descriptor Set");
-		let parameters = context.build_dynamic_buffer(
+		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Sun Visibility Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let point_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
@@ -277,8 +276,7 @@ impl SunVisibilityPass {
 			let [x, y, z] = <[f32; 3]>::from(view_space_direction_to_light(sink.view(), sun.direction));
 			*entry = [x, y, z, sun.angular_radius_tangent];
 		}
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = parameters;
-		frame.sync_buffer(self.parameters);
+		*frame.map(self.parameters) = parameters;
 		Some(SunVisibilityStages {
 			trace: trace.map(|pipeline| ComputeStage {
 				label: "Contact Shadow Trace",

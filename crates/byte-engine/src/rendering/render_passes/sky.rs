@@ -161,7 +161,7 @@ struct AtmosphereTables {
 	sky_view_lut: ghi::ImageHandle,
 	sampler: ghi::SamplerHandle,
 	/// The constants every table pass reads, and the user's own passes with them; the user uploads them each frame.
-	parameters: ghi::DynamicBufferHandle<SkyShaderData>,
+	parameters: ghi::BufferHandle<SkyShaderData>,
 	/// The GPU counters of the transmittance, multiple scattering, and sky view stages.
 	counters: [ghi::CounterHandle; 3],
 	/// The haze the transmittance and multiple-scattering tables were built for, or `None` before their first build.
@@ -201,10 +201,11 @@ impl AtmosphereTables {
 		let counters = ["transmittance", "multiple-scattering", "view"]
 			.map(|name| render_pass_builder.create_gpu_counter(&format!("{counter_prefix}-{name}")));
 		let context = render_pass_builder.context();
-		let parameters = context.build_dynamic_buffer(
+		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name(parameters_name)
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let [transmittance_lut, multiple_scattering_lut, sky_view_lut] = [
 			("Sky Transmittance LUT", TRANSMITTANCE_LUT_EXTENT),
@@ -215,8 +216,7 @@ impl AtmosphereTables {
 			context.build_image(
 				ghi::image::Builder::new(crate::rendering::SCENE_COLOR_FORMAT, ghi::Uses::Image | ghi::Uses::Storage)
 					.name(name)
-					.extent(extent)
-					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+					.extent(extent),
 			)
 		});
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
@@ -479,7 +479,7 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		// Per-view sky constants come from the active camera before dispatch.
 		let data = sky_shader_data(&self.settings, &sink_sun(sink), sink);
 		let tables = self.tables.prepare(frame, self.settings.haze, &data)?;
-		*frame.get_mut_dynamic_buffer_slice(self.tables.parameters) = data;
+		*frame.map(self.tables.parameters) = data;
 		let composite_extent = sky_composite_extent(sink.extent(), self.settings.screen_height);
 		let composite_counter = self.composite_counter;
 
@@ -584,8 +584,7 @@ impl AtmosphereSkyEnvironment {
 					.name(name)
 					.extent(Extent::square(size))
 					.mip_levels(levels)
-					.cube_compatible()
-					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+					.cube_compatible(),
 			)
 		};
 		let radiance = cube("Sky Environment Radiance", SKY_ENVIRONMENT_FACE_SIZE, SKY_ENVIRONMENT_LEVELS);
@@ -686,7 +685,7 @@ impl RenderPass for AtmosphereSkyEnvironment {
 		let specular = simple_compute::ready_all(&mut self.specular, frame, frame_allocator)?;
 		let diffuse = self.diffuse.ready(frame)?;
 		let tables = self.tables.prepare(frame, self.settings.haze, &data)?;
-		*frame.get_mut_dynamic_buffer_slice(self.tables.parameters) = data;
+		*frame.map(self.tables.parameters) = data;
 		self.key = Some(key);
 		let [capture_counter, prefilter_counter] = self.counters;
 

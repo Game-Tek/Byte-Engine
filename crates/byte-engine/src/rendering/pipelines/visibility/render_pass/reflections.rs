@@ -23,7 +23,7 @@ use crate::rendering::pipelines::visibility::shader_data::ReflectionShaderParame
 /// Create it with the material-evaluation descriptor set, then call [`Self::prepare`] every frame before material
 /// evaluation records.
 pub(super) struct ScreenSpaceReflections {
-	parameters: ghi::DynamicBufferHandle<ReflectionShaderParameters>,
+	parameters: ghi::BufferHandle<ReflectionShaderParameters>,
 }
 
 impl ScreenSpaceReflections {
@@ -35,14 +35,15 @@ impl ScreenSpaceReflections {
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
-		depth_pyramid: ghi::DynamicImageHandle,
-		lit: ghi::DynamicImageHandle,
-		depth: ghi::DynamicImageHandle,
+		depth_pyramid: ghi::ImageHandle,
+		lit: ghi::ImageHandle,
+		depth: ghi::ImageHandle,
 	) -> Self {
-		let parameters = context.build_dynamic_buffer(
+		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Reflection Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		// The layout fixes every image's sampler: `reflection_texel` reads the texel under a coordinate and mirrors the
 		// image past the screen's edge.
@@ -62,7 +63,7 @@ impl ScreenSpaceReflections {
 	/// `history` describes the previous frame's images, or is `None` when they do not hold this sink's data. Without
 	/// it every ray misses, and material evaluation keeps the environment.
 	pub(super) fn prepare(&self, frame: &mut ghi::implementation::Frame, history: Option<SinkHistory>) {
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = history
+		*frame.map(self.parameters) = history
 			.map(|history| {
 				let (numerator, denominator_offset) = depth_unprojection(&history.view);
 				ReflectionShaderParameters {
@@ -74,6 +75,5 @@ impl ScreenSpaceReflections {
 				}
 			})
 			.unwrap_or_default();
-		frame.sync_buffer(self.parameters);
 	}
 }

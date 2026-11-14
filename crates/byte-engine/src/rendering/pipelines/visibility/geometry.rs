@@ -409,7 +409,7 @@ impl GeometryHandles {
 			ghi::buffer::Builder::new(uses)
 				.name(name)
 				.length(length as usize)
-				.device_accesses(ghi::DeviceAccesses::HostToDevice)
+				.host_access(ghi::HostAccess::Write)
 		};
 		let GeometryCapacity {
 			vertices,
@@ -453,9 +453,9 @@ impl GeometryHandles {
 
 impl GeometryBuffers {
 	/// Imports every stream `handles` names from the render context into the loader.
-	pub(crate) fn import(handles: &GeometryHandles, render: &ghi::implementation::Context, loader: &mut Loader) -> Self {
+	pub(crate) fn import(handles: &GeometryHandles, render: &mut ghi::implementation::Context, loader: &mut Loader) -> Self {
 		fn import<T: ?Sized>(
-			render: &ghi::implementation::Context,
+			render: &mut ghi::implementation::Context,
 			loader: &mut Loader,
 			buffer: ghi::BufferHandle<T>,
 		) -> ghi::BufferHandle<T> {

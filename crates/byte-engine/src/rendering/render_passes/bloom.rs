@@ -205,7 +205,7 @@ fn level_weights(settings: BloomPassSettings, level_count: usize, sink_height: u
 pub struct BloomPass {
 	controls: Rc<BloomControls>,
 	/// One buffer per climb, indexed by the level it builds. The prefilter reads level `0`'s, the composite's.
-	parameters: Vec<ghi::DynamicBufferHandle<BloomShaderData>>,
+	parameters: Vec<ghi::BufferHandle<BloomShaderData>>,
 	/// The prefilter that weighs each pixel of a block, and the one that reads each block with one bilinear tap.
 	extract_passes: [simple_tile::Pass; 2],
 	downsample_passes: Vec<simple_compute::Pass>,
@@ -278,10 +278,11 @@ impl BloomPass {
 		// Every level but the coarsest is climbed, and a one-level pyramid still composites its top.
 		let parameters = (0..level_count.saturating_sub(1).max(1))
 			.map(|_| {
-				context.build_dynamic_buffer(
+				context.build_buffer(
 					ghi::buffer::Builder::new(ghi::Uses::Storage)
 						.name("Bloom Parameters")
-						.device_accesses(ghi::DeviceAccesses::HostToDevice),
+						.host_access(ghi::HostAccess::Write)
+						.copies(ghi::Copies::PerFrame),
 				)
 			})
 			.collect::<Vec<_>>();
@@ -406,8 +407,7 @@ impl BloomPass {
 	fn write_parameters(&self, frame: &mut ghi::implementation::Frame, settings: BloomPassSettings, sink_height: u32) {
 		let weights = level_weights(settings, self.level_count, sink_height);
 		for (level, parameters) in self.parameters.iter().enumerate() {
-			*frame.get_mut_dynamic_buffer_slice(*parameters) =
-				BloomShaderData::climb(settings, &weights, level, self.level_count);
+			*frame.map(*parameters) = BloomShaderData::climb(settings, &weights, level, self.level_count);
 		}
 	}
 }

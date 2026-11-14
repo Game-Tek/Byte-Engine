@@ -37,7 +37,7 @@ struct FogShaderData {
 /// of the surface behind them.
 pub struct ExponentialHeightFogRenderPass {
 	resources: [simple_tile::Resource; 3],
-	parameters: ghi::DynamicBufferHandle<FogShaderData>,
+	parameters: ghi::BufferHandle<FogShaderData>,
 }
 
 impl Entity for ExponentialHeightFogRenderPass {}
@@ -58,20 +58,23 @@ impl ExponentialHeightFogRenderPass {
 			.try_read_from(FOG_LIGHT_TARGET)
 			.map(ghi::BaseImageHandle::from);
 
+		let queue = render_pass_builder.queue();
 		let context = render_pass_builder.context();
-		let parameters = context.build_dynamic_buffer(
+		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Exponential Height Fog Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		// The shader fetches texels by coordinate, so the sampler only completes the texture bindings.
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 		let fog_light = fog_light.unwrap_or_else(|| {
 			crate::rendering::lookup_textures::create_lookup_texture(
 				context,
-				"No Fog Light",
-				ghi::Formats::RGBA16F,
-				Extent::square(1),
+				queue,
+				ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image)
+					.name("No Fog Light")
+					.extent(Extent::square(1)),
 				&[0; 8],
 			)
 			.into()
@@ -155,7 +158,7 @@ impl PixelStep for ExponentialHeightFogRenderPass {
 		let (sun_illuminance, sun_direction) = sink.sun().map_or((Vec3f::new(0.0, 0.0, 0.0), None), |sun| {
 			(sun.illuminance, Some(sun.direction))
 		});
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = fog_shader_data(&fog, sun_illuminance, sun_direction, sink);
+		*frame.map(self.parameters) = fog_shader_data(&fog, sun_illuminance, sun_direction, sink);
 		true
 	}
 }

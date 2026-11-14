@@ -29,12 +29,8 @@ pub(super) fn change_frames(device: &mut impl ghi::context::Context, queue_handl
 
 	let extent = Extent::rectangle(1920, 1080);
 
-	let render_target = device.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
-			.extent(extent)
-			.device_accesses(DeviceAccesses::DeviceToHost)
-			.use_case(UseCases::DYNAMIC),
-	);
+	let render_target = device
+		.build_image(ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource).extent(extent));
 
 	let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
@@ -103,9 +99,9 @@ pub(super) fn change_frames(device: &mut impl ghi::context::Context, queue_handl
 	}
 }
 
-pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: QueueHandle, use_case: UseCases) {
+pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: QueueHandle, copies: ghi::Copies) {
 	//! Tests that the render system can perform rendering while resize the render targets.
-	//! Static targets are one image shared by every frame, so the resize happens while an earlier frame may use it.
+	//! Targets with one copy are one image shared by every frame, so the resize happens while an earlier frame may use it.
 
 	const FRAMES_IN_FLIGHT: usize = 3;
 
@@ -134,8 +130,7 @@ pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: Queu
 	let render_target = device.build_image(
 		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
 			.extent(extent)
-			.device_accesses(DeviceAccesses::DeviceToHost)
-			.use_case(use_case),
+			.copies(copies),
 	);
 
 	let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
@@ -241,8 +236,7 @@ pub(super) fn resize_layers(device: &mut impl ghi::context::Context, queue_handl
 	let render_target = device.build_image(
 		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
 			.extent(extent)
-			.array_layers(std::num::NonZeroU32::new(2))
-			.device_accesses(DeviceAccesses::DeviceToHost),
+			.array_layers(std::num::NonZeroU32::new(2)),
 	);
 	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
 	let render_finished_synchronizer = device.create_synchronizer(None, true);
@@ -295,7 +289,7 @@ pub(super) fn resize_layers(device: &mut impl ghi::context::Context, queue_handl
 pub(super) fn resize_render_target_in_flight(
 	device: &mut impl ghi::context::Context,
 	queue_handle: QueueHandle,
-	use_case: UseCases,
+	copies: ghi::Copies,
 ) {
 	//! Tests that resizing a render target while earlier frames still render to it keeps the old image alive for them.
 	//! Unlike [`resize`], no frame waits for the GPU, so frames overlap across each resize.
@@ -323,7 +317,7 @@ pub(super) fn resize_render_target_in_flight(
 	let render_target = device.build_image(
 		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
 			.extent(extent)
-			.use_case(use_case),
+			.copies(copies),
 	);
 
 	let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
@@ -375,14 +369,17 @@ pub(super) fn resize_render_target_in_flight(
 }
 
 pub(super) fn resize_dynamic_buffer(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
-	//! Tests that growing a dynamic buffer between frames keeps its old storage alive for the frames still in flight.
+	//! Tests that growing a per-frame buffer between frames keeps its old storage alive for the frames still in flight.
 	//! Every frame copies the persistent CPU source into the GPU buffer, so earlier frames use the old storage.
 
 	const FRAME_COUNT: u64 = 12;
 	const RESIZE_FRAME: u64 = 4;
 
-	let buffer = device.build_dynamic_buffer::<[u8; 64]>(
-		ghi::buffer::Builder::new(Uses::Storage).device_accesses(DeviceAccesses::HostToDevice),
+	let buffer = device.build_buffer::<[u8]>(
+		ghi::buffer::Builder::new(Uses::Storage)
+			.host_access(HostAccess::Write)
+			.copies(ghi::Copies::PerFrame)
+			.length(64),
 	);
 	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
 	let render_finished_synchronizer = device.create_synchronizer(None, true);
@@ -398,7 +395,7 @@ pub(super) fn resize_dynamic_buffer(device: &mut impl ghi::context::Context, que
 			render_finished_synchronizer,
 			|execution| {
 				let frame = execution.frame().unwrap();
-				*frame.get_mut_dynamic_buffer_slice(buffer) = [i as u8; 64];
+				frame.map(buffer).fill(i as u8);
 				execution.record(command_buffer_handle, |_| {});
 				[]
 			},
@@ -419,15 +416,14 @@ pub(super) fn array_buffer_round_trip(device: &mut impl ghi::context::Context, q
 		ghi::buffer::Builder::new(Uses::Storage | Uses::TransferSource | Uses::TransferDestination)
 			.name(name)
 			.length(LENGTH)
-			.device_accesses(DeviceAccesses::HostToDevice | DeviceAccesses::DeviceToHost)
+			.host_access(HostAccess::Write)
 	};
 	let source = device.build_buffer::<[u32]>(array_builder("Array Source"));
 	let destination = device.build_buffer::<[u32]>(array_builder("Array Destination"));
 
-	let values = device.get_mut_buffer_slice(source);
+	let values = buffer_contents(device, source);
 	assert_eq!(values.len(), LENGTH);
 	values.copy_from_slice(&[3, 1, 4, 1, 5]);
-	device.sync_buffer(source);
 
 	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
 	let synchronizer = device.create_synchronizer(None, true);
@@ -448,7 +444,7 @@ pub(super) fn array_buffer_round_trip(device: &mut impl ghi::context::Context, q
 	device.wait();
 
 	assert!(!device.has_errors());
-	assert_eq!(device.get_buffer_slice(destination), &[3, 1, 4, 1, 5]);
+	assert_eq!(buffer_contents(device, destination), &[3, 1, 4, 1, 5]);
 }
 
 // The rendering scenario shares one resource setup across all dynamic-data frame transitions.
@@ -482,12 +478,8 @@ pub(super) fn dynamic_data(device: &mut impl ghi::context::Context, queue_handle
 	// Use and odd width to make sure there is a middle/center pixel
 	let extent = Extent::rectangle(1920, 1080);
 
-	let render_target = device.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
-			.extent(extent)
-			.device_accesses(DeviceAccesses::DeviceToHost)
-			.use_case(UseCases::DYNAMIC),
-	);
+	let render_target = device
+		.build_image(ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource).extent(extent));
 
 	let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
@@ -501,8 +493,7 @@ pub(super) fn dynamic_data(device: &mut impl ghi::context::Context, queue_handle
 		&attachments,
 	));
 
-	let _buffer =
-		device.build_buffer::<u8>(ghi::buffer::Builder::new(Uses::Storage).device_accesses(DeviceAccesses::HostToDevice));
+	let _buffer = device.build_buffer::<u8>(ghi::buffer::Builder::new(Uses::Storage).host_access(HostAccess::Write));
 
 	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
 
@@ -636,24 +627,23 @@ pub(super) fn dynamic_data(device: &mut impl ghi::context::Context, queue_handle
 }
 
 pub(super) fn dynamic_textures(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
-	//! Tests that dynamic textures write to the current frame image instead of always writing to the root image.
+	//! Tests that commands in a frame write that frame's copy of a per-frame image instead of always the first copy.
 
 	let extent = Extent::square(2);
-	let pixel_count = (extent.width() * extent.height()) as usize;
 
-	let upload_image = device.build_dynamic_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Image | Uses::TransferSource)
+	let upload_image = device.build_image(
+		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Image | Uses::TransferSource | Uses::Clear)
 			.extent(extent)
-			.device_accesses(DeviceAccesses::HostToDevice),
+			.copies(ghi::Copies::PerFrame),
 	);
 
-	let readback_image = device.build_dynamic_image(
+	let readback_image = device.build_image(
 		ghi::image::Builder::new(
 			Formats::RGBA8UNORM,
 			Uses::Image | Uses::TransferSource | Uses::TransferDestination,
 		)
 		.extent(extent)
-		.device_accesses(DeviceAccesses::DeviceToHost),
+		.copies(ghi::Copies::PerFrame),
 	);
 
 	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
@@ -683,15 +673,8 @@ pub(super) fn dynamic_textures(device: &mut impl ghi::context::Context, queue_ha
 				&[],
 				render_finished_synchronizer,
 				|execution| {
-					let frame = execution.frame().unwrap();
-
-					let texture_slice = frame.get_mut_dynamic_texture_slice(upload_image.into());
-					for pixel in texture_slice.as_chunks_mut::<4>().0.iter_mut().take(pixel_count) {
-						pixel.copy_from_slice(&[expected_color.r, expected_color.g, expected_color.b, expected_color.a]);
-					}
-					frame.sync_texture(upload_image.into());
-
 					execution.record(command_buffer_handle, |command_buffer_recording| {
+						command_buffer_recording.clear_images(&[(upload_image.into(), clear_color(expected_color))]);
 						command_buffer_recording.blit_image(
 							upload_image.into(),
 							Layouts::Transfer,
@@ -724,19 +707,19 @@ pub(super) fn previous_frame_transfers(device: &mut impl ghi::context::Context, 
 	//! frame's copy.
 
 	let extent = Extent::square(2);
-	let pixel_count = (extent.width() * extent.height()) as usize;
 
-	let upload_image = device.build_dynamic_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Image | Uses::TransferSource)
+	let upload_image = device.build_image(
+		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Image | Uses::TransferSource | Uses::Clear)
 			.extent(extent)
-			.device_accesses(DeviceAccesses::HostToDevice),
+			.copies(ghi::Copies::PerFrame),
 	);
-	let history_image = device.build_dynamic_image(
+	let history_image = device.build_image(
 		ghi::image::Builder::new(
 			Formats::RGBA8UNORM,
 			Uses::Image | Uses::TransferSource | Uses::TransferDestination,
 		)
-		.extent(extent),
+		.extent(extent)
+		.copies(ghi::Copies::PerFrame),
 	);
 
 	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
@@ -763,15 +746,8 @@ pub(super) fn previous_frame_transfers(device: &mut impl ghi::context::Context, 
 			&[],
 			render_finished_synchronizer,
 			|execution| {
-				let frame = execution.frame().unwrap();
-
-				let texture_slice = frame.get_mut_dynamic_texture_slice(upload_image.into());
-				for pixel in texture_slice.as_chunks_mut::<4>().0.iter_mut().take(pixel_count) {
-					pixel.copy_from_slice(&[color.r, color.g, color.b, color.a]);
-				}
-				frame.sync_texture(upload_image.into());
-
 				execution.record(command_buffer_handle, |command_buffer_recording| {
+					command_buffer_recording.clear_images(&[(upload_image.into(), clear_color(color))]);
 					command_buffer_recording.blit_image(
 						upload_image.into(),
 						Layouts::Transfer,
@@ -783,7 +759,7 @@ pub(super) fn previous_frame_transfers(device: &mut impl ghi::context::Context, 
 						transfers.push(command_buffer_recording.transfer_texture(history_image.into()).expect(
 							"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
 						));
-						transfers.push(command_buffer_recording.transfer_texture_with_frame(history_image, -1).expect(
+						transfers.push(command_buffer_recording.transfer_texture_with_frame(history_image.into(), -1).expect(
 							"Previous-frame texture transfer failed. The most likely cause is that the backend cannot resolve frame offsets for transfers.",
 						));
 					}
@@ -909,17 +885,18 @@ pub(super) fn multiframe_resources(device: &mut impl ghi::context::Context, queu
 		ShaderParameter::new(&compute_shader, ShaderTypes::Compute),
 	));
 
-	let image = device.build_dynamic_image(
+	let image = device.build_image(
 		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage | Uses::TransferSource)
 			.name("Image")
 			.extent(Extent::square(2))
-			.device_accesses(DeviceAccesses::DeviceToHost),
+			.copies(ghi::Copies::PerFrame),
 	);
 
 	let descriptor_set = device.create_descriptor_set(None, &layout);
 	device.write(&[
 		ghi::DescriptorWrite::image(descriptor_set, image_resource.slot(), image, Layouts::General),
-		ghi::DescriptorWrite::image_with_frame(descriptor_set, last_frame_image_resource.slot(), image, Layouts::General, -1),
+		ghi::DescriptorWrite::image(descriptor_set, last_frame_image_resource.slot(), image, Layouts::General)
+			.with_frame_offset(-1),
 	]);
 
 	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
@@ -1116,24 +1093,26 @@ pub(super) fn texture3d_lut_round_trip(device: &mut impl ghi::context::Context, 
 	let source = device.build_image(
 		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Image | Uses::TransferDestination)
 			.name("3D LUT source")
-			.extent(extent)
-			.device_accesses(DeviceAccesses::HostToDevice),
+			.extent(extent),
 	);
+	let layout = ghi::ImageCopyLayout::new(Formats::RGBA8UNORM, extent, extent.depth() as usize).unwrap();
+	let staging = device.build_buffer::<[u8]>(
+		ghi::buffer::Builder::new(Uses::TransferSource)
+			.name("3D LUT staging")
+			.host_access(ghi::HostAccess::Write)
+			.length(layout.padded_size),
+	);
+	// SAFETY: No work has used the new staging buffer, and the mapping ends before the copy is recorded.
+	let bytes = unsafe { device.map_unsynchronized(staging) }.into_bytes();
+	layout.write_rows(bytes, &expected, layout.compact_bytes_per_row);
+	device.record(queue_handle, None, |recording| {
+		recording.copy_buffer_to_images(&[layout.copy(staging.into(), 0, source.into(), 0)]);
+	});
 	let destination = device.build_image(
 		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage | Uses::TransferSource)
 			.name("3D LUT destination")
-			.extent(extent)
-			.device_accesses(DeviceAccesses::DeviceToHost),
+			.extent(extent),
 	);
-	device.write_texture(source, |bytes| {
-		assert_eq!(
-			bytes.len(),
-			expected.len(),
-			"Unexpected 3D LUT staging size. The most likely cause is that image depth was omitted from compact storage."
-		);
-		bytes.copy_from_slice(&expected);
-	});
-	device.sync_texture(source);
 
 	let compute_shader_artifact = ghi::shader::compile(
 		"GHI Texture3D LUT round-trip compute shader",
@@ -1248,35 +1227,46 @@ pub(super) fn texture3d_lut_round_trip(device: &mut impl ghi::context::Context, 
 	assert!(!device.has_errors());
 }
 
-/// Checks partial R8 uploads against GPU readback, including untouched texels and image edges.
+/// Checks whole and region copies from a buffer into an R8 image against GPU readback, including untouched texels and
+/// image edges.
 pub(super) fn texture_region_uploads(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
-	let extent = Extent::rectangle(37, 29);
+	const WIDTH: usize = 37;
+	const HEIGHT: usize = 29;
+
+	let extent = Extent::rectangle(WIDTH as u32, HEIGHT as u32);
 	let image = device.build_image(
 		ghi::image::Builder::new(
 			Formats::R8UNORM,
 			Uses::Image | Uses::TransferSource | Uses::TransferDestination,
 		)
-		.extent(extent)
-		.device_accesses(DeviceAccesses::HostToDevice),
+		.extent(extent),
 	);
 	let readback = device.build_image(
-		ghi::image::Builder::new(Formats::R8UNORM, Uses::TransferSource | Uses::TransferDestination)
-			.extent(extent)
-			.device_accesses(DeviceAccesses::DeviceToHost),
+		ghi::image::Builder::new(Formats::R8UNORM, Uses::TransferSource | Uses::TransferDestination).extent(extent),
+	);
+	// Each frame writes its own copy, so a frame never overwrites rows an earlier frame's copy still reads.
+	let staging = device.build_buffer::<[u8]>(
+		ghi::buffer::Builder::new(Uses::TransferSource)
+			.host_access(HostAccess::Write)
+			.copies(ghi::Copies::PerFrame)
+			.length(ghi::ImageCopyLayout::new(Formats::R8UNORM, extent, 1).unwrap().padded_size),
 	);
 	let commands = device.queue(queue_handle).create_command_buffer(None);
 	let finished = device.create_synchronizer(None, true);
-	let mut expected = vec![17u8; 37 * 29];
+	let mut expected = vec![17u8; WIDTH * HEIGHT];
 	let patches = [
-		None,
-		Some(ghi::image::Region {
+		ghi::image::Region {
+			offset: [0, 0],
+			size: [WIDTH as u32, HEIGHT as u32],
+		},
+		ghi::image::Region {
 			offset: [3, 5],
 			size: [7, 9],
-		}),
-		Some(ghi::image::Region {
+		},
+		ghi::image::Region {
 			offset: [31, 24],
 			size: [6, 5],
-		}),
+		},
 	];
 	for (index, patch) in patches.into_iter().enumerate() {
 		let mut transfer = None;
@@ -1284,23 +1274,20 @@ pub(super) fn texture_region_uploads(device: &mut impl ghi::context::Context, qu
 			.queue(queue_handle)
 			.execute(Some(FrameRequest::new(index as u64, finished)), &[], finished, |execution| {
 				let frame = execution.frame().unwrap();
-				let staging = frame.get_texture_slice_mut(image.into());
-				if let Some(region) = patch {
-					// Poison unrelated staging bytes: a full GPU copy must fail this test.
-					staging.fill(231);
-					for y in region.offset[1]..region.offset[1] + region.size[1] {
-						for x in region.offset[0]..region.offset[0] + region.size[0] {
-							let offset = (y * 37 + x) as usize;
-							expected[offset] = 40 + index as u8;
-							staging[offset] = expected[offset];
-						}
+				// The first copy covers the whole image with its starting value; later ones patch rectangles of it.
+				let start = patch.offset[1] as usize * WIDTH + patch.offset[0] as usize;
+				if index > 0 {
+					for row in 0..patch.size[1] as usize {
+						expected[start + row * WIDTH..][..patch.size[0] as usize].fill(40 + index as u8);
 					}
-					frame.sync_texture_region(image.into(), region);
-				} else {
-					staging.copy_from_slice(&expected);
-					frame.sync_texture(image.into());
 				}
+				// A region copy's source holds only the region's rows.
+				let layout =
+					ghi::ImageCopyLayout::new(Formats::R8UNORM, Extent::rectangle(patch.size[0], patch.size[1]), 1).unwrap();
+				layout.write_rows(frame.map(staging), &expected[start..], WIDTH);
+				let copy = layout.copy(staging.into(), 0, image.into(), 0).region(patch);
 				execution.record(commands, |recording| {
+					recording.copy_buffer_to_images(&[copy]);
 					recording.blit_image(image.into(), Layouts::Transfer, readback.into(), Layouts::Transfer);
 					transfer = Some(recording.transfer_texture(readback.into()).unwrap());
 				});
@@ -1322,20 +1309,6 @@ fn create_loader_context(device: &BackendDevice) -> BackendContext {
 	)
 }
 
-/// Records transfers in a context outside any frame and blocks until the GPU finishes them.
-fn record_and_wait(
-	context: &mut BackendContext,
-	queue_handle: QueueHandle,
-	record: impl FnOnce(&mut ghi::implementation::CommandBufferRecording<'_>),
-) {
-	let command_buffer = context.queue(queue_handle).create_command_buffer(None);
-	let finished = context.create_synchronizer(None, false);
-	let mut recording = context.create_command_buffer_recording(command_buffer);
-	record(&mut recording);
-	recording.execute(finished);
-	context.wait_for_synchronizer(finished);
-}
-
 pub(super) fn exported_image_keeps_contents_and_mips(
 	device: &BackendDevice,
 	context: &mut BackendContext,
@@ -1346,8 +1319,6 @@ pub(super) fn exported_image_keeps_contents_and_mips(
 	//! base mip back and accept a copy into the last mip.
 
 	const MIP_LEVELS: u32 = 3;
-	// Every backend expects texture upload rows padded to 256 bytes.
-	const ROW_PITCH: usize = 256;
 	const SIDE: usize = 4;
 	const ROW_BYTES: usize = SIDE * 4;
 
@@ -1362,31 +1333,25 @@ pub(super) fn exported_image_keeps_contents_and_mips(
 		.extent(Extent::square(SIDE as u32))
 		.mip_levels(MIP_LEVELS),
 	);
-	let staging = loader.build_buffer::<[u8; ROW_PITCH * SIDE]>(
+	let base = ghi::ImageCopyLayout::new(Formats::RGBA8UNORM, Extent::square(SIDE as u32), 1).unwrap();
+	let staging = loader.build_buffer::<[u8]>(
 		ghi::buffer::Builder::new(Uses::TransferSource)
 			.name("Exported Image Staging")
-			.device_accesses(DeviceAccesses::HostOnly),
+			.host_access(HostAccess::Write)
+			.length(base.padded_size),
 	);
-	let bytes = loader.get_mut_buffer_slice(staging);
-	for (row, texels) in expected.chunks(ROW_BYTES).enumerate() {
-		bytes[row * ROW_PITCH..][..ROW_BYTES].copy_from_slice(texels);
-	}
-	record_and_wait(&mut loader, queue_handle, |recording| {
-		recording.copy_buffer_to_images(&[ghi::BufferImageCopyDescriptor::new(
-			staging.into(),
-			0,
-			ROW_PITCH,
-			ROW_PITCH * SIDE,
-			image.into(),
-			0,
-		)]);
+	base.write_rows(buffer_contents(&mut loader, staging), &expected, ROW_BYTES);
+	loader.record(queue_handle, None, |recording| {
+		recording.copy_buffer_to_images(&[base.copy(staging.into(), 0, image.into(), 0)]);
 	});
 	let image = context.intern_image(loader.export_image(image));
 
-	let last_mip = context.build_buffer::<[u8; ROW_PITCH]>(
+	let last_mip_layout = ghi::ImageCopyLayout::new(Formats::RGBA8UNORM, Extent::square(1), 1).unwrap();
+	let last_mip = context.build_buffer::<[u8]>(
 		ghi::buffer::Builder::new(Uses::TransferSource)
 			.name("Last Mip Staging")
-			.device_accesses(DeviceAccesses::HostOnly),
+			.host_access(HostAccess::Write)
+			.length(last_mip_layout.padded_size),
 	);
 	let command_buffer_handle = context.queue(queue_handle).create_command_buffer(None);
 	let synchronizer = context.create_synchronizer(None, true);
@@ -1395,14 +1360,7 @@ pub(super) fn exported_image_keeps_contents_and_mips(
 		.queue(queue_handle)
 		.execute(Some(FrameRequest::new(0, synchronizer)), &[], synchronizer, |execution| {
 			execution.record(command_buffer_handle, |recording| {
-				recording.copy_buffer_to_images(&[ghi::BufferImageCopyDescriptor::new(
-					last_mip.into(),
-					0,
-					ROW_PITCH,
-					ROW_PITCH,
-					image.into(),
-					MIP_LEVELS - 1,
-				)]);
+				recording.copy_buffer_to_images(&[last_mip_layout.copy(last_mip.into(), 0, image.into(), MIP_LEVELS - 1)]);
 				transfer = Some(recording.transfer_texture(image.into()).unwrap());
 			});
 			[]
@@ -1424,22 +1382,113 @@ pub(super) fn imported_buffer_receives_copies(device: &BackendDevice, context: &
 	let destination = context.build_buffer::<[u8; 64]>(
 		ghi::buffer::Builder::new(Uses::TransferDestination)
 			.name("Shared Destination")
-			.device_accesses(DeviceAccesses::HostOnly),
+			.host_access(HostAccess::Write),
 	);
 	let mut loader = create_loader_context(device);
 	let imported = loader.import_buffer(context.share_buffer(destination));
 	let staging = loader.build_buffer::<[u8; 64]>(
 		ghi::buffer::Builder::new(Uses::TransferSource)
 			.name("Shared Source")
-			.device_accesses(DeviceAccesses::HostOnly),
+			.host_access(HostAccess::Write),
 	);
-	*loader.get_mut_buffer_slice(staging) = expected;
-	record_and_wait(&mut loader, queue_handle, |recording| {
+	*buffer_contents(&mut loader, staging) = expected;
+	loader.record(queue_handle, None, |recording| {
 		recording.copy_buffers(&[ghi::BufferCopyDescriptor::new(staging.into(), 0, imported.into(), 0, 64)]);
 	});
 
-	assert_eq!(context.get_buffer_slice(destination), &expected);
+	assert_eq!(buffer_contents(context, destination), &expected);
 	assert!(!ghi::context::Context::has_errors(&loader));
+}
+
+pub(super) fn imported_private_buffer_keeps_copies_made_before_its_owner_records(
+	device: &BackendDevice,
+	context: &mut BackendContext,
+	queue_handle: QueueHandle,
+) {
+	//! Tests that a buffer without host access starts zeroed before another context writes it, never after.
+	//! The lightmap bake shares its geometry buffers and loads the scene into them before it records anything.
+
+	let expected: [u8; 64] = std::array::from_fn(|index| (index * 3 + 1) as u8);
+	let destination = context.build_buffer::<[u8; 64]>(
+		ghi::buffer::Builder::new(Uses::TransferDestination | Uses::TransferSource).name("Shared Private Destination"),
+	);
+	let mut loader = create_loader_context(device);
+	let imported = loader.import_buffer(context.share_buffer(destination));
+	let staging = loader.build_buffer_with::<[u8; 64]>(
+		ghi::buffer::Builder::new(Uses::TransferSource)
+			.name("Shared Private Source")
+			.host_access(HostAccess::Write),
+		|bytes| *bytes = expected,
+	);
+	loader.record(queue_handle, None, |recording| {
+		recording.copy_buffers(&[ghi::BufferCopyDescriptor::new(staging.into(), 0, imported.into(), 0, 64)]);
+	});
+
+	// The owner's first recording must not zero what the loader already wrote.
+	let readback = context.build_buffer::<[u8; 64]>(
+		ghi::buffer::Builder::new(Uses::TransferDestination)
+			.name("Shared Private Readback")
+			.host_access(HostAccess::Read),
+	);
+	context.record(queue_handle, None, |recording| {
+		recording.copy_buffers(&[ghi::BufferCopyDescriptor::new(destination.into(), 0, readback.into(), 0, 64)]);
+	});
+
+	assert_eq!(buffer_contents(context, readback), &expected);
+	assert!(!ghi::context::Context::has_errors(&loader));
+	assert!(!ghi::context::Context::has_errors(context));
+}
+
+pub(super) fn imported_private_buffer_keeps_copies_made_while_its_zero_fill_runs(
+	device: &BackendDevice,
+	context: &mut BackendContext,
+	queue_handle: QueueHandle,
+) {
+	//! Tests that sharing a buffer waits for a zero fill a frame already submitted, so the fill can't overwrite a copy
+	//! another context makes after sharing. A large buffer keeps the fill running while the copy is submitted.
+
+	const SIZE: usize = 256 << 20;
+	let expected = [42u8; 64];
+	let destination = context.build_buffer::<[u8]>(
+		ghi::buffer::Builder::new(Uses::TransferDestination | Uses::TransferSource)
+			.name("Shared Private Destination")
+			.length(SIZE),
+	);
+	// The loader is ready before the fill starts, so its copy follows the fill as closely as possible.
+	let mut loader = create_loader_context(device);
+	let staging = loader.build_buffer_with::<[u8; 64]>(
+		ghi::buffer::Builder::new(Uses::TransferSource)
+			.name("Shared Private Source")
+			.host_access(HostAccess::Write),
+		|bytes| *bytes = expected,
+	);
+	let readback = context.build_buffer::<[u8; 64]>(
+		ghi::buffer::Builder::new(Uses::TransferDestination)
+			.name("Shared Private Readback")
+			.host_access(HostAccess::Read),
+	);
+	// The frame's recording submits the pending zero fill, and frames don't wait for their work.
+	let command_buffer = context.queue(queue_handle).create_command_buffer(None);
+	let signal = context.create_synchronizer(None, true);
+	context
+		.queue(queue_handle)
+		.execute(Some(FrameRequest::new(0, signal)), &[], signal, |execution| {
+			execution.record(command_buffer, |_| {});
+			[]
+		});
+	let imported = loader.import_buffer(context.share_buffer(destination));
+	loader.record(queue_handle, None, |recording| {
+		recording.copy_buffers(&[ghi::BufferCopyDescriptor::new(staging.into(), 0, imported.into(), 0, 64)]);
+	});
+
+	context.wait();
+	context.record(queue_handle, None, |recording| {
+		recording.copy_buffers(&[ghi::BufferCopyDescriptor::new(destination.into(), 0, readback.into(), 0, 64)]);
+	});
+
+	assert_eq!(buffer_contents(context, readback), &expected);
+	assert!(!ghi::context::Context::has_errors(&loader));
+	assert!(!ghi::context::Context::has_errors(context));
 }
 
 pub(super) fn transferred_mapping_feeds_every_later_copy(context: &mut BackendContext, queue_handle: QueueHandle) {
@@ -1449,15 +1498,15 @@ pub(super) fn transferred_mapping_feeds_every_later_copy(context: &mut BackendCo
 	let staging = context.build_buffer::<[u8; 64]>(
 		ghi::buffer::Builder::new(Uses::TransferSource)
 			.name("Transferred Staging")
-			.device_accesses(DeviceAccesses::HostToDevice),
+			.host_access(HostAccess::Write),
 	);
 	let destination = context.build_buffer::<[u8; 128]>(
 		ghi::buffer::Builder::new(Uses::TransferDestination)
 			.name("Transferred Destination")
-			.device_accesses(DeviceAccesses::HostOnly),
+			.host_access(HostAccess::Write),
 	);
 	// SAFETY: The context outlives the mapping, and the buffer is not mapped again while it exists.
-	let (address, byte_count) = unsafe { context.transfer_buffer_mapping(staging) }.into_raw_parts();
+	let (address, byte_count) = unsafe { context.map_unsynchronized(staging) }.into_raw_parts();
 	assert_eq!(byte_count, 64);
 	let write = |value: u8| {
 		// SAFETY: The transferred mapping covers 64 writable bytes, and no submitted copy reads them while they change.
@@ -1466,7 +1515,7 @@ pub(super) fn transferred_mapping_feeds_every_later_copy(context: &mut BackendCo
 
 	for (batch, value) in [3u8, 7].into_iter().enumerate() {
 		write(value);
-		record_and_wait(context, queue_handle, |recording| {
+		context.record(queue_handle, None, |recording| {
 			recording.copy_buffers(&[ghi::BufferCopyDescriptor::new(
 				staging.into(),
 				0,
@@ -1477,50 +1526,34 @@ pub(super) fn transferred_mapping_feeds_every_later_copy(context: &mut BackendCo
 		});
 	}
 
-	let contents = context.get_buffer_slice(destination);
+	let contents = buffer_contents(context, destination);
 	assert_eq!(&contents[..64], &[3; 64]);
 	assert_eq!(&contents[64..], &[7; 64]);
 	assert!(!ghi::context::Context::has_errors(context));
 }
 
-pub(super) fn polled_synchronizer_reports_completion(context: &mut BackendContext, queue_handle: QueueHandle) {
-	//! Tests that polling a synchronizer reports completion without blocking and frees it for the next submission.
-	//! A loader polls its copy batch so its thread keeps reading files while the GPU works.
+pub(super) fn workload_is_complete_when_record_returns(context: &mut BackendContext, queue_handle: QueueHandle) {
+	//! Tests that a workload's writes are visible to the CPU as soon as `record` returns, with no further wait.
+	//! Loaders and bakers rely on it to know that their copies landed.
 
 	let expected: [u8; 16] = std::array::from_fn(|index| index as u8 + 1);
-	let source = context
-		.build_buffer::<[u8; 16]>(ghi::buffer::Builder::new(Uses::TransferSource).device_accesses(DeviceAccesses::HostOnly));
-	let destination = context.build_buffer::<[u8; 16]>(
-		ghi::buffer::Builder::new(Uses::TransferDestination).device_accesses(DeviceAccesses::HostOnly),
-	);
-	*context.get_mut_buffer_slice(source) = expected;
-	let idle = context.create_synchronizer(None, false);
-	assert!(
-		context.poll_synchronizer(idle),
-		"A synchronizer with no submission must report completion."
-	);
-
-	let finished = context.create_synchronizer(None, false);
-	let command_buffer = context.queue(queue_handle).create_command_buffer(None);
+	let source =
+		context.build_buffer::<[u8; 16]>(ghi::buffer::Builder::new(Uses::TransferSource).host_access(HostAccess::Write));
+	let destination =
+		context.build_buffer::<[u8; 16]>(ghi::buffer::Builder::new(Uses::TransferDestination).host_access(HostAccess::Write));
+	*buffer_contents(context, source) = expected;
 	for _ in 0..2 {
-		let mut recording = context.create_command_buffer_recording(command_buffer);
-		recording.copy_buffers(&[ghi::BufferCopyDescriptor::new(source.into(), 0, destination.into(), 0, 16)]);
-		recording.execute(finished);
-		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-		while !context.poll_synchronizer(finished) {
-			assert!(
-				std::time::Instant::now() < deadline,
-				"Polled copy did not complete. The most likely cause is that polling never observes GPU completion."
-			);
-			std::thread::yield_now();
-		}
-		assert_eq!(context.get_buffer_slice(destination), &expected);
+		*buffer_contents(context, destination) = [0; 16];
+		context.record(queue_handle, Some("Copy"), |recording| {
+			recording.copy_buffers(&[ghi::BufferCopyDescriptor::new(source.into(), 0, destination.into(), 0, 16)]);
+		});
+		assert_eq!(buffer_contents(context, destination), &expected);
 	}
 	assert!(!ghi::context::Context::has_errors(context));
 }
 
 pub(super) fn dynamic_buffer_created_in_a_frame_has_a_copy_per_frame(context: &mut BackendContext, queue_handle: QueueHandle) {
-	//! Tests that a dynamic buffer created while a frame is recorded gives every frame in flight its own copy.
+	//! Tests that a per-frame buffer created while a frame is recorded gives every frame in flight its own copy.
 	//! Frames overlap on the GPU, so a copy the next frame shared would let the CPU overwrite data a frame still reads.
 
 	context.set_frames_in_flight(2);
@@ -1535,25 +1568,90 @@ pub(super) fn dynamic_buffer_created_in_a_frame_has_a_copy_per_frame(context: &m
 				match frame_index {
 					// Frame 1 is the second sequence, so the buffer is created while that sequence records.
 					1 => {
-						let created = frame.build_dynamic_buffer::<[u32; 4]>(
-							ghi::buffer::Builder::new(Uses::Storage).device_accesses(DeviceAccesses::HostToDevice),
+						let created = frame.build_buffer::<[u32; 4]>(
+							ghi::buffer::Builder::new(Uses::Storage)
+								.host_access(HostAccess::Write)
+								.copies(ghi::Copies::PerFrame),
 						);
-						*frame.get_mut_dynamic_buffer_slice(created) = [1; 4];
+						*frame.map(created) = [1; 4];
 						buffer = Some(created);
 					}
 					// Frame 2 is the first sequence again. Its copy never received frame 1's write.
 					2 => assert_eq!(
-						*frame.get_mut_dynamic_buffer_slice(buffer.expect("Frame 1 created the buffer.")),
+						*frame.map(buffer.expect("Frame 1 created the buffer.")),
 						[0; 4],
-						"A dynamic buffer created in frame 1 shares a copy with frame 2. The most likely cause is that its per-frame copies are created lazily."
+						"A per-frame buffer created in frame 1 shares a copy with frame 2. The most likely cause is that its per-frame copies are created lazily."
 					),
 					// Frame 3 reuses frame 1's sequence and still sees what frame 1 wrote.
-					3 => assert_eq!(*frame.get_mut_dynamic_buffer_slice(buffer.expect("Frame 1 created the buffer.")), [1; 4]),
+					3 => assert_eq!(*frame.map(buffer.expect("Frame 1 created the buffer.")), [1; 4]),
 					_ => {}
 				}
 				[]
 			});
 	}
 	context.wait();
+	assert!(!ghi::context::Context::has_errors(context));
+}
+
+/// Returns the clear value that fills an image with `color`.
+fn clear_color(color: RGBAu8) -> ghi::ClearValue {
+	let channel = |value: u8| f32::from(value) / 255.0;
+	ghi::ClearValue::Color(RGBA::new(
+		channel(color.r),
+		channel(color.g),
+		channel(color.b),
+		channel(color.a),
+	))
+}
+
+pub(super) fn buffer_copy_fills_every_depth_slice_of_a_volume(context: &mut BackendContext, queue_handle: QueueHandle) {
+	//! Tests that a copy from a buffer into a volume fills every depth slice, not only the first.
+	//! Volume lookup textures and 3D noise are filled this way.
+
+	const SIDE: u32 = 2;
+	let image = context.build_image(
+		ghi::image::Builder::new(
+			Formats::RGBA8UNORM,
+			Uses::Image | Uses::TransferDestination | Uses::TransferSource,
+		)
+		.name("Copied Volume")
+		.extent(Extent::new(SIDE, SIDE, SIDE)),
+	);
+	let row_bytes = SIDE as usize * 4;
+	let layout = ghi::ImageCopyLayout::new(Formats::RGBA8UNORM, Extent::new(SIDE, SIDE, SIDE), SIDE as usize).unwrap();
+	let staging = context.build_buffer::<[u8]>(
+		ghi::buffer::Builder::new(Uses::TransferSource)
+			.name("Volume Staging")
+			.host_access(HostAccess::Write)
+			.length(layout.padded_size),
+	);
+	{
+		// SAFETY: Nothing else maps the staging buffer, and no work has been submitted yet.
+		let bytes = unsafe { context.map_unsynchronized(staging) }.into_bytes();
+		// Each slice gets its own value, so a slice the copy skipped shows up.
+		for slice in 0..SIDE as usize {
+			for row in 0..SIDE as usize {
+				bytes[slice * layout.padded_bytes_per_image + row * layout.padded_bytes_per_row..][..row_bytes]
+					.fill(10 + slice as u8);
+			}
+		}
+	}
+
+	let transfer = context.record(queue_handle, None, |recording| {
+		recording.copy_buffer_to_images(&[layout.copy(staging.into(), 0, image.into(), 0)]);
+		recording.transfer_texture(image.into()).unwrap()
+	});
+
+	let readback = context.get_image_data(transfer).unwrap();
+	for slice in 0..SIDE as usize {
+		for row in 0..SIDE as usize {
+			let start = slice * readback.bytes_per_image + row * readback.bytes_per_row;
+			assert_eq!(
+				&readback.bytes[start..][..row_bytes],
+				&[10 + slice as u8; SIDE as usize * 4],
+				"slice {slice}, row {row}"
+			);
+		}
+	}
 	assert!(!ghi::context::Context::has_errors(context));
 }

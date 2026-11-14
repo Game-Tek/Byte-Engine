@@ -23,7 +23,7 @@ own GHI context, and its own queue.
 
 | | Render timeline | Loading timeline |
 |---|---|---|
-| Thread | The main thread | The loading thread that `launch_deferred_tasks_thread` starts |
+| Thread | The main thread | The loading thread that `launch_deferred_tasks_thread` starts, and the loader's batcher thread |
 | Context owner | `Renderer` | `Loader` |
 | Queue | Graphics queue | Copy queue |
 | Work | Records, submits, and presents frames | Reads, decodes, stages, and copies resources |
@@ -36,7 +36,7 @@ the other.
 flowchart TD
   device("GraphicsDevice<br/>owned by GraphicsApplication")
   device --> render("Render context on the graphics queue<br/>main thread: record, submit, present")
-  device --> loader("Loader context on the copy queue<br/>loading thread: lanes, batches, submit, wait")
+  device --> loader("Loader context on the copy queue<br/>loading threads: lanes, then batches recorded as workloads")
   render -- requests --> client("LoaderClient")
   loader -- Ready and Failed --> client
 ```
@@ -60,7 +60,7 @@ flowchart TD
     C --> E("add_deferred_task<br/>queues every lane")
   end
   setup --> F("launch_deferred_tasks_thread")
-  F --> G("Loading thread<br/>Loader::run, then every lane as a task<br/>on one async runtime")
+  F --> G("Loading thread<br/>Loader::run starts the batcher thread,<br/>then every lane as a task on one async runtime")
 ```
 
 A pipeline set up after `launch_deferred_tasks_thread` can't add lanes, so set
@@ -76,7 +76,7 @@ sequenceDiagram
   participant W as World
   participant M as Pipeline manager<br/>render thread
   participant L as Lanes<br/>loading thread
-  participant LD as Loader<br/>loading thread
+  participant LD as Loader<br/>batcher thread
   participant Q as Copy queue
 
   W->>M: CreateMessage of a RenderableMesh
@@ -87,11 +87,8 @@ sequenceDiagram
   Note over L: read, decode, write a StagingLease
   L->>LD: LoaderLane::upload(lease, images, buffers)
   Note over LD: add the upload to the batch
-  LD->>Q: submit when the window passes, staging runs out,<br/>or every busy lane waits on the loader
-  loop every 0.5 ms
-    LD->>Q: poll_synchronizer
-  end
-  Q-->>LD: batch finished
+  LD->>Q: record the batch as one workload when the window passes,<br/>staging runs out, or every busy lane waits on the loader
+  Q-->>LD: the workload returns once the GPU finished it
   Note over LD: return staging, export images
   LD-->>L: detached images
   alt load succeeded
@@ -113,8 +110,9 @@ sequenceDiagram
    `StagingLease`.
 4. The lane hands the loader an upload as plain data through
    `LoaderLane::upload` or `upload_native_image`.
-5. The loader adds the upload to the current batch, submits the batch on the
-   copy queue, and waits for it without blocking its thread.
+5. The loader adds the upload to the current batch and records the batch as one
+   workload on the copy queue. Recording the workload waits for the GPU on the
+   batcher's own thread, so no lane blocks.
 6. When the batch finishes, the loader returns its staging to the arena, exports
    each finished image from the loader context, and answers the lane.
 7. The lane sends `Ready` with a resident value that holds detached images, never
@@ -434,10 +432,12 @@ It submits the batch as soon as any of these is true:
 - Every busy lane is waiting on the loader, so waiting longer can't add an upload.
 - Every lane is gone.
 
-Only one batch is on the copy queue at a time. While it runs, the loader keeps
-collecting the next batch, and lanes keep reading and decoding. The loader
-checks the running batch with `Context::poll_synchronizer` every 0.5 ms instead
-of blocking, because the lanes share its thread.
+Only one batch is on the copy queue at a time. The batcher records each batch
+with `Context::record`, which submits it as one workload and returns once the
+GPU finished it. The batcher has its own thread, so that wait blocks no lane:
+while the GPU copies, lanes keep reading, decoding, and queueing uploads for
+the next batch. Native image reads finish on their own, and the batcher checks
+them between batches.
 
 <Callout type="info" title="Why busy lanes end a batch early">
 	A lane that loads a flipbook's frames one after another waits for each upload
@@ -500,10 +500,11 @@ supports the loading timeline when it provides every one of these:
 - `Context::export_image` and `intern_image`, which move an image and its
   tracked state between contexts. A detached image dropped before it's interned
   frees its memory.
-- `Context::share_buffer` and `import_buffer` for static buffers. The importing
-  context only records copies with the handle, and the owning context sees those
-  writes before it next reads the buffer.
-- `Context::poll_synchronizer`, which reports completion without blocking.
+- `Context::share_buffer` and `import_buffer` for buffers with one copy. The
+  importing context only records copies with the handle, and the owning context
+  sees those writes before it next reads the buffer.
+- `Context::record`, which submits a workload and returns once the GPU finished
+  it.
 
 Metal implements the contract. Vulkan and DX12 don't yet, so Linux and Windows
 builds fail until they do. `todo.md` lists what each backend needs.
@@ -522,7 +523,8 @@ cargo nextest run --ignore-default-filter -p byte-engine --test loading
 |---|---|
 | `exported_image_keeps_contents_and_mips` | An image filled in one context keeps its contents and mip count in another. |
 | `imported_buffer_receives_copies` | A context sees the copies another context made into its shared buffer. |
-| `polled_synchronizer_reports_completion` | Polling reports completion without blocking and frees the synchronizer. |
+| `imported_private_buffer_keeps_copies_made_before_its_owner_records` | Sharing a buffer zero-fills it first, so that fill can't erase another context's copies. |
+| `workload_is_complete_when_record_returns` | Everything a workload wrote, readbacks included, is ready when `record` returns. |
 | `uploads_are_visible_when_ready_even_beyond_staging_capacity` | Uploads larger than the staging arena all finish, and each `Ready` arrives only after its bytes landed. |
 | `dependencies_load_once_without_render_requests` | Lanes load the dependencies a load names without a render-side request, and a resource with two parents loads once. |
 | `textures_load_from_a_first_mip_level` | A texture loaded from a later mip is an image whose base level holds that mip, at that mip's extent. |

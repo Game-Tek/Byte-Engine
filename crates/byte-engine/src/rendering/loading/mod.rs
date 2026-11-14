@@ -15,7 +15,7 @@
 //! ```text
 //! Pipeline::request(request)  ->  lane: read metadata, request dependencies  ->  other lanes
 //!                                 lane: I/O, decode, write staging
-//!                                 lane: upload (plain data)  ->  loader: batch, submit on copy queue, wait
+//!                                 lane: upload (plain data)  ->  loader: batch, submit a workload on the copy queue
 //!                                 lane: send Ready { key, resident with detached images }
 //! Pipeline::poll()            <-  render thread: intern images, adopt into scene state
 //! ```

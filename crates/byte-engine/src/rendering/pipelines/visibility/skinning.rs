@@ -47,8 +47,8 @@ pub(crate) struct SkinningDispatch {
 pub(crate) struct SkinningPass {
 	pub(crate) pipeline: crate::rendering::PipelineRef,
 	descriptor_set: ghi::DescriptorSetHandle,
-	matrix_palette_buffer: ghi::DynamicBufferHandle<[ghi::pod::Mat4x3f; MAX_SKINNING_MATRICES]>,
-	dual_quaternion_palette_buffer: ghi::DynamicBufferHandle<[DualQuaternion; MAX_SKINNING_MATRICES]>,
+	matrix_palette_buffer: ghi::BufferHandle<[ghi::pod::Mat4x3f; MAX_SKINNING_MATRICES]>,
+	dual_quaternion_palette_buffer: ghi::BufferHandle<[DualQuaternion; MAX_SKINNING_MATRICES]>,
 }
 
 impl SkinningPass {
@@ -59,19 +59,15 @@ impl SkinningPass {
 		pipeline_manager: &PipelineManagerClient,
 		geometry: &GeometryHandles,
 	) -> Self {
-		let dynamic = |name, accesses| {
+		// The CPU writes each frame's palettes into that frame's copy.
+		let per_frame = |name| {
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name(name)
-				.device_accesses(accesses)
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame)
 		};
-		let matrix_palette_buffer = context.build_dynamic_buffer(dynamic(
-			"Visibility Skinning Matrix Palette",
-			ghi::DeviceAccesses::HostToDevice,
-		));
-		let dual_quaternion_palette_buffer = context.build_dynamic_buffer(dynamic(
-			"Visibility Skinning Dual Quaternion Palette",
-			ghi::DeviceAccesses::HostToDevice,
-		));
+		let matrix_palette_buffer = context.build_buffer(per_frame("Visibility Skinning Matrix Palette"));
+		let dual_quaternion_palette_buffer = context.build_buffer(per_frame("Visibility Skinning Dual Quaternion Palette"));
 		let descriptor_set = set_layouts::SKINNING.create_set(context, "Visibility Skinning Compute Set");
 		let skinning = set_layouts::SKINNING.binder(descriptor_set);
 		context.write(&[
@@ -100,16 +96,13 @@ impl SkinningPass {
 		dual_quaternions: &[DualQuaternion],
 	) {
 		if !matrices.is_empty() {
-			let palette = frame.get_mut_dynamic_buffer_slice(self.matrix_palette_buffer);
+			let palette = frame.map(self.matrix_palette_buffer);
 			for (destination, matrix) in palette.iter_mut().zip(matrices) {
 				*destination = (*matrix).into();
 			}
-			frame.sync_buffer(self.matrix_palette_buffer);
 		}
 		if !dual_quaternions.is_empty() {
-			frame.get_mut_dynamic_buffer_slice(self.dual_quaternion_palette_buffer)[..dual_quaternions.len()]
-				.copy_from_slice(dual_quaternions);
-			frame.sync_buffer(self.dual_quaternion_palette_buffer);
+			frame.map(self.dual_quaternion_palette_buffer)[..dual_quaternions.len()].copy_from_slice(dual_quaternions);
 		}
 	}
 

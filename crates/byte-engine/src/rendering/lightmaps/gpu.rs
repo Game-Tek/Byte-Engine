@@ -137,7 +137,7 @@ pub(crate) fn trace(
 	};
 	let handles = GeometryHandles::new(&mut render, capacity, true);
 	let mut loader = Loader::new(&device, [].as_slice());
-	let geometry = GeometryBuffers::import(&handles, &render, &mut loader);
+	let geometry = GeometryBuffers::import(&handles, &mut render, &mut loader);
 	let (mut client, lanes) = spawn(
 		&loader,
 		BakeLoad {
@@ -634,7 +634,7 @@ struct Bake {
 	lights_set: ghi::DescriptorSetHandle,
 	bake_set: ghi::DescriptorSetHandle,
 	bake_layout: SetLayout,
-	parameters: ghi::DynamicBufferHandle<LightmapBakeParameters>,
+	parameters: ghi::BufferHandle<LightmapBakeParameters>,
 	environment_intensity: f32,
 	light: ghi::BufferHandle<[[f32; 4]]>,
 }
@@ -740,7 +740,7 @@ impl Bake {
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name(name)
 				.length(length)
-				.device_accesses(ghi::DeviceAccesses::HostToDevice)
+				.host_access(ghi::HostAccess::Write)
 		};
 		let meshes_buffer = upload(render, host("Lightmap Bake Meshes", meshes.len()), &meshes);
 		let materials_buffer = upload(render, host("Lightmap Bake Materials", MAX_MATERIALS), &materials);
@@ -752,13 +752,12 @@ impl Bake {
 			host("Lightmap Bake Material Parameters", parameter_values.len()),
 			&parameter_values,
 		);
-		let lighting_buffer = render.build_buffer::<LightingData>(
+		let lighting_buffer = render.build_buffer_with::<LightingData>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Lightmap Bake Lights")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write),
+			|buffer| *buffer = *lighting,
 		);
-		*render.get_mut_buffer_slice(lighting_buffer) = *lighting;
-		render.sync_buffer(lighting_buffer);
 		// The hit shaders read no view, dispatch, or evaluation records, but the scene set declares them.
 		let unused = upload(render, host("Lightmap Bake Unused Records", 1 << 16), &vec![0u32; 1 << 16]);
 
@@ -826,12 +825,7 @@ impl Bake {
 			host("Lightmap Texel Guide Groups", texel_count),
 			&pad(&groups.texel_groups, texel_count),
 		);
-		let device = |name, length: usize| {
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name(name)
-				.length(length)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-		};
+		let device = |name, length: usize| ghi::buffer::Builder::new(ghi::Uses::Storage).name(name).length(length);
 		// The learning batches fill both before any guided batch reads them, so they start unwritten.
 		let guide_cells = render.build_buffer::<[f32]>(device("Lightmap Guide Cells", group_count * GUIDE_CELLS));
 		let guides = render.build_buffer::<[f32]>(device("Lightmap Guides", group_count * GUIDE_STRIDE));
@@ -839,18 +833,18 @@ impl Bake {
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Lightmap Light")
 				.length(image_texels)
-				.device_accesses(ghi::DeviceAccesses::DeviceToHost),
+				.host_access(ghi::HostAccess::Read),
 		);
 		let dilated = render.build_buffer::<[[f32; 4]]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Lightmap Dilated")
-				.length(image_texels)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+				.length(image_texels),
 		);
-		let parameters = render.build_dynamic_buffer::<LightmapBakeParameters>(
+		let parameters = render.build_buffer::<LightmapBakeParameters>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Lightmap Bake Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let bake_binder = bake_layout.binder(bake_set);
 		render.write(&[
@@ -871,7 +865,7 @@ impl Bake {
 		let environment_sampler = render.build_sampler(material_sampler().max_lod((IBL_SPECULAR_LEVEL_COUNT - 1) as f32));
 		if loaded.environment.is_none() {
 			// Paths that leave a scene without an environment bring back no light.
-			let fallback = create_fallback_environment(render, environment_sampler);
+			let fallback = create_fallback_environment(render, queue, environment_sampler);
 			render.write(&[bake_binder.sampled("lightmap_environment", fallback.specular_image, environment_sampler)]);
 		}
 
@@ -982,7 +976,10 @@ impl Bake {
 				},
 			);
 		}
-		render.get_buffer_slice(self.light).to_vec()
+		// SAFETY: `run_frame` waited for the GPU after the last dilation, so no submitted command uses the buffer.
+		#[allow(unsafe_code)]
+		let light = unsafe { render.map_unsynchronized(self.light) }.into_bytes();
+		bytemuck::cast_slice(light).to_vec()
 	}
 
 	/// Records one frame: it binds the images that arrived, publishes compiled pipelines, places the instances and
@@ -1035,8 +1032,7 @@ impl Bake {
 				let hit = shading.prepare(frame, pipelines, record_materials);
 				let structure_work = structures.prepare(frame, traced, &bump);
 				let ray_traced_scene = structures.descriptor_set();
-				*frame.get_mut_dynamic_buffer_slice(*parameters_buffer) = parameters;
-				frame.sync_buffer(*parameters_buffer);
+				*frame.map(*parameters_buffer) = parameters;
 				execution.record(*command_buffer, |recording| {
 					if !structure_work.builds.is_empty() {
 						recording.build_bottom_level_acceleration_structures(structure_work.builds);
@@ -1087,11 +1083,10 @@ fn upload<T: bytemuck::Pod>(
 	builder: ghi::buffer::Builder,
 	values: &[T],
 ) -> ghi::BufferHandle<[T]> {
-	let buffer = render.build_buffer::<[T]>(builder.length(values.len()));
 	// A backend may round the allocation up, which gives the buffer more elements than were asked for.
-	render.get_mut_buffer_slice(buffer)[..values.len()].copy_from_slice(values);
-	render.sync_buffer(buffer);
-	buffer
+	render.build_buffer_with::<[T]>(builder.length(values.len()), |buffer| {
+		buffer[..values.len()].copy_from_slice(values)
+	})
 }
 
 /// Returns `values` padded with zeroed elements to `length`, since a buffer holds at least one element.

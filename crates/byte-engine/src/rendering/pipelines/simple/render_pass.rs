@@ -99,7 +99,7 @@ impl RenderPass {
 
 		let camera_data_buffer = sm.camera_data_buffer;
 
-		let camera_data_buffer = frame.get_mut_dynamic_buffer_slice(camera_data_buffer);
+		let camera_data_buffer = frame.map(camera_data_buffer);
 
 		camera_data_buffer[sink.index()] = CameraShaderData {
 			vp: sink.view_projection().into(),

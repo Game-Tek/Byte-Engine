@@ -457,14 +457,6 @@ impl crate::context::Context for Context {
 		}
 	}
 
-	/// Returns whether every armed fence of the synchronizer has signaled, without blocking.
-	fn poll_synchronizer(&mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) -> bool {
-		// Non-frame submissions only signal one sequence's fence, so the other sequences may never have been submitted.
-		self.get_syncronizer_handles(synchronizer)
-			.into_iter()
-			.all(|handle| self.private_synchronizer_signaled(handle))
-	}
-
 	fn wait(&mut self) {
 		self.device.wait();
 	}

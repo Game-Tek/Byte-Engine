@@ -28,7 +28,6 @@ use byte_engine::{
 use ghi::{
 	command_buffer::CommandBufferRecording as _,
 	context::{Context as _, ContextCreate as _},
-	queue::Queue as _,
 };
 use resource_management::{
 	ProcessedAsset, StreamDescription,
@@ -222,7 +221,7 @@ fn uploads_are_visible_when_ready_even_beyond_staging_capacity() {
 		ghi::buffer::Builder::new(ghi::Uses::TransferDestination)
 			.name("Loaded Chunks")
 			.length(CHUNK * UPLOADS)
-			.device_accesses(ghi::DeviceAccesses::HostOnly),
+			.host_access(ghi::HostAccess::Read),
 	);
 	let mut loader = Loader::new(&device, &NoParameters);
 	let imported = loader.import_buffer(render.share_buffer(destination)).into();
@@ -235,7 +234,8 @@ fn uploads_are_visible_when_ready_even_beyond_staging_capacity() {
 		client.request(chunk);
 	}
 	poll_ready(&mut client, UPLOADS, |chunk| {
-		let bytes = &render.get_buffer_slice(destination)[chunk * CHUNK..][..CHUNK];
+		// SAFETY: The loader reports a chunk ready only after its copy completed, and no later copy writes its range.
+		let bytes = &unsafe { render.map_unsynchronized(destination) }.into_bytes()[chunk * CHUNK..][..CHUNK];
 		assert!(
 			bytes.iter().all(|byte| *byte == chunk as u8 + 1),
 			"Chunk {chunk} was reported ready before its copy finished."
@@ -319,15 +319,13 @@ fn textures_load_from_a_first_mip_level() {
 	stop.store(true, Ordering::Relaxed);
 	thread.join().unwrap();
 
-	let command_buffer = render.queue(device.graphics_queue()).create_command_buffer(None);
-	let finished = render.create_synchronizer(None, false);
-	let mut recording = render.create_command_buffer_recording(command_buffer);
-	let transfers = images
-		.iter()
-		.map(|&(first_level, image)| (first_level, recording.transfer_texture(image.into()).unwrap()))
-		.collect::<Vec<_>>();
-	recording.execute(finished);
-	render.wait_for_synchronizer(finished);
+	// The workload returns once the GPU finished the readbacks.
+	let transfers = render.record(device.graphics_queue(), None, |recording| {
+		images
+			.iter()
+			.map(|&(first_level, image)| (first_level, recording.transfer_texture(image.into()).unwrap()))
+			.collect::<Vec<_>>()
+	});
 
 	for (first_level, transfer) in transfers {
 		let readback = render.get_image_data(transfer).unwrap();

@@ -480,6 +480,7 @@ impl Renderer {
 		};
 		RenderPassBuilder::new(
 			&mut self.context,
+			self.graphics_queue_handle,
 			&mut self.render_targets,
 			&mut self.render_pass_states,
 			sink_id,
@@ -1209,7 +1210,7 @@ impl Renderer {
 							Ok(ResolvedScreenshotCapture::AfterScene { target }) => command_buffer_recording.transfer_texture(*target),
 							// No pass writes the previous frame's copy, so any point in the frame reads the same data.
 							Ok(ResolvedScreenshotCapture::PreviousFrame { target }) => {
-								command_buffer_recording.transfer_texture_with_frame(*target, -1)
+								command_buffer_recording.transfer_texture_with_frame((*target).into(), -1)
 							}
 							_ => continue,
 						};
@@ -1332,6 +1333,11 @@ impl Renderer {
 			.find_map(|(name, image)| (name == target).then_some(*image))
 			.ok_or(RendererScreenshotError::TargetNotWritten)?;
 		Ok(ResolvedScreenshotCapture::AfterPass { pass: pass_id, target })
+	}
+
+	/// Returns the queue frames record on, where setup work records its one-time uploads.
+	pub fn graphics_queue(&self) -> ghi::QueueHandle {
+		self.graphics_queue_handle
 	}
 
 	/// Borrows the render thread's GHI context for setup work that must run before the first frame.
@@ -1515,7 +1521,7 @@ pub(super) enum ResolvedScreenshotCapture {
 	},
 	/// The copy of a history target that the previous frame wrote.
 	PreviousFrame {
-		target: ghi::DynamicImageHandle,
+		target: ghi::ImageHandle,
 	},
 }
 

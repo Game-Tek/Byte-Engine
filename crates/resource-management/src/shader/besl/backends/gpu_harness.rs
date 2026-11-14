@@ -77,12 +77,16 @@ pub(super) fn upload<T: bytemuck::Pod>(
 	uses: ghi::Uses,
 	values: &[T],
 ) -> ghi::BufferHandle<[T]> {
-	let buffer = context.build_buffer::<[T]>(
+	context.build_buffer_with::<[T]>(
 		ghi::buffer::Builder::new(uses)
 			.length(values.len())
-			.device_accesses(ghi::DeviceAccesses::HostToDevice),
-	);
-	context.get_mut_buffer_slice(buffer).copy_from_slice(values);
-	context.sync_buffer(buffer);
-	buffer
+			.host_access(ghi::HostAccess::Write),
+		|buffer| buffer.copy_from_slice(values),
+	)
+}
+
+/// Copies a buffer the CPU reads out of the GPU, once the context waited for every submission that used it.
+pub(super) fn download<T: bytemuck::Pod>(context: &mut impl ghi::context::Context, buffer: ghi::BufferHandle<[T]>) -> Vec<T> {
+	// SAFETY: Callers wait for the GPU first, so no submitted command uses the buffer.
+	bytemuck::cast_slice(unsafe { context.map_unsynchronized(buffer) }.into_bytes()).to_vec()
 }

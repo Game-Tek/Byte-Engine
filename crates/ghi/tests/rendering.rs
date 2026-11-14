@@ -11,8 +11,7 @@
 
 use ghi::implementation::{Context as BackendContext, Device as BackendDevice, Instance};
 use ghi::{
-	BufferDescriptor, BufferStridedRange, DataTypes, DeviceAccesses, Formats, Layouts, QueueHandle, ShaderTypes, UseCases,
-	Uses,
+	BufferDescriptor, BufferStridedRange, DataTypes, Formats, HostAccess, Layouts, QueueHandle, ShaderTypes, Uses,
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 		BoundRayTracingPipelineMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
@@ -213,12 +212,12 @@ fn change_frames_in_flight() {
 
 #[test]
 fn resize_render_target() {
-	run(|context, queue_handle| resources::resize(context, queue_handle, UseCases::DYNAMIC));
+	run(|context, queue_handle| resources::resize(context, queue_handle, ghi::Copies::PerFrame));
 }
 
 #[test]
 fn resize_static_render_target() {
-	run(|context, queue_handle| resources::resize(context, queue_handle, UseCases::STATIC));
+	run(|context, queue_handle| resources::resize(context, queue_handle, ghi::Copies::One));
 }
 
 #[test]
@@ -228,7 +227,7 @@ fn resize_render_target_layers() {
 
 #[test]
 fn resize_static_render_target_in_flight() {
-	run(|context, queue_handle| resources::resize_render_target_in_flight(context, queue_handle, UseCases::STATIC));
+	run(|context, queue_handle| resources::resize_render_target_in_flight(context, queue_handle, ghi::Copies::One));
 }
 
 #[test]
@@ -368,13 +367,30 @@ fn imported_buffer_receives_copies() {
 }
 
 #[test]
+fn imported_private_buffer_keeps_copies_made_before_its_owner_records() {
+	let (_instance, device, mut context, queue_handle) = create_default_device_setup();
+	resources::imported_private_buffer_keeps_copies_made_before_its_owner_records(&device, &mut context, queue_handle);
+}
+
+#[test]
+fn imported_private_buffer_keeps_copies_made_while_its_zero_fill_runs() {
+	let (_instance, device, mut context, queue_handle) = create_default_device_setup();
+	resources::imported_private_buffer_keeps_copies_made_while_its_zero_fill_runs(&device, &mut context, queue_handle);
+}
+
+#[test]
 fn transferred_mapping_feeds_every_later_copy() {
 	run(resources::transferred_mapping_feeds_every_later_copy);
 }
 
 #[test]
-fn polled_synchronizer_reports_completion() {
-	run(resources::polled_synchronizer_reports_completion);
+fn workload_is_complete_when_record_returns() {
+	run(resources::workload_is_complete_when_record_returns);
+}
+
+#[test]
+fn buffer_copy_fills_every_depth_slice_of_a_volume() {
+	run(resources::buffer_copy_fills_every_depth_slice_of_a_volume);
 }
 
 #[test]

@@ -377,11 +377,6 @@ impl UploadArena {
 		}
 	}
 
-	/// Drops every page so the next allocation starts fresh; commands that retained old pages keep them alive.
-	pub(crate) fn discard(&mut self) {
-		self.pages.clear();
-	}
-
 	#[cfg(test)]
 	pub(crate) fn page_count(&self) -> usize {
 		self.pages.len()

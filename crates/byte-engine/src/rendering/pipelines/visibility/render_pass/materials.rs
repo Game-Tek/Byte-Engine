@@ -89,9 +89,7 @@ impl MaterialPrepasses {
 		let material_dispatch_descriptor_set =
 			set_layouts::MATERIAL_DISPATCH.create_set(context, "Material Dispatch Descriptor Set");
 		let material_buffer = |name, extra_uses| {
-			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination | extra_uses)
-				.name(name)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination | extra_uses).name(name)
 		};
 		let material_count = context.build_buffer(material_buffer("Material Count", ghi::Uses::empty()));
 		let material_offset: ghi::BufferHandle<[u32; MAX_MATERIALS]> =

@@ -397,17 +397,16 @@ fn trace_with(
 		.collect::<Vec<_>>();
 	let top_level = context.create_top_level_acceleration_structure(None, instances.len() as u32);
 
-	let albedos = context.build_buffer::<[[f32; 4]]>(
+	let albedos = context.build_buffer_with::<[[f32; 4]]>(
 		ghi::buffer::Builder::new(ghi::Uses::Storage)
 			.length(GEOMETRY_ALBEDOS.len())
-			.device_accesses(ghi::DeviceAccesses::HostToDevice),
+			.host_access(ghi::HostAccess::Write),
+		|albedos| albedos.copy_from_slice(&GEOMETRY_ALBEDOS),
 	);
-	context.get_mut_buffer_slice(albedos).copy_from_slice(&GEOMETRY_ALBEDOS);
-	context.sync_buffer(albedos);
 	let surfaces = context.build_buffer::<[Surface]>(
 		ghi::buffer::Builder::new(ghi::Uses::Storage)
 			.length(RAYS as usize)
-			.device_accesses(ghi::DeviceAccesses::DeviceToHost),
+			.host_access(ghi::HostAccess::Read),
 	);
 	let scene_set = context.create_descriptor_set(None, &scene_layout);
 	let materials_set = context.create_descriptor_set(None, &materials_layout);
@@ -439,7 +438,7 @@ fn trace_with(
 		"The GPU trace reported validation errors. The most likely cause is a baked shader that reads a resource its pipeline doesn't bind."
 	);
 
-	context.get_buffer_slice(surfaces).to_vec()
+	super::gpu_harness::download(context, surfaces)
 }
 
 /// Uploads `triangles` as one geometry: packed positions, three per triangle, and 16-bit indices.

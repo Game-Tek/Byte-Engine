@@ -75,6 +75,7 @@ use crate::core::message_bus::MessageScope;
 use crate::gameplay::Transform;
 use crate::rendering::csm::{self, CascadeFitting, CascadeSplits};
 use crate::rendering::lights::{ConeLight, DirectionalLight, Lights, LocalEmission, PointLight};
+use crate::rendering::lookup_textures::{create_blue_noise_texture, create_lookup_texture};
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::renderable::mesh::MeshKey;
@@ -554,23 +555,22 @@ impl ResidentEnvironment {
 /// Creates the opaque black environment sampled while no HDR environment is configured or its upload is pending.
 pub(crate) fn create_fallback_environment(
 	context: &mut ghi::implementation::Context,
+	queue: ghi::QueueHandle,
 	sampler: ghi::SamplerHandle,
 ) -> ResidentEnvironment {
-	let image = context.build_image(
-		ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
+	// Opaque alpha keeps material evaluation on this black environment instead of the analytical fallback reserved for
+	// explicitly transparent environment texels.
+	const FACE: [u8; 4] = [0, 0, 0, u8::MAX];
+	let image = create_lookup_texture(
+		context,
+		queue,
+		ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image)
 			.name("Visibility Environment Fallback")
 			.extent(Extent::square(1))
 			// Materials sample the environment as a cubemap.
-			.cube_compatible()
-			.device_accesses(ghi::DeviceAccesses::HostToDevice)
-			.use_case(ghi::UseCases::STATIC),
+			.cube_compatible(),
+		[FACE; 6].as_flattened(),
 	);
-	// Opaque alpha keeps material evaluation on this black environment instead of the analytical fallback
-	// reserved for explicitly transparent environment texels.
-	for face in context.get_texture_slice_mut(image).chunks_exact_mut(4) {
-		face.copy_from_slice(&[0, 0, 0, u8::MAX]);
-	}
-	context.sync_texture(image);
 	ResidentEnvironment {
 		diffuse_image: image.into(),
 		specular_image: image.into(),
@@ -778,15 +778,15 @@ pub struct VisibilityPipelineManager {
 	material_parameter_listener: DefaultListener<SetMaterialParameter>,
 	/// Canonical dynamic material parameter values, copied into each frame-local buffer after they change.
 	material_parameters: MaterialParameters,
-	material_parameters_buffer: ghi::DynamicBufferHandle<[[f32; 4]; MAX_MATERIAL_PARAMETERS]>,
+	material_parameters_buffer: ghi::BufferHandle<[[f32; 4]; MAX_MATERIAL_PARAMETERS]>,
 	deletions_listener: DefaultListener<DeleteMessage>,
 	/// Canonical material table, copied into each frame-local buffer after it changes.
 	materials: Box<[MaterialData; MAX_MATERIALS]>,
-	materials_buffer: ghi::DynamicBufferHandle<[MaterialData; MAX_MATERIALS]>,
+	materials_buffer: ghi::BufferHandle<[MaterialData; MAX_MATERIALS]>,
 	/// Canonical evaluation slot of every material table entry, which [`Self::rebuild_material_lists`] assigns. It is
 	/// copied into each frame-local buffer together with `materials`.
 	material_evaluations: Box<[u32; MAX_MATERIALS]>,
-	material_evaluations_buffer: ghi::DynamicBufferHandle<[u32; MAX_MATERIALS]>,
+	material_evaluations_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 	/// Which frame sequences' copies of the material and evaluation buffers hold the current tables. Every frame
 	/// sequence keeps its own copy, so a change reaches each copy on a frame of that copy's sequence.
 	materials_copies_current: [bool; ghi::MAX_FRAMES_IN_FLIGHT],
@@ -905,6 +905,8 @@ pub struct VisibilityPipelineManager {
 	/// report covers the run.
 	reported_merged_room: bool,
 	pub(crate) scene: VisibilityScene,
+	/// The blue noise every sink's screen-space passes draw their per-pixel random numbers from.
+	blue_noise: ghi::ImageHandle,
 }
 
 impl VisibilityPipelineManager {
@@ -914,6 +916,7 @@ impl VisibilityPipelineManager {
 	/// deletions here, so it sees every message published after setup.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
+		queue: ghi::QueueHandle,
 		world: &MessageScope,
 		geometry: GeometryHandles,
 		mut loader: VisibilityLoaderClient,
@@ -933,37 +936,39 @@ impl VisibilityPipelineManager {
 		probe_gi_configuration.declare(ProbeGiSettings::SETTINGS.iter().map(Setting::parameter));
 		contact_shadow_configuration.declare(ContactShadowSettings::SETTINGS.iter().map(Setting::parameter));
 		lod_configuration.declare(LodSettings::SETTINGS.iter().map(Setting::parameter));
-		let environment = create_fallback_environment(context, loader.environment_sampler);
+		let environment = create_fallback_environment(context, queue, loader.environment_sampler);
+		let blue_noise = create_blue_noise_texture(context, queue);
 		if settings.features.material_evaluation == MaterialEvaluationMode::Uber {
 			loader.request_uber_shaders();
 		}
 		// Every mode tests masked materials in the coverage shaders.
 		loader.request_coverage_shaders();
 		let skinning_pass = SkinningPass::new(context, &pipeline_manager, &geometry);
-		let host_buffer = |name, uses| {
-			ghi::buffer::Builder::new(uses)
-				.name(name)
-				.device_accesses(ghi::DeviceAccesses::HostToDevice)
-		};
-		let materials_buffer = context.build_dynamic_buffer(host_buffer(
-			"Materials Data",
-			ghi::Uses::Storage | ghi::Uses::TransferDestination,
-		));
-		let material_evaluations_buffer = context.build_dynamic_buffer(host_buffer(
-			"Material Evaluations",
-			ghi::Uses::Storage | ghi::Uses::TransferDestination,
-		));
-		let material_parameters_buffer = context.build_dynamic_buffer(host_buffer(
-			"Material Parameters",
-			ghi::Uses::Storage | ghi::Uses::TransferDestination,
-		));
-		let views_buffer = context.build_dynamic_buffer(host_buffer("Visibility Views Data", ghi::Uses::Storage));
-		let frame_buffer = context.build_dynamic_buffer(host_buffer("Visibility Frame Data", ghi::Uses::Storage));
+		let host_buffer = |name, uses| ghi::buffer::Builder::new(uses).name(name).host_access(ghi::HostAccess::Write);
+		let materials_buffer = context.build_buffer(
+			host_buffer("Materials Data", ghi::Uses::Storage | ghi::Uses::TransferDestination).copies(ghi::Copies::PerFrame),
+		);
+		let material_evaluations_buffer = context.build_buffer(
+			host_buffer("Material Evaluations", ghi::Uses::Storage | ghi::Uses::TransferDestination)
+				.copies(ghi::Copies::PerFrame),
+		);
+		let material_parameters_buffer = context.build_buffer(
+			host_buffer("Material Parameters", ghi::Uses::Storage | ghi::Uses::TransferDestination)
+				.copies(ghi::Copies::PerFrame),
+		);
+		let views_buffer =
+			context.build_buffer(host_buffer("Visibility Views Data", ghi::Uses::Storage).copies(ghi::Copies::PerFrame));
+		let frame_buffer =
+			context.build_buffer(host_buffer("Visibility Frame Data", ghi::Uses::Storage).copies(ghi::Copies::PerFrame));
 		let instances = settings.instance_capacity.instances as usize;
-		let meshes_buffer =
-			context.build_dynamic_buffer(host_buffer("Visibility Meshes Data", ghi::Uses::Storage).length(instances));
-		let lighting_buffer =
-			context.build_dynamic_buffer(host_buffer("Light Data", ghi::Uses::Storage | ghi::Uses::TransferDestination));
+		let meshes_buffer = context.build_buffer(
+			host_buffer("Visibility Meshes Data", ghi::Uses::Storage)
+				.length(instances)
+				.copies(ghi::Copies::PerFrame),
+		);
+		let lighting_buffer = context.build_buffer(
+			host_buffer("Light Data", ghi::Uses::Storage | ghi::Uses::TransferDestination).copies(ghi::Copies::PerFrame),
+		);
 		let descriptor_set = set_layouts::SCENE.create_set(context, "Scene Descriptor Set");
 		let mesh_work = MeshWork::new(
 			context,
@@ -1035,6 +1040,7 @@ impl VisibilityPipelineManager {
 			scene.buffer("vertex_lightmap_uvs", geometry.vertex_lightmap_uvs),
 		]);
 		Self {
+			blue_noise,
 			loader,
 			resource_events: Vec::new(),
 			pipeline_manager,
@@ -2173,7 +2179,7 @@ impl VisibilityPipelineManager {
 		current: &ShadowViews,
 		states: &ShadowMapStates,
 	) {
-		let views = frame.get_mut_dynamic_buffer_slice(self.scene.views_buffer);
+		let views = frame.map(self.scene.views_buffer);
 		views.fill(ShaderViewData::from(main_view));
 		let gpu_fit = self.settings.cascade_fitting == CascadeFitting::Receivers;
 		for (slot, cascades) in current.cascades.iter().enumerate() {
@@ -2194,7 +2200,6 @@ impl VisibilityPipelineManager {
 					*states.point_face_view(position, face).unwrap_or(current);
 			}
 		}
-		frame.sync_buffer(self.scene.views_buffer);
 	}
 }
 
@@ -2246,22 +2251,17 @@ impl PipelineManager for VisibilityPipelineManager {
 		debug_span!("Visibility::adopt_scene_updates").in_scope(|| self.adopt_scene_updates(transforms));
 		self.apply_runtime_settings();
 		debug_span!("Visibility::adopt_resource_completions").in_scope(|| self.adopt_resource_completions(frame, transforms));
-		*frame.get_mut_dynamic_buffer_slice(self.scene.frame_buffer) = ShaderFrame {
+		*frame.map(self.scene.frame_buffer) = ShaderFrame {
 			time: time.as_seconds_f32(),
 		};
-		frame.sync_buffer(self.scene.frame_buffer);
 		// Each frame sequence has its own buffers, so changed tables are copied into each one on its own frame.
 		let sequence = frame.key().sequence_index() as usize;
 		if !self.materials_copies_current[sequence] {
 			self.materials_copies_current[sequence] = true;
+			frame.map(self.materials_buffer).copy_from_slice(&*self.materials);
 			frame
-				.get_mut_dynamic_buffer_slice(self.materials_buffer)
-				.copy_from_slice(&*self.materials);
-			frame.sync_buffer(self.materials_buffer);
-			frame
-				.get_mut_dynamic_buffer_slice(self.material_evaluations_buffer)
+				.map(self.material_evaluations_buffer)
 				.copy_from_slice(&*self.material_evaluations);
-			frame.sync_buffer(self.material_evaluations_buffer);
 		}
 		// Detail levels follow the first sink's camera, like the views and exposure below.
 		let lod_view = sinks.first().map(|sink| {
@@ -2302,15 +2302,11 @@ impl PipelineManager for VisibilityPipelineManager {
 		// Every frame sequence has its own copy of the instance table, so each takes what changed since its last frame.
 		let stale = std::mem::replace(&mut self.stale_records[sequence], 0..0);
 		if !stale.is_empty() {
-			frame.get_mut_dynamic_buffer_slice(self.scene.meshes_buffer)[stale.clone()]
-				.copy_from_slice(&self.instance_records[stale]);
-			frame.sync_buffer(self.scene.meshes_buffer);
+			frame.map(self.scene.meshes_buffer)[stale.clone()].copy_from_slice(&self.instance_records[stale]);
 		}
 		// Instances write their own parameter blocks as the frame names them, so the changes are copied after.
 		if let Some((first, changes)) = self.material_parameters.take_changes(sequence) {
-			frame.get_mut_dynamic_buffer_slice(self.material_parameters_buffer)[first..first + changes.len()]
-				.copy_from_slice(changes);
-			frame.sync_buffer(self.material_parameters_buffer);
+			frame.map(self.material_parameters_buffer)[first..first + changes.len()].copy_from_slice(changes);
 		}
 		// The GPU builds the work from the instances each phase lists, so only a new list is written.
 		if std::mem::take(&mut self.stale_work[sequence]) {
@@ -2464,8 +2460,8 @@ impl PipelineManager for VisibilityPipelineManager {
 		};
 		if let Some(pool) = self.surfel_pool.as_ref().filter(|_| surfels.is_some())
 			&& frame.key().frame_index().is_multiple_of(GI_LOG_INTERVAL)
+			&& let Some(counts) = pool.counts(frame)
 		{
-			let counts = pool.counts(frame);
 			log::debug!(
 				"Surfel GI keeps {} surfels alive, {} of them spawned by rays' hits, in {} cell entries; the last grid recycled {}, and the frame before it spawned {} and lost {} while its rays' hits asked for {}. Young and changing surfels wanted {} rays and traced {}; settled ones wanted {} and traced {}.",
 				counts.last_alive,
@@ -2483,8 +2479,8 @@ impl PipelineManager for VisibilityPipelineManager {
 		}
 		if let Some(volume) = self.probe_volume.as_ref().filter(|_| probes.is_some())
 			&& frame.key().frame_index().is_multiple_of(GI_LOG_INTERVAL)
+			&& let Some(schedule) = volume.schedule(frame)
 		{
-			let schedule = volume.schedule(frame);
 			log::debug!(
 				"Probe GI holds {} active, {} idle, {} buried, and {} unset probes; the frame before updated {}.",
 				schedule.last_active,
@@ -2663,6 +2659,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			self.settings.instance_capacity.meshlet_groups,
 			probe_gi,
 			debug_views,
+			self.blue_noise,
 		);
 		context.write(
 			&self

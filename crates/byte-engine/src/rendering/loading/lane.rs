@@ -13,7 +13,7 @@ use smallvec::SmallVec;
 
 use super::{
 	client::LoaderClient,
-	loader::{BufferRegion, ImageUpload, Loader, NativeImageUpload, UploadRequest},
+	loader::{BufferRegion, ImageUpload, Loader, NativeImageUpload, StagedUpload, UploadRequest},
 };
 use crate::rendering::resource_loading::{StagingLease, UploadStagingArena};
 
@@ -78,7 +78,7 @@ pub trait LoadPipeline: Send + Sync + 'static {
 	/// Request the resources this one depends on with [`LoaderLane::request`] as soon as you know them, so they load
 	/// while this one does. Fetch and decode, write the bytes into a [`StagingLease`], then hand the GPU work to the
 	/// loader through [`LoaderLane::upload`] or [`LoaderLane::upload_native_image`]. The loader batches it with other
-	/// lanes' uploads and answers once the copies finished.
+	/// lanes' uploads and answers once the copies landed.
 	fn load(
 		&self,
 		request: Self::Request,
@@ -227,11 +227,13 @@ impl<P: LoadPipeline> LoaderLane<P> {
 		buffers: SmallVec<[BufferRegion; 16]>,
 	) -> Result<[ghi::implementation::DetachedImage; N], LoadError> {
 		let images = self
-			.send(|reply| UploadRequest::Staged {
-				staging,
-				images: SmallVec::from_iter(images),
-				buffers,
-				reply,
+			.send(|reply| {
+				UploadRequest::Staged(StagedUpload {
+					staging,
+					images: SmallVec::from_iter(images),
+					buffers,
+					reply,
+				})
 			})
 			.await?;
 		let mut images = images.into_iter();

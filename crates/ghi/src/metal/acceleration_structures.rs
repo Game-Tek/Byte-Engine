@@ -279,12 +279,6 @@ impl ScratchArena {
 		self.cursor = 0;
 	}
 
-	/// Drops the buffer so the next build starts a fresh one; commands that use the old buffer keep it alive.
-	pub(crate) fn discard(&mut self) {
-		self.buffer = None;
-		self.cursor = 0;
-	}
-
 	/// Returns a buffer and the range of `size` bytes in it that one build may use, apart from every other range
 	/// handed out since the last reset.
 	///

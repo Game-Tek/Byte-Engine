@@ -99,7 +99,7 @@ struct SystemPool {
 	prepare_sets: PublishedSets,
 	simulate_sets: PublishedSets,
 	draw_sets: PublishedSets,
-	frame_data: ghi::DynamicBufferHandle<ParticleFrameData>,
+	frame_data: ghi::BufferHandle<ParticleFrameData>,
 	particles: ghi::BufferHandle<[ShaderParticle]>,
 	draws: ghi::BufferHandle<[[u32; 4]; 2]>,
 	dispatch: ghi::BufferHandle<[[u32; 3]; 1]>,
@@ -272,27 +272,22 @@ impl ParticleManager {
 impl SystemPool {
 	/// Creates the buffers of one loaded system and requests its generated pipelines.
 	fn new(frame: &mut ghi::implementation::Frame, pipeline_manager: &PipelineManagerClient, system: ParticleSystem) -> Self {
-		let frame_data = frame.build_dynamic_buffer(
+		let frame_data = frame.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Particle Frame")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		// Two halves: the simulation reads last frame's particles from one and packs the survivors into the other.
 		let particles = frame.build_buffer::<[ShaderParticle]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Particles")
-				.length(system.capacity as usize * 2)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+				.length(system.capacity as usize * 2),
 		);
-		let draws = frame.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::Indirect)
-				.name("Particle Draws")
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
-		);
+		let draws =
+			frame.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::Indirect).name("Particle Draws"));
 		let dispatch = frame.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::Indirect)
-				.name("Particle Simulation Dispatch")
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::Indirect).name("Particle Simulation Dispatch"),
 		);
 
 		Self {
@@ -463,7 +458,7 @@ impl PipelineManager for ParticleManager {
 				pool,
 				index,
 				&mut self.emitters,
-				frame.get_mut_dynamic_buffer_slice(pool.frame_data),
+				frame.map(pool.frame_data),
 				side,
 				delta_time,
 				self.seed,
@@ -479,7 +474,6 @@ impl PipelineManager for ParticleManager {
 				pool.reset = true;
 				continue;
 			}
-			frame.sync_buffer(pool.frame_data);
 			pools.push(PoolFrame {
 				simulate,
 				draw,

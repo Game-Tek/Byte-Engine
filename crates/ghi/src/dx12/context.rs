@@ -1410,21 +1410,6 @@ impl crate::context::Context for Device {
 		Device::wait_for_synchronizer(self, synchronizer);
 	}
 
-	/// Returns whether every fence of the synchronizer reached its captured submission value, without blocking.
-	///
-	/// A complete synchronizer refreshes readbacks the same way a wait does, so mapping them afterwards is valid.
-	fn poll_synchronizer(&mut self, synchronizer: SynchronizerHandle) -> bool {
-		let complete = self.synchronizer_handles(synchronizer).into_iter().all(|handle| {
-			self.synchronizers
-				.get(handle.index() as usize)
-				.is_none_or(|synchronizer| unsafe { synchronizer.fence.GetCompletedValue() } >= synchronizer.value)
-		});
-		if complete {
-			self.refresh_readback_texture_copies(None);
-		}
-		complete
-	}
-
 	fn wait(&mut self) {
 		for index in 0..self.synchronizers.len() {
 			self.wait_for_private_synchronizer(crate::synchronizer::SynchronizerHandle::from_index(index as u64));

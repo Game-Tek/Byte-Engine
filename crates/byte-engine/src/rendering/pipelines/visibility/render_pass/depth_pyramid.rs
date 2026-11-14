@@ -83,9 +83,9 @@ pub(super) struct DepthPyramidPass {
 	pub(super) view_descriptor_set: ghi::DescriptorSetHandle,
 	pub(super) pipelines: Pipelines<1>,
 	/// The half-resolution camera constants that match the pyramid's mip zero.
-	pub(super) view_data: ghi::DynamicBufferHandle<ScreenViewData>,
+	pub(super) view_data: ghi::BufferHandle<ScreenViewData>,
 	/// The pyramid whose mips zero through two hold nearest positive linear depth from half resolution down.
-	pub(super) depth_pyramid: ghi::DynamicImageHandle,
+	pub(super) depth_pyramid: ghi::ImageHandle,
 }
 
 impl DepthPyramidPass {
@@ -99,10 +99,11 @@ impl DepthPyramidPass {
 	) -> Self {
 		let descriptor_set = set_layouts::DEPTH_PYRAMID.create_set(context, "Depth Pyramid Descriptor Set");
 		let view_descriptor_set = set_layouts::GTAO_VIEW.create_set(context, "Screen View Descriptor Set");
-		let view_data = context.build_dynamic_buffer(
+		let view_data = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Screen View Data")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		// The pass gathers texel quads, which no sampler filter or reduction touches.
 		let point_sampler = context.build_sampler(
@@ -111,12 +112,12 @@ impl DepthPyramidPass {
 				.mip_map_mode(ghi::FilteringModes::Closest),
 		);
 		// The initial 8x8 allocation keeps all declared mips valid before the first sink resize.
-		let depth_pyramid = context.build_dynamic_image(
+		let depth_pyramid = context.build_image(
 			ghi::image::Builder::new(ghi::Formats::R32F, ghi::Uses::Storage | ghi::Uses::Image)
 				.name("Linear Depth Pyramid")
 				.extent(Extent::square(8))
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-				.mip_levels(DEPTH_PYRAMID_MIP_COUNT),
+				.mip_levels(DEPTH_PYRAMID_MIP_COUNT)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let pyramid = set_layouts::DEPTH_PYRAMID.binder(descriptor_set);
 		let [first, second, third] =
@@ -154,8 +155,7 @@ impl DepthPyramidPass {
 		fitted_suns: u32,
 	) -> impl RenderPassFunction + use<> {
 		let half_extent = sink.extent().scaled_down(2);
-		*frame.get_mut_dynamic_buffer_slice(self.view_data) = screen_view_data(sink, half_extent);
-		frame.sync_buffer(self.view_data);
+		*frame.map(self.view_data) = screen_view_data(sink, half_extent);
 		frame.resize_image(self.depth_pyramid.into(), half_extent);
 		let descriptor_sets = [self.view_descriptor_set, self.descriptor_set];
 

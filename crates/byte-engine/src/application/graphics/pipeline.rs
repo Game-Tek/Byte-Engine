@@ -165,8 +165,10 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 
 	run_on_loading_thread(application, visibility_loader_lanes.into_iter().map(|lane| lane.run()));
 
+	let graphics_queue = application.renderer.graphics_queue();
 	let visibility_pipeline_manager = VisibilityPipelineManager::new(
 		application.renderer.context_mut(),
+		graphics_queue,
 		&application.world,
 		geometry,
 		visibility_loader,

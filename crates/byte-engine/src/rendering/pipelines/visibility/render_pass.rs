@@ -186,7 +186,7 @@ pub(super) use self::probe_gi::PROBE_GI_PIPELINES;
 use self::probe_gi::ProbeResolvePass;
 pub(crate) use self::probe_gi::{
 	DEFAULT_PROBE_RAY_BUDGET, DEFAULT_PROBE_SPACING, PROBE_RAY_BUDGET_RANGE, PROBE_RAYS, PROBE_SPACING_RANGE, ProbeFrame,
-	ProbeGiSettings, ProbeVolume,
+	ProbeGiSettings, ProbeSchedule, ProbeVolume,
 };
 pub(super) use self::ray_hits::RAY_HIT_PIPELINES;
 pub(crate) use self::ray_hits::{RayHits, RayTracing};
@@ -206,7 +206,7 @@ pub(super) use self::surfel_gi::SURFEL_GI_PIPELINES;
 use self::surfel_gi::SurfelResolvePass;
 pub(crate) use self::surfel_gi::{
 	DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET, MAX_SURFEL_RAY_BUDGET, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
-	SurfelFrame, SurfelGiSettings, SurfelLight, SurfelPool, SurfelTargets, create_surfel_targets,
+	SurfelFrame, SurfelGiSettings, SurfelLight, SurfelPool, SurfelPoolCounts, SurfelTargets, create_surfel_targets,
 };
 use self::visibility::{VisibilityPass, VisibilityPhase};
 #[cfg(test)]
@@ -366,17 +366,17 @@ struct ScreenSpaceCounters {
 #[derive(Clone, Copy)]
 pub(crate) struct SinkTargets {
 	/// The scene's light, one copy per frame in flight. Reflection rays read the previous frame's copy.
-	pub(crate) lit: ghi::DynamicImageHandle,
+	pub(crate) lit: ghi::ImageHandle,
 	/// The scene's reverse-Z depth, one copy per frame in flight. Reflection rays read the previous frame's copy to find
 	/// the pixel that saw their hit.
-	pub(crate) depth: ghi::DynamicImageHandle,
+	pub(crate) depth: ghi::ImageHandle,
 	pub(crate) primitive_index: ghi::BaseImageHandle,
 	pub(crate) instance_id: ghi::BaseImageHandle,
 	/// The SSGI images. Surfel GI and probe GI write the same images in SSGI's place.
 	pub(crate) ssgi: SsgiTargets,
 	/// The diffuse light that opaque material evaluation writes for next frame's SSGI rays, present when the project
 	/// builds SSGI in.
-	pub(crate) diffuse_radiance_history: Option<ghi::DynamicImageHandle>,
+	pub(crate) diffuse_radiance_history: Option<ghi::ImageHandle>,
 	/// Surfel GI's own images, present when the frame has a [`SurfelPool`] that surfel GI can light this sink from.
 	pub(crate) surfels: Option<SurfelTargets>,
 	/// The sun's contact shadows, which opaque material evaluation multiplies into the sun's shadow.
@@ -590,13 +590,14 @@ impl VisibilityRenderPass {
 	/// environment written by the pipeline manager; see [`Self::material_evaluation_descriptor_set`]. `features` are
 	/// the ones the project's material shaders were baked with; a left-out feature creates no pass and requests no
 	/// pipelines. Surfel GI lights the sink when `targets` holds surfel images, and `probe_gi` tells whether the frame
-	/// has a [`ProbeVolume`] that probe GI can light this sink from.
+	/// has a [`ProbeVolume`] that probe GI can light this sink from. `blue_noise` is the texture the screen-space
+	/// passes draw their per-pixel random numbers from.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: PipelineManagerClient,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		views_buffer: ghi::BaseBufferHandle,
-		lighting_buffer: ghi::DynamicBufferHandle<LightingData>,
+		lighting_buffer: ghi::BufferHandle<LightingData>,
 		targets: SinkTargets,
 		shadow_maps: &ShadowMaps,
 		stage_counters: StageCounters,
@@ -604,6 +605,7 @@ impl VisibilityRenderPass {
 		meshlet_groups: u32,
 		probe_gi: bool,
 		debug_views: crate::rendering::DebugViews,
+		blue_noise: ghi::ImageHandle,
 	) -> Self {
 		let visibility_buffer_descriptor_set =
 			set_layouts::VISIBILITY_BUFFER.create_set(context, "Visibility Buffer Descriptor Set");
@@ -646,6 +648,7 @@ impl VisibilityRenderPass {
 				depth_pyramid.view_data,
 				targets.ssgi,
 				diffuse_radiance_history,
+				blue_noise,
 			)
 		});
 		let surfel_resolve = targets.surfels.map(|surfels| {
@@ -766,6 +769,7 @@ impl VisibilityRenderPass {
 					depth_pyramid.depth_pyramid,
 					depth_pyramid.view_descriptor_set,
 					targets.gtao,
+					blue_noise,
 				)
 			}),
 			sun_visibility: SunVisibilityPass::new(
@@ -789,6 +793,7 @@ impl VisibilityRenderPass {
 				depth,
 				shadow_maps,
 				targets.fog_light,
+				blue_noise,
 			),
 			depth_pyramid,
 			ssgi,
@@ -1074,6 +1079,10 @@ impl VisibilityRenderPass {
 					record_compute_stages(c, None, &[surfels.validate])
 				});
 				c.counter(counters.surfel_integrate, |c| record_compute_stages(c, None, &surfels.update));
+				// The CPU logs the counts from this frame's copy once the frame completes.
+				let (counts, readback) = surfels.counts;
+				let copy = ghi::BufferCopyDescriptor::new(counts, 0, readback, 0, size_of::<SurfelPoolCounts>());
+				ghi::command_buffer::CommandBufferRecording::copy_buffers(c, &[copy]);
 			}
 			// The probe updates bring every probe the sinks' resolves read up to date. The trace reads the volume before
 			// the update rewrites it, so the hits bounce the light the probes held last frame.
@@ -1083,6 +1092,10 @@ impl VisibilityRenderPass {
 				});
 				c.counter(counters.probe_trace, |c| probes.rays.record(c));
 				c.counter(counters.probe_update, |c| record_compute_stages(c, None, &[probes.update]));
+				// The CPU logs the schedule from this frame's copy once the frame completes.
+				let (schedule, readback) = probes.schedule_counts;
+				let copy = ghi::BufferCopyDescriptor::new(schedule, 0, readback, 0, size_of::<ProbeSchedule>());
+				ghi::command_buffer::CommandBufferRecording::copy_buffers(c, &[copy]);
 			}
 
 			// The opaque layer establishes the depth and color retained by every later transparent primitive. Its early

@@ -205,18 +205,16 @@ impl<K: Default> SlugCurves<K> {
 	pub(super) fn upload(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
-		curve_buffer: ghi::DynamicBufferHandle<[[f32; 4]; UI_SLUG_CURVE_CAPACITY]>,
-		band_buffer: ghi::DynamicBufferHandle<[u32; UI_SLUG_BAND_CAPACITY]>,
+		curve_buffer: ghi::BufferHandle<[[f32; 4]; UI_SLUG_CURVE_CAPACITY]>,
+		band_buffer: ghi::BufferHandle<[u32; UI_SLUG_BAND_CAPACITY]>,
 	) {
 		let uploaded = &mut self.uploaded[frame.key().sequence_index() as usize];
 		let (curves, bands) = *uploaded;
 		if curves != self.curves.len() {
-			frame.get_mut_dynamic_buffer_slice(curve_buffer)[curves..self.curves.len()].copy_from_slice(&self.curves[curves..]);
-			frame.sync_buffer(curve_buffer);
+			frame.map(curve_buffer)[curves..self.curves.len()].copy_from_slice(&self.curves[curves..]);
 		}
 		if bands != self.bands.len() {
-			frame.get_mut_dynamic_buffer_slice(band_buffer)[bands..self.bands.len()].copy_from_slice(&self.bands[bands..]);
-			frame.sync_buffer(band_buffer);
+			frame.map(band_buffer)[bands..self.bands.len()].copy_from_slice(&self.bands[bands..]);
 		}
 		*uploaded = (self.curves.len(), self.bands.len());
 	}

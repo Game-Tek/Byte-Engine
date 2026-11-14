@@ -87,7 +87,6 @@ pub(crate) fn build_texture_descriptor(
 		extent,
 		format,
 		uses,
-		access,
 		array_layers,
 		cube_compatible,
 		cube_array_compatible,
@@ -132,7 +131,8 @@ pub(crate) fn build_texture_descriptor(
 		descriptor.setTextureType(mtl::MTLTextureType::Type2DArray);
 	}
 	descriptor.setUsage(utils::texture_usage_from_uses(uses));
-	descriptor.setResourceOptions(utils::resource_options_from_access(access));
+	// Only GPU commands access images, so they live in private storage.
+	descriptor.setResourceOptions(mtl::MTLResourceOptions::StorageModePrivate);
 	let array_length = if cube_compatible {
 		1
 	} else if cube_array_compatible {

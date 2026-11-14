@@ -165,15 +165,10 @@ impl Spike {
 		let record_buffer = device.build_buffer::<[u32]>(
 			ghi::buffer::Builder::new(Uses::Storage)
 				.length(records.len())
-				.device_accesses(DeviceAccesses::HostToDevice),
+				.host_access(HostAccess::Write),
 		);
-		device.get_mut_buffer_slice(record_buffer).copy_from_slice(records);
-		device.sync_buffer(record_buffer);
-		let results = device.build_buffer::<[[f32; 4]]>(
-			ghi::buffer::Builder::new(Uses::Storage)
-				.length(records.len())
-				.device_accesses(DeviceAccesses::DeviceOnly),
-		);
+		buffer_contents(device, record_buffer).copy_from_slice(records);
+		let results = device.build_buffer::<[[f32; 4]]>(ghi::buffer::Builder::new(Uses::Storage).length(records.len()));
 		let set = device.create_descriptor_set(None, &self.layout);
 		device.write(&[
 			ghi::DescriptorWrite::buffer(set, ghi::ResourceSlot::new(0), record_buffer.into()),

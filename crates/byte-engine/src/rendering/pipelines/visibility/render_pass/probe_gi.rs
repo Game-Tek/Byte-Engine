@@ -255,10 +255,12 @@ pub(crate) struct ProbeVolume {
 	update_set: ghi::DescriptorSetHandle,
 	/// Every probe GI compute pipeline, in the order of [`PROBE_GI_PIPELINES`].
 	pipelines: Pipelines<6>,
-	volume_parameters: ghi::DynamicBufferHandle<ProbeVolumeParameters>,
-	update_parameters: ghi::DynamicBufferHandle<ProbeGiParameters>,
-	/// The schedule and its counts, in memory the host can read.
+	volume_parameters: ghi::BufferHandle<ProbeVolumeParameters>,
+	update_parameters: ghi::BufferHandle<ProbeGiParameters>,
+	/// The schedule and its counts.
 	schedule: ghi::BufferHandle<ProbeSchedule>,
+	/// Each frame's copy of [`Self::schedule`], which the CPU reads once the frame completes.
+	schedule_readback: ghi::BufferHandle<ProbeSchedule>,
 	ray_budget: u32,
 	spacing: f32,
 }
@@ -276,7 +278,7 @@ impl ProbeVolume {
 		ray_budget: u32,
 		spacing: f32,
 		environment: ResidentEnvironment,
-		lighting_buffer: ghi::DynamicBufferHandle<LightingData>,
+		lighting_buffer: ghi::BufferHandle<LightingData>,
 	) -> Self {
 		let volume_set = set_layouts::PROBE_VOLUME.create_set(context, "Probe Volume Descriptor Set");
 		let update_set = set_layouts::PROBE_GI.create_set(context, "Probe GI Descriptor Set");
@@ -285,7 +287,6 @@ impl ProbeVolume {
 		let device_buffer = |name, length: u32| {
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name(name)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.length(length as usize)
 		};
 		let records: ghi::BufferHandle<[ProbeRecord]> = context.build_buffer(device_buffer("Probe Records", PROBE_COUNT));
@@ -294,10 +295,14 @@ impl ProbeVolume {
 		let list: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Probe List", probe_budget));
 		let ray_results: ghi::BufferHandle<[ProbeRayResult]> =
 			context.build_buffer(device_buffer("Probe Ray Results", ray_budget));
-		let schedule = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Probe Schedule")
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly | ghi::DeviceAccesses::CpuRead),
+		let schedule = context
+			.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferSource).name("Probe Schedule"));
+		// Each frame copies the schedule here, so the CPU reads a completed frame's copy while later frames run.
+		let schedule_readback = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::TransferDestination)
+				.name("Probe Schedule Readback")
+				.host_access(ghi::HostAccess::Read)
+				.copies(ghi::Copies::PerFrame),
 		);
 		// One tile per probe: the tiles of a cascade's x and y run along a row, its z along the rows, cascade after
 		// cascade.
@@ -306,21 +311,22 @@ impl ProbeVolume {
 			context.build_image(
 				ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image)
 					.name(name)
-					.extent(Extent::rectangle(tiles.width() * tile, tiles.height() * tile))
-					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+					.extent(Extent::rectangle(tiles.width() * tile, tiles.height() * tile)),
 			)
 		};
 		let irradiance = atlas("Probe Irradiance", ghi::Formats::RGBA16F, IRRADIANCE_TILE);
 		let distance = atlas("Probe Distance", ghi::Formats::RG16F, DISTANCE_TILE);
-		let volume_parameters = context.build_dynamic_buffer(
+		let volume_parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Probe Volume Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
-		let update_parameters = context.build_dynamic_buffer(
+		let update_parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Probe GI Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let volume = set_layouts::PROBE_VOLUME.binder(volume_set);
 		let update = set_layouts::PROBE_GI.binder(update_set);
@@ -347,6 +353,7 @@ impl ProbeVolume {
 			volume_parameters,
 			update_parameters,
 			schedule,
+			schedule_readback,
 			ray_budget,
 			spacing,
 		}
@@ -380,17 +387,16 @@ impl ProbeVolume {
 		let sort = hits.sort(pipeline_manager, self.ray_budget)?;
 		let camera = camera_position(sink.view());
 		let frame_index = frame.key().frame_index();
-		*frame.get_mut_dynamic_buffer_slice(self.volume_parameters) = ProbeVolumeParameters {
+		*frame.map(self.volume_parameters) = ProbeVolumeParameters {
 			cascades: cascade_windows(camera, self.spacing),
 			// Only differences between frame indices matter, so wrapping is harmless.
 			frame_index: frame_index as u32,
 			environment_intensity,
 			_padding: [0; 2],
 		};
-		frame.sync_buffer(self.volume_parameters);
 		let [rotation_x, rotation_y, rotation_z] = random_rotation(frame_index);
 		let probe_budget = self.ray_budget / PROBE_RAYS;
-		*frame.get_mut_dynamic_buffer_slice(self.update_parameters) = ProbeGiParameters {
+		*frame.map(self.update_parameters) = ProbeGiParameters {
 			rotation_x: rotation_x.into(),
 			probe_budget,
 			rotation_y: rotation_y.into(),
@@ -398,7 +404,6 @@ impl ProbeVolume {
 			rotation_z: rotation_z.into(),
 			_padding1: 0,
 		};
-		frame.sync_buffer(self.update_parameters);
 
 		let sets = [self.volume_set, self.update_set];
 		let stage = |label, pipeline, threads, workgroup| ComputeStage {
@@ -418,6 +423,7 @@ impl ProbeVolume {
 			hits.descriptor_set(),
 		];
 		Some(ProbeFrame {
+			schedule_counts: (self.schedule.into(), self.schedule_readback.into()),
 			schedule: [
 				stage("Probe Schedule", schedule, PROBE_COUNT, 64),
 				stage("Probe Select", select, 1, 1),
@@ -451,9 +457,9 @@ impl ProbeVolume {
 		})
 	}
 
-	/// Returns the schedule's counts as the GPU last left them, for logging. Frames still in flight may change them.
-	pub(crate) fn schedule(&self, frame: &mut ghi::implementation::Frame) -> ProbeSchedule {
-		*frame.get_mut_buffer_slice(self.schedule)
+	/// Returns the schedule's counts as the frame that completed when `frame` started left them, for logging.
+	pub(crate) fn schedule(&self, frame: &ghi::implementation::Frame) -> Option<ProbeSchedule> {
+		frame.read(self.schedule_readback).copied()
 	}
 }
 
@@ -467,6 +473,8 @@ pub(crate) struct ProbeFrame {
 	pub(super) rays: RayStages<5>,
 	/// Blends each listed probe's rays into its maps, then relocates and classifies it.
 	pub(super) update: ComputeStage<2>,
+	/// The schedule and the frame's readback copy, which the frame copies it into after the update.
+	pub(super) schedule_counts: (ghi::BaseBufferHandle, ghi::BaseBufferHandle),
 	volume_set: ghi::DescriptorSetHandle,
 	resolve: ghi::PipelineHandle,
 }
@@ -480,7 +488,7 @@ pub(super) struct ProbeResolvePass {
 	screen_trace_descriptor_set: ghi::DescriptorSetHandle,
 	/// The sink's own settings and output images.
 	descriptor_set: ghi::DescriptorSetHandle,
-	parameters: ghi::DynamicBufferHandle<ProbeResolveParameters>,
+	parameters: ghi::BufferHandle<ProbeResolveParameters>,
 }
 
 impl ProbeResolvePass {
@@ -490,18 +498,19 @@ impl ProbeResolvePass {
 	/// SSGI images, which the resolve writes in SSGI's place, and `debug_views` the sink's debug target pool.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
-		depth_pyramid: ghi::DynamicImageHandle,
-		view_data: ghi::DynamicBufferHandle<ScreenViewData>,
+		depth_pyramid: ghi::ImageHandle,
+		view_data: ghi::BufferHandle<ScreenViewData>,
 		targets: SsgiTargets,
 		debug_views: &crate::rendering::DebugViews,
 	) -> Self {
 		let screen_trace_descriptor_set =
 			set_layouts::SCREEN_TRACE.create_set(context, "Probe Resolve Screen Trace Descriptor Set");
 		let descriptor_set = set_layouts::PROBE_RESOLVE.create_set(context, "Probe Resolve Descriptor Set");
-		let parameters = context.build_dynamic_buffer(
+		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Probe Resolve Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let point_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
@@ -546,7 +555,7 @@ impl ProbeResolvePass {
 		exposure: f32,
 		shown: crate::rendering::ShownDebugViews,
 	) -> ComputeStage<3> {
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = ProbeResolveParameters {
+		*frame.map(self.parameters) = ProbeResolveParameters {
 			view_to_world: math::inverse(sink.view().view()).into(),
 			exposure,
 			debug_view_first_slot: shown.first_slot,
@@ -554,7 +563,6 @@ impl ProbeResolvePass {
 			_padding: [0; 3],
 			_padding_1: 0,
 		};
-		frame.sync_buffer(self.parameters);
 		ComputeStage {
 			label: "Probe Resolve",
 			pipeline: probes.resolve,

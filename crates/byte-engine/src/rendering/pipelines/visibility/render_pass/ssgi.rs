@@ -19,7 +19,7 @@ use utils::Extent;
 
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::{ComputeStage, Pipelines, SinkHistory};
-use crate::rendering::lookup_textures::{blue_noise_offset, create_blue_noise_texture};
+use crate::rendering::lookup_textures::blue_noise_offset;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink};
 
@@ -55,9 +55,9 @@ const SSGI_RESOLUTION_DIVISOR: u32 = 2;
 pub(crate) struct SsgiTargets {
 	pub(crate) raw: ghi::BaseImageHandle,
 	/// Named [`SSGI_NORMALS_TARGET`]. Bind it in material evaluation with [`history`](Self::history).
-	pub(crate) normals: ghi::DynamicImageHandle,
+	pub(crate) normals: ghi::ImageHandle,
 	/// Named [`SSGI_HISTORY_TARGET`]. Bind it in material evaluation, which upsamples it with its pixels' surfaces.
-	pub(crate) history: ghi::DynamicImageHandle,
+	pub(crate) history: ghi::ImageHandle,
 }
 
 /// Creates the SSGI render-graph targets for the sink that `render_pass_builder` sets up.
@@ -66,11 +66,7 @@ pub(crate) struct SsgiTargets {
 pub(crate) fn create_ssgi_targets(
 	render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>,
 ) -> SsgiTargets {
-	let image = |name, format| {
-		ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image)
-			.name(name)
-			.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-	};
+	let image = |name, format| ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image).name(name);
 	let radiance_image = |name| image(name, RADIANCE_FORMAT);
 	SsgiTargets {
 		raw: render_pass_builder
@@ -87,12 +83,11 @@ pub(crate) fn create_ssgi_targets(
 /// Next, bind it in material evaluation and pass it to [`SsgiPass::new`].
 pub(crate) fn create_diffuse_radiance_history_target(
 	render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>,
-) -> ghi::DynamicImageHandle {
+) -> ghi::ImageHandle {
 	// Clear use lets the renderer clear it on frames the scene records nothing.
 	render_pass_builder.create_history_target(
 		ghi::image::Builder::new(RADIANCE_FORMAT, ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::Clear)
-			.name(DIFFUSE_RADIANCE_HISTORY_TARGET)
-			.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+			.name(DIFFUSE_RADIANCE_HISTORY_TARGET),
 		1,
 	)
 }
@@ -130,7 +125,7 @@ pub(super) struct SsgiPass {
 	temporal_descriptor_sets: [ghi::DescriptorSetHandle; 3],
 	/// The trace and temporal pipelines.
 	pub(super) pipelines: Pipelines<2>,
-	parameters: ghi::DynamicBufferHandle<SsgiShaderParameters>,
+	parameters: ghi::BufferHandle<SsgiShaderParameters>,
 }
 
 impl SsgiPass {
@@ -142,19 +137,21 @@ impl SsgiPass {
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
-		depth_pyramid: ghi::DynamicImageHandle,
-		view_data: ghi::DynamicBufferHandle<ScreenViewData>,
+		depth_pyramid: ghi::ImageHandle,
+		view_data: ghi::BufferHandle<ScreenViewData>,
 		targets: SsgiTargets,
-		diffuse_radiance_history: ghi::DynamicImageHandle,
+		diffuse_radiance_history: ghi::ImageHandle,
+		blue_noise: ghi::ImageHandle,
 	) -> Self {
 		let screen_trace_descriptor_set = set_layouts::SCREEN_TRACE.create_set(context, "SSGI Screen Trace Descriptor Set");
 		let parameters_descriptor_set = set_layouts::SSGI.create_set(context, "SSGI Parameters Descriptor Set");
 		let trace_descriptor_set = set_layouts::SSGI_TRACE.create_set(context, "SSGI Trace Descriptor Set");
 		let temporal_descriptor_set = set_layouts::SSGI_TEMPORAL.create_set(context, "SSGI Temporal Descriptor Set");
-		let parameters = context.build_dynamic_buffer(
+		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("SSGI Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let point_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
@@ -162,7 +159,6 @@ impl SsgiPass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
-		let blue_noise = create_blue_noise_texture(context);
 		let SsgiTargets { raw, normals, history } = targets;
 		let screen_trace = set_layouts::SCREEN_TRACE.binder(screen_trace_descriptor_set);
 		let trace = set_layouts::SSGI_TRACE.binder(trace_descriptor_set);
@@ -215,14 +211,13 @@ impl SsgiPass {
 		let (previous_clip, previous_view, history_exposure_ratio) = history
 			.map(|previous| previous.reprojection(sink.view(), exposure))
 			.unwrap_or((Default::default(), Default::default(), 1.0));
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = SsgiShaderParameters {
+		*frame.map(self.parameters) = SsgiShaderParameters {
 			current_view_to_previous_clip: previous_clip.into(),
 			current_view_to_previous_view: previous_view.into(),
 			noise_offset: blue_noise_offset(frame.key().frame_index()),
 			history_valid: history.is_some() as u32,
 			history_exposure_ratio,
 		};
-		frame.sync_buffer(self.parameters);
 
 		let stage = |label, pipeline, descriptor_sets| ComputeStage {
 			label,

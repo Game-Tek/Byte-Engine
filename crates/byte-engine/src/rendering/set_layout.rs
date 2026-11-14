@@ -247,8 +247,8 @@ impl SetBinder<'_> {
 
 	/// Binds the copy of a per-frame texture whose sampler the shader fixes that belongs to a relative frame, such as
 	/// `-1` for the previous frame.
-	pub fn texture_with_frame(&self, name: &str, image: ghi::DynamicImageHandle, frame_offset: i32) -> ghi::DescriptorWrite {
-		ghi::DescriptorWrite::image_with_frame(self.set, self.slot(name), image, ghi::Layouts::Read, frame_offset)
+	pub fn texture_with_frame(&self, name: &str, image: ghi::ImageHandle, frame_offset: i32) -> ghi::DescriptorWrite {
+		ghi::DescriptorWrite::image(self.set, self.slot(name), image, ghi::Layouts::Read).with_frame_offset(frame_offset)
 	}
 
 	/// Binds one element of a texture array whose sampler the shader fixes, so the set takes only the image.
@@ -270,18 +270,12 @@ impl SetBinder<'_> {
 	pub fn sampled_with_frame(
 		&self,
 		name: &str,
-		image: ghi::DynamicImageHandle,
+		image: ghi::ImageHandle,
 		sampler: ghi::SamplerHandle,
 		frame_offset: i32,
 	) -> ghi::DescriptorWrite {
-		ghi::DescriptorWrite::combined_image_sampler_with_frame(
-			self.set,
-			self.slot(name),
-			image,
-			sampler,
-			ghi::Layouts::Read,
-			frame_offset,
-		)
+		ghi::DescriptorWrite::combined_image_sampler(self.set, self.slot(name), image, sampler, ghi::Layouts::Read)
+			.with_frame_offset(frame_offset)
 	}
 
 	/// Binds one element of a texture array.
@@ -705,7 +699,7 @@ mod tests {
 	fn image_arrays_bind_only_arrayed_storage_images_they_fit() {
 		let mut device = ghi::debug::Device::new();
 		let image: ghi::BaseImageHandle = device
-			.build_dynamic_image(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage))
+			.build_image(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage).copies(ghi::Copies::PerFrame))
 			.into();
 		let array = Resource::image_array("pool", &[image, image]);
 		let single = Resource::image("pool", image);
@@ -744,10 +738,10 @@ mod tests {
 		];
 		let mut device = ghi::debug::Device::new();
 		let buffer = device.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage));
-		let image = device.build_dynamic_image(ghi::image::Builder::new(
-			ghi::Formats::RGBA16F,
-			ghi::Uses::Image | ghi::Uses::Storage,
-		));
+		let image = device.build_image(
+			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image | ghi::Uses::Storage)
+				.copies(ghi::Copies::PerFrame),
+		);
 		let sampler = device.build_sampler(ghi::sampler::Builder::new());
 		let resources = [
 			Resource::image("result", image),

@@ -65,21 +65,24 @@ impl SmaaPass {
 			ghi::image::Builder::new(ghi::Formats::RG8UNORM, ghi::Uses::Image | edge_uses).name("SMAA Edges"),
 		);
 
+		let queue = render_pass_builder.queue();
 		let context = render_pass_builder.context();
 		let area_pixels = decode_lookup_texture(AREA_TEXTURE, AREA_TEXTURE_BYTE_COUNT, "area texture");
 		let area_texture = create_lookup_texture(
 			context,
-			"SMAA Area Texture",
-			ghi::Formats::RG8UNORM,
-			utils::Extent::rectangle(AREA_TEXTURE_WIDTH, AREA_TEXTURE_HEIGHT),
+			queue,
+			ghi::image::Builder::new(ghi::Formats::RG8UNORM, ghi::Uses::Image)
+				.name("SMAA Area Texture")
+				.extent(utils::Extent::rectangle(AREA_TEXTURE_WIDTH, AREA_TEXTURE_HEIGHT)),
 			&area_pixels,
 		);
 		let search_pixels = decode_lookup_texture(SEARCH_TEXTURE, SEARCH_TEXTURE_BYTE_COUNT, "search texture");
 		let search_texture = create_lookup_texture(
 			context,
-			"SMAA Search Texture",
-			ghi::Formats::R8UNORM,
-			utils::Extent::rectangle(SEARCH_TEXTURE_WIDTH, SEARCH_TEXTURE_HEIGHT),
+			queue,
+			ghi::image::Builder::new(ghi::Formats::R8UNORM, ghi::Uses::Image)
+				.name("SMAA Search Texture")
+				.extent(utils::Extent::rectangle(SEARCH_TEXTURE_WIDTH, SEARCH_TEXTURE_HEIGHT)),
 			&search_pixels,
 		);
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());

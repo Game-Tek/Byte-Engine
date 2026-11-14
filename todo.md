@@ -83,9 +83,8 @@
 
 # P1 - Bake and asset performance
 
-- Free idle offline GPU pyramids. `GPUMipProcessor` in `crates/resource-management/src/resources/mips/gpu.rs` keeps every pyramid it creates because the GHI has no `destroy_image`/`destroy_buffer`; `MAX_IN_FLIGHT` bounds the count per extent. Add GHI resource destruction, then evict least-recently-used idle slots against a byte budget next to the bake memory budget.
-- Pipeline environment-map bakes the way material mips are pipelined. `GPUIBLProcessor` in `crates/resource-management/src/ibl/gpu.rs` completes each request inline in `GpuProcessor::submit`; give it per-request scratch and finish requests in `poll` so several HDR images overlap on the GPU.
-- Replace the 1 ms completion poll in `crates/resource-management/src/gpu_worker.rs` with a backend wake only if profiling shows it matters: a `Context::wait_for_any_synchronizer` with a timeout (Vulkan `vkWaitForFences` wait-any, DX12 `SetEventOnCompletion` with real events, Metal a condvar pulsed from the commit feedback handler).
+- Free idle offline GPU pyramids. `GPUMipProcessor` in `crates/resource-management/src/resources/mips/gpu.rs` keeps every pyramid it creates because the GHI has no `destroy_image`/`destroy_buffer`; `GpuProcessor::MAX_BATCH` bounds the count per extent. Add GHI resource destruction, then evict least-recently-used idle slots against a byte budget next to the bake memory budget. Then free the staging buffer `create_lookup_texture` (`crates/byte-engine/src/rendering/lookup_textures.rs`) creates for each lookup texture once its copy returns.
+- Batch environment-map bakes the way material mips are batched. `GPUIBLProcessor` in `crates/resource-management/src/ibl/gpu.rs` records one workload per request in `GpuProcessor::process`; give it per-request scratch and record a batch in one workload, so several HDR images share one submission and one wait.
 - Replace asset-handler tuple results with an allocator-backed or borrowed `BakedAsset` payload that storage can consume before arena reset.
 - Redesign `MeshProcessorSession` as a two-pass packer that computes offsets and writes directly into one final allocation.
 - Let glTF parsing borrow GLB and external BIN data instead of copying whole buffers.

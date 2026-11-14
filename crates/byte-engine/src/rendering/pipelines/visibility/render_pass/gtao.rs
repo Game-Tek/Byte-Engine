@@ -12,7 +12,6 @@ use utils::Extent;
 use super::depth_pyramid::DEPTH_PYRAMID_MIP_COUNT;
 use super::{ComputeStage, Pipelines};
 use crate::configuration::{Accepts, Setting};
-use crate::rendering::lookup_textures::create_blue_noise_texture;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink};
 
@@ -52,9 +51,7 @@ pub(crate) fn create_gtao_targets(
 	let mut target = |name, format, resolution_divisor| {
 		render_pass_builder
 			.create_scaled_render_target(
-				ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image)
-					.name(name)
-					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+				ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image).name(name),
 				resolution_divisor,
 			)
 			.into()
@@ -159,7 +156,7 @@ pub(super) struct GtaoPass {
 	upscale_descriptor_set: ghi::DescriptorSetHandle,
 	/// The evaluate, blur, and upscale pipelines.
 	pub(super) pipelines: Pipelines<3>,
-	parameters: ghi::DynamicBufferHandle<GtaoShaderParameters>,
+	parameters: ghi::BufferHandle<GtaoShaderParameters>,
 }
 
 impl GtaoPass {
@@ -171,9 +168,10 @@ impl GtaoPass {
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		depth: ghi::BaseImageHandle,
-		depth_pyramid: ghi::DynamicImageHandle,
+		depth_pyramid: ghi::ImageHandle,
 		view_descriptor_set: ghi::DescriptorSetHandle,
 		targets: GtaoTargets,
+		blue_noise: ghi::ImageHandle,
 	) -> Self {
 		let gtao_descriptor_set = set_layouts::GTAO.create_set(context, "GTAO Descriptor Set");
 		let blur_descriptor_set = set_layouts::GTAO_BLUR.create_set(context, "GTAO Blur X Descriptor Set");
@@ -181,9 +179,9 @@ impl GtaoPass {
 		let dynamic_buffer = |name| {
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name(name)
-				.device_accesses(ghi::DeviceAccesses::HostToDevice)
+				.host_access(ghi::HostAccess::Write)
 		};
-		let parameters = context.build_dynamic_buffer(dynamic_buffer("GTAO Parameters"));
+		let parameters = context.build_buffer(dynamic_buffer("GTAO Parameters").copies(ghi::Copies::PerFrame));
 		let depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
@@ -199,7 +197,6 @@ impl GtaoPass {
 		);
 		// The evaluation reads it texel by texel at the pixel modulo its side, the same pattern every frame: nothing
 		// accumulates GTAO over frames, so animating it would only flicker.
-		let blue_noise = create_blue_noise_texture(context);
 		let evaluate = set_layouts::GTAO.binder(gtao_descriptor_set);
 		let blur = set_layouts::GTAO_BLUR.binder(blur_descriptor_set);
 		let upscale = set_layouts::GTAO_UPSCALE.binder(upscale_descriptor_set);
@@ -240,12 +237,11 @@ impl GtaoPass {
 	) -> GtaoStages {
 		let extent = sink.extent();
 		let gtao_extent = extent.scaled_down(GTAO_RESOLUTION_DIVISOR);
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = GtaoShaderParameters {
+		*frame.map(self.parameters) = GtaoShaderParameters {
 			radius: settings.radius,
 			samples_per_ray: settings.samples_per_ray,
 			radial_rays: settings.radial_rays,
 		};
-		frame.sync_buffer(self.parameters);
 
 		GtaoStages {
 			evaluate: ComputeStage {

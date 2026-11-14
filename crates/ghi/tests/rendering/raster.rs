@@ -17,8 +17,6 @@ pub(super) fn render_triangle(device: &mut impl ghi::context::Context, queue_han
 		Indirect(BufferHandle<[f32; 21]>, BufferHandle<[[u32; 4]; 2]>),
 	}
 
-	let signal = device.create_synchronizer(None, false);
-
 	let floats: [f32; 21] = [
 		0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
 	];
@@ -40,19 +38,17 @@ pub(super) fn render_triangle(device: &mut impl ghi::context::Context, queue_han
 			let vertex_buffer = device.build_buffer::<[f32; 21]>(
 				ghi::buffer::Builder::new(Uses::Vertex)
 					.name("Indirect Triangle Vertices")
-					.device_accesses(DeviceAccesses::HostToDevice),
+					.host_access(HostAccess::Write),
 			);
-			*device.get_mut_buffer_slice(vertex_buffer) = floats;
-			device.sync_buffer(vertex_buffer);
+			*buffer_contents(device, vertex_buffer) = floats;
 
 			// The first record draws no instances, so a triangle only appears if the draw reads the selected entry.
 			let indirect_buffer = device.build_buffer::<[[u32; 4]; 2]>(
 				ghi::buffer::Builder::new(Uses::Indirect)
 					.name("Indirect Triangle Draws")
-					.device_accesses(DeviceAccesses::HostToDevice),
+					.host_access(HostAccess::Write),
 			);
-			*device.get_mut_buffer_slice(indirect_buffer) = [[3, 0, 0, 0], [3, 1, 0, 0]];
-			device.sync_buffer(indirect_buffer);
+			*buffer_contents(device, indirect_buffer) = [[3, 0, 0, 0], [3, 1, 0, 0]];
 			Geometry::Indirect(vertex_buffer, indirect_buffer)
 		}
 	};
@@ -69,12 +65,8 @@ pub(super) fn render_triangle(device: &mut impl ghi::context::Context, queue_han
 	// Use and odd width to make sure there is a middle/center pixel
 	let extent = Extent::rectangle(1921, 1080);
 
-	let render_target = device.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
-			.extent(extent)
-			.device_accesses(DeviceAccesses::DeviceToHost)
-			.use_case(UseCases::STATIC),
-	);
+	let render_target = device
+		.build_image(ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource).extent(extent));
 
 	let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
@@ -88,33 +80,29 @@ pub(super) fn render_triangle(device: &mut impl ghi::context::Context, queue_han
 		&attachments,
 	));
 
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-
 	let texture_copy_handle = {
-		let mut recording = device.create_command_buffer_recording(command_buffer_handle);
+		device.record(queue_handle, None, |recording| {
+			let attachments = [AttachmentInformation::new(
+				render_target,
+				Layouts::RenderTarget,
+				ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
+				ghi::StoreOp::Store,
+			)];
 
-		let attachments = [AttachmentInformation::new(
-			render_target,
-			Layouts::RenderTarget,
-			ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
-			ghi::StoreOp::Store,
-		)];
-
-		let render_pass = recording.start_render_pass(extent, &attachments);
-		match geometry {
-			Geometry::Mesh(mesh) => render_pass.bind_raster_pipeline(pipeline).draw_mesh(&mesh),
-			Geometry::Indirect(vertex_buffer, indirect_buffer) => {
-				render_pass.bind_vertex_buffers(&[BufferDescriptor::new(vertex_buffer)]);
-				render_pass.bind_raster_pipeline(pipeline).draw_indirect(indirect_buffer, 1);
+			let render_pass = recording.start_render_pass(extent, &attachments);
+			match geometry {
+				Geometry::Mesh(mesh) => render_pass.bind_raster_pipeline(pipeline).draw_mesh(&mesh),
+				Geometry::Indirect(vertex_buffer, indirect_buffer) => {
+					render_pass.bind_vertex_buffers(&[BufferDescriptor::new(vertex_buffer)]);
+					render_pass.bind_raster_pipeline(pipeline).draw_indirect(indirect_buffer, 1);
+				}
 			}
-		}
-		render_pass.end_render_pass();
+			render_pass.end_render_pass();
 
-		let texture_copy_handle = recording
-			.transfer_texture(render_target.into())
-			.expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.");
-		recording.execute(signal);
-		texture_copy_handle
+			recording
+				.transfer_texture(render_target.into())
+				.expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.")
+		})
 	};
 
 	device.wait();
@@ -150,7 +138,6 @@ fn add_depth_state_test_triangle(
 #[cfg(target_os = "macos")]
 /// Verifies that a Metal raster pipeline can depth-test without replacing the retained reverse-Z depth.
 pub(super) fn render_without_depth_writes(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
-	let signal = device.create_synchronizer(None, false);
 	let vertex_layout = [
 		VertexElement::new("POSITION", DataTypes::Float3, 0),
 		VertexElement::new("COLOR", DataTypes::Float4, 0),
@@ -190,51 +177,43 @@ pub(super) fn render_without_depth_writes(device: &mut impl ghi::context::Contex
 	);
 
 	let extent = Extent::rectangle(9, 9);
-	let render_target = device.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
-			.extent(extent)
-			.device_accesses(DeviceAccesses::DeviceToHost)
-			.use_case(UseCases::STATIC),
-	);
+	let render_target = device
+		.build_image(ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource).extent(extent));
 	let depth_target = device.build_image(
 		ghi::image::Builder::new(Formats::Depth32, Uses::DepthStencil)
 			.extent(extent)
-			.use_case(UseCases::STATIC)
 			.optimized_clear_value(ClearValue::Depth(0.0)),
 	);
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-
 	let copy_handle = {
-		let mut recording = device.create_command_buffer_recording(command_buffer_handle);
-		let attachments = [
-			AttachmentInformation::new(
-				render_target,
-				Layouts::RenderTarget,
-				ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
-				ghi::StoreOp::Store,
-			),
-			AttachmentInformation::new(
-				depth_target,
-				Layouts::RenderTarget,
-				ghi::LoadOp::Clear(ClearValue::Depth(0.0)),
-				ghi::StoreOp::Store,
-			),
-		];
-		let render_pass = recording.start_render_pass(extent, &attachments);
+		device.record(queue_handle, None, |recording| {
+			let attachments = [
+				AttachmentInformation::new(
+					render_target,
+					Layouts::RenderTarget,
+					ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
+					ghi::StoreOp::Store,
+				),
+				AttachmentInformation::new(
+					depth_target,
+					Layouts::RenderTarget,
+					ghi::LoadOp::Clear(ClearValue::Depth(0.0)),
+					ghi::StoreOp::Store,
+				),
+			];
+			let render_pass = recording.start_render_pass(extent, &attachments);
 
-		// With reverse-Z, the middle draw passes at 0.9 but must leave the first draw's 0.8 depth intact.
-		render_pass.bind_raster_pipeline(depth_write_pipeline).draw_mesh(&first);
-		render_pass.bind_raster_pipeline(no_depth_write_pipeline).draw_mesh(&no_write);
-		render_pass.bind_raster_pipeline(depth_write_pipeline).draw_mesh(&last);
-		// A later no-write draw behind retained opaque depth must still be rejected by the depth test.
-		render_pass.bind_raster_pipeline(no_depth_write_pipeline).draw_mesh(&behind);
-		render_pass.end_render_pass();
+			// With reverse-Z, the middle draw passes at 0.9 but must leave the first draw's 0.8 depth intact.
+			render_pass.bind_raster_pipeline(depth_write_pipeline).draw_mesh(&first);
+			render_pass.bind_raster_pipeline(no_depth_write_pipeline).draw_mesh(&no_write);
+			render_pass.bind_raster_pipeline(depth_write_pipeline).draw_mesh(&last);
+			// A later no-write draw behind retained opaque depth must still be rejected by the depth test.
+			render_pass.bind_raster_pipeline(no_depth_write_pipeline).draw_mesh(&behind);
+			render_pass.end_render_pass();
 
-		let copy_handle = recording
-			.transfer_texture(render_target.into())
-			.expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.");
-		recording.execute(signal);
-		copy_handle
+			recording
+				.transfer_texture(render_target.into())
+				.expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.")
+		})
 	};
 
 	device.wait();

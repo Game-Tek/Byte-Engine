@@ -27,11 +27,7 @@ pub(crate) fn create_backdrop_targets(
 ) -> BackdropTargets {
 	let mut target = |format, name| {
 		render_pass_builder
-			.create_render_target(
-				ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image)
-					.name(name)
-					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
-			)
+			.create_render_target(ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image).name(name))
 			.into()
 	};
 	BackdropTargets {
@@ -63,7 +59,7 @@ impl BackdropPass {
 		view_descriptor_set: ghi::DescriptorSetHandle,
 		material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
 		point_sampler: ghi::SamplerHandle,
-		lit: ghi::DynamicImageHandle,
+		lit: ghi::ImageHandle,
 		depth: ghi::BaseImageHandle,
 		targets: BackdropTargets,
 	) -> Self {

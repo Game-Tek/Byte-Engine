@@ -1589,7 +1589,7 @@ pub(crate) async fn load_environment_maps<P: LoadPipeline>(
 	let mut byte_count = 0;
 	let mut layout = |format, extent| {
 		let upload = TextureUploadLayout::new(format, extent, 6, byte_count);
-		byte_count += upload.as_ref().map_or(0, |upload| upload.padded_size);
+		byte_count += upload.as_ref().map_or(0, |upload| upload.copy.padded_size);
 		upload
 	};
 	let diffuse_upload = layout(diffuse_format, diffuse_extent).ok_or_else(layout_failure)?;
@@ -1611,7 +1611,7 @@ pub(crate) async fn load_environment_maps<P: LoadPipeline>(
 		let names = std::iter::once(resource_management::resources::image::IBL_DIFFUSE_IRRADIANCE_STREAM_NAME)
 			.chain(specular_stream_names.iter().map(String::as_str));
 		for (name, upload) in names.zip(std::iter::once(&diffuse_upload).chain(&specular_uploads)) {
-			let region = &mut allocator.take(upload.padded_size)[..upload.compact_size];
+			let region = &mut allocator.take(upload.copy.padded_size)[..upload.copy.compact_size];
 			streams.push(resource_management::stream::StreamMut::new(name, region));
 		}
 		load_image_streams(&mut reference, streams).await.map_err(|error| {
@@ -1623,7 +1623,7 @@ pub(crate) async fn load_environment_maps<P: LoadPipeline>(
 	// Measure before packing rows, while the diffuse cube is still tightly packed face after face.
 	let upward_illuminance = if diffuse_format == ghi::Formats::RGBA16F {
 		upward_illuminance(
-			&staging.bytes_mut()[diffuse_upload.offset..diffuse_upload.offset + diffuse_upload.compact_size],
+			&staging.bytes_mut()[diffuse_upload.offset..diffuse_upload.offset + diffuse_upload.copy.compact_size],
 			diffuse_extent.width(),
 			diffuse_extent.height(),
 		)
@@ -1634,7 +1634,9 @@ pub(crate) async fn load_environment_maps<P: LoadPipeline>(
 		0.0
 	};
 	for upload in std::iter::once(&diffuse_upload).chain(&specular_uploads) {
-		upload.pack_rows(&mut staging.bytes_mut()[upload.offset..upload.offset + upload.padded_size]);
+		upload
+			.copy
+			.pack_rows(&mut staging.bytes_mut()[upload.offset..upload.offset + upload.copy.padded_size]);
 	}
 
 	let cube = |name: String, format, extent, mip_levels, regions| ImageUpload {

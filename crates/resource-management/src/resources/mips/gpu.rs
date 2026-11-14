@@ -22,7 +22,7 @@ impl fmt::Display for GPUMipError {
 		match self {
 			Self::Worker(error) => error.describe("mip", formatter),
 			Self::UnsupportedRequest => formatter.write_str("GPU mip request is unsupported. The most likely cause is a 16-bit filtering format, buffers that don't match the request's extent, or a BC7 request after the BC7 kernel failed to compile."),
-			Self::UploadSizeMismatch { expected, got } => write!(formatter, "GPU mip upload has the wrong size: expected {expected}, got {got}. The most likely cause is a staging allocation that does not match the base image."),
+			Self::UploadSizeMismatch { expected, got } => write!(formatter, "GPU mip base level has the wrong size: expected {expected}, got {got}. The most likely cause is base level bytes that don't match the request's extent. Pass width × height × 4 bytes of RGBA8 texels."),
 			Self::ReadbackSizeMismatch { expected, got } => write!(formatter, "GPU mip readback has the wrong size: expected {expected}, got {got}. The most likely cause is incomplete texture readback."),
 			Self::GPUExecution => formatter.write_str("GPU mip generation failed. The most likely cause is a graphics backend validation or command-execution error."),
 		}
@@ -161,14 +161,15 @@ pub struct GPUMipProcessor {
 	block_kernel: Option<Option<ComputeKernel>>,
 	queue: ghi::QueueHandle,
 	sampler: ghi::SamplerHandle,
-	/// Pyramids, each idle or bound to one in-flight request. An extent gains another pyramid only while all of its
-	/// existing ones are busy, so it holds at most [`GpuProcessor::MAX_IN_FLIGHT`] of them. The GHI can't destroy
-	/// images or buffers yet, so pyramids are never freed.
+	/// Pyramids, each idle or bound to one request of the batch being recorded. An extent gains another pyramid only
+	/// while all of its existing ones are busy, so it holds at most [`GpuProcessor::MAX_BATCH`] of them. The GHI can't
+	/// destroy images or buffers yet, so pyramids are never freed.
 	scratch: Vec<GPUMipScratch>,
 }
 
-/// The `InFlight` enum records where a running request's result lands so [`GpuProcessor::poll`] can collect it.
-enum InFlight {
+/// The `Output` enum records where a recorded request's result lands, so it can be collected once the workload
+/// finished.
+enum Output {
 	/// The BC7 block buffer holds the encoded chain.
 	Blocks(ghi::BufferHandle<[[u32; 4]]>),
 	/// The readbacks hold the filtered levels, one per level below the base.
@@ -246,12 +247,11 @@ impl GPUMipProcessor {
 		let idle = self
 			.scratch
 			.iter()
-			.position(|scratch| scratch.in_flight.is_none() && scratch.width == width && scratch.height == height);
+			.position(|scratch| !scratch.busy && scratch.width == width && scratch.height == height);
 		idle.unwrap_or_else(|| {
 			self.scratch.push(create_scratch(
 				&mut self.gpu.context,
 				&self.mip_kernel.layout,
-				self.queue,
 				self.sampler,
 				width,
 				height,
@@ -259,27 +259,26 @@ impl GPUMipProcessor {
 			self.scratch.len() - 1
 		})
 	}
-}
 
-impl GpuProcessor for GPUMipProcessor {
-	/// The base level's width and height, its gamma, and the stored format of the chain.
-	type Request = (u32, u32, Gamma, Formats);
-	/// The encoded chain for BC7, or the filtered levels below the base level back to back.
-	type Result = Result<Vec<u8>, GPUMipError>;
-	type Ticket = usize;
-
-	/// Enough to overlap one texture's upload and readback with other textures' dispatches, while bounding how many
-	/// pyramids one extent can accumulate.
-	const MAX_IN_FLIGHT: usize = 4;
-
-	/// Uploads the RGBA8 base level and records the filter dispatches, then either the BC7 dispatches into the block
-	/// buffer or one readback per filtered level, on an idle pyramid of the request's extent.
-	fn submit(&mut self, &(width, height, gamma, format): &Self::Request, base: &[u8]) -> Submission<usize, Self::Result> {
+	/// Validates one request, takes an idle pyramid of its extent, and writes its base level into the pyramid's upload
+	/// buffer. Returns the pyramid, with the BC7 kernel when the GPU encodes the chain.
+	fn prepare(
+		&mut self,
+		&(width, height, _, format): &(u32, u32, Gamma, Formats),
+		base: &[u8],
+	) -> Result<(usize, Option<ComputeKernel>), GPUMipError> {
 		let block_kernel = match encodes_on_gpu(format).then(|| self.block_kernel()) {
 			// The kernel's failure was logged once when it was compiled; the caller takes the CPU path quietly.
-			Some(None) => return Submission::Complete(Err(GPUMipError::UnsupportedRequest)),
+			Some(None) => return Err(GPUMipError::UnsupportedRequest),
 			kernel => kernel.flatten(),
 		};
+		let layout = upload_layout(width, height);
+		if base.len() != layout.compact_size {
+			return Err(GPUMipError::UploadSizeMismatch {
+				expected: layout.compact_size,
+				got: base.len(),
+			});
+		}
 		let scratch_index = self.acquire_scratch(width, height);
 
 		let context = &mut self.gpu.context;
@@ -289,101 +288,151 @@ impl GpuProcessor for GPUMipProcessor {
 		{
 			scratch.blocks = Some(create_block_scratch(context, &kernel.layout, self.sampler, scratch));
 		}
+		// SAFETY: The pyramid is idle, so no submitted work reads its upload buffer, and the mapping ends here.
+		let upload = unsafe { context.map_unsynchronized(scratch.upload) }.into_bytes();
+		layout.write_rows(upload, base, layout.compact_bytes_per_row);
+		scratch.busy = true;
+		Ok((scratch_index, block_kernel))
+	}
+}
 
-		let upload = context.get_texture_slice_mut(scratch.base_image);
-		if upload.len() != base.len() {
-			return Submission::Complete(Err(GPUMipError::UploadSizeMismatch {
-				expected: base.len(),
-				got: upload.len(),
-			}));
-		}
-		upload.copy_from_slice(base);
-		context.sync_texture(scratch.base_image);
-
-		// The shader filters in linear light when this push constant is non-zero.
-		let srgb = u32::from(gamma == Gamma::SRGB);
-		let mut recording = context.create_command_buffer_recording(scratch.command_buffer);
-		for level in &scratch.levels {
-			let command = recording.bind_compute_pipeline(self.mip_kernel.pipeline);
+/// Records one request on its pyramid: the base level's upload, the filter dispatches, and then either the BC7
+/// dispatches into the block buffer or one readback per filtered level.
+fn record_request(
+	recording: &mut ghi::implementation::CommandBufferRecording<'_>,
+	mip_kernel: &ComputeKernel,
+	block_kernel: Option<&ComputeKernel>,
+	scratch: &GPUMipScratch,
+	gamma: Gamma,
+) -> Result<Output, GPUMipError> {
+	let layout = upload_layout(scratch.width, scratch.height);
+	recording.copy_buffer_to_images(&[layout.copy(scratch.upload.into(), 0, scratch.base_image.into(), 0)]);
+	// The shader filters in linear light when this push constant is non-zero.
+	let srgb = u32::from(gamma == Gamma::SRGB);
+	for level in &scratch.levels {
+		let command = recording.bind_compute_pipeline(mip_kernel.pipeline);
+		command.bind_descriptor_sets(&[level.descriptor_set]);
+		command.write_push_constant(
+			0,
+			PushConstants {
+				source_width: level.source_width,
+				source_height: level.source_height,
+				destination_width: level.width,
+				destination_height: level.height,
+				srgb,
+			},
+		);
+		command.dispatch(ghi::DispatchExtent::new(
+			Extent::rectangle(level.width, level.height),
+			Extent::rectangle(8, 8),
+		));
+	}
+	if let Some((kernel, blocks)) = block_kernel.zip(scratch.blocks.as_ref()) {
+		for level in &blocks.levels {
+			let command = recording.bind_compute_pipeline(kernel.pipeline);
 			command.bind_descriptor_sets(&[level.descriptor_set]);
-			command.write_push_constant(
-				0,
-				PushConstants {
-					source_width: level.source_width,
-					source_height: level.source_height,
-					destination_width: level.width,
-					destination_height: level.height,
-					srgb,
-				},
-			);
+			command.write_push_constant(0, level.push_constants);
 			command.dispatch(ghi::DispatchExtent::new(
-				Extent::rectangle(level.width, level.height),
-				Extent::rectangle(8, 8),
+				Extent::rectangle(level.push_constants.blocks_x, level.push_constants.blocks_y),
+				Extent::square(BC7_WORKGROUP_SIZE),
 			));
 		}
-		let in_flight = if let Some((kernel, blocks)) = block_kernel.zip(scratch.blocks.as_ref()) {
-			for level in &blocks.levels {
-				let command = recording.bind_compute_pipeline(kernel.pipeline);
-				command.bind_descriptor_sets(&[level.descriptor_set]);
-				command.write_push_constant(0, level.push_constants);
-				command.dispatch(ghi::DispatchExtent::new(
-					Extent::rectangle(level.push_constants.blocks_x, level.push_constants.blocks_y),
-					Extent::square(BC7_WORKGROUP_SIZE),
-				));
-			}
-			InFlight::Blocks(blocks.buffer)
-		} else {
-			let readbacks = scratch
-				.levels
-				.iter()
-				.map(|level| recording.transfer_texture(level.image.into()))
-				.collect::<Result<Vec<_>, _>>();
-			match readbacks {
-				Ok(readbacks) => InFlight::Levels(readbacks),
-				// Dropping the recording abandons the readbacks it already registered.
-				Err(_) => return Submission::Complete(Err(GPUMipError::GPUExecution)),
-			}
-		};
-		recording.execute(scratch.synchronizer);
-		scratch.in_flight = Some(in_flight);
-		Submission::InFlight(scratch_index)
+		return Ok(Output::Blocks(blocks.buffer));
 	}
+	scratch
+		.levels
+		.iter()
+		.map(|level| recording.transfer_texture(level.image.into()))
+		.collect::<Result<Vec<_>, _>>()
+		.map(Output::Levels)
+		.map_err(|_| GPUMipError::GPUExecution)
+}
 
-	/// Copies the result of a completed request out of its pyramid.
-	fn poll(&mut self, scratch_index: usize) -> Option<Self::Result> {
-		let Self { gpu, scratch, .. } = self;
-		let (context, scratch) = (&mut gpu.context, &mut scratch[scratch_index]);
-		if !context.poll_synchronizer(scratch.synchronizer) {
-			return None;
+/// Copies the result of a finished request out of its pyramid.
+fn collect_output(
+	context: &mut ghi::implementation::Context,
+	scratch: &GPUMipScratch,
+	output: Output,
+) -> Result<Vec<u8>, GPUMipError> {
+	match output {
+		// The buffer holds every level's blocks back to back, which is the stored chain layout.
+		Output::Blocks(buffer) => {
+			// SAFETY: The workload that wrote the buffer finished, and the next one that writes it is recorded only
+			// after this copy.
+			Ok(unsafe { context.map_unsynchronized(buffer) }.into_bytes().to_vec())
 		}
-		let in_flight = scratch.in_flight.take().expect("A polled pyramid has an in-flight request");
-		#[cfg(debug_assertions)]
-		if context.has_errors() {
-			return Some(Err(GPUMipError::GPUExecution));
-		}
-		match in_flight {
-			// The buffer holds every level's blocks back to back, which is the stored chain layout.
-			InFlight::Blocks(buffer) => Some(Ok(
-				bytemuck::cast_slice::<[u32; 4], u8>(context.get_buffer_slice(buffer)).to_vec()
-			)),
-			InFlight::Levels(readbacks) => {
-				let mut levels = Vec::with_capacity(packed_lower_levels_size(scratch.width, scratch.height, 4));
-				for (level, handle) in scratch.levels.iter().zip(readbacks) {
-					let size = level.width as usize * level.height as usize * 4;
-					let Ok(readback) = context.get_image_data(handle) else {
-						return Some(Err(GPUMipError::GPUExecution));
-					};
-					let Some(source) = readback.bytes.get(..size) else {
-						return Some(Err(GPUMipError::ReadbackSizeMismatch {
-							expected: size,
-							got: readback.bytes.len(),
-						}));
-					};
-					levels.extend_from_slice(source);
-				}
-				Some(Ok(levels))
+		Output::Levels(readbacks) => {
+			let mut levels = Vec::with_capacity(packed_lower_levels_size(scratch.width, scratch.height, 4));
+			for (level, handle) in scratch.levels.iter().zip(readbacks) {
+				let size = level.width as usize * level.height as usize * 4;
+				let readback = context.get_image_data(handle).map_err(|_| GPUMipError::GPUExecution)?;
+				let source = readback.bytes.get(..size).ok_or(GPUMipError::ReadbackSizeMismatch {
+					expected: size,
+					got: readback.bytes.len(),
+				})?;
+				levels.extend_from_slice(source);
 			}
+			Ok(levels)
 		}
+	}
+}
+
+impl GpuProcessor for GPUMipProcessor {
+	/// The base level's width and height, its gamma, and the stored format of the chain.
+	type Request = (u32, u32, Gamma, Formats);
+	/// The encoded chain for BC7, or the filtered levels below the base level back to back.
+	type Result = Result<Vec<u8>, GPUMipError>;
+
+	/// Enough to fill the GPU with small textures in one workload, while bounding how many pyramids one extent can
+	/// accumulate.
+	const MAX_BATCH: usize = 4;
+
+	/// Prepares every request on its own pyramid, records them all in one workload, and copies each result out once
+	/// the workload finished.
+	fn process(&mut self, batch: &[(Self::Request, Vec<u8>)]) -> BatchResults<Self::Result> {
+		let prepared = batch
+			.iter()
+			.map(|(request, base)| self.prepare(request, base))
+			.collect::<SmallVec<[_; 4]>>();
+
+		let Self {
+			gpu,
+			mip_kernel,
+			queue,
+			scratch,
+			..
+		} = self;
+		// Requests that failed to prepare record nothing and keep their error.
+		let recorded = gpu.context.record(*queue, Some("Generate material mips"), |recording| {
+			prepared
+				.into_iter()
+				.zip(batch)
+				.map(|(prepared, &((_, _, gamma, _), _))| {
+					let (scratch_index, block_kernel) = prepared?;
+					let scratch = &scratch[scratch_index];
+					Ok((
+						scratch_index,
+						record_request(recording, mip_kernel, block_kernel.as_ref(), scratch, gamma),
+					))
+				})
+				.collect::<SmallVec<[Result<_, GPUMipError>; 4]>>()
+		});
+		// Only debug builds validate GPU execution.
+		let failed = cfg!(debug_assertions) && gpu.context.has_errors();
+
+		recorded
+			.into_iter()
+			.map(|recorded| {
+				let (scratch_index, output) = recorded?;
+				let scratch = &mut scratch[scratch_index];
+				scratch.busy = false;
+				let output = output?;
+				if failed {
+					return Err(GPUMipError::GPUExecution);
+				}
+				collect_output(&mut gpu.context, scratch, output)
+			})
+			.collect()
 	}
 }
 
@@ -392,13 +441,13 @@ struct GPUMipScratch {
 	width: u32,
 	height: u32,
 	base_image: ghi::ImageHandle,
+	/// The base level's rows, padded to the copy pitch, which each request copies into `base_image`.
+	upload: ghi::BufferHandle<[u8]>,
 	levels: Vec<GPUMipScratchLevel>,
 	/// The BC7 output and bindings, created on the first BC7 request for this extent.
 	blocks: Option<BlockScratch>,
-	command_buffer: ghi::CommandBufferHandle,
-	synchronizer: ghi::SynchronizerHandle,
-	/// The request running on this pyramid, until [`GpuProcessor::poll`] collects it.
-	in_flight: Option<InFlight>,
+	/// Whether a request of the batch being recorded uses this pyramid.
+	busy: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -424,21 +473,31 @@ struct BlockScratchLevel {
 	push_constants: BlockPushConstants,
 }
 
+/// Returns how an RGBA8 base level of `width` by `height` sits in its upload buffer.
+fn upload_layout(width: u32, height: u32) -> ghi::ImageCopyLayout {
+	ghi::ImageCopyLayout::new(ghi::Formats::RGBA8UNORM, Extent::rectangle(width, height), 1).expect(
+		"A GPU pyramid's base level does not fit in memory. The most likely cause is an invalid texture extent. Pass a smaller texture.",
+	)
+}
+
 /// Allocates and binds one reusable GPU pyramid for a base extent.
 fn create_scratch(
 	context: &mut ghi::implementation::Context,
 	layout: &ghi::DescriptorSetLayout,
-	queue: ghi::QueueHandle,
 	sampler: ghi::SamplerHandle,
 	width: u32,
 	height: u32,
 ) -> GPUMipScratch {
 	let base_image = context.build_image(
-		ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image)
+		ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
 			.name("Material mip base")
-			.extent(Extent::rectangle(width, height))
-			.device_accesses(ghi::DeviceAccesses::HostToDevice)
-			.use_case(ghi::UseCases::STATIC),
+			.extent(Extent::rectangle(width, height)),
+	);
+	let upload = context.build_buffer::<[u8]>(
+		ghi::buffer::Builder::new(ghi::Uses::TransferSource)
+			.name("Material mip base upload")
+			.host_access(ghi::HostAccess::Write)
+			.length(upload_layout(width, height).padded_size),
 	);
 	// Each level filters the one before it.
 	let mut source = base_image;
@@ -451,9 +510,7 @@ fn create_scratch(
 					ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferSource,
 				)
 				.name("Material mip level")
-				.extent(Extent::rectangle(width, height))
-				.device_accesses(ghi::DeviceAccesses::DeviceToHost)
-				.use_case(ghi::UseCases::STATIC),
+				.extent(Extent::rectangle(width, height)),
 			);
 			let descriptor_set = context.create_descriptor_set(Some("Material mip level"), layout);
 			context.write(&[
@@ -471,17 +528,14 @@ fn create_scratch(
 			}
 		})
 		.collect();
-	let command_buffer = context.queue(queue).create_command_buffer(Some("Generate material mips"));
-	let synchronizer = context.create_synchronizer(Some("Material mips generated"), true);
 	GPUMipScratch {
 		width,
 		height,
 		base_image,
+		upload,
 		levels,
 		blocks: None,
-		command_buffer,
-		synchronizer,
-		in_flight: None,
+		busy: false,
 	}
 }
 
@@ -497,7 +551,7 @@ fn create_block_scratch(
 	let buffer = context.build_buffer::<[[u32; 4]]>(
 		ghi::buffer::Builder::new(ghi::Uses::Storage)
 			.name("Material BC7 blocks")
-			.device_accesses(ghi::DeviceAccesses::DeviceToHost)
+			.host_access(ghi::HostAccess::Read)
 			.length(chain_size / BLOCK_BYTES),
 	);
 	// Each level's blocks follow the previous level's, which is the stored chain layout.
@@ -978,25 +1032,12 @@ mod tests {
 			// The first request creates the pyramid, so time the second one.
 			for pass in 0..2 {
 				let start = Instant::now();
-				let copy = base.to_vec();
+				let batch = [(request, base.to_vec())];
 				let copy_in = start.elapsed();
+				// One workload uploads, filters, encodes, and waits, so its time includes the staging and readback copies.
 				let start = Instant::now();
-				let Submission::InFlight(ticket) = processor.submit(&request, &copy) else {
-					panic!("expected in flight")
-				};
-				let submit = start.elapsed();
-				let start = Instant::now();
-				while !processor
-					.gpu
-					.context
-					.poll_synchronizer(processor.scratch[ticket].synchronizer)
-				{
-					std::hint::spin_loop();
-				}
-				let gpu = start.elapsed();
-				let start = Instant::now();
-				let readback = processor.poll(ticket).expect("finished").expect("ok");
-				let copy_out = start.elapsed();
+				let readback = processor.process(&batch).pop().expect("one result").expect("ok");
+				let process = start.elapsed();
 				let start = Instant::now();
 				if encodes_on_gpu(format) {
 					output.copy_from_slice(&readback);
@@ -1013,7 +1054,7 @@ mod tests {
 				if pass == 1 {
 					let image = if std::ptr::eq(base, &noisy) { "noisy" } else { "smooth" };
 					eprintln!(
-						"{format:?} {width}x{height} {image}: copy in {copy_in:?}, submit (staging copy + upload + record) {submit:?}, GPU {gpu:?}, copy out {copy_out:?}, CPU encode/copy {cpu_encode:?}"
+						"{format:?} {width}x{height} {image}: copy in {copy_in:?}, process (staging copy + upload + GPU + copy out) {process:?}, CPU encode/copy {cpu_encode:?}"
 					);
 				}
 			}
@@ -1051,6 +1092,7 @@ use ghi::{
 	device::Device as _,
 	queue::Queue as _,
 };
+use smallvec::SmallVec;
 use utils::Extent;
 
 use super::{
@@ -1059,7 +1101,7 @@ use super::{
 };
 use crate::{
 	gpu_worker::{
-		ComputeKernel, GpuClaim, GpuProcessor, GpuWorker, GpuWorkerError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT, Submission,
+		BatchResults, ComputeKernel, GpuClaim, GpuProcessor, GpuWorker, GpuWorkerError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT,
 		create_besl_compute_kernel, create_compute_context, create_compute_kernel,
 	},
 	types::{Formats, Gamma},

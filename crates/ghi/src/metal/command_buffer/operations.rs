@@ -681,12 +681,30 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			let destination_handle = self.get_internal_image_handle(copy.destination_image);
 			let source = self.device.buffers.resource(source_handle);
 			let destination = self.device.images.resource(destination_handle);
-			let source_size = copy
-				.source_bytes_per_image
-				.checked_mul(destination.description.array_layers as usize)
-				.expect(
-					"Metal texture copy tracked range overflowed. The most likely cause is an invalid source pitch or array layer count.",
-				);
+			let description = destination.description;
+
+			assert!(
+				copy.destination_mip_level < description.mip_levels,
+				"Metal texture copy mip level is out of range. The most likely cause is that the upload metadata does not match the allocated image. mip_level={}, mip_levels={}",
+				copy.destination_mip_level,
+				description.mip_levels
+			);
+			let mip_extent = crate::image::mip_extent(description.extent, copy.destination_mip_level);
+			// A region copy writes one rectangle of the base level; any other copy writes the whole mip.
+			if let Some(region) = copy.destination_region {
+				region.validate(description.extent, description.format, description.array_layers);
+			}
+			let (copy_extent, origin) = copy.destination_region.map_or((mip_extent, [0, 0]), |region| {
+				(Extent::rectangle(region.size[0], region.size[1]), region.offset)
+			});
+			// A volume's mip holds one 2D image per depth slice, so each layer reads that many images.
+			let depth = copy_extent.depth().max(1) as usize;
+			let bytes_per_layer = copy.source_bytes_per_image.checked_mul(depth).expect(
+				"Metal texture copy tracked range overflowed. The most likely cause is an invalid source pitch or image depth.",
+			);
+			let source_size = bytes_per_layer.checked_mul(description.array_layers as usize).expect(
+				"Metal texture copy tracked range overflowed. The most likely cause is an invalid source pitch or array layer count.",
+			);
 			self.consume_resources([
 				synchronization::MetalResourceUse::buffer(
 					source_handle,
@@ -704,17 +722,16 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				),
 			]);
 
-			assert!(
-				copy.destination_mip_level < destination.description.mip_levels,
-				"Metal texture copy mip level is out of range. The most likely cause is that the upload metadata does not match the allocated image. mip_level={}, mip_levels={}",
-				copy.destination_mip_level,
-				destination.description.mip_levels
+			let crate::ImageCopyLayout {
+				compact_bytes_per_row,
+				row_count,
+				compact_bytes_per_image,
+				padded_bytes_per_row: expected_bytes_per_row,
+				padded_bytes_per_image: expected_bytes_per_image,
+				..
+			} = crate::ImageCopyLayout::new(description.format, copy_extent, 1).expect(
+				"Metal texture copy layout overflowed. The most likely cause is an image extent too large for the host address space.",
 			);
-			let destination_extent = crate::image::mip_extent(destination.description.extent, copy.destination_mip_level);
-			let (compact_bytes_per_row, row_count, compact_bytes_per_image) =
-				utils::texture_upload_layout(destination.description.format, destination_extent);
-			let (expected_bytes_per_row, expected_bytes_per_image) =
-				utils::texture_copy_pitches(compact_bytes_per_row, row_count);
 
 			assert_eq!(
 				copy.source_offset % crate::TEXTURE_COPY_PITCH_ALIGNMENT,
@@ -723,18 +740,18 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				copy.source_offset,
 				copy.source_bytes_per_row,
 				copy.source_bytes_per_image,
-				destination.description.format,
-				destination.description.extent
+				description.format,
+				copy_extent
 			);
 			assert_eq!(
 				copy.source_bytes_per_row, expected_bytes_per_row,
 				"Metal texture copy row pitch mismatch. The most likely cause is that upload preparation and Metal copy recording disagree about BC block row padding. format={:?}, extent={:?}, compact_bytes_per_row={compact_bytes_per_row}, compact_bytes_per_image={compact_bytes_per_image}, row_count={row_count}, source_bytes_per_row={}, expected={expected_bytes_per_row}",
-				destination.description.format, destination.description.extent, copy.source_bytes_per_row
+				description.format, copy_extent, copy.source_bytes_per_row
 			);
 			assert_eq!(
 				copy.source_bytes_per_image, expected_bytes_per_image,
 				"Metal texture copy image pitch mismatch. The most likely cause is that upload preparation and Metal copy recording disagree about padded rows per image. format={:?}, extent={:?}, compact_bytes_per_row={compact_bytes_per_row}, compact_bytes_per_image={compact_bytes_per_image}, row_count={row_count}, source_bytes_per_image={}, expected={expected_bytes_per_image}",
-				destination.description.format, destination.description.extent, copy.source_bytes_per_image
+				description.format, copy_extent, copy.source_bytes_per_image
 			);
 			let required_source_bytes = copy.source_offset.checked_add(source_size).expect(
 				"Metal texture copy source bounds overflowed. The most likely cause is an invalid array layer count or image pitch.",
@@ -745,18 +762,21 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				"Metal texture copy source buffer is too small. The most likely cause is that the staging buffer allocation is smaller than the recorded texture copy. source_size={}, required_source_bytes={required_source_bytes}, source_offset={}, array_layers={}, source_bytes_per_image={}, format={:?}, extent={:?}",
 				source.size,
 				copy.source_offset,
-				destination.description.array_layers,
+				description.array_layers,
 				copy.source_bytes_per_image,
-				destination.description.format,
-				destination.description.extent
+				description.format,
+				copy_extent
 			);
 
-			let mut source_size = utils::mtl_size(destination_extent);
-			source_size.depth = 1;
-			let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
+			let source_extent = utils::mtl_size(copy_extent);
+			let destination_origin = mtl::MTLOrigin {
+				x: origin[0] as _,
+				y: origin[1] as _,
+				z: 0,
+			};
 
-			for slice in 0..destination.description.array_layers as usize {
-				let source_offset = copy.source_offset + slice * copy.source_bytes_per_image;
+			for slice in 0..description.array_layers as usize {
+				let source_offset = copy.source_offset + slice * bytes_per_layer;
 
 				// SAFETY: The source layout and destination subresource were validated before recording this copy.
 				unsafe {
@@ -765,7 +785,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 						source_offset as _,
 						copy.source_bytes_per_row as _,
 						copy.source_bytes_per_image as _,
-						source_size,
+						source_extent,
 						&destination.texture,
 						slice,
 						copy.destination_mip_level as _,
@@ -785,19 +805,12 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 	fn transfer_texture_with_frame(
 		&mut self,
-		image: graphics_hardware_interface::DynamicImageHandle,
+		image: graphics_hardware_interface::BaseImageHandle,
 		frame_offset: i32,
 	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
+		let copies = self.device.images.chain(image).count();
+		crate::descriptors::assert_frame_offset(copies, frame_offset);
 		self.record_texture_transfer(image.into(), frame_offset)
-	}
-
-	fn write_image_data(
-		&mut self,
-		image_handle: graphics_hardware_interface::BaseImageHandle,
-		data: &[graphics_hardware_interface::RGBAu8],
-	) {
-		// The upload buffer snapshots caller memory now; the tracked blit performs the GPU-visible write in command order.
-		self.upload_texture(self.get_internal_image_handle(image_handle), bytemuck::cast_slice(data), None);
 	}
 
 	fn blit_image(
@@ -834,30 +847,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		unsafe {
 			transfer_encoder.copyFromTexture_toTexture(source_texture, destination_texture);
 		}
-	}
-
-	fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
-		self.sync_private_buffer(self.get_internal_buffer_handle(buffer_handle.into()));
-	}
-
-	/// Ends and submits a non-frame recording as a one-command Metal 4 batch that `synchronizer` signals.
-	fn execute(mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
-		self.end_encoder();
-		self.publish_resource_states();
-		let synchronizer = context::synchronizer_for_sequence(self.commit.synchronizers, synchronizer, self.sequence_index);
-		for handle in self.texture_readbacks.drain(..) {
-			self.commit.texture_readbacks.mark_submitted(handle, Some(synchronizer));
-		}
-		std::mem::take(&mut self.builds).submit(
-			self.device.acceleration_structures,
-			synchronizer,
-			self.commit.pending_compactions,
-		);
-
-		let commands = SmallVec::<[queue::NativeCommand; 4]>::from_iter([self.command_buffer.take()]);
-		let submitted = self.commit.queue.submit_batch(self.commit.queue_handle, commands);
-		// The synchronizer owns the submitted batch until its completion message arrives.
-		self.commit.synchronizers.resource_mut(synchronizer).signal(submitted);
 	}
 }
 
@@ -1241,12 +1230,12 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 
 	fn indirect_dispatch<const N: usize>(
 		&mut self,
-		buffer_handle: impl Into<crate::command_buffer::IndirectDispatchBuffer<N>>,
+		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 3]; N]>,
 		entry_index: usize,
 	) {
 		let entry = crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index);
 		let (indirect_buffer_address, record_use) =
-			self.resolve_indirect_record(buffer_handle.into().0, entry, mtl::MTLStages::Dispatch);
+			self.resolve_indirect_record(buffer_handle.into(), entry, mtl::MTLStages::Dispatch);
 		self.prepare_dispatch([record_use]);
 
 		let bound_pipeline = self.bound_pipeline.expect(
@@ -1362,5 +1351,27 @@ impl BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
 		// Metal ends the threadgroups at the grid's edges early, so exactly one thread runs for each launch point.
 		self.ensure_compute_encoder()
 			.dispatchThreads_threadsPerThreadgroup(grid, threadgroup);
+	}
+}
+
+impl CommandBufferRecording<'_> {
+	/// Ends and submits a workload, or the context's pending uploads, as a one-command Metal 4 batch that
+	/// `synchronizer`, one frame sequence's synchronizer, signals.
+	pub(crate) fn submit(mut self, synchronizer: crate::synchronizer::SynchronizerHandle) {
+		self.end_encoder();
+		self.publish_resource_states();
+		for handle in self.texture_readbacks.drain(..) {
+			self.commit.texture_readbacks.mark_submitted(handle, Some(synchronizer));
+		}
+		std::mem::take(&mut self.builds).submit(
+			self.device.acceleration_structures,
+			synchronizer,
+			self.commit.pending_compactions,
+		);
+
+		let commands = SmallVec::<[queue::NativeCommand; 4]>::from_iter([self.command_buffer.take()]);
+		let submitted = self.commit.queue.submit_batch(self.commit.queue_handle, commands);
+		// The synchronizer owns the submitted batch until its completion message arrives.
+		self.commit.synchronizers.resource_mut(synchronizer).signal(submitted);
 	}
 }

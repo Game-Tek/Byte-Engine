@@ -364,6 +364,8 @@ impl SceneEnvironment {
 /// that records commands for those resources.
 pub struct RenderPassBuilder<'a> {
 	context: &'a mut ghi::implementation::Context,
+	/// The queue the renderer records frames on, where a pass uploads its lookup textures.
+	queue: ghi::QueueHandle,
 	sink_id: usize,
 	swapchain: ghi::SwapchainHandle,
 	/// The step of the sink's frame this builder's pass records as.
@@ -400,6 +402,7 @@ impl<'a> RenderPassBuilder<'a> {
 	#[allow(clippy::too_many_arguments)]
 	pub(crate) fn new(
 		context: &'a mut ghi::implementation::Context,
+		queue: ghi::QueueHandle,
 		images: &'a mut RenderTargets,
 		render_pass_states: &'a mut RenderPassStates,
 		sink_id: usize,
@@ -413,6 +416,7 @@ impl<'a> RenderPassBuilder<'a> {
 	) -> Self {
 		RenderPassBuilder {
 			context,
+			queue,
 			sink_id,
 			swapchain,
 			node,
@@ -639,15 +643,13 @@ impl<'a> RenderPassBuilder<'a> {
 	///
 	/// The previous copy holds no usable data on a sink's first frame or right after a resize, so the reading pass must
 	/// track whether it recorded the sink at the same extent in the previous frame.
-	pub fn create_history_target(
-		&mut self,
-		builder: ghi::image::Builder<'a>,
-		resolution_divisor: u32,
-	) -> ghi::DynamicImageHandle {
+	pub fn create_history_target(&mut self, builder: ghi::image::Builder<'a>, resolution_divisor: u32) -> ghi::ImageHandle {
 		let (name, format) = target_identity(&builder);
-		let image = self
-			.context
-			.build_dynamic_image(builder.additional_uses(ghi::Uses::Clear | ghi::Uses::TransferSource));
+		let image = self.context.build_image(
+			builder
+				.additional_uses(ghi::Uses::Clear | ghi::Uses::TransferSource)
+				.copies(ghi::Copies::PerFrame),
+		);
 		self.register_render_target(name, format, image.into(), resolution_divisor, Placement::PerFrame(image));
 		image
 	}
@@ -710,6 +712,12 @@ impl<'a> RenderPassBuilder<'a> {
 	pub fn try_read_from(&mut self, name: &'a str) -> Option<ReadFromResult> {
 		self.images.get_image_index(name, self.sink_id)?;
 		Some(self.read_from(name))
+	}
+
+	/// Returns the queue the renderer records frames on, where a pass records one-time uploads, such as its lookup
+	/// textures, while it is built.
+	pub fn queue(&self) -> ghi::QueueHandle {
+		self.queue
 	}
 
 	pub fn context(&mut self) -> &'_ mut ghi::implementation::Context {

@@ -15,6 +15,7 @@
 //! base in `_besl_sets[s >> 1]`, and storage buffers are read as `uint` words, since their views have the layouts'
 //! default four-byte stride.
 
+use super::common::buffer_contents;
 use super::*;
 
 /// The entry point every HLSL shader of these scenarios names, as the BESL HLSL generator does.
@@ -194,8 +195,7 @@ struct Rays {
 impl Rays {
 	/// Reads what each ray reported. Call it after the frame that traced the rays completed.
 	fn read(&self, device: &mut impl ghi::context::Context) -> Vec<Option<Hit>> {
-		device
-			.get_buffer_slice(self.hits)
+		buffer_contents(device, self.hits)
 			.iter()
 			.map(|words| Hit::decode(*words))
 			.collect()
@@ -267,17 +267,16 @@ impl Tracer {
 			ghi::buffer::Builder::new(Uses::Storage)
 				.name("Ray Probe Origins")
 				.length(origins.len())
-				.device_accesses(DeviceAccesses::HostToDevice),
+				.host_access(HostAccess::Write),
 		);
-		for (padded, origin) in device.get_mut_buffer_slice(origin_buffer).iter_mut().zip(origins) {
+		for (padded, origin) in buffer_contents(device, origin_buffer).iter_mut().zip(origins) {
 			*padded = [origin[0], origin[1], origin[2], 0.0];
 		}
-		device.sync_buffer(origin_buffer);
 		let hits = device.build_buffer::<[ProbeWords]>(
 			ghi::buffer::Builder::new(Uses::Storage)
 				.name("Ray Probe Hits")
 				.length(origins.len())
-				.device_accesses(DeviceAccesses::DeviceToHost),
+				.host_access(HostAccess::Read),
 		);
 		let set = device.create_descriptor_set(None, &self.layout);
 		device.write(&[
@@ -330,10 +329,9 @@ fn geometry_buffer<T: Pod>(device: &mut impl ghi::context::Context, values: &[T]
 	let buffer = device.build_buffer::<[T]>(
 		ghi::buffer::Builder::new(Uses::AccelerationStructureBuild)
 			.length(values.len())
-			.device_accesses(DeviceAccesses::HostToDevice),
+			.host_access(HostAccess::Write),
 	);
-	device.get_mut_buffer_slice(buffer).copy_from_slice(values);
-	device.sync_buffer(buffer);
+	buffer_contents(device, buffer).copy_from_slice(values);
 	buffer
 }
 
@@ -1130,7 +1128,7 @@ struct ShadedRays {
 impl ShadedRays {
 	/// Reads each ray's payload. Call it after the frame that traced the rays completed.
 	fn read(&self, device: &mut impl ghi::context::Context) -> Vec<Payload> {
-		device.get_buffer_slice(self.payloads).to_vec()
+		buffer_contents(device, self.payloads).to_vec()
 	}
 }
 
@@ -1236,23 +1234,21 @@ impl Shading {
 		let origin_buffer = device.build_buffer::<[[f32; 4]]>(
 			ghi::buffer::Builder::new(Uses::Storage)
 				.length(origins.len())
-				.device_accesses(DeviceAccesses::HostToDevice),
+				.host_access(HostAccess::Write),
 		);
-		for (padded, origin) in device.get_mut_buffer_slice(origin_buffer).iter_mut().zip(origins) {
+		for (padded, origin) in buffer_contents(device, origin_buffer).iter_mut().zip(origins) {
 			*padded = [origin[0], origin[1], origin[2], 0.0];
 		}
-		device.sync_buffer(origin_buffer);
 		let material_buffer = device.build_buffer::<[u32]>(
 			ghi::buffer::Builder::new(Uses::Storage)
 				.length(material_values.len())
-				.device_accesses(DeviceAccesses::HostToDevice),
+				.host_access(HostAccess::Write),
 		);
-		device.get_mut_buffer_slice(material_buffer).copy_from_slice(material_values);
-		device.sync_buffer(material_buffer);
+		buffer_contents(device, material_buffer).copy_from_slice(material_values);
 		let payloads = device.build_buffer::<[Payload]>(
 			ghi::buffer::Builder::new(Uses::Storage)
 				.length(origins.len())
-				.device_accesses(DeviceAccesses::DeviceToHost),
+				.host_access(HostAccess::Read),
 		);
 		let rays_set = device.create_descriptor_set(None, &self.rays_layout);
 		let materials_set = device.create_descriptor_set(None, &self.materials_layout);
@@ -1462,17 +1458,17 @@ pub(super) fn trace_rays_launches_exactly_the_requested_grid(
 		let count = device.build_buffer::<[u32]>(
 			ghi::buffer::Builder::new(Uses::Storage)
 				.length(1)
-				.device_accesses(DeviceAccesses::DeviceToHost),
+				.host_access(HostAccess::Read),
 		);
 		let size = device.build_buffer::<[[u32; 4]]>(
 			ghi::buffer::Builder::new(Uses::Storage)
 				.length(1)
-				.device_accesses(DeviceAccesses::DeviceToHost),
+				.host_access(HostAccess::Read),
 		);
 		let indices = device.build_buffer::<[[u32; 4]]>(
 			ghi::buffer::Builder::new(Uses::Storage)
 				.length(points.max(1))
-				.device_accesses(DeviceAccesses::DeviceToHost),
+				.host_access(HostAccess::Read),
 		);
 		let set = device.create_descriptor_set(None, &layout);
 		device.write(&[
@@ -1504,16 +1500,16 @@ pub(super) fn trace_rays_launches_exactly_the_requested_grid(
 		let (width, height, depth) = (extent.width(), extent.height().max(1), extent.depth().max(1));
 		let expected = if width == 0 { 0 } else { width * height * depth };
 		assert_eq!(
-			device.get_buffer_slice(count)[0],
+			buffer_contents(device, count)[0],
 			expected,
 			"Invocations of a launch of {extent:?}."
 		);
 		if expected == 0 {
-			assert_eq!(device.get_buffer_slice(size)[0], [0; 4], "A launch with no width ran.");
+			assert_eq!(buffer_contents(device, size)[0], [0; 4], "A launch with no width ran.");
 			continue;
 		}
-		assert_eq!(device.get_buffer_slice(size)[0], [width, height, depth, 0]);
-		let written = device.get_buffer_slice(indices);
+		assert_eq!(buffer_contents(device, size)[0], [width, height, depth, 0]);
+		let written = buffer_contents(device, indices);
 		for z in 0..depth {
 			for y in 0..height {
 				for x in 0..width {

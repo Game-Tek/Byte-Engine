@@ -242,7 +242,6 @@ impl ShadowMaps {
 		fn depth_map(format: ghi::Formats, name: &str) -> ghi::image::Builder<'_> {
 			ghi::image::Builder::new(format, ghi::Uses::DepthStencil | ghi::Uses::Image)
 				.name(name)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.optimized_clear_value(ghi::ClearValue::Depth(0.0))
 		}
 		let directional: ghi::BaseImageHandle = context
@@ -257,7 +256,6 @@ impl ShadowMaps {
 			ghi::image::Builder::new(ghi::Formats::R16UNORM, ghi::Uses::Storage | ghi::Uses::Image)
 				.name(name)
 				.extent(depth_pyramid_extent(resolution, 1))
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.mip_levels(DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT)
 		};
 		let directional_depth_pyramid: ghi::BaseImageHandle =
@@ -467,7 +465,7 @@ impl ShadowMaps {
 /// [`ShadowWork::receiver_fit`].
 pub(super) struct CascadeFitPass {
 	receiver_fit_descriptor_set: ghi::DescriptorSetHandle,
-	receiver_fit_parameters: ghi::DynamicBufferHandle<ReceiverFitShaderData>,
+	receiver_fit_parameters: ghi::BufferHandle<ReceiverFitShaderData>,
 	/// The box each cascade's receivers fill. The linear depth pyramid pass merges every frame's receivers into it,
 	/// and the fit resets it after reading, so it is cleared once, before its first frame.
 	receiver_bounds: ghi::BufferHandle<[u32; RECEIVER_BOUNDS_PER_CASCADE * RECEIVER_FIT_CASCADES]>,
@@ -487,16 +485,13 @@ impl CascadeFitPass {
 	) -> Self {
 		let receiver_fit_descriptor_set =
 			set_layouts::CASCADE_FIT.create_set(context, "Directional Shadow Receiver Fit Descriptor Set");
-		let receiver_fit_parameters = context.build_dynamic_buffer(
+		let receiver_fit_parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Directional Shadow Receiver Fit Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
-		let device_buffer = |name, uses| {
-			ghi::buffer::Builder::new(ghi::Uses::Storage | uses)
-				.name(name)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-		};
+		let device_buffer = |name, uses| ghi::buffer::Builder::new(ghi::Uses::Storage | uses).name(name);
 		let receiver_bounds = context.build_buffer(device_buffer(
 			"Directional Shadow Receiver Bounds",
 			ghi::Uses::TransferDestination,
@@ -556,7 +551,7 @@ impl CascadeFitPass {
 		let fitted_cascades = (SHADOW_CASCADE_COUNT * receiver_fit.len()) as u32;
 		let fits_receivers = fitted_cascades > 0;
 		if fits_receivers {
-			*frame.get_mut_dynamic_buffer_slice(self.receiver_fit_parameters) = receiver_fit_shader_data(
+			*frame.map(self.receiver_fit_parameters) = receiver_fit_shader_data(
 				screen_view_data(sink, sink.extent()),
 				sink.view(),
 				receiver_fit,
@@ -564,7 +559,6 @@ impl CascadeFitPass {
 				updated_cascades,
 				drawn_cascades,
 			);
-			frame.sync_buffer(self.receiver_fit_parameters);
 		}
 		// A new buffer holds anything; the fit zeroes it after every read from then on.
 		let clear_bounds = fits_receivers && !self.bounds_cleared.swap(true, std::sync::atomic::Ordering::Relaxed);

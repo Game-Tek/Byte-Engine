@@ -615,7 +615,7 @@ double-sided surface's normal points to the viewer's side.
 | A light on the near side | Lights the surface as it does any other. |
 | A light on the far side | Adds diffuse light and no specular light. The diffuse light is the near side's, with `translucency` in place of the base color and the angle the light makes with the far side in place of the angle with the near side. |
 | Shadows | A light on the far side is shadowed by what lies between it and the surface, as a light on the near side is. The surface doesn't shadow itself. |
-| Environment | With environment diffuse light, the surface adds the environment's irradiance on its far side, weighted as indirect diffuse light is, with `translucency` in place of the base color. |
+| Environment | The surface adds the environment's irradiance on its far side, weighted as indirect diffuse light is, with `translucency` in place of the base color, whichever source lights the near side. |
 | Other indirect diffuse light | Screen-space and ray-traced indirect light and lightmaps light the near side only. |
 | Ray tracing | Rays that hit the surface read no `translucency`. |
 

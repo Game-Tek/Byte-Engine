@@ -689,9 +689,9 @@ material_evaluation_suffix: fn () -> void {
 	// Where the surface passes no light, such as a stem in a leaf atlas, far-side lights are skipped before their
 	// shadows are filtered.
 	let passes_light: bool = max(max(translucency.x, translucency.y), translucency.z) > 0.0;
-	// The environment lights the far side too. Screen-space and ray-traced light and lightmaps are gathered on the
-	// near side only, so they add nothing here.
-	if (passes_light && adds_environment_diffuse) {
+	// The environment lights the far side too, even where surfel GI or a lightmap holds its light for the near side:
+	// they, like screen-space and ray-traced light, gather the near side only, so they add nothing here.
+	if (passes_light) {
 		diffuse = diffuse + vec3f(indirect_translucency)
 			* sample_environment_irradiance(material_evaluation, vec3f(0.0, 0.0, 0.0) - vec3f(normal))
 			* (material_evaluation.lighting_data.environment_intensity * environment_visibility * f32(occlusion));

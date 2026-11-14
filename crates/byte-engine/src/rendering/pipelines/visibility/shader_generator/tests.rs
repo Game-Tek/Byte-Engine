@@ -609,7 +609,10 @@ fn skin_material_writes_subsurface_images_only_when_built_in() {
 	};
 	for binding in ["subsurface_diffuse", "subsurface_shape", "subsurface_albedo"] {
 		assert!(reaches(true, binding), "a skin material should write `{binding}`");
-		assert!(!reaches(false, binding), "`{binding}` was written without subsurface scattering");
+		assert!(
+			!reaches(false, binding),
+			"`{binding}` was written without subsurface scattering"
+		);
 	}
 	// The thickness weights the far side's light by the profile's transmittance.
 	assert!(reaches(true, "burley_transmittance"));
@@ -643,9 +646,9 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 			subsurface: true,
 			..Default::default()
 		})
-			.generate(&graph, &parameters, &EMBEDDED_MODULES)
-			.expect("test graph should generate")
-			.expect("the pipelines mode builds an evaluation shader");
+		.generate(&graph, &parameters, &EMBEDDED_MODULES)
+		.expect("test graph should generate")
+		.expect("the pipelines mode builds an evaluation shader");
 		let root = besl::lex(shader).expect("generated program should link");
 
 		let settings = ShaderGenerationSettings::compute(utils::Extent::line(128)).name("material_evaluation".to_string());

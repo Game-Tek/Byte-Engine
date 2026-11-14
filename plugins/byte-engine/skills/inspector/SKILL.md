@@ -1,6 +1,6 @@
 ---
 name: inspector
-description: "Drive and observe a running Byte Engine application through its HTTP inspector: find entities, post messages such as TriggerAction to play-test input, change runtime settings such as detail levels, debug views, or render passes without restarting, wait for ticks, GPU times, or settings to take effect without sleeping, capture screenshots of the window or of any render target, show debug views, read CPU and GPU metrics, read debug data streams, and close the app. Start it with `--unattended=<frames per second>` so it renders on its own in the background without disturbing the desktop. Use when the user wants to check what a Byte Engine app does at runtime, test gameplay or input without a human at the keyboard, see a frame or an intermediate render target, or measure frame time."
+description: "Drive and observe a running Byte Engine application through its HTTP inspector: find entities, post messages such as TriggerAction to play-test input, change runtime settings such as detail levels, debug views, or render passes without restarting, wait for ticks, GPU times, settings to take effect, or on-demand bakes to finish without sleeping, capture screenshots of the window or of any render target, show debug views, read CPU and GPU metrics, read debug data streams, and close the app. Start it with `--unattended=<frames per second>` so it renders on its own in the background without disturbing the desktop. Use when the user wants to check what a Byte Engine app does at runtime, test gameplay or input without a human at the keyboard, see a frame or an intermediate render target, or measure frame time."
 ---
 
 # Drive a running Byte Engine application
@@ -103,12 +103,51 @@ longer than needed, and you can't read a stale row.
 | A frame's GPU times | A `gpu` event for its tick, or a `tick` event whose `gpu` map isn't empty |
 | A setting to take effect | A `configuration` event for its `parameter` whose `state.status` isn't `pending` |
 | The application to close | A `closing` event, after which every request returns at once |
+| Bakes to finish | The `Assets` debug data stream; see [Wait for bakes to finish](#wait-for-bakes-to-finish) |
 
 - A `lagged` event means more than 1,024 ticks ended since your last request. Read what you missed from
   `/metrics/frames?since=<tick>`.
 - At most four requests can wait at once, and a fifth gets `503`. Keep one wait loop per tool.
 - Waiting doesn't wake the application. An attended app that renders on demand and has nothing to draw ends no
   ticks, so the wait ends empty. Unattended runs end a tick at every period.
+
+## Wait for bakes to finish
+
+A debug application bakes missing or stale resources while it runs, so its first frames can show missing materials
+and its frame times include bake work. Don't guess how many ticks or seconds a bake takes. The asset manager
+reports every bake on a debug data stream named `Assets`, the same records the console's bakes view shows. Each
+record is written when a bake starts or ends and carries the state after that change: `baking`, the bakes still
+running, plus the `baked` and `failed` totals.
+
+1. Start the application with `--debug.streams=streams.ndjson`, so the records reach a file you can read while it
+   runs.
+2. After the step that requests the assets, such as loading a scene, wait until the latest `bakes` record lists no
+   running bake. The loop checks once per tick through `wait_ticks` from
+   [Wait for something to happen](#wait-for-something-to-happen):
+
+   ```bash
+   # Returns once no bake runs: the latest `Assets` record has an empty `baking`, or no bake started.
+   # `fromjson?` skips a line the application is still writing.
+   wait_bakes() {
+     while jq -nRe '[inputs | fromjson? | select(.stream == "bakes")] | last | (.data.baking // []) | length > 0' \
+       streams.ndjson > /dev/null; do
+       wait_ticks 1 || return 1
+     done
+   }
+   ```
+
+3. Check that nothing failed before you trust a frame:
+
+   ```bash
+   jq -nR '[inputs | fromjson? | select(.stream == "bakes")] | last | .data | {baked, failed, finished: [.finished[] | select(.ok | not) | .id]}' streams.ndjson
+   ```
+
+- A run whose store is current bakes nothing and writes no `Assets` record, so `wait_bakes` returns at once.
+- A record is written only when a bake starts. Call `wait_bakes` after the step that requests the assets, not
+  before: an asset nobody requested yet doesn't bake yet.
+- Release builds don't bake on demand and write no `Assets` record. Bake them first with BELD.
+- Each record's `tick` is the tick the bake started or ended on, so after a run you can drop every tick up to the
+  last record whose `baking` is empty from a `metrics-out` file.
 
 ## Change a setting while the app runs
 
@@ -254,4 +293,5 @@ Read these pages for the exact rules. Each is served as Markdown:
 - Unattended runs, pacing, and tick time: https://byte-engine.0x44491229.dev/docs/reference/time.md
 - Debug views: https://byte-engine.0x44491229.dev/docs/use/debug-views.md
 - Debug data streams: https://byte-engine.0x44491229.dev/docs/use/debug-data-streams.md and https://byte-engine.0x44491229.dev/docs/reference/debug-data-streams.md
+- The bake stream's records: https://byte-engine.0x44491229.dev/docs/reference/resource-management.md#bake-stream
 - Index of every page: https://byte-engine.0x44491229.dev/llms.txt

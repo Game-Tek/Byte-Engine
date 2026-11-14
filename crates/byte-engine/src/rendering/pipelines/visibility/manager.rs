@@ -48,8 +48,7 @@ use super::render_pass::{
 	PROBE_SPACING_RANGE, ProbeGiSettings, ProbeVolume, RayHits, RayTracing, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
 	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool,
 	VisibilityRenderPass, create_backdrop_targets, create_diffuse_radiance_history_target, create_fog_light_target,
-	create_gtao_targets, create_ssgi_targets, create_subsurface_targets, create_sun_visibility_targets,
-	create_surfel_targets,
+	create_gtao_targets, create_ssgi_targets, create_subsurface_targets, create_sun_visibility_targets, create_surfel_targets,
 };
 use super::residency::MeshResidencies;
 use super::scene::{

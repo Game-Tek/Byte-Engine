@@ -1162,7 +1162,9 @@ impl VisibilityRenderPass {
 			// Subsurface pixels add their spread diffuse light before the background and the backdrop copy, so blended
 			// surfaces see it behind them.
 			if let Some(stage) = &subsurface {
-				c.counter(counters.subsurface, |c| record_compute_stages(c, None, std::slice::from_ref(stage)));
+				c.counter(counters.subsurface, |c| {
+					record_compute_stages(c, None, std::slice::from_ref(stage))
+				});
 			}
 			// The background fills pixels no opaque surface covered, so transparent surfaces composite over it.
 			if let Some(background) = background {

@@ -12,7 +12,9 @@ binary (see [Run the application's BELD](#run-the-applications-beld)).
 ## Decide whether you need to bake
 
 - **Debug builds: don't bake before a run.** A debug application installs an asset manager that bakes a missing
-  or stale resource the first time the application requests it. Edit the asset and run the application.
+  or stale resource the first time the application requests it. Edit the asset and run the application. To know
+  when those bakes end, read the application's `Assets` debug data stream instead of waiting a fixed time; the
+  inspector skill's "Wait for bakes to finish" section shows how.
 - **Release builds: bake first.** A release application reads only the baked store and can't process assets.
   After changing a source asset, run `beld bake`; BELD rebakes only what changed.
 - **Use `beld bake --force`** after updating the engine or BELD, or after changing a render feature or

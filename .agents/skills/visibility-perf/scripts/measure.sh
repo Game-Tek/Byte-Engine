@@ -26,8 +26,11 @@ if [[ ${REBAKE:-0} == 1 ]]; then rm -rf "$sandbox/model_viewer/resources"; fi
 # The viewer resolves assets relative to its crate directory.
 cd "$sandbox/model_viewer" || exit 1
 # Release builds leave GPU counters off, and without them no stage time is sampled.
-( "$binary" --unattended="${RATE:-60}" --render.ghi.features.counters=true "$@" > "$out/$name.log" 2>&1 & )
-# The inspector answers once the viewer runs; the first bake can take a while after that.
+# Debug data streams go to a file, so the asset manager's `Assets` stream says when on-demand bakes end.
+streams="$out/$name.streams.ndjson"
+( "$binary" --unattended="${RATE:-60}" --render.ghi.features.counters=true --debug.streams="$streams" "$@" \
+	> "$out/$name.log" 2>&1 & )
+# The inspector answers once the viewer runs; bakes start after that, as the viewer requests its assets.
 until curl -sf 'http://127.0.0.1:6680/configuration' > /dev/null; do sleep 1; done
 cursor=$(curl -s 'http://127.0.0.1:6680/events' | jq -r .cursor)
 # Returns once `$1` more ticks ended, or fails when the viewer closes; it paces on the viewer instead of a guessed sleep.
@@ -40,6 +43,15 @@ wait_ticks() {
 		(( left -= $(jq '[.events[] | select(.event == "tick")] | length' <<<"$batch") ))
 	done
 }
+# Returns once no bake runs: the latest `Assets` record has an empty `baking`, or no bake started. It checks once per
+# tick, so a long bake (a REBAKE run's shaders) takes as long as it needs and a current store passes at once.
+# `fromjson?` skips a line the viewer is still writing.
+wait_bakes() {
+	while jq -nRe '[inputs | fromjson? | select(.stream == "bakes")] | last | (.data.baking // []) | length > 0' \
+		"$streams" > /dev/null 2>&1; do
+		wait_ticks 1 || return 1
+	done
+}
 # The viewer creates its look action after loading, so wait for the action itself, one tick at a time. Its handle
 # depends on what the viewer creates before it, so resolve it by name.
 while [[ $(curl -s 'http://127.0.0.1:6680/entities?name=Lookaround') == '[]' ]]; do wait_ticks 1 || exit 1; done
@@ -47,8 +59,11 @@ look_target=$(curl -s 'http://127.0.0.1:6680/entities?name=Lookaround' | jq '.[0
 curl -s -X POST -H 'Content-Type: application/json' \
 	-d "{\"type\":\"TriggerAction\",\"target\":$look_target,\"payload\":{\"type\":\"Vector3\",\"value\":[$look]}}" \
 	'http://127.0.0.1:6680/messages'
-# The pin applies on the next tick and shows in the frame after it.
+# The pin applies on the next tick and shows in the frame after it. Those frames request the shaders and textures
+# the view needs, so wait for their bakes before sampling: a frame that bakes times the bake, not the passes.
 wait_ticks 2 || exit 1
+wait_bakes || exit 1
+echo "bakes: $(jq -nRc '[inputs | fromjson? | select(.stream == "bakes")] | last | .data // {} | {baked, failed}' "$streams")"
 echo "== $name"
 python3 "$scripts/sample_metrics.py" 127.0.0.1:6680 "${ROUNDS:-3}"
 curl -s -o "$out/${name}_lit.png" 'http://127.0.0.1:6680/screenshots?sink=0'

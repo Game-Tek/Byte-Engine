@@ -136,11 +136,15 @@ Check each of these once per session, before the first build or run:
   one asset file between runs. Launch from the crate directory, or
   assets silently fail to resolve.
 - `scripts/measure.sh <name> [viewer params]` does the whole run: launch unattended at `RATE` (default 60), wait for
-  the inspector and then for the look action, pacing on `GET /events` tick events instead of sleeping, pin the look (`LOOK=lx,ly,lz`, default the hall view from the spawn point), sample `stage.*`, capture the lit image and `TARGET="<render target>"`, stop the viewer. `REBAKE=1` deletes the
+  the inspector and then for the look action, pacing on `GET /events` tick events instead of sleeping, pin the look (`LOOK=lx,ly,lz`, default the hall view from the spawn point), wait until the `Assets` debug data
+  stream (written to `$OUT_DIR/<name>.streams.ndjson`, the records the console's bakes view shows) lists no running
+  bake, checking once per tick, sample `stage.*`, capture the lit image and `TARGET="<render target>"`, stop the viewer. `REBAKE=1` deletes the
   resources first. `OUT_DIR` defaults to `$TMPDIR/byte-engine-perf`.
 - `scripts/ab.py --a <saved binary> --b <saved binary> [-- viewer params]` A/Bs two builds: interleaved rounds (A B,
   then B A), each run unattended to `--ticks` through `kill-after` with its ticks in `metrics-out` NDJSON, the look
-  pinned once through the inspector, and the ticks before the pin and `--settle` after it dropped. It scales each run
+  pinned once through the inspector, and the ticks before the pin and before the last bake ended (from each run's
+  `Assets` stream in `<run>.streams.ndjson`), plus `--settle` after both, dropped. A run still baking when it exits
+  is refused. It scales each run
   by its `--control` stage (default `stage.shadow-maps`), reports medians, deltas, and the run-to-run spread as
   noise, marks stages under `--floor` ms as `~0`, and writes each run's log and NDJSON, `results.json`, and
   `command.txt` to `--out`.
@@ -181,7 +185,8 @@ Check each of these once per session, before the first build or run:
 - `metrics-out` writes once, when the viewer closes: every retained tick as NDJSON only when the path ends in
   `.ndjson`, and one summary JSON object otherwise (a `.jsonl` path gets the summary). `kill-after` counts ticks,
   not seconds, and a run that isn't loaded yet reaches it at full rate. For settled per-tick rows of a long load,
-  run without `kill-after`, wait for the geometry, then save `GET /metrics/frames?since=0&presented=true` (the latest
+  run without `kill-after`, wait for the geometry and for the `Assets` stream to list no running bake (the
+  inspector skill's `wait_bakes`), then save `GET /metrics/frames?since=0&presented=true` (the latest
   1,024 ticks) and summarize its last rows.
 - `--resources.path=<dir>` gives a variant its own baked resources. A descriptor-set layout change needs a fresh
   directory; an edit to one `.besl` asset rebakes its pipeline on its own, so an A/B of one asset swaps the file

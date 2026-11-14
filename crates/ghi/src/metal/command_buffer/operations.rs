@@ -1293,7 +1293,7 @@ impl BoundTilePipelineMode for CommandBufferRecording<'_> {
 
 		self.render_encoder("dispatch_tiles")
 			.dispatchThreadsPerTile(utils::mtl_size(threads));
-		self.record_render_attachment_writes();
+		// Ending the pass records its attachment writes.
 		self.end_encoder();
 	}
 }

@@ -766,13 +766,15 @@ impl MetalResourceTracker {
 				self.apply_use(scope, resource_use);
 			}
 		}
-		// The tables' own writes do not stop their reads from being skipped by the next command.
+		// The tables settle against the history the whole command leaves. The tables' own writes do not stop their
+		// reads from being skipped by the next command, and neither do the additional uses, which reach none of the
+		// tables' memory on this path, such as a render pass's attachment writes that its first draw consumes.
+		for &resource_use in additional_uses {
+			self.apply_use(scope, resource_use);
+		}
 		let settled = Some((scope, self.generation, self.encoder_barriers.len()));
 		for &table in bound {
 			tables[table as usize].settled = settled;
-		}
-		for &resource_use in additional_uses {
-			self.apply_use(scope, resource_use);
 		}
 		barrier
 	}

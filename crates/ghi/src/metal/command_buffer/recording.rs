@@ -400,6 +400,17 @@ impl<'a> CommandBufferRecording<'a> {
 	///
 	/// A render encoder also records its attachment writes, so later commands order after them.
 	pub(super) fn end_encoder(&mut self) {
+		// A pass that recorded no command still runs its load and store actions, which wait for the attachments'
+		// earlier accesses.
+		if let Some(EncoderState {
+			encoder: ActiveEncoder::Render(pass),
+			..
+		}) = self.encoder.as_mut()
+			&& !pass.attachment_uses.is_empty()
+		{
+			let attachment_uses = std::mem::take(&mut pass.attachment_uses);
+			self.consume_resources(attachment_uses);
+		}
 		let Some(state) = self.encoder.take() else {
 			return;
 		};

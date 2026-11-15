@@ -42,7 +42,8 @@ A resource is current while all of those are unchanged; see [freshness](/docs/re
 During a debug request, Byte Engine checks the requested resource and bakes again only what a changed input reaches.
 
 While a debug application runs, it watches the assets directory, and the directories it links to, such as the engine's assets.
-When a file changes, it checks every resource it loaded so far and publishes an update for each one that baked again.
+When a file changes, it checks every resource it loaded so far and publishes an update for each one stored again since the last update.
+The renderer rebuilds the pipelines that read an updated shader, so editing a material's `.bemx` graph or `.bema` file shows the new material without a restart.
 
 The payload hash remains separate.
 It identifies the baked resource data and doesn't decide whether a source asset is stale.

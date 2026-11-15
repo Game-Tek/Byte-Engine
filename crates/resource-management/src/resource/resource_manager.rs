@@ -398,7 +398,7 @@ impl ResourceManager {
 
 		#[cfg(debug_assertions)]
 		if let Some(asset_manager) = asset_manager {
-			asset_manager.track_resource(stored.id());
+			asset_manager.track_resource(stored.id(), stored.baked_at());
 		}
 
 		Ok((stored, reader))

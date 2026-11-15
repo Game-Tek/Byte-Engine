@@ -479,12 +479,15 @@ impl AssetManager {
 	}
 
 	/// Adds a requested root resource to the ones checked again when source files change.
+	///
+	/// `baked_at` is when the record the requester read was stored. A later check publishes the root once its stored
+	/// record is newer, so a root that is already tracked keeps the time it was last published at.
 	#[cfg(debug_assertions)]
-	pub(crate) fn track_resource(&self, id: &str) {
+	pub(crate) fn track_resource(&self, id: &str, baked_at: u64) {
 		let mut hot_reload = self.state.hot_reload.lock();
 
-		if !hot_reload.tracked.contains(id) {
-			hot_reload.tracked.insert(id.to_owned());
+		if !hot_reload.tracked.contains_key(id) {
+			hot_reload.tracked.insert(id.to_owned(), baked_at);
 		}
 	}
 
@@ -571,8 +574,9 @@ struct HotReloadState {
 			notify_debouncer_full::RecommendedCache,
 		>,
 	>,
-	/// The roots requested so far, each checked again when source files change.
-	tracked: std::collections::HashSet<String>,
+	/// The roots requested so far, each checked again when source files change, with when the record last published
+	/// for each was stored.
+	tracked: HashMap<String, u64>,
 	/// Each root being checked; a root missing from the map is idle.
 	reloads: HashMap<String, RootReload>,
 	updates: Option<Arc<crate::resource::resource_manager::ResourceUpdateBroadcaster>>,
@@ -621,7 +625,7 @@ impl AssetManagerState {
 
 			hot_reload
 				.tracked
-				.iter()
+				.keys()
 				.filter(|root| {
 					// A root already being checked is checked again once it finishes instead of twice at once.
 					if let Some(reload) = hot_reload.reloads.get_mut(*root) {
@@ -659,20 +663,39 @@ impl AssetManagerState {
 		}
 	}
 
-	/// Makes one tracked root current and publishes it only when that stored it again.
+	/// Makes one tracked root current and publishes it when its stored record is newer than the one last published.
+	///
+	/// The record decides, not whether this check ran the bake: roots that share a resource, such as a material
+	/// variant and the material's shader, rebuild it once in whichever check reaches it first, and every one of them
+	/// still has to be published.
 	#[cfg(debug_assertions)]
 	async fn reload_resource(self: Arc<Self>, id: String) {
 		// Enter the shared bake registry so a resource several changed roots use is rebuilt once.
-		let rebaked = matches!(
-			self.dispatch_bake_in_scope(&id, BakeMode::IfStale, BakeOrigin::Recheck).await,
-			Ok(BakeOutcome::Baked)
-		);
+		let current = self
+			.dispatch_bake_in_scope(&id, BakeMode::IfStale, BakeOrigin::Recheck)
+			.await
+			.is_ok();
 
-		if rebaked && let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(&id)).await {
-			let update = crate::resource::resource_manager::ResourceUpdate::new(id.clone(), resource.class().to_string());
+		if current && let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(&id)).await {
+			let updates = {
+				let mut hot_reload = self.hot_reload.lock();
+				let hot_reload = &mut *hot_reload;
 
-			if let Some(updates) = self.hot_reload.lock().updates.clone() {
-				updates.send(update);
+				match hot_reload.tracked.get_mut(&id) {
+					Some(published) if *published != resource.baked_at() => {
+						*published = resource.baked_at();
+
+						hot_reload.updates.clone()
+					}
+					_ => None,
+				}
+			};
+
+			if let Some(updates) = updates {
+				updates.send(crate::resource::resource_manager::ResourceUpdate::new(
+					id.clone(),
+					resource.class().to_string(),
+				));
 			}
 		}
 
@@ -1905,7 +1928,7 @@ pub mod tests {
 
 		let resource = manager.bake_if_not_exists_serialized("parent.test").await.unwrap();
 
-		manager.track_resource(resource.id());
+		manager.track_resource(resource.id(), resource.baked_at());
 
 		asset_storage.add_file("child.test", b"changed child");
 
@@ -1920,6 +1943,45 @@ pub mod tests {
 				"TestResource".into()
 			))
 		);
+	}
+
+	#[cfg(debug_assertions)]
+	#[r#async::test]
+	async fn every_tracked_root_a_shared_rebake_stores_again_is_published() {
+		// Tests that a root whose record another root's check already stored again is still published, as a
+		// material's shader is when its variant's check rebuilds the material first.
+		let asset_storage = TestStorageBackend::new();
+
+		asset_storage.add_file("parent.test", b"parent");
+
+		asset_storage.add_file("child.test", b"child");
+
+		let (manager, _) = versioned_asset_manager(asset_storage.clone(), MemoryStorageBackend::new());
+
+		let updates = Arc::new(crate::resource::resource_manager::ResourceUpdateBroadcaster::default());
+
+		let listener = updates.listener();
+
+		manager.state.hot_reload.lock().updates = Some(updates);
+
+		for id in ["parent.test", "child.test"] {
+			let resource = manager.bake_if_not_exists_serialized(id).await.unwrap();
+
+			manager.track_resource(resource.id(), resource.baked_at());
+		}
+
+		asset_storage.add_file("child.test", b"changed child");
+
+		// The parent's check rebuilds the child first, so the child's own check finds it current.
+		manager.state.epoch.fetch_add(1, Ordering::AcqRel);
+		manager.state.clone().reload_resource("parent.test".to_string()).await;
+		manager.state.clone().reload_resource("child.test".to_string()).await;
+
+		let published = std::iter::from_fn(|| listener.read())
+			.map(|update| update.id().to_owned())
+			.collect::<Vec<_>>();
+
+		assert_eq!(published, ["parent.test", "child.test"]);
 	}
 
 	#[cfg(debug_assertions)]
@@ -1941,7 +2003,7 @@ pub mod tests {
 
 		let resource = manager.bake_if_not_exists_serialized("stable.test").await.unwrap();
 
-		manager.track_resource(resource.id());
+		manager.track_resource(resource.id(), resource.baked_at());
 
 		manager.state.clone().reload_resource("stable.test".to_string()).await;
 

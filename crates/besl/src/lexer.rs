@@ -850,6 +850,22 @@ Foo: struct {
 	}
 
 	#[test]
+	fn lex_rejects_scopes_used_as_values() {
+		// `root` is the program scope and `noise` a module. Neither is a value.
+		for source in [
+			"main: fn () -> void { let x: f32 = root; }",
+			"noise: mod { SEED: const f32 = 1.0; } main: fn () -> void { let x: f32 = noise; }",
+		] {
+			let node = crate::parse(source).expect("Failed to parse");
+
+			assert!(
+				matches!(lex_with_root(Node::root(), node), Err(LexError::Invalid { .. })),
+				"expected `{source}` to be rejected"
+			);
+		}
+	}
+
+	#[test]
 	fn recursive_function_calls_link_to_their_function() {
 		let program = crate::compile_to_besl("count: fn (n: u32) -> u32 { return count(n); }", None)
 			.expect("Recursive functions should link");

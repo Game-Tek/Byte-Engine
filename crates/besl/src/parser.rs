@@ -431,6 +431,28 @@ mod tests {
 	}
 
 	#[test]
+	fn deeply_nested_unclosed_loops_return_an_error() {
+		// A statement must read its tokens once. Retrying a failed loop as a call and then as a value multiplied the work
+		// per nesting level, so this depth would never finish.
+		let source = format!("main: fn () -> void {{ {}", "for (i = if (c) { x = 0; ".repeat(64));
+
+		assert!(parse(&tokenize(&source)).is_err());
+	}
+
+	#[test]
+	fn deeply_nested_block_and_arm_values_parse() {
+		// Block and match arm values that start with a name are read once, not once as a statement and again as a value.
+		let depth = 32;
+		let if_values = format!("{}b{}", "a + if (c) { ".repeat(depth), " } else { b }".repeat(depth));
+		let match_values = format!("{}b{}", "match n { 0 => a + ".repeat(depth), ", _ => b }".repeat(depth));
+
+		for value in [if_values, match_values] {
+			let source = format!("main: fn () -> void {{ x = {value}; }}");
+			assert!(parse(&tokenize(&source)).is_ok(), "expected `{source}` to parse");
+		}
+	}
+
+	#[test]
 	fn test_parse_struct_and_function() {
 		let source = "
 Light: struct {

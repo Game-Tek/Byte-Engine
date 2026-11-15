@@ -1,4 +1,6 @@
-use math::{Degrees, Matrix, Plane, Point, UnitVector, Vector, WorldSpace, inverse, orthographic_matrix, projection_matrix};
+use math::{
+	Degrees, Matrix, Plane, Point, Ray, UnitVector, Vector, WorldSpace, inverse, orthographic_matrix, projection_matrix,
+};
 use maths_rs::{Vec3f, Vec4f, mat::MatTranslate as _};
 
 /// The `View` struct provides projection and orientation data shared by
@@ -171,6 +173,36 @@ impl View {
 		self.aspect_ratio
 	}
 
+	/// Returns where this view shows the world-space `point`, in normalized device coordinates: `x` from `-1` at the
+	/// left edge to `1` at the right, `y` from `-1` at the bottom to `1` at the top. Returns `None` for a point at or
+	/// behind the eye, which a perspective view cannot show.
+	///
+	/// Use it to place screen-space marks, such as an editor gizmo, over what the view shows. [`Self::ray`] maps the
+	/// other way.
+	pub fn project(&self, point: Point) -> Option<[f32; 2]> {
+		let clip = self.view_projection() * Vec4f::new(point.x(), point.y(), point.z(), 1.0);
+		(clip.w > f32::EPSILON).then(|| [clip.x / clip.w, clip.y / clip.w])
+	}
+
+	/// Returns the world-space ray from the near plane through the point at normalized device coordinates `ndc`, as
+	/// [`Self::project`] gives them.
+	///
+	/// Use it to find what lies under the pointer, such as with
+	/// [`RayQuery`](crate::physics::RayQuery), or to drag something along a line or plane in the world.
+	pub fn ray(&self, ndc: [f32; 2]) -> Ray {
+		let inverse_view_projection = inverse(self.view_projection());
+		// Depth is reversed: the near plane sits at 1 and the far plane at 0.
+		let unproject = |depth: f32| {
+			let point = inverse_view_projection * Vec4f::new(ndc[0], ndc[1], depth, 1.0);
+			Point::from_maths(Vec3f::from(point) / point.w)
+		};
+		let (near, far) = (unproject(1.0), unproject(0.0));
+		let direction = (far - near)
+			.normalized()
+			.expect("View ray direction is invalid. The most likely cause is a view whose near and far planes coincide.");
+		Ray::new(near, direction)
+	}
+
 	/// Returns the view-frustum corners as world-space points.
 	pub fn get_frustum_corners(&self) -> [Point; 8] {
 		let inverse_view_projection = inverse(self.view_projection());
@@ -285,6 +317,39 @@ mod tests {
 			);
 			assert!((shifted.z - original.z).abs() < 1e-6, "{point:?}");
 		}
+	}
+
+	#[test]
+	fn project_maps_points_to_screen_edges_and_rejects_points_behind_the_eye() {
+		let view = View::new_perspective(Degrees::new(90.0), 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
+
+		let [x, y] = view.project(Point::new(0.0, 0.0, 5.0)).expect("a point ahead is shown");
+		assert!(x.abs() < 1e-5 && y.abs() < 1e-5);
+		// With a 90 degree field of view, a point as far up or right as it is ahead sits on the screen's edge.
+		let [_, top] = view.project(Point::new(0.0, 5.0, 5.0)).expect("a point ahead is shown");
+		assert!((top - 1.0).abs() < 1e-4, "{top}");
+		let [right, _] = view.project(Point::new(5.0, 0.0, 5.0)).expect("a point ahead is shown");
+		assert!((right - 1.0).abs() < 1e-4, "{right}");
+
+		assert_eq!(view.project(Point::new(0.0, 0.0, -5.0)), None);
+	}
+
+	#[test]
+	fn ray_passes_through_the_point_it_was_projected_from() {
+		let view = View::new_perspective(
+			Degrees::new(60.0),
+			1.5,
+			0.1,
+			100.0,
+			Point::new(1.0, 2.0, -3.0),
+			Vector::new(0.2, -0.3, 1.0).normalized().unwrap(),
+		);
+		let point = Point::new(2.0, 0.5, 6.0);
+
+		let ray = view.ray(view.project(point).expect("the point is ahead"));
+
+		let distance = (point - ray.origin()).length();
+		assert_point_near(ray.point_at(distance), point);
 	}
 
 	#[test]

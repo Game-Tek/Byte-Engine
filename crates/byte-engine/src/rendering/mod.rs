@@ -120,7 +120,11 @@ pub(crate) fn warn_once(reported: &mut bool, exceeded: bool, message: impl FnOnc
 	*reported = exceeded;
 }
 
-/// Builds a perspective [`View`] from a scene camera and render target extent.
+/// Builds the perspective [`View`] the renderer draws a camera with, placed and turned by `po`, for a render target
+/// of `extent`.
+///
+/// Tools that work in screen space, such as an editor gizmo, build the same view from the camera, its transform, and
+/// the window's size, then map points with [`View::project`] and [`View::ray`].
 pub fn make_perspective_view_from_camera<T: Positionable + Orientable>(camera: &Camera, po: &T, extent: Extent) -> View {
 	let fov_y = camera.vertical_fov();
 	debug_assert!(
@@ -134,8 +138,8 @@ pub fn make_perspective_view_from_camera<T: Positionable + Orientable>(camera: &
 	View::new_perspective(
 		fov_y,
 		extent.aspect_ratio(),
-		0.1,
-		100.0,
+		camera.near(),
+		camera.far(),
 		po.position(),
 		direction_from_orientation(po.orientation()),
 	)

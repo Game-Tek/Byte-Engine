@@ -6,6 +6,9 @@
 pub struct Camera {
 	fov: Degrees,
 	aspect_ratio: f32,
+	/// The distances in meters of the nearest and farthest surfaces the camera shows.
+	near: f32,
+	far: f32,
 	f_number: f32,
 	focus_distance: f32,
 	sensor_height: f32,
@@ -19,6 +22,8 @@ impl Camera {
 		Self {
 			fov: Degrees::new(45.0),
 			aspect_ratio: 1.0,
+			near: 0.1,
+			far: 100.0,
 			f_number: f32::INFINITY,
 			focus_distance: 10.0,
 			sensor_height: 0.024,
@@ -34,6 +39,35 @@ impl Camera {
 	/// Returns the camera's width-to-height aspect ratio.
 	pub fn aspect_ratio(&self) -> f32 {
 		self.aspect_ratio
+	}
+
+	/// Returns the distance in meters of the nearest surface the camera shows. See [`Self::set_clip_planes`].
+	pub fn near(&self) -> f32 {
+		self.near
+	}
+
+	/// Returns the distance in meters of the farthest surface the camera shows. See [`Self::set_clip_planes`].
+	pub fn far(&self) -> f32 {
+		self.far
+	}
+
+	/// Sets the clip planes. See [`Self::set_clip_planes`].
+	pub fn with_clip_planes(mut self, near: f32, far: f32) -> Self {
+		self.set_clip_planes(near, far);
+		self
+	}
+
+	/// Sets the distances in meters, along the view direction, of the nearest and farthest surfaces the camera
+	/// shows. Anything closer than `near` or beyond `far` is cut away. The defaults are `0.1` and `100.0`.
+	///
+	/// Shadow cascades and depth of field spread over this range, so keep `far` no larger than the scene needs.
+	pub fn set_clip_planes(&mut self, near: f32, far: f32) {
+		debug_assert!(
+			near > 0.0 && near < far && far.is_finite(),
+			"Camera clip planes are invalid. The most likely cause is a near plane at or below zero, or not closer than the far plane. Pass 0 < near < far."
+		);
+		self.near = near;
+		self.far = far;
 	}
 
 	/// Returns the lens f-number. See [`Self::set_f_number`].

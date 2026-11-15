@@ -137,6 +137,8 @@ const UI_BLUR_HALF_Y: usize = 4;
 /// vertex or index buffers. A frame is one draw per damaged region, plus one more for each
 /// backdrop blur, because a blur reads the layer drawn below it.
 pub struct UiRenderPass {
+	/// The pass's name, which its state, GPU counter, and render targets go by.
+	name: &'static str,
 	caches: UiGeometryCaches,
 	masks: UiMaskTable,
 	pipeline_manager: crate::rendering::PipelineManagerClient,
@@ -289,18 +291,21 @@ impl UiRenderPass {
 	// Keep the UI pipeline and fixed buffer setup together because every handle is required by frame preparation.
 	#[allow(clippy::too_many_lines)]
 	///
-	/// `font` is the font file to draw text with, from [`crate::ui::load_font`], or `None` for a system font. It must
-	/// match the font the UI [`crate::ui::Engine`] measured with.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, font: Option<std::sync::Arc<[u8]>>) -> Self {
+	/// `name` names the pass and its render targets, so several UI passes can draw over one another, each its own
+	/// layer: `render.pass.<name>` enables or bypasses it, the inspector reports its GPU time under it, and its
+	/// output and persistent layer are the targets `<name>` and `<name> layer`. `fonts` are the fonts to draw text
+	/// with, the first being the default, or empty for a system font. They must match the fonts the UI
+	/// [`crate::ui::Engine`] measured with; see [`crate::ui::Fonts`].
+	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, name: &'static str, fonts: crate::ui::Fonts<'_>) -> Self {
 		// A sink without a scene pipeline has no `main`; the UI then composites over black.
 		let scene = render_pass_builder.try_read_from("main");
 		// The layer outlives frames: damaged regions are redrawn into it and the scene is composited under it every frame.
 		// Only draws write it and the composite only reads it, so it takes no storage usage and Metal keeps it compressed.
 		let main_attachment = render_pass_builder.create_persistent_render_target(
-			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::RenderTarget | ghi::Uses::Image).name("UI Layer"),
+			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::RenderTarget | ghi::Uses::Image).name(&format!("{name} layer")),
 		);
 		let output = render_pass_builder.create_main_render_target(
-			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Storage | ghi::Uses::Image).name("UI"),
+			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Storage | ghi::Uses::Image).name(name),
 		);
 
 		let pipeline_manager = render_pass_builder.pipeline_manager().clone();
@@ -524,6 +529,7 @@ impl UiRenderPass {
 		let main_copy = render_pass_builder.take_main_copy();
 
 		Self {
+			name,
 			caches: UiGeometryCaches::default(),
 			masks: UiMaskTable::default(),
 			pipeline_manager,
@@ -559,7 +565,7 @@ impl UiRenderPass {
 			reported_dropped_glyphs: false,
 			reported_image_limit: false,
 			reported_dropped_paths: false,
-			text_system: TextSystem::with_font(font),
+			text_system: TextSystem::with_fonts(fonts),
 			uploads,
 		}
 	}
@@ -914,7 +920,7 @@ fn separable_blur(
 
 impl RenderPass for UiRenderPass {
 	fn name(&self) -> &'static str {
-		"ui"
+		self.name
 	}
 
 	/// Forwards the scene unchanged, since this pass took the builder's forwarding copy for itself.
@@ -966,6 +972,7 @@ impl RenderPass for UiRenderPass {
 			self.upload_frame_copies(frame);
 		}
 		let composite_descriptor_set = self.composite_descriptor_set;
+		let name = self.name;
 		let composite = move |command_buffer: &mut ghi::implementation::CommandBufferRecording| {
 			let full = UiPixelRegion::full(extent);
 			dispatch_region(
@@ -1007,7 +1014,7 @@ impl RenderPass for UiRenderPass {
 			move |command_buffer| {
 				command_buffer.copy_buffer_to_images(uploads);
 				command_buffer.region(
-					|label| label.write_str("UI"),
+					|label| label.write_str(name),
 					|command_buffer| {
 						let push = |first: u32| UiDrawPush {
 							viewport: [extent.width().max(1) as f32, extent.height().max(1) as f32],
@@ -3086,6 +3093,7 @@ mod tests {
 				clip_mask: None,
 				color: RGBA::white(),
 				font_size,
+				font: None,
 				text: content.to_string(),
 			}],
 			..UiDrawList::default()
@@ -3120,7 +3128,7 @@ mod tests {
 		for (character, font_size) in [('@', 32.0f32), ('g', 24.0), ('B', 16.0), ('W', 12.0), ('8', 48.0)] {
 			// A whole-pixel pen and baseline put the shader's samples on the rasterizer's pixel grid.
 			let position = [8.0f32, 4.0];
-			let line = fonts.line_metrics(font_size).unwrap();
+			let line = fonts.line_metrics(0, font_size).unwrap();
 			let baseline = (position[1] + line.ascent.max(font_size * 0.8f32)).round();
 			let glyph = fonts
 				.glyph_by_key(crate::ui::font::GlyphKey::new(character, font_size))

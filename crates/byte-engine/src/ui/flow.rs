@@ -249,6 +249,26 @@ pub fn centered_column(input: FlowInput) -> FlowOutput {
 	FlowOutput::new(offset, Offset(input.cursor.0, input.cursor.1 + input.child_size.1))
 }
 
+/// Places each child against the end of the row, such as a value aligned to the right edge of a field.
+///
+/// The cursor does not move, so every child sits at the end; give each its own container to line up several.
+pub fn end_row(input: FlowInput) -> FlowOutput {
+	let offset = Offset(input.cursor.0 + input.parent_size.0 - input.child_size.0, input.cursor.1);
+	FlowOutput::new(offset, input.cursor)
+}
+
+/// Places each child against the end of the row and centered vertically, such as a right-aligned label in a button
+/// or a row.
+///
+/// Like [`end_row`], the cursor does not move.
+pub fn centered_end_row(input: FlowInput) -> FlowOutput {
+	let offset = Offset(
+		input.cursor.0 + input.parent_size.0 - input.child_size.0,
+		input.cursor.1 + ((input.parent_size.1 - input.child_size.1) * 0.5).max(0.0),
+	);
+	FlowOutput::new(offset, input.cursor)
+}
+
 pub fn center(input: FlowInput) -> FlowOutput {
 	let offset = Offset(
 		input.cursor.0 + ((input.parent_size.0 - input.child_size.0) * 0.5).max(0.0),
@@ -272,6 +292,8 @@ pub(crate) fn placement_key(flow: &utils::InlineCopyFn<FlowInput, FlowOutput>) -
 		centered_row.type_id(),
 		centered_column.type_id(),
 		center.type_id(),
+		end_row.type_id(),
+		centered_end_row.type_id(),
 		row_with_gap(0.0).type_id(),
 		column_with_gap(0.0).type_id(),
 		centered_row_with_gap(0.0).type_id(),
@@ -314,5 +336,23 @@ impl From<(Location, u32)> for Location3 {
 impl From<Location3> for Location {
 	fn from(value: Location3) -> Self {
 		Location(value.0, value.1)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn end_rows_place_children_against_the_parent_end() {
+		let input = FlowInput::new(Size::new(200, 40), Offset::new(10, 5), Size::new(50, 20));
+
+		let end = end_row(input);
+		assert_eq!(end.child_offset(), Offset::new(160, 5));
+		assert_eq!(end.next_cursor(), Offset::new(10, 5));
+
+		let centered = centered_end_row(input);
+		assert_eq!(centered.child_offset(), Offset::new(160, 15));
+		assert_eq!(centered.next_cursor(), Offset::new(10, 5));
 	}
 }

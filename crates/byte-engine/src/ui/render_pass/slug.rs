@@ -67,8 +67,9 @@ pub(super) struct SlugCurves<K> {
 	spans: Vec<CurveSpan>,
 }
 
-/// Packed glyphs by [`crate::ui::font::OutlinePlacement::index`]. Build their quads with [`build_ui_slug_geometry_damaged`].
-pub(super) type UiGlyphCurves = SlugCurves<Vec<Option<PackedOutline>>>;
+/// Packed glyphs by [`crate::ui::font::OutlinePlacement::face`], then by
+/// [`crate::ui::font::OutlinePlacement::index`]. Build their quads with [`build_ui_slug_geometry_damaged`].
+pub(super) type UiGlyphCurves = SlugCurves<Vec<Vec<Option<PackedOutline>>>>;
 
 impl<K: Default> SlugCurves<K> {
 	/// Creates an empty packing limited to `curve_capacity` curve elements and `band_capacity` band values.
@@ -224,16 +225,20 @@ impl UiGlyphCurves {
 	/// Returns where the shader finds `outline`, packing it on first use.
 	///
 	/// Returns `None` when the glyph does not fit in the remaining buffer space.
-	pub(super) fn ensure(&mut self, index: usize, outline: &GlyphOutline) -> Option<PackedOutline> {
-		if let Some(Some(glyph)) = self.packed.get(index) {
+	pub(super) fn ensure(&mut self, face: usize, index: usize, outline: &GlyphOutline) -> Option<PackedOutline> {
+		if let Some(Some(glyph)) = self.packed.get(face).and_then(|glyphs| glyphs.get(index)) {
 			return Some(*glyph);
 		}
 		// Glyph outlines are about one em across, so the overlap is a fixed em distance.
 		let glyph = self.pack(&outline.curves, outline.bounds, BAND_OVERLAP)?;
-		if self.packed.len() <= index {
-			self.packed.resize(index + 1, None);
+		if self.packed.len() <= face {
+			self.packed.resize_with(face + 1, Vec::new);
 		}
-		self.packed[index] = Some(glyph);
+		let glyphs = &mut self.packed[face];
+		if glyphs.len() <= index {
+			glyphs.resize(index + 1, None);
+		}
+		glyphs[index] = Some(glyph);
 		Some(glyph)
 	}
 }
@@ -347,8 +352,8 @@ pub(super) fn build_ui_slug_geometry_damaged<'a>(
 			let origin = [text.position[0] * sx, text.position[1] * sy];
 			let color = text.color.into();
 			let mask = masks.index(None, text.clip_mask, sx, sy);
-			text_system.place_outlines(&text.text, size, |placement| {
-				let Some(glyph) = glyphs.ensure(placement.index, placement.outline) else {
+			text_system.place_outlines(&text.text, text.font, size, |placement| {
+				let Some(glyph) = glyphs.ensure(placement.face, placement.index, placement.outline) else {
 					geometry.dropped_glyphs += 1;
 					return;
 				};
@@ -406,6 +411,7 @@ mod tests {
 			clip_mask: None,
 			color: RGBA::new(1.0, 0.5, 0.25, 1.0),
 			font_size: 16.0,
+			font: None,
 			text: content.to_string(),
 		}
 	}
@@ -447,7 +453,7 @@ mod tests {
 		assert_eq!(geometry.labels.as_slice(), std::slice::from_ref(&(0..2)));
 
 		// The viewport doubles the layout, so the label draws at 32 pixels per em.
-		let (_, outline) = fonts.outline('H').unwrap();
+		let (_, outline) = fonts.outline(0, 'H').unwrap();
 		let bounds = outline.bounds;
 		let glyph = &geometry.primitives[0];
 		assert_eq!(glyph.kind, UI_KIND_SLUG_GLYPH);

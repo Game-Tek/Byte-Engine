@@ -144,7 +144,8 @@ animation steps once per frame.
 | Color correction | `color-correction` | `Color Correction` | After everything that writes scene light, before a LUT and tone mapping. |
 | Color grading | `lut`, `aces-color-grading`, `aces2-color-grading`, `dwg-color-grading` | Their named outputs | After scene-linear effects. `lut` goes before tone mapping; the ACES, ACES 2.0, and DaVinci passes end in display color, so they take the tone mapper's place. |
 | Film grain | `film-grain` | `Film Grain` | After tone mapping or color grading and antialiasing, before the UI. |
-| UI | `ui` | `UI` | Before the renders every sink must see are published. |
+| UI | The name its setup call gives it; one pass per call | `<name>` and its persistent layer `<name> layer` | Before the renders every sink must see are published. Each pass draws over the passes before it. |
+| Debug overlay | `debug-overlay` | `debug-overlay` and `debug-overlay layer` | After the passes it should cover. |
 | Debug meshes | `debug-meshes` | `Debug Meshes` | After tone mapping and the overlays it should cover, before the first window. |
 
 A pass's `scene.<name>` or `pass.<name>` metric and its `render.pass.<name>`

@@ -126,6 +126,8 @@ pub(super) struct UiTextDrawElement {
 	pub(super) clip_mask: Option<DrawClipMask>,
 	pub(super) color: RGBA,
 	pub(super) font_size: f32,
+	/// The name of the font to draw with, or `None` for the default.
+	pub(super) font: Option<&'static str>,
 	pub(super) text: String,
 }
 
@@ -141,6 +143,7 @@ impl Clone for UiTextDrawElement {
 			clip_mask: self.clip_mask,
 			color: self.color,
 			font_size: self.font_size,
+			font: self.font,
 			text: self.text.clone(),
 		}
 	}
@@ -154,6 +157,7 @@ impl Clone for UiTextDrawElement {
 		self.clip_mask = source.clip_mask;
 		self.color = source.color;
 		self.font_size = source.font_size;
+		self.font = source.font;
 		self.text.clone_from(&source.text);
 	}
 }
@@ -1442,6 +1446,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			clip_mask: draw_clip_mask_from_layout(text.placement.clip_mask, text.placement.rotation),
 			color,
 			font_size: text.font_size * text.placement.scale[0].min(text.placement.scale[1]),
+			font: text.font,
 			text: String::new(),
 		};
 		if let Some(previous) = draw_list.texts.get_mut(text_count) {

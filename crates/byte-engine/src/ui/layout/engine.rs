@@ -173,12 +173,12 @@ impl Engine<()> {
 }
 
 impl<C: 'static> Engine<C> {
-	/// Measures text with the font file `font` instead of a system font.
+	/// Measures text with `fonts` instead of a system font: the first is the default, and text picks another by name
+	/// with [`Properties::font`](crate::ui::Properties::font).
 	///
-	/// Load it with [`crate::ui::load_font`], and give the UI render pass the same bytes, so layout and drawing agree
-	/// on glyph sizes.
-	pub fn with_font(mut self, font: std::sync::Arc<[u8]>) -> Self {
-		self.text_system = TextSystem::with_font(Some(font));
+	/// Give the UI render pass the same list, so layout and drawing agree on glyph sizes. See [`Fonts`].
+	pub fn with_fonts(mut self, fonts: crate::ui::Fonts<'_>) -> Self {
+		self.text_system = TextSystem::with_fonts(fonts);
 		self
 	}
 
@@ -1003,6 +1003,7 @@ impl<C: 'static> Engine<C> {
 							_ => RGBA::white(),
 						},
 						font_size: text.settings().font_size,
+						font: text.settings().font,
 						content,
 					}
 				}),

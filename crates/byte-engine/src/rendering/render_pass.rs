@@ -610,7 +610,7 @@ impl<'a> RenderPassBuilder<'a> {
 	///
 	/// Use it for images a pass updates incrementally, such as a layer that only redraws damaged regions. Unlike
 	/// [`Self::create_render_target`], the target never shares memory with other targets.
-	pub fn create_persistent_render_target(&mut self, builder: ghi::image::Builder<'a>) -> RenderToResult {
+	pub fn create_persistent_render_target(&mut self, builder: ghi::image::Builder<'_>) -> RenderToResult {
 		let (name, format) = target_identity(&builder);
 		let image = self.context.build_image(builder.additional_uses(ghi::Uses::TransferSource));
 		self.register_render_target(name, format, image.into(), 1, Placement::Persistent)

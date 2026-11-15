@@ -37,21 +37,31 @@ enum FontState {
 	Unavailable,
 }
 
-/// The `GlyphKey` struct identifies one rasterized glyph by character and pixel size.
+/// The `GlyphKey` struct identifies one rasterized glyph by font, character, and pixel size.
 ///
 /// The size is keyed by its bit pattern so a cache lookup never depends on float rounding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct GlyphKey {
+	/// The font's number in its [`TextSystem`]; see [`TextSystem::face`].
+	pub(crate) face: u16,
 	pub(crate) character: char,
 	pub(crate) font_size_bits: u32,
 }
 
 impl GlyphKey {
+	/// Keys a glyph of the default font; pick another with [`Self::in_face`].
 	pub(crate) fn new(character: char, font_size: f32) -> Self {
 		Self {
+			face: 0,
 			character,
 			font_size_bits: font_size.max(1.0).to_bits(),
 		}
+	}
+
+	/// Moves this key to font `face`.
+	pub(crate) fn in_face(mut self, face: usize) -> Self {
+		self.face = face as u16;
+		self
 	}
 }
 
@@ -100,7 +110,9 @@ impl GlyphOutline {
 /// The `OutlinePlacement` struct locates one visible glyph outline in target pixels.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OutlinePlacement<'a> {
-	/// The font's index of this glyph. Use it to key per-glyph data.
+	/// The number of the font the glyph comes from; see [`TextSystem::face`].
+	pub(crate) face: usize,
+	/// The font's index of this glyph. Key per-glyph data with it and [`Self::face`].
 	pub(crate) index: usize,
 	/// Pen position on the baseline in target pixels.
 	pub(crate) pen: [f32; 2],
@@ -131,73 +143,130 @@ pub(crate) struct GlyphPlacement {
 const MEASURE_CACHE_ENTRIES: usize = 4096;
 const MEASURE_CACHE_BYTES: usize = 512 * 1024;
 
+/// The `Fonts` type names the fonts a UI draws text with, as pairs of a name and a font file.
+///
+/// Pass the same list to [`crate::ui::Engine::with_fonts`] and to
+/// [`crate::application::graphics::setup_ui_render_pass`], so layout and drawing agree. The first font is the
+/// default; text picks another by name with [`crate::ui::Properties::font`]. Name each font by its asset ID, such as
+/// `"Inter-SemiBold.ttf"`, and read its file with [`load_font`]. An empty list draws every text with a system font.
+pub type Fonts<'a> = &'a [(&'static str, Arc<[u8]>)];
+
+/// The `Face` struct is one font of a [`TextSystem`], with the outlines and metrics read from it so far.
+struct Face {
+	/// The name text picks this font by; `None` for the system font used when the application gives none.
+	name: Option<&'static str>,
+	/// The font file, or `None` to find a system font.
+	data: Option<Arc<[u8]>>,
+	state: FontState,
+	/// Outlines by the font's glyph index, read on first use.
+	outlines: Vec<Option<GlyphOutline>>,
+	/// Vertical metrics at one pixel per em; every size is a multiple of these.
+	em_line_metrics: Option<LineMetrics>,
+}
+
+impl Face {
+	fn new(name: Option<&'static str>, data: Option<Arc<[u8]>>) -> Self {
+		Self {
+			name,
+			data,
+			state: FontState::Uninitialized,
+			outlines: Vec::new(),
+			em_line_metrics: None,
+		}
+	}
+}
+
 /// The `TextSystem` struct shapes UI text and supplies its glyphs as outlines or bitmaps.
+///
+/// It draws with one or more fonts, numbered in the order the application gave them; font `0` is the default. A
+/// text picks a font by name, which [`Self::face`] turns into that number.
 ///
 /// Measurement and outline placement use the same size-independent advances, so layout and
 /// drawing never disagree and neither rasterizes anything. Glyph bitmaps exist only for the
-/// atlas renderer, which rasterizes them once per character and pixel size.
+/// atlas renderer, which rasterizes them once per font, character, and pixel size.
 pub(crate) struct TextSystem {
-	/// The font file to use instead of a system font, when the application chose one.
-	preferred_font: Option<Arc<[u8]>>,
-	font_state: FontState,
-	measure_cache: HashMap<u32, HashMap<String, Size>>,
-	previous_measure_cache: HashMap<u32, HashMap<String, Size>>,
+	/// Never empty: without application fonts, it holds one face that finds a system font.
+	faces: Vec<Face>,
+	/// Font names text asked for that no face has, so each is reported once.
+	reported_names: Vec<&'static str>,
+	/// Measurements by font number and font size, packed into one key.
+	measure_cache: HashMap<u64, HashMap<String, Size>>,
+	previous_measure_cache: HashMap<u64, HashMap<String, Size>>,
 	measure_cache_entries: usize,
 	measure_cache_bytes: usize,
 	/// Emptied keys of the generation that rotated out, which new measurements reuse instead of allocating.
 	spare_measure_keys: Vec<String>,
 	glyph_cache: HashMap<GlyphKey, Glyph>,
-	/// Outlines by the font's glyph index, read on first use.
-	outlines: Vec<Option<GlyphOutline>>,
-	/// Vertical metrics at one pixel per em; every size is a multiple of these.
-	em_line_metrics: Option<LineMetrics>,
 	reported_unavailable: bool,
 }
 
 impl TextSystem {
 	pub fn new() -> Self {
-		Self::with_font(None)
+		Self::with_fonts(&[])
 	}
 
-	/// Creates a text system that uses the font file `font`, falling back to a system font
-	/// when it is `None` or doesn't parse.
-	pub fn with_font(font: Option<Arc<[u8]>>) -> Self {
+	/// Creates a text system that draws with `fonts`, the first being the default. A font that doesn't parse falls
+	/// back to a system font, and so does an empty list.
+	pub fn with_fonts(fonts: Fonts<'_>) -> Self {
+		let mut faces: Vec<Face> = fonts
+			.iter()
+			.map(|(name, data)| Face::new(Some(*name), Some(data.clone())))
+			.collect();
+		if faces.is_empty() {
+			faces.push(Face::new(None, None));
+		}
 		Self {
-			preferred_font: font,
-			font_state: FontState::Uninitialized,
+			faces,
+			reported_names: Vec::new(),
 			measure_cache: HashMap::default(),
 			previous_measure_cache: HashMap::default(),
 			measure_cache_entries: 0,
 			measure_cache_bytes: 0,
 			spare_measure_keys: Vec::new(),
 			glyph_cache: HashMap::default(),
-			outlines: Vec::new(),
-			em_line_metrics: None,
 			reported_unavailable: false,
 		}
 	}
 
-	/// Returns whether a font is available for text measurement and drawing.
-	pub fn has_font(&mut self) -> bool {
-		self.font().is_some()
+	/// Returns the number of the font named `name`, or of the default font for `None` or a name no font has.
+	pub fn face(&mut self, name: Option<&'static str>) -> usize {
+		let Some(name) = name else {
+			return 0;
+		};
+		if let Some(face) = self.faces.iter().position(|face| face.name == Some(name)) {
+			return face;
+		}
+		if !self.reported_names.contains(&name) {
+			self.reported_names.push(name);
+			log::warn!(
+				"UI font '{name}' isn't loaded, so its text uses the default font. The most likely cause is a font missing from the list given to `Engine::with_fonts` and `setup_ui_render_pass`. Add `(\"{name}\", load_font(..., \"{name}\"))` to that list."
+			);
+		}
+		0
 	}
 
-	/// Measures text with a bounded string cache and reusable glyph metrics.
-	pub fn measure(&mut self, text: &str, font_size: f32) -> Size {
+	/// Returns whether a font is available for text measurement and drawing.
+	pub fn has_font(&mut self) -> bool {
+		self.font(0).is_some()
+	}
+
+	/// Measures text in the font named `font` with a bounded string cache and reusable glyph metrics.
+	pub fn measure(&mut self, text: &str, font: Option<&'static str>, font_size: f32) -> Size {
 		if text.is_empty() {
 			return Size::new(0.0, 0.0);
 		}
 
+		let face = self.face(font);
 		let font_size = font_size.max(1.0);
-		let font_size_key = font_size.to_bits();
+		let key = ((face as u64) << 32) | font_size.to_bits() as u64;
 		for cache in [&self.measure_cache, &self.previous_measure_cache] {
-			if let Some(size) = cache.get(&font_size_key).and_then(|sizes| sizes.get(text)) {
+			if let Some(size) = cache.get(&key).and_then(|sizes| sizes.get(text)) {
 				return *size;
 			}
 		}
 
-		let size = if self.has_font() {
-			self.measure_with_glyphs(text, font_size)
+		let size = if self.font(face).is_some() {
+			self.measure_with_glyphs(text, face, font_size)
 		} else {
 			measure_with_fallback(text, font_size)
 		};
@@ -218,9 +287,9 @@ impl TextSystem {
 				self.measure_cache_entries = 0;
 				self.measure_cache_bytes = 0;
 			}
-			let mut key = self.spare_measure_keys.pop().unwrap_or_default();
-			key.push_str(text);
-			self.measure_cache.entry(font_size_key).or_default().insert(key, size);
+			let mut text_key = self.spare_measure_keys.pop().unwrap_or_default();
+			text_key.push_str(text);
+			self.measure_cache.entry(key).or_default().insert(text_key, size);
 			self.measure_cache_entries += 1;
 			self.measure_cache_bytes += text.len();
 			debug_assert!(
@@ -230,14 +299,15 @@ impl TextSystem {
 		size
 	}
 
-	/// Returns the vertical metrics for one pixel size, or `None` without a font.
-	pub fn line_metrics(&mut self, font_size: f32) -> Option<LineMetrics> {
+	/// Returns the vertical metrics of font `face` for one pixel size, or `None` without a font.
+	pub fn line_metrics(&mut self, face: usize, font_size: f32) -> Option<LineMetrics> {
 		let font_size = font_size.max(1.0);
-		if self.em_line_metrics.is_none() {
-			self.em_line_metrics = Some(font_line_metrics(self.font()?, 1.0));
+		if self.faces[face].em_line_metrics.is_none() {
+			let metrics = font_line_metrics(self.font(face)?, 1.0);
+			self.faces[face].em_line_metrics = Some(metrics);
 		}
 		// Metrics scale linearly, so a continuously animated size needs no cache entry of its own.
-		let em = self.em_line_metrics?;
+		let em = self.faces[face].em_line_metrics?;
 		Some(LineMetrics {
 			line_height: em.line_height * font_size,
 			ascent: em.ascent * font_size,
@@ -245,15 +315,15 @@ impl TextSystem {
 		})
 	}
 
-	/// Returns one character's glyph index and outline, reading the outline from the font on first use.
+	/// Returns one character's glyph index in font `face` and its outline, reading the outline from the font on
+	/// first use.
 	///
 	/// Returns `None` without a font. Characters the font draws alike share a glyph index, and a
 	/// character without contours, such as a space, has an outline that only advances the pen.
-	pub fn outline(&mut self, character: char) -> Option<(usize, &GlyphOutline)> {
-		if matches!(self.font_state, FontState::Uninitialized) {
-			self.font()?;
-		}
-		let FontState::Ready(font) = &mut self.font_state else {
+	pub fn outline(&mut self, face: usize, character: char) -> Option<(usize, &GlyphOutline)> {
+		self.font(face)?;
+		let Face { state, outlines, .. } = &mut self.faces[face];
+		let FontState::Ready(font) = state else {
 			return None;
 		};
 		let index = *font.glyph_indices.entry(character).or_insert_with(|| {
@@ -272,23 +342,31 @@ impl TextSystem {
 				})
 				.map_or(0, |glyph| glyph.0)
 		});
-		if self.outlines.len() <= index as usize {
-			self.outlines.resize(index as usize + 1, None);
+		if outlines.len() <= index as usize {
+			outlines.resize(index as usize + 1, None);
 		}
-		let outline = self.outlines[index as usize].get_or_insert_with(|| read_outline(font, index));
+		let outline = outlines[index as usize].get_or_insert_with(|| read_outline(font, index));
 		Some((index as usize, outline))
 	}
 
-	/// Visits every visible glyph outline of `text` with its pen position relative to the text's top left corner.
+	/// Visits every visible glyph outline of `text`, in the font named `font`, with its pen position relative to the
+	/// text's top left corner.
 	///
 	/// Lines advance by the font's line height and advances stay fractional, exactly as
 	/// [`Self::measure`] sums them. Returns `false` when no font is available.
-	pub fn place_outlines(&mut self, text: &str, font_size: f32, mut visit: impl FnMut(OutlinePlacement<'_>)) -> bool {
+	pub fn place_outlines(
+		&mut self,
+		text: &str,
+		font: Option<&'static str>,
+		font_size: f32,
+		mut visit: impl FnMut(OutlinePlacement<'_>),
+	) -> bool {
 		if text.is_empty() {
 			return false;
 		}
+		let face = self.face(font);
 		let font_size = font_size.max(1.0);
-		let Some(line) = self.line_metrics(font_size) else {
+		let Some(line) = self.line_metrics(face, font_size) else {
 			return false;
 		};
 
@@ -298,11 +376,16 @@ impl TextSystem {
 				pen = [0.0, pen[1] + line.line_height];
 				continue;
 			}
-			let Some((index, outline)) = self.outline(character) else {
+			let Some((index, outline)) = self.outline(face, character) else {
 				return false;
 			};
 			if outline.is_visible() {
-				visit(OutlinePlacement { index, pen, outline });
+				visit(OutlinePlacement {
+					face,
+					index,
+					pen,
+					outline,
+				});
 			}
 			pen[0] += outline.advance * font_size;
 		}
@@ -312,10 +395,9 @@ impl TextSystem {
 
 	/// Returns the cached glyph for one key, rasterizing it on first use.
 	pub fn glyph_by_key(&mut self, key: GlyphKey) -> Option<&Glyph> {
-		if matches!(self.font_state, FontState::Uninitialized) {
-			self.font()?;
-		}
-		let FontState::Ready(font) = &mut self.font_state else {
+		let face = key.face as usize;
+		self.font(face)?;
+		let FontState::Ready(font) = &mut self.faces[face].state else {
 			return None;
 		};
 		// Bitmap consumers build the rasterizer once; layout and GPU outlines never need it.
@@ -342,7 +424,7 @@ impl TextSystem {
 		}))
 	}
 
-	/// Places every visible glyph of `text` in target pixels, starting at `origin`.
+	/// Places every visible glyph of `text`, in the font named `font`, in target pixels, starting at `origin`.
 	///
 	/// Lines advance by the font's line height. Fractional advances are preserved
 	/// so rendering can scale and translate the run without pixel snapping. Returns
@@ -350,6 +432,7 @@ impl TextSystem {
 	pub fn place_glyphs(
 		&mut self,
 		text: &str,
+		font: Option<&'static str>,
 		font_size: f32,
 		origin: (i32, i32),
 		mut visit: impl FnMut(GlyphPlacement),
@@ -357,8 +440,9 @@ impl TextSystem {
 		if text.is_empty() {
 			return false;
 		}
+		let face = self.face(font);
 		let font_size = font_size.max(1.0);
-		let Some(line) = self.line_metrics(font_size) else {
+		let Some(line) = self.line_metrics(face, font_size) else {
 			return false;
 		};
 
@@ -372,7 +456,7 @@ impl TextSystem {
 				continue;
 			}
 
-			let key = GlyphKey::new(character, font_size);
+			let key = GlyphKey::new(character, font_size).in_face(face);
 			let Some(glyph) = self.glyph_by_key(key) else {
 				return false;
 			};
@@ -389,8 +473,8 @@ impl TextSystem {
 		true
 	}
 
-	fn measure_with_glyphs(&mut self, text: &str, font_size: f32) -> Size {
-		let Some(line) = self.line_metrics(font_size) else {
+	fn measure_with_glyphs(&mut self, text: &str, face: usize, font_size: f32) -> Size {
+		let Some(line) = self.line_metrics(face, font_size) else {
 			return measure_with_fallback(text, font_size);
 		};
 		let mut max_width: f32 = 0.0;
@@ -407,7 +491,7 @@ impl TextSystem {
 
 			// Advances come from the outline, so measuring never rasterizes a glyph.
 			current_width += self
-				.outline(character)
+				.outline(face, character)
 				.map_or(0.0, |(_, outline)| outline.advance * font_size);
 		}
 
@@ -419,10 +503,11 @@ impl TextSystem {
 		Size::new(max_width.max(0.0), height.max(0.0))
 	}
 
-	/// Loads font tables on first use without preparing every glyph for CPU rasterization.
-	fn font(&mut self) -> Option<&LoadedFont> {
-		if matches!(self.font_state, FontState::Uninitialized) {
-			self.font_state = match open_font(self.preferred_font.as_ref()) {
+	/// Loads font `face`'s tables on first use without preparing every glyph for CPU rasterization.
+	fn font(&mut self, face: usize) -> Option<&LoadedFont> {
+		let entry = &mut self.faces[face];
+		if matches!(entry.state, FontState::Uninitialized) {
+			entry.state = match open_font(entry.data.as_ref()) {
 				Ok(font) => FontState::Ready(font),
 				Err(error) => {
 					if !self.reported_unavailable {
@@ -435,7 +520,7 @@ impl TextSystem {
 			};
 		}
 
-		match &self.font_state {
+		match &self.faces[face].state {
 			FontState::Ready(font) => Some(font),
 			_ => None,
 		}
@@ -705,8 +790,9 @@ fn open_font(preferred: Option<&Arc<[u8]>>) -> Result<LoadedFont, String> {
 
 /// Reads the payload of the `Font` resource `id`, the font file the UI draws text with.
 ///
-/// Call it once at startup, then pass the result to [`crate::ui::Engine::with_font`] and to
-/// [`crate::application::graphics::setup_ui_render_pass`], so layout and drawing use the same font. Cloning the
+/// Call it once at startup for each font, then name the results in the [`Fonts`] list you pass to
+/// [`crate::ui::Engine::with_fonts`] and to [`crate::application::graphics::setup_ui_render_pass`], so layout and
+/// drawing use the same fonts. Cloning the
 /// result shares the bytes instead of copying them.
 pub async fn load_font(resource_manager: &resource_management::ResourceManager, id: &str) -> Result<Arc<[u8]>, String> {
 	use resource_management::resource::ReadTargetsMut;
@@ -854,16 +940,16 @@ mod tests {
 			return;
 		}
 		for character in "AV café ΩЖ中🙂\u{10ffff}".chars() {
-			let advance = text.outline(character).unwrap().1.advance;
+			let advance = text.outline(0, character).unwrap().1.advance;
 			for size in [12.0, 19.5, 32.0] {
 				let bitmap = text.glyph_by_key(GlyphKey::new(character, size)).unwrap();
 				assert!((advance * size - bitmap.advance_width).abs() < 0.0001);
 			}
 		}
 		let mut outlines = Vec::new();
-		text.place_outlines("A B\nC", 19.5, |glyph| outlines.push(glyph.pen));
+		text.place_outlines("A B\nC", None, 19.5, |glyph| outlines.push(glyph.pen));
 		let mut placements = Vec::new();
-		text.place_glyphs("A B\nC", 19.5, (0, 0), |glyph| placements.push(glyph));
+		text.place_glyphs("A B\nC", None, 19.5, (0, 0), |glyph| placements.push(glyph));
 		let bitmaps = placements.into_iter().map(|placement| {
 			let bitmap = text.glyph_by_key(placement.key).unwrap();
 			[
@@ -880,15 +966,42 @@ mod tests {
 	}
 
 	#[test]
+	fn text_measures_with_the_font_it_names_and_falls_back_to_the_first() {
+		// Two different readable fonts from the machine; without them there is nothing to tell apart.
+		let mut files = super::explicit_font_candidates()
+			.into_iter()
+			.filter_map(|path| std::fs::read(path).ok())
+			.filter(|bytes| ttf_parser::Face::parse(bytes, 0).is_ok());
+		let (Some(first), Some(second)) = (files.next(), files.next()) else {
+			return;
+		};
+		let fonts = [("first", first.into()), ("second", second.into())];
+		let mut text = TextSystem::with_fonts(&fonts);
+		let mut only_first = TextSystem::with_fonts(&fonts[..1]);
+		let mut only_second = TextSystem::with_fonts(&fonts[1..]);
+		let sample = "Wide glyphs, narrow ones";
+
+		assert_eq!(text.measure(sample, None, 16.0), only_first.measure(sample, None, 16.0));
+		assert_eq!(
+			text.measure(sample, Some("second"), 16.0),
+			only_second.measure(sample, None, 16.0)
+		);
+		assert_eq!(
+			text.measure(sample, Some("missing"), 16.0),
+			only_first.measure(sample, None, 16.0)
+		);
+	}
+
+	#[test]
 	fn measurements_stay_consistent_after_many_text_changes() {
 		let mut text_system = TextSystem::new();
 		let labels = [("Score: 123", 16.0), ("First line\nSecond line", 24.0), ("áβ中", 12.0)];
-		let expected = labels.map(|(text, size)| text_system.measure(text, size));
+		let expected = labels.map(|(text, size)| text_system.measure(text, None, size));
 		for value in 0..3 * super::MEASURE_CACHE_ENTRIES {
-			text_system.measure(&format!("Changing score: {value}"), 16.0);
+			text_system.measure(&format!("Changing score: {value}"), None, 16.0);
 		}
 		for ((text, size), expected) in labels.into_iter().zip(expected) {
-			assert_eq!(text_system.measure(text, size), expected);
+			assert_eq!(text_system.measure(text, None, size), expected);
 		}
 	}
 
@@ -920,7 +1033,7 @@ mod tests {
 		}
 
 		let mut placements = Vec::new();
-		let placed = text_system.place_glyphs("AB\nC", 20.0, (10, 5), |placement| placements.push(placement));
+		let placed = text_system.place_glyphs("AB\nC", None, 20.0, (10, 5), |placement| placements.push(placement));
 		assert!(placed);
 		let placements = placements
 			.into_iter()
@@ -936,11 +1049,11 @@ mod tests {
 		assert_eq!(b.0, 10.0 + a.3 + b.2 as f32);
 		assert_eq!(c.0, 10.0 + c.2 as f32);
 		assert!(c.1 > a.1, "second line must sit below the first");
-		let line = text_system.line_metrics(20.0).unwrap();
+		let line = text_system.line_metrics(0, 20.0).unwrap();
 		assert!((c.1 - a.1 - line.line_height).abs() <= 2.0);
 
 		// Measurement uses the same advances as placement.
-		let measured = text_system.measure("AB", 20.0);
+		let measured = text_system.measure("AB", None, 20.0);
 		assert!((measured.x() - (a.3 + b.3)).abs() < 0.001);
 	}
 
@@ -952,7 +1065,7 @@ mod tests {
 		}
 
 		let (index, outline) = text_system
-			.outline('B')
+			.outline(0, 'B')
 			.map(|(index, outline)| (index, outline.clone()))
 			.unwrap();
 		assert!(outline.is_visible());
@@ -972,8 +1085,8 @@ mod tests {
 		// An upright capital stands on the baseline and is about as tall as most of an em.
 		assert!(outline.bounds[1].abs() < 0.05 && outline.bounds[3] > 0.5 && outline.bounds[3] < 1.0);
 
-		assert_eq!(text_system.outline('B').unwrap().0, index);
-		let (_, space) = text_system.outline(' ').unwrap();
+		assert_eq!(text_system.outline(0, 'B').unwrap().0, index);
+		let (_, space) = text_system.outline(0, ' ').unwrap();
 		assert!(!space.is_visible());
 		assert!(space.advance > 0.0);
 	}

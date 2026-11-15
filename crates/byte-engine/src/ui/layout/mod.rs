@@ -69,6 +69,8 @@ pub(crate) struct RenderTextElement {
 	pub(crate) color: RGBA,
 	/// The unscaled font size; glyphs are placed at it times the smaller placement scale.
 	pub(crate) font_size: f32,
+	/// The name of the font to draw with, or `None` for the default.
+	pub(crate) font: Option<&'static str>,
 	pub(crate) content: String,
 }
 
@@ -168,7 +170,7 @@ fn measure_element(element: &IdedElement, available: Size, text: &mut TextSystem
 		Primitives::Curve(curve) => box_size(curve.path.width, curve.path.height, available),
 		Primitives::Path(path) => box_size(path.path.width, path.path.height, available),
 		Primitives::Image(image) => box_size(image.width, image.height, available),
-		Primitives::Text(value) => text.measure(value.content(), value.settings().font_size),
+		Primitives::Text(value) => text.measure(value.content(), value.settings().font, value.settings().font_size),
 	};
 	*cached = Some((element.revision, available, size));
 	size

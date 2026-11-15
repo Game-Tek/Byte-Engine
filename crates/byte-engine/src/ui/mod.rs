@@ -44,7 +44,7 @@ pub use components::{
 pub use drag::{DragCapture, DragDrop};
 pub use element::Id;
 pub use flow::{FlowFunction, FlowInput, FlowOutput, Location, Location3, Offset, Size};
-pub use font::load_font;
+pub use font::{Fonts, load_font};
 pub use layout::{
 	Anchor, Depth, Geometry, Position, Sizing,
 	context::{ContainerContext, Context, ElementContext, ElementKey, ElementSlot},

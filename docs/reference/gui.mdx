@@ -384,9 +384,11 @@ intersected with the clip, and the rotated bounds of turned elements.
 
 ## Text
 
-Text uses the font of the [`Font` resource](/docs/reference/assets#fonts) the
-application gives the UI, or a system font when it gives none or the font
-doesn't parse. Text is drawn from glyph outlines, and measurement and placement use the same
+Text uses the fonts of the [`Font` resources](/docs/reference/assets#fonts) the
+application gives the UI, or a system font when it gives none or a font
+doesn't parse. Each font has a name. A text draws with the font it names, or
+with the first font when it names none; a name no font has draws with the
+first font and is reported once in the log. Text is drawn from glyph outlines, and measurement and placement use the same
 size-independent advances, so layout and drawing never disagree. Text has these
 guarantees:
 

@@ -213,14 +213,28 @@ fn run_on_loading_thread<F: Future<Output = ()> + 'static>(
 	application.add_deferred_task(move |runtime| lanes.into_iter().for_each(|lane| runtime.spawn(lane).detach()));
 }
 
-/// Installs the retained UI render pass fed by UI render messages from `ui`.
+/// Installs a retained UI render pass fed by UI render messages from `ui`.
+///
+/// Each call adds its own pass, which draws its UI over `main` as everything registered before it left it, so a later
+/// call draws over an earlier one: a game's HUD, then a tool such as an editor over the HUD. `name` tells the passes
+/// apart: `render.pass.<name>` enables or bypasses this one, the inspector reports its GPU time under that name, and
+/// its render targets are `<name>` and `<name> layer`. Give every call a different name; see
+/// [Draw one interface over another](/docs/use/gui#draw-one-interface-over-another).
 ///
 /// Register this pass before publishing renders that every sink must observe.
 /// The source subscribes immediately and retains the latest render for sinks
-/// initialized later. `font` is the font file text is drawn with, from [`crate::ui::load_font`], or `None` for a
-/// system font; pass the same bytes to [`crate::ui::Engine::with_font`] so layout and drawing agree.
-pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<Render>, font: Option<std::sync::Arc<[u8]>>) {
+/// initialized later. `fonts` are the fonts text is drawn with, the first being the default, or empty for a system
+/// font; pass the same list to [`crate::ui::Engine::with_fonts`] so layout and drawing agree. See
+/// [`crate::ui::Fonts`].
+pub fn setup_ui_render_pass(
+	application: &mut GraphicsApplication,
+	name: &'static str,
+	ui: &Factory<Render>,
+	fonts: crate::ui::Fonts<'_>,
+) {
 	UiRenderPass::request_pipelines(&application.renderer.pipeline_manager_client());
+	// Each sink builds its pass later, so the pass keeps its own list; cloning it shares the font files.
+	let fonts = fonts.to_vec();
 	let source = std::rc::Rc::new(std::cell::RefCell::new(UiRenderSource::new(ui.listener())));
 	let renderer = &mut application.renderer;
 
@@ -278,7 +292,7 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<
 		Box::new(CustomRenderPass {
 			source: std::rc::Rc::clone(&source),
 			revision: 0,
-			render_pass: UiRenderPass::new(render_pass_builder, font.clone()),
+			render_pass: UiRenderPass::new(render_pass_builder, name, &fonts),
 		})
 	});
 }

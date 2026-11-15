@@ -24,6 +24,7 @@ use ::byte_engine::rendering::visibility::layouts::scene_records::*;
 use ::byte_engine::rendering::visibility::layouts::scene::*;
 use ::byte_engine::rendering::visibility::layouts::screen_view::*;
 use ::byte_engine::rendering::visibility::layouts::sun_visibility::*;
+use ::byte_engine::rendering::visibility::layouts::virtual_shadows::*;
 
 // Returns the view-space position at continuous full-resolution pixel coordinates, where integers are pixel centers.
 sun_view_position: fn (sun_visibility: SunVisibility, pixel: vec2f, z: f32) -> vec3f {
@@ -774,6 +775,181 @@ sample_directional_shadow: fn (
 	return lit;
 }
 
+// Projects a world-space receiver into one level of the virtual shadow map, moved off its surface by `normal_offset`
+// texels of that level. Returns its virtual texel position in x and y, and its depth with a small margin in z: half a
+// texel of the level plus five millimeters, which the plane comparison leaves to rounding alone.
+virtual_shadow_receiver: fn (
+	scene: Scene,
+	sampling: VirtualShadowSampling,
+	level: u32,
+	world_space_position: vec3f,
+	normal_offset: vec3f
+) -> vec3f {
+	let texels_per_meter: f32 = virtual_shadow_texels_per_meter(sampling.sampled_frame.constants, level);
+	let position: vec3f = virtual_shadow_level_position(
+		scene.views.views[1 + level].view_projection, world_space_position + normal_offset / texels_per_meter
+	);
+	let margin: f32 = (0.005 + 0.5 / texels_per_meter) / sampling.sampled_frame.constants.w;
+	return vec3f(position.x, position.y, position.z + margin);
+}
+
+// Returns one of the three candidate levels' values: `first` for offset zero, then `second`, then `third`.
+virtual_shadow_candidate: fn (offset: u32, first: vec3f, second: vec3f, third: vec3f) -> vec3f {
+	if (offset == 0) {
+		return first;
+	}
+	if (offset == 1) {
+		return second;
+	}
+	return third;
+}
+
+// Resolves the sun's shadow from its virtual shadow map, with the cascades' blocker search, penumbra width, and level
+// choice, read from pages. The candidate levels run from the one the receiver's distance from the camera picks to two
+// coarser, the levels the marking gave it pages in. The receiver's level is the first of them that holds it, and it is
+// lit when none does. `surface_vector0`, `surface_vector1`, and `normal_offset` are as `sample_directional_shadow`
+// takes them.
+sample_virtual_shadow: fn (
+	scene: Scene,
+	sampling: VirtualShadowSampling,
+	angular_radius_tangent: f32,
+	world_space_position: vec3f,
+	surface_vector0: vec3f,
+	surface_vector1: vec3f,
+	normal_offset: vec3f
+) -> f32 {
+	let camera: vec4f = sampling.sampled_frame.camera;
+	let constants: vec4f = sampling.sampled_frame.constants;
+	let distance: f32 = length(world_space_position - vec3f(camera.x, camera.y, camera.z));
+	if (distance >= camera.w) {
+		return 1.0;
+	}
+	let first_level: u32 = virtual_shadow_receiver_level(constants, distance);
+	let last_level: u32 = min(first_level + 2, VIRTUAL_SHADOW_LEVELS - 1);
+	// Each candidate's receiver, projected once, and one bit per candidate, from the first, for the ones that hold it.
+	let receiver0: vec3f = virtual_shadow_receiver(scene, sampling, first_level, world_space_position, normal_offset);
+	let receiver1: vec3f = virtual_shadow_receiver(scene, sampling, min(first_level + 1, last_level), world_space_position, normal_offset);
+	let receiver2: vec3f = virtual_shadow_receiver(scene, sampling, last_level, world_space_position, normal_offset);
+	let held: u32 = 0;
+	let depth_level: u32 = VIRTUAL_SHADOW_LEVELS;
+	for (let level: u32 = first_level; level <= last_level; level = level + 1) {
+		let receiver: vec3f = virtual_shadow_candidate(level - first_level, receiver0, receiver1, receiver2);
+		if (virtual_shadow_level_holds(sampling, level, vec2f(receiver.x, receiver.y), receiver.z)) {
+			held = held | (1 << (level - first_level));
+			depth_level = min(depth_level, level);
+		}
+	}
+	if (held == 0) {
+		return 1.0;
+	}
+
+	// The blocker search runs in the first level where occluders up to two meters above the receiver cast penumbrae
+	// within twelve texels, or the last candidate, as `directional_shadow_fitting_cascade` picks a cascade; in the
+	// receiver's level when that one doesn't hold it.
+	let search_level: u32 = last_level;
+	for (let level: u32 = last_level; level > depth_level; level = level - 1) {
+		if (2.0 * angular_radius_tangent * virtual_shadow_texels_per_meter(constants, level - 1) <= 12.0) {
+			search_level = level - 1;
+		}
+	}
+	if ((held & (1 << (search_level - first_level))) == 0) {
+		search_level = depth_level;
+	}
+	let search_receiver: vec3f = virtual_shadow_candidate(search_level - first_level, receiver0, receiver1, receiver2);
+	let texels: f32 = f32(VIRTUAL_SHADOW_RESOLUTION);
+	let search_gradient: vec2f = directional_shadow_receiver_gradient(
+		scene.views.views[1 + search_level].view_projection, surface_vector0, surface_vector1
+	) / texels;
+	let occluder_distance: f32 = virtual_shadow_occluder_distance(
+		sampling, search_level, vec2f(search_receiver.x, search_receiver.y), search_receiver.z, search_gradient
+	);
+	if (search_level == depth_level) {
+		if (occluder_distance <= 0.0 - 2.0) {
+			return 0.0;
+		}
+		if (occluder_distance < 0.0) {
+			return 1.0;
+		}
+	}
+
+	// The penumbra filters in the candidate that holds the receiver where clamping its width to the tent's two to
+	// eight texels changes it least, mixed with the best one on the other side of sqrt(12) texels where the two fit
+	// almost as well, as `sample_directional_shadow` chooses among cascades.
+	let penumbra_meters: f32 = max(occluder_distance, 0.0) * angular_radius_tangent;
+	let fitted_penumbra_meters: f32 = max(penumbra_meters, 0.0001);
+	let last_filter_level: u32 = min(search_level + 1, last_level);
+	let narrow_level: u32 = VIRTUAL_SHADOW_LEVELS;
+	let narrow_misfit: f32 = 100000000.0;
+	let wide_level: u32 = VIRTUAL_SHADOW_LEVELS;
+	let wide_misfit: f32 = 100000000.0;
+	for (let level: u32 = depth_level; level <= last_filter_level; level = level + 1) {
+		if ((held & (1 << (level - first_level))) != 0) {
+			let width: f32 = fitted_penumbra_meters * virtual_shadow_texels_per_meter(constants, level);
+			let misfit: f32 = max(2.0 / width, width / 6.0);
+			if (width * width < 12.0) {
+				if (misfit < narrow_misfit) {
+					narrow_level = level;
+					narrow_misfit = misfit;
+				}
+			} else if (misfit < wide_misfit) {
+				wide_level = level;
+				wide_misfit = misfit;
+			}
+		}
+	}
+	let filter_level: u32 = wide_level;
+	let filter_misfit: f32 = wide_misfit;
+	let partner_level: u32 = narrow_level;
+	let partner_misfit: f32 = narrow_misfit;
+	if (narrow_misfit < wide_misfit || (narrow_misfit == wide_misfit && narrow_level < wide_level)) {
+		filter_level = narrow_level;
+		filter_misfit = narrow_misfit;
+		partner_level = wide_level;
+		partner_misfit = wide_misfit;
+	}
+	let filter_share: f32 = 1.0;
+	let sampled_levels: u32 = 1;
+	if (partner_level != VIRTUAL_SHADOW_LEVELS) {
+		filter_share = min(partner_misfit / filter_misfit - 0.5, 1.0);
+		if (filter_share < 1.0) {
+			sampled_levels = 2;
+		}
+	}
+	let lit: f32 = 0.0;
+	for (let sampled: u32 = 0; sampled < sampled_levels; sampled = sampled + 1) {
+		let level: u32 = filter_level;
+		let share: f32 = filter_share;
+		if (sampled == 1) {
+			level = partner_level;
+			share = 1.0 - filter_share;
+		}
+		let receiver: vec3f = virtual_shadow_candidate(level - first_level, receiver0, receiver1, receiver2);
+		let gradient: vec2f = search_gradient;
+		if (level != search_level) {
+			gradient = directional_shadow_receiver_gradient(
+				scene.views.views[1 + level].view_projection, surface_vector0, surface_vector1
+			) / texels;
+		}
+		// A level other than the search's proves the receiver lit or shadowed itself where it can, since a thin occluder
+		// or gap can vanish at the search's resolution.
+		let proven: f32 = 0.0;
+		if (occluder_distance <= 0.0 && level != search_level) {
+			proven = virtual_shadow_occluder_distance(sampling, level, vec2f(receiver.x, receiver.y), receiver.z, gradient);
+		}
+		let level_lit: f32 = 0.0;
+		if (proven == 0.0 - 1.0) {
+			level_lit = 1.0;
+		} else if (proven != 0.0 - 2.0) {
+			level_lit = virtual_shadow_penumbra(
+				sampling, level, vec2f(receiver.x, receiver.y), receiver.z, gradient,
+				penumbra_meters * virtual_shadow_texels_per_meter(constants, level)
+			);
+		}
+		lit = lit + share * level_lit;
+	}
+	return lit;
+}
+
 // Per tile texel: 1/z of the view depth, which every use of depth below needs, or zero without a surface; and every
 // sun's trace, one per channel.
 shared_inverse_depth: workgroup<f32, 64>;
@@ -838,6 +1014,7 @@ trace_position: fn (pixel: vec2u, full_to_trace_scale: vec2f) -> vec2f {
 resolve_sun_shadow: fn (
 	scene: Scene,
 	sun_visibility: SunVisibility,
+	sampling: VirtualShadowSampling,
 	sun: u32,
 	world_position: vec3f,
 	view_position: vec3f,
@@ -859,6 +1036,12 @@ resolve_sun_shadow: fn (
 	let normal_offset: vec3f = normal * sqrt(max(1.0 - sun_cosine * sun_cosine, 0.0));
 	if (sun_cosine < 0.0) {
 		normal_offset = normal_offset * (0.0 - 1.0);
+	}
+	// Under virtual shadow maps the one shadowed sun samples its pages instead of cascades.
+	if (sun_visibility.sun_visibility_parameters.virtual_shadows != 0) {
+		return sample_virtual_shadow(
+			scene, sampling, sun_visibility.sun_visibility_parameters.suns[sun].w, world_position, edge0, edge1, normal_offset
+		);
 	}
 	let first_cascade: u32 = sun * 4;
 	return sample_directional_shadow(
@@ -889,7 +1072,7 @@ resolve_sun_shadow: fn (
 	);
 }
 
-main: fn (input: StageInput, scene: Scene, sun_visibility: SunVisibility) -> void {
+main: fn (input: StageInput, scene: Scene, sun_visibility: SunVisibility, sampling: VirtualShadowSampling) -> void {
 	let pixel: vec2u = input.thread_id;
 	let extent: vec2u = image_size(sun_visibility.sun_visibility_output);
 	// Mip zero of the depth pyramid is at the trace resolution, so its size is the trace grid without reading the trace.
@@ -967,7 +1150,7 @@ main: fn (input: StageInput, scene: Scene, sun_visibility: SunVisibility) -> voi
 	// One loop resolves every sun, so the resolve is compiled once instead of once per sun slot.
 	let suns: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	for (let sun: u32 = 0; sun < sun_count; sun = sun + 1) {
-		suns[sun] = resolve_sun_shadow(scene, sun_visibility, sun, world_position, view_position, edge0, edge1, normal, view_normal);
+		suns[sun] = resolve_sun_shadow(scene, sun_visibility, sampling, sun, world_position, view_position, edge0, edge1, normal, view_normal);
 	}
 	// A pixel every shadow map fully shadows needs no contact shadow.
 	if (max(max(suns.x, suns.y), max(suns.z, suns.w)) <= 0.0) {

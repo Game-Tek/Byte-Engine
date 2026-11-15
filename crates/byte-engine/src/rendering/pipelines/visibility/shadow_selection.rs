@@ -16,6 +16,7 @@ use super::layout::{
 	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_MAP_FORMAT, POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT,
 	local_shadow_map_resolution,
 };
+use super::virtual_shadows::DirectionalShadowTechnique;
 use crate::gameplay::Transform;
 use crate::rendering::lights::{ConeLight, Lights, LocalEmission, PointLight};
 use crate::rendering::{Sink, View};
@@ -36,8 +37,10 @@ pub(crate) const SHADOW_EXPOSURE_THRESHOLD_LUX: f32 = 0.125;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ShadowBudget {
 	pub(crate) bytes: u64,
-	/// One sun's cascades.
+	/// One sun's cascades, or nothing when suns cast shadows through a virtual shadow map, which has its own pool.
 	pub(crate) directional_bytes: u64,
+	/// Whether suns cast shadows through a virtual shadow map instead of cascades.
+	pub(crate) virtual_suns: bool,
 	/// One cone map of each size class.
 	pub(crate) cone_bytes: [u64; LOCAL_SHADOW_SIZE_CLASS_COUNT],
 	/// One point light's six cube faces of each size class.
@@ -45,14 +48,20 @@ pub(crate) struct ShadowBudget {
 }
 
 impl ShadowBudget {
-	/// Prices each light kind for a budget of `mebibytes` and directional cascades of `cascade_resolution` texels per
-	/// side.
-	pub(crate) fn new(mebibytes: u32, cascade_resolution: u32) -> Self {
+	/// Prices each light kind for a budget of `mebibytes`, directional cascades of `cascade_resolution` texels per side,
+	/// and suns that cast shadows by `technique`.
+	pub(crate) fn new(mebibytes: u32, cascade_resolution: u32, technique: DirectionalShadowTechnique) -> Self {
 		let map_bytes =
 			|format: ghi::Formats, resolution: u32| format.size() as u64 * u64::from(resolution) * u64::from(resolution);
+		let virtual_suns = technique == DirectionalShadowTechnique::Virtual;
 		Self {
 			bytes: u64::from(mebibytes) << 20,
-			directional_bytes: map_bytes(DIRECTIONAL_SHADOW_MAP_FORMAT, cascade_resolution) * SHADOW_CASCADE_COUNT as u64,
+			directional_bytes: if virtual_suns {
+				0
+			} else {
+				map_bytes(DIRECTIONAL_SHADOW_MAP_FORMAT, cascade_resolution) * SHADOW_CASCADE_COUNT as u64
+			},
+			virtual_suns,
 			cone_bytes: std::array::from_fn(|size_class| {
 				map_bytes(CONE_SHADOW_MAP_FORMAT, local_shadow_map_resolution(size_class))
 			}),
@@ -60,6 +69,11 @@ impl ShadowBudget {
 				map_bytes(POINT_SHADOW_MAP_FORMAT, local_shadow_map_resolution(size_class)) * POINT_SHADOW_FACE_COUNT as u64
 			}),
 		}
+	}
+
+	/// Returns the most suns that cast shadows: the one a virtual shadow map holds, or four suns' cascades.
+	pub(crate) fn suns(&self) -> usize {
+		if self.virtual_suns { 1 } else { MAX_DIRECTIONAL_SHADOW_COUNT }
 	}
 
 	/// Returns the bytes the shadow maps of `layout` occupy.
@@ -147,6 +161,8 @@ pub(crate) enum LightShadow {
 	Directional {
 		slot: u32,
 	},
+	/// The sun of the virtual shadow map, in sun slot zero.
+	Virtual,
 	/// `layer` is the light's layer of the cone image of its size class.
 	Cone {
 		view_index: u32,
@@ -218,6 +234,8 @@ pub(crate) struct ShadowLightSelection<'a> {
 	pub(crate) points: SmallVec<[LocalShadow<'a, PointLight>; MAX_POINT_SHADOW_COUNT]>,
 	/// Directional lights, and local lights some sink sees, that are lit but hold no shadow map this frame.
 	pub(crate) unshadowed_count: usize,
+	/// Whether the suns cast shadows through a virtual shadow map, so the shadow-map images hold no cascades for them.
+	pub(crate) virtual_suns: bool,
 	/// Every selected light's shadow, sorted by light index, so the lighting upload looks each light up once.
 	assignments: SmallVec<[(usize, LightShadow); SHADOW_ASSIGNMENTS_INLINE]>,
 }
@@ -227,7 +245,7 @@ impl ShadowLightSelection<'_> {
 	/// each class uses.
 	pub(crate) fn layout(&self) -> ShadowLayout {
 		let mut layout = ShadowLayout {
-			suns: self.suns.len(),
+			suns: if self.virtual_suns { 0 } else { self.suns.len() },
 			..ShadowLayout::default()
 		};
 		for cone in &self.cones {
@@ -279,7 +297,14 @@ impl ShadowLightSelection<'_> {
 			.suns
 			.iter()
 			.enumerate()
-			.map(|(slot, sun)| (sun.index, LightShadow::Directional { slot: slot as u32 }))
+			.map(|(slot, sun)| {
+				let shadow = if self.virtual_suns {
+					LightShadow::Virtual
+				} else {
+					LightShadow::Directional { slot: slot as u32 }
+				};
+				(sun.index, shadow)
+			})
 			.collect();
 		for (position, cone) in self.cones.iter().enumerate() {
 			let shadow = LightShadow::Cone {
@@ -614,7 +639,10 @@ pub(crate) fn select_shadow_lights<'a>(
 	intensity_scale_candela: impl Fn(usize) -> f32,
 	previous_slots: &[ShadowSlot],
 ) -> ShadowLightSelection<'a> {
-	let mut selection = ShadowLightSelection::default();
+	let mut selection = ShadowLightSelection {
+		virtual_suns: budget.virtual_suns,
+		..ShadowLightSelection::default()
+	};
 	if sinks.is_empty() {
 		return selection;
 	}
@@ -647,7 +675,7 @@ pub(crate) fn select_shadow_lights<'a>(
 		let ranked = match light {
 			Lights::Direction(light) => {
 				shadow_casters += 1;
-				if suns.len() < MAX_DIRECTIONAL_SHADOW_COUNT {
+				if suns.len() < budget.suns() {
 					suns.push(SunShadow {
 						index,
 						direction: math::direction_from_orientation(transform.orientation()),
@@ -813,6 +841,7 @@ mod tests {
 		ShadowBudget {
 			bytes,
 			directional_bytes: 8,
+			virtual_suns: false,
 			cone_bytes: [1; LOCAL_SHADOW_SIZE_CLASS_COUNT],
 			point_bytes: [6; LOCAL_SHADOW_SIZE_CLASS_COUNT],
 		}

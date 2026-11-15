@@ -3895,6 +3895,8 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 	let tile = || Settings::compute(Extent::square(8));
 	// The surfel passes that run one thread per pool slot or scan element.
 	let surfel_slots = || Settings::compute(Extent::line(256));
+	// The virtual shadow map's line-shaped page passes.
+	let line = || Settings::compute(Extent::line(64));
 	for (name, source, settings) in [
 		(
 			"meshlet_task",
@@ -3905,6 +3907,12 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 		("masked_visibility_mesh", asset_source!("masked-visibility-mesh.besl"), mesh()),
 		("shadow_mesh", asset_source!("shadow-mesh.besl"), mesh()),
 		("masked_shadow_mesh", asset_source!("masked-shadow-mesh.besl"), mesh()),
+		("virtual_shadow_mesh", asset_source!("virtual-shadow-mesh.besl"), mesh()),
+		(
+			"virtual_shadow_fragment",
+			asset_source!("virtual-shadow-fragment.besl"),
+			Settings::fragment(),
+		),
 		(
 			"visibility_fragment",
 			asset_source!("visibility-fragment.besl"),
@@ -4011,6 +4019,34 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 		),
 		("probe_update", asset_source!("probe-update.besl"), surfel_slots()),
 		("probe_resolve", asset_source!("probe-resolve.besl"), tile()),
+		("virtual_shadow_free", asset_source!("virtual-shadow-free.besl"), line()),
+		(
+			"virtual_shadow_invalidate",
+			asset_source!("virtual-shadow-invalidate.besl"),
+			line(),
+		),
+		("virtual_shadow_mark", asset_source!("virtual-shadow-mark.besl"), tile()),
+		(
+			"virtual_shadow_find_free",
+			asset_source!("virtual-shadow-find-free.besl"),
+			line(),
+		),
+		(
+			"virtual_shadow_allocate",
+			asset_source!("virtual-shadow-allocate.besl"),
+			line(),
+		),
+		("virtual_shadow_clear", asset_source!("virtual-shadow-clear.besl"), line()),
+		(
+			"virtual_shadow_hierarchy",
+			asset_source!("virtual-shadow-hierarchy.besl"),
+			Settings::compute(Extent::line(256)),
+		),
+		(
+			"virtual_shadow_cells",
+			asset_source!("virtual-shadow-cells.besl"),
+			Settings::compute(Extent::line(256)),
+		),
 	] {
 		let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
 		// Baking gives every standalone shader the common helpers, such as `source_over`.
@@ -4748,6 +4784,7 @@ main: fn (input: StageInput) -> void {{
 }
 
 mod surfel_gi;
+mod virtual_shadows;
 
 /// A capacity with room for exactly two [`geometry_fixture_mesh`] meshes in every stream.
 fn two_mesh_geometry_capacity() -> GeometryCapacity {
@@ -5475,7 +5512,10 @@ fn subsurface_bleeds_less_across_a_step_in_depth() {
 	}
 	let across_flat = flat.run(&program, [8, 8])[0];
 	let across_step = stepped.run(&program, [8, 8])[0];
-	assert!(across_flat > 0.05, "expected light to bleed across a flat edge, found {across_flat}");
+	assert!(
+		across_flat > 0.05,
+		"expected light to bleed across a flat edge, found {across_flat}"
+	);
 	assert!(
 		across_step < across_flat * 0.25,
 		"expected a step in depth to cut the bleed, found {across_step} against {across_flat}"

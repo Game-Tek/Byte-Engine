@@ -886,6 +886,20 @@ mod tests {
 		compile(&shader, "besl-ray-queries");
 	}
 
+	/// Verifies both image atomics lower to GLSL image atomic functions on integer texel coordinates.
+	#[test]
+	fn image_atomics_lower_to_glsl() {
+		let shader = lower_fixture(
+			super::super::IMAGE_ATOMICS,
+			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
+		);
+		assert_string_contains!(shader, "imageAtomicOr(");
+		assert_string_contains!(shader, "imageAtomicMax(");
+		assert_string_contains!(shader, "uvec4(previous_depth))");
+
+		compile(&shader, "besl-image-atomics");
+	}
+
 	/// Compiles generated GLSL to SPIR-V on Linux so a lowering that glslang rejects fails the test.
 	fn compile(shader: &str, name: &str) {
 		#[cfg(target_os = "linux")]

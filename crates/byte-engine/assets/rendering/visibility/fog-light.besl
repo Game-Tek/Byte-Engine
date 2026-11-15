@@ -175,7 +175,8 @@ directional_light: fn (
 	let travel: vec3f = fog_light.lighting_data.lights[light_index].position;
 	let scattering: f32 = phase(fog_light, dot(direction, vec3f(0.0, 0.0, 0.0) - travel));
 	let first_view: u32 = fog_light.lighting_data.lights[light_index].shadow_view_0;
-	if (first_view == 0) {
+	// A sun under virtual shadow maps has no cascades, and lights its fog unshadowed for now.
+	if (first_view == 0 || fog_light.lighting_data.lights[light_index].virtual_shadow != 0) {
 		return scattering * (1.0 - full_transmittance);
 	}
 	// The shadow reaches the far end of the last cascade along the camera's view axis.

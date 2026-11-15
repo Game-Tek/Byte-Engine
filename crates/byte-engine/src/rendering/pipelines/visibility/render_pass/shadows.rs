@@ -19,7 +19,9 @@ use super::super::mesh_dispatch::PhaseDispatches;
 use super::super::shader_data::ShaderViewData;
 use super::super::shadow_selection::{ShadowLayout, SunShadow};
 use super::super::shadow_updates::{ShadowDraw, ShadowDraws, ShadowImage};
+use super::super::virtual_shadows::{DirectionalShadowTechnique, VirtualShadowSettings};
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
+use super::virtual_shadows::VirtualShadowMaps;
 use super::{
 	ComputeStage, OcclusionPhase, Pipelines, StageCounters, opaque_layer_pipelines, record_compute_stages,
 	record_meshlet_dispatches,
@@ -212,6 +214,8 @@ pub(crate) struct ShadowMaps {
 	pub(crate) cone: [ghi::BaseImageHandle; LOCAL_SHADOW_SIZE_CLASS_COUNT],
 	/// One image per size class, the smallest first.
 	pub(crate) point: [ghi::BaseImageHandle; LOCAL_SHADOW_SIZE_CLASS_COUNT],
+	/// The first sun's virtual shadow map, which it samples instead of cascades under the virtual technique.
+	pub(crate) virtual_maps: VirtualShadowMaps,
 }
 
 /// The fewest layers the cone image keeps: Metal requires two to create the array texture that material evaluation
@@ -226,7 +230,9 @@ fn depth_pyramid_extent(resolution: u32, suns: usize) -> Extent {
 }
 
 impl ShadowMaps {
-	/// Creates the shadow maps and requests their depth pipelines. `resolution` sizes the cascade depth pyramid for
+	/// Creates the shadow maps and requests their depth pipelines. `technique` and `virtual_settings` decide whether the
+	/// first sun gets a virtual shadow map and how large its pool is, and `instance_capacity` how many instance records
+	/// its invalidation follows. `resolution` sizes the cascade depth pyramid for
 	/// cascades of that many texels per side, a multiple of 16 so the pyramid reduces them in whole cells; every frame's
 	/// [`ShadowWork::cascade_resolution`] draws them at it. Every map image starts empty, and [`Self::prepare`] sizes
 	/// it to the maps the budget gives it.
@@ -238,6 +244,9 @@ impl ShadowMaps {
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		resolution: u32,
+		technique: DirectionalShadowTechnique,
+		virtual_settings: VirtualShadowSettings,
+		instance_capacity: u32,
 	) -> Self {
 		fn depth_map(format: ghi::Formats, name: &str) -> ghi::image::Builder<'_> {
 			ghi::image::Builder::new(format, ghi::Uses::DepthStencil | ghi::Uses::Image)
@@ -297,6 +306,13 @@ impl ShadowMaps {
 			directional_depth_minimum_pyramid,
 			cone,
 			point,
+			virtual_maps: VirtualShadowMaps::new(
+				context,
+				pipeline_manager,
+				technique == DirectionalShadowTechnique::Virtual,
+				virtual_settings,
+				instance_capacity,
+			),
 		}
 	}
 
@@ -330,7 +346,8 @@ impl ShadowMaps {
 			coverage.map(|coverage| coverage.local),
 		);
 		let [depth_pyramid_pipeline] = self.depth_pyramid_pipeline.resolve(pipeline_manager)?;
-		let cascade_count = SHADOW_CASCADE_COUNT * work.suns.len();
+		// The layout counts only the suns that draw cascades, none under virtual shadow maps.
+		let cascade_count = SHADOW_CASCADE_COUNT * work.suns.len().min(work.layout.suns);
 		let runs = shadow_runs(&work.draws);
 		// One thread per 4x4 texel block: each SIMD-width workgroup reduces four by two cells, four threads per cell.
 		let depth_pyramid = ComputeStage {
@@ -431,7 +448,7 @@ impl ShadowMaps {
 				let (first_view, count) = (run.first_view as usize, run.count as usize);
 				record_meshlet_dispatches(
 					c,
-					descriptor_sets,
+					&descriptor_sets,
 					OcclusionPhase::Disabled,
 					ranges,
 					first_view,

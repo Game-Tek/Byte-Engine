@@ -526,8 +526,27 @@ impl Node {
 				void.clone(),
 			),
 			builtin_intrinsic("output_extent", vec![], vec2u32.clone()),
+			// Writes one unsigned texel of an `r32ui` storage image, the counterpart of `image_load_u32`.
+			builtin_intrinsic(
+				"write_u32",
+				vec![
+					("image", texture_2d.clone()),
+					("coord", vec2u32.clone()),
+					("value", u32_t.clone()),
+				],
+				void.clone(),
+			),
 			builtin_intrinsic(
 				"image_atomic_or",
+				vec![
+					("image", texture_2d.clone()),
+					("coord", vec2u32.clone()),
+					("value", u32_t.clone()),
+				],
+				u32_t.clone(),
+			),
+			builtin_intrinsic(
+				"image_atomic_max",
 				vec![("image", texture_2d), ("coord", vec2u32), ("value", u32_t.clone())],
 				u32_t.clone(),
 			),

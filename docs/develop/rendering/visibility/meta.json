@@ -10,6 +10,7 @@
 		"shadow-maps",
 		"skinning",
 		"surfel-gi",
-		"transparent-phase"
+		"transparent-phase",
+		"virtual-shadow-maps"
 	]
 }

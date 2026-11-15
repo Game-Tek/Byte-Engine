@@ -1,0 +1,1 @@
+{"name":"Virtual Shadow Pass","kind":{"type":"raster","shaders":["byte_engine/rendering/visibility/meshlet-task.besl","byte_engine/rendering/visibility/virtual-shadow-mesh.besl","byte_engine/rendering/visibility/virtual-shadow-fragment.besl"],"push_constants":[{"offset":0,"size":28}],"attachments":[]}}

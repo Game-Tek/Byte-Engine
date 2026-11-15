@@ -1,0 +1,33 @@
+// Writes each newly drawn page's cells: per 8x8 texels, the depth farthest from the light and the depth nearest it. The
+// samplers' fully-lit and fully-shadowed probes and blocker search read them, as the cascades' read their depth
+// pyramids. It also clears the page's dirty flag, so a later sink and later frames keep its depth. One workgroup per
+// request, one thread per cell.
+
+use ::byte_engine::rendering::visibility::layouts::virtual_shadows::*;
+
+main: fn (input: StageInput, pages: VirtualShadowPages) -> void {
+	let request: u32 = threadgroup_position();
+	let entry: u32 = atomic_load(pages.page_table.entries[pages.requests.slots[request]]);
+	if ((entry & PAGE_ALLOCATED) == 0) {
+		return;
+	}
+	if (input.thread_idx == 0) {
+		atomic_and(pages.page_table.entries[pages.requests.slots[request]], 4294967295 - PAGE_DIRTY);
+	}
+	let physical: u32 = entry & PAGE_PHYSICAL_MASK;
+	let cell: vec2u = vec2u(input.thread_idx % VIRTUAL_SHADOW_PAGE_CELLS, input.thread_idx / VIRTUAL_SHADOW_PAGE_CELLS);
+	let origin: vec2u = virtual_shadow_physical_origin(pages.page_frame.pool_pages_per_row, physical) + vec2u(cell.x * VIRTUAL_SHADOW_CELL_TEXELS, cell.y * VIRTUAL_SHADOW_CELL_TEXELS);
+	let nearest: u32 = 0;
+	let farthest: u32 = 4294967295;
+	for (let y: u32 = 0; y < VIRTUAL_SHADOW_CELL_TEXELS; y = y + 1) {
+		for (let x: u32 = 0; x < VIRTUAL_SHADOW_CELL_TEXELS; x = x + 1) {
+			let code: u32 = image_load_u32(pages.pool, origin + vec2u(x, y));
+			nearest = max(nearest, code);
+			farthest = min(farthest, code);
+		}
+	}
+	// Reversed depth: the largest is nearest the light, which is a cell's occluder depth for the probes.
+	pages.page_cells[physical * VIRTUAL_SHADOW_PAGE_CELLS * VIRTUAL_SHADOW_PAGE_CELLS + input.thread_idx] = vec2f(
+		decode_virtual_shadow_depth(nearest), decode_virtual_shadow_depth(farthest)
+	);
+}

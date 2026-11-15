@@ -222,7 +222,9 @@ pub struct LightData {
 	/// The size class of a cone or point light's shadow map, which picks the image of that class. See
 	/// [`super::layout::LOCAL_SHADOW_SIZE_CLASS_COUNT`].
 	pub(crate) shadow_size_class: u32,
-	pub(crate) _padding: [u32; 3],
+	/// Nonzero for the sun whose shadow lies in the virtual shadow map's pages instead of cascades.
+	pub(crate) virtual_shadow: u32,
+	pub(crate) _padding: [u32; 2],
 	/// A sun's slot, a cone's layer, or a point's cube within the image of its size class.
 	pub shadow_layer: u32,
 	pub(crate) ies_profile: u32,

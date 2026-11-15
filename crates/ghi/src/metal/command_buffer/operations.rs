@@ -410,6 +410,14 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		if layered {
 			rpd.setRenderTargetArrayLength(render_target_array_length as _);
 		}
+		// A pass without attachments rasterizes at the extent the caller gives, with one sample per pixel. Its fragments
+		// write only through storage resources, such as image atomics.
+		if attachments.is_empty() {
+			rpd.setRenderTargetWidth(extent.width() as _);
+			rpd.setRenderTargetHeight(extent.height() as _);
+			// SAFETY: one sample per pixel is a count every Metal device supports.
+			unsafe { rpd.setDefaultRasterSampleCount(1) };
+		}
 
 		let mut color_index = 0;
 		for (attachment, surface, view) in &attachments {

@@ -300,3 +300,17 @@ The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves th
 - Dispatch the subsurface pass only over subsurface pixels, through the material pixel lists or tiles marked during material evaluation, instead of over the whole screen, and skip it in frames that draw no subsurface material.
 - Shade subsurface materials in surfel and probe GI hits; `material_hit_body` only reads albedo and emission.
 - Rotate the subsurface sample disk per pixel once the engine has temporal anti-aliasing, as Golubev does, to trade the fixed pattern's faint structure at large radii for noise TAA removes.
+
+## Virtual shadow maps (deferred)
+
+- Sample the virtual shadow map for transparent receivers and the fog march; both get no sun shadow under `virtual` today. Fog and transparent receivers also need pages marked, or a fallback to the nearest coarser level that holds one.
+- Mark pages from every sink's receivers, not only the first sink's, so a second camera's shadows don't depend on what the first one sees.
+- Free pages under skinned instances every frame they receive a pose; today a pose leaves the pages drawn with an earlier one.
+- Alpha-test masked casters in the page draw; they cast as if opaque.
+- Report a metric per page pass inside `stage.virtual-shadow-maps`.
+- Read the penumbra filter's texels in 4 × 4 blocks with gathers when a block lies inside one page, as the cascades do; the resolve fetches each texel through its page (about 3 ms against 1.4 ms for cascades in the quarry, debug build).
+- Cut the page draw's fixed cost: 1.5 ms in the quarry with a still camera, nearly all the task stage testing every instance against 16 levels. Skip levels with no dirty page, or raise `MAX_TASK_VIEWS` to 16 so one dispatch covers every level.
+- Shadow more than one directional light, with page table layers per light.
+- Quantize the sun direction that shadows use: a slowly turning sun frees every page each frame, as in the chapter.
+- Cone and point lights on the page pool, using the thesis's mip chains.
+- Per-level detail-level selection for the page draw.

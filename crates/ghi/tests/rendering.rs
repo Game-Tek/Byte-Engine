@@ -206,6 +206,11 @@ fn raster_pipeline_can_disable_depth_writes() {
 }
 
 #[test]
+fn render_pass_without_attachments_writes_through_image_atomics() {
+	run(raster::render_without_attachments_through_image_atomics);
+}
+
+#[test]
 fn change_frames_in_flight() {
 	run(resources::change_frames);
 }

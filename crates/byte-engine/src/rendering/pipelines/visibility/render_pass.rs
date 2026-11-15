@@ -22,6 +22,7 @@ mod ssgi;
 mod subsurface;
 mod sun_visibility;
 mod surfel_gi;
+mod virtual_shadows;
 mod visibility;
 
 use ghi::context::{Context as _, ContextCreate as _};
@@ -115,14 +116,16 @@ pub(super) fn opaque_layer_pipelines(
 /// Records one mesh dispatch per non-empty work range and batch of up to [`MAX_TASK_VIEWS`] views. The batches draw
 /// `view_count` packed views from `view_base` into consecutive layers from zero.
 ///
-/// `descriptor_sets` are the base set and a sink's [`OcclusionCulling::descriptor_set`]. The shared task shader declares
-/// the occlusion resources, so every pass binds them, but only `occlusion` other than [`OcclusionPhase::Disabled`] uses
-/// them. `minimum_caster_extent` is the narrowest instance, in normalized device units across x, that orthographic views
-/// draw; pass zero for perspective views and to draw every size. Call it inside a render pass whose attachments hold
-/// `view_count` layers, or one unlayered target for one view.
+/// `descriptor_sets` start with the base set and a sink's [`OcclusionCulling::descriptor_set`]; a pass whose fragment
+/// stage reads more sets appends them. The shared task shader declares the occlusion resources, so every pass binds
+/// them, but only `occlusion` other than [`OcclusionPhase::Disabled`] uses them. `minimum_caster_extent` is the
+/// narrowest instance, in normalized device units across x, that orthographic views draw; pass zero for perspective
+/// views and to draw every size. Call it inside a render pass whose attachments hold `view_count` layers, one unlayered
+/// target for one view, or no attachments when the fragment stage writes through atomics, as the virtual shadow page
+/// draw does.
 pub(super) fn record_meshlet_dispatches(
 	c: &mut impl ghi::command_buffer::RasterizationRenderPassMode,
-	descriptor_sets: [ghi::DescriptorSetHandle; 2],
+	descriptor_sets: &[ghi::DescriptorSetHandle],
 	occlusion: OcclusionPhase,
 	ranges: impl IntoIterator<Item = (MeshDispatch, Option<ghi::PipelineHandle>)>,
 	view_base: usize,
@@ -139,7 +142,7 @@ pub(super) fn record_meshlet_dispatches(
 			unreachable!("A work range that holds instances has a pipeline: masked instances wait for the coverage shaders.");
 		};
 		let c = c.bind_raster_pipeline(pipeline);
-		c.bind_descriptor_sets(&descriptor_sets);
+		c.bind_descriptor_sets(descriptor_sets);
 		// The large instances' workgroups, then the ones small instances' meshlets share. The GPU counted both, so a
 		// range without work dispatches no workgroups.
 		for shared_lanes in [0, 1] {
@@ -208,6 +211,7 @@ pub(crate) use self::surfel_gi::{
 	DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET, MAX_SURFEL_RAY_BUDGET, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
 	SurfelFrame, SurfelGiSettings, SurfelLight, SurfelPool, SurfelPoolCounts, SurfelTargets, create_surfel_targets,
 };
+pub(crate) use self::virtual_shadows::VirtualShadowMark;
 use self::visibility::{VisibilityPass, VisibilityPhase};
 #[cfg(test)]
 pub(crate) use self::{
@@ -223,6 +227,7 @@ use super::scene::RenderInfo;
 use super::set_layouts;
 use super::shader_data::LightingData;
 use super::skinning::SkinningPass;
+use super::virtual_shadows::ShaderVirtualShadowFrame;
 use crate::configuration::{Accepts, Setting};
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassFunction};
 use crate::rendering::{PipelineManagerClient, ShownDebugViews, Sink, View};
@@ -238,6 +243,8 @@ pub(crate) struct FrameWork<'a> {
 	pub(crate) mesh_work: &'a MeshWork,
 	/// Draws the shadow maps every sink samples.
 	pub(crate) shadows: &'a ShadowMaps,
+	/// The frame's virtual shadow map placement and changed records, under the virtual technique.
+	pub(crate) virtual_shadows: Option<ShaderVirtualShadowFrame>,
 	/// Builds the acceleration structures surfel GI or probe GI traces, in frames they light.
 	pub(crate) acceleration_structures: Option<AccelerationStructureWork<'a>>,
 	/// Brings the generated environment up to date before any ray reads it.
@@ -256,6 +263,8 @@ pub(crate) struct StageCounters {
 	shadow_maps: ghi::CounterHandle,
 	/// The max-depth pyramid built from the directional cascades.
 	shadow_depth_pyramid: ghi::CounterHandle,
+	/// The virtual shadow map's page passes and page draw.
+	virtual_shadow_maps: ghi::CounterHandle,
 	light_clusters: ghi::CounterHandle,
 	visibility_early: ghi::CounterHandle,
 	occlusion_pyramid: ghi::CounterHandle,
@@ -306,6 +315,7 @@ impl StageCounters {
 			skinning: builder.create_gpu_counter("skinning"),
 			shadow_maps: builder.create_gpu_counter("shadow-maps"),
 			shadow_depth_pyramid: builder.create_gpu_counter("shadow-depth-pyramid"),
+			virtual_shadow_maps: builder.create_gpu_counter("virtual-shadow-maps"),
 			light_clusters: builder.create_gpu_counter("light-clusters"),
 			visibility_early: builder.create_gpu_counter("visibility-early"),
 			occlusion_pyramid: builder.create_gpu_counter("occlusion-pyramid"),
@@ -578,6 +588,8 @@ pub(crate) struct VisibilityRenderPass {
 	material_evaluation: MaterialEvaluationPass,
 	fog_light: FogLightPass,
 	stage_counters: StageCounters,
+	/// This sink's marking of the virtual shadow map's pages, under the virtual technique.
+	virtual_shadow_mark: Option<VirtualShadowMark>,
 	/// Which material debug views to write this frame; see `MATERIAL_DEBUG_VIEWS`.
 	debug_views: crate::rendering::DebugViews,
 }
@@ -638,7 +650,17 @@ impl VisibilityRenderPass {
 			cascade_fit.receiver_bounds(),
 			cascade_fit.receiver_fit_parameters(),
 		);
-		let occlusion = OcclusionCulling::new(context, &pipeline_manager, depth, meshlet_groups);
+		let occlusion = OcclusionCulling::new(
+			context,
+			&pipeline_manager,
+			depth,
+			meshlet_groups,
+			shadow_maps.virtual_maps.page_hierarchy,
+		);
+		let virtual_shadow_mark = shadow_maps
+			.virtual_maps
+			.enabled()
+			.then(|| shadow_maps.virtual_maps.create_mark(context, depth));
 		// The diffuse radiance history exists exactly when the project builds SSGI in.
 		let ssgi = targets.diffuse_radiance_history.map(|diffuse_radiance_history| {
 			SsgiPass::new(
@@ -805,6 +827,7 @@ impl VisibilityRenderPass {
 			reflections,
 			backdrop,
 			stage_counters,
+			virtual_shadow_mark,
 			pipeline_manager,
 			debug_views,
 		}
@@ -852,6 +875,26 @@ impl VisibilityRenderPass {
 		let receiver_fit = match frame_work {
 			Some(_) => shadow_work.receiver_fit.as_slice(),
 			None => &[],
+		};
+		let virtual_shadows = match (frame_work, &self.virtual_shadow_mark) {
+			(
+				Some(FrameWork {
+					shadows: shadow_maps,
+					virtual_shadows: Some(data),
+					..
+				}),
+				Some(mark),
+			) => Some(shadow_maps.virtual_maps.prepare(
+				frame,
+				pipeline_manager,
+				data,
+				mark,
+				sink,
+				dispatches,
+				self.visibility.descriptor_sets,
+				self.stage_counters.virtual_shadow_maps,
+			)?),
+			_ => None,
 		};
 		let (skinning, mesh_work, shadows) = match frame_work {
 			Some(FrameWork {
@@ -1118,6 +1161,11 @@ impl VisibilityRenderPass {
 			}
 			// The depth pyramid also finds the directional shadow receiver bounds the cascade fit shrinks to.
 			c.counter(counters.depth_pyramid, &depth_pyramid);
+			// The virtual shadow map's pages follow this sink's receivers, so they are marked and drawn once its depth
+			// exists, before the sun visibility resolve samples them. The recording times itself.
+			if let Some(virtual_shadows) = &virtual_shadows {
+				virtual_shadows(c);
+			}
 			if fits_receivers {
 				c.counter(counters.cascade_fit, &cascade_fit);
 				if let Some(shadows) = &shadows {

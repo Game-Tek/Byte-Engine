@@ -84,6 +84,7 @@ pub(crate) static ENGINE_MODULES: &[(&str, &str)] = engine_modules![
 	"visibility/layouts/surfel_spatial.besl",
 	"visibility/layouts/surfel_temporal.besl",
 	"visibility/layouts/visibility_buffer.besl",
+	"visibility/layouts/virtual_shadows.besl",
 ];
 
 /// Returns the source of `file`, a module's path from the asset root, from a table of embedded modules such as

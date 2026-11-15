@@ -1,0 +1,413 @@
+// The state of a virtual shadow map, which the page passes, the page draw, and the samplers share: the page table, the
+// physical pages' owners and origins, the pool of depth texels, and the per-frame placement. See `virtual_shadows.rs`
+// and the design note `docs/develop/rendering/visibility/virtual-shadow-maps.mdx`.
+//
+// One light's clipmap has VIRTUAL_SHADOW_LEVELS levels of VIRTUAL_SHADOW_PAGES x VIRTUAL_SHADOW_PAGES pages. A level's
+// page `(x, y)` on its world-fixed grid lives in page table slot `(x mod 32, y mod 32)`, so scrolling a level reuses
+// the slots its pages left. Page grid coordinates carry a bias of 2^20, a multiple of 32, so
+// they stay positive and the slot is the remainder of an unsigned division.
+
+use ::byte_engine::rendering::visibility::layouts::screen_view::*;
+
+VIRTUAL_SHADOW_LEVELS: const u32 = 16;
+VIRTUAL_SHADOW_PAGES: const u32 = 32;
+VIRTUAL_SHADOW_PAGE_TEXELS: const u32 = 128;
+VIRTUAL_SHADOW_RESOLUTION: const u32 = 4096;
+VIRTUAL_SHADOW_TABLE_ENTRIES: const u32 = 16384;
+// Each level's page hierarchy: 32x32, 16x16, 8x8, 4x4, 2x2, and 1x1 entries, finest first.
+VIRTUAL_SHADOW_HIERARCHY_ENTRIES: const u32 = 1365;
+VIRTUAL_SHADOW_HIERARCHY_MIPS: const u32 = 6;
+// Each page's min and max depth cells cover 8x8 texels, 16x16 cells a page.
+VIRTUAL_SHADOW_CELL_TEXELS: const u32 = 8;
+VIRTUAL_SHADOW_PAGE_CELLS: const u32 = 16;
+// How far around a receiver its blocker search and penumbra filter read, in texels of a level.
+VIRTUAL_SHADOW_RECEIVER_REACH: const f32 = 16.0;
+// Workgroup width of the line-shaped page passes.
+VIRTUAL_SHADOW_LINE_WORKGROUP: const u32 = 64;
+
+// A page table entry: flags in the top bits and the physical page in the low sixteen. These follow the chapter's code.
+PAGE_ALLOCATED: const u32 = 2147483648;
+PAGE_REQUESTED: const u32 = 1073741824;
+PAGE_DIRTY: const u32 = 268435456;
+PAGE_VISITED: const u32 = 134217728;
+PAGE_PHYSICAL_MASK: const u32 = 65535;
+// A physical page's owner: whether it holds a page, whether a receiver needed it this frame, and its page table slot.
+OWNER_ALLOCATED: const u32 = 2147483648;
+OWNER_VISITED: const u32 = 536870912;
+OWNER_SLOT_MASK: const u32 = 65535;
+
+// Pool texels hold depth, which is reversed and lies in 0..1, as a fraction of the largest f32 below 2^32. The code
+// orders like the depth, so an atomic max keeps the depth nearest the light, and its steps are finer than f32 depth
+// near 1. BESL has no bit cast, which would store the f32 itself.
+VIRTUAL_SHADOW_DEPTH_CODE_SCALE: const f32 = 4294967040.0;
+
+// The indirect dispatch records the find-free pass writes for the passes that run once per request: the allocation,
+// the clear, and the cells, three words each.
+VIRTUAL_SHADOW_ALLOCATE_DISPATCH: const u32 = 0;
+VIRTUAL_SHADOW_CLEAR_DISPATCH: const u32 = 3;
+VIRTUAL_SHADOW_CELLS_DISPATCH: const u32 = 6;
+
+// Must match `ShaderVirtualShadowFrame` in `virtual_shadows.rs`.
+VirtualShadowFrame: struct {
+	// Each level's first page column and row on its grid this frame in xy, and last frame's in zw, biased.
+	origin_pages: vec4u[16],
+	// The camera's world position in xyz, and how far from it receivers are shadowed in w.
+	camera: vec4f,
+	// The first level's size in meters, the level bias, the light-space depth of every level's near plane, and the
+	// depth range in meters.
+	constants: vec4f,
+	free_all: u32,
+	pool_pages_per_row: u32,
+	pool_pages: u32,
+	// The instance records that may have changed since the pages last saw them, from `changed_first` up to
+	// `changed_end`, and how many records the scene holds this frame.
+	changed_first: u32,
+	changed_end: u32,
+	instance_count: u32,
+	_padding0: u32,
+	_padding1: u32,
+}
+
+VirtualShadowPageTable: struct {
+	entries: atomicu32[16384],
+}
+
+VirtualShadowPageOwners: struct {
+	owners: atomicu32[16384],
+}
+
+VirtualShadowPageOrigins: struct {
+	// Each physical page's light-space near-plane depth when it was drawn.
+	origins: f32[16384],
+}
+
+VirtualShadowRequests: struct {
+	// Requests this sink's marking appended so far.
+	count: atomicu32,
+	// The requests the allocation serves: the count when marking ended.
+	total: u32,
+	// Each request's page table slot.
+	slots: u32[16384],
+}
+
+VirtualShadowPageLists: struct {
+	free_count: atomicu32,
+	unvisited_count: atomicu32,
+	free_pages: u32[16384],
+	unvisited_pages: u32[16384],
+}
+
+VirtualShadowDispatches: struct {
+	arguments: u32[9],
+}
+
+// Read-only views of the same buffers, for the shaders that only sample.
+VirtualShadowPageTableEntries: struct {
+	entries: u32[16384],
+}
+
+VirtualShadowPages: layer {
+	page_table: descriptor<{ type: VirtualShadowPageTable, binding: 0, access: read_write, memory: device }>;
+	page_owners: descriptor<{ type: VirtualShadowPageOwners, binding: 1, access: read_write, memory: device }>;
+	page_origins: descriptor<{ type: VirtualShadowPageOrigins, binding: 2, access: read_write, memory: device }>;
+	requests: descriptor<{ type: VirtualShadowRequests, binding: 3, access: read_write, memory: device }>;
+	page_lists: descriptor<{ type: VirtualShadowPageLists, binding: 4, access: read_write, memory: device }>;
+	dispatches: descriptor<{ type: VirtualShadowDispatches, binding: 5, access: read_write, memory: device }>;
+	// Each level's hierarchy of dirty flags, VIRTUAL_SHADOW_HIERARCHY_ENTRIES per level.
+	page_hierarchy: descriptor<{ type: u32[], binding: 6, access: read_write, memory: device }>;
+	// Each physical page's 16x16 cells, the depth nearest the light in x and the farthest in y.
+	page_cells: descriptor<{ type: vec2f[], binding: 7, access: read_write, memory: device }>;
+	page_frame: descriptor<{ type: VirtualShadowFrame, binding: 8, access: read }>;
+	// Each instance record's world-space bounding sphere when the pages last saw it, center in xyz and radius in w.
+	caster_bounds: descriptor<{ type: vec4f[], binding: 9, access: read_write, memory: device }>;
+	pool: descriptor<{ type: StorageImage<r32ui>, binding: 10, access: read_write }>;
+	// Each instance record's level word when the pages last saw it.
+	caster_levels: descriptor<{ type: u32[], binding: 11, access: read_write, memory: device }>;
+}
+
+VirtualShadowSampling: layer {
+	sampled_page_table: descriptor<{ type: VirtualShadowPageTableEntries, binding: 0, access: read }>;
+	sampled_page_origins: descriptor<{ type: VirtualShadowPageOrigins, binding: 1, access: read }>;
+	sampled_page_cells: descriptor<{ type: vec2f[], binding: 2, access: read }>;
+	sampled_frame: descriptor<{ type: VirtualShadowFrame, binding: 3, access: read }>;
+	sampled_pool: descriptor<{ type: StorageImage<r32ui>, binding: 4, access: read }>;
+}
+
+// One sink's receivers, which its marking reads: its opaque depth, and the camera constants that turn a pixel and its
+// depth into a view-space position at the depth's resolution.
+VirtualShadowMark: layer {
+	mark_depth: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+	mark_view: descriptor<{ type: ScreenView, binding: 1, access: read }>;
+}
+
+// Returns a level's side in meters. `constants` is `VirtualShadowFrame.constants`.
+virtual_shadow_level_size: fn (constants: vec4f, level: u32) -> f32 {
+	return constants.x * pow(2.0, f32(level));
+}
+
+// Returns the level a receiver `distance` meters from the camera picks, as `virtual_shadows.rs` spells it.
+virtual_shadow_receiver_level: fn (constants: vec4f, distance: f32) -> u32 {
+	let level: f32 = ceil(log2(max(distance * constants.y / (0.4375 * constants.x), 0.000001)));
+	return u32(clamp(level, 0.0, f32(VIRTUAL_SHADOW_LEVELS - 1)));
+}
+
+// Returns the page table slot of a level's virtual page: its column and row within the level, from zero. `origin` is
+// the level's `VirtualShadowFrame.origin_pages` entry.
+virtual_shadow_slot: fn (origin: vec4u, level: u32, page: vec2u) -> u32 {
+	let wrapped: vec2u = vec2u((origin.x + page.x) % VIRTUAL_SHADOW_PAGES, (origin.y + page.y) % VIRTUAL_SHADOW_PAGES);
+	return level * VIRTUAL_SHADOW_PAGES * VIRTUAL_SHADOW_PAGES + wrapped.y * VIRTUAL_SHADOW_PAGES + wrapped.x;
+}
+
+// Returns the page of a level that holds a texel coordinate along one axis, held to the level's pages.
+virtual_shadow_page_of: fn (texel: f32) -> u32 {
+	return u32(clamp(floor(texel / f32(VIRTUAL_SHADOW_PAGE_TEXELS)), 0.0, f32(VIRTUAL_SHADOW_PAGES - 1)));
+}
+
+// Returns whether a square of half-side `reach` texels around `center` overlaps a level at all.
+virtual_shadow_square_overlaps: fn (center: vec2f, reach: f32) -> bool {
+	let side: f32 = f32(VIRTUAL_SHADOW_RESOLUTION);
+	return center.x + reach >= 0.0 && center.y + reach >= 0.0 && center.x - reach < side && center.y - reach < side;
+}
+
+// Returns a physical page's first texel in the pool.
+virtual_shadow_physical_origin: fn (pages_per_row: u32, physical: u32) -> vec2u {
+	return vec2u((physical % pages_per_row) * VIRTUAL_SHADOW_PAGE_TEXELS, (physical / pages_per_row) * VIRTUAL_SHADOW_PAGE_TEXELS);
+}
+
+// Returns where a world position lies in a level: its virtual texel position, where integers are texel corners, in xy,
+// and its depth in z.
+virtual_shadow_level_position: fn (view_projection: mat4f, position: vec3f) -> vec3f {
+	let clip: vec4f = view_projection * vec4f(position.x, position.y, position.z, 1.0);
+	let texels: f32 = f32(VIRTUAL_SHADOW_RESOLUTION);
+	return vec3f((clip.x * 0.5 + 0.5) * texels, (0.5 - clip.y * 0.5) * texels, clip.z);
+}
+
+encode_virtual_shadow_depth: fn (depth: f32) -> u32 {
+	return u32(clamp(depth, 0.0, 1.0) * VIRTUAL_SHADOW_DEPTH_CODE_SCALE);
+}
+
+decode_virtual_shadow_depth: fn (code: u32) -> f32 {
+	return f32(code) / VIRTUAL_SHADOW_DEPTH_CODE_SCALE;
+}
+
+// Returns a level's virtual texels per meter.
+virtual_shadow_texels_per_meter: fn (constants: vec4f, level: u32) -> f32 {
+	return f32(VIRTUAL_SHADOW_RESOLUTION) / virtual_shadow_level_size(constants, level);
+}
+
+// Returns whether a level can shadow a receiver at virtual texel position `center` and depth `depth`: the receiver lies
+// inside the level, at least ten texels plus VIRTUAL_SHADOW_RECEIVER_REACH from its edge, so every texel the sampler
+// reads lies inside it, within the level's depth range, and every page under that reach holds depth. A page the pool
+// had no room for leaves the receiver to a coarser level.
+virtual_shadow_level_holds: fn (sampling: VirtualShadowSampling, level: u32, center: vec2f, depth: f32) -> bool {
+	let margin: f32 = 10.0 + VIRTUAL_SHADOW_RECEIVER_REACH;
+	let side: f32 = f32(VIRTUAL_SHADOW_RESOLUTION);
+	if (center.x < margin || center.y < margin || center.x > side - margin || center.y > side - margin) {
+		return false;
+	}
+	if (depth < 0.0 || depth > 1.0) {
+		return false;
+	}
+	let page_texels: f32 = f32(VIRTUAL_SHADOW_PAGE_TEXELS);
+	let first_column: u32 = u32(floor((center.x - VIRTUAL_SHADOW_RECEIVER_REACH) / page_texels));
+	let first_row: u32 = u32(floor((center.y - VIRTUAL_SHADOW_RECEIVER_REACH) / page_texels));
+	let last_column: u32 = u32(floor((center.x + VIRTUAL_SHADOW_RECEIVER_REACH) / page_texels));
+	let last_row: u32 = u32(floor((center.y + VIRTUAL_SHADOW_RECEIVER_REACH) / page_texels));
+	for (let row: u32 = first_row; row <= last_row; row = row + 1) {
+		for (let column: u32 = first_column; column <= last_column; column = column + 1) {
+			let slot: u32 = virtual_shadow_slot(sampling.sampled_frame.origin_pages[level], level, vec2u(column, row));
+			if ((sampling.sampled_page_table.entries[slot] & PAGE_ALLOCATED) == 0) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+// Returns the page table entries of the 2x2 pages of a level from `first_page`: the page itself in x, the one to its
+// right in y, the one below in z, and the one below and right in w. A sampler's reach is far smaller than a page, so
+// these four hold every texel it reads. A page past the level's last reads as empty.
+virtual_shadow_page_quad: fn (sampling: VirtualShadowSampling, level: u32, first_page: vec2u) -> vec4u {
+	let entries: vec4u = vec4u(0, 0, 0, 0);
+	let last: u32 = VIRTUAL_SHADOW_PAGES - 1;
+	entries.x = sampling.sampled_page_table.entries[virtual_shadow_slot(sampling.sampled_frame.origin_pages[level], level, first_page)];
+	if (first_page.x < last) {
+		entries.y = sampling.sampled_page_table.entries[virtual_shadow_slot(sampling.sampled_frame.origin_pages[level], level, first_page + vec2u(1, 0))];
+	}
+	if (first_page.y < last) {
+		entries.z = sampling.sampled_page_table.entries[virtual_shadow_slot(sampling.sampled_frame.origin_pages[level], level, first_page + vec2u(0, 1))];
+	}
+	if (first_page.x < last && first_page.y < last) {
+		entries.w = sampling.sampled_page_table.entries[virtual_shadow_slot(sampling.sampled_frame.origin_pages[level], level, first_page + vec2u(1, 1))];
+	}
+	return entries;
+}
+
+// Returns which of a page quad's entries holds a texel.
+virtual_shadow_quad_entry: fn (entries: vec4u, first_page: vec2u, texel: vec2u) -> u32 {
+	let page: vec2u = vec2u(texel.x / VIRTUAL_SHADOW_PAGE_TEXELS, texel.y / VIRTUAL_SHADOW_PAGE_TEXELS);
+	if (page.y == first_page.y) {
+		if (page.x == first_page.x) {
+			return entries.x;
+		}
+		return entries.y;
+	}
+	if (page.x == first_page.x) {
+		return entries.z;
+	}
+	return entries.w;
+}
+
+// Returns how much a physical page's stored depths must shift to compare with a receiver projected by this frame's
+// level views. A page keeps the near plane it was drawn with, and depth moves by the near plane's change over the
+// depth range.
+virtual_shadow_page_shift: fn (sampling: VirtualShadowSampling, physical: u32) -> f32 {
+	let constants: vec4f = sampling.sampled_frame.constants;
+	return (sampling.sampled_page_origins.origins[physical] - constants.z) / constants.w;
+}
+
+// Returns the depth a level's texel holds, nearest the light, in this frame's depth, or -1 where no caster covers it
+// or no page backs it, which lights every receiver.
+virtual_shadow_texel_depth: fn (sampling: VirtualShadowSampling, entries: vec4u, first_page: vec2u, texel: vec2u) -> f32 {
+	let entry: u32 = virtual_shadow_quad_entry(entries, first_page, texel);
+	if ((entry & PAGE_ALLOCATED) == 0) {
+		return 0.0 - 1.0;
+	}
+	let physical: u32 = entry & PAGE_PHYSICAL_MASK;
+	let code: u32 = image_load_u32(
+		sampling.sampled_pool,
+		virtual_shadow_physical_origin(sampling.sampled_frame.pool_pages_per_row, physical)
+			+ vec2u(texel.x % VIRTUAL_SHADOW_PAGE_TEXELS, texel.y % VIRTUAL_SHADOW_PAGE_TEXELS)
+	);
+	if (code == 0) {
+		return 0.0 - 1.0;
+	}
+	return decode_virtual_shadow_depth(code) - virtual_shadow_page_shift(sampling, physical);
+}
+
+// Returns a level cell's depth nearest the light in x and farthest in y, in this frame's depth. A cell no page backs
+// reads as empty: nearest -1, which proves it lit, and farthest -1.
+virtual_shadow_cell: fn (sampling: VirtualShadowSampling, entries: vec4u, first_page: vec2u, cell: vec2u) -> vec2f {
+	let texel: vec2u = vec2u(cell.x * VIRTUAL_SHADOW_CELL_TEXELS, cell.y * VIRTUAL_SHADOW_CELL_TEXELS);
+	let entry: u32 = virtual_shadow_quad_entry(entries, first_page, texel);
+	if ((entry & PAGE_ALLOCATED) == 0) {
+		return vec2f(0.0 - 1.0, 0.0 - 1.0);
+	}
+	let physical: u32 = entry & PAGE_PHYSICAL_MASK;
+	let local: vec2u = vec2u(
+		(texel.x % VIRTUAL_SHADOW_PAGE_TEXELS) / VIRTUAL_SHADOW_CELL_TEXELS,
+		(texel.y % VIRTUAL_SHADOW_PAGE_TEXELS) / VIRTUAL_SHADOW_CELL_TEXELS
+	);
+	let depths: vec2f = sampling.sampled_page_cells[
+		physical * VIRTUAL_SHADOW_PAGE_CELLS * VIRTUAL_SHADOW_PAGE_CELLS + local.y * VIRTUAL_SHADOW_PAGE_CELLS + local.x
+	];
+	let shift: f32 = virtual_shadow_page_shift(sampling, physical);
+	// An empty texel stores zero, which shifts with its page but still lies past every receiver.
+	return vec2f(depths.x - shift, depths.y - shift);
+}
+
+// Searches the cells around a receiver for occluders, as the cascades' blocker search reads their depth pyramids.
+// Returns how far above the receiver they are, in meters along the light: -2 when every cell lies wholly above the
+// receiver's plane, so it is fully shadowed; -1 when none rises above it, so it is fully lit; zero when the cells
+// rise above it only within the plane's slope; and the occluders' mean height otherwise. `depth_gradient` is the
+// receiver plane's depth change per texel. This reads the cells within 12 texels, the reach the cascades' search
+// covers.
+virtual_shadow_occluder_distance: fn (
+	sampling: VirtualShadowSampling,
+	level: u32,
+	center: vec2f,
+	receiver_depth: f32,
+	depth_gradient: vec2f
+) -> f32 {
+	let reach: f32 = 12.0;
+	let cell_texels: f32 = f32(VIRTUAL_SHADOW_CELL_TEXELS);
+	let first_cell: vec2u = vec2u(u32(floor((center.x - reach) / cell_texels)), u32(floor((center.y - reach) / cell_texels)));
+	let last_cell: vec2u = vec2u(u32(floor((center.x + reach) / cell_texels)), u32(floor((center.y + reach) / cell_texels)));
+	let first_page: vec2u = vec2u(
+		first_cell.x * VIRTUAL_SHADOW_CELL_TEXELS / VIRTUAL_SHADOW_PAGE_TEXELS,
+		first_cell.y * VIRTUAL_SHADOW_CELL_TEXELS / VIRTUAL_SHADOW_PAGE_TEXELS
+	);
+	let entries: vec4u = virtual_shadow_page_quad(sampling, level, first_page);
+	// The plane departs from the receiver's depth by at most this much at the far corner of any cell read.
+	let slope: f32 = (abs(depth_gradient.x) + abs(depth_gradient.y)) * (reach + cell_texels);
+	let all_above: bool = true;
+	let blocker_sum: f32 = 0.0;
+	let blocker_count: f32 = 0.0;
+	let any_above_plane: bool = false;
+	for (let y: u32 = first_cell.y; y <= last_cell.y; y = y + 1) {
+		for (let x: u32 = first_cell.x; x <= last_cell.x; x = x + 1) {
+			let cell: vec2f = virtual_shadow_cell(sampling, entries, first_page, vec2u(x, y));
+			if (cell.y <= receiver_depth + slope) {
+				all_above = false;
+			}
+			if (cell.x > receiver_depth - slope) {
+				any_above_plane = true;
+				// The plane's depth at the cell's center, which an occluder must rise above to shade the receiver.
+				let offset: vec2f = (vec2f(f32(x), f32(y)) + vec2f(0.5, 0.5)) * cell_texels - center;
+				let plane: f32 = receiver_depth + dot(depth_gradient, offset);
+				if (cell.x > plane) {
+					blocker_sum = blocker_sum + cell.x;
+					blocker_count = blocker_count + 1.0;
+				}
+			}
+		}
+	}
+	if (all_above) {
+		return 0.0 - 2.0;
+	}
+	if (any_above_plane == false) {
+		return 0.0 - 1.0;
+	}
+	if (blocker_count == 0.0) {
+		return 0.0;
+	}
+	return max(blocker_sum / blocker_count - receiver_depth, 0.0) * sampling.sampled_frame.constants.w;
+}
+
+// Filters a receiver's shadow in one level with a tent `penumbra_radius` texels wide, from two to eight, over every
+// texel whose center lies within it on both axes, as the cascades' penumbra filter does. Each texel compares with the
+// receiver's plane at its center. Texels are read one by one through their pages; the receiver's level holds every
+// page the filter reads.
+virtual_shadow_penumbra: fn (
+	sampling: VirtualShadowSampling,
+	level: u32,
+	center: vec2f,
+	receiver_depth: f32,
+	depth_gradient: vec2f,
+	penumbra_radius: f32
+) -> f32 {
+	let radius: f32 = clamp(penumbra_radius, 2.0, 8.0);
+	let blocks: u32 = u32(ceil(radius * 0.5));
+	let reach: f32 = f32(blocks * 2);
+	let first_texel: vec2f = vec2f(floor(center.x - reach + 0.5), floor(center.y - reach + 0.5));
+	let first_offset: vec2f = first_texel + vec2f(0.5, 0.5) - center;
+	let first: vec2u = vec2u(u32(first_texel.x), u32(first_texel.y));
+	let first_page: vec2u = vec2u(first.x / VIRTUAL_SHADOW_PAGE_TEXELS, first.y / VIRTUAL_SHADOW_PAGE_TEXELS);
+	let entries: vec4u = virtual_shadow_page_quad(sampling, level, first_page);
+	let side: u32 = blocks * 4;
+	let lit: f32 = 0.0;
+	let column_weight_sum: f32 = 0.0;
+	let row_weight_sum: f32 = 0.0;
+	for (let row: u32 = 0; row < side; row = row + 1) {
+		let row_offset: f32 = first_offset.y + f32(row);
+		let weight_y: f32 = max(radius - abs(row_offset), 0.0);
+		row_weight_sum = row_weight_sum + weight_y;
+		// The block grid reaches past the tent, so its outer rows and columns weigh nothing and read no texel.
+		if (weight_y > 0.0) {
+			column_weight_sum = 0.0;
+			let row_lit: f32 = 0.0;
+			for (let column: u32 = 0; column < side; column = column + 1) {
+				let column_offset: f32 = first_offset.x + f32(column);
+				let weight_x: f32 = max(radius - abs(column_offset), 0.0);
+				column_weight_sum = column_weight_sum + weight_x;
+				if (weight_x > 0.0) {
+					let plane: f32 = receiver_depth + depth_gradient.x * column_offset + depth_gradient.y * row_offset;
+					let stored: f32 = virtual_shadow_texel_depth(sampling, entries, first_page, first + vec2u(column, row));
+					row_lit = row_lit + weight_x * step(stored, plane);
+				}
+			}
+			lit = lit + weight_y * row_lit;
+		}
+	}
+	return lit / (column_weight_sum * row_weight_sum);
+}

@@ -29,9 +29,9 @@ use super::instance_rebuild::{
 	rebuild_instances, rebuild_lanes,
 };
 use super::layout::{
-	CONE_SHADOW_VIEW_OFFSET, DEFAULT_SHADOW_MAP_BUDGET_MIB, DEFAULT_SHADOW_MAP_RESOLUTION, MAX_BINDLESS_TEXTURES, MAX_LIGHTS,
-	MAX_MATERIAL_PARAMETERS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, NO_EVALUATION, POINT_SHADOW_FACE_COUNT,
-	POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT, VERTEX_UV_BUFFER_STRIDE,
+	CONE_SHADOW_VIEW_OFFSET, DEFAULT_SHADOW_MAP_BUDGET_MIB, DEFAULT_SHADOW_MAP_RESOLUTION, DIRECTIONAL_SHADOW_VIEW_OFFSET,
+	MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIAL_PARAMETERS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, NO_EVALUATION,
+	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT, VERTEX_UV_BUFFER_STRIDE,
 };
 use super::lightmaps::Lightmaps;
 use super::loader::{
@@ -65,6 +65,10 @@ use super::shadow_updates::{
 };
 use super::skinning::{
 	DualQuaternion, MAX_SKINNING_MATRICES, SkinningDispatch, SkinningPaletteKind, SkinningPass, append_dual_quaternion_palette,
+};
+use super::virtual_shadows::{
+	DirectionalShadowTechnique, ShaderVirtualShadowFrame, VirtualShadowLevels, VirtualShadowSettings,
+	place_virtual_shadow_levels, range_union,
 };
 use crate::application::parameters::Parameters;
 use crate::core::alley::Alley;
@@ -113,6 +117,15 @@ pub const DIRECTIONAL_SHADOW_FITTING_PARAMETER: &str = "directional-shadows.fitt
 /// The startup parameter, inside the `render` subtree, that sets the directional cascades' resolution in texels per
 /// side. See [`VisibilityPipelineSettings::with_directional_shadow_map_resolution`].
 pub const DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER: &str = "directional-shadows.resolution";
+/// The startup parameter, inside the `render` subtree, that chooses how directional lights cast shadows: `cascades` or
+/// `virtual`. See [`DirectionalShadowTechnique`].
+pub const DIRECTIONAL_SHADOW_TECHNIQUE_PARAMETER: &str = "directional-shadows.technique";
+/// The startup parameters, inside the `render` subtree, that size a virtual shadow map: its finest level's side in
+/// meters, the scale on the distance receivers pick their level by, and the pages its pool holds. See
+/// [`VirtualShadowSettings`].
+pub const VIRTUAL_SHADOW_LEVEL_SIZE_PARAMETER: &str = "directional-shadows.first-level-size";
+pub const VIRTUAL_SHADOW_LEVEL_BIAS_PARAMETER: &str = "directional-shadows.level-bias";
+pub const VIRTUAL_SHADOW_POOL_PAGES_PARAMETER: &str = "directional-shadows.pool-pages";
 /// The startup parameter, inside the `render` subtree, that sets how many surfels surfel GI keeps alive at once. See
 /// [`VisibilityPipelineSettings::with_surfel_capacity`].
 pub const SURFEL_CAPACITY_PARAMETER: &str = "surfel-gi.surfel-capacity";
@@ -138,6 +151,8 @@ pub struct VisibilityPipelineSettings {
 	cascade_splits: CascadeSplits,
 	cascade_fitting: CascadeFitting,
 	directional_shadow_map_resolution: u32,
+	directional_shadow_technique: DirectionalShadowTechnique,
+	virtual_shadows: VirtualShadowSettings,
 	surfel_capacity: u32,
 	surfel_ray_budget: u32,
 	probe_ray_budget: u32,
@@ -156,6 +171,8 @@ impl Default for VisibilityPipelineSettings {
 			cascade_splits: CascadeSplits::default(),
 			cascade_fitting: CascadeFitting::default(),
 			directional_shadow_map_resolution: DEFAULT_SHADOW_MAP_RESOLUTION,
+			directional_shadow_technique: DirectionalShadowTechnique::default(),
+			virtual_shadows: VirtualShadowSettings::default(),
 			surfel_capacity: DEFAULT_SURFEL_CAPACITY,
 			surfel_ray_budget: DEFAULT_SURFEL_RAY_BUDGET,
 			probe_ray_budget: DEFAULT_PROBE_RAY_BUDGET,
@@ -242,6 +259,18 @@ impl VisibilityPipelineSettings {
 				.with_directional_shadow_map_resolution(resolution)
 				.unwrap_or_else(|reason| panic!("{reason}"));
 		}
+		if let Some(technique) = parse(&parameters, DIRECTIONAL_SHADOW_TECHNIQUE_PARAMETER) {
+			settings = settings.with_directional_shadow_technique(technique);
+		}
+		// Virtual shadow map sizing: each parameter overrides one part of the defaults.
+		let virtual_defaults = settings.virtual_shadow_settings();
+		let virtual_shadows = VirtualShadowSettings::new(
+			parse(&parameters, VIRTUAL_SHADOW_LEVEL_SIZE_PARAMETER).unwrap_or(virtual_defaults.first_level_size()),
+			parse(&parameters, VIRTUAL_SHADOW_LEVEL_BIAS_PARAMETER).unwrap_or(virtual_defaults.level_bias()),
+			parse(&parameters, VIRTUAL_SHADOW_POOL_PAGES_PARAMETER).unwrap_or(virtual_defaults.pool_pages()),
+		)
+		.unwrap_or_else(|reason| panic!("{reason}"));
+		settings = settings.with_virtual_shadow_settings(virtual_shadows);
 		if let Some(capacity) = parse(&parameters, SURFEL_CAPACITY_PARAMETER) {
 			settings = settings
 				.with_surfel_capacity(capacity)
@@ -340,6 +369,29 @@ impl VisibilityPipelineSettings {
 		}
 		self.directional_shadow_map_resolution = resolution;
 		Ok(self)
+	}
+
+	/// Sets how directional lights cast shadows: through cascades, or through a virtual shadow map for the first
+	/// directional light. The rules of each are specified in the
+	/// [visibility pipeline reference](/docs/reference/rendering#virtual-shadow-maps).
+	pub fn with_directional_shadow_technique(mut self, technique: DirectionalShadowTechnique) -> Self {
+		self.directional_shadow_technique = technique;
+		self
+	}
+
+	pub fn directional_shadow_technique(&self) -> DirectionalShadowTechnique {
+		self.directional_shadow_technique
+	}
+
+	/// Sets how large a virtual shadow map's finest level is, how coarse a level receivers pick, and how many pages hold
+	/// depth at once. They apply only with [`DirectionalShadowTechnique::Virtual`].
+	pub fn with_virtual_shadow_settings(mut self, settings: VirtualShadowSettings) -> Self {
+		self.virtual_shadows = settings;
+		self
+	}
+
+	pub fn virtual_shadow_settings(&self) -> VirtualShadowSettings {
+		self.virtual_shadows
 	}
 
 	/// Sets the shadow-map memory, in mebibytes, that every shadow-casting light shares.
@@ -504,7 +556,11 @@ impl VisibilityPipelineSettings {
 
 	/// Returns what one light of each kind costs from the shadow-map budget.
 	fn shadow_budget(&self) -> ShadowBudget {
-		ShadowBudget::new(self.shadow_map_budget_mib, self.directional_shadow_map_resolution)
+		ShadowBudget::new(
+			self.shadow_map_budget_mib,
+			self.directional_shadow_map_resolution,
+			self.directional_shadow_technique,
+		)
 	}
 }
 
@@ -848,6 +904,12 @@ pub struct VisibilityPipelineManager {
 	shadow_slots: ShadowSlots,
 	/// What every shadow map was drawn with, so maps that don't draw this frame keep their view.
 	shadow_states: ShadowMapStates,
+	/// The virtual shadow map's level placement the GPU last recorded, which the next placement scrolls from.
+	virtual_shadow_levels: Option<VirtualShadowLevels>,
+	/// The instance records that changed since the virtual shadow map last recorded, and how many records there were
+	/// then, so its invalidation also sees the records that left.
+	virtual_shadow_changes: std::ops::Range<usize>,
+	virtual_shadow_records: usize,
 	gtao_configuration: crate::configuration::ConfigurationPort,
 	gtao_settings: GtaoSettings,
 	gi_configuration: crate::configuration::ConfigurationPort,
@@ -979,7 +1041,14 @@ impl VisibilityPipelineManager {
 			settings.instance_capacity.instances,
 			settings.instance_capacity.meshlet_groups,
 		);
-		let shadow_maps = ShadowMaps::new(context, &pipeline_manager, settings.directional_shadow_map_resolution);
+		let shadow_maps = ShadowMaps::new(
+			context,
+			&pipeline_manager,
+			settings.directional_shadow_map_resolution,
+			settings.directional_shadow_technique,
+			settings.virtual_shadows,
+			settings.instance_capacity.instances,
+		);
 		let ray_tracing = context.supports_ray_tracing();
 		let surfel_pool = (settings.features.surfel_gi && ray_tracing).then(|| {
 			SurfelPool::new(
@@ -1100,6 +1169,9 @@ impl VisibilityPipelineManager {
 			shadow_layout: ShadowLayout::default(),
 			shadow_slots: ShadowSlots::new(),
 			shadow_states: ShadowMapStates::default(),
+			virtual_shadow_levels: None,
+			virtual_shadow_changes: 0..0,
+			virtual_shadow_records: 0,
 			gtao_configuration,
 			gtao_settings: GtaoSettings::default(),
 			gi_configuration,
@@ -2109,7 +2181,7 @@ impl VisibilityPipelineManager {
 	}
 
 	/// Returns each shadowed sun's cascades, fitted to the camera frustum, by sun slot, and the view every map of
-	/// `shadows` would be drawn from this frame.
+	/// `shadows` would be drawn from this frame. A sun under a virtual shadow map has no cascades.
 	///
 	/// `ies_scales` holds each light's IES intensity scale by light index.
 	fn shadow_views(
@@ -2118,8 +2190,8 @@ impl VisibilityPipelineManager {
 		shadows: &ShadowLightSelection<'_>,
 		ies_scales: &[(f32, Option<IesProfileTexture>)],
 	) -> (SunCascades, ShadowViews) {
-		let cascades: SunCascades = shadows
-			.suns
+		let cascade_suns = if shadows.virtual_suns { &[][..] } else { &shadows.suns[..] };
+		let cascades: SunCascades = cascade_suns
 			.iter()
 			.map(|sun| {
 				csm::make_cascade_frames(
@@ -2284,12 +2356,9 @@ impl PipelineManager for VisibilityPipelineManager {
 		if self.instances_stale || moved || std::mem::take(&mut self.instances_moved) {
 			let updated = self.update_active_instances(frame, lod_view, !self.instances_stale, alley);
 			self.instances_stale = updated.outdated;
+			self.virtual_shadow_changes = range_union(self.virtual_shadow_changes.clone(), updated.records.clone());
 			for stale in &mut self.stale_records {
-				*stale = if std::ops::Range::is_empty(stale) {
-					updated.records.clone()
-				} else {
-					stale.start.min(updated.records.start)..stale.end.max(updated.records.end)
-				};
+				*stale = range_union(stale.clone(), updated.records.clone());
 			}
 			if updated.relisted {
 				self.stale_work = [true; ghi::MAX_FRAMES_IN_FLIGHT];
@@ -2374,6 +2443,41 @@ impl PipelineManager for VisibilityPipelineManager {
 		if let Some(sink) = sinks.first() {
 			self.write_views(frame, sink.view(), &shadow_views, &shadow_states);
 		}
+		// Under virtual shadow maps the first sun's levels take the directional views, level `l` view `1 + l`, placed
+		// around the first sink's camera.
+		let virtual_shadows = match (sinks.first(), shadows.suns.first()) {
+			(Some(sink), Some(sun)) if self.shadow_maps.virtual_maps.enabled() => {
+				let eye = math::inverse(sink.view().view()).get_column(3);
+				let camera = math::Point::new(eye.x, eye.y, eye.z);
+				let levels = place_virtual_shadow_levels(
+					sun.direction,
+					camera,
+					self.settings.virtual_shadows.first_level_size(),
+					self.virtual_shadow_levels.as_ref(),
+				);
+				let views = frame.map(self.scene.views_buffer);
+				for (level, view) in levels.views.iter().enumerate() {
+					views[DIRECTIONAL_SHADOW_VIEW_OFFSET + level] = ShaderViewData::from(*view);
+				}
+				// The rewritten records, and the ones that appeared or left since the map last recorded.
+				let records = self.instance_kept.len();
+				let previous = self.virtual_shadow_records;
+				let changed = range_union(
+					self.virtual_shadow_changes.clone(),
+					previous.min(records)..previous.max(records),
+				);
+				let data = ShaderVirtualShadowFrame::new(
+					&levels,
+					self.settings.virtual_shadows,
+					camera,
+					self.settings.cascade_splits.distance(),
+					changed.start as u32..changed.end as u32,
+					records as u32,
+				);
+				Some((levels, data))
+			}
+			_ => None,
+		};
 		// A local light casts shadows only once its map holds a drawn one.
 		let shadow_for = |index| shadow_states.shadow_for(&shadows, index);
 		// Like the views above, exposure comes from the first sink; every sink shares one lighting upload.
@@ -2388,7 +2492,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			receiver_fit: (self.settings.cascade_fitting == CascadeFitting::Receivers)
 				.then_some(cascades)
 				.unwrap_or_default(),
-			drawn_cascades: shadow_states.drawn_cascades(shadows.suns.len()),
+			drawn_cascades: shadow_states.drawn_cascades(shadows.layout().suns),
 			layout: self.shadow_layout,
 			draws: shadow_draws,
 		};
@@ -2501,6 +2605,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			skinning: &self.skinning_pass,
 			mesh_work: &self.mesh_work,
 			shadows: &self.shadow_maps,
+			virtual_shadows: virtual_shadows.as_ref().map(|(_, data)| *data),
 			acceleration_structures,
 			environment: self.scene_environment.as_ref(),
 		};
@@ -2556,6 +2661,11 @@ impl PipelineManager for VisibilityPipelineManager {
 			.collect();
 		if frame_work_recorded {
 			self.shadow_states = shadow_states;
+			if let Some((levels, _)) = virtual_shadows {
+				self.virtual_shadow_levels = Some(levels);
+				self.virtual_shadow_changes = 0..0;
+				self.virtual_shadow_records = self.instance_kept.len();
+			}
 			// The frame-wide work stored the surfels' light at this frame's exposure.
 			if surfels.is_some() {
 				self.surfel_exposure = exposure;

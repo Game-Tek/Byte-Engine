@@ -401,13 +401,21 @@ pub(super) enum ImageInstruction {
 		slot: ResourceSlot,
 		coord: usize,
 	},
-	ImageAtomicOr {
+	/// Applies `operation` to an unsigned storage-image texel and writes the texel's previous value to `register`.
+	ImageAtomic {
+		operation: AtomicOperation,
 		register: usize,
 		slot: ResourceSlot,
 		coord: usize,
 		value: usize,
 	},
 	WriteImage {
+		slot: ResourceSlot,
+		coord: usize,
+		value: usize,
+	},
+	/// Writes an unsigned texel of a storage image.
+	WriteImageU32 {
 		slot: ResourceSlot,
 		coord: usize,
 		value: usize,

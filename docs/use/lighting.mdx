@@ -258,6 +258,15 @@ they cover, and the lights that don't fit stay lit without shadows. The
 [shadow map reference](/docs/reference/rendering#shadow-maps) gives the costs and
 the order.
 
+The sun can cast its shadow through virtual shadow maps instead of cascades.
+They keep sharp shadows from near the camera to far away, and redraw only what
+changed. Set `render.directional-shadows.technique` to `virtual` at application
+startup, and `render.directional-shadows.pool-pages` to the pages of 64 KiB the
+sun may hold, 4,096 by default. Only the first directional light casts a shadow
+this way, and transparent surfaces and fog are lit by it without a shadow. The
+[virtual shadow map reference](/docs/reference/rendering#virtual-shadow-maps)
+gives the rules.
+
 ## Set camera exposure
 
 Real-world light values are far brighter than a display can show, so pair them with a matching

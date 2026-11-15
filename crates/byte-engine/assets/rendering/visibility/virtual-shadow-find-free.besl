@@ -1,0 +1,34 @@
+// Lists the physical pages a request may take, as the chapter's find-free pass does: first the pages that hold
+// nothing, then the pages no receiver needed this frame, which hold cached depth that may be given up. One thread per
+// physical page. The first thread also takes the sink's request count, writes the dispatches of the passes that run per
+// request, and starts the count over for the next sink.
+
+use ::byte_engine::rendering::visibility::layouts::virtual_shadows::*;
+
+main: fn (input: StageInput, pages: VirtualShadowPages) -> void {
+	let physical: u32 = input.thread_id.x;
+	if (physical == 0) {
+		let requested: u32 = min(atomic_load(pages.requests.count), VIRTUAL_SHADOW_TABLE_ENTRIES);
+		pages.requests.total = requested;
+		atomic_store(pages.requests.count, 0);
+		let groups: u32 = (requested + VIRTUAL_SHADOW_LINE_WORKGROUP - 1) / VIRTUAL_SHADOW_LINE_WORKGROUP;
+		pages.dispatches.arguments[VIRTUAL_SHADOW_ALLOCATE_DISPATCH] = groups;
+		pages.dispatches.arguments[VIRTUAL_SHADOW_ALLOCATE_DISPATCH + 1] = 1;
+		pages.dispatches.arguments[VIRTUAL_SHADOW_ALLOCATE_DISPATCH + 2] = 1;
+		pages.dispatches.arguments[VIRTUAL_SHADOW_CLEAR_DISPATCH] = requested;
+		pages.dispatches.arguments[VIRTUAL_SHADOW_CLEAR_DISPATCH + 1] = 1;
+		pages.dispatches.arguments[VIRTUAL_SHADOW_CLEAR_DISPATCH + 2] = 1;
+		pages.dispatches.arguments[VIRTUAL_SHADOW_CELLS_DISPATCH] = requested;
+		pages.dispatches.arguments[VIRTUAL_SHADOW_CELLS_DISPATCH + 1] = 1;
+		pages.dispatches.arguments[VIRTUAL_SHADOW_CELLS_DISPATCH + 2] = 1;
+	}
+	if (physical >= pages.page_frame.pool_pages) {
+		return;
+	}
+	let owner: u32 = atomic_load(pages.page_owners.owners[physical]);
+	if ((owner & OWNER_ALLOCATED) == 0) {
+		pages.page_lists.free_pages[atomic_add(pages.page_lists.free_count, 1)] = physical;
+	} else if ((owner & OWNER_VISITED) == 0) {
+		pages.page_lists.unvisited_pages[atomic_add(pages.page_lists.unvisited_count, 1)] = physical;
+	}
+}

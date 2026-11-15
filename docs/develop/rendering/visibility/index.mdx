@@ -17,9 +17,13 @@ Choose a topic:
 - [Material parameters](/docs/develop/rendering/visibility/material-parameters):
   where dynamic material parameter values live, how instances find them, and
   why uploads carry only changes.
-- [Shadow maps](/docs/develop/rendering/visibility/shadow-maps): how lights get
-  shadow maps within the memory budget, how large each map is, and how map
-  updates spread over frames within the update budget.
+- [Shadow maps](/docs/develop/rendering/visibility/shadow-maps): how cone and
+  point lights get shadow maps within the memory budget, how large each map is,
+  and how map updates spread over frames within the update budget.
+- [Virtual shadow maps](/docs/develop/rendering/visibility/virtual-shadow-maps):
+  the alternative to cascades for sun shadows, which keeps depth in cached
+  pages of a clipmap, where its design comes from, and the rules a change to
+  it must keep.
 - [Skinning](/docs/develop/rendering/visibility/skinning): where posed vertices
   live, how an animated instance gets and gives back its vertices, and why one
   copy serves every frame in flight.

@@ -20,6 +20,9 @@ SunVisibilityParameters: struct {
 	// Nonzero when the contact-shadow trace ran this frame. The bake removes every block that reads it when the
 	// project leaves contact shadows out, which also drops the trace binding.
 	contact_shadows: u32,
+	// Nonzero when the sun samples its virtual shadow map instead of cascades. Contact shadows read no further than
+	// `contact_shadows`.
+	virtual_shadows: u32,
 }
 
 // Reduction sampling gives the fully-lit probe the nearest occluder of four pyramid cells in one read, and the

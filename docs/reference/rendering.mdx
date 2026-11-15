@@ -367,7 +367,7 @@ cameras or objects requests a redraw itself.
 | Resident lightmaps | 16 |
 | Texture slots per material | 16 |
 | Lights | 1,024; the rest are left out with one warning |
-| Shadowed lights | 4 directional with 4 cascades each, 16 cone, 16 point |
+| Shadowed lights | 4 directional with 4 cascades each, or 1 with 16 virtual shadow map levels; 16 cone, 16 point |
 | Light clusters | 16 by 8 by 24 |
 
 A renderable is drawn only once its mesh's coarsest detail level, every
@@ -428,6 +428,10 @@ error for it.
 | Capacity | Each culling group of a large instance, and each meshlet of a small one, takes one of the `render.instances.meshlet-group-capacity` groups. |
 | Meshlet vertices | With `render.geometry.meshlet-vertices` on, the camera and shadow passes draw each meshlet from its own copy of its vertices' positions and UVs. A position there is rounded to 16 bits on each axis within its detail level's bounding sphere, so it lies within the sphere's radius over 65,535 of the vertex. Shading, rays, and lightmaps read the exact vertices. An instance that receives poses is drawn from its own posed vertices. |
 
+`render.directional-shadows.technique` selects how directional lights cast
+shadows: `cascades`, the default, follows the rules below, and `virtual`
+follows [virtual shadow maps](#virtual-shadow-maps).
+
 | Directional shadow rule | Value |
 | --- | --- |
 | Cascades | Four, splitting the range from the camera to `render.directional-shadows.distance` by the split blend between logarithmic and even. |
@@ -446,11 +450,13 @@ error for it.
 ### Shadow maps
 
 Every shadow-casting light draws from one memory budget,
-`render.shadow-maps.budget-mb`, 128 MiB by default:
+`render.shadow-maps.budget-mb`, 128 MiB by default. With virtual shadow maps,
+directional lights take nothing from it: their pages come from their own
+[page pool](#virtual-shadow-maps).
 
 | Light | Shadow map | Cost |
 | --- | --- | --- |
-| The first directional light | Four cascades of 2,048 texels per side by default, 16-bit depth | 32 MiB at the default resolution |
+| The first directional light, with cascades | Four cascades of 2,048 texels per side by default, 16-bit depth | 32 MiB at the default resolution |
 | A cone light | One map of its size class, 16-bit depth | 32 KiB to 8 MiB |
 | A point light | A cube map of six faces of its size class, 16-bit depth | 192 KiB to 48 MiB |
 
@@ -488,6 +494,10 @@ draws one of these:
 | One cascade of a directional light | The cascade resolution squared, 4,194,304 at 2,048 texels per side |
 | One cone map | Its size class's texels per side squared |
 | One face of a point light's cube map | Its size class's texels per side squared |
+
+With virtual shadow maps, directional lights have no cascades to update:
+their pages stay cached instead, and every update is a cone map or a point cube
+face.
 
 Every frame draws cascades 0 and 1 of every shadowed directional light. Their
 texels count against the budget first, even when they exceed it. Every other
@@ -531,6 +541,38 @@ stays selected in the same size class. A light that changes class gets a new
 map. The image of each class grows when the class needs more maps than it holds,
 and shrinks only when the budget needs its memory. An image that changes size
 loses every map it holds.
+
+### Virtual shadow maps
+
+With `render.directional-shadows.technique` set to `virtual`, the first
+directional light casts shadows through a virtual shadow map, and other
+directional lights cast none. Its shadow is a clipmap of 16 levels around the
+first sink's camera. Each level is a map of 4,096 × 4,096 texels, split into
+32 × 32 pages of 128 × 128 texels. Only the pages that receivers need hold
+depth, in memory taken from one page pool, and a page keeps its depth across
+frames until something changes it.
+
+| Virtual shadow map rule | Value |
+| --- | --- |
+| Levels | 16. Level l spans `render.directional-shadows.first-level-size` × 2<sup>l</sup> meters per side, 4 m by default, and its texels measure that span over 4,096. |
+| Placement | Each level looks along the direction the light travels. It's centered on the first sink's camera across the light, snapped to whole pages, and its depth range reaches 1,000 m toward the light and 1,000 m away from it, from the camera's position along the light. |
+| Depth | 32-bit, larger toward the light: depth in 0 through 1 times 4,294,967,040, truncated. |
+| Reach | A receiver farther than `render.directional-shadows.distance` from the camera gets no sun shadow and needs no pages. |
+| Receiver level | ceil(log<sub>2</sub>(d × b / (0.4375 × s))), held between 0 and 15, where d is the receiver's distance from the camera, s the first level's size, and b `render.directional-shadows.level-bias`. |
+| Needed pages | Each opaque receiver of the first sink needs, in its level and in the next two coarser levels up to level 15, every page holding a texel within 16 texels of the receiver on both axes. |
+| Page pool | `render.directional-shadows.pool-pages` pages, 4,096 by default, at 64 KiB each. A needed page without depth takes a free page, then a page no receiver needed this frame. When none is left, it stays without depth this frame and is needed again the next. |
+| Cached pages | A page keeps its depth until its level moves so that the page leaves the level's square; the light's direction changes, which empties every page; an instance whose bounding sphere, before or after, reaches into the page appears, disappears, moves, changes the detail level it draws, or becomes drawable; or another page takes its memory. A skinned instance's pose doesn't empty a page. A page without depth is drawn again in the frame a receiver needs it. |
+| Depth across moves | A page's depth holds while the camera moves along the light: receivers compare against it from where its level stood along the light when the page was drawn. |
+| Casters | Opaque and masked instances, at least 32 of the level's texels across. Masked instances cast as if opaque. |
+| Holding a receiver | A level holds a receiver that lies at least 26 texels inside its square, so everything the sampler reads lies inside it, within its depth range, and whose needed pages in that level all hold depth. |
+| Receiver's level | The first level, from the one the receiver level rule gives up to two coarser, that holds the receiver. When none does, the receiver gets no sun shadow. |
+| Search level | The first level, from the receiver's, where the penumbra of an occluder 2 m above the receiver spans at most 12 of its texels and that holds the receiver; otherwise the receiver's level. |
+| Receiver, penumbra width, penumbra filter | As for cascades, with the level in the cascade's place. |
+| Receiver plane | As for cascades, but moved toward the sun by 5 mm plus half a texel of the level. |
+| Penumbra level | Among the receiver's level and the next two coarser levels that hold the receiver, the one where the penumbra's width w, in its texels, makes the larger of 2 / w and w / 6 least; the lower-numbered one where two tie. A penumbra of no width counts as 0.1 millimeters. |
+| Level fade | As the cascade fade, between the penumbra level and the best candidate on the other side of √12 texels. |
+| Blocker search and probes | Read cells of 8 × 8 texels within 12 texels of the receiver, each holding its texels' depth nearest and farthest from the light. The receiver is fully shadowed when every cell's farthest depth lies above its plane's highest point over the cells, and fully lit when no cell's nearest depth reaches its plane's lowest point. Otherwise the occluders' height is the mean of the nearest depths of the cells that rise above the plane at their centers. |
+| Transparent receivers, fog | No sun shadow. |
 
 ### Materials
 
@@ -832,7 +874,7 @@ metric when it runs: `skinning`, `shadow-maps`, `shadow-depth-pyramid`,
 `light-clusters`, `acceleration-structures`, `surfel-grid`, `surfel-trace`,
 `surfel-validate`, `surfel-integrate`, `probe-schedule`, `probe-trace`, `probe-update`,
 `visibility-early`, `occlusion-pyramid`, `visibility-late`,
-`material-prepasses`, `depth-pyramid`, `cascade-fit`, `screen-space`,
+`material-prepasses`, `depth-pyramid`, `cascade-fit`, `virtual-shadow-maps`, `screen-space`,
 `fog-light`, `material-evaluation`, `subsurface`, `background`, `backdrop`, and `transparent`. Only the first sink
 records the ray tracing, surfel, and probe stages: the surfel stages in a frame
 that surfel GI lights, the probe stages in a frame that probe GI lights, and
@@ -840,6 +882,11 @@ that surfel GI lights, the probe stages in a frame that probe GI lights, and
 `pipelines`. `subsurface` runs only when `render.subsurface.enabled` was `true`
 at startup. `backdrop` runs only in a frame that draws transparent surfaces
 while a loaded blended material reads `scenecolor` or `sceneposition`.
+
+`shadow-depth-pyramid` and `cascade-fit` run only with cascades, and
+`virtual-shadow-maps` only with virtual shadow maps, in a frame with a shadowed
+directional light. Only the first sink records `virtual-shadow-maps`, after its
+depth pyramid, and it covers every page pass and the page draw.
 
 Inside `screen-space`, each dispatch also reports its own metric, when the
 technique it belongs to runs: `sun-visibility-trace`, `gtao-evaluate`,

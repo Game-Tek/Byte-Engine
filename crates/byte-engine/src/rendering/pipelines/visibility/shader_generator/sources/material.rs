@@ -765,9 +765,10 @@ material_evaluation_suffix: fn () -> void {
 							sun_visibility_value = suns_visibility.w;
 						}
 						occlusion_factor = f16(sun_visibility_value);
-					} else {
+					} else if (material_evaluation.lighting_data.lights[light_index].virtual_shadow == 0) {
 						// A transparent surface lies in front of the opaque depth that pass resolved, so it filters the
-						// shadow map itself, without contact shadows, which trace that depth.
+						// shadow map itself, without contact shadows, which trace that depth. A sun under virtual shadow
+						// maps has no cascades to filter, and lights its transparent surfaces unshadowed.
 						let shadow_view1: u32 = material_evaluation.lighting_data.lights[light_index].shadow_views[1];
 						let shadow_view2: u32 = material_evaluation.lighting_data.lights[light_index].shadow_views[2];
 						let shadow_view3: u32 = material_evaluation.lighting_data.lights[light_index].shadow_views[3];

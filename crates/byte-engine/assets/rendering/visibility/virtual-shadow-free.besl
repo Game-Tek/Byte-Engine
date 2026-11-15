@@ -1,0 +1,41 @@
+// Starts a frame of a virtual shadow map: frees the pages each level's scroll brought into view, or every page when the
+// light turned, and clears every page's per-frame flags. One thread per page table slot.
+//
+// A slot holds the page of its level's grid whose coordinates are congruent to the slot modulo 32 and that lies in
+// the level's window. When the window moves, a slot's page changed exactly when that page lay outside last frame's
+// window on either axis. This follows the chapter's free-wrapped pass; clearing the per-frame flags here instead of in a
+// pass at the end of the frame gives the same result with one pass over the table.
+
+use ::byte_engine::rendering::visibility::layouts::virtual_shadows::*;
+
+// Returns whether the page a slot holds along one axis this frame lay outside last frame's window.
+entered_window: fn (slot: u32, origin: u32, previous_origin: u32) -> bool {
+	let page: u32 = origin + (slot + VIRTUAL_SHADOW_PAGES - origin % VIRTUAL_SHADOW_PAGES) % VIRTUAL_SHADOW_PAGES;
+	return page < previous_origin || page >= previous_origin + VIRTUAL_SHADOW_PAGES;
+}
+
+main: fn (input: StageInput, pages: VirtualShadowPages) -> void {
+	let slot: u32 = input.thread_id.x;
+	if (slot >= VIRTUAL_SHADOW_TABLE_ENTRIES) {
+		return;
+	}
+	let level: u32 = slot / (VIRTUAL_SHADOW_PAGES * VIRTUAL_SHADOW_PAGES);
+	let origin: vec4u = pages.page_frame.origin_pages[level];
+	let column: u32 = slot % VIRTUAL_SHADOW_PAGES;
+	let row: u32 = (slot / VIRTUAL_SHADOW_PAGES) % VIRTUAL_SHADOW_PAGES;
+	let entry: u32 = atomic_load(pages.page_table.entries[slot]);
+	let freed: bool = pages.page_frame.free_all != 0
+		|| entered_window(column, origin.x, origin.z)
+		|| entered_window(row, origin.y, origin.w);
+	if ((entry & PAGE_ALLOCATED) != 0) {
+		let physical: u32 = entry & PAGE_PHYSICAL_MASK;
+		if (freed) {
+			atomic_store(pages.page_owners.owners[physical], 0);
+			atomic_store(pages.page_table.entries[slot], 0);
+			return;
+		}
+		// A page nothing needs this frame stays allocated but may be taken.
+		atomic_and(pages.page_owners.owners[physical], OWNER_ALLOCATED | OWNER_SLOT_MASK);
+	}
+	atomic_store(pages.page_table.entries[slot], entry & (PAGE_ALLOCATED | PAGE_DIRTY | PAGE_PHYSICAL_MASK));
+}

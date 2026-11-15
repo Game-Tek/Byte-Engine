@@ -1396,7 +1396,8 @@ impl ExecutableProgram {
 					return Ok(InstructionProgress::Complete(None));
 				}
 			}
-			ImageInstruction::ImageAtomicOr {
+			ImageInstruction::ImageAtomic {
+				operation,
 				register,
 				slot,
 				coord,
@@ -1405,7 +1406,7 @@ impl ExecutableProgram {
 				let coord = expect_vec2u(register_ref(registers, *coord)?)?;
 				let value = expect_u32(register_ref(registers, *value)?)?;
 				let slot = resolve_resource_slot(*slot, registers)?;
-				let previous = descriptors.image_mut(slot)?.atomic_or(coord, value)?;
+				let previous = descriptors.image_mut(slot)?.atomic(*operation, coord, value)?;
 				registers[*register] = Some(Value::U32(previous));
 			}
 			ImageInstruction::WriteImage { slot, coord, value } => {
@@ -1425,6 +1426,12 @@ impl ExecutableProgram {
 				};
 				let slot = resolve_resource_slot(*slot, registers)?;
 				descriptors.image_mut(slot)?.write(coord, value)?;
+			}
+			ImageInstruction::WriteImageU32 { slot, coord, value } => {
+				let coord = expect_vec2u(register_ref(registers, *coord)?)?;
+				let value = expect_u32(register_ref(registers, *value)?)?;
+				let slot = resolve_resource_slot(*slot, registers)?;
+				descriptors.image_mut(slot)?.write_u32(coord, value)?;
 			}
 			ImageInstruction::WriteTileOutput { slot, coord, value } => {
 				let coord = expect_vec2u(register_ref(registers, *coord)?)?;

@@ -215,13 +215,19 @@ impl<'a> Compiler<'a> {
 				}
 				Ok(register)
 			}
-			"image_atomic_or" => {
+			"image_atomic_or" | "image_atomic_max" => {
 				require_argument_count(arguments, 3)?;
 				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::ReadWrite)?;
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
 				let value = self.compile_value_expression(&arguments[2], &ValueType::U32)?;
 				let register = self.allocate_register();
-				self.emit(ImageInstruction::ImageAtomicOr {
+				let operation = if name == "image_atomic_or" {
+					AtomicOperation::Or
+				} else {
+					AtomicOperation::Max
+				};
+				self.emit(ImageInstruction::ImageAtomic {
+					operation,
 					register,
 					slot,
 					coord,

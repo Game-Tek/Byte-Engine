@@ -785,6 +785,38 @@ fn gather_returns_the_texel_quad_in_platform_order() {
 }
 
 #[test]
+fn image_atomics_keep_the_maximum_and_return_the_previous_texel() {
+	let script = r#"
+	depths: descriptor<{ type: StorageImage<r32ui>, binding: 0, access: read_write }>;
+	main: fn () -> void {
+		let first: u32 = image_atomic_max(depths, vec2u(0, 0), 5);
+		let second: u32 = image_atomic_max(depths, vec2u(0, 0), 3);
+		image_atomic_max(depths, vec2u(1, 0), first);
+		image_atomic_or(depths, vec2u(2, 0), second);
+		write_u32(depths, vec2u(3, 0), second + 1);
+	}
+	"#;
+
+	let executable = compile_test_program(script, None);
+	let mut depths = Texture::new(4, 1).expect("Expected texture allocation");
+	for (x, value) in [(0, 4), (1, 0), (2, 8), (3, 0)] {
+		depths.write_u32([x, 0], value).expect("Expected texel write");
+	}
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_image(ResourceSlot::new(0), &mut depths);
+		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+	}
+
+	// The texel keeps the largest value, a smaller one leaves it, and each atomic returns the texel it replaced.
+	let texel = |x| depths.fetch_u32([x, 0]).expect("Expected texel fetch");
+	assert_eq!(texel(0), Value::U32(5));
+	assert_eq!(texel(1), Value::U32(4));
+	assert_eq!(texel(2), Value::U32(8 | 5));
+	assert_eq!(texel(3), Value::U32(6));
+}
+
+#[test]
 fn executable_program_writes_through_an_indexed_storage_image_array() {
 	let script = r#"
 	main: fn () -> void {

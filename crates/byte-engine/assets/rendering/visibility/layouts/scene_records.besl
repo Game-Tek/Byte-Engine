@@ -122,6 +122,13 @@ instance_triangle: fn (mesh: Mesh, triangle: vec3u) -> vec3u {
 	return triangle;
 }
 
+// Places an object-space sphere in the world with `model`. The radius grows by the model's largest axis scale.
+world_sphere: fn(model: mat4x3f, sphere: vec4f) -> vec4f {
+	let scale: f32 = sqrt(max(dot(model[0], model[0]), max(dot(model[1], model[1]), dot(model[2], model[2]))));
+	let world_center: vec3f = model * vec4f(sphere.x, sphere.y, sphere.z, 1.0);
+	return vec4f(world_center.x, world_center.y, world_center.z, sphere.w * scale);
+}
+
 // Returns `normal` turned by the linear part of a model or joint matrix, given as its three columns. Normals turn by
 // the inverse transpose, the cofactor matrix over the determinant, so they stay square to their surface under a
 // non-uniform scale. The determinant's sign also keeps them pointing out of a mirroring model, whose cofactors alone

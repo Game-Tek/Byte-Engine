@@ -129,7 +129,8 @@ pub(crate) struct SunVisibilityShaderParameters {
 	pub(crate) sun_count: u32,
 	/// Nonzero when the resolve multiplies in the contact-shadow trace this frame.
 	pub(crate) contact_shadows: u32,
-	pub(crate) _padding: u32,
+	/// Nonzero when the sun samples its virtual shadow map instead of cascades.
+	pub(crate) virtual_shadows: u32,
 }
 
 /// Returns the view-space unit direction from a surface toward a directional light whose light travels along
@@ -149,8 +150,10 @@ pub(crate) fn view_space_direction_to_light(view: View, light_direction: math::U
 pub(super) struct SunVisibilityPass {
 	/// The screen view constants and depth pyramid the trace marches, then the trace's own set.
 	trace_descriptor_sets: [ghi::DescriptorSetHandle; 2],
-	/// The scene set, whose views hold the camera and the sun's cascades, then the resolve's own set.
-	resolve_descriptor_sets: [ghi::DescriptorSetHandle; 2],
+	/// The scene set, whose views hold the camera and the sun's cascades or levels, the resolve's own set, and the
+	/// virtual shadow map's sampling set.
+	resolve_descriptor_sets: [ghi::DescriptorSetHandle; 3],
+	virtual_shadows: bool,
 	/// The contact-shadow trace pipeline, absent when contact shadows are left out.
 	pub(super) trace_pipelines: Option<Pipelines<1>>,
 	pub(super) resolve_pipelines: Pipelines<1>,
@@ -234,7 +237,12 @@ impl SunVisibilityPass {
 
 		Self {
 			trace_descriptor_sets: [screen_trace_descriptor_set, trace_descriptor_set],
-			resolve_descriptor_sets: [base_descriptor_set, resolve_descriptor_set],
+			resolve_descriptor_sets: [
+				base_descriptor_set,
+				resolve_descriptor_set,
+				shadow_maps.virtual_maps.sampling_descriptor_set,
+			],
+			virtual_shadows: shadow_maps.virtual_maps.enabled(),
 			trace_pipelines: contact_shadows.then(|| Pipelines::request(pipeline_manager, CONTACT_SHADOW_PIPELINES)),
 			resolve_pipelines: Pipelines::request(pipeline_manager, ["sun-visibility"]),
 			parameters,
@@ -270,6 +278,7 @@ impl SunVisibilityPass {
 			max_distance: settings.max_distance,
 			sun_count: suns.len() as u32,
 			contact_shadows: u32::from(trace.is_some()),
+			virtual_shadows: u32::from(self.virtual_shadows),
 			..Default::default()
 		};
 		for (entry, sun) in parameters.suns.iter_mut().zip(suns) {
@@ -304,7 +313,7 @@ pub(super) struct SunVisibilityStages {
 	/// The half-resolution contact-shadow trace, absent when contact shadows are off; it reads only the depth pyramid.
 	pub(super) trace: Option<ComputeStage<2>>,
 	/// The full-resolution resolve; it reads the trace, the shadow maps, and their pyramids.
-	pub(super) resolve: ComputeStage<2>,
+	pub(super) resolve: ComputeStage<3>,
 }
 
 #[cfg(test)]

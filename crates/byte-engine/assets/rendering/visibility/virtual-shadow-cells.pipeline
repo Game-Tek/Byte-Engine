@@ -1,0 +1,1 @@
+{"name":"Virtual Shadow Page Cells","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/virtual-shadow-cells.besl"}}

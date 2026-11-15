@@ -335,7 +335,7 @@ impl Generator {
 				self.emit_node_string(string, &arguments[3]);
 				string.push(')');
 			}
-			"image_atomic_or" => {
+			"image_atomic_or" | "image_atomic_max" => {
 				let return_type = r#return.borrow().get_name().unwrap_or("u32").to_string();
 				self.emit_hlsl_atomic_helper_call(string, name, arguments, Some(&return_type));
 			}
@@ -373,7 +373,7 @@ impl Generator {
 				self.emit_node_string(string, &arguments[0]);
 				string.push(')');
 			}
-			"write" => {
+			"write" | "write_u32" => {
 				self.emit_node_string(string, &arguments[0]);
 				string.push('[');
 				self.emit_node_string(string, &arguments[1]);

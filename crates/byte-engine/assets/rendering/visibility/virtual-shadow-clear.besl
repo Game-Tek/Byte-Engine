@@ -1,0 +1,23 @@
+// Empties each newly allocated page and marks it dirty, so the page draw writes its depth. One workgroup per request,
+// each thread clearing a column of 256 texels.
+
+use ::byte_engine::rendering::visibility::layouts::virtual_shadows::*;
+
+main: fn (input: StageInput, pages: VirtualShadowPages) -> void {
+	let request: u32 = threadgroup_position();
+	let slot: u32 = pages.requests.slots[request];
+	let entry: u32 = atomic_load(pages.page_table.entries[slot]);
+	if ((entry & PAGE_ALLOCATED) == 0) {
+		return;
+	}
+	let origin: vec2u = virtual_shadow_physical_origin(pages.page_frame.pool_pages_per_row, entry & PAGE_PHYSICAL_MASK);
+	let lane: u32 = input.thread_idx;
+	// Lanes 0..63 clear columns lane and lane + 64 of every row.
+	for (let row: u32 = 0; row < VIRTUAL_SHADOW_PAGE_TEXELS; row = row + 1) {
+		write_u32(pages.pool, origin + vec2u(lane, row), 0);
+		write_u32(pages.pool, origin + vec2u(lane + VIRTUAL_SHADOW_LINE_WORKGROUP, row), 0);
+	}
+	if (lane == 0) {
+		atomic_or(pages.page_table.entries[slot], PAGE_DIRTY);
+	}
+}

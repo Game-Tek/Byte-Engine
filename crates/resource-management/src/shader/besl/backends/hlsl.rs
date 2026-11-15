@@ -1837,6 +1837,21 @@ mod tests {
 		compile_dxil(&shader, "besl-ray-queries", ShaderTypes::Compute);
 	}
 
+	/// Verifies both image atomics lower to `Interlocked` calls on the texel, which return the previous value through a
+	/// generated helper.
+	#[test]
+	fn image_atomics_lower_to_hlsl() {
+		let shader = lower_fixture(
+			super::super::IMAGE_ATOMICS,
+			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
+		);
+		assert_string_contains!(shader, "InterlockedOr(flags[");
+		assert_string_contains!(shader, "InterlockedMax(depths[");
+		assert_string_contains!(shader, "] = previous_depth");
+
+		compile_dxil(&shader, "besl-image-atomics", ShaderTypes::Compute);
+	}
+
 	/// Compiles generated HLSL with DXC on Windows so a lowering that DXC rejects fails the test.
 	fn compile_dxil(shader: &str, name: &str, stage: ShaderTypes) {
 		#[cfg(target_os = "windows")]

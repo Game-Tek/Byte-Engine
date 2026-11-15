@@ -72,6 +72,9 @@ bitflags::bitflags! {
 		const RenderTarget = 1 << 6;
 		/// Resource will be used as an input attachment.
 		const InputAttachment = 1 << 15;
+		/// A storage image that shaders update with image atomics, such as `image_atomic_max`. Combine it with
+		/// [`Self::Storage`]; only unsigned 32-bit images support it.
+		const Atomic = 1 << 16;
 		/// Resource will be used as a depth stencil.
 		const DepthStencil = 1 << 7;
 		/// Resource will be used as a transfer source.

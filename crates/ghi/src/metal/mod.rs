@@ -135,6 +135,11 @@ pub(crate) mod utils {
 			usage |= mtl::MTLTextureUsage::ShaderWrite;
 		}
 
+		// Metal rejects texture atomics on a texture created without this usage.
+		if uses.contains(Uses::Atomic) {
+			usage |= mtl::MTLTextureUsage::ShaderAtomic;
+		}
+
 		// Metal clears images by loading them as render-pass attachments.
 		if uses.intersects(Uses::RenderTarget | Uses::DepthStencil | Uses::Clear) {
 			usage |= mtl::MTLTextureUsage::RenderTarget;

@@ -1497,6 +1497,21 @@ mod tests {
 		compile_natively(&shader, "besl-atomic-compare-exchange").await;
 	}
 
+	/// Verifies both image atomics lower to Metal texture atomics on read-write textures, and that Metal accepts them.
+	#[compio::test]
+	async fn image_atomics_lower_to_msl_texture_atomics() {
+		let shader = lower_fixture(
+			super::super::IMAGE_ATOMICS,
+			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
+		);
+		assert_string_contains!(shader, "texture2d<uint, access::read_write> flags");
+		assert_string_contains!(shader, ".atomic_fetch_or(coord,4).x");
+		assert_string_contains!(shader, ".atomic_fetch_max(coord,previous_flags+1).x");
+		assert_string_contains!(shader, ".write(uint4(previous_depth),coord)");
+
+		compile_natively(&shader, "besl-image-atomics").await;
+	}
+
 	/// Verifies raster entry points and called helpers receive source-declared push constants.
 	#[compio::test]
 	async fn source_declared_raster_push_constants_are_entry_point_parameters() {

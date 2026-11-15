@@ -971,8 +971,12 @@ impl NodeEmitter for Generator {
 				self.emit_node(string, &arguments[1]);
 				string.push_str(if name == "image_load_u32" { ")).x" } else { "))" });
 			}
-			"write" | "image_atomic_or" => {
-				string.push_str(if name == "write" { "imageStore(" } else { "imageAtomicOr(" });
+			"write" | "image_atomic_or" | "image_atomic_max" => {
+				string.push_str(match name.as_str() {
+					"write" => "imageStore(",
+					"image_atomic_or" => "imageAtomicOr(",
+					_ => "imageAtomicMax(",
+				});
 				self.emit_node(string, &arguments[0]);
 				self.emit_separator(string);
 				string.push_str("ivec2(");
@@ -981,6 +985,18 @@ impl NodeEmitter for Generator {
 				self.emit_separator(string);
 				self.emit_node(string, &arguments[2]);
 				string.push(')');
+			}
+			"write_u32" => {
+				string.push_str("imageStore(");
+				self.emit_node(string, &arguments[0]);
+				self.emit_separator(string);
+				string.push_str("ivec2(");
+				self.emit_node(string, &arguments[1]);
+				string.push(')');
+				self.emit_separator(string);
+				string.push_str("uvec4(");
+				self.emit_node(string, &arguments[2]);
+				string.push_str("))");
 			}
 			"guard_image_bounds" => {
 				let sampled = reads_sampled_image(&arguments[0]);

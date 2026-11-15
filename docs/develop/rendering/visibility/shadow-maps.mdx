@@ -7,7 +7,9 @@ icon: Sun
 Read this page before you change which lights get shadow maps, how large those
 maps are, or how often they're drawn. What an application can rely on is
 specified under [shadow maps](/docs/reference/rendering#shadow-maps) in the
-visibility pipeline reference.
+visibility pipeline reference. Directional lights can instead cast shadows
+through [virtual shadow maps](/docs/develop/rendering/visibility/virtual-shadow-maps),
+which reuse this page's sun slots, penumbra filter, and small-caster cull.
 
 ## Shadow maps share a budget
 

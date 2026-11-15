@@ -95,7 +95,9 @@ lists the explicit conversion overloads registered as intrinsics.
 | `image_size` | `image_size(StorageImage) -> vec2u` | Returns the image width and height. |
 | `guard_image_bounds` | `guard_image_bounds(StorageImage, vec2u coord) -> void` | Returns from the current function when the coordinate is outside the image. |
 | `write` | `write(StorageImage, vec2u coord, vec4f value) -> void` | Stores one texel. |
-| `image_atomic_or` | `image_atomic_or(StorageImage, vec2u coord, u32 value) -> u32` | Atomically ORs an unsigned texel and returns its previous value. GLSL, HLSL, and the VM support it; MSL doesn't. |
+| `write_u32` | `write_u32(StorageImage, vec2u coord, u32 value) -> void` | Writes one unsigned texel of a writable `r32ui` image. |
+| `image_atomic_or` | `image_atomic_or(StorageImage, vec2u coord, u32 value) -> u32` | Atomically ORs an unsigned texel and returns its previous value. The image is read-write, `r32ui`, and created with the atomic use. |
+| `image_atomic_max` | `image_atomic_max(StorageImage, vec2u coord, u32 value) -> u32` | Atomically keeps the larger of an unsigned texel and `value`, and returns the texel's previous value. The image is read-write, `r32ui`, and created with the atomic use. |
 
 ### Buffer and workgroup atomics
 

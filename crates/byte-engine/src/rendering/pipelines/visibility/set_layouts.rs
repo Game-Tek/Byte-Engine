@@ -95,6 +95,21 @@ layout!(SSGI_TEMPORAL, "layouts::ssgi_temporal::SsgiTemporal");
 layout!(CONTACT_SHADOWS, "layouts::contact_shadows::ContactShadows");
 layout!(SUN_VISIBILITY, "layouts::sun_visibility::SunVisibility");
 layout!(
+	/// The set the virtual shadow map's page passes and page draw keep the page table and pool through.
+	VIRTUAL_SHADOW_PAGES,
+	"layouts::virtual_shadows::VirtualShadowPages"
+);
+layout!(
+	/// The set the sun visibility resolve samples the virtual shadow map through.
+	VIRTUAL_SHADOW_SAMPLING,
+	"layouts::virtual_shadows::VirtualShadowSampling"
+);
+layout!(
+	/// The per-sink set the virtual shadow map's marking reads the sink's receivers through.
+	VIRTUAL_SHADOW_MARK,
+	"layouts::virtual_shadows::VirtualShadowMark"
+);
+layout!(
 	/// The frame-wide surfel GI set: the surfel pool, its grid, the scene's light table, and the settings every surfel
 	/// stage shares.
 	SURFEL_GI,
@@ -218,6 +233,9 @@ mod tests {
 			&SSGI_TEMPORAL,
 			&CONTACT_SHADOWS,
 			&SUN_VISIBILITY,
+			&VIRTUAL_SHADOW_PAGES,
+			&VIRTUAL_SHADOW_SAMPLING,
+			&VIRTUAL_SHADOW_MARK,
 			&SURFEL_GI,
 			&SURFEL_RESOLVE,
 			&SURFEL_TEMPORAL,

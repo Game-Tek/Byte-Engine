@@ -55,6 +55,8 @@ pub(crate) enum OcclusionPhase {
 	Late = 2,
 	/// Draws the unoccluded meshlets without recording them, as transparent geometry does.
 	Test = 3,
+	/// Draws only what covers a dirty page of a virtual shadow map level, as its page draw does.
+	Pages = 4,
 }
 
 /// The `OcclusionCulling` struct owns one sink's occlusion pyramid, its record of unoccluded meshlets, and the
@@ -76,13 +78,15 @@ impl OcclusionCulling {
 	/// Creates the pyramid and the unoccluded-meshlet record, and requests the build pipelines.
 	///
 	/// `depth` is the sink's visibility depth, and `meshlet_groups` the mesh dispatch work items a frame can hold,
-	/// [`crate::rendering::pipelines::visibility::InstanceCapacity::meshlet_groups`]. Next, call [`Self::prepare`] each
+	/// [`crate::rendering::pipelines::visibility::InstanceCapacity::meshlet_groups`]. `page_hierarchy` is the virtual
+	/// shadow map's, which [`OcclusionPhase::Pages`] culls against. Next, call [`Self::prepare`] each
 	/// frame.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		depth: ghi::BaseImageHandle,
 		meshlet_groups: u32,
+		page_hierarchy: ghi::BaseBufferHandle,
 	) -> Self {
 		let descriptor_set = set_layouts::OCCLUSION.create_set(context, "Occlusion Culling Descriptor Set");
 		let build_descriptor_sets = [
@@ -117,6 +121,7 @@ impl OcclusionCulling {
 			// The layer fixes the pyramid's minimum sampler.
 			culling.texture("occlusion_pyramid", pyramid),
 			culling.buffer("occlusion_visibility", visibility),
+			culling.buffer("page_hierarchy", page_hierarchy),
 			base.sampled("source_depth", depth, point_sampler),
 			// The tail stage reduces the last level the base stage wrote.
 			tail.image_mip("source_level", pyramid, BASE_LEVELS as u32 - 1),

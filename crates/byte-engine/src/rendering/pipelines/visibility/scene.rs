@@ -9,7 +9,10 @@ use utils::hash::HashMap;
 use utils::{AvailabilityHandle, StableVec, StableVecHandle};
 
 use super::geometry::encode_octahedral_unit_vector;
-use super::layout::{ActiveEvaluationMask, MAX_ADDRESSABLE_INSTANCES, MAX_LIGHTS, SHADOW_CASCADE_COUNT, SHADOW_VIEW_COUNT};
+use super::layout::{
+	ActiveEvaluationMask, DIRECTIONAL_SHADOW_VIEW_OFFSET, MAX_ADDRESSABLE_INSTANCES, MAX_LIGHTS, SHADOW_CASCADE_COUNT,
+	SHADOW_VIEW_COUNT,
+};
 use super::loader::CoveragePipelines;
 use super::lod::MeshLods;
 use super::render_pass::VisibilityRenderPass;
@@ -336,6 +339,9 @@ pub(crate) fn light_data(
 			let views = std::array::from_fn::<u32, SHADOW_CASCADE_COUNT, _>(|cascade| first_view + cascade as u32);
 			(views, 0, slot)
 		}
+		// The virtual shadow map's sun has no cascades: its first view marks it shadowed, and `virtual_shadow` tells
+		// readers its shadow lies in pages.
+		LightShadow::Virtual => ([DIRECTIONAL_SHADOW_VIEW_OFFSET as u32, 0, 0, 0], 0, 0),
 		LightShadow::Cone {
 			view_index,
 			size_class,
@@ -358,6 +364,7 @@ pub(crate) fn light_data(
 				light_type: 68,
 				shadow_views,
 				shadow_layer,
+				virtual_shadow: u32::from(shadow == LightShadow::Virtual),
 				angular_radius_tangent: light.angular_radius.value().tan(),
 				..LightData::default()
 			};

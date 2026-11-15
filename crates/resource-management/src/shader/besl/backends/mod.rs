@@ -280,6 +280,19 @@ const SUBGROUP_COMPUTE: &str = r#"
 	}
 "#;
 
+/// ORs flags into and keeps the maximum of unsigned storage-image texels, using both image atomics as expressions.
+#[cfg(test)]
+const IMAGE_ATOMICS: &str = r#"
+	flags: descriptor<{ type: StorageImage<r32ui>, binding: 0, access: read_write }>;
+	depths: descriptor<{ type: StorageImage<r32ui>, binding: 1, access: read_write }>;
+	main: fn () -> void {
+		let coord: vec2u = thread_id();
+		let previous_flags: u32 = image_atomic_or(flags, coord, 4);
+		let previous_depth: u32 = image_atomic_max(depths, coord, previous_flags + 1);
+		write_u32(flags, coord, previous_depth);
+	}
+"#;
+
 /// Reads the vertex invocation indices into locals named like the `StageInput` fields, and passes them to a helper
 /// whose parameters take the same names, so a backend that bound the builtins by those names would redeclare them.
 #[cfg(test)]

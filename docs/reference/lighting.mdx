@@ -90,7 +90,9 @@ illuminance falls below 0.125 lux. A light can replace either end of that range.
 
 The visibility pipeline specifies which lights get shadow maps, how large they
 are, and how often they're drawn, under
-[shadow maps](/docs/reference/rendering#shadow-maps).
+[shadow maps](/docs/reference/rendering#shadow-maps), and how directional lights
+can use virtual shadow maps instead of cascades, under
+[virtual shadow maps](/docs/reference/rendering#virtual-shadow-maps).
 
 ## Height fog lighting
 
@@ -107,7 +109,7 @@ gathers the light its fog scatters toward the camera, single scattering only:
 | Lights | Every light in the scene's light table, up to its limit. Directional lights light every point of fog. Point and cone lights light fog within their reach, at their peak intensity in every direction: IES profiles don't apply, the inverse-square falloff and a cone's angular falloff do. |
 | Fog volume | A point or cone light lights the fog only where its reach overlaps a layer's box or, for a layer without one, lies below the height where the layer's density falls under 0.0001 per meter. |
 | Shadows | A light with a shadow map shadows each sample of fog. A directional or cone light's sample blends the depth comparisons of the four texels around its position bilinearly; a point light's sample compares the one texel its direction selects. |
-| Directional shadow distance | A directional light's shadow reaches the far end of its last cascade, along the camera's view axis. Fog past it, and fog that no cascade holds, is lit. A sample takes the first cascade, from the one its depth falls in, that holds it. |
+| Directional shadow distance | A directional light's shadow reaches the far end of its last cascade, along the camera's view axis. Fog past it, and fog that no cascade holds, is lit. A sample takes the first cascade, from the one its depth falls in, that holds it. With virtual shadow maps, fog gets no sun shadow. |
 | Local shadow range | A cone or point light shadows fog between its shadow's near and far planes. Fog outside that range is lit. |
 
 ### Light samples

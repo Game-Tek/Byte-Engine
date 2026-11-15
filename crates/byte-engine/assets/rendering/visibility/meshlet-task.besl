@@ -4,6 +4,7 @@
 use ::byte_engine::rendering::visibility::layouts::scene_records::*;
 use ::byte_engine::rendering::visibility::layouts::scene::*;
 use ::byte_engine::rendering::visibility::layouts::occlusion::*;
+use ::byte_engine::rendering::visibility::layouts::virtual_shadows::*;
 
 // Up to six views of each of the workgroup's 32 meshlets, then the workgroup's work in the last word. `scene_records`
 // gives the format.
@@ -37,6 +38,9 @@ OCCLUSION_EARLY: const u32 = 1;
 OCCLUSION_LATE: const u32 = 2;
 // Tests every meshlet against this frame's occlusion pyramid, as transparent geometry does.
 OCCLUSION_TEST: const u32 = 3;
+// Draws the levels of a virtual shadow map, view `1 + l` for level `l`: keeps only what covers a dirty page, as the
+// chapter's page draw culls against its hierarchical page buffer.
+OCCLUSION_PAGES: const u32 = 4;
 
 MAX_TASK_VIEWS: const u32 = 6;
 // The coarsest occlusion pyramid level. Keep it one below `OCCLUSION_PYRAMID_MIP_COUNT`.
@@ -123,13 +127,6 @@ cone_allows_rendering: fn(mesh: Mesh, meshlet: Meshlet, sphere: vec4f, view: Vie
 	return dot(center_delta, cone_axis) < cone_cutoff * length(center_delta) + sphere.w;
 }
 
-// Places an object-space sphere in the world with `model`. The radius grows by the model's largest axis scale.
-world_sphere: fn(model: mat4x3f, sphere: vec4f) -> vec4f {
-	let scale: f32 = sqrt(max(dot(model[0], model[0]), max(dot(model[1], model[1]), dot(model[2], model[2]))));
-	let world_center: vec3f = model * vec4f(sphere.x, sphere.y, sphere.z, 1.0);
-	return vec4f(world_center.x, world_center.y, world_center.z, sphere.w * scale);
-}
-
 // Returns the smaller and the larger tangent slope, lateral over depth, from the eye to a view-space circle. The circle
 // must lie past `radius` in depth.
 circle_tangent_slopes: fn(lateral: f32, depth: f32, radius: f32) -> vec2f {
@@ -181,6 +178,38 @@ sphere_is_occluded: fn(occlusion: Occlusion, view: View, sphere: vec4f) -> bool 
 	return nearest_depth < farthest_depth;
 }
 
+// Returns whether a world-space sphere covers a dirty page of virtual shadow map level `level`, whose orthographic
+// `view` drew it. It reads the hierarchy mip where the sphere's page rectangle spans at most two entries a side, at
+// most four entries, as the chapter's culling does.
+sphere_covers_dirty_pages: fn(occlusion: Occlusion, view: View, level: u32, sphere: vec4f) -> bool {
+	let clip: vec4f = view.view_projection * vec4f(sphere.x, sphere.y, sphere.z, 1.0);
+	let row_x: vec3f = vec3f(view.view_projection[0].x, view.view_projection[1].x, view.view_projection[2].x);
+	// A level's pages span the two normalized device units across it.
+	let pages: f32 = f32(VIRTUAL_SHADOW_PAGES);
+	let center_x: f32 = (clip.x * 0.5 + 0.5) * pages;
+	let center_y: f32 = (0.5 - clip.y * 0.5) * pages;
+	let radius: f32 = sphere.w * sqrt(dot(row_x, row_x)) * 0.5 * pages;
+	let first_x: u32 = u32(clamp(floor(center_x - radius), 0.0, pages - 1.0));
+	let first_y: u32 = u32(clamp(floor(center_y - radius), 0.0, pages - 1.0));
+	let last_x: u32 = u32(clamp(floor(center_x + radius), 0.0, pages - 1.0));
+	let last_y: u32 = u32(clamp(floor(center_y + radius), 0.0, pages - 1.0));
+	let offset: u32 = level * VIRTUAL_SHADOW_HIERARCHY_ENTRIES;
+	let side: u32 = VIRTUAL_SHADOW_PAGES;
+	for (let mip: u32 = 0; mip < VIRTUAL_SHADOW_HIERARCHY_MIPS; mip = mip + 1) {
+		let x0: u32 = first_x >> mip;
+		let y0: u32 = first_y >> mip;
+		let x1: u32 = last_x >> mip;
+		let y1: u32 = last_y >> mip;
+		if (x1 - x0 <= 1 && y1 - y0 <= 1) {
+			return (occlusion.page_hierarchy[offset + y0 * side + x0] | occlusion.page_hierarchy[offset + y0 * side + x1]
+				| occlusion.page_hierarchy[offset + y1 * side + x0] | occlusion.page_hierarchy[offset + y1 * side + x1]) != 0;
+		}
+		offset = offset + side * side;
+		side = side / 2;
+	}
+	return true;
+}
+
 main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	let workgroup_index: u32 = thread_position() / 32;
 	let lane: u32 = thread_idx();
@@ -206,6 +235,24 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	let view_count: u32 = min(push_constant.view_count, MAX_TASK_VIEWS);
 	let phase: u32 = push_constant.occlusion_phase;
 
+	// A page draw draws only into dirty pages. Bit `v` marks view `view_base + v` as a level with any, from the root of
+	// its page hierarchy; every lane reads the same words, so a batch with none leaves before it reads its instance.
+	let dirty_views: u32 = 0;
+	if (phase == OCCLUSION_PAGES) {
+		for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
+			let root: u32 = (push_constant.view_base + view_offset) * VIRTUAL_SHADOW_HIERARCHY_ENTRIES - 1;
+			if (occlusion.page_hierarchy[root] != 0) {
+				dirty_views = dirty_views | (1 << view_offset);
+			}
+		}
+		if (dirty_views == 0) {
+			if (lane == 0) {
+				set_task_mesh_output_count(0);
+			}
+			return;
+		}
+	}
+
 	let mesh: Mesh = scene.meshes[instance_index];
 	let level: MeshLevel = scene.mesh_levels[mesh.level & MESH_LEVEL_MASK];
 	// Posed meshlets can leave their bind-pose bounds, so every view keeps a skinned instance and all its meshlets.
@@ -224,6 +271,14 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 		let view: View = scene.views.views[push_constant.view_base + view_offset];
 		let shows: bool = sphere_is_visible(view, instance_sphere)
 			&& sphere_is_wide_enough(view, caster_sphere, push_constant.minimum_caster_extent);
+		// A page draw keeps an instance only over a dirty page; the nested test skips the read for the views it can't
+		// matter for.
+		if (shows && phase == OCCLUSION_PAGES) {
+			shows = ((dirty_views >> view_offset) & 1) != 0;
+			if (shows) {
+				shows = sphere_covers_dirty_pages(occlusion, view, push_constant.view_base + view_offset - 1, instance_sphere);
+			}
+		}
 		if (skinned || shows) {
 			instance_views = instance_views | (1 << view_offset);
 		}
@@ -281,6 +336,9 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 					let emit: bool = true;
 					if (tests_occlusion) {
 						emit = sphere_is_occluded(occlusion, view, world_meshlet_sphere) == false;
+					}
+					if (phase == OCCLUSION_PAGES && skinned == false) {
+						emit = sphere_covers_dirty_pages(occlusion, view, push_constant.view_base + view_offset - 1, world_meshlet_sphere);
 					}
 					// The late pass remembers every unoccluded meshlet, but draws only those the early pass skipped.
 					if (phase == OCCLUSION_LATE) {

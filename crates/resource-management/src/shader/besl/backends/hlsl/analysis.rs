@@ -206,7 +206,7 @@ impl Generator {
 			"atomic_compare_exchange" => "InterlockedCompareExchange",
 			"atomic_add" | "atomic_sub" => "InterlockedAdd",
 			"atomic_min" => "InterlockedMin",
-			"atomic_max" => "InterlockedMax",
+			"atomic_max" | "image_atomic_max" => "InterlockedMax",
 			"atomic_and" => "InterlockedAnd",
 			"atomic_or" | "image_atomic_or" => "InterlockedOr",
 			"atomic_xor" => "InterlockedXor",
@@ -214,7 +214,7 @@ impl Generator {
 		};
 		string.push_str(operation);
 		string.push('(');
-		if name == "image_atomic_or" {
+		if is_image_atomic(name) {
 			self.emit_node_string(string, &arguments[0]);
 			string.push('[');
 			self.emit_node_string(string, &arguments[1]);
@@ -272,11 +272,7 @@ impl Generator {
 		);
 		// The destination's indices, then every operand, each with the BESL type its parameter takes.
 		let mut parameters = Vec::<(besl::NodeReference, String)>::new();
-		let destination = if name == "image_atomic_or" {
-			None
-		} else {
-			Some(&arguments[0])
-		};
+		let destination = if is_image_atomic(name) { None } else { Some(&arguments[0]) };
 		if let Some(destination) = destination {
 			collect_destination_indices(destination, &mut parameters);
 		}
@@ -401,4 +397,10 @@ fn collect_destination_indices(node: &besl::NodeReference, parameters: &mut Vec<
 		}
 		_ => {}
 	}
+}
+
+/// Returns whether `name` is an image atomic, whose destination is a storage-image texel instead of a buffer or
+/// workgroup value.
+fn is_image_atomic(name: &str) -> bool {
+	matches!(name, "image_atomic_or" | "image_atomic_max")
 }

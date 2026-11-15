@@ -289,11 +289,12 @@ impl ShadowMapStates {
 		let cascade_texels = u64::from(cascade_resolution).pow(2);
 		let class_texels = |size_class: usize| u64::from(local_shadow_map_resolution(size_class)).pow(2);
 		let cascade = |slot, cascade| Unit::Cascade { slot, cascade };
-		let always_drawn = (0..selection.suns.len())
+		// Only suns whose shadows are cascades have maps here; a virtual shadow map keeps its own pages.
+		let always_drawn = (0..layout.suns)
 			.flat_map(|slot| (0..ALWAYS_DRAWN_CASCADES).map(move |index| cascade(slot, index)))
 			.collect::<SmallVec<[Unit; SHADOW_MAPS_INLINE]>>();
 		// Every competing map with its importance and texels.
-		let competing = (0..selection.suns.len())
+		let competing = (0..layout.suns)
 			.flat_map(|slot| (ALWAYS_DRAWN_CASCADES..SHADOW_CASCADE_COUNT).map(move |index| cascade(slot, index)))
 			.map(|unit| (unit, sink_pixels, cascade_texels))
 			.chain(
@@ -424,7 +425,7 @@ impl ShadowMapStates {
 				let position = (view_index as usize - POINT_SHADOW_VIEW_OFFSET) / POINT_SHADOW_FACE_COUNT;
 				self.points[position].1.iter().all(|face| face.drawn.is_some())
 			}
-			LightShadow::None | LightShadow::Directional { .. } => true,
+			LightShadow::None | LightShadow::Directional { .. } | LightShadow::Virtual => true,
 		};
 		if drawn { shadow } else { LightShadow::None }
 	}

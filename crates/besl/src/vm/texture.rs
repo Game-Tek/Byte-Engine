@@ -378,10 +378,11 @@ impl Texture {
 		coord[0] < self.width && coord[1] < self.height
 	}
 
-	pub(super) fn atomic_or(&mut self, coord: [u32; 2], value: u32) -> Result<u32, VmError> {
+	/// Applies an atomic `operation` with `value` to the unsigned texel at `coord` and returns the texel's previous value.
+	pub(super) fn atomic(&mut self, operation: AtomicOperation, coord: [u32; 2], value: u32) -> Result<u32, VmError> {
 		let index = self.texel_index([coord[0], coord[1], 0])?;
 		let previous = self.texels[index].u32()?;
-		let updated = previous | value;
+		let updated = expect_u32(&apply_atomic_operation(operation, &Value::U32(previous), &Value::U32(value))?)?;
 		self.texels[index] = Texel::U32(updated);
 		Ok(previous)
 	}

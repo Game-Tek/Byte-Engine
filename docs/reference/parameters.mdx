@@ -132,10 +132,14 @@ Every value here is validated, and a bad one stops startup.
 | `render.instances.capacity` | 1 through 33,554,432 | 1,024 | Instances one frame draws, one per primitive of a renderable mesh. A primitive past it isn't drawn, with one warning. |
 | `render.instances.meshlet-group-capacity` | Positive count | 131,072 | Groups of meshlets that one frame culls. An instance takes one per 32 meshlets of the level it draws, or one per meshlet when the level has 8 meshlets or fewer. An instance past it isn't drawn, with one warning. |
 | `render.instances.rebuild-lanes` | Positive count | The performance cores | The most lanes that rebuild the frame's instances; `1` rebuilds them on the render thread. A lane takes at least 8,192 primitives. |
-| `render.directional-shadows.distance` | Positive meters | 100 | How far directional shadow cascades reach. |
+| `render.directional-shadows.technique` | `cascades` or `virtual` | `cascades` | How directional lights cast shadows: through [cascades](/docs/reference/rendering#the-visibility-pipeline) or [virtual shadow maps](/docs/reference/rendering#virtual-shadow-maps). |
+| `render.directional-shadows.distance` | Positive meters | 100 | How far directional shadows reach: the cascades' range, or, with virtual shadow maps, the farthest receiver from the camera they shadow. |
 | `render.directional-shadows.split-blend` | 0 through 1 | 0.8 | The share of logarithmic versus even cascade splits. |
 | `render.directional-shadows.fitting` | `receivers` or `frustum` | `receivers` | What each cascade covers. |
 | `render.directional-shadows.resolution` | A positive multiple of 16 | 2,048 | Cascade texels per side. |
+| `render.directional-shadows.first-level-size` | Positive meters | 4 | With virtual shadow maps, the side of the finest level; each coarser level doubles it. |
+| `render.directional-shadows.level-bias` | Positive | 1 | With virtual shadow maps, scales the distance the receiver level rule measures: above 1 picks coarser levels, below 1 finer ones. |
+| `render.directional-shadows.pool-pages` | 1 through 16,384 | 4,096 | With virtual shadow maps, the pages that hold depth at once, 64 KiB each. |
 | `render.surfel-gi.surfel-capacity` | A power of two from 1,024 through 16,777,216 | 32,768 | The most surfels alive at once. |
 | `render.surfel-gi.ray-budget` | A multiple of 1,024 from 1,024 through 1,048,576 | 16,384 | The most rays surfels trace each frame. |
 | `render.probe-gi.ray-budget` | A multiple of 128 from 128 through 1,048,576 | 65,536 | The rays probes trace each frame, 128 for each probe updated. |

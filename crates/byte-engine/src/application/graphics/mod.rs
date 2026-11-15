@@ -121,7 +121,12 @@ pub struct GraphicsApplication {
 	inspector_events: std::sync::Arc<crate::inspector::EventSignal>,
 	configuration: Configuration,
 
+	/// Layers that pull their own sinks from [`Self::input`] before the world's sink, in the order they were added;
+	/// see [`Self::add_input_layer`].
+	input_layers: Vec<Box<dyn FnMut(&mut input::InputCollector)>>,
 	window_factory: (Factory<Window>, DefaultListener<CreateMessage<Window>>),
+	/// Feature changes for open windows, which the renderer applies before each frame.
+	window_features: DefaultListener<rendering::SetWindowFeatures>,
 
 	generator_factory: Factory<std::boxed::Box<dyn Generator>>,
 
@@ -208,6 +213,7 @@ struct Services {
 	waker: LoopWaker,
 	window_factory: Factory<Window>,
 	window_factory_listener: DefaultListener<CreateMessage<Window>>,
+	window_features: DefaultListener<rendering::SetWindowFeatures>,
 	generator_factory: Factory<std::boxed::Box<dyn Generator>>,
 	window_events: DefaultChannel<ghi::window::Event>,
 }
@@ -305,6 +311,7 @@ impl GraphicsApplication {
 
 						let window_factory = messages.factory();
 						let window_factory_listener = window_factory.listener();
+						let window_features = messages.channel().listener();
 
 						let generator_factory = messages.factory();
 
@@ -325,6 +332,7 @@ impl GraphicsApplication {
 							waker,
 							window_factory,
 							window_factory_listener,
+							window_features,
 							generator_factory,
 							window_events,
 						});
@@ -422,6 +430,8 @@ impl GraphicsApplication {
 			configuration,
 
 			window_factory: (services.window_factory, services.window_factory_listener),
+			window_features: services.window_features,
+			input_layers: Vec::new(),
 
 			generator_factory: services.generator_factory,
 
@@ -646,7 +656,10 @@ impl GraphicsApplication {
 	fn prepare_renderer_state(&mut self) {
 		let _span = debug_span!("GraphicsApplication::prepare_renderer_state").entered();
 		while let Some(message) = self.window_factory.1.read() {
-			self.renderer.create_window(message.into_data());
+			self.renderer.create_window(message.handle(), message.into_data());
+		}
+		while let Some(change) = self.window_features.read() {
+			self.renderer.set_window_features(change.window(), change.features());
 		}
 		while let Some(message) = self.cameras_listener.read() {
 			self.renderer.create_camera(message.handle(), message.into_data());
@@ -892,9 +905,14 @@ impl GraphicsApplication {
 
 		self.process_gamepad_events();
 
-		// The world's sink is the only sink here, so it captures nothing.
-		debug_span!("GraphicsApplication::update_input")
-			.in_scope(|| self.actions.pull(&mut self.input, |_| input::Capture::Passed));
+		// Layers pull first, so the world's sink only resolves the input they passed. It pulls last and captures
+		// nothing.
+		debug_span!("GraphicsApplication::update_input").in_scope(|| {
+			for layer in &mut self.input_layers {
+				layer(&mut self.input);
+			}
+			self.actions.pull(&mut self.input, |_| input::Capture::Passed)
+		});
 
 		self.streams.update();
 		let result = run(self, time);
@@ -1022,6 +1040,18 @@ impl GraphicsApplication {
 	/// controls screen reads presses through.
 	pub fn actions_mut(&mut self) -> (&mut input::InputCollector, &mut input::InputSink) {
 		(&mut self.input, &mut self.actions)
+	}
+
+	/// Adds a layer of input that takes its share before the world's [`Action`] values resolve, such as a tool drawn
+	/// over the game that keeps the clicks it handles.
+	///
+	/// Each tick, the application calls `layer` with [`Self::input`], in the order the layers were added, then
+	/// resolves the world's actions from the input the layers passed. In it, pull a sink you added to the collector
+	/// through [`Self::actions_mut`] with [`InputSink::pull`](input::InputSink::pull), and capture what it handles.
+	/// Next, cancel the world's held actions with [`InputSink::cancel_seat`](input::InputSink::cancel_seat) when the
+	/// layer starts taking input a held action was using.
+	pub fn add_input_layer(&mut self, layer: impl FnMut(&mut input::InputCollector) + 'static) {
+		self.input_layers.push(Box::new(layer));
 	}
 
 	/// Returns the renderer used by setup functions and advanced render integrations.

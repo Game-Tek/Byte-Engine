@@ -62,6 +62,35 @@ impl Window {
 
 impl Entity for Window {}
 
+/// The `SetWindowFeatures` struct changes the features of an open window, so an application can switch modes without
+/// opening another window, such as an editor freeing the cursor a game captures.
+///
+/// Send it on the [`crate::application::graphics::GraphicsApplication::messages`] channel with the handle the window was
+/// created with. The renderer applies it before the next frame. Only [`Features::CAPTURE_CURSOR`] changes at runtime;
+/// see [window features](/docs/reference/rendering#windows).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetWindowFeatures {
+	window: Handle,
+	features: Features,
+}
+
+impl SetWindowFeatures {
+	/// Gives the window created with `window` the features `features`.
+	pub fn new(window: Handle, features: Features) -> Self {
+		Self { window, features }
+	}
+
+	/// The handle the window was created with.
+	pub fn window(&self) -> Handle {
+		self.window
+	}
+
+	/// The features the window takes.
+	pub fn features(&self) -> Features {
+		self.features
+	}
+}
+
 bitflags::bitflags! {
 	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 	/// Bit flags for the features of a window.

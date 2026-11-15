@@ -185,9 +185,10 @@ pub struct Renderer {
 	/// This field drops after renderer subsystems so they finish pending GPU work before their resources are destroyed.
 	context: ghi::implementation::Context,
 
-	/// Display windows, their swapchains, and whether the latest acquisition warned that the window cannot render.
-	/// Declared after `context`, because destroying a swapchain's surface may still talk to its window.
-	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle, bool); 16]>,
+	/// Display windows, their swapchains, whether the latest acquisition warned that the window cannot render, and the
+	/// handle and features the application gave them. Declared after `context`, because destroying a swapchain's
+	/// surface may still talk to its window.
+	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle, bool, Handle, window::Features); 16]>,
 	/// The windowing connection that pumps every window's events. Declared after `windows` so they drop first.
 	app: Option<ghi::window::App>,
 }
@@ -801,11 +802,37 @@ impl Renderer {
 		self.app.as_mut().map_or(Ok(()), |app| app.wake_on_hid_changes(monitor))
 	}
 
+	/// Gives the window created with `handle` the features `features`, applying the ones that change at runtime.
+	///
+	/// Only [`window::Features::CAPTURE_CURSOR`] changes on an open window; a change to another feature is logged and
+	/// left out.
+	pub fn set_window_features(&mut self, handle: Handle, features: window::Features) {
+		let Some((window, _, _, _, current)) = self.windows.iter_mut().find(|(.., window, _)| *window == handle) else {
+			log::warn!(
+				"Window features were not changed. The most likely cause is a handle that names no open window, or a window the renderer hasn't opened yet. Send the change after the tick that created the window, with the handle its creation returned."
+			);
+			return;
+		};
+		let fixed = (features ^ *current) & !window::Features::CAPTURE_CURSOR;
+		if !fixed.is_empty() {
+			log::warn!(
+				"Window features {fixed:?} were not changed. The most likely cause is that only cursor capture changes on an open window. Create the window with these features instead."
+			);
+		}
+		let captures = features.contains(window::Features::CAPTURE_CURSOR);
+		if captures != current.contains(window::Features::CAPTURE_CURSOR) {
+			if let Some(app) = &mut self.app {
+				app.set_cursor_capture(window, captures);
+			}
+			current.set(window::Features::CAPTURE_CURSOR, captures);
+		}
+	}
+
 	/// Caps the presentation rate by setting the minimum time between presented frames on every window,
 	/// including windows created later. `None` removes the cap so frames present on every refresh.
 	pub fn set_present_interval(&mut self, interval: Option<std::time::Duration>) {
 		self.present_interval = interval;
-		for (_window, swapchain, _) in &self.windows {
+		for (_window, swapchain, ..) in &self.windows {
 			self.context.set_present_interval(*swapchain, interval);
 		}
 	}
@@ -867,7 +894,7 @@ impl Renderer {
 		let frame = ghi::queue::FrameRequest::new(self.started_frame_count, self.render_finished_synchronizer);
 		let mut present_time = None;
 
-		for (index, (window, swapchain, warned)) in self.windows.iter_mut().enumerate() {
+		for (index, (window, swapchain, warned, ..)) in self.windows.iter_mut().enumerate() {
 			if !undecided(&self.acquisitions.1, index) {
 				continue;
 			}
@@ -1351,11 +1378,13 @@ impl Renderer {
 		self.pipeline_compilation_client.clone()
 	}
 
-	/// Creates the swapchain and sink state for a window.
+	/// Creates the swapchain and sink state for a window created with `handle`.
 	///
 	/// Next, create a camera with [`Self::create_camera`] and associate it with the
-	/// sink through the application or world integration.
-	pub fn create_window(&mut self, window: Window) {
+	/// sink through the application or world integration. Change its features later with
+	/// [`Self::set_window_features`].
+	pub fn create_window(&mut self, handle: Handle, window: Window) {
+		let requested_features = window.features();
 		let name = window.name();
 		let extent = window.extent();
 		let camera = window.camera();
@@ -1399,7 +1428,7 @@ impl Renderer {
 				}
 
 				let sink_id = self.windows.len();
-				self.windows.push((window, swapchain_handle, false));
+				self.windows.push((window, swapchain_handle, false, handle, requested_features));
 				self.redraw_requested = true;
 
 				// The first window closes the render graph, so the fusions its steps group with can be read.

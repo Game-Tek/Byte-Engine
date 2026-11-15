@@ -37,6 +37,7 @@ again.
 | Size changes | The sink follows the window's size in pixels when the user resizes it or the display's scale changes. |
 | Decorations on Wayland | A window with decorations asks the compositor to draw them. When the compositor draws none, as GNOME's doesn't, libdecor draws them, in the dark theme variant when the desktop prefers dark. Without libdecor, the window opens undecorated and one warning is logged. |
 | Text on Wayland | A key press that types a printable character reports it as `Keyboard.Character`. Holding a key doesn't repeat it. |
+| Feature changes | A `SetWindowFeatures` message on the application's message scope, naming the handle the window was created with, applies before the next frame. Only cursor capture changes on an open window; a change to another feature is logged and left out, and so is a message naming no open window. |
 
 ## Camera
 

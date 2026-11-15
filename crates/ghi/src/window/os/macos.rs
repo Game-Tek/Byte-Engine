@@ -781,6 +781,21 @@ impl App {
 		AppWaker
 	}
 
+	/// Adds `window` to the windows that capture the cursor, or removes it; see
+	/// [`crate::window::App::set_cursor_capture`]. The pump holds the cursor for a capturing window that has focus.
+	pub(crate) fn set_cursor_capture(&mut self, window: &Window, captures: bool) {
+		let id = window.id();
+		let mut windows = self.cursor.windows.borrow_mut();
+		windows.retain(|capturing| *capturing != id);
+		if captures {
+			windows.push(id);
+		}
+		drop(windows);
+		if !captures && self.cursor.holds(id) {
+			self.cursor.release();
+		}
+	}
+
 	/// Opens an AppKit dialog; see [`crate::window::App::open_dialog`].
 	pub(crate) fn open_dialog(
 		&mut self,

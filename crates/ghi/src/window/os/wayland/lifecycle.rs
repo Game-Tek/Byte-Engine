@@ -270,6 +270,23 @@ impl App {
 		AppWaker(Arc::clone(&self.wake))
 	}
 
+	/// Sets whether `window` hides the cursor and locks the pointer while it has focus; see
+	/// [`crate::window::App::set_cursor_capture`].
+	///
+	/// The cursor shows again only when it next enters a window, since a window that doesn't capture sets no cursor of
+	/// its own.
+	pub(crate) fn set_cursor_capture(&mut self, window: &Window, captures: bool) {
+		let Some(state) = self.data.window_mut(window.id) else {
+			return;
+		};
+		state.captures_cursor = captures;
+		if !captures && let Some(lock) = state.cursor_lock.take() {
+			lock.destroy();
+		}
+		let qh = self.event_queue.handle();
+		self.data.lock_cursors(&qh);
+	}
+
 	/// Sends a dialog to the desktop portal; see [`crate::window::App::open_dialog`].
 	///
 	/// Portal dialogs are not attached to `parent` yet, so they open on their own.

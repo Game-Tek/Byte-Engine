@@ -172,7 +172,7 @@ struct WindowData {
 	/// The monitor the window was last reported on, so moves report only real display changes.
 	monitor: Cell<HMONITOR>,
 	/// Whether the window holds the cursor while it has focus.
-	captures_cursor: bool,
+	captures_cursor: Cell<bool>,
 	/// The cursor's latest client position in pixels, so the next one can report the movement between them.
 	cursor_position: Cell<Option<(i32, i32)>>,
 	cursor_capture: Rc<CursorCapture>,
@@ -316,7 +316,7 @@ impl App {
 			use_raw_keyboard: self.use_raw_keyboard,
 			monitor: Cell::new(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }),
 			// A background window is never shown, so it never takes focus to hold the cursor.
-			captures_cursor: features.contains(Features::CAPTURE_CURSOR) && !features.contains(Features::BACKGROUND),
+			captures_cursor: Cell::new(features.contains(Features::CAPTURE_CURSOR) && !features.contains(Features::BACKGROUND)),
 			cursor_position: Cell::new(None),
 			cursor_capture: self.cursor_capture.clone(),
 			absolute_mouse: self.absolute_mouse.clone(),
@@ -436,7 +436,7 @@ impl App {
 	/// disappears.
 	fn update_cursor_capture(&self) {
 		let target = focused_window_data()
-			.filter(|window| window.captures_cursor)
+			.filter(|window| window.captures_cursor.get())
 			.and_then(|window| Some((window.id, center_pixel(window_handle(window.id))?)));
 
 		match (self.cursor_capture.held.get(), target) {
@@ -457,6 +457,15 @@ impl App {
 
 	pub(crate) fn waker(&self) -> AppWaker {
 		AppWaker(Arc::clone(&self.wake_event))
+	}
+
+	/// Sets whether `window` holds the cursor while it has focus; see [`crate::window::App::set_cursor_capture`].
+	/// The pump clips the cursor for a capturing window that has focus.
+	pub(crate) fn set_cursor_capture(&mut self, window: &Window, captures: bool) {
+		window.data.captures_cursor.set(captures);
+		if !captures && self.cursor_capture.holds(window.data.id) {
+			self.cursor_capture.release();
+		}
 	}
 
 	/// Starts a common dialog on its own thread; see [`crate::window::App::open_dialog`].

@@ -81,14 +81,16 @@ movement doesn't depend on the window's size.
 
 ## Cursor capture
 
-A window created with cursor capture holds the cursor while it's captured, so
-the mouse can move without end, and `Mouse.Movement` keeps reporting motion.
+A window with cursor capture holds the cursor while it's captured, so the
+mouse can move without end, and `Mouse.Movement` keeps reporting motion. A
+window gets cursor capture when it's created, or later through a
+[feature change](/docs/reference/rendering#windows).
 
 | Rule | Value |
 | --- | --- |
 | Engages | While the window has focus and no mouse button is held. On Wayland, the compositor engages it while the window has focus and the pointer is over it. |
 | While captured | The cursor is hidden and held at the window's center. `Pointer.Position` isn't recorded. `Pointer.Movement` keeps reporting motion on macOS and Wayland, and isn't recorded on Windows. |
-| Releases | When the window loses focus, is minimized, or closes. The cursor shows again at the window's center. |
+| Releases | When the window loses focus, is minimized, or closes, or when a feature change removes its cursor capture. The cursor shows again at the window's center. On Wayland, a removed capture shows the cursor again only once it leaves the window and comes back. |
 | One at a time | At most one window holds the cursor. |
 | Background windows | A window that runs unattended never captures the cursor. |
 
@@ -137,6 +139,17 @@ This is why diagonal keyboard movement can be represented as one stable movement
 For lookaround, `Function::Sphere` can map a 2D input into a 3D direction.
 Your application receives a direction-like action value without needing to know
 whether it came from mouse position or a stick.
+
+## Input layers
+
+An input layer takes its share of a tick's input before the world's actions
+resolve, such as a tool drawn over the game that keeps the clicks it handles.
+
+| Rule | Value |
+| --- | --- |
+| Order | Each tick, the application runs its layers in the order they were added, then resolves the world's actions. |
+| Capture | Input a layer's sink captures doesn't reach later layers or the world's actions. A captured press keeps its control until it's released. |
+| Held actions | A world action that's held when a layer starts capturing its input keeps its value until the world's sink cancels it. |
 
 ## Tick policy
 

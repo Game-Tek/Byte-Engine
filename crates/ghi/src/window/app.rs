@@ -52,6 +52,15 @@ impl App {
 		Ok(id)
 	}
 
+	/// Makes `window` hold the cursor while it has focus, as [`Features::CAPTURE_CURSOR`] does when it's created, or
+	/// gives the cursor back.
+	///
+	/// A window that stops capturing frees and shows the cursor at once. One that starts capturing holds the cursor
+	/// from the next [`Self::poll`] in which it has focus and no mouse button is down.
+	pub fn set_cursor_capture(&mut self, window: &Window, captures: bool) {
+		self.os_app.set_cursor_capture(window.os_window(), captures);
+	}
+
 	/// Makes a waiting [`Self::poll`] return when a HID device connects or disconnects, so the caller can check
 	/// [`crate::hid::Monitor::take_changed`] without polling on a timer.
 	///

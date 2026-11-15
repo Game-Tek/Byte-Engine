@@ -47,8 +47,17 @@ in `.ndjson`.
 ## Entities and messages
 
 The entity query lists every factory-created handle with its types and the
-name and position the inspector has observed since it started. It filters by
-exact type or name.
+properties the inspector has observed since it started. It filters by exact
+type or name.
+
+| Property | Value |
+| --- | --- |
+| `name` | The latest name attached to the entity. |
+| `transform` | The latest transform published for the entity, in the `TransformationUpdate` payload's shape: `position` and `scale` as three numbers, `orientation` as four. |
+
+A property is present only when the entity has it. Because `transform` has the
+`TransformationUpdate` payload's shape, a client can change one field of it and
+post the whole value back without resetting the others.
 
 | Message | Payload | Effect |
 | --- | --- | --- |

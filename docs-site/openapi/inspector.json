@@ -2,7 +2,7 @@
 	"openapi": "3.2.0",
 	"info": {
 		"title": "Byte Engine HTTP Inspector API",
-		"version": "0.2.0",
+		"version": "0.3.0",
 		"description": "Inspect and control a running headed Byte Engine application through its loopback HTTP server. The inspector listens on port 6680 and does not provide authentication. Keep it bound to the loopback interface."
 	},
 	"servers": [
@@ -98,7 +98,11 @@
 										],
 										"properties": {
 											"name": "main camera",
-											"position": [0.0, 1.8, -4.0]
+											"transform": {
+												"position": [0.0, 1.8, -4.0],
+												"scale": [1.0, 1.0, 1.0],
+												"orientation": [0.0, 0.0, 0.0, 1.0]
+											}
 										}
 									}
 								]
@@ -1067,9 +1071,9 @@
 								"type": "string",
 								"description": "Latest name attached to the entity."
 							},
-							"position": {
-								"$ref": "#/components/schemas/Vector3",
-								"description": "World-space position from the latest transform published for the entity, as `[x, y, z]`."
+							"transform": {
+								"$ref": "#/components/schemas/TransformPayload",
+								"description": "Latest transform published for the entity, in the `TransformationUpdate` payload's shape, so a client can change one field and post the whole value back."
 							}
 						}
 					}

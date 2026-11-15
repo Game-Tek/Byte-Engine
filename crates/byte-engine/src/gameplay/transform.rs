@@ -16,8 +16,8 @@ pub struct Transform {
 /// The `SerializableTransform` struct defines the checked reflection boundary for engine transforms.
 ///
 /// A missing field takes the identity's value, so a payload names only what it changes. Facet reads it for the
-/// inspector, and serde for levels.
-#[derive(facet::Facet, serde::Deserialize)]
+/// inspector, and serde for levels and for the inspector's `transform` property.
+#[derive(facet::Facet, serde::Deserialize, serde::Serialize)]
 #[facet(deny_unknown_fields)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SerializableTransform {

@@ -1181,8 +1181,11 @@ fn entity_rows<'a>(found: &[&'a InspectedEntity], total: usize, search: &str, he
 		.unwrap_or(0)
 		.clamp(4, 32);
 	for entity in shown {
-		let position = match entity.property("position") {
-			Some(InspectedValue::Point(point)) => format!("{:.2}, {:.2}, {:.2}", point.x(), point.y(), point.z()),
+		let position = match entity.property("transform") {
+			Some(InspectedValue::Transform(transform)) => {
+				let point = transform.get_position();
+				format!("{:.2}, {:.2}, {:.2}", point.x(), point.y(), point.z())
+			}
 			_ => "-".to_string(),
 		};
 		rows.push(Line::from(vec![
@@ -1940,8 +1943,8 @@ mod tests {
 		assert_eq!(console.status, format!("Posted TransformationUpdate to {}", handle.id()));
 		let moved = world.inspector.entities(None, Some("shipping crate"));
 		assert_eq!(
-			moved[0].property("position"),
-			Some(InspectedValue::Point(math::Point::new(4.0, 5.0, 6.0)))
+			moved[0].property("transform"),
+			Some(InspectedValue::Transform(&crate::gameplay::Transform::from_position(math::Point::new(4.0, 5.0, 6.0))))
 		);
 	}
 

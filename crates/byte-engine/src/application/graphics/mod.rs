@@ -112,6 +112,8 @@ pub struct GraphicsApplication {
 
 	close: bool,
 
+	/// The inspector the console and the HTTP transport serve, which [`Self::inspector`] lends to in-process tools.
+	inspector: EntityHandle<DefaultInspector>,
 	/// Keeps the HTTP inspector transport listening while the application lives.
 	_http_inspector: HttpInspectorServer,
 	screenshot_broker: std::sync::Arc<crate::inspector::screenshot::ScreenshotBroker>,
@@ -195,6 +197,7 @@ struct Services {
 	directional_lights_listener: DefaultListener<CreateMessage<rendering::DirectionalLight>>,
 	fogs_listener: DefaultListener<CreateMessage<rendering::ExponentialHeightFog>>,
 	shown_transforms: ShownTransforms,
+	inspector: EntityHandle<DefaultInspector>,
 	http_inspector: HttpInspectorServer,
 	/// The console's thread, when the terminal console started; it joins the application's workers.
 	console: Option<Thread>,
@@ -298,7 +301,7 @@ impl GraphicsApplication {
 							application_events.listener(),
 							parameters.scope("console"),
 						);
-						let http_inspector = HttpInspectorServer::new(inspector, waker.clone(), parameters.scope("inspector"));
+						let http_inspector = HttpInspectorServer::new(inspector.clone(), waker.clone(), parameters.scope("inspector"));
 
 						let window_factory = messages.factory();
 						let window_factory_listener = window_factory.listener();
@@ -313,6 +316,7 @@ impl GraphicsApplication {
 							directional_lights_listener,
 							fogs_listener,
 							shown_transforms,
+							inspector,
 							http_inspector,
 							console,
 							retained_streams,
@@ -411,6 +415,7 @@ impl GraphicsApplication {
 			application,
 			window_events: services.window_events,
 
+			inspector: services.inspector,
 			_http_inspector: services.http_inspector,
 			screenshot_broker: services.screenshot_broker,
 			inspector_events: services.inspector_events,
@@ -1137,6 +1142,15 @@ impl GraphicsApplication {
 	/// and systems keep their own copy.
 	pub fn world(&self) -> &MessageScope {
 		&self.world
+	}
+
+	/// Returns the inspector the console and the HTTP inspector serve, for tools that run inside the application,
+	/// such as an in-game editor.
+	///
+	/// List entities with [`DefaultInspector::entities`] and change them with [`DefaultInspector::post_message`]. See
+	/// the [inspector reference](/docs/reference/inspector) for the messages it accepts.
+	pub fn inspector(&self) -> &EntityHandle<DefaultInspector> {
+		&self.inspector
 	}
 
 	/// Returns the audio generator factory used by default audio setup.

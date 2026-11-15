@@ -29,7 +29,7 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Clients use this server to inspect factory-created entities and drain
 /// passive publication ranges. `GET /entities` returns each numeric `target`,
 /// its Rust `types`, and a `properties` object with every tracked value it has:
-/// its `name` and its latest `position` as `[x, y, z]`. Filter entities with an
+/// its `name` and its latest `transform`. Filter entities with an
 /// exact `name`, `type`, or both. `GET /messages` returns the `scope`, complete
 /// generic `type`, `first_sequence`, and `count` for each route that published
 /// since the previous request. Payloads remain opaque. `GET /messages/types`
@@ -1050,7 +1050,9 @@ mod tests {
 
 		let named = labels.create("crate-model".to_string());
 		names.derive(named, Name::new("shipping crate"));
-		transforms.derive(named, Transform::from_position(Point::new(1.0, 2.0, 3.0)));
+		let mut transform = Transform::from_position(Point::new(1.0, 2.0, 3.0));
+		transform.set_scale(math::Scale::new(2.0, 2.0, 2.0));
+		transforms.derive(named, transform);
 		let _unnamed = labels.create("barrel-model".to_string());
 
 		let response = super::entities_response(&inspector, Some("name=shipping+crate"));
@@ -1060,7 +1062,11 @@ mod tests {
 		assert_eq!(entities[0]["target"], named.id());
 		assert_eq!(
 			entities[0]["properties"],
-			serde_json::json!({ "name": "shipping crate", "position": [1.0, 2.0, 3.0] })
+			// The transform comes back whole, in the shape `TransformationUpdate` accepts, so it can be posted back.
+			serde_json::json!({
+				"name": "shipping crate",
+				"transform": { "position": [1.0, 2.0, 3.0], "scale": [2.0, 2.0, 2.0], "orientation": [0.0, 0.0, 0.0, 1.0] },
+			})
 		);
 		assert!(
 			entities[0]["types"]

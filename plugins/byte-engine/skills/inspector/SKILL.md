@@ -52,7 +52,7 @@ application does.
 
 | You want to | Call |
 | --- | --- |
-| Find an entity's handle, types, name, or position | `GET /entities?name=<exact name>` or `GET /entities?type=<full Rust type path>` |
+| Find an entity's handle, types, name, or transform | `GET /entities?name=<exact name>` or `GET /entities?type=<full Rust type path>` |
 | Learn which messages the app accepts and their payload shapes | `GET /messages/types` |
 | Move, delete, or trigger an input action on an entity | `POST /messages` |
 | See the final frame | `GET /screenshots?sink=0` |
@@ -193,11 +193,12 @@ The parameters reference lists every runtime setting and the values it accepts.
 
 3. Check the effect. A `204` means the message was published, not that anything reacted to it. Wait for the
    ticks the reaction needs with `wait_ticks` from [Wait for something to happen](#wait-for-something-to-happen),
-   instead of sleeping. Then read the affected entity's `position` from `/entities`, take a screenshot, or read its
+   instead of sleeping. Then read the affected entity's `transform` from `/entities`, take a screenshot, or read its
    debug data stream.
 
 `TransformationUpdate` takes a complete transform: `position` and `scale` as three numbers and `orientation` as a
-quaternion of four. `Delete` and `Destroy` take a `null` payload.
+quaternion of four. A field left out takes its identity value, so to change one field, read the entity's `transform`
+from `/entities`, change that field, and post the whole value back. `Delete` and `Destroy` take a `null` payload.
 
 `GET /messages` drains a cursor that every client shares, so two tools that both poll it each see only part of
 the stream. It reports message ranges by Rust type, not payloads.

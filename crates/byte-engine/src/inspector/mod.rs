@@ -7,7 +7,6 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use math::Point;
 #[cfg(feature = "headed")]
 use screenshot::ScreenshotBroker;
 use serde::{Serialize, Serializer, ser::SerializeMap, ser::SerializeStruct};
@@ -23,7 +22,7 @@ use crate::{
 		message_bus::{MessageBus, MessageScope},
 		message_observer::{MessageObserver, ObservedEntity},
 	},
-	gameplay::{Name, TransformationUpdate},
+	gameplay::{Name, Transform, TransformationUpdate, transform::SerializableTransform},
 	metrics::Metrics,
 };
 
@@ -109,15 +108,15 @@ pub struct InspectedEntity {
 pub enum InspectedValue<'a> {
 	/// Text, such as an attached [`Name`].
 	Text(&'a str),
-	/// A world-space location, serialized as `[x, y, z]`.
-	Point(Point),
+	/// A transform, serialized in the `TransformationUpdate` payload's shape so a client can post it back.
+	Transform(&'a Transform),
 }
 
 impl Serialize for InspectedValue<'_> {
 	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
 		match self {
 			Self::Text(text) => serializer.serialize_str(text),
-			Self::Point(point) => [point.x(), point.y(), point.z()].serialize(serializer),
+			Self::Transform(transform) => SerializableTransform::from(*transform).serialize(serializer),
 		}
 	}
 }
@@ -127,8 +126,8 @@ impl Serialize for InspectedValue<'_> {
 struct InspectedProperties {
 	/// The latest [`Name`] derived for the entity.
 	name: Option<Name>,
-	/// The position of the latest [`Transform`](crate::gameplay::Transform) published for the entity.
-	position: Option<Point>,
+	/// The latest [`Transform`] published for the entity.
+	transform: Option<Transform>,
 }
 
 impl InspectedProperties {
@@ -136,7 +135,7 @@ impl InspectedProperties {
 	fn iter(&self) -> impl Iterator<Item = (&'static str, InspectedValue<'_>)> {
 		[
 			self.name.as_ref().map(|name| ("name", InspectedValue::Text(name.as_str()))),
-			self.position.map(|position| ("position", InspectedValue::Point(position))),
+			self.transform.as_ref().map(|transform| ("transform", InspectedValue::Transform(transform))),
 		]
 		.into_iter()
 		.flatten()
@@ -174,7 +173,7 @@ impl InspectedEntity {
 		self.entity.types()
 	}
 
-	/// Returns the tracked property with this protocol name, such as `name` or `position`, when the entity has it.
+	/// Returns the tracked property with this protocol name, such as `name` or `transform`, when the entity has it.
 	pub fn property(&self, name: &str) -> Option<InspectedValue<'_>> {
 		self.properties
 			.iter()
@@ -388,9 +387,9 @@ fn watch_properties(
 	messages.channel::<CreateMessage<Name>>().watch(move |creation| {
 		names.lock().entry(creation.handle()).or_default().name = Some(creation.data().clone());
 	});
-	let positions = Arc::clone(properties);
+	let transforms = Arc::clone(properties);
 	messages.channel::<TransformationUpdate>().watch(move |update| {
-		positions.lock().entry(update.handle()).or_default().position = Some(update.transform().get_position());
+		transforms.lock().entry(update.handle()).or_default().transform = Some(update.transform().clone());
 	});
 	let deleted = Arc::clone(properties);
 	let observer = observer.clone();
@@ -441,15 +440,15 @@ mod tests {
 		assert_eq!(entities[0].handle(), handle);
 		assert_eq!(entities[0].property("name"), Some(InspectedValue::Text("crate")));
 		assert_eq!(
-			entities[0].property("position"),
-			Some(InspectedValue::Point(Point::new(1.0, 2.0, 3.0)))
+			entities[0].property("transform"),
+			Some(InspectedValue::Transform(&Transform::from_position(Point::new(1.0, 2.0, 3.0))))
 		);
 		assert_eq!(
 			inspector.entities(Some(std::any::type_name::<String>()), Some("crate")).len(),
 			1
 		);
 
-		// Updates sent straight to the transform route, as physics does, replace the spawn position.
+		// Updates sent straight to the transform route, as physics does, replace the spawn transform.
 		world.channel::<TransformationUpdate>().send(TransformationUpdate::new(
 			handle,
 			Transform::from_position(Point::new(4.0, 5.0, 6.0)),
@@ -459,8 +458,8 @@ mod tests {
 		let entities = inspector.entities(None, Some("shipping crate"));
 		assert_eq!(entities[0].handle(), handle);
 		assert_eq!(
-			entities[0].property("position"),
-			Some(InspectedValue::Point(Point::new(4.0, 5.0, 6.0)))
+			entities[0].property("transform"),
+			Some(InspectedValue::Transform(&Transform::from_position(Point::new(4.0, 5.0, 6.0))))
 		);
 
 		world.channel::<DeleteMessage>().send(DeleteMessage::new(handle));

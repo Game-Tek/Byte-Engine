@@ -17,6 +17,7 @@ mod occlusion;
 mod probe_gi;
 mod ray_hits;
 mod reflections;
+mod screen_query;
 mod shadows;
 mod ssgi;
 mod subsurface;
@@ -168,6 +169,8 @@ pub(super) fn record_meshlet_dispatches(
 }
 
 use self::backdrop::BackdropPass;
+use self::screen_query::ScreenQueryPass;
+pub(crate) use self::screen_query::{NO_INSTANCE, SCREEN_QUERY_CAPACITY, ScreenQueryStages};
 pub(crate) use self::backdrop::{BackdropTargets, create_backdrop_targets};
 use self::depth_pyramid::DepthPyramidPass;
 // Only the layout tests compare the record with the stride its layer reflects.
@@ -585,6 +588,8 @@ pub(crate) struct VisibilityRenderPass {
 	subsurface: Option<SubsurfacePass>,
 	reflections: ScreenSpaceReflections,
 	backdrop: BackdropPass,
+	/// Reads the visibility buffer at the pixels of the sink's screen scene queries.
+	screen_query: ScreenQueryPass,
 	material_evaluation: MaterialEvaluationPass,
 	fog_light: FogLightPass,
 	stage_counters: StageCounters,
@@ -715,6 +720,7 @@ impl VisibilityRenderPass {
 			depth,
 			targets.backdrop,
 		);
+		let screen_query = ScreenQueryPass::new(context, &pipeline_manager, targets.instance_id);
 		let visibility = set_layouts::VISIBILITY_BUFFER.binder(visibility_buffer_descriptor_set);
 		let evaluation = set_layouts::MATERIAL_EVALUATION.binder(material_evaluation_descriptor_set);
 		// The debug target pool, which the shown views write; see `MATERIAL_DEBUG_VIEWS`.
@@ -826,11 +832,31 @@ impl VisibilityRenderPass {
 				.map(|subsurface| SubsurfacePass::new(context, &pipeline_manager, depth, targets.lit, subsurface)),
 			reflections,
 			backdrop,
+			screen_query,
 			stage_counters,
 			virtual_shadow_mark,
 			pipeline_manager,
 			debug_views,
 		}
+	}
+
+	/// Writes this frame's screen scene query `points` and returns the reads to give [`Self::prepare`], or `None` without
+	/// points or while a read pipeline is still compiling. See [`ScreenQueryPass::prepare`].
+	pub(crate) fn prepare_screen_queries(
+		&self,
+		frame: &mut ghi::implementation::Frame,
+		points: &[[u32; 2]],
+	) -> Option<ScreenQueryStages> {
+		self.screen_query.prepare(frame, &self.pipeline_manager, points)
+	}
+
+	/// Returns the instances the frame that completed when `frame` started read for this sink's screen scene queries.
+	/// See [`ScreenQueryPass::read`].
+	pub(crate) fn read_screen_queries<'a>(
+		&self,
+		frame: &'a ghi::implementation::Frame,
+	) -> Option<&'a [u32; SCREEN_QUERY_CAPACITY]> {
+		self.screen_query.read(frame)
 	}
 
 	/// Returns the descriptor set that carries material-evaluation-only resources, including the environment.
@@ -849,7 +875,8 @@ impl VisibilityRenderPass {
 	/// work when it picked surfel GI or probe GI; the sink that records the frame-wide work also records the surfel grid
 	/// or the probe updates. `gtao_settings` and
 	/// `contact_shadow_settings` are the runtime controls the manager holds. `fog` is the newest height fog, which the
-	/// sink's fog light march lights.
+	/// sink's fog light march lights. `screen_queries` are the reads [`Self::prepare_screen_queries`] returned for this
+	/// frame, which record around the transparent layer.
 	pub(crate) fn prepare<'a>(
 		&'a self,
 		frame: &mut ghi::implementation::Frame,
@@ -867,6 +894,7 @@ impl VisibilityRenderPass {
 		contact_shadow_settings: ContactShadowSettings,
 		fog: Option<&crate::rendering::ExponentialHeightFog>,
 		background: Option<&crate::rendering::render_pass::SceneBackground>,
+		screen_queries: Option<ScreenQueryStages>,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<impl RenderPassFunction + use<'a>> {
 		let pipeline_manager = &self.pipeline_manager;
@@ -1154,6 +1182,10 @@ impl VisibilityRenderPass {
 			c.counter(counters.visibility_late, |c| {
 				draw(c, VisibilityPhase::Opaque, OcclusionPhase::Late)
 			});
+			// The transparent layer clears the instance identifiers, so the queries read the opaque layer's now.
+			if let Some(queries) = &screen_queries {
+				record_compute_stages(c, None, &[queries.opaque]);
+			}
 			if let Some((prepasses, pipelines)) = material_prepasses {
 				c.counter(counters.material_prepasses, |c| {
 					prepasses.record(c, extent, pipelines, VisibilityPhase::Opaque)
@@ -1248,6 +1280,13 @@ impl VisibilityRenderPass {
 					}
 					transparent_materials(c);
 				});
+				// A blended surface the transparent layer drew at a queried pixel is in front of the opaque one.
+				if let Some(queries) = &screen_queries {
+					record_compute_stages(c, None, &[queries.blended]);
+				}
+			}
+			if let Some(queries) = &screen_queries {
+				ghi::command_buffer::CommandBufferRecording::copy_buffers(c, &[queries.copy]);
 			}
 			c.end_region();
 		})

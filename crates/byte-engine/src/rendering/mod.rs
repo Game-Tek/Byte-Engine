@@ -43,6 +43,7 @@ mod pipeline_compilation;
 pub mod pipeline_manager;
 mod pose;
 mod resource;
+pub mod screen_query;
 pub mod set_layout;
 
 pub mod renderer;
@@ -90,6 +91,7 @@ pub use render_pass::{
 pub use renderable::mesh::RenderableMesh;
 pub use renderer::{RenderTargets, Renderer};
 pub use resource::{Query, Resource};
+pub use screen_query::{ScreenSceneHit, ScreenSceneQuery};
 pub use set_layout::{SetBinder, SetLayout};
 pub use shown_transforms::ShownTransforms;
 pub use sink::Sink;

@@ -32,6 +32,7 @@ pub(crate) mod ray_tracing;
 mod render_pass;
 mod renderables;
 mod residency;
+mod screen_queries;
 pub(crate) mod scene;
 pub(crate) mod set_layouts;
 pub(crate) mod shader_data;

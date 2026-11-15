@@ -1,0 +1,15 @@
+// Replaces each queried pixel's opaque instance with the blended surface the transparent layer drew in front of it,
+// where it drew one. See layouts/screen_query.besl.
+
+use ::byte_engine::rendering::visibility::layouts::screen_query::*;
+
+main: fn (input: StageInput, screen_query: ScreenQuery) -> void {
+	let query: u32 = input.thread_idx;
+	if (query >= SCREEN_QUERY_CAPACITY) {
+		return;
+	}
+	let instance: u32 = instance_at_query(screen_query, query);
+	if (instance != NO_INSTANCE) {
+		screen_query.instances.instances[query] = instance;
+	}
+}

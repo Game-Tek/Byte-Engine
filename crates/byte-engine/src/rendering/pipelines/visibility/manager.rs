@@ -72,10 +72,11 @@ use super::virtual_shadows::{
 };
 use crate::application::parameters::Parameters;
 use crate::core::alley::Alley;
-use crate::core::factory::{CreateMessage, Handle};
+use crate::core::factory::{CreateMessage, Factory, Handle};
 use crate::core::listener::{DefaultListener, Listener as _};
 use crate::core::message::DeleteMessage;
 use crate::core::message_bus::MessageScope;
+use super::screen_queries::ScreenQueries;
 use crate::gameplay::Transform;
 use crate::rendering::csm::{self, CascadeFitting, CascadeSplits};
 use crate::rendering::lights::{ConeLight, DirectionalLight, Lights, LocalEmission, PointLight};
@@ -824,6 +825,11 @@ pub struct VisibilityPipelineManager {
 	mesh_listener: DefaultListener<CreateMessage<RenderableMesh>>,
 	environment_listener: DefaultListener<CreateMessage<Environment>>,
 	lightmap_listener: DefaultListener<CreateMessage<Lightmap>>,
+	/// The screen scene queries the world creates, which [`ScreenQueries`] keeps until a completed frame answers them.
+	screen_query_listener: DefaultListener<CreateMessage<crate::rendering::ScreenSceneQuery>>,
+	screen_queries: ScreenQueries,
+	/// Where the answers to screen scene queries are created.
+	screen_query_hits: Factory<crate::rendering::ScreenSceneHit>,
 	/// The lightmap the world names, and where each lit primitive lies in it once it loaded.
 	lightmaps: Lightmaps,
 	fog_listener: DefaultListener<CreateMessage<crate::rendering::ExponentialHeightFog>>,
@@ -1120,6 +1126,9 @@ impl VisibilityPipelineManager {
 			mesh_listener: world.factory::<RenderableMesh>().listener(),
 			environment_listener: world.factory::<Environment>().listener(),
 			lightmap_listener: world.factory::<Lightmap>().listener(),
+			screen_query_listener: world.factory::<crate::rendering::ScreenSceneQuery>().listener(),
+			screen_queries: ScreenQueries::default(),
+			screen_query_hits: world.factory(),
 			lightmaps: Lightmaps::default(),
 			fog_listener: world.factory::<crate::rendering::ExponentialHeightFog>().listener(),
 			fog: None,
@@ -1942,6 +1951,40 @@ impl VisibilityPipelineManager {
 
 	/* Frame preparation */
 
+	/// Answers the screen scene queries the frame of `sequence` read when it last ran, which completed before this one
+	/// started, then queues the queries the world created since and answers those no sink of `sinks` shows.
+	fn adopt_screen_queries(&mut self, frame: &ghi::implementation::Frame, sequence: usize, sinks: &[Sink]) {
+		let hits = &self.screen_query_hits;
+		if self.screen_queries.has_recorded(sequence) {
+			let sink_states = &self.scene.sink_states;
+			self.screen_queries.complete(
+				sequence,
+				|sink| {
+					let state = sink_states.iter().find(|state| state.id == sink)?;
+					state.render_pass.read_screen_queries(frame).copied()
+				},
+				|hit| {
+					hits.create(hit);
+				},
+			);
+		}
+		let mut created = false;
+		while let Some(message) = self.screen_query_listener.read() {
+			self.screen_queries.push(message.handle(), *message.data());
+			created = true;
+		}
+		if created {
+			let shown = sinks
+				.iter()
+				.filter(|sink| self.scene.sink_states.iter().any(|state| state.id == sink.index()))
+				.filter_map(Sink::camera)
+				.collect::<SmallVec<[Handle; 16]>>();
+			self.screen_queries.answer_unshown(&shown, |hit| {
+				hits.create(hit);
+			});
+		}
+	}
+
 	/// Applies queued GTAO, GI, surfel GI, probe GI, contact-shadow, and detail level controls before any sink records
 	/// this frame's commands.
 	fn apply_runtime_settings(&mut self) {
@@ -2335,6 +2378,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				.map(self.material_evaluations_buffer)
 				.copy_from_slice(&*self.material_evaluations);
 		}
+		self.adopt_screen_queries(frame, sequence, sinks);
 		// Detail levels follow the first sink's camera, like the views and exposure below.
 		let lod_view = sinks.first().map(|sink| {
 			// A sun's light travels along its transform's facing, which is the way its shadows fall.
@@ -2615,6 +2659,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let recorded_indirect_diffuse = self.recorded_indirect_diffuse;
 		let mut recorded_sinks = SmallVec::<[Sink; 4]>::new();
 		let mut frame_work_recorded = false;
+		let screen_queries = &mut self.screen_queries;
 		let commands = sinks
 			.iter()
 			.filter_map(|sink| {
@@ -2636,6 +2681,10 @@ impl PipelineManager for VisibilityPipelineManager {
 						indirect_diffuse: recorded_indirect_diffuse,
 					});
 				let _span = debug_span!("Visibility::prepare_sink", sink = sink.index()).entered();
+				// The sink reads the pixels of the oldest queries that name its camera.
+				let taken = sink.camera().map(|camera| screen_queries.take(camera)).unwrap_or_default();
+				let points = taken.iter().map(|(_, query)| query.point()).collect::<SmallVec<[[u32; 2]; 16]>>();
+				let query_stages = render_pass.prepare_screen_queries(frame, &points);
 				let command = render_pass.prepare(
 					frame,
 					sink,
@@ -2652,13 +2701,29 @@ impl PipelineManager for VisibilityPipelineManager {
 					self.contact_shadow_settings,
 					self.fog.as_ref(),
 					background,
+					query_stages,
 					frame_allocator,
-				)?;
+				);
+				// Queries a frame doesn't read wait for the next one, ahead of newer queries.
+				if command.is_some() && query_stages.is_some() {
+					screen_queries.record(sequence, sink.index(), &taken);
+				} else {
+					screen_queries.put_back(taken);
+				}
+				let command = command?;
 				recorded_sinks.push(*sink);
 				frame_work_recorded |= command_index == 0;
 				Some((sink.index(), allocate_render_command(frame_allocator, command)))
 			})
 			.collect();
+		// The reads name instance slots, which the answers turn into the entities the slots held in this frame.
+		if self.screen_queries.has_recorded(sequence) {
+			let entities = &self.scene.render_entities;
+			self.screen_queries.remember_slots(
+				sequence,
+				(0..entities.slots_len()).map(|slot| entities.get_slot(slot).map(|entity| entity.handle)),
+			);
+		}
 		if frame_work_recorded {
 			self.shadow_states = shadow_states;
 			if let Some((levels, _)) = virtual_shadows {

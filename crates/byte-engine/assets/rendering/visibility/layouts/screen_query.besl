@@ -1,0 +1,35 @@
+// The descriptor set of the screen scene query reads, which find the instance under each queried pixel of one sink.
+// The reads run after the opaque layer and again after the transparent layer, so a blended surface in front of the
+// opaque scene replaces what the first read found.
+
+// The most queries one sink reads in a frame.
+SCREEN_QUERY_CAPACITY: const u32 = 16;
+// The visibility buffer's value where no surface was drawn, and the answer for a point outside the sink.
+NO_INSTANCE: const u32 = 4294967295;
+
+// The queried pixels, from the sink's top-left pixel. Unused entries hold points outside every sink.
+ScreenQueryPoints: struct {
+	points: vec2u[16],
+}
+
+// The instance found at each queried pixel, in query order, or `NO_INSTANCE`.
+ScreenQueryInstances: struct {
+	instances: u32[16],
+}
+
+ScreenQuery: layer {
+	points: descriptor<{ type: ScreenQueryPoints, binding: 0, access: read, memory: device }>;
+	instances: descriptor<{ type: ScreenQueryInstances, binding: 1, access: read_write, memory: device }>;
+	// The instance under each pixel, from the visibility buffer.
+	instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 2, access: read }>;
+}
+
+// Returns the instance the visibility buffer holds at query `query`'s pixel, or `NO_INSTANCE` for a point outside it.
+instance_at_query: fn (screen_query: ScreenQuery, query: u32) -> u32 {
+	let point: vec2u = screen_query.points.points[query];
+	let extent: vec2u = image_size(screen_query.instance_index_render_target);
+	if (point.x >= extent.x || point.y >= extent.y) {
+		return NO_INSTANCE;
+	}
+	return image_load_u32(screen_query.instance_index_render_target, point);
+}

@@ -2719,6 +2719,74 @@ fn gtao_half_resolution_blur_preserves_uniform_ao_and_smooths_horizontally() {
 	);
 }
 
+/// Runs one screen query read, `name`, over a 4 × 4 visibility buffer where texel `lane` holds `instance(lane)`, for
+/// `points`, starting from `previous` in the instances it writes, and returns those instances.
+fn run_screen_query(name: &str, instance: impl Fn(usize) -> u32, points: &[[u32; 2]], previous: [u32; 16]) -> Vec<u32> {
+	let program = match name {
+		"screen-query" => asset!("screen-query.besl"),
+		_ => asset!("screen-query-blended.besl"),
+	};
+	let mut point_buffer = buffer(&program, slot(&program, "points"));
+	for index in 0..16 {
+		let point = points.get(index).copied().unwrap_or([u32::MAX; 2]);
+		point_buffer
+			.write_array_element(index, Value::Vec2U(point))
+			.expect("screen query point");
+	}
+	let mut instances = buffer(&program, slot(&program, "instances"));
+	for (index, value) in previous.into_iter().enumerate() {
+		instances.write_array_element(index, Value::U32(value)).expect("previous instance");
+	}
+	let mut texture = instance_texture(4, instance);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(slot(&program, "points"), &mut point_buffer);
+	descriptors.bind_buffer(slot(&program, "instances"), &mut instances);
+	descriptors.bind_image(slot(&program, INSTANCE_INDEX), &mut texture);
+	for lane in 0..16 {
+		program
+			.run_main_with_config(&mut descriptors, &lane_config(lane))
+			.expect("screen query lane");
+	}
+	drop(descriptors);
+	(0..16)
+		.map(|index| match instances.read_array_element(index).expect("instance") {
+			Value::U32(value) => value,
+			value => panic!("Expected a u32 instance, found {value:?}"),
+		})
+		.collect()
+}
+
+/// Verifies the opaque read finds the instance at each queried pixel, and none for a point outside the buffer or an
+/// unused entry.
+#[test]
+fn screen_query_reads_the_instance_at_each_point() {
+	let instances = run_screen_query(
+		"screen-query",
+		|lane| if lane == 6 { u32::MAX } else { lane as u32 + 100 },
+		&[[1, 0], [2, 1], [3, 3], [4, 0]],
+		[7; 16],
+	);
+
+	assert_eq!(&instances[..4], &[101, u32::MAX, 115, u32::MAX]);
+	assert!(instances[4..].iter().all(|&instance| instance == u32::MAX));
+}
+
+/// Verifies the blended read replaces an opaque instance only where the transparent layer drew a surface.
+#[test]
+fn screen_query_blended_read_keeps_the_opaque_instance_where_nothing_blended_was_drawn() {
+	let mut previous = [u32::MAX; 16];
+	previous[0] = 40;
+	previous[1] = 41;
+	let instances = run_screen_query(
+		"screen-query-blended",
+		|lane| if lane == 0 { 9 } else { u32::MAX },
+		&[[0, 0], [1, 0]],
+		previous,
+	);
+
+	assert_eq!(&instances[..2], &[9, 41]);
+}
+
 /// Verifies the backdrop copy keeps the opaque scene's light as it is and turns reversed device depth into linear view
 /// depth, with the sky at the view's far depth, which `sceneposition` rebuilds positions from.
 #[test]

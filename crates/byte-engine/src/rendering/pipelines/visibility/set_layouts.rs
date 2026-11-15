@@ -59,6 +59,11 @@ layout!(
 );
 layout!(DEPTH_PYRAMID, "layouts::depth_pyramid::DepthPyramid");
 layout!(BACKDROP, "layouts::backdrop::Backdrop");
+layout!(
+	/// The per-sink set the screen scene query reads find the instance under each queried pixel through.
+	SCREEN_QUERY,
+	"layouts::screen_query::ScreenQuery"
+);
 layout!(HIZ_BASE, "layouts::hiz_base::HizBase");
 layout!(HIZ_TAIL, "layouts::hiz_tail::HizTail");
 layout!(SHADOW_DEPTH_PYRAMID, "layouts::shadow_depth_pyramid::ShadowDepthPyramid");
@@ -220,6 +225,7 @@ mod tests {
 			&SUBSURFACE,
 			&DEPTH_PYRAMID,
 			&BACKDROP,
+			&SCREEN_QUERY,
 			&HIZ_BASE,
 			&HIZ_TAIL,
 			&SHADOW_DEPTH_PYRAMID,

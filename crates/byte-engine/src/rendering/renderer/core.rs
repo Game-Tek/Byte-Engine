@@ -1081,6 +1081,7 @@ impl Renderer {
 						let transform = transforms.get(*camera_handle).cloned().unwrap_or_default();
 						let view = make_perspective_view_from_camera(camera, &transform, extent);
 						let sink = Sink::new(view, extent, *sink_id)
+							.with_camera(*camera_handle)
 							.with_exposure_scale(camera.exposure_scale())
 							.with_lens(camera.f_number(), camera.focus_distance(), camera.sensor_height())
 							.with_frame_interval(frame_interval);

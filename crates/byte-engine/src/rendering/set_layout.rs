@@ -69,6 +69,7 @@ pub(crate) static ENGINE_MODULES: &[(&str, &str)] = engine_modules![
 	"visibility/layouts/scene.besl",
 	"visibility/layouts/scene_lights.besl",
 	"visibility/layouts/scene_records.besl",
+	"visibility/layouts/screen_query.besl",
 	"visibility/layouts/screen_trace.besl",
 	"visibility/layouts/screen_view.besl",
 	"visibility/layouts/shadow_depth_pyramid.besl",

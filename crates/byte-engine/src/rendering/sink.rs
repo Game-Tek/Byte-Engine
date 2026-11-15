@@ -2,6 +2,7 @@ use math::Matrix;
 use utils::Extent;
 
 use crate::{
+	core::factory::Handle,
 	rendering::{ExponentialHeightFog, Sun, view::View},
 	time::MediaTime,
 };
@@ -29,6 +30,8 @@ pub struct Sink {
 	sun: Option<Sun>,
 	/// The scene's fog; see [`Self::with_fog`].
 	fog: Option<ExponentialHeightFog>,
+	/// The camera the sink shows; see [`Self::with_camera`].
+	camera: Option<Handle>,
 	index: usize,
 }
 
@@ -48,6 +51,7 @@ impl Sink {
 			frame_interval: MediaTime::ZERO,
 			sun: None,
 			fog: None,
+			camera: None,
 			index,
 		}
 	}
@@ -164,5 +168,17 @@ impl Sink {
 	/// Returns the renderer-local sink index.
 	pub fn index(&self) -> usize {
 		self.index
+	}
+
+	/// Sets the camera the sink shows, so passes can answer requests that name the camera, such as a
+	/// [`crate::rendering::ScreenSceneQuery`].
+	pub fn with_camera(mut self, camera: Handle) -> Self {
+		self.camera = Some(camera);
+		self
+	}
+
+	/// Returns the camera the sink shows, or `None` for a sink built without one, such as one made for a test.
+	pub fn camera(&self) -> Option<Handle> {
+		self.camera
 	}
 }

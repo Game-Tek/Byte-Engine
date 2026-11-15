@@ -868,6 +868,29 @@ The first sink records the builds and the placement in the
 the builds. The placement runs alongside the stages after it, so its time shows
 in the first stage that traces rays.
 
+### Screen scene queries
+
+A screen scene query asks which entity a camera shows at one pixel. The
+application creates a `ScreenSceneQuery` in the world, and the visibility
+pipeline answers it by creating a `ScreenSceneHit` in the world.
+
+| Field | Definition |
+| --- | --- |
+| `ScreenSceneQuery::camera` | The handle of the camera whose window the point is in. |
+| `ScreenSceneQuery::point` | The pixel, as `[x, y]` in the window's render extent: x grows to the right and y grows down from the top-left pixel, `[0, 0]`. |
+| `ScreenSceneHit::query` | The handle the query was created with. |
+| `ScreenSceneHit::entity` | The handle of the renderable mesh whose surface covers the pixel, or none. |
+
+| Rule | Value |
+| --- | --- |
+| Hit surface | The nearest surface the frame draws at the pixel: a blended surface in front of the opaque scene, otherwise the opaque or masked surface. |
+| No entity | The pixel shows no surface, such as the sky; the point is outside the extent; or no window of the frame that takes the query shows its camera. |
+| Taking | Each frame takes the queries created before it, oldest first, at most 16 per window. Queries beyond 16 wait for later frames. |
+| Answer | Every query gets exactly one hit. The hit is created once the frame that read the pixel completes on the GPU, two frames after it took the query. The entity is the one at the pixel in that frame, even if it was deleted since. |
+| Pipelines | Only the visibility pipeline answers queries. |
+
+The reads record no stage metric.
+
 ### Stages and targets
 
 Each sink records these stages in order, and each reports a `stage.<name>`
@@ -917,6 +940,7 @@ history targets can also be read from the previous frame.
 
 - [`rendering` module](/docs/api/latest/byte_engine/rendering)
 - [`rendering::camera`](/docs/api/latest/byte_engine/rendering/camera)
+- [`rendering::screen_query`](/docs/api/latest/byte_engine/rendering/screen_query)
 - [`rendering::sink`](/docs/api/latest/byte_engine/rendering/sink)
 - [`rendering::view`](/docs/api/latest/byte_engine/rendering/view)
 - [`application::graphics`](/docs/api/latest/byte_engine/application/graphics)

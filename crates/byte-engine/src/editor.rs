@@ -279,6 +279,7 @@ impl Editor {
 		self.move_carry(app);
 		self.post_edit(app);
 		self.save_graph(app);
+		self.edit_texture(app);
 		self.place_gizmo();
 
 		let viewport = self.engine.ctx_mut().viewport;
@@ -621,6 +622,23 @@ impl Editor {
 		}
 	}
 
+	/// Writes the setting the texture's properties panel changed to the texture's sidecar, and reads back what the
+	/// texture now bakes with, for the panel to show.
+	fn edit_texture(&mut self, app: &GraphicsApplication) {
+		let shell = self.engine.ctx_mut();
+		let Some(setting) = shell.texture_edit.take() else {
+			return;
+		};
+		let Some(texture) = shell.layers.texture_mut() else {
+			return;
+		};
+		let inspector = app.inspector();
+		match inspector.set_image_setting(&texture.id, setting).and_then(|()| inspector.image_settings(&texture.id)) {
+			Ok(settings) => texture.settings = Some(settings),
+			Err(error) => log::warn!("The editor couldn't change the settings of '{}'. {error}", texture.id),
+		}
+	}
+
 	/// Opens the texture source image `id` in the preview panel, in place of any texture it showed.
 	///
 	/// The image decodes on this thread, which holds the frame for as long as a large image takes to decode; it's
@@ -634,9 +652,19 @@ impl Editor {
 			.and_then(|bytes| resource_management::processors::preview_rgba8(&bytes, LONGEST));
 		match preview {
 			Ok(preview) => {
+				// The panel shows the picture even when the settings can't be read, as from a malformed sidecar.
+				let settings = app
+					.inspector()
+					.image_settings(id)
+					.inspect_err(|error| log::warn!("The editor couldn't show the settings of '{id}'. {error}"))
+					.ok();
 				let layers = &mut self.engine.ctx_mut().layers;
 				layers.close(|layer| matches!(layer, Layer::Texture(_)));
-				layers.push(Layer::Texture(layers::Texture { id: id.to_owned(), preview }));
+				layers.push(Layer::Texture(layers::Texture {
+					id: id.to_owned(),
+					preview,
+					settings,
+				}));
 			}
 			Err(error) => log::warn!("The editor couldn't preview '{id}'. {error}"),
 		}

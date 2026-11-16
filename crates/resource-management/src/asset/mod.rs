@@ -194,6 +194,80 @@ impl CoverageManifest {
 /// The BEAD key that holds a standalone image's settings.
 pub(crate) const IMAGE_SETTINGS_KEY: &str = "image";
 
+/// The `ImageSetting` enum is one image setting a tool sets in an image's sidecar, with the value it takes, as the
+/// [image settings](/docs/reference/assets#image-settings) specify it.
+///
+/// Apply one to a sidecar with [`with_image_setting`], or to an image's own sidecar file with
+/// [`AssetManager::set_image_setting`](manager::AssetManager::set_image_setting).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ImageSetting {
+	/// `mips`: whether the image stores levels below its authored size.
+	Mips(bool),
+	/// `compression`: whether the image is block-compressed.
+	Compression(bool),
+	/// `coverage`: the alpha cutoff, from 0 to 1, every smaller level keeps, or `None` for averaged levels.
+	Coverage(Option<f64>),
+	/// `cpu_readable`: whether the application can read the stored texels.
+	CpuReadable(bool),
+}
+
+impl ImageSetting {
+	/// The setting's key in an image settings object, and its value as the sidecar holds it.
+	fn entry(self) -> (&'static str, Value) {
+		match self {
+			Self::Mips(mips) => ("mips", mips.into()),
+			Self::Compression(compression) => ("compression", compression.into()),
+			// A cutoff is a number, and no cutoff is `false`, as the manifest reads them.
+			Self::Coverage(cutoff) => ("coverage", cutoff.map_or(Value::Bool(false), Value::from)),
+			Self::CpuReadable(readable) => ("cpu_readable", readable.into()),
+		}
+	}
+}
+
+/// The `ResolvedImageSettings` struct is what a standalone image bakes with, as a tool shows it: its semantic, the
+/// settings in effect, and whether a sidecar of its own sets any.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedImageSettings {
+	/// What the image's texels mean, from its file name, which picks its color space and its defaults.
+	pub semantic: Semantic,
+	/// The settings its sidecar and directory defaults give, over the defaults for its semantic.
+	pub settings: ImageProcessorSettings,
+	/// Whether the image has a sidecar of its own, which a change goes to.
+	pub sidecar: bool,
+}
+
+/// Returns `sidecar`, the parsed BEAD file of a standalone image or `None` when it has none, with `setting` set in its
+/// `image` object, which is created when missing. Every other key keeps its value.
+///
+/// Fails, changing nothing, when the sidecar or its `image` key isn't an object, or when a cutoff is outside 0 to 1.
+pub fn with_image_setting(sidecar: Option<BEADType>, setting: ImageSetting) -> Result<BEADType, String> {
+	if let ImageSetting::Coverage(Some(cutoff)) = setting
+		&& !(0.0..=1.0).contains(&cutoff)
+	{
+		return Err(format!(
+			"The coverage cutoff {cutoff} is outside 0 to 1. The most likely cause is a mistyped value. Give a cutoff from 0 to 1, or turn coverage off."
+		));
+	}
+	let mut sidecar = sidecar.unwrap_or_else(|| Value::Object(JsonObject::new()));
+	let Value::Object(root) = &mut sidecar else {
+		return Err(
+			"The image's sidecar isn't an object. The most likely cause is a hand-edited BEAD file. Make the file a JSON5 object, such as `{ image: {} }`."
+				.to_string(),
+		);
+	};
+	let Value::Object(image) = root
+		.entry(IMAGE_SETTINGS_KEY)
+		.or_insert_with(|| Value::Object(JsonObject::new()))
+	else {
+		return Err(format!(
+			"The image's sidecar holds `{IMAGE_SETTINGS_KEY}` as something other than an object. The most likely cause is a hand-edited BEAD file. Make `{IMAGE_SETTINGS_KEY}` an object of image settings."
+		));
+	};
+	let (key, value) = setting.entry();
+	image.insert(key.to_string(), value);
+	Ok(sidecar)
+}
+
 /// The BEAD key that holds the settings of every image a model contains.
 pub(crate) const MODEL_IMAGE_SETTINGS_KEY: &str = "images";
 
@@ -413,8 +487,37 @@ mod container_default_resource_tests {
 
 #[cfg(test)]
 mod image_settings_tests {
-	use super::parse_image_settings;
+	use super::{ImageSetting, parse_image_settings, with_image_setting};
 	use crate::processors::image::{ImageProcessorSettings, Semantic};
+
+	#[test]
+	fn a_setting_creates_the_sidecar_and_reads_back_as_set() {
+		let sidecar = with_image_setting(None, ImageSetting::Mips(false)).unwrap();
+		let sidecar = with_image_setting(Some(sidecar), ImageSetting::Coverage(Some(0.25))).unwrap();
+		let read = parse_image_settings(Some(&sidecar), "image", Semantic::Albedo).unwrap();
+		assert!(!read.mips);
+		assert_eq!(read.coverage, Some(0.25));
+		assert_eq!(read.compression, ImageProcessorSettings::for_semantic(Semantic::Albedo).compression);
+
+		let sidecar = with_image_setting(Some(sidecar), ImageSetting::Coverage(None)).unwrap();
+		assert_eq!(parse_image_settings(Some(&sidecar), "image", Semantic::Albedo).unwrap().coverage, None);
+	}
+
+	#[test]
+	fn a_setting_keeps_the_sidecars_other_keys() {
+		let sidecar = super::parse_json(r#"{ image: { compression: false }, other: 1 }"#).unwrap();
+		let sidecar = with_image_setting(Some(sidecar), ImageSetting::CpuReadable(true)).unwrap();
+		assert_eq!(sidecar["other"], 1);
+		assert_eq!(sidecar["image"]["compression"], false);
+		assert_eq!(sidecar["image"]["cpu_readable"], true);
+	}
+
+	#[test]
+	fn a_cutoff_outside_zero_to_one_or_a_sidecar_that_isnt_an_object_fails() {
+		assert!(with_image_setting(None, ImageSetting::Coverage(Some(1.5))).is_err());
+		assert!(with_image_setting(Some(serde_json::json!([1])), ImageSetting::Mips(true)).is_err());
+		assert!(with_image_setting(Some(serde_json::json!({ "image": 2 })), ImageSetting::Mips(true)).is_err());
+	}
 
 	fn settings(source: &str, semantic: Semantic) -> Result<ImageProcessorSettings, String> {
 		parse_image_settings(Some(&super::parse_json(source).unwrap()), "image", semantic)

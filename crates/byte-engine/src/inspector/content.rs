@@ -10,7 +10,9 @@
 use std::sync::Arc;
 
 use resource_management::{
-	ResourceManager, asset::handler::implementations::level::bake_level, resource::storage_backend::Query,
+	ResourceManager,
+	asset::{ImageSetting, ResolvedImageSettings, handler::implementations::level::bake_level},
+	resource::storage_backend::Query,
 };
 
 use super::DefaultInspector;
@@ -122,6 +124,23 @@ impl DefaultInspector {
 	pub fn write_source_asset(&self, id: &str, text: &str) -> Result<(), String> {
 		self.on_store("The source asset could not be written.", |store| async move {
 			asset_manager(store)?.write_source(id, text.as_bytes()).await
+		})
+	}
+
+	/// Returns what the standalone image source `id` bakes with: its semantic, the settings in effect, and whether it
+	/// has a sidecar of its own, in a development build. Next, change one with [`Self::set_image_setting`]. The rules
+	/// are specified under [Source assets](/docs/reference/inspector#source-assets).
+	pub fn image_settings(&self, id: &str) -> Result<ResolvedImageSettings, String> {
+		self.on_store("The image settings could not be read.", |store| async move {
+			asset_manager(store)?.image_settings(id).await
+		})
+	}
+
+	/// Sets `setting` in the sidecar of the standalone image source `id`, creating the sidecar when it's missing, in a
+	/// development build. The application then bakes the image again, as after any source change.
+	pub fn set_image_setting(&self, id: &str, setting: ImageSetting) -> Result<(), String> {
+		self.on_store("The image setting could not be changed.", |store| async move {
+			asset_manager(store)?.set_image_setting(id, setting).await
 		})
 	}
 

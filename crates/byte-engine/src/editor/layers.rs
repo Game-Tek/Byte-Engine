@@ -36,6 +36,8 @@ pub(crate) struct Texture {
 	pub(crate) id: String,
 	/// The picture the panel shows, scaled down to fit it.
 	pub(crate) preview: resource_management::processors::Preview,
+	/// What the texture bakes with, which its properties panel shows and changes; `None` when it couldn't be read.
+	pub(crate) settings: Option<resource_management::asset::ResolvedImageSettings>,
 }
 
 /// The `Layers` struct is the editor's stack of layers; empty while the editor is closed.
@@ -129,6 +131,13 @@ impl Layers {
 	/// The topmost texture being previewed, which its panel shows while palettes open over it.
 	pub(crate) fn texture(&self) -> Option<&Texture> {
 		self.stack.iter().rev().find_map(|layer| match layer {
+			Layer::Texture(texture) => Some(texture),
+			_ => None,
+		})
+	}
+
+	pub(crate) fn texture_mut(&mut self) -> Option<&mut Texture> {
+		self.stack.iter_mut().rev().find_map(|layer| match layer {
 			Layer::Texture(texture) => Some(texture),
 			_ => None,
 		})

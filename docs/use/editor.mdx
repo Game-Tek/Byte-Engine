@@ -86,6 +86,14 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
    a texture to see it in a preview panel, with its size in pixels, and press Escape to close it. Textures show from
    their PNG or JPEG source files, so a build without sources finds none.
 
+   The panel on the right shows the texture's [image settings](/docs/reference/assets#image-settings): its semantic
+   and color space, which come from its file name, and the settings you can change: mips, compression, coverage, and
+   CPU readable. It shows the values the texture bakes with, from its BEAD sidecar and directory defaults, or the
+   defaults for its semantic when nothing sets them. Click a switch, or click the coverage field and type a cutoff
+   from 0 to 1 or `off`, and the editor writes the change to the texture's sidecar, such as `rock_albedo.jpg.bead`,
+   creating it when it doesn't exist. Your application then bakes the texture again. The editor writes the sidecar
+   as plain JSON, so comments in it don't survive a change.
+
 7. To start a new level, press Cmd+K, pick **New level**, and pick the folder it goes in; `/` is the asset folder
    itself. The editor writes an empty level there, named `untitled.level`, or a numbered name, such as
    `untitled 2.level`, when that name is taken. The level isn't loaded into the running game.

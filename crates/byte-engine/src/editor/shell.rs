@@ -52,6 +52,8 @@ pub(crate) struct Shell {
 	pub(crate) graph_revision: u64,
 	/// Whether the canvas asked to save the open graph, until the editor writes it through the inspector.
 	pub(crate) save_graph: bool,
+	/// The setting the texture's properties panel changed, until the editor writes it to the texture's sidecar.
+	pub(crate) texture_edit: Option<resource_management::asset::ImageSetting>,
 	/// The entity the properties panel's trash button deleted, until the editor posts the deletion to the game.
 	pub(crate) delete: Option<Handle>,
 	/// The game's warnings and errors, shown as toasts.
@@ -73,6 +75,7 @@ impl Shell {
 			delete: None,
 			graph_revision: 0,
 			save_graph: false,
+			texture_edit: None,
 			toasts: Default::default(),
 		}
 	}
@@ -171,7 +174,17 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 	let mut shown_viewport = viewport;
 	let mut shown_revision = None;
 	let mut shown_selection = None;
+	let mut shown_texture = false;
 	loop {
+		// A texture's properties panel takes the entity's place while the texture is open.
+		let texture = root.with(|shell: &mut Shell| shell.layers.texture().is_some()).await;
+		if texture != shown_texture {
+			shown_texture = texture;
+			fields
+				.panel
+				.update_container(|c| c.opacity(if texture { 0.0 } else { 1.0 }).hit_testable(!texture))
+				.await;
+		}
 		let (viewport, revision) = root.with(|shell: &mut Shell| (shell.viewport, shell.scene_revision)).await;
 		if viewport != shown_viewport {
 			shown_viewport = viewport;

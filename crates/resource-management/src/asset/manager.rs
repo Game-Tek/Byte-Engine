@@ -456,6 +456,46 @@ impl AssetManager {
 		self.state.storage_backend.write(id, contents).await
 	}
 
+	/// Returns what the standalone image source `id`, such as `textures/rock_albedo.png`, bakes with: its semantic, its
+	/// settings from its sidecar and directory defaults over its semantic's defaults, and whether it has a sidecar.
+	///
+	/// Tools show these before changing one with [`Self::set_image_setting`].
+	pub async fn image_settings(&self, id: &str) -> Result<asset::ResolvedImageSettings, String> {
+		let unreadable = || {
+			format!(
+				"The settings of image '{id}' could not be read. The most likely cause is a BEAD file beside it, or above it, that isn't valid JSON5. Fix the file the bake log names."
+			)
+		};
+		let url = ResourceId::new(id);
+		let semantic = crate::processors::image::guess_semantic_from_name(url.get_base());
+		let backend = &self.state.storage_backend;
+		let spec = backend.load_sidecar(url).await.map_err(|()| unreadable())?;
+		let sidecar_id = format!("{id}.bead");
+		let sidecar = backend.load_bead(ResourceId::new(&sidecar_id)).await.map_err(|()| unreadable())?.is_some();
+		let settings = asset::parse_image_settings(spec.as_ref(), asset::IMAGE_SETTINGS_KEY, semantic)
+			.map_err(|error| format!("{} {error}", unreadable()))?;
+		Ok(asset::ResolvedImageSettings { semantic, settings, sidecar })
+	}
+
+	/// Sets `setting` in the sidecar of the standalone image source `id`, creating the sidecar when it's missing and
+	/// keeping its other keys, so the next bake of the image uses it.
+	///
+	/// The sidecar is written as JSON, so comments it held are lost.
+	pub async fn set_image_setting(&self, id: &str, setting: asset::ImageSetting) -> Result<(), String> {
+		let sidecar_id = format!("{id}.bead");
+		let backend = &self.state.storage_backend;
+		let sidecar = backend.load_bead(ResourceId::new(&sidecar_id)).await.map_err(|()| {
+			format!(
+				"The sidecar '{sidecar_id}' could not be read. The most likely cause is a file that isn't valid JSON5. Fix or delete the file, then change the setting again."
+			)
+		})?;
+		let sidecar = asset::with_image_setting(sidecar, setting)?;
+		let text = serde_json::to_string_pretty(&sidecar).map_err(|error| {
+			format!("The sidecar '{sidecar_id}' could not be written ({error}). The most likely cause is a value JSON can't hold. Report it as a bug.")
+		})?;
+		backend.write(&sidecar_id, text.as_bytes()).await
+	}
+
 	/// Bakes the asset at `id` without checking for an existing stored resource.
 	///
 	/// Its dependencies are still reused when current. To rebuild them too, call [`Self::rebuild`].

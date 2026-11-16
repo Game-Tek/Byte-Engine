@@ -58,7 +58,7 @@ impl Scope {
 			Self::Explore => "Find a material or texture to open",
 			Self::Configure => "Find a setting to show or change",
 			Self::Nodes => "Find a node to add",
-			Self::Folders => "Find the folder the new level goes in",
+			Self::Folders => "Find the folder the new level goes in, or type a new one",
 		}
 	}
 }
@@ -92,7 +92,7 @@ pub(crate) enum Kind {
 	Setting(Accepts),
 	/// Lists the folders a new level can go in.
 	NewLevel,
-	/// Writes a new, empty level into the folder the label names.
+	/// Writes a new, empty level into the folder the label names, creating the folder when it doesn't exist.
 	Folder,
 }
 
@@ -183,6 +183,21 @@ impl State {
 			.take(MAX_ROWS)
 			.map(|index| self.entries[index].clone())
 			.collect();
+		if self.scope == Scope::Folders
+			&& let Some(folder) = typed_folder(&self.search)
+			&& !self.entries.iter().any(|entry| entry.label == folder)
+		{
+			// A folder that doesn't exist yet is offered too; writing the level creates it. It leads while what's
+			// typed can't still grow into a listed folder's name, so Enter takes it, and trails the matches otherwise.
+			let leads = !self.entries.iter().any(|entry| entry.label.starts_with(folder.trim_end_matches('/')));
+			let entry = Entry {
+				detail: "New folder".to_owned(),
+				..Entry::new(folder, Kind::Folder)
+			};
+			self.results.truncate(MAX_ROWS - 1);
+			let at = if leads { 0 } else { self.results.len() };
+			self.results.insert(at, entry);
+		}
 		self.highlight = 0;
 		self.revision += 1;
 	}
@@ -198,6 +213,14 @@ impl State {
 	pub(crate) fn highlighted(&self) -> Option<&Entry> {
 		self.results.get(self.highlight)
 	}
+}
+
+/// The folder ID that `search` names, such as `levels/maps/` for ` /levels/maps `, or `None` when it names none:
+/// when it's empty or the asset folder itself, or has an empty, `.`, or `..` part.
+fn typed_folder(search: &str) -> Option<String> {
+	let path = search.trim().trim_matches('/');
+	let valid = !path.is_empty() && path.split('/').all(|part| !part.trim().is_empty() && part != "." && part != "..");
+	valid.then(|| format!("{path}/"))
 }
 
 /// The `Setting` struct is a runtime setting being given a new value, over the palette that found it: the field
@@ -524,6 +547,28 @@ mod tests {
 
 		setting.pick(0);
 		assert_eq!(setting.chosen(), "surfels", "the only listed value");
+	}
+
+	#[test]
+	fn a_typed_folder_that_isnt_listed_is_offered_as_a_new_one() {
+		let folders = ["/", "levels/", "textures/"].map(|folder| Entry::new(folder, Kind::Folder)).to_vec();
+		let mut state = State::new(Scope::Folders, folders, &[]);
+		let typed = |state: &mut State, search: &str| {
+			state.search = search.to_owned();
+			state.find();
+			state.results.iter().map(|entry| (entry.label.clone(), entry.detail.clone())).collect::<Vec<_>>()
+		};
+		let new = |label: &str| (label.to_owned(), "New folder".to_owned());
+
+		// A name no listed folder starts with leads, so Enter creates it.
+		assert_eq!(typed(&mut state, "/maps/arena"), [new("maps/arena/")]);
+		// One that could still become a listed folder trails the matches.
+		assert_eq!(typed(&mut state, "lev").first().map(|row| row.0.as_str()), Some("levels/"));
+		assert_eq!(typed(&mut state, "lev").last(), Some(&new("lev/")));
+		// A listed folder, the asset folder, and paths that leave it aren't offered.
+		for search in ["levels", "levels/", "/", "../maps", "a//b"] {
+			assert!(!typed(&mut state, search).iter().any(|row| row.1 == "New folder"), "{search}");
+		}
 	}
 
 	#[test]

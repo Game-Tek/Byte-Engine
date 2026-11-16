@@ -44,6 +44,11 @@ pub use message::{
 };
 #[cfg(feature = "headed")]
 pub(crate) mod screenshot;
+// The search's fuzzy matcher comes with the headed build, as the console does.
+#[cfg(feature = "headed")]
+mod search;
+#[cfg(feature = "headed")]
+pub use search::find_entities;
 #[cfg(feature = "headed")]
 pub use screenshot::{
 	MAX_SCREENSHOT_CAPTURES, ScreenshotCapture, ScreenshotError, ScreenshotFormat, ScreenshotResponse, ScreenshotSelection,

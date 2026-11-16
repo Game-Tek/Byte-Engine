@@ -69,6 +69,34 @@ The message type catalog describes each payload's shape with a small
 vocabulary: null, boolean, string, integer, number, array, tuple, object,
 optional, map, result, enum, any, recursive, and unknown.
 
+### Entity search
+
+An entity search picks entities out of the entity query's list by their names
+and types. The console's entities view and in-process tools, such as an
+editor's scene list, take the same search. A search is words separated by
+spaces.
+
+| Word | Keeps the entities |
+| --- | --- |
+| `type:` and text, such as `type:camera` | That have a type whose full name contains the text, in any letter case. |
+| Anything else | Whose name fuzzy-matches the word: its characters appear in the name in order, possibly with others between them. |
+
+An entity must pass every word. Name words also take these forms:
+
+| Form | Matches names that |
+| --- | --- |
+| `'text` | Contain the text. |
+| `^text` | Start with the text. |
+| `text$` | End with the text. |
+| `!` before any form | Don't match it. |
+
+A name word matches without regard to letter case unless it has an uppercase
+letter. An entity without a name never matches a name word.
+
+Without a name word, the found entities are in handle order. With one, the
+best match comes first, and equal matches stay in handle order. An empty search
+keeps every entity.
+
 ## Configuration
 
 The configuration route lists every runtime setting update with its parameter,

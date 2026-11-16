@@ -14,7 +14,6 @@ use std::{
 	time::{Duration, Instant},
 };
 
-use neo_frizbee::{Config, Matcher, Pattern};
 use ratatui::{
 	DefaultTerminal, Frame,
 	crossterm::{
@@ -40,7 +39,7 @@ use crate::{
 	},
 	configuration::{Accepts, ConfigurationEventId, ConfigurationUpdateState, ConfigurationValue},
 	core::{EntityHandle, factory::Handle, listener::DefaultListener, listener::Listener as _},
-	inspector::{DefaultInspector, InspectedEntity, InspectedValue, RegisteredMessageType},
+	inspector::{DefaultInspector, InspectedEntity, InspectedValue, RegisteredMessageType, find_entities},
 };
 
 /// How long `set` waits for the owning system before it reports the update as pending.
@@ -1069,7 +1068,7 @@ fn candidates(before: &str, sources: &Sources) -> (usize, Vec<Candidate>, Option
 				.into_iter()
 				.map(|entity| Candidate {
 					text: entity.handle().id().to_string(),
-					note: format!("{}  {}", entity_name(entity), short_types(entity)),
+					note: format!("{}  {}", entity.name(), short_types(entity)),
 					whole: true,
 				})
 				.collect();
@@ -1126,42 +1125,6 @@ fn draw_completion(frame: &mut Frame, completion: &Completion, pane: Rect) {
 	frame.render_widget(Paragraph::new(rows), area);
 }
 
-/// Returns the entities that pass every word of `search`, an [entity search](/docs/reference/console#entity-search):
-/// in handle order without a name word, and best match first with one.
-///
-/// A `type:` word keeps the entities with a type whose name contains its text; any other word fuzzy-matches names.
-fn find_entities<'a>(entities: &'a [InspectedEntity], search: &str) -> Vec<&'a InspectedEntity> {
-	let mut patterns = Vec::new();
-	let mut types = Vec::new();
-	for word in search.split_whitespace() {
-		match word.strip_prefix("type:") {
-			Some(text) => types.push(text),
-			None => patterns.push(Pattern::parse(word)),
-		}
-	}
-	let mut kept: Vec<&InspectedEntity> = entities
-		.iter()
-		.filter(|entity| {
-			types
-				.iter()
-				.all(|text| entity.types().iter().any(|name| contains_ignore_case(name, text)))
-		})
-		.collect();
-	kept.sort_unstable_by_key(|entity| entity.handle().id());
-	if patterns.is_empty() {
-		return kept;
-	}
-	let names: Vec<&str> = kept.iter().map(|entity| entity_name(entity)).collect();
-	// The matcher sorts best match first, then by position in `names`, so equal scores stay in handle order.
-	Matcher::from_patterns(&patterns, &Config::default())
-		.match_list(&names)
-		.into_iter()
-		// An entity without a name has nothing to match, so only the negated forms could keep it; none does.
-		.filter(|found| !names[found.index as usize].is_empty())
-		.map(|found| kept[found.index as usize])
-		.collect()
-}
-
 /// Returns the entities view's rows: how many entities `found` holds of `total`, then up to `height - 1` entities
 /// with their handle, name, position, and types.
 fn entity_rows<'a>(found: &[&'a InspectedEntity], total: usize, search: &str, height: usize) -> Vec<Line<'a>> {
@@ -1176,7 +1139,7 @@ fn entity_rows<'a>(found: &[&'a InspectedEntity], total: usize, search: &str, he
 	// The name column is as wide as the longest shown name, up to a limit so the types stay on screen.
 	let name_width = shown
 		.iter()
-		.map(|entity| entity_name(entity).chars().count())
+		.map(|entity| entity.name().chars().count())
 		.max()
 		.unwrap_or(0)
 		.clamp(4, 32);
@@ -1190,20 +1153,12 @@ fn entity_rows<'a>(found: &[&'a InspectedEntity], total: usize, search: &str, he
 		};
 		rows.push(Line::from(vec![
 			Span::raw(format!("{:>6}  ", entity.handle().id())),
-			Span::raw(format!("{:<name_width$}  ", entity_name(entity))),
+			Span::raw(format!("{:<name_width$}  ", entity.name())),
 			Span::raw(format!("{position:<26}")),
 			Span::raw(short_types(entity)).dim(),
 		]));
 	}
 	rows
-}
-
-/// Returns the entity's name, or empty text when it has none.
-fn entity_name(entity: &InspectedEntity) -> &str {
-	match entity.property("name") {
-		Some(InspectedValue::Text(name)) => name,
-		_ => "",
-	}
 }
 
 /// Returns the entity's types without their module paths, joined by commas, such as `Camera, Name`.
@@ -1236,15 +1191,6 @@ fn push_short_type(shown: &mut String, name: &str) {
 /// Returns the last `::` segment of a path.
 fn last_segment(path: &str) -> &str {
 	path.rsplit("::").next().unwrap_or(path)
-}
-
-/// Returns whether `text` contains `part`, comparing ASCII letters in any case.
-fn contains_ignore_case(text: &str, part: &str) -> bool {
-	part.is_empty()
-		|| text
-			.as_bytes()
-			.windows(part.len())
-			.any(|window| window.eq_ignore_ascii_case(part.as_bytes()))
 }
 
 /// Returns whether `text` starts with `prefix`, comparing ASCII letters in any case.

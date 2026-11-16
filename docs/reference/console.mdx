@@ -103,24 +103,9 @@ The value is the rest of the line after the name.
 
 ## Entity search
 
-A search is words separated by spaces.
-
-| Word | Keeps the entities |
-| --- | --- |
-| `type:` and text, such as `type:camera` | That have a type whose full name contains the text, in any letter case. |
-| Anything else | Whose name fuzzy-matches the word: its characters appear in the name in order, possibly with others between them. |
-
-An entity must pass every word. Name words also take these forms:
-
-| Form | Matches names that |
-| --- | --- |
-| `'text` | Contain the text. |
-| `^text` | Start with the text. |
-| `text$` | End with the text. |
-| `!` before any form | Don't match it. |
-
-A name word matches without regard to letter case unless it has an uppercase
-letter. An entity without a name never matches a name word.
+The entities view and the `entities` command take an
+[entity search](/docs/reference/inspector#entity-search), which picks entities
+by fuzzy-matching their names and by their types.
 
 While the command line starts with `entities`, the pane shows the entities
 view, filtered by the rest of the line as you type. Otherwise the entities
@@ -137,7 +122,7 @@ the words before it:
 | After `set` | The declared parameter names starting with the word, up to and including the next `.` after it, so `render.` offers `render.gi.` and `render.lod.` before their settings. A whole name is a candidate on its own. Names with a space in them aren't offered. | For a whole name, the values it takes. |
 | After `set` and a declared name | The words that setting takes, matched in any letter case: `true` and `false`, the setting's choices, or the word it takes beside a number, such as `off`. | None. |
 | After `post` | The registered message types starting with the word, in any letter case. | None. |
-| After `post` and a type | The handles of the entities whose name the word fuzzy-matches, as a name word of the [entity search](#entity-search) does, best match first; every entity's handle for an empty word. | The entity's name and types. |
+| After `post` and a type | The handles of the entities whose name the word fuzzy-matches, as a name word of the [entity search](/docs/reference/inspector#entity-search) does, best match first; every entity's handle for an empty word. | The entity's name and types. |
 | After `post`, a type, and a target | None. | None. |
 | Any other | None. | None. |
 

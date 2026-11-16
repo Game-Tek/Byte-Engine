@@ -1,40 +1,62 @@
-//! A mesh the palette spawned and the pointer carries until a click or a release places it.
+//! A mesh or prefab from the palette that the pointer carries until a click or a release places it.
 //!
-//! This module holds the carried mesh's state and the pure parts of placing it: the level it spawns as, and where a
-//! pointer's ray lands when nothing physical is under it. Spawning, moving, and deleting it are the editor's, through
-//! the inspector.
+//! This module holds the carry's state and the pure parts of placing it: the level a mesh spawns as, and where a
+//! pointer's ray lands when nothing physical is under it. Spawning, moving, and deleting are the editor's, through the
+//! inspector.
 
 use crate::core::factory::Handle;
 use crate::gameplay::level::level_entity_handle_from_root;
 use crate::math::{Point, Ray};
 
-/// The `Carry` struct is one mesh the pointer carries, from its spawn until it's placed or cancelled.
-#[derive(Clone, Copy, Debug)]
+/// The `Load` enum is what a carry holds, which decides when it spawns.
+#[derive(Debug)]
+pub(crate) enum Load {
+	/// A mesh, spawned when the carry starts so it follows the pointer: the spawned level's root, which deleting
+	/// removes the mesh by, and the mesh's entity, the one handle after the root.
+	Mesh { root: Handle, entity: Handle },
+	/// A stored prefab, by ID, spawned only where it's placed: the spawner bakes the placement into each of the
+	/// prefab's entities, so they can't follow the pointer as one.
+	Prefab(String),
+}
+
+/// The `Carry` struct is one mesh or prefab the pointer carries, from the palette until it's placed or cancelled.
+#[derive(Debug)]
 pub(crate) struct Carry {
-	/// The spawned level's root; deleting it removes the mesh.
-	pub(crate) root: Handle,
-	/// The mesh's entity, the one handle after the root.
-	pub(crate) entity: Handle,
-	/// Whether the mesh was dragged out of the palette, so releasing the button places it. Otherwise it's pinned to the
+	pub(crate) load: Load,
+	/// Whether the load was dragged out of the palette, so releasing the button places it. Otherwise it's pinned to the
 	/// pointer, and the next press places it.
 	pub(crate) held: bool,
 	/// The physics query asked for the surface under the pointer, while it waits for its answer.
 	pub(crate) query: Option<Handle>,
-	/// Where the mesh was last moved to.
+	/// Where the pointer last carried the load to.
 	pub(crate) position: Point,
 }
 
 impl Carry {
 	/// Starts carrying the mesh spawned as the level whose root is `root`, at `position`.
-	pub(crate) fn new(root: Handle, position: Point, held: bool) -> Self {
+	pub(crate) fn mesh(root: Handle, position: Point, held: bool) -> Self {
+		let entity = level_entity_handle_from_root(root, 0);
+		Self::new(Load::Mesh { root, entity }, position, held)
+	}
+
+	/// Starts carrying the stored prefab `id`, to spawn where it's placed, from `position`.
+	pub(crate) fn prefab(id: &str, position: Point, held: bool) -> Self {
+		Self::new(Load::Prefab(id.to_string()), position, held)
+	}
+
+	fn new(load: Load, position: Point, held: bool) -> Self {
 		Self {
-			root,
-			entity: level_entity_handle_from_root(root, 0),
+			load,
 			held,
 			query: None,
 			position,
 		}
 	}
+}
+
+/// Returns whether the palette result `resource` is a stored prefab rather than a mesh.
+pub(crate) fn is_prefab(resource: &str) -> bool {
+	resource.ends_with(".prefab")
 }
 
 /// Returns the source of a level of one entity named `name`: the mesh `resource` at `position`.

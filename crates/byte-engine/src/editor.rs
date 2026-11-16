@@ -8,9 +8,10 @@
 //! F5 opens and closes it. While it's open, it frees the cursor and takes all of the game's input. Clicking the game
 //! view selects what it shows, and the gizmo, drawn in its own render pass, moves, turns, or scales the selection, by
 //! the tool the toolbar picks.
-//! Cmd+K opens the command palette, which finds a mesh to drag into the scene, or to pin to the pointer with Enter
-//! until a click places it, or a material graph to edit on a node canvas; while a graph is open, it finds a node kind
-//! to add to it.
+//! Cmd+K opens the command palette, which finds a mesh or a prefab to drag into the scene, or to pin to the pointer
+//! with Enter until a click places it, or a material graph to edit on a node canvas; while a graph is open, it finds a
+//! node kind to add to it. A prefab spawns where it's placed, with its parameters' defaults, through the spawner the
+//! game gave the inspector, so it knows the game's own kinds.
 //!
 //! See [Edit a level in the running game](/docs/use/editor) for how to install it and what it edits.
 
@@ -36,6 +37,7 @@ use crate::core::channel::{Channel as _, DefaultChannel};
 use crate::core::factory::{CreateMessage, Factory, Handle};
 use crate::core::listener::{DefaultListener, Listener as _};
 use crate::gameplay::Transform;
+use crate::gameplay::level::level_entity_handle_from_root;
 use crate::ghi::window::{Event, Events};
 use crate::input::{ActionPhase, ResolvedAction, SeatHandle, Value};
 use crate::inspector::{
@@ -368,6 +370,17 @@ impl Editor {
 			log::warn!("The palette couldn't list the game's meshes. {error}");
 			Vec::new()
 		});
+		// A development build bakes a prefab from its source when it spawns, so its sources are what can spawn: the
+		// store may still hold prefabs whose sources were deleted, and lacks those not baked yet. A build without
+		// sources spawns what the store holds.
+		match app
+			.inspector()
+			.source_assets("prefab")
+			.or_else(|_| app.inspector().resources("Prefab"))
+		{
+			Ok(prefabs) => resources.extend(prefabs),
+			Err(error) => log::warn!("The palette couldn't list the game's prefabs. {error}"),
+		}
 		match app.inspector().source_assets("bemx") {
 			Ok(graphs) => resources.extend(graphs),
 			Err(error) => log::warn!("The palette couldn't list the game's material graphs. {error}"),
@@ -382,11 +395,11 @@ impl Editor {
 	/// spawns once the pointer leaves the palette, and follows the pointer until the release, or, released on the same
 	/// result, it's pinned. A press elsewhere closes the palette and goes on to the scene.
 	fn carry_or_palette_takes(&mut self, app: &GraphicsApplication, phase: ActionPhase, pointer: UiPoint) -> bool {
-		if let Some(carry) = self.carry {
+		if let Some(held) = self.carry.as_ref().map(|carry| carry.held) {
 			match phase {
-				ActionPhase::Started if !carry.held => self.place_carry(),
-				ActionPhase::Ended if carry.held => self.place_carry(),
-				ActionPhase::Cancelled if carry.held => self.cancel_carry(app),
+				ActionPhase::Started if !held => self.place_carry(app),
+				ActionPhase::Ended if held => self.place_carry(app),
+				ActionPhase::Cancelled if held => self.cancel_carry(app),
 				_ => {}
 			}
 			return true;
@@ -413,8 +426,8 @@ impl Editor {
 					&& let Some(resource) = resource_at(row)
 				{
 					self.palette_press = None;
-					// Only meshes can be dragged into the scene; a material graph opens, and a node kind is added, when
-					// its row is clicked.
+					// Only meshes and prefabs can be dragged into the scene; a material graph opens, and a node kind is
+					// added, when its row is clicked.
 					if !graph::is_graph(&resource) && shell.graph.is_none() {
 						shell.palette.close();
 						self.spawn_carry(app, &resource, true);
@@ -442,7 +455,7 @@ impl Editor {
 	}
 
 	/// Acts on the palette result `resource`: adds a node of that kind to the open graph, opens a material graph on
-	/// the canvas, or spawns a mesh to carry, `held` when dragged out of the palette.
+	/// the canvas, or carries a mesh or prefab, `held` when dragged out of the palette.
 	fn choose(&mut self, app: &GraphicsApplication, resource: &str, held: bool) {
 		if let Some(graph) = self.engine.ctx_mut().graph.as_mut() {
 			if let Some(kind) = resource_management::bemx::kinds::kind(resource) {
@@ -468,13 +481,17 @@ impl Editor {
 		}
 	}
 
-	/// Spawns `resource` as a mesh on the ground under the pointer, and carries it: `held` when dragged out of the
-	/// palette, pinned otherwise.
+	/// Carries `resource` from the ground under the pointer: `held` when dragged out of the palette, pinned otherwise.
+	/// A mesh spawns now, to follow the pointer; a prefab spawns where it's placed.
 	fn spawn_carry(&mut self, app: &GraphicsApplication, resource: &str, held: bool) {
 		let position = self.pointer_ray().and_then(carry::ground_point).unwrap_or(Point::origin());
+		if carry::is_prefab(resource) {
+			self.carry = Some(carry::Carry::prefab(resource, position, held));
+			return;
+		}
 		let source = carry::level_source(palette::entity_name(resource), resource, position);
 		match app.inspector().spawn_level(&source) {
-			Ok(root) => self.carry = Some(carry::Carry::new(root, position, held)),
+			Ok(root) => self.carry = Some(carry::Carry::mesh(root, position, held)),
 			Err(error) => log::warn!("The editor couldn't place '{resource}'. {error}"),
 		}
 	}
@@ -484,11 +501,14 @@ impl Editor {
 	///
 	/// One query waits at a time, so the mesh follows the pointer a physics step behind.
 	fn move_carry(&mut self, app: &GraphicsApplication) {
-		let Some(mut carry) = self.carry else {
+		if self.carry.is_none() {
 			while self.rays.read().is_some() {}
 			return;
-		};
+		}
 		let Some(ray) = self.pointer_ray() else {
+			return;
+		};
+		let Some(carry) = self.carry.as_mut() else {
 			return;
 		};
 		let mut target = None;
@@ -506,20 +526,23 @@ impl Editor {
 			&& position != carry.position
 		{
 			carry.position = position;
+			// A prefab spawns only where it's placed, so only a mesh moves along.
+			let carry::Load::Mesh { entity, .. } = carry.load else {
+				return;
+			};
 			let transform = Transform::from_position(position);
 			let payload = serde_json::to_string(&InspectedValue::Transform(&transform)).expect(
 				"Transform failed to serialize. The most likely cause is a non-finite component. Check the pointer's ray.",
 			);
 			if let Err(error) = app
 				.inspector()
-				.post_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, carry.entity, &payload)
+				.post_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, entity, &payload)
 			{
 				log::warn!(
 					"The editor couldn't move the carried mesh. {error} Check that the game registers inspector messages."
 				);
 			}
 		}
-		self.carry = Some(carry);
 	}
 
 	/// Posts the deletion and the change the properties panel made to the game: a deletion as a `Delete`, a transform
@@ -576,17 +599,30 @@ impl Editor {
 		}
 	}
 
-	/// Leaves the carried mesh where it is and selects it, so the gizmo can move it on.
-	fn place_carry(&mut self) {
-		if let Some(carry) = self.carry.take() {
-			self.engine.ctx_mut().selected = Some(carry.entity);
-		}
+	/// Leaves the carried mesh where it is, or spawns the carried prefab there, and selects it, so the gizmo can move it
+	/// on. A prefab's first entity is selected.
+	fn place_carry(&mut self, app: &GraphicsApplication) {
+		let Some(carry) = self.carry.take() else {
+			return;
+		};
+		let entity = match carry.load {
+			carry::Load::Mesh { entity, .. } => entity,
+			carry::Load::Prefab(id) => match app.inspector().spawn_resource(&id, Transform::from_position(carry.position)) {
+				Ok(root) => level_entity_handle_from_root(root, 0),
+				Err(error) => {
+					log::warn!("The editor couldn't place prefab '{id}'. {error}");
+					return;
+				}
+			},
+		};
+		self.engine.ctx_mut().selected = Some(entity);
 	}
 
-	/// Removes the carried mesh from the scene.
+	/// Removes the carried mesh from the scene. A carried prefab hasn't spawned, so it only stops being carried.
 	fn cancel_carry(&mut self, app: &GraphicsApplication) {
 		if let Some(carry) = self.carry.take()
-			&& let Err(error) = app.inspector().post_message(DELETE_MESSAGE_TYPE, carry.root, "null")
+			&& let carry::Load::Mesh { root, .. } = carry.load
+			&& let Err(error) = app.inspector().post_message(DELETE_MESSAGE_TYPE, root, "null")
 		{
 			log::warn!(
 				"The editor couldn't remove the carried mesh. {error} Check that the game registers inspector messages."

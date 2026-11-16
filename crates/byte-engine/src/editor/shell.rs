@@ -338,7 +338,7 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 	let prompt = if ctx.with(|shell: &mut Shell| shell.graph.is_some()).await {
 		"Find a node to add"
 	} else {
-		"Find a mesh to place or a material to edit"
+		"Find a mesh or prefab to place, or a material to edit"
 	};
 	let width = palette::WIDTH - palette::INSET * 2.0;
 	let height = palette::height(0);

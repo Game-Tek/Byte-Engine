@@ -13,6 +13,8 @@
 //! node kind to add to it. A prefab spawns where it's placed, with its parameters' defaults, through the spawner the
 //! game gave the inspector, so it knows the game's own kinds.
 //!
+//! While it's open, the warnings and errors the game logs show as toasts in the bottom-right corner.
+//!
 //! See [Edit a level in the running game](/docs/use/editor) for how to install it and what it edits.
 
 mod carry;
@@ -23,6 +25,7 @@ mod input;
 mod palette;
 mod scene;
 mod shell;
+mod toasts;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -99,6 +102,8 @@ pub struct Editor {
 	carry: Option<carry::Carry>,
 	/// The physics world's answers to the carried mesh's ray queries.
 	rays: DefaultListener<CreateMessage<RayQueryResponse>>,
+	/// The number of the last log record the editor read, so it reads each warning and error once.
+	log_seen: u64,
 }
 
 /// Installs the editor over `app` and returns it, so the game can step it with [`Editor::frame`].
@@ -145,6 +150,8 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 		palette_press: None,
 		carry: None,
 		rays: app.world().factory::<RayQueryResponse>().listener(),
+		// What was logged before the editor existed isn't news.
+		log_seen: crate::application::log_capture::revision(),
 	}
 }
 
@@ -251,6 +258,7 @@ impl Editor {
 		let polled = self.poll_scene(app);
 		self.find_shown(polled);
 		self.adopt_hits();
+		self.toast_log();
 		self.move_carry(app);
 		self.post_edit(app);
 		self.save_graph(app);
@@ -616,6 +624,21 @@ impl Editor {
 			},
 		};
 		self.engine.ctx_mut().selected = Some(entity);
+	}
+
+	/// Shows the warnings and errors logged since the last frame as toasts, while the editor is open. Those logged
+	/// while it's closed are passed over.
+	fn toast_log(&mut self) {
+		use crate::application::log_capture::{self, LineKind};
+		let open = self.layer.borrow().open;
+		let toasts = &mut self.engine.ctx_mut().toasts;
+		self.log_seen = log_capture::entries_since(self.log_seen, |entry| {
+			if let LineKind::Log(level @ (log::Level::Warn | log::Level::Error)) = entry.kind
+				&& open
+			{
+				toasts.post(level, entry.message());
+			}
+		});
 	}
 
 	/// Removes the carried mesh from the scene. A carried prefab hasn't spawned, so it only stops being carried.

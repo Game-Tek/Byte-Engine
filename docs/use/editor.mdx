@@ -68,6 +68,16 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
 5. To change a material, find its graph in the palette and open it. Drag between sockets to connect nodes, press Cmd+K
    to add one, and press Cmd+S to save the graph; your application reloads the material.
 
+## See warnings and errors
+
+While the editor is open, each warning and error your application logs shows as a toast in the window's bottom-right
+corner: what happened, over its likely cause. The newest toast is in front, with up to two older ones behind it. Move
+the pointer over them to spread them out and keep them from leaving; otherwise each one leaves after four seconds, or
+when you click its ×. A message that repeats counts up on its toast instead of adding another.
+
+Toasts show what `log.level` lets through, which is only errors unless you change it. To see warnings too, run with
+`RUST_LOG=warn` or set [`log.level`](/docs/reference/parameters) to `warn`.
+
 ## Rust API
 
 - [`install`](/docs/api/latest/byte_engine/editor#fn.install)

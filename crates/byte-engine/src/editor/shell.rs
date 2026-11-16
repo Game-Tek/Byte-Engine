@@ -6,6 +6,7 @@
 //! and an indigo accent for the selection.
 
 mod graph_view;
+mod toasts;
 
 use crate::core::factory::Handle;
 use crate::editor::fields::{CAMERA, Change, Setting, TRANSFORM};
@@ -50,6 +51,8 @@ pub(crate) struct Shell {
 	pub(crate) save_graph: bool,
 	/// The entity the properties panel's trash button deleted, until the editor posts the deletion to the game.
 	pub(crate) delete: Option<Handle>,
+	/// The game's warnings and errors, shown as toasts.
+	pub(crate) toasts: crate::editor::toasts::Toasts,
 }
 
 impl Shell {
@@ -68,6 +71,7 @@ impl Shell {
 			graph: None,
 			graph_revision: 0,
 			save_graph: false,
+			toasts: Default::default(),
 		}
 	}
 
@@ -153,6 +157,7 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 		.component(async |ctx| graph_view::graph_view(ctx).await)
 		.await;
 	root.element("palette").component(async |ctx| palette_view(ctx).await).await;
+	root.element("toasts").component(async |ctx| toasts::toasts(ctx).await).await;
 
 	let mut shown_list = None;
 	let mut shown_viewport = viewport;

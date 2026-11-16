@@ -236,8 +236,9 @@ fn install_subscriber(metrics: Arc<Metrics>, trace: bool, log_filter: Option<&st
 	}
 }
 
-/// The `EngineLogger` struct lets the [console](crate::inspector::console) take log records while it owns the
-/// terminal, where writing them to standard error would draw over its screen.
+/// The `EngineLogger` struct keeps every log record for in-process tools, such as the editor's toasts, and holds them
+/// back from standard error while the [console](crate::inspector::console) owns the terminal, where writing them would
+/// draw over its screen.
 #[cfg(not(feature = "tracy"))]
 struct EngineLogger(env_logger::Logger);
 
@@ -251,9 +252,9 @@ impl log::Log for EngineLogger {
 		if !self.0.matches(record) {
 			return;
 		}
-		if super::log_capture::is_active() {
-			super::log_capture::push_record(record);
-		} else {
+		// Every record is kept for in-process tools; standard error gets it too unless the console owns the terminal.
+		super::log_capture::push_record(record);
+		if !super::log_capture::is_active() {
 			self.0.log(record);
 		}
 	}

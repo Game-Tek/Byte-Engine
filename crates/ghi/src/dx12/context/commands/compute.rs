@@ -73,6 +73,8 @@ impl Device {
 		};
 		let command_signature = if argument_type == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW {
 			&mut self.indirect_draw_signature
+		} else if argument_type == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH {
+			&mut self.indirect_mesh_dispatch_signature
 		} else {
 			&mut self.indirect_dispatch_signature
 		};

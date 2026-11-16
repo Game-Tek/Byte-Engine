@@ -1,7 +1,10 @@
+use std::{cell::Cell, rc::Rc};
+
 use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _, frame::Frame as _};
 use utils::Extent;
 
 use crate::{
+	configuration::{Accepts, ConfigurationPort, Read, Setting},
 	core::Entity,
 	rendering::{
 		Sink,
@@ -13,7 +16,7 @@ const MAX_BLOOM_LEVELS: u32 = 6;
 
 /// The `BloomPassSettings` struct defines the intent and shaping controls for a reusable HDR bloom stage.
 ///
-/// Pass it to [`crate::application::graphics::setup_bloom_render_pass`] or [`BloomPass::with_settings`].
+/// Pass it to [`crate::application::graphics::setup_bloom_render_pass`] or [`BloomControls::new`].
 #[derive(Clone, Copy, Debug)]
 pub struct BloomPassSettings {
 	/// Share of each pixel's light that moves into the glow's tail, from `0.0`, which passes the scene through, to
@@ -37,6 +40,11 @@ pub struct BloomPassSettings {
 	pub radius: f32,
 	/// Pyramid depth, from `1` to `6`. Each level halves the resolution and doubles the glow's reach.
 	pub levels: u32,
+	/// Whether the prefilter weighs each pixel of a 2x2 block by its brightness before averaging the block, so a
+	/// cluster of bright pixels can't flicker the glow. Off, the default, each block is one bilinear read, which reads
+	/// the scene a quarter as often; a lone bright pixel is still held back, but a cluster of them glows more. The
+	/// `render.bloom.pixel-weights` parameter changes it at runtime.
+	pub pixel_weights: bool,
 }
 
 impl Default for BloomPassSettings {
@@ -49,6 +57,7 @@ impl Default for BloomPassSettings {
 			max_brightness: 4096.0,
 			radius: 1.0,
 			levels: 6,
+			pixel_weights: false,
 		}
 	}
 }
@@ -56,6 +65,50 @@ impl Default for BloomPassSettings {
 impl BloomPassSettings {
 	fn resolved_level_count(self) -> usize {
 		self.levels.clamp(1, MAX_BLOOM_LEVELS) as usize
+	}
+
+	/// The runtime settings, named inside the controls' configuration port.
+	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[Setting {
+		name: "pixel-weights",
+		accepts: Accepts::Bool,
+		value: |settings| Read::Bool(settings.pixel_weights),
+		apply: |settings, read| {
+			let pixel_weights = read.bool();
+			Ok(Self {
+				pixel_weights,
+				..settings
+			})
+		},
+	}];
+}
+
+/// The `BloomControls` struct shares one set of settings between every sink's [`BloomPass`], so a runtime parameter
+/// changes the glow of every window at once.
+///
+/// Create it with [`Self::new`] from a [`ConfigurationPort`] registered for the prefix the application gives bloom, and
+/// hand the same `Rc` to each pass with [`BloomPass::new`].
+pub struct BloomControls {
+	settings: Cell<BloomPassSettings>,
+	configuration: ConfigurationPort,
+}
+
+impl BloomControls {
+	/// Creates controls that start at `settings` and apply the runtime updates queued on `configuration`. The pyramid
+	/// depth keeps its starting value, because each pass sizes its levels once.
+	pub fn new(settings: BloomPassSettings, configuration: ConfigurationPort) -> Rc<Self> {
+		configuration.declare(BloomPassSettings::SETTINGS.iter().map(|setting| setting.parameter(settings)));
+		Rc::new(Self {
+			settings: Cell::new(settings),
+			configuration,
+		})
+	}
+
+	/// Applies the queued runtime updates and returns the settings every pass draws with this frame.
+	pub fn settings(&self) -> BloomPassSettings {
+		let mut settings = self.settings.get();
+		self.configuration.drain(&mut settings, BloomPassSettings::SETTINGS);
+		self.settings.set(settings);
+		settings
 	}
 }
 
@@ -142,17 +195,20 @@ fn level_weights(settings: BloomPassSettings, level_count: usize, sink_height: u
 /// radius per channel, rides the same pyramid as per-channel level weights, so it costs no extra pass. The pass prefilters the HDR `main`
 /// target into a half-resolution pyramid with Jimenez's 13-tap filter, using a brightness-weighted average on the
 /// first level so single bright texels do not flicker, then climbs back up with a tent blur per level, weighting each
-/// level by its share of the tail and halo. The last climb and the blend into the scene share one dispatch, so the top level never
+/// level by its share of the tail and halo. The prefilter weighs each pixel of a block, or reads each block with one
+/// bilinear tap, as [`BloomPassSettings::pixel_weights`] says; the two are separate pipelines, because one shader
+/// branching between them costs both their registers. The last climb and the blend into the scene share one dispatch, so the top level never
 /// reaches memory. The prefilter and the composite, the two steps at the sink's half and full resolution, are tile
 /// shaders, so where the platform runs tile functions their targets stay losslessly compressed. The smaller levels run
 /// as compute dispatches in one encoder: each tile pass is a render pass of its own, which costs more than a small level
 /// saves. Install it after the passes that write scene light and before tone mapping. Toggle it at runtime with the
-/// `render.pass.bloom` parameter.
+/// `render.pass.bloom` parameter, and choose the prefilter with `render.bloom.pixel-weights`.
 pub struct BloomPass {
-	settings: BloomPassSettings,
+	controls: Rc<BloomControls>,
 	/// One buffer per climb, indexed by the level it builds. The prefilter reads level `0`'s, the composite's.
-	parameters: Vec<ghi::DynamicBufferHandle<BloomShaderData>>,
-	extract_pass: simple_tile::Pass,
+	parameters: Vec<ghi::BufferHandle<BloomShaderData>>,
+	/// The prefilter that weighs each pixel of a block, and the one that reads each block with one bilinear tap.
+	extract_passes: [simple_tile::Pass; 2],
 	downsample_passes: Vec<simple_compute::Pass>,
 	upsample_passes: Vec<simple_compute::Pass>,
 	/// Builds the top level from the one below it and adds it onto the scene.
@@ -166,15 +222,11 @@ pub struct BloomPass {
 impl Entity for BloomPass {}
 
 impl BloomPass {
-	/// Creates a bloom pass with the default glow shaping parameters.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
-		Self::with_settings(render_pass_builder, BloomPassSettings::default())
-	}
-
-	/// Creates a bloom pass with caller-supplied settings and remaps `main` for downstream passes.
+	/// Creates a bloom pass that draws with the settings `controls` holds, and remaps `main` for downstream passes.
 	// Keep the paired downsample and upsample resource graph together so level indices remain symmetric.
 	#[allow(clippy::too_many_lines)]
-	pub fn with_settings(render_pass_builder: &mut RenderPassBuilder, settings: BloomPassSettings) -> Self {
+	pub fn new(render_pass_builder: &mut RenderPassBuilder, controls: Rc<BloomControls>) -> Self {
+		let settings = controls.settings();
 		let source = render_pass_builder.read_from("main");
 		let main_format = render_pass_builder.format_of("main");
 		// The builder gives the replacement for `main` the uses a tile pass writes it with.
@@ -227,24 +279,27 @@ impl BloomPass {
 		// Every level but the coarsest is climbed, and a one-level pyramid still composites its top.
 		let parameters = (0..level_count.saturating_sub(1).max(1))
 			.map(|_| {
-				context.build_dynamic_buffer(
+				context.build_buffer(
 					ghi::buffer::Builder::new(ghi::Uses::Storage)
 						.name("Bloom Parameters")
-						.device_accesses(ghi::DeviceAccesses::HostToDevice),
+						.host_access(ghi::HostAccess::Write)
+						.copies(ghi::Copies::PerFrame),
 				)
 			})
 			.collect::<Vec<_>>();
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 
 		let pyramid_formats = [crate::rendering::SCENE_COLOR_FORMAT];
-		let extract_pipeline = simple_tile::Pipeline::compile(
-			render_pass_builder,
-			simple_tile::Descriptor::new(
-				"Bloom Extract",
-				"byte_engine/rendering/bloom/extract.pipeline",
-				&pyramid_formats,
-			),
-		);
+		let extract_pipelines = [
+			("Bloom Extract Pixels", "byte_engine/rendering/bloom/extract-pixels.pipeline"),
+			("Bloom Extract", "byte_engine/rendering/bloom/extract.pipeline"),
+		]
+		.map(|(label, pipeline)| {
+			simple_tile::Pipeline::compile(
+				render_pass_builder,
+				simple_tile::Descriptor::new(label, pipeline, &pyramid_formats),
+			)
+		});
 		let downsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Bloom Downsample", "byte_engine/rendering/bloom/downsample.pipeline"),
@@ -262,14 +317,16 @@ impl BloomPass {
 			),
 		);
 
-		let extract_pass = extract_pipeline.bind(
-			"Bloom Extract Descriptor Set",
-			&[
-				simple_tile::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
-				simple_tile::Resource::buffer("bloom_parameters", parameters[0]),
-			],
-			&[simple_tile::Output::new("result", downsample_images[0])],
-		);
+		let extract_passes = extract_pipelines.map(|pipeline| {
+			pipeline.bind(
+				"Bloom Extract Descriptor Set",
+				&[
+					simple_tile::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
+					simple_tile::Resource::buffer("bloom_parameters", parameters[0]),
+				],
+				&[simple_tile::Output::new("result", downsample_images[0])],
+			)
+		});
 
 		let downsample_passes = (1..level_count)
 			.map(|index| {
@@ -335,9 +392,9 @@ impl BloomPass {
 			.map(|name| render_pass_builder.create_gpu_counter(name));
 
 		Self {
-			settings,
+			controls,
 			parameters,
-			extract_pass,
+			extract_passes,
 			downsample_passes,
 			upsample_passes,
 			composite_pass,
@@ -348,11 +405,10 @@ impl BloomPass {
 
 	/// Writes each climb's weights for a sink `sink_height` pixels tall into its per-frame parameter buffer before
 	/// dispatch. The halation radius is a share of the sink's height, so the weights follow the sink's size.
-	fn write_parameters(&self, frame: &mut ghi::implementation::Frame, sink_height: u32) {
-		let weights = level_weights(self.settings, self.level_count, sink_height);
+	fn write_parameters(&self, frame: &mut ghi::implementation::Frame, settings: BloomPassSettings, sink_height: u32) {
+		let weights = level_weights(settings, self.level_count, sink_height);
 		for (level, parameters) in self.parameters.iter().enumerate() {
-			*frame.get_mut_dynamic_buffer_slice(*parameters) =
-				BloomShaderData::climb(self.settings, &weights, level, self.level_count);
+			*frame.map(*parameters) = BloomShaderData::climb(settings, &weights, level, self.level_count);
 		}
 	}
 }
@@ -368,13 +424,14 @@ impl RenderPass for BloomPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		let extract_pass = self.extract_pass.ready(frame)?;
-		let downsample_passes = ready_in(&mut self.downsample_passes, frame, frame_allocator)?;
-		let upsample_passes = ready_in(&mut self.upsample_passes, frame, frame_allocator)?;
+		let settings = self.controls.settings();
+		let extract_pass = self.extract_passes[usize::from(!settings.pixel_weights)].ready(frame)?;
+		let downsample_passes = simple_compute::ready_all(&mut self.downsample_passes, frame, frame_allocator)?;
+		let upsample_passes = simple_compute::ready_all(&mut self.upsample_passes, frame, frame_allocator)?;
 		let composite_pass = self.composite_pass.ready(frame)?;
 		let extent = sink.extent();
 
-		self.write_parameters(frame, extent.height());
+		self.write_parameters(frame, settings, extent.height());
 
 		let level_count = self.level_count;
 		let [extract_counter, downsample_counter, upsample_counter, composite_counter] = self.counters;
@@ -422,19 +479,6 @@ fn level_divisor(level: usize) -> u32 {
 	2 << level
 }
 
-/// Readies every pass into the frame allocator, or returns `None` while any of their pipelines is unavailable.
-fn ready_in<'a>(
-	passes: &mut [simple_compute::Pass],
-	frame: &mut ghi::implementation::Frame,
-	frame_allocator: &'a bumpalo::Bump,
-) -> Option<&'a [simple_compute::ReadyPass]> {
-	let mut ready = bumpalo::collections::Vec::with_capacity_in(passes.len(), frame_allocator);
-	for pass in passes {
-		ready.push(pass.ready(frame)?);
-	}
-	Some(ready.into_bump_slice())
-}
-
 /// Returns the extent of a pyramid level, matching the size the renderer gives its render target.
 fn bloom_extent(extent: Extent, level: usize) -> Extent {
 	extent.scaled_down(level_divisor(level))
@@ -449,6 +493,8 @@ mod tests {
 		PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_at, run_pixel, slot, texture_2d, tile_lanes, tiles,
 	};
 
+	static BLOOM_EXTRACT_PIXELS_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("bloom/extract-pixels.besl"));
 	static BLOOM_EXTRACT_BESL: std::sync::LazyLock<&str> =
 		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("bloom/extract.besl"));
 	const BLOOM_DOWNSAMPLE_BESL: &str = include_str!("../../../assets/rendering/bloom/downsample.besl");
@@ -484,9 +530,10 @@ mod tests {
 		);
 	}
 
-	/// Runs the prefilter over a 2x2 source into one texel.
+	/// Runs the prefilter that weighs each pixel over a 2x2 source into one texel.
 	fn extract(source_texels: &[[f32; 4]; 4], threshold: f32, soft_knee: f32, max_brightness: f32) -> [f32; 4] {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_EXTRACT_BESL));
+		let program =
+			crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_EXTRACT_PIXELS_BESL));
 		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
@@ -505,10 +552,16 @@ mod tests {
 		rgba(&result, [0, 0])
 	}
 
-	/// Runs the prefilter over a whole `size` by `size` source, every tile of it, without threshold or ceiling. Each
-	/// lane filters a 2x2 block of destination texels, so a tile's 8x8 lanes cover its 16x16 texels.
-	fn extract_image(size: u32, source_texels: &[[f32; 4]]) -> Texture {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_EXTRACT_BESL));
+	/// Runs the prefilter over a whole `size` by `size` source, every tile of it, without threshold or ceiling, weighing
+	/// each block's pixels or reading each block with one bilinear tap as `pixel_weights` says. Each lane filters a 2x2
+	/// block of destination texels, so a tile's 8x8 lanes cover its 16x16 texels.
+	fn extract_image(size: u32, source_texels: &[[f32; 4]], pixel_weights: bool) -> Texture {
+		let source = if pixel_weights {
+			*BLOOM_EXTRACT_PIXELS_BESL
+		} else {
+			*BLOOM_EXTRACT_BESL
+		};
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(source));
 		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
@@ -535,6 +588,13 @@ mod tests {
 	/// tile.
 	#[test]
 	fn bloom_extract_besl_vm_filters_alike_across_tiles() {
+		for pixel_weights in [true, false] {
+			assert_extract_filters_alike_across_tiles(pixel_weights);
+		}
+	}
+
+	/// Checks the prefilter's symmetry and shift invariance with or without pixel weights.
+	fn assert_extract_filters_alike_across_tiles(pixel_weights: bool) {
 		const SIZE: u32 = 48;
 		// Glow sampled from two destination texels before the block to two after, in both axes.
 		let glow_around = |block: u32| -> Vec<[f32; 4]> {
@@ -548,7 +608,7 @@ mod tests {
 					}
 				})
 				.collect::<Vec<_>>();
-			let result = extract_image(SIZE, &texels);
+			let result = extract_image(SIZE, &texels, pixel_weights);
 			(0..25)
 				.map(|index| rgba(&result, [block + index % 5 - 2, block + index / 5 - 2]))
 				.collect()
@@ -575,7 +635,7 @@ mod tests {
 
 	/// Verifies threshold rejection and soft-knee extraction through the production bloom program.
 	#[test]
-	fn bloom_extract_besl_vm_applies_threshold_and_soft_knee() {
+	fn bloom_extract_pixels_besl_vm_applies_threshold_and_soft_knee() {
 		for (source_color, expected) in [
 			([0.25, 0.2, 0.1, 0.25], [0.0, 0.0, 0.0, 1.0]),
 			([2.0, 1.0, 0.5, 0.25], [1.0, 0.5, 0.25, 1.0]),
@@ -586,7 +646,7 @@ mod tests {
 
 	/// Verifies that no texel glows above the configured ceiling.
 	#[test]
-	fn bloom_extract_besl_vm_holds_texels_to_max_brightness() {
+	fn bloom_extract_pixels_besl_vm_holds_texels_to_max_brightness() {
 		let result = extract(&[[100.0, 100.0, 100.0, 1.0]; 4], 0.0, 0.0, 64.0);
 
 		assert_rgba_close(result, [64.0, 64.0, 64.0, 1.0], 1e-3);
@@ -594,7 +654,7 @@ mod tests {
 
 	/// Verifies that a non-finite scene texel cannot poison the glow around it.
 	#[test]
-	fn bloom_extract_besl_vm_survives_non_finite_input() {
+	fn bloom_extract_pixels_besl_vm_survives_non_finite_input() {
 		for bad in [f32::INFINITY, f32::NAN] {
 			let source = [
 				[bad, bad, bad, 1.0],
@@ -611,7 +671,7 @@ mod tests {
 	/// saturated one as hard as a white one, while a uniform block keeps all its light. The clamp-addressed 2x2 source
 	/// repeats the firefly in the filter's edge blocks, so it lands above the third a truly lone texel would.
 	#[test]
-	fn bloom_extract_besl_vm_suppresses_fireflies() {
+	fn bloom_extract_pixels_besl_vm_suppresses_fireflies() {
 		// One texel lit in a block of four.
 		let lone = |color: [f32; 3]| {
 			[
@@ -629,6 +689,60 @@ mod tests {
 		assert_rgba_close(extract(&uniform, 0.0, 0.0, NO_CEILING), [1.0, 1.0, 1.0, 1.0], 1e-5);
 		assert!(white[0] > 0.0 && white[0] < 0.5, "{white:?}");
 		assert!((blue[2] - white[2]).abs() < 1e-4, "{blue:?} {white:?}");
+	}
+
+	/// Returns a `size` by `size` scene of `background` with one texel of `color` at `texel`.
+	fn lone_texel_scene(size: u32, background: f32, texel: [u32; 2], color: [f32; 3]) -> Vec<[f32; 4]> {
+		(0..size * size)
+			.map(|index| {
+				if [index % size, index / size] == texel {
+					[color[0], color[1], color[2], 1.0]
+				} else {
+					[background, background, background, 1.0]
+				}
+			})
+			.collect()
+	}
+
+	/// Verifies that the prefilter holds a lone bright texel under one half whatever its brightness, with or without
+	/// pixel weights, because each group of blocks holds it in one block only.
+	#[test]
+	fn bloom_extract_besl_vm_holds_back_a_lone_firefly_in_either_mode() {
+		for pixel_weights in [true, false] {
+			for color in [[1024.0, 1024.0, 1024.0], [0.0, 0.0, 65504.0]] {
+				let result = extract_image(32, &lone_texel_scene(32, 0.0, [17, 14], color), pixel_weights);
+				for coordinate in [[8, 7], [9, 7], [8, 6], [7, 7]] {
+					let glow = rgba(&result, coordinate);
+					assert!(
+						glow.iter().take(3).all(|channel| *channel < 0.5),
+						"{pixel_weights} {coordinate:?}: {glow:?}"
+					);
+				}
+			}
+		}
+	}
+
+	/// Verifies that reading each block with one bilinear tap keeps a uniform field's light and holds an infinite or NaN
+	/// texel to a finite glow.
+	#[test]
+	fn bloom_extract_besl_vm_keeps_light_and_survives_non_finite_input() {
+		let uniform = vec![[0.25, 0.5, 0.75, 1.0]; 32 * 32];
+		assert_rgba_close(
+			rgba(&extract_image(32, &uniform, false), [5, 9]),
+			[0.25, 0.5, 0.75, 1.0],
+			1e-3,
+		);
+
+		for bad in [f32::INFINITY, f32::NAN] {
+			let result = extract_image(32, &lone_texel_scene(32, 1.0, [16, 16], [bad, bad, bad]), false);
+			for coordinate in [[7, 7], [8, 8], [9, 9]] {
+				let glow = rgba(&result, coordinate);
+				assert!(
+					glow.iter().all(|channel| channel.is_finite()),
+					"{bad} {coordinate:?}: {glow:?}"
+				);
+			}
+		}
 	}
 
 	/// Runs the pyramid downsample over a 2x2 source into one texel.
@@ -995,7 +1109,7 @@ mod tests {
 		let rgb = |value: [f32; 4]| [value[0], value[1], value[2]];
 		let level_size = |level: usize| size / level_divisor(level);
 
-		let mut downsampled = vec![texels(&extract_image(size, scene), level_size(0))];
+		let mut downsampled = vec![texels(&extract_image(size, scene, settings.pixel_weights), level_size(0))];
 		for level in 1..levels {
 			downsampled.push(downsample_image(level_size(level - 1), &downsampled[level - 1]));
 		}
@@ -1061,8 +1175,10 @@ mod tests {
 			settings(0.5, 3.0, [0.3, 0.1, 0.0], [0.1, 0.05, 0.2]),
 		] {
 			let result = bloom(SIZE, &scene, settings, 4);
+			// The prefilter keeps its blocks in half floats, about three significant digits, so 30 can come back a few
+			// thousandths off.
 			for coordinate in [[0, 0], [17, 40], [63, 63]] {
-				assert_rgba_close(rgba(&result, coordinate), [0.5, 2.0, 30.0, 1.0], 1e-3);
+				assert_rgba_close(rgba(&result, coordinate), [0.5, 2.0, 30.0, 1.0], 1e-2);
 			}
 		}
 	}
@@ -1155,6 +1271,7 @@ mod tests {
 
 		// The downsample and upsample run as compute; the others are tile shaders.
 		for (name, source, tile) in [
+			("bloom_extract_pixels", *BLOOM_EXTRACT_PIXELS_BESL, Some(EXTRACT_TILE)),
 			("bloom_extract", *BLOOM_EXTRACT_BESL, Some(EXTRACT_TILE)),
 			("bloom_downsample", BLOOM_DOWNSAMPLE_BESL, None),
 			("bloom_upsample", *BLOOM_UPSAMPLE_BESL, None),

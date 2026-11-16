@@ -22,7 +22,7 @@ pub use resource_id::ResourceId;
 pub use resource_manager::{ResourceUpdate, ResourceUpdateListener};
 pub use storage_backend::redb::{
 	PackedFragmentation, PayloadFile, ReDBStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode,
-	ResourceStorageSettings, StorageUsage,
+	ResourceStorageSettings, ResourceStoreOpenError, StorageUsage,
 };
 pub use storage_backend::{
 	DynReadStorageBackend, DynStorageBackend, DynWriteStorageBackend, MemoryStorageBackend, ReadStorageBackend,

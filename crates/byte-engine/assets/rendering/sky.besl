@@ -52,8 +52,9 @@ main: fn (input: StageInput) -> void {
 		return;
 	}
 
-	// The sky-view LUT holds scattering per lux, so the sun light's RGB illuminance sets the sky's brightness and color.
-	// The uploaded illuminance and disk radiance already include the camera exposure, so the sky is written pre-exposed.
+	// The sky-view LUT holds scattering per lux of sunlight reaching the camera, so the sun light's RGB illuminance
+	// sets the sky's brightness and color. The uploaded illuminance and disk radiance already include the camera
+	// exposure, so the sky is written pre-exposed.
 	let sampled_sky: vec4f = texture_lod(sky_view_lut, octahedral_encode(direction));
 	let sky_scattering: vec3f = vec3f(sampled_sky.x, sampled_sky.y, sampled_sky.z)
 		* vec3f(parameters.sun_illuminance.x, parameters.sun_illuminance.y, parameters.sun_illuminance.z);
@@ -74,8 +75,12 @@ main: fn (input: StageInput) -> void {
 			get_atmosphere_radius()
 		);
 		let sampled_transmittance: vec4f = texture_lod(transmittance_lut, transmittance_uv);
+		let transmittance: vec3f = vec3f(sampled_transmittance.x, sampled_transmittance.y, sampled_transmittance.z);
+		// The light's radiance is already the sunlight that reaches the camera, so the disk shows it undimmed. It
+		// fades only where the air passes less than the limit the sky divides by, as the sun sets.
 		sun_radiance = sun_disk
-			* vec3f(sampled_transmittance.x, sampled_transmittance.y, sampled_transmittance.z)
+			* transmittance
+			/ max(transmittance, vec3f(SKY_MIN_SUN_TRANSMITTANCE, SKY_MIN_SUN_TRANSMITTANCE, SKY_MIN_SUN_TRANSMITTANCE))
 			* vec3f(parameters.sun_disk_radiance.x, parameters.sun_disk_radiance.y, parameters.sun_disk_radiance.z);
 	}
 	// Keep atmosphere and sun radiance linear and unclamped for the final tonemap pass.

@@ -14,12 +14,15 @@ format or change a handler, read
 ## Asset IDs
 
 Asset IDs are written as resource-style paths.
+Asset IDs are case-sensitive on every platform: each directory and file name in an ID must match the file's spelling
+exactly. On a case-insensitive file system, such as the default ones on macOS and Windows, an ID that differs from a
+file only in case still names no file, so it fails to read and counts as missing.
 The file extension is part of the ID when selecting an asset handler, and a fragment can identify a sub-asset when a container format exposes many resources.
 For example, a glTF asset can produce mesh, skeleton, animation, material, image, and generated shader resources.
 
 ## Excluded assets
 
-The `resources.exclude` [parameter](/docs/reference/parameters#application)
+The `assets.exclude` [parameter](/docs/reference/parameters#application)
 is an array of glob patterns. An asset whose ID matches a pattern is never
 baked, by BELD or by a development build of the application.
 
@@ -30,7 +33,7 @@ baked, by BELD or by a development build of the application.
 | Requested ID | A bake request for a matching ID fails with an error that names the asset as excluded, whether BELD, an application, or another asset made it, and even when the store already has a resource for the ID. |
 | Dependency | An asset that needs an excluded asset fails to bake, with the same error for the excluded asset. |
 | Stored resources | Excluding an asset doesn't remove a resource baked before. A release build, which never bakes, still loads it. |
-| No patterns | Without `resources.exclude`, or with an empty array, nothing is excluded. |
+| No patterns | Without `assets.exclude`, or with an empty array, nothing is excluded. |
 
 ## Source formats
 
@@ -49,6 +52,7 @@ The standard graphics setup bakes these formats:
 - `.particles` [GPU particle systems](/docs/reference/particles), which bake into generated shaders and pipelines
 - `.terrain.bead` [terrains](/docs/reference/terrain), which bake a height map into a tree of node meshes
 - LUT assets
+- TrueType and OpenType fonts
 - WAV and OGG audio
 - standalone `.besl` shaders with `.besl.bead` stage metadata
 
@@ -112,12 +116,15 @@ every model below it.
 | --- | --- |
 | Pattern | Text with placeholders, such as `{name}_LOD{level}`. `{level}` is a decimal number and appears exactly once. Every other placeholder, `{` and a name of letters, digits, and underscores, then `}`, matches any text that isn't empty. Two placeholders can't touch. |
 | Match | The pattern must match the model's file name without its extension. A model whose name doesn't match has no authored levels. |
-| Level files | The model's directory and extension, with the pattern's placeholders as the model's name filled them and the level one higher, then two higher, and so on. A number keeps the model's zero padding, so `LOD01` is followed by `LOD02`. |
-| Chain end | The first level file that doesn't exist, or that holds other than one mesh instance, other material names, or other vertex streams than the model. A model that holds other than one mesh instance uses none. Adding a missing file later rebakes the model. |
-| Count | At most `max_levels` levels, counting full detail. |
+| Level files | The model's directory and extension, with the pattern's placeholders as the model's name filled them and each level number above the model's in turn. A number keeps the model's zero padding, so `LOD01` is followed by `LOD02`. |
+| Chain end | The first level file that doesn't exist, or that holds other than one mesh instance or other vertex streams than the model. A model that holds other than one mesh instance uses none. Adding a missing file later rebakes the model. |
+| Other materials | A level file whose material names differ from those of the level before it, as a billboard's do, starts primitives of its own: one for each of its materials, bound like the model's materials by name. Later level files with those names are their coarser levels. These primitives take over from every primitive of the levels before them. |
+| Takeover | The primitives that take over are drawn only where their error is within what the renderer allows, and the primitives they replace only where it isn't, so one set shows at a time. Their error is the level file's, measured against the model at full detail and at least the error of the last level before it. Every level of the new primitives adds it to its own. All the primitives on both sides share one bounding sphere, around all of them. |
+| Count | At most `max_levels` level files, counting the model. Each primitive holds at most `max_levels` levels: authored levels take their places first, and gap levels and coarser levels take what's left. |
 | Primitive | Each material's triangles in a level file become that level of the primitive with the same material, and its vertices are added to the primitive's. A level whose vertices don't fit in the 65,536 a primitive holds, a material that doesn't fit in one primitive at full detail, a skinned model, and a bake with lightmap UVs fall back to simplified levels, with a warning in the model's trace. |
 | Error | Measured against full detail: the farthest a vertex of either lies from the other's triangles. A level's error is at least the error of the level before it. |
-| Coarser levels | Simplified from the last authored level as described above, each with that level's error added to its own. |
+| Gap levels | Before each authored level, while `max_levels` leaves a level for it and every authored level after it, levels simplified from the level before it as [Detail levels](#detail-levels) specifies, each with that level's error added to its own. A gap level is kept while its error is less than the authored level's and the authored level has at most 75% of its triangles; the first that isn't ends the gap. |
+| Coarser levels | Simplified from the last authored level as [Detail levels](#detail-levels) specifies, each with that level's error added to its own. |
 | Baking | The level files are read as sources of the model and don't need to be baked themselves, so [excluded assets](#excluded-assets) can hold them. |
 
 ## Lightmap UVs
@@ -236,6 +243,8 @@ BC7. An image's BEAD file can change either step with an object of these keys:
 | --- | --- | --- |
 | `mips` | `true` | `false` stores only the authored size, with no smaller levels. |
 | `compression` | From the image's semantic | Whether the image is block-compressed. |
+| `coverage` | `0.5` for opacity maps, `false` for other images | The alpha cutoff, from 0 to 1, whose coverage every smaller level keeps, as [coverage](#coverage) defines; `false` averages the levels without scaling them. |
+| `cpu_readable` | `false` | `true` keeps the stored texels readable by the application. A resource store that encodes images for GPU-only reading, such as one with Metal I/O compression, stores this image without that encoding. |
 
 Every key is optional, and a key left out keeps its default. Packed
 metallic-roughness maps and half-float images, such as EXR, are never
@@ -245,7 +254,34 @@ whole file name, such as `rock_albedo.jpg.bead`. A glTF, GLB, or FBX model reads
 from its `images` key and applies it to every image the model contains.
 
 Turn `mips` off for images drawn at their authored size, such as UI art, and
-`compression` off for images whose exact colors matter more than their memory.
+`compression` off for images whose exact colors matter more than their memory. Turn `cpu_readable` on for images the application reads
+itself, such as UI art it crops or tints.
+
+### Coverage
+
+An alpha-tested material keeps a texel where its opacity is at or above the
+material's `alpha_cutoff`. A level's coverage is the share of its texels whose
+opacity channel, as stored, is at or above the image's `coverage` cutoff. An
+opacity map holds opacity in its first channel; any other image holds it in its
+alpha channel.
+
+With a cutoff, each level below the authored size multiplies its opacity
+channel by one factor, chosen so the level's coverage comes as close as its
+texels allow to the authored size's coverage. A texel that reaches the cutoff
+before the factor applies reaches it after, and one that doesn't, doesn't.
+Results above 1 store 1. The other channels, and the authored size, keep their
+values.
+
+| Case | Result |
+| --- | --- |
+| Cutoff of 0 | Every texel passes; the levels keep their values. |
+| Authored size with no passing texel | No level has a passing texel. |
+| Texel of opacity 0 | It never passes, whatever the factor. |
+| Half-float image, such as EXR | The levels keep their values. |
+| `mips` set to `false` | No smaller levels exist, so the cutoff has no effect. |
+
+The cutoff matches a material's only when it equals that material's
+`alpha_cutoff`.
 
 ## Environment maps
 
@@ -335,7 +371,7 @@ The `clips` entries name the database's clips:
 | Entry | Names |
 | --- | --- |
 | ID | An entry without `*` or `?` names one clip by asset ID, fragment included, as in `character.fbx#animations/Walk`. |
-| Pattern | An entry with `*` or `?` matches the IDs of source files, with the syntax of [excluded assets](#excluded-assets). Each match names the file's default resource, which must be an animation clip. Matches follow one another in ascending ID order. |
+| Pattern | An entry with `*` or `?` matches the IDs of source files, with the syntax of [excluded assets](#excluded-assets). Each match names the file's default resource, which must be an animation clip. Matches follow one another in ascending ID order. A source file that starts or stops matching makes the database [stale](/docs/reference/resource-management#freshness). |
 | Order | Clips follow the order of their entries. A clip that several entries name keeps the place of the first. |
 | Later sources | A pattern matches the sources there are when the database bakes. A matching source added later joins the database the next time the database bakes. |
 
@@ -422,9 +458,84 @@ Only these handlers read sidecars:
 | glTF, GLB, FBX | `lods` | The detail level settings listed under [Detail levels](#detail-levels). Unknown keys fail the bake. |
 | glTF, GLB, FBX | `images` | The [image settings](#image-settings) for every image the model contains. Unknown keys fail the bake. |
 | PNG, JPEG, EXR | `image` | The [image settings](#image-settings) for the image. Unknown keys fail the bake. |
-| glTF, GLB, FBX | `asset.<material name>.asset` | The ID of a `.bema` variant to use for that material. Unnamed glTF materials can't be overridden; unnamed FBX materials use the key `default`. |
+| glTF, GLB, FBX | `asset.<material name>` | The variant to use for that material: an authored `.bema` variant or one written in the sidecar, as listed under [Material bindings](#material-bindings). |
 | FBX | `skeleton` | The ID of the skeleton to bake against, instead of the file's own. |
 | BESL | `stage`, `tile`, `workgroup`, `maximum_mesh_threadgroups`, `maximum_vertices`, `maximum_primitives` | The stage metadata specified in the [BESL interface](/docs/reference/besl/interface#standalone-stage-metadata). The sidecar is required. |
+
+### Material bindings
+
+`asset` in a glTF, GLB, or FBX model's settings binds the model's materials to
+variants. It's read after the directory defaults and the sidecar merge, so a
+directory `.bead` can bind every model below it. A sidecar's entry merges field
+by field over its directory's entry of the same key. A `null` key, field, or
+variable counts as left out, which lets a deeper file drop one it inherits,
+such as `select`.
+
+| Key | Binds |
+| --- | --- |
+| The material's name | That material. Unnamed FBX materials use the name `default`. |
+| `"*"` | Every material of the model without a key of its own, unnamed glTF and FBX materials included. A named key is used on its own, never merged with `"*"`. |
+
+A material without a key, and without `"*"`, is generated from the model. A
+binding is either `{ asset }`, the ID of an authored `.bema` variant that bakes
+as a dependency, or an inline variant with these fields. With `asset` present,
+every other field is ignored.
+
+| Field | Value |
+| --- | --- |
+| `parent` | The parent material's asset ID, a [template](#binding-templates). Required without `select`, and ignored with it. |
+| `select` | A non-empty array of rules `{ requires, parent, alpha_mode, alpha_cutoff, double_sided }`. `requires` is an optional array of variable names, and `parent` is a template. |
+| `variables` | Optional. An object keyed by the parent's parameter names, whose values are templates, arrays of templates, numbers, or arrays of numbers. |
+| `alpha_mode`, `alpha_cutoff`, `double_sided` | Optional, with the values a [`.bema` variant](/docs/reference/bema#variant-files) accepts. A field left out keeps the parent's value. |
+
+#### Binding templates
+
+`parent`, `select[].parent`, and every string in `variables` are level 1
+templates of the URI Template standard, Request for Comments (RFC) 6570: each
+`{name}` is replaced by the variable's value, unchanged and without URI
+escaping. Only these variables exist:
+
+| Variable | Value |
+| --- | --- |
+| `{dir}` | The name of the directory that holds the model, such as `xb5ebhf`; empty for a model at the asset root. |
+| `{stem}` | The model's file name without its last extension, such as `xb5ebhf_LOD0`. |
+| `{material}` | The material's name; `default` for an unnamed FBX material, and `material_<index>` or `material_default` for an unnamed glTF material. |
+
+After expansion, a value that starts with `./` is relative to the model's
+directory. Any other value is an asset ID from the asset root.
+
+#### Resolution
+
+1. Each variable resolves. A number or an array of numbers resolves to itself.
+   A template, or an array of templates, resolves to the first whose source
+   asset exists. When none exists, the variable is unresolved, which isn't an
+   error.
+2. Without `select`, the parent is `parent`. With it, the parent comes from the
+   first rule whose `requires` variables all resolved; a rule without
+   `requires` always matches. The rule's coverage fields replace the block's,
+   field by field.
+3. Each of the parent's parameters takes its variable's value. A parameter
+   whose variable is unresolved or absent keeps the parent's value, static or
+   dynamic. Variables the parent doesn't declare are ignored.
+4. Values resolve with the parent parameter's `data_type`, as in a variant
+   file. A string is always an asset ID, never a named color: it bakes as an
+   image for a `Texture2D` parameter, so write colors as arrays of numbers.
+
+The bake fails when:
+
+- A binding or a rule isn't an object, or has a field not listed here.
+- A template has an unknown variable, an operator such as `{+dir}`, or an
+  unmatched `{` or `}`.
+- A `variables` value mixes strings and numbers.
+- No `select` rule matches.
+- A resolved asset ID is given to a parameter that isn't `Texture2D`.
+
+An inline variant is stored as the model's resource
+`<model ID>#materials/<material>.variant`, with `<material>` named as under
+[Container fragments](#container-fragments). It refers to its parent `Material`,
+which every model that names that parent shares. The model's bake depends on
+every candidate it checked: on each file it chose, and on the absence of each
+earlier candidate, so creating one rebakes the model.
 
 Every hand-written format has a JSON schema under the engine's
 `assets/schemas` directory: `bema.schema.json`, `bemx.schema.json`, `besl.bead.schema.json`,
@@ -503,6 +614,12 @@ A `.lut` or `.cube` file is a text table with `TITLE`, `LUT_1D_SIZE` or
 with `#`. It bakes to a one- or three-dimensional LUT whose entry count is the
 size or the size cubed.
 
+## Fonts
+
+A `.ttf` or `.otf` file bakes into one `Font` resource whose payload is the
+file's bytes, unchanged. A file that doesn't parse as a TrueType or OpenType
+font fails the bake. A font collection, such as a `.ttc` file, isn't accepted.
+
 ## Container fragments
 
 A glTF, GLB, or FBX file is a container: one source file that bakes into several resources. The fragment after `#`
@@ -527,7 +644,7 @@ in a resource ID names which one. The same fragments work in debug baking and in
 | glTF and GLB | The material's sanitized name, with each character other than a letter, digit, `_`, or `-` replaced by `_`; `material_<index>` for an unnamed material; `material_default` for primitives without one. |
 | FBX | `<index>_<sanitized name>`, where `<index>` is the material's index in the file; `<index>_material` for an unnamed material; `default_material` for polygons without one. |
 
-A material that a sidecar overrides isn't generated, so it has no `materials/` resource; bake the override's own ID.
+A material that a sidecar binds to an inline variant keeps its `materials/<material>.variant` ID, which then bakes the inline variant. A material bound to an authored `.bema` variant with `{ asset }` has no `materials/` resource; bake the variant's own ID.
 A `materials/` fragment that matches no generated material fails to bake.
 
 ## Skeletal models
@@ -576,8 +693,8 @@ The importer normalizes axes and authored units, triangulates polygon faces, pre
 Meshes without authored UVs receive a zero-filled UV stream because the visibility renderer requires that stream even for untextured materials.
 Polygon corners of one mesh whose position, normal, tangent, bitangent, UV, and color are exactly equal, and in a skinned mesh share a control point, become one vertex. Corners that differ in any of them, as along a UV or normal seam, stay separate vertices.
 
-FBX material names can be mapped to existing variants in a sibling `.fbx.bead` file, using the same `asset.<material-name>.asset` shape as other model overrides.
-Without an override, the importer generates a material variant whose [surface](/docs/reference/bemx) inputs come from the FBX material:
+An FBX model's sidecar binds its materials to variants as [Material bindings](#material-bindings) specifies.
+Without a binding, the importer generates a material variant whose [surface](/docs/reference/bemx) inputs come from the FBX material:
 
 | Surface input | FBX value | FBX texture |
 | --- | --- | --- |

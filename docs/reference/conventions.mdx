@@ -27,7 +27,8 @@ plane, and a capsule's axis is local Y.
 | --- | --- |
 | Field of view | Vertical, in degrees, 45 by default. The horizontal field is the vertical times the aspect ratio. |
 | Aspect ratio | Width over height. |
-| Clip space | x and y from −1 to 1. |
+| Clip planes | The camera's near and far distances, 0.1 m and 100 m by default. |
+| Clip space | x from −1 at the left edge to 1 at the right, and y from −1 at the bottom to 1 at the top. |
 | Depth | Reversed: the near plane maps to 1 and the far plane to 0, and 0 means no surface. |
 | Front faces | Have a negative signed area in clip space, for any view direction. |
 | View basis | Right, up, and the view direction; a vertical view direction uses +Z as its reference up. |

@@ -283,7 +283,11 @@ impl Device {
 	}
 
 	/// Replaces CPU shadow storage immediately while retaining each native allocation through its owning sequence fence.
-	pub fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize) {
+	pub fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(
+		&mut self,
+		buffer_handle: DynamicBufferHandle<T>,
+		size: usize,
+	) {
 		let buffer_handle: BaseBufferHandle = buffer_handle.into();
 		let buffer = self
 			.buffer(buffer_handle)
@@ -329,7 +333,9 @@ impl Device {
 		for key in retired_state_keys {
 			self.buffer_states.remove(&key);
 		}
-		self.mark_stale_descriptors(|descriptor, _| matches!(descriptor, WriteData::Buffer { handle } if handle == buffer_handle));
+		self.mark_stale_descriptors(
+			|descriptor, _| matches!(descriptor, WriteData::Buffer { handle } if handle == buffer_handle),
+		);
 	}
 
 	/// Establishes and waits for one terminal fence on every distinct native queue.

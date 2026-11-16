@@ -12,9 +12,8 @@ use windows::Win32::Graphics::Direct3D12 as d3d12;
 
 use super::*;
 use crate::dx12::acceleration_structures::{
-	BottomLevel, BuildState, CompactionCopy, Completion, INSTANCE_SIZE, PendingCompaction, STRUCTURE_ALIGNMENT,
-	ScratchArena, SizeQuery, TopLevel, TopLevelCopy, build_inputs, index_bytes, index_size, instance_record,
-	triangle_geometry,
+	BottomLevel, BuildState, CompactionCopy, Completion, INSTANCE_SIZE, PendingCompaction, STRUCTURE_ALIGNMENT, ScratchArena,
+	SizeQuery, TopLevel, TopLevelCopy, build_inputs, index_bytes, index_size, instance_record, triangle_geometry,
 };
 use crate::rt;
 
@@ -615,9 +614,12 @@ impl Device {
 	pub(crate) fn submit_recorded_builds(&mut self, command_buffer_handle: CommandBufferHandle, completion: Completion) {
 		let builds = std::mem::take(&mut self.command_buffers[command_buffer_handle.index() as usize].recorded_builds);
 		let structures = &mut self.acceleration_structures;
-		structures
-			.pending_compactions
-			.extend(builds.size_queries.into_iter().map(|query| PendingCompaction { query, completion }));
+		structures.pending_compactions.extend(
+			builds
+				.size_queries
+				.into_iter()
+				.map(|query| PendingCompaction { query, completion }),
+		);
 		for (bits, copy, epoch) in builds.top_levels {
 			if let Some(top_level) = structures.top_levels.get(bits) {
 				top_level.copies[copy as usize].built_epoch.set(Some(epoch));
@@ -731,7 +733,10 @@ impl Device {
 		let cpu_handle = self.shader_visible_cpu_handle(false, slot);
 		// SAFETY: The view names the copy by address, which lives as long as the structure, and the handle is a slot of
 		// the shader-visible heap.
-		unsafe { self.device.CreateShaderResourceView(None::<&ID3D12Resource>, Some(&desc), cpu_handle) };
+		unsafe {
+			self.device
+				.CreateShaderResourceView(None::<&ID3D12Resource>, Some(&desc), cpu_handle)
+		};
 	}
 
 	/// Returns the storage of the copy of `handle` that sequence `sequence_index` builds, which recordings that read
@@ -742,6 +747,10 @@ impl Device {
 		sequence_index: u8,
 	) -> Option<ID3D12Resource> {
 		let top_level = self.acceleration_structures.top_levels.get(handle.bits())?;
-		Some(top_level.copies[sequence_index as usize % top_level.copies.len()].resource.clone())
+		Some(
+			top_level.copies[sequence_index as usize % top_level.copies.len()]
+				.resource
+				.clone(),
+		)
 	}
 }

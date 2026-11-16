@@ -1,0 +1,28 @@
+// The descriptor set of the passes that build the frame's mesh dispatch work on the GPU: the instances they list and
+// the work items, ranges, and dispatch counts they write.
+//
+// The CPU only keeps the list of instances each raster phase draws, which changes when the scene does. How many
+// meshlets each instance draws follows the camera, so three passes turn the list into work items every frame:
+// `work-count.besl` counts each instance's items, `work-ranges.besl` lays the ranges out, and `work-scatter.besl`
+// writes the items. The meshlet passes then dispatch as many workgroups as `work_dispatches` says.
+
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+
+// The entries of `instance_list` each workgroup of the count and scatter passes takes. Every phase's entries start at
+// a multiple of it, so a group belongs to one phase.
+WORK_GROUP_ENTRIES: const u32 = 32;
+
+WorkBuild: layer {
+	meshes: descriptor<{ type: Mesh[], binding: 0, access: read, memory: device }>;
+	mesh_levels: descriptor<{ type: MeshLevel[], binding: 1, access: read, memory: device }>;
+	// The instance of each listed entry, phase by phase, or `EMPTY_WORK_ITEM` for the entries that pad a phase.
+	instance_list: descriptor<{ type: u32[], binding: 2, access: read, memory: device }>;
+	// Each entry's work items: its chunk items in bits 0-15, or the items it shares workgroups with in bits 16-31.
+	entry_items: descriptor<{ type: u32[], binding: 3, access: read_write, memory: device }>;
+	// Each group of entries' chunk items in `x` and shared items in `y`: their totals as the count pass writes them,
+	// then the group's first item of each kind once the ranges pass has laid them out.
+	group_items: descriptor<{ type: vec2u[], binding: 4, access: read_write, memory: device }>;
+	// The frame's work: `WORK_HEADER` words of ranges, then the work items.
+	work_items: descriptor<{ type: u32[], binding: 5, access: write, memory: device }>;
+	work_dispatches: descriptor<{ type: u32[], binding: 6, access: write, memory: device }>;
+}

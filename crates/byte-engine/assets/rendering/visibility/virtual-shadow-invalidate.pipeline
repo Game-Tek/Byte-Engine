@@ -1,0 +1,1 @@
+{"name":"Virtual Shadow Invalidate Pages","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/virtual-shadow-invalidate.besl"}}

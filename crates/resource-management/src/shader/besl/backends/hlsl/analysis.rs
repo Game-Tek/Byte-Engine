@@ -160,10 +160,13 @@ impl Generator {
 			};
 			function.get().borrow().get_name().unwrap_or_default().to_string()
 		};
-		let (element_type, count) = crate::shader::generator::value_array_parts(&type_name)
-			.expect("An array constructor builds an array type");
+		let (element_type, count) =
+			crate::shader::generator::value_array_parts(&type_name).expect("An array constructor builds an array type");
 		// Array type names hold brackets, so the helpers are named after the element type and count.
-		let helper = format!("_besl_array_{}_{count}", element_type.replace(|c: char| !c.is_ascii_alphanumeric(), "_"));
+		let helper = format!(
+			"_besl_array_{}_{count}",
+			element_type.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+		);
 		if self.constructed_arrays.insert(type_name.clone()) {
 			let formatting = ShaderFormatting::new(self.minified);
 			let mut function = format!("struct {helper}{{");
@@ -203,7 +206,7 @@ impl Generator {
 			"atomic_compare_exchange" => "InterlockedCompareExchange",
 			"atomic_add" | "atomic_sub" => "InterlockedAdd",
 			"atomic_min" => "InterlockedMin",
-			"atomic_max" => "InterlockedMax",
+			"atomic_max" | "image_atomic_max" => "InterlockedMax",
 			"atomic_and" => "InterlockedAnd",
 			"atomic_or" | "image_atomic_or" => "InterlockedOr",
 			"atomic_xor" => "InterlockedXor",
@@ -211,7 +214,7 @@ impl Generator {
 		};
 		string.push_str(operation);
 		string.push('(');
-		if name == "image_atomic_or" {
+		if is_image_atomic(name) {
 			self.emit_node_string(string, &arguments[0]);
 			string.push('[');
 			self.emit_node_string(string, &arguments[1]);
@@ -269,7 +272,7 @@ impl Generator {
 		);
 		// The destination's indices, then every operand, each with the BESL type its parameter takes.
 		let mut parameters = Vec::<(besl::NodeReference, String)>::new();
-		let destination = if name == "image_atomic_or" { None } else { Some(&arguments[0]) };
+		let destination = if is_image_atomic(name) { None } else { Some(&arguments[0]) };
 		if let Some(destination) = destination {
 			collect_destination_indices(destination, &mut parameters);
 		}
@@ -380,7 +383,10 @@ fn collect_destination_indices(node: &besl::NodeReference, parameters: &mut Vec<
 		besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) => {
 			collect_destination_indices(left, parameters);
 			let indexed = left.borrow().node().is_indexable();
-			let constant = matches!(right.borrow().node(), besl::Nodes::Expression(besl::Expressions::Literal { .. }));
+			let constant = matches!(
+				right.borrow().node(),
+				besl::Nodes::Expression(besl::Expressions::Literal { .. })
+			);
 			if indexed && !constant {
 				parameters.push((right.clone(), "u32".to_string()));
 			}
@@ -391,4 +397,10 @@ fn collect_destination_indices(node: &besl::NodeReference, parameters: &mut Vec<
 		}
 		_ => {}
 	}
+}
+
+/// Returns whether `name` is an image atomic, whose destination is a storage-image texel instead of a buffer or
+/// workgroup value.
+fn is_image_atomic(name: &str) -> bool {
+	matches!(name, "image_atomic_or" | "image_atomic_max")
 }

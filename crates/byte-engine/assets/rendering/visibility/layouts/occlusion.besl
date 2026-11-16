@@ -1,5 +1,6 @@
-// The descriptor set of camera occlusion culling: the farthest-depth pyramid of the camera's early pass, which the
-// task stage tests meshlet bounds against, and the meshlets its late pass found unoccluded.
+// The descriptor set of the task stage's culling: the farthest-depth pyramid of the camera's early pass, which the task
+// stage tests meshlet bounds against, the meshlets its late pass found unoccluded, and the virtual shadow map's dirty
+// pages.
 
 // Culling reads the farthest depth in the 2x2 texel footprint around a meshlet rectangle's center, from the one level it
 // picked.
@@ -11,4 +12,7 @@ Occlusion: layer {
 	// One word per work item, by its position in `mesh_dispatch_work`: bit `m` marks meshlet `m` of the item's chunk as
 	// unoccluded when the camera's late pass last culled it.
 	occlusion_visibility: descriptor<{ type: u32[], binding: 1, access: read_write, memory: device }>;
+	// The virtual shadow map's hierarchy of dirty pages, which the page draw culls against. Each level holds 1,365
+	// entries: 32x32, 16x16, 8x8, 4x4, 2x2, and 1x1, finest first. Only `OCCLUSION_PAGES` reads it.
+	page_hierarchy: descriptor<{ type: u32[], binding: 2, access: read }>;
 }

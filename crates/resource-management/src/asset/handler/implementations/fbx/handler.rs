@@ -86,7 +86,10 @@ async fn resolve_animation_skeleton(
 	Ok((target, source_to_skeleton))
 }
 
-/// Reads the files the `lods.authored` pattern of `spec` names as the coarser levels of the model at `base`, finest
+/// The docs section that specifies authored detail levels.
+const AUTHORED_LEVELS_DOCS_PATH: &str = "reference/assets#authored-detail-levels";
+
+/// Parses the files the `lods.authored` pattern of `spec` names as the coarser levels of the model at `base`, finest
 /// first, stopping at the first that doesn't exist. Returns none when the pattern is unset or doesn't match the model,
 /// when detail levels are off, and, with a warning, when the model is skinned or the bake gives it lightmap UVs.
 async fn load_authored_levels(
@@ -95,7 +98,7 @@ async fn load_authored_levels(
 	base: &str,
 	settings: MeshSettings,
 	skinned: bool,
-) -> Result<Vec<(String, Vec<u8>)>, LoadErrors> {
+) -> Result<Vec<(String, ufbx::SceneRoot)>, LoadErrors> {
 	let pattern = asset::authored_level_pattern(spec).map_err(|error| {
 		context.error(format_args!(
 			"Failed to read the authored detail levels of FBX asset '{base}': {error}. The most likely cause is a mistyped `lods.authored` pattern in the asset's BEAD file. Write it like \"{{name}}_LOD{{level}}\"."
@@ -109,21 +112,33 @@ async fn load_authored_levels(
 		return Ok(Vec::new());
 	}
 	if skinned || settings.lightmap_uvs.is_some() {
-		let reason = if skinned { "it has a skeleton" } else { "the bake gives it lightmap UVs" };
+		let reason = if skinned {
+			"it has a skeleton"
+		} else {
+			"the bake gives it lightmap UVs"
+		};
 		context.warn(format_args!(
 			"FBX asset '{base}' leaves its authored detail levels out because {reason}, which authored levels don't support. Its levels are generated instead. See {}.",
-			crate::online_docs_url("reference/assets#authored-detail-levels")
+			crate::online_docs_url(AUTHORED_LEVELS_DOCS_PATH)
 		));
 		return Ok(Vec::new());
 	}
 	let mut levels = Vec::new();
 	for id in ids.take(settings.lods.max_levels as usize - 1) {
 		// A missing file ends the chain. The bake records its absence, so adding it later rebakes the model.
-		let data = match context.resolve(ResourceId::new(&id)).await {
-			Ok((data, _)) => data.to_vec(),
-			Err(_) => break,
+		let Ok((data, _)) = context.resolve(ResourceId::new(&id)).await else {
+			break;
 		};
-		levels.push((id, data));
+		// The scene owns its geometry, so the source bytes drop once it's parsed.
+		let scene = load_fbx_scene(&data, &id).map_err(|error| {
+			context.error(format_args!(
+				"Failed to import authored detail level '{id}' of FBX asset '{base}': {error}. The most likely cause is a damaged file or one that isn't FBX. Export the level again, or delete it to end the model's levels before it. See {}.",
+				crate::online_docs_url(AUTHORED_LEVELS_DOCS_PATH)
+			));
+			LoadErrors::FailedToProcess
+		})?;
+		drop(data);
+		levels.push((id, scene));
 	}
 	Ok(levels)
 }
@@ -199,6 +214,11 @@ impl FBXAssetHandler {
 impl AssetHandler for FBXAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
 		r#type.eq_ignore_ascii_case("fbx")
+	}
+
+	fn identity(&self) -> u64 {
+		// Lightmap UVs add a vertex stream to every mesh the handler bakes.
+		u64::from(self.lightmap_uvs)
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
@@ -320,7 +340,6 @@ impl AssetHandler for FBXAssetHandler {
 
 		// Geometry doesn't depend on material contents, so it is processed while the material textures and shaders
 		// bake on the worker pool, and the resolved materials are attached when the mesh is committed.
-		let material_keys = used_material_keys(&scene, allocator);
 		let settings = mesh_settings(spec.as_ref(), self.lightmap_uvs).map_err(|error| {
 			context.error(format_args!(
 				"Failed to read FBX mesh settings '{}': {error}. The most likely cause is a mistyped `lods` or `lightmap_uvs` object in the asset's BEAD file.",
@@ -328,33 +347,44 @@ impl AssetHandler for FBXAssetHandler {
 			));
 			LoadErrors::FailedToProcess
 		})?;
-		let level_sources = load_authored_levels(context, spec.as_ref(), base.as_ref(), settings, skeleton.is_some()).await?;
-		let mut level_scenes = Vec::with_capacity(level_sources.len());
-		for (id, data) in &level_sources {
-			let level_scene = load_fbx_scene(data, id).map_err(|error| {
-				context.error(format_args!(
-					"Failed to import authored detail level '{id}' of FBX asset '{}': {error}",
-					url.as_ref()
-				));
-				LoadErrors::FailedToProcess
-			})?;
-			level_scenes.push((id.as_str(), level_scene));
-		}
-		let levels: Vec<(&str, &ufbx::Scene)> = level_scenes.iter().map(|(id, scene)| (*id, &**scene)).collect();
+		let level_scenes = load_authored_levels(context, spec.as_ref(), base.as_ref(), settings, skeleton.is_some()).await?;
+		let levels: Vec<(&str, &ufbx::Scene)> = level_scenes.iter().map(|(id, scene)| (id.as_str(), &**scene)).collect();
+		// A level file that uses other materials starts a stage: primitives of its own, which take over from the
+		// model's. Each stage's scene is followed by the level files up to the next stage's.
+		let starts = authored_stage_starts(&scene, &levels).map_err(|error| {
+			context.error(format_args!(
+				"Failed to read the authored detail levels of FBX mesh '{}': {error}",
+				url.as_ref()
+			));
+			LoadErrors::FailedToProcess
+		})?;
+		let stage_scenes = fbx_stage_scenes(base.as_ref(), &scene, &levels, &starts);
+		let stage_keys: Vec<_> = stage_scenes
+			.iter()
+			.map(|(_, scene)| used_material_keys(scene, allocator))
+			.collect();
+		let stages = fbx_stages(&stage_scenes, &levels, &starts, &stage_keys);
 		let mut level_notes = FbxAuthoredLevelNotes::default();
 		let mut culled_polygons = FbxCulledPolygonCounts::default();
 		let (materials, mesh) = std::future::join!(
-			resolve_fbx_materials(context, spec.as_ref(), source_id, &scene, &material_keys,),
+			async {
+				// Every stage's materials, in stage order, which is the order the primitives' slots follow.
+				let mut materials = Vec::new();
+				for stage in &stages {
+					materials.extend(
+						resolve_fbx_materials(context, spec.as_ref(), source_id, stage.scene, stage.material_keys).await?,
+					);
+				}
+				Ok::<_, LoadErrors>(materials)
+			},
 			async {
 				import_fbx_mesh_session(
-					&scene,
-					&material_keys,
+					&stages,
 					skeleton,
 					&source_to_skeleton,
 					allocator,
 					&mut culled_polygons,
 					settings,
-					&levels,
 					&mut level_notes,
 				)
 			},
@@ -366,7 +396,7 @@ impl AssetHandler for FBXAssetHandler {
 			context.warn(format_args!(
 				"FBX asset '{}': {warning} See {}.",
 				url.as_ref(),
-				crate::online_docs_url("reference/assets#authored-detail-levels")
+				crate::online_docs_url(AUTHORED_LEVELS_DOCS_PATH)
 			));
 		}
 		for note in &level_notes.info {

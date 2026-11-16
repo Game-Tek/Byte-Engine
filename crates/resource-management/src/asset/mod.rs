@@ -14,17 +14,18 @@ use crate::{
 
 mod authored_levels;
 mod bake_memory;
+pub mod bake_state;
 pub mod handler;
 pub mod intercept;
 pub mod manager;
+pub mod provenance;
 
 #[cfg(debug_assertions)]
 pub mod resource_trace;
 
+pub(crate) use authored_levels::{AuthoredLevelPattern, authored_level_pattern};
 #[cfg(debug_assertions)]
 pub use resource_trace::{ResourceTrace, ResourceTraceItem, ResourceTraceLevel};
-
-pub(crate) use authored_levels::{AuthoredLevelPattern, authored_level_pattern};
 
 pub type BEADType = Value;
 
@@ -165,6 +166,29 @@ fn mesh_lod_settings(spec: Option<&BEADType>) -> Result<MeshLodSettings, String>
 struct ImageSettingsManifest {
 	mips: Option<bool>,
 	compression: Option<bool>,
+	coverage: Option<CoverageManifest>,
+	cpu_readable: Option<bool>,
+}
+
+/// The `CoverageManifest` enum is the `coverage` key of an image settings object: an alpha cutoff from 0 to 1, or
+/// `false` for plain averaged levels.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum CoverageManifest {
+	Cutoff(f32),
+	Enabled(bool),
+}
+
+impl CoverageManifest {
+	/// Returns the cutoff the manifest asks for, or why it is invalid.
+	fn cutoff(self) -> Result<Option<f32>, String> {
+		match self {
+			Self::Cutoff(cutoff) if (0.0..=1.0).contains(&cutoff) => Ok(Some(cutoff)),
+			Self::Cutoff(cutoff) => Err(format!("`coverage` is {cutoff}, outside 0 to 1")),
+			Self::Enabled(false) => Ok(None),
+			Self::Enabled(true) => Err("`coverage` is `true`; give the alpha cutoff instead".to_string()),
+		}
+	}
 }
 
 /// The BEAD key that holds a standalone image's settings.
@@ -184,6 +208,8 @@ fn parse_image_settings(spec: Option<&BEADType>, key: &str, semantic: Semantic) 
 	Ok(ImageProcessorSettings {
 		mips: manifest.mips.unwrap_or(defaults.mips),
 		compression: manifest.compression.unwrap_or(defaults.compression),
+		coverage: manifest.coverage.map_or(Ok(defaults.coverage), CoverageManifest::cutoff)?,
+		cpu_readable: manifest.cpu_readable.unwrap_or(defaults.cpu_readable),
 	})
 }
 
@@ -408,9 +434,36 @@ mod image_settings_tests {
 			settings("{ image: { compression: true } }", Semantic::Height),
 			Ok(ImageProcessorSettings {
 				mips: true,
-				compression: true
+				compression: true,
+				coverage: None,
+				cpu_readable: false,
 			})
 		);
+		assert_eq!(
+			settings("{ image: { cpu_readable: true } }", Semantic::Other),
+			Ok(ImageProcessorSettings {
+				cpu_readable: true,
+				..ImageProcessorSettings::for_semantic(Semantic::Other)
+			})
+		);
+	}
+
+	#[test]
+	fn opacity_maps_keep_coverage_unless_their_settings_change_the_cutoff() {
+		let coverage = |source: &str, semantic| settings(source, semantic).map(|settings| settings.coverage);
+
+		assert_eq!(coverage("{ image: {} }", Semantic::Opacity), Ok(Some(0.5)));
+		assert_eq!(coverage("{ image: {} }", Semantic::Albedo), Ok(None));
+		assert_eq!(coverage("{ image: { coverage: 0.3 } }", Semantic::Opacity), Ok(Some(0.3)));
+		assert_eq!(coverage("{ image: { coverage: 0.5 } }", Semantic::Albedo), Ok(Some(0.5)));
+		assert_eq!(coverage("{ image: { coverage: false } }", Semantic::Opacity), Ok(None));
+		for invalid in [
+			"{ image: { coverage: true } }",
+			"{ image: { coverage: 1.5 } }",
+			"{ image: { coverage: -0.1 } }",
+		] {
+			assert!(coverage(invalid, Semantic::Opacity).is_err(), "{invalid}");
+		}
 	}
 
 	#[test]
@@ -490,6 +543,7 @@ mod mesh_lod_settings_tests {
 pub mod resource_id;
 pub mod storage_backend;
 
+pub use provenance::{BakeInput, Provenance};
 pub use resource_id::ResourceId;
 pub use storage_backend::{
 	AssetSource, AssetStorageBytes, AssetVersion, DynStorageBackend, FileStorageBackend, StorageBackend,
@@ -512,10 +566,54 @@ pub async fn read_asset_from_source<'a>(
 		return Err(());
 	}
 
-	let path = base_path.unwrap_or(std::path::Path::new("")).join(base.as_ref());
+	let base_path = base_path.unwrap_or(std::path::Path::new(""));
+	// Asset IDs are case-sensitive on every platform, so a case-insensitive file system doesn't read a file whose name
+	// only differs in case.
+	if !path_has_exact_case(base_path, base.as_ref()) {
+		return Err(());
+	}
+	let path = base_path.join(base.as_ref());
 	let source_bytes = read_asset_bytes(&path, allocator).await?;
 
 	Ok((source_bytes, url.get_asset_type().to_string()))
+}
+
+/// Returns whether every component of `relative`, under `base`, names a directory entry spelled exactly as written.
+///
+/// Case-insensitive file systems, such as the default ones on macOS and Windows, open `rock_basecolor.jpg` for
+/// `rock_BaseColor.jpg`. Checking each component against its directory's listing keeps asset IDs case-sensitive there
+/// too, so the same ID finds the same file, or none, on every platform. Returns `false` when a component doesn't exist.
+pub(crate) fn path_has_exact_case(base: &std::path::Path, relative: &str) -> bool {
+	use std::path::Component;
+
+	let mut directory = base.to_path_buf();
+
+	for component in std::path::Path::new(relative).components() {
+		match component {
+			Component::Normal(name) => {
+				let listed = if directory.as_os_str().is_empty() {
+					std::path::Path::new(".")
+				} else {
+					&directory
+				};
+				let Ok(mut entries) = std::fs::read_dir(listed) else {
+					return false;
+				};
+				if !entries.any(|entry| entry.is_ok_and(|entry| entry.file_name() == name)) {
+					return false;
+				}
+				directory.push(name);
+			}
+			Component::ParentDir => {
+				directory.pop();
+			}
+			Component::CurDir => {}
+			// An absolute ID starts from its own root.
+			Component::RootDir | Component::Prefix(_) => directory = std::path::PathBuf::from(component.as_os_str()),
+		}
+	}
+
+	true
 }
 
 /// Maps source bytes when possible, falling back to an allocated asynchronous read.

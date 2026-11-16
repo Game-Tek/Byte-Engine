@@ -1,0 +1,183 @@
+---
+title: Virtual shadow maps
+description: Understand how virtual shadow maps keep sun shadow depth in cached pages of a clipmap, where that design comes from, and the rules a change to it must keep.
+icon: Sun
+---
+
+Virtual shadow maps are the alternative to cascades for the first directional
+light, chosen with `render.directional-shadows.technique`. Read this page before
+you change them. What an application can rely on is specified under
+[virtual shadow maps](/docs/reference/rendering#virtual-shadow-maps) in the
+rendering reference. Cascades, and the cone and point maps, are described in
+[Shadow maps](/docs/develop/rendering/visibility/shadow-maps); both techniques
+share its selection of sun slots, its penumbra width and level choice, and its
+small-caster cull.
+
+## The design follows GPU Zen 3
+
+Sun shadows implement *Virtual Shadow Maps* by Matej Sakmary, Jake Ryan, Justin
+Hall, and Alessio Lustri, in *GPU Zen 3: Advanced Rendering Techniques*
+(Black Cat Publishing, 2024), pages 319 to 336. The algorithm and its
+constants come from the chapter's companion code, the Timberdoodle renderer at
+commit `f5e9018826` (May 2024). Two later changes come from Sakmary's master's
+thesis, *Virtual Shadow Maps* (Czech Technical University in Prague, 2025):
+
+- Each page keeps the light-axis origin of the view it was drawn with, which
+  replaced the chapter's per-level height offsets.
+- Changed casters free their pages in a GPU pass instead of a CPU-built mask.
+
+The engine departs from both sources in these places, each for the reason
+given:
+
+| Change | Reason |
+| --- | --- |
+| A receiver needs pages in its level and the next two coarser levels, within 16 texels of it. The chapter needs one page at one level. | The penumbra filter picks its level by the penumbra's width, which only the map can tell, and its blocker search and tent reach 16 texels. Without the coarser pages, a wide penumbra has nothing to read. |
+| A receiver whose level lacks a page falls back to the next coarser level that holds it, and is lit when none does. The chapter's code reads such a page as lit. | A full pool leaves single pages out. Falling back keeps a shadow there, only blurrier. |
+| The free-wrapped pass also clears each page's per-frame bits, and the cells pass clears each drawn page's dirty bit. The chapter's code clears them in passes of their own. | Fewer passes over the page table, with the same result. |
+| A request the pool can't serve leaves its entry requested but unallocated. The chapter's code marks it with an allocation-failed bit. | Nothing reads that bit: an entry without `ALLOCATED` already tells the sampler to fall back. |
+| Marking reads a page's entry before its atomic, and skips a page already visited this frame. The chapter elects one lane per page in each subgroup. | Most receivers then do no atomic at all, with no assumption about subgroup width. |
+| Finding free pages appends to its two lists with plain atomics. The chapter's code counts each subgroup's pages with a ballot. | The lists' order doesn't matter, and the pass is small. |
+| Invalidation compares each instance record's bounds and level word with the ones it stored, over the records the CPU rewrote. The thesis frees under a list of spheres the CPU builds. | The CPU already knows which records it rewrote, but not their bounds; the records hold those. |
+| Each drawn page also gets min and max depth cells of 8 × 8 texels, and the blocker search and probes read them. **[own]** | The cascades read reduction-sampled pyramids, whose 2 × 2 footprint can cross a page edge. |
+| Depth is stored as a fraction of 4,294,967,040 rather than the float's bits. | BESL has no bit cast. The code orders like the depth, so an atomic max still keeps the nearest. |
+
+## Pages live in one pool
+
+The sun's shadow is 16 levels, each a virtual map of 4,096 × 4,096 texels that
+doubles the side of the one before it. Each level is cut into 32 × 32 pages of
+128 × 128 texels. These GPU buffers hold the state, all in
+`layouts/virtual_shadows.besl` and owned by `VirtualShadowMaps` in
+`render_pass/virtual_shadows.rs`:
+
+- **Page table:** 16,384 `u32` entries, 32 × 32 per level. An entry holds the
+  physical page in bits 0 to 15, and the flags `ALLOCATED` (bit 31),
+  `REQUESTED` (30), `DIRTY` (28), and `VISITED` (27).
+- **Page owners:** one entry per physical page, holding `ALLOCATED` (bit 31),
+  `VISITED` (29), and its page table slot.
+- **Pool:** one `U32` storage image of physical pages, each texel a depth code.
+- **Page origins:** one float per physical page, the near plane's position
+  along the light when the page was drawn.
+- **Page hierarchy:** per level, 1,365 entries in mips of 32 × 32 down to
+  1 × 1, each the OR of the `DIRTY` flags below it, in the level's own page
+  coordinates.
+- **Page cells:** per physical page, 16 × 16 cells of the nearest and farthest
+  depth of their 8 × 8 texels.
+- **Caster bounds and levels:** per instance record, the world bounding sphere
+  and level word the invalidation last saw.
+
+Each level's view snaps to whole pages of its own world-fixed grid, so moving
+the camera scrolls pages instead of moving texels. The table addresses pages
+toroidally: grid page `p` sits in slot `p mod 32`. Grid coordinates carry a
+bias of 2<sup>20</sup>, a multiple of 32, so they stay positive on the GPU.
+
+## A frame keeps what it can
+
+The first sink records the `virtual-shadow-maps` stage after its depth pyramid,
+where cascades record their fit:
+
+1. Free: frees the pages each level's scroll brought in, or every page when the
+   sun turned, and clears every page's per-frame flags.
+2. Invalidate: for each instance record the CPU rewrote since the stage last
+   recorded, and each record that appeared or left, compares its world bounds
+   and level word with the stored ones. When they differ, it frees the pages
+   under the old and the new bounds at every level, and stores the new ones.
+3. Mark: gives each receiver within the shadow distance its level and sets
+   `REQUESTED` and `VISITED` on the pages it needs. The first requester of a
+   page without memory appends an allocation request, and the first visitor of
+   a page with memory marks its owner `VISITED`.
+4. Find free: lists the free physical pages, then the ones nothing visited
+   this frame, and writes the indirect dispatch arguments.
+5. Allocate: gives each request a free page, then an unvisited page, taken
+   from the slot that held it. A request past both waits for a later frame. It
+   records the page's origin.
+6. Clear: zeroes each new page and sets `DIRTY`.
+7. Hierarchy: reduces the `DIRTY` flags into the page hierarchy.
+8. Draw: draws the casters of every level into its dirty pages.
+9. Cells: writes the cells of each new page and clears its `DIRTY`.
+
+A page nothing changes draws once and stays, so a still camera over a still
+scene draws nothing at all.
+
+## Depth goes through atomics
+
+The draw is one render pass with no attachments, 4,096 texels on a side. It
+goes through `record_meshlet_dispatches` with `OcclusionPhase::Pages`, which
+makes the shared task shader keep an instance or meshlet only where its sphere
+covers a dirty page of the level: it reads the hierarchy mip where the
+sphere's page rectangle spans at most two entries a side. A batch whose levels
+have no dirty page at the hierarchy's root returns before it reads an
+instance. The page hierarchy
+sits in the occlusion layer for that reason. `virtual-shadow-mesh.besl` passes
+each vertex's level and its position in the level, in texels and depth, and
+`virtual-shadow-fragment.besl` looks the page up and, when it's allocated and
+dirty, writes the depth code with an atomic max into the pool. Writing only
+dirty pages is what lets clean pages keep their depth through the same draw.
+
+With no depth attachment there is no early depth test, so every covered
+fragment of a dirty page runs. Culling by the page hierarchy keeps that work to
+the casters over new pages. Masked casters draw through the same pipelines,
+solid.
+
+## Pages keep their origin
+
+Each level's view follows the camera along the light continuously, so a
+cached page would read wrong depths once the camera climbed or descended. Each
+page keeps the near plane it was drawn with, and a stored depth shifts by the
+difference between that and the current near plane, over the 2,000 m depth
+range, before it's compared. Under an orthographic view, that one number is
+the whole of the thesis's stored translation: the other two axes snap to
+pages.
+
+## Sampling reads through the page table
+
+`sample_virtual_shadow` in `sun-visibility.besl` resolves the opaque pixels,
+with the helpers in `layouts/virtual_shadows.besl`. It keeps the cascades'
+structure: a receiver's level, a search level, the blocker search and probes,
+then the penumbra level and fade. The filter reads every texel under its tent
+one at a time, through the entries of the 2 × 2 pages its reach can cross. The
+cascades' block gathers are a later optimization.
+
+Transparent receivers and the fog march don't sample the map yet: the
+virtual sun's light record sets its `virtual_shadow` flag, and both skip the
+sun's shadow where it's set.
+
+## Levels share the cascades' cull and filter
+
+Each level skips small casters as a cascade does, through the
+`minimum_caster_extent` push constant at 2 × 32 / 4,096; see
+[Cascades skip small casters](/docs/develop/rendering/visibility/shadow-maps#cascades-skip-small-casters).
+The penumbra width, tent, and level fade follow the cascades' filter, see
+[Sun penumbrae read every texel under their filter](/docs/develop/rendering/visibility/shadow-maps#sun-penumbrae-read-every-texel-under-their-filter).
+Levels are exactly twice as coarse as the one before, so the choice between
+neighbors needs none of the caveats that receivers fitting brings.
+
+## A change must keep these rules
+
+- Only allocated, dirty pages take depth writes. A write to a clean page
+  corrupts its cached depth for every later frame.
+- Every change to an instance record that moves or changes its caster lands in
+  the range the invalidation compares. A missed change leaves pages drawn
+  without it, which no later frame repairs.
+- A page's origin is written with its allocation and read with every sample of
+  it. A page sampled with another origin shows its shadow shifted along the
+  light.
+- Every page a receiver's blocker search and filter can read is needed, at the
+  receiver's level and the two coarser ones. A filter that reaches further must
+  widen the needed square with it.
+- A level holds a receiver only when all its needed pages hold depth, so the
+  filter never reads a page without depth.
+- Freeing a page clears its page table entry and its owner together. An owner
+  left pointing at a reused page frees the new page's entry.
+- Cascades left as they are. The two techniques share sun slots, the
+  penumbra rules, and the caster cull, and a change to one of those must keep
+  both techniques' tests passing.
+
+The CPU tests in `virtual_shadows.rs` guard the level placement and the
+changed-record range, and the VM tests in `tests/virtual_shadows.rs` guard
+scrolling, allocation, and the page hierarchy. `visibility_assets_lower_to_the_platform_shader_language`
+compiles every pass, and `task_main_skips_casters_narrower_than_the_minimum_extent`
+guards the caster cull.
+
+## Rust API
+
+- [`rendering` module](/docs/api/latest/byte_engine/rendering)

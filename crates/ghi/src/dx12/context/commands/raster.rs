@@ -222,6 +222,35 @@ impl Device {
 		self.native_counters.mesh_dispatch_encode_count += 1;
 	}
 
+	/// Encodes a native DX12 mesh shader dispatch whose workgroup counts come from one record of a GPU buffer, when
+	/// a mesh pipeline is bound.
+	pub(crate) fn dispatch_meshes_indirect_native<const N: usize>(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		pipeline_handle: Option<PipelineHandle>,
+		base_buffer_handle: BaseBufferHandle,
+		entry_index: usize,
+		sequence_index: u8,
+	) {
+		let Some(pipeline) = pipeline_handle.and_then(|pipeline_handle| self.pipelines.get(pipeline_handle.index() as usize))
+		else {
+			return;
+		};
+		if !matches!(pipeline.kind, PipelineKind::Raster) || pipeline.pipeline_state.is_none() || !pipeline.has_mesh_shader {
+			return;
+		}
+		let entry = crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index);
+		if self.execute_indirect_native(
+			command_buffer_handle,
+			base_buffer_handle,
+			sequence_index,
+			D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH,
+			|| entry,
+		) {
+			self.native_counters.mesh_dispatch_encode_count += 1;
+		}
+	}
+
 	/// Binds a stored mesh and encodes a native DX12 indexed draw command.
 	pub(crate) fn draw_mesh_native(&mut self, command_buffer_handle: CommandBufferHandle, mesh_handle: MeshHandle) {
 		let Some(command_list) = self.command_list(command_buffer_handle) else {
@@ -249,7 +278,9 @@ impl Device {
 			command_list.DrawIndexedInstanced(mesh.index_count, 1, 0, 0, 0);
 		}
 		// The mesh's view replaced the bound ones, so a later pipeline bind has none to restride.
-		self.command_buffers[command_buffer_handle.index() as usize].vertex_buffer_views.clear();
+		self.command_buffers[command_buffer_handle.index() as usize]
+			.vertex_buffer_views
+			.clear();
 		self.mark_command_buffer_work(command_buffer_handle);
 		self.native_counters.vertex_buffer_bind_count += 1;
 		self.native_counters.index_buffer_bind_count += 1;

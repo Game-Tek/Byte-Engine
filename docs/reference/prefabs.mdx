@@ -1,0 +1,110 @@
+---
+title: .prefab files
+description: Look up the fields of a .prefab file, how parameters and instances resolve, and what spawning a prefab publishes.
+icon: Boxes
+---
+
+A `.prefab` file is a reusable group of entities. It has the same entities as a
+[`.level` file](/docs/reference/levels), plus parameters: named values that each
+instance can set. A level or another prefab places a prefab with an
+[instance](#instances), and an application can spawn one directly at a
+placement. Behavior comes from the kinds the prefab's entities hold, as
+[tasks](/docs/reference/tasks#attached-tasks) attached to those kinds. To write
+and spawn one, follow [Spawn reusable objects with prefabs](/docs/use/prefabs).
+
+## File
+
+A `.prefab` file is JSON5. For editor completion, point `"$schema"` at the
+engine's `schemas/prefab.schema.json`, relative to your file.
+
+| Field | Meaning |
+| --- | --- |
+| `$schema` | Optional. Ignored by baking. |
+| `parameters` | Optional. An object from parameter name to its default value. |
+| `entities` | The entities of the prefab, as a level's [entities](/docs/reference/levels#entities) are written. |
+
+Baking rejects any other field.
+
+## Parameters
+
+| Rule | Behavior |
+| --- | --- |
+| Name | A non-empty string, unique in the file. |
+| Default | Any value a payload can hold except an entity reference or a parameter reference. Every parameter has one. |
+| Reference | An object with one field, `$parameter`, whose value is a parameter's name. It stands for that parameter's value wherever a payload value can stand, including inside a `transform` and inside an instance's `parameters`. |
+| Value | The value the instance sets, or the default when the instance sets none. |
+| Rejected | A `$parameter` that names a parameter the file doesn't declare, a `$parameter` object with another field or a value that isn't a string, and a `$parameter` in a `.level` file or in a default. |
+
+A parameter reference can't be a key, so a parameter can't name a kind or a field.
+
+## Instances
+
+An entity of a level or a prefab becomes an instance with the `prefab` field.
+
+| Field | Meaning |
+| --- | --- |
+| `resource` | The ID of a baked `.prefab`. |
+| `parameters` | Optional. An object from the prefab's parameter names to their values. A value can be a `$parameter` reference to the enclosing prefab's parameters. |
+
+| Rule | Behavior |
+| --- | --- |
+| Membership | Each entity of the prefab without a `parent` belongs to the instance entity, so deleting the instance deletes the prefab's entities. |
+| Placement | The instance entity's world transform places the prefab. An instance without a `transform` places it at the transform its own entities are relative to. |
+| Components | The instance entity keeps its own components, such as a `name`. The prefab adds entities; it never adds components to the instance entity. |
+| References | A prefab's `$entity` references resolve within that prefab. An instance's entity can't be referred to from inside the prefab, or the other way around. |
+| Rejected at spawn | A `resource` that isn't a baked prefab, a `parameters` name the prefab doesn't declare, prefabs that place themselves through a chain of instances, and instances nested deeper than the [limit](#limits). |
+
+## Transforms
+
+A `transform` payload is relative to its spawn's placement. A spawn's placement
+is the transform the application passes, which is the identity unless it sets
+one. An instance's prefab spawns at the instance entity's world transform.
+
+The spawned [transform](/docs/reference/world#transforms) is the world
+transform, the placement `P` combined with the payload `L`:
+
+| Part | World value |
+| --- | --- |
+| Position | `P.position + P.orientation · (P.scale × L.position)` |
+| Orientation | `P.orientation · L.orientation` |
+| Scale | `P.scale × L.scale`, axis by axis |
+
+A non-uniform scale on an instance combined with a rotated child keeps each axis's
+scale and doesn't shear. Other kinds that hold world positions, such as a
+`navigation_area` or a `merged` mesh's placements, aren't moved by a placement.
+
+## Spawning
+
+Spawning a level or a prefab first loads it, then publishes it.
+
+| Step | Behavior |
+| --- | --- |
+| Load | Requests the level or prefab and, through their instances, every prefab it reaches. A prefab that two instances use loads once. Loading publishes nothing. |
+| Parameters | A prefab spawned directly takes its parameter values from the application, as an object from parameter name to value. |
+| Handles | One run of consecutive handles: the root, then the loaded level's or prefab's entities in baked order, then each instance's prefab entities. Instances are taken in spawn order, and a nested instance's entities follow its own prefab's entities right away. |
+| Root | A [scene](/docs/reference/world#scenes) when the spawn has no parent, otherwise a member of the parent the application names. |
+| Decode | Every payload of every expanded prefab is decoded before anything is published. A failure publishes nothing and names the prefab, the entity, the kind, and the cause. |
+| Publish | The root, then scene membership for the loaded entities and then each instance's entities, so parents publish before children. Then each kind's components, for the loaded entities and then for each instance, in the handle order above. |
+| Unload | Deleting the root deletes every entity of the spawn, prefab entities included. |
+
+All other spawning rules are the [level's](/docs/reference/levels#spawning).
+
+## Baking
+
+| Rule | Behavior |
+| --- | --- |
+| Class | `Prefab`. |
+| Instances | A level or prefab stores each instance's `resource` and `parameters`. It doesn't bake the prefab it names, so changing the prefab doesn't bake the level again; the next spawn uses the prefab's latest bake. |
+| Rejected | Everything a level rejects, plus the parameter rules above and an instance without a `resource`. |
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| Nesting | 16 instances deep, counted from the loaded level or prefab. |
+| Handles | One for the root and one for each entity of every expanded prefab. |
+| Messages | One for each entity's scene membership and one for each component, of every expanded prefab, as for a [level](/docs/reference/levels#limits). |
+
+## Rust API
+
+- [`gameplay::level` module](/docs/api/latest/byte_engine/gameplay/level)

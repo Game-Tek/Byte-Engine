@@ -1,7 +1,9 @@
-//! Ground-truth ambient occlusion computed at half resolution from the linear depth pyramid, then denoised and upscaled.
+//! Ground-truth ambient occlusion and its bent normal, computed at half resolution from the linear depth pyramid, then
+//! denoised, and the occlusion upscaled.
 //!
-//! Material evaluation combines the result with the hit fraction of the indirect diffuse source when both run, and
-//! darkens environment diffuse and specular light by it. Turn it off with `render.gtao.enabled`.
+//! Material evaluation combines the occlusion with the hit fraction of the indirect diffuse source when both run, and
+//! darkens environment diffuse light by it. Specular occlusion intersects the reflection's lobe with the cone of open
+//! directions around the bent normal. Turn it off with `render.gtao.enabled`.
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
@@ -9,7 +11,7 @@ use utils::Extent;
 
 use super::depth_pyramid::DEPTH_PYRAMID_MIP_COUNT;
 use super::{ComputeStage, Pipelines};
-use crate::configuration::ConfigurationValue;
+use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink};
 
@@ -33,6 +35,10 @@ pub(crate) struct GtaoTargets {
 	pub(crate) blurred: ghi::BaseImageHandle,
 	/// The full-resolution result material evaluation reads, named `Ambient Occlusion`.
 	pub(crate) ambient_occlusion: ghi::BaseImageHandle,
+	/// The noisy half-resolution bent normal, as its two components across the view vector, named `GTAO Bent Normal`.
+	pub(crate) raw_bent_normal: ghi::BaseImageHandle,
+	/// The horizontally denoised bent normal material evaluation reads, named `GTAO Bent Normal Blur`.
+	pub(crate) bent_normal: ghi::BaseImageHandle,
 }
 
 /// Creates the GTAO render targets for the sink that `render_pass_builder` sets up.
@@ -42,20 +48,20 @@ pub(crate) struct GtaoTargets {
 pub(crate) fn create_gtao_targets(
 	render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>,
 ) -> GtaoTargets {
-	let mut target = |name, resolution_divisor| {
+	let mut target = |name, format, resolution_divisor| {
 		render_pass_builder
 			.create_scaled_render_target(
-				ghi::image::Builder::new(ghi::Formats::R8UNORM, ghi::Uses::Storage | ghi::Uses::Image)
-					.name(name)
-					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+				ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image).name(name),
 				resolution_divisor,
 			)
 			.into()
 	};
 	GtaoTargets {
-		raw: target("GTAO Raw", GTAO_RESOLUTION_DIVISOR),
-		blurred: target("GTAO Blur", GTAO_RESOLUTION_DIVISOR),
-		ambient_occlusion: target("Ambient Occlusion", 1),
+		raw: target("GTAO Raw", ghi::Formats::R8UNORM, GTAO_RESOLUTION_DIVISOR),
+		blurred: target("GTAO Blur", ghi::Formats::R8UNORM, GTAO_RESOLUTION_DIVISOR),
+		ambient_occlusion: target("Ambient Occlusion", ghi::Formats::R8UNORM, 1),
+		raw_bent_normal: target("GTAO Bent Normal", ghi::Formats::RG8UNORM, GTAO_RESOLUTION_DIVISOR),
+		bent_normal: target("GTAO Bent Normal Blur", ghi::Formats::RG8UNORM, GTAO_RESOLUTION_DIVISOR),
 	}
 }
 
@@ -82,59 +88,59 @@ impl Default for GtaoSettings {
 }
 
 impl GtaoSettings {
-	/// Applies one runtime parameter, returning the updated settings and the effective value, or leaves them unchanged.
-	pub(crate) fn with_parameter(
-		self,
-		parameter: &str,
-		value: &ConfigurationValue,
-	) -> Result<(Self, ConfigurationValue), String> {
-		match parameter {
-			"enabled" => {
-				let enabled = value.to_bool().ok_or(
-					"GTAO enabled was not set. The most likely cause is that the value is neither `true` nor `false`.",
-				)?;
-				Ok((Self { enabled, ..self }, ConfigurationValue::Bool(enabled)))
-			}
-			"radius" => {
-				let radius = value
-					.to_f64()
-					.filter(|radius| *radius >= 0.0 && *radius <= f32::MAX as f64)
-					.ok_or(
-						"GTAO radius was not set. The most likely cause is that the value is not a finite nonnegative number.",
-					)?;
-				let settings = Self {
+	/// The runtime settings, named inside the `render.gtao.` port.
+	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[
+		Setting {
+			name: "enabled",
+			accepts: Accepts::Bool,
+			value: |settings| Read::Bool(settings.enabled),
+			apply: |settings, read| {
+				let enabled = read.bool();
+				Ok(Self { enabled, ..settings })
+			},
+		},
+		Setting {
+			name: "radius",
+			accepts: Accepts::Number { min: 0.0 },
+			value: |settings| Read::Number(f64::from(settings.radius)),
+			apply: |settings, read| {
+				let radius = read.number();
+				Ok(Self {
 					radius: radius as f32,
-					..self
-				};
-				Ok((settings, ConfigurationValue::Float(f64::from(settings.radius))))
-			}
-			"samples-per-ray" => {
-				let samples_per_ray = value.to_u32()
-					.filter(|samples| (MIN_SAMPLES_PER_RAY..=MAX_SAMPLES_PER_RAY).contains(samples))
-					.ok_or(format!(
-						"GTAO samples-per-ray was not set. The most likely cause is that the value is not a whole number in the range {MIN_SAMPLES_PER_RAY}..={MAX_SAMPLES_PER_RAY}."
-					))?;
-				Ok((
-					Self { samples_per_ray, ..self },
-					ConfigurationValue::Integer(i64::from(samples_per_ray)),
-				))
-			}
-			"radial-rays" => {
-				let radial_rays = value.to_u32()
-					.filter(|rays| (MIN_RADIAL_RAYS..=MAX_RADIAL_RAYS).contains(rays) && rays % 2 == 0)
-					.ok_or(format!(
-						"GTAO radial-rays was not set. The most likely cause is that the value is not an even whole number in the range {MIN_RADIAL_RAYS}..={MAX_RADIAL_RAYS}."
-					))?;
-				Ok((
-					Self { radial_rays, ..self },
-					ConfigurationValue::Integer(i64::from(radial_rays)),
-				))
-			}
-			_ => {
-				Err("GTAO parameter was not set. The most likely cause is that the parameter name is unsupported.".to_string())
-			}
-		}
-	}
+					..settings
+				})
+			},
+		},
+		Setting {
+			name: "samples-per-ray",
+			accepts: Accepts::Whole {
+				min: MIN_SAMPLES_PER_RAY,
+				max: MAX_SAMPLES_PER_RAY,
+				step: 1,
+			},
+			value: |settings| Read::Whole(settings.samples_per_ray),
+			apply: |settings, read| {
+				let samples_per_ray = read.whole();
+				Ok(Self {
+					samples_per_ray,
+					..settings
+				})
+			},
+		},
+		Setting {
+			name: "radial-rays",
+			accepts: Accepts::Whole {
+				min: MIN_RADIAL_RAYS,
+				max: MAX_RADIAL_RAYS,
+				step: 2,
+			},
+			value: |settings| Read::Whole(settings.radial_rays),
+			apply: |settings, read| {
+				let radial_rays = read.whole();
+				Ok(Self { radial_rays, ..settings })
+			},
+		},
+	];
 }
 
 #[repr(C)]
@@ -154,7 +160,7 @@ pub(super) struct GtaoPass {
 	upscale_descriptor_set: ghi::DescriptorSetHandle,
 	/// The evaluate, blur, and upscale pipelines.
 	pub(super) pipelines: Pipelines<3>,
-	parameters: ghi::DynamicBufferHandle<GtaoShaderParameters>,
+	parameters: ghi::BufferHandle<GtaoShaderParameters>,
 }
 
 impl GtaoPass {
@@ -166,9 +172,10 @@ impl GtaoPass {
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		depth: ghi::BaseImageHandle,
-		depth_pyramid: ghi::DynamicImageHandle,
+		depth_pyramid: ghi::ImageHandle,
 		view_descriptor_set: ghi::DescriptorSetHandle,
 		targets: GtaoTargets,
+		blue_noise: ghi::ImageHandle,
 	) -> Self {
 		let gtao_descriptor_set = set_layouts::GTAO.create_set(context, "GTAO Descriptor Set");
 		let blur_descriptor_set = set_layouts::GTAO_BLUR.create_set(context, "GTAO Blur X Descriptor Set");
@@ -176,9 +183,9 @@ impl GtaoPass {
 		let dynamic_buffer = |name| {
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name(name)
-				.device_accesses(ghi::DeviceAccesses::HostToDevice)
+				.host_access(ghi::HostAccess::Write)
 		};
-		let parameters = context.build_dynamic_buffer(dynamic_buffer("GTAO Parameters"));
+		let parameters = context.build_buffer(dynamic_buffer("GTAO Parameters").copies(ghi::Copies::PerFrame));
 		let depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
@@ -192,6 +199,8 @@ impl GtaoPass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
 		);
+		// The evaluation reads it texel by texel at the pixel modulo its side, the same pattern every frame: nothing
+		// accumulates GTAO over frames, so animating it would only flicker.
 		let evaluate = set_layouts::GTAO.binder(gtao_descriptor_set);
 		let blur = set_layouts::GTAO_BLUR.binder(blur_descriptor_set);
 		let upscale = set_layouts::GTAO_UPSCALE.binder(upscale_descriptor_set);
@@ -199,9 +208,13 @@ impl GtaoPass {
 			evaluate.buffer("gtao_parameters", parameters),
 			evaluate.texture("depth_pyramid", depth_pyramid),
 			evaluate.image("ao_output", targets.raw),
+			evaluate.image("bent_normal_output", targets.raw_bent_normal),
+			evaluate.sampled("blue_noise", blue_noise, ao_sampler),
 			blur.sampled("linear_depth", depth_pyramid, depth_sampler),
 			blur.sampled("ao_source", targets.raw, ao_sampler),
 			blur.image("ao_output", targets.blurred),
+			blur.sampled("bent_normal_source", targets.raw_bent_normal, ao_sampler),
+			blur.image("bent_normal_output", targets.bent_normal),
 			upscale.sampled("visibility_depth", depth, depth_sampler),
 			upscale.texture("ao_source", targets.blurred),
 			upscale.image("ao_output", targets.ambient_occlusion),
@@ -228,12 +241,11 @@ impl GtaoPass {
 	) -> GtaoStages {
 		let extent = sink.extent();
 		let gtao_extent = extent.scaled_down(GTAO_RESOLUTION_DIVISOR);
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = GtaoShaderParameters {
+		*frame.map(self.parameters) = GtaoShaderParameters {
 			radius: settings.radius,
 			samples_per_ray: settings.samples_per_ray,
 			radial_rays: settings.radial_rays,
 		};
-		frame.sync_buffer(self.parameters);
 
 		GtaoStages {
 			evaluate: ComputeStage {
@@ -277,13 +289,19 @@ pub(super) struct GtaoStages {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::configuration::{ConfigurationValue, apply_setting};
 
 	#[test]
 	fn enabled_toggles_only_whether_the_pass_runs() {
 		let settings = GtaoSettings::default();
-		let (disabled, effective) = settings
-			.with_parameter("enabled", &ConfigurationValue::Text("false".to_string()))
-			.unwrap();
+		let (disabled, effective) = apply_setting(
+			settings,
+			GtaoSettings::SETTINGS,
+			"",
+			"enabled",
+			&ConfigurationValue::Text("false".to_string()),
+		)
+		.unwrap();
 		assert_eq!(effective, ConfigurationValue::Bool(false));
 		assert_eq!(
 			disabled,
@@ -292,6 +310,15 @@ mod tests {
 				..settings
 			}
 		);
-		assert!(disabled.with_parameter("enabled", &ConfigurationValue::Integer(1)).is_err());
+		assert!(
+			apply_setting(
+				disabled,
+				GtaoSettings::SETTINGS,
+				"",
+				"enabled",
+				&ConfigurationValue::Integer(1)
+			)
+			.is_err()
+		);
 	}
 }

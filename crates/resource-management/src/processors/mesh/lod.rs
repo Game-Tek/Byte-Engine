@@ -62,9 +62,9 @@ pub(super) fn simplify_levels(
 
 	let mut levels: Vec<LodLevel> = Vec::new();
 	while levels.len() + 1 < max_levels {
-		let (triangles, error) = levels
-			.last()
-			.map_or((indices.len() / 3, base_error), |level| (level.indices.len() / 3, level.error));
+		let (triangles, error) = levels.last().map_or((indices.len() / 3, base_error), |level| {
+			(level.indices.len() / 3, level.error)
+		});
 		if triangles <= LOD_MIN_TRIANGLES {
 			break;
 		}
@@ -112,7 +112,11 @@ pub(super) fn simplify_levels(
 /// unseen. Returns infinity when exactly one list has no triangles.
 pub(super) fn level_distance(positions: &[[f32; 3]], full: &[u32], level: &[u32]) -> f32 {
 	if full.is_empty() || level.is_empty() {
-		return if full.is_empty() && level.is_empty() { 0.0 } else { f32::INFINITY };
+		return if full.is_empty() && level.is_empty() {
+			0.0
+		} else {
+			f32::INFINITY
+		};
 	}
 	let one_way = |from: &[u32], to: &[u32]| {
 		let grid = TriangleGrid::new(positions, to);
@@ -206,7 +210,10 @@ impl<'a> TriangleGrid<'a> {
 		let bound = |pick: fn(f32, f32) -> f32, start: f32| {
 			std::array::from_fn(|axis| corners.iter().map(|corner| corner[axis]).fold(start, pick))
 		};
-		let (low, high) = (self.cell_of(bound(f32::min, f32::INFINITY)), self.cell_of(bound(f32::max, f32::NEG_INFINITY)));
+		let (low, high) = (
+			self.cell_of(bound(f32::min, f32::INFINITY)),
+			self.cell_of(bound(f32::max, f32::NEG_INFINITY)),
+		);
 		for z in low[2]..=high[2] {
 			for y in low[1]..=high[1] {
 				for x in low[0]..=high[0] {
@@ -225,31 +232,55 @@ impl<'a> TriangleGrid<'a> {
 		for radius in 0..=max_radius {
 			let low: [usize; 3] = std::array::from_fn(|axis| center[axis].saturating_sub(radius));
 			let high: [usize; 3] = std::array::from_fn(|axis| (center[axis] + radius).min(self.dimensions[axis] - 1));
-			for z in low[2]..=high[2] {
-				for y in low[1]..=high[1] {
-					for x in low[0]..=high[0] {
-						let shell = [x, y, z]
-							.iter()
-							.zip(center)
-							.map(|(&at, center)| at.abs_diff(center))
-							.max()
-							.unwrap_or(0);
-						if shell != radius {
-							continue;
-						}
-						let cell = self.cell_index([x, y, z]);
-						for &triangle in &self.triangles[self.starts[cell] as usize..self.starts[cell + 1] as usize] {
-							nearest = nearest.min(point_triangle_distance(point, self.corners(triangle as usize)));
-						}
-					}
-				}
-			}
+			self.visit_shell(low, high, point, &mut nearest);
 			// Every cell of the next shell lies at least `radius` cells from the point.
 			if nearest <= radius as f32 * self.cell {
 				break;
 			}
 		}
 		nearest
+	}
+
+	/// Visits the cells on the surface of the box `low..=high`, skipping its interior.
+	///
+	/// A shell has `O(r²)` cells, so walking its six faces keeps the search at `O(r²)` per radius instead of testing
+	/// the `O(r³)` cells of the whole box.
+	fn visit_shell(&self, low: [usize; 3], high: [usize; 3], point: [f32; 3], nearest: &mut f32) {
+		let (x0, x1) = (low[0], high[0]);
+		let (y0, y1) = (low[1], high[1]);
+		let (z0, z1) = (low[2], high[2]);
+		// The two z faces.
+		for z in [z0, z1] {
+			for y in y0..=y1 {
+				for x in x0..=x1 {
+					self.visit_cell([x, y, z], point, nearest);
+				}
+			}
+		}
+		// The two y faces, between the z faces.
+		for z in (z0 + 1)..z1 {
+			for y in [y0, y1] {
+				for x in x0..=x1 {
+					self.visit_cell([x, y, z], point, nearest);
+				}
+			}
+		}
+		// The two x faces, between the z and y faces.
+		for z in (z0 + 1)..z1 {
+			for y in (y0 + 1)..y1 {
+				for x in [x0, x1] {
+					self.visit_cell([x, y, z], point, nearest);
+				}
+			}
+		}
+	}
+
+	/// Lowers `nearest` to the closest triangle in `cell`.
+	fn visit_cell(&self, cell: [usize; 3], point: [f32; 3], nearest: &mut f32) {
+		let index = self.cell_index(cell);
+		for &triangle in &self.triangles[self.starts[index] as usize..self.starts[index + 1] as usize] {
+			*nearest = (*nearest).min(point_triangle_distance(point, self.corners(triangle as usize)));
+		}
 	}
 }
 
@@ -258,7 +289,11 @@ fn point_triangle_distance(point: [f32; 3], [a, b, c]: [[f32; 3]; 3]) -> f32 {
 	let sub = |u: [f32; 3], v: [f32; 3]| [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
 	let dot = |u: [f32; 3], v: [f32; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
 	let along = |origin: [f32; 3], direction: [f32; 3], t: f32| {
-		[origin[0] + direction[0] * t, origin[1] + direction[1] * t, origin[2] + direction[2] * t]
+		[
+			origin[0] + direction[0] * t,
+			origin[1] + direction[1] * t,
+			origin[2] + direction[2] * t,
+		]
 	};
 	// Closest point by Voronoi region, after Ericson's Real-Time Collision Detection, section 5.1.5.
 	let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(point, a));
@@ -299,7 +334,7 @@ fn point_triangle_distance(point: [f32; 3], [a, b, c]: [[f32; 3]; 3]) -> f32 {
 /// Share of the previous level's triangles that each level aims to keep.
 const LOD_TRIANGLE_RATIO: f32 = 0.5;
 /// Smallest share of the previous level's triangles a level must remove to be kept.
-const LOD_MIN_REDUCTION: f32 = 0.25;
+pub(super) const LOD_MIN_REDUCTION: f32 = 0.25;
 /// Triangle count at or below which a level gets no coarser one, because it already fits in about two meshlets.
 const LOD_MIN_TRIANGLES: usize = 2 * MESHLET_MAX_TRIANGLES;
 /// Weight of each normal component against position error, which is measured relative to the mesh extent.
@@ -307,3 +342,58 @@ const LOD_NORMAL_WEIGHT: f32 = 0.5;
 
 use super::packing::MESHLET_MAX_TRIANGLES;
 use crate::resources::mesh::MAX_PRIMITIVE_LODS;
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The grid search must measure the same distance as testing every triangle.
+	#[test]
+	fn level_distance_matches_brute_force() {
+		const SIDE: usize = 12;
+		let mut positions = Vec::new();
+		for z in 0..SIDE {
+			for x in 0..SIDE {
+				positions.push([x as f32 * 0.7, ((x * 7 + z * 3) % 5) as f32 * 0.3, z as f32 * 0.9]);
+			}
+		}
+		let mut full = Vec::new();
+		for z in 0..SIDE - 1 {
+			for x in 0..SIDE - 1 {
+				let a = (z * SIDE + x) as u32;
+				let b = a + 1;
+				let c = a + SIDE as u32;
+				let d = c + 1;
+				full.extend([a, b, c, b, d, c]);
+			}
+		}
+		// A coarser level drops every other quad, so the two lists differ.
+		let level = full.chunks_exact(6).step_by(2).flatten().copied().collect::<Vec<_>>();
+		let brute_one_way = |from: &[u32], to: &[u32]| {
+			let mut seen = vec![false; positions.len()];
+			let mut farthest = 0.0f32;
+			for &vertex in from {
+				if !std::mem::replace(&mut seen[vertex as usize], true) {
+					let point = positions[vertex as usize];
+					let nearest = to
+						.chunks_exact(3)
+						.map(|triangle| {
+							let corners = [triangle[0] as usize, triangle[1] as usize, triangle[2] as usize]
+								.map(|vertex| positions[vertex]);
+							point_triangle_distance(point, corners)
+						})
+						.fold(f32::INFINITY, f32::min);
+					farthest = farthest.max(nearest);
+				}
+			}
+			farthest
+		};
+		let expected = brute_one_way(&level, &full).max(brute_one_way(&full, &level));
+		let found = level_distance(&positions, &full, &level);
+		let tolerance = 1e-4 * expected.max(1.0);
+		assert!(
+			(found - expected).abs() <= tolerance,
+			"level distance found {found}, brute force found {expected}"
+		);
+	}
+}

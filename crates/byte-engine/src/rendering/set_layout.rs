@@ -33,6 +33,7 @@ pub(crate) static ENGINE_MODULES: &[(&str, &str)] = engine_modules![
 	"layouts/aces2_rec709_100nit.besl",
 	"layouts/acescct.besl",
 	"layouts/color.besl",
+	"layouts/environment_cube.besl",
 	"layouts/fog.besl",
 	"layouts/lut.besl",
 	"layouts/sky_parameters.besl",
@@ -41,6 +42,7 @@ pub(crate) static ENGINE_MODULES: &[(&str, &str)] = engine_modules![
 	"ui/layouts/backdrop_blur.besl",
 	"ui/layouts/composite.besl",
 	"ui/layouts/ui.besl",
+	"visibility/layouts/backdrop.besl",
 	"visibility/layouts/cascade_fit.besl",
 	"visibility/layouts/contact_shadows.besl",
 	"visibility/layouts/depth_pyramid.besl",
@@ -67,10 +69,13 @@ pub(crate) static ENGINE_MODULES: &[(&str, &str)] = engine_modules![
 	"visibility/layouts/scene.besl",
 	"visibility/layouts/scene_lights.besl",
 	"visibility/layouts/scene_records.besl",
+	"visibility/layouts/screen_query.besl",
 	"visibility/layouts/screen_trace.besl",
 	"visibility/layouts/screen_view.besl",
 	"visibility/layouts/shadow_depth_pyramid.besl",
 	"visibility/layouts/skinning.besl",
+	"visibility/layouts/subsurface.besl",
+	"visibility/layouts/work_build.besl",
 	"visibility/layouts/ssgi.besl",
 	"visibility/layouts/ssgi_temporal.besl",
 	"visibility/layouts/ssgi_trace.besl",
@@ -80,6 +85,7 @@ pub(crate) static ENGINE_MODULES: &[(&str, &str)] = engine_modules![
 	"visibility/layouts/surfel_spatial.besl",
 	"visibility/layouts/surfel_temporal.besl",
 	"visibility/layouts/visibility_buffer.besl",
+	"visibility/layouts/virtual_shadows.besl",
 ];
 
 /// Returns the source of `file`, a module's path from the asset root, from a table of embedded modules such as
@@ -138,6 +144,8 @@ impl SetLayout {
 	///
 	/// A pipeline's stages each declare the layouts they list; this is the pipeline's view of them.
 	pub fn merged<'a>(sets: impl IntoIterator<Item = &'a SetLayout>) -> Arc<[SetLayout]> {
+		// A pipeline lists at most MAX_DESCRIPTOR_SETS layouts, so the linear scan over the merged list is a scan of at
+		// most fifteen entries.
 		let mut merged = Vec::<SetLayout>::new();
 		for set in sets {
 			match merged
@@ -224,12 +232,12 @@ impl SetBinder<'_> {
 		ghi::DescriptorWrite::image(self.set, self.slot(name), image, ghi::Layouts::General)
 	}
 
-	/// Binds one mip of a storage image.
 	/// Binds one element of an arrayed storage image, such as a debug target pool slot.
 	pub fn image_element(&self, name: &str, image: impl Into<ghi::BaseImageHandle>, index: u32) -> ghi::DescriptorWrite {
 		ghi::DescriptorWrite::image(self.set, self.slot(name), image, ghi::Layouts::General).with_array_element(index)
 	}
 
+	/// Binds one mip of a storage image.
 	pub fn image_mip(&self, name: &str, image: impl Into<ghi::BaseImageHandle>, mip_level: u32) -> ghi::DescriptorWrite {
 		ghi::DescriptorWrite::image_mip(self.set, self.slot(name), image, ghi::Layouts::General, mip_level)
 	}
@@ -237,6 +245,12 @@ impl SetBinder<'_> {
 	/// Binds a texture whose sampler the shader fixes with a BESL `sampler` declaration, so the set takes only the image.
 	pub fn texture(&self, name: &str, image: impl Into<ghi::BaseImageHandle>) -> ghi::DescriptorWrite {
 		ghi::DescriptorWrite::image(self.set, self.slot(name), image, ghi::Layouts::Read)
+	}
+
+	/// Binds the copy of a per-frame texture whose sampler the shader fixes that belongs to a relative frame, such as
+	/// `-1` for the previous frame.
+	pub fn texture_with_frame(&self, name: &str, image: ghi::ImageHandle, frame_offset: i32) -> ghi::DescriptorWrite {
+		ghi::DescriptorWrite::image(self.set, self.slot(name), image, ghi::Layouts::Read).with_frame_offset(frame_offset)
 	}
 
 	/// Binds one element of a texture array whose sampler the shader fixes, so the set takes only the image.
@@ -258,18 +272,12 @@ impl SetBinder<'_> {
 	pub fn sampled_with_frame(
 		&self,
 		name: &str,
-		image: ghi::DynamicImageHandle,
+		image: ghi::ImageHandle,
 		sampler: ghi::SamplerHandle,
 		frame_offset: i32,
 	) -> ghi::DescriptorWrite {
-		ghi::DescriptorWrite::combined_image_sampler_with_frame(
-			self.set,
-			self.slot(name),
-			image,
-			sampler,
-			ghi::Layouts::Read,
-			frame_offset,
-		)
+		ghi::DescriptorWrite::combined_image_sampler(self.set, self.slot(name), image, sampler, ghi::Layouts::Read)
+			.with_frame_offset(frame_offset)
 	}
 
 	/// Binds one element of a texture array.
@@ -413,6 +421,9 @@ pub fn create_sets(
 		*slot = Some(descriptor_set);
 		for binding in &set.interface().bindings {
 			// A binding the pipeline does not reach may be left without a resource.
+			//
+			// The lookup scans the pipeline's own resources, at most MAX_LAYOUT_RESOURCES, and a set is created once per
+			// pipeline publish, not per frame.
 			if let Some(resource) = resources.iter().find(|resource| resource.name() == binding.name) {
 				resource.descriptor_writes(descriptor_set, ghi::ResourceSlot::new(binding.slot), &mut writes);
 			}
@@ -426,12 +437,18 @@ pub fn create_sets(
 /// The most elements [`Resource::image_array`] binds, which is the most debug targets a sink's pool holds.
 pub const MAX_IMAGE_ARRAY_ELEMENTS: usize = 15;
 
+/// The faces of a cube image, in the native order (+X, −X, +Y, −Y, +Z, −Z), and the elements a
+/// [`Resource::cube_mip`] binding declares.
+pub const CUBE_FACES: u32 = 6;
+
 /// The `Resource` enum names one concrete resource for a BESL binding, for [`create_sets`] to bind by name.
 #[derive(Clone, Copy)]
 pub enum Resource {
 	Buffer(&'static str, ghi::BaseBufferHandle),
 	PlannedBuffer(&'static str, ghi::BaseBufferHandle),
 	Image(&'static str, ghi::ImageOrSwapchain),
+	/// One mip of a cube's six faces, element by element; see [`Resource::cube_mip`].
+	CubeMip(&'static str, ghi::BaseImageHandle, u32),
 	/// The first `count` images of an arrayed storage-image binding, element by element.
 	ImageArray(&'static str, [Option<ghi::BaseImageHandle>; MAX_IMAGE_ARRAY_ELEMENTS]),
 	CombinedImageSampler(&'static str, ghi::BaseImageHandle, ghi::SamplerHandle, ghi::Layouts),
@@ -450,6 +467,13 @@ impl Resource {
 	/// Binds a storage-image destination without exposing whether it is an image or swapchain.
 	pub fn image(name: &'static str, image: impl Into<ghi::ImageOrSwapchain>) -> Self {
 		Self::Image(name, image.into())
+	}
+
+	/// Binds mip `mip_level` of each face of the cube `image` to the element of the same index of a storage-image
+	/// binding of [`CUBE_FACES`] elements, so one dispatch fills a level of every face, picking the face by
+	/// `thread_layer`.
+	pub fn cube_mip(name: &'static str, image: impl Into<ghi::BaseImageHandle>, mip_level: u32) -> Self {
+		Self::CubeMip(name, image.into(), mip_level)
 	}
 
 	/// Binds `images` to the first elements of an arrayed storage-image binding, such as the debug target pool a
@@ -485,6 +509,7 @@ impl Resource {
 			Self::Buffer(name, ..)
 			| Self::PlannedBuffer(name, ..)
 			| Self::Image(name, ..)
+			| Self::CubeMip(name, ..)
 			| Self::ImageArray(name, ..)
 			| Self::CombinedImageSampler(name, ..) => name,
 		}
@@ -497,6 +522,8 @@ impl Resource {
 			(BindingKind::StorageImage | BindingKind::SampledImage, Self::ImageArray(_, images)) => {
 				count > 1 && images.iter().flatten().count() <= count as usize
 			}
+			// A storage image the shader only reads binds as a sampled image.
+			(BindingKind::StorageImage | BindingKind::SampledImage, Self::CubeMip(..)) => count == CUBE_FACES,
 			(BindingKind::StorageBuffer, Self::Buffer(..) | Self::PlannedBuffer(..))
 			// A texture whose sampler the shader fixes binds only its image.
 			| (
@@ -524,6 +551,14 @@ impl Resource {
 			}
 			Self::Image(_, ghi::ImageOrSwapchain::Swapchain(swapchain)) => {
 				writes.push(ghi::DescriptorWrite::swapchain(set, slot, swapchain));
+			}
+			Self::CubeMip(_, image, mip_level) => {
+				for face in 0..CUBE_FACES {
+					writes.push(
+						ghi::DescriptorWrite::image_layer_mip(set, slot, image, ghi::Layouts::General, face, mip_level)
+							.with_array_element(face),
+					);
+				}
 			}
 			Self::ImageArray(_, images) => {
 				for (element, image) in images.iter().enumerate() {
@@ -666,7 +701,7 @@ mod tests {
 	fn image_arrays_bind_only_arrayed_storage_images_they_fit() {
 		let mut device = ghi::debug::Device::new();
 		let image: ghi::BaseImageHandle = device
-			.build_dynamic_image(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage))
+			.build_image(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage).copies(ghi::Copies::PerFrame))
 			.into();
 		let array = Resource::image_array("pool", &[image, image]);
 		let single = Resource::image("pool", image);
@@ -705,10 +740,10 @@ mod tests {
 		];
 		let mut device = ghi::debug::Device::new();
 		let buffer = device.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage));
-		let image = device.build_dynamic_image(ghi::image::Builder::new(
-			ghi::Formats::RGBA16F,
-			ghi::Uses::Image | ghi::Uses::Storage,
-		));
+		let image = device.build_image(
+			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image | ghi::Uses::Storage)
+				.copies(ghi::Copies::PerFrame),
+		);
 		let sampler = device.build_sampler(ghi::sampler::Builder::new());
 		let resources = [
 			Resource::image("result", image),

@@ -34,7 +34,9 @@ MeshLevel: struct {
 	meshlet_count: u32,
 	// The level's first vertex in the vertex attribute buffers.
 	vertex_base: u32,
-	_padding: u32,
+	// Object-space radius of the largest part of the level that casts a shadow as one object: the sphere's own, or one
+	// copy's for a merged mesh, whose sphere spans many copies. Cascades that skip small casters measure it.
+	caster_radius: f32,
 }
 
 // One meshlet of a detail level. The offsets are absolute positions in the vertex-index and primitive-index buffers.
@@ -60,6 +62,46 @@ MESH_MATERIAL_MASK: const u32 = 65535;
 MESH_FLAG_DOUBLE_SIDED: const u32 = 16777216;
 // `Mesh::level` flag of an instance skinning posed this frame: its vertices start at `Mesh::surface.x`.
 MESH_FLAG_SKINNED: const u32 = 33554432;
+// `Mesh::level` flag of an instance that isn't drawn from where the camera is: another primitive of its mesh has
+// taken its place, or it hasn't taken over yet. It gets no work items. Rays still read its record.
+MESH_FLAG_HIDDEN: const u32 = 2147483648;
+// The most meshlets an instance draws for them to share task workgroups with other instances' meshlets, one work
+// item each. A larger instance takes an item for every 32 of its meshlets.
+SHARED_INSTANCE_MESHLETS: const u32 = 8;
+// The work ranges a frame has: for each of the five raster phases, the items of its large instances, then the items
+// its small instances share. Each range is one record of three words in `work_dispatches`, and two of the first
+// words of the work buffer: its first item and its workgroup count.
+WORK_RANGES: const u32 = 10;
+// The words that hold the ranges at the start of the work buffer, before the first work item.
+WORK_HEADER: const u32 = 20;
+
+// One vertex of a meshlet, stored in the meshlet's own order so a mesh stage reads a meshlet's vertices in a row.
+// `position` holds the object-space position as UNORM16 components within the level's sphere: x and y in
+// `position.x`, low half first, and z in the low half of `position.y`. `uv` is the vertex's UV.
+MeshletVertex: struct {
+	position: vec2u,
+	uv: vec2f16,
+}
+
+// `Meshlet::counts` flag of a meshlet whose vertices are in the meshlet vertex buffer.
+MESHLET_LOCAL_VERTICES: const u32 = 65536;
+
+// Returns the object-space position a meshlet vertex stores within its level's sphere.
+meshlet_vertex_position: fn (vertex: MeshletVertex, level: MeshLevel) -> vec3f {
+	let quantized: vec3f = vec3f(
+		f32(vertex.position.x & 65535),
+		f32(vertex.position.x >> 16),
+		f32(vertex.position.y & 65535)
+	) / 65535.0;
+	let center: vec3f = vec3f(level.bounding_sphere.x, level.bounding_sphere.y, level.bounding_sphere.z);
+	return center + (quantized * 2.0 - vec3f(1.0, 1.0, 1.0)) * level.bounding_sphere.w;
+}
+
+// Returns whether an instance draws `meshlet` from the meshlet vertex buffer. A posed instance never does: its
+// vertices are its own, which skinning wrote this frame.
+draws_local_vertices: fn (mesh: Mesh, meshlet: Meshlet) -> bool {
+	return (meshlet.counts & MESHLET_LOCAL_VERTICES) != 0 && (mesh.level & MESH_FLAG_SKINNED) == 0;
+}
 
 // Returns the first vertex of an instance that draws `level`: its own posed range when skinning posed it this frame,
 // else the level's.
@@ -68,4 +110,108 @@ instance_vertex_base: fn (mesh: Mesh, level: MeshLevel) -> u32 {
 		return mesh.surface.x;
 	}
 	return level.vertex_base;
+}
+
+// Returns a triangle's meshlet vertices in the order `mesh` draws them. A mirroring model, one whose determinant is
+// negative, reverses every triangle's winding on screen, so swapping two vertices keeps the mesh's outside facing front
+// and back-face culling still hides its inside.
+instance_triangle: fn (mesh: Mesh, triangle: vec3u) -> vec3u {
+	if (dot(cross(mesh.model[0], mesh.model[1]), mesh.model[2]) < 0.0) {
+		return vec3u(triangle.x, triangle.z, triangle.y);
+	}
+	return triangle;
+}
+
+// Places an object-space sphere in the world with `model`. The radius grows by the model's largest axis scale.
+world_sphere: fn(model: mat4x3f, sphere: vec4f) -> vec4f {
+	let scale: f32 = sqrt(max(dot(model[0], model[0]), max(dot(model[1], model[1]), dot(model[2], model[2]))));
+	let world_center: vec3f = model * vec4f(sphere.x, sphere.y, sphere.z, 1.0);
+	return vec4f(world_center.x, world_center.y, world_center.z, sphere.w * scale);
+}
+
+// Returns `normal` turned by the linear part of a model or joint matrix, given as its three columns. Normals turn by
+// the inverse transpose, the cofactor matrix over the determinant, so they stay square to their surface under a
+// non-uniform scale. The determinant's sign also keeps them pointing out of a mirroring model, whose cofactors alone
+// point in.
+transform_normal: fn (column0: vec3f, column1: vec3f, column2: vec3f, normal: vec3f) -> vec3f {
+	let cofactor0: vec3f = cross(column1, column2);
+	let cofactor1: vec3f = cross(column2, column0);
+	let cofactor2: vec3f = cross(column0, column1);
+	let determinant: f32 = dot(column0, cofactor0);
+	if (abs(determinant) > 0.00000001) {
+		return (cofactor0 * normal.x + cofactor1 * normal.y + cofactor2 * normal.z) / determinant;
+	}
+
+	// A singular matrix has no inverse, so it turns the normal like a direction, which keeps its usable axes instead of
+	// producing NaNs.
+	return column0 * normal.x + column1 * normal.y + column2 * normal.z;
+}
+
+// How the meshlet task stage hands a workgroup's kept meshlets to its mesh stage, through a payload of 193 words.
+//
+// Words 0 to 191 are entries, one for each kept meshlet and view. An entry names its lane of the task workgroup in
+// bits 0-4 and its view, as an offset into the dispatch's batch, in bits 5-7. Consecutive entries form a group, which
+// one mesh grid draws: as many entries as stay within the vertices and triangles one grid emits. Bits 8-14 hold the
+// group's vertices up to and including the entry's, minus one, bits 15-22 the same for its triangles, and bit 23
+// marks the group's last entry. Word `g` also holds, in bits 24-31, the index of the first entry of group `g`.
+//
+// Word 192 is the workgroup's work: the index of its first work item in bits 0-30, and bit 31 set when each lane has a
+// work item of its own, which names the lane's instance above its low 7 bits and its meshlet in them. Otherwise the
+// workgroup has one item, which names an instance and a chunk of 32 of its meshlets, one for each lane.
+MESHLET_PAYLOAD_WORK: const u32 = 192;
+MESHLET_WORK_SHARED: const u32 = 2147483648;
+MESHLET_ENTRY_ENDS_GROUP: const u32 = 8388608;
+// The vertices and triangles one mesh grid emits: two full meshlets, so one meshlet that two views keep, or the
+// meshlets of two neighboring lanes, draw from one grid instead of two. Launching grids costs more than filling them.
+// Keep them equal to the mesh stages' `maximum_vertices` and `maximum_primitives`.
+MAX_GROUP_VERTICES: const u32 = 128;
+MAX_GROUP_TRIANGLES: const u32 = 252;
+// The threads of one mesh grid. Each draws a vertex and up to two triangles.
+MESH_THREADS: const u32 = 128;
+// The work item of a lane that has no meshlet, which pads a workgroup whose lanes have items of their own.
+EMPTY_WORK_ITEM: const u32 = 4294967295;
+
+// Returns the entry of a kept meshlet with `vertex_count` vertices and `triangle_count` triangles, neither zero, before
+// the task stage forms groups: the counts take the place of the group's running totals.
+meshlet_entry: fn (lane: u32, view_offset: u32, vertex_count: u32, triangle_count: u32) -> u32 {
+	return lane | (view_offset << 5) | ((vertex_count - 1) << 8) | ((triangle_count - 1) << 15);
+}
+
+entry_lane: fn (entry: u32) -> u32 {
+	return entry & 31;
+}
+
+entry_view_offset: fn (entry: u32) -> u32 {
+	return (entry >> 5) & 7;
+}
+
+// Returns how many of its group's vertices come up to and including the entry's.
+entry_vertex_end: fn (entry: u32) -> u32 {
+	return ((entry >> 8) & 127) + 1;
+}
+
+// Returns how many of its group's triangles come up to and including the entry's.
+entry_triangle_end: fn (entry: u32) -> u32 {
+	return ((entry >> 15) & 255) + 1;
+}
+
+// Returns the index of the first entry of group `g`, from payload word `g`.
+group_first_entry: fn (word: u32) -> u32 {
+	return (word >> 24) & 255;
+}
+
+// Returns the index of the work item that names `lane`'s meshlet, from the payload's work word.
+lane_work_index: fn (work: u32, lane: u32) -> u32 {
+	if ((work & MESHLET_WORK_SHARED) != 0) {
+		return (work & 2147483647) + lane;
+	}
+	return work;
+}
+
+// Returns `lane`'s meshlet, counted from its level's first, from the payload's work word and the lane's work item.
+lane_meshlet: fn (work: u32, item: u32, lane: u32) -> u32 {
+	if ((work & MESHLET_WORK_SHARED) != 0) {
+		return item & 127;
+	}
+	return (item & 127) * 32 + lane;
 }

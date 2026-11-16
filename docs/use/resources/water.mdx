@@ -1,0 +1,201 @@
+---
+title: Make a water surface
+description: Build a material for still water with moving waves, reflections, a depth-tinted view of what lies below, and foam along the shore.
+icon: Waves
+---
+
+Water is a blended material whose graph reads the scene behind its surface.
+This page builds one for a lake or a flooded pit, one piece at a time: waves
+that drift, light that passes through and darkens with depth, refraction, and
+foam where the water is shallow. Every node it uses is in the
+[BEMX graphs](/docs/reference/bemx) reference.
+
+You need a tileable wave normal map and a flat mesh for the water's surface,
+such as a plane or a thin box.
+
+## Make the waves move
+
+Sample the wave map twice, at coordinates from the world position rather than
+the mesh's texture coordinates, so the waves keep their size on any mesh. Give
+the two copies different sizes and let `time` drift them in different
+directions, so the pattern never repeats in an obvious way:
+
+```json5
+{ name: "position", node: "position" },
+{ name: "ground", node: "swizzle", in: "position", channels: "xz" },
+{ name: "time", node: "time" },
+{ name: "wave_scale", node: "parameter", parameter: "wave_scale", type: "float" },
+{ name: "near_size", node: "multiply", in1: "ground", in2: "wave_scale" },
+{ name: "near_drift", node: "multiply", in1: "time", in2: [0.021, 0.013] },
+{ name: "near_uv", node: "add", in1: "near_size", in2: "near_drift" },
+{ name: "far_scale", node: "multiply", in1: "wave_scale", in2: 0.37 },
+{ name: "far_size", node: "multiply", in1: "ground", in2: "far_scale" },
+{ name: "far_drift", node: "multiply", in1: "time", in2: [-0.008, 0.017] },
+{ name: "far_uv", node: "add", in1: "far_size", in2: "far_drift" },
+{ name: "near_texel", node: "image", texture: "waves", type: "vector3", texcoord: "near_uv" },
+{ name: "far_texel", node: "image", texture: "waves", type: "vector3", texcoord: "far_uv" },
+```
+
+Turn each texel into a normal. Because the coordinates follow the world's x and
+z axes, give `normalmap` the world frame instead of the mesh's. Then add the two
+normals and normalize the sum:
+
+```json5
+{ name: "near_normal", node: "normalmap", in: "near_texel", tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, -1.0], normal: [0.0, 1.0, 0.0] },
+{ name: "far_normal", node: "normalmap", in: "far_texel", tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, -1.0], normal: [0.0, 1.0, 0.0] },
+{ name: "both_normals", node: "add", in1: "near_normal", in2: "far_normal" },
+{ name: "normal", node: "normalize", in: "both_normals" },
+```
+
+With a low roughness, this normal is enough for the water to reflect the sky
+and the shore. You don't add reflections yourself: the renderer weighs them by
+the viewing angle, so the water mirrors more toward the horizon.
+
+## Show what lies below
+
+`scenecolor` is the light of the opaque scene behind the surface, and
+`sceneposition` is where that scene is. Light that crosses more water loses more
+of each colour, so dim the scene behind by the distance between the two
+surfaces. An `absorption` parameter sets how fast each colour fades: a higher
+red value gives green water.
+
+```json5
+{ name: "behind", node: "scenecolor", texcoord: "behind_at" },
+{ name: "floor", node: "sceneposition", texcoord: "behind_at" },
+{ name: "path", node: "subtract", in1: "floor", in2: "position" },
+{ name: "distance", node: "magnitude", in: "path" },
+{ name: "absorption", node: "parameter", parameter: "absorption", type: "vector3" },
+{ name: "optical_depth", node: "multiply", in1: "absorption", in2: "distance" },
+{ name: "negated_depth", node: "multiply", in1: "optical_depth", in2: -1.0 },
+{ name: "kept", node: "exp", in: "negated_depth" },
+{ name: "through", node: "multiply", in1: "behind", in2: "kept" },
+```
+
+Write the result to the surface's `transmission`. The renderer adds it where the
+water doesn't reflect, so you see the bottom when you look straight down and
+the reflection at a grazing angle.
+
+## Bend the view through the waves
+
+`behind_at` is the screen position to read the scene behind at. Push
+`screenposition` aside by the waves' tilt so the bottom wobbles. Where the
+pushed position shows something above the water, such as a rock that stands in
+front of it, read straight behind instead:
+
+```json5
+{ name: "screen", node: "screenposition" },
+{ name: "tilt", node: "swizzle", in: "normal", channels: "xz" },
+{ name: "refraction", node: "parameter", parameter: "refraction", type: "float" },
+{ name: "bend", node: "multiply", in1: "tilt", in2: "refraction" },
+{ name: "bent", node: "add", in1: "screen", in2: "bend" },
+{ name: "bent_floor", node: "sceneposition", texcoord: "bent" },
+{ name: "bent_height", node: "extract", in: "bent_floor", index: 1 },
+{ name: "surface_height", node: "extract", in: "position", index: 1 },
+{ name: "behind_at", node: "ifgreater", value1: "bent_height", value2: "surface_height", in1: "screen", in2: "bent" },
+```
+
+The height test suits level water. A refraction of a few hundredths of the
+screen is usually enough.
+
+## Add foam along the shore
+
+The water is shallow where the floor lies just below the surface. Fade foam in
+over a `foam_width` of depth, and break it up with one channel of the wave map
+so it doesn't draw a solid line:
+
+```json5
+{ name: "floor_height", node: "extract", in: "floor", index: 1 },
+{ name: "depth", node: "subtract", in1: "surface_height", in2: "floor_height" },
+{ name: "foam_width", node: "parameter", parameter: "foam_width", type: "float" },
+{ name: "deep", node: "smoothstep", in: "depth", low: 0.0, high: "foam_width" },
+{ name: "shallow", node: "invert", in: "deep" },
+{ name: "ripple", node: "extract", in: "near_texel", index: 0 },
+{ name: "breakup", node: "smoothstep", in: "ripple", low: 0.42, high: 0.58 },
+{ name: "foam", node: "multiply", in1: "shallow", in2: "breakup" },
+```
+
+Foam is rough and pale, and you can't see through it. Blend the surface toward
+that look where `foam` is high, and end the graph with the surface:
+
+```json5
+{ name: "water_color", node: "parameter", parameter: "color", type: "color3" },
+{ name: "base_color", node: "mix", bg: "water_color", fg: [0.85, 0.85, 0.8], mix: "foam" },
+{ name: "roughness", node: "mix", bg: 0.03, fg: 0.6, mix: "foam" },
+{ name: "clear", node: "invert", in: "foam" },
+{ name: "transmission", node: "multiply", in1: "through", in2: "clear" },
+{ name: "surface", node: "surface", base_color: "base_color", normal: "normal", roughness: "roughness", transmission: "transmission" },
+```
+
+Put every node in one `nodes` list in a `water.bemx` file. The order of the
+nodes doesn't matter.
+
+## Declare the material
+
+Set `alpha_mode` to `"Blend"`. Only blended materials have a scene behind them,
+so a graph that reads `scenecolor` or `sceneposition` in any other mode fails to
+bake. Leave `opacity` at its default of 1: the water's look comes from its
+reflection and its transmission, not from blending with the scene.
+
+Declare the graph's parameters and their defaults in a `water_surface.bema`
+material:
+
+```json
+{
+	"domain": "World",
+	"type": "Surface",
+	"graph": "materials/water.bemx",
+	"alpha_mode": "Blend",
+	"variables": [
+		{ "name": "waves", "data_type": "Texture2D", "type": "Static", "value": "textures/water_normal.png" },
+		{ "name": "wave_scale", "data_type": "float", "type": "Static", "value": 0.15 },
+		{ "name": "refraction", "data_type": "float", "type": "Static", "value": 0.03 },
+		{ "name": "absorption", "data_type": "vec3f", "type": "Static", "value": [0.3, 0.15, 0.12] },
+		{ "name": "foam_width", "data_type": "float", "type": "Static", "value": 0.25 },
+		{ "name": "color", "data_type": "vec3f", "type": "Static", "value": [0.01, 0.015, 0.015] }
+	]
+}
+```
+
+A mesh draws a variant, so give each body of water a variant of it with the
+values that suit it. This one is a murky green pond:
+
+```json
+{
+	"parent": "materials/water_surface.bema",
+	"variables": [
+		{ "name": "waves", "value": "textures/water_normal.png" },
+		{ "name": "wave_scale", "value": 0.15 },
+		{ "name": "refraction", "value": 0.03 },
+		{ "name": "absorption", "value": [2.6, 1.3, 1.8] },
+		{ "name": "foam_width", "value": 0.25 },
+		{ "name": "color", "value": [0.01, 0.015, 0.012] }
+	]
+}
+```
+
+Name the wave map with a `normal` suffix, such as `water_normal.png`, so it
+bakes as a normal map. Then [bake](/docs/use/resources/bake) the materials and
+put the variant on the water's mesh.
+
+## Tune the water
+
+| To make the water | Change |
+| --- | --- |
+| Clearer, so the bottom shows deeper | Lower every `absorption` component |
+| Murkier | Raise every `absorption` component |
+| Green or brown instead of blue | Raise the `absorption` of red and blue above green's |
+| Choppier | Raise `wave_scale` for smaller waves, or use a steeper wave map |
+| Calmer | Lower the drift speeds in `near_drift` and `far_drift` |
+| Wobble more through the surface | Raise `refraction` |
+| Foamier at the shore | Raise `foam_width` |
+
+To change the water while the application runs, such as making it murkier after
+a storm, mark the variable `Dynamic` and send it a new value, as
+[Change a parameter at runtime](/docs/use/resources/author#change-a-parameter-at-runtime)
+shows.
+
+## Rust API
+
+- [`SetMaterialParameter`](/docs/api/latest/byte_engine/rendering)
+
+Next, [bake the application resources](/docs/use/resources/bake).

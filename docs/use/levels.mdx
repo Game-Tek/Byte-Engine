@@ -52,19 +52,43 @@ entity refers to it or belongs to it:
 A `parent` only groups entities: deleting the frame deletes the door, but moving the frame doesn't move the door.
 Every transform is a world transform. The [.level reference](/docs/reference/levels) lists every field and kind.
 
+To place a group of entities you reuse, such as a lamp post or a squad, write it once as a prefab and give an entity
+a `prefab` field; see [Spawn reusable objects with prefabs](/docs/use/prefabs).
+
+### Place many copies of a mesh
+
+To scatter a mesh that never moves, such as grass or rocks, write one entity for each copy with only `mesh` and
+`transform`, and no `id`:
+
+```json5
+{ components: { mesh: { resource: "grass.glb" }, transform: { position: [12, 0, 4], scale: [1.2, 1.2, 1.2] } } },
+```
+
+Each copy is an entity of its own, and picks its own detail level. The renderer culls small copies together and
+draws the ones it keeps several to a draw, so a field of small meshes doesn't cost a draw for each.
+
+To spend less on each copy, at the cost of copies that change detail level in groups, bake levels with merging on:
+register `LevelAssetHandler::merging(128)` with the asset manager in place of the default level handler. Baking then
+groups the nearby copies of a mesh resource placed more than 128 times into clusters, and the renderer draws each
+cluster as one mesh. The merged geometry is built in memory and isn't stored. To keep a copy as its own entity, so
+that you can move or delete it, give it an `id`. The
+[merged placements rules](/docs/reference/levels#merged-placements) list what merges.
+
 ## Spawn a level
 
 Create the systems that follow the level's components first, such as `Physics`, `Navigation`, and the renderer's
-pipeline, because they see only what's published after them. Then spawn the level by its asset ID:
+pipeline, because they see only what's published after them. Then load the level by its asset ID and spawn it:
 
 ```rust
 let spawner = Spawner::with_engine_kinds();
-let level = build_single_threaded_async_runtime()
-	.block_on(spawner.spawn_resource(app.world(), app.resource_manager(), "levels/courtyard.level"))?;
+let courtyard = build_single_threaded_async_runtime()
+	.block_on(Loaded::load(app.resource_manager(), "levels/courtyard.level"))?;
+let level = spawner.spawn(app.world(), &courtyard, Placement::default())?;
 ```
 
-`spawn_resource` waits for the baked level, then publishes every entity. A level that can't spawn, such as one that
-names a kind the spawner doesn't know, publishes nothing and returns a message that names the entity and kind.
+`Loaded::load` waits for the baked level and every prefab it places, and `spawn` publishes every entity. A level that
+can't spawn, such as one that names a kind the spawner doesn't know, publishes nothing and returns a message that
+names the entity and kind.
 
 ## Add your own kinds
 
@@ -139,3 +163,5 @@ app.world().channel::<DeleteMessage>().send(DeleteMessage::new(level));
 - [`gameplay::level` module](/docs/api/latest/byte_engine/gameplay/level)
 - [`Spawner`](/docs/api/latest/byte_engine/gameplay/level/Spawner)
 - [`EntityRef`](/docs/api/latest/byte_engine/gameplay/level/EntityRef)
+- [`Loaded`](/docs/api/latest/byte_engine/gameplay/level/Loaded)
+- [`Placement`](/docs/api/latest/byte_engine/gameplay/level/Placement)

@@ -11,7 +11,6 @@
 - Rebuild Metal dynamic resources when the frame count changes. `set_frames_in_flight` in `crates/ghi/src/metal/context/traits.rs` only retires upload slots and resizes `internal_upload_queues`. Descriptor sets, synchronizers, and dynamic buffers stay chained at their old length, so `nth_handle` reuses the last node.
 - Fail DX12 pipeline creation when no native pipeline state exists. `crates/ghi/src/dx12/context/pipelines.rs` still returns a handle, and later dispatch records no work when `pipeline_state` is `None`.
 - Add `else` to BESL, then remove the SSGI workarounds for it from `crates/byte-engine/assets/rendering/visibility/ssgi-*.besl`. It needs the parser or lexer, the VM, and the MSL, HLSL, and GLSL backends.
-- Rebake generated visibility material shaders when the layer modules they take, or the generator, change. A sandbox app that loads stale material shaders from its resource cache now panics on the first material dispatch with "Missing descriptor set for layout", which names the layer; the bake cache only notices changes to resource-management itself. Until then, delete the app's `resources` folder after changing `crates/byte-engine/assets/rendering/visibility/layouts` or `shader_generator`. Have the material generator (`load_engine_modules` in `crates/byte-engine/src/rendering/pipelines/visibility/shader_generator.rs`) and the `SetLayout` statics in `crates/byte-engine/src/rendering/pipelines/visibility/set_layouts.rs` read the layer modules through the asset manager instead of `ENGINE_MODULES` (`include_str!` in `crates/byte-engine/src/rendering/set_layout.rs`), so `BakeContext::resolve` records them as dependencies, as `read_module_files` does for standalone shaders in `crates/resource-management/src/asset/handler/implementations/besl.rs`. The `SetLayout` statics then need a runtime source rather than a `LazyLock` over embedded text.
 - Return a parse error for a zero-length BESL array. `u32[0]` is accepted, then `Node::array` expects a non-zero size in `crates/besl/src/lexer/ast.rs`.
 - Emit `vec3u16` raster I/O as a non-interpolated integer on HLSL, GLSL, and MSL. `is_integer_type` lists the 2- and 4-component forms and omits `vec3u16`, so the stage output is interpolated or the backend compile fails.
 - Make Linux audio pause return an error when the device does not support ALSA pause. `crates/ahi/src/os/linux.rs` uses `pcm.pause(true).unwrap()`, and `play` panics for a channel count other than 1 or 2. On Windows, reject a closest match the renderer cannot play, request 32-bit streams as float rather than integer PCM, and treat `CoInitializeEx` returning `S_FALSE` as already initialized. `play` panics outside 16- or 32-bit mono and stereo, and a 32-bit stream is requested as `KSDATAFORMAT_SUBTYPE_PCM` while samples are written as `f32`.
@@ -27,6 +26,8 @@
 # P1 - Runtime performance
 
 ## Frame and rendering
+
+- Measure Quarry mesh loading and LOD residency against a stable baked resource store after the instance-lifecycle startup fix. Check competition between mesh refinements and full texture chains in the four shared loader lanes, the material-readiness gate on LOD demand, and the repeated reads and conversion from one-level-at-a-time refinement. Deferred at the user's request; do not change loading or residency policy as part of the instance-lifecycle fix.
 
 - Reuse the fetched taps when ray-traced indirect diffuse reconstruction retries with the triangle-plane normal, without weakening either normal or tangent-plane rejection. The covered-facet fix raises material evaluation from 2.0058125 to 2.1334795 ms (+6.36%) on Sponza's close lion view at 1920 × 1080 on an Apple M4; frame time rises 0.84%, within the runs' spread, so it does not yet meet `AGENTS.md`'s no-regression bar. Keep the three `surfel_reconstruction_*` regressions and repeat the native A/B/B/A timing and square/wide captures after optimizing.
 - Use Metal's native sampler reduction on Apple10 GPUs. A BESL `sampler` with `reduction: min` or `max` always reduces in shader code on Metal (`_besl_downsample_*` in `crates/resource-management/src/shader/besl/backends/msl/emit.rs`), because a baked shader doesn't know its GPU family. On Apple10 a `constexpr sampler(..., reduction::minimum)` reads one texel instead of four at levels above 0, which occlusion culling does for every meshlet. Bake an Apple10 variant, or pick the reduction at pipeline creation with a function constant, and A/B the culling and sun-visibility stage counters.
@@ -82,9 +83,8 @@
 
 # P1 - Bake and asset performance
 
-- Free idle offline GPU pyramids. `GPUMipProcessor` in `crates/resource-management/src/resources/mips/gpu.rs` keeps every pyramid it creates because the GHI has no `destroy_image`/`destroy_buffer`; `MAX_IN_FLIGHT` bounds the count per extent. Add GHI resource destruction, then evict least-recently-used idle slots against a byte budget next to the bake memory budget.
-- Pipeline environment-map bakes the way material mips are pipelined. `GPUIBLProcessor` in `crates/resource-management/src/ibl/gpu.rs` completes each request inline in `GpuProcessor::submit`; give it per-request scratch and finish requests in `poll` so several HDR images overlap on the GPU.
-- Replace the 1 ms completion poll in `crates/resource-management/src/gpu_worker.rs` with a backend wake only if profiling shows it matters: a `Context::wait_for_any_synchronizer` with a timeout (Vulkan `vkWaitForFences` wait-any, DX12 `SetEventOnCompletion` with real events, Metal a condvar pulsed from the commit feedback handler).
+- Free idle offline GPU pyramids. `GPUMipProcessor` in `crates/resource-management/src/resources/mips/gpu.rs` keeps every pyramid it creates because the GHI has no `destroy_image`/`destroy_buffer`; `GpuProcessor::MAX_BATCH` bounds the count per extent. Add GHI resource destruction, then evict least-recently-used idle slots against a byte budget next to the bake memory budget. Then free the staging buffer `create_lookup_texture` (`crates/byte-engine/src/rendering/lookup_textures.rs`) creates for each lookup texture once its copy returns.
+- Batch environment-map bakes the way material mips are batched. `GPUIBLProcessor` in `crates/resource-management/src/ibl/gpu.rs` records one workload per request in `GpuProcessor::process`; give it per-request scratch and record a batch in one workload, so several HDR images share one submission and one wait.
 - Replace asset-handler tuple results with an allocator-backed or borrowed `BakedAsset` payload that storage can consume before arena reset.
 - Redesign `MeshProcessorSession` as a two-pass packer that computes offsets and writes directly into one final allocation.
 - Let glTF parsing borrow GLB and external BIN data instead of copying whole buffers.
@@ -93,6 +93,7 @@
 - Move generated glTF and FBX material factors (base color, metallic, roughness, emission, normal scale, occlusion strength) out of the BESL source into per-material GPU data, so materials that differ only in factors share one compiled shader. Generated shaders are already shared per graph (`store_generated_shaders`), but factors are still written into the program as literals. Specialization constants can carry them, but each distinct value still compiles its own pipeline; a factor array in the visibility `Material` struct, filled from variant variables, would let them share one.
 - Extract independent glTF primitive attributes concurrently before constructing the mesh source.
 - Run independent BEMA shader loading/compilation and material/variant variable resolution concurrently while preserving order.
+- Make a `.bemx` or `.bema` edit reach the screen faster than about 1 s in debug runs. Each material's shader carries the engine's whole shading program, about 117 KB of MSL, so BESL lowering (about 150 ms, 114 ms with BESL and resource management optimized) and the offline `metal` compile (about 380 ms, 267 ms of it parsing and checking) scale with engine code, not with the material. Compile the engine's shading code once and link each material's evaluation function against it, for example with Metal function linking, so an edit compiles only the material's own code. The watcher's 250 ms debounce adds a quarter of that; keep it, since some editors save in bursts.
 - Compress generated image mip levels concurrently after mip-chain generation.
 - Drain BELD's buffered task stream directly instead of collecting unit results.
 - Replace formatted mip stream names with typed stream identifiers or prefix-plus-index metadata.
@@ -115,8 +116,7 @@
 
 ## Engine systems
 
-- Skip the render targets of visibility features a project leaves out. With `VisibilityFeatures` turning off SSGI or contact shadows, `create_ssgi_targets` (`crates/byte-engine/src/rendering/pipelines/visibility/render_pass/ssgi.rs`) and the contact trace target in `create_sun_visibility_targets` are still allocated per sink, and `pixel-mapping.besl` still zeroes the diffuse radiance history only SSGI reads.
-- Rebake generated material shaders when the baked `VisibilityFeatures` change, without `beld bake --force`. Source versions record only files, so a material baked with GTAO stays current after `config.json` turns it off. Record the generator's feature set in the material's provenance and compare it in `AssetManager::resource_is_stale`.
+- Skip the render targets of visibility features a project leaves out. With `VisibilityFeatures` turning off SSGI or contact shadows, `create_ssgi_targets` (`crates/byte-engine/src/rendering/pipelines/visibility/render_pass/ssgi.rs`) and the contact trace target in `create_sun_visibility_targets` are still allocated per sink.
 - Light the first frames after launch with surfel GI on. Since `08a64beec`, a pixel that no surfel lit and that no light on the screen reaches gets none, so every surface the sun doesn't reach is exactly black for the first 26 to 90 frames (measured in the Sponza model viewer on 2026-11-01, raw `Lit` on the shaded floor; it settles near 0.1 and stays there). Bringing back the environment's unoccluded irradiance as a fallback would return the white flash that commit removed, so find a fill that is safe in enclosed rooms: for example, hold presentation or the GI's contribution until the first surfels have their rays, or weigh a fallback by an occlusion estimate. Measure the launch frames and that commit's 60° gallery turn before and after.
 - Decide whether the fitted ACES paths stay. The `aces2-color-grading` pass (`crates/byte-engine/assets/rendering/color-grading/aces2.besl`) now renders the official ACES 2.0 Rec.709-D65 100-nit sRGB-piecewise transform from tables computed offline by `scripts/generate-aces2-tables.py`, and agrees with OpenColorIO within 0.002. The `aces` tone mapper and the `aces-color-grading` pass still use Hill's fit. Retire them, or move them onto the ACES 2.0 transform, and validate against the Academy's golden images, which haven't been run.
 - Support self-overlapping and intersecting transparent surfaces with forward per-fragment shading or OIT.
@@ -174,11 +174,11 @@ The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves th
 ## Shader behavior
 
 - Implement Metal interpolation and metadata-driven push-constant mapping without hardcoded backend conventions.
+- Add a BEMX `surface.displacement` input that moves vertices, so water, cloth or terrain can ripple. The visibility mesh, shadow, material-evaluation prefix and BLAS stages all read the resident vertex streams, so evaluate the displacement once per frame in a compute pass that writes an instance-owned vertex range, the way skinning does, and point every stage at that range. Deferred from the water-material plan: the slate quarry's still pit doesn't need it.
 
 ## MaterialX conversion
 
 - Reduce MaterialX scattering closures onto a BEMX `Surface`, so a `<surface>` node built from `oren_nayar_diffuse_bsdf`, `dielectric_bsdf`, `conductor_bsdf`, `layer` and `mix` converts instead of reporting an unsupported shading model. This is most of the MaterialX pbrlib test suite and the pbrlib-native way to write a surface.
-- Let a MaterialX `<image>` sample with transformed texture coordinates. BEMX image nodes already take a `texcoord` input; the visibility shader generator needs to honour it, sampling with the given coordinate and carrying the matching texture-coordinate derivatives, otherwise a tiled or placed image picks the wrong mip level. Until then `place2d`, `tiledimage` and `hextiledimage` are reported as unsupported.
 - Add BEMX nodes for the MaterialX procedural and colour-conversion nodes the standard library defines with source code rather than node graphs, and map them in `materialx::bemx`: `noise2d`, `noise3d`, `fractal3d`, `cellnoise2d`, `worleynoise2d`, `flake2d`, `flake3d`, `hsvtorgb`, `rgbtohsv` and `blackbody`.
 
 # P2 - BESL architecture
@@ -271,7 +271,12 @@ The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves th
 
 `.level` files and `gameplay::Spawner` (`crates/byte-engine/src/gameplay/level.rs`) place a flat list of entities. Left out of the first version:
 
-- Prefabs and nested levels: an entity that spawns another `.level` under its transform, with ids namespaced by the instance, then per-entity overrides. Every transform is a world transform today, so an instance's transform would have to be composed into its entities at spawn.
+- Per-entity overrides of a prefab instance's payloads. Parameters cover the authored contract today; an override would name a prefab entity by id and replace one kind's payload.
+- Respawn prefab instances when their prefab rebakes in debug builds, as for levels below.
+- Let the inspector list a prefab's parameters with their defaults, so an editor can show them.
+- Place world-space payloads other than `transform` with their spawn: `navigation_area` extents, `merged` mesh placements, and anything else that holds world positions ignores a prefab's placement today.
+- Light the prefabs a level places when baking its lightmap. `collect_level` spawns the level alone, so a level with instances fails the lightmap bake.
+- Engine kinds the sandbox's prefabs need, such as an animator and a navigation agent, so `third_person`'s NPC can move to a `.prefab`.
 - Respawn a level when its resource rebakes in debug builds. `ResourceManager::resource_updates` reports the level's ID; deleting the root and spawning again is correct but loses runtime state.
 - Spawn levels larger than the message pool across ticks. A spawn publishes one message per entity and per component in one call; past `messages.capacity` the publisher waits for listeners that run later on the same thread.
 - Warn when a spawned kind has no listener. A kind no system follows is published and dropped silently; channels can't report how many listeners they have.
@@ -298,3 +303,25 @@ The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves th
 - Attach Linux portal dialogs to their parent window: export the toplevel with `zxdg_exporter_v2` and pass `wayland:<handle>` as the portal's parent window. Today they open on their own.
 - Offer message boxes on Linux, which has no portal for them; `App::open_dialog` returns `DialogError::Unsupported` there.
 - Compile and run the Wayland portal backend (`crates/ghi/src/window/os/wayland/dialogs.rs`) on Linux: it was written on the Mac and never compiled.
+
+## Subsurface scattering (deferred)
+
+- Bake local thickness offline so meshes get transmission through ears and nostrils without an authored map: cast rays inward from each vertex or texel at mesh bake, or bake inverted ambient occlusion (Barré-Brisebois and Bouchard, GDC 2011), and expose it to BEMX graphs as a `thickness` source. Deferred on 2026-11-13 in favor of the authored `thickness` input.
+- Convert MaterialX `standard_surface` subsurface inputs to BEMX: `subsurface_radius × subsurface_scale` to `subsurface_radius`, gated by `subsurface` weight. `docs/reference/materialx.mdx` still lists them as not converted.
+- Dispatch the subsurface pass only over subsurface pixels, through the material pixel lists or tiles marked during material evaluation, instead of over the whole screen, and skip it in frames that draw no subsurface material.
+- Shade subsurface materials in surfel and probe GI hits; `material_hit_body` only reads albedo and emission.
+- Rotate the subsurface sample disk per pixel once the engine has temporal anti-aliasing, as Golubev does, to trade the fixed pattern's faint structure at large radii for noise TAA removes.
+
+## Virtual shadow maps (deferred)
+
+- Sample the virtual shadow map for transparent receivers and the fog march; both get no sun shadow under `virtual` today. Fog and transparent receivers also need pages marked, or a fallback to the nearest coarser level that holds one.
+- Mark pages from every sink's receivers, not only the first sink's, so a second camera's shadows don't depend on what the first one sees.
+- Free pages under skinned instances every frame they receive a pose; today a pose leaves the pages drawn with an earlier one.
+- Alpha-test masked casters in the page draw; they cast as if opaque.
+- Report a metric per page pass inside `stage.virtual-shadow-maps`.
+- Read the penumbra filter's texels in 4 × 4 blocks with gathers when a block lies inside one page, as the cascades do; the resolve fetches each texel through its page (about 3 ms against 1.4 ms for cascades in the quarry, debug build).
+- Cut the page draw's fixed cost: 1.5 ms in the quarry with a still camera, nearly all the task stage testing every instance against 16 levels. Skip levels with no dirty page, or raise `MAX_TASK_VIEWS` to 16 so one dispatch covers every level.
+- Shadow more than one directional light, with page table layers per light.
+- Quantize the sun direction that shadows use: a slowly turning sun frees every page each frame, as in the chapter.
+- Cone and point lights on the page pool, using the thesis's mip chains.
+- Per-level detail-level selection for the page draw.

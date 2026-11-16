@@ -731,6 +731,9 @@ fn feature_requirements(settings: &crate::device::Features) -> Vec<(&'static str
 		feature!(vulkan_12.host_query_reset),
 		// Min and max samplers reduce in hardware, through runtime samplers and the samplers shaders fix.
 		feature!(vulkan_12.sampler_filter_minmax),
+		// Vertex shaders pick the render target array layer they rasterize into, such as a shadow cascade, through
+		// the BESL `render_target_array_index` output, which lowers to the SPIR-V `ShaderLayer` capability.
+		feature!(vulkan_12.shader_output_layer),
 		feature!(vulkan_13.pipeline_creation_cache_control),
 		feature!(vulkan_13.subgroup_size_control),
 		feature!(vulkan_13.compute_full_subgroups),

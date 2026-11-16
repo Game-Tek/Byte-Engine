@@ -55,7 +55,6 @@ pub struct SharedBuffer<T: ?Sized> {
 	buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
 	size: usize,
 	uses: crate::Uses,
-	access: crate::DeviceAccesses,
 	contents: std::marker::PhantomData<T>,
 }
 
@@ -87,7 +86,7 @@ impl Context {
 	/// image-group member, whose memory belongs to this context's group heap.
 	pub fn export_image(&mut self, image: graphics_hardware_interface::ImageHandle) -> DetachedImage {
 		let image = self.images.take(image.0).expect(
-			"Image export failed. The most likely cause is that the handle is stale, belongs to another context, or names a dynamic image.",
+			"Image export failed. The most likely cause is that the handle is stale, belongs to another context, or names an image with a copy per frame.",
 		);
 		assert!(
 			image.slot.is_none(),
@@ -106,8 +105,6 @@ impl Context {
 				.contains_key(&crate::PrivateHandles::Image(handle)),
 			"Image deletion failed. The most likely cause is that a descriptor set still binds the image. Write another resource to those bindings first.",
 		);
-		// A pending upload would read the image after it left the context.
-		self.pending_image_syncs.retain(|&(pending, _)| pending != handle);
 		let image = self.export_image(image);
 		self.tasks.push(Task {
 			kind: TaskKind::DeleteImage(image),
@@ -124,22 +121,28 @@ impl Context {
 
 	/// Shares a buffer this context owns so another context of the same device can record copies into it.
 	///
-	/// Keep this context alive for as long as any context uses the imported buffer. Next, pass the value to
-	/// [`Self::import_buffer`] on that context.
+	/// A buffer without host access is zeroed before this returns, so a copy the other context makes is never
+	/// overwritten by that zero fill. Keep this context alive for as long as any context uses the imported buffer.
+	/// Next, pass the value to [`Self::import_buffer`] on that context.
 	///
 	/// # Panics
 	///
 	/// Panics when the handle names no buffer of this context or a buffer with one representation per frame.
-	pub fn share_buffer<T: ?Sized>(&self, buffer: graphics_hardware_interface::BufferHandle<T>) -> SharedBuffer<T> {
-		let shared = self.buffers.get_unique(buffer.into()).expect(
-			"Buffer sharing failed. The most likely cause is that the handle is stale, belongs to another context, or names a dynamic buffer.",
+	pub fn share_buffer<T: ?Sized>(&mut self, buffer: graphics_hardware_interface::BufferHandle<T>) -> SharedBuffer<T> {
+		let base: graphics_hardware_interface::BaseBufferHandle = buffer.into();
+		// The other context can write the buffer at once, so its zero fill must have finished: submit the fills still
+		// waiting for this context's next recording, then wait for every internal upload in flight, since a frame may
+		// have submitted the fill already.
+		self.flush_pending_uploads(graphics_hardware_interface::QueueHandle::from_index(0), None);
+		self.retire_all_internal_uploads();
+		let shared = self.buffers.get_unique(base).expect(
+			"Buffer sharing failed. The most likely cause is that the handle is stale, belongs to another context, or names a buffer with a copy per frame.",
 		);
 		SharedBuffer {
 			name: shared.name.clone(),
 			buffer: shared.buffer.clone(),
 			size: shared.size,
 			uses: shared.uses,
-			access: shared.access,
 			contents: std::marker::PhantomData,
 		}
 	}
@@ -154,13 +157,14 @@ impl Context {
 		let gpu_address = buffer.buffer.gpuAddress();
 		let (handle, _) = self.buffers.add(Buffer {
 			name: buffer.name,
-			staging: None,
 			buffer: buffer.buffer,
 			size: buffer.size,
 			gpu_address,
 			pointer: std::ptr::null_mut(),
 			uses: buffer.uses,
-			access: buffer.access,
+			// The owning context keeps CPU access, so this context only records GPU commands with the buffer.
+			host_access: crate::HostAccess::None,
+			copies: crate::Copies::One,
 		});
 		graphics_hardware_interface::BufferHandle(handle, std::marker::PhantomData)
 	}

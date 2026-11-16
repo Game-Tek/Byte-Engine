@@ -103,6 +103,14 @@ pub(super) struct MaterialReconstructionFeatures {
 	pub reads_tangent_frame: bool,
 	/// The material writes a tangent-space normal, which the suffix turns out of the tangent frame.
 	pub writes_normal: bool,
+	/// The material samples an image at coordinates computed from the position, so it reads how the position changes
+	/// across the pixel. Material evaluation always has that change; a ray tracing hit sizes it from the ray cone.
+	pub reads_position_difference: bool,
+	/// The material writes light that passes through its surface, which the suffix adds where the surface doesn't
+	/// reflect.
+	pub writes_transmission: bool,
+	/// The material writes the share of light that crosses its surface, so the suffix lights it from its far side too.
+	pub writes_translucency: bool,
 }
 
 impl MaterialReconstructionFeatures {
@@ -124,6 +132,9 @@ impl MaterialReconstructionFeatures {
 			reads_uv: all.reads_uv || features.reads_uv,
 			reads_tangent_frame: all.reads_tangent_frame || features.reads_tangent_frame,
 			writes_normal: all.writes_normal || features.writes_normal,
+			reads_position_difference: all.reads_position_difference || features.reads_position_difference,
+			writes_transmission: all.writes_transmission || features.writes_transmission,
+			writes_translucency: all.writes_translucency || features.writes_translucency,
 		})
 	}
 }
@@ -137,7 +148,9 @@ pub(super) fn material_evaluation_prefix_statements(features: MaterialReconstruc
 }
 
 /// Statements that start an uber evaluation shader's thread: the opaque phase's workgroup window of indirect diffuse
-/// texels, then the thread's own pixel of its tile and the arm key of its material, `material_arm`.
+/// texels, then the thread's own pixel of its tile and the arm key of its material, `material_arm`. An opaque shader's
+/// thread then returns at a pixel the phase's other shader shades; `translucent_arm_bit` and `clears_background` are
+/// declared first.
 pub(super) fn material_evaluation_tile_statements(transparent: bool) -> Vec<Node<'static>> {
 	let mut statements = Vec::new();
 	// Only opaque surfaces read indirect diffuse light, so only the opaque shader loads the window and waits for it.
@@ -148,6 +161,13 @@ pub(super) fn material_evaluation_tile_statements(transparent: bool) -> Vec<Node
 		MATERIAL_EVALUATION_TILE_SOURCE,
 		"material_evaluation_tile",
 	));
+	// The transparent phase's shaders return by their arms instead: the pixels they skip include the opaque layer's.
+	if !transparent {
+		statements.extend(parse_besl_statements(
+			MATERIAL_EVALUATION_TILE_KIND_SOURCE,
+			"material_evaluation_tile_kind",
+		));
+	}
 	statements
 }
 
@@ -182,8 +202,17 @@ pub(super) fn material_surface_statements(features: MaterialReconstructionFeatur
 /// only for a material that reads them.
 pub(super) fn material_hit_prefix_statements(features: MaterialReconstructionFeatures) -> Vec<Node<'static>> {
 	let mut statements = parse_besl_statements(MATERIAL_HIT_PREFIX_SOURCE, "material_hit_prefix");
+	if features.needs_uv() || features.reads_position_difference {
+		statements.extend(parse_besl_statements(MATERIAL_HIT_FOOTPRINT_SOURCE, "material_hit_footprint"));
+	}
 	if features.needs_uv() {
 		statements.extend(parse_besl_statements(MATERIAL_HIT_UV_SOURCE, "material_hit_uv"));
+	}
+	if features.reads_position_difference {
+		statements.extend(parse_besl_statements(
+			MATERIAL_HIT_POSITION_DIFFERENCE_SOURCE,
+			"material_hit_position_difference",
+		));
 	}
 	if features.needs_tangent_frame() {
 		statements.extend(parse_besl_statements(MATERIAL_HIT_TANGENT_SOURCE, "material_hit_tangent"));
@@ -206,6 +235,14 @@ pub(super) fn material_evaluation_suffix_statements(
 ) -> Vec<Node<'static>> {
 	let mut statements = material_normal_statements(features);
 	statements.extend(material_lighting_statements(visibility_features));
+	if !features.writes_transmission {
+		remove_statements_reading(&mut statements, "transmission");
+	}
+	// The far-side lighting reads `translucency` or a local computed from it, so a material that is not translucent
+	// compiles none of it.
+	if !features.writes_translucency {
+		remove_statements_reading(&mut statements, "translucency");
+	}
 	statements
 }
 

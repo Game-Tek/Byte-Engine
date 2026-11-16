@@ -23,8 +23,8 @@ composable engine layer.
 - 📨 Actor-style system boundaries built around compact messages, factories,
   handles, and listeners.
 - 📦 Asset pipeline that separates authored assets from runtime-ready resources.
-- 🛠️ `beld`, a workspace CLI for baking, listing, querying, inspecting, and deleting
-  resources.
+- 🛠️ BELD, the command line each application builds for baking, listing, querying,
+  inspecting, and deleting its resources.
 - 🧪 BESL, the Byte Engine Shader Language, for shader parsing, reflection, material
   integration, and backend shader generation.
 - 🧩 Early retained, async-friendly UI primitives that run in the engine render loop.
@@ -120,12 +120,11 @@ Getting the latest unreleased changes requires pulling Byte-Engine from Git and 
 | `crates/byte-engine` | Main public engine crate and application-facing facade. |
 | `crates/ghi` | Graphics hardware interface used by the renderer. |
 | `crates/ahi` | Audio hardware interface used by engine audio systems. |
-| `crates/resource-management` | Asset handling, resource storage, shader resources, and runtime reads. |
+| `crates/resource-management` | Asset handling, resource storage, shader resources, runtime reads, parameters, and the BELD command line. |
 | `crates/besl` | Byte Engine Shader Language parser, lexer, semantic graph, and integration. |
 | `crates/betp` | Byte Engine transport protocol primitives for local and remote sessions. |
 | `crates/math` | Shared math aliases and helpers. |
 | `crates/utils` | Shared allocation, async, sync, collection, and geometry utilities. |
-| `crates/beld` | Installable asset baking and resource inspection CLI. |
 | `docs` | Documentation source: Introduction, Use (application tasks), Contribute (engine workflow and design notes), Reference (definitions), and the generated API section. |
 | `docs-site` | Documentation site project. |
 
@@ -165,13 +164,9 @@ Byte-Engine separates the files you author from runtime-ready resources:
 - When debug or development loading is enabled, the resource manager can read an
   existing resource or ask an asset handler to bake it.
 
-Install `beld` to inspect and manage resources:
-
-```sh
-cargo install beld
-```
-
-Then run its resource commands:
+Give your application its own BELD binary, as
+[Add BELD to your application](https://byte-engine.0x44491229.dev/docs/use/resources/add-beld)
+shows, and run its resource commands:
 
 ```sh
 beld --source assets --destination resources bake texture.png scene.glb character.fbx

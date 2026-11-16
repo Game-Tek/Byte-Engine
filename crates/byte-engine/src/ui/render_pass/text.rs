@@ -66,9 +66,10 @@ pub(super) struct UiGlyphAtlas {
 	next_shelf_y: u32,
 	regions: HashMap<GlyphKey, AtlasRegion>,
 	generation: u64,
-	dirty: bool,
+	/// Whether the GPU image needs the whole atlas at the next upload, as it does before its first and after a reset.
 	full_upload: bool,
-	dirty_regions: Vec<ghi::image::Region>,
+	/// The regions the next upload copies; empty while the GPU image matches the CPU pixels.
+	pending: Vec<ghi::image::Region>,
 	resized: bool,
 }
 
@@ -85,9 +86,8 @@ impl UiGlyphAtlas {
 			next_shelf_y: 0,
 			regions: HashMap::default(),
 			generation: 0,
-			dirty: false,
 			full_upload: true,
-			dirty_regions: Vec::new(),
+			pending: Vec::new(),
 			resized: false,
 		}
 	}
@@ -177,19 +177,23 @@ impl UiGlyphAtlas {
 				.copy_from_slice(&glyph.bitmap[source..source + glyph.width as usize]);
 		}
 		self.regions.insert(key, region);
-		self.dirty = true;
-		if !self.full_upload {
+		if self.full_upload {
+			// The whole atlas covers this glyph, so the first insert after a reset queues it once.
+			if self.pending.is_empty() {
+				self.pending.push(self.whole_region());
+			}
+		} else {
 			// Shelf neighbors form one upload; padding supplies transparent samples
 			// for bilinear filtering without uploading the rest of the atlas.
 			if let Some(dirty) = self
-				.dirty_regions
+				.pending
 				.iter_mut()
 				.find(|dirty| dirty.offset[1] == y && dirty.offset[0] + dirty.size[0] == x)
 			{
 				dirty.size[0] += padded_width;
 				dirty.size[1] = dirty.size[1].max(padded_height);
 			} else {
-				self.dirty_regions.push(ghi::image::Region {
+				self.pending.push(ghi::image::Region {
 					offset: [x, y],
 					size: [padded_width, padded_height],
 				});
@@ -239,9 +243,9 @@ impl UiGlyphAtlas {
 		self.next_shelf_y = 0;
 		self.regions.clear();
 		self.generation += 1;
-		self.dirty = true;
 		self.full_upload = true;
-		self.dirty_regions.clear();
+		self.pending.clear();
+		self.pending.push(self.whole_region());
 		self.resized = true;
 	}
 
@@ -255,47 +259,43 @@ impl UiGlyphAtlas {
 		}
 	}
 
-	/// Mirrors CPU changes to the GPU image; a no-op when nothing changed since the last upload.
-	pub(super) fn upload(&mut self, frame: &mut ghi::implementation::Frame, image: ghi::BaseImageHandle) {
+	/// Resizes the GPU image to the atlas's extent after the atlas grew.
+	pub(super) fn sync_extent(&mut self, frame: &mut ghi::implementation::Frame, image: ghi::BaseImageHandle) {
 		if self.resized {
 			frame.resize_image(image, self.extent());
 			self.resized = false;
 		}
-		if !self.dirty {
-			return;
-		}
-		let staging = frame.get_texture_slice_mut(image);
-		self.copy_dirty_pixels(staging);
-		if self.full_upload {
-			frame.sync_texture(image);
-		} else {
-			for &region in &self.dirty_regions {
-				frame.sync_texture_region(image, region);
-			}
-		}
-		self.full_upload = false;
-		self.dirty_regions.clear();
-		self.dirty = false;
 	}
 
-	/// Copies the pending rows into full-image staging storage without touching other texels.
-	fn copy_dirty_pixels(&self, staging: &mut [u8]) {
-		if self.full_upload {
-			staging[..self.pixels.len()].copy_from_slice(&self.pixels);
-			return;
+	/// Returns the staging bytes [`Self::drain_pending`] hands out; zero when nothing changed since the last upload.
+	pub(super) fn upload_size(&self) -> usize {
+		self.pending
+			.iter()
+			.map(|&region| region_layout(UI_GLYPH_ATLAS_FORMAT, region).padded_size)
+			.sum()
+	}
+
+	/// Hands every region the GPU image needs since the last upload to `copy`, with the atlas pixels from its first
+	/// texel and the atlas row stride, then marks the atlas uploaded.
+	pub(super) fn drain_pending(&mut self, mut copy: impl FnMut(ghi::image::Region, &[u8], usize)) {
+		for region in self.pending.drain(..) {
+			let start = (region.offset[1] * self.size + region.offset[0]) as usize;
+			copy(region, &self.pixels[start..], self.size as usize);
 		}
-		for region in &self.dirty_regions {
-			for y in region.offset[1]..region.offset[1] + region.size[1] {
-				let start = (y * self.size + region.offset[0]) as usize;
-				let end = start + region.size[0] as usize;
-				staging[start..end].copy_from_slice(&self.pixels[start..end]);
-			}
+		self.full_upload = false;
+	}
+
+	/// Returns the region that covers the whole atlas.
+	fn whole_region(&self) -> ghi::image::Region {
+		ghi::image::Region {
+			offset: [0, 0],
+			size: [self.size, self.size],
 		}
 	}
 
 	#[cfg(test)]
 	pub(super) fn is_dirty(&self) -> bool {
-		self.dirty
+		!self.pending.is_empty()
 	}
 }
 
@@ -334,10 +334,11 @@ struct PreparedText {
 fn place_text_glyphs<A: std::alloc::Allocator>(
 	text_system: &mut TextSystem,
 	text: &str,
+	font: Option<&'static str>,
 	font_size: f32,
 	glyphs: &mut Vec<PendingGlyph, A>,
 ) {
-	text_system.place_glyphs(text, font_size, (0, 0), |placement| {
+	text_system.place_glyphs(text, font, font_size, (0, 0), |placement| {
 		glyphs.push(PendingGlyph {
 			key: placement.key,
 			x: placement.x,
@@ -471,7 +472,7 @@ pub(super) fn build_ui_text_geometry_damaged<'a>(
 		}
 		let font_size = raster_font_size(text.font_size * font_scale);
 		if !retain_runs {
-			place_text_glyphs(text_system, &text.text, font_size, &mut pending);
+			place_text_glyphs(text_system, &text.text, text.font, font_size, &mut pending);
 			label.glyphs.end = pending.len();
 			continue;
 		}
@@ -495,7 +496,7 @@ pub(super) fn build_ui_text_geometry_damaged<'a>(
 		label.cache_index = Some(index);
 		let run = &mut atlas.runs[index];
 		run.source_index = text_index;
-		let placement_changed = run.font_size != font_size || run.input.text != text.text;
+		let placement_changed = run.font_size != font_size || run.input.font != text.font || run.input.text != text.text;
 		let visual_changed = placement_changed
 			|| run.input != *text
 			|| run.viewport != (viewport, draw_list.layout_size)
@@ -509,11 +510,11 @@ pub(super) fn build_ui_text_geometry_damaged<'a>(
 		if placement_changed {
 			run.placement_valid = false;
 			// Continuously changing labels stream glyphs without retaining obsolete runs.
-			place_text_glyphs(text_system, &text.text, font_size, &mut pending);
+			place_text_glyphs(text_system, &text.text, text.font, font_size, &mut pending);
 		} else {
 			if !run.placement_valid {
 				run.glyphs.clear();
-				place_text_glyphs(text_system, &text.text, font_size, &mut run.glyphs);
+				place_text_glyphs(text_system, &text.text, text.font, font_size, &mut run.glyphs);
 				run.placement_valid = true;
 			}
 			for glyph in &mut run.glyphs {
@@ -561,6 +562,7 @@ pub(super) fn build_ui_text_geometry_damaged<'a>(
 				label.glyphs.start = pending.len();
 				text_system.place_glyphs(
 					&text.text,
+					text.font,
 					raster_font_size(text.font_size * font_scale),
 					(0, 0),
 					|placement| {
@@ -783,6 +785,7 @@ mod tests {
 			clip_mask: None,
 			color: RGBA::new(1.0, 0.5, 0.25, 1.0),
 			font_size: 16.0,
+			font: None,
 			text: content.to_string(),
 		}
 	}
@@ -813,7 +816,7 @@ mod tests {
 		);
 		let start = first.primitives[0].bounds;
 		let count = atlas.len();
-		atlas.dirty = false;
+		atlas.pending.clear();
 		for step in 1..20 {
 			// Stay inside the 13 pixel bucket, which ends at 13.5.
 			list.texts[0].font_size = 13.1 + step as f32 * 0.02;
@@ -935,27 +938,36 @@ mod tests {
 		);
 	}
 
+	/// Applies the atlas's pending copies to `image`, the way the GPU copies them.
+	fn apply_pending_copies(atlas: &mut UiGlyphAtlas, image: &mut [u8]) {
+		let size = atlas.size();
+		atlas.drain_pending(|region, source, stride| {
+			for row in 0..region.size[1] as usize {
+				let start = (region.offset[1] as usize + row) * size as usize + region.offset[0] as usize;
+				let texels = &source[row * stride..][..region.size[0] as usize];
+				image[start..start + texels.len()].copy_from_slice(texels);
+			}
+		});
+	}
+
 	#[test]
 	fn atlas_updates_copy_padded_regions_and_reset_clears_old_pixels() {
 		let mut atlas = UiGlyphAtlas::new(64);
 		atlas.insert(GlyphKey::new('A', 16.0), &glyph(5, 8, 93)).unwrap();
-		let mut staging = vec![0; 64 * 64];
-		atlas.copy_dirty_pixels(&mut staging);
-		assert_eq!(staging, atlas.pixels());
-		// Emulate completion of the initial full upload, then add two shelf neighbors.
-		atlas.full_upload = false;
-		atlas.dirty = false;
+		let mut image = vec![0; 64 * 64];
+		apply_pending_copies(&mut atlas, &mut image);
+		assert_eq!(image, atlas.pixels());
 		atlas.insert(GlyphKey::new('B', 16.0), &glyph(6, 8, 121)).unwrap();
 		atlas.insert(GlyphKey::new('C', 16.0), &glyph(4, 7, 151)).unwrap();
-		// A distant staging byte must survive a partial copy.
-		*staging.last_mut().unwrap() = 231;
-		atlas.copy_dirty_pixels(&mut staging);
+		// A distant texel must survive a partial copy.
+		*image.last_mut().unwrap() = 231;
+		apply_pending_copies(&mut atlas, &mut image);
 		let mut expected = atlas.pixels().to_vec();
 		*expected.last_mut().unwrap() = 231;
-		assert_eq!(staging, expected);
+		assert_eq!(image, expected);
 		atlas.reset(64);
-		atlas.copy_dirty_pixels(&mut staging);
-		assert!(staging.iter().all(|&pixel| pixel == 0));
+		apply_pending_copies(&mut atlas, &mut image);
+		assert!(image.iter().all(|&pixel| pixel == 0));
 	}
 
 	#[test]

@@ -47,24 +47,138 @@ in `.ndjson`.
 ## Entities and messages
 
 The entity query lists every factory-created handle with its types and the
-name and position the inspector has observed since it started. It filters by
-exact type or name.
+properties the inspector has observed since it started. It filters by exact
+type or name.
+
+| Property | Value |
+| --- | --- |
+| `name` | The latest name attached to the entity. |
+| `transform` | The latest transform published for the entity, in the `TransformationUpdate` payload's shape: `position` and `scale` as three numbers, `orientation` as four. |
+| `camera` | The latest camera settings published for the entity, in the `CameraUpdate` payload's shape. |
+| `point_light`, `cone_light`, `directional_light` | The latest settings published for the light the entity is, as authored, in its update message's payload shape. |
+
+A property is present only when the entity has it. Because `transform`,
+`camera`, and the light properties have their update message's payload shape,
+a client can change one field of any of them and post the whole value back
+without resetting the others.
 
 | Message | Payload | Effect |
 | --- | --- | --- |
 | `TransformationUpdate` | A complete transform: `position` and `scale` as three numbers, `orientation` as four. | Moves the entity. |
+| `CameraUpdate` | Camera settings, as the camera payload table describes. | Replaces every setting of the camera the entity is, from the next frame on. |
+| `PointLightUpdate`, `ConeLightUpdate`, `DirectionalLightUpdate` | A light's settings, as the level's [`point_light`, `cone_light`, and `directional_light` kinds](/docs/reference/levels#kinds) write them. | Replaces every setting of the light of that kind the entity is, from the next frame on. |
 | `Delete`, `Destroy` | Null. | Deletes and retires the entity. |
 | `TriggerAction` | An input value tagged by its kind, such as a float. | Publishes an action event as if from a device. The target is the action's handle, found by name in the entity query. |
+
+A missing field of a `TransformationUpdate` or `CameraUpdate` payload takes
+its default, and an unknown field rejects the message. A light's payload takes
+the same defaults and rules as its [level kind](/docs/reference/levels#lights),
+and a light property reports every setting as it was authored: its color as
+`kelvin` or `linear_srgb`, and its intensity in the quantity it was given in. The camera payload has
+these fields, whose rules are the
+[camera's](/docs/reference/rendering#camera):
+
+| Field | Default | Accepts |
+| --- | --- | --- |
+| `fov` | 45 | The vertical field of view in degrees, above 0 and below 180. |
+| `near` | 0.1 | The near plane in meters, above 0 and below `far`. |
+| `far` | 100 | The far plane in meters, finite. |
+| `f_number` | Null | The lens f-number, above 0, or null for a pinhole. |
+| `focus_distance` | 10 | The distance in focus in meters, above 0 and finite. |
+| `sensor_height` | 0.024 | The sensor height in meters, above 0 and finite. |
+| `exposure` | 0 | The exposure in stops, finite and within ±64. |
 
 The message type catalog describes each payload's shape with a small
 vocabulary: null, boolean, string, integer, number, array, tuple, object,
 optional, map, result, enum, any, recursive, and unknown.
+
+### Entity search
+
+An entity search picks entities out of the entity query's list by their names
+and types. The console's entities view and in-process tools, such as an
+editor's scene list, take the same search. A search is words separated by
+spaces.
+
+| Word | Keeps the entities |
+| --- | --- |
+| `type:` and text, such as `type:camera` | That have a type whose full name contains the text, in any letter case. |
+| Anything else | Whose name fuzzy-matches the word: its characters appear in the name in order, possibly with others between them. |
+
+An entity must pass every word. Name words also take these forms:
+
+| Form | Matches names that |
+| --- | --- |
+| `'text` | Contain the text. |
+| `^text` | Start with the text. |
+| `text$` | End with the text. |
+| `!` before any form | Don't match it. |
+
+A name word matches without regard to letter case unless it has an uppercase
+letter. An entity without a name never matches a name word.
+
+Without a name word, the found entities are in handle order. With one, the
+best match comes first, and equal matches stay in handle order. An empty search
+keeps every entity.
+
+### Spawning levels
+
+A spawn takes a level's source, the same JSON a `.level` file holds, or the ID
+of a baked level or prefab, and spawns it into the running application, as
+spawning a baked level does; see [Levels](/docs/reference/levels) and
+[Prefabs](/docs/reference/prefabs). Use it to add entities while the application
+runs, such as a mesh or a prefab an editor drops into the scene.
+
+| Rule | Behavior |
+| --- | --- |
+| Spawner | The application's: a level spawns only once the application gave the inspector its spawner, and only kinds that spawner knows spawn. Without one, every spawn fails. |
+| Source | Checked as [baking](/docs/reference/levels#baking) checks a level file, except that a level that names a mesh to [merge](/docs/reference/levels#merged-placements) isn't merged. The prefabs its instances place load from the application's resource manager. |
+| ID | A baked level or prefab, loaded from the application's resource manager with every prefab it reaches, and placed at the transform the spawn gives. A prefab takes its parameters' defaults. Only in-process tools spawn by ID. |
+| Answer | The level's root. Its entities take the handles that follow, one each, in the order baking stores them: parents first, otherwise in the source's order. |
+| Failure | A source that doesn't bake, or an entity whose component doesn't fit its kind, spawns nothing and answers with the cause. |
+| Unload | Deleting the root deletes every entity the spawn added. |
+
+## Resources
+
+The resource query lists the ID of every stored resource of one class, such as
+`Mesh`, in ID order. Classes are named as the
+[resource store](/docs/reference/resource-store#resource-classes) names them,
+and matched exactly. It reads the store, so a development build lists only the
+resources it already baked. A class no resource has lists nothing.
+
+## Source assets
+
+In a development build, the inspector reaches the application's source
+assets: the files under the asset directory that `assets.path` sets, which the
+application bakes on demand.
+
+| Rule | Behavior |
+| --- | --- |
+| IDs | An asset's path under the asset directory, with `/` between its parts, as every asset ID is. An ID that leaves the directory, such as one with a `..` part, fails. |
+| List | The ID of every source file whose name ends in one extension, such as `bemx`, in ID order. The extension is matched exactly, without its dot. |
+| Read | One source file's text. A file that isn't UTF-8 text fails. |
+| Write | Replaces one source file's text, creating the file and its directories when missing. Readers never see a partly written file. The application then bakes again what read the file, as it does after any source change. |
+| Transports | In-process tools list, read, and write. The HTTP inspector lists and reads, with `GET /assets?extension=bemx` and `GET /assets/source?id=<id>`; it never writes, since it has no authentication. |
+| Release builds | Every request fails, since release applications don't read source assets. |
 
 ## Configuration
 
 The configuration route lists every runtime setting update with its parameter,
 the requested value, and its state: pending until the pass it targets is
 installed, set with the value in effect, or not set with the reason.
+
+An update request names one parameter and the value to give it. It answers
+with the update's event, and the owning system applies it on a later tick.
+
+| Field | Accepts |
+| --- | --- |
+| `parameter` | The full parameter name, as on the command line without the leading dashes, such as `render.lod.force`. |
+| `value` | A Boolean, a whole number, a number with a fraction, or text. |
+
+| Outcome | Result |
+| --- | --- |
+| A system owns the parameter's prefix | The event is pending until that system sets it or refuses it. |
+| No system owns the parameter's prefix | The event comes back not set. |
+| A field is missing or unknown | The request is refused, and no event is created. |
 
 ## Events
 

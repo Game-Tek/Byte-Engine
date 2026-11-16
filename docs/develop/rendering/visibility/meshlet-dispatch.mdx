@@ -1,0 +1,154 @@
+---
+title: Meshlet dispatch
+description: Understand how the visibility pipeline hands meshlets to task workgroups and packs the kept ones into mesh grids before you change the work items, the task payload, or a mesh shader.
+icon: Boxes
+---
+
+Read this page before you change the mesh dispatch work items, the task
+shader, its payload, or any mesh shader. What an application can rely on is
+specified under [the visibility pipeline](/docs/reference/rendering#the-visibility-pipeline)
+in the rendering reference.
+
+## Why small meshlets are packed
+
+A task workgroup culls 32 meshlets, one on each lane, and a mesh grid draws up
+to 128 vertices and 252 triangles, two full meshlets. A scene of many small
+meshes fills neither when every instance has workgroups and grids of its own: a
+grass tuft of one 20-vertex meshlet would run a workgroup with 31 idle lanes,
+then a grid a sixth full. So the pipeline packs twice, every frame, from what's
+drawn:
+
+- **Small instances share workgroups.** The meshlets of instances that draw
+  `SHARED_INSTANCE_MESHLETS` meshlets or fewer fill workgroups together.
+- **Kept meshlets share grids.** The task shader groups the meshlets it keeps,
+  and one mesh grid draws a whole group. A grid holds two full meshlets, so a
+  meshlet that several shadow cascades keep, or two neighboring full
+  meshlets, take one grid instead of two: launching grids costs more than
+  filling them. On the slate quarry this took 1.6 % off the frame, from both
+  the shadow maps and the camera's visibility pass.
+
+Nothing is baked or stored for this, so it follows each instance's detail
+level and each view's culling.
+
+## How it's built
+
+1. The GPU builds the frame's work items, because how many meshlets an
+   instance draws follows the camera. `MeshWork`, in `mesh_dispatch.rs`,
+   keeps only the list of instances each raster phase draws, and writes it
+   when the scene changes. Three compute passes turn it into work each frame.
+   `work-count.besl` counts each listed instance's items from its record.
+   `work-ranges.besl` lays out two ranges for each phase: a chunk item for
+   every 32 meshlets of each large instance, then an item for every meshlet
+   of each small instance, padded with empty items to whole workgroups.
+   `work-scatter.besl` writes the items.
+2. `record_meshlet_dispatches`, in `render_pass.rs`, dispatches each range
+   with `dispatch_meshes_indirect`, which reads the workgroup count the
+   ranges pass wrote. The `work_range` push constant names the range, whose
+   first item the task shader reads from the start of the work buffer, and
+   `shared_lanes` tells it which kind it reads.
+3. `meshlet-task.besl` culls one meshlet on each lane. Each kept meshlet and
+   view becomes a payload entry that names its lane, its view, and its vertex
+   and triangle counts.
+4. After the lanes finish, lane 0 forms the groups: each takes the next entry
+   while the group stays within one grid's vertices and triangles. It rewrites
+   the counts as the group's running totals, marks each group's last entry,
+   and stores each group's first entry.
+5. A mesh shader draws one group with 128 threads. Each thread walks the
+   group's entries to find the one that holds its vertex and the ones that
+   hold its two triangles, the triangle of its index and the one 128 after
+   it, then reads each entry's instance and meshlet through the work items.
+
+`layouts/scene_records.besl` specifies the payload words and holds the
+functions that decode them, which the task shader and the four mesh shaders
+share.
+
+## Meshlet vertices
+
+A mesh thread used to reach its vertex in two steps: the meshlet's vertex
+index, then the position that index names. With
+`GeometryCapacity::meshlet_vertices` on, which is the default, the loader also
+writes each meshlet's vertices in the meshlet's own order, as one
+`ShaderMeshletVertex` for each vertex index: the position, rounded to 16 bits
+within the level's sphere, and the UV. A mesh thread then reads its vertex
+directly, and a meshlet's vertices lie in a row.
+
+`write_meshlet_vertices`, in `geometry/prepare.rs`, fills the stream from the
+prepared mesh's other streams, so resource, generated, and merged meshes all
+get it from one place and no baked mesh changes. It marks each meshlet it
+covers with `MESHLET_LOCAL_VERTICES`, and the mesh shaders fall back to the
+indexed vertices for a meshlet without the mark and for a posed instance.
+
+## Rules a change must keep
+
+- **A triangle keeps its identity.** A mesh shader marks each triangle with
+  its own meshlet and index in that meshlet, and each vertex with its
+  instance, whatever grid draws it. Material evaluation finds the triangle
+  from those, so it doesn't know about groups.
+- **The instance is written per vertex.** Every vertex of a meshlet belongs to
+  one instance, and a grid has half as many vertices as triangles, so the
+  instance costs less there. Integers aren't interpolated, so the fragment
+  stage reads it whole.
+- **Only masked stages pass UVs.** `masked-visibility-mesh.besl` and
+  `masked-shadow-mesh.besl` write the UV the alpha test reads, and the
+  instance's material word once per vertex, so the coverage fragment finds its
+  material without reading the instance record: that dependent read cost the
+  masked pass more than the extra output. `visibility-mesh.besl` and
+  `shadow-mesh.besl` don't, and each pair must otherwise stay the same. The
+  coverage fragment's interface sorts its fields by name, which sets the mesh
+  stage's output locations.
+- **A group fits one grid.** `MAX_GROUP_VERTICES` and `MAX_GROUP_TRIANGLES` in
+  `scene_records.besl` must equal `maximum_vertices` and `maximum_primitives`
+  in the mesh shaders' `.bead` files.
+- **An entry never holds a count of zero.** The payload stores counts minus
+  one, so the task shader keeps no meshlet without a vertex or a triangle.
+- **A group starts at or after the entry of its own index.** The task shader
+  stores group `g`'s first entry in word `g` after it has rewritten that word,
+  which holds only because every group has at least one entry.
+- **Meshlet vertices are a copy for drawing only.** Material evaluation, rays,
+  skinning, and lightmaps read the indexed vertices. A meshlet vertex lies at
+  the element its index has in the vertex-index stream, so both streams share
+  one range and one capacity.
+- **One occlusion record per workgroup.** The record is keyed by the
+  workgroup's first work item and holds one bit per lane, in both kinds of
+  workgroup.
+- **Shared workgroups end whole.** The ranges pass pads the last one with
+  empty items, and a lane with an empty item reads instance zero and emits
+  nothing.
+- **A listed instance always has a record.** The count pass reads the record
+  of every instance a phase lists, so an instance that draws nothing from
+  where the camera is keeps its place and carries `MESH_FLAG_HIDDEN`.
+- **Every phase starts on a group of 32 entries.** The count and scatter
+  passes take 32 entries of the instance list to a workgroup, and the ranges
+  pass sums whole groups for each phase.
+- **The work is built before any meshlet pass.** The sink that records the
+  frame-wide work records the build first, after the frame's instance records
+  are written.
+- **A camera move rewrites records, not lists.** `follow_instances`, in
+  `instance_rebuild.rs`, picks again only the instances whose kept pick no
+  longer holds and rewrites their records. An instance that moved gives up
+  its pick with `Kept::release`. Only a rebuild changes the lists.
+- **Every meshlet pipeline declares the task shader's push constants.** The
+  `.pipeline` files give their size.
+
+## Tests
+
+- `mesh_work_lists_each_phases_chunks_then_its_shared_meshlets` and
+  `mesh_work_draws_what_fits_the_work_buffer`, in `visibility/tests.rs`, run
+  the three build passes in the BESL VM: which instances share workgroups,
+  the padding, hidden instances, and what's left out when the work is full.
+- `following_the_camera_leaves_what_a_rebuild_from_there_would` and
+  `following_a_moved_entity_leaves_what_a_rebuild_would`, in
+  `instance_rebuild.rs`, compare a followed instance table with a rebuilt
+  one.
+- `visibility/tests.rs` runs the shaders in the BESL VM.
+  `task_main_groups_small_meshlets_into_full_mesh_grids` and
+  `task_main_culls_the_meshlet_each_shared_lane_names` cover the task shader's
+  grouping and shared lanes, and
+  `visibility_mesh_main_draws_every_meshlet_of_its_group` covers a grid that
+  draws two meshlets.
+- `meshlet_vertices_repeat_each_meshlets_vertices_in_its_own_order`, in
+  `geometry/prepare.rs`, covers the stream, and
+  `mesh_stages_read_a_meshlets_own_vertices` covers the four mesh shaders
+  reading it.
+- `visibility_assets_lower_to_the_platform_shader_language` compiles the
+  shaders with the platform compiler.

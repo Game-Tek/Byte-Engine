@@ -1,7 +1,6 @@
 //! Graphics pipeline and render-pass setup.
 
 use super::*;
-use crate::rendering::DirectionalLight;
 
 /// Installs the retained wireframe debug scene after the render passes registered before this call.
 ///
@@ -166,8 +165,10 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 
 	run_on_loading_thread(application, visibility_loader_lanes.into_iter().map(|lane| lane.run()));
 
+	let graphics_queue = application.renderer.graphics_queue();
 	let visibility_pipeline_manager = VisibilityPipelineManager::new(
 		application.renderer.context_mut(),
+		graphics_queue,
 		&application.world,
 		geometry,
 		visibility_loader,
@@ -196,9 +197,9 @@ pub fn setup_particles(application: &mut GraphicsApplication) {
 	let resources = application.resource_manager_handle();
 	let (loader, renderer) = application.loader_and_renderer_mut();
 	let pipeline_manager = renderer.pipeline_manager_client();
-	// Systems are small records read once each, so one lane keeps up.
+	// Systems are small records read once each, so one general lane keeps up.
 	let (systems_loader, lanes) =
-		rendering::loading::spawn(loader, rendering::particles::ParticleSystemLoader { resources }, 1, 16);
+		rendering::loading::spawn(loader, rendering::particles::ParticleSystemLoader { resources }, 1, 1, 16);
 	let particle_manager = rendering::particles::ParticleManager::new(&application.world, pipeline_manager, systems_loader);
 	application.renderer.add_pipeline_manager(particle_manager);
 	run_on_loading_thread(application, lanes.into_iter().map(|lane| lane.run()));
@@ -212,15 +213,28 @@ fn run_on_loading_thread<F: Future<Output = ()> + 'static>(
 	application.add_deferred_task(move |runtime| lanes.into_iter().for_each(|lane| runtime.spawn(lane).detach()));
 }
 
-/// Installs the retained UI render pass fed by UI render messages from `ui`.
+/// Installs a retained UI render pass fed by UI render messages from `ui`.
+///
+/// Each call adds its own pass, which draws its UI over `main` as everything registered before it left it, so a later
+/// call draws over an earlier one: a game's HUD, then a tool such as an editor over the HUD. `name` tells the passes
+/// apart: `render.pass.<name>` enables or bypasses this one, the inspector reports its GPU time under that name, and
+/// its render targets are `<name>` and `<name> layer`. Give every call a different name; see
+/// [Draw one interface over another](/docs/use/gui#draw-one-interface-over-another).
 ///
 /// Register this pass before publishing renders that every sink must observe.
 /// The source subscribes immediately and retains the latest render for sinks
-/// initialized later. `font` is the file text is drawn with, or `None` for a system font;
-/// pass the same file to [`crate::ui::Engine::with_font`] so layout and drawing agree.
-pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<Render>, font: Option<&std::path::Path>) {
-	let font = font.map(std::path::Path::to_path_buf);
+/// initialized later. `fonts` are the fonts text is drawn with, the first being the default, or empty for a system
+/// font; pass the same list to [`crate::ui::Engine::with_fonts`] so layout and drawing agree. See
+/// [`crate::ui::Fonts`].
+pub fn setup_ui_render_pass(
+	application: &mut GraphicsApplication,
+	name: &'static str,
+	ui: &Factory<Render>,
+	fonts: crate::ui::Fonts<'_>,
+) {
 	UiRenderPass::request_pipelines(&application.renderer.pipeline_manager_client());
+	// Each sink builds its pass later, so the pass keeps its own list; cloning it shares the font files.
+	let fonts = fonts.to_vec();
 	let source = std::rc::Rc::new(std::cell::RefCell::new(UiRenderSource::new(ui.listener())));
 	let renderer = &mut application.renderer;
 
@@ -278,7 +292,7 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<
 		Box::new(CustomRenderPass {
 			source: std::rc::Rc::clone(&source),
 			revision: 0,
-			render_pass: UiRenderPass::new(render_pass_builder, font.as_deref()),
+			render_pass: UiRenderPass::new(render_pass_builder, name, &fonts),
 		})
 	});
 }
@@ -463,13 +477,15 @@ fn setup_image_transform_render_pass(
 /// The pass moves `settings.scatter` of every pixel's scene-linear light into a faint tail
 /// around it within `main`, adding no light, so call it after the passes that write scene light, such as the visibility
 /// pipeline and the atmosphere sky, and before tone mapping. Later passes consume its
-/// remapped `main` output. Use `render.pass.bloom` to enable or bypass it at runtime.
+/// remapped `main` output. Use `render.pass.bloom` to enable or bypass it at runtime, and `render.bloom.pixel-weights`
+/// to choose how its prefilter averages the scene.
 pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: BloomPassSettings) {
-	let renderer = &mut application.renderer;
-
-	renderer.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
-		Box::new(BloomPass::with_settings(render_pass_builder, settings))
-	});
+	let controls = BloomControls::new(settings, application.configure("render.bloom."));
+	application
+		.renderer
+		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+			Box::new(BloomPass::new(render_pass_builder, controls.clone()))
+		});
 }
 
 /// Installs depth of field for every current and future render sink.
@@ -693,30 +709,20 @@ pub fn setup_smaa_render_pass(application: &mut GraphicsApplication) {
 /// Installs exponential height fog for every current and future render sink.
 ///
 /// The fog hides distant surfaces and the horizon behind mist that thins with altitude, lit by the sky and the
-/// newest [`DirectionalLight`]. Call it after the scene pipeline and [`setup_particles`], and before
+/// newest [`DirectionalLight`](rendering::DirectionalLight). Call it after the scene pipeline and [`setup_particles`], and before
 /// [`setup_lens_flare_render_pass`], [`setup_bloom_render_pass`], and tone mapping, so bright light glows through the
 /// fog. Use `render.pass.exponential-height-fog` to enable or bypass it at runtime.
 ///
 /// The pass draws nothing until a fog exists. Next, create an [`rendering::ExponentialHeightFog`] through
-/// [`MessageScope::factory`](crate::core::message_bus::MessageScope::factory). Like the atmosphere sky, each window's fog subscribes to fogs and lights when the
-/// renderer adopts the window, so create them in a tick after the one that creates the window.
+/// [`MessageScope::factory`](crate::core::message_bus::MessageScope::factory), in any tick, before or after the window:
+/// the pass reads the newest fog and sun from [`rendering::Sink`].
 pub fn setup_exponential_height_fog_render_pass(application: &mut GraphicsApplication) {
-	// Keep producer handles in the sink factory instead of template listeners, which would retain unread broadcast messages.
-	let fog_factory = application.world().factory::<rendering::ExponentialHeightFog>();
-	let light_factory = application.world().factory::<DirectionalLight>();
-	let transform_channel = application.world().channel::<TransformationUpdate>();
-
 	use rendering::render_passes::height_fog::ExponentialHeightFogRenderPass;
 
 	application
 		.renderer
-		.add_pixel_step_for_all_sinks(ExponentialHeightFogRenderPass::PIPELINE, move |render_pass_builder| {
-			Box::new(ExponentialHeightFogRenderPass::new(
-				render_pass_builder,
-				fog_factory.listener(),
-				light_factory.listener(),
-				transform_channel.listener(),
-			))
+		.add_pixel_step_for_all_sinks(ExponentialHeightFogRenderPass::PIPELINE, |render_pass_builder| {
+			Box::new(ExponentialHeightFogRenderPass::new(render_pass_builder))
 		});
 }
 
@@ -725,23 +731,28 @@ pub fn setup_exponential_height_fog_render_pass(application: &mut GraphicsApplic
 /// Scene pipelines draw it after opaque surfaces and before transparent ones, so transparent surfaces blend over
 /// the sky. Use `render.pass.atmosphere sky` to enable or bypass it at runtime; bypassed, the background is black.
 ///
-/// The newest [`DirectionalLight`] is the sky's sun: its illuminance sets the sky's brightness and color, and its
+/// The newest [`DirectionalLight`](rendering::DirectionalLight) is the sky's sun: its illuminance sets the sky's brightness and color, and its
 /// transform sets the sun's direction. Without one, the sky stays black.
 ///
-/// Each window's sky subscribes to lights when the renderer adopts the window, at the end of the tick that creates it,
-/// and doesn't see lights created before then. Create the window in one tick and the light in a later one.
-pub fn setup_atmosphere_sky_render_pass(application: &mut GraphicsApplication) {
-	// Keep producer handles in the sink factory instead of template listeners, which would retain unread broadcast messages.
-	let light_factory = application.world().factory::<DirectionalLight>();
-	let transform_channel = application.world().channel::<TransformationUpdate>();
+/// `settings` sets the atmosphere and how much of the screen the sky covers. The default draws the upper half of
+/// the screen; set [`AtmosphereSkyRenderPassSettings::screen_height`] to `1.0` for cameras that look up or down.
+/// Use `render.sky.haze` to change [`AtmosphereSkyRenderPassSettings::haze`] at runtime.
+///
+/// The sky reads its sun from [`rendering::Sink::sun`], so a light created in any tick, before or after the window,
+/// lights it.
+pub fn setup_atmosphere_sky_render_pass(application: &mut GraphicsApplication, settings: AtmosphereSkyRenderPassSettings) {
+	let controls = AtmosphereSkyControls::new(settings, application.configure("render.sky."));
 	let renderer = &mut application.renderer;
 
+	let environment_controls = controls.clone();
 	renderer.set_scene_background_for_all_sinks(move |render_pass_builder, targets| {
-		Box::new(AtmosphereSkyRenderPass::new(
+		Box::new(AtmosphereSkyRenderPass::new(render_pass_builder, targets, controls.clone()))
+	});
+	// The same sky lights the scene while it selects no `Environment`.
+	renderer.set_scene_environment(move |render_pass_builder| {
+		rendering::render_passes::sky::AtmosphereSkyEnvironment::scene_environment(
 			render_pass_builder,
-			targets,
-			light_factory.listener(),
-			transform_channel.listener(),
-		))
+			environment_controls.clone(),
+		)
 	});
 }

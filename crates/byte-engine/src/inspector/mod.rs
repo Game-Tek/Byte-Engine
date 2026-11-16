@@ -7,7 +7,6 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use math::Point;
 #[cfg(feature = "headed")]
 use screenshot::ScreenshotBroker;
 use serde::{Serialize, Serializer, ser::SerializeMap, ser::SerializeStruct};
@@ -15,7 +14,7 @@ use utils::sync::Mutex;
 
 use crate::{
 	application::Events,
-	configuration::{Configuration, ConfigurationEvent},
+	configuration::{Configuration, ConfigurationEvent, ConfigurationEventId, ConfigurationValue, Parameter},
 	core::{
 		channel::{Channel, DefaultChannel},
 		factory::{CreateMessage, Handle},
@@ -23,13 +22,16 @@ use crate::{
 		message_bus::{MessageBus, MessageScope},
 		message_observer::{MessageObserver, ObservedEntity},
 	},
-	gameplay::{Name, TransformationUpdate},
+	gameplay::{Name, Transform, TransformationUpdate, transform::SerializableTransform},
 	metrics::Metrics,
 };
 
 // Only the graphics application raises the event signal and the HTTP inspector reads events; headless builds leave both
 // sides unused.
+#[cfg(feature = "headed")]
+pub mod console;
 #[cfg_attr(not(feature = "headed"), allow(dead_code))]
+mod content;
 mod events;
 #[cfg_attr(not(feature = "headed"), allow(unused_imports))]
 pub(crate) use events::{EventBatch, EventCursor, EventFilter, EventSignal, EventWaitError, MAX_EVENT_WAIT};
@@ -38,23 +40,29 @@ pub mod http;
 mod message;
 use message::SerializableMessage;
 pub use message::{
-	DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, RegisteredMessageType, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
-	TRIGGER_ACTION_MESSAGE_TYPE,
+	CAMERA_UPDATE_MESSAGE_TYPE, CONE_LIGHT_UPDATE_MESSAGE_TYPE, DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE,
+	DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE, POINT_LIGHT_UPDATE_MESSAGE_TYPE, RegisteredMessageType,
+	TRANSFORMATION_UPDATE_MESSAGE_TYPE, TRIGGER_ACTION_MESSAGE_TYPE,
 };
 #[cfg(feature = "headed")]
 pub(crate) mod screenshot;
+// The search's fuzzy matcher comes with the headed build, as the console does.
+#[cfg(feature = "headed")]
+mod search;
 #[cfg(feature = "headed")]
 pub use screenshot::{
 	MAX_SCREENSHOT_CAPTURES, ScreenshotCapture, ScreenshotError, ScreenshotFormat, ScreenshotResponse, ScreenshotSelection,
 	ScreenshotSubmitError, Screenshots,
 };
+#[cfg(feature = "headed")]
+pub use search::{find_entities, fuzzy_find};
 mod shape;
 // Only the graphics application opens stream output and adopts requests; headless builds leave that side unused.
 #[cfg_attr(not(feature = "headed"), allow(dead_code, unused_imports))]
 mod stream;
 pub use stream::{DebugDataStream, DebugDataStreamWriter};
 #[cfg_attr(not(feature = "headed"), allow(unused_imports))]
-pub(crate) use stream::{DebugDataStreams, StreamOutput};
+pub(crate) use stream::{DebugDataStreams, RetainedStreams, StreamOutput};
 
 /// The [`Inspectable`] trait defines the read and mutation surface exposed to
 /// external engine tooling.
@@ -107,15 +115,34 @@ pub struct InspectedEntity {
 pub enum InspectedValue<'a> {
 	/// Text, such as an attached [`Name`].
 	Text(&'a str),
-	/// A world-space location, serialized as `[x, y, z]`.
-	Point(Point),
+	/// A transform, serialized in the `TransformationUpdate` payload's shape so a client can post it back.
+	Transform(&'a Transform),
+	/// A camera's settings, serialized in the `CameraUpdate` payload's shape so a client can post them back.
+	#[cfg(feature = "headed")]
+	Camera(&'a crate::rendering::Camera),
+	/// A light's settings as authored, serialized in its update message's payload shape so a client can post them
+	/// back.
+	#[cfg(feature = "headed")]
+	PointLight(&'a crate::rendering::PointLight),
+	#[cfg(feature = "headed")]
+	ConeLight(&'a crate::rendering::ConeLight),
+	#[cfg(feature = "headed")]
+	DirectionalLight(&'a crate::rendering::DirectionalLight),
 }
 
 impl Serialize for InspectedValue<'_> {
 	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
 		match self {
 			Self::Text(text) => serializer.serialize_str(text),
-			Self::Point(point) => [point.x(), point.y(), point.z()].serialize(serializer),
+			Self::Transform(transform) => SerializableTransform::from(*transform).serialize(serializer),
+			#[cfg(feature = "headed")]
+			Self::Camera(camera) => camera.serialize(serializer),
+			#[cfg(feature = "headed")]
+			Self::PointLight(light) => light.serialize(serializer),
+			#[cfg(feature = "headed")]
+			Self::ConeLight(light) => light.serialize(serializer),
+			#[cfg(feature = "headed")]
+			Self::DirectionalLight(light) => light.serialize(serializer),
 		}
 	}
 }
@@ -125,8 +152,18 @@ impl Serialize for InspectedValue<'_> {
 struct InspectedProperties {
 	/// The latest [`Name`] derived for the entity.
 	name: Option<Name>,
-	/// The position of the latest [`Transform`](crate::gameplay::Transform) published for the entity.
-	position: Option<Point>,
+	/// The latest [`Transform`] published for the entity.
+	transform: Option<Transform>,
+	/// The latest camera settings published for the entity, when it's a camera.
+	#[cfg(feature = "headed")]
+	camera: Option<crate::rendering::Camera>,
+	/// The latest settings published for each light the entity is.
+	#[cfg(feature = "headed")]
+	point_light: Option<crate::rendering::PointLight>,
+	#[cfg(feature = "headed")]
+	cone_light: Option<crate::rendering::ConeLight>,
+	#[cfg(feature = "headed")]
+	directional_light: Option<crate::rendering::DirectionalLight>,
 }
 
 impl InspectedProperties {
@@ -134,7 +171,18 @@ impl InspectedProperties {
 	fn iter(&self) -> impl Iterator<Item = (&'static str, InspectedValue<'_>)> {
 		[
 			self.name.as_ref().map(|name| ("name", InspectedValue::Text(name.as_str()))),
-			self.position.map(|position| ("position", InspectedValue::Point(position))),
+			self.transform.as_ref().map(|transform| ("transform", InspectedValue::Transform(transform))),
+			#[cfg(feature = "headed")]
+			self.camera.as_ref().map(|camera| ("camera", InspectedValue::Camera(camera))),
+			// Each light property is named after the level kind whose payload it has.
+			#[cfg(feature = "headed")]
+			self.point_light.as_ref().map(|light| ("point_light", InspectedValue::PointLight(light))),
+			#[cfg(feature = "headed")]
+			self.cone_light.as_ref().map(|light| ("cone_light", InspectedValue::ConeLight(light))),
+			#[cfg(feature = "headed")]
+			self.directional_light
+				.as_ref()
+				.map(|light| ("directional_light", InspectedValue::DirectionalLight(light))),
 		]
 		.into_iter()
 		.flatten()
@@ -172,7 +220,7 @@ impl InspectedEntity {
 		self.entity.types()
 	}
 
-	/// Returns the tracked property with this protocol name, such as `name` or `position`, when the entity has it.
+	/// Returns the tracked property with this protocol name, such as `name` or `transform`, when the entity has it.
 	pub fn property(&self, name: &str) -> Option<InspectedValue<'_>> {
 		self.properties
 			.iter()
@@ -195,6 +243,14 @@ pub struct DefaultInspector {
 	metrics: Arc<Metrics>,
 	/// Wakes requests waiting in [`Self::wait_for_events`]; the application loop raises it.
 	event_signal: Arc<EventSignal>,
+	/// The latest record of each debug data stream, which the console shows.
+	streams: Arc<RetainedStreams>,
+	/// The world levels spawn into.
+	world: MessageScope,
+	/// The application's spawner, once it gave it; see [`Self::set_spawner`].
+	spawner: Mutex<Option<Arc<crate::gameplay::Spawner>>>,
+	/// The application's resource manager, once it gave it; see [`Self::set_resource_manager`].
+	resource_manager: std::sync::OnceLock<crate::core::EntityHandle<resource_management::ResourceManager>>,
 }
 
 impl DefaultInspector {
@@ -234,7 +290,18 @@ impl DefaultInspector {
 			debug_views: None,
 			metrics,
 			event_signal: Arc::new(EventSignal::new()),
+			streams: Arc::default(),
+			world: messages,
+			spawner: Mutex::new(None),
+			resource_manager: std::sync::OnceLock::new(),
 		}
+	}
+
+	/// Returns the latest record of each debug data stream. Give it to the application's stream output so records
+	/// reach it.
+	#[cfg_attr(not(feature = "headed"), allow(dead_code))]
+	pub(crate) fn streams(&self) -> &Arc<RetainedStreams> {
+		&self.streams
 	}
 
 	/// Returns the per-tick CPU and GPU timings of the application.
@@ -273,6 +340,31 @@ impl DefaultInspector {
 	/// Returns the latest configuration event states for protocol adapters.
 	pub fn configuration_events(&self) -> Vec<ConfigurationEvent> {
 		self.configuration.events()
+	}
+
+	/// Returns every runtime setting the application's systems declared, by name, with the values each takes and
+	/// holds, so a tool can list them and show their values.
+	///
+	/// Next, set one with [`Self::update_configuration`].
+	pub fn configuration_parameters(&self) -> Vec<Parameter> {
+		self.configuration.parameters()
+	}
+
+	/// Returns the latest state of the configuration event `id`, so a tool can report whether an update it queued with
+	/// [`Self::update_configuration`] was set.
+	pub fn configuration_event(&self, id: ConfigurationEventId) -> Option<ConfigurationEvent> {
+		self.configuration.event(id)
+	}
+
+	/// Queues `value` for the system that owns `parameter` and returns the event that reports whether it was set.
+	///
+	/// The owning system applies it on a later tick. Follow the event's state through
+	/// [`Self::configuration_events`] or the `configuration` events of [`Self::wait_for_events`].
+	pub fn update_configuration(&self, parameter: &str, value: ConfigurationValue) -> ConfigurationEvent {
+		let id = self.configuration.update(parameter, value);
+		self.configuration.event(id).expect(
+			"Configuration event is missing right after it was queued. The most likely cause is an event history that drops new events. Keep the newest events when trimming the history.",
+		)
 	}
 
 	/// Connects the catalog the renderer publishes its debug views to, which `GET /debug-views` serves.
@@ -365,10 +457,30 @@ fn watch_properties(
 	messages.channel::<CreateMessage<Name>>().watch(move |creation| {
 		names.lock().entry(creation.handle()).or_default().name = Some(creation.data().clone());
 	});
-	let positions = Arc::clone(properties);
+	let transforms = Arc::clone(properties);
 	messages.channel::<TransformationUpdate>().watch(move |update| {
-		positions.lock().entry(update.handle()).or_default().position = Some(update.transform().get_position());
+		transforms.lock().entry(update.handle()).or_default().transform = Some(update.transform().clone());
 	});
+	#[cfg(feature = "headed")]
+	{
+		let cameras = Arc::clone(properties);
+		messages.channel::<crate::rendering::CameraUpdate>().watch(move |update| {
+			cameras.lock().entry(update.handle()).or_default().camera = Some(update.data().clone());
+		});
+		// A light created again under its handle replaces it, so each creation is its latest settings.
+		let lights = Arc::clone(properties);
+		messages.channel::<crate::rendering::PointLightUpdate>().watch(move |update| {
+			lights.lock().entry(update.handle()).or_default().point_light = Some(update.data().clone());
+		});
+		let lights = Arc::clone(properties);
+		messages.channel::<crate::rendering::ConeLightUpdate>().watch(move |update| {
+			lights.lock().entry(update.handle()).or_default().cone_light = Some(update.data().clone());
+		});
+		let lights = Arc::clone(properties);
+		messages.channel::<crate::rendering::DirectionalLightUpdate>().watch(move |update| {
+			lights.lock().entry(update.handle()).or_default().directional_light = Some(update.data().clone());
+		});
+	}
 	let deleted = Arc::clone(properties);
 	let observer = observer.clone();
 	messages.channel::<DeleteMessage>().watch(move |deletion| {
@@ -392,6 +504,7 @@ mod tests {
 		},
 		gameplay::{Name, Transform, TransformationUpdate},
 		metrics::Metrics,
+		rendering::{Camera, CameraUpdate},
 	};
 
 	#[test]
@@ -418,15 +531,15 @@ mod tests {
 		assert_eq!(entities[0].handle(), handle);
 		assert_eq!(entities[0].property("name"), Some(InspectedValue::Text("crate")));
 		assert_eq!(
-			entities[0].property("position"),
-			Some(InspectedValue::Point(Point::new(1.0, 2.0, 3.0)))
+			entities[0].property("transform"),
+			Some(InspectedValue::Transform(&Transform::from_position(Point::new(1.0, 2.0, 3.0))))
 		);
 		assert_eq!(
 			inspector.entities(Some(std::any::type_name::<String>()), Some("crate")).len(),
 			1
 		);
 
-		// Updates sent straight to the transform route, as physics does, replace the spawn position.
+		// Updates sent straight to the transform route, as physics does, replace the spawn transform.
 		world.channel::<TransformationUpdate>().send(TransformationUpdate::new(
 			handle,
 			Transform::from_position(Point::new(4.0, 5.0, 6.0)),
@@ -436,11 +549,99 @@ mod tests {
 		let entities = inspector.entities(None, Some("shipping crate"));
 		assert_eq!(entities[0].handle(), handle);
 		assert_eq!(
-			entities[0].property("position"),
-			Some(InspectedValue::Point(Point::new(4.0, 5.0, 6.0)))
+			entities[0].property("transform"),
+			Some(InspectedValue::Transform(&Transform::from_position(Point::new(4.0, 5.0, 6.0))))
 		);
 
 		world.channel::<DeleteMessage>().send(DeleteMessage::new(handle));
 		assert!(inspector.entities(None, Some("shipping crate")).is_empty());
+	}
+
+	#[test]
+	fn a_posted_light_update_replaces_the_light_property_as_authored() {
+		use crate::rendering::{ConeLight, ConeLightUpdate, LightColor, PhotometricIntensity};
+
+		let message_bus = MessageBus::default();
+		message_bus.observe().expect("attach test message observer");
+		let world = message_bus.new_scope("inspected-light-test-world");
+		let mut inspector = DefaultInspector::new(
+			DefaultChannel::new(),
+			Configuration::new(),
+			world.clone(),
+			Arc::new(Metrics::new()),
+		);
+		inspector
+			.register_message(super::CONE_LIGHT_UPDATE_MESSAGE_TYPE, world.channel::<ConeLightUpdate>())
+			.unwrap();
+		let light = ConeLight::new(
+			LightColor::kelvin(4000.0),
+			PhotometricIntensity::luminous_flux(800.0),
+			math::Radians::new(0.3),
+			math::Radians::new(0.5),
+		)
+		.unwrap();
+		let handle: Handle = world.create(light).with(Name::new("spot")).into();
+		let light = |inspector: &DefaultInspector| {
+			let entities = inspector.entities(None, Some("spot"));
+			serde_json::to_value(entities[0].property("cone_light").expect("a cone light property")).unwrap()
+		};
+		// The light reports what it was authored with, not what it resolved to.
+		assert_eq!(light(&inspector)["color"], serde_json::json!({ "kelvin": 4000.0 }));
+		assert_eq!(light(&inspector)["intensity"]["luminous_flux"]["lumens"], 800.0);
+
+		// The property's own shape posts back, with fields changed.
+		let mut payload = light(&inspector);
+		payload["color"] = serde_json::json!({ "linear_srgb": [1.0, 0.5, 0.25] });
+		payload["outer_angle"] = 0.75.into();
+		payload["shadow_far"] = 12.0.into();
+		inspector
+			.post_message(super::CONE_LIGHT_UPDATE_MESSAGE_TYPE, handle, &payload.to_string())
+			.unwrap();
+		assert_eq!(light(&inspector), payload);
+
+		// A cone whose inner angle isn't below its outer one is refused.
+		payload["inner_angle"] = 1.0.into();
+		assert!(
+			inspector
+				.post_message(super::CONE_LIGHT_UPDATE_MESSAGE_TYPE, handle, &payload.to_string())
+				.is_err()
+		);
+	}
+
+	#[test]
+	fn a_posted_camera_update_replaces_the_camera_property() {
+		let message_bus = MessageBus::default();
+		message_bus.observe().expect("attach test message observer");
+		let world = message_bus.new_scope("inspected-camera-test-world");
+		let mut inspector = DefaultInspector::new(
+			DefaultChannel::new(),
+			Configuration::new(),
+			world.clone(),
+			Arc::new(Metrics::new()),
+		);
+		inspector
+			.register_message(super::CAMERA_UPDATE_MESSAGE_TYPE, world.channel::<CameraUpdate>())
+			.unwrap();
+		let handle: Handle = world.create(Camera::new()).with(Name::new("camera")).into();
+		let camera = |inspector: &DefaultInspector| {
+			let entities = inspector.entities(None, Some("camera"));
+			serde_json::to_value(entities[0].property("camera").expect("a camera property")).unwrap()
+		};
+		assert_eq!(camera(&inspector)["fov"], 45.0);
+
+		// The property's own shape posts back, with one field changed.
+		let mut payload = camera(&inspector);
+		payload["fov"] = 70.0.into();
+		payload["f_number"] = 2.8f32.into();
+		inspector
+			.post_message(super::CAMERA_UPDATE_MESSAGE_TYPE, handle, &payload.to_string())
+			.unwrap();
+		assert_eq!(camera(&inspector), payload);
+
+		assert!(
+			inspector
+				.post_message(super::CAMERA_UPDATE_MESSAGE_TYPE, handle, r#"{ "near": 0 }"#)
+				.is_err()
+		);
 	}
 }

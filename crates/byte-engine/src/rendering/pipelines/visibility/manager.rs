@@ -15,21 +15,23 @@ use resource_management::resources::skeleton::SkinBinding;
 use resource_management::types::AlphaMode;
 use smallvec::SmallVec;
 use tracing::debug_span;
-use utils::hash::HashMap;
+use utils::hash::{HashMap, HashSet};
 use utils::{AvailabilityGraph, Extent, StableVec};
 
 use super::acceleration_structures::{SceneAccelerationStructures, TracedPrimitive};
 use super::features::{
-	CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, MaterialEvaluationMode, RENDER_PARAMETERS, VisibilityFeatures,
+	CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, MaterialEvaluationMode, RENDER_PARAMETERS, UberVariant,
+	VisibilityFeatures,
 };
 use super::geometry::{GeometryCapacity, GeometryHandles, MeshData, allocate_vertices};
 use super::instance_rebuild::{
-	Admission, InstanceOutputs, InstanceSources, LaneScratch, instance_phase, rebuild_instances, rebuild_lanes,
+	Admission, Followed, InstanceOutputs, InstanceSources, Kept, LaneScratch, follow_instances, instance_phase,
+	rebuild_instances, rebuild_lanes,
 };
 use super::layout::{
-	CONE_SHADOW_VIEW_OFFSET, DEFAULT_SHADOW_MAP_BUDGET_MIB, DEFAULT_SHADOW_MAP_RESOLUTION, MAX_BINDLESS_TEXTURES, MAX_LIGHTS,
-	MAX_MATERIAL_PARAMETERS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, NO_EVALUATION, POINT_SHADOW_FACE_COUNT,
-	POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT, VERTEX_UV_BUFFER_STRIDE,
+	CONE_SHADOW_VIEW_OFFSET, DEFAULT_SHADOW_MAP_BUDGET_MIB, DEFAULT_SHADOW_MAP_RESOLUTION, DIRECTIONAL_SHADOW_VIEW_OFFSET,
+	MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIAL_PARAMETERS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, NO_EVALUATION,
+	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT, VERTEX_UV_BUFFER_STRIDE,
 };
 use super::lightmaps::Lightmaps;
 use super::loader::{
@@ -38,22 +40,22 @@ use super::loader::{
 };
 use super::lod::{LodSettings, LodView, MeshLods};
 use super::material_parameters::MaterialParameters;
-use super::mesh_dispatch::MeshDispatchWorkBuffer;
+use super::mesh_dispatch::MeshWork;
 use super::ray_tracing::{HitShading, PROBE_SHADE_SHADER, SURFEL_SHADE_SHADER};
 use super::render_pass::{
 	ContactShadowSettings, DEFAULT_PROBE_RAY_BUDGET, DEFAULT_PROBE_SPACING, DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET,
 	FrameWork, GiSettings, GtaoSettings, IndirectDiffuseSource, MAX_SURFEL_RAY_BUDGET, PROBE_RAY_BUDGET_RANGE, PROBE_RAYS,
 	PROBE_SPACING_RANGE, ProbeGiSettings, ProbeVolume, RayHits, RayTracing, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
 	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool,
-	VisibilityRenderPass, create_fog_light_target, create_gtao_targets, create_ssgi_targets, create_sun_visibility_targets,
-	create_surfel_targets,
+	VisibilityRenderPass, create_backdrop_targets, create_diffuse_radiance_history_target, create_fog_light_target,
+	create_gtao_targets, create_ssgi_targets, create_subsurface_targets, create_sun_visibility_targets, create_surfel_targets,
 };
 use super::residency::MeshResidencies;
 use super::scene::{
 	InstanceCapacity, MaterialEvaluation, PosedVertices, RenderEntity, RenderInfo, RenderSkin, SinkState, VisibilityScene,
 };
 use super::set_layouts;
-use super::shader_data::{IesProfileTexture, MaterialData, ShaderMesh, ShaderViewData};
+use super::shader_data::{IesProfileTexture, MaterialData, ShaderFrame, ShaderMesh, ShaderViewData};
 use super::shadow_selection::{
 	SHADOW_DEFAULT_EXPOSURE_SCALE, ShadowBudget, ShadowLayout, ShadowLightSelection, ShadowSlots, make_cone_shadow_view,
 	make_point_shadow_view, retain_layout, select_shadow_lights, sun_cascade_view,
@@ -65,15 +67,21 @@ use super::terrain::{TerrainChange, TerrainStreams};
 use super::skinning::{
 	DualQuaternion, MAX_SKINNING_MATRICES, SkinningDispatch, SkinningPaletteKind, SkinningPass, append_dual_quaternion_palette,
 };
+use super::virtual_shadows::{
+	DirectionalShadowTechnique, ShaderVirtualShadowFrame, VirtualShadowLevels, VirtualShadowSettings,
+	place_virtual_shadow_levels, range_union,
+};
 use crate::application::parameters::Parameters;
 use crate::core::alley::Alley;
-use crate::core::factory::{CreateMessage, Handle};
+use crate::core::factory::{CreateMessage, Factory, Handle};
 use crate::core::listener::{DefaultListener, Listener as _};
 use crate::core::message::DeleteMessage;
 use crate::core::message_bus::MessageScope;
+use super::screen_queries::ScreenQueries;
 use crate::gameplay::Transform;
 use crate::rendering::csm::{self, CascadeFitting, CascadeSplits};
 use crate::rendering::lights::{ConeLight, DirectionalLight, Lights, LocalEmission, PointLight};
+use crate::rendering::lookup_textures::{create_blue_noise_texture, create_lookup_texture};
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::renderable::mesh::MeshKey;
@@ -92,6 +100,9 @@ pub const SHADOW_UPDATE_TEXELS_PARAMETER: &str = "shadow-maps.update-texels";
 /// The prefix, inside the `render` subtree, of the startup parameters that set each scene-wide geometry buffer's
 /// element count, such as `render.geometry.triangle-capacity`. See [`GeometryCapacity`].
 pub const GEOMETRY_CAPACITY_PARAMETER_PREFIX: &str = "geometry.";
+/// The startup parameter, inside [`RENDER_PARAMETERS`], that turns the meshlet vertex stream on or off:
+/// `render.geometry.meshlet-vertices`. See [`GeometryCapacity::meshlet_vertices`].
+pub const MESHLET_VERTICES_PARAMETER: &str = "geometry.meshlet-vertices";
 /// The prefix, inside the `render` subtree, of the startup parameters that size the per-frame instance tables:
 /// `render.instances.capacity` and `render.instances.meshlet-group-capacity`. See [`InstanceCapacity`].
 pub const INSTANCE_CAPACITY_PARAMETER_PREFIX: &str = "instances.";
@@ -108,6 +119,15 @@ pub const DIRECTIONAL_SHADOW_FITTING_PARAMETER: &str = "directional-shadows.fitt
 /// The startup parameter, inside the `render` subtree, that sets the directional cascades' resolution in texels per
 /// side. See [`VisibilityPipelineSettings::with_directional_shadow_map_resolution`].
 pub const DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER: &str = "directional-shadows.resolution";
+/// The startup parameter, inside the `render` subtree, that chooses how directional lights cast shadows: `cascades` or
+/// `virtual`. See [`DirectionalShadowTechnique`].
+pub const DIRECTIONAL_SHADOW_TECHNIQUE_PARAMETER: &str = "directional-shadows.technique";
+/// The startup parameters, inside the `render` subtree, that size a virtual shadow map: its finest level's side in
+/// meters, the scale on the distance receivers pick their level by, and the pages its pool holds. See
+/// [`VirtualShadowSettings`].
+pub const VIRTUAL_SHADOW_LEVEL_SIZE_PARAMETER: &str = "directional-shadows.first-level-size";
+pub const VIRTUAL_SHADOW_LEVEL_BIAS_PARAMETER: &str = "directional-shadows.level-bias";
+pub const VIRTUAL_SHADOW_POOL_PAGES_PARAMETER: &str = "directional-shadows.pool-pages";
 /// The startup parameter, inside the `render` subtree, that sets how many surfels surfel GI keeps alive at once. See
 /// [`VisibilityPipelineSettings::with_surfel_capacity`].
 pub const SURFEL_CAPACITY_PARAMETER: &str = "surfel-gi.surfel-capacity";
@@ -133,6 +153,8 @@ pub struct VisibilityPipelineSettings {
 	cascade_splits: CascadeSplits,
 	cascade_fitting: CascadeFitting,
 	directional_shadow_map_resolution: u32,
+	directional_shadow_technique: DirectionalShadowTechnique,
+	virtual_shadows: VirtualShadowSettings,
 	surfel_capacity: u32,
 	surfel_ray_budget: u32,
 	probe_ray_budget: u32,
@@ -151,6 +173,8 @@ impl Default for VisibilityPipelineSettings {
 			cascade_splits: CascadeSplits::default(),
 			cascade_fitting: CascadeFitting::default(),
 			directional_shadow_map_resolution: DEFAULT_SHADOW_MAP_RESOLUTION,
+			directional_shadow_technique: DirectionalShadowTechnique::default(),
+			virtual_shadows: VirtualShadowSettings::default(),
 			surfel_capacity: DEFAULT_SURFEL_CAPACITY,
 			surfel_ray_budget: DEFAULT_SURFEL_RAY_BUDGET,
 			probe_ray_budget: DEFAULT_PROBE_RAY_BUDGET,
@@ -201,6 +225,9 @@ impl VisibilityPipelineSettings {
 				*capacity = value;
 			}
 		}
+		if let Some(kept) = parse(&parameters, MESHLET_VERTICES_PARAMETER) {
+			geometry_capacity.meshlet_vertices = kept;
+		}
 		settings = settings
 			.with_geometry_capacity(geometry_capacity)
 			.unwrap_or_else(|reason| panic!("{reason}"));
@@ -234,6 +261,18 @@ impl VisibilityPipelineSettings {
 				.with_directional_shadow_map_resolution(resolution)
 				.unwrap_or_else(|reason| panic!("{reason}"));
 		}
+		if let Some(technique) = parse(&parameters, DIRECTIONAL_SHADOW_TECHNIQUE_PARAMETER) {
+			settings = settings.with_directional_shadow_technique(technique);
+		}
+		// Virtual shadow map sizing: each parameter overrides one part of the defaults.
+		let virtual_defaults = settings.virtual_shadow_settings();
+		let virtual_shadows = VirtualShadowSettings::new(
+			parse(&parameters, VIRTUAL_SHADOW_LEVEL_SIZE_PARAMETER).unwrap_or(virtual_defaults.first_level_size()),
+			parse(&parameters, VIRTUAL_SHADOW_LEVEL_BIAS_PARAMETER).unwrap_or(virtual_defaults.level_bias()),
+			parse(&parameters, VIRTUAL_SHADOW_POOL_PAGES_PARAMETER).unwrap_or(virtual_defaults.pool_pages()),
+		)
+		.unwrap_or_else(|reason| panic!("{reason}"));
+		settings = settings.with_virtual_shadow_settings(virtual_shadows);
 		if let Some(capacity) = parse(&parameters, SURFEL_CAPACITY_PARAMETER) {
 			settings = settings
 				.with_surfel_capacity(capacity)
@@ -334,6 +373,29 @@ impl VisibilityPipelineSettings {
 		Ok(self)
 	}
 
+	/// Sets how directional lights cast shadows: through cascades, or through a virtual shadow map for the first
+	/// directional light. The rules of each are specified in the
+	/// [visibility pipeline reference](/docs/reference/rendering#virtual-shadow-maps).
+	pub fn with_directional_shadow_technique(mut self, technique: DirectionalShadowTechnique) -> Self {
+		self.directional_shadow_technique = technique;
+		self
+	}
+
+	pub fn directional_shadow_technique(&self) -> DirectionalShadowTechnique {
+		self.directional_shadow_technique
+	}
+
+	/// Sets how large a virtual shadow map's finest level is, how coarse a level receivers pick, and how many pages hold
+	/// depth at once. They apply only with [`DirectionalShadowTechnique::Virtual`].
+	pub fn with_virtual_shadow_settings(mut self, settings: VirtualShadowSettings) -> Self {
+		self.virtual_shadows = settings;
+		self
+	}
+
+	pub fn virtual_shadow_settings(&self) -> VirtualShadowSettings {
+		self.virtual_shadows
+	}
+
 	/// Sets the shadow-map memory, in mebibytes, that every shadow-casting light shares.
 	///
 	/// The first directional light takes its cascades first, cone and point lights then share what remains by how much
@@ -360,8 +422,9 @@ impl VisibilityPipelineSettings {
 	/// cube face its size class's texels per side squared.
 	///
 	/// Cascades 0 and 1 of every shadowed sun draw every frame and count first. The other cascades, cone maps, and point
-	/// cube faces then draw by need within what's left, so a smaller budget spreads their updates over more frames. The
-	/// rules are specified in the [shadow map updates](/docs/reference/rendering#shadow-map-updates) of the visibility
+	/// cube faces then draw by need within what's left, so a smaller budget spreads their updates over more frames.
+	/// Texels a frame leaves unspent carry over to the next, so a budget that leaves half a map draws it every other
+	/// frame. The rules are specified in the [shadow map updates](/docs/reference/rendering#shadow-map-updates) of the visibility
 	/// pipeline reference.
 	///
 	/// # Errors
@@ -495,7 +558,11 @@ impl VisibilityPipelineSettings {
 
 	/// Returns what one light of each kind costs from the shadow-map budget.
 	fn shadow_budget(&self) -> ShadowBudget {
-		ShadowBudget::new(self.shadow_map_budget_mib, self.directional_shadow_map_resolution)
+		ShadowBudget::new(
+			self.shadow_map_budget_mib,
+			self.directional_shadow_map_resolution,
+			self.directional_shadow_technique,
+		)
 	}
 }
 
@@ -506,16 +573,6 @@ enum Availability {
 	Material(u32),
 	Texture(u32),
 }
-
-/// A renderable waiting for its mesh resource.
-struct PendingRenderable {
-	handle: Handle,
-	mesh_key: MeshKey,
-}
-
-/// The evaluation slot of each phase's uber shader, which is the only evaluation of its phase in the uber material
-/// evaluation mode.
-const UBER_EVALUATION_INDEX: u32 = 0;
 
 /// One material's render-thread pipeline and authored alpha and sidedness contract.
 struct LoadedMaterial {
@@ -528,6 +585,8 @@ struct LoadedMaterial {
 	/// The material's key in the coverage shaders, when it is masked.
 	coverage_arm: Option<u32>,
 	texture_indices: Vec<u32>,
+	/// Whether the material's graph reads the opaque scene behind its surface.
+	reads_backdrop: bool,
 }
 
 /// The `UberShader` struct is one phase's compiled uber material evaluation shader, which evaluates the materials whose
@@ -554,23 +613,22 @@ impl ResidentEnvironment {
 /// Creates the opaque black environment sampled while no HDR environment is configured or its upload is pending.
 pub(crate) fn create_fallback_environment(
 	context: &mut ghi::implementation::Context,
+	queue: ghi::QueueHandle,
 	sampler: ghi::SamplerHandle,
 ) -> ResidentEnvironment {
-	let image = context.build_image(
-		ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
+	// Opaque alpha keeps material evaluation on this black environment instead of the analytical fallback reserved for
+	// explicitly transparent environment texels.
+	const FACE: [u8; 4] = [0, 0, 0, u8::MAX];
+	let image = create_lookup_texture(
+		context,
+		queue,
+		ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image)
 			.name("Visibility Environment Fallback")
 			.extent(Extent::square(1))
 			// Materials sample the environment as a cubemap.
-			.cube_compatible()
-			.device_accesses(ghi::DeviceAccesses::HostToDevice)
-			.use_case(ghi::UseCases::STATIC),
+			.cube_compatible(),
+		[FACE; 6].as_flattened(),
 	);
-	// Opaque alpha keeps material evaluation on this black environment instead of the analytical fallback
-	// reserved for explicitly transparent environment texels.
-	for face in context.get_texture_slice_mut(image).chunks_exact_mut(4) {
-		face.copy_from_slice(&[0, 0, 0, u8::MAX]);
-	}
-	context.sync_texture(image);
 	ResidentEnvironment {
 		diffuse_image: image.into(),
 		specular_image: image.into(),
@@ -701,7 +759,7 @@ fn resolve_ies_profile(light: &Lights, profiles: &HashMap<String, IesProfileText
 fn built_in_or_off(enabled: bool, built_in: bool, parameter: &str) -> bool {
 	if enabled && !built_in {
 		log::warn!(
-			"`{RENDER_PARAMETERS}.{parameter}` was not enabled. The most likely cause is that it was `false` at startup, so its feature was left out of the project's shaders. Set it to `true` in `config.json`, then rebake with `beld bake --force`. See {}.",
+			"`{RENDER_PARAMETERS}.{parameter}` was not enabled. The most likely cause is that it was `false` at startup, so its feature was left out of the project's shaders. Set it to `true` in `config.json`, then bake again with `beld bake`. See {}.",
 			crate::online_docs_url("use/resources/bake#leave-render-features-out-of-the-bake")
 		);
 	}
@@ -775,6 +833,11 @@ pub struct VisibilityPipelineManager {
 	terrain_requests: Vec<crate::rendering::renderable::mesh::MeshSource>,
 	environment_listener: DefaultListener<CreateMessage<Environment>>,
 	lightmap_listener: DefaultListener<CreateMessage<Lightmap>>,
+	/// The screen scene queries the world creates, which [`ScreenQueries`] keeps until a completed frame answers them.
+	screen_query_listener: DefaultListener<CreateMessage<crate::rendering::ScreenSceneQuery>>,
+	screen_queries: ScreenQueries,
+	/// Where the answers to screen scene queries are created.
+	screen_query_hits: Factory<crate::rendering::ScreenSceneHit>,
 	/// The lightmap the world names, and where each lit primitive lies in it once it loaded.
 	lightmaps: Lightmaps,
 	fog_listener: DefaultListener<CreateMessage<crate::rendering::ExponentialHeightFog>>,
@@ -785,34 +848,53 @@ pub struct VisibilityPipelineManager {
 	material_parameter_listener: DefaultListener<SetMaterialParameter>,
 	/// Canonical dynamic material parameter values, copied into each frame-local buffer after they change.
 	material_parameters: MaterialParameters,
-	material_parameters_buffer: ghi::DynamicBufferHandle<[[f32; 4]; MAX_MATERIAL_PARAMETERS]>,
+	material_parameters_buffer: ghi::BufferHandle<[[f32; 4]; MAX_MATERIAL_PARAMETERS]>,
 	deletions_listener: DefaultListener<DeleteMessage>,
 	/// Canonical material table, copied into each frame-local buffer after it changes.
 	materials: Box<[MaterialData; MAX_MATERIALS]>,
-	materials_buffer: ghi::DynamicBufferHandle<[MaterialData; MAX_MATERIALS]>,
+	materials_buffer: ghi::BufferHandle<[MaterialData; MAX_MATERIALS]>,
 	/// Canonical evaluation slot of every material table entry, which [`Self::rebuild_material_lists`] assigns. It is
 	/// copied into each frame-local buffer together with `materials`.
 	material_evaluations: Box<[u32; MAX_MATERIALS]>,
-	material_evaluations_buffer: ghi::DynamicBufferHandle<[u32; MAX_MATERIALS]>,
+	material_evaluations_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 	/// Which frame sequences' copies of the material and evaluation buffers hold the current tables. Every frame
 	/// sequence keeps its own copy, so a change reaches each copy on a frame of that copy's sequence.
 	materials_copies_current: [bool; ghi::MAX_FRAMES_IN_FLIGHT],
-	mesh_dispatch_work: MeshDispatchWorkBuffer,
+	/// The instance table, which every frame sequence's copy is brought up to date from. Keeping it lets a frame patch
+	/// the instances that changed instead of writing them all.
+	instance_records: Vec<ShaderMesh>,
+	/// What the instances were rebuilt with, which following the camera reads; see [`super::instance_rebuild`].
+	instance_kept: Vec<Kept>,
+	/// Whether something the instances are rebuilt from changed, other than where the camera is: the scene, the
+	/// loaded resources, the materials, or the detail view's error scale. The next frame rebuilds them.
+	instances_stale: bool,
+	/// Whether a primitive moved, or its mesh's resident detail levels changed, since the instances were last brought
+	/// up to date. The next frame follows them, which picks those primitives again.
+	instances_moved: bool,
+	/// The mesh primitives whose resident detail levels changed this frame, kept across frames to reuse its room.
+	refreshed_lods: HashSet<(MeshKey, u32)>,
+	/// The slots of the instance table that changed since each frame sequence's copy was last brought up to date.
+	stale_records: [std::ops::Range<usize>; ghi::MAX_FRAMES_IN_FLIGHT],
+	/// Which frame sequences' copies of the phases' instance lists are older than the lists.
+	stale_work: [bool; ghi::MAX_FRAMES_IN_FLIGHT],
+	/// The detail view the instances were last rebuilt or followed for.
+	instances_lod_view: Option<LodView>,
+	/// The work ranges of the current instances.
+	mesh_work: MeshWork,
 	skinning_pass: SkinningPass,
 	skinning_frame: SkinningFrame,
 	/// The resident streams, whose vertex ranges posed skinned instances take and give back.
 	geometry: GeometryHandles,
 	/// Whether the last frame recorded the pending UV copies of new posed ranges, so the next one drops them.
 	posed_uv_copies_recorded: bool,
-	pending_renderables: Vec<PendingRenderable>,
 	/// Adopted materials indexed by material table slot.
 	loaded_materials: Vec<Option<LoadedMaterial>>,
-	/// The uber material evaluation shader of each phase, opaque then transparent, once one compiled. Only the uber
+	/// Each uber material evaluation shader, in the order of [`UberVariant::ALL`], once one compiled. Only the uber
 	/// material evaluation mode loads them.
-	uber_shaders: [Option<UberShader>; 2],
-	/// The phases whose uber shader is loading, or baking again, so materials it lacks wait for it instead of starting
+	uber_shaders: [Option<UberShader>; 4],
+	/// The variants whose uber shader is loading, or baking again, so materials it lacks wait for it instead of starting
 	/// another bake.
-	uber_shaders_loading: [bool; 2],
+	uber_shaders_loading: [bool; 4],
 	/// The arm keys of the published coverage shaders, in ascending order, once they compiled.
 	coverage_keys: Option<Arc<[u32]>>,
 	/// Whether the coverage shaders are loading, or baking again, so masked materials they lack wait for them instead of
@@ -822,6 +904,9 @@ pub struct VisibilityPipelineManager {
 	loaded_ies_profiles: HashMap<String, IesProfileTexture>,
 	availability: AvailabilityGraph<Availability>,
 	environment: EnvironmentState,
+	/// The environment the renderer generates, such as the atmosphere sky's. It lights the scene while the scene selects
+	/// no [`Environment`], and the first sink records it before the frame-wide work that reads it.
+	scene_environment: Option<crate::rendering::render_pass::SceneEnvironment>,
 	/// The startup limits and shadow coverage.
 	settings: VisibilityPipelineSettings,
 	/// The shadow maps every sink samples. The first recorded sink renders them each frame.
@@ -833,6 +918,12 @@ pub struct VisibilityPipelineManager {
 	shadow_slots: ShadowSlots,
 	/// What every shadow map was drawn with, so maps that don't draw this frame keep their view.
 	shadow_states: ShadowMapStates,
+	/// The virtual shadow map's level placement the GPU last recorded, which the next placement scrolls from.
+	virtual_shadow_levels: Option<VirtualShadowLevels>,
+	/// The instance records that changed since the virtual shadow map last recorded, and how many records there were
+	/// then, so its invalidation also sees the records that left.
+	virtual_shadow_changes: std::ops::Range<usize>,
+	virtual_shadow_records: usize,
 	gtao_configuration: crate::configuration::ConfigurationPort,
 	gtao_settings: GtaoSettings,
 	gi_configuration: crate::configuration::ConfigurationPort,
@@ -886,7 +977,12 @@ pub struct VisibilityPipelineManager {
 	recorded_indirect_diffuse: Option<IndirectDiffuseSource>,
 	/// Whether the light-count and shadow-budget warnings were reported while their limit stays exceeded.
 	reported_limits: [bool; 3],
+	/// Whether a merged mesh that found no room for its geometry was reported. Capacities are set at startup, so one
+	/// report covers the run.
+	reported_merged_room: bool,
 	pub(crate) scene: VisibilityScene,
+	/// The blue noise every sink's screen-space passes draw their per-pixel random numbers from.
+	blue_noise: ghi::ImageHandle,
 }
 
 impl VisibilityPipelineManager {
@@ -896,6 +992,7 @@ impl VisibilityPipelineManager {
 	/// deletions here, so it sees every message published after setup.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
+		queue: ghi::QueueHandle,
 		world: &MessageScope,
 		geometry: GeometryHandles,
 		mut loader: VisibilityLoaderClient,
@@ -908,40 +1005,83 @@ impl VisibilityPipelineManager {
 		lod_configuration: crate::configuration::ConfigurationPort,
 		settings: VisibilityPipelineSettings,
 	) -> Self {
-		let environment = create_fallback_environment(context, loader.environment_sampler);
+		let gtao_settings = GtaoSettings::default();
+		let gi_settings = GiSettings::new(settings.features);
+		let surfel_gi_settings = SurfelGiSettings::new(
+			settings.features.surfel_gi,
+			settings.surfel_capacity,
+			settings.surfel_ray_budget,
+		);
+		let probe_gi_settings = ProbeGiSettings::new(
+			settings.features.probe_gi,
+			settings.probe_ray_budget,
+			settings.probe_spacing,
+		);
+		let contact_shadow_settings = ContactShadowSettings::default();
+		let lod_settings = LodSettings::default();
+		gtao_configuration.declare(GtaoSettings::SETTINGS.iter().map(|setting| setting.parameter(gtao_settings)));
+		gi_configuration.declare(GiSettings::SETTINGS.iter().map(|setting| setting.parameter(gi_settings)));
+		surfel_gi_configuration
+			.declare(SurfelGiSettings::SETTINGS.iter().map(|setting| setting.parameter(surfel_gi_settings)));
+		probe_gi_configuration
+			.declare(ProbeGiSettings::SETTINGS.iter().map(|setting| setting.parameter(probe_gi_settings)));
+		contact_shadow_configuration.declare(
+			ContactShadowSettings::SETTINGS
+				.iter()
+				.map(|setting| setting.parameter(contact_shadow_settings)),
+		);
+		lod_configuration.declare(LodSettings::SETTINGS.iter().map(|setting| setting.parameter(lod_settings)));
+		let environment = create_fallback_environment(context, queue, loader.environment_sampler);
+		let blue_noise = create_blue_noise_texture(context, queue);
 		if settings.features.material_evaluation == MaterialEvaluationMode::Uber {
 			loader.request_uber_shaders();
 		}
 		// Every mode tests masked materials in the coverage shaders.
 		loader.request_coverage_shaders();
 		let skinning_pass = SkinningPass::new(context, &pipeline_manager, &geometry);
-		let host_buffer = |name, uses| {
-			ghi::buffer::Builder::new(uses)
-				.name(name)
-				.device_accesses(ghi::DeviceAccesses::HostToDevice)
-		};
-		let materials_buffer = context.build_dynamic_buffer(host_buffer(
-			"Materials Data",
-			ghi::Uses::Storage | ghi::Uses::TransferDestination,
-		));
-		let material_evaluations_buffer = context.build_dynamic_buffer(host_buffer(
-			"Material Evaluations",
-			ghi::Uses::Storage | ghi::Uses::TransferDestination,
-		));
-		let material_parameters_buffer = context.build_dynamic_buffer(host_buffer(
-			"Material Parameters",
-			ghi::Uses::Storage | ghi::Uses::TransferDestination,
-		));
-		let views_buffer = context.build_dynamic_buffer(host_buffer("Visibility Views Data", ghi::Uses::Storage));
+		let host_buffer = |name, uses| ghi::buffer::Builder::new(uses).name(name).host_access(ghi::HostAccess::Write);
+		let materials_buffer = context.build_buffer(
+			host_buffer("Materials Data", ghi::Uses::Storage | ghi::Uses::TransferDestination).copies(ghi::Copies::PerFrame),
+		);
+		let material_evaluations_buffer = context.build_buffer(
+			host_buffer("Material Evaluations", ghi::Uses::Storage | ghi::Uses::TransferDestination)
+				.copies(ghi::Copies::PerFrame),
+		);
+		let material_parameters_buffer = context.build_buffer(
+			host_buffer("Material Parameters", ghi::Uses::Storage | ghi::Uses::TransferDestination)
+				.copies(ghi::Copies::PerFrame),
+		);
+		let views_buffer =
+			context.build_buffer(host_buffer("Visibility Views Data", ghi::Uses::Storage).copies(ghi::Copies::PerFrame));
+		let frame_buffer =
+			context.build_buffer(host_buffer("Visibility Frame Data", ghi::Uses::Storage).copies(ghi::Copies::PerFrame));
 		let instances = settings.instance_capacity.instances as usize;
-		let meshes_buffer =
-			context.build_dynamic_buffer(host_buffer("Visibility Meshes Data", ghi::Uses::Storage).length(instances));
-		let lighting_buffer =
-			context.build_dynamic_buffer(host_buffer("Light Data", ghi::Uses::Storage | ghi::Uses::TransferDestination));
+		let meshes_buffer = context.build_buffer(
+			host_buffer("Visibility Meshes Data", ghi::Uses::Storage)
+				.length(instances)
+				.copies(ghi::Copies::PerFrame),
+		);
+		let lighting_buffer = context.build_buffer(
+			host_buffer("Light Data", ghi::Uses::Storage | ghi::Uses::TransferDestination).copies(ghi::Copies::PerFrame),
+		);
 		let descriptor_set = set_layouts::SCENE.create_set(context, "Scene Descriptor Set");
-		let mesh_dispatch_work =
-			MeshDispatchWorkBuffer::new(context, descriptor_set, settings.instance_capacity.meshlet_groups);
-		let shadow_maps = ShadowMaps::new(context, &pipeline_manager, settings.directional_shadow_map_resolution);
+		let mesh_work = MeshWork::new(
+			context,
+			&pipeline_manager,
+			descriptor_set,
+			meshes_buffer,
+			geometry.mesh_levels,
+			settings.instance_capacity.instances,
+			settings.instance_capacity.meshlet_groups,
+		);
+		let shadow_maps = ShadowMaps::new(
+			context,
+			&pipeline_manager,
+			settings.directional_shadow_map_resolution,
+			settings.directional_shadow_technique,
+			settings.virtual_shadows,
+			settings.instance_capacity.instances,
+		);
 		let ray_tracing = context.supports_ray_tracing();
 		let surfel_pool = (settings.features.surfel_gi && ray_tracing).then(|| {
 			SurfelPool::new(
@@ -986,11 +1126,13 @@ impl VisibilityPipelineManager {
 		let scene = set_layouts::SCENE.binder(descriptor_set);
 		context.write(&[
 			scene.buffer("views", views_buffer),
+			scene.buffer("frame", frame_buffer),
 			scene.buffer("meshes", meshes_buffer),
 			scene.buffer("vertex_positions", geometry.vertex_positions),
 			scene.buffer("vertex_normals", geometry.vertex_normals),
 			scene.buffer("vertex_uvs", geometry.vertex_uvs),
 			scene.buffer("vertex_indices", geometry.vertex_indices),
+			scene.buffer("meshlet_vertices", geometry.meshlet_vertices),
 			scene.buffer("primitive_indices", geometry.primitive_indices),
 			scene.buffer("meshlets", geometry.meshlets),
 			scene.buffer("mesh_levels", geometry.mesh_levels),
@@ -1000,6 +1142,7 @@ impl VisibilityPipelineManager {
 			scene.buffer("vertex_lightmap_uvs", geometry.vertex_lightmap_uvs),
 		]);
 		Self {
+			blue_noise,
 			loader,
 			resource_events: Vec::new(),
 			pipeline_manager,
@@ -1014,6 +1157,9 @@ impl VisibilityPipelineManager {
 			terrain_requests: Vec::new(),
 			environment_listener: world.factory::<Environment>().listener(),
 			lightmap_listener: world.factory::<Lightmap>().listener(),
+			screen_query_listener: world.factory::<crate::rendering::ScreenSceneQuery>().listener(),
+			screen_queries: ScreenQueries::default(),
+			screen_query_hits: world.factory(),
 			lightmaps: Lightmaps::default(),
 			fog_listener: world.factory::<crate::rendering::ExponentialHeightFog>().listener(),
 			fog: None,
@@ -1028,15 +1174,22 @@ impl VisibilityPipelineManager {
 			material_evaluations_buffer,
 			// The default tables must reach every frame sequence too.
 			materials_copies_current: [false; ghi::MAX_FRAMES_IN_FLIGHT],
-			mesh_dispatch_work,
+			instance_records: vec![bytemuck::Zeroable::zeroed(); settings.instance_capacity.instances as usize],
+			instance_kept: Vec::new(),
+			instances_stale: true,
+			instances_moved: false,
+			refreshed_lods: HashSet::default(),
+			stale_records: std::array::from_fn(|_| 0..0),
+			stale_work: [true; ghi::MAX_FRAMES_IN_FLIGHT],
+			instances_lod_view: None,
+			mesh_work,
 			skinning_pass,
 			skinning_frame: SkinningFrame::default(),
 			geometry,
 			posed_uv_copies_recorded: false,
-			pending_renderables: Vec::new(),
 			loaded_materials: Vec::new(),
-			uber_shaders: [None, None],
-			uber_shaders_loading: [settings.features.material_evaluation == MaterialEvaluationMode::Uber; 2],
+			uber_shaders: [None, None, None, None],
+			uber_shaders_loading: [settings.features.material_evaluation == MaterialEvaluationMode::Uber; 4],
 			coverage_keys: None,
 			coverage_shaders_loading: true,
 			loaded_ies_profiles: HashMap::default(),
@@ -1050,27 +1203,23 @@ impl VisibilityPipelineManager {
 				illuminance: None,
 				descriptors_dirty: false,
 			},
+			scene_environment: None,
 			settings,
 			shadow_maps,
 			shadow_layout: ShadowLayout::default(),
 			shadow_slots: ShadowSlots::new(),
 			shadow_states: ShadowMapStates::default(),
+			virtual_shadow_levels: None,
+			virtual_shadow_changes: 0..0,
+			virtual_shadow_records: 0,
 			gtao_configuration,
-			gtao_settings: GtaoSettings::default(),
+			gtao_settings,
 			gi_configuration,
-			gi_settings: GiSettings::new(settings.features),
+			gi_settings,
 			surfel_gi_configuration,
-			surfel_gi_settings: SurfelGiSettings::new(
-				settings.features.surfel_gi,
-				settings.surfel_capacity,
-				settings.surfel_ray_budget,
-			),
+			surfel_gi_settings,
 			probe_gi_configuration,
-			probe_gi_settings: ProbeGiSettings::new(
-				settings.features.probe_gi,
-				settings.probe_ray_budget,
-				settings.probe_spacing,
-			),
+			probe_gi_settings,
 			ray_tracing,
 			surfel_pool,
 			probe_volume,
@@ -1082,23 +1231,25 @@ impl VisibilityPipelineManager {
 			rebuild_scratch: Vec::new(),
 			reported_surfel_gi_fallback: false,
 			contact_shadow_configuration,
-			contact_shadow_settings: ContactShadowSettings::default(),
+			contact_shadow_settings,
 			lod_configuration,
-			lod_settings: LodSettings::default(),
+			lod_settings,
 			mesh_residencies: MeshResidencies::default(),
 			recorded_sinks: SmallVec::new(),
 			recorded_exposure: 1.0,
 			surfel_exposure: 1.0,
 			recorded_indirect_diffuse: None,
 			reported_limits: [false; 3],
+			reported_merged_room: false,
 			scene: VisibilityScene {
 				render_entities: StableVec::new(),
 				skinning_poses: HashMap::default(),
-				render_entity_handles: HashMap::default(),
+				renderables: Default::default(),
 				lights: StableVec::new(),
 				light_handles: HashMap::default(),
 				descriptor_set,
 				views_buffer,
+				frame_buffer,
 				meshes_buffer,
 				lighting_buffer,
 				render_info: Default::default(),
@@ -1112,21 +1263,35 @@ impl VisibilityPipelineManager {
 	/// Applies the frame's scene edits before anything is drawn: poses, then the transforms the frame shows, then
 	/// deletions.
 	fn adopt_scene_updates(&mut self, transforms: &ShownTransforms) {
+		// Whether anything the instances are rebuilt from changed.
+		let mut changed = false;
 		while let Some(message) = self.pose_listener.read() {
 			self.scene.write_skinned_pose(message.handle(), message.global_matrices());
+			changed = true;
 		}
 		while let Some(message) = self.material_parameter_listener.read() {
 			self.material_parameters.receive(message);
+			changed = true;
 		}
+		// A primitive that moved keeps its place among the instances, so only its own pick is made again.
+		let kept = &mut self.instance_kept;
+		let mut moved = false;
 		for (handle, transform) in transforms.changed() {
-			self.scene.update_transform(*handle, transform);
 			// A terrain's nodes draw at its transform.
-			for instance in self.terrains.instances(*handle) {
-				self.scene.update_transform(instance, transform);
+			for handle in std::iter::once(*handle).chain(self.terrains.instances(*handle)) {
+			self.scene.update_transform(handle, transform, |slot| {
+				// A primitive added since the last rebuild has no kept slot yet, and the rebuild it waits for picks it.
+				if let Some(kept) = kept.get_mut(slot) {
+					kept.release();
+				}
+				moved = true;
+			});
 			}
 		}
+		self.instances_moved |= moved;
 		let mut changes = std::mem::take(&mut self.terrain_changes);
 		while let Some(message) = self.deletions_listener.read() {
+			changed = true;
 			let handle = message.into_handle();
 			self.terrains.remove(handle, &mut changes);
 			self.scene.remove_light(handle);
@@ -1139,6 +1304,15 @@ impl VisibilityPipelineManager {
 		}
 		self.apply_terrain_changes(&mut changes, transforms);
 		self.terrain_changes = changes;
+		if changed {
+			self.instances_changed();
+		}
+	}
+
+	/// Records that something the frame's instances are rebuilt from changed, so the next frame rebuilds them. Call
+	/// it wherever the scene's entities, their resources, or their materials change.
+	fn instances_changed(&mut self) {
+		self.instances_stale = true;
 	}
 
 	/// Adds one light where its handle is shown and requests its optional photometric texture dependency.
@@ -1148,7 +1322,7 @@ impl VisibilityPipelineManager {
 		}
 		self.scene.add_light(handle, light);
 		if let Some(transform) = transforms.get(handle) {
-			self.scene.update_transform(handle, transform);
+			self.scene.update_transform(handle, transform, |_| {});
 		}
 	}
 
@@ -1171,24 +1345,28 @@ impl VisibilityPipelineManager {
 		let source = renderable.source().clone();
 		let (mesh_key, resident) = self.loader.request_mesh(source);
 		if let Some(mesh) = resident {
+			self.scene.renderables.insert_resident(handle);
 			self.add_renderable(handle, mesh_key, &mesh, model_of(handle, transforms));
 		} else {
-			self.pending_renderables.push(PendingRenderable { handle, mesh_key });
+			self.scene.renderables.wait(handle, mesh_key);
 		}
 	}
 
+	/// Removes only the lifecycle state this handle owns; new handles need no cleanup.
 	fn remove_mesh_instance(&mut self, handle: Handle) {
-		self.pending_renderables.retain(|pending| pending.handle != handle);
-		self.material_parameters.release_entity(handle);
 		let ranges = &self.geometry.ranges;
 		// Nothing reads a range after its instance leaves the frame, except frames still in flight, and the backends
 		// order the next owner's writes after those reads.
-		self.scene.remove_renderable(handle, |range| {
+		if !self.scene.remove_renderable(handle, |range| {
 			ranges
 				.lock()
 				.unwrap_or_else(|error| error.into_inner())
 				.give_back_vertices(range);
-		});
+		}) {
+			return;
+		}
+		self.instances_changed();
+		self.material_parameters.release_entity(handle);
 		self.availability.remove(&Availability::Renderable(handle)).expect(
 			"Visibility renderable availability could not be removed. The most likely cause is that another graph node depends on a renderable.",
 		);
@@ -1200,31 +1378,51 @@ impl VisibilityPipelineManager {
 	fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame, transforms: &ShownTransforms) {
 		let mut events = std::mem::take(&mut self.resource_events);
 		self.loader.update(frame, &mut events);
+		// Every event changes what some instance draws: a mesh, a level, a material, a texture, or a lightmap. A level
+		// that arrives or leaves changes only its own primitive's instances, which are picked again without a rebuild.
+		if events.iter().any(|event| {
+			!matches!(
+				event,
+				VisibilityLoaderEvent::MeshLevelsLoaded { .. } | VisibilityLoaderEvent::MeshLevelsUnavailable { .. }
+			)
+		}) {
+			self.instances_changed();
+		}
 		// Material readiness changes rebuild the material lists once, after every event of the frame.
 		let mut materials_changed = false;
 		for event in events.drain(..) {
 			match event {
 				VisibilityLoaderEvent::MeshReady { key, mesh } => {
-					// The base block holds each primitive's coarsest level.
-					self.mesh_residencies.add_mesh(
-						key,
-						mesh.primitives
-							.iter()
-							.map(|primitive| (primitive.lods.levels().len() - 1) as u8),
-					);
-					self.resolve_pending_renderables(key, &mesh, transforms);
+					let level_counts = mesh.primitives.iter().map(|primitive| primitive.lods.levels().len() as u8);
+					if matches!(key, MeshKey::Merged(_)) {
+						// A merged mesh holds nothing yet: each primitive builds the level its instances want.
+						self.mesh_residencies.add_merged_mesh(key, level_counts);
+					} else {
+						// The base block holds each primitive's coarsest level.
+						self.mesh_residencies.add_mesh(key, level_counts.map(|levels| levels - 1));
+					}
+					for handle in self.scene.renderables.mesh_ready(key) {
+						self.add_renderable(handle, key, &mesh, model_of(handle, transforms));
+					}
 				}
 				VisibilityLoaderEvent::MeshLevelsLoaded { key, primitives } => {
 					for levels in &primitives {
 						if levels.block.is_some() {
 							self.mesh_residencies.loaded(key, levels.primitive, levels.finest);
-							self.refresh_entity_lods(key, levels.primitive);
+							self.refreshed_lods.insert((key, levels.primitive));
 						} else if let Some((released, released_primitive)) =
 							self.mesh_residencies
 								.without_room(key, levels.primitive, ghi::MAX_FRAMES_IN_FLIGHT as u64)
 						{
 							self.loader.release_mesh_levels(released, released_primitive);
-							self.refresh_entity_lods(released, released_primitive);
+							self.refreshed_lods.insert((released, released_primitive));
+						} else if matches!(key, MeshKey::Merged(_)) && !self.reported_merged_room {
+							// A resource mesh without room still draws its coarsest level; a merged mesh draws nothing.
+							self.reported_merged_room = true;
+							warn!(
+								"Visibility merged mesh {key} has no room for its geometry, so it is not drawn. The most likely cause is that the merged meshes in view need more of the {} stream than the geometry capacity holds. Raise the matching capacity among `render.geometry.vertex-capacity`, `render.geometry.vertex-index-capacity`, `render.geometry.triangle-capacity`, `render.geometry.meshlet-capacity`, and `render.geometry.level-capacity`.",
+								levels.full.unwrap_or("geometry")
+							);
 						}
 					}
 					self.mesh_residencies.load_finished(key, primitives);
@@ -1239,17 +1437,17 @@ impl VisibilityPipelineManager {
 					self.adopt_material(material, evaluation);
 					materials_changed = true;
 				}
-				VisibilityLoaderEvent::UberShaderReady {
-					transparent,
-					keys,
-					pipeline,
-				} => {
+				VisibilityLoaderEvent::UberShaderReady { variant, keys, pipeline } => {
 					self.adopt_uber_shader(
-						transparent,
+						variant,
 						UberShader {
 							keys,
 							pipeline,
-							name: "Uber Shader".into(),
+							name: if variant.translucent {
+								"Translucent Uber Shader".into()
+							} else {
+								"Uber Shader".into()
+							},
 						},
 					);
 					materials_changed = true;
@@ -1263,11 +1461,11 @@ impl VisibilityPipelineManager {
 					self.coverage_shaders_loading = false;
 					error!("The coverage shaders of the masked passes are unavailable: {error}");
 				}
-				VisibilityLoaderEvent::UberShaderUnavailable { transparent, error } => {
-					self.uber_shaders_loading[usize::from(transparent)] = false;
+				VisibilityLoaderEvent::UberShaderUnavailable { variant, error } => {
+					self.uber_shaders_loading[variant.index()] = false;
 					error!(
-						"The {} uber material evaluation shader is unavailable: {error}",
-						if transparent { "transparent" } else { "opaque" }
+						"The uber material evaluation shader {} is unavailable: {error}",
+						variant.shader()
 					);
 				}
 				VisibilityLoaderEvent::MaterialUnavailable { index } => {
@@ -1307,9 +1505,11 @@ impl VisibilityPipelineManager {
 				}
 				VisibilityLoaderEvent::MeshUnavailable { key, error } => {
 					// Nothing will make the mesh resident, so its renderables stop waiting; creating one again requests it again.
-					let waiting = self.pending_renderables.len();
-					self.pending_renderables.retain(|pending| pending.mesh_key != key);
-					let dropped = waiting - self.pending_renderables.len();
+					let mut dropped = 0;
+					while let Some(handle) = self.scene.renderables.waiter(key) {
+						self.remove_mesh_instance(handle);
+						dropped += 1;
+					}
 					warn!(
 						"Visibility mesh {key:?} could not be loaded, so its {dropped} renderables are not drawn. The most likely cause is a missing or invalid mesh asset. Fix the asset, then create the renderables again. {error}"
 					);
@@ -1320,10 +1520,29 @@ impl VisibilityPipelineManager {
 			}
 		}
 		self.resource_events = events;
+		self.refresh_entity_lods();
 		// Every replacement is in its slot now, so nothing binds the images it replaced.
 		self.loader.delete_replaced_images(frame);
 		if materials_changed {
 			self.rebuild_material_lists();
+		}
+		// The generated environment lights the scene until the scene selects one, from the frame after its first fill, so
+		// nothing reads its maps before they hold light.
+		if self.environment.requested.is_none()
+			&& let Some((diffuse_image, specular_image)) = self
+				.scene_environment
+				.as_ref()
+				.and_then(crate::rendering::render_pass::SceneEnvironment::maps)
+		{
+			if self.environment.bound.specular_image != specular_image {
+				self.environment.bind(ResidentEnvironment {
+					diffuse_image,
+					specular_image,
+					sampler: self.loader.environment_sampler,
+					// Generated light is physical already, so no requested lux rescales it.
+					upward_illuminance: 0.0,
+				});
+			}
 		}
 		if self.environment.descriptors_dirty {
 			self.environment.descriptors_dirty = false;
@@ -1350,6 +1569,7 @@ impl VisibilityPipelineManager {
 		for entity in self.scene.render_entities.iter_mut() {
 			entity.lightmap = self.lightmaps.instance(entity.handle, entity.primitive);
 		}
+		self.instances_changed();
 	}
 
 	/// Publishes one texture the loader already transferred, and returns whether it is a material texture slot's first
@@ -1429,6 +1649,7 @@ impl VisibilityPipelineManager {
 			texture_slots: textures,
 			parameters,
 			hit_group,
+			reads_backdrop,
 			..
 		} = material;
 		for shading in [&mut self.surfel_shading, &mut self.probe_shading].into_iter().flatten() {
@@ -1465,7 +1686,10 @@ impl VisibilityPipelineManager {
 		}
 		let name: Arc<str> = id.into();
 		if !evaluated {
-			self.uncovered(matches!(alpha_mode, AlphaMode::Blend), &name);
+			// Only an arm can be uncovered: a material's own pipeline always shades it.
+			if let MaterialEvaluator::Arm(key) = evaluation {
+				self.uncovered(UberVariant::of_arm(key, matches!(alpha_mode, AlphaMode::Blend)), &name);
+			}
 		}
 		if !tested {
 			self.untested(&name);
@@ -1479,18 +1703,20 @@ impl VisibilityPipelineManager {
 			double_sided,
 			coverage_arm,
 			texture_indices,
+			reads_backdrop,
 		});
 		self.materials_copies_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
 	}
 
 	/// Returns whether `evaluation` can shade a material of `alpha_mode` now: always for its own pipeline, and for an arm
-	/// once its phase's uber shader holds it.
+	/// once the uber shader of its phase and kind holds it.
 	fn covers(&self, evaluation: MaterialEvaluator<ghi::PipelineHandle>, alpha_mode: AlphaMode) -> bool {
 		match evaluation {
 			MaterialEvaluator::Pipeline(_) => true,
-			MaterialEvaluator::Arm(key) => self.uber_shaders[usize::from(matches!(alpha_mode, AlphaMode::Blend))]
-				.as_ref()
-				.is_some_and(|shader| shader.keys.binary_search(&key).is_ok()),
+			MaterialEvaluator::Arm(key) => self.uber_shaders
+				[UberVariant::of_arm(key, matches!(alpha_mode, AlphaMode::Blend)).index()]
+			.as_ref()
+			.is_some_and(|shader| shader.keys.binary_search(&key).is_ok()),
 		}
 	}
 
@@ -1550,19 +1776,21 @@ impl VisibilityPipelineManager {
 		);
 	}
 
-	/// Publishes a phase's newly compiled uber `shader`, and makes every material of the phase available exactly when
-	/// the shader holds its arm.
+	/// Publishes the newly compiled uber `shader` of `variant`, and makes every material of the variant available
+	/// exactly when the shader holds its arm.
 	///
 	/// Next, call [`Self::rebuild_material_lists`] once the frame's events are adopted.
-	fn adopt_uber_shader(&mut self, transparent: bool, shader: UberShader) {
-		let phase = usize::from(transparent);
-		self.uber_shaders[phase] = Some(shader);
-		self.uber_shaders_loading[phase] = false;
+	fn adopt_uber_shader(&mut self, variant: UberVariant, shader: UberShader) {
+		self.uber_shaders[variant.index()] = Some(shader);
+		self.uber_shaders_loading[variant.index()] = false;
 		for slot in 0..self.loaded_materials.len() {
 			let Some(material) = &self.loaded_materials[slot] else {
 				continue;
 			};
-			if matches!(material.alpha_mode, AlphaMode::Blend) != transparent {
+			let MaterialEvaluator::Arm(key) = material.evaluation else {
+				continue;
+			};
+			if UberVariant::of_arm(key, matches!(material.alpha_mode, AlphaMode::Blend)) != variant {
 				continue;
 			}
 			let evaluated = self.covers(material.evaluation, material.alpha_mode);
@@ -1570,18 +1798,18 @@ impl VisibilityPipelineManager {
 			let (index, name) = (material.index, material.name.clone());
 			self.availability.set_key_available(&Availability::Material(index), covered);
 			if !evaluated {
-				self.uncovered(transparent, &name);
+				self.uncovered(variant, &name);
 			}
 		}
 	}
 
-	/// Handles a material of one phase whose arm the phase's uber shader lacks. Development builds bake the shader
+	/// Handles a material whose arm the uber shader of its `variant` lacks. Development builds bake the shader
 	/// again from every material the store holds; release builds can't, so they report the material.
 	///
-	/// While the phase's shader is loading, or baking again for another material, its arrival checks the materials
+	/// While the variant's shader is loading, or baking again for another material, its arrival checks the materials
 	/// again instead.
-	fn uncovered(&mut self, transparent: bool, material: &str) {
-		let phase = usize::from(transparent);
+	fn uncovered(&mut self, variant: UberVariant, material: &str) {
+		let phase = variant.index();
 		if self.uber_shaders_loading[phase] {
 			return;
 		}
@@ -1589,7 +1817,7 @@ impl VisibilityPipelineManager {
 		{
 			let _ = material;
 			self.uber_shaders_loading[phase] = true;
-			self.loader.rebake_uber_shader(transparent);
+			self.loader.rebake_uber_shader(variant);
 		}
 		#[cfg(not(debug_assertions))]
 		error!(
@@ -1606,33 +1834,47 @@ impl VisibilityPipelineManager {
 	/// one per material. A
 	/// material that isn't ready keeps [`NO_EVALUATION`]; no admitted instance uses it.
 	///
-	/// In the uber mode, each phase's list holds its uber shader alone, and a ready material's table entry holds its arm
-	/// key, which the shader matches.
+	/// In the uber mode, each phase's list holds its uber shaders alone, the translucent materials' after the others',
+	/// and a ready material's table entry holds its arm key, which its shader matches.
 	fn rebuild_material_lists(&mut self) {
 		let render_info = &mut self.scene.render_info;
 		render_info.opaque_evaluations.clear();
 		render_info.transparent_evaluations.clear();
 		self.material_evaluations.fill(NO_EVALUATION);
 		self.materials_copies_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
+		// An instance's evaluation slot comes from these lists.
+		self.instances_stale = true;
 		if self.settings.features.material_evaluation == MaterialEvaluationMode::Uber {
-			for (evaluations, shader) in [&mut render_info.opaque_evaluations, &mut render_info.transparent_evaluations]
-				.into_iter()
-				.zip(&self.uber_shaders)
-			{
-				if let Some(shader) = shader {
-					evaluations.push(MaterialEvaluation {
-						name: shader.name.clone(),
-						index: UBER_EVALUATION_INDEX,
-						pipeline: shader.pipeline,
-					});
-				}
-			}
+			// Each phase's uber shader evaluates every ready material, so it reads the backdrop when any of them does.
+			let mut reads_backdrop = false;
 			for material in self.loaded_materials.iter().flatten() {
 				if let MaterialEvaluator::Arm(key) = material.evaluation
 					&& self.availability.is_key_ready(&Availability::Material(material.index))
 				{
 					self.material_evaluations[material.index as usize] = key;
+					reads_backdrop |= material.reads_backdrop;
 				}
+			}
+			// `UberVariant::ALL` lists each phase's translucent shader after its other one.
+			for variant in UberVariant::ALL {
+				let Some(shader) = &self.uber_shaders[variant.index()] else {
+					continue;
+				};
+				// The opaque phase's translucent shader leaves the background to the other one, so it waits for it.
+				if variant.translucent && !variant.transparent && self.uber_shaders[UberVariant::BACKGROUND.index()].is_none() {
+					continue;
+				}
+				let evaluations = if variant.transparent {
+					&mut render_info.transparent_evaluations
+				} else {
+					&mut render_info.opaque_evaluations
+				};
+				evaluations.push(MaterialEvaluation {
+					name: shader.name.clone(),
+					index: variant.evaluation_index(),
+					pipeline: shader.pipeline,
+					reads_backdrop,
+				});
 			}
 			return;
 		}
@@ -1667,37 +1909,35 @@ impl VisibilityPipelineManager {
 				},
 				index: evaluation_index,
 				pipeline,
+				// Materials that share a pipeline share their program, so the first one speaks for the slot.
+				reads_backdrop: first.reads_backdrop,
 			});
 		}
 	}
 
-	/// Creates scene instances for every pending renderable whose mesh is now resident.
-	fn resolve_pending_renderables(&mut self, key: MeshKey, mesh: &MeshData, transforms: &ShownTransforms) {
-		let mut pending = std::mem::take(&mut self.pending_renderables);
-		pending.retain(|renderable| {
-			if renderable.mesh_key != key {
-				return true;
-			}
-			self.add_renderable(renderable.handle, key, mesh, model_of(renderable.handle, transforms));
-			false
-		});
-		self.pending_renderables = pending;
-	}
-
-	/// Gives every render entity of one primitive of `key` the detail levels it holds now, after finer levels arrived
-	/// or left.
-	fn refresh_entity_lods(&mut self, key: MeshKey, primitive: u32) {
-		let Some(lods) = self.loader.primitive_lods(key, primitive as usize) else {
+	/// Gives the render entities of every primitive in `refreshed_lods` the detail levels they hold now, after finer
+	/// levels arrived or left, and has the next frame pick those entities again.
+	fn refresh_entity_lods(&mut self) {
+		if self.refreshed_lods.is_empty() {
 			return;
-		};
-		for entity in self
-			.scene
-			.render_entities
-			.iter_mut()
-			.filter(|entity| entity.mesh == key && entity.primitive == primitive)
-		{
-			entity.lods = lods;
 		}
+		// One pass over the entities serves every primitive refreshed this frame. Each refreshed entity gives up its
+		// pick, so the next frame follows it like a moved one and rewrites only its record.
+		let (refreshed, loader, kept) = (&self.refreshed_lods, &self.loader, &mut self.instance_kept);
+		for (slot, entity) in self.scene.render_entities.indexed_iter_mut() {
+			if !refreshed.contains(&(entity.mesh, entity.primitive)) {
+				continue;
+			}
+			if let Some(lods) = loader.primitive_lods(entity.mesh, entity.primitive as usize) {
+				entity.lods = lods;
+			}
+			// An entity added since the last rebuild has no kept slot yet, and the rebuild it waits for picks it.
+			if let Some(kept) = kept.get_mut(slot) {
+				kept.release();
+			}
+		}
+		self.refreshed_lods.clear();
+		self.instances_moved = true;
 	}
 
 	/// Adds one resident renderable at `model`.
@@ -1737,6 +1977,8 @@ impl VisibilityPipelineManager {
 				}),
 			});
 		}
+		// A renderable of a mesh that is already resident arrives with no loader event.
+		self.instances_changed();
 	}
 
 	/// Starts drawing the renderable terrain `handle`, and requests its node tree when no other terrain drew it yet.
@@ -1808,6 +2050,7 @@ impl VisibilityPipelineManager {
 					let Some(data) = self.loader.mesh(mesh).cloned() else {
 						continue;
 					};
+					self.scene.renderables.insert_resident(instance);
 					self.add_renderable(instance, mesh, &data, model_of(terrain, transforms));
 				}
 			}
@@ -1816,27 +2059,53 @@ impl VisibilityPipelineManager {
 
 	/* Frame preparation */
 
+	/// Answers the screen scene queries the frame of `sequence` read when it last ran, which completed before this one
+	/// started, then queues the queries the world created since and answers those no sink of `sinks` shows.
+	fn adopt_screen_queries(&mut self, frame: &ghi::implementation::Frame, sequence: usize, sinks: &[Sink]) {
+		let hits = &self.screen_query_hits;
+		if self.screen_queries.has_recorded(sequence) {
+			let sink_states = &self.scene.sink_states;
+			self.screen_queries.complete(
+				sequence,
+				|sink| {
+					let state = sink_states.iter().find(|state| state.id == sink)?;
+					state.render_pass.read_screen_queries(frame).copied()
+				},
+				|hit| {
+					hits.create(hit);
+				},
+			);
+		}
+		let mut created = false;
+		while let Some(message) = self.screen_query_listener.read() {
+			self.screen_queries.push(message.handle(), *message.data());
+			created = true;
+		}
+		if created {
+			let shown = sinks
+				.iter()
+				.filter(|sink| self.scene.sink_states.iter().any(|state| state.id == sink.index()))
+				.filter_map(Sink::camera)
+				.collect::<SmallVec<[Handle; 16]>>();
+			self.screen_queries.answer_unshown(&shown, |hit| {
+				hits.create(hit);
+			});
+		}
+	}
+
 	/// Applies queued GTAO, GI, surfel GI, probe GI, contact-shadow, and detail level controls before any sink records
 	/// this frame's commands.
 	fn apply_runtime_settings(&mut self) {
-		self.lod_configuration
-			.drain(&mut self.lod_settings, LodSettings::with_parameter);
-		self.gtao_configuration
-			.drain(&mut self.gtao_settings, GtaoSettings::with_parameter);
-		let features = self.settings.features;
-		// A technique left out of the shaders is not selected; the log says so, as for the features below.
-		self.gi_configuration
-			.drain(&mut self.gi_settings, |settings, parameter, value| {
-				settings
-					.with_parameter(parameter, value, features)
-					.inspect_err(|reason| log::warn!("{reason}"))
-			});
+		self.lod_configuration.drain(&mut self.lod_settings, LodSettings::SETTINGS);
+		self.gtao_configuration.drain(&mut self.gtao_settings, GtaoSettings::SETTINGS);
+		self.gi_configuration.drain(&mut self.gi_settings, GiSettings::SETTINGS);
 		self.surfel_gi_configuration
-			.drain(&mut self.surfel_gi_settings, SurfelGiSettings::with_parameter);
+			.drain(&mut self.surfel_gi_settings, SurfelGiSettings::SETTINGS);
 		self.probe_gi_configuration
-			.drain(&mut self.probe_gi_settings, ProbeGiSettings::with_parameter);
+			.drain(&mut self.probe_gi_settings, ProbeGiSettings::SETTINGS);
 		self.contact_shadow_configuration
-			.drain(&mut self.contact_shadow_settings, ContactShadowSettings::with_parameter);
+			.drain(&mut self.contact_shadow_settings, ContactShadowSettings::SETTINGS);
+		let features = self.settings.features;
 		// A feature left out of the shaders stays off, whatever the runtime asks for.
 		self.gtao_settings.enabled = built_in_or_off(self.gtao_settings.enabled, features.gtao, GTAO_ENABLED_PARAMETER);
 		self.contact_shadow_settings.enabled = built_in_or_off(
@@ -1866,25 +2135,27 @@ impl VisibilityPipelineManager {
 	/// coarser than it. Without a camera it draws the finest resident level. The levels instances want go to
 	/// [`MeshResidencies`], which decides what loads next. Large scenes rebuild on several of `alley`'s lanes, with the
 	/// same result as one; see [`super::instance_rebuild`].
-	fn rebuild_active_instances(
+	///
+	/// With `follow`, nothing but the camera changed since the instances were rebuilt or last followed, so they are
+	/// brought up to date by picking again only the ones whose pick expired; an entity that can't be followed
+	/// rebuilds them all after all.
+	///
+	/// Returns what changed in the kept instances, which the caller copies to the frame's buffers. Its `outdated` says
+	/// the next frame must rebuild: an instance had to be finished in order, as a posed skinned instance is every
+	/// frame.
+	fn update_active_instances(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
 		lod_view: Option<LodView>,
+		follow: bool,
 		alley: &mut Alley,
-	) {
+	) -> Followed {
 		let _span = debug_span!(
 			"Visibility::rebuild_active_instances",
 			entities = self.scene.render_entities.len()
 		)
 		.entered();
-		let render_info = &mut self.scene.render_info;
-		render_info.clear_active_instances();
-		if std::mem::take(&mut self.posed_uv_copies_recorded) {
-			render_info.posed_uv_copies.clear();
-		}
-		self.skinning_frame.clear();
-		let mesh_data = frame.get_mut_dynamic_buffer_slice(self.scene.meshes_buffer);
-		let capacity = mesh_data.len();
+		let capacity = self.instance_records.len();
 
 		let availability = &self.availability;
 		let loaded_materials = &self.loaded_materials;
@@ -1903,8 +2174,10 @@ impl VisibilityPipelineManager {
 					phase: instance_phase(&material.alpha_mode, material.double_sided),
 					evaluation: match material.evaluation {
 						MaterialEvaluator::Pipeline(_) => material_evaluations[entity.shader_mesh.material_index() as usize],
-						// Each phase's uber shader is the only evaluation of its phase.
-						MaterialEvaluator::Arm(_) => UBER_EVALUATION_INDEX,
+						// The phase has one uber shader for its translucent materials and one for the others.
+						MaterialEvaluator::Arm(key) => {
+							UberVariant::of_arm(key, matches!(material.alpha_mode, AlphaMode::Blend)).evaluation_index()
+						}
 					},
 					double_sided: material.double_sided,
 				})
@@ -1915,36 +2188,79 @@ impl VisibilityPipelineManager {
 			traces_rays: self.acceleration_structures.is_some(),
 		};
 
-		let RenderInfo {
-			opaque_instances,
-			masked_instances,
-			double_sided_instances,
-			double_sided_masked_instances,
-			transparent_instances,
-			opaque_evaluation_mask,
-			transparent_evaluation_mask,
-			..
-		} = render_info;
 		let lanes = rebuild_lanes(sources.entities.slots_len(), self.settings.instance_rebuild_lanes());
-		let left_out = rebuild_instances(
-			alley,
-			&sources,
-			lanes,
-			InstanceOutputs {
-				meshes: mesh_data,
-				traced: &mut self.traced_primitives,
-				phases: [
+		let render_info = &mut self.scene.render_info;
+		/// Returns the phase lists and the evaluation masks of `render_info`, in the order the rebuild fills them.
+		fn outputs(
+			render_info: &mut RenderInfo,
+		) -> (
+			[&mut Vec<super::scene::Instance>; super::instance_rebuild::PHASES],
+			[&mut super::layout::ActiveEvaluationMask; 2],
+		) {
+			let RenderInfo {
+				opaque_instances,
+				masked_instances,
+				double_sided_instances,
+				double_sided_masked_instances,
+				transparent_instances,
+				opaque_evaluation_mask,
+				transparent_evaluation_mask,
+				..
+			} = render_info;
+			(
+				[
 					opaque_instances,
 					masked_instances,
 					double_sided_instances,
 					double_sided_masked_instances,
 					transparent_instances,
 				],
-				masks: [opaque_evaluation_mask, transparent_evaluation_mask],
+				[opaque_evaluation_mask, transparent_evaluation_mask],
+			)
+		}
+		// Following measures each kept pick against the camera, so a frame without one rebuilds.
+		if follow && lod_view.is_some() {
+			let (phases, masks) = outputs(render_info);
+			let followed = follow_instances(
+				alley,
+				&sources,
+				lanes,
+				InstanceOutputs {
+					meshes: &mut self.instance_records,
+					traced: &mut self.traced_primitives,
+					phases,
+					masks,
+					lanes: &mut self.rebuild_scratch,
+					kept: &mut self.instance_kept,
+				},
+			);
+			if !followed.outdated {
+				self.mesh_residencies
+					.end_frame(|key, primitives| self.loader.request_mesh_levels(key, primitives));
+				return followed;
+			}
+		}
+
+		render_info.clear_active_instances();
+		if std::mem::take(&mut self.posed_uv_copies_recorded) {
+			render_info.posed_uv_copies.clear();
+		}
+		self.skinning_frame.clear();
+		let (phases, masks) = outputs(render_info);
+		let left_out = rebuild_instances(
+			alley,
+			&sources,
+			lanes,
+			InstanceOutputs {
+				meshes: &mut self.instance_records,
+				traced: &mut self.traced_primitives,
+				phases,
+				masks,
 				lanes: &mut self.rebuild_scratch,
+				kept: &mut self.instance_kept,
 			},
 		);
-		let mesh_data = frame.get_mut_dynamic_buffer_slice(self.scene.meshes_buffer);
+		let mesh_data = &mut self.instance_records;
 
 		// Finish, in slot order, the instances whose parameter block or skin changes shared state.
 		for deferred in self.rebuild_scratch.iter().flat_map(|lane| &lane.deferred) {
@@ -2002,15 +2318,21 @@ impl VisibilityPipelineManager {
 				"Visibility left {left_out} instances out of a frame. The most likely cause is that the scene shows more mesh primitives than the {capacity} instances the pipeline holds; raise `render.instances.capacity`."
 			)
 		});
-		frame.sync_buffer(self.scene.meshes_buffer);
 		self.skinning_pass
 			.write_palettes(frame, &self.skinning_frame.matrices, &self.skinning_frame.dual_quaternions);
 		self.mesh_residencies
 			.end_frame(|key, primitives| self.loader.request_mesh_levels(key, primitives));
+		Followed {
+			records: 0..self.instance_kept.len(),
+			relisted: true,
+			// An instance finished here changes every frame, as a posed one does, or was given its parameter block
+			// just now, which the next rebuild records. Either way the next frame can't keep these instances.
+			outdated: self.rebuild_scratch.iter().any(|lane| !lane.deferred.is_empty()),
+		}
 	}
 
 	/// Returns each shadowed sun's cascades, fitted to the camera frustum, by sun slot, and the view every map of
-	/// `shadows` would be drawn from this frame.
+	/// `shadows` would be drawn from this frame. A sun under a virtual shadow map has no cascades.
 	///
 	/// `ies_scales` holds each light's IES intensity scale by light index.
 	fn shadow_views(
@@ -2019,8 +2341,8 @@ impl VisibilityPipelineManager {
 		shadows: &ShadowLightSelection<'_>,
 		ies_scales: &[(f32, Option<IesProfileTexture>)],
 	) -> (SunCascades, ShadowViews) {
-		let cascades: SunCascades = shadows
-			.suns
+		let cascade_suns = if shadows.virtual_suns { &[][..] } else { &shadows.suns[..] };
+		let cascades: SunCascades = cascade_suns
 			.iter()
 			.map(|sun| {
 				csm::make_cascade_frames(
@@ -2080,7 +2402,7 @@ impl VisibilityPipelineManager {
 		current: &ShadowViews,
 		states: &ShadowMapStates,
 	) {
-		let views = frame.get_mut_dynamic_buffer_slice(self.scene.views_buffer);
+		let views = frame.map(self.scene.views_buffer);
 		views.fill(ShaderViewData::from(main_view));
 		let gpu_fit = self.settings.cascade_fitting == CascadeFitting::Receivers;
 		for (slot, cascades) in current.cascades.iter().enumerate() {
@@ -2101,7 +2423,6 @@ impl VisibilityPipelineManager {
 					*states.point_face_view(position, face).unwrap_or(current);
 			}
 		}
-		frame.sync_buffer(self.scene.views_buffer);
 	}
 }
 
@@ -2159,37 +2480,73 @@ impl PipelineManager for VisibilityPipelineManager {
 		frame_allocator: &'a bumpalo::Bump,
 		transforms: &ShownTransforms,
 		alley: &mut Alley,
-		_time: crate::time::MediaTime,
+		time: crate::time::MediaTime,
 	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]> {
 		debug_span!("Visibility::adopt_scene_updates").in_scope(|| self.adopt_scene_updates(transforms));
 		self.apply_runtime_settings();
 		debug_span!("Visibility::adopt_resource_completions").in_scope(|| self.adopt_resource_completions(frame, transforms));
+		*frame.map(self.scene.frame_buffer) = ShaderFrame {
+			time: time.as_seconds_f32(),
+		};
 		// Each frame sequence has its own buffers, so changed tables are copied into each one on its own frame.
 		let sequence = frame.key().sequence_index() as usize;
 		if !self.materials_copies_current[sequence] {
 			self.materials_copies_current[sequence] = true;
+			frame.map(self.materials_buffer).copy_from_slice(&*self.materials);
 			frame
-				.get_mut_dynamic_buffer_slice(self.materials_buffer)
-				.copy_from_slice(&*self.materials);
-			frame.sync_buffer(self.materials_buffer);
-			frame
-				.get_mut_dynamic_buffer_slice(self.material_evaluations_buffer)
+				.map(self.material_evaluations_buffer)
 				.copy_from_slice(&*self.material_evaluations);
-			frame.sync_buffer(self.material_evaluations_buffer);
 		}
+		self.adopt_screen_queries(frame, sequence, sinks);
 		// Detail levels follow the first sink's camera, like the views and exposure below.
-		let lod_view = sinks.first().map(|sink| LodView::new(sink, self.lod_settings));
+		let lod_view = sinks.first().map(|sink| {
+			// A sun's light travels along its transform's facing, which is the way its shadows fall.
+			let suns = self.scene.lights.iter().filter_map(|(_, light, transform)| {
+				matches!(light, Lights::Direction(_))
+					.then(|| math::direction_from_orientation(transform.get_orientation()).into_maths())
+			});
+			LodView::new(sink, self.lod_settings).with_suns(suns)
+		});
 		// Terrains place this frame's node instances before the frame lists its instances.
 		self.stream_terrains(frame.key().frame_index(), lod_view, transforms);
-		self.rebuild_active_instances(frame, lod_view, alley);
+		// A camera that only moved, zoomed, or changed size leaves most instances as they are, so they are followed,
+		// not rebuilt. A forced level or a switch of projection picks every level anew.
+		let moved = lod_view != self.instances_lod_view;
+		self.instances_stale |= match (&lod_view, &self.instances_lod_view) {
+			(Some(view), Some(last)) => !view.scales_alike(last),
+			(None, None) => false,
+			_ => true,
+		};
+		self.instances_lod_view = lod_view;
+		if self.instances_stale || moved || std::mem::take(&mut self.instances_moved) {
+			let updated = self.update_active_instances(frame, lod_view, !self.instances_stale, alley);
+			self.instances_stale = updated.outdated;
+			self.virtual_shadow_changes = range_union(self.virtual_shadow_changes.clone(), updated.records.clone());
+			for stale in &mut self.stale_records {
+				*stale = range_union(stale.clone(), updated.records.clone());
+			}
+			if updated.relisted {
+				self.stale_work = [true; ghi::MAX_FRAMES_IN_FLIGHT];
+			}
+		} else {
+			// Nothing the instances are made from changed, so the frame draws the ones it has.
+			self.mesh_residencies
+				.repeat_frame(|key, primitives| self.loader.request_mesh_levels(key, primitives));
+		}
+		// Every frame sequence has its own copy of the instance table, so each takes what changed since its last frame.
+		let stale = std::mem::replace(&mut self.stale_records[sequence], 0..0);
+		if !stale.is_empty() {
+			frame.map(self.scene.meshes_buffer)[stale.clone()].copy_from_slice(&self.instance_records[stale]);
+		}
 		// Instances write their own parameter blocks as the frame names them, so the changes are copied after.
 		if let Some((first, changes)) = self.material_parameters.take_changes(sequence) {
-			frame.get_mut_dynamic_buffer_slice(self.material_parameters_buffer)[first..first + changes.len()]
-				.copy_from_slice(changes);
-			frame.sync_buffer(self.material_parameters_buffer);
+			frame.map(self.material_parameters_buffer)[first..first + changes.len()].copy_from_slice(changes);
 		}
-		let dispatches = debug_span!("Visibility::write_mesh_dispatch_work")
-			.in_scope(|| self.mesh_dispatch_work.write_phases(frame, &self.scene.render_info));
+		// The GPU builds the work from the instances each phase lists, so only a new list is written.
+		if std::mem::take(&mut self.stale_work[sequence]) {
+			self.mesh_work.write_lists(frame, &self.scene.render_info);
+		}
+		let dispatches = self.mesh_work.dispatches();
 
 		crate::rendering::warn_once(&mut self.reported_limits[0], self.scene.lights.len() > MAX_LIGHTS, || {
 			format!(
@@ -2251,6 +2608,41 @@ impl PipelineManager for VisibilityPipelineManager {
 		if let Some(sink) = sinks.first() {
 			self.write_views(frame, sink.view(), &shadow_views, &shadow_states);
 		}
+		// Under virtual shadow maps the first sun's levels take the directional views, level `l` view `1 + l`, placed
+		// around the first sink's camera.
+		let virtual_shadows = match (sinks.first(), shadows.suns.first()) {
+			(Some(sink), Some(sun)) if self.shadow_maps.virtual_maps.enabled() => {
+				let eye = math::inverse(sink.view().view()).get_column(3);
+				let camera = math::Point::new(eye.x, eye.y, eye.z);
+				let levels = place_virtual_shadow_levels(
+					sun.direction,
+					camera,
+					self.settings.virtual_shadows.first_level_size(),
+					self.virtual_shadow_levels.as_ref(),
+				);
+				let views = frame.map(self.scene.views_buffer);
+				for (level, view) in levels.views.iter().enumerate() {
+					views[DIRECTIONAL_SHADOW_VIEW_OFFSET + level] = ShaderViewData::from(*view);
+				}
+				// The rewritten records, and the ones that appeared or left since the map last recorded.
+				let records = self.instance_kept.len();
+				let previous = self.virtual_shadow_records;
+				let changed = range_union(
+					self.virtual_shadow_changes.clone(),
+					previous.min(records)..previous.max(records),
+				);
+				let data = ShaderVirtualShadowFrame::new(
+					&levels,
+					self.settings.virtual_shadows,
+					camera,
+					self.settings.cascade_splits.distance(),
+					changed.start as u32..changed.end as u32,
+					records as u32,
+				);
+				Some((levels, data))
+			}
+			_ => None,
+		};
 		// A local light casts shadows only once its map holds a drawn one.
 		let shadow_for = |index| shadow_states.shadow_for(&shadows, index);
 		// Like the views above, exposure comes from the first sink; every sink shares one lighting upload.
@@ -2265,7 +2657,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			receiver_fit: (self.settings.cascade_fitting == CascadeFitting::Receivers)
 				.then_some(cascades)
 				.unwrap_or_default(),
-			drawn_cascades: shadow_states.drawn_cascades(shadows.suns.len()),
+			drawn_cascades: shadow_states.drawn_cascades(shadows.layout().suns),
 			layout: self.shadow_layout,
 			draws: shadow_draws,
 		};
@@ -2337,8 +2729,8 @@ impl PipelineManager for VisibilityPipelineManager {
 		};
 		if let Some(pool) = self.surfel_pool.as_ref().filter(|_| surfels.is_some())
 			&& frame.key().frame_index().is_multiple_of(GI_LOG_INTERVAL)
+			&& let Some(counts) = pool.counts(frame)
 		{
-			let counts = pool.counts(frame);
 			log::debug!(
 				"Surfel GI keeps {} surfels alive, {} of them spawned by rays' hits, in {} cell entries; the last grid recycled {}, and the frame before it spawned {} and lost {} while its rays' hits asked for {}. Young and changing surfels wanted {} rays and traced {}; settled ones wanted {} and traced {}.",
 				counts.last_alive,
@@ -2356,8 +2748,8 @@ impl PipelineManager for VisibilityPipelineManager {
 		}
 		if let Some(volume) = self.probe_volume.as_ref().filter(|_| probes.is_some())
 			&& frame.key().frame_index().is_multiple_of(GI_LOG_INTERVAL)
+			&& let Some(schedule) = volume.schedule(frame)
 		{
-			let schedule = volume.schedule(frame);
 			log::debug!(
 				"Probe GI holds {} active, {} idle, {} buried, and {} unset probes; the frame before updated {}.",
 				schedule.last_active,
@@ -2376,8 +2768,11 @@ impl PipelineManager for VisibilityPipelineManager {
 		drop(ray_tracing_span);
 		let frame_work = FrameWork {
 			skinning: &self.skinning_pass,
+			mesh_work: &self.mesh_work,
 			shadows: &self.shadow_maps,
+			virtual_shadows: virtual_shadows.as_ref().map(|(_, data)| *data),
 			acceleration_structures,
+			environment: self.scene_environment.as_ref(),
 		};
 		let render_info = &self.scene.render_info;
 		let previously_recorded_sinks = &self.recorded_sinks;
@@ -2385,6 +2780,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let recorded_indirect_diffuse = self.recorded_indirect_diffuse;
 		let mut recorded_sinks = SmallVec::<[Sink; 4]>::new();
 		let mut frame_work_recorded = false;
+		let screen_queries = &mut self.screen_queries;
 		let commands = sinks
 			.iter()
 			.filter_map(|sink| {
@@ -2406,6 +2802,10 @@ impl PipelineManager for VisibilityPipelineManager {
 						indirect_diffuse: recorded_indirect_diffuse,
 					});
 				let _span = debug_span!("Visibility::prepare_sink", sink = sink.index()).entered();
+				// The sink reads the pixels of the oldest queries that name its camera.
+				let taken = sink.camera().map(|camera| screen_queries.take(camera)).unwrap_or_default();
+				let points = taken.iter().map(|(_, query)| query.point()).collect::<SmallVec<[[u32; 2]; 16]>>();
+				let query_stages = render_pass.prepare_screen_queries(frame, &points);
 				let command = render_pass.prepare(
 					frame,
 					sink,
@@ -2422,15 +2822,36 @@ impl PipelineManager for VisibilityPipelineManager {
 					self.contact_shadow_settings,
 					self.fog.as_ref(),
 					background,
+					query_stages,
 					frame_allocator,
-				)?;
+				);
+				// Queries a frame doesn't read wait for the next one, ahead of newer queries.
+				if command.is_some() && query_stages.is_some() {
+					screen_queries.record(sequence, sink.index(), &taken);
+				} else {
+					screen_queries.put_back(taken);
+				}
+				let command = command?;
 				recorded_sinks.push(*sink);
 				frame_work_recorded |= command_index == 0;
 				Some((sink.index(), allocate_render_command(frame_allocator, command)))
 			})
 			.collect();
+		// The reads name instance slots, which the answers turn into the entities the slots held in this frame.
+		if self.screen_queries.has_recorded(sequence) {
+			let entities = &self.scene.render_entities;
+			self.screen_queries.remember_slots(
+				sequence,
+				(0..entities.slots_len()).map(|slot| entities.get_slot(slot).map(|entity| entity.handle)),
+			);
+		}
 		if frame_work_recorded {
 			self.shadow_states = shadow_states;
+			if let Some((levels, _)) = virtual_shadows {
+				self.virtual_shadow_levels = Some(levels);
+				self.virtual_shadow_changes = 0..0;
+				self.virtual_shadow_records = self.instance_kept.len();
+			}
 			// The frame-wide work stored the surfels' light at this frame's exposure.
 			if surfels.is_some() {
 				self.surfel_exposure = exposure;
@@ -2472,14 +2893,27 @@ impl PipelineManager for VisibilityPipelineManager {
 		);
 		render_pass_builder.alias("Depth", "depth");
 		render_pass_builder.alias("Lit", "main");
+		// Every sink hands over the same environment.
+		self.scene_environment = render_pass_builder.scene_environment();
 		let background = render_pass_builder.create_scene_background(crate::rendering::render_pass::SceneBackgroundTargets {
 			color: lit.into(),
 			depth: depth.into(),
 		});
 		let ssgi = create_ssgi_targets(render_pass_builder);
+		let diffuse_radiance_history = self
+			.settings
+			.features
+			.ssgi
+			.then(|| create_diffuse_radiance_history_target(render_pass_builder));
 		let sun_visibility = create_sun_visibility_targets(render_pass_builder);
 		let gtao = create_gtao_targets(render_pass_builder);
 		let fog_light = create_fog_light_target(render_pass_builder);
+		let backdrop = create_backdrop_targets(render_pass_builder);
+		let subsurface = self
+			.settings
+			.features
+			.subsurface
+			.then(|| create_subsurface_targets(render_pass_builder));
 		let stage_counters = super::render_pass::StageCounters::new(render_pass_builder);
 		let surfel_gi = self.surfel_pool.is_some();
 		let surfels = surfel_gi.then(|| create_surfel_targets(render_pass_builder));
@@ -2507,10 +2941,13 @@ impl PipelineManager for VisibilityPipelineManager {
 				primitive_index: primitive_index.into(),
 				instance_id: instance_id.into(),
 				ssgi,
+				diffuse_radiance_history,
 				surfels,
 				sun_visibility,
 				gtao,
 				fog_light,
+				backdrop,
+				subsurface,
 			},
 			&self.shadow_maps,
 			stage_counters,
@@ -2518,6 +2955,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			self.settings.instance_capacity.meshlet_groups,
 			probe_gi,
 			debug_views,
+			self.blue_noise,
 		);
 		context.write(
 			&self
@@ -2535,15 +2973,13 @@ impl PipelineManager for VisibilityPipelineManager {
 
 #[cfg(test)]
 mod tests {
-	use maths_rs::Vec3f;
-
 	use super::*;
 	use crate::rendering::lights::{LightColor, PhotometricIntensity, PointLight};
 
 	#[test]
 	fn resolved_ies_profile_applies_the_per_light_dimmer() {
 		let profile_light = Lights::Point(
-			PointLight::new_ies(LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)), 0.5, "lights/office.ies")
+			PointLight::new(LightColor::LinearSrgb([1.0, 1.0, 1.0]), PhotometricIntensity::Ies { profile: "lights/office.ies".into(), dimmer: 0.5 })
 				.expect("physical IES point light"),
 		);
 		let analytic_light = Lights::Point(
@@ -2589,7 +3025,11 @@ mod tests {
 			probe_gi,
 			..VisibilityFeatures::default()
 		};
-		let gi = |enabled, technique| GiSettings { enabled, technique };
+		let gi = |enabled, technique| GiSettings {
+			enabled,
+			technique,
+			..GiSettings::new(VisibilityFeatures::default())
+		};
 		// (GI settings, built-in SSGI, surfel GI, and probe GI, ray tracing) and the source that lights the frame.
 		let cases = [
 			((gi(true, Surfels), (true, true, false), true), Some(Surfels)),

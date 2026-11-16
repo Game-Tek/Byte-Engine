@@ -699,12 +699,20 @@ impl Lexer {
 					}
 					parser::Expressions::Member { name } => {
 						let source = resolve_member(&self.scopes, name)?;
-						// Functions are not values. A function body that names its own function would also hold a strong
-						// reference to its ancestor, which forms an `Rc` cycle that is never freed.
-						if matches!(source.borrow().node(), Nodes::Function { .. }) {
-							return Err(LexError::invalid(format!(
-								"Function `{name}` can't be used as a value. The most likely cause is a missing `()` after the function name."
-							)));
+						// Functions and scopes are not values. Naming one from inside it would also hold a strong reference
+						// to an ancestor, an `Rc` cycle that is never freed.
+						match source.borrow().node() {
+							Nodes::Function { .. } => {
+								return Err(LexError::invalid(format!(
+									"Function `{name}` can't be used as a value. The most likely cause is a missing `()` after the function name."
+								)));
+							}
+							Nodes::Scope { .. } => {
+								return Err(LexError::invalid(format!(
+									"Scope `{name}` can't be used as a value. The most likely cause is a module or `root` named on its own. Name a declaration inside it instead, such as `{name}::VALUE`."
+								)));
+							}
+							_ => {}
 						}
 						// A path such as `noise::SEED` names the declaration `SEED`, which backends emit by its own name.
 						let name = name.rsplit("::").next().unwrap_or(name);

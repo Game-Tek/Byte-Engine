@@ -21,8 +21,6 @@ pub enum ConvertError {
 	UnsupportedNode { node: String, category: String },
 	/// A node carries a MaterialX type that no BEMX type represents.
 	UnsupportedType { node: String, data_type: String },
-	/// An `<image>` samples with coordinates other than the mesh's own.
-	UnsupportedTextureCoordinates { node: String },
 	/// A geometric node reads a property the material stage does not carry.
 	UnknownGeometricProperty { node: String, property: String },
 	/// An `<image>` names no file to sample.
@@ -60,11 +58,6 @@ impl Display for ConvertError {
 			ConvertError::UnsupportedType { node, data_type } => write!(
 				f,
 				"Unsupported MaterialX type '{data_type}' on node '{node}'. The most likely cause is a shading network carrying matrices, strings or closures where a material expects a colour or a number."
-			),
-			ConvertError::UnsupportedTextureCoordinates { node } => write!(
-				f,
-				"Unsupported texture coordinates on image node '{node}'. The most likely cause is a 'texcoord' input driven by a transform; converted images sample with the mesh's own texture coordinates only. See {}.",
-				online_docs_url(MATERIALX_DOCS_PATH)
 			),
 			ConvertError::UnknownGeometricProperty { node, property } => write!(
 				f,

@@ -108,6 +108,9 @@ pub(crate) const MESH_FLAG_DOUBLE_SIDED: u32 = 1 << 24;
 /// [`ShaderMesh`] flag for an instance skinning posed this frame. Posed meshlets can leave their bind-pose bounds, so
 /// task shaders keep all of its meshlets in every view.
 pub(crate) const MESH_FLAG_SKINNED: u32 = 1 << 25;
+/// [`ShaderMesh`] flag for a listed instance that draws nothing from where the camera is, such as one out of its
+/// primitive's range or one only rays hit. The passes that build the frame's mesh work give it no work items.
+pub(crate) const MESH_FLAG_HIDDEN: u32 = 1 << 31;
 
 /// The `InstanceLightmap` struct says where an instance's light lies in the resident lightmaps, so material evaluation
 /// can read it.
@@ -162,6 +165,15 @@ pub(crate) struct ShaderViewData {
 	pub(crate) far: f32,
 }
 
+/// The `ShaderFrame` struct is the scene layer's `frame` record: what every pass of a frame shares, written once a
+/// frame.
+#[repr(C)]
+#[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct ShaderFrame {
+	/// The frame clock's elapsed seconds, which a material's `time` node reads.
+	pub(crate) time: f32,
+}
+
 impl From<View> for ShaderViewData {
 	fn from(view: View) -> Self {
 		Self {
@@ -210,7 +222,9 @@ pub struct LightData {
 	/// The size class of a cone or point light's shadow map, which picks the image of that class. See
 	/// [`super::layout::LOCAL_SHADOW_SIZE_CLASS_COUNT`].
 	pub(crate) shadow_size_class: u32,
-	pub(crate) _padding: [u32; 3],
+	/// Nonzero for the sun whose shadow lies in the virtual shadow map's pages instead of cascades.
+	pub(crate) virtual_shadow: u32,
+	pub(crate) _padding: [u32; 2],
 	/// A sun's slot, a cone's layer, or a point's cube within the image of its size class.
 	pub shadow_layer: u32,
 	pub(crate) ies_profile: u32,

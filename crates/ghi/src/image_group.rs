@@ -12,7 +12,7 @@ use std::ops::RangeInclusive;
 use smallvec::SmallVec;
 use utils::{Extent, hash::HashMap};
 
-use crate::{BaseImageHandle, DeviceAccesses, ImageGroupHandle, UseCases};
+use crate::{BaseImageHandle, Copies, ImageGroupHandle};
 
 /// The `ImageGroupMember` struct gives one group member its size and the span of the frame that uses it.
 ///
@@ -178,23 +178,9 @@ impl ImageGroups {
 	///
 	/// Backends call this before creating an image whose builder names a group.
 	pub(crate) fn validate_member(builder: &crate::image::Builder) {
-		let name = builder.name.unwrap_or("unnamed");
 		assert!(
-			builder.use_case == UseCases::STATIC,
-			"Image '{name}' cannot join an image group. The most likely cause is a per-frame (dynamic) image, which keeps one copy per frame in flight and cannot share memory."
-		);
-		assert!(
-			builder.device_accesses == DeviceAccesses::DeviceOnly,
-			"Image '{name}' cannot join an image group. The most likely cause is an image the CPU can access, which needs host-visible memory that group heaps do not provide."
-		);
-	}
-
-	/// Rejects a per-frame image that names a group. Backends call this from `build_dynamic_image`.
-	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal backend uses it."))]
-	pub(crate) fn reject_dynamic_member(builder: &crate::image::Builder) {
-		assert!(
-			builder.group.is_none(),
-			"Image '{}' cannot join an image group. The most likely cause is a per-frame (dynamic) image, which keeps one copy per frame in flight and cannot share memory.",
+			builder.copies == Copies::One,
+			"Image '{}' cannot join an image group. The most likely cause is an image with a copy per frame, which cannot share memory. Build group members with one copy.",
 			builder.name.unwrap_or("unnamed"),
 		);
 	}

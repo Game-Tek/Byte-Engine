@@ -394,7 +394,7 @@ mod tests {
 			std::process::id(),
 			entity.id()
 		));
-		let output = Arc::new(StreamOutput::open(path.to_str().unwrap(), changes_only, Instant::now()).expect("file opens"));
+		let output = Arc::new(StreamOutput::open(path.to_str(), changes_only, Instant::now(), Arc::default()).expect("file opens"));
 		(DebugDataStreamWriter::new(output, entity, "Character".into()), path)
 	}
 

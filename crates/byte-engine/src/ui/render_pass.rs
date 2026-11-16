@@ -36,6 +36,7 @@ mod fill;
 mod geometry;
 mod slug;
 mod text;
+mod uploads;
 
 #[cfg(test)]
 mod cpu_tests;
@@ -53,6 +54,7 @@ use fill::*;
 use geometry::*;
 use slug::*;
 use text::*;
+use uploads::*;
 
 /// The text renderer every [`UiRenderPass`] uses. Set it to [`UiTextMode::Atlas`] to draw CPU-rasterized glyphs instead.
 const UI_TEXT_MODE: UiTextMode = UiTextMode::Slug;
@@ -75,8 +77,8 @@ enum UiTextMode {
 enum UiText {
 	Slug {
 		glyphs: UiGlyphCurves,
-		curve_buffer: ghi::DynamicBufferHandle<[[f32; 4]; UI_SLUG_CURVE_CAPACITY]>,
-		band_buffer: ghi::DynamicBufferHandle<[u32; UI_SLUG_BAND_CAPACITY]>,
+		curve_buffer: ghi::BufferHandle<[[f32; 4]; UI_SLUG_CURVE_CAPACITY]>,
+		band_buffer: ghi::BufferHandle<[u32; UI_SLUG_BAND_CAPACITY]>,
 	},
 	Atlas {
 		atlas: UiGlyphAtlas,
@@ -135,6 +137,8 @@ const UI_BLUR_HALF_Y: usize = 4;
 /// vertex or index buffers. A frame is one draw per damaged region, plus one more for each
 /// backdrop blur, because a blur reads the layer drawn below it.
 pub struct UiRenderPass {
+	/// The pass's name, which its state, GPU counter, and render targets go by.
+	name: &'static str,
 	caches: UiGeometryCaches,
 	masks: UiMaskTable,
 	pipeline_manager: crate::rendering::PipelineManagerClient,
@@ -142,8 +146,8 @@ pub struct UiRenderPass {
 	/// The ubershader with blending disabled: a scissored quad is the hardware clear for one damaged region.
 	clear_pipeline: crate::rendering::PipelineRef,
 	/// One copy per frame in flight, so a rebuild never rewrites records an earlier frame still draws.
-	primitive_buffer: ghi::DynamicBufferHandle<[UiPrimitive; MAX_UI_PRIMITIVES]>,
-	mask_buffer: ghi::DynamicBufferHandle<[UiClipMaskEntry; MAX_UI_MASKS]>,
+	primitive_buffer: ghi::BufferHandle<[UiPrimitive; MAX_UI_PRIMITIVES]>,
+	mask_buffer: ghi::BufferHandle<[UiClipMaskEntry; MAX_UI_MASKS]>,
 	/// The prepared frame's primitive records, kept so each frame's buffer copy can receive them on its own frame.
 	/// Rebuilds write into this storage directly.
 	primitives: Vec<UiPrimitive>,
@@ -152,10 +156,12 @@ pub struct UiRenderPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	image_sampler: ghi::SamplerHandle,
 	image_textures: HashMap<u64, UiImageTexture>,
+	/// Carries the texels of UI images and the glyph atlas into their images.
+	uploads: UiUploadStaging,
 	text: UiText,
 	paths: UiPathCurves,
-	path_curve_buffer: ghi::DynamicBufferHandle<[[f32; 4]; UI_SLUG_CURVE_CAPACITY]>,
-	path_band_buffer: ghi::DynamicBufferHandle<[u32; UI_SLUG_BAND_CAPACITY]>,
+	path_curve_buffer: ghi::BufferHandle<[[f32; 4]; UI_SLUG_CURVE_CAPACITY]>,
+	path_band_buffer: ghi::BufferHandle<[u32; UI_SLUG_BAND_CAPACITY]>,
 	blur_downsample_pipeline: crate::rendering::PipelineRef,
 	blur_filter_pipeline: crate::rendering::PipelineRef,
 	/// The blur chain's images, indexed like [`UI_BLUR_IMAGES`].
@@ -285,18 +291,21 @@ impl UiRenderPass {
 	// Keep the UI pipeline and fixed buffer setup together because every handle is required by frame preparation.
 	#[allow(clippy::too_many_lines)]
 	///
-	/// `font` is the file to draw text with, or `None` for a system font. It must match the
-	/// font the UI [`crate::ui::Engine`] measured with.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, font: Option<&std::path::Path>) -> Self {
+	/// `name` names the pass and its render targets, so several UI passes can draw over one another, each its own
+	/// layer: `render.pass.<name>` enables or bypasses it, the inspector reports its GPU time under it, and its
+	/// output and persistent layer are the targets `<name>` and `<name> layer`. `fonts` are the fonts to draw text
+	/// with, the first being the default, or empty for a system font. They must match the fonts the UI
+	/// [`crate::ui::Engine`] measured with; see [`crate::ui::Fonts`].
+	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, name: &'static str, fonts: crate::ui::Fonts<'_>) -> Self {
 		// A sink without a scene pipeline has no `main`; the UI then composites over black.
 		let scene = render_pass_builder.try_read_from("main");
 		// The layer outlives frames: damaged regions are redrawn into it and the scene is composited under it every frame.
 		// Only draws write it and the composite only reads it, so it takes no storage usage and Metal keeps it compressed.
 		let main_attachment = render_pass_builder.create_persistent_render_target(
-			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::RenderTarget | ghi::Uses::Image).name("UI Layer"),
+			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::RenderTarget | ghi::Uses::Image).name(&format!("{name} layer")),
 		);
 		let output = render_pass_builder.create_main_render_target(
-			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Storage | ghi::Uses::Image).name("UI"),
+			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Storage | ghi::Uses::Image).name(name),
 		);
 
 		let pipeline_manager = render_pass_builder.pipeline_manager().clone();
@@ -311,17 +320,20 @@ impl UiRenderPass {
 		let output: ghi::ImageOrSwapchain = output.into();
 
 		let context = render_pass_builder.context();
+		let uploads = UiUploadStaging::new(context);
 
 		// The CPU rewrites these buffers while earlier frames may still read them, so every frame in flight gets a copy.
-		let primitive_buffer: ghi::DynamicBufferHandle<[UiPrimitive; MAX_UI_PRIMITIVES]> = context.build_dynamic_buffer(
+		let primitive_buffer: ghi::BufferHandle<[UiPrimitive; MAX_UI_PRIMITIVES]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("UI Primitives")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
-		let mask_buffer: ghi::DynamicBufferHandle<[UiClipMaskEntry; MAX_UI_MASKS]> = context.build_dynamic_buffer(
+		let mask_buffer: ghi::BufferHandle<[UiClipMaskEntry; MAX_UI_MASKS]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("UI Clip Masks")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let image_sampler = context.build_sampler(ghi::sampler::Builder::new());
 		// Every texture binding of the ubershader needs a texture, so unused ones share this one.
@@ -329,8 +341,7 @@ impl UiRenderPass {
 			.build_image(
 				ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
 					.name("UI Unused Texture")
-					.extent(Extent::square(1))
-					.device_accesses(ghi::DeviceAccesses::HostToDevice),
+					.extent(Extent::square(1)),
 			)
 			.into();
 		let descriptor_set = UI_LAYOUT.create_set(context, "UI");
@@ -364,15 +375,17 @@ impl UiRenderPass {
 		}
 		let text = match UI_TEXT_MODE {
 			UiTextMode::Slug => {
-				let curve_buffer = context.build_dynamic_buffer(
+				let curve_buffer = context.build_buffer(
 					ghi::buffer::Builder::new(ghi::Uses::Storage)
 						.name("UI Glyph Curves")
-						.device_accesses(ghi::DeviceAccesses::HostToDevice),
+						.host_access(ghi::HostAccess::Write)
+						.copies(ghi::Copies::PerFrame),
 				);
-				let band_buffer = context.build_dynamic_buffer(
+				let band_buffer = context.build_buffer(
 					ghi::buffer::Builder::new(ghi::Uses::Storage)
 						.name("UI Glyph Bands")
-						.device_accesses(ghi::DeviceAccesses::HostToDevice),
+						.host_access(ghi::HostAccess::Write)
+						.copies(ghi::Copies::PerFrame),
 				);
 				context.write(&[
 					ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("glyph_curves"), curve_buffer.into()),
@@ -391,8 +404,7 @@ impl UiRenderPass {
 					.build_image(
 						ghi::image::Builder::new(UI_GLYPH_ATLAS_FORMAT, ghi::Uses::Image | ghi::Uses::TransferDestination)
 							.name("UI Glyph Atlas")
-							.extent(atlas.extent())
-							.device_accesses(ghi::DeviceAccesses::HostToDevice),
+							.extent(atlas.extent()),
 					)
 					.into();
 				let sampler = context.build_sampler(
@@ -417,15 +429,17 @@ impl UiRenderPass {
 				UiText::Atlas { atlas, image }
 			}
 		};
-		let path_curve_buffer = context.build_dynamic_buffer(
+		let path_curve_buffer = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("UI Path Curves")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
-		let path_band_buffer = context.build_dynamic_buffer(
+		let path_band_buffer = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("UI Path Bands")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		context.write(&[
 			ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("path_curves"), path_curve_buffer.into()),
@@ -439,7 +453,11 @@ impl UiRenderPass {
 				ghi::Uses::Image | ghi::Uses::Storage
 			};
 			context
-				.build_dynamic_image(ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, uses).name(UI_BLUR_IMAGES[index]))
+				.build_image(
+					ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, uses)
+						.name(UI_BLUR_IMAGES[index])
+						.copies(ghi::Copies::PerFrame),
+				)
 				.into()
 		});
 		let main_attachment_image: ghi::BaseImageHandle = main_attachment.into();
@@ -511,6 +529,7 @@ impl UiRenderPass {
 		let main_copy = render_pass_builder.take_main_copy();
 
 		Self {
+			name,
 			caches: UiGeometryCaches::default(),
 			masks: UiMaskTable::default(),
 			pipeline_manager,
@@ -546,14 +565,20 @@ impl UiRenderPass {
 			reported_dropped_glyphs: false,
 			reported_image_limit: false,
 			reported_dropped_paths: false,
-			text_system: TextSystem::with_font(font.map(std::path::Path::to_path_buf)),
+			text_system: TextSystem::with_fonts(fonts),
+			uploads,
 		}
 	}
 
-	/// Makes an image resident and returns the element of the ubershader's texture array it is bound to.
+	/// Makes an image resident and returns the element of the ubershader's texture array it is bound to, and whether
+	/// its texels must be copied into it.
 	///
 	/// Returns `None` when every element holds an image the UI still shows.
-	fn ensure_image_texture(&mut self, frame: &mut ghi::implementation::Frame, source: usize) -> Option<u32> {
+	fn ensure_image_texture(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		source: usize,
+	) -> Option<(u32, Option<ghi::BaseImageHandle>)> {
 		let image = &self.adopted.data.images[source];
 		if !self.image_textures.contains_key(&image.image_id) {
 			let free = (UI_FIRST_IMAGE_TEXTURE_SLOT..UI_TEXTURE_SLOTS)
@@ -563,8 +588,7 @@ impl UiRenderPass {
 					.build_image(
 						ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
 							.name("UI Image")
-							.extent(Extent::rectangle(image.source_width, image.source_height))
-							.device_accesses(ghi::DeviceAccesses::HostToDevice),
+							.extent(Extent::rectangle(image.source_width, image.source_height)),
 					)
 					.into();
 				frame.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
@@ -599,14 +623,46 @@ impl UiRenderPass {
 		let texture = self.image_textures.get_mut(&image.image_id)?;
 		if texture.version != image.version || texture.extent != (image.source_width, image.source_height) {
 			frame.resize_image(texture.image, Extent::rectangle(image.source_width, image.source_height));
-			let texture_slice = frame.get_texture_slice_mut(texture.image);
-			texture_slice[..image.pixels.len()].copy_from_slice(&image.pixels);
-			frame.sync_texture(texture.image);
 			texture.version = image.version;
 			texture.extent = (image.source_width, image.source_height);
+			return Some((texture.slot, Some(texture.image)));
 		}
 
-		Some(texture.slot)
+		Some((texture.slot, None))
+	}
+
+	/// Stages the glyph atlas regions and the image texels that changed, for the copies this frame records before
+	/// its draws.
+	///
+	/// `images` pairs each image to copy with the index of its source in the adopted draw list.
+	fn stage_uploads(&mut self, frame: &mut ghi::implementation::Frame, images: &[(ghi::BaseImageHandle, usize)]) {
+		let sources = &self.adopted.data.images;
+		let image_region = |source: usize| ghi::image::Region {
+			offset: [0, 0],
+			size: [sources[source].source_width, sources[source].source_height],
+		};
+		let atlas = match &mut self.text {
+			UiText::Atlas { atlas, image } => Some((atlas, *image)),
+			UiText::Slug { .. } => None,
+		};
+		let size = atlas.as_ref().map_or(0, |(atlas, _)| atlas.upload_size())
+			+ images
+				.iter()
+				.map(|&(_, source)| region_layout(ghi::Formats::RGBA8UNORM, image_region(source)).padded_size)
+				.sum::<usize>();
+		if size == 0 {
+			return;
+		}
+		let mut writer = self.uploads.begin(frame, size);
+		if let Some((atlas, image)) = atlas {
+			atlas.drain_pending(|region, pixels, stride| writer.copy(image, UI_GLYPH_ATLAS_FORMAT, region, pixels, stride));
+		}
+		for &(image, source) in images {
+			let region = image_region(source);
+			// UI images hold compact RGBA8 rows.
+			let stride = region.size[0] as usize * 4;
+			writer.copy(image, ghi::Formats::RGBA8UNORM, region, &sources[source].pixels, stride);
+		}
 	}
 
 	/// Takes the adopted UI for drawing; every sink can take the same [`AdoptedRender`].
@@ -687,7 +743,7 @@ impl UiRenderPass {
 					frame_allocator,
 					damage,
 				);
-				atlas.upload(frame, *image);
+				atlas.sync_extent(frame, *image);
 				Some(geometry)
 			}
 		};
@@ -716,9 +772,13 @@ impl UiRenderPass {
 		);
 
 		let mut images_without_texture = 0;
+		let mut image_uploads = bumpalo::collections::Vec::new_in(frame_allocator);
 		for &(primitive, source) in &primitives.images {
 			match self.ensure_image_texture(frame, source as usize) {
-				Some(slot) => primitives.primitives[primitive as usize].data0 = slot,
+				Some((slot, upload)) => {
+					primitives.primitives[primitive as usize].data0 = slot;
+					image_uploads.extend(upload.map(|image| (image, source as usize)));
+				}
 				None => {
 					// An empty quad rasterizes nothing, which keeps the records after it in place.
 					primitives.primitives[primitive as usize].bounds = [0.0; 4];
@@ -726,6 +786,7 @@ impl UiRenderPass {
 				}
 			}
 		}
+		self.stage_uploads(frame, &image_uploads);
 
 		warn_once(&mut self.reported_capacity_limit, primitives.truncated, || {
 			format!(
@@ -821,11 +882,9 @@ impl UiRenderPass {
 		if self.primitive_copies_current[sequence] {
 			return;
 		}
-		frame.get_mut_dynamic_buffer_slice(self.primitive_buffer)[..self.primitives.len()].copy_from_slice(&self.primitives);
-		frame.sync_buffer(self.primitive_buffer);
+		frame.map(self.primitive_buffer)[..self.primitives.len()].copy_from_slice(&self.primitives);
 		let masks = self.masks.entries();
-		frame.get_mut_dynamic_buffer_slice(self.mask_buffer)[..masks.len()].copy_from_slice(masks);
-		frame.sync_buffer(self.mask_buffer);
+		frame.map(self.mask_buffer)[..masks.len()].copy_from_slice(masks);
 		self.primitive_copies_current[sequence] = true;
 	}
 }
@@ -861,7 +920,7 @@ fn separable_blur(
 
 impl RenderPass for UiRenderPass {
 	fn name(&self) -> &'static str {
-		"ui"
+		self.name
 	}
 
 	/// Forwards the scene unchanged, since this pass took the builder's forwarding copy for itself.
@@ -913,6 +972,7 @@ impl RenderPass for UiRenderPass {
 			self.upload_frame_copies(frame);
 		}
 		let composite_descriptor_set = self.composite_descriptor_set;
+		let name = self.name;
 		let composite = move |command_buffer: &mut ghi::implementation::CommandBufferRecording| {
 			let full = UiPixelRegion::full(extent);
 			dispatch_region(
@@ -942,6 +1002,8 @@ impl RenderPass for UiRenderPass {
 		let layer = self.layer;
 		let blur_backdrop = self.blur_images[UI_BLUR_BACKDROP];
 		let steps: &'a [UiStep] = frame_allocator.alloc_slice_copy(prepared_steps);
+		// A rebuild staged the texels its images need; they land before any draw samples them.
+		let uploads = self.uploads.take_copies(frame_allocator);
 		let damage: &'a [UiPixelRegion] = frame_allocator.alloc_slice_copy(&self.damage);
 		// The recorded command brings the layer up to the adopted revision at this extent.
 		self.layer_revision = self.adopted.revision;
@@ -950,8 +1012,9 @@ impl RenderPass for UiRenderPass {
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
 			move |command_buffer| {
+				command_buffer.copy_buffer_to_images(uploads);
 				command_buffer.region(
-					|label| label.write_str("UI"),
+					|label| label.write_str(name),
 					|command_buffer| {
 						let push = |first: u32| UiDrawPush {
 							viewport: [extent.width().max(1) as f32, extent.height().max(1) as f32],
@@ -1336,7 +1399,7 @@ mod tests {
 			push_constant.write("viewport", Value::Vec2F(self.viewport)).unwrap();
 			push_constant.write("first", Value::U32(first)).unwrap();
 			let mut vertex = Buffer::new(self.executable.builtin_vertex_index_layout().unwrap().clone());
-			vertex.write("vertex_index", Value::U32(vertex_index)).unwrap();
+			vertex.write(besl::VERTEX_INDEX_BUILTIN, Value::U32(vertex_index)).unwrap();
 			let mut position = Buffer::new(self.executable.builtin_position_layout().unwrap().clone());
 			let mut outputs: Vec<_> = (0..6)
 				.map(|index| Buffer::new(self.executable.output_layout(index).unwrap().clone()))
@@ -3030,6 +3093,7 @@ mod tests {
 				clip_mask: None,
 				color: RGBA::white(),
 				font_size,
+				font: None,
 				text: content.to_string(),
 			}],
 			..UiDrawList::default()
@@ -3064,7 +3128,7 @@ mod tests {
 		for (character, font_size) in [('@', 32.0f32), ('g', 24.0), ('B', 16.0), ('W', 12.0), ('8', 48.0)] {
 			// A whole-pixel pen and baseline put the shader's samples on the rasterizer's pixel grid.
 			let position = [8.0f32, 4.0];
-			let line = fonts.line_metrics(font_size).unwrap();
+			let line = fonts.line_metrics(0, font_size).unwrap();
 			let baseline = (position[1] + line.ascent.max(font_size * 0.8f32)).round();
 			let glyph = fonts
 				.glyph_by_key(crate::ui::font::GlyphKey::new(character, font_size))

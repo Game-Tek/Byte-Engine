@@ -496,42 +496,48 @@ fn statement_expression_parsers<'i, 'a: 'i>() -> [ExpressionParser<'i, 'a>; 7] {
 /// `return`, `break`, `continue`, and `discard` still end the block, and any other expression becomes the value the
 /// block yields, as an [`Expressions::Yield`]. The `}` is left for the caller.
 pub(crate) fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
-	// `match` and `if` are keywords, so syntax errors inside them are reported instead of retried as an expression.
+	// `match`, `if`, and `for` are keywords, so syntax errors inside them are reported instead of retried as an expression.
 	match iterator.as_slice().first() {
 		Some(&"match") => return parse_match(iterator),
 		Some(&"if") => return parse_conditional(iterator),
+		Some(&"for") => return parse_for_loop(iterator),
 		_ => {}
 	}
 
-	if let Ok(result) = parse_for_loop(iterator.clone()) {
-		return Ok(result);
+	// The first token picks one parse, so each token is read once. Retrying a failed statement as a value would
+	// re-parse every nested block once per level, which takes exponential time on deeply nested input.
+	if starts_value_only(&iterator) {
+		// A value that can't be a statement is valid only as the block's value, before `}`.
+		let (value, next) = parse_expression_node(&[parse_rvalue], iterator)?;
+		return match next.as_slice().first() {
+			Some(&"}") => Ok((Node::r#yield(value), next)),
+			_ => Err(ParsingFailReasons::NotMine),
+		};
 	}
 
-	if let Ok((statement, mut next)) = parse_expression_node(&statement_expression_parsers(), iterator.clone()) {
-		match next.as_slice().first() {
-			Some(&";") => {
-				next.next();
-				return Ok((statement, next));
-			}
-			Some(&"}") if is_control_flow(&statement) => return Ok((statement, next)),
-			Some(&"}") if is_let(&statement) => {
-				return Err(ParsingFailReasons::BadSyntax {
-					message: "Expected `;` after a `let`. The most likely cause is a `let` written as the last line of a block, which can't be the block's value."
-						.to_string(),
-				});
-			}
-			_ => {}
+	// A statement that starts with a name reads as a value would, so before `}` it is the block's value.
+	let (statement, mut next) = parse_expression_node(&statement_expression_parsers(), iterator)?;
+	match next.as_slice().first() {
+		Some(&";") => {
+			next.next();
+			Ok((statement, next))
 		}
+		Some(&"}") if is_control_flow(&statement) => Ok((statement, next)),
+		Some(&"}") if is_let(&statement) => Err(ParsingFailReasons::BadSyntax {
+			message: "Expected `;` after a `let`. The most likely cause is a `let` written as the last line of a block, which can't be the block's value."
+				.to_string(),
+		}),
+		Some(&"}") => Ok((Node::r#yield(statement), next)),
+		_ => Err(ParsingFailReasons::NotMine),
 	}
+}
 
-	// Any other expression before `}` is the block's value. It is parsed as a value, because the statement parsers
-	// read a literal such as `1` as a name.
-	let (value, next) = parse_expression_node(&[parse_rvalue], iterator)?;
-	if next.as_slice().first() != Some(&"}") {
-		return Err(ParsingFailReasons::NotMine);
-	}
-
-	Ok((Node::r#yield(value), next))
+/// Reports whether the next token can start a value but not a statement: a literal such as `1` or `true`, a prefix
+/// operator, a group `(`, or a record `{`. The statement parsers would misread a literal as a name.
+fn starts_value_only(iterator: &std::slice::Iter<'_, &str>) -> bool {
+	iterator.as_slice().first().is_some_and(|token| {
+		is_literal(token) || crate::UnaryOperators::from_token(token).is_some() || matches!(*token, "(" | "{")
+	})
 }
 
 /// Reports whether `node` is `return`, `break`, `continue`, or `discard`, which end a block themselves instead of
@@ -643,15 +649,14 @@ fn parse_match_arm_body<'i, 'a: 'i>(
 			(vec![statement], true, iterator)
 		}
 		_ => {
-			// As at a block's end, any other expression is parsed as a value, so a literal such as `1` stays a literal.
-			let statement = parse_expression_node(&statement_expression_parsers(), iterator.clone())
-				.ok()
-				.filter(|(statement, _)| is_control_flow(statement) || is_let(statement));
-			let (body, iterator) = match statement {
-				Some(statement) => statement,
-				None => {
-					let (value, iterator) = parse_expression_node(&[parse_rvalue], iterator)?;
-					(Node::r#yield(value), iterator)
+			// As in `parse_statement`, the first token picks one parse.
+			let (body, iterator) = if starts_value_only(&iterator) {
+				let (value, iterator) = parse_expression_node(&[parse_rvalue], iterator)?;
+				(Node::r#yield(value), iterator)
+			} else {
+				match parse_expression_node(&statement_expression_parsers(), iterator)? {
+					(statement, iterator) if is_control_flow(&statement) || is_let(&statement) => (statement, iterator),
+					(value, iterator) => (Node::r#yield(value), iterator),
 				}
 			};
 			(vec![body], false, iterator)

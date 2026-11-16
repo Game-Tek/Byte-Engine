@@ -20,7 +20,8 @@ pub use half::f16;
 use instruction::*;
 pub use layout::{
 	BufferLayout, BufferMemberLayout, DescriptorLayout, ResourceSlot, ValueType, builtin_instance_index_slot,
-	builtin_position_slot, builtin_vertex_index_slot, input_slot, output_slot,
+	builtin_position_slot, builtin_primitive_index_slot, builtin_render_target_array_index_slot, builtin_vertex_index_slot,
+	input_slot, output_slot,
 };
 use layout::{PUSH_CONSTANT_SLOT, dynamic_resource_slot};
 use program::{ExecutableFunction, ExecutionFrame, ExecutionState};

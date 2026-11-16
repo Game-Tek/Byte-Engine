@@ -72,6 +72,10 @@ pub struct Image {
 	/// Number of mip levels stored in the accompanying data buffer, including the base level.
 	#[serde(default = "default_mip_count")]
 	pub mip_count: u32,
+	/// Whether the application reads the texels on the CPU, so the store must keep them in an encoding the CPU can
+	/// read instead of a GPU-only one. Set from the image's `cpu_readable` setting.
+	#[serde(default)]
+	pub cpu_readable: bool,
 	/// Baked lighting maps stored as named binary subresources of this image.
 	#[serde(default)]
 	pub ibl: Option<ImageIBL>,
@@ -104,6 +108,7 @@ mod tests {
 			gamma: Gamma::SRGB,
 			extent: [8, 4, 0],
 			mip_count: 4,
+			cpu_readable: false,
 			ibl: Some(ImageIBL {
 				diffuse_irradiance: ImageSubresource {
 					format: Formats::RGBA16F,
@@ -154,6 +159,7 @@ mod tests {
 			gamma: Gamma::Linear,
 			extent: [1, 1, 0],
 			mip_count: 1,
+			cpu_readable: false,
 			ibl: None,
 			photometry: None,
 		};

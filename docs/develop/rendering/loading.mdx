@@ -23,7 +23,7 @@ own GHI context, and its own queue.
 
 | | Render timeline | Loading timeline |
 |---|---|---|
-| Thread | The main thread | The loading thread that `launch_deferred_tasks_thread` starts |
+| Thread | The main thread | The loading thread that `launch_deferred_tasks_thread` starts, and the loader's batcher thread |
 | Context owner | `Renderer` | `Loader` |
 | Queue | Graphics queue | Copy queue |
 | Work | Records, submits, and presents frames | Reads, decodes, stages, and copies resources |
@@ -36,7 +36,7 @@ the other.
 flowchart TD
   device("GraphicsDevice<br/>owned by GraphicsApplication")
   device --> render("Render context on the graphics queue<br/>main thread: record, submit, present")
-  device --> loader("Loader context on the copy queue<br/>loading thread: lanes, batches, submit, wait")
+  device --> loader("Loader context on the copy queue<br/>loading threads: lanes, then batches recorded as workloads")
   render -- requests --> client("LoaderClient")
   loader -- Ready and Failed --> client
 ```
@@ -60,7 +60,7 @@ flowchart TD
     C --> E("add_deferred_task<br/>queues every lane")
   end
   setup --> F("launch_deferred_tasks_thread")
-  F --> G("Loading thread<br/>Loader::run, then every lane as a task<br/>on one async runtime")
+  F --> G("Loading thread<br/>Loader::run starts the batcher thread,<br/>then every lane as a task on one async runtime")
 ```
 
 A pipeline set up after `launch_deferred_tasks_thread` can't add lanes, so set
@@ -76,7 +76,7 @@ sequenceDiagram
   participant W as World
   participant M as Pipeline manager<br/>render thread
   participant L as Lanes<br/>loading thread
-  participant LD as Loader<br/>loading thread
+  participant LD as Loader<br/>batcher thread
   participant Q as Copy queue
 
   W->>M: CreateMessage of a RenderableMesh
@@ -87,11 +87,8 @@ sequenceDiagram
   Note over L: read, decode, write a StagingLease
   L->>LD: LoaderLane::upload(lease, images, buffers)
   Note over LD: add the upload to the batch
-  LD->>Q: submit when the window passes, staging runs out,<br/>or every busy lane waits on the loader
-  loop every 0.5 ms
-    LD->>Q: poll_synchronizer
-  end
-  Q-->>LD: batch finished
+  LD->>Q: record the batch as one workload when the window passes,<br/>staging runs out, or every busy lane waits on the loader
+  Q-->>LD: the workload returns once the GPU finished it
   Note over LD: return staging, export images
   LD-->>L: detached images
   alt load succeeded
@@ -107,13 +104,15 @@ sequenceDiagram
 2. A lane on the loading thread picks up the request and reads the resource's
    metadata. It requests every resource that metadata names, such as a mesh's
    materials or a material's textures, with `LoaderLane::request`. Other lanes
-   start loading those right away.
+   start loading those right away, in the order their
+   [priorities](#how-lanes-prioritize-requests) set.
 3. The lane reads and decodes the resource, and writes its bytes into a
    `StagingLease`.
 4. The lane hands the loader an upload as plain data through
    `LoaderLane::upload` or `upload_native_image`.
-5. The loader adds the upload to the current batch, submits the batch on the
-   copy queue, and waits for it without blocking its thread.
+5. The loader adds the upload to the current batch and records the batch as one
+   workload on the copy queue. Recording the workload waits for the GPU on the
+   batcher's own thread, so no lane blocks.
 6. When the batch finishes, the loader returns its staging to the arena, exports
    each finished image from the loader context, and answers the lane.
 7. The lane sends `Ready` with a resident value that holds detached images, never
@@ -121,6 +120,97 @@ sequenceDiagram
 8. On its next frame, the pipeline polls its client, interns the images into the
    render context, and writes descriptors with samplers it owns. Resources can
    become ready in any order, so adopt each one on its own.
+
+## How lanes prioritize requests
+
+Lanes load what keeps something from drawing before what only refines it.
+`LoadPipeline::priority` ranks every request as one of two `Priority` values,
+and ranks it `Needed` unless the pipeline overrides it:
+
+- `Needed`: something can't draw until the request loads.
+- `Background`: the request improves something that already draws, such as a
+  finer detail level or a full mip chain.
+
+A dependency that a lane requests takes its own priority, not the priority of
+the load that requested it.
+
+Each priority has its own queue. Every submission goes through one path,
+whether it comes from `LoaderClient::request`, `LoaderClient::reload`, or
+`LoaderLane::request`: it joins the queue of its priority, then rings a
+doorbell, which is a queue of empty tokens.
+
+`loading::spawn` takes a `lane_count` and a `background_lane_count`, and splits
+the lanes into two kinds:
+
+| Lane | Count | Takes |
+|---|---|---|
+| Needed lane | `lane_count - background_lane_count` | Needed requests only. It waits on the needed queue. |
+| General lane | `background_lane_count` | A needed request when one waits, and a background request otherwise. It waits on the doorbell only after it found both queues empty. |
+
+A pool of one lane has one general lane. `spawn` panics on a split that leaves
+no general lane, or, with more than one lane, no needed lane.
+
+The visibility pipeline runs four lanes, two of them general, and ranks these
+requests as background:
+
+| Request | Why it can wait |
+|---|---|
+| `MeshLevels` | The mesh already draws with its coarsest levels, which load with it. |
+| `TextureDetail` | The texture already draws with its coarse mips. |
+| `Lightmap` | An instance draws once its renderable, materials, and textures are ready, and adopts its lightmap whenever it arrives. |
+
+Every other visibility request is needed. The other pipelines rank every
+request as needed and use one general lane, so every lane takes every request.
+
+A change here must keep these true:
+
+- A needed request never queues behind a background one. A free lane of either
+  kind takes it first, and a burst of needed requests can use every lane that
+  isn't already loading background work.
+- At most `background_lane_count` background loads run at once.
+- Background requests always load: a general lane takes one whenever no needed
+  request waits.
+- No submission goes unseen. Its token joins the doorbell after the submission
+  joins its queue, and a general lane checks both queues before it waits.
+- Dropping the `LoaderClient` closes every queue, so idle lanes stop even though
+  each lane can still request dependencies.
+- A request is background only when nothing waits for it to draw. If instances
+  ever wait for their lightmaps before they draw, rank `Lightmap` as needed.
+
+The default test run covers these rules:
+
+| Test | What it checks |
+|---|---|
+| `needed_requests_start_before_queued_background_requests` | A needed request starts on a needed lane while background requests queue, and a free general lane takes a needed request before a background one. |
+| `background_loads_never_exceed_the_background_lane_count` | A backlog of background requests never runs on more lanes than the general lanes, and all of it loads. |
+| `needed_bursts_use_every_lane` | A burst of needed requests runs on every lane at once. |
+| `background_requests_drain_without_needed_work` | Background requests load when no needed request waits, on a pool of one lane. |
+| `dependencies_queue_by_their_own_priority` | A lane's dependency takes its own priority, not the priority of the load that requested it. |
+| `dropping_the_client_stops_needed_and_general_lanes` | Every lane of both kinds stops once the client is dropped. |
+
+`a_split_without_a_general_lane_panics` and
+`a_split_without_a_needed_lane_panics` check that `spawn` rejects a split that
+would starve one priority.
+
+## How visibility instances wait for meshes
+
+Each renderable handle has one lifecycle record: waiting for a mesh, or
+resident and owning its primitive slots. The scene indexes records by handle
+and waiting instances by mesh. Creation replaces only that handle's existing
+state; a new handle needs no cleanup. Mesh completion transitions only its
+waiters to resident. Deletion removes the record and releases its primitive
+slots and any posed vertex ranges. A failed mesh load removes its waiters
+through the same cleanup path.
+
+Removing a waiter swaps the last handle into its place and updates that
+handle's index. This keeps insertion and removal independent of the number
+of waiting instances. Don't scan all waiting instances on creation: a scene
+with many instances of a shared mesh would take quadratic time to start.
+
+This lifecycle doesn't duplicate resource state. Materials still determine
+draw readiness through the availability graph, and mesh detail residency stays
+shared across instances. The transition tests live in
+`rendering::pipelines::visibility::renderables`.
 
 ## How mesh detail levels stream
 
@@ -177,6 +267,69 @@ A change here must keep these true:
 
 The residency decisions are tested in `rendering::pipelines::visibility::residency`, and the level table in
 `rendering::pipelines::visibility::lod`.
+
+## How merged meshes build
+
+A merged mesh draws many static copies of one resource mesh as one mesh, so
+the renderer handles a patch of grass instead of each tuft. The level bake
+[clusters the placements](/docs/develop/resource-management/level-merging) and
+the [merged mesh rules](/docs/reference/rendering#the-visibility-pipeline)
+define the behavior. Storing merged geometry would repeat the mesh once per
+copy on disk, which took 5 GiB for one test scene, so it's built in memory
+instead.
+
+- `MeshSource::Merged` names the resource mesh and the placements. Its key
+  hashes both, once, when the source is made.
+- `MergedSource`, in `geometry/prepare/merged.rs`, is the resource mesh read
+  whole into memory: every vertex, and every level's meshlets. The loader reads
+  it once per resource mesh and keeps it, so building a level reads nothing
+  from the store.
+- The base load places no geometry. It publishes each primitive's bounds and
+  level table with no level resident, so the mesh costs nothing until it's
+  drawn.
+- `MeshResidencies::add_merged_mesh` follows the mesh in exact mode: each
+  primitive asks for the level its instances want whenever it holds another or
+  none. The request reuses `PrimitiveLevels`, where `finest` names the one
+  level to build.
+- `PreparedMesh::merged` builds that level by repeating the source level once
+  for each copy. It transforms positions and normals, offsets each copy's
+  meshlet vertex indices, and copies each meshlet with its sphere and cone
+  transformed. It clusters nothing, so a build is a straight copy.
+  `GeometryBuffers::append_primitives` then places it like any block.
+- `SourceLevel::pack` joins consecutive meshlets, of one copy and of the
+  copies after it, into one while they fit a meshlet. A small mesh bakes into
+  meshlets far below a meshlet's size, so without packing a patch of small
+  tufts draws one meshlet for each tuft. Only neighbors in the list join, which
+  keeps the build a copy; the level bake lists a cluster's placements along a
+  Z-order curve so that neighbors in the list are neighbors in space.
+- `LodView::sees` decides whether a merged instance is in view, from the
+  camera frustum and the directions the suns' light travels. The instance
+  rebuild records a wanted level only for an instance in view, so a cluster
+  nothing can see builds nothing, and its level becomes the first to release.
+
+A change here must keep these true:
+
+- A merged primitive holds one level, so a block's vertices are that level's
+  alone and each copy's meshlets index its own run of them.
+- A mirrored copy swaps two corners of each triangle, and a copy with a
+  non-uniform scale gets a cone that never culls.
+- The level bake and `MergedSource::primitives` agree on how many copies fit
+  one primitive, so a baked cluster always loads.
+- A merged mesh keeps no flat triangles, so rays and the lightmap bake skip it.
+- A merged level's record holds the radius of its largest copy as its
+  `caster_radius`, so cascades skip a patch of small copies as they would skip
+  each copy; see [shadow maps](/docs/develop/rendering/visibility/shadow-maps).
+- Packing depends only on the meshlets' counts and order, so the meshlet count
+  a level table reports before a build matches what the build writes.
+- The in-view test never rules out what the camera sees. It may keep an
+  instance that isn't visible, never the reverse. Shadows that point and cone
+  lights cast from clusters outside the camera's view aren't followed.
+
+`geometry/prepare/merged.rs` tests the builder and the packing,
+`a_merged_mesh_loads_exactly_the_level_wanted_finer_or_coarser` in
+`residency.rs` tests the residency rule, and
+`an_instance_is_seen_in_the_frustum_or_when_a_sun_carries_its_shadow_there` in
+`lod.rs` tests the in-view rule.
 
 ## How terrain nodes stream
 
@@ -249,8 +402,9 @@ entries. IES profiles and lightmaps load their full mip chain at once.
   shaders need no change.
 - A `Texture` request loads the mips from `coarse_first_level` on: the first
   mip no larger than 128 texels. Once that upload finishes, the lane requests
-  the full chain as a separate `TextureDetail` request, so it queues behind the
-  coarse mips of every texture already waiting.
+  the full chain as a separate `TextureDetail` request. It's a
+  [background request](#how-lanes-prioritize-requests), so it waits for every
+  needed request, including the coarse mips of every texture already waiting.
 - Both loads use the same slot of `textures`. `VisibilityLoaderClient` keeps
   the image in each slot of each array and the mip it starts at. An image with
   more mips replaces the slot's image. Once the frame's writes put the new
@@ -328,10 +482,12 @@ It submits the batch as soon as any of these is true:
 - Every busy lane is waiting on the loader, so waiting longer can't add an upload.
 - Every lane is gone.
 
-Only one batch is on the copy queue at a time. While it runs, the loader keeps
-collecting the next batch, and lanes keep reading and decoding. The loader
-checks the running batch with `Context::poll_synchronizer` every 0.5 ms instead
-of blocking, because the lanes share its thread.
+Only one batch is on the copy queue at a time. The batcher records each batch
+with `Context::record`, which submits it as one workload and returns once the
+GPU finished it. The batcher has its own thread, so that wait blocks no lane:
+while the GPU copies, lanes keep reading, decoding, and queueing uploads for
+the next batch. Native image reads finish on their own, and the batcher checks
+them between batches.
 
 <Callout type="info" title="Why busy lanes end a batch early">
 	A lane that loads a flipbook's frames one after another waits for each upload
@@ -394,10 +550,11 @@ supports the loading timeline when it provides every one of these:
 - `Context::export_image` and `intern_image`, which move an image and its
   tracked state between contexts. A detached image dropped before it's interned
   frees its memory.
-- `Context::share_buffer` and `import_buffer` for static buffers. The importing
-  context only records copies with the handle, and the owning context sees those
-  writes before it next reads the buffer.
-- `Context::poll_synchronizer`, which reports completion without blocking.
+- `Context::share_buffer` and `import_buffer` for buffers with one copy. The
+  importing context only records copies with the handle, and the owning context
+  sees those writes before it next reads the buffer.
+- `Context::record`, which submits a workload and returns once the GPU finished
+  it.
 
 Metal implements the contract. Vulkan and DX12 don't yet, so Linux and Windows
 builds fail until they do. `todo.md` lists what each backend needs.
@@ -416,19 +573,24 @@ cargo nextest run --ignore-default-filter -p byte-engine --test loading
 |---|---|
 | `exported_image_keeps_contents_and_mips` | An image filled in one context keeps its contents and mip count in another. |
 | `imported_buffer_receives_copies` | A context sees the copies another context made into its shared buffer. |
-| `polled_synchronizer_reports_completion` | Polling reports completion without blocking and frees the synchronizer. |
+| `imported_private_buffer_keeps_copies_made_before_its_owner_records` | Sharing a buffer zero-fills it first, so that fill can't erase another context's copies. |
+| `workload_is_complete_when_record_returns` | Everything a workload wrote, readbacks included, is ready when `record` returns. |
 | `uploads_are_visible_when_ready_even_beyond_staging_capacity` | Uploads larger than the staging arena all finish, and each `Ready` arrives only after its bytes landed. |
 | `dependencies_load_once_without_render_requests` | Lanes load the dependencies a load names without a render-side request, and a resource with two parents loads once. |
 | `textures_load_from_a_first_mip_level` | A texture loaded from a later mip is an image whose base level holds that mip, at that mip's extent. |
 
 The default test run also covers
 `full_arena_reports_exhaustion_until_a_lease_returns`, which checks the signal
-that ends a batch when staging runs out.
+that ends a batch when staging runs out, and the
+[lane priority tests](#how-lanes-prioritize-requests).
 
 ## Known limits
 
 - Lanes are cooperative tasks on one thread. A long synchronous decode step
   delays batch submission and completion checks.
+- A background load that started keeps its general lane until it finishes. While
+  every general lane loads background work, needed requests have only the needed
+  lanes.
 - Each batch costs one copy-queue round trip, about 0.75 ms on Metal. A lane that
   loads a flipbook's frames one after another pays it for every frame. Load the
   frames concurrently to let them share a batch.

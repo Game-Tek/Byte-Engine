@@ -38,6 +38,7 @@ pub enum Events {
 pub enum Key {
 	Escape,
 	Backspace,
+	Enter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

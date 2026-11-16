@@ -152,5 +152,6 @@ main: fn (input: StageInput, scene: Scene, material_dispatch: MaterialDispatch, 
 		let zero: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 		write(material_evaluation.lit_map, coord, zero);
 		write(material_evaluation.diffuse_radiance_map, coord, zero);
+		write(material_evaluation.subsurface_albedo, coord, zero);
 	}
 }

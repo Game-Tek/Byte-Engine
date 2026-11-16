@@ -21,6 +21,7 @@
       "properties": {
         "id": { "description": "A name, unique in the file, that other entities use to refer to this one.", "type": "string", "minLength": 1 },
         "parent": { "description": "The id of the entity this one belongs to. Deleting the parent deletes it; it never moves it.", "type": "string", "minLength": 1 },
+        "prefab": { "$ref": "#/$defs/instance" },
         "components": {
           "description": "The entity's components, from kind name to payload. Application kinds are accepted as any value.",
           "type": "object",
@@ -39,6 +40,16 @@
         }
       }
     },
+    "instance": {
+      "description": "Makes the entity an instance of a prefab, whose entities spawn under it at its transform.",
+      "type": "object",
+      "required": ["resource"],
+      "additionalProperties": false,
+      "properties": {
+        "resource": { "description": "The ID of a baked .prefab.", "type": "string", "minLength": 1 },
+        "parameters": { "description": "Values for the prefab's parameters, by name. A parameter left out takes its default.", "type": "object" }
+      }
+    },
     "vector3": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
     "extents3": { "type": "array", "items": { "type": "number", "exclusiveMinimum": 0 }, "minItems": 3, "maxItems": 3 },
     "extents2": { "type": "array", "items": { "type": "number", "exclusiveMinimum": 0 }, "minItems": 2, "maxItems": 2 },
@@ -51,7 +62,7 @@
       "properties": { "$entity": { "type": "string", "minLength": 1 } }
     },
     "transform": {
-      "description": "A world transform. A missing field takes the identity's value.",
+      "description": "A transform relative to the spawn's placement, which is the world unless the application places the spawn. A missing field takes the identity's value.",
       "type": "object",
       "additionalProperties": false,
       "properties": {

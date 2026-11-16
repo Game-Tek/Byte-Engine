@@ -69,10 +69,6 @@ impl Default for LutPassSettings {
 pub struct LutPass {
 	workflow: LutWorkflow,
 	resources: [simple_tile::Resource; 2],
-	lut: Lut,
-	/// The prepared texels, dropped once the first frame uploads them into `lut_image`.
-	lut_bytes: Option<StdBox<[u8]>>,
-	lut_image: ghi::ImageHandle,
 }
 
 #[repr(C)]
@@ -112,25 +108,26 @@ impl LutPass {
 			settings.strength
 		);
 
+		let queue = render_pass_builder.queue();
 		let context = render_pass_builder.context();
 
 		// A linear, clamped sampler reads the LUT.
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
-		let lut_image = context.build_image(
-			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image | ghi::Uses::TransferDestination)
+		let pixels = lut_rgba16f_texels(&lut_metadata, &bytes);
+		let lut_image = create_lookup_texture(
+			context,
+			queue,
+			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image)
 				.name("LUT Texture")
-				.extent(Extent::cube(lut_metadata.size, lut_metadata.size, lut_metadata.size))
-				.device_accesses(ghi::DeviceAccesses::HostToDevice)
-				.use_case(ghi::UseCases::STATIC),
+				.extent(Extent::cube(lut_metadata.size, lut_metadata.size, lut_metadata.size)),
+			&pixels,
 		);
-		let parameters = context.build_buffer::<LutShaderParameters>(
+		let parameters = context.build_buffer_with::<LutShaderParameters>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("LUT Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write),
+			|parameters| *parameters = lut_shader_parameters(&lut_metadata, settings.strength),
 		);
-		*context.get_mut_buffer_slice(parameters) = lut_shader_parameters(&lut_metadata, settings.strength);
-		// The write reaches the GPU copy only once synced.
-		context.sync_buffer(parameters);
 
 		Self {
 			workflow,
@@ -138,21 +135,7 @@ impl LutPass {
 				simple_tile::Resource::combined_image_sampler("lut_texture", lut_image, sampler, ghi::Layouts::Read),
 				simple_tile::Resource::buffer("lut_parameters", parameters),
 			],
-			lut: lut_metadata,
-			lut_bytes: Some(bytes),
-			lut_image,
 		}
-	}
-
-	/// Uploads the baked LUT payload into the cached GPU 3D texture the first time the pass is used.
-	fn ensure_lut_uploaded(&mut self, frame: &mut ghi::implementation::Frame) {
-		let Some(lut_bytes) = self.lut_bytes.take() else {
-			return;
-		};
-		let target = frame.get_texture_slice_mut(self.lut_image.into());
-
-		write_lut_bytes_to_rgba16f_upload_target(&self.lut, &lut_bytes, target);
-		frame.sync_texture(self.lut_image.into());
 	}
 }
 
@@ -199,8 +182,7 @@ impl PixelStep for LutPass {
 		&self.resources
 	}
 
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, _sink: &Sink) -> bool {
-		self.ensure_lut_uploaded(frame);
+	fn prepare(&mut self, _frame: &mut ghi::implementation::Frame, _sink: &Sink) -> bool {
 		true
 	}
 }
@@ -230,49 +212,29 @@ async fn load_lut_bytes(reference: &mut Reference<Lut>) -> Result<StdBox<[u8]>, 
 	})
 }
 
-/// Converts the baked LUT RGB float payload directly into an RGBA16F 3D texture upload target.
-fn write_lut_bytes_to_rgba16f_upload_target(lut: &Lut, lut_bytes: &[u8], upload_target: &mut [u8]) {
+/// Converts the baked LUT RGB float payload into the compact RGBA16F texels of its 3D texture.
+fn lut_rgba16f_texels(lut: &Lut, lut_bytes: &[u8]) -> Vec<u8> {
 	assert!(
 		matches!(lut.kind, LutKind::ThreeDimensional),
 		"Unsupported LUT kind for upload. The most likely cause is that a non-3D LUT resource reached the LUT render pass."
 	);
-
-	let expected_size = expected_lut_payload_size(lut);
-
 	assert_eq!(
 		lut_bytes.len(),
-		expected_size,
+		expected_lut_payload_size(lut),
 		"Invalid LUT payload size. The most likely cause is that the baked LUT binary does not match the LUT metadata."
 	);
 
-	let texel_count = lut
-		.kind
-		.expected_entry_count(lut.size)
-		.expect("Invalid LUT dimensions. The most likely cause is that the LUT size overflowed during texture upload.");
-	let expected_upload_size = texel_count * 4 * std::mem::size_of::<u16>();
-
-	assert_eq!(
-		upload_target.len(),
-		expected_upload_size,
-		"Unexpected LUT texture upload size. The most likely cause is that the GPU image extent or format does not match the LUT resource metadata."
-	);
-
 	// The resource stores tightly packed RGB f32 texels, while the GPU texture expects RGBA16F texels.
-	for (rgb, rgba16f) in lut_bytes.as_chunks::<{ 3 * std::mem::size_of::<f32>() }>().0.iter().zip(
-		upload_target
-			.as_chunks_mut::<{ 4 * std::mem::size_of::<u16>() }>()
-			.0
-			.iter_mut(),
-	) {
-		let r = f32::from_le_bytes(rgb[0..4].try_into().unwrap());
-		let g = f32::from_le_bytes(rgb[4..8].try_into().unwrap());
-		let b = f32::from_le_bytes(rgb[8..12].try_into().unwrap());
-
-		rgba16f[0..2].copy_from_slice(&f16::from_f32(r).to_bits().to_le_bytes());
-		rgba16f[2..4].copy_from_slice(&f16::from_f32(g).to_bits().to_le_bytes());
-		rgba16f[4..6].copy_from_slice(&f16::from_f32(b).to_bits().to_le_bytes());
-		rgba16f[6..8].copy_from_slice(&f16::from_f32(1.0).to_bits().to_le_bytes());
-	}
+	lut_bytes
+		.as_chunks::<{ 3 * size_of::<f32>() }>()
+		.0
+		.iter()
+		.flat_map(|rgb| {
+			let channel = |index: usize| f32::from_le_bytes(rgb[index * 4..][..4].try_into().unwrap());
+			[channel(0), channel(1), channel(2), 1.0].map(|value| f16::from_f32(value).to_bits().to_le_bytes())
+		})
+		.flatten()
+		.collect()
 }
 
 fn expected_lut_payload_size(lut: &Lut) -> usize {
@@ -544,10 +506,7 @@ mod tests {
 
 use std::boxed::Box as StdBox;
 
-use ghi::{
-	context::{Context as _, ContextCreate as _},
-	frame::Frame as _,
-};
+use ghi::context::ContextCreate as _;
 use half::f16;
 use resource_management::{
 	Reference,
@@ -560,6 +519,7 @@ use crate::{
 	core::Entity,
 	rendering::{
 		Sink,
+		lookup_textures::create_lookup_texture,
 		render_pass::{RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
 	},
 };

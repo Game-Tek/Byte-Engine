@@ -43,6 +43,7 @@ mod pipeline_compilation;
 pub mod pipeline_manager;
 mod pose;
 mod resource;
+pub mod screen_query;
 pub mod set_layout;
 
 pub mod renderer;
@@ -60,12 +61,13 @@ pub mod pipelines;
 
 /// Per-output render target state passed to render passes.
 pub mod sink;
+pub mod sun;
 /// Projection and view matrix construction for cameras and lights.
 pub mod view;
 
 pub mod csm;
 
-pub use camera::Camera;
+pub use camera::{Camera, CameraUpdate};
 pub use debug::{DebugDepthMode, DebugMesh, DebugMeshRenderPass, DebugSceneManager, DebugShape};
 pub use debug_views::{DebugViewCatalog, DebugViews, ShownDebugViews};
 pub use device::GraphicsDevice;
@@ -73,8 +75,8 @@ pub use environment::Environment;
 pub use fog::{ExponentialHeightFog, FogLayer};
 pub use lightmap::Lightmap;
 pub use lights::{
-	ConeLight, DirectionalLight, IesProfile, Light, LightClasses, LightColor, LocalEmission, PhotometricError,
-	PhotometricIntensity, PointLight,
+	ConeLight, ConeLightUpdate, DirectionalLight, DirectionalLightUpdate, IesProfile, Light, LightClasses, LightColor,
+	LocalEmission, PhotometricError, PhotometricIntensity, PointLight, PointLightUpdate,
 };
 pub(crate) use material_parameter::MaterialParameterTarget;
 pub use material_parameter::SetMaterialParameter;
@@ -89,11 +91,13 @@ pub use render_pass::{
 pub use renderable::{mesh::RenderableMesh, terrain::RenderableTerrain};
 pub use renderer::{RenderTargets, Renderer};
 pub use resource::{Query, Resource};
+pub use screen_query::{ScreenSceneHit, ScreenSceneQuery};
 pub use set_layout::{SetBinder, SetLayout};
 pub use shown_transforms::ShownTransforms;
 pub use sink::Sink;
+pub use sun::Sun;
 pub use view::View;
-pub use window::{Features, Window};
+pub use window::{Features, SetWindowFeatures, Window};
 
 use crate::space::{Orientable, Positionable};
 
@@ -118,7 +122,11 @@ pub(crate) fn warn_once(reported: &mut bool, exceeded: bool, message: impl FnOnc
 	*reported = exceeded;
 }
 
-/// Builds a perspective [`View`] from a scene camera and render target extent.
+/// Builds the perspective [`View`] the renderer draws a camera with, placed and turned by `po`, for a render target
+/// of `extent`.
+///
+/// Tools that work in screen space, such as an editor gizmo, build the same view from the camera, its transform, and
+/// the window's size, then map points with [`View::project`] and [`View::ray`].
 pub fn make_perspective_view_from_camera<T: Positionable + Orientable>(camera: &Camera, po: &T, extent: Extent) -> View {
 	let fov_y = camera.vertical_fov();
 	debug_assert!(
@@ -132,8 +140,8 @@ pub fn make_perspective_view_from_camera<T: Positionable + Orientable>(camera: &
 	View::new_perspective(
 		fov_y,
 		extent.aspect_ratio(),
-		0.1,
-		100.0,
+		camera.near(),
+		camera.far(),
 		po.position(),
 		direction_from_orientation(po.orientation()),
 	)

@@ -4,16 +4,34 @@
 /// Install one on the material, glTF, and FBX asset handlers so every material they bake targets that renderer.
 /// Generators write node values with [`bemx::besl::Lowering`].
 pub trait ProgramGenerator: Send + Sync {
+	/// Returns a fingerprint of everything that decides what the generator builds besides a material's graph and
+	/// parameters and the module files it brings in: its code and its configuration, such as the features it builds in.
+	///
+	/// The asset manager records it with every material it bakes, so a changed generator makes them stale.
+	fn identity(&self) -> u64;
+
+	/// Returns the sets of modules the generator's programs bring in, each module as a path from the asset root such
+	/// as `::byte_engine::rendering::visibility::layouts::scene`.
+	///
+	/// The bake reads each set's files, and the files of the modules those use, from the assets, and passes them to
+	/// the `generate` methods as [`ProgramModules`]. Reading them there records each file as a source of the material,
+	/// so editing a module bakes the materials that bring it in again. A generator whose programs bring in no modules
+	/// keeps the default.
+	fn module_sets(&self) -> &[&[&str]] {
+		&[]
+	}
+
 	/// Builds the BESL program that evaluates `graph` for a material whose parameters are `parameters`, in the order
 	/// the renderer binds them, or `None` when the renderer evaluates its materials in shaders it assembles after the
 	/// bake instead. The bake stores the material's [`MaterialProgram`] either way.
 	///
-	/// Returns the error text to report when the graph needs something the renderer cannot supply, such as a
-	/// parameter `parameters` does not declare.
+	/// `modules` holds the files of [`Self::module_sets`]. Returns the error text to report when the graph needs
+	/// something the renderer cannot supply, such as a parameter `parameters` does not declare.
 	fn generate<'a>(
 		&self,
 		graph: &'a bemx::Graph,
 		parameters: &'a [MaterialParameter],
+		modules: &'a ProgramModules,
 	) -> Result<Option<besl::parser::Node<'a>>, String>;
 
 	/// Builds the closest-hit BESL program that reports `graph`'s surface to the rays that hit it, or `None` when the
@@ -25,8 +43,9 @@ pub trait ProgramGenerator: Send + Sync {
 		&self,
 		graph: &'a bemx::Graph,
 		parameters: &'a [MaterialParameter],
+		modules: &'a ProgramModules,
 	) -> Result<Option<besl::parser::Node<'a>>, String> {
-		let _ = (graph, parameters);
+		let _ = (graph, parameters, modules);
 		Ok(None)
 	}
 
@@ -47,10 +66,63 @@ pub trait ProgramGenerator: Send + Sync {
 		&self,
 		id: &str,
 		arms: &'a [AssembledArm<'a>],
+		modules: &'a ProgramModules,
 	) -> Result<(besl::parser::Node<'a>, ShaderGenerationSettings), String> {
-		let _ = (id, arms);
+		let _ = (id, arms, modules);
 		Err(NO_ASSEMBLED_SHADERS.to_string())
 	}
+}
+
+/// The `ProgramModules` struct holds the module files a [`ProgramGenerator`]'s programs bring in, one list per set
+/// of [`ProgramGenerator::module_sets`].
+///
+/// A bake loads them from the asset files and passes them to the generator, which attaches the list of the set a
+/// program brings in with [`besl::attach_modules`]. Outside a bake, build one with [`Self::load`].
+#[derive(Default)]
+pub struct ProgramModules {
+	sets: Vec<(Vec<String>, Vec<besl::LoadedModule>)>,
+}
+
+impl ProgramModules {
+	/// Loads every set of `sets`, and the modules they use, with `read`, which returns the source of a module file
+	/// named by its path from the asset root, or `None` when the file doesn't exist.
+	pub fn load(sets: &[&[&str]], mut read: impl FnMut(&str) -> Option<String>) -> Result<Self, besl::CompilationError> {
+		let mut modules = Self::default();
+		for set in sets {
+			let files = besl::ModuleLoader::load(&uses(set), &mut read)?;
+			modules
+				.sets
+				.push((set.iter().map(|module| module.to_string()).collect(), files));
+		}
+		Ok(modules)
+	}
+
+	/// Returns the files of the set `modules` names, or none when the bake loaded no such set.
+	pub fn get(&self, modules: &[&str]) -> &[besl::LoadedModule] {
+		self.sets
+			.iter()
+			.find(|(set, _)| set.iter().map(String::as_str).eq(modules.iter().copied()))
+			.map_or(&[], |(_, files)| files)
+	}
+}
+
+/// Returns BESL source that brings in every one of `modules`.
+fn uses(modules: &[&str]) -> String {
+	modules.iter().map(|module| format!("use {module}::*;")).collect()
+}
+
+/// Reads the files of every module set `generator` names through `context`, which records each file, and each file a
+/// module could live in but doesn't, as a source of the bake.
+async fn load_program_modules(context: &BakeContext<'_>, generator: &dyn ProgramGenerator) -> Result<ProgramModules, String> {
+	let mut modules = ProgramModules::default();
+	for set in generator.module_sets() {
+		// The sets name modules from the asset root, so the ID they would be relative to is never used.
+		let files = super::besl::read_module_files(context, ResourceId::new(""), &uses(set)).await?;
+		modules
+			.sets
+			.push((set.iter().map(|module| module.to_string()).collect(), files));
+	}
+	Ok(modules)
 }
 
 /// The error [`ProgramGenerator`]'s assembled-shader methods report for a renderer that assembles no shaders.
@@ -132,6 +204,8 @@ impl ParameterKind {
 impl MaterialProgram {
 	/// Keeps `graph` and `parameters` so a renderer can generate the material's surface code after the bake.
 	pub(crate) fn new(graph: &bemx::Graph, parameters: &[MaterialParameter]) -> Result<Self, String> {
+		let reads_backdrop = graph.reads_backdrop();
+		let translucent = graph.is_translucent();
 		let graph = serde_json::to_string(graph).map_err(|error| {
 			format!("Failed to store the material graph: {error}. The most likely cause is a non-finite constant in it.")
 		})?;
@@ -154,6 +228,8 @@ impl MaterialProgram {
 			identity: crate::resource::compression::payload_hash(&identity),
 			graph,
 			parameters,
+			reads_backdrop,
+			translucent,
 		})
 	}
 
@@ -238,6 +314,7 @@ impl BEMAAssetHandler {
 			})
 			.collect();
 		let (shaders, program) = program?;
+		backdrop_needs_blending(program.reads_backdrop, alpha_mode).map_err(|problem| invalid(&problem))?;
 
 		let resource = MaterialModel {
 			double_sided,
@@ -258,49 +335,16 @@ impl BEMAAssetHandler {
 	async fn bake_variant<'a>(context: BakeContext<'a>, url: ResourceId<'a>, asset: &Value) -> Result<(), LoadErrors> {
 		let parent_material_url = asset["parent"].as_str().ok_or(LoadErrors::FailedToProcess)?;
 		let material = context.bake_dependency(parent_material_url).await?;
-		let material_repr: MaterialModel = crate::from_slice(&material.resource).map_err(|_| LoadErrors::FailedToProcess)?;
 		let authored_variables = asset["variables"].as_array().ok_or(LoadErrors::FailedToProcess)?;
 		let invalid = |problem: &str| report_invalid(context, "material variant", url, problem);
-		let invalid = &invalid;
-		let value_requests = material_repr.parameters.iter().map(|parameter| async move {
-			let value = authored_variables
+		let value_of = |name: &str| {
+			authored_variables
 				.iter()
-				.find(|variable| variable["name"].as_str() == Some(parameter.name.as_str()))
+				.find(|variable| variable["name"].as_str() == Some(name))
 				.map(|variable| &variable["value"])
-				.filter(|value| !value.is_null());
-			// A dynamic value the variant leaves out starts at the parent's default.
-			if value.is_none() && parameter.dynamic {
-				return Ok(parameter.value.clone());
-			}
-			let value = value.ok_or_else(|| {
-				invalid(&format!(
-					"it gives no `value` for the parent's static variable '{}'. The most likely cause is a variable left out of the variant or written without a value.",
-					parameter.name
-				))
-			})?;
-			resolve_value(context, &parameter.r#type, value, invalid).await
-		});
-		let values = buffered_in_order(value_requests, 8).await?;
-		let variables = material_repr
-			.parameters
-			.iter()
-			.zip(values)
-			.map(|(parameter, value)| VariantVariableModel {
-				value,
-				name: parameter.name.clone(),
-				r#type: parameter.r#type.clone(),
-				dynamic: parameter.dynamic,
-			})
-			.collect();
-		// A variant keeps each of its material's coverage settings it leaves out.
-		let (alpha_mode, double_sided) = surface_coverage(asset, material_repr.alpha_mode, material_repr.double_sided)
-			.map_err(|problem| invalid(&problem))?;
-		let resource = VariantModel {
-			material,
-			variables,
-			alpha_mode,
-			double_sided,
+				.filter(|value| !value.is_null())
 		};
+		let resource = variant_model(context, material, &value_of, asset, VariantSource::File, &invalid).await?;
 
 		context.store_primary(ProcessedAsset::new(url, resource), &[]).await
 	}
@@ -380,7 +424,8 @@ impl BEMAAssetHandler {
 			.map(|(key, material)| AssembledArm { key, material })
 			.collect::<Vec<_>>();
 
-		let (program, settings) = generator.generate_assembled(url.as_ref(), &arms).map_err(fail)?;
+		let modules = load_program_modules(&context, generator).await.map_err(fail)?;
+		let (program, settings) = generator.generate_assembled(url.as_ref(), &arms, &modules).map_err(fail)?;
 		let prepared = context.prepare_shader(program, &settings).map_err(fail)?;
 		let compiler_identity = PlatformShaderCompiler::compiler_identity().await.map_err(fail)?;
 		let shader_id = format!("{}#shaders/{:016x}", url.as_ref(), prepared.cache_key(compiler_identity));
@@ -430,8 +475,9 @@ impl BEMAAssetHandler {
 		})?;
 		let graph = bemx::json::parse(source)
 			.map_err(|error| compile_error(format!("Failed to read material graph '{}': {error}", path.as_ref())))?;
-		let program = generator.generate(&graph, parameters).map_err(compile_error)?;
-		let hit_program = generator.generate_hit(&graph, parameters).map_err(compile_error)?;
+		let modules = load_program_modules(&context, generator).await.map_err(compile_error)?;
+		let program = generator.generate(&graph, parameters, &modules).map_err(compile_error)?;
+		let hit_program = generator.generate_hit(&graph, parameters, &modules).map_err(compile_error)?;
 
 		let hit_shader_id = format!("{}#hit-shader", material.as_ref());
 		let hit_compile_error = |error: String| {
@@ -635,8 +681,42 @@ pub(crate) struct GeneratedMaterial {
 pub(crate) enum MaterialSource {
 	/// A BEAD sidecar names an authored variant, which bakes as a dependency.
 	Override(String),
+	/// A BEAD sidecar describes the variant itself. It is stored as `id`, the ID the generated material's variant would
+	/// have.
+	Inline { id: String, binding: InlineBinding },
 	/// The importer describes the material as a BEMX graph, which is generated.
 	Generated(GeneratedMaterial),
+}
+
+impl MaterialSource {
+	/// Maps what a sidecar binds a material to into its source, generating the material with `generate` when nothing
+	/// binds it. `base_id` is the generated material's ID without the `.variant` suffix, which inline variants share.
+	///
+	/// `binding` comes from [`material_binding`]; a malformed binding is reported with `container_id` and fails.
+	pub(crate) fn new(
+		context: BakeContext<'_>,
+		container_id: ResourceId<'_>,
+		binding: Result<Option<MaterialBinding>, String>,
+		base_id: String,
+		generate: impl FnOnce(String) -> Result<Self, LoadErrors>,
+	) -> Result<Self, LoadErrors> {
+		match binding {
+			Ok(Some(MaterialBinding::Asset(id))) => Ok(Self::Override(id)),
+			Ok(Some(MaterialBinding::Inline(binding))) => Ok(Self::Inline {
+				id: format!("{base_id}.variant"),
+				binding,
+			}),
+			Ok(None) => generate(base_id),
+			Err(problem) => {
+				context.error(format_args!(
+					"Invalid material binding in the sidecar settings of '{}': {problem} See {}.",
+					container_id.as_ref(),
+					online_docs_url(MATERIAL_BINDINGS_DOCS_PATH)
+				));
+				Err(LoadErrors::FailedToProcess)
+			}
+		}
+	}
 }
 
 /// Bounds concurrent BEAD material override bakes.
@@ -644,9 +724,9 @@ const OVERRIDE_BAKE_CONCURRENCY: usize = 8;
 
 /// Resolves the variants of a container's materials, in the order given.
 ///
-/// glTF and FBX importers call this once per container. Overrides bake as dependencies while the other materials are
-/// generated through [`store_generated_materials`]; both run concurrently. `image_ids` holds the resource ID of each
-/// container image, indexed by the materials' `images`.
+/// glTF and FBX importers call this once per container. Overrides bake as dependencies, inline variants resolve their
+/// files and bake their parents, and the other materials are generated through [`store_generated_materials`]; all three
+/// run concurrently. `image_ids` holds the resource ID of each container image, indexed by the materials' `images`.
 ///
 /// Next, reference the returned variants from the container's mesh primitives.
 pub(crate) async fn resolve_container_materials(
@@ -655,38 +735,59 @@ pub(crate) async fn resolve_container_materials(
 	image_ids: &[String],
 	materials: Vec<MaterialSource>,
 ) -> Result<Vec<ReferenceModel<VariantModel>>, LoadErrors> {
-	let mut is_override = Vec::with_capacity(materials.len());
+	/// Which of the three lists below holds each material, in material order.
+	#[derive(Clone, Copy)]
+	enum Origin {
+		Override,
+		Inline,
+		Generated,
+	}
+
+	let mut origins = Vec::with_capacity(materials.len());
 	let mut overrides = Vec::new();
+	let mut inline = Vec::new();
 	let mut generated = Vec::new();
 
 	for material in materials {
-		is_override.push(matches!(material, MaterialSource::Override(_)));
-
 		match material {
-			MaterialSource::Override(id) => overrides.push(id),
-			MaterialSource::Generated(material) => generated.push(material),
+			MaterialSource::Override(id) => {
+				origins.push(Origin::Override);
+				overrides.push(id);
+			}
+			MaterialSource::Inline { id, binding } => {
+				origins.push(Origin::Inline);
+				inline.push((id, binding));
+			}
+			MaterialSource::Generated(material) => {
+				origins.push(Origin::Generated);
+				generated.push(material);
+			}
 		}
 	}
 
-	let (overridden, generated) = std::future::join!(
+	let inline_requests = inline
+		.iter()
+		.map(|(id, binding)| bake_inline_variant(context, container_id, id, binding));
+
+	let (overridden, inline, generated) = std::future::join!(
 		context.bake_dependencies::<VariantModel>(&overrides, OVERRIDE_BAKE_CONCURRENCY),
+		buffered_in_order(inline_requests, OVERRIDE_BAKE_CONCURRENCY),
 		store_generated_materials(context, container_id, image_ids, generated),
 	)
 	.await;
 
-	let (mut overridden, mut generated) = (overridden?.into_iter(), generated?.into_iter());
+	let (mut overridden, mut inline, mut generated) = (overridden?.into_iter(), inline?.into_iter(), generated?.into_iter());
 
-	// Put overridden and generated variants back in material order.
-	is_override
+	// Put the variants back in material order.
+	origins
 		.into_iter()
-		.map(|is_override| if is_override { overridden.next() } else { generated.next() })
+		.map(|origin| match origin {
+			Origin::Override => overridden.next(),
+			Origin::Inline => inline.next(),
+			Origin::Generated => generated.next(),
+		})
 		.collect::<Option<Vec<_>>>()
 		.ok_or(LoadErrors::FailedToProcess)
-}
-
-/// Reads the variant a BEAD sidecar assigns to the container material `name`, from `asset.<name>.asset`.
-pub(crate) fn bead_material_override(spec: Option<&serde_json::Value>, name: &str) -> Option<String> {
-	spec?["asset"][name]["asset"].as_str().map(ToString::to_string)
 }
 
 /// Generates and stores the variants of a container's generated materials, in the order given.
@@ -833,6 +934,7 @@ async fn store_generated_shaders(
 	};
 
 	let compiler_identity = PlatformShaderCompiler::compiler_identity().await.map_err(compile_error)?;
+	let modules = load_program_modules(&context, generator).await.map_err(compile_error)?;
 
 	// Generated materials evaluate in the same compute stage as authored material shaders, and are hit the same way.
 	let settings = compute_material_stage(&compiler_name);
@@ -857,7 +959,10 @@ async fn store_generated_shaders(
 				// Every material keeps its program for the shaders assembled after the bake. Without an evaluation shader,
 				// equal programs are what make two materials share an entry.
 				let material_program = MaterialProgram::new(&material.graph, &parameters).map_err(compile_error)?;
-				let (prepared, key) = match generator.generate(&material.graph, &parameters).map_err(compile_error)? {
+				let (prepared, key) = match generator
+					.generate(&material.graph, &parameters, &modules)
+					.map_err(compile_error)?
+				{
 					Some(program) => {
 						let prepared = context.prepare_shader(program, &settings).map_err(compile_error)?;
 						let key = prepared.cache_key(compiler_identity);
@@ -868,7 +973,7 @@ async fn store_generated_shaders(
 				// Graphs that lower to the same evaluation source compute the same surface, so their hit shaders match too;
 				// the hit shader is generated from the same graph and parameters.
 				let hit = generator
-					.generate_hit(&material.graph, &parameters)
+					.generate_hit(&material.graph, &parameters, &modules)
 					.map_err(compile_error)?
 					.map(|program| context.prepare_shader(program, &hit_settings))
 					.transpose()
@@ -925,6 +1030,152 @@ async fn store_generated_shader(
 	})?;
 
 	store_model_owned::<Shader, _>(context, shader_id, shader, shader_bytes).await
+}
+
+/// Fails a material of `alpha_mode` whose graph `reads_backdrop`, the scene behind its surface, unless it blends: only
+/// the transparent phase has the opaque scene drawn behind its surfaces.
+fn backdrop_needs_blending(reads_backdrop: bool, alpha_mode: AlphaMode) -> Result<(), String> {
+	if !reads_backdrop || matches!(alpha_mode, AlphaMode::Blend) {
+		return Ok(());
+	}
+
+	Err("its graph reads `scenecolor` or `sceneposition`, but its `alpha_mode` isn't `\"Blend\"`. The most likely cause is a water or glass graph given to an opaque material, or a variant that turns a blended parent opaque. Set `alpha_mode` to `\"Blend\"`.".to_string())
+}
+
+/// The `VariantSource` enum is where a variant [`variant_model`] builds is written, which sets the rules its values
+/// follow.
+#[derive(Clone, Copy, PartialEq)]
+enum VariantSource {
+	/// A `.bema` variant file, which must list every static parameter.
+	File,
+	/// An inline variant in a model sidecar. A static parameter without a value keeps the parent's, and a string is
+	/// always an asset ID, so it is only a value for a `Texture2D` parameter.
+	Inline,
+}
+
+/// Builds the variant of `material` whose values `value_of` gives by parameter name, and whose coverage fields `asset`
+/// holds, as `.bema` variant files and inline sidecar variants both describe them.
+///
+/// A dynamic parameter without a value keeps the parent's default; a static one follows the rules of `source`.
+/// Problems are reported through `invalid`.
+async fn variant_model<'v>(
+	context: BakeContext<'_>,
+	material: ReferenceModel<MaterialModel>,
+	value_of: &dyn Fn(&str) -> Option<&'v Value>,
+	asset: &Value,
+	source: VariantSource,
+	invalid: &dyn Fn(&str) -> LoadErrors,
+) -> Result<VariantModel, LoadErrors> {
+	let material_repr: MaterialModel = crate::from_slice(&material.resource).map_err(|_| LoadErrors::FailedToProcess)?;
+	let value_requests = material_repr.parameters.iter().map(|parameter| async move {
+		let value = value_of(&parameter.name);
+		if value.is_none() && (parameter.dynamic || source == VariantSource::Inline) {
+			return Ok(parameter.value.clone());
+		}
+		if source == VariantSource::Inline && parameter.r#type != "Texture2D" && value.is_some_and(Value::is_string) {
+			return Err(invalid(&format!(
+				"its variable '{}' names a file, but the parent's parameter is a `{}`, not a `Texture2D`. The most likely cause is a texture bound to a value parameter, or a named color, which inline variants read as a file name. Write the value as a number or an array of numbers.",
+				parameter.name, parameter.r#type
+			)));
+		}
+		let value = value.ok_or_else(|| {
+			invalid(&format!(
+				"it gives no `value` for the parent's static variable '{}'. The most likely cause is a variable left out of the variant or written without a value.",
+				parameter.name
+			))
+		})?;
+		resolve_value(context, &parameter.r#type, value, invalid).await
+	});
+	let values = buffered_in_order(value_requests, 8).await?;
+	let variables = material_repr
+		.parameters
+		.iter()
+		.zip(values)
+		.map(|(parameter, value)| VariantVariableModel {
+			value,
+			name: parameter.name.clone(),
+			r#type: parameter.r#type.clone(),
+			dynamic: parameter.dynamic,
+		})
+		.collect();
+	// A variant keeps each of its material's coverage settings it leaves out.
+	let (alpha_mode, double_sided) =
+		surface_coverage(asset, material_repr.alpha_mode, material_repr.double_sided).map_err(|problem| invalid(&problem))?;
+	backdrop_needs_blending(material_repr.program.reads_backdrop, alpha_mode).map_err(|problem| invalid(&problem))?;
+
+	Ok(VariantModel {
+		material,
+		variables,
+		alpha_mode,
+		double_sided,
+	})
+}
+
+/// Resolves an inline sidecar variant and stores it as `id`: looks up each variable's candidate files, picks the first
+/// `select` rule whose required variables resolved, and builds the variant of that rule's parent.
+///
+/// Every candidate it looks up becomes a bake dependency, present or missing, so adding an earlier candidate later
+/// rebakes the container. Variables that don't resolve keep the parent's value.
+async fn bake_inline_variant(
+	context: BakeContext<'_>,
+	container_id: ResourceId<'_>,
+	id: &str,
+	binding: &InlineBinding,
+) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
+	let mut resolved = Vec::with_capacity(binding.variables.len());
+
+	for (name, value) in &binding.variables {
+		let value = match value {
+			BindingValue::Literal(value) => Some(value.clone()),
+			BindingValue::Candidates(candidates) => {
+				let mut chosen = None;
+				for candidate in candidates {
+					if context.source_exists(ResourceId::new(candidate)).await? {
+						chosen = Some(Value::String(candidate.clone()));
+						break;
+					}
+				}
+				log::trace!("Material '{id}' variable '{name}' resolved to {chosen:?} from {candidates:?}.");
+				chosen
+			}
+		};
+		resolved.push((name.as_str(), value));
+	}
+
+	let value_of = |name: &str| {
+		resolved
+			.iter()
+			.find(|(variable, _)| *variable == name)
+			.and_then(|(_, value)| value.as_ref())
+	};
+
+	let Some(rule) = binding
+		.rules
+		.iter()
+		.find(|rule| rule.requires.iter().all(|name| value_of(name).is_some()))
+	else {
+		context.error(format_args!(
+			"No `select` rule of `asset.\"{}\"` matches material '{id}' of '{}'. The most likely cause is that every rule `requires` a variable whose files don't exist next to the model. Add a last rule without `requires`. See {}.",
+			binding.key,
+			container_id.as_ref(),
+			online_docs_url(MATERIAL_BINDINGS_DOCS_PATH)
+		));
+		return Err(LoadErrors::FailedToProcess);
+	};
+
+	let material = context.bake_dependency(&rule.parent).await?;
+	let invalid = |problem: &str| {
+		context.error(format_args!(
+			"Invalid inline variant `asset.\"{}\"` for material '{id}' of '{}': {problem} See {}.",
+			binding.key,
+			container_id.as_ref(),
+			online_docs_url(MATERIAL_BINDINGS_DOCS_PATH)
+		));
+		LoadErrors::FailedToProcess
+	};
+	let variant = variant_model(context, material, &value_of, &rule.coverage, VariantSource::Inline, &invalid).await?;
+
+	store_model::<VariantModel>(context, id, variant, &[]).await
 }
 
 /// Reports why a `.bema` file of the given `kind`, such as `"material"`, can't bake, and returns the load error.
@@ -1054,10 +1305,15 @@ pub mod tests {
 	pub struct MinimalTestShaderGenerator;
 
 	impl ProgramGenerator for MinimalTestShaderGenerator {
+		fn identity(&self) -> u64 {
+			0
+		}
+
 		fn generate<'a>(
 			&self,
 			_: &'a bemx::Graph,
 			_: &'a [MaterialParameter],
+			_modules: &'a super::ProgramModules,
 		) -> Result<Option<besl::parser::Node<'a>>, String> {
 			Ok(Some(besl::parser::Node::root_with_children(vec![
 				besl::parser::Node::main_function(Vec::new()),
@@ -1253,18 +1509,24 @@ pub mod tests {
 		"SurfaceHit: struct { distance: f32 }\nmain: fn (payload: SurfaceHit) -> SurfaceHit { return payload; }";
 
 	impl ProgramGenerator for HitTestShaderGenerator {
+		fn identity(&self) -> u64 {
+			0
+		}
+
 		fn generate<'a>(
 			&self,
 			graph: &'a bemx::Graph,
 			parameters: &'a [MaterialParameter],
+			_modules: &'a super::ProgramModules,
 		) -> Result<Option<besl::parser::Node<'a>>, String> {
-			MinimalTestShaderGenerator.generate(graph, parameters)
+			MinimalTestShaderGenerator.generate(graph, parameters, _modules)
 		}
 
 		fn generate_hit<'a>(
 			&self,
 			_: &'a bemx::Graph,
 			_: &'a [MaterialParameter],
+			_modules: &'a super::ProgramModules,
 		) -> Result<Option<besl::parser::Node<'a>>, String> {
 			besl::parse(HIT_PROGRAM).map(Some).map_err(|error| format!("{error:?}"))
 		}
@@ -1437,10 +1699,15 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for AssemblingTestGenerator {
+		fn identity(&self) -> u64 {
+			0
+		}
+
 		fn generate<'a>(
 			&self,
 			_: &'a bemx::Graph,
 			_: &'a [MaterialParameter],
+			_modules: &'a super::ProgramModules,
 		) -> Result<Option<besl::parser::Node<'a>>, String> {
 			Ok(None)
 		}
@@ -1459,6 +1726,7 @@ pub mod tests {
 			&self,
 			_: &str,
 			_: &'a [super::AssembledArm<'a>],
+			_: &'a super::ProgramModules,
 		) -> Result<(besl::parser::Node<'a>, ShaderGenerationSettings), String> {
 			Ok((
 				besl::parser::Node::root_with_children(vec![besl::parser::Node::main_function(Vec::new())]),
@@ -1620,9 +1888,21 @@ pub mod tests {
 		assert_eq!(solved.resource().static_values().collect::<Vec<_>>(), stored);
 	}
 
-	/// Returns an asset manager over a foliage material whose `opacity` reads its own opacity map, declared with
+	/// A foliage graph for [`coverage_asset_manager`]: an `opacity` read from its `strength` parameter.
+	const COVERAGE_GRAPH: &str = r#"{
+		nodes: [
+			{ name: "strength", node: "parameter", parameter: "strength", type: "float" },
+			{ name: "surface", node: "surface", opacity: "strength" },
+		],
+	}"#;
+
+	/// Returns an asset manager over a foliage material with `graph`, such as [`COVERAGE_GRAPH`], declared with
 	/// `material_fields`, and over each of `variants`, a name and the fields after its `parent` and `variables`.
-	fn coverage_asset_manager(material_fields: &str, variants: &[(&str, &str)]) -> (AssetManager, MemoryStorageBackend) {
+	fn coverage_asset_manager(
+		graph: &'static str,
+		material_fields: &str,
+		variants: &[(&str, &str)],
+	) -> (AssetManager, MemoryStorageBackend) {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 		asset_storage_backend.add_file(
 			"foliage.bema",
@@ -1637,16 +1917,7 @@ pub mod tests {
 			.leak()
 			.as_bytes(),
 		);
-		asset_storage_backend.add_file(
-			"foliage.bemx",
-			r#"{
-				nodes: [
-					{ name: "strength", node: "parameter", parameter: "strength", type: "float" },
-					{ name: "surface", node: "surface", opacity: "strength" },
-				],
-			}"#
-			.as_bytes(),
-		);
+		asset_storage_backend.add_file("foliage.bemx", graph.as_bytes());
 		for (name, fields) in variants {
 			asset_storage_backend.add_file(
 				format!("{name}.bema").leak(),
@@ -1676,6 +1947,7 @@ pub mod tests {
 	#[r#async::test]
 	async fn variants_inherit_and_override_alpha_mode_and_sidedness() {
 		let (asset_manager, resource_storage_backend) = coverage_asset_manager(
+			COVERAGE_GRAPH,
 			r#""alpha_mode": "Mask", "alpha_cutoff": 0.3, "double_sided": true,"#,
 			&[
 				("inherits", ""),
@@ -1719,7 +1991,8 @@ pub mod tests {
 	/// A root material without the fields is opaque and one-sided, and a masked one without a cutoff tests against 0.5.
 	#[r#async::test]
 	async fn materials_default_to_opaque_one_sided_and_a_half_cutoff() {
-		let (asset_manager, resource_storage_backend) = coverage_asset_manager("", &[("masked", r#", "alpha_mode": "Mask""#)]);
+		let (asset_manager, resource_storage_backend) =
+			coverage_asset_manager(COVERAGE_GRAPH, "", &[("masked", r#", "alpha_mode": "Mask""#)]);
 
 		let _: ReferenceModel<VariantModel> = asset_manager
 			.bake_if_not_exists("masked.bema")
@@ -1750,9 +2023,44 @@ pub mod tests {
 			r#""alpha_cutoff": "0.5","#,
 			r#""double_sided": "true","#,
 		] {
-			let (asset_manager, _) = coverage_asset_manager(fields, &[]);
+			let (asset_manager, _) = coverage_asset_manager(COVERAGE_GRAPH, fields, &[]);
 			let baked: Result<ReferenceModel<MaterialModel>, _> = asset_manager.bake_if_not_exists("foliage.bema").await;
 			assert!(baked.is_err(), "fields {fields} should fail the bake");
+		}
+	}
+
+	/// Only a blended surface has the opaque scene drawn behind it, so a material that reads the backdrop bakes only
+	/// while it blends, whether its own `alpha_mode` or a variant's decides that.
+	#[r#async::test]
+	async fn reading_the_backdrop_needs_a_blended_material() {
+		const BACKDROP_GRAPH: &str = r#"{
+			nodes: [
+				{ name: "strength", node: "parameter", parameter: "strength", type: "float" },
+				{ name: "behind", node: "scenecolor" },
+				{ name: "tinted", node: "multiply", in1: "behind", in2: "strength" },
+				{ name: "surface", node: "surface", transmission: "tinted" },
+			],
+		}"#;
+
+		let (asset_manager, _) = coverage_asset_manager(
+			BACKDROP_GRAPH,
+			r#""alpha_mode": "Blend","#,
+			&[("clear", ""), ("solid", r#", "alpha_mode": "Opaque""#)],
+		);
+		let _: ReferenceModel<VariantModel> = asset_manager
+			.bake_if_not_exists("clear.bema")
+			.await
+			.expect("A variant that keeps its parent's blending should bake");
+		let solid: Result<ReferenceModel<VariantModel>, _> = asset_manager.bake_if_not_exists("solid.bema").await;
+		assert!(
+			solid.is_err(),
+			"A variant that turns a blended parent opaque should fail the bake"
+		);
+
+		for fields in ["", r#""alpha_mode": "Mask","#] {
+			let (asset_manager, _) = coverage_asset_manager(BACKDROP_GRAPH, fields, &[]);
+			let baked: Result<ReferenceModel<MaterialModel>, _> = asset_manager.bake_if_not_exists("foliage.bema").await;
+			assert!(baked.is_err(), "fields {fields:?} should fail the bake");
 		}
 	}
 
@@ -1773,6 +2081,11 @@ use std::{collections::HashMap, sync::Arc};
 
 use serde_json::Value;
 use utils::Extent;
+
+mod binding;
+
+use binding::{BindingValue, InlineBinding, MATERIAL_BINDINGS_DOCS_PATH};
+pub(crate) use binding::{MaterialBinding, TemplateScope, material_binding};
 
 use super::{
 	ResourceId,

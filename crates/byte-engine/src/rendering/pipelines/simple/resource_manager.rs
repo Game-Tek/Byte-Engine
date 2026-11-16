@@ -54,6 +54,8 @@ pub(super) const SIMPLE_INDEX_CAPACITY: usize = 1024 * 1024;
 const POSITION_STRIDE: usize = std::mem::size_of::<(f32, f32, f32)>();
 const INDEX_STRIDE: usize = std::mem::size_of::<u16>();
 const SIMPLE_LOADER_LANE_COUNT: usize = 1;
+/// A single lane is a general lane, which takes needed requests first.
+const SIMPLE_LOADER_BACKGROUND_LANE_COUNT: usize = 1;
 const SIMPLE_LOADER_RESULT_CAPACITY: usize = 64;
 
 /// The `PreparedSimpleMesh` struct keeps Simple-formatted transfer bytes alive until its lane finishes the copies.
@@ -100,7 +102,7 @@ impl SimpleLoader {
 	/// them. Run the returned lane on the loading thread.
 	pub(crate) fn spawn(
 		loader: &mut Loader,
-		render: &ghi::implementation::Context,
+		render: &mut ghi::implementation::Context,
 		resources: EntityHandle<resource_management::ResourceManager>,
 		store: SharedSimpleResourceStore,
 	) -> (SimpleLoaderClient, Vec<SimpleLoaderLane>) {
@@ -119,6 +121,7 @@ impl SimpleLoader {
 				indices,
 			},
 			SIMPLE_LOADER_LANE_COUNT,
+			SIMPLE_LOADER_BACKGROUND_LANE_COUNT,
 			SIMPLE_LOADER_RESULT_CAPACITY,
 		)
 	}
@@ -138,6 +141,12 @@ impl LoadPipeline for SimpleLoader {
 		let staging = lane.staging().clone();
 		let prepared = match request {
 			MeshSource::Generated(generator) => prepare_generated_mesh(generator.as_ref(), staging).await,
+			MeshSource::Merged(_) => {
+				return Err(LoadError(
+					"Simple pipeline mesh was not loaded. The most likely cause is a merged mesh, which only the visibility pipeline builds. Draw the copies as separate resource meshes instead."
+						.to_string(),
+				));
+			}
 			MeshSource::Resource(id) => {
 				let resource = self
 					.resources
@@ -193,15 +202,10 @@ impl SimpleResourceStore {
 	/// Share this store between the loader and pipeline manager.
 	pub(crate) fn new(context: &mut ghi::implementation::Context) -> Self {
 		let vertex_positions_buffer = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Vertex | ghi::Uses::TransferDestination)
-				.name("Vertex Positions")
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+			ghi::buffer::Builder::new(ghi::Uses::Vertex | ghi::Uses::TransferDestination).name("Vertex Positions"),
 		);
-		let indices_buffer = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Index | ghi::Uses::TransferDestination)
-				.name("Indices")
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
-		);
+		let indices_buffer =
+			context.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Index | ghi::Uses::TransferDestination).name("Indices"));
 
 		Self {
 			vertex_positions_buffer,

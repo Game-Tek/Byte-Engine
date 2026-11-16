@@ -3,7 +3,7 @@
 //! Exposure and white balance are linear, so they fold into one matrix built here, and the split tone's direction is
 //! computed here once; the tone curve, split tone, and saturation run in the shader, in ACEScct. Install it with [`crate::application::graphics::setup_color_correction_render_pass`].
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::context::ContextCreate as _;
 
 use crate::{
 	core::Entity,
@@ -321,14 +321,12 @@ impl ColorCorrectionPass {
 		validate(&settings);
 
 		let context = render_pass_builder.context();
-		let parameters = context.build_buffer::<ColorCorrectionShaderData>(
+		let parameters = context.build_buffer_with::<ColorCorrectionShaderData>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Color Correction Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write),
+			|parameters| *parameters = color_correction_shader_data(&settings),
 		);
-		*context.get_mut_buffer_slice(parameters) = color_correction_shader_data(&settings);
-		// The write reaches the GPU copy only once synced.
-		context.sync_buffer(parameters);
 
 		Self {
 			resources: [simple_tile::Resource::buffer("correction_parameters", parameters)],

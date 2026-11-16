@@ -7,7 +7,6 @@ pub enum GPUIBLBakeError {
 	Worker(GpuWorkerError),
 	AtlasTooLarge { width: u32, height: u32 },
 	AtlasLayoutOverflow,
-	SourceUploadSizeMismatch { expected: usize, got: usize },
 	OutputReadbackSizeMismatch { expected: usize, got: usize },
 	GPUExecution,
 }
@@ -23,10 +22,6 @@ impl fmt::Display for GPUIBLBakeError {
 			),
 			Self::AtlasLayoutOverflow => formatter.write_str(
 				"GPU environment-map atlas layout overflowed. The most likely cause is an environment image with unsupported dimensions.",
-			),
-			Self::SourceUploadSizeMismatch { expected, got } => write!(
-				formatter,
-				"GPU environment-map source upload has the wrong size: expected {expected}, got {got}. The most likely cause is a GHI staging allocation that does not match the source atlas."
 			),
 			Self::OutputReadbackSizeMismatch { expected, got } => write!(
 				formatter,
@@ -143,26 +138,29 @@ impl GPUIBLProcessor {
 			scratch
 		};
 
-		let upload = self.gpu.context.get_texture_slice_mut(scratch.source_atlas);
-		let expected_upload_size = atlas_byte_size(source_atlas_extent)?;
-		if upload.len() != expected_upload_size {
-			return Err(GPUIBLBakeError::SourceUploadSizeMismatch {
-				expected: expected_upload_size,
-				got: upload.len(),
-			});
-		}
+		let atlas_layout = upload_layout(source_atlas_extent)?;
+		// SAFETY: Every bake waits for its submission, so no submitted work reads the upload buffer, and the mapping
+		// ends here.
+		let upload = unsafe { self.gpu.context.map_unsynchronized(scratch.upload) }.into_bytes();
+		// The atlas is written compact at the start of the upload, then its rows move out to the copy pitch.
 		write_source_atlas(
 			source_width,
 			source_height,
 			source_rgba16f,
-			upload,
+			&mut upload[..atlas_layout.compact_size],
 			&mut self.source_mip,
 			&mut self.source_row_solid_angles,
 		)?;
-		self.gpu.context.sync_texture(scratch.source_atlas);
-
-		let copy_handle = self.dispatch(layout, source_level_count, scratch)?;
-		self.gpu.context.wait_for_synchronizer(scratch.synchronizer);
+		atlas_layout.pack_rows(&mut upload[..atlas_layout.padded_size]);
+		let upload = atlas_layout.copy(scratch.upload.into(), 0, scratch.source_atlas.into(), 0);
+		let pipeline = self.kernel.pipeline;
+		// The workload returns once the GPU finished the bake, so its readback is ready.
+		let copy_handle = self
+			.gpu
+			.context
+			.record(self.queue, Some("Generate environment maps"), |recording| {
+				record_bake(recording, pipeline, layout, source_level_count, scratch, upload)
+			})?;
 		#[cfg(debug_assertions)]
 		if self.gpu.context.has_errors() {
 			return Err(GPUIBLBakeError::GPUExecution);
@@ -189,18 +187,23 @@ impl GPUIBLProcessor {
 	/// Allocates one reusable source/output atlas pair for a dimension combination.
 	fn create_scratch(&mut self, key: GPUIBLScratchKey) -> GPUIBLScratch {
 		let source_atlas = self.gpu.context.build_image(
-			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image)
+			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name("Environment source mip atlas")
-				.extent(key.source_atlas_extent)
-				.device_accesses(ghi::DeviceAccesses::HostToDevice)
-				.use_case(ghi::UseCases::STATIC),
+				.extent(key.source_atlas_extent),
+		);
+		let upload_size = upload_layout(key.source_atlas_extent)
+			.expect("A validated environment atlas should fit in memory. The most likely cause is an invalid atlas extent.")
+			.padded_size;
+		let upload = self.gpu.context.build_buffer::<[u8]>(
+			ghi::buffer::Builder::new(ghi::Uses::TransferSource)
+				.name("Environment source mip atlas upload")
+				.host_access(ghi::HostAccess::Write)
+				.length(upload_size),
 		);
 		let output_atlas = self.gpu.context.build_image(
 			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage | ghi::Uses::TransferSource)
 				.name("Environment cubemap output atlas")
-				.extent(key.output_atlas_extent)
-				.device_accesses(ghi::DeviceAccesses::DeviceToHost)
-				.use_case(ghi::UseCases::STATIC),
+				.extent(key.output_atlas_extent),
 		);
 		let descriptor_set = self
 			.gpu
@@ -216,94 +219,84 @@ impl GPUIBLProcessor {
 			),
 			ghi::DescriptorWrite::image(descriptor_set, OUTPUT_SLOT, output_atlas, ghi::Layouts::General),
 		]);
-		let command_buffer = self
-			.gpu
-			.context
-			.queue(self.queue)
-			.create_command_buffer(Some("Generate environment maps"));
-		let synchronizer = self.gpu.context.create_synchronizer(Some("Environment maps generated"), true);
-
 		GPUIBLScratch {
 			key,
 			source_atlas,
+			upload,
 			output_atlas,
 			descriptor_set,
-			command_buffer,
-			synchronizer,
 		}
 	}
+}
 
-	/// Records every roughness level and the diffuse map before one compact atlas readback.
-	fn dispatch(
-		&mut self,
-		layout: CubemapIBLLayout,
-		source_level_count: u32,
-		scratch: GPUIBLScratch,
-	) -> Result<ghi::TextureCopyHandle, GPUIBLBakeError> {
-		let (source_width, source_height) = layout.source_dimensions();
-		let source_level_y_offsets = source_level_y_offsets(source_height);
-		let source_row_angle_step = std::f32::consts::PI / source_height as f32;
-		let source_solid_angle_scale =
-			(std::f32::consts::TAU / source_width as f32) * 2.0 * (std::f32::consts::PI / (2.0 * source_height as f32)).sin();
-		let mut recording = self.gpu.context.create_command_buffer_recording(scratch.command_buffer);
-		let command = recording.bind_compute_pipeline(self.kernel.pipeline);
-		command.bind_descriptor_sets(&[scratch.descriptor_set]);
-		// Specular levels use mode 1, except the unfiltered level 0, and the diffuse map uses mode 2.
-		let specular = layout
-			.specular_face_sizes()
-			.into_iter()
-			.enumerate()
-			.map(|(level, face_size)| {
-				let roughness = level as f32 / (IBL_PREFILTERED_SPECULAR_MIP_COUNT - 1) as f32;
-				(face_size, (level != 0) as u32, roughness)
-			});
-		let mut output_y_offset = 0;
-		for (face_size, mode, roughness) in specular.chain([(DIFFUSE_CUBE_FACE_SIZE, 2, 1.0)]) {
-			command.write_push_constant(
-				0,
-				GPUIBLPushConstants {
-					source_width,
-					source_height,
-					source_level_count,
-					output_face_size: face_size,
-					output_y_offset,
-					mode,
-					roughness,
-					source_row_angle_step,
-					source_solid_angle_scale,
-					_padding: [0; 3],
-					source_level_y_offsets,
-				},
-			);
-			command.dispatch(ghi::DispatchExtent::new(
-				Extent::new(face_size * face_size * CUBE_FACE_COUNT as u32, 1, 1),
-				Extent::new(64, 1, 1),
-			));
-			output_y_offset += face_size * CUBE_FACE_COUNT as u32;
-		}
-
-		let copy_handle = recording
-			.transfer_texture(scratch.output_atlas.into())
-			.map_err(|_| GPUIBLBakeError::GPUExecution)?;
-		recording.execute(scratch.synchronizer);
-		Ok(copy_handle)
+/// Records the source atlas upload, every roughness level, and the diffuse map before one compact atlas readback.
+fn record_bake(
+	recording: &mut ghi::implementation::CommandBufferRecording<'_>,
+	pipeline: ghi::PipelineHandle,
+	layout: CubemapIBLLayout,
+	source_level_count: u32,
+	scratch: GPUIBLScratch,
+	upload: ghi::BufferImageCopyDescriptor,
+) -> Result<ghi::TextureCopyHandle, GPUIBLBakeError> {
+	let (source_width, source_height) = layout.source_dimensions();
+	let source_level_y_offsets = source_level_y_offsets(source_height);
+	let source_row_angle_step = std::f32::consts::PI / source_height as f32;
+	let source_solid_angle_scale =
+		(std::f32::consts::TAU / source_width as f32) * 2.0 * (std::f32::consts::PI / (2.0 * source_height as f32)).sin();
+	recording.copy_buffer_to_images(&[upload]);
+	let command = recording.bind_compute_pipeline(pipeline);
+	command.bind_descriptor_sets(&[scratch.descriptor_set]);
+	// Specular levels use mode 1, except the unfiltered level 0, and the diffuse map uses mode 2.
+	let specular = layout
+		.specular_face_sizes()
+		.into_iter()
+		.enumerate()
+		.map(|(level, face_size)| {
+			let roughness = level as f32 / (IBL_PREFILTERED_SPECULAR_MIP_COUNT - 1) as f32;
+			(face_size, (level != 0) as u32, roughness)
+		});
+	let mut output_y_offset = 0;
+	for (face_size, mode, roughness) in specular.chain([(DIFFUSE_CUBE_FACE_SIZE, 2, 1.0)]) {
+		command.write_push_constant(
+			0,
+			GPUIBLPushConstants {
+				source_width,
+				source_height,
+				source_level_count,
+				output_face_size: face_size,
+				output_y_offset,
+				mode,
+				roughness,
+				source_row_angle_step,
+				source_solid_angle_scale,
+				_padding: [0; 3],
+				source_level_y_offsets,
+			},
+		);
+		command.dispatch(ghi::DispatchExtent::new(
+			Extent::new(face_size * face_size * CUBE_FACE_COUNT as u32, 1, 1),
+			Extent::new(64, 1, 1),
+		));
+		output_y_offset += face_size * CUBE_FACE_COUNT as u32;
 	}
+
+	recording
+		.transfer_texture(scratch.output_atlas.into())
+		.map_err(|_| GPUIBLBakeError::GPUExecution)
 }
 
 impl GpuProcessor for GPUIBLProcessor {
 	type Request = Extent;
 	type Result = Result<BakedImageIBL, GPUIBLBakeError>;
-	/// No request is ever in flight, which the type states so `poll` needs no body.
-	type Ticket = std::convert::Infallible;
 
-	const MAX_IN_FLIGHT: usize = 1;
+	/// One bake already fills the GPU, and each holds a large source atlas.
+	const MAX_BATCH: usize = 1;
 
-	fn submit(&mut self, source_extent: &Extent, source_rgba16f: &[u8]) -> Submission<Self::Ticket, Self::Result> {
-		Submission::Complete(self.bake_image_ibl(*source_extent, source_rgba16f))
-	}
-
-	fn poll(&mut self, ticket: Self::Ticket) -> Option<Self::Result> {
-		match ticket {}
+	fn process(&mut self, batch: &[(Extent, Vec<u8>)]) -> BatchResults<Self::Result> {
+		batch
+			.iter()
+			.map(|(source_extent, source_rgba16f)| self.bake_image_ibl(*source_extent, source_rgba16f))
+			.collect()
 	}
 }
 
@@ -333,10 +326,10 @@ struct GPUIBLScratchKey {
 struct GPUIBLScratch {
 	key: GPUIBLScratchKey,
 	source_atlas: ghi::ImageHandle,
+	/// The source atlas's rows, padded to the copy pitch, which each bake writes and copies into `source_atlas`.
+	upload: ghi::BufferHandle<[u8]>,
 	output_atlas: ghi::ImageHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
-	command_buffer: ghi::CommandBufferHandle,
-	synchronizer: ghi::SynchronizerHandle,
 }
 
 /// Computes every packed source-level row offset once so shaders avoid scanning the MIP chain for each sample.
@@ -492,11 +485,14 @@ fn validate_atlas_extent(extent: Extent) -> Result<(), GPUIBLBakeError> {
 	Ok(())
 }
 
+/// Returns how an RGBA16F atlas sits in a buffer that a copy reads.
+fn upload_layout(extent: Extent) -> Result<ghi::ImageCopyLayout, GPUIBLBakeError> {
+	ghi::ImageCopyLayout::new(ghi::Formats::RGBA16F, extent, 1).ok_or(GPUIBLBakeError::AtlasLayoutOverflow)
+}
+
+/// Returns the bytes of an RGBA16F atlas without row padding, as readbacks return it.
 fn atlas_byte_size(extent: Extent) -> Result<usize, GPUIBLBakeError> {
-	(extent.width() as usize)
-		.checked_mul(extent.height() as usize)
-		.and_then(|pixel_count| pixel_count.checked_mul(BYTES_PER_RGBA16F_PIXEL))
-		.ok_or(GPUIBLBakeError::AtlasLayoutOverflow)
+	Ok(upload_layout(extent)?.compact_size)
 }
 
 /// Removes unused atlas columns while retaining mip-major, face-major stream order.
@@ -697,7 +693,7 @@ use super::{
 };
 use crate::{
 	gpu_worker::{
-		ComputeKernel, GpuProcessor, GpuWorkerError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT, Submission,
+		BatchResults, ComputeKernel, GpuProcessor, GpuWorkerError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT,
 		create_compute_context, create_compute_kernel,
 	},
 	resources::{image::IBL_PREFILTERED_SPECULAR_MIP_COUNT, mips::mip_extents},

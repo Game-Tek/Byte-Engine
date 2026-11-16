@@ -2,9 +2,10 @@
 # ticks with the camera's look pinned, and compares the per-stage GPU medians.
 #
 # Each run writes every tick to NDJSON through `metrics-out` and exits through `kill-after`, so timing takes no
-# screenshots and no inspector polling. The inspector is used once per run, to pin the look; ticks before the pin and
-# --settle ticks after it are dropped, so loading, the first bake, and temporal histories filling up stay out of the
-# medians.
+# screenshots and no inspector polling. The inspector is used once per run, to pin the look. Each run also writes its
+# debug data streams to NDJSON, and the asset manager's `Assets` stream says on which tick the on-demand bakes ended.
+# Ticks before the pin and before the last bake ended are dropped, and so are --settle ticks after both, so loading,
+# bakes, and temporal histories filling up stay out of the medians.
 #
 # The GPU clock changes between runs, so each run's stages are scaled by how far its --control stage, one the change
 # does not touch, sits from the control's median over all runs. Check that the control's own spread is small before
@@ -17,7 +18,7 @@
 #              [--look 1.0,0.0,0.0] [--control stage.shadow-maps] [--match stage.] [--floor 0.005]
 #              [--out <dir>] [--sandbox ~/development/sandbox] [-- viewer parameters...]
 #   Copy each binary out of target/ first (mbx can delete target directories), and bake the store both read before
-#   the first round: a run that bakes spends its ticks loading.
+#   the first round: a run that bakes spends its ticks baking, and one still baking at --ticks is refused.
 import argparse
 import json
 import os
@@ -33,7 +34,7 @@ parser.add_argument("--a", required=True, help="the baseline viewer binary")
 parser.add_argument("--b", required=True, help="the changed viewer binary")
 parser.add_argument("--rounds", type=int, default=3, help="rounds of one A and one B run, alternating their order")
 parser.add_argument("--ticks", type=int, default=900, help="ticks each run renders before it exits")
-parser.add_argument("--settle", type=int, default=120, help="ticks dropped after the look is pinned")
+parser.add_argument("--settle", type=int, default=120, help="ticks dropped after the look is pinned and the bakes ended")
 parser.add_argument("--rate", type=int, default=60, help="the unattended rendering rate")
 parser.add_argument("--look", default="1.0,0.0,0.0", help="the look direction to pin")
 parser.add_argument("--control", default="stage.shadow-maps", help="a stage the change does not touch")
@@ -57,7 +58,7 @@ def get(path):
 
 
 def pin(process, name, log_path):
-    """Pins the look of the viewer `process` runs and returns the first tick to keep: --settle ticks after the pin."""
+    """Pins the look of the viewer `process` runs and returns the tick the pin was sent on."""
     # The inspector answers before the viewer creates its look action, so wait for the action itself. Its handle
     # depends on what the viewer creates before it, so resolve it by name.
     target = None
@@ -78,18 +79,44 @@ def pin(process, name, log_path):
     message = {"type": "TriggerAction", "target": target, "payload": {"type": "Vector3", "value": [float(v) for v in arguments.look.split(",")]}}
     request = urllib.request.Request(inspector + "/messages", json.dumps(message).encode(), {"Content-Type": "application/json"})
     urllib.request.urlopen(request, timeout=30).read()
-    return json.loads(get("/metrics"))["last_tick"] + arguments.settle
+    return json.loads(get("/metrics"))["last_tick"]
+
+
+def bakes_ended(streams, name):
+    """Returns the tick of the last `Assets` record with no bake running in the run's `streams` file, or 0 when the run
+    baked nothing. Exits when the run ended with bakes still running."""
+    last = None
+    if os.path.exists(streams):
+        with open(streams) as file:
+            for line in file:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    # The viewer was killed while it wrote this line.
+                    continue
+                if record.get("stream") == "bakes":
+                    last = record
+    if last is None:
+        return 0
+    data = last["data"]
+    if data["baking"]:
+        sys.exit(f"{name} was still baking {data['baking'][0]['id']} when it exited. Bake the store before the first round, or raise --ticks.")
+    if data["failed"]:
+        print(f"{name}: {data['failed']} bakes failed; check the run's log before trusting its frames.", file=sys.stderr)
+    return last["tick"]
 
 
 def run(label, binary, round_index):
     """Runs one binary to its kill-after tick and returns its per-metric GPU medians after the pin."""
     name = f"{label}{round_index}"
     frames = os.path.join(arguments.out, f"{name}.ndjson")
+    streams = os.path.join(arguments.out, f"{name}.streams.ndjson")
     command = [
         os.path.abspath(binary),
         f"--unattended={arguments.rate}",
         f"--kill-after={arguments.ticks}",
         f"--metrics-out={frames}",
+        f"--debug.streams={streams}",
         "--render.ghi.features.counters=true",
         f"--inspector.port={arguments.port}",
         *arguments.viewer,
@@ -98,13 +125,14 @@ def run(label, binary, round_index):
         # The viewer resolves assets relative to its crate directory.
         process = subprocess.Popen(command, cwd=os.path.join(arguments.sandbox, "model_viewer"), stdout=log, stderr=log)
         try:
-            first = pin(process, name, log.name)
+            pinned = pin(process, name, log.name)
             process.wait()
         finally:
             # A failure while pinning must not leave the viewer running into the next run.
             if process.poll() is None:
                 process.kill()
 
+    first = max(pinned, bakes_ended(streams, name)) + arguments.settle
     samples = {}
     with open(frames) as file:
         for row in (json.loads(line) for line in file if line.strip()):
@@ -113,7 +141,7 @@ def run(label, binary, round_index):
             for metric, value in row.get("gpu", {}).items():
                 samples.setdefault(metric, []).append(value)
     if not samples:
-        sys.exit(f"{name} kept no ticks after its pin. Raise --ticks above the load time plus --settle ({arguments.settle}).")
+        sys.exit(f"{name} kept no ticks after its pin. Raise --ticks above the load and bake time plus --settle ({arguments.settle}).")
     print(f"{name}: {len(next(iter(samples.values())))} ticks", file=sys.stderr)
     return {metric: statistics.median(values) for metric, values in samples.items()}
 

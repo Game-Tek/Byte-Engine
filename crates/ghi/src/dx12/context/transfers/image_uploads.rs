@@ -468,7 +468,9 @@ impl Device {
 		{
 			return false;
 		}
-		let (Some(upload), mapped, _) = self.create_buffer_resource(upload_size, DeviceAccesses::HostToDevice, Uses::TransferSource) else {
+		let (Some(upload), mapped, _) =
+			self.create_buffer_resource(upload_size, DeviceAccesses::HostToDevice, Uses::TransferSource)
+		else {
 			return false;
 		};
 		if mapped.is_null() {

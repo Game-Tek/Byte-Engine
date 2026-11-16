@@ -1,5 +1,5 @@
 use super::*;
-use crate::sampler::{Address, Reduction};
+use crate::sampler::Reduction;
 
 impl<'a> Compiler<'a> {
 	// Intrinsic names form one exhaustive VM dispatch table whose arms document the portable instruction semantics.
@@ -215,13 +215,19 @@ impl<'a> Compiler<'a> {
 				}
 				Ok(register)
 			}
-			"image_atomic_or" => {
+			"image_atomic_or" | "image_atomic_max" => {
 				require_argument_count(arguments, 3)?;
 				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::ReadWrite)?;
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
 				let value = self.compile_value_expression(&arguments[2], &ValueType::U32)?;
 				let register = self.allocate_register();
-				self.emit(ImageInstruction::ImageAtomicOr {
+				let operation = if name == "image_atomic_or" {
+					AtomicOperation::Or
+				} else {
+					AtomicOperation::Max
+				};
+				self.emit(ImageInstruction::ImageAtomic {
+					operation,
 					register,
 					slot,
 					coord,
@@ -815,13 +821,6 @@ impl<'a> Compiler<'a> {
 /// downsample intrinsic names. `None` reads through the sampler the application bound.
 fn fixed_sampler(texture: &NodeReference, intrinsic: &str) -> Result<Option<Sampler>, VmError> {
 	if let Some(state) = crate::lexer::binding_sampler(texture) {
-		if state.address != Address::Clamp {
-			return Err(VmError::UnsupportedExpression {
-				message: format!(
-					"`{intrinsic}` reads through a sampler whose address isn't `clamp`. The most likely cause is a VM test of a shader that wraps texture coordinates; the VM only clamps them. Use `address: clamp` in the tested sampler."
-				),
-			});
-		}
 		return Ok(Some(Sampler::from(state)));
 	}
 	Ok(match intrinsic {

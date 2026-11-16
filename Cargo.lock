@@ -173,26 +173,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
-name = "beld"
-version = "0.2.0"
-dependencies = [
- "anstream",
- "base64",
- "byte-engine",
- "byte-engine-besl",
- "byte-engine-resource-management",
- "byte-engine-utils",
- "clap",
- "colored",
- "log",
- "ratatui",
- "serde",
- "serde_json",
- "simple_logger",
- "sysinfo",
-]
-
-[[package]]
 name = "bit_field"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -277,8 +257,10 @@ dependencies = [
  "libc",
  "log",
  "maths-rs",
+ "neo_frizbee",
  "oxhttp",
  "png",
+ "ratatui",
  "realfft",
  "rustfft",
  "serde",
@@ -371,13 +353,16 @@ name = "byte-engine-resource-management"
 version = "0.2.0"
 dependencies = [
  "announcement",
+ "anstream",
  "base64",
  "bumpalo",
+ "byte-engine",
  "byte-engine-besl",
  "byte-engine-ghi",
  "byte-engine-math",
  "byte-engine-utils",
  "bytemuck",
+ "clap",
  "colored",
  "compio",
  "exr",
@@ -394,11 +379,16 @@ dependencies = [
  "notify-debouncer-full",
  "png",
  "rapidhash",
+ "ratatui",
  "redb",
  "rkyv",
  "serde",
  "serde_json",
  "shaderc",
+ "simple_logger",
+ "smallvec 1.15.2",
+ "sysinfo",
+ "ttf-parser",
  "ufbx",
  "urlencoding",
  "vorbis_rs",
@@ -2087,6 +2077,15 @@ name = "mutants"
 version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc0287524726960e07b119cebd01678f852f147742ae0d925e6a520dca956126"
+
+[[package]]
+name = "neo_frizbee"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb0dd0e69b342eaddb657120a21a56f3e887ddc505fac780cf430dbbbb3aed26"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "nix"

@@ -2,12 +2,12 @@
 //! geometry streams.
 
 use besl::vm::{
-	Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, TaskOutputs, Texture,
-	Value, WorkgroupState, input_slot, output_slot,
+	Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, TaskOutputs, Texture, Value,
+	WorkgroupState, input_slot, output_slot,
 };
 
 use super::geometry::{GeometryCapacity, GeometryCounts, GeometryRanges, RetiredRanges};
-use super::layout::ShaderMeshletData;
+use super::layout::{MESHLET_LOCAL_VERTICES, ShaderMeshletData, ShaderMeshletVertex};
 use super::mesh_dispatch::MeshDispatchWorkItem;
 use super::render_pass::{OCCLUSION_PYRAMID_HEIGHT, OCCLUSION_PYRAMID_MIP_COUNT, OCCLUSION_PYRAMID_WIDTH, OcclusionPhase};
 use super::shader_data::{MESH_FLAG_DOUBLE_SIDED, MESH_FLAG_SKINNED};
@@ -30,7 +30,10 @@ const PIXEL_MAPPING: &str = "pixel_mapping_buffer";
 const INSTANCE_INDEX: &str = "instance_index_render_target";
 const LIT: &str = "lit_map";
 const DIFFUSE_RADIANCE_HISTORY: &str = "diffuse_radiance_map";
+const SUBSURFACE_ALBEDO: &str = "subsurface_albedo";
 const MESH_DISPATCH_WORK: &str = "mesh_dispatch_work";
+/// The words of ranges at the start of the work buffer, which `scene_records.besl` spells `WORK_HEADER`.
+const WORK_HEADER: usize = 20;
 const OCCLUSION_PYRAMID: &str = "occlusion_pyramid";
 const OCCLUSION_VISIBILITY: &str = "occlusion_visibility";
 const VERTEX_POSITIONS: &str = "vertex_positions";
@@ -38,6 +41,7 @@ const VERTEX_UVS: &str = "vertex_uvs";
 const VERTEX_INDICES: &str = "vertex_indices";
 const PRIMITIVE_INDICES: &str = "primitive_indices";
 const MESHLETS: &str = "meshlets";
+const MESHLET_VERTICES: &str = "meshlet_vertices";
 const MESH_LEVELS: &str = "mesh_levels";
 const FIXTURE_INSTANCE_INDEX: usize = 3;
 /// The fixture instance's level record.
@@ -48,9 +52,15 @@ const FIXTURE_MESHLET_INDEX: usize = 5;
 const MESHLET_INSTANCE_BITS: u32 = 12;
 /// Task payload words keep the view's offset into its batch above the meshlet index.
 const VIEW_OFFSET_SHIFT: u32 = MESHLET_INSTANCE_BITS;
-/// The task payload word that holds the workgroup's instance, after the six views of 32 meshlets.
-const PAYLOAD_INSTANCE_WORD: usize = 192;
+/// The task payload word that holds the workgroup's work, after the six views of 32 meshlets.
+const PAYLOAD_WORK_WORD: usize = 192;
+/// The flag of a payload's work word whose lanes each have a work item of their own.
+const PAYLOAD_WORK_SHARED: u32 = 1 << 31;
+/// The flag of the last payload entry of a group.
+const ENTRY_ENDS_GROUP: u32 = 1 << 23;
 const TASK_WORKGROUP_SIZE: u32 = 32;
+/// The threads of one mesh grid, as the mesh shaders' `.bead` files declare them.
+const MESH_THREADS: u32 = 128;
 const GTAO_WORKGROUP_WIDTH: u32 = 16;
 const GTAO_WORKGROUP_SIZE: usize = 128;
 /// The 8x4 workgroup of the GTAO and directional-shadow depth pyramids.
@@ -194,7 +204,7 @@ fn visibility_fragment_main_forwards_primitive_and_instance_identifiers() {
 const IDENTITY_AFFINE_MATRIX: [f32; 12] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
 
 /// Returns a view-projection matrix that moves identity geometry outside the horizontal clip range.
-fn horizontally_translated_matrix(translation: f32) -> [f32; 16] {
+const fn horizontally_translated_matrix(translation: f32) -> [f32; 16] {
 	let mut matrix = IDENTITY_MATRIX;
 	matrix[12] = translation;
 	matrix
@@ -211,6 +221,13 @@ struct TaskMeshFixture {
 	/// The sphere of the instance's level, which task shaders test before any meshlet and decode the meshlets' spheres
 	/// within. The fixture's model is the identity.
 	bounding_sphere: [f32; 4],
+	/// The radius the level casts shadows with, when it differs from its sphere's: one copy's, for a merged mesh.
+	caster_radius: Option<f32>,
+	/// Every meshlet's vertex and triangle counts. The default fills a mesh grid, so each meshlet draws alone.
+	counts: [u8; 2],
+	/// The meshlet each lane's own work item names, counted from the level's first, for a workgroup whose lanes
+	/// have items of their own. `None` runs a workgroup with one item: the instance's first chunk of meshlets.
+	lane_meshlets: Option<&'static [u32]>,
 }
 
 impl Default for TaskMeshFixture {
@@ -220,6 +237,9 @@ impl Default for TaskMeshFixture {
 			back_facing: false,
 			// Wide enough to reach every fixture meshlet, so the instance test passes unless a test moves it.
 			bounding_sphere: [0.0, 0.0, 0.5, 8.0],
+			caster_radius: None,
+			counts: [64, 126],
+			lane_meshlets: None,
 		}
 	}
 }
@@ -227,11 +247,13 @@ impl Default for TaskMeshFixture {
 /// Executes one exact production task workgroup at its global dispatch position over consecutive meshlets, culling
 /// against `view_count` views from `view_base`.
 ///
-/// View `i` draws with `view_projections[i]`. With `occlusion`, the workgroup also culls by occlusion as the camera's
-/// passes do, and view zero is [`fixture_camera`] at an aspect ratio of two.
+/// View `i` draws with `view_projections[i]`, and only instances at least `minimum_caster_extent` normalized device
+/// units across. With `occlusion`, the workgroup also culls by occlusion as the camera's passes do, and view zero is
+/// [`fixture_camera`] at an aspect ratio of two.
 fn run_meshlet_task_workgroup(
 	view_projections: &[[f32; 16]],
 	[view_base, view_count]: [u32; 2],
+	minimum_caster_extent: f32,
 	center_radii: &[[f32; 4]],
 	mesh: TaskMeshFixture,
 	workgroup_index: u32,
@@ -266,7 +288,13 @@ fn run_meshlet_task_workgroup(
 	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
 	write_fixture_mesh(&mut meshes, mesh.flags, [0; 2]);
 	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
-	write_fixture_level(&mut mesh_levels, mesh.bounding_sphere, meshlet_count, 0);
+	write_fixture_level_caster(
+		&mut mesh_levels,
+		mesh.bounding_sphere,
+		mesh.caster_radius.unwrap_or(mesh.bounding_sphere[3]),
+		meshlet_count,
+		0,
+	);
 	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), FIXTURE_MESHLET_INDEX + center_radii.len());
 	for (meshlet_offset, center_radius) in center_radii.iter().copied().enumerate() {
 		// A cutoff past one disables cone rejection. The back-facing cone points along +Z, the direction from the
@@ -275,7 +303,7 @@ fn run_meshlet_task_workgroup(
 		let meshlet = ShaderMeshletData::new(
 			0,
 			0,
-			[0; 2],
+			mesh.counts,
 			center_radius,
 			mesh.bounding_sphere,
 			[0.0, 0.0, 1.0],
@@ -285,7 +313,7 @@ fn run_meshlet_task_workgroup(
 	}
 	let mut push_constant = push_constant_buffer(&program);
 	for (member, value) in [
-		("work_item_base", 0),
+		("work_range", 0),
 		("view_base", view_base),
 		("layer_base", 0),
 		("view_count", view_count),
@@ -295,15 +323,42 @@ fn run_meshlet_task_workgroup(
 				.as_ref()
 				.map_or(OcclusionPhase::Disabled, |occlusion| occlusion.phase) as u32,
 		),
+		("shared_lanes", u32::from(mesh.lane_meshlets.is_some())),
 	] {
 		push_constant.write(member, Value::U32(value)).expect("task push constant");
 	}
-	let mut mesh_dispatch_work = array_buffer(&program, slot(&program, MESH_DISPATCH_WORK), FIXTURE_TABLE_LENGTH);
-	let packed_work = MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed;
+	push_constant
+		.write("minimum_caster_extent", Value::F32(minimum_caster_extent))
+		.expect("task minimum caster extent");
+	let work_length = WORK_HEADER + FIXTURE_TABLE_LENGTH;
+	let mut mesh_dispatch_work = array_buffer(&program, slot(&program, MESH_DISPATCH_WORK), work_length);
+	// The dispatch draws the first work range, whose items follow the ranges.
 	mesh_dispatch_work
-		.write_array_element(workgroup_index as usize, Value::U32(packed_work))
-		.expect("compact mesh dispatch work");
-	// The record is keyed by the work item's position in the work buffer.
+		.write_array_element(0, Value::U32(WORK_HEADER as u32))
+		.expect("first work range");
+	match mesh.lane_meshlets {
+		None => {
+			let packed_work = MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed;
+			mesh_dispatch_work
+				.write_array_element(WORK_HEADER + workgroup_index as usize, Value::U32(packed_work))
+				.expect("compact mesh dispatch work");
+		}
+		// Each lane's item, then empty items for the lanes without one.
+		Some(lane_meshlets) => {
+			for lane in 0..TASK_WORKGROUP_SIZE as usize {
+				let item = lane_meshlets.get(lane).map_or(MeshDispatchWorkItem::EMPTY, |&meshlet| {
+					MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, meshlet)
+				});
+				mesh_dispatch_work
+					.write_array_element(
+						WORK_HEADER + (workgroup_index * TASK_WORKGROUP_SIZE) as usize + lane,
+						Value::U32(item.packed),
+					)
+					.expect("shared mesh dispatch work");
+			}
+		}
+	}
+	// The record is keyed by the work item's position among the frame's items.
 	let mut occlusion_visibility = array_buffer(&program, slot(&program, OCCLUSION_VISIBILITY), FIXTURE_TABLE_LENGTH);
 	if let Some(occlusion) = &occlusion {
 		occlusion_visibility
@@ -353,8 +408,21 @@ fn write_fixture_mesh(meshes: &mut Buffer, flags: u32, surface: [u32; 2]) {
 /// Writes the fixture level's record: `meshlet_count` meshlets from the fixture meshlet, inside `bounding_sphere`, over
 /// vertices from `vertex_base`.
 fn write_fixture_level(mesh_levels: &mut Buffer, bounding_sphere: [f32; 4], meshlet_count: u32, vertex_base: u32) {
+	write_fixture_level_caster(mesh_levels, bounding_sphere, bounding_sphere[3], meshlet_count, vertex_base);
+}
+
+/// Writes the fixture level's record as [`write_fixture_level`] does, casting shadows with `caster_radius` where one
+/// object casts with its whole sphere.
+fn write_fixture_level_caster(
+	mesh_levels: &mut Buffer,
+	bounding_sphere: [f32; 4],
+	caster_radius: f32,
+	meshlet_count: u32,
+	vertex_base: u32,
+) {
 	for (member, value) in [
 		("bounding_sphere", Value::Vec4F(bounding_sphere)),
+		("caster_radius", Value::F32(caster_radius)),
 		("first_meshlet", Value::U32(FIXTURE_MESHLET_INDEX as u32)),
 		("meshlet_count", Value::U32(meshlet_count)),
 		("vertex_base", Value::U32(vertex_base)),
@@ -385,6 +453,7 @@ fn camera_task_payload(center_radii: &[[f32; 4]], mesh: TaskMeshFixture, workgro
 	task_payload(&run_meshlet_task_workgroup(
 		&[IDENTITY_MATRIX],
 		[0, 1],
+		0.0,
 		center_radii,
 		mesh,
 		workgroup_index,
@@ -392,49 +461,130 @@ fn camera_task_payload(center_radii: &[[f32; 4]], mesh: TaskMeshFixture, workgro
 	))
 }
 
-/// Reads every payload word a task workgroup emitted, in emission order.
-fn task_payload(outputs: &TaskOutputs) -> Vec<Value> {
+/// Reads the groups a task workgroup handed its mesh grids, in grid order: each group's entries as the lane that kept
+/// the meshlet and the view's offset into the batch.
+fn task_groups(outputs: &TaskOutputs) -> Vec<Vec<[u32; 2]>> {
+	let word = |index: usize| match outputs.payload_value("meshlet_instances", index) {
+		Some(Value::U32(word)) => *word,
+		word => panic!("Unexpected task payload word: {word:?}."),
+	};
 	(0..outputs.mesh_output_count().expect("task mesh output count") as usize)
-		.map(|index| {
-			outputs
-				.payload_value("meshlet_instances", index)
-				.expect("emitted task payload word")
-				.clone()
+		.map(|group| {
+			let first = (word(group) >> 24 & 255) as usize;
+			let last = (first..)
+				.find(|&index| word(index) & ENTRY_ENDS_GROUP != 0)
+				.expect("a group ends");
+			(first..=last).map(|index| [word(index) & 31, word(index) >> 5 & 7]).collect()
 		})
 		.collect()
 }
 
-/// The payload a task emits for a fixture meshlet seen by the view `view_offset` steps into its batch.
+/// Reads every meshlet a task workgroup emitted, in emission order, each as [`batched_meshlet_instance`] writes it.
+fn task_payload(outputs: &TaskOutputs) -> Vec<Value> {
+	task_groups(outputs)
+		.into_iter()
+		.flatten()
+		.map(|[lane, view_offset]| batched_meshlet_instance(lane, view_offset))
+		.collect()
+}
+
+/// What [`task_payload`] reads for a fixture meshlet seen by the view `view_offset` steps into its batch.
 ///
-/// `relative_meshlet_index` counts from the first meshlet of the instance's level.
+/// `relative_meshlet_index` counts from the first meshlet of the instance's level, which is the lane that culls it.
 fn batched_meshlet_instance(relative_meshlet_index: u32, view_offset: u32) -> Value {
 	Value::U32(relative_meshlet_index | (view_offset << VIEW_OFFSET_SHIFT))
 }
 
-/// Returns the payload a task workgroup of the fixture instance hands its mesh grids, with `first` as grid zero's word.
-fn mesh_task_payload(first: Value) -> Vec<Value> {
-	let mut payload = vec![Value::U32(0); PAYLOAD_INSTANCE_WORD + 1];
-	payload[0] = first;
-	payload[PAYLOAD_INSTANCE_WORD] = Value::U32(FIXTURE_INSTANCE_INDEX as u32);
+/// Returns the payload entry of `lane`'s meshlet in the view `view_offset` steps into its batch, as the last entry of
+/// a group that holds `vertices` vertices and `triangles` triangles up to and including it.
+fn group_entry(lane: u32, view_offset: u32, [vertices, triangles]: [u32; 2], ends_group: bool) -> Value {
+	let ends = if ends_group { ENTRY_ENDS_GROUP } else { 0 };
+	Value::U32(lane | (view_offset << 5) | ((vertices - 1) << 8) | ((triangles - 1) << 15) | ends)
+}
+
+/// Returns the payload a task workgroup hands its mesh grids: `entries`, which form group zero, and `work`.
+fn mesh_task_payload(entries: &[Value], work: u32) -> Vec<Value> {
+	let mut payload = vec![Value::U32(0); PAYLOAD_WORK_WORD + 1];
+	payload[..entries.len()].clone_from_slice(entries);
+	payload[PAYLOAD_WORK_WORD] = Value::U32(work);
 	payload
 }
 
-/// Verifies the task stage hands every mesh grid its workgroup's instance in the payload's last word.
+/// Verifies the task stage hands every mesh grid its workgroup's first work item in the payload's last word.
 #[test]
-fn task_main_hands_its_instance_to_the_mesh_stage() {
+fn task_main_hands_its_work_to_the_mesh_stage() {
+	let work = |mesh| {
+		let outputs = run_meshlet_task_workgroup(&[IDENTITY_MATRIX], [0, 1], 0.0, &[[0.0, 0.0, 0.5, 0.1]], mesh, 1, None);
+		outputs.payload_value("meshlet_instances", PAYLOAD_WORK_WORD).cloned()
+	};
+
+	// The range's items follow the ranges at the start of the work buffer.
+	let first = WORK_HEADER as u32;
+	assert_eq!(work(TaskMeshFixture::default()), Some(Value::U32(first + 1)));
+	// Lanes with items of their own take 32 of them to a workgroup.
+	let shared = TaskMeshFixture {
+		lane_meshlets: Some(&[0]),
+		..Default::default()
+	};
+	assert_eq!(
+		work(shared),
+		Some(Value::U32((first + TASK_WORKGROUP_SIZE) | PAYLOAD_WORK_SHARED))
+	);
+}
+
+/// Verifies small meshlets share a mesh grid while its vertices and triangles hold them, and start another when not.
+#[test]
+fn task_main_groups_small_meshlets_into_full_mesh_grids() {
+	let groups = |counts| {
+		let mesh = TaskMeshFixture {
+			counts,
+			..Default::default()
+		};
+		task_groups(&run_meshlet_task_workgroup(
+			&[IDENTITY_MATRIX],
+			[0, 1],
+			0.0,
+			&[[0.0, 0.0, 0.5, 0.1]; 5],
+			mesh,
+			0,
+			None,
+		))
+	};
+	let lanes = |groups: Vec<Vec<[u32; 2]>>| -> Vec<Vec<u32>> {
+		groups
+			.into_iter()
+			.map(|group| group.into_iter().map(|[lane, _]| lane).collect())
+			.collect()
+	};
+
+	// Four meshlets of 30 vertices fit the 128 a grid emits, and a fifth doesn't.
+	assert_eq!(lanes(groups([30, 10])), [vec![0, 1, 2, 3], vec![4]]);
+	// Triangles bound a group as well: two meshlets of 100 fit the 252 a grid emits.
+	assert_eq!(lanes(groups([8, 100])), [vec![0, 1], vec![2, 3], vec![4]]);
+	// Two full meshlets share a grid.
+	assert_eq!(lanes(groups([64, 126])), [vec![0, 1], vec![2, 3], vec![4]]);
+}
+
+/// Verifies lanes with work items of their own cull the meshlets their items name, and lanes without one emit nothing.
+#[test]
+fn task_main_culls_the_meshlet_each_shared_lane_names() {
+	let mesh = TaskMeshFixture {
+		counts: [20, 10],
+		// The second lane's meshlet lies outside the frustum.
+		lane_meshlets: Some(&[2, 1, 0]),
+		..Default::default()
+	};
 	let outputs = run_meshlet_task_workgroup(
 		&[IDENTITY_MATRIX],
 		[0, 1],
-		&[[0.0, 0.0, 0.5, 0.1]],
-		TaskMeshFixture::default(),
+		0.0,
+		&[[0.0, 0.0, 0.5, 0.1], [4.0, 0.0, 0.5, 0.1], [0.5, 0.0, 0.5, 0.1]],
+		mesh,
 		0,
 		None,
 	);
 
-	assert_eq!(
-		outputs.payload_value("meshlet_instances", PAYLOAD_INSTANCE_WORD),
-		Some(&Value::U32(FIXTURE_INSTANCE_INDEX as u32))
-	);
+	assert_eq!(task_groups(&outputs), [[[0, 0], [2, 0]]]);
 }
 
 /// Verifies camera culling retains an intersecting meshlet and rejects one outside the frustum.
@@ -454,7 +604,7 @@ fn task_main_culls_instances_outside_every_view() {
 		bounding_sphere: [4.0, 0.0, 0.5, 0.1],
 		..Default::default()
 	};
-	let output = run_meshlet_task_workgroup(&[IDENTITY_MATRIX; 2], [0, 2], &[[0.0, 0.0, 0.5, 0.1]], outside, 0, None);
+	let output = run_meshlet_task_workgroup(&[IDENTITY_MATRIX; 2], [0, 2], 0.0, &[[0.0, 0.0, 0.5, 0.1]], outside, 0, None);
 	assert_eq!(task_payload(&output), []);
 }
 
@@ -485,12 +635,67 @@ fn task_main_keeps_skinned_meshlets_in_every_view() {
 		bounding_sphere: [4.0, 0.0, 0.5, 0.1],
 		..Default::default()
 	};
-	let output = run_meshlet_task_workgroup(&[IDENTITY_MATRIX; 2], [0, 2], &[[4.0, 0.0, 0.5, 0.1]], skinned, 0, None);
+	let output = run_meshlet_task_workgroup(&[IDENTITY_MATRIX; 2], [0, 2], 0.0, &[[4.0, 0.0, 0.5, 0.1]], skinned, 0, None);
 
 	assert_eq!(
 		task_payload(&output),
 		[batched_meshlet_instance(0, 0), batched_meshlet_instance(0, 1)]
 	);
+}
+
+/// Verifies an orthographic view skips an instance narrower than the minimum caster extent and keeps one at least that
+/// wide, while a skinned instance reaches the view whatever its size.
+#[test]
+fn task_main_skips_casters_narrower_than_the_minimum_extent() {
+	// The identity view-projection is orthographic at one normalized device unit per meter, so a sphere of radius r is
+	// 2r across.
+	let payload = |radius: f32, flags| {
+		let mesh = TaskMeshFixture {
+			flags,
+			bounding_sphere: [0.0, 0.0, 0.5, radius],
+			..Default::default()
+		};
+		let center_radius = [0.0, 0.0, 0.5, radius];
+		task_payload(&run_meshlet_task_workgroup(
+			&[IDENTITY_MATRIX],
+			[0, 1],
+			0.5,
+			&[center_radius],
+			mesh,
+			0,
+			None,
+		))
+	};
+
+	assert_eq!(payload(0.2, 0), []);
+	assert_eq!(payload(0.25, 0), [batched_meshlet_instance(0, 0)]);
+	assert_eq!(payload(0.2, MESH_FLAG_SKINNED), [batched_meshlet_instance(0, 0)]);
+}
+
+/// Verifies an orthographic view measures a merged level by one of its copies: a level whose sphere is wide, because it
+/// spans many copies, is skipped when a copy is narrower than the minimum caster extent.
+#[test]
+fn task_main_skips_a_wide_level_whose_copies_are_narrower_than_the_minimum_extent() {
+	let payload = |caster_radius: f32| {
+		let mesh = TaskMeshFixture {
+			// Two units across, well past the half unit the view asks for.
+			bounding_sphere: [0.0, 0.0, 0.5, 1.0],
+			caster_radius: Some(caster_radius),
+			..Default::default()
+		};
+		task_payload(&run_meshlet_task_workgroup(
+			&[IDENTITY_MATRIX],
+			[0, 1],
+			0.5,
+			&[[0.0, 0.0, 0.5, 0.1]],
+			mesh,
+			0,
+			None,
+		))
+	};
+
+	assert_eq!(payload(0.2), []);
+	assert_eq!(payload(0.25), [batched_meshlet_instance(0, 0)]);
 }
 
 /// Verifies the task rejects a meshlet facing away from the view unless its material is double-sided.
@@ -520,6 +725,7 @@ fn task_main_emits_one_meshlet_copy_per_view_that_sees_it() {
 	let output = run_meshlet_task_workgroup(
 		&view_projections,
 		[2, 4],
+		0.0,
 		&[[0.0, 0.0, 0.5, 0.1]],
 		TaskMeshFixture::default(),
 		0,
@@ -604,6 +810,7 @@ fn camera_occlusion_meshlets(
 	task_payload(&run_meshlet_task_workgroup(
 		&[],
 		[0, 1],
+		0.0,
 		center_radii,
 		mesh,
 		0,
@@ -729,7 +936,7 @@ fn late_pass_clears_the_record_of_instances_outside_the_view() {
 		record: &mut record,
 	};
 
-	run_meshlet_task_workgroup(&[], [0, 1], &[[100.0, 0.0, 10.0, 0.5]], outside, 0, Some(occlusion));
+	run_meshlet_task_workgroup(&[], [0, 1], 0.0, &[[100.0, 0.0, 10.0, 0.5]], outside, 0, Some(occlusion));
 
 	assert_eq!(record, 0);
 }
@@ -885,35 +1092,131 @@ impl MeshView {
 		view_offset: 0,
 		view_projection: IDENTITY_MATRIX,
 	};
+
+	/// The third view of a shadow batch that starts at view five and layer one, shifted right by two.
+	const SHADOW: Self = Self {
+		view_base: 5,
+		layer_base: 1,
+		view_offset: 2,
+		view_projection: horizontally_translated_matrix(2.0),
+	};
 }
 
-/// Executes one production mesh main over one identity triangle meshlet and verifies its complete output contract.
+/// The `MeshAttributes` enum names the attributes a mesh stage passes to its fragment stage, which a mesh-shader test
+/// checks as part of the stage's output contract.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MeshAttributes {
+	/// Nothing, for a stage no fragment stage follows, as for opaque shadow casters.
+	None,
+	/// The instance's material word at location 0 and the UV at location 1, which the masked shadow passes' alpha test
+	/// reads.
+	MaterialAndUv,
+	/// The instance and the primitive at locations 0 and 1, which the visibility pass writes.
+	InstanceAndPrimitive,
+	/// The instance, its material word, the primitive, and the UV at locations 0 to 3, which the masked visibility pass
+	/// writes and tests.
+	InstanceMaterialPrimitiveAndUv,
+}
+
+impl MeshAttributes {
+	/// Returns whether the stage reads UVs to pass on.
+	fn has_uv(self) -> bool {
+		matches!(self, Self::MaterialAndUv | Self::InstanceMaterialPrimitiveAndUv)
+	}
+
+	/// Returns how many attribute locations the stage writes.
+	fn locations(self) -> u8 {
+		match self {
+			Self::None => 0,
+			Self::MaterialAndUv | Self::InstanceAndPrimitive => 2,
+			Self::InstanceMaterialPrimitiveAndUv => 4,
+		}
+	}
+
+	/// Returns the location of the instance, if the stage passes it.
+	fn instance_location(self) -> Option<usize> {
+		matches!(self, Self::InstanceAndPrimitive | Self::InstanceMaterialPrimitiveAndUv).then_some(0)
+	}
+
+	/// Returns the location of the instance's material word, if the stage passes it.
+	fn material_location(self) -> Option<usize> {
+		match self {
+			Self::MaterialAndUv => Some(0),
+			Self::InstanceMaterialPrimitiveAndUv => Some(1),
+			Self::None | Self::InstanceAndPrimitive => None,
+		}
+	}
+
+	/// Returns the location of each triangle's meshlet and place in it, if the stage marks them.
+	fn primitive_location(self) -> Option<usize> {
+		match self {
+			Self::InstanceAndPrimitive => Some(1),
+			Self::InstanceMaterialPrimitiveAndUv => Some(2),
+			Self::None | Self::MaterialAndUv => None,
+		}
+	}
+}
+
+/// The material word of the fixture instance in mesh-stage tests, which the masked stages pass on unchanged.
+const FIXTURE_MATERIAL_WORD: u32 = 0x8000_0005;
+
+/// Executes one production mesh main over one triangle meshlet placed by `model` and verifies its complete output
+/// contract, including that the triangle winds on screen as it does under an identity model.
+///
+/// With `local_vertices`, the meshlet keeps its vertices in the meshlet vertex buffer and the indexed vertices hold
+/// other positions, so the stage must read the meshlet's own.
 fn assert_triangle_mesh_program(
 	program: ExecutableProgram,
 	view: MeshView,
+	model: [f32; 12],
 	base_vertex: u32,
 	expected_clip_positions: [[f32; 4]; 3],
 	expected_render_target_array_index: Option<u32>,
+	attributes: MeshAttributes,
+	local_vertices: bool,
 ) {
 	let mut views = buffer(&program, slot(&program, VIEWS));
 	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
 	write_fixture_mesh(&mut meshes, 0, [0; 2]);
+	meshes
+		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(model))
+		.expect("fixture mesh model");
+	meshes
+		.write_array_member(FIXTURE_INSTANCE_INDEX, "material", Value::U32(FIXTURE_MATERIAL_WORD))
+		.expect("fixture mesh material");
 	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
 	write_fixture_level(&mut mesh_levels, [0.0, 0.0, 0.0, 2.0], 1, base_vertex);
 	let vertex_count = base_vertex as usize + 3;
 	let mut positions = array_buffer(&program, slot(&program, VERTEX_POSITIONS), vertex_count);
-	for (index, position) in [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]].into_iter().enumerate() {
+	const LEVEL_SPHERE: [f32; 4] = [0.0, 0.0, 0.0, 2.0];
+	let corners = [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]];
+	let mut meshlet_vertices =
+		local_vertices.then(|| array_buffer(&program, slot(&program, MESHLET_VERTICES), FIXTURE_TABLE_LENGTH));
+	for (index, position) in corners.into_iter().enumerate() {
+		// The indexed vertices lie elsewhere when the meshlet keeps its own.
+		let indexed = if local_vertices { [9.0, 9.0, 9.0] } else { position };
 		positions
-			.write_array_element(base_vertex as usize + index, Value::Vec3F(position))
+			.write_array_element(base_vertex as usize + index, Value::Vec3F(indexed))
 			.expect("mesh vertex");
+		if let Some(meshlet_vertices) = &mut meshlet_vertices {
+			let vertex = ShaderMeshletVertex::new(position, LEVEL_SPHERE, [0; 4]);
+			meshlet_vertices
+				.write_array_member(index, "position", Value::Vec2U(vertex.position))
+				.expect("meshlet vertex");
+		}
 	}
-	let mut vertex_uvs = array_buffer(&program, slot(&program, VERTEX_UVS), vertex_count);
+	// A stage that passes no attributes reads no UVs, so its program keeps no UV binding.
+	let mut vertex_uvs = attributes
+		.has_uv()
+		.then(|| array_buffer(&program, slot(&program, VERTEX_UVS), vertex_count));
 	let mut vertex_indices = array_buffer(&program, slot(&program, VERTEX_INDICES), 3);
 	let mut primitive_indices = array_buffer(&program, slot(&program, PRIMITIVE_INDICES), 3);
 	for index in 0..3 {
-		vertex_uvs
-			.write_array_element(base_vertex as usize + index, Value::Vec2F16([besl::vm::f16::ZERO; 2]))
-			.expect("mesh UV");
+		if let Some(vertex_uvs) = &mut vertex_uvs {
+			vertex_uvs
+				.write_array_element(base_vertex as usize + index, Value::Vec2F16([besl::vm::f16::ZERO; 2]))
+				.expect("mesh UV");
+		}
 		vertex_indices
 			.write_array_element(index, Value::U16(index as u16))
 			.expect("vertex index");
@@ -922,10 +1225,13 @@ fn assert_triangle_mesh_program(
 			.expect("triangle index");
 	}
 	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), FIXTURE_MESHLET_INDEX + 1);
-	let meshlet = ShaderMeshletData::new(0, 0, [3, 1], [0.0; 4], [0.0, 0.0, 0.0, 2.0], [0.0, 0.0, 1.0], 2.0);
+	let mut meshlet = ShaderMeshletData::new(0, 0, [3, 1], [0.0; 4], LEVEL_SPHERE, [0.0, 0.0, 1.0], 2.0);
+	if local_vertices {
+		meshlet.counts |= MESHLET_LOCAL_VERTICES;
+	}
 	write_meshlet(&mut meshlets, FIXTURE_MESHLET_INDEX, meshlet);
 	let mut push_constant = push_constant_buffer(&program);
-	push_constant.write("work_item_base", Value::U32(0)).expect("mesh work base");
+	push_constant.write("work_range", Value::U32(0)).expect("mesh work range");
 	views
 		.write_array_member(
 			(view.view_base + view.view_offset) as usize,
@@ -940,26 +1246,41 @@ fn assert_triangle_mesh_program(
 	] {
 		push_constant.write(member, Value::U32(value)).expect("mesh view batch");
 	}
-	let payload = batched_meshlet_instance(0, view.view_offset);
+	let payload = [group_entry(0, view.view_offset, [3, 1], true)];
+	// The workgroup's one work item names the fixture instance's first chunk of meshlets.
+	let mut mesh_dispatch_work = array_buffer(&program, slot(&program, MESH_DISPATCH_WORK), FIXTURE_TABLE_LENGTH);
+	mesh_dispatch_work
+		.write_array_element(
+			0,
+			Value::U32(MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed),
+		)
+		.expect("mesh dispatch work");
 
-	let mut out_instance_indices = buffer(&program, output_slot(0));
-	let mut out_primitive_indices = buffer(&program, output_slot(1));
-	let mut out_uvs = buffer(&program, output_slot(2));
+	// One buffer per attribute location the stage writes.
+	let mut out_attributes = (0..attributes.locations())
+		.map(|location| buffer(&program, output_slot(location)))
+		.collect::<Vec<_>>();
 	let mut mesh_outputs = MeshOutputs::new();
 	{
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_task_payload("meshlet_instances", mesh_task_payload(payload));
+		descriptors.bind_task_payload("meshlet_instances", mesh_task_payload(&payload, 0));
+		descriptors.bind_buffer(slot(&program, MESH_DISPATCH_WORK), &mut mesh_dispatch_work);
 		descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
 		descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
 		descriptors.bind_buffer(slot(&program, MESH_LEVELS), &mut mesh_levels);
 		descriptors.bind_buffer(slot(&program, VERTEX_POSITIONS), &mut positions);
-		descriptors.bind_buffer(slot(&program, VERTEX_UVS), &mut vertex_uvs);
+		if let Some(meshlet_vertices) = &mut meshlet_vertices {
+			descriptors.bind_buffer(slot(&program, MESHLET_VERTICES), meshlet_vertices);
+		}
+		if let Some(vertex_uvs) = &mut vertex_uvs {
+			descriptors.bind_buffer(slot(&program, VERTEX_UVS), vertex_uvs);
+		}
 		descriptors.bind_buffer(slot(&program, VERTEX_INDICES), &mut vertex_indices);
 		descriptors.bind_buffer(slot(&program, PRIMITIVE_INDICES), &mut primitive_indices);
 		descriptors.bind_buffer(slot(&program, MESHLETS), &mut meshlets);
-		descriptors.bind_buffer(output_slot(0), &mut out_instance_indices);
-		descriptors.bind_buffer(output_slot(1), &mut out_primitive_indices);
-		descriptors.bind_buffer(output_slot(2), &mut out_uvs);
+		for (location, attribute) in out_attributes.iter_mut().enumerate() {
+			descriptors.bind_buffer(output_slot(location as u8), attribute);
+		}
 		descriptors.bind_push_constant(&mut push_constant);
 		descriptors.bind_mesh_outputs(&mut mesh_outputs);
 		// Mesh invocations share their capture just as lanes in one production mesh workgroup share output arrays.
@@ -976,25 +1297,47 @@ fn assert_triangle_mesh_program(
 		assert_rgba_close(
 			mesh_outputs.vertex_position(index).expect("mesh vertex output"),
 			expected,
-			0.00001,
+			// A meshlet vertex stores its position to 16 bits of its level's sphere.
+			if local_vertices { 0.0001 } else { 0.00001 },
 		);
 	}
-	assert_eq!(mesh_outputs.triangle(0), Some([0, 1, 2]));
+	// The fixture triangle winds counterclockwise as an identity model shows it. Back-face culling decides by winding, so
+	// a model that changes the winding on screen would hide the other side.
+	let triangle = mesh_outputs.triangle(0).expect("mesh triangle output");
+	let mut sorted = triangle;
+	sorted.sort_unstable();
+	assert_eq!(sorted, [0, 1, 2]);
+	let [a, b, c] = triangle.map(|index| mesh_outputs.vertex_position(index as usize).expect("mesh vertex output"));
+	let screen_area =
+		(b[0] / b[3] - a[0] / a[3]) * (c[1] / c[3] - a[1] / a[3]) - (c[0] / c[3] - a[0] / a[3]) * (b[1] / b[3] - a[1] / a[3]);
+	assert!(screen_area > 0.0, "the triangle {triangle:?} winds clockwise on screen");
 	if let Some(expected) = expected_render_target_array_index {
 		assert_eq!(mesh_outputs.render_target_array_index(0), Some(expected));
 	}
-	assert_eq!(
-		out_instance_indices
-			.read_indexed("out_instance_index", 0)
-			.expect("mesh output"),
-		Value::U32(FIXTURE_INSTANCE_INDEX as u32)
-	);
-	assert_eq!(
-		out_primitive_indices
-			.read_indexed("out_primitive_index", 0)
-			.expect("mesh output"),
-		Value::U32((FIXTURE_MESHLET_INDEX as u32) << 8)
-	);
+	if let Some(location) = attributes.instance_location() {
+		assert_eq!(
+			out_attributes[location]
+				.read_indexed("out_instance_index", 0)
+				.expect("mesh output"),
+			Value::U32(FIXTURE_INSTANCE_INDEX as u32)
+		);
+	}
+	if let Some(location) = attributes.material_location() {
+		assert_eq!(
+			out_attributes[location]
+				.read_indexed("out_material_word", 0)
+				.expect("mesh output"),
+			Value::U32(FIXTURE_MATERIAL_WORD)
+		);
+	}
+	if let Some(location) = attributes.primitive_location() {
+		assert_eq!(
+			out_attributes[location]
+				.read_indexed("out_primitive_index", 0)
+				.expect("mesh output"),
+			Value::U32((FIXTURE_MESHLET_INDEX as u32) << 8)
+		);
+	}
 }
 
 /// Verifies visibility mesh output geometry and metadata through the BESL VM.
@@ -1003,10 +1346,292 @@ fn visibility_mesh_main_emits_identity_triangle_and_metadata() {
 	assert_triangle_mesh_program(
 		asset!("visibility-mesh.besl"),
 		MeshView::CAMERA,
+		IDENTITY_AFFINE_MATRIX,
 		0,
 		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
+		MeshAttributes::InstanceAndPrimitive,
+		false,
 	);
+}
+
+/// Verifies the mesh stages draw a meshlet from the meshlet vertex buffer when it keeps its vertices there.
+#[test]
+fn mesh_stages_read_a_meshlets_own_vertices() {
+	for (program, attributes, layer) in [
+		(asset!("visibility-mesh.besl"), MeshAttributes::InstanceAndPrimitive, None),
+		(
+			asset!("masked-visibility-mesh.besl"),
+			MeshAttributes::InstanceMaterialPrimitiveAndUv,
+			None,
+		),
+		(asset!("shadow-mesh.besl"), MeshAttributes::None, Some(0)),
+		(asset!("masked-shadow-mesh.besl"), MeshAttributes::MaterialAndUv, Some(0)),
+	] {
+		assert_triangle_mesh_program(
+			program,
+			MeshView::CAMERA,
+			IDENTITY_AFFINE_MATRIX,
+			0,
+			[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
+			layer,
+			attributes,
+			true,
+		);
+	}
+}
+
+/// Verifies the masked visibility mesh stage also passes its fragment stage the material word and the UV, at locations
+/// of their own.
+#[test]
+fn masked_visibility_mesh_main_emits_identity_triangle_and_metadata() {
+	assert_triangle_mesh_program(
+		asset!("masked-visibility-mesh.besl"),
+		MeshView::CAMERA,
+		IDENTITY_AFFINE_MATRIX,
+		0,
+		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
+		None,
+		MeshAttributes::InstanceMaterialPrimitiveAndUv,
+		false,
+	);
+}
+
+/// Verifies one mesh grid draws every meshlet of its group: each one's vertices after the earlier ones', its triangles
+/// naming them there, and each triangle marked with its own meshlet and its place in it.
+#[test]
+fn visibility_mesh_main_draws_every_meshlet_of_its_group() {
+	let program = asset!("masked-visibility-mesh.besl");
+	let mut views = buffer(&program, slot(&program, VIEWS));
+	views
+		.write_array_member(0, "view_projection", Value::Mat4F(IDENTITY_MATRIX))
+		.expect("mesh view");
+	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
+	write_fixture_mesh(&mut meshes, 0, [0; 2]);
+	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
+	write_fixture_level(&mut mesh_levels, [0.0, 0.0, 0.0, 2.0], 2, 0);
+	// Two triangle meshlets, the second beside the first, each over three vertices of its own.
+	let mut positions = array_buffer(&program, slot(&program, VERTEX_POSITIONS), 6);
+	let mut vertex_uvs = array_buffer(&program, slot(&program, VERTEX_UVS), 6);
+	let mut vertex_indices = array_buffer(&program, slot(&program, VERTEX_INDICES), 6);
+	let mut primitive_indices = array_buffer(&program, slot(&program, PRIMITIVE_INDICES), 6);
+	let corners = [[-1.0, -1.0], [1.0, -1.0], [0.0, 1.0]];
+	for index in 0..6 {
+		let [x, y] = corners[index % 3];
+		positions
+			.write_array_element(index, Value::Vec3F([x + 4.0 * (index / 3) as f32, y, 0.0]))
+			.expect("mesh vertex");
+		vertex_uvs
+			.write_array_element(index, Value::Vec2F16([besl::vm::f16::ZERO; 2]))
+			.expect("mesh UV");
+		vertex_indices
+			.write_array_element(index, Value::U16(index as u16))
+			.expect("vertex index");
+		// Each triangle names the three vertices of its own meshlet.
+		primitive_indices
+			.write_array_element(index, Value::U8((index % 3) as u8))
+			.expect("triangle index");
+	}
+	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), FIXTURE_MESHLET_INDEX + 2);
+	for meshlet in 0..2 {
+		let record = ShaderMeshletData::new(
+			meshlet * 3,
+			meshlet,
+			[3, 1],
+			[0.0; 4],
+			[0.0, 0.0, 0.0, 2.0],
+			[0.0, 0.0, 1.0],
+			2.0,
+		);
+		write_meshlet(&mut meshlets, FIXTURE_MESHLET_INDEX + meshlet as usize, record);
+	}
+	let mut mesh_dispatch_work = array_buffer(&program, slot(&program, MESH_DISPATCH_WORK), FIXTURE_TABLE_LENGTH);
+	mesh_dispatch_work
+		.write_array_element(
+			0,
+			Value::U32(MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed),
+		)
+		.expect("mesh dispatch work");
+	let mut push_constant = push_constant_buffer(&program);
+	for member in ["work_range", "view_base", "layer_base"] {
+		push_constant.write(member, Value::U32(0)).expect("mesh push constant");
+	}
+	push_constant.write("view_count", Value::U32(1)).expect("mesh view count");
+	// The lanes that kept the two meshlets, as one group.
+	let payload = [group_entry(0, 0, [3, 1], false), group_entry(1, 0, [6, 2], true)];
+
+	let mut out_attributes = (0..MeshAttributes::InstanceMaterialPrimitiveAndUv.locations())
+		.map(|location| buffer(&program, output_slot(location)))
+		.collect::<Vec<_>>();
+	let mut mesh_outputs = MeshOutputs::new();
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_task_payload("meshlet_instances", mesh_task_payload(&payload, 0));
+		descriptors.bind_buffer(slot(&program, MESH_DISPATCH_WORK), &mut mesh_dispatch_work);
+		descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
+		descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
+		descriptors.bind_buffer(slot(&program, MESH_LEVELS), &mut mesh_levels);
+		descriptors.bind_buffer(slot(&program, VERTEX_POSITIONS), &mut positions);
+		descriptors.bind_buffer(slot(&program, VERTEX_UVS), &mut vertex_uvs);
+		descriptors.bind_buffer(slot(&program, VERTEX_INDICES), &mut vertex_indices);
+		descriptors.bind_buffer(slot(&program, PRIMITIVE_INDICES), &mut primitive_indices);
+		descriptors.bind_buffer(slot(&program, MESHLETS), &mut meshlets);
+		for (location, attribute) in out_attributes.iter_mut().enumerate() {
+			descriptors.bind_buffer(output_slot(location as u8), attribute);
+		}
+		descriptors.bind_push_constant(&mut push_constant);
+		descriptors.bind_mesh_outputs(&mut mesh_outputs);
+		for thread_idx in 0..6 {
+			program
+				.run_main_with_config(&mut descriptors, &lane_config(thread_idx).with_threadgroup_position(0))
+				.expect("production mesh shader execution");
+		}
+	}
+
+	assert_eq!((mesh_outputs.vertex_count(), mesh_outputs.primitive_count()), (6, 2));
+	for index in 0..6 {
+		let [x, y] = corners[index % 3];
+		assert_rgba_close(
+			mesh_outputs.vertex_position(index).expect("mesh vertex output"),
+			[x + 4.0 * (index / 3) as f32, y, 0.0, 1.0],
+			0.00001,
+		);
+	}
+	assert_eq!(
+		[0, 1].map(|triangle| mesh_outputs.triangle(triangle).expect("mesh triangle output")),
+		[[0, 1, 2], [3, 4, 5]]
+	);
+	for triangle in 0..2 {
+		assert_eq!(
+			out_attributes[0]
+				.read_indexed("out_instance_index", triangle)
+				.expect("mesh output"),
+			Value::U32(FIXTURE_INSTANCE_INDEX as u32)
+		);
+		// Each triangle is the first of its own meshlet.
+		assert_eq!(
+			out_attributes[2]
+				.read_indexed("out_primitive_index", triangle)
+				.expect("mesh output"),
+			Value::U32((FIXTURE_MESHLET_INDEX as u32 + triangle as u32) << 8)
+		);
+	}
+}
+
+/// Verifies a mesh grid draws the triangles past its thread count, which each thread draws after the triangle of its
+/// own index.
+#[test]
+fn visibility_mesh_main_draws_triangles_past_its_thread_count() {
+	// A full meshlet, and the whole group.
+	const FULL: usize = 126;
+	const TRIANGLES: usize = 131;
+	let program = asset!("masked-visibility-mesh.besl");
+	let mut views = buffer(&program, slot(&program, VIEWS));
+	views
+		.write_array_member(0, "view_projection", Value::Mat4F(IDENTITY_MATRIX))
+		.expect("mesh view");
+	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
+	write_fixture_mesh(&mut meshes, 0, [0; 2]);
+	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
+	write_fixture_level(&mut mesh_levels, [0.0, 0.0, 0.0, 2.0], 2, 0);
+	// Two meshlets, the second beside the first, each over three vertices of its own: a full meshlet of 126 triangles,
+	// then one of 5, whose triangles are the group's 127th to 131st.
+	let mut positions = array_buffer(&program, slot(&program, VERTEX_POSITIONS), 6);
+	let mut vertex_uvs = array_buffer(&program, slot(&program, VERTEX_UVS), 6);
+	let mut vertex_indices = array_buffer(&program, slot(&program, VERTEX_INDICES), 6);
+	let mut primitive_indices = array_buffer(&program, slot(&program, PRIMITIVE_INDICES), TRIANGLES * 3);
+	let corners = [[-1.0, -1.0], [1.0, -1.0], [0.0, 1.0]];
+	for index in 0..6 {
+		let [x, y] = corners[index % 3];
+		positions
+			.write_array_element(index, Value::Vec3F([x + 4.0 * (index / 3) as f32, y, 0.0]))
+			.expect("mesh vertex");
+		vertex_uvs
+			.write_array_element(index, Value::Vec2F16([besl::vm::f16::ZERO; 2]))
+			.expect("mesh UV");
+		vertex_indices
+			.write_array_element(index, Value::U16(index as u16))
+			.expect("vertex index");
+	}
+	// Each triangle names the three vertices of its own meshlet.
+	for index in 0..TRIANGLES * 3 {
+		primitive_indices
+			.write_array_element(index, Value::U8((index % 3) as u8))
+			.expect("triangle index");
+	}
+	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), FIXTURE_MESHLET_INDEX + 2);
+	for (meshlet, (first_triangle, triangles)) in [(0, FULL), (FULL, TRIANGLES - FULL)].into_iter().enumerate() {
+		let record = ShaderMeshletData::new(
+			meshlet as u32 * 3,
+			first_triangle as u32,
+			[3, triangles as u8],
+			[0.0; 4],
+			[0.0, 0.0, 0.0, 2.0],
+			[0.0, 0.0, 1.0],
+			2.0,
+		);
+		write_meshlet(&mut meshlets, FIXTURE_MESHLET_INDEX + meshlet, record);
+	}
+	let mut mesh_dispatch_work = array_buffer(&program, slot(&program, MESH_DISPATCH_WORK), FIXTURE_TABLE_LENGTH);
+	mesh_dispatch_work
+		.write_array_element(
+			0,
+			Value::U32(MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed),
+		)
+		.expect("mesh dispatch work");
+	let mut push_constant = push_constant_buffer(&program);
+	for member in ["work_range", "view_base", "layer_base"] {
+		push_constant.write(member, Value::U32(0)).expect("mesh push constant");
+	}
+	push_constant.write("view_count", Value::U32(1)).expect("mesh view count");
+	// The lanes that kept the two meshlets, as one group.
+	let payload = [
+		group_entry(0, 0, [3, FULL as u32], false),
+		group_entry(1, 0, [6, TRIANGLES as u32], true),
+	];
+
+	let mut out_attributes = (0..MeshAttributes::InstanceMaterialPrimitiveAndUv.locations())
+		.map(|location| buffer(&program, output_slot(location)))
+		.collect::<Vec<_>>();
+	let mut mesh_outputs = MeshOutputs::new();
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_task_payload("meshlet_instances", mesh_task_payload(&payload, 0));
+		descriptors.bind_buffer(slot(&program, MESH_DISPATCH_WORK), &mut mesh_dispatch_work);
+		descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
+		descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
+		descriptors.bind_buffer(slot(&program, MESH_LEVELS), &mut mesh_levels);
+		descriptors.bind_buffer(slot(&program, VERTEX_POSITIONS), &mut positions);
+		descriptors.bind_buffer(slot(&program, VERTEX_UVS), &mut vertex_uvs);
+		descriptors.bind_buffer(slot(&program, VERTEX_INDICES), &mut vertex_indices);
+		descriptors.bind_buffer(slot(&program, PRIMITIVE_INDICES), &mut primitive_indices);
+		descriptors.bind_buffer(slot(&program, MESHLETS), &mut meshlets);
+		for (location, attribute) in out_attributes.iter_mut().enumerate() {
+			descriptors.bind_buffer(output_slot(location as u8), attribute);
+		}
+		descriptors.bind_push_constant(&mut push_constant);
+		descriptors.bind_mesh_outputs(&mut mesh_outputs);
+		for thread_idx in 0..TRIANGLES as u32 - MESH_THREADS {
+			program
+				.run_main_with_config(&mut descriptors, &lane_config(thread_idx).with_threadgroup_position(0))
+				.expect("production mesh shader execution");
+		}
+	}
+
+	assert_eq!(
+		(mesh_outputs.vertex_count(), mesh_outputs.primitive_count()),
+		(6, TRIANGLES as u32)
+	);
+	// The threads that ran drew the triangle MESH_THREADS past their own: the second meshlet's last three.
+	for triangle in FULL + 2..TRIANGLES {
+		assert_eq!(mesh_outputs.triangle(triangle).expect("mesh triangle output"), [3, 4, 5]);
+		assert_eq!(
+			out_attributes[2]
+				.read_indexed("out_primitive_index", triangle)
+				.expect("mesh output"),
+			Value::U32(((FIXTURE_MESHLET_INDEX as u32 + 1) << 8) | (triangle - FULL) as u32)
+		);
+	}
 }
 
 /// Verifies that an instance reads its vertices from the range its record names, as a posed instance's own range is.
@@ -1015,9 +1640,12 @@ fn visibility_mesh_main_reads_vertices_from_its_base_vertex() {
 	assert_triangle_mesh_program(
 		asset!("visibility-mesh.besl"),
 		MeshView::CAMERA,
+		IDENTITY_AFFINE_MATRIX,
 		7,
 		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
+		MeshAttributes::InstanceAndPrimitive,
+		false,
 	);
 }
 
@@ -1027,15 +1655,62 @@ fn visibility_mesh_main_reads_vertices_from_its_base_vertex() {
 fn shadow_mesh_main_emits_selected_view_triangle_and_metadata() {
 	assert_triangle_mesh_program(
 		asset!("shadow-mesh.besl"),
-		MeshView {
-			view_base: 5,
-			layer_base: 1,
-			view_offset: 2,
-			view_projection: horizontally_translated_matrix(2.0),
-		},
+		MeshView::SHADOW,
+		IDENTITY_AFFINE_MATRIX,
 		0,
 		[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
 		Some(3),
+		MeshAttributes::None,
+		false,
+	);
+}
+
+/// Verifies masked shadow mesh output draws the same triangle and passes the material word its alpha test reads.
+#[test]
+fn masked_shadow_mesh_main_emits_selected_view_triangle_and_instance() {
+	assert_triangle_mesh_program(
+		asset!("masked-shadow-mesh.besl"),
+		MeshView::SHADOW,
+		IDENTITY_AFFINE_MATRIX,
+		0,
+		[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
+		Some(3),
+		MeshAttributes::MaterialAndUv,
+		false,
+	);
+}
+
+/// A model that mirrors x, as a scale of -1 along it does.
+const MIRRORING_AFFINE_MATRIX: [f32; 12] = [-1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+
+/// Verifies that a mirrored instance's triangles keep facing front in the visibility pass, so back-face culling hides
+/// the same faces it hides when the instance isn't mirrored.
+#[test]
+fn visibility_mesh_main_keeps_a_mirrored_instance_facing_front() {
+	assert_triangle_mesh_program(
+		asset!("visibility-mesh.besl"),
+		MeshView::CAMERA,
+		MIRRORING_AFFINE_MATRIX,
+		0,
+		[[1.0, -1.0, 0.0, 1.0], [-1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
+		None,
+		MeshAttributes::InstanceAndPrimitive,
+		false,
+	);
+}
+
+/// Verifies that a mirrored instance's triangles keep facing front in the shadow passes.
+#[test]
+fn shadow_mesh_main_keeps_a_mirrored_instance_facing_front() {
+	assert_triangle_mesh_program(
+		asset!("shadow-mesh.besl"),
+		MeshView::SHADOW,
+		MIRRORING_AFFINE_MATRIX,
+		0,
+		[[3.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
+		Some(3),
+		MeshAttributes::None,
+		false,
 	);
 }
 
@@ -1058,12 +1733,13 @@ fn run_material_count(
 	material_counts
 }
 
-/// The light an older frame left in the lit target and the diffuse radiance history before pixel mapping runs.
+/// The light an older frame left in the lit target, the diffuse radiance history, and the subsurface albedo before
+/// pixel mapping runs.
 const STALE_LIGHT: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
 
 /// Runs one 16x16 pixel-mapping workgroup over the square instance-index image of `width` texels in visibility
-/// `phase`, zero for opaque and one for transparent. Returns the mapping, the lit target, and the diffuse radiance
-/// history, which started full of [`STALE_LIGHT`] at the instance image's size.
+/// `phase`, zero for opaque and one for transparent. Returns the mapping, the lit target, the diffuse radiance history,
+/// and the subsurface albedo, which started full of [`STALE_LIGHT`] at the instance image's size.
 fn run_pixel_mapping(
 	program: &ExecutableProgram,
 	tables: &mut PrepassTables,
@@ -1071,7 +1747,7 @@ fn run_pixel_mapping(
 	instance_indices: &mut Texture,
 	width: u32,
 	phase: u32,
-) -> (besl::vm::Buffer, [Texture; 2]) {
+) -> (besl::vm::Buffer, [Texture; 3]) {
 	let mut pixel_mapping = buffer(program, slot(program, PIXEL_MAPPING));
 	let mut push_constant = push_constant_buffer(program);
 	push_constant.write("phase", Value::U32(phase)).expect("pixel mapping phase");
@@ -1082,7 +1758,7 @@ fn run_pixel_mapping(
 		}
 		texture
 	});
-	let [lit, diffuse_radiance_history] = &mut images;
+	let [lit, diffuse_radiance_history, subsurface_albedo] = &mut images;
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(slot(program, MESH_DATA), &mut tables.meshes);
 	descriptors.bind_buffer(slot(program, MATERIAL_EVALUATIONS), &mut tables.evaluations);
@@ -1091,6 +1767,7 @@ fn run_pixel_mapping(
 	descriptors.bind_image(slot(program, INSTANCE_INDEX), instance_indices);
 	descriptors.bind_image(slot(program, LIT), lit);
 	descriptors.bind_image(slot(program, DIFFUSE_RADIANCE_HISTORY), diffuse_radiance_history);
+	descriptors.bind_image(slot(program, SUBSURFACE_ALBEDO), subsurface_albedo);
 	descriptors.bind_push_constant(&mut push_constant);
 	run_workgroup_containing::<PIXEL_MAPPING_WORKGROUP_SIZE>(program, descriptors, PIXEL_MAPPING_WORKGROUP_WIDTH, [0, 0]);
 	(pixel_mapping, images)
@@ -1562,14 +2239,15 @@ fn reduce_nearest_nonzero_depth(source: &[[f32; 4]], width: u32, height: u32) ->
 /// Runs the GTAO workgroup containing `coordinate` over a `width` by `height` image and reads that pixel.
 ///
 /// `levels` holds the linear depth of the pyramid's first three mips, each half as wide and high as the one before.
-/// `controls` holds the radius, the samples per ray, and the radial ray count.
+/// `controls` holds the radius, the samples per ray, and the radial ray count. Returns the occlusion and the encoded
+/// view-space bent normal at `coordinate`.
 fn run_gtao(
 	program: &ExecutableProgram,
 	[width, height]: [u32; 2],
 	levels: [&[[f32; 4]]; 3],
 	coordinate: [u32; 2],
 	(radius, samples_per_ray, radial_rays): (f32, u32, u32),
-) -> [f32; 4] {
+) -> GtaoOutput {
 	let mut view = gtao_view_data(program, width, height);
 	let mut parameters = buffer(program, slot(program, GTAO_PARAMETERS));
 	for (member, value) in [
@@ -1584,17 +2262,63 @@ fn run_gtao(
 		depth_pyramid.add_mip(texture_2d((width / divisor).max(1), (height / divisor).max(1), texels));
 	}
 	let mut output = empty_image(width, height);
+	let mut bent_normal = empty_image(width, height);
+	let mut blue_noise = blue_noise_texture();
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(slot(program, GTAO_VIEW), &mut view);
 	descriptors.bind_buffer(slot(program, GTAO_PARAMETERS), &mut parameters);
 	descriptors.bind_texture(slot(program, "depth_pyramid"), &mut depth_pyramid);
 	descriptors.bind_image(slot(program, "ao_output"), &mut output);
+	descriptors.bind_image(slot(program, "bent_normal_output"), &mut bent_normal);
+	descriptors.bind_texture(slot(program, "blue_noise"), &mut blue_noise);
 	run_workgroup_containing::<GTAO_WORKGROUP_SIZE>(program, descriptors, GTAO_WORKGROUP_WIDTH, coordinate);
-	rgba(&output, coordinate)
+	GtaoOutput {
+		ao: rgba(&output, coordinate),
+		bent_normal: rgba(&bent_normal, coordinate),
+		view_vector: gtao_fixture_view_vector([width, height], coordinate, levels[0][(coordinate[1] * width + coordinate[0]) as usize][0]),
+	}
+}
+
+/// Returns the unit vector from the surface `linear_depth` units in front of the camera at `pixel` toward the camera,
+/// in the fixture's view space, rebuilt the way GTAO rebuilds positions from [`screen_view_buffer`]'s constants.
+fn gtao_fixture_view_vector([width, height]: [u32; 2], pixel: [u32; 2], linear_depth: f32) -> [f32; 3] {
+	let projection = math::projection_matrix(math::Degrees::new(60.0), width as f32 / height as f32, GTAO_NEAR, GTAO_FAR);
+	let ray_x = pixel[0] as f32 * 2.0 / (width as f32 * projection[0]) + (1.0 / width as f32 - 1.0) / projection[0];
+	let ray_y = pixel[1] as f32 * -2.0 / (height as f32 * projection[5]) + (1.0 - 1.0 / height as f32) / projection[5];
+	let toward_camera = [-ray_x * linear_depth, -ray_y * linear_depth, -linear_depth];
+	let length = toward_camera.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+	toward_camera.map(|axis| axis / length)
+}
+
+/// What GTAO writes at one pixel.
+#[derive(Debug, Clone, Copy)]
+struct GtaoOutput {
+	ao: [f32; 4],
+	/// The bent normal's components across the view vector, mapped from -1..1 to 0..1.
+	bent_normal: [f32; 4],
+	/// The pixel's view vector, whose frame the bent normal is stored in.
+	view_vector: [f32; 3],
+}
+
+impl GtaoOutput {
+	/// Returns the bent normal in view space, rebuilt from its components in the frame `t = normalize(up × V)`,
+	/// `b = V × t` and the hemisphere around `V`.
+	fn decoded_bent_normal(&self) -> [f32; 3] {
+		let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+		let view = self.view_vector;
+		let t = cross([0.0, 1.0, 0.0], view);
+		let t_length = t.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+		let t = t.map(|axis| axis / t_length);
+		let b = cross(view, t);
+		let x = self.bent_normal[0] * 2.0 - 1.0;
+		let y = self.bent_normal[1] * 2.0 - 1.0;
+		let z = (1.0 - x * x - y * y).max(0.0).sqrt();
+		std::array::from_fn(|axis| t[axis] * x + b[axis] * y + view[axis] * z)
+	}
 }
 
 /// Executes GTAO over a flat floor whose pixel footprint crosses the former absolute normal cutoff.
-fn run_gtao_floor_fixture(program: &ExecutableProgram, camera_height: f32, coordinate: [u32; 2]) -> [f32; 4] {
+fn run_gtao_floor_fixture(program: &ExecutableProgram, camera_height: f32, coordinate: [u32; 2]) -> GtaoOutput {
 	const EXTENT: u32 = 64;
 	let projection = math::projection_matrix(math::Degrees::new(60.0), 1.0, GTAO_NEAR, GTAO_FAR);
 	let ray_mul_y = -2.0 / (EXTENT as f32 * projection[5]);
@@ -1632,7 +2356,7 @@ fn run_gtao_fixture(
 	depth_texels: &[[f32; 4]],
 	coordinate: [u32; 2],
 	controls: (f32, u32, u32),
-) -> [f32; 4] {
+) -> GtaoOutput {
 	let linear_depth_texels = depth_texels
 		.iter()
 		.map(|texel| [gtao_fixture_linear_depth(texel[0]), 0.0, 0.0, 1.0])
@@ -1648,7 +2372,7 @@ fn run_gtao_fixture(
 }
 
 /// Runs the production GTAO shader with uniform coarse levels so a fixture can isolate hierarchical sampling.
-fn run_gtao_hierarchical_fixture(program: &ExecutableProgram, coarse_linear_depth: f32) -> [f32; 4] {
+fn run_gtao_hierarchical_fixture(program: &ExecutableProgram, coarse_linear_depth: f32) -> GtaoOutput {
 	const EXTENT: u32 = 129;
 	const CENTER: [u32; 2] = [64, 64];
 	let linear_depth_texels = vec![[gtao_fixture_linear_depth(0.35), 0.0, 0.0, 1.0]; (EXTENT * EXTENT) as usize];
@@ -1818,8 +2542,8 @@ fn directional_shadow_depth_pyramid_combines_each_cells_four_blocks_in_every_cas
 #[test]
 fn gtao_uses_depth_pyramid_for_distant_samples() {
 	let program = asset!("gtao.besl");
-	let empty_coarse_depth = run_gtao_hierarchical_fixture(&program, 0.0);
-	let occupied_coarse_depth = run_gtao_hierarchical_fixture(&program, gtao_fixture_linear_depth(0.4));
+	let empty_coarse_depth = run_gtao_hierarchical_fixture(&program, 0.0).ao;
+	let occupied_coarse_depth = run_gtao_hierarchical_fixture(&program, gtao_fixture_linear_depth(0.4)).ao;
 	assert!(
 		occupied_coarse_depth[0] < empty_coarse_depth[0],
 		"Expected populated coarse depth to increase distant occlusion, found empty={empty_coarse_depth:?} and occupied={occupied_coarse_depth:?}. The most likely cause is that GTAO stopped selecting hierarchy levels."
@@ -1831,30 +2555,90 @@ fn gtao_uses_depth_pyramid_for_distant_samples() {
 fn gtao_writes_white_for_background_and_expected_recessed_foreground_ao() {
 	let program = asset!("gtao.besl");
 	let background = run_gtao_fixture(&program, 1, 1, &[[0.0, 0.0, 0.0, 1.0]], [0, 0], (1.0, 6, 8));
-	assert_rgba_close(background, [1.0, 1.0, 1.0, 1.0], 0.00001);
+	assert_rgba_close(background.ao, [1.0, 1.0, 1.0, 1.0], 0.00001);
+	assert_rgba_close(background.bent_normal, [0.5, 0.5, 0.0, 0.0], 0.00001);
 
 	// A recessed center surrounded by nearer depth exercises reconstruction, normal estimation, and the
-	// adaptive bounded AO integral.
+	// adaptive bounded AO integral. The center lies at the bottom of a one-pixel pit about as deep as its distance from
+	// the camera, so the horizons on every side stand nearly overhead and close almost the whole hemisphere.
 	let mut foreground_depth = [[0.75, 0.0, 0.0, 1.0]; 25];
 	foreground_depth[12] = [0.35, 0.0, 0.0, 1.0];
 	let foreground = run_gtao_fixture(&program, 5, 5, &foreground_depth, [2, 2], (1.0, 6, 8));
-	assert_rgba_close(foreground, [0.8315444, 0.8315444, 0.8315444, 1.0], 0.00001);
+	assert_rgba_close(foreground.ao, [0.040486574, 0.040486574, 0.040486574, 1.0], 0.00001);
 
 	let disabled = run_gtao_fixture(&program, 5, 5, &foreground_depth, [2, 2], (0.0, 1, 2));
-	assert_rgba_close(disabled, [1.0, 1.0, 1.0, 1.0], 0.00001);
+	assert_rgba_close(disabled.ao, [1.0, 1.0, 1.0, 1.0], 0.00001);
 }
 
 /// Verifies flat-floor normals remain valid when their world-space finite differences become very small.
 #[test]
 fn gtao_floor_has_no_scale_dependent_normal_seam() {
 	let program = asset!("gtao.besl");
-	let larger_floor = run_gtao_floor_fixture(&program, 0.1, [32, 63]);
-	let scaled_floor = run_gtao_floor_fixture(&program, 0.06, [32, 63]);
+	let larger_floor = run_gtao_floor_fixture(&program, 0.1, [32, 63]).ao;
+	let scaled_floor = run_gtao_floor_fixture(&program, 0.06, [32, 63]).ao;
 	assert!(
 		(larger_floor[0] - scaled_floor[0]).abs() < 0.0005,
 		"Expected geometrically identical floors to preserve AO across world scales, got large={} and scaled={}. The most likely cause is a scale-dependent normal fallback.",
 		larger_floor[0],
 		scaled_floor[0]
+	);
+}
+
+/// Runs GTAO at `coordinate` over a 64 by 64 image of positive linear depths, with the pyramid's coarser levels reduced
+/// from it, a radius of one world unit, 4 samples per ray, and 6 rays.
+fn run_gtao_linear_fixture(program: &ExecutableProgram, linear_depth: &[[f32; 4]], coordinate: [u32; 2]) -> GtaoOutput {
+	const EXTENT: u32 = 64;
+	let (linear_depth_1, width_1, height_1) = reduce_nearest_nonzero_depth(linear_depth, EXTENT, EXTENT);
+	let (linear_depth_2, ..) = reduce_nearest_nonzero_depth(&linear_depth_1, width_1, height_1);
+	run_gtao(
+		program,
+		[EXTENT, EXTENT],
+		[linear_depth, &linear_depth_1, &linear_depth_2],
+		coordinate,
+		(1.0, 4, 6),
+	)
+}
+
+/// Returns a 64 by 64 depth image of a plane two units from the camera that faces it, with a wall rising toward the
+/// camera from column `wall_column` on, each column 0.1 units nearer than the one before.
+fn gtao_wall_depths(wall_column: u32) -> Vec<[f32; 4]> {
+	(0..64 * 64)
+		.map(|index| {
+			let column = index % 64;
+			let depth = if column >= wall_column { 2.0 - 0.1 * (column - wall_column + 1) as f32 } else { 2.0 };
+			[depth.max(0.5), 0.0, 0.0, 1.0]
+		})
+		.collect()
+}
+
+/// Verifies an open plane keeps its visibility and its bent normal is its normal, and that a wall beside it occludes it
+/// and bends its normal away from the wall.
+#[test]
+fn gtao_bends_the_normal_away_from_an_occluder() {
+	let program = asset!("gtao.besl");
+	let open = run_gtao_linear_fixture(&program, &gtao_wall_depths(64), [32, 32]);
+	let open_bent_normal = open.decoded_bent_normal();
+	assert!(
+		open.ao[0] > 0.999,
+		"Expected an open plane to see its whole hemisphere, found {open:?}. The most likely cause is a horizon that starts above the surface's tangent."
+	);
+	// The fixture's view space looks down positive z, so a plane facing the camera has the normal (0, 0, -1).
+	assert!(
+		open_bent_normal[0].abs() < 0.001 && open_bent_normal[1].abs() < 0.001 && open_bent_normal[2] < -0.999,
+		"Expected an open plane's bent normal to be its normal, found {open_bent_normal:?}."
+	);
+
+	// The wall stands to the right, toward positive screen and view x.
+	let walled = run_gtao_linear_fixture(&program, &gtao_wall_depths(36), [32, 32]);
+	let walled_bent_normal = walled.decoded_bent_normal();
+	assert!(
+		walled.ao[0] < open.ao[0] - 0.03,
+		"Expected the wall to occlude the plane beside it, found open={open:?} and walled={walled:?}."
+	);
+	// Three slices see the wall at angles the pixel's noise picks, so the lean carries some y as well, less than its x.
+	assert!(
+		walled_bent_normal[0] < -0.02 && walled_bent_normal[1].abs() < walled_bent_normal[0].abs(),
+		"Expected the bent normal to lean left, away from the wall, found {walled_bent_normal:?}. The most likely cause is a slice direction whose sign doesn't match its screen direction."
 	);
 }
 
@@ -1865,17 +2649,27 @@ fn run_gtao_blur_fixture(
 	height: u32,
 	depth_texels: &[[f32; 4]],
 	ao_texels: &[[f32; 4]],
+	bent_normal_texels: &[[f32; 4]],
 	coordinate: [u32; 2],
-) -> [f32; 4] {
+) -> GtaoOutput {
 	let mut depth = texture_2d(width, height, depth_texels);
 	let mut ao = texture_2d(width, height, ao_texels);
+	let mut bent_normal = texture_2d(width, height, bent_normal_texels);
 	let mut output = empty_image(width, height);
+	let mut bent_normal_output = empty_image(width, height);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_texture(slot(program, "linear_depth"), &mut depth);
 	descriptors.bind_texture(slot(program, "ao_source"), &mut ao);
 	descriptors.bind_image(slot(program, "ao_output"), &mut output);
+	descriptors.bind_texture(slot(program, "bent_normal_source"), &mut bent_normal);
+	descriptors.bind_image(slot(program, "bent_normal_output"), &mut bent_normal_output);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, coordinate);
-	rgba(&output, coordinate)
+	GtaoOutput {
+		ao: rgba(&output, coordinate),
+		bent_normal: rgba(&bent_normal_output, coordinate),
+		// The blur filters the stored components as they are and never decodes them.
+		view_vector: [0.0, 0.0, -1.0],
+	}
 }
 
 /// Runs the production depth-aware upscale workgroup whose 2x2 output quads include `coordinate`, and reads that
@@ -1911,18 +2705,128 @@ fn gtao_half_resolution_blur_preserves_uniform_ao_and_smooths_horizontally() {
 	let blur_x = asset!("gtao-blur-x.besl");
 	let depth = [[0.5, 0.0, 0.0, 1.0]; 25];
 	let uniform_ao = [[0.37, 0.0, 0.0, 1.0]; 25];
-	assert_rgba_close(
-		run_gtao_blur_fixture(&blur_x, 5, 5, &depth, &uniform_ao, [2, 2]),
-		[0.37, 0.0, 0.0, 1.0],
-		0.00001,
+	let uniform_bent_normal = [[0.25, 0.75, 0.0, 1.0]; 25];
+	let uniform = run_gtao_blur_fixture(&blur_x, 5, 5, &depth, &uniform_ao, &uniform_bent_normal, [2, 2]);
+	assert_rgba_close(uniform.ao, [0.37, 0.0, 0.0, 1.0], 0.00001);
+	assert_rgba_close(uniform.bent_normal, [0.25, 0.75, 0.0, 1.0], 0.00001);
+
+	// Horizontal variation must be reduced before the final reconstruction stage, in the bent normal as in the occlusion.
+	let directional_ao: [[f32; 4]; 25] = std::array::from_fn(|index| [if index % 5 == 2 { 1.0 } else { 0.0 }, 0.0, 0.0, 1.0]);
+	let horizontal = run_gtao_blur_fixture(&blur_x, 5, 5, &depth, &directional_ao, &directional_ao, [2, 2]);
+	assert!(
+		horizontal.ao[0] < 0.8 && horizontal.bent_normal[0] < 0.8,
+		"Expected X blur to mix neighboring columns, found {horizontal:?}"
+	);
+}
+
+/// Runs one screen query read, `name`, over a 4 × 4 visibility buffer where texel `lane` holds `instance(lane)`, for
+/// `points`, starting from `previous` in the instances it writes, and returns those instances.
+fn run_screen_query(name: &str, instance: impl Fn(usize) -> u32, points: &[[u32; 2]], previous: [u32; 16]) -> Vec<u32> {
+	let program = match name {
+		"screen-query" => asset!("screen-query.besl"),
+		_ => asset!("screen-query-blended.besl"),
+	};
+	let mut point_buffer = buffer(&program, slot(&program, "points"));
+	for index in 0..16 {
+		let point = points.get(index).copied().unwrap_or([u32::MAX; 2]);
+		point_buffer
+			.write_array_element(index, Value::Vec2U(point))
+			.expect("screen query point");
+	}
+	let mut instances = buffer(&program, slot(&program, "instances"));
+	for (index, value) in previous.into_iter().enumerate() {
+		instances.write_array_element(index, Value::U32(value)).expect("previous instance");
+	}
+	let mut texture = instance_texture(4, instance);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(slot(&program, "points"), &mut point_buffer);
+	descriptors.bind_buffer(slot(&program, "instances"), &mut instances);
+	descriptors.bind_image(slot(&program, INSTANCE_INDEX), &mut texture);
+	for lane in 0..16 {
+		program
+			.run_main_with_config(&mut descriptors, &lane_config(lane))
+			.expect("screen query lane");
+	}
+	drop(descriptors);
+	(0..16)
+		.map(|index| match instances.read_array_element(index).expect("instance") {
+			Value::U32(value) => value,
+			value => panic!("Expected a u32 instance, found {value:?}"),
+		})
+		.collect()
+}
+
+/// Verifies the opaque read finds the instance at each queried pixel, and none for a point outside the buffer or an
+/// unused entry.
+#[test]
+fn screen_query_reads_the_instance_at_each_point() {
+	let instances = run_screen_query(
+		"screen-query",
+		|lane| if lane == 6 { u32::MAX } else { lane as u32 + 100 },
+		&[[1, 0], [2, 1], [3, 3], [4, 0]],
+		[7; 16],
 	);
 
-	// Horizontal variation must be reduced before the final reconstruction stage.
-	let directional_ao: [[f32; 4]; 25] = std::array::from_fn(|index| [if index % 5 == 2 { 1.0 } else { 0.0 }, 0.0, 0.0, 1.0]);
-	let horizontal = run_gtao_blur_fixture(&blur_x, 5, 5, &depth, &directional_ao, [2, 2]);
+	assert_eq!(&instances[..4], &[101, u32::MAX, 115, u32::MAX]);
+	assert!(instances[4..].iter().all(|&instance| instance == u32::MAX));
+}
+
+/// Verifies the blended read replaces an opaque instance only where the transparent layer drew a surface.
+#[test]
+fn screen_query_blended_read_keeps_the_opaque_instance_where_nothing_blended_was_drawn() {
+	let mut previous = [u32::MAX; 16];
+	previous[0] = 40;
+	previous[1] = 41;
+	let instances = run_screen_query(
+		"screen-query-blended",
+		|lane| if lane == 0 { 9 } else { u32::MAX },
+		&[[0, 0], [1, 0]],
+		previous,
+	);
+
+	assert_eq!(&instances[..2], &[9, 41]);
+}
+
+/// Verifies the backdrop copy keeps the opaque scene's light as it is and turns reversed device depth into linear view
+/// depth, with the sky at the view's far depth, which `sceneposition` rebuilds positions from.
+#[test]
+fn backdrop_copies_light_and_linearizes_depth() {
+	let program = asset!("backdrop.besl");
+	let surface_depth = 3.0;
+	let lit = [[0.25, 0.5, 2.0, 1.0], [4.0, 3.0, 1.0, 1.0]];
+	let depth = [
+		[gtao_fixture_device_depth(surface_depth), 0.0, 0.0, 1.0],
+		[0.0, 0.0, 0.0, 1.0],
+	];
+
+	let mut view = gtao_view_data(&program, 2, 1);
+	let mut source_lit = texture_2d(2, 1, &lit);
+	let mut source_depth = texture_2d(2, 1, &depth);
+	let mut color = empty_image(2, 1);
+	let mut linear_depth = empty_image(2, 1);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(slot(&program, GTAO_VIEW), &mut view);
+	descriptors.bind_texture(slot(&program, "source_lit"), &mut source_lit);
+	descriptors.bind_texture(slot(&program, "source_depth"), &mut source_depth);
+	descriptors.bind_image(slot(&program, "color"), &mut color);
+	descriptors.bind_image(slot(&program, "depth"), &mut linear_depth);
+	for pixel in [[0, 0], [1, 0]] {
+		run_at(&program, &mut descriptors, pixel);
+	}
+	drop(descriptors);
+
+	for x in 0..2 {
+		assert_rgba_close(rgba(&color, [x, 0]), lit[x as usize], 0.00001);
+	}
 	assert!(
-		horizontal[0] < 0.8,
-		"Expected X blur to mix neighboring columns, found {horizontal:?}"
+		(rgba(&linear_depth, [0, 0])[0] - surface_depth).abs() < 0.001,
+		"Expected the surface's linear depth {surface_depth}, found {:?}",
+		rgba(&linear_depth, [0, 0])
+	);
+	assert!(
+		(rgba(&linear_depth, [1, 0])[0] - GTAO_FAR).abs() < 0.01,
+		"Expected the sky at the far depth {GTAO_FAR}, found {:?}",
+		rgba(&linear_depth, [1, 0])
 	);
 }
 
@@ -2004,8 +2908,8 @@ fn ssgi_parameters(program: &ExecutableProgram, previous_clip: Option<maths_rs::
 	parameters
 }
 
-/// Returns the engine's blue noise as the RG8 texture the SSGI trace reads, each byte `k` as `k / 255`.
-fn ssgi_blue_noise() -> Texture {
+/// Returns the engine's blue noise as the RG8 texture the SSGI trace and GTAO read, each byte `k` as `k / 255`.
+fn blue_noise_texture() -> Texture {
 	use crate::rendering::lookup_textures::{BLUE_NOISE, BLUE_NOISE_SIDE};
 
 	let texels: Vec<[f32; 4]> = BLUE_NOISE
@@ -2085,7 +2989,7 @@ fn run_ssgi_trace_outputs(
 		.unwrap();
 	let mut depth_pyramid = texture_2d(extent, extent, depth);
 	let mut previous_lit = texture_2d(extent * 2, extent * 2, radiance);
-	let mut blue_noise = ssgi_blue_noise();
+	let mut blue_noise = blue_noise_texture();
 	let mut output = empty_image(extent, extent);
 	let mut normals = empty_image(extent, extent);
 	let mut workgroups: Vec<[u32; 2]> = pixels
@@ -3059,6 +3963,8 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 	let tile = || Settings::compute(Extent::square(8));
 	// The surfel passes that run one thread per pool slot or scan element.
 	let surfel_slots = || Settings::compute(Extent::line(256));
+	// The virtual shadow map's line-shaped page passes.
+	let line = || Settings::compute(Extent::line(64));
 	for (name, source, settings) in [
 		(
 			"meshlet_task",
@@ -3066,7 +3972,15 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 			Settings::task(Extent::line(32), 192),
 		),
 		("visibility_mesh", asset_source!("visibility-mesh.besl"), mesh()),
+		("masked_visibility_mesh", asset_source!("masked-visibility-mesh.besl"), mesh()),
 		("shadow_mesh", asset_source!("shadow-mesh.besl"), mesh()),
+		("masked_shadow_mesh", asset_source!("masked-shadow-mesh.besl"), mesh()),
+		("virtual_shadow_mesh", asset_source!("virtual-shadow-mesh.besl"), mesh()),
+		(
+			"virtual_shadow_fragment",
+			asset_source!("virtual-shadow-fragment.besl"),
+			Settings::fragment(),
+		),
 		(
 			"visibility_fragment",
 			asset_source!("visibility-fragment.besl"),
@@ -3173,6 +4087,34 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 		),
 		("probe_update", asset_source!("probe-update.besl"), surfel_slots()),
 		("probe_resolve", asset_source!("probe-resolve.besl"), tile()),
+		("virtual_shadow_free", asset_source!("virtual-shadow-free.besl"), line()),
+		(
+			"virtual_shadow_invalidate",
+			asset_source!("virtual-shadow-invalidate.besl"),
+			line(),
+		),
+		("virtual_shadow_mark", asset_source!("virtual-shadow-mark.besl"), tile()),
+		(
+			"virtual_shadow_find_free",
+			asset_source!("virtual-shadow-find-free.besl"),
+			line(),
+		),
+		(
+			"virtual_shadow_allocate",
+			asset_source!("virtual-shadow-allocate.besl"),
+			line(),
+		),
+		("virtual_shadow_clear", asset_source!("virtual-shadow-clear.besl"), line()),
+		(
+			"virtual_shadow_hierarchy",
+			asset_source!("virtual-shadow-hierarchy.besl"),
+			Settings::compute(Extent::line(256)),
+		),
+		(
+			"virtual_shadow_cells",
+			asset_source!("virtual-shadow-cells.besl"),
+			Settings::compute(Extent::line(256)),
+		),
 	] {
 		let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
 		// Baking gives every standalone shader the common helpers, such as `source_over`.
@@ -3238,7 +4180,7 @@ fn uploaded_light(
 fn light_cluster_fixture_light(cone: bool) -> crate::rendering::lights::Lights {
 	use crate::rendering::lights::{ConeLight, LightColor, Lights, PhotometricIntensity, PointLight};
 
-	let color = LightColor::LinearSrgb(maths_rs::Vec3f::new(1.0, 1.0, 1.0));
+	let color = LightColor::LinearSrgb([1.0, 1.0, 1.0]);
 	let intensity = PhotometricIntensity::LuminousIntensity {
 		candela: 100.0,
 		reference_distance_m: 1.0,
@@ -3320,7 +4262,7 @@ fn light_clusters_hold_the_lights_whose_reach_touches_them() {
 	let forward = UnitVector::z_axis();
 	let sun = Lights::Direction(
 		DirectionalLight::new(
-			LightColor::LinearSrgb(maths_rs::Vec3f::new(1.0, 1.0, 1.0)),
+			LightColor::LinearSrgb([1.0, 1.0, 1.0]),
 			PhotometricIntensity::Illuminance {
 				lux: 100_000.0,
 				measurement_distance_m: 1.0,
@@ -3910,6 +4852,7 @@ main: fn (input: StageInput) -> void {{
 }
 
 mod surfel_gi;
+mod virtual_shadows;
 
 /// A capacity with room for exactly two [`geometry_fixture_mesh`] meshes in every stream.
 fn two_mesh_geometry_capacity() -> GeometryCapacity {
@@ -3920,6 +4863,7 @@ fn two_mesh_geometry_capacity() -> GeometryCapacity {
 		meshlets: 8,
 		levels: 4,
 		skinning_vertices: 100,
+		meshlet_vertices: true,
 	}
 }
 
@@ -4164,7 +5108,7 @@ fn fog_light_sun(lux: f32, travel: math::UnitVector, shadowed: bool) -> super::s
 
 	let sun = Lights::Direction(
 		DirectionalLight::new(
-			LightColor::LinearSrgb(maths_rs::Vec3f::new(1.0, 1.0, 1.0)),
+			LightColor::LinearSrgb([1.0, 1.0, 1.0]),
 			PhotometricIntensity::Illuminance {
 				lux,
 				measurement_distance_m: 1.0,
@@ -4361,4 +5305,296 @@ fn fog_light_of_a_cone_light_stays_inside_its_cone() {
 		"The march's cone light estimate is off. The most likely cause is a wrong cone clip: marched {marched:?}, expected {expected}"
 	);
 	assert_rgba_close(away, [0.0, 0.0, 0.0, away[3]], 1e-6);
+}
+
+/// Runs the three passes that build a frame's mesh work over `phases`, each a raster phase's listed instances as
+/// their meshlet counts, or `None` for one that is hidden. Instances are numbered in the order they are listed.
+///
+/// Returns the work buffer's items, its ranges' first items and workgroup counts, and the dispatch records, of a
+/// work buffer with room for `capacity` items after its ranges.
+fn build_mesh_work(phases: [&[Option<u32>]; 5], capacity: u32) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+	use super::shader_data::MESH_FLAG_HIDDEN;
+
+	const GROUP: usize = 32;
+	let count = asset!("work-count.besl");
+	let ranges = asset!("work-ranges.besl");
+	let scatter = asset!("work-scatter.besl");
+
+	let instances = phases.iter().map(|phase| phase.len()).sum::<usize>();
+	let mut meshes = array_buffer(&count, slot(&count, MESH_DATA), instances.max(1));
+	let mut mesh_levels = array_buffer(&count, slot(&count, MESH_LEVELS), instances.max(1));
+	// Each phase's entries, padded to whole groups with empty ones.
+	let mut list = Vec::new();
+	let mut phase_ends = [0; 5];
+	for (phase, listed) in phases.into_iter().enumerate() {
+		for &meshlets in listed {
+			let instance = list.iter().filter(|&&entry| entry != u32::MAX).count();
+			// Every instance draws a level of its own, which holds its meshlets.
+			let flags = if meshlets.is_some() { 0 } else { MESH_FLAG_HIDDEN };
+			meshes
+				.write_array_member(instance, "level", Value::U32(instance as u32 | flags))
+				.expect("listed mesh level");
+			mesh_levels
+				.write_array_member(instance, "meshlet_count", Value::U32(meshlets.unwrap_or(77)))
+				.expect("listed level meshlets");
+			list.push(instance as u32);
+		}
+		list.resize(list.len().next_multiple_of(GROUP), u32::MAX);
+		phase_ends[phase] = (list.len() / GROUP) as u32;
+	}
+	let groups = list.len() / GROUP;
+	let mut instance_list = array_buffer(&count, slot(&count, "instance_list"), list.len().max(1));
+	for (entry, &instance) in list.iter().enumerate() {
+		instance_list
+			.write_array_element(entry, Value::U32(instance))
+			.expect("instance list entry");
+	}
+	let mut entry_items = array_buffer(&count, slot(&count, "entry_items"), list.len().max(1));
+	let mut group_items = array_buffer(&count, slot(&count, "group_items"), groups.max(1));
+	let capacity = capacity + WORK_HEADER as u32;
+	let mut work_items = array_buffer(&ranges, slot(&ranges, "work_items"), capacity as usize);
+	let mut work_dispatches = array_buffer(&ranges, slot(&ranges, "work_dispatches"), 30);
+	let group_lanes = |group: usize| -> [ExecutionConfig; GROUP] {
+		std::array::from_fn(|lane| lane_config(lane as u32).with_threadgroup_position(group as u32))
+	};
+
+	let mut push_constant = push_constant_buffer(&count);
+	push_constant
+		.write("entry_count", Value::U32(list.len() as u32))
+		.expect("count entries");
+	for group in 0..groups {
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(slot(&count, MESH_DATA), &mut meshes);
+		descriptors.bind_buffer(slot(&count, MESH_LEVELS), &mut mesh_levels);
+		descriptors.bind_buffer(slot(&count, "instance_list"), &mut instance_list);
+		descriptors.bind_buffer(slot(&count, "entry_items"), &mut entry_items);
+		descriptors.bind_buffer(slot(&count, "group_items"), &mut group_items);
+		descriptors.bind_push_constant(&mut push_constant);
+		run_workgroup(&count, descriptors, &group_lanes(group));
+	}
+
+	let mut push_constant = push_constant_buffer(&ranges);
+	let ends = [
+		"opaque_end",
+		"masked_end",
+		"double_sided_end",
+		"double_sided_masked_end",
+		"transparent_end",
+	];
+	for (member, end) in ends.into_iter().zip(phase_ends) {
+		push_constant.write(member, Value::U32(end)).expect("phase end");
+	}
+	push_constant
+		.write("capacity", Value::U32(capacity))
+		.expect("ranges capacity");
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(slot(&ranges, "group_items"), &mut group_items);
+	descriptors.bind_buffer(slot(&ranges, "work_items"), &mut work_items);
+	descriptors.bind_buffer(slot(&ranges, "work_dispatches"), &mut work_dispatches);
+	descriptors.bind_push_constant(&mut push_constant);
+	run_workgroup(&ranges, descriptors, &[lane_config(0).with_threadgroup_position(0)]);
+
+	let mut push_constant = push_constant_buffer(&scatter);
+	push_constant
+		.write("entry_count", Value::U32(list.len() as u32))
+		.expect("scatter entries");
+	push_constant
+		.write("capacity", Value::U32(capacity))
+		.expect("scatter capacity");
+	for group in 0..groups {
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(slot(&scatter, "instance_list"), &mut instance_list);
+		descriptors.bind_buffer(slot(&scatter, "entry_items"), &mut entry_items);
+		descriptors.bind_buffer(slot(&scatter, "group_items"), &mut group_items);
+		descriptors.bind_buffer(slot(&scatter, "work_items"), &mut work_items);
+		descriptors.bind_push_constant(&mut push_constant);
+		run_workgroup(&scatter, descriptors, &group_lanes(group));
+	}
+
+	let read = |buffer: &Buffer, length: usize| (0..length).map(|index| read_u32(buffer, index)).collect::<Vec<_>>();
+	let work = read(&work_items, capacity as usize);
+	// The ranges name items by their place in the buffer, so they are returned from the first item instead.
+	let ranges = work[..WORK_HEADER]
+		.chunks(2)
+		.flat_map(|range| [range[0] - WORK_HEADER as u32, range[1]])
+		.collect();
+	(work[WORK_HEADER..].to_vec(), ranges, read(&work_dispatches, 30))
+}
+
+/// Verifies the frame's work lists each phase's large instances by chunk and then its small instances' meshlets in
+/// shared workgroups, in list order, skips hidden instances, and counts the workgroups each range dispatches.
+#[test]
+fn mesh_work_lists_each_phases_chunks_then_its_shared_meshlets() {
+	let item = |instance: u32, index: u32| MeshDispatchWorkItem::new(instance, index).packed;
+	let empty = MeshDispatchWorkItem::EMPTY.packed;
+	// Instance 0 takes two chunks, 1 is hidden, 2 and 3 share a workgroup; instance 4 takes two chunks and 5 shares.
+	let opaque = [Some(33), None, Some(2), Some(1)];
+	let masked = [Some(40), Some(8)];
+
+	let (items, ranges, dispatches) = build_mesh_work([&opaque, &masked, &[], &[], &[]], 80);
+
+	let mut expected = vec![item(0, 0), item(0, 1), item(2, 0), item(2, 1), item(3, 0)];
+	expected.resize(34, empty);
+	expected.extend([item(4, 0), item(4, 1)]);
+	expected.extend((0..8).map(|meshlet| item(5, meshlet)));
+	expected.resize(68, empty);
+	assert_eq!(items[..68], expected);
+	// Each range's first item and workgroups: a phase's chunks, then its shared workgroups.
+	assert_eq!(ranges[..8], [0, 2, 2, 1, 34, 2, 36, 1]);
+	assert!(ranges[8..].chunks(2).all(|range| range == [68, 0]));
+	assert_eq!(dispatches[..12], [2, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1]);
+	assert!(dispatches[12..].chunks(3).all(|record| record == [0, 1, 1]));
+}
+
+/// Verifies work that doesn't fit the work buffer draws the instances that do: the range that crosses the capacity
+/// dispatches the workgroups whose items fit, and the ranges after it none.
+#[test]
+fn mesh_work_draws_what_fits_the_work_buffer() {
+	let item = |instance: u32, index: u32| MeshDispatchWorkItem::new(instance, index).packed;
+	// The masked phase's 60 chunks start after the opaque phase's two, and 38 of them fit.
+	let (items, ranges, dispatches) = build_mesh_work([&[Some(33)], &[Some(60 * 32)], &[], &[], &[Some(1)]], 40);
+
+	assert_eq!(items[..2], [item(0, 0), item(0, 1)]);
+	assert!(items[2..].iter().copied().eq((0..38).map(|chunk| item(1, chunk))));
+	assert_eq!(ranges[..8], [0, 2, 2, 0, 2, 38, 62, 0]);
+	assert!(ranges[8..].chunks(2).all(|range| range == [40, 0]));
+	assert_eq!(dispatches[..12], [2, 1, 1, 0, 1, 1, 38, 1, 1, 0, 1, 1]);
+	assert!(dispatches[12..].chunks(3).all(|record| record == [0, 1, 1]));
+}
+
+/// The side of the square image the subsurface fixtures shade.
+const SUBSURFACE_FIXTURE_SIDE: u32 = 16;
+
+/// The `SubsurfaceFixture` struct holds what material evaluation leaves for the subsurface pass, one entry per pixel
+/// of a [`SUBSURFACE_FIXTURE_SIDE`]-wide square, and the lit image before the pass.
+#[derive(Clone)]
+struct SubsurfaceFixture {
+	/// Positive view depth, in meters.
+	depth: Vec<f32>,
+	diffuse: Vec<[f32; 3]>,
+	scale: Vec<[f32; 3]>,
+	/// The square root of the albedo, and whether the pixel scatters.
+	albedo_root: Vec<([f32; 3], bool)>,
+	lit: Vec<[f32; 3]>,
+}
+
+impl SubsurfaceFixture {
+	/// A flat surface 1 m away whose every pixel scatters with `diffuse` light, profile scale `scale`, and an albedo
+	/// root of `albedo_root`, over a lit image of `lit`.
+	fn uniform(diffuse: [f32; 3], scale: [f32; 3], albedo_root: [f32; 3], lit: [f32; 3]) -> Self {
+		let pixels = (SUBSURFACE_FIXTURE_SIDE * SUBSURFACE_FIXTURE_SIDE) as usize;
+		Self {
+			depth: vec![1.0; pixels],
+			diffuse: vec![diffuse; pixels],
+			scale: vec![scale; pixels],
+			albedo_root: vec![(albedo_root, true); pixels],
+			lit: vec![lit; pixels],
+		}
+	}
+
+	/// Returns the index of every pixel left of column `column`.
+	fn left_of(column: u32) -> impl Iterator<Item = usize> {
+		(0..SUBSURFACE_FIXTURE_SIDE * SUBSURFACE_FIXTURE_SIDE)
+			.filter(move |index| index % SUBSURFACE_FIXTURE_SIDE < column)
+			.map(|index| index as usize)
+	}
+
+	/// Runs the subsurface pass over the workgroup holding `coordinate` and reads the lit image there.
+	fn run(&self, program: &ExecutableProgram, coordinate: [u32; 2]) -> [f32; 3] {
+		let side = SUBSURFACE_FIXTURE_SIDE;
+		let texels = |values: &[[f32; 3]], alpha: f32| values.iter().map(|[r, g, b]| [*r, *g, *b, alpha]).collect::<Vec<_>>();
+		let device_depth = self
+			.depth
+			.iter()
+			.map(|z| [GTAO_DEPTH_NUMERATOR / z - GTAO_DEPTH_OFFSET, 0.0, 0.0, 1.0])
+			.collect::<Vec<_>>();
+		let albedo_root = self
+			.albedo_root
+			.iter()
+			.map(|([r, g, b], scatters)| [*r, *g, *b, if *scatters { 1.0 } else { 0.0 }])
+			.collect::<Vec<_>>();
+		let mut view = screen_view_buffer(program, slot(program, "view"), side, side);
+		let mut depth = texture_2d(side, side, &device_depth);
+		let mut diffuse = texture_2d(side, side, &texels(&self.diffuse, 1.0));
+		let mut scale = texture_2d(side, side, &texels(&self.scale, 0.0));
+		let mut albedo = texture_2d(side, side, &albedo_root);
+		let mut lit = texture_2d(side, side, &texels(&self.lit, 1.0));
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(slot(program, "view"), &mut view);
+		descriptors.bind_texture(slot(program, "depth"), &mut depth);
+		descriptors.bind_texture(slot(program, "diffuse_light"), &mut diffuse);
+		descriptors.bind_texture(slot(program, "profile_scale"), &mut scale);
+		descriptors.bind_texture(slot(program, "albedo_root"), &mut albedo);
+		descriptors.bind_image(slot(program, "lit_map"), &mut lit);
+		run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, coordinate);
+		let [r, g, b, _] = rgba(&lit, coordinate);
+		[r, g, b]
+	}
+}
+
+/// Asserts each channel of `actual` is within `tolerance` of `expected`.
+fn assert_rgb_close(actual: [f32; 3], expected: [f32; 3], tolerance: f32) {
+	for (channel, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+		assert!(
+			(actual - expected).abs() <= tolerance,
+			"channel {channel}: expected {expected}, found {actual}"
+		);
+	}
+}
+
+/// Evenly lit skin keeps its brightness: the spread light, weighted by the albedo's other root, adds to the lit image
+/// exactly what the pixel's own diffuse light would.
+#[test]
+fn subsurface_keeps_the_brightness_of_evenly_lit_skin() {
+	let program = asset!("subsurface.besl");
+	let fixture = SubsurfaceFixture::uniform([0.4, 0.2, 0.1], [0.05, 0.03, 0.01], [0.5, 0.6, 0.7], [0.1, 0.1, 0.1]);
+	assert_rgb_close(fixture.run(&program, [8, 8]), [0.1 + 0.2, 0.1 + 0.12, 0.1 + 0.07], 0.001);
+}
+
+/// Pixels of other materials neither give scattered light nor take it.
+#[test]
+fn subsurface_spreads_light_only_between_subsurface_pixels() {
+	let program = asset!("subsurface.besl");
+	let mut fixture = SubsurfaceFixture::uniform([0.4, 0.4, 0.4], [0.05, 0.05, 0.05], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
+	// The left half is a bright surface that doesn't scatter, with its own light already in the lit image.
+	for index in SubsurfaceFixture::left_of(8) {
+		fixture.diffuse[index] = [100.0, 100.0, 100.0];
+		fixture.albedo_root[index].1 = false;
+		fixture.lit[index] = [7.0, 7.0, 7.0];
+	}
+	assert_rgb_close(fixture.run(&program, [8, 8]), [0.4, 0.4, 0.4], 0.001);
+	assert_rgb_close(fixture.run(&program, [7, 8]), [7.0, 7.0, 7.0], 0.0);
+}
+
+/// Light bleeds across an edge in the image, but much less across one that is also a step in depth.
+#[test]
+fn subsurface_bleeds_less_across_a_step_in_depth() {
+	let program = asset!("subsurface.besl");
+	let mut flat = SubsurfaceFixture::uniform([0.0, 0.0, 0.0], [0.05, 0.05, 0.05], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
+	for index in SubsurfaceFixture::left_of(8) {
+		flat.diffuse[index] = [1.0, 1.0, 1.0];
+	}
+	let mut stepped = flat.clone();
+	for index in SubsurfaceFixture::left_of(8) {
+		stepped.depth[index] = 1.5;
+	}
+	let across_flat = flat.run(&program, [8, 8])[0];
+	let across_step = stepped.run(&program, [8, 8])[0];
+	assert!(
+		across_flat > 0.05,
+		"expected light to bleed across a flat edge, found {across_flat}"
+	);
+	assert!(
+		across_step < across_flat * 0.25,
+		"expected a step in depth to cut the bleed, found {across_step} against {across_flat}"
+	);
+}
+
+/// A profile scale of zero spreads nothing: the pixel keeps its own diffuse light, whatever its neighbors hold.
+#[test]
+fn subsurface_with_a_zero_radius_keeps_the_pixel_light() {
+	let program = asset!("subsurface.besl");
+	let mut fixture = SubsurfaceFixture::uniform([5.0, 5.0, 5.0], [0.0, 0.0, 0.0], [0.5, 0.5, 0.5], [0.0, 0.0, 0.0]);
+	fixture.diffuse[(8 * SUBSURFACE_FIXTURE_SIDE + 8) as usize] = [0.2, 0.4, 0.6];
+	assert_rgb_close(fixture.run(&program, [8, 8]), [0.1, 0.2, 0.3], 0.0001);
 }

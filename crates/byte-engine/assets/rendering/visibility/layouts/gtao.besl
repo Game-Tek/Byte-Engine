@@ -1,5 +1,5 @@
 // The descriptor set of the GTAO evaluation pass: its settings, the linear depth pyramid it reads, and the
-// half-resolution occlusion it writes. The screen view constants come from `gtao-view.besl`.
+// half-resolution occlusion and bent normal it writes, and the blue noise that places its samples. The screen view constants come from `gtao-view.besl`.
 
 GTAOParameters: struct {
 	radius: f32,
@@ -15,4 +15,8 @@ Gtao: layer {
 	gtao_parameters: descriptor<{ type: GTAOParameters, binding: 0, access: read, memory: constant }>;
 	depth_pyramid: descriptor<{ type: Texture2D, binding: 1, access: read, sampler: gtao_depth_texels }>;
 	ao_output: descriptor<{ type: StorageImage<r8>, binding: 2, access: write }>;
+	// The bent normal's two components across the view vector, mapped from -1..1 to 0..1; see `gtao.besl`.
+	bent_normal_output: descriptor<{ type: StorageImage<rg8>, binding: 3, access: write }>;
+	// The engine's tiling blue noise, which turns each pixel's slices and offsets its samples.
+	blue_noise: descriptor<{ type: Texture2D, binding: 4, access: read }>;
 }

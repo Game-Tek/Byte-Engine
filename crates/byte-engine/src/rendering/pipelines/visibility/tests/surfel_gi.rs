@@ -1532,13 +1532,16 @@ impl WhiteShade {
 		let (pass, shade) = (shade(), shade());
 		// Material hit shaders stack on the layers the shader generator gives them.
 		// The stand-in takes the layers and modules every material's closest hit takes.
-		use super::super::shader_generator::{
-			MATERIAL_HIT_LAYERS, MATERIAL_HIT_MODULE_FILES, MATERIAL_HIT_MODULES, layered_program,
-		};
+		use super::super::shader_generator::{EMBEDDED_MODULES, MATERIAL_HIT_LAYERS, MATERIAL_HIT_MODULES, layered_program};
 		let mut white_hit = besl::parse(WHITE_HIT).expect("the white hit should parse");
 		let main = white_hit.get_mut("main").expect("the white hit declares `main`").clone();
-		let white_hit = layered_program(main, &MATERIAL_HIT_LAYERS, &MATERIAL_HIT_MODULES, &MATERIAL_HIT_MODULE_FILES)
-			.expect("the white hit should take the material hit layers");
+		let white_hit = layered_program(
+			main,
+			&MATERIAL_HIT_LAYERS,
+			&MATERIAL_HIT_MODULES,
+			EMBEDDED_MODULES.get(&MATERIAL_HIT_MODULES),
+		)
+		.expect("the white hit should take the material hit layers");
 		let white_hit = compile(besl::lex(white_hit).expect("the white hit should link"));
 		let hits = array_buffer(&shade, slot(&shade, "ray_hits"), RAY_BUDGET as usize);
 		let lights = buffer(&shade, slot(&shade, "surfel_scene_lights"));

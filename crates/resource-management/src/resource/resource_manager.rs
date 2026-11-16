@@ -169,8 +169,8 @@ impl std::fmt::Display for RequestError {
 					LoadMessages::Excluded { asset } => (
 						"Could not bake asset.",
 						asset.as_str(),
-						"A `resources.exclude` pattern matches the asset, so it is never baked.",
-						"Stop requesting the asset, or remove its pattern from `resources.exclude` in config.json.",
+						"A `assets.exclude` pattern matches the asset, so it is never baked.",
+						"Stop requesting the asset, or remove its pattern from `assets.exclude` in config.json.",
 					),
 					LoadMessages::ExecutionUnavailable => (
 						"Could not bake asset.",
@@ -283,6 +283,15 @@ impl ResourceManager {
 		self.resource_updates.listener()
 	}
 
+	/// Returns the asset manager that bakes this store's resources on demand, once one is installed.
+	///
+	/// Development tools reach the application's source assets through it, such as with
+	/// [`AssetManager::read_source`].
+	#[cfg(debug_assertions)]
+	pub fn asset_manager(&self) -> Option<&AssetManager> {
+		self.asset_manager.get()
+	}
+
 	/// Returns the development trace for asset-backed resource bakes when asset management is installed.
 	///
 	/// Next, call [`ResourceTrace::items`] with the resource ID shown by the
@@ -317,21 +326,6 @@ impl ResourceManager {
 				id: id.to_owned(),
 				source,
 			})
-	}
-
-	/// Bakes `id` again from its asset, even when its sources did not change, and returns once it is stored.
-	///
-	/// Development builds call this for a resource gathered from other resources rather than from its own sources, such
-	/// as an assembled evaluation shader, once what it gathers changed. Next, [`Self::request`] it again.
-	#[cfg(debug_assertions)]
-	pub async fn rebake(&self, id: &str) -> Result<(), RequestError> {
-		let Some(asset_manager) = self.asset_manager.get() else {
-			return Err(RequestError::Missing { id: id.to_owned() });
-		};
-		asset_manager
-			.bake(id)
-			.await
-			.map_err(|source| RequestError::bake(id, source, asset_manager))
 	}
 
 	/// Bakes every discoverable source asset of `asset_type`, such as `fusion`, whose resource is missing or stale, so a
@@ -413,7 +407,7 @@ impl ResourceManager {
 
 		#[cfg(debug_assertions)]
 		if let Some(asset_manager) = asset_manager {
-			asset_manager.track_resource(&stored);
+			asset_manager.track_resource(stored.id(), stored.baked_at());
 		}
 
 		Ok((stored, reader))
@@ -485,6 +479,7 @@ mod tests {
 			gamma: Gamma::Linear,
 			extent: [1, 1, 0],
 			mip_count: 1,
+			cpu_readable: false,
 			ibl: None,
 			photometry: None,
 		};

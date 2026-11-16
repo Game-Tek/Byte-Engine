@@ -59,13 +59,12 @@ struct TintStep {
 impl TintStep {
 	fn new(builder: &mut RenderPassBuilder, color: [f32; 4]) -> Self {
 		let context = builder.context();
-		let parameters = context.build_buffer::<[f32; 4]>(
+		let parameters = context.build_buffer_with::<[f32; 4]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Tint Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write),
+			|parameters| *parameters = color,
 		);
-		*context.get_mut_buffer_slice(parameters) = color;
-		context.sync_buffer(parameters);
 		Self {
 			resources: [Resource::buffer("tint_parameters", parameters)],
 		}

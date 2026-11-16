@@ -2,11 +2,15 @@
 	"title": "Visibility pipeline",
 	"icon": "Computer",
 	"pages": [
+		"ambient-occlusion",
 		"lightmaps",
 		"material-evaluation",
 		"material-parameters",
+		"meshlet-dispatch",
 		"shadow-maps",
 		"skinning",
-		"surfel-gi"
+		"surfel-gi",
+		"transparent-phase",
+		"virtual-shadow-maps"
 	]
 }

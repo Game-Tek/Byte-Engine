@@ -202,7 +202,7 @@ swapchain in a grid: one view fills the screen, two sit side by side, three or f
 3×3. Each cell averages the `side × side` block of slot texels that lands on each of its pixels, so a slot is
 always written at full resolution and the tiling never changes what a pass does. The slot order is the grid order,
 and shown views hold the first slots, so cell `i` reads slot `i`. The pass reads its parameters, the shown view
-count and the grid side, from a dynamic buffer the renderer fills each frame.
+count and the grid side, from a buffer with a copy per frame that the renderer fills each frame.
 
 ## The shader side
 

@@ -117,8 +117,12 @@ impl TryFrom<u8> for Keys {
 			37 => Ok(Keys::ControlLeft),
 			64 => Ok(Keys::AltLeft),
 			65 => Ok(Keys::Space),
+			60 => Ok(Keys::Period),
 			108 => Ok(Keys::AltRight),
 			105 => Ok(Keys::ControlRight),
+			// The X keycodes of the left and right Super keys.
+			133 => Ok(Keys::MetaLeft),
+			134 => Ok(Keys::MetaRight),
 			62 => Ok(Keys::ShiftRight),
 			36 => Ok(Keys::Enter),
 			22 => Ok(Keys::Backspace),

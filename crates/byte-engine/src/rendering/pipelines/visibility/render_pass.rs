@@ -7,6 +7,7 @@
 //! [`VisibilityRenderPass::prepare`] turns the frame's [`RenderInfo`] into one ordered recording, timing each stage
 //! with the sink's [`StageCounters`] so the inspector reports where the pass's GPU time goes.
 
+mod backdrop;
 mod depth_pyramid;
 mod fog_light;
 mod gtao;
@@ -16,10 +17,13 @@ mod occlusion;
 mod probe_gi;
 mod ray_hits;
 mod reflections;
+mod screen_query;
 mod shadows;
 mod ssgi;
+mod subsurface;
 mod sun_visibility;
 mod surfel_gi;
+mod virtual_shadows;
 mod visibility;
 
 use ghi::context::{Context as _, ContextCreate as _};
@@ -113,16 +117,21 @@ pub(super) fn opaque_layer_pipelines(
 /// Records one mesh dispatch per non-empty work range and batch of up to [`MAX_TASK_VIEWS`] views. The batches draw
 /// `view_count` packed views from `view_base` into consecutive layers from zero.
 ///
-/// `descriptor_sets` are the base set and a sink's [`OcclusionCulling::descriptor_set`]. The shared task shader declares
-/// the occlusion resources, so every pass binds them, but only `occlusion` other than [`OcclusionPhase::Disabled`] uses
-/// them. Call it inside a render pass whose attachments hold `view_count` layers, or one unlayered target for one view.
+/// `descriptor_sets` start with the base set and a sink's [`OcclusionCulling::descriptor_set`]; a pass whose fragment
+/// stage reads more sets appends them. The shared task shader declares the occlusion resources, so every pass binds
+/// them, but only `occlusion` other than [`OcclusionPhase::Disabled`] uses them. `minimum_caster_extent` is the
+/// narrowest instance, in normalized device units across x, that orthographic views draw; pass zero for perspective
+/// views and to draw every size. Call it inside a render pass whose attachments hold `view_count` layers, one unlayered
+/// target for one view, or no attachments when the fragment stage writes through atomics, as the virtual shadow page
+/// draw does.
 pub(super) fn record_meshlet_dispatches(
 	c: &mut impl ghi::command_buffer::RasterizationRenderPassMode,
-	descriptor_sets: [ghi::DescriptorSetHandle; 2],
+	descriptor_sets: &[ghi::DescriptorSetHandle],
 	occlusion: OcclusionPhase,
 	ranges: impl IntoIterator<Item = (MeshDispatch, Option<ghi::PipelineHandle>)>,
 	view_base: usize,
 	view_count: usize,
+	minimum_caster_extent: f32,
 ) {
 	use ghi::command_buffer::{BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _};
 
@@ -134,24 +143,35 @@ pub(super) fn record_meshlet_dispatches(
 			unreachable!("A work range that holds instances has a pipeline: masked instances wait for the coverage shaders.");
 		};
 		let c = c.bind_raster_pipeline(pipeline);
-		c.bind_descriptor_sets(&descriptor_sets);
-		for first_layer in (0..view_count).step_by(MAX_TASK_VIEWS) {
-			let batch_views = (view_count - first_layer).min(MAX_TASK_VIEWS);
-			c.write_push_constant(
-				0,
-				[
-					dispatch.work_item_base,
-					(view_base + first_layer) as u32,
-					first_layer as u32,
-					batch_views as u32,
-					occlusion as u32,
-				],
-			);
-			c.dispatch_meshes(dispatch.workgroup_count, 1, 1);
+		c.bind_descriptor_sets(descriptor_sets);
+		// The large instances' workgroups, then the ones small instances' meshlets share. The GPU counted both, so a
+		// range without work dispatches no workgroups.
+		for shared_lanes in [0, 1] {
+			let range = dispatch.phase * 2 + shared_lanes;
+			for first_layer in (0..view_count).step_by(MAX_TASK_VIEWS) {
+				let batch_views = (view_count - first_layer).min(MAX_TASK_VIEWS);
+				c.write_push_constant(
+					0,
+					[
+						range,
+						(view_base + first_layer) as u32,
+						first_layer as u32,
+						batch_views as u32,
+						occlusion as u32,
+						minimum_caster_extent.to_bits(),
+						shared_lanes,
+					],
+				);
+				c.dispatch_meshes_indirect(dispatch.records, range as usize);
+			}
 		}
 	}
 }
 
+use self::backdrop::BackdropPass;
+use self::screen_query::ScreenQueryPass;
+pub(crate) use self::screen_query::{NO_INSTANCE, SCREEN_QUERY_CAPACITY, ScreenQueryStages};
+pub(crate) use self::backdrop::{BackdropTargets, create_backdrop_targets};
 use self::depth_pyramid::DepthPyramidPass;
 // Only the layout tests compare the record with the stride its layer reflects.
 #[cfg(test)]
@@ -165,14 +185,14 @@ use self::gtao::{GtaoPass, GtaoTargets};
 pub(crate) use self::gtao::{GtaoSettings, create_gtao_targets};
 use self::light_clusters::LightClusterPass;
 pub(super) use self::materials::{MATERIAL_EVALUATION_PUSH_CONSTANT_SIZE, MATERIAL_PREPASS_PIPELINES};
-use self::materials::{MaterialEvaluationPass, MaterialPrepasses, ScreenSpaceLighting};
+use self::materials::{MaterialEvaluationPass, MaterialPrepasses, ScreenSpaceLighting, evaluation_is_active};
 use self::occlusion::OcclusionCulling;
 pub(crate) use self::occlusion::OcclusionPhase;
 pub(super) use self::probe_gi::PROBE_GI_PIPELINES;
 use self::probe_gi::ProbeResolvePass;
 pub(crate) use self::probe_gi::{
 	DEFAULT_PROBE_RAY_BUDGET, DEFAULT_PROBE_SPACING, PROBE_RAY_BUDGET_RANGE, PROBE_RAYS, PROBE_SPACING_RANGE, ProbeFrame,
-	ProbeGiSettings, ProbeVolume,
+	ProbeGiSettings, ProbeSchedule, ProbeVolume,
 };
 pub(super) use self::ray_hits::RAY_HIT_PIPELINES;
 pub(crate) use self::ray_hits::{RayHits, RayTracing};
@@ -181,7 +201,10 @@ use self::shadows::CascadeFitPass;
 pub(crate) use self::shadows::{ShadowMaps, ShadowWork, SunCascades};
 pub(super) use self::ssgi::SSGI_PIPELINES;
 use self::ssgi::SsgiPass;
-pub(crate) use self::ssgi::{SsgiTargets, create_ssgi_targets};
+pub(crate) use self::ssgi::{SsgiTargets, create_diffuse_radiance_history_target, create_ssgi_targets};
+pub(super) use self::subsurface::SUBSURFACE_PIPELINES;
+use self::subsurface::SubsurfacePass;
+pub(crate) use self::subsurface::{SubsurfaceTargets, create_subsurface_targets};
 pub(super) use self::sun_visibility::CONTACT_SHADOW_PIPELINES;
 use self::sun_visibility::SunVisibilityPass;
 pub(crate) use self::sun_visibility::{ContactShadowSettings, SunVisibilityTargets, create_sun_visibility_targets};
@@ -189,8 +212,9 @@ pub(super) use self::surfel_gi::SURFEL_GI_PIPELINES;
 use self::surfel_gi::SurfelResolvePass;
 pub(crate) use self::surfel_gi::{
 	DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET, MAX_SURFEL_RAY_BUDGET, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
-	SurfelFrame, SurfelGiSettings, SurfelLight, SurfelPool, SurfelTargets, create_surfel_targets,
+	SurfelFrame, SurfelGiSettings, SurfelLight, SurfelPool, SurfelPoolCounts, SurfelTargets, create_surfel_targets,
 };
+pub(crate) use self::virtual_shadows::VirtualShadowMark;
 use self::visibility::{VisibilityPass, VisibilityPhase};
 #[cfg(test)]
 pub(crate) use self::{
@@ -201,12 +225,13 @@ pub(crate) use self::{
 use super::acceleration_structures::AccelerationStructureWork;
 use super::features::{MaterialEvaluationMode, VisibilityFeatures};
 use super::layout::MAX_TASK_VIEWS;
-use super::mesh_dispatch::{MeshDispatch, PhaseDispatches};
+use super::mesh_dispatch::{MeshDispatch, MeshWork, PhaseDispatches};
 use super::scene::RenderInfo;
 use super::set_layouts;
 use super::shader_data::LightingData;
 use super::skinning::SkinningPass;
-use crate::configuration::ConfigurationValue;
+use super::virtual_shadows::ShaderVirtualShadowFrame;
+use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassFunction};
 use crate::rendering::{PipelineManagerClient, ShownDebugViews, Sink, View};
 
@@ -217,10 +242,16 @@ use crate::rendering::{PipelineManagerClient, ShownDebugViews, Sink, View};
 pub(crate) struct FrameWork<'a> {
 	/// Deforms the frame's skinned meshes.
 	pub(crate) skinning: &'a SkinningPass,
+	/// Builds the mesh work every pass that draws meshlets dispatches.
+	pub(crate) mesh_work: &'a MeshWork,
 	/// Draws the shadow maps every sink samples.
 	pub(crate) shadows: &'a ShadowMaps,
+	/// The frame's virtual shadow map placement and changed records, under the virtual technique.
+	pub(crate) virtual_shadows: Option<ShaderVirtualShadowFrame>,
 	/// Builds the acceleration structures surfel GI or probe GI traces, in frames they light.
 	pub(crate) acceleration_structures: Option<AccelerationStructureWork<'a>>,
+	/// Brings the generated environment up to date before any ray reads it.
+	pub(crate) environment: Option<&'a crate::rendering::render_pass::SceneEnvironment>,
 }
 
 /// The `StageCounters` struct holds the GPU timing counters one sink's visibility pass records around each of its
@@ -235,6 +266,8 @@ pub(crate) struct StageCounters {
 	shadow_maps: ghi::CounterHandle,
 	/// The max-depth pyramid built from the directional cascades.
 	shadow_depth_pyramid: ghi::CounterHandle,
+	/// The virtual shadow map's page passes and page draw.
+	virtual_shadow_maps: ghi::CounterHandle,
 	light_clusters: ghi::CounterHandle,
 	visibility_early: ghi::CounterHandle,
 	occlusion_pyramid: ghi::CounterHandle,
@@ -269,7 +302,11 @@ pub(crate) struct StageCounters {
 	fog_light: ghi::CounterHandle,
 	/// Opaque material evaluation.
 	material_evaluation: ghi::CounterHandle,
+	/// The spread of subsurface pixels' diffuse light.
+	subsurface: ghi::CounterHandle,
 	background: ghi::CounterHandle,
+	/// The copy of the opaque scene that blended materials read behind their surfaces.
+	backdrop: ghi::CounterHandle,
 	/// The transparent layer's visibility draw, material prepasses, and material evaluation.
 	transparent: ghi::CounterHandle,
 }
@@ -281,6 +318,7 @@ impl StageCounters {
 			skinning: builder.create_gpu_counter("skinning"),
 			shadow_maps: builder.create_gpu_counter("shadow-maps"),
 			shadow_depth_pyramid: builder.create_gpu_counter("shadow-depth-pyramid"),
+			virtual_shadow_maps: builder.create_gpu_counter("virtual-shadow-maps"),
 			light_clusters: builder.create_gpu_counter("light-clusters"),
 			visibility_early: builder.create_gpu_counter("visibility-early"),
 			occlusion_pyramid: builder.create_gpu_counter("occlusion-pyramid"),
@@ -312,7 +350,9 @@ impl StageCounters {
 			},
 			fog_light: builder.create_gpu_counter("fog-light"),
 			material_evaluation: builder.create_gpu_counter("material-evaluation"),
+			subsurface: builder.create_gpu_counter("subsurface"),
 			background: builder.create_gpu_counter("background"),
+			backdrop: builder.create_gpu_counter("backdrop"),
 			transparent: builder.create_gpu_counter("transparent"),
 		}
 	}
@@ -339,15 +379,17 @@ struct ScreenSpaceCounters {
 #[derive(Clone, Copy)]
 pub(crate) struct SinkTargets {
 	/// The scene's light, one copy per frame in flight. Reflection rays read the previous frame's copy.
-	pub(crate) lit: ghi::DynamicImageHandle,
+	pub(crate) lit: ghi::ImageHandle,
 	/// The scene's reverse-Z depth, one copy per frame in flight. Reflection rays read the previous frame's copy to find
 	/// the pixel that saw their hit.
-	pub(crate) depth: ghi::DynamicImageHandle,
+	pub(crate) depth: ghi::ImageHandle,
 	pub(crate) primitive_index: ghi::BaseImageHandle,
 	pub(crate) instance_id: ghi::BaseImageHandle,
-	/// The SSGI images, including the diffuse light that opaque material evaluation writes for next frame's rays. Surfel
-	/// GI and probe GI write the same images in SSGI's place.
+	/// The SSGI images. Surfel GI and probe GI write the same images in SSGI's place.
 	pub(crate) ssgi: SsgiTargets,
+	/// The diffuse light that opaque material evaluation writes for next frame's SSGI rays, present when the project
+	/// builds SSGI in.
+	pub(crate) diffuse_radiance_history: Option<ghi::ImageHandle>,
 	/// Surfel GI's own images, present when the frame has a [`SurfelPool`] that surfel GI can light this sink from.
 	pub(crate) surfels: Option<SurfelTargets>,
 	/// The sun's contact shadows, which opaque material evaluation multiplies into the sun's shadow.
@@ -356,6 +398,11 @@ pub(crate) struct SinkTargets {
 	pub(crate) gtao: GtaoTargets,
 	/// The half-resolution light of the height fog, which the height fog pass reads.
 	pub(crate) fog_light: ghi::BaseImageHandle,
+	/// The copy of the opaque scene that blended materials read behind their surfaces.
+	pub(crate) backdrop: BackdropTargets,
+	/// What opaque material evaluation leaves at subsurface pixels, present when the project builds subsurface
+	/// scattering in.
+	pub(crate) subsurface: Option<SubsurfaceTargets>,
 }
 
 /// The `IndirectDiffuseSource` enum names the pass that lights a frame's indirect diffuse light, so the frame runs only
@@ -391,6 +438,9 @@ impl IndirectDiffuseSource {
 			Self::Baked => 3,
 		}
 	}
+
+	/// Every source, in the order of the `render.gi.technique` words in [`GiSettings::SETTINGS`].
+	const ALL: [Self; 4] = [Self::ScreenSpace, Self::Surfels, Self::Probes, Self::Baked];
 
 	/// Returns the `gi.technique` value that selects this source, and the startup parameter that builds it in.
 	fn names(self) -> (&'static str, &'static str) {
@@ -429,6 +479,8 @@ pub(crate) struct GiSettings {
 	pub(crate) enabled: bool,
 	/// The technique that lights indirect diffuse light while `enabled`.
 	pub(crate) technique: IndirectDiffuseSource,
+	/// The techniques the project built into its shaders, the only ones `technique` can select.
+	pub(crate) features: VisibilityFeatures,
 }
 
 impl GiSettings {
@@ -449,55 +501,42 @@ impl GiSettings {
 		Self {
 			enabled: true,
 			technique,
+			features,
 		}
 	}
 
-	/// Applies one runtime parameter, returning the updated settings and the effective value, or leaves them unchanged.
-	///
-	/// A technique the project left out of its shaders, `features`, is not selected.
-	pub(crate) fn with_parameter(
-		self,
-		parameter: &str,
-		value: &ConfigurationValue,
-		features: VisibilityFeatures,
-	) -> Result<(Self, ConfigurationValue), String> {
-		match parameter {
-			"enabled" => {
-				let enabled = value.to_bool().ok_or(
-					"GI enabled was not set. The most likely cause is that the value is neither `true` nor `false`. Set it to `true` or `false`.",
-				)?;
-				Ok((Self { enabled, ..self }, ConfigurationValue::Bool(enabled)))
-			}
-			"technique" => {
-				// Technique names match in any letter case, so `SSGI` selects SSGI too.
-				let technique = value
-					.as_text()
-					.and_then(|text| {
-						[
-							IndirectDiffuseSource::ScreenSpace,
-							IndirectDiffuseSource::Surfels,
-							IndirectDiffuseSource::Probes,
-							IndirectDiffuseSource::Baked,
-						]
-						.into_iter()
-						.find(|technique| text.eq_ignore_ascii_case(technique.names().0))
-					})
-					.ok_or("GI technique was not set. The most likely cause is that the value is not `ssgi`, `surfels`, `probes`, or `baked`. Set it to one of the four.")?;
+	/// The runtime settings, named inside the `render.gi.` port. A technique the project left out of its shaders is
+	/// not selected, and the log says so.
+	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[
+		Setting {
+			name: "enabled",
+			accepts: Accepts::Bool,
+			value: |settings| Read::Bool(settings.enabled),
+			apply: |settings, read| {
+				let enabled = read.bool();
+				Ok(Self { enabled, ..settings })
+			},
+		},
+		Setting {
+			name: "technique",
+			// Listed in `IndirectDiffuseSource::ALL` order, which `apply` indexes.
+			accepts: Accepts::Choice(&["ssgi", "surfels", "probes", "baked"]),
+			value: |settings| Read::Choice(IndirectDiffuseSource::ALL.iter().position(|technique| *technique == settings.technique).unwrap_or(0)),
+			apply: |settings, read| {
+				let technique = IndirectDiffuseSource::ALL[read.choice()];
 				let (name, feature) = technique.names();
-				if !technique.built_in(features) {
-					return Err(format!(
+				if !technique.built_in(settings.features) {
+					let reason = format!(
 						"GI technique `{name}` was not selected. The most likely cause is that `render.{feature}` was `false` at startup, so the technique was left out of the project's shaders. Set it to `true` in `config.json`, then rebake with `beld bake --force`. See {}.",
 						crate::online_docs_url("use/resources/bake#leave-render-features-out-of-the-bake")
-					));
+					);
+					log::warn!("{reason}");
+					return Err(reason);
 				}
-				Ok((Self { technique, ..self }, ConfigurationValue::Text(name.to_string())))
-			}
-			_ => Err(
-				"GI parameter was not set. The most likely cause is that the parameter name is unsupported. Use `enabled` or `technique`."
-					.to_string(),
-			),
-		}
-	}
+				Ok(Self { technique, ..settings })
+			},
+		},
+	];
 }
 
 /// The `SinkHistory` struct describes what the previous frame's history images hold for one sink.
@@ -547,10 +586,17 @@ pub(crate) struct VisibilityRenderPass {
 	surfel_resolve: Option<SurfelResolvePass>,
 	/// Absent when the frame has no probe volume to light this sink from.
 	probe_resolve: Option<ProbeResolvePass>,
+	/// Absent when the project left subsurface scattering out of its shaders.
+	subsurface: Option<SubsurfacePass>,
 	reflections: ScreenSpaceReflections,
+	backdrop: BackdropPass,
+	/// Reads the visibility buffer at the pixels of the sink's screen scene queries.
+	screen_query: ScreenQueryPass,
 	material_evaluation: MaterialEvaluationPass,
 	fog_light: FogLightPass,
 	stage_counters: StageCounters,
+	/// This sink's marking of the virtual shadow map's pages, under the virtual technique.
+	virtual_shadow_mark: Option<VirtualShadowMark>,
 	/// Which material debug views to write this frame; see `MATERIAL_DEBUG_VIEWS`.
 	debug_views: crate::rendering::DebugViews,
 }
@@ -563,13 +609,14 @@ impl VisibilityRenderPass {
 	/// environment written by the pipeline manager; see [`Self::material_evaluation_descriptor_set`]. `features` are
 	/// the ones the project's material shaders were baked with; a left-out feature creates no pass and requests no
 	/// pipelines. Surfel GI lights the sink when `targets` holds surfel images, and `probe_gi` tells whether the frame
-	/// has a [`ProbeVolume`] that probe GI can light this sink from.
+	/// has a [`ProbeVolume`] that probe GI can light this sink from. `blue_noise` is the texture the screen-space
+	/// passes draw their per-pixel random numbers from.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: PipelineManagerClient,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		views_buffer: ghi::BaseBufferHandle,
-		lighting_buffer: ghi::DynamicBufferHandle<LightingData>,
+		lighting_buffer: ghi::BufferHandle<LightingData>,
 		targets: SinkTargets,
 		shadow_maps: &ShadowMaps,
 		stage_counters: StageCounters,
@@ -577,6 +624,7 @@ impl VisibilityRenderPass {
 		meshlet_groups: u32,
 		probe_gi: bool,
 		debug_views: crate::rendering::DebugViews,
+		blue_noise: ghi::ImageHandle,
 	) -> Self {
 		let visibility_buffer_descriptor_set =
 			set_layouts::VISIBILITY_BUFFER.create_set(context, "Visibility Buffer Descriptor Set");
@@ -609,14 +657,27 @@ impl VisibilityRenderPass {
 			cascade_fit.receiver_bounds(),
 			cascade_fit.receiver_fit_parameters(),
 		);
-		let occlusion = OcclusionCulling::new(context, &pipeline_manager, depth, meshlet_groups);
-		let ssgi = features.ssgi.then(|| {
+		let occlusion = OcclusionCulling::new(
+			context,
+			&pipeline_manager,
+			depth,
+			meshlet_groups,
+			shadow_maps.virtual_maps.page_hierarchy,
+		);
+		let virtual_shadow_mark = shadow_maps
+			.virtual_maps
+			.enabled()
+			.then(|| shadow_maps.virtual_maps.create_mark(context, depth));
+		// The diffuse radiance history exists exactly when the project builds SSGI in.
+		let ssgi = targets.diffuse_radiance_history.map(|diffuse_radiance_history| {
 			SsgiPass::new(
 				context,
 				&pipeline_manager,
 				depth_pyramid.depth_pyramid,
 				depth_pyramid.view_data,
 				targets.ssgi,
+				diffuse_radiance_history,
+				blue_noise,
 			)
 		});
 		let surfel_resolve = targets.surfels.map(|surfels| {
@@ -651,6 +712,17 @@ impl VisibilityRenderPass {
 			targets.lit,
 			targets.depth,
 		);
+		let backdrop = BackdropPass::new(
+			context,
+			&pipeline_manager,
+			depth_pyramid.view_descriptor_set,
+			material_evaluation_descriptor_set,
+			depth_sampler,
+			targets.lit,
+			depth,
+			targets.backdrop,
+		);
+		let screen_query = ScreenQueryPass::new(context, &pipeline_manager, targets.instance_id);
 		let visibility = set_layouts::VISIBILITY_BUFFER.binder(visibility_buffer_descriptor_set);
 		let evaluation = set_layouts::MATERIAL_EVALUATION.binder(material_evaluation_descriptor_set);
 		// The debug target pool, which the shown views write; see `MATERIAL_DEBUG_VIEWS`.
@@ -664,9 +736,9 @@ impl VisibilityRenderPass {
 			.collect::<Vec<_>>();
 		writes.extend([
 			evaluation.image("lit_map", targets.lit),
-			evaluation.image("diffuse_radiance_map", targets.ssgi.diffuse_radiance_history),
 			evaluation.buffer("lighting_data", lighting_buffer),
 			evaluation.sampled("ao", targets.gtao.ambient_occlusion, linear_sampler),
+			evaluation.sampled("gtao_bent_normal", targets.gtao.bent_normal, linear_sampler),
 			// Material evaluation upsamples the half-resolution SSGI result itself. It fetches texels at edges, and filters the
 			// history in one read where all four texels lie on the pixel's plane.
 			evaluation.sampled("ssgi_history", targets.ssgi.history, linear_sampler),
@@ -679,6 +751,20 @@ impl VisibilityRenderPass {
 			visibility.image("triangle_index", targets.primitive_index),
 			visibility.image("instance_index_render_target", targets.instance_id),
 		]);
+		// Without SSGI the shaders leave out `diffuse_radiance_map`, so nothing is bound there.
+		writes.extend(
+			targets
+				.diffuse_radiance_history
+				.map(|image| evaluation.image("diffuse_radiance_map", image)),
+		);
+		// Without subsurface scattering the shaders leave out its images, so nothing is bound there.
+		if let Some(subsurface) = targets.subsurface {
+			writes.extend([
+				evaluation.image("subsurface_diffuse", subsurface.diffuse),
+				evaluation.image("subsurface_shape", subsurface.shape),
+				evaluation.image("subsurface_albedo", subsurface.albedo),
+			]);
+		}
 		// One image of each local shadow-map size class, which a light picks by its class.
 		for (size_class, (cone, point)) in shadow_maps.cone.iter().zip(&shadow_maps.point).enumerate() {
 			writes.extend([
@@ -713,6 +799,7 @@ impl VisibilityRenderPass {
 					depth_pyramid.depth_pyramid,
 					depth_pyramid.view_descriptor_set,
 					targets.gtao,
+					blue_noise,
 				)
 			}),
 			sun_visibility: SunVisibilityPass::new(
@@ -736,16 +823,42 @@ impl VisibilityRenderPass {
 				depth,
 				shadow_maps,
 				targets.fog_light,
+				blue_noise,
 			),
 			depth_pyramid,
 			ssgi,
 			surfel_resolve,
 			probe_resolve,
+			subsurface: targets
+				.subsurface
+				.map(|subsurface| SubsurfacePass::new(context, &pipeline_manager, depth, targets.lit, subsurface)),
 			reflections,
+			backdrop,
+			screen_query,
 			stage_counters,
+			virtual_shadow_mark,
 			pipeline_manager,
 			debug_views,
 		}
+	}
+
+	/// Writes this frame's screen scene query `points` and returns the reads to give [`Self::prepare`], or `None` without
+	/// points or while a read pipeline is still compiling. See [`ScreenQueryPass::prepare`].
+	pub(crate) fn prepare_screen_queries(
+		&self,
+		frame: &mut ghi::implementation::Frame,
+		points: &[[u32; 2]],
+	) -> Option<ScreenQueryStages> {
+		self.screen_query.prepare(frame, &self.pipeline_manager, points)
+	}
+
+	/// Returns the instances the frame that completed when `frame` started read for this sink's screen scene queries.
+	/// See [`ScreenQueryPass::read`].
+	pub(crate) fn read_screen_queries<'a>(
+		&self,
+		frame: &'a ghi::implementation::Frame,
+	) -> Option<&'a [u32; SCREEN_QUERY_CAPACITY]> {
+		self.screen_query.read(frame)
 	}
 
 	/// Returns the descriptor set that carries material-evaluation-only resources, including the environment.
@@ -764,7 +877,8 @@ impl VisibilityRenderPass {
 	/// work when it picked surfel GI or probe GI; the sink that records the frame-wide work also records the surfel grid
 	/// or the probe updates. `gtao_settings` and
 	/// `contact_shadow_settings` are the runtime controls the manager holds. `fog` is the newest height fog, which the
-	/// sink's fog light march lights.
+	/// sink's fog light march lights. `screen_queries` are the reads [`Self::prepare_screen_queries`] returned for this
+	/// frame, which record around the transparent layer.
 	pub(crate) fn prepare<'a>(
 		&'a self,
 		frame: &mut ghi::implementation::Frame,
@@ -782,6 +896,7 @@ impl VisibilityRenderPass {
 		contact_shadow_settings: ContactShadowSettings,
 		fog: Option<&crate::rendering::ExponentialHeightFog>,
 		background: Option<&crate::rendering::render_pass::SceneBackground>,
+		screen_queries: Option<ScreenQueryStages>,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<impl RenderPassFunction + use<'a>> {
 		let pipeline_manager = &self.pipeline_manager;
@@ -791,13 +906,35 @@ impl VisibilityRenderPass {
 			Some(_) => shadow_work.receiver_fit.as_slice(),
 			None => &[],
 		};
-		let (skinning, shadows) = match frame_work {
+		let virtual_shadows = match (frame_work, &self.virtual_shadow_mark) {
+			(
+				Some(FrameWork {
+					shadows: shadow_maps,
+					virtual_shadows: Some(data),
+					..
+				}),
+				Some(mark),
+			) => Some(shadow_maps.virtual_maps.prepare(
+				frame,
+				pipeline_manager,
+				data,
+				mark,
+				sink,
+				dispatches,
+				self.visibility.descriptor_sets,
+				self.stage_counters.virtual_shadow_maps,
+			)?),
+			_ => None,
+		};
+		let (skinning, mesh_work, shadows) = match frame_work {
 			Some(FrameWork {
 				skinning,
+				mesh_work,
 				shadows: shadow_maps,
 				..
 			}) => (
 				Some((skinning, pipeline_manager.pipeline(skinning.pipeline)?)),
+				Some((mesh_work, mesh_work.pipelines(pipeline_manager)?)),
 				Some(shadow_maps.prepare(
 					frame,
 					pipeline_manager,
@@ -808,7 +945,7 @@ impl VisibilityRenderPass {
 					render_info.coverage_pipelines,
 				)?),
 			),
-			None => (None, None),
+			None => (None, None, None),
 		};
 		let visibility_pipelines = opaque_layer_pipelines(
 			self.visibility.pipelines.resolve(pipeline_manager)?,
@@ -845,6 +982,10 @@ impl VisibilityRenderPass {
 			Some(gtao) => Some((gtao, gtao.pipelines.resolve(pipeline_manager)?)),
 			None => None,
 		};
+		let subsurface_pipelines = match &self.subsurface {
+			Some(subsurface) => Some((subsurface, subsurface.pipelines.resolve(pipeline_manager)?)),
+			None => None,
+		};
 		let lit_by_ssgi = indirect_diffuse == Some(IndirectDiffuseSource::ScreenSpace);
 		let ssgi_pipelines = match self.ssgi.as_ref().filter(|_| lit_by_ssgi) {
 			Some(ssgi) => Some((ssgi, ssgi.pipelines.resolve(pipeline_manager)?)),
@@ -861,6 +1002,7 @@ impl VisibilityRenderPass {
 			sun_visibility_pipeline,
 		);
 		let gtao = gtao_pipelines.map(|(gtao, pipelines)| gtao.prepare(frame, sink, gtao_settings, pipelines));
+		let subsurface = subsurface_pipelines.map(|(subsurface, pipelines)| subsurface.prepare(frame, sink, pipelines));
 		// SSGI history exists only if SSGI also lit last frame: another source leaves no diffuse radiance for its rays.
 		let ssgi_history = history.filter(|history| history.indirect_diffuse == Some(IndirectDiffuseSource::ScreenSpace));
 		let ssgi = ssgi_pipelines.map(|(ssgi, pipelines)| ssgi.prepare(frame, sink, ssgi_history, exposure, pipelines));
@@ -941,7 +1083,22 @@ impl VisibilityRenderPass {
 		// lost if this pass gave up on the frame after it. A background still compiling leaves the sky black for this
 		// frame instead of holding the scene back.
 		let background = background.and_then(|background| background.prepare(frame, sink, frame_allocator));
+		// The generated environment is prepared last for the same reason, and recorded first: surfel and probe rays and
+		// material evaluation all read it.
+		let environment = frame_work
+			.and_then(|work| work.environment)
+			.and_then(|environment| environment.prepare(frame, sink, frame_allocator));
 		let extent = sink.extent();
+		// Blended materials read the scene behind them only from the copy, so it runs only in frames that draw one.
+		let reads_backdrop = !dispatches.transparent.is_empty()
+			&& render_info.transparent_evaluations.iter().any(|evaluation| {
+				evaluation.reads_backdrop && evaluation_is_active(&render_info.transparent_evaluation_mask, evaluation.index)
+			});
+		let backdrop = reads_backdrop
+			.then(|| self.backdrop.prepare(pipeline_manager, extent))
+			.flatten();
+		// The transparent phase waits for the copy it reads while the copy's pipeline compiles, as it waits for its own.
+		let draws_transparent = !dispatches.transparent.is_empty() && (backdrop.is_some() || !reads_backdrop);
 		// Each stage records its counter only when it records commands, so an idle stage reports no time.
 		let counters = self.stage_counters;
 		let skinning = skinning.filter(|_| !render_info.skinning_dispatches.is_empty());
@@ -950,12 +1107,19 @@ impl VisibilityRenderPass {
 			use ghi::command_buffer::CommonCommandBufferMode as _;
 
 			c.start_region(|label| label.write_str("Visibility Render Model"));
+			if let Some(environment) = environment {
+				environment(c);
+			}
 			if let Some((pass, pipeline)) = skinning {
 				c.counter(counters.skinning, |c| {
 					// New ranges get their UVs beside the positions and normals skinning writes, before any stage reads them.
 					ghi::command_buffer::CommandBufferRecording::copy_buffers(c, &render_info.posed_uv_copies);
 					pass.record(c, &render_info.skinning_dispatches, pipeline)
 				});
+			}
+			// Every pass below that draws meshlets dispatches the work this builds.
+			if let Some((work, pipelines)) = mesh_work {
+				work.record(c, pipelines);
 			}
 			// Cascades fitted to the camera's surfaces are drawn once the opaque layer's depth exists. The shadow
 			// recording times its maps and pyramid with this sink's counters itself.
@@ -988,6 +1152,10 @@ impl VisibilityRenderPass {
 					record_compute_stages(c, None, &[surfels.validate])
 				});
 				c.counter(counters.surfel_integrate, |c| record_compute_stages(c, None, &surfels.update));
+				// The CPU logs the counts from this frame's copy once the frame completes.
+				let (counts, readback) = surfels.counts;
+				let copy = ghi::BufferCopyDescriptor::new(counts, 0, readback, 0, size_of::<SurfelPoolCounts>());
+				ghi::command_buffer::CommandBufferRecording::copy_buffers(c, &[copy]);
 			}
 			// The probe updates bring every probe the sinks' resolves read up to date. The trace reads the volume before
 			// the update rewrites it, so the hits bounce the light the probes held last frame.
@@ -997,6 +1165,10 @@ impl VisibilityRenderPass {
 				});
 				c.counter(counters.probe_trace, |c| probes.rays.record(c));
 				c.counter(counters.probe_update, |c| record_compute_stages(c, None, &[probes.update]));
+				// The CPU logs the schedule from this frame's copy once the frame completes.
+				let (schedule, readback) = probes.schedule_counts;
+				let copy = ghi::BufferCopyDescriptor::new(schedule, 0, readback, 0, size_of::<ProbeSchedule>());
+				ghi::command_buffer::CommandBufferRecording::copy_buffers(c, &[copy]);
 			}
 
 			// The opaque layer establishes the depth and color retained by every later transparent primitive. Its early
@@ -1012,6 +1184,10 @@ impl VisibilityRenderPass {
 			c.counter(counters.visibility_late, |c| {
 				draw(c, VisibilityPhase::Opaque, OcclusionPhase::Late)
 			});
+			// The transparent layer clears the instance identifiers, so the queries read the opaque layer's now.
+			if let Some(queries) = &screen_queries {
+				record_compute_stages(c, None, &[queries.opaque]);
+			}
 			if let Some((prepasses, pipelines)) = material_prepasses {
 				c.counter(counters.material_prepasses, |c| {
 					prepasses.record(c, extent, pipelines, VisibilityPhase::Opaque)
@@ -1019,6 +1195,11 @@ impl VisibilityRenderPass {
 			}
 			// The depth pyramid also finds the directional shadow receiver bounds the cascade fit shrinks to.
 			c.counter(counters.depth_pyramid, &depth_pyramid);
+			// The virtual shadow map's pages follow this sink's receivers, so they are marked and drawn once its depth
+			// exists, before the sun visibility resolve samples them. The recording times itself.
+			if let Some(virtual_shadows) = &virtual_shadows {
+				virtual_shadows(c);
+			}
 			if fits_receivers {
 				c.counter(counters.cascade_fit, &cascade_fit);
 				if let Some(shadows) = &shadows {
@@ -1073,14 +1254,27 @@ impl VisibilityRenderPass {
 				c.counter(counters.fog_light, |c| record_compute_stages(c, None, stages));
 			}
 			c.counter(counters.material_evaluation, &opaque_materials);
+			// Subsurface pixels add their spread diffuse light before the background and the backdrop copy, so blended
+			// surfaces see it behind them.
+			if let Some(stage) = &subsurface {
+				c.counter(counters.subsurface, |c| {
+					record_compute_stages(c, None, std::slice::from_ref(stage))
+				});
+			}
 			// The background fills pixels no opaque surface covered, so transparent surfaces composite over it.
 			if let Some(background) = background {
 				c.counter(counters.background, background);
 			}
 
+			// The copy reads the opaque layer and the background, before the transparent draw overwrites the depth.
+			if let Some(stage) = &backdrop {
+				c.counter(counters.backdrop, |c| {
+					record_compute_stages(c, None, std::slice::from_ref(stage))
+				});
+			}
 			// The visibility buffer holds one transparent layer. Resolving every blend primitive together lets
 			// normal depth testing select the nearest surface before source-over evaluation.
-			if !dispatches.transparent.is_empty() {
+			if draws_transparent {
 				c.counter(counters.transparent, |c| {
 					draw(c, VisibilityPhase::Transparent, OcclusionPhase::Test);
 					if let Some((prepasses, pipelines)) = material_prepasses {
@@ -1088,6 +1282,13 @@ impl VisibilityRenderPass {
 					}
 					transparent_materials(c);
 				});
+				// A blended surface the transparent layer drew at a queried pixel is in front of the opaque one.
+				if let Some(queries) = &screen_queries {
+					record_compute_stages(c, None, &[queries.blended]);
+				}
+			}
+			if let Some(queries) = &screen_queries {
+				ghi::command_buffer::CommandBufferRecording::copy_buffers(c, &[queries.copy]);
 			}
 			c.end_region();
 		})
@@ -1097,6 +1298,7 @@ impl VisibilityRenderPass {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::configuration::{ConfigurationValue, apply_setting};
 
 	fn text(value: &str) -> ConfigurationValue {
 		ConfigurationValue::Text(value.to_string())
@@ -1126,19 +1328,25 @@ mod tests {
 		assert!(GiSettings::new(features(true, false, false)).enabled);
 	}
 
+	/// Applies one `render.gi.` update to the settings of a project built with `features`.
+	fn set(
+		features: VisibilityFeatures,
+		name: &str,
+		value: ConfigurationValue,
+	) -> Result<(GiSettings, ConfigurationValue), String> {
+		apply_setting(GiSettings::new(features), GiSettings::SETTINGS, "", name, &value)
+	}
+
 	#[test]
 	fn gi_enabled_accepts_booleans_and_startup_text() {
 		let features = VisibilityFeatures::default();
-		let (disabled, effective) = GiSettings::new(features)
-			.with_parameter("enabled", &text("false"), features)
-			.unwrap();
+		let (disabled, effective) = set(features, "enabled", text("false")).unwrap();
 		assert!(!disabled.enabled);
 		assert_eq!(effective, ConfigurationValue::Bool(false));
-		let (enabled, _) = disabled
-			.with_parameter("enabled", &ConfigurationValue::Bool(true), features)
-			.unwrap();
+		let (enabled, _) =
+			apply_setting(disabled, GiSettings::SETTINGS, "", "enabled", &ConfigurationValue::Bool(true)).unwrap();
 		assert!(enabled.enabled);
-		assert!(enabled.with_parameter("enabled", &text("off"), features).is_err());
+		assert!(set(features, "enabled", text("off")).is_err());
 	}
 
 	#[test]
@@ -1147,28 +1355,23 @@ mod tests {
 			surfel_gi: true,
 			..VisibilityFeatures::default()
 		};
-		let settings = GiSettings::new(both);
 
-		let (surfels, effective) = settings.with_parameter("technique", &text("surfels"), both).unwrap();
+		let (surfels, effective) = set(both, "technique", text("surfels")).unwrap();
 		assert_eq!(surfels.technique, IndirectDiffuseSource::Surfels);
 		assert_eq!(effective, text("surfels"));
-		let (ssgi, effective) = surfels.with_parameter("technique", &text("SSGI"), both).unwrap();
+		let (ssgi, effective) = apply_setting(surfels, GiSettings::SETTINGS, "", "technique", &text("SSGI")).unwrap();
 		assert_eq!(ssgi.technique, IndirectDiffuseSource::ScreenSpace);
 		assert_eq!(effective, text("ssgi"));
-		assert!(settings.with_parameter("technique", &text("voxels"), both).is_err());
+		assert!(set(both, "technique", text("voxels")).is_err());
 
 		// A technique left out of the shaders can't be selected, and the reason names the parameter that builds it in.
-		let reason = settings
-			.with_parameter("technique", &text("surfels"), VisibilityFeatures::default())
-			.unwrap_err();
+		let reason = set(VisibilityFeatures::default(), "technique", text("surfels")).unwrap_err();
 		assert!(reason.contains("`render.surfel-gi.enabled`"), "{reason}");
-		let reason = settings.with_parameter("technique", &text("probes"), both).unwrap_err();
+		let reason = set(both, "technique", text("probes")).unwrap_err();
 		assert!(reason.contains("`render.probe-gi.enabled`"), "{reason}");
 
 		let probes_built_in = VisibilityFeatures { probe_gi: true, ..both };
-		let (probes, effective) = settings
-			.with_parameter("technique", &text("Probes"), probes_built_in)
-			.unwrap();
+		let (probes, effective) = set(probes_built_in, "technique", text("Probes")).unwrap();
 		assert_eq!(probes.technique, IndirectDiffuseSource::Probes);
 		assert_eq!(effective, text("probes"));
 	}
@@ -1182,13 +1385,10 @@ mod tests {
 		};
 		assert_eq!(GiSettings::new(baked).technique, IndirectDiffuseSource::Baked);
 
-		let settings = GiSettings::new(VisibilityFeatures::default());
-		let (lightmaps, effective) = settings.with_parameter("technique", &text("Baked"), baked).unwrap();
+		let (lightmaps, effective) = set(baked, "technique", text("Baked")).unwrap();
 		assert_eq!(lightmaps.technique, IndirectDiffuseSource::Baked);
 		assert_eq!(effective, text("baked"));
-		let reason = settings
-			.with_parameter("technique", &text("baked"), VisibilityFeatures::default())
-			.unwrap_err();
+		let reason = set(VisibilityFeatures::default(), "technique", text("baked")).unwrap_err();
 		assert!(reason.contains("`render.baked-gi.enabled`"), "{reason}");
 	}
 }

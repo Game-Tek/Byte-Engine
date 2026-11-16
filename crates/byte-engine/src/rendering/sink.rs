@@ -1,7 +1,11 @@
 use math::Matrix;
 use utils::Extent;
 
-use crate::{rendering::view::View, time::MediaTime};
+use crate::{
+	core::factory::Handle,
+	rendering::{ExponentialHeightFog, Sun, view::View},
+	time::MediaTime,
+};
 
 /// The shortest gap between the focus distance and the focal length, in meters. A lens can't focus nearer than its
 /// focal length, where the circle of confusion grows without bound.
@@ -22,6 +26,12 @@ pub struct Sink {
 	/// The lens's f-number, focus distance in meters, and sensor height in meters; see [`Self::with_lens`].
 	lens: [f32; 3],
 	frame_interval: MediaTime,
+	/// The scene's sun; see [`Self::with_sun`].
+	sun: Option<Sun>,
+	/// The scene's fog; see [`Self::with_fog`].
+	fog: Option<ExponentialHeightFog>,
+	/// The camera the sink shows; see [`Self::with_camera`].
+	camera: Option<Handle>,
 	index: usize,
 }
 
@@ -39,6 +49,9 @@ impl Sink {
 			exposure_scale: 1.0,
 			lens: [f32::INFINITY, 10.0, 0.024],
 			frame_interval: MediaTime::ZERO,
+			sun: None,
+			fog: None,
+			camera: None,
 			index,
 		}
 	}
@@ -102,6 +115,29 @@ impl Sink {
 		self
 	}
 
+	/// Sets the sun the frame shows. Passes that draw sunlight in the air, such as the sky and the fog, read it with
+	/// [`Self::sun`].
+	pub fn with_sun(mut self, sun: Sun) -> Self {
+		self.sun = Some(sun);
+		self
+	}
+
+	/// Returns the scene's sun, or `None` while the scene has no [`crate::rendering::DirectionalLight`].
+	pub fn sun(&self) -> Option<Sun> {
+		self.sun
+	}
+
+	/// Sets the fog the frame shows. The height fog pass reads it with [`Self::fog`].
+	pub fn with_fog(mut self, fog: ExponentialHeightFog) -> Self {
+		self.fog = Some(fog);
+		self
+	}
+
+	/// Returns the scene's newest [`ExponentialHeightFog`], or `None` while the scene has none.
+	pub fn fog(&self) -> Option<ExponentialHeightFog> {
+		self.fog
+	}
+
 	/// Returns the camera or light view used by this render target.
 	pub fn view(&self) -> View {
 		self.view
@@ -132,5 +168,17 @@ impl Sink {
 	/// Returns the renderer-local sink index.
 	pub fn index(&self) -> usize {
 		self.index
+	}
+
+	/// Sets the camera the sink shows, so passes can answer requests that name the camera, such as a
+	/// [`crate::rendering::ScreenSceneQuery`].
+	pub fn with_camera(mut self, camera: Handle) -> Self {
+		self.camera = Some(camera);
+		self
+	}
+
+	/// Returns the camera the sink shows, or `None` for a sink built without one, such as one made for a test.
+	pub fn camera(&self) -> Option<Handle> {
+		self.camera
 	}
 }

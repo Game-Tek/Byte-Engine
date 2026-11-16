@@ -127,6 +127,8 @@ fn flatten<'a>(
 			let Nodes::Parameter { name, r#type } = parameter.node() else {
 				continue;
 			};
+			// A signature has fewer than ten parameters in practice, so the linear search over the parameters merged so
+			// far stays trivial; it runs once per composed signature at compile time.
 			match params.iter().find_map(|existing| match existing.node() {
 				Nodes::Parameter {
 					name: existing_name,

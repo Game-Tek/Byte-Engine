@@ -128,4 +128,3 @@ pub fn binding_sampler(texture: &NodeReference) -> Option<SamplerState> {
 		_ => None,
 	}
 }
-

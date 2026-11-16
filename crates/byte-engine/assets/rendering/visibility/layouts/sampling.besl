@@ -50,6 +50,16 @@ square_to_cosine: fn (point: vec2f) -> vec3f {
 	return vec3f(disk.x, disk.y, sqrt(max(0.0, 1.0 - dot(disk, disk))));
 }
 
+// Returns point `index` of a Hammersley set of `count` points, the set the offline environment bake prefilters with: `index / count`, and the index's bits reversed.
+sample_hammersley: fn (index: u32, count: u32) -> vec2f {
+	let bits: u32 = (index << 16) | (index >> 16);
+	bits = ((bits & 1431655765) << 1) | ((bits & 2863311530) >> 1);
+	bits = ((bits & 858993459) << 2) | ((bits & 3435973836) >> 2);
+	bits = ((bits & 252645135) << 4) | ((bits & 4042322160) >> 4);
+	bits = ((bits & 16711935) << 8) | ((bits & 4278255360) >> 8);
+	return vec2f(f32(index) / f32(count), f32(bits) * 0.00000000023283064365386963);
+}
+
 // Returns a well-mixed 32-bit hash of `value` (Bob Jenkins' one-at-a-time finalizer, as webgiya uses it).
 sample_hash: fn (value: u32) -> u32 {
 	let x: u32 = value;

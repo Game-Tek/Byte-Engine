@@ -2,7 +2,7 @@ use super::*;
 
 impl Context {
 	/// Waits for and releases one upload slot during frame retirement or a cross-queue handoff.
-	pub(super) fn retire_internal_uploads(&mut self, sequence_index: u8) {
+	pub(crate) fn retire_internal_uploads(&mut self, sequence_index: u8) {
 		if self.internal_upload_queues[sequence_index as usize].take().is_none() {
 			return;
 		}
@@ -10,21 +10,10 @@ impl Context {
 		self.wait_for_private_synchronizer(synchronizer);
 	}
 
-	/// Releases the internal upload submissions that already completed, without waiting.
-	///
-	/// A frame retires its uploads when its sequence is reused, but detached recordings have no such point. They
-	/// call this before submitting more uploads, and completion polls call it too, so retained staging pages and
-	/// native commands stay bounded by the uploads still running instead of growing for the life of the context.
-	pub(super) fn retire_completed_internal_uploads(&mut self) {
+	/// Waits for and releases every internal upload submission still in flight.
+	pub(crate) fn retire_all_internal_uploads(&mut self) {
 		for sequence_index in 0..self.internal_upload_queues.len() {
-			if self.internal_upload_queues[sequence_index].is_none() {
-				continue;
-			}
-			let synchronizer =
-				synchronizer_for_sequence(&self.synchronizers, self.internal_upload_synchronizer, sequence_index as u8);
-			if self.synchronizers.resource_mut(synchronizer).poll(&mut self.queues) {
-				self.internal_upload_queues[sequence_index] = None;
-			}
+			self.retire_internal_uploads(sequence_index as u8);
 		}
 	}
 
@@ -61,6 +50,9 @@ impl Context {
 		// The context does not exist yet, so the internal upload synchronizer is built like `create_synchronizer` does.
 		let internal_upload_synchronizer: graphics_hardware_interface::SynchronizerHandle =
 			synchronizers.add_chain((0..frames).map(|_| Synchronizer::default()));
+		// Workloads wait as they submit, so one completes before the next starts and they share one synchronizer.
+		let workload_synchronizer: graphics_hardware_interface::SynchronizerHandle =
+			synchronizers.add_chain(std::iter::once(Synchronizer::default()));
 		Ok(Context {
 			factory: Factory::new(device.clone(), compiler, settings),
 			allocator: allocator::Allocator::new(device.clone(), settings.debug_labels),
@@ -70,7 +62,6 @@ impl Context {
 			buffers: ResourceCollection::with_capacity(1024),
 			images: ResourceCollection::with_capacity(1024),
 			samplers: Vec::new(),
-			allocations: Vec::new(),
 			descriptor_sets: ResourceCollection::default(),
 			meshes: Vec::new(),
 			acceleration_structures: Default::default(),
@@ -84,6 +75,7 @@ impl Context {
 			command_buffers: Vec::new(),
 			synchronizers,
 			internal_upload_synchronizer,
+			workload_synchronizer,
 			internal_upload_queues: vec![None; MAX_FRAMES_IN_FLIGHT],
 			swapchains: Vec::new(),
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
@@ -92,8 +84,7 @@ impl Context {
 			timestamp_frequency,
 			resource_to_descriptor: HashMap::default(),
 			settings,
-			pending_buffer_syncs: VecDeque::new(),
-			pending_image_syncs: VecDeque::new(),
+			pending_buffer_clears: VecDeque::new(),
 			tasks: Vec::new(),
 			upload_arenas: (0..=MAX_FRAMES_IN_FLIGHT)
 				.map(|_| command_buffer::UploadArena::new(settings.debug_labels))
@@ -104,61 +95,80 @@ impl Context {
 		})
 	}
 
-	/// Creates a zeroed buffer and, for a device-only buffer, the staging copy the CPU maps in its place.
+	/// Creates one zeroed buffer copy: private storage when only the GPU accesses it, mapped shared storage otherwise.
+	///
+	/// Shared copies are zeroed here. A private copy is zero-filled by the next internal submission, which the caller
+	/// queues with [`Self::queue_buffer_clear`] once the copy has a handle.
 	pub(super) fn create_buffer_resource(
 		&mut self,
 		name: Option<&str>,
 		size: usize,
 		resource_uses: crate::Uses,
-		device_accesses: crate::DeviceAccesses,
+		host_access: crate::HostAccess,
+		copies: crate::Copies,
 	) -> Buffer {
-		let options = utils::resource_options_from_access(device_accesses);
-		let name = name.map(str::to_owned);
-		let buffer = self.allocator.buffer(size, options);
-
-		let staging = (device_accesses == crate::DeviceAccesses::DeviceOnly)
-			.then(|| self.allocator.buffer(size, mtl::MTLResourceOptions::StorageModeShared));
-
-		if let Some(name) = name.as_deref().filter(|_| self.settings.debug_labels) {
+		let buffer = self.allocator.buffer(size, utils::buffer_options(host_access));
+		if let Some(name) = name.filter(|_| self.settings.debug_labels) {
 			buffer.setLabel(Some(&NSString::from_str(name)));
-			if let Some(staging) = staging.as_ref() {
-				staging.setLabel(Some(&NSString::from_str(&format!("{name}_staging"))));
-			}
 		}
 
-		// A device-only buffer is mapped through its staging copy.
-		let pointer = staging.as_ref().unwrap_or(&buffer).contents().as_ptr().cast::<u8>();
+		let pointer = if host_access == crate::HostAccess::None {
+			std::ptr::null_mut()
+		} else {
+			buffer.contents().as_ptr().cast::<u8>()
+		};
 		if size != 0 && !pointer.is_null() {
 			// Typed buffer APIs expose the mapped bytes as zeroable POD values, and the memory may have held another
 			// resource, so initialize the complete representation.
 			unsafe { std::ptr::write_bytes(pointer, 0, size) };
 		}
-		let gpu_address = buffer.gpuAddress();
-		let staging = staging.map(|staging| {
-			self.buffers
-				.add(Buffer {
-					name: name.as_ref().map(|name| format!("{name}_staging")),
-					staging: None,
-					buffer: staging,
-					size,
-					gpu_address: 0,
-					pointer,
-					uses: resource_uses,
-					access: crate::DeviceAccesses::HostToDevice,
-				})
-				.1
-		});
 
 		Buffer {
-			name,
+			name: name.map(str::to_owned),
+			gpu_address: buffer.gpuAddress(),
 			buffer,
-			staging,
 			size,
-			gpu_address,
 			pointer,
 			uses: resource_uses,
-			access: device_accesses,
+			host_access,
+			copies,
 		}
+	}
+
+	/// Queues the zero fill of a private buffer copy for the next internal submission. Shared copies need none.
+	pub(super) fn queue_buffer_clear(&mut self, handle: BufferHandle) {
+		if self.buffers.resource(handle).host_access == crate::HostAccess::None {
+			self.pending_buffer_clears.push_back(handle);
+		}
+	}
+
+	/// Returns how many copies a resource declaring `copies` has: one, or one per frame in flight.
+	pub(crate) fn copy_count(&self, copies: crate::Copies) -> u8 {
+		match copies {
+			crate::Copies::One => 1,
+			crate::Copies::PerFrame => self.frames,
+		}
+	}
+
+	/// Creates every copy of a buffer `builder` describes, `size` bytes each, and returns its public handle.
+	///
+	/// Every copy exists from the start, so a buffer created in the middle of a frame never shares a copy with another
+	/// frame in flight.
+	pub(super) fn add_buffer(
+		&mut self,
+		builder: &crate::buffer::Builder,
+		size: usize,
+	) -> graphics_hardware_interface::BaseBufferHandle {
+		let copies = (0..self.copy_count(builder.copies))
+			.map(|_| {
+				self.create_buffer_resource(builder.name, size, builder.resource_uses, builder.host_access, builder.copies)
+			})
+			.collect::<SmallVec<[_; MAX_FRAMES_IN_FLIGHT]>>();
+		let master = self.buffers.add_chain(copies);
+		for handle in self.buffers.chain(master).collect::<SmallVec<[_; MAX_FRAMES_IN_FLIGHT]>>() {
+			self.queue_buffer_clear(handle);
+		}
+		master
 	}
 
 	/// Creates a CPU-visible buffer that holds a copy of `bytes`.
@@ -170,7 +180,7 @@ impl Context {
 		buffer
 	}
 
-	/// Creates an image in the context's heaps, with a host staging copy when the CPU may access it.
+	/// Creates an image in the context's heaps.
 	///
 	/// An image whose memory another resource used before starts with what that resource left there, so write it
 	/// before reading it.
@@ -181,27 +191,17 @@ impl Context {
 			texture.setLabel(Some(&NSString::from_str(name)));
 		}
 
-		// Device-only images are written through uploads or transfers, so they need no host copy.
-		let staging = description
-			.access
-			.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite)
-			.then(|| {
-				let (_, _, bytes_per_image) = utils::texture_upload_layout(description.format, description.extent);
-				vec![0u8; bytes_per_image * description.extent.depth().max(1) as usize * description.array_layers as usize]
-			});
-
 		Image {
 			name: name.map(str::to_owned),
 			texture,
 			description,
-			staging,
 			slot: None,
 		}
 	}
 
 	/// Returns the typed CPU mapping of a buffer's copy for frame sequence `sequence_index`.
 	///
-	/// A buffer with one copy maps it for every sequence. A device-only buffer maps its staging copy.
+	/// A buffer with one copy maps it for every sequence.
 	pub(crate) fn typed_buffer_pointer<T: ?Sized + crate::buffer::BufferContents>(
 		&self,
 		buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>,
@@ -215,23 +215,6 @@ impl Context {
 		<T as crate::buffer::BufferContents>::from_raw_parts(buffer.pointer, buffer.size).expect(
 			"Failed to map a typed Metal buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage.",
 		)
-	}
-
-	/// Queues the staging upload of the copy of `buffer_handle` that frame sequence `sequence_index` uses.
-	///
-	/// Does nothing for a buffer without staging storage. The next recording on a queue submits the upload.
-	pub(crate) fn sync_buffer_copy(
-		&mut self,
-		buffer_handle: graphics_hardware_interface::BaseBufferHandle,
-		sequence_index: u8,
-	) {
-		let handle = self
-			.buffers
-			.nth_handle(buffer_handle, sequence_index as usize)
-			.expect("Missing Metal buffer. The most likely cause is that the buffer handle came from another context.");
-		if self.buffers.resource(handle).staging.is_some() {
-			self.pending_buffer_syncs.push_back(handle);
-		}
 	}
 
 	/// Stores one resolved resource in a set, patches its argument-buffer entry, and advances the set version, so
@@ -302,6 +285,16 @@ impl Context {
 		}
 	}
 
+	/// Returns how many copies the buffer or image a descriptor write names has; other resources have one.
+	pub(super) fn descriptor_resource_copies(&self, descriptor: crate::descriptors::WriteData) -> usize {
+		match descriptor {
+			crate::descriptors::WriteData::Buffer { handle } => self.buffers.chain(handle).count(),
+			crate::descriptors::WriteData::Image { handle, .. } => self.images.chain(handle).count(),
+			crate::descriptors::WriteData::CombinedImageSampler { image_handle, .. } => self.images.chain(image_handle).count(),
+			_ => 1,
+		}
+	}
+
 	/// Resolves a descriptor write into the concrete per-frame Metal resources referenced by the current sequence.
 	pub(super) fn resolve_descriptor_for_frame(
 		&self,
@@ -321,12 +314,14 @@ impl Context {
 				handle,
 				layout,
 				mip_level,
+				array_layer,
 			} => {
 				let handle = self.images.nth_handle(handle, resource_frame_index)?;
 				Some(Descriptor::Image {
 					image: handle,
 					layout,
 					mip_level,
+					array_layer,
 				})
 			}
 			crate::descriptors::WriteData::CombinedImageSampler {
@@ -402,7 +397,7 @@ impl Context {
 					let handle = self
 						.images
 						.nth_handle(handle, sequence_index as usize)
-						.expect("Missing Metal frame-local image. The most likely cause is an invalid dynamic image handle.");
+						.expect("Missing Metal frame-local image. The most likely cause is an invalid per-frame image handle.");
 					self.resize_image_internal(handle, extent, array_layers);
 				}
 				TaskKind::DeleteImage(image) => drop(image),
@@ -510,7 +505,6 @@ impl Context {
 				name: image.name.take(),
 				texture,
 				description,
-				staging: None,
 				slot: Some(GroupSlot {
 					heap_serial: *heap_serial,
 					offset: slot.offset as usize,

@@ -27,7 +27,7 @@ use super::super::shader_data::LightingData;
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::ray_hits::{RayHits, RayStages, RayTracing, ShadeStage};
 use super::{ComputeStage, Pipelines, SinkHistory, SsgiTargets};
-use crate::configuration::ConfigurationValue;
+use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
@@ -111,9 +111,9 @@ pub(crate) const SURFEL_HISTORY_WEIGHTS_TARGET: &str = "Surfel History Weights";
 #[derive(Clone, Copy)]
 pub(crate) struct SurfelTargets {
 	/// Named [`SURFEL_HISTORY_TARGET`].
-	pub(crate) history: ghi::DynamicImageHandle,
+	pub(crate) history: ghi::ImageHandle,
 	/// Named [`SURFEL_HISTORY_WEIGHTS_TARGET`].
-	pub(crate) weights: ghi::DynamicImageHandle,
+	pub(crate) weights: ghi::ImageHandle,
 }
 
 /// Creates the surfel GI render-graph targets for the sink that `render_pass_builder` sets up.
@@ -123,11 +123,7 @@ pub(crate) struct SurfelTargets {
 pub(crate) fn create_surfel_targets(
 	render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>,
 ) -> SurfelTargets {
-	let image = |name, format| {
-		ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image)
-			.name(name)
-			.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-	};
+	let image = |name, format| ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image).name(name);
 	SurfelTargets {
 		history: render_pass_builder
 			.create_history_target(image(SURFEL_HISTORY_TARGET, ghi::Formats::RGBA16F), SURFEL_RESOLVE_DIVISOR),
@@ -329,9 +325,11 @@ pub(crate) struct SurfelPool {
 	descriptor_set: ghi::DescriptorSetHandle,
 	/// Every surfel GI compute pipeline, in the order of [`SURFEL_GI_PIPELINES`].
 	pipelines: Pipelines<12>,
-	parameters: ghi::DynamicBufferHandle<SurfelGiParameters>,
-	/// The allocator and counts, in memory the host can read.
+	parameters: ghi::BufferHandle<SurfelGiParameters>,
+	/// The allocator and counts.
 	counts: ghi::BufferHandle<SurfelPoolCounts>,
+	/// Each frame's copy of [`Self::counts`], which the CPU reads once the frame completes.
+	counts_readback: ghi::BufferHandle<SurfelPoolCounts>,
 	capacity: u32,
 	ray_budget: u32,
 }
@@ -358,14 +356,13 @@ impl SurfelPool {
 		capacity: u32,
 		ray_budget: u32,
 		environment: ResidentEnvironment,
-		lighting_buffer: ghi::DynamicBufferHandle<LightingData>,
+		lighting_buffer: ghi::BufferHandle<LightingData>,
 	) -> Self {
 		let descriptor_set = set_layouts::SURFEL_GI.create_set(context, "Surfel GI Descriptor Set");
 		// Every buffer starts zeroed, which is an empty pool: no live slot, an empty free stack, and zero cell counts.
 		let device_buffer = |name, length: u32| {
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name(name)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.length(length as usize)
 		};
 		let records: ghi::BufferHandle<[SurfelRecord]> = context.build_buffer(device_buffer("Surfel Records", capacity));
@@ -395,15 +392,20 @@ impl SurfelPool {
 		let clearances: ghi::BufferHandle<[f32]> = context.build_buffer(device_buffer("Surfel Clearances", capacity));
 		let hit_spawns: ghi::BufferHandle<[SurfelHitSpawn]> =
 			context.build_buffer(device_buffer("Surfel Hit Spawns", SURFEL_MAX_HIT_SPAWNS));
-		let counts = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Surfel Pool")
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly | ghi::DeviceAccesses::CpuRead),
+		let counts =
+			context.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferSource).name("Surfel Pool"));
+		// Each frame copies the counts here, so the CPU reads a completed frame's copy while later frames run.
+		let counts_readback = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::TransferDestination)
+				.name("Surfel Pool Readback")
+				.host_access(ghi::HostAccess::Read)
+				.copies(ghi::Copies::PerFrame),
 		);
-		let parameters = context.build_dynamic_buffer(
+		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Surfel GI Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let set = set_layouts::SURFEL_GI.binder(descriptor_set);
 		context.write(&[
@@ -432,6 +434,7 @@ impl SurfelPool {
 			pipelines: Pipelines::request(pipeline_manager, SURFEL_GI_PIPELINES),
 			parameters,
 			counts,
+			counts_readback,
 			capacity,
 			ray_budget,
 		}
@@ -474,7 +477,7 @@ impl SurfelPool {
 		] = self.pipelines.resolve(pipeline_manager)?;
 		let sort = hits.sort(pipeline_manager, self.ray_budget)?;
 		let camera = camera_position(sink.view());
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = SurfelGiParameters {
+		*frame.map(self.parameters) = SurfelGiParameters {
 			grid_origin: snapped_grid_origin(camera).into(),
 			surfel_capacity: self.capacity,
 			camera_position: camera.into(),
@@ -485,7 +488,6 @@ impl SurfelPool {
 			previous_exposure: light.previous_exposure,
 			environment_intensity: light.environment_intensity,
 		};
-		frame.sync_buffer(self.parameters);
 
 		let scan_threads = scan_group_count(self.capacity) * SURFEL_SCAN_WORKGROUP_SIZE;
 		let stage = |label, pipeline, threads| ComputeStage {
@@ -540,6 +542,7 @@ impl SurfelPool {
 				stage("Surfel Integrate", integrate, self.capacity),
 				stage("Surfel Allocate Hits", allocate_hits, SURFEL_MAX_HIT_SPAWNS),
 			],
+			counts: (self.counts.into(), self.counts_readback.into()),
 			descriptor_set: self.descriptor_set,
 			resolve,
 			allocate,
@@ -547,9 +550,9 @@ impl SurfelPool {
 		})
 	}
 
-	/// Returns the pool's counts as the GPU last left them, for logging. Frames still in flight may change them.
-	pub(crate) fn counts(&self, frame: &mut ghi::implementation::Frame) -> SurfelPoolCounts {
-		*frame.get_mut_buffer_slice(self.counts)
+	/// Returns the pool's counts as the frame that completed when `frame` started left them, for logging.
+	pub(crate) fn counts(&self, frame: &ghi::implementation::Frame) -> Option<SurfelPoolCounts> {
+		frame.read(self.counts_readback).copied()
 	}
 }
 
@@ -567,6 +570,8 @@ pub(crate) struct SurfelFrame {
 	/// Folds the rays into every live surfel's estimate and record, which the resolve reads, then turns the spawn
 	/// requests of the rays' hits into surfels.
 	pub(super) update: [ComputeStage; 2],
+	/// The pool counts and the frame's readback copy, which the frame copies them into after the update.
+	pub(super) counts: (ghi::BaseBufferHandle, ghi::BaseBufferHandle),
 	descriptor_set: ghi::DescriptorSetHandle,
 	resolve: ghi::PipelineHandle,
 	allocate: ghi::PipelineHandle,
@@ -587,7 +592,7 @@ pub(super) struct SurfelResolvePass {
 	temporal_descriptor_set: ghi::DescriptorSetHandle,
 	/// The images the spatial pass reads and writes.
 	spatial_descriptor_set: ghi::DescriptorSetHandle,
-	parameters: ghi::DynamicBufferHandle<SurfelResolveParameters>,
+	parameters: ghi::BufferHandle<SurfelResolveParameters>,
 }
 
 impl SurfelResolvePass {
@@ -598,8 +603,8 @@ impl SurfelResolvePass {
 	/// `debug_views` its debug target pool.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
-		depth_pyramid: ghi::DynamicImageHandle,
-		view_data: ghi::DynamicBufferHandle<ScreenViewData>,
+		depth_pyramid: ghi::ImageHandle,
+		view_data: ghi::BufferHandle<ScreenViewData>,
 		ssgi: SsgiTargets,
 		surfels: SurfelTargets,
 		debug_views: &crate::rendering::DebugViews,
@@ -609,15 +614,15 @@ impl SurfelResolvePass {
 		let descriptor_set = set_layouts::SURFEL_RESOLVE.create_set(context, "Surfel Resolve Descriptor Set");
 		let temporal_descriptor_set = set_layouts::SURFEL_TEMPORAL.create_set(context, "Surfel Temporal Descriptor Set");
 		let spatial_descriptor_set = set_layouts::SURFEL_SPATIAL.create_set(context, "Surfel Spatial Descriptor Set");
-		let parameters = context.build_dynamic_buffer(
+		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Surfel Resolve Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let spawns: ghi::BufferHandle<[SurfelSpawn]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Surfel Spawn Requests")
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.length(MAX_SPAWN_TILES as usize),
 		);
 		let point_sampler = context.build_sampler(
@@ -686,7 +691,7 @@ impl SurfelResolvePass {
 		let (previous_clip, previous_view, history_exposure_ratio) = history
 			.map(|previous| previous.reprojection(sink.view(), exposure))
 			.unwrap_or((Default::default(), Default::default(), 1.0));
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = SurfelResolveParameters {
+		*frame.map(self.parameters) = SurfelResolveParameters {
 			view_to_world: math::inverse(sink.view().view()).into(),
 			current_view_to_previous_clip: previous_clip.into(),
 			current_view_to_previous_view: previous_view.into(),
@@ -700,7 +705,6 @@ impl SurfelResolvePass {
 			_padding: [0; 3],
 			_padding_1: 0,
 		};
-		frame.sync_buffer(self.parameters);
 		let screen_stage = |label, pipeline, descriptor_sets| ComputeStage {
 			label,
 			pipeline,
@@ -778,44 +782,45 @@ impl SurfelGiSettings {
 		}
 	}
 
-	/// Applies one runtime parameter, returning the updated settings and the effective value, or leaves them unchanged.
+	/// The runtime settings, named inside the `render.surfel-gi.` port.
 	///
 	/// Whether surfel GI is built in, the surfel capacity, and the ray budget are decided once, at startup. Their
 	/// startup values, which every port receives, are accepted as they are; any other value is not set.
-	pub(crate) fn with_parameter(
-		self,
-		parameter: &str,
-		value: &ConfigurationValue,
-	) -> Result<(Self, ConfigurationValue), String> {
-		match parameter {
-			"enabled" => {
-				if value.to_bool() == Some(self.built_in) {
-					return Ok((self, ConfigurationValue::Bool(self.built_in)));
+	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[
+		Setting {
+			name: "enabled",
+			accepts: Accepts::Bool,
+			value: |settings| Read::Bool(settings.built_in),
+			apply: |settings, read| {
+				if read == Read::Bool(settings.built_in) {
+					return Ok(settings);
 				}
 				Err(format!(
 					"Surfel GI enabled was not changed from `{}`. The most likely cause is that it decides once, at startup, whether surfel GI is built into the shaders. Select a technique at runtime with `render.gi.technique` instead, or set `render.surfel-gi.enabled` in `config.json` and restart the application.",
-					self.built_in
+					settings.built_in
 				))
-			}
-			"surfel-capacity" => self.with_startup_size(value, self.surfel_capacity, "Surfel capacity", parameter),
-			"ray-budget" => self.with_startup_size(value, self.ray_budget, "Surfel ray budget", parameter),
-			_ => Err(
-				"Surfel GI parameter was not set. The most likely cause is that the parameter name is unsupported. Use `enabled`, `surfel-capacity`, or `ray-budget`."
-					.to_string(),
-			),
-		}
-	}
+			},
+		},
+		Setting {
+			name: "surfel-capacity",
+			accepts: STARTUP_SIZE,
+			value: |settings| Read::Whole(settings.surfel_capacity),
+			apply: |settings, read| {
+				settings.with_startup_size(read, settings.surfel_capacity, "Surfel capacity", "surfel-capacity")
+			},
+		},
+		Setting {
+			name: "ray-budget",
+			accepts: STARTUP_SIZE,
+			value: |settings| Read::Whole(settings.ray_budget),
+			apply: |settings, read| settings.with_startup_size(read, settings.ray_budget, "Surfel ray budget", "ray-budget"),
+		},
+	];
 
-	/// Accepts `value` for the startup size `size` only when it doesn't change it.
-	fn with_startup_size(
-		self,
-		value: &ConfigurationValue,
-		size: u32,
-		label: &str,
-		parameter: &str,
-	) -> Result<(Self, ConfigurationValue), String> {
-		if value.to_u32() == Some(size) {
-			return Ok((self, ConfigurationValue::Integer(i64::from(size))));
+	/// Accepts `read` for the startup size `size` only when it doesn't change it.
+	fn with_startup_size(self, read: Read, size: u32, label: &str, parameter: &str) -> Result<Self, String> {
+		if read == Read::Whole(size) {
+			return Ok(self);
 		}
 		Err(format!(
 			"{label} was not changed from {size}. The most likely cause is that it sizes surfel buffers once, when the renderer starts. Set `render.surfel-gi.{parameter}` in `config.json` and restart the application."
@@ -823,11 +828,19 @@ impl SurfelGiSettings {
 	}
 }
 
+/// The values a startup-only size reads: any whole number, so a change is reported as such rather than as a bad value.
+const STARTUP_SIZE: Accepts = Accepts::Whole {
+	min: 0,
+	max: u32::MAX,
+	step: 1,
+};
+
 #[cfg(test)]
 mod tests {
 	use std::mem::size_of;
 
 	use super::*;
+	use crate::configuration::{ConfigurationValue, apply_setting};
 	use crate::rendering::SetLayout;
 
 	#[test]
@@ -882,27 +895,56 @@ mod tests {
 		let settings = SurfelGiSettings::new(true, 65_536, 8_192);
 
 		// Startup parameters reach the port as text, and keep the settings as they are.
-		let (kept, effective) = settings
-			.with_parameter("surfel-capacity", &ConfigurationValue::Text("65536".to_string()))
-			.unwrap();
+		let (kept, effective) = apply_setting(
+			settings,
+			SurfelGiSettings::SETTINGS,
+			"",
+			"surfel-capacity",
+			&ConfigurationValue::Text("65536".to_string()),
+		)
+		.unwrap();
 		assert_eq!(kept, settings);
 		assert_eq!(effective, ConfigurationValue::Integer(65_536));
 		assert!(
-			settings
-				.with_parameter("ray-budget", &ConfigurationValue::Integer(8_192))
-				.is_ok()
+			apply_setting(
+				settings,
+				SurfelGiSettings::SETTINGS,
+				"",
+				"ray-budget",
+				&ConfigurationValue::Integer(8_192)
+			)
+			.is_ok()
 		);
 		assert!(
-			settings
-				.with_parameter("enabled", &ConfigurationValue::Text("true".to_string()))
-				.is_ok()
+			apply_setting(
+				settings,
+				SurfelGiSettings::SETTINGS,
+				"",
+				"enabled",
+				&ConfigurationValue::Text("true".to_string())
+			)
+			.is_ok()
 		);
-		assert!(settings.with_parameter("enabled", &ConfigurationValue::Bool(false)).is_err());
+		assert!(
+			apply_setting(
+				settings,
+				SurfelGiSettings::SETTINGS,
+				"",
+				"enabled",
+				&ConfigurationValue::Bool(false)
+			)
+			.is_err()
+		);
 
 		for (parameter, value) in [("surfel-capacity", 32_768), ("ray-budget", 16_384)] {
-			let reason = settings
-				.with_parameter(parameter, &ConfigurationValue::Integer(value))
-				.unwrap_err();
+			let reason = apply_setting(
+				settings,
+				SurfelGiSettings::SETTINGS,
+				"",
+				parameter,
+				&ConfigurationValue::Integer(value),
+			)
+			.unwrap_err();
 			assert!(
 				reason.contains(&format!("`render.surfel-gi.{parameter}` in `config.json`")),
 				"{reason}"

@@ -3,6 +3,7 @@ use crate::device::Device as _;
 
 impl crate::context::Context for Context {
 	type Queue<'a> = crate::metal::queue::Queue<'a>;
+	type Recording<'a> = crate::metal::CommandBufferRecording<'a>;
 
 	fn has_errors(&self) -> bool {
 		false
@@ -36,69 +37,31 @@ impl crate::context::Context for Context {
 		}
 	}
 
-	fn create_command_buffer_recording(
-		&mut self,
-		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
-		Context::create_command_buffer_recording(self, command_buffer_handle)
+	fn record<'a, R>(
+		&'a mut self,
+		queue: graphics_hardware_interface::QueueHandle,
+		name: Option<&str>,
+		record: impl FnOnce(&mut Self::Recording<'a>) -> R,
+	) -> R {
+		self.record_workload(queue, name, record)
 	}
 
 	fn get_buffer_address(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> u64 {
 		self.buffers.get_single(buffer_handle).unwrap().gpu_address
 	}
 
-	fn get_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
-		&mut self,
-		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
-	) -> &T {
-		// SAFETY: Typed handles preserve the allocation's type and the buffer remains mapped while the context lives.
-		unsafe { &*self.typed_buffer_pointer(buffer_handle, 0) }
-	}
-
-	fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
-		&mut self,
-		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
-	) -> &mut T {
-		// SAFETY: Typed handles preserve the allocation's type and `&mut self` guarantees exclusive CPU access.
-		unsafe { &mut *self.typed_buffer_pointer(buffer_handle, 0) }
-	}
-
-	/// Transfers the mapped range to a higher-level owner without manufacturing an unbounded reference.
-	///
-	/// # Safety
-	///
-	/// The caller must keep the context and buffer alive and must not create another CPU mapping until the returned mapping is discarded.
-	unsafe fn transfer_buffer_mapping<T: ?Sized + crate::buffer::BufferContents>(
+	unsafe fn map_unsynchronized<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> crate::buffer::Mapping {
+		let buffer = self
+			.buffers
+			.get_single(buffer_handle.into())
+			.expect("Missing Metal buffer. The most likely cause is that the buffer handle came from another context.");
+		crate::buffer::assert_unsynchronized_mappable(buffer.host_access, buffer.copies);
 		let pointer = self.typed_buffer_pointer::<T>(buffer_handle, 0);
 		// SAFETY: The caller accepts the lifetime and exclusivity requirements documented by this method.
 		unsafe { crate::buffer::Mapping::from_raw_parts(pointer.cast::<u8>(), T::byte_count(pointer)) }
-	}
-
-	fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
-		self.sync_buffer_copy(buffer_handle.into(), 0);
-	}
-
-	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &mut [u8] {
-		let handle = self.images.nth_handle(texture_handle.0, 0).unwrap();
-		self.images.resource_mut(handle).staging.as_deref_mut().unwrap_or_default()
-	}
-
-	fn sync_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle) {
-		let handle = self.images.nth_handle(image_handle.0, 0).unwrap();
-		self.pending_image_syncs.push_back((handle, None));
-	}
-
-	fn write_texture(&mut self, texture_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
-		let image_handle = self.images.nth_handle(texture_handle.0, 0).unwrap();
-		let Some(staging) = self.images.resource_mut(image_handle).staging.as_mut() else {
-			return;
-		};
-
-		f(staging);
-		self.pending_image_syncs.push_back((image_handle, None));
 	}
 
 	/// Applies retained descriptor writes to every frame-local logical set they target.
@@ -107,6 +70,9 @@ impl crate::context::Context for Context {
 	/// from creation, so the write resolves completely here.
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		for write in descriptor_set_writes {
+			if let Some(frame_offset) = write.frame_offset {
+				crate::descriptors::assert_frame_offset(self.descriptor_resource_copies(write.descriptor), frame_offset);
+			}
 			let frame_offset = write.frame_offset.unwrap_or(0);
 			// A public handle names the first set of its frame-local chain.
 			let set_handles = self
@@ -262,25 +228,22 @@ impl crate::context::Context for Context {
 
 	fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
-		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
-		size: usize,
+		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+		length: usize,
 	) {
+		let size = T::layout(Some(length)).size();
 		let buffer_handle = buffer_handle.into();
-		let buffer = self.buffers.get_single(buffer_handle).unwrap();
-
-		if buffer.size >= size {
-			return;
-		}
-
-		let (uses, access, name) = (buffer.uses, buffer.access, buffer.name.clone());
-
-		// Dynamic buffers have one materialized resource per in-flight frame. Resize every existing resource so command recording cannot resolve an older allocation for a nonzero sequence.
-		for frame_index in 0..self.frames as usize {
-			let Some(handle) = self.buffers.nth_handle(buffer_handle, frame_index) else {
-				continue;
-			};
-			let replacement = self.create_buffer_resource(name.as_deref(), size, uses, access);
+		let handles = self
+			.buffers
+			.chain(buffer_handle)
+			.collect::<SmallVec<[_; MAX_FRAMES_IN_FLIGHT]>>();
+		for handle in handles {
+			let buffer = self.buffers.resource(handle);
+			let (uses, host_access, copies, name) = (buffer.uses, buffer.host_access, buffer.copies, buffer.name.clone());
+			// Submitted commands retain the allocation they recorded, so the old copy lives until they complete.
+			let replacement = self.create_buffer_resource(name.as_deref(), size, uses, host_access, copies);
 			*self.buffers.resource_mut(handle) = replacement;
+			self.queue_buffer_clear(handle);
 			self.rewrite_descriptors_for_handle(PrivateHandles::Buffer(handle));
 		}
 	}
@@ -290,17 +253,6 @@ impl crate::context::Context for Context {
 			let synchronizer_handle = synchronizer_for_sequence(&self.synchronizers, synchronizer_handle, frame_index as u8);
 			self.wait_for_private_synchronizer(synchronizer_handle);
 		}
-	}
-
-	fn poll_synchronizer(&mut self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> bool {
-		// Pollers never start frames, so this is where their finished uploads get released.
-		self.retire_completed_internal_uploads();
-		let mut complete = true;
-		for frame_index in 0..self.frames as usize {
-			let synchronizer_handle = synchronizer_for_sequence(&self.synchronizers, synchronizer_handle, frame_index as u8);
-			complete &= self.synchronizers.resource_mut(synchronizer_handle).poll(&mut self.queues);
-		}
-		complete
 	}
 
 	fn wait(&mut self) {
@@ -334,21 +286,6 @@ impl crate::context::Context for Context {
 }
 
 impl crate::context::ContextCreate for Context {
-	fn create_allocation(
-		&mut self,
-		size: usize,
-		_resource_uses: crate::Uses,
-		device_accesses: crate::DeviceAccesses,
-	) -> graphics_hardware_interface::AllocationHandle {
-		let options = utils::resource_options_from_access(device_accesses);
-		let buffer = self.allocator.buffer(size, options);
-		if self.settings.debug_labels {
-			buffer.setLabel(Some(&NSString::from_str(&format!("Allocation {}", self.allocations.len()))));
-		}
-		self.allocations.push(buffer);
-		graphics_hardware_interface::AllocationHandle::from_index((self.allocations.len() - 1) as u64)
-	}
-
 	fn add_mesh_from_vertices_and_indices(
 		&mut self,
 		vertex_count: u32,
@@ -501,48 +438,35 @@ impl crate::context::ContextCreate for Context {
 		builder: buffer_builder::Builder,
 	) -> graphics_hardware_interface::BufferHandle<T> {
 		let size = T::layout(builder.length).size();
-		let buffer = self.create_buffer_resource(builder.name, size, builder.resource_uses, builder.device_accesses);
-		let (handle, _) = self.buffers.add(buffer);
-
-		graphics_hardware_interface::BufferHandle::<T>(handle, std::marker::PhantomData)
+		graphics_hardware_interface::BufferHandle::<T>(self.add_buffer(&builder, size), std::marker::PhantomData)
 	}
 
-	fn build_dynamic_buffer<T: ?Sized + crate::buffer::BufferContents>(
+	fn build_buffer_with<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		builder: buffer_builder::Builder,
-	) -> graphics_hardware_interface::DynamicBufferHandle<T> {
-		let size = <T as crate::buffer::BufferContents>::layout(builder.length).size();
-
-		// Create every frame sequence's copy up front, so a buffer created mid-frame never shares a copy with another
-		// frame in flight, which the CPU could rewrite while that frame still reads it.
-		let buffers = (0..self.frames)
-			.map(|_| self.create_buffer_resource(builder.name, size, builder.resource_uses, builder.device_accesses))
-			.collect::<SmallVec<[_; MAX_FRAMES_IN_FLIGHT]>>();
-		let master = self.buffers.add_chain(buffers);
-
-		graphics_hardware_interface::DynamicBufferHandle::<T>(master, std::marker::PhantomData)
-	}
-
-	fn build_dynamic_image(&mut self, builder: image_builder::Builder) -> graphics_hardware_interface::DynamicImageHandle {
-		crate::image_group::ImageGroups::reject_dynamic_member(&builder);
-		let description = ImageDescription::new(&builder);
-		// Create every frame sequence's image up front, like dynamic buffers, so frames in flight never share one.
-		let images = (0..self.frames)
-			.map(|_| self.create_image_resource(builder.get_name(), description))
-			.collect::<SmallVec<[_; MAX_FRAMES_IN_FLIGHT]>>();
-		let master = self.images.add_chain(images);
-
-		graphics_hardware_interface::DynamicImageHandle(master)
+		initialize: impl Fn(&mut T),
+	) -> graphics_hardware_interface::BufferHandle<T> {
+		crate::buffer::assert_initializable(builder.host_access);
+		let handle = self.build_buffer::<T>(builder);
+		for copy in 0..self.buffers.chain(handle.into()).count() {
+			// SAFETY: The copy is shared storage of `T`'s layout, and no command has used the new buffer yet.
+			initialize(unsafe { &mut *self.typed_buffer_pointer::<T>(handle, copy as u8) });
+		}
+		handle
 	}
 
 	fn build_image(&mut self, builder: image_builder::Builder) -> graphics_hardware_interface::ImageHandle {
 		if builder.group.is_some() {
 			crate::image_group::ImageGroups::validate_member(&builder);
 		}
-		// A member starts with its own texture at the builder's extent, so descriptors can reference it before the
-		// group is placed. Placement replaces the texture with one in the group heap.
-		let image = self.create_image_resource(builder.get_name(), ImageDescription::new(&builder));
-		let (handle, _) = self.images.add(image);
+		let description = ImageDescription::new(&builder);
+		// Every frame sequence gets its copy up front, so frames in flight never share one. A group member starts with
+		// its own texture at the builder's extent, so descriptors can reference it before the group is placed;
+		// placement replaces the texture with one in the group heap.
+		let images = (0..self.copy_count(builder.copies))
+			.map(|_| self.create_image_resource(builder.get_name(), description))
+			.collect::<SmallVec<[_; MAX_FRAMES_IN_FLIGHT]>>();
+		let handle = self.images.add_chain(images);
 		if let Some(group) = builder.group {
 			self.image_groups.add_member(group, handle);
 		}

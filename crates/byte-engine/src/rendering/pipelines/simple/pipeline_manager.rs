@@ -14,8 +14,8 @@
 /// It owns the world listeners, pending scene instances, resident lookup, instance bookkeeping, and
 /// sink-local passes. Loader lanes own mesh preparation, placement, and transfer.
 pub struct PipelineManager {
-	pub(super) instance_data_buffer: ghi::DynamicBufferHandle<[ghi::pod::Mat4x3f; MAX_INSTANCES]>,
-	pub(super) camera_data_buffer: ghi::DynamicBufferHandle<[CameraShaderData; 8]>,
+	pub(super) instance_data_buffer: ghi::BufferHandle<[ghi::pod::Mat4x3f; MAX_INSTANCES]>,
+	pub(super) camera_data_buffer: ghi::BufferHandle<[CameraShaderData; 8]>,
 	pub(super) vertex_positions_buffer: ghi::BufferHandle<[[f32; 3]; super::resource_manager::SIMPLE_VERTEX_CAPACITY]>,
 	pub(super) indices_buffer: ghi::BufferHandle<[u16; super::resource_manager::SIMPLE_INDEX_CAPACITY]>,
 	pipeline: crate::rendering::PipelineRef,
@@ -99,16 +99,18 @@ impl PipelineManager {
 		loader: SimpleLoaderClient,
 		resource_store: &SharedSimpleResourceStore,
 	) -> Self {
-		let camera_data_buffer = context.build_dynamic_buffer(
+		let camera_data_buffer = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Camera Data Buffer")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 
-		let instance_data_buffer = context.build_dynamic_buffer(
+		let instance_data_buffer = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Instance Data Buffer")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 
 		let pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/simple/simple.pipeline");
@@ -159,7 +161,7 @@ impl PipelineManager {
 	/// Each frame in flight reads its own copy, and a copy last written by an earlier frame misses every change
 	/// since. So each frame writes its whole copy instead of only the slots that changed.
 	fn write_instance_data(&mut self, frame: &mut ghi::implementation::Frame) {
-		let instance_data = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
+		let instance_data = frame.map(self.instance_data_buffer);
 		for (slot, (_, model)) in self.instances.indexed_iter() {
 			instance_data[slot] = *model;
 		}
@@ -463,7 +465,7 @@ mod tests {
 			.expect("Failed to seed vertex position. The most likely cause is an interface type mismatch.");
 
 		input_instance
-			.write("instance_index", Value::U32(3))
+			.write(besl::INSTANCE_INDEX_BUILTIN, Value::U32(3))
 			.expect("Failed to seed instance ID. The most likely cause is an interface type mismatch.");
 
 		{

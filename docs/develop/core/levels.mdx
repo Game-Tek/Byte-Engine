@@ -57,14 +57,48 @@ that each take the next undecoded run. A level of one run decodes on the
 calling thread. The decoded components then publish on the calling thread, in
 kind order and then entity order.
 
+## Prefabs and instances
+
+A `.prefab` bakes through the level's layout (`implementations/prefab.rs` calls
+the level baker's `lay_out`), so a prefab is a `Level` plus its parameters. The
+values instances set and a prefab's defaults share one token stream, the level's
+`values`, so a value is an offset. A `$parameter` bakes to a `Parameter` token
+that holds the parameter's index; baking resolves names, never values.
+
+Instances resolve at spawn time, not at bake time, so changing a prefab never
+bakes the levels that place it again. Spawning splits in two:
+
+- **Load** (`Loaded::load`, async) requests the level or prefab and every
+  prefab its instances reach, once each. Nothing is decoded.
+- **Spawn** (`Spawner::spawn`, sync) expands the instances depth first into a
+  list of expansions, each a template and where its handles start, before it
+  takes the spawn's one run of handles. Every run of every kind of every
+  expansion then decodes in parallel, as a level's runs do.
+
+The token deserializer resolves a `Parameter` token by switching to the value's
+tokens: an instance's value, a default, or values from code. A value an
+instance sets may itself be a `Parameter` token naming the enclosing prefab's
+parameters, so each value carries the expansion it resolves in.
+
+The spawner reads `transform` itself instead of through a registered kind,
+since it composes every transform with its expansion's placement. Expansions
+compose in order, so an instance's world transform is known before its prefab
+is placed at it.
+
 ## Rules a change must keep
 
 - **All or nothing.** No message is published until every component of the
-  level decodes and converts. A spawn that fails leaves the world untouched.
+  level and of every expanded prefab decodes and converts. A spawn that fails
+  leaves the world untouched.
+- **Load, then spawn.** Spawning never requests a resource, so it stays
+  synchronous and can run many times from one `Loaded`.
+- **Bounded nesting.** Expansion stops at `MAX_NESTING` instances deep, which
+  also ends a prefab that places itself.
 - **Parents before children.** Scene membership publishes in baked order, which
   is parents first, because the scene graph attaches a member under a parent it
   already knows.
-- **One handle run.** Entity `n` spawns with the root's handle plus `n + 1`.
+- **One handle run.** Entity `n` of the loaded level spawns with the root's
+  handle plus `n + 1`, and each expansion's entities follow in expansion order.
   References depend on it.
 - **Kind order, then entity order.** Each kind's components publish in the
   order of its entities, so a listener reads them in spawn order.
@@ -83,7 +117,11 @@ sources, so the store's version marker wipes stale bakes.
 - `gameplay/level/tests.rs` bakes text, spawns it into a standalone scope, and
   checks what listeners receive: one handle per entity, membership order,
   resolved references, nothing published on failure, consecutive handles across
-  runs, and every engine kind's payload shape.
+  runs, and every engine kind's payload shape. Its prefab tests check placement,
+  parameters from code, instances and nested parameters, and deletion through
+  an instance.
+- `asset/handler/implementations/prefab.rs` tests check parameter tokens,
+  defaults, instance values, and every parameter rule the reference rejects.
 - `cargo bench -p byte-engine --bench level` spawns a level of 65,536 props and
   compares it with creating the same props in code, and splits the cost by kind.
   Run it before and after a change to the format or the spawner.

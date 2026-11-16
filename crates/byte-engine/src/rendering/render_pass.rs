@@ -286,6 +286,74 @@ impl SceneBackground {
 	}
 }
 
+/// Builds the scene's generated environment, once for the whole renderer; see [`RenderPassBuilder::scene_environment`].
+pub type SceneEnvironmentFactory =
+	dyn for<'builder, 'resources> Fn(&'builder mut RenderPassBuilder<'resources>) -> SceneEnvironment;
+
+/// The `SceneEnvironment` struct is an environment that a render pass generates on the GPU, such as the atmosphere sky's,
+/// which scene pipelines light with while the scene selects no [`crate::rendering::Environment`].
+///
+/// Register its factory with [`crate::rendering::Renderer::set_scene_environment`]. A scene pipeline takes it with
+/// [`RenderPassBuilder::scene_environment`], records it once per frame before any work that reads the environment, such
+/// as global illumination's rays, and binds its maps as it binds a baked environment's, with its own environment sampler. The maps hold unexposed
+/// radiance in the baked maps' layout: a cube of irradiance over π, and a cube of radiance prefiltered for roughness
+/// `level / 7` over eight levels.
+#[derive(Clone)]
+pub struct SceneEnvironment {
+	pass: Rc<RefCell<RenderPassHarness>>,
+	diffuse: ghi::BaseImageHandle,
+	specular: ghi::BaseImageHandle,
+	/// Whether the pass has recorded its first fill, so the maps hold light rather than whatever memory they started
+	/// with.
+	filled: Rc<Cell<bool>>,
+}
+
+impl SceneEnvironment {
+	/// Creates the environment that `render_pass` fills: the irradiance cube `diffuse` and the prefiltered radiance cube
+	/// `specular`.
+	pub fn new(
+		render_pass_builder: &mut RenderPassBuilder,
+		render_pass: Box<dyn RenderPass>,
+		diffuse: impl Into<ghi::BaseImageHandle>,
+		specular: impl Into<ghi::BaseImageHandle>,
+	) -> Self {
+		Self {
+			pass: Rc::new(RefCell::new(RenderPassHarness::new(
+				render_pass,
+				render_pass_builder.render_pass_states,
+			))),
+			diffuse: diffuse.into(),
+			specular: specular.into(),
+			filled: Rc::new(Cell::new(false)),
+		}
+	}
+
+	/// Prepares the commands that bring the maps up to date for `sink`'s frame, or `None` when they already are.
+	pub(crate) fn prepare<'a>(
+		&self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		let command = self.pass.borrow_mut().prepare(frame, sink, frame_allocator);
+		if command.is_some() {
+			self.filled.set(true);
+		}
+		command
+	}
+
+	/// Reports whether the environment asks for a new frame; see [`RenderPass::needs_frame`].
+	pub(crate) fn needs_frame(&self) -> bool {
+		self.pass.borrow_mut().needs_frame()
+	}
+
+	/// Returns the irradiance cube and the prefiltered radiance cube once a frame has recorded their first fill, so a
+	/// reader binds them from the next frame on, or `None` before.
+	pub(crate) fn maps(&self) -> Option<(ghi::BaseImageHandle, ghi::BaseImageHandle)> {
+		self.filled.get().then_some((self.diffuse, self.specular))
+	}
+}
+
 /// The [`RenderPassBuilder`] struct provides sink resources and records the
 /// dependencies of a render pass.
 ///
@@ -296,6 +364,8 @@ impl SceneBackground {
 /// that records commands for those resources.
 pub struct RenderPassBuilder<'a> {
 	context: &'a mut ghi::implementation::Context,
+	/// The queue the renderer records frames on, where a pass uploads its lookup textures.
+	queue: ghi::QueueHandle,
 	sink_id: usize,
 	swapchain: ghi::SwapchainHandle,
 	/// The step of the sink's frame this builder's pass records as.
@@ -310,6 +380,8 @@ pub struct RenderPassBuilder<'a> {
 	pipeline_manager: crate::rendering::PipelineManagerClient,
 	scene_background_factory: Option<&'a SceneBackgroundFactory>,
 	created_scene_backgrounds: Vec<SceneBackground>,
+	/// The renderer's generated environment, handed to scene nodes; see [`Self::scene_environment`].
+	scene_environment: Option<SceneEnvironment>,
 	/// The copy that forwards the incoming `main` into this pass's replacement while the pass is bypassed.
 	main_copy: Option<ImageBypassPass>,
 	/// Every stage counter this node created, with the name the renderer reports it under.
@@ -325,22 +397,26 @@ impl<'a> RenderPassBuilder<'a> {
 	///
 	/// `node` is the step of the sink's frame the pass records as. `final_output` marks the terminal post-scene pass,
 	/// whose replacement `main` is the sink swapchain. `scene_background_factory` is what
-	/// [`Self::create_scene_background`] builds from; pass it only for scene nodes.
+	/// [`Self::create_scene_background`] builds from and `scene_environment` what [`Self::scene_environment`] returns;
+	/// pass them only for scene nodes.
 	#[allow(clippy::too_many_arguments)]
 	pub(crate) fn new(
 		context: &'a mut ghi::implementation::Context,
+		queue: ghi::QueueHandle,
 		images: &'a mut RenderTargets,
 		render_pass_states: &'a mut RenderPassStates,
 		sink_id: usize,
 		swapchain: ghi::SwapchainHandle,
 		pipeline_manager: crate::rendering::PipelineManagerClient,
 		scene_background_factory: Option<&'a SceneBackgroundFactory>,
+		scene_environment: Option<SceneEnvironment>,
 		node: crate::rendering::renderer::RenderNode,
 		final_output: bool,
 		debug_view_settings: DebugViewSettings,
 	) -> Self {
 		RenderPassBuilder {
 			context,
+			queue,
 			sink_id,
 			swapchain,
 			node,
@@ -353,6 +429,7 @@ impl<'a> RenderPassBuilder<'a> {
 			pipeline_manager,
 			scene_background_factory,
 			created_scene_backgrounds: Vec::new(),
+			scene_environment,
 			main_copy: None,
 			gpu_counters: Vec::new(),
 			debug_view_settings,
@@ -448,6 +525,14 @@ impl<'a> RenderPassBuilder<'a> {
 		Some(background)
 	}
 
+	/// Returns the scene's generated environment, or `None` when the application registered none.
+	///
+	/// Every sink gets the same environment. Scene pipelines record it once per frame, before any work that reads the
+	/// environment, and light with its maps while the scene selects no [`crate::rendering::Environment`].
+	pub fn scene_environment(&self) -> Option<SceneEnvironment> {
+		self.scene_environment.clone()
+	}
+
 	/// Returns the state every pass named `name` shares, adding it when it is new, for a run of pixel steps that follows
 	/// each step's state itself.
 	pub(crate) fn render_pass_state(&mut self, name: &str) -> Rc<Cell<RenderPassState>> {
@@ -525,7 +610,7 @@ impl<'a> RenderPassBuilder<'a> {
 	///
 	/// Use it for images a pass updates incrementally, such as a layer that only redraws damaged regions. Unlike
 	/// [`Self::create_render_target`], the target never shares memory with other targets.
-	pub fn create_persistent_render_target(&mut self, builder: ghi::image::Builder<'a>) -> RenderToResult {
+	pub fn create_persistent_render_target(&mut self, builder: ghi::image::Builder<'_>) -> RenderToResult {
 		let (name, format) = target_identity(&builder);
 		let image = self.context.build_image(builder.additional_uses(ghi::Uses::TransferSource));
 		self.register_render_target(name, format, image.into(), 1, Placement::Persistent)
@@ -558,15 +643,13 @@ impl<'a> RenderPassBuilder<'a> {
 	///
 	/// The previous copy holds no usable data on a sink's first frame or right after a resize, so the reading pass must
 	/// track whether it recorded the sink at the same extent in the previous frame.
-	pub fn create_history_target(
-		&mut self,
-		builder: ghi::image::Builder<'a>,
-		resolution_divisor: u32,
-	) -> ghi::DynamicImageHandle {
+	pub fn create_history_target(&mut self, builder: ghi::image::Builder<'a>, resolution_divisor: u32) -> ghi::ImageHandle {
 		let (name, format) = target_identity(&builder);
-		let image = self
-			.context
-			.build_dynamic_image(builder.additional_uses(ghi::Uses::Clear | ghi::Uses::TransferSource));
+		let image = self.context.build_image(
+			builder
+				.additional_uses(ghi::Uses::Clear | ghi::Uses::TransferSource)
+				.copies(ghi::Copies::PerFrame),
+		);
 		self.register_render_target(name, format, image.into(), resolution_divisor, Placement::PerFrame(image));
 		image
 	}
@@ -629,6 +712,12 @@ impl<'a> RenderPassBuilder<'a> {
 	pub fn try_read_from(&mut self, name: &'a str) -> Option<ReadFromResult> {
 		self.images.get_image_index(name, self.sink_id)?;
 		Some(self.read_from(name))
+	}
+
+	/// Returns the queue the renderer records frames on, where a pass records one-time uploads, such as its lookup
+	/// textures, while it is built.
+	pub fn queue(&self) -> ghi::QueueHandle {
+		self.queue
 	}
 
 	pub fn context(&mut self) -> &'_ mut ghi::implementation::Context {

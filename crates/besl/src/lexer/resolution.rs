@@ -25,6 +25,9 @@ pub(super) fn get_reference(chain: &[NodeReference], name: &str) -> Option<NodeR
 		return resolve_path(chain, name);
 	}
 
+	// Each level searches its own subtree, so resolving every identifier of a large program is quadratic. Shader
+	// programs are authored by hand and stay small, and an index would have to be rebuilt whenever a scope gains a
+	// declaration, so the scan is kept until generated shaders make it a measured cost.
 	for node in chain.iter().rev() {
 		let reference = match node.borrow().node() {
 			Nodes::Intrinsic { .. } => find_descendant(node, name, DescendantSearch::Any),

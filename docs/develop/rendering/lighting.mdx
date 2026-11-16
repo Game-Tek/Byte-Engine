@@ -14,8 +14,9 @@ limits an application sees are specified in the
 Byte Engine resolves authoring units on the CPU. The GPU receives RGB lux for
 directional lights and RGB candela for point and cone lights. Local lights use
 inverse-square attenuation, and the physically based (PBR) material evaluation
-applies diffuse `albedo / π` and specular bidirectional reflectance distribution
-function (BRDF) terms.
+applies the diffuse and specular bidirectional reflectance distribution function
+(BRDF) terms that [diffuse takes what specular leaves](#diffuse-takes-what-specular-leaves)
+describes.
 
 For a local light, the incident RGB quantity at a surface is
 `candela / distance²`, multiplied by the cone factor when applicable. For a
@@ -26,6 +27,109 @@ don't change the authored unit conversion.
 The PBR visibility pipeline and the atmosphere sky apply the camera exposure as
 they write scene light, so later passes such as bloom and tone mapping receive
 exposed light. Scenes drawn with other pipelines ignore exposure.
+
+## Diffuse takes what specular leaves
+
+Light that reaches a surface either reflects off its specular lobe or enters
+the surface and scatters out as diffuse light. The specular lobe's directional
+albedo `E(μ)` is the share of light arriving at cosine `μ` that it reflects. The
+diffuse term takes the rest of the light on the way in and on the way out, after
+Kelemen and Szirmay-Kalos (A Microfacet Based Coupled Specular-Matte BRDF Model
+with Importance Sampling, 2001):
+
+`f_d = (1 − metalness) · albedo / π · (1 − E(μl)) · (1 − E(μv)) / (1 − E_avg)`
+
+- `μl` and `μv` are the cosines between the shading normal and the light and
+  view directions.
+- `E(μ) = F0 · A + B`, where `A` and `B` come from Karis's fit of the split-sum
+  environment BRDF, the same one that weighs reflected light. The diffuse part
+  belongs to the dielectric layer, so it uses the dielectric `F0` of 0.04.
+- `E_avg` is the cosine-weighted average of `E(μ)` over the hemisphere. A
+  quadratic in roughness fits it within 0.004, so shaders don't integrate it.
+  Dividing by `1 − E_avg` keeps a surface lit from every direction as bright as
+  `(1 − E(μv)) · albedo`.
+
+Indirect diffuse light arrives from the whole hemisphere, so its weight is that
+average: `(1 − metalness) · (1 − E(μv)) · albedo`.
+
+A rough surface's lobe reflects little light at any angle, so its diffuse light
+stays close to Lambert's even at a grazing view. A smooth surface's lobe reflects
+nearly everything at grazing angles, so its diffuse light fades there. A Fresnel
+factor of the macroscopic normal alone, `1 − F(μ)`, assumes a mirror-smooth
+surface and darkens rough surfaces seen edge-on.
+
+A change here must keep these rules:
+
+- Diffuse and specular together never reflect more than the light that arrives:
+  for any view, `E(μv)` plus the diffuse albedo over every light direction stays
+  at or below one.
+- Diffuse light stays above zero at a grazing view on a rough surface.
+
+## Smooth highlights stay finite
+
+Material evaluation keeps most of its BRDF in half floats, but not the
+Trowbridge-Reitz distribution of the light lobe. A smooth lobe peaks at
+`1 / (π α²)`, with `α` the roughness squared: about 390,000 for calm water at
+roughness 0.03, far past the half-float maximum of 65,504. The textbook
+denominator `(n·h)² (α² − 1) + 1` also cancels to zero where `n·h` rounds to one.
+The infinities and NaNs that result reach `Lit`, and bloom's prefilter reads NaN
+as zero, so the highlight shows white but doesn't glow.
+
+Material evaluation follows Filament (*Physically Based Rendering in Filament*,
+"Specular D"): it writes `1 − (n·h)²` as `|n × h|²`, evaluates the lobe in single
+precision, and holds the lights' `α` at or above `0.045²`, which bounds the peak
+at about 77,600. Reflected light takes the roughness as written.
+
+A change here must keep the lobe's peak finite at that floor and its projected
+integral over the hemisphere at one, which
+`trowbridge_reitz_peaks_finitely_and_integrates_to_one_in_the_besl_vm` checks.
+
+## Thin surfaces pass light to their far side
+
+A leaf is a thin sheet: part of the light that enters one face scatters out of
+the other. A material says how much with the BEMX `translucency` input, and
+the [rendering reference](/docs/reference/rendering#translucent-materials)
+specifies what it adds. This isn't subsurface scattering in the sense of light
+spreading sideways under skin: nothing is blurred across pixels, and the pixel
+only gains light from lights behind it. Skin's sideways spread is in
+[subsurface scattering](/docs/develop/rendering/subsurface-scattering), whose
+`thickness` input feeds this far-side path.
+
+The light loop of `MATERIAL_EVALUATION_SUFFIX_SOURCE` drops a light whose
+cosine with the shading normal isn't positive. For a translucent material it
+keeps a light with a negative cosine, takes the cosine on the far side, runs
+the same attenuation and shadow code, and then adds diffuse light only:
+
+`f_t = (1 − metalness) · translucency / π · (1 − E(μl)) · (1 − E(μv)) / (1 − E_avg)`
+
+That's the coupled diffuse term with `translucency` for the albedo and `μl`
+measured on the far side, so the specular lobe takes its share on the way in
+and on the way out exactly as it does for near-side light.
+
+The far-side code reads `translucency` or a local computed from it, and
+`material_evaluation_suffix_statements` in `shader_generator/ast.rs` removes
+every such statement from a material that doesn't set the input. In the uber
+mode, translucent materials have
+[shaders of their own](/docs/develop/rendering/visibility/material-evaluation#translucent-materials-take-their-own-shaders).
+
+A light behind a leaf must still reach it through the shadow map. Both sun
+shadow sites, `resolve_sun_shadow` in `sun-visibility.besl` and the transparent
+path of the light loop, move the receiver off its triangle on the sun's side.
+On the camera's side, a back-lit leaf would move behind its own depth in the
+map and shadow itself.
+
+A change here must keep these rules:
+
+- **Pay only where it's used.** Every far-side statement reads `translucency`
+  or a local computed from it, so a material without the input compiles none
+  of them.
+- **Share the light's path.** Far-side light uses the loop's attenuation,
+  cone, IES, and shadow code. Don't copy them into a second loop.
+- **Leave the receiver on the light's side.** A normal offset moves the
+  receiver toward the light it's tested against, never toward the camera.
+- **Keep the energy rule.** With `base_color` plus `translucency` at or under
+  one, near-side and far-side diffuse light plus specular light never exceed
+  the light that arrives.
 
 ## Lights are culled per cluster
 
@@ -84,6 +188,156 @@ The visibility tests `fog_light_tiles_hold_the_lights_that_reach_the_fog` and
 the `fog_light_of_*` tests guard the culling, the closed form, the shadow
 lookup, and the point and cone estimates against reference integrals. The
 height fog tests guard the blend.
+
+## The sky's haze uses the delta-Eddington approximation
+
+The atmosphere sky builds three lookup tables: transmittance, multiple
+scattering, and the sky view. The multiple-scattering table sums every
+scattering order after the first in closed form, which only works if light
+leaves each scattering event evenly in all directions. Air nearly does. Haze
+doesn't: with the default anisotropy of 0.76 it throws most of its light
+forward. Fed to the table unchanged, a clear day's haze spreads that light over
+the whole sky and turns it white.
+
+The sky therefore scales the haze with the delta-Eddington approximation
+(Joseph, Wiscombe, and Weinman, 1976, *The Delta-Eddington Approximation for
+Radiative Flux Transfer*). For a phase function of anisotropy `g`, the fraction
+`g²` of the scattered light counts as a forward peak that was never scattered,
+and the remaining `1 − g²` scatters with the much lower anisotropy
+`g / (1 + g)`. `haze_transport_scale` in `render_passes/sky.rs` returns that
+`1 − g²`, and the pass uploads both the full and the scaled haze scattering:
+
+| Where | Haze it uses |
+| --- | --- |
+| Transmittance table, which dims sunlight and the view | Scaled |
+| Multiple-scattering table | Scaled, as an even scatterer |
+| Sky view, light the haze scatters once toward the eye | Full, with the Cornette-Shanks phase function |
+| Sky view, everything else | Scaled |
+
+The once-scattered term keeps the true phase function because that light is
+what draws the glow around the sun, and the scaled haze has no forward peak
+left to draw it with. This follows the single-scattering correction of Nakajima
+and Tanaka (1988), which adds exact single scattering to a solution computed
+with a truncated phase function.
+
+A change to the sky must keep these true:
+
+- Every table reads the scaled haze. A table that reads the full haze whitens
+  the sky again.
+- Only the once-scattered haze term reads the full haze and the anisotropy.
+- The multiple-scattering table still treats the scaled haze as an even
+  scatterer, though its anisotropy is `g / (1 + g)`, not zero. That's the
+  table's own approximation, not part of delta-Eddington.
+
+`forward_scattering_haze_dims_the_sun_like_thinner_even_haze` and
+`haze_glows_around_the_sun` in `render_passes/sky.rs` guard the scaling and the
+glow.
+
+## The sky is the environment
+
+Surfel GI, probe GI, and material evaluation take the sky's light from the
+environment: rays that miss read its specular cube, and pixels read its
+irradiance cube. A scene lit by the atmosphere sky alone used to have no
+environment, so none of them saw any sky. `AtmosphereSkyEnvironment` in
+`render_passes/sky.rs` now generates one from the sky the camera sees, in the
+layout a baked environment has, so every reader works unchanged.
+
+It's a scene environment, a mechanism next to the scene background: the
+renderer builds it once from the factory `Renderer::set_scene_environment`
+registers, every scene pipeline takes it with
+`RenderPassBuilder::scene_environment`, and the visibility pipeline binds its
+maps through the same `EnvironmentState::bind` a baked map uses, until the
+scene creates an `Environment`.
+
+Each regeneration has these stages:
+
+1. Build its own atmosphere tables, the same transmittance, multiple-scattering,
+   and sky-view passes as the sky (Hillaire 2020), for the first sink's camera
+   height rounded to a meter, with the sun's unexposed illuminance.
+2. Capture: `sky-environment.besl` resamples the octahedral sky-view table into
+   level 0 of a 128-texel radiance cube, times the sunlight.
+3. `environment-downsample.besl` box-filters the radiance cube's levels, one
+   face and level at a time.
+4. `environment-prefilter.besl` writes the specular cube with the split-sum
+   prefilter for the Trowbridge-Reitz (GGX) lobe of Karis (*Real Shading in Unreal Engine 4*, 2013), and the
+   8 × 8 irradiance cube with cosine-weighted samples. Both read each sample at
+   the radiance level that filtered importance sampling (Křivánek and Colbert,
+   *Real-time Shading with Filtered Importance Sampling*, 2008) picks for its
+   solid angle.
+
+The prefilter is the offline bake's in `resource-management/src/ibl/cpu.rs`,
+ported: the same Hammersley points, α = roughness², level-of-detail rule, face
+orientation, and irradiance over π. The judgment calls that depart from it:
+
+- Each specular texel takes 64 samples and each irradiance texel 256, where
+  the bake takes 1,024. Filtered importance sampling reads each sample at the
+  level its solid angle covers, which keeps the result smooth with fewer.
+- The cubes are 128 texels wide, the smallest that holds the eight levels the
+  visibility loader requires of baked maps.
+- The camera height is rounded to a meter, so a camera that bobs doesn't
+  regenerate the environment every frame.
+- The sun's disk is left out, since the directional light already carries it.
+
+The environment's tables are separate from each sink's sky tables: they
+rebuild only when the haze changes and cost a few hundred microseconds then,
+so sharing them wasn't worth tying the sinks' passes to the environment's.
+
+The visibility pipeline records the environment first in the first sink's
+frame-wide work, before surfel and probe tracing, and prepares it last, after
+every step that can give up on the frame. A regeneration on the slate quarry at
+1024 × 1024 on an Apple M4 takes about 0.5 ms; steady frames record nothing.
+
+Each pass fills one level of all six faces in a single dispatch with a depth of
+six: the shader binds the level's faces as a six-element storage image array,
+`Resource::cube_mip`, and picks its face with `thread_layer`. Each element is a
+2D view of one layer, `DescriptorWrite::image_layer_mip`, which Vulkan and
+Metal support.
+DX12 doesn't yet: a 2D view of an array slice must be a one-slice array view,
+which the HLSL generator's `RWTexture2D` declarations can't take.
+
+A change to the sky environment must keep these true:
+
+- Its maps hold unexposed physical radiance, as baked maps do, and its
+  intensity is 1.
+- It regenerates before any of the frame's work that reads the environment.
+- Its face orientation matches `cubemap_texel_direction` in the offline bake.
+
+`sky_environment_holds_the_sky_view_light_times_the_sunlight`,
+`environment_downsample_averages_each_two_by_two_block`, and
+`uniform_environment_prefilters_to_itself` in `render_passes/sky.rs` guard the
+capture, the pyramid, and the prefilter's normalization.
+
+## Ambient occlusion doesn't darken traced light twice
+
+Surfel GI, probe GI, and lightmaps trace rays, so their light already holds the
+occlusion those rays found. GTAO estimates the same occlusion again from the
+depth buffer, within its radius. Multiplying the two darkens every occluder both
+see twice. How much depends on how much GTAO finds: on the slate quarry's far
+cliffs, where its one-meter radius spans a few pixels, its visibility averaged
+0.96 on shaded rock, so the product cost about 4 % of the surfels' light
+(2026-11-13). Close surfaces lose more.
+
+Material evaluation instead multiplies a traced source's light by
+`traced_light_occlusion`: GTAO's visibility divided by the share of the
+source's rays that reached the environment, at most one. It's the rule the
+[environment's visibility](/docs/reference/rendering#indirect-diffuse-light)
+follows, the smaller of the two estimates, applied to light that already
+carries one of them. It's this engine's own rule, not a published method.
+Short-range ambient occlusion, as Unreal Engine's Lumen applies it, is the
+published alternative: it needs a GTAO radius tied to each source's own
+resolution, which a surfel's distance-scaled radius doesn't give.
+
+A change to it must keep these true:
+
+- GTAO never darkens traced light where it finds no more occlusion than the
+  source's rays did.
+- Where no ray reached the environment, as indoors, GTAO leaves the light
+  alone. The source's own resolution is all the occlusion that light has.
+- The environment's visibility, which reflections read, stays the smaller of
+  the two estimates.
+
+`gtao_darkens_traced_light_only_beyond_the_occlusion_its_rays_found_in_the_besl_vm`
+in `shader_generator/tests.rs` guards the rule.
 
 ## Shadow maps belong to the visibility pipeline
 

@@ -1,7 +1,7 @@
 use besl::sampler::Reduction;
 use besl::vm::{
 	Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Sampler, Texture, Value, VmError, builtin_position_slot,
-	output_slot,
+	builtin_primitive_index_slot, builtin_render_target_array_index_slot, output_slot,
 };
 use besl::{BindingTypes, Node, compile_to_besl};
 
@@ -41,6 +41,88 @@ fn structural_position_return_uses_the_builtin_position_slot_without_shadowing_i
 			.read(besl::STRUCTURAL_POSITION_OUTPUT)
 			.expect("Expected structural position value"),
 		Value::Vec4F([1.0, 2.0, 3.0, 1.0])
+	);
+}
+
+#[test]
+fn structural_layer_return_uses_the_builtin_layer_slot() {
+	let program = compile_to_besl(
+		r#"
+		main: fn () -> interface { position: vec4f, render_target_array_index: u32 } {
+			let layer: u32 = 3;
+			return { position: vec4f(0.0, 0.0, 0.0, 1.0), render_target_array_index: layer };
+		}
+		"#,
+		None,
+	)
+	.expect("Expected layered vertex source to link");
+	let executable = ExecutableProgram::compile(program).expect("Expected layered vertex source to compile");
+	let mut position = Buffer::new(
+		executable
+			.builtin_position_layout()
+			.expect("Expected VM position output")
+			.clone(),
+	);
+	let mut layer = Buffer::new(
+		executable
+			.builtin_render_target_array_index_layout()
+			.expect("Expected VM layer output")
+			.clone(),
+	);
+
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(builtin_position_slot(), &mut position);
+		descriptors.bind_buffer(builtin_render_target_array_index_slot(), &mut layer);
+		executable
+			.run_main(&mut descriptors)
+			.expect("Expected layered vertex execution");
+	}
+
+	assert_eq!(
+		layer
+			.read(besl::STRUCTURAL_RENDER_TARGET_ARRAY_INDEX_OUTPUT)
+			.expect("Expected structural layer value"),
+		Value::U32(3)
+	);
+}
+
+#[test]
+fn stage_input_primitive_index_reads_the_builtin_primitive_index_slot() {
+	let program = compile_to_besl(
+		r#"
+		main: fn (input: StageInput) -> output { value: u32 } {
+			let value: u32 = input.primitive_index;
+			return { value };
+		}
+		"#,
+		None,
+	)
+	.expect("Expected primitive index fragment source to link");
+	let executable = ExecutableProgram::compile(program).expect("Expected primitive index fragment source to compile");
+	let mut primitive_index = Buffer::new(
+		executable
+			.builtin_primitive_index_layout()
+			.expect("Expected VM primitive index input")
+			.clone(),
+	);
+	primitive_index
+		.write(besl::PRIMITIVE_INDEX_BUILTIN, Value::U32(41))
+		.expect("Expected primitive index write");
+	let mut output = Buffer::new(executable.output_layout(0).expect("Expected value output").clone());
+
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(builtin_primitive_index_slot(), &mut primitive_index);
+		descriptors.bind_buffer(output_slot(0), &mut output);
+		executable
+			.run_main(&mut descriptors)
+			.expect("Expected primitive index fragment execution");
+	}
+
+	assert_eq!(
+		output.read("_besl_output_value").expect("Expected output value"),
+		Value::U32(41)
 	);
 }
 

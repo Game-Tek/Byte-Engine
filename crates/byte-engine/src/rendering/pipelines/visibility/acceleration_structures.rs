@@ -30,10 +30,11 @@ pub(crate) const BOTTOM_LEVEL_BUILD_TRIANGLES_PER_FRAME: u32 = 262_144;
 /// The bits of every instance's mask: rays that trace the scene use them all.
 const SCENE_MASK: u8 = 0xFF;
 
-/// The `TracedPrimitive` struct is one primitive the frame draws, as the acceleration structures need it.
+/// The `TracedPrimitive` struct is one primitive of the frame that rays can hit, as the acceleration structures need it.
 ///
-/// The visibility pipeline manager lists one per admitted primitive while it rebuilds the frame's instances, and hands
-/// the list to [`SceneAccelerationStructures::prepare`].
+/// The visibility pipeline manager lists one per admitted opaque primitive while it rebuilds the frame's instances,
+/// and hands the list to [`SceneAccelerationStructures::prepare`]. Masked and blended primitives aren't listed: no
+/// bottom level holds them.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TracedPrimitive {
 	pub(crate) renderable: Handle,
@@ -244,7 +245,7 @@ pub(crate) struct SceneAccelerationStructures {
 	top_level: ghi::TopLevelAccelerationStructureHandle,
 	/// For each frame, entry `custom_index + geometry` of a hit names the frame's mesh record it hit and the hit
 	/// geometry's first triangle.
-	geometry_records: ghi::DynamicBufferHandle<[[u32; 2]]>,
+	geometry_records: ghi::BufferHandle<[[u32; 2]]>,
 	/// The most instances the top level places.
 	instances: u32,
 	vertex_positions: ghi::BufferHandle<[[f32; 3]]>,
@@ -266,11 +267,12 @@ impl SceneAccelerationStructures {
 	pub(crate) fn new(context: &mut ghi::implementation::Context, geometry: &GeometryHandles, instances: u32) -> Option<Self> {
 		let flat_triangle_indices = geometry.flat_triangle_indices?;
 		let top_level = context.create_top_level_acceleration_structure(Some("Scene Top Level"), instances);
-		let geometry_records = context.build_dynamic_buffer(
+		let geometry_records = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Ray Tracing Geometry Records")
 				.length(instances as usize)
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let descriptor_set = set_layouts::RAY_TRACED_SCENE.create_set(context, "Ray-Traced Scene");
 		let set = set_layouts::RAY_TRACED_SCENE.binder(descriptor_set);
@@ -354,9 +356,8 @@ impl SceneAccelerationStructures {
 		}
 
 		let mut placed = bumpalo::collections::Vec::with_capacity_in(self.instances as usize, frame_allocator);
-		let records = frame.get_mut_dynamic_buffer_slice(self.geometry_records);
+		let records = frame.map(self.geometry_records);
 		place_instances(primitives, &self.bottom_levels, &mut placed, records);
-		frame.sync_buffer(self.geometry_records);
 		let instances = bumpalo::collections::Vec::from_iter_in(
 			placed.iter().map(|instance| ghi::rt::Instance {
 				transform: instance_transform(instance.model),

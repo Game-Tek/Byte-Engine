@@ -15,12 +15,39 @@ use super::ENTITY_REFERENCE;
 /// `Deserialize`.
 ///
 /// An entity reference reads as the object `{ "$entity": handle }`, which [`super::EntityRef`] decodes, with the
-/// handle counted from the spawn's first entity. Strings are borrowed from the payload.
+/// handle counted from the spawn's first entity. A parameter reference reads as the value the spawn gives that
+/// parameter. Strings are borrowed from the payload.
 pub(super) struct TokenDeserializer<'p, 's> {
 	tokens: Tokens<'p, 's>,
 	peeked: Option<Token<'p>>,
 	/// The handle identity of the level's entity 0.
 	first_entity: u32,
+	/// The expansion whose parameters the tokens' parameter references name, or `None` where they can name none.
+	scope: Option<usize>,
+	arguments: &'s Arguments<'p>,
+}
+
+/// The `Arguments` struct holds the value each parameter takes in one spawn, for every expanded prefab.
+///
+/// A value is tokens in a level's or prefab's values, or in values code passed. It may itself refer to the
+/// parameters of the expansion that set it, its scope, which is how a prefab passes its own parameters on.
+#[derive(Default)]
+pub(super) struct Arguments<'p> {
+	/// For each expansion, the value of each parameter of its prefab, in declaration order.
+	pub(super) expansions: Vec<Vec<Argument<'p>>>,
+	/// The string tables the values' strings and keys index into.
+	pub(super) strings: Vec<Vec<&'p str>>,
+}
+
+/// The `Argument` struct locates one parameter's value and the expansion its parameter references resolve in.
+#[derive(Clone, Copy)]
+pub(super) struct Argument<'p> {
+	/// The tokens, starting at the value and continuing past it.
+	pub(super) tokens: &'p [u8],
+	/// The index of the value's string table in [`Arguments::strings`].
+	pub(super) strings: usize,
+	/// The expansion whose parameters the value refers to; `None` for a default or a value from code.
+	pub(super) scope: Option<usize>,
 }
 
 /// The `Error` struct says why a payload doesn't fit its kind, in serde's words.
@@ -42,13 +69,31 @@ impl de::Error for Error {
 }
 
 impl<'p, 's> TokenDeserializer<'p, 's> {
-	/// Reads `tokens`, a run of a baked kind's payloads.
-	pub(super) fn new(tokens: Tokens<'p, 's>, first_entity: u32) -> Self {
+	/// Reads `tokens`, a run of a baked kind's payloads, whose parameter references name `scope`'s parameters.
+	pub(super) fn new(tokens: Tokens<'p, 's>, first_entity: u32, scope: Option<usize>, arguments: &'s Arguments<'p>) -> Self {
 		Self {
 			tokens,
 			peeked: None,
 			first_entity,
+			scope,
+			arguments,
 		}
+	}
+
+	/// Returns a deserializer over the value the spawn gives parameter `index` of this deserializer's scope.
+	fn parameter(&self, index: u32) -> Result<Self, Error> {
+		let argument = self
+			.scope
+			.and_then(|scope| self.arguments.expansions.get(scope))
+			.and_then(|arguments| arguments.get(index as usize))
+			.ok_or_else(malformed)?;
+		let strings = self.arguments.strings.get(argument.strings).ok_or_else(malformed)?;
+		Ok(Self::new(
+			Tokens::new(argument.tokens, strings),
+			self.first_entity,
+			argument.scope,
+			self.arguments,
+		))
 	}
 
 	fn next(&mut self) -> Result<Token<'p>, Error> {
@@ -100,16 +145,23 @@ impl<'de> de::Deserializer<'de> for &mut TokenDeserializer<'de, '_> {
 				let reference = std::iter::once((ENTITY_REFERENCE, u64::from(handle)));
 				visitor.visit_map(MapDeserializer::<_, Error>::new(reference))
 			}
+			Token::Parameter(index) => de::Deserializer::deserialize_any(&mut self.parameter(index)?, visitor),
 			Token::Key(_) | Token::SequenceEnd | Token::ObjectEnd => Err(malformed()),
 		}
 	}
 
 	fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
-		if self.peek()? == Token::Null {
-			self.next()?;
-			visitor.visit_none()
-		} else {
-			visitor.visit_some(self)
+		match self.peek()? {
+			Token::Null => {
+				self.next()?;
+				visitor.visit_none()
+			}
+			// The parameter's value decides whether the option holds one.
+			Token::Parameter(index) => {
+				self.next()?;
+				de::Deserializer::deserialize_option(&mut self.parameter(index)?, visitor)
+			}
+			_ => visitor.visit_some(self),
 		}
 	}
 
@@ -120,11 +172,12 @@ impl<'de> de::Deserializer<'de> for &mut TokenDeserializer<'de, '_> {
 	/// Reads a variant as its name, or as an object with one field that names it and holds its value.
 	fn deserialize_enum<V: Visitor<'de>>(
 		self,
-		_: &'static str,
-		_: &'static [&'static str],
+		name: &'static str,
+		variants: &'static [&'static str],
 		visitor: V,
 	) -> Result<V::Value, Error> {
 		match self.next()? {
+			Token::Parameter(index) => de::Deserializer::deserialize_enum(&mut self.parameter(index)?, name, variants, visitor),
 			Token::String(variant) => visitor.visit_enum(BorrowedStrDeserializer::new(variant)),
 			Token::ObjectStart => {
 				let value = visitor.visit_enum(Variant { de: self })?;

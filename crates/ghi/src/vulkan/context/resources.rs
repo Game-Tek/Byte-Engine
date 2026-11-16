@@ -711,7 +711,10 @@ impl Context {
 	/// Frames that already started may have recorded or submitted work that references the object. Before the first
 	/// frame, work submitted outside frames is covered by waiting for frame 0, whose fence orders all earlier submissions.
 	pub(crate) fn defer_destruction(&mut self, task: Tasks) {
-		self.tasks.push(Task::after(task, crate::vulkan::Completion::Frame(self.last_started_frame.unwrap_or(0))));
+		self.tasks.push(Task::after(
+			task,
+			crate::vulkan::Completion::Frame(self.last_started_frame.unwrap_or(0)),
+		));
 	}
 
 	/// Destroys a buffer that [`Self::create_dedicated_buffer`] made, and frees its memory, once the frames recorded

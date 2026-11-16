@@ -123,7 +123,11 @@ impl std::fmt::Display for MeshProcessingError {
 				f,
 				"Primitive {primitive} has authored detail levels, but it is skinned or the bake gives it lightmap UVs, and neither supports them. The most likely cause is a model handler that passed authored levels it should have left out. Report it as an engine bug."
 			),
-			Self::TooManyLevelMeshlets { primitive, level, meshlets } => write!(
+			Self::TooManyLevelMeshlets {
+				primitive,
+				level,
+				meshlets,
+			} => write!(
 				f,
 				"Detail level {level} of primitive {primitive} needs {meshlets} meshlets, more than the {} one level holds. The most likely cause is a primitive whose triangles share few vertices, so each meshlet fills its 64 vertices long before its 124 triangles. Weld the primitive's duplicate vertices or split it in the source model. See {}.",
 				crate::resources::mesh::MAX_LEVEL_MESHLETS,

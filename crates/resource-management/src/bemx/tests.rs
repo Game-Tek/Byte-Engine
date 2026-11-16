@@ -193,6 +193,64 @@ fn json_documents_pick_their_surface() {
 	assert_eq!(graph.surface().roughness, None);
 }
 
+/// A graph is translucent when its surface sets `translucency`, whatever the input computes, and not otherwise.
+#[test]
+fn a_surface_that_sets_translucency_makes_a_translucent_graph() {
+	let leaf = json::parse(
+		r#"{ nodes: [
+			{ name: "albedo", node: "image", texture: "base_color", type: "vector3" },
+			{ name: "surface", node: "surface", base_color: "albedo", translucency: [0.0, 0.0, 0.0] },
+		] }"#,
+	)
+	.expect("a surface with translucency should parse");
+	assert!(leaf.is_translucent());
+
+	let stone = json::parse(r#"{ nodes: [{ name: "surface", node: "surface", roughness: 0.9 }] }"#)
+		.expect("a surface without translucency should parse");
+	assert!(!stone.is_translucent());
+
+	// `translucency` is a colour, as `base_color` is.
+	json::parse(r#"{ nodes: [{ name: "surface", node: "surface", translucency: 0.5 }] }"#)
+		.expect_err("a float translucency should not parse");
+}
+
+/// A graph scatters when its surface sets `subsurface_radius`, a colour of mean free paths, and `thickness` makes it
+/// translucent only together with that radius and without `translucency`.
+#[test]
+fn subsurface_inputs_make_subsurface_and_translucent_graphs() {
+	let skin = json::parse(
+		r#"{ nodes: [
+			{ name: "radius", node: "parameter", parameter: "radius", type: "vector3" },
+			{ name: "surface", node: "surface", subsurface_radius: "radius" },
+		] }"#,
+	)
+	.expect("a surface with a subsurface radius should parse");
+	assert!(skin.is_subsurface());
+	assert!(!skin.is_translucent());
+
+	let ear = json::parse(
+		r#"{ nodes: [{ name: "surface", node: "surface", subsurface_radius: [0.004, 0.0014, 0.0007], thickness: 0.01 }] }"#,
+	)
+	.expect("a subsurface surface with a thickness should parse");
+	assert!(ear.is_subsurface());
+	assert!(ear.is_translucent());
+
+	let stone = json::parse(r#"{ nodes: [{ name: "surface", node: "surface", roughness: 0.9 }] }"#)
+		.expect("a surface without subsurface inputs should parse");
+	assert!(!stone.is_subsurface());
+
+	// The radius is a colour, as `translucency` is.
+	json::parse(r#"{ nodes: [{ name: "surface", node: "surface", subsurface_radius: 0.004 }] }"#)
+		.expect_err("a float subsurface radius should not parse");
+	let lone = json::parse(r#"{ nodes: [{ name: "surface", node: "surface", thickness: 0.01 }] }"#)
+		.expect_err("a thickness without a subsurface radius should not parse");
+	assert!(lone.to_string().contains("subsurface_radius"), "{lone}");
+	json::parse(
+		r#"{ nodes: [{ name: "surface", node: "surface", subsurface_radius: [0.004, 0.0014, 0.0007], thickness: 0.01, translucency: [0.5, 0.5, 0.5] }] }"#,
+	)
+	.expect_err("a thickness together with a translucency should not parse");
+}
+
 #[test]
 fn json_error_messages_name_the_node_and_the_likely_cause() {
 	let error = json::parse(r#"{ nodes: [{ name: "surface", node: "surface", metalness: [1.0, 0.0] }] }"#)
@@ -201,4 +259,103 @@ fn json_error_messages_name_the_node_and_the_likely_cause() {
 
 	assert!(message.contains("'surface'"), "{message}");
 	assert!(message.contains("The most likely cause"), "{message}");
+}
+
+#[test]
+fn written_text_reads_back_as_the_same_graph_with_names_first() {
+	let source = r#"{
+		// A comment, which a document doesn't keep.
+		nodes: [
+			{ type: "color3", texture: "color", node: "image", name: "base_color" },
+			{ in2: [1.0, 0.9, 0.8], name: "tinted", node: "multiply", in1: "base_color" },
+			{ name: "surface", node: "surface", roughness: 0.5, base_color: "tinted" },
+		],
+	}"#;
+	let document = crate::asset::parse_json(source).unwrap();
+
+	let written = json::write(&document);
+
+	assert_eq!(crate::asset::parse_json(&written).unwrap(), document);
+	assert_eq!(json::parse(&written).unwrap(), json::parse(source).unwrap());
+	assert!(
+		written.contains(r#"{ name: "tinted", node: "multiply", in1: "base_color", in2: [1.0, 0.9, 0.8] }"#),
+		"{written}"
+	);
+}
+
+#[test]
+fn every_kind_accepts_the_fields_its_table_lists_and_no_other() {
+	for kind in super::kinds::KINDS {
+		// A graph needs one surface, so a surface under test is that one.
+		let surface = if kind.produces {
+			r#", { name: "surface", node: "surface" }"#
+		} else {
+			""
+		};
+		let node = |extra: &str| format!(r#"{{ nodes: [{{ name: "node", node: "{}"{extra} }}{surface}] }}"#, kind.name);
+		// Other errors, such as a missing required input, are fine here: the fields themselves are accepted.
+		for field in kind
+			.inputs
+			.iter()
+			.map(|input| input.name)
+			.chain(kind.settings.iter().map(|setting| setting.name))
+		{
+			let result = json::parse(&node(&format!(r#", {field}: 1"#)));
+			assert!(
+				!matches!(result, Err(ParseError::UnknownField { .. })),
+				"{} rejects its own field {field}",
+				kind.name
+			);
+		}
+		assert!(
+			matches!(json::parse(&node(r#", unlisted: 1"#)), Err(ParseError::UnknownField { .. })),
+			"{} accepts a field its table doesn't list",
+			kind.name
+		);
+	}
+}
+
+#[test]
+fn an_input_left_out_reads_its_tables_default() {
+	use super::kinds::{InputDefault, KINDS};
+
+	// A constant every required input can read, and a setting value every kind takes.
+	let mut compared = 0;
+	for kind in KINDS.iter().filter(|kind| kind.produces) {
+		let required = kind
+			.inputs
+			.iter()
+			.filter(|input| input.default == InputDefault::Required)
+			.map(|input| format!(", {}: [0.5, 0.5, 0.5]", input.name))
+			.chain(kind.settings.iter().filter(|setting| setting.required).map(|setting| {
+				let value = match setting.kind {
+					super::kinds::SettingKind::Type => r#""vector3""#,
+					super::kinds::SettingKind::Channels => r#""xyz""#,
+					super::kinds::SettingKind::Value => "[0.5, 0.5, 0.5]",
+					_ => r#""name""#,
+				};
+				format!(", {}: {value}", setting.name)
+			}))
+			.collect::<String>();
+		for input in kind.inputs {
+			let InputDefault::Value(default) = input.default else {
+				continue;
+			};
+			let graph = |extra: &str| {
+				json::parse(&format!(
+					r#"{{ nodes: [{{ name: "node", node: "{}"{required}{extra} }}, {{ name: "surface", node: "surface" }}] }}"#,
+					kind.name
+				))
+			};
+			let written = default.iter().map(f32::to_string).collect::<Vec<_>>().join(", ");
+			let written = if default.len() == 1 { written } else { format!("[{written}]") };
+			// A node whose types don't fit these stand-in inputs is checked by its own tests instead.
+			let (Ok(omitted), Ok(explicit)) = (graph(""), graph(&format!(", {}: {written}", input.name))) else {
+				continue;
+			};
+			assert_eq!(omitted, explicit, "{}'s {} default", kind.name, input.name);
+			compared += 1;
+		}
+	}
+	assert!(compared > 20, "only {compared} defaults were compared");
 }

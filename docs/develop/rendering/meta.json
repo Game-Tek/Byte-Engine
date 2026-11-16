@@ -4,6 +4,7 @@
 	"pages": [
 		"loading",
 		"lighting",
+		"subsurface-scattering",
 		"visibility",
 		"shown-transforms",
 		"metal-presentation",

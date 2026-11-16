@@ -32,10 +32,15 @@ impl Text {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextSettings {
 	pub font_size: f32,
+	/// The name of the [`Fonts`](crate::ui::Fonts) entry to draw with, or `None` for the default font.
+	pub font: Option<&'static str>,
 }
 
 impl Default for TextSettings {
 	fn default() -> Self {
-		Self { font_size: 16.0 }
+		Self {
+			font_size: 16.0,
+			font: None,
+		}
 	}
 }

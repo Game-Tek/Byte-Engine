@@ -86,16 +86,12 @@ impl RayHits {
 		let device_buffer = |name, length: u32| {
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name(name)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.length(length as usize)
 		};
 		let hits: ghi::BufferHandle<[RayHit]> = context.build_buffer(device_buffer("Ray Hits", ray_budget));
 		let keys: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Ray Hit Keys", ray_budget));
-		let sort: ghi::BufferHandle<RayHitSort> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Ray Hit Sort")
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
-		);
+		let sort: ghi::BufferHandle<RayHitSort> =
+			context.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage).name("Ray Hit Sort"));
 		let sorted: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Ray Sorted Hits", ray_budget));
 		let set = set_layouts::RAY_HITS.binder(descriptor_set);
 		context.write(&[

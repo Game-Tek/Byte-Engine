@@ -1,0 +1,31 @@
+// Writes a page draw's fragment into the physical page that backs its virtual texel, as the chapter's attachment-less
+// page draw does. Only a page that is allocated and dirty takes depth: a clean page already holds it, and a texel no
+// receiver needs has no page. The pool keeps the depth nearest the light through an atomic max, which stands in for the
+// depth test.
+
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+use ::byte_engine::rendering::visibility::layouts::occlusion::*;
+use ::byte_engine::rendering::visibility::layouts::virtual_shadows::*;
+
+main: fn (
+	input: StageInput,
+	scene: Scene,
+	occlusion: Occlusion,
+	pages: VirtualShadowPages,
+	pipeline_input: interface {
+		level: u32,
+		texel: vec3f,
+	},
+) -> void {
+	let texel: vec2u = vec2u(u32(pipeline_input.texel.x), u32(pipeline_input.texel.y));
+	let page: vec2u = vec2u(texel.x / VIRTUAL_SHADOW_PAGE_TEXELS, texel.y / VIRTUAL_SHADOW_PAGE_TEXELS);
+	let slot: u32 = virtual_shadow_slot(pages.page_frame.origin_pages[pipeline_input.level], pipeline_input.level, page);
+	let entry: u32 = atomic_load(pages.page_table.entries[slot]);
+	if ((entry & (PAGE_ALLOCATED | PAGE_DIRTY)) != (PAGE_ALLOCATED | PAGE_DIRTY)) {
+		return;
+	}
+	let physical: vec2u = virtual_shadow_physical_origin(pages.page_frame.pool_pages_per_row, entry & PAGE_PHYSICAL_MASK)
+		+ vec2u(texel.x % VIRTUAL_SHADOW_PAGE_TEXELS, texel.y % VIRTUAL_SHADOW_PAGE_TEXELS);
+	image_atomic_max(pages.pool, physical, encode_virtual_shadow_depth(pipeline_input.texel.z));
+}

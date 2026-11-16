@@ -35,6 +35,12 @@ pub(super) struct SerializableMessage {
 
 /// The stable inspection-protocol name for a transform replacement message.
 pub const TRANSFORMATION_UPDATE_MESSAGE_TYPE: &str = "TransformationUpdate";
+/// The stable inspection-protocol name for a camera settings replacement message.
+pub const CAMERA_UPDATE_MESSAGE_TYPE: &str = "CameraUpdate";
+/// The stable inspection-protocol names for the light settings replacement messages, one per light shape.
+pub const POINT_LIGHT_UPDATE_MESSAGE_TYPE: &str = "PointLightUpdate";
+pub const CONE_LIGHT_UPDATE_MESSAGE_TYPE: &str = "ConeLightUpdate";
+pub const DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE: &str = "DirectionalLightUpdate";
 /// The stable inspection-protocol name for a terminal entity deletion.
 pub const DELETE_MESSAGE_TYPE: &str = "Delete";
 /// The alternate inspection-protocol name for a terminal entity deletion.

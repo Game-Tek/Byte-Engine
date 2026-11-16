@@ -2,12 +2,16 @@
 ///
 /// Pair a color with [`PhotometricIntensity`], then pass both values to a light constructor such as
 /// [`super::DirectionalLight::new`]. RGB magnitude does not control brightness because colors are normalized to unit luminance.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Facet and serde read and write it as a light's `color` in a [level](/docs/reference/levels#lights).
+#[derive(Clone, Copy, Debug, PartialEq, facet::Facet, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
+#[facet(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum LightColor {
 	/// Uses a blackbody-style color temperature from 1,000 K through 40,000 K.
 	Kelvin(f32),
-	/// Uses a nonnegative linear-sRGB chromaticity with nonzero luminance.
-	LinearSrgb(maths_rs::Vec3f),
+	/// Uses a nonnegative linear-sRGB chromaticity with nonzero luminance, as `[r, g, b]`.
+	LinearSrgb([f32; 3]),
 }
 
 impl LightColor {
@@ -18,7 +22,7 @@ impl LightColor {
 
 	/// Creates a `LinearSrgb` color from RGB components. See [`LightColor::LinearSrgb`].
 	pub fn linear_srgb(r: f32, g: f32, b: f32) -> Self {
-		Self::LinearSrgb(maths_rs::Vec3f::new(r, g, b))
+		Self::LinearSrgb([r, g, b])
 	}
 }
 
@@ -34,18 +38,25 @@ impl From<(f32, f32, f32)> for LightColor {
 	}
 }
 
-/// The `PhotometricIntensity` enum provides physical light quantities with enough context for analytic lights.
+/// The `PhotometricIntensity` enum provides physical light quantities with enough context for analytic lights, or a
+/// measured IES profile for a point or cone light.
 ///
-/// You can use every variant with every light shape. See the
+/// You can use every photometric variant with every light shape. See the
 /// [lighting reference](/docs/reference/lighting)
-/// to choose the quantity and its reference values.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// to choose the quantity and its reference values. Facet and serde read and write it as a light's `intensity` in a
+/// [level](/docs/reference/levels#lights), where each distance and area is 1 unless given.
+#[derive(Clone, Debug, PartialEq, facet::Facet, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
+#[facet(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum PhotometricIntensity {
 	/// Sets illuminance at a measurement distance.
 	Illuminance {
 		/// The illuminance in lumens per square meter.
 		lux: f32,
 		/// The distance in meters used to convert illuminance for a local light.
+		#[facet(default = 1.0f32)]
+		#[serde(default = "one")]
 		measurement_distance_m: f32,
 	},
 	/// Sets luminous intensity with a reference distance for directional conversion.
@@ -53,6 +64,8 @@ pub enum PhotometricIntensity {
 		/// The luminous intensity in lumens per steradian.
 		candela: f32,
 		/// The distance in meters used to convert intensity for a directional light.
+		#[facet(default = 1.0f32)]
+		#[serde(default = "one")]
 		reference_distance_m: f32,
 	},
 	/// Sets total luminous flux with a directional beam area.
@@ -60,6 +73,8 @@ pub enum PhotometricIntensity {
 		/// The total emitted luminous flux.
 		lumens: f32,
 		/// The beam area in square meters used to convert flux for a directional light.
+		#[facet(default = 1.0f32)]
+		#[serde(default = "one")]
 		directional_beam_area_m2: f32,
 	},
 	/// Sets emitter luminance with the geometry needed for an analytic approximation.
@@ -67,11 +82,35 @@ pub enum PhotometricIntensity {
 		/// The luminance in candela per square meter.
 		nits: f32,
 		/// The visible projected emitter area in square meters.
+		#[facet(default = 1.0f32)]
+		#[serde(default = "one")]
 		projected_area_m2: f32,
 		/// The distance in meters used to convert luminance for a directional light.
+		#[facet(default = 1.0f32)]
+		#[serde(default = "one")]
 		reference_distance_m: f32,
 	},
+	/// Takes a point or cone light's calibrated intensity and angular distribution from a baked IES profile; see
+	/// [`super::IesProfile::new`].
+	///
+	/// The associated [`crate::gameplay::Transform`] maps local `+Z` to the emission axis, local `+X` to the IES C0
+	/// tangent, and local `+Y` to the C90 tangent. The light's color tints the profile with unit luminance. The
+	/// visibility pipeline resolves the profile asynchronously; until it reaches the GPU, the light uses its dimmed
+	/// unit-luminance color as a fallback.
+	Ies {
+		/// The IES profile's resource ID.
+		profile: String,
+		/// A linear fraction from `0.0` for off through `1.0` for the measured output.
+		dimmer: f32,
+	},
 }
+
+fn one() -> f32 {
+	1.0
+}
+
+/// The cause a directional light gives for an IES intensity, which only local lights take.
+const IES_IS_LOCAL: &str = "that the intensity names an IES profile, which only point and cone lights take. Give a directional light a photometric intensity such as `illuminance`";
 
 impl PhotometricIntensity {
 	/// Creates an illuminance intensity from a lux value, with a default measurement distance of 1 meter.
@@ -136,7 +175,7 @@ impl LightColor {
 	/// or contains a temperature outside the supported range.
 	pub fn resolve(self) -> Result<maths_rs::Vec3f, PhotometricError> {
 		let rgb = match self {
-			Self::LinearSrgb(rgb) => rgb,
+			Self::LinearSrgb([r, g, b]) => maths_rs::Vec3f::new(r, g, b),
 			Self::Kelvin(temperature) => linear_srgb_from_temperature(temperature)?,
 		};
 		normalize_luminance(rgb)
@@ -148,9 +187,10 @@ impl PhotometricIntensity {
 	///
 	/// # Errors
 	///
-	/// Returns [`PhotometricError`] when a required magnitude, distance, or area is not positive and finite.
-	pub fn directional_lux(self) -> Result<f32, PhotometricError> {
-		match self {
+	/// Returns [`PhotometricError`] when a required magnitude, distance, or area is not positive and finite, or when
+	/// it names an IES profile.
+	pub fn directional_lux(&self) -> Result<f32, PhotometricError> {
+		match *self {
 			Self::Illuminance {
 				lux,
 				measurement_distance_m,
@@ -178,6 +218,7 @@ impl PhotometricIntensity {
 			} => Ok(positive(nits, "the luminance is not positive and finite")?
 				* positive(projected_area_m2, "the projected area is not positive and finite")?
 				/ positive(reference_distance_m, "the reference distance is not positive and finite")?.powi(2)),
+			Self::Ies { .. } => Err(PhotometricError(IES_IS_LOCAL)),
 		}
 	}
 
@@ -186,7 +227,7 @@ impl PhotometricIntensity {
 	/// # Errors
 	///
 	/// Returns [`PhotometricError`] when a required magnitude, distance, or area is not positive and finite.
-	pub fn point_candela(self) -> Result<f32, PhotometricError> {
+	pub fn point_candela(&self) -> Result<f32, PhotometricError> {
 		self.local_candela(4.0 * std::f32::consts::PI)
 	}
 
@@ -195,13 +236,15 @@ impl PhotometricIntensity {
 	/// # Errors
 	///
 	/// Returns [`PhotometricError`] when a required magnitude, distance, or area is not positive and finite.
-	pub fn cone_candela(self, inner_angle: math::Radians, outer_angle: math::Radians) -> Result<f32, PhotometricError> {
+	pub fn cone_candela(&self, inner_angle: math::Radians, outer_angle: math::Radians) -> Result<f32, PhotometricError> {
 		let effective_solid_angle = std::f32::consts::PI * (2.0 - inner_angle.cos() - outer_angle.cos());
 		self.local_candela(effective_solid_angle)
 	}
 
-	fn local_candela(self, flux_solid_angle: f32) -> Result<f32, PhotometricError> {
-		match self {
+	/// Resolves an analytic quantity to candela. An IES profile has no single candela value; the local lights resolve
+	/// it to an [`super::IesProfile`] before they get here.
+	fn local_candela(&self, flux_solid_angle: f32) -> Result<f32, PhotometricError> {
+		match *self {
 			Self::Illuminance {
 				lux,
 				measurement_distance_m,
@@ -233,6 +276,9 @@ impl PhotometricIntensity {
 				Ok(positive(nits, "the luminance is not positive and finite")?
 					* positive(projected_area_m2, "the projected area is not positive and finite")?)
 			}
+			Self::Ies { .. } => Err(PhotometricError(
+				"that the intensity names an IES profile, which has no single candela value. Read the profile's calibrated intensity instead",
+			)),
 		}
 	}
 }
@@ -283,8 +329,6 @@ fn positive(value: f32, cause: &'static str) -> Result<f32, PhotometricError> {
 
 #[cfg(test)]
 mod tests {
-	use maths_rs::Vec3f;
-
 	use super::{LightColor, PhotometricIntensity};
 
 	fn assert_near(actual: f32, expected: f32) {
@@ -300,7 +344,7 @@ mod tests {
 			LightColor::Kelvin(1_500.0),
 			LightColor::Kelvin(6_500.0),
 			LightColor::Kelvin(15_000.0),
-			LightColor::LinearSrgb(Vec3f::new(0.2, 0.5, 1.0)),
+			LightColor::LinearSrgb([0.2, 0.5, 1.0]),
 		] {
 			let rgb = color.resolve().expect("valid light chromaticity");
 			assert_near(0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z, 1.0);
@@ -386,7 +430,7 @@ mod tests {
 
 		let white = LightColor::kelvin(6_500.0);
 		let bright = PhotometricIntensity::luminous_intensity(100.0);
-		let cone = |inner: f32, outer: f32| ConeLight::new(white, bright, Radians::new(inner), Radians::new(outer));
+		let cone = |inner: f32, outer: f32| ConeLight::new(white, bright.clone(), Radians::new(inner), Radians::new(outer));
 		for (problem, result) in [
 			("inner angle not below the outer one", cone(0.5, 0.5).err()),
 			("negative inner angle", cone(-0.1, 0.5).err()),
@@ -394,9 +438,9 @@ mod tests {
 			("non-finite angle", cone(0.5, f32::NAN).err()),
 			(
 				"IES dimmer above 1",
-				ConeLight::new_ies(white, 1.5, "lamp.ies", Radians::new(0.2), Radians::new(0.5)).err(),
+				ConeLight::new(white, PhotometricIntensity::Ies { profile: "lamp.ies".into(), dimmer: 1.5 }, Radians::new(0.2), Radians::new(0.5)).err(),
 			),
-			("empty IES profile", PointLight::new_ies(white, 0.5, " ").err()),
+			("empty IES profile", PointLight::new(white, PhotometricIntensity::Ies { profile: " ".into(), dimmer: 0.5 }).err()),
 			(
 				"angular radius past π/2",
 				DirectionalLight::new(white, PhotometricIntensity::illuminance(1_000.0))

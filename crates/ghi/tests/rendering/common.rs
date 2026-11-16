@@ -1,5 +1,16 @@
 use super::*;
 
+/// Returns a one-copy buffer's contents, for tests that write inputs before submitting and read results after waiting.
+pub(super) fn buffer_contents<'a, T: ?Sized + ghi::buffer::BufferContents>(
+	context: &'a mut impl ghi::context::Context,
+	buffer: ghi::BufferHandle<T>,
+) -> &'a mut T {
+	// SAFETY: Tests call this only while no submitted command uses the buffer, and drop the view before mapping again.
+	let (address, byte_count) = unsafe { context.map_unsynchronized(buffer) }.into_raw_parts();
+	// SAFETY: The mapping covers the buffer's whole typed allocation.
+	unsafe { &mut *T::from_raw_parts(address as *mut u8, byte_count).expect("A mapped test buffer holds its type.") }
+}
+
 /// Views initialized f32 test data as the byte-oriented mesh upload API expects.
 pub(super) fn f32_bytes(values: &[f32]) -> &[u8] {
 	// SAFETY: f32 has no padding, and the returned view is bounded by the live source slice.

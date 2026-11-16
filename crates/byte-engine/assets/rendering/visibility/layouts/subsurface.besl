@@ -1,0 +1,22 @@
+// The descriptor set of the subsurface pass: the full-resolution camera constants and depth it rebuilds surface
+// distances from, what material evaluation left at each subsurface pixel, and the lit image it adds the spread light to.
+// Material evaluation writes the three subsurface images; see `layouts/material_evaluation.besl`.
+
+use ::byte_engine::rendering::visibility::layouts::screen_view::*;
+
+// The pass fetches exact texels, so the textures take a fixed sampler and the set holds only the images.
+texel: sampler<{ filter: nearest, mip_filter: nearest, address: clamp }>;
+
+Subsurface: layer {
+	// Sized for the full-resolution sink, unlike the half-resolution constants the depth pyramid uploads.
+	view: descriptor<{ type: ScreenView, binding: 0, access: read, memory: constant }>;
+	// Reversed device depth, full size.
+	depth: descriptor<{ type: Texture2D, binding: 1, access: read, sampler: texel }>;
+	// The diffuse light before scattering, weighted by the square root of the albedo and pre-exposed.
+	diffuse_light: descriptor<{ type: Texture2D, binding: 2, access: read, sampler: texel }>;
+	// The profile scale `d` per channel, in meters.
+	profile_scale: descriptor<{ type: Texture2D, binding: 3, access: read, sampler: texel }>;
+	// The square root of the albedo, with alpha 1 at subsurface pixels and 0 elsewhere.
+	albedo_root: descriptor<{ type: Texture2D, binding: 4, access: read, sampler: texel }>;
+	lit_map: descriptor<{ type: StorageImage<r11f_g11f_b10f>, binding: 5, access: read_write }>;
+}

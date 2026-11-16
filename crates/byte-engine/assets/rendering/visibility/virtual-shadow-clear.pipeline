@@ -1,0 +1,1 @@
+{"name":"Virtual Shadow Clear Pages","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/virtual-shadow-clear.besl"}}

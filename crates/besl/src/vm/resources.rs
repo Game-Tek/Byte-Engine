@@ -505,11 +505,17 @@ impl<'a> DescriptorBindings<'a> {
 		self.execution_frames.push(frame);
 	}
 
+	/// Reads one task-payload element: from the payload a mesh shader was handed, or else the element the running
+	/// task workgroup wrote, which a task shader may read back.
 	pub(super) fn task_payload_value(&self, name: &str, index: usize) -> Result<Value, VmError> {
-		let values = self
-			.task_payloads
-			.get(name)
-			.ok_or_else(|| VmError::MissingTaskPayload { name: name.to_string() })?;
+		let Some(values) = self.task_payloads.get(name) else {
+			return self
+				.task_outputs
+				.as_deref()
+				.and_then(|outputs| outputs.payload_value(name, index))
+				.cloned()
+				.ok_or_else(|| VmError::MissingTaskPayload { name: name.to_string() });
+		};
 		values
 			.get(index)
 			.cloned()

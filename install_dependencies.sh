@@ -103,7 +103,7 @@ success "Package manager updated."
 
 # Keep this list in sync with README requirements and Linux CI needs:
 # Vulkan development/linker files, Wayland/X11 development packages, ALSA,
-# CMake, pkg-config, udev, D-Bus, Mesa GL, Vulkan loader/runtime tools, and validation layers.
+# CMake, pkg-config, udev, D-Bus, libdecor, Mesa GL, Vulkan loader/runtime tools, and validation layers.
 if [ "$PKG_MANAGER" == "apt" ]; then
     DEPENDENCIES=(
         cmake

@@ -496,7 +496,7 @@ fn append_key_event(event: &NSEvent, push: &mut impl FnMut(Events)) {
 	let Some(characters) = event.characters() else {
 		return;
 	};
-	for character in characters.to_string().chars().filter(|character| !character.is_control()) {
+	for character in characters.to_string().chars().filter(|character| types_text(*character)) {
 		push(Events::Character {
 			seat: Seat::stub(),
 			character,
@@ -781,6 +781,21 @@ impl App {
 		AppWaker
 	}
 
+	/// Adds `window` to the windows that capture the cursor, or removes it; see
+	/// [`crate::window::App::set_cursor_capture`]. The pump holds the cursor for a capturing window that has focus.
+	pub(crate) fn set_cursor_capture(&mut self, window: &Window, captures: bool) {
+		let id = window.id();
+		let mut windows = self.cursor.windows.borrow_mut();
+		windows.retain(|capturing| *capturing != id);
+		if captures {
+			windows.push(id);
+		}
+		drop(windows);
+		if !captures && self.cursor.holds(id) {
+			self.cursor.release();
+		}
+	}
+
 	/// Opens an AppKit dialog; see [`crate::window::App::open_dialog`].
 	pub(crate) fn open_dialog(
 		&mut self,
@@ -831,6 +846,15 @@ impl Drop for Window {
 	}
 }
 
+/// Returns whether `character`, from an AppKit key event, is text the key typed.
+///
+/// Control characters, such as those Enter and Backspace type, arrive as `Events::Key` instead. AppKit also reports
+/// keys that type no text, such as the arrows and function keys, as characters in the Unicode private-use range it
+/// reserves for them, U+F700 to U+F8FF (`NSUpArrowFunctionKey` and its neighbors); those aren't text either.
+fn types_text(character: char) -> bool {
+	!character.is_control() && !('\u{F700}'..='\u{F8FF}').contains(&character)
+}
+
 fn accepts_text_input(flags: NSEventModifierFlags) -> bool {
 	!flags.intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control)
 }
@@ -843,6 +867,8 @@ struct ModifierState {
 	control_right: bool,
 	alt_left: bool,
 	alt_right: bool,
+	meta_left: bool,
+	meta_right: bool,
 	caps_lock: bool,
 }
 
@@ -858,6 +884,8 @@ impl ModifierState {
 			Keys::ControlRight => (&mut self.control_right, &mut self.control_left, Flags::Control),
 			Keys::AltLeft => (&mut self.alt_left, &mut self.alt_right, Flags::Option),
 			Keys::AltRight => (&mut self.alt_right, &mut self.alt_left, Flags::Option),
+			Keys::MetaLeft => (&mut self.meta_left, &mut self.meta_right, Flags::Command),
+			Keys::MetaRight => (&mut self.meta_right, &mut self.meta_left, Flags::Command),
 			Keys::CapsLock => {
 				let pressed = flags.contains(Flags::CapsLock);
 				return (std::mem::replace(&mut self.caps_lock, pressed) != pressed).then_some(pressed);
@@ -887,6 +915,8 @@ fn modifier_keycode_to_key(code: u16) -> Option<Keys> {
 		62 => Some(Keys::ControlRight),
 		58 => Some(Keys::AltLeft),
 		61 => Some(Keys::AltRight),
+		55 => Some(Keys::MetaLeft),
+		54 => Some(Keys::MetaRight),
 		57 => Some(Keys::CapsLock),
 		_ => None,
 	}
@@ -950,6 +980,7 @@ fn keycode_to_key(code: u16) -> Option<Keys> {
 		48 => Some(Keys::Tab),
 		36 => Some(Keys::Enter),
 		49 => Some(Keys::Space),
+		47 => Some(Keys::Period),
 		114 => Some(Keys::Insert),
 		117 => Some(Keys::Delete),
 		115 => Some(Keys::Home),
@@ -982,7 +1013,18 @@ fn keycode_to_key(code: u16) -> Option<Keys> {
 mod tests {
 	use objc2_foundation::{NSPoint, NSRect, NSSize};
 
-	use super::normalize_mouse_position;
+	use super::{normalize_mouse_position, types_text};
+
+	#[test]
+	fn keys_that_type_no_text_report_no_characters() {
+		// AppKit's up arrow, F1, and the end of its function-key range, then Enter's carriage return.
+		for character in ['\u{F700}', '\u{F704}', '\u{F8FF}', '\r'] {
+			assert!(!types_text(character), "{character:?} is not text");
+		}
+		for character in ['a', 'Ñ', ' ', '€'] {
+			assert!(types_text(character), "{character:?} is text");
+		}
+	}
 
 	#[test]
 	fn normalize_mouse_position_uses_the_content_frame_edges() {

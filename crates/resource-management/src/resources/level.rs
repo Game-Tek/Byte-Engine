@@ -12,7 +12,8 @@
 //! - for each kind, every component's payload in entity order, as tokens that name strings by their index in the
 //!   kind's strings;
 //! - for each kind, where every [`RUN`]-th payload starts in its tokens, as little-endian `u32` byte offsets, so
-//!   runs of payloads decode on separate threads.
+//!   runs of payloads decode on separate threads;
+//! - the values that instances set and that a prefab defaults its parameters to, as tokens, with their own strings.
 
 /// The `Level` struct lets an application spawn a level's entities from pre-parsed sections instead of text.
 ///
@@ -28,9 +29,39 @@ pub struct Level {
 	pub ids: Section,
 	/// The components of each kind, sorted by kind name.
 	pub kinds: Vec<LevelKind>,
+	/// The entities that place a prefab, in spawn order.
+	pub instances: Vec<LevelInstance>,
+	/// The values of instances' parameters and of a prefab's defaults, read with [`Self::value`].
+	pub values: Section,
+	/// The distinct strings and keys of [`Self::values`], read with [`Self::value_strings`].
+	pub value_strings: Section,
 }
 
-super::impl_direct_resource!(Level, "Level");
+/// The `LevelInstance` struct names the prefab one entity places, so a spawner loads it and spawns it under the entity.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct LevelInstance {
+	/// The spawn index of the entity that places the prefab.
+	pub entity: u32,
+	/// The ID of the prefab it places.
+	pub resource: String,
+	/// The parameters the instance sets, in file order.
+	pub parameters: Vec<NamedValue>,
+}
+
+/// The `NamedValue` struct is a parameter's name and where its value starts in the level's [`Level::values`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct NamedValue {
+	pub name: String,
+	/// The byte offset of the value's first token in [`Level::values`].
+	pub value: u32,
+}
+
+super::impl_direct_resource!(Level, "Level", references = instance_resources);
+
+/// Returns the prefabs a level's instances place, so tools can follow them.
+fn instance_resources(level: &Level) -> Vec<&str> {
+	level.instances.iter().map(|instance| instance.resource.as_str()).collect()
+}
 
 /// The `LevelKind` struct locates every component of one kind, so a spawner decodes them all in one pass.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -98,6 +129,20 @@ impl Level {
 	}
 }
 
+impl Level {
+	/// Returns the strings of [`Self::values`], checked once, like [`LevelKind::strings`].
+	pub fn value_strings<'p>(&self, payload: &'p [u8]) -> Option<Vec<&'p str>> {
+		strings(self.value_strings.of(payload)?)
+	}
+
+	/// Returns the tokens of the value that starts at `offset` in [`Self::values`].
+	///
+	/// `strings` is what [`Self::value_strings`] returned. The tokens continue past the value, so read only one.
+	pub fn value<'p, 's>(&self, payload: &'p [u8], strings: &'s [&'p str], offset: u32) -> Option<Tokens<'p, 's>> {
+		Some(Tokens::new(self.values.of(payload)?.get(offset as usize..)?, strings))
+	}
+}
+
 impl LevelKind {
 	/// Returns the index of each entity that holds a component of this kind, ascending.
 	pub fn entities<'p>(&self, payload: &'p [u8]) -> Option<impl ExactSizeIterator<Item = u32> + 'p> {
@@ -108,14 +153,7 @@ impl LevelKind {
 	///
 	/// Returns `None` when `payload` doesn't hold the section or a string isn't UTF-8.
 	pub fn strings<'p>(&self, payload: &'p [u8]) -> Option<Vec<&'p str>> {
-		let mut bytes = self.strings.of(payload)?;
-		let mut strings = Vec::new();
-		while let Some((length, rest)) = bytes.split_first_chunk::<4>() {
-			let (text, rest) = rest.split_at_checked(u32::from_le_bytes(*length) as usize)?;
-			strings.push(std::str::from_utf8(text).ok()?);
-			bytes = rest;
-		}
-		Some(strings)
+		strings(self.strings.of(payload)?)
 	}
 
 	/// Returns the tokens of the run of payloads that starts with payload `run * RUN`, one value for each of its
@@ -133,6 +171,17 @@ impl LevelKind {
 	pub fn run_count(&self) -> u32 {
 		self.count.div_ceil(RUN)
 	}
+}
+
+/// Reads a strings section: each string as a little-endian `u32` byte length and its UTF-8 bytes.
+fn strings(mut bytes: &[u8]) -> Option<Vec<&str>> {
+	let mut strings = Vec::new();
+	while let Some((length, rest)) = bytes.split_first_chunk::<4>() {
+		let (text, rest) = rest.split_at_checked(u32::from_le_bytes(*length) as usize)?;
+		strings.push(std::str::from_utf8(text).ok()?);
+		bytes = rest;
+	}
+	Some(strings)
 }
 
 /// Reads `bytes` as little-endian `u32`s.
@@ -160,6 +209,8 @@ pub enum Token<'a> {
 	ObjectEnd,
 	/// A reference to the entity with this index in the level.
 	Entity(u32),
+	/// A reference to the prefab parameter with this index, which stands for the parameter's value.
+	Parameter(u32),
 }
 
 // One byte tags each token; the tag order is the encoding and must not change without a store version bump.
@@ -176,6 +227,7 @@ const OBJECT_START: u8 = 9;
 const KEY: u8 = 10;
 const OBJECT_END: u8 = 11;
 const ENTITY: u8 = 12;
+const PARAMETER: u8 = 13;
 
 /// The `TokenWriter` struct encodes one kind's payloads, storing each distinct string once.
 #[derive(Default)]
@@ -211,6 +263,10 @@ impl TokenWriter {
 			Token::ObjectEnd => self.bytes.push(OBJECT_END),
 			Token::Entity(index) => {
 				self.bytes.push(ENTITY);
+				self.bytes.extend_from_slice(&index.to_le_bytes());
+			}
+			Token::Parameter(index) => {
+				self.bytes.push(PARAMETER);
 				self.bytes.extend_from_slice(&index.to_le_bytes());
 			}
 		}
@@ -303,6 +359,7 @@ impl<'a, 's> Tokens<'a, 's> {
 			KEY => Token::Key(self.text()?),
 			OBJECT_END => Token::ObjectEnd,
 			ENTITY => Token::Entity(u32::from_le_bytes(self.take()?)),
+			PARAMETER => Token::Parameter(u32::from_le_bytes(self.take()?)),
 			_ => return Err(MalformedTokens),
 		})
 	}

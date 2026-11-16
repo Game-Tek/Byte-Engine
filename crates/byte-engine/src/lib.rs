@@ -133,6 +133,8 @@ pub mod application;
 pub mod audio;
 pub mod configuration;
 pub mod core;
+#[cfg(feature = "headed")]
+pub mod editor;
 pub mod input;
 #[cfg(feature = "headed")]
 pub mod ui;

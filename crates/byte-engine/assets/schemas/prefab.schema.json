@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://byte-engine.dev/schemas/prefab.schema.json",
+  "title": "Byte Engine prefab",
+  "description": "A reusable group of entities with parameters, consumed by the .prefab asset handler.",
+  "type": "object",
+  "required": [
+    "entities"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "parameters": {
+      "description": "Parameter names and their default values, which an instance or the spawning code can replace.",
+      "type": "object",
+      "propertyNames": {
+        "minLength": 1
+      }
+    },
+    "entities": {
+      "description": "The entities of the prefab, in any order. Payloads can refer to a parameter with { \"$parameter\": name }.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/entity"
+      }
+    }
+  },
+  "$defs": {
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "A name, unique in the file, that other entities use to refer to this one.",
+          "type": "string",
+          "minLength": 1
+        },
+        "parent": {
+          "description": "The id of the entity this one belongs to. Without one, it belongs to the instance.",
+          "type": "string",
+          "minLength": 1
+        },
+        "prefab": {
+          "$ref": "level.schema.json#/$defs/instance"
+        },
+        "components": {
+          "description": "The entity's components, from kind name to payload, as in a level. Any value can be a parameter reference.",
+          "type": "object",
+          "propertyNames": {
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

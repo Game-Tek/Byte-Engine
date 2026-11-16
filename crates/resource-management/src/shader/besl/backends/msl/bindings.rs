@@ -218,11 +218,12 @@ impl Generator {
 			Self::identifier(name).push_to(string);
 		}
 		string.push('(');
-		string.push_str("uint2 gid [[thread_position_in_grid]]");
+		// Metal requires the grid position attributes to share a width; three dimensions carry `thread_layer`.
+		string.push_str("uint3 gid [[thread_position_in_grid]]");
 		self.emit_separator(string);
 		string.push_str("uint thread_index [[thread_index_in_threadgroup]]");
 		self.emit_separator(string);
-		string.push_str("uint2 threadgroup_position [[threadgroup_position_in_grid]]");
+		string.push_str("uint3 threadgroup_position [[threadgroup_position_in_grid]]");
 		if uses_simd_lane_id {
 			self.emit_separator(string);
 			string.push_str("uint simd_lane_id [[thread_index_in_simdgroup]]");
@@ -273,7 +274,7 @@ impl Generator {
 		self.emit_separator(string);
 		string.push_str("ushort2 _besl_tile_thread [[thread_position_in_threadgroup]]");
 		self.emit_separator(string);
-		string.push_str("uint2 threadgroup_position [[threadgroup_position_in_grid]]");
+		string.push_str("uint2 _besl_tile_group [[threadgroup_position_in_grid]]");
 		self.emit_separator(string);
 		let _ = write!(
 			string,
@@ -305,7 +306,13 @@ impl Generator {
 		ShaderFormatting::new(self.minified).push_block_start(string);
 
 		self.emit_indentation(string, 1);
-		let _ = write!(string, "uint2 gid=threadgroup_position*{threads}u+uint2(_besl_tile_thread)");
+		string.push_str("uint3 threadgroup_position=uint3(_besl_tile_group,0u)");
+		self.emit_statement_end(string);
+		self.emit_indentation(string, 1);
+		let _ = write!(
+			string,
+			"uint3 gid=uint3(_besl_tile_group*{threads}u+uint2(_besl_tile_thread),0u)"
+		);
 		self.emit_statement_end(string);
 		self.emit_indentation(string, 1);
 		let _ = write!(
@@ -660,9 +667,9 @@ impl Generator {
 			if !uses_simd_lane_id && !context.requires_resources && !uses_tile_context {
 				return;
 			}
-			push(string, format_args!("uint2 "), &"gid");
+			push(string, format_args!("uint3 "), &"gid");
 			push(string, format_args!("uint "), &"thread_index");
-			push(string, format_args!("uint2 "), &"threadgroup_position");
+			push(string, format_args!("uint3 "), &"threadgroup_position");
 			if uses_simd_lane_id {
 				push(string, format_args!("uint "), &"simd_lane_id");
 			}
@@ -689,7 +696,7 @@ impl Generator {
 				push(string, format_args!("uint2 "), &"output_extent");
 			}
 		} else if let Some(raster) = &self.raster_stage_context {
-			if !raster.has_hidden_inputs() && !self.hidden_context(function).requires_resources {
+			if !raster.has_push_constant && !self.hidden_context(function).requires_resources {
 				return;
 			}
 			if raster.has_push_constant {
@@ -701,12 +708,6 @@ impl Generator {
 						push(string, format_args!("constant _set{set}& "), &SetArgument(set));
 					}
 				}
-			}
-			if raster.has_vertex_index {
-				push(string, format_args!("uint "), &besl::VERTEX_INDEX_BUILTIN);
-			}
-			if raster.has_instance_index {
-				push(string, format_args!("uint "), &besl::INSTANCE_INDEX_BUILTIN);
 			}
 		}
 	}

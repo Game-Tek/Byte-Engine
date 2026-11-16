@@ -766,13 +766,15 @@ impl MetalResourceTracker {
 				self.apply_use(scope, resource_use);
 			}
 		}
-		// The tables' own writes do not stop their reads from being skipped by the next command.
+		// The tables settle against the history the whole command leaves. The tables' own writes do not stop their
+		// reads from being skipped by the next command, and neither do the additional uses, which reach none of the
+		// tables' memory on this path, such as a render pass's attachment writes that its first draw consumes.
+		for &resource_use in additional_uses {
+			self.apply_use(scope, resource_use);
+		}
 		let settled = Some((scope, self.generation, self.encoder_barriers.len()));
 		for &table in bound {
 			tables[table as usize].settled = settled;
-		}
-		for &resource_use in additional_uses {
-			self.apply_use(scope, resource_use);
 		}
 		barrier
 	}
@@ -961,6 +963,11 @@ impl MetalResourceTracker {
 			if kept == resource_start || uses[resource_start].key != resource_use.key {
 				resource_start = kept;
 			}
+			// The search and shift below are quadratic only when one resource keeps many disjoint uses in this command.
+			// A command usually names each resource once, so its kept list holds one use and both cost O(1); a table
+			// that repeats one resource, such as a texture array filled with a placeholder, has overlapping uses that
+			// merge away instead of growing the list.
+			//
 			// Merging widens the use, which can make it reach kept uses it did not reach before.
 			while let Some(overlapped) =
 				(resource_start..kept).find(|&position| uses[position].region.overlaps(resource_use.region))

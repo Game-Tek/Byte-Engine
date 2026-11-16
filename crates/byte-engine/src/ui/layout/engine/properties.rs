@@ -347,6 +347,15 @@ impl Properties<'_, Text> {
 		self.target.settings.font_size = font_size;
 		self
 	}
+
+	/// Draws the text with the font named `font`, such as `"Inter-SemiBold.ttf"`, to set its weight or family.
+	///
+	/// The name must be one of the [`Fonts`](crate::ui::Fonts) given to the engine and the render pass; any other
+	/// name draws with the default font and logs a warning once.
+	pub fn font(self, font: &'static str) -> Self {
+		self.target.settings.font = Some(font);
+		self
+	}
 }
 
 /// Setters for elements drawn from curve segments: stroked curves and filled paths.

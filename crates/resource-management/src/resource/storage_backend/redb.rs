@@ -24,12 +24,75 @@ pub struct ReDBStorageBackend {
 	/// Suffix for the next staging file name. Name clashes with other processes or
 	/// backends sharing the directory are resolved by retrying with the next value.
 	next_staging_file: AtomicU64,
+	/// Payload files published since the last durable commit. [`Self::sync_payloads`] writes them to the disk right
+	/// before that commit, so a bake syncs its payloads once per flush instead of once per resource.
+	unsynced_payloads: Mutex<Vec<std::path::PathBuf>>,
 }
 
 /// The `RedbDatabase` enum lets applications read compatible stores without writes while tools and cache recovery can update them.
 enum RedbDatabase {
 	Writable(redb::Database),
 	ReadOnly(redb::ReadOnlyDatabase),
+}
+
+/// The `ResourceStoreOpenError` enum tells a caller why a resources directory did not open, so a tool or application
+/// can report a locked, damaged, or incompatible store instead of baking into or reading from nothing.
+///
+/// Every variant names the resources directory. No open repairs or deletes a store it rejects; the one exception is
+/// the documented reset of a store whose resource-management signature is missing or changed, which happens before
+/// the database is read. Its [`Display`](std::fmt::Display) output is the complete message to show the user.
+#[derive(Debug)]
+pub enum ResourceStoreOpenError {
+	/// Another backend, in this process or another one, holds the store's database lock.
+	InUse { path: std::path::PathBuf },
+	/// `resources.db` or `resources.pack` holds data that is not a valid resource store. `detail` describes the
+	/// damage.
+	Corrupt { path: std::path::PathBuf, detail: String },
+	/// The file system refused an operation the open needs. `action` completes "could not ...".
+	Io {
+		path: std::path::PathBuf,
+		action: &'static str,
+		source: std::io::Error,
+	},
+	/// The store, or the requested settings, cannot be used by this engine build. `reason` is a complete message
+	/// with the cause and the fix, such as a payload storage mode that differs from the store's.
+	Incompatible { path: std::path::PathBuf, reason: String },
+}
+
+impl std::fmt::Display for ResourceStoreOpenError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::InUse { path } => write!(
+				f,
+				"Resource store '{}' is already open. The most likely cause is that a running application, another BELD command, or another backend in this process holds its database. Close the other program or drop the other backend, then open the store again. See {}.",
+				path.display(),
+				crate::online_docs_url(RESOURCE_STORE_RECOVERY_DOCS_PATH)
+			),
+			Self::Corrupt { path, detail } => write!(
+				f,
+				"Resource store '{}' is corrupt or unreadable, and was left unchanged. The most likely cause is that a crash, an interrupted bake, a disk error, or another program damaged its files. Delete '{}' and bake again. See {}. Error: {detail}",
+				path.display(),
+				path.display(),
+				crate::online_docs_url(RESOURCE_STORE_RECOVERY_DOCS_PATH)
+			),
+			Self::Io { path, action, source } => write!(
+				f,
+				"Resource store '{}' did not open because the engine could not {action}. The most likely cause is that this process cannot access the directory or its files, or the disk is full. Check the permissions and free space of '{}', then open the store again. Error: {source}",
+				path.display(),
+				path.display()
+			),
+			Self::Incompatible { path, reason } => write!(f, "Resource store '{}' cannot be opened. {reason}", path.display()),
+		}
+	}
+}
+
+impl std::error::Error for ResourceStoreOpenError {
+	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+		match self {
+			Self::Io { source, .. } => Some(source),
+			Self::InUse { .. } | Self::Corrupt { .. } | Self::Incompatible { .. } => None,
+		}
+	}
 }
 
 impl ReDBStorageBackend {
@@ -39,16 +102,17 @@ impl ReDBStorageBackend {
 	/// store read-only, but discard a mismatched store before reading stale values. Use
 	/// [`Self::open_read_only`] when a tool must inspect a store without changing it. Use
 	/// [`Self::new_writable_with_mode`] when a producer must select a payload storage mode.
-	pub fn new(base_path: std::path::PathBuf) -> Self {
+	///
+	/// # Errors
+	///
+	/// Returns a [`ResourceStoreOpenError`] when the store is in use, corrupt, inaccessible, or incompatible. The
+	/// backend never substitutes a temporary store; use [`MemoryStorageBackend`](super::MemoryStorageBackend) when
+	/// resources must not persist.
+	pub fn new(base_path: std::path::PathBuf) -> Result<Self, ResourceStoreOpenError> {
 		if cfg!(debug_assertions) || validate_resource_management_signature(&base_path).is_err() {
 			Self::new_writable(base_path)
 		} else {
-			Self::open_read_only(base_path).unwrap_or_else(|error| {
-				panic!(
-					"Failed to open a compatible resources database in read-only mode. The most likely cause is an incomplete or corrupt resource store. Rebuild the resource directory with BELD. See {}. Error: {error}",
-					crate::online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
-				)
-			})
+			Self::open_read_only(base_path)
 		}
 	}
 
@@ -56,12 +120,19 @@ impl ReDBStorageBackend {
 	///
 	/// Read-only tools use this constructor so a signature mismatch remains available for the user to inspect or replace.
 	/// After handling an incompatibility, use [`Self::new_writable`] only when the user has requested a resource update.
-	pub fn open_read_only(base_path: std::path::PathBuf) -> Result<Self, String> {
-		validate_resource_management_signature(&base_path)?;
-		let database_path = base_path.join(RESOURCES_DATABASE_FILE);
-		let db = redb::ReadOnlyDatabase::open(&database_path)
+	///
+	/// # Errors
+	///
+	/// Returns [`ResourceStoreOpenError::Incompatible`] when another engine revision baked the store, and the other
+	/// [`ResourceStoreOpenError`] variants when the store is in use, corrupt, or inaccessible.
+	pub fn open_read_only(base_path: std::path::PathBuf) -> Result<Self, ResourceStoreOpenError> {
+		validate_resource_management_signature(&base_path).map_err(|reason| ResourceStoreOpenError::Incompatible {
+			path: base_path.clone(),
+			reason,
+		})?;
+		let db = redb::ReadOnlyDatabase::open(base_path.join(RESOURCES_DATABASE_FILE))
 			.map(RedbDatabase::ReadOnly)
-			.map_err(|error| format!("resource database '{}' could not be opened: {error}", database_path.display()))?;
+			.map_err(|error| store_open_error(&base_path, "open 'resources.db'", error))?;
 		let mut backend = Self {
 			db,
 			base_path,
@@ -70,6 +141,7 @@ impl ReDBStorageBackend {
 			packed_allocator: None,
 			opened_empty: false,
 			next_staging_file: AtomicU64::new(0),
+			unsynced_payloads: Mutex::new(Vec::new()),
 		};
 		let settings = backend.persisted_settings()?;
 		backend.storage_mode = settings.storage_mode;
@@ -80,8 +152,13 @@ impl ReDBStorageBackend {
 	/// Opens a writable resource store and preserves its persisted payload mode.
 	///
 	/// New stores use [`ResourceStorageMode::Files`]. Use [`Self::new_writable_with_mode`] to select another mode.
-	pub fn new_writable(base_path: std::path::PathBuf) -> Self {
-		Self::open_writable(base_path, None, None).unwrap_or_else(|error| panic!("Failed to open resource store. {error}"))
+	///
+	/// # Errors
+	///
+	/// Returns a [`ResourceStoreOpenError`] when the store is in use, corrupt, or inaccessible. Every error leaves
+	/// `resources.db` as it was.
+	pub fn new_writable(base_path: std::path::PathBuf) -> Result<Self, ResourceStoreOpenError> {
+		Self::open_writable(base_path, None, None)
 	}
 
 	/// Opens a writable resource store with the selected payload mode.
@@ -90,87 +167,107 @@ impl ReDBStorageBackend {
 	///
 	/// # Errors
 	///
-	/// Returns an error when an existing store uses another payload mode.
-	pub fn new_writable_with_mode(base_path: std::path::PathBuf, storage_mode: ResourceStorageMode) -> Result<Self, String> {
+	/// Returns [`ResourceStoreOpenError::Incompatible`] when an existing store uses another payload mode, and the
+	/// errors of [`Self::new_writable`].
+	pub fn new_writable_with_mode(
+		base_path: std::path::PathBuf,
+		storage_mode: ResourceStorageMode,
+	) -> Result<Self, ResourceStoreOpenError> {
 		Self::open_writable(base_path, Some(storage_mode), None)
 	}
 
 	/// Opens a writable resource store with explicit payload and image-compression settings.
+	///
+	/// # Errors
+	///
+	/// Returns [`ResourceStoreOpenError::Incompatible`] when this build cannot store `settings` or an existing store
+	/// uses another payload mode, and the errors of [`Self::new_writable`].
 	pub fn new_writable_with_settings(
 		base_path: std::path::PathBuf,
 		settings: ResourceStorageSettings,
-	) -> Result<Self, String> {
-		settings.validate()?;
+	) -> Result<Self, ResourceStoreOpenError> {
+		settings.validate().map_err(|reason| ResourceStoreOpenError::Incompatible {
+			path: base_path.clone(),
+			reason,
+		})?;
 		Self::open_writable(base_path, Some(settings.storage_mode), Some(settings.image_compression))
 	}
 
 	/// Opens the database and establishes one payload mode before callers can store resources.
+	///
+	/// Every failure is returned. Substituting a temporary database would let a bake report success and lose its output.
 	fn open_writable(
 		base_path: std::path::PathBuf,
 		requested_mode: Option<ResourceStorageMode>,
 		requested_compression: Option<ResourceGpuCompressionPolicy>,
-	) -> Result<Self, String> {
-		std::fs::create_dir_all(&base_path).unwrap();
-		let db = if cfg!(test) {
-			log::info!("Using memory database instead of file database.");
-			RedbDatabase::Writable(
-				redb::Database::builder()
-					.create_with_backend(redb::backends::InMemoryBackend::new())
-					.unwrap_or_else(|_| panic!("Could not create in-memory database")),
-			)
-		} else {
-			sync_resource_management_signature(&base_path);
-			let db = redb::Database::create(base_path.join(RESOURCES_DATABASE_FILE)).unwrap_or_else(|_| {
-				redb::Database::builder()
-					.create_with_backend(redb::backends::InMemoryBackend::new())
-					.unwrap_or_else(|_| panic!("Could not create in-memory database"))
-			});
-			RedbDatabase::Writable(db)
-		};
+	) -> Result<Self, ResourceStoreOpenError> {
+		sync_resource_management_signature(&base_path)?;
+		let writable_db = redb::Database::create(base_path.join(RESOURCES_DATABASE_FILE))
+			.map_err(|error| store_open_error(&base_path, "open 'resources.db'", error))?;
 
-		let RedbDatabase::Writable(writable_db) = &db else {
-			unreachable!();
-		};
-		let write = writable_db.begin_write().unwrap();
+		let write = writable_db
+			.begin_write()
+			.map_err(|error| store_open_error(&base_path, "start a write to 'resources.db'", error))?;
 		let opened_empty = write
 			.open_table(RESOURCES_TABLE)
 			.is_ok_and(|resources| resources.is_empty().unwrap_or(false));
 		let _ = write.open_table(RESOURCE_CLASS_INDEX_TABLE);
 		let _ = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE);
 		let _ = write.open_table(PACKED_RESOURCE_OFFSETS_TABLE);
-		#[cfg(debug_assertions)]
-		for table in DEVELOPMENT_TABLES {
+		for table in RECORD_TABLES {
 			let _ = write.open_table(table);
 		}
 		let settings = {
-			let mut configuration = write.open_table(STORE_CONFIGURATION_TABLE).unwrap();
-			let stored_mode = configuration.get(STORAGE_MODE_KEY).unwrap().map(|value| {
-				ResourceStorageMode::from_bytes(value.value()).unwrap_or_else(|| {
-					panic!("Failed to open resource store. The most likely cause is an unknown persisted payload storage mode.")
+			let mut configuration = write
+				.open_table(STORE_CONFIGURATION_TABLE)
+				.map_err(|error| store_open_error(&base_path, "read the store configuration", error))?;
+			let stored_mode = configuration
+				.get(STORAGE_MODE_KEY)
+				.map_err(|error| store_open_error(&base_path, "read the store configuration", error))?
+				.map(|value| {
+					ResourceStorageMode::from_bytes(value.value()).ok_or_else(|| ResourceStoreOpenError::Corrupt {
+						path: base_path.clone(),
+						detail: "the persisted payload storage mode is not recognized".to_string(),
+					})
 				})
-			});
+				.transpose()?;
 			let storage_mode = match (stored_mode, requested_mode) {
 				(Some(stored), Some(requested)) if stored != requested => {
-					return Err(format!(
-						"Resource store mode does not match. The destination already uses '{stored:?}', but '{requested:?}' was requested."
-					));
+					return Err(ResourceStoreOpenError::Incompatible {
+						path: base_path,
+						reason: format!(
+							"The store already uses '{}' payload storage, but '{}' was requested. The most likely cause is that the bake selects a different `--storage-mode` than the bake that created the store. Bake with `--storage-mode {}`, or delete the resources directory and bake again. See {}.",
+							stored.as_str(),
+							requested.as_str(),
+							stored.as_str(),
+							crate::online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
+						),
+					});
 				}
 				(Some(stored), _) => stored,
 				(None, requested) => {
 					let selected = requested.unwrap_or_default();
-					configuration.insert(STORAGE_MODE_KEY, selected.as_bytes()).unwrap();
+					configuration
+						.insert(STORAGE_MODE_KEY, selected.as_bytes())
+						.map_err(|error| store_open_error(&base_path, "write the store configuration", error))?;
 					selected
 				}
 			};
 			let stored_compression = configuration
 				.get(IMAGE_COMPRESSION_KEY)
-				.unwrap()
+				.map_err(|error| store_open_error(&base_path, "read the store configuration", error))?
 				.map(|value| ResourceGpuCompressionPolicy::from_bytes(value.value()))
-				.transpose()?
+				.transpose()
+				.map_err(|detail| ResourceStoreOpenError::Corrupt {
+					path: base_path.clone(),
+					detail,
+				})?
 				.unwrap_or_default();
 			let image_compression = match requested_compression {
 				Some(requested) => {
-					configuration.insert(IMAGE_COMPRESSION_KEY, requested.as_bytes()).unwrap();
+					configuration
+						.insert(IMAGE_COMPRESSION_KEY, requested.as_bytes())
+						.map_err(|error| store_open_error(&base_path, "write the store configuration", error))?;
 					requested
 				}
 				None => stored_compression,
@@ -179,30 +276,39 @@ impl ReDBStorageBackend {
 				storage_mode,
 				image_compression,
 			};
-			settings.validate()?;
+			// Returning drops the write uncommitted, so a rejected open leaves the store configuration unchanged.
+			settings.validate().map_err(|reason| ResourceStoreOpenError::Incompatible {
+				path: base_path.clone(),
+				reason,
+			})?;
 			settings
 		};
-		write.commit().unwrap();
+		write
+			.commit()
+			.map_err(|error| store_open_error(&base_path, "commit the store configuration", error))?;
 		let packed_allocator = match settings.storage_mode {
 			ResourceStorageMode::Files => None,
-			ResourceStorageMode::Packed => Some(PackedResourceAllocator::open(
-				base_path.join(PACKED_RESOURCES_FILE),
-				read_packed_ranges(
-					&writable_db
-						.begin_read()
-						.map_err(|error| packed_database_error("Packed resource metadata could not be read", error))?,
-				)?,
-			)?),
+			ResourceStorageMode::Packed => {
+				let read = writable_db
+					.begin_read()
+					.map_err(|error| store_open_error(&base_path, "read 'resources.db'", error))?;
+				let live_ranges = read_packed_ranges(&read).map_err(|detail| ResourceStoreOpenError::Corrupt {
+					path: base_path.clone(),
+					detail,
+				})?;
+				Some(PackedResourceAllocator::open(&base_path, live_ranges)?)
+			}
 		};
 
 		Ok(ReDBStorageBackend {
-			db,
+			db: RedbDatabase::Writable(writable_db),
 			base_path,
 			storage_mode: settings.storage_mode,
 			image_compression: settings.image_compression,
 			packed_allocator,
 			opened_empty,
 			next_staging_file: AtomicU64::new(0),
+			unsynced_payloads: Mutex::new(Vec::new()),
 		})
 	}
 
@@ -211,6 +317,37 @@ impl ReDBStorageBackend {
 			RedbDatabase::Writable(db) => db.begin_read(),
 			RedbDatabase::ReadOnly(db) => db.begin_read(),
 		}
+	}
+
+	/// Writes every payload published since the last durable commit to the disk.
+	///
+	/// Call it right before each durable commit. That commit flushes the drive's cache, which makes these writes
+	/// permanent first, so no durable record can name a payload that a crash would lose.
+	async fn sync_payloads(&self) -> Result<(), String> {
+		use utils::r#async::stream::{self, TryStreamExt as _};
+
+		let mut paths = std::mem::take(&mut *self.unsynced_payloads.lock().unwrap());
+		// Packed payloads all live in the pack, which one sync covers. Syncing an unchanged pack costs almost nothing.
+		if self.storage_mode == ResourceStorageMode::Packed {
+			paths.push(self.base_path.join(PACKED_RESOURCES_FILE));
+		}
+
+		let synced = stream::iter(paths.iter().map(Ok))
+			.try_for_each_concurrent(PAYLOAD_SYNCS_IN_FLIGHT, |path| async move {
+				sync_payload(path).await.map_err(|error| (path, error))
+			})
+			.await;
+		if let Err((path, error)) = synced {
+			let message = format!(
+				"Failed to sync resource payload '{}'. The most likely cause is that the disk is full or unavailable. Free disk space or check the resource directory, then bake again. Error: {error}",
+				path.display()
+			);
+			// Keep every payload so the next durable commit syncs them again. A file that did sync syncs again almost
+			// for free.
+			self.unsynced_payloads.lock().unwrap().extend(paths);
+			return Err(message);
+		}
+		Ok(())
 	}
 
 	/// Creates and pre-sizes a unique staging file before returning it to a processor.
@@ -280,30 +417,38 @@ impl ReDBStorageBackend {
 	}
 
 	/// Reads store-wide payload settings before any resource locations are interpreted.
-	fn persisted_settings(&self) -> Result<ResourceStorageSettings, String> {
+	fn persisted_settings(&self) -> Result<ResourceStorageSettings, ResourceStoreOpenError> {
+		let corrupt = |detail: String| ResourceStoreOpenError::Corrupt {
+			path: self.base_path.clone(),
+			detail,
+		};
 		let read = self
 			.begin_read()
-			.map_err(|error| format!("resource database read failed: {error}"))?;
+			.map_err(|error| store_open_error(&self.base_path, "read 'resources.db'", error))?;
 		let table = read
 			.open_table(STORE_CONFIGURATION_TABLE)
-			.map_err(|error| format!("resource store configuration is missing: {error}"))?;
+			.map_err(|error| store_open_error(&self.base_path, "read the store configuration", error))?;
 		let mode = table
 			.get(STORAGE_MODE_KEY)
-			.map_err(|error| format!("resource payload mode could not be read: {error}"))?
-			.ok_or_else(|| "resource payload mode is missing".to_string())?;
+			.map_err(|error| store_open_error(&self.base_path, "read the store configuration", error))?
+			.ok_or_else(|| corrupt("the persisted payload storage mode is missing".to_string()))?;
 		let storage_mode = ResourceStorageMode::from_bytes(mode.value())
-			.ok_or_else(|| "resource payload mode is not recognized".to_string())?;
+			.ok_or_else(|| corrupt("the persisted payload storage mode is not recognized".to_string()))?;
 		let image_compression = table
 			.get(IMAGE_COMPRESSION_KEY)
-			.map_err(|error| format!("resource image compression could not be read: {error}"))?
+			.map_err(|error| store_open_error(&self.base_path, "read the store configuration", error))?
 			.map(|value| ResourceGpuCompressionPolicy::from_bytes(value.value()))
-			.transpose()?
+			.transpose()
+			.map_err(corrupt)?
 			.unwrap_or_default();
 		let settings = ResourceStorageSettings {
 			storage_mode,
 			image_compression,
 		};
-		settings.validate()?;
+		settings.validate().map_err(|reason| ResourceStoreOpenError::Incompatible {
+			path: self.base_path.clone(),
+			reason,
+		})?;
 		Ok(settings)
 	}
 
@@ -480,7 +625,7 @@ impl ReDBStorageBackend {
 	/// [`ReadStorageBackend::read_trace`] for one ID.
 	#[cfg(debug_assertions)]
 	pub fn traces(&self) -> Result<Vec<(String, Vec<ResourceTraceItem>)>, String> {
-		self.development_records(RESOURCE_TRACES_TABLE, "traces", crate::from_slice)
+		self.records(RESOURCE_TRACES_TABLE, "traces", crate::from_slice)
 	}
 
 	/// Returns the IDs each stored resource's model names, by resource ID, for tools that follow them.
@@ -489,12 +634,18 @@ impl ReDBStorageBackend {
 	/// resource isn't listed.
 	#[cfg(debug_assertions)]
 	pub fn references(&self) -> Result<Vec<(String, Vec<String>)>, String> {
-		self.development_records(RESOURCE_REFERENCES_TABLE, "references", crate::from_slice)
+		self.records(RESOURCE_REFERENCES_TABLE, "references", crate::from_slice)
 	}
 
-	/// Decodes every value of a debug-only table. A missing table, as in a store baked by a release build, has none.
-	#[cfg(debug_assertions)]
-	fn development_records<T>(
+	/// Returns the provenance of every resource ID that has one, by ID, for tools that explain freshness.
+	///
+	/// Next, pass a record to [`stale_sources`](crate::asset::manager::stale_sources) to find the sources that changed.
+	pub fn provenances(&self) -> Result<Vec<(String, Provenance)>, String> {
+		self.records(RESOURCE_PROVENANCE_TABLE, "provenance", crate::from_slice)
+	}
+
+	/// Decodes every value of a per-resource record table. A missing table has none.
+	fn records<T>(
 		&self,
 		table: redb::TableDefinition<[u8; 16], &[u8]>,
 		name: &str,
@@ -566,8 +717,7 @@ impl ReDBStorageBackend {
 			}
 			let _ = resources_table.remove(&id);
 			let _ = packed_offsets.remove(&id);
-			#[cfg(debug_assertions)]
-			for table in DEVELOPMENT_TABLES {
+			for table in RECORD_TABLES {
 				let _ = write.open_table(table).unwrap().remove(&id);
 			}
 		}
@@ -659,8 +809,7 @@ impl ReDBStorageBackend {
 			packed_offsets
 				.retain(|_, _| false)
 				.map_err(|error| resource_clear_error("clear the packed resource offsets", error))?;
-			#[cfg(debug_assertions)]
-			for table in DEVELOPMENT_TABLES {
+			for table in RECORD_TABLES {
 				use redb::TableHandle as _;
 
 				write
@@ -820,6 +969,26 @@ impl ReadStorageBackend for ReDBStorageBackend {
 		})
 	}
 
+	fn read_provenance(&self, id: asset::ResourceId<'_>) -> Result<Option<Provenance>, String> {
+		let read = self.begin_read().map_err(|error| provenance_error("read", &error))?;
+		let table = match read.open_table(RESOURCE_PROVENANCE_TABLE) {
+			Ok(table) => table,
+			// A store written before any bake recorded provenance has no table yet.
+			Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+			Err(error) => return Err(provenance_error("read", &error)),
+		};
+		let Some(record) = table
+			.get(&ResourceId::from(id.as_ref()))
+			.map_err(|error| provenance_error("read", &error))?
+		else {
+			return Ok(None);
+		};
+
+		crate::from_slice::<(String, Provenance)>(record.value())
+			.map(|(_, provenance)| Some(provenance))
+			.map_err(|error| provenance_error("read", &error))
+	}
+
 	#[cfg(debug_assertions)]
 	fn read_trace<'a>(
 		&'a self,
@@ -870,7 +1039,9 @@ impl WriteStorageBackend for ReDBStorageBackend {
 		Ok(())
 	}
 
-	fn delete<'a>(&'a self, id: asset::ResourceId<'a>) -> Result<(), String> {
+	async fn delete<'a>(&'a self, id: asset::ResourceId<'a>) -> Result<(), String> {
+		// The delete commits durably, which also makes every deferred commit before it durable.
+		self.sync_payloads().await?;
 		if let Some(payload_path) = self.remove_resource_record(id)? {
 			let _ = remove_file(payload_path);
 		}
@@ -905,6 +1076,50 @@ impl WriteStorageBackend for ReDBStorageBackend {
 
 			Ok(ResourceTransaction::new(self, resource_id, reservation, writer))
 		}
+	}
+
+	fn settings_fingerprint(&self) -> u64 {
+		use std::hash::Hasher as _;
+
+		// Texture compression decides the encoding of every direct texture's payload. The storage mode only decides
+		// where a payload lives, and a store can't change it.
+		let mut hasher = utils::hash::FxHasher::with_seed(961961961961961);
+		hasher.write(self.image_compression.as_bytes());
+		hasher.finish()
+	}
+
+	fn write_provenance(&self, id: asset::ResourceId<'_>, provenance: &Provenance) -> Result<(), String> {
+		let mut write = match &self.db {
+			RedbDatabase::Writable(db) => db.begin_write().map_err(|error| provenance_error("write", &error))?,
+			RedbDatabase::ReadOnly(_) => {
+				return Err(
+					"Cannot write provenance to a read-only resources database. The most likely cause is that the backend was opened with `ReDBStorageBackend::open_read_only`. Open it with `ReDBStorageBackend::new_writable`."
+						.to_string(),
+				);
+			}
+		};
+		// Provenance is made durable with the resources of the same bake by `persist`.
+		write
+			.set_durability(redb::Durability::None)
+			.map_err(|error| provenance_error("write", &error))?;
+		let key = ResourceId::from(id.as_ref());
+		{
+			let mut table = write
+				.open_table(RESOURCE_PROVENANCE_TABLE)
+				.map_err(|error| provenance_error("write", &error))?;
+			if provenance.is_empty() {
+				table.remove(&key).map_err(|error| provenance_error("write", &error))?;
+			} else {
+				// The ID is kept with the record because a bake that didn't finish has no resource record to name it.
+				let serialized =
+					crate::to_vec(&(id.to_string(), provenance.clone())).map_err(|error| provenance_error("write", &error))?;
+				table
+					.insert(&key, serialized.as_slice())
+					.map_err(|error| provenance_error("write", &error))?;
+			}
+		}
+
+		write.commit().map_err(|error| provenance_error("write", &error))
 	}
 
 	#[cfg(debug_assertions)]
@@ -943,12 +1158,13 @@ impl WriteStorageBackend for ReDBStorageBackend {
 
 	/// Flushes every deferred commit to disk with one durable commit.
 	///
-	/// Payload files are synchronized before their metadata is committed, so the flush never publishes a record whose
-	/// payload could be missing after a crash.
-	fn persist(&self) -> Result<(), String> {
+	/// The payloads of those commits are synced first, so the flush never publishes a record whose payload could be
+	/// missing after a crash.
+	async fn persist(&self) -> Result<(), String> {
 		let RedbDatabase::Writable(db) = &self.db else {
 			return Ok(());
 		};
+		self.sync_payloads().await?;
 		let write = db.begin_write().map_err(|error| {
 			format!("Failed to persist baked resources. The resource database could not begin a write. Error: {error}")
 		})?;
@@ -988,13 +1204,15 @@ impl ResourceTransactionCommit for ReDBStorageBackend {
 					return Err(());
 				}
 				let destination = resource_payload_path(&self.base_path, resource_id.0, hash, encoding);
-				match encoding {
+				let stored_size = match encoding {
 					ResourcePayloadEncoding::MetalIoLz4 => output.persist_compressed_file(&destination, encoding)?,
 					ResourcePayloadEncoding::Raw | ResourcePayloadEncoding::CpuLz4 => {
 						output.persist_staged_file(&destination)?;
 						prepared_stored_size
 					}
-				}
+				};
+				self.unsynced_payloads.lock().unwrap().push(destination);
+				stored_size
 			}
 			ResourceStorageMode::Packed => {
 				if packed_range.is_none() || encoding.is_gpu_backed() {
@@ -1127,11 +1345,16 @@ pub enum ResourceStorageMode {
 }
 
 impl ResourceStorageMode {
-	fn as_bytes(self) -> &'static [u8] {
+	/// Returns the persisted name, which is also the BELD `--storage-mode` value.
+	fn as_str(self) -> &'static str {
 		match self {
-			Self::Files => b"files",
-			Self::Packed => b"packed",
+			Self::Files => "files",
+			Self::Packed => "packed",
 		}
+	}
+
+	fn as_bytes(self) -> &'static [u8] {
+		self.as_str().as_bytes()
 	}
 
 	fn from_bytes(bytes: &[u8]) -> Option<Self> {
@@ -1176,7 +1399,7 @@ impl ResourceGpuCompressionPolicy {
 		match bytes {
 			b"none" => Ok(Self::Disabled),
 			b"metal-io-lz4" => Ok(Self::MetalIoLz4),
-			_ => Err("resource image compression is not recognized".to_string()),
+			_ => Err("the persisted image compression is not recognized".to_string()),
 		}
 	}
 }
@@ -1282,52 +1505,64 @@ fn read_resource_cache_signature(base_path: &Path, signature_file: &str) -> Opti
 }
 
 /// Rejects a release resource store produced by a different resource schema before archived values are read.
+///
+/// The error is a complete message for [`ResourceStoreOpenError::Incompatible`].
 fn validate_resource_management_signature(base_path: &Path) -> Result<(), String> {
 	match read_resource_cache_signature(base_path, RESOURCE_MANAGEMENT_SIGNATURE_FILE) {
 		Some(signature) if signature == RESOURCE_MANAGEMENT_CODE_HASH => Ok(()),
 		Some(signature) => Err(format!(
-			"resource-management signature '{signature}' does not match this engine's expected signature '{RESOURCE_MANAGEMENT_CODE_HASH}'"
+			"Its resource-management signature '{signature}' does not match this engine's signature '{RESOURCE_MANAGEMENT_CODE_HASH}'. The most likely cause is that a different engine revision baked it. Bake the store again with this revision's BELD. See {}.",
+			crate::online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
 		)),
 		None => Err(format!(
-			"resource-management signature marker '{}' is missing",
-			RESOURCE_MANAGEMENT_SIGNATURE_FILE
+			"Its resource-management signature marker '{RESOURCE_MANAGEMENT_SIGNATURE_FILE}' is missing. The most likely cause is that the directory is not a baked resource store, or its bake did not finish. Bake the store with BELD. See {}.",
+			crate::online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
 		)),
 	}
 }
 
 /// Writes one cache-owner signature beside the resource database.
-fn write_resource_cache_signature(base_path: &Path, signature_file: &str, signature: &str) {
-	std::fs::write(base_path.join(signature_file), signature).unwrap_or_else(|error| {
-		panic!(
-			"Failed to write resource cache signature file '{}'. The most likely cause is that the resources directory '{}' is not writable. Error: {}",
-			signature_file,
-			base_path.display(),
-			error
-		)
-	});
+fn write_resource_cache_signature(
+	base_path: &Path,
+	signature_file: &str,
+	signature: &str,
+) -> Result<(), ResourceStoreOpenError> {
+	std::fs::write(base_path.join(signature_file), signature).map_err(|source| ResourceStoreOpenError::Io {
+		path: base_path.to_path_buf(),
+		action: "write the resource-management signature",
+		source,
+	})
 }
 
 /// Removes every persisted value after a cache owner reports an incompatible signature.
-fn reset_resource_cache(base_path: &Path) {
-	std::fs::remove_dir_all(base_path).unwrap_or_else(|error| {
-		panic!(
-			"Failed to delete stale resources directory. The most likely cause is that another process is still using files inside '{}'. Error: {}",
-			base_path.display(),
-			error
-		)
-	});
+fn reset_resource_cache(base_path: &Path) -> Result<(), ResourceStoreOpenError> {
+	std::fs::remove_dir_all(base_path).map_err(|source| ResourceStoreOpenError::Io {
+		path: base_path.to_path_buf(),
+		action: "delete the stale resources directory",
+		source,
+	})?;
+	create_resources_directory(base_path)
+}
 
-	std::fs::create_dir_all(base_path).unwrap();
+fn create_resources_directory(base_path: &Path) -> Result<(), ResourceStoreOpenError> {
+	std::fs::create_dir_all(base_path).map_err(|source| ResourceStoreOpenError::Io {
+		path: base_path.to_path_buf(),
+		action: "create the resources directory",
+		source,
+	})
 }
 
 /// Synchronizes the resource-management implementation marker shared by every database opener.
-fn sync_resource_management_signature(base_path: &Path) {
-	std::fs::create_dir_all(base_path).unwrap();
+///
+/// A missing or changed signature deletes the directory, because archived values from another schema cannot be read.
+/// A matching signature leaves every file in place, so a corrupt database is reported by the open that follows.
+fn sync_resource_management_signature(base_path: &Path) -> Result<(), ResourceStoreOpenError> {
+	create_resources_directory(base_path)?;
 
 	let stored_signature = read_resource_cache_signature(base_path, RESOURCE_MANAGEMENT_SIGNATURE_FILE);
 
 	if stored_signature.as_deref() == Some(RESOURCE_MANAGEMENT_CODE_HASH) {
-		return;
+		return Ok(());
 	}
 
 	if let Some(stored_signature) = stored_signature {
@@ -1337,19 +1572,48 @@ fn sync_resource_management_signature(base_path: &Path) {
 			stored_signature,
 			RESOURCE_MANAGEMENT_CODE_HASH
 		);
-		reset_resource_cache(base_path);
+		reset_resource_cache(base_path)?;
 	} else if base_path.join(RESOURCES_DATABASE_FILE).exists() {
 		log::info!(
 			"Deleting resources at '{}' because the resource-management signature marker is missing.",
 			base_path.display()
 		);
-		reset_resource_cache(base_path);
+		reset_resource_cache(base_path)?;
 	}
 
-	write_resource_cache_signature(base_path, RESOURCE_MANAGEMENT_SIGNATURE_FILE, RESOURCE_MANAGEMENT_CODE_HASH);
+	write_resource_cache_signature(base_path, RESOURCE_MANAGEMENT_SIGNATURE_FILE, RESOURCE_MANAGEMENT_CODE_HASH)
+}
+
+/// Sorts a redb failure during an open into the cause a caller can act on.
+///
+/// `action` completes "could not ..." for file-system failures, such as "open 'resources.db'".
+fn store_open_error(base_path: &Path, action: &'static str, error: impl Into<redb::Error>) -> ResourceStoreOpenError {
+	let path = base_path.to_path_buf();
+	match error.into() {
+		redb::Error::DatabaseAlreadyOpen => ResourceStoreOpenError::InUse { path },
+		// redb reports a file without a valid header, such as one another tool wrote, as invalid data.
+		redb::Error::Io(source) if source.kind() == std::io::ErrorKind::InvalidData => ResourceStoreOpenError::Corrupt {
+			path,
+			detail: source.to_string(),
+		},
+		redb::Error::Io(source) => ResourceStoreOpenError::Io { path, action, source },
+		// Damaged pages, an old file format, a refused repair, and missing or mistyped tables all mean that this
+		// file cannot serve as the store's database.
+		error => ResourceStoreOpenError::Corrupt {
+			path,
+			detail: error.to_string(),
+		},
+	}
 }
 
 /// Creates a consistent storage error for one REDB clear step.
+/// Builds the error for a provenance record that couldn't be read or written.
+fn provenance_error(action: &str, error: &dyn std::fmt::Display) -> String {
+	format!(
+		"Failed to {action} resource provenance. The most likely cause is a corrupt or unwritable resources database. Delete the resources directory and bake again. Error: {error}"
+	)
+}
+
 fn resource_list_error(error: &dyn std::fmt::Display) -> String {
 	format!(
 		"Failed to list resources. The most likely cause is a corrupt resources database. Delete the resources directory and bake again. Error: {error}"
@@ -1440,7 +1704,9 @@ fn parse_payload_name(name: &str) -> Option<(ResourceId, u64, ResourcePayloadEnc
 
 /// Selects ordinary textures while environment images retain their existing multi-image CPU upload path.
 fn is_direct_texture(class: &str, metadata: &[u8]) -> bool {
-	class == "Image" && crate::from_slice::<crate::resources::image::Image>(metadata).is_ok_and(|image| image.ibl.is_none())
+	class == "Image"
+		&& crate::from_slice::<crate::resources::image::Image>(metadata)
+			.is_ok_and(|image| image.ibl.is_none() && !image.cpu_readable)
 }
 
 /// Encodes the class and fixed-width UID directly into the persisted index key.
@@ -1514,9 +1780,15 @@ const RESOURCE_PROPERTY_INDEX_TABLE: redb::TableDefinition<&[u8], [u8; 16]> =
 const RESOURCE_TRACES_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefinition::new("resource-traces");
 #[cfg(debug_assertions)]
 const RESOURCE_REFERENCES_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefinition::new("resource-references");
-/// The debug-only tables, which hold at most one record per resource UID and lose it when the resource is deleted.
+/// What the store remembers about how each resource ID came to be stored: its ID and its [`Provenance`].
+const RESOURCE_PROVENANCE_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefinition::new("resource-provenance");
+/// The tables besides the resources table that hold at most one record per resource UID and lose it when the resource
+/// is deleted.
 #[cfg(debug_assertions)]
-const DEVELOPMENT_TABLES: [redb::TableDefinition<[u8; 16], &[u8]>; 2] = [RESOURCE_TRACES_TABLE, RESOURCE_REFERENCES_TABLE];
+const RECORD_TABLES: [redb::TableDefinition<[u8; 16], &[u8]>; 3] =
+	[RESOURCE_PROVENANCE_TABLE, RESOURCE_TRACES_TABLE, RESOURCE_REFERENCES_TABLE];
+#[cfg(not(debug_assertions))]
+const RECORD_TABLES: [redb::TableDefinition<[u8; 16], &[u8]>; 1] = [RESOURCE_PROVENANCE_TABLE];
 
 const RESOURCE_MANAGEMENT_CODE_HASH: &str = env!("RESOURCE_MANAGEMENT_CODE_HASH");
 const RESOURCE_MANAGEMENT_SIGNATURE_FILE: &str = ".resource-management-version";
@@ -1526,6 +1798,7 @@ const PACKED_RESOURCES_FILE: &str = "resources.pack";
 const RESOURCES_DATABASE_FILE: &str = "resources.db";
 const STAGED_RESOURCE_FILE_PREFIX: &str = ".resource-write";
 const BAKING_APP_RESOURCES_DOCS_PATH: &str = "use/resources/bake";
+const RESOURCE_STORE_RECOVERY_DOCS_PATH: &str = "use/resources/bake#fix-a-resource-store-that-doesnt-open";
 
 #[cfg(test)]
 mod tests {
@@ -1734,6 +2007,7 @@ mod tests {
 			gamma: Gamma::Linear,
 			extent: [4, 4, 0],
 			mip_count: 1,
+			cpu_readable: false,
 			ibl: None,
 			photometry: None,
 		};
@@ -2038,7 +2312,7 @@ mod tests {
 		assert_eq!(backing.as_slice(), b"last");
 		drop(backing);
 
-		backend.delete(id).unwrap();
+		backend.delete(id).await.unwrap();
 		backend
 			.store(
 				ProcessedAsset::new(
@@ -2465,6 +2739,8 @@ mod tests {
 				graph: String::new(),
 				parameters: Vec::new(),
 				identity: 0,
+				reads_backdrop: false,
+				translucent: false,
 			},
 		};
 		VariantModel {
@@ -2532,6 +2808,7 @@ mod tests {
 
 		backend
 			.delete(crate::asset::ResourceId::new("pipelines/replaced.pipeline"))
+			.await
 			.unwrap();
 		assert_eq!(backend.references().unwrap().len(), 2);
 
@@ -2575,7 +2852,7 @@ mod tests {
 		assert!(backend.read(id).await.is_none());
 		assert!(backend.list().await.unwrap().is_empty());
 
-		backend.delete(id).unwrap();
+		backend.delete(id).await.unwrap();
 
 		assert!(backend.read_trace(id).await.unwrap().is_empty());
 		assert!(backend.traces().unwrap().is_empty());
@@ -2593,7 +2870,7 @@ mod tests {
 			},
 		)
 		.await;
-		backend.delete(crate::asset::ResourceId::new("materials/a")).unwrap();
+		backend.delete(crate::asset::ResourceId::new("materials/a")).await.unwrap();
 
 		let (ids, _) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/a").limit(10)).await;
 
@@ -2627,11 +2904,33 @@ mod tests {
 	}
 }
 
+/// How many payload syncs a flush runs at once. Each sync opens and closes its file, and running several hides those
+/// round trips, while the bound keeps the blocking pool's threads free for other work.
+const PAYLOAD_SYNCS_IN_FLIGHT: usize = 16;
+
+/// Writes one payload file's data to the drive.
+///
+/// Compio syncs with a plain `fsync` on Apple platforms, where the standard library's `sync_data` also flushes the
+/// whole drive cache, once per payload. The durable commit that follows flushes that cache once for every payload.
+async fn sync_payload(path: &std::path::Path) -> std::io::Result<()> {
+	let file = match compio::fs::File::open(path).await {
+		Ok(file) => file,
+		// The resource was replaced or deleted after it was published, so no record names this file anymore.
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+		Err(error) => return Err(error),
+	};
+	file.sync_data().await?;
+	file.close().await
+}
+
 use std::{
 	future::Future,
 	io::Write as _,
 	path::Path,
-	sync::atomic::{AtomicU64, Ordering},
+	sync::{
+		Mutex,
+		atomic::{AtomicU64, Ordering},
+	},
 };
 
 use redb::{ReadableDatabase as _, ReadableTable, ReadableTableMetadata as _};
@@ -2647,6 +2946,7 @@ use super::{
 use crate::ResourceTraceItem;
 use crate::{
 	ProcessedAsset, QueryableProperty, QueryableValue, SerializableResource, asset,
+	asset::Provenance,
 	r#async::{self, BoxedFuture, File as AsyncFile},
 	resource::{
 		ResourceCompressionPolicy, ResourceId, ResourcePayloadEncoding, ResourceReaderBacking, reader::StoredResourceReader,

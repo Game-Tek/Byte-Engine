@@ -1070,10 +1070,10 @@ sample_directional_shadow: fn (
 	let penumbra_meters: f32 = max(occluder_distance, 0.0) * angular_radius_tangent;
 	let fitted_penumbra_meters: f32 = max(penumbra_meters, 0.0001);
 	let last_filter_cascade: u32 = min(search_cascade + 1, 3);
-	let filter_cascade: u32 = 4;
-	let filter_misfit: f32 = 100000000.0;
-	let runner_up_cascade: u32 = 4;
-	let runner_up_misfit: f32 = 100000000.0;
+	let narrow_cascade: u32 = 4;
+	let narrow_misfit: f32 = 100000000.0;
+	let wide_cascade: u32 = 4;
+	let wide_misfit: f32 = 100000000.0;
 	for (let cascade: u32 = depth_cascade; cascade <= last_filter_cascade; cascade = cascade + 1) {
 		let cascade_view: u32 = directional_shadow_cascade_view(cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
 		if (cascade == depth_cascade
@@ -1081,49 +1081,57 @@ sample_directional_shadow: fn (
 			|| directional_shadow_cascade_holds(scene.views.views[cascade_view].view_projection, world_space_position, shadow_map_width)) {
 			let width: f32 = fitted_penumbra_meters * directional_shadow_cascade_scale(cascade, texels_per_meter);
 			let misfit: f32 = max(2.0 / width, width / 6.0);
-			if (misfit < filter_misfit) {
-				runner_up_cascade = filter_cascade;
-				runner_up_misfit = filter_misfit;
-				filter_cascade = cascade;
-				filter_misfit = misfit;
-			} else if (misfit < runner_up_misfit) {
-				runner_up_cascade = cascade;
-				runner_up_misfit = misfit;
+			if (width * width < 12.0) {
+				if (misfit < narrow_misfit) {
+					narrow_cascade = cascade;
+					narrow_misfit = misfit;
+				}
+			} else if (misfit < wide_misfit) {
+				wide_cascade = cascade;
+				wide_misfit = misfit;
 			}
 		}
 	}
-	let filter_view: u32 = directional_shadow_cascade_view(filter_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
-	let lit: f32 = sample_directional_shadow_cascade(
-		material_evaluation,
-		shadow_map,
-		scene.views.views[filter_view].view_projection,
-		first_layer + filter_cascade,
-		world_space_position + normal_offset / directional_shadow_cascade_scale(filter_cascade, texels_per_meter),
-		world_space_position_derivative_x,
-		world_space_position_derivative_y,
-		shadow_map_extent,
-		penumbra_meters,
-		occluder_distance <= 0.0 && filter_cascade != search_cascade
-	);
-	let filter_share: f32 = min(runner_up_misfit / filter_misfit - 0.5, 1.0);
-	if (runner_up_cascade == 4 || filter_share >= 1.0) {
-		return lit;
+	let filter_cascade: u32 = wide_cascade;
+	let filter_misfit: f32 = wide_misfit;
+	let partner_cascade: u32 = narrow_cascade;
+	let partner_misfit: f32 = narrow_misfit;
+	if (narrow_misfit < wide_misfit || (narrow_misfit == wide_misfit && narrow_cascade < wide_cascade)) {
+		filter_cascade = narrow_cascade;
+		filter_misfit = narrow_misfit;
+		partner_cascade = wide_cascade;
+		partner_misfit = wide_misfit;
 	}
-	let runner_up_view: u32 = directional_shadow_cascade_view(
-		runner_up_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3
-	);
-	let runner_up_lit: f32 = sample_directional_shadow_cascade(
-		material_evaluation,
-		shadow_map,
-		scene.views.views[runner_up_view].view_projection,
-		first_layer + runner_up_cascade,
-		world_space_position + normal_offset / directional_shadow_cascade_scale(runner_up_cascade, texels_per_meter),
-		world_space_position_derivative_x,
-		world_space_position_derivative_y,
-		shadow_map_extent,
-		penumbra_meters,
-		occluder_distance <= 0.0 && runner_up_cascade != search_cascade
-	);
-	return mix(runner_up_lit, lit, filter_share);
+	let filter_share: f32 = 1.0;
+	let sampled_cascades: u32 = 1;
+	if (partner_cascade != 4) {
+		filter_share = min(partner_misfit / filter_misfit - 0.5, 1.0);
+		if (filter_share < 1.0) {
+			sampled_cascades = 2;
+		}
+	}
+	let lit: f32 = 0.0;
+	for (let sampled: u32 = 0; sampled < sampled_cascades; sampled = sampled + 1) {
+		let cascade: u32 = filter_cascade;
+		let share: f32 = filter_share;
+		if (sampled == 1) {
+			cascade = partner_cascade;
+			share = 1.0 - filter_share;
+		}
+		let cascade_view: u32 = directional_shadow_cascade_view(cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
+		lit = lit + share * sample_directional_shadow_cascade(
+			material_evaluation,
+			shadow_map,
+			scene.views.views[cascade_view].view_projection,
+			first_layer + cascade,
+			world_space_position + normal_offset / directional_shadow_cascade_scale(cascade, texels_per_meter),
+			world_space_position_derivative_x,
+			world_space_position_derivative_y,
+			shadow_map_extent,
+			penumbra_meters,
+			occluder_distance <= 0.0 && cascade != search_cascade
+		);
+	}
+	return lit;
 }
 "#;

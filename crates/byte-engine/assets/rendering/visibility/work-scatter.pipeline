@@ -1,0 +1,1 @@
+{"name":"Mesh Work Scatter","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/work-scatter.besl","push_constants":[{"offset":0,"size":24}]}}

@@ -81,7 +81,7 @@ impl IBLGenerator {
 			drop(claim);
 			match baked {
 				Ok(baked) => {
-					context.info("Generated environment maps on the GPU.");
+					context.debug("Generated environment maps on the GPU.");
 					return store_baked_image(context, url, baked).await;
 				}
 				Err(error) => context.warn(format!(
@@ -119,6 +119,7 @@ async fn store_baked_image(
 		gamma: Gamma::Linear,
 		extent: baked.root_extent,
 		mip_count: 1,
+		cpu_readable: false,
 		ibl: Some(baked.ibl),
 		photometry: None,
 	};

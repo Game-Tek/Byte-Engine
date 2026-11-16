@@ -31,9 +31,13 @@ Baking rejects any other field.
 | `id` | Optional. A non-empty name, unique in the file, that other entities use to refer to this one. |
 | `parent` | Optional. The `id` of the entity this one belongs to. Deleting the parent deletes it. Without a parent, it belongs to the level. |
 | `components` | Optional. An object from kind name to that kind's payload. A kind appears at most once per entity. |
+| `prefab` | Optional. Makes the entity an instance of a prefab, which spawns the prefab's entities under it. See [instances](/docs/reference/prefabs#instances). |
 
 Baking rejects any other field. A parent only groups entities for deletion: it
-never moves its children, and every transform is a world transform.
+never moves its children. Every `transform` is relative to the spawn's
+placement, which is the identity unless the application sets one, so a level
+spawned without a placement holds world transforms. See
+[transforms](/docs/reference/prefabs#transforms).
 
 ## Entity references
 
@@ -70,6 +74,7 @@ A `transform` field that's missing takes the identity's value.
 | Source | Fields |
 | --- | --- |
 | `resource` | A mesh resource ID. |
+| `merged` | `resource`, a mesh resource ID, and `placements`, a sequence of `transform` payloads. The mesh draws once at each placement, as one mesh; the [rendering reference](/docs/reference/rendering#the-visibility-pipeline) defines how. Place the entity at the origin, since the placements are world transforms. The mesh must be static, and its copies must fit one primitive, as [merged placements](#merged-placements) define. Baking writes this source; a level can also author it. |
 | `box` | `half_extents` as `[x, y, z]`, and optionally `material`, a material resource ID, and `meter_uvs`, which tiles textures once per meter. |
 | `sphere` | `radius`. |
 | `capsule` | `radius`, `height` with the caps included, and optionally `material`. |
@@ -108,8 +113,9 @@ The engine's kinds reject fields they don't define. An application kind accepts 
 
 | Step | Behavior |
 | --- | --- |
-| Kinds | Every kind the level names must be registered with the spawner, or nothing spawns. |
-| Handles | One run of consecutive handles: the level's root first, then each entity in baked order. |
+| Load | The level and every prefab its instances reach are loaded before anything spawns; see [prefab spawning](/docs/reference/prefabs#spawning). |
+| Kinds | Every kind the level and its prefabs name must be registered with the spawner, or nothing spawns. |
+| Handles | One run of consecutive handles: the level's root first, then each entity in baked order, then the entities of each instance's prefab. |
 | Decode | Every payload is decoded and turned into its component before anything is published. A failure publishes nothing and names the entity, the kind, and the cause. |
 | Publish | The root's scene, then each entity's scene membership, parents before children, then each kind's components in entity order, one kind after another. |
 | Unload | Deleting the root deletes every entity of the level through the scene graph. |
@@ -123,16 +129,38 @@ The engine's kinds reject fields they don't define. An application kind accepts 
 | --- | --- |
 | Class | `Level`. |
 | Order | Entities are stored parents first, otherwise in file order. |
-| Payloads | Stored parsed, so spawning reads no text. Baking doesn't know the application's kinds, so it doesn't check a payload against its kind: a payload that doesn't fit fails the spawn. |
-| Rejected | Unknown fields, empty or repeated `id`s, an unknown `parent`, parents that form a cycle, a kind repeated in one entity, an empty kind name, an unknown or malformed entity reference, and numbers JSON can't represent. |
-| Dependencies | Resource IDs in payloads aren't baked with the level, so changing a referenced resource doesn't bake the level again. |
+| Payloads | Stored parsed, so spawning reads no text. Baking doesn't know the application's kinds, so it doesn't check a payload against its kind: a payload that doesn't fit fails the spawn. The one exception is [merged placements](#merged-placements), which read `mesh` and `transform` when merging is on. |
+| Rejected | Unknown fields, empty or repeated `id`s, a `$parameter` reference, an instance without a `resource`, an unknown `parent`, parents that form a cycle, a kind repeated in one entity, an empty kind name, an unknown or malformed entity reference, and numbers JSON can't represent. |
+| Dependencies | Resource IDs in payloads aren't baked with the level, so changing a referenced resource doesn't bake the level again. A mesh the level [merges](#merged-placements) is the exception: it's baked with the level, and changing it bakes the level again, since its size decides the clusters. |
+
+### Merged placements
+
+Merging is off unless the application turns it on for its level bakes. With it
+on, a level that places one mesh resource many times bakes those placements
+into clusters: a few entities that each draw the mesh at many placements as
+one merged mesh. The level stores the placements, never the merged geometry.
+
+Every copy of a cluster draws the same [detail level](/docs/reference/rendering#the-visibility-pipeline),
+so the copies change level together.
+
+| Rule | Behavior |
+| --- | --- |
+| Placement | An entity with no `id` whose components are `mesh` with a `resource` source and, optionally, `transform`. An entity with any other field or component isn't a placement. |
+| Group | The placements that share a mesh resource and a `parent`. |
+| Threshold | A group merges when it has more placements than the threshold the application sets. A smaller group keeps its entities. |
+| Clusters | A merged group splits into clusters of placements that lie near each other. A cluster holds at most as many placements as copies of the mesh fit one primitive: 65,536 vertices, and 4,096 meshlets at full [detail](/docs/reference/assets#detail-levels), for the primitive of the mesh that fits the fewest. A cluster lists its placements along a Z-order curve through its bounds, so placements next to each other in the list are near each other. |
+| Result | One entity for each cluster, in the place of the group's first entity in the file, with the group's `parent`, no `transform`, and a `mesh` with the [`merged` source](#mesh-sources): the group's mesh and the cluster's transforms. The group's own entities aren't stored. |
+| Excluded transforms | A placement whose `transform` the kind rejects, or whose `scale` has a zero, keeps its entity. |
+| Excluded meshes | A mesh that's skinned, animated by a node, or that doesn't bake isn't merged. Its placements keep their entities, and the bake logs a warning that names the mesh. |
+| Movement | Merged placements have no entities, so nothing can move, hide, or delete one of them. Give a placement an `id` to keep its entity. |
+| Lightmaps | A lightmap bake neither lights nor traces a `merged` mesh. |
 
 ## Limits
 
 | Limit | Value |
 | --- | --- |
 | Components | At most one of each kind per entity. |
-| Hierarchy | None. Every transform is a world transform. |
+| Hierarchy | None at run time. Every spawned transform is a world transform; a placement and instances are combined into it when the spawn publishes. |
 | Handles | A spawn uses one handle for the root and one for each entity. Handles are never reused. |
 | Messages | A spawn publishes one message for the root, one for each entity's scene membership, and one for each component. They must fit the message pool, set by `messages.capacity`, until every listener reads them. |
 

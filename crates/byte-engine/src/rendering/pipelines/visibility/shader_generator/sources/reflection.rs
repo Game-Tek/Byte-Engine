@@ -8,9 +8,9 @@
 // both linear along the path, so the test compares inverse depths: the ray is behind a surface when its 1/z is the
 // smaller one, `scene_z * inverse_z < 1`, which needs no division. Background holds zero depth and nothing to hit.
 //
-// The pyramid's point sampler reads the texel under the coordinate and clamps to the image's edge, so a step needs no
-// rounding, clamping, or conversion to integer coordinates of its own. Together with the bit-mask scan in
-// `trace_screen_space_reflection`, this made material evaluation 2.2 % faster on the Sponza hall view, and fetching the
+// The pyramid's `reflection_texel` sampler reads the texel under the coordinate and mirrors the image past its edge,
+// so a step needs no rounding, folding, or conversion to integer coordinates of its own. Together with the bit-mask
+// scan in `trace_screen_space_reflection`, this made material evaluation 2.2 % faster on the Sponza hall view, and fetching the
 // texel at converted integer coordinates instead was 3 % slower than sampling it (2026-10-06).
 pub(crate) const REFLECTION_RAY_IS_BEHIND_SOURCE: &str = r#"
 reflection_ray_is_behind: fn (material_evaluation: MaterialEvaluation, ray: ReflectionRay, fraction: f32) -> bool {
@@ -45,6 +45,9 @@ reflection_history_depth_error: fn (material_evaluation: MaterialEvaluation, dev
 // Reads last frame's light where the previous camera saw `world_position`, converted back to unexposed radiance.
 // Returns zero alpha when the previous frame did not see that surface.
 //
+// A hit past the screen's edge was found in the mirrored depth, so its light is read from the same mirrored pixel:
+// the coordinate folds back across the edge it crossed, as the depth pyramid's mirror sampler folds it.
+//
 // The trace finds hits in half-resolution depth, which keeps the nearest of each 2x2 pixel block, while light is
 // stored per full-resolution pixel. Next to an object's edge, the pixel under the hit can belong to the background.
 // So the four pixels around the hit are read, and only the one whose previous depth matches the hit supplies light.
@@ -61,10 +64,15 @@ reflection_history_radiance: fn (material_evaluation: MaterialEvaluation, world_
 	if (clip.w <= 0.0) {
 		return miss;
 	}
-	let uv: vec2f = vec2f(0.5 + 0.5 * clip.x / clip.w, 0.5 - 0.5 * clip.y / clip.w);
-	if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+	let unfolded_uv: vec2f = vec2f(0.5 + 0.5 * clip.x / clip.w, 0.5 - 0.5 * clip.y / clip.w);
+	// Only one mirrored copy lies around the screen; folding further would read unrelated pixels.
+	if (unfolded_uv.x < -1.0 || unfolded_uv.x > 2.0 || unfolded_uv.y < -1.0 || unfolded_uv.y > 2.0) {
 		return miss;
 	}
+	let uv: vec2f = vec2f(
+		min(abs(unfolded_uv.x), 2.0 - abs(unfolded_uv.x)),
+		min(abs(unfolded_uv.y), 2.0 - abs(unfolded_uv.y))
+	);
 	let lit_extent: vec2u = texture_size(material_evaluation.previous_lit);
 	let base_x: f32 = floor(uv.x * f32(lit_extent.x) - 0.5);
 	let base_y: f32 = floor(uv.y * f32(lit_extent.y) - 0.5);
@@ -164,18 +172,22 @@ trace_screen_space_reflection: fn (
 	// evenly at any resolution.
 	let origin_uv: vec2f = vec2f(0.5 + 0.5 * start_clip.x / start_clip.w, 0.5 - 0.5 * start_clip.y / start_clip.w);
 	let far_uv: vec2f = vec2f(0.5 + 0.5 * end_clip.x / end_clip.w, 0.5 - 0.5 * end_clip.y / end_clip.w);
-	// Cut the screen path where it leaves the image, so every step lands on screen and none are wasted.
+	// Past the screen's edge the depth pyramid repeats mirrored, so a ray keeps marching into the mirrored copy instead
+	// of ending at the border. Mirrored depth is only a plausible stand-in for the unseen scene, so the path is cut this
+	// far past each edge, in image widths, and hits fade out on the way there. Every step lands where the mirrored copy
+	// still resembles the scene, and none are wasted beyond it.
+	let mirror_reach: f32 = 0.5;
 	let path: vec2f = far_uv - origin_uv;
 	let exit_fraction: f32 = 1.0;
 	if (path.x > 0.0) {
-		exit_fraction = min(exit_fraction, (1.0 - origin_uv.x) / path.x);
+		exit_fraction = min(exit_fraction, (1.0 + mirror_reach - origin_uv.x) / path.x);
 	} else if (path.x < 0.0) {
-		exit_fraction = min(exit_fraction, -origin_uv.x / path.x);
+		exit_fraction = min(exit_fraction, (-mirror_reach - origin_uv.x) / path.x);
 	}
 	if (path.y > 0.0) {
-		exit_fraction = min(exit_fraction, (1.0 - origin_uv.y) / path.y);
+		exit_fraction = min(exit_fraction, (1.0 + mirror_reach - origin_uv.y) / path.y);
 	} else if (path.y < 0.0) {
-		exit_fraction = min(exit_fraction, -origin_uv.y / path.y);
+		exit_fraction = min(exit_fraction, (-mirror_reach - origin_uv.y) / path.y);
 	}
 	if (exit_fraction <= 0.0) {
 		return miss;
@@ -271,12 +283,13 @@ trace_screen_space_reflection: fn (
 		if (radiance.w == 0.0) {
 			return miss;
 		}
-		// Fade hits near the image border and near the end of the ray's reach, so reflections do not end in a hard
-		// line where the screen or the ray runs out.
-		let border_distance: f32 = min(min(hit_uv.x, 1.0 - hit_uv.x), min(hit_uv.y, 1.0 - hit_uv.y));
-		let border_fade: f32 = clamp(border_distance * 20.0, 0.0, 1.0);
+		// Fade hits in the outer half of the mirrored band and near the end of the ray's reach, so reflections do not
+		// end in a hard line where the mirrored copy or the ray runs out. Hits on screen and just past its edge keep
+		// full strength, which hides the screen's border in the reflection.
+		let outside_distance: f32 = max(max(max(-hit_uv.x, hit_uv.x - 1.0), max(-hit_uv.y, hit_uv.y - 1.0)), 0.0);
+		let mirror_fade: f32 = clamp((mirror_reach - outside_distance) / (0.5 * mirror_reach), 0.0, 1.0);
 		let distance_fade: f32 = clamp((max_distance - hit_distance) / (0.25 * max_distance), 0.0, 1.0);
-		return vec4f(radiance.x, radiance.y, radiance.z, facing_fade * border_fade * distance_fade);
+		return vec4f(radiance.x, radiance.y, radiance.z, facing_fade * mirror_fade * distance_fade);
 	}
 	return miss;
 }

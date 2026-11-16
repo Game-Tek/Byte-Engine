@@ -2,10 +2,10 @@ use utils::Extent;
 
 use crate::synchronizer::SynchronizerHandle as PrivateSynchronizerHandle;
 use crate::{
-	AllocationHandle, BaseBufferHandle, BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle,
-	CounterHandle, DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, DynamicImageHandle, Formats, ImageHandle,
-	MeshHandle, PipelineHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderBindingTableHandle, ShaderHandle,
-	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer,
+	BaseBufferHandle, BottomLevelAccelerationStructureHandle, BufferHandle, CounterHandle, DescriptorSetHandle, Formats,
+	ImageHandle, MeshHandle, PipelineHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderBindingTableHandle,
+	ShaderHandle, ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle,
+	Uses, buffer,
 	buffer::BufferContents,
 	descriptors, image,
 	pipelines::VertexElement,
@@ -275,7 +275,10 @@ impl<T> TextureReadbackRegistry<T> {
 		Some(value)
 	}
 
-	#[cfg_attr(not(test), allow(dead_code, reason = "Only tests and the DX12 backend read every readback."))]
+	#[cfg_attr(
+		not(test),
+		allow(dead_code, reason = "Only tests and the DX12 backend read every readback.")
+	)]
 	pub(crate) fn values(&self) -> impl Iterator<Item = &T> {
 		self.slots.iter().filter_map(|slot| slot.state.value())
 	}
@@ -309,11 +312,14 @@ impl<T> TextureReadbackRegistry<T> {
 /// The `Context` trait identifies objects that own render resources created from a GPU device.
 /// Implementations use the context lifetime to bound the lifetime of owned GPU resources.
 ///
-/// Create resources through [`ContextCreate`], record work outside frames with
-/// [`Self::create_command_buffer_recording`], then submit frame work through a
-/// queue returned by [`Self::queue`].
+/// Create resources through [`ContextCreate`], run work outside frames as a workload with [`Self::record`], and
+/// submit frame work through a queue returned by [`Self::queue`].
 pub trait Context: ContextCreate {
 	type Queue<'a>: crate::queue::Queue
+	where
+		Self: 'a;
+	/// The recording a workload records into; see [`Self::record`].
+	type Recording<'a>: crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode
 	where
 		Self: 'a;
 
@@ -368,13 +374,18 @@ pub trait Context: ContextCreate {
 	/// Returns a borrowed queue wrapper that exposes queue-local command submission.
 	fn queue<'a>(&'a mut self, queue_handle: QueueHandle) -> Self::Queue<'a>;
 
-	/// Starts a recording that belongs to no frame, for transfers submitted outside the render loop.
+	/// Records a workload with `record`, submits it on `queue`, and returns once the GPU finished it.
 	///
-	/// Next, record commands and submit them with [`crate::command_buffer::CommandBufferRecording::execute`].
-	fn create_command_buffer_recording(
-		&mut self,
-		command_buffer_handle: CommandBufferHandle,
-	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode;
+	/// A workload is GPU work outside frames, such as a loader's batch of copies or an offline bake. Unlike a frame,
+	/// which waits when its sequence starts again, a workload waits when it is submitted, so what it wrote and read
+	/// back is complete when this returns. It carries the copies of staged writes queued before it, ahead of its own
+	/// commands. Returns what `record` returns, such as the handles of texture transfers to read next.
+	fn record<'a, R>(
+		&'a mut self,
+		queue: QueueHandle,
+		name: Option<&str>,
+		record: impl FnOnce(&mut Self::Recording<'a>) -> R,
+	) -> R;
 
 	/// Changes the maximum number of frames in flight.
 	///
@@ -384,44 +395,23 @@ pub trait Context: ContextCreate {
 	/// Returns a device accessible address for the provided buffer handle.
 	fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64;
 
-	/// Returns a shared view into a typed buffer's contents.
+	/// Gives exclusive CPU access to a whole buffer with one copy, without synchronizing with the GPU.
 	///
-	/// [`Pod`] keeps every possible GPU-written bit pattern valid for `T` and excludes uninitialized padding. Array
-	/// buffers return a slice with the length the buffer was built with.
-	fn get_buffer_slice<T: ?Sized + BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &T;
-
-	/// Returns a mutable view into CPU-visible buffer contents.
-	///
-	/// [`Pod`] keeps every possible GPU-written bit pattern valid for `T` and excludes uninitialized padding.
-	fn get_mut_buffer_slice<T: ?Sized + BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T;
-
-	/// Transfers exclusive CPU access to a persistently mapped buffer.
-	///
-	/// Use this only when a higher-level owner must lease disjoint mapped regions
-	/// across threads. Ordinary writes should use [`Self::get_mut_buffer_slice`].
+	/// Use it for memory the application orders against GPU work itself, such as a staging arena whose regions it
+	/// leases to loader threads and reuses only after the copies that read them complete.
 	///
 	/// # Safety
 	///
-	/// The context must outlive the returned mapping and every region derived from
-	/// it. The caller must not map the buffer again while the transferred mapping exists.
-	unsafe fn transfer_buffer_mapping<T: ?Sized + BufferContents>(
+	/// The context must outlive the returned mapping and every region derived from it. CPU access to any byte must
+	/// not overlap GPU access to it, and the buffer must not be mapped again while the mapping exists.
+	///
+	/// # Panics
+	///
+	/// Panics unless the buffer has host access and [`crate::Copies::One`].
+	unsafe fn map_unsynchronized<T: ?Sized + BufferContents>(
 		&mut self,
 		buffer_handle: BufferHandle<T>,
 	) -> crate::buffer::Mapping;
-
-	/// Flushes or uploads pending writes for the provided buffer.
-	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>);
-
-	/// Returns mutable CPU access to an image's backing bytes.
-	fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &mut [u8];
-
-	/// Flushes or uploads pending writes for the provided image.
-	fn sync_texture(&mut self, image_handle: ImageHandle);
-
-	/// Enables writes to a texture and queues a copy operation.
-	///
-	/// Call `sync` on a command buffer before the GPU uses the texture.
-	fn write_texture(&mut self, texture_handle: ImageHandle, f: impl FnOnce(&mut [u8]));
 
 	/// Updates retained descriptor-set state before command recording.
 	///
@@ -476,20 +466,20 @@ pub trait Context: ContextCreate {
 	/// though it is copyable; a second call with the same value returns [`TextureTransferError::InvalidHandle`].
 	fn get_image_data(&mut self, texture_copy_handle: TextureCopyHandle) -> Result<TextureReadback, TextureTransferError>;
 
-	/// Resizes a dynamic buffer to the specified size.
-	fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize);
+	/// Replaces every copy of an array buffer with copies of `length` elements.
+	///
+	/// The new copies start zero-initialized. The old copies stay valid until every frame recorded before the resize
+	/// completes. Descriptor sets that name the buffer name the new copies.
+	///
+	/// # Panics
+	///
+	/// Panics when the buffer holds a single value instead of a slice.
+	fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>, length: usize);
 
 	/// Waits for operations associated with one synchronizer to complete.
 	///
 	/// Call this after submitting a command buffer when later CPU work depends only on that submission.
 	fn wait_for_synchronizer(&mut self, synchronizer: SynchronizerHandle);
-
-	/// Returns whether every submission signaled through one synchronizer has completed, without blocking.
-	///
-	/// Use this instead of [`Self::wait_for_synchronizer`] on a thread that has other work to do while the GPU
-	/// finishes, such as a resource loader that keeps reading files during a copy. A `true` result frees the same
-	/// command state that a wait frees, so the synchronizer can signal the next submission.
-	fn poll_synchronizer(&mut self, synchronizer: SynchronizerHandle) -> bool;
 
 	/// Waits for all pending operations to complete.
 	fn wait(&mut self);
@@ -505,14 +495,6 @@ pub trait Context: ContextCreate {
 
 /// The `ContextCreate` trait provides creation operations for resources owned by a GHI context.
 pub trait ContextCreate {
-	/// Creates a new allocation from a managed allocator for the underlying GPU allocations.
-	fn create_allocation(
-		&mut self,
-		size: usize,
-		_resource_uses: Uses,
-		resource_device_accesses: DeviceAccesses,
-	) -> AllocationHandle;
-
 	/// Uploads indexed mesh data and returns a reusable mesh handle.
 	fn add_mesh_from_vertices_and_indices(
 		&mut self,
@@ -587,31 +569,35 @@ pub trait ContextCreate {
 	/// Panics when `pipeline` is not a ray tracing pipeline or has no hit group that an entry names.
 	fn write_shader_binding_table(&mut self, table: ShaderBindingTableHandle, pipeline: PipelineHandle, hit_groups: &[u32]);
 
-	/// Creates a zero-initialized static buffer from a builder.
+	/// Creates a zero-initialized buffer from a builder.
 	///
 	/// `T` is one [`Pod`] value, or a slice `[E]` of [`Pod`] elements whose count comes from
-	/// [`buffer::Builder::length`]. [`Pod`] keeps zero initialization and later GPU-written bytes valid.
-	/// Static buffers are not resizable; use [`ContextCreate::build_dynamic_buffer`] when the allocation must grow.
+	/// [`buffer::Builder::length`]. [`Pod`] keeps zero initialization and later GPU-written bytes valid. The builder's
+	/// [`crate::HostAccess`] and [`crate::Copies`] decide how the CPU reaches it. Resize array buffers with
+	/// [`Context::resize_buffer`].
 	///
 	/// # Panics
 	///
 	/// Panics when a slice buffer has no builder length or a single-value buffer has one. See [`BufferContents`].
 	fn build_buffer<T: ?Sized + BufferContents>(&mut self, builder: buffer::Builder) -> BufferHandle<T>;
 
-	/// Creates a zero-initialized dynamic buffer from a builder.
+	/// Creates a buffer the CPU writes, with `initialize` writing every copy before any command can read it.
 	///
-	/// `T` must implement [`Pod`] so zero initialization and later GPU-written bytes always form a valid value.
-	/// Dynamic buffers can be resized with [`Context::resize_buffer`].
-	fn build_dynamic_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T>;
-
-	/// Creates a dynamic image from a builder.
+	/// Use it for parameters and tables that are known when the buffer is created.
 	///
-	/// The image starts without valid contents. Write it before reading it.
-	fn build_dynamic_image(&mut self, builder: image::Builder) -> DynamicImageHandle;
+	/// # Panics
+	///
+	/// Panics unless the builder declares [`crate::HostAccess::Write`], and in the cases [`Self::build_buffer`] does.
+	fn build_buffer_with<T: ?Sized + BufferContents>(
+		&mut self,
+		builder: buffer::Builder,
+		initialize: impl Fn(&mut T),
+	) -> BufferHandle<T>;
 
 	/// Creates an image from a builder.
 	///
-	/// The image starts without valid contents. Write it before reading it.
+	/// The image starts without valid contents. Fill it with a copy from a buffer, through
+	/// [`crate::command_buffer::CommonCommandBufferMode::copy_buffer_to_images`], or render to it before reading it.
 	///
 	/// When the builder names a group with [`image::Builder::group`], the image joins that group and has no usable
 	/// memory until [`crate::frame::Frame::place_image_group`] places it.
@@ -696,16 +682,6 @@ pub trait ContextCreate {
 /// ```
 macro_rules! delegate_context_create_to_device {
 	() => {
-		fn create_allocation(
-			&mut self,
-			size: usize,
-			resource_uses: $crate::Uses,
-			resource_device_accesses: $crate::DeviceAccesses,
-		) -> $crate::AllocationHandle {
-			self.device
-				.create_allocation(size, resource_uses, resource_device_accesses)
-		}
-
 		fn add_mesh_from_vertices_and_indices(
 			&mut self,
 			vertex_count: u32,
@@ -773,12 +749,12 @@ macro_rules! delegate_context_create_to_device {
 			self.device.build_buffer(builder)
 		}
 
-		fn build_dynamic_buffer<T: ?Sized + $crate::buffer::BufferContents>(&mut self, builder: $crate::buffer::Builder) -> $crate::DynamicBufferHandle<T> {
-			self.device.build_dynamic_buffer(builder)
-		}
-
-		fn build_dynamic_image(&mut self, builder: $crate::image::Builder) -> $crate::DynamicImageHandle {
-			self.device.build_dynamic_image(builder)
+		fn build_buffer_with<T: ?Sized + $crate::buffer::BufferContents>(
+			&mut self,
+			builder: $crate::buffer::Builder,
+			initialize: impl Fn(&mut T),
+		) -> $crate::BufferHandle<T> {
+			self.device.build_buffer_with(builder, initialize)
 		}
 
 		fn create_image_group(&mut self, name: Option<&str>) -> $crate::ImageGroupHandle {

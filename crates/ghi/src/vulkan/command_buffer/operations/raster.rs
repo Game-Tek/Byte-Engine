@@ -156,6 +156,41 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		}
 	}
 
+	fn dispatch_meshes_indirect<const N: usize>(
+		&mut self,
+		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 3]; N]>,
+		entry_index: usize,
+	) {
+		let entry = crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index);
+		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into());
+		let buffer = self.get_buffer(buffer_handle);
+		let (vk_buffer, buffer_size) = (buffer.buffer, buffer.size);
+		assert!(
+			entry.end <= buffer_size,
+			"Vulkan indirect mesh dispatch entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={}, buffer_size={buffer_size}",
+			entry.end,
+		);
+
+		// The dispatch record must be visible to the indirect stage before the deferred render pass begins.
+		self.vulkan_consume_resources([vulkan_consumption(
+			Handles::Buffer(buffer_handle),
+			vk::PipelineStageFlags2::DRAW_INDIRECT,
+			vk::AccessFlags2::INDIRECT_COMMAND_READ,
+		)])
+		.apply(self);
+		let command_buffer = self.prepare_draw();
+		unsafe {
+			// The stride is one record, which is the entry's size.
+			self.device.mesh_shading.cmd_draw_mesh_tasks_indirect(
+				command_buffer,
+				vk_buffer,
+				entry.start as vk::DeviceSize,
+				1,
+				entry.len() as u32,
+			);
+		}
+	}
+
 	fn draw_indirect<const N: usize>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 4]; N]>,

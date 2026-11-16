@@ -179,13 +179,15 @@ impl<E: UiInput> Default for Channel<E> {
 }
 
 impl<E: UiInput> Channel<E> {
-	/// Moves `input` into the inbox and ends the waits it satisfies. Returns `false`, keeping nothing, when no wait
-	/// selects it.
+	/// Moves `input` into the inbox when a wait selects it, and returns whether one did; `false` keeps nothing.
+	///
+	/// The wait stays until a poll stops renewing it, so every input of one batch, such as two characters typed in
+	/// one frame, reaches the task in order instead of only the first.
 	fn deliver(&mut self, input: &E) -> bool {
-		let waiting = self.waits.len();
-		self.waits
-			.retain(|wait| !(wait.key.0 == input.target() && input.matches(wait.key.1)));
-		let delivered = self.waits.len() != waiting;
+		let delivered = self
+			.waits
+			.iter()
+			.any(|wait| wait.key.0 == input.target() && input.matches(wait.key.1));
 		if delivered {
 			self.inbox.push_back(input.clone());
 		}

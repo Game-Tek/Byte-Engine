@@ -1,0 +1,55 @@
+---
+title: Pick the entity under the pointer
+description: Find which mesh a camera shows at a pixel, such as the one a player or an editor clicks, by asking the renderer with a screen scene query.
+icon: MousePointerClick
+---
+
+Use a screen scene query when you need to know what's under a point of the window, such as selecting the mesh a
+player clicks. The renderer reads the answer from the frame it draws, so it matches what's on screen, blended
+surfaces included.
+
+Queries need the visibility pipeline, which you install with `setup_pbr_visibility_shading_render_pipeline`.
+
+## Ask what's at a pixel
+
+Create a `ScreenSceneQuery` in the world with the camera the window shows and the pixel, counted from the window's
+top-left pixel. Keep the handle the creation returns:
+
+```rust
+let query = app.world().create(ScreenSceneQuery::new(camera, [x, y])).handle();
+```
+
+`Pointer.Position` runs from −1 at the left and bottom edges to 1 at the right and top. Convert it to pixels of the
+window's extent before you ask:
+
+```rust
+let pixel = |normalized: f32, extent: f32| ((normalized + 1.0) * 0.5 * extent).clamp(0.0, extent - 1.0) as u32;
+let point = [pixel(pointer.x, width), pixel(-pointer.y, height)];
+```
+
+## Read the answer
+
+Listen to the world's `ScreenSceneHit` factory. Subscribe once during setup, so you don't miss an answer, and match
+each hit to your query:
+
+```rust
+let hits = app.world().factory::<ScreenSceneHit>().listener();
+
+// Each tick:
+while let Some(message) = hits.read() {
+    let hit = message.data();
+    if Some(hit.query()) == pending {
+        pending = None;
+        selected = hit.entity();
+    }
+}
+```
+
+The answer arrives about two frames after you create the query. `entity` is the renderable mesh at the pixel, or
+`None` when the pixel shows no mesh, such as the sky. A query whose camera no window shows gets `None` right away.
+The [rendering reference](/docs/reference/rendering#screen-scene-queries) lists every rule.
+
+## Rust API
+
+- [`ScreenSceneQuery`](/docs/api/latest/byte_engine/rendering/screen_query/ScreenSceneQuery)
+- [`ScreenSceneHit`](/docs/api/latest/byte_engine/rendering/screen_query/ScreenSceneHit)

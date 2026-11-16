@@ -23,6 +23,11 @@ get_rayleigh_scale_height: fn () -> f32 { return parameters.atmosphere.z; }
 get_mie_scale_height: fn () -> f32 { return parameters.atmosphere.w; }
 get_mie_anisotropy: fn () -> f32 { return parameters.sun_direction.w; }
 get_ozone_strength: fn () -> f32 { return parameters.misc.x; }
+// How much light the haze scatters per meter at ground level, the same for every color.
+get_haze_scattering: fn () -> f32 { return parameters.haze.x; }
+// The haze scattering that dims and diffuses light. Haze throws most of its light forward, and the delta-Eddington
+// approximation counts that part as never scattered, so the rest scatters evenly enough for the lookup tables.
+get_haze_transport_scattering: fn () -> f32 { return parameters.haze.y; }
 
 should_skip_below_horizon: fn () -> bool {
 	return parameters.misc.y > 0.5;
@@ -40,6 +45,12 @@ sample_multiple_scattering: fn (sun_zenith_cosine: f32, altitude_fraction: f32) 
 	let uv: vec2f = (parameters_uv * (size - vec2f(1.0, 1.0)) + vec2f(0.5, 0.5)) / size;
 	let sampled: vec4f = texture_lod(multiple_scattering_lut, uv);
 	return vec3f(sampled.x, sampled.y, sampled.z);
+}
+
+// Maps an even step along a ray to one that starts short and grows.
+sample_distribution: fn (value: f32) -> f32 {
+	let clamped: f32 = clamp(value, 0.0, 1.0);
+	return clamped * clamped;
 }
 
 phase_rayleigh: fn (cosine_theta: f32) -> f32 {
@@ -78,15 +89,28 @@ main: fn (input: StageInput) -> void {
 
 	let atmosphere_start: f32 = max(0.0, atmosphere_roots.x);
 	let distance_through_atmosphere: f32 = atmosphere_roots.y - atmosphere_start;
-	let optical_depth: vec3f = vec3f(0.0, 0.0, 0.0);
+	let throughput: vec3f = vec3f(1.0, 1.0, 1.0);
 	let luminance: vec3f = vec3f(0.0, 0.0, 0.0);
 	let sun_direction: vec3f = get_sun_direction();
 	let cosine_theta: f32 = dot(direction, sun_direction);
 	let phase_r: f32 = phase_rayleigh(cosine_theta);
 	let phase_m: f32 = phase_mie(cosine_theta, get_mie_anisotropy());
+	let beta_rayleigh: vec3f = vec3f(0.000005802, 0.000013558, 0.000033100);
+	// Light the haze scatters once toward the eye keeps the haze's full scattering and true phase function, which
+	// draws the glow around the sun, as the TMS correction of Nakajima and Tanaka (1988) does. Everything else sees
+	// the scaled haze.
+	let beta_mie: vec3f = vec3f(get_haze_scattering(), get_haze_scattering(), get_haze_scattering());
+	let beta_mie_transport: vec3f = vec3f(
+		get_haze_transport_scattering(),
+		get_haze_transport_scattering(),
+		get_haze_transport_scattering()
+	);
+	let minimum_extinction: vec3f = vec3f(0.000000000001, 0.000000000001, 0.000000000001);
 	for (let i: u32 = 0; i < 32; i = i + 1) {
-		let t0: f32 = atmosphere_start + distance_through_atmosphere * (f32(i) / 32.0);
-		let t1: f32 = atmosphere_start + distance_through_atmosphere * (f32(i + 1) / 32.0);
+		// Steps grow with distance, so the dense air near a camera on the ground gets the short ones.
+		let t0: f32 = atmosphere_start + distance_through_atmosphere * sample_distribution(f32(i) / 32.0);
+		let t1: f32 = atmosphere_start + distance_through_atmosphere * sample_distribution(f32(i + 1) / 32.0);
+		let step_length: f32 = t1 - t0;
 		let sample_position: vec3f = origin + direction * (0.5 * (t0 + t1));
 		let density: vec3f = atmosphere_density_profile(
 			sample_position,
@@ -96,10 +120,8 @@ main: fn (input: StageInput) -> void {
 			get_mie_scale_height(),
 			get_ozone_strength()
 		);
-		optical_depth = optical_depth + density * (t1 - t0);
-		let transmittance_to_camera: vec3f = exp(
-			vec3f(0.0, 0.0, 0.0) - atmosphere_extinction_from_density(optical_depth)
-		);
+		let extinction: vec3f = max(atmosphere_extinction_from_density(density, get_haze_transport_scattering()), minimum_extinction);
+		let step_transmittance: vec3f = exp(vec3f(0.0, 0.0, 0.0) - extinction * step_length);
 		let transmittance_uv: vec2f = atmosphere_transmittance_uv(
 			sample_position,
 			sun_direction,
@@ -113,19 +135,34 @@ main: fn (input: StageInput) -> void {
 			sampled_transmittance.y,
 			sampled_transmittance.z
 		);
-		let beta_rayleigh: vec3f = vec3f(0.000005802, 0.000013558, 0.000033100);
-		let beta_mie: vec3f = vec3f(0.000003996, 0.000003996, 0.000003996);
 		let scattering: vec3f = density.x * beta_rayleigh * phase_r + density.y * beta_mie * phase_m;
 		// Light scattered more than once arrives evenly from all directions, so it needs no phase function.
 		let sample_up: vec3f = normalize(sample_position - planet_center);
 		let altitude_fraction: f32 = (length(sample_position - planet_center) - get_ground_radius())
 			/ (get_atmosphere_radius() - get_ground_radius());
 		let higher_orders: vec3f = sample_multiple_scattering(dot(sample_up, sun_direction), altitude_fraction);
-		let total_scattering: vec3f = density.x * beta_rayleigh + density.y * beta_mie;
-		luminance = luminance
-			+ transmittance_to_camera * (transmittance_to_sun * scattering + total_scattering * higher_orders) * (t1 - t0);
+		let total_scattering: vec3f = density.x * beta_rayleigh + density.y * beta_mie_transport;
+		// Integrate each step analytically, so a step through thick or hazy air doesn't hide its own light.
+		let source: vec3f = transmittance_to_sun * scattering + total_scattering * higher_orders;
+		luminance = luminance + throughput * (source - source * step_transmittance) / extinction;
+		throughput = throughput * step_transmittance;
 	}
-	// Store scattering per lux of sunlight. The composite multiplies by the sun light's illuminance each frame, so a
-	// brighter or recolored light doesn't rebuild this LUT.
+	// The light's illuminance is the sunlight that reaches the camera, as it is for the surfaces the light shines on.
+	// The air between the camera and the sun already dimmed it, so the sunlight that enters the atmosphere, which is
+	// what the loop above scattered, is that illuminance over the transmittance toward the sun.
+	let camera_transmittance_uv: vec2f = atmosphere_transmittance_uv(
+		origin,
+		sun_direction,
+		planet_center,
+		get_ground_radius(),
+		get_atmosphere_radius()
+	);
+	let camera_transmittance: vec4f = texture_lod(transmittance_lut, camera_transmittance_uv);
+	luminance = luminance / max(
+		vec3f(camera_transmittance.x, camera_transmittance.y, camera_transmittance.z),
+		vec3f(SKY_MIN_SUN_TRANSMITTANCE, SKY_MIN_SUN_TRANSMITTANCE, SKY_MIN_SUN_TRANSMITTANCE)
+	);
+	// Store scattering per lux of sunlight reaching the camera. The composite multiplies by the sun light's illuminance
+	// each frame, so a brighter or recolored light doesn't rebuild this LUT.
 	write(sky_view_lut, pixel, vec4f(luminance.x, luminance.y, luminance.z, 1.0));
 }

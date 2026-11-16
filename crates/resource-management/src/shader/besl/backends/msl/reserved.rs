@@ -154,7 +154,8 @@ fn is_builtin_function(name: &str) -> bool {
 /// - `main`: the backend renames the BESL entry point to [`MSL_ENTRY_POINT`](super::MSL_ENTRY_POINT) itself.
 /// - `push_constant`: the BESL push-constant block lowers to the backend parameter of that name.
 /// - `FragmentOutput`: a fragment `main` may return a BESL struct of that name as its explicit output.
-/// - `vertex_index`, `instance_index`, and `front_facing`: the backend binds these raster builtins by their BESL names.
+/// - `front_facing`: the backend binds this raster builtin by its BESL name. The other raster builtins lower to
+///   `_besl_stage_` symbols, such as [`besl::INSTANCE_INDEX_BUILTIN`], which no shader name can take.
 ///
 /// `level` and `gradient2d` are absent because the backend always writes them as `metal::level` and
 /// `metal::gradient2d`.

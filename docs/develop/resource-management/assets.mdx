@@ -14,7 +14,33 @@ settings, are listed in the [asset formats reference](/docs/reference/assets).
 
 When you edit a glTF or FBX file and rebake it, unchanged generated shaders are reused instead of compiled again.
 A generated shader compiles again only when its material graph, the render pipeline's shader generator, the shader backend, or the installed shader compiler changes.
-To force every stored shader to compile again, call `AssetManager::rebuild_resources_baked_before` and then `AssetManager::bake_if_stale`.
+To compile an asset's shaders again whatever the store holds, call `AssetManager::rebuild`.
+
+## Freshness
+
+The [freshness reference](/docs/reference/resource-management#freshness) defines when a resource is current. This section says how the asset manager keeps that definition true, and what your change must keep.
+
+One function decides: `AssetManagerState::ensure_baked_uncoalesced`. It reads the ID's `Provenance` from the resource store and takes the first of these that applies:
+
+1. The record has no inputs but names producers, so another ID's bake stores the resource. The manager makes the first producer current and returns. A model's material variant works this way: only the model's bake can rebuild a material that comes from one of its detail-level files.
+2. The record has inputs and the resource exists. `first_changed_input` checks each input, and the resource is current when none changed.
+3. Otherwise the handler runs for the ID.
+
+`BakeContext` records the inputs while the handler runs: `resolve`, `load_sidecar`, and `source_exists` record source files; `bake_dependency` records the resource it read; `query_resources` and `source_ids` record what they listed; `setting` records a declared value. `bake_uncoalesced` writes the record last, through `commit_provenance`, so a bake that fails leaves the ID stale.
+
+Keep these rules when you change a handler or the manager:
+
+- Everything a handler reads that could change the result goes through `BakeContext`. A handler that reads a file with `std::fs`, embeds one with `include_str!`, or reads a parameter it was built with records nothing, and its resources stay current when that input changes. Read files through `resolve`. Give a handler option a place in `AssetHandler::identity`. Give a bake service an `identity` and record it where the context hands the service out, as `BakeContext::program_generator` does.
+- A dependency is recorded by the fingerprint of what the bake read, `resource_fingerprint`, never by the dependency's own sources. That lets a resource baked again to the same bytes leave its dependents current, which is what keeps a code fingerprint as coarse as a whole directory affordable.
+- A resource a bake stores besides the requested one has no inputs of its own. Never give a handler a second code path that rebuilds such a resource from its ID alone unless that path reads everything the first one does.
+- Checks are remembered per epoch in `checked`. The epoch advances with every root request, unless the caller promised with `AssetManager::verify_once` that sources hold still, and when a watcher reports a change. A watcher only brings a check forward; a change it misses is found by the next request. A check of a bake that ran a query also expires when the store's contents change. Don't cache a freshness result anywhere else.
+- A freshness check that re-enters the dispatcher boxes the call, and passes the ID that asks as `BakeOrigin::Dependency::parent`, so a resource is never asked to wait for its own bake.
+- Hot reload doesn't map changed paths to assets. A watcher batch advances the epoch and checks every tracked root with the same function. `FileStorageBackend::watch_roots` lists the target of every directory link, because a watcher doesn't follow links.
+- A check publishes a tracked root when its stored record is newer than the one last published for it, whichever check stored it. Roots share resources, and the shared bake registry rebuilds each resource once: a material variant's check rebuilds the material and its `#shader`, so the shader root's own check finds it current. Publishing only from the check that ran the bake drops that shader's update, and the renderer keeps the old pipeline. `every_tracked_root_a_shared_rebake_stores_again_is_published` in `manager.rs` guards this.
+
+The engine's layer modules are an example of the first rule. The material generator names the modules its programs bring in through `ProgramGenerator::module_sets`, and the `.bema` handler reads them from the assets with `load_program_modules`, so each module file is a source of every material. Only the runtime embeds them, in `ENGINE_MODULES`, to build descriptor sets without reading assets. After you edit a layer module, materials bake again at once, and the runtime's sets follow when the engine is rebuilt.
+
+The tests named `a_…` after `ScriptedAssetHandler` in `manager.rs` guard each input kind, producers, removal of resources a bake stops storing, failed bakes, and forced rebuilds. Add a line to a script there before you add a special case to the manager.
 
 ## Asset handlers
 
@@ -26,7 +52,7 @@ The context keeps source resolution, recursive baking, allocator-aware resource 
 Each stored resource contains typed metadata plus the binary payload that consumers later upload, stream, decode, or play.
 
 When your handler needs adjacent `.bead` settings, call `context.load_sidecar(id)` explicitly.
-`context.resolve(id)` returns only the source bytes and asset type. BESL, FBX, glTF, PNG, and EXR handlers request sidecars. Other handlers read their sources independently.
+`context.resolve(id)` returns only the source bytes and asset type. BESL, FBX, glTF, image, and EXR handlers request sidecars. Other handlers read their sources independently.
 
 ```rust
 let (source, asset_type) = context.resolve(id).await?;
@@ -34,7 +60,7 @@ let settings = context.load_sidecar(id).await?;
 ```
 
 The sidecar helper parses JSON5, merges the [directory defaults](/docs/reference/assets#sidecars) under the sidecar, and returns `None` when none of those files exist.
-It records each file's ID as a dependency, including its absence, so creating, editing, or removing any of them makes the resource stale.
+It records each file's ID as an input, including its absence, so creating, editing, or removing any of them makes the resource stale.
 A sidecar that your handler doesn't request has no effect on baking or freshness.
 Custom source backends provide the same utility through `StorageBackend::load_sidecar`, which reads each file with `StorageBackend::load_bead`; implement `version` for individual files and return `AssetVersion::missing()` only when a file doesn't exist.
 
@@ -49,7 +75,7 @@ Handlers see one merged object and can't tell which file a key came from, so a k
 
 Keep these rules when you change it:
 
-- Every file the merge consults is a bake dependency, present or absent. `TrackingStorageBackend` overrides `load_bead`, not `load_sidecar`, so each layer goes through `tracked` on its own. The watcher needs nothing extra, since a change to `anims/.bead` reports that ID and the resources that depend on it rebake.
+- Every file the merge consults is an input of the bake, present or absent. `TrackingStorageBackend` overrides `load_bead`, not `load_sidecar`, so each layer goes through `tracked` on its own. The watcher needs nothing extra, since any change under the assets directory checks every loaded resource again.
 - The more specific file wins. Don't stop at the first file found; layers combine, so a sidecar can override one key of its directory's `images` object and keep the rest.
 - Directory defaults configure assets; they don't select them. Discovery still asks for an adjacent sidecar, through `AssetSource::has_sidecar`, so a folder default doesn't turn every `.besl` below it into a standalone shader. A `.bead` file has no asset type, so discovery never offers it as an asset.
 - Handlers read keys by name and ignore keys they don't know, which a folder shared by different formats relies on. Strict parsing belongs to each key's value, such as `lods` or `images`, never the whole object.
@@ -70,6 +96,13 @@ Read the trace through `AssetManager::resource_trace` or, after installing the a
 Call `ResourceTrace::items` for one ID or `ResourceTrace::resource_ids` to find IDs with messages.
 The trace is an in-memory development tool: release builds don't expose it, and trace items are never stored as production resources.
 
+## Report bakes while they run
+
+`AssetManager::set_bake_reporter` gives the manager a `BakeReporter`. From then on, `bake_uncoalesced` records a run as soon as it finds the asset's handler and reports the manager's `BakeState` when the run starts and when it ends.
+The run is a guard: a bake ends `ok` only through `BakeRun::succeeded`, and dropping the guard any other way, through an error, an early return, or a cancelled future, counts the bake as failed. Keep every new return path between the guard and `succeeded`, so no bake is lost from the totals.
+Reports go out while the tracker's lock is held, so they arrive in order; a slow reporter stalls bakes rather than skipping a state. Without a reporter, the tracker does nothing, so BELD and tests pay nothing.
+The engine's reporter writes each state to the `bakes` [debug data stream](/docs/reference/resource-management#bake-stream), which the console's bakes view reads. Its tests check the states a capturing reporter receives, not the tracker's internals.
+
 ## Processing
 
 Asset processing turns source data into engine data.
@@ -78,7 +111,8 @@ Image processing decodes pixels, infers semantics from names such as albedo, nor
 Standalone PNG data textures, such as normal or roughness maps, stay linear even when an image editor added sRGB metadata.
 For color textures, supported sRGB or linear PNG metadata overrides the filename default. An unsupported transfer function falls back to the inferred semantic.
 EXR images keep their linear HDR values in an `RGBA16F` image and don't generate lighting maps by default.
-By default every image gets a full mip chain, whatever its source format, and albedo and normal maps are also block-compressed. Lookup tables such as IES intensity maps keep one uncompressed level. Byte Engine filters 8-bit levels on the GPU and also compresses color textures to BC7 there, with a BESL kernel that uses the same search as the CPU encoder's `ultra_fast` profile. Sixteen-bit and half-float chains, and every chain without a compatible GPU, are filtered and compressed on the CPU, at comparable quality.
+By default every image gets a full mip chain, whatever its source format, and its semantic decides whether it's also block-compressed, as [semantic defaults](/docs/reference/assets#semantic-defaults) lists. Lookup tables such as IES intensity maps keep one uncompressed level. Byte Engine filters 8-bit levels on the GPU and also compresses color textures to BC7 there, with a BESL kernel that uses the same search as the CPU encoder's `ultra_fast` profile. Sixteen-bit and half-float chains, and every chain without a compatible GPU, are filtered and compressed on the CPU, at comparable quality.
+An image with a coverage cutoff, every opacity map by default, scales the opacity channel of each smaller level so the level keeps the authored size's [coverage](/docs/reference/assets#coverage) at that cutoff. Without it, averaging thins one-texel cut-outs such as grass blades below the cutoff, and an alpha-tested material loses them a few meters away. The pass runs after the whole chain is filtered and before it's encoded, so each level scales its own averaged values and never compounds the scale of the level before it; keep that order. Because the GPU compresses BC7 levels as soon as it filters them, a block-compressed chain with a cutoff filters and compresses on the CPU, and an uncompressed one scales the GPU's filtered levels. The `opacity_maps_keep_their_coverage_in_every_level` and `compressed_opacity_maps_keep_their_coverage_in_every_level` tests guard both paths.
 A glTF metallic-roughness texture that every material in the file reads only through its green and blue channels is stored as a two-channel `RG8` image, or `RG16` from a sixteen-bit source, holding roughness in red and metallic in green. The generated materials read those channels, so the image samples the same values it did with all four channels. An image that a material also reads through another channel, such as an occlusion-roughness-metallic texture, keeps all its channels. This layout is part of the image fragment's contract: a hand-written material that samples `model.gltf#images/<index>` for metallic and roughness must read red and green.
 Mesh processing normalizes vertex layout, packs streams, creates meshlets, records bounding boxes, associates primitives with material variants, and preserves primitive skin bindings.
 Mesh processing also builds detail levels. It simplifies each primitive into coarser versions, each with about half the triangles of the one before, until a level stops getting smaller, fits in about two meshlets, or reaches the level limit. Every level uses the primitive's own vertices and is stored as extra meshlets after the full-detail ones, so levels add vertex indices, triangles, and meshlets but no vertices. Each level records an error: the estimated largest distance, in model units, between it and full detail. The renderer draws the coarsest level whose error covers at most a pixel. Skinned primitives keep full detail only.
@@ -92,7 +126,7 @@ This keeps two rules true, so preserve them when you change a handler or a proce
 - The same pixels with the same semantic and settings bake to the same image, whether they came from a PNG, an EXR, or a glTF or FBX texture. A step such as mip generation can't be present for one format and missing for another.
 - A handler holds no processing backend. The asset manager owns the `ImageProcessor`, which holds the mip and environment-lighting generators, and handlers reach it through `BakeContext::image_processor`. Install GPU backends once with `AssetManager::set_image_processor`; a new manager processes on the CPU. See [Bake services](#bake-services) for the other services the manager owns.
 
-To add an image format, decode it into an `ImageSource` and call `ImageProcessor::process_in`, then name the result with `ProcessedImage::into_asset` and store it. Don't build an `Image` yourself. The `Semantic` decides the stored format and channel packing. `ImageProcessorSettings` decides the optional steps: whether the image gets a mip chain and whether it's block-compressed. Start from `ImageProcessorSettings::for_semantic` for a sampled texture, or `ImageProcessorSettings::LOOKUP` for a table read at exact coordinates. Authors override these through the asset's sidecar: read it with `image_settings`, which takes the `image` key for a standalone image or the `images` key for a model, so every format honors the same [image settings](/docs/reference/assets#image-settings). When your decoder writes into a buffer it owns, pass `ImageProcessor::process_owned_in` a closure that decodes into that buffer and hands it over. The processor calls the closure once it can process the image soon, so decode inside the closure, never before the call; see [GPU claims](#gpu-claims). When the decoded bytes already are the stored format, the processor keeps the buffer as the stored image and filters the mip chain into it after the base level, so the pixels are never copied. Reserve `ImageProcessor::in_place_capacity` bytes before decoding: the bake arena can't grow a buffer without copying it, and memory it frees isn't reused until the bake ends. The PNG, EXR, and IES handlers work this way.
+To add an image format, decode it into an `ImageSource` and call `ImageProcessor::process_in`, then name the result with `ProcessedImage::into_asset` and store it. Don't build an `Image` yourself. The `Semantic` decides the stored format and channel packing. `ImageProcessorSettings` decides the optional steps: whether the image gets a mip chain and whether it's block-compressed. Start from `ImageProcessorSettings::for_semantic` for a sampled texture, or `ImageProcessorSettings::LOOKUP` for a table read at exact coordinates. Authors override these through the asset's sidecar: read it with `image_settings`, which takes the `image` key for a standalone image or the `images` key for a model, so every format honors the same [image settings](/docs/reference/assets#image-settings). When your decoder writes into a buffer it owns, pass `ImageProcessor::process_owned_in` a closure that decodes into that buffer and hands it over. The processor calls the closure once it can process the image soon, so decode inside the closure, never before the call; see [GPU claims](#gpu-claims). When the decoded bytes already are the stored format, the processor keeps the buffer as the stored image and filters the mip chain into it after the base level, so the pixels are never copied. Reserve `ImageProcessor::in_place_capacity` bytes before decoding: the bake arena can't grow a buffer without copying it, and memory it frees isn't reused until the bake ends. The image, EXR, and IES handlers work this way.
 
 When your handler knows metadata the pixels don't carry, such as the IES photometric scale, set it on `ProcessedImage::image` before storing.
 
@@ -145,7 +179,9 @@ decode and import data long-lived.
 
 ## GPU claims
 
-A bake starts every requested asset at once, while the GPU worker and the stages after it take textures a few at a time. So work that waits for the GPU claims a place at the GPU worker before it allocates what it waits with. A `GpuWorker` hands out `GpuWorker::CLAIMS` places, twice the requests its processor runs at once: while those run, as many again prepare their input. Further claims wait in arrival order, and the wait suspends their bake, so pool threads keep running other assets.
+A bake starts every requested asset at once, while the GPU worker and the stages after it take textures a few at a time. So work that waits for the GPU claims a place at the GPU worker before it allocates what it waits with. A `GpuWorker` hands out `GpuWorker::CLAIMS` places, twice the requests its processor records as one batch: while the GPU runs a batch, as many again prepare their input. Further claims wait, and the wait suspends their bake, so pool threads keep running other assets.
+
+A bake stays on the worker thread that first polls it. Two claims held on one thread therefore take turns at its CPU work, such as decoding and compressing, and each one's waits for the GPU and the disk end only once the other yields. So a freed place goes to the oldest bake waiting on a thread that holds no claim, and to the oldest waiting bake when every waiting thread holds one.
 
 The image processor claims a place for every image that gets a mip chain, and calls the handler's decode closure only once it holds the claim. Images queued behind the GPU therefore hold no decoded pixels. The image keeps the claim until it's stored: `ProcessedImage::into_asset` returns an `ImagePayload` that holds the claim, so images waiting to be compressed and written still count against the claims, and memory stays bounded when storing is slower than encoding. The [bake memory budget](/docs/use/resources/beld#control-bake-memory) admits root bakes; claims bound the images inside them.
 
@@ -155,8 +191,9 @@ A change must keep these rules true:
 - Never await another bake, or another image's claim, while holding a claim. A holder waits only on its own decode, the GPU, CPU encoding, and the store, so every claim returns in bounded time, and claims can't deadlock with the bake tree. So store each processed image before processing the next one.
 - Keep the claim until the image's memory is released. A claim dropped earlier lets decoded images pile up at whichever later stage is slowest.
 - `GpuWorker::submit` takes a claim, so the worker's queue never holds more requests than it has claims.
+- A freed place never stays free while a bake waits for one, even when every waiting bake's thread already holds a claim.
 
-The `claims_past_capacity_wait_and_are_granted_in_arrival_order` and `a_waiter_that_stops_waiting_passes_its_place_on` tests in `gpu_worker` guard the queue. The GPU mip generator's `images_decode_only_once_the_gpu_can_take_them_soon` test guards that images decode no further ahead of the GPU than its claims allow.
+The `claims_past_capacity_wait_and_are_granted_in_arrival_order`, `a_waiter_that_stops_waiting_passes_its_place_on`, and `a_freed_place_goes_first_to_a_waiter_whose_thread_holds_no_claim` tests in `gpu_worker` guard the queue. The GPU mip generator's `images_decode_only_once_the_gpu_can_take_them_soon` test guards that images decode no further ahead of the GPU than its claims allow.
 
 ## Rust API
 

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::application::parameters::Parameters;
 use crate::{
 	application::LoopWaker,
+	configuration::ConfigurationValue,
 	core::{EntityHandle, factory::Handle},
 	inspector::{
 		DefaultInspector, EventCursor, EventFilter, EventWaitError, MAX_EVENT_WAIT, MAX_SCREENSHOT_CAPTURES, ScreenshotCapture,
@@ -28,7 +29,7 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Clients use this server to inspect factory-created entities and drain
 /// passive publication ranges. `GET /entities` returns each numeric `target`,
 /// its Rust `types`, and a `properties` object with every tracked value it has:
-/// its `name` and its latest `position` as `[x, y, z]`. Filter entities with an
+/// its `name` and its latest `transform`. Filter entities with an
 /// exact `name`, `type`, or both. `GET /messages` returns the `scope`, complete
 /// generic `type`, `first_sequence`, and `count` for each route that published
 /// since the previous request. Payloads remain opaque. `GET /messages/types`
@@ -45,6 +46,11 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// [`GraphicsApplication::world`](crate::application::graphics::GraphicsApplication::world),
 /// resolve its target with `GET /entities?name=<action>` and send `type:
 /// "TriggerAction"` with a reflected [`Value`](crate::input::Value).
+///
+/// `POST /configuration` changes a runtime setting while the application runs. Send a JSON object with the full
+/// `parameter` name, such as `render.lod.force`, and its `value`; the response is the update's event, and
+/// `GET /configuration` or the `configuration` events of `GET /events` report when the owning system set or refused
+/// it.
 ///
 /// The server shares the [`DefaultInspector`] handle, so another transport can
 /// serve a second protocol surface from the same handle.
@@ -186,11 +192,16 @@ fn handle_request(inspector: &DefaultInspector, waker: &LoopWaker, request: &mut
 		(&Method::GET, "/messages/types") => message_types_response(inspector),
 		(&Method::POST, "/messages") => message_response(inspector, request.body_mut()),
 		(&Method::GET, "/configuration") => json_response(&inspector.configuration_events()),
+		(&Method::POST, "/configuration") => configuration_response(inspector, request.body_mut()),
 		#[cfg(feature = "headed")]
 		(&Method::GET, "/debug-views") => json_response(&inspector.debug_views()),
 		(&Method::GET, "/metrics") => metrics_response(inspector, request.uri().query()),
 		(&Method::GET, "/metrics/frames") => metrics_frames_response(inspector, request.uri().query()),
 		(&Method::GET, "/entities") => entities_response(inspector, request.uri().query()),
+		(&Method::POST, "/levels") => level_response(inspector, request.body_mut()),
+		(&Method::GET, "/resources") => resources_response(inspector, request.uri().query()),
+		(&Method::GET, "/assets") => source_assets_response(inspector, request.uri().query()),
+		(&Method::GET, "/assets/source") => source_asset_response(inspector, request.uri().query()),
 		(&Method::GET, "/events") => events_response(inspector, request.uri().query()),
 		(&Method::DELETE, "/") => {
 			inspector.close_application();
@@ -212,6 +223,69 @@ fn entities_response(inspector: &DefaultInspector, query: Option<&str>) -> Respo
 		}
 	};
 	json_response(&inspector.entities(query.entity_type.as_deref(), query.name.as_deref()))
+}
+
+/// Spawns the level whose source is the request body and answers with its root.
+fn level_response(inspector: &DefaultInspector, body: &mut Body) -> Response<Body> {
+	let mut source = String::new();
+	if let Err(error) = std::io::Read::read_to_string(body, &mut source) {
+		return response(
+			StatusCode::BAD_REQUEST,
+			format!(
+				"Level request is invalid. The most likely cause is a body that isn't UTF-8 text: {error}. Send the level's source as UTF-8 JSON."
+			),
+		);
+	}
+	match inspector.spawn_level(&source) {
+		Ok(root) => json_response(&serde_json::json!({ "root": root.id() })),
+		Err(error) => response(StatusCode::BAD_REQUEST, error),
+	}
+}
+
+/// Lists the IDs of the stored resources of the class the query names.
+fn resources_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
+	let Some([Some(class)]) = query.map(|query| parse_query(query, [&["class"]])).and_then(Result::ok) else {
+		return response(
+			StatusCode::BAD_REQUEST,
+			"Resource query is malformed. The most likely cause is a missing, empty, duplicate, or unknown parameter. Send exactly one `class`, such as `class=Mesh`.",
+		);
+	};
+	match inspector.resources(&class) {
+		Ok(ids) => json_response(&ids),
+		Err(error) => response(StatusCode::SERVICE_UNAVAILABLE, error),
+	}
+}
+
+/// Lists the source assets with one extension, from a query naming exactly one `extension`.
+fn source_assets_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
+	let Some([Some(extension)]) = query.map(|query| parse_query(query, [&["extension"]])).and_then(Result::ok) else {
+		return response(
+			StatusCode::BAD_REQUEST,
+			"Source asset query is malformed. The most likely cause is a missing, empty, duplicate, or unknown parameter. Send exactly one `extension`, such as `extension=bemx`.",
+		);
+	};
+	match inspector.source_assets(&extension) {
+		Ok(ids) => json_response(&ids),
+		Err(error) => response(StatusCode::SERVICE_UNAVAILABLE, error),
+	}
+}
+
+/// Answers one source asset's text, as plain text, from a query naming exactly one `id`. The HTTP inspector only
+/// reads sources; it has no authentication, so writing them is left to in-process tools.
+fn source_asset_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
+	let Some([Some(id)]) = query.map(|query| parse_query(query, [&["id"]])).and_then(Result::ok) else {
+		return response(
+			StatusCode::BAD_REQUEST,
+			"Source asset request is malformed. The most likely cause is a missing, empty, duplicate, or unknown parameter. Send exactly one `id`, such as `id=materials/floor.bemx`.",
+		);
+	};
+	match inspector.read_source_asset(&id) {
+		Ok(text) => Response::builder()
+			.header("Content-Type", "text/plain; charset=utf-8")
+			.body(Body::from(text))
+			.expect("Inspector text response is valid. The most likely cause is an invalid static header name."),
+		Err(error) => response(StatusCode::NOT_FOUND, error),
+	}
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -403,6 +477,40 @@ fn message_response(inspector: &DefaultInspector, body: &mut Body) -> Response<B
 	match inspector.post_message(&request.message_type, Handle::from_id(request.target), request.payload.get()) {
 		Ok(()) => response(StatusCode::NO_CONTENT, Body::empty()),
 		Err(error) => response(StatusCode::BAD_REQUEST, error),
+	}
+}
+
+/// The `ConfigurationRequest` struct is the body of `POST /configuration`: one startup parameter to change while the
+/// application runs.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigurationRequest {
+	/// The full parameter name, as on the command line without the leading dashes, such as `render.lod.force`.
+	parameter: String,
+	value: ConfigurationValue,
+}
+
+/// Queues one configuration update and answers with its event, which starts pending unless no system owns the
+/// parameter.
+fn configuration_response(inspector: &DefaultInspector, body: &mut Body) -> Response<Body> {
+	let request: ConfigurationRequest = match serde_json::from_reader(body) {
+		Ok(request) => request,
+		Err(error) => {
+			return response(
+				StatusCode::BAD_REQUEST,
+				format!(
+					"Configuration request is invalid. The most likely cause is a body other than `{{\"parameter\": <name>, \"value\": <boolean, number, or text>}}`: {error}"
+				),
+			);
+		}
+	};
+	let event = inspector.update_configuration(&request.parameter, request.value);
+	match json_response(&event) {
+		mut accepted if accepted.status() == StatusCode::OK => {
+			*accepted.status_mut() = StatusCode::ACCEPTED;
+			accepted
+		}
+		failed => failed,
 	}
 }
 
@@ -1009,7 +1117,9 @@ mod tests {
 
 		let named = labels.create("crate-model".to_string());
 		names.derive(named, Name::new("shipping crate"));
-		transforms.derive(named, Transform::from_position(Point::new(1.0, 2.0, 3.0)));
+		let mut transform = Transform::from_position(Point::new(1.0, 2.0, 3.0));
+		transform.set_scale(math::Scale::new(2.0, 2.0, 2.0));
+		transforms.derive(named, transform);
 		let _unnamed = labels.create("barrel-model".to_string());
 
 		let response = super::entities_response(&inspector, Some("name=shipping+crate"));
@@ -1019,7 +1129,11 @@ mod tests {
 		assert_eq!(entities[0]["target"], named.id());
 		assert_eq!(
 			entities[0]["properties"],
-			serde_json::json!({ "name": "shipping crate", "position": [1.0, 2.0, 3.0] })
+			// The transform comes back whole, in the shape `TransformationUpdate` accepts, so it can be posted back.
+			serde_json::json!({
+				"name": "shipping crate",
+				"transform": { "position": [1.0, 2.0, 3.0], "scale": [2.0, 2.0, 2.0], "orientation": [0.0, 0.0, 0.0, 1.0] },
+			})
 		);
 		assert!(
 			entities[0]["types"]
@@ -1492,6 +1606,74 @@ mod tests {
 	}
 
 	#[test]
+	fn server_spawns_levels_and_answers_with_their_root() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		inspector.set_spawner(Arc::new(crate::gameplay::Spawner::with_engine_kinds()));
+		let server = TestServer::new(inspector.clone());
+
+		let response = server.request("POST", "/levels", r#"{"entities":[{"components":{"name":"crate"}}]}"#);
+		assert!(response.starts_with(b"HTTP/1.1 200"), "unexpected response: {response:?}");
+		let root: serde_json::Value = serde_json::from_slice(response_body(&response)).expect("parse the spawn answer");
+		let root = root["root"].as_u64().expect("the root handle") as u32;
+		let spawned = inspector.entities(None, Some("crate"));
+		assert_eq!(spawned.first().map(|entity| entity.handle()), Some(Handle::from_id(root + 1)));
+
+		let response = server.request("POST", "/levels", r#"{"entities":[{"parent":"missing"}]}"#);
+		assert!(response.starts_with(b"HTTP/1.1 400"), "unexpected response: {response:?}");
+	}
+
+	#[test]
+	fn resource_queries_need_exactly_one_class() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let server = TestServer::new(inspector);
+		for path in [
+			"/resources",
+			"/resources?class=",
+			"/resources?class=Mesh&class=Image",
+			"/resources?kind=Mesh",
+		] {
+			assert!(server.request("GET", path, "").starts_with(b"HTTP/1.1 400"), "{path}");
+		}
+		// Without a resource manager, a well-formed query can't be answered.
+		assert!(
+			server
+				.request("GET", "/resources?class=Mesh", "")
+				.starts_with(b"HTTP/1.1 503")
+		);
+	}
+
+	#[test]
+	fn source_asset_requests_need_one_parameter_and_never_write() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let server = TestServer::new(inspector);
+		for path in [
+			"/assets",
+			"/assets?extension=",
+			"/assets?kind=bemx",
+			"/assets/source",
+			"/assets/source?id=",
+		] {
+			assert!(server.request("GET", path, "").starts_with(b"HTTP/1.1 400"), "{path}");
+		}
+		// Without a resource manager, a well-formed request can't be answered.
+		assert!(
+			server
+				.request("GET", "/assets?extension=bemx", "")
+				.starts_with(b"HTTP/1.1 503")
+		);
+		assert!(
+			server
+				.request("GET", "/assets/source?id=a.bemx", "")
+				.starts_with(b"HTTP/1.1 404")
+		);
+		// The HTTP inspector has no authentication, so no method writes a source.
+		for method in ["POST", "PUT"] {
+			let answer = server.request(method, "/assets/source?id=a.bemx", "{}");
+			assert!(!answer.starts_with(b"HTTP/1.1 2"), "{method}: {answer:?}");
+		}
+	}
+
+	#[test]
 	fn server_rejects_zero_entity_targets() {
 		let (inspector, _events, mut transforms) = test_inspector(Configuration::new());
 		let server = TestServer::new(inspector);
@@ -1640,5 +1822,50 @@ mod tests {
 		assert_eq!(body[0]["parameter"], "render.pass.bloom");
 		assert_eq!(body[0]["requested"], "bypassed");
 		assert_eq!(body[0]["state"]["status"], "pending");
+	}
+
+	#[test]
+	fn posted_configuration_reaches_the_system_that_owns_its_prefix() {
+		let configuration = Configuration::new();
+		let port = configuration.register("render.lod.");
+		let (inspector, _events, _transforms) = test_inspector(configuration);
+		let server = TestServer::new(inspector);
+
+		let response = server.request("POST", "/configuration", r#"{"parameter":"render.lod.force","value":0}"#);
+		assert!(response.starts_with(b"HTTP/1.1 202"), "unexpected response: {response:?}");
+		let event: serde_json::Value = serde_json::from_slice(response_body(&response)).expect("parse configuration event");
+		assert_eq!(event["parameter"], "render.lod.force");
+		assert_eq!(event["state"]["status"], "pending");
+
+		let update = port.read().expect("the owning port receives the posted update");
+		assert_eq!(update.parameter(), "force");
+		assert_eq!(update.value(), &crate::configuration::ConfigurationValue::Integer(0));
+		port.set(update.id(), update.value().clone());
+		let events = server.get_json("/configuration");
+		assert_eq!(events[0]["state"], serde_json::json!({ "status": "set", "value": 0 }));
+	}
+
+	#[test]
+	fn posted_configuration_without_an_owner_is_not_set() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let response = TestServer::new(inspector).request(
+			"POST",
+			"/configuration",
+			r#"{"parameter":"render.unknown.knob","value":"on"}"#,
+		);
+		assert!(response.starts_with(b"HTTP/1.1 202"), "unexpected response: {response:?}");
+		let event: serde_json::Value = serde_json::from_slice(response_body(&response)).expect("parse configuration event");
+		assert_eq!(event["state"]["status"], "not-set");
+	}
+
+	#[test]
+	fn configuration_request_rejects_unknown_fields() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let response = TestServer::new(inspector).request(
+			"POST",
+			"/configuration",
+			r#"{"parameter":"render.lod.force","value":0,"when":"now"}"#,
+		);
+		assert!(response.starts_with(b"HTTP/1.1 400"), "unexpected response: {response:?}");
 	}
 }

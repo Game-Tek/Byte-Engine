@@ -753,3 +753,33 @@ fn a_period_shortened_after_a_fire_waits_for_the_next_advance() {
 	run(&mut runtime, &mut log, &[0, 30]);
 	assert_eq!(log.0, ["120+120", "150+30"]);
 }
+
+/// The `Patrol` struct is a kind that attached tasks start for.
+#[derive(Clone)]
+struct Patrol(&'static str);
+
+#[test]
+fn an_attached_task_starts_for_each_entity_that_gets_its_kind_and_ends_with_it() {
+	use crate::core::factory::Creator as _;
+
+	let (world, mut runtime) = runtime();
+	let mut log = Log::default();
+	// An entity created before `attach` starts no task.
+	world.create(Patrol("early"));
+	runtime.attach(|tasks: Tasks<Log>, _, patrol: Patrol| async move {
+		loop {
+			note(&tasks, patrol.0.to_string()).await;
+			tasks.tick().await;
+		}
+	});
+	let guard = world.create(Patrol("guard")).handle();
+	// A replaced component starts no second task.
+	world.factory::<Patrol>().derive(guard, Patrol("again"));
+
+	runtime.poll(&mut log);
+	world.channel::<DeleteMessage>().send(DeleteMessage::new(guard));
+	advance(&mut runtime, 10);
+	runtime.poll(&mut log);
+
+	assert_eq!(log.0, ["guard"], "the task ends when its entity is deleted");
+}

@@ -16,8 +16,6 @@ Publish crates in dependency waves. You can publish crates within the same wave 
 3. `byte-engine-resource-management`
 4. `byte-engine`
 
-Don't publish `beld`. It is a workspace tool and has `publish = false`.
-
 ## Verify the workspace
 
 Run these checks before publishing:

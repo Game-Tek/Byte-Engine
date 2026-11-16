@@ -1,0 +1,71 @@
+// Marks the pages one sink's opaque receivers need: at each receiver's level and the next two coarser levels, every
+// page holding a texel within VIRTUAL_SHADOW_RECEIVER_REACH texels of it, which covers its blocker search and penumbra
+// filter. One thread per pixel. The chapter marks one page at one level; the coarser levels are this engine's, because
+// the penumbra filter picks its level by the penumbra's width, which only the map tells.
+//
+// As in the chapter, a page's first requester appends an allocation request and a page that holds depth is kept from
+// being taken. A receiver reads the entry before marking it and skips a page already marked this frame, so most
+// receivers do no atomic at all; the chapter elects one lane per page within each subgroup instead.
+
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+use ::byte_engine::rendering::visibility::layouts::screen_view::*;
+use ::byte_engine::rendering::visibility::layouts::virtual_shadows::*;
+
+// Marks one page of one level.
+mark_page: fn (pages: VirtualShadowPages, level: u32, page: vec2u) -> void {
+	let slot: u32 = virtual_shadow_slot(pages.page_frame.origin_pages[level], level, page);
+	if ((atomic_load(pages.page_table.entries[slot]) & PAGE_VISITED) != 0) {
+		return;
+	}
+	let previous: u32 = atomic_or(pages.page_table.entries[slot], PAGE_REQUESTED | PAGE_VISITED);
+	if ((previous & (PAGE_REQUESTED | PAGE_ALLOCATED)) == 0) {
+		let request: u32 = atomic_add(pages.requests.count, 1);
+		if (request < VIRTUAL_SHADOW_TABLE_ENTRIES) {
+			pages.requests.slots[request] = slot;
+		}
+	} else if ((previous & (PAGE_ALLOCATED | PAGE_VISITED)) == PAGE_ALLOCATED) {
+		atomic_or(pages.page_owners.owners[previous & PAGE_PHYSICAL_MASK], OWNER_VISITED);
+	}
+}
+
+main: fn (input: StageInput, scene: Scene, pages: VirtualShadowPages, mark: VirtualShadowMark) -> void {
+	let pixel: vec2u = input.thread_id;
+	// The page lists start empty for this sink's find-free pass, which runs after every receiver marked.
+	if (pixel.x == 0 && pixel.y == 0) {
+		atomic_store(pages.page_lists.free_count, 0);
+		atomic_store(pages.page_lists.unvisited_count, 0);
+	}
+	let extent: vec2u = texture_size(mark.mark_depth);
+	if (pixel.x >= extent.x || pixel.y >= extent.y) {
+		return;
+	}
+	let device_depth: f32 = fetch(mark.mark_depth, pixel).x;
+	if (device_depth == 0.0) {
+		return;
+	}
+	let inverse_z: f32 = (device_depth + mark.mark_view.depth_unproject_denominator_offset) / mark.mark_view.depth_unproject_numerator;
+	let z: f32 = 1.0 / inverse_z;
+	let ray: vec2f = vec2f(f32(pixel.x), f32(pixel.y)) * mark.mark_view.pixel_to_ray_mul + mark.mark_view.pixel_to_ray_add;
+	let world: vec3f = scene.views.views[0].inverse_view * vec4f(ray.x * z, ray.y * z, z, 1.0);
+	let camera: vec4f = pages.page_frame.camera;
+	let distance: f32 = length(world - vec3f(camera.x, camera.y, camera.z));
+	if (distance > camera.w) {
+		return;
+	}
+	let first_level: u32 = virtual_shadow_receiver_level(pages.page_frame.constants, distance);
+	let last_level: u32 = min(first_level + 2, VIRTUAL_SHADOW_LEVELS - 1);
+	let reach: f32 = VIRTUAL_SHADOW_RECEIVER_REACH;
+	for (let level: u32 = first_level; level <= last_level; level = level + 1) {
+		let position: vec3f = virtual_shadow_level_position(scene.views.views[1 + level].view_projection, world);
+		let center: vec2f = vec2f(position.x, position.y);
+		// The reach is far smaller than a page, so the square covers at most two pages on each axis.
+		if (virtual_shadow_square_overlaps(center, reach)) {
+			for (let row: u32 = virtual_shadow_page_of(center.y - reach); row <= virtual_shadow_page_of(center.y + reach); row = row + 1) {
+				for (let column: u32 = virtual_shadow_page_of(center.x - reach); column <= virtual_shadow_page_of(center.x + reach); column = column + 1) {
+					mark_page(pages, level, vec2u(column, row));
+				}
+			}
+		}
+	}
+}

@@ -97,9 +97,12 @@ impl ImportedMaterial {
 
 				self.merge_node_image_semantics(*value, semantic, semantics);
 			}
-			Node::NormalMap { value, scale } => {
+			Node::NormalMap { value, scale, frame } => {
 				self.merge_node_image_semantics(*value, Semantic::Normal, semantics);
-				self.merge_node_image_semantics(*scale, semantic, semantics);
+
+				for input in std::iter::once(scale).chain(frame.iter().flatten()) {
+					self.merge_node_image_semantics(*input, semantic, semantics);
+				}
 			}
 			other => other.visit_inputs(|input| self.merge_node_image_semantics(input, semantic, semantics)),
 		}
@@ -207,7 +210,11 @@ impl ImportedGraphBuilder {
 		let value = self.image(image, Type::Vector3)?;
 		let scale = self.builder.constant(Value::Float(scale));
 
-		self.builder.add(Node::NormalMap { value, scale })
+		self.builder.add(Node::NormalMap {
+			value,
+			scale,
+			frame: [None; 3],
+		})
 	}
 
 	/// Splits a `vector4` colour into the base colour and the opacity a surface reads.

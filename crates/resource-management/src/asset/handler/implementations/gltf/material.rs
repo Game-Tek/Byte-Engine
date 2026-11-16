@@ -20,8 +20,8 @@ pub(crate) fn unique_gltf_materials<'a>(
 
 /// Resolves glTF materials into variants, in the order given.
 ///
-/// Maps each material to a BEAD override or a generated BEMX graph, then resolves them all through
-/// [`resolve_container_materials`], which bakes overrides as dependencies and generates the rest.
+/// Maps each material to what its sidecar binds it to, an authored or inline variant, or else a generated BEMX graph,
+/// then resolves them all through [`resolve_container_materials`].
 pub(crate) async fn resolve_gltf_materials(
 	context: BakeContext<'_>,
 	spec: Option<&serde_json::Value>,
@@ -32,20 +32,18 @@ pub(crate) async fn resolve_gltf_materials(
 	let image_semantics = gltf_image_semantics(gltf);
 	let sources = materials
 		.iter()
-		// Unnamed materials have no BEAD override key, so they are always generated.
-		.map(
-			|material| match material.name().and_then(|name| bead_material_override(spec, name)) {
-				Some(override_id) => Ok(MaterialSource::Override(override_id)),
-				None => {
-					let base_id = generated_material_base_id(mesh_url, material);
-					let material = generated_gltf_material(material, &image_semantics).map_err(|error| {
-						log::error!("Failed to generate the glTF material '{base_id}': {error}");
-						LoadErrors::FailedToProcess
-					})?;
-					Ok(MaterialSource::Generated(GeneratedMaterial { base_id, material }))
-				}
-			},
-		)
+		.map(|material| {
+			let base_id = generated_material_base_id(mesh_url, material);
+			let binding = gltf_material_binding(spec, mesh_url, material, &base_id);
+
+			MaterialSource::new(context, mesh_url, binding, base_id, |base_id| {
+				let material = generated_gltf_material(material, &image_semantics).map_err(|error| {
+					log::error!("Failed to generate the glTF material '{base_id}': {error}");
+					LoadErrors::FailedToProcess
+				})?;
+				Ok(MaterialSource::Generated(GeneratedMaterial { base_id, material }))
+			})
+		})
 		.collect::<Result<Vec<_>, LoadErrors>>()?;
 
 	let image_ids = gltf
@@ -78,10 +76,11 @@ pub(crate) fn generated_gltf_material(
 	Ok(material)
 }
 
-/// Finds the generated material that `url`, a `#materials/<name>.variant` or `.material` ID, names among the materials
-/// the container's primitives use.
+/// Finds the material that `url`, a `#materials/<name>.variant` or `.material` ID, names among the materials the
+/// container's primitives use: a generated material, or an inline variant from the sidecar, which shares its ID.
 ///
-/// Materials a BEAD sidecar overrides are left out, because the container never generates them.
+/// Materials a sidecar binds to an authored `.bema` variant are left out, because the container stores nothing for
+/// them.
 pub(crate) fn generated_material_for_id<'a>(
 	gltf: &'a gltf::Gltf,
 	spec: Option<&serde_json::Value>,
@@ -93,11 +92,34 @@ pub(crate) fn generated_material_for_id<'a>(
 	let (materials, _) = unique_gltf_materials(primitives.map(|primitive| primitive.material()));
 
 	materials.into_iter().find(|material| {
-		let overridden = material.name().and_then(|name| bead_material_override(spec, name)).is_some();
-		let named = names_generated_material(url, &generated_material_base_id(source_id, material));
+		let base_id = generated_material_base_id(source_id, material);
+		let overridden = matches!(
+			gltf_material_binding(spec, source_id, material, &base_id),
+			Ok(Some(MaterialBinding::Asset(_)))
+		);
 
-		!overridden && named
+		!overridden && names_generated_material(url, &base_id)
 	})
+}
+
+/// Reads what the sidecar settings `spec` of the model `mesh_url` bind `material` to. `base_id` is the material's
+/// [`generated_material_base_id`].
+///
+/// Unnamed materials have no key of their own, so only `"*"` binds them. Their `{material}` is the name their generated
+/// resource has, such as `material_3`.
+fn gltf_material_binding(
+	spec: Option<&serde_json::Value>,
+	mesh_url: ResourceId<'_>,
+	material: &gltf::Material<'_>,
+	base_id: &str,
+) -> Result<Option<MaterialBinding>, String> {
+	let scope = TemplateScope {
+		model_id: mesh_url.as_ref(),
+		material: material
+			.name()
+			.unwrap_or_else(|| base_id.rsplit('/').next().unwrap_or_default()),
+	};
+	material_binding(spec, material.name(), &scope)
 }
 
 pub(crate) fn generated_material_base_id(mesh_url: ResourceId<'_>, material: &gltf::Material<'_>) -> String {

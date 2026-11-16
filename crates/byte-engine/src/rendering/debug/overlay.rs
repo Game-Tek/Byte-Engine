@@ -94,7 +94,7 @@ impl DebugOverlayRenderPass {
 			engine,
 			adopted: AdoptedRender::default(),
 			extent: Extent::rectangle(0, 0),
-			render_pass: UiRenderPass::new(render_pass_builder, None),
+			render_pass: UiRenderPass::new(render_pass_builder, "debug-overlay", &[]),
 		}
 	}
 
@@ -118,7 +118,7 @@ impl DebugOverlayRenderPass {
 
 impl RenderPass for DebugOverlayRenderPass {
 	fn name(&self) -> &'static str {
-		"debug-overlay"
+		self.render_pass.name()
 	}
 
 	fn prepare<'a>(

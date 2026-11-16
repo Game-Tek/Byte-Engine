@@ -18,7 +18,6 @@ use super::super::shader_data::LightingData;
 use super::shadows::ShadowMaps;
 use super::{ComputeStage, Pipelines};
 use crate::rendering::fog::{FOG_LIGHT_TARGET, FogLayerShaderData, pixel_to_camera_offset};
-use crate::rendering::lookup_textures::create_blue_noise_texture;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{ExponentialHeightFog, FogLayer, PipelineManagerClient, Sink};
 
@@ -46,9 +45,7 @@ pub(crate) fn create_fog_light_target(
 ) -> ghi::BaseImageHandle {
 	render_pass_builder
 		.create_scaled_render_target(
-			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage | ghi::Uses::Image)
-				.name(FOG_LIGHT_TARGET)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage | ghi::Uses::Image).name(FOG_LIGHT_TARGET),
 			FOG_LIGHT_RESOLUTION_DIVISOR,
 		)
 		.into()
@@ -177,7 +174,7 @@ pub(super) struct FogLightPass {
 	/// The scene set, whose views hold the shadow maps' projections, then the fog light set.
 	descriptor_sets: [ghi::DescriptorSetHandle; 2],
 	pipelines: Pipelines<2>,
-	parameters: ghi::DynamicBufferHandle<FogLightShaderParameters>,
+	parameters: ghi::BufferHandle<FogLightShaderParameters>,
 }
 
 impl FogLightPass {
@@ -189,23 +186,21 @@ impl FogLightPass {
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		base_descriptor_set: ghi::DescriptorSetHandle,
-		lighting_buffer: ghi::DynamicBufferHandle<LightingData>,
+		lighting_buffer: ghi::BufferHandle<LightingData>,
 		depth: ghi::BaseImageHandle,
 		shadow_maps: &ShadowMaps,
 		target: ghi::BaseImageHandle,
+		blue_noise: ghi::ImageHandle,
 	) -> Self {
 		let descriptor_set = set_layouts::FOG_LIGHT.create_set(context, "Fog Light Descriptor Set");
-		let parameters = context.build_dynamic_buffer(
+		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Fog Light Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
-		let tile_masks: ghi::BufferHandle<[u32; FOG_LIGHT_TILE_MASK_WORD_COUNT]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Fog Light Tile Masks")
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
-		);
-		let blue_noise = create_blue_noise_texture(context);
+		let tile_masks: ghi::BufferHandle<[u32; FOG_LIGHT_TILE_MASK_WORD_COUNT]> =
+			context.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage).name("Fog Light Tile Masks"));
 		let point_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
@@ -255,8 +250,7 @@ impl FogLightPass {
 		fog: &ExponentialHeightFog,
 	) -> Option<[ComputeStage<2>; 2]> {
 		let [tiles, march] = self.pipelines.resolve(pipeline_manager)?;
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = fog_light_shader_parameters(fog, sink);
-		frame.sync_buffer(self.parameters);
+		*frame.map(self.parameters) = fog_light_shader_parameters(fog, sink);
 		// One workgroup per tile, and one thread per mask word of 32 lights.
 		let tile_workgroup = FOG_LIGHT_TILE_MASK_WORDS;
 		Some([

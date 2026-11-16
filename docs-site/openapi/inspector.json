@@ -2,7 +2,7 @@
 	"openapi": "3.2.0",
 	"info": {
 		"title": "Byte Engine HTTP Inspector API",
-		"version": "0.2.0",
+		"version": "0.3.0",
 		"description": "Inspect and control a running headed Byte Engine application through its loopback HTTP server. The inspector listens on port 6680 and does not provide authentication. Keep it bound to the loopback interface."
 	},
 	"servers": [
@@ -98,7 +98,11 @@
 										],
 										"properties": {
 											"name": "main camera",
-											"position": [0.0, 1.8, -4.0]
+											"transform": {
+												"position": [0.0, 1.8, -4.0],
+												"scale": [1.0, 1.0, 1.0],
+												"orientation": [0.0, 0.0, 0.0, 1.0]
+											}
 										}
 									}
 								]
@@ -107,6 +111,228 @@
 					},
 					"400": {
 						"$ref": "#/components/responses/BadRequest"
+					}
+				}
+			}
+		},
+		"/levels": {
+			"post": {
+				"operationId": "spawnLevel",
+				"summary": "Spawn a level",
+				"description": "Spawns a level from its source, the same JSON a `.level` file holds, through the application's spawner, and answers with the level's root handle. The level's entities take the handles that follow the root, one each, parents first and otherwise in the source's order. Delete the root with a `Delete` message to remove them all. A source that doesn't bake, or a component that doesn't fit its kind, spawns nothing.",
+				"tags": ["Control"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"description": "A level's source, as a `.level` file holds it.",
+								"required": ["entities"],
+								"properties": {
+									"entities": {
+										"type": "array",
+										"items": {
+											"type": "object"
+										}
+									}
+								}
+							},
+							"example": {
+								"entities": [
+									{
+										"components": {
+											"name": "crate",
+											"transform": {
+												"position": [0.0, 0.0, 2.0]
+											},
+											"mesh": {
+												"resource": "crate.glb"
+											}
+										}
+									}
+								]
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The level spawned.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"required": ["root"],
+									"properties": {
+										"root": {
+											"type": "integer",
+											"minimum": 1,
+											"description": "The level's root handle. The first entity's handle is one more."
+										}
+									}
+								},
+								"example": {
+									"root": 120
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "The source didn't bake, a component didn't fit its kind, or the application gave the inspector no spawner.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/assets": {
+			"get": {
+				"operationId": "listSourceAssets",
+				"summary": "List source assets",
+				"description": "Returns the ID of every source asset whose name ends in one extension, such as `bemx`, in ID order. Development builds only.",
+				"tags": ["Inspection"],
+				"parameters": [
+					{
+						"name": "extension",
+						"in": "query",
+						"required": true,
+						"description": "The file extension, without its dot, matched exactly.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						},
+						"example": "bemx"
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The IDs, in ID order; empty when no source has the extension.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "array",
+									"items": {
+										"type": "string"
+									}
+								},
+								"example": ["materials/floor.bemx", "materials/pbr.bemx"]
+							}
+						}
+					},
+					"400": {
+						"$ref": "#/components/responses/BadRequest"
+					},
+					"503": {
+						"description": "A release build, an application without an asset directory or resource manager, or an asset directory that couldn't be read.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/assets/source": {
+			"get": {
+				"operationId": "readSourceAsset",
+				"summary": "Read a source asset",
+				"description": "Returns one source asset's text. Development builds only. The HTTP inspector never writes source assets, since it has no authentication.",
+				"tags": ["Inspection"],
+				"parameters": [
+					{
+						"name": "id",
+						"in": "query",
+						"required": true,
+						"description": "The asset's path under the asset directory, with `/` between its parts.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						},
+						"example": "materials/floor.bemx"
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The asset's text.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"400": {
+						"$ref": "#/components/responses/BadRequest"
+					},
+					"404": {
+						"description": "No text source has the ID, the ID leaves the asset directory, or source assets are unavailable in this build.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/resources": {
+			"get": {
+				"operationId": "listResources",
+				"summary": "List resources",
+				"description": "Returns the ID of every stored resource of one class, such as `Mesh`, in ID order. It reads the resource store, so a development build lists only resources it already baked.",
+				"tags": ["Inspection"],
+				"parameters": [
+					{
+						"name": "class",
+						"in": "query",
+						"required": true,
+						"description": "The resource class, matched exactly, as the resource store names it.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						},
+						"example": "Mesh"
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The IDs, in ID order; empty when no resource has the class.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "array",
+									"items": {
+										"type": "string"
+									}
+								},
+								"example": ["MotusMan/MotusMan_v55.fbx", "crate.glb"]
+							}
+						}
+					},
+					"400": {
+						"$ref": "#/components/responses/BadRequest"
+					},
+					"503": {
+						"description": "The application has no resource manager, or the store couldn't be read.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
 					}
 				}
 			}
@@ -154,6 +380,18 @@
 								"oneOf": [
 									{
 										"$ref": "#/components/schemas/TransformationUpdateMessage"
+									},
+									{
+										"$ref": "#/components/schemas/CameraUpdateMessage"
+									},
+									{
+										"$ref": "#/components/schemas/PointLightUpdateMessage"
+									},
+									{
+										"$ref": "#/components/schemas/ConeLightUpdateMessage"
+									},
+									{
+										"$ref": "#/components/schemas/DirectionalLightUpdateMessage"
 									},
 									{
 										"$ref": "#/components/schemas/DeletionMessage"
@@ -279,13 +517,63 @@
 						}
 					}
 				}
+			},
+			"post": {
+				"operationId": "updateConfiguration",
+				"summary": "Update a configuration parameter",
+				"description": "Queues a new value for a parameter while the application runs, as if it had been passed at startup. The system that owns the parameter's prefix applies it on a later tick. Follow the returned event through `GET /configuration` or the `configuration` events of `GET /events` until it is set or not set.",
+				"tags": ["Control"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ConfigurationRequest"
+							},
+							"example": {
+								"parameter": "render.lod.force",
+								"value": 0
+							}
+						}
+					}
+				},
+				"responses": {
+					"202": {
+						"description": "The update was queued. Its event is pending, or not set when no system owns the parameter.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConfigurationEvent"
+								},
+								"example": {
+									"id": 2,
+									"parameter": "render.lod.force",
+									"requested": 0,
+									"state": {
+										"status": "pending"
+									}
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "The body is not an object with exactly `parameter` and `value`.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
 			}
 		},
 		"/debug-views": {
 			"get": {
 				"operationId": "listDebugViews",
 				"summary": "List debug views",
-				"description": "Returns every debug view the render passes and scene pipelines declared, as `<pass>.<view>`, with the debug target slot each shown view holds, how many views can be shown at once, and whether this build has debug views. Show or hide a view with the `render.debug.view.<pass>.<view>` configuration parameter.",
+				"description": "Returns every debug view the render passes and scene pipelines declared, as `<pass>.<view>`, with the debug target slot each shown view holds, how many views can be shown at once, and whether this build has debug views. Show or hide a view by setting the `render.debug.view.<pass>.<view>` parameter with `POST /configuration`.",
 				"tags": ["Inspection"],
 				"responses": {
 					"200": {
@@ -1017,9 +1305,25 @@
 								"type": "string",
 								"description": "Latest name attached to the entity."
 							},
-							"position": {
-								"$ref": "#/components/schemas/Vector3",
-								"description": "World-space position from the latest transform published for the entity, as `[x, y, z]`."
+							"transform": {
+								"$ref": "#/components/schemas/TransformPayload",
+								"description": "Latest transform published for the entity, in the `TransformationUpdate` payload's shape, so a client can change one field and post the whole value back."
+							},
+							"camera": {
+								"$ref": "#/components/schemas/CameraPayload",
+								"description": "Latest camera settings published for the entity, in the `CameraUpdate` payload's shape, so a client can change one field and post the whole value back."
+							},
+							"point_light": {
+								"$ref": "#/components/schemas/PointLightPayload",
+								"description": "Latest settings published for the point light the entity is, as authored, in the `PointLightUpdate` payload's shape, so a client can change one field and post the whole value back."
+							},
+							"cone_light": {
+								"$ref": "#/components/schemas/ConeLightPayload",
+								"description": "Latest settings published for the cone light the entity is, as authored, in the `ConeLightUpdate` payload's shape, so a client can change one field and post the whole value back."
+							},
+							"directional_light": {
+								"$ref": "#/components/schemas/DirectionalLightPayload",
+								"description": "Latest settings published for the directional light the entity is, as authored, in the `DirectionalLightUpdate` payload's shape, so a client can change one field and post the whole value back."
 							}
 						}
 					}
@@ -1141,6 +1445,86 @@
 					},
 					"payload": {
 						"$ref": "#/components/schemas/TransformPayload"
+					}
+				}
+			},
+			"CameraUpdateMessage": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["type", "target", "payload"],
+				"properties": {
+					"type": {
+						"const": "CameraUpdate",
+						"description": "Stable inspector protocol message name."
+					},
+					"target": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 4294967295,
+						"description": "Camera entity handle returned by `GET /entities`."
+					},
+					"payload": {
+						"$ref": "#/components/schemas/CameraPayload"
+					}
+				}
+			},
+			"PointLightUpdateMessage": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["type", "target", "payload"],
+				"properties": {
+					"type": {
+						"const": "PointLightUpdate",
+						"description": "Stable inspector protocol message name."
+					},
+					"target": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 4294967295,
+						"description": "Handle of the point light entity, as `GET /entities` returns it."
+					},
+					"payload": {
+						"$ref": "#/components/schemas/PointLightPayload"
+					}
+				}
+			},
+			"ConeLightUpdateMessage": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["type", "target", "payload"],
+				"properties": {
+					"type": {
+						"const": "ConeLightUpdate",
+						"description": "Stable inspector protocol message name."
+					},
+					"target": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 4294967295,
+						"description": "Handle of the cone light entity, as `GET /entities` returns it."
+					},
+					"payload": {
+						"$ref": "#/components/schemas/ConeLightPayload"
+					}
+				}
+			},
+			"DirectionalLightUpdateMessage": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["type", "target", "payload"],
+				"properties": {
+					"type": {
+						"const": "DirectionalLightUpdate",
+						"description": "Stable inspector protocol message name."
+					},
+					"target": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 4294967295,
+						"description": "Handle of the directional light entity, as `GET /entities` returns it."
+					},
+					"payload": {
+						"$ref": "#/components/schemas/DirectionalLightPayload"
 					}
 				}
 			},
@@ -1284,6 +1668,63 @@
 					}
 				}
 			},
+			"CameraPayload": {
+				"type": "object",
+				"additionalProperties": false,
+				"description": "Camera settings. A missing field takes a new camera's value.",
+				"properties": {
+					"fov": {
+						"type": "number",
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"exclusiveMaximum": 180,
+						"default": 45,
+						"description": "Vertical field of view in degrees."
+					},
+					"near": {
+						"type": "number",
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"default": 0.1,
+						"description": "Near plane in meters, below `far`."
+					},
+					"far": {
+						"type": "number",
+						"format": "float",
+						"default": 100,
+						"description": "Far plane in meters, finite."
+					},
+					"f_number": {
+						"type": ["number", "null"],
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"default": null,
+						"description": "Lens f-number, or null for a pinhole that keeps every depth in focus."
+					},
+					"focus_distance": {
+						"type": "number",
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"default": 10,
+						"description": "Distance in focus, in meters."
+					},
+					"sensor_height": {
+						"type": "number",
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"default": 0.024,
+						"description": "Sensor height in meters."
+					},
+					"exposure": {
+						"type": "number",
+						"format": "float",
+						"minimum": -64,
+						"maximum": 64,
+						"default": 0,
+						"description": "Exposure in stops."
+					}
+				}
+			},
 			"Vector3": {
 				"type": "array",
 				"description": "Three finite x, y, and z components.",
@@ -1345,6 +1786,20 @@
 					},
 					"state": {
 						"$ref": "#/components/schemas/ConfigurationState"
+					}
+				}
+			},
+			"ConfigurationRequest": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["parameter", "value"],
+				"properties": {
+					"parameter": {
+						"description": "The full parameter name, as on the command line without the leading dashes.",
+						"type": "string"
+					},
+					"value": {
+						"$ref": "#/components/schemas/ConfigurationValue"
 					}
 				}
 			},
@@ -1414,6 +1869,278 @@
 					},
 					"reason": {
 						"type": "string"
+					}
+				}
+			},
+			"LightColor": {
+				"description": "Light color: a blackbody temperature, or a linear-sRGB color whose magnitude doesn't set brightness.",
+				"oneOf": [
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["kelvin"],
+						"properties": {
+							"kelvin": {
+								"type": "number",
+								"format": "float",
+								"minimum": 1000,
+								"maximum": 40000,
+								"description": "Color temperature in kelvin."
+							}
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["linear_srgb"],
+						"properties": {
+							"linear_srgb": {
+								"type": "array",
+								"items": {
+									"type": "number",
+									"format": "float",
+									"minimum": 0
+								},
+								"minItems": 3,
+								"maxItems": 3,
+								"description": "Linear-sRGB `[r, g, b]` with nonzero luminance."
+							}
+						}
+					}
+				]
+			},
+			"LightIntensity": {
+				"description": "Light intensity in the quantity it was authored in. Each distance and area is 1 unless given.",
+				"oneOf": [
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["illuminance"],
+						"properties": {
+							"illuminance": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": ["lux"],
+								"properties": {
+									"lux": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"description": "Illuminance in lux."
+									},
+									"measurement_distance_m": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"default": 1,
+										"description": "Distance in meters the illuminance is measured at, for a local light."
+									}
+								}
+							}
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["luminous_intensity"],
+						"properties": {
+							"luminous_intensity": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": ["candela"],
+								"properties": {
+									"candela": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"description": "Luminous intensity in candela."
+									},
+									"reference_distance_m": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"default": 1,
+										"description": "Distance in meters that converts it for a directional light."
+									}
+								}
+							}
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["luminous_flux"],
+						"properties": {
+							"luminous_flux": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": ["lumens"],
+								"properties": {
+									"lumens": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"description": "Luminous flux in lumens."
+									},
+									"directional_beam_area_m2": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"default": 1,
+										"description": "Beam area in square meters that converts it for a directional light."
+									}
+								}
+							}
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["luminance"],
+						"properties": {
+							"luminance": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": ["nits"],
+								"properties": {
+									"nits": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"description": "Luminance in nits."
+									},
+									"projected_area_m2": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"default": 1,
+										"description": "Projected emitter area in square meters."
+									},
+									"reference_distance_m": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"default": 1,
+										"description": "Distance in meters that converts it for a directional light."
+									}
+								}
+							}
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["ies"],
+						"properties": {
+							"ies": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": ["profile", "dimmer"],
+								"properties": {
+									"profile": {
+										"type": "string",
+										"description": "IES profile resource ID."
+									},
+									"dimmer": {
+										"type": "number",
+										"format": "float",
+										"minimum": 0,
+										"maximum": 1,
+										"description": "Fraction of the measured output, from 0 through 1. Point and cone lights only."
+									}
+								}
+							}
+						}
+					}
+				]
+			},
+			"PointLightPayload": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["color", "intensity"],
+				"description": "Point light settings, as a level's `point_light` kind writes them.",
+				"properties": {
+					"color": {
+						"$ref": "#/components/schemas/LightColor"
+					},
+					"intensity": {
+						"$ref": "#/components/schemas/LightIntensity"
+					},
+					"shadow_near": {
+						"type": ["number", "null"],
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"default": null,
+						"description": "Near end of the shadow range in meters, below `shadow_far`, or null for the renderer's."
+					},
+					"shadow_far": {
+						"type": ["number", "null"],
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"default": null,
+						"description": "Far end of the shadow range in meters, or null for the renderer's."
+					}
+				}
+			},
+			"ConeLightPayload": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["color", "intensity", "inner_angle", "outer_angle"],
+				"description": "Cone light settings, as a level's `cone_light` kind writes them.",
+				"properties": {
+					"color": {
+						"$ref": "#/components/schemas/LightColor"
+					},
+					"intensity": {
+						"$ref": "#/components/schemas/LightIntensity"
+					},
+					"inner_angle": {
+						"type": "number",
+						"format": "float",
+						"minimum": 0,
+						"description": "Half angle of the fully lit inner cone in radians from the forward direction, from 0 up to `outer_angle`."
+					},
+					"outer_angle": {
+						"type": "number",
+						"format": "float",
+						"maximum": 3.1415927,
+						"description": "Half angle of the outer cone in radians, at most π."
+					},
+					"shadow_near": {
+						"type": ["number", "null"],
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"default": null,
+						"description": "Near end of the shadow range in meters, below `shadow_far`, or null for the renderer's."
+					},
+					"shadow_far": {
+						"type": ["number", "null"],
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"default": null,
+						"description": "Far end of the shadow range in meters, or null for the renderer's."
+					}
+				}
+			},
+			"DirectionalLightPayload": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["color", "intensity"],
+				"description": "Directional light settings, as a level's `directional_light` kind writes them. Its intensity can't be `ies`.",
+				"properties": {
+					"color": {
+						"$ref": "#/components/schemas/LightColor"
+					},
+					"intensity": {
+						"$ref": "#/components/schemas/LightIntensity"
+					},
+					"angular_radius": {
+						"type": ["number", "null"],
+						"format": "float",
+						"minimum": 0,
+						"exclusiveMaximum": 1.5707964,
+						"default": null,
+						"description": "Angular radius of the light's disk in radians, or null for the sun's."
 					}
 				}
 			},

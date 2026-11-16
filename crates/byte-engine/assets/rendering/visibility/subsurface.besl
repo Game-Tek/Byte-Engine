@@ -1,0 +1,116 @@
+// Spreads the diffuse light of subsurface pixels beneath their surface and adds it to the lit image.
+//
+// Christensen and Burley's normalized diffusion profile, "Approximate Reflectance Profiles for Efficient Subsurface
+// Scattering" (2015), evaluated in screen space as Golubev's "Efficient Screen-Space Subsurface Scattering Using
+// Burley's Normalized Diffusion in Real-Time" (SIGGRAPH 2018) describes. Each pixel reads a fixed disk of samples
+// whose radii follow the profile of its widest channel, weights each sample by every channel's profile at the
+// sample's distance in view space over the density it was drawn with, and divides by the summed weights, so evenly lit
+// skin keeps its brightness. The pattern is the same every frame because no temporal filter averages it out.
+// See the subsurface scattering design note.
+
+use ::byte_engine::rendering::visibility::layouts::subsurface::*;
+
+SUBSURFACE_SAMPLES: const u32 = 32;
+// The share of the widest channel's light the disk reaches out to. Past it, samples would add little but noise.
+SUBSURFACE_REACH: const f32 = 0.997;
+// The angle between consecutive samples, `π(3 − √5)`, which spreads any number of them evenly around the disk.
+GOLDEN_ANGLE: const f32 = 2.3999632297286533;
+// A pixel whose disk spans less than this many pixels keeps its own light: every sample would land on it.
+MIN_DISK_PIXELS: const f32 = 0.5;
+
+// Returns the radius, in units of the profile scale `d`, inside which the share `u` of the profile's light falls.
+// Golubev's analytic inverse of `1 − ¼·e^(−r/d) − ¾·e^(−r/(3d))`, from "Sampling Burley's Normalized Diffusion
+// Profiles" (2019).
+burley_radius: fn (u: f32) -> f32 {
+	let tail: f32 = 1.0 - u;
+	let g: f32 = 1.0 + 4.0 * tail * (2.0 * tail + sqrt(1.0 + 4.0 * tail * tail));
+	let g_cube_root: f32 = pow(g, 1.0 / 3.0);
+	let c: f32 = 1.0 + g_cube_root + 1.0 / g_cube_root;
+	return 3.0 * log2(c / (4.0 * tail)) / 1.4426950408889634;
+}
+
+// Returns Burley's profile at `distance` for scale `scale`, without its constant `1 / (8π·d)`, which cancels when the
+// weights are normalized per channel.
+burley_profile: fn (distance: f32, scale: f32) -> f32 {
+	let x: f32 = distance / max(scale, 0.000000001);
+	return (exp(0.0 - x) + exp(0.0 - x / 3.0)) / max(distance, 0.000000001);
+}
+
+// Returns `light / weight`, or `fallback` when no sample weighed anything.
+weighted_mean: fn (light: f32, weight: f32, fallback: f32) -> f32 {
+	if (weight > 0.0) {
+		return light / weight;
+	}
+	return fallback;
+}
+
+// Returns the positive view depth of a reversed device depth.
+linear_depth: fn (subsurface: Subsurface, device_depth: f32) -> f32 {
+	return subsurface.view.depth_unproject_numerator / (device_depth + subsurface.view.depth_unproject_denominator_offset);
+}
+
+main: fn (input: StageInput, subsurface: Subsurface) -> void {
+	let pixel: vec2u = input.thread_id;
+	let extent: vec2u = image_size(subsurface.lit_map);
+	if (pixel.x >= extent.x || pixel.y >= extent.y) {
+		return;
+	}
+	let albedo_root: vec4f = fetch(subsurface.albedo_root, pixel);
+	if (albedo_root.w < 0.5) {
+		return;
+	}
+	let center_texel: vec4f = fetch(subsurface.diffuse_light, pixel);
+	let center_light: vec3f = vec3f(center_texel.x, center_texel.y, center_texel.z);
+	let scale_texel: vec4f = fetch(subsurface.profile_scale, pixel);
+	let scale: vec3f = vec3f(scale_texel.x, scale_texel.y, scale_texel.z);
+	let widest: f32 = max(max(scale.x, scale.y), scale.z);
+	let center_depth: f32 = linear_depth(subsurface, fetch(subsurface.depth, pixel).x);
+	// Pixels per meter at the pixel's depth, which turns the disk's radii into screen offsets.
+	let pixels_per_meter: f32 = subsurface.view.projection_pixels_y / max(center_depth, 0.0001);
+
+	let spread: vec3f = center_light;
+	if (widest * burley_radius(SUBSURFACE_REACH) * pixels_per_meter >= MIN_DISK_PIXELS) {
+		let light_sum: vec3f = vec3f(0.0, 0.0, 0.0);
+		let weight_sum: vec3f = vec3f(0.0, 0.0, 0.0);
+		let center: vec2f = vec2f(f32(pixel.x) + 0.5, f32(pixel.y) + 0.5);
+		for (let index: u32 = 0; index < SUBSURFACE_SAMPLES; index = index + 1) {
+			// Equal shares of the widest channel's light, each sample at the middle of its share.
+			let share: f32 = SUBSURFACE_REACH * (f32(index) + 0.5) / f32(SUBSURFACE_SAMPLES);
+			let radius: f32 = burley_radius(share) * widest;
+			let angle: f32 = f32(index) * GOLDEN_ANGLE;
+			let position: vec2f = center + vec2f(cos(angle), sin(angle)) * (radius * pixels_per_meter);
+			if (position.x < 0.0 || position.y < 0.0 || position.x >= f32(extent.x) || position.y >= f32(extent.y)) {
+				continue;
+			}
+			let sample_pixel: vec2u = vec2u(u32(position.x), u32(position.y));
+			// Light spreads only between pixels of subsurface materials.
+			if (fetch(subsurface.albedo_root, sample_pixel).w < 0.5) {
+				continue;
+			}
+			let depth_step: f32 = linear_depth(subsurface, fetch(subsurface.depth, sample_pixel).x) - center_depth;
+			let distance: f32 = sqrt(radius * radius + depth_step * depth_step);
+			// The sample was drawn with the widest channel's profile as its density over the disk, so each channel's
+			// weight is its own profile at the sample's distance in view space over that density.
+			let density: f32 = burley_profile(radius, widest);
+			let weight: vec3f = vec3f(
+				burley_profile(distance, scale.x),
+				burley_profile(distance, scale.y),
+				burley_profile(distance, scale.z)
+			) / density;
+			let sample_light: vec4f = fetch(subsurface.diffuse_light, sample_pixel);
+			light_sum = light_sum + weight * vec3f(sample_light.x, sample_light.y, sample_light.z);
+			weight_sum = weight_sum + weight;
+		}
+		// A channel whose samples all fell off the surface keeps the pixel's own light.
+		spread = vec3f(
+			weighted_mean(light_sum.x, weight_sum.x, center_light.x),
+			weighted_mean(light_sum.y, weight_sum.y, center_light.y),
+			weighted_mean(light_sum.z, weight_sum.z, center_light.z)
+		);
+	}
+
+	// The light leaves weighted by the albedo's other square root.
+	let lit: vec4f = image_load(subsurface.lit_map, pixel);
+	let leaving: vec3f = spread * vec3f(albedo_root.x, albedo_root.y, albedo_root.z);
+	write(subsurface.lit_map, pixel, vec4f(lit.x + leaving.x, lit.y + leaving.y, lit.z + leaving.z, 1.0));
+}

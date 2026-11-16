@@ -10,8 +10,8 @@ use windows::core::HSTRING;
 
 use super::*;
 use crate::dx12::ray_tracing::{
-	CALLABLE_OFFSET, IDENTIFIER_SIZE, MAX_TRACE_INVOCATIONS, RECORD_STRIDE, RayTracingState, ShaderBindingTable,
-	WrittenTable, check_hit_groups, fill_shader_binding_table, table_size,
+	CALLABLE_OFFSET, IDENTIFIER_SIZE, MAX_TRACE_INVOCATIONS, RECORD_STRIDE, RayTracingState, ShaderBindingTable, WrittenTable,
+	check_hit_groups, fill_shader_binding_table, table_size,
 };
 
 /// The name every generated shader's entry point has, which each library export renames.
@@ -34,7 +34,8 @@ impl Device {
 			!builder.hit_groups.is_empty(),
 			"DX12 ray tracing pipeline creation failed. The most likely cause is that no hit group was given. Pass at least one hit group."
 		);
-		let layout = self.ray_tracing_pipeline_layout(&builder.ray_generation, builder.hit_groups, builder.push_constant_ranges);
+		let layout =
+			self.ray_tracing_pipeline_layout(&builder.ray_generation, builder.hit_groups, builder.push_constant_ranges);
 		let state = self.create_ray_tracing_state(&layout.root_signature, &builder);
 		CompiledPipeline {
 			layout,
@@ -71,9 +72,10 @@ impl Device {
 			let same = |(handle, map): &(ShaderHandle, &[pipelines::SpecializationMapEntry])| {
 				*handle == key.0
 					&& map.len() == key.1.len()
-					&& map.iter().zip(key.1).all(|(a, b)| {
-						a.constant_id == b.constant_id && a.r#type == b.r#type && a.value == b.value
-					})
+					&& map
+						.iter()
+						.zip(key.1)
+						.all(|(a, b)| a.constant_id == b.constant_id && a.r#type == b.r#type && a.value == b.value)
 			};
 			let library = match library_keys.iter().position(same) {
 				Some(index) => index + 1,
@@ -124,10 +126,18 @@ impl Device {
 		let mut global_root_signature = d3d12::D3D12_GLOBAL_ROOT_SIGNATURE {
 			pGlobalRootSignature: std::mem::ManuallyDrop::new(Some(root_signature.clone())),
 		};
-		let subobject = |r#type, desc: *const std::ffi::c_void| d3d12::D3D12_STATE_SUBOBJECT { Type: r#type, pDesc: desc };
+		let subobject = |r#type, desc: *const std::ffi::c_void| d3d12::D3D12_STATE_SUBOBJECT {
+			Type: r#type,
+			pDesc: desc,
+		};
 		let mut subobjects = library_descs
 			.iter()
-			.map(|desc| subobject(d3d12::D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, (desc as *const d3d12::D3D12_DXIL_LIBRARY_DESC).cast()))
+			.map(|desc| {
+				subobject(
+					d3d12::D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY,
+					(desc as *const d3d12::D3D12_DXIL_LIBRARY_DESC).cast(),
+				)
+			})
 			.collect::<Vec<_>>();
 		// Subobjects without an association apply to every export of the state object.
 		subobjects.push(subobject(
@@ -229,7 +239,9 @@ impl Device {
 			"DX12 shader binding table write failed because the handle names no table of this context. The most likely cause is that the handle came from another context. Write tables the context created."
 		);
 		check_hit_groups(
-			self.ray_tracing_state(pipeline, "write_shader_binding_table").hit_groups.len(),
+			self.ray_tracing_state(pipeline, "write_shader_binding_table")
+				.hit_groups
+				.len(),
 			hit_groups,
 		);
 		let size = table_size(hit_groups.len());
@@ -243,7 +255,11 @@ impl Device {
 		);
 		// SAFETY: The mapping covers the buffer's `size` bytes, and only this write uses it.
 		let memory = unsafe { std::slice::from_raw_parts_mut(mapped.cast::<u8>(), size as usize) };
-		fill_shader_binding_table(self.ray_tracing_state(pipeline, "write_shader_binding_table"), hit_groups, memory);
+		fill_shader_binding_table(
+			self.ray_tracing_state(pipeline, "write_shader_binding_table"),
+			hit_groups,
+			memory,
+		);
 		// SAFETY: The CPU wrote every record it will, and the buffer stays mapped nowhere else.
 		unsafe { resource.Unmap(0, None) };
 		// SAFETY: The resource is a live buffer.

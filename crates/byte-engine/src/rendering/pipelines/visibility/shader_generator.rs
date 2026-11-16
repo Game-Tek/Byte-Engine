@@ -12,11 +12,9 @@ mod sources;
 #[cfg(test)]
 mod tests;
 
-use std::sync::LazyLock;
-
 use besl::parser::{MatchArm, MatchPattern, Node};
 use resource_management::asset::handler::implementations::bema::{
-	AssembledArm, AssembledMaterial, MaterialParameter, ParameterKind, ProgramGenerator,
+	AssembledArm, AssembledMaterial, MaterialParameter, ParameterKind, ProgramGenerator, ProgramModules,
 };
 use resource_management::bemx;
 use resource_management::shader::generator::ShaderGenerationSettings;
@@ -31,7 +29,7 @@ use self::ast::*;
 pub(crate) use self::ast::{MATERIAL_DEBUG_VIEW_NAMES, remove_statements_reading};
 use self::sources::*;
 use super::VisibilityFeatures;
-use super::features::{COVERAGE_SHADERS, MaterialEvaluationMode, UBER_MATERIAL_SHADERS};
+use super::features::{COVERAGE_SHADERS, MaterialEvaluationMode, UBER_MATERIAL_SHADERS, UberVariant};
 use super::layout::{
 	LIGHT_CLUSTER_COLUMNS, LIGHT_CLUSTER_MASK_WORD_COUNT, LIGHT_CLUSTER_ROWS, LIGHT_CLUSTER_SLICES,
 	LOCAL_SHADOW_SIZE_CLASS_COUNT, MAX_BINDLESS_TEXTURES, MAX_IES_PROFILES, MAX_LIGHTMAPS, MAX_LIGHTS, MAX_MATERIAL_TEXTURES,
@@ -40,7 +38,6 @@ use super::layout::{
 };
 use crate::application::parameters::Parameters;
 use crate::rendering::common_shader_generator::common_shader_module;
-use crate::rendering::set_layout::{ENGINE_MODULES, module_source};
 
 // The layer modules spell out their array sizes; these guards catch limit changes.
 const _: () = assert!(
@@ -98,10 +95,6 @@ pub(super) const MATERIAL_HIT_MODULES: [&str; 3] = [
 	"::byte_engine::rendering::visibility::layouts::ray_traced_scene",
 ];
 
-/// The module files of [`MATERIAL_EVALUATION_MODULES`], loaded once from the embedded engine modules.
-static MATERIAL_EVALUATION_MODULE_FILES: LazyLock<Vec<besl::LoadedModule>> =
-	LazyLock::new(|| load_engine_modules(&MATERIAL_EVALUATION_MODULES));
-
 /// The layer every coverage shader's `main` takes: the scene set, which the masked raster passes bind first.
 const COVERAGE_LAYERS: [(&str, &str); 1] = [("scene", "Scene")];
 
@@ -111,27 +104,19 @@ const COVERAGE_MODULES: [&str; 2] = [
 	"::byte_engine::rendering::visibility::layouts::scene",
 ];
 
-/// The module files of [`COVERAGE_MODULES`], loaded once from the embedded engine modules.
-static COVERAGE_MODULE_FILES: LazyLock<Vec<besl::LoadedModule>> = LazyLock::new(|| load_engine_modules(&COVERAGE_MODULES));
+/// The module sets the generator's programs bring in, which a bake reads from the project's assets; see
+/// [`ProgramGenerator::module_sets`].
+const MODULE_SETS: [&[&str]; 3] = [&MATERIAL_EVALUATION_MODULES, &COVERAGE_MODULES, &MATERIAL_HIT_MODULES];
 
-/// The module files of [`MATERIAL_HIT_MODULES`], loaded once from the embedded engine modules.
-pub(super) static MATERIAL_HIT_MODULE_FILES: LazyLock<Vec<besl::LoadedModule>> =
-	LazyLock::new(|| load_engine_modules(&MATERIAL_HIT_MODULES));
+/// The generator's module sets, loaded from the modules embedded for the runtime, for tests that generate programs
+/// without a bake to read the files.
+#[cfg(test)]
+pub(super) static EMBEDDED_MODULES: std::sync::LazyLock<ProgramModules> = std::sync::LazyLock::new(|| {
+	use crate::rendering::set_layout::{ENGINE_MODULES, module_source};
 
-/// Loads `modules`, paths from the asset root, and the modules they use from [`ENGINE_MODULES`].
-///
-/// # Panics
-///
-/// Panics when a module doesn't load, which is an error in the engine's own assets.
-fn load_engine_modules(modules: &[&str]) -> Vec<besl::LoadedModule> {
-	let source = modules.iter().map(|module| format!("use {module}::*;")).collect::<String>();
-	let failed = |error: besl::CompilationError| -> ! {
-		panic!(
-			"The visibility layer modules failed to load ({error:?}). The most likely cause is an engine layer module that is missing from `ENGINE_MODULES` or doesn't parse. Add the module to the table, or fix its source."
-		)
-	};
-	besl::ModuleLoader::load(&source, |file| module_source(ENGINE_MODULES, file)).unwrap_or_else(|error| failed(error))
-}
+	ProgramModules::load(&MODULE_SETS, |file| module_source(ENGINE_MODULES, file))
+		.expect("The visibility layer modules failed to load. The most likely cause is a layer module that is missing from `ENGINE_MODULES` or doesn't parse.")
+});
 
 /// Returns a program whose `main` takes `layers` after its own parameters, and which brings in `modules`, whose loaded
 /// files are `files`.
@@ -190,8 +175,11 @@ impl VisibilityShaderGenerator {
 		}
 	}
 
-	/// Builds the uber material evaluation shader of one phase: one compute program that shades every pixel of the
-	/// phase whose material has one of `arms`, in 8 x 8-pixel tiles.
+	/// Builds the uber material evaluation shader of `variant`: one compute program that shades every pixel of the
+	/// variant's phase whose material has one of `arms`, in 8 x 8-pixel tiles.
+	///
+	/// A phase's translucent materials have a shader apart from its other materials, so only their pixels run the code
+	/// that lights a surface from its far side. Pass each shader the arms [`uber_arm_key`] keys for its variant.
 	///
 	/// Each thread reconstructs its pixel's surface once, runs the arm of its material's key, and lights the result
 	/// with the same suffix as a per-material shader. A material's static values are literals in its arm, so the arm
@@ -200,7 +188,13 @@ impl VisibilityShaderGenerator {
 	///
 	/// Call it on a generator built for [`MaterialEvaluationMode::Uber`], whose scope declares the tile window. Compile it
 	/// with 8 × 8-thread workgroups; the bake does so through [`ProgramGenerator::generate_assembled`].
-	pub fn uber_program<'a>(&self, transparent: bool, arms: &'a [AssembledArm<'a>]) -> Result<Node<'a>, String> {
+	pub(crate) fn uber_program<'a>(
+		&self,
+		variant: UberVariant,
+		arms: &'a [AssembledArm<'a>],
+		modules: &'a ProgramModules,
+	) -> Result<Node<'a>, String> {
+		let transparent = variant.transparent;
 		let bodies = arms
 			.iter()
 			.map(|arm| {
@@ -219,12 +213,22 @@ impl VisibilityShaderGenerator {
 				.collect::<Vec<_>>()
 		};
 
-		// The phase is a literal, so each phase's shader compiles only its own path of the shared sources.
-		let mut statements = vec![Node::let_assignment(
-			"transparent",
-			"bool",
-			Node::literal_expression(if transparent { "true" } else { "false" }),
-		)];
+		let literal = |value: bool| Node::literal_expression(if value { "true" } else { "false" });
+		// The phase is a literal, so each phase's shader compiles only its own path of the shared sources. Of the opaque
+		// phase's two shaders, the one every frame runs writes the background, so no pixel is written twice.
+		let mut statements = vec![
+			Node::let_assignment("transparent", "bool", literal(transparent)),
+			Node::let_assignment("clears_background", "bool", literal(!transparent && !variant.translucent)),
+		];
+		if !transparent {
+			// Both opaque shaders run over the same pixels, and the lowest bit of a pixel's arm key says which one shades
+			// it, so the other returns before it rebuilds the surface.
+			statements.push(Node::let_assignment(
+				"translucent_arm_bit",
+				"u32",
+				Node::literal_expression(if variant.translucent { "1" } else { "0" }),
+			));
+		}
 		statements.extend(material_evaluation_tile_statements(transparent));
 		if transparent {
 			// The instance target still holds the opaque layer where no blend surface was drawn. Those pixels return before
@@ -265,37 +269,34 @@ impl VisibilityShaderGenerator {
 		});
 		statements.push(Node::r#match(Node::member_expression("material_arm"), material_arms));
 		statements.extend(material_lighting_statements(self.features));
+		// The arms and the outputs' defaults name the outputs of features too, such as `subsurface_radius`, so the code
+		// of a left-out feature goes from the whole program.
+		self.features.remove_left_out_code(&mut statements);
 
 		let main = Node::function("main", vec![Node::parameter("input", "StageInput")], "void", statements);
 		let mut root = layered_program(
 			main,
 			&MATERIAL_EVALUATION_LAYERS,
 			&MATERIAL_EVALUATION_MODULES,
-			&MATERIAL_EVALUATION_MODULE_FILES,
+			modules.get(&MATERIAL_EVALUATION_MODULES),
 		)?;
 		root.add(self.common.iter().chain(&self.scope).cloned().collect());
 
 		Ok(root)
 	}
-}
 
-/// The `CoveragePass` enum names the masked raster passes a coverage shader is the fragment of.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CoveragePass {
-	/// The masked visibility pass, whose fragment writes the primitive and instance it keeps.
-	Visibility,
-	/// The masked shadow passes, whose fragment writes only depth.
-	Depth,
-}
-
-impl VisibilityShaderGenerator {
 	/// Builds the coverage shader of `pass`: one fragment program that leaves out each fragment of a masked material whose
 	/// `opacity` falls below the material's cutoff, with one arm per material of `arms`.
 	///
 	/// The arms compute only `opacity`, from the material's static values, its dynamic values, its textures, and the vertex
 	/// UV, and a fragment whose material has no arm keeps an `opacity` of 1. Compile it as a fragment shader; the bake does
 	/// so through [`ProgramGenerator::generate_assembled`].
-	pub(crate) fn coverage_program<'a>(&self, pass: CoveragePass, arms: &'a [AssembledArm<'a>]) -> Result<Node<'a>, String> {
+	pub(crate) fn coverage_program<'a>(
+		&self,
+		pass: CoveragePass,
+		arms: &'a [AssembledArm<'a>],
+		modules: &'a ProgramModules,
+	) -> Result<Node<'a>, String> {
 		let mut main = match pass {
 			CoveragePass::Visibility => parse_besl_function(COVERAGE_VISIBILITY_SOURCE, "coverage_visibility"),
 			CoveragePass::Depth => parse_besl_function(COVERAGE_DEPTH_SOURCE, "coverage_depth"),
@@ -320,27 +321,29 @@ impl VisibilityShaderGenerator {
 			patterns: vec![MatchPattern::Wildcard],
 			statements: Vec::new(),
 		});
-		let coverage_arm = Node::accessor(
-			Node::accessor(
-				Node::accessor(
-					Node::accessor(Node::member_expression("scene"), Node::member_expression("materials")),
-					Node::member_expression("materials"),
-				),
-				Node::sentence(vec![Node::member_expression("material_index")]),
-			),
-			Node::member_expression("coverage_arm"),
-		);
 
 		let besl::parser::Nodes::Function { name, statements, .. } = main.node_mut() else {
 			unreachable!("The coverage sources define functions.");
 		};
 		*name = "main";
-		statements.insert(COVERAGE_ARMS_POSITION, Node::r#match(coverage_arm, material_arms));
+		statements.insert(
+			COVERAGE_ARMS_POSITION,
+			Node::r#match(Node::member_expression("coverage_arm"), material_arms),
+		);
 
-		let mut root = layered_program(main, &COVERAGE_LAYERS, &COVERAGE_MODULES, &COVERAGE_MODULE_FILES)?;
+		let mut root = layered_program(main, &COVERAGE_LAYERS, &COVERAGE_MODULES, modules.get(&COVERAGE_MODULES))?;
 		root.add(self.common.to_vec());
 		Ok(root)
 	}
+}
+
+/// The `CoveragePass` enum names the masked raster passes a coverage shader is the fragment of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CoveragePass {
+	/// The masked visibility pass, whose fragment writes the primitive and instance it keeps.
+	Visibility,
+	/// The masked shadow passes, whose fragment writes only depth.
+	Depth,
 }
 
 /// The workgroup of uber material evaluation shaders: one 8 x 8-pixel tile of the sink.
@@ -349,9 +352,8 @@ pub(crate) const UBER_WORKGROUP: utils::Extent = utils::Extent::square(8);
 /// The `AssembledShader` enum names what one assembled shader the visibility renderer bakes is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AssembledShader {
-	/// The uber material evaluation shader of the transparent phase when `transparent` is set, of the opaque one
-	/// otherwise; see [`UBER_MATERIAL_SHADERS`].
-	Evaluation { transparent: bool },
+	/// One of the uber material evaluation shaders; see [`UBER_MATERIAL_SHADERS`].
+	Evaluation(UberVariant),
 	/// The coverage shader of a masked raster pass; see [`COVERAGE_SHADERS`].
 	Coverage(CoveragePass),
 }
@@ -359,8 +361,8 @@ enum AssembledShader {
 impl AssembledShader {
 	/// Returns what the assembled shader `id` is for, or the error to report when the renderer names no such shader.
 	fn of(id: &str) -> Result<Self, String> {
-		if let Some(phase) = UBER_MATERIAL_SHADERS.iter().position(|shader| *shader == id) {
-			return Ok(Self::Evaluation { transparent: phase == 1 });
+		if let Some(variant) = UberVariant::ALL.into_iter().find(|variant| variant.shader() == id) {
+			return Ok(Self::Evaluation(variant));
 		}
 		match COVERAGE_SHADERS.iter().position(|shader| *shader == id) {
 			Some(0) => Ok(Self::Coverage(CoveragePass::Visibility)),
@@ -373,13 +375,20 @@ impl AssembledShader {
 }
 
 /// Returns the uber shader arm key of a material: the hash of its program's `identity`, the components of its static
-/// values, and its phase.
+/// values, and its phase, with the lowest bit set for a translucent material and clear for any other.
 ///
-/// Materials with equal keys run the same code, so they share an arm. The bake writes the key into the uber shader,
-/// and the runtime into the material's entry of the evaluation table, so both must call this function. The key is
-/// never `u32::MAX`, which marks a material no evaluation shades.
-pub fn uber_arm_key(identity: u64, static_values: impl IntoIterator<Item = f32>, transparent: bool) -> u32 {
-	arm_key(identity, static_values, u8::from(transparent))
+/// Materials with equal keys run the same code, so they share an arm. The bake writes the key into the uber shader
+/// of `variant`, and the runtime into the material's entry of the evaluation table, so both must call this function.
+/// The opaque phase's two shaders tell their pixels apart by the lowest bit alone, before they rebuild a surface.
+/// The key is never `u32::MAX`, which marks a material no evaluation shades.
+pub(crate) fn uber_arm_key(identity: u64, static_values: impl IntoIterator<Item = f32>, variant: UberVariant) -> u32 {
+	let key = arm_key(identity, static_values, u8::from(variant.transparent));
+	if variant.translucent {
+		// `arm_key` returns at most `u32::MAX - 1`, whose lowest bit is clear, so only that key would become `u32::MAX`.
+		(key | 1).min(u32::MAX - 2)
+	} else {
+		key & !1
+	}
 }
 
 /// Returns the coverage shader arm key of a masked material: the hash of its program's `identity` and the components
@@ -447,7 +456,20 @@ fn static_value_declarations<'a>(arm: &AssembledArm<'a>) -> Result<Vec<Node<'a>>
 }
 
 impl ProgramGenerator for VisibilityShaderGenerator {
-	fn generate<'a>(&self, graph: &'a bemx::Graph, parameters: &'a [MaterialParameter]) -> Result<Option<Node<'a>>, String> {
+	fn identity(&self) -> u64 {
+		self.features.generator_identity()
+	}
+
+	fn module_sets(&self) -> &[&[&str]] {
+		&MODULE_SETS
+	}
+
+	fn generate<'a>(
+		&self,
+		graph: &'a bemx::Graph,
+		parameters: &'a [MaterialParameter],
+		modules: &'a ProgramModules,
+	) -> Result<Option<Node<'a>>, String> {
 		// The uber mode bakes no shader per material; the bake keeps the material's program for the uber shaders.
 		if self.features.material_evaluation == MaterialEvaluationMode::Uber {
 			return Ok(None);
@@ -457,6 +479,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		let mut statements = material_evaluation_prefix_statements(features);
 		statements.extend(body);
 		statements.extend(material_evaluation_suffix_statements(features, self.features));
+		// The body and the outputs' defaults name the outputs of features too, such as `subsurface_radius`, so the code
+		// of a left-out feature goes from the whole program.
+		self.features.remove_left_out_code(&mut statements);
 
 		let mut main = Node::main_function(statements);
 		if let besl::parser::Nodes::Function { params, .. } = main.node_mut() {
@@ -469,7 +494,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			main,
 			&MATERIAL_EVALUATION_LAYERS,
 			&MATERIAL_EVALUATION_MODULES,
-			&MATERIAL_EVALUATION_MODULE_FILES,
+			modules.get(&MATERIAL_EVALUATION_MODULES),
 		)?;
 
 		// The suffix branches on `transparent`; each phase's pipeline compiles only its own path. Static value parameters
@@ -492,7 +517,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		Ok(Some(root))
 	}
 
-	/// Keeps a material in the uber shader of its phase, under the key [`uber_arm_key`] gives it, and a masked material in
+	/// Keeps a material in the uber shader of its phase and kind, under the key [`uber_arm_key`] gives it, and a masked material in
 	/// both coverage shaders, under the key [`coverage_arm_key`] gives it.
 	fn assembled_key(&self, id: &str, material: &AssembledMaterial<'_>) -> Result<Option<u32>, String> {
 		let shader = AssembledShader::of(id)?;
@@ -501,9 +526,10 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		}
 		let static_values = material.static_values.iter().flatten().copied();
 		Ok(match shader {
-			// Each phase's shader evaluates the materials of its own alpha mode.
-			AssembledShader::Evaluation { transparent } => (transparent == matches!(material.alpha_mode, AlphaMode::Blend))
-				.then(|| uber_arm_key(material.identity, static_values, transparent)),
+			// Each shader evaluates the materials of its own alpha mode that are translucent, or those that are not.
+			AssembledShader::Evaluation(variant) => (variant.transparent == matches!(material.alpha_mode, AlphaMode::Blend)
+				&& variant.translucent == material.graph.is_translucent())
+			.then(|| uber_arm_key(material.identity, static_values, variant)),
 			AssembledShader::Coverage(_) => {
 				matches!(material.alpha_mode, AlphaMode::Mask(_)).then(|| coverage_arm_key(material.identity, static_values))
 			}
@@ -516,17 +542,18 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		&self,
 		id: &str,
 		arms: &'a [AssembledArm<'a>],
+		modules: &'a ProgramModules,
 	) -> Result<(Node<'a>, ShaderGenerationSettings), String> {
 		Ok(match AssembledShader::of(id)? {
-			AssembledShader::Evaluation { transparent } => {
-				let name = if transparent {
-					"transparent_uber_material_evaluation"
-				} else {
-					"opaque_uber_material_evaluation"
-				};
+			AssembledShader::Evaluation(variant) => {
+				let name = format!(
+					"{}{}_uber_material_evaluation",
+					if variant.transparent { "transparent" } else { "opaque" },
+					if variant.translucent { "_translucent" } else { "" }
+				);
 				(
-					self.uber_program(transparent, arms)?,
-					ShaderGenerationSettings::compute(UBER_WORKGROUP).name(name.to_string()),
+					self.uber_program(variant, arms, modules)?,
+					ShaderGenerationSettings::compute(UBER_WORKGROUP).name(name),
 				)
 			}
 			AssembledShader::Coverage(pass) => {
@@ -535,7 +562,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					CoveragePass::Depth => "masked_depth_coverage",
 				};
 				(
-					self.coverage_program(pass, arms)?,
+					self.coverage_program(pass, arms, modules)?,
 					ShaderGenerationSettings::fragment().name(name.to_string()),
 				)
 			}
@@ -552,6 +579,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		&self,
 		graph: &'a bemx::Graph,
 		parameters: &'a [MaterialParameter],
+		modules: &'a ProgramModules,
 	) -> Result<Option<Node<'a>>, String> {
 		if !self.features.generates_hit_shaders() {
 			return Ok(None);
@@ -571,7 +599,12 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			statements,
 		);
 
-		let mut root = layered_program(main, &MATERIAL_HIT_LAYERS, &MATERIAL_HIT_MODULES, &MATERIAL_HIT_MODULE_FILES)?;
+		let mut root = layered_program(
+			main,
+			&MATERIAL_HIT_LAYERS,
+			&MATERIAL_HIT_MODULES,
+			modules.get(&MATERIAL_HIT_MODULES),
+		)?;
 		let declarations = (0u32..)
 			.zip(parameters)
 			.filter_map(|(index, parameter)| match parameter.kind {
@@ -671,6 +704,16 @@ pub(super) fn visibility_shader_module<'a>(tile: bool) -> [Node<'a>; 2] {
 		(COMPUTE_VERTEX_INDICES_SOURCE, "compute_vertex_indices"),
 		(COMPUTE_TRIANGLE_INTERPOLATION_SOURCE, "compute_triangle_interpolation"),
 		(FACING_NORMAL_SOURCE, "facing_normal"),
+		(ENVIRONMENT_BRDF_SOURCE, "environment_brdf"),
+		(DIFFUSE_TRANSMISSION_SOURCE, "diffuse_transmission"),
+		(AVERAGE_SPECULAR_ALBEDO_SOURCE, "average_specular_albedo"),
+		(HORIZON_OCCLUSION_SOURCE, "horizon_occlusion"),
+		(FAST_ACOS_SOURCE, "fast_acos"),
+		(CONE_SPECULAR_OCCLUSION_SOURCE, "cone_specular_occlusion"),
+		(TRACED_LIGHT_OCCLUSION_SOURCE, "traced_light_occlusion"),
+		(BURLEY_DISTANCE_SOURCE, "burley_distance"),
+		(BURLEY_TRANSMITTANCE_SOURCE, "burley_transmittance"),
+		(TROWBRIDGE_REITZ_SOURCE, "trowbridge_reitz"),
 		(IES_PROFILE_UV_SOURCE, "ies_profile_uv"),
 		(IES_PROFILE_SAMPLE_SOURCE, "sample_ies_profile"),
 		(SHADOW_RECEIVER_PLANE_SOURCE, "shadow_receiver_plane_depth_gradient"),
@@ -724,6 +767,7 @@ pub(super) fn visibility_shader_module<'a>(tile: bool) -> [Node<'a>; 2] {
 		(POINT_SHADOW_SOURCE, "sample_point_shadow"),
 		(ENVIRONMENT_IRRADIANCE_SOURCE, "sample_environment_irradiance"),
 		(ENVIRONMENT_SPECULAR_SOURCE, "sample_environment_specular"),
+		(BACKDROP_POSITION_SOURCE, "backdrop_position"),
 	];
 
 	let mut children = structs;

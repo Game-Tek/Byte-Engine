@@ -48,7 +48,10 @@ impl TexelSurface<'_> {
 		let mut uv = 0.0f64;
 		for &[a, b, c] in self.triangles {
 			let [a, b, c] = [a, b, c].map(|index| index as usize);
-			world += f64::from(length(cross(sub(self.positions[b], self.positions[a]), sub(self.positions[c], self.positions[a])))) / 2.0;
+			world += f64::from(length(cross(
+				sub(self.positions[b], self.positions[a]),
+				sub(self.positions[c], self.positions[a]),
+			))) / 2.0;
 			uv += f64::from(cross_2d(sub_2d(self.uvs[b], self.uvs[a]), sub_2d(self.uvs[c], self.uvs[a])).abs()) / 2.0;
 		}
 		(world, uv)
@@ -238,7 +241,11 @@ fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 }
 
 fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-	[a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+	[
+		a[1] * b[2] - a[2] * b[1],
+		a[2] * b[0] - a[0] * b[2],
+		a[0] * b[1] - a[1] * b[0],
+	]
 }
 
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -297,15 +304,26 @@ mod tests {
 		for y in 0..extent {
 			for x in 0..extent {
 				let inside = (2..6).contains(&x) && (3..7).contains(&y);
-				assert_eq!(pixels[(y * extent + x) as usize] != NO_LIGHTMAP_TEXEL, inside, "texel ({x}, {y})");
+				assert_eq!(
+					pixels[(y * extent + x) as usize] != NO_LIGHTMAP_TEXEL,
+					inside,
+					"texel ({x}, {y})"
+				);
 			}
 		}
 		// The rectangle's texel (1, 2) has its center at UV (0.375, 0.625), half a meter per texel on the floor.
 		let texel = texels[pixels[(5 * extent + 3) as usize] as usize];
 		assert_eq!(texel.pixel, 5 * extent + 3);
 		assert!((texel.position[0] - 0.75).abs() < 1.0e-5 && (texel.position[2] - 1.25).abs() < 1.0e-5);
-		assert_eq!(texel.normal, [0.0, 1.0, 0.0], "the face normal turns to the side the vertex normals face");
-		assert!((texel.offset - 0.125).abs() < 1.0e-5, "paths leave a quarter of a texel's width above");
+		assert_eq!(
+			texel.normal,
+			[0.0, 1.0, 0.0],
+			"the face normal turns to the side the vertex normals face"
+		);
+		assert!(
+			(texel.offset - 0.125).abs() < 1.0e-5,
+			"paths leave a quarter of a texel's width above"
+		);
 	}
 
 	#[test]
@@ -329,6 +347,9 @@ mod tests {
 		// The center (0.5, 0.5) lies above the hypotenuse; its nearest point on the triangle is on that edge.
 		assert!(texel.position[2] > 0.0 && texel.position[2] < 0.1);
 		assert_eq!(texel.normal, [0.0, -1.0, 0.0]);
-		assert_eq!(pixels[4], NO_LIGHTMAP_TEXEL, "a texel the triangle doesn't reach holds nothing");
+		assert_eq!(
+			pixels[4], NO_LIGHTMAP_TEXEL,
+			"a texel the triangle doesn't reach holds nothing"
+		);
 	}
 }

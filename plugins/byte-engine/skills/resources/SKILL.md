@@ -12,7 +12,9 @@ binary (see [Run the application's BELD](#run-the-applications-beld)).
 ## Decide whether you need to bake
 
 - **Debug builds: don't bake before a run.** A debug application installs an asset manager that bakes a missing
-  or stale resource the first time the application requests it. Edit the asset and run the application.
+  or stale resource the first time the application requests it. Edit the asset and run the application. To know
+  when those bakes end, read the application's `Assets` debug data stream instead of waiting a fixed time; the
+  inspector skill's "Wait for bakes to finish" section shows how.
 - **Release builds: bake first.** A release application reads only the baked store and can't process assets.
   After changing a source asset, run `beld bake`; BELD rebakes only what changed.
 - **Use `beld bake --force`** after updating the engine or BELD, or after changing a render feature or
@@ -220,7 +222,7 @@ beld query is:dangling                            # resources that use an ID the
 ## Commands that change or remove resources
 
 Ask the user before running `beld delete`, `beld clear`, `beld wipe`, or `beld bake --prune`. They remove
-resources, and `clear` and `wipe` remove the whole store. To stop baking an asset, add it to `resources.exclude`
+resources, and `clear` and `wipe` remove the whole store. To stop baking an asset, add it to `assets.exclude`
 in `config.json`; an exclusion doesn't delete a resource that is already baked.
 
 ## When a resource doesn't load in a debug build
@@ -232,6 +234,15 @@ Check these in order:
    every failure.
 3. That the store wasn't cleared by a signature change. The store is wiped when the resource code changes.
 4. That the requested resource type matches the class stored for that ID: `beld query <id>`.
+5. That what it was built from is still there. A material variant (`model.fbx#materials/<name>.variant`) loads
+   through its parent material's shaders. Deleting a shader or material resource leaves the model counting as
+   current, so neither the debug asset manager nor `beld bake <id>` rebakes it, and the variant reports "variant
+   request failed". Delete the model's own resource too (its ID with no fragment), then bake the model and
+   material IDs.
+
+A read-only command such as `beld query` can report a store "corrupt or unreadable" with "Database repair aborted"
+after an application crashed while it baked. Any command that opens the store for writing repairs it: bake one
+small asset, then query again.
 
 ## Exit codes
 

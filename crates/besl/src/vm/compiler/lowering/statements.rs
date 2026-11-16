@@ -603,6 +603,14 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(())
 			}
+			"write_u32" => {
+				require_argument_count(arguments, 3)?;
+				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Write)?;
+				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
+				let value = self.compile_value_expression(&arguments[2], &ValueType::U32)?;
+				self.emit(ImageInstruction::WriteImageU32 { slot, coord, value });
+				Ok(())
+			}
 			"guard_image_bounds" => {
 				require_argument_count(arguments, 2)?;
 				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Any)?;
@@ -663,7 +671,7 @@ impl<'a> Compiler<'a> {
 				self.compile_intrinsic_call_expression(intrinsic, arguments, &return_type)?;
 				Ok(())
 			}
-			"image_atomic_or" => {
+			"image_atomic_or" | "image_atomic_max" => {
 				self.compile_intrinsic_call_expression(intrinsic, arguments, &ValueType::U32)?;
 				Ok(())
 			}

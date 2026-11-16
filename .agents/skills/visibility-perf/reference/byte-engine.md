@@ -84,6 +84,12 @@ To time single dispatches inside a stage, add temporary handles to `StageCounter
 
 Check each of these once per session, before the first build or run:
 
+- **GPU counters are off unless you turn them on.** `render.ghi.features.counters` defaults to `false` in release
+  builds, and a release run without it reports no `frame`, `scene`, `pass`, or `stage` GPU time: `/metrics` and the
+  `gpu` events hold CPU spans only. Pass `--render.ghi.features.counters=true` to every timing run, release or debug,
+  and check that the first sample has GPU stage times before running more. `measure.sh` and `ab.py` pass it, and
+  `sample_metrics.py` stops when a round has no GPU times.
+
 - **The target directory resolves.** `~/development/sandbox/target` is a symlink into mbx's cache, and mbx deletes
   whole target directories when disk runs low. If `test -e ~/development/sandbox/target` fails, remove the dangling
   link (`rm ~/development/sandbox/target`) and build again. Don't point the sandbox at the engine's `target/`: the
@@ -123,17 +129,22 @@ Check each of these once per session, before the first build or run:
 
 ## Measuring here
 
-- Build from the sandbox workspace: `cd ~/development/sandbox && cargo build -p model-viewer`. After a change to a
-  shader generator or a BESL backend, delete `~/development/sandbox/model_viewer/resources` before launching, or the
-  viewer runs the stale baked shader. An edit to a `.besl` asset rebakes on its own, because baked resources record
-  their assets' content hashes, so an A/B can swap one asset file between runs. Launch from the crate directory, or
+- Build from the sandbox workspace: `cd ~/development/sandbox && cargo build -p model-viewer`. A change to a
+  shader generator (anything under `crates/byte-engine/src/rendering`), to the BESL crate, to a render feature, or to
+  a `.besl` asset, layer modules included, rebakes the shaders it shaped on the next launch or `beld bake`: each bake
+  records those as inputs. An edit under `crates/resource-management` still resets the whole store. An A/B can swap
+  one asset file between runs. Launch from the crate directory, or
   assets silently fail to resolve.
 - `scripts/measure.sh <name> [viewer params]` does the whole run: launch unattended at `RATE` (default 60), wait for
-  the inspector and then for the look action, pacing on `GET /events` tick events instead of sleeping, pin the look (`LOOK=lx,ly,lz`, default the hall view from the spawn point), sample `stage.*`, capture the lit image and `TARGET="<render target>"`, stop the viewer. `REBAKE=1` deletes the
+  the inspector and then for the look action, pacing on `GET /events` tick events instead of sleeping, pin the look (`LOOK=lx,ly,lz`, default the hall view from the spawn point), wait until the `Assets` debug data
+  stream (written to `$OUT_DIR/<name>.streams.ndjson`, the records the console's bakes view shows) lists no running
+  bake, checking once per tick, sample `stage.*`, capture the lit image and `TARGET="<render target>"`, stop the viewer. `REBAKE=1` deletes the
   resources first. `OUT_DIR` defaults to `$TMPDIR/byte-engine-perf`.
 - `scripts/ab.py --a <saved binary> --b <saved binary> [-- viewer params]` A/Bs two builds: interleaved rounds (A B,
   then B A), each run unattended to `--ticks` through `kill-after` with its ticks in `metrics-out` NDJSON, the look
-  pinned once through the inspector, and the ticks before the pin and `--settle` after it dropped. It scales each run
+  pinned once through the inspector, and the ticks before the pin and before the last bake ended (from each run's
+  `Assets` stream in `<run>.streams.ndjson`), plus `--settle` after both, dropped. A run still baking when it exits
+  is refused. It scales each run
   by its `--control` stage (default `stage.shadow-maps`), reports medians, deltas, and the run-to-run spread as
   noise, marks stages under `--floor` ms as `~0`, and writes each run's log and NDJSON, `results.json`, and
   `command.txt` to `--out`.
@@ -141,7 +152,7 @@ Check each of these once per session, before the first build or run:
 - `scripts/sample_metrics.py [host:port] [rounds] [shots]` is the forced-frame sampler on its own. It reads rows
   from `GET /events`, so it misses no tick between rounds and waits for each round's GPU times instead of sleeping.
 - To read the BESL or MSL of any shader without launching the viewer or instrumenting the engine, intercept it from a
-  dry-run bake: `cd ~/development/sandbox/model_viewer && <engine>/target/debug/beld --source assets bake --dry-run
+  dry-run bake: `cd ~/development/sandbox/model_viewer && ../target/debug/model-viewer-beld --source assets bake --dry-run
   --intercept '*.besl' --intercept '*.msl' <id> 2>/dev/null`, where `<id>` is a `.bema`, a `.glb`, or a
   `byte_engine/rendering/visibility/<pass>.pipeline`. Products are named `<shader ID>.besl`, `<shader ID>.msl`, and
   `<shader ID>.metallib`; `--intercept '*' --format json | jq -r '.intercepted[].name'` lists them. Add
@@ -167,7 +178,16 @@ Check each of these once per session, before the first build or run:
   `{"type":"TriggerAction","target":1,"payload":{"type":"Vector3","value":[lx,ly,lz]}}` to pin the look,
   `GET /entities?name=Move` for the movement action. The inspector listens on `127.0.0.1:6680`. Startup parameters
   override as `--name=value`: `render.directional-shadows.resolution`, `render.ssgi.enabled`, `render.gtao.*`,
-  `render.contact-shadows.*`, `kill-after`, `metrics-out`.
+  `render.contact-shadows.*`, `kill-after`, `metrics-out`. Runtime settings (`render.lod.*`, `render.gtao.*`,
+  `render.gi.*`, `render.pass.<name>`, `render.debug.view.*`) also change live with `POST /configuration` and
+  `{"parameter":"render.lod.force","value":0}`; wait for its `configuration` event to leave `pending` before you
+  sample, so an A/B of a runtime setting needs no restart and keeps the same camera and warm caches.
+- `metrics-out` writes once, when the viewer closes: every retained tick as NDJSON only when the path ends in
+  `.ndjson`, and one summary JSON object otherwise (a `.jsonl` path gets the summary). `kill-after` counts ticks,
+  not seconds, and a run that isn't loaded yet reaches it at full rate. For settled per-tick rows of a long load,
+  run without `kill-after`, wait for the geometry and for the `Assets` stream to list no running bake (the
+  inspector skill's `wait_bakes`), then save `GET /metrics/frames?since=0&presented=true` (the latest
+  1,024 ticks) and summarize its last rows.
 - `--resources.path=<dir>` gives a variant its own baked resources. A descriptor-set layout change needs a fresh
   directory; an edit to one `.besl` asset rebakes its pipeline on its own, so an A/B of one asset swaps the file
   between runs and keeps the directory.
@@ -190,7 +210,7 @@ Check each of these once per session, before the first build or run:
 - Useful pinned looks from the spawn point: `1,0,0` (hall), `-1,0,0` (back down the hall), `0.2,-0.5,1` (floor and
   courtyard side). The viewer integrates camera velocity with frame time, so walks never repeat.
 - To study one kernel outside the engine, bake its pipeline without opening the viewer:
-  `cd ~/development/sandbox/model_viewer && <engine>/target/debug/beld --source assets bake --dry-run
+  `cd ~/development/sandbox/model_viewer && ../target/debug/model-viewer-beld --source assets bake --dry-run
   --intercept '*.metallib' --intercept-out <scratch dir> byte_engine/rendering/visibility/<pass>.pipeline`.
   Each metallib is named after its shader, so there is no need to `grep` the store's `*-raw` files, and
   `xcrun metal-source --extract=raw <file>` writes the MSL the engine compiled. A small Swift harness that renders the
@@ -251,12 +271,21 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
 ### Assets and bakes
 
 - Each viewer run re-bakes the resources whose sources changed. Give every variant its own asset snapshot and pass
-  `--assets-path=<snapshot>` to both its bake and its runs: a directory of symlinks to
+  it to both its bake (`beld --source <snapshot>`) and its runs (`--assets.path=<snapshot>`): a directory of symlinks to
   `~/development/sandbox/model_viewer/assets/*` plus `byte-engine` pointing at a `cp -Rp` copy of
   `crates/byte-engine/assets` (`-p` keeps mtimes, so only changed shaders re-bake), and a `cp -R` of the resources
   directory per variant. Pair each snapshot with a binary built from the same Rust tree, because set layouts are
   reflected at build time. Without this, a BESL edit made mid-A/B pairs an old binary with new shaders and panics with
   "Missing descriptor set for layout".
+- Editing a layer module (`layouts/*.besl`) rebakes the material shaders that bring it in, because a material's
+  bake reads the module files from the assets. The runtime builds its descriptor sets from the copies embedded in the
+  binary, so rebuild the viewer too, or the new shaders meet old sets and it panics with "Missing descriptor set for
+  layout".
+- `beld bake --force <ids>` rebakes the given IDs and everything they're baked from, textures included, and nothing
+  else. A plain `beld bake <ids>` after a shader or feature change rebakes only the stale shaders.
+- A run that crashes while it bakes can leave the store unreadable to read-only commands: `beld query` reports it
+  "corrupt or unreadable" with "Database repair aborted". Opening it for writing repairs it, so bake one small
+  asset before querying. Don't delete the store for this.
 - Any edit to `crates/resource-management`, even rustfmt, changes the resource-management signature. A binary with
   another signature deletes the whole resources directory at startup and re-bakes it during the run. Bake with the
   binary that reads the resources, and wait for the bake before capturing.
@@ -269,7 +298,7 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
 
 - The release `model-viewer` reads only a BELD-baked store. From `~/development/sandbox/model_viewer`, bake with
   `target/release/model-viewer-beld --source "$PWD/assets" --destination <store> --config <config.json> bake`, then
-  run `model-viewer --unattended=60 --inspector.port=<port> --resources.path=<store>`.
+  run `model-viewer --unattended=60 --inspector.port=<port> --resources.path=<store> --render.ghi.features.counters=true`.
 - GPU stage metrics need `--render.ghi.features.counters=true` in release; otherwise `/metrics` holds only CPU spans.
 - Pass `--unattended=<hz>` to release runs as well. Without it, a locked screen renders frames only on capture
   requests and temporal histories reset.
@@ -395,6 +424,9 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
   reads to `ENGINE_MODULES` in `set_layout.rs`.
 - A layer module has no `main`, so test its helpers through `with_engine_modules(stand_in)`, whose stand-in `use`s
   the modules and takes their layers in its own `main`; give the stand-in's own bindings numbers no layer takes.
+
+- A draw's first instance doesn't reach `input.instance_index` on every backend (DX12 leaves it out), so push the
+  offset as a constant and add it in the shader; draw at instance zero.
 
 ## Working agreement with the user
 

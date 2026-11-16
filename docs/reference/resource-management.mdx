@@ -76,6 +76,75 @@ Resource storage owns persistence and publication. It can choose a physical
 layout or encoding without changing the resource's decoded identity or the
 typed contract seen by consumers.
 
+## Freshness
+
+A stored resource is **current** when every input its bake observed still has
+the fingerprint the bake recorded. Otherwise it's **stale**, and the next
+request for it bakes it again. No other rule decides whether a resource is
+baked again.
+
+### Bakes and provenance
+
+| Term | Definition |
+| --- | --- |
+| Bake | One run of an asset handler for one requested ID. It stores the resource with that ID, and can store others, such as the materials and the skeleton of a model. |
+| Provenance | What the store records for a resource ID: the inputs its latest finished bake observed, the other resources that bake stored, and the IDs whose bakes store the resource. |
+| Producer | An ID whose bake stores a resource with another ID. |
+
+| Resource | Made current by |
+| --- | --- |
+| A resource whose ID was baked by request | Checking the inputs of its own bake. |
+| A resource only a producer stores | Making the producer current. |
+| A resource the store has no provenance for | Baking its ID. |
+
+A bake that fails or is interrupted leaves its ID stale, whatever it stored
+before it stopped. When a bake finishes, each resource its previous bake stored
+and it didn't store again is removed, unless another bake stores it too.
+
+### Inputs
+
+An input is a key and a fingerprint. The key's prefix names its kind.
+
+| Key | Recorded when a bake | Fingerprint | Changes when |
+| --- | --- | --- | --- |
+| `source:<asset ID>` | Reads a source file, a sidecar, or a directory default, or checks whether one exists. | The file's size and modification time and, for a file the bake read, its content hash; or a record that the file is absent. | The content changes, or the file appears or disappears. A file the bake read that has a new modification time and the same content is unchanged. |
+| `resource:<resource ID>` | Uses another bake's stored resource. | The hash of that resource's metadata and decoded payload, or a record that it's absent or failed to bake. | The resource bakes to a different result, appears, or disappears. A resource that bakes again to the same result leaves the resources baked from it current. |
+| `query:<class>,<property>=<value>` | Lists the stored resources a [query](/docs/reference/resource-store#queries) matches. | The hash of every match's ID and resource fingerprint. | A match appears, disappears, or bakes to a different result. |
+| `listing:<pattern>` | Lists the source files whose ID matches a pattern. | The hash of the matching IDs. | A matching file appears or disappears. |
+| `setting:<name>` | Reads a setting. | The value declared under that name, or zero when none is. | The declared value changes, or the name is no longer declared. |
+
+Checking a `resource` or `query` input first makes the resources it names
+current, which can bake them.
+
+### Settings
+
+Everything that shapes a bake and isn't a file or a resource is a setting.
+
+| Setting | Read by | Covers |
+| --- | --- | --- |
+| `handler:<type>` | Every bake of that handler. | The handler's options, such as lightmap UVs for models or the merge threshold for levels. |
+| `program-generator` | Every bake that generates a material program. | The generator's code, the [render features](/docs/reference/parameters) it was built with, and whether the build is a debug build. |
+| `program-transform` | Every bake of a standalone shader. | The same, for the transform standalone shaders go through. |
+| `shader-code` | Every bake that links a shader. | The BESL code that links and lowers shaders. |
+| `shader-compiler` | Every bake that compiles a shader. | The platform shader toolchain, its version, and the flags it runs with. |
+| `store` | Every bake that stores an image. | The store's texture compression. |
+
+A change to `config.json`, an environment variable, or a command-line argument
+makes a resource stale only through a setting the resource's bake read.
+
+A change to the code that defines the store's layout, the engine's
+resource-management source, isn't a setting. It resets the whole store through
+the [version marker](/docs/reference/resource-store#version-marker).
+
+### Requests
+
+| Request | Result |
+| --- | --- |
+| A current resource | Nothing is baked. |
+| A stale resource | The resources its inputs name are made current, then it bakes. |
+| A forced resource | It bakes, and so does every resource its bake uses, each once for the run, whatever their provenance says. No other resource bakes. |
+| A resource of an [excluded](/docs/reference/assets#excluded-assets) asset | The request fails. A query doesn't match the resource. |
+
 ## Development and release
 
 Debug applications can process missing or stale assets on demand. This shortens
@@ -87,6 +156,25 @@ deterministic and keeps authoring dependencies out of the application.
 
 Both workflows produce the same resource model. The difference is when the
 asset is processed, not what runtime systems consume.
+
+### Bake stream
+
+A debug application that bakes on demand reports its bakes as a
+[debug data stream](/docs/reference/debug-data-streams) named `Assets`, whose
+records have the stream `bakes`. A bake is one run of an asset's processor; a
+request that finds the resource current bakes nothing and changes no record.
+A record is written when a bake starts and when it ends, and carries the state
+after that change.
+
+| Field of `data` | Type | Meaning |
+| --- | --- | --- |
+| `baking` | Array | The bakes running, oldest first. Each has the resource `id`, `requested_by`, the IDs waiting on it outermost first (empty for a bake requested directly), and `elapsed_ms`, the milliseconds since it started. |
+| `baked` | Integer | The bakes that stored their resource since the application started. |
+| `failed` | Integer | The bakes that ended without storing their resource since the application started. |
+| `finished` | Array | The latest 16 bakes to end, newest first. Each has the resource `id`, `requested_by` as in `baking`, `ok`, which is `true` when it stored its resource, and `duration_ms`. |
+
+The key is the `id` of every bake in `baking`, with `baked` and `failed`; a
+record where only times changed has the same key.
 
 ## Put it to work
 

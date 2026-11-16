@@ -1,3 +1,4 @@
+mod backdrop;
 mod coverage;
 mod environment;
 mod material;
@@ -6,6 +7,7 @@ mod reflection;
 mod shadow;
 mod ssgi;
 
+pub(crate) use backdrop::*;
 pub(crate) use coverage::*;
 pub(crate) use environment::*;
 pub(crate) use material::*;

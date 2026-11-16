@@ -1,0 +1,1 @@
+{"name":"Bloom Extract Pixels","kind":{"type":"tile","shader":"byte_engine/rendering/bloom/extract-pixels.besl"}}

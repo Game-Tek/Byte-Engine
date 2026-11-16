@@ -1,0 +1,47 @@
+// Builds each level's hierarchy of dirty pages, as the chapter's hierarchical page buffer: entry 0 of each mip covers
+// the level's first pages, and an entry is set when a page under it is dirty, so the page draw culls casters over clean
+// pages without reading the table. One workgroup per level; the hierarchy lies in the level's own page coordinates,
+// not the table's wrapped ones.
+
+use ::byte_engine::rendering::visibility::layouts::virtual_shadows::*;
+
+reduced: workgroup<u32, 1024>;
+
+main: fn (input: StageInput, pages: VirtualShadowPages) -> void {
+	let level: u32 = threadgroup_position();
+	let lane: u32 = input.thread_idx;
+	let base: u32 = level * VIRTUAL_SHADOW_HIERARCHY_ENTRIES;
+	for (let index: u32 = lane; index < 1024; index = index + 256) {
+		let page: vec2u = vec2u(index % VIRTUAL_SHADOW_PAGES, index / VIRTUAL_SHADOW_PAGES);
+		let entry: u32 = atomic_load(pages.page_table.entries[virtual_shadow_slot(pages.page_frame.origin_pages[level], level, page)]);
+		let dirty: u32 = 0;
+		if ((entry & (PAGE_ALLOCATED | PAGE_DIRTY)) == (PAGE_ALLOCATED | PAGE_DIRTY)) {
+			dirty = 1;
+		}
+		reduced[index] = dirty;
+		pages.page_hierarchy[base + index] = dirty;
+	}
+	workgroup_barrier();
+	// Each mip halves the side: its entry `(x, y)` ORs entries `(2x .. 2x + 1, 2y .. 2y + 1)` of the mip before, which the
+	// workgroup array holds compacted from its start.
+	let side: u32 = 16;
+	let offset: u32 = 1024;
+	for (let mip: u32 = 1; mip < VIRTUAL_SHADOW_HIERARCHY_MIPS; mip = mip + 1) {
+		let value: u32 = 0;
+		if (lane < side * side) {
+			let x: u32 = lane % side;
+			let y: u32 = lane / side;
+			let finer: u32 = side * 2;
+			value = reduced[(2 * y) * finer + 2 * x] | reduced[(2 * y) * finer + 2 * x + 1]
+				| reduced[(2 * y + 1) * finer + 2 * x] | reduced[(2 * y + 1) * finer + 2 * x + 1];
+		}
+		workgroup_barrier();
+		if (lane < side * side) {
+			reduced[lane] = value;
+			pages.page_hierarchy[base + offset + lane] = value;
+		}
+		workgroup_barrier();
+		offset = offset + side * side;
+		side = side / 2;
+	}
+}

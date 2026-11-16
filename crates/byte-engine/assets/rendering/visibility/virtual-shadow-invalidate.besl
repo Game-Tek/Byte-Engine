@@ -1,0 +1,66 @@
+// Frees the pages under the casters that changed since the pages last saw them, at every level, so they are drawn
+// again when a receiver needs them. One thread per instance record the frame names as possibly changed. This follows the
+// thesis's invalidation, which frees pages on the GPU from the casters' bounds, instead of the chapter's CPU-built mask.
+//
+// Each record's bounds and level word are kept from the last frame that saw it. A record whose bounds or level word
+// differ moved, appeared, disappeared, or changed what it draws: the pages under its old bounds and under its new ones
+// are freed.
+
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+use ::byte_engine::rendering::visibility::layouts::virtual_shadows::*;
+
+// Frees every allocated page of every level under a world-space sphere. Level `l` is view `1 + l`.
+free_pages_under: fn (scene: Scene, pages: VirtualShadowPages, sphere: vec4f) -> void {
+	for (let level: u32 = 0; level < VIRTUAL_SHADOW_LEVELS; level = level + 1) {
+		let position: vec3f = virtual_shadow_level_position(
+			scene.views.views[1 + level].view_projection, vec3f(sphere.x, sphere.y, sphere.z)
+		);
+		let radius: f32 = sphere.w * virtual_shadow_texels_per_meter(pages.page_frame.constants, level);
+		let center: vec2f = vec2f(position.x, position.y);
+		// A sphere wholly outside the level frees nothing there.
+		if (virtual_shadow_square_overlaps(center, radius)) {
+			for (let row: u32 = virtual_shadow_page_of(center.y - radius); row <= virtual_shadow_page_of(center.y + radius); row = row + 1) {
+				for (let column: u32 = virtual_shadow_page_of(center.x - radius); column <= virtual_shadow_page_of(center.x + radius); column = column + 1) {
+					let slot: u32 = virtual_shadow_slot(pages.page_frame.origin_pages[level], level, vec2u(column, row));
+					let entry: u32 = atomic_load(pages.page_table.entries[slot]);
+					if ((entry & PAGE_ALLOCATED) != 0) {
+						atomic_store(pages.page_owners.owners[entry & PAGE_PHYSICAL_MASK], 0);
+						atomic_store(pages.page_table.entries[slot], 0);
+					}
+				}
+			}
+		}
+	}
+}
+
+main: fn (input: StageInput, scene: Scene, pages: VirtualShadowPages) -> void {
+	let record: u32 = pages.page_frame.changed_first + input.thread_id.x;
+	if (record >= pages.page_frame.changed_end) {
+		return;
+	}
+	let old_bounds: vec4f = pages.caster_bounds[record];
+	let old_level: u32 = pages.caster_levels[record];
+	// A record past the scene's last is gone, and has no bounds.
+	let new_bounds: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let new_level: u32 = 0;
+	if (record < pages.page_frame.instance_count) {
+		let mesh: Mesh = scene.meshes[record];
+		let level: MeshLevel = scene.mesh_levels[mesh.level & MESH_LEVEL_MASK];
+		new_bounds = world_sphere(mesh.model, level.bounding_sphere);
+		new_level = mesh.level;
+	}
+	let moved: bool = old_bounds.x != new_bounds.x || old_bounds.y != new_bounds.y || old_bounds.z != new_bounds.z
+		|| old_bounds.w != new_bounds.w;
+	if (moved == false && old_level == new_level) {
+		return;
+	}
+	if (old_bounds.w > 0.0) {
+		free_pages_under(scene, pages, old_bounds);
+	}
+	if (new_bounds.w > 0.0) {
+		free_pages_under(scene, pages, new_bounds);
+	}
+	pages.caster_bounds[record] = new_bounds;
+	pages.caster_levels[record] = new_level;
+}

@@ -11,6 +11,8 @@ pub fn tokenize(source: &str) -> Vec<&str> {
 		if last.is_alphabetic() || last == '_' {
 			c.is_alphanumeric() || c == '_'
 		} else if last.is_numeric() {
+			// This rescans the token per character. Tokens are names, numbers, and paths of a few dozen characters, so
+			// the rescan is linear in a short length; only a pathological multi-kilobyte numeric literal notices.
 			c.is_alphanumeric() || c == '_' || c == '.' && token.chars().all(|character| character.is_ascii_digit())
 		} else if last == '.' {
 			c.is_numeric()

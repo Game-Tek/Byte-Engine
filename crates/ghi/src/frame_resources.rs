@@ -74,7 +74,7 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 	/// handle.
 	///
 	/// Use it for resources that need a private copy per frame in flight, such as synchronizers, descriptor sets, and
-	/// dynamic buffers and images. Every copy exists from the start, so no frame ever shares a copy with another frame
+	/// buffers and images with a copy per frame. Every copy exists from the start, so no frame ever shares a copy with another frame
 	/// in flight. Resolve a frame's copy with [`Self::nth_handle`].
 	///
 	/// # Panics

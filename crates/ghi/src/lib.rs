@@ -52,11 +52,11 @@ pub(crate) use crate::frame_resources::*;
 #[cfg(target_os = "windows")]
 pub(crate) use crate::graphics_hardware_interface::PipelineLayoutHandle;
 pub use crate::graphics_hardware_interface::{
-	AllocationHandle, AttachmentInformation, BaseBufferHandle, BaseImageHandle, BottomLevelAccelerationStructureHandle,
-	BufferHandle, ClearValue, CommandBufferHandle, CounterHandle, DescriptorSetHandle, DispatchExtent, DynamicBufferHandle,
-	DynamicImageHandle, FrameKey, ImageGroupHandle, ImageHandle, ImageOrSwapchain, LoadOp, MeshHandle, PipelineHandle,
-	PresentKey, PresentationModes, QueueHandle, QueueSelection, RGBAu8, SamplerHandle, ShaderBindingTableHandle, ShaderHandle,
-	StoreOp, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TextureViewTypes, TopLevelAccelerationStructureHandle,
+	AttachmentInformation, BaseBufferHandle, BaseImageHandle, BottomLevelAccelerationStructureHandle, BufferHandle, ClearValue,
+	CommandBufferHandle, CounterHandle, DescriptorSetHandle, DispatchExtent, FrameKey, ImageGroupHandle, ImageHandle,
+	ImageOrSwapchain, LoadOp, MeshHandle, PipelineHandle, PresentKey, PresentationModes, QueueHandle, QueueSelection, RGBAu8,
+	SamplerHandle, ShaderBindingTableHandle, ShaderHandle, StoreOp, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
+	TextureViewTypes, TopLevelAccelerationStructureHandle,
 };
 pub(crate) use crate::graphics_hardware_interface::{MasterHandle, PrivateHandle};
 pub use crate::window::Window;
@@ -112,16 +112,17 @@ pub use pipelines::ShaderParameter;
 pub use queue::Queue;
 pub use shader::{DescriptorSetLayout, ResourceKind, ResourceSlot, ShaderDescriptorSet, ShaderResourceDescriptor};
 use smallvec::SmallVec;
+pub(crate) use types::aligned_copy_pitches;
 pub use types::{
 	AccessPolicies, BufferCopyDescriptor, BufferDescriptor, BufferImageCopyDescriptor, BufferStridedRange, ChannelBitSize,
-	ChannelLayout, DataTypes, DeviceAccesses, Encodings, FilteringModes, Formats, Layouts, SamplerAddressingModes,
-	SamplingReductionModes, ShaderTypes, Size, Stages, TEXTURE_COPY_PITCH_ALIGNMENT, UseCases, Uses, WorkloadTypes,
-	aligned_copy_pitches,
+	ChannelLayout, Copies, DataTypes, Encodings, FilteringModes, Formats, HostAccess, ImageCopyLayout, Layouts,
+	SamplerAddressingModes, SamplingReductionModes, ShaderTypes, Size, Stages, TEXTURE_COPY_PITCH_ALIGNMENT, Uses,
+	WorkloadTypes,
 };
 
-/// The most frames a context keeps in flight, and so the most per-frame copies a dynamic resource has.
+/// The most frames a context keeps in flight, and so the most copies a resource with a copy per frame has.
 ///
-/// Rewrite a dynamic buffer this many frames in a row to reach every copy.
+/// Rewrite a buffer with a copy per frame this many frames in a row to reach every copy.
 pub const MAX_FRAMES_IN_FLIGHT: usize = 3;
 
 /// Clamps a scissor rectangle to the active render area so every backend accepts it.

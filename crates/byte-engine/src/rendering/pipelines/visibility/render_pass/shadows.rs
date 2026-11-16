@@ -19,12 +19,14 @@ use super::super::mesh_dispatch::PhaseDispatches;
 use super::super::shader_data::ShaderViewData;
 use super::super::shadow_selection::{ShadowLayout, SunShadow};
 use super::super::shadow_updates::{ShadowDraw, ShadowDraws, ShadowImage};
+use super::super::virtual_shadows::{DirectionalShadowTechnique, VirtualShadowSettings};
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
+use super::virtual_shadows::VirtualShadowMaps;
 use super::{
 	ComputeStage, OcclusionPhase, Pipelines, StageCounters, opaque_layer_pipelines, record_compute_stages,
 	record_meshlet_dispatches,
 };
-use crate::rendering::csm::{CASTER_REACH, CascadeFrame, EDGE_TEXELS, SIZE_STEPS_PER_OCTAVE};
+use crate::rendering::csm::{CASTER_REACH, CascadeFrame, EDGE_TEXELS, MIN_CASTER_TEXELS, SIZE_STEPS_PER_OCTAVE};
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
@@ -212,6 +214,8 @@ pub(crate) struct ShadowMaps {
 	pub(crate) cone: [ghi::BaseImageHandle; LOCAL_SHADOW_SIZE_CLASS_COUNT],
 	/// One image per size class, the smallest first.
 	pub(crate) point: [ghi::BaseImageHandle; LOCAL_SHADOW_SIZE_CLASS_COUNT],
+	/// The first sun's virtual shadow map, which it samples instead of cascades under the virtual technique.
+	pub(crate) virtual_maps: VirtualShadowMaps,
 }
 
 /// The fewest layers the cone image keeps: Metal requires two to create the array texture that material evaluation
@@ -226,7 +230,9 @@ fn depth_pyramid_extent(resolution: u32, suns: usize) -> Extent {
 }
 
 impl ShadowMaps {
-	/// Creates the shadow maps and requests their depth pipelines. `resolution` sizes the cascade depth pyramid for
+	/// Creates the shadow maps and requests their depth pipelines. `technique` and `virtual_settings` decide whether the
+	/// first sun gets a virtual shadow map and how large its pool is, and `instance_capacity` how many instance records
+	/// its invalidation follows. `resolution` sizes the cascade depth pyramid for
 	/// cascades of that many texels per side, a multiple of 16 so the pyramid reduces them in whole cells; every frame's
 	/// [`ShadowWork::cascade_resolution`] draws them at it. Every map image starts empty, and [`Self::prepare`] sizes
 	/// it to the maps the budget gives it.
@@ -238,11 +244,13 @@ impl ShadowMaps {
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		resolution: u32,
+		technique: DirectionalShadowTechnique,
+		virtual_settings: VirtualShadowSettings,
+		instance_capacity: u32,
 	) -> Self {
 		fn depth_map(format: ghi::Formats, name: &str) -> ghi::image::Builder<'_> {
 			ghi::image::Builder::new(format, ghi::Uses::DepthStencil | ghi::Uses::Image)
 				.name(name)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.optimized_clear_value(ghi::ClearValue::Depth(0.0))
 		}
 		let directional: ghi::BaseImageHandle = context
@@ -257,7 +265,6 @@ impl ShadowMaps {
 			ghi::image::Builder::new(ghi::Formats::R16UNORM, ghi::Uses::Storage | ghi::Uses::Image)
 				.name(name)
 				.extent(depth_pyramid_extent(resolution, 1))
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.mip_levels(DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT)
 		};
 		let directional_depth_pyramid: ghi::BaseImageHandle =
@@ -299,6 +306,13 @@ impl ShadowMaps {
 			directional_depth_minimum_pyramid,
 			cone,
 			point,
+			virtual_maps: VirtualShadowMaps::new(
+				context,
+				pipeline_manager,
+				technique == DirectionalShadowTechnique::Virtual,
+				virtual_settings,
+				instance_capacity,
+			),
 		}
 	}
 
@@ -332,7 +346,8 @@ impl ShadowMaps {
 			coverage.map(|coverage| coverage.local),
 		);
 		let [depth_pyramid_pipeline] = self.depth_pyramid_pipeline.resolve(pipeline_manager)?;
-		let cascade_count = SHADOW_CASCADE_COUNT * work.suns.len();
+		// The layout counts only the suns that draw cascades, none under virtual shadow maps.
+		let cascade_count = SHADOW_CASCADE_COUNT * work.suns.len().min(work.layout.suns);
 		let runs = shadow_runs(&work.draws);
 		// One thread per 4x4 texel block: each SIMD-width workgroup reduces four by two cells, four threads per cell.
 		let depth_pyramid = ComputeStage {
@@ -347,6 +362,8 @@ impl ShadowMaps {
 		};
 		let (directional, cone, point) = (self.directional, self.cone, self.point);
 		let directional_extent = Extent::square(work.cascade_resolution);
+		// Normalized device x spans two units across a map.
+		let minimum_cascade_caster_extent = 2.0 * MIN_CASTER_TEXELS / work.cascade_resolution as f32;
 		let class_extent = |size_class| Extent::square(local_shadow_map_resolution(size_class));
 
 		// An image without maps drops its memory; one with maps holds every map the budget kept for its kind. Every image
@@ -394,21 +411,28 @@ impl ShadowMaps {
 			// workgroup culls its meshlets against a batch of views, so each instance's data is read once per batch instead
 			// of once per view. Only the run's layers are cleared, so every other map keeps what it holds.
 			let record_run = |c: &mut ghi::implementation::CommandBufferRecording, run: &ShadowRun| {
-				let (name, target, extent, pipelines) = match run.image {
+				// Only orthographic cascades skip small casters; a perspective map's widths change with distance.
+				let (name, target, extent, pipelines, minimum_caster_extent) = match run.image {
 					ShadowImage::Directional => (
 						"Directional Shadow Map",
 						directional,
 						directional_extent,
 						directional_pipelines,
+						minimum_cascade_caster_extent,
 					),
-					ShadowImage::Cone(size_class) => {
-						("Cone Shadow Map", cone[size_class], class_extent(size_class), local_pipelines)
-					}
+					ShadowImage::Cone(size_class) => (
+						"Cone Shadow Map",
+						cone[size_class],
+						class_extent(size_class),
+						local_pipelines,
+						0.0,
+					),
 					ShadowImage::Point(size_class) => (
 						"Point Shadow Map",
 						point[size_class],
 						class_extent(size_class),
 						local_pipelines,
+						0.0,
 					),
 				};
 				c.start_region(|label| label.write_str(name));
@@ -422,7 +446,15 @@ impl ShadowMaps {
 				let c = c.start_render_pass(extent, &attachments);
 				let ranges = dispatches.opaque_layer.into_iter().zip(pipelines);
 				let (first_view, count) = (run.first_view as usize, run.count as usize);
-				record_meshlet_dispatches(c, descriptor_sets, OcclusionPhase::Disabled, ranges, first_view, count);
+				record_meshlet_dispatches(
+					c,
+					&descriptor_sets,
+					OcclusionPhase::Disabled,
+					ranges,
+					first_view,
+					count,
+					minimum_caster_extent,
+				);
 				c.end_render_pass();
 				c.end_region();
 			};
@@ -450,7 +482,7 @@ impl ShadowMaps {
 /// [`ShadowWork::receiver_fit`].
 pub(super) struct CascadeFitPass {
 	receiver_fit_descriptor_set: ghi::DescriptorSetHandle,
-	receiver_fit_parameters: ghi::DynamicBufferHandle<ReceiverFitShaderData>,
+	receiver_fit_parameters: ghi::BufferHandle<ReceiverFitShaderData>,
 	/// The box each cascade's receivers fill. The linear depth pyramid pass merges every frame's receivers into it,
 	/// and the fit resets it after reading, so it is cleared once, before its first frame.
 	receiver_bounds: ghi::BufferHandle<[u32; RECEIVER_BOUNDS_PER_CASCADE * RECEIVER_FIT_CASCADES]>,
@@ -470,16 +502,13 @@ impl CascadeFitPass {
 	) -> Self {
 		let receiver_fit_descriptor_set =
 			set_layouts::CASCADE_FIT.create_set(context, "Directional Shadow Receiver Fit Descriptor Set");
-		let receiver_fit_parameters = context.build_dynamic_buffer(
+		let receiver_fit_parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Directional Shadow Receiver Fit Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
-		let device_buffer = |name, uses| {
-			ghi::buffer::Builder::new(ghi::Uses::Storage | uses)
-				.name(name)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-		};
+		let device_buffer = |name, uses| ghi::buffer::Builder::new(ghi::Uses::Storage | uses).name(name);
 		let receiver_bounds = context.build_buffer(device_buffer(
 			"Directional Shadow Receiver Bounds",
 			ghi::Uses::TransferDestination,
@@ -539,7 +568,7 @@ impl CascadeFitPass {
 		let fitted_cascades = (SHADOW_CASCADE_COUNT * receiver_fit.len()) as u32;
 		let fits_receivers = fitted_cascades > 0;
 		if fits_receivers {
-			*frame.get_mut_dynamic_buffer_slice(self.receiver_fit_parameters) = receiver_fit_shader_data(
+			*frame.map(self.receiver_fit_parameters) = receiver_fit_shader_data(
 				screen_view_data(sink, sink.extent()),
 				sink.view(),
 				receiver_fit,
@@ -547,7 +576,6 @@ impl CascadeFitPass {
 				updated_cascades,
 				drawn_cascades,
 			);
-			frame.sync_buffer(self.receiver_fit_parameters);
 		}
 		// A new buffer holds anything; the fit zeroes it after every read from then on.
 		let clear_bounds = fits_receivers && !self.bounds_cleared.swap(true, std::sync::atomic::Ordering::Relaxed);

@@ -58,20 +58,39 @@ pub(crate) fn online_docs_url(path: &str) -> String {
 	)
 }
 
-/// Names the current vertex invocation's vertex index.
+/// Names the symbol a vertex shader's `input.vertex_index` lowers to: the current invocation's vertex index.
 ///
-/// Vertex shaders can read this implicit `u32` value as `vertex_index` without declaring an
-/// interface input. Each graphics backend supplies its native vertex system value.
-pub const VERTEX_INDEX_BUILTIN: &str = "vertex_index";
+/// Each graphics backend binds it to its native vertex system value, and the VM to
+/// [`builtin_vertex_index_slot`](crate::vm::builtin_vertex_index_slot). The `_besl_stage_` prefix, shared by every
+/// stage-input symbol, keeps the field's own name free for the shader's variables, so a `let vertex_index` can't
+/// collide with it after lowering.
+pub const VERTEX_INDEX_BUILTIN: &str = "_besl_stage_vertex_index";
 
-/// Names the current vertex invocation's instance index.
+/// Names the symbol a vertex shader's `input.instance_index` lowers to: the current invocation's instance index.
 ///
-/// Vertex shaders can read this implicit `u32` value as `instance_index` without declaring an
-/// interface input. Each graphics backend supplies its native instance system value.
-pub const INSTANCE_INDEX_BUILTIN: &str = "instance_index";
+/// Each graphics backend binds it to its native instance system value, and the VM to
+/// [`builtin_instance_index_slot`](crate::vm::builtin_instance_index_slot).
+pub const INSTANCE_INDEX_BUILTIN: &str = "_besl_stage_instance_index";
+
+/// Names the symbol a fragment shader's `input.primitive_index` lowers to: the index of the primitive that produced
+/// the current fragment.
+///
+/// It counts the primitives of one draw from zero. Each graphics backend binds it to its native primitive ID, and the
+/// VM to [`builtin_primitive_index_slot`](crate::vm::builtin_primitive_index_slot).
+pub const PRIMITIVE_INDEX_BUILTIN: &str = "_besl_stage_primitive_index";
 
 /// Names the collision-free semantic output used for a structural vertex `position` field.
 pub const STRUCTURAL_POSITION_OUTPUT: &str = "_besl_interface_position";
+
+/// Names the vertex interface field that picks the render target array layer a primitive rasterizes into.
+///
+/// A vertex shader returns it like `position`: it takes no varying location, the next stage doesn't declare it, and
+/// each graphics backend writes it to its native layer output. Mesh shaders pick the layer with
+/// `set_mesh_primitive_render_target_array_index` instead.
+pub const RENDER_TARGET_ARRAY_INDEX_FIELD: &str = "render_target_array_index";
+
+/// Names the collision-free semantic output used for a structural vertex [`RENDER_TARGET_ARRAY_INDEX_FIELD`] field.
+pub const STRUCTURAL_RENDER_TARGET_ARRAY_INDEX_OUTPUT: &str = "_besl_interface_render_target_array_index";
 
 /// Names the built-in struct that `intersect` returns and `invoke` takes.
 pub const HIT_STRUCT: &str = "Hit";
@@ -98,6 +117,14 @@ pub const HIT_MEMBERS: [(&str, &str); 8] = [
 /// named `position`. The legacy flat interface spelling remains valid during shader migration.
 pub fn is_position_output(name: &str) -> bool {
 	matches!(name, "position" | STRUCTURAL_POSITION_OUTPUT)
+}
+
+/// Reports whether an emitted output name carries the native render target array layer.
+///
+/// Backends call this where they call [`is_position_output`], to write the output to their layer builtin instead of a
+/// varying.
+pub fn is_render_target_array_index_output(name: &str) -> bool {
+	name == STRUCTURAL_RENDER_TARGET_ARRAY_INDEX_OUTPUT
 }
 
 /// Returns the `output` declaration that `expression` names, looking through parentheses, or `None` when it names

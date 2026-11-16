@@ -62,7 +62,12 @@ impl RenderPass {
 			(depth, ghi::ClearValue::Depth(0.0)),
 		]
 		.map(|(target, clear)| {
-			ghi::AttachmentInformation::new(target, ghi::Layouts::RenderTarget, ghi::LoadOp::Clear(clear), ghi::StoreOp::Store)
+			ghi::AttachmentInformation::new(
+				target,
+				ghi::Layouts::RenderTarget,
+				ghi::LoadOp::Clear(clear),
+				ghi::StoreOp::Store,
+			)
 		});
 
 		Self {
@@ -94,7 +99,7 @@ impl RenderPass {
 
 		let camera_data_buffer = sm.camera_data_buffer;
 
-		let camera_data_buffer = frame.get_mut_dynamic_buffer_slice(camera_data_buffer);
+		let camera_data_buffer = frame.map(camera_data_buffer);
 
 		camera_data_buffer[sink.index()] = CameraShaderData {
 			vp: sink.view_projection().into(),

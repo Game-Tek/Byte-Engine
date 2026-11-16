@@ -67,6 +67,19 @@ at its deadlines, one wait for each fire.
 | Spawn | A spawned task runs in the same poll as the task that spawned it, after the tasks already woken. |
 | Repeat | The same sequence of advances, messages, and spawns runs the tasks in the same order. |
 
+## Attached tasks
+
+An attached task is the behavior of a kind: the runtime starts one for each
+entity that gets a component of that kind, owned by that entity.
+
+| Rule | Behavior |
+| --- | --- |
+| Start | At the first advance or poll after the entity gets the component. Entities that got it before the kind was attached start nothing. |
+| Once | One task per entity and kind. A component that replaces an earlier one of the same kind starts nothing. |
+| Input | The entity's handle and the component the entity got. |
+| Owner | The entity. Deleting it ends the task, as for any task spawned on an entity. |
+| Order | Within one start, entities start in the order they got their component; kinds start in the order they were attached. |
+
 ## Rust API
 
 - [`gameplay::tasks`](/docs/api/latest/byte_engine/gameplay/tasks)

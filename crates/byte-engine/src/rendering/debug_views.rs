@@ -23,7 +23,7 @@ use std::{
 use serde::Serialize;
 use smallvec::SmallVec;
 
-use crate::configuration::{ConfigurationEventId, ConfigurationPort, ConfigurationUpdate, ConfigurationValue};
+use crate::configuration::{Accepts, ConfigurationEventId, ConfigurationPort, ConfigurationUpdate, ConfigurationValue};
 use crate::rendering::pipelines::visibility::VisibilityFeatures;
 
 /// The most debug targets a sink's pool holds, as many as the shaders' `debug_view_targets` arrays declare.
@@ -234,6 +234,17 @@ impl DebugViewRegistry {
 			}),
 		}
 		self.publish();
+	}
+
+	/// Returns the `<pass>.<view>` name of every registered view, each shown with `true` or hidden with `false`, and
+	/// whether it shows now, to declare on the `render.debug.view.` port.
+	pub(crate) fn parameters(&self) -> impl Iterator<Item = (String, Accepts, ConfigurationValue)> + '_ {
+		self.passes.iter().flat_map(|pass| {
+			pass.views.iter().enumerate().map(move |(index, view)| {
+				let shown = pass.shown & 1 << index != 0;
+				(format!("{}.{view}", pass.name), Accepts::Bool, ConfigurationValue::Bool(shown))
+			})
+		})
 	}
 
 	/// Shows `view` of `pass`, or hides it and frees its slot. Hiding a hidden view or showing a shown one changes

@@ -401,13 +401,21 @@ pub(super) enum ImageInstruction {
 		slot: ResourceSlot,
 		coord: usize,
 	},
-	ImageAtomicOr {
+	/// Applies `operation` to an unsigned storage-image texel and writes the texel's previous value to `register`.
+	ImageAtomic {
+		operation: AtomicOperation,
 		register: usize,
 		slot: ResourceSlot,
 		coord: usize,
 		value: usize,
 	},
 	WriteImage {
+		slot: ResourceSlot,
+		coord: usize,
+		value: usize,
+	},
+	/// Writes an unsigned texel of a storage image.
+	WriteImageU32 {
 		slot: ResourceSlot,
 		coord: usize,
 		value: usize,
@@ -494,6 +502,7 @@ pub(super) enum InvocationBuiltin {
 	ThreadIdx,
 	ThreadPosition,
 	ThreadId,
+	ThreadLayer,
 	ThreadgroupPosition,
 	SubgroupLaneIndex,
 	OutputExtent,
@@ -515,6 +524,7 @@ impl InvocationBuiltin {
 			InvocationBuiltin::ThreadIdx => "thread_idx",
 			InvocationBuiltin::ThreadPosition => "thread_position",
 			InvocationBuiltin::ThreadId => "thread_id",
+			InvocationBuiltin::ThreadLayer => "thread_layer",
 			InvocationBuiltin::ThreadgroupPosition => "threadgroup_position",
 			InvocationBuiltin::SubgroupLaneIndex => "subgroup_lane_index",
 			InvocationBuiltin::OutputExtent => "output_extent",
@@ -532,10 +542,11 @@ impl InvocationBuiltin {
 
 	/// Returns the builtin that a zero-argument intrinsic call named `name` reads, if it reads one.
 	pub(super) fn from_name(name: &str) -> Option<Self> {
-		const ALL: [InvocationBuiltin; 15] = [
+		const ALL: [InvocationBuiltin; 16] = [
 			InvocationBuiltin::ThreadIdx,
 			InvocationBuiltin::ThreadPosition,
 			InvocationBuiltin::ThreadId,
+			InvocationBuiltin::ThreadLayer,
 			InvocationBuiltin::ThreadgroupPosition,
 			InvocationBuiltin::SubgroupLaneIndex,
 			InvocationBuiltin::OutputExtent,

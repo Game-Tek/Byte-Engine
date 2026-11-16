@@ -61,7 +61,7 @@ impl BaseApplication {
 		let parameters = layer_parameters(parameters, configuration, std::env::vars(), std::env::args());
 
 		let metrics = Arc::new(Metrics::new());
-		let trace = parameters.iter().any(|parameter| parameter.name == "trace");
+		let trace = parameters.iter().any(|parameter| parameter.is("trace"));
 		install_subscriber(
 			Arc::clone(&metrics),
 			trace,
@@ -96,7 +96,7 @@ impl BaseApplication {
 			application
 				.parameters
 				.iter()
-				.map(|p| format!("{}={}", p.name, p.value))
+				.map(|p| format!("{}={}", p.name(), p.value()))
 				.collect::<Vec<String>>()
 				.join(", ")
 		);
@@ -216,7 +216,11 @@ fn install_subscriber(metrics: Arc<Metrics>, trace: bool, log_filter: Option<&st
 		}
 		#[cfg(not(feature = "tracy"))]
 		{
-			logger.try_init().is_ok()
+			let logger = logger.build();
+			let max_level = logger.filter();
+			log::set_boxed_logger(Box::new(EngineLogger(logger)))
+				.map(|()| log::set_max_level(max_level))
+				.is_ok()
 		}
 	};
 
@@ -229,6 +233,34 @@ fn install_subscriber(metrics: Arc<Metrics>, trace: bool, log_filter: Option<&st
 		log::warn!(
 			"Byte-Engine could not install its logger. The most likely cause is that the application installed another logger before creating the application."
 		);
+	}
+}
+
+/// The `EngineLogger` struct keeps every log record for in-process tools, such as the editor's toasts, and holds them
+/// back from standard error while the [console](crate::inspector::console) owns the terminal, where writing them would
+/// draw over its screen.
+#[cfg(not(feature = "tracy"))]
+struct EngineLogger(env_logger::Logger);
+
+#[cfg(not(feature = "tracy"))]
+impl log::Log for EngineLogger {
+	fn enabled(&self, metadata: &log::Metadata) -> bool {
+		self.0.enabled(metadata)
+	}
+
+	fn log(&self, record: &log::Record) {
+		if !self.0.matches(record) {
+			return;
+		}
+		// Every record is kept for in-process tools; standard error gets it too unless the console owns the terminal.
+		super::log_capture::push_record(record);
+		if !super::log_capture::is_active() {
+			self.0.log(record);
+		}
+	}
+
+	fn flush(&self) {
+		self.0.flush();
 	}
 }
 

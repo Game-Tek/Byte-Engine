@@ -2,11 +2,12 @@ use std::num::NonZeroU32;
 
 use utils::Extent;
 
-use crate::{ClearValue, DeviceAccesses, Formats, ImageGroupHandle, PrivateHandle, PrivateHandles, UseCases, Uses};
+use crate::{ClearValue, Copies, Formats, ImageGroupHandle, PrivateHandle, PrivateHandles, Uses};
 
-/// The `Region` struct selects a rectangle in the base level of a 2D image.
-/// Write its rows through [`crate::frame::Frame::get_texture_slice_mut`], then
-/// submit them with [`crate::frame::Frame::sync_texture_region`].
+/// The `Region` struct selects a rectangle in the base level of a 2D image, so a copy can update part of an image
+/// that GPU work already uses.
+///
+/// Pass it to [`crate::BufferImageCopyDescriptor::region`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Region {
 	pub offset: [u32; 2],
@@ -14,11 +15,11 @@ pub struct Region {
 }
 
 impl Region {
-	/// Checks that a partial upload addresses a nonempty, uncompressed 2D color region.
+	/// Checks that a partial copy addresses a nonempty, uncompressed 2D color region.
 	pub(crate) fn validate(self, extent: Extent, format: Formats, layers: u32) {
 		assert!(
 			extent.depth() <= 1 && layers == 1 && format.bc_bytes_per_block().is_none() && !format.is_depth(),
-			"Texture region upload is unsupported. The most likely cause is a compressed, depth, layered, or 3D image."
+			"Image region copy is unsupported. The most likely cause is a compressed, depth, layered, or 3D image. Copy whole mips of such images instead."
 		);
 		assert!(
 			self.size[0] > 0
@@ -29,7 +30,7 @@ impl Region {
 				&& self.offset[1]
 					.checked_add(self.size[1])
 					.is_some_and(|end| end <= extent.height()),
-			"Texture upload region is out of bounds. The most likely cause is stale image dimensions or an empty rectangle."
+			"Image copy region is out of bounds. The most likely cause is stale image dimensions or an empty rectangle. Keep the region inside the image's base level."
 		);
 	}
 }
@@ -53,8 +54,7 @@ pub struct Builder<'a> {
 	pub(crate) extent: Extent,
 	pub(crate) format: Formats,
 	pub(crate) resource_uses: Uses,
-	pub(crate) device_accesses: DeviceAccesses,
-	pub(crate) use_case: UseCases,
+	pub(crate) copies: Copies,
 	pub(crate) mip_levels: u32,
 	pub(crate) array_layers: Option<NonZeroU32>,
 	pub(crate) cube_compatible: bool,
@@ -66,16 +66,15 @@ pub struct Builder<'a> {
 impl<'a> Builder<'a> {
 	/// Creates an image builder for the given format and resource uses.
 	///
-	/// The default image is static, has one mip level, and uses GPU-only memory.
-	/// Its name and array-layer count are `None`, and its extent is zero.
+	/// The default image has one copy and one mip level. Its name and array-layer count are `None`, and its extent is
+	/// zero.
 	pub fn new(format: Formats, resource_uses: Uses) -> Self {
 		Self {
 			name: None,
 			extent: Extent::cube(0, 0, 0),
 			format,
 			resource_uses,
-			device_accesses: DeviceAccesses::DeviceOnly,
-			use_case: UseCases::STATIC,
+			copies: Copies::One,
 			mip_levels: 1,
 			array_layers: None,
 			cube_compatible: false,
@@ -101,13 +100,12 @@ impl<'a> Builder<'a> {
 		self
 	}
 
-	pub fn device_accesses(mut self, device_accesses: DeviceAccesses) -> Self {
-		self.device_accesses = device_accesses;
-		self
-	}
-
-	pub fn use_case(mut self, use_case: UseCases) -> Self {
-		self.use_case = use_case;
+	/// Declares how many copies of the image exist.
+	///
+	/// Use [`Copies::PerFrame`] for images that later frames read at a negative frame offset, such as history,
+	/// through [`crate::DescriptorWrite::with_frame_offset`].
+	pub fn copies(mut self, copies: Copies) -> Self {
+		self.copies = copies;
 		self
 	}
 
@@ -150,8 +148,8 @@ impl<'a> Builder<'a> {
 
 	/// Makes the image a member of `group`, so it may share device memory with other members.
 	///
-	/// A member has no usable memory until [`crate::frame::Frame::place_image_group`] places the group. Only
-	/// static, device-only images can join a group. Next, build the image with
+	/// A member has no usable memory until [`crate::frame::Frame::place_image_group`] places the group. Only images
+	/// with one copy can join a group. Next, build the image with
 	/// [`crate::context::ContextCreate::build_image`].
 	pub fn group(mut self, group: ImageGroupHandle) -> Self {
 		self.group = Some(group);
@@ -164,6 +162,15 @@ impl<'a> Builder<'a> {
 
 	pub fn get_format(&self) -> Formats {
 		self.format
+	}
+
+	pub fn get_extent(&self) -> Extent {
+		self.extent
+	}
+
+	/// Returns the number of array layers, which is 1 when none were declared.
+	pub fn get_array_layers(&self) -> u32 {
+		self.array_layers.map_or(1, NonZeroU32::get)
 	}
 }
 

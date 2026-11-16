@@ -20,7 +20,7 @@ contract of the visibility pipeline. The design notes behind it are under
 | Sink | The per-frame destination the renderer builds from a window's extent and camera: the view, the extent, the exposure scale, and the frame interval. |
 | View | Projection and view matrices with near, far, vertical field of view, and aspect ratio, perspective or orthographic. |
 | Renderable mesh | An entity's geometry: a baked mesh by ID, a generated mesh, a sphere, or a box. A generated mesh may name its material; otherwise it takes the pipeline's default. |
-| Environment | A baked environment map, optionally scaled to deliver a given illuminance. Without one, the visibility pipeline uses an opaque black fallback. |
+| Environment | A baked environment map, optionally scaled to deliver a given illuminance. The newest one lights the scene. Without one, the visibility pipeline lights with the [sky environment](#sky-environment) when the atmosphere sky is installed, and with an opaque black fallback otherwise. |
 | Fog, lights, particle emitters | Specified with their own pages: [Light a scene](/docs/use/lighting), [lighting](/docs/reference/lighting), [particles](/docs/reference/particles). The newest fog wins. |
 | Debug mesh | A retained wireframe sphere, box, capsule, segment, or circle with a color, tested against scene depth or drawn over it. |
 
@@ -37,6 +37,7 @@ again.
 | Size changes | The sink follows the window's size in pixels when the user resizes it or the display's scale changes. |
 | Decorations on Wayland | A window with decorations asks the compositor to draw them. When the compositor draws none, as GNOME's doesn't, libdecor draws them, in the dark theme variant when the desktop prefers dark. Without libdecor, the window opens undecorated and one warning is logged. |
 | Text on Wayland | A key press that types a printable character reports it as `Keyboard.Character`. Holding a key doesn't repeat it. |
+| Feature changes | A `SetWindowFeatures` message on the application's message scope, naming the handle the window was created with, applies before the next frame. Only cursor capture changes on an open window; a change to another feature is logged and left out, and so is a message naming no open window. |
 
 ## Camera
 
@@ -44,12 +45,16 @@ again.
 | --- | --- | --- |
 | Field of view | 45° | Vertical, in degrees, above 0 and below 180. |
 | Exposure | 0 stops | The exposure scale is 2 to the power of the stops, within ±64. |
-| Near and far planes | 0.1 and 100 | Fixed. |
-| Projection | Perspective | Sinks always use a perspective view. |
+| Near and far planes | 0.1 and 100 | In meters along the view direction, the near plane above 0 and below the far plane, the far plane finite. |
+| Projection | Perspective | Sinks always use a perspective view. The aspect ratio comes from the sink's extent. |
 | F-number | ∞ | Above 0. ∞ is a pinhole, which keeps every depth in focus. |
 | Focus distance | 10 m | Above 0. The depth that's in focus. |
 | Sensor height | 24 mm | Above 0. |
-| Aspect ratio | | Stored but not read; the aspect ratio comes from the window's extent. |
+
+A camera created again under its own handle replaces every field of that
+camera from the next frame on. The inspector's
+[`CameraUpdate`](/docs/reference/inspector#entities-and-messages) message
+does this.
 
 The camera's position and orientation come from its shown transform. Up is
 +Y, unless the view direction is within 1 percent of vertical, when +Z is used.
@@ -131,7 +136,8 @@ animation steps once per frame.
 | Simple scene pipeline | `PipelineManager` | `main`, `depth` | As the scene pipeline, for prototyping. |
 | Visibility scene pipeline | `VisibilityPipelineManager` | `main`, `depth`, primitive and instance IDs | Before the deferred tasks thread starts. |
 | Particles | `ParticleManager` | `main` | After the scene pipeline, before the deferred tasks thread starts. |
-| Atmosphere sky | `atmosphere sky` | The scene color where depth is 0 | As the scene background. Black when bypassed or without a directional light. |
+| Atmosphere sky | `atmosphere sky` | The scene color where depth is 0, in the top `screen_height` of the rows | As the scene background. Black when bypassed or without a directional light. |
+| Sky environment | `atmosphere sky environment` | The [sky environment](#sky-environment)'s cubes | With the atmosphere sky, as the scene environment. Holds its last maps when bypassed. |
 | Height fog | `exponential-height-fog` | `Exponential Height Fog` | After the scene and particles, before lens flare, bloom, and tone mapping. |
 | Depth-of-field reference | `depth-of-field-reference` | `Depth of Field Reference`, and its mean as `Depth of Field Reference Red`, `Green`, and `Blue` | In place of depth of field. Its setup function installs it bypassed. |
 | Depth of field | `depth-of-field` | `Depth of Field`, and the unfiltered blur as `Depth of Field Gathered` | After scene light and fog, before motion blur, lens flare, bloom, and tone mapping. |
@@ -143,7 +149,8 @@ animation steps once per frame.
 | Color correction | `color-correction` | `Color Correction` | After everything that writes scene light, before a LUT and tone mapping. |
 | Color grading | `lut`, `aces-color-grading`, `aces2-color-grading`, `dwg-color-grading` | Their named outputs | After scene-linear effects. `lut` goes before tone mapping; the ACES, ACES 2.0, and DaVinci passes end in display color, so they take the tone mapper's place. |
 | Film grain | `film-grain` | `Film Grain` | After tone mapping or color grading and antialiasing, before the UI. |
-| UI | `ui` | `UI` | Before the renders every sink must see are published. |
+| UI | The name its setup call gives it; one pass per call | `<name>` and its persistent layer `<name> layer` | Before the renders every sink must see are published. Each pass draws over the passes before it. |
+| Debug overlay | `debug-overlay` | `debug-overlay` and `debug-overlay layer` | After the passes it should cover. |
 | Debug meshes | `debug-meshes` | `Debug Meshes` | After tone mapping and the overlays it should cover, before the first window. |
 
 A pass's `scene.<name>` or `pass.<name>` metric and its `render.pass.<name>`
@@ -153,6 +160,7 @@ a `stage.<name>` metric for each stage they record in a frame:
 | Pass | Stages |
 | --- | --- |
 | Atmosphere sky | `sky-transmittance` and `sky-multiple-scattering` in frames that rebuild the atmosphere, `sky-view` in frames that rebuild the view, and `sky-composite` |
+| Sky environment | In frames that regenerate it: `sky-environment-transmittance` and `sky-environment-multiple-scattering` when the atmosphere changed, `sky-environment-view`, `sky-environment-capture`, and `sky-environment-prefilter` |
 | Depth of field | `depth-of-field-prepare`, `depth-of-field-gather`, `depth-of-field-filter` |
 | Lens flare | `lens-flare-extract`, `lens-flare-downsample`, `lens-flare-features`, `lens-flare-composite` |
 | Bloom | `bloom-extract`, `bloom-downsample` and `bloom-upsample` when the levels need them, `bloom-composite` |
@@ -161,6 +169,23 @@ a `stage.<name>` metric for each stage they record in a frame:
 The default setup installs the visibility pipeline, particles, and a 1920 by
 1080 window, and no post-scene pass, so the scene reaches the swapchain through
 the copy.
+
+### Sky environment
+
+The atmosphere sky also generates the scene's environment, which the visibility pipeline lights
+with while the scene has no `Environment`. It holds the sky the first sink's camera sees, in the
+layout of a baked environment:
+
+| Property | Value |
+| --- | --- |
+| Radiance | The sky's radiance in each direction: the sky-view light for each lux of sunlight, times the sun's illuminance, unexposed, in nits. Black below the horizon wherever the sky is, and without the sun's disk, which the directional light carries. |
+| Specular cube | Six faces of 128 × 128 texels, RGBA16F, 8 levels. Level `l` holds the radiance prefiltered with the Trowbridge-Reitz (GGX) lobe of roughness `l / 7`, viewed along the texel's direction; level 0 holds the radiance. Each texel takes 64 samples. |
+| Irradiance cube | Six faces of 8 × 8 texels, RGBA16F, 1 level: the cosine-weighted mean radiance around the texel's direction, which is irradiance over π. Each texel takes 256 samples. |
+| Faces | +X, −X, +Y, −Y, +Z, −Z, oriented as a baked environment's. |
+| Intensity | 1. The sky is already in physical units, so no illuminance rescales it. |
+| Viewpoint | The first sink's camera height, rounded to the nearest meter. |
+| Regenerated | In full, before any of the frame's work that reads the environment, in each frame where the sun's direction or illuminance, the rounded height, or the haze changes. Other frames record nothing. |
+| Without a directional light | Black. |
 
 ### Pixel steps and fusion
 
@@ -207,7 +232,7 @@ The engine ships these fusions:
 | Motion blur | Shutter 8,333 µs, maximum blur radius 32 pixels, 8 taps of 1 to 32. It blurs camera turns and zooms only, by the shutter's share of the frame interval. |
 | Lens flare | Threshold 1, soft knee 0.5, maximum brightness 64, intensity 0.05, 4 ghosts of 1 to 8, ghost spacing 0.35, halo width 0.45, halo intensity 0.5, chromatic distortion 0.004, a blue tint, squeeze 1. |
 | Height fog | A layer's height falloff 0.2 and base height 0; a fog's albedo white, maximum opacity 1, anisotropy 0.7 within 0 to 1, ambient illuminance 0 lux, 16 light samples within 1 to 64. See [height fog lighting](/docs/reference/lighting#height-fog-lighting). |
-| Atmosphere sky | Earth's radii and scale heights, Mie anisotropy 0.76, ozone strength 1, ground albedo 0.3, the sun disk capped at 32,768 per channel; not settable through the setup function. |
+| Atmosphere sky | Earth's radii and scale heights, Mie anisotropy 0.76, haze 0.05 and 0 or more, ozone strength 1, ground albedo 0.3, the sunlight entering the atmosphere limited to 16 times the light's illuminance per channel, the sun disk capped at 32,768 per channel, screen height 0.5 within 0 to 1. The screen height is the fraction of the sink's rows, from the top and rounded up, that the sky covers: 0.5 is the upper half and 1 the full screen. Rows below it keep the scene's clear color, and the sky dispatches only the workgroups that cover its rows. |
 | Antialiasing | SMAA 1x Ultra: edge threshold 0.05 on perceptual luma √(L / (1 + L)), local contrast factor 2, 32 orthogonal and 16 diagonal search steps, corner rounding 0.25; not settable. |
 | Color correction | Exposure 0 EV, temperature 6,504 K within 1,000 to 15,000 K, tint 0 within −1 to 1, shadows 0 and highlights 0 within −1 to 1, contrast 1 above 0, split hue 0°, split amount 0 within 0 to 1, split balance 0 within −1 to 1, saturation 1 at 0 or above, density 0.5 within 0 to 1. The defaults leave the picture unchanged. |
 | Color grading | Look strength 1, within 0 to 1. Each channel is the input plus the strength times the LUT's change to it, in the encoding the LUT reads: scene-linear for `lut`, ACEScct for `aces-color-grading` and `aces2-color-grading`, DaVinci Intermediate for `dwg-color-grading`. |
@@ -327,7 +352,8 @@ they fall on. Each channel's tail and halo come from that channel's light alone.
 | Level weight w<sub>k,c</sub> | s × r<sup>k</sup> / the sum of r<sup>j</sup> over every level j, plus h<sub>c</sub> × g<sub>k,c</sub> / the sum of g<sub>j,c</sub> over every level j. The tail's and the halo's weights each sum to 1 before their share scales them. |
 | Tail exponent `p` | Sets r = 2<sup>2 − p</sup>, so the tail falls off as about 1 / distance<sup>p</sup>. At 2, every level carries the same share; at 3, each level carries half the share of the one before. |
 | Halation radius | The halo's radius, per channel, as a share of the sink's height. It sets g<sub>k,c</sub> = e<sup>−2 (k − m)²</sup>, where m = log<sub>2</sub>(radius in pixels / 2), held between 0 and the last level: the halo centers on the level whose texels span its radius and reaches about half a level to either side. |
-| Source | The scene with every channel held between 0 and the maximum brightness. Level 0 averages 2 × 2 blocks of pixels in groups of four. Within a block, each pixel weighs 1 / (1 + M) against the others, and within a group each block weighs 1 / (1 + M) by its average, where M is the largest channel. A single bright pixel therefore can't flicker the tail, and where every pixel is alike the weights cancel. |
+| Source | Level 0 averages 2 × 2 blocks of the scene in groups of four, and within a group each block weighs 1 / (1 + M) by its average, where M is the largest channel. With pixel weights, every channel of every pixel is first held between 0 and the maximum brightness, and within a block each pixel weighs 1 / (1 + M) against the others. Without them, a block is the plain average of its pixels, held between 0 and the maximum brightness. Either way a single bright pixel can't flicker the tail, and where every pixel is alike the weights cancel; pixel weights also hold back a cluster of bright pixels inside one block. |
+| Pixel weights | Off by default. Set by `BloomPassSettings::pixel_weights` and the `render.bloom.pixel-weights` parameter. |
 
 Rendering on demand, set by the `render-on-demand` parameter, renders a frame
 only when a window, camera, or pass state changed, a pass asked for one, or a
@@ -347,7 +373,7 @@ cameras or objects requests a redraw itself.
 | Resident lightmaps | 16 |
 | Texture slots per material | 16 |
 | Lights | 1,024; the rest are left out with one warning |
-| Shadowed lights | 4 directional with 4 cascades each, 16 cone, 16 point |
+| Shadowed lights | 4 directional with 4 cascades each, or 1 with 16 virtual shadow map levels; 16 cone, 16 point |
 | Light clusters | 16 by 8 by 24 |
 
 A renderable is drawn only once its mesh's coarsest detail level, every
@@ -368,11 +394,14 @@ error for it.
 | Detail level rule | Value |
 | --- | --- |
 | Allowed error | One pixel times `render.lod.bias`, converted to world units from the first sink's projection. |
+| Small instances | An instance is small while its bounding sphere's radius covers fewer than `render.lod.small-radius` pixels, measured at the sphere's nearest point to the camera. A small instance is allowed `render.lod.small-bias` times the error. |
 | Instance error | The level's error per distance times the straight-line distance from the camera to the nearest point of the bounding sphere, plus its constant error, divided by the largest model axis. Turning the camera never switches levels. |
 | Wanted level | The coarsest level whose error is within the allowed error; the finest otherwise. An instance around the camera, with zero scale, or without a finite error wants full detail. |
-| Drawn level | The wanted level when it's resident; otherwise the mesh's finest resident level. |
+| Drawn level | The wanted level when it's resident; otherwise the mesh's finest resident level. An instance of a merged mesh with no resident level isn't drawn. |
+| Replaced primitives | A primitive that [others of its mesh take over from](/docs/reference/assets#authored-detail-levels), as a billboard does from a plant, isn't drawn once the error they take over at is within the allowed error. Those others aren't drawn until then. Both sides measure distance with one bounding sphere, so exactly one of them is drawn. |
+| Forced level | With `render.lod.force` set, a primitive that takes over from others isn't drawn, and the primitives it would replace are. |
 | Shadows | Draw the same level as the camera. |
-| Ray tracing | Rays hit each primitive's coarsest level. |
+| Ray tracing | Rays hit each primitive's coarsest level. Rays never hit a merged mesh or a primitive that takes over from others; they hit the primitives it replaces instead, at any distance. |
 
 | Detail level residency rule | Value |
 | --- | --- |
@@ -382,6 +411,47 @@ error for it.
 | Loading | While a primitive's wanted level is finer than R, its levels from R − 1 down load and replace the finer levels it held before, one level at a time. A mesh loads the primitives that want more together, at most one such load at a time. |
 | Release | When a primitive's finer levels don't fit the geometry capacity, the primitive whose finer levels no instance has wanted for the longest releases them all and goes back to its base level, and the load tries again once that room frees. Levels an instance wanted in the last frame, and base levels, are never released. |
 | No room | When nothing can be released, the load waits and tries again on a later frame. Instances keep drawing their finest resident level. Other primitives of the same load that fit become resident. |
+
+| Merged mesh rule | Value |
+| --- | --- |
+| Geometry | A merged mesh repeats each primitive of its resource mesh once at each placement, with positions and normals transformed. It's built in memory and never stored. |
+| Meshlets | The copies' meshlets are listed copy by copy, in the order of the placements. Consecutive meshlets pack into one while it stays within 64 vertices and 126 triangles. A packed meshlet's sphere contains its meshlets' spheres. A meshlet packed from several, or from a copy whose scale isn't uniform, has no normal cone, so it's never culled for facing away. |
+| Source | The resource mesh is read whole, once, and kept in memory for every merged mesh that repeats it. |
+| Bounds | Each primitive's bounding sphere contains every copy's. |
+| Level error | The resource mesh's, times the largest scale component of any placement. |
+| Residency | A merged mesh holds no geometry when it loads. Each primitive holds one level: the level its instances want. When they want another level, finer or coarser, that level is built and replaces the one held. |
+| In view | An instance of a merged mesh wants a level only while it's in view: its bounding sphere, or that sphere carried any distance along the direction a directional light's light travels, isn't wholly behind one plane of the first sink's camera frustum. The first four directional lights count. An instance out of view wants nothing, keeps drawing the level its primitive holds, and is the first to release it. |
+| Release | When a primitive's level doesn't fit the geometry capacity, the release and no-room rules above apply, and a released primitive holds nothing until its level is built again. The pipeline logs one warning the first time a merged primitive finds no room and nothing to release. |
+| Limits | The copies must fit one primitive: 65,536 vertices, and 4,096 meshlets at full detail. A mesh that doesn't, or whose resource mesh is skinned or animated by a node, fails to load. |
+| Lightmap UVs | None. |
+| Simple pipeline | Doesn't draw merged meshes. |
+
+| Meshlet drawing rule | Value |
+| --- | --- |
+| Culling | Each view culls every meshlet of an instance it may show: by the view's frustum, by the meshlet's normal cone unless the material is double-sided, and, for the camera, by occlusion. The meshlets of a skinned instance that receives poses are never culled. |
+| Culling groups | Meshlets are culled 32 at a time. An instance that draws more than 8 meshlets has groups of its own, one for each 32 of its meshlets. The meshlets of smaller instances fill groups together, in instance order. |
+| Shared draws | The meshlets a group keeps are drawn together while they fit: consecutive kept meshlets share one draw of up to 128 vertices and 252 triangles, two full meshlets. They may belong to different instances, and to different views of one shadow batch. A meshlet that doesn't fit starts the next draw. |
+| Capacity | Each culling group of a large instance, and each meshlet of a small one, takes one of the `render.instances.meshlet-group-capacity` groups. |
+| Meshlet vertices | With `render.geometry.meshlet-vertices` on, the camera and shadow passes draw each meshlet from its own copy of its vertices' positions and UVs. A position there is rounded to 16 bits on each axis within its detail level's bounding sphere, so it lies within the sphere's radius over 65,535 of the vertex. Shading, rays, and lightmaps read the exact vertices. An instance that receives poses is drawn from its own posed vertices. |
+
+`render.directional-shadows.technique` selects how directional lights cast
+shadows: `cascades`, the default, follows the rules below, and `virtual`
+follows [virtual shadow maps](#virtual-shadow-maps).
+
+| Directional shadow rule | Value |
+| --- | --- |
+| Cascades | Four, splitting the range from the camera to `render.directional-shadows.distance` by the split blend between logarithmic and even. |
+| Fitting | With receivers fitting, each cascade shrinks to the surfaces the camera sees, after two small depth passes. With frustum fitting, it covers the whole slice without them. |
+| Stability | Each cascade is the smallest light-space square around its slice, padded by 17 texels, rounded in 8 steps per doubling, and snapped to a world-fixed texel grid. Casters start 100 m toward the light. |
+| Casters | A cascade draws an instance only when its bounding sphere is at least 32 of the cascade's texels across. An instance of a merged mesh is measured by the bounding sphere of its largest copy, not by the sphere around all of them. Skinned instances always draw. Cone and point maps draw instances of every size. |
+| Holding a receiver | A cascade holds a receiver that lies inside its square, at least 10 texels from its edge, and inside its depth range, from where its casters start to its far side, give or take one depth step of 1/65535. With receivers fitting, a cascade's far side is the surface farthest from the light that the camera sees in that cascade's slice, so a cascade often doesn't hold a receiver of another slice. |
+| Beyond the last cascade | No sun shadow. |
+| Receiver | The surface point, moved off its triangle along the triangle's normal on the sun's side by sin θ texels of the cascade it's tested in, where θ is the angle between that normal and the direction toward the sun. |
+| Receiver plane | Each filter tap compares the stored depth with the depth of the receiver's triangle plane at the tap's texel center, moved toward the sun by 1.5 depth steps of 1/65535 per cascade, from cascade 0 at 1.5 to cascade 3 at 6. Where the sun is within about 3° of the plane, the plane's depth changes across the map as it would at that angle, a slope of 20. |
+| Penumbra width | On each side of an occluder's edge, the occluder's distance above the receiver along the light times the tangent of the light's angular radius. |
+| Penumbra cascade | Among the cascades from the receiver's own up to the one after the cascade its occluders are searched in that hold the receiver, the one where the penumbra's width w, in its texels, makes the larger of 2 / w and w / 6 least; the lower-numbered one where two tie. A penumbra of no width counts as 0.1 millimeters. |
+| Penumbra filter | A tent over every texel whose center lies within the radius of the receiver on both axes. The radius is the penumbra's width in the penumbra cascade's texels, at least 2 and at most 8. Each texel weighs the radius less its center's distance from the receiver, on each axis, and the weights are normalized to sum to 1. |
+| Cascade fade | The candidates split at a width of √12 texels, where 2 / w and w / 6 are equal: those narrower and those at least that wide. Where the best candidate of the other side than the penumbra cascade's has less than 1.5 times the penumbra cascade's larger of 2 / w and w / 6, the result mixes the two cascades' results. The penumbra cascade's share is that ratio less 0.5: half where the two are equal, all of it at 1.5. Candidates on the penumbra cascade's own side never mix with it. |
 
 ### Terrains
 
@@ -405,28 +475,16 @@ camera, as detail levels do.
 | Node renderables | Each drawn node is a renderable of its own, with the detail levels, culling, shadows, and ray tracing of any renderable. Material parameters set on the terrain entity don't reach them, and they have no lightmap. |
 | Transform | A change to the terrain entity's transform moves every node it draws. Deleting the entity removes them. |
 
-| Directional shadow rule | Value |
-| --- | --- |
-| Cascades | Four, splitting the range from the camera to `render.directional-shadows.distance` by the split blend between logarithmic and even. |
-| Fitting | With receivers fitting, each cascade shrinks to the surfaces the camera sees, after two small depth passes. With frustum fitting, it covers the whole slice without them. |
-| Stability | Each cascade is the smallest light-space square around its slice, padded by 17 texels, rounded in 8 steps per doubling, and snapped to a world-fixed texel grid. Casters start 100 m toward the light. |
-| Holding a receiver | A cascade holds a receiver that lies inside its square, at least 10 texels from its edge, and inside its depth range, from where its casters start to its far side, give or take one depth step of 1/65535. With receivers fitting, a cascade's far side is the surface farthest from the light that the camera sees in that cascade's slice, so a cascade often doesn't hold a receiver of another slice. |
-| Beyond the last cascade | No sun shadow. |
-| Receiver | The surface point, moved off its triangle along the triangle's normal on the camera's side by sin θ texels of the cascade it's tested in, where θ is the angle between that normal and the direction toward the sun. |
-| Receiver plane | Each filter tap compares the stored depth with the depth of the receiver's triangle plane at the tap's texel center, moved toward the sun by 1.5 depth steps of 1/65535 per cascade, from cascade 0 at 1.5 to cascade 3 at 6. Where the sun is within about 3° of the plane, the plane's depth changes across the map as it would at that angle, a slope of 20. |
-| Penumbra width | On each side of an occluder's edge, the occluder's distance above the receiver along the light times the tangent of the light's angular radius. |
-| Penumbra cascade | Among the cascades from the receiver's own up to the one after the cascade its occluders are searched in that hold the receiver, the one where the penumbra's width w, in its texels, makes the larger of 2 / w and w / 6 least; the lower-numbered one where two tie. A penumbra of no width counts as 0.1 millimeters. |
-| Penumbra filter | A tent over every texel whose center lies within the radius of the receiver on both axes. The radius is the penumbra's width in the penumbra cascade's texels, at least 2 and at most 8. Each texel weighs the radius less its center's distance from the receiver, on each axis, and the weights are normalized to sum to 1. |
-| Cascade fade | Where the next best of those cascades has less than 1.5 times the penumbra cascade's larger of 2 / w and w / 6, the result mixes the two cascades' results. The penumbra cascade's share is that ratio less 0.5: half where the two are equal, all of it at 1.5. |
-
 ### Shadow maps
 
 Every shadow-casting light draws from one memory budget,
-`render.shadow-maps.budget-mb`, 128 MiB by default:
+`render.shadow-maps.budget-mb`, 128 MiB by default. With virtual shadow maps,
+directional lights take nothing from it: their pages come from their own
+[page pool](#virtual-shadow-maps).
 
 | Light | Shadow map | Cost |
 | --- | --- | --- |
-| The first directional light | Four cascades of 2,048 texels per side by default, 16-bit depth | 32 MiB at the default resolution |
+| The first directional light, with cascades | Four cascades of 2,048 texels per side by default, 16-bit depth | 32 MiB at the default resolution |
 | A cone light | One map of its size class, 16-bit depth | 32 KiB to 8 MiB |
 | A point light | A cube map of six faces of its size class, 16-bit depth | 192 KiB to 48 MiB |
 
@@ -455,8 +513,9 @@ shadows, with one warning in the log. At most 4 directional, 16 cone, and 16 poi
 ### Shadow map updates
 
 A shadow map isn't drawn again every frame. Each frame draws a set of updates
-chosen within an update budget, `render.shadow-maps.update-texels`, 16,777,216
-texels by default. One update draws one of these:
+chosen within an update budget, `render.shadow-maps.update-texels`, 10,485,760
+texels by default: two and a half cascades at 2,048 texels per side. One update
+draws one of these:
 
 | Update | Texels |
 | --- | --- |
@@ -464,9 +523,15 @@ texels by default. One update draws one of these:
 | One cone map | Its size class's texels per side squared |
 | One face of a point light's cube map | Its size class's texels per side squared |
 
+With virtual shadow maps, directional lights have no cascades to update:
+their pages stay cached instead, and every update is a cone map or a point cube
+face.
+
 Every frame draws cascades 0 and 1 of every shadowed directional light. Their
 texels count against the budget first, even when they exceed it. Every other
-update is a candidate: cascades 2 and 3, cone maps, and point cube faces.
+update is a candidate: cascades 2 and 3, cone maps, and point cube faces. The
+candidates share what's left of the budget, plus the budget that earlier frames
+carried over.
 
 Candidates are ordered in three tiers:
 
@@ -480,8 +545,17 @@ Age is the number of frames since the map was drawn. Importance is the largest
 number of sink pixels the light's shadow range covers in any sink, and for a
 cascade, the pixel count of the largest sink. Candidates draw in that order
 while their texels fit in what's left of the budget. A candidate that doesn't
-fit is skipped, and later candidates can still draw. When no candidate fits,
-the first one draws anyway.
+fit is skipped, and later candidates can still draw.
+
+The texels the candidates leave unspent carry over to the next frame, up to the
+texels of the largest candidate. A candidate that doesn't fit this frame draws
+once enough has carried over. With the default budget and one shadowed
+directional light, half a cascade is left each frame, so one of cascades 2 and 3
+draws every other frame, and each one every fourth frame.
+
+When no candidate fits, the first one draws anyway, past the budget, if it
+hasn't been drawn yet, or if cascades 0 and 1 take the whole budget, so that
+nothing carries over. A frame that draws past the budget carries nothing over.
 
 Until a map has been drawn, its light is lit without that shadow. A map that
 isn't drawn this frame keeps the view it was drawn with, and receivers sample
@@ -496,19 +570,52 @@ map. The image of each class grows when the class needs more maps than it holds,
 and shrinks only when the budget needs its memory. An image that changes size
 loses every map it holds.
 
+### Virtual shadow maps
+
+With `render.directional-shadows.technique` set to `virtual`, the first
+directional light casts shadows through a virtual shadow map, and other
+directional lights cast none. Its shadow is a clipmap of 16 levels around the
+first sink's camera. Each level is a map of 4,096 × 4,096 texels, split into
+32 × 32 pages of 128 × 128 texels. Only the pages that receivers need hold
+depth, in memory taken from one page pool, and a page keeps its depth across
+frames until something changes it.
+
+| Virtual shadow map rule | Value |
+| --- | --- |
+| Levels | 16. Level l spans `render.directional-shadows.first-level-size` × 2<sup>l</sup> meters per side, 4 m by default, and its texels measure that span over 4,096. |
+| Placement | Each level looks along the direction the light travels. It's centered on the first sink's camera across the light, snapped to whole pages, and its depth range reaches 1,000 m toward the light and 1,000 m away from it, from the camera's position along the light. |
+| Depth | 32-bit, larger toward the light: depth in 0 through 1 times 4,294,967,040, truncated. |
+| Reach | A receiver farther than `render.directional-shadows.distance` from the camera gets no sun shadow and needs no pages. |
+| Receiver level | ceil(log<sub>2</sub>(d × b / (0.4375 × s))), held between 0 and 15, where d is the receiver's distance from the camera, s the first level's size, and b `render.directional-shadows.level-bias`. |
+| Needed pages | Each opaque receiver of the first sink needs, in its level and in the next two coarser levels up to level 15, every page holding a texel within 16 texels of the receiver on both axes. |
+| Page pool | `render.directional-shadows.pool-pages` pages, 4,096 by default, at 64 KiB each. A needed page without depth takes a free page, then a page no receiver needed this frame. When none is left, it stays without depth this frame and is needed again the next. |
+| Cached pages | A page keeps its depth until its level moves so that the page leaves the level's square; the light's direction changes, which empties every page; an instance whose bounding sphere, before or after, reaches into the page appears, disappears, moves, changes the detail level it draws, or becomes drawable; or another page takes its memory. A skinned instance's pose doesn't empty a page. A page without depth is drawn again in the frame a receiver needs it. |
+| Depth across moves | A page's depth holds while the camera moves along the light: receivers compare against it from where its level stood along the light when the page was drawn. |
+| Casters | Opaque and masked instances, at least 32 of the level's texels across. Masked instances cast as if opaque. |
+| Holding a receiver | A level holds a receiver that lies at least 26 texels inside its square, so everything the sampler reads lies inside it, within its depth range, and whose needed pages in that level all hold depth. |
+| Receiver's level | The first level, from the one the receiver level rule gives up to two coarser, that holds the receiver. When none does, the receiver gets no sun shadow. |
+| Search level | The first level, from the receiver's, where the penumbra of an occluder 2 m above the receiver spans at most 12 of its texels and that holds the receiver; otherwise the receiver's level. |
+| Receiver, penumbra width, penumbra filter | As for cascades, with the level in the cascade's place. |
+| Receiver plane | As for cascades, but moved toward the sun by 5 mm plus half a texel of the level. |
+| Penumbra level | Among the receiver's level and the next two coarser levels that hold the receiver, the one where the penumbra's width w, in its texels, makes the larger of 2 / w and w / 6 least; the lower-numbered one where two tie. A penumbra of no width counts as 0.1 millimeters. |
+| Level fade | As the cascade fade, between the penumbra level and the best candidate on the other side of √12 texels. |
+| Blocker search and probes | Read cells of 8 × 8 texels within 12 texels of the receiver, each holding its texels' depth nearest and farthest from the light. The receiver is fully shadowed when every cell's farthest depth lies above its plane's highest point over the cells, and fully lit when no cell's nearest depth reaches its plane's lowest point. Otherwise the occluders' height is the mean of the nearest depths of the cells that rise above the plane at their centers. |
+| Transparent receivers, fog | No sun shadow. |
+
 ### Materials
 
 The pipeline accepts a material whose render model is `Visibility` with the
 `MaterialEvaluation` pass, which is what every `.bema` file and imported model
 bakes to. Its surface code is generated from the material's
 [BEMX graph](/docs/reference/bemx): into the material's own evaluation shader
-in `pipelines` mode, and into the shader of its phase in `uber` mode.
+in `pipelines` mode, and into the shader of its phase and kind in `uber` mode.
 
 | Rule | Value |
 | --- | --- |
 | Alpha mode | Opaque, masked with a cutoff, or blended; see [alpha modes](/docs/reference/bema#alpha-modes). Blended materials draw in the transparent phase. |
 | Masked coverage | The masked visibility and shadow passes evaluate each masked material's `opacity` in one coverage shader per pass kind, which holds one arm per distinct program and set of static values, in both evaluation modes. A masked material is drawn once both coverage shaders hold its arm, with the same development and release rules as uber `Coverage`. |
 | Double-sided | Draws without back-face culling, in the visibility and shadow passes. |
+| Mirrored | An instance whose [transform mirrors it](/docs/reference/world#transforms) culls the same faces as when it isn't mirrored, in the visibility and shadow passes. |
 | Variables | Programs that differ only in textures or dynamic values share one pipeline and one dispatch; each distinct set of static scalar and vector values takes its own. Texture variables take slots in declaration order, up to 16. Dynamic values number at most 16384 in all, counting every loaded material's and every entity's own. |
 | Layers | Every material evaluation shader takes the scene, visibility buffer, and material evaluation layers, and every closest-hit shader the scene and ray-traced scene layers. |
 
@@ -518,14 +625,16 @@ shade every pixel with the same surface and lighting:
 | Mode | Shaders | Work per phase |
 | --- | --- | --- |
 | `pipelines` | One evaluation shader per material program, specialized per set of static values | The material prepasses list each pipeline's pixels, then each pipeline shades its list. |
-| `uber` | One shader per phase that holds every material variant in the bake as one arm | One pass over the sink in 8 × 8-pixel tiles, without material prepasses. |
+| `uber` | One shader per phase and kind that holds every material variant of that phase and kind in the bake as one arm | One pass over the sink in 8 × 8-pixel tiles for each shader the frame uses, without material prepasses. |
 
 | Uber rule | Value |
 | --- | --- |
-| Arms | One per distinct program, set of static values, and phase. Variants that differ only in textures or dynamic values share an arm. |
-| Coverage | A material is drawn once the published shader of its phase holds its arm. A development build rebakes the shader when a material baked after it arrives; a release build logs one error for each material missing from the bake and doesn't draw it. |
-| Background | The opaque pass writes zero to `Lit` and `Diffuse Radiance History` at every pixel no opaque surface covers. |
-| Baked shaders | Material resources keep their graph instead of an evaluation shader. Every bake assembles both phases' shaders last, from every material variant in the store; they have no asset of their own. Changing the mode needs a forced rebake. |
+| Kinds | Each phase has two shaders: one for [translucent materials](#translucent-materials) and one for the rest. A material has an arm in exactly one of the four. |
+| Arms | One per distinct program, set of static values, phase, and kind. Variants that differ only in textures or dynamic values share an arm. |
+| Coverage | A material is drawn once the published shader of its phase and kind holds its arm. A development build bakes the shader again when a material baked after it arrives, because the stored materials are an input of the shader; a release build logs one error for each material missing from the bake and doesn't draw it. |
+| Background | The opaque pass of the materials that aren't translucent writes zero to `Lit`, and to `Diffuse Radiance History` when the project builds SSGI in, at every pixel no opaque surface covers. It runs every frame. |
+| Unused shaders | A shader other than the one that writes the background runs only in a frame that draws an instance whose material has an arm in it. |
+| Baked shaders | Material resources keep their graph instead of an evaluation shader. Every bake assembles the four shaders last, from every material variant in the store, and skips a shader whose materials didn't change; they have no asset of their own. Changing the mode makes every material stale, so the next bake processes them. |
 
 The evaluation shader writes the graph's surface into these properties. A surface
 input the graph leaves out takes its [BEMX default](/docs/reference/bemx#surface),
@@ -539,13 +648,112 @@ and a graph without a normal keeps the geometric one:
 | `roughness` | Half float | 0.5 |
 | `occlusion` | Half float, multiplying indirect diffuse light | 1 |
 | `emission` | Three half floats, added to the diffuse light | 0, 0, 0 |
+| `translucency` | Three half floats, in translucent materials only | 0, 0, 0 |
+| `subsurface_radius` | Three half floats, meters, in subsurface materials only | 0, 0, 0 |
+
+Lights reflect off a surface as if its roughness were at least 0.045, so the
+highlight of a smoother surface, such as calm water, stays finite. Reflected
+environment and screen-space light use the roughness as written.
 
 The surface's world-space normal is converted to the tangent frame. A BEMX
-`image` node samples its texture at the
-vertex UV with the derivatives the pipeline computed. Writing a normal or
-reading the tangent or bitangent makes the pipeline build the tangent frame for
-that material, and sampling a texture or reading texture coordinates makes it
-reconstruct the UV.
+`image` node samples its texture at its coordinates with the level of detail
+their change across the pixel selects: the derivatives the pipeline computed
+for the vertex UV, or the [measured change](/docs/reference/bemx#values-and-geometry)
+of coordinates the graph computes. A closest-hit shader sizes both from the
+ray's footprint. Writing a normal or reading the tangent or bitangent makes the
+pipeline build the tangent frame for that material, and sampling a texture at
+the vertex UV or reading texture coordinates makes it reconstruct the UV.
+
+A BEMX `time` node reads the frame clock's elapsed time in seconds, the clock
+every pipeline manager receives for the frame. Every pass of a frame reads the
+same time.
+
+### Translucent materials
+
+A material whose graph sets the BEMX
+[`translucency`](/docs/reference/bemx#surface) input is translucent, whatever
+value the input computes. Its evaluation shader lights the surface from both
+sides. No other material's shader holds that code: in `pipelines` mode each
+material has its own shader, and in `uber` mode translucent materials have a
+shader of their own in each phase.
+
+The far side of a surface is the side its shading normal points away from. A
+double-sided surface's normal points to the viewer's side.
+
+| Light | On a translucent surface |
+| --- | --- |
+| A light on the near side | Lights the surface as it does any other. |
+| A light on the far side | Adds diffuse light and no specular light. The diffuse light is the near side's, with `translucency` in place of the base color and the angle the light makes with the far side in place of the angle with the near side. |
+| Shadows | A light on the far side is shadowed by what lies between it and the surface, as a light on the near side is. The surface doesn't shadow itself. |
+| Environment | The surface adds the environment's irradiance on its far side, weighted as indirect diffuse light is, with `translucency` in place of the base color, whichever source lights the near side. |
+| Other indirect diffuse light | Screen-space and ray-traced indirect light and lightmaps light the near side only. |
+| Ray tracing | Rays that hit the surface read no `translucency`. |
+
+A graph that sets BEMX `thickness` is translucent with a `translucency`, in each
+channel, of `base_color` times the share of light that crosses the thickness
+`t` under that channel's [scattering profile](#subsurface-scattering):
+`¼·e^(−t/d) + ¾·e^(−t/(3d))`.
+
+### Subsurface scattering
+
+A material whose graph sets BEMX
+[`subsurface_radius`](/docs/reference/bemx#surface) is a subsurface material
+when `render.subsurface.enabled` was `true` at startup. Otherwise, and in the
+transparent phase, it shades as if it didn't scatter.
+
+Light spreads under the surface along Christensen and Burley's normalized
+diffusion profile. For a channel with albedo `A`, the `base_color` channel, and
+mean free path `ℓ`, the `subsurface_radius` channel, the light that leaves the
+surface a distance `r` from where it entered is:
+
+| Term | Value |
+| --- | --- |
+| Shape | `s = 1.85 − A + 7·|A − 0.8|³` |
+| Scale | `d = ℓ / s` |
+| Profile | `R(r) = (e^(−r/d) + e^(−r/(3d))) / (8π·d·r)`, which integrates to one over the plane |
+
+| Rule | Value |
+| --- | --- |
+| Scattered light | The diffuse light the surface receives: indirect, environment, and direct light, and the light crossing a translucent surface. Emission, specular light, reflections, and transmission don't scatter. |
+| Color | The scattered light is weighted by the square root of `base_color` where it enters and again where it leaves, so each pixel's diffuse light is `√A` times the profile-weighted average of `√A` times the light received around it. |
+| Neighbors | Light spreads between pixels of subsurface materials only. Pixels of other materials, and the background, neither give nor take scattered light. |
+| Distance | `r` is the distance in view space between the two surface points, depth included, so light crosses a step in depth only as far as the profile allows. |
+| Samples | The pass reads 32 points around each pixel, placed in the same pattern every frame. The pattern spreads them where the profile of the channel with the largest `d` is largest, out to the radius that holds 99.7 % of its light. |
+| Radius of zero | A pixel whose largest `d` covers less than one pixel keeps its own diffuse light. |
+| Normalization | Each pixel's result is divided by the sum of its samples' weights, so a surface lit evenly keeps its brightness. |
+| Ray tracing | Rays that hit the surface read no `subsurface_radius`; GI shades the surface as if it didn't scatter. |
+
+### Ambient occlusion
+
+GTAO, Jimenez and others' ground-truth ambient occlusion, estimates two values
+for each opaque pixel from the depth around it: its visibility, the
+cosine-weighted fraction of the hemisphere around its normal that nearby
+geometry leaves open, and its bent normal, the mean direction of that open
+part.
+
+| Rule | Value |
+| --- | --- |
+| Resolution | GTAO evaluates and filters at half the sink's size. Material evaluation reads the visibility at full size, and the bent normal filtered from the half-size image. |
+| Slices | `render.gtao.radial-rays` directions split into half as many slices. Each slice is the plane through the view direction and one screen direction. Each pixel turns its slices by its own angle, up to the spacing between them, and offsets its samples along each side by its own fraction of a step; both come from a fixed 64 × 64 blue-noise pattern tiled over the half-size image, the same in every frame. |
+| Horizons | Each slice finds the highest horizon on either side of the pixel among `render.gtao.samples-per-ray` depth samples per side, within `render.gtao.radius` world units. A sample's horizon fades to the lowest one, the surface's own tangent, over the outer 61.5 % of the radius. A horizon never drops below the tangent. |
+| Visibility | The slices' horizon arcs, integrated against the cosine around the normal and averaged, weighted by the length of the normal's projection onto each slice. |
+| Bent normal | The slices' arcs integrated against their direction, summed with the same weights and normalized. It lies within a quarter turn of the view vector, since every slice's visible arc holds the view vector. At a pixel where GTAO finds no surface normal in the depth, the bent normal is the view vector. |
+| Small radius | As the radius shrinks below 4 half-size pixels, the occlusion and the bent normal's tilt away from the normal fade to none. |
+| Sky | Pixels with no geometry have a visibility of 1. |
+
+### Reflections
+
+An opaque pixel reflects the environment and, below a roughness of 0.4, the
+screen around it. Light a screen-space reflection finds carries its own
+occlusion. Two terms, multiplied together, dim the environment's reflection:
+
+| Term | Value |
+| --- | --- |
+| Specular occlusion | The fraction of the reflection's lobe that falls inside the visibility cone, Jimenez and others' cone-cone approximation. The visibility cone is centered on the pixel's bent normal and has a cosine of `√(1 − v)`, where `v` is the pixel's environment visibility, as [indirect diffuse light](#indirect-diffuse-light) defines it. The reflection's lobe is a cone around the mirror direction with a cosine of `2^(−3.32193·α²)`, where `α` is the roughness squared, at least 0.01. The fraction is the cones' intersection, by the smoothstep fit of their solid angles, divided by the lobe's solid angle. Without GTAO, the bent normal is the shading normal. |
+| Horizon occlusion | `clamp(1 + 1.3 · dot(R, Ng), 0, 1)²`, Russell's fit, where `R` is the mirror direction of the shading normal and `Ng` the geometric normal. A shading normal that tilts the mirror direction toward or below the surface, as a normal map does near creases and silhouettes, fades the reflection to nothing at 0.77 below the surface's plane. |
+
+A mirror direction that points below the geometric surface finds no
+screen-space reflection, only the faded environment.
 
 ### Indirect diffuse light
 
@@ -564,7 +772,7 @@ One source lights the indirect diffuse light of a frame's opaque surfaces:
 | Images | The source writes `SSGI History` and `SSGI Normals`, which material evaluation reads. Material evaluation writes `Diffuse Radiance History`, which SSGI rays read in the next frame, only in a frame that SSGI lights. |
 | SSGI history | SSGI reads its history only after a frame it lit at the same sink size. Its first frame after a frame it didn't light starts without history. |
 | Environment light | Material evaluation adds the environment's irradiance around each opaque pixel's normal, times the environment's intensity and the pixel's environment visibility: the smaller of one minus the source's hit fraction and GTAO's visibility, each when it ran. Under surfel GI or probe GI, and at a pixel a lightmap lights, it adds none: their light holds the environment's light their rays reached. The environment visibility also dims the environment's reflections. |
-| Small-scale occlusion | Under surfel GI or probe GI, and at a pixel a lightmap lights, material evaluation multiplies the source's light at each opaque pixel by GTAO's visibility, when GTAO runs. |
+| Small-scale occlusion | Under surfel GI or probe GI, and at a pixel a lightmap lights, the source's light already holds the occlusion its rays found: the share of them that reached the environment, one minus the hit fraction, or a lightmap's alpha. When GTAO runs, material evaluation multiplies the source's light at each opaque pixel by GTAO's visibility divided by that share, at most one. GTAO darkens the light only where it finds more occlusion than the source did, and never where no ray reached the environment. |
 | Surfels | At most `render.surfel-gi.surfel-capacity` surfels live at once, and they trace at most `render.surfel-gi.ray-budget` rays a frame. |
 | Probes | Probes trace at most `render.probe-gi.ray-budget` rays a frame, 128 for each probe they update. |
 | Baked shaders | Material shaders keep the indirect diffuse read while any source is built in, the diffuse radiance write while SSGI is, and the lightmap read while lightmaps are. Materials have closest-hit shaders while surfel GI, probe GI, or lightmaps are built in. |
@@ -687,6 +895,29 @@ The first sink records the builds and the placement in the
 the builds. The placement runs alongside the stages after it, so its time shows
 in the first stage that traces rays.
 
+### Screen scene queries
+
+A screen scene query asks which entity a camera shows at one pixel. The
+application creates a `ScreenSceneQuery` in the world, and the visibility
+pipeline answers it by creating a `ScreenSceneHit` in the world.
+
+| Field | Definition |
+| --- | --- |
+| `ScreenSceneQuery::camera` | The handle of the camera whose window the point is in. |
+| `ScreenSceneQuery::point` | The pixel, as `[x, y]` in the window's render extent: x grows to the right and y grows down from the top-left pixel, `[0, 0]`. |
+| `ScreenSceneHit::query` | The handle the query was created with. |
+| `ScreenSceneHit::entity` | The handle of the renderable mesh whose surface covers the pixel, or none. |
+
+| Rule | Value |
+| --- | --- |
+| Hit surface | The nearest surface the frame draws at the pixel: a blended surface in front of the opaque scene, otherwise the opaque or masked surface. |
+| No entity | The pixel shows no surface, such as the sky; the point is outside the extent; or no window of the frame that takes the query shows its camera. |
+| Taking | Each frame takes the queries created before it, oldest first, at most 16 per window. Queries beyond 16 wait for later frames. |
+| Answer | Every query gets exactly one hit. The hit is created once the frame that read the pixel completes on the GPU, two frames after it took the query. The entity is the one at the pixel in that frame, even if it was deleted since. |
+| Pipelines | Only the visibility pipeline answers queries. |
+
+The reads record no stage metric.
+
 ### Stages and targets
 
 Each sink records these stages in order, and each reports a `stage.<name>`
@@ -694,12 +925,19 @@ metric when it runs: `skinning`, `shadow-maps`, `shadow-depth-pyramid`,
 `light-clusters`, `acceleration-structures`, `surfel-grid`, `surfel-trace`,
 `surfel-validate`, `surfel-integrate`, `probe-schedule`, `probe-trace`, `probe-update`,
 `visibility-early`, `occlusion-pyramid`, `visibility-late`,
-`material-prepasses`, `depth-pyramid`, `cascade-fit`, `screen-space`,
-`fog-light`, `material-evaluation`, `background`, and `transparent`. Only the first sink
+`material-prepasses`, `depth-pyramid`, `cascade-fit`, `virtual-shadow-maps`, `screen-space`,
+`fog-light`, `material-evaluation`, `subsurface`, `background`, `backdrop`, and `transparent`. Only the first sink
 records the ray tracing, surfel, and probe stages: the surfel stages in a frame
 that surfel GI lights, the probe stages in a frame that probe GI lights, and
 `acceleration-structures` in either. `material-prepasses` runs only when `render.material-evaluation` is
-`pipelines`.
+`pipelines`. `subsurface` runs only when `render.subsurface.enabled` was `true`
+at startup. `backdrop` runs only in a frame that draws transparent surfaces
+while a loaded blended material reads `scenecolor` or `sceneposition`.
+
+`shadow-depth-pyramid` and `cascade-fit` run only with cascades, and
+`virtual-shadow-maps` only with virtual shadow maps, in a frame with a shadowed
+directional light. Only the first sink records `virtual-shadow-maps`, after its
+depth pyramid, and it covers every page pass and the page draw.
 
 Inside `screen-space`, each dispatch also reports its own metric, when the
 technique it belongs to runs: `sun-visibility-trace`, `gtao-evaluate`,
@@ -712,10 +950,14 @@ its cost alone: it can include time other dispatches ran alongside it.
 | --- | --- |
 | `Lit`, aliased `main` | Scene color, full size. Reflections read the previous frame's copy. |
 | `Depth`, aliased `depth` | Reversed depth, full size. Reflections read the previous frame's copy. |
+| `Backdrop Color`, `Backdrop Depth` | The opaque scene's light and positive linear view depth, full size, as they stood before the transparent phase, which `scenecolor` and `sceneposition` read. |
 | `primitive index`, `instance_id` | 32-bit IDs per pixel. |
 | `Sun Visibility`, `Contact Shadow Trace` | Sun visibility per shadow slot, full size, and its half-size contact trace. |
-| `SSGI Raw`, `SSGI Normals`, `SSGI History`, `Diffuse Radiance History` | Half-size indirect lighting and its history. |
+| `SSGI Raw`, `SSGI Normals`, `SSGI History` | Half-size indirect lighting and its history. |
+| `Diffuse Radiance History` | Full-size diffuse light that opaque surfaces leave for the next frame's SSGI rays. It exists only when `render.ssgi.enabled` is `true`. |
 | `Ambient Occlusion`, `GTAO Raw`, `GTAO Blur` | Ambient occlusion, full size, and its half-size evaluation and denoised intermediate; no usable data on frames GTAO doesn't run. |
+| `GTAO Bent Normal`, `GTAO Bent Normal Blur` | The half-size bent normal, as GTAO evaluates it and as material evaluation reads it after the denoise; no usable data on frames GTAO doesn't run. Red and green hold its components along `t = normalize(up × V)` and `b = V × t`, mapped from −1 through 1 to 0 through 1, where `V` is the view vector and `up` the view's up axis; its component along `V` is `√(1 − x² − y²)`. |
+| `Subsurface Diffuse`, `Subsurface Shape`, `Subsurface Albedo` | Full size, only when `render.subsurface.enabled` is `true`. At each pixel of a subsurface material: the diffuse light before scattering, times `√A` and the exposure; `d` per channel, in meters; and `√A`. `Subsurface Albedo`'s alpha is 1 at those pixels and 0 at every other pixel opaque material evaluation writes. |
 | `Surfel History`, `Surfel History Weights` | Half-size history of surfel GI's light, and its confidence and luminance variance; only when surfel GI is built in. |
 
 These names, with a pass's outputs, select a screenshot through the inspector;
@@ -725,6 +967,7 @@ history targets can also be read from the previous frame.
 
 - [`rendering` module](/docs/api/latest/byte_engine/rendering)
 - [`rendering::camera`](/docs/api/latest/byte_engine/rendering/camera)
+- [`rendering::screen_query`](/docs/api/latest/byte_engine/rendering/screen_query)
 - [`rendering::sink`](/docs/api/latest/byte_engine/rendering/sink)
 - [`rendering::view`](/docs/api/latest/byte_engine/rendering/view)
 - [`application::graphics`](/docs/api/latest/byte_engine/application/graphics)

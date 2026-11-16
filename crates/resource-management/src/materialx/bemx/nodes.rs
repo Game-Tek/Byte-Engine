@@ -132,6 +132,8 @@ fn builtin<'a>(
 		"bitangent" => converter.geometry("Bworld", name)?,
 		// MaterialX and BEMX both point a view direction from the viewer at the surface.
 		"viewdirection" => converter.view_direction(name)?,
+		// BEMX counts time in seconds, which MaterialX's `fps` input only relabels for hosts that count frames.
+		"time" => converter.add(name, Node::Time)?,
 		"texcoord" => {
 			let index = integer_parameter(converter, frame, node, "index").unwrap_or(0);
 
@@ -263,8 +265,20 @@ fn builtin<'a>(
 		"normalmap" => {
 			let value = operand(converter, frame, node, "in", 0.5, Type::Vector3)?;
 			let scale = operand(converter, frame, node, "scale", 1.0, Type::Float)?;
+			// An unconnected axis keeps the geometry's own, which is MaterialX's default for each of them.
+			let mut axes = [None; 3];
+			for (axis, input) in axes.iter_mut().zip(bemx::NORMAL_MAP_FRAME_INPUTS) {
+				*axis = converter.input(frame, node, input)?;
+			}
 
-			converter.add(name, Node::NormalMap { value, scale })?
+			converter.add(
+				name,
+				Node::NormalMap {
+					value,
+					scale,
+					frame: axes,
+				},
+			)?
 		}
 
 		_ => return Ok(None),
@@ -347,12 +361,13 @@ fn image<'a>(
 ) -> Result<bemx::NodeId, ConvertError> {
 	let name = instance.name;
 
-	// Converted images sample with the mesh's own texture coordinates, so a transformed set cannot be honoured.
-	if let Some(coordinates) = instance.input("texcoord")
-		&& !samples_default_coordinates(converter, frame, coordinates)
-	{
-		return Err(ConvertError::UnsupportedTextureCoordinates { node: name.to_string() });
-	}
+	// An image at the mesh's own coordinates leaves `texcoord` out, so the renderer samples the way it always does.
+	let texcoord = match instance.input("texcoord") {
+		Some(coordinates) if !samples_default_coordinates(converter, frame, coordinates) => {
+			converter.input(frame, node, "texcoord")?
+		}
+		_ => None,
+	};
 
 	let file = string_parameter(converter, frame, node, "file").unwrap_or("");
 
@@ -372,7 +387,7 @@ fn image<'a>(
 		Node::Image {
 			texture,
 			r#type: result,
-			texcoord: None,
+			texcoord,
 		},
 	)
 }

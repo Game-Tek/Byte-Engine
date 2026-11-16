@@ -17,11 +17,11 @@ mod tests {
 	use std::alloc::{Allocator, Global};
 
 	use super::{
-		FBXAssetHandler, FbxAuthoredLevelNotes, FbxCulledPolygonCounts, FbxImportError, FbxMeshProcessingError, MaterialKey, RemappedCorners,
-		canonical_animation_node_map, decode_fbx_texture_image, fbx_material, fbx_texture_source_path,
-		finite_material_component, finite_material_product, import_fbx_animation, import_fbx_mesh_session, import_fbx_skeleton,
-		import_fbx_skin_binding, load_fbx_scene, matrix_to_affine, remap_triangle_corners, resolve_fbx_texture_path,
-		select_fbx_skin, skin_weights, used_material_keys,
+		FBXAssetHandler, FbxAuthoredLevelNotes, FbxCulledPolygonCounts, FbxImportError, FbxMeshProcessingError, MaterialKey,
+		RemappedCorners, authored_stage_starts, canonical_animation_node_map, decode_fbx_texture_image, fbx_material,
+		fbx_stage_scenes, fbx_stages, fbx_texture_source_path, finite_material_component, finite_material_product,
+		import_fbx_animation, import_fbx_mesh_session, import_fbx_skeleton, import_fbx_skin_binding, load_fbx_scene,
+		matrix_to_affine, remap_triangle_corners, resolve_fbx_texture_path, select_fbx_skin, skin_weights, used_material_keys,
 	};
 	#[cfg(debug_assertions)]
 	use crate::{
@@ -91,23 +91,26 @@ mod tests {
 		allocator: &'a dyn Allocator,
 	) -> Result<(ProcessedMesh, FbxAuthoredLevelNotes), FbxMeshProcessingError> {
 		let mut notes = FbxAuthoredLevelNotes::default();
-		let keys = used_material_keys(scene, allocator);
-		let materials = keys
+		let starts = authored_stage_starts(scene, levels)?;
+		let scenes = fbx_stage_scenes("model.fbx", scene, levels, &starts);
+		let keys: Vec<_> = scenes.iter().map(|(_, scene)| used_material_keys(scene, allocator)).collect();
+		let materials = scenes
 			.iter()
-			.map(|key| match key {
-				MaterialKey::Default => test_material("default"),
-				MaterialKey::Material(id) => test_material(scene.materials[*id as usize].element.name.as_ref()),
+			.zip(&keys)
+			.flat_map(|((_, scene), keys)| {
+				keys.iter().map(move |&key| match key {
+					MaterialKey::Default => test_material("default"),
+					MaterialKey::Material(id) => test_material(scene.materials[id as usize].element.name.as_ref()),
+				})
 			})
 			.collect::<Vec<_>>();
 		let session = import_fbx_mesh_session(
-			scene,
-			&keys,
+			&fbx_stages(&scenes, levels, &starts, &keys),
 			skeleton,
 			source_to_skeleton,
 			allocator,
 			&mut FbxCulledPolygonCounts::default(),
 			crate::processors::mesh::MeshSettings::default(),
-			levels,
 			&mut notes,
 		)?;
 		Ok((session.finish(&materials), notes))
@@ -215,7 +218,7 @@ mod tests {
 	}
 
 	#[test]
-	fn authored_levels_follow_full_detail_until_a_file_with_other_materials() {
+	fn a_level_file_with_other_materials_takes_over_from_the_levels_before_it() {
 		let scene = load_fbx_scene(LEAF_LOD0_FBX, "leaf_LOD0.fbx").expect("fixture FBX should parse");
 		let lod1 = load_fbx_scene(LEAF_LOD1_FBX, "leaf_LOD1.fbx").expect("fixture FBX should parse");
 		let lod2 = load_fbx_scene(LEAF_LOD2_FBX, "leaf_LOD2.fbx").expect("fixture FBX should parse");
@@ -233,14 +236,39 @@ mod tests {
 
 		// The flat quad's 4 vertices follow full detail's in the primitive, and sort first.
 		assert_eq!(primitive.vertex_count, alone.mesh.primitives[0].vertex_count + 4);
-		assert_eq!(primitive.lods.len(), 2, "the billboard file ends the chain, and one quad is too small to simplify");
+		assert_eq!(
+			primitive.lods.len(),
+			2,
+			"the billboard file ends the leaf's levels, and one quad is too small to simplify"
+		);
 		assert_eq!(primitive.lods[1].vertex_count, 4);
 		// The raised center lies 0.2 centimeters from the flat quad.
 		assert_close([primitive.lods[1].error], [0.002]);
 		assert!(notes.warnings.is_empty(), "unexpected warnings: {:?}", notes.warnings);
+
+		// The billboard file is a primitive of its own, with its own material, that starts where the leaf ends.
+		let [leaf, billboard] = &processed.mesh.primitives[..] else {
+			panic!(
+				"the billboard should be a second primitive: {:?}",
+				processed.mesh.primitives.len()
+			);
+		};
+		assert_ne!(leaf.material, billboard.material);
+		let takeover = leaf.replaced_at.expect("the billboard should replace the leaf");
 		assert!(
-			notes.info.iter().any(|note| note.contains("leaf_LOD2.fbx") && note.contains("Billboard")),
-			"the chain should end at the billboard: {:?}",
+			takeover >= leaf.lods[1].error,
+			"the takeover comes after the leaf's last level"
+		);
+		assert_eq!(billboard.replaced_at, None);
+		assert_eq!(billboard.lods[0].error, takeover);
+		// Both measure distance with one sphere, so they switch together.
+		assert_eq!(leaf.bounding_sphere, billboard.bounding_sphere);
+		assert!(
+			notes
+				.info
+				.iter()
+				.any(|note| note.contains("leaf_LOD2.fbx") && note.contains("take over")),
+			"the billboard should be noted as taking over: {:?}",
 			notes.info
 		);
 	}
@@ -747,6 +775,55 @@ mod tests {
 
 		let (result, _) = bake(variant_id.trim_end_matches(".variant").to_string()).await;
 		assert!(result.is_err(), "a material fragment without its suffix names no resource");
+	}
+
+	/// Guards a report: a forced bake made every assembled shader fail, because it asked for each stored variant by its
+	/// own ID, and a variant whose material comes from a detail-level file can't be rebuilt from the model's first file.
+	#[r#async::test]
+	async fn a_material_from_a_detail_level_file_is_made_current_through_its_model() {
+		let asset_storage = AssetTestStorageBackend::new();
+		asset_storage.add_file("leaf_LOD0.fbx", LEAF_LOD0_FBX);
+		asset_storage.add_file("leaf_LOD1.fbx", LEAF_LOD1_FBX);
+		asset_storage.add_file("leaf_LOD2.fbx", LEAF_LOD2_FBX);
+		asset_storage.add_file("leaf_LOD0.fbx.bead", br#"{ "lods": { "authored": "{name}_LOD{level}" } }"#);
+		let resource_storage = MemoryStorageBackend::new();
+
+		let manager = || {
+			let mut asset_manager = AssetManager::new(asset_storage.clone(), resource_storage.clone());
+			asset_manager.set_program_generator(MinimalTestShaderGenerator);
+			asset_manager.add_asset_handler(FBXAssetHandler::default());
+			asset_manager
+		};
+
+		manager()
+			.bake_if_stale("leaf_LOD0.fbx")
+			.await
+			.expect("the model with authored levels should bake");
+		let billboard = resource_storage
+			.get_resources()
+			.into_iter()
+			.find(|resource| resource.class == "Variant" && resource.id.contains("Billboard"))
+			.expect("the model should store the variant of its last level file's material")
+			.id;
+
+		// Each run is a new manager, as each BELD run is.
+		manager()
+			.bake_if_stale(&billboard)
+			.await
+			.expect("a current model should answer for the variant it stores");
+		manager()
+			.rebuild(&billboard)
+			.await
+			.expect("a forced rebuild of the variant should rebuild its model");
+
+		asset_storage.add_file(
+			"leaf_LOD0.fbx.bead",
+			br#"{ "lods": { "authored": "{name}_LOD{level}" }, "edited": true }"#,
+		);
+		manager()
+			.bake_if_stale(&billboard)
+			.await
+			.expect("a stale model should bake again for the variant it stores");
 	}
 
 	#[r#async::test]
@@ -1301,7 +1378,7 @@ use super::{
 	store_imported_image, store_model,
 };
 use crate::asset::handler::implementations::bema::{
-	GeneratedMaterial, MaterialSource, bead_material_override, resolve_container_materials,
+	GeneratedMaterial, MaterialBinding, MaterialSource, TemplateScope, material_binding, resolve_container_materials,
 };
 use crate::{
 	ProcessedAsset, ReferenceModel, asset,

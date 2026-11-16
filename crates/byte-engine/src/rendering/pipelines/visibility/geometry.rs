@@ -19,13 +19,13 @@ use smallvec::SmallVec;
 use utils::RangeAllocator;
 
 pub(crate) use self::prepare::{
-	GENERATED_MESH_MATERIAL, PreparedLevels, PreparedMesh, PreparedSurface, decode_octahedral_unit_vector,
+	GENERATED_MESH_MATERIAL, MergedSource, PreparedLevels, PreparedMesh, PreparedSurface, decode_octahedral_unit_vector,
 	encode_octahedral_unit_vector,
 };
 use super::layout::{
 	MAX_ADDRESSABLE_LEVELS, MAX_ADDRESSABLE_MESHLETS, MAX_INSTANCE_MESHLETS, RuntimeVertexLightmapUv, RuntimeVertexNormal,
-	RuntimeVertexUv, ShaderMeshLevel, ShaderMeshletData, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE, VERTEX_NORMAL_BUFFER_STRIDE,
-	VERTEX_UV_BUFFER_STRIDE,
+	RuntimeVertexUv, ShaderMeshLevel, ShaderMeshletData, ShaderMeshletVertex, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE,
+	VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
 };
 use super::lod::MeshLods;
 use crate::rendering::loading::{BufferRegion, Loader};
@@ -56,6 +56,10 @@ pub struct GeometryCapacity {
 	pub levels: u32,
 	/// Bind-pose vertices of meshes that use GPU skinning.
 	pub skinning_vertices: u32,
+	/// Whether every meshlet also stores its vertices' positions and UVs in its own order, 12 bytes for each vertex
+	/// index, so drawing a meshlet reads them in a row. It trades that memory for draw time. Positions there are
+	/// rounded to 16 bits within their detail level's bounds; shading and rays keep the exact vertices.
+	pub meshlet_vertices: bool,
 }
 
 impl Default for GeometryCapacity {
@@ -69,6 +73,7 @@ impl Default for GeometryCapacity {
 			// Half the meshlets, since most levels hold several.
 			levels: 1024 * 4,
 			skinning_vertices: 65536 * 4,
+			meshlet_vertices: true,
 		}
 	}
 }
@@ -316,6 +321,8 @@ pub(crate) struct PrimitiveLevels {
 	pub(crate) finest: u8,
 	/// Where the levels landed: `None` until the load places them, and after it when the geometry buffers had no room.
 	pub(crate) block: Option<PrimitiveBlock>,
+	/// The geometry stream that had no room for the levels, when one hadn't.
+	pub(crate) full: Option<&'static str>,
 }
 
 /// The `MeshPrimitive` struct locates one primitive's geometry, material slot, and optional skin inside its mesh.
@@ -358,6 +365,9 @@ pub(crate) struct GeometryHandles {
 	pub(crate) vertex_lightmap_uvs: ghi::BufferHandle<[RuntimeVertexLightmapUv]>,
 	/// Meshlet-local indices into the vertex buffers.
 	pub(crate) vertex_indices: ghi::BufferHandle<[u16]>,
+	/// Each meshlet vertex's position and UV, at the element its index has in `vertex_indices`. One element long, and
+	/// never written, when [`GeometryCapacity::meshlet_vertices`] is off.
+	pub(crate) meshlet_vertices: ghi::BufferHandle<[ShaderMeshletVertex]>,
 	/// Triangles as indices into `vertex_indices`.
 	pub(crate) primitive_indices: ghi::BufferHandle<[[u8; 3]]>,
 	pub(crate) meshlets: ghi::BufferHandle<[ShaderMeshletData]>,
@@ -399,7 +409,7 @@ impl GeometryHandles {
 			ghi::buffer::Builder::new(uses)
 				.name(name)
 				.length(length as usize)
-				.device_accesses(ghi::DeviceAccesses::HostToDevice)
+				.host_access(ghi::HostAccess::Write)
 		};
 		let GeometryCapacity {
 			vertices,
@@ -408,6 +418,7 @@ impl GeometryHandles {
 			meshlets,
 			levels,
 			skinning_vertices: skinning,
+			meshlet_vertices,
 		} = capacity;
 		Self {
 			capacity,
@@ -421,6 +432,11 @@ impl GeometryHandles {
 			)),
 			vertex_lightmap_uvs: context.build_buffer(build("Visibility Vertex Lightmap UV Buffer", geometry, vertices)),
 			vertex_indices: context.build_buffer(build("Visibility Index Buffer", indices, vertex_indices)),
+			meshlet_vertices: context.build_buffer(build(
+				"Visibility Meshlet Vertices Buffer",
+				storage,
+				if meshlet_vertices { vertex_indices } else { 1 },
+			)),
 			primitive_indices: context.build_buffer(build("Visibility Primitive Indices Buffer", indices, triangles)),
 			meshlets: context.build_buffer(build("Visibility Meshlets Data", storage, meshlets)),
 			mesh_levels: context.build_buffer(build("Visibility Mesh Levels", storage, levels)),
@@ -437,9 +453,9 @@ impl GeometryHandles {
 
 impl GeometryBuffers {
 	/// Imports every stream `handles` names from the render context into the loader.
-	pub(crate) fn import(handles: &GeometryHandles, render: &ghi::implementation::Context, loader: &mut Loader) -> Self {
+	pub(crate) fn import(handles: &GeometryHandles, render: &mut ghi::implementation::Context, loader: &mut Loader) -> Self {
 		fn import<T: ?Sized>(
-			render: &ghi::implementation::Context,
+			render: &mut ghi::implementation::Context,
 			loader: &mut Loader,
 			buffer: ghi::BufferHandle<T>,
 		) -> ghi::BufferHandle<T> {
@@ -453,6 +469,7 @@ impl GeometryBuffers {
 				vertex_uvs: import(render, loader, handles.vertex_uvs),
 				vertex_lightmap_uvs: import(render, loader, handles.vertex_lightmap_uvs),
 				vertex_indices: import(render, loader, handles.vertex_indices),
+				meshlet_vertices: import(render, loader, handles.meshlet_vertices),
 				primitive_indices: import(render, loader, handles.primitive_indices),
 				meshlets: import(render, loader, handles.meshlets),
 				mesh_levels: import(render, loader, handles.mesh_levels),
@@ -544,6 +561,11 @@ impl GeometryBuffers {
 				&streams.vertex_indices,
 				self.handles.vertex_indices.into(),
 				ranges.primitive_indices.start as usize * 2,
+			),
+			copy(
+				&streams.meshlet_vertices,
+				self.handles.meshlet_vertices.into(),
+				ranges.primitive_indices.start as usize * std::mem::size_of::<ShaderMeshletVertex>(),
 			),
 			copy(
 				&streams.primitive_indices,
@@ -658,8 +680,12 @@ impl GeometryBuffers {
 				levels: length(&elements.levels),
 				..GeometryCounts::default()
 			};
-			let Ok(block) = ranges.take(&counts) else {
-				continue;
+			let block = match ranges.take(&counts) {
+				Ok(block) => block,
+				Err(stream) => {
+					levels.full = Some(stream);
+					continue;
+				}
 			};
 			prepared.place_records(&elements, &block);
 			let (streams, elements) = (&prepared.streams, &elements);
@@ -710,6 +736,18 @@ impl GeometryBuffers {
 					&elements.primitive_indices,
 					2,
 					handles.vertex_indices.into(),
+					block.primitive_indices.start,
+				),
+				copy(
+					&streams.meshlet_vertices,
+					&elements.primitive_indices,
+					// An empty stream copies nothing, whatever the primitive's elements.
+					if streams.meshlet_vertices.is_empty() {
+						0
+					} else {
+						std::mem::size_of::<ShaderMeshletVertex>()
+					},
+					handles.meshlet_vertices.into(),
 					block.primitive_indices.start,
 				),
 				copy(

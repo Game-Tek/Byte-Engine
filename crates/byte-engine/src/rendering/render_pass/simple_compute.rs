@@ -141,4 +141,31 @@ impl ReadyPass {
 		command_buffer.bind_descriptor_sets(&self.descriptor_sets.handles());
 		command_buffer.dispatch(ghi::DispatchExtent::new(extent, self.workgroup));
 	}
+
+	/// Records this pass with `push_constant` written at offset 0, for a shader that takes one dispatch's parameters
+	/// that way, such as the cube face it fills.
+	pub fn record_with_push_constant(
+		&self,
+		command_buffer: &mut ghi::implementation::CommandBufferRecording,
+		extent: Extent,
+		push_constant: impl bytemuck::Pod,
+	) {
+		let command_buffer = command_buffer.bind_compute_pipeline(self.pipeline);
+		command_buffer.bind_descriptor_sets(&self.descriptor_sets.handles());
+		command_buffer.write_push_constant(0, push_constant);
+		command_buffer.dispatch(ghi::DispatchExtent::new(extent, self.workgroup));
+	}
+}
+
+/// Readies every pass into the frame allocator, or returns `None` while any of their pipelines is unavailable.
+pub fn ready_all<'a>(
+	passes: &mut [Pass],
+	frame: &mut ghi::implementation::Frame,
+	frame_allocator: &'a bumpalo::Bump,
+) -> Option<&'a [ReadyPass]> {
+	let mut ready = bumpalo::collections::Vec::with_capacity_in(passes.len(), frame_allocator);
+	for pass in passes {
+		ready.push(pass.ready(frame)?);
+	}
+	Some(ready.into_bump_slice())
 }

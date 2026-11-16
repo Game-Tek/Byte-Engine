@@ -35,4 +35,27 @@ fn main() {
 	}
 
 	println!("cargo:rustc-env=RESOURCE_MANAGEMENT_CODE_HASH={:x}", context.finalize());
+
+	// The BESL crate shapes every compiled shader but not the layout of the store, so its changes make shaders stale
+	// instead of resetting the store. Outside the workspace the crate's sources aren't beside this one, and its version
+	// stands in for them.
+	let besl = manifest_dir.join("../besl/src");
+	let mut files = Vec::new();
+	if besl.is_dir() {
+		collect_files(&besl, &mut files);
+		files.sort();
+	}
+
+	let mut context = md5::Context::new();
+	context.consume(env::var("CARGO_PKG_VERSION").unwrap().as_bytes());
+	for file in files {
+		println!("cargo:rerun-if-changed={}", file.display());
+
+		context.consume(file.strip_prefix(&besl).unwrap().to_string_lossy().as_bytes());
+		context.consume([0]);
+		context.consume(fs::read(&file).unwrap());
+		context.consume([0]);
+	}
+
+	println!("cargo:rustc-env=BESL_CODE_HASH={:x}", context.finalize());
 }

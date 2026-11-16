@@ -12,17 +12,24 @@ the rendering reference.
 Choose a topic:
 
 - [Material evaluation modes](/docs/develop/rendering/visibility/material-evaluation):
-  how the uber mode bakes one shader per phase and shades the screen in tiles,
+  how the uber mode bakes its shaders and shades the screen in tiles,
   and the rules both modes keep.
 - [Material parameters](/docs/develop/rendering/visibility/material-parameters):
   where dynamic material parameter values live, how instances find them, and
   why uploads carry only changes.
-- [Shadow maps](/docs/develop/rendering/visibility/shadow-maps): how lights get
-  shadow maps within the memory budget, how large each map is, and how map
-  updates spread over frames within the update budget.
+- [Shadow maps](/docs/develop/rendering/visibility/shadow-maps): how cone and
+  point lights get shadow maps within the memory budget, how large each map is,
+  and how map updates spread over frames within the update budget.
+- [Virtual shadow maps](/docs/develop/rendering/visibility/virtual-shadow-maps):
+  the alternative to cascades for sun shadows, which keeps depth in cached
+  pages of a clipmap, where its design comes from, and the rules a change to
+  it must keep.
 - [Skinning](/docs/develop/rendering/visibility/skinning): where posed vertices
   live, how an animated instance gets and gives back its vertices, and why one
   copy serves every frame in flight.
+- [Transparent phase](/docs/develop/rendering/visibility/transparent-phase):
+  how blended surfaces shade over the opaque scene, why the scene behind them
+  is copied first, and how transmission reaches the lit image.
 - [Surfel GI](/docs/develop/rendering/visibility/surfel-gi): how surfels gather
   ray-traced bounce light, why hits sort by material before they're shaded, and
   the rules the frame-wide surfel stages keep.

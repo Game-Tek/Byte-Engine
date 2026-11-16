@@ -1,0 +1,1 @@
+{"name":"Environment Downsample","kind":{"type":"compute","shader":"byte_engine/rendering/environment-downsample.besl"}}

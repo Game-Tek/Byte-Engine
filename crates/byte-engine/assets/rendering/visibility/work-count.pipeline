@@ -1,0 +1,1 @@
+{"name":"Mesh Work Count","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/work-count.besl","push_constants":[{"offset":0,"size":24}]}}

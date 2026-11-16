@@ -158,7 +158,8 @@ impl Generator {
 			else {
 				continue;
 			};
-			if name == "front_facing" {
+			// Raster builtins arrive as entry-point parameters instead of stage attributes.
+			if name == "front_facing" || name == besl::PRIMITIVE_INDEX_BUILTIN {
 				continue;
 			}
 			self.emit_user_attribute(string, name, format, *location);
@@ -241,6 +242,12 @@ impl Generator {
 				continue;
 			};
 			if besl::is_position_output(name) {
+				continue;
+			}
+			if besl::is_render_target_array_index_output(name) {
+				formatting.push_indentation(string, 1);
+				string.push_str("uint render_target_array_index [[render_target_array_index]]");
+				formatting.push_statement_end(string);
 				continue;
 			}
 			self.emit_user_attribute(string, name, format, *location);
@@ -331,6 +338,8 @@ impl Generator {
 			string.push('.');
 			if besl::is_position_output(name) {
 				string.push_str("position");
+			} else if besl::is_render_target_array_index_output(name) {
+				string.push_str("render_target_array_index");
 			} else {
 				Self::identifier(name).push_to(string);
 			}
@@ -359,11 +368,11 @@ impl Generator {
 		string.push_str("(VertexInput in [[stage_in]]");
 		if context.has_vertex_index {
 			self.emit_separator(string);
-			string.push_str("uint vertex_index [[vertex_id]]");
+			let _ = write!(string, "uint {} [[vertex_id]]", besl::VERTEX_INDEX_BUILTIN);
 		}
 		if context.has_instance_index {
 			self.emit_separator(string);
-			string.push_str("uint instance_index [[instance_id]]");
+			let _ = write!(string, "uint {} [[instance_id]]", besl::INSTANCE_INDEX_BUILTIN);
 		}
 		if context.has_push_constant {
 			self.emit_separator(string);
@@ -434,12 +443,18 @@ impl Generator {
 		string.push(' ');
 		string.push_str(MSL_ENTRY_POINT);
 		string.push_str("(FragmentInput in [[stage_in]]");
-		if inputs
-			.iter()
-			.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == "front_facing"))
-		{
+		let has_input = |builtin: &str| {
+			inputs
+				.iter()
+				.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == builtin))
+		};
+		if has_input("front_facing") {
 			self.emit_separator(string);
 			string.push_str("bool front_facing [[front_facing]]");
+		}
+		if has_input(besl::PRIMITIVE_INDEX_BUILTIN) {
+			self.emit_separator(string);
+			let _ = write!(string, "uint {} [[primitive_id]]", besl::PRIMITIVE_INDEX_BUILTIN);
 		}
 		if context.has_push_constant {
 			self.emit_separator(string);
@@ -454,7 +469,16 @@ impl Generator {
 
 		// Mirror BESL global stage inputs through local variables so ordinary BESL can read
 		// stage inputs while explicit output structs can be returned directly.
-		self.emit_raster_input_locals(string, inputs, "in", &[("front_facing", "front_facing")], 1);
+		self.emit_raster_input_locals(
+			string,
+			inputs,
+			"in",
+			&[
+				("front_facing", "front_facing"),
+				(besl::PRIMITIVE_INDEX_BUILTIN, besl::PRIMITIVE_INDEX_BUILTIN),
+			],
+			1,
+		);
 
 		if returns_explicit_output {
 			self.emit_statement_block(string, statements, 1);

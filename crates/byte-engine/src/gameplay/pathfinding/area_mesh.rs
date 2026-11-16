@@ -89,7 +89,8 @@ fn weld<Space>(pieces: &[Vec<Point<Space>>]) -> (Vec<Point<Space>>, Vec<Vec<Navi
 	for piece in pieces {
 		let mut polygon = Vec::with_capacity(piece.len());
 		for &point in piece {
-			// A linear search keeps welding simple; meshes rebuild only when their areas change.
+			// A linear search keeps welding simple. It is quadratic in the pieces' total vertices, but the mesh
+			// rebuilds only when its areas change, not per frame.
 			let vertex = vertices
 				.iter()
 				.position(|&vertex| distance_xz(vertex, point) <= NAVIGATION_TOLERANCE)
@@ -129,6 +130,8 @@ fn split_at_junctions<Space>(
 				split.push(from);
 
 				on_edge.clear();
+				// Every edge scans every welded vertex. This runs only when the mesh rebuilds, where the quadratic pair
+				// costs less than a spatial index the rebuild would build and throw away.
 				on_edge.extend(vertices.iter().enumerate().filter_map(|(vertex, &point)| {
 					let vertex = vertex as NavigationVertexHandle;
 					let fraction = line_fraction_xz(point, start, end);

@@ -54,7 +54,7 @@ pub enum Placement {
 	/// The image keeps one copy per frame in flight, so the next frame can read this frame's copy as history. Its first
 	/// node writes this frame's copy, or the renderer clears it when that node records nothing. It holds the image's
 	/// per-frame handle, which [`RenderTargets::history`] returns.
-	PerFrame(ghi::DynamicImageHandle),
+	PerFrame(ghi::ImageHandle),
 }
 
 /// The `Target` struct describes one render-target image a sink's graph created.
@@ -213,7 +213,7 @@ impl RenderTargets {
 	}
 
 	/// Returns the per-frame image a sink's `name` resolves to, when it is a [`Placement::PerFrame`] target.
-	pub fn history(&self, name: &str, sink_id: usize) -> Option<ghi::DynamicImageHandle> {
+	pub fn history(&self, name: &str, sink_id: usize) -> Option<ghi::ImageHandle> {
 		match self.targets[self.get_image_index(name, sink_id)?].placement {
 			Placement::PerFrame(image) => Some(image),
 			Placement::Member | Placement::Persistent => None,
@@ -466,8 +466,11 @@ mod tests {
 
 	#[test]
 	fn history_targets_follow_the_sink_extent() {
-		let history = ghi::debug::Device::new()
-			.build_dynamic_image(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image).name("History"));
+		let history = ghi::debug::Device::new().build_image(
+			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image)
+				.name("History")
+				.copies(ghi::Copies::PerFrame),
+		);
 		let mut targets = RenderTargets::new();
 
 		targets.insert(

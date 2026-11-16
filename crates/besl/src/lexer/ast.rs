@@ -313,8 +313,9 @@ impl Node {
 			atomic_i32.clone(),
 			acceleration_structure.clone(),
 			hit.clone(),
-			// Vertex invocation indices are implicit BESL values. Their placeholder locations are
-			// never exposed as vertex attributes; backends and the VM map them to dedicated built-ins.
+			// Vertex invocation indices and the fragment primitive index are implicit BESL values. Their placeholder
+			// locations are never exposed as stage attributes; backends and the VM map them to dedicated built-ins.
+			Node::input(crate::PRIMITIVE_INDEX_BUILTIN, u32_t.clone(), u8::MAX - 2).into(),
 			Node::input(crate::VERTEX_INDEX_BUILTIN, u32_t.clone(), u8::MAX - 1).into(),
 			Node::input(crate::INSTANCE_INDEX_BUILTIN, u32_t.clone(), u8::MAX).into(),
 			builtin_intrinsic(
@@ -525,8 +526,27 @@ impl Node {
 				void.clone(),
 			),
 			builtin_intrinsic("output_extent", vec![], vec2u32.clone()),
+			// Writes one unsigned texel of an `r32ui` storage image, the counterpart of `image_load_u32`.
+			builtin_intrinsic(
+				"write_u32",
+				vec![
+					("image", texture_2d.clone()),
+					("coord", vec2u32.clone()),
+					("value", u32_t.clone()),
+				],
+				void.clone(),
+			),
 			builtin_intrinsic(
 				"image_atomic_or",
+				vec![
+					("image", texture_2d.clone()),
+					("coord", vec2u32.clone()),
+					("value", u32_t.clone()),
+				],
+				u32_t.clone(),
+			),
+			builtin_intrinsic(
+				"image_atomic_max",
 				vec![("image", texture_2d), ("coord", vec2u32), ("value", u32_t.clone())],
 				u32_t.clone(),
 			),
@@ -645,7 +665,13 @@ impl Node {
 			[&u32_t, &u8_t, &u16_t, &i32_t, &f16_t, &f32_t].map(|source| (source, &u32_t)),
 		));
 		// Invocation builtins take no arguments and read the invocation's coordinates.
-		for name in ["thread_idx", "subgroup_lane_index", "threadgroup_position", "thread_position"] {
+		for name in [
+			"thread_idx",
+			"subgroup_lane_index",
+			"threadgroup_position",
+			"thread_position",
+			"thread_layer",
+		] {
 			builtins.push(builtin_intrinsic(name, vec![], u32_t.clone()));
 		}
 		// Ray queries share one signature and differ in what they report. `invoke` isn't registered here: its payload

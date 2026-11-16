@@ -6,6 +6,7 @@
 
 use utils::Extent;
 
+use super::super::features::UberVariant;
 use super::super::layout::{ActiveEvaluationMask, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES};
 use super::super::scene::MaterialEvaluation;
 use super::super::set_layouts;
@@ -88,9 +89,7 @@ impl MaterialPrepasses {
 		let material_dispatch_descriptor_set =
 			set_layouts::MATERIAL_DISPATCH.create_set(context, "Material Dispatch Descriptor Set");
 		let material_buffer = |name, extra_uses| {
-			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination | extra_uses)
-				.name(name)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination | extra_uses).name(name)
 		};
 		let material_count = context.build_buffer(material_buffer("Material Count", ghi::Uses::empty()));
 		let material_offset: ghi::BufferHandle<[u32; MAX_MATERIALS]> =
@@ -234,14 +233,18 @@ impl MaterialEvaluationPass {
 
 			let active = evaluations
 				.iter()
-				.filter(|evaluation| clears_background || evaluation_is_active(active_evaluations, evaluation.index));
+				// The uber shader that writes the background runs every frame; any other evaluation runs for its instances.
+				.filter(|evaluation| {
+					(clears_background && evaluation.index == UberVariant::BACKGROUND.evaluation_index())
+						|| evaluation_is_active(active_evaluations, evaluation.index)
+				});
 			c.start_region(|label| {
 				label.write_str(phase.label())?;
 				label.write_str(" Material Evaluation")
 			});
 			// Pixel mapping gave every pixel to exactly one evaluation slot, so no two dispatches touch the same pixel
 			// of the lit target or the histories, and they can overlap instead of each waiting for the last one's
-			// writes. A phase's uber shader is its only dispatch.
+			// writes. A phase's uber shaders each return at the other's pixels.
 			c.unordered(|c| {
 				// Every evaluation of a phase has its own pipeline.
 				for evaluation in active {

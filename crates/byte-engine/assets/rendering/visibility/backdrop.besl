@@ -1,0 +1,22 @@
+// Copies the opaque scene for the blended materials that read it; render_pass/backdrop.rs says why. The light is
+// copied as it is, already multiplied by exposure. The reversed depth becomes positive linear view depth, which turns
+// the sky's zero into the view's far depth, so a material finds the sky at the far plane.
+
+use ::byte_engine::rendering::visibility::layouts::screen_view::*;
+use ::byte_engine::rendering::visibility::layouts::gtao_view::*;
+use ::byte_engine::rendering::visibility::layouts::backdrop::*;
+
+main: fn (input: StageInput, gtao_view: GtaoView, backdrop: Backdrop) -> void {
+	let pixel: vec2u = input.thread_id;
+	let extent: vec2u = image_size(backdrop.depth);
+	if (pixel.x >= extent.x || pixel.y >= extent.y) {
+		return;
+	}
+
+	let device_depth: f32 = fetch(backdrop.source_depth, pixel).x;
+	let view_depth: f32 = gtao_view.gtao_view.depth_unproject_numerator
+		/ (device_depth + gtao_view.gtao_view.depth_unproject_denominator_offset);
+
+	write(backdrop.color, pixel, fetch(backdrop.source_lit, pixel));
+	write(backdrop.depth, pixel, vec4f(view_depth, 0.0, 0.0, 1.0));
+}

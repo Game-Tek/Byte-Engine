@@ -142,11 +142,7 @@ impl<'a> Compiler<'a> {
 			accessible_binding(binding.borrow().node(), access)?;
 			// Every possible element occupies one flat host slot; only the selected resource is used at execution.
 			for element in 0..count {
-				self.claim_descriptor_layout(
-					slot.offset(element as u32),
-					DescriptorLayout::Image,
-					"resource type",
-				)?;
+				self.claim_descriptor_layout(slot.offset(element as u32), DescriptorLayout::Image, "resource type")?;
 			}
 			let index = self.compile_value_expression(&index, &ValueType::U32)?;
 			let register = self.allocate_register();
@@ -208,6 +204,8 @@ impl<'a> Compiler<'a> {
 
 				let slot = if crate::is_position_output(&output_name) {
 					builtin_position_slot()
+				} else if crate::is_render_target_array_index_output(&output_name) {
+					builtin_render_target_array_index_slot()
 				} else {
 					output_slot(*location)
 				};
@@ -267,6 +265,7 @@ impl<'a> Compiler<'a> {
 				let slot = match name.as_str() {
 					crate::VERTEX_INDEX_BUILTIN => builtin_vertex_index_slot(),
 					crate::INSTANCE_INDEX_BUILTIN => builtin_instance_index_slot(),
+					crate::PRIMITIVE_INDEX_BUILTIN => builtin_primitive_index_slot(),
 					_ => input_slot(*location),
 				};
 				(slot, value_type)

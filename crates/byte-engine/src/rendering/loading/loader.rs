@@ -13,7 +13,6 @@ use ghi::{
 	command_buffer::CommandBufferRecording as _,
 	context::{Context as _, ContextCreate as _},
 	io::{ResourceIoContext as _, ResourceIoQueue as _, ResourceIoTicket as _},
-	queue::Queue as _,
 };
 use smallvec::SmallVec;
 use utils::Extent;
@@ -28,19 +27,19 @@ use crate::{
 
 /// How long a batch collects uploads before the loader submits it, unless staging runs out first.
 const DEFAULT_BATCH_WINDOW: Duration = Duration::from_millis(4);
-/// How often the loader checks the batch on the copy queue while uploads are pending or in flight.
+/// How often the loader checks native reads while they run.
 const POLL_INTERVAL: Duration = Duration::from_micros(500);
 /// The staging capacity that every lane of every pipeline shares.
 const STAGING_BYTE_COUNT: usize = 32 * 1024 * 1024;
 
 /// The `Loader` struct owns the loading timeline: its context, its copy queue, and the staging memory lanes share.
 ///
-/// Lanes hand it uploads as plain data. It collects them into one batch until the batch window elapses, staging
-/// runs out, or every busy lane is waiting on it, submits the batch on the copy queue, and keeps collecting the next
-/// batch while the GPU copies. One batch is in flight at a time: the next one waits until the copy queue is free
-/// again. Finished images leave the loader context as [`ghi::implementation::DetachedImage`] values. Lanes report
-/// them to the render thread, which interns them when it adopts the notification. The render thread never waits on
-/// the loader.
+/// Lanes hand it uploads as plain data and wait for its answer without blocking their thread. On a thread of its
+/// own, it collects uploads into one batch until the batch window elapses, staging runs out, or every busy lane is
+/// waiting on it, and submits the batch as one workload on the copy queue, which returns once the copies landed.
+/// Then it answers each lane. Finished images leave the loader context as [`ghi::implementation::DetachedImage`]
+/// values. Lanes report them to the render thread, which interns them when it adopts the notification. The render
+/// thread never waits on the loader.
 ///
 /// Create it with [`Self::new`], import every render buffer that lanes append to with [`Self::import_buffer`], and
 /// create lanes with [`spawn`](super::spawn). Next, start it with [`Self::run`] on the thread that runs the lanes.
@@ -62,8 +61,6 @@ impl Loader {
 		let mut context = device.create_context();
 		let (staging_buffer, staging, staging_worker) =
 			UploadStagingArena::create(&mut context, STAGING_BYTE_COUNT, "Loader Staging Buffer");
-		let command_buffer = context.queue(device.copy_queue()).create_command_buffer(Some("Loader Batch"));
-		let synchronizer = context.create_synchronizer(Some("Loader Batch"), false);
 		// Native I/O stays optional so devices without it still load staged textures.
 		let io_queue = context
 			.create_resource_io_queue(ghi::io::ResourceIoQueueDescriptor::new().name("Loader I/O"))
@@ -80,8 +77,7 @@ impl Loader {
 		Self {
 			batcher: Batcher {
 				context,
-				command_buffer,
-				synchronizer,
+				queue: device.copy_queue(),
 				staging_buffer,
 				staging,
 				io_queue,
@@ -89,7 +85,7 @@ impl Loader {
 				busy_lanes: Arc::new(AtomicUsize::new(0)),
 				batch_window,
 				pending: Vec::new(),
-				in_flight: Vec::new(),
+				reads: Vec::new(),
 				image_copies: Vec::new(),
 				buffer_copies: Vec::new(),
 			},
@@ -105,10 +101,10 @@ impl Loader {
 		self.batcher.context.import_buffer(buffer)
 	}
 
-	/// Starts the loader's tasks on `runtime`.
+	/// Starts the staging worker on `runtime` and the batcher on a thread of its own.
 	///
-	/// Run it on the thread that runs the lanes. The loader stops once every lane is gone and its last batch is
-	/// finished.
+	/// Run it on the thread that runs the lanes. The batcher waits for the GPU at every batch, so it never shares that
+	/// thread. The loader stops once every lane is gone and its last batch is finished.
 	pub fn run(self, runtime: &compio::runtime::Runtime) {
 		let Self {
 			batcher,
@@ -117,7 +113,10 @@ impl Loader {
 		} = self;
 		drop(uploads);
 		runtime.spawn(staging_worker.run()).detach();
-		runtime.spawn(batcher.run()).detach();
+		std::thread::Builder::new()
+			.name("Loader Batcher".to_string())
+			.spawn(move || batcher.run())
+			.expect("Failed to start the loader batcher thread. The most likely cause is that the process ran out of threads. Free some threads, or raise the process's thread limit.");
 	}
 }
 
@@ -198,38 +197,34 @@ pub struct NativeImageRegion {
 /// The `UploadRequest` enum carries one lane's upload and the channel its result goes back through.
 pub(super) enum UploadRequest {
 	/// Creates images and fills them, and any imported buffers, from one staging lease.
-	Staged {
-		staging: StagingLease,
-		images: SmallVec<[ImageUpload; 2]>,
-		buffers: SmallVec<[BufferRegion; 16]>,
-		reply: kanal::Sender<SmallVec<[ghi::implementation::DetachedImage; 2]>>,
-	},
+	Staged(StagedUpload),
 	NativeImage {
 		upload: NativeImageUpload,
 		reply: kanal::Sender<Result<ghi::implementation::DetachedImage, String>>,
 	},
 }
 
-/// The `Completion` enum keeps what one upload needs until its batch finishes on the GPU.
-enum Completion {
-	Staged {
-		images: SmallVec<[ghi::ImageHandle; 2]>,
-		/// Returns to the arena once the copies that read it finished.
-		staging: StagingLease,
-		reply: kanal::Sender<SmallVec<[ghi::implementation::DetachedImage; 2]>>,
-	},
-	NativeImage {
-		image: ghi::ImageHandle,
-		ticket: ghi::implementation::ResourceIoTicket,
-		reply: kanal::Sender<Result<ghi::implementation::DetachedImage, String>>,
-	},
+/// The `StagedUpload` struct is one lane's upload from a staging lease, which waits in a batch until its copies land.
+pub(super) struct StagedUpload {
+	pub(super) staging: StagingLease,
+	pub(super) images: SmallVec<[ImageUpload; 2]>,
+	pub(super) buffers: SmallVec<[BufferRegion; 16]>,
+	pub(super) reply: kanal::Sender<SmallVec<[ghi::implementation::DetachedImage; 2]>>,
 }
 
-/// The `Batcher` struct is the running half of a [`Loader`]: it collects, submits, and finishes batches.
+/// The `NativeRead` struct keeps one native image upload until its reads finish.
+struct NativeRead {
+	image: ghi::ImageHandle,
+	ticket: ghi::implementation::ResourceIoTicket,
+	reply: kanal::Sender<Result<ghi::implementation::DetachedImage, String>>,
+}
+
+/// The `Batcher` struct is the running half of a [`Loader`]: it collects uploads, submits them in batches, and
+/// answers the lanes once they landed.
 pub(super) struct Batcher {
 	context: ghi::implementation::Context,
-	command_buffer: ghi::CommandBufferHandle,
-	synchronizer: ghi::SynchronizerHandle,
+	/// The copy queue every batch runs on.
+	queue: ghi::QueueHandle,
 	staging_buffer: ghi::BaseBufferHandle,
 	pub(super) staging: Arc<UploadStagingArena>,
 	io_queue: Option<ghi::implementation::ResourceIoQueue>,
@@ -237,10 +232,10 @@ pub(super) struct Batcher {
 	/// How many lanes are loading a resource right now, across every pipeline.
 	pub(super) busy_lanes: Arc<AtomicUsize>,
 	batch_window: Duration,
-	/// Uploads collected for the next batch.
-	pending: Vec<UploadRequest>,
-	/// What the batch on the copy queue needs once it finishes. Empty while the queue is free.
-	in_flight: Vec<Completion>,
+	/// Staged uploads collected for the next batch.
+	pending: Vec<StagedUpload>,
+	/// Native image reads that haven't finished.
+	reads: Vec<NativeRead>,
 	/// Copy lists rebuilt for every batch. They keep their storage so collecting a batch allocates nothing.
 	image_copies: Vec<ghi::BufferImageCopyDescriptor>,
 	buffer_copies: Vec<ghi::BufferCopyDescriptor>,
@@ -251,102 +246,151 @@ impl Batcher {
 	///
 	/// A batch is due once its window elapsed, staging ran out, or every busy lane already waits on an upload, since
 	/// waiting then would only delay the lanes. Once every lane is gone none is busy, so the last batch is due at
-	/// once. A batch is submitted only when the previous one finished. While work is pending or in flight, the loop
-	/// checks it every [`POLL_INTERVAL`] without blocking, so lanes on this thread keep reading and decoding.
-	async fn run(mut self) {
+	/// once. Submitting a batch returns once its copies landed, so the next batch collects while lanes wait on this
+	/// thread's answer, not while the GPU copies.
+	fn run(mut self) {
+		let requests = self.requests.clone();
+		let requests = requests.as_sync();
 		let mut opened = Instant::now();
+		let mut open = true;
 		loop {
-			if self.pending.is_empty() && self.in_flight.is_empty() {
-				// Nothing is left to check, so sleep until a lane uploads.
-				let Ok(request) = self.requests.recv().await else {
+			// Sleep until a lane uploads while nothing waits; otherwise check again by the next deadline.
+			let request = if self.pending.is_empty() && self.reads.is_empty() {
+				// Once every lane is gone the channel is closed, so this returns at once.
+				let Ok(request) = requests.recv() else {
 					return;
 				};
-				self.pending.push(request);
-				opened = Instant::now();
-			}
-			while let Ok(Some(request)) = self.requests.as_sync().try_recv() {
+				Some(request)
+			} else {
+				// Native reads finish on their own, so they're checked every poll interval.
+				let window_left = self.batch_window.saturating_sub(opened.elapsed());
+				let timeout = match (self.pending.is_empty(), self.reads.is_empty()) {
+					(true, _) => POLL_INTERVAL,
+					(false, true) => window_left,
+					(false, false) => window_left.min(POLL_INTERVAL),
+				};
+				if !open {
+					// No lane is left to send anything, and a closed channel returns at once; only native reads still run.
+					std::thread::sleep(timeout);
+				}
+				match requests.recv_timeout(timeout) {
+					Ok(request) => Some(request),
+					Err(kanal::ReceiveErrorTimeout::Timeout) => None,
+					Err(_) => {
+						open = false;
+						None
+					}
+				}
+			};
+			for request in request
+				.into_iter()
+				.chain(std::iter::from_fn(|| requests.try_recv().ok().flatten()))
+			{
 				if self.pending.is_empty() {
 					opened = Instant::now();
 				}
-				self.pending.push(request);
+				self.accept(request);
 			}
 
-			if !self.in_flight.is_empty() && self.is_finished() {
-				self.finish();
-			}
-			// Each busy lane waits on at most one upload of its own, so this many pending uploads means none can join.
-			let every_lane_waits = self.pending.len() >= self.busy_lanes.load(Ordering::Acquire);
-			let due = opened.elapsed() >= self.batch_window || self.staging.is_exhausted() || every_lane_waits;
-			if self.in_flight.is_empty() && !self.pending.is_empty() && due {
+			self.finish_reads();
+			// Each busy lane waits on at most one upload of its own, so this many uploads means none can join.
+			let every_lane_waits = self.pending.len() + self.reads.len() >= self.busy_lanes.load(Ordering::Acquire);
+			let due = opened.elapsed() >= self.batch_window || self.staging.is_exhausted() || every_lane_waits || !open;
+			if !self.pending.is_empty() && due {
 				self.dispatch();
-			}
-
-			if !self.pending.is_empty() || !self.in_flight.is_empty() {
-				compio::time::sleep(POLL_INTERVAL).await;
 			}
 		}
 	}
 
-	/// Creates every image of the pending batch, records all of its copies in one command buffer, and submits it.
+	/// Queues a staged upload for the next batch, or starts a native read.
+	fn accept(&mut self, request: UploadRequest) {
+		match request {
+			UploadRequest::Staged(upload) => self.pending.push(upload),
+			UploadRequest::NativeImage { upload, reply } => match self.submit_native(upload) {
+				Ok((image, ticket)) => self.reads.push(NativeRead { image, ticket, reply }),
+				Err(error) => {
+					let _ = reply.send(Err(error));
+				}
+			},
+		}
+	}
+
+	/// Creates every image of the pending batch, records all of its copies in one workload, and answers every lane
+	/// once it landed.
+	///
+	/// A lane that stopped waiting drops its images when its reply fails to send.
 	fn dispatch(&mut self) {
 		let mut pending = std::mem::take(&mut self.pending);
-		for request in pending.drain(..) {
-			match request {
-				UploadRequest::Staged {
-					staging,
-					images,
-					buffers,
-					reply,
-				} => {
-					let base = staging.offset();
-					let mut handles = SmallVec::new();
-					for upload in &images {
-						let image = self.context.build_image(upload.description.builder());
-						self.image_copies.extend(upload.regions.iter().map(|region| {
-							ghi::BufferImageCopyDescriptor::new(
-								self.staging_buffer,
-								base + region.offset,
-								region.bytes_per_row,
-								region.bytes_per_image,
-								image.into(),
-								region.mip_level,
-							)
-						}));
-						handles.push(image);
-					}
-					self.buffer_copies.extend(buffers.iter().map(|region| {
-						ghi::BufferCopyDescriptor::new(
-							self.staging_buffer,
-							base + region.offset,
-							region.destination,
-							region.destination_offset,
-							region.size,
-						)
-					}));
-					self.in_flight.push(Completion::Staged {
-						images: handles,
-						staging,
-						reply,
-					});
-				}
-				UploadRequest::NativeImage { upload, reply } => match self.submit_native(upload) {
-					Ok((image, ticket)) => self.in_flight.push(Completion::NativeImage { image, ticket, reply }),
-					Err(error) => {
-						let _ = reply.send(Err(error));
-					}
-				},
+		let mut answers = SmallVec::<[_; 16]>::new();
+		for StagedUpload {
+			staging,
+			images,
+			buffers,
+			reply,
+		} in pending.drain(..)
+		{
+			let base = staging.offset();
+			let mut handles = SmallVec::<[ghi::ImageHandle; 2]>::new();
+			for upload in &images {
+				let image = self.context.build_image(upload.description.builder());
+				self.image_copies.extend(upload.regions.iter().map(|region| {
+					ghi::BufferImageCopyDescriptor::new(
+						self.staging_buffer,
+						base + region.offset,
+						region.bytes_per_row,
+						region.bytes_per_image,
+						image.into(),
+						region.mip_level,
+					)
+				}));
+				handles.push(image);
 			}
+			self.buffer_copies.extend(buffers.iter().map(|region| {
+				ghi::BufferCopyDescriptor::new(
+					self.staging_buffer,
+					base + region.offset,
+					region.destination,
+					region.destination_offset,
+					region.size,
+				)
+			}));
+			answers.push((handles, staging, reply));
 		}
 		self.pending = pending;
 
-		if !self.image_copies.is_empty() || !self.buffer_copies.is_empty() {
-			let mut recording = self.context.create_command_buffer_recording(self.command_buffer);
-			recording.copy_buffers(&self.buffer_copies);
-			recording.copy_buffer_to_images(&self.image_copies);
-			recording.execute(self.synchronizer);
-		}
+		let (buffer_copies, image_copies) = (&self.buffer_copies, &self.image_copies);
+		self.context.record(self.queue, Some("Loader Batch"), |recording| {
+			recording.copy_buffers(buffer_copies);
+			recording.copy_buffer_to_images(image_copies);
+		});
 		self.image_copies.clear();
 		self.buffer_copies.clear();
+
+		// The copies landed, so the staging goes back to the arena and the images can leave the context.
+		for (images, staging, reply) in answers {
+			drop(staging);
+			let images = images.into_iter().map(|image| self.context.export_image(image)).collect();
+			let _ = reply.send(images);
+		}
+	}
+
+	/// Answers the lanes whose native reads finished, with their images or with why a read failed.
+	fn finish_reads(&mut self) {
+		let mut index = 0;
+		while index < self.reads.len() {
+			if self.reads[index].ticket.status() == ghi::io::ResourceIoStatus::Pending {
+				index += 1;
+				continue;
+			}
+			let NativeRead { image, ticket, reply } = self.reads.swap_remove(index);
+			let image = self.context.export_image(image);
+			let result = ticket.wait().map(|()| image).map_err(|error| {
+				format!(
+					"Texture I/O failed. The most likely cause is unreadable or incompatible compressed texture data. {error}"
+				)
+			});
+			let _ = reply.send(result);
+		}
 	}
 
 	/// Creates the image for a native upload, opens its file, and submits one read per mip on the native I/O queue.
@@ -398,40 +442,5 @@ impl Batcher {
 				))
 			}
 		}
-	}
-
-	/// Returns whether the GPU finished every copy and native read of the batch in flight, without blocking.
-	fn is_finished(&mut self) -> bool {
-		self.context.poll_synchronizer(self.synchronizer)
-			&& self.in_flight.iter().all(|completion| match completion {
-				Completion::NativeImage { ticket, .. } => ticket.status() != ghi::io::ResourceIoStatus::Pending,
-				Completion::Staged { .. } => true,
-			})
-	}
-
-	/// Returns the finished batch's staging to the arena and hands every lane its result.
-	///
-	/// A lane that stopped waiting drops its images when its reply fails to send.
-	fn finish(&mut self) {
-		let mut in_flight = std::mem::take(&mut self.in_flight);
-		for completion in in_flight.drain(..) {
-			match completion {
-				Completion::Staged { images, staging, reply } => {
-					drop(staging);
-					let images = images.into_iter().map(|image| self.context.export_image(image)).collect();
-					let _ = reply.send(images);
-				}
-				Completion::NativeImage { image, ticket, reply } => {
-					let image = self.context.export_image(image);
-					let result = ticket.wait().map(|()| image).map_err(|error| {
-						format!(
-							"Texture I/O failed. The most likely cause is unreadable or incompatible compressed texture data. {error}"
-						)
-					});
-					let _ = reply.send(result);
-				}
-			}
-		}
-		self.in_flight = in_flight;
 	}
 }

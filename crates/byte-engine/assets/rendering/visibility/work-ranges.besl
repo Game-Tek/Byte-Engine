@@ -1,0 +1,79 @@
+// Lays out the frame's work ranges from the groups' item totals: gives each group its first item of each kind, and
+// writes each range's first item and workgroup count and the dispatch record the meshlet passes read.
+//
+// One thread walks the groups in order, so every instance keeps its place in the work between frames while nothing
+// before it changes, which is what lets the occlusion record of a work item find the same meshlets again.
+
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::work_build::*;
+
+push_constant: push_constant {
+	// One past the last group of each raster phase. The phases' groups follow one another.
+	opaque_end: u32,
+	masked_end: u32,
+	double_sided_end: u32,
+	double_sided_masked_end: u32,
+	transparent_end: u32,
+	// The words the work buffer holds, its ranges included.
+	capacity: u32,
+}
+
+main: fn (input: StageInput, work_build: WorkBuild) -> void {
+	let first_group: u32 = 0;
+	// The ranges take the first words of the work buffer.
+	let first_item: u32 = WORK_HEADER;
+	for (let phase: u32 = 0; phase < 5; phase = phase + 1) {
+		let end_group: u32 = push_constant.opaque_end;
+		if (phase == 1) { end_group = push_constant.masked_end; }
+		if (phase == 2) { end_group = push_constant.double_sided_end; }
+		if (phase == 3) { end_group = push_constant.double_sided_masked_end; }
+		if (phase == 4) { end_group = push_constant.transparent_end; }
+
+		// The phase's chunk items come first, so their total places its shared items.
+		let chunk_count: u32 = 0;
+		let shared_count: u32 = 0;
+		for (let group: u32 = first_group; group < end_group; group = group + 1) {
+			let totals: vec2u = work_build.group_items[group];
+			chunk_count = chunk_count + totals.x;
+			shared_count = shared_count + totals.y;
+		}
+		let shared_base: u32 = first_item + chunk_count;
+		let chunks: u32 = 0;
+		let shared: u32 = 0;
+		for (let group: u32 = first_group; group < end_group; group = group + 1) {
+			let totals: vec2u = work_build.group_items[group];
+			work_build.group_items[group] = vec2u(first_item + chunks, shared_base + shared);
+			chunks = chunks + totals.x;
+			shared = shared + totals.y;
+		}
+		// Shared items fill whole workgroups of 32 lanes, the last one padded with empty items.
+		let shared_groups: u32 = (shared_count + 31) / 32;
+		let item_count: u32 = chunk_count + shared_groups * 32;
+		// The scatter pass writes no item past the buffer, so a range dispatches only the workgroups whose items fit,
+		// and the instances past them aren't drawn. `first_item` never passes the capacity.
+		let drawn_chunks: u32 = min(chunk_count, push_constant.capacity - first_item);
+		let shared_room: u32 = 0;
+		if (shared_base < push_constant.capacity) {
+			shared_room = (push_constant.capacity - shared_base) / 32;
+		}
+		let drawn_shared: u32 = min(shared_groups, shared_room);
+		for (let item: u32 = shared_base + shared_count; item < shared_base + drawn_shared * 32; item = item + 1) {
+			work_build.work_items[item] = EMPTY_WORK_ITEM;
+		}
+
+		let range: u32 = phase * 2;
+		work_build.work_items[range * 2] = first_item;
+		work_build.work_items[range * 2 + 1] = drawn_chunks;
+		work_build.work_items[range * 2 + 2] = shared_base;
+		work_build.work_items[range * 2 + 3] = drawn_shared;
+		work_build.work_dispatches[range * 3] = drawn_chunks;
+		work_build.work_dispatches[range * 3 + 1] = 1;
+		work_build.work_dispatches[range * 3 + 2] = 1;
+		work_build.work_dispatches[range * 3 + 3] = drawn_shared;
+		work_build.work_dispatches[range * 3 + 4] = 1;
+		work_build.work_dispatches[range * 3 + 5] = 1;
+
+		first_item = min(first_item + item_count, push_constant.capacity);
+		first_group = end_group;
+	}
+}

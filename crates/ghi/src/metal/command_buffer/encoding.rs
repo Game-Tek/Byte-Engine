@@ -248,9 +248,12 @@ impl CommandBufferRecording<'_> {
 						let size = self.device.buffers.resource(buffer).size;
 						synchronization::MetalResourceUse::buffer(buffer, 0, size, stages, access)
 					}
-					Descriptor::Image { image, mip_level, .. } => {
-						synchronization::MetalResourceUse::image(image, mip_level, None, stages, access)
-					}
+					Descriptor::Image {
+						image,
+						mip_level,
+						array_layer,
+						..
+					} => synchronization::MetalResourceUse::image(image, mip_level, array_layer, stages, access),
 					Descriptor::CombinedImageSampler { image, .. } => {
 						synchronization::MetalResourceUse::image(image, None, None, stages, access)
 					}
@@ -367,8 +370,9 @@ impl CommandBufferRecording<'_> {
 	/// Records that the render pass just begun writes `attachments`, each an attachment and the image it targets, at
 	/// `stages`.
 	///
-	/// It waits for the attachments' earlier accesses, marks the image-group members the pass clears or discards as
-	/// holding new contents, and keeps the writes that every command of the pass records.
+	/// It keeps the attachments' first accesses for the pass's first command, see [`Self::prepare_draw`], marks the
+	/// image-group members the pass clears or discards as holding new contents, and keeps the writes that every
+	/// command of the pass records.
 	pub(super) fn track_render_attachments<'a>(
 		&mut self,
 		attachments: impl IntoIterator<Item = (&'a graphics_hardware_interface::AttachmentInformation, ImageHandle)>,
@@ -392,20 +396,24 @@ impl CommandBufferRecording<'_> {
 				self.commit.image_groups.initialize(image);
 			}
 		}
-		self.consume_resources(initial_uses);
 		// Every command records the same attachment writes, so they are consolidated once for the whole pass.
 		synchronization::MetalResourceTracker::consolidate_in_place(&mut final_uses);
-		self.render_pass_mut("a render pass").attachment_writes = final_uses;
+		let pass = self.render_pass_mut("a render pass");
+		pass.attachment_uses = initial_uses;
+		pass.attachment_writes = final_uses;
 	}
 
 	/// Prepares the next draw in the open render pass; `operation` names the draw call if no pass is open.
+	///
+	/// The pass's first command also consumes the attachments' first accesses. Nothing between the pass's start and
+	/// its first command runs on the GPU, so the barrier they need can wait until then and share the command's own.
 	pub(super) fn prepare_draw(
 		&mut self,
 		operation: &str,
 		additional_uses: impl IntoIterator<Item = synchronization::MetalResourceUse>,
 	) {
-		self.render_encoder(operation);
-		self.prepare_command(additional_uses);
+		let attachment_uses = std::mem::take(&mut self.render_pass_mut(operation).attachment_uses);
+		self.prepare_command(additional_uses.into_iter().chain(attachment_uses));
 	}
 
 	/// Encodes one render-pass clear for a compatible group of color and depth images.

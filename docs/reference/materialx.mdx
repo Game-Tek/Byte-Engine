@@ -38,13 +38,10 @@ or bake the network into textures with the MaterialX tools.
 
 ## Differences from the document
 
-Three things behave differently from the document:
+Two things behave differently from the document:
 
 - Object-space and model-space geometric properties read their world-space
   value.
-- Images sample with the mesh's own texture coordinates. An `<image>` whose
-  `texcoord` is driven by anything else, such as a `place2d` or a `tiledimage`,
-  is reported instead of being sampled at the wrong place.
 - A `texcoord` node that reads a set other than zero converts, but a renderer
   that carries one texture coordinate set reports it when it builds the shader.
 

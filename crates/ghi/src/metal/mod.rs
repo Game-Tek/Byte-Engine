@@ -45,7 +45,7 @@ pub(crate) mod utils {
 	use objc2_metal as mtl;
 	use utils::Extent;
 
-	use crate::{DeviceAccesses, FilteringModes, Formats, SamplerAddressingModes, SamplingReductionModes, Uses};
+	use crate::{FilteringModes, Formats, SamplerAddressingModes, SamplingReductionModes, Uses};
 
 	pub(crate) fn parse_threadgroup_size_metadata(source: &str) -> Option<Extent> {
 		let metadata_prefix = "// besl-threadgroup-size:";
@@ -116,13 +116,11 @@ pub(crate) mod utils {
 		}
 	}
 
-	/// Selects the storage of a buffer or texture, with default CPU caching and hazard tracking.
-	pub(crate) fn resource_options_from_access(access: DeviceAccesses) -> mtl::MTLResourceOptions {
-		if access == DeviceAccesses::DeviceOnly {
-			mtl::MTLResourceOptions::StorageModePrivate
-		} else {
-			// Metal 4 has no managed-resource synchronization commands. Shared storage is CPU-coherent after queue completion.
-			mtl::MTLResourceOptions::StorageModeShared
+	/// Selects the storage of a buffer: private when only the GPU accesses it, CPU-coherent shared storage otherwise.
+	pub(crate) fn buffer_options(host_access: crate::HostAccess) -> mtl::MTLResourceOptions {
+		match host_access {
+			crate::HostAccess::None => mtl::MTLResourceOptions::StorageModePrivate,
+			crate::HostAccess::Write | crate::HostAccess::Read => mtl::MTLResourceOptions::StorageModeShared,
 		}
 	}
 
@@ -135,6 +133,11 @@ pub(crate) mod utils {
 
 		if uses.contains(Uses::Storage) {
 			usage |= mtl::MTLTextureUsage::ShaderWrite;
+		}
+
+		// Metal rejects texture atomics on a texture created without this usage.
+		if uses.contains(Uses::Atomic) {
+			usage |= mtl::MTLTextureUsage::ShaderAtomic;
 		}
 
 		// Metal clears images by loading them as render-pass attachments.
@@ -174,20 +177,6 @@ pub(crate) mod utils {
 			SamplerAddressingModes::Clamp => mtl::MTLSamplerAddressMode::ClampToEdge,
 			SamplerAddressingModes::Border { .. } => mtl::MTLSamplerAddressMode::ClampToBorderColor,
 		}
-	}
-
-	/// Returns the compact row pitch, row count, and image pitch of one texture subresource.
-	pub(crate) fn texture_upload_layout(format: Formats, extent: Extent) -> (usize, usize, usize) {
-		format.copy_layout(extent).expect(
-			"Metal texture layout overflowed. The most likely cause is an image extent too large for the host address space.",
-		)
-	}
-
-	/// Returns the row and image pitches Metal copies of one texture subresource use, padded for the GPU.
-	pub(crate) fn texture_copy_pitches(bytes_per_row: usize, row_count: usize) -> (usize, usize) {
-		crate::aligned_copy_pitches(bytes_per_row, row_count).expect(
-			"Metal texture copy pitch overflowed. The most likely cause is an image extent too large for the host address space.",
-		)
 	}
 
 	/// Copies `rows` rows of `row_bytes` bytes between two row pitches, such as compact CPU data and a padded copy buffer.
@@ -325,12 +314,12 @@ pub(crate) mod utils {
 		fn upload_layout_preserves_bc_block_rows_and_minimum_extent() {
 			let extent = Extent::rectangle(5, 7);
 
-			let (bytes_per_row, row_count, bytes_per_image) = texture_upload_layout(Formats::BC7, extent);
+			let layout = crate::ImageCopyLayout::new(Formats::BC7, extent, 1).unwrap();
 
-			assert_eq!(bytes_per_row, 2 * 16);
-			assert_eq!(row_count, 2);
-			assert_eq!(bytes_per_image, 2 * 2 * 16);
-			assert_eq!(texture_upload_layout(Formats::RGBA8UNORM, Extent::rectangle(0, 0)), (4, 1, 4));
+			assert_eq!(layout.compact_bytes_per_row, 2 * 16);
+			assert_eq!(layout.row_count, 2);
+			assert_eq!(layout.compact_bytes_per_image, 2 * 2 * 16);
+			assert_eq!(Formats::RGBA8UNORM.copy_layout(Extent::rectangle(0, 0)), Some((4, 1, 4)));
 		}
 	}
 }
@@ -342,12 +331,25 @@ pub(crate) use state::{
 	ArgumentBufferSnapshot, ArgumentResources, Buffer, DescriptorSet, GroupSlot, ImageDescription, Swapchain, Synchronizer,
 };
 
+#[cfg(test)]
+impl Context {
+	/// Returns a buffer's CPU-visible contents, for tests that write inputs before submitting and read results after
+	/// waiting.
+	pub(crate) fn test_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer: crate::BufferHandle<T>) -> &mut T {
+		// SAFETY: Tests call this only while no submitted command uses the buffer.
+		unsafe { &mut *self.typed_buffer_pointer(buffer, 0) }
+	}
+}
+
 /// Creates a real Metal context with one queue for the requested workloads, for tests that run GPU work.
 #[cfg(test)]
 pub(crate) fn test_context(workloads: crate::WorkloadTypes) -> (Context, crate::QueueHandle) {
 	use crate::device::Device as _;
 
-	let features = crate::device::Features::new().debug_labels(true).ray_tracing(true).counters(true);
+	let features = crate::device::Features::new()
+		.debug_labels(true)
+		.ray_tracing(true)
+		.counters(true);
 	let mut instance = Instance::new(features)
 		.expect("Failed to create a Metal test instance. The most likely cause is that no Metal device is available.");
 	let mut queue_handle = None;
@@ -382,6 +384,35 @@ mod flat_binding_tests {
 	) -> (crate::DescriptorSetLayout, [crate::ShaderDescriptorSet; 1]) {
 		let layout = crate::DescriptorSetLayout::new(name, resources);
 		(layout.clone(), [crate::ShaderDescriptorSet::new(layout)])
+	}
+
+	/// Creates a 1x1 image of `format` holding `texel`, filled through a staging buffer copy.
+	fn single_texel_image(
+		context: &mut Context,
+		queue_handle: crate::QueueHandle,
+		format: crate::Formats,
+		name: &str,
+		texel: &[u8],
+	) -> crate::ImageHandle {
+		use crate::command_buffer::CommandBufferRecording as _;
+		let image = context.build_image(
+			crate::image::Builder::new(format, crate::Uses::Image | crate::Uses::TransferDestination)
+				.name(name)
+				.extent(Extent::square(1)),
+		);
+		let layout = crate::ImageCopyLayout::new(format, Extent::square(1), 1).unwrap();
+		let staging = context.build_buffer::<[u8]>(
+			crate::buffer::Builder::new(crate::Uses::TransferSource)
+				.host_access(crate::HostAccess::Write)
+				.length(layout.padded_size),
+		);
+		// SAFETY: No work has used the new staging buffer, and the mapping ends before the copy is recorded.
+		let bytes = unsafe { context.map_unsynchronized(staging) }.into_bytes();
+		layout.write_rows(bytes, texel, layout.compact_bytes_per_row);
+		context.record(queue_handle, None, |recording| {
+			recording.copy_buffer_to_images(&[layout.copy(staging.into(), 0, image.into(), 0)]);
+		});
+		image
 	}
 
 	/// Exercises the production material ordering where scalar resources follow the bindless texture table.
@@ -476,30 +507,30 @@ mod flat_binding_tests {
 		let material_index = context.build_buffer::<u32>(
 			crate::buffer::Builder::new(crate::Uses::Storage)
 				.name("Material Texture Index Probe")
-				.device_accesses(crate::DeviceAccesses::HostToDevice),
+				.host_access(crate::HostAccess::Write),
 		);
-		*context.get_mut_buffer_slice(material_index) = TEXTURE_INDEX;
+		*context.test_buffer(material_index) = TEXTURE_INDEX;
 		let output = context.build_buffer::<u32>(
 			crate::buffer::Builder::new(crate::Uses::Storage)
 				.name("Material Binding Probe Output")
-				.device_accesses(crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuWrite),
+				.host_access(crate::HostAccess::Read),
 		);
-		*context.get_mut_buffer_slice(output) = 0;
+		*context.test_buffer(output) = 0;
 
-		let material_texture = context.build_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image)
-				.name("Material Binding Probe Texture")
-				.extent(Extent::square(1))
-				.device_accesses(crate::DeviceAccesses::HostToDevice),
+		let material_texture = single_texel_image(
+			&mut context,
+			queue_handle,
+			crate::Formats::RGBA8UNORM,
+			"Material Binding Probe Texture",
+			&[64, 0, 0, 255],
 		);
-		context.write_texture(material_texture, |bytes| bytes.copy_from_slice(&[64, 0, 0, 255]));
-		let ao_texture = context.build_image(
-			crate::image::Builder::new(crate::Formats::R8UNORM, crate::Uses::Image)
-				.name("Material Binding Probe AO")
-				.extent(Extent::square(1))
-				.device_accesses(crate::DeviceAccesses::HostToDevice),
+		let ao_texture = single_texel_image(
+			&mut context,
+			queue_handle,
+			crate::Formats::R8UNORM,
+			"Material Binding Probe AO",
+			&[192],
 		);
-		context.write_texture(ao_texture, |bytes| bytes.copy_from_slice(&[192]));
 		let sampler = context.build_sampler(
 			crate::sampler::Builder::new()
 				.filtering_mode(crate::FilteringModes::Closest)
@@ -541,7 +572,7 @@ mod flat_binding_tests {
 		context.wait();
 
 		assert_eq!(
-			*context.get_buffer_slice(output),
+			*context.test_buffer(output),
 			64 | (192 << 8),
 			"Material resources after the bindless table reached the wrong Metal argument IDs. The most likely cause is that a set's argument buffer and the shader's argument-buffer struct lay out its layout differently.",
 		);
@@ -590,11 +621,9 @@ mod flat_binding_tests {
 			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute)
 				.with_specialization_map(&specialization_map),
 		));
-		let output = context.build_buffer::<u32>(
-			crate::buffer::Builder::new(crate::Uses::Storage)
-				.device_accesses(crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuWrite),
-		);
-		*context.get_mut_buffer_slice(output) = 0;
+		let output =
+			context.build_buffer::<u32>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Read));
+		*context.test_buffer(output) = 0;
 		let descriptor_set = context.create_descriptor_set(Some("Metal 4 Specialization Probe"), &output_layout);
 		context.write(&[crate::DescriptorWrite::buffer(descriptor_set, OUTPUT_SLOT, output.into())]);
 		let command_buffer = context
@@ -615,7 +644,7 @@ mod flat_binding_tests {
 		context.wait();
 
 		assert_eq!(
-			*context.get_buffer_slice(output),
+			*context.test_buffer(output),
 			73,
 			"Metal 4 specialization produced the wrong value. The most likely cause is that the specialized function descriptor did not reach the pipeline compiler.",
 		);
@@ -662,18 +691,15 @@ mod flat_binding_tests {
 			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
 		let mut input_buffer = |value: u32| {
-			let buffer = context.build_buffer::<u32>(
-				crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
-			);
-			*context.get_mut_buffer_slice(buffer) = value;
+			let buffer = context
+				.build_buffer::<u32>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Write));
+			*context.test_buffer(buffer) = value;
 			buffer
 		};
 		let first_input = input_buffer(10);
 		let second_input = input_buffer(20);
-		let output = context.build_buffer::<u32>(
-			crate::buffer::Builder::new(crate::Uses::Storage)
-				.device_accesses(crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuWrite),
-		);
+		let output =
+			context.build_buffer::<u32>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Read));
 		let descriptor_set = context.create_descriptor_set(Some("Metal Retention Probe"), &probe_layout);
 		context.write(&[
 			crate::DescriptorWrite::buffer(descriptor_set, INPUT_SLOT, first_input.into()),
@@ -695,7 +721,7 @@ mod flat_binding_tests {
 		let encoded_sets = |context: &super::context::Context| argument_buffers(context).iter().flatten().count();
 
 		let run_frame = |context: &mut super::context::Context, frame_index: u64, push: u32| -> u32 {
-			*context.get_mut_buffer_slice(output) = 0;
+			*context.test_buffer(output) = 0;
 			context
 				.queue(queue_handle)
 				.execute(Some(FrameRequest::new(frame_index, signal)), &[], signal, |execution| {
@@ -708,7 +734,7 @@ mod flat_binding_tests {
 					[]
 				});
 			context.wait();
-			*context.get_buffer_slice(output)
+			*context.test_buffer(output)
 		};
 
 		// One argument buffer per frame-local set, then every later frame reuses its sequence's buffer and pages.
@@ -798,18 +824,15 @@ mod flat_binding_tests {
 			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
 		let mut input_buffer = |value: u32| {
-			let buffer = context.build_buffer::<u32>(
-				crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
-			);
-			*context.get_mut_buffer_slice(buffer) = value;
+			let buffer = context
+				.build_buffer::<u32>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Write));
+			*context.test_buffer(buffer) = value;
 			buffer
 		};
 		let first_input = input_buffer(10);
 		let second_input = input_buffer(20);
-		let output = context.build_buffer::<[u32; 2]>(
-			crate::buffer::Builder::new(crate::Uses::Storage)
-				.device_accesses(crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuWrite),
-		);
+		let output = context
+			.build_buffer::<[u32; 2]>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Read));
 		let descriptor_set = context.create_descriptor_set(Some("Metal Snapshot Probe"), &probe_layout);
 		context.write(&[
 			crate::DescriptorWrite::buffer(descriptor_set, INPUT_SLOT, first_input.into()),
@@ -824,7 +847,7 @@ mod flat_binding_tests {
 
 		// Each frame-local copy of the set is bound, written and bound again while its first reader is not submitted.
 		for frame_index in 0..u64::from(context.frames) * 2 {
-			*context.get_mut_buffer_slice(output) = [0; 2];
+			*context.test_buffer(output) = [0; 2];
 			context.write(&[crate::DescriptorWrite::buffer(descriptor_set, INPUT_SLOT, first_input.into())]);
 			context
 				.queue(queue_handle)
@@ -849,7 +872,7 @@ mod flat_binding_tests {
 			context.wait();
 
 			assert_eq!(
-				*context.get_buffer_slice(output),
+				*context.test_buffer(output),
 				[10, 20],
 				"A recorded command read a descriptor set write made after it bound the set, on frame {frame_index}. The most likely cause is that the set's argument buffer was written over while a command still read it.",
 			);
@@ -958,17 +981,17 @@ mod flat_binding_tests {
 			.name("Dynamic Storage Mip Reader Pipeline"),
 		);
 
-		let depth_pyramid = context.build_dynamic_image(
+		let depth_pyramid = context.build_image(
 			crate::image::Builder::new(crate::Formats::R32F, crate::Uses::Storage | crate::Uses::Image)
 				.name("Dynamic Storage Mip Test Pyramid")
 				.extent(Extent::square(8))
-				.device_accesses(crate::DeviceAccesses::DeviceOnly)
-				.mip_levels(4),
+				.mip_levels(4)
+				.copies(crate::Copies::PerFrame),
 		);
 		let output_buffer = context.build_buffer::<[u32; 3]>(
 			crate::buffer::Builder::new(crate::Uses::Storage)
 				.name("Dynamic Storage Mip Test Output")
-				.device_accesses(crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuWrite),
+				.host_access(crate::HostAccess::Read),
 		);
 		let sampler = context.build_sampler(
 			crate::sampler::Builder::new()
@@ -999,7 +1022,7 @@ mod flat_binding_tests {
 		let completion = context.create_synchronizer(Some("Dynamic Storage Mip Test Completion"), true);
 
 		for frame_index in 0..4 {
-			*context.get_mut_buffer_slice(output_buffer) = [0; 3];
+			*context.test_buffer(output_buffer) = [0; 3];
 			context.queue(queue_handle).execute(
 				Some(FrameRequest::new(frame_index, completion)),
 				&[],
@@ -1021,7 +1044,7 @@ mod flat_binding_tests {
 			context.wait();
 
 			assert_eq!(
-				*context.get_buffer_slice(output_buffer),
+				*context.test_buffer(output_buffer),
 				[250, 500, 750],
 				"Dynamic mip storage views produced stale or incorrect values on frame {frame_index}. The most likely cause is that a frame-local mip descriptor was not retained or rebound."
 			);
@@ -1119,9 +1142,9 @@ mod tile_tests {
 		let value = context.build_buffer::<f32>(
 			crate::buffer::Builder::new(crate::Uses::Storage)
 				.name("Tile Probe Value")
-				.device_accesses(crate::DeviceAccesses::HostToDevice),
+				.host_access(crate::HostAccess::Write),
 		);
-		*context.get_mut_buffer_slice(value) = 128.0 / 255.0;
+		*context.test_buffer(value) = 128.0 / 255.0;
 		let set = context.create_descriptor_set(Some("Tile Probe Inputs"), &layout);
 		context.write(&[crate::DescriptorWrite::buffer(set, VALUE_SLOT, value.into())]);
 		let image = context.build_image(
@@ -1142,23 +1165,21 @@ mod tile_tests {
 			"The tile probe's output has shader-write usage. The most likely cause is that render-target uses map to shader write."
 		);
 
-		let synchronizer = context.create_synchronizer(None, false);
-		let command_buffer = context.create_command_buffer(None, queue_handle);
-		let mut recording = context.create_command_buffer_recording(command_buffer);
-		let outputs = [crate::AttachmentInformation::new(
-			image,
-			crate::Layouts::RenderTarget,
-			crate::LoadOp::Clear(crate::ClearValue::Color(::utils::RGBA::new(0.0, 0.0, 0.0, 0.0))),
-			crate::StoreOp::Store,
-		)];
-		let pass = recording.start_tile_pass(pipeline, extent, &outputs);
-		pass.bind_descriptor_sets(&[set]);
-		pass.write_push_constant(0, [0.0f32, 0.0, 64.0 / 255.0, 0.0]);
-		pass.dispatch_tiles();
-		let readback = recording
-			.transfer_texture(image.into())
-			.expect("Tile probe readback failed. The most likely cause is that the test image lacks transfer-source support.");
-		recording.execute(synchronizer);
+		let readback = crate::context::Context::record(&mut context, queue_handle, None, |recording| {
+			let outputs = [crate::AttachmentInformation::new(
+				image,
+				crate::Layouts::RenderTarget,
+				crate::LoadOp::Clear(crate::ClearValue::Color(::utils::RGBA::new(0.0, 0.0, 0.0, 0.0))),
+				crate::StoreOp::Store,
+			)];
+			let pass = recording.start_tile_pass(pipeline, extent, &outputs);
+			pass.bind_descriptor_sets(&[set]);
+			pass.write_push_constant(0, [0.0f32, 0.0, 64.0 / 255.0, 0.0]);
+			pass.dispatch_tiles();
+			recording.transfer_texture(image.into()).expect(
+				"Tile probe readback failed. The most likely cause is that the test image lacks transfer-source support.",
+			)
+		});
 		let mapped = context
 			.get_image_data(readback)
 			.expect("Tile probe mapping failed. The most likely cause is that the tile pass did not complete successfully.");

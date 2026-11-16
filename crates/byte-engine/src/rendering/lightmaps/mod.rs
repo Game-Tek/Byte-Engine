@@ -11,9 +11,9 @@ mod bead;
 mod gpu;
 mod guides;
 mod scene;
-mod texels;
 #[cfg(test)]
 mod tests;
+mod texels;
 
 pub use bake::LightmapAssetHandler;
 

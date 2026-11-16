@@ -1,0 +1,86 @@
+---
+title: Transparent phase
+description: Understand how blended surfaces shade over the opaque scene, why the scene behind them is copied first, and the rules a change to the transparent phase must keep.
+icon: Layers
+---
+
+Read this page before you change how blended materials shade, the backdrop
+their graphs read, or how `transmission` reaches the lit image. What a graph
+can read is specified under
+[values and geometry](/docs/reference/bemx#values-and-geometry), and the
+`backdrop` stage and its targets under
+[stages and targets](/docs/reference/rendering#stages-and-targets).
+
+## One layer, shaded in compute
+
+The transparent phase draws every blended instance into the visibility buffer
+together, so depth testing keeps the nearest blended surface at each pixel.
+Material evaluation then shades that one layer and composites it over `Lit`
+with source-over blending. Surfaces behind the nearest blended one aren't
+shaded: a frame holds one transparent layer, not a sorted stack.
+
+## The backdrop
+
+A blended graph reads the opaque scene behind it at any screen position,
+because refraction looks up the scene at an offset from the pixel. `Lit` can't
+serve those reads: the transparent dispatch writes `Lit` at its own pixel while
+other threads read it at theirs, and no order between the threads holds. So
+`BackdropPass` in `render_pass/backdrop.rs` copies the scene first, after the
+opaque layer and the scene background and before the transparent visibility
+draw, which overwrites `Depth` with the nearest blended surface:
+
+- `Backdrop Color` holds `Lit`, already multiplied by exposure, in the same
+  format.
+- `Backdrop Depth` holds positive linear view depth in `R32F`, so the sky,
+  reversed depth 0, becomes the view's far depth.
+
+`backdrop.besl` writes both from one read of each source per pixel. The stage
+in `shader_generator/material.rs` samples `Backdrop Color` bilinearly and
+divides it by the exposure, so `scenecolor` holds light in `emission` units.
+`sceneposition` scales the view ray at its screen position by the linear depth
+and turns it into world space with the camera's `inverse_view`. The ray comes
+from the same screen view constants the copy unprojects depth with, the ones
+material evaluation binds as `ssgi_view`, so both follow one projection.
+
+The copy costs a full-resolution read and write of color and depth, so it runs
+only in a frame that admits an instance of a blended material that reads the
+backdrop. The bake records that for each material in its program's
+`reads_backdrop`, and `rebuild_material_lists` gives each transparent
+`MaterialEvaluation` the flag of its materials; the render pass checks the
+flagged evaluations against the frame's transparent evaluation mask. While the
+copy's pipeline compiles, the transparent phase waits, as it does for its own
+pipelines, instead of reading stale images. A material that reads no backdrop
+node lowers to no read of the targets.
+
+## Transmission
+
+A graph's `transmission` is light that crosses the surface toward the viewer.
+The suffix adds it after lighting, weighted by one minus the split-sum
+reflectance the reflected light uses, `F0 · env_brdf.x + env_brdf.y`, so the two
+share one Fresnel term and their sum never exceeds the light they divide. Every
+material declares `transmission` as zero, but only one whose graph writes it
+runs the addition: the generator removes the statements that read it otherwise.
+
+## Rules a change must keep
+
+- **Copy before the transparent draw.** `Backdrop Depth` must hold the opaque
+  depth, which the transparent visibility draw overwrites.
+- **Read the backdrop, never `Lit`, at another pixel.** Reading `Lit` anywhere
+  but the thread's own pixel in the transparent dispatch races its writes.
+- **Keep the backdrop to blended materials.** The bake rejects any other
+  material that reads `scenecolor` or `sceneposition`, because nothing has
+  copied the scene when the opaque phase shades.
+- **Share one Fresnel term.** Weight `transmission` by the reflectance that
+  weights reflected light, so a change to the BRDF changes both.
+
+## Tests that guard it
+
+- The BEMX lowering tests check, in the BESL VM, that the backdrop nodes read
+  what the stage hands them, at their default and computed screen positions.
+- The visibility generator tests check that a blended graph reading the
+  backdrop and writing `transmission` links and lowers to the platform shader
+  language, and that the masked coverage stage rejects the backdrop.
+- The material handler tests check that an opaque material, and a variant that
+  turns a blended parent opaque, fail to bake when their graph reads the
+  backdrop.
+- The set layout tests check that the backdrop pass's records match its layer.

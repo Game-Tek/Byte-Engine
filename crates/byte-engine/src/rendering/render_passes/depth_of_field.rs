@@ -79,7 +79,7 @@ pub struct DepthOfFieldPassSettings {
 /// take the focus of the surface behind them. Show the blur diameters with the
 /// `render.debug.view.depth-of-field.circle-of-confusion` parameter.
 pub struct DepthOfFieldPass {
-	parameters: ghi::DynamicBufferHandle<DepthOfFieldShaderData>,
+	parameters: ghi::BufferHandle<DepthOfFieldShaderData>,
 	/// Writes the source and its averaged levels.
 	prepare_pass: simple_compute::Pass,
 	gather_pass: simple_compute::Pass,
@@ -162,22 +162,23 @@ impl DepthOfFieldPass {
 		let counters = ["depth-of-field-prepare", "depth-of-field-gather", "depth-of-field-filter"]
 			.map(|name| render_pass_builder.create_gpu_counter(name));
 
+		let queue = render_pass_builder.queue();
 		let context = render_pass_builder.context();
-		let parameters = context.build_dynamic_buffer(
+		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Depth of Field Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let tile_reaches = context.build_buffer::<[f32]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Depth of Field Tile Reaches")
-				.length(MAX_TILES as usize)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+				.length(MAX_TILES as usize),
 		);
 		// The prepare pass fetches texels by coordinate; the gather's far taps blend between texels, and
 		// the clamp keeps taps past the image's edge on its edge texels.
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
-		let blue_noise = crate::rendering::lookup_textures::create_blue_noise_texture(context);
+		let blue_noise = crate::rendering::lookup_textures::create_blue_noise_texture(context, queue);
 		let read = |name, image| simple_compute::Resource::combined_image_sampler(name, image, sampler, ghi::Layouts::Read);
 
 		let prepare_pass = prepare.bind(
@@ -261,7 +262,7 @@ impl RenderPass for DepthOfFieldPass {
 		) else {
 			return self.main_copy.prepare(frame, sink, frame_allocator);
 		};
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = DepthOfFieldShaderData {
+		*frame.map(self.parameters) = DepthOfFieldShaderData {
 			circle_of_confusion,
 			blur_limits: self.blur_limits,
 			tiles_per_row,
@@ -350,7 +351,7 @@ struct DepthOfFieldReferenceShaderData {
 /// [`crate::application::graphics::setup_depth_of_field_reference_render_pass`], which leaves it bypassed, and enable
 /// it with `render.pass.depth-of-field-reference=enabled`. Bypass motion blur while it runs, since it blurs the moves.
 pub struct DepthOfFieldReferencePass {
-	parameters: ghi::DynamicBufferHandle<DepthOfFieldReferenceShaderData>,
+	parameters: ghi::BufferHandle<DepthOfFieldReferenceShaderData>,
 	accumulate_pass: simple_tile::Pass,
 	/// Forwards `main` unchanged while the pass is bypassed or its shader is still compiling.
 	main_copy: ImageBypassPass,
@@ -394,10 +395,11 @@ impl DepthOfFieldReferencePass {
 			),
 		);
 		let context = render_pass_builder.context();
-		let parameters = context.build_dynamic_buffer(
+		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Depth of Field Reference Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		// The shader fetches texels by coordinate, so the sampler only completes the texture binding.
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
@@ -445,7 +447,7 @@ impl RenderPass for DepthOfFieldReferencePass {
 			.filter(|(mean_key, _)| *mean_key == key)
 			.map_or(0, |(_, count)| count);
 		let frames = (count + 1).min(REFERENCE_WINDOW);
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = DepthOfFieldReferenceShaderData {
+		*frame.map(self.parameters) = DepthOfFieldReferenceShaderData {
 			weight: 1.0 / frames as f32,
 		};
 		self.mean = Some((key, frames));

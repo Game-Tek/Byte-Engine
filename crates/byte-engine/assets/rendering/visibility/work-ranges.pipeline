@@ -1,0 +1,1 @@
+{"name":"Mesh Work Ranges","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/work-ranges.besl","push_constants":[{"offset":0,"size":24}]}}

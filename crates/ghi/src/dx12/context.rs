@@ -35,6 +35,7 @@ pub struct Device {
 	pub(crate) pipelines: Vec<Pipeline>,
 	indirect_dispatch_signature: Option<ID3D12CommandSignature>,
 	indirect_draw_signature: Option<ID3D12CommandSignature>,
+	indirect_mesh_dispatch_signature: Option<ID3D12CommandSignature>,
 	shaders: Vec<Shader>,
 	meshes: Vec<Mesh>,
 	pub(crate) swapchains: Vec<Swapchain>,
@@ -177,6 +178,7 @@ impl Device {
 		retain_field!(pipelines);
 		retain_field!(indirect_dispatch_signature);
 		retain_field!(indirect_draw_signature);
+		retain_field!(indirect_mesh_dispatch_signature);
 		retain_field!(shaders);
 		retain_field!(meshes);
 		retain_field!(swapchains);
@@ -1406,21 +1408,6 @@ impl crate::context::Context for Device {
 
 	fn wait_for_synchronizer(&mut self, synchronizer: SynchronizerHandle) {
 		Device::wait_for_synchronizer(self, synchronizer);
-	}
-
-	/// Returns whether every fence of the synchronizer reached its captured submission value, without blocking.
-	///
-	/// A complete synchronizer refreshes readbacks the same way a wait does, so mapping them afterwards is valid.
-	fn poll_synchronizer(&mut self, synchronizer: SynchronizerHandle) -> bool {
-		let complete = self.synchronizer_handles(synchronizer).into_iter().all(|handle| {
-			self.synchronizers
-				.get(handle.index() as usize)
-				.is_none_or(|synchronizer| unsafe { synchronizer.fence.GetCompletedValue() } >= synchronizer.value)
-		});
-		if complete {
-			self.refresh_readback_texture_copies(None);
-		}
-		complete
 	}
 
 	fn wait(&mut self) {

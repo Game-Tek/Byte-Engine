@@ -224,24 +224,31 @@ pub(super) struct PackedResourceAllocator {
 
 impl PackedResourceAllocator {
 	/// Opens a writable pack and reconstructs reusable gaps from the live ranges recorded in redb.
-	pub(super) fn open(pack_path: PathBuf, live_ranges: Vec<PackedRange>) -> Result<Self, String> {
+	///
+	/// Ranges that overlap or extend past the end of the pack are reported as a corrupt store and left unchanged.
+	pub(super) fn open(resources_path: &Path, live_ranges: Vec<PackedRange>) -> Result<Self, ResourceStoreOpenError> {
+		let pack_path = resources_path.join(PACKED_RESOURCES_FILE);
+		let io_error = |action, source| ResourceStoreOpenError::Io {
+			path: resources_path.to_path_buf(),
+			action,
+			source,
+		};
 		let file = std::fs::OpenOptions::new()
 			.create(true)
 			.read(true)
 			.write(true)
 			.truncate(false)
 			.open(&pack_path)
-			.map_err(|error| {
-				format!(
-					"Packed resource file could not be opened: {error}. The most likely cause is that the resource directory is not writable."
-				)
-			})?;
-		let high_water = file.metadata().map_err(|error| {
-			format!(
-				"Packed resource file size could not be read: {error}. The most likely cause is an inaccessible or incomplete resource file."
-			)
-		})?.len();
-		let state = reconstruct_state(&pack_path, high_water, live_ranges)?;
+			.map_err(|source| io_error("open 'resources.pack'", source))?;
+		let high_water = file
+			.metadata()
+			.map_err(|source| io_error("read the size of 'resources.pack'", source))?
+			.len();
+		let state = reconstruct_state(&pack_path, high_water, live_ranges).map_err(|_| ResourceStoreOpenError::Corrupt {
+			path: resources_path.to_path_buf(),
+			detail: "the packed payload ranges recorded in 'resources.db' overlap or extend past the end of 'resources.pack'"
+				.to_string(),
+		})?;
 		let allocator = Self {
 			pack_path,
 			state: Mutex::new(state),
@@ -398,7 +405,7 @@ fn invalid_layout_message(pack_path: &Path) -> String {
 	)
 }
 
-use super::BAKING_APP_RESOURCES_DOCS_PATH;
+use super::{BAKING_APP_RESOURCES_DOCS_PATH, PACKED_RESOURCES_FILE, ResourceStoreOpenError};
 
 const FRAGMENTATION_MIN_FILE_SIZE: u64 = 64 * 1024 * 1024;
 const FRAGMENTATION_MIN_FREE_SLOTS: usize = 32;

@@ -175,12 +175,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn build_bottom_level_acceleration_structures(&mut self, structures: &[crate::BottomLevelAccelerationStructureHandle]) {
 		let frame_sequence = self.frame_key.map(|frame_key| frame_key.sequence_index);
-		self.device.record_bottom_level_builds(
-			self.command_buffer,
-			frame_sequence,
-			self.sequence_index(),
-			structures,
-		);
+		self.device
+			.record_bottom_level_builds(self.command_buffer, frame_sequence, self.sequence_index(), structures);
 	}
 
 	#[allow(unreachable_code)]
@@ -481,6 +477,17 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		self.refresh_descriptor_tables_if_dirty();
 		self.device
 			.dispatch_meshes_native(self.command_buffer, self.bound_pipeline, x, y, z);
+	}
+
+	fn dispatch_meshes_indirect<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 3]; N]>, entry_index: usize) {
+		self.refresh_descriptor_tables_if_dirty();
+		self.device.dispatch_meshes_indirect_native::<N>(
+			self.command_buffer,
+			self.bound_pipeline,
+			buffer.into(),
+			entry_index,
+			self.sequence_index(),
+		);
 	}
 
 	fn draw_indirect<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 4]; N]>, entry_index: usize) {

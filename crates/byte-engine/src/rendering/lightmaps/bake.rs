@@ -62,15 +62,18 @@ impl AssetHandler for LightmapAssetHandler {
 		let (level, payload) = load_level(&context.resource_manager(), &bead.level)
 			.await
 			.map_err(|cause| invalid(&cause))?;
-		let scene = collect_level(id.as_ref(), &level, &payload).map_err(|cause| invalid(&cause))?;
+		let scene = collect_level(id.as_ref(), level, payload).map_err(|cause| invalid(&cause))?;
 		let mut meshes = Vec::new();
 		let mut materials = Vec::new();
+		// These dedupe distinct mesh and material IDs, not entities: a level's thousands of props reuse a few dozen
+		// meshes and materials, and the loop runs once per lightmap bake.
 		for mesh in &scene.meshes {
 			match &mesh.source {
 				MeshSource::Resource(mesh) if !meshes.iter().any(|known: &String| known == mesh.as_ref()) => {
 					meshes.push(mesh.to_string());
 				}
-				MeshSource::Resource(_) => {}
+				// The scene leaves merged meshes out, and one that got through has nothing to bake.
+				MeshSource::Resource(_) | MeshSource::Merged(_) => {}
 				MeshSource::Generated(generator) => {
 					let material = generator.material().unwrap_or(GENERATED_MESH_MATERIAL).to_string();
 					if !materials.contains(&material) {

@@ -584,7 +584,9 @@ pub(crate) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 		(Unary::FromF32ToF16 | Unary::FromF32ToU32, _) => mismatch(ValueType::F32),
 		(Unary::FromU8ToU32, _) => mismatch(ValueType::U8),
 		(Unary::FromU16ToU32, _) => mismatch(ValueType::U16),
-		(Unary::FromU32ToF32 | Unary::FromU32ToF16 | Unary::FromU32ToU16 | Unary::FromU32ToU8 | Unary::FindLsb, _) => mismatch(ValueType::U32),
+		(Unary::FromU32ToF32 | Unary::FromU32ToF16 | Unary::FromU32ToU16 | Unary::FromU32ToU8 | Unary::FindLsb, _) => {
+			mismatch(ValueType::U32)
+		}
 		(Unary::FromI32ToF32 | Unary::FromI32ToF16 | Unary::FromI32ToU32, _) => mismatch(ValueType::I32),
 		(Unary::LogicalNot, Value::Bool(value)) => Ok(Value::Bool(!value)),
 		(Unary::LogicalNot, _) => mismatch(ValueType::Bool),

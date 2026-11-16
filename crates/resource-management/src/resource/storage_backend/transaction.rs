@@ -308,7 +308,9 @@ impl ResourceWriter {
 		self.target.flush().await
 	}
 
-	/// Verifies the exact-size contract and durably finishes payload I/O before metadata publication.
+	/// Verifies the exact-size contract and finishes payload I/O before metadata publication.
+	///
+	/// The bytes are written but not synced; the backend syncs them before its next durable commit.
 	async fn finish(self, decoded_size: Option<usize>) -> std::io::Result<ResourceWriteOutput> {
 		if self.written_size != self.expected_size {
 			return Err(std::io::Error::new(
@@ -530,10 +532,9 @@ impl AsyncResourceFile {
 			})
 	}
 
-	/// Flushes and synchronizes the file, then closes its transaction-owned handle.
+	/// Flushes the file, then closes its transaction-owned handle.
 	async fn finish(mut self) -> std::io::Result<()> {
 		self.flush().await?;
-		self.file.sync_data().await?;
 		self.file.close().await?;
 		Ok(())
 	}
@@ -625,7 +626,7 @@ enum FinishedResourceWriteTarget {
 	StagedFile(StagedResourceFile),
 }
 
-/// The `ResourceWriteOutput` struct carries one durable payload into backend metadata publication.
+/// The `ResourceWriteOutput` struct carries one complete payload into backend metadata publication.
 pub(super) struct ResourceWriteOutput {
 	target: FinishedResourceWriteTarget,
 	hash: u64,

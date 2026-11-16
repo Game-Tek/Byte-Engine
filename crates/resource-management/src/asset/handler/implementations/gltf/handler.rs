@@ -205,6 +205,11 @@ impl AssetHandler for GLTFAssetHandler {
 		r#type == "gltf" || r#type == "glb"
 	}
 
+	fn identity(&self) -> u64 {
+		// Lightmap UVs add a vertex stream to every mesh the handler bakes.
+		u64::from(self.lightmap_uvs)
+	}
+
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
 		// Resolve the container base so generated skeleton and animation fragments never become part of the source filename.
 		let base = url.get_base();

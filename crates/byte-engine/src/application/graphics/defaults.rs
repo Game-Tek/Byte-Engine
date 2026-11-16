@@ -90,9 +90,9 @@ pub fn setup_default_window(application: &mut GraphicsApplication) {
 /// In debug builds, connects the asset directory to the resource manager, with the bake services and asset handlers
 /// `configure` installs for the application's parameters.
 ///
-/// Pass the function the application's own BELD passes to `beld::run`, such as [`configure_default_baking`], so a debug
-/// run and a release bake produce the same resources. Release builds intentionally leave the manager without asset
-/// processors and must receive their complete resource store from BELD.
+/// Pass the function the application's own BELD passes to `resource_management::beld::run`, such as
+/// [`configure_default_baking`], so a debug run and a release bake produce the same resources. Release builds
+/// intentionally leave the manager without asset processors and must receive their complete resource store from BELD.
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub fn setup_default_resource_and_asset_management(
 	application: &mut GraphicsApplication,
@@ -101,37 +101,40 @@ pub fn setup_default_resource_and_asset_management(
 	#[cfg(debug_assertions)]
 	{
 		use crate::application::application::resolve_application_path;
+		use crate::application::parameters::Parameters as _;
 
-		let assets_path = resolve_application_path(application.get_parameter("assets-path"), "assets");
+		// The asset manager's own options live in the `assets` scope; asset handlers still read the whole set.
+		let options = application.parameters().scope("assets");
+		let assets_path = resolve_application_path(options.get_parameter("path"), "assets");
 
 		let storage_backend = FileStorageBackend::new(assets_path);
 
 		let mut asset_manager = AssetManager::new_shared(storage_backend, application.resource_manager.storage_backend());
 
-		use crate::application::parameters::Parameters as _;
-
 		// The same patterns BELD reads, so a debug run never bakes what a release bake leaves out.
 		asset_manager.set_excluded_assets(
-			application
-				.parameters()
-				.get_elements("resources.exclude")
+			options
+				.get_elements("exclude")
 				.map(|pattern| utils::Glob::new(pattern.value()))
 				.collect(),
 		);
 
 		configure(&mut asset_manager, application.parameters());
 
+		super::asset_stream::open(&mut asset_manager, application.world());
+
 		application.resource_manager.set_asset_manager(asset_manager);
 	}
 }
 
 /// Configures `asset_manager` to bake the way the standard engine does: installs the bake services every handler
-/// shares, then the material, model, image, terrain, audio, and standalone-shader handlers, for the visibility renderer
+/// shares, then the material, model, image, font, terrain, audio, and standalone-shader handlers, for the visibility renderer
 /// configured by the `render` scope of `parameters`.
 ///
-/// Pass it to [`setup_default_resource_and_asset_management`] and to `beld::run`, so a debug run and a baked store
-/// produce the same resources from the same assets with the same services. An application with its own formats calls
-/// it, then adds its handlers with [`AssetManager::add_asset_handler`], in one function it passes to both.
+/// Pass it to [`setup_default_resource_and_asset_management`] and to `resource_management::beld::run`, so a debug run
+/// and a baked store produce the same resources from the same assets with the same services. An application with its
+/// own formats calls it, then adds its handlers with [`AssetManager::add_asset_handler`], in one function it passes to
+/// both.
 ///
 /// The services are [`default_image_processor`], one [`VisibilityShaderGenerator`] that `.bema`, glTF, and FBX
 /// materials all target, and the [`CommonShaderGenerator`] transform, which leaves out of standalone shaders the
@@ -139,6 +142,10 @@ pub fn setup_default_resource_and_asset_management(
 pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[Parameter]) {
 	let features = VisibilityFeatures::from_parameters(parameters.scope(RENDER_PARAMETERS));
 
+	// A full bake skips the engine assets only left-out features use, and assembles the shaders gathered from every
+	// material last.
+	asset_manager.set_discovery_filter(move |id| !features.excludes(id));
+	asset_manager.set_assembled_resources(features.assembled_resources().iter().map(|id| (*id).to_string()).collect());
 	asset_manager.set_image_processor(default_image_processor());
 	asset_manager.set_program_generator(VisibilityShaderGenerator::with_features(features));
 	asset_manager.set_program_transform(CommonShaderGenerator::with_features(features));
@@ -154,13 +161,15 @@ pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[
 	asset_manager.add_asset_handler(PipelineAssetHandler);
 	asset_manager.add_asset_handler(FusionAssetHandler);
 	asset_manager.add_asset_handler(FlipbookAssetHandler);
-	asset_manager.add_asset_handler(LevelAssetHandler);
+	asset_manager.add_asset_handler(LevelAssetHandler::default());
+	asset_manager.add_asset_handler(PrefabAssetHandler);
 	asset_manager.add_asset_handler(AudioGraphAssetHandler);
 	asset_manager.add_asset_handler(ParticleSystemAssetHandler);
 	asset_manager.add_asset_handler(EXRAssetHandler::new());
 	asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
 	asset_manager.add_asset_handler(TerrainAssetHandler);
 	asset_manager.add_asset_handler(LUTAssetHandler::new());
+	asset_manager.add_asset_handler(FontAssetHandler::new());
 	asset_manager.add_asset_handler(WAVAssetHandler::new());
 	asset_manager.add_asset_handler(OGGAssetHandler::new());
 	asset_manager.add_asset_handler(BESLShaderAssetHandler);
@@ -356,9 +365,9 @@ use resource_management::{
 		handler::implementations::{
 			audio_graph::AudioGraphAssetHandler, bema::BEMAAssetHandler, besl::BESLShaderAssetHandler,
 			environment::EnvironmentMapAssetHandler, exr::EXRAssetHandler, fbx::FBXAssetHandler,
-			flipbook::FlipbookAssetHandler, fusion::FusionAssetHandler, gltf::GLTFAssetHandler, ies::IESAssetHandler,
-			level::LevelAssetHandler, lut::LUTAssetHandler, ogg::OGGAssetHandler, particles::ParticleSystemAssetHandler,
-			pipeline::PipelineAssetHandler, image::ImageAssetHandler, terrain::TerrainAssetHandler, wav::WAVAssetHandler,
+			flipbook::FlipbookAssetHandler, font::FontAssetHandler, fusion::FusionAssetHandler, gltf::GLTFAssetHandler,
+			ies::IESAssetHandler, image::ImageAssetHandler, level::LevelAssetHandler, lut::LUTAssetHandler, prefab::PrefabAssetHandler,
+			ogg::OGGAssetHandler, particles::ParticleSystemAssetHandler, pipeline::PipelineAssetHandler, terrain::TerrainAssetHandler, wav::WAVAssetHandler,
 		},
 		manager::AssetManager,
 	},

@@ -351,6 +351,7 @@ impl EffectAnalysis {
 				| "threadgroup_position"
 				| "thread_position"
 				| "thread_id"
+				| "thread_layer"
 				| "output_extent"
 				| "image_load"
 				| "image_load_u32"

@@ -6,6 +6,9 @@
 //! another primitive needs the room and no instance wanted those levels in the last frame. Primitives of one mesh hold
 //! their levels independently, so a large mesh refines only where the camera is close. [`MeshResidencies`] only
 //! decides; the visibility manager carries its decisions out through the loader.
+//!
+//! A merged mesh holds nothing at first. Its geometry is built in memory, so each primitive's block holds only the
+//! level its instances want, and reloads at that level whenever they want another, finer or coarser.
 
 use std::ops::Range;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -33,6 +36,8 @@ struct MeshResidency {
 	loading: bool,
 	/// Whether the mesh's finer levels failed for a reason more room won't fix, so none is asked for again.
 	unavailable: bool,
+	/// Whether each primitive holds only the level its instances want, instead of every level from that one down.
+	exact: bool,
 }
 
 /// The `PrimitiveResidency` struct follows one primitive's resident detail levels and what its instances want.
@@ -40,13 +45,17 @@ struct MeshResidency {
 struct PrimitiveResidency {
 	/// The primitive's mesh in [`MeshResidencies::meshes`].
 	mesh: u32,
-	/// The primitive's coarsest level, which its base block holds. Zero leaves nothing finer to load.
+	/// The primitive's coarsest level, which its base block holds. Zero leaves nothing finer to load. For a mesh that
+	/// holds only wanted levels it is the level count, one past the coarsest, since the base block holds nothing.
 	base: u8,
-	/// The finest resident level: `base` until a finer block loads.
+	/// The finest resident level: `base` until a finer block loads. For a mesh that holds only wanted levels it is
+	/// the one level held.
 	finest: u8,
 	/// The finest level any instance wanted this frame, or `u8::MAX` when none was drawn. Lanes that rebuild instances
 	/// lower it together.
 	wanted: AtomicU8,
+	/// What `wanted` held when the last frame closed, which a frame that rebuilds no instance wants again.
+	last_wanted: u8,
 	/// The last frame some instance wanted a level finer than `base`, which the finer block holds.
 	last_wanted_finer: Option<u64>,
 	/// The first frame a load that found no room may ask again.
@@ -73,16 +82,28 @@ pub(crate) struct MeshResidencies {
 impl MeshResidencies {
 	/// Starts following a resident mesh whose primitives' coarsest levels are `coarsest`, in primitive order.
 	pub(crate) fn add_mesh(&mut self, key: MeshKey, coarsest: impl IntoIterator<Item = u8>) {
+		self.follow(key, coarsest, false);
+	}
+
+	/// Starts following a resident merged mesh, which holds no geometry yet, whose primitives have `level_counts`
+	/// levels, in primitive order. Each primitive then loads the one level its instances want.
+	pub(crate) fn add_merged_mesh(&mut self, key: MeshKey, level_counts: impl IntoIterator<Item = u8>) {
+		self.follow(key, level_counts, true);
+	}
+
+	/// Starts following `key`, whose primitives' base blocks end at `bases`, in primitive order.
+	fn follow(&mut self, key: MeshKey, bases: impl IntoIterator<Item = u8>, exact: bool) {
 		if self.mesh_indices.contains_key(&key) {
 			return;
 		}
 		let mesh = self.meshes.len() as u32;
 		let first = self.primitives.len();
-		self.primitives.extend(coarsest.into_iter().map(|base| PrimitiveResidency {
+		self.primitives.extend(bases.into_iter().map(|base| PrimitiveResidency {
 			mesh,
 			base,
 			finest: base,
 			wanted: AtomicU8::new(u8::MAX),
+			last_wanted: u8::MAX,
 			last_wanted_finer: None,
 			retry_frame: 0,
 		}));
@@ -92,6 +113,7 @@ impl MeshResidencies {
 			primitives: first..self.primitives.len(),
 			loading: false,
 			unavailable: false,
+			exact,
 		});
 	}
 
@@ -119,27 +141,56 @@ impl MeshResidencies {
 	/// the load started; a mesh whose load can't start is marked unavailable.
 	///
 	/// A primitive asks for one level at a time, which keeps each load small and makes detail arrive coarse to fine.
-	/// A mesh's primitives load together, so each of its level streams is read once per load.
-	pub(crate) fn end_frame(&mut self, mut request: impl FnMut(MeshKey, Vec<PrimitiveLevels>) -> bool) {
+	/// A mesh's primitives load together, so each of its level streams is read once per load. A primitive of a merged
+	/// mesh asks for exactly the level its instances want, whenever it holds another or none.
+	pub(crate) fn end_frame(&mut self, request: impl FnMut(MeshKey, Vec<PrimitiveLevels>) -> bool) {
+		self.close_frame(false, request);
+	}
+
+	/// Closes a frame that rebuilt no instance, because none changed: every primitive wants what it wanted when the
+	/// last rebuilt frame closed. Otherwise as [`Self::end_frame`], so loads keep arriving and unwanted levels keep
+	/// aging while the scene stands still.
+	pub(crate) fn repeat_frame(&mut self, request: impl FnMut(MeshKey, Vec<PrimitiveLevels>) -> bool) {
+		self.close_frame(true, request);
+	}
+
+	/// Closes a frame with the wants recorded during it, or with the last closed frame's when `repeat` is set.
+	fn close_frame(&mut self, repeat: bool, mut request: impl FnMut(MeshKey, Vec<PrimitiveLevels>) -> bool) {
 		let frame = self.frame;
 		self.frame += 1;
 		for mesh in &mut self.meshes {
 			let mut loads = Vec::new();
 			for (primitive, residency) in self.primitives[mesh.primitives.clone()].iter_mut().enumerate() {
-				let wanted = std::mem::replace(residency.wanted.get_mut(), u8::MAX);
+				if !repeat {
+					residency.last_wanted = std::mem::replace(residency.wanted.get_mut(), u8::MAX);
+				}
+				let wanted = residency.last_wanted;
 				if wanted < residency.base {
 					residency.last_wanted_finer = Some(frame);
 				}
-				if wanted >= residency.finest || frame < residency.retry_frame || mesh.loading || mesh.unavailable {
+				if frame < residency.retry_frame || mesh.loading || mesh.unavailable {
 					continue;
 				}
+				let level = if mesh.exact {
+					// No instance wanted anything, or the one level held is the wanted one.
+					if wanted == u8::MAX || wanted == residency.finest {
+						continue;
+					}
+					wanted
+				} else {
+					if wanted >= residency.finest {
+						continue;
+					}
+					residency.finest - 1
+				};
 				if loads.capacity() == 0 {
 					loads = self.spare_lists.pop().unwrap_or_default();
 				}
 				loads.push(PrimitiveLevels {
 					primitive: primitive as u32,
-					finest: residency.finest - 1,
+					finest: level,
 					block: None,
+					full: None,
 				});
 			}
 			if !loads.is_empty() {
@@ -221,6 +272,7 @@ impl MeshResidencies {
 		for primitive in &mut self.primitives[mesh.primitives.clone()] {
 			primitive.finest = primitive.base;
 			*primitive.wanted.get_mut() = u8::MAX;
+			primitive.last_wanted = u8::MAX;
 			primitive.last_wanted_finer = None;
 			primitive.retry_frame = 0;
 		}
@@ -284,6 +336,63 @@ mod tests {
 		residencies.load_finished(NEAR, Vec::new());
 		residencies.want(slot, 1);
 		assert!(end_frame(&mut residencies).is_empty());
+	}
+
+	#[test]
+	fn a_merged_mesh_loads_exactly_the_level_wanted_finer_or_coarser() {
+		let mut residencies = MeshResidencies::default();
+		// Even a primitive with one level has to load it, since a merged mesh starts with nothing.
+		residencies.add_merged_mesh(NEAR, [4, 1]);
+		let (slot, single) = (residencies.slot(NEAR, 0).unwrap(), residencies.slot(NEAR, 1).unwrap());
+
+		// Nothing loads until an instance is drawn.
+		assert!(end_frame(&mut residencies).is_empty());
+
+		residencies.want(slot, 1);
+		residencies.want(single, 0);
+		assert_eq!(end_frame(&mut residencies), [load(NEAR, &[(0, 1), (1, 0)])]);
+		residencies.loaded(NEAR, 0, 1);
+		residencies.loaded(NEAR, 1, 0);
+		residencies.load_finished(NEAR, Vec::new());
+
+		// The level held is the level wanted, so nothing loads.
+		residencies.want(slot, 1);
+		residencies.want(single, 0);
+		assert!(end_frame(&mut residencies).is_empty());
+
+		// The camera backs away: the coarser level replaces the finer one.
+		residencies.want(slot, 3);
+		assert_eq!(end_frame(&mut residencies), [load(NEAR, &[(0, 3)])]);
+	}
+
+	#[test]
+	fn a_repeated_frame_wants_what_the_last_frame_wanted() {
+		let mut residencies = MeshResidencies::default();
+		residencies.add_mesh(NEAR, [3]);
+		let slot = residencies.slot(NEAR, 0).unwrap();
+		let repeat_frame = |residencies: &mut MeshResidencies| {
+			let mut loads = Vec::new();
+			residencies.repeat_frame(|key, primitives| {
+				loads.push((
+					key,
+					primitives.iter().map(|levels| (levels.primitive, levels.finest)).collect(),
+				));
+				true
+			});
+			loads
+		};
+
+		// The one rebuilt frame wants full detail, which loads a level at a time.
+		residencies.want(slot, 0);
+		assert_eq!(end_frame(&mut residencies), [load(NEAR, &[(0, 2)])]);
+		residencies.loaded(NEAR, 0, 2);
+		residencies.load_finished(NEAR, Vec::new());
+
+		// Frames that rebuild nothing keep asking for the rest, with no new want recorded.
+		assert_eq!(repeat_frame(&mut residencies), [load(NEAR, &[(0, 1)])]);
+		residencies.loaded(NEAR, 0, 1);
+		residencies.load_finished(NEAR, Vec::new());
+		assert_eq!(repeat_frame(&mut residencies), [load(NEAR, &[(0, 0)])]);
 	}
 
 	#[test]

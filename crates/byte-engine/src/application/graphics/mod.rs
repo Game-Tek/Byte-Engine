@@ -25,14 +25,15 @@
 /// - `kill-after`: Closes the application after this number of ticks. The default is `None`.
 /// - `inspector.address`: Serves the HTTP inspector on this IPv4 or IPv6 address only, such as `0.0.0.0` to reach it from another machine. The default is both loopback addresses. An address that isn't loopback is logged as a warning, because anyone who reaches the inspector can close the application or send it messages.
 /// - `inspector.port`: Serves the HTTP inspector on this port. The default is `6680`, or a free port the system picks, logged as a warning, when another application uses it. A port set here that is in use stops startup.
+/// - `console.enabled`: Takes over the terminal that started the application with a full-screen console: the log, and a command line for commands such as `set render.lod.force 2`. The console starts only when standard input and standard output are both terminals; set this to `false` when the application reads standard input or writes standard output itself. See the [console reference](/docs/reference/console). The default is `true`.
 /// - `metrics-out`: Writes the performance metrics the inspector serves to this file when the application closes: the `GET /metrics` summary as JSON, or every retained tick as NDJSON, one `GET /metrics/frames` row per line, when the path ends in `.ndjson`. Combine it with `kill-after` to measure a run without polling. The default is `None`.
-/// - `debug.streams`: Writes every entity data stream that world-spawned [`DebugDataStream`](crate::inspector::DebugDataStream) requests to `log`, `stdout`, `stderr`, or the file at this path, such as `/dev/fd/3`, as NDJSON. The default is `None`, which opens no stream.
+/// - `debug.streams`: Writes every entity data stream that world-spawned [`DebugDataStream`](crate::inspector::DebugDataStream) requests to `log`, `stdout`, `stderr`, or the file at this path, such as `/dev/fd/3`, as NDJSON. The default is `None`, which opens no stream unless the console runs; the console reads streams, so they open for it with no destination.
 /// - `debug.streams.changes-only`: Writes a data stream record only when the system's key for it changed, leaving out records where only progress like a phase moved. The default is `false`.
 /// - `max-frame-rate`: Caps presentation at this many frames per second; frames land on even refreshes. The default is uncapped.
 /// - `simulation-rate`: Steps simulation this many times per second, independent of how often frames are presented. [`Self::tick_stepped_with`] paces its steps on it and defaults to `60`. [`Self::tick_with`] simulates once per frame and panics when this rate disagrees with the rate frames are presented at.
 /// - `unattended`: Runs the application for no one at the desktop, such as an agent debugging it through the inspector, at this many frames per second. Windows open without being shown or taking focus, every tick renders every window whether or not it can be seen, the loop paces itself to the rate, and the clock advances by exactly one frame period per tick, so runs repeat. The rate is required; `max-frame-rate` and `render-on-demand` are ignored. The default is `None`, an attended run.
 /// - `render-on-demand`: Renders only when something changed instead of on every tick. Window changes, UI renders, and screenshot requests ask for frames; call [`Renderer::request_redraw`] after changing the scene. Idle ticks keep running at the refresh rate of the fastest display showing a window, or the `max-frame-rate` pace when that is slower, so events are still handled. Once the frame is shown and no UI component waits for a frame, the loop waits in the window system until an event, a UI timer, or a [`crate::application::LoopWaker`] wakes it; call [`crate::application::LoopWaker::wake`] from threads that change state the loop must see. The default is `false`.
-/// - `assets-path`: Selects the debug-build asset directory. Relative overrides use the current working directory. In development, the default is `assets` under `CARGO_MANIFEST_DIR` when available, then beside the executable.
+/// - `assets.path`: Selects the debug-build asset directory. Relative overrides use the current working directory. In development, the default is `assets` under `CARGO_MANIFEST_DIR` when available, then beside the executable.
 /// - `resources.path`: Selects the resource directory. Relative overrides use the current working directory. In development, the default uses `CARGO_MANIFEST_DIR` when available; otherwise, it is beside the executable.
 /// - `render.debug`: Enables validation layers. The default is `true` in debug builds.
 /// - `render.debug.dump`: Enables graphics API logging. The default is `false`.
@@ -54,10 +55,12 @@
 /// - `render.baked-gi.enabled`: Builds baked lightmaps in: lightmap UVs in mesh bakes, the lightmap bake in BELD, and lightmap reads in the baked shaders, so `render.gi.technique` can select `baked`. It is read once, at startup. The default is `false`.
 /// - `render.contact-shadows.enabled`: Traces short rays toward the sun to shadow where objects touch, such as under a foot on a floor. Like `render.gtao.enabled`, its startup value also decides whether contact shadows are built into the baked shaders. The default is `true`.
 /// - `render.contact-shadows.distance`: Sets the world-space reach of each contact-shadow ray. The default is `0.1`.
+/// - `render.lights.directional.max`: Caps how many directional lights the project uses. Set it to `1` when the scene has at most one directional light, which builds the `single_directional_light` shader feature in. No shader reads that feature yet, so the setting changes nothing drawn. The default is `4`.
+/// - `render.bloom.pixel-weights`: Weighs each pixel of a bloom prefilter block by its brightness before averaging the block (`true`), or reads each block with one bilinear tap (`false`), which costs less but lets a cluster of bright pixels glow more. The default is `false`.
 /// - `render.lod.bias`: Scales the on-screen error, one pixel by default, that a mesh detail level may show before a finer one is drawn. Values above `1` draw coarser levels sooner, and `0` allows no error. Levels follow the first window's camera, and shadows draw the same level. The default is `1.0`.
 /// - `render.lod.force`: Draws this detail level for every mesh instead of choosing by distance, where `0` is full detail; a mesh with fewer levels draws its coarsest one. Use it to compare levels or to measure what they save. The default is `off`.
 /// - `render.shadow-maps.budget-mb`: Sets the shadow-map memory, in mebibytes, that every shadow-casting light shares. The first directional light takes its cascades first, cone and point lights then share what remains by how much of the screen they light, and other directional lights take what is left. One sun takes 32 MiB at the default resolution and four times that per doubling of `render.directional-shadows.resolution`; a cone light takes 32 KiB to 8 MiB and a point light 192 KiB to 48 MiB, by how large it looks in the largest sink that sees it. Maps allocate on first use; the default is `128`.
-/// - `render.shadow-maps.update-texels`: Sets how many shadow-map texels each frame draws. Cascades 0 and 1 of every shadowed sun draw every frame and count first; the other cascades, cone maps, and point cube faces then draw by need within what's left, so a smaller budget spreads their updates over more frames. The default is `16777216`, the four cascades of one sun at 2,048 texels per side.
+/// - `render.shadow-maps.update-texels`: Sets how many shadow-map texels each frame draws. Cascades 0 and 1 of every shadowed sun draw every frame and count first; the other cascades, cone maps, and point cube faces then draw by need within what's left, so a smaller budget spreads their updates over more frames. Texels a frame leaves unspent carry over to the next, so a budget smaller than one map still draws it every few frames. The default is `10485760`, two and a half cascades of one sun at 2,048 texels per side: cascades 2 and 3 take turns every other frame. Set `16777216` to draw all four every frame.
 /// - `render.directional-shadows.resolution`: Sets the directional shadow cascades' resolution in texels per side, a multiple of 16. Halving it quarters the shadow raster and depth pyramid work, and each sun's cost from the shadow-map budget. The default is `2048`.
 ///
 /// See the [sample project guide](/docs/use/sample-project)
@@ -109,6 +112,8 @@ pub struct GraphicsApplication {
 
 	close: bool,
 
+	/// The inspector the console and the HTTP transport serve, which [`Self::inspector`] lends to in-process tools.
+	inspector: EntityHandle<DefaultInspector>,
 	/// Keeps the HTTP inspector transport listening while the application lives.
 	_http_inspector: HttpInspectorServer,
 	screenshot_broker: std::sync::Arc<crate::inspector::screenshot::ScreenshotBroker>,
@@ -116,7 +121,12 @@ pub struct GraphicsApplication {
 	inspector_events: std::sync::Arc<crate::inspector::EventSignal>,
 	configuration: Configuration,
 
+	/// Layers that pull their own sinks from [`Self::input`] before the world's sink, in the order they were added;
+	/// see [`Self::add_input_layer`].
+	input_layers: Vec<Box<dyn FnMut(&mut input::InputCollector)>>,
 	window_factory: (Factory<Window>, DefaultListener<CreateMessage<Window>>),
+	/// Feature changes for open windows, which the renderer applies before each frame.
+	window_features: DefaultListener<rendering::SetWindowFeatures>,
 
 	generator_factory: Factory<std::boxed::Box<dyn Generator>>,
 
@@ -124,6 +134,11 @@ pub struct GraphicsApplication {
 	/// application code that steps them.
 	world: MessageScope,
 	cameras_listener: DefaultListener<crate::core::factory::CreateMessage<Camera>>,
+	/// Directional lights, the newest of which the renderer shows as the sun. It subscribes at startup, so a light
+	/// created before a window's passes exist still reaches them.
+	directional_lights_listener: DefaultListener<CreateMessage<rendering::DirectionalLight>>,
+	/// Fogs, the newest of which the renderer shows. It subscribes at startup for the same reason.
+	fogs_listener: DefaultListener<CreateMessage<rendering::ExponentialHeightFog>>,
 	/// The transforms every frame shows, sampled after each simulation step and resolved before each frame.
 	shown_transforms: ShownTransforms,
 
@@ -184,13 +199,21 @@ struct Services {
 	input: input::InputCollector,
 	actions: input::InputSink,
 	cameras_listener: DefaultListener<CreateMessage<Camera>>,
+	directional_lights_listener: DefaultListener<CreateMessage<rendering::DirectionalLight>>,
+	fogs_listener: DefaultListener<CreateMessage<rendering::ExponentialHeightFog>>,
 	shown_transforms: ShownTransforms,
+	inspector: EntityHandle<DefaultInspector>,
 	http_inspector: HttpInspectorServer,
+	/// The console's thread, when the terminal console started; it joins the application's workers.
+	console: Option<Thread>,
+	/// Where the inspector keeps each debug data stream's latest record.
+	retained_streams: std::sync::Arc<crate::inspector::RetainedStreams>,
 	screenshot_broker: std::sync::Arc<crate::inspector::screenshot::ScreenshotBroker>,
 	inspector_events: std::sync::Arc<crate::inspector::EventSignal>,
 	waker: LoopWaker,
 	window_factory: Factory<Window>,
 	window_factory_listener: DefaultListener<CreateMessage<Window>>,
+	window_features: DefaultListener<rendering::SetWindowFeatures>,
 	generator_factory: Factory<std::boxed::Box<dyn Generator>>,
 	window_events: DefaultChannel<ghi::window::Event>,
 }
@@ -240,7 +263,8 @@ impl GraphicsApplication {
 								ResourceStorageSettings::new(ResourceStorageMode::Files)
 									.image_compression(ResourceGpuCompressionPolicy::native()),
 							)
-							.unwrap(),
+							// The message names the store, the cause, and the fix; startup has no caller to return it to.
+							.unwrap_or_else(|error| panic!("{error}")),
 						);
 					});
 					lane.only_one_runs_mut(services, |services| {
@@ -249,6 +273,8 @@ impl GraphicsApplication {
 						let actions = input::InputSink::new(input.add_sink(), action_events.clone())
 							.with_declarations(world_messages.factory::<Action>().listener());
 						let cameras_listener = world_messages.factory::<Camera>().listener();
+						let directional_lights_listener = world_messages.factory::<rendering::DirectionalLight>().listener();
+						let fogs_listener = world_messages.factory::<rendering::ExponentialHeightFog>().listener();
 						let shown_transforms = ShownTransforms::new(&world_messages);
 
 						// Register reflected posts after the shown transforms' future-only listener exists.
@@ -262,6 +288,32 @@ impl GraphicsApplication {
 						inspector
 							.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms.clone())
 							.unwrap_or_else(|error| panic!("{error}"));
+						// The renderer replaces a camera created again under its handle, so an update is a creation.
+						inspector
+							.register_message(
+								CAMERA_UPDATE_MESSAGE_TYPE,
+								world_messages.channel::<rendering::CameraUpdate>(),
+							)
+							.unwrap_or_else(|error| panic!("{error}"));
+						// So does a light, created again under its handle.
+						inspector
+							.register_message(
+								POINT_LIGHT_UPDATE_MESSAGE_TYPE,
+								world_messages.channel::<rendering::PointLightUpdate>(),
+							)
+							.unwrap_or_else(|error| panic!("{error}"));
+						inspector
+							.register_message(
+								CONE_LIGHT_UPDATE_MESSAGE_TYPE,
+								world_messages.channel::<rendering::ConeLightUpdate>(),
+							)
+							.unwrap_or_else(|error| panic!("{error}"));
+						inspector
+							.register_message(
+								DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE,
+								world_messages.channel::<rendering::DirectionalLightUpdate>(),
+							)
+							.unwrap_or_else(|error| panic!("{error}"));
 						for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
 							inspector
 								.register_message(message_type, world_messages.channel::<DeleteMessage>())
@@ -273,11 +325,19 @@ impl GraphicsApplication {
 						let inspector = EntityHandle::from(inspector);
 						let screenshot_broker = inspector.screenshot_broker();
 						let inspector_events = inspector.event_signal();
+						let retained_streams = std::sync::Arc::clone(inspector.streams());
 						let waker = LoopWaker::default();
-						let http_inspector = HttpInspectorServer::new(inspector, waker.clone(), parameters.scope("inspector"));
+						let console = crate::inspector::console::spawn(
+							inspector.clone(),
+							waker.clone(),
+							application_events.listener(),
+							parameters.scope("console"),
+						);
+						let http_inspector = HttpInspectorServer::new(inspector.clone(), waker.clone(), parameters.scope("inspector"));
 
 						let window_factory = messages.factory();
 						let window_factory_listener = window_factory.listener();
+						let window_features = messages.channel().listener();
 
 						let generator_factory = messages.factory();
 
@@ -286,13 +346,19 @@ impl GraphicsApplication {
 							input,
 							actions,
 							cameras_listener,
+							directional_lights_listener,
+							fogs_listener,
 							shown_transforms,
+							inspector,
 							http_inspector,
+							console,
+							retained_streams,
 							screenshot_broker,
 							inspector_events,
 							waker,
 							window_factory,
 							window_factory_listener,
+							window_features,
 							generator_factory,
 							window_events,
 						});
@@ -318,8 +384,14 @@ impl GraphicsApplication {
 		let resource_manager = EntityHandle::from(ResourceManager::new(resource_storage));
 
 		renderer.set_resource_manager(&resource_manager);
+		// The inspector lists stored resources, and it was created before the store finished opening.
+		services.inspector.set_resource_manager(resource_manager.clone());
 		// Every server compiles from the first request on, so no setup function has to start them.
 		let mut threads = SmallVec::new();
+		// The console restores the terminal when it ends, so it is joined on close like every other worker.
+		// The console reads debug data streams, so its presence opens them like a `debug.streams` destination does.
+		let console_running = services.console.is_some();
+		threads.extend(services.console);
 		for server in pipeline_compilation_servers {
 			let resources = resource_manager.clone();
 			threads.push(Thread::new(application.events().listener(), move |mut events| {
@@ -357,16 +429,18 @@ impl GraphicsApplication {
 		let metrics_out = application
 			.get_parameter("metrics-out")
 			.map(|parameter| std::path::PathBuf::from(parameter.value()));
-		let streams = application.get_parameter("debug.streams").map(|parameter| {
+		let destination = application.get_parameter("debug.streams").map(|parameter| parameter.value());
+		let streams = (destination.is_some() || console_running).then(|| {
 			let changes_only = application
 				.get_parameter("debug.streams.changes-only")
 				.is_some_and(|parameter| parameter.as_bool_simple());
-			let output = crate::inspector::StreamOutput::open(parameter.value(), changes_only, start_time).unwrap_or_else(|error| {
-				panic!(
-					"Data stream destination could not be opened. The most likely cause is that the `debug.streams` path '{}' names a directory that does not exist: {error}",
-					parameter.value()
-				)
-			});
+			let output = crate::inspector::StreamOutput::open(destination, changes_only, start_time, services.retained_streams)
+				.unwrap_or_else(|error| {
+					panic!(
+						"Data stream destination could not be opened. The most likely cause is that the `debug.streams` path '{}' names a directory that does not exist: {error}",
+						destination.unwrap_or_default()
+					)
+				});
 			Arc::new(output)
 		});
 
@@ -377,17 +451,22 @@ impl GraphicsApplication {
 			application,
 			window_events: services.window_events,
 
+			inspector: services.inspector,
 			_http_inspector: services.http_inspector,
 			screenshot_broker: services.screenshot_broker,
 			inspector_events: services.inspector_events,
 			configuration,
 
 			window_factory: (services.window_factory, services.window_factory_listener),
+			window_features: services.window_features,
+			input_layers: Vec::new(),
 
 			generator_factory: services.generator_factory,
 
 			world: world_messages,
 			cameras_listener: services.cameras_listener,
+			directional_lights_listener: services.directional_lights_listener,
+			fogs_listener: services.fogs_listener,
 			shown_transforms: services.shown_transforms,
 
 			input: services.input,
@@ -601,14 +680,23 @@ impl GraphicsApplication {
 		self.gamepad_system.poll(&mut self.input, self.gamepad_device_class_handle);
 	}
 
-	/// Adopts newly created windows and cameras before renderer preparation.
+	/// Adopts newly created windows, cameras, directional lights, and fogs before renderer preparation.
 	fn prepare_renderer_state(&mut self) {
 		let _span = debug_span!("GraphicsApplication::prepare_renderer_state").entered();
 		while let Some(message) = self.window_factory.1.read() {
-			self.renderer.create_window(message.into_data());
+			self.renderer.create_window(message.handle(), message.into_data());
+		}
+		while let Some(change) = self.window_features.read() {
+			self.renderer.set_window_features(change.window(), change.features());
 		}
 		while let Some(message) = self.cameras_listener.read() {
 			self.renderer.create_camera(message.handle(), message.into_data());
+		}
+		while let Some(message) = self.directional_lights_listener.read() {
+			self.renderer.create_directional_light(message.handle(), message.into_data());
+		}
+		while let Some(message) = self.fogs_listener.read() {
+			self.renderer.create_fog(message.into_data());
 		}
 	}
 
@@ -845,9 +933,14 @@ impl GraphicsApplication {
 
 		self.process_gamepad_events();
 
-		// The world's sink is the only sink here, so it captures nothing.
-		debug_span!("GraphicsApplication::update_input")
-			.in_scope(|| self.actions.pull(&mut self.input, |_| input::Capture::Passed));
+		// Layers pull first, so the world's sink only resolves the input they passed. It pulls last and captures
+		// nothing.
+		debug_span!("GraphicsApplication::update_input").in_scope(|| {
+			for layer in &mut self.input_layers {
+				layer(&mut self.input);
+			}
+			self.actions.pull(&mut self.input, |_| input::Capture::Passed)
+		});
 
 		self.streams.update();
 		let result = run(self, time);
@@ -977,6 +1070,18 @@ impl GraphicsApplication {
 		(&mut self.input, &mut self.actions)
 	}
 
+	/// Adds a layer of input that takes its share before the world's [`Action`] values resolve, such as a tool drawn
+	/// over the game that keeps the clicks it handles.
+	///
+	/// Each tick, the application calls `layer` with [`Self::input`], in the order the layers were added, then
+	/// resolves the world's actions from the input the layers passed. In it, pull a sink you added to the collector
+	/// through [`Self::actions_mut`] with [`InputSink::pull`](input::InputSink::pull), and capture what it handles.
+	/// Next, cancel the world's held actions with [`InputSink::cancel_seat`](input::InputSink::cancel_seat) when the
+	/// layer starts taking input a held action was using.
+	pub fn add_input_layer(&mut self, layer: impl FnMut(&mut input::InputCollector) + 'static) {
+		self.input_layers.push(Box::new(layer));
+	}
+
 	/// Returns the renderer used by setup functions and advanced render integrations.
 	pub fn renderer(&self) -> &Renderer {
 		&self.renderer
@@ -1095,6 +1200,15 @@ impl GraphicsApplication {
 	/// and systems keep their own copy.
 	pub fn world(&self) -> &MessageScope {
 		&self.world
+	}
+
+	/// Returns the inspector the console and the HTTP inspector serve, for tools that run inside the application,
+	/// such as an in-game editor.
+	///
+	/// List entities with [`DefaultInspector::entities`] and change them with [`DefaultInspector::post_message`]. See
+	/// the [inspector reference](/docs/reference/inspector) for the messages it accepts.
+	pub fn inspector(&self) -> &EntityHandle<DefaultInspector> {
+		&self.inspector
 	}
 
 	/// Returns the audio generator factory used by default audio setup.
@@ -1451,8 +1565,9 @@ use crate::{
 	gameplay::transform::TransformationUpdate,
 	input::Action,
 	inspector::{
-		DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, DefaultInspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
-		TRIGGER_ACTION_MESSAGE_TYPE, http::HttpInspectorServer,
+		CAMERA_UPDATE_MESSAGE_TYPE, CONE_LIGHT_UPDATE_MESSAGE_TYPE, DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE,
+		DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE, DefaultInspector, POINT_LIGHT_UPDATE_MESSAGE_TYPE,
+		TRANSFORMATION_UPDATE_MESSAGE_TYPE, TRIGGER_ACTION_MESSAGE_TYPE, http::HttpInspectorServer,
 	},
 	metrics::TickClock,
 	rendering::{
@@ -1462,10 +1577,10 @@ use crate::{
 			visibility::{RENDER_PARAMETERS, VisibilityPipelineManager, VisibilityPipelineSettings},
 		},
 		render_passes::{
-			bloom::{BloomPass, BloomPassSettings},
+			bloom::{BloomControls, BloomPass, BloomPassSettings},
 			image_transform::ImageTransformStep,
 			lut::{LutPass, LutWorkflow},
-			sky::AtmosphereSkyRenderPass,
+			sky::{AtmosphereSkyControls, AtmosphereSkyRenderPass, AtmosphereSkyRenderPassSettings},
 			smaa::SmaaPass,
 		},
 	},
@@ -1485,6 +1600,9 @@ use crate::{
 	input,
 	rendering::{self, Camera, renderer::Renderer, window::Window},
 };
+// Only debug builds bake on demand, so only they report bakes.
+#[cfg(debug_assertions)]
+mod asset_stream;
 pub mod defaults;
 mod integrations;
 

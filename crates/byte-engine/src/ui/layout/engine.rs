@@ -173,18 +173,19 @@ impl Engine<()> {
 }
 
 impl<C: 'static> Engine<C> {
+	/// Measures text with `fonts` instead of a system font: the first is the default, and text picks another by name
+	/// with [`Properties::font`](crate::ui::Properties::font).
+	///
+	/// Give the UI render pass the same list, so layout and drawing agree on glyph sizes. See [`Fonts`].
+	pub fn with_fonts(mut self, fonts: crate::ui::Fonts<'_>) -> Self {
+		self.text_system = TextSystem::with_fonts(fonts);
+		self
+	}
+
 	/// Creates a UI engine with shared application context available to components.
 	///
 	/// Next, call [`Self::mount`] with the root component, then begin the per-frame
 	/// [`Self::evaluate`] and [`Self::render`] sequence.
-	/// Measures text with the font at `path` instead of a system font.
-	///
-	/// Give the UI render pass the same file, so layout and drawing agree on glyph sizes.
-	pub fn with_font(mut self, path: impl Into<std::path::PathBuf>) -> Self {
-		self.text_system = TextSystem::with_font(Some(path.into()));
-		self
-	}
-
 	pub fn with_context(ctx: C) -> Self {
 		let (sender, commands) = std::sync::mpsc::channel();
 		Self {
@@ -1002,6 +1003,7 @@ impl<C: 'static> Engine<C> {
 							_ => RGBA::white(),
 						},
 						font_size: text.settings().font_size,
+						font: text.settings().font,
 						content,
 					}
 				}),
@@ -3326,6 +3328,29 @@ mod tests {
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(*engine.ctx(), None);
+	}
+
+	#[test]
+	fn characters_typed_in_one_frame_all_reach_the_focused_field_in_order() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::with_context(String::new());
+
+		engine.mount(async move |ctx| {
+			let mut field = ctx.element("field").text_field("", |f| f).await;
+			field.request_focus().await;
+			loop {
+				let event = field.on_text_edit().await;
+				ctx.with(move |typed: &mut String| event.edit.apply_to(typed)).await;
+			}
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		for character in "abc".chars() {
+			engine.input_character(character);
+		}
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(engine.ctx(), "abc");
 	}
 
 	#[test]

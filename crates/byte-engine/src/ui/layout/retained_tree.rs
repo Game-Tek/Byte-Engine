@@ -146,9 +146,9 @@ fn curve_segments(primitive: &Primitives) -> &[CurveSegment] {
 }
 
 /// Returns only the text inputs that affect intrinsic size.
-fn text_measurement_inputs(primitive: &Primitives) -> Option<(&str, f32)> {
+fn text_measurement_inputs(primitive: &Primitives) -> Option<(&str, f32, Option<&'static str>)> {
 	match primitive {
-		Primitives::Text(text) => Some((text.content(), text.settings().font_size)),
+		Primitives::Text(text) => Some((text.content(), text.settings().font_size, text.settings().font)),
 		_ => None,
 	}
 }
@@ -456,10 +456,10 @@ impl RetainedTree {
 		let element = &mut self.elements[index];
 		// Snapshot every input a revision class depends on, so the classes the edit left alone keep their numbers.
 		let placement = placement_inputs(&element.primitive);
-		let text_before = text_measurement_inputs(&element.primitive).map(|(content, size)| {
+		let text_before = text_measurement_inputs(&element.primitive).map(|(content, size, font)| {
 			self.text_before.clear();
 			self.text_before.push_str(content);
-			size
+			(size, font)
 		});
 		let transform = element.transform;
 		let flow = flow_type(&element.primitive);
@@ -482,8 +482,8 @@ impl RetainedTree {
 			&& properties == property_inputs(&element.primitive)
 			&& transform == element.transform
 			&& opacity == element.opacity
-			&& text_measurement_inputs(&element.primitive).map_or(true, |(content, size)| {
-				text_before == Some(size) && content == self.text_before
+			&& text_measurement_inputs(&element.primitive).map_or(true, |(content, size, font)| {
+				text_before == Some((size, font)) && content == self.text_before
 			}) && self.style_before.as_slice() == element.style.layers()
 			&& self.segments_before.as_slice() == curve_segments(&element.primitive)
 		{
@@ -509,7 +509,7 @@ impl RetainedTree {
 				self.revisions.non_transform = before.non_transform;
 			}
 			if text_measurement_inputs(&element.primitive)
-				.is_some_and(|(content, size)| text_before != Some(size) || content != self.text_before)
+				.is_some_and(|(content, size, font)| text_before != Some((size, font)) || content != self.text_before)
 			{
 				self.text_changes.push(index);
 			}

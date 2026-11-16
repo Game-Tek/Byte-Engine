@@ -23,6 +23,11 @@ Byte Engine provides three analytic light shapes. Point and cone lights can also
 One world-space distance unit is one meter. Keep your scene at that scale so inverse-square
 attenuation and distance-based conversions remain meaningful.
 
+A light keeps its settings as authored: its color as a temperature or an RGB
+color, its intensity in the quantity it was given in, and its angles and shadow
+range. A light created again under its own handle replaces the light of the
+same shape that handle had, from the next frame on.
+
 ## Color
 
 `LightColor::TemperatureKelvin` names a blackbody-style illuminant, which Byte
@@ -90,7 +95,9 @@ illuminance falls below 0.125 lux. A light can replace either end of that range.
 
 The visibility pipeline specifies which lights get shadow maps, how large they
 are, and how often they're drawn, under
-[shadow maps](/docs/reference/rendering#shadow-maps).
+[shadow maps](/docs/reference/rendering#shadow-maps), and how directional lights
+can use virtual shadow maps instead of cascades, under
+[virtual shadow maps](/docs/reference/rendering#virtual-shadow-maps).
 
 ## Height fog lighting
 
@@ -107,7 +114,7 @@ gathers the light its fog scatters toward the camera, single scattering only:
 | Lights | Every light in the scene's light table, up to its limit. Directional lights light every point of fog. Point and cone lights light fog within their reach, at their peak intensity in every direction: IES profiles don't apply, the inverse-square falloff and a cone's angular falloff do. |
 | Fog volume | A point or cone light lights the fog only where its reach overlaps a layer's box or, for a layer without one, lies below the height where the layer's density falls under 0.0001 per meter. |
 | Shadows | A light with a shadow map shadows each sample of fog. A directional or cone light's sample blends the depth comparisons of the four texels around its position bilinearly; a point light's sample compares the one texel its direction selects. |
-| Directional shadow distance | A directional light's shadow reaches the far end of its last cascade, along the camera's view axis. Fog past it, and fog that no cascade holds, is lit. A sample takes the first cascade, from the one its depth falls in, that holds it. |
+| Directional shadow distance | A directional light's shadow reaches the far end of its last cascade, along the camera's view axis. Fog past it, and fog that no cascade holds, is lit. A sample takes the first cascade, from the one its depth falls in, that holds it. With virtual shadow maps, fog gets no sun shadow. |
 | Local shadow range | A cone or point light shadows fog between its shadow's near and far planes. Fog outside that range is lit. |
 
 ### Light samples
@@ -138,11 +145,50 @@ Where nothing shadows a light, the shadowed and unshadowed placements give the s
 ## Sky and calibration
 
 If you install the atmosphere sky with `setup_atmosphere_sky_render_pass`, the newest directional
-light is also the sky's sun. Its lux and color set how bright and what color the sky is, so a
+light is also the sky's sun, whether it was created before or after the window. Its lux and color set how bright and what color the sky is, so a
 brighter sun brightens the sky too. Without a directional light, the sky is black. The sky includes
 light that scatters more than once in the air, and sunlight the ground reflects back up, so a
-100,000 lux sun gives a clear sky of about 2,000 to 8,000 nits, brightest near the horizon. The sky is drawn after opaque surfaces
-and before transparent ones, so glass and other blended surfaces show the sky behind them.
+100,000 lux sun high in the sky gives, at the default haze and away from the sun, a clear sky of
+about 3,400 nits well above the horizon and 6,500 near it, and several times more around the sun.
+
+The same sky is the scene's environment while the scene has no `Environment`: global illumination,
+reflections, and the rest of the environment's light take the sky's light in the same units, with
+no calibration. See [sky environment](/docs/reference/rendering#sky-environment).
+
+Haze is the aerosol optical depth looking straight up from the ground. It scatters every color
+alike and mostly forward, so more haze puts a white glow around the sun and pales the rest of the
+sky a little, most near the horizon:
+
+| Haze | Air |
+| --- | --- |
+| 0 | No aerosols, only air molecules and ozone |
+| 0.02 | Very clean air |
+| 0.05 | A clear day; the default |
+| 0.15 | An average day over land |
+| 0.4 | A hazy day |
+
+Haze takes any number of 0 or more. It thins with altitude over the Mie scale height, so its
+scattering at the ground is the haze divided by that height. For a Mie anisotropy `g`:
+
+| Light | Haze scattering it meets |
+| --- | --- |
+| Scattered once by the haze toward the eye | The full haze, with the Cornette-Shanks phase function |
+| Sunlight on its way down, the view, and light scattered more than once | The haze × (1 − g²), scattered evenly |
+
+The light's illuminance is the sunlight that reaches the camera, the same light that surfaces
+receive. The sunlight that enters the atmosphere is that illuminance divided, for each color
+channel, by the atmosphere's transmittance from the camera toward the sun:
+
+| Quantity | Value |
+| --- | --- |
+| Sunlight entering the atmosphere | Illuminance ÷ max(transmittance toward the sun, 1/16), for each color channel |
+| Sky radiance | Scattering for each lux entering the atmosphere × the sunlight entering the atmosphere |
+| Sun disk radiance | Illuminance ÷ the disk's solid angle, while the transmittance is 1/16 or more; below that, multiplied by 16 × transmittance |
+| Sun below the horizon | Transmittance 0, so the sky is 16 times its scattering for each lux and the disk is black |
+
+The sky is drawn after opaque surfaces
+and before transparent ones, so glass and other blended surfaces show the sky behind them. By
+default the sky covers the upper half of the screen; its `screen_height` setting changes how much.
 
 <Callout type="info" title="Physical calibration limits">
 	Emissive materials don't have a unified physical calibration with analytic

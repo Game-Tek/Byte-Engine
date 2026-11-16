@@ -45,11 +45,8 @@ fn render(bencher: Bencher, pipelines: usize, table: Table) {
 		AccessPolicies::READ,
 	);
 	let layout = ghi::DescriptorSetLayout::new("Benchmark Textures", [textures]);
-	let target = context.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
-			.extent(Extent::square(64))
-			.device_accesses(DeviceAccesses::DeviceOnly),
-	);
+	let target =
+		context.build_image(ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget).extent(Extent::square(64)));
 	// Each pipeline samples its own element of the shared table, so every one of them reads the set.
 	// The table is the set's only binding, so element `index` sits `index` descriptors past the set's resource base and
 	// its sampler `index` entries past the set's sampler base.
@@ -92,13 +89,7 @@ fn render(bencher: Bencher, pipelines: usize, table: Table) {
 		Table::Loaded => 2 + TEXTURES as usize,
 	};
 	let images: Vec<_> = (0..image_count)
-		.map(|_| {
-			context.build_image(
-				ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Image)
-					.extent(Extent::square(1))
-					.device_accesses(DeviceAccesses::HostToDevice),
-			)
-		})
+		.map(|_| context.build_image(ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Image).extent(Extent::square(1))))
 		.collect();
 	let sampler = context.build_sampler(ghi::sampler::Builder::new());
 	let set = context.create_descriptor_set(None, &layout);

@@ -1,0 +1,1 @@
+{"name":"Virtual Shadow Page Hierarchy","kind":{"type":"compute","shader":"byte_engine/rendering/visibility/virtual-shadow-hierarchy.besl"}}

@@ -48,6 +48,58 @@ A transform applies to the whole subtree: a scaled container scales its
 descendants' rectangles, hit bounds, clipping, curve points, stroke widths, and
 font sizes together, so one transform on a content layer zooms a canvas.
 
+## Draw text with your own fonts
+
+Without fonts of its own, the UI draws text with a system font. To ship your
+own, put `.ttf` or `.otf` files in your assets directory, load each once at
+startup, and give the same list to the engine and to the render pass, so text
+is measured and drawn alike. Name each font by its asset ID; the first one is
+the default:
+
+```rust
+let runtime = build_single_threaded_async_runtime();
+let load = |id| {
+    runtime
+        .block_on(byte_engine::ui::load_font(app.resource_manager(), id))
+        .unwrap_or_else(|error| panic!("{error}"))
+};
+let fonts = [
+    ("Inter-Regular.ttf", load("Inter-Regular.ttf")),
+    ("Inter-SemiBold.ttf", load("Inter-SemiBold.ttf")),
+];
+setup_ui_render_pass(&mut app, "ui", &ui_renders, &fonts);
+let mut engine = Engine::with_context(model).with_fonts(&fonts);
+```
+
+Text uses the default font unless it names another. Use a heavier font for a
+title, for example:
+
+```rust
+panel.element("title").text("Settings", |t| t.font("Inter-SemiBold.ttf").font_size(20.0)).await;
+```
+
+Each font bakes into a [`Font` resource](/docs/reference/assets#fonts) like any
+other asset, so a release build reads it from the resource store.
+
+## Draw one interface over another
+
+Give each interface its own engine, its own render factory, and its own UI pass
+when they come from different code, such as a game's heads-up display and a
+tool that installs itself over the game. Each pass draws over everything
+registered before it, so register the one that goes on top last:
+
+```rust
+let hud_renders = Factory::new();
+setup_ui_render_pass(&mut app, "hud", &hud_renders, &[]);
+let editor_renders = Factory::new();
+setup_ui_render_pass(&mut app, "editor", &editor_renders, &[]);
+```
+
+Give every pass a different name. The name is how you hide one at runtime: set
+`render.pass.editor` to `bypassed` to hide the editor and keep the heads-up
+display. A second pass with a name already in use stops the application at
+startup.
+
 ## Pin an element to an edge or the center
 
 To keep an element in a corner or centered however its parent resizes, anchor
@@ -393,3 +445,5 @@ input outside the tree, and both evaluation and rendering key on it.
 - [`Engine`](/docs/api/latest/byte_engine/ui)
 - [`UiRenderPass`](/docs/api/latest/byte_engine/ui)
 - [`setup_ui_render_pass`](/docs/api/latest/byte_engine/application/graphics#fn.setup_ui_render_pass)
+- [`load_font`](/docs/api/latest/byte_engine/ui#fn.load_font)
+- [`Fonts`](/docs/api/latest/byte_engine/ui#type.Fonts)

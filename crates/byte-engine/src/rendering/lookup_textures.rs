@@ -4,6 +4,7 @@
 //! Upload one with [`create_lookup_texture`] when a pass is built, then bind it with
 //! [`crate::rendering::set_layout`]'s `sampled` binder method.
 
+use ghi::command_buffer::CommandBufferRecording as _;
 use ghi::context::{Context as _, ContextCreate as _};
 
 /// The side of the square, tiling [`BLUE_NOISE`] texture, in texels.
@@ -31,33 +32,58 @@ pub(crate) fn blue_noise_offset(frame_index: u64) -> [f32; 2] {
 	[(frame / PLASTIC).fract() as f32, (frame / (PLASTIC * PLASTIC)).fract() as f32]
 }
 
-/// Creates and uploads one immutable lookup texture.
+/// Creates an immutable image from `builder` and fills its base level with `pixels`.
+///
+/// `pixels` holds every depth slice of every array layer, one after another, each in rows of the image's width without
+/// padding. They reach the image through a staging buffer and a copy recorded on `queue`, and the call returns once the
+/// GPU wrote them.
 pub(crate) fn create_lookup_texture(
 	context: &mut ghi::implementation::Context,
-	name: &str,
-	format: ghi::Formats,
-	extent: utils::Extent,
+	queue: ghi::QueueHandle,
+	builder: ghi::image::Builder,
 	pixels: &[u8],
 ) -> ghi::ImageHandle {
-	let image = context.build_image(
-		ghi::image::Builder::new(format, ghi::Uses::Image | ghi::Uses::TransferDestination)
-			.name(name)
-			.extent(extent)
-			.device_accesses(ghi::DeviceAccesses::HostToDevice)
-			.use_case(ghi::UseCases::STATIC),
+	let extent = builder.get_extent();
+	let image_count = extent.depth().max(1) as usize * builder.get_array_layers() as usize;
+	let layout = ghi::ImageCopyLayout::new(builder.get_format(), extent, image_count).expect(
+		"Lookup texture layout overflowed. The most likely cause is an extent too large for its format. Use a smaller extent.",
 	);
-	context.get_texture_slice_mut(image).copy_from_slice(pixels);
-	context.sync_texture(image);
+	assert_eq!(
+		pixels.len(),
+		layout.compact_size,
+		"Lookup texture '{}' got the wrong number of bytes. The most likely cause is pixels for another extent, format, or layer count. Pass every slice of every layer in compact rows.",
+		builder.get_name().unwrap_or("unnamed"),
+	);
+
+	let image = context.build_image(builder.additional_uses(ghi::Uses::TransferDestination));
+	// The GHI has no buffer destruction yet, so the staging buffer outlives the copy; see `todo.md`.
+	let staging = context.build_buffer::<[u8]>(
+		ghi::buffer::Builder::new(ghi::Uses::TransferSource)
+			.name("Lookup Texture Staging")
+			.host_access(ghi::HostAccess::Write)
+			.length(layout.padded_size),
+	);
+	// SAFETY: No GPU work has used the new staging buffer, and the mapping ends before the copy is recorded.
+	#[allow(unsafe_code)]
+	let staging_bytes = unsafe { context.map_unsynchronized(staging) }.into_bytes();
+	layout.write_rows(staging_bytes, pixels, layout.compact_bytes_per_row);
+	context.record(queue, Some("Upload Lookup Texture"), |recording| {
+		recording.copy_buffer_to_images(&[layout.copy(staging.into(), 0, image.into(), 0)]);
+	});
 	image
 }
 
 /// Uploads [`BLUE_NOISE`] as an RG8 texture.
-pub(crate) fn create_blue_noise_texture(context: &mut ghi::implementation::Context) -> ghi::ImageHandle {
+pub(crate) fn create_blue_noise_texture(
+	context: &mut ghi::implementation::Context,
+	queue: ghi::QueueHandle,
+) -> ghi::ImageHandle {
 	create_lookup_texture(
 		context,
-		"Blue Noise",
-		ghi::Formats::RG8UNORM,
-		utils::Extent::rectangle(BLUE_NOISE_SIDE, BLUE_NOISE_SIDE),
+		queue,
+		ghi::image::Builder::new(ghi::Formats::RG8UNORM, ghi::Uses::Image)
+			.name("Blue Noise")
+			.extent(utils::Extent::rectangle(BLUE_NOISE_SIDE, BLUE_NOISE_SIDE)),
 		BLUE_NOISE,
 	)
 }

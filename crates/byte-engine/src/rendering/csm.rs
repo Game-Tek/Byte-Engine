@@ -117,6 +117,10 @@ pub(crate) const EDGE_TEXELS: f32 = 17.0;
 /// outgrows the step, at the cost of up to 9% of the texels.
 pub(crate) const SIZE_STEPS_PER_OCTAVE: f32 = 8.0;
 
+/// The narrowest instance, in texels across its bounding sphere, that a cascade draws. A caster costs about the same to
+/// draw at any size, and the many small ones a coarse cascade holds, such as grass, each shade only a few texels.
+pub(crate) const MIN_CASTER_TEXELS: f32 = 32.0;
+
 /// The `CascadeFitting` enum chooses what each directional shadow cascade covers.
 ///
 /// Pass it to [`crate::rendering::pipelines::visibility::VisibilityPipelineSettings::with_cascade_fitting`].

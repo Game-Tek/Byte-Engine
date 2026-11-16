@@ -34,7 +34,7 @@ impl Generator {
 		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "HLSL");
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
-		crate::shader::generator::validate_vertex_builtin_inputs(&shader_compilation_settings.stage, &order)?;
+		crate::shader::generator::validate_raster_builtins(&shader_compilation_settings.stage, &order)?;
 		let requirements = intrinsic_requirements(&order);
 		if requirements.uses_subgroup_intrinsics && !matches!(self.stage, Stages::Compute { .. }) {
 			return Err(());
@@ -788,12 +788,16 @@ fn emit_descriptor_declaration(
 	let _ = write!(string, "; }} }};{break_char}static _besl_array_{name} {name};{break_char}");
 }
 
-/// Returns where raster stage input or output `node` goes in its stage's signature: the position first, then the rest
-/// by location.
-fn io_order(node: &besl::NodeReference) -> (bool, u8) {
+/// Returns where raster stage input or output `node` goes in its stage's signature: the position and vertex indices
+/// first, then the varyings by location, then the system values the next stage doesn't declare, so every varying
+/// lines up with the register the previous stage wrote it to.
+fn io_order(node: &besl::NodeReference) -> (u8, u8) {
 	match node.borrow().node() {
-		besl::Nodes::Input { name, location, .. } => (!crate::shader::generator::is_vertex_builtin_input(name), *location),
-		besl::Nodes::Output { name, location, .. } => (!besl::is_position_output(name), *location),
-		_ => (true, u8::MAX),
+		besl::Nodes::Input { name, .. } if crate::shader::generator::is_vertex_builtin_input(name) => (0, 0),
+		besl::Nodes::Input { name, .. } if name == besl::PRIMITIVE_INDEX_BUILTIN => (2, 0),
+		besl::Nodes::Output { name, .. } if besl::is_position_output(name) => (0, 0),
+		besl::Nodes::Output { name, .. } if besl::is_render_target_array_index_output(name) => (2, 0),
+		besl::Nodes::Input { location, .. } | besl::Nodes::Output { location, .. } => (1, *location),
+		_ => (1, u8::MAX),
 	}
 }

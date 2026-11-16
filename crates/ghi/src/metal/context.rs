@@ -50,7 +50,6 @@ pub struct Context {
 	pub(crate) buffers: ResourceCollection<Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(crate) images: ResourceCollection<Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
 	pub(crate) samplers: Vec<Retained<ProtocolObject<dyn mtl::MTLSamplerState>>>,
-	pub(crate) allocations: Vec<Retained<ProtocolObject<dyn mtl::MTLBuffer>>>,
 	pub(crate) descriptor_sets: DescriptorSets,
 	pub(crate) meshes: Vec<Mesh>,
 	pub(crate) acceleration_structures: acceleration_structures::AccelerationStructures,
@@ -71,6 +70,8 @@ pub struct Context {
 	>,
 	/// Signals when the internal uploads of each frame sequence complete.
 	internal_upload_synchronizer: graphics_hardware_interface::SynchronizerHandle,
+	/// Signaled by every workload, which waits for it before it returns.
+	pub(crate) workload_synchronizer: graphics_hardware_interface::SynchronizerHandle,
 	internal_upload_queues: Vec<Option<graphics_hardware_interface::QueueHandle>>,
 	pub(crate) swapchains: Vec<Swapchain>,
 	pub(crate) texture_readbacks: crate::context::TextureReadbackRegistry<TextureReadbackStorage>,
@@ -88,8 +89,8 @@ pub struct Context {
 		HashMap<PrivateHandles, HashSet<(DescriptorSetHandle, crate::shader::ResourceSlot, u32)>>,
 
 	pub settings: crate::device::Features,
-	pub(crate) pending_buffer_syncs: VecDeque<BufferHandle>,
-	pub(crate) pending_image_syncs: VecDeque<(ImageHandle, Option<crate::image::Region>)>,
+	/// New private buffer copies the next internal submission zero-fills.
+	pub(crate) pending_buffer_clears: VecDeque<BufferHandle>,
 	pub(crate) tasks: Vec<Task>,
 	/// One retained upload arena per in-flight frame, followed by the transient arena for detached recordings.
 	pub(crate) upload_arenas: Vec<command_buffer::UploadArena>,
@@ -132,17 +133,15 @@ mod tests {
 	#[test]
 	fn created_resources_are_placed_in_heaps() {
 		let mut context = test_context();
-		context.build_buffer::<[u32; 16]>(
-			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
-		);
-		context.build_dynamic_buffer::<[u32; 16]>(crate::buffer::Builder::new(crate::Uses::Storage));
+		context
+			.build_buffer::<[u32; 16]>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Write));
+		context.build_buffer::<[u32; 16]>(crate::buffer::Builder::new(crate::Uses::Storage).copies(crate::Copies::PerFrame));
+		context
+			.build_image(crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(Extent::square(4)));
 		context.build_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image)
+			crate::image::Builder::new(crate::Formats::RGBA16F, crate::Uses::RenderTarget)
 				.extent(Extent::square(4))
-				.device_accesses(crate::DeviceAccesses::HostToDevice),
-		);
-		context.build_dynamic_image(
-			crate::image::Builder::new(crate::Formats::RGBA16F, crate::Uses::RenderTarget).extent(Extent::square(4)),
+				.copies(crate::Copies::PerFrame),
 		);
 		let mesh = context.add_mesh_from_vertices_and_indices(
 			3,
@@ -206,7 +205,7 @@ mod tests {
 		let buffers = [(); 2].map(|_| {
 			context.build_buffer::<[u8; 4]>(
 				crate::buffer::Builder::new(crate::Uses::TransferSource | crate::Uses::TransferDestination)
-					.device_accesses(crate::DeviceAccesses::HostOnly),
+					.host_access(crate::HostAccess::Write),
 			)
 		});
 		let command_buffer = context.queue(queue_handle).create_command_buffer(None);
@@ -340,19 +339,18 @@ mod tests {
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
 				.extent(extent),
 		);
-		let synchronizer = context.create_synchronizer(None, false);
-		let command_buffer = context.create_command_buffer(None, crate::QueueHandle::from_index(0));
-		let mut recording = context.create_command_buffer_recording(command_buffer);
-
-		let first = recording.transfer_texture(image.into()).expect(
-			"First Metal texture transfer failed. The most likely cause is that the test image lacks transfer-source support.",
-		);
-		let second = recording.transfer_texture(image.into()).expect(
-			"Second Metal texture transfer failed. The most likely cause is that the test image lacks transfer-source support.",
-		);
+		let (first, second) =
+			crate::context::Context::record(&mut context, crate::QueueHandle::from_index(0), None, |recording| {
+				let first = recording.transfer_texture(image.into()).expect(
+					"First Metal texture transfer failed. The most likely cause is that the test image lacks transfer-source support.",
+				);
+				let second = recording.transfer_texture(image.into()).expect(
+					"Second Metal texture transfer failed. The most likely cause is that the test image lacks transfer-source support.",
+				);
+				(first, second)
+			});
 		assert_ne!(first, second);
 
-		recording.execute(synchronizer);
 		let mapped = context.get_image_data(first).expect(
 			"Metal texture mapping failed. The most likely cause is that the transfer command did not complete successfully.",
 		);
@@ -372,39 +370,15 @@ mod tests {
 		);
 		assert_eq!(context.texture_readbacks.values().count(), 0);
 
-		let synchronizer = context.create_synchronizer(None, false);
-		let command_buffer = context.create_command_buffer(None, crate::QueueHandle::from_index(0));
-		let mut recording = context.create_command_buffer_recording(command_buffer);
-		let third = recording.transfer_texture(image.into()).expect(
-			"Third Metal texture transfer failed. The most likely cause is that the test image lacks transfer-source support.",
-		);
+		let third = crate::context::Context::record(&mut context, crate::QueueHandle::from_index(0), None, |recording| {
+			recording.transfer_texture(image.into()).expect(
+				"Third Metal texture transfer failed. The most likely cause is that the test image lacks transfer-source support.",
+			)
+		});
 		assert!(third.bits() > second.bits());
-		recording.execute(synchronizer);
 		context.get_image_data(third).expect(
 			"Third Metal texture mapping failed. The most likely cause is that its transfer command did not complete successfully.",
 		);
 		assert_eq!(context.texture_readbacks.values().count(), 0);
-	}
-
-	#[test]
-	fn dropped_texture_transfer_releases_staging_and_cannot_be_mapped() {
-		let mut context = test_context();
-		let image = context.build_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
-				.extent(Extent::square(1)),
-		);
-		let command_buffer = context.create_command_buffer(None, crate::QueueHandle::from_index(0));
-		let mut recording = context.create_command_buffer_recording(command_buffer);
-		let handle = recording
-			.transfer_texture(image.into())
-			.expect("Metal texture transfer recording must succeed for a valid 2D transfer source.");
-
-		drop(recording);
-
-		assert_eq!(context.texture_readbacks.values().count(), 0);
-		assert_eq!(
-			context.get_image_data(handle),
-			Err(crate::TextureTransferError::MappingFailed)
-		);
 	}
 }

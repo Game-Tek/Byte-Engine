@@ -20,8 +20,8 @@
 
 pub(crate) mod acceleration_structures;
 mod features;
-mod instance_rebuild;
 pub(crate) mod geometry;
+mod instance_rebuild;
 pub(crate) mod layout;
 mod lightmaps;
 pub(crate) mod loader;
@@ -31,7 +31,9 @@ pub(crate) mod material_parameters;
 mod mesh_dispatch;
 pub(crate) mod ray_tracing;
 mod render_pass;
+mod renderables;
 mod residency;
+mod screen_queries;
 pub(crate) mod scene;
 pub(crate) mod set_layouts;
 pub(crate) mod shader_data;
@@ -42,21 +44,23 @@ mod skinning;
 mod terrain;
 #[cfg(test)]
 mod tests;
+pub(crate) mod virtual_shadows;
 
 pub use features::{
 	GTAO_ENABLED_PARAMETER, MATERIAL_EVALUATION_PARAMETER, MaterialEvaluationMode, PROBE_GI_ENABLED_PARAMETER,
 	RENDER_PARAMETERS, SURFEL_GI_ENABLED_PARAMETER, VisibilityFeatures,
 };
 pub use geometry::GeometryCapacity;
-pub use scene::InstanceCapacity;
 pub(crate) use geometry::GeometryHandles;
 pub(crate) use loader::spawn as spawn_loader;
 pub use manager::{
 	DIRECTIONAL_SHADOW_DISTANCE_PARAMETER, DIRECTIONAL_SHADOW_FITTING_PARAMETER, DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER,
-	DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER, GEOMETRY_CAPACITY_PARAMETER_PREFIX, INSTANCE_CAPACITY_PARAMETER_PREFIX,
-	INSTANCE_REBUILD_LANES_PARAMETER,
-	PROBE_RAY_BUDGET_PARAMETER,
-	PROBE_SPACING_PARAMETER, SHADOW_MAP_BUDGET_PARAMETER, SURFEL_CAPACITY_PARAMETER, SURFEL_RAY_BUDGET_PARAMETER,
-	VisibilityPipelineManager, VisibilityPipelineSettings,
+	DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER, DIRECTIONAL_SHADOW_TECHNIQUE_PARAMETER, GEOMETRY_CAPACITY_PARAMETER_PREFIX,
+	INSTANCE_CAPACITY_PARAMETER_PREFIX, INSTANCE_REBUILD_LANES_PARAMETER, MESHLET_VERTICES_PARAMETER,
+	PROBE_RAY_BUDGET_PARAMETER, PROBE_SPACING_PARAMETER, SHADOW_MAP_BUDGET_PARAMETER, SURFEL_CAPACITY_PARAMETER,
+	SURFEL_RAY_BUDGET_PARAMETER, VIRTUAL_SHADOW_LEVEL_BIAS_PARAMETER, VIRTUAL_SHADOW_LEVEL_SIZE_PARAMETER,
+	VIRTUAL_SHADOW_POOL_PAGES_PARAMETER, VisibilityPipelineManager, VisibilityPipelineSettings,
 };
+pub use scene::InstanceCapacity;
 pub use shader_generator::VisibilityShaderGenerator;
+pub use virtual_shadows::{DirectionalShadowTechnique, VirtualShadowSettings};

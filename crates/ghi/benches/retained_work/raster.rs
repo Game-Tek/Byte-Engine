@@ -67,15 +67,14 @@ fn render(bencher: Bencher, objects: usize, workload: Workload) {
 	let columns = 16usize;
 	let rows = objects / columns;
 	let extent = Extent::rectangle((columns * 16) as _, (rows * 16) as _);
-	let target = context.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
-			.extent(extent)
-			.device_accesses(DeviceAccesses::DeviceToHost),
-	);
+	let target = context
+		.build_image(ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource).extent(extent));
 	// A packed object buffer models per-frame instance data. Both alternatives have identical capacity.
 	let buffers = std::array::from_fn::<_, 2, _>(|_| {
-		context.build_dynamic_buffer::<[[f32; 4]; 256]>(
-			ghi::buffer::Builder::new(Uses::Storage).device_accesses(DeviceAccesses::HostToDevice),
+		context.build_buffer::<[[f32; 4]; 256]>(
+			ghi::buffer::Builder::new(Uses::Storage)
+				.host_access(HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		)
 	});
 	let set = context.create_descriptor_set(None, &layout);
@@ -109,7 +108,7 @@ fn render(bencher: Bencher, objects: usize, workload: Workload) {
 					// Consume each replacement this frame; pending writes cannot accumulate without submissions.
 					frame.write(&[writes[active]]);
 				}
-				let data = frame.get_mut_dynamic_buffer_slice(buffers[active]);
+				let data = frame.map(buffers[active]);
 				for object in 0..objects {
 					let selected = object % 4 == index as usize % 4;
 					if index < 2 || !matches!(workload, Workload::MixedMotion) || selected {
@@ -120,7 +119,6 @@ fn render(bencher: Bencher, objects: usize, workload: Workload) {
 					// Repopulate the active slot from retained CPU data so mixed updates do not leave older slots stale.
 					data[object] = expected[object].map(|value| value as f32 / 255.0);
 				}
-				frame.sync_buffer(buffers[active]);
 
 				let recordings = if matches!(workload, Workload::FourRecordings) { 4 } else { 1 };
 				for (part, &command) in commands[..recordings].iter().enumerate() {

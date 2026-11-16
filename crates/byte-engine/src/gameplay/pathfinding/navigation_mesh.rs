@@ -209,6 +209,8 @@ impl<Space> NavigationMesh<Space> {
 				if vertex as usize >= vertices.len() {
 					return Err(NavigationMeshBuildError::InvalidVertex { polygon, vertex });
 				}
+				// A polygon is an authored convex loop of a few vertices, so the quadratic repeat check runs over a
+				// small fixed count.
 				if indices[..offset].contains(&vertex) {
 					return Err(NavigationMeshBuildError::RepeatedVertex { polygon, vertex });
 				}
@@ -293,6 +295,8 @@ impl<Space> NavigationMesh<Space> {
 			return None;
 		}
 
+		// A navigation mesh is authored areas, not render geometry: a level's walkable surface is tens to low hundreds
+		// of convex polygons, so the linear scan stays cheap and needs no index to build or keep current.
 		self.polygons
 			.iter()
 			.enumerate()
@@ -345,6 +349,8 @@ impl<Space> NavigationMesh<Space> {
 		if !is_finite(point) {
 			return None;
 		}
+		// The boundary holds only the edges no second polygon shares, far fewer than the mesh's edges, and this is the
+		// fallback for a point the mesh does not cover.
 		self.boundary
 			.iter()
 			.map(|&(from, to)| closest_point_on_segment_xz(point, self.vertices[from as usize], self.vertices[to as usize]))
@@ -743,6 +749,9 @@ fn is_convex_xz<Space>(vertices: &[Point<Space>], indices: &[NavigationVertexHan
 	}
 
 	// Consistent local turns alone can still describe a self-intersecting star polygon.
+	//
+	// This all-pairs edge test is quadratic only in the polygon's vertex count, which is a handful for an authored
+	// convex polygon, and it runs once when the mesh is built.
 	for first_edge in 0..indices.len() {
 		let first_next = (first_edge + 1) % indices.len();
 		for second_edge in first_edge + 1..indices.len() {

@@ -88,6 +88,9 @@ struct RenderPass {
 	encoder: Retained<ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>>,
 	/// The pass's extent, which scissors are clamped to.
 	extent: Extent,
+	/// The attachments' first accesses, which the pass's first command consumes with its own uses, so one barrier
+	/// orders both. A pass that ends with no command consumes them as it ends.
+	attachment_uses: SmallVec<[synchronization::MetalResourceUse; 8]>,
 	/// The attachment writes every command of the pass records, consolidated once as the pass begins.
 	attachment_writes: SmallVec<[synchronization::MetalResourceUse; 8]>,
 	/// Whether the bound vertex buffers changed since the pass's vertex argument table last held them.
@@ -103,6 +106,7 @@ impl RenderPass {
 		Self {
 			encoder,
 			extent,
+			attachment_uses: SmallVec::new(),
 			attachment_writes: SmallVec::new(),
 			vertex_buffers_dirty: false,
 			encoded_vertex_buffer_count: 0,
@@ -371,11 +375,6 @@ impl UploadArena {
 		for page in &mut self.pages {
 			page.cursor = 0;
 		}
-	}
-
-	/// Drops every page so the next allocation starts fresh; commands that retained old pages keep them alive.
-	pub(crate) fn discard(&mut self) {
-		self.pages.clear();
 	}
 
 	#[cfg(test)]

@@ -4,18 +4,21 @@ use objc2_metal::{MTLSamplerState as _, MTLTexture as _};
 
 use super::*;
 use crate::metal::queue::{StoredQueue, SubmittedBatch};
-use crate::{DeviceAccesses, Formats, ResourceCollection, Uses};
+use crate::{Formats, ResourceCollection, Uses};
 
+/// The `Buffer` struct owns one copy of a GHI buffer: private storage when only the GPU accesses it, shared storage
+/// that the CPU maps otherwise.
 #[derive(Clone)]
 pub(crate) struct Buffer {
 	pub(crate) name: Option<String>,
-	pub(crate) staging: Option<BufferHandle>,
 	pub(crate) buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
 	pub(crate) size: usize,
 	pub(crate) gpu_address: u64,
+	/// Null for private storage.
 	pub(crate) pointer: *mut u8,
 	pub(crate) uses: Uses,
-	pub(crate) access: DeviceAccesses,
+	pub(crate) host_access: crate::HostAccess,
+	pub(crate) copies: crate::Copies,
 }
 
 /// The `ImageDescription` struct keeps the creation parameters that rebuilding an image, for example at a new
@@ -25,7 +28,6 @@ pub(crate) struct ImageDescription {
 	pub(crate) extent: Extent,
 	pub(crate) format: Formats,
 	pub(crate) uses: Uses,
-	pub(crate) access: DeviceAccesses,
 	pub(crate) array_layers: u32,
 	pub(crate) cube_compatible: bool,
 	pub(crate) cube_array_compatible: bool,
@@ -38,7 +40,6 @@ impl ImageDescription {
 			extent: builder.extent,
 			format: builder.format,
 			uses: builder.resource_uses,
-			access: builder.device_accesses,
 			array_layers: builder.array_layers.map_or(1, std::num::NonZeroU32::get),
 			cube_compatible: builder.cube_compatible,
 			cube_array_compatible: builder.cube_array_compatible,
@@ -55,8 +56,6 @@ pub struct Image {
 	pub(crate) name: Option<String>,
 	pub(crate) texture: Retained<ProtocolObject<dyn mtl::MTLTexture>>,
 	pub(crate) description: ImageDescription,
-	/// Present only for images the CPU may access.
-	pub(crate) staging: Option<Vec<u8>>,
 	/// Present only for image-group members after their group is placed.
 	pub(crate) slot: Option<GroupSlot>,
 }
@@ -177,18 +176,29 @@ impl DescriptorSet {
 				self.words[word] = buffer.gpu_address;
 				pin(allocation(&*buffer.buffer));
 			}
-			Some(Descriptor::Image { image, mip_level, .. }) => {
+			Some(Descriptor::Image {
+				image,
+				mip_level,
+				array_layer,
+				..
+			}) => {
 				let image = resources.images.resource(image);
 				pin(allocation(&*image.texture));
-				self.words[word] = match mip_level {
-					Some(mip_level) => {
-						let view = command_buffer::texture_view_2d(&image.texture, image.description.format, mip_level, 0);
+				// A chosen mip or layer, such as one cube face's mip, is a 2D view of that subresource.
+				self.words[word] = match (mip_level, array_layer) {
+					(None, None) => resource_id(image.texture.gpuResourceID()),
+					(mip_level, array_layer) => {
+						let view = command_buffer::texture_view_2d(
+							&image.texture,
+							image.description.format,
+							mip_level.unwrap_or(0),
+							array_layer.unwrap_or(0),
+						);
 						let id = resource_id(view.gpuResourceID());
 						pin(allocation(&*view));
 						self.texture_views.push((element, view));
 						id
 					}
-					None => resource_id(image.texture.gpuResourceID()),
 				};
 			}
 			Some(Descriptor::CombinedImageSampler { image, sampler, .. }) => {

@@ -617,6 +617,55 @@ fn declared_samplers_replace_the_sampler_the_application_binds() {
 }
 
 #[test]
+fn declared_sampler_addresses_resolve_coordinates_outside_the_image() {
+	let script = r#"
+	clamped: sampler<{ filter: nearest, address: clamp }>;
+	repeated: sampler<{ filter: nearest, address: repeat }>;
+	mirrored: sampler<{ filter: nearest, address: mirror }>;
+	clamp_texture: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: clamped }>;
+	repeat_texture: descriptor<{ type: Texture2D, binding: 1, access: read, sampler: repeated }>;
+	mirror_texture: descriptor<{ type: Texture2D, binding: 2, access: read, sampler: mirrored }>;
+	main: fn () -> void {
+		buff.clamp = texture_lod(clamp_texture, vec2f(1.125, 0.5), 0.0).x;
+		buff.repeat = texture_lod(repeat_texture, vec2f(1.125, 0.5), 0.0).x;
+		buff.mirror = texture_lod(mirror_texture, vec2f(1.125, 0.5), 0.0).x;
+		buff.mirror_below = texture_lod(mirror_texture, vec2f(-0.375, 0.5), 0.0).x;
+	}
+	"#;
+	let root = buffer_root(
+		"buff",
+		3,
+		&[
+			("clamp", "f32"),
+			("repeat", "f32"),
+			("mirror", "f32"),
+			("mirror_below", "f32"),
+		],
+	);
+	let executable = compile_test_program(script, Some(root));
+	let buffer_slot = ResourceSlot::new(3);
+	// One row of four texels, numbered by their column.
+	let texels = [0, 1, 2, 3].map(|x| ([x, 0], [x as f32, 0.0, 0.0, 1.0]));
+	let mut textures = [0; 3].map(|_| Texture::new(4, 1).expect("Expected texture allocation"));
+	for texture in &mut textures {
+		write_texture(texture, &texels);
+	}
+	let mut buffer = buffer_for_slot(&executable, buffer_slot);
+	let mut descriptors = DescriptorBindings::new();
+	for (slot, texture) in textures.iter_mut().enumerate() {
+		descriptors.bind_texture_with_sampler(ResourceSlot::new(slot as u32), texture, Sampler::nearest());
+	}
+	descriptors.bind_buffer(buffer_slot, &mut buffer);
+	executable
+		.run_main(&mut descriptors)
+		.expect("Expected addressed reads to succeed");
+
+	// 1.125 lies half a texel past the right edge, in texel 4. Clamp reads the edge texel 3, repeat wraps to texel 0,
+	// and mirror reflects to texel 3. -0.375 lies in texel -2, which mirror reflects to texel 1.
+	assert_eq!(read_f32s(&buffer, 4), vec![3.0, 0.0, 3.0, 1.0]);
+}
+
+#[test]
 fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_state() {
 	let script = r#"
 	main: fn () -> void {
@@ -736,6 +785,38 @@ fn gather_returns_the_texel_quad_in_platform_order() {
 }
 
 #[test]
+fn image_atomics_keep_the_maximum_and_return_the_previous_texel() {
+	let script = r#"
+	depths: descriptor<{ type: StorageImage<r32ui>, binding: 0, access: read_write }>;
+	main: fn () -> void {
+		let first: u32 = image_atomic_max(depths, vec2u(0, 0), 5);
+		let second: u32 = image_atomic_max(depths, vec2u(0, 0), 3);
+		image_atomic_max(depths, vec2u(1, 0), first);
+		image_atomic_or(depths, vec2u(2, 0), second);
+		write_u32(depths, vec2u(3, 0), second + 1);
+	}
+	"#;
+
+	let executable = compile_test_program(script, None);
+	let mut depths = Texture::new(4, 1).expect("Expected texture allocation");
+	for (x, value) in [(0, 4), (1, 0), (2, 8), (3, 0)] {
+		depths.write_u32([x, 0], value).expect("Expected texel write");
+	}
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_image(ResourceSlot::new(0), &mut depths);
+		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+	}
+
+	// The texel keeps the largest value, a smaller one leaves it, and each atomic returns the texel it replaced.
+	let texel = |x| depths.fetch_u32([x, 0]).expect("Expected texel fetch");
+	assert_eq!(texel(0), Value::U32(5));
+	assert_eq!(texel(1), Value::U32(4));
+	assert_eq!(texel(2), Value::U32(8 | 5));
+	assert_eq!(texel(3), Value::U32(6));
+}
+
+#[test]
 fn executable_program_writes_through_an_indexed_storage_image_array() {
 	let script = r#"
 	main: fn () -> void {
@@ -777,6 +858,53 @@ fn executable_program_writes_through_an_indexed_storage_image_array() {
 
 	assert_eq!(
 		images[2].fetch([0, 0]).expect("Expected image fetch"),
+		Value::Vec4F([0.25, 0.5, 0.75, 1.0])
+	);
+	assert_ne!(
+		images[0].fetch([0, 0]).expect("Expected image fetch"),
+		Value::Vec4F([0.25, 0.5, 0.75, 1.0])
+	);
+}
+
+#[test]
+fn thread_layer_reads_the_invocation_third_grid_coordinate() {
+	let script = r#"
+	main: fn () -> void {
+		write(images[thread_layer()], vec2u(0, 0), vec4f(0.25, 0.5, 0.75, 1.0));
+	}
+	"#;
+
+	let mut root = Node::root();
+	root.add_child(
+		Node::binding_array(
+			"images",
+			BindingTypes::Image {
+				format: Some("rgba8".to_string()),
+			},
+			0,
+			false,
+			true,
+			2,
+		)
+		.into(),
+	);
+	let executable = compile_test_program(script, Some(root));
+	let mut images = [
+		Texture::new(1, 1).expect("Expected texture allocation"),
+		Texture::new(1, 1).expect("Expected texture allocation"),
+	];
+	{
+		let mut descriptors = DescriptorBindings::new();
+		for (element, image) in images.iter_mut().enumerate() {
+			descriptors.bind_image(ResourceSlot::new(element as u32), image);
+		}
+		executable
+			.run_main_with_config(&mut descriptors, &ExecutionConfig::default().with_thread_layer(1))
+			.expect("Expected execution to succeed");
+	}
+
+	assert_eq!(
+		images[1].fetch([0, 0]).expect("Expected image fetch"),
 		Value::Vec4F([0.25, 0.5, 0.75, 1.0])
 	);
 	assert_ne!(
@@ -960,9 +1088,9 @@ fn executable_program_reads_implicit_vertex_invocation_indices() {
 	let script = r#"
 	out_vertex_index: output<u32, 0>;
 	out_instance_index: output<u32, 1>;
-	main: fn () -> void {
-		out_vertex_index = vertex_index;
-		out_instance_index = instance_index;
+	main: fn (input: StageInput) -> void {
+		out_vertex_index = input.vertex_index;
+		out_instance_index = input.instance_index;
 	}
 	"#;
 
@@ -972,10 +1100,10 @@ fn executable_program_reads_implicit_vertex_invocation_indices() {
 	let mut out_vertex_index = interface_buffer(executable.output_layout(0));
 	let mut out_instance_index = interface_buffer(executable.output_layout(1));
 	vertex_index
-		.write("vertex_index", Value::U32(17))
+		.write(crate::VERTEX_INDEX_BUILTIN, Value::U32(17))
 		.expect("Expected vertex index write to succeed");
 	instance_index
-		.write("instance_index", Value::U32(23))
+		.write(crate::INSTANCE_INDEX_BUILTIN, Value::U32(23))
 		.expect("Expected instance index write to succeed");
 
 	{
@@ -2711,6 +2839,31 @@ fn task_payload_writes_respect_the_declared_count() {
 			count: 4,
 		}
 	);
+}
+
+#[test]
+fn a_task_shader_reads_back_the_payload_elements_it_wrote() {
+	let executable = compile_test_program(
+		r#"
+		visible_meshlets: task_payload<u32, 4>;
+
+		main: fn () -> void {
+			visible_meshlets[0] = 5;
+			visible_meshlets[1] = visible_meshlets[0] | 16;
+		}
+		"#,
+		None,
+	);
+	let mut outputs = TaskOutputs::new();
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_task_outputs(&mut outputs);
+		executable
+			.run_main(&mut descriptors)
+			.expect("a task shader should read the payload element it wrote");
+	}
+
+	assert_eq!(outputs.payload_value("visible_meshlets", 1), Some(&Value::U32(21)));
 }
 
 #[test]

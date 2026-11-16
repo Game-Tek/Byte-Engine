@@ -3,9 +3,14 @@
 
 use std::sync::Arc;
 
-use besl::vm::{AccelerationStructure, BottomLevelStructure, Buffer, DescriptorBindings, ExecutableProgram, Instance, RayTracingPipeline, Texture, Value};
+use besl::vm::{
+	AccelerationStructure, BottomLevelStructure, Buffer, DescriptorBindings, ExecutableProgram, Instance, RayTracingPipeline,
+	Texture, Value,
+};
 
-use crate::rendering::shader_vm_test::{array_buffer, asset_source, buffer, compile, run_at, slot, texture_2d, with_engine_modules};
+use crate::rendering::shader_vm_test::{
+	array_buffer, asset_source, buffer, compile, run_at, slot, texture_2d, with_engine_modules,
+};
 
 /// The paths each fixture texel traces.
 const SAMPLES: u32 = 64;
@@ -16,8 +21,7 @@ const NO_TEXEL: u32 = u32::MAX;
 
 fn kernel(name: &str) -> ExecutableProgram {
 	compile(
-		besl::lex(with_engine_modules(asset_source(&format!("lightmaps/{name}"))))
-			.expect("the lightmap kernel should link"),
+		besl::lex(with_engine_modules(asset_source(&format!("lightmaps/{name}")))).expect("the lightmap kernel should link"),
 	)
 }
 
@@ -53,7 +57,12 @@ fn ceiling_at(y: f32) -> AccelerationStructure {
 /// on z.
 fn quad(y: f32, left: f32, right: f32) -> AccelerationStructure {
 	let corner = |x: f32, z: f32| [x, y, z];
-	let [a, b, c, d] = [corner(left, -100.0), corner(right, -100.0), corner(right, 100.0), corner(left, 100.0)];
+	let [a, b, c, d] = [
+		corner(left, -100.0),
+		corner(right, -100.0),
+		corner(right, 100.0),
+		corner(left, 100.0),
+	];
 	AccelerationStructure::new(vec![Instance {
 		transform: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
 		custom_index: 0,
@@ -157,7 +166,14 @@ fn read_vec4(buffer: &Buffer, index: usize) -> [f32; 4] {
 /// environment's intensity, so the texel's mean is that radiance, its irradiance over π.
 #[test]
 fn a_texel_under_an_open_sky_holds_the_skys_radiance() {
-	let (sum, escaped) = trace_texel(&AccelerationStructure::new(Vec::new()), hit(0.0, true), 0.5, 2.0, 3, [SAMPLES, 0]);
+	let (sum, escaped) = trace_texel(
+		&AccelerationStructure::new(Vec::new()),
+		hit(0.0, true),
+		0.5,
+		2.0,
+		3,
+		[SAMPLES, 0],
+	);
 
 	let samples = SAMPLES as f32;
 	assert_eq!([sum[0] / samples, sum[1] / samples, sum[2] / samples], [1.0; 3]);
@@ -222,8 +238,12 @@ fn the_resolve_averages_paths_and_dilation_fills_empty_texels_ring_by_ring() {
 		indices.write_array_element(pixel, Value::U32(traced)).expect("index");
 	}
 	let mut accumulation = array_buffer(&dilate, slot(&dilate, "lightmap_accumulation"), 2);
-	accumulation.write_array_element(0, Value::Vec4F([4.0, 8.0, 12.0, 0.0])).expect("sum");
-	accumulation.write_array_element(1, Value::Vec4F([4.0, 4.0, 4.0, 4.0])).expect("sum");
+	accumulation
+		.write_array_element(0, Value::Vec4F([4.0, 8.0, 12.0, 0.0]))
+		.expect("sum");
+	accumulation
+		.write_array_element(1, Value::Vec4F([4.0, 4.0, 4.0, 4.0]))
+		.expect("sum");
 	// One of the lit texel's four paths reached the environment.
 	let mut escapes = array_buffer(&dilate, slot(&dilate, "lightmap_escapes"), 2);
 	escapes.write_array_element(0, Value::F32(1.0)).expect("escapes");
@@ -248,10 +268,18 @@ fn the_resolve_averages_paths_and_dilation_fills_empty_texels_ring_by_ring() {
 				assert_eq!(read_vec4(&light, 3), EMPTY, "a texel inside geometry holds nothing");
 			}
 			1 => {
-				assert_eq!(read_vec4(&dilated, 0), [1.0, 2.0, 3.0, 0.25], "the first ring takes its lit neighbor");
+				assert_eq!(
+					read_vec4(&dilated, 0),
+					[1.0, 2.0, 3.0, 0.25],
+					"the first ring takes its lit neighbor"
+				);
 				assert_eq!(read_vec4(&dilated, 15), EMPTY, "the second ring waits a pass");
 			}
-			_ => assert_eq!(read_vec4(&light, 15), [1.0, 2.0, 3.0, 0.25], "the second ring fills on the next pass"),
+			_ => assert_eq!(
+				read_vec4(&light, 15),
+				[1.0, 2.0, 3.0, 0.25],
+				"the second ring fills on the next pass"
+			),
 		}
 	}
 }

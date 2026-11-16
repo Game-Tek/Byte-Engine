@@ -307,7 +307,8 @@ impl Generator {
 				string.push_str(", memory_order_relaxed)");
 			}
 			"thread_position" => string.push_str("thread_position"),
-			"thread_id" => string.push_str("gid"),
+			"thread_id" => string.push_str("gid.xy"),
+			"thread_layer" => string.push_str("gid.z"),
 			"thread_idx" => string.push_str("thread_index"),
 			"subgroup_lane_index" => string.push_str("simd_lane_id"),
 			"threadgroup_position" => {
@@ -349,6 +350,20 @@ impl Generator {
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str("})");
 			}
+			// Texture atomics (MSL 3.1) need the texture bound `read_write` and created for atomic use, see
+			// `ghi::Uses::Atomic`. They return the previous texel as a vector whose first component is the value.
+			"image_atomic_or" | "image_atomic_max" => {
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(if name == "image_atomic_or" {
+					".atomic_fetch_or("
+				} else {
+					".atomic_fetch_max("
+				});
+				self.emit_node_string(string, &arguments[1]);
+				self.emit_separator(string);
+				self.emit_node_string(string, &arguments[2]);
+				string.push_str(").x");
+			}
 			"image_load" | "image_load_u32" => {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".read(");
@@ -382,7 +397,7 @@ impl Generator {
 				self.emit_node_string(string, &arguments[1]);
 				let _ = write!(
 					string,
-					";uint2 _besl_offset=_besl_pixel-threadgroup_position*{tile}u;if(all(_besl_offset<uint2({tile}u))&&all(_besl_pixel<output_extent)){{{TILE_OUTPUTS_STRUCT} _besl_outputs"
+					";uint2 _besl_offset=_besl_pixel-threadgroup_position.xy*{tile}u;if(all(_besl_offset<uint2({tile}u))&&all(_besl_pixel<output_extent)){{{TILE_OUTPUTS_STRUCT} _besl_outputs"
 				);
 				if keeps_others {
 					string.push_str("=tile_block.read(ushort2(_besl_offset))");
@@ -394,6 +409,15 @@ impl Generator {
 				string.push_str(";tile_block.write(_besl_outputs,ushort2(_besl_offset));}}");
 			}
 			"output_extent" => string.push_str("output_extent"),
+			"write_u32" => {
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".write(uint4(");
+				self.emit_node_string(string, &arguments[2]);
+				string.push(')');
+				self.emit_separator(string);
+				self.emit_node_string(string, &arguments[1]);
+				string.push(')');
+			}
 			"write" => {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".write(");

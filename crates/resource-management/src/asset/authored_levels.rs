@@ -1,5 +1,7 @@
 //! Find the files that hold a model's authored detail levels from the `lods.authored` pattern of its BEAD settings.
 
+use std::fmt::Write as _;
+
 use super::BEADType;
 
 /// The `AuthoredLevelPattern` struct lets a directory of models name, once, which files hold each model's coarser
@@ -29,9 +31,15 @@ impl AuthoredLevelPattern {
 		while !rest.is_empty() {
 			match rest.find('{') {
 				Some(0) => {
-					let end = rest.find('}').ok_or_else(|| format!("`lods.authored` '{pattern}' has a `{{` without a closing `}}`"))?;
+					let end = rest
+						.find('}')
+						.ok_or_else(|| format!("`lods.authored` '{pattern}' has a `{{` without a closing `}}`"))?;
 					let name = &rest[1..end];
-					if name.is_empty() || !name.chars().all(|character| character.is_ascii_alphanumeric() || character == '_') {
+					if name.is_empty()
+						|| !name
+							.chars()
+							.all(|character| character.is_ascii_alphanumeric() || character == '_')
+					{
 						return Err(format!(
 							"`lods.authored` '{pattern}' has the placeholder `{{{name}}}`, but a placeholder name holds only letters, digits, and underscores"
 						));
@@ -41,7 +49,11 @@ impl AuthoredLevelPattern {
 							"`lods.authored` '{pattern}' puts two placeholders next to each other, so the file names can't say where one ends"
 						));
 					}
-					parts.push(if name == "level" { PatternPart::Level } else { PatternPart::Any(name.to_string()) });
+					parts.push(if name == "level" {
+						PatternPart::Level
+					} else {
+						PatternPart::Any(name.to_string())
+					});
 					rest = &rest[end + 1..];
 				}
 				Some(start) => {
@@ -66,8 +78,12 @@ impl AuthoredLevelPattern {
 	/// Returns `None` when the model's file name, without its extension, doesn't match the pattern. The caller stops
 	/// at the first file that doesn't exist.
 	pub(crate) fn coarser_level_ids(&self, model_id: &str) -> Option<impl Iterator<Item = String> + '_> {
-		let (directory, file) = model_id.rsplit_once('/').map_or(("", model_id), |(directory, file)| (directory, file));
-		let (stem, extension) = file.rsplit_once('.').map_or((file, None), |(stem, extension)| (stem, Some(extension)));
+		let (directory, file) = model_id
+			.rsplit_once('/')
+			.map_or(("", model_id), |(directory, file)| (directory, file));
+		let (stem, extension) = file
+			.rsplit_once('.')
+			.map_or((file, None), |(stem, extension)| (stem, Some(extension)));
 		let mut captures = Vec::new();
 		let mut level = None;
 		if !match_parts(&self.parts, stem, &mut captures, &mut level) {
@@ -95,7 +111,9 @@ impl AuthoredLevelPattern {
 						id.push_str(value.map_or("", String::as_str));
 					}
 					// Keeps the model's zero padding, so `LOD01` is followed by `LOD02`.
-					PatternPart::Level => id.push_str(&format!("{level:0width$}")),
+					PatternPart::Level => {
+						let _ = write!(id, "{level:0width$}");
+					}
 				}
 			}
 			if let Some(extension) = &extension {
@@ -133,20 +151,20 @@ fn match_parts<'p, 't>(
 			let ends = text.char_indices().map(|(index, _)| index).skip(1).chain([text.len()]);
 			for end in ends.filter(|&end| end > 0) {
 				let value = &text[..end];
-				if let Some(&(_, earlier)) = captures.iter().find(|(captured, _)| captured == name) {
-					if earlier != value {
-						continue;
+				match captures.iter().find(|(captured, _)| captured == name) {
+					Some(&(_, earlier)) => {
+						if earlier == value && match_parts(rest, &text[end..], captures, level) {
+							return true;
+						}
 					}
-					if match_parts(rest, &text[end..], captures, level) {
-						return true;
+					None => {
+						captures.push((name.as_str(), value));
+						if match_parts(rest, &text[end..], captures, level) {
+							return true;
+						}
+						captures.pop();
 					}
-					continue;
 				}
-				captures.push((name.as_str(), value));
-				if match_parts(rest, &text[end..], captures, level) {
-					return true;
-				}
-				captures.pop();
 			}
 			false
 		}
@@ -179,10 +197,20 @@ mod tests {
 	fn a_model_whose_name_matches_lists_its_coarser_level_files_in_its_directory() {
 		assert_eq!(
 			levels("{name}_LOD{level}", "plants/fern/fern_VarA_LOD0.fbx").unwrap(),
-			["plants/fern/fern_VarA_LOD1.fbx", "plants/fern/fern_VarA_LOD2.fbx", "plants/fern/fern_VarA_LOD3.fbx"]
+			[
+				"plants/fern/fern_VarA_LOD1.fbx",
+				"plants/fern/fern_VarA_LOD2.fbx",
+				"plants/fern/fern_VarA_LOD3.fbx"
+			]
 		);
-		assert_eq!(levels("{name}_LOD{level}", "fern_LOD1.fbx").unwrap(), ["fern_LOD2.fbx", "fern_LOD3.fbx", "fern_LOD4.fbx"]);
-		assert_eq!(levels("{name}_lod{level}", "rock_lod08.fbx").unwrap()[..2], ["rock_lod09.fbx", "rock_lod10.fbx"]);
+		assert_eq!(
+			levels("{name}_LOD{level}", "fern_LOD1.fbx").unwrap(),
+			["fern_LOD2.fbx", "fern_LOD3.fbx", "fern_LOD4.fbx"]
+		);
+		assert_eq!(
+			levels("{name}_lod{level}", "rock_lod08.fbx").unwrap()[..2],
+			["rock_lod09.fbx", "rock_lod10.fbx"]
+		);
 	}
 
 	#[test]
@@ -193,8 +221,17 @@ mod tests {
 
 	#[test]
 	fn patterns_need_one_level_and_separable_placeholders() {
-		for pattern in ["{name}_LOD", "{level}_{level}", "{name}{level}", "{name_LOD{level}", "{na-me}_{level}"] {
-			assert!(AuthoredLevelPattern::parse(pattern).is_err(), "'{pattern}' should be rejected");
+		for pattern in [
+			"{name}_LOD",
+			"{level}_{level}",
+			"{name}{level}",
+			"{name_LOD{level}",
+			"{na-me}_{level}",
+		] {
+			assert!(
+				AuthoredLevelPattern::parse(pattern).is_err(),
+				"'{pattern}' should be rejected"
+			);
 		}
 	}
 }

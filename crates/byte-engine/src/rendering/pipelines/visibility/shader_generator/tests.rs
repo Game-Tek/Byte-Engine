@@ -40,6 +40,75 @@ const TEXTURED_GRAPH: &str = r#"{
 	],
 }"#;
 
+/// A graph that samples every image at coordinates it computes: two normal maps at world-space coordinates from the
+/// position, scrolled by the time and turned out of the world frame those coordinates follow, and a base colour tiled
+/// from the mesh's own coordinates. It reads [`textured_parameters`].
+const WORLD_MAPPED_GRAPH: &str = r#"{
+	nodes: [
+		{ name: "position", node: "position" },
+		{ name: "ground", node: "swizzle", in: "position", channels: "xz" },
+		{ name: "time", node: "time" },
+		{ name: "drift", node: "multiply", in1: "time", in2: [0.03, 0.02] },
+		{ name: "scaled", node: "multiply", in1: "ground", in2: 0.5 },
+		{ name: "near", node: "add", in1: "scaled", in2: "drift" },
+		{ name: "far", node: "multiply", in1: "ground", in2: [0.13, 0.11] },
+		{ name: "near_texel", node: "image", texture: "normal_map", type: "vector3", texcoord: "near" },
+		{ name: "far_texel", node: "image", texture: "normal_map", type: "vector3", texcoord: "far" },
+		{ name: "near_normal", node: "normalmap", in: "near_texel", tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, -1.0], normal: [0.0, 1.0, 0.0] },
+		{ name: "far_normal", node: "normalmap", in: "far_texel", tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, -1.0], normal: [0.0, 1.0, 0.0] },
+		{ name: "both", node: "add", in1: "near_normal", in2: "far_normal" },
+		{ name: "blended", node: "normalize", in: "both" },
+		{ name: "uv", node: "texcoord" },
+		{ name: "tiled", node: "multiply", in1: "uv", in2: 4.0 },
+		{ name: "albedo", node: "image", texture: "base_color", type: "vector3", texcoord: "tiled" },
+		{ name: "surface", node: "surface", base_color: "albedo", normal: "blended", roughness: 0.05 },
+	],
+}"#;
+
+/// A blended graph that reads the scene behind its surface the way water does: it bends the screen position by a normal
+/// map, reads the backdrop's light and position there, dims the light by the distance it crosses, and writes it as
+/// transmission. It reads [`textured_parameters`].
+const BACKDROP_GRAPH: &str = r#"{
+	nodes: [
+		{ name: "position", node: "position" },
+		{ name: "ground", node: "swizzle", in: "position", channels: "xz" },
+		{ name: "texel", node: "image", texture: "normal_map", type: "vector3", texcoord: "ground" },
+		{ name: "bumped", node: "normalmap", in: "texel" },
+		{ name: "bend", node: "swizzle", in: "bumped", channels: "xz" },
+		{ name: "offset", node: "multiply", in1: "bend", in2: 0.02 },
+		{ name: "screen", node: "screenposition" },
+		{ name: "refracted", node: "add", in1: "screen", in2: "offset" },
+		{ name: "behind", node: "scenecolor", texcoord: "refracted" },
+		{ name: "floor", node: "sceneposition", texcoord: "refracted" },
+		{ name: "path", node: "subtract", in1: "floor", in2: "position" },
+		{ name: "length", node: "magnitude", in: "path" },
+		{ name: "absorbed", node: "multiply", in1: "length", in2: -0.4 },
+		{ name: "kept", node: "exp", in: "absorbed" },
+		{ name: "transmitted", node: "multiply", in1: "behind", in2: "kept" },
+		{ name: "albedo", node: "image", texture: "base_color", type: "vector3" },
+		{ name: "surface", node: "surface", base_color: "albedo", normal: "bumped", roughness: 0.05, transmission: "transmitted" },
+	],
+}"#;
+
+/// A translucent graph, the way a leaf reads its translucency map: the share of light that crosses the surface is the
+/// base colour, tinted toward green. It reads [`textured_parameters`].
+const TRANSLUCENT_GRAPH: &str = r#"{
+	nodes: [
+		{ name: "albedo", node: "image", texture: "base_color", type: "vector3" },
+		{ name: "crossed", node: "multiply", in1: "albedo", in2: [0.5, 0.9, 0.3] },
+		{ name: "surface", node: "surface", base_color: "albedo", translucency: "crossed" },
+	],
+}"#;
+
+/// A skin with a scattering radius per channel and a thickness light crosses, which scatters its diffuse light and
+/// lights its far side through the thickness.
+const SKIN_GRAPH: &str = r#"{
+	nodes: [
+		{ name: "albedo", node: "image", texture: "base_color", type: "vector3" },
+		{ name: "surface", node: "surface", base_color: "albedo", subsurface_radius: [0.0037, 0.0014, 0.0007], thickness: 0.01 },
+	],
+}"#;
+
 /// The parameters [`TEXTURED_GRAPH`] reads, in binding order.
 fn textured_parameters() -> Vec<MaterialParameter> {
 	vec![
@@ -303,7 +372,7 @@ fn value_parameters_become_specializations_at_their_variable_index() {
 	];
 
 	let shader = material_generator()
-		.generate(&graph, &parameters)
+		.generate(&graph, &parameters, &EMBEDDED_MODULES)
 		.expect("a graph reading declared parameters should generate")
 		.expect("the pipelines mode builds an evaluation shader");
 
@@ -330,7 +399,7 @@ fn dynamic_parameters_read_the_instance_parameter_block() {
 	let parameters = dynamic_parameters();
 
 	let shader = material_generator()
-		.generate(&graph, &parameters)
+		.generate(&graph, &parameters, &EMBEDDED_MODULES)
 		.expect("a graph reading dynamic parameters should generate")
 		.expect("the pipelines mode builds an evaluation shader");
 
@@ -365,7 +434,7 @@ fn a_dynamic_parameter_read_with_another_type_is_reported() {
 	parameters[2] = parameter("glow", ParameterKind::Dynamic(bemx::Type::Vector3));
 
 	let error = material_generator()
-		.generate(&graph, &parameters)
+		.generate(&graph, &parameters, &EMBEDDED_MODULES)
 		.expect_err("a graph reading a dynamic parameter with another type should not generate");
 
 	assert!(error.contains("'glow'"), "{error}");
@@ -373,13 +442,15 @@ fn a_dynamic_parameter_read_with_another_type_is_reported() {
 
 #[test]
 fn material_evaluation_of_a_textured_graph_produces_valid_besl() {
-	let graph = graph(TEXTURED_GRAPH);
-	let parameters = textured_parameters();
-	let shader = material_generator()
-		.generate(&graph, &parameters)
-		.expect("textured graph should generate")
-		.expect("the pipelines mode builds an evaluation shader");
-	besl::lex(shader).expect("generated normal-mapped program should link");
+	for source in [TEXTURED_GRAPH, WORLD_MAPPED_GRAPH, BACKDROP_GRAPH, TRANSLUCENT_GRAPH] {
+		let graph = graph(source);
+		let parameters = textured_parameters();
+		let shader = material_generator()
+			.generate(&graph, &parameters, &EMBEDDED_MODULES)
+			.expect("textured graph should generate")
+			.expect("the pipelines mode builds an evaluation shader");
+		besl::lex(shader).expect("generated normal-mapped program should link");
+	}
 }
 
 /// A world-space normal that is not a normal map is projected onto the tangent frame, which has to link as well.
@@ -393,7 +464,7 @@ fn material_evaluation_of_a_world_space_normal_produces_valid_besl() {
 		] }"#,
 	);
 	let shader = material_generator()
-		.generate(&graph, &[])
+		.generate(&graph, &[], &EMBEDDED_MODULES)
 		.expect("graph should generate")
 		.expect("the pipelines mode builds an evaluation shader");
 	besl::lex(shader).expect("generated world-normal program should link");
@@ -405,7 +476,7 @@ fn a_graph_reading_an_undeclared_parameter_is_reported() {
 	let parameters = [parameter("base_color", ParameterKind::Texture)];
 
 	let error = material_generator()
-		.generate(&graph, &parameters)
+		.generate(&graph, &parameters, &EMBEDDED_MODULES)
 		.expect_err("a graph reading parameters the material does not declare should not generate");
 
 	assert!(error.contains("'tint'"), "{error}");
@@ -430,7 +501,7 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 	let graph = graph(r#"{ nodes: [{ name: "surface", node: "surface", base_color: [1.0, 1.0, 1.0] }] }"#);
 	let reaches = |features, binding: &str| {
 		let shader = material_generator_with(features)
-			.generate(&graph, &[])
+			.generate(&graph, &[], &EMBEDDED_MODULES)
 			.expect("constant graph should generate")
 			.expect("the pipelines mode builds an evaluation shader");
 		let root = besl::lex(shader).expect("generated program should link");
@@ -468,6 +539,13 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 			},
 			"debug_view_targets",
 		),
+		(
+			VisibilityFeatures {
+				subsurface: false,
+				..Default::default()
+			},
+			"subsurface_diffuse",
+		),
 	];
 	let every_feature = VisibilityFeatures {
 		gtao: true,
@@ -476,6 +554,8 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 		probe_gi: true,
 		baked_gi: true,
 		contact_shadows: true,
+		subsurface: true,
+		single_directional_light: true,
 		debug_views: true,
 		material_evaluation: Default::default(),
 	};
@@ -507,6 +587,37 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 	);
 }
 
+/// A skin material's shader writes the images the subsurface pass reads only when the project builds subsurface
+/// scattering in, and its thickness keeps the far-side lighting a translucent material has.
+#[test]
+fn skin_material_writes_subsurface_images_only_when_built_in() {
+	let skin = graph(SKIN_GRAPH);
+	let parameters = textured_parameters();
+	let reaches = |subsurface, binding: &str| {
+		let shader = material_generator_with(VisibilityFeatures {
+			subsurface,
+			..Default::default()
+		})
+		.generate(&skin, &parameters, &EMBEDDED_MODULES)
+		.expect("the skin graph should generate")
+		.expect("the pipelines mode builds an evaluation shader");
+		let root = besl::lex(shader).expect("generated program should link");
+		let main = root.get_main().expect("generated program should contain main");
+		resource_management::shader::besl::graph::dependency_order(&main)
+			.iter()
+			.any(|node| node.borrow().get_name() == Some(binding))
+	};
+	for binding in ["subsurface_diffuse", "subsurface_shape", "subsurface_albedo"] {
+		assert!(reaches(true, binding), "a skin material should write `{binding}`");
+		assert!(
+			!reaches(false, binding),
+			"`{binding}` was written without subsurface scattering"
+		);
+	}
+	// The thickness weights the far side's light by the profile's transmittance.
+	assert!(reaches(true, "burley_transmittance"));
+}
+
 /// Verifies the generated material evaluation program lowers to the running platform's shader language.
 ///
 /// Linking only proves the BESL is well formed. The generated program reaches the GPU through a platform
@@ -519,13 +630,25 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
 
 	// The textured graph reaches every optional reconstruction: texture coordinates, the tangent frame, and samples.
-	// The dynamic graph reads the parameter buffer at every value width.
-	for (source, parameters) in [(TEXTURED_GRAPH, textured_parameters()), (DYNAMIC_GRAPH, dynamic_parameters())] {
+	// The world-mapped graph samples at computed coordinates. The dynamic graph reads the parameter buffer at every
+	// value width.
+	for (source, parameters) in [
+		(TEXTURED_GRAPH, textured_parameters()),
+		(WORLD_MAPPED_GRAPH, textured_parameters()),
+		(BACKDROP_GRAPH, textured_parameters()),
+		(TRANSLUCENT_GRAPH, textured_parameters()),
+		(SKIN_GRAPH, textured_parameters()),
+		(DYNAMIC_GRAPH, dynamic_parameters()),
+	] {
 		let graph = graph(source);
-		let shader = material_generator()
-			.generate(&graph, &parameters)
-			.expect("test graph should generate")
-			.expect("the pipelines mode builds an evaluation shader");
+		// Subsurface scattering is left out by default; build it in so its writes reach the platform compiler too.
+		let shader = material_generator_with(VisibilityFeatures {
+			subsurface: true,
+			..Default::default()
+		})
+		.generate(&graph, &parameters, &EMBEDDED_MODULES)
+		.expect("test graph should generate")
+		.expect("the pipelines mode builds an evaluation shader");
 		let root = besl::lex(shader).expect("generated program should link");
 
 		let settings = ShaderGenerationSettings::compute(utils::Extent::line(128)).name("material_evaluation".to_string());
@@ -538,20 +661,23 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 }
 
 /// Builds an uber generator's arms for the textured graph at two static tints, which declare the same static parameter
-/// in two arms, and the dynamic graph, and runs `check` on each phase's program.
-fn with_uber_programs(check: impl Fn(bool, Node<'_>)) {
+/// in two arms, the dynamic graph, and the translucent graph, and runs `check` on each variant's program.
+fn with_uber_programs(check: impl Fn(UberVariant, Node<'_>)) {
 	let generator = material_generator_with(VisibilityFeatures {
 		material_evaluation: MaterialEvaluationMode::Uber,
+		subsurface: true,
 		..Default::default()
 	});
-	let (textured, dynamic) = (graph(TEXTURED_GRAPH), graph(DYNAMIC_GRAPH));
+	let (textured, dynamic, translucent) = (graph(TEXTURED_GRAPH), graph(DYNAMIC_GRAPH), graph(TRANSLUCENT_GRAPH));
 	let (textured_parameters, dynamic_parameters) = (textured_parameters(), dynamic_parameters());
 	let tints = [vec![vec![1.0, 0.5, 0.25, 1.0]], vec![vec![-0.5, 0.0, 2.0, 0.5]]];
 	let roughness = [vec![0.75]];
+	let opaque = UberVariant::new(false, false);
 	let keys = [
-		uber_arm_key(1, tints[0].concat(), false).to_string(),
-		uber_arm_key(1, tints[1].concat(), false).to_string(),
-		uber_arm_key(2, roughness.concat(), false).to_string(),
+		uber_arm_key(1, tints[0].concat(), opaque).to_string(),
+		uber_arm_key(1, tints[1].concat(), opaque).to_string(),
+		uber_arm_key(2, roughness.concat(), opaque).to_string(),
+		uber_arm_key(3, tints[0].concat(), UberVariant::new(false, true)).to_string(),
 	];
 	let model = resource_management::resources::material::RenderModel {
 		name: "Visibility".to_string(),
@@ -569,6 +695,7 @@ fn with_uber_programs(check: impl Fn(bool, Node<'_>)) {
 		material(&textured, &textured_parameters, &tints[0]),
 		material(&textured, &textured_parameters, &tints[1]),
 		material(&dynamic, &dynamic_parameters, &roughness),
+		material(&translucent, &textured_parameters, &tints[0]),
 	];
 	let arms = [
 		AssembledArm {
@@ -583,26 +710,32 @@ fn with_uber_programs(check: impl Fn(bool, Node<'_>)) {
 			key: &keys[2],
 			material: &materials[2],
 		},
+		AssembledArm {
+			key: &keys[3],
+			material: &materials[3],
+		},
 	];
-	// A fresh development store holds no material yet, so its first bake assembles shaders without arms.
-	for arms in [&arms[..], &[]] {
-		for transparent in [false, true] {
+	for variant in UberVariant::ALL {
+		// A variant's shader holds the arms of its kind: the translucent arm, or the others.
+		let arms = if variant.translucent { &arms[3..] } else { &arms[..3] };
+		// A fresh development store holds no material yet, so its first bake assembles shaders without arms.
+		for arms in [arms, &[]] {
 			check(
-				transparent,
+				variant,
 				generator
-					.uber_program(transparent, arms)
+					.uber_program(variant, arms, &EMBEDDED_MODULES)
 					.expect("the test arms should generate an uber program"),
 			);
 		}
 	}
 }
 
-/// Verifies an uber material evaluation program links in both phases, with arms that declare the same static parameter.
+/// Verifies an uber material evaluation program links for every variant, with arms that declare the same static
+/// parameter.
 #[test]
 fn uber_material_evaluation_produces_valid_besl() {
-	with_uber_programs(|transparent, program| {
-		besl::lex(program)
-			.unwrap_or_else(|error| panic!("the uber program should link (transparent: {transparent}): {error:?}"));
+	with_uber_programs(|variant, program| {
+		besl::lex(program).unwrap_or_else(|error| panic!("the uber program should link ({variant:?}): {error:?}"));
 	});
 }
 
@@ -614,32 +747,42 @@ async fn uber_material_evaluation_lowers_to_the_platform_shader_language() {
 	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
 
 	let programs = std::cell::RefCell::new(Vec::new());
-	with_uber_programs(|transparent, program| {
+	with_uber_programs(|variant, program| {
 		programs
 			.borrow_mut()
-			.push((transparent, besl::lex(program).expect("the uber program should link")));
+			.push((variant, besl::lex(program).expect("the uber program should link")));
 	});
-	for (transparent, root) in programs.into_inner() {
+	for (variant, root) in programs.into_inner() {
 		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8)).name("uber_material_evaluation".to_string());
 		PlatformShaderCompiler::new()
 			.generate(&settings, &root)
 			.await
 			.unwrap_or_else(|error| {
-				panic!("the uber program should compile for the platform shader language (transparent: {transparent}): {error}")
+				panic!("the uber program should compile for the platform shader language ({variant:?}): {error}")
 			});
 	}
 }
 
-/// Verifies arm keys separate what changes a material's code: its program, its static values, and its phase.
+/// Verifies arm keys separate what changes a material's code: its program, its static values, and its phase, and
+/// that a key names the variant whose shader holds its arm.
 #[test]
-fn uber_arm_keys_follow_program_values_and_phase() {
-	let key = uber_arm_key(7, [0.5, 1.0], false);
+fn uber_arm_keys_follow_program_values_and_variant() {
+	let opaque = UberVariant::new(false, false);
+	let key = uber_arm_key(7, [0.5, 1.0], opaque);
 
-	assert_eq!(key, uber_arm_key(7, [0.5, 1.0], false));
-	assert_ne!(key, uber_arm_key(8, [0.5, 1.0], false));
-	assert_ne!(key, uber_arm_key(7, [0.5, 2.0], false));
-	assert_ne!(key, uber_arm_key(7, [0.5, 1.0], true));
-	assert_ne!(key, u32::MAX);
+	assert_eq!(key, uber_arm_key(7, [0.5, 1.0], opaque));
+	assert_ne!(key, uber_arm_key(8, [0.5, 1.0], opaque));
+	assert_ne!(key, uber_arm_key(7, [0.5, 2.0], opaque));
+	for variant in UberVariant::ALL {
+		for identity in 0..64 {
+			let key = uber_arm_key(identity, [0.5, 1.0], variant);
+			assert_ne!(key, u32::MAX);
+			assert_eq!(UberVariant::of_arm(key, variant.transparent), variant);
+			if variant != opaque {
+				assert_ne!(key, uber_arm_key(identity, [0.5, 1.0], opaque));
+			}
+		}
+	}
 }
 
 /// A masked graph whose `opacity` multiplies a separate opacity texture by a static and a dynamic parameter, the way a
@@ -647,7 +790,11 @@ fn uber_arm_keys_follow_program_values_and_phase() {
 const MASKED_GRAPH: &str = r#"{
 	nodes: [
 		{ name: "albedo", node: "image", texture: "base_color", type: "vector3" },
-		{ name: "mask", node: "image", texture: "opacity", type: "float" },
+		{ name: "uv", node: "texcoord" },
+		{ name: "tiled", node: "multiply", in1: "uv", in2: 2.0 },
+		{ name: "time", node: "time" },
+		{ name: "scrolled", node: "add", in1: "tiled", in2: "time" },
+		{ name: "mask", node: "image", texture: "opacity", type: "float", texcoord: "scrolled" },
 		{ name: "strength", node: "parameter", parameter: "strength", type: "float" },
 		{ name: "fade", node: "parameter", parameter: "fade", type: "float" },
 		{ name: "scaled", node: "multiply", in1: "mask", in2: "strength" },
@@ -666,8 +813,9 @@ fn masked_parameters() -> Vec<MaterialParameter> {
 	]
 }
 
-/// Verifies both coverage shaders link with an arm that samples a separate opacity texture and reads static and
-/// dynamic parameters, beside an arm whose graph leaves `opacity` out, and without arms.
+/// Verifies both coverage shaders link with an arm that samples a separate opacity texture at tiled coordinates
+/// scrolled by the time and reads static and dynamic parameters, beside an arm whose graph leaves `opacity` out, and
+/// without arms.
 #[test]
 fn coverage_shaders_produce_valid_besl() {
 	let generator = material_generator();
@@ -707,47 +855,108 @@ fn coverage_shaders_produce_valid_besl() {
 	for arms in [&arms[..], &[]] {
 		for pass in [CoveragePass::Visibility, CoveragePass::Depth] {
 			let program = generator
-				.coverage_program(pass, arms)
+				.coverage_program(pass, arms, &EMBEDDED_MODULES)
 				.expect("the test arms should generate a coverage program");
 			besl::lex(program).unwrap_or_else(|error| panic!("the {pass:?} coverage program should link: {error:?}"));
 		}
 	}
 }
 
-/// Verifies a masked material whose `opacity` reads the normal fails to bake, because the masked passes carry only the
-/// vertex UV.
+/// Verifies a masked material whose `opacity` reads what the masked passes lack fails to bake: the normal, because
+/// they carry only the vertex UV, and the scene behind the surface, because they draw before it exists.
 #[test]
-fn coverage_shaders_reject_opacity_that_reads_geometry() {
-	let graph = graph(
-		r#"{
-	nodes: [
-		{ name: "normal", node: "normal" },
-		{ name: "up", node: "extract", in: "normal", index: 1 },
-		{ name: "surface", node: "surface", opacity: "up" },
-	],
-}"#,
-	);
+fn coverage_shaders_reject_opacity_that_reads_unavailable_values() {
 	let model = resource_management::resources::material::RenderModel {
 		name: "Visibility".to_string(),
 		pass: "MaterialEvaluation".to_string(),
 	};
-	let material = AssembledMaterial {
-		model: &model,
-		graph: &graph,
-		parameters: &[],
-		identity: 0,
-		static_values: &[],
-		alpha_mode: resource_management::types::AlphaMode::Mask(0.5),
-	};
-	let arms = [AssembledArm {
-		key: "1",
-		material: &material,
-	}];
+	for (reads, expected) in [
+		(r#"{ name: "read", node: "normal" }"#, "Normal"),
+		(
+			r#"{ name: "uv", node: "texcoord" }, { name: "read", node: "scenecolor", texcoord: "uv" }"#,
+			"scene behind the surface",
+		),
+	] {
+		let graph = graph(&format!(
+			r#"{{ nodes: [
+				{reads},
+				{{ name: "first", node: "extract", in: "read", index: 0 }},
+				{{ name: "surface", node: "surface", opacity: "first" }},
+			] }}"#
+		));
+		let material = AssembledMaterial {
+			model: &model,
+			graph: &graph,
+			parameters: &[],
+			identity: 0,
+			static_values: &[],
+			alpha_mode: resource_management::types::AlphaMode::Mask(0.5),
+		};
+		let arms = [AssembledArm {
+			key: "1",
+			material: &material,
+		}];
 
-	let Err(error) = material_generator().coverage_program(CoveragePass::Depth, &arms) else {
-		panic!("a masked opacity that reads the normal should fail to generate");
-	};
-	assert!(error.contains("Normal"), "{error}");
+		let Err(error) = material_generator().coverage_program(CoveragePass::Depth, &arms, &EMBEDDED_MODULES) else {
+			panic!("a masked opacity that reads {reads} should fail to generate");
+		};
+		assert!(error.contains(expected), "{error}");
+	}
+}
+
+/// Verifies `sceneposition` rebuilds the world position of the backdrop from its linear depth through the screen view
+/// constants and the camera's inverse view, at the screen's middle and off it, and at a wide aspect ratio.
+#[test]
+fn backdrop_position_rebuilds_world_positions_in_the_besl_vm() {
+	let executable = compile_with(
+		r#"
+		main: fn (input: StageInput, material_evaluation: MaterialEvaluation, scene: Scene) -> void {
+			results.centre = backdrop_position(material_evaluation, scene.views.views[0], vec2f(0.5, 0.5));
+			results.corner = backdrop_position(material_evaluation, scene.views.views[0], vec2f(0.75, 0.25));
+		}
+		"#,
+		vec![
+			parse_besl_function(BACKDROP_POSITION_SOURCE, "backdrop_position"),
+			results_binding(members("vec3f", &["centre", "corner"]), 0),
+		],
+	);
+	// A vertical field of view of 90 degrees reaches one unit up per unit of depth, and an aspect ratio of two twice as
+	// far across, so the projection's scales are 0.5 and 1. These are the constants `screen_view_data` builds from them
+	// for a 4 by 2 pixel pyramid. The camera stands ten units along x.
+	let mut screen_view = buffer(&executable, slot(&executable, "ssgi_view"));
+	screen_view.write("pixel_to_ray_mul", Value::Vec2F([1.0, -1.0])).unwrap();
+	screen_view.write("pixel_to_ray_add", Value::Vec2F([-1.5, 0.5])).unwrap();
+	screen_view.write("view_z_sign", Value::F32(1.0)).unwrap();
+	let mut views = buffer(&executable, slot(&executable, "views"));
+	views
+		.write_array_member(
+			0,
+			"inverse_view",
+			Value::Mat4x3F([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 10.0, 0.0, 0.0]),
+		)
+		.unwrap();
+	let mut depth = texture_2d(2, 2, &[[4.0, 0.0, 0.0, 1.0]; 4]);
+	let mut results = buffer(&executable, slot(&executable, "results"));
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(slot(&executable, "views"), &mut views);
+	descriptors.bind_buffer(slot(&executable, "ssgi_view"), &mut screen_view);
+	descriptors.bind_texture(slot(&executable, "backdrop_depth"), &mut depth);
+	descriptors.bind_buffer(slot(&executable, "results"), &mut results);
+	run_at(&executable, &mut descriptors, [0, 0]);
+	drop(descriptors);
+
+	for (name, expected) in [("centre", [10.0, 0.0, 4.0]), ("corner", [14.0, 2.0, 4.0])] {
+		let Value::Vec3F(actual) = results.read(name).expect("backdrop position") else {
+			panic!("Unexpected backdrop position type.");
+		};
+		assert!(
+			actual
+				.iter()
+				.zip(expected)
+				.all(|(actual, expected)| (actual - expected).abs() < 0.001),
+			"Expected the {name} backdrop at {expected:?}, found {actual:?}. The most likely cause is a view ray built from the wrong field of view or screen axis."
+		);
+	}
 }
 
 /// Verifies only masked materials take arms in the coverage shaders, under the same key in both.
@@ -792,14 +1001,20 @@ fn hit_generator() -> VisibilityShaderGenerator {
 	})
 }
 
-/// A material's closest-hit shader links for every input its body reaches: textures sampled through ray cones, a
-/// tangent frame, static and dynamic parameters, and emission.
+/// A material's closest-hit shader links for every input its body reaches: textures sampled through ray cones, at the
+/// mesh's coordinates and at coordinates computed from the position, a tangent frame, static and dynamic parameters,
+/// and emission.
 #[test]
 fn material_hit_shaders_produce_valid_besl() {
-	for (source, parameters) in [(TEXTURED_GRAPH, textured_parameters()), (DYNAMIC_GRAPH, dynamic_parameters())] {
+	for (source, parameters) in [
+		(TEXTURED_GRAPH, textured_parameters()),
+		(WORLD_MAPPED_GRAPH, textured_parameters()),
+		(BACKDROP_GRAPH, textured_parameters()),
+		(DYNAMIC_GRAPH, dynamic_parameters()),
+	] {
 		let graph = graph(source);
 		let shader = hit_generator()
-			.generate_hit(&graph, &parameters)
+			.generate_hit(&graph, &parameters, &EMBEDDED_MODULES)
 			.expect("test graph should generate a hit shader")
 			.expect("a project with surfel GI should build hit shaders");
 		besl::lex(shader).expect("generated hit program should link");
@@ -818,13 +1033,13 @@ fn materials_get_hit_shaders_only_with_surfel_gi() {
 
 	assert!(
 		without
-			.generate_hit(&graph, &parameters)
+			.generate_hit(&graph, &parameters, &EMBEDDED_MODULES)
 			.expect("graph should generate")
 			.is_none()
 	);
 	assert!(
 		hit_generator()
-			.generate_hit(&graph, &parameters)
+			.generate_hit(&graph, &parameters, &EMBEDDED_MODULES)
 			.expect("graph should generate")
 			.is_some()
 	);
@@ -840,7 +1055,7 @@ async fn material_hit_shaders_lower_to_the_platform_shader_language() {
 	for (source, parameters) in [(TEXTURED_GRAPH, textured_parameters()), (DYNAMIC_GRAPH, dynamic_parameters())] {
 		let graph = graph(source);
 		let shader = hit_generator()
-			.generate_hit(&graph, &parameters)
+			.generate_hit(&graph, &parameters, &EMBEDDED_MODULES)
 			.expect("test graph should generate a hit shader")
 			.expect("a project with surfel GI should build hit shaders");
 		let root = besl::lex(shader).expect("generated hit program should link");
@@ -1618,7 +1833,7 @@ fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 		main,
 		&MATERIAL_EVALUATION_LAYERS,
 		&MATERIAL_EVALUATION_MODULES,
-		&MATERIAL_EVALUATION_MODULE_FILES,
+		EMBEDDED_MODULES.get(&MATERIAL_EVALUATION_MODULES),
 	)
 	.unwrap();
 	root.add(
@@ -1807,6 +2022,246 @@ fn facing_normal_reverses_only_back_facing_normals_in_the_besl_vm() {
 			("grazing_front", 0.2 / (1.04f32).sqrt()),
 		],
 		"facing_normal does not orient normals by the camera side of the surface plane",
+	);
+}
+
+/// Verifies a mirroring, non-uniformly scaled model keeps a slanted normal square to its surface and pointing out of it,
+/// as the quarry's flipped rocks need to be lit like their unflipped copies.
+#[test]
+fn transform_normal_stays_square_and_outward_under_a_mirroring_non_uniform_scale_in_the_besl_vm() {
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			// The surface spans (1, 1, 0) and z; its outward normal is (1, -1, 0). The model mirrors x and stretches it.
+			let normal: vec3f = normalize(transform_normal(
+				vec3f(0.0 - 3.0, 0.0, 0.0),
+				vec3f(0.0, 2.0, 0.0),
+				vec3f(0.0, 0.0, 2.0),
+				normalize(vec3f(1.0, 0.0 - 1.0, 0.0))
+			));
+			results.x = normal.x;
+			results.y = normal.y;
+			results.z = normal.z;
+		}
+		"#,
+		&mut [],
+		&[],
+		members("f32", &["x", "y", "z"]),
+	);
+	// The world surface spans (-3, 2, 0) and z, so its normal is (-2, -3, 0) or its opposite. The outward one agrees with
+	// the model's image of the outward normal, (-3, -2, 0).
+	let length = 13f32.sqrt();
+	assert_f32_results(
+		&results,
+		&[("x", -2.0 / length), ("y", -3.0 / length), ("z", 0.0)],
+		"transform_normal does not turn normals by the model's inverse transpose",
+	);
+}
+
+/// Verifies the coupled diffuse term keeps the two rules of the lighting design note: diffuse and specular together never
+/// reflect more than arrives, and a rough surface keeps its diffuse light at a grazing view.
+#[test]
+fn coupled_diffuse_conserves_energy_and_lights_rough_surfaces_at_grazing_views_in_the_besl_vm() {
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			// For each roughness and view cosine, the specular albedo toward the viewer plus the diffuse albedo of a white
+			// surface over every light direction: (1 - E(μv)) / (1 - E_avg) times the cosine-weighted integral of
+			// 1 - E(μl), taken with the midpoint rule.
+			let worst_total: f32 = 0.0;
+			for (let r: u32 = 0; r < 11; r = r + 1) {
+				let roughness: f16 = f16(f32(r) / 10.0);
+				let average: f32 = f32(average_specular_albedo(roughness));
+				let integral: f32 = 0.0;
+				for (let l: u32 = 0; l < 64; l = l + 1) {
+					let cosine: f32 = (f32(l) + 0.5) / 64.0;
+					integral = integral + 2.0 * cosine * f32(diffuse_transmission(f16(cosine), roughness)) / 64.0;
+				}
+				for (let v: u32 = 0; v < 9; v = v + 1) {
+					let view: f16 = f16(f32(v) / 8.0);
+					let leaves: f32 = f32(diffuse_transmission(view, roughness));
+					worst_total = max(worst_total, (1.0 - leaves) + leaves * integral / (1.0 - average));
+				}
+			}
+			results.worst_total = worst_total;
+			results.rough_grazing = f32(diffuse_transmission(f16(0.0), f16(0.87)));
+		}
+		"#,
+		&mut [],
+		&[
+			(ENVIRONMENT_BRDF_SOURCE, "environment_brdf"),
+			(DIFFUSE_TRANSMISSION_SOURCE, "diffuse_transmission"),
+			(AVERAGE_SPECULAR_ALBEDO_SOURCE, "average_specular_albedo"),
+		],
+		members("f32", &["worst_total", "rough_grazing"]),
+	);
+	let worst_total = read_f32(&results, "worst_total");
+	// Half precision and the quadratic's fit leave about a percent of slack.
+	assert!(
+		worst_total <= 1.01,
+		"Diffuse and specular together reflect {worst_total} of the arriving light. The most likely cause is an average \
+		 specular albedo that no longer matches the environment BRDF fit."
+	);
+	let rough_grazing = read_f32(&results, "rough_grazing");
+	assert!(
+		rough_grazing > 0.9,
+		"A rough surface seen edge-on keeps only {rough_grazing} of its diffuse light. The most likely cause is a \
+		 diffuse weight that follows the Fresnel factor of the macroscopic normal instead of the specular lobe."
+	);
+}
+
+/// Verifies the light lobe peaks at its analytic value `1 / (π α²)` for the smoothest lobe material evaluation allows,
+/// where the half vector meets the normal, and stays a distribution: its projected integral over the hemisphere is one.
+/// A mirror direction above the geometric surface keeps its whole reflection, one that dips below it keeps less, and
+/// one 0.77 or more below the surface's plane keeps none.
+#[test]
+fn horizon_occlusion_fades_reflections_below_the_geometric_surface_in_the_besl_vm() {
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			let up: vec3f = vec3f(0.0, 1.0, 0.0);
+			results.above = horizon_occlusion(normalize(vec3f(1.0, 1.0, 0.0)), up);
+			results.along = horizon_occlusion(vec3f(1.0, 0.0, 0.0), up);
+			results.below = horizon_occlusion(normalize(vec3f(1.0, 0.0 - 0.3, 0.0)), up);
+			results.under = horizon_occlusion(normalize(vec3f(0.5, 0.0 - 1.0, 0.0)), up);
+		}
+		"#,
+		&mut [],
+		&[(HORIZON_OCCLUSION_SOURCE, "horizon_occlusion")],
+		members("f32", &["above", "along", "below", "under"]),
+	);
+	let below = 1.0 - 1.3 * 0.3 / (1.0f32 + 0.09).sqrt();
+	for (name, expected) in [("above", 1.0), ("along", 1.0), ("below", below * below), ("under", 0.0)] {
+		let value = read_f32(&results, name);
+		assert!(
+			(value - expected).abs() < 0.0001,
+			"A reflection {name} the surface kept {value}, not {expected}. The most likely cause is a fade other than \
+			 Russell's squared fit."
+		);
+	}
+}
+
+/// Verifies cone-cone specular occlusion keeps a whole reflection the open directions hold, none of one they can't, and,
+/// for a lobe wider than the open cone, the share of the lobe's solid angle the cone covers.
+#[test]
+fn cone_specular_occlusion_keeps_the_lobe_share_inside_the_visibility_cone_in_the_besl_vm() {
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			let up: vec3f = vec3f(0.0, 1.0, 0.0);
+			let side: vec3f = vec3f(1.0, 0.0, 0.0);
+			results.open = cone_specular_occlusion(up, normalize(vec3f(1.0, 1.0, 0.0)), 1.0, 0.3);
+			results.closed = cone_specular_occlusion(up, up, 0.0, 0.3);
+			results.smooth_inside = cone_specular_occlusion(up, up, 0.5, 0.1);
+			results.smooth_outside = cone_specular_occlusion(up, side, 0.5, 0.1);
+			results.rough_inside = cone_specular_occlusion(up, up, 0.5, 1.0);
+		}
+		"#,
+		&mut [],
+		&[
+			(FAST_ACOS_SOURCE, "fast_acos"),
+			(CONE_SPECULAR_OCCLUSION_SOURCE, "cone_specular_occlusion"),
+		],
+		members("f32", &["open", "closed", "smooth_inside", "smooth_outside", "rough_inside"]),
+	);
+	// A visibility of one half opens a cone whose cosine is √0.5. A lobe of α = 1 has a cosine of 0.1 and holds that
+	// whole cone, so it keeps the ratio of the two caps.
+	let rough_inside = (1.0 - 0.5f32.sqrt()) / (1.0 - 0.1);
+	for (name, expected) in [
+		("open", 1.0),
+		("closed", 0.0),
+		("smooth_inside", 1.0),
+		("smooth_outside", 0.0),
+		("rough_inside", rough_inside),
+	] {
+		let value = read_f32(&results, name);
+		assert!(
+			(value - expected).abs() < 0.001,
+			"The {name} reflection kept {value}, not {expected}. The most likely cause is a cone angle or cap ratio \
+			 other than the cone-cone approximation's."
+		);
+	}
+}
+
+/// Verifies that GTAO darkens a traced source's light only by the occlusion it finds beyond the source's own: not at
+/// all where it finds less or where no ray reached the environment, and by the ratio of the two where it finds more.
+#[test]
+fn gtao_darkens_traced_light_only_beyond_the_occlusion_its_rays_found_in_the_besl_vm() {
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			results.same = traced_light_occlusion(0.5, 0.5);
+			results.gtao_sees_less = traced_light_occlusion(0.8, 0.5);
+			results.gtao_sees_more = traced_light_occlusion(0.4, 0.8);
+			results.enclosed = traced_light_occlusion(0.6, 0.0);
+		}
+		"#,
+		&mut [],
+		&[(TRACED_LIGHT_OCCLUSION_SOURCE, "traced_light_occlusion")],
+		members("f32", &["same", "gtao_sees_less", "gtao_sees_more", "enclosed"]),
+	);
+	for (name, expected) in [
+		("same", 1.0),
+		("gtao_sees_less", 1.0),
+		("gtao_sees_more", 0.5),
+		("enclosed", 1.0),
+	] {
+		let value = read_f32(&results, name);
+		assert!(
+			(value - expected).abs() < 0.001,
+			"The {name} case kept {value} of the traced light, not {expected}. The most likely cause is GTAO's \
+			 visibility multiplying light that already holds the occlusion its rays found."
+		);
+	}
+}
+
+#[test]
+fn trowbridge_reitz_peaks_finitely_and_integrates_to_one_in_the_besl_vm() {
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			let normal: vec3f = vec3f(0.0, 0.0, 1.0);
+			results.peak = trowbridge_reitz(normal, normal, 0.002025);
+			// A half vector 0.001 radians off the normal, where (n·h)² rounds to one in single precision.
+			results.near_peak = trowbridge_reitz(normal, normalize(vec3f(0.001, 0.0, 1.0)), 0.002025);
+			// The integral of D(h) (n·h) over the hemisphere, by the midpoint rule over the polar angle.
+			let integral: f32 = 0.0;
+			let steps: u32 = 2048;
+			let step: f32 = 1.57079632679 / f32(steps);
+			for (let i: u32 = 0; i < steps; i = i + 1) {
+				let theta: f32 = (f32(i) + 0.5) * step;
+				let half_vector: vec3f = vec3f(sin(theta), 0.0, cos(theta));
+				integral = integral + trowbridge_reitz(normal, half_vector, 0.25) * cos(theta) * sin(theta) * 6.28318530718 * step;
+			}
+			results.integral = integral;
+		}
+		"#,
+		&mut [],
+		&[(TROWBRIDGE_REITZ_SOURCE, "trowbridge_reitz")],
+		members("f32", &["peak", "near_peak", "integral"]),
+	);
+	let alpha = 0.002025f64;
+	let peak = f64::from(read_f32(&results, "peak"));
+	let expected_peak = 1.0 / (std::f64::consts::PI * alpha * alpha);
+	assert!(
+		(peak - expected_peak).abs() < expected_peak * 0.001,
+		"The lobe peaks at {peak}, not {expected_peak}. The most likely cause is a distribution that cancels or \
+		 overflows where the half vector meets the normal."
+	);
+	// The textbook form, in f64, at the same angle.
+	let cosine = 1.0 / (1.0f64 + 0.001 * 0.001).sqrt();
+	let base = cosine * cosine * (alpha * alpha - 1.0) + 1.0;
+	let expected_near_peak = alpha * alpha / (std::f64::consts::PI * base * base);
+	let near_peak = f64::from(read_f32(&results, "near_peak"));
+	assert!(
+		(near_peak - expected_near_peak).abs() < expected_near_peak * 0.001,
+		"The lobe reads {near_peak} 0.001 radians off its peak, not {expected_near_peak}. The most likely cause is \
+		 that 1 - (n·h)² is computed by subtraction, which cancels near the peak."
+	);
+	let integral = read_f32(&results, "integral");
+	assert!(
+		(integral - 1.0).abs() < 0.001,
+		"The lobe's projected integral is {integral}, not 1. The most likely cause is a wrong normalization constant."
 	);
 }
 

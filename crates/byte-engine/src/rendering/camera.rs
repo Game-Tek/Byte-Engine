@@ -1,11 +1,18 @@
-#[derive(Clone, Debug)]
 /// The `Camera` struct provides scene-owned world-space view settings to render sinks and inspection tools.
 ///
 /// Besides the view and exposure, it describes a thin lens: an f-number, a focus distance, and a sensor height, which
 /// together set how far each depth is out of focus. See [`Self::set_f_number`].
+///
+/// Create one on the world with a transform. To change it later, create it again under its own handle, as a
+/// [`CameraUpdate`]. Facet and serde read and write it as the
+/// [`CameraUpdate` payload](/docs/reference/inspector#entities-and-messages).
+#[derive(Clone, Debug, PartialEq, facet::Facet)]
+#[facet(opaque, proxy = SerializableCamera)]
 pub struct Camera {
 	fov: Degrees,
-	aspect_ratio: f32,
+	/// The distances in meters of the nearest and farthest surfaces the camera shows.
+	near: f32,
+	far: f32,
 	f_number: f32,
 	focus_distance: f32,
 	sensor_height: f32,
@@ -18,7 +25,8 @@ impl Camera {
 	pub fn new() -> Self {
 		Self {
 			fov: Degrees::new(45.0),
-			aspect_ratio: 1.0,
+			near: 0.1,
+			far: 100.0,
 			f_number: f32::INFINITY,
 			focus_distance: 10.0,
 			sensor_height: 0.024,
@@ -31,9 +39,33 @@ impl Camera {
 		self.fov
 	}
 
-	/// Returns the camera's width-to-height aspect ratio.
-	pub fn aspect_ratio(&self) -> f32 {
-		self.aspect_ratio
+	/// Returns the distance in meters of the nearest surface the camera shows. See [`Self::set_clip_planes`].
+	pub fn near(&self) -> f32 {
+		self.near
+	}
+
+	/// Returns the distance in meters of the farthest surface the camera shows. See [`Self::set_clip_planes`].
+	pub fn far(&self) -> f32 {
+		self.far
+	}
+
+	/// Sets the clip planes. See [`Self::set_clip_planes`].
+	pub fn with_clip_planes(mut self, near: f32, far: f32) -> Self {
+		self.set_clip_planes(near, far);
+		self
+	}
+
+	/// Sets the distances in meters, along the view direction, of the nearest and farthest surfaces the camera
+	/// shows. Anything closer than `near` or beyond `far` is cut away. The defaults are `0.1` and `100.0`.
+	///
+	/// Shadow cascades and depth of field spread over this range, so keep `far` no larger than the scene needs.
+	pub fn set_clip_planes(&mut self, near: f32, far: f32) {
+		debug_assert!(
+			near > 0.0 && near < far && far.is_finite(),
+			"Camera clip planes are invalid. The most likely cause is a near plane at or below zero, or not closer than the far plane. Pass 0 < near < far."
+		);
+		self.near = near;
+		self.far = far;
 	}
 
 	/// Returns the lens f-number. See [`Self::set_f_number`].
@@ -151,56 +183,6 @@ impl Camera {
 	}
 }
 
-impl Inspectable for Camera {
-	fn as_string(&self) -> String {
-		format!("{:?}", self)
-	}
-
-	fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
-		let number = |value: &str| {
-			value.parse::<f32>().map_err(|e| {
-				format!(
-					"Invalid camera field value. The most likely cause is that {key} is not a number: {e}. Send a decimal number."
-				)
-			})
-		};
-		let positive = |value: &str| {
-			number(value).and_then(|number| {
-				(number > 0.0 && number.is_finite()).then_some(number).ok_or_else(|| {
-					format!("Invalid camera field value. The most likely cause is that {key} is not a positive, finite number. Send a length in meters above zero.")
-				})
-			})
-		};
-		match key {
-			"fov" => {
-				self.set_fov(Degrees::new(number(value)?));
-				Ok(())
-			}
-			// `inf` parses as a pinhole.
-			"f_number" => {
-				let f_number = number(value)?;
-				if f_number > 0.0 {
-					self.set_f_number(f_number);
-					Ok(())
-				} else {
-					Err("Invalid camera field value. The most likely cause is that f_number is not above zero. Send an f-number such as 1.8, or inf for a pinhole.".to_string())
-				}
-			}
-			"focus_distance" => {
-				self.set_focus_distance(positive(value)?);
-				Ok(())
-			}
-			"sensor_height" => {
-				self.set_sensor_height(positive(value)?);
-				Ok(())
-			}
-			_ => Err(format!(
-				"Unknown camera field. The most likely cause is an unsupported inspector key: {key}"
-			)),
-		}
-	}
-}
-
 impl Default for Camera {
 	fn default() -> Self {
 		Self::new()
@@ -209,39 +191,167 @@ impl Default for Camera {
 
 use math::Degrees;
 
-use crate::inspector::Inspectable;
+use crate::core::factory::CreateMessage;
+
+/// The `CameraUpdate` type replaces a camera's settings: a camera created again under the handle of the camera it
+/// replaces. The inspector posts it as `CameraUpdate`.
+pub type CameraUpdate = CreateMessage<Camera>;
+
+/// The `SerializableCamera` struct is the checked reflection boundary of [`Camera`], in the `CameraUpdate` payload's
+/// shape.
+///
+/// A missing field takes a new camera's value, so a payload names only what it changes, and a null `f_number` is a
+/// pinhole, since JSON has no infinity.
+#[derive(facet::Facet, serde::Deserialize, serde::Serialize)]
+#[facet(deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SerializableCamera {
+	#[facet(default = 45.0f32)]
+	#[serde(default = "default_fov")]
+	fov: f32,
+	#[facet(default = 0.1f32)]
+	#[serde(default = "default_near")]
+	near: f32,
+	#[facet(default = 100.0f32)]
+	#[serde(default = "default_far")]
+	far: f32,
+	#[facet(default)]
+	#[serde(default)]
+	f_number: Option<f32>,
+	#[facet(default = 10.0f32)]
+	#[serde(default = "default_focus_distance")]
+	focus_distance: f32,
+	#[facet(default = 0.024f32)]
+	#[serde(default = "default_sensor_height")]
+	sensor_height: f32,
+	#[facet(default)]
+	#[serde(default)]
+	exposure: f32,
+}
+
+fn default_fov() -> f32 {
+	45.0
+}
+
+fn default_near() -> f32 {
+	0.1
+}
+
+fn default_far() -> f32 {
+	100.0
+}
+
+fn default_focus_distance() -> f32 {
+	10.0
+}
+
+fn default_sensor_height() -> f32 {
+	0.024
+}
+
+impl TryFrom<SerializableCamera> for Camera {
+	type Error = String;
+
+	/// Checks every field against the camera's rules before building it, so a payload never reaches the setters'
+	/// assertions.
+	fn try_from(value: SerializableCamera) -> Result<Self, Self::Error> {
+		let invalid = |field: &str, rule: &str| {
+			format!("Camera payload is invalid. The most likely cause is that `{field}` is outside its range. Send {rule}.")
+		};
+		let positive = |number: f32| number > 0.0 && number.is_finite();
+		if !(value.fov > 0.0 && value.fov < 180.0) {
+			return Err(invalid("fov", "a vertical field of view in degrees above 0 and below 180"));
+		}
+		if !(positive(value.near) && positive(value.far) && value.near < value.far) {
+			return Err(invalid(
+				"near` or `far",
+				"a near plane above 0 and below a finite far plane, in meters",
+			));
+		}
+		if value.f_number.is_some_and(|f_number| !positive(f_number)) {
+			return Err(invalid("f_number", "an f-number above 0, or null for a pinhole"));
+		}
+		if !positive(value.focus_distance) {
+			return Err(invalid("focus_distance", "a distance in meters above 0"));
+		}
+		if !positive(value.sensor_height) {
+			return Err(invalid("sensor_height", "a height in meters above 0"));
+		}
+		if !(value.exposure.is_finite() && value.exposure.abs() <= 64.0) {
+			return Err(invalid("exposure", "a number of stops within ±64"));
+		}
+		Ok(Camera::new()
+			.with_fov(Degrees::new(value.fov))
+			.with_clip_planes(value.near, value.far)
+			.with_f_number(value.f_number.unwrap_or(f32::INFINITY))
+			.with_focus_distance(value.focus_distance)
+			.with_sensor_height(value.sensor_height)
+			.with_exposure(value.exposure))
+	}
+}
+
+impl From<&Camera> for SerializableCamera {
+	fn from(camera: &Camera) -> Self {
+		Self {
+			fov: camera.fov.value(),
+			near: camera.near,
+			far: camera.far,
+			f_number: camera.f_number.is_finite().then_some(camera.f_number),
+			focus_distance: camera.focus_distance,
+			sensor_height: camera.sensor_height,
+			exposure: camera.exposure,
+		}
+	}
+}
+
+impl serde::Serialize for Camera {
+	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		SerializableCamera::from(self).serialize(serializer)
+	}
+}
+
+impl<'de> serde::Deserialize<'de> for Camera {
+	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		Camera::try_from(SerializableCamera::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+	}
+}
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 
 	#[test]
-	fn inspector_sets_the_lens() {
-		let mut camera = Camera::new();
-		camera.set("f_number", "1.8").unwrap();
-		camera.set("focus_distance", "2.5").unwrap();
-		camera.set("sensor_height", "0.015").unwrap();
-		assert_eq!(
-			(camera.f_number(), camera.focus_distance(), camera.sensor_height()),
-			(1.8, 2.5, 0.015)
-		);
-		camera.set("f_number", "inf").unwrap();
+	fn a_camera_payload_round_trips_and_names_only_what_it_changes() {
+		let camera = Camera::new()
+			.with_f_number(1.8)
+			.with_exposure(-2.0)
+			.with_clip_planes(0.5, 300.0);
+		let json = serde_json::to_value(&camera).unwrap();
+		assert_eq!(json["f_number"], 1.8f32);
+		assert_eq!(serde_json::from_value::<Camera>(json).unwrap(), camera);
+
+		// A missing field keeps a new camera's value, and null is a pinhole.
+		let camera: Camera = serde_json::from_str(r#"{ "fov": 60, "f_number": null }"#).unwrap();
+		assert_eq!(camera.vertical_fov(), Degrees::new(60.0));
 		assert_eq!(camera.f_number(), f32::INFINITY);
+		assert_eq!((camera.near(), camera.far()), (0.1, 100.0));
+		assert!(serde_json::to_value(&camera).unwrap()["f_number"].is_null());
 	}
 
 	#[test]
-	fn inspector_rejects_lens_values_outside_their_range() {
-		let mut camera = Camera::new();
-		for (key, value) in [
-			("f_number", "0"),
-			("f_number", "NaN"),
-			("focus_distance", "-1"),
-			("focus_distance", "inf"),
-			("sensor_height", "0"),
-			("sensor_height", "wide"),
+	fn a_camera_payload_outside_the_camera_rules_is_rejected() {
+		for payload in [
+			r#"{ "fov": 0 }"#,
+			r#"{ "fov": 180 }"#,
+			r#"{ "near": 0 }"#,
+			r#"{ "near": 5, "far": 5 }"#,
+			r#"{ "f_number": 0 }"#,
+			r#"{ "focus_distance": -1 }"#,
+			r#"{ "sensor_height": 0 }"#,
+			r#"{ "exposure": 65 }"#,
+			r#"{ "aspect_ratio": 1.5 }"#,
 		] {
-			assert!(camera.set(key, value).is_err(), "{key} = {value}");
+			assert!(serde_json::from_str::<Camera>(payload).is_err(), "{payload}");
 		}
-		assert_eq!(camera.f_number(), f32::INFINITY);
 	}
 }

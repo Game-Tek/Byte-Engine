@@ -24,7 +24,7 @@ struct DebugViewPresentShaderData {
 /// The `DebugViewPresentPass` struct tiles one sink's shown debug views into its final output.
 pub(crate) struct DebugViewPresentPass {
 	pass: simple_compute::Pass,
-	parameters: ghi::DynamicBufferHandle<DebugViewPresentShaderData>,
+	parameters: ghi::BufferHandle<DebugViewPresentShaderData>,
 }
 
 impl DebugViewPresentPass {
@@ -40,10 +40,11 @@ impl DebugViewPresentPass {
 			render_pass_builder,
 			simple_compute::Descriptor::new("Debug Views", Self::PIPELINE),
 		);
-		let parameters = render_pass_builder.context().build_dynamic_buffer(
+		let parameters = render_pass_builder.context().build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Debug View Present Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let pass = pipeline.bind(
 			"Debug View Present Descriptor Set",
@@ -67,7 +68,7 @@ impl DebugViewPresentPass {
 		use ghi::frame::Frame as _;
 
 		let command = self.pass.prepare(frame, sink, frame_allocator)?;
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = present_shader_data(taken);
+		*frame.map(self.parameters) = present_shader_data(taken);
 		Some(command)
 	}
 }

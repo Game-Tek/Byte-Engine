@@ -1,0 +1,49 @@
+// Writes each listed instance's work items where the ranges pass placed them.
+
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::work_build::*;
+
+push_constant: push_constant {
+	// The entries of the instance list.
+	entry_count: u32,
+	// The words the work buffer holds. Items the ranges pass placed past them aren't written, and no range draws
+	// them.
+	capacity: u32,
+}
+
+main: fn (input: StageInput, work_build: WorkBuild) -> void {
+	let group: u32 = threadgroup_position();
+	let lane: u32 = input.thread_idx;
+	let entry: u32 = group * WORK_GROUP_ENTRIES + lane;
+	if (entry >= push_constant.entry_count) {
+		return;
+	}
+	let items: u32 = work_build.entry_items[entry];
+	if (items == 0) {
+		return;
+	}
+	// The entry's items follow those of the group's earlier entries.
+	let chunk: u32 = 0;
+	let shared: u32 = 0;
+	for (let earlier: u32 = 0; earlier < lane; earlier = earlier + 1) {
+		let earlier_items: u32 = work_build.entry_items[group * WORK_GROUP_ENTRIES + earlier];
+		chunk = chunk + (earlier_items & 65535);
+		shared = shared + (earlier_items >> 16);
+	}
+	let first: vec2u = work_build.group_items[group];
+	let instance: u32 = work_build.instance_list[entry];
+
+	// Each chunk item names 32 of the instance's meshlets, and each shared item one.
+	for (let index: u32 = 0; index < (items & 65535); index = index + 1) {
+		let item: u32 = first.x + chunk + index;
+		if (item < push_constant.capacity) {
+			work_build.work_items[item] = (instance << 7) | index;
+		}
+	}
+	for (let index: u32 = 0; index < (items >> 16); index = index + 1) {
+		let item: u32 = first.y + shared + index;
+		if (item < push_constant.capacity) {
+			work_build.work_items[item] = (instance << 7) | index;
+		}
+	}
+}

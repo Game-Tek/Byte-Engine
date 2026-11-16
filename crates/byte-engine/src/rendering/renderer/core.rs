@@ -115,6 +115,11 @@ pub struct Renderer {
 	sink_cameras: SmallVec<[(SinkId, Handle); 16]>,
 	/// Cameras and their stable handles. Each one is placed at its handle's shown transform.
 	cameras: SmallVec<[(Handle, Camera); 16]>,
+	/// The newest directional light, which every sink carries to its passes as the sun; see
+	/// [`Self::create_directional_light`].
+	sun_light: Option<(Handle, DirectionalLight)>,
+	/// The newest fog, which every sink carries to its passes; see [`Self::create_fog`].
+	fog: Option<ExponentialHeightFog>,
 
 	render_targets: RenderTargets,
 	#[cfg(debug_assertions)]
@@ -133,6 +138,9 @@ pub struct Renderer {
 	resource_manager: Option<EntityHandle<ResourceManager>>,
 	scene_background_factory: Option<Box<crate::rendering::render_pass::SceneBackgroundFactory>>,
 	scene_backgrounds: SmallVec<[crate::rendering::render_pass::SceneBackground; 16]>,
+	scene_environment_factory: Option<Box<crate::rendering::render_pass::SceneEnvironmentFactory>>,
+	/// The generated environment, built with the first scene sink and shared by every sink after it.
+	scene_environment: Option<crate::rendering::render_pass::SceneEnvironment>,
 	scene_presentation_copies: SmallVec<[(SinkId, ImageBypassPass); 16]>,
 	pending_sink_initializations: SmallVec<[SinkId; 16]>,
 	configuration: ConfigurationPort,
@@ -177,9 +185,10 @@ pub struct Renderer {
 	/// This field drops after renderer subsystems so they finish pending GPU work before their resources are destroyed.
 	context: ghi::implementation::Context,
 
-	/// Display windows, their swapchains, and whether the latest acquisition warned that the window cannot render.
-	/// Declared after `context`, because destroying a swapchain's surface may still talk to its window.
-	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle, bool); 16]>,
+	/// Display windows, their swapchains, whether the latest acquisition warned that the window cannot render, and the
+	/// handle and features the application gave them. Declared after `context`, because destroying a swapchain's
+	/// surface may still talk to its window.
+	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle, bool, Handle, window::Features); 16]>,
 	/// The windowing connection that pumps every window's events. Declared after `windows` so they drop first.
 	app: Option<ghi::window::App>,
 }
@@ -322,6 +331,8 @@ impl Renderer {
 			swapchain_images,
 			sink_cameras: SmallVec::with_capacity(16),
 			cameras: SmallVec::with_capacity(16),
+			sun_light: None,
+			fog: None,
 
 			render_targets: RenderTargets::new(),
 			#[cfg(debug_assertions)]
@@ -334,6 +345,8 @@ impl Renderer {
 			resource_manager: None,
 			scene_background_factory: None,
 			scene_backgrounds: SmallVec::new(),
+			scene_environment_factory: None,
+			scene_environment: None,
 			scene_presentation_copies: SmallVec::with_capacity(16),
 			pending_sink_initializations: SmallVec::with_capacity(16),
 			configuration: render_pass_configuration,
@@ -393,6 +406,7 @@ impl Renderer {
 	fn register_debug_views(&mut self, name: &str, views: Option<(&'static [&'static str], Arc<AtomicU32>)>) {
 		if let Some((views, cell)) = views {
 			self.debug_views.register(name, views, cell);
+			self.debug_view_configuration.declare(self.debug_views.parameters());
 		}
 	}
 
@@ -461,18 +475,20 @@ impl Renderer {
 	/// Only scene nodes get the scene background factory, because only their backgrounds reach
 	/// `self.scene_backgrounds`, where the renderer asks them for frames.
 	fn sink_builder(&mut self, sink_id: SinkId, node: RenderNode, final_output: bool) -> RenderPassBuilder<'_> {
-		let scene_background_factory = match node {
-			RenderNode::Scene(_) => self.scene_background_factory.as_deref(),
-			RenderNode::Pass(_) | RenderNode::Presentation | RenderNode::DebugView => None,
+		let (scene_background_factory, scene_environment) = match node {
+			RenderNode::Scene(_) => (self.scene_background_factory.as_deref(), self.scene_environment.clone()),
+			RenderNode::Pass(_) | RenderNode::Presentation | RenderNode::DebugView => (None, None),
 		};
 		RenderPassBuilder::new(
 			&mut self.context,
+			self.graphics_queue_handle,
 			&mut self.render_targets,
 			&mut self.render_pass_states,
 			sink_id,
 			self.windows[sink_id].1,
 			self.pipeline_compilation_client.clone(),
 			scene_background_factory,
+			scene_environment,
 			node,
 			final_output,
 			self.debug_view_settings,
@@ -486,6 +502,7 @@ impl Renderer {
 		pipeline_manager_id: PipelineManagerId,
 		sink_id: SinkId,
 	) {
+		self.create_scene_environment(pipeline_manager_id, sink_id);
 		let mut builder = self.sink_builder(sink_id, RenderNode::Scene(pipeline_manager_id), false);
 		pipeline_manager.create_sink(sink_id, &mut builder);
 		builder.record_node();
@@ -498,6 +515,21 @@ impl Renderer {
 		if let Some(counter) = self.create_gpu_counter("scene", pipeline_manager.name(), sink_id) {
 			self.scene_counters.push((pipeline_manager_id, sink_id, counter));
 		}
+	}
+
+	/// Builds the registered scene environment the first time a scene node needs it, so every sink after shares it.
+	///
+	/// It builds with the scene node's builder, so its counters report next to that node's stages.
+	fn create_scene_environment(&mut self, pipeline_manager_id: PipelineManagerId, sink_id: SinkId) {
+		// The factory runs once; taking it leaves later sinks the environment it built.
+		let Some(factory) = self.scene_environment_factory.take() else {
+			return;
+		};
+		let mut builder = self.sink_builder(sink_id, RenderNode::Scene(pipeline_manager_id), false);
+		let environment = factory(&mut builder);
+		let stage_counters = builder.take_gpu_counters();
+		self.adopt_stage_counters(stage_counters, sink_id);
+		self.scene_environment = Some(environment);
 	}
 
 	fn initialize_scene_sink(&mut self, sink_id: SinkId) {
@@ -538,6 +570,26 @@ impl Renderer {
 			"Render graph is already closed. The most likely cause is that a scene background was registered after creating a window. Register it before creating the first window."
 		);
 		self.scene_background_factory = Some(Box::new(factory));
+	}
+
+	/// Registers the environment the scene lights with while it selects no [`crate::rendering::Environment`], such as
+	/// one the atmosphere sky generates.
+	///
+	/// Register it before creating a window. The renderer builds it once, with the first scene sink, and every scene
+	/// pipeline takes it with [`RenderPassBuilder::scene_environment`]. Its [`RenderPass::name`] controls it like a
+	/// post-scene pass. A later registration replaces an earlier one.
+	pub fn set_scene_environment<F>(&mut self, factory: F)
+	where
+		F: for<'builder, 'resources> Fn(
+				&'builder mut RenderPassBuilder<'resources>,
+			) -> crate::rendering::render_pass::SceneEnvironment
+			+ 'static,
+	{
+		assert!(
+			self.windows.is_empty(),
+			"Render graph is already closed. The most likely cause is that a scene environment was registered after creating a window. Register it before creating the first window."
+		);
+		self.scene_environment_factory = Some(Box::new(factory));
 	}
 
 	/// Registers a render pass factory that will be instantiated for every future sink.
@@ -692,6 +744,7 @@ impl Renderer {
 		}
 		self.registrations = registrations;
 		self.fusions = FusionCatalog::Planned(planned);
+		declare_render_passes(&self.configuration, &self.render_pass_states);
 
 		// A scene-only graph has no terminal pass that can receive the swapchain directly. An empty graph also has
 		// no scene color to copy, so presenting the acquired swapchain is the complete frame operation in that case.
@@ -749,11 +802,37 @@ impl Renderer {
 		self.app.as_mut().map_or(Ok(()), |app| app.wake_on_hid_changes(monitor))
 	}
 
+	/// Gives the window created with `handle` the features `features`, applying the ones that change at runtime.
+	///
+	/// Only [`window::Features::CAPTURE_CURSOR`] changes on an open window; a change to another feature is logged and
+	/// left out.
+	pub fn set_window_features(&mut self, handle: Handle, features: window::Features) {
+		let Some((window, _, _, _, current)) = self.windows.iter_mut().find(|(.., window, _)| *window == handle) else {
+			log::warn!(
+				"Window features were not changed. The most likely cause is a handle that names no open window, or a window the renderer hasn't opened yet. Send the change after the tick that created the window, with the handle its creation returned."
+			);
+			return;
+		};
+		let fixed = (features ^ *current) & !window::Features::CAPTURE_CURSOR;
+		if !fixed.is_empty() {
+			log::warn!(
+				"Window features {fixed:?} were not changed. The most likely cause is that only cursor capture changes on an open window. Create the window with these features instead."
+			);
+		}
+		let captures = features.contains(window::Features::CAPTURE_CURSOR);
+		if captures != current.contains(window::Features::CAPTURE_CURSOR) {
+			if let Some(app) = &mut self.app {
+				app.set_cursor_capture(window, captures);
+			}
+			current.set(window::Features::CAPTURE_CURSOR, captures);
+		}
+	}
+
 	/// Caps the presentation rate by setting the minimum time between presented frames on every window,
 	/// including windows created later. `None` removes the cap so frames present on every refresh.
 	pub fn set_present_interval(&mut self, interval: Option<std::time::Duration>) {
 		self.present_interval = interval;
-		for (_window, swapchain, _) in &self.windows {
+		for (_window, swapchain, ..) in &self.windows {
 			self.context.set_present_interval(*swapchain, interval);
 		}
 	}
@@ -815,7 +894,7 @@ impl Renderer {
 		let frame = ghi::queue::FrameRequest::new(self.started_frame_count, self.render_finished_synchronizer);
 		let mut present_time = None;
 
-		for (index, (window, swapchain, warned)) in self.windows.iter_mut().enumerate() {
+		for (index, (window, swapchain, warned, ..)) in self.windows.iter_mut().enumerate() {
 			if !undecided(&self.acquisitions.1, index) {
 				continue;
 			}
@@ -826,9 +905,9 @@ impl Renderer {
 
 			let acquisition = self.context.acquire_swapchain_image(frame, *swapchain);
 			if index == 0 {
-				present_time = acquisition.as_ref().and_then(|acquisition| {
-					acquisition.target_present_time().or_else(|| acquisition.present_time())
-				});
+				present_time = acquisition
+					.as_ref()
+					.and_then(|acquisition| acquisition.target_present_time().or_else(|| acquisition.present_time()));
 			}
 
 			// A window without a usable image skips the frame. Say so once, and again only after it recovers.
@@ -881,6 +960,9 @@ impl Renderer {
 		}
 		for background in &self.scene_backgrounds {
 			needs_frame |= background.needs_frame();
+		}
+		if let Some(environment) = &self.scene_environment {
+			needs_frame |= environment.needs_frame();
 		}
 		needs_frame
 	}
@@ -1026,9 +1108,20 @@ impl Renderer {
 						let transform = transforms.get(*camera_handle).cloned().unwrap_or_default();
 						let view = make_perspective_view_from_camera(camera, &transform, extent);
 						let sink = Sink::new(view, extent, *sink_id)
+							.with_camera(*camera_handle)
 							.with_exposure_scale(camera.exposure_scale())
 							.with_lens(camera.f_number(), camera.focus_distance(), camera.sensor_height())
 							.with_frame_interval(frame_interval);
+						let sink = match &self.sun_light {
+							Some((handle, light)) => {
+								sink.with_sun(Sun::new(light, &transforms.get(*handle).cloned().unwrap_or_default()))
+							}
+							None => sink,
+						};
+						let sink = match self.fog {
+							Some(fog) => sink.with_fog(fog),
+							None => sink,
+						};
 						let samples_lens = self
 							.render_passes
 							.iter()
@@ -1145,7 +1238,7 @@ impl Renderer {
 							Ok(ResolvedScreenshotCapture::AfterScene { target }) => command_buffer_recording.transfer_texture(*target),
 							// No pass writes the previous frame's copy, so any point in the frame reads the same data.
 							Ok(ResolvedScreenshotCapture::PreviousFrame { target }) => {
-								command_buffer_recording.transfer_texture_with_frame(*target, -1)
+								command_buffer_recording.transfer_texture_with_frame((*target).into(), -1)
 							}
 							_ => continue,
 						};
@@ -1270,6 +1363,11 @@ impl Renderer {
 		Ok(ResolvedScreenshotCapture::AfterPass { pass: pass_id, target })
 	}
 
+	/// Returns the queue frames record on, where setup work records its one-time uploads.
+	pub fn graphics_queue(&self) -> ghi::QueueHandle {
+		self.graphics_queue_handle
+	}
+
 	/// Borrows the render thread's GHI context for setup work that must run before the first frame.
 	pub fn context_mut(&mut self) -> &mut ghi::implementation::Context {
 		&mut self.context
@@ -1280,11 +1378,13 @@ impl Renderer {
 		self.pipeline_compilation_client.clone()
 	}
 
-	/// Creates the swapchain and sink state for a window.
+	/// Creates the swapchain and sink state for a window created with `handle`.
 	///
 	/// Next, create a camera with [`Self::create_camera`] and associate it with the
-	/// sink through the application or world integration.
-	pub fn create_window(&mut self, window: Window) {
+	/// sink through the application or world integration. Change its features later with
+	/// [`Self::set_window_features`].
+	pub fn create_window(&mut self, handle: Handle, window: Window) {
+		let requested_features = window.features();
 		let name = window.name();
 		let extent = window.extent();
 		let camera = window.camera();
@@ -1328,7 +1428,7 @@ impl Renderer {
 				}
 
 				let sink_id = self.windows.len();
-				self.windows.push((window, swapchain_handle, false));
+				self.windows.push((window, swapchain_handle, false, handle, requested_features));
 				self.redraw_requested = true;
 
 				// The first window closes the render graph, so the fusions its steps group with can be read.
@@ -1363,6 +1463,24 @@ impl Renderer {
 		} else {
 			self.cameras.push((handle, camera));
 		}
+		self.redraw_requested = true;
+	}
+
+	/// Makes `light` the sun, replacing the previous one: the newest directional light is the sun.
+	///
+	/// Every sink then carries it to its passes through [`Sink::sun`], placed with the transform each frame shows,
+	/// so a window's sky and fog see the sun however late the window's passes were built.
+	pub fn create_directional_light(&mut self, handle: Handle, light: DirectionalLight) {
+		self.sun_light = Some((handle, light));
+		self.redraw_requested = true;
+	}
+
+	/// Makes `fog` the scene's fog, replacing the previous one: the newest fog is the one shown.
+	///
+	/// Every sink then carries it to its passes through [`Sink::fog`], so a window's fog pass sees it however late the
+	/// window's passes were built.
+	pub fn create_fog(&mut self, fog: ExponentialHeightFog) {
+		self.fog = Some(fog);
 		self.redraw_requested = true;
 	}
 }
@@ -1433,7 +1551,7 @@ pub(super) enum ResolvedScreenshotCapture {
 	},
 	/// The copy of a history target that the previous frame wrote.
 	PreviousFrame {
-		target: ghi::DynamicImageHandle,
+		target: ghi::ImageHandle,
 	},
 }
 
@@ -1465,7 +1583,9 @@ use tracing::debug_span;
 use utils::{Box, Extent};
 
 use super::{
-	configuration::{PendingRenderPassConfiguration, apply_render_pass_configuration, set_render_pass_state},
+	configuration::{
+		PendingRenderPassConfiguration, apply_render_pass_configuration, declare_render_passes, set_render_pass_state,
+	},
 	targets::{FirstUse, RenderNode, RenderTargets},
 };
 use crate::rendering::{
@@ -1485,7 +1605,8 @@ use crate::{
 	core::{EntityHandle, factory::Handle},
 	metrics::{MetricId, MetricKind, Metrics},
 	rendering::{
-		Camera, PipelineManagerServer, ShownTransforms, Sink, make_perspective_view_from_camera,
+		Camera, DirectionalLight, ExponentialHeightFog, PipelineManagerServer, ShownTransforms, Sink, Sun,
+		make_perspective_view_from_camera,
 		pipeline_manager::PipelineManager,
 		render_pass::RenderPassReturn,
 		window::{self, Window},

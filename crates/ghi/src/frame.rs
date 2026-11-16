@@ -3,8 +3,8 @@ use std::time::Instant;
 use utils::Extent;
 
 use crate::{
-	BaseBufferHandle, BaseImageHandle, BufferHandle, CommandBufferHandle, DynamicBufferHandle, PresentKey,
-	SwapchainHandle, command_buffer::CommandBufferRecording, descriptors,
+	BaseImageHandle, BufferHandle, CommandBufferHandle, PresentKey, SwapchainHandle, command_buffer::CommandBufferRecording,
+	descriptors,
 };
 
 /// The `Frame` trait scopes frame-local GPU work so per-frame resources stay tied to an active frame.
@@ -22,45 +22,35 @@ where
 	/// Returns the frame key for the active frame.
 	fn key(&self) -> crate::FrameKey;
 
-	/// Returns a mutable view into CPU-visible buffer contents for the active frame.
+	/// Returns this frame's copy of a buffer the CPU writes.
 	///
-	/// The buffer has one copy that every frame in flight reads, so earlier frames may still read it on the GPU.
-	/// Write only ranges no submitted frame reads. For data that changes while frames are in flight, create a
-	/// dynamic buffer and write it with [`Self::get_mut_dynamic_buffer_slice`] instead.
-	fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T;
-
-	/// Flushes or uploads pending writes for the provided buffer.
+	/// Starting the frame waited for the last frame that used this copy, so no submitted work reads it. Work
+	/// submitted after the write reads what the CPU wrote, with no further call. A copy keeps what was last written
+	/// to it, so write everything the frame reads.
 	///
-	/// For a dynamic buffer this uploads the copy this frame writes.
-	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>);
-
-	/// Returns mutable CPU access to an image's backing bytes for the active frame.
-	fn get_texture_slice_mut(&mut self, texture_handle: BaseImageHandle) -> &mut [u8];
-
-	/// Flushes or uploads pending writes for the provided image.
-	fn sync_texture(&mut self, image_handle: BaseImageHandle);
-
-	/// Uploads only the given rectangle from the image's existing CPU backing bytes.
+	/// # Panics
 	///
-	/// Supports uncompressed 2D color images with one layer at mip zero. Rows keep the
-	/// full image's pitch; untouched texels retain their GPU contents. Initialize
-	/// the whole image with [`Self::sync_texture`] before using partial updates.
-	fn sync_texture_region(&mut self, image_handle: BaseImageHandle, region: crate::image::Region);
+	/// Panics unless the buffer was built with [`crate::HostAccess::Write`] and [`crate::Copies::PerFrame`].
+	fn map<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T;
+
+	/// Returns the copy of a buffer the CPU reads that the frame which completed when this frame started wrote.
+	///
+	/// Starting a frame waits for the frame of the same sequence before it, so that frame's copy holds what its
+	/// commands wrote until this frame's commands run. Returns `None` while the first frames of each sequence start.
+	///
+	/// # Panics
+	///
+	/// Panics unless the buffer was built with [`crate::HostAccess::Read`] and [`crate::Copies::PerFrame`].
+	fn read<T: ?Sized + crate::buffer::BufferContents>(&self, buffer_handle: BufferHandle<T>) -> Option<&T>;
 
 	/// Writes descriptor set updates during the active frame.
 	fn write(&mut self, descriptor_set_writes: &[descriptors::DescriptorWrite]);
 
-	/// Returns a mutable reference to this frame's copy of the dynamic buffer's contents.
+	/// Resizes a buffer to `length` elements, replacing every copy with a new one that starts zero-initialized.
 	///
-	/// Every frame in flight has its own copy, so writing it never races an earlier frame. A copy keeps what its
-	/// last frame wrote, so write everything the frame reads, or track which copies already hold a change with
-	/// [`crate::FrameKey::sequence_index`].
-	fn get_mut_dynamic_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T;
-
-	/// Returns a mutable reference to the dynamic image's contents for the current frame.
-	fn get_mut_dynamic_texture_slice(&mut self, image_handle: BaseImageHandle) -> &mut [u8] {
-		self.get_texture_slice_mut(image_handle)
-	}
+	/// Work recorded before the resize keeps the old copies until it completes, so a frame can resize a buffer and
+	/// then map its new copy. Next, write it with [`Self::map`].
+	fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>, length: usize);
 
 	/// Resizes an image to the specified extent.
 	/// This method has no effect when the image already has the requested extent.

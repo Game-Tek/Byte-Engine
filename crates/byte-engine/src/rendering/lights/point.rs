@@ -1,4 +1,4 @@
-use super::{LightColor, LocalEmission, PhotometricError, PhotometricIntensity};
+use super::{LightColor, LocalEmission, PhotometricError, PhotometricIntensity, checked_shadow_range, serde_through_proxy};
 use crate::{
 	inspector::Inspectable,
 	rendering::lights::{Light, LightClasses},
@@ -6,58 +6,93 @@ use crate::{
 
 /// The `PointLight` struct provides photometric settings for omnidirectional local emitters.
 ///
-/// Use the associated [`crate::gameplay::Transform`] to place the light and orient an optional IES profile.
-#[derive(Debug, Clone, PartialEq)]
+/// Use the associated [`crate::gameplay::Transform`] to place the light and orient an optional IES profile. It keeps
+/// the color and intensity it was authored with, which facet and serde read and write as a level's
+/// [`point_light` kind](/docs/reference/levels#lights) and the inspector's `PointLightUpdate` payload. To change it
+/// later, create it again under its own handle.
+#[derive(Debug, Clone, PartialEq, facet::Facet)]
+#[facet(opaque, proxy = SerializablePointLight)]
 pub struct PointLight {
-	/// The color, optional IES profile, and shadow-range overrides every local light shares.
-	pub emission: LocalEmission,
+	color: LightColor,
+	intensity: PhotometricIntensity,
+	/// What the color and intensity resolve to, with the shadow-range overrides every local light shares.
+	pub(crate) emission: LocalEmission,
 }
 
 impl PointLight {
-	/// Creates a point light whose GPU color is luminous intensity in candela.
+	/// Creates a point light of `color` and `intensity`, whose GPU color is luminous intensity in candela.
 	///
-	/// The renderer derives cube-shadow coverage from the resolved luminous intensity. Use
-	/// [`Self::with_shadow_near`], [`Self::with_shadow_far`], or [`Self::with_shadow_range`] to
-	/// override that range. Next, pass the returned light to
-	/// [`crate::core::factory::Creator::create`] on the world scope ([`crate::core::message_bus::MessageScope`]) to make it
-	/// available to the active rendering pipeline.
+	/// An intensity of [`PhotometricIntensity::Ies`] takes the light's intensity and angular distribution from a baked
+	/// IES profile, tinted by `color`. The renderer derives cube-shadow coverage from the resolved luminous intensity.
+	/// Use [`Self::with_shadow_near`], [`Self::with_shadow_far`], or [`Self::with_shadow_range`] to override that
+	/// range. Next, pass the returned light to [`crate::core::factory::Creator::create`] on the world scope
+	/// ([`crate::core::message_bus::MessageScope`]) to make it available to the active rendering pipeline.
 	///
 	/// # Errors
 	///
-	/// Returns [`PhotometricError`] when the color or intensity contains an invalid physical value.
+	/// Returns [`PhotometricError`] when the color or intensity contains an invalid physical value, or the IES profile
+	/// is invalid: see [`super::IesProfile::new`].
 	pub fn new(color: LightColor, intensity: PhotometricIntensity) -> Result<Self, PhotometricError> {
-		let chromaticity = color.resolve()?;
+		let emission = LocalEmission::new(color, &intensity, PhotometricIntensity::point_candela)?;
 		Ok(Self {
-			emission: LocalEmission::uniform(chromaticity, intensity.point_candela()?),
+			color,
+			intensity,
+			emission,
 		})
 	}
 
-	/// Creates a point light whose calibrated intensity and angular distribution come from a baked IES profile.
-	///
-	/// The associated [`crate::gameplay::Transform`] maps local `+Z` to the emission axis, local `+X`
-	/// to the IES C0 tangent, and local `+Y` to the C90 tangent. `color` tints the profile with unit
-	/// luminance. `dimmer` is a
-	/// linear fraction from `0.0` for off through `1.0` for the measured output. The visibility pipeline
-	/// resolves `ies_profile_resource_id` asynchronously and applies the image's dimmed candela scale
-	/// after it reaches the GPU. Until then, the light uses its dimmed unit-luminance color as a fallback.
-	///
-	/// Next, pass the returned light to [`crate::core::factory::Creator::create`] on
-	/// the world scope ([`crate::core::message_bus::MessageScope`]).
-	///
-	/// # Errors
-	///
-	/// Returns [`PhotometricError`] when `color` cannot resolve to a physical chromaticity, or when the profile is
-	/// invalid: see [`super::IesProfile::new`].
-	pub fn new_ies(
-		color: LightColor,
-		dimmer: f32,
-		ies_profile_resource_id: impl Into<String>,
-	) -> Result<Self, PhotometricError> {
-		Ok(Self {
-			emission: LocalEmission::ies(color, dimmer, ies_profile_resource_id)?,
-		})
+	/// Returns the color the light was authored with.
+	pub fn color(&self) -> LightColor {
+		self.color
+	}
+
+	/// Returns the intensity the light was authored with.
+	pub fn intensity(&self) -> &PhotometricIntensity {
+		&self.intensity
 	}
 }
+
+/// The `SerializablePointLight` struct is the checked reflection boundary of [`PointLight`], in the `point_light`
+/// payload's shape.
+#[derive(facet::Facet, serde::Serialize, serde::Deserialize)]
+#[facet(deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SerializablePointLight {
+	color: LightColor,
+	intensity: PhotometricIntensity,
+	#[facet(default)]
+	#[serde(default)]
+	shadow_near: Option<f32>,
+	#[facet(default)]
+	#[serde(default)]
+	shadow_far: Option<f32>,
+}
+
+impl TryFrom<SerializablePointLight> for PointLight {
+	type Error = String;
+
+	/// Checks the payload against the light's rules before building it.
+	fn try_from(value: SerializablePointLight) -> Result<Self, Self::Error> {
+		checked_shadow_range(value.shadow_near, value.shadow_far).map_err(|error| error.to_string())?;
+		let mut light = PointLight::new(value.color, value.intensity).map_err(|error| error.to_string())?;
+		light.emission.shadow_near_override = value.shadow_near;
+		light.emission.shadow_far_override = value.shadow_far;
+		Ok(light)
+	}
+}
+
+impl From<&PointLight> for SerializablePointLight {
+	fn from(light: &PointLight) -> Self {
+		Self {
+			color: light.color,
+			intensity: light.intensity.clone(),
+			shadow_near: light.emission.shadow_near_override(),
+			shadow_far: light.emission.shadow_far_override(),
+		}
+	}
+}
+
+serde_through_proxy!(PointLight, SerializablePointLight);
 
 impl Light for PointLight {
 	fn class(&self) -> LightClasses {

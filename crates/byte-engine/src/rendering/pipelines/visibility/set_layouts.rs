@@ -52,7 +52,18 @@ layout!(
 layout!(GTAO, "layouts::gtao::Gtao");
 layout!(GTAO_BLUR, "layouts::gtao_blur::GtaoBlur");
 layout!(GTAO_UPSCALE, "layouts::gtao_upscale::GtaoUpscale");
+layout!(
+	/// The per-sink set of the subsurface pass, which spreads subsurface pixels' diffuse light.
+	SUBSURFACE,
+	"layouts::subsurface::Subsurface"
+);
 layout!(DEPTH_PYRAMID, "layouts::depth_pyramid::DepthPyramid");
+layout!(BACKDROP, "layouts::backdrop::Backdrop");
+layout!(
+	/// The per-sink set the screen scene query reads find the instance under each queried pixel through.
+	SCREEN_QUERY,
+	"layouts::screen_query::ScreenQuery"
+);
 layout!(HIZ_BASE, "layouts::hiz_base::HizBase");
 layout!(HIZ_TAIL, "layouts::hiz_tail::HizTail");
 layout!(SHADOW_DEPTH_PYRAMID, "layouts::shadow_depth_pyramid::ShadowDepthPyramid");
@@ -69,6 +80,12 @@ layout!(
 );
 layout!(SKINNING, "layouts::skinning::Skinning");
 layout!(
+	/// The set the passes that build the frame's mesh work read the instance list and write the work items through.
+	/// See [`super::mesh_dispatch::MeshWork`].
+	WORK_BUILD,
+	"layouts::work_build::WorkBuild"
+);
+layout!(
 	/// The screen view constants and linear depth pyramid a pass that marches screen-space rays reads.
 	SCREEN_TRACE,
 	"layouts::screen_trace::ScreenTrace"
@@ -82,6 +99,21 @@ layout!(SSGI_TRACE, "layouts::ssgi_trace::SsgiTrace");
 layout!(SSGI_TEMPORAL, "layouts::ssgi_temporal::SsgiTemporal");
 layout!(CONTACT_SHADOWS, "layouts::contact_shadows::ContactShadows");
 layout!(SUN_VISIBILITY, "layouts::sun_visibility::SunVisibility");
+layout!(
+	/// The set the virtual shadow map's page passes and page draw keep the page table and pool through.
+	VIRTUAL_SHADOW_PAGES,
+	"layouts::virtual_shadows::VirtualShadowPages"
+);
+layout!(
+	/// The set the sun visibility resolve samples the virtual shadow map through.
+	VIRTUAL_SHADOW_SAMPLING,
+	"layouts::virtual_shadows::VirtualShadowSampling"
+);
+layout!(
+	/// The per-sink set the virtual shadow map's marking reads the sink's receivers through.
+	VIRTUAL_SHADOW_MARK,
+	"layouts::virtual_shadows::VirtualShadowMark"
+);
 layout!(
 	/// The frame-wide surfel GI set: the surfel pool, its grid, the scene's light table, and the settings every surfel
 	/// stage shares.
@@ -140,7 +172,7 @@ mod tests {
 	use super::super::layout::{ShaderMeshLevel, ShaderMeshletData};
 	use super::super::render_pass::{FogLightShaderParameters, ScreenViewData};
 	use super::super::shader_data::{
-		LightClusterParameters, LightingData, MaterialData, ReflectionShaderParameters, ShaderMesh, ShaderViewData,
+		LightClusterParameters, LightingData, MaterialData, ReflectionShaderParameters, ShaderFrame, ShaderMesh, ShaderViewData,
 	};
 	use super::*;
 
@@ -156,6 +188,7 @@ mod tests {
 
 		// A table reflects the stride of one record, and a single record reflects its own size.
 		assert_eq!(stride(&SCENE, "views"), size_of::<ShaderViewData>());
+		assert_eq!(stride(&SCENE, "frame"), size_of::<ShaderFrame>());
 		assert_eq!(stride(&SCENE, "meshes"), size_of::<ShaderMesh>());
 		assert_eq!(stride(&SCENE, "meshlets"), size_of::<ShaderMeshletData>());
 		assert_eq!(stride(&SCENE, "materials"), size_of::<MaterialData>());
@@ -189,7 +222,10 @@ mod tests {
 			&GTAO,
 			&GTAO_BLUR,
 			&GTAO_UPSCALE,
+			&SUBSURFACE,
 			&DEPTH_PYRAMID,
+			&BACKDROP,
+			&SCREEN_QUERY,
 			&HIZ_BASE,
 			&HIZ_TAIL,
 			&SHADOW_DEPTH_PYRAMID,
@@ -203,6 +239,9 @@ mod tests {
 			&SSGI_TEMPORAL,
 			&CONTACT_SHADOWS,
 			&SUN_VISIBILITY,
+			&VIRTUAL_SHADOW_PAGES,
+			&VIRTUAL_SHADOW_SAMPLING,
+			&VIRTUAL_SHADOW_MARK,
 			&SURFEL_GI,
 			&SURFEL_RESOLVE,
 			&SURFEL_TEMPORAL,

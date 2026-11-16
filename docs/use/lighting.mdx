@@ -46,6 +46,12 @@ world.create(sunlight);
 Light constructors return `PhotometricError` when a color, magnitude, distance, or area is zero,
 negative, or not finite. A Kelvin value must be from 1,000 K through 40,000 K.
 
+Give a sun the lux and color it has on the ground, where a light meter would read it: about
+100,000 lux at 5,500 to 6,000 K at noon, and far less and warmer near sunset. The
+[atmosphere sky](/docs/reference/lighting#sky-and-calibration) works out the sunlight above the air
+from that, so lower and warm the light as the sun sets. A low sun left at noon values gives a sky
+that's too bright and too blue.
+
 ## Choose a color
 
 Use `LightColor::TemperatureKelvin` for a blackbody-style illuminant such as daylight, a tungsten
@@ -252,6 +258,15 @@ they cover, and the lights that don't fit stay lit without shadows. The
 [shadow map reference](/docs/reference/rendering#shadow-maps) gives the costs and
 the order.
 
+The sun can cast its shadow through virtual shadow maps instead of cascades.
+They keep sharp shadows from near the camera to far away, and redraw only what
+changed. Set `render.directional-shadows.technique` to `virtual` at application
+startup, and `render.directional-shadows.pool-pages` to the pages of 64 KiB the
+sun may hold, 4,096 by default. Only the first directional light casts a shadow
+this way, and transparent surfaces and fog are lit by it without a shadow. The
+[virtual shadow map reference](/docs/reference/rendering#virtual-shadow-maps)
+gives the rules.
+
 ## Set camera exposure
 
 Real-world light values are far brighter than a display can show, so pair them with a matching
@@ -275,6 +290,10 @@ Later passes, such as bloom and tone mapping, receive exposed light. Scenes draw
 pipelines ignore exposure. The camera's f-number doesn't change it.
 
 ## Calibrate the environment map
+
+A scene with the atmosphere sky and no `Environment` takes its sky light from the sky itself, in the
+sky's own units, so it needs no calibration. Create an `Environment` when you want a baked map to
+light the scene instead.
 
 Environment maps store light in arbitrary units. Give the environment the illuminance it should
 deliver to an upward-facing surface, so it lights the scene in the same units as your lights:
@@ -497,14 +516,14 @@ Vulkan. The application that reads the lightmap doesn't.
 Height fog fills the scene with mist that's thickest near the ground and thins out with altitude,
 like rain mist, an overcast day, or haze in a valley. Install the fog pass after the scene pipeline
 and particles, and before antialiasing, lens flare, bloom, and tone mapping, so bright light glows
-through the mist. Then create a fog in a tick after the one that creates the window:
+through the mist. Then create a fog, in any tick:
 
 ```rust
 use byte_engine::rendering::{ExponentialHeightFog, FogLayer};
 
 byte_engine::application::graphics::setup_exponential_height_fog_render_pass(&mut app);
 
-// Later, once the window exists: rain mist that hides about 40 % of a surface 10 m away.
+// Rain mist that hides about 40 % of a surface 10 m away. The newest fog is the one shown.
 app.world().factory::<ExponentialHeightFog>().create(
 	ExponentialHeightFog::new(FogLayer::new(0.06).with_height_falloff(0.1))
 		.with_ambient_illuminance(15_000.0),

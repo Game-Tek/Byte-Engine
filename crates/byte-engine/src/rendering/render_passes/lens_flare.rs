@@ -95,8 +95,8 @@ struct LensFlareShaderData {
 /// the `render.pass.lens-flare` parameter.
 pub struct LensFlarePass {
 	settings: LensFlarePassSettings,
-	prefilter_parameters: ghi::DynamicBufferHandle<BloomShaderData>,
-	feature_parameters: ghi::DynamicBufferHandle<LensFlareShaderData>,
+	prefilter_parameters: ghi::BufferHandle<BloomShaderData>,
+	feature_parameters: ghi::BufferHandle<LensFlareShaderData>,
 	extract_pass: simple_tile::Pass,
 	downsample_pass: simple_compute::Pass,
 	features_pass: simple_compute::Pass,
@@ -128,9 +128,7 @@ impl LensFlarePass {
 		// The prefilter writes the half-resolution image as a tile output and compute dispatches write the others.
 		let output_uses = simple_tile::output_uses(render_pass_builder.context());
 		let flare_target = |name, write_uses| {
-			ghi::image::Builder::new(crate::rendering::SCENE_COLOR_FORMAT, ghi::Uses::Image | write_uses)
-				.name(name)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+			ghi::image::Builder::new(crate::rendering::SCENE_COLOR_FORMAT, ghi::Uses::Image | write_uses).name(name)
 		};
 		let half_image = render_pass_builder
 			.create_scaled_render_target(flare_target("Lens Flare Half Resolution", output_uses), HALF_RESOLUTION);
@@ -142,15 +140,17 @@ impl LensFlarePass {
 			.create_scaled_render_target(flare_target("Lens Flare Features", ghi::Uses::Storage), QUARTER_RESOLUTION);
 
 		let context = render_pass_builder.context();
-		let prefilter_parameters = context.build_dynamic_buffer(
+		let prefilter_parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Lens Flare Prefilter Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
-		let feature_parameters = context.build_dynamic_buffer(
+		let feature_parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Lens Flare Feature Parameters")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
 		);
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 
@@ -238,7 +238,7 @@ impl LensFlarePass {
 	fn write_parameters(&self, frame: &mut ghi::implementation::Frame) {
 		let settings = self.settings;
 
-		let prefilter = frame.get_mut_dynamic_buffer_slice(self.prefilter_parameters);
+		let prefilter = frame.map(self.prefilter_parameters);
 		prefilter.prefilter = [
 			settings.threshold.max(0.0),
 			settings.soft_knee.clamp(0.0, 1.0),
@@ -247,7 +247,7 @@ impl LensFlarePass {
 		];
 		prefilter.filter = [0.0; 4];
 
-		let features = frame.get_mut_dynamic_buffer_slice(self.feature_parameters);
+		let features = frame.map(self.feature_parameters);
 		features.ghosts = [
 			settings.resolved_ghost_count() as f32,
 			settings.ghost_spacing,

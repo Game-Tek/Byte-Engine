@@ -6,7 +6,7 @@
 
 use byte_engine::{
 	core::{Creator, message_bus::MessageScope},
-	gameplay::{Spawner, Transform},
+	gameplay::{Loaded, Placement, Spawner, Transform},
 	math::{Point, Vector},
 	physics::{Body, BodyTypes, LocalSpace, Shapes},
 	rendering::RenderableMesh,
@@ -45,6 +45,7 @@ fn level_source() -> String {
 #[divan::bench(sample_count = 20)]
 fn spawn_baked_level(bencher: Bencher) {
 	let (level, payload) = bake_level(level_source().as_bytes()).expect("the benchmark level should bake");
+	let level = Loaded::level("bench.level", level, payload);
 	let mut spawner = Spawner::with_engine_kinds();
 	spawner.register::<Tag>("tag").unwrap();
 
@@ -53,7 +54,7 @@ fn spawn_baked_level(bencher: Bencher) {
 		// A fresh scope per sample, so earlier samples' messages never fill its pool.
 		.with_inputs(|| MessageScope::standalone("world"))
 		.bench_local_values(|world| {
-			spawner.spawn(&world, &level, &payload).unwrap();
+			spawner.spawn(&world, &level, Placement::default()).unwrap();
 			world
 		});
 }
@@ -101,13 +102,14 @@ fn single_kind_source(component: &str) -> String {
 #[divan::bench(sample_count = 20, args = ["none", "transform", "body", "mesh", "tag"])]
 fn spawn_one_kind(bencher: Bencher, component: &str) {
 	let (level, payload) = bake_level(single_kind_source(component).as_bytes()).unwrap();
+	let level = Loaded::level("bench.level", level, payload);
 	let mut spawner = Spawner::with_engine_kinds();
 	spawner.register::<Tag>("tag").unwrap();
 	bencher
 		.counter(ItemsCount::new(PROPS))
 		.with_inputs(|| MessageScope::standalone("world"))
 		.bench_local_values(|world| {
-			spawner.spawn(&world, &level, &payload).unwrap();
+			spawner.spawn(&world, &level, Placement::default()).unwrap();
 			world
 		});
 }

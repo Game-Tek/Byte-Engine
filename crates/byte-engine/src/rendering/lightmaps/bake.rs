@@ -62,7 +62,7 @@ impl AssetHandler for LightmapAssetHandler {
 		let (level, payload) = load_level(&context.resource_manager(), &bead.level)
 			.await
 			.map_err(|cause| invalid(&cause))?;
-		let scene = collect_level(id.as_ref(), &level, &payload).map_err(|cause| invalid(&cause))?;
+		let scene = collect_level(id.as_ref(), level, payload).map_err(|cause| invalid(&cause))?;
 		let mut meshes = Vec::new();
 		let mut materials = Vec::new();
 		// These dedupe distinct mesh and material IDs, not entities: a level's thousands of props reuse a few dozen

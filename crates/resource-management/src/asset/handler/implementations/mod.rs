@@ -24,6 +24,7 @@ pub mod lut;
 pub mod ogg;
 pub mod particles;
 pub mod pipeline;
+pub mod prefab;
 pub mod wav;
 
 pub use audio_graph::*;
@@ -42,6 +43,7 @@ pub use lut::*;
 pub use ogg::*;
 pub use particles::*;
 pub use pipeline::*;
+pub use prefab::*;
 pub use wav::*;
 
 pub use self::image::*;

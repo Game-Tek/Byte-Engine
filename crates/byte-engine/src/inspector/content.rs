@@ -16,14 +16,17 @@ use resource_management::{
 use super::DefaultInspector;
 use crate::{
 	core::{EntityHandle, factory::Handle},
-	gameplay::Spawner,
+	gameplay::{
+		Spawner, Transform,
+		level::{Loaded, Placement},
+	},
 };
 
 impl DefaultInspector {
 	/// Gives the inspector the spawner levels spawn with, replacing any earlier one.
 	///
 	/// Give it the same spawner the application spawns its own levels with, so a spawned level knows the
-	/// application's kinds. Next, spawn with [`Self::spawn_level`].
+	/// application's kinds. Next, spawn with [`Self::spawn_level`] or [`Self::spawn_resource`].
 	pub fn set_spawner(&self, spawner: Arc<Spawner>) {
 		*self.spawner.lock() = Some(spawner);
 	}
@@ -32,15 +35,37 @@ impl DefaultInspector {
 	///
 	/// The level's entities take the handles after the root, one each, parents first and otherwise in the source's
 	/// order; [`level_entity_handle_from_root`](crate::gameplay::level::level_entity_handle_from_root) finds the
-	/// `n`-th from the root. Delete the root to remove them all. Publishing happens on
-	/// the calling thread.
+	/// `n`-th from the root, and the entities of the prefabs its instances place follow. Delete the root to remove
+	/// them all. Prefabs load from the resource manager. Publishing happens on the calling thread.
 	pub fn spawn_level(&self, source: &str) -> Result<Handle, String> {
-		let spawner = self.spawner.lock().clone().ok_or_else(|| {
-			"The level could not be spawned. The most likely cause is that the application gave the inspector no spawner. Call `DefaultInspector::set_spawner` with the application's spawner at setup.".to_string()
-		})?;
-		let (level, payload) =
-			bake_level(source.as_bytes()).map_err(|cause| format!("The level could not be spawned. {cause}"))?;
-		spawner.spawn(&self.world, &level, &payload)
+		const FAILURE: &str = "The level could not be spawned.";
+		let spawner = self.spawner(FAILURE)?;
+		let (level, payload) = bake_level(source.as_bytes()).map_err(|cause| format!("{FAILURE} {cause}"))?;
+		let placed = !level.instances.is_empty();
+		let mut loaded = Loaded::level("the inspector's level", level, payload);
+		// Only a level that places prefabs needs the store.
+		if placed {
+			loaded = self.on_store(FAILURE, |store| loaded.complete(store))?;
+		}
+		spawner.spawn(&self.world, &loaded, Placement::default())
+	}
+
+	/// Spawns the baked level or prefab `id` at `transform` and returns the spawn's root.
+	///
+	/// A prefab takes its parameters' defaults. Use it to drop a stored prefab into a running application, such as
+	/// from an editor's palette of [`Self::resources`] of class `Prefab`. Delete the root to remove it.
+	pub fn spawn_resource(&self, id: &str, transform: Transform) -> Result<Handle, String> {
+		let failure = format!("'{id}' could not be spawned.");
+		let spawner = self.spawner(&failure)?;
+		let loaded = self.on_store(&failure, |store| Loaded::load(store, id))?;
+		spawner.spawn(&self.world, &loaded, Placement::at(transform))
+	}
+
+	/// Returns the spawner the application gave, or the error that says to give one.
+	fn spawner(&self, failure: &str) -> Result<Arc<Spawner>, String> {
+		self.spawner.lock().clone().ok_or_else(|| {
+			format!("{failure} The most likely cause is that the application gave the inspector no spawner. Call `DefaultInspector::set_spawner` with the application's spawner at setup.")
+		})
 	}
 
 	/// Gives the inspector the resource manager [`Self::resources`] lists resources from. Only the first call takes

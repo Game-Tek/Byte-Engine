@@ -266,7 +266,12 @@ The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves th
 
 `.level` files and `gameplay::Spawner` (`crates/byte-engine/src/gameplay/level.rs`) place a flat list of entities. Left out of the first version:
 
-- Prefabs and nested levels: an entity that spawns another `.level` under its transform, with ids namespaced by the instance, then per-entity overrides. Every transform is a world transform today, so an instance's transform would have to be composed into its entities at spawn.
+- Per-entity overrides of a prefab instance's payloads. Parameters cover the authored contract today; an override would name a prefab entity by id and replace one kind's payload.
+- Respawn prefab instances when their prefab rebakes in debug builds, as for levels below.
+- Let the inspector list a prefab's parameters with their defaults, so an editor can show them.
+- Place world-space payloads other than `transform` with their spawn: `navigation_area` extents, `merged` mesh placements, and anything else that holds world positions ignores a prefab's placement today.
+- Light the prefabs a level places when baking its lightmap. `collect_level` spawns the level alone, so a level with instances fails the lightmap bake.
+- Engine kinds the sandbox's prefabs need, such as an animator and a navigation agent, so `third_person`'s NPC can move to a `.prefab`.
 - Respawn a level when its resource rebakes in debug builds. `ResourceManager::resource_updates` reports the level's ID; deleting the root and spawning again is correct but loses runtime state.
 - Spawn levels larger than the message pool across ticks. A spawn publishes one message per entity and per component in one call; past `messages.capacity` the publisher waits for listeners that run later on the same thread.
 - Warn when a spawned kind has no listener. A kind no system follows is published and dropped silently; channels can't report how many listeners they have.

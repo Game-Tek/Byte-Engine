@@ -20,7 +20,7 @@ use crate::{
 	ProcessedAsset,
 	processors::mesh::{cluster_placements, copies_that_fit},
 	resources::{
-		level::{Level, LevelKind, NO_PARENT, RUN, Section, Token, TokenWriter},
+		level::{Level, LevelInstance, LevelKind, NO_PARENT, NamedValue, RUN, Section, Token, TokenWriter},
 		mesh::{Mesh, MeshModel},
 	},
 };
@@ -69,7 +69,7 @@ impl AssetHandler for LevelAssetHandler {
 			log::error!("Level '{}' could not be baked. {cause}", id.as_ref());
 			LoadErrors::FailedToProcess
 		};
-		let entities = parse(&source).map_err(report)?;
+		let LevelSource { entities, .. } = parse(&source).map_err(report)?;
 
 		// Each mesh placed often enough merges, as many copies to a cluster as fit one primitive of the mesh.
 		let mut merges = Vec::new();
@@ -83,7 +83,7 @@ impl AssetHandler for LevelAssetHandler {
 		}
 		let entities = cluster_entities(entities, &merges);
 
-		let (level, payload) = lay_out(&entities).map_err(report)?;
+		let (level, payload, _) = lay_out(&entities, None).map_err(report)?;
 
 		context.store_primary_owned(ProcessedAsset::new(id, level), payload).await
 	}
@@ -201,6 +201,7 @@ fn cluster_entities(mut entities: Vec<EntitySource>, merges: &[(MergeGroup, usiz
 			clusters_at[first].push(EntitySource {
 				id: None,
 				parent: entities[first].parent.clone(),
+				prefab: None,
 				components: Object(vec![(
 					"mesh".to_string(),
 					Value::Object(Object(vec![("merged".to_string(), Value::Object(source))])),
@@ -224,7 +225,7 @@ fn cluster_entities(mut entities: Vec<EntitySource>, merges: &[(MergeGroup, usiz
 
 /// Returns the mesh resource `entity` places and where, when the entity is nothing but that placement.
 fn static_placement(entity: &EntitySource) -> Option<(&str, [f32; 3])> {
-	if entity.id.is_some() {
+	if entity.id.is_some() || entity.prefab.is_some() {
 		return None;
 	}
 	let (mut mesh, mut transform) = (None, None);
@@ -299,21 +300,28 @@ fn numbers<const N: usize>(value: &Value) -> Option<[f32; N]> {
 /// meshes: bake the level through its asset handler for that. Returns the cause and fix of the first problem found,
 /// ready to follow a statement of what failed.
 pub fn bake_level(source: &[u8]) -> Result<(Level, Vec<u8>), String> {
-	lay_out(&parse(source)?)
+	let LevelSource { entities, .. } = parse(source)?;
+	let (level, payload, _) = lay_out(&entities, None)?;
+	Ok((level, payload))
 }
 
-/// Parses a `.level` source into its entities, in file order.
-fn parse(source: &[u8]) -> Result<Vec<EntitySource>, String> {
+/// Parses a JSON5 source into `T`, a level's or a prefab's authored form.
+pub(super) fn parse<T: serde::de::DeserializeOwned>(source: &[u8]) -> Result<T, String> {
 	let text = std::str::from_utf8(source)
 		.map_err(|_| "The most likely cause is that the file isn't UTF-8 text. Save it as UTF-8.".to_string())?;
-	let LevelSource { entities, .. } = json5::from_str(text).map_err(|error| {
-		format!("The most likely cause is that the file doesn't hold a level: {error}. Fix the reported field.")
-	})?;
-	Ok(entities)
+	json5::from_str(text).map_err(|error| {
+		format!("The most likely cause is that the file doesn't hold its format's fields: {error}. Fix the reported field.")
+	})
 }
 
-/// Checks `entities` and lays them out as the level's model and payload.
-fn lay_out(entities: &[EntitySource]) -> Result<(Level, Vec<u8>), String> {
+/// Checks `entities` and lays them out as a level's model and payload.
+///
+/// `parameters` are a prefab's parameters with their defaults, which its payloads may refer to; a level has none and
+/// rejects every parameter reference. Returns each parameter's name and where its default starts in the values.
+pub(super) fn lay_out(
+	entities: &[EntitySource],
+	parameters: Option<&Object>,
+) -> Result<(Level, Vec<u8>, Vec<NamedValue>), String> {
 	let count = u32::try_from(entities.len())
 		.ok()
 		.filter(|&count| count < NO_PARENT)
@@ -355,7 +363,72 @@ fn lay_out(entities: &[EntitySource]) -> Result<(Level, Vec<u8>), String> {
 		spawn_index[index] = position as u32;
 	}
 
-	let kinds = group_kinds(entities, &order, |id| ids.get(id).map(|&index| spawn_index[index]))?;
+	let entity = |id: &str| ids.get(id).map(|&index| spawn_index[index]);
+	let names = parameter_indices(parameters)?;
+	let references = References {
+		entity: Some(&entity),
+		parameters: names.as_ref(),
+	};
+	let kinds = group_kinds(entities, &order, &references)?;
+
+	// Instances' parameters and the prefab's defaults share one token stream, so a value is an offset into it.
+	let mut values = TokenWriter::default();
+	let defaults = match parameters {
+		Some(Object(fields)) => fields
+			.iter()
+			.map(|(name, value)| {
+				let offset = values.offset() as u32;
+				write_value(&mut values, value, &References::default()).map_err(|cause| {
+					format!("The most likely cause is that the default of parameter '{name}' {cause}")
+				})?;
+				Ok(NamedValue {
+					name: name.clone(),
+					value: offset,
+				})
+			})
+			.collect::<Result<Vec<_>, String>>()?,
+		None => Vec::new(),
+	};
+	let mut instances = Vec::new();
+	for (spawn, &index) in order.iter().enumerate() {
+		let Some(instance) = &entities[index].prefab else {
+			continue;
+		};
+		if instance.resource.is_empty() {
+			return Err(format!(
+				"The most likely cause is that the `prefab` of {} has an empty `resource`. Set it to a prefab's ID.",
+				describe(entities, index)
+			));
+		}
+		let parameters = instance
+			.parameters
+			.0
+			.iter()
+			.map(|(name, value)| {
+				let offset = values.offset() as u32;
+				// An instance's value can pass on the enclosing prefab's parameters, but names no entity.
+				let references = References {
+					entity: None,
+					parameters: names.as_ref(),
+				};
+				write_value(&mut values, value, &references).map_err(|cause| {
+					format!(
+						"The most likely cause is that parameter '{name}' of the `prefab` of {} {cause}",
+						describe(entities, index)
+					)
+				})?;
+				Ok(NamedValue {
+					name: name.clone(),
+					value: offset,
+				})
+			})
+			.collect::<Result<Vec<_>, String>>()?;
+		instances.push(LevelInstance {
+			entity: spawn as u32,
+			resource: instance.resource.clone(),
+			parameters,
+		});
+	}
 
 	let mut payload = Vec::new();
 	let parents = append(&mut payload, |bytes| {
@@ -398,15 +471,48 @@ fn lay_out(entities: &[EntitySource]) -> Result<(Level, Vec<u8>), String> {
 		})
 		.collect();
 
+	let (values, value_strings) = values.finish();
+	let value_strings = append(&mut payload, |bytes| bytes.extend_from_slice(&value_strings));
+	let values = append(&mut payload, |bytes| bytes.extend_from_slice(&values));
+
 	Ok((
 		Level {
 			entities: count,
 			parents,
 			ids,
 			kinds,
+			instances,
+			values,
+			value_strings,
 		},
 		payload,
+		defaults,
 	))
+}
+
+/// Maps each parameter of a prefab to its index, rejecting empty names. A level, which has no parameters, maps none.
+fn parameter_indices(parameters: Option<&Object>) -> Result<Option<HashMap<&str, u32>>, String> {
+	let Some(Object(fields)) = parameters else {
+		return Ok(None);
+	};
+	let mut names = HashMap::with_capacity(fields.len());
+	for (index, (name, _)) in fields.iter().enumerate() {
+		if name.is_empty() {
+			return Err("The most likely cause is that a parameter has an empty name. Name the parameter.".to_string());
+		}
+		// The authored object already rejects a repeated key, so each name is new here.
+		names.insert(name.as_str(), index as u32);
+	}
+	Ok(Some(names))
+}
+
+/// The `References` struct says which references a value may hold where it's written, and what they resolve to.
+#[derive(Default)]
+struct References<'a> {
+	/// Returns the spawn index of the entity with an id; `None` where no entity can be referred to.
+	entity: Option<&'a dyn Fn(&str) -> Option<u32>>,
+	/// The index of each parameter; `None` outside a prefab.
+	parameters: Option<&'a HashMap<&'a str, u32>>,
 }
 
 /// Maps each `id` to the position of its entity in the file, rejecting empty and repeated ids.
@@ -479,11 +585,11 @@ struct KindColumn {
 
 /// Groups every component by kind, in spawn order, encoding each payload as tokens.
 ///
-/// `entity` returns the spawn index of the entity with an id, which entity references are written as.
+/// `references` resolves the entity and parameter references the payloads hold.
 fn group_kinds<'s>(
 	entities: &'s [EntitySource],
 	order: &[usize],
-	entity: impl Fn(&str) -> Option<u32>,
+	references: &References<'_>,
 ) -> Result<BTreeMap<&'s str, KindColumn>, String> {
 	let mut kinds = BTreeMap::<&str, KindColumn>::new();
 	for (spawn_index, &index) in order.iter().enumerate() {
@@ -503,7 +609,7 @@ fn group_kinds<'s>(
 				column.runs.push(column.values.offset() as u32);
 			}
 			column.entities.push(spawn_index as u32);
-			write_value(&mut column.values, value, &entity).map_err(|cause| {
+			write_value(&mut column.values, value, references).map_err(|cause| {
 				format!(
 					"The most likely cause is that the `{kind}` component of {} {cause}",
 					describe(entities, index)
@@ -514,10 +620,10 @@ fn group_kinds<'s>(
 	Ok(kinds)
 }
 
-/// Appends `value` to `writer` as tokens, writing `$entity` objects as entity references.
+/// Appends `value` to `writer` as tokens, writing `$entity` and `$parameter` objects as references.
 ///
-/// The error completes a sentence about the component that holds the value.
-fn write_value(writer: &mut TokenWriter, value: &Value, entity: &impl Fn(&str) -> Option<u32>) -> Result<(), String> {
+/// The error completes a sentence about the value.
+fn write_value(writer: &mut TokenWriter, value: &Value, references: &References<'_>) -> Result<(), String> {
 	match value {
 		Value::Null => writer.write(Token::Null),
 		Value::Bool(value) => writer.write(Token::Bool(*value)),
@@ -528,7 +634,7 @@ fn write_value(writer: &mut TokenWriter, value: &Value, entity: &impl Fn(&str) -
 		Value::Sequence(values) => {
 			writer.write(Token::SequenceStart);
 			for value in values {
-				write_value(writer, value, entity)?;
+				write_value(writer, value, references)?;
 			}
 			writer.write(Token::SequenceEnd);
 		}
@@ -539,6 +645,9 @@ fn write_value(writer: &mut TokenWriter, value: &Value, entity: &impl Fn(&str) -
 						"holds a malformed entity reference. Write it as an object with only `{ENTITY_REFERENCE}`, set to an entity's id."
 					));
 				};
+				let entity = references.entity.ok_or_else(|| {
+					"holds an entity reference where none can stand. Write the value itself.".to_string()
+				})?;
 				let index = entity(id).ok_or_else(|| {
 					format!(
 						"refers to entity '{id}', which no entity has as its id. Fix the reference or add an entity with that id."
@@ -547,10 +656,29 @@ fn write_value(writer: &mut TokenWriter, value: &Value, entity: &impl Fn(&str) -
 				writer.write(Token::Entity(index));
 				return Ok(());
 			}
+			if fields.iter().any(|(key, _)| key == PARAMETER_REFERENCE) {
+				let [(_, Value::String(name))] = fields.as_slice() else {
+					return Err(format!(
+						"holds a malformed parameter reference. Write it as an object with only `{PARAMETER_REFERENCE}`, set to a parameter's name."
+					));
+				};
+				let parameters = references.parameters.ok_or_else(|| {
+					format!(
+						"refers to parameter '{name}' where no parameter can stand. Only a prefab's components and instances refer to parameters; write the value itself."
+					)
+				})?;
+				let index = parameters.get(name.as_str()).ok_or_else(|| {
+					format!(
+						"refers to parameter '{name}', which the prefab doesn't declare. Fix the reference or add the parameter to `parameters`."
+					)
+				})?;
+				writer.write(Token::Parameter(*index));
+				return Ok(());
+			}
 			writer.write(Token::ObjectStart);
 			for (key, value) in fields {
 				writer.write(Token::Key(key));
-				write_value(writer, value, entity)?;
+				write_value(writer, value, references)?;
 			}
 			writer.write(Token::ObjectEnd);
 		}
@@ -558,8 +686,16 @@ fn write_value(writer: &mut TokenWriter, value: &Value, entity: &impl Fn(&str) -
 	Ok(())
 }
 
+/// Appends `value` to `writer` as tokens, where no entity or parameter can be referred to.
+pub(super) fn write_plain_value(writer: &mut TokenWriter, value: &Value) -> Result<(), String> {
+	write_value(writer, value, &References::default())
+}
+
 /// The field that turns an object into a reference to another entity of the level.
 const ENTITY_REFERENCE: &str = "$entity";
+
+/// The field that turns an object into a reference to a parameter of the prefab.
+const PARAMETER_REFERENCE: &str = "$parameter";
 
 /// Names an entity for a message: by its id, or by its position in the file.
 fn describe(entities: &[EntitySource], index: usize) -> String {
@@ -582,28 +718,40 @@ fn append(payload: &mut Vec<u8>, write: impl FnOnce(&mut Vec<u8>)) -> Section {
 /// The `LevelSource` struct is the authored form of a level.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LevelSource {
+pub(super) struct LevelSource {
 	/// Points editors at the schema; baking ignores it.
 	#[serde(rename = "$schema", default)]
 	_schema: Option<serde::de::IgnoredAny>,
-	entities: Vec<EntitySource>,
+	pub(super) entities: Vec<EntitySource>,
 }
 
 /// The `EntitySource` struct is the authored form of one entity.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct EntitySource {
+pub(super) struct EntitySource {
 	#[serde(default)]
 	id: Option<String>,
 	#[serde(default)]
 	parent: Option<String>,
 	#[serde(default)]
+	prefab: Option<InstanceSource>,
+	#[serde(default)]
 	components: Object,
+}
+
+/// The `InstanceSource` struct is the authored form of an entity's `prefab` field: the prefab it places and the
+/// parameters it sets.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstanceSource {
+	resource: String,
+	#[serde(default)]
+	parameters: Object,
 }
 
 /// The `Value` enum is one authored payload value, kept apart from serde_json so that repeated keys and non-finite
 /// numbers are rejected instead of folded away, and keys keep their order.
-enum Value {
+pub(super) enum Value {
 	Null,
 	Bool(bool),
 	Unsigned(u64),
@@ -614,9 +762,37 @@ enum Value {
 	Object(Object),
 }
 
+impl TryFrom<serde_json::Value> for Value {
+	type Error = String;
+
+	/// Converts a JSON value from code, keeping its fields' order.
+	fn try_from(value: serde_json::Value) -> Result<Self, String> {
+		Ok(match value {
+			serde_json::Value::Null => Value::Null,
+			serde_json::Value::Bool(value) => Value::Bool(value),
+			serde_json::Value::Number(number) => match (number.as_u64(), number.as_i64(), number.as_f64()) {
+				(Some(value), _, _) => Value::Unsigned(value),
+				(None, Some(value), _) => Value::Signed(value),
+				(None, None, Some(value)) => Value::Float(value),
+				_ => return Err("holds a number JSON can't represent. Pass a finite number.".to_string()),
+			},
+			serde_json::Value::String(value) => Value::String(value),
+			serde_json::Value::Array(values) => {
+				Value::Sequence(values.into_iter().map(Value::try_from).collect::<Result<_, _>>()?)
+			}
+			serde_json::Value::Object(fields) => Value::Object(Object(
+				fields
+					.into_iter()
+					.map(|(key, value)| Ok((key, Value::try_from(value)?)))
+					.collect::<Result<_, String>>()?,
+			)),
+		})
+	}
+}
+
 /// The `Object` struct is an authored object's fields in file order, each key once.
 #[derive(Default)]
-struct Object(Vec<(String, Value)>);
+pub(super) struct Object(Vec<(String, Value)>);
 
 impl<'de> serde::Deserialize<'de> for Value {
 	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {

@@ -31,9 +31,13 @@ Baking rejects any other field.
 | `id` | Optional. A non-empty name, unique in the file, that other entities use to refer to this one. |
 | `parent` | Optional. The `id` of the entity this one belongs to. Deleting the parent deletes it. Without a parent, it belongs to the level. |
 | `components` | Optional. An object from kind name to that kind's payload. A kind appears at most once per entity. |
+| `prefab` | Optional. Makes the entity an instance of a prefab, which spawns the prefab's entities under it. See [instances](/docs/reference/prefabs#instances). |
 
 Baking rejects any other field. A parent only groups entities for deletion: it
-never moves its children, and every transform is a world transform.
+never moves its children. Every `transform` is relative to the spawn's
+placement, which is the identity unless the application sets one, so a level
+spawned without a placement holds world transforms. See
+[transforms](/docs/reference/prefabs#transforms).
 
 ## Entity references
 
@@ -108,8 +112,9 @@ The engine's kinds reject fields they don't define. An application kind accepts 
 
 | Step | Behavior |
 | --- | --- |
-| Kinds | Every kind the level names must be registered with the spawner, or nothing spawns. |
-| Handles | One run of consecutive handles: the level's root first, then each entity in baked order. |
+| Load | The level and every prefab its instances reach are loaded before anything spawns; see [prefab spawning](/docs/reference/prefabs#spawning). |
+| Kinds | Every kind the level and its prefabs name must be registered with the spawner, or nothing spawns. |
+| Handles | One run of consecutive handles: the level's root first, then each entity in baked order, then the entities of each instance's prefab. |
 | Decode | Every payload is decoded and turned into its component before anything is published. A failure publishes nothing and names the entity, the kind, and the cause. |
 | Publish | The root's scene, then each entity's scene membership, parents before children, then each kind's components in entity order, one kind after another. |
 | Unload | Deleting the root deletes every entity of the level through the scene graph. |
@@ -124,7 +129,7 @@ The engine's kinds reject fields they don't define. An application kind accepts 
 | Class | `Level`. |
 | Order | Entities are stored parents first, otherwise in file order. |
 | Payloads | Stored parsed, so spawning reads no text. Baking doesn't know the application's kinds, so it doesn't check a payload against its kind: a payload that doesn't fit fails the spawn. The one exception is [merged placements](#merged-placements), which read `mesh` and `transform` when merging is on. |
-| Rejected | Unknown fields, empty or repeated `id`s, an unknown `parent`, parents that form a cycle, a kind repeated in one entity, an empty kind name, an unknown or malformed entity reference, and numbers JSON can't represent. |
+| Rejected | Unknown fields, empty or repeated `id`s, a `$parameter` reference, an instance without a `resource`, an unknown `parent`, parents that form a cycle, a kind repeated in one entity, an empty kind name, an unknown or malformed entity reference, and numbers JSON can't represent. |
 | Dependencies | Resource IDs in payloads aren't baked with the level, so changing a referenced resource doesn't bake the level again. A mesh the level [merges](#merged-placements) is the exception: it's baked with the level, and changing it bakes the level again, since its size decides the clusters. |
 
 ### Merged placements
@@ -154,7 +159,7 @@ so the copies change level together.
 | Limit | Value |
 | --- | --- |
 | Components | At most one of each kind per entity. |
-| Hierarchy | None. Every transform is a world transform. |
+| Hierarchy | None at run time. Every spawned transform is a world transform; a placement and instances are combined into it when the spawn publishes. |
 | Handles | A spawn uses one handle for the root and one for each entity. Handles are never reused. |
 | Messages | A spawn publishes one message for the root, one for each entity's scene membership, and one for each component. They must fit the message pool, set by `messages.capacity`, until every listener reads them. |
 

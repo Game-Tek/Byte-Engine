@@ -162,6 +162,7 @@ pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[
 	asset_manager.add_asset_handler(FusionAssetHandler);
 	asset_manager.add_asset_handler(FlipbookAssetHandler);
 	asset_manager.add_asset_handler(LevelAssetHandler::default());
+	asset_manager.add_asset_handler(PrefabAssetHandler);
 	asset_manager.add_asset_handler(AudioGraphAssetHandler);
 	asset_manager.add_asset_handler(ParticleSystemAssetHandler);
 	asset_manager.add_asset_handler(EXRAssetHandler::new());
@@ -364,7 +365,7 @@ use resource_management::{
 			audio_graph::AudioGraphAssetHandler, bema::BEMAAssetHandler, besl::BESLShaderAssetHandler,
 			environment::EnvironmentMapAssetHandler, exr::EXRAssetHandler, fbx::FBXAssetHandler,
 			flipbook::FlipbookAssetHandler, font::FontAssetHandler, fusion::FusionAssetHandler, gltf::GLTFAssetHandler,
-			ies::IESAssetHandler, image::ImageAssetHandler, level::LevelAssetHandler, lut::LUTAssetHandler,
+			ies::IESAssetHandler, image::ImageAssetHandler, level::LevelAssetHandler, lut::LUTAssetHandler, prefab::PrefabAssetHandler,
 			ogg::OGGAssetHandler, particles::ParticleSystemAssetHandler, pipeline::PipelineAssetHandler, wav::WAVAssetHandler,
 		},
 		manager::AssetManager,

@@ -110,4 +110,5 @@ pub mod mips;
 pub mod motion_database;
 pub mod particle_system;
 pub mod pipeline;
+pub mod prefab;
 pub mod skeleton;

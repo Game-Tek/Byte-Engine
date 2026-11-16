@@ -4,7 +4,7 @@
 //! [`GraphicsApplication`](crate::application::graphics::GraphicsApplication) owns the runtime and advances its
 //! clock once per simulation step. Access it through
 //! [`GraphicsApplication::runtime`](crate::application::graphics::GraphicsApplication::runtime), start tasks
-//! with [`Runtime::spawn`] or [`Runtime::spawn_on`], then call [`Runtime::poll`] with your
+//! with [`Runtime::spawn`], [`Runtime::spawn_on`], or [`Runtime::attach`], then call [`Runtime::poll`] with your
 //! state before and after the systems whose messages tasks await. A task can wait for animation root motion or a
 //! ray query's answer and continue in the same tick. Applications without graphics can own a [`Runtime`] directly.
 //!
@@ -54,7 +54,7 @@ use crate::{
 	MediaTime,
 	application::Time,
 	core::{
-		factory::Handle,
+		factory::{CreateMessage, Handle},
 		listener::{DefaultListener, Listener as _},
 		message::DeleteMessage,
 		message_bus::MessageScope,
@@ -182,6 +182,55 @@ pub struct Runtime {
 	/// Swapped with [`State::spawned`] so spawned futures are adopted, or dropped, with the shared state released.
 	adopting: Vec<(TaskId, BoxedTask)>,
 	deletions: DefaultListener<DeleteMessage>,
+	/// The scope whose factories [`Self::attach`] listens on.
+	world: MessageScope,
+	/// The behaviors [`Self::attach`] registered, each starting tasks for the entities that get its kind.
+	attached: Vec<Box<dyn Attached>>,
+}
+
+/// The `Attached` trait starts one attached behavior's tasks, keeping its kind's type out of the runtime.
+trait Attached {
+	/// Starts a task for every entity that got the kind since the last call and has none running.
+	fn start(&mut self, state: &Rc<RefCell<State>>);
+	/// Forgets `handle`, an entity the world deleted, whose task already ended.
+	fn forget(&mut self, handle: Handle);
+}
+
+/// The `Attachment` struct is one behavior [`Runtime::attach`] registered: its kind's creations and the task each
+/// one starts.
+struct Attachment<T: Clone + Send + Sync + 'static, S, B> {
+	creations: DefaultListener<CreateMessage<T>>,
+	behave: B,
+	/// The entities whose task started, so a replaced component doesn't start a second one.
+	started: utils::hash::HashSet<Handle>,
+	context: PhantomData<fn(S)>,
+}
+
+impl<T, S, F, B> Attached for Attachment<T, S, B>
+where
+	T: Clone + Send + Sync + 'static,
+	S: 'static,
+	F: Future<Output = ()> + 'static,
+	B: Fn(Tasks<S>, Handle, T) -> F,
+{
+	fn start(&mut self, state: &Rc<RefCell<State>>) {
+		while let Some(creation) = self.creations.read() {
+			let handle = creation.handle();
+			if !self.started.insert(handle) {
+				continue;
+			}
+			let tasks = Tasks {
+				state: Rc::clone(state),
+				context: PhantomData,
+			};
+			let future = (self.behave)(tasks, handle, creation.into_data());
+			state.borrow_mut().spawn(Some(handle), Box::pin(future));
+		}
+	}
+
+	fn forget(&mut self, handle: Handle) {
+		self.started.remove(&handle);
+	}
 }
 
 /// The `Running` struct keeps one live task's future beside the waker its polls hand out.
@@ -202,6 +251,36 @@ impl Runtime {
 			woken: Vec::new(),
 			adopting: Vec::new(),
 			deletions: world.channel::<DeleteMessage>().listener(),
+			world: world.clone(),
+			attached: Vec::new(),
+		}
+	}
+
+	/// Starts `behave` as a task for every entity that gets a `T` from now on; deleting the entity cancels it.
+	///
+	/// Use it to give a kind behavior, so a level or prefab that places the kind also places its logic. `behave`
+	/// receives the entity's handle and its `T`, and runs once per entity: a `T` that replaces an earlier one starts
+	/// nothing. Attach before spawning, since only entities created after the call start a task. The tasks start on
+	/// the next [`Self::advance`] or [`Self::poll`]. Next, register `T` as a kind with
+	/// [`Spawner::register`](crate::gameplay::Spawner::register).
+	pub fn attach<T, S, F>(&mut self, behave: impl Fn(Tasks<S>, Handle, T) -> F + 'static)
+	where
+		T: Clone + Send + Sync + 'static,
+		S: 'static,
+		F: Future<Output = ()> + 'static,
+	{
+		self.attached.push(Box::new(Attachment {
+			creations: self.world.factory::<T>().listener(),
+			behave,
+			started: Default::default(),
+			context: PhantomData,
+		}));
+	}
+
+	/// Starts the attached tasks of entities created since the last call.
+	fn start_attached(&mut self) {
+		for attached in &mut self.attached {
+			attached.start(&self.state);
 		}
 	}
 
@@ -241,6 +320,8 @@ impl Runtime {
 	/// Call it once per tick, before the tick's first [`Self::poll`]. Only the delta counts, so a paused tick that
 	/// passes a zero delta still resolves tick waits, with zero, while sleeps hold.
 	pub fn advance(&mut self, time: Time) {
+		// Attached tasks start before deletions end tasks, so an entity created and deleted in one tick ends both.
+		self.start_attached();
 		self.end_deleted();
 
 		let mut state = self.state.borrow_mut();
@@ -286,6 +367,7 @@ impl Runtime {
 	/// Call it after [`Self::advance`] and again after each stage whose messages tasks wait for, such as an animation
 	/// step whose root motion a character awaits.
 	pub fn poll<C: 'static>(&mut self, context: &mut C) {
+		self.start_attached();
 		loop {
 			self.adopt();
 
@@ -357,6 +439,9 @@ impl Runtime {
 	fn end_deleted(&mut self) {
 		while let Some(deletion) = self.deletions.read() {
 			let handle = *deletion.handle();
+			for attached in &mut self.attached {
+				attached.forget(handle);
+			}
 			let owned = {
 				let mut state = self.state.borrow_mut();
 				let owned = state.owned.remove(&handle).unwrap_or_default();

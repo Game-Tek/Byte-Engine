@@ -116,15 +116,17 @@ keeps every entity.
 
 ### Spawning levels
 
-A spawn takes a level's source, the same JSON a `.level` file holds, and spawns
-it into the running application, as spawning a baked level does; see
-[Levels](/docs/reference/levels). Use it to add entities while the application
-runs, such as a mesh an editor drops into the scene.
+A spawn takes a level's source, the same JSON a `.level` file holds, or the ID
+of a baked level or prefab, and spawns it into the running application, as
+spawning a baked level does; see [Levels](/docs/reference/levels) and
+[Prefabs](/docs/reference/prefabs). Use it to add entities while the application
+runs, such as a mesh or a prefab an editor drops into the scene.
 
 | Rule | Behavior |
 | --- | --- |
 | Spawner | The application's: a level spawns only once the application gave the inspector its spawner, and only kinds that spawner knows spawn. Without one, every spawn fails. |
-| Source | Checked as [baking](/docs/reference/levels#baking) checks a level file, except that a level that names a mesh to [merge](/docs/reference/levels#merged-placements) isn't merged. |
+| Source | Checked as [baking](/docs/reference/levels#baking) checks a level file, except that a level that names a mesh to [merge](/docs/reference/levels#merged-placements) isn't merged. The prefabs its instances place load from the application's resource manager. |
+| ID | A baked level or prefab, loaded from the application's resource manager with every prefab it reaches, and placed at the transform the spawn gives. A prefab takes its parameters' defaults. Only in-process tools spawn by ID. |
 | Answer | The level's root. Its entities take the handles that follow, one each, in the order baking stores them: parents first, otherwise in the source's order. |
 | Failure | A source that doesn't bake, or an entity whose component doesn't fit its kind, spawns nothing and answers with the cause. |
 | Unload | Deleting the root deletes every entity the spawn added. |

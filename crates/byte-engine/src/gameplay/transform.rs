@@ -125,6 +125,19 @@ impl Transform {
 		Self::new(Point::origin(), Scale::identity(), orientation)
 	}
 
+	/// Returns `local`, a transform relative to this one, as a transform in the space this one is in.
+	///
+	/// Spawning uses it to place a prefab's entities at their instance. Scale composes axis by axis, so a non-uniform
+	/// scale combined with a rotated `local` keeps each axis's scale instead of shearing.
+	pub fn compose(&self, local: &Self) -> Self {
+		let offset = self.orientation.rotate_vector(self.scale * (local.position - Point::origin()));
+		Self::new(
+			self.position + offset,
+			self.scale * local.scale,
+			self.orientation.compose(local.orientation),
+		)
+	}
+
 	/// Builds the renderer-facing affine matrix with scale applied before rotation and translation.
 	pub fn get_matrix(&self) -> Matrix {
 		Matrix::from_translation(self.position.into_maths())
@@ -262,6 +275,21 @@ mod tests {
 			transform.get_matrix() * Vec4f::new(1.0, 1.0, 1.0, 1.0),
 			Vec4f::new(12.0, 23.0, 34.0, 1.0)
 		);
+	}
+
+	#[test]
+	fn compose_places_a_local_transform_in_its_parent_space() {
+		let quarter_turn = Orientation::try_from_array([0.0, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2]).unwrap();
+		let parent = Transform::new(Point::new(1.0, 0.0, 0.0), Scale::new(2.0, 2.0, 2.0), quarter_turn);
+		let local = Transform::from_position(Point::new(1.0, 0.0, 0.0));
+
+		let placed = parent.compose(&local);
+
+		// A quarter turn about +Y sends +X to -Z, after the scale doubles the offset.
+		assert!(placed.get_position().distance_to(Point::new(1.0, 0.0, -2.0)) < 1e-5);
+		assert_eq!(placed.scale(), Scale::new(2.0, 2.0, 2.0));
+		assert_eq!(placed.get_orientation(), quarter_turn);
+		assert_eq!(Transform::identity().compose(&local), local, "the identity places nothing");
 	}
 }
 

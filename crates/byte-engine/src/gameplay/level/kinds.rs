@@ -10,12 +10,12 @@ use serde::Deserialize;
 
 use super::{EntityRef, Spawner};
 use crate::{
-	gameplay::{Name, Transform, pathfinding::NavigationArea, transform::SerializableTransform},
+	gameplay::{Name, pathfinding::NavigationArea},
 	physics::{Body, BodyTypes, Constraint, LocalSpace, Shapes},
 };
 
 impl Spawner {
-	/// Creates a spawner that knows the engine's kinds: `transform`, `name`, `mesh`, `directional_light`,
+	/// Creates a spawner that knows the engine's kinds: `name`, `mesh`, `directional_light`,
 	/// `point_light`, `cone_light`, `lightmap`, `body`, `navigation_area`, and `hinge`.
 	///
 	/// A build without rendering ignores `mesh`, the lights, and `lightmap`, so a server spawns the same levels as its
@@ -23,9 +23,6 @@ impl Spawner {
 	/// Next, register your application's kinds with [`Self::register`] or [`Self::register_with`].
 	pub fn with_engine_kinds() -> Self {
 		let mut spawner = Self::new();
-		spawner
-			.register_with("transform", |transform: SerializableTransform| Transform::try_from(transform))
-			.expect(DISTINCT);
 		spawner.register_with("name", name).expect(DISTINCT);
 		spawner.register_with("body", body).expect(DISTINCT);
 		spawner.register_with("navigation_area", navigation_area).expect(DISTINCT);
@@ -216,7 +213,8 @@ mod rendering {
 	use maths_rs::Vec3f;
 	use serde::Deserialize;
 
-	use super::{Radians, SerializableTransform, Transform, positive};
+	use super::{Radians, positive};
+	use crate::gameplay::{Transform, transform::SerializableTransform};
 	use crate::rendering::{
 		ConeLight, DirectionalLight, LightColor, Lightmap, PhotometricIntensity, PointLight, RenderableMesh,
 		mesh::generator::{BoxMeshGenerator, CapsuleMeshGenerator, SphereMeshGenerator},

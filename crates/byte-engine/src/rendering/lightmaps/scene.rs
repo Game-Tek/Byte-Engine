@@ -12,7 +12,10 @@ use crate::core::{
 	listener::{DefaultListener, Listener},
 	message_bus::MessageScope,
 };
-use crate::gameplay::{Spawner, Transform};
+use crate::gameplay::{
+	Spawner, Transform,
+	level::{Loaded, Placement},
+};
 use crate::rendering::lights::Lights;
 use crate::rendering::pipelines::visibility::{scene::light_data, shader_data::LightData, shadow_selection::LightShadow};
 use crate::rendering::renderable::mesh::{MeshSource, RenderableMesh};
@@ -62,7 +65,9 @@ pub(crate) async fn load_level(resources: &ResourceManager, id: &str) -> Result<
 ///
 /// Kinds the engine doesn't know are skipped, since only the engine's kinds draw or light anything. Returns the most
 /// likely cause of what is wrong with the level.
-pub(crate) fn collect_level(lightmap_id: &str, level: &Level, payload: &[u8]) -> Result<LevelScene, String> {
+///
+/// A level whose instances place prefabs fails, since the bake doesn't load or light prefabs.
+pub(crate) fn collect_level(lightmap_id: &str, level: Level, payload: Vec<u8>) -> Result<LevelScene, String> {
 	let mut spawner = Spawner::with_engine_kinds();
 	for kind in &level.kinds {
 		// An application kind holds nothing the bake reads; an engine kind is already registered and stays.
@@ -76,8 +81,9 @@ pub(crate) fn collect_level(lightmap_id: &str, level: &Level, payload: &[u8]) ->
 	let mut point_lights = world.factory::<PointLight>().listener();
 	let mut cone_lights = world.factory::<ConeLight>().listener();
 	let mut lightmaps = world.factory::<Lightmap>().listener();
+	let loaded = Loaded::level(lightmap_id, level, payload);
 	let root = spawner
-		.spawn(&world, level, payload)
+		.spawn(&world, &loaded, Placement::default())
 		.map_err(|error| format!("that the level doesn't spawn: {error}"))?;
 	// A spawn places entity `n` at the `n`-th handle after the root.
 	let entity = |handle: Handle| handle.id() - root.id() - 1;
@@ -166,7 +172,7 @@ mod tests {
 	fn a_level_yields_its_meshes_lights_and_lightmap_holder_by_spawn_index() {
 		let (level, payload) = bake_level(LEVEL.as_bytes()).expect("the test level should bake");
 
-		let scene = collect_level("arena.lightmap.bead", &level, &payload).expect("the level should be collected");
+		let scene = collect_level("arena.lightmap.bead", level.clone(), payload.clone()).expect("the level should be collected");
 
 		assert_eq!(scene.holder, 3);
 		assert_eq!(scene.lights.len(), 1);
@@ -180,6 +186,6 @@ mod tests {
 	fn a_level_that_doesnt_name_the_lightmap_fails() {
 		let (level, payload) = bake_level(LEVEL.as_bytes()).expect("the test level should bake");
 
-		assert!(collect_level("other.lightmap.bead", &level, &payload).is_err());
+		assert!(collect_level("other.lightmap.bead", level, payload).is_err());
 	}
 }

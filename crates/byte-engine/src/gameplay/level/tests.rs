@@ -1,7 +1,7 @@
-use math::Point;
-use resource_management::asset::handler::implementations::level::bake_level;
+use math::{Orientation, Point, Scale};
+use resource_management::asset::handler::implementations::{level::bake_level, prefab::bake_prefab};
 
-use super::{EntityRef, Spawner};
+use super::{EntityRef, Loaded, Placement, Spawner};
 use crate::{
 	core::{
 		channel::{Channel, DefaultChannel},
@@ -43,7 +43,12 @@ fn spawner() -> Spawner {
 /// Bakes `source` and spawns it into `world`.
 fn spawn(spawner: &Spawner, world: &MessageScope, source: &str) -> Result<Handle, String> {
 	let (level, payload) = bake_level(source.as_bytes()).expect("the test level should bake");
-	spawner.spawn(world, &level, &payload)
+	spawner.spawn(world, &Loaded::level("test.level", level, payload), Placement::default())
+}
+
+/// Bakes the prefab `source` in memory.
+fn prefab(source: &str) -> (super::Prefab, Vec<u8>) {
+	bake_prefab(source.as_bytes()).expect("the test prefab should bake")
 }
 
 /// Reads every creation `listener` holds, as handle and value.
@@ -160,7 +165,7 @@ fn a_level_that_cannot_spawn_publishes_nothing() {
 
 		let error = spawn(&spawner(), &world, source).expect_err(problem);
 
-		assert!(error.starts_with("Level could not be spawned."), "{problem}: {error}");
+		assert!(error.starts_with("'test.level' could not be spawned."), "{problem}: {error}");
 		assert!(
 			drain(&mut scenes).is_empty() && drain(&mut names).is_empty(),
 			"{problem} published something"
@@ -393,4 +398,170 @@ fn a_failure_far_into_a_level_names_its_entity() {
 
 	assert!(error.contains("`team` component of entity 'late'"), "{error}");
 	assert!(drain(&mut teams).is_empty());
+}
+
+/// A prefab whose `team` kind takes its number from a parameter, at an offset from its instance.
+const SOLDIER: &str = r#"{
+	parameters: { number: 7 },
+	entities: [
+		{ id: "body", components: { name: "soldier", transform: { position: [0, 1, 0] }, team: { number: { "$parameter": "number" } } } },
+		{ parent: "body", components: { name: "helmet", transform: { position: [0, 2, 0] } } },
+	],
+}"#;
+
+#[test]
+fn a_prefab_spawns_at_its_placement_with_the_parameters_code_sets() {
+	let world = MessageScope::standalone("world");
+	let mut transforms = world.factory::<Transform>().listener();
+	let mut teams = world.factory::<Team>().listener();
+	let mut members = world.factory::<SceneNode>().listener();
+	let (soldier, payload) = prefab(SOLDIER);
+	let loaded = Loaded::prefab("soldier.prefab", soldier, payload);
+	let spawner = spawner();
+
+	let quarter_turn = Orientation::try_from_array([0.0, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2]).unwrap();
+	let placement = Transform::new(Point::new(10.0, 0.0, 0.0), Scale::new(2.0, 2.0, 2.0), quarter_turn);
+	let first = spawner.spawn(&world, &loaded, Placement::at(placement.clone())).unwrap();
+	let second = spawner
+		.spawn(
+			&world,
+			&loaded,
+			Placement::default().with_parameters(&serde_json::json!({ "number": 3 })).unwrap(),
+		)
+		.unwrap();
+
+	let transforms = drain(&mut transforms);
+	let world_of = |root: Handle, entity: u32| {
+		let handle = super::level_entity_handle_from_root(root, entity);
+		transforms.iter().find(|(h, _)| *h == handle).unwrap().1.clone()
+	};
+	assert!(
+		world_of(first, 1).get_position().distance_to(Point::new(10.0, 4.0, 0.0)) < 1e-5,
+		"the placement scales and moves the entity"
+	);
+	assert_eq!(world_of(first, 0).get_orientation(), quarter_turn);
+	assert_eq!(world_of(second, 0).get_position(), Point::new(0.0, 1.0, 0.0));
+	assert_eq!(
+		drain(&mut teams).into_iter().map(|(_, team)| team.number).collect::<Vec<_>>(),
+		[7, 3],
+		"an unset parameter takes its default"
+	);
+	let members = drain(&mut members);
+	assert!(members.contains(&(super::level_entity_handle_from_root(first, 0), SceneNode::under(first))));
+}
+
+#[test]
+fn an_instance_spawns_its_prefab_under_itself_at_its_transform() {
+	let world = MessageScope::standalone("world");
+	let mut transforms = world.factory::<Transform>().listener();
+	let mut teams = world.factory::<Team>().listener();
+	let mut members = world.factory::<SceneNode>().listener();
+	let mut names = world.factory::<Name>().listener();
+	let (level, payload) = bake_level(
+		br#"{ entities: [
+			{ components: { name: "post", transform: { position: [5, 0, 0] } }, prefab: { resource: "soldier.prefab", parameters: { number: 2 } } },
+			{ components: { name: "gate" } },
+		] }"#,
+	)
+	.unwrap();
+	let (soldier, soldier_payload) = prefab(SOLDIER);
+	let loaded = Loaded::level("test.level", level, payload).with_prefab("soldier.prefab", soldier, soldier_payload);
+
+	let root = spawner().spawn(&world, &loaded, Placement::default()).unwrap();
+
+	let names = drain(&mut names);
+	let handle_of = |name: &str| names.iter().find(|(_, n)| n.as_str() == name).unwrap().0;
+	let (post, body, helmet) = (handle_of("post"), handle_of("soldier"), handle_of("helmet"));
+	assert_eq!(handle_of("gate").id(), post.id() + 1, "level entities come before the prefab's");
+	assert_eq!(body.id(), post.id() + 2);
+	assert_eq!(
+		drain(&mut members),
+		[
+			(post, SceneNode::under(root)),
+			(handle_of("gate"), SceneNode::under(root)),
+			(body, SceneNode::under(post)),
+			(helmet, SceneNode::under(body)),
+		]
+	);
+	let transforms = drain(&mut transforms);
+	let position_of = |handle: Handle| transforms.iter().find(|(h, _)| *h == handle).unwrap().1.get_position();
+	assert_eq!(position_of(body), Point::new(5.0, 1.0, 0.0));
+	assert_eq!(position_of(helmet), Point::new(5.0, 2.0, 0.0));
+	assert_eq!(drain(&mut teams), [(body, Team { number: 2 })]);
+}
+
+#[test]
+fn a_nested_prefab_takes_the_parameters_its_enclosing_prefab_passes_on() {
+	let world = MessageScope::standalone("world");
+	let mut teams = world.factory::<Team>().listener();
+	let (squad, squad_payload) = prefab(
+		r#"{
+			parameters: { number: 1 },
+			entities: [
+				{ prefab: { resource: "soldier.prefab", parameters: { number: { "$parameter": "number" } } } },
+				{ prefab: { resource: "soldier.prefab" } },
+			],
+		}"#,
+	);
+	let (soldier, soldier_payload) = prefab(SOLDIER);
+	let loaded = Loaded::prefab("squad.prefab", squad, squad_payload).with_prefab("soldier.prefab", soldier, soldier_payload);
+
+	spawner()
+		.spawn(
+			&world,
+			&loaded,
+			Placement::default().with_parameters(&serde_json::json!({ "number": 9 })).unwrap(),
+		)
+		.unwrap();
+
+	assert_eq!(drain(&mut teams).into_iter().map(|(_, team)| team.number).collect::<Vec<_>>(), [9, 7]);
+}
+
+#[test]
+fn a_prefab_spawn_that_cannot_complete_publishes_nothing() {
+	let (soldier, soldier_payload) = prefab(SOLDIER);
+	let (looping, looping_payload) = prefab(r#"{ entities: [{ prefab: { resource: "loop.prefab" } }] }"#);
+	let (broken, broken_payload) = prefab(r#"{ entities: [{ id: "bad", components: { team: { number: "x" } } }] }"#);
+	let level = |source: &str| {
+		let (level, payload) = bake_level(source.as_bytes()).unwrap();
+		Loaded::level("test.level", level, payload)
+			.with_prefab("soldier.prefab", soldier.clone(), soldier_payload.clone())
+			.with_prefab("loop.prefab", looping.clone(), looping_payload.clone())
+			.with_prefab("broken.prefab", broken.clone(), broken_payload.clone())
+	};
+	for (problem, source, cause) in [
+		("unknown parameter", r#"{ entities: [{ prefab: { resource: "soldier.prefab", parameters: { rank: 1 } } }] }"#, "doesn't declare"),
+		("missing prefab", r#"{ entities: [{ prefab: { resource: "absent.prefab" } }] }"#, "isn't loaded"),
+		("prefab that places itself", r#"{ entities: [{ prefab: { resource: "loop.prefab" } }] }"#, "nest more than"),
+		("prefab that doesn't decode", r#"{ entities: [{ components: { name: "a" } }, { prefab: { resource: "broken.prefab" } }] }"#, "entity 'bad' of 'broken.prefab'"),
+	] {
+		let world = MessageScope::standalone("world");
+		let mut scenes = world.factory::<Scene>().listener();
+		let mut names = world.factory::<Name>().listener();
+
+		let error = spawner().spawn(&world, &level(source), Placement::default()).expect_err(problem);
+
+		assert!(error.contains(cause), "{problem}: {error}");
+		assert!(drain(&mut scenes).is_empty() && drain(&mut names).is_empty(), "{problem} published something");
+	}
+}
+
+#[test]
+fn deleting_an_instance_deletes_its_prefab() {
+	let world = MessageScope::standalone("world");
+	let mut scenes = SceneGraph::new(&world);
+	let deletes: DefaultChannel<DeleteMessage> = world.channel();
+	let mut deleted = deletes.listener();
+	let (level, payload) = bake_level(br#"{ entities: [{ id: "post", prefab: { resource: "soldier.prefab" } }] }"#).unwrap();
+	let (soldier, soldier_payload) = prefab(SOLDIER);
+	let loaded = Loaded::level("test.level", level, payload).with_prefab("soldier.prefab", soldier, soldier_payload);
+
+	let root = spawner().spawn(&world, &loaded, Placement::default()).unwrap();
+	let post = super::level_entity_handle_from_root(root, 0);
+	deletes.send(DeleteMessage::new(post));
+	scenes.cascade();
+
+	let mut deleted = std::iter::from_fn(|| deleted.read()).map(|deletion| deletion.into_handle().id()).collect::<Vec<_>>();
+	deleted.sort();
+	assert_eq!(deleted, [post.id(), post.id() + 1, post.id() + 2]);
 }

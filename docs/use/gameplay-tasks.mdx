@@ -46,6 +46,31 @@ app.runtime().spawn(|tasks| gun(tasks, camera));
 A task can spawn more tasks, such as one per shot it fires. They run in the
 same poll.
 
+### Give a kind its behavior
+
+To start the same behavior on every entity that has a component, attach a task
+to the component's type. A level or prefab that places the component then
+places its behavior too:
+
+```rust
+#[derive(Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Patrol {
+	speed: f32,
+}
+
+spawner.register::<Patrol>("patrol")?;
+app.runtime().attach(|tasks: Tasks<Scene>, guard: Handle, patrol: Patrol| async move {
+	loop {
+		walk(&tasks, guard, patrol.speed).await;
+		tasks.sleep(MediaTime::from_seconds(2)).await;
+	}
+});
+```
+
+Attach before you spawn: only entities that get the component afterwards start
+a task. Deleting the entity ends its task.
+
 ## Poll from your tick
 
 The application advances task time before your simulation callback. Poll the

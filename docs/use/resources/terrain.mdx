@@ -1,0 +1,103 @@
+---
+title: Bake a terrain
+description: Turn a height map into a terrain whose parts load one at a time as the camera moves, with distant parts at low detail.
+icon: Boxes
+---
+
+Bake a terrain when you want ground that's larger than one mesh should be. The
+bake splits the height map into square nodes at several levels of detail and
+stores each node as a mesh of its own. The renderer loads the fine nodes near the
+camera and covers the distance with a few coarse ones. The
+[terrain reference](/docs/reference/terrain) specifies every field and rule.
+
+## Export the height map
+
+Export the height map from your terrain tool as a 16-bit grayscale PNG or as an
+EXR, and save it in your `assets/` directory, such as
+`assets/terrain/valley.png`. An 8-bit PNG also works, but it has only 256
+heights, so its slopes bake into steps.
+
+The top of the image becomes the terrain's +Z edge, and its right side the +X
+edge. The darkest value is the lowest height and the brightest the highest.
+
+## Choose a material
+
+Every node draws with one `.bema` variant. Write one as
+[Declare a material](/docs/use/resources/author#declare-a-material) shows. Its
+`UV` stream spans the whole terrain from 0 to 1 and lines up with the height
+map, so one texture painted over the height map, such as a color or splat map,
+covers the terrain exactly. Scale the UV in the material's graph to tile a
+detail texture.
+
+## Write the terrain asset
+
+Create a `.terrain.bead` file, such as `assets/terrain/valley.terrain.bead`:
+
+```json5
+{
+  $schema: "byte_engine/schemas/terrain.bead.schema.json",
+  height_map: "terrain/valley.png",
+  material: "terrain/valley.bema",
+  spacing: 2,          // meters between samples, so a 2,049-sample map spans 4,096 m
+  heights: [-20, 380], // meters at the darkest and the brightest value
+  tile_size: 64,       // quads along each side of a node
+}
+```
+
+Set `spacing` and `heights` from the size and height range your terrain tool
+exported. Keep `tile_size` at 64 unless you have a reason to change it: a
+smaller one makes more, smaller nodes, so loading follows the camera more
+closely but more meshes are drawn; a larger one does the opposite.
+
+The image handler also bakes `valley.png` as a texture. If nothing samples it,
+add its path to the [excluded assets](/docs/reference/assets#excluded-assets).
+The terrain still reads it.
+
+## Bake it
+
+Bake the terrain with BELD, or request it from a development build as with any
+other asset:
+
+```bash
+beld bake terrain/valley.terrain.bead
+```
+
+The bake stores a `Terrain` resource under `terrain/valley.terrain.bead`, and
+one mesh for each node under `terrain/valley.terrain.bead#nodes/<level>/<column>/<row>`.
+A development build that requests a single node's mesh bakes only that mesh.
+
+## Draw it
+
+Create an entity with a `RenderableTerrain` that names the terrain asset, and
+a `Transform` that places it:
+
+```rust
+let valley = app
+	.world()
+	.create(RenderableTerrain::resource("terrain/valley.terrain.bead"))
+	.with(Transform::from_position(Point::new(-2048.0, 0.0, -2048.0)))
+	.handle();
+```
+
+A level spawns the same entity from its `terrain` kind:
+
+```json5
+{ components: { terrain: "terrain/valley.terrain.bead", transform: { position: [-2048, 0, -2048] } } }
+```
+
+The renderer then loads the nodes the camera needs: fine nodes near the
+camera, coarse ones in the distance. A node keeps drawing until finer ones
+replace it, so the ground never shows holes while it loads. Moving the
+entity moves the whole terrain, and deleting it removes the terrain. The
+[terrain rendering rules](/docs/reference/rendering#terrains) specify which
+nodes draw.
+
+The detail settings that pick mesh detail levels also pick terrain nodes, so
+lowering the allowed pixel error loads finer nodes farther away.
+
+## Rust API
+
+- [`RenderableTerrain`](/docs/api/latest/byte_engine/rendering/renderable/terrain/RenderableTerrain)
+- [`Terrain`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resources/terrain/struct.Terrain.html)
+- [`TerrainNode`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resources/terrain/struct.TerrainNode.html)
+- [`TerrainAssetHandler`](https://docs.rs/byte-engine-resource-management/latest/resource_management/asset/handler/implementations/terrain/struct.TerrainAssetHandler.html)

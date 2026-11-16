@@ -1,5 +1,5 @@
 {
 	"title": "Resource Management",
 	"icon": "Storage",
-	"pages": ["assets", "resources", "bemx", "materialx"]
+	"pages": ["assets", "terrain", "resources", "bemx", "materialx"]
 }

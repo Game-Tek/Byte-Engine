@@ -1,0 +1,109 @@
+---
+title: Terrain
+description: Look up the fields of a terrain asset, how its height map becomes terrain space, and the node tree, meshes, errors, and bounds that a terrain bakes into.
+icon: Boxes
+---
+
+A terrain is a height map baked into a tree of square nodes. Each node is a mesh
+of its own, so a renderer loads only the nodes near the camera at full detail
+and covers the distance with a few large, coarse nodes. To bake one, follow
+[Bake a terrain](/docs/use/resources/terrain). To change how terrains bake, read
+[Terrain baking](/docs/develop/resource-management/terrain).
+
+## Terrain assets
+
+A `.terrain.bead` file is a JSON5 object with these fields:
+
+| Field | Default | Value |
+| --- | --- | --- |
+| `$schema` | None | `byte_engine/schemas/terrain.bead.schema.json`, for editor completion. |
+| `height_map` | Required | The ID of a PNG or EXR image, relative to the application's `assets/` directory, whose samples are the terrain's heights. |
+| `material` | Required | The ID of the `.bema` variant every node draws with. |
+| `spacing` | `1` | Meters between neighboring samples, along X and along Z. Finite and greater than zero. |
+| `heights` | `[0, 100]` | Two heights in meters: the height of a sample whose value is 0, then of one whose value is 1. Finite, with the first lower than the second. |
+| `tile_size` | `64` | Quads along each side of a node: a power of two from 4 through 128. |
+
+A field that isn't listed, or a value outside its range, fails the bake.
+
+## Height maps
+
+| Rule | Value |
+| --- | --- |
+| Size | At least 2 samples on each side. |
+| PNG samples | Grayscale, grayscale with alpha, RGB, or RGBA, at 8 or 16 bits. The first channel is the sample. Its value is the integer over 255 or 65,535. Other bit depths and palette images fail the bake. |
+| EXR samples | The first layer's `Y` channel, else its `R` channel, else its first channel in name order. Its value is the sample itself. A value that isn't finite fails the bake. |
+| Color metadata | None applies: samples are data, never color. |
+| Height | `heights[0] + value × (heights[1] − heights[0])`. EXR values outside 0 through 1 extend the range. |
+
+Use 16-bit PNG or EXR height maps. An 8-bit map has 256 heights, so its slopes
+bake into steps.
+
+## Terrain space
+
+A terrain's meshes, bounds, and errors are in terrain space, in meters.
+For a height map `W` samples wide and `H` samples tall:
+
+| Sample | Position |
+| --- | --- |
+| Column `c`, from 0 at the left edge | `x = (c − (W − 1) / 2) × spacing` |
+| Row `r`, from 0 at the top edge | `z = ((H − 1) / 2 − r) × spacing` |
+| Height | `y` is the sample's height. |
+
+The terrain's center is at the origin, the image's top edge faces +Z, and its
+right edge faces +X, as the [axes](/docs/reference/conventions#axes) define.
+
+## Node tree
+
+A quad is the square between four neighboring samples. A terrain has `W − 1`
+quads along X and `H − 1` along Z.
+
+| Term | Definition |
+| --- | --- |
+| Level | Level 0 holds the finest nodes. A node of level `k` spans `tile_size × 2^k` quads on each side, and its vertices lie every `2^k` samples. |
+| Grid | Level `k` has `ceil((W − 1) / (tile_size × 2^k))` columns and `ceil((H − 1) / (tile_size × 2^k))` rows of nodes. |
+| Levels | The coarsest level is the first with one column and one row. Its node is the root. |
+| Node | Column `i` and row `j` of level `k` span sample columns `i × n` through `min((i + 1) × n, W − 1)` and sample rows `j × n` through `min((j + 1) × n, H − 1)`, where `n = tile_size × 2^k`. Nodes on the right and bottom edges can be narrower. |
+| Children | The nodes of level `k − 1` at columns `2i` and `2i + 1` and rows `2j` and `2j + 1` that exist. Together they span the node's samples exactly. Level 0 nodes have none. |
+
+## Node meshes
+
+Each node's mesh has two primitives, both drawn with the terrain's material.
+
+| Rule | Value |
+| --- | --- |
+| Vertex columns | Every `2^k`-th sample column from the node's first, and its last column when that one falls between them. Vertex rows follow the same rule. |
+| Surface | One vertex at each vertex column and row, at its sample's position. Each quad between four of them, with corners `a` at the lower column and row, `b` at the higher column, `c` at both higher, and `d` at the higher row, makes the triangles `a b c` and `a c d`. Both face +Y. |
+| Normal | Perpendicular to the height map's slope, measured between the samples `2^k` away on each side, or the edge sample where that lies outside the map. Neighboring nodes of one level share their edge vertices' normals. |
+| Tangent | Along +X, following the slope, with a bitangent sign of 1. |
+| UV | `(c / (W − 1), r / (H − 1))` at column `c` and row `r`, so one texture spans the whole terrain and lines up with the height map. |
+| Skirt | The second primitive: a strip along the node's outer edge, from each edge vertex down to a copy of it `d` meters lower, facing away from the node. Its vertices copy their edge vertex's normal, tangent, and UV. |
+| Skirt depth | `d = max(2 × E, spacing)` for every node of a level, where `E` is the largest error of a node one level coarser, or of the root for the root's level. |
+| Detail levels | Each primitive gets [detail levels](/docs/reference/assets#detail-levels) with `lock_borders` set, so a node's edge never moves at any of its levels. |
+
+## Errors and bounds
+
+| Term | Definition |
+| --- | --- |
+| Error | The largest vertical distance, in meters, between a sample inside the node and the node's surface above or below it, or the largest error of the node's children, whichever is larger. Level 0 nodes have an error of 0. A node's error is never smaller than its children's. |
+| Bounds | The box from the node's lowest sample minus its skirt depth to its highest sample, over the node's span on X and Z. It holds the node's mesh and the meshes of every node below it. |
+
+## Seams
+
+| Neighbors | Result |
+| --- | --- |
+| Same level | Their shared edge has the same vertices, so the surfaces meet without a gap. |
+| One level apart | The gap along their shared edge is at most the coarser node's error plus the finer node's, so the skirts of both cover it. |
+| Further apart | Skirts can leave gaps. A renderer draws neighbors at most one level apart. |
+
+## Resources
+
+| Resource ID | Class | Holds |
+| --- | --- | --- |
+| `<terrain>` | `Terrain` | The terrain's sample counts, spacing, heights, and tile size, and for each level its columns and rows, then for each node its mesh ID, bounds, and error. Nodes are ordered by level from level 0, then by row, then by column. |
+| `<terrain>#nodes/<level>/<column>/<row>` | `Mesh` | One node's mesh. |
+
+`<terrain>` is the `.terrain.bead` file's ID. A request for the terrain bakes it
+and the mesh of every node. A request for one node's mesh bakes only that mesh.
+A `nodes/` fragment that names no node, and any other fragment, fails the bake.
+A change to the terrain asset, its height map, or its material bakes each
+resource again.

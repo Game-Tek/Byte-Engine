@@ -178,6 +178,56 @@ A change here must keep these true:
 The residency decisions are tested in `rendering::pipelines::visibility::residency`, and the level table in
 `rendering::pipelines::visibility::lod`.
 
+## How terrain nodes stream
+
+The visibility pipeline draws a [baked terrain](/docs/reference/terrain) by
+choosing which of its nodes to draw each frame, and draws each chosen node as
+an ordinary renderable of the node's mesh. The
+[terrain rules](/docs/reference/rendering#terrains) define the behavior; this
+section explains how it's built.
+
+- `TerrainCuts` holds the selection as pure state, one entry for each node of
+  the tree. `want` walks the tree against an allowed-error function and then
+  refines until no wanted node borders one two levels finer. `draw` takes a
+  residency function, marks covered nodes from the leaves up, picks the drawn
+  nodes from the root down, and coarsens seams two levels apart where the
+  coarser mesh is resident. Neither knows about meshes, loaders, or the scene,
+  so the tests drive it with plain closures.
+- `LodView::in_space` carries the camera into a terrain's space once a frame,
+  so each node's allowed error is one clamp and one distance against its box.
+  The error comes from the same detail settings as mesh detail levels.
+- `TerrainStreams` keeps one entry per terrain resource, with every node mesh
+  any of its terrains needed and the frame it was last needed, and one entry
+  per terrain entity, with its cuts and an instance handle for each node it
+  draws. `select` turns changes in the drawn cut into `TerrainChange` values,
+  which the manager applies as renderables to add and instances to remove.
+  Node instances draw from new handles at the terrain entity's transform, so
+  culling, detail levels, shadows, and ray tracing need nothing of their own.
+- Node meshes load through `VisibilityLoaderClient::request_mesh`, as any
+  renderable mesh. A node mesh idle for 120 frames is released through
+  `VisibilityLoaderClient::release_mesh`, which retires its base and finer
+  blocks, and `MeshResidencies::release`, which resets its primitives' slots in
+  place, so render entities and other meshes keep their slots. A released mesh
+  stays requested in the loader's client, so the loader sends its next request
+  as a reload.
+
+A change here must keep these true:
+
+- A terrain never shows a hole while nodes load: a node draws until children
+  that replace it are resident, and finer nodes draw until a coarser node that
+  replaces them is resident.
+- A node mesh is released only when no render entity draws it and no load of
+  its finer levels is in flight, and the root's mesh is never released.
+- No node mesh is released while the pipeline traces rays, because
+  acceleration structures can't release a mesh's bottom-level structure yet.
+- Releasing slots takes the highest first, since each release moves the last
+  tracked mesh into the freed slot.
+
+The selection and streaming rules are tested in
+`rendering::pipelines::visibility::terrain`, the terrain-space allowed error in
+`rendering::pipelines::visibility::lod`, and slot release in
+`rendering::pipelines::visibility::residency`.
+
 ## How texture mips load
 
 Material textures in the visibility pipeline load their coarse mips first, so

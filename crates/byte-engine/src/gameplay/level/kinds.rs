@@ -16,9 +16,9 @@ use crate::{
 
 impl Spawner {
 	/// Creates a spawner that knows the engine's kinds: `transform`, `name`, `mesh`, `directional_light`,
-	/// `point_light`, `cone_light`, `lightmap`, `body`, `navigation_area`, and `hinge`.
+	/// `point_light`, `cone_light`, `lightmap`, `terrain`, `body`, `navigation_area`, and `hinge`.
 	///
-	/// A build without rendering ignores `mesh`, the lights, and `lightmap`, so a server spawns the same levels as its
+	/// A build without rendering ignores `mesh`, the lights, `lightmap`, and `terrain`, so a server spawns the same levels as its
 	/// clients.
 	/// Next, register your application's kinds with [`Self::register`] or [`Self::register_with`].
 	pub fn with_engine_kinds() -> Self {
@@ -39,9 +39,10 @@ impl Spawner {
 			spawner.register_with("point_light", rendering::point_light).expect(DISTINCT);
 			spawner.register_with("cone_light", rendering::cone_light).expect(DISTINCT);
 			spawner.register_with("lightmap", rendering::lightmap).expect(DISTINCT);
+			spawner.register_with("terrain", rendering::terrain).expect(DISTINCT);
 		}
 		#[cfg(not(feature = "headed"))]
-		for kind in ["mesh", "directional_light", "point_light", "cone_light", "lightmap"] {
+		for kind in ["mesh", "directional_light", "point_light", "cone_light", "lightmap", "terrain"] {
 			spawner.ignore(kind).expect(DISTINCT);
 		}
 		spawner
@@ -218,7 +219,7 @@ mod rendering {
 
 	use super::{Radians, positive};
 	use crate::rendering::{
-		ConeLight, DirectionalLight, LightColor, Lightmap, PhotometricIntensity, PointLight, RenderableMesh,
+		ConeLight, DirectionalLight, LightColor, Lightmap, PhotometricIntensity, PointLight, RenderableMesh, RenderableTerrain,
 		mesh::generator::{BoxMeshGenerator, CapsuleMeshGenerator, SphereMeshGenerator},
 	};
 
@@ -394,6 +395,14 @@ mod rendering {
 			return Err("the lightmap ID is empty. Name the `.lightmap.bead` asset baked from this level".to_string());
 		}
 		Ok(Lightmap::new(resource_id))
+	}
+
+	/// Turns the ID a `terrain` kind names into the component that draws it.
+	pub(super) fn terrain(resource_id: String) -> Result<RenderableTerrain, String> {
+		if resource_id.is_empty() {
+			return Err("the terrain ID is empty. Name the `.terrain.bead` asset to draw".to_string());
+		}
+		Ok(RenderableTerrain::resource(resource_id))
 	}
 
 	pub(super) fn directional_light(light: DirectionalLightPayload) -> Result<DirectionalLight, String> {

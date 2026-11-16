@@ -126,7 +126,7 @@ pub fn setup_default_resource_and_asset_management(
 }
 
 /// Configures `asset_manager` to bake the way the standard engine does: installs the bake services every handler
-/// shares, then the material, model, image, audio, and standalone-shader handlers, for the visibility renderer
+/// shares, then the material, model, image, terrain, audio, and standalone-shader handlers, for the visibility renderer
 /// configured by the `render` scope of `parameters`.
 ///
 /// Pass it to [`setup_default_resource_and_asset_management`] and to `beld::run`, so a debug run and a baked store
@@ -159,6 +159,7 @@ pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[
 	asset_manager.add_asset_handler(ParticleSystemAssetHandler);
 	asset_manager.add_asset_handler(EXRAssetHandler::new());
 	asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
+	asset_manager.add_asset_handler(TerrainAssetHandler);
 	asset_manager.add_asset_handler(LUTAssetHandler::new());
 	asset_manager.add_asset_handler(WAVAssetHandler::new());
 	asset_manager.add_asset_handler(OGGAssetHandler::new());
@@ -357,7 +358,7 @@ use resource_management::{
 			environment::EnvironmentMapAssetHandler, exr::EXRAssetHandler, fbx::FBXAssetHandler,
 			flipbook::FlipbookAssetHandler, fusion::FusionAssetHandler, gltf::GLTFAssetHandler, ies::IESAssetHandler,
 			level::LevelAssetHandler, lut::LUTAssetHandler, ogg::OGGAssetHandler, particles::ParticleSystemAssetHandler,
-			pipeline::PipelineAssetHandler, image::ImageAssetHandler, wav::WAVAssetHandler,
+			pipeline::PipelineAssetHandler, image::ImageAssetHandler, terrain::TerrainAssetHandler, wav::WAVAssetHandler,
 		},
 		manager::AssetManager,
 	},

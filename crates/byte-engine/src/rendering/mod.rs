@@ -86,7 +86,7 @@ pub use pose::UpdatePose;
 pub use render_pass::{
 	MainRenderTarget, ReadFromResult, RenderPass, RenderPassBuilder, RenderPassReturn, RenderPassState, RenderToResult,
 };
-pub use renderable::mesh::RenderableMesh;
+pub use renderable::{mesh::RenderableMesh, terrain::RenderableTerrain};
 pub use renderer::{RenderTargets, Renderer};
 pub use resource::{Query, Resource};
 pub use set_layout::{SetBinder, SetLayout};

@@ -61,6 +61,7 @@ use super::shadow_selection::{
 use super::shadow_updates::{
 	DEFAULT_SHADOW_UPDATE_TEXELS, ShadowMapStates, ShadowViews, drawn_cascade_view, undrawn_cascade_view,
 };
+use super::terrain::{TerrainChange, TerrainStreams};
 use super::skinning::{
 	DualQuaternion, MAX_SKINNING_MATRICES, SkinningDispatch, SkinningPaletteKind, SkinningPass, append_dual_quaternion_palette,
 };
@@ -77,8 +78,8 @@ use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::renderable::mesh::MeshKey;
 use crate::rendering::{
-	Environment, Lightmap, PipelineManagerClient, RenderableMesh, Resource, SetMaterialParameter, ShownTransforms, Sink,
-	UpdatePose, View,
+	Environment, Lightmap, PipelineManagerClient, RenderableMesh, RenderableTerrain, Resource, SetMaterialParameter,
+	ShownTransforms, Sink, UpdatePose, View,
 };
 
 /// The startup parameters that set the local-light shadow pool capacities.
@@ -765,6 +766,13 @@ pub struct VisibilityPipelineManager {
 	directional_light_listener: DefaultListener<CreateMessage<DirectionalLight>>,
 	point_light_listener: DefaultListener<CreateMessage<PointLight>>,
 	mesh_listener: DefaultListener<CreateMessage<RenderableMesh>>,
+	terrain_listener: DefaultListener<CreateMessage<RenderableTerrain>>,
+	/// Every renderable terrain, the nodes each one draws, and when each node mesh was last needed.
+	terrains: TerrainStreams,
+	/// The scene changes terrains asked for, kept so frames reuse the room.
+	terrain_changes: Vec<TerrainChange>,
+	/// The node meshes terrains asked for this frame, kept so frames reuse the room.
+	terrain_requests: Vec<crate::rendering::renderable::mesh::MeshSource>,
 	environment_listener: DefaultListener<CreateMessage<Environment>>,
 	lightmap_listener: DefaultListener<CreateMessage<Lightmap>>,
 	/// The lightmap the world names, and where each lit primitive lies in it once it loaded.
@@ -1000,6 +1008,10 @@ impl VisibilityPipelineManager {
 			directional_light_listener: world.factory::<DirectionalLight>().listener(),
 			point_light_listener: world.factory::<PointLight>().listener(),
 			mesh_listener: world.factory::<RenderableMesh>().listener(),
+			terrain_listener: world.factory::<RenderableTerrain>().listener(),
+			terrains: TerrainStreams::default(),
+			terrain_changes: Vec::new(),
+			terrain_requests: Vec::new(),
 			environment_listener: world.factory::<Environment>().listener(),
 			lightmap_listener: world.factory::<Lightmap>().listener(),
 			lightmaps: Lightmaps::default(),
@@ -1108,9 +1120,15 @@ impl VisibilityPipelineManager {
 		}
 		for (handle, transform) in transforms.changed() {
 			self.scene.update_transform(*handle, transform);
+			// A terrain's nodes draw at its transform.
+			for instance in self.terrains.instances(*handle) {
+				self.scene.update_transform(instance, transform);
+			}
 		}
+		let mut changes = std::mem::take(&mut self.terrain_changes);
 		while let Some(message) = self.deletions_listener.read() {
 			let handle = message.into_handle();
+			self.terrains.remove(handle, &mut changes);
 			self.scene.remove_light(handle);
 			// A deleted renderable also drops the material parameters set on it.
 			self.remove_mesh_instance(handle);
@@ -1119,6 +1137,8 @@ impl VisibilityPipelineManager {
 				self.refresh_instance_lightmaps();
 			}
 		}
+		self.apply_terrain_changes(&mut changes, transforms);
+		self.terrain_changes = changes;
 	}
 
 	/// Adds one light where its handle is shown and requests its optional photometric texture dependency.
@@ -1151,7 +1171,7 @@ impl VisibilityPipelineManager {
 		let source = renderable.source().clone();
 		let (mesh_key, resident) = self.loader.request_mesh(source);
 		if let Some(mesh) = resident {
-			self.add_renderable(handle, mesh_key, &mesh, transforms);
+			self.add_renderable(handle, mesh_key, &mesh, model_of(handle, transforms));
 		} else {
 			self.pending_renderables.push(PendingRenderable { handle, mesh_key });
 		}
@@ -1278,6 +1298,12 @@ impl VisibilityPipelineManager {
 					{
 						self.environment.bind(environment);
 					}
+				}
+				VisibilityLoaderEvent::TerrainReady { id, terrain } => {
+					let mut changes = std::mem::take(&mut self.terrain_changes);
+					self.terrains.adopt(&id, terrain, &mut changes);
+					self.apply_terrain_changes(&mut changes, transforms);
+					self.terrain_changes = changes;
 				}
 				VisibilityLoaderEvent::MeshUnavailable { key, error } => {
 					// Nothing will make the mesh resident, so its renderables stop waiting; creating one again requests it again.
@@ -1652,7 +1678,7 @@ impl VisibilityPipelineManager {
 			if renderable.mesh_key != key {
 				return true;
 			}
-			self.add_renderable(renderable.handle, key, mesh, transforms);
+			self.add_renderable(renderable.handle, key, mesh, model_of(renderable.handle, transforms));
 			false
 		});
 		self.pending_renderables = pending;
@@ -1674,15 +1700,11 @@ impl VisibilityPipelineManager {
 		}
 	}
 
-	/// Adds one resident renderable where its handle is shown.
-	fn add_renderable(&mut self, handle: Handle, key: MeshKey, mesh: &MeshData, transforms: &ShownTransforms) {
+	/// Adds one resident renderable at `model`.
+	fn add_renderable(&mut self, handle: Handle, key: MeshKey, mesh: &MeshData, model: ghi::pod::Mat4x3f) {
 		if let Some(structures) = &mut self.acceleration_structures {
 			structures.register_mesh(key, mesh);
 		}
-		let model = transforms
-			.get(handle)
-			.map_or_else(math::Matrix::identity, Transform::get_matrix)
-			.into();
 		let availability = self.availability.get_or_insert(Availability::Renderable(handle), true);
 		for (index, primitive) in mesh.primitives.iter().enumerate() {
 			let material = self
@@ -1714,6 +1736,81 @@ impl VisibilityPipelineManager {
 					posed_vertices: PosedVertices::Unallocated,
 				}),
 			});
+		}
+	}
+
+	/// Starts drawing the renderable terrain `handle`, and requests its node tree when no other terrain drew it yet.
+	fn create_terrain(&mut self, handle: Handle, terrain: RenderableTerrain, transforms: &ShownTransforms) {
+		let mut changes = std::mem::take(&mut self.terrain_changes);
+		let id = terrain.resource_id().clone();
+		if self.terrains.add(handle, id.clone(), &mut changes) {
+			self.loader.request_terrain(id);
+		}
+		self.apply_terrain_changes(&mut changes, transforms);
+		self.terrain_changes = changes;
+	}
+
+	/// Selects every terrain's nodes for frame `frame` from `lod_view`'s camera, adds and removes their instances,
+	/// requests the node meshes they want, and releases the node meshes no terrain needed for a while.
+	fn stream_terrains(&mut self, frame: u64, lod_view: Option<LodView>, transforms: &ShownTransforms) {
+		let Some(lod_view) = lod_view else {
+			return;
+		};
+		let mut changes = std::mem::take(&mut self.terrain_changes);
+		let mut requests = std::mem::take(&mut self.terrain_requests);
+		let loader = &self.loader;
+		self.terrains.select(
+			frame,
+			|terrain| Some(lod_view.in_space(&model_of(terrain, transforms))),
+			|source| requests.push(source),
+			|key| loader.mesh(key).is_some(),
+			&mut changes,
+		);
+		for source in requests.drain(..) {
+			self.loader.request_mesh(source);
+		}
+		self.terrain_requests = requests;
+		self.apply_terrain_changes(&mut changes, transforms);
+		self.terrain_changes = changes;
+
+		// Rays hit a mesh through acceleration structures that stay built while the mesh is resident, so meshes that
+		// rays may hit stay.
+		if self.acceleration_structures.is_some() {
+			return;
+		}
+		let mut idle = self.terrains.idle_meshes(frame).collect::<SmallVec<[(usize, MeshKey); 16]>>();
+		// Each release moves the last requested mesh into its slot, so slots go from the highest down.
+		idle.sort_unstable_by(|(a, _), (b, _)| b.cmp(a));
+		for (slot, key) in idle {
+			// A mesh that isn't resident yet, that a renderable still draws, or whose finer levels are loading, stays
+			// until a later frame.
+			if self.loader.mesh(key).is_none()
+				|| self.scene.render_entities.iter().any(|entity| entity.mesh == key)
+				|| !self.mesh_residencies.release(key)
+			{
+				continue;
+			}
+			self.loader.release_mesh(key);
+			self.terrains.released(slot);
+		}
+	}
+
+	/// Applies the scene changes terrains asked for, and empties `changes`.
+	fn apply_terrain_changes(&mut self, changes: &mut Vec<TerrainChange>, transforms: &ShownTransforms) {
+		for change in changes.drain(..) {
+			match change {
+				TerrainChange::Remove(instance) => self.remove_mesh_instance(instance),
+				TerrainChange::Add {
+					terrain,
+					instance,
+					mesh,
+				} => {
+					let Some(data) = self.loader.mesh(mesh).cloned() else {
+						continue;
+					};
+					self.add_renderable(instance, mesh, &data, model_of(terrain, transforms));
+				}
+			}
 		}
 	}
 
@@ -2008,6 +2105,14 @@ impl VisibilityPipelineManager {
 	}
 }
 
+/// Returns the model matrix `handle` is shown at, or the identity when it has no transform.
+fn model_of(handle: Handle, transforms: &ShownTransforms) -> ghi::pod::Mat4x3f {
+	transforms
+		.get(handle)
+		.map_or_else(math::Matrix::identity, Transform::get_matrix)
+		.into()
+}
+
 impl PipelineManager for VisibilityPipelineManager {
 	/// Drains creation messages in dependency order: resources first so their loads start before any entity
 	/// needs them, then lights, meshes, and environments.
@@ -2028,6 +2133,9 @@ impl PipelineManager for VisibilityPipelineManager {
 		}
 		while let Some(message) = self.mesh_listener.read() {
 			self.request_mesh(message.handle(), message.into_data(), transforms);
+		}
+		while let Some(message) = self.terrain_listener.read() {
+			self.create_terrain(message.handle(), message.into_data(), transforms);
 		}
 		while let Some(message) = self.fog_listener.read() {
 			self.fog = Some(*message.data());
@@ -2071,6 +2179,8 @@ impl PipelineManager for VisibilityPipelineManager {
 		}
 		// Detail levels follow the first sink's camera, like the views and exposure below.
 		let lod_view = sinks.first().map(|sink| LodView::new(sink, self.lod_settings));
+		// Terrains place this frame's node instances before the frame lists its instances.
+		self.stream_terrains(frame.key().frame_index(), lod_view, transforms);
 		self.rebuild_active_instances(frame, lod_view, alley);
 		// Instances write their own parameter blocks as the frame names them, so the changes are copied after.
 		if let Some((first, changes)) = self.material_parameters.take_changes(sequence) {

@@ -23,6 +23,7 @@ pub mod lut;
 pub mod ogg;
 pub mod particles;
 pub mod pipeline;
+pub mod terrain;
 pub mod wav;
 
 pub use audio_graph::*;
@@ -41,4 +42,5 @@ pub use lut::*;
 pub use ogg::*;
 pub use particles::*;
 pub use pipeline::*;
+pub use terrain::*;
 pub use wav::*;

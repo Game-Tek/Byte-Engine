@@ -204,6 +204,29 @@ impl MeshResidencies {
 		}
 	}
 
+	/// Returns whether `key` can be released now: true when no load of its finer levels is in flight, and then its
+	/// primitives go back to their base levels, as a mesh that loads again starts. False when a load is in flight, so
+	/// the caller tries again on a later frame.
+	///
+	/// The mesh's slots stay valid for render entities added after it loads again.
+	pub(crate) fn release(&mut self, key: MeshKey) -> bool {
+		let Some(&mesh) = self.mesh_indices.get(&key) else {
+			return true;
+		};
+		let mesh = &mut self.meshes[mesh as usize];
+		if mesh.loading {
+			return false;
+		}
+		mesh.unavailable = false;
+		for primitive in &mut self.primitives[mesh.primitives.clone()] {
+			primitive.finest = primitive.base;
+			*primitive.wanted.get_mut() = u8::MAX;
+			primitive.last_wanted_finer = None;
+			primitive.retry_frame = 0;
+		}
+		true
+	}
+
 	/// Records that `key`'s finer levels can't load, so none is asked for again, and closes its load.
 	pub(crate) fn unavailable(&mut self, key: MeshKey) {
 		let Some(&mesh) = self.mesh_indices.get(&key) else {
@@ -305,6 +328,27 @@ mod tests {
 			assert!(end_frame(&mut residencies).is_empty());
 		}
 		residencies.want(near, 0);
+		assert_eq!(end_frame(&mut residencies), [load(NEAR, &[(0, 1)])]);
+	}
+
+	#[test]
+	fn a_released_mesh_starts_from_its_base_levels_and_waits_for_its_load_in_flight() {
+		let mut residencies = MeshResidencies::default();
+		residencies.add_mesh(NEAR, [2]);
+		let slot = residencies.slot(NEAR, 0).unwrap();
+		residencies.want(slot, 1);
+		assert_eq!(end_frame(&mut residencies), [load(NEAR, &[(0, 1)])]);
+
+		// The load is in flight, so the mesh can't go yet.
+		assert!(!residencies.release(NEAR));
+		residencies.loaded(NEAR, 0, 1);
+		residencies.load_finished(NEAR, Vec::new());
+		assert!(residencies.release(NEAR));
+
+		// Loaded again, it asks for its finer levels from its base level, through the same slot.
+		residencies.add_mesh(NEAR, [2]);
+		assert_eq!(residencies.slot(NEAR, 0), Some(slot));
+		residencies.want(slot, 1);
 		assert_eq!(end_frame(&mut residencies), [load(NEAR, &[(0, 1)])]);
 	}
 

@@ -42,6 +42,11 @@ pub trait MeshPrimitiveSource {
 		&[]
 	}
 
+	/// Returns the primitive's triangles, three vertex indices each.
+	///
+	/// Wind each triangle so that `(b − a) × (c − a)` points behind its front face, into the surface. Mesh processing
+	/// swaps every triangle's last two indices, which turns that winding into the engine's
+	/// [front faces](/docs/reference/conventions#camera-and-clip-space).
 	fn indices(&self) -> Result<impl ExactSizeIterator<Item = Result<u32, Self::Error>> + '_, Self::Error>;
 
 	fn positions(&self) -> Result<impl ExactSizeIterator<Item = Result<Point<ModelSpace>, Self::Error>> + '_, Self::Error>;

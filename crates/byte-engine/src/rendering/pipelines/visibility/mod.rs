@@ -10,6 +10,7 @@
 //! * `geometry`: GPU geometry buffers, sized by [`GeometryCapacity`], and the worker-side conversion of meshes into
 //!   them.
 //! * `lod`: which of a primitive's baked detail levels each instance draws.
+//! * `terrain`: which nodes of each renderable terrain draw, and which node meshes load and go.
 //! * `render_pass`: the per-sink GPU passes.
 //! * `shader_generator`: [`VisibilityShaderGenerator`] turns authored materials into material-evaluation compute
 //!   shaders.
@@ -38,6 +39,7 @@ mod shader_generator;
 pub(crate) mod shadow_selection;
 mod shadow_updates;
 mod skinning;
+mod terrain;
 #[cfg(test)]
 mod tests;
 

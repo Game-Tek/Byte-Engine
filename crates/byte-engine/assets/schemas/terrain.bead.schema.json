@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://byte-engine.dev/schemas/terrain.bead.schema.json",
+  "title": "Byte Engine terrain asset",
+  "description": "A standalone terrain asset that bakes a height map into a tree of node meshes that load one at a time.",
+  "type": "object",
+  "required": ["height_map", "material"],
+  "properties": {
+    "$schema": { "type": "string", "description": "The local JSON Schema reference for this asset." },
+    "height_map": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The asset-root-relative ID of a PNG or EXR image whose samples are the terrain's heights. Use 16-bit PNG or EXR."
+    },
+    "material": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The ID of the .bema variant every node draws with."
+    },
+    "spacing": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 1,
+      "description": "Meters between neighboring samples, along X and along Z."
+    },
+    "heights": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 2,
+      "maxItems": 2,
+      "default": [0, 100],
+      "description": "The height in meters of a sample whose value is 0, then of one whose value is 1. The first must be lower."
+    },
+    "tile_size": {
+      "type": "integer",
+      "enum": [4, 8, 16, 32, 64, 128],
+      "default": 64,
+      "description": "Quads along each side of a node."
+    }
+  },
+  "additionalProperties": false
+}

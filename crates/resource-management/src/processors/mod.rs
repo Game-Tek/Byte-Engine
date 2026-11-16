@@ -6,6 +6,7 @@ pub mod audio;
 pub mod image;
 pub mod lut;
 pub mod mesh;
+pub mod terrain;
 
 pub use audio::*;
 pub use image::*;

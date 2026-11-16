@@ -246,10 +246,11 @@ fn engine_kinds_read_the_payloads_the_reference_specifies() {
 #[cfg(feature = "headed")]
 #[test]
 fn rendering_kinds_read_the_payloads_the_reference_specifies() {
-	use crate::rendering::{ConeLight, DirectionalLight, PointLight, RenderableMesh};
+	use crate::rendering::{ConeLight, DirectionalLight, PointLight, RenderableMesh, RenderableTerrain};
 
 	let world = MessageScope::standalone("world");
 	let mut meshes = world.factory::<RenderableMesh>().listener();
+	let mut terrains = world.factory::<RenderableTerrain>().listener();
 	let mut suns = world.factory::<DirectionalLight>().listener();
 	let mut lamps = world.factory::<PointLight>().listener();
 	let mut spots = world.factory::<ConeLight>().listener();
@@ -267,11 +268,15 @@ fn rendering_kinds_read_the_payloads_the_reference_specifies() {
 			{ components: { point_light: { color: { kelvin: 3000 }, intensity: { ies: { profile: "lamp.ies", dimmer: 0.5 } }, shadow_far: 12 } } },
 			{ components: { cone_light: { color: { kelvin: 4000 }, intensity: { luminous_intensity: { candela: 900 } }, inner_angle: 0.3, outer_angle: 0.5, shadow_near: 0.2, shadow_far: 20 } } },
 			{ components: { cone_light: { color: { kelvin: 4000 }, intensity: { ies: { profile: "spot.ies", dimmer: 1 } }, inner_angle: 0.6, outer_angle: 0.8 } } },
+			{ components: { terrain: "valley.terrain.bead" } },
 		] }"#,
 	)
 	.unwrap();
 
 	assert_eq!(drain(&mut meshes).len(), 4);
+	let terrains = drain(&mut terrains);
+	assert_eq!(terrains.len(), 1);
+	assert_eq!(&**terrains[0].1.resource_id(), "valley.terrain.bead");
 	assert_eq!(drain(&mut suns).len(), 1);
 
 	let lamps = drain(&mut lamps);

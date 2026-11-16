@@ -19,6 +19,7 @@ use resource_management::resources::{
 	lightmap::{Lightmap as ResourceLightmap, LightmapInstance},
 	material::{AssembledShader, Value, Variant as ResourceVariant},
 	mesh::Mesh,
+	terrain::Terrain,
 };
 use resource_management::types::AlphaMode;
 use smallvec::SmallVec;
@@ -74,6 +75,8 @@ pub(crate) enum VisibilityLoadKey {
 	IesProfile(String),
 	Environment(String),
 	Lightmap(String),
+	/// A terrain's node tree, without any node mesh.
+	Terrain(Arc<str>),
 	/// The uber material evaluation shader of the transparent phase when `true`, of the opaque phase otherwise.
 	UberShader(bool),
 	/// Both coverage shaders and the masked raster pipelines they are the fragments of.
@@ -92,6 +95,7 @@ impl std::fmt::Display for VisibilityLoadKey {
 			Self::IesProfile(id) => write!(formatter, "IES profile {id}"),
 			Self::Environment(id) => write!(formatter, "environment {id}"),
 			Self::Lightmap(id) => write!(formatter, "lightmap {id}"),
+			Self::Terrain(id) => write!(formatter, "terrain {id}"),
 			Self::MeshLevels(key) => write!(formatter, "finer detail levels of mesh {key:?}"),
 			Self::UberShader(transparent) => {
 				write!(formatter, "uber shader {}", UBER_MATERIAL_SHADERS[usize::from(*transparent)])
@@ -125,6 +129,8 @@ pub(crate) enum VisibilityLoadRequest {
 	Environment(String),
 	/// A baked lightmap and its image.
 	Lightmap(String),
+	/// A terrain's node tree. Its node meshes load as meshes of their own.
+	Terrain(Arc<str>),
 	/// The uber material evaluation shader of one phase, the transparent one when `transparent` is set. `rebake` bakes
 	/// it again first, from every material the store now holds; only development builds can.
 	UberShader {
@@ -304,6 +310,8 @@ pub(crate) enum VisibilityResident {
 		index: u32,
 		image: ghi::implementation::DetachedImage,
 	},
+	/// A terrain's node tree.
+	Terrain { id: Arc<str>, terrain: Terrain },
 	/// Upload-complete image-based lighting whose images the render thread still interns.
 	Environment {
 		id: String,
@@ -378,6 +386,11 @@ pub(crate) enum VisibilityLoaderEvent {
 	},
 	TextureReady(ResidentTexture),
 	LightmapReady(ResidentLightmap),
+	/// A terrain's node tree, which the terrains that draw it select nodes from.
+	TerrainReady {
+		id: Arc<str>,
+		terrain: Arc<Terrain>,
+	},
 	EnvironmentReady {
 		id: String,
 		environment: ResidentEnvironment,
@@ -413,6 +426,9 @@ pub(crate) struct VisibilityLoaderClient {
 	meshes: HashMap<MeshKey, Arc<MeshData>>,
 	/// Each resident resource mesh's ID, which its finer levels load from.
 	mesh_ids: HashMap<MeshKey, Arc<str>>,
+	/// Meshes released since they were last requested, which the client still counts as requested, so a request
+	/// loads them again.
+	released: utils::hash::HashSet<MeshKey>,
 	/// The finer detail levels of primitives some instance wanted, by mesh and primitive index, in ranges of their own.
 	refined: HashMap<(MeshKey, u32), PrimitiveBlock>,
 	/// The free space of the geometry streams, which released meshes return to.
@@ -520,20 +536,36 @@ impl VisibilityLoaderClient {
 		if let MeshSource::Resource(id) = &source {
 			self.mesh_ids.entry(key).or_insert_with(|| id.clone());
 		}
-		self.client.request(VisibilityLoadRequest::Mesh(source));
+		// The client still counts a released mesh as requested, so only a reload sends it again.
+		if self.released.remove(&key) {
+			self.client.reload(VisibilityLoadRequest::Mesh(source));
+		} else {
+			self.client.request(VisibilityLoadRequest::Mesh(source));
+		}
 		(key, resident)
 	}
 
-	/// Stops publishing `key`'s mesh and frees its geometry once no frame in flight reads it.
+	/// Returns `key`'s mesh when it is resident.
+	pub(crate) fn mesh(&self, key: MeshKey) -> Option<&Arc<MeshData>> {
+		self.meshes.get(&key)
+	}
+
+	/// Stops publishing `key`'s mesh and frees its geometry, finer levels included, once no frame in flight reads it.
+	/// The next [`Self::request_mesh`] of it loads it again.
 	///
 	/// Call it only after every renderable that draws the mesh left the scene, since their instances still name its
-	/// ranges. The loader still counts the key as requested, so load the mesh again with a reload, not
-	/// [`Self::request_mesh`].
-	#[expect(dead_code, reason = "Mesh detail residency, the next step, evicts meshes through it.")]
+	/// ranges, and while no load of its finer levels is in flight. Does nothing for a mesh that isn't resident.
 	pub(crate) fn release_mesh(&mut self, key: MeshKey) {
-		if let Some(mesh) = self.meshes.remove(&key) {
-			self.retired_ranges.retire(mesh.ranges.clone(), self.next_frame);
+		let Some(mesh) = self.meshes.remove(&key) else {
+			return;
+		};
+		self.retired_ranges.retire(mesh.ranges.clone(), self.next_frame);
+		for primitive in 0..mesh.primitives.len() as u32 {
+			if let Some(block) = self.refined.remove(&(key, primitive)) {
+				self.retired_ranges.retire(block.ranges, self.next_frame);
+			}
 		}
+		self.released.insert(key);
 	}
 
 	/// Loads finer detail levels of some of `key`'s primitives in one load: each listed primitive from its finest listed
@@ -612,6 +644,11 @@ impl VisibilityLoaderClient {
 	}
 
 	/// Requests one baked lightmap and its image.
+	/// Requests a terrain's node tree. It arrives as a [`VisibilityLoaderEvent::TerrainReady`].
+	pub(crate) fn request_terrain(&mut self, id: Arc<str>) {
+		self.client.request(VisibilityLoadRequest::Terrain(id));
+	}
+
 	pub(crate) fn request_lightmap(&mut self, id: String) {
 		self.client.request(VisibilityLoadRequest::Lightmap(id));
 	}
@@ -793,6 +830,13 @@ impl VisibilityLoaderClient {
 					instances,
 				}),
 				LoaderEvent::Ready {
+					resident: VisibilityResident::Terrain { id, terrain },
+					..
+				} => VisibilityLoaderEvent::TerrainReady {
+					id,
+					terrain: Arc::new(terrain),
+				},
+				LoaderEvent::Ready {
 					resident:
 						VisibilityResident::Environment {
 							id,
@@ -966,6 +1010,7 @@ pub(crate) fn spawn(
 			pipeline_manager,
 			meshes: HashMap::default(),
 			mesh_ids: HashMap::default(),
+			released: Default::default(),
 			refined: HashMap::default(),
 			geometry_ranges: geometry.ranges.clone(),
 			retired_ranges: RetiredRanges::default(),
@@ -1416,6 +1461,21 @@ impl VisibilityLoader {
 		})
 	}
 
+	/// Loads a terrain's node tree. Its node meshes aren't requested: the terrains that draw it request the ones the
+	/// camera needs.
+	async fn load_terrain(&self, id: Arc<str>) -> Result<VisibilityResident, LoadError> {
+		let terrain: Reference<Terrain> = self.resource_manager.request(&id).await.map_err(|error| {
+			LoadError(format!(
+				"Visibility could not load terrain {id}. The most likely cause is that the `.terrain.bead` asset wasn't baked or failed to bake. Bake it with `beld bake`, and check its log. See {}. Request error: {error}",
+				crate::online_docs_url("use/resources/terrain#bake-it")
+			))
+		})?;
+		Ok(VisibilityResident::Terrain {
+			id,
+			terrain: terrain.into_resource(),
+		})
+	}
+
 	/// Loads the diffuse and roughness-prefiltered IBL streams and transfers them as one batch.
 	async fn load_environment(&self, id: String, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
 		let EnvironmentMaps {
@@ -1803,6 +1863,7 @@ impl LoadPipeline for VisibilityLoader {
 			VisibilityLoadRequest::IesProfile(id) => VisibilityLoadKey::IesProfile(id.clone()),
 			VisibilityLoadRequest::Environment(id) => VisibilityLoadKey::Environment(id.clone()),
 			VisibilityLoadRequest::Lightmap(id) => VisibilityLoadKey::Lightmap(id.clone()),
+			VisibilityLoadRequest::Terrain(id) => VisibilityLoadKey::Terrain(id.clone()),
 			VisibilityLoadRequest::UberShader { transparent, .. } => VisibilityLoadKey::UberShader(*transparent),
 			VisibilityLoadRequest::CoverageShaders { .. } => VisibilityLoadKey::CoverageShaders,
 		}
@@ -1828,6 +1889,7 @@ impl LoadPipeline for VisibilityLoader {
 			}
 			VisibilityLoadRequest::Environment(id) => self.load_environment(id, lane).await,
 			VisibilityLoadRequest::Lightmap(id) => self.load_lightmap(id, lane).await,
+			VisibilityLoadRequest::Terrain(id) => self.load_terrain(id).await,
 			VisibilityLoadRequest::UberShader { transparent, rebake } => self.load_uber_shader(transparent, rebake).await,
 			VisibilityLoadRequest::CoverageShaders { rebake } => self.load_coverage_shaders(rebake).await,
 		}

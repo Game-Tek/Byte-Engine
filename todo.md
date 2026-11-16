@@ -126,6 +126,11 @@
 - Add a starburst and a lens dirt texture to the screen-space lens flare in `crates/byte-engine/src/rendering/render_passes/lens_flare.rs`. The starburst should rotate with the camera's orientation from `Sink::view`, and the dirt texture should modulate the flare, and optionally the bloom, at composite time. Both need texture assets loaded by the pass.
 - Build the CPU animation graph, evaluate imported glTF and FBX clips into `VisibilitySceneManager::write_skinned_pose`, apply retained rigid primitive nodes, and provide animation-safe bounds so posed meshlet culling can be re-enabled.
 
+- Release streamed meshes while ray tracing. `SceneAccelerationStructures` builds a BLAS per mesh and never releases one, so `VisibilityPipelineManager::stream_terrains` (`crates/byte-engine/src/rendering/pipelines/visibility/manager.rs`) releases no terrain node mesh while the pipeline traces rays, and a long flight over a large terrain keeps every node it visited. Destroy a mesh's BLAS once no frame in flight reads it, reuse its hit records, and then drop the early return.
+- Pass terrain entities' material parameters to their node renderables. `SetMaterialParameter` on a `RenderableTerrain` entity reaches no node, since each node draws from a handle of its own; forward the entity's parameters to every node instance as `TerrainStreams` adds it, and update the terrain rules in `docs/reference/rendering.mdx#terrains`.
+- Give terrains height queries for physics and gameplay, such as placing RTS units on the ground. The `Terrain` resource keeps no heights; store the height field as a payload stream, or a coarser copy of it, and specify how a query interpolates it in `docs/reference/terrain.mdx`.
+- Give terrain node meshes lightmap UVs when the bake builds lightmaps in. Each node could use its terrain-wide `UV` scaled to the node's square, since the surface never overlaps itself.
+
 - Give skinned primitives detail levels once animation-safe bounds exist. `MeshProcessorSession` keeps them at full detail because simplification error is measured in the bind pose and the instance sphere is the rest pose, so the renderer could not tell when a coarser level is safe.
 
 ## Surfel global illumination

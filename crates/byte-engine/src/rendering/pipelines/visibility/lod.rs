@@ -202,6 +202,28 @@ impl LodView {
 		}
 	}
 
+	/// Carries the allowed error into the model space of `model`, so many boxes of one model, such as a terrain's
+	/// nodes, measure against the camera without transforming each box. Next, call [`LodSpace::allowed_error`].
+	///
+	/// A model without a usable inverse, such as one with a zero scale, allows no error.
+	pub(crate) fn in_space(&self, model: &Mat4x3f) -> LodSpace {
+		let [x_axis, y_axis, z_axis, translation] = <[[f32; 3]; 4]>::from(*model).map(|[x, y, z]| Vec3f::new(x, y, z));
+		let scales = [x_axis, y_axis, z_axis].map(|axis| dot(axis, axis).sqrt());
+		let (smallest, largest) = (scales.into_iter().fold(f32::INFINITY, f32::min), scales.into_iter().fold(0.0, f32::max));
+		// The eye in model space solves `axes × eye = eye − translation` by Cramer's rule.
+		let determinant = dot(x_axis, cross(y_axis, z_axis));
+		let relative = self.eye - translation;
+		let eye = [cross(y_axis, z_axis), cross(z_axis, x_axis), cross(x_axis, y_axis)]
+			.map(|normal| dot(relative, normal) / determinant);
+		// Written so that a NaN in any term also allows no error.
+		if !(determinant.abs() > 0.0 && largest.is_finite() && smallest > 0.0) {
+			return LodSpace::new([0.0; 3], 0.0, 0.0);
+		}
+		// A model-space distance is at least the smallest scale's share of the world-space one, and a model-space
+		// error at most the largest scale's, so the allowance never shows more than the allowed pixels.
+		LodSpace::new(eye, self.error_per_distance * smallest / largest, self.constant_error / largest)
+	}
+
 	/// Returns the largest model-space error that stays within the allowed pixels for an instance.
 	///
 	/// The distance runs from the camera to the nearest point of the instance's bounding sphere, so the level suits
@@ -219,6 +241,41 @@ impl LodView {
 			return 0.0;
 		}
 		(self.error_per_distance * distance + self.constant_error) / scale
+	}
+}
+
+/// The `LodSpace` struct is a [`LodView`] carried into one model's space, for selection that measures many boxes of
+/// that model, such as the nodes of a terrain.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LodSpace {
+	/// The camera position in model space.
+	eye: Vec3f,
+	/// Model-space error allowed per unit of model-space distance from the camera.
+	error_per_distance: f32,
+	/// Model-space error allowed at any distance.
+	constant_error: f32,
+}
+
+impl LodSpace {
+	/// Creates the allowance of a camera at `eye` in model space, which allows `error_per_distance` model units of error
+	/// per model unit of distance, plus `constant_error`. [`LodView::in_space`] makes the one a frame uses.
+	pub(crate) fn new(eye: [f32; 3], error_per_distance: f32, constant_error: f32) -> Self {
+		Self {
+			eye: Vec3f::new(eye[0], eye[1], eye[2]),
+			error_per_distance,
+			constant_error,
+		}
+	}
+
+	/// Returns the largest model-space error a box from `min` to `max` may show, measured from its point nearest the
+	/// camera. A box around the camera allows only the constant error.
+	pub(crate) fn allowed_error(&self, min: [f32; 3], max: [f32; 3]) -> f32 {
+		let nearest = Vec3f::new(
+			self.eye.x.clamp(min[0], max[0]),
+			self.eye.y.clamp(min[1], max[1]),
+			self.eye.z.clamp(min[2], max[2]),
+		);
+		self.error_per_distance * dist(nearest, self.eye) + self.constant_error
 	}
 }
 
@@ -282,6 +339,24 @@ mod tests {
 		assert_eq!(meshlets(instance(0.0, 0.5, 1.0)), 8);
 		assert_eq!(meshlets(instance(0.0, 600.0, 0.0)), 8);
 		assert_eq!(meshlets(instance(f32::NAN, 600.0, 1.0)), 8);
+	}
+
+	#[test]
+	fn boxes_allow_the_error_a_pixel_covers_at_their_nearest_point_in_model_units() {
+		let view = perspective(LodSettings::default());
+		let close = |actual: f32, expected: f32| (actual - expected).abs() < 1e-6;
+
+		// The model doubles and moves 10 units ahead: its unit box's nearest point is 10 units away, where a pixel
+		// spans 0.02 units, or 0.01 model units.
+		let space = view.in_space(&instance(0.0, 10.0, 2.0));
+		assert!(close(space.allowed_error([0.0; 3], [1.0; 3]), 0.01));
+		// A box around the camera allows no error.
+		assert_eq!(space.allowed_error([-10.0; 3], [10.0; 3]), 0.0);
+		// A collapsed model allows none anywhere.
+		assert_eq!(view.in_space(&instance(0.0, 10.0, 0.0)).allowed_error([0.0; 3], [1.0; 3]), 0.0);
+		// A model stretched along one axis measures distances by its shortest axis and errors by its longest.
+		let stretched = [[1.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 10.0]].into();
+		assert!(close(view.in_space(&stretched).allowed_error([0.0; 3], [1.0; 3]), 10.0 / 500.0 / 4.0));
 	}
 
 	#[test]
@@ -375,7 +450,7 @@ mod tests {
 }
 
 use ghi::pod::Mat4x3f;
-use maths_rs::{Vec3f, dist, dot};
+use maths_rs::{Vec3f, cross, dist, dot};
 use resource_management::resources::mesh::MAX_PRIMITIVE_LODS;
 
 use crate::configuration::ConfigurationValue;

@@ -47,6 +47,7 @@ The standard graphics setup bakes these formats:
 - `.fusion` lists of pixel step pipelines that bake into one fused pipeline
 - `.flipbook` image sequences with a playback rate
 - `.particles` [GPU particle systems](/docs/reference/particles), which bake into generated shaders and pipelines
+- `.terrain.bead` [terrains](/docs/reference/terrain), which bake a height map into a tree of node meshes
 - LUT assets
 - WAV and OGG audio
 - standalone `.besl` shaders with `.besl.bead` stage metadata
@@ -428,8 +429,8 @@ Only these handlers read sidecars:
 Every hand-written format has a JSON schema under the engine's
 `assets/schemas` directory: `bema.schema.json`, `bemx.schema.json`, `besl.bead.schema.json`,
 `environment.bead.schema.json`, `fusion.schema.json`, `image.bead.schema.json` for the image
-sidecar, `model.bead.schema.json` for the model sidecar, `motion.bead.schema.json`, and
-`particles.schema.json`.
+sidecar, `model.bead.schema.json` for the model sidecar, `motion.bead.schema.json`,
+`particles.schema.json`, and `terrain.bead.schema.json`.
 
 ## Pipelines
 

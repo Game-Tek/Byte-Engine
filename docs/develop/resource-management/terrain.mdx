@@ -1,0 +1,93 @@
+---
+title: Terrain baking
+description: Understand how a height map bakes into a node tree of meshes, and which rules a change to the terrain bake must keep.
+icon: Boxes
+---
+
+Read this page before you change how terrains bake: the terrain handler, the
+terrain processor, or the `Terrain` resource. The
+[terrain reference](/docs/reference/terrain) specifies what the bake accepts and
+produces. This page explains how it's built and why.
+
+## Design
+
+A terrain is a quadtree of square nodes, each stored as an ordinary `Mesh`
+resource. A level `k` node covers `2^k` times the quads of a level 0 node, with
+vertices every `2^k` samples, so every node holds about the same number of
+vertices whatever area it covers.
+
+| Choice | Reason |
+| --- | --- |
+| One mesh per node | Streaming needs a unit the loader already moves. A node mesh loads, becomes resident, and is released through the same path as any mesh, so terrains need no geometry format, loader lane, or residency rules of their own. |
+| A tree of coarser nodes | Mesh detail levels shrink what each mesh draws, but not how many meshes there are. A 4,097-sample map has 4,096 level 0 nodes; the tree draws the distance with a few large nodes instead, and leaves the fine nodes unloaded. |
+| Detail levels inside each node | The tree changes detail in steps of a whole level. The mesh processor's detail levels refine between those steps for free, through the renderer's existing level selection. `lock_borders` keeps each node's edge where the tree put it, so the levels never open a seam. |
+| Skirts | A seam between nodes of different levels can be closed by stitching edges or by hiding the gap. Stitching makes a node's indices depend on which neighbors are drawn, so nodes couldn't load or draw on their own. A skirt depends only on the node. |
+| The skirt is its own primitive | Joined to the surface, the skirt would make the surface edge an interior edge, which `lock_borders` no longer holds. As a separate primitive, every skirt vertex lies on a border, so the skirt never simplifies, and the surface keeps an open border to lock. |
+| Errors against the height map | Each node's error is measured against every sample it covers, not against its children's surfaces, so errors don't add up level by level. Taking the larger of its own error and its children's keeps errors from falling toward the root, so a renderer that refines a node never finds a child that needs less. |
+| Skirt depth per level | The gap to a neighbor one level coarser is at most both nodes' errors. That neighbor may not be the node's parent, so the depth uses the largest error of the coarser level. |
+| A decoder of its own | The image decoders convert to color formats such as RGBA16F, which keep 11 bits of a 16-bit sample. A height map needs every bit. |
+
+## How a bake runs
+
+1. The handler reads the `.terrain.bead` file, bakes the material variant as a
+   dependency, and decodes the height map with `decode_height_map_in`.
+2. `HeightField::from_height_map` scales the samples to meters in place.
+3. `TerrainLayout::new` fixes the tree: each level's grid and each node's span.
+4. `plan_terrain` measures every node, finest first, and each level's skirt
+   depth. Every request measures the whole tree, even a request for one node,
+   because a skirt's depth depends on the next coarser level's errors.
+5. `NodeGeometry::build` fills one node's surface and skirt, and the mesh
+   processor turns them into a mesh with detail levels.
+6. The handler stores each mesh, then the `Terrain` resource that lists them.
+
+A whole-terrain bake builds node meshes on every core with `std::thread::scope`,
+in batches of four nodes per thread, and stores each batch before it builds the
+next, so finished meshes waiting for storage stay bounded. The `BakeContext`
+can't move between threads, so worker threads return error text that the bake
+thread reports. On a 10-core Apple M4, a debug build bakes a 1,025-sample map
+with 64-quad nodes, 341 of them, in 9.2 seconds this way, against 29.5 seconds
+on one thread.
+
+## Rules a change must keep
+
+- A node's error is never smaller than any of its children's.
+- A node's bounds hold its mesh, skirt included, and the bounds of every node
+  below it.
+- Neighbors of one level share their edge vertices exactly, normals included.
+- A node's edge never moves at any of its mesh's detail levels.
+- A skirt reaches at least as deep as the largest gap to a neighbor one level
+  coarser.
+- Nodes are listed by level from level 0, then by row, then by column, and a
+  node's mesh ID names its level, column, and row.
+
+## Run the tests that guard the design
+
+```bash
+cargo nextest run -p byte-engine-resource-management terrain height_map
+```
+
+| Test | What it checks |
+| --- | --- |
+| `a_node_never_strays_less_than_its_children_and_its_bounds_hold_them` | Errors never fall toward the root, and bounds nest. |
+| `a_spike_between_vertices_is_the_error_of_every_node_above_it` | Errors are measured against samples between a node's vertices, and skirt depths follow the coarser level. |
+| `skirts_cover_the_seam_between_neighbors_one_level_apart` | The gap along a seam between levels is within both skirts. |
+| `neighbors_of_one_level_share_their_edge_vertices` | Edge positions and normals match between neighbors. |
+| `surfaces_face_up_and_skirts_face_away_from_their_node` | Winding of both primitives. |
+| `sixteen_bit_png_samples_keep_every_bit` | The height map decoder keeps full precision. |
+| `a_terrain_bakes_its_node_tree_and_every_node_mesh` | The resources a bake stores, end to end. |
+| `a_node_request_bakes_only_that_node` | A node fragment bakes one mesh. |
+
+## Known limits
+
+- Node meshes have no `Vertex.LightmapUV` stream, so lightmaps skip terrains.
+- The `Terrain` resource keeps no heights, so physics and gameplay can't query
+  the ground's height from it yet.
+- The visibility pipeline selects and streams nodes, as
+  [How terrain nodes stream](/docs/develop/rendering/loading#how-terrain-nodes-stream)
+  explains.
+
+## Related API
+
+- [`Terrain`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resources/terrain/struct.Terrain.html)
+- [`terrain` processor module](https://docs.rs/byte-engine-resource-management/latest/resource_management/processors/terrain/index.html)
+- [`TerrainAssetHandler`](https://docs.rs/byte-engine-resource-management/latest/resource_management/asset/handler/implementations/terrain/struct.TerrainAssetHandler.html)

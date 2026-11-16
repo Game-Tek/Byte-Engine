@@ -110,3 +110,4 @@ pub mod motion_database;
 pub mod particle_system;
 pub mod pipeline;
 pub mod skeleton;
+pub mod terrain;

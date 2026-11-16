@@ -383,6 +383,28 @@ error for it.
 | Release | When a primitive's finer levels don't fit the geometry capacity, the primitive whose finer levels no instance has wanted for the longest releases them all and goes back to its base level, and the load tries again once that room frees. Levels an instance wanted in the last frame, and base levels, are never released. |
 | No room | When nothing can be released, the load waits and tries again on a later frame. Instances keep drawing their finest resident level. Other primitives of the same load that fit become resident. |
 
+### Terrains
+
+A renderable terrain names a [`Terrain` resource](/docs/reference/terrain) and
+draws some of its nodes, each as a renderable of the node's mesh at the
+terrain entity's transform. Which nodes it draws follows the first sink's
+camera, as detail levels do.
+
+| Terrain rule | Value |
+| --- | --- |
+| Camera | The first sink's camera position, carried into terrain space by the inverse of the terrain's transform. |
+| Distance | The straight-line distance in terrain space from the camera to the nearest point of a node's bounds; zero inside them. |
+| Allowed error | The detail levels' allowed error at that distance, in terrain units: the error per distance times the distance times the transform's smallest axis scale, plus the constant error, divided by its largest axis scale. |
+| Refined | The root is wanted. A wanted node with children is refined when its error is larger than its allowed error, and then its children are wanted instead of it. |
+| Wanted balance | While a wanted, unrefined node borders, on the other side of an edge, a refined node of its own level whose child along that edge is refined, the wanted node is refined too. |
+| Requests | Every wanted node's mesh is requested, refined or not. |
+| Covered | A node is covered when its mesh is resident, or when it has children and every child is covered. Nothing draws until the root is covered. |
+| Drawn | From the root, a covered node draws its children by this rule when it's refined and every child is covered, or when its mesh isn't resident; otherwise it draws itself. So a node keeps drawing until its children can replace it, and finer nodes keep drawing until a coarser node that replaces them is resident. |
+| Drawn balance | While a drawn node borders, on the other side of an edge, a node of its own level whose child along that edge draws its own children, and that child's mesh is resident, the child draws itself instead. Seams whose closing meshes aren't resident yet can show gaps until they load. |
+| Release | A node's mesh is released after 120 frames in which no terrain of that resource wanted or drew it, unless it's the root, or a renderable still draws it. A released mesh loads again when it's wanted. While the pipeline traces rays, no terrain node mesh is released. |
+| Node renderables | Each drawn node is a renderable of its own, with the detail levels, culling, shadows, and ray tracing of any renderable. Material parameters set on the terrain entity don't reach them, and they have no lightmap. |
+| Transform | A change to the terrain entity's transform moves every node it draws. Deleting the entity removes them. |
+
 | Directional shadow rule | Value |
 | --- | --- |
 | Cascades | Four, splitting the range from the camera to `render.directional-shadows.distance` by the split blend between logarithmic and even. |

@@ -191,6 +191,102 @@
 				}
 			}
 		},
+		"/assets": {
+			"get": {
+				"operationId": "listSourceAssets",
+				"summary": "List source assets",
+				"description": "Returns the ID of every source asset whose name ends in one extension, such as `bemx`, in ID order. Development builds only.",
+				"tags": ["Inspection"],
+				"parameters": [
+					{
+						"name": "extension",
+						"in": "query",
+						"required": true,
+						"description": "The file extension, without its dot, matched exactly.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						},
+						"example": "bemx"
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The IDs, in ID order; empty when no source has the extension.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "array",
+									"items": {
+										"type": "string"
+									}
+								},
+								"example": ["materials/floor.bemx", "materials/pbr.bemx"]
+							}
+						}
+					},
+					"400": {
+						"$ref": "#/components/responses/BadRequest"
+					},
+					"503": {
+						"description": "A release build, an application without an asset directory or resource manager, or an asset directory that couldn't be read.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/assets/source": {
+			"get": {
+				"operationId": "readSourceAsset",
+				"summary": "Read a source asset",
+				"description": "Returns one source asset's text. Development builds only. The HTTP inspector never writes source assets, since it has no authentication.",
+				"tags": ["Inspection"],
+				"parameters": [
+					{
+						"name": "id",
+						"in": "query",
+						"required": true,
+						"description": "The asset's path under the asset directory, with `/` between its parts.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						},
+						"example": "materials/floor.bemx"
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The asset's text.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"400": {
+						"$ref": "#/components/responses/BadRequest"
+					},
+					"404": {
+						"description": "No text source has the ID, the ID leaves the asset directory, or source assets are unavailable in this build.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/resources": {
 			"get": {
 				"operationId": "listResources",

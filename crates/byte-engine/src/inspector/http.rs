@@ -200,6 +200,8 @@ fn handle_request(inspector: &DefaultInspector, waker: &LoopWaker, request: &mut
 		(&Method::GET, "/entities") => entities_response(inspector, request.uri().query()),
 		(&Method::POST, "/levels") => level_response(inspector, request.body_mut()),
 		(&Method::GET, "/resources") => resources_response(inspector, request.uri().query()),
+		(&Method::GET, "/assets") => source_assets_response(inspector, request.uri().query()),
+		(&Method::GET, "/assets/source") => source_asset_response(inspector, request.uri().query()),
 		(&Method::GET, "/events") => events_response(inspector, request.uri().query()),
 		(&Method::DELETE, "/") => {
 			inspector.close_application();
@@ -251,6 +253,38 @@ fn resources_response(inspector: &DefaultInspector, query: Option<&str>) -> Resp
 	match inspector.resources(&class) {
 		Ok(ids) => json_response(&ids),
 		Err(error) => response(StatusCode::SERVICE_UNAVAILABLE, error),
+	}
+}
+
+/// Lists the source assets with one extension, from a query naming exactly one `extension`.
+fn source_assets_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
+	let Some([Some(extension)]) = query.map(|query| parse_query(query, [&["extension"]])).and_then(Result::ok) else {
+		return response(
+			StatusCode::BAD_REQUEST,
+			"Source asset query is malformed. The most likely cause is a missing, empty, duplicate, or unknown parameter. Send exactly one `extension`, such as `extension=bemx`.",
+		);
+	};
+	match inspector.source_assets(&extension) {
+		Ok(ids) => json_response(&ids),
+		Err(error) => response(StatusCode::SERVICE_UNAVAILABLE, error),
+	}
+}
+
+/// Answers one source asset's text, as plain text, from a query naming exactly one `id`. The HTTP inspector only
+/// reads sources; it has no authentication, so writing them is left to in-process tools.
+fn source_asset_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
+	let Some([Some(id)]) = query.map(|query| parse_query(query, [&["id"]])).and_then(Result::ok) else {
+		return response(
+			StatusCode::BAD_REQUEST,
+			"Source asset request is malformed. The most likely cause is a missing, empty, duplicate, or unknown parameter. Send exactly one `id`, such as `id=materials/floor.bemx`.",
+		);
+	};
+	match inspector.read_source_asset(&id) {
+		Ok(text) => Response::builder()
+			.header("Content-Type", "text/plain; charset=utf-8")
+			.body(Body::from(text))
+			.expect("Inspector text response is valid. The most likely cause is an invalid static header name."),
+		Err(error) => response(StatusCode::NOT_FOUND, error),
 	}
 }
 
@@ -1606,6 +1640,37 @@ mod tests {
 				.request("GET", "/resources?class=Mesh", "")
 				.starts_with(b"HTTP/1.1 503")
 		);
+	}
+
+	#[test]
+	fn source_asset_requests_need_one_parameter_and_never_write() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let server = TestServer::new(inspector);
+		for path in [
+			"/assets",
+			"/assets?extension=",
+			"/assets?kind=bemx",
+			"/assets/source",
+			"/assets/source?id=",
+		] {
+			assert!(server.request("GET", path, "").starts_with(b"HTTP/1.1 400"), "{path}");
+		}
+		// Without a resource manager, a well-formed request can't be answered.
+		assert!(
+			server
+				.request("GET", "/assets?extension=bemx", "")
+				.starts_with(b"HTTP/1.1 503")
+		);
+		assert!(
+			server
+				.request("GET", "/assets/source?id=a.bemx", "")
+				.starts_with(b"HTTP/1.1 404")
+		);
+		// The HTTP inspector has no authentication, so no method writes a source.
+		for method in ["POST", "PUT"] {
+			let answer = server.request(method, "/assets/source?id=a.bemx", "{}");
+			assert!(!answer.starts_with(b"HTTP/1.1 2"), "{method}: {answer:?}");
+		}
 	}
 
 	#[test]

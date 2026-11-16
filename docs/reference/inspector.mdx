@@ -137,6 +137,21 @@ The resource query lists the ID of every stored resource of one class, such as
 and matched exactly. It reads the store, so a development build lists only the
 resources it already baked. A class no resource has lists nothing.
 
+## Source assets
+
+In a development build, the inspector reaches the application's source
+assets: the files under the asset directory that `assets.path` sets, which the
+application bakes on demand.
+
+| Rule | Behavior |
+| --- | --- |
+| IDs | An asset's path under the asset directory, with `/` between its parts, as every asset ID is. An ID that leaves the directory, such as one with a `..` part, fails. |
+| List | The ID of every source file whose name ends in one extension, such as `bemx`, in ID order. The extension is matched exactly, without its dot. |
+| Read | One source file's text. A file that isn't UTF-8 text fails. |
+| Write | Replaces one source file's text, creating the file and its directories when missing. Readers never see a partly written file. The application then bakes again what read the file, as it does after any source change. |
+| Transports | In-process tools list, read, and write. The HTTP inspector lists and reads, with `GET /assets?extension=bemx` and `GET /assets/source?id=<id>`; it never writes, since it has no authentication. |
+| Release builds | Every request fails, since release applications don't read source assets. |
+
 ## Configuration
 
 The configuration route lists every runtime setting update with its parameter,

@@ -260,3 +260,102 @@ fn json_error_messages_name_the_node_and_the_likely_cause() {
 	assert!(message.contains("'surface'"), "{message}");
 	assert!(message.contains("The most likely cause"), "{message}");
 }
+
+#[test]
+fn written_text_reads_back_as_the_same_graph_with_names_first() {
+	let source = r#"{
+		// A comment, which a document doesn't keep.
+		nodes: [
+			{ type: "color3", texture: "color", node: "image", name: "base_color" },
+			{ in2: [1.0, 0.9, 0.8], name: "tinted", node: "multiply", in1: "base_color" },
+			{ name: "surface", node: "surface", roughness: 0.5, base_color: "tinted" },
+		],
+	}"#;
+	let document = crate::asset::parse_json(source).unwrap();
+
+	let written = json::write(&document);
+
+	assert_eq!(crate::asset::parse_json(&written).unwrap(), document);
+	assert_eq!(json::parse(&written).unwrap(), json::parse(source).unwrap());
+	assert!(
+		written.contains(r#"{ name: "tinted", node: "multiply", in1: "base_color", in2: [1.0, 0.9, 0.8] }"#),
+		"{written}"
+	);
+}
+
+#[test]
+fn every_kind_accepts_the_fields_its_table_lists_and_no_other() {
+	for kind in super::kinds::KINDS {
+		// A graph needs one surface, so a surface under test is that one.
+		let surface = if kind.produces {
+			r#", { name: "surface", node: "surface" }"#
+		} else {
+			""
+		};
+		let node = |extra: &str| format!(r#"{{ nodes: [{{ name: "node", node: "{}"{extra} }}{surface}] }}"#, kind.name);
+		// Other errors, such as a missing required input, are fine here: the fields themselves are accepted.
+		for field in kind
+			.inputs
+			.iter()
+			.map(|input| input.name)
+			.chain(kind.settings.iter().map(|setting| setting.name))
+		{
+			let result = json::parse(&node(&format!(r#", {field}: 1"#)));
+			assert!(
+				!matches!(result, Err(ParseError::UnknownField { .. })),
+				"{} rejects its own field {field}",
+				kind.name
+			);
+		}
+		assert!(
+			matches!(json::parse(&node(r#", unlisted: 1"#)), Err(ParseError::UnknownField { .. })),
+			"{} accepts a field its table doesn't list",
+			kind.name
+		);
+	}
+}
+
+#[test]
+fn an_input_left_out_reads_its_tables_default() {
+	use super::kinds::{InputDefault, KINDS};
+
+	// A constant every required input can read, and a setting value every kind takes.
+	let mut compared = 0;
+	for kind in KINDS.iter().filter(|kind| kind.produces) {
+		let required = kind
+			.inputs
+			.iter()
+			.filter(|input| input.default == InputDefault::Required)
+			.map(|input| format!(", {}: [0.5, 0.5, 0.5]", input.name))
+			.chain(kind.settings.iter().filter(|setting| setting.required).map(|setting| {
+				let value = match setting.kind {
+					super::kinds::SettingKind::Type => r#""vector3""#,
+					super::kinds::SettingKind::Channels => r#""xyz""#,
+					super::kinds::SettingKind::Value => "[0.5, 0.5, 0.5]",
+					_ => r#""name""#,
+				};
+				format!(", {}: {value}", setting.name)
+			}))
+			.collect::<String>();
+		for input in kind.inputs {
+			let InputDefault::Value(default) = input.default else {
+				continue;
+			};
+			let graph = |extra: &str| {
+				json::parse(&format!(
+					r#"{{ nodes: [{{ name: "node", node: "{}"{required}{extra} }}, {{ name: "surface", node: "surface" }}] }}"#,
+					kind.name
+				))
+			};
+			let written = default.iter().map(f32::to_string).collect::<Vec<_>>().join(", ");
+			let written = if default.len() == 1 { written } else { format!("[{written}]") };
+			// A node whose types don't fit these stand-in inputs is checked by its own tests instead.
+			let (Ok(omitted), Ok(explicit)) = (graph(""), graph(&format!(", {}: {written}", input.name))) else {
+				continue;
+			};
+			assert_eq!(omitted, explicit, "{}'s {} default", kind.name, input.name);
+			compared += 1;
+		}
+	}
+	assert!(compared > 20, "only {compared} defaults were compared");
+}

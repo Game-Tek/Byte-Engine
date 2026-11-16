@@ -421,6 +421,41 @@ impl AssetManager {
 		Ok(ids)
 	}
 
+	/// Lists the ID of every source asset the storage backend holds, whether or not a handler bakes it, in ID order.
+	///
+	/// Development tools that open sources, such as an editor's material graphs, list them with it. Next, read one with
+	/// [`Self::read_source`].
+	pub async fn sources(&self) -> Result<Vec<String>, String> {
+		let mut ids = self
+			.state
+			.storage_backend
+			.discover()
+			.await?
+			.into_iter()
+			.map(crate::asset::AssetSource::into_id)
+			.collect::<Vec<_>>();
+		ids.sort_unstable();
+		Ok(ids)
+	}
+
+	/// Reads the source asset `id` as the storage backend holds it. Next, write a changed version back with
+	/// [`Self::write_source`].
+	pub async fn read_source(&self, id: &str) -> Result<Vec<u8>, String> {
+		let (bytes, _) = self.state.storage_backend.resolve(ResourceId::new(id)).await.map_err(|()| {
+			format!(
+				"Source asset '{id}' could not be read. The most likely cause is that no file has this ID, spelled with this case, under the asset directory. List the source assets to find its ID."
+			)
+		})?;
+		Ok(bytes.to_vec())
+	}
+
+	/// Replaces the source asset `id` with `contents`, creating it when missing.
+	///
+	/// In a development build, the watcher then bakes again what read the file, as after any source change.
+	pub async fn write_source(&self, id: &str, contents: &[u8]) -> Result<(), String> {
+		self.state.storage_backend.write(id, contents).await
+	}
+
 	/// Bakes the asset at `id` without checking for an existing stored resource.
 	///
 	/// Its dependencies are still reused when current. To rebuild them too, call [`Self::rebuild`].

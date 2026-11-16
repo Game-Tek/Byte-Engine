@@ -33,6 +33,7 @@ use serde_json::{Map, Value as Json};
 use super::graph::{
 	BinaryOperator, Channel, Comparison, Graph, GraphBuilder, GraphError, Node, NodeId, Surface, Type, UnaryOperator, Value,
 };
+use super::kinds;
 use super::{BEMX_DOCS_PATH, COMBINE_INPUTS, DEFAULT_LUMINANCE_WEIGHTS, NORMAL_MAP_FRAME_INPUTS, NUMBERED_INPUTS};
 use crate::online_docs_url;
 
@@ -130,6 +131,106 @@ pub fn read(document: &Json) -> Result<Graph, ParseError> {
 	})
 }
 
+/// Writes `document`, the JSON of a `.bemx` file, as `.bemx` source text that [`parse`] reads back.
+///
+/// Each node takes one line, with its `name` and `node` first and its other fields in the order its kind lists them in
+/// [`kinds::KINDS`], so the file reads like a hand-written one. Tools that edit graphs, such as an editor's node
+/// canvas, save with it. A document carries no comments, so the text has none.
+pub fn write(document: &Json) -> String {
+	use std::fmt::Write as _;
+
+	let mut text = String::from("{\n");
+	let Some(root) = document.as_object() else {
+		return document.to_string();
+	};
+	if let Some(nodes) = root.get("nodes").and_then(Json::as_array) {
+		text.push_str("\tnodes: [\n");
+		for node in nodes {
+			text.push_str("\t\t");
+			match node.as_object() {
+				Some(fields) => write_node(&mut text, fields),
+				None => write_value(&mut text, node),
+			}
+			text.push_str(",\n");
+		}
+		text.push_str("\t],\n");
+	}
+	for (key, value) in root.iter().filter(|(key, _)| *key != "nodes") {
+		text.push('\t');
+		write_key(&mut text, key);
+		write_value(&mut text, value);
+		let _ = writeln!(text, ",");
+	}
+	text.push_str("}\n");
+	text
+}
+
+/// Writes one node on one line: `name` and `node`, then its kind's inputs and settings in the table's order, then any
+/// field the kind doesn't list, which the reader will report.
+fn write_node(text: &mut String, fields: &Map<String, Json>) {
+	let kind = fields.get("node").and_then(Json::as_str).and_then(kinds::kind);
+	let listed = kind.into_iter().flat_map(|kind| {
+		kind.inputs
+			.iter()
+			.map(|input| input.name)
+			.chain(kind.settings.iter().map(|setting| setting.name))
+	});
+	let order = COMMON_FIELDS.into_iter().chain(listed);
+	let rest = fields
+		.keys()
+		.map(String::as_str)
+		.filter(|key| !COMMON_FIELDS.contains(key) && !kind.is_some_and(|kind| kind.accepts(key)));
+
+	text.push_str("{ ");
+	let mut first = true;
+	for key in order.chain(rest) {
+		let Some(value) = fields.get(key) else {
+			continue;
+		};
+		if !first {
+			text.push_str(", ");
+		}
+		first = false;
+		write_key(text, key);
+		write_value(text, value);
+	}
+	text.push_str(" }");
+}
+
+/// Writes `key: `, bare when it's an identifier, as every BEMX field is, and quoted otherwise.
+fn write_key(text: &mut String, key: &str) {
+	let bare = key
+		.chars()
+		.next()
+		.is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+		&& key
+			.chars()
+			.all(|character| character.is_ascii_alphanumeric() || character == '_');
+	if bare {
+		text.push_str(key);
+	} else {
+		text.push_str(&Json::from(key).to_string());
+	}
+	text.push_str(": ");
+}
+
+/// Writes a field's value, with a space after each comma of an array, as the files are written by hand.
+fn write_value(text: &mut String, value: &Json) {
+	match value {
+		Json::Array(items) => {
+			text.push('[');
+			for (index, item) in items.iter().enumerate() {
+				if index > 0 {
+					text.push_str(", ");
+				}
+				write_value(text, item);
+			}
+			text.push(']');
+		}
+		other => text.push_str(&other.to_string()),
+	}
+}
+
 /// The `State` enum records how far reading one entry has got, so a cycle is noticed instead of recursing forever.
 #[derive(Clone, Copy)]
 enum State {
@@ -185,11 +286,15 @@ impl<'d> Reader<'d, '_> {
 				field: "node",
 			})?;
 
+		// The table lists every field a kind takes, so the arms below read fields without checking for others.
+		let spec = kinds::kind(kind).ok_or_else(|| ParseError::UnknownKind {
+			node: name.to_string(),
+			kind: kind.to_string(),
+		})?;
 		let field = Fields { name, fields };
+		field.allow(|key| spec.accepts(key))?;
 
 		if let Some(operator) = UnaryOperator::from_category(kind) {
-			field.only(&["in"])?;
-
 			return Ok(Node::Unary {
 				operator,
 				value: self.required(field, "in")?,
@@ -197,8 +302,6 @@ impl<'d> Reader<'d, '_> {
 		}
 
 		if let Some(operator) = BinaryOperator::from_category(kind) {
-			field.only(&["in1", "in2"])?;
-
 			return Ok(Node::Binary {
 				operator,
 				left: self.required(field, "in1")?,
@@ -207,8 +310,6 @@ impl<'d> Reader<'d, '_> {
 		}
 
 		if let Some(comparison) = Comparison::from_category(kind) {
-			field.only(&["value1", "value2", "in1", "in2"])?;
-
 			return Ok(Node::Compare {
 				comparison,
 				left: self.or(field, "value1", Comparison::DEFAULT_LEFT)?,
@@ -219,45 +320,27 @@ impl<'d> Reader<'d, '_> {
 		}
 
 		Ok(match kind {
-			"constant" => {
-				field.only(&["value"])?;
-
-				Node::Constant(field.value("value")?.ok_or_else(|| field.missing("value"))?)
-			}
-			"parameter" => {
-				field.only(&["parameter", "type"])?;
-
-				Node::Parameter {
-					name: field
-						.string("parameter")?
-						.ok_or_else(|| field.missing("parameter"))?
-						.to_string(),
-					r#type: field.r#type("type")?.ok_or_else(|| field.missing("type"))?,
-				}
-			}
-			"position" | "normal" | "tangent" | "bitangent" | "viewdirection" | "time" | "screenposition" => {
-				field.only(&[])?;
-
-				match kind {
-					"position" => Node::Position,
-					"normal" => Node::Normal,
-					"tangent" => Node::Tangent,
-					"bitangent" => Node::Bitangent,
-					"time" => Node::Time,
-					"screenposition" => Node::ScreenPosition,
-					_ => Node::ViewDirection,
-				}
-			}
-			"texcoord" => {
-				field.only(&["index"])?;
-
-				Node::TexCoord {
-					index: field.integer("index")?.unwrap_or(0),
-				}
-			}
+			"constant" => Node::Constant(field.value("value")?.ok_or_else(|| field.missing("value"))?),
+			"parameter" => Node::Parameter {
+				name: field
+					.string("parameter")?
+					.ok_or_else(|| field.missing("parameter"))?
+					.to_string(),
+				r#type: field.r#type("type")?.ok_or_else(|| field.missing("type"))?,
+			},
+			"position" | "normal" | "tangent" | "bitangent" | "viewdirection" | "time" | "screenposition" => match kind {
+				"position" => Node::Position,
+				"normal" => Node::Normal,
+				"tangent" => Node::Tangent,
+				"bitangent" => Node::Bitangent,
+				"time" => Node::Time,
+				"screenposition" => Node::ScreenPosition,
+				_ => Node::ViewDirection,
+			},
+			"texcoord" => Node::TexCoord {
+				index: field.integer("index")?.unwrap_or(0),
+			},
 			"scenecolor" | "sceneposition" => {
-				field.only(&["texcoord"])?;
-
 				let texcoord = self.input(field, "texcoord")?;
 
 				match kind {
@@ -265,18 +348,12 @@ impl<'d> Reader<'d, '_> {
 					_ => Node::ScenePosition { texcoord },
 				}
 			}
-			"image" => {
-				field.only(&["texture", "type", "texcoord"])?;
-
-				Node::Image {
-					texture: field.string("texture")?.ok_or_else(|| field.missing("texture"))?.to_string(),
-					r#type: field.r#type("type")?.unwrap_or(Type::Vector4),
-					texcoord: self.input(field, "texcoord")?,
-				}
-			}
+			"image" => Node::Image {
+				texture: field.string("texture")?.ok_or_else(|| field.missing("texture"))?.to_string(),
+				r#type: field.r#type("type")?.unwrap_or(Type::Vector4),
+				texcoord: self.input(field, "texcoord")?,
+			},
 			"clamp" | "smoothstep" => {
-				field.only(&["in", "low", "high"])?;
-
 				let (value, low, high) = (
 					self.required(field, "in")?,
 					self.or(field, "low", 0.0)?,
@@ -289,29 +366,19 @@ impl<'d> Reader<'d, '_> {
 					Node::Smoothstep { value, low, high }
 				}
 			}
-			"mix" => {
-				field.only(&["bg", "fg", "mix"])?;
-
-				Node::Mix {
-					background: self.required(field, "bg")?,
-					foreground: self.required(field, "fg")?,
-					factor: self.or(field, "mix", 0.0)?,
-				}
-			}
-			"remap" => {
-				field.only(&["in", "inlow", "inhigh", "outlow", "outhigh"])?;
-
-				Node::Remap {
-					value: self.required(field, "in")?,
-					input_low: self.or(field, "inlow", 0.0)?,
-					input_high: self.or(field, "inhigh", 1.0)?,
-					output_low: self.or(field, "outlow", 0.0)?,
-					output_high: self.or(field, "outhigh", 1.0)?,
-				}
-			}
+			"mix" => Node::Mix {
+				background: self.required(field, "bg")?,
+				foreground: self.required(field, "fg")?,
+				factor: self.or(field, "mix", 0.0)?,
+			},
+			"remap" => Node::Remap {
+				value: self.required(field, "in")?,
+				input_low: self.or(field, "inlow", 0.0)?,
+				input_high: self.or(field, "inhigh", 1.0)?,
+				output_low: self.or(field, "outlow", 0.0)?,
+				output_high: self.or(field, "outhigh", 1.0)?,
+			},
 			"dotproduct" | "crossproduct" => {
-				field.only(&["in1", "in2"])?;
-
 				let (left, right) = (self.required(field, "in1")?, self.required(field, "in2")?);
 
 				if kind == "dotproduct" {
@@ -320,16 +387,10 @@ impl<'d> Reader<'d, '_> {
 					Node::CrossProduct { left, right }
 				}
 			}
-			"magnitude" => {
-				field.only(&["in"])?;
-
-				Node::Magnitude {
-					value: self.required(field, "in")?,
-				}
-			}
+			"magnitude" => Node::Magnitude {
+				value: self.required(field, "in")?,
+			},
 			"extract" => {
-				field.only(&["in", "index"])?;
-
 				let index = field.integer("index")?.unwrap_or(0);
 
 				Node::Extract {
@@ -338,8 +399,6 @@ impl<'d> Reader<'d, '_> {
 				}
 			}
 			"swizzle" => {
-				field.only(&["in", "channels"])?;
-
 				let channels = field.string("channels")?.ok_or_else(|| field.missing("channels"))?;
 
 				Node::Swizzle {
@@ -353,23 +412,15 @@ impl<'d> Reader<'d, '_> {
 			}
 			"combine" => {
 				let names = &NUMBERED_INPUTS[..COMBINE_INPUTS];
-				field.only(names)?;
-
 				Node::Combine {
 					values: self.numbered(field, names)?,
 				}
 			}
-			"convert" => {
-				field.only(&["in", "type"])?;
-
-				Node::Convert {
-					value: self.required(field, "in")?,
-					r#type: field.r#type("type")?.ok_or_else(|| field.missing("type"))?,
-				}
-			}
+			"convert" => Node::Convert {
+				value: self.required(field, "in")?,
+				r#type: field.r#type("type")?.ok_or_else(|| field.missing("type"))?,
+			},
 			"luminance" => {
-				field.only(&["in", "lumacoeffs"])?;
-
 				let weights = match field.value("lumacoeffs")? {
 					None => DEFAULT_LUMINANCE_WEIGHTS,
 					Some(Value::Vector3(weights)) => weights,
@@ -381,17 +432,11 @@ impl<'d> Reader<'d, '_> {
 					weights,
 				}
 			}
-			"invert" => {
-				field.only(&["in", "amount"])?;
-
-				Node::Invert {
-					value: self.required(field, "in")?,
-					amount: self.or(field, "amount", 1.0)?,
-				}
-			}
+			"invert" => Node::Invert {
+				value: self.required(field, "in")?,
+				amount: self.or(field, "amount", 1.0)?,
+			},
 			"premult" | "unpremult" => {
-				field.only(&["in"])?;
-
 				let value = self.required(field, "in")?;
 
 				if kind == "premult" {
@@ -400,56 +445,32 @@ impl<'d> Reader<'d, '_> {
 					Node::Unpremultiply { value }
 				}
 			}
-			"switch" => {
-				field.allow(|key| key == "which" || NUMBERED_INPUTS.contains(&key))?;
-
-				Node::Switch {
-					which: self.or(field, "which", 0.0)?,
-					values: self.numbered(field, &NUMBERED_INPUTS)?,
-				}
-			}
-			"normalmap" => {
-				field.only(&["in", "scale", "normal", "tangent", "bitangent"])?;
-
-				Node::NormalMap {
-					value: self.required(field, "in")?,
-					scale: self.or(field, "scale", 1.0)?,
-					frame: [
-						self.input(field, NORMAL_MAP_FRAME_INPUTS[0])?,
-						self.input(field, NORMAL_MAP_FRAME_INPUTS[1])?,
-						self.input(field, NORMAL_MAP_FRAME_INPUTS[2])?,
-					],
-				}
-			}
-			"surface" => {
-				field.only(&[
-					"base_color",
-					"opacity",
-					"metalness",
-					"roughness",
-					"normal",
-					"emission",
-					"occlusion",
-					"transmission",
-					"translucency",
-					"subsurface_radius",
-					"thickness",
-				])?;
-
-				Node::Surface(Surface {
-					base_color: self.input(field, "base_color")?,
-					opacity: self.input(field, "opacity")?,
-					metalness: self.input(field, "metalness")?,
-					roughness: self.input(field, "roughness")?,
-					normal: self.input(field, "normal")?,
-					emission: self.input(field, "emission")?,
-					occlusion: self.input(field, "occlusion")?,
-					transmission: self.input(field, "transmission")?,
-					translucency: self.input(field, "translucency")?,
-					subsurface_radius: self.input(field, "subsurface_radius")?,
-					thickness: self.input(field, "thickness")?,
-				})
-			}
+			"switch" => Node::Switch {
+				which: self.or(field, "which", 0.0)?,
+				values: self.numbered(field, &NUMBERED_INPUTS)?,
+			},
+			"normalmap" => Node::NormalMap {
+				value: self.required(field, "in")?,
+				scale: self.or(field, "scale", 1.0)?,
+				frame: [
+					self.input(field, NORMAL_MAP_FRAME_INPUTS[0])?,
+					self.input(field, NORMAL_MAP_FRAME_INPUTS[1])?,
+					self.input(field, NORMAL_MAP_FRAME_INPUTS[2])?,
+				],
+			},
+			"surface" => Node::Surface(Surface {
+				base_color: self.input(field, "base_color")?,
+				opacity: self.input(field, "opacity")?,
+				metalness: self.input(field, "metalness")?,
+				roughness: self.input(field, "roughness")?,
+				normal: self.input(field, "normal")?,
+				emission: self.input(field, "emission")?,
+				occlusion: self.input(field, "occlusion")?,
+				transmission: self.input(field, "transmission")?,
+				translucency: self.input(field, "translucency")?,
+				subsurface_radius: self.input(field, "subsurface_radius")?,
+				thickness: self.input(field, "thickness")?,
+			}),
 			_ => {
 				return Err(ParseError::UnknownKind {
 					node: name.to_string(),
@@ -524,13 +545,8 @@ struct Fields<'d> {
 }
 
 impl<'d> Fields<'d> {
-	/// Reports the first field the entry's kind does not read, so a misspelt input is not silently left at its
-	/// default.
-	fn only(&self, allowed: &[&str]) -> Result<(), ParseError> {
-		self.allow(|key| allowed.contains(&key))
-	}
-
-	/// Reports the first field that is not common to every node and that `allowed` rejects.
+	/// Reports the first field that is not common to every node and that `allowed` rejects, so a misspelt input is not
+	/// silently left at its default.
 	fn allow(&self, allowed: impl Fn(&str) -> bool) -> Result<(), ParseError> {
 		match self
 			.fields

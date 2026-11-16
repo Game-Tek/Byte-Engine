@@ -283,6 +283,15 @@ impl ResourceManager {
 		self.resource_updates.listener()
 	}
 
+	/// Returns the asset manager that bakes this store's resources on demand, once one is installed.
+	///
+	/// Development tools reach the application's source assets through it, such as with
+	/// [`AssetManager::read_source`].
+	#[cfg(debug_assertions)]
+	pub fn asset_manager(&self) -> Option<&AssetManager> {
+		self.asset_manager.get()
+	}
+
 	/// Returns the development trace for asset-backed resource bakes when asset management is installed.
 	///
 	/// Next, call [`ResourceTrace::items`] with the resource ID shown by the

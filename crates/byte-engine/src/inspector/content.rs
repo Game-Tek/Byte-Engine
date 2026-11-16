@@ -1,10 +1,11 @@
-//! What the inspector adds to and lists from a running application's content: levels spawned from their source, and
-//! the IDs of stored resources.
+//! What the inspector adds to and lists from a running application's content: levels spawned from their source, the
+//! IDs of stored resources, and, in development builds, the source assets themselves.
 //!
-//! Both need parts the application creates after the inspector, so the application hands them over once they exist:
+//! These need parts the application creates after the inspector, so the application hands them over once they exist:
 //! its spawner with [`DefaultInspector::set_spawner`], its resource manager with
 //! [`DefaultInspector::set_resource_manager`]. The rules are specified under
-//! [Spawning levels](/docs/reference/inspector#spawning-levels) and [Resources](/docs/reference/inspector#resources).
+//! [Spawning levels](/docs/reference/inspector#spawning-levels), [Resources](/docs/reference/inspector#resources), and
+//! [Source assets](/docs/reference/inspector#source-assets).
 
 use std::sync::Arc;
 
@@ -53,24 +54,92 @@ impl DefaultInspector {
 	/// It reads the resource store on a thread of its own and waits for it, so call it when a list is wanted, such as
 	/// when an editor opens its asset palette, not every frame.
 	pub fn resources(&self, class: &str) -> Result<Vec<String>, String> {
-		let resources = self.resource_manager.get().ok_or_else(|| {
-			"Resources could not be listed. The most likely cause is that the application has no resource manager. List resources from a graphics application.".to_string()
+		self.on_store("Resources could not be listed.", |store| query_all(store, class))
+	}
+
+	/// Returns the ID of every source asset whose name ends in `.{extension}`, such as `bemx`, in ID order, in a
+	/// development build.
+	///
+	/// It reads the asset directory on a thread of its own and waits for it, like [`Self::resources`]. Next, read one
+	/// with [`Self::read_source_asset`]. The rules are specified under
+	/// [Source assets](/docs/reference/inspector#source-assets).
+	pub fn source_assets(&self, extension: &str) -> Result<Vec<String>, String> {
+		self.on_store("Source assets could not be listed.", |store| async move {
+			let suffix = format!(".{extension}");
+			let mut ids = asset_manager(store)?.sources().await?;
+			ids.retain(|id| id.ends_with(&suffix));
+			Ok(ids)
+		})
+	}
+
+	/// Returns the text of the source asset `id` in a development build. Next, write a changed text back with
+	/// [`Self::write_source_asset`].
+	pub fn read_source_asset(&self, id: &str) -> Result<String, String> {
+		self.on_store("The source asset could not be read.", |store| async move {
+			let bytes = asset_manager(store)?.read_source(id).await?;
+			String::from_utf8(bytes).map_err(|_| {
+				format!(
+					"Source asset '{id}' isn't text. The most likely cause is a binary file, such as an image. Read only text sources, such as `.bemx` files."
+				)
+			})
+		})
+	}
+
+	/// Replaces the text of the source asset `id`, creating it when missing, in a development build.
+	///
+	/// The application then bakes again what read it, as after any source change. Only in-process tools write: the
+	/// HTTP inspector has no authentication, so it never calls this.
+	pub fn write_source_asset(&self, id: &str, text: &str) -> Result<(), String> {
+		self.on_store("The source asset could not be written.", |store| async move {
+			asset_manager(store)?.write_source(id, text.as_bytes()).await
+		})
+	}
+
+	/// Runs `operation` on the application's resource manager on a thread and runtime of its own, and waits for it.
+	///
+	/// The store reads files asynchronously, so its operations run off any runtime the caller may already be driving.
+	/// `failure` begins the errors that keep it from running at all.
+	fn on_store<'s, T: Send, F>(
+		&'s self,
+		failure: &str,
+		operation: impl FnOnce(&'s ResourceManager) -> F + Send,
+	) -> Result<T, String>
+	where
+		F: Future<Output = Result<T, String>>,
+	{
+		let store = self.resource_manager.get().ok_or_else(|| {
+			format!(
+				"{failure} The most likely cause is that the application has no resource manager. Use the inspector of a graphics application."
+			)
 		})?;
-		// The store reads files asynchronously, so the query runs on a runtime of its own, off any runtime the caller
-		// may already be driving.
 		std::thread::scope(|scope| {
 			scope
 				.spawn(|| {
 					let runtime = compio::runtime::Runtime::new().map_err(|error| {
 						format!(
-							"Resources could not be listed. The most likely cause is that the system ran out of file descriptors or threads: {error}. Close other applications and try again."
+							"{failure} The most likely cause is that the system ran out of file descriptors or threads: {error}. Close other applications and try again."
 						)
 					})?;
-					runtime.block_on(query_all(resources, class))
+					runtime.block_on(operation(store))
 				})
 				.join()
 				.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 		})
+	}
+}
+
+/// Returns the asset manager that reaches `store`'s source assets, or the error a build without one gives.
+fn asset_manager(store: &ResourceManager) -> Result<&resource_management::asset::manager::AssetManager, String> {
+	#[cfg(debug_assertions)]
+	{
+		store.asset_manager().ok_or_else(|| {
+			"The application bakes nothing on demand. The most likely cause is that it runs without an asset directory. Set `assets.path` to the source asset directory.".to_string()
+		})
+	}
+	#[cfg(not(debug_assertions))]
+	{
+		let _ = store;
+		Err("Source assets are unavailable. The most likely cause is a release build, which doesn't read source assets. Use a development build.".to_string())
 	}
 }
 
@@ -149,8 +218,46 @@ mod tests {
 	}
 
 	#[test]
+	fn source_assets_are_listed_by_extension_read_and_written() {
+		let (inspector, _world) = inspector();
+		let directory = std::env::temp_dir().join(format!(
+			"inspector-source-assets-{}-{:?}",
+			std::process::id(),
+			std::time::SystemTime::now()
+		));
+		std::fs::create_dir_all(directory.join("materials")).unwrap();
+		std::fs::write(directory.join("materials/floor.bemx"), "{ nodes: [] }").unwrap();
+		std::fs::write(directory.join("materials/floor.png"), [0u8, 159, 146, 150]).unwrap();
+		let store = ResourceManager::new(resource_management::resource::storage_backend::MemoryStorageBackend::new());
+		store.set_asset_manager(resource_management::asset::manager::AssetManager::new_shared(
+			resource_management::asset::storage_backend::FileStorageBackend::new(directory.clone()),
+			store.storage_backend(),
+		));
+		inspector.set_resource_manager(EntityHandle::from(store));
+
+		assert_eq!(inspector.source_assets("bemx").unwrap(), ["materials/floor.bemx"]);
+		assert_eq!(inspector.read_source_asset("materials/floor.bemx").unwrap(), "{ nodes: [] }");
+		assert!(
+			inspector.read_source_asset("materials/floor.png").is_err(),
+			"an image isn't text"
+		);
+
+		inspector.write_source_asset("materials/wall.bemx", "{ nodes: [1] }").unwrap();
+		assert_eq!(
+			inspector.source_assets("bemx").unwrap(),
+			["materials/floor.bemx", "materials/wall.bemx"]
+		);
+		assert_eq!(inspector.read_source_asset("materials/wall.bemx").unwrap(), "{ nodes: [1] }");
+		assert!(inspector.write_source_asset("../outside.bemx", "{}").is_err());
+
+		std::fs::remove_dir_all(directory).unwrap();
+	}
+
+	#[test]
 	fn resources_are_not_listed_without_a_resource_manager() {
 		let (inspector, _world) = inspector();
 		assert!(inspector.resources("Mesh").is_err());
+		assert!(inspector.source_assets("bemx").is_err());
+		assert!(inspector.write_source_asset("materials/floor.bemx", "{}").is_err());
 	}
 }

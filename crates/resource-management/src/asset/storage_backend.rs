@@ -121,6 +121,18 @@ pub trait StorageBackend: Send + Sync {
 			Ok(super::provenance::content_fingerprint(&bytes))
 		}
 	}
+
+	/// Replaces the source asset `id` with `contents`, creating it and its directories when missing.
+	///
+	/// Development tools that edit sources, such as an editor's material graphs, write through it; the asset manager's
+	/// watcher then bakes again what read the file. A backend without writable sources keeps the default, which fails.
+	fn write<'a>(&'a self, id: &'a str, _contents: &'a [u8]) -> impl Future<Output = Result<(), String>> + 'a {
+		async move {
+			Err(format!(
+				"Source asset '{id}' could not be written. The most likely cause is that the storage backend has no writable sources. Write sources through a local asset directory."
+			))
+		}
+	}
 }
 
 /// The `DynStorageBackend` trait provides object-safe asset source resolution and version checks.
@@ -135,6 +147,7 @@ pub trait DynStorageBackend: Send + Sync {
 	fn load_bead<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<Option<BEADType>, ()>>;
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>>;
 	fn content_hash<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<u64, ()>>;
+	fn write<'a>(&'a self, id: &'a str, contents: &'a [u8]) -> BoxedFuture<'a, Result<(), String>>;
 }
 
 impl<T: StorageBackend> DynStorageBackend for T {
@@ -173,6 +186,10 @@ impl<T: StorageBackend> DynStorageBackend for T {
 
 	fn content_hash<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<u64, ()>> {
 		Box::pin(self.content_hash(url))
+	}
+
+	fn write<'a>(&'a self, id: &'a str, contents: &'a [u8]) -> BoxedFuture<'a, Result<(), String>> {
+		Box::pin(self.write(id, contents))
 	}
 }
 
@@ -415,6 +432,27 @@ impl StorageBackend for FileStorageBackend {
 		future(read_asset_from_source(url, Some(&self.base_path), allocator))
 	}
 
+	fn write<'a>(&'a self, id: &'a str, contents: &'a [u8]) -> impl Future<Output = Result<(), String>> + 'a {
+		let path = source_path(&self.base_path, id);
+		let contents = contents.to_vec();
+		async move {
+			let path = path?;
+			let written = path.clone();
+			match crate::r#async::offload(move || write_atomically(&written, &contents)).await {
+				Ok(result) => result.map_err(|error| {
+					format!(
+						"Source asset '{id}' could not be written to '{}'. The most likely cause is that the asset directory is read-only or the disk is full: {error}. Check the directory's permissions and free space.",
+						path.display()
+					)
+				}),
+				Err(error) => {
+					error.resume_unwind();
+					Err("Source asset write stopped. The most likely cause is that its blocking worker was cancelled.".to_string())
+				}
+			}
+		}
+	}
+
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, ()>> + 'a {
 		future(async move {
 			let base = url.get_base();
@@ -428,6 +466,41 @@ impl StorageBackend for FileStorageBackend {
 			}
 		})
 	}
+}
+
+/// Returns the path of the source asset `id` under `root`, or an error when the ID is empty or leaves `root`, such as
+/// one with a `..` part or an absolute one.
+fn source_path(root: &Path, id: &str) -> Result<PathBuf, String> {
+	use std::path::Component;
+
+	let relative = Path::new(id);
+	if id.is_empty()
+		|| !relative
+			.components()
+			.all(|component| matches!(component, Component::Normal(_)))
+	{
+		return Err(format!(
+			"Source asset ID '{id}' is invalid. The most likely cause is an empty ID, an absolute path, or a `..` part that leaves the asset directory. Pass a path under the asset directory, such as `materials/floor.bemx`."
+		));
+	}
+	Ok(root.join(relative))
+}
+
+/// Replaces the file at `path` with `contents`, creating its directories when missing.
+///
+/// The contents go to a sibling file first, which then takes the file's place, so a reader, such as the asset
+/// watcher's bake, never sees a partly written file.
+fn write_atomically(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+	if let Some(parent) = path.parent() {
+		std::fs::create_dir_all(parent)?;
+	}
+	let mut staging = path.as_os_str().to_owned();
+	staging.push(".writing");
+	let staging = PathBuf::from(staging);
+	std::fs::write(&staging, contents)?;
+	std::fs::rename(&staging, path).inspect_err(|_| {
+		let _ = std::fs::remove_file(&staging);
+	})
 }
 
 /// Adds to `roots` the target of every directory link at or below `directory`, and of the links below those targets.
@@ -698,6 +771,30 @@ pub mod tests {
 
 	/// Asset IDs are case-sensitive on every platform: an ID whose case differs from the file's, in its name or in a
 	/// directory, is missing, even where the file system would open it.
+	#[crate::r#async::test]
+	async fn a_written_source_reads_back_and_ids_cannot_leave_the_directory() {
+		let directory = temporary_asset_directory();
+		let storage_backend = FileStorageBackend::new(directory.clone());
+
+		storage_backend.write("materials/floor.bemx", b"{ nodes: [] }").await.unwrap();
+		let (bytes, _) = storage_backend
+			.resolve(ResourceId::new("materials/floor.bemx"))
+			.await
+			.unwrap();
+		assert_eq!(&*bytes, b"{ nodes: [] }");
+		// Writing again replaces the file, without leaving its staging file behind.
+		storage_backend.write("materials/floor.bemx", b"{}").await.unwrap();
+		assert_eq!(fs::read(directory.join("materials/floor.bemx")).unwrap(), b"{}");
+		assert_eq!(fs::read_dir(directory.join("materials")).unwrap().count(), 1);
+
+		for id in ["", "../outside.bemx", "materials/../../outside.bemx", "/tmp/outside.bemx"] {
+			assert!(storage_backend.write(id, b"{}").await.is_err(), "{id:?}");
+		}
+		assert!(!directory.parent().unwrap().join("outside.bemx").exists());
+
+		fs::remove_dir_all(directory).unwrap();
+	}
+
 	#[crate::r#async::test]
 	async fn file_storage_backend_ids_are_case_sensitive() {
 		let directory = temporary_asset_directory();

@@ -43,6 +43,7 @@ pub(crate) mod gltf;
 mod graph;
 pub(crate) mod import;
 pub mod json;
+pub mod kinds;
 
 pub use graph::{
 	BinaryOperator, Channel, Comparison, Expected, Graph, GraphBuilder, GraphError, Node, NodeId, Surface, Type, UnaryOperator,

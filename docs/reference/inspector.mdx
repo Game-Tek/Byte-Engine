@@ -54,16 +54,33 @@ type or name.
 | --- | --- |
 | `name` | The latest name attached to the entity. |
 | `transform` | The latest transform published for the entity, in the `TransformationUpdate` payload's shape: `position` and `scale` as three numbers, `orientation` as four. |
+| `camera` | The latest camera settings published for the entity, in the `CameraUpdate` payload's shape. |
 
-A property is present only when the entity has it. Because `transform` has the
-`TransformationUpdate` payload's shape, a client can change one field of it and
-post the whole value back without resetting the others.
+A property is present only when the entity has it. Because `transform` and
+`camera` have their update message's payload shape, a client can change one
+field of either and post the whole value back without resetting the others.
 
 | Message | Payload | Effect |
 | --- | --- | --- |
 | `TransformationUpdate` | A complete transform: `position` and `scale` as three numbers, `orientation` as four. | Moves the entity. |
+| `CameraUpdate` | Camera settings, as the camera payload table describes. | Replaces every setting of the camera the entity is, from the next frame on. |
 | `Delete`, `Destroy` | Null. | Deletes and retires the entity. |
 | `TriggerAction` | An input value tagged by its kind, such as a float. | Publishes an action event as if from a device. The target is the action's handle, found by name in the entity query. |
+
+A missing field of a `TransformationUpdate` or `CameraUpdate` payload takes
+its default, and an unknown field rejects the message. The camera payload has
+these fields, whose rules are the
+[camera's](/docs/reference/rendering#camera):
+
+| Field | Default | Accepts |
+| --- | --- | --- |
+| `fov` | 45 | The vertical field of view in degrees, above 0 and below 180. |
+| `near` | 0.1 | The near plane in meters, above 0 and below `far`. |
+| `far` | 100 | The far plane in meters, finite. |
+| `f_number` | Null | The lens f-number, above 0, or null for a pinhole. |
+| `focus_distance` | 10 | The distance in focus in meters, above 0 and finite. |
+| `sensor_height` | 0.024 | The sensor height in meters, above 0 and finite. |
+| `exposure` | 0 | The exposure in stops, finite and within ±64. |
 
 The message type catalog describes each payload's shape with a small
 vocabulary: null, boolean, string, integer, number, array, tuple, object,

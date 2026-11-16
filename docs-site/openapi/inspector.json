@@ -286,6 +286,9 @@
 										"$ref": "#/components/schemas/TransformationUpdateMessage"
 									},
 									{
+										"$ref": "#/components/schemas/CameraUpdateMessage"
+									},
+									{
 										"$ref": "#/components/schemas/DeletionMessage"
 									},
 									{
@@ -1200,6 +1203,10 @@
 							"transform": {
 								"$ref": "#/components/schemas/TransformPayload",
 								"description": "Latest transform published for the entity, in the `TransformationUpdate` payload's shape, so a client can change one field and post the whole value back."
+							},
+							"camera": {
+								"$ref": "#/components/schemas/CameraPayload",
+								"description": "Latest camera settings published for the entity, in the `CameraUpdate` payload's shape, so a client can change one field and post the whole value back."
 							}
 						}
 					}
@@ -1321,6 +1328,26 @@
 					},
 					"payload": {
 						"$ref": "#/components/schemas/TransformPayload"
+					}
+				}
+			},
+			"CameraUpdateMessage": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["type", "target", "payload"],
+				"properties": {
+					"type": {
+						"const": "CameraUpdate",
+						"description": "Stable inspector protocol message name."
+					},
+					"target": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 4294967295,
+						"description": "Camera entity handle returned by `GET /entities`."
+					},
+					"payload": {
+						"$ref": "#/components/schemas/CameraPayload"
 					}
 				}
 			},
@@ -1461,6 +1488,63 @@
 						},
 						"minItems": 4,
 						"maxItems": 4
+					}
+				}
+			},
+			"CameraPayload": {
+				"type": "object",
+				"additionalProperties": false,
+				"description": "Camera settings. A missing field takes a new camera's value.",
+				"properties": {
+					"fov": {
+						"type": "number",
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"exclusiveMaximum": 180,
+						"default": 45,
+						"description": "Vertical field of view in degrees."
+					},
+					"near": {
+						"type": "number",
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"default": 0.1,
+						"description": "Near plane in meters, below `far`."
+					},
+					"far": {
+						"type": "number",
+						"format": "float",
+						"default": 100,
+						"description": "Far plane in meters, finite."
+					},
+					"f_number": {
+						"type": ["number", "null"],
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"default": null,
+						"description": "Lens f-number, or null for a pinhole that keeps every depth in focus."
+					},
+					"focus_distance": {
+						"type": "number",
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"default": 10,
+						"description": "Distance in focus, in meters."
+					},
+					"sensor_height": {
+						"type": "number",
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"default": 0.024,
+						"description": "Sensor height in meters."
+					},
+					"exposure": {
+						"type": "number",
+						"format": "float",
+						"minimum": -64,
+						"maximum": 64,
+						"default": 0,
+						"description": "Exposure in stops."
 					}
 				}
 			},

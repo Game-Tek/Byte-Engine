@@ -67,7 +67,7 @@ pub mod view;
 
 pub mod csm;
 
-pub use camera::Camera;
+pub use camera::{Camera, CameraUpdate};
 pub use debug::{DebugDepthMode, DebugMesh, DebugMeshRenderPass, DebugSceneManager, DebugShape};
 pub use debug_views::{DebugViewCatalog, DebugViews, ShownDebugViews};
 pub use device::GraphicsDevice;

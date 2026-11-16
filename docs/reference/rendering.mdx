@@ -45,12 +45,16 @@ again.
 | --- | --- | --- |
 | Field of view | 45° | Vertical, in degrees, above 0 and below 180. |
 | Exposure | 0 stops | The exposure scale is 2 to the power of the stops, within ±64. |
-| Near and far planes | 0.1 and 100 | Fixed. |
-| Projection | Perspective | Sinks always use a perspective view. |
+| Near and far planes | 0.1 and 100 | In meters along the view direction, the near plane above 0 and below the far plane, the far plane finite. |
+| Projection | Perspective | Sinks always use a perspective view. The aspect ratio comes from the sink's extent. |
 | F-number | ∞ | Above 0. ∞ is a pinhole, which keeps every depth in focus. |
 | Focus distance | 10 m | Above 0. The depth that's in focus. |
 | Sensor height | 24 mm | Above 0. |
-| Aspect ratio | | Stored but not read; the aspect ratio comes from the window's extent. |
+
+A camera created again under its own handle replaces every field of that
+camera from the next frame on. The inspector's
+[`CameraUpdate`](/docs/reference/inspector#entities-and-messages) message
+does this.
 
 The camera's position and orientation come from its shown transform. Up is
 +Y, unless the view direction is within 1 percent of vertical, when +Z is used.

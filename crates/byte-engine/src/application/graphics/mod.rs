@@ -288,6 +288,13 @@ impl GraphicsApplication {
 						inspector
 							.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms.clone())
 							.unwrap_or_else(|error| panic!("{error}"));
+						// The renderer replaces a camera created again under its handle, so an update is a creation.
+						inspector
+							.register_message(
+								CAMERA_UPDATE_MESSAGE_TYPE,
+								world_messages.channel::<rendering::CameraUpdate>(),
+							)
+							.unwrap_or_else(|error| panic!("{error}"));
 						for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
 							inspector
 								.register_message(message_type, world_messages.channel::<DeleteMessage>())
@@ -1539,8 +1546,8 @@ use crate::{
 	gameplay::transform::TransformationUpdate,
 	input::Action,
 	inspector::{
-		DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, DefaultInspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
-		TRIGGER_ACTION_MESSAGE_TYPE, http::HttpInspectorServer,
+		CAMERA_UPDATE_MESSAGE_TYPE, DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, DefaultInspector,
+		TRANSFORMATION_UPDATE_MESSAGE_TYPE, TRIGGER_ACTION_MESSAGE_TYPE, http::HttpInspectorServer,
 	},
 	metrics::TickClock,
 	rendering::{

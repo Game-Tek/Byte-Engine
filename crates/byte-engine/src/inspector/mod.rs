@@ -40,8 +40,8 @@ pub mod http;
 mod message;
 use message::SerializableMessage;
 pub use message::{
-	DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, RegisteredMessageType, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
-	TRIGGER_ACTION_MESSAGE_TYPE,
+	CAMERA_UPDATE_MESSAGE_TYPE, DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, RegisteredMessageType,
+	TRANSFORMATION_UPDATE_MESSAGE_TYPE, TRIGGER_ACTION_MESSAGE_TYPE,
 };
 #[cfg(feature = "headed")]
 pub(crate) mod screenshot;
@@ -116,6 +116,9 @@ pub enum InspectedValue<'a> {
 	Text(&'a str),
 	/// A transform, serialized in the `TransformationUpdate` payload's shape so a client can post it back.
 	Transform(&'a Transform),
+	/// A camera's settings, serialized in the `CameraUpdate` payload's shape so a client can post them back.
+	#[cfg(feature = "headed")]
+	Camera(&'a crate::rendering::Camera),
 }
 
 impl Serialize for InspectedValue<'_> {
@@ -123,6 +126,8 @@ impl Serialize for InspectedValue<'_> {
 		match self {
 			Self::Text(text) => serializer.serialize_str(text),
 			Self::Transform(transform) => SerializableTransform::from(*transform).serialize(serializer),
+			#[cfg(feature = "headed")]
+			Self::Camera(camera) => camera.serialize(serializer),
 		}
 	}
 }
@@ -134,6 +139,9 @@ struct InspectedProperties {
 	name: Option<Name>,
 	/// The latest [`Transform`] published for the entity.
 	transform: Option<Transform>,
+	/// The latest camera settings published for the entity, when it's a camera.
+	#[cfg(feature = "headed")]
+	camera: Option<crate::rendering::Camera>,
 }
 
 impl InspectedProperties {
@@ -142,6 +150,8 @@ impl InspectedProperties {
 		[
 			self.name.as_ref().map(|name| ("name", InspectedValue::Text(name.as_str()))),
 			self.transform.as_ref().map(|transform| ("transform", InspectedValue::Transform(transform))),
+			#[cfg(feature = "headed")]
+			self.camera.as_ref().map(|camera| ("camera", InspectedValue::Camera(camera))),
 		]
 		.into_iter()
 		.flatten()
@@ -406,6 +416,13 @@ fn watch_properties(
 	messages.channel::<TransformationUpdate>().watch(move |update| {
 		transforms.lock().entry(update.handle()).or_default().transform = Some(update.transform().clone());
 	});
+	#[cfg(feature = "headed")]
+	{
+		let cameras = Arc::clone(properties);
+		messages.channel::<crate::rendering::CameraUpdate>().watch(move |update| {
+			cameras.lock().entry(update.handle()).or_default().camera = Some(update.data().clone());
+		});
+	}
 	let deleted = Arc::clone(properties);
 	let observer = observer.clone();
 	messages.channel::<DeleteMessage>().watch(move |deletion| {
@@ -429,6 +446,7 @@ mod tests {
 		},
 		gameplay::{Name, Transform, TransformationUpdate},
 		metrics::Metrics,
+		rendering::{Camera, CameraUpdate},
 	};
 
 	#[test]
@@ -479,5 +497,42 @@ mod tests {
 
 		world.channel::<DeleteMessage>().send(DeleteMessage::new(handle));
 		assert!(inspector.entities(None, Some("shipping crate")).is_empty());
+	}
+
+	#[test]
+	fn a_posted_camera_update_replaces_the_camera_property() {
+		let message_bus = MessageBus::default();
+		message_bus.observe().expect("attach test message observer");
+		let world = message_bus.new_scope("inspected-camera-test-world");
+		let mut inspector = DefaultInspector::new(
+			DefaultChannel::new(),
+			Configuration::new(),
+			world.clone(),
+			Arc::new(Metrics::new()),
+		);
+		inspector
+			.register_message(super::CAMERA_UPDATE_MESSAGE_TYPE, world.channel::<CameraUpdate>())
+			.unwrap();
+		let handle: Handle = world.create(Camera::new()).with(Name::new("camera")).into();
+		let camera = |inspector: &DefaultInspector| {
+			let entities = inspector.entities(None, Some("camera"));
+			serde_json::to_value(entities[0].property("camera").expect("a camera property")).unwrap()
+		};
+		assert_eq!(camera(&inspector)["fov"], 45.0);
+
+		// The property's own shape posts back, with one field changed.
+		let mut payload = camera(&inspector);
+		payload["fov"] = 70.0.into();
+		payload["f_number"] = 2.8f32.into();
+		inspector
+			.post_message(super::CAMERA_UPDATE_MESSAGE_TYPE, handle, &payload.to_string())
+			.unwrap();
+		assert_eq!(camera(&inspector), payload);
+
+		assert!(
+			inspector
+				.post_message(super::CAMERA_UPDATE_MESSAGE_TYPE, handle, r#"{ "near": 0 }"#)
+				.is_err()
+		);
 	}
 }

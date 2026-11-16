@@ -32,7 +32,7 @@ pub(crate) const ROW_HEIGHT: f32 = 30.0;
 pub(crate) const MAX_ROWS: usize = 8;
 
 /// The `Scope` enum is which of the palette's versions is open, picked by the shortcut that opened it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Scope {
 	/// Everything the palette finds, opened with Cmd+K.
 	#[default]
@@ -45,20 +45,36 @@ pub(crate) enum Scope {
 	Configure,
 	/// The node kinds to add to the open material graph.
 	Nodes,
-	/// The folders a new level can go in, opened by the New level command.
-	Folders,
+	/// The root materials a new variant can specialize, opened by the New variant command.
+	Materials,
+	/// The folders what's being created can go in, opened by the New level, New material, and New variant commands.
+	Folders(Create),
+}
+
+/// The `Create` enum is what the folders palette creates in the folder it finds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Create {
+	/// An empty level.
+	Level,
+	/// A root material with an empty graph of its own.
+	Material,
+	/// A variant of the root material this names, which starts with the material's values.
+	Variant(String),
 }
 
 impl Scope {
 	/// What the search field says while it's empty.
-	pub(crate) fn prompt(self) -> &'static str {
+	pub(crate) fn prompt(&self) -> &'static str {
 		match self {
 			Self::All => "Find something to place, a resource to open, or a setting",
 			Self::Place => "Find a mesh, prefab, or light to place",
 			Self::Explore => "Find a material or texture to open",
 			Self::Configure => "Find a setting to show or change",
 			Self::Nodes => "Find a node to add",
-			Self::Folders => "Find the folder the new level goes in, or type a new one",
+			Self::Materials => "Find the material the new variant specializes",
+			Self::Folders(Create::Level) => "Find the folder the new level goes in, or type a new one",
+			Self::Folders(Create::Material) => "Find the folder the new material goes in, or type a new one",
+			Self::Folders(Create::Variant(_)) => "Find the folder the new variant goes in, or type a new one",
 		}
 	}
 }
@@ -92,7 +108,14 @@ pub(crate) enum Kind {
 	Setting(Accepts),
 	/// Lists the folders a new level can go in.
 	NewLevel,
-	/// Writes a new, empty level into the folder the label names, creating the folder when it doesn't exist.
+	/// Lists the folders a new material can go in.
+	NewMaterial,
+	/// Lists the root materials a new variant can specialize.
+	NewVariant,
+	/// Lists the folders a new variant of the root material the label names can go in.
+	Material,
+	/// Writes what the folders palette creates into the folder the label names, creating the folder when it doesn't
+	/// exist.
 	Folder,
 }
 
@@ -124,8 +147,14 @@ impl Entry {
 	/// The name the row leads with: a resource's file name without its extension, or the whole label otherwise.
 	pub(crate) fn name(&self) -> &str {
 		match self.kind {
-			Kind::Mesh | Kind::Prefab | Kind::Graph | Kind::Texture => entity_name(&self.label),
-			Kind::Light(_) | Kind::Node | Kind::Setting(_) | Kind::NewLevel | Kind::Folder => &self.label,
+			Kind::Mesh | Kind::Prefab | Kind::Graph | Kind::Texture | Kind::Material => entity_name(&self.label),
+			Kind::Light(_)
+			| Kind::Node
+			| Kind::Setting(_)
+			| Kind::NewLevel
+			| Kind::NewMaterial
+			| Kind::NewVariant
+			| Kind::Folder => &self.label,
 		}
 	}
 }
@@ -183,7 +212,7 @@ impl State {
 			.take(MAX_ROWS)
 			.map(|index| self.entries[index].clone())
 			.collect();
-		if self.scope == Scope::Folders
+		if matches!(self.scope, Scope::Folders(_))
 			&& let Some(folder) = typed_folder(&self.search)
 			&& !self.entries.iter().any(|entry| entry.label == folder)
 		{
@@ -552,7 +581,7 @@ mod tests {
 	#[test]
 	fn a_typed_folder_that_isnt_listed_is_offered_as_a_new_one() {
 		let folders = ["/", "levels/", "textures/"].map(|folder| Entry::new(folder, Kind::Folder)).to_vec();
-		let mut state = State::new(Scope::Folders, folders, &[]);
+		let mut state = State::new(Scope::Folders(Create::Level), folders, &[]);
 		let typed = |state: &mut State, search: &str| {
 			state.search = search.to_owned();
 			state.find();

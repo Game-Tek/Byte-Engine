@@ -578,13 +578,16 @@ async fn palette_row(
 }
 
 /// The gradient a palette entry's icon takes, so each kind reads at a glance: meshes in the accent, as the scene's
-/// rows are, indigo prefabs, amber lights, pink materials, blue textures, gray nodes, teal settings, and violet levels.
+/// rows are, indigo prefabs, amber lights, pink materials and their commands, blue textures, gray nodes, teal
+/// settings, and violet levels.
 fn kind_tint(kind: palette::Kind) -> [RGBA; 2] {
 	match kind {
 		palette::Kind::Mesh => [ACCENT_LIGHT, ACCENT],
 		palette::Kind::Prefab => [hex(0x8A93F0, 1.0), hex(0x5E6AD2, 1.0)],
 		palette::Kind::Light(_) => [hex(0xFFD27A, 1.0), hex(0xF5A524, 1.0)],
-		palette::Kind::Graph => [hex(0xF29BD4, 1.0), hex(0xD9539F, 1.0)],
+		palette::Kind::Graph | palette::Kind::Material | palette::Kind::NewMaterial | palette::Kind::NewVariant => {
+			[hex(0xF29BD4, 1.0), hex(0xD9539F, 1.0)]
+		}
 		palette::Kind::Texture => [hex(0x8CC4FF, 1.0), hex(0x3D8BE0, 1.0)],
 		palette::Kind::Node => [hex(0xB9BCC4, 1.0), hex(0x6E737C, 1.0)],
 		palette::Kind::Setting(_) => [hex(0x7FE3E0, 1.0), hex(0x2BA8A4, 1.0)],

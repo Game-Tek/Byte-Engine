@@ -28,6 +28,7 @@
 //! See [Edit a level in the running game](/docs/use/editor) for how to install it and what it edits.
 
 mod carry;
+mod create;
 mod fields;
 mod gizmo;
 mod graph;
@@ -428,11 +429,7 @@ impl Editor {
 		};
 		self.palette_press = None;
 		if !same {
-			let entries = palette_entries(app, scope);
-			self.engine
-				.ctx_mut()
-				.layers
-				.push(Layer::Palette(palette::State::new(scope, entries, &self.recent)));
+			self.open_palette(app, scope);
 		}
 	}
 
@@ -525,8 +522,20 @@ impl Editor {
 			return;
 		}
 		// The palette gives way to what it opens.
-		layers.pop();
+		if let Some(Layer::Palette(palette)) = layers.pop()
+			&& let palette::Scope::Folders(what) = &palette.scope
+		{
+			create::create(app, &entry.label, what);
+			return;
+		}
 		self.choose(app, entry, false);
+	}
+
+	/// Opens the palette on `scope` over what's open, which offers new variants of the open graph's materials.
+	fn open_palette(&mut self, app: &GraphicsApplication, scope: palette::Scope) {
+		let layers = &mut self.engine.ctx_mut().layers;
+		let entries = palette_entries(app, &scope, layers.graph().map(|graph| graph.id.as_str()));
+		layers.push(Layer::Palette(palette::State::new(scope, entries, &self.recent)));
 	}
 
 	/// Puts `entry` first among what the palette was used for.
@@ -588,17 +597,19 @@ impl Editor {
 				self.open_texture(app, id);
 				return;
 			}
-			palette::Kind::NewLevel => {
-				// The command's palette gives way to one on the folders the level can go in.
-				let entries = palette_entries(app, palette::Scope::Folders);
-				let palette = palette::State::new(palette::Scope::Folders, entries, &self.recent);
-				self.engine.ctx_mut().layers.push(Layer::Palette(palette));
-				return;
+			// A command's palette gives way to one on what it asks for next: the folder what it creates goes in, or
+			// the material a variant specializes.
+			palette::Kind::NewLevel | palette::Kind::NewMaterial | palette::Kind::NewVariant | palette::Kind::Material => {
+				let scope = match entry.kind {
+					palette::Kind::NewLevel => palette::Scope::Folders(palette::Create::Level),
+					palette::Kind::NewMaterial => palette::Scope::Folders(palette::Create::Material),
+					palette::Kind::NewVariant => palette::Scope::Materials,
+					_ => palette::Scope::Folders(palette::Create::Variant(id.to_owned())),
+				};
+				return self.open_palette(app, scope);
 			}
-			palette::Kind::Folder => {
-				create_level(app, id);
-				return;
-			}
+			// Only the folders palette lists folders, which picking an entry answers.
+			palette::Kind::Folder => return,
 			_ => {
 				self.spawn_carry(app, entry, held);
 				return;
@@ -965,36 +976,6 @@ impl Editor {
 	}
 }
 
-/// Writes a new, empty level source into `folder`, as `/` or a folder ID such as `levels/`, under the first
-/// `untitled` name no level there has.
-fn create_level(app: &GraphicsApplication, folder: &str) {
-	let created = app.inspector().source_assets("level").and_then(|levels| {
-		let id = new_level_id(folder, &levels);
-		app.inspector().write_source_asset(&id, EMPTY_LEVEL).map(|()| id)
-	});
-	match created {
-		Ok(id) => log::info!("The editor created the level '{id}'."),
-		Err(error) => log::warn!("The editor couldn't create the level. {error}"),
-	}
-}
-
-/// The source of a level with no entities, which a new level starts as.
-const EMPTY_LEVEL: &str = "{\n\t\"entities\": []\n}\n";
-
-/// The ID a new level in `folder` takes: `untitled.level`, or `untitled 2.level` and so on when `levels`, the IDs of
-/// the levels there are, has it.
-fn new_level_id(folder: &str, levels: &[String]) -> String {
-	// The asset directory's own folder adds nothing to the ID.
-	let folder = folder.strip_prefix('/').unwrap_or(folder);
-	(1..)
-		.map(|n| match n {
-			1 => format!("{folder}untitled.level"),
-			n => format!("{folder}untitled {n}.level"),
-		})
-		.find(|id| !levels.contains(id))
-		.expect("An unbounded count always finds a free name.")
-}
-
 /// Removes a carried mesh or light from the scene. A carried prefab hasn't spawned, so it only stops being carried.
 fn remove_carried(app: &GraphicsApplication, carry: carry::Carry) {
 	if let carry::Load::Spawned { root, .. } = carry.load
@@ -1004,27 +985,38 @@ fn remove_carried(app: &GraphicsApplication, carry: carry::Carry) {
 	}
 }
 
-/// Gathers what the palette's `scope` finds: the node kinds for a graph, the runtime settings for settings, the
-/// resources to explore for exploring, the source folders for a new level; otherwise the stored meshes, the prefabs,
-/// and every kind of light, and for everything, also the New level command, the resources to explore, and the runtime
-/// settings.
-fn palette_entries(app: &GraphicsApplication, scope: palette::Scope) -> Vec<palette::Entry> {
+/// Gathers what the palette's `scope` finds: the node kinds for a graph, led by a new variant of each root material
+/// the open `graph` computes; the runtime settings for settings; the resources to explore for exploring; the root
+/// materials for a new variant; the source folders for what's being created; otherwise the stored meshes, the
+/// prefabs, and every kind of light, and for everything, also the New level, New material, and New variant commands,
+/// the resources to explore, and the runtime settings.
+fn palette_entries(app: &GraphicsApplication, scope: &palette::Scope, graph: Option<&str>) -> Vec<palette::Entry> {
 	use palette::{Entry, Kind, Scope};
 	let settings = || app.inspector().configuration_parameters().into_iter().map(Entry::setting);
 	let mut entries = Vec::new();
 	match scope {
 		Scope::Nodes => {
-			return resource_management::bemx::kinds::KINDS
-				.iter()
-				.map(|kind| Entry::new(kind.name, Kind::Node))
-				.collect();
+			if let Some(graph) = graph {
+				let materials = create::root_materials(app).into_iter();
+				entries.extend(materials.filter(|(_, of)| of == graph).map(|(material, _)| Entry {
+					detail: "New variant".to_owned(),
+					..Entry::new(material, Kind::Material)
+				}));
+			}
+			let kinds = resource_management::bemx::kinds::KINDS.iter();
+			entries.extend(kinds.map(|kind| Entry::new(kind.name, Kind::Node)));
+			return entries;
 		}
 		Scope::Configure => return settings().collect(),
 		Scope::Explore => {
 			explorable(app, &mut entries);
 			return entries;
 		}
-		Scope::Folders => {
+		Scope::Materials => {
+			let materials = create::root_materials(app).into_iter();
+			return materials.map(|(material, _)| Entry::new(material, Kind::Material)).collect();
+		}
+		Scope::Folders(_) => {
 			return app.inspector().source_folders().map_or_else(
 				|error| {
 					log::warn!("The palette couldn't list the game's folders. {error}");
@@ -1051,8 +1043,10 @@ fn palette_entries(app: &GraphicsApplication, scope: palette::Scope) -> Vec<pale
 		Err(error) => log::warn!("The palette couldn't list the game's prefabs. {error}"),
 	}
 	entries.extend(carry::LIGHTS.iter().map(|light| Entry::new(light.name, Kind::Light(light))));
-	if scope == Scope::All {
+	if *scope == Scope::All {
 		entries.push(Entry::new("New level", Kind::NewLevel));
+		entries.push(Entry::new("New material", Kind::NewMaterial));
+		entries.push(Entry::new("New variant", Kind::NewVariant));
 		explorable(app, &mut entries);
 		entries.extend(settings());
 	}
@@ -1076,17 +1070,5 @@ fn explorable(app: &GraphicsApplication, entries: &mut Vec<palette::Entry>) {
 				break;
 			}
 		}
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::new_level_id;
-
-	#[test]
-	fn a_new_level_takes_the_first_untitled_name_free_in_its_folder() {
-		assert_eq!(new_level_id("/", &[]), "untitled.level");
-		let taken = ["levels/untitled.level", "levels/untitled 2.level", "untitled 3.level"].map(String::from);
-		assert_eq!(new_level_id("levels/", &taken), "levels/untitled 3.level");
 	}
 }

@@ -100,7 +100,17 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
    named `untitled.level`, or a numbered name, such as `untitled 2.level`, when that name is taken. The level isn't
    loaded into the running game.
 
-8. To change a material, find its graph with Cmd+E or Cmd+K and open it. Drag between sockets to connect nodes, press
+8. To start a new material, press Cmd+K, pick **New material**, and pick its folder as for a level. The editor
+   writes a [root material](/docs/reference/bema#material-files) with no parameters, `untitled.bema`, and its graph,
+   `untitled.bemx`, which holds only a surface node. Open the graph to build the surface.
+
+   To start a variant, pick **New variant**, then the root material it specializes, then its folder. The editor
+   writes a [variant](/docs/reference/bema#variant-files), such as `paint variant.bema`, that gives every parameter
+   the material's own value, so it looks like the material until you change one. While a material's graph is open,
+   the palette lists **New variant** rows first, one for each root material that uses the graph, so you can skip
+   picking the material.
+
+9. To change a material, find its graph with Cmd+E or Cmd+K and open it. Drag between sockets to connect nodes, press
    Cmd+A to add one, and press Cmd+S to save the graph; your application reloads the material.
 
 ## See warnings and errors

@@ -4,7 +4,7 @@ use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate a
 use utils::Extent;
 
 use crate::{
-	configuration::{Accepts, ConfigurationPort, Setting},
+	configuration::{Accepts, ConfigurationPort, Read, Setting},
 	core::Entity,
 	rendering::{
 		Sink,
@@ -71,6 +71,7 @@ impl BloomPassSettings {
 	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[Setting {
 		name: "pixel-weights",
 		accepts: Accepts::Bool,
+		value: |settings| Read::Bool(settings.pixel_weights),
 		apply: |settings, read| {
 			let pixel_weights = read.bool();
 			Ok(Self {
@@ -95,7 +96,7 @@ impl BloomControls {
 	/// Creates controls that start at `settings` and apply the runtime updates queued on `configuration`. The pyramid
 	/// depth keeps its starting value, because each pass sizes its levels once.
 	pub fn new(settings: BloomPassSettings, configuration: ConfigurationPort) -> Rc<Self> {
-		configuration.declare(BloomPassSettings::SETTINGS.iter().map(Setting::parameter));
+		configuration.declare(BloomPassSettings::SETTINGS.iter().map(|setting| setting.parameter(settings)));
 		Rc::new(Self {
 			settings: Cell::new(settings),
 			configuration,

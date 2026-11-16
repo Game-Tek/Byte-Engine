@@ -231,7 +231,7 @@ use super::set_layouts;
 use super::shader_data::LightingData;
 use super::skinning::SkinningPass;
 use super::virtual_shadows::ShaderVirtualShadowFrame;
-use crate::configuration::{Accepts, Setting};
+use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassFunction};
 use crate::rendering::{PipelineManagerClient, ShownDebugViews, Sink, View};
 
@@ -511,6 +511,7 @@ impl GiSettings {
 		Setting {
 			name: "enabled",
 			accepts: Accepts::Bool,
+			value: |settings| Read::Bool(settings.enabled),
 			apply: |settings, read| {
 				let enabled = read.bool();
 				Ok(Self { enabled, ..settings })
@@ -520,6 +521,7 @@ impl GiSettings {
 			name: "technique",
 			// Listed in `IndirectDiffuseSource::ALL` order, which `apply` indexes.
 			accepts: Accepts::Choice(&["ssgi", "surfels", "probes", "baked"]),
+			value: |settings| Read::Choice(IndirectDiffuseSource::ALL.iter().position(|technique| *technique == settings.technique).unwrap_or(0)),
 			apply: |settings, read| {
 				let technique = IndirectDiffuseSource::ALL[read.choice()];
 				let (name, feature) = technique.names();

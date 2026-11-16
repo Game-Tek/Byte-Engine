@@ -30,6 +30,14 @@ pub use photometry::{LightColor, PhotometricError, PhotometricIntensity};
 pub use point::PointLight;
 pub use point::PointLight as Point;
 
+use crate::core::factory::CreateMessage;
+
+/// The `PointLightUpdate`, `ConeLightUpdate`, and `DirectionalLightUpdate` types replace a light's settings: a light
+/// created again under the handle of the light it replaces. The inspector posts them under the same names.
+pub type PointLightUpdate = CreateMessage<PointLight>;
+pub type ConeLightUpdate = CreateMessage<ConeLight>;
+pub type DirectionalLightUpdate = CreateMessage<DirectionalLight>;
+
 /// The `Light` trait identifies the shader and storage class of a scene light.
 pub trait Light {
 	fn class(&self) -> LightClasses;
@@ -58,6 +66,19 @@ pub struct LocalEmission {
 }
 
 impl LocalEmission {
+	/// Resolves a local light's authored `color` and `intensity`: through its IES profile when it names one, and
+	/// otherwise to the candela `candela` resolves the intensity to for the light's shape.
+	fn new(
+		color: LightColor,
+		intensity: &PhotometricIntensity,
+		candela: impl FnOnce(&PhotometricIntensity) -> Result<f32, PhotometricError>,
+	) -> Result<Self, PhotometricError> {
+		match intensity {
+			PhotometricIntensity::Ies { profile, dimmer } => Self::ies(color, *dimmer, profile.clone()),
+			_ => Ok(Self::uniform(color.resolve()?, candela(intensity)?)),
+		}
+	}
+
 	/// Creates an analytic emitter whose `chromaticity` carries `candela`.
 	fn uniform(chromaticity: Vec3f, candela: f32) -> Self {
 		Self::with_profile(
@@ -117,6 +138,44 @@ impl Lights {
 		}
 	}
 }
+
+/// Checks a local light's authored shadow range: each end above zero and finite, and the near one below the far one
+/// when both are set.
+fn checked_shadow_range(near: Option<f32>, far: Option<f32>) -> Result<(), PhotometricError> {
+	let positive = |value: Option<f32>| value.is_none_or(|value| value.is_finite() && value > 0.0);
+	if !(positive(near) && positive(far)) {
+		return Err(PhotometricError::new(
+			"that a shadow distance isn't above zero and finite. Give `shadow_near` and `shadow_far` in meters above zero, or leave them out",
+		));
+	}
+	if let (Some(near), Some(far)) = (near, far)
+		&& near >= far
+	{
+		return Err(PhotometricError::new(
+			"that `shadow_near` isn't below `shadow_far`. Give a near distance below the far one",
+		));
+	}
+	Ok(())
+}
+
+/// Implements serde for a light through its checked payload proxy `$proxy`, the shape its level kind and its inspector
+/// update message take, as facet's `proxy` attribute does for reflection.
+macro_rules! serde_through_proxy {
+	($light:ty, $proxy:ty) => {
+		impl serde::Serialize for $light {
+			fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+				<$proxy>::from(self).serialize(serializer)
+			}
+		}
+
+		impl<'de> serde::Deserialize<'de> for $light {
+			fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+				<$light>::try_from(<$proxy as serde::Deserialize>::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+			}
+		}
+	};
+}
+pub(crate) use serde_through_proxy;
 
 /// Implements the shadow-range builders and IES accessor of a light that embeds a [`LocalEmission`] in `emission`.
 ///

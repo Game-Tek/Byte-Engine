@@ -24,7 +24,7 @@ impl Sun {
 	/// Returns the sun that `light` gives when the frame shows it with `transform`.
 	pub fn new(light: &DirectionalLight, transform: &Transform) -> Self {
 		Self {
-			illuminance: light.color,
+			illuminance: light.illuminance,
 			angular_radius: light.angular_radius,
 			// A directional light's orientation points along ray travel; scattering needs the direction toward the sun.
 			direction: -math::direction_from_orientation(transform.get_orientation()),
@@ -56,7 +56,7 @@ mod tests {
 		] {
 			assert!((toward + ray).abs() < 1e-5, "sun {:?}, rays {rays:?}", sun.direction);
 		}
-		assert_eq!(sun.illuminance, light.color);
+		assert_eq!(sun.illuminance, light.illuminance);
 		assert_eq!(sun.angular_radius.value(), light.angular_radius.value());
 	}
 }

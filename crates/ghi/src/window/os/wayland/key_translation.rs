@@ -80,6 +80,7 @@ pub(super) fn keysym_to_key(keysym: xkb::Keysym) -> Option<Keys> {
 		keysyms::KEY_Super_R => Keys::MetaRight,
 		keysyms::KEY_Menu => Keys::Menu,
 		keysyms::KEY_space => Keys::Space,
+		keysyms::KEY_period => Keys::Period,
 		keysyms::KEY_Insert => Keys::Insert,
 		keysyms::KEY_Delete => Keys::Delete,
 		keysyms::KEY_Home => Keys::Home,

@@ -790,6 +790,7 @@ impl SurfelGiSettings {
 		Setting {
 			name: "enabled",
 			accepts: Accepts::Bool,
+			value: |settings| Read::Bool(settings.built_in),
 			apply: |settings, read| {
 				if read == Read::Bool(settings.built_in) {
 					return Ok(settings);
@@ -803,6 +804,7 @@ impl SurfelGiSettings {
 		Setting {
 			name: "surfel-capacity",
 			accepts: STARTUP_SIZE,
+			value: |settings| Read::Whole(settings.surfel_capacity),
 			apply: |settings, read| {
 				settings.with_startup_size(read, settings.surfel_capacity, "Surfel capacity", "surfel-capacity")
 			},
@@ -810,6 +812,7 @@ impl SurfelGiSettings {
 		Setting {
 			name: "ray-budget",
 			accepts: STARTUP_SIZE,
+			value: |settings| Read::Whole(settings.ray_budget),
 			apply: |settings, read| settings.with_startup_size(read, settings.ray_budget, "Surfel ray budget", "ray-budget"),
 		},
 	];

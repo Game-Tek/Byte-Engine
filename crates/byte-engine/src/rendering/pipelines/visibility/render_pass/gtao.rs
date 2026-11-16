@@ -11,7 +11,7 @@ use utils::Extent;
 
 use super::depth_pyramid::DEPTH_PYRAMID_MIP_COUNT;
 use super::{ComputeStage, Pipelines};
-use crate::configuration::{Accepts, Setting};
+use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink};
 
@@ -93,6 +93,7 @@ impl GtaoSettings {
 		Setting {
 			name: "enabled",
 			accepts: Accepts::Bool,
+			value: |settings| Read::Bool(settings.enabled),
 			apply: |settings, read| {
 				let enabled = read.bool();
 				Ok(Self { enabled, ..settings })
@@ -101,6 +102,7 @@ impl GtaoSettings {
 		Setting {
 			name: "radius",
 			accepts: Accepts::Number { min: 0.0 },
+			value: |settings| Read::Number(f64::from(settings.radius)),
 			apply: |settings, read| {
 				let radius = read.number();
 				Ok(Self {
@@ -116,6 +118,7 @@ impl GtaoSettings {
 				max: MAX_SAMPLES_PER_RAY,
 				step: 1,
 			},
+			value: |settings| Read::Whole(settings.samples_per_ray),
 			apply: |settings, read| {
 				let samples_per_ray = read.whole();
 				Ok(Self {
@@ -131,6 +134,7 @@ impl GtaoSettings {
 				max: MAX_RADIAL_RAYS,
 				step: 2,
 			},
+			value: |settings| Read::Whole(settings.radial_rays),
 			apply: |settings, read| {
 				let radial_rays = read.whole();
 				Ok(Self { radial_rays, ..settings })

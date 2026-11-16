@@ -23,6 +23,11 @@ Byte Engine provides three analytic light shapes. Point and cone lights can also
 One world-space distance unit is one meter. Keep your scene at that scale so inverse-square
 attenuation and distance-based conversions remain meaningful.
 
+A light keeps its settings as authored: its color as a temperature or an RGB
+color, its intensity in the quantity it was given in, and its angles and shadow
+range. A light created again under its own handle replaces the light of the
+same shape that handle had, from the next frame on.
+
 ## Color
 
 `LightColor::TemperatureKelvin` names a blackbody-style illuminant, which Byte

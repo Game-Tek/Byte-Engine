@@ -37,7 +37,7 @@ While the console runs, it owns the whole terminal.
 | Log view | Every log record that passes the `log.level` filter, newest at the bottom, with each command and its result between them. A record's level is colored by severity and the rest of it isn't. A record longer than the pane wraps. The pane keeps the latest 10,000 records and results. |
 | Bakes view | The latest record of the [bake stream](/docs/reference/resource-management#bake-stream): how many bakes are running, have stored their resource, and have failed; each running bake with how long it has run; and the latest bakes to end, each marked as stored or failed, with how long it took. In both lists a bake sits under the ID that asked for it, joined to it by a dim tree line: `├─` before a bake with more below it under the same ID, `╰─` before the last, and `│` running on past the bakes nested in between. A bake shows only the part of its ID that differs from that ID's: a subresource shows its `#fragment`, and a file shows its path after the directories both IDs share. A requester that isn't in the list, such as a resource whose freshness is being checked, shows dim and without a time. A row longer than the pane is cut. Before the first record, the view says no bake was reported. |
 | Entities view | The entities the [entity query](/docs/reference/inspector#entities-and-messages) lists, filtered by the [entity search](#entity-search): first how many match and how many exist, then one row per match with its handle, its name, its position, and its types without their module paths. Without a name word, rows are in handle order; with one, best match first. Rows past the pane's bottom aren't shown. The view refreshes four times a second. |
-| Completion list | While Tab offers more than one candidate: up to 8 candidates over the bottom rows of the pane, the one in the command line highlighted, then `… N more` when there are more, then what the setting takes when completing a value. See [Completion](#completion). |
+| Completion list | While Tab offers more than one candidate: up to 8 candidates over the bottom rows of the pane, the one in the command line highlighted, then `… N more` when there are more, then the setting's value and what it takes when completing a value. See [Completion](#completion). |
 | Command line | What you're typing. |
 | Status line | The latest result and the keys. |
 
@@ -134,7 +134,7 @@ while its system runs.
 
 | Candidates | Tab |
 | --- | --- |
-| None | Changes nothing. After `set` and a declared name, the list shows only what the setting takes, such as `render.lod.bias takes a number of 0 or more`. After `post`, a type, and a target, the list shows only the shape of the type's payload. |
+| None | Changes nothing. After `set` and a declared name, the list shows only the setting's value and what it takes, such as `render.lod.bias is 1 and takes a number of 0 or more`. After `post`, a type, and a target, the list shows only the shape of the type's payload. |
 | One | Replaces the word with it. A whole word gets a space after it; a name segment ending in `.` doesn't. |
 | More than one | Replaces the word with the text every candidate starts with, when that text starts with the word, and opens the list. Each further Tab replaces the word with the next candidate, from the first, and wraps around; Shift+Tab goes back. |
 

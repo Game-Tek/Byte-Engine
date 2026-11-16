@@ -1,11 +1,12 @@
-//! The values the properties panel edits: an entity's position, rotation, and scale, and a camera's settings. This
-//! module says how each one reads from an entity, shows, scrubs, reads typed text, and changes the entity.
+//! The values the properties panel edits: an entity's position, rotation, and scale, a camera's settings, and a
+//! light's. This module says how each one reads from an entity, shows, scrubs, reads typed text, and changes the
+//! entity.
 //!
 //! Drawing the fields is the shell's job, and posting a [`Change`] to the game the editor's.
 
 use maths_rs::{Quatf, Vec3f};
 
-use crate::editor::scene::SceneEntity;
+use crate::editor::scene::{SceneEntity, SceneLight};
 use crate::gameplay::Transform;
 use crate::math::{self, Orientation, Point, Scale};
 use crate::rendering::Camera;
@@ -17,6 +18,8 @@ pub(crate) enum Change {
 	Transform(Transform),
 	/// New camera settings, posted as a `CameraUpdate`.
 	Camera(Camera),
+	/// New light settings, posted as the light's update message.
+	Light(SceneLight),
 }
 
 impl Change {
@@ -25,6 +28,7 @@ impl Change {
 		match self {
 			Change::Transform(transform) => entity.transform = transform.clone(),
 			Change::Camera(camera) => entity.camera = Some(camera.clone()),
+			Change::Light(light) => entity.light = Some(light.clone()),
 		}
 	}
 }
@@ -40,6 +44,8 @@ enum Target {
 	Scale(usize),
 	/// A field of the camera's `CameraUpdate` payload.
 	Camera(&'static str),
+	/// A number in the light's update payload, by JSON pointer, such as `/color/kelvin`.
+	Light(&'static str),
 }
 
 /// The `Scrub` enum is how dragging across a field changes its value.
@@ -67,6 +73,8 @@ pub(crate) struct Setting {
 	scrub: Scrub,
 	/// The value a scrub starts from when the setting has none, such as a pinhole's f-number.
 	unset_start: f32,
+	/// What the field shows while the setting has no value, which typing also unsets it with.
+	unset: &'static str,
 }
 
 /// The transform's settings, a row each for position, rotation, and scale, X, Y, and Z in order.
@@ -96,6 +104,52 @@ pub(crate) const CAMERA: [Setting; 7] = [
 	camera("sensor_height", "Sensor", 1000.0, " mm", 1, Scrub::Exponential(160.0), 0.024),
 ];
 
+/// Every light setting the panel can show, in its order, two to a row. A light shows those its payload has: the
+/// color as authored, a temperature or red, green, and blue; the intensity's own quantity; a cone's angles, a
+/// directional light's disk, and a local light's shadow range.
+pub(crate) const LIGHT: [Setting; 14] = [
+	light("/color/kelvin", "Temp", 1.0, " K", 0, Scrub::Linear(20.0), "–"),
+	light("/color/linear_srgb/0", "R", 1.0, "", 2, Scrub::Linear(0.005), "–"),
+	light("/color/linear_srgb/1", "G", 1.0, "", 2, Scrub::Linear(0.005), "–"),
+	light("/color/linear_srgb/2", "B", 1.0, "", 2, Scrub::Linear(0.005), "–"),
+	light("/intensity/illuminance/lux", "Lux", 1.0, " lx", 0, Scrub::Exponential(120.0), "–"),
+	light("/intensity/luminous_intensity/candela", "Cd", 1.0, " cd", 0, Scrub::Exponential(120.0), "–"),
+	light("/intensity/luminous_flux/lumens", "Flux", 1.0, " lm", 0, Scrub::Exponential(120.0), "–"),
+	light("/intensity/luminance/nits", "Lum", 1.0, " nt", 0, Scrub::Exponential(120.0), "–"),
+	light("/intensity/ies/dimmer", "Dimmer", 1.0, "", 2, Scrub::Linear(0.005), "–"),
+	light("/inner_angle", "Inner", DEGREES, "°", 1, Scrub::Linear(0.004), "–"),
+	light("/outer_angle", "Outer", DEGREES, "°", 1, Scrub::Linear(0.004), "–"),
+	light("/angular_radius", "Disk", DEGREES, "°", 2, Scrub::Exponential(120.0), "–"),
+	// Without a value, the renderer picks the shadow range itself.
+	light("/shadow_near", "Near", 1.0, " m", 2, Scrub::Exponential(120.0), "auto"),
+	light("/shadow_far", "Far", 1.0, " m", 1, Scrub::Exponential(120.0), "auto"),
+];
+
+/// Shows a light's angles, in radians in its payload, in degrees.
+const DEGREES: f32 = 180.0 / std::f32::consts::PI;
+
+const fn light(
+	pointer: &'static str,
+	label: &'static str,
+	display_scale: f32,
+	unit: &'static str,
+	decimals: usize,
+	scrub: Scrub,
+	unset: &'static str,
+) -> Setting {
+	Setting {
+		target: Target::Light(pointer),
+		label,
+		display_scale,
+		unit,
+		decimals,
+		scrub,
+		// An unset shadow distance scrubs from a meter.
+		unset_start: 1.0,
+		unset,
+	}
+}
+
 /// The X, Y, and Z settings of one transform value.
 const fn axes(row: Row, unit: &'static str, decimals: usize, scrub: Scrub) -> [Setting; 3] {
 	[
@@ -119,6 +173,7 @@ const fn axis(row: Row, axis: usize, label: &'static str, unit: &'static str, de
 		decimals,
 		scrub,
 		unset_start: 0.0,
+		unset: "–",
 	}
 }
 
@@ -139,6 +194,7 @@ const fn camera(
 		decimals,
 		scrub,
 		unset_start,
+		unset: "∞",
 	}
 }
 
@@ -147,7 +203,20 @@ impl Setting {
 	pub(crate) fn axis(&self) -> Option<usize> {
 		match self.target {
 			Target::Position(axis) | Target::Rotation(axis) | Target::Scale(axis) => Some(axis),
-			Target::Camera(_) => None,
+			Target::Camera(_) | Target::Light(_) => None,
+		}
+	}
+
+	/// Whether `entity` has this setting at all, set or not: a light setting is there when the light's payload has its
+	/// field, which depends on how the light was authored.
+	pub(crate) fn applies(&self, entity: &SceneEntity) -> bool {
+		match self.target {
+			Target::Position(_) | Target::Rotation(_) | Target::Scale(_) => true,
+			Target::Camera(_) => entity.camera.is_some(),
+			Target::Light(pointer) => entity
+				.light
+				.as_ref()
+				.is_some_and(|light| light.payload.pointer(pointer).is_some()),
 		}
 	}
 
@@ -175,6 +244,7 @@ impl Setting {
 				};
 				value.is_finite().then_some(value)
 			}
+			Target::Light(pointer) => Some(entity.light.as_ref()?.payload.pointer(pointer)?.as_f64()? as f32),
 		}
 	}
 
@@ -204,6 +274,13 @@ impl Setting {
 				payload[key] = value.map_or(serde_json::Value::Null, Into::into);
 				return serde_json::from_value(payload).ok().map(Change::Camera);
 			}
+			// Light edits go through the payload too, so the light's own rules decide.
+			Target::Light(pointer) => {
+				let light = entity.light.as_ref()?;
+				let mut payload = light.payload.clone();
+				*payload.pointer_mut(pointer)? = value.map_or(serde_json::Value::Null, Into::into);
+				return light.with_payload(payload).map(Change::Light);
+			}
 		}
 		Some(Change::Transform(transform))
 	}
@@ -232,15 +309,15 @@ impl Setting {
 				};
 				let _ = write!(text, "{:.*}{}", self.decimals, shown, self.unit);
 			}
-			None => text.push('∞'),
+			None => text.push_str(self.unset),
 		}
 	}
 
-	/// Reads typed `text` as a value in the field's shown unit: `Some(None)` unsets the setting, for `∞`, `inf`, or
-	/// `off`, and `None` means the text isn't a number.
+	/// Reads typed `text` as a value in the field's shown unit: `Some(None)` unsets the setting, for `∞`, `inf`, `off`,
+	/// or what the field shows unset, and `None` means the text isn't a number.
 	pub(crate) fn parse(&self, text: &str) -> Option<Option<f32>> {
 		let text = text.trim().trim_end_matches(self.unit.trim()).trim();
-		if ["∞", "inf", "off"].iter().any(|unset| text.eq_ignore_ascii_case(unset)) {
+		if ["∞", "inf", "off", self.unset].iter().any(|unset| text.eq_ignore_ascii_case(unset)) {
 			return Some(None);
 		}
 		text.parse::<f32>().ok().map(|value| Some(value / self.display_scale))
@@ -280,6 +357,7 @@ mod tests {
 			kind: String::new(),
 			transform,
 			camera,
+			light: None,
 		}
 	}
 
@@ -293,7 +371,7 @@ mod tests {
 	fn changed_camera(change: Option<Change>) -> Option<Camera> {
 		match change? {
 			Change::Camera(camera) => Some(camera),
-			Change::Transform(_) => None,
+			Change::Transform(_) | Change::Light(_) => None,
 		}
 	}
 
@@ -312,6 +390,59 @@ mod tests {
 		assert_eq!(camera_setting("f_number").value(&camera), None);
 		// An entity that isn't a camera has no camera settings.
 		assert_eq!(fov.value(&entity(Transform::identity(), None)), None);
+	}
+
+	fn light_setting(pointer: &str) -> &'static Setting {
+		LIGHT
+			.iter()
+			.find(|setting| matches!(setting.target, Target::Light(name) if name == pointer))
+			.unwrap()
+	}
+
+	fn cone(payload: serde_json::Value) -> SceneEntity {
+		let light = SceneLight {
+			kind: crate::editor::scene::LightKind::Cone,
+			payload: serde_json::Value::Null,
+		};
+		SceneEntity {
+			light: light.with_payload(payload),
+			..entity(Transform::identity(), None)
+		}
+	}
+
+	#[test]
+	fn light_settings_follow_the_light_as_authored_and_its_rules() {
+		let light = cone(serde_json::json!({
+			"color": { "kelvin": 3000.0 },
+			"intensity": { "luminous_flux": { "lumens": 800.0 } },
+			"inner_angle": 0.3,
+			"outer_angle": 0.5,
+		}));
+		// A light authored in kelvin and lumens shows those, not red, green, and blue or candela.
+		let kelvin = light_setting("/color/kelvin");
+		assert!(kelvin.applies(&light) && light_setting("/intensity/luminous_flux/lumens").applies(&light));
+		assert!(!light_setting("/color/linear_srgb/0").applies(&light));
+		assert!(!light_setting("/intensity/luminous_intensity/candela").applies(&light));
+
+		let warmer = SceneEntity {
+			light: match kelvin.with(&light, Some(2700.0)) {
+				Some(Change::Light(light)) => Some(light),
+				_ => None,
+			},
+			..entity(Transform::identity(), None)
+		};
+		assert_eq!(kelvin.value(&warmer), Some(2700.0));
+		assert_eq!(light_setting("/outer_angle").value(&warmer), Some(0.5));
+
+		// The cone's rules refuse an inner angle past the outer one.
+		assert!(light_setting("/inner_angle").with(&light, Some(0.6)).is_none());
+		// An unset shadow distance shows that the renderer picks it, and typing that unsets it.
+		let near = light_setting("/shadow_near");
+		assert!(near.applies(&light));
+		let mut text = String::new();
+		near.display(near.value(&light), &mut text);
+		assert_eq!(text, "auto");
+		assert_eq!(near.parse("auto"), Some(None));
 	}
 
 	#[test]

@@ -236,13 +236,14 @@ impl DebugViewRegistry {
 		self.publish();
 	}
 
-	/// Returns the `<pass>.<view>` name of every registered view, each shown with `true` or hidden with `false`, to
-	/// declare on the `render.debug.view.` port.
-	pub(crate) fn parameters(&self) -> impl Iterator<Item = (String, Accepts)> + '_ {
+	/// Returns the `<pass>.<view>` name of every registered view, each shown with `true` or hidden with `false`, and
+	/// whether it shows now, to declare on the `render.debug.view.` port.
+	pub(crate) fn parameters(&self) -> impl Iterator<Item = (String, Accepts, ConfigurationValue)> + '_ {
 		self.passes.iter().flat_map(|pass| {
-			pass.views
-				.iter()
-				.map(move |view| (format!("{}.{view}", pass.name), Accepts::Bool))
+			pass.views.iter().enumerate().map(move |(index, view)| {
+				let shown = pass.shown & 1 << index != 0;
+				(format!("{}.{view}", pass.name), Accepts::Bool, ConfigurationValue::Bool(shown))
+			})
 		})
 	}
 

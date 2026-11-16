@@ -4180,7 +4180,7 @@ fn uploaded_light(
 fn light_cluster_fixture_light(cone: bool) -> crate::rendering::lights::Lights {
 	use crate::rendering::lights::{ConeLight, LightColor, Lights, PhotometricIntensity, PointLight};
 
-	let color = LightColor::LinearSrgb(maths_rs::Vec3f::new(1.0, 1.0, 1.0));
+	let color = LightColor::LinearSrgb([1.0, 1.0, 1.0]);
 	let intensity = PhotometricIntensity::LuminousIntensity {
 		candela: 100.0,
 		reference_distance_m: 1.0,
@@ -4262,7 +4262,7 @@ fn light_clusters_hold_the_lights_whose_reach_touches_them() {
 	let forward = UnitVector::z_axis();
 	let sun = Lights::Direction(
 		DirectionalLight::new(
-			LightColor::LinearSrgb(maths_rs::Vec3f::new(1.0, 1.0, 1.0)),
+			LightColor::LinearSrgb([1.0, 1.0, 1.0]),
 			PhotometricIntensity::Illuminance {
 				lux: 100_000.0,
 				measurement_distance_m: 1.0,
@@ -5108,7 +5108,7 @@ fn fog_light_sun(lux: f32, travel: math::UnitVector, shadowed: bool) -> super::s
 
 	let sun = Lights::Direction(
 		DirectionalLight::new(
-			LightColor::LinearSrgb(maths_rs::Vec3f::new(1.0, 1.0, 1.0)),
+			LightColor::LinearSrgb([1.0, 1.0, 1.0]),
 			PhotometricIntensity::Illuminance {
 				lux,
 				measurement_distance_m: 1.0,

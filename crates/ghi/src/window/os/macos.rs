@@ -980,6 +980,7 @@ fn keycode_to_key(code: u16) -> Option<Keys> {
 		48 => Some(Keys::Tab),
 		36 => Some(Keys::Enter),
 		49 => Some(Keys::Space),
+		47 => Some(Keys::Period),
 		114 => Some(Keys::Insert),
 		117 => Some(Keys::Delete),
 		115 => Some(Keys::Home),

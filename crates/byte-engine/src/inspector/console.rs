@@ -37,7 +37,7 @@ use crate::{
 		parameters::Parameters,
 		thread::Thread,
 	},
-	configuration::{Accepts, ConfigurationEventId, ConfigurationUpdateState, ConfigurationValue},
+	configuration::{ConfigurationEventId, ConfigurationUpdateState, ConfigurationValue, Parameter},
 	core::{EntityHandle, factory::Handle, listener::DefaultListener, listener::Listener as _},
 	inspector::{DefaultInspector, InspectedEntity, InspectedValue, RegisteredMessageType, find_entities},
 };
@@ -207,7 +207,7 @@ fn run(
 			Event::Key(key) if key.kind == KeyEventKind::Press => match console.handle(key) {
 				Some(Action::Run(line)) => console.run_line(&line, inspector, waker, Instant::now()),
 				Some(Action::Complete { forward }) => {
-					let parameters = inspector.configuration.parameters();
+					let parameters = inspector.configuration_parameters();
 					let entities = inspector.entities(None, None);
 					let messages = inspector.message_types();
 					let sources = Sources {
@@ -272,7 +272,7 @@ impl View {
 /// The `Sources` struct is what Tab completes from: the application's state at the moment Tab is pressed.
 struct Sources<'a> {
 	/// The declared runtime settings, sorted by name.
-	parameters: &'a [(String, Accepts)],
+	parameters: &'a [Parameter],
 	entities: &'a [InspectedEntity],
 	/// The message types `post` accepts.
 	messages: &'a [RegisteredMessageType<'a>],
@@ -337,7 +337,8 @@ struct Completion {
 	candidates: Vec<Candidate>,
 	/// The candidate in the command line, once Tab has cycled to one.
 	selected: Option<usize>,
-	/// What the word accepts, such as "render.motion-blur.taps takes a whole number from 1 through 32".
+	/// What the word holds and accepts, such as "render.motion-blur.taps is 8 and takes a whole number from 1 through
+	/// 32".
 	hint: Option<String>,
 }
 
@@ -559,10 +560,10 @@ impl Console {
 	fn collect_results(&mut self, inspector: &DefaultInspector, now: Instant) {
 		let mut reports = Vec::new();
 		self.awaiting.retain_mut(|awaiting| {
-			let state = inspector.configuration.event(awaiting.id).map(|event| event.state().clone());
+			let state = inspector.configuration_event(awaiting.id).map(|event| event.state().clone());
 			let parameter = &awaiting.parameter;
 			match state {
-				Some(ConfigurationUpdateState::Set { value }) => reports.push(format!("{parameter} set to {}", show_value(&value))),
+				Some(ConfigurationUpdateState::Set { value }) => reports.push(format!("{parameter} set to {value}")),
 				Some(ConfigurationUpdateState::NotSet { reason }) => reports.push(format!("{parameter} not set: {reason}")),
 				_ => {
 					if !awaiting.reported_pending && now.duration_since(awaiting.since) >= RESULT_WAIT {
@@ -950,16 +951,6 @@ fn style_row(kind: LineKind, first: bool, row: &str) -> Line<'_> {
 	])
 }
 
-/// Returns a value as typed, without the quotes JSON would put around text.
-fn show_value(value: &ConfigurationValue) -> String {
-	match value {
-		ConfigurationValue::Bool(value) => value.to_string(),
-		ConfigurationValue::Integer(value) => value.to_string(),
-		ConfigurationValue::Float(value) => value.to_string(),
-		ConfigurationValue::Text(value) => value.clone(),
-	}
-}
-
 /// Returns the `help` text: each command's usage and what it does.
 fn help() -> String {
 	let width = COMMANDS.iter().map(|command| command.usage.len()).max().unwrap_or(0);
@@ -1010,9 +1001,9 @@ fn candidates(before: &str, sources: &Sources) -> (usize, Vec<Candidate>, Option
 		["set"] => {
 			let mut candidates: Vec<Candidate> = Vec::new();
 			// A name with a space in it can't be typed as one word, so it isn't offered.
-			for (name, accepts) in parameters
+			for Parameter { name, accepts, .. } in parameters
 				.iter()
-				.filter(|(name, _)| name.starts_with(word) && !name.contains(' '))
+				.filter(|parameter| parameter.name.starts_with(word) && !parameter.name.contains(' '))
 			{
 				let candidate = match name[word.len()..].find('.') {
 					Some(dot) => Candidate {
@@ -1034,7 +1025,7 @@ fn candidates(before: &str, sources: &Sources) -> (usize, Vec<Candidate>, Option
 			(start, candidates, None)
 		}
 		["set", name] => {
-			let Some((_, accepts)) = parameters.iter().find(|(declared, _)| declared == name) else {
+			let Some(Parameter { accepts, value, .. }) = parameters.iter().find(|parameter| parameter.name == *name) else {
 				return (start, Vec::new(), None);
 			};
 			let lowered = word.to_ascii_lowercase();
@@ -1048,7 +1039,7 @@ fn candidates(before: &str, sources: &Sources) -> (usize, Vec<Candidate>, Option
 					whole: true,
 				})
 				.collect();
-			(start, candidates, Some(format!("{name} takes {}", accepts.describe())))
+			(start, candidates, Some(format!("{name} is {value} and takes {}", accepts.describe())))
 		}
 		["post"] => {
 			let candidates = sources
@@ -1222,7 +1213,7 @@ fn parse_line(line: &str) -> Result<Command<'_>, String> {
 		"set" => match split_word(arguments) {
 			(parameter, value) if !parameter.is_empty() && !value.is_empty() => Ok(Command::Set {
 				parameter,
-				value: read_value(value),
+				value: ConfigurationValue::from_typed(value),
 			}),
 			_ => Err(
 				"`set` needs a parameter and a value. The most likely cause is that one of them is missing. Type `set <parameter> <value>`, such as `set render.lod.force 2`."
@@ -1265,14 +1256,9 @@ fn split_word(text: &str) -> (&str, &str) {
 	}
 }
 
-/// Reads a value as JSON, as the inspector's configuration route does, so `true`, `2`, and `0.5` keep their types;
-/// text that isn't JSON, such as `off`, stays text.
-fn read_value(text: &str) -> ConfigurationValue {
-	serde_json::from_str(text).unwrap_or_else(|_| ConfigurationValue::Text(text.to_string()))
-}
-
 #[cfg(test)]
 mod tests {
+	use crate::configuration::Accepts;
 	use std::sync::Arc;
 
 	use ratatui::{Terminal, backend::TestBackend};
@@ -1548,16 +1534,20 @@ mod tests {
 	}
 
 	/// The parameters a renderer might declare, sorted as [`Configuration::parameters`] returns them.
-	fn parameters() -> Vec<(String, Accepts)> {
+	fn parameters() -> Vec<Parameter> {
 		[
-			("render.gi.enabled", Accepts::Bool),
-			("render.gi.technique", Accepts::Choice(&["ssgi", "surfels"])),
-			("render.lod.bias", Accepts::Number { min: 0.0 }),
-			("render.lod.force", Accepts::WholeOr("off")),
-			("render.pass.atmosphere sky", Accepts::Choice(&["enabled", "bypassed"])),
+			("render.gi.enabled", Accepts::Bool, ConfigurationValue::Bool(true)),
+			("render.gi.technique", Accepts::Choice(&["ssgi", "surfels"]), "ssgi".into()),
+			("render.lod.bias", Accepts::Number { min: 0.0 }, ConfigurationValue::Float(1.0)),
+			("render.lod.force", Accepts::WholeOr("off"), "off".into()),
+			("render.pass.atmosphere sky", Accepts::Choice(&["enabled", "bypassed"]), "enabled".into()),
 		]
 		.into_iter()
-		.map(|(name, accepts)| (name.to_string(), accepts))
+		.map(|(name, accepts, value)| Parameter {
+			name: name.to_string(),
+			accepts,
+			value,
+		})
 		.collect()
 	}
 
@@ -1633,7 +1623,7 @@ mod tests {
 		assert_eq!(tab(&mut console, "set render.gi.technique "), "set render.gi.technique s");
 		let rows = draw(&mut console, &VecDeque::new(), 80, 8);
 		assert!(rows[2].contains("ssgi") && rows[3].contains("surfels"), "{rows:?}");
-		assert!(rows[4].contains("render.gi.technique takes `ssgi` or `surfels`"), "{rows:?}");
+		assert!(rows[4].contains("render.gi.technique is ssgi and takes `ssgi` or `surfels`"), "{rows:?}");
 	}
 
 	#[test]
@@ -1641,7 +1631,7 @@ mod tests {
 		let mut console = Console::default();
 		assert_eq!(tab(&mut console, "set render.lod.bias "), "set render.lod.bias ");
 		let rows = draw(&mut console, &VecDeque::new(), 80, 6);
-		assert!(rows[2].contains("render.lod.bias takes a number of 0 or more"), "{rows:?}");
+		assert!(rows[2].contains("render.lod.bias is 1 and takes a number of 0 or more"), "{rows:?}");
 	}
 
 	#[test]

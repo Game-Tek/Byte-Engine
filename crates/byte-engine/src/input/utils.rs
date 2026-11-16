@@ -138,6 +138,7 @@ pub const KEYBOARD_KEYS: &[&str] = &[
 	"RightMeta",
 	"Menu",
 	"Space",
+	"Period",
 	"Insert",
 	"Delete",
 	"Home",

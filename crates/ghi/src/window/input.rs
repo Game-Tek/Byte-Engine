@@ -136,6 +136,8 @@ pub enum Keys {
 	Menu,
 	/// The spacebar key.
 	Space,
+	/// The period key, beside the comma on the main keyboard.
+	Period,
 	/// The insert key.
 	Insert,
 	/// The delete key.

@@ -245,8 +245,18 @@ impl VisibilityScene {
 		});
 	}
 
-	/// Registers a light and records its slot.
+	/// Registers a light and records its slot, or replaces the light of the same shape its handle already has, where
+	/// it already shows: a light created again under its handle is an update of its settings.
 	pub(crate) fn add_light(&mut self, handle: Handle, light: Lights) {
+		let slots = self.light_handles.get(&handle).map_or(&[][..], |slots| slots.as_slice());
+		for &slot in slots {
+			if let Some((_, existing, _)) = self.lights.get_mut(slot)
+				&& std::mem::discriminant(existing) == std::mem::discriminant(&light)
+			{
+				*existing = light;
+				return;
+			}
+		}
 		let slot = self.lights.push((handle, light, Transform::default()));
 		self.light_handles.entry(handle).or_default().push(slot);
 	}
@@ -360,7 +370,7 @@ pub(crate) fn light_data(
 		Lights::Direction(light) => {
 			return LightData {
 				position: shader_vec3(direction),
-				color: shader_vec3(light.color),
+				color: shader_vec3(light.illuminance),
 				light_type: 68,
 				shadow_views,
 				shadow_layer,
@@ -448,7 +458,7 @@ mod tests {
 		)
 		.expect("finite IES orientation");
 		let transform = Transform::from_rotation(orientation);
-		let light = PointLight::new_ies(LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)), 0.25, "lights/office.ies")
+		let light = PointLight::new(LightColor::LinearSrgb([1.0, 1.0, 1.0]), PhotometricIntensity::Ies { profile: "lights/office.ies".into(), dimmer: 0.25 })
 			.expect("physical IES point light");
 		let resident = light_data(
 			&Lights::Point(light),
@@ -478,7 +488,7 @@ mod tests {
 
 	#[test]
 	fn light_data_uploads_directional_lux_and_local_candela_without_unit_tags() {
-		let white = LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0));
+		let white = LightColor::LinearSrgb([1.0, 1.0, 1.0]);
 		let directional = DirectionalLight::new(
 			white,
 			PhotometricIntensity::Illuminance {

@@ -33,7 +33,13 @@ pub(super) fn declare_render_passes(configuration: &ConfigurationPort, states: &
 		states
 			.iter()
 			.filter(|(_, shared)| instance_count(shared) > 0)
-			.map(|(name, _)| (name.as_str(), Accepts::Choice(&["enabled", "bypassed"]))),
+			.map(|(name, shared)| {
+				(
+					name.as_str(),
+					Accepts::Choice(&["enabled", "bypassed"]),
+					shared.get().as_parameter_value().into(),
+				)
+			}),
 	);
 }
 

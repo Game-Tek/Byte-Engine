@@ -14,7 +14,7 @@ use maths_rs::Vec4f;
 use utils::Extent;
 
 use crate::{
-	configuration::{Accepts, ConfigurationPort, Setting},
+	configuration::{Accepts, ConfigurationPort, Read, Setting},
 	core::Entity,
 	rendering::{
 		DebugViews, ShownDebugViews, Sink, View,
@@ -64,6 +64,7 @@ impl MotionBlurPassSettings {
 			max: MAX_TAPS,
 			step: 1,
 		},
+		value: |settings| Read::Whole(settings.taps),
 		apply: |settings, read| {
 			let taps = read.whole();
 			Ok(Self { taps, ..settings })
@@ -84,7 +85,7 @@ pub struct MotionBlurControls {
 impl MotionBlurControls {
 	/// Creates controls that start at `settings` and apply the runtime updates queued on `configuration`.
 	pub fn new(settings: MotionBlurPassSettings, configuration: ConfigurationPort) -> Rc<Self> {
-		configuration.declare(MotionBlurPassSettings::SETTINGS.iter().map(Setting::parameter));
+		configuration.declare(MotionBlurPassSettings::SETTINGS.iter().map(|setting| setting.parameter(settings)));
 		Rc::new(Self {
 			settings: Cell::new(settings),
 			configuration,

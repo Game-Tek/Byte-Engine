@@ -22,7 +22,7 @@ use super::super::shadow_selection::SunShadow;
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
 use super::shadows::ShadowMaps;
 use super::{ComputeStage, Pipelines};
-use crate::configuration::{Accepts, Setting};
+use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
@@ -50,6 +50,7 @@ impl ContactShadowSettings {
 		Setting {
 			name: "enabled",
 			accepts: Accepts::Bool,
+			value: |settings| Read::Bool(settings.enabled),
 			apply: |settings, read| {
 				let enabled = read.bool();
 				Ok(Self { enabled, ..settings })
@@ -58,6 +59,7 @@ impl ContactShadowSettings {
 		Setting {
 			name: "distance",
 			accepts: Accepts::Number { min: 0.0 },
+			value: |settings| Read::Number(f64::from(settings.max_distance)),
 			apply: |settings, read| {
 				let distance = read.number();
 				Ok(Self {

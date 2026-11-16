@@ -997,13 +997,32 @@ impl VisibilityPipelineManager {
 		lod_configuration: crate::configuration::ConfigurationPort,
 		settings: VisibilityPipelineSettings,
 	) -> Self {
-		use crate::configuration::Setting;
-		gtao_configuration.declare(GtaoSettings::SETTINGS.iter().map(Setting::parameter));
-		gi_configuration.declare(GiSettings::SETTINGS.iter().map(Setting::parameter));
-		surfel_gi_configuration.declare(SurfelGiSettings::SETTINGS.iter().map(Setting::parameter));
-		probe_gi_configuration.declare(ProbeGiSettings::SETTINGS.iter().map(Setting::parameter));
-		contact_shadow_configuration.declare(ContactShadowSettings::SETTINGS.iter().map(Setting::parameter));
-		lod_configuration.declare(LodSettings::SETTINGS.iter().map(Setting::parameter));
+		let gtao_settings = GtaoSettings::default();
+		let gi_settings = GiSettings::new(settings.features);
+		let surfel_gi_settings = SurfelGiSettings::new(
+			settings.features.surfel_gi,
+			settings.surfel_capacity,
+			settings.surfel_ray_budget,
+		);
+		let probe_gi_settings = ProbeGiSettings::new(
+			settings.features.probe_gi,
+			settings.probe_ray_budget,
+			settings.probe_spacing,
+		);
+		let contact_shadow_settings = ContactShadowSettings::default();
+		let lod_settings = LodSettings::default();
+		gtao_configuration.declare(GtaoSettings::SETTINGS.iter().map(|setting| setting.parameter(gtao_settings)));
+		gi_configuration.declare(GiSettings::SETTINGS.iter().map(|setting| setting.parameter(gi_settings)));
+		surfel_gi_configuration
+			.declare(SurfelGiSettings::SETTINGS.iter().map(|setting| setting.parameter(surfel_gi_settings)));
+		probe_gi_configuration
+			.declare(ProbeGiSettings::SETTINGS.iter().map(|setting| setting.parameter(probe_gi_settings)));
+		contact_shadow_configuration.declare(
+			ContactShadowSettings::SETTINGS
+				.iter()
+				.map(|setting| setting.parameter(contact_shadow_settings)),
+		);
+		lod_configuration.declare(LodSettings::SETTINGS.iter().map(|setting| setting.parameter(lod_settings)));
 		let environment = create_fallback_environment(context, queue, loader.environment_sampler);
 		let blue_noise = create_blue_noise_texture(context, queue);
 		if settings.features.material_evaluation == MaterialEvaluationMode::Uber {
@@ -1182,21 +1201,13 @@ impl VisibilityPipelineManager {
 			virtual_shadow_changes: 0..0,
 			virtual_shadow_records: 0,
 			gtao_configuration,
-			gtao_settings: GtaoSettings::default(),
+			gtao_settings,
 			gi_configuration,
-			gi_settings: GiSettings::new(settings.features),
+			gi_settings,
 			surfel_gi_configuration,
-			surfel_gi_settings: SurfelGiSettings::new(
-				settings.features.surfel_gi,
-				settings.surfel_capacity,
-				settings.surfel_ray_budget,
-			),
+			surfel_gi_settings,
 			probe_gi_configuration,
-			probe_gi_settings: ProbeGiSettings::new(
-				settings.features.probe_gi,
-				settings.probe_ray_budget,
-				settings.probe_spacing,
-			),
+			probe_gi_settings,
 			ray_tracing,
 			surfel_pool,
 			probe_volume,
@@ -1208,9 +1219,9 @@ impl VisibilityPipelineManager {
 			rebuild_scratch: Vec::new(),
 			reported_surfel_gi_fallback: false,
 			contact_shadow_configuration,
-			contact_shadow_settings: ContactShadowSettings::default(),
+			contact_shadow_settings,
 			lod_configuration,
-			lod_settings: LodSettings::default(),
+			lod_settings,
 			mesh_residencies: MeshResidencies::default(),
 			recorded_sinks: SmallVec::new(),
 			recorded_exposure: 1.0,
@@ -2852,15 +2863,13 @@ impl PipelineManager for VisibilityPipelineManager {
 
 #[cfg(test)]
 mod tests {
-	use maths_rs::Vec3f;
-
 	use super::*;
 	use crate::rendering::lights::{LightColor, PhotometricIntensity, PointLight};
 
 	#[test]
 	fn resolved_ies_profile_applies_the_per_light_dimmer() {
 		let profile_light = Lights::Point(
-			PointLight::new_ies(LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)), 0.5, "lights/office.ies")
+			PointLight::new(LightColor::LinearSrgb([1.0, 1.0, 1.0]), PhotometricIntensity::Ies { profile: "lights/office.ies".into(), dimmer: 0.5 })
 				.expect("physical IES point light"),
 		);
 		let analytic_light = Lights::Point(

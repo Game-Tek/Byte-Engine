@@ -14,6 +14,7 @@ use super::{
 	ACCENT, AXIS_COLORS, CORNER, MARGIN, MUTED, PROPERTIES_WIDTH, SIDEBAR_WIDTH, SQUIRCLE, Shell, TEXT, TOOLBAR_HEIGHT,
 	hairline, hex, panel, read_typed, row_style, solid, top_highlight, typing_style, vertical,
 };
+use crate::editor::layers::Layer;
 use crate::editor::graph::{Graph, HEADER_HEIGHT, NODE_WIDTH, PendingWire, ROW_HEIGHT, Row, Source};
 use crate::ui::components::container::Container;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
@@ -42,7 +43,7 @@ const DEFAULT_VALUE: RGBA = hex(0x8A8F98, 0.6);
 /// Shows the open graph's panel while a graph is open, declaring it again for each graph that opens.
 pub(super) async fn graph_view(ctx: &mut EvaluationContext<Shell>) {
 	loop {
-		while !ctx.with(|shell: &mut Shell| shell.graph.is_some()).await {
+		while ctx.with(|shell: &mut Shell| shell.layers.graph().is_none()).await {
 			ctx.render().await;
 		}
 		let mut frame = graph_panel(ctx).await;
@@ -114,8 +115,8 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 	let (title, id) = ctx
 		.with(|shell: &mut Shell| {
 			let graph = shell
-				.graph
-				.as_ref()
+				.layers
+				.graph()
 				.expect("The graph panel shows only while a graph is open.");
 			(graph.file_name().to_string(), graph.id.clone())
 		})
@@ -187,7 +188,7 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 		})
 		.await;
 	let bounds = ctx
-		.with(|shell: &mut Shell| shell.graph.as_ref().map(Graph::bounds))
+		.with(|shell: &mut Shell| shell.layers.graph().map(Graph::bounds))
 		.await
 		.unwrap_or_default();
 	let mut view = View::fitting(bounds, canvas_size);
@@ -198,7 +199,7 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 	let mut save_hovered = false;
 	// The graph's revisions the panel last showed: its rows', and its values' and status's.
 	let mut shown_shape = ctx
-		.with(|shell: &mut Shell| shell.graph.as_ref().map_or(0, |graph| graph.shape_revision))
+		.with(|shell: &mut Shell| shell.layers.graph().map_or(0, |graph| graph.shape_revision))
 		.await;
 	let mut shown_status = None;
 	// The wire being dragged, as the panel last drew it, and its curve.
@@ -227,7 +228,7 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 				}
 			},
 			_ = close.on(Events::Actuated) => {
-				ctx.with(|shell: &mut Shell| shell.graph = None).await;
+				ctx.with(|shell: &mut Shell| shell.layers.close(|layer| matches!(layer, Layer::Graph(_)))).await;
 			},
 			_ = close.on(Events::PointerEntered) => close_hovered = true,
 			_ = close.on(Events::PointerExited) => close_hovered = false,
@@ -242,7 +243,7 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 		save.update_container(|c| c.style(row_style(false, save_hovered))).await;
 		let (current, shape, status_revision) = ctx
 			.with(|shell: &mut Shell| {
-				let graph = shell.graph.as_ref();
+				let graph = shell.layers.graph();
 				(
 					graph.map(|_| shell.graph_revision),
 					graph.map_or(0, |graph| graph.shape_revision),
@@ -263,7 +264,7 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 		}
 		let pending = ctx
 			.with(|shell: &mut Shell| {
-				let graph = shell.graph.as_ref()?;
+				let graph = shell.layers.graph()?;
 				let wire = graph.pending?;
 				Some((graph.nodes.get(wire.from)?.output(), wire.end))
 			})
@@ -282,7 +283,7 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 			shown_status = Some(status_revision);
 			let (text, color, unsaved) = ctx
 				.with(|shell: &mut Shell| {
-					let graph = shell.graph.as_ref()?;
+					let graph = shell.layers.graph()?;
 					Some(match &graph.notice {
 						Some(notice) => (first_sentence(notice).to_string(), AXIS_COLORS[0], graph.unsaved),
 						None if graph.unsaved => ("Unsaved changes".to_string(), MUTED, true),
@@ -310,8 +311,8 @@ async fn draw_world(
 	let (nodes, links, wires, [_, _, right, bottom]) = ctx
 		.with(|shell: &mut Shell| {
 			let graph = shell
-				.graph
-				.as_ref()
+				.layers
+				.graph()
 				.expect("The graph canvas draws only while a graph is open.");
 			// Each node, and whether a wire leaves its output.
 			let nodes = graph
@@ -534,7 +535,7 @@ async fn value_field(ctx: &mut EvaluationContext<Shell>, node: usize, row: usize
 		select! {
 			_ = well.on(Events::Grabbed) => {
 				start = Some(ctx.with(move |shell: &mut Shell| {
-					let graph = shell.graph.as_ref()?;
+					let graph = shell.layers.graph()?;
 					graph.number(node, graph.nodes.get(node)?.rows.get(row)?.field())
 				}).await);
 				dragged = false;
@@ -567,13 +568,13 @@ async fn value_field(ctx: &mut EvaluationContext<Shell>, node: usize, row: usize
 		}
 		// The value is shown again only when the graph's values changed.
 		let revision = ctx
-			.with(|shell: &mut Shell| shell.graph.as_ref().map(|graph| graph.revision))
+			.with(|shell: &mut Shell| shell.layers.graph().map(|graph| graph.revision))
 			.await;
 		if revision.is_some() && shown != revision {
 			shown = revision;
 			let (text, color) = ctx
 				.with(move |shell: &mut Shell| {
-					let row = shell.graph.as_ref()?.nodes.get(node)?.rows.get(row)?;
+					let row = shell.layers.graph()?.nodes.get(node)?.rows.get(row)?;
 					Some(shown_value(row))
 				})
 				.await
@@ -606,7 +607,7 @@ fn edit(shell: &mut Shell, node: usize, row: usize, value: impl FnOnce(&Graph, &
 
 /// Changes the open graph with `change`, or shows why it refused.
 fn change(shell: &mut Shell, change: impl FnOnce(&mut Graph) -> Result<(), String>) {
-	let Some(graph) = shell.graph.as_mut() else {
+	let Some(graph) = shell.layers.graph_mut() else {
 		return;
 	};
 	if let Err(error) = change(graph) {
@@ -680,7 +681,7 @@ async fn wire_handle(ctx: &mut EvaluationContext<Shell>, grip: PendingWire, z: f
 		select! {
 			_ = handle.on(Events::Grabbed) => {
 				ctx.with(move |shell: &mut Shell| {
-					if let Some(graph) = shell.graph.as_mut() {
+					if let Some(graph) = shell.layers.graph_mut() {
 						graph.pending = Some(grip);
 					}
 				})
@@ -691,7 +692,7 @@ async fn wire_handle(ctx: &mut EvaluationContext<Shell>, grip: PendingWire, z: f
 					// The drag's delta is in pixels, and the graph's units are pixels at a zoom of 1.
 					let end = [grip.end[0] + delta.x / z, grip.end[1] + delta.y / z];
 					ctx.with(move |shell: &mut Shell| {
-						if let Some(wire) = shell.graph.as_mut().and_then(|graph| graph.pending.as_mut()) {
+						if let Some(wire) = shell.layers.graph_mut().and_then(|graph| graph.pending.as_mut()) {
 							wire.end = end;
 						}
 					})

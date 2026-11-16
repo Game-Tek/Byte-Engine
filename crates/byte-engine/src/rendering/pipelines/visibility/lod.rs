@@ -249,6 +249,7 @@ impl LodSettings {
 		Setting {
 			name: "bias",
 			accepts: Accepts::Number { min: 0.0 },
+			value: |settings| Read::Number(f64::from(settings.bias)),
 			apply: |settings, read| {
 				let bias = read.number();
 				Ok(Self {
@@ -261,6 +262,7 @@ impl LodSettings {
 			name: "force",
 			accepts: Accepts::WholeOr("off"),
 			// `off` reads as the word, and draws by distance again.
+			value: |settings| settings.force.map_or(Read::Word, Read::Whole),
 			apply: |settings, read| match read {
 				Read::Word => Ok(Self { force: None, ..settings }),
 				level => Ok(Self {
@@ -272,6 +274,7 @@ impl LodSettings {
 		Setting {
 			name: "small-radius",
 			accepts: Accepts::Number { min: 0.0 },
+			value: |settings| Read::Number(f64::from(settings.small_radius)),
 			apply: |settings, read| {
 				let small_radius = read.number();
 				Ok(Self {
@@ -283,6 +286,7 @@ impl LodSettings {
 		Setting {
 			name: "small-bias",
 			accepts: Accepts::Number { min: 1.0 },
+			value: |settings| Read::Number(f64::from(settings.small_bias)),
 			apply: |settings, read| {
 				let small_bias = read.number();
 				Ok(Self {

@@ -6,7 +6,7 @@ use maths_rs::Vec3f;
 use utils::Extent;
 
 use crate::{
-	configuration::{Accepts, ConfigurationPort, Setting},
+	configuration::{Accepts, ConfigurationPort, Read, Setting},
 	core::Entity,
 	rendering::{
 		DirectionalLight, Sink, Sun,
@@ -94,6 +94,7 @@ impl AtmosphereSkyRenderPassSettings {
 	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[Setting {
 		name: "haze",
 		accepts: Accepts::Number { min: 0.0 },
+		value: |settings| Read::Number(f64::from(settings.haze)),
 		apply: |settings, read| {
 			let haze = read.number();
 			Ok(Self {
@@ -117,7 +118,7 @@ pub struct AtmosphereSkyControls {
 impl AtmosphereSkyControls {
 	/// Creates controls that start at `settings` and apply the runtime updates queued on `configuration`.
 	pub fn new(settings: AtmosphereSkyRenderPassSettings, configuration: ConfigurationPort) -> Rc<Self> {
-		configuration.declare(AtmosphereSkyRenderPassSettings::SETTINGS.iter().map(Setting::parameter));
+		configuration.declare(AtmosphereSkyRenderPassSettings::SETTINGS.iter().map(|setting| setting.parameter(settings)));
 		Rc::new(Self {
 			settings: Cell::new(settings),
 			configuration,

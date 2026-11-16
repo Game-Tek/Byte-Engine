@@ -5,14 +5,19 @@
 //! rendering under it. It reads and changes the scene through the inspector protocol, the same one the console and
 //! the HTTP inspector speak.
 //!
-//! F5 opens and closes it. While it's open, it frees the cursor and takes all of the game's input. Clicking the game
+//! F5 opens and closes it. Its modes stack as layers: the scene at the bottom, then a material graph, the palette,
+//! a setting being typed, or a carried load on top. The top layer takes input, and Escape pops it, so Escape steps
+//! back one mode at a time and closes the editor from the scene. While it's open, it frees the cursor and takes all
+//! of the game's input. Clicking the game
 //! view selects what it shows, and the gizmo, drawn in its own render pass, moves, turns, or scales the selection, by
 //! the tool the toolbar picks.
 //! The command palette opens, as VS Code's does, on a scope picked by its shortcut: Cmd+A on what can be placed, a
 //! mesh, prefab, or light to drag into the scene or pin to the pointer with Enter until a click places it, and Cmd+K
 //! on that and the material graphs to edit on a node canvas. While a graph is open, either finds a node kind to add to
 //! it. A prefab spawns where it's placed, with its parameters' defaults, through the spawner the game gave the
-//! inspector, so it knows the game's own kinds.
+//! inspector, so it knows the game's own kinds. Cmd+. opens it on the game's runtime settings, which Cmd+K finds too:
+//! Enter on one shows its value in the search field, and Enter again sets it to what the field says, as the console's
+//! `set` does.
 //!
 //! While it's open, the warnings and errors the game logs show as toasts in the bottom-right corner.
 //!
@@ -23,6 +28,7 @@ mod fields;
 mod gizmo;
 mod graph;
 mod input;
+mod layers;
 mod palette;
 mod scene;
 mod shell;
@@ -35,7 +41,7 @@ use std::time::{Duration, Instant};
 use shell::Shell;
 
 use crate::application::graphics::GraphicsApplication;
-use crate::configuration::ConfigurationValue;
+use crate::configuration::{ConfigurationEventId, ConfigurationUpdateState, ConfigurationValue};
 use crate::core::Creator as _;
 use crate::core::channel::{Channel as _, DefaultChannel};
 use crate::core::factory::{CreateMessage, Factory, Handle};
@@ -43,6 +49,7 @@ use crate::core::listener::{DefaultListener, Listener as _};
 use crate::gameplay::Transform;
 use crate::gameplay::level::level_entity_handle_from_root;
 use crate::ghi::window::{Event, Events};
+use crate::editor::layers::Layer;
 use crate::input::{ActionPhase, ResolvedAction, SeatHandle, Value};
 use crate::inspector::{
 	CAMERA_UPDATE_MESSAGE_TYPE, DELETE_MESSAGE_TYPE, InspectedEntity, InspectedValue, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
@@ -99,8 +106,8 @@ pub struct Editor {
 	meta: bool,
 	/// The palette result the pointer pressed, until it leaves the palette or is released.
 	palette_press: Option<usize>,
-	/// The mesh the pointer carries into the scene.
-	carry: Option<carry::Carry>,
+	/// The settings the palette asked the game to change, by event, until their systems answer.
+	settings: Vec<(ConfigurationEventId, String)>,
 	/// The physics world's answers to the carried mesh's ray queries.
 	rays: DefaultListener<CreateMessage<RayQueryResponse>>,
 	/// The number of the last log record the editor read, so it reads each warning and error once.
@@ -149,7 +156,7 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 		pointer: UiPoint::new(0.0, 0.0),
 		meta: false,
 		palette_press: None,
-		carry: None,
+		settings: Vec::new(),
 		rays: app.world().factory::<RayQueryResponse>().listener(),
 		// What was logged before the editor existed isn't news.
 		log_seen: crate::application::log_capture::revision(),
@@ -157,8 +164,8 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 }
 
 impl Editor {
-	/// Opens or closes the editor on F5, feeds this tick's pointer input and resizes into the editor's UI, lays it
-	/// out, and sends the render when it changed.
+	/// Opens or closes the editor on F5 and Escape, feeds this tick's pointer input and resizes into the editor's UI,
+	/// lays it out, and sends the render when it changed.
 	pub fn frame(&mut self, app: &mut GraphicsApplication) {
 		while let Some(message) = self.windows.read() {
 			// The editor frees the cursor of the game's first window.
@@ -197,8 +204,8 @@ impl Editor {
 				Value::Vector2(v) if handle == self.actions.drag => {
 					let pointer = UiPoint::new(v.x, v.y);
 					self.pointer = pointer;
-					// The palette and a carried mesh see the pointer first.
-					if self.carry_or_palette_takes(app, action.phase, pointer) {
+					// A palette or a carried mesh on top of the scene sees the pointer first.
+					if self.layer_takes(app, action.phase, pointer) {
 						continue;
 					}
 					match action.phase {
@@ -255,10 +262,12 @@ impl Editor {
 		}
 
 		self.resolved = resolved;
+		self.sync_open(app);
 
 		let polled = self.poll_scene(app);
 		self.find_shown(polled);
 		self.adopt_hits();
+		self.report_settings(app);
 		self.toast_log();
 		self.move_carry(app);
 		self.post_edit(app);
@@ -274,16 +283,33 @@ impl Editor {
 		}
 	}
 
-	/// Opens the editor when it's closed, or closes it when it's open.
+	/// Opens the editor on the scene when it's closed, or pops every layer when it's open, which closes it.
+	fn toggle(&mut self, app: &GraphicsApplication) {
+		if !self.engine.ctx_mut().layers.open() {
+			self.engine.ctx_mut().layers.push(Layer::Scene);
+			return;
+		}
+		while self.engine.ctx_mut().layers.open() {
+			self.pop(app);
+		}
+	}
+
+	/// Pops the top layer and undoes what it left in the game: a carried mesh or light is removed.
+	fn pop(&mut self, app: &GraphicsApplication) {
+		if let Some(Layer::Carry(carry)) = self.engine.ctx_mut().layers.pop() {
+			remove_carried(app, carry);
+		}
+	}
+
+	/// Opens or closes the editor to match its layers: it's open while any layer is.
 	///
 	/// An open editor shows its pass, frees the game window's cursor, and takes all of the game's input, so the game's
 	/// held actions end. A closed one bypasses its pass and gives the window its own cursor capture back.
-	fn toggle(&mut self, app: &mut GraphicsApplication) {
-		let open = {
-			let mut layer = self.layer.borrow_mut();
-			layer.open = !layer.open;
-			layer.open
-		};
+	fn sync_open(&mut self, app: &mut GraphicsApplication) {
+		let open = self.engine.ctx_mut().layers.open();
+		if std::mem::replace(&mut self.layer.borrow_mut().open, open) == open {
+			return;
+		}
 		let pass = if open { "enabled" } else { "bypassed" };
 		app.inspector()
 			.update_configuration("render.pass.editor", ConfigurationValue::from(pass));
@@ -326,90 +352,114 @@ impl Editor {
 		}
 	}
 
-	/// Answers a pressed key: Cmd+K opens the palette on everything and Cmd+A on what can be placed, Cmd+S saves the
-	/// open material graph, the arrows move the palette's highlight, Enter chooses the highlighted entry, and Escape
-	/// cancels a carried load or closes the palette or the graph.
+	/// Answers a pressed key: Cmd+K opens the palette on everything, Cmd+A on what can be placed, and Cmd+. on the
+	/// runtime settings, Cmd+S saves the open material graph, the arrows move the palette's highlight, Enter picks the
+	/// highlighted entry or sets the typed setting, and Escape pops the top layer, which closes the editor from the
+	/// scene. A property field taking typed text answers Enter and Escape itself.
 	fn key(&mut self, app: &GraphicsApplication, key: crate::input::ActionHandle) {
-		let open = self.engine.ctx_mut().palette.open;
 		let scope = if key == self.actions.k {
 			Some(palette::Scope::All)
 		} else if key == self.actions.a {
 			Some(palette::Scope::Place)
+		} else if key == self.actions.period {
+			Some(palette::Scope::Configure)
 		} else {
 			None
 		};
 		if let Some(scope) = scope
 			&& self.meta
-			&& self.carry.is_none()
 		{
 			self.toggle_palette(app, scope);
-		} else if key == self.actions.s && self.meta {
-			let shell = self.engine.ctx_mut();
-			shell.save_graph = shell.graph.is_some();
-		} else if key == self.actions.up && open {
-			self.engine.ctx_mut().palette.move_highlight(-1);
-		} else if key == self.actions.down && open {
-			self.engine.ctx_mut().palette.move_highlight(1);
-		} else if key == self.actions.enter && open {
-			let palette = &mut self.engine.ctx_mut().palette;
-			if let Some(entry) = palette.highlighted().cloned() {
-				palette.close();
-				self.choose(app, &entry, false);
-			}
-		} else if key == self.actions.escape {
-			let shell = self.engine.ctx_mut();
-			if self.carry.is_some() {
-				self.cancel_carry(app);
-			} else if open {
-				shell.palette.close();
-			} else if shell.graph.is_some() {
-				shell.graph = None;
-			}
-		}
-	}
-
-	/// Opens the palette on `scope`, closes it when it's already open on `scope`, or switches it to `scope`, as VS
-	/// Code's shortcuts do. While a material graph is open, every scope is its node kinds.
-	fn toggle_palette(&mut self, app: &GraphicsApplication, scope: palette::Scope) {
-		let shell = self.engine.ctx_mut();
-		let scope = if shell.graph.is_some() { palette::Scope::Nodes } else { scope };
-		if shell.palette.open && shell.palette.scope == scope {
-			shell.palette.close();
 			return;
 		}
-		self.palette_press = None;
-		let entries = palette_entries(app, scope);
-		self.engine.ctx_mut().palette.open(scope, entries);
+		if key == self.actions.s && self.meta {
+			let shell = self.engine.ctx_mut();
+			shell.save_graph = shell.layers.graph().is_some();
+			return;
+		}
+		match self.engine.ctx_mut().layers.top_mut() {
+			Some(Layer::Typing) => {}
+			Some(Layer::Palette(palette)) if key == self.actions.up => palette.move_highlight(-1),
+			Some(Layer::Palette(palette)) if key == self.actions.down => palette.move_highlight(1),
+			Some(Layer::Palette(palette)) if key == self.actions.enter => {
+				if let Some(entry) = palette.highlighted().cloned() {
+					self.pick_entry(app, &entry);
+				}
+			}
+			Some(Layer::Setting(_)) if key == self.actions.enter => self.set_setting(app),
+			Some(_) if key == self.actions.escape => self.pop(app),
+			_ => {}
+		}
 	}
 
-	/// Routes the pointer's press, motion, and release to a carried mesh or the open palette, and returns whether they
-	/// took it.
+	/// Opens the palette on `asked`, closes it when it's already open on that scope, or switches it to that scope, as
+	/// VS Code's shortcuts do. What the palette opens over picks the scope it opens on: over a material graph, it finds
+	/// the graph's node kinds. A carried load or a field taking text keeps the palette closed.
+	fn toggle_palette(&mut self, app: &GraphicsApplication, asked: palette::Scope) {
+		let layers = &mut self.engine.ctx_mut().layers;
+		if matches!(layers.top(), None | Some(Layer::Carry(_) | Layer::Typing)) {
+			return;
+		}
+		let scope = layers.palette_scope(asked);
+		// A setting being typed goes back to the palette that found it, which the new palette replaces.
+		if matches!(layers.top(), Some(Layer::Setting(_))) {
+			layers.pop();
+		}
+		let same = match layers.top() {
+			Some(Layer::Palette(palette)) => {
+				let same = palette.scope == scope;
+				layers.pop();
+				same
+			}
+			_ => false,
+		};
+		self.palette_press = None;
+		if !same {
+			let entries = palette_entries(app, scope);
+			self.engine
+				.ctx_mut()
+				.layers
+				.push(Layer::Palette(palette::State::new(scope, entries)));
+		}
+	}
+
+	/// Routes the pointer's press, motion, and release to the top layer when it's a carried load or the palette, and
+	/// returns whether it took them.
 	///
-	/// A pinned mesh is placed by the next press, a dragged one by its release. A press on a palette result picks it: it
+	/// A pinned load is placed by the next press, a dragged one by its release. A press on a palette result picks it: it
 	/// spawns once the pointer leaves the palette, and follows the pointer until the release, or, released on the same
 	/// result, it's pinned. A press elsewhere closes the palette and goes on to the scene.
-	fn carry_or_palette_takes(&mut self, app: &GraphicsApplication, phase: ActionPhase, pointer: UiPoint) -> bool {
-		if let Some(held) = self.carry.as_ref().map(|carry| carry.held) {
-			match phase {
-				ActionPhase::Started if !held => self.place_carry(app),
-				ActionPhase::Ended if held => self.place_carry(app),
-				ActionPhase::Cancelled if held => self.cancel_carry(app),
-				_ => {}
-			}
-			return true;
-		}
+	fn layer_takes(&mut self, app: &GraphicsApplication, phase: ActionPhase, pointer: UiPoint) -> bool {
 		let shell = self.engine.ctx_mut();
-		if !shell.palette.open && self.palette_press.is_none() {
-			return false;
-		}
+		let typing_setting = match shell.layers.top() {
+			Some(Layer::Carry(carry)) => {
+				match (phase, carry.held) {
+					(ActionPhase::Started, false) | (ActionPhase::Ended, true) => self.place_carry(app),
+					(ActionPhase::Cancelled, true) => self.pop(app),
+					_ => {}
+				}
+				return true;
+			}
+			Some(Layer::Palette(_)) => false,
+			Some(Layer::Setting(_)) => true,
+			_ => return false,
+		};
 		let viewport = shell.viewport;
 		let pixel = [(pointer.x + 1.0) * 0.5 * viewport.x(), (1.0 - pointer.y) * 0.5 * viewport.y()];
-		let rows = shell.palette.results.len();
-		let entry_at = |row: usize| shell.palette.results.get(row).cloned();
+		// A setting being typed shows its one row in the palette's place.
+		let entry_at = |layers: &mut layers::Layers, row: usize| match layers.setting_mut() {
+			Some(setting) => (row == 0).then(|| setting.row.clone()),
+			None => layers.palette().and_then(|palette| palette.results.get(row).cloned()),
+		};
+		let rows = match shell.layers.palette() {
+			_ if typing_setting => 1,
+			Some(palette) => palette.results.len(),
+			None => 0,
+		};
 		match phase {
 			ActionPhase::Started => {
 				if !palette::contains(viewport, rows, pixel) {
-					shell.palette.close();
+					shell.layers.close(|layer| matches!(layer, Layer::Palette(_)));
 					return false;
 				}
 				self.palette_press = palette::row_at(viewport, rows, pixel);
@@ -417,13 +467,13 @@ impl Editor {
 			ActionPhase::Updated => {
 				if let Some(row) = self.palette_press
 					&& !palette::contains(viewport, rows, pixel)
-					&& let Some(entry) = entry_at(row)
+					&& let Some(entry) = entry_at(&mut shell.layers, row)
 				{
 					self.palette_press = None;
 					// Only what's placed can be dragged into the scene; a material graph opens, and a node kind is
 					// added, when its row is clicked.
 					if entry.kind.places() {
-						shell.palette.close();
+						shell.layers.pop();
 						self.spawn_carry(app, &entry, true);
 					}
 				}
@@ -431,10 +481,13 @@ impl Editor {
 			ActionPhase::Ended => {
 				if let Some(row) = self.palette_press.take()
 					&& palette::row_at(viewport, rows, pixel) == Some(row)
-					&& let Some(entry) = entry_at(row)
+					&& let Some(entry) = entry_at(&mut shell.layers, row)
 				{
-					shell.palette.close();
-					self.choose(app, &entry, false);
+					if typing_setting {
+						self.set_setting(app);
+					} else {
+						self.pick_entry(app, &entry);
+					}
 				}
 			}
 			ActionPhase::Cancelled => self.palette_press = None,
@@ -448,13 +501,57 @@ impl Editor {
 		Some(view.ray([self.pointer.x, self.pointer.y]))
 	}
 
+	/// Answers Enter, or a click, on the palette's `entry`: opens a setting's value over the palette to type a new one,
+	/// or closes the palette and [`Self::choose`]s the entry.
+	fn pick_entry(&mut self, app: &GraphicsApplication, entry: &palette::Entry) {
+		let layers = &mut self.engine.ctx_mut().layers;
+		if let Some(setting) = palette::Setting::new(entry) {
+			layers.push(Layer::Setting(setting));
+			return;
+		}
+		// The palette gives way to what it opens.
+		layers.pop();
+		self.choose(app, entry, false);
+	}
+
+	/// Sets the setting being typed to the typed value, and closes it with the palette that found it.
+	fn set_setting(&mut self, app: &GraphicsApplication) {
+		let layers = &mut self.engine.ctx_mut().layers;
+		let Some(setting) = layers.setting_mut() else {
+			return;
+		};
+		// Read as the console reads a `set`, so `true`, `2`, and `off` reach the setting as their own kinds.
+		let value = ConfigurationValue::from_typed(setting.value.trim());
+		let name = std::mem::take(&mut setting.row.label);
+		layers.close(|layer| matches!(layer, Layer::Palette(_)));
+		let event = app.inspector().update_configuration(&name, value);
+		self.settings.push((event.id(), name));
+	}
+
+	/// Toasts each setting the palette changed that its system refused, with the system's reason, and forgets those
+	/// it answered.
+	fn report_settings(&mut self, app: &GraphicsApplication) {
+		self.settings.retain(|(id, name)| match app.inspector().configuration_event(*id).map(|event| event.state().clone()) {
+			Some(ConfigurationUpdateState::Pending) => true,
+			Some(ConfigurationUpdateState::NotSet { reason }) => {
+				// The toast names the setting, as some systems' reasons don't; a reason that does opens with the same
+				// sentence, which would show twice.
+				let lead = format!("`{name}` was not set. ");
+				let cause = reason.strip_prefix(lead.as_str()).unwrap_or(&reason);
+				log::warn!("{lead}{cause}");
+				false
+			}
+			Some(ConfigurationUpdateState::Set { .. }) | None => false,
+		});
+	}
+
 	/// Acts on the palette's `entry`: adds a node of its kind to the open graph, opens a material graph on the canvas,
 	/// or carries what it places, `held` when dragged out of the palette.
 	fn choose(&mut self, app: &GraphicsApplication, entry: &palette::Entry, held: bool) {
 		let id = entry.label.as_str();
 		match entry.kind {
 			palette::Kind::Node => {
-				if let Some(graph) = self.engine.ctx_mut().graph.as_mut()
+				if let Some(graph) = self.engine.ctx_mut().layers.graph_mut()
 					&& let Some(kind) = resource_management::bemx::kinds::kind(id)
 				{
 					graph.add(kind);
@@ -474,7 +571,7 @@ impl Editor {
 		match opened {
 			Ok(graph) => {
 				let shell = self.engine.ctx_mut();
-				shell.graph = Some(graph);
+				shell.layers.push(Layer::Graph(graph));
 				shell.graph_revision += 1;
 			}
 			Err(error) => log::warn!("The editor couldn't open the material graph. {error}"),
@@ -487,7 +584,8 @@ impl Editor {
 		let position = self.pointer_ray().and_then(carry::ground_point).unwrap_or(Point::origin());
 		let (light, kind, settings) = match entry.kind {
 			palette::Kind::Prefab => {
-				self.carry = Some(carry::Carry::prefab(&entry.label, position, held));
+				let carry = carry::Carry::prefab(&entry.label, position, held);
+				self.engine.ctx_mut().layers.push(Layer::Carry(carry));
 				return;
 			}
 			palette::Kind::Light(light) => {
@@ -500,7 +598,10 @@ impl Editor {
 		};
 		let source = carry::level_source(entry.name(), &carry::placed(position, light), kind, settings);
 		match app.inspector().spawn_level(&source) {
-			Ok(root) => self.carry = Some(carry::Carry::spawned(root, position, light, held)),
+			Ok(root) => {
+				let carry = carry::Carry::spawned(root, position, light, held);
+				self.engine.ctx_mut().layers.push(Layer::Carry(carry));
+			}
 			Err(error) => log::warn!("The editor couldn't place '{}'. {error}", entry.label),
 		}
 	}
@@ -510,14 +611,12 @@ impl Editor {
 	///
 	/// One query waits at a time, so the mesh follows the pointer a physics step behind.
 	fn move_carry(&mut self, app: &GraphicsApplication) {
-		if self.carry.is_none() {
+		let ray = self.pointer_ray();
+		let Some(carry) = self.engine.ctx_mut().layers.carry_mut() else {
 			while self.rays.read().is_some() {}
 			return;
-		}
-		let Some(ray) = self.pointer_ray() else {
-			return;
 		};
-		let Some(carry) = self.carry.as_mut() else {
+		let Some(ray) = ray else {
 			return;
 		};
 		let mut target = None;
@@ -555,7 +654,7 @@ impl Editor {
 	}
 
 	/// Posts the deletion and the change the properties panel made to the game: a deletion as a `Delete`, a transform
-	/// as a `TransformationUpdate`, and camera settings as a `CameraUpdate`.
+	/// as a `TransformationUpdate`, camera settings as a `CameraUpdate`, and light settings as the light's own update.
 	fn post_edit(&mut self, app: &GraphicsApplication) {
 		if let Some(handle) = self.engine.ctx_mut().delete.take() {
 			// The deleted entity can't be dragged on.
@@ -575,6 +674,7 @@ impl Editor {
 				serde_json::to_string(&InspectedValue::Transform(transform)),
 			),
 			fields::Change::Camera(camera) => (CAMERA_UPDATE_MESSAGE_TYPE, serde_json::to_string(camera)),
+			fields::Change::Light(light) => (light.kind.update_message(), serde_json::to_string(&light.payload)),
 		};
 		let payload = payload.expect(
 			"The edited value failed to serialize. The most likely cause is a non-finite value. Check the edited field.",
@@ -593,7 +693,7 @@ impl Editor {
 		if !std::mem::take(&mut shell.save_graph) {
 			return;
 		}
-		let Some(graph) = shell.graph.as_mut() else {
+		let Some(graph) = shell.layers.graph_mut() else {
 			return;
 		};
 		match graph
@@ -611,7 +711,11 @@ impl Editor {
 	/// Leaves the carried mesh where it is, or spawns the carried prefab there, and selects it, so the gizmo can move it
 	/// on. A prefab's first entity is selected.
 	fn place_carry(&mut self, app: &GraphicsApplication) {
-		let Some(carry) = self.carry.take() else {
+		let layers = &mut self.engine.ctx_mut().layers;
+		if layers.carry_mut().is_none() {
+			return;
+		}
+		let Some(Layer::Carry(carry)) = layers.pop() else {
 			return;
 		};
 		let entity = match carry.load {
@@ -642,17 +746,6 @@ impl Editor {
 		});
 	}
 
-	/// Removes the carried mesh from the scene. A carried prefab hasn't spawned, so it only stops being carried.
-	fn cancel_carry(&mut self, app: &GraphicsApplication) {
-		if let Some(carry) = self.carry.take()
-			&& let carry::Load::Spawned { root, .. } = carry.load
-			&& let Err(error) = app.inspector().post_message(DELETE_MESSAGE_TYPE, root, "null")
-		{
-			log::warn!(
-				"The editor couldn't remove the carried mesh. {error} Check that the game registers inspector messages."
-			);
-		}
-	}
 
 	/// Stands the gizmo at the selection while the editor is open, in the game camera's view, and hides it otherwise.
 	fn place_gizmo(&mut self) {
@@ -670,7 +763,8 @@ impl Editor {
 	/// Lights the gizmo part under `pointer`, in normalized window coordinates, unless a part is being dragged.
 	fn hover(&mut self, pointer: UiPoint) {
 		let shell = self.engine.ctx_mut();
-		if self.drag.is_some() || self.carry.is_some() || shell.palette.open || shell.graph.is_some() {
+		// Only the scene's own layer shows the gizmo to point at; anything over it takes the pointer.
+		if self.drag.is_some() || !matches!(shell.layers.top(), Some(Layer::Scene)) {
 			self.gizmo.borrow_mut().hovered = None;
 			return;
 		}
@@ -779,15 +873,30 @@ impl Editor {
 	}
 }
 
-/// Gathers what the palette's `scope` finds: the node kinds for a graph; otherwise the stored meshes, the prefabs,
-/// and every kind of light, and for everything, also the `.bemx` sources a development build can open.
+/// Removes a carried mesh or light from the scene. A carried prefab hasn't spawned, so it only stops being carried.
+fn remove_carried(app: &GraphicsApplication, carry: carry::Carry) {
+	if let carry::Load::Spawned { root, .. } = carry.load
+		&& let Err(error) = app.inspector().post_message(DELETE_MESSAGE_TYPE, root, "null")
+	{
+		log::warn!("The editor couldn't remove the carried mesh. {error} Check that the game registers inspector messages.");
+	}
+}
+
+/// Gathers what the palette's `scope` finds: the node kinds for a graph, the runtime settings for settings; otherwise
+/// the stored meshes, the prefabs, and every kind of light, and for everything, also the `.bemx` sources a development
+/// build can open and the runtime settings.
 fn palette_entries(app: &GraphicsApplication, scope: palette::Scope) -> Vec<palette::Entry> {
 	use palette::{Entry, Kind, Scope};
-	if scope == Scope::Nodes {
-		return resource_management::bemx::kinds::KINDS
-			.iter()
-			.map(|kind| Entry::new(kind.name, Kind::Node))
-			.collect();
+	let settings = || app.inspector().configuration_parameters().into_iter().map(Entry::setting);
+	match scope {
+		Scope::Nodes => {
+			return resource_management::bemx::kinds::KINDS
+				.iter()
+				.map(|kind| Entry::new(kind.name, Kind::Node))
+				.collect();
+		}
+		Scope::Configure => return settings().collect(),
+		Scope::All | Scope::Place => {}
 	}
 	let mut entries: Vec<Entry> = app
 		.inspector()
@@ -816,6 +925,7 @@ fn palette_entries(app: &GraphicsApplication, scope: palette::Scope) -> Vec<pale
 			Ok(graphs) => entries.extend(graphs.into_iter().map(|id| Entry::new(id, Kind::Graph))),
 			Err(error) => log::warn!("The palette couldn't list the game's material graphs. {error}"),
 		}
+		entries.extend(settings());
 	}
 	entries
 }

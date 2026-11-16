@@ -9,9 +9,9 @@ mod graph_view;
 mod toasts;
 
 use crate::core::factory::Handle;
-use crate::editor::fields::{CAMERA, Change, Setting, TRANSFORM};
+use crate::editor::fields::{CAMERA, Change, LIGHT, Setting, TRANSFORM};
 use crate::editor::gizmo::Tool;
-use crate::editor::graph::Graph;
+use crate::editor::layers::{Layer, Layers};
 use crate::editor::palette;
 use crate::editor::scene::SceneEntity;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
@@ -37,14 +37,12 @@ pub(crate) struct Shell {
 	/// The entities the overview lists for the search, in order, which [`Editor::frame`](crate::editor::Editor::frame)
 	/// finds; a change advances `scene_revision`.
 	pub(crate) shown: Vec<Handle>,
-	/// The command palette's search and results.
-	pub(crate) palette: palette::State,
+	/// The editor's modes, from the scene up: what shows, and what takes input.
+	pub(crate) layers: Layers,
 	/// What the gizmo does to the selection, as the toolbar picked it.
 	pub(crate) tool: Tool,
 	/// The last change the properties panel made, and the entity it changed, until the editor posts it to the game.
 	pub(crate) edit: Option<(Handle, Change)>,
-	/// The material graph the canvas shows, opened from the palette.
-	pub(crate) graph: Option<Graph>,
 	/// Advanced whenever another graph opens, so the canvas is declared again for it.
 	pub(crate) graph_revision: u64,
 	/// Whether the canvas asked to save the open graph, until the editor writes it through the inspector.
@@ -64,11 +62,10 @@ impl Shell {
 			selected: None,
 			search: String::new(),
 			shown: Vec::new(),
-			palette: palette::State::default(),
+			layers: Layers::default(),
 			tool: Tool::Move,
 			edit: None,
 			delete: None,
-			graph: None,
 			graph_revision: 0,
 			save_graph: false,
 			toasts: Default::default(),
@@ -179,10 +176,10 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 			shown_list = Some(list(&mut content, shown_list.take(), viewport).await);
 		}
 
-		// The panel follows the selection, its name as the list does, and whether it's a camera; the fields follow
-		// their values on their own.
+		// The panel follows the selection, its name as the list does, and its settings block; the fields follow their
+		// values on their own.
 		let selection = root
-			.with(|shell: &mut Shell| shell.selection().map(|entity| (entity.handle, entity.camera.is_some())))
+			.with(|shell: &mut Shell| shell.selection().map(|entity| (entity.handle, Part::of(entity))))
 			.await
 			.map(|selection| (selection, revision));
 		if selection != shown_selection {
@@ -329,7 +326,7 @@ async fn search_field(ctx: &mut EvaluationContext<Shell>, width: f32) {
 /// It takes the keyboard's focus while it shows, which goes back to the scene search once it's removed.
 async fn palette_view(ctx: &mut EvaluationContext<Shell>) {
 	loop {
-		while !ctx.with(|shell: &mut Shell| shell.palette.open).await {
+		while ctx.with(|shell: &mut Shell| shell.layers.palette().is_none()).await {
 			ctx.render().await;
 		}
 		let mut frame = palette_panel(ctx).await;
@@ -389,26 +386,24 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 	let mut rows: Option<EvaluationContext<Shell>> = None;
 	let mut shown = None;
 	loop {
-		let (open, revision) = ctx
-			.with(|shell: &mut Shell| (shell.palette.open, shell.palette.revision))
+		let revision = ctx
+			.with(|shell: &mut Shell| {
+				let layers = &shell.layers;
+				layers.palette().map(|palette| (palette.revision, layers.revision))
+			})
 			.await;
-		if !open {
+		let Some(revision) = revision else {
 			return frame;
-		}
+		};
 		if shown != Some(revision) {
 			shown = Some(revision);
-			// A shortcut can switch the open palette to another scope, which says what it finds.
-			let (results, highlight, search, prompt) = ctx
-				.with(|shell: &mut Shell| {
-					let palette = &shell.palette;
-					(
-						palette.results.clone(),
-						palette.highlight,
-						palette.search.clone(),
-						palette.scope.prompt(),
-					)
-				})
-				.await;
+			// A shortcut can switch the open palette to another scope, which says what it finds, and a setting opened
+			// over it shows its own row and value.
+			let Some((results, highlight, search, prompt)) =
+				ctx.with(|shell: &mut Shell| palette_shown(&mut shell.layers)).await
+			else {
+				return frame;
+			};
 			// The panel grows with its results, so the rows are declared again under a resized panel.
 			let height = palette::height(results.len());
 			frame
@@ -435,14 +430,34 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 		select! {
 			edit = input.on_text_edit() => {
 				ctx.with(move |shell: &mut Shell| {
-					edit.edit.apply_to(&mut shell.palette.search);
-					shell.palette.find();
+					// The field holds the value of a setting being typed, or the palette's search otherwise.
+					if let Some(setting) = shell.layers.setting_mut() {
+						edit.edit.apply_to(&mut setting.value);
+					} else if let Some(palette) = shell.layers.palette_mut() {
+						edit.edit.apply_to(&mut palette.search);
+						palette.find();
+					}
 				})
 				.await;
 			},
 			_ = ctx.render() => {},
 		}
 	}
+}
+
+/// What the open palette shows: its rows, the highlighted one, the field's text, and what the field says while it's
+/// empty. A setting being typed over it shows its own row and value instead.
+fn palette_shown(layers: &mut Layers) -> Option<(Vec<palette::Entry>, usize, String, &'static str)> {
+	if let Some(setting) = layers.setting_mut() {
+		return Some((vec![setting.row.clone()], 0, setting.value.clone(), "Type a new value"));
+	}
+	let palette = layers.palette()?;
+	Some((
+		palette.results.clone(),
+		palette.highlight,
+		palette.search.clone(),
+		palette.scope.prompt(),
+	))
 }
 
 /// One palette entry: an icon tinted by what it is, its name, and its full ID when the name shortens it, lit when
@@ -480,15 +495,17 @@ async fn palette_row(
 	row.element("name")
 		.text(entry.name(), |t| t.font_size(13.0).style([solid(TEXT)]))
 		.await;
-	if entry.name() != entry.label {
+	// A setting's value, or what it takes while it's edited, says more than its name repeated would.
+	let detail = if entry.detail.is_empty() { &entry.label } else { &entry.detail };
+	if entry.name() != detail {
 		row.element("id")
-			.text(&entry.label, |t| t.font_size(11.5).style([solid(MUTED)]))
+			.text(detail, |t| t.font_size(11.5).style([solid(MUTED)]))
 			.await;
 	}
 }
 
 /// The gradient a palette entry's icon takes, so each kind reads at a glance: indigo meshes, green prefabs, amber
-/// lights, pink materials, and gray nodes.
+/// lights, pink materials, gray nodes, and teal settings.
 fn kind_tint(kind: palette::Kind) -> [RGBA; 2] {
 	match kind {
 		palette::Kind::Mesh => [hex(0x8A93F0, 1.0), ACCENT],
@@ -496,6 +513,7 @@ fn kind_tint(kind: palette::Kind) -> [RGBA; 2] {
 		palette::Kind::Light(_) => [hex(0xFFD27A, 1.0), hex(0xF5A524, 1.0)],
 		palette::Kind::Graph => [hex(0xF29BD4, 1.0), hex(0xD9539F, 1.0)],
 		palette::Kind::Node => [hex(0xB9BCC4, 1.0), hex(0x6E737C, 1.0)],
+		palette::Kind::Setting(_) => [hex(0x7FE3E0, 1.0), hex(0x2BA8A4, 1.0)],
 	}
 }
 
@@ -561,59 +579,114 @@ const fn block_height(rows: usize) -> f32 {
 }
 
 /// The properties panel's height: its insets around the entity block, the transform block while the selection has a
-/// transform, and the camera block while the selection is a camera.
-fn properties_height(transform: bool, camera: bool) -> f32 {
+/// transform, and a settings block of `part_rows` rows while the selection has one.
+fn properties_height(transform: bool, part_rows: usize) -> f32 {
 	let transform = if transform {
 		BLOCK_GAP + block_height(TRANSFORM.len())
 	} else {
 		0.0
 	};
-	let camera = if camera {
-		BLOCK_GAP + block_height(CAMERA.len().div_ceil(2))
+	let part = if part_rows > 0 {
+		BLOCK_GAP + block_height(part_rows)
 	} else {
 		0.0
 	};
-	INSET * 2.0 + block_height(1) + transform + camera
+	INSET * 2.0 + block_height(1) + transform + part
+}
+
+/// The `Part` struct names the settings block the panel shows under the selection's transform: a camera's or a
+/// light's, with those of the block's settings the entity has, since a light shows its settings as authored.
+#[derive(Clone, Copy)]
+struct Part {
+	handle: Handle,
+	title: &'static str,
+	settings: &'static [Setting],
+	/// One bit per setting in `settings`, set for those the entity has.
+	shown: u32,
+}
+
+impl Part {
+	/// The settings block `entity` shows, or `None` for an entity that's neither a camera nor a light.
+	fn of(entity: &SceneEntity) -> Option<Self> {
+		let (title, settings) = match &entity.light {
+			_ if entity.camera.is_some() => ("Camera", &CAMERA[..]),
+			Some(light) => (light.kind.title(), &LIGHT[..]),
+			None => return None,
+		};
+		let shown = settings
+			.iter()
+			.enumerate()
+			.filter(|(_, setting)| setting.applies(entity))
+			.fold(0, |shown, (index, _)| shown | 1 << index);
+		Some(Self {
+			handle: entity.handle,
+			title,
+			settings,
+			shown,
+		})
+	}
+
+	/// The settings the block shows, in order.
+	fn settings(&self) -> impl Iterator<Item = &'static Setting> {
+		let shown = self.shown;
+		self.settings
+			.iter()
+			.enumerate()
+			.filter(move |(index, _)| shown & 1 << index != 0)
+			.map(|(_, setting)| setting)
+	}
+
+	/// How many rows the block's fields take, two to a row.
+	fn rows(&self) -> usize {
+		(self.shown.count_ones() as usize).div_ceil(2)
+	}
+}
+
+/// Two parts are the same block when they're the same kind of block, for the same entity, with the same settings.
+impl PartialEq for Part {
+	fn eq(&self, other: &Self) -> bool {
+		self.handle == other.handle && self.title == other.title && self.shown == other.shown
+	}
 }
 
 /// The properties panel's parts that follow the selection: the panel, which grows to hold the blocks the selection
-/// has, the name, and the transform and camera blocks while the selection has those parts.
+/// has, the name, the transform block, and the camera's or light's settings block.
 struct Fields {
 	panel: EvaluationContext<Shell>,
 	blocks: EvaluationContext<Shell>,
 	name: EvaluationContext<Shell>,
 	/// The transform block, while the selection has a transform. Its fields follow the selection on their own.
 	transform: Option<EvaluationContext<Shell>>,
-	/// The camera block and the camera it edits, while the selection is a camera.
-	camera: Option<(Handle, EvaluationContext<Shell>)>,
+	/// The settings block and the part it shows, while the selection is a camera or a light.
+	part: Option<(Part, EvaluationContext<Shell>)>,
 }
 
 impl Fields {
 	/// Shows the selected entity's name, or a dash without a selection, its transform block while it has a transform,
-	/// and its camera block while it's a camera.
+	/// and its settings block while it's a camera or a light.
 	async fn show(&mut self, root: &mut EvaluationContext<Shell>) {
 		let selection = root
 			.with(|shell: &mut Shell| {
 				shell
 					.selection()
-					.map(|entity| (entity.handle, entity.label().to_string(), entity.camera.is_some()))
+					.map(|entity| (entity.label().to_string(), Part::of(entity)))
 			})
 			.await;
-		let name = selection.as_ref().map_or("–", |(_, label, _)| label.as_str());
+		let name = selection.as_ref().map_or("–", |(label, _)| label.as_str());
 		self.name.update_text(|t| t.content(name)).await;
 
 		// The scene holds only entities with a transform, so every selection has one.
 		let transform = selection.is_some();
-		// The camera block belongs to one camera, so it's declared again for another one.
-		let camera = selection.and_then(|(handle, _, is_camera)| is_camera.then_some(handle));
-		let camera_changed = self.camera.as_ref().map(|(handle, _)| *handle) != camera;
+		// A settings block belongs to one entity, so it's declared again for another one.
+		let part = selection.and_then(|(_, part)| part);
+		let part_changed = self.part.as_ref().map(|(shown, _)| *shown) != part;
 		let transform_changed = self.transform.is_some() != transform;
-		if !camera_changed && !transform_changed {
+		if !part_changed && !transform_changed {
 			return;
 		}
-		// Blocks stack in the order they're declared, so the camera block also comes off when the transform block comes
-		// back, to be declared again under it.
-		if let Some((_, mut block)) = self.camera.take() {
+		// Blocks stack in the order they're declared, so the settings block also comes off when the transform block
+		// comes back, to be declared again under it.
+		if let Some((_, mut block)) = self.part.take() {
 			block.remove().await;
 		}
 		if transform_changed {
@@ -622,20 +695,20 @@ impl Fields {
 				None => self.transform = Some(transform_block(&mut self.blocks).await),
 			}
 		}
-		let height = properties_height(transform, camera.is_some());
+		let height = properties_height(transform, part.map_or(0, |part| part.rows()));
 		self.panel
 			.update_container(|c| c.height(height.into()).style(panel(height, 1.0)))
 			.await;
-		if let Some(handle) = camera {
-			self.camera = Some((handle, camera_block(&mut self.blocks, handle).await));
+		if let Some(part) = part {
+			self.part = Some((part, settings_block(&mut self.blocks, part).await));
 		}
 	}
 }
 
 /// The properties panel: a block for each part of the selected entity, the entity itself with its name, its
-/// transform, and its camera settings while it's a camera.
+/// transform, and its camera's or light's settings.
 async fn properties(root: &mut EvaluationContext<Shell>) -> Fields {
-	let height = properties_height(false, false);
+	let height = properties_height(false, 0);
 	let mut panel_element = root
 		.element("properties")
 		.container(|c| {
@@ -656,7 +729,7 @@ async fn properties(root: &mut EvaluationContext<Shell>) -> Fields {
 		.container(|c| {
 			c.absolute_position(INSET, INSET)
 				.width(width.into())
-				.height(properties_height(true, true).into())
+				.height(properties_height(true, CAMERA.len().max(LIGHT.len()).div_ceil(2)).into())
 				.flow(flow::column_with_gap(BLOCK_GAP as u32))
 		})
 		.await;
@@ -675,7 +748,7 @@ async fn properties(root: &mut EvaluationContext<Shell>) -> Fields {
 		blocks,
 		name,
 		transform: None,
-		camera: None,
+		part: None,
 	}
 }
 
@@ -754,21 +827,29 @@ async fn block(
 	(block, header)
 }
 
-/// The camera block: the camera's settings two to a row.
-async fn camera_block(blocks: &mut EvaluationContext<Shell>, handle: Handle) -> EvaluationContext<Shell> {
+/// A camera's or light's settings block: the part's settings two to a row.
+async fn settings_block(blocks: &mut EvaluationContext<Shell>, part: Part) -> EvaluationContext<Shell> {
 	let width = PROPERTIES_WIDTH - INSET * 2.0;
-	let (mut block, _) = block(blocks, &format!("camera {}", handle.id()), "Camera", CAMERA.len().div_ceil(2)).await;
+	let key = format!("{} {}", part.title, part.handle.id());
+	let (mut block, _) = block(blocks, &key, part.title, part.rows()).await;
 	let field_width = (width - 6.0) / 2.0;
-	for (row, pair) in CAMERA.chunks(2).enumerate() {
-		let mut line = block
-			.element(("row", row))
-			.container(|c| c.width(width.into()).height(FIELD_HEIGHT.into()).flow(flow::row_with_gap(6)))
-			.await;
-		for setting in pair {
-			line.element(setting.label)
-				.component(async move |ctx| setting_field(ctx, setting, field_width, true).await)
-				.await;
+	let mut line = None;
+	for (index, setting) in part.settings().enumerate() {
+		// Every other setting starts a new row.
+		if index % 2 == 0 {
+			line = Some(
+				block
+					.element(("row", index / 2))
+					.container(|c| c.width(width.into()).height(FIELD_HEIGHT.into()).flow(flow::row_with_gap(6)))
+					.await,
+			);
 		}
+		let Some(line) = line.as_mut() else {
+			unreachable!("The first setting starts a row.");
+		};
+		line.element(setting.label)
+			.component(async move |ctx| setting_field(ctx, setting, field_width, true).await)
+			.await;
 	}
 	block
 }
@@ -987,6 +1068,8 @@ async fn read_typed(
 	font_size: f32,
 ) -> Option<String> {
 	let [typing, rest] = styles;
+	// While text is typed, the field takes Enter and Escape, so Escape cancels the typing instead of popping a layer.
+	ctx.with(|shell: &mut Shell| shell.layers.push(Layer::Typing)).await;
 	well.update_container(|c| c.style(typing)).await;
 	let mut input = well
 		.element("input")
@@ -1016,6 +1099,8 @@ async fn read_typed(
 	};
 	// Removing the field gives the keyboard back to the scene search.
 	input.remove().await;
+	ctx.with(|shell: &mut Shell| shell.layers.close(|layer| matches!(layer, Layer::Typing)))
+		.await;
 	well.update_container(|c| c.style(rest)).await;
 	apply.then_some(typed)
 }

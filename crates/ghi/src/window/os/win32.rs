@@ -923,6 +923,8 @@ fn wparam_to_key(wparam: WPARAM) -> Option<Keys> {
 		0x0D => Some(Keys::Enter),
 		0x1B => Some(Keys::Escape),
 		0x20 => Some(Keys::Space),
+		// VK_OEM_PERIOD
+		0xBE => Some(Keys::Period),
 		0x2D => Some(Keys::Insert),
 		0x2E => Some(Keys::Delete),
 		0x25 => Some(Keys::ArrowLeft),

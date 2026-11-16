@@ -55,20 +55,26 @@ type or name.
 | `name` | The latest name attached to the entity. |
 | `transform` | The latest transform published for the entity, in the `TransformationUpdate` payload's shape: `position` and `scale` as three numbers, `orientation` as four. |
 | `camera` | The latest camera settings published for the entity, in the `CameraUpdate` payload's shape. |
+| `point_light`, `cone_light`, `directional_light` | The latest settings published for the light the entity is, as authored, in its update message's payload shape. |
 
-A property is present only when the entity has it. Because `transform` and
-`camera` have their update message's payload shape, a client can change one
-field of either and post the whole value back without resetting the others.
+A property is present only when the entity has it. Because `transform`,
+`camera`, and the light properties have their update message's payload shape,
+a client can change one field of any of them and post the whole value back
+without resetting the others.
 
 | Message | Payload | Effect |
 | --- | --- | --- |
 | `TransformationUpdate` | A complete transform: `position` and `scale` as three numbers, `orientation` as four. | Moves the entity. |
 | `CameraUpdate` | Camera settings, as the camera payload table describes. | Replaces every setting of the camera the entity is, from the next frame on. |
+| `PointLightUpdate`, `ConeLightUpdate`, `DirectionalLightUpdate` | A light's settings, as the level's [`point_light`, `cone_light`, and `directional_light` kinds](/docs/reference/levels#kinds) write them. | Replaces every setting of the light of that kind the entity is, from the next frame on. |
 | `Delete`, `Destroy` | Null. | Deletes and retires the entity. |
 | `TriggerAction` | An input value tagged by its kind, such as a float. | Publishes an action event as if from a device. The target is the action's handle, found by name in the entity query. |
 
 A missing field of a `TransformationUpdate` or `CameraUpdate` payload takes
-its default, and an unknown field rejects the message. The camera payload has
+its default, and an unknown field rejects the message. A light's payload takes
+the same defaults and rules as its [level kind](/docs/reference/levels#lights),
+and a light property reports every setting as it was authored: its color as
+`kelvin` or `linear_srgb`, and its intensity in the quantity it was given in. The camera payload has
 these fields, whose rules are the
 [camera's](/docs/reference/rendering#camera):
 

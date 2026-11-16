@@ -6,7 +6,10 @@
 use crate::core::factory::Handle;
 use crate::gameplay::Transform;
 use crate::inspector::{InspectedEntity, InspectedValue, find_entities};
-use crate::rendering::Camera;
+use crate::inspector::{
+	CONE_LIGHT_UPDATE_MESSAGE_TYPE, DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE, POINT_LIGHT_UPDATE_MESSAGE_TYPE,
+};
+use crate::rendering::{Camera, ConeLight, DirectionalLight, PointLight};
 
 /// The `SceneEntity` struct is one row of the scene overview and what the properties panel shows when it is selected.
 #[derive(Clone, Debug, PartialEq)]
@@ -21,6 +24,72 @@ pub(crate) struct SceneEntity {
 	pub(crate) transform: Transform,
 	/// The entity's camera settings, when it's a camera.
 	pub(crate) camera: Option<Camera>,
+	/// The entity's light settings as authored, when it's a light.
+	pub(crate) light: Option<SceneLight>,
+}
+
+/// The `LightKind` enum is which shape of light an entity is, named as its inspector property and level kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LightKind {
+	Point,
+	Cone,
+	Directional,
+}
+
+impl LightKind {
+	pub(crate) const ALL: [Self; 3] = [Self::Point, Self::Cone, Self::Directional];
+
+	/// The inspector property and level kind that hold the light's settings.
+	pub(crate) fn property(self) -> &'static str {
+		match self {
+			Self::Point => "point_light",
+			Self::Cone => "cone_light",
+			Self::Directional => "directional_light",
+		}
+	}
+
+	/// What the properties panel calls it.
+	pub(crate) fn title(self) -> &'static str {
+		match self {
+			Self::Point => "Point light",
+			Self::Cone => "Cone light",
+			Self::Directional => "Directional light",
+		}
+	}
+
+	/// The inspector message that replaces its settings.
+	pub(crate) fn update_message(self) -> &'static str {
+		match self {
+			Self::Point => POINT_LIGHT_UPDATE_MESSAGE_TYPE,
+			Self::Cone => CONE_LIGHT_UPDATE_MESSAGE_TYPE,
+			Self::Directional => DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE,
+		}
+	}
+}
+
+/// The `SceneLight` struct is a light's settings as the panel edits them: its shape, and its update payload as
+/// authored, whose fields the panel's light settings name by JSON pointer.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SceneLight {
+	pub(crate) kind: LightKind,
+	pub(crate) payload: serde_json::Value,
+}
+
+impl SceneLight {
+	/// Returns this light with `payload`, as the engine reads it back, or `None` when the light's rules refuse it, such
+	/// as a cone whose inner angle passes its outer one.
+	pub(crate) fn with_payload(&self, payload: serde_json::Value) -> Option<Self> {
+		// The engine's own types check the payload, so the panel takes exactly the values the game would.
+		fn checked<T: serde::de::DeserializeOwned + serde::Serialize>(payload: serde_json::Value) -> Option<serde_json::Value> {
+			serde_json::to_value(serde_json::from_value::<T>(payload).ok()?).ok()
+		}
+		let payload = match self.kind {
+			LightKind::Point => checked::<PointLight>(payload),
+			LightKind::Cone => checked::<ConeLight>(payload),
+			LightKind::Directional => checked::<DirectionalLight>(payload),
+		}?;
+		Some(Self { kind: self.kind, payload })
+	}
 }
 
 impl SceneEntity {
@@ -53,12 +122,17 @@ pub(crate) fn collect(entities: &[InspectedEntity], scene: &mut Vec<SceneEntity>
 			Some(InspectedValue::Camera(camera)) => Some(camera.clone()),
 			_ => None,
 		};
+		let light = LightKind::ALL.into_iter().find_map(|kind| {
+			let payload = serde_json::to_value(entity.property(kind.property())?).ok()?;
+			Some(SceneLight { kind, payload })
+		});
 		rows.push(SceneEntity {
 			handle: entity.handle(),
 			name,
 			kind,
 			transform: transform.clone(),
 			camera,
+			light,
 		});
 	}
 	// A stable order keeps rows from jumping when the inspector reports entities in another order.

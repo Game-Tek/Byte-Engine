@@ -1,12 +1,16 @@
 //! The command palette: a floating search over what the editor can do, as VS Code's is.
 //!
-//! Each shortcut opens it on a [`Scope`]: Cmd+K on everything, Cmd+A on what can be placed in the scene, and either
-//! on the node kinds while a material graph is open. A placeable [`Entry`] is dragged into the scene or pinned to the
-//! pointer until a click places it; a material graph opens on the canvas, and a node kind is added to the open graph.
+//! Each shortcut opens it on a [`Scope`]: Cmd+K on everything, Cmd+A on what can be placed in the scene, Cmd+. on the
+//! game's runtime settings, and any of them on the node kinds while a material graph is open. A placeable [`Entry`] is
+//! dragged into the scene or pinned to the pointer until a click places it; a material graph opens on the canvas, and
+//! a node kind is added to the open graph. A setting opens a [`Setting`] over the palette, which shows its value in
+//! the search field, where a typed value replaces it.
 //!
-//! This module holds what the palette shows and where it is on screen. The shell draws it from [`State`], and the
-//! editor turns presses, keys, and typing into changes of it; acting on the chosen entry is the editor's job.
+//! This module holds what the palette shows and where it is on screen. The palette is a layer of the editor's
+//! [`Layers`](crate::editor::layers::Layers), which the shell draws it from; the editor turns presses, keys, and
+//! typing into changes of it, and acting on the chosen entry is the editor's job.
 
+use crate::configuration::{Accepts, Parameter};
 use crate::editor::carry::Light;
 use crate::inspector::fuzzy_find;
 use crate::ui::Size;
@@ -34,6 +38,8 @@ pub(crate) enum Scope {
 	All,
 	/// What can be placed in the scene, opened with Cmd+A.
 	Place,
+	/// The game's runtime settings, opened with Cmd+.
+	Configure,
 	/// The node kinds to add to the open material graph.
 	Nodes,
 }
@@ -42,8 +48,9 @@ impl Scope {
 	/// What the search field says while it's empty.
 	pub(crate) fn prompt(self) -> &'static str {
 		match self {
-			Self::All => "Find a mesh, prefab, or light to place, or a material to edit",
+			Self::All => "Find something to place, a material to edit, or a setting",
 			Self::Place => "Find a mesh, prefab, or light to place",
+			Self::Configure => "Find a setting to show or change",
 			Self::Nodes => "Find a node to add",
 		}
 	}
@@ -52,9 +59,11 @@ impl Scope {
 /// The `Entry` struct is one thing the palette finds: what its row says, which the search matches, and what it is.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Entry {
-	/// A resource's or source's ID, a node kind's name, or a light's name.
+	/// A resource's or source's ID, a node kind's name, a light's name, or a setting's name.
 	pub(crate) label: String,
 	pub(crate) kind: Kind,
+	/// What the row says after the name, such as a setting's value; empty for most entries.
+	pub(crate) detail: String,
 }
 
 /// The `Kind` enum is what choosing an entry does.
@@ -70,6 +79,8 @@ pub(crate) enum Kind {
 	Graph,
 	/// Adds a node of the kind the label names to the open graph.
 	Node,
+	/// Shows the runtime setting the label names, which takes these values, to change it.
+	Setting(Accepts),
 }
 
 impl Kind {
@@ -84,6 +95,16 @@ impl Entry {
 		Self {
 			label: label.into(),
 			kind,
+			detail: String::new(),
+		}
+	}
+
+	/// The entry of a runtime setting, which shows its value.
+	pub(crate) fn setting(parameter: Parameter) -> Self {
+		Self {
+			detail: parameter.value.to_string(),
+			label: parameter.name,
+			kind: Kind::Setting(parameter.accepts),
 		}
 	}
 
@@ -91,7 +112,7 @@ impl Entry {
 	pub(crate) fn name(&self) -> &str {
 		match self.kind {
 			Kind::Mesh | Kind::Prefab | Kind::Graph => entity_name(&self.label),
-			Kind::Light(_) | Kind::Node => &self.label,
+			Kind::Light(_) | Kind::Node | Kind::Setting(_) => &self.label,
 		}
 	}
 }
@@ -99,8 +120,6 @@ impl Entry {
 /// The `State` struct is what the palette shows, which the editor changes and the shell draws.
 #[derive(Default)]
 pub(crate) struct State {
-	/// Whether the palette is showing.
-	pub(crate) open: bool,
 	/// Which version of the palette is open.
 	pub(crate) scope: Scope,
 	/// What the search field holds.
@@ -116,19 +135,15 @@ pub(crate) struct State {
 }
 
 impl State {
-	/// Shows the palette's `scope` over `entries`, with an empty search.
-	pub(crate) fn open(&mut self, scope: Scope, entries: Vec<Entry>) {
-		self.open = true;
-		self.scope = scope;
-		self.search.clear();
-		self.entries = entries;
-		self.find();
-	}
-
-	/// Hides the palette.
-	pub(crate) fn close(&mut self) {
-		self.open = false;
-		self.revision += 1;
+	/// The palette's `scope` over `entries`, with an empty search.
+	pub(crate) fn new(scope: Scope, entries: Vec<Entry>) -> Self {
+		let mut state = Self {
+			scope,
+			entries,
+			..Self::default()
+		};
+		state.find();
+		state
 	}
 
 	/// Finds the results for the search, as the console finds entities by name, and highlights the best one.
@@ -153,6 +168,31 @@ impl State {
 	/// The highlighted result, if there is any.
 	pub(crate) fn highlighted(&self) -> Option<&Entry> {
 		self.results.get(self.highlight)
+	}
+}
+
+/// The `Setting` struct is a runtime setting being given a new value, over the palette that found it: the field
+/// holds the value, its one row says what it takes, and Enter sets it.
+pub(crate) struct Setting {
+	/// The setting's row, which says what it takes.
+	pub(crate) row: Entry,
+	/// What the field holds: the setting's value when it opened, then what's typed.
+	pub(crate) value: String,
+}
+
+impl Setting {
+	/// The setting `entry` names, its value typed in to be replaced, or `None` when the entry isn't a setting.
+	pub(crate) fn new(entry: &Entry) -> Option<Self> {
+		let Kind::Setting(accepts) = entry.kind else {
+			return None;
+		};
+		Some(Self {
+			value: entry.detail.clone(),
+			row: Entry {
+				detail: format!("takes {}", accepts.describe()),
+				..entry.clone()
+			},
+		})
 	}
 }
 
@@ -196,10 +236,7 @@ mod tests {
 	use super::*;
 
 	fn palette(resources: &[&str]) -> State {
-		let mut state = State::default();
-		let entries = resources.iter().map(|id| Entry::new(*id, Kind::Mesh)).collect();
-		state.open(Scope::Place, entries);
-		state
+		State::new(Scope::Place, resources.iter().map(|id| Entry::new(*id, Kind::Mesh)).collect())
 	}
 
 	fn labels(state: &State) -> Vec<&str> {
@@ -242,6 +279,23 @@ mod tests {
 		);
 		assert!(contains(viewport, 3, [left + 1.0, top + 1.0]));
 		assert!(!contains(viewport, 3, [left - 1.0, top + 1.0]));
+	}
+
+	#[test]
+	fn a_picked_setting_puts_its_value_in_the_field_and_says_what_it_takes() {
+		let bias = Parameter {
+			name: "render.lod.bias".to_string(),
+			accepts: Accepts::Number { min: 0.0 },
+			value: crate::configuration::ConfigurationValue::Float(1.5),
+		};
+		let state = State::new(Scope::Configure, vec![Entry::setting(bias)]);
+		assert_eq!(state.results[0].detail, "1.5");
+
+		let setting = Setting::new(state.highlighted().unwrap()).unwrap();
+		assert_eq!(setting.value, "1.5");
+		assert_eq!(setting.row.label, "render.lod.bias");
+		assert_eq!(setting.row.detail, "takes a number of 0 or more");
+		assert!(Setting::new(&Entry::new("crate.glb", Kind::Mesh)).is_none());
 	}
 
 	#[test]

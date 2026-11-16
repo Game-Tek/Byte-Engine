@@ -75,8 +75,8 @@ pub use environment::Environment;
 pub use fog::{ExponentialHeightFog, FogLayer};
 pub use lightmap::Lightmap;
 pub use lights::{
-	ConeLight, DirectionalLight, IesProfile, Light, LightClasses, LightColor, LocalEmission, PhotometricError,
-	PhotometricIntensity, PointLight,
+	ConeLight, ConeLightUpdate, DirectionalLight, DirectionalLightUpdate, IesProfile, Light, LightClasses, LightColor,
+	LocalEmission, PhotometricError, PhotometricIntensity, PointLight, PointLightUpdate,
 };
 pub(crate) use material_parameter::MaterialParameterTarget;
 pub use material_parameter::SetMaterialParameter;

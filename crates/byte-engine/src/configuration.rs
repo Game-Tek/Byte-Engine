@@ -5,8 +5,9 @@
 //! consuming system keeps each update pending until it can report either
 //! [`ConfigurationUpdateState::Set`] or [`ConfigurationUpdateState::NotSet`].
 //!
-//! Each system also declares the names it takes with [`ConfigurationPort::declare`], so adapters can list them with
-//! [`Configuration::parameters`] and describe their values with [`Accepts`].
+//! Each system also declares the names it takes, and the value each holds, with [`ConfigurationPort::declare`], so
+//! adapters can list them with [`Configuration::parameters`], show their values, and describe what they accept with
+//! [`Accepts`]. A system's [`ConfigurationPort::set`] reports keep those values current.
 
 use std::{
 	collections::VecDeque,
@@ -85,6 +86,31 @@ impl ConfigurationValue {
 	}
 }
 
+impl ConfigurationValue {
+	/// Reads text a person typed as JSON, as the inspector's configuration route does, so `true`, `2`, and `0.5` keep
+	/// their types; anything else, such as `off`, is text.
+	///
+	/// Adapters such as the console and the editor's palette read typed values with it before [`Configuration::update`].
+	pub fn from_typed(text: &str) -> Self {
+		serde_json::from_str(text).unwrap_or_else(|_| Self::Text(text.to_string()))
+	}
+}
+
+/// Shows the value as a person would type it: a number that came from 32-bit floating point without the digits the
+/// widening added, such as `0.1` rather than `0.10000000149011612`.
+impl std::fmt::Display for ConfigurationValue {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Bool(value) => value.fmt(f),
+			Self::Integer(value) => value.fmt(f),
+			// Most settings hold `f32`s, so a value that is exactly one shows with that type's shortest digits.
+			Self::Float(value) if f64::from(*value as f32) == *value => (*value as f32).fmt(f),
+			Self::Float(value) => value.fmt(f),
+			Self::Text(value) => value.fmt(f),
+		}
+	}
+}
+
 impl From<&str> for ConfigurationValue {
 	fn from(value: &str) -> Self {
 		Self::Text(value.to_string())
@@ -101,7 +127,7 @@ impl From<String> for ConfigurationValue {
 /// every setting does and adapters such as the console can complete and describe them.
 ///
 /// Systems name it in a [`Setting`] table or pass it to [`ConfigurationPort::declare`]; adapters read it back from
-/// [`Configuration::parameters`].
+/// [`Parameter::accepts`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Accepts {
 	/// `true` or `false`.
@@ -277,13 +303,15 @@ pub(crate) struct Setting<S> {
 	/// Stores a read value in the settings, or returns why the system can't take it, such as a startup-only size
 	/// asked to change. Values outside [`Self::accepts`] never reach it.
 	pub(crate) apply: fn(S, Read) -> Result<S, String>,
+	/// Reads the setting's value out of the settings, as [`Self::accepts`] would read it, so adapters can show it.
+	pub(crate) value: fn(S) -> Read,
 }
 
 #[cfg(feature = "headed")]
 impl<S> Setting<S> {
-	/// Returns the name and accepted values to pass to [`ConfigurationPort::declare`].
-	pub(crate) fn parameter(&self) -> (&'static str, Accepts) {
-		(self.name, self.accepts)
+	/// Returns the name, accepted values, and value in `settings` to pass to [`ConfigurationPort::declare`].
+	pub(crate) fn parameter(&self, settings: S) -> (&'static str, Accepts, ConfigurationValue) {
+		(self.name, self.accepts, self.accepts.value((self.value)(settings)))
 	}
 }
 
@@ -365,11 +393,24 @@ impl ConfigurationUpdate {
 	}
 }
 
+/// The `Parameter` struct is one runtime setting a system declared, as adapters list it: the console completes its
+/// name, and the editor's palette finds it and shows its value before setting a new one with
+/// [`Configuration::update`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Parameter {
+	/// The full name, such as `render.lod.bias`; inside a route, the name after its prefix.
+	pub name: String,
+	/// The values the setting takes.
+	pub accepts: Accepts,
+	/// The value in effect: the one the system declared, or the last one it reported set.
+	pub value: ConfigurationValue,
+}
+
 struct ConfigurationRoute {
 	prefix: String,
 	sender: SyncSender<ConfigurationUpdate>,
-	/// The names inside `prefix` the owning system declared, with the values each accepts.
-	parameters: Vec<(String, Accepts)>,
+	/// The parameters the owning system declared, by their names inside `prefix`.
+	parameters: Vec<Parameter>,
 }
 
 struct ConfigurationState {
@@ -494,23 +535,23 @@ impl Configuration {
 	}
 
 	/// Returns every parameter the registered systems declared, by full name in name order, with the values each
-	/// accepts.
+	/// accepts and holds.
 	///
 	/// Adapters such as the console use it to complete and describe names; a system that declared nothing still
 	/// takes updates under its prefix.
-	pub fn parameters(&self) -> Vec<(String, Accepts)> {
+	pub fn parameters(&self) -> Vec<Parameter> {
 		let state = self.state.lock();
-		let mut parameters: Vec<(String, Accepts)> = state
+		let mut parameters: Vec<Parameter> = state
 			.routes
 			.iter()
 			.flat_map(|route| {
-				route
-					.parameters
-					.iter()
-					.map(|(name, accepts)| (format!("{}{name}", route.prefix), *accepts))
+				route.parameters.iter().map(|parameter| Parameter {
+					name: format!("{}{}", route.prefix, parameter.name),
+					..parameter.clone()
+				})
 			})
 			.collect();
-		parameters.sort_by(|a, b| a.0.cmp(&b.0));
+		parameters.sort_by(|a, b| a.name.cmp(&b.name));
 		parameters
 	}
 
@@ -557,9 +598,24 @@ impl ConfigurationPort {
 		self.receiver.try_recv().ok()
 	}
 
-	/// Reports the effective value applied by the consuming system.
+	/// Reports the effective value applied by the consuming system, which the parameter then holds.
 	pub fn set(&self, id: ConfigurationEventId, value: ConfigurationValue) {
-		finish_event(&self.state, id, ConfigurationUpdateState::Set { value });
+		let mut state = self.state.lock();
+		if !finish(&mut state, id, ConfigurationUpdateState::Set { value: value.clone() }) {
+			return;
+		}
+		let Some(event) = state.events.iter().find(|event| event.id == id) else {
+			return;
+		};
+		// The event names the parameter in full; the route keeps it by the name inside the prefix.
+		let name = event.parameter.strip_prefix(self.prefix.as_str()).unwrap_or(&event.parameter).to_string();
+		if let Some(parameter) = state.routes[self.route]
+			.parameters
+			.iter_mut()
+			.find(|parameter| parameter.name == name)
+		{
+			parameter.value = value;
+		}
 	}
 
 	/// Reports why the consuming system did not apply the requested value.
@@ -567,14 +623,22 @@ impl ConfigurationPort {
 		finish_event(&self.state, id, ConfigurationUpdateState::NotSet { reason: reason.into() });
 	}
 
-	/// Declares the parameters this port's system takes, by their names inside the prefix, replacing those declared
-	/// before.
+	/// Declares the parameters this port's system takes, by their names inside the prefix, with the values each
+	/// accepts and holds now, replacing those declared before.
 	///
-	/// A system with a [`Setting`] table declares it once, as `port.declare(SETTINGS.iter().map(Setting::parameter))`;
-	/// a system whose names change while it runs, such as the installed render passes, declares them again on each
-	/// change. Next, [`Configuration::parameters`] lists them.
-	pub fn declare<N: Into<String>>(&self, parameters: impl IntoIterator<Item = (N, Accepts)>) {
-		let parameters = parameters.into_iter().map(|(name, accepts)| (name.into(), accepts)).collect();
+	/// A system with a [`Setting`] table declares it once, as
+	/// `port.declare(SETTINGS.iter().map(|setting| setting.parameter(settings)))`; a system whose names change while it
+	/// runs, such as the installed render passes, declares them again on each change. Next, [`Configuration::parameters`]
+	/// lists them, and each [`Self::set`] keeps its value current.
+	pub fn declare<N: Into<String>>(&self, parameters: impl IntoIterator<Item = (N, Accepts, ConfigurationValue)>) {
+		let parameters = parameters
+			.into_iter()
+			.map(|(name, accepts, value)| Parameter {
+				name: name.into(),
+				accepts,
+				value,
+			})
+			.collect();
 		self.state.lock().routes[self.route].parameters = parameters;
 	}
 
@@ -628,16 +692,23 @@ pub(crate) fn apply_setting<S: Copy>(
 
 /// Completes a pending event once so late or duplicate reports cannot rewrite debugging history.
 fn finish_event(state: &Arc<Mutex<ConfigurationState>>, id: ConfigurationEventId, result: ConfigurationUpdateState) {
-	let mut state = state.lock();
+	finish(&mut state.lock(), id, result);
+}
+
+/// Completes the pending event `id` with `result`, and returns whether it did: a finished or forgotten event stays as
+/// it was.
+fn finish(state: &mut ConfigurationState, id: ConfigurationEventId, result: ConfigurationUpdateState) -> bool {
 	let revision = state.revision + 1;
 	let Some(event) = state.events.iter_mut().find(|event| event.id == id) else {
-		return;
+		return false;
 	};
-	if matches!(event.state, ConfigurationUpdateState::Pending) {
-		event.state = result;
-		event.revision = revision;
-		state.revision = revision;
+	if !matches!(event.state, ConfigurationUpdateState::Pending) {
+		return false;
 	}
+	event.state = result;
+	event.revision = revision;
+	state.revision = revision;
+	true
 }
 
 #[cfg(test)]
@@ -701,12 +772,42 @@ mod tests {
 		let configuration = Configuration::new();
 		let pass = configuration.register("render.pass.");
 		let lod = configuration.register("render.lod.");
-		lod.declare([("force", Accepts::WholeOr("off")), ("bias", Accepts::Number { min: 0.0 })]);
-		pass.declare([("ui", Accepts::Choice(&["enabled", "bypassed"]))]);
-		pass.declare([("bloom", Accepts::Choice(&["enabled", "bypassed"]))]);
+		let enabled = || ConfigurationValue::from("enabled");
+		lod.declare([
+			("force", Accepts::WholeOr("off"), ConfigurationValue::from("off")),
+			("bias", Accepts::Number { min: 0.0 }, ConfigurationValue::Float(1.0)),
+		]);
+		pass.declare([("ui", Accepts::Choice(&["enabled", "bypassed"]), enabled())]);
+		pass.declare([("bloom", Accepts::Choice(&["enabled", "bypassed"]), enabled())]);
 
-		let names: Vec<String> = configuration.parameters().into_iter().map(|(name, _)| name).collect();
+		let names: Vec<String> = configuration.parameters().into_iter().map(|parameter| parameter.name).collect();
 		assert_eq!(names, ["render.lod.bias", "render.lod.force", "render.pass.bloom"]);
+	}
+
+	#[test]
+	fn a_parameter_holds_its_declared_value_until_its_system_reports_another_set() {
+		let configuration = Configuration::new();
+		let lod = configuration.register("render.lod.");
+		lod.declare([("bias", Accepts::Number { min: 0.0 }, ConfigurationValue::Float(1.0))]);
+		let value = || configuration.parameters()[0].value.clone();
+		assert_eq!(value(), ConfigurationValue::Float(1.0));
+
+		let refused = configuration.update("render.lod.bias", ConfigurationValue::Float(-1.0));
+		lod.not_set(refused, "Below the minimum.");
+		assert_eq!(value(), ConfigurationValue::Float(1.0), "a refused value isn't held");
+
+		let id = configuration.update("render.lod.bias", ConfigurationValue::Float(2.5));
+		lod.set(id, ConfigurationValue::Float(2.5));
+		assert_eq!(value(), ConfigurationValue::Float(2.5));
+	}
+
+	#[test]
+	fn typed_values_keep_their_types_and_show_as_typed() {
+		assert_eq!(ConfigurationValue::from_typed("true"), ConfigurationValue::Bool(true));
+		assert_eq!(ConfigurationValue::from_typed("2"), ConfigurationValue::Integer(2));
+		assert_eq!(ConfigurationValue::from_typed("off"), ConfigurationValue::from("off"));
+		assert_eq!(ConfigurationValue::Float(f64::from(0.1f32)).to_string(), "0.1");
+		assert_eq!(ConfigurationValue::Float(0.25).to_string(), "0.25");
 	}
 
 	#[test]
@@ -741,6 +842,7 @@ mod tests {
 				max: 32,
 				step: 1,
 			},
+			value: |taps| Read::Whole(taps),
 			apply: |_, read| Ok(read.whole()),
 		}];
 		let configuration = Configuration::new();

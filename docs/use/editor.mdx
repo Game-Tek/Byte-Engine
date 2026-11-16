@@ -41,11 +41,14 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
 
 ## Edit the scene
 
-1. Press F5 to open the editor. It frees the cursor and takes all of your application's input until you press F5
-   again.
+1. Press F5 to open the editor. It frees the cursor and takes all of your application's input until you close it
+   with F5 or Escape. Escape steps back one thing at a time: it cancels what you're carrying or typing, closes the
+   palette, then the material graph, and then the editor.
 
 2. Click an entity in the game view, or its row in the scene list, to select it. The properties panel shows the
-   entity's name, its transform while it has one, and its camera settings while it's a camera.
+   entity's name, its transform while it has one, and its camera or light settings. A light shows its color and
+   intensity in the form it was authored in, such as a temperature in kelvin and a flux in lumens. Its shadow range
+   shows `auto` until you set it; type `auto` to hand it back to the renderer.
 
 3. Pick Move, Rotate, or Scale in the toolbar, then drag a handle of the gizmo. To set a value exactly, drag a
    property field sideways, or click it and type the value.
@@ -56,8 +59,8 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
    with its parameters' defaults. A light starts a little above the surface you place it on, a cone or directional
    light facing down; select it to move or turn it.
 
-   Press Cmd+K instead to search everything, material graphs included. Press the shortcut again to close the palette,
-   or the other one to switch to it.
+   Press Cmd+K instead to search everything, material graphs and settings included. Press the shortcut again to close
+   the palette, or another one to switch to it.
 
    Prefabs spawn through the spawner you give the inspector, so their components can use your own kinds. Give it
    the spawner you register your kinds with, after you register them:
@@ -70,7 +73,12 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
 
    See [Spawn reusable objects with prefabs](/docs/use/prefabs) to write one.
 
-5. To change a material, find its graph with Cmd+K and open it. Drag between sockets to connect nodes, press Cmd+A to
+5. To change a runtime setting, such as `render.lod.bias`, press Cmd+. and type part of its name. Each row shows the
+   setting's value. Press Enter on one to put its value in the search field, type a new value, and press Enter again
+   to set it. The values a setting takes are the ones the console's `set` takes; when your application refuses one, a
+   toast says why. See [runtime settings](/docs/reference/parameters#runtime-settings) for what each one takes.
+
+6. To change a material, find its graph with Cmd+K and open it. Drag between sockets to connect nodes, press Cmd+A to
    add one, and press Cmd+S to save the graph; your application reloads the material.
 
 ## See warnings and errors

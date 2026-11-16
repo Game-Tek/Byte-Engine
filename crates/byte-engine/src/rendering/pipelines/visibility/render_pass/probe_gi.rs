@@ -606,6 +606,7 @@ impl ProbeGiSettings {
 		Setting {
 			name: "enabled",
 			accepts: Accepts::Bool,
+			value: |settings| Read::Bool(settings.built_in),
 			apply: |settings, read| {
 				if read == Read::Bool(settings.built_in) {
 					return Ok(settings);
@@ -623,6 +624,7 @@ impl ProbeGiSettings {
 				max: u32::MAX,
 				step: 1,
 			},
+			value: |settings| Read::Whole(settings.ray_budget),
 			apply: |settings, read| {
 				if read == Read::Whole(settings.ray_budget) {
 					return Ok(settings);
@@ -636,6 +638,7 @@ impl ProbeGiSettings {
 		Setting {
 			name: "spacing",
 			accepts: Accepts::Number { min: 0.0 },
+			value: |settings| Read::Number(f64::from(settings.spacing)),
 			apply: |settings, read| {
 				if matches!(read, Read::Number(spacing) if spacing as f32 == settings.spacing) {
 					return Ok(settings);

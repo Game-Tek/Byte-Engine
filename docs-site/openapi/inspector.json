@@ -385,6 +385,15 @@
 										"$ref": "#/components/schemas/CameraUpdateMessage"
 									},
 									{
+										"$ref": "#/components/schemas/PointLightUpdateMessage"
+									},
+									{
+										"$ref": "#/components/schemas/ConeLightUpdateMessage"
+									},
+									{
+										"$ref": "#/components/schemas/DirectionalLightUpdateMessage"
+									},
+									{
 										"$ref": "#/components/schemas/DeletionMessage"
 									},
 									{
@@ -1303,6 +1312,18 @@
 							"camera": {
 								"$ref": "#/components/schemas/CameraPayload",
 								"description": "Latest camera settings published for the entity, in the `CameraUpdate` payload's shape, so a client can change one field and post the whole value back."
+							},
+							"point_light": {
+								"$ref": "#/components/schemas/PointLightPayload",
+								"description": "Latest settings published for the point light the entity is, as authored, in the `PointLightUpdate` payload's shape, so a client can change one field and post the whole value back."
+							},
+							"cone_light": {
+								"$ref": "#/components/schemas/ConeLightPayload",
+								"description": "Latest settings published for the cone light the entity is, as authored, in the `ConeLightUpdate` payload's shape, so a client can change one field and post the whole value back."
+							},
+							"directional_light": {
+								"$ref": "#/components/schemas/DirectionalLightPayload",
+								"description": "Latest settings published for the directional light the entity is, as authored, in the `DirectionalLightUpdate` payload's shape, so a client can change one field and post the whole value back."
 							}
 						}
 					}
@@ -1444,6 +1465,66 @@
 					},
 					"payload": {
 						"$ref": "#/components/schemas/CameraPayload"
+					}
+				}
+			},
+			"PointLightUpdateMessage": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["type", "target", "payload"],
+				"properties": {
+					"type": {
+						"const": "PointLightUpdate",
+						"description": "Stable inspector protocol message name."
+					},
+					"target": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 4294967295,
+						"description": "Handle of the point light entity, as `GET /entities` returns it."
+					},
+					"payload": {
+						"$ref": "#/components/schemas/PointLightPayload"
+					}
+				}
+			},
+			"ConeLightUpdateMessage": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["type", "target", "payload"],
+				"properties": {
+					"type": {
+						"const": "ConeLightUpdate",
+						"description": "Stable inspector protocol message name."
+					},
+					"target": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 4294967295,
+						"description": "Handle of the cone light entity, as `GET /entities` returns it."
+					},
+					"payload": {
+						"$ref": "#/components/schemas/ConeLightPayload"
+					}
+				}
+			},
+			"DirectionalLightUpdateMessage": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["type", "target", "payload"],
+				"properties": {
+					"type": {
+						"const": "DirectionalLightUpdate",
+						"description": "Stable inspector protocol message name."
+					},
+					"target": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 4294967295,
+						"description": "Handle of the directional light entity, as `GET /entities` returns it."
+					},
+					"payload": {
+						"$ref": "#/components/schemas/DirectionalLightPayload"
 					}
 				}
 			},
@@ -1788,6 +1869,278 @@
 					},
 					"reason": {
 						"type": "string"
+					}
+				}
+			},
+			"LightColor": {
+				"description": "Light color: a blackbody temperature, or a linear-sRGB color whose magnitude doesn't set brightness.",
+				"oneOf": [
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["kelvin"],
+						"properties": {
+							"kelvin": {
+								"type": "number",
+								"format": "float",
+								"minimum": 1000,
+								"maximum": 40000,
+								"description": "Color temperature in kelvin."
+							}
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["linear_srgb"],
+						"properties": {
+							"linear_srgb": {
+								"type": "array",
+								"items": {
+									"type": "number",
+									"format": "float",
+									"minimum": 0
+								},
+								"minItems": 3,
+								"maxItems": 3,
+								"description": "Linear-sRGB `[r, g, b]` with nonzero luminance."
+							}
+						}
+					}
+				]
+			},
+			"LightIntensity": {
+				"description": "Light intensity in the quantity it was authored in. Each distance and area is 1 unless given.",
+				"oneOf": [
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["illuminance"],
+						"properties": {
+							"illuminance": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": ["lux"],
+								"properties": {
+									"lux": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"description": "Illuminance in lux."
+									},
+									"measurement_distance_m": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"default": 1,
+										"description": "Distance in meters the illuminance is measured at, for a local light."
+									}
+								}
+							}
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["luminous_intensity"],
+						"properties": {
+							"luminous_intensity": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": ["candela"],
+								"properties": {
+									"candela": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"description": "Luminous intensity in candela."
+									},
+									"reference_distance_m": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"default": 1,
+										"description": "Distance in meters that converts it for a directional light."
+									}
+								}
+							}
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["luminous_flux"],
+						"properties": {
+							"luminous_flux": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": ["lumens"],
+								"properties": {
+									"lumens": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"description": "Luminous flux in lumens."
+									},
+									"directional_beam_area_m2": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"default": 1,
+										"description": "Beam area in square meters that converts it for a directional light."
+									}
+								}
+							}
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["luminance"],
+						"properties": {
+							"luminance": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": ["nits"],
+								"properties": {
+									"nits": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"description": "Luminance in nits."
+									},
+									"projected_area_m2": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"default": 1,
+										"description": "Projected emitter area in square meters."
+									},
+									"reference_distance_m": {
+										"type": "number",
+										"format": "float",
+										"exclusiveMinimum": 0,
+										"default": 1,
+										"description": "Distance in meters that converts it for a directional light."
+									}
+								}
+							}
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["ies"],
+						"properties": {
+							"ies": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": ["profile", "dimmer"],
+								"properties": {
+									"profile": {
+										"type": "string",
+										"description": "IES profile resource ID."
+									},
+									"dimmer": {
+										"type": "number",
+										"format": "float",
+										"minimum": 0,
+										"maximum": 1,
+										"description": "Fraction of the measured output, from 0 through 1. Point and cone lights only."
+									}
+								}
+							}
+						}
+					}
+				]
+			},
+			"PointLightPayload": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["color", "intensity"],
+				"description": "Point light settings, as a level's `point_light` kind writes them.",
+				"properties": {
+					"color": {
+						"$ref": "#/components/schemas/LightColor"
+					},
+					"intensity": {
+						"$ref": "#/components/schemas/LightIntensity"
+					},
+					"shadow_near": {
+						"type": ["number", "null"],
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"default": null,
+						"description": "Near end of the shadow range in meters, below `shadow_far`, or null for the renderer's."
+					},
+					"shadow_far": {
+						"type": ["number", "null"],
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"default": null,
+						"description": "Far end of the shadow range in meters, or null for the renderer's."
+					}
+				}
+			},
+			"ConeLightPayload": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["color", "intensity", "inner_angle", "outer_angle"],
+				"description": "Cone light settings, as a level's `cone_light` kind writes them.",
+				"properties": {
+					"color": {
+						"$ref": "#/components/schemas/LightColor"
+					},
+					"intensity": {
+						"$ref": "#/components/schemas/LightIntensity"
+					},
+					"inner_angle": {
+						"type": "number",
+						"format": "float",
+						"minimum": 0,
+						"description": "Half angle of the fully lit inner cone in radians from the forward direction, from 0 up to `outer_angle`."
+					},
+					"outer_angle": {
+						"type": "number",
+						"format": "float",
+						"maximum": 3.1415927,
+						"description": "Half angle of the outer cone in radians, at most π."
+					},
+					"shadow_near": {
+						"type": ["number", "null"],
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"default": null,
+						"description": "Near end of the shadow range in meters, below `shadow_far`, or null for the renderer's."
+					},
+					"shadow_far": {
+						"type": ["number", "null"],
+						"format": "float",
+						"exclusiveMinimum": 0,
+						"default": null,
+						"description": "Far end of the shadow range in meters, or null for the renderer's."
+					}
+				}
+			},
+			"DirectionalLightPayload": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["color", "intensity"],
+				"description": "Directional light settings, as a level's `directional_light` kind writes them. Its intensity can't be `ies`.",
+				"properties": {
+					"color": {
+						"$ref": "#/components/schemas/LightColor"
+					},
+					"intensity": {
+						"$ref": "#/components/schemas/LightIntensity"
+					},
+					"angular_radius": {
+						"type": ["number", "null"],
+						"format": "float",
+						"minimum": 0,
+						"exclusiveMaximum": 1.5707964,
+						"default": null,
+						"description": "Angular radius of the light's disk in radians, or null for the sun's."
 					}
 				}
 			},

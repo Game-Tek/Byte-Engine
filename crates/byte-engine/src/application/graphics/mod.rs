@@ -295,6 +295,25 @@ impl GraphicsApplication {
 								world_messages.channel::<rendering::CameraUpdate>(),
 							)
 							.unwrap_or_else(|error| panic!("{error}"));
+						// So does a light, created again under its handle.
+						inspector
+							.register_message(
+								POINT_LIGHT_UPDATE_MESSAGE_TYPE,
+								world_messages.channel::<rendering::PointLightUpdate>(),
+							)
+							.unwrap_or_else(|error| panic!("{error}"));
+						inspector
+							.register_message(
+								CONE_LIGHT_UPDATE_MESSAGE_TYPE,
+								world_messages.channel::<rendering::ConeLightUpdate>(),
+							)
+							.unwrap_or_else(|error| panic!("{error}"));
+						inspector
+							.register_message(
+								DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE,
+								world_messages.channel::<rendering::DirectionalLightUpdate>(),
+							)
+							.unwrap_or_else(|error| panic!("{error}"));
 						for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
 							inspector
 								.register_message(message_type, world_messages.channel::<DeleteMessage>())
@@ -1546,7 +1565,8 @@ use crate::{
 	gameplay::transform::TransformationUpdate,
 	input::Action,
 	inspector::{
-		CAMERA_UPDATE_MESSAGE_TYPE, DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, DefaultInspector,
+		CAMERA_UPDATE_MESSAGE_TYPE, CONE_LIGHT_UPDATE_MESSAGE_TYPE, DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE,
+		DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE, DefaultInspector, POINT_LIGHT_UPDATE_MESSAGE_TYPE,
 		TRANSFORMATION_UPDATE_MESSAGE_TYPE, TRIGGER_ACTION_MESSAGE_TYPE, http::HttpInspectorServer,
 	},
 	metrics::TickClock,

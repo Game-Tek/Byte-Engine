@@ -30,11 +30,12 @@ impl Spawner {
 		#[cfg(feature = "headed")]
 		{
 			spawner.register_with("mesh", rendering::mesh).expect(DISTINCT);
+			// A light reads its own payload, the one the inspector's light updates take too.
 			spawner
-				.register_with("directional_light", rendering::directional_light)
+				.register::<crate::rendering::DirectionalLight>("directional_light")
 				.expect(DISTINCT);
-			spawner.register_with("point_light", rendering::point_light).expect(DISTINCT);
-			spawner.register_with("cone_light", rendering::cone_light).expect(DISTINCT);
+			spawner.register::<crate::rendering::PointLight>("point_light").expect(DISTINCT);
+			spawner.register::<crate::rendering::ConeLight>("cone_light").expect(DISTINCT);
 			spawner.register_with("lightmap", rendering::lightmap).expect(DISTINCT);
 		}
 		#[cfg(not(feature = "headed"))]
@@ -213,10 +214,10 @@ mod rendering {
 	use maths_rs::Vec3f;
 	use serde::Deserialize;
 
-	use super::{Radians, positive};
+	use super::positive;
 	use crate::gameplay::{Transform, transform::SerializableTransform};
 	use crate::rendering::{
-		ConeLight, DirectionalLight, LightColor, Lightmap, PhotometricIntensity, PointLight, RenderableMesh,
+		Lightmap, RenderableMesh,
 		mesh::generator::{BoxMeshGenerator, CapsuleMeshGenerator, SphereMeshGenerator},
 	};
 
@@ -294,110 +295,6 @@ mod rendering {
 		})
 	}
 
-	/// The `ColorPayload` enum is the authored form of [`LightColor`].
-	#[derive(Deserialize)]
-	#[serde(rename_all = "snake_case", deny_unknown_fields)]
-	pub(super) enum ColorPayload {
-		Kelvin(f32),
-		LinearSrgb([f32; 3]),
-	}
-
-	/// The `IntensityPayload` enum is the authored form of [`PhotometricIntensity`], with each distance and area 1 by
-	/// default, or of an IES profile for a local light.
-	#[derive(Deserialize)]
-	#[serde(rename_all = "snake_case", deny_unknown_fields)]
-	pub(super) enum IntensityPayload {
-		Illuminance {
-			lux: f32,
-			#[serde(default = "super::one")]
-			measurement_distance_m: f32,
-		},
-		LuminousIntensity {
-			candela: f32,
-			#[serde(default = "super::one")]
-			reference_distance_m: f32,
-		},
-		LuminousFlux {
-			lumens: f32,
-			#[serde(default = "super::one")]
-			directional_beam_area_m2: f32,
-		},
-		Luminance {
-			nits: f32,
-			#[serde(default = "super::one")]
-			projected_area_m2: f32,
-			#[serde(default = "super::one")]
-			reference_distance_m: f32,
-		},
-		Ies {
-			profile: String,
-			dimmer: f32,
-		},
-	}
-
-	impl From<ColorPayload> for LightColor {
-		fn from(color: ColorPayload) -> Self {
-			match color {
-				ColorPayload::Kelvin(kelvin) => LightColor::kelvin(kelvin),
-				ColorPayload::LinearSrgb([r, g, b]) => LightColor::linear_srgb(r, g, b),
-			}
-		}
-	}
-
-	/// The `Intensity` enum is what a light's `intensity` names: a photometric quantity, or a baked IES profile.
-	enum Intensity {
-		Photometric(PhotometricIntensity),
-		Ies { profile: String, dimmer: f32 },
-	}
-
-	impl From<IntensityPayload> for Intensity {
-		fn from(intensity: IntensityPayload) -> Self {
-			Intensity::Photometric(match intensity {
-				IntensityPayload::Illuminance {
-					lux,
-					measurement_distance_m,
-				} => PhotometricIntensity::Illuminance {
-					lux,
-					measurement_distance_m,
-				},
-				IntensityPayload::LuminousIntensity {
-					candela,
-					reference_distance_m,
-				} => PhotometricIntensity::LuminousIntensity {
-					candela,
-					reference_distance_m,
-				},
-				IntensityPayload::LuminousFlux {
-					lumens,
-					directional_beam_area_m2,
-				} => PhotometricIntensity::LuminousFlux {
-					lumens,
-					directional_beam_area_m2,
-				},
-				IntensityPayload::Luminance {
-					nits,
-					projected_area_m2,
-					reference_distance_m,
-				} => PhotometricIntensity::Luminance {
-					nits,
-					projected_area_m2,
-					reference_distance_m,
-				},
-				IntensityPayload::Ies { profile, dimmer } => return Intensity::Ies { profile, dimmer },
-			})
-		}
-	}
-
-	/// The `DirectionalLightPayload` struct is the authored form of a [`DirectionalLight`].
-	#[derive(Deserialize)]
-	#[serde(deny_unknown_fields)]
-	pub(super) struct DirectionalLightPayload {
-		color: ColorPayload,
-		intensity: IntensityPayload,
-		#[serde(default)]
-		angular_radius: Option<f32>,
-	}
-
 	/// Turns the ID a `lightmap` kind names into the component that loads it.
 	pub(super) fn lightmap(resource_id: String) -> Result<Lightmap, String> {
 		if resource_id.is_empty() {
@@ -406,93 +303,4 @@ mod rendering {
 		Ok(Lightmap::new(resource_id))
 	}
 
-	pub(super) fn directional_light(light: DirectionalLightPayload) -> Result<DirectionalLight, String> {
-		let Intensity::Photometric(intensity) = light.intensity.into() else {
-			return Err(
-				"it names an IES profile, which only point and cone lights take. Give it a photometric intensity such as `illuminance`"
-					.to_string(),
-			);
-		};
-		let built = DirectionalLight::new(light.color.into(), intensity).map_err(|error| error.to_string())?;
-		match light.angular_radius {
-			Some(radius) => built
-				.with_angular_radius(Radians::new(radius))
-				.map_err(|error| error.to_string()),
-			None => Ok(built),
-		}
-	}
-
-	/// The `PointLightPayload` struct is the authored form of a [`PointLight`].
-	#[derive(Deserialize)]
-	#[serde(deny_unknown_fields)]
-	pub(super) struct PointLightPayload {
-		color: ColorPayload,
-		intensity: IntensityPayload,
-		#[serde(default)]
-		shadow_near: Option<f32>,
-		#[serde(default)]
-		shadow_far: Option<f32>,
-	}
-
-	pub(super) fn point_light(light: PointLightPayload) -> Result<PointLight, String> {
-		let (near, far) = shadow_range(light.shadow_near, light.shadow_far)?;
-		let mut built = match light.intensity.into() {
-			Intensity::Photometric(intensity) => PointLight::new(light.color.into(), intensity),
-			Intensity::Ies { profile, dimmer } => PointLight::new_ies(light.color.into(), dimmer, profile),
-		}
-		.map_err(|error| error.to_string())?;
-		if let Some(near) = near {
-			built = built.with_shadow_near(near);
-		}
-		if let Some(far) = far {
-			built = built.with_shadow_far(far);
-		}
-		Ok(built)
-	}
-
-	/// The `ConeLightPayload` struct is the authored form of a [`ConeLight`], with half angles in radians.
-	#[derive(Deserialize)]
-	#[serde(deny_unknown_fields)]
-	pub(super) struct ConeLightPayload {
-		color: ColorPayload,
-		intensity: IntensityPayload,
-		inner_angle: f32,
-		outer_angle: f32,
-		#[serde(default)]
-		shadow_near: Option<f32>,
-		#[serde(default)]
-		shadow_far: Option<f32>,
-	}
-
-	pub(super) fn cone_light(light: ConeLightPayload) -> Result<ConeLight, String> {
-		let (near, far) = shadow_range(light.shadow_near, light.shadow_far)?;
-		let (inner, outer) = (Radians::new(light.inner_angle), Radians::new(light.outer_angle));
-		let mut built = match light.intensity.into() {
-			Intensity::Photometric(intensity) => ConeLight::new(light.color.into(), intensity, inner, outer),
-			Intensity::Ies { profile, dimmer } => ConeLight::new_ies(light.color.into(), dimmer, profile, inner, outer),
-		}
-		.map_err(|error| error.to_string())?;
-		if let Some(near) = near {
-			built = built.with_shadow_near(near);
-		}
-		if let Some(far) = far {
-			built = built.with_shadow_far(far);
-		}
-		Ok(built)
-	}
-
-	/// Checks a local light's shadow overrides: each above zero, and the near one below the far one when both are
-	/// given.
-	fn shadow_range(near: Option<f32>, far: Option<f32>) -> Result<(Option<f32>, Option<f32>), String> {
-		let near = near.map(|near| positive(near, "shadow near distance")).transpose()?;
-		let far = far.map(|far| positive(far, "shadow far distance")).transpose()?;
-		if let (Some(near), Some(far)) = (near, far)
-			&& near >= far
-		{
-			return Err(format!(
-				"its shadow range runs from {near} m to {far} m. Give a `shadow_near` below `shadow_far`"
-			));
-		}
-		Ok((near, far))
-	}
 }

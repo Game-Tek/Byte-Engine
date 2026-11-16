@@ -9,8 +9,8 @@ use objc2::runtime::ProtocolObject;
 use objc2::{ClassType as _, DefinedClass, MainThreadMarker, MainThreadOnly, Message as _, define_class, msg_send};
 use objc2_app_kit::{
 	NSApp, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply,
-	NSBackingStoreType, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSScreen, NSView, NSWindow,
-	NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask,
+	NSBackingStoreType, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSResponder, NSScreen, NSView,
+	NSWindow, NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask,
 };
 use objc2_core_graphics::{CGAssociateMouseAndMouseCursorPosition, CGWarpMouseCursorPosition};
 use objc2_foundation::{
@@ -222,6 +222,29 @@ define_class!(
 		#[unsafe(method(windowDidExitFullScreen:))]
 		fn window_did_exit_full_screen(&self, _notification: &NSNotification) {
 			self.ivars().zoomed.set(false);
+		}
+	}
+);
+
+define_class!(
+	/// The `EngineWindow` class lets every engine window take keyboard focus, decorated or not.
+	///
+	/// AppKit only makes a window the key window, the one keyboard events go to, when it has a title bar, unless the
+	/// window says otherwise. A borderless window would leave key presses without a window, and AppKit would beep at
+	/// each one.
+	#[unsafe(super(NSWindow, NSResponder, NSObject))]
+	#[thread_kind = MainThreadOnly]
+	struct EngineWindow;
+
+	impl EngineWindow {
+		#[unsafe(method(canBecomeKeyWindow))]
+		fn can_become_key_window(&self) -> bool {
+			true
+		}
+
+		#[unsafe(method(canBecomeMainWindow))]
+		fn can_become_main_window(&self) -> bool {
+			true
 		}
 	}
 );
@@ -566,11 +589,17 @@ impl App {
 				NSWindowStyleMask::empty()
 			};
 
-		// SAFETY: The frame, style mask, and backing mode form a valid designated NSWindow initializer call on the main thread.
-		let window = unsafe {
-			let window = NSWindow::alloc(mtm);
-			NSWindow::initWithContentRect_styleMask_backing_defer(window, frame, style, NSBackingStoreType::Buffered, false)
-		};
+		// SAFETY: The frame, style mask, and backing mode form a valid designated NSWindow initializer call on the main
+		// thread, and `EngineWindow` adds no state the initializer would leave unset.
+		let window: Retained<NSWindow> = Retained::into_super(unsafe {
+			msg_send![
+				EngineWindow::alloc(mtm),
+				initWithContentRect: frame,
+				styleMask: style,
+				backing: NSBackingStoreType::Buffered,
+				defer: false
+			]
+		});
 		// The window is owned by `Window`; AppKit must not free it when the user closes it.
 		// SAFETY: Disabling release-on-close only changes ownership bookkeeping for a window we retain.
 		unsafe { window.setReleasedWhenClosed(false) };

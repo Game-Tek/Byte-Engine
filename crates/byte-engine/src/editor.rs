@@ -106,6 +106,8 @@ pub struct Editor {
 	meta: bool,
 	/// The palette result the pointer pressed, until it leaves the palette or is released.
 	palette_press: Option<usize>,
+	/// What the palette was last used for, newest first, by label and kind, which it lists first when it opens.
+	recent: Vec<(String, palette::Kind)>,
 	/// The settings the palette asked the game to change, by event, until their systems answer.
 	settings: Vec<(ConfigurationEventId, String)>,
 	/// The physics world's answers to the carried mesh's ray queries.
@@ -156,6 +158,7 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 		pointer: UiPoint::new(0.0, 0.0),
 		meta: false,
 		palette_press: None,
+		recent: Vec::new(),
 		settings: Vec::new(),
 		rays: app.world().factory::<RayQueryResponse>().listener(),
 		// What was logged before the editor existed isn't news.
@@ -386,6 +389,8 @@ impl Editor {
 					self.pick_entry(app, &entry);
 				}
 			}
+			Some(Layer::Setting(setting)) if key == self.actions.up => setting.move_highlight(-1),
+			Some(Layer::Setting(setting)) if key == self.actions.down => setting.move_highlight(1),
 			Some(Layer::Setting(_)) if key == self.actions.enter => self.set_setting(app),
 			Some(_) if key == self.actions.escape => self.pop(app),
 			_ => {}
@@ -419,7 +424,7 @@ impl Editor {
 			self.engine
 				.ctx_mut()
 				.layers
-				.push(Layer::Palette(palette::State::new(scope, entries)));
+				.push(Layer::Palette(palette::State::new(scope, entries, &self.recent)));
 		}
 	}
 
@@ -431,7 +436,7 @@ impl Editor {
 	/// result, it's pinned. A press elsewhere closes the palette and goes on to the scene.
 	fn layer_takes(&mut self, app: &GraphicsApplication, phase: ActionPhase, pointer: UiPoint) -> bool {
 		let shell = self.engine.ctx_mut();
-		let typing_setting = match shell.layers.top() {
+		match shell.layers.top() {
 			Some(Layer::Carry(carry)) => {
 				match (phase, carry.held) {
 					(ActionPhase::Started, false) | (ActionPhase::Ended, true) => self.place_carry(app),
@@ -440,21 +445,20 @@ impl Editor {
 				}
 				return true;
 			}
-			Some(Layer::Palette(_)) => false,
-			Some(Layer::Setting(_)) => true,
+			Some(Layer::Palette(_) | Layer::Setting(_)) => {}
 			_ => return false,
-		};
+		}
 		let viewport = shell.viewport;
 		let pixel = [(pointer.x + 1.0) * 0.5 * viewport.x(), (1.0 - pointer.y) * 0.5 * viewport.y()];
-		// A setting being typed shows its one row in the palette's place.
-		let entry_at = |layers: &mut layers::Layers, row: usize| match layers.setting_mut() {
-			Some(setting) => (row == 0).then(|| setting.row.clone()),
+		// A setting being typed shows its own rows in the palette's place.
+		let entry_at = |layers: &layers::Layers, row: usize| match layers.setting() {
+			Some(setting) => setting.rows.get(row).cloned(),
 			None => layers.palette().and_then(|palette| palette.results.get(row).cloned()),
 		};
-		let rows = match shell.layers.palette() {
-			_ if typing_setting => 1,
-			Some(palette) => palette.results.len(),
-			None => 0,
+		let rows = match (shell.layers.setting(), shell.layers.palette()) {
+			(Some(setting), _) => setting.rows.len(),
+			(None, Some(palette)) => palette.results.len(),
+			(None, None) => 0,
 		};
 		match phase {
 			ActionPhase::Started => {
@@ -467,13 +471,14 @@ impl Editor {
 			ActionPhase::Updated => {
 				if let Some(row) = self.palette_press
 					&& !palette::contains(viewport, rows, pixel)
-					&& let Some(entry) = entry_at(&mut shell.layers, row)
+					&& let Some(entry) = entry_at(&shell.layers, row)
 				{
 					self.palette_press = None;
 					// Only what's placed can be dragged into the scene; a material graph opens, and a node kind is
 					// added, when its row is clicked.
 					if entry.kind.places() {
 						shell.layers.pop();
+						self.remember(&entry);
 						self.spawn_carry(app, &entry, true);
 					}
 				}
@@ -481,9 +486,10 @@ impl Editor {
 			ActionPhase::Ended => {
 				if let Some(row) = self.palette_press.take()
 					&& palette::row_at(viewport, rows, pixel) == Some(row)
-					&& let Some(entry) = entry_at(&mut shell.layers, row)
+					&& let Some(entry) = entry_at(&shell.layers, row)
 				{
-					if typing_setting {
+					if let Some(setting) = shell.layers.setting_mut() {
+						setting.pick(row);
 						self.set_setting(app);
 					} else {
 						self.pick_entry(app, &entry);
@@ -504,6 +510,7 @@ impl Editor {
 	/// Answers Enter, or a click, on the palette's `entry`: opens a setting's value over the palette to type a new one,
 	/// or closes the palette and [`Self::choose`]s the entry.
 	fn pick_entry(&mut self, app: &GraphicsApplication, entry: &palette::Entry) {
+		self.remember(entry);
 		let layers = &mut self.engine.ctx_mut().layers;
 		if let Some(setting) = palette::Setting::new(entry) {
 			layers.push(Layer::Setting(setting));
@@ -514,15 +521,25 @@ impl Editor {
 		self.choose(app, entry, false);
 	}
 
-	/// Sets the setting being typed to the typed value, and closes it with the palette that found it.
+	/// Puts `entry` first among what the palette was used for.
+	fn remember(&mut self, entry: &palette::Entry) {
+		// Every scope shares the list, so it keeps enough that one scope's use doesn't push out another's.
+		const KEPT: usize = 32;
+		self.recent
+			.retain(|(label, kind)| !(*label == entry.label && *kind == entry.kind));
+		self.recent.insert(0, (entry.label.clone(), entry.kind));
+		self.recent.truncate(KEPT);
+	}
+
+	/// Sets the setting being typed to the picked or typed value, and closes it with the palette that found it.
 	fn set_setting(&mut self, app: &GraphicsApplication) {
 		let layers = &mut self.engine.ctx_mut().layers;
 		let Some(setting) = layers.setting_mut() else {
 			return;
 		};
 		// Read as the console reads a `set`, so `true`, `2`, and `off` reach the setting as their own kinds.
-		let value = ConfigurationValue::from_typed(setting.value.trim());
-		let name = std::mem::take(&mut setting.row.label);
+		let value = ConfigurationValue::from_typed(setting.chosen());
+		let name = std::mem::take(&mut setting.name);
 		layers.close(|layer| matches!(layer, Layer::Palette(_)));
 		let event = app.inspector().update_configuration(&name, value);
 		self.settings.push((event.id(), name));

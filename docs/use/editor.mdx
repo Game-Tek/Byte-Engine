@@ -59,6 +59,8 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
    with its parameters' defaults. A light starts a little above the surface you place it on, a cone or directional
    light facing down; select it to move or turn it.
 
+   Before you type, the palette lists what you used most recently in it first.
+
    Press Cmd+K instead to search everything, material graphs and settings included. Press the shortcut again to close
    the palette, or another one to switch to it.
 
@@ -75,7 +77,9 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
 
 5. To change a runtime setting, such as `render.lod.bias`, press Cmd+. and type part of its name. Each row shows the
    setting's value. Press Enter on one to put its value in the search field, type a new value, and press Enter again
-   to set it. The values a setting takes are the ones the console's `set` takes; when your application refuses one, a
+   to set it. A setting that takes one of a few words, such as `true` or `false` or a technique's name, lists them
+   instead: pick one with the arrow keys or a click, or type to narrow the list, and press Enter. Press Escape to go
+   back to the search. The values a setting takes are the ones the console's `set` takes; when your application refuses one, a
    toast says why. See [runtime settings](/docs/reference/parameters#runtime-settings) for what each one takes.
 
 6. To change a material, find its graph with Cmd+K and open it. Drag between sockets to connect nodes, press Cmd+A to

@@ -3,10 +3,12 @@
 //!
 //! The look is a dark, tactile take on Linear: raised surfaces lit from above (a vertical gradient, a one-pixel
 //! highlight along the top edge, a dark hairline around the edge, and a soft drop shadow), sunken wells for values,
-//! and an indigo accent for the selection.
+//! and Byte Engine's green as the accent for the selection.
 
 mod graph_view;
 mod toasts;
+
+use std::time::Instant;
 
 use crate::core::factory::Handle;
 use crate::editor::fields::{CAMERA, Change, LIGHT, Setting, TRANSFORM};
@@ -17,7 +19,9 @@ use crate::editor::scene::SceneEntity;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::{Events, Key};
-use crate::ui::{Anchor, ConcreteLayer, CurvePath, FillRule, LinearGradient, Position, Size, flow};
+use crate::ui::{
+	Anchor, ConcreteLayer, CurvePath, FillRule, LinearGradient, Position, Size, Transform, UiPoint, flow,
+};
 use crate::utils::RGBA;
 use crate::utils::r#async::select;
 
@@ -137,8 +141,11 @@ const TEXT: RGBA = hex(0xE6E6E9, 1.0);
 const MUTED: RGBA = hex(0x8A8F98, 1.0);
 /// Muted text on the toolbar, lighter than [`MUTED`] since the game's frame shows through the toolbar's glass.
 const TOOLBAR_MUTED: RGBA = hex(0xB9BCC4, 1.0);
-/// Linear's indigo, for the selection.
-const ACCENT: RGBA = hex(0x5E6AD2, 1.0);
+/// Byte Engine's green, the docs site's `--be-green`, for the selection; [`ACCENT_RGB`] tints with it.
+const ACCENT: RGBA = hex(ACCENT_RGB, 1.0);
+const ACCENT_RGB: u32 = 0x41D866;
+/// The accent lit from above, where a raised tile in it catches the light.
+const ACCENT_LIGHT: RGBA = hex(0x80E599, 1.0);
 const ROW_GAP: u32 = 2;
 
 /// Builds the chrome, then follows the window's size, resizing the panels that span it.
@@ -335,9 +342,13 @@ async fn palette_view(ctx: &mut EvaluationContext<Shell>) {
 }
 
 /// Declares the open palette's panel and keeps it current until the palette closes, then returns it for removal.
+///
+/// The panel animates in as it opens and out once it closes, as [`palette::entering`] and [`palette::leaving`] place
+/// it; it's returned once it has left.
 async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
 	let width = palette::WIDTH - palette::INSET * 2.0;
 	let height = palette::height(0);
+	let start = palette::entering(0.0);
 	let mut frame = ctx
 		.element("frame")
 		.container(|c| {
@@ -348,6 +359,8 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 				.corner_exponent(SQUIRCLE)
 				.clip(false)
 				.hit_testable(true)
+				.opacity(start.opacity)
+				.transform(look_transform(start))
 				.style(panel(height, 1.0))
 		})
 		.await;
@@ -385,24 +398,27 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 
 	let mut rows: Option<EvaluationContext<Shell>> = None;
 	let mut shown = None;
+	let opened = Instant::now();
+	let mut shown_look = Some(start);
 	loop {
 		let revision = ctx
 			.with(|shell: &mut Shell| {
 				let layers = &shell.layers;
-				layers.palette().map(|palette| (palette.revision, layers.revision))
+				let setting = layers.setting().map(|setting| setting.revision);
+				layers.palette().map(|palette| (palette.revision, layers.revision, setting))
 			})
 			.await;
 		let Some(revision) = revision else {
-			return frame;
+			break;
 		};
 		if shown != Some(revision) {
 			shown = Some(revision);
 			// A shortcut can switch the open palette to another scope, which says what it finds, and a setting opened
 			// over it shows its own row and value.
 			let Some((results, highlight, search, prompt)) =
-				ctx.with(|shell: &mut Shell| palette_shown(&mut shell.layers)).await
+				ctx.with(|shell: &mut Shell| palette_shown(&shell.layers)).await
 			else {
-				return frame;
+				break;
 			};
 			// The panel grows with its results, so the rows are declared again under a resized panel.
 			let height = palette::height(results.len());
@@ -427,29 +443,69 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 			}
 			rows = Some(list);
 		}
+		let look = palette::entering(opened.elapsed().as_secs_f32());
+		if shown_look != Some(look) {
+			shown_look = Some(look);
+			show_look(&mut frame, look).await;
+		}
 		select! {
 			edit = input.on_text_edit() => {
-				ctx.with(move |shell: &mut Shell| {
-					// The field holds the value of a setting being typed, or the palette's search otherwise.
-					if let Some(setting) = shell.layers.setting_mut() {
-						edit.edit.apply_to(&mut setting.value);
-					} else if let Some(palette) = shell.layers.palette_mut() {
-						edit.edit.apply_to(&mut palette.search);
-						palette.find();
-					}
-				})
-				.await;
+				let text = ctx
+					.with(move |shell: &mut Shell| {
+						// The field holds the value of a setting being typed, or the palette's search otherwise.
+						if let Some(setting) = shell.layers.setting_mut() {
+							setting.type_edit(edit.edit);
+							Some(setting.value.clone())
+						} else if let Some(palette) = shell.layers.palette_mut() {
+							edit.edit.apply_to(&mut palette.search);
+							palette.find();
+							Some(palette.search.clone())
+						} else {
+							None
+						}
+					})
+					.await;
+				// A text field shows only what it's given, so it's given what was typed.
+				if let Some(text) = text {
+					input.update_text(|t| t.content(&text)).await;
+				}
 			},
 			_ = ctx.render() => {},
 		}
 	}
+	// The palette closed: the panel leaves before it's removed.
+	let closed = Instant::now();
+	loop {
+		let seconds = closed.elapsed().as_secs_f32();
+		show_look(&mut frame, palette::leaving(seconds)).await;
+		if seconds >= palette::EXIT {
+			return frame;
+		}
+		ctx.render().await;
+	}
+}
+
+/// Places the palette's panel as `look` says.
+async fn show_look(frame: &mut EvaluationContext<Shell>, look: palette::Look) {
+	frame
+		.update_container(move |c| c.opacity(look.opacity).transform(look_transform(look)))
+		.await;
+}
+
+/// The transform that moves the palette's panel `look.y` pixels down and scales it about its top edge.
+fn look_transform(look: palette::Look) -> Transform {
+	Transform::identity()
+		.translate_y(look.y)
+		.scale(look.scale)
+		.origin(UiPoint::new(0.5, 0.0))
 }
 
 /// What the open palette shows: its rows, the highlighted one, the field's text, and what the field says while it's
 /// empty. A setting being typed over it shows its own row and value instead.
-fn palette_shown(layers: &mut Layers) -> Option<(Vec<palette::Entry>, usize, String, &'static str)> {
-	if let Some(setting) = layers.setting_mut() {
-		return Some((vec![setting.row.clone()], 0, setting.value.clone(), "Type a new value"));
+fn palette_shown(layers: &Layers) -> Option<(Vec<palette::Entry>, usize, String, &'static str)> {
+	if let Some(setting) = layers.setting() {
+		let prompt = if setting.highlight.is_some() { "Type or pick a value" } else { "Type a new value" };
+		return Some((setting.rows.clone(), setting.highlight.unwrap_or(0), setting.value.clone(), prompt));
 	}
 	let palette = layers.palette()?;
 	Some((
@@ -504,12 +560,12 @@ async fn palette_row(
 	}
 }
 
-/// The gradient a palette entry's icon takes, so each kind reads at a glance: indigo meshes, green prefabs, amber
-/// lights, pink materials, gray nodes, and teal settings.
+/// The gradient a palette entry's icon takes, so each kind reads at a glance: meshes in the accent, as the scene's
+/// rows are, indigo prefabs, amber lights, pink materials, gray nodes, and teal settings.
 fn kind_tint(kind: palette::Kind) -> [RGBA; 2] {
 	match kind {
-		palette::Kind::Mesh => [hex(0x8A93F0, 1.0), ACCENT],
-		palette::Kind::Prefab => [hex(0x6FE08E, 1.0), hex(0x2FB457, 1.0)],
+		palette::Kind::Mesh => [ACCENT_LIGHT, ACCENT],
+		palette::Kind::Prefab => [hex(0x8A93F0, 1.0), hex(0x5E6AD2, 1.0)],
 		palette::Kind::Light(_) => [hex(0xFFD27A, 1.0), hex(0xF5A524, 1.0)],
 		palette::Kind::Graph => [hex(0xF29BD4, 1.0), hex(0xD9539F, 1.0)],
 		palette::Kind::Node => [hex(0xB9BCC4, 1.0), hex(0x6E737C, 1.0)],
@@ -1269,7 +1325,7 @@ fn setting_style(framed: bool, hovered: bool) -> [ConcreteLayer; 3] {
 /// parent's well, tinted with it, since the parent's rounded edge would clip a ring.
 fn typing_style(framed: bool) -> [ConcreteLayer; 3] {
 	if !framed {
-		return [solid(hex(0x5E6AD2, 0.22)), top_highlight(0.0), hairline(0.0)];
+		return [solid(hex(ACCENT_RGB, 0.22)), top_highlight(0.0), hairline(0.0)];
 	}
 	let [fill, shadow, _] = well();
 	[fill, shadow, ConcreteLayer::default().color(ACCENT.into()).stroke(1.0)]
@@ -1284,15 +1340,14 @@ fn tool_style(chosen: bool, hovered: bool) -> [ConcreteLayer; 3] {
 	}
 }
 
-/// A scene row: clear at rest, a faint lift under the pointer, and a raised indigo surface while selected.
+/// A scene row: clear at rest, a faint lift under the pointer, and, while selected, tinted with the accent and edged
+/// in it, as the docs site marks what's active, so the light text stays readable over the brand's own green.
 fn row_style(selected: bool, hovered: bool) -> [ConcreteLayer; 3] {
 	if selected {
 		[
-			ConcreteLayer::default()
-				.color(hex(0x000000, 0.3).into())
-				.drop_shadow([0.0, 1.0], 2.0),
-			ConcreteLayer::default().color(vertical(ROW_HEIGHT, hex(0x6872DA, 1.0), hex(0x545FC6, 1.0))),
-			top_highlight(0.18),
+			ConcreteLayer::default().color(vertical(ROW_HEIGHT, hex(ACCENT_RGB, 0.22), hex(ACCENT_RGB, 0.14))),
+			top_highlight(0.08),
+			ConcreteLayer::default().color(hex(ACCENT_RGB, 0.55).into()).stroke(1.0),
 		]
 	} else {
 		// A transparent fill keeps the row a surface the pointer can reach while it paints nothing.
@@ -1303,7 +1358,7 @@ fn row_style(selected: bool, hovered: bool) -> [ConcreteLayer; 3] {
 
 /// A small raised tile in the accent color that marks a row as an entity.
 fn icon() -> [ConcreteLayer; 3] {
-	tinted_icon(hex(0x8A93F0, 1.0), ACCENT)
+	tinted_icon(ACCENT_LIGHT, ACCENT)
 }
 
 /// A small raised tile lit from `top` to `bottom`.

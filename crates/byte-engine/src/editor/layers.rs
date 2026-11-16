@@ -87,6 +87,13 @@ impl Layers {
 	}
 
 	/// The setting being typed, while it's the top layer.
+	pub(crate) fn setting(&self) -> Option<&palette::Setting> {
+		match self.stack.last()? {
+			Layer::Setting(setting) => Some(setting),
+			_ => None,
+		}
+	}
+
 	pub(crate) fn setting_mut(&mut self) -> Option<&mut palette::Setting> {
 		match self.stack.last_mut()? {
 			Layer::Setting(setting) => Some(setting),

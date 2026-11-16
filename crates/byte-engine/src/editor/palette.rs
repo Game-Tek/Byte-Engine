@@ -13,6 +13,7 @@
 use crate::configuration::{Accepts, Parameter};
 use crate::editor::carry::Light;
 use crate::inspector::fuzzy_find;
+use crate::ui::TextEdit;
 use crate::ui::Size;
 
 /// The palette's width, in pixels.
@@ -126,6 +127,8 @@ pub(crate) struct State {
 	pub(crate) search: String,
 	/// Everything the open scope finds, gathered when it opened.
 	pub(crate) entries: Vec<Entry>,
+	/// The entries used most recently, newest first, as indices into `entries`; an empty search lists them first.
+	recent: Vec<usize>,
 	/// The entries the search finds, best first, at most [`MAX_ROWS`].
 	pub(crate) results: Vec<Entry>,
 	/// The result Enter picks.
@@ -135,21 +138,35 @@ pub(crate) struct State {
 }
 
 impl State {
-	/// The palette's `scope` over `entries`, with an empty search.
-	pub(crate) fn new(scope: Scope, entries: Vec<Entry>) -> Self {
+	/// The palette's `scope` over `entries`, with an empty search, which lists those of `recent` it finds first.
+	/// `recent` is what was used most recently in any scope, newest first, by label and kind.
+	pub(crate) fn new(scope: Scope, entries: Vec<Entry>, recent: &[(String, Kind)]) -> Self {
+		// Only what this scope finds is listed: a recent mesh isn't a setting's recent.
+		let recent = recent
+			.iter()
+			.filter_map(|(label, kind)| entries.iter().position(|entry| entry.label == *label && entry.kind == *kind))
+			.collect();
 		let mut state = Self {
 			scope,
 			entries,
+			recent,
 			..Self::default()
 		};
 		state.find();
 		state
 	}
 
-	/// Finds the results for the search, as the console finds entities by name, and highlights the best one.
+	/// Finds the results for the search, as the console finds entities by name, and highlights the best one. An
+	/// empty search lists the recently used entries first, then the rest in order.
 	pub(crate) fn find(&mut self) {
-		let labels: Vec<&str> = self.entries.iter().map(|entry| entry.label.as_str()).collect();
-		self.results = fuzzy_find(&labels, &self.search)
+		let found: Vec<usize> = if self.search.trim().is_empty() {
+			let rest = (0..self.entries.len()).filter(|index| !self.recent.contains(index));
+			self.recent.iter().copied().chain(rest).collect()
+		} else {
+			let labels: Vec<&str> = self.entries.iter().map(|entry| entry.label.as_str()).collect();
+			fuzzy_find(&labels, &self.search)
+		};
+		self.results = found
 			.into_iter()
 			.take(MAX_ROWS)
 			.map(|index| self.entries[index].clone())
@@ -172,27 +189,146 @@ impl State {
 }
 
 /// The `Setting` struct is a runtime setting being given a new value, over the palette that found it: the field
-/// holds the value, its one row says what it takes, and Enter sets it.
+/// holds the value, and the rows below it list the values a setting with a closed set takes, or say what an open one
+/// takes. Enter sets the highlighted value, or the typed one.
 pub(crate) struct Setting {
-	/// The setting's row, which says what it takes.
-	pub(crate) row: Entry,
+	/// The setting's full name.
+	pub(crate) name: String,
 	/// What the field holds: the setting's value when it opened, then what's typed.
 	pub(crate) value: String,
+	/// The rows under the field: the values that start with what's typed, for a setting that takes a closed set of
+	/// words, or one row saying what the setting takes otherwise.
+	pub(crate) rows: Vec<Entry>,
+	/// The listed value Enter picks, among `rows`; `None` when the setting takes typed values.
+	pub(crate) highlight: Option<usize>,
+	/// Advanced whenever the rows or the highlight change, so the shell redraws them.
+	pub(crate) revision: u64,
+	accepts: Accepts,
+	/// Whether anything was typed yet; until then, the value shows as if selected, and typing replaces it.
+	typed: bool,
 }
 
 impl Setting {
-	/// The setting `entry` names, its value typed in to be replaced, or `None` when the entry isn't a setting.
+	/// The setting `entry` names, its value typed in to be replaced and its current value highlighted when it takes a
+	/// closed set, or `None` when the entry isn't a setting.
 	pub(crate) fn new(entry: &Entry) -> Option<Self> {
 		let Kind::Setting(accepts) = entry.kind else {
 			return None;
 		};
-		Some(Self {
+		let mut setting = Self {
+			name: entry.label.clone(),
 			value: entry.detail.clone(),
-			row: Entry {
-				detail: format!("takes {}", accepts.describe()),
-				..entry.clone()
-			},
-		})
+			rows: Vec::new(),
+			highlight: None,
+			revision: 0,
+			accepts,
+			typed: false,
+		};
+		setting.list();
+		// The value it opened with is the one highlighted, so Enter alone keeps it.
+		let current = setting.rows.iter().position(|row| row.label.eq_ignore_ascii_case(&setting.value));
+		setting.highlight = setting.highlight.and(current.or(Some(0)));
+		Some(setting)
+	}
+
+	/// Applies a keystroke to the value. The first one replaces the value it opened with, as typing over a selection
+	/// does: a character starts a new value, and erasing clears it. A closed set lists the values that start with it.
+	pub(crate) fn type_edit(&mut self, edit: TextEdit) {
+		if !std::mem::replace(&mut self.typed, true) {
+			self.value.clear();
+		}
+		if !matches!(edit, TextEdit::Deleted(_)) || !self.value.is_empty() {
+			edit.apply_to(&mut self.value);
+		}
+		self.list();
+	}
+
+	/// Moves the highlight by `step` listed values, stopping at the first and the last.
+	pub(crate) fn move_highlight(&mut self, step: isize) {
+		if let Some(highlight) = &mut self.highlight {
+			*highlight = highlight.saturating_add_signed(step).min(self.rows.len().saturating_sub(1));
+			self.revision += 1;
+		}
+	}
+
+	/// Picks the listed value at `row`, as a click on it does.
+	pub(crate) fn pick(&mut self, row: usize) {
+		if self.highlight.is_some() && row < self.rows.len() {
+			self.highlight = Some(row);
+		}
+	}
+
+	/// The value Enter sets: the highlighted listed value, or what's typed when none is listed.
+	pub(crate) fn chosen(&self) -> &str {
+		match self.highlight.and_then(|row| self.rows.get(row)) {
+			Some(row) => &row.label,
+			None => self.value.trim(),
+		}
+	}
+
+	/// Lists the rows for the field's value: the closed set's words that start with it, the first highlighted, or the
+	/// row that says what an open setting takes.
+	fn list(&mut self) {
+		self.revision += 1;
+		let words = match self.accepts {
+			// Only a setting whose every value is a word has a closed set; one that also takes numbers is typed.
+			Accepts::Bool | Accepts::Choice(_) => self.accepts.words(),
+			_ => {
+				self.rows = vec![Entry {
+					detail: format!("takes {}", self.accepts.describe()),
+					..Entry::new(self.name.clone(), Kind::Setting(self.accepts))
+				}];
+				return;
+			}
+		};
+		// Before anything is typed, every value is listed; the field then holds the value it opened with.
+		let prefix = if self.typed { self.value.trim().to_ascii_lowercase() } else { String::new() };
+		self.rows = words
+			.iter()
+			.filter(|word| word.to_ascii_lowercase().starts_with(&prefix))
+			.map(|word| Entry::new(*word, Kind::Setting(self.accepts)))
+			.collect();
+		self.highlight = Some(0);
+	}
+}
+
+/// How long the palette takes to come in, and to go out, in seconds.
+pub(crate) const ENTER: f32 = 0.15;
+pub(crate) const EXIT: f32 = 0.09;
+
+/// The `Look` struct is where the palette's panel is in its animation: how far above its place it sits, in pixels,
+/// its scale about its top edge, and its opacity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Look {
+	pub(crate) y: f32,
+	pub(crate) scale: f32,
+	pub(crate) opacity: f32,
+}
+
+/// The panel `seconds` after it opened: it drops in from a little above and grows from a little smaller, settling
+/// with a slight overshoot, while it fades in faster than it moves.
+pub(crate) fn entering(seconds: f32) -> Look {
+	let progress = (seconds / ENTER).clamp(0.0, 1.0);
+	// A back-out curve: past 1 near the end, then back, so the panel lands with a little give.
+	const OVERSHOOT: f32 = 0.8;
+	let t = progress - 1.0;
+	let motion = 1.0 + (OVERSHOOT + 1.0) * t * t * t + OVERSHOOT * t * t;
+	let fade = 1.0 - (1.0 - (progress * 2.0).min(1.0)).powi(3);
+	Look {
+		y: -10.0 * (1.0 - motion),
+		scale: 0.96 + 0.04 * motion,
+		opacity: fade,
+	}
+}
+
+/// The panel `seconds` after it closed: it lifts a little, shrinks a little, and fades out, speeding up as it goes.
+pub(crate) fn leaving(seconds: f32) -> Look {
+	let progress = (seconds / EXIT).clamp(0.0, 1.0);
+	let eased = progress * progress;
+	Look {
+		y: -6.0 * eased,
+		scale: 1.0 - 0.03 * eased,
+		opacity: 1.0 - eased,
 	}
 }
 
@@ -236,7 +372,7 @@ mod tests {
 	use super::*;
 
 	fn palette(resources: &[&str]) -> State {
-		State::new(Scope::Place, resources.iter().map(|id| Entry::new(*id, Kind::Mesh)).collect())
+		State::new(Scope::Place, resources.iter().map(|id| Entry::new(*id, Kind::Mesh)).collect(), &[])
 	}
 
 	fn labels(state: &State) -> Vec<&str> {
@@ -252,6 +388,41 @@ mod tests {
 		state.find();
 		assert_eq!(labels(&state), ["crate.glb", "props/crate.glb"]);
 		assert_eq!(state.highlighted().map(|entry| entry.label.as_str()), Some("crate.glb"));
+	}
+
+	#[test]
+	fn an_empty_search_lists_the_scopes_recently_used_entries_first() {
+		let entries = ["a.glb", "b.glb", "c.glb"].map(|id| Entry::new(id, Kind::Mesh)).to_vec();
+		// A setting used last belongs to another scope, so it isn't listed here.
+		let recent = [
+			("render.lod.bias".to_string(), Kind::Setting(crate::configuration::Accepts::Bool)),
+			("c.glb".to_string(), Kind::Mesh),
+			("b.glb".to_string(), Kind::Mesh),
+		];
+		let mut state = State::new(Scope::Place, entries, &recent);
+		assert_eq!(labels(&state), ["c.glb", "b.glb", "a.glb"]);
+
+		state.search = "a".to_string();
+		state.find();
+		assert_eq!(labels(&state), ["a.glb"], "a search finds by name alone");
+	}
+
+	#[test]
+	fn the_panel_comes_in_from_above_and_goes_out_upward() {
+		const REST: Look = Look {
+			y: 0.0,
+			scale: 1.0,
+			opacity: 1.0,
+		};
+		let start = entering(0.0);
+		assert!(start.opacity == 0.0 && start.y < 0.0 && start.scale < 1.0);
+		assert_eq!(entering(ENTER), REST);
+		// The overshoot carries it a little past its place before it settles.
+		assert!((0..20).any(|step| entering(ENTER * step as f32 / 20.0).y > 0.0));
+
+		assert_eq!(leaving(0.0), REST);
+		let gone = leaving(EXIT);
+		assert!(gone.opacity == 0.0 && gone.y < 0.0 && gone.scale < 1.0);
 	}
 
 	#[test]
@@ -288,14 +459,59 @@ mod tests {
 			accepts: Accepts::Number { min: 0.0 },
 			value: crate::configuration::ConfigurationValue::Float(1.5),
 		};
-		let state = State::new(Scope::Configure, vec![Entry::setting(bias)]);
+		let state = State::new(Scope::Configure, vec![Entry::setting(bias)], &[]);
 		assert_eq!(state.results[0].detail, "1.5");
 
 		let setting = Setting::new(state.highlighted().unwrap()).unwrap();
 		assert_eq!(setting.value, "1.5");
-		assert_eq!(setting.row.label, "render.lod.bias");
-		assert_eq!(setting.row.detail, "takes a number of 0 or more");
+		assert_eq!(setting.rows[0].label, "render.lod.bias");
+		assert_eq!(setting.rows[0].detail, "takes a number of 0 or more");
+		assert_eq!(setting.highlight, None, "a number is typed, not picked");
 		assert!(Setting::new(&Entry::new("crate.glb", Kind::Mesh)).is_none());
+	}
+
+	#[test]
+	fn typing_over_a_setting_replaces_its_value_then_edits_what_was_typed() {
+		let entry = Entry::setting(Parameter {
+			name: "render.lod.bias".to_string(),
+			accepts: Accepts::Number { min: 0.0 },
+			value: crate::configuration::ConfigurationValue::Float(1.5),
+		});
+		let mut setting = Setting::new(&entry).unwrap();
+		setting.type_edit(TextEdit::Inserted('3'));
+		setting.type_edit(TextEdit::Inserted('2'));
+		assert_eq!(setting.value, "32");
+		setting.type_edit(TextEdit::Deleted('2'));
+		assert_eq!(setting.value, "3");
+
+		let mut erased = Setting::new(&entry).unwrap();
+		erased.type_edit(TextEdit::Deleted('5'));
+		assert_eq!(erased.value, "", "erasing first clears the value");
+		assert_eq!(setting.chosen(), "3");
+	}
+
+	#[test]
+	fn a_closed_set_lists_its_values_from_the_current_one_and_typing_narrows_them() {
+		let entry = Entry::setting(Parameter {
+			name: "render.gi.technique".to_string(),
+			accepts: Accepts::Choice(&["ssgi", "surfels", "probes"]),
+			value: "probes".into(),
+		});
+		let mut setting = Setting::new(&entry).unwrap();
+		let labels = |setting: &Setting| setting.rows.iter().map(|row| row.label.clone()).collect::<Vec<_>>();
+		assert_eq!(labels(&setting), ["ssgi", "surfels", "probes"]);
+		assert_eq!(setting.chosen(), "probes", "Enter alone keeps the current value");
+
+		setting.move_highlight(-1);
+		assert_eq!(setting.chosen(), "surfels");
+
+		setting.type_edit(TextEdit::Inserted('s'));
+		assert_eq!(labels(&setting), ["ssgi", "surfels"]);
+		setting.type_edit(TextEdit::Inserted('u'));
+		assert_eq!(setting.chosen(), "surfels");
+
+		setting.pick(0);
+		assert_eq!(setting.chosen(), "surfels", "the only listed value");
 	}
 
 	#[test]

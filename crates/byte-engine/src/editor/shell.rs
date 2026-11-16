@@ -6,6 +6,7 @@
 //! and Byte Engine's green as the accent for the selection.
 
 mod graph_view;
+mod texture_view;
 mod toasts;
 
 use std::time::Instant;
@@ -159,6 +160,9 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 	// The graph canvas goes over the game view, under the palette.
 	root.element("graph")
 		.component(async |ctx| graph_view::graph_view(ctx).await)
+		.await;
+	root.element("texture")
+		.component(async |ctx| texture_view::texture_view(ctx).await)
 		.await;
 	root.element("palette").component(async |ctx| palette_view(ctx).await).await;
 	root.element("toasts").component(async |ctx| toasts::toasts(ctx).await).await;
@@ -561,15 +565,17 @@ async fn palette_row(
 }
 
 /// The gradient a palette entry's icon takes, so each kind reads at a glance: meshes in the accent, as the scene's
-/// rows are, indigo prefabs, amber lights, pink materials, gray nodes, and teal settings.
+/// rows are, indigo prefabs, amber lights, pink materials, blue textures, gray nodes, teal settings, and violet levels.
 fn kind_tint(kind: palette::Kind) -> [RGBA; 2] {
 	match kind {
 		palette::Kind::Mesh => [ACCENT_LIGHT, ACCENT],
 		palette::Kind::Prefab => [hex(0x8A93F0, 1.0), hex(0x5E6AD2, 1.0)],
 		palette::Kind::Light(_) => [hex(0xFFD27A, 1.0), hex(0xF5A524, 1.0)],
 		palette::Kind::Graph => [hex(0xF29BD4, 1.0), hex(0xD9539F, 1.0)],
+		palette::Kind::Texture => [hex(0x8CC4FF, 1.0), hex(0x3D8BE0, 1.0)],
 		palette::Kind::Node => [hex(0xB9BCC4, 1.0), hex(0x6E737C, 1.0)],
 		palette::Kind::Setting(_) => [hex(0x7FE3E0, 1.0), hex(0x2BA8A4, 1.0)],
+		palette::Kind::NewLevel | palette::Kind::Folder => [hex(0xC9A4FF, 1.0), hex(0x8B5CF6, 1.0)],
 	}
 }
 

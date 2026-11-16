@@ -1,9 +1,9 @@
 //! The command palette: a floating search over what the editor can do, as VS Code's is.
 //!
-//! Each shortcut opens it on a [`Scope`]: Cmd+K on everything, Cmd+A on what can be placed in the scene, Cmd+. on the
-//! game's runtime settings, and any of them on the node kinds while a material graph is open. A placeable [`Entry`] is
-//! dragged into the scene or pinned to the pointer until a click places it; a material graph opens on the canvas, and
-//! a node kind is added to the open graph. A setting opens a [`Setting`] over the palette, which shows its value in
+//! Each shortcut opens it on a [`Scope`]: Cmd+K on everything, Cmd+A on what can be placed in the scene, Cmd+E on the
+//! resources to explore, Cmd+. on the game's runtime settings, and any of them on the node kinds while a material graph
+//! is open. A placeable [`Entry`] is dragged into the scene or pinned to the pointer until a click places it; a
+//! material graph opens on the canvas, a texture in a preview panel, and a node kind is added to the open graph. A setting opens a [`Setting`] over the palette, which shows its value in
 //! the search field, where a typed value replaces it.
 //!
 //! This module holds what the palette shows and where it is on screen. The palette is a layer of the editor's
@@ -39,20 +39,26 @@ pub(crate) enum Scope {
 	All,
 	/// What can be placed in the scene, opened with Cmd+A.
 	Place,
+	/// The resources to open and look at, material graphs and textures, opened with Cmd+E.
+	Explore,
 	/// The game's runtime settings, opened with Cmd+.
 	Configure,
 	/// The node kinds to add to the open material graph.
 	Nodes,
+	/// The folders a new level can go in, opened by the New level command.
+	Folders,
 }
 
 impl Scope {
 	/// What the search field says while it's empty.
 	pub(crate) fn prompt(self) -> &'static str {
 		match self {
-			Self::All => "Find something to place, a material to edit, or a setting",
+			Self::All => "Find something to place, a resource to open, or a setting",
 			Self::Place => "Find a mesh, prefab, or light to place",
+			Self::Explore => "Find a material or texture to open",
 			Self::Configure => "Find a setting to show or change",
 			Self::Nodes => "Find a node to add",
+			Self::Folders => "Find the folder the new level goes in",
 		}
 	}
 }
@@ -78,10 +84,16 @@ pub(crate) enum Kind {
 	Light(&'static Light),
 	/// Opens the material graph source the label names on the canvas.
 	Graph,
+	/// Previews the texture source image the label names.
+	Texture,
 	/// Adds a node of the kind the label names to the open graph.
 	Node,
 	/// Shows the runtime setting the label names, which takes these values, to change it.
 	Setting(Accepts),
+	/// Lists the folders a new level can go in.
+	NewLevel,
+	/// Writes a new, empty level into the folder the label names.
+	Folder,
 }
 
 impl Kind {
@@ -112,8 +124,8 @@ impl Entry {
 	/// The name the row leads with: a resource's file name without its extension, or the whole label otherwise.
 	pub(crate) fn name(&self) -> &str {
 		match self.kind {
-			Kind::Mesh | Kind::Prefab | Kind::Graph => entity_name(&self.label),
-			Kind::Light(_) | Kind::Node | Kind::Setting(_) => &self.label,
+			Kind::Mesh | Kind::Prefab | Kind::Graph | Kind::Texture => entity_name(&self.label),
+			Kind::Light(_) | Kind::Node | Kind::Setting(_) | Kind::NewLevel | Kind::Folder => &self.label,
 		}
 	}
 }

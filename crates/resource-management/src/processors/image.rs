@@ -1,7 +1,9 @@
 mod decode;
+mod preview;
 mod source;
 
 pub(crate) use decode::{decode_rgba16f_in, png_declared_gamma};
+pub use preview::{Preview, preview_rgba8};
 pub(crate) use source::canonicalize_rgba16f_in;
 pub use source::{ImageSource, SourceChannels, SourceEncoding};
 use source::{append_canonical_image_in, canonicalize_image_in, source_bytes_are};

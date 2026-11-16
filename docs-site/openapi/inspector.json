@@ -245,7 +245,7 @@
 			"get": {
 				"operationId": "readSourceAsset",
 				"summary": "Read a source asset",
-				"description": "Returns one source asset's text. Development builds only. The HTTP inspector never writes source assets, since it has no authentication.",
+				"description": "Returns one source asset's bytes, unchanged. Development builds only. The HTTP inspector never writes source assets, since it has no authentication.",
 				"tags": ["Inspection"],
 				"parameters": [
 					{
@@ -262,11 +262,12 @@
 				],
 				"responses": {
 					"200": {
-						"description": "The asset's text.",
+						"description": "The asset's bytes.",
 						"content": {
-							"text/plain": {
+							"application/octet-stream": {
 								"schema": {
-									"type": "string"
+									"type": "string",
+									"format": "binary"
 								}
 							}
 						}
@@ -275,7 +276,7 @@
 						"$ref": "#/components/responses/BadRequest"
 					},
 					"404": {
-						"description": "No text source has the ID, the ID leaves the asset directory, or source assets are unavailable in this build.",
+						"description": "No source has the ID, the ID leaves the asset directory, or source assets are unavailable in this build.",
 						"content": {
 							"text/plain": {
 								"schema": {

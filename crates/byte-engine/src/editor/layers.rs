@@ -22,10 +22,20 @@ pub(crate) enum Layer {
 	Palette(palette::State),
 	/// A runtime setting's value being typed, over the palette that found the setting.
 	Setting(palette::Setting),
+	/// A texture shown in a preview panel, as Cmd+E opened it.
+	Texture(Texture),
 	/// A mesh, prefab, or light following the pointer until a click places it.
 	Carry(Carry),
 	/// Text being typed into a property field, which answers Enter and Escape itself.
 	Typing,
+}
+
+/// The `Texture` struct is a texture the editor shows in its preview panel, decoded from its source image.
+pub(crate) struct Texture {
+	/// The source image's asset ID, such as `textures/brick.png`.
+	pub(crate) id: String,
+	/// The picture the panel shows, scaled down to fit it.
+	pub(crate) preview: resource_management::processors::Preview,
 }
 
 /// The `Layers` struct is the editor's stack of layers; empty while the editor is closed.
@@ -112,6 +122,14 @@ impl Layers {
 	pub(crate) fn graph_mut(&mut self) -> Option<&mut Graph> {
 		self.stack.iter_mut().rev().find_map(|layer| match layer {
 			Layer::Graph(graph) => Some(graph),
+			_ => None,
+		})
+	}
+
+	/// The topmost texture being previewed, which its panel shows while palettes open over it.
+	pub(crate) fn texture(&self) -> Option<&Texture> {
+		self.stack.iter().rev().find_map(|layer| match layer {
+			Layer::Texture(texture) => Some(texture),
 			_ => None,
 		})
 	}

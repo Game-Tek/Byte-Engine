@@ -155,7 +155,8 @@ application bakes on demand.
 | --- | --- |
 | IDs | An asset's path under the asset directory, with `/` between its parts, as every asset ID is. An ID that leaves the directory, such as one with a `..` part, fails. |
 | List | The ID of every source file whose name ends in one extension, such as `bemx`, in ID order. The extension is matched exactly, without its dot. |
-| Read | One source file's text. A file that isn't UTF-8 text fails. |
+| Folders | Every folder under the asset directory that holds a source file at any depth, as its ID with a trailing `/`, in ID order, after the asset directory itself, which is `/`. A folder with no source file in it isn't listed. |
+| Read | One source file's bytes, unchanged, whether it holds text, such as a `.bemx` graph, or binary data, such as a PNG image. |
 | Write | Replaces one source file's text, creating the file and its directories when missing. Readers never see a partly written file. The application then bakes again what read the file, as it does after any source change. |
 | Transports | In-process tools list, read, and write. The HTTP inspector lists and reads, with `GET /assets?extension=bemx` and `GET /assets/source?id=<id>`; it never writes, since it has no authentication. |
 | Release builds | Every request fails, since release applications don't read source assets. |

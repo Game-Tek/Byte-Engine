@@ -97,16 +97,21 @@ impl DefaultInspector {
 		})
 	}
 
-	/// Returns the text of the source asset `id` in a development build. Next, write a changed text back with
-	/// [`Self::write_source_asset`].
-	pub fn read_source_asset(&self, id: &str) -> Result<String, String> {
+	/// Returns every folder under the asset directory that holds a source asset, in a development build: `/` for the
+	/// asset directory itself, then each folder's ID with a trailing `/`, such as `levels/`, in ID order.
+	///
+	/// Use it to let a person pick where a new source asset goes, then write it with [`Self::write_source_asset`].
+	pub fn source_folders(&self) -> Result<Vec<String>, String> {
+		self.on_store("Source folders could not be listed.", |store| async move {
+			Ok(folders_of(&asset_manager(store)?.sources().await?))
+		})
+	}
+
+	/// Returns the bytes of the source asset `id`, unchanged, in a development build: a `.bemx` graph's text or a PNG
+	/// image's encoded pixels alike. Next, write a changed text back with [`Self::write_source_asset`].
+	pub fn read_source_asset(&self, id: &str) -> Result<Vec<u8>, String> {
 		self.on_store("The source asset could not be read.", |store| async move {
-			let bytes = asset_manager(store)?.read_source(id).await?;
-			String::from_utf8(bytes).map_err(|_| {
-				format!(
-					"Source asset '{id}' isn't text. The most likely cause is a binary file, such as an image. Read only text sources, such as `.bemx` files."
-				)
-			})
+			asset_manager(store)?.read_source(id).await
 		})
 	}
 
@@ -188,6 +193,21 @@ async fn query_all(resources: &ResourceManager, class: &str) -> Result<Vec<Strin
 	Ok(ids)
 }
 
+/// The folders that hold the files `ids` name, at any depth: `/` for the top folder, then each folder's path with a
+/// trailing `/`, in order, each once.
+fn folders_of(ids: &[String]) -> Vec<String> {
+	let mut folders = vec!["/".to_owned()];
+	for id in ids {
+		// Every `/` in an ID ends a folder that holds it: `a/b/c.png` is in `a/` and `a/b/`.
+		for (end, _) in id.match_indices('/') {
+			folders.push(id[..=end].to_owned());
+		}
+	}
+	folders[1..].sort_unstable();
+	folders.dedup();
+	folders
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -243,7 +263,7 @@ mod tests {
 	}
 
 	#[test]
-	fn source_assets_are_listed_by_extension_read_and_written() {
+	fn source_assets_are_listed_by_extension_read_as_bytes_and_written() {
 		let (inspector, _world) = inspector();
 		let directory = std::env::temp_dir().join(format!(
 			"inspector-source-assets-{}-{:?}",
@@ -261,21 +281,24 @@ mod tests {
 		inspector.set_resource_manager(EntityHandle::from(store));
 
 		assert_eq!(inspector.source_assets("bemx").unwrap(), ["materials/floor.bemx"]);
-		assert_eq!(inspector.read_source_asset("materials/floor.bemx").unwrap(), "{ nodes: [] }");
-		assert!(
-			inspector.read_source_asset("materials/floor.png").is_err(),
-			"an image isn't text"
-		);
+		assert_eq!(inspector.read_source_asset("materials/floor.bemx").unwrap(), b"{ nodes: [] }");
+		assert_eq!(inspector.read_source_asset("materials/floor.png").unwrap(), [0u8, 159, 146, 150]);
 
 		inspector.write_source_asset("materials/wall.bemx", "{ nodes: [1] }").unwrap();
 		assert_eq!(
 			inspector.source_assets("bemx").unwrap(),
 			["materials/floor.bemx", "materials/wall.bemx"]
 		);
-		assert_eq!(inspector.read_source_asset("materials/wall.bemx").unwrap(), "{ nodes: [1] }");
+		assert_eq!(inspector.read_source_asset("materials/wall.bemx").unwrap(), b"{ nodes: [1] }");
 		assert!(inspector.write_source_asset("../outside.bemx", "{}").is_err());
 
 		std::fs::remove_dir_all(directory).unwrap();
+	}
+
+	#[test]
+	fn folders_list_the_top_folder_then_every_folder_that_holds_a_file_once() {
+		let ids = ["b/c/d.png", "a.bemx", "b/e.level", "b/c/f.png"].map(String::from);
+		assert_eq!(folders_of(&ids), ["/", "b/", "b/c/"]);
 	}
 
 	#[test]

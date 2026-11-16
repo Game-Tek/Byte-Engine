@@ -13,11 +13,15 @@
 //! the tool the toolbar picks.
 //! The command palette opens, as VS Code's does, on a scope picked by its shortcut: Cmd+A on what can be placed, a
 //! mesh, prefab, or light to drag into the scene or pin to the pointer with Enter until a click places it, and Cmd+K
-//! on that and the material graphs to edit on a node canvas. While a graph is open, either finds a node kind to add to
-//! it. A prefab spawns where it's placed, with its parameters' defaults, through the spawner the game gave the
-//! inspector, so it knows the game's own kinds. Cmd+. opens it on the game's runtime settings, which Cmd+K finds too:
+//! on that and the material graphs to edit on a node canvas. Cmd+E opens it on the resources to explore: material
+//! graphs, which open on the canvas, and textures, which open in a preview panel decoded from their source images.
+//! While a graph is open, any of them finds a node kind to add to it. A prefab spawns where it's placed, with its
+//! parameters' defaults, through the spawner the game gave the inspector, so it knows the game's own kinds. Cmd+. opens it on the game's runtime settings, which Cmd+K finds too:
 //! Enter on one shows its value in the search field, and Enter again sets it to what the field says, as the console's
 //! `set` does.
+//!
+//! Cmd+K also finds the New level command, which lists the folders under the asset directory and writes an empty
+//! level into the one picked.
 //!
 //! While it's open, the warnings and errors the game logs show as toasts in the bottom-right corner.
 //!
@@ -355,15 +359,18 @@ impl Editor {
 		}
 	}
 
-	/// Answers a pressed key: Cmd+K opens the palette on everything, Cmd+A on what can be placed, and Cmd+. on the
-	/// runtime settings, Cmd+S saves the open material graph, the arrows move the palette's highlight, Enter picks the
-	/// highlighted entry or sets the typed setting, and Escape pops the top layer, which closes the editor from the
-	/// scene. A property field taking typed text answers Enter and Escape itself.
+	/// Answers a pressed key: Cmd+K opens the palette on everything, Cmd+A on what can be placed, Cmd+E on the
+	/// resources to explore, and Cmd+. on the runtime settings, Cmd+S saves the open material graph, the arrows move
+	/// the palette's highlight, Enter picks the highlighted entry or sets the typed setting, and Escape pops the top
+	/// layer, which closes the editor from the scene. A property field taking typed text answers Enter and Escape
+	/// itself.
 	fn key(&mut self, app: &GraphicsApplication, key: crate::input::ActionHandle) {
 		let scope = if key == self.actions.k {
 			Some(palette::Scope::All)
 		} else if key == self.actions.a {
 			Some(palette::Scope::Place)
+		} else if key == self.actions.e {
+			Some(palette::Scope::Explore)
 		} else if key == self.actions.period {
 			Some(palette::Scope::Configure)
 		} else {
@@ -562,8 +569,8 @@ impl Editor {
 		});
 	}
 
-	/// Acts on the palette's `entry`: adds a node of its kind to the open graph, opens a material graph on the canvas,
-	/// or carries what it places, `held` when dragged out of the palette.
+	/// Acts on the palette's `entry`: adds a node of its kind to the open graph, opens a material graph on the canvas
+	/// or a texture in the preview panel, or carries what it places, `held` when dragged out of the palette.
 	fn choose(&mut self, app: &GraphicsApplication, entry: &palette::Entry, held: bool) {
 		let id = entry.label.as_str();
 		match entry.kind {
@@ -576,22 +583,62 @@ impl Editor {
 				return;
 			}
 			palette::Kind::Graph => {}
+			palette::Kind::Texture => {
+				self.open_texture(app, id);
+				return;
+			}
+			palette::Kind::NewLevel => {
+				// The command's palette gives way to one on the folders the level can go in.
+				let entries = palette_entries(app, palette::Scope::Folders);
+				let palette = palette::State::new(palette::Scope::Folders, entries, &self.recent);
+				self.engine.ctx_mut().layers.push(Layer::Palette(palette));
+				return;
+			}
+			palette::Kind::Folder => {
+				create_level(app, id);
+				return;
+			}
 			_ => {
 				self.spawn_carry(app, entry, held);
 				return;
 			}
 		}
-		let opened = app
-			.inspector()
-			.read_source_asset(id)
-			.and_then(|text| graph::Graph::open(id, &text));
+		let opened = app.inspector().read_source_asset(id).and_then(|bytes| {
+			let text = String::from_utf8(bytes).map_err(|_| {
+				format!("'{id}' isn't text. The most likely cause is a binary file named as a graph. Open a `.bemx` file saved as UTF-8 text.")
+			})?;
+			graph::Graph::open(id, &text)
+		});
 		match opened {
 			Ok(graph) => {
 				let shell = self.engine.ctx_mut();
+				// What the explorer opens replaces the texture it showed.
+				shell.layers.close(|layer| matches!(layer, Layer::Texture(_)));
 				shell.layers.push(Layer::Graph(graph));
 				shell.graph_revision += 1;
 			}
 			Err(error) => log::warn!("The editor couldn't open the material graph. {error}"),
+		}
+	}
+
+	/// Opens the texture source image `id` in the preview panel, in place of any texture it showed.
+	///
+	/// The image decodes on this thread, which holds the frame for as long as a large image takes to decode; it's
+	/// what a click asked for, once.
+	fn open_texture(&mut self, app: &GraphicsApplication, id: &str) {
+		// The panel never shows a texture larger than this, so a larger one is scaled down before it's uploaded.
+		const LONGEST: u32 = 1024;
+		let preview = app
+			.inspector()
+			.read_source_asset(id)
+			.and_then(|bytes| resource_management::processors::preview_rgba8(&bytes, LONGEST));
+		match preview {
+			Ok(preview) => {
+				let layers = &mut self.engine.ctx_mut().layers;
+				layers.close(|layer| matches!(layer, Layer::Texture(_)));
+				layers.push(Layer::Texture(layers::Texture { id: id.to_owned(), preview }));
+			}
+			Err(error) => log::warn!("The editor couldn't preview '{id}'. {error}"),
 		}
 	}
 
@@ -890,6 +937,36 @@ impl Editor {
 	}
 }
 
+/// Writes a new, empty level source into `folder`, as `/` or a folder ID such as `levels/`, under the first
+/// `untitled` name no level there has.
+fn create_level(app: &GraphicsApplication, folder: &str) {
+	let created = app.inspector().source_assets("level").and_then(|levels| {
+		let id = new_level_id(folder, &levels);
+		app.inspector().write_source_asset(&id, EMPTY_LEVEL).map(|()| id)
+	});
+	match created {
+		Ok(id) => log::info!("The editor created the level '{id}'."),
+		Err(error) => log::warn!("The editor couldn't create the level. {error}"),
+	}
+}
+
+/// The source of a level with no entities, which a new level starts as.
+const EMPTY_LEVEL: &str = "{\n\t\"entities\": []\n}\n";
+
+/// The ID a new level in `folder` takes: `untitled.level`, or `untitled 2.level` and so on when `levels`, the IDs of
+/// the levels there are, has it.
+fn new_level_id(folder: &str, levels: &[String]) -> String {
+	// The asset directory's own folder adds nothing to the ID.
+	let folder = folder.strip_prefix('/').unwrap_or(folder);
+	(1..)
+		.map(|n| match n {
+			1 => format!("{folder}untitled.level"),
+			n => format!("{folder}untitled {n}.level"),
+		})
+		.find(|id| !levels.contains(id))
+		.expect("An unbounded count always finds a free name.")
+}
+
 /// Removes a carried mesh or light from the scene. A carried prefab hasn't spawned, so it only stops being carried.
 fn remove_carried(app: &GraphicsApplication, carry: carry::Carry) {
 	if let carry::Load::Spawned { root, .. } = carry.load
@@ -899,12 +976,14 @@ fn remove_carried(app: &GraphicsApplication, carry: carry::Carry) {
 	}
 }
 
-/// Gathers what the palette's `scope` finds: the node kinds for a graph, the runtime settings for settings; otherwise
-/// the stored meshes, the prefabs, and every kind of light, and for everything, also the `.bemx` sources a development
-/// build can open and the runtime settings.
+/// Gathers what the palette's `scope` finds: the node kinds for a graph, the runtime settings for settings, the
+/// resources to explore for exploring, the source folders for a new level; otherwise the stored meshes, the prefabs,
+/// and every kind of light, and for everything, also the New level command, the resources to explore, and the runtime
+/// settings.
 fn palette_entries(app: &GraphicsApplication, scope: palette::Scope) -> Vec<palette::Entry> {
 	use palette::{Entry, Kind, Scope};
 	let settings = || app.inspector().configuration_parameters().into_iter().map(Entry::setting);
+	let mut entries = Vec::new();
 	match scope {
 		Scope::Nodes => {
 			return resource_management::bemx::kinds::KINDS
@@ -913,18 +992,25 @@ fn palette_entries(app: &GraphicsApplication, scope: palette::Scope) -> Vec<pale
 				.collect();
 		}
 		Scope::Configure => return settings().collect(),
+		Scope::Explore => {
+			explorable(app, &mut entries);
+			return entries;
+		}
+		Scope::Folders => {
+			return app.inspector().source_folders().map_or_else(
+				|error| {
+					log::warn!("The palette couldn't list the game's folders. {error}");
+					Vec::new()
+				},
+				|folders| folders.into_iter().map(|folder| Entry::new(folder, Kind::Folder)).collect(),
+			);
+		}
 		Scope::All | Scope::Place => {}
 	}
-	let mut entries: Vec<Entry> = app
-		.inspector()
-		.resources("Mesh")
-		.unwrap_or_else(|error| {
-			log::warn!("The palette couldn't list the game's meshes. {error}");
-			Vec::new()
-		})
-		.into_iter()
-		.map(|id| Entry::new(id, Kind::Mesh))
-		.collect();
+	match app.inspector().resources("Mesh") {
+		Ok(meshes) => entries.extend(meshes.into_iter().map(|id| Entry::new(id, Kind::Mesh))),
+		Err(error) => log::warn!("The palette couldn't list the game's meshes. {error}"),
+	}
 	// A development build bakes a prefab from its source when it spawns, so its sources are what can spawn: the
 	// store may still hold prefabs whose sources were deleted, and lacks those not baked yet. A build without
 	// sources spawns what the store holds.
@@ -938,11 +1024,41 @@ fn palette_entries(app: &GraphicsApplication, scope: palette::Scope) -> Vec<pale
 	}
 	entries.extend(carry::LIGHTS.iter().map(|light| Entry::new(light.name, Kind::Light(light))));
 	if scope == Scope::All {
-		match app.inspector().source_assets("bemx") {
-			Ok(graphs) => entries.extend(graphs.into_iter().map(|id| Entry::new(id, Kind::Graph))),
-			Err(error) => log::warn!("The palette couldn't list the game's material graphs. {error}"),
-		}
+		entries.push(Entry::new("New level", Kind::NewLevel));
+		explorable(app, &mut entries);
 		entries.extend(settings());
 	}
 	entries
+}
+
+/// Adds the resources the explorer opens to `entries`: the `.bemx` material graphs and the PNG and JPEG texture
+/// sources a development build can read.
+fn explorable(app: &GraphicsApplication, entries: &mut Vec<palette::Entry>) {
+	use palette::{Entry, Kind};
+	match app.inspector().source_assets("bemx") {
+		Ok(graphs) => entries.extend(graphs.into_iter().map(|id| Entry::new(id, Kind::Graph))),
+		Err(error) => log::warn!("The palette couldn't list the game's material graphs. {error}"),
+	}
+	for extension in ["png", "jpg", "jpeg"] {
+		match app.inspector().source_assets(extension) {
+			Ok(textures) => entries.extend(textures.into_iter().map(|id| Entry::new(id, Kind::Texture))),
+			Err(error) => {
+				log::warn!("The palette couldn't list the game's textures. {error}");
+				// Every extension fails alike, so one warning is enough.
+				break;
+			}
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::new_level_id;
+
+	#[test]
+	fn a_new_level_takes_the_first_untitled_name_free_in_its_folder() {
+		assert_eq!(new_level_id("/", &[]), "untitled.level");
+		let taken = ["levels/untitled.level", "levels/untitled 2.level", "untitled 3.level"].map(String::from);
+		assert_eq!(new_level_id("levels/", &taken), "levels/untitled 3.level");
+	}
 }

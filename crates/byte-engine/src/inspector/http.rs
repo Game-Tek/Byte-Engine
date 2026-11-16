@@ -270,7 +270,7 @@ fn source_assets_response(inspector: &DefaultInspector, query: Option<&str>) -> 
 	}
 }
 
-/// Answers one source asset's text, as plain text, from a query naming exactly one `id`. The HTTP inspector only
+/// Answers one source asset's bytes, unchanged, from a query naming exactly one `id`. The HTTP inspector only
 /// reads sources; it has no authentication, so writing them is left to in-process tools.
 fn source_asset_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
 	let Some([Some(id)]) = query.map(|query| parse_query(query, [&["id"]])).and_then(Result::ok) else {
@@ -280,9 +280,9 @@ fn source_asset_response(inspector: &DefaultInspector, query: Option<&str>) -> R
 		);
 	};
 	match inspector.read_source_asset(&id) {
-		Ok(text) => Response::builder()
-			.header("Content-Type", "text/plain; charset=utf-8")
-			.body(Body::from(text))
+		Ok(bytes) => Response::builder()
+			.header("Content-Type", "application/octet-stream")
+			.body(Body::from(bytes))
 			.expect("Inspector text response is valid. The most likely cause is an invalid static header name."),
 		Err(error) => response(StatusCode::NOT_FOUND, error),
 	}

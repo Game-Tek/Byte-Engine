@@ -12,11 +12,6 @@ use serde_json::Value as Json;
 
 use crate::utils::RGBA;
 
-/// Whether the palette result `resource` is a material graph, a `.bemx` source, rather than a mesh.
-pub(crate) fn is_graph(resource: &str) -> bool {
-	resource.ends_with(".bemx")
-}
-
 /// A node's width on the canvas, in canvas units, which are pixels at a zoom of 1.
 pub(crate) const NODE_WIDTH: f32 = 190.0;
 /// The height of a node's header, which holds its name and kind.

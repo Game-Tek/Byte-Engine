@@ -23,10 +23,11 @@ pub(crate) struct Actions {
 	pub(crate) character: ActionHandle,
 	/// Erases backward in the focused text field.
 	pub(crate) backspace: ActionHandle,
-	/// Either system key: Command on macOS, Windows or Super elsewhere. With K, it opens the palette; with S, it saves
-	/// the open material graph.
+	/// Either system key: Command on macOS, Windows or Super elsewhere. With K, it opens the palette on everything;
+	/// with A, on what can be placed; with S, it saves the open material graph.
 	pub(crate) meta: ActionHandle,
 	pub(crate) k: ActionHandle,
+	pub(crate) a: ActionHandle,
 	pub(crate) s: ActionHandle,
 	pub(crate) up: ActionHandle,
 	pub(crate) down: ActionHandle,
@@ -98,6 +99,7 @@ pub(crate) fn install(app: &mut GraphicsApplication) -> (Actions, Rc<RefCell<Lay
 			Types::Boolean,
 		),
 		k: action("EditorK", &[ActionBindingDescription::new("Keyboard.K")], Types::Boolean),
+		a: action("EditorA", &[ActionBindingDescription::new("Keyboard.A")], Types::Boolean),
 		s: action("EditorS", &[ActionBindingDescription::new("Keyboard.S")], Types::Boolean),
 		up: action("EditorUp", &[ActionBindingDescription::new("Keyboard.Up")], Types::Boolean),
 		down: action(

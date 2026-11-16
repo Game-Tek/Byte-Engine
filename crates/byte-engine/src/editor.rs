@@ -8,10 +8,11 @@
 //! F5 opens and closes it. While it's open, it frees the cursor and takes all of the game's input. Clicking the game
 //! view selects what it shows, and the gizmo, drawn in its own render pass, moves, turns, or scales the selection, by
 //! the tool the toolbar picks.
-//! Cmd+K opens the command palette, which finds a mesh or a prefab to drag into the scene, or to pin to the pointer
-//! with Enter until a click places it, or a material graph to edit on a node canvas; while a graph is open, it finds a
-//! node kind to add to it. A prefab spawns where it's placed, with its parameters' defaults, through the spawner the
-//! game gave the inspector, so it knows the game's own kinds.
+//! The command palette opens, as VS Code's does, on a scope picked by its shortcut: Cmd+A on what can be placed, a
+//! mesh, prefab, or light to drag into the scene or pin to the pointer with Enter until a click places it, and Cmd+K
+//! on that and the material graphs to edit on a node canvas. While a graph is open, either finds a node kind to add to
+//! it. A prefab spawns where it's placed, with its parameters' defaults, through the spawner the game gave the
+//! inspector, so it knows the game's own kinds.
 //!
 //! While it's open, the warnings and errors the game logs show as toasts in the bottom-right corner.
 //!
@@ -325,17 +326,23 @@ impl Editor {
 		}
 	}
 
-	/// Answers a pressed key: Cmd+K opens or closes the palette, Cmd+S saves the open material graph, the arrows move
-	/// the palette's highlight, Enter pins the highlighted mesh to the pointer, and Escape cancels a carried mesh or
-	/// closes the palette or the graph.
+	/// Answers a pressed key: Cmd+K opens the palette on everything and Cmd+A on what can be placed, Cmd+S saves the
+	/// open material graph, the arrows move the palette's highlight, Enter chooses the highlighted entry, and Escape
+	/// cancels a carried load or closes the palette or the graph.
 	fn key(&mut self, app: &GraphicsApplication, key: crate::input::ActionHandle) {
 		let open = self.engine.ctx_mut().palette.open;
-		if key == self.actions.k && self.meta && self.carry.is_none() {
-			if open {
-				self.engine.ctx_mut().palette.close();
-			} else {
-				self.open_palette(app);
-			}
+		let scope = if key == self.actions.k {
+			Some(palette::Scope::All)
+		} else if key == self.actions.a {
+			Some(palette::Scope::Place)
+		} else {
+			None
+		};
+		if let Some(scope) = scope
+			&& self.meta
+			&& self.carry.is_none()
+		{
+			self.toggle_palette(app, scope);
 		} else if key == self.actions.s && self.meta {
 			let shell = self.engine.ctx_mut();
 			shell.save_graph = shell.graph.is_some();
@@ -345,9 +352,9 @@ impl Editor {
 			self.engine.ctx_mut().palette.move_highlight(1);
 		} else if key == self.actions.enter && open {
 			let palette = &mut self.engine.ctx_mut().palette;
-			if let Some(resource) = palette.highlighted().map(str::to_string) {
+			if let Some(entry) = palette.highlighted().cloned() {
 				palette.close();
-				self.choose(app, &resource, false);
+				self.choose(app, &entry, false);
 			}
 		} else if key == self.actions.escape {
 			let shell = self.engine.ctx_mut();
@@ -361,39 +368,18 @@ impl Editor {
 		}
 	}
 
-	/// Opens the palette over the game's mesh resources and material graphs, as the inspector lists them: the stored
-	/// meshes, and the `.bemx` sources a development build can open. While a graph is open, it lists the node kinds
-	/// to add to it instead.
-	fn open_palette(&mut self, app: &GraphicsApplication) {
-		self.palette_press = None;
-		if self.engine.ctx_mut().graph.is_some() {
-			let kinds = resource_management::bemx::kinds::KINDS
-				.iter()
-				.map(|kind| kind.name.to_string())
-				.collect();
-			self.engine.ctx_mut().palette.open(kinds);
+	/// Opens the palette on `scope`, closes it when it's already open on `scope`, or switches it to `scope`, as VS
+	/// Code's shortcuts do. While a material graph is open, every scope is its node kinds.
+	fn toggle_palette(&mut self, app: &GraphicsApplication, scope: palette::Scope) {
+		let shell = self.engine.ctx_mut();
+		let scope = if shell.graph.is_some() { palette::Scope::Nodes } else { scope };
+		if shell.palette.open && shell.palette.scope == scope {
+			shell.palette.close();
 			return;
 		}
-		let mut resources = app.inspector().resources("Mesh").unwrap_or_else(|error| {
-			log::warn!("The palette couldn't list the game's meshes. {error}");
-			Vec::new()
-		});
-		// A development build bakes a prefab from its source when it spawns, so its sources are what can spawn: the
-		// store may still hold prefabs whose sources were deleted, and lacks those not baked yet. A build without
-		// sources spawns what the store holds.
-		match app
-			.inspector()
-			.source_assets("prefab")
-			.or_else(|_| app.inspector().resources("Prefab"))
-		{
-			Ok(prefabs) => resources.extend(prefabs),
-			Err(error) => log::warn!("The palette couldn't list the game's prefabs. {error}"),
-		}
-		match app.inspector().source_assets("bemx") {
-			Ok(graphs) => resources.extend(graphs),
-			Err(error) => log::warn!("The palette couldn't list the game's material graphs. {error}"),
-		}
-		self.engine.ctx_mut().palette.open(resources);
+		self.palette_press = None;
+		let entries = palette_entries(app, scope);
+		self.engine.ctx_mut().palette.open(scope, entries);
 	}
 
 	/// Routes the pointer's press, motion, and release to a carried mesh or the open palette, and returns whether they
@@ -419,7 +405,7 @@ impl Editor {
 		let viewport = shell.viewport;
 		let pixel = [(pointer.x + 1.0) * 0.5 * viewport.x(), (1.0 - pointer.y) * 0.5 * viewport.y()];
 		let rows = shell.palette.results.len();
-		let resource_at = |row: usize| shell.palette.results.get(row).cloned();
+		let entry_at = |row: usize| shell.palette.results.get(row).cloned();
 		match phase {
 			ActionPhase::Started => {
 				if !palette::contains(viewport, rows, pixel) {
@@ -431,24 +417,24 @@ impl Editor {
 			ActionPhase::Updated => {
 				if let Some(row) = self.palette_press
 					&& !palette::contains(viewport, rows, pixel)
-					&& let Some(resource) = resource_at(row)
+					&& let Some(entry) = entry_at(row)
 				{
 					self.palette_press = None;
-					// Only meshes and prefabs can be dragged into the scene; a material graph opens, and a node kind is
+					// Only what's placed can be dragged into the scene; a material graph opens, and a node kind is
 					// added, when its row is clicked.
-					if !graph::is_graph(&resource) && shell.graph.is_none() {
+					if entry.kind.places() {
 						shell.palette.close();
-						self.spawn_carry(app, &resource, true);
+						self.spawn_carry(app, &entry, true);
 					}
 				}
 			}
 			ActionPhase::Ended => {
 				if let Some(row) = self.palette_press.take()
 					&& palette::row_at(viewport, rows, pixel) == Some(row)
-					&& let Some(resource) = resource_at(row)
+					&& let Some(entry) = entry_at(row)
 				{
 					shell.palette.close();
-					self.choose(app, &resource, false);
+					self.choose(app, &entry, false);
 				}
 			}
 			ActionPhase::Cancelled => self.palette_press = None,
@@ -462,23 +448,29 @@ impl Editor {
 		Some(view.ray([self.pointer.x, self.pointer.y]))
 	}
 
-	/// Acts on the palette result `resource`: adds a node of that kind to the open graph, opens a material graph on
-	/// the canvas, or carries a mesh or prefab, `held` when dragged out of the palette.
-	fn choose(&mut self, app: &GraphicsApplication, resource: &str, held: bool) {
-		if let Some(graph) = self.engine.ctx_mut().graph.as_mut() {
-			if let Some(kind) = resource_management::bemx::kinds::kind(resource) {
-				graph.add(kind);
+	/// Acts on the palette's `entry`: adds a node of its kind to the open graph, opens a material graph on the canvas,
+	/// or carries what it places, `held` when dragged out of the palette.
+	fn choose(&mut self, app: &GraphicsApplication, entry: &palette::Entry, held: bool) {
+		let id = entry.label.as_str();
+		match entry.kind {
+			palette::Kind::Node => {
+				if let Some(graph) = self.engine.ctx_mut().graph.as_mut()
+					&& let Some(kind) = resource_management::bemx::kinds::kind(id)
+				{
+					graph.add(kind);
+				}
+				return;
 			}
-			return;
-		}
-		if !graph::is_graph(resource) {
-			self.spawn_carry(app, resource, held);
-			return;
+			palette::Kind::Graph => {}
+			_ => {
+				self.spawn_carry(app, entry, held);
+				return;
+			}
 		}
 		let opened = app
 			.inspector()
-			.read_source_asset(resource)
-			.and_then(|text| graph::Graph::open(resource, &text));
+			.read_source_asset(id)
+			.and_then(|text| graph::Graph::open(id, &text));
 		match opened {
 			Ok(graph) => {
 				let shell = self.engine.ctx_mut();
@@ -489,18 +481,27 @@ impl Editor {
 		}
 	}
 
-	/// Carries `resource` from the ground under the pointer: `held` when dragged out of the palette, pinned otherwise.
-	/// A mesh spawns now, to follow the pointer; a prefab spawns where it's placed.
-	fn spawn_carry(&mut self, app: &GraphicsApplication, resource: &str, held: bool) {
+	/// Carries what `entry` places from the ground under the pointer: `held` when dragged out of the palette, pinned
+	/// otherwise. A mesh or light spawns now, to follow the pointer; a prefab spawns where it's placed.
+	fn spawn_carry(&mut self, app: &GraphicsApplication, entry: &palette::Entry, held: bool) {
 		let position = self.pointer_ray().and_then(carry::ground_point).unwrap_or(Point::origin());
-		if carry::is_prefab(resource) {
-			self.carry = Some(carry::Carry::prefab(resource, position, held));
-			return;
-		}
-		let source = carry::level_source(palette::entity_name(resource), resource, position);
+		let (light, kind, settings) = match entry.kind {
+			palette::Kind::Prefab => {
+				self.carry = Some(carry::Carry::prefab(&entry.label, position, held));
+				return;
+			}
+			palette::Kind::Light(light) => {
+				let settings = serde_json::from_str(light.settings).expect(
+					"A light's settings failed to parse. The most likely cause is a typo in the editor's light presets. Check `carry::LIGHTS`.",
+				);
+				(Some(light), light.kind, settings)
+			}
+			_ => (None, "mesh", serde_json::json!({ "resource": entry.label })),
+		};
+		let source = carry::level_source(entry.name(), &carry::placed(position, light), kind, settings);
 		match app.inspector().spawn_level(&source) {
-			Ok(root) => self.carry = Some(carry::Carry::mesh(root, position, held)),
-			Err(error) => log::warn!("The editor couldn't place '{resource}'. {error}"),
+			Ok(root) => self.carry = Some(carry::Carry::spawned(root, position, light, held)),
+			Err(error) => log::warn!("The editor couldn't place '{}'. {error}", entry.label),
 		}
 	}
 
@@ -534,11 +535,11 @@ impl Editor {
 			&& position != carry.position
 		{
 			carry.position = position;
-			// A prefab spawns only where it's placed, so only a mesh moves along.
-			let carry::Load::Mesh { entity, .. } = carry.load else {
+			// A prefab spawns only where it's placed, so only a spawned mesh or light moves along.
+			let carry::Load::Spawned { entity, .. } = carry.load else {
 				return;
 			};
-			let transform = Transform::from_position(position);
+			let transform = carry::placed(position, carry.light);
 			let payload = serde_json::to_string(&InspectedValue::Transform(&transform)).expect(
 				"Transform failed to serialize. The most likely cause is a non-finite component. Check the pointer's ray.",
 			);
@@ -614,7 +615,7 @@ impl Editor {
 			return;
 		};
 		let entity = match carry.load {
-			carry::Load::Mesh { entity, .. } => entity,
+			carry::Load::Spawned { entity, .. } => entity,
 			carry::Load::Prefab(id) => match app.inspector().spawn_resource(&id, Transform::from_position(carry.position)) {
 				Ok(root) => level_entity_handle_from_root(root, 0),
 				Err(error) => {
@@ -644,7 +645,7 @@ impl Editor {
 	/// Removes the carried mesh from the scene. A carried prefab hasn't spawned, so it only stops being carried.
 	fn cancel_carry(&mut self, app: &GraphicsApplication) {
 		if let Some(carry) = self.carry.take()
-			&& let carry::Load::Mesh { root, .. } = carry.load
+			&& let carry::Load::Spawned { root, .. } = carry.load
 			&& let Err(error) = app.inspector().post_message(DELETE_MESSAGE_TYPE, root, "null")
 		{
 			log::warn!(
@@ -776,4 +777,45 @@ impl Editor {
 			shell.scene_revision += 1;
 		}
 	}
+}
+
+/// Gathers what the palette's `scope` finds: the node kinds for a graph; otherwise the stored meshes, the prefabs,
+/// and every kind of light, and for everything, also the `.bemx` sources a development build can open.
+fn palette_entries(app: &GraphicsApplication, scope: palette::Scope) -> Vec<palette::Entry> {
+	use palette::{Entry, Kind, Scope};
+	if scope == Scope::Nodes {
+		return resource_management::bemx::kinds::KINDS
+			.iter()
+			.map(|kind| Entry::new(kind.name, Kind::Node))
+			.collect();
+	}
+	let mut entries: Vec<Entry> = app
+		.inspector()
+		.resources("Mesh")
+		.unwrap_or_else(|error| {
+			log::warn!("The palette couldn't list the game's meshes. {error}");
+			Vec::new()
+		})
+		.into_iter()
+		.map(|id| Entry::new(id, Kind::Mesh))
+		.collect();
+	// A development build bakes a prefab from its source when it spawns, so its sources are what can spawn: the
+	// store may still hold prefabs whose sources were deleted, and lacks those not baked yet. A build without
+	// sources spawns what the store holds.
+	match app
+		.inspector()
+		.source_assets("prefab")
+		.or_else(|_| app.inspector().resources("Prefab"))
+	{
+		Ok(prefabs) => entries.extend(prefabs.into_iter().map(|id| Entry::new(id, Kind::Prefab))),
+		Err(error) => log::warn!("The palette couldn't list the game's prefabs. {error}"),
+	}
+	entries.extend(carry::LIGHTS.iter().map(|light| Entry::new(light.name, Kind::Light(light))));
+	if scope == Scope::All {
+		match app.inspector().source_assets("bemx") {
+			Ok(graphs) => entries.extend(graphs.into_iter().map(|id| Entry::new(id, Kind::Graph))),
+			Err(error) => log::warn!("The palette couldn't list the game's material graphs. {error}"),
+		}
+	}
+	entries
 }

@@ -339,12 +339,6 @@ async fn palette_view(ctx: &mut EvaluationContext<Shell>) {
 
 /// Declares the open palette's panel and keeps it current until the palette closes, then returns it for removal.
 async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
-	// While a graph is open, the palette lists node kinds to add to it.
-	let prompt = if ctx.with(|shell: &mut Shell| shell.graph.is_some()).await {
-		"Find a node to add"
-	} else {
-		"Find a mesh or prefab to place, or a material to edit"
-	};
 	let width = palette::WIDTH - palette::INSET * 2.0;
 	let height = palette::height(0);
 	let mut frame = ctx
@@ -387,7 +381,8 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 		.await;
 	let mut hint = well
 		.element("hint")
-		.text(prompt, |t| t.font_size(14.0).style([solid(MUTED)]))
+		// The scope's prompt fills in with the first results.
+		.text("", |t| t.font_size(14.0).style([solid(MUTED)]))
 		.await;
 	input.request_focus().await;
 
@@ -402,10 +397,16 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 		}
 		if shown != Some(revision) {
 			shown = Some(revision);
-			let (results, highlight, search) = ctx
+			// A shortcut can switch the open palette to another scope, which says what it finds.
+			let (results, highlight, search, prompt) = ctx
 				.with(|shell: &mut Shell| {
 					let palette = &shell.palette;
-					(palette.results.clone(), palette.highlight, palette.search.clone())
+					(
+						palette.results.clone(),
+						palette.highlight,
+						palette.search.clone(),
+						palette.scope.prompt(),
+					)
 				})
 				.await;
 			// The panel grows with its results, so the rows are declared again under a resized panel.
@@ -426,8 +427,8 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 				.element("rows")
 				.container(|c| c.width(width.into()).flow(flow::column))
 				.await;
-			for (index, resource) in results.iter().enumerate() {
-				palette_row(&mut list, index, resource, index == highlight, width).await;
+			for (index, entry) in results.iter().enumerate() {
+				palette_row(&mut list, index, entry, index == highlight, width).await;
 			}
 			rows = Some(list);
 		}
@@ -444,8 +445,15 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 	}
 }
 
-/// One mesh in the palette: its file name over its full resource ID, lit when highlighted.
-async fn palette_row(parent: &mut EvaluationContext<Shell>, index: usize, resource: &str, highlighted: bool, width: f32) {
+/// One palette entry: an icon tinted by what it is, its name, and its full ID when the name shortens it, lit when
+/// highlighted.
+async fn palette_row(
+	parent: &mut EvaluationContext<Shell>,
+	index: usize,
+	entry: &palette::Entry,
+	highlighted: bool,
+	width: f32,
+) {
 	let mut row = parent
 		.element(format_args!("{index}"))
 		.container(|c| {
@@ -459,23 +467,35 @@ async fn palette_row(parent: &mut EvaluationContext<Shell>, index: usize, resour
 		})
 		.await;
 	row.element("lead").container(|c| c.width(2.into()).height(1.into())).await;
+	let [top, bottom] = kind_tint(entry.kind);
 	row.element("icon")
 		.container(|c| {
 			c.width(12.into())
 				.height(12.into())
 				.corner_radius(3.0)
 				.corner_exponent(SQUIRCLE)
-				.style(icon())
+				.style(tinted_icon(top, bottom))
 		})
 		.await;
 	row.element("name")
-		.text(palette::entity_name(resource), |t| t.font_size(13.0).style([solid(TEXT)]))
+		.text(entry.name(), |t| t.font_size(13.0).style([solid(TEXT)]))
 		.await;
-	// A node kind's name is its whole ID, so it shows once.
-	if palette::entity_name(resource) != resource {
+	if entry.name() != entry.label {
 		row.element("id")
-			.text(resource, |t| t.font_size(11.5).style([solid(MUTED)]))
+			.text(&entry.label, |t| t.font_size(11.5).style([solid(MUTED)]))
 			.await;
+	}
+}
+
+/// The gradient a palette entry's icon takes, so each kind reads at a glance: indigo meshes, green prefabs, amber
+/// lights, pink materials, and gray nodes.
+fn kind_tint(kind: palette::Kind) -> [RGBA; 2] {
+	match kind {
+		palette::Kind::Mesh => [hex(0x8A93F0, 1.0), ACCENT],
+		palette::Kind::Prefab => [hex(0x6FE08E, 1.0), hex(0x2FB457, 1.0)],
+		palette::Kind::Light(_) => [hex(0xFFD27A, 1.0), hex(0xF5A524, 1.0)],
+		palette::Kind::Graph => [hex(0xF29BD4, 1.0), hex(0xD9539F, 1.0)],
+		palette::Kind::Node => [hex(0xB9BCC4, 1.0), hex(0x6E737C, 1.0)],
 	}
 }
 
@@ -1198,8 +1218,13 @@ fn row_style(selected: bool, hovered: bool) -> [ConcreteLayer; 3] {
 
 /// A small raised tile in the accent color that marks a row as an entity.
 fn icon() -> [ConcreteLayer; 3] {
+	tinted_icon(hex(0x8A93F0, 1.0), ACCENT)
+}
+
+/// A small raised tile lit from `top` to `bottom`.
+fn tinted_icon(top: RGBA, bottom: RGBA) -> [ConcreteLayer; 3] {
 	[
-		ConcreteLayer::default().color(vertical(12.0, hex(0x8A93F0, 1.0), ACCENT)),
+		ConcreteLayer::default().color(vertical(12.0, top, bottom)),
 		top_highlight(0.25),
 		hairline(0.45),
 	]

@@ -50,9 +50,14 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
 3. Pick Move, Rotate, or Scale in the toolbar, then drag a handle of the gizmo. To set a value exactly, drag a
    property field sideways, or click it and type the value.
 
-4. Press Cmd+K to open the command palette, type part of a mesh's or a prefab's name, and drag the result into the
-   scene. Press Enter instead to carry it with the pointer until you click where it goes. A mesh follows the pointer;
-   a prefab appears where you place it, with its parameters' defaults.
+4. Press Cmd+A to open the palette on what you can place: your meshes, your prefabs, and a point, cone, or
+   directional light. Type part of a name and drag the result into the scene, or press Enter to carry it with the
+   pointer until you click where it goes. A mesh or light follows the pointer; a prefab appears where you place it,
+   with its parameters' defaults. A light starts a little above the surface you place it on, a cone or directional
+   light facing down; select it to move or turn it.
+
+   Press Cmd+K instead to search everything, material graphs included. Press the shortcut again to close the palette,
+   or the other one to switch to it.
 
    Prefabs spawn through the spawner you give the inspector, so their components can use your own kinds. Give it
    the spawner you register your kinds with, after you register them:
@@ -65,8 +70,8 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
 
    See [Spawn reusable objects with prefabs](/docs/use/prefabs) to write one.
 
-5. To change a material, find its graph in the palette and open it. Drag between sockets to connect nodes, press Cmd+K
-   to add one, and press Cmd+S to save the graph; your application reloads the material.
+5. To change a material, find its graph with Cmd+K and open it. Drag between sockets to connect nodes, press Cmd+A to
+   add one, and press Cmd+S to save the graph; your application reloads the material.
 
 ## See warnings and errors
 

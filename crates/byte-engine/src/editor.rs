@@ -525,7 +525,10 @@ impl Editor {
 		if let Some(Layer::Palette(palette)) = layers.pop()
 			&& let palette::Scope::Folders(what) = &palette.scope
 		{
-			create::create(app, &entry.label, what);
+			// A new material opens its graph on the canvas, to build its surface.
+			if let Some(graph) = create::create(app, &entry.label, what) {
+				self.choose(app, &palette::Entry::new(graph, palette::Kind::Graph), false);
+			}
 			return;
 		}
 		self.choose(app, entry, false);

@@ -9,13 +9,14 @@ use super::palette::{self, Create};
 use crate::application::graphics::GraphicsApplication;
 
 /// Writes what `what` names into `folder`, as `/` or a folder ID such as `levels/`, under the first name no source
-/// there has: `untitled.level`, `untitled.bema` with its graph `untitled.bemx`, or `<material> variant.bema`.
-pub(super) fn create(app: &GraphicsApplication, folder: &str, what: &Create) {
+/// there has: `untitled.level`, `untitled.bema` with its graph `untitled.bemx`, or `<material> variant.bema`. Returns
+/// the ID of a new material's graph, which is what's edited next.
+pub(super) fn create(app: &GraphicsApplication, folder: &str, what: &Create) -> Option<String> {
 	let inspector = app.inspector();
 	let created = match what {
 		Create::Level => inspector.source_assets("level").and_then(|levels| {
 			let id = format!("{}.level", free_stem(folder, "untitled", |stem| has(&levels, stem, "level")));
-			inspector.write_source_asset(&id, EMPTY_LEVEL).map(|()| id)
+			inspector.write_source_asset(&id, EMPTY_LEVEL).map(|()| (id, None))
 		}),
 		Create::Material => inspector.source_assets("bema").and_then(|materials| {
 			let graphs = inspector.source_assets("bemx")?;
@@ -24,18 +25,24 @@ pub(super) fn create(app: &GraphicsApplication, folder: &str, what: &Create) {
 			let (id, graph) = (format!("{stem}.bema"), format!("{stem}.bemx"));
 			// The graph goes first, so the material's bake finds it.
 			inspector.write_source_asset(&graph, EMPTY_GRAPH)?;
-			inspector.write_source_asset(&id, &material_source(&graph)).map(|()| id)
+			inspector.write_source_asset(&id, &material_source(&graph)).map(|()| (id, Some(graph)))
 		}),
 		Create::Variant(parent) => inspector.source_assets("bema").and_then(|materials| {
 			let source = variant_source(parent, &read_material(app, parent)?)?;
 			let base = format!("{} variant", palette::entity_name(parent));
 			let id = format!("{}.bema", free_stem(folder, &base, |stem| has(&materials, stem, "bema")));
-			inspector.write_source_asset(&id, &source).map(|()| id)
+			inspector.write_source_asset(&id, &source).map(|()| (id, None))
 		}),
 	};
 	match created {
-		Ok(id) => log::info!("The editor created '{id}'."),
-		Err(error) => log::warn!("The editor couldn't create the asset. {error}"),
+		Ok((id, graph)) => {
+			log::info!("The editor created '{id}'.");
+			graph
+		}
+		Err(error) => {
+			log::warn!("The editor couldn't create the asset. {error}");
+			None
+		}
 	}
 }
 

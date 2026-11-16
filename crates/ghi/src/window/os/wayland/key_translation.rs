@@ -76,6 +76,8 @@ pub(super) fn keysym_to_key(keysym: xkb::Keysym) -> Option<Keys> {
 		keysyms::KEY_Control_R => Keys::ControlRight,
 		keysyms::KEY_Alt_L => Keys::AltLeft,
 		keysyms::KEY_Alt_R => Keys::AltRight,
+		keysyms::KEY_Super_L => Keys::MetaLeft,
+		keysyms::KEY_Super_R => Keys::MetaRight,
 		keysyms::KEY_Menu => Keys::Menu,
 		keysyms::KEY_space => Keys::Space,
 		keysyms::KEY_Insert => Keys::Insert,

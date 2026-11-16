@@ -858,6 +858,8 @@ struct ModifierState {
 	control_right: bool,
 	alt_left: bool,
 	alt_right: bool,
+	meta_left: bool,
+	meta_right: bool,
 	caps_lock: bool,
 }
 
@@ -873,6 +875,8 @@ impl ModifierState {
 			Keys::ControlRight => (&mut self.control_right, &mut self.control_left, Flags::Control),
 			Keys::AltLeft => (&mut self.alt_left, &mut self.alt_right, Flags::Option),
 			Keys::AltRight => (&mut self.alt_right, &mut self.alt_left, Flags::Option),
+			Keys::MetaLeft => (&mut self.meta_left, &mut self.meta_right, Flags::Command),
+			Keys::MetaRight => (&mut self.meta_right, &mut self.meta_left, Flags::Command),
 			Keys::CapsLock => {
 				let pressed = flags.contains(Flags::CapsLock);
 				return (std::mem::replace(&mut self.caps_lock, pressed) != pressed).then_some(pressed);
@@ -902,6 +906,8 @@ fn modifier_keycode_to_key(code: u16) -> Option<Keys> {
 		62 => Some(Keys::ControlRight),
 		58 => Some(Keys::AltLeft),
 		61 => Some(Keys::AltRight),
+		55 => Some(Keys::MetaLeft),
+		54 => Some(Keys::MetaRight),
 		57 => Some(Keys::CapsLock),
 		_ => None,
 	}

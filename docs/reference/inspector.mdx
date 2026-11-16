@@ -97,6 +97,29 @@ Without a name word, the found entities are in handle order. With one, the
 best match comes first, and equal matches stay in handle order. An empty search
 keeps every entity.
 
+### Spawning levels
+
+A spawn takes a level's source, the same JSON a `.level` file holds, and spawns
+it into the running application, as spawning a baked level does; see
+[Levels](/docs/reference/levels). Use it to add entities while the application
+runs, such as a mesh an editor drops into the scene.
+
+| Rule | Behavior |
+| --- | --- |
+| Spawner | The application's: a level spawns only once the application gave the inspector its spawner, and only kinds that spawner knows spawn. Without one, every spawn fails. |
+| Source | Checked as [baking](/docs/reference/levels#baking) checks a level file, except that a level that names a mesh to [merge](/docs/reference/levels#merged-placements) isn't merged. |
+| Answer | The level's root. Its entities take the handles that follow, one each, in the order baking stores them: parents first, otherwise in the source's order. |
+| Failure | A source that doesn't bake, or an entity whose component doesn't fit its kind, spawns nothing and answers with the cause. |
+| Unload | Deleting the root deletes every entity the spawn added. |
+
+## Resources
+
+The resource query lists the ID of every stored resource of one class, such as
+`Mesh`, in ID order. Classes are named as the
+[resource store](/docs/reference/resource-store#resource-classes) names them,
+and matched exactly. It reads the store, so a development build lists only the
+resources it already baked. A class no resource has lists nothing.
+
 ## Configuration
 
 The configuration route lists every runtime setting update with its parameter,

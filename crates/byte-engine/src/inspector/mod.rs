@@ -31,6 +31,7 @@ use crate::{
 #[cfg(feature = "headed")]
 pub mod console;
 #[cfg_attr(not(feature = "headed"), allow(dead_code))]
+mod content;
 mod events;
 #[cfg_attr(not(feature = "headed"), allow(unused_imports))]
 pub(crate) use events::{EventBatch, EventCursor, EventFilter, EventSignal, EventWaitError, MAX_EVENT_WAIT};
@@ -48,12 +49,12 @@ pub(crate) mod screenshot;
 #[cfg(feature = "headed")]
 mod search;
 #[cfg(feature = "headed")]
-pub use search::find_entities;
-#[cfg(feature = "headed")]
 pub use screenshot::{
 	MAX_SCREENSHOT_CAPTURES, ScreenshotCapture, ScreenshotError, ScreenshotFormat, ScreenshotResponse, ScreenshotSelection,
 	ScreenshotSubmitError, Screenshots,
 };
+#[cfg(feature = "headed")]
+pub use search::{find_entities, fuzzy_find};
 mod shape;
 // Only the graphics application opens stream output and adopts requests; headless builds leave that side unused.
 #[cfg_attr(not(feature = "headed"), allow(dead_code, unused_imports))]
@@ -203,6 +204,12 @@ pub struct DefaultInspector {
 	event_signal: Arc<EventSignal>,
 	/// The latest record of each debug data stream, which the console shows.
 	streams: Arc<RetainedStreams>,
+	/// The world levels spawn into.
+	world: MessageScope,
+	/// The application's spawner, once it gave it; see [`Self::set_spawner`].
+	spawner: Mutex<Option<Arc<crate::gameplay::Spawner>>>,
+	/// The application's resource manager, once it gave it; see [`Self::set_resource_manager`].
+	resource_manager: std::sync::OnceLock<crate::core::EntityHandle<resource_management::ResourceManager>>,
 }
 
 impl DefaultInspector {
@@ -243,6 +250,9 @@ impl DefaultInspector {
 			metrics,
 			event_signal: Arc::new(EventSignal::new()),
 			streams: Arc::default(),
+			world: messages,
+			spawner: Mutex::new(None),
+			resource_manager: std::sync::OnceLock::new(),
 		}
 	}
 

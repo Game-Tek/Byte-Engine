@@ -115,6 +115,132 @@
 				}
 			}
 		},
+		"/levels": {
+			"post": {
+				"operationId": "spawnLevel",
+				"summary": "Spawn a level",
+				"description": "Spawns a level from its source, the same JSON a `.level` file holds, through the application's spawner, and answers with the level's root handle. The level's entities take the handles that follow the root, one each, parents first and otherwise in the source's order. Delete the root with a `Delete` message to remove them all. A source that doesn't bake, or a component that doesn't fit its kind, spawns nothing.",
+				"tags": ["Control"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"description": "A level's source, as a `.level` file holds it.",
+								"required": ["entities"],
+								"properties": {
+									"entities": {
+										"type": "array",
+										"items": {
+											"type": "object"
+										}
+									}
+								}
+							},
+							"example": {
+								"entities": [
+									{
+										"components": {
+											"name": "crate",
+											"transform": {
+												"position": [0.0, 0.0, 2.0]
+											},
+											"mesh": {
+												"resource": "crate.glb"
+											}
+										}
+									}
+								]
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The level spawned.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"required": ["root"],
+									"properties": {
+										"root": {
+											"type": "integer",
+											"minimum": 1,
+											"description": "The level's root handle. The first entity's handle is one more."
+										}
+									}
+								},
+								"example": {
+									"root": 120
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "The source didn't bake, a component didn't fit its kind, or the application gave the inspector no spawner.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/resources": {
+			"get": {
+				"operationId": "listResources",
+				"summary": "List resources",
+				"description": "Returns the ID of every stored resource of one class, such as `Mesh`, in ID order. It reads the resource store, so a development build lists only resources it already baked.",
+				"tags": ["Inspection"],
+				"parameters": [
+					{
+						"name": "class",
+						"in": "query",
+						"required": true,
+						"description": "The resource class, matched exactly, as the resource store names it.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						},
+						"example": "Mesh"
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The IDs, in ID order; empty when no resource has the class.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "array",
+									"items": {
+										"type": "string"
+									}
+								},
+								"example": ["MotusMan/MotusMan_v55.fbx", "crate.glb"]
+							}
+						}
+					},
+					"400": {
+						"$ref": "#/components/responses/BadRequest"
+					},
+					"503": {
+						"description": "The application has no resource manager, or the store couldn't be read.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/messages": {
 			"get": {
 				"operationId": "drainMessages",

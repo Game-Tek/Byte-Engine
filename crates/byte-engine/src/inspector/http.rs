@@ -198,6 +198,8 @@ fn handle_request(inspector: &DefaultInspector, waker: &LoopWaker, request: &mut
 		(&Method::GET, "/metrics") => metrics_response(inspector, request.uri().query()),
 		(&Method::GET, "/metrics/frames") => metrics_frames_response(inspector, request.uri().query()),
 		(&Method::GET, "/entities") => entities_response(inspector, request.uri().query()),
+		(&Method::POST, "/levels") => level_response(inspector, request.body_mut()),
+		(&Method::GET, "/resources") => resources_response(inspector, request.uri().query()),
 		(&Method::GET, "/events") => events_response(inspector, request.uri().query()),
 		(&Method::DELETE, "/") => {
 			inspector.close_application();
@@ -219,6 +221,37 @@ fn entities_response(inspector: &DefaultInspector, query: Option<&str>) -> Respo
 		}
 	};
 	json_response(&inspector.entities(query.entity_type.as_deref(), query.name.as_deref()))
+}
+
+/// Spawns the level whose source is the request body and answers with its root.
+fn level_response(inspector: &DefaultInspector, body: &mut Body) -> Response<Body> {
+	let mut source = String::new();
+	if let Err(error) = std::io::Read::read_to_string(body, &mut source) {
+		return response(
+			StatusCode::BAD_REQUEST,
+			format!(
+				"Level request is invalid. The most likely cause is a body that isn't UTF-8 text: {error}. Send the level's source as UTF-8 JSON."
+			),
+		);
+	}
+	match inspector.spawn_level(&source) {
+		Ok(root) => json_response(&serde_json::json!({ "root": root.id() })),
+		Err(error) => response(StatusCode::BAD_REQUEST, error),
+	}
+}
+
+/// Lists the IDs of the stored resources of the class the query names.
+fn resources_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
+	let Some([Some(class)]) = query.map(|query| parse_query(query, [&["class"]])).and_then(Result::ok) else {
+		return response(
+			StatusCode::BAD_REQUEST,
+			"Resource query is malformed. The most likely cause is a missing, empty, duplicate, or unknown parameter. Send exactly one `class`, such as `class=Mesh`.",
+		);
+	};
+	match inspector.resources(&class) {
+		Ok(ids) => json_response(&ids),
+		Err(error) => response(StatusCode::SERVICE_UNAVAILABLE, error),
+	}
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -1536,6 +1569,43 @@ mod tests {
 				"{query}: unexpected response: {response:?}"
 			);
 		}
+	}
+
+	#[test]
+	fn server_spawns_levels_and_answers_with_their_root() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		inspector.set_spawner(Arc::new(crate::gameplay::Spawner::with_engine_kinds()));
+		let server = TestServer::new(inspector.clone());
+
+		let response = server.request("POST", "/levels", r#"{"entities":[{"components":{"name":"crate"}}]}"#);
+		assert!(response.starts_with(b"HTTP/1.1 200"), "unexpected response: {response:?}");
+		let root: serde_json::Value = serde_json::from_slice(response_body(&response)).expect("parse the spawn answer");
+		let root = root["root"].as_u64().expect("the root handle") as u32;
+		let spawned = inspector.entities(None, Some("crate"));
+		assert_eq!(spawned.first().map(|entity| entity.handle()), Some(Handle::from_id(root + 1)));
+
+		let response = server.request("POST", "/levels", r#"{"entities":[{"parent":"missing"}]}"#);
+		assert!(response.starts_with(b"HTTP/1.1 400"), "unexpected response: {response:?}");
+	}
+
+	#[test]
+	fn resource_queries_need_exactly_one_class() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let server = TestServer::new(inspector);
+		for path in [
+			"/resources",
+			"/resources?class=",
+			"/resources?class=Mesh&class=Image",
+			"/resources?kind=Mesh",
+		] {
+			assert!(server.request("GET", path, "").starts_with(b"HTTP/1.1 400"), "{path}");
+		}
+		// Without a resource manager, a well-formed query can't be answered.
+		assert!(
+			server
+				.request("GET", "/resources?class=Mesh", "")
+				.starts_with(b"HTTP/1.1 503")
+		);
 	}
 
 	#[test]

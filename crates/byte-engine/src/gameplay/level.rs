@@ -51,6 +51,14 @@ pub fn level_entity_handle(known: Handle, known_index: u32, entity: u32) -> Hand
 	Handle::from_id(known.id() - known_index + entity)
 }
 
+/// Returns the handle a spawn gave entity `entity` of its level, from the level's root, the handle the spawn returned.
+///
+/// The root comes first in the spawn's run of handles, so entity `entity` is `entity + 1` handles after it. Use it to
+/// reach an entity of a level you just spawned, such as to move or select it.
+pub fn level_entity_handle_from_root(root: Handle, entity: u32) -> Handle {
+	Handle::from_id(root.id() + 1 + entity)
+}
+
 /// The `EntityRef` struct lets a kind's payload name another entity of the same level.
 ///
 /// Use it as a field of a payload type passed to [`Spawner::register_with`], and turn it into the entity's handle

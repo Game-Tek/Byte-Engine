@@ -26,6 +26,12 @@ Each class has triggers:
 Each device class declares its named inputs and the value type that each input
 produces.
 
+`Keyboard.LeftMeta` and `Keyboard.RightMeta` are the keys beside the space bar
+that the system keeps for its own shortcuts: Command on macOS, the Windows key
+on Windows, and Super on Linux. The system may take some combinations with
+them, such as Command and the space bar on macOS, before the application sees
+them.
+
 ## Devices
 
 A device is a concrete instance of a class.

@@ -15,14 +15,8 @@ use super::{InspectedEntity, InspectedValue};
 /// Read the entities with [`DefaultInspector::entities`](super::DefaultInspector::entities) first, then show what this
 /// returns.
 pub fn find_entities<'a>(entities: &'a [InspectedEntity], search: &str) -> Vec<&'a InspectedEntity> {
-	let mut patterns = Vec::new();
-	let mut types = Vec::new();
-	for word in search.split_whitespace() {
-		match word.strip_prefix("type:") {
-			Some(text) => types.push(text),
-			None => patterns.push(Pattern::parse(word)),
-		}
-	}
+	let (types, names): (Vec<&str>, Vec<&str>) = search.split_whitespace().partition(|word| word.starts_with("type:"));
+	let types: Vec<&str> = types.iter().map(|word| &word["type:".len()..]).collect();
 	let mut kept: Vec<&InspectedEntity> = entities
 		.iter()
 		.filter(|entity| {
@@ -32,17 +26,34 @@ pub fn find_entities<'a>(entities: &'a [InspectedEntity], search: &str) -> Vec<&
 		})
 		.collect();
 	kept.sort_unstable_by_key(|entity| entity.handle().id());
-	if patterns.is_empty() {
+	if names.is_empty() {
 		return kept;
 	}
-	let names: Vec<&str> = kept.iter().map(|entity| entity.name()).collect();
-	// The matcher sorts best match first, then by position in `names`, so equal scores stay in handle order.
-	Matcher::from_patterns(&patterns, &Config::default())
-		.match_list(&names)
+	let entity_names: Vec<&str> = kept.iter().map(|entity| entity.name()).collect();
+	fuzzy_find(&entity_names, &names.join(" "))
 		.into_iter()
-		// An entity without a name has nothing to match, so only the negated forms could keep it; none does.
-		.filter(|found| !names[found.index as usize].is_empty())
-		.map(|found| kept[found.index as usize])
+		.map(|index| kept[index])
+		.collect()
+}
+
+/// Returns the indices of the `candidates` that match every word of `search`, best match first, as the name words of
+/// an [entity search](/docs/reference/inspector#entity-search) match names.
+///
+/// Use it to fuzzy-find among names that aren't entities, such as resource IDs, the same way the console finds
+/// entities. Equal matches keep their order in `candidates`, and an empty candidate never matches. An empty search
+/// keeps every non-empty candidate, in order.
+pub fn fuzzy_find(candidates: &[&str], search: &str) -> Vec<usize> {
+	let patterns: Vec<Pattern> = search.split_whitespace().map(Pattern::parse).collect();
+	if patterns.is_empty() {
+		return (0..candidates.len()).filter(|&index| !candidates[index].is_empty()).collect();
+	}
+	// The matcher sorts best match first, then by position in `candidates`.
+	Matcher::from_patterns(&patterns, &Config::default())
+		.match_list(candidates)
+		.into_iter()
+		// An empty candidate has nothing to match, so only the negated forms could keep it; none does.
+		.filter(|found| !candidates[found.index as usize].is_empty())
+		.map(|found| found.index as usize)
 		.collect()
 }
 
@@ -113,6 +124,14 @@ mod tests {
 		assert_eq!(names(&find_entities(&entities, "crate")), ["crate", "shipping crate"]);
 		assert_eq!(names(&find_entities(&entities, "shpcrt")), ["shipping crate"]);
 		assert_eq!(names(&find_entities(&entities, "!crate")), ["barrel"]);
+	}
+
+	#[test]
+	fn fuzzy_find_ranks_any_names_best_first() {
+		let ids = ["meshes/barrel.glb", "props/crate.glb", "crate.glb", ""];
+		assert_eq!(fuzzy_find(&ids, "crate"), [2, 1]);
+		assert_eq!(fuzzy_find(&ids, "brl"), [0]);
+		assert_eq!(fuzzy_find(&ids, ""), [0, 1, 2]);
 	}
 
 	#[test]

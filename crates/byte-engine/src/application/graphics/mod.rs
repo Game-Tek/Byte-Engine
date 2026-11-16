@@ -358,6 +358,8 @@ impl GraphicsApplication {
 		let resource_manager = EntityHandle::from(ResourceManager::new(resource_storage));
 
 		renderer.set_resource_manager(&resource_manager);
+		// The inspector lists stored resources, and it was created before the store finished opening.
+		services.inspector.set_resource_manager(resource_manager.clone());
 		// Every server compiles from the first request on, so no setup function has to start them.
 		let mut threads = SmallVec::new();
 		// The console restores the terminal when it ends, so it is joined on close like every other worker.

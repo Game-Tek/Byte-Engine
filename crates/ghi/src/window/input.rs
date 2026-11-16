@@ -127,6 +127,11 @@ pub enum Keys {
 	AltLeft,
 	/// The alt right key.
 	AltRight,
+	/// The left key the system keeps for its shortcuts: Command on macOS, the Windows key on Windows, and Super on
+	/// Linux.
+	MetaLeft,
+	/// The right key the system keeps for its shortcuts; see [`Self::MetaLeft`].
+	MetaRight,
 	/// The menu key.
 	Menu,
 	/// The spacebar key.

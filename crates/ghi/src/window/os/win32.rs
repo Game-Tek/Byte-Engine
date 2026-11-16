@@ -933,6 +933,9 @@ fn wparam_to_key(wparam: WPARAM) -> Option<Keys> {
 		0x10 => Some(Keys::ShiftLeft),
 		0x11 => Some(Keys::ControlLeft),
 		0x12 => Some(Keys::AltLeft),
+		// VK_LWIN and VK_RWIN, the Windows keys.
+		0x5B => Some(Keys::MetaLeft),
+		0x5C => Some(Keys::MetaRight),
 		_ => None,
 	}
 }

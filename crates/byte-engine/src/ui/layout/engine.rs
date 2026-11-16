@@ -3331,6 +3331,29 @@ mod tests {
 	}
 
 	#[test]
+	fn characters_typed_in_one_frame_all_reach_the_focused_field_in_order() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::with_context(String::new());
+
+		engine.mount(async move |ctx| {
+			let mut field = ctx.element("field").text_field("", |f| f).await;
+			field.request_focus().await;
+			loop {
+				let event = field.on_text_edit().await;
+				ctx.with(move |typed: &mut String| event.edit.apply_to(typed)).await;
+			}
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		for character in "abc".chars() {
+			engine.input_character(character);
+		}
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(engine.ctx(), "abc");
+	}
+
+	#[test]
 	fn focused_text_field_delete_emits_deleted_last_character() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context(None);

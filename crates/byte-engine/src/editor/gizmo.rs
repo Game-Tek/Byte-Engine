@@ -274,14 +274,8 @@ impl Placement {
 		}
 		let quadrant = facing.map(|along| if along > 0.0 { -1.0 } else { 1.0 });
 
-		let (low, high) = match tool {
-			// The plane handles lie inside the arrows' hull, so the hull bounds every shape.
-			Tool::Move | Tool::Scale => tips.into_iter().fold((center, center), |(low, high), tip| {
-				(
-					Vec2f::new(low.x.min(tip.x), low.y.min(tip.y)),
-					Vec2f::new(high.x.max(tip.x), high.y.max(tip.y)),
-				)
-			}),
+		let rect = match tool {
+			Tool::Move | Tool::Scale => handle_bounds(center, tips, quadrant),
 			// A ring `center + u cos t + v sin t` reaches `sqrt(u.x² + v.x²)` either side of the center across, and
 			// likewise down; the view ring reaches its radius.
 			Tool::Rotate => {
@@ -291,7 +285,7 @@ impl Placement {
 					reach.x = reach.x.max((u.x * u.x + v.x * v.x).sqrt());
 					reach.y = reach.y.max((u.y * u.y + v.y * v.y).sqrt());
 				}
-				(center - reach, center + reach)
+				bounds([center - reach, center + reach].into_iter())
 			}
 		};
 		Some(Self {
@@ -308,12 +302,7 @@ impl Placement {
 			visibility,
 			facing,
 			quadrant,
-			rect: [
-				low.x - MARGIN_PIXELS,
-				low.y - MARGIN_PIXELS,
-				high.x + MARGIN_PIXELS,
-				high.y + MARGIN_PIXELS,
-			],
+			rect,
 			extent,
 		})
 	}
@@ -405,6 +394,39 @@ fn ring_basis(axis: usize) -> [usize; 2] {
 /// The ring around `axis` on screen, as the two vectors from its center to where its basis axes cross it, in pixels.
 fn ring_axes(screen_axes: &[Vec2f; 3], axis: usize) -> [Vec2f; 2] {
 	ring_basis(axis).map(|basis| screen_axes[basis] * RING_RADIUS)
+}
+
+/// Returns the pixel rectangle the move and scale gizmos cover, as [`Placement::rect`] holds it: the arrows from
+/// `center` to `tips`, and the plane handles between each pair of arrows.
+///
+/// A plane handle sits on the camera's side of each axis, the sides `quadrant` holds, so it can lie opposite an arrow,
+/// outside the arrows' own hull. Each handle lies within the parallelogram its two arms span from the center.
+fn handle_bounds(center: Vec2f, tips: [Vec2f; 3], quadrant: [f32; 3]) -> [f32; 4] {
+	let reach = PLANE_CENTER + PLANE_HALF;
+	let arms = [0, 1, 2].map(|axis| (tips[axis] - center) * (reach * quadrant[axis]));
+	let corners = [(0, 1), (0, 2), (1, 2)].map(|(first, second)| center + arms[first] + arms[second]);
+	bounds(
+		[center]
+			.into_iter()
+			.chain(tips)
+			.chain(arms.map(|arm| center + arm))
+			.chain(corners),
+	)
+}
+
+/// Returns the pixel rectangle around `points`, widened by [`MARGIN_PIXELS`] for the shapes' widths: left, top, right,
+/// bottom.
+fn bounds(points: impl Iterator<Item = Vec2f>) -> [f32; 4] {
+	let [mut left, mut top, mut right, mut bottom] = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+	for point in points {
+		[left, top, right, bottom] = [left.min(point.x), top.min(point.y), right.max(point.x), bottom.max(point.y)];
+	}
+	[
+		left - MARGIN_PIXELS,
+		top - MARGIN_PIXELS,
+		right + MARGIN_PIXELS,
+		bottom + MARGIN_PIXELS,
+	]
 }
 
 /// Returns the pixel `point` shows in `view`, drawn at `extent`, or `None` behind the camera.
@@ -832,17 +854,13 @@ impl PixelStep for GizmoStep {
 			mut rect,
 			..
 		} = placement;
-		// A scale drag stretches the handles with the scale it applies; the drawing area grows to hold them.
+		// A scale drag stretches the handles, and the plane handles between them, with the scale it applies, so the
+		// drawing area follows them.
 		if let Some(stretch) = state.stretch {
 			for axis in 0..3 {
 				tips[axis] = center + (tips[axis] - center) * stretch[axis];
-				rect = [
-					rect[0].min(tips[axis].x - MARGIN_PIXELS),
-					rect[1].min(tips[axis].y - MARGIN_PIXELS),
-					rect[2].max(tips[axis].x + MARGIN_PIXELS),
-					rect[3].max(tips[axis].y + MARGIN_PIXELS),
-				];
 			}
+			rect = handle_bounds(center, tips, [qx, qy, qz]);
 		}
 		let tip = |axis: usize| [tips[axis].x, tips[axis].y, visibility[axis], 0.0];
 		*frame.map(self.parameters) = Parameters {
@@ -913,6 +931,45 @@ mod tests {
 
 		assert_eq!(placement.pick(at(-handle, handle)), Some(Part::PlaneZ));
 		assert_eq!(placement.pick(at(handle, handle)), None);
+	}
+
+	#[test]
+	fn the_drawn_area_holds_every_part_from_any_side() {
+		// From each corner around the selection, the plane handles sit on the camera's side, opposite some arrows.
+		for x in [-4.0, 4.0] {
+			for y in [-3.0, 3.0] {
+				for z in [-5.0, 5.0] {
+					let (view, extent) = view_from(Point::new(x, y, z));
+					for tool in [Tool::Move, Tool::Scale, Tool::Rotate] {
+						let placement = Placement::new(view, extent, &at(Point::origin()), tool).unwrap();
+						// A part is grabbed up to `GRAB_PIXELS` outside its shape, so its grab area may reach that far
+						// past the drawn area.
+						let [left, top, right, bottom] = placement.rect;
+						let [left, top, right, bottom] = [
+							left - GRAB_PIXELS,
+							top - GRAB_PIXELS,
+							right + GRAB_PIXELS,
+							bottom + GRAB_PIXELS,
+						];
+						// Every fourth pixel finds every part, which are each wider than that.
+						for px in (0..800).step_by(4) {
+							for py in (0..600).step_by(4) {
+								let pixel = [px as f32, py as f32];
+								if let Some(part) = placement.pick(pixel) {
+									let inside = (left..=right).contains(&pixel[0]) && (top..=bottom).contains(&pixel[1]);
+									assert!(
+										inside,
+										"{part:?} at {pixel:?} lies outside {:?} from {:?}",
+										placement.rect,
+										(x, y, z)
+									);
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 
 	#[test]

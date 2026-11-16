@@ -1,0 +1,350 @@
+// Draws the editor's transform gizmo over the frame, as one of three tools:
+// - move: an arrow along each world axis, a handle in each axis plane, and a dot at the center;
+// - rotate: a ring around each world axis, and a wider ring around the view's direction;
+// - scale: a square-capped handle along each of the selection's axes, the plane handles, and the dot.
+//
+// The gizmo is drawn as flat vector shapes on the screen, measured in pixels, so its lines stay crisp and thin at any
+// distance. The editor projects the gizmo's center, its three axes, and the tips of its three arrows, and everything
+// else follows from them: an arrow runs from the center to its tip, a plane handle is the parallelogram the two arrows
+// of its plane span, and a ring is the ellipse the two axes of its plane span. Edges are antialiased from each shape's
+// distance to the pixel.
+
+//
+// Parts the camera sees edge-on fade out, since they can't be dragged precisely. While the pointer is over a part, the
+// others step back a little; while a part is dragged, they step back further.
+//
+// `gizmo.rs` measures the same shapes to pick them, and both must keep these constants in step.
+
+GizmoParameters: struct {
+	// xy: the gizmo's center, in pixels.
+	center: vec4f,
+	// xy: the tip of the X, Y, and Z arrows, in pixels. z: how visible the arrow is, from 0 to 1.
+	x_tip: vec4f,
+	y_tip: vec4f,
+	z_tip: vec4f,
+	// How visible each plane handle is, from 0 to 1, by the axis it faces.
+	planes: vec4f,
+	// Per axis, 1 or -1: the side of the center the plane handles sit on.
+	quadrant: vec4f,
+	// The pixel rectangle the gizmo can cover: x and y the top-left corner, z and w the bottom-right one.
+	rect: vec4f,
+	// x: the part under the pointer, y: the part being dragged, 0 for none. Parts are numbered 1 to 3 for the X, Y,
+	// and Z arrows or scale handles, 4 to 6 for the handles of the planes facing X, Y, and Z, 7 for the center, 8 to 10
+	// for the rings around X, Y, and Z, and 11 for the view ring. z: the tool, 0 to move, 1 to rotate, 2 to scale.
+	state: vec4f,
+	// The true projection of one arrow's length along X (xy) and Y (zw), in pixels, from the center.
+	xy_axes: vec4f,
+	// xy: the same for Z.
+	z_axis: vec4f,
+	// xyz: how far each axis points away from the camera, from -1 to 1.
+	facing: vec4f,
+}
+
+Gizmo: layer {
+	gizmo_parameters: descriptor<{ type: GizmoParameters, binding: 0, access: read, memory: constant }>;
+}
+
+// Every length is in pixels.
+// The gap between the center and where the shafts begin.
+CENTER_GAP: const f32 = 11.0;
+// Half a shaft's width, and its width under the pointer.
+SHAFT_HALF_WIDTH: const f32 = 2.0;
+SHAFT_HOVER_HALF_WIDTH: const f32 = 2.5;
+// The arrowhead, from its base to its tip, and half its base.
+HEAD_LENGTH: const f32 = 15.0;
+HEAD_HALF_WIDTH: const f32 = 6.5;
+// How round the head's tip and its base corners are, as smoothing widths: the tip stays nearly sharp.
+TIP_ROUNDING: const f32 = 1.0;
+BASE_ROUNDING: const f32 = 3.0;
+// How wide the fillet is where the shaft flares into the head.
+HEAD_TAPER: const f32 = 4.0;
+// The center dot's radius, and its radius under the pointer.
+CENTER_RADIUS: const f32 = 5.0;
+CENTER_HOVER_RADIUS: const f32 = 6.0;
+// Where a plane handle sits along its two arrows, and half its side, as fractions of an arrow.
+PLANE_CENTER: const f32 = 0.3;
+PLANE_HALF: const f32 = 0.075;
+PLANE_ROUNDING: const f32 = 1.0;
+// Half the width of a plane handle's edge line.
+PLANE_STROKE_HALF_WIDTH: const f32 = 0.6;
+// A scale handle's square cap: half its side, and how round its corners are.
+CAP_HALF: const f32 = 5.5;
+CAP_ROUNDING: const f32 = 1.5;
+// An axis ring's radius, as a fraction of an arrow, and half its line's width, at rest and under the pointer.
+RING_RADIUS: const f32 = 0.85;
+RING_HALF_WIDTH: const f32 = 1.75;
+RING_HOVER_HALF_WIDTH: const f32 = 2.25;
+// The view ring's radius, in pixels.
+VIEW_RING_PIXELS: const f32 = 112.0;
+// The cosine and sine of the angle each of a ring's 64 segments turns: a full turn over 64.
+RING_STEP_COS: const f32 = 0.9951847;
+RING_STEP_SIN: const f32 = 0.09801714;
+// How present a ring's far half is, behind the gizmo's center.
+RING_BACK_PRESENCE: const f32 = 0.3;
+
+// The z component of the cross product of `a` and `b`, which is positive when `b` turns left from `a`.
+cross2: fn (a: vec2f, b: vec2f) -> f32 {
+	return a.x * b.y - a.y * b.x;
+}
+
+// The distance from `p` to the segment from `a` to `b`.
+segment: fn (p: vec2f, a: vec2f, b: vec2f) -> f32 {
+	let pa: vec2f = p - a;
+	let ba: vec2f = b - a;
+	let h: f32 = clamp(dot(pa, ba) / max(dot(ba, ba), 0.0001), 0.0, 1.0);
+	return length(pa - ba * h);
+}
+
+// The signed distance from `p` to the convex quadrilateral `a`, `b`, `c`, `d`, negative inside.
+quadrilateral: fn (p: vec2f, a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> f32 {
+	let edge: f32 = min(min(segment(p, a, b), segment(p, b, c)), min(segment(p, c, d), segment(p, d, a)));
+	let s0: f32 = cross2(b - a, p - a);
+	let s1: f32 = cross2(c - b, p - b);
+	let s2: f32 = cross2(d - c, p - c);
+	let s3: f32 = cross2(a - d, p - d);
+	if ((s0 >= 0.0 && s1 >= 0.0 && s2 >= 0.0 && s3 >= 0.0) || (s0 <= 0.0 && s1 <= 0.0 && s2 <= 0.0 && s3 <= 0.0)) {
+		return 0.0 - edge;
+	}
+	return edge;
+}
+
+// The polynomial smooth minimum of `a` and `b`, which fillets where they meet over a width of `k`.
+smooth_min: fn (a: f32, b: f32, k: f32) -> f32 {
+	let h: f32 = max(k - abs(a - b), 0.0) / k;
+	return min(a, b) - h * h * k * 0.25;
+}
+
+// The signed distance from `p` to the arrow from `center` to `tip`: a shaft `half_width` either side of its line,
+// with a round cap where it starts, flaring into a head with a crisp tip and beveled base corners.
+arrow: fn (p: vec2f, center: vec2f, tip: vec2f, half_width: f32) -> f32 {
+	let axis: vec2f = tip - center;
+	let direction: vec2f = axis * (1.0 / max(length(axis), 0.0001));
+	let side: vec2f = vec2f(0.0 - direction.y, direction.x);
+	// The head is the meeting of three half-planes, its two sides and its base, measured from the tip: `back` runs
+	// toward the center and `lateral` across. Smooth maxima round each corner on its own, the tip barely and the base
+	// corners more.
+	let offset: vec2f = p - tip;
+	let back: f32 = 0.0 - dot(offset, direction);
+	let lateral: f32 = dot(offset, side);
+	let slant: f32 = sqrt(HEAD_LENGTH * HEAD_LENGTH + HEAD_HALF_WIDTH * HEAD_HALF_WIDTH);
+	let left: f32 = (lateral * HEAD_LENGTH - back * HEAD_HALF_WIDTH) / slant;
+	let right: f32 = (0.0 - lateral * HEAD_LENGTH - back * HEAD_HALF_WIDTH) / slant;
+	let tip_sides: f32 = 0.0 - smooth_min(0.0 - left, 0.0 - right, TIP_ROUNDING);
+	let head: f32 = 0.0 - smooth_min(0.0 - tip_sides, HEAD_LENGTH - back, BASE_ROUNDING);
+	let shaft: f32 = segment(p, center + direction * CENTER_GAP, tip - direction * HEAD_LENGTH) - half_width;
+	return smooth_min(shaft, head, HEAD_TAPER);
+}
+
+// The signed distance from `p` to the scale handle from `center` to `tip`: a shaft ending in a rounded square that
+// `tip` closes.
+scale_handle: fn (p: vec2f, center: vec2f, tip: vec2f, half_width: f32) -> f32 {
+	let axis: vec2f = tip - center;
+	let direction: vec2f = axis * (1.0 / max(length(axis), 0.0001));
+	let side: vec2f = vec2f(0.0 - direction.y, direction.x);
+	let cap: vec2f = tip - direction * CAP_HALF;
+	let shaft: f32 = segment(p, center + direction * CENTER_GAP, cap) - half_width;
+	// The cap is a box along the handle, measured from its middle.
+	let offset: vec2f = p - cap;
+	let qx: f32 = abs(dot(offset, direction)) - (CAP_HALF - CAP_ROUNDING);
+	let qy: f32 = abs(dot(offset, side)) - (CAP_HALF - CAP_ROUNDING);
+	let cap_distance: f32 = length(vec2f(max(qx, 0.0), max(qy, 0.0))) + min(max(qx, qy), 0.0) - CAP_ROUNDING;
+	return min(shaft, cap_distance);
+}
+
+// The distance from `p` to the ring `center + u cos t + v sin t`, traced as 64 segments (x), and how far its nearest
+// point lies behind the center along the view (y), from the view's direction along the ring's two axes, `first` and
+// `second`.
+ring: fn (p: vec2f, center: vec2f, u: vec2f, v: vec2f, first: f32, second: f32) -> vec2f {
+	let c: f32 = 1.0;
+	let s: f32 = 0.0;
+	let previous: vec2f = center + u;
+	let nearest: f32 = 1000000.0;
+	let depth: f32 = 0.0;
+	for (let index: u32 = 0; index < 64; index = index + 1) {
+		// Turning by the step each segment instead of evaluating the angle keeps the shader free of trigonometry.
+		let next_c: f32 = c * RING_STEP_COS - s * RING_STEP_SIN;
+		let next_s: f32 = s * RING_STEP_COS + c * RING_STEP_SIN;
+		let next: vec2f = center + u * next_c + v * next_s;
+		let d: f32 = segment(p, previous, next);
+		if (d < nearest) {
+			nearest = d;
+			depth = (c + next_c) * 0.5 * first + (s + next_s) * 0.5 * second;
+		}
+		previous = next;
+		c = next_c;
+		s = next_s;
+	}
+	return vec2f(nearest, depth);
+}
+
+// The signed distance from `p` to the handle in the plane of the arrows `first` and `second`, given from the center,
+// on their `first_side` and `second_side`.
+plane: fn (p: vec2f, center: vec2f, first: vec2f, second: vec2f, first_side: f32, second_side: f32) -> f32 {
+	let near_first: vec2f = first * ((PLANE_CENTER - PLANE_HALF) * first_side);
+	let far_first: vec2f = first * ((PLANE_CENTER + PLANE_HALF) * first_side);
+	let near_second: vec2f = second * ((PLANE_CENTER - PLANE_HALF) * second_side);
+	let far_second: vec2f = second * ((PLANE_CENTER + PLANE_HALF) * second_side);
+	return quadrilateral(
+		p,
+		center + near_first + near_second,
+		center + far_first + near_second,
+		center + far_first + far_second,
+		center + near_first + far_second
+	) - PLANE_ROUNDING;
+}
+
+// The color of the axis `axis`, 1 to 3, or of the center and the view ring for any other: red, Byte Engine green, and blue.
+axis_color: fn (axis: f32) -> vec3f {
+	if (axis < 0.5) { return vec3f(0.96, 0.96, 0.97); }
+	if (axis < 1.5) { return vec3f(0.95, 0.33, 0.36); }
+	if (axis < 2.5) { return vec3f(0.251, 0.847, 0.4); }
+	if (axis < 3.5) { return vec3f(0.3, 0.55, 1.0); }
+	return vec3f(0.96, 0.96, 0.97);
+}
+
+// The color of `part` on `axis`: the axis's color, lighter under the pointer or while dragged.
+part_color: fn (part: f32, axis: f32, hovered: f32, active: f32) -> vec3f {
+	let color: vec3f = axis_color(axis);
+	if (abs(part - active) < 0.5 || (active < 0.5 && abs(part - hovered) < 0.5)) {
+		return color * 0.75 + vec3f(0.25, 0.25, 0.25);
+	}
+	return color;
+}
+
+// How present `part` is: less while another part is under the pointer, and less still while another is dragged.
+part_presence: fn (part: f32, hovered: f32, active: f32) -> f32 {
+	if (active > 0.5) {
+		if (abs(part - active) > 0.5) { return 0.3; }
+		return 1.0;
+	}
+	if (hovered > 0.5 && abs(part - hovered) > 0.5) { return 0.55; }
+	return 1.0;
+}
+
+// The share of the pixel a shape at signed distance `d` covers.
+coverage: fn (d: f32) -> f32 {
+	return clamp(0.5 - d, 0.0, 1.0);
+}
+
+// `color` laid over `under` at `alpha`.
+over: fn (under: vec3f, color: vec3f, alpha: f32) -> vec3f {
+	return under * (1.0 - alpha) + color * alpha;
+}
+
+pixel: fn (scene: vec4f, coordinate: vec2u, extent: vec2u, gizmo: Gizmo) -> vec4f {
+	// The pixel's center, in the same continuous coordinates the editor projects to.
+	let p: vec2f = vec2f(f32(coordinate.x) + 0.5, f32(coordinate.y) + 0.5);
+	let rect: vec4f = gizmo.gizmo_parameters.rect;
+	if (p.x < rect.x || p.y < rect.y || p.x > rect.z || p.y > rect.w) {
+		return scene;
+	}
+
+	let center4: vec4f = gizmo.gizmo_parameters.center;
+	let x_tip: vec4f = gizmo.gizmo_parameters.x_tip;
+	let y_tip: vec4f = gizmo.gizmo_parameters.y_tip;
+	let z_tip: vec4f = gizmo.gizmo_parameters.z_tip;
+	let planes: vec4f = gizmo.gizmo_parameters.planes;
+	let quadrant: vec4f = gizmo.gizmo_parameters.quadrant;
+	let state: vec4f = gizmo.gizmo_parameters.state;
+	let hovered: f32 = state.x;
+	let active: f32 = state.y;
+	let tool: f32 = state.z;
+	let center: vec2f = vec2f(center4.x, center4.y);
+	let color: vec3f = vec3f(scene.x, scene.y, scene.z);
+
+	if (tool > 0.5 && tool < 1.5) {
+		let xy_axes: vec4f = gizmo.gizmo_parameters.xy_axes;
+		let z_axis4: vec4f = gizmo.gizmo_parameters.z_axis;
+		let facing: vec4f = gizmo.gizmo_parameters.facing;
+		let sx: vec2f = vec2f(xy_axes.x, xy_axes.y) * RING_RADIUS;
+		let sy: vec2f = vec2f(xy_axes.z, xy_axes.w) * RING_RADIUS;
+		let sz: vec2f = vec2f(z_axis4.x, z_axis4.y) * RING_RADIUS;
+		// Each ring lies in the plane of the next two axes, in the order that turns positively around its own.
+		let x_ring: vec2f = ring(p, center, sy, sz, facing.y, facing.z);
+		let y_ring: vec2f = ring(p, center, sz, sx, facing.z, facing.x);
+		let z_ring: vec2f = ring(p, center, sx, sy, facing.x, facing.y);
+
+		let view_width: f32 = RING_HALF_WIDTH;
+		if (abs(hovered - 11.0) < 0.5 || abs(active - 11.0) < 0.5) { view_width = RING_HOVER_HALF_WIDTH; }
+		let view_ring: f32 = abs(length(p - center) - VIEW_RING_PIXELS) - view_width;
+		color = over(color, part_color(11.0, 0.0, hovered, active), coverage(view_ring) * 0.75 * part_presence(11.0, hovered, active));
+
+		// The rings' far halves first, faint, then their near halves over them, so near crosses over far.
+		for (let half: u32 = 0; half < 2; half = half + 1) {
+			for (let axis: u32 = 1; axis < 4; axis = axis + 1) {
+				let part: f32 = f32(axis) + 7.0;
+				let r: vec2f = x_ring;
+				if (axis == 2) { r = y_ring; }
+				if (axis == 3) { r = z_ring; }
+				let width: f32 = RING_HALF_WIDTH;
+				if (abs(hovered - part) < 0.5 || abs(active - part) < 0.5) { width = RING_HOVER_HALF_WIDTH; }
+				// How far behind the center the ring runs here, eased over a short span so the halves blend.
+				let back: f32 = clamp(0.5 + r.y * 6.0, 0.0, 1.0);
+				let share: f32 = back * RING_BACK_PRESENCE;
+				if (half == 1) { share = 1.0 - back; }
+				let presence: f32 = share * part_presence(part, hovered, active);
+				color = over(color, part_color(part, f32(axis), hovered, active), coverage(r.x - width) * presence);
+			}
+		}
+		return vec4f(color.x, color.y, color.z, scene.w);
+	}
+
+	let x_axis: vec2f = vec2f(x_tip.x, x_tip.y) - center;
+	let y_axis: vec2f = vec2f(y_tip.x, y_tip.y) - center;
+	let z_axis: vec2f = vec2f(z_tip.x, z_tip.y) - center;
+
+	// Every shape's distance, with the arrow and dot under the pointer drawn larger.
+	let x_width: f32 = SHAFT_HALF_WIDTH;
+	if (abs(hovered - 1.0) < 0.5 || abs(active - 1.0) < 0.5) { x_width = SHAFT_HOVER_HALF_WIDTH; }
+	let y_width: f32 = SHAFT_HALF_WIDTH;
+	if (abs(hovered - 2.0) < 0.5 || abs(active - 2.0) < 0.5) { y_width = SHAFT_HOVER_HALF_WIDTH; }
+	let z_width: f32 = SHAFT_HALF_WIDTH;
+	if (abs(hovered - 3.0) < 0.5 || abs(active - 3.0) < 0.5) { z_width = SHAFT_HOVER_HALF_WIDTH; }
+	let radius: f32 = CENTER_RADIUS;
+	if (abs(hovered - 7.0) < 0.5 || abs(active - 7.0) < 0.5) { radius = CENTER_HOVER_RADIUS; }
+
+	// The scale tool caps its handles with squares where the move tool has arrowheads.
+	let x_arrow: f32 = 0.0;
+	let y_arrow: f32 = 0.0;
+	let z_arrow: f32 = 0.0;
+	if (tool > 1.5) {
+		x_arrow = scale_handle(p, center, vec2f(x_tip.x, x_tip.y), x_width);
+		y_arrow = scale_handle(p, center, vec2f(y_tip.x, y_tip.y), y_width);
+		z_arrow = scale_handle(p, center, vec2f(z_tip.x, z_tip.y), z_width);
+	} else {
+		x_arrow = arrow(p, center, vec2f(x_tip.x, x_tip.y), x_width);
+		y_arrow = arrow(p, center, vec2f(y_tip.x, y_tip.y), y_width);
+		z_arrow = arrow(p, center, vec2f(z_tip.x, z_tip.y), z_width);
+	}
+	let x_plane: f32 = plane(p, center, y_axis, z_axis, quadrant.y, quadrant.z);
+	let y_plane: f32 = plane(p, center, x_axis, z_axis, quadrant.x, quadrant.z);
+	let z_plane: f32 = plane(p, center, x_axis, y_axis, quadrant.x, quadrant.y);
+	let dot_distance: f32 = length(p - center) - radius;
+
+	// The plane handles first, as a faint fill inside a fine edge, then the arrows, then the dot on top.
+	for (let axis: u32 = 1; axis < 4; axis = axis + 1) {
+		let part: f32 = f32(axis) + 3.0;
+		let d: f32 = x_plane;
+		let visibility: f32 = planes.x;
+		if (axis == 2) { d = y_plane; visibility = planes.y; }
+		if (axis == 3) { d = z_plane; visibility = planes.z; }
+		let presence: f32 = visibility * part_presence(part, hovered, active);
+		let fill: f32 = 0.18;
+		if (abs(part - hovered) < 0.5 || abs(part - active) < 0.5) { fill = 0.35; }
+		let tint: vec3f = part_color(part, f32(axis), hovered, active);
+		color = over(color, tint, coverage(d) * fill * presence);
+		color = over(color, tint, coverage(abs(d) - PLANE_STROKE_HALF_WIDTH) * 0.9 * presence);
+	}
+	for (let axis: u32 = 1; axis < 4; axis = axis + 1) {
+		let part: f32 = f32(axis);
+		let d: f32 = x_arrow;
+		let visibility: f32 = x_tip.z;
+		if (axis == 2) { d = y_arrow; visibility = y_tip.z; }
+		if (axis == 3) { d = z_arrow; visibility = z_tip.z; }
+		let presence: f32 = visibility * part_presence(part, hovered, active);
+		color = over(color, part_color(part, part, hovered, active), coverage(d) * presence);
+	}
+	color = over(color, part_color(7.0, 0.0, hovered, active), coverage(dot_distance) * part_presence(7.0, hovered, active));
+
+	return vec4f(color.x, color.y, color.z, scene.w);
+}

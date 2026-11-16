@@ -1,0 +1,62 @@
+---
+title: Edit a level in the running game
+description: Install the level editor over your application to select, move, turn, and scale entities, drop meshes into the scene, and edit material graphs while the game keeps running.
+icon: PencilRuler
+---
+
+Use the editor when you want to arrange a level while you play it. It draws over your application's frame, so the game
+keeps running and rendering under it, and every change you make reaches the game at once.
+
+The editor picks what you click with a screen scene query, so it needs the visibility pipeline, which you install with
+`setup_pbr_visibility_shading_render_pipeline`. It reads your keys through the default input, which you install with
+`setup_default_input`.
+
+## Install the editor
+
+1. Set up your application's own render passes first. The editor's pass must come last, so it draws over everything
+   else, your own UI included.
+
+2. Call `install` before the first window opens, with the window's size. Render passes register before the first
+   window.
+
+   ```rust
+   use byte_engine::ui::Size;
+
+   let mut editor = byte_engine::editor::install(&mut app, Size::new(1920, 1080));
+   ```
+
+3. Call `frame` once in every tick, after your game's own tick:
+
+   ```rust
+   while app
+   	.tick_with(|app, time| {
+   		game.tick(app, time);
+   		editor.frame(app);
+   	})
+   	.is_some()
+   {}
+   ```
+
+The editor starts closed, and a closed editor costs nothing: its render pass forwards the frame unchanged.
+
+## Edit the scene
+
+1. Press F5 to open the editor. It frees the cursor and takes all of your application's input until you press F5
+   again.
+
+2. Click an entity in the game view, or its row in the scene list, to select it. The properties panel shows the
+   entity's name, its transform while it has one, and its camera settings while it's a camera.
+
+3. Pick Move, Rotate, or Scale in the toolbar, then drag a handle of the gizmo. To set a value exactly, drag a
+   property field sideways, or click it and type the value.
+
+4. Press Cmd+K to open the command palette, type part of a mesh's name, and drag the result into the scene. Press
+   Enter instead to carry the mesh with the pointer until you click where it goes.
+
+5. To change a material, find its graph in the palette and open it. Drag between sockets to connect nodes, press Cmd+K
+   to add one, and press Cmd+S to save the graph; your application reloads the material.
+
+## Rust API
+
+- [`install`](/docs/api/latest/byte_engine/editor#fn.install)
+- [`Editor`](/docs/api/latest/byte_engine/editor/Editor)

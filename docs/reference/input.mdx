@@ -54,7 +54,7 @@ A trigger is a named value on a device class.
 It can be boolean, float, unicode, vector, quaternion, color, or another supported input value type.
 
 Window events are translated into trigger records.
-For example, a key press becomes a boolean value for `Keyboard.W`, mouse motion becomes a `Vector2` value for `Mouse.Movement`, and typed text becomes a unicode value for `Keyboard.Character`. One physical event can become records on more than one device: a mouse click becomes both `Pointer.LeftButton` and `Mouse.LeftButton`.
+For example, a key press becomes a boolean value for `Keyboard.W`, mouse motion becomes a `Vector2` value for `Mouse.Movement`, and typed text becomes a unicode value for `Keyboard.Character`. Only text a key types reaches `Keyboard.Character`: control characters, such as those Enter and Backspace type, and the private-use characters a platform reports for keys that type no text, such as the arrows and function keys on macOS, don't. One physical event can become records on more than one device: a mouse click becomes both `Pointer.LeftButton` and `Mouse.LeftButton`.
 
 The collector queues records until the sinks pull them. When the tick ends, it
 keeps the latest value for each seat, device, and trigger.

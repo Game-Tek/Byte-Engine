@@ -496,7 +496,7 @@ fn append_key_event(event: &NSEvent, push: &mut impl FnMut(Events)) {
 	let Some(characters) = event.characters() else {
 		return;
 	};
-	for character in characters.to_string().chars().filter(|character| !character.is_control()) {
+	for character in characters.to_string().chars().filter(|character| types_text(*character)) {
 		push(Events::Character {
 			seat: Seat::stub(),
 			character,
@@ -846,6 +846,15 @@ impl Drop for Window {
 	}
 }
 
+/// Returns whether `character`, from an AppKit key event, is text the key typed.
+///
+/// Control characters, such as those Enter and Backspace type, arrive as `Events::Key` instead. AppKit also reports
+/// keys that type no text, such as the arrows and function keys, as characters in the Unicode private-use range it
+/// reserves for them, U+F700 to U+F8FF (`NSUpArrowFunctionKey` and its neighbors); those aren't text either.
+fn types_text(character: char) -> bool {
+	!character.is_control() && !('\u{F700}'..='\u{F8FF}').contains(&character)
+}
+
 fn accepts_text_input(flags: NSEventModifierFlags) -> bool {
 	!flags.intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control)
 }
@@ -1003,7 +1012,18 @@ fn keycode_to_key(code: u16) -> Option<Keys> {
 mod tests {
 	use objc2_foundation::{NSPoint, NSRect, NSSize};
 
-	use super::normalize_mouse_position;
+	use super::{normalize_mouse_position, types_text};
+
+	#[test]
+	fn keys_that_type_no_text_report_no_characters() {
+		// AppKit's up arrow, F1, and the end of its function-key range, then Enter's carriage return.
+		for character in ['\u{F700}', '\u{F704}', '\u{F8FF}', '\r'] {
+			assert!(!types_text(character), "{character:?} is not text");
+		}
+		for character in ['a', 'Ñ', ' ', '€'] {
+			assert!(types_text(character), "{character:?} is text");
+		}
+	}
 
 	#[test]
 	fn normalize_mouse_position_uses_the_content_frame_edges() {

@@ -13,12 +13,12 @@ use byte_engine::{
 	rendering::{
 		Camera, DirectionalLight, LightColor, PhotometricIntensity, PipelineManager, RenderImage, RenderImageReady, SceneId,
 		SetRenderImageExtent, ShownTransforms, Sink,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, allocate_render_command},
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, SceneEnvironment, allocate_render_command},
 	},
 };
 use ghi::{
 	command_buffer::{CommandBufferRecording as _, RasterizationRenderPassMode as _},
-	context::Context as _,
+	context::{Context as _, ContextCreate as _},
 };
 use utils::{Box, Extent, RGBA};
 
@@ -31,21 +31,33 @@ const FILL: RGBA = RGBA {
 	a: 1.0,
 };
 
-/// The `FillPass` struct ends a sink's graph by filling its final target with [`FILL`], so a readback shows whether
-/// the graph wrote the render image.
+/// The color a pass registered for windows alone fills with: pure red, which a render image must never show.
+const WINDOW_FILL: RGBA = RGBA {
+	r: 1.0,
+	g: 0.0,
+	b: 0.0,
+	a: 1.0,
+};
+
+/// The `FillPass` struct ends a sink's graph by filling its final target with a color, [`FILL`] unless it says
+/// otherwise, so a readback shows whether the graph wrote the render image.
 struct FillPass {
 	attachment: ghi::AttachmentInformation,
 }
 
 impl FillPass {
 	fn new(builder: &mut RenderPassBuilder) -> Self {
+		Self::filling(builder, FILL)
+	}
+
+	fn filling(builder: &mut RenderPassBuilder, color: RGBA) -> Self {
 		let target = builder
 			.create_main_render_target(ghi::image::Builder::new(ghi::Formats::BGRAu8, ghi::Uses::RenderTarget).name("fill"));
 		Self {
 			attachment: ghi::AttachmentInformation::new(
 				target,
 				ghi::Layouts::RenderTarget,
-				ghi::LoadOp::Clear(ghi::ClearValue::Color(FILL)),
+				ghi::LoadOp::Clear(ghi::ClearValue::Color(color)),
 				ghi::StoreOp::Store,
 			),
 		}
@@ -155,6 +167,33 @@ fn a_render_image_holds_its_graph_output_and_follows_its_extent() {
 	assert_eq!(pixel, [0, 255, 0, 255]);
 }
 
+#[test]
+fn a_render_image_leaves_out_the_passes_registered_for_windows() {
+	let mut application = application("render-image-windows-test");
+	let renderer = application.renderer_mut();
+	renderer.add_post_scene_render_pass_for_all_sinks(|builder| Box::new(FillPass::new(builder)));
+	// Last in every window, as an interface drawn over the game is.
+	renderer.add_post_scene_render_pass_for_windows(|builder| Box::new(FillPass::filling(builder, WINDOW_FILL)));
+	let mut ready = application.messages().channel::<RenderImageReady>().listener();
+
+	let camera: byte_engine::core::factory::Handle = application.world().create(Camera::new()).into();
+	application
+		.render_image_factory()
+		.create(RenderImage::new(SceneId::WORLD, Extent::rectangle(16, 16), camera));
+
+	let answer = wait_for_image(&mut application, &mut ready);
+	// The pass registered for all sinks becomes the image's last pass, so the image takes its color.
+	let mut pixel = [0; 4];
+	for _ in 0..256 {
+		application.tick();
+		pixel = read_back(&mut application, answer.image()).1;
+		if pixel != [0; 4] {
+			break;
+		}
+	}
+	assert_eq!(pixel, [0, 255, 0, 255], "A pass registered for windows drew into the render image.");
+}
+
 /// What one scene pipeline saw: the sinks it built state for, and each sink it prepared with whether it carried a sun.
 #[derive(Default)]
 struct Seen {
@@ -244,4 +283,70 @@ fn a_scene_reaches_only_its_own_render_images() {
 	assert!(!staged.prepared.is_empty(), "The preview's pipeline never prepared a frame.");
 	assert!(world.prepared.iter().all(|&seen| seen == (0, false)));
 	assert!(staged.prepared.iter().all(|&seen| seen == (1, true)));
+}
+
+/// The `IdlePass` struct stands in for the pass that fills a generated environment, recording nothing.
+struct IdlePass;
+
+impl RenderPass for IdlePass {
+	fn name(&self) -> &'static str {
+		"idle environment"
+	}
+
+	fn prepare<'a>(
+		&mut self,
+		_frame: &mut ghi::implementation::Frame,
+		_sink: &Sink,
+		_frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		None
+	}
+}
+
+#[test]
+fn each_scene_generates_its_own_environment() {
+	let mut application = application("render-image-environments-test");
+	let preview = application.create_scene("preview");
+	let world_pipeline = record(&mut application, SceneId::WORLD);
+	let preview_pipeline = record(&mut application, preview);
+	// Counts the environments the renderer builds, each with two small cubes of its own.
+	let built = Arc::new(Mutex::new(0));
+	let counted = built.clone();
+	application.renderer_mut().set_scene_environment(move |builder| {
+		*counted.lock().unwrap() += 1;
+		let mut cube = |name: &str| {
+			builder.context().build_image(
+				ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image | ghi::Uses::Storage)
+					.name(name)
+					.extent(Extent::square(1))
+					.cube_compatible(),
+			)
+		};
+		let (diffuse, specular) = (cube("diffuse"), cube("specular"));
+		SceneEnvironment::new(builder, Box::new(IdlePass), diffuse, specular)
+	});
+	let mut ready = application.messages().channel::<RenderImageReady>().listener();
+
+	// Two sinks show the world and one the preview.
+	let stage = application.scene_messages(preview).clone();
+	let extent = Extent::rectangle(16, 16);
+	for _ in 0..2 {
+		let camera: byte_engine::core::factory::Handle = application.world().create(Camera::new()).into();
+		application
+			.render_image_factory()
+			.create(RenderImage::new(SceneId::WORLD, extent, camera));
+	}
+	let preview_camera: byte_engine::core::factory::Handle = stage.create(Camera::new()).into();
+	application
+		.render_image_factory()
+		.create(RenderImage::new(preview, extent, preview_camera));
+	wait_for_image(&mut application, &mut ready);
+	for _ in 0..256 {
+		if world_pipeline.lock().unwrap().created.len() == 2 && !preview_pipeline.lock().unwrap().created.is_empty() {
+			break;
+		}
+		application.tick();
+	}
+
+	assert_eq!(*built.lock().unwrap(), 2, "The renderer builds one environment for each scene, not for each sink.");
 }

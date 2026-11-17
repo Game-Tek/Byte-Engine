@@ -1,6 +1,7 @@
 use std::{
 	borrow::Cow,
 	hash::{Hash, Hasher as _},
+	sync::Arc,
 };
 
 use maths_rs::{Vec3f, Vec4f, cross, normalize};
@@ -15,6 +16,7 @@ pub struct SphereMeshGenerator {
 	segments: u32,
 	rings: u32,
 	vertex_positions: Vec<(f32, f32, f32)>,
+	material: Option<Arc<str>>,
 }
 
 impl Default for SphereMeshGenerator {
@@ -50,7 +52,15 @@ impl SphereMeshGenerator {
 			segments,
 			rings,
 			vertex_positions,
+			material: None,
 		}
+	}
+
+	/// Draws the sphere with the material resource `material` instead of the default generated-mesh material, such as
+	/// to preview a material on it.
+	pub fn with_material(mut self, material: impl Into<Arc<str>>) -> Self {
+		self.material = Some(material.into());
+		self
 	}
 }
 
@@ -170,7 +180,12 @@ impl MeshGenerator for SphereMeshGenerator {
 		self.radius.to_bits().hash(&mut hasher);
 		self.rings.hash(&mut hasher);
 		self.segments.hash(&mut hasher);
+		self.material.hash(&mut hasher);
 		hasher.finish()
+	}
+
+	fn material(&self) -> Option<&str> {
+		self.material.as_deref()
 	}
 
 	fn clone_box(&self) -> Box<dyn MeshGenerator> {
@@ -268,5 +283,15 @@ mod tests {
 			SphereMeshGenerator::from_radius(2.0).hash()
 		);
 		assert!(SphereMeshGenerator::new().colors().is_none());
+	}
+
+	#[test]
+	fn a_sphere_draws_with_the_material_it_names() {
+		let plain = SphereMeshGenerator::new();
+		let painted = SphereMeshGenerator::new().with_material("paint.bema");
+		assert_eq!(plain.material(), None);
+		assert_eq!(painted.material(), Some("paint.bema"));
+		// Meshes that share a hash share their material, so a sphere of another material is another mesh.
+		assert_ne!(plain.hash(), painted.hash());
 	}
 }

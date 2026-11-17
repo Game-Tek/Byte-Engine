@@ -16,8 +16,9 @@ The editor picks what you click with a screen scene query, so it needs the visib
 1. Set up your application's own render passes first. The editor's pass must come last, so it draws over everything
    else, your own UI included.
 
-2. Call `install` before the first window opens, with the window's size. Render passes register before the first
-   window.
+2. Call `install` before the first window opens, with the window's size, and before
+   `launch_deferred_tasks_thread`. Render passes register before the first window, and the editor installs the
+   pipeline its previews draw with, which the loading thread must start with.
 
    ```rust
    use byte_engine::ui::Size;
@@ -37,7 +38,9 @@ The editor picks what you click with a screen scene query, so it needs the visib
    {}
    ```
 
-The editor starts closed, and a closed editor costs nothing: its render pass forwards the frame unchanged.
+The editor starts closed, and a closed editor costs almost nothing: its render pass forwards the frame unchanged.
+Its previews draw in a scene of their own, with a visibility pipeline of their own, which holds its GPU memory even
+while the editor is closed.
 
 ## Edit the scene
 
@@ -97,7 +100,8 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
    toast says why. See [runtime settings](/docs/reference/parameters#runtime-settings) for what each one takes.
 
 7. To explore your resources, press Cmd+E and type part of a name. It finds your material graphs, material variants,
-   and textures. Open
+   meshes, and textures. Open a mesh to see it in a window of its own, lit on a stage of its own, with its size in
+   meters on the right. Drag the picture to turn the mesh as a trackball: a drag across it turns it the way you drag, and a drag around its edge rolls it. Scroll to move closer or farther. Open
    a texture to see it in a window of its own, with its size in pixels, beside the running game. Press Escape in that
    window, or close it, to close it. Opening a texture that's already open does nothing. Textures show from their PNG
    or JPEG source files, so a build without sources finds none.
@@ -128,7 +132,8 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
 
    To change a variant's parameters, find it with Cmd+E and open it. It opens in a window of its own, with its
    parent's parameters on the right and the value the variant gives each, or the parent's default when it gives
-   none. Click a value and type a new one, then press Enter: a number for a `float`; three or four numbers, apart by
+   none. The main panel shows a sphere wearing the variant, which you turn and zoom as you do a mesh, and which
+   follows each change once your application bakes it. Click a value and type a new one, then press Enter: a number for a `float`; three or four numbers, apart by
    commas or spaces, or a color name such as `Purple`, for a `vec3f` or `vec4f`; or an image's asset ID for a
    `Texture2D`. Text that isn't one changes nothing. The editor writes the change to the variant's file, and your
    application bakes the material again. It writes plain JSON, so comments in the file don't survive a change.

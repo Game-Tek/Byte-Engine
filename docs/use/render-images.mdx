@@ -44,7 +44,9 @@ let preview = app
 Use `SceneId::WORLD` as the scene to show the world.
 
 Register every post-scene pass before you create the first render image or
-window, as for windows.
+window, as for windows. The image records the passes you registered for all
+sinks, such as tone mapping, but not the interfaces you draw over your windows
+with `setup_ui_render_pass`, so your game's interface stays out of it.
 
 ## Learn which image to show
 

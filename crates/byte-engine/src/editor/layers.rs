@@ -27,6 +27,8 @@ pub(crate) enum Layer {
 	Texture(Texture),
 	/// A material variant's parameters, at the bottom of the layers of its own window.
 	Variant(Variant),
+	/// A stored mesh on the preview stage, at the bottom of the layers of its own window.
+	Mesh(Mesh),
 	/// A mesh, prefab, or light following the pointer until a click places it.
 	Carry(Carry),
 	/// Text being typed into a field, a property or the scene search, which answers Enter and Escape itself and keeps the
@@ -42,6 +44,14 @@ pub(crate) struct Texture {
 	pub(crate) preview: resource_management::processors::Preview,
 	/// What the texture bakes with, which its properties panel shows and changes; `None` when it couldn't be read.
 	pub(crate) settings: Option<resource_management::asset::ResolvedImageSettings>,
+}
+
+/// The `Mesh` struct is a stored mesh the editor shows on its preview stage, with the box that frames it.
+pub(crate) struct Mesh {
+	/// The mesh's resource ID, such as `models/chair.glb`.
+	pub(crate) id: String,
+	/// The box that holds the mesh, in the coordinates it was authored in.
+	pub(crate) bounds: crate::math::AABB<resource_management::resources::ModelSpace>,
 }
 
 /// The `Layers` struct is the editor's stack of layers; empty while the editor is closed.
@@ -158,6 +168,14 @@ impl Layers {
 	pub(crate) fn variant_mut(&mut self) -> Option<&mut Variant> {
 		self.stack.iter_mut().rev().find_map(|layer| match layer {
 			Layer::Variant(variant) => Some(variant),
+			_ => None,
+		})
+	}
+
+	/// The mesh being previewed, which its window shows while palettes open over it.
+	pub(crate) fn mesh(&self) -> Option<&Mesh> {
+		self.stack.iter().rev().find_map(|layer| match layer {
+			Layer::Mesh(mesh) => Some(mesh),
 			_ => None,
 		})
 	}

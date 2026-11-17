@@ -116,6 +116,10 @@ impl RenderPass for DebugMeshRenderPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
+		// Debug meshes are the world's, so a sink of another scene, such as a preview, shows none.
+		if sink.scene() != crate::rendering::SceneId::WORLD {
+			return self.main_copy.prepare(frame, sink, frame_allocator);
+		}
 		let (depth_draws, overlay_draws) = self.prepare_draws(frame, sink, frame_allocator);
 		if depth_draws.is_empty() && overlay_draws.is_empty() {
 			return self.main_copy.prepare(frame, sink, frame_allocator);

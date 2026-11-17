@@ -35,7 +35,8 @@ pub fn setup_debug_mesh_render_pass(application: &mut GraphicsApplication) -> Fa
 	factory
 }
 
-/// Installs a text overlay that prints the transform of the entity `handle` names in the window's top-left corner.
+/// Installs a text overlay that prints the transform of the entity `handle` names in the top-left corner of every
+/// window with a camera.
 ///
 /// Register it after every pass it should cover, usually last, so grading and film grain leave the text unchanged. A
 /// scene pipeline must come first, so the overlay has a `main` image to draw over. Like every pass, register it before
@@ -53,9 +54,10 @@ pub fn setup_debug_overlay_render_pass(application: &mut GraphicsApplication, ha
 		application.world().channel::<TransformationUpdate>().listener(),
 	)));
 
+	// The text belongs to the window, so render images leave it out.
 	application
 		.renderer
-		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+		.add_post_scene_render_pass_for_windows(move |render_pass_builder| {
 			Box::new(rendering::debug::DebugOverlayRenderPass::new(
 				render_pass_builder,
 				std::rc::Rc::clone(&source),
@@ -230,7 +232,8 @@ fn run_on_loading_thread<F: Future<Output = ()> + 'static>(
 /// its render targets are `<name>` and `<name> layer`. Give every call a different name; see
 /// [Draw one interface over another](/docs/use/gui#draw-one-interface-over-another).
 ///
-/// `window` is where the pass draws: `None` draws in every window with a camera, over its scene, and `Some` draws
+/// `window` is where the pass draws: `None` draws in every window with a camera, over its scene, but not in render
+/// images, which show the scene alone, and `Some` draws
 /// only in that window, which must have no camera, over black; see
 /// [Open an interface in a window of its own](/docs/use/gui#open-an-interface-in-a-window-of-its-own). Register a
 /// window's pass right after creating the window.
@@ -311,7 +314,7 @@ pub fn setup_ui_render_pass(
 		})
 	};
 	match window {
-		None => renderer.add_post_scene_render_pass_for_all_sinks(factory),
+		None => renderer.add_post_scene_render_pass_for_windows(factory),
 		Some(window) => renderer.add_render_pass_for_window(window, factory),
 	}
 }
@@ -753,8 +756,10 @@ pub fn setup_exponential_height_fog_render_pass(application: &mut GraphicsApplic
 /// The newest [`DirectionalLight`](rendering::DirectionalLight) is the sky's sun: its illuminance sets the sky's brightness and color, and its
 /// transform sets the sun's direction. Without one, the sky stays black.
 ///
-/// `settings` sets the atmosphere and how much of the screen the sky covers. The default draws the upper half of
-/// the screen; set [`AtmosphereSkyRenderPassSettings::screen_height`] to `1.0` for cameras that look up or down.
+/// `settings` sets the atmosphere and how much of the screen the sky covers. The default fills the whole screen, below
+/// the horizon too. For a camera that never looks down past the horizon, set
+/// [`AtmosphereSkyRenderPassSettings::skip_below_horizon`] and a lower
+/// [`AtmosphereSkyRenderPassSettings::screen_height`], such as `0.5`, to draw fewer pixels.
 /// Use `render.sky.haze` to change [`AtmosphereSkyRenderPassSettings::haze`] at runtime.
 ///
 /// The sky reads its sun from [`rendering::Sink::sun`], so a light created in any tick, before or after the window,

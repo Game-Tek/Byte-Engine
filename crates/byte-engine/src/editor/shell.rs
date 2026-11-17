@@ -6,16 +6,19 @@
 //! and Byte Engine's green as the accent for the selection.
 
 mod graph_view;
+mod mesh_view;
+mod preview_view;
 mod resource_panels;
 mod texture_view;
-mod variant_view;
 mod toasts;
+mod variant_view;
 
-use crate::editor::drawer;
+pub(crate) use resource_panels::picture_room;
 
 use std::time::Instant;
 
 use crate::core::factory::Handle;
+use crate::editor::drawer;
 use crate::editor::fields::{CAMERA, Change, LIGHT, Setting, TRANSFORM};
 use crate::editor::gizmo::Tool;
 use crate::editor::layers::{Layer, Layers};
@@ -61,6 +64,13 @@ pub(crate) struct Shell {
 	/// The parameter the variant's panel changed, by name, with its new value, until the editor writes it to the
 	/// variant's file.
 	pub(crate) variant_edit: Option<(String, serde_json::Value)>,
+	/// The image the window's preview is drawn into, once the renderer opened it.
+	pub(crate) preview: Option<crate::ghi::ImageHandle>,
+	/// Where a drag over the preview started and where it reached, in arcball coordinates, until the editor turns the
+	/// preview's subject by it; see [`crate::editor::preview::Framing::turn`].
+	pub(crate) turn: Option<([f32; 2], [f32; 2])>,
+	/// How many steps the preview was scrolled closer, until the editor moves its camera by them.
+	pub(crate) zoom: f32,
 	/// The entity the properties panel's trash button deleted, until the editor posts the deletion to the game.
 	pub(crate) delete: Option<Handle>,
 	/// The game's warnings and errors, shown as toasts.
@@ -84,6 +94,9 @@ impl Shell {
 			texture_edit: None,
 			variant_edit: None,
 			view_camera: None,
+			preview: None,
+			turn: None,
+			zoom: 0.0,
 			toasts: Default::default(),
 		}
 	}
@@ -227,8 +240,8 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 	}
 }
 
-/// Builds a resource window's interface: the material graph's canvas, the texture's preview, or the variant's
-/// parameters, whichever is at the bottom of its layers, under the palette that opens over it.
+/// Builds a resource window's interface: the material graph's canvas, the texture's preview, the variant's
+/// parameters, or the mesh's preview, whichever is at the bottom of its layers, under the palette that opens over it.
 pub(crate) async fn window(root: &mut EvaluationContext<Shell>) {
 	root.element("graph")
 		.component(async |ctx| graph_view::graph_view(ctx).await)
@@ -239,6 +252,7 @@ pub(crate) async fn window(root: &mut EvaluationContext<Shell>) {
 	root.element("variant")
 		.component(async |ctx| variant_view::variant_view(ctx).await)
 		.await;
+	root.element("mesh").component(async |ctx| mesh_view::mesh_view(ctx).await).await;
 	root.element("palette").component(async |ctx| palette_view(ctx).await).await;
 	loop {
 		root.render().await;
@@ -658,7 +672,7 @@ async fn palette_row(
 /// settings, and violet levels.
 fn kind_tint(kind: palette::Kind) -> [RGBA; 2] {
 	match kind {
-		palette::Kind::Mesh => [ACCENT_LIGHT, ACCENT],
+		palette::Kind::Mesh | palette::Kind::MeshPreview => [ACCENT_LIGHT, ACCENT],
 		palette::Kind::Prefab => [hex(0x8A93F0, 1.0), hex(0x5E6AD2, 1.0)],
 		palette::Kind::Light(_) => [hex(0xFFD27A, 1.0), hex(0xF5A524, 1.0)],
 		palette::Kind::Graph

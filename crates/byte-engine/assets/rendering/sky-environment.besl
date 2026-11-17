@@ -1,6 +1,7 @@
 // Fills the six faces of the sky environment's radiance cube, a face per `thread_layer`, from the sky-view LUT: the sky's radiance in the texel's
-// direction, per lux of sunlight, times the sun's unexposed illuminance. It's black below the horizon wherever the
-// LUT is, and holds no sun disk, since the directional light already carries the sun.
+// direction, per lux of sunlight, times the sun's unexposed illuminance. Below the horizon it holds what the sky shows
+// there: the horizon's sky for a full sky, so lighting comes from all around, or black when the sky skips below the
+// horizon. It holds no sun disk, since the directional light already carries the sun.
 use ::byte_engine::rendering::layouts::sky_parameters::*;
 use ::byte_engine::rendering::layouts::environment_cube::*;
 
@@ -13,7 +14,16 @@ main: fn (input: StageInput) -> void {
 	let face: u32 = input.thread_layer;
 	guard_image_bounds(result[face], texel);
 	let direction: vec3f = environment_cube_direction(face, texel, image_size(result[face]));
-	let sky: vec4f = texture_lod(sky_view_lut, octahedral_encode(direction));
+	let up: vec3f = normalize(
+		vec3f(parameters.camera_position.x, parameters.camera_position.y, parameters.camera_position.z)
+			- vec3f(parameters.planet_center.x, parameters.planet_center.y, parameters.planet_center.z)
+	);
+	let skips_below_horizon: bool = parameters.misc.y > 0.5;
+	if (skips_below_horizon && dot(direction, up) < 0.0) {
+		write(result[face], texel, vec4f(0.0, 0.0, 0.0, 1.0));
+		return;
+	}
+	let sky: vec4f = texture_lod(sky_view_lut, octahedral_encode(full_sky_direction(direction, up)));
 	write(result[face], texel, vec4f(
 		sky.x * parameters.sun_illuminance.x,
 		sky.y * parameters.sun_illuminance.y,

@@ -5,6 +5,21 @@
 // sun sets, or one below the horizon, brightens the sky at most 16 times per channel.
 SKY_MIN_SUN_TRANSMITTANCE: const f32 = 0.0625;
 
+// The direction whose sky a full sky shows toward `direction` from a camera whose local up is `up`: the direction
+// itself above the horizon, and below it the horizon in the same heading, as analytic sky models clamp the view to the
+// horizon. Straight down has no heading, so it takes the horizon toward +X.
+full_sky_direction: fn (direction: vec3f, up: vec3f) -> vec3f {
+	let elevation: f32 = dot(direction, up);
+	if (elevation >= 0.0) {
+		return direction;
+	}
+	let heading: vec3f = direction - up * elevation;
+	if (length(heading) < 0.0001) {
+		heading = vec3f(1.0, 0.0, 0.0) - up * up.x;
+	}
+	return normalize(heading);
+}
+
 SkyParameters: struct {
 	inverse_view_projection: mat4f,
 	camera_position: vec4f,

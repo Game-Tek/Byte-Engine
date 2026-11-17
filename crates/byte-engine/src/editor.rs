@@ -15,9 +15,10 @@
 //! The command palette opens, as VS Code's does, on a scope picked by its shortcut: Cmd+A on what can be placed, a
 //! mesh, prefab, or light to drag into the scene or pin to the pointer with Enter until a click places it, and Cmd+K
 //! on that and the material graphs to edit on a node canvas. Cmd+E opens it on the resources to explore: material
-//! graphs, material variants, whose parameters it changes, and textures, decoded from their source images. Each opens
-//! in a window of its own, with its own layers and UI engine, which takes the input of that window; there, any of the
-//! shortcuts finds a node kind to add to the graph.
+//! graphs, material variants, whose parameters it changes, meshes, and textures, decoded from their source images. Each
+//! opens in a window of its own, with its own layers and UI engine, which takes the input of that window; there, any of
+//! the shortcuts finds a node kind to add to the graph. A variant's window shows it on a sphere, and a mesh's window
+//! shows the mesh, both drawn on the editor's preview stage, a scene of its own; see [`preview`].
 //! A prefab spawns where it's placed, with its parameters' defaults, through the spawner the game gave the inspector,
 //! so it knows the game's own kinds. Cmd+. opens it on the game's runtime settings, which Cmd+K finds too: Enter on one
 //! shows its value in the search field, and Enter again sets it to what the field says, as the console's `set` does.
@@ -40,6 +41,7 @@ mod history;
 mod input;
 mod layers;
 mod palette;
+mod preview;
 mod scene;
 mod shell;
 mod toasts;
@@ -92,6 +94,8 @@ struct ResourceWindow {
 	renders: Factory<Render>,
 	/// The revision of the last render sent.
 	published: Option<RenderRevision>,
+	/// The stage slot the window's main panel shows, while it previews a mesh or material.
+	preview: Option<usize>,
 }
 
 /// How often the editor asks the inspector for the scene, the same rate the console refreshes at.
@@ -174,14 +178,17 @@ pub struct Editor {
 	flown: Option<Instant>,
 	/// Switches the game window between the game's camera and the editor's.
 	window_cameras: DefaultChannel<SetWindowCamera>,
+	/// Where resource windows preview meshes and materials, apart from the game's world.
+	stage: preview::Stage,
 }
 
 /// Installs the editor over `app` and returns it, so the game can step it with [`Editor::frame`].
 ///
-/// Call it during setup, after the game's own render passes and before the first window: render passes register
-/// before the first window, and the editor's pass must come last to draw over everything else, the game's own UI
-/// included. The game must use the default input, from `setup_default_input`. `viewport` is the window size the
-/// editor lays out at until the first resize. The editor starts closed.
+/// Call it during setup, after the game's own render passes, before the first window, and before
+/// [`crate::application::graphics::defaults::launch_deferred_tasks_thread`]: render passes register before the first
+/// window, the editor's pass must come last to draw over everything else, the game's own UI included, and the pipeline
+/// previews draw with loads on the loading thread. The game must use the default input, from `setup_default_input`.
+/// `viewport` is the window size the editor lays out at until the first resize. The editor starts closed.
 pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 	let renders = Factory::new();
 	// The gizmo draws over the game's frame, and the editor's panels over the gizmo.
@@ -236,6 +243,7 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 		look: None,
 		flown: None,
 		window_cameras: app.messages().channel(),
+		stage: preview::Stage::install(app),
 	}
 }
 
@@ -265,7 +273,8 @@ impl Editor {
 				}
 				// The application closed the window already; the editor lets go of what drew in it.
 				(Events::Close, Some(index)) => {
-					self.resources.remove(index);
+					let resource = self.resources.remove(index);
+					self.release(&resource);
 				}
 				_ => {}
 			}
@@ -325,12 +334,14 @@ impl Editor {
 	/// Writes what each resource window changed, lays it out, and sends its render when it changed. Closes a window
 	/// whose last layer Escape popped, and every one once the editor closed.
 	fn step_resources(&mut self, app: &mut GraphicsApplication) {
+		self.stage.adopt();
 		let open = self.engine.ctx_mut().layers.open();
 		let mut index = 0;
 		while index < self.resources.len() {
 			if !open || !self.resources[index].engine.ctx_mut().layers.open() {
 				let resource = self.resources.remove(index);
 				self.close_windows.send(CloseWindow::new(resource.window));
+				self.release(&resource);
 				continue;
 			}
 			// Saving reads the window's own shell, which takes the main engine's place while it's written.
@@ -341,6 +352,15 @@ impl Editor {
 			std::mem::swap(&mut self.engine, &mut self.resources[index].engine);
 
 			let resource = &mut self.resources[index];
+			// The preview follows the drag and scroll the panel took, fills the room the panel leaves it, and shows once
+			// the renderer named its image.
+			if let Some(slot) = resource.preview {
+				let shell = resource.engine.ctx_mut();
+				let (turn, zoom) = (shell.turn.take(), std::mem::take(&mut shell.zoom));
+				self.stage.steer(slot, turn, zoom);
+				self.stage.resize(slot, shell::picture_room(shell.viewport));
+				shell.preview = self.stage.image(slot);
+			}
 			let viewport = resource.engine.ctx_mut().viewport;
 			resource.engine.evaluate(viewport, app.frame_allocator());
 			let render = resource.engine.render();
@@ -352,10 +372,17 @@ impl Editor {
 		}
 	}
 
-	/// Opens `layer`, a material graph or a texture, in a window of its own titled `id`, the asset it shows. The
-	/// window draws only its own interface, which its engine lays out with `layer` at the bottom of its stack. An asset
-	/// already open in a window doesn't open again.
-	fn open_resource(&mut self, app: &mut GraphicsApplication, id: &str, layer: Layer) {
+	/// Frees the stage slot a closed resource window previewed in, for the next preview.
+	fn release(&mut self, resource: &ResourceWindow) {
+		if let Some(slot) = resource.preview {
+			self.stage.close(slot);
+		}
+	}
+
+	/// Opens `layer`, such as a material graph or a texture, in a window of its own titled `id`, the asset it shows,
+	/// with `subject` on the stage for its main panel to show. The window draws only its own interface, which its
+	/// engine lays out with `layer` at the bottom of its stack. An asset already open in a window doesn't open again.
+	fn open_resource(&mut self, app: &mut GraphicsApplication, id: &str, layer: Layer, subject: Option<preview::Subject>) {
 		if self.resources.iter().any(|resource| resource.asset == id) {
 			return;
 		}
@@ -371,6 +398,8 @@ impl Editor {
 		let mut engine = Engine::with_context(shell);
 		engine.set_waker(app.waker().into());
 		engine.mount(async |root| shell::window(root).await);
+		let viewport = Size::new(RESOURCE_WINDOW[0], RESOURCE_WINDOW[1]);
+		let preview = subject.map(|subject| self.stage.open(app, subject, shell::picture_room(viewport)));
 		self.resources.push(ResourceWindow {
 			window,
 			id: None,
@@ -378,6 +407,7 @@ impl Editor {
 			engine,
 			renders,
 			published: None,
+			preview,
 		});
 	}
 
@@ -893,6 +923,10 @@ impl Editor {
 				self.open_variant(app, id);
 				return;
 			}
+			palette::Kind::MeshPreview => {
+				self.open_mesh(app, id);
+				return;
+			}
 			// A command's palette gives way to one on what it asks for next: the folder what it creates goes in, or
 			// the material a variant specializes.
 			palette::Kind::NewLevel | palette::Kind::NewMaterial | palette::Kind::NewVariant | palette::Kind::Material => {
@@ -918,7 +952,7 @@ impl Editor {
 			graph::Graph::open(id, &text)
 		});
 		match opened {
-			Ok(graph) => self.open_resource(app, id, Layer::Graph(graph)),
+			Ok(graph) => self.open_resource(app, id, Layer::Graph(graph), None),
 			Err(error) => log::warn!("The editor couldn't open the material graph. {error}"),
 		}
 	}
@@ -946,7 +980,7 @@ impl Editor {
 		let opened = create::read_material(app, id)
 			.and_then(|source| variant::Variant::open(id, source, |parent| create::read_material(app, parent)));
 		match opened {
-			Ok(variant) => self.open_resource(app, id, Layer::Variant(variant)),
+			Ok(variant) => self.open_resource(app, id, Layer::Variant(variant), Some(preview::Subject::Material(id))),
 			Err(error) => log::warn!("The editor couldn't open the variant. {error}"),
 		}
 	}
@@ -963,6 +997,17 @@ impl Editor {
 		let source = variant.set(&name, value);
 		if let Err(error) = app.inspector().write_source_asset(&variant.id, &source) {
 			log::warn!("The editor couldn't save '{}'. {error}", variant.id);
+		}
+	}
+
+	/// Opens the stored mesh `id` in a window of its own, on the stage, framed by the box that holds it.
+	fn open_mesh(&mut self, app: &mut GraphicsApplication, id: &str) {
+		match app.inspector().mesh_bounds(id) {
+			Ok(bounds) => {
+				let mesh = layers::Mesh { id: id.to_owned(), bounds };
+				self.open_resource(app, id, Layer::Mesh(mesh), Some(preview::Subject::Mesh(id, bounds)));
+			}
+			Err(error) => log::warn!("The editor couldn't preview '{id}'. {error}"),
 		}
 	}
 
@@ -990,7 +1035,7 @@ impl Editor {
 					preview,
 					settings,
 				};
-				self.open_resource(app, id, Layer::Texture(texture));
+				self.open_resource(app, id, Layer::Texture(texture), None);
 			}
 			Err(error) => log::warn!("The editor couldn't preview '{id}'. {error}"),
 		}
@@ -1382,6 +1427,11 @@ fn palette_entries(app: &GraphicsApplication, scope: &palette::Scope, graph: Opt
 		Scope::Configure => return settings().collect(),
 		Scope::Explore => {
 			explorable(app, &mut entries);
+			// Only the explorer opens meshes: everywhere else, a mesh is placed.
+			match app.inspector().resources("Mesh") {
+				Ok(meshes) => entries.extend(meshes.into_iter().map(|id| Entry::new(id, Kind::MeshPreview))),
+				Err(error) => log::warn!("The palette couldn't list the game's meshes. {error}"),
+			}
 			return entries;
 		}
 		Scope::Materials => {

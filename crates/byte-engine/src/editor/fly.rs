@@ -14,8 +14,10 @@ use crate::math::{Point, Scale, UnitVector, Vector, direction_from_orientation};
 const ACCELERATION: f32 = 100.0;
 /// The share of its speed the camera keeps after a second without keys, so it glides to a stop at any frame rate.
 const DAMPING: f32 = 0.01;
-/// How far short of straight up or down the camera can look, in radians, so its view keeps a direction to call right.
+/// How far short of straight up or down a camera can look, in radians, so its view keeps a direction to call right.
 const PITCH_MARGIN: f32 = 0.01;
+/// The steepest a camera can look up or down, in radians.
+const PITCH_LIMIT: f32 = FRAC_PI_2 - PITCH_MARGIN;
 
 /// The `Fly` struct is the editor camera's place and motion while it's flown, so each frame moves it on from the last.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,11 +36,10 @@ impl Fly {
 	/// takes over from the game's.
 	pub(crate) fn from_transform(transform: &Transform) -> Self {
 		let direction = direction_from_orientation(transform.get_orientation());
-		let limit = FRAC_PI_2 - PITCH_MARGIN;
 		Self {
 			position: transform.get_position(),
 			yaw: direction.x().atan2(direction.z()),
-			pitch: direction.y().clamp(-1.0, 1.0).asin().clamp(-limit, limit),
+			pitch: direction.y().clamp(-1.0, 1.0).asin().clamp(-PITCH_LIMIT, PITCH_LIMIT),
 			velocity: Vector::new(0.0, 0.0, 0.0),
 		}
 	}
@@ -47,15 +48,14 @@ impl Fly {
 	/// turns it a full circle, and one from bottom to top looks from straight down to straight up, as the model
 	/// viewer's pointer does.
 	pub(crate) fn turn(&mut self, delta: [f32; 2]) {
-		let limit = FRAC_PI_2 - PITCH_MARGIN;
 		self.yaw += delta[0] * PI;
-		self.pitch = (self.pitch + delta[1] * FRAC_PI_2).clamp(-limit, limit);
+		self.pitch = (self.pitch + delta[1] * FRAC_PI_2).clamp(-PITCH_LIMIT, PITCH_LIMIT);
 	}
 
 	/// Moves the camera on by `dt` seconds with `thrust` held, right, up, and forward along its view, each from -1 to
 	/// 1, and returns where it now is.
 	pub(crate) fn step(&mut self, thrust: [f32; 3], dt: f32) -> Transform {
-		let forward = self.direction();
+		let forward = heading(self.yaw, self.pitch);
 		let right = up().cross(forward.into_vector());
 		let up = forward.cross(right);
 		let push = thrust[0] * right + thrust[1] * up + thrust[2] * forward.into_vector();
@@ -67,20 +67,21 @@ impl Fly {
 
 	/// Where the camera is, looking along its view.
 	pub(crate) fn transform(&self) -> Transform {
-		Transform::new(self.position, Scale::identity(), self.direction().into())
+		Transform::new(self.position, Scale::identity(), heading(self.yaw, self.pitch).into())
 	}
 
 	/// Whether the camera is still gliding, so the editor knows to keep moving it.
 	pub(crate) fn moving(&self) -> bool {
 		self.velocity.dot(self.velocity) > 1e-6
 	}
+}
 
-	fn direction(&self) -> UnitVector {
-		let (yaw, pitch) = (self.yaw, self.pitch);
-		Vector::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos())
-			.normalized()
-			.expect("A direction from angles has unit length.")
-	}
+/// The direction a camera turned `yaw` about the vertical, from +Z toward +X, and tilted `pitch` above the horizon
+/// looks along, both in radians.
+pub(crate) fn heading(yaw: f32, pitch: f32) -> UnitVector {
+	Vector::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos())
+		.normalized()
+		.expect("A direction from angles has unit length.")
 }
 
 #[cfg(test)]

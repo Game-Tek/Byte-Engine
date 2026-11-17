@@ -64,10 +64,15 @@ pub struct AtmosphereSkyRenderPassSettings {
 	/// The fraction of sunlight the planet's surface reflects back into the atmosphere. Multiple scattering adds that
 	/// light to the sky.
 	pub ground_albedo: f32,
+	/// Whether directions below the horizon keep the scene's clear color instead of the sky. The default, `false`,
+	/// draws a full sky around the camera, as a model viewer or a material preview wants: below the horizon, each
+	/// direction shows the sky at the horizon in the same heading. Set it for a game whose ground covers everything
+	/// below the horizon.
 	pub skip_below_horizon: bool,
 	pub planet_center: Point,
 	/// The fraction of the screen's height, from the top, that the sky covers, clamped to `0.0..=1.0`. The default,
-	/// `0.5`, covers the upper half; use `1.0` for cameras that look up or down. Rows below keep the scene's clear color.
+	/// `1.0`, covers the full screen; `0.5` covers the upper half, which is enough for a camera that skips below the
+	/// horizon and never looks far down. Rows below keep the scene's clear color.
 	pub screen_height: f32,
 }
 
@@ -82,9 +87,9 @@ impl Default for AtmosphereSkyRenderPassSettings {
 			haze: 0.05,
 			ozone_strength: 1.0,
 			ground_albedo: 0.3,
-			skip_below_horizon: true,
+			skip_below_horizon: false,
 			planet_center: Point::new(0.0, -6_360_000.0, 0.0),
-			screen_height: 0.5,
+			screen_height: 1.0,
 		}
 	}
 }
@@ -733,7 +738,7 @@ impl RenderPass for AtmosphereSkyEnvironment {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{Buffer, DescriptorBindings, ResourceSlot, Value};
-	use math::{Point, UnitVector};
+	use math::{Point, UnitVector, Vector};
 	use maths_rs::Vec3f;
 
 	use super::simple_compute;
@@ -768,8 +773,8 @@ mod tests {
 		}
 	}
 
-	/// Uploads the production sky constants for `settings`, `sun`, and a camera with `exposure_scale`, so every shader
-	/// test reads exactly what the pass writes.
+	/// Uploads the production sky constants for `settings`, `sun`, and a camera with `exposure_scale` looking along +Z,
+	/// so every shader test reads exactly what the pass writes.
 	fn sky_parameters(
 		program: &besl::vm::ExecutableProgram,
 		parameter_slot: ResourceSlot,
@@ -777,13 +782,25 @@ mod tests {
 		sun: crate::rendering::Sun,
 		exposure_scale: f32,
 	) -> Buffer {
+		sky_parameters_looking(program, parameter_slot, settings, sun, exposure_scale, UnitVector::z_axis())
+	}
+
+	/// Uploads the sky constants as [`sky_parameters`] does, for a camera at the origin looking along `looking`.
+	fn sky_parameters_looking(
+		program: &besl::vm::ExecutableProgram,
+		parameter_slot: ResourceSlot,
+		settings: &super::AtmosphereSkyRenderPassSettings,
+		sun: crate::rendering::Sun,
+		exposure_scale: f32,
+		looking: UnitVector,
+	) -> Buffer {
 		let view = crate::rendering::View::new_perspective(
 			math::Degrees::new(60.0),
 			1.0,
 			0.1,
 			100.0,
 			Point::origin(),
-			UnitVector::z_axis(),
+			looking,
 		);
 		let sink = crate::rendering::Sink::new(view, utils::Extent::square(1), 0).with_exposure_scale(exposure_scale);
 		let data = super::sky_shader_data(settings, &sun, &sink);
@@ -1029,11 +1046,24 @@ mod tests {
 		sun_illuminance: [f32; 3],
 		exposure_scale: f32,
 	) -> [f32; 4] {
+		let sun = test_sun(sun_illuminance, sun_direction);
+		let sky_view = texture_2d(1, 1, &[sky_scattering]);
+		composite_looking(settings, sun, sky_view, sun_transmittance, exposure_scale, UnitVector::z_axis())
+	}
+
+	/// Composites one background pixel as [`composite`] does, over the sky-view LUT `sky_view`, for a camera looking
+	/// along `looking`, whose single pixel looks that way.
+	fn composite_looking(
+		settings: &super::AtmosphereSkyRenderPassSettings,
+		sun: crate::rendering::Sun,
+		mut sky_view: besl::vm::Texture,
+		sun_transmittance: [f32; 3],
+		exposure_scale: f32,
+		looking: UnitVector,
+	) -> [f32; 4] {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*SKY_SHADER_BESL));
 		let parameter_slot = slot(&program, "parameters");
-		let sun = test_sun(sun_illuminance, sun_direction);
-		let mut parameters = sky_parameters(&program, parameter_slot, settings, sun, exposure_scale);
-		let mut sky_view = texture_2d(1, 1, &[sky_scattering]);
+		let mut parameters = sky_parameters_looking(&program, parameter_slot, settings, sun, exposure_scale, looking);
 		let [r, g, b] = sun_transmittance;
 		let mut transmittance = texture_2d(1, 1, &[[r, g, b, 1.0]]);
 		let mut depth = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
@@ -1064,6 +1094,31 @@ mod tests {
 			[0.0, 0.0, 0.0, 1.0],
 			0.0,
 		);
+	}
+
+	/// Verifies that a full sky shows below the horizon the sky at the horizon in the same heading, and that skipping
+	/// below the horizon leaves those pixels as the scene cleared them.
+	#[test]
+	fn below_the_horizon_a_full_sky_shows_the_horizon() {
+		// Every texel holds its own index, so the pixel shows which direction it sampled.
+		let texels: Vec<[f32; 4]> = (0..64).map(|index| [index as f32 * 0.01, 0.0, 0.0, 1.0]).collect();
+		let sun = test_sun(TEST_SUN_ILLUMINANCE, test_sun_direction());
+		let shown = |settings: &super::AtmosphereSkyRenderPassSettings, looking: Vector| {
+			let looking = looking.normalized().unwrap();
+			composite_looking(settings, sun, texture_2d(8, 8, &texels), [1.0; 3], 1.0, looking)
+		};
+		let full = super::AtmosphereSkyRenderPassSettings::default();
+		let horizon = shown(&full, Vector::new(0.0, 0.0, 1.0));
+		let below = shown(&full, Vector::new(0.0, -1.0, 1.0));
+		let straight_up = shown(&full, Vector::new(0.0, 1.0, 1.0));
+		assert_rgba_close(below, horizon, 1e-6);
+		assert!(straight_up != horizon, "The texels above the horizon tell directions apart: {straight_up:?}");
+
+		let skipping = super::AtmosphereSkyRenderPassSettings {
+			skip_below_horizon: true,
+			..Default::default()
+		};
+		assert_rgba_close(shown(&skipping, Vector::new(0.0, -1.0, 1.0)), [0.0; 4], 0.0);
 	}
 
 	/// Verifies that the light's illuminance is the sunlight that reaches the camera. Light scattered once reaches the
@@ -1181,6 +1236,43 @@ mod tests {
 		drop(descriptors);
 
 		assert_rgba_close(rgba(&result, [1, 0]), [8.0, 6.0, 4.0, 1.0], 1e-3);
+	}
+
+	/// Verifies that the sky environment lights from all around under a full sky: straight down it holds the horizon's
+	/// sky, and black only when the sky skips below the horizon.
+	#[test]
+	fn a_full_sky_environment_holds_the_horizon_below_it() {
+		let program =
+			crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*SKY_ENVIRONMENT_SHADER_BESL));
+		let parameter_slot = slot(&program, "parameters");
+		// Every texel holds its own index, so a texel shows which direction it sampled.
+		let texels: Vec<[f32; 4]> = (0..64).map(|index| [1.0 + index as f32, 0.0, 0.0, 1.0]).collect();
+		// The center texel of a three-texel face looks straight along the face's axis.
+		let center = |settings: &super::AtmosphereSkyRenderPassSettings, face: u32| {
+			let mut parameters =
+				sky_parameters(&program, parameter_slot, settings, test_sun([1.0; 3], test_sun_direction()), 1.0);
+			let mut sky_view = texture_2d(8, 8, &texels);
+			let mut result = empty_image(3, 3);
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(slot(&program, "sky_view_lut"), &mut sky_view);
+			descriptors.bind_buffer(parameter_slot, &mut parameters);
+			descriptors.bind_image(slot(&program, "result").offset(face), &mut result);
+			run_on_face(&program, &mut descriptors, [1, 1], face);
+			drop(descriptors);
+			rgba(&result, [1, 1])
+		};
+		// The faces are +X, -X, +Y, -Y, +Z, -Z.
+		let full = super::AtmosphereSkyRenderPassSettings::default();
+		let toward_x = center(&full, 0);
+		let straight_down = center(&full, 3);
+		assert!(toward_x[0] > 0.0, "The horizon holds sky: {toward_x:?}");
+		assert_rgba_close(straight_down, toward_x, 1e-5);
+
+		let skipping = super::AtmosphereSkyRenderPassSettings {
+			skip_below_horizon: true,
+			..Default::default()
+		};
+		assert_rgba_close(center(&skipping, 3), [0.0, 0.0, 0.0, 1.0], 0.0);
 	}
 
 	/// Verifies that the environment shaders, which index six-face storage arrays by `thread_layer`, compile with the

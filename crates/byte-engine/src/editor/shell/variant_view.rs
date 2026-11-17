@@ -1,10 +1,11 @@
-//! A material variant's window: an empty main panel titled with the variant and its parent, and the variant's
-//! parameters docked on the right, each in a field that takes a typed value.
+//! A material variant's window: a main panel titled with the variant and its parent, which previews the variant on a
+//! sphere, and the variant's parameters docked on the right, each in a field that takes a typed value.
 //!
 //! A typed value that reads for its parameter's kind becomes [`Shell::variant_edit`], which the editor writes to the
 //! variant's file; see [`crate::editor::variant`].
 
-use super::resource_panels::{docked_panel, main_panel};
+use super::preview_view::preview;
+use super::resource_panels::{docked_panel, main_panel, picture_room};
 use super::{FIELD_HEIGHT, MUTED, SQUIRCLE, Shell, TEXT, block, read_typed, row_style, setting_style, solid, typing_style};
 use crate::editor::layers::Layer;
 use crate::editor::variant::{self, Kind};
@@ -32,8 +33,8 @@ pub(super) async fn variant_view(ctx: &mut EvaluationContext<Shell>) {
 	}
 }
 
-/// Declares the main panel, titled with the variant and the material it specializes, and keeps it until the variant
-/// closes or the window resizes, then returns it for removal. Under its title it's empty for now.
+/// Declares the main panel, titled with the variant and the material it specializes, with the variant's preview under
+/// its title, and keeps it until the variant closes or the window resizes, then returns it for removal.
 async fn variant_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
 	let viewport = ctx.with(|shell: &mut Shell| shell.viewport).await;
 	let (name, parent) = ctx
@@ -42,7 +43,8 @@ async fn variant_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 			(variant.file().to_owned(), format!("variant of {}", variant.parent))
 		})
 		.await;
-	let (frame, mut close, _) = main_panel(ctx, &name, &parent).await;
+	let (mut frame, mut close, _) = main_panel(ctx, &name, &parent).await;
+	preview(&mut frame, picture_room(viewport)).await;
 	let mut close_hovered = false;
 	loop {
 		select! {

@@ -8,10 +8,22 @@ use super::{
 use crate::ui::flow;
 use crate::ui::layout::context::{Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
-use crate::ui::{Anchor, Position};
+use crate::ui::{Anchor, Position, Size};
 
 /// The height of the main panel's title bar.
 pub(super) const TITLE_HEIGHT: f32 = 36.0;
+
+/// The room the main panel leaves under its title bar in a window of `viewport` pixels, as whole pixels, which a
+/// preview fills.
+pub(crate) fn picture_room(viewport: Size) -> [u32; 2] {
+	let [width, height] = main_size(viewport);
+	[width as u32, (height - TITLE_HEIGHT) as u32]
+}
+
+/// The main panel's width and height in a window of `viewport` pixels.
+fn main_size(viewport: Size) -> [f32; 2] {
+	[(viewport.x() - PROPERTIES_WIDTH).max(200.0), viewport.y().max(TITLE_HEIGHT + 100.0)]
+}
 
 /// Declares the main panel, titled `name` with `detail` beside it in muted text, and returns it with its close button
 /// and its size. What it shows goes under the title bar, from `TITLE_HEIGHT` down.
@@ -20,9 +32,7 @@ pub(super) async fn main_panel(
 	name: &str,
 	detail: &str,
 ) -> (EvaluationContext<Shell>, EvaluationContext<Shell>, [f32; 2]) {
-	let viewport = ctx.with(|shell: &mut Shell| shell.viewport).await;
-	let width = (viewport.x() - PROPERTIES_WIDTH).max(200.0);
-	let height = viewport.y().max(TITLE_HEIGHT + 100.0);
+	let [width, height] = main_size(ctx.with(|shell: &mut Shell| shell.viewport).await);
 	let mut frame = ctx
 		.element("frame")
 		.container(|c| {

@@ -188,7 +188,8 @@ channel, by the atmosphere's transmittance from the camera toward the sun:
 
 The sky is drawn after opaque surfaces
 and before transparent ones, so glass and other blended surfaces show the sky behind them. By
-default the sky covers the upper half of the screen; its `screen_height` setting changes how much.
+default the sky fills the whole screen, and below the horizon each direction shows the sky at the horizon in the same
+heading; its `skip_below_horizon` setting leaves the directions below the horizon black, and its `screen_height` setting limits how much of the screen it covers.
 
 <Callout type="info" title="Physical calibration limits">
 	Emissive materials don't have a unified physical calibration with analytic

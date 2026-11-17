@@ -47,15 +47,19 @@ main: fn (input: StageInput) -> void {
 	let direction: vec3f = reconstruct_view_direction(pixel, extent);
 	let camera_position: vec3f = get_camera_position();
 	let planet_center: vec3f = get_planet_center();
-	// Below the horizon the background keeps the black the scene cleared it to.
-	if (should_skip_below_horizon() && dot(direction, normalize(camera_position - planet_center)) < 0.0) {
+	let local_up: vec3f = normalize(camera_position - planet_center);
+	let elevation: f32 = dot(direction, local_up);
+	// Below the horizon the background keeps the black the scene cleared it to, or, for a full sky, shows the sky at
+	// the horizon in the same heading instead of the planet.
+	if (should_skip_below_horizon() && elevation < 0.0) {
 		return;
 	}
+	let sky_direction: vec3f = full_sky_direction(direction, local_up);
 
 	// The sky-view LUT holds scattering per lux of sunlight reaching the camera, so the sun light's RGB illuminance
 	// sets the sky's brightness and color. The uploaded illuminance and disk radiance already include the camera
 	// exposure, so the sky is written pre-exposed.
-	let sampled_sky: vec4f = texture_lod(sky_view_lut, octahedral_encode(direction));
+	let sampled_sky: vec4f = texture_lod(sky_view_lut, octahedral_encode(sky_direction));
 	let sky_scattering: vec3f = vec3f(sampled_sky.x, sampled_sky.y, sampled_sky.z)
 		* vec3f(parameters.sun_illuminance.x, parameters.sun_illuminance.y, parameters.sun_illuminance.z);
 	let sun_direction: vec3f = get_sun_direction();

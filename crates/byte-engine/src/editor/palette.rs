@@ -39,7 +39,7 @@ pub(crate) enum Scope {
 	All,
 	/// What can be placed in the scene, opened with Cmd+A.
 	Place,
-	/// The resources to open and look at, material graphs and textures, opened with Cmd+E.
+	/// The resources to open and look at, material graphs, variants, meshes, and textures, opened with Cmd+E.
 	Explore,
 	/// The game's runtime settings, opened with Cmd+.
 	Configure,
@@ -102,6 +102,8 @@ pub(crate) enum Kind {
 	Graph,
 	/// Previews the texture source image the label names.
 	Texture,
+	/// Previews the stored mesh the label names, which the explorer opens instead of placing it.
+	MeshPreview,
 	/// Opens the material variant the label names, to change its parameters.
 	Variant,
 	/// Adds a node of the kind the label names to the open graph.
@@ -149,7 +151,15 @@ impl Entry {
 	/// The name the row leads with: a resource's file name without its extension, or the whole label otherwise.
 	pub(crate) fn name(&self) -> &str {
 		match self.kind {
-			Kind::Mesh | Kind::Prefab | Kind::Graph | Kind::Texture | Kind::Variant | Kind::Material => entity_name(&self.label),
+			Kind::Mesh
+			| Kind::MeshPreview
+			| Kind::Prefab
+			| Kind::Graph
+			| Kind::Texture
+			| Kind::Variant
+			| Kind::Material => {
+				entity_name(&self.label)
+			}
 			Kind::Light(_)
 			| Kind::Node
 			| Kind::Setting(_)

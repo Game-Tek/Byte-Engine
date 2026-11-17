@@ -287,7 +287,7 @@ impl SceneBackground {
 	}
 }
 
-/// Builds the scene's generated environment, once for the whole renderer; see [`RenderPassBuilder::scene_environment`].
+/// Builds a scene's generated environment, once for each scene; see [`RenderPassBuilder::scene_environment`].
 pub type SceneEnvironmentFactory =
 	dyn for<'builder, 'resources> Fn(&'builder mut RenderPassBuilder<'resources>) -> SceneEnvironment;
 
@@ -529,7 +529,7 @@ impl<'a> RenderPassBuilder<'a> {
 
 	/// Returns the scene's generated environment, or `None` when the application registered none.
 	///
-	/// Every sink gets the same environment. Scene pipelines record it once per frame, before any work that reads the
+	/// Every sink of a scene gets the same environment, its scene's. Scene pipelines record it once per frame, before any work that reads the
 	/// environment, and light with its maps while the scene selects no [`crate::rendering::Environment`].
 	pub fn scene_environment(&self) -> Option<SceneEnvironment> {
 		self.scene_environment.clone()

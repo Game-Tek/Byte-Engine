@@ -145,6 +145,12 @@ The resource query lists the ID of every stored resource of one class, such as
 and matched exactly. It reads the store, so a development build lists only the
 resources it already baked. A class no resource has lists nothing.
 
+The mesh bounds query answers, for one stored mesh, the smallest axis-aligned
+box that holds the bounding boxes of all its primitives, in the coordinates the
+mesh was authored in. Node transforms aren't applied. A development build bakes
+the mesh first when it's missing or stale. An ID that names no mesh fails with
+the cause. Only in-process tools ask it.
+
 ## Source assets
 
 In a development build, the inspector reaches the application's source

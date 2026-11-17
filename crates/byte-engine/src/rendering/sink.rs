@@ -3,7 +3,7 @@ use utils::Extent;
 
 use crate::{
 	core::factory::Handle,
-	rendering::{ExponentialHeightFog, Sun, view::View},
+	rendering::{ExponentialHeightFog, SceneId, Sun, view::View},
 	time::MediaTime,
 };
 
@@ -32,6 +32,8 @@ pub struct Sink {
 	fog: Option<ExponentialHeightFog>,
 	/// The camera the sink shows; see [`Self::with_camera`].
 	camera: Option<Handle>,
+	/// The scene the sink shows; see [`Self::with_scene`].
+	scene: SceneId,
 	index: usize,
 }
 
@@ -52,6 +54,7 @@ impl Sink {
 			sun: None,
 			fog: None,
 			camera: None,
+			scene: SceneId::WORLD,
 			index,
 		}
 	}
@@ -180,5 +183,17 @@ impl Sink {
 	/// Returns the camera the sink shows, or `None` for a sink built without one, such as one made for a test.
 	pub fn camera(&self) -> Option<Handle> {
 		self.camera
+	}
+
+	/// Sets the scene the sink shows, so passes that draw one scene's objects, such as the world's debug meshes, leave
+	/// the other scenes' sinks alone. A sink shows the world unless this sets another scene.
+	pub fn with_scene(mut self, scene: SceneId) -> Self {
+		self.scene = scene;
+		self
+	}
+
+	/// Returns the scene the sink shows; see [`Self::with_scene`].
+	pub fn scene(&self) -> SceneId {
+		self.scene
 	}
 }

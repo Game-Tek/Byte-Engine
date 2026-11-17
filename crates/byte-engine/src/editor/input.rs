@@ -8,7 +8,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::application::graphics::GraphicsApplication;
-use crate::input::{ActionBindingDescription, ActionHandle, Capture, InputSink, ResolvedAction, TickPolicy, Types};
+use crate::constants::{forward, right, up};
+use crate::input::{ActionBindingDescription, ActionHandle, Axis3, Capture, InputSink, ResolvedAction, TickPolicy, Types};
 
 /// The `Actions` struct names the editor's actions, so [`crate::editor::Editor::frame`] can tell the resolved ones apart.
 pub(crate) struct Actions {
@@ -39,6 +40,11 @@ pub(crate) struct Actions {
 	pub(crate) down: ActionHandle,
 	pub(crate) enter: ActionHandle,
 	pub(crate) escape: ActionHandle,
+	/// W, A, S, D, Space, and the left Shift held, as a push right, up, and forward along the editor camera's view, the
+	/// model viewer's keys. It repeats every tick while a key is held.
+	pub(crate) fly: ActionHandle,
+	/// The pointer dragged with the right button, which turns the editor camera.
+	pub(crate) look: ActionHandle,
 }
 
 /// The `Layer` struct is the state the editor's input layer shares with the editor, which reads what the layer
@@ -57,6 +63,23 @@ pub(crate) fn install(app: &mut GraphicsApplication) -> (Actions, Rc<RefCell<Lay
 	let channel = app.messages().channel();
 	let (collector, _) = app.actions_mut();
 	let mut sink = InputSink::new(collector.add_sink(), channel);
+	let push = |key: &'static str, direction: crate::math::UnitVector| {
+		ActionBindingDescription::new(key).mapped(Axis3::from(direction).into())
+	};
+	let fly = sink.create_action(
+		collector,
+		"EditorFly",
+		Types::Vector3,
+		&[
+			push("Keyboard.W", forward()),
+			push("Keyboard.S", -forward()),
+			push("Keyboard.A", -right()),
+			push("Keyboard.D", right()),
+			push("Keyboard.Space", up()),
+			push("Keyboard.LeftShift", -up()),
+		],
+		TickPolicy::WhileActive,
+	);
 	let mut action = |name: &'static str, bindings: &[ActionBindingDescription], kind: Types| {
 		sink.create_action(collector, name, kind, bindings, TickPolicy::OnChange)
 	};
@@ -137,6 +160,12 @@ pub(crate) fn install(app: &mut GraphicsApplication) -> (Actions, Rc<RefCell<Lay
 			"EditorEscape",
 			&[ActionBindingDescription::new("Keyboard.Escape")],
 			Types::Boolean,
+		),
+		fly,
+		look: action(
+			"EditorLook",
+			&[ActionBindingDescription::new("Pointer.Position").dragged_by("Pointer.RightButton")],
+			Types::Vector2,
 		),
 	};
 

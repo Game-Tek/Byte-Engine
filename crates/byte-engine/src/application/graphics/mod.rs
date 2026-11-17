@@ -127,6 +127,8 @@ pub struct GraphicsApplication {
 	window_factory: (Factory<Window>, DefaultListener<CreateMessage<Window>>),
 	/// Feature changes for open windows, which the renderer applies before each frame.
 	window_features: DefaultListener<rendering::SetWindowFeatures>,
+	/// Camera changes for open windows, which the renderer applies before each frame.
+	window_cameras: DefaultListener<rendering::SetWindowCamera>,
 	/// Windows the application closes, which the renderer removes before each frame.
 	window_closes: DefaultListener<rendering::CloseWindow>,
 	/// This tick's window events, kept between ticks so polling allocates nothing.
@@ -218,6 +220,7 @@ struct Services {
 	window_factory: Factory<Window>,
 	window_factory_listener: DefaultListener<CreateMessage<Window>>,
 	window_features: DefaultListener<rendering::SetWindowFeatures>,
+	window_cameras: DefaultListener<rendering::SetWindowCamera>,
 	window_closes: DefaultListener<rendering::CloseWindow>,
 	generator_factory: Factory<std::boxed::Box<dyn Generator>>,
 	window_events: DefaultChannel<ghi::window::Event>,
@@ -343,6 +346,7 @@ impl GraphicsApplication {
 						let window_factory = messages.factory();
 						let window_factory_listener = window_factory.listener();
 						let window_features = messages.channel().listener();
+						let window_cameras = messages.channel().listener();
 						let window_closes = messages.channel().listener();
 
 						let generator_factory = messages.factory();
@@ -365,6 +369,7 @@ impl GraphicsApplication {
 							window_factory,
 							window_factory_listener,
 							window_features,
+							window_cameras,
 							window_closes,
 							generator_factory,
 							window_events,
@@ -466,6 +471,7 @@ impl GraphicsApplication {
 
 			window_factory: (services.window_factory, services.window_factory_listener),
 			window_features: services.window_features,
+			window_cameras: services.window_cameras,
 			window_closes: services.window_closes,
 			polled_window_events: Vec::new(),
 			input_layers: Vec::new(),
@@ -716,7 +722,8 @@ impl GraphicsApplication {
 		self.gamepad_system.poll(&mut self.input, self.gamepad_device_class_handle);
 	}
 
-	/// Adopts newly created windows, cameras, directional lights, and fogs before renderer preparation.
+	/// Adopts newly created windows, cameras, the cameras windows show, directional lights, and fogs before renderer
+	/// preparation.
 	fn prepare_renderer_state(&mut self) {
 		let _span = debug_span!("GraphicsApplication::prepare_renderer_state").entered();
 		while let Some(message) = self.window_factory.1.read() {
@@ -730,6 +737,9 @@ impl GraphicsApplication {
 		}
 		while let Some(message) = self.cameras_listener.read() {
 			self.renderer.create_camera(message.handle(), message.into_data());
+		}
+		while let Some(change) = self.window_cameras.read() {
+			self.renderer.set_window_camera(change.window(), change.camera());
 		}
 		while let Some(message) = self.directional_lights_listener.read() {
 			self.renderer.create_directional_light(message.handle(), message.into_data());

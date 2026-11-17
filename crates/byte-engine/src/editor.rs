@@ -8,9 +8,10 @@
 //! F5 opens and closes it. Its modes stack as layers: the scene at the bottom, then a material graph, the palette,
 //! a setting being typed, or a carried load on top. The top layer takes input, and Escape pops it, so Escape steps
 //! back one mode at a time and closes the editor from the scene. While it's open, it frees the cursor and takes all
-//! of the game's input. Clicking the game
-//! view selects what it shows, and the gizmo, drawn in its own render pass, moves, turns, or scales the selection, by
-//! the tool the toolbar picks.
+//! of the game's input. It shows the game's camera until W, A, S, D, Space, Shift, or a right-button drag flies the
+//! view, which switches the game window to the editor's own camera, standing where the game's was; closing the editor
+//! gives the window the game's camera back. Clicking the game view selects what it shows, and the gizmo, drawn in its
+//! own render pass, moves, turns, or scales the selection, by the tool the toolbar picks.
 //! The command palette opens, as VS Code's does, on a scope picked by its shortcut: Cmd+A on what can be placed, a
 //! mesh, prefab, or light to drag into the scene or pin to the pointer with Enter until a click places it, and Cmd+K
 //! on that and the material graphs to edit on a node canvas. Cmd+E opens it on the resources to explore: material
@@ -32,6 +33,7 @@ mod carry;
 mod create;
 mod drawer;
 mod fields;
+mod fly;
 mod gizmo;
 mod graph;
 mod history;
@@ -57,6 +59,7 @@ use crate::core::factory::{CreateMessage, Factory, Handle};
 use crate::core::listener::{DefaultListener, Listener as _};
 use crate::gameplay::Transform;
 use crate::gameplay::level::level_entity_handle_from_root;
+use crate::gameplay::transform::TransformationUpdate;
 use crate::ghi::window::{Event, Events};
 use crate::editor::layers::Layer;
 use crate::input::{ActionPhase, ResolvedAction, SeatHandle, Value};
@@ -65,7 +68,9 @@ use crate::inspector::{
 };
 use crate::math::Point;
 use crate::physics::{RayQuery, RayQueryResponse};
-use crate::rendering::{CloseWindow, Features, ScreenSceneHit, ScreenSceneQuery, SetWindowFeatures, Window};
+use crate::rendering::{
+	Camera, CloseWindow, Features, ScreenSceneHit, ScreenSceneQuery, SetWindowCamera, SetWindowFeatures, Window,
+};
 use crate::ui::layout::engine::Engine;
 use crate::ui::{Key, Render, RenderRevision, Size, UiPoint, UiVector};
 
@@ -155,6 +160,20 @@ pub struct Editor {
 	resources: Vec<ResourceWindow>,
 	/// Closes resource windows.
 	close_windows: DefaultChannel<CloseWindow>,
+	/// The camera the editor flies, once it first flew; it stays out of the scene list.
+	camera: Option<Handle>,
+	/// The editor camera's flight, and the game's camera it took over from, while the game window shows the editor's.
+	flight: Option<(fly::Fly, Handle)>,
+	/// The push the fly keys held this frame: right, up, and forward.
+	thrust: [f32; 3],
+	/// How far the right-button drag moved this frame, in normalized window coordinates, which turns the camera.
+	turned: [f32; 2],
+	/// Where the right-button drag last was, while it turns the camera.
+	look: Option<UiPoint>,
+	/// When the editor camera last moved, to move it on by the time since.
+	flown: Option<Instant>,
+	/// Switches the game window between the game's camera and the editor's.
+	window_cameras: DefaultChannel<SetWindowCamera>,
 }
 
 /// Installs the editor over `app` and returns it, so the game can step it with [`Editor::frame`].
@@ -210,6 +229,13 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 		log_seen: crate::application::log_capture::revision(),
 		resources: Vec::new(),
 		close_windows: app.messages().channel(),
+		camera: None,
+		flight: None,
+		thrust: [0.0; 3],
+		turned: [0.0; 2],
+		look: None,
+		flown: None,
+		window_cameras: app.messages().channel(),
 	}
 }
 
@@ -283,6 +309,7 @@ impl Editor {
 		self.report_settings(app);
 		self.toast_log();
 		self.move_carry(app);
+		self.fly_camera(app);
 		self.place_gizmo();
 
 		let viewport = self.engine.ctx_mut().viewport;
@@ -359,6 +386,25 @@ impl Editor {
 	fn act(&mut self, app: &mut GraphicsApplication, action: ResolvedAction, scene: bool) {
 		let handle = action.action;
 		match action.value {
+			// The keys and the right-button drag fly the editor's camera while nothing over the scene takes them.
+			Value::Vector3(push) if handle == self.actions.fly => {
+				if scene && self.flies() {
+					self.thrust = [push.x, push.y, push.z];
+				}
+			}
+			Value::Vector2(v) if handle == self.actions.look => {
+				let pointer = UiPoint::new(v.x, v.y);
+				match action.phase {
+					ActionPhase::Started => self.look = (scene && self.flies()).then_some(pointer),
+					ActionPhase::Updated => {
+						if let Some(last) = self.look.replace(pointer) {
+							self.turned[0] += pointer.x - last.x;
+							self.turned[1] += pointer.y - last.y;
+						}
+					}
+					ActionPhase::Ended | ActionPhase::Cancelled => self.look = None,
+				}
+			}
 			Value::Vector2(v) if handle == self.actions.drag => {
 				let pointer = UiPoint::new(v.x, v.y);
 				if scene {
@@ -484,7 +530,90 @@ impl Editor {
 		} else {
 			self.engine.cancel();
 			self.release_gizmo();
+			self.land();
 		}
+	}
+
+	/// Whether the fly keys and the right-button drag fly the camera: while the scene is the top layer, so a field
+	/// taking text or the palette keeps the keys, and no system key is held, so Cmd+A and Cmd+S stay shortcuts.
+	fn flies(&mut self) -> bool {
+		!self.meta && matches!(self.engine.ctx_mut().layers.top(), Some(Layer::Scene))
+	}
+
+	/// Moves the editor's camera on by this frame's keys and drag, switching the game window to it on its first move,
+	/// and lets it glide to a stop once they're released.
+	fn fly_camera(&mut self, app: &GraphicsApplication) {
+		let now = Instant::now();
+		// A long frame, such as the first after a pause, moves the camera no further than a short one.
+		let dt = self.flown.map_or(0.0, |flown| now.duration_since(flown).as_secs_f32()).min(0.1);
+		self.flown = Some(now);
+		let thrust = std::mem::take(&mut self.thrust);
+		let turned = std::mem::take(&mut self.turned);
+		let steered = thrust != [0.0; 3] || turned != [0.0; 2];
+		if steered {
+			self.take_over(app);
+		}
+		let (Some((fly, _)), Some(camera)) = (&mut self.flight, self.camera) else {
+			return;
+		};
+		if !steered && !fly.moving() {
+			return;
+		}
+		fly.turn(turned);
+		let transform = fly.step(thrust, dt);
+		app.world()
+			.channel::<TransformationUpdate>()
+			.send(TransformationUpdate::new(camera, transform));
+	}
+
+	/// Switches the game window to the editor's camera, with the game camera's settings and standing where it stands, so
+	/// the view doesn't jump. Does nothing while the window shows the editor's camera already, or before the scene lists
+	/// a camera.
+	fn take_over(&mut self, app: &GraphicsApplication) {
+		let Some((window, _)) = self.window else {
+			return;
+		};
+		if self.flight.is_some() {
+			return;
+		}
+		let shell = self.engine.ctx_mut();
+		let Some((game, settings)) = shell
+			.scene
+			.iter()
+			.find_map(|entity| Some((entity, entity.camera.clone()?)))
+		else {
+			return;
+		};
+		// The editor's camera is made once and placed again each time it takes over.
+		let camera = match self.camera {
+			Some(camera) => {
+				app.world().factory::<Camera>().derive(camera, settings);
+				camera
+			}
+			None => {
+				let camera = app.world().create(settings).handle();
+				self.camera = Some(camera);
+				camera
+			}
+		};
+		let fly = fly::Fly::from_transform(&game.transform);
+		app.world()
+			.channel::<TransformationUpdate>()
+			.send(TransformationUpdate::new(camera, fly.transform()));
+		self.window_cameras.send(SetWindowCamera::new(window, camera));
+		shell.view_camera = Some(camera);
+		self.flight = Some((fly, game.handle));
+	}
+
+	/// Gives the game window its own camera back, so the editor opens on it next time.
+	fn land(&mut self) {
+		if let Some((_, game)) = self.flight.take()
+			&& let Some((window, _)) = self.window
+		{
+			self.window_cameras.send(SetWindowCamera::new(window, game));
+		}
+		self.engine.ctx_mut().view_camera = None;
+		self.look = None;
 	}
 
 	/// Asks the renderer which mesh the game's camera shows at `pointer`, in normalized window coordinates.
@@ -1192,6 +1321,10 @@ impl Editor {
 		}
 		self.polled = Some(now);
 		self.entities = app.inspector().entities(None, None);
+		// The editor's own camera isn't part of the scene.
+		if let Some(camera) = self.camera {
+			self.entities.retain(|entity| entity.handle() != camera);
+		}
 		let shell = self.engine.ctx_mut();
 		if scene::collect(&self.entities, &mut shell.scene) {
 			shell.scene_revision += 1;

@@ -29,7 +29,8 @@ pub(crate) enum Layer {
 	Variant(Variant),
 	/// A mesh, prefab, or light following the pointer until a click places it.
 	Carry(Carry),
-	/// Text being typed into a property field, which answers Enter and Escape itself.
+	/// Text being typed into a field, a property or the scene search, which answers Enter and Escape itself and keeps the
+	/// keys from flying the camera.
 	Typing,
 }
 

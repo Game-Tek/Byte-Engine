@@ -45,12 +45,21 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
    with F5 or Escape. Escape steps back one thing at a time: it cancels what you're carrying or typing, closes the
    palette, and then the editor. Closing the editor also closes the windows of the graphs and textures it opened.
 
-2. Click an entity in the game view, or its row in the scene list, to select it. The properties panel shows the
+2. Look around the scene with the editor's own camera. The editor opens on your game's camera; press W, A, S, or D to
+   fly forward, left, back, or right, Space to rise, and Shift to sink, and hold the right mouse button and drag to
+   turn. The first move switches the view to the editor's camera, which starts where your game's camera stands, so
+   your game's camera stays where your game puts it. Closing the editor goes back to your game's camera, and the next
+   time it opens, it opens there again.
+
+   The keys move the camera while no field takes text. Click the scene search to type in it, and press Enter or
+   Escape, or click elsewhere, to give the keys back to the camera.
+
+3. Click an entity in the game view, or its row in the scene list, to select it. The properties panel shows the
    entity's name, its transform while it has one, and its camera or light settings. A light shows its color and
    intensity in the form it was authored in, such as a temperature in kelvin and a flux in lumens. Its shadow range
    shows `auto` until you set it; type `auto` to hand it back to the renderer.
 
-3. Pick Move, Rotate, or Scale in the toolbar, then drag a handle of the gizmo. To set a value exactly, drag a
+4. Pick Move, Rotate, or Scale in the toolbar, then drag a handle of the gizmo. To set a value exactly, drag a
    property field sideways, or click it and type the value.
 
    Press Cmd+Z to undo a move, turn, or scale, and Cmd+Shift+Z to redo it. One drag, from press to release, undoes
@@ -58,7 +67,7 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
    after the game moved the entity too keeps the game's move. See [Editor history](/docs/reference/editor-history)
    for how edits group into steps.
 
-4. Press Cmd+A to open the palette on what you can place: your meshes, your prefabs, and a point, cone, or
+5. Press Cmd+A to open the palette on what you can place: your meshes, your prefabs, and a point, cone, or
    directional light. Type part of a name and drag the result into the scene, or press Enter to carry it with the
    pointer until you click where it goes. A mesh or light follows the pointer; a prefab appears where you place it,
    with its parameters' defaults. A light starts a little above the surface you place it on, a cone or directional
@@ -80,14 +89,14 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
 
    See [Spawn reusable objects with prefabs](/docs/use/prefabs) to write one.
 
-5. To change a runtime setting, such as `render.lod.bias`, press Cmd+. and type part of its name. Each row shows the
+6. To change a runtime setting, such as `render.lod.bias`, press Cmd+. and type part of its name. Each row shows the
    setting's value. Press Enter on one to put its value in the search field, type a new value, and press Enter again
    to set it. A setting that takes one of a few words, such as `true` or `false` or a technique's name, lists them
    instead: pick one with the arrow keys or a click, or type to narrow the list, and press Enter. Press Escape to go
    back to the search. The values a setting takes are the ones the console's `set` takes; when your application refuses one, a
    toast says why. See [runtime settings](/docs/reference/parameters#runtime-settings) for what each one takes.
 
-6. To explore your resources, press Cmd+E and type part of a name. It finds your material graphs, material variants,
+7. To explore your resources, press Cmd+E and type part of a name. It finds your material graphs, material variants,
    and textures. Open
    a texture to see it in a window of its own, with its size in pixels, beside the running game. Press Escape in that
    window, or close it, to close it. Opening a texture that's already open does nothing. Textures show from their PNG
@@ -101,13 +110,13 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
    creating it when it doesn't exist. Your application then bakes the texture again. The editor writes the sidecar
    as plain JSON, so comments in it don't survive a change.
 
-7. To start a new level, press Cmd+K, pick **New level**, and pick the folder it goes in; `/` is the asset folder
+8. To start a new level, press Cmd+K, pick **New level**, and pick the folder it goes in; `/` is the asset folder
    itself. To put it in a folder that doesn't exist yet, type the folder's path, such as `levels/arena`, and pick
    the **New folder** row; the editor creates the folder with the level. The editor writes an empty level there,
    named `untitled.level`, or a numbered name, such as `untitled 2.level`, when that name is taken. The level isn't
    loaded into the running game.
 
-8. To start a new material, press Cmd+K, pick **New material**, and pick its folder as for a level. The editor
+9. To start a new material, press Cmd+K, pick **New material**, and pick its folder as for a level. The editor
    writes a [root material](/docs/reference/bema#material-files) with no parameters, `untitled.bema`, and its graph,
    `untitled.bemx`, which holds only a surface node, and opens the graph so you can build the surface.
 
@@ -124,10 +133,10 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
    `Texture2D`. Text that isn't one changes nothing. The editor writes the change to the variant's file, and your
    application bakes the material again. It writes plain JSON, so comments in the file don't survive a change.
 
-9. To change a material, find its graph with Cmd+E or Cmd+K and open it. The graph opens in a window of its own. In
-   that window, drag between sockets to connect nodes, press Cmd+A to add one, and press Cmd+S to save the graph; your
-   application reloads the material. Press Escape in the window, or close it, when you're done. Undo and redo apply
-   to the scene, in the game's window.
+10. To change a material, find its graph with Cmd+E or Cmd+K and open it. The graph opens in a window of its own. In
+    that window, drag between sockets to connect nodes, press Cmd+A to add one, and press Cmd+S to save the graph; your
+    application reloads the material. Press Escape in the window, or close it, when you're done. Undo and redo apply
+    to the scene, in the game's window.
 
 ## See warnings and errors
 

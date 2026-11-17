@@ -56,6 +56,8 @@ pub(crate) struct Shell {
 	pub(crate) save_graph: bool,
 	/// The setting the texture's properties panel changed, until the editor writes it to the texture's sidecar.
 	pub(crate) texture_edit: Option<resource_management::asset::ImageSetting>,
+	/// The editor's own camera, while the game window shows it instead of the game's.
+	pub(crate) view_camera: Option<Handle>,
 	/// The parameter the variant's panel changed, by name, with its new value, until the editor writes it to the
 	/// variant's file.
 	pub(crate) variant_edit: Option<(String, serde_json::Value)>,
@@ -81,6 +83,7 @@ impl Shell {
 			save_graph: false,
 			texture_edit: None,
 			variant_edit: None,
+			view_camera: None,
 			toasts: Default::default(),
 		}
 	}
@@ -105,12 +108,15 @@ impl Shell {
 		}
 	}
 
-	/// The game's camera, the one the editor picks and draws the gizmo through.
+	/// The camera the game window shows, the one the editor picks and draws the gizmo through: the editor's own while
+	/// it flies, or the game's.
 	pub(crate) fn camera(&self) -> Option<Handle> {
-		self.scene
-			.iter()
-			.find(|entity| entity.camera.is_some())
-			.map(|entity| entity.handle)
+		self.view_camera.or_else(|| {
+			self.scene
+				.iter()
+				.find(|entity| entity.camera.is_some())
+				.map(|entity| entity.handle)
+		})
 	}
 
 	/// The selected entity, while it is still in the scene.
@@ -343,10 +349,11 @@ async fn list(
 
 /// The search field over the scene list: a sunken well whose text is [`Shell::search`], with a hint while it's empty.
 ///
-/// It keeps the keyboard's focus, since it's the editor's only text field, so typing while the editor is open searches.
+/// It takes the keyboard's focus only once it's clicked, so until then the keys fly the editor's camera. Enter, Escape,
+/// or a press outside the well gives them back and keeps the search.
 async fn search_field(ctx: &mut EvaluationContext<Shell>, width: f32) {
 	const HINT: &str = "Search by name, or type:Camera";
-	let mut well = ctx
+	let mut field = ctx
 		.element("well")
 		.container(|c| {
 			c.width(width.into())
@@ -359,35 +366,64 @@ async fn search_field(ctx: &mut EvaluationContext<Shell>, width: f32) {
 		})
 		.await;
 	// Leading space, since the UI has no padding.
-	well.element("lead").container(|c| c.width(8.into()).height(1.into())).await;
-	let mut input = well
+	field.element("lead").container(|c| c.width(8.into()).height(1.into())).await;
+	let mut input = field
 		.element("input")
 		.text_field("", |t| t.font_size(12.0).style([solid(TEXT)]))
 		.await;
-	let mut hint = well
+	let mut hint = field
 		.element("hint")
 		.text(HINT, |t| t.font_size(12.0).style([solid(MUTED)]))
 		.await;
-	input.request_focus().await;
 
 	loop {
-		let edit = input.on_text_edit().await;
-		let search = ctx
-			.with(move |shell: &mut Shell| {
-				edit.edit.apply_to(&mut shell.search);
-				shell.search.clone()
-			})
+		field.on(Events::Actuated).await;
+		// While the search takes text, it keeps the keys, and Escape stops the typing instead of closing the editor.
+		ctx.with(|shell: &mut Shell| shell.layers.push(Layer::Typing)).await;
+		field.update_container(|c| c.style(typing_style(true))).await;
+		input.request_focus().await;
+		loop {
+			select! {
+				edit = input.on_text_edit() => {
+					let search = ctx
+						.with(move |shell: &mut Shell| {
+							edit.edit.apply_to(&mut shell.search);
+							shell.search.clone()
+						})
+						.await;
+					input.update_text(|t| t.content(&search)).await;
+					hint.update_text(|t| t.content(if search.is_empty() { HINT } else { "" })).await;
+				},
+				_ = input.on_key(Key::Enter) => break,
+				_ = input.on_key(Key::Escape) => break,
+				_ = ctx.render() => {
+					if pressed_outside(ctx, &mut field).await {
+						break;
+					}
+				},
+			}
+		}
+		input.release_focus().await;
+		ctx.with(|shell: &mut Shell| shell.layers.close(|layer| matches!(layer, Layer::Typing)))
 			.await;
-		input.update_text(|t| t.content(&search)).await;
-		hint.update_text(|t| t.content(if search.is_empty() { HINT } else { "" }))
-			.await;
+		field.update_container(|c| c.style(well())).await;
 	}
+}
+
+/// Whether the pointer is pressed outside `well`, which ends typing into it.
+async fn pressed_outside(ctx: &mut EvaluationContext<Shell>, well: &mut EvaluationContext<Shell>) -> bool {
+	let pointer = ctx.pointer().await;
+	let outside = well.geometry().await.is_some_and(|geometry| {
+		let [x, y] = [pointer.position.x, pointer.position.y];
+		x < geometry.x() || x > geometry.right() || y < geometry.y() || y > geometry.bottom()
+	});
+	pointer.pressed && outside
 }
 
 /// The command palette: while it's open, a search field over the meshes it finds, the highlighted one lit.
 ///
 /// The panel is declared each time the palette opens and removed when it closes, so it starts from an empty search.
-/// It takes the keyboard's focus while it shows, which goes back to the scene search once it's removed.
+/// It takes the keyboard's focus while it shows, which goes back to what had it before once it's removed.
 async fn palette_view(ctx: &mut EvaluationContext<Shell>) {
 	loop {
 		while ctx.with(|shell: &mut Shell| shell.layers.palette().is_none()).await {
@@ -1208,18 +1244,13 @@ async fn read_typed(
 			_ = input.on_key(Key::Enter) => break true,
 			_ = input.on_key(Key::Escape) => break false,
 			_ = ctx.render() => {
-				let pointer = ctx.pointer().await;
-				let outside = well.geometry().await.is_some_and(|geometry| {
-					let [x, y] = [pointer.position.x, pointer.position.y];
-					x < geometry.x() || x > geometry.right() || y < geometry.y() || y > geometry.bottom()
-				});
-				if pointer.pressed && outside {
+				if pressed_outside(ctx, well).await {
 					break false;
 				}
 			},
 		}
 	};
-	// Removing the field gives the keyboard back to the scene search.
+	// Removing the field gives the keyboard back to what had it before.
 	input.remove().await;
 	ctx.with(|shell: &mut Shell| shell.layers.close(|layer| matches!(layer, Layer::Typing)))
 		.await;

@@ -895,6 +895,23 @@ impl Renderer {
 		}
 	}
 
+	/// Makes the window created with `handle` show `camera` from the next frame on, keeping the passes its sink built.
+	///
+	/// Only a window created with a camera shows a scene, so a window without one is left out with a warning.
+	pub fn set_window_camera(&mut self, handle: Handle, camera: Handle) {
+		let shown = self
+			.sink_of(handle)
+			.and_then(|sink_id| self.sink_cameras.iter_mut().find(|(sink, _)| *sink == sink_id));
+		let Some((_, shown)) = shown else {
+			log::warn!(
+				"The window's camera was not changed. The most likely cause is a handle that names no open window, or a window created without a camera. Attach a camera to the window before creating it, and send the change after the tick that created it."
+			);
+			return;
+		};
+		*shown = camera;
+		self.redraw_requested = true;
+	}
+
 	/// Caps the presentation rate by setting the minimum time between presented frames on every window,
 	/// including windows created later. `None` removes the cap so frames present on every refresh.
 	pub fn set_present_interval(&mut self, interval: Option<std::time::Duration>) {

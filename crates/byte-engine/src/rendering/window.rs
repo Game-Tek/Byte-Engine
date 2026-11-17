@@ -91,6 +91,35 @@ impl SetWindowFeatures {
 	}
 }
 
+/// The `SetWindowCamera` struct changes the camera an open window shows, so an application can look through another
+/// camera without opening another window, such as an editor flying its own camera over the game's.
+///
+/// Send it on the [`crate::application::graphics::GraphicsApplication::messages`] channel with the handle the window was
+/// created with. The renderer applies it before the next frame, to a window created with a camera; see
+/// [windows](/docs/reference/rendering#windows).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetWindowCamera {
+	window: Handle,
+	camera: Handle,
+}
+
+impl SetWindowCamera {
+	/// Makes the window created with `window` show `camera`.
+	pub fn new(window: Handle, camera: Handle) -> Self {
+		Self { window, camera }
+	}
+
+	/// The handle the window was created with.
+	pub fn window(&self) -> Handle {
+		self.window
+	}
+
+	/// The camera the window shows.
+	pub fn camera(&self) -> Handle {
+		self.camera
+	}
+}
+
 /// The `CloseWindow` struct closes an open window from the application, such as a tool closing its own window.
 ///
 /// Send it on the [`crate::application::graphics::GraphicsApplication::messages`] channel with the handle the window was

@@ -1,7 +1,7 @@
 //! The transforms frames show, blended between the samples simulation steps publish.
 //!
-//! [`ShownTransforms`] reads the world's transform route once for the whole renderer, so scene pipelines, lights,
-//! cameras, and particle emitters move on one timeline. The rules are specified under
+//! [`ShownTransforms`] reads the transform route of every scene once for the whole renderer, so scene pipelines,
+//! lights, cameras, and particle emitters move on one timeline. The rules are specified under
 //! [shown transforms](/docs/reference/rendering#shown-transforms).
 
 use utils::hash::HashMap;
@@ -26,8 +26,9 @@ const SPAN_LIMIT: MediaTime = MediaTime::from_ticks(MediaTime::TICKS_PER_SECOND 
 /// [`crate::rendering::PipelineManager::prepare`]. Read [`Self::changed`] in `prepare` to move what a manager
 /// already draws, and [`Self::get`] to place what it starts drawing.
 pub struct ShownTransforms {
-	transforms_listener: DefaultListener<TransformationUpdate>,
-	deletions_listener: DefaultListener<DeleteMessage>,
+	/// The transform and deletion routes of every scene's scope. Handles are unique across scopes, so one timeline
+	/// per handle serves every scene.
+	listeners: smallvec::SmallVec<[(DefaultListener<TransformationUpdate>, DefaultListener<DeleteMessage>); 2]>,
 	timelines: HashMap<Handle, Timeline>,
 	/// The handles whose shown transform may still change, so frames skip entities at rest.
 	moving: Vec<Handle>,
@@ -39,13 +40,22 @@ impl ShownTransforms {
 	/// Subscribes to `world`'s transforms and deletions. Next, call [`Self::step`] after every simulation step and
 	/// [`Self::adopt`] once per tick.
 	pub(crate) fn new(world: &MessageScope) -> Self {
-		Self {
-			transforms_listener: world.channel::<TransformationUpdate>().listener(),
-			deletions_listener: world.channel::<DeleteMessage>().listener(),
+		let mut transforms = Self {
+			listeners: smallvec::SmallVec::new(),
 			timelines: HashMap::default(),
 			moving: Vec::new(),
 			changed: Vec::new(),
-		}
+		};
+		transforms.follow(world);
+		transforms
+	}
+
+	/// Subscribes to the transforms and deletions of `scene`, another scene's scope, too.
+	pub(crate) fn follow(&mut self, scene: &MessageScope) {
+		self.listeners.push((
+			scene.channel::<TransformationUpdate>().listener(),
+			scene.channel::<DeleteMessage>().listener(),
+		));
 	}
 
 	/// Keeps the transforms published by the step that ended at `time.elapsed()` and lasted `time.delta()` as that
@@ -60,27 +70,31 @@ impl ShownTransforms {
 	/// routes never hold back their publishers.
 	pub(crate) fn adopt(&mut self) {
 		self.read_transforms(None);
-		while let Some(message) = self.deletions_listener.read() {
-			self.timelines.remove(&message.into_handle());
+		for (_, deletions) in &mut self.listeners {
+			while let Some(message) = deletions.read() {
+				self.timelines.remove(&message.into_handle());
+			}
 		}
 	}
 
 	/// Drains the transform route as samples of the step `step` names, or as placements without one, and queues
 	/// every handle it touched for the next resolved frame.
 	fn read_transforms(&mut self, step: Option<Time>) {
-		while let Some(message) = self.transforms_listener.read() {
-			let handle = message.handle();
-			let timeline = self
-				.timelines
-				.entry(handle)
-				.and_modify(|timeline| match step {
-					Some(time) => timeline.sample(message.transform(), time.elapsed(), time.delta()),
-					None => timeline.place(message.transform()),
-				})
-				.or_insert_with(|| Timeline::new(message.transform(), step.map(|time| time.elapsed())));
-			if !timeline.moving {
-				timeline.moving = true;
-				self.moving.push(handle);
+		for (transforms, _) in &mut self.listeners {
+			while let Some(message) = transforms.read() {
+				let handle = message.handle();
+				let timeline = self
+					.timelines
+					.entry(handle)
+					.and_modify(|timeline| match step {
+						Some(time) => timeline.sample(message.transform(), time.elapsed(), time.delta()),
+						None => timeline.place(message.transform()),
+					})
+					.or_insert_with(|| Timeline::new(message.transform(), step.map(|time| time.elapsed())));
+				if !timeline.moving {
+					timeline.moving = true;
+					self.moving.push(handle);
+				}
 			}
 		}
 	}

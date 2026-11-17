@@ -6,7 +6,10 @@ use super::{
 	properties::{Setup, Spares, assert_rgba_len, declare, update},
 	*,
 };
-use crate::ui::{components::path::Path, layout::context::slot_path};
+use crate::ui::{
+	components::{image::ImageSource, path::Path},
+	layout::context::slot_path,
+};
 
 /// The `EvaluationContext` struct lets a mounted asynchronous UI component declare and edit its part of the tree.
 ///
@@ -214,13 +217,13 @@ impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
 		self,
 		width: u32,
 		height: u32,
-		pixels: impl AsRef<[u8]>,
+		source: impl Into<ImageSource>,
 		setup: impl Setup<Image>,
 	) -> impl Future<Output = EvaluationContext<C>> {
 		let create = move |content_id, _: &mut Spares| {
-			let pixels = pixels.as_ref();
-			assert_rgba_len(width, height, pixels);
-			Primitives::Image(Image::new(content_id, width, height, pixels))
+			let source = source.into();
+			assert_rgba_len(width, height, &source);
+			Primitives::Image(Image::new(content_id, width, height, source))
 		};
 		declare(self, create, setup)
 	}

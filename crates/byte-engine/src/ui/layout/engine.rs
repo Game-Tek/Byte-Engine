@@ -987,7 +987,7 @@ impl<C: 'static> Engine<C> {
 						version: image.version(),
 						source_width: image.width_pixels(),
 						source_height: image.height_pixels(),
-						pixels: std::sync::Arc::clone(image.pixels()),
+						source: image.source().clone(),
 					})
 				}
 				Primitives::Text(text) => write_entry(text_elements, count, local_unchanged, placement, |previous| {
@@ -3288,7 +3288,7 @@ mod tests {
 							.await;
 					}
 					4 => {
-						picture.update_image(|i| i.pixels(1, 1, vec![255; 4])).await;
+						picture.update_image(|i| i.source(1, 1, vec![255; 4])).await;
 					}
 					_ => {}
 				}

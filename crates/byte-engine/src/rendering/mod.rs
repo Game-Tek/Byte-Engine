@@ -30,6 +30,8 @@ pub mod device;
 pub mod lights;
 pub mod loading;
 pub mod particles;
+pub mod render_image;
+pub mod scene;
 pub mod window;
 
 /// Camera state used to derive scene views.
@@ -85,12 +87,14 @@ pub use pipeline_compilation::{PipelineManagerClient, PipelineManagerServer, Pip
 pub use pipeline_manager::PipelineManager;
 pub use pipelines::{SimplePipelineManager, VisibilityPipelineManager};
 pub use pose::UpdatePose;
+pub use render_image::{RenderImage, RenderImageReady, SetRenderImageExtent};
 pub use render_pass::{
 	MainRenderTarget, ReadFromResult, RenderPass, RenderPassBuilder, RenderPassReturn, RenderPassState, RenderToResult,
 };
 pub use renderable::{mesh::RenderableMesh, terrain::RenderableTerrain};
 pub use renderer::{RenderTargets, Renderer};
 pub use resource::{Query, Resource};
+pub use scene::SceneId;
 pub use screen_query::{ScreenSceneHit, ScreenSceneQuery};
 pub use set_layout::{SetBinder, SetLayout};
 pub use shown_transforms::ShownTransforms;

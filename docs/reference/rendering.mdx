@@ -4,8 +4,8 @@ description: Look up the objects a scene is made of, the camera, the pipeline an
 icon: Computer
 ---
 
-The renderer draws each window from a scene pipeline followed by post-scene
-passes. This page specifies the objects an application creates, the camera,
+The renderer draws each window and each render image from a scene pipeline
+followed by post-scene passes. This page specifies the objects an application creates, the camera,
 how pipelines and passes compose, every pass the engine ships with, and the
 contract of the visibility pipeline. The design notes behind it are under
 [Rendering](/docs/develop/rendering) in Contribute, and the lights are in the
@@ -16,8 +16,10 @@ contract of the visibility pipeline. The design notes behind it are under
 | Object | Role |
 | --- | --- |
 | Window | A named render surface with an extent, optional decorations, and optional [cursor capture](/docs/reference/input#cursor-capture), with one camera attached. Each window becomes one sink, numbered in creation order. |
+| Render image | An image the renderer draws a camera into instead of a window, with an extent in pixels, showing one scene. Each render image becomes one sink, numbered with the windows in creation order. |
+| Scene | What one message scope creates: the world, or a scene the application creates, such as a preview stage. Each scene has its own scene pipelines, sun, and fog. Every window shows the world. |
 | Camera | View settings created on the world with a transform, which the renderer follows. |
-| Sink | The per-frame destination the renderer builds from a window's extent and camera: the view, the extent, the exposure scale, and the frame interval. |
+| Sink | The per-frame destination the renderer builds from a window's or render image's extent and camera: the view, the extent, the exposure scale, and the frame interval. |
 | View | Projection and view matrices with near, far, vertical field of view, and aspect ratio, perspective or orthographic. |
 | Renderable mesh | An entity's geometry: a baked mesh by ID, a generated mesh, a sphere, or a box. A generated mesh may name its material; otherwise it takes the pipeline's default. |
 | Environment | A baked environment map, optionally scaled to deliver a given illuminance. The newest one lights the scene. Without one, the visibility pipeline lights with the [sky environment](#sky-environment) when the atmosphere sky is installed, and with an opaque black fallback otherwise. |
@@ -25,9 +27,9 @@ contract of the visibility pipeline. The design notes behind it are under
 | Debug mesh | A retained wireframe sphere, box, capsule, segment, or circle with a color, tested against scene depth or drawn over it. |
 
 Scene color is linear HDR in the packed `RGBu11u11u10` format. Tone-mapping
-passes write 16-bit float display color. The window's swapchain is `BGRAu8`
-and stores display-encoded color as the last pass wrote it, without encoding it
-again.
+passes write 16-bit float display color. A sink's final target, the window's
+swapchain or the render image, is `BGRAu8` and stores display-encoded color as
+the last pass wrote it, without encoding it again.
 
 ### Windows
 
@@ -113,11 +115,34 @@ animation steps once per frame.
 | Publishes every _n_ steps | Moves without stopping between samples and is shown _n_ steps behind, as long as _n_ steps last at most 250 ms. |
 | Starts moving after a rest | Its first segment lasts up to 250 ms; the next sample's segment starts from wherever that one reached. |
 
+### Render images
+
+| Rule | Behavior |
+| --- | --- |
+| Creation | A `RenderImage` created on the application's message scope, with a scene, an extent in pixels, and a camera, opens before the next frame. The renderer then sends a `RenderImageReady` message on the application's message scope, naming the handle the render image was created with and the image. |
+| Image | `BGRAu8`, as large as the render image's extent. Passes can sample it, read and write it as a storage image, and copy from it. |
+| Render graph | A render image records its scene's pipelines and the passes registered for all sinks, like a window with a camera. Creating the first render image closes the render graph, as creating the first window does. |
+| Frames | Every frame the renderer renders draws every render image, whether or not anything reads it, before it draws any window. A window's pass that reads a render image reads the picture of the same frame. |
+| Size changes | A `SetRenderImageExtent` message on the application's message scope, naming the handle the render image was created with and an extent in pixels, resizes the image from the next frame on. The image keeps its handle. A message naming no open render image is logged and left out. |
+| Removal | A `DeleteMessage` on the application's message scope naming the handle the render image was created with stops rendering it before the next frame. Its image and its passes stay allocated until the renderer drops. |
+| Screenshots | A screenshot of a render image's sink with no pass named captures the image after the last pass. |
+
+### Scenes
+
+| Rule | Behavior |
+| --- | --- |
+| World | The world is the scene the application starts with. Every window shows it. |
+| Creation | Creating a scene gives a new message scope. Objects created on it, such as meshes, lights, fog, environments, cameras, and particle emitters, belong to that scene alone, and its scene pipelines never see the other scenes' objects. |
+| Scene pipelines | Each scene records the scene pipelines installed for it, in the order they were installed. A pipeline is installed for one scene, and installing it for another scene creates another instance with its own state. |
+| Sun and fog | The newest directional light and the newest fog created on a scene's scope light that scene's sinks. |
+| Cameras | A sink shows its scene from its camera's transform, whichever scope created the camera. |
+| Shared state | Post-scene passes, the scene background, and the sky environment are shared by every scene. The sky environment follows the first sink with a scene. |
+
 ## Pipelines and passes
 
 | Concept | Role |
 | --- | --- |
-| Scene pipeline | Owns scene state and per-sink resources and records one command per sink per frame. Several can be registered; the default setup registers the visibility pipeline and particles. |
+| Scene pipeline | Owns one scene's state and per-sink resources and records one command per sink of its scene per frame. Several can be registered; the default setup registers the visibility pipeline and particles for the world. |
 | Render pass | Sink-local post-processing that reads `main` and usually replaces it. Registered for every sink. |
 | Pixel step | A render pass that computes each pixel of its replacement for `main` from the same pixel of the incoming `main`. The renderer records it, alone or [fused](#pixel-steps-and-fusion) with the steps next to it. |
 | Scene background | A pass the scene pipeline records after opaque and before transparent surfaces, such as the sky. A later registration replaces an earlier one. |
@@ -125,12 +150,12 @@ animation steps once per frame.
 
 | Rule | Value |
 | --- | --- |
-| Registration | Post-scene passes and the scene background are registered before the first window. |
-| Order per sink | Every scene pipeline in registration order, then every post-scene pass in registration order, then a copy to the swapchain only when no post-scene pass exists. |
-| Terminal pass | The last post-scene pass must create the main render target, which is the swapchain. |
+| Registration | Post-scene passes and the scene background are registered before the first window or render image. |
+| Order per sink | Every scene pipeline of the sink's scene in registration order, then every post-scene pass in registration order, then a copy to the sink's final target only when no post-scene pass exists. |
+| Terminal pass | The last post-scene pass must create the main render target, which is the sink's final target: the window's swapchain or the render image. |
 | Targets | A pass declares named, sink-scoped targets: full-size, scaled by a divisor, persistent, or history targets whose previous frame can be read. Reading a target that nothing creates fails at setup. |
 | Clears | A node that records nothing has its first-use targets cleared; one that records has them discarded. |
-| Frame-wide work | Detail levels, shadow views, and exposure follow the first sink. |
+| Frame-wide work | Detail levels, shadow views, and exposure follow each scene's first sink. |
 | Swapchain | FIFO presentation with 2 frames in flight. On Vulkan, a swapchain has 3 images unless `render.swapchain.images` sets a count, and when the driver and surface support waiting for presents, a frame starts only after the display shows the frame presented 2 frames before it, or after 67 ms. |
 
 ### Passes
@@ -209,7 +234,7 @@ shader is a [pixel shader](/docs/reference/besl/interface#pixel-shaders).
 | Catalog read | When the first window opens, the renderer reads the catalog once. Development builds first bake every `.fusion` source that's missing or stale. Sinks initialize after the catalog is read, and draw nothing before. |
 | Matching | Going through the steps in registration order, a run starts at each step that isn't in a run yet. It takes the longest fusion whose steps are the pipelines of that step and the steps after it, in order. With no such fusion, the step is a run of its own on its own pipeline. |
 | Fusion off | With `render.fusion` set to `false`, every step is a run of its own. |
-| Output | A run writes one replacement for `main`, named like its last step's output and in its last step's output format. The run that ends the post-scene passes writes the swapchain. The other steps' outputs don't exist. |
+| Output | A run writes one replacement for `main`, named like its last step's output and in its last step's output format. The run that ends the post-scene passes writes the sink's final target. The other steps' outputs don't exist. |
 | Precision | Inside a fused run, color passes from step to step as 32-bit floats. |
 | State | Each step keeps its own pass state and `render.pass.<name>` parameter. A run of one step that's bypassed or inactive forwards `main`. A fused run skips its bypassed and inactive steps, and when all of them are skipped, it writes `main` unchanged. |
 | Pending | While a run's pipeline compiles, and after it fails, the run forwards `main`. |
@@ -365,6 +390,9 @@ screenshot is pending. Scene changes don't count, so an application that moves
 cameras or objects requests a redraw itself.
 
 ## The visibility pipeline
+
+Each instance of the visibility pipeline draws one scene. On this page, its
+first sink is the first sink of that scene.
 
 | Limit | Value |
 | --- | --- |

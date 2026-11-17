@@ -37,7 +37,7 @@ pub use animation::{
 pub use components::{
 	container::{Container, Sector},
 	curve::{Curve, CurvePath, CurvePoint, CurveSegment},
-	image::Image,
+	image::{Image, ImageSource},
 	path::{FillRule, Path},
 	text::Text,
 };

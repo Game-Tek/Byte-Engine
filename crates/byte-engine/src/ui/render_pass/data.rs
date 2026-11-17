@@ -5,6 +5,7 @@ use std::sync::{Arc, LazyLock};
 use super::*;
 use crate::rendering::SetLayout;
 use crate::rendering::set_layout::ENGINE_MODULES;
+use crate::ui::components::image::ImageSource;
 
 /// The UI layer keeps premultiplied coverage in alpha for compositing over the scene.
 pub(super) const MAIN_ATTACHMENT_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
@@ -170,7 +171,7 @@ pub(super) struct UiImageDrawElement {
 	pub(super) version: u64,
 	pub(super) source_width: u32,
 	pub(super) source_height: u32,
-	pub(super) pixels: Arc<[u8]>,
+	pub(super) source: ImageSource,
 	pub(super) position: [f32; 2],
 	pub(super) size: [f32; 2],
 	pub(super) clip: Option<DrawClip>,
@@ -739,9 +740,29 @@ pub(super) struct UiPrimitives<'a> {
 pub(super) struct UiImageTexture {
 	pub(super) version: u64,
 	pub(super) extent: (u32, u32),
-	pub(super) image: ghi::BaseImageHandle,
+	/// The image bound to the slot.
+	pub(super) binding: UiImageBinding,
 	/// Element of the ubershader's texture array this image is bound to.
 	pub(super) slot: u32,
+}
+
+/// The `UiImageBinding` enum tells whether a texture slot samples an image the pass owns and fills from pixels or one
+/// the application's GPU work writes, which the pass must never write or resize.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum UiImageBinding {
+	/// An `RGBA8UNORM` image the pass created and copies pixels into.
+	Owned(ghi::BaseImageHandle),
+	/// An image from an [`ImageSource::Gpu`], sampled where it is.
+	External(ghi::BaseImageHandle),
+}
+
+impl UiImageBinding {
+	/// The image the slot samples.
+	pub(super) fn image(self) -> ghi::BaseImageHandle {
+		match self {
+			UiImageBinding::Owned(image) | UiImageBinding::External(image) => image,
+		}
+	}
 }
 
 /// The `UiPreparedFrame` struct retains the steps recorded for one render revision, viewport, and damage set.
@@ -894,6 +915,19 @@ pub(super) fn blur_footprints(draw_list: &UiDrawList, viewport: Extent, out: &mu
 			];
 		}
 		UiPixelRegion::from_bounds(bounds, UI_BLUR_FOOTPRINT_MARGIN as f32, viewport)
+	}));
+}
+
+/// Adds the pixels every drawn GPU image covers, since the GPU may write a new picture into it every frame. The bounds
+/// are the ones the image's draw tests against damage, so a frame redraws exactly the image.
+pub(super) fn gpu_image_footprints(draw_list: &UiDrawList, viewport: Extent, out: &mut Vec<UiPixelRegion>) {
+	let sx = viewport.width().max(1) as f32 / draw_list.layout_size[0].max(1.0);
+	let sy = viewport.height().max(1) as f32 / draw_list.layout_size[1].max(1.0);
+	let live = |image: &&UiImageDrawElement| matches!(image.source, ImageSource::Gpu(_)) && should_draw_image(image);
+	out.extend(draw_list.images.iter().filter(live).filter_map(|image| {
+		let pixel_size = [image.size[0] * sx, image.size[1] * sy];
+		let bounds = element_bounds(image.position, pixel_size, sx, sy, UI_DAMAGE_MARGIN_PIXELS);
+		UiPixelRegion::from_bounds(turned_bounds(bounds, image.clip_mask, sx, sy), 0.0, viewport)
 	}));
 }
 
@@ -1421,7 +1455,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			version: image.version,
 			source_width: image.source_width,
 			source_height: image.source_height,
-			pixels: Arc::clone(&image.pixels),
+			source: image.source.clone(),
 			position: [image.placement.position.x(), image.placement.position.y()],
 			size: [image.placement.size.x(), image.placement.size.y()],
 			clip: draw_clip_from_geometry(image.placement.clip),
@@ -1494,7 +1528,10 @@ fn scale_segment(segment: &CurveSegment, scale: [f32; 2]) -> CurveSegment {
 pub(super) fn should_draw_image(image: &UiImageDrawElement) -> bool {
 	image.source_width > 0
 		&& image.source_height > 0
-		&& image.pixels.len() == image.source_width as usize * image.source_height as usize * 4
+		&& image
+			.source
+			.pixels()
+			.is_none_or(|pixels| pixels.len() == image.source_width as usize * image.source_height as usize * 4)
 		&& image.size[0] > 0.0
 		&& image.size[1] > 0.0
 		&& image.opacity > 0.0

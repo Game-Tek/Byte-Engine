@@ -74,8 +74,10 @@ pub fn setup_debug_overlay_render_pass(application: &mut GraphicsApplication, ha
 ///
 /// The lane runs on the loading thread, so start that thread with
 /// [`defaults::launch_deferred_tasks_thread`] after every subsystem has
-/// registered its work. That thread also runs the loader.
-pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
+/// registered its work. That thread also runs the loader. The pipeline draws
+/// `scene`, [`SceneId::WORLD`] or a scene from [`GraphicsApplication::create_scene`].
+pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication, scene: SceneId) {
+	let scope = application.scene_messages(scene).clone();
 	let application_resources = application.resource_manager.clone();
 
 	let (loader, renderer) = application.loader_and_renderer_mut();
@@ -92,12 +94,12 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 
 	let pipeline_manager = SimplePipelineManager::new(
 		application.renderer.context_mut(),
-		&application.world,
+		&scope,
 		pipeline_compiler,
 		simple_loader,
 		&resource_store,
 	);
-	application.renderer.add_pipeline_manager(pipeline_manager);
+	application.renderer.add_pipeline_manager(scene, pipeline_manager);
 	run_on_loading_thread(application, simple_loader_lanes.into_iter().map(|lane| lane.run()));
 }
 
@@ -115,10 +117,15 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 /// [`defaults::launch_deferred_tasks_thread`] starts together with the
 /// application's [`Loader`](rendering::loading::Loader).
 ///
+/// The pipeline draws `scene`: [`SceneId::WORLD`] for every window, or a scene from
+/// [`GraphicsApplication::create_scene`]. Each call installs an instance with its own GPU state, so install it once
+/// per scene.
+///
 /// Next, create an [`Environment`](crate::rendering::Environment) through
-/// [`MessageScope::factory`](crate::core::message_bus::MessageScope::factory) to select the HDR image used for ambient and
-/// specular reflections.
-pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
+/// [`MessageScope::factory`](crate::core::message_bus::MessageScope::factory) on the scene's scope to select the HDR
+/// image used for ambient and specular reflections.
+pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication, scene: SceneId) {
+	let scope = application.scene_messages(scene).clone();
 	let visibility_pipeline_settings = VisibilityPipelineSettings::from_parameters(
 		application
 			.parameters()
@@ -169,7 +176,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	let visibility_pipeline_manager = VisibilityPipelineManager::new(
 		application.renderer.context_mut(),
 		graphics_queue,
-		&application.world,
+		&scope,
 		geometry,
 		visibility_loader,
 		pipeline_manager,
@@ -181,7 +188,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		lod_configuration,
 		visibility_pipeline_settings,
 	);
-	application.renderer.add_pipeline_manager(visibility_pipeline_manager);
+	application.renderer.add_pipeline_manager(scene, visibility_pipeline_manager);
 }
 
 /// Installs the GPU particle runtime on top of the scene pipeline registered before it.
@@ -191,17 +198,19 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 /// light to the scene's `main` color before post-processing, so bloom and tone mapping treat them like any other
 /// emitter. A system costs nothing on frames without live particles.
 ///
-/// Next, create a [`rendering::ParticleEmitter`] naming a `.particles` asset, with a [`crate::gameplay::Transform`],
-/// through [`Creator::create`](crate::core::factory::Creator::create) on the world scope.
-pub fn setup_particles(application: &mut GraphicsApplication) {
+/// The particles belong to `scene`, [`SceneId::WORLD`] or a scene from [`GraphicsApplication::create_scene`]. Next,
+/// create a [`rendering::ParticleEmitter`] naming a `.particles` asset, with a [`crate::gameplay::Transform`], through
+/// [`Creator::create`](crate::core::factory::Creator::create) on that scene's scope.
+pub fn setup_particles(application: &mut GraphicsApplication, scene: SceneId) {
+	let scope = application.scene_messages(scene).clone();
 	let resources = application.resource_manager_handle();
 	let (loader, renderer) = application.loader_and_renderer_mut();
 	let pipeline_manager = renderer.pipeline_manager_client();
 	// Systems are small records read once each, so one general lane keeps up.
 	let (systems_loader, lanes) =
 		rendering::loading::spawn(loader, rendering::particles::ParticleSystemLoader { resources }, 1, 1, 16);
-	let particle_manager = rendering::particles::ParticleManager::new(&application.world, pipeline_manager, systems_loader);
-	application.renderer.add_pipeline_manager(particle_manager);
+	let particle_manager = rendering::particles::ParticleManager::new(&scope, pipeline_manager, systems_loader);
+	application.renderer.add_pipeline_manager(scene, particle_manager);
 	run_on_loading_thread(application, lanes.into_iter().map(|lane| lane.run()));
 }
 

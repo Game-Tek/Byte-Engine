@@ -18,9 +18,9 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 
 	setup_default_audio(application);
 
-	setup_pbr_visibility_shading_render_pipeline(application);
+	setup_pbr_visibility_shading_render_pipeline(application, SceneId::WORLD);
 
-	setup_particles(application);
+	setup_particles(application, SceneId::WORLD);
 
 	setup_default_window(application);
 
@@ -231,10 +231,10 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 /// [`crate::audio::graph::AudioGraphFactory`], or spawn a baked one by
 /// publishing an [`AudioGraphAsset`] on the world.
 pub fn setup_default_audio(application: &mut GraphicsApplication) {
-	let mut audio_graphs_listener = AudioGraphFactory::in_scope(&application.world).listener();
-	let mut audio_graph_assets_listener = application.world.factory::<AudioGraphAsset>().listener();
+	let mut audio_graphs_listener = AudioGraphFactory::in_scope(application.world()).listener();
+	let mut audio_graph_assets_listener = application.world().factory::<AudioGraphAsset>().listener();
 
-	let mut deletions_listener = application.world.channel::<DeleteMessage>().listener();
+	let mut deletions_listener = application.world().channel::<DeleteMessage>().listener();
 
 	let (mut sample_loader_client, sample_loader) =
 		AudioSampleLoader::new(application.resource_manager.clone(), AudioSamplePoolConfig::default());
@@ -379,6 +379,7 @@ use tracing::debug_span;
 use utils::Extent;
 
 use super::{GraphicsApplication, setup_particles, setup_pbr_visibility_shading_render_pipeline};
+use crate::rendering::SceneId;
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
 use crate::rendering::pipelines::visibility::{RENDER_PARAMETERS, VisibilityFeatures, VisibilityShaderGenerator};
 use crate::{

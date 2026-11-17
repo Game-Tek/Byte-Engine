@@ -79,7 +79,7 @@ fn main() {
 	setup_default_resource_and_asset_management(&mut app, configure_default_baking);
 	setup_default_input(&mut app);
 	setup_default_audio(&mut app);
-	setup_pbr_visibility_shading_render_pipeline(&mut app);
+	setup_pbr_visibility_shading_render_pipeline(&mut app, byte_engine::rendering::SceneId::WORLD);
 
 	let animation = locomotion_graph();
 	let mut pool = setup_animation_pool(

@@ -8,6 +8,7 @@ use crate::rendering::{
 	render_pass::simple_compute,
 	shader_vm_test::{assert_rgba_close, compile as compile_shader_vm, rgba, run_at, slot, texture_2d},
 };
+use crate::ui::components::image::ImageSource;
 use crate::ui::{Size, flow::Location3, layout::Geometry, style::LayerKind};
 
 static UI_COMPOSITE_BESL: std::sync::LazyLock<&str> =
@@ -209,4 +210,53 @@ fn layer_composite_besl_vm_places_the_premultiplied_layer_over_black_inside_the_
 	assert_rgba_close(rgba(&result, [0, 0]), [0.0, 0.5, 0.0, 1.0], 0.0001);
 	assert_rgba_close(rgba(&result, [1, 0]), [0.0, 0.0, 0.0, 1.0], 0.0001);
 	assert_rgba_close(rgba(&result, [2, 0]), [9.0; 4], 0.0);
+}
+
+/// Creates an opaque GPU image handle, for draw lists that only name an image.
+#[allow(
+	unsafe_code,
+	clippy::undocumented_unsafe_blocks,
+	reason = "UI tests manufacture an opaque GHI handle without exposing a production constructor."
+)]
+fn gpu_image(value: u64) -> ghi::ImageHandle {
+	assert_ne!(value, 0);
+	// SAFETY: `ImageHandle` is a transparent wrapper over the nonzero opaque `u64` handle representation GHI uses.
+	unsafe { std::mem::transmute(value) }
+}
+
+fn image_element(order: u32, position: [f32; 2], size: [f32; 2], source: ImageSource) -> UiImageDrawElement {
+	UiImageDrawElement {
+		depth: 0,
+		order,
+		image_id: u64::from(order),
+		version: 0,
+		source_width: 1,
+		source_height: 1,
+		source,
+		position,
+		size,
+		clip: None,
+		clip_mask: None,
+		opacity: 1.0,
+	}
+}
+
+#[test]
+fn gpu_images_are_redrawn_every_frame_and_bitmaps_only_when_they_change() {
+	let viewport = Extent::rectangle(400, 400);
+	let draw_list = UiDrawList {
+		layout_size: [400.0, 400.0],
+		images: vec![
+			image_element(1, [100.0, 100.0], [50.0, 40.0], ImageSource::Gpu(gpu_image(7))),
+			image_element(2, [200.0, 200.0], [50.0, 50.0], ImageSource::Pixels(vec![255; 4].into())),
+		],
+		..UiDrawList::default()
+	};
+	let mut out = Vec::new();
+	gpu_image_footprints(&draw_list, viewport, &mut out);
+	let margin = UI_DAMAGE_MARGIN_PIXELS as u32;
+	assert_eq!(
+		out,
+		vec![region(100 - margin, 100 - margin, 50 + margin * 2, 40 + margin * 2)]
+	);
 }

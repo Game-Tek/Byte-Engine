@@ -131,20 +131,26 @@ pub struct GraphicsApplication {
 	window_cameras: DefaultListener<rendering::SetWindowCamera>,
 	/// Windows the application closes, which the renderer removes before each frame.
 	window_closes: DefaultListener<rendering::CloseWindow>,
+	/// Render images the application creates, which the renderer opens before each frame.
+	render_image_factory: (
+		Factory<rendering::RenderImage>,
+		DefaultListener<CreateMessage<rendering::RenderImage>>,
+	),
+	/// Where the application learns which image the renderer draws each render image into.
+	render_images_ready: DefaultChannel<rendering::RenderImageReady>,
+	/// Size changes for open render images, which the renderer applies before each frame.
+	render_image_extents: DefaultListener<rendering::SetRenderImageExtent>,
+	/// Removals on the application's message scope, which stop the render images they name.
+	render_image_deletes: DefaultListener<DeleteMessage>,
 	/// This tick's window events, kept between ticks so polling allocates nothing.
 	polled_window_events: Vec<ghi::window::Event>,
 
 	generator_factory: Factory<std::boxed::Box<dyn Generator>>,
 
-	/// The scope entities are created in. Systems that follow them, such as physics, are created on it by the
-	/// application code that steps them.
-	world: MessageScope,
-	cameras_listener: DefaultListener<crate::core::factory::CreateMessage<Camera>>,
-	/// Directional lights, the newest of which the renderer shows as the sun. It subscribes at startup, so a light
-	/// created before a window's passes exist still reaches them.
-	directional_lights_listener: DefaultListener<CreateMessage<rendering::DirectionalLight>>,
-	/// Fogs, the newest of which the renderer shows. It subscribes at startup for the same reason.
-	fogs_listener: DefaultListener<CreateMessage<rendering::ExponentialHeightFog>>,
+	/// Every scene's scope and the routes the renderer takes its cameras, sun, and fog from, by [`SceneId`]. The
+	/// world comes first: entities are created on its scope, and systems that follow them, such as physics, are
+	/// created on it by the application code that steps them.
+	scenes: Vec<SceneRoutes>,
 	/// The transforms every frame shows, sampled after each simulation step and resolved before each frame.
 	shown_transforms: ShownTransforms,
 
@@ -199,14 +205,37 @@ enum LoaderState {
 	Launched,
 }
 
+/// The `SceneRoutes` struct keeps one scene's scope and the routes its cameras, sun, and fog reach the renderer by.
+///
+/// They subscribe when the scene is created, so a light created before a sink's passes exist still reaches them.
+struct SceneRoutes {
+	scope: MessageScope,
+	cameras: DefaultListener<CreateMessage<Camera>>,
+	/// Directional lights, the newest of which the renderer shows as the scene's sun.
+	directional_lights: DefaultListener<CreateMessage<rendering::DirectionalLight>>,
+	/// Fogs, the newest of which the renderer shows in the scene.
+	fogs: DefaultListener<CreateMessage<rendering::ExponentialHeightFog>>,
+}
+
+impl SceneRoutes {
+	/// Subscribes to the cameras, suns, and fogs of the scene whose objects are created on `scope`.
+	fn new(scope: MessageScope) -> Self {
+		Self {
+			cameras: scope.factory::<Camera>().listener(),
+			directional_lights: scope.factory::<rendering::DirectionalLight>().listener(),
+			fogs: scope.factory::<rendering::ExponentialHeightFog>().listener(),
+			scope,
+		}
+	}
+}
+
 /// The `Services` struct names the CPU-side services one setup lane of [`GraphicsApplication::new`] builds, so
 /// services of the same type cannot trade places.
 struct Services {
 	input: input::InputCollector,
 	actions: input::InputSink,
-	cameras_listener: DefaultListener<CreateMessage<Camera>>,
-	directional_lights_listener: DefaultListener<CreateMessage<rendering::DirectionalLight>>,
-	fogs_listener: DefaultListener<CreateMessage<rendering::ExponentialHeightFog>>,
+	/// The world's scene routes.
+	world: SceneRoutes,
 	shown_transforms: ShownTransforms,
 	inspector: EntityHandle<DefaultInspector>,
 	http_inspector: HttpInspectorServer,
@@ -280,9 +309,7 @@ impl GraphicsApplication {
 						let mut input = input::InputCollector::new();
 						let actions = input::InputSink::new(input.add_sink(), action_events.clone())
 							.with_declarations(world_messages.factory::<Action>().listener());
-						let cameras_listener = world_messages.factory::<Camera>().listener();
-						let directional_lights_listener = world_messages.factory::<rendering::DirectionalLight>().listener();
-						let fogs_listener = world_messages.factory::<rendering::ExponentialHeightFog>().listener();
+						let world = SceneRoutes::new(world_messages.clone());
 						let shown_transforms = ShownTransforms::new(&world_messages);
 
 						// Register reflected posts after the shown transforms' future-only listener exists.
@@ -355,9 +382,7 @@ impl GraphicsApplication {
 						*services = Some(Services {
 							input,
 							actions,
-							cameras_listener,
-							directional_lights_listener,
-							fogs_listener,
+							world,
 							shown_transforms,
 							inspector,
 							http_inspector,
@@ -458,6 +483,12 @@ impl GraphicsApplication {
 
 		let streams = crate::inspector::DebugDataStreams::new(&world_messages, streams);
 
+		let render_image_factory = application.messages().factory();
+		let render_image_factory_listener = render_image_factory.listener();
+		let render_images_ready = application.messages().channel();
+		let render_image_extents = application.messages().channel().listener();
+		let render_image_deletes = application.messages().channel().listener();
+
 		GraphicsApplication {
 			runtime: crate::gameplay::Runtime::new(&world_messages),
 			application,
@@ -473,15 +504,16 @@ impl GraphicsApplication {
 			window_features: services.window_features,
 			window_cameras: services.window_cameras,
 			window_closes: services.window_closes,
+			render_image_factory: (render_image_factory, render_image_factory_listener),
+			render_images_ready,
+			render_image_extents,
+			render_image_deletes,
 			polled_window_events: Vec::new(),
 			input_layers: Vec::new(),
 
 			generator_factory: services.generator_factory,
 
-			world: world_messages,
-			cameras_listener: services.cameras_listener,
-			directional_lights_listener: services.directional_lights_listener,
-			fogs_listener: services.fogs_listener,
+			scenes: vec![services.world],
 			shown_transforms: services.shown_transforms,
 
 			input: services.input,
@@ -735,17 +767,32 @@ impl GraphicsApplication {
 		while let Some(close) = self.window_closes.read() {
 			self.close_window(close.window());
 		}
-		while let Some(message) = self.cameras_listener.read() {
-			self.renderer.create_camera(message.handle(), message.into_data());
+		while let Some(message) = self.render_image_factory.1.read() {
+			let handle = message.handle();
+			let image = self.renderer.create_render_image(handle, message.into_data());
+			self.render_images_ready.send(rendering::RenderImageReady::new(handle, image));
+		}
+		while let Some(change) = self.render_image_extents.read() {
+			self.renderer.set_render_image_extent(change.render_image(), change.extent());
+		}
+		while let Some(delete) = self.render_image_deletes.read() {
+			self.renderer.remove_render_image(*delete.handle());
+		}
+		for (index, scene) in self.scenes.iter_mut().enumerate() {
+			let id = SceneId::new(index);
+			while let Some(message) = scene.cameras.read() {
+				self.renderer.create_camera(message.handle(), message.into_data());
+			}
+			while let Some(message) = scene.directional_lights.read() {
+				self.renderer
+					.create_directional_light(id, message.handle(), message.into_data());
+			}
+			while let Some(message) = scene.fogs.read() {
+				self.renderer.create_fog(id, message.into_data());
+			}
 		}
 		while let Some(change) = self.window_cameras.read() {
 			self.renderer.set_window_camera(change.window(), change.camera());
-		}
-		while let Some(message) = self.directional_lights_listener.read() {
-			self.renderer.create_directional_light(message.handle(), message.into_data());
-		}
-		while let Some(message) = self.fogs_listener.read() {
-			self.renderer.create_fog(message.into_data());
 		}
 	}
 
@@ -1199,9 +1246,50 @@ impl GraphicsApplication {
 		(loader, std::mem::take(&mut self.deferred_tasks))
 	}
 
+	/// Creates a scene isolated from the world, such as a preview stage, and returns its id.
+	///
+	/// Objects created on its scope, [`Self::scene_messages`], reach only its own scene pipelines, and its sun and fog
+	/// light only its sinks. `name` names the scope in diagnostics. Next, install its scene pipelines with the id, such
+	/// as [`setup_pbr_visibility_shading_render_pipeline`], and show it with a [`rendering::RenderImage`]. See
+	/// [scenes](/docs/reference/rendering#scenes).
+	pub fn create_scene(&mut self, name: &str) -> SceneId {
+		let scope = self.application.message_bus().new_scope(name);
+		let id = self.renderer.create_scene();
+		assert_eq!(
+			id.index(),
+			self.scenes.len(),
+			"The renderer and the application number scenes alike."
+		);
+		self.shown_transforms.follow(&scope);
+		self.scenes.push(SceneRoutes::new(scope));
+		id
+	}
+
+	/// The scope objects of `scene` are created on.
+	///
+	/// # Panics
+	///
+	/// Panics when `scene` is not the world or a scene [`Self::create_scene`] returned.
+	pub fn scene_messages(&self, scene: SceneId) -> &MessageScope {
+		&self
+			.scenes
+			.get(scene.index())
+			.expect("Scene is unknown. The most likely cause is a scene id from another application. Pass `SceneId::WORLD` or the id of a scene `create_scene` returned.")
+			.scope
+	}
+
 	/// Returns the factory used to request new windows.
 	pub fn window_factory(&self) -> &Factory<Window> {
 		&self.window_factory.0
+	}
+
+	/// Returns the factory used to request new [render images](rendering::RenderImage), which draw a camera into an
+	/// image instead of a window.
+	///
+	/// Next, listen for [`rendering::RenderImageReady`] on [`Self::messages`] to learn the image the renderer draws
+	/// into, then show it in the interface.
+	pub fn render_image_factory(&self) -> &Factory<rendering::RenderImage> {
+		&self.render_image_factory.0
 	}
 
 	/// Returns the application-owned namespace used by headed-runtime channels and factories.
@@ -1248,7 +1336,7 @@ impl GraphicsApplication {
 	/// and step them from the tick callback in the order the application wants. The scope is `Clone`, so lanes
 	/// and systems keep their own copy.
 	pub fn world(&self) -> &MessageScope {
-		&self.world
+		&self.scenes[SceneId::WORLD.index()].scope
 	}
 
 	/// Returns the inspector the console and the HTTP inspector serve, for tools that run inside the application,
@@ -1647,7 +1735,7 @@ impl Creator<Window> for GraphicsApplication {
 
 use crate::{
 	input,
-	rendering::{self, Camera, renderer::Renderer, window::Window},
+	rendering::{self, Camera, SceneId, renderer::Renderer, window::Window},
 };
 // Only debug builds bake on demand, so only they report bakes.
 #[cfg(debug_assertions)]

@@ -1,0 +1,107 @@
+---
+title: Show a camera inside your UI
+description: Draw a camera's view of the world or of a scene of its own into an image with a render image, and show that image in a UI element, such as a preview in an editor panel.
+icon: Image
+---
+
+Use a render image when you want a camera's view inside your interface instead
+of in a window of its own, such as a preview panel in a tool. The renderer
+draws the image every frame with the same passes a window gets, and a UI
+element shows it without copying it. The image can show the world or a scene
+of its own, such as a stage that holds only the model you preview.
+
+## Stage a scene of its own
+
+Skip this step to show the world. Otherwise, create a scene and install its
+scene pipelines with its id, as you do for the world. Create its objects on the
+scene's own scope, so the world never sees them:
+
+```rust
+let preview_scene = app.create_scene("preview");
+setup_pbr_visibility_shading_render_pipeline(&mut app, preview_scene);
+
+let stage = app.scene_messages(preview_scene).clone();
+stage.create(DirectionalLight::new(LightColor::kelvin(6000.0), PhotometricIntensity::illuminance(20_000.0))?);
+stage.create(RenderableMesh::resource("models/chair.glb")).with(Transform::default());
+```
+
+Each scene pipeline you install keeps its own GPU state, so a staged scene costs
+as much memory as the world's pipelines.
+
+## Create a render image
+
+Create a camera on the scene's scope, `app.world()` for the world, then create a
+`RenderImage` with the scene's id, the size you want, in pixels, and that
+camera. Keep the handle the creation returns:
+
+```rust
+let camera: Handle = stage.create(Camera::new()).into();
+let preview = app
+    .render_image_factory()
+    .create(RenderImage::new(preview_scene, Extent::rectangle(512, 512), camera));
+```
+
+Use `SceneId::WORLD` as the scene to show the world.
+
+Register every post-scene pass before you create the first render image or
+window, as for windows.
+
+## Learn which image to show
+
+The renderer opens the render image before the next frame and answers with a
+`RenderImageReady` message on the application's message scope. Subscribe
+during setup, so you don't miss the answer:
+
+```rust
+let ready = app.messages().channel::<RenderImageReady>().listener();
+
+// Each tick:
+while let Some(answer) = ready.read() {
+    if answer.render_image() == preview {
+        image = Some(answer.image());
+    }
+}
+```
+
+## Show it in the UI
+
+Declare an `image` element, passing the size the element starts at, in pixels,
+and the image in place of pixels. The element shows what the renderer wrote
+that frame, so it follows the camera without any more work:
+
+```rust
+let mut picture = panel.element("preview").image(512, 512, image, |i| i).await;
+```
+
+To show the picture at another size in pixels, update the element's source:
+
+```rust
+picture.update_image(|i| i.source(640, 480, image)).await;
+```
+
+## Resize or remove it
+
+When the panel changes size, send a `SetRenderImageExtent` with the new size in
+pixels. The image keeps its handle, so the element keeps showing it:
+
+```rust
+app.messages().channel().send(SetRenderImageExtent::new(preview, Extent::rectangle(640, 480)));
+```
+
+To stop rendering it, send a `DeleteMessage` with its handle on the same scope:
+
+```rust
+app.messages().channel().send(DeleteMessage::new(preview));
+```
+
+The [rendering reference](/docs/reference/rendering#render-images) lists every
+rule.
+
+## Rust API
+
+- [`GraphicsApplication::create_scene`](/docs/api/latest/byte_engine/application/graphics/GraphicsApplication#method.create_scene)
+- [`SceneId`](/docs/api/latest/byte_engine/rendering/scene/SceneId)
+- [`RenderImage`](/docs/api/latest/byte_engine/rendering/render_image/RenderImage)
+- [`RenderImageReady`](/docs/api/latest/byte_engine/rendering/render_image/RenderImageReady)
+- [`SetRenderImageExtent`](/docs/api/latest/byte_engine/rendering/render_image/SetRenderImageExtent)
+- [`ui` module](/docs/api/latest/byte_engine/ui)

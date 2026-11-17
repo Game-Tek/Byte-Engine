@@ -9,7 +9,11 @@ use utils::hash::FxHasher;
 
 use crate::ui::{
 	Container, Text,
-	components::{curve::Curve, image::Image, path::Path},
+	components::{
+		curve::Curve,
+		image::{Image, ImageSource},
+		path::Path,
+	},
 	drag::DragCapture,
 	element::Id,
 	layout::{
@@ -148,10 +152,10 @@ pub trait Context<C: 'static = ()>: Sized {
 		&mut self,
 		width: u32,
 		height: u32,
-		pixels: impl AsRef<[u8]>,
+		source: impl Into<ImageSource>,
 		setup: impl Setup<Image>,
 	) -> impl Future<Output = EvaluationContext<C>> {
-		self.element("image").image(width, height, pixels, setup)
+		self.element("image").image(width, height, source, setup)
 	}
 
 	fn path(&mut self, setup: impl Setup<Path>) -> impl Future<Output = EvaluationContext<C>> {
@@ -219,17 +223,20 @@ pub trait ElementContext<C: 'static = ()> {
 	/// other segment setters.
 	fn curve(self, setup: impl Setup<Curve>) -> impl Future<Output = EvaluationContext<C>>;
 
-	/// Declares an image of `width` by `height` RGBA pixels, shown at its pixel size until setup sizes it. The pixels
-	/// are copied into the engine's storage.
+	/// Declares an image of `width` by `height` pixels, shown at its pixel size until setup sizes it.
+	///
+	/// `source` is RGBA pixels, which are copied into the engine's storage, or a GPU image, such as the one a
+	/// [`crate::rendering::RenderImageReady`] names. The UI samples a GPU image where it is, every frame it draws, so the
+	/// element follows what the GPU writes into it; the image needs the [`ghi::Uses::Image`] use.
 	///
 	/// # Panics
 	///
-	/// Awaiting it panics when `pixels` does not hold exactly `width * height * 4` bytes.
+	/// Awaiting it panics when pixels don't hold exactly `width * height * 4` bytes.
 	fn image(
 		self,
 		width: u32,
 		height: u32,
-		pixels: impl AsRef<[u8]>,
+		source: impl Into<ImageSource>,
 		setup: impl Setup<Image>,
 	) -> impl Future<Output = EvaluationContext<C>>;
 

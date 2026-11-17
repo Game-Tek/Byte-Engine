@@ -56,6 +56,8 @@ use slug::*;
 use text::*;
 use uploads::*;
 
+use crate::ui::components::image::ImageSource;
+
 /// The text renderer every [`UiRenderPass`] uses. Set it to [`UiTextMode::Atlas`] to draw CPU-rasterized glyphs instead.
 const UI_TEXT_MODE: UiTextMode = UiTextMode::Slug;
 
@@ -156,6 +158,8 @@ pub struct UiRenderPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	image_sampler: ghi::SamplerHandle,
 	image_textures: HashMap<u64, UiImageTexture>,
+	/// Owned image textures no slot uses, kept for the next bitmap, since GHI images are never destroyed.
+	spare_image_textures: Vec<ghi::BaseImageHandle>,
 	/// Carries the texels of UI images and the glyph atlas into their images.
 	uploads: UiUploadStaging,
 	text: UiText,
@@ -302,7 +306,8 @@ impl UiRenderPass {
 		// The layer outlives frames: damaged regions are redrawn into it and the scene is composited under it every frame.
 		// Only draws write it and the composite only reads it, so it takes no storage usage and Metal keeps it compressed.
 		let main_attachment = render_pass_builder.create_persistent_render_target(
-			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::RenderTarget | ghi::Uses::Image).name(&format!("{name} layer")),
+			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::RenderTarget | ghi::Uses::Image)
+				.name(&format!("{name} layer")),
 		);
 		let output = render_pass_builder.create_main_render_target(
 			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Storage | ghi::Uses::Image).name(name),
@@ -542,6 +547,7 @@ impl UiRenderPass {
 			descriptor_set,
 			image_sampler,
 			image_textures: HashMap::default(),
+			spare_image_textures: Vec::new(),
 			paths: UiPathCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY),
 			path_curve_buffer,
 			path_band_buffer,
@@ -570,65 +576,100 @@ impl UiRenderPass {
 		}
 	}
 
-	/// Makes an image resident and returns the element of the ubershader's texture array it is bound to, and whether
-	/// its texels must be copied into it.
+	/// Makes an image resident and returns the element of the ubershader's texture array it is bound to, and the
+	/// owned image its texels must be copied into, when they changed.
 	///
-	/// Returns `None` when every element holds an image the UI still shows.
+	/// A GPU image is bound where it is and never copied into. Returns `None` when every element holds an image the
+	/// UI still shows.
 	fn ensure_image_texture(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
 		source: usize,
 	) -> Option<(u32, Option<ghi::BaseImageHandle>)> {
 		let image = &self.adopted.data.images[source];
-		if !self.image_textures.contains_key(&image.image_id) {
-			let free = (UI_FIRST_IMAGE_TEXTURE_SLOT..UI_TEXTURE_SLOTS)
-				.find(|slot| self.image_textures.values().all(|texture| texture.slot != *slot));
-			let texture = if let Some(slot) = free {
-				let texture: ghi::BaseImageHandle = frame
+		let (image_id, version, extent) = (image.image_id, image.version, (image.source_width, image.source_height));
+		let external = match &image.source {
+			ImageSource::Gpu(handle) => Some(ghi::BaseImageHandle::from(*handle)),
+			ImageSource::Pixels(_) => None,
+		};
+
+		// The slot the image is bound to, and the binding it had: none for an image that just took a slot.
+		let (slot, bound) = match self.image_textures.get(&image_id) {
+			Some(texture) => (texture.slot, Some(texture.binding)),
+			None => {
+				let free = (UI_FIRST_IMAGE_TEXTURE_SLOT..UI_TEXTURE_SLOTS)
+					.find(|slot| self.image_textures.values().all(|texture| texture.slot != *slot));
+				let slot = match free {
+					Some(slot) => slot,
+					None => {
+						// Every element is taken. An image the UI no longer shows hands over its element, and its
+						// owned texture waits for the next bitmap.
+						let shown = &self.adopted.data.images;
+						let stale = self
+							.image_textures
+							.keys()
+							.copied()
+							.find(|id| shown.iter().all(|image| image.image_id != *id))?;
+						let texture = self.image_textures.remove(&stale)?;
+						if let UiImageBinding::Owned(owned) = texture.binding {
+							self.spare_image_textures.push(owned);
+						}
+						texture.slot
+					}
+				};
+				(slot, None)
+			}
+		};
+
+		// A GPU image binds where it is; a bitmap keeps its owned texture, or takes a spare or a new one.
+		let binding = match (external, bound) {
+			(Some(external), _) => UiImageBinding::External(external),
+			(None, Some(owned @ UiImageBinding::Owned(_))) => owned,
+			(None, _) => UiImageBinding::Owned(self.spare_image_textures.pop().unwrap_or_else(|| {
+				frame
 					.build_image(
 						ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
 							.name("UI Image")
-							.extent(Extent::rectangle(image.source_width, image.source_height)),
+							.extent(Extent::rectangle(extent.0, extent.1)),
 					)
-					.into();
-				frame.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
-					self.descriptor_set,
-					UI_LAYOUT.slot("textures"),
-					texture,
-					self.image_sampler,
-					ghi::Layouts::Read,
-					slot,
-				)]);
-				UiImageTexture {
-					version: u64::MAX,
-					extent: (0, 0),
-					image: texture,
-					slot,
-				}
-			} else {
-				// Every element is taken. An image the UI no longer shows hands over its texture and its element.
-				let shown = &self.adopted.data.images;
-				let stale = self
-					.image_textures
-					.keys()
-					.copied()
-					.find(|id| shown.iter().all(|image| image.image_id != *id))?;
-				let mut texture = self.image_textures.remove(&stale)?;
-				texture.version = u64::MAX;
-				texture
-			};
-			self.image_textures.insert(image.image_id, texture);
+					.into()
+			})),
+		};
+		if bound != Some(binding) {
+			// A slot that switches to a GPU image gives its owned texture back for the next bitmap.
+			if let Some(UiImageBinding::Owned(owned)) = bound {
+				self.spare_image_textures.push(owned);
+			}
+			frame.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
+				self.descriptor_set,
+				UI_LAYOUT.slot("textures"),
+				binding.image(),
+				self.image_sampler,
+				ghi::Layouts::Read,
+				slot,
+			)]);
 		}
 
-		let texture = self.image_textures.get_mut(&image.image_id)?;
-		if texture.version != image.version || texture.extent != (image.source_width, image.source_height) {
-			frame.resize_image(texture.image, Extent::rectangle(image.source_width, image.source_height));
-			texture.version = image.version;
-			texture.extent = (image.source_width, image.source_height);
-			return Some((texture.slot, Some(texture.image)));
+		let texture = self.image_textures.entry(image_id).or_insert(UiImageTexture {
+			version: u64::MAX,
+			extent: (0, 0),
+			binding,
+			slot,
+		});
+		// A newly bound owned texture holds no texels yet.
+		if bound != Some(binding) {
+			texture.version = u64::MAX;
 		}
-
-		Some((texture.slot, None))
+		texture.binding = binding;
+		match binding {
+			UiImageBinding::Owned(owned) if texture.version != version || texture.extent != extent => {
+				frame.resize_image(owned, Extent::rectangle(extent.0, extent.1));
+				texture.version = version;
+				texture.extent = extent;
+				Some((slot, Some(owned)))
+			}
+			_ => Some((slot, None)),
+		}
 	}
 
 	/// Stages the glyph atlas regions and the image texels that changed, for the copies this frame records before
@@ -658,10 +699,14 @@ impl UiRenderPass {
 			atlas.drain_pending(|region, pixels, stride| writer.copy(image, UI_GLYPH_ATLAS_FORMAT, region, pixels, stride));
 		}
 		for &(image, source) in images {
+			// Only bitmaps get an owned texture to copy into.
+			let Some(pixels) = sources[source].source.pixels() else {
+				continue;
+			};
 			let region = image_region(source);
 			// UI images hold compact RGBA8 rows.
 			let stride = region.size[0] as usize * 4;
-			writer.copy(image, ghi::Formats::RGBA8UNORM, region, &sources[source].pixels, stride);
+			writer.copy(image, ghi::Formats::RGBA8UNORM, region, pixels, stride);
 		}
 	}
 
@@ -702,6 +747,7 @@ impl UiRenderPass {
 			self.damage.push(UiPixelRegion::full(extent));
 		}
 		blur_footprints(&self.adopted.data, extent, &mut self.damage);
+		gpu_image_footprints(&self.adopted.data, extent, &mut self.damage);
 		merge_damage(&mut self.damage, extent);
 	}
 
@@ -1171,6 +1217,7 @@ mod tests {
 			texture_2d,
 		},
 	};
+	use crate::ui::components::image::ImageSource;
 	use crate::ui::{
 		components::curve::{CurvePoint, CurveSegment},
 		flow::Size,
@@ -2532,7 +2579,7 @@ mod tests {
 				version: 1,
 				source_width: 1,
 				source_height: 1,
-				pixels: image_pixels(1, 1).into(),
+				source: ImageSource::Pixels(image_pixels(1, 1).into()),
 				position: [0.0, 0.0],
 				size: [10.0, 10.0],
 				clip: None,
@@ -3799,7 +3846,7 @@ mod tests {
 				version: 0,
 				source_width: 10,
 				source_height: 10,
-				pixels: image_pixels(10, 10).into(),
+				source: ImageSource::Pixels(image_pixels(10, 10).into()),
 				position: [10.0, 20.0],
 				size: [40.0, 20.0],
 				clip: Some(DrawClip {

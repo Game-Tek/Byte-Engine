@@ -6,7 +6,8 @@
 //! live in [`crate::rendering::render_passes`].
 //! Replace the color flowing through the graph with
 //! [`RenderPassBuilder::create_main_render_target`]. The builder supplies an
-//! intermediate image or the swapchain without exposing graph position to the pass.
+//! intermediate image or the sink's final target, a window's swapchain or a render image, without exposing graph
+//! position to the pass.
 
 pub mod pixel_steps;
 pub mod simple_compute;
@@ -18,7 +19,7 @@ use std::{
 	sync::{Arc, atomic::AtomicU32},
 };
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::context::ContextCreate as _;
 use smallvec::SmallVec;
 use utils::{Box, hash::HashMap};
 
@@ -367,7 +368,8 @@ pub struct RenderPassBuilder<'a> {
 	/// The queue the renderer records frames on, where a pass uploads its lookup textures.
 	queue: ghi::QueueHandle,
 	sink_id: usize,
-	swapchain: ghi::SwapchainHandle,
+	/// Where the sink's graph ends: the window's swapchain or the render image, which the terminal pass writes.
+	final_target: MainRenderTarget,
 	/// The step of the sink's frame this builder's pass records as.
 	node: crate::rendering::renderer::RenderNode,
 	final_output: bool,
@@ -396,7 +398,7 @@ impl<'a> RenderPassBuilder<'a> {
 	/// Creates the builder for one node of a sink's graph.
 	///
 	/// `node` is the step of the sink's frame the pass records as. `final_output` marks the terminal post-scene pass,
-	/// whose replacement `main` is the sink swapchain. `scene_background_factory` is what
+	/// whose replacement `main` is `final_target`, the sink's swapchain or render image. `scene_background_factory` is what
 	/// [`Self::create_scene_background`] builds from and `scene_environment` what [`Self::scene_environment`] returns;
 	/// pass them only for scene nodes.
 	#[allow(clippy::too_many_arguments)]
@@ -406,7 +408,7 @@ impl<'a> RenderPassBuilder<'a> {
 		images: &'a mut RenderTargets,
 		render_pass_states: &'a mut RenderPassStates,
 		sink_id: usize,
-		swapchain: ghi::SwapchainHandle,
+		final_target: MainRenderTarget,
 		pipeline_manager: crate::rendering::PipelineManagerClient,
 		scene_background_factory: Option<&'a SceneBackgroundFactory>,
 		scene_environment: Option<SceneEnvironment>,
@@ -418,7 +420,7 @@ impl<'a> RenderPassBuilder<'a> {
 			context,
 			queue,
 			sink_id,
-			swapchain,
+			final_target,
 			node,
 			final_output,
 			final_output_written: false,
@@ -656,11 +658,12 @@ impl<'a> RenderPassBuilder<'a> {
 
 	/// Creates a replacement for the color image named `main`.
 	///
-	/// The renderer supplies the sink swapchain when this pass is terminal. In every other position, this creates and
+	/// The renderer supplies the sink's final target, its window's swapchain or its render image, when this pass is
+	/// terminal. In every other position, this creates and
 	/// aliases the requested image, adding [`simple_tile::output_uses`] and [`ghi::Uses::Image`], which later passes
 	/// need to sample `main`, to the uses `builder` asks for. Bind the
 	/// returned target without inspecting its variant, and take its format from [`MainRenderTarget::format`], because
-	/// the swapchain format can differ from the intermediate format: request a tile pipeline for that format, write a
+	/// the final target's format can differ from the intermediate format: request a tile pipeline for that format, write a
 	/// compute output as a formatless storage image, and derive a raster attachment from the target. Next, bind it with
 	/// [`simple_tile::Output::new`] or [`simple_compute::Resource::image`].
 	///
@@ -676,13 +679,10 @@ impl<'a> RenderPassBuilder<'a> {
 		let source = self.try_read_from("main");
 		let main = if self.final_output {
 			self.final_output_written = true;
-			let target = ghi::ImageOrSwapchain::Swapchain(self.swapchain);
-			self.external_writable_targets.push((name.to_string(), target));
-			self.external_writable_targets.push(("main".to_string(), target));
-			MainRenderTarget {
-				target,
-				format: self.context.swapchain_format(),
-			}
+			let target = self.final_target;
+			self.external_writable_targets.push((name.to_string(), target.target));
+			self.external_writable_targets.push(("main".to_string(), target.target));
+			target
 		} else {
 			// The copy that forwards `main` while the pass is bypassed writes the replacement as a tile output, and the
 			// passes after this one sample it as `main`.
@@ -729,7 +729,7 @@ impl<'a> RenderPassBuilder<'a> {
 		&self.pipeline_manager
 	}
 
-	/// Reports whether this builder gave its pass the terminal swapchain target.
+	/// Reports whether this builder gave its pass the sink's final target.
 	pub(crate) fn writes_final_output(&self) -> bool {
 		self.final_output_written
 	}
@@ -798,7 +798,8 @@ impl From<RenderToResult> for ghi::pipelines::raster::AttachmentDescriptor {
 	}
 }
 
-/// The `MainRenderTarget` struct hides whether a replacement `main` output is an image or the sink swapchain.
+/// The `MainRenderTarget` struct hides whether a replacement `main` output is an intermediate image or the sink's final
+/// target, a window's swapchain or a render image.
 ///
 /// Pass it directly to [`simple_compute::Resource::image`] or convert it into a
 /// raster attachment descriptor.
@@ -809,6 +810,11 @@ pub struct MainRenderTarget {
 }
 
 impl MainRenderTarget {
+	/// Names `target`, which holds images of `format`, as a sink's final target.
+	pub(crate) fn new(target: ghi::ImageOrSwapchain, format: ghi::Formats) -> Self {
+		Self { target, format }
+	}
+
 	/// Returns the format of the image or swapchain behind the target.
 	pub fn format(&self) -> ghi::Formats {
 		self.format

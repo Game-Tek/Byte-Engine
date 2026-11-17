@@ -15,6 +15,7 @@ use crate::ui::{
 	components::{
 		container::Sector,
 		curve::{CurvePath, CurvePoint, CurveSegment},
+		image::ImageSource,
 		path::{FillRule, Path},
 	},
 	flow::{FlowFunction, FlowInput, FlowOutput},
@@ -465,25 +466,28 @@ impl Properties<'_, Path> {
 }
 
 impl Properties<'_, Image> {
-	/// Replaces the RGBA pixels, copying them into the engine's storage. `pixels` must hold exactly
-	/// `width * height * 4` bytes.
+	/// Replaces the picture with `source`, `width` by `height` pixels: RGBA pixels, copied into the engine's storage,
+	/// which must hold exactly `width * height * 4` bytes, or a GPU image, such as the one a
+	/// [`crate::rendering::RenderImageReady`] names.
 	#[track_caller]
-	pub fn pixels(self, width: u32, height: u32, pixels: impl AsRef<[u8]>) -> Self {
-		let pixels = pixels.as_ref();
-		assert_rgba_len(width, height, pixels);
-		self.target.set_rgba(width, height, pixels);
+	pub fn source(self, width: u32, height: u32, source: impl Into<ImageSource>) -> Self {
+		let source = source.into();
+		assert_rgba_len(width, height, &source);
+		self.target.set_source(width, height, source);
 		self
 	}
 }
 
-/// Panics at the caller when RGBA data does not match its dimensions.
+/// Panics at the caller when a source's RGBA data does not match its dimensions. A GPU image has no data to check.
 #[track_caller]
-pub(super) fn assert_rgba_len(width: u32, height: u32, pixels: &[u8]) {
-	assert_eq!(
-		pixels.len(),
-		width as usize * height as usize * 4,
-		"RGBA image data must contain exactly width * height * 4 bytes"
-	);
+pub(super) fn assert_rgba_len(width: u32, height: u32, source: &ImageSource) {
+	if let Some(pixels) = source.pixels() {
+		assert_eq!(
+			pixels.len(),
+			width as usize * height as usize * 4,
+			"RGBA image data must contain exactly width * height * 4 bytes"
+		);
+	}
 }
 
 /// Builds a container outside any engine from `setup`'s properties, for tests that lay out elements directly.

@@ -1,6 +1,6 @@
 {
 	"title": "Use",
 	"description": "Make your application do something with Byte Engine, one task per page.",
-	"pages": ["index", "setup", "---Build---", "sample-project", "resources", "build", "---Systems---", "input", "pick-entities", "animation", "motion-matching", "audio", "gameplay-tasks", "levels", "prefabs", "navigation", "lighting", "skin", "color-correction", "color-grading", "film-grain", "fuse-post-processing", "depth-of-field", "shared-descriptor-sets", "gui", "particles", "debug-views", "debug-overlay", "debug-data-streams", "inspector-events", "console", "editor"],
+	"pages": ["index", "setup", "---Build---", "sample-project", "resources", "build", "---Systems---", "input", "pick-entities", "animation", "motion-matching", "audio", "gameplay-tasks", "levels", "prefabs", "navigation", "lighting", "skin", "color-correction", "color-grading", "film-grain", "fuse-post-processing", "depth-of-field", "shared-descriptor-sets", "gui", "render-images", "particles", "debug-views", "debug-overlay", "debug-data-streams", "inspector-events", "console", "editor"],
 	"root": true
 }

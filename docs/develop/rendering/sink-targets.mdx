@@ -1,0 +1,93 @@
+---
+title: Sink targets
+description: Understand how a sink's graph ends in a window's swapchain or in a render image, how scenes keep sinks apart, and what a change to sinks, scenes, frame recording, or presentation must keep true.
+icon: Computer
+---
+
+Read this page before you change how the renderer creates sinks or scenes,
+records a frame's nodes, or presents. The behavior an application sees is
+specified under [render images](/docs/reference/rendering#render-images),
+[scenes](/docs/reference/rendering#scenes), and
+[windows](/docs/reference/rendering#windows).
+
+## One sink, two ends
+
+A sink is everything the renderer keeps to draw one view: its camera, its scene
+pipeline state, its post-scene passes, and its render targets. Only where its
+graph ends differs. `Renderer` keeps one `SinkTarget` per sink, either a window
+with its swapchain or a render image with its image and extent, and every other
+part of the sink is shared code.
+
+The graph never asks which end it has. `RenderPassBuilder` holds the sink's
+final target as a `MainRenderTarget`, and `create_main_render_target` hands it
+to the terminal pass. The scene-only presentation copy and the debug view
+tiling take the same target. A render image is `BGRAu8` with a swapchain's uses,
+so a pass that can end a window's graph can end a render image's without
+change.
+
+## Frames
+
+A window takes part in a frame only after its swapchain image is acquired,
+which `SinkFrame::Acquired` records with the image's extent. A render image
+needs no acquisition: the acquisition step records `SinkFrame::Image`, and
+`prepare` takes the extent from the render image itself. That way, an extent
+change that arrives after the tick acquired still applies to that frame. The
+frame resizes the image like the sink's own render targets.
+
+Pacing and presentation stay window-only. Only acquired windows give present
+keys, and `presents_this_frame` counts only them, so a frame that only draws
+render images paces like a frame whose windows are all hidden.
+
+## Recording order
+
+Every sink's scene pipelines record before any post-scene pass. The post-scene
+passes then record sink by sink: every render image first, then every window.
+Each sink records its passes, its presentation copy, and its debug view tiling
+before the next sink starts. A window's pass that samples a render image
+therefore reads the picture of the same frame, and the command buffer's access
+tracking orders the read after the write.
+
+Scene pipelines receive their sinks in creation order instead, as
+[Scenes](#scenes) explains.
+
+## Scenes
+
+A scene is a message scope and the scene pipelines installed for it. The
+renderer numbers scenes with `SceneId`, the world first, and keeps each
+scene's sun and fog apart. Every pipeline manager draws one scene: the
+renderer builds a manager's per-sink state only for its scene's sinks, and
+`prepare` hands it only those sinks. A window always shows the world, and a
+render image shows the scene it names.
+
+Managers stay single-scene instead of keeping state per scene, because the
+visibility pipeline does its frame-wide work, such as detail levels, shadow
+views, and exposure, for the first sink it gets. Before the managers prepare,
+the renderer sorts the frame's sinks by scene, keeping creation order within
+each scene, so each manager gets a contiguous run whose first sink is its
+scene's first sink. A second instance of a pipeline keeps all its GPU state
+twice, so a preview scene with the visibility pipeline costs as much memory as
+the world's.
+
+One `ShownTransforms` follows every scene's scope. Handles are unique across
+scopes, so one timeline per handle serves every scene, and a manager ignores
+the handles it doesn't draw.
+
+## Rules a change must keep
+
+- Never branch on the final target's variant inside a pass. Take the format from
+  `MainRenderTarget::format`.
+- Keep render images recording before windows.
+- Never present or pace on a render image.
+- Keep removed sinks as `None`, so the other sinks keep their ids.
+- Hand a scene pipeline only its own scene's sinks, in creation order.
+
+## Tests
+
+`crates/byte-engine/tests/render_image.rs` creates a render image through the
+application, ends its graph with a pass that fills the final target with one
+color, and reads the image back after a frame and after a resize. It needs a
+GPU, so run it with
+`cargo nextest run -p byte-engine --test render_image --ignore-default-filter`.
+The same binary checks that each scene pipeline builds state for and prepares
+only its own scene's render images, and that a scene's sun reaches only its
+own sinks.

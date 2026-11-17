@@ -32,17 +32,75 @@ type SinkId = usize;
 type RenderPassId = usize;
 type PipelineManagerId = usize;
 
-/// How one window takes part in the frame being prepared.
+/// How one sink takes part in the frame being prepared.
 #[derive(Clone, Copy)]
-enum WindowFrame {
+enum SinkFrame {
 	/// The frame renders into this acquired swapchain image and presents it.
 	Acquired(ghi::PresentKey, Extent, ghi::SwapchainHandle),
 	/// No part of the window can be seen, so the frame skips it without acquiring, unless a screenshot captures it.
 	Hidden,
 	/// The window had no usable swapchain image, so the frame skips it.
 	Unusable,
-	/// The window was removed, so no frame renders it again.
+	/// The sink was removed, so no frame renders it again.
 	Removed,
+	/// The sink renders into this render image at this extent, which needs no acquisition and presents nothing.
+	Image(Extent, ghi::ImageHandle),
+}
+
+/// The `SceneLighting` struct keeps the sun and fog of one scene, which every sink of the scene carries to its passes.
+#[derive(Default)]
+struct SceneLighting {
+	/// The scene's newest directional light; see [`Renderer::create_directional_light`].
+	sun_light: Option<(Handle, DirectionalLight)>,
+	/// The scene's newest fog; see [`Renderer::create_fog`].
+	fog: Option<ExponentialHeightFog>,
+}
+
+/// The `SinkTarget` enum names where one sink's graph ends, so windows and render images share every other part of a
+/// sink: its scene, its passes, and its render targets.
+enum SinkTarget {
+	Window {
+		/// The scene the window shows, which is always the world.
+		scene: SceneId,
+		window: ghi::Window,
+		swapchain: ghi::SwapchainHandle,
+		/// Whether the latest acquisition warned that the window cannot render.
+		warned: bool,
+		/// The handle the application created the window with.
+		handle: Handle,
+		/// The features the application gave the window.
+		features: window::Features,
+	},
+	Image {
+		/// The handle the application created the render image with.
+		handle: Handle,
+		/// The scene the render image shows.
+		scene: SceneId,
+		image: ghi::ImageHandle,
+		/// The extent the image renders at, in pixels.
+		extent: Extent,
+	},
+}
+
+impl SinkTarget {
+	/// The handle the application created the window or render image with.
+	fn handle(&self) -> Handle {
+		match self {
+			SinkTarget::Window { handle, .. } | SinkTarget::Image { handle, .. } => *handle,
+		}
+	}
+
+	/// The scene the sink shows.
+	fn scene(&self) -> SceneId {
+		match self {
+			SinkTarget::Window { scene, .. } | SinkTarget::Image { scene, .. } => *scene,
+		}
+	}
+}
+
+/// The scene sink `sink_id` of `sinks` shows. A removed sink shows nothing, so it sorts with the world.
+fn scene_of(sinks: &[Option<SinkTarget>], sink_id: SinkId) -> SceneId {
+	sinks[sink_id].as_ref().map_or(SceneId::WORLD, SinkTarget::scene)
 }
 
 /// The `SinkPass` struct keeps one sink-local post-scene pass with what the renderer needs to record and capture it.
@@ -106,7 +164,7 @@ pub struct Renderer {
 	started_frame_count: u64,
 
 	/// The frame index the acquisitions belong to and, per window adopted so far, how the window takes part in it.
-	acquisitions: (u64, SmallVec<[WindowFrame; 16]>),
+	acquisitions: (u64, SmallVec<[SinkFrame; 16]>),
 	/// The minimum time between presented frames applied to every window; `None` presents on every refresh.
 	present_interval: Option<std::time::Duration>,
 	/// Whether no one watches the windows: they open in the background and render whether or not they can be seen.
@@ -117,11 +175,8 @@ pub struct Renderer {
 	sink_cameras: SmallVec<[(SinkId, Handle); 16]>,
 	/// Cameras and their stable handles. Each one is placed at its handle's shown transform.
 	cameras: SmallVec<[(Handle, Camera); 16]>,
-	/// The newest directional light, which every sink carries to its passes as the sun; see
-	/// [`Self::create_directional_light`].
-	sun_light: Option<(Handle, DirectionalLight)>,
-	/// The newest fog, which every sink carries to its passes; see [`Self::create_fog`].
-	fog: Option<ExponentialHeightFog>,
+	/// The sun and fog of every scene, by [`SceneId`]; the world's comes first.
+	scenes: SmallVec<[SceneLighting; 4]>,
 
 	render_targets: RenderTargets,
 	#[cfg(debug_assertions)]
@@ -163,7 +218,8 @@ pub struct Renderer {
 	/// The pass that tiles each sink's shown debug views over its presented image, when the build has debug views.
 	debug_view_presents: SmallVec<[(SinkId, DebugViewPresentPass); 16]>,
 
-	pipeline_managers: SmallVec<[Box<dyn PipelineManager>; 16]>,
+	/// Every scene pipeline with the scene it draws. A manager's index is its [`PipelineManagerId`].
+	pipeline_managers: SmallVec<[(SceneId, Box<dyn PipelineManager>); 16]>,
 	pipeline_compilation_client: crate::rendering::PipelineManagerClient,
 	pipeline_compilation_manager: crate::rendering::pipeline_compilation::PipelineManager,
 
@@ -192,11 +248,13 @@ pub struct Renderer {
 	/// This field drops after renderer subsystems so they finish pending GPU work before their resources are destroyed.
 	context: ghi::implementation::Context,
 
-	/// Display windows, their swapchains, whether the latest acquisition warned that the window cannot render, and the
-	/// handle and features the application gave them, by sink. A removed window leaves `None`, so the other sinks keep
-	/// their ids. Declared after `context`, because destroying a swapchain's surface may still talk to its window.
-	windows: SmallVec<[Option<(ghi::Window, ghi::SwapchainHandle, bool, Handle, window::Features)>; 16]>,
-	/// The windowing connection that pumps every window's events. Declared after `windows` so they drop first.
+	/// Where each sink's graph ends, a window or a render image, by sink. A removed sink leaves `None`, so the other
+	/// sinks keep their ids. Declared after `context`, because destroying a swapchain's surface may still talk to its
+	/// window.
+	sinks: SmallVec<[Option<SinkTarget>; 16]>,
+	/// The sink of the first window opened, the main window, which stays its sink after it closes.
+	main_window: Option<SinkId>,
+	/// The windowing connection that pumps every window's events. Declared after `sinks` so they drop first.
 	app: Option<ghi::window::App>,
 }
 
@@ -330,7 +388,8 @@ impl Renderer {
 
 			started_frame_count: 0,
 
-			windows: SmallVec::with_capacity(16),
+			sinks: SmallVec::with_capacity(16),
+			main_window: None,
 			app: None,
 			acquisitions: (0, SmallVec::with_capacity(16)),
 			present_interval: None,
@@ -338,8 +397,7 @@ impl Renderer {
 			swapchain_images,
 			sink_cameras: SmallVec::with_capacity(16),
 			cameras: SmallVec::with_capacity(16),
-			sun_light: None,
-			fog: None,
+			scenes: smallvec::smallvec![SceneLighting::default()],
 
 			render_targets: RenderTargets::new(),
 			#[cfg(debug_assertions)]
@@ -463,20 +521,34 @@ impl Renderer {
 	/// Next, add post-scene passes with
 	/// [`Self::add_post_scene_render_pass_for_all_sinks`] or create a window with
 	/// [`Self::create_window`].
-	pub fn add_pipeline_manager(&mut self, mut pipeline_manager: impl PipelineManager + 'static) {
+	pub fn add_pipeline_manager(&mut self, scene: SceneId, mut pipeline_manager: impl PipelineManager + 'static) {
+		assert!(
+			scene.index() < self.scenes.len(),
+			"Scene pipeline names an unknown scene. The most likely cause is a scene id from another renderer. Install scene pipelines for `SceneId::WORLD` or a scene `Renderer::create_scene` returned."
+		);
 		let pipeline_manager_id = self.pipeline_managers.len();
-		// Sinks that already exist get the manager's state now; deferred sinks get it when they initialize.
+		// Sinks of the scene that already exist get the manager's state now; deferred sinks get it when they
+		// initialize.
 		let sinks: SmallVec<[SinkId; 16]> = self
 			.sink_cameras
 			.iter()
 			.map(|(sink_id, _)| *sink_id)
-			.filter(|sink_id| !self.pending_sink_initializations.contains(sink_id))
+			.filter(|sink_id| !self.pending_sink_initializations.contains(sink_id) && scene_of(&self.sinks, *sink_id) == scene)
 			.collect();
 		for sink_id in sinks {
 			self.create_manager_sink(&mut pipeline_manager, pipeline_manager_id, sink_id);
 		}
 
-		self.pipeline_managers.push(Box::new(pipeline_manager));
+		self.pipeline_managers.push((scene, Box::new(pipeline_manager)));
+	}
+
+	/// Adds a scene with no scene pipelines, sun, or fog, and returns its id.
+	///
+	/// Next, install its scene pipelines with [`Self::add_pipeline_manager`] and show it with
+	/// [`Self::create_render_image`].
+	pub fn create_scene(&mut self) -> SceneId {
+		self.scenes.push(SceneLighting::default());
+		SceneId::new(self.scenes.len() - 1)
 	}
 
 	/// Starts the builder for one node of a sink's graph; `final_output` marks the sink's terminal post-scene pass.
@@ -488,14 +560,14 @@ impl Renderer {
 			RenderNode::Scene(_) => (self.scene_background_factory.as_deref(), self.scene_environment.clone()),
 			RenderNode::Pass(_) | RenderNode::Presentation | RenderNode::DebugView => (None, None),
 		};
-		let swapchain = self.swapchain(sink_id);
+		let final_target = self.final_target(sink_id);
 		RenderPassBuilder::new(
 			&mut self.context,
 			self.graphics_queue_handle,
 			&mut self.render_targets,
 			&mut self.render_pass_states,
 			sink_id,
-			swapchain,
+			final_target,
 			self.pipeline_compilation_client.clone(),
 			scene_background_factory,
 			scene_environment,
@@ -544,9 +616,12 @@ impl Renderer {
 
 	fn initialize_scene_sink(&mut self, sink_id: SinkId) {
 		// Every manager builds through `self`, so the list steps aside while they do.
+		let scene = scene_of(&self.sinks, sink_id);
 		let mut pipeline_managers = std::mem::take(&mut self.pipeline_managers);
-		for (pipeline_manager_id, pipeline_manager) in pipeline_managers.iter_mut().enumerate() {
-			self.create_manager_sink(&mut **pipeline_manager, pipeline_manager_id, sink_id);
+		for (pipeline_manager_id, (manager_scene, pipeline_manager)) in pipeline_managers.iter_mut().enumerate() {
+			if *manager_scene == scene {
+				self.create_manager_sink(&mut **pipeline_manager, pipeline_manager_id, sink_id);
+			}
 		}
 		self.pipeline_managers = pipeline_managers;
 
@@ -576,8 +651,8 @@ impl Renderer {
 			+ 'static,
 	{
 		assert!(
-			self.windows.is_empty(),
-			"Render graph is already closed. The most likely cause is that a scene background was registered after creating a window. Register it before creating the first window."
+			self.sinks.is_empty(),
+			"Render graph is already closed. The most likely cause is that a scene background was registered after creating a window or render image. Register it before creating the first window or render image."
 		);
 		self.scene_background_factory = Some(Box::new(factory));
 	}
@@ -596,8 +671,8 @@ impl Renderer {
 			+ 'static,
 	{
 		assert!(
-			self.windows.is_empty(),
-			"Render graph is already closed. The most likely cause is that a scene environment was registered after creating a window. Register it before creating the first window."
+			self.sinks.is_empty(),
+			"Render graph is already closed. The most likely cause is that a scene environment was registered after creating a window or render image. Register it before creating the first window or render image."
 		);
 		self.scene_environment_factory = Some(Box::new(factory));
 	}
@@ -611,8 +686,8 @@ impl Renderer {
 		F: for<'builder, 'resources> Fn(&'builder mut RenderPassBuilder<'resources>) -> Box<dyn RenderPass> + 'static,
 	{
 		assert!(
-			self.windows.is_empty(),
-			"Render graph is already closed. The most likely cause is that a post-scene render pass was registered after creating a window. Register every pass before creating the first window."
+			self.sinks.is_empty(),
+			"Render graph is already closed. The most likely cause is that a post-scene render pass was registered after creating a window or render image. Register every pass before creating the first window or render image."
 		);
 		self.registrations.push(Registration::Pass(Box::new(render_pass_factory)));
 	}
@@ -629,8 +704,8 @@ impl Renderer {
 		F: for<'builder, 'resources> Fn(&'builder mut RenderPassBuilder<'resources>) -> Box<dyn PixelStep> + 'static,
 	{
 		assert!(
-			self.windows.is_empty(),
-			"Render graph is already closed. The most likely cause is that a pixel step was registered after creating a window. Register every pass before creating the first window."
+			self.sinks.is_empty(),
+			"Render graph is already closed. The most likely cause is that a pixel step was registered after creating a window or render image. Register every pass before creating the first window or render image."
 		);
 		self.registrations.push(Registration::Step {
 			pipeline,
@@ -745,7 +820,9 @@ impl Renderer {
 	where
 		F: for<'builder, 'resources> Fn(&'builder mut RenderPassBuilder<'resources>) -> Box<dyn RenderPass> + 'static,
 	{
-		let built = self.sink_of(window).is_some_and(|sink_id| self.window_graphs.contains(&sink_id));
+		let built = self
+			.sink_of(window)
+			.is_some_and(|sink_id| self.window_graphs.contains(&sink_id));
 		assert!(
 			!built,
 			"Render graph of the window is already closed. The most likely cause is that a pass was registered for a window a frame after the window was created. Register every pass of a window right after creating it."
@@ -755,10 +832,10 @@ impl Renderer {
 
 	/// The sink of an open window without a camera that has passes registered and none built yet.
 	fn unbuilt_window_graph(&self) -> Option<SinkId> {
-		self.open_windows().find_map(|(sink_id, (.., handle, _))| {
+		self.open_windows().find_map(|(sink_id, _, handle)| {
 			let unbuilt = !self.window_graphs.contains(&sink_id)
 				&& !self.sink_cameras.iter().any(|(camera_sink, _)| *camera_sink == sink_id)
-				&& self.window_registrations.iter().any(|(window, _)| window == handle);
+				&& self.window_registrations.iter().any(|(window, _)| *window == handle);
 			unbuilt.then_some(sink_id)
 		})
 	}
@@ -766,7 +843,10 @@ impl Renderer {
 	/// Builds the passes registered for each open window without a camera, which closes those windows' graphs.
 	fn build_window_graphs(&mut self) {
 		while let Some(sink_id) = self.unbuilt_window_graph() {
-			let window = self.windows[sink_id].as_ref().expect("Only open windows build graphs.").3;
+			let window = self.sinks[sink_id]
+				.as_ref()
+				.expect("Only open windows build graphs.")
+				.handle();
 			let (passes, others) = std::mem::take(&mut self.window_registrations)
 				.into_iter()
 				.partition::<SmallVec<[_; 4]>, _>(|(handle, _)| *handle == window);
@@ -813,23 +893,22 @@ impl Renderer {
 		self.fusions = FusionCatalog::Planned(planned);
 		declare_render_passes(&self.configuration, &self.render_pass_states);
 
-		// A scene-only graph has no terminal pass that can receive the swapchain directly. An empty graph also has
+		// A scene-only graph has no terminal pass that can receive the final target directly. An empty graph also has
 		// no scene color to copy, so presenting the acquired swapchain is the complete frame operation in that case.
+		let final_target = self.final_target(sink_id);
 		if final_index.is_none() && self.render_targets.get("main", sink_id).is_some() {
-			let swapchain = self.swapchain(sink_id);
 			let mut builder = self.sink_builder(sink_id, RenderNode::Presentation, false);
 			let source = builder.read_from("main");
-			let copy = ImageBypassPass::new(&mut builder, source, swapchain);
+			let copy = ImageBypassPass::new(&mut builder, source, final_target);
 			builder.record_node();
 			self.scene_presentation_copies.push((sink_id, copy));
 		}
 
 		// The debug views tile over everything, so their pass is the sink's last node.
 		if self.debug_view_settings.enabled {
-			let swapchain = self.swapchain(sink_id);
 			let mut builder = self.sink_builder(sink_id, RenderNode::DebugView, false);
 			let pool = builder.debug_view_pool(ghi::AccessPolicies::READ);
-			let present = DebugViewPresentPass::new(&mut builder, &pool, ghi::ImageOrSwapchain::Swapchain(swapchain));
+			let present = DebugViewPresentPass::new(&mut builder, &pool, final_target.into());
 			builder.record_node();
 			self.debug_view_presents.push((sink_id, present));
 		}
@@ -843,7 +922,7 @@ impl Renderer {
 		self.app.iter_mut().flat_map(move |app| app.poll(wait))
 	}
 
-	/// Opens an operating system dialog, such as a file or color picker, without waiting for the user. The first
+	/// Opens an operating system dialog, such as a file or color picker, without waiting for the user. The main
 	/// window owns it, so it opens attached to that window where the platform supports it.
 	///
 	/// Next, match [`ghi::window::AppEvents::Dialog`] events against the returned id. They reach the application with
@@ -855,7 +934,11 @@ impl Renderer {
 			Some(app) => app,
 			app => app.insert(ghi::window::App::new("main_window").map_err(ghi::window::DialogError::Os)?),
 		};
-		app.open_dialog(dialog, self.windows.first().and_then(Option::as_ref).map(|(window, ..)| window))
+		let owner = self.main_window.and_then(|sink_id| match &self.sinks[sink_id] {
+			Some(SinkTarget::Window { window, .. }) => Some(window),
+			_ => None,
+		});
+		app.open_dialog(dialog, owner)
 	}
 
 	/// Returns the handle that interrupts a waiting [`Self::poll_windows`], once a window connected the renderer
@@ -874,7 +957,11 @@ impl Renderer {
 	/// Only [`window::Features::CAPTURE_CURSOR`] changes on an open window; a change to another feature is logged and
 	/// left out.
 	pub fn set_window_features(&mut self, handle: Handle, features: window::Features) {
-		let Some((window, _, _, _, current)) = self.windows.iter_mut().flatten().find(|(.., window, _)| *window == handle) else {
+		let open = self.sink_of(handle).and_then(|sink_id| match &mut self.sinks[sink_id] {
+			Some(SinkTarget::Window { window, features, .. }) => Some((window, features)),
+			_ => None,
+		});
+		let Some((window, current)) = open else {
 			log::warn!(
 				"Window features were not changed. The most likely cause is a handle that names no open window, or a window the renderer hasn't opened yet. Send the change after the tick that created the window, with the handle its creation returned."
 			);
@@ -916,8 +1003,10 @@ impl Renderer {
 	/// including windows created later. `None` removes the cap so frames present on every refresh.
 	pub fn set_present_interval(&mut self, interval: Option<std::time::Duration>) {
 		self.present_interval = interval;
-		for (_window, swapchain, ..) in self.windows.iter().flatten() {
-			self.context.set_present_interval(*swapchain, interval);
+		for target in self.sinks.iter().flatten() {
+			if let SinkTarget::Window { swapchain, .. } = target {
+				self.context.set_present_interval(*swapchain, interval);
+			}
 		}
 	}
 
@@ -935,7 +1024,9 @@ impl Renderer {
 	///
 	/// The fastest display decides so that no window handles its events later than its display could show them.
 	pub fn refresh_interval(&self) -> Option<std::time::Duration> {
-		self.windows.iter().flatten().filter_map(|(window, ..)| window.refresh_interval()).min()
+		self.open_windows()
+			.filter_map(|(_, window, _)| window.refresh_interval())
+			.min()
 	}
 
 	/// Acquires the swapchain image of every window for the next frame and returns the primary window's display time,
@@ -960,34 +1051,47 @@ impl Renderer {
 		}
 		// A window still needs deciding when this frame has no entry for it, or when it is hidden and a screenshot
 		// captures it.
-		let undecided = |acquisitions: &[WindowFrame], index: SinkId| match acquisitions.get(index) {
+		let undecided = |acquisitions: &[SinkFrame], index: SinkId| match acquisitions.get(index) {
 			None => true,
-			Some(window_frame) => matches!(window_frame, WindowFrame::Hidden) && captured(index),
+			Some(sink_frame) => matches!(sink_frame, SinkFrame::Hidden) && captured(index),
 		};
-		if !(0..self.windows.len()).any(|index| undecided(&self.acquisitions.1, index)) {
+		if !(0..self.sinks.len()).any(|index| undecided(&self.acquisitions.1, index)) {
 			return None;
 		}
 
 		let _span = debug_span!(
 			"Renderer::acquire_swapchains",
 			frame = self.started_frame_count,
-			windows = self.windows.len()
+			sinks = self.sinks.len()
 		)
 		.entered();
 
 		let frame = ghi::queue::FrameRequest::new(self.started_frame_count, self.render_finished_synchronizer);
 		let mut present_time = None;
 
-		for (index, window) in self.windows.iter_mut().enumerate() {
+		for (index, target) in self.sinks.iter_mut().enumerate() {
 			if !undecided(&self.acquisitions.1, index) {
 				continue;
 			}
-			let Some((window, swapchain, warned, ..)) = window else {
-				self.acquisitions.1.push(WindowFrame::Removed);
-				continue;
+			// Only a window can be hidden, so a removed sink or a render image is decided the first time it's seen.
+			let (window, swapchain, warned) = match target {
+				None => {
+					self.acquisitions.1.push(SinkFrame::Removed);
+					continue;
+				}
+				Some(SinkTarget::Image { image, extent, .. }) => {
+					self.acquisitions.1.push(SinkFrame::Image(*extent, *image));
+					continue;
+				}
+				Some(SinkTarget::Window {
+					window,
+					swapchain,
+					warned,
+					..
+				}) => (window, swapchain, warned),
 			};
 			if !self.unattended && !captured(index) && !window.is_visible() {
-				self.acquisitions.1.push(WindowFrame::Hidden);
+				self.acquisitions.1.push(SinkFrame::Hidden);
 				continue;
 			}
 
@@ -1015,13 +1119,13 @@ impl Renderer {
 				)
 			});
 
-			let window_frame = match acquisition.filter(|_| problem.is_none()) {
-				Some(acquisition) => WindowFrame::Acquired(acquisition.present_key(), acquisition.extent(), *swapchain),
-				None => WindowFrame::Unusable,
+			let sink_frame = match acquisition.filter(|_| problem.is_none()) {
+				Some(acquisition) => SinkFrame::Acquired(acquisition.present_key(), acquisition.extent(), *swapchain),
+				None => SinkFrame::Unusable,
 			};
 			match self.acquisitions.1.get_mut(index) {
-				Some(decided) => *decided = window_frame,
-				None => self.acquisitions.1.push(window_frame),
+				Some(decided) => *decided = sink_frame,
+				None => self.acquisitions.1.push(sink_frame),
 			}
 		}
 
@@ -1041,12 +1145,11 @@ impl Renderer {
 	///
 	/// Render passes adopt their pending inputs while answering, so call this after the tick published them.
 	pub(crate) fn needs_frame(&mut self) -> bool {
-		let mut needs_frame = self.redraw_requested
-			|| !self.pending_sink_initializations.is_empty()
-			|| self.unbuilt_window_graph().is_some();
+		let mut needs_frame =
+			self.redraw_requested || !self.pending_sink_initializations.is_empty() || self.unbuilt_window_graph().is_some();
 		// Ask every pass so each adopts its inputs this tick, even when an earlier one already answered.
 		// A removed window's passes never render again, so they can't need a frame.
-		for render_pass in self.render_passes.iter_mut().filter(|pass| self.windows[pass.sink].is_some()) {
+		for render_pass in self.render_passes.iter_mut().filter(|pass| self.sinks[pass.sink].is_some()) {
 			needs_frame |= render_pass.harness.needs_frame();
 		}
 		for background in &self.scene_backgrounds {
@@ -1060,7 +1163,7 @@ impl Renderer {
 
 	/// Starts scene resource requests before window setup or frame preparation borrows the context.
 	pub(crate) fn update(&mut self, transforms: &ShownTransforms) {
-		for pipeline_manager in &mut self.pipeline_managers {
+		for (_, pipeline_manager) in &mut self.pipeline_managers {
 			pipeline_manager.update(transforms);
 		}
 	}
@@ -1082,7 +1185,7 @@ impl Renderer {
 				.acquisitions
 				.1
 				.iter()
-				.any(|window_frame| matches!(window_frame, WindowFrame::Acquired(..)))
+				.any(|sink_frame| matches!(sink_frame, SinkFrame::Acquired(..)))
 	}
 
 	/// Prepares a frame by invoking the configured render passes.
@@ -1108,12 +1211,12 @@ impl Renderer {
 		let _span = debug_span!(
 			"Renderer::prepare",
 			frame = self.started_frame_count,
-			windows = self.windows.len()
+			sinks = self.sinks.len()
 		)
 		.entered();
 
-		let Some(_) = self.windows.iter().flatten().next() else {
-			log::debug!("No swapchains available to present to. Skipping rendering!");
+		let Some(_) = self.sinks.iter().flatten().next() else {
+			log::debug!("No window or render image is open. Skipping rendering!");
 			let screenshots = screenshot_requests
 				.iter()
 				.map(|_| Err(RendererScreenshotError::SinkNotFound))
@@ -1190,7 +1293,7 @@ impl Renderer {
 				{
 					let _span = debug_span!("Renderer::build_sinks", cameras = self.cameras.len()).entered();
 					for (sink_id, camera_handle) in self.sink_cameras.iter() {
-						let WindowFrame::Acquired(_present_key, extent, _swapchain) = swapchains[*sink_id] else {
+						let (SinkFrame::Acquired(_, extent, _) | SinkFrame::Image(extent, _)) = swapchains[*sink_id] else {
 							continue;
 						};
 						let Some((_, camera)) = self.cameras.iter().find(|(handle, _)| handle == camera_handle) else {
@@ -1204,13 +1307,14 @@ impl Renderer {
 							.with_exposure_scale(camera.exposure_scale())
 							.with_lens(camera.f_number(), camera.focus_distance(), camera.sensor_height())
 							.with_frame_interval(frame_interval);
-						let sink = match &self.sun_light {
+						let lighting = &self.scenes[scene_of(&self.sinks, *sink_id).index()];
+						let sink = match &lighting.sun_light {
 							Some((handle, light)) => {
 								sink.with_sun(Sun::new(light, &transforms.get(*handle).cloned().unwrap_or_default()))
 							}
 							None => sink,
 						};
-						let sink = match self.fog {
+						let sink = match lighting.fog {
 							Some(fog) => sink.with_fog(fog),
 							None => sink,
 						};
@@ -1226,18 +1330,25 @@ impl Renderer {
 					}
 					// A window with its own graph shows no scene, so its sink has no camera and an identity view.
 					for sink_id in &self.window_graphs {
-						let WindowFrame::Acquired(_present_key, extent, _swapchain) = swapchains[*sink_id] else {
+						let SinkFrame::Acquired(_present_key, extent, _swapchain) = swapchains[*sink_id] else {
 							continue;
 						};
 						sinks.push(Sink::new(View::identity(), extent, *sink_id).with_frame_interval(frame_interval));
 					}
 				}
+				// Each scene's sinks lie next to each other, in creation order, so every scene pipeline takes the run of
+				// its own scene, whose first sink leads its frame-wide work.
+				sinks.sort_by_key(|sink| scene_of(&self.sinks, sink.index()).index());
 
 				// The render targets each node uses first, per sink, so recording can give them new contents.
 				let mut first_uses = SmallVec::<[(SinkId, FirstUse); 64]>::new();
 				{
 					let _span = debug_span!("Renderer::resize_render_targets", sinks = sinks.len()).entered();
 					for sink in &sinks {
+						// A render image follows its sink's extent like the sink's own targets do.
+						if let SinkFrame::Image(_, image) = swapchains[sink.index()] {
+							frame.resize_image(image.into(), sink.extent());
+						}
 						// Resize the sink's images to its extent, divided for reduced-resolution targets.
 						for (image, extent) in self.render_targets.get_images_for_sink(sink.index(), sink.extent()) {
 							frame.resize_image(image, extent);
@@ -1250,12 +1361,20 @@ impl Renderer {
 					}
 				}
 
-				// Each manager's commands, indexed by manager, with the sink every command records for.
-				let pipeline_manager_commands: SmallVec<[SmallVec<[(SinkId, RenderPassReturn<'_>); 16]>; 16]> = {
+				// Each manager's sinks, the run of its scene, and its commands, indexed by manager, with the sink every
+				// command records for.
+				type ManagerCommands<'a> = (std::ops::Range<usize>, SmallVec<[(SinkId, RenderPassReturn<'a>); 16]>);
+				let pipeline_manager_commands: SmallVec<[ManagerCommands<'_>; 16]> = {
 					let _span = debug_span!("Renderer::prepare_pipeline_managers").entered();
 					self.pipeline_managers
 						.iter_mut()
-						.map(|pipeline_manager| pipeline_manager.prepare(frame, &sinks, frame_allocator, transforms, alley, time))
+						.map(|(scene, pipeline_manager)| {
+							let start = sinks.partition_point(|sink| scene_of(&self.sinks, sink.index()) .index() < scene.index());
+							let end = sinks.partition_point(|sink| scene_of(&self.sinks, sink.index()).index() <= scene.index());
+							let commands =
+								pipeline_manager.prepare(frame, &sinks[start..end], frame_allocator, transforms, alley, time);
+							(start..end, commands)
+						})
 						.collect()
 				};
 
@@ -1304,9 +1423,9 @@ impl Renderer {
 
 				let present_keys = swapchains
 					.iter()
-					.filter_map(|window_frame| match window_frame {
-						WindowFrame::Acquired(present_key, ..) => Some(*present_key),
-						WindowFrame::Hidden | WindowFrame::Unusable | WindowFrame::Removed => None,
+					.filter_map(|sink_frame| match sink_frame {
+						SinkFrame::Acquired(present_key, ..) => Some(*present_key),
+						SinkFrame::Hidden | SinkFrame::Unusable | SinkFrame::Removed | SinkFrame::Image(..) => None,
 					})
 					.collect::<SmallVec<[ghi::PresentKey; 16]>>();
 				drop(prepare_frame_work);
@@ -1318,8 +1437,8 @@ impl Renderer {
 					}
 					{
 						let _span = debug_span!("Renderer::record_pipeline_manager_commands").entered();
-						for (pipeline_manager_id, commands) in pipeline_manager_commands.iter().enumerate() {
-							for sink in &sinks {
+						for (pipeline_manager_id, (scene_sinks, commands)) in pipeline_manager_commands.iter().enumerate() {
+							for sink in &sinks[scene_sinks.clone()] {
 								let command = commands
 									.iter()
 									.find_map(|(sink_id, command)| (*sink_id == sink.index()).then_some(*command));
@@ -1346,29 +1465,37 @@ impl Renderer {
 
 					{
 						let _span = debug_span!("Renderer::record_render_pass_commands").entered();
-						for (commands, render_pass_id, sink, counter) in render_pass_commands {
-							let node = RenderNode::Pass(render_pass_id);
-							let counter = counter.map(|(counter, _)| counter);
-							record_node(command_buffer_recording, &first_uses, sink, node, &commands, counter);
-							for (request_index, capture) in screenshot_captures.iter().enumerate() {
-								if let Ok(ResolvedScreenshotCapture::AfterPass { pass, target }) = capture
-									&& *pass == render_pass_id
-								{
-									screenshot_transfers[request_index] = Some(
-										command_buffer_recording
-											.transfer_texture(*target)
-											.map_err(RendererScreenshotError::Transfer),
-									);
+						// Render images finish before any window records its passes, so a window's pass that reads one
+						// reads this frame's picture.
+						let in_phase = |sink: SinkId, images: bool| matches!(swapchains[sink], SinkFrame::Image(..)) == images;
+						for images in [true, false] {
+							for (commands, render_pass_id, sink, counter) in
+								render_pass_commands.iter().filter(|(.., sink, _)| in_phase(*sink, images))
+							{
+								let node = RenderNode::Pass(*render_pass_id);
+								let counter = counter.as_ref().map(|(counter, _)| *counter);
+								record_node(command_buffer_recording, &first_uses, *sink, node, commands, counter);
+								for (request_index, capture) in screenshot_captures.iter().enumerate() {
+									if let Ok(ResolvedScreenshotCapture::AfterPass { pass, target }) = capture
+										&& pass == render_pass_id
+									{
+										screenshot_transfers[request_index] = Some(
+											command_buffer_recording
+												.transfer_texture(*target)
+												.map_err(RendererScreenshotError::Transfer),
+										);
+									}
 								}
 							}
+							for (command, sink) in scene_presentation_commands.iter().filter(|(_, sink)| in_phase(*sink, images)) {
+								let node = RenderNode::Presentation;
+								record_node(command_buffer_recording, &first_uses, *sink, node, &[*command], None);
+							}
+							for (command, sink) in debug_view_commands.iter().filter(|(_, sink)| in_phase(*sink, images)) {
+								let node = RenderNode::DebugView;
+								record_node(command_buffer_recording, &first_uses, *sink, node, &[*command], None);
+							}
 						}
-					}
-
-					for (command, sink_id) in scene_presentation_commands {
-						record_node(command_buffer_recording, &first_uses, sink_id, RenderNode::Presentation, &[command], None);
-					}
-					for (command, sink_id) in debug_view_commands {
-						record_node(command_buffer_recording, &first_uses, sink_id, RenderNode::DebugView, &[command], None);
 					}
 
 					// Final captures remain after every pass; duplicate requests receive independent transfer handles.
@@ -1377,11 +1504,14 @@ impl Renderer {
 							Err(error) => Err(*error),
 							Ok(ResolvedScreenshotCapture::FinalSwapchain { sink }) => match swapchains.get(*sink) {
 								None => Err(RendererScreenshotError::SinkNotFound),
-								Some(WindowFrame::Hidden | WindowFrame::Unusable | WindowFrame::Removed) => {
+								Some(SinkFrame::Hidden | SinkFrame::Unusable | SinkFrame::Removed) => {
 									Err(RendererScreenshotError::SinkUnavailable)
 								}
-								Some(WindowFrame::Acquired(_present_key, _extent, swapchain)) => command_buffer_recording
+								Some(SinkFrame::Acquired(_present_key, _extent, swapchain)) => command_buffer_recording
 									.transfer_texture(ghi::ImageOrSwapchain::Swapchain(*swapchain))
+									.map_err(RendererScreenshotError::Transfer),
+								Some(SinkFrame::Image(_, image)) => command_buffer_recording
+									.transfer_texture((*image).into())
 									.map_err(RendererScreenshotError::Transfer),
 							},
 							Ok(_) => continue,
@@ -1420,7 +1550,7 @@ impl Renderer {
 		capture: &crate::inspector::screenshot::ScreenshotCapture,
 	) -> Result<ResolvedScreenshotCapture, RendererScreenshotError> {
 		use crate::inspector::screenshot::ScreenshotCapture;
-		if self.windows.get(sink).is_none_or(Option::is_none) {
+		if self.sinks.get(sink).is_none_or(Option::is_none) {
 			return Err(RendererScreenshotError::SinkNotFound);
 		}
 		let (pass, target) = match capture {
@@ -1488,13 +1618,60 @@ impl Renderer {
 		let Some(sink_id) = self.sink_of(handle) else {
 			return;
 		};
-		let (window, swapchain, ..) = self.windows[sink_id].take().expect("`sink_of` finds only open windows.");
+		let Some(SinkTarget::Window { window, swapchain, .. }) =
+			self.sinks[sink_id].take_if(|target| matches!(target, SinkTarget::Window { .. }))
+		else {
+			return;
+		};
+		self.forget_sink(sink_id, handle);
 		// The swapchain goes before its window, since destroying its surface may still talk to the window.
 		self.context.destroy_swapchain(swapchain);
 		drop(window);
-		// An image acquired at the start of this tick must not be presented.
-		if let Some(window_frame) = self.acquisitions.1.get_mut(sink_id) {
-			*window_frame = WindowFrame::Removed;
+	}
+
+	/// Stops rendering the render image created with `handle`. Removing a render image that isn't open does nothing.
+	///
+	/// The image, the sink's passes, and its render targets stay allocated until the renderer drops.
+	pub fn remove_render_image(&mut self, handle: Handle) {
+		if let Some(sink_id) = self.sink_of(handle)
+			&& self.sinks[sink_id]
+				.take_if(|target| matches!(target, SinkTarget::Image { .. }))
+				.is_some()
+		{
+			self.forget_sink(sink_id, handle);
+		}
+	}
+
+	/// Resizes the render image created with `handle` to `extent` pixels from the next frame on.
+	///
+	/// A handle that names no open render image is logged and left out.
+	pub fn set_render_image_extent(&mut self, handle: Handle, extent: Extent) {
+		let Some(sink_id) = self.sink_of(handle) else {
+			log::warn!(
+				"The render image was not resized. The most likely cause is a handle that names no open render image, or one the renderer hasn't opened yet. Send the change after the renderer answered with `RenderImageReady`."
+			);
+			return;
+		};
+		let Some(SinkTarget::Image { extent: current, .. }) = &mut self.sinks[sink_id] else {
+			log::warn!(
+				"The render image was not resized. The most likely cause is a handle that names no open render image, or one the renderer hasn't opened yet. Send the change after the renderer answered with `RenderImageReady`."
+			);
+			return;
+		};
+		*current = extent;
+		// A frame this tick already decided renders at the new extent too.
+		if let Some(SinkFrame::Image(decided, _)) = self.acquisitions.1.get_mut(sink_id) {
+			*decided = extent;
+		}
+		self.redraw_requested = true;
+	}
+
+	/// Forgets every reference to the sink `sink_id`, created with `handle`, whose target was taken out, so no frame
+	/// renders it again.
+	fn forget_sink(&mut self, sink_id: SinkId, handle: Handle) {
+		// A sink decided at the start of this tick must not be rendered or presented.
+		if let Some(sink_frame) = self.acquisitions.1.get_mut(sink_id) {
+			*sink_frame = SinkFrame::Removed;
 		}
 		self.sink_cameras.retain(|(sink, _)| *sink != sink_id);
 		self.window_graphs.retain(|sink| *sink != sink_id);
@@ -1506,38 +1683,47 @@ impl Renderer {
 	/// The handle of the open window whose native window is `id`, which window events name.
 	pub fn window_handle(&self, id: ghi::window::WindowId) -> Option<Handle> {
 		self.open_windows()
-			.find_map(|(_, (window, .., handle, _))| (window.id() == id).then_some(*handle))
+			.find_map(|(_, window, handle)| (window.id() == id).then_some(handle))
 	}
 
 	/// The native window id of the open window created with `handle`, which its window events carry.
 	pub fn window_id(&self, handle: Handle) -> Option<ghi::window::WindowId> {
 		self.open_windows()
-			.find_map(|(_, (window, .., open, _))| (*open == handle).then(|| window.id()))
+			.find_map(|(_, window, open)| (open == handle).then(|| window.id()))
 	}
 
 	/// The handle of the main window: the first one opened, while it's open.
 	pub fn main_window(&self) -> Option<Handle> {
-		self.windows.first()?.as_ref().map(|(.., handle, _)| *handle)
+		self.sinks.get(self.main_window?)?.as_ref().map(SinkTarget::handle)
 	}
 
-	/// The sink of the open window created with `handle`.
+	/// The sink of the open window or render image created with `handle`.
 	fn sink_of(&self, handle: Handle) -> Option<SinkId> {
-		self.open_windows().find_map(|(sink_id, (.., window, _))| (*window == handle).then_some(sink_id))
+		self.sinks
+			.iter()
+			.position(|target| target.as_ref().is_some_and(|target| target.handle() == handle))
 	}
 
 	/// Every open window with its sink.
-	fn open_windows(
-		&self,
-	) -> impl Iterator<Item = (SinkId, &(ghi::Window, ghi::SwapchainHandle, bool, Handle, window::Features))> {
-		self.windows
+	fn open_windows(&self) -> impl Iterator<Item = (SinkId, &ghi::Window, Handle)> {
+		self.sinks
 			.iter()
 			.enumerate()
-			.filter_map(|(sink_id, window)| Some((sink_id, window.as_ref()?)))
+			.filter_map(|(sink_id, target)| match target.as_ref()? {
+				SinkTarget::Window { window, handle, .. } => Some((sink_id, window, *handle)),
+				SinkTarget::Image { .. } => None,
+			})
 	}
 
-	/// The swapchain of the open window of `sink_id`.
-	fn swapchain(&self, sink_id: SinkId) -> ghi::SwapchainHandle {
-		self.windows[sink_id].as_ref().expect("Only open windows' sinks build passes.").1
+	/// The final target of the open sink `sink_id`, which its terminal pass writes: its window's swapchain or its render
+	/// image.
+	fn final_target(&self, sink_id: SinkId) -> MainRenderTarget {
+		match self.sinks[sink_id].as_ref().expect("Only open sinks build passes.") {
+			SinkTarget::Window { swapchain, .. } => {
+				MainRenderTarget::new(ghi::ImageOrSwapchain::Swapchain(*swapchain), self.context.swapchain_format())
+			}
+			SinkTarget::Image { image, .. } => MainRenderTarget::new((*image).into(), self.context.swapchain_format()),
+		}
 	}
 
 	/// Creates the swapchain and sink state for a window created with `handle`.
@@ -1589,21 +1775,22 @@ impl Renderer {
 					self.context.set_present_interval(swapchain_handle, self.present_interval);
 				}
 
-				let sink_id = self.windows.len();
-				self.windows.push(Some((window, swapchain_handle, false, handle, requested_features)));
-				self.redraw_requested = true;
-
-				// The first window closes the render graph, so the fusions its steps group with can be read.
-				self.start_fusion_catalog();
+				let sink_id = self.sinks.len();
+				self.sinks.push(Some(SinkTarget::Window {
+					scene: SceneId::WORLD,
+					window,
+					swapchain: swapchain_handle,
+					warned: false,
+					handle,
+					features: requested_features,
+				}));
+				self.main_window.get_or_insert(sink_id);
 				if let Some(camera) = camera {
-					self.sink_cameras.push((sink_id, *camera));
-					if (self.defer_first_frame_sink_setup && self.started_frame_count == 0) || !self.fusions_planned() {
-						// The native window and swapchain can be presented before scene pipelines are created; this keeps
-						// first-paint latency independent of shader and PSO warmup.
-						self.pending_sink_initializations.push(sink_id);
-					} else {
-						self.initialize_scene_sink(sink_id);
-					}
+					self.open_scene_sink(sink_id, *camera);
+				} else {
+					// A window without a camera still closes the render graph.
+					self.redraw_requested = true;
+					self.start_fusion_catalog();
 				}
 			}
 			Err(msg) => {
@@ -1612,6 +1799,56 @@ impl Renderer {
 					crate::online_docs_url("use/setup/environment")
 				);
 			}
+		}
+	}
+
+	/// Creates the image and sink state for a render image created with `handle`, and returns the image the sink's
+	/// graph ends in.
+	///
+	/// The image has the swapchain format, so the passes that end a sink's graph write either alike, and is as large as
+	/// the render image's extent. Every frame draws it before any
+	/// window, so a window's pass can read it in the same frame. Next, show the returned image, resize it with
+	/// [`Self::set_render_image_extent`], and stop it with [`Self::remove_render_image`].
+	pub fn create_render_image(&mut self, handle: Handle, render_image: RenderImage) -> ghi::ImageHandle {
+		let extent = render_image.extent();
+		// The same uses as a window's swapchain, so every terminal pass writes either alike, and `Image` so a window's
+		// pass can sample the picture.
+		let image = self.context.build_image(
+			ghi::image::Builder::new(
+				self.context.swapchain_format(),
+				ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::Image,
+			)
+			.name("Render image")
+			.extent(extent),
+		);
+		let scene = render_image.scene();
+		assert!(
+			scene.index() < self.scenes.len(),
+			"Render image names an unknown scene. The most likely cause is a scene id from another application. Show `SceneId::WORLD` or a scene `GraphicsApplication::create_scene` returned."
+		);
+		let sink_id = self.sinks.len();
+		self.sinks.push(Some(SinkTarget::Image {
+			handle,
+			scene,
+			image,
+			extent,
+		}));
+		self.open_scene_sink(sink_id, render_image.camera());
+		image
+	}
+
+	/// Shows `camera`'s scene on the new sink `sink_id` and closes the render graph, which the first sink does.
+	fn open_scene_sink(&mut self, sink_id: SinkId, camera: Handle) {
+		self.redraw_requested = true;
+		// The first sink closes the render graph, so the fusions its steps group with can be read.
+		self.start_fusion_catalog();
+		self.sink_cameras.push((sink_id, camera));
+		if (self.defer_first_frame_sink_setup && self.started_frame_count == 0) || !self.fusions_planned() {
+			// The native window and swapchain can be presented before scene pipelines are created; this keeps
+			// first-paint latency independent of shader and PSO warmup.
+			self.pending_sink_initializations.push(sink_id);
+		} else {
+			self.initialize_scene_sink(sink_id);
 		}
 	}
 
@@ -1628,21 +1865,21 @@ impl Renderer {
 		self.redraw_requested = true;
 	}
 
-	/// Makes `light` the sun, replacing the previous one: the newest directional light is the sun.
+	/// Makes `light` the sun of `scene`, replacing the previous one: the newest directional light is the sun.
 	///
-	/// Every sink then carries it to its passes through [`Sink::sun`], placed with the transform each frame shows,
-	/// so a window's sky and fog see the sun however late the window's passes were built.
-	pub fn create_directional_light(&mut self, handle: Handle, light: DirectionalLight) {
-		self.sun_light = Some((handle, light));
+	/// Every sink of the scene then carries it to its passes through [`Sink::sun`], placed with the transform each
+	/// frame shows, so a window's sky and fog see the sun however late the window's passes were built.
+	pub fn create_directional_light(&mut self, scene: SceneId, handle: Handle, light: DirectionalLight) {
+		self.scenes[scene.index()].sun_light = Some((handle, light));
 		self.redraw_requested = true;
 	}
 
-	/// Makes `fog` the scene's fog, replacing the previous one: the newest fog is the one shown.
+	/// Makes `fog` the fog of `scene`, replacing the previous one: the newest fog is the one shown.
 	///
-	/// Every sink then carries it to its passes through [`Sink::fog`], so a window's fog pass sees it however late the
-	/// window's passes were built.
-	pub fn create_fog(&mut self, fog: ExponentialHeightFog) {
-		self.fog = Some(fog);
+	/// Every sink of the scene then carries it to its passes through [`Sink::fog`], so a window's fog pass sees it
+	/// however late the window's passes were built.
+	pub fn create_fog(&mut self, scene: SceneId, fog: ExponentialHeightFog) {
+		self.scenes[scene.index()].fog = Some(fog);
 		self.redraw_requested = true;
 	}
 }
@@ -1756,7 +1993,7 @@ use crate::rendering::{
 };
 use crate::rendering::{
 	render_pass::{
-		RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassState, RenderPassStates,
+		MainRenderTarget, RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassState, RenderPassStates,
 		pixel_steps::{Fusion, PixelRun, PixelStep, PixelStepFactory, Planned, load_fusions, plan},
 	},
 	render_passes::blit::ImageBypassPass,
@@ -1767,8 +2004,8 @@ use crate::{
 	core::{EntityHandle, factory::Handle},
 	metrics::{MetricId, MetricKind, Metrics},
 	rendering::{
-		Camera, DirectionalLight, ExponentialHeightFog, PipelineManagerServer, ShownTransforms, Sink, Sun, View,
-		make_perspective_view_from_camera,
+		Camera, DirectionalLight, ExponentialHeightFog, PipelineManagerServer, RenderImage, SceneId, ShownTransforms, Sink,
+		Sun, View, make_perspective_view_from_camera,
 		pipeline_manager::PipelineManager,
 		render_pass::RenderPassReturn,
 		window::{self, Window},

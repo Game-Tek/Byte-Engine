@@ -81,7 +81,7 @@ pub(crate) struct RenderImageElement {
 	pub(crate) version: u64,
 	pub(crate) source_width: u32,
 	pub(crate) source_height: u32,
-	pub(crate) pixels: std::sync::Arc<[u8]>,
+	pub(crate) source: crate::ui::components::image::ImageSource,
 }
 
 #[derive(Clone)]

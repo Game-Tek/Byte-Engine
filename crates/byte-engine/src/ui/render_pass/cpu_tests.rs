@@ -121,7 +121,7 @@ fn image_primitives_resolve_visible_sources_and_versions() {
 				opacity,
 				source_width: 1,
 				source_height: 1,
-				pixels: vec![value; 4].into(),
+				source: ImageSource::Pixels(vec![value; 4].into()),
 				position: [0.0, 0.0],
 				size: [10.0, 10.0],
 				clip: None,
@@ -148,7 +148,7 @@ fn image_primitives_resolve_visible_sources_and_versions() {
 		.map(|&(primitive, source)| {
 			assert_eq!(output.primitives[primitive as usize].kind, UI_KIND_IMAGE);
 			let image = &data.images[source as usize];
-			(image.image_id, image.version, image.pixels[0])
+			(image.image_id, image.version, image.source.pixels().unwrap()[0])
 		})
 		.collect();
 	assert_eq!(sources, [(7, 2, 30), (8, 1, 40), (7, 1, 50)]);

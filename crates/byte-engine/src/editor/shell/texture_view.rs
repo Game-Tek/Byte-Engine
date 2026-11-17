@@ -13,8 +13,8 @@ use resource_management::types::Gamma;
 
 use super::resource_panels::{Drawer, Side, base};
 use super::{
-	ACCENT, FIELD_HEIGHT, MUTED, SQUIRCLE, Shell, TEXT, block, fits, hairline, open_room, read_typed, setting_style,
-	solid, top_highlight, typing_style, well,
+	FIELD_HEIGHT, MUTED, SQUIRCLE, Shell, TEXT, block, cap, channel, fits, open_room, read_typed, setting_style, solid,
+	typing_style,
 };
 use crate::ui::flow;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
@@ -25,13 +25,17 @@ use crate::utils::r#async::select;
 /// The width of a property's control at the end of its row: a switch, a field, or a value.
 const CONTROL_WIDTH: f32 = 110.0;
 /// A switch's width and height.
-const SWITCH: [f32; 2] = [30.0, 16.0];
+const SWITCH: [f32; 2] = [34.0, 18.0];
+/// The gap between a switch's knob and the edge of its channel.
+const KNOB_GAP: f32 = 2.0;
+/// How long a switch's knob takes to slide across, in seconds.
+const SLIDE: f32 = 0.16;
 /// The height of the line under the properties that says where they're saved.
+const FOOTER_HEIGHT: f32 = 16.0;
 /// How much one scroll step zooms the picture in, as a factor of its size.
 const ZOOM_STEP: f32 = 1.25;
 /// The most screen pixels a texel of the texture's source takes, zoomed in all the way.
 const MAX_PIXELS_PER_TEXEL: f32 = 8.0;
-const FOOTER_HEIGHT: f32 = 16.0;
 
 /// Shows the open texture's layers while a texture is open, declaring them again for each texture that opens and when
 /// the window resizes.
@@ -287,9 +291,12 @@ async fn property_row(ctx: &mut EvaluationContext<Shell>, property: Property, wi
 	}
 }
 
-/// A switch at the end of the row, lit in the accent while the setting is on; a click turns the setting over.
+/// A switch at the end of the row, made like a physical one: a domed knob in a channel cut into the panel, which slides
+/// across as the setting turns over, filling the channel with the accent behind it while the setting is on. A click
+/// turns the setting over.
 async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationContext<Shell>, property: Property) {
-	let knob = SWITCH[1] - 4.0;
+	let knob = SWITCH[1] - KNOB_GAP * 2.0;
+	let travel = SWITCH[0] - knob - KNOB_GAP * 2.0;
 	let mut track = control
 		.element("switch")
 		.container(|c| {
@@ -298,20 +305,24 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 				.height(SWITCH[1].into())
 				.corner_radius(SWITCH[1] * 0.5)
 				.hit_testable(true)
-				.style(well())
+				.style(channel(SWITCH[1], 0.0))
 		})
 		.await;
 	let mut handle = track
 		.element("knob")
 		.container(|c| {
-			c.absolute_position(2.0, 2.0)
+			c.absolute_position(KNOB_GAP, KNOB_GAP)
 				.width(knob.into())
 				.height(knob.into())
 				.corner_radius(knob * 0.5)
-				.style([solid(TEXT), top_highlight(0.3)])
+				.style(cap(knob))
 		})
 		.await;
-	let mut shown = None;
+	// Where the knob heads, from 0 off to 1 on, where it started its slide, and when; and where it stands.
+	let mut heading = None;
+	let mut from = 0.0;
+	let mut moved = std::time::Instant::now();
+	let mut at = None;
 	loop {
 		select! {
 			_ = track.on(Events::Actuated) => {
@@ -323,17 +334,32 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 			},
 			_ = ctx.render() => {},
 		}
-		let on = settings(ctx).await.and_then(|settings| property.switched(&settings));
-		if shown != Some(on) {
-			shown = Some(on);
-			let on = on.unwrap_or(false);
-			let x = if on { SWITCH[0] - knob - 2.0 } else { 2.0 };
-			track
-				.update_container(|c| c.style(if on { [solid(ACCENT), top_highlight(0.15), hairline(0.5)] } else { well() }))
-				.await;
-			handle.update_container(|c| c.absolute_position(x, 2.0)).await;
+		let on = settings(ctx).await.and_then(|settings| property.switched(&settings)).unwrap_or(false);
+		let target = if on { 1.0 } else { 0.0 };
+		if heading != Some(target) {
+			// A turned-over setting slides the knob from wherever it stands; the first frame shows it in place.
+			from = at.unwrap_or(target);
+			moved = std::time::Instant::now();
+			heading = Some(target);
 		}
+		let position = slide(from, target, moved.elapsed().as_secs_f32());
+		if at == Some(position) {
+			continue;
+		}
+		at = Some(position);
+		track.update_container(|c| c.style(channel(SWITCH[1], position))).await;
+		handle
+			.update_container(|c| c.absolute_position(KNOB_GAP + travel * position, KNOB_GAP))
+			.await;
 	}
+}
+
+/// Where a knob that started sliding from `from` toward `target`, both from 0 off to 1 on, stands `seconds` later:
+/// an ease-out, quick to leave and gentle to settle, as a sprung switch moves.
+fn slide(from: f32, target: f32, seconds: f32) -> f32 {
+	let progress = (seconds / SLIDE).clamp(0.0, 1.0);
+	let eased = 1.0 - (1.0 - progress).powi(3);
+	from + (target - from) * eased
 }
 
 /// The coverage's field: a well that shows the cutoff, or `off`, and takes a typed one when clicked.
@@ -440,7 +466,7 @@ async fn footer(ctx: &mut EvaluationContext<Shell>, width: f32) {
 
 #[cfg(test)]
 mod tests {
-	use super::{ImageSetting, fitted, parse_coverage};
+	use super::{ImageSetting, SLIDE, fitted, parse_coverage, slide};
 
 	#[test]
 	fn a_typed_coverage_is_off_or_a_cutoff_from_zero_to_one() {
@@ -456,5 +482,16 @@ mod tests {
 		assert_eq!(fitted(100, 50, [400.0, 400.0]), [400.0, 200.0]);
 		assert_eq!(fitted(800, 400, [400.0, 400.0]), [400.0, 200.0]);
 		assert_eq!(fitted(400, 800, [400.0, 400.0]), [200.0, 400.0]);
+	}
+
+	#[test]
+	fn a_knob_eases_out_from_where_it_stood_and_settles_on_its_side() {
+		assert_eq!(slide(0.0, 1.0, 0.0), 0.0);
+		assert_eq!(slide(0.0, 1.0, SLIDE), 1.0);
+		assert_eq!(slide(1.0, 0.0, SLIDE * 2.0), 0.0);
+		// It covers more than half the way in the first half of the time.
+		assert!(slide(0.0, 1.0, SLIDE * 0.5) > 0.5);
+		// Turned back partway, it starts from where it stood.
+		assert_eq!(slide(0.4, 0.0, 0.0), 0.4);
 	}
 }

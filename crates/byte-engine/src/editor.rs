@@ -358,6 +358,7 @@ impl Editor {
 				let shell = resource.engine.ctx_mut();
 				let (turn, zoom) = (shell.turn.take(), std::mem::take(&mut shell.zoom));
 				self.stage.steer(slot, turn, zoom);
+				self.stage.show_level(slot, shell.detail_level);
 				let viewport = [shell.viewport.x(), shell.viewport.y()];
 				let room = shell::open_room(viewport[0], shell.drawer_shown, shell.drawers);
 				// The drawers make room while the subject is zoomed wider than the room between them.

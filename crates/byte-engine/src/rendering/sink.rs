@@ -34,6 +34,8 @@ pub struct Sink {
 	camera: Option<Handle>,
 	/// The scene the sink shows; see [`Self::with_scene`].
 	scene: SceneId,
+	/// The detail level the camera draws meshes at; see [`Self::with_detail_level`].
+	detail_level: Option<u32>,
 	index: usize,
 }
 
@@ -55,6 +57,7 @@ impl Sink {
 			fog: None,
 			camera: None,
 			scene: SceneId::WORLD,
+			detail_level: None,
 			index,
 		}
 	}
@@ -149,6 +152,19 @@ impl Sink {
 	/// Returns the pixel extent available to render passes for this sink.
 	pub fn extent(&self) -> Extent {
 		self.extent
+	}
+
+	/// Sets the detail level every mesh draws at, as [`crate::rendering::Camera::detail_level`] returns it, or `None`
+	/// to select levels by distance.
+	pub fn with_detail_level(mut self, level: Option<u32>) -> Self {
+		self.detail_level = level;
+		self
+	}
+
+	/// Returns the detail level every mesh draws at, or `None` while levels are selected by distance. See
+	/// [`Self::with_detail_level`].
+	pub fn detail_level(&self) -> Option<u32> {
+		self.detail_level
 	}
 
 	/// Returns the camera exposure as a linear factor. Passes that write scene light multiply it in, so later passes

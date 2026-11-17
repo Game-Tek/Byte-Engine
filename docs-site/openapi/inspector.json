@@ -1723,6 +1723,13 @@
 						"maximum": 64,
 						"default": 0,
 						"description": "Exposure in stops."
+					},
+					"detail_level": {
+						"type": ["integer", "null"],
+						"format": "uint32",
+						"minimum": 0,
+						"default": null,
+						"description": "Detail level every mesh draws at, or null to select levels by distance."
 					}
 				}
 			},

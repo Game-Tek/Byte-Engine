@@ -17,6 +17,8 @@ pub struct Camera {
 	focus_distance: f32,
 	sensor_height: f32,
 	exposure: f32,
+	/// The detail level every mesh draws at, or `None` to select levels by distance; see [`Self::with_detail_level`].
+	detail_level: Option<u32>,
 }
 
 impl Camera {
@@ -31,6 +33,7 @@ impl Camera {
 			focus_distance: 10.0,
 			sensor_height: 0.024,
 			exposure: 0.0,
+			detail_level: None,
 		}
 	}
 
@@ -181,6 +184,21 @@ impl Camera {
 		);
 		self.exposure = stops;
 	}
+
+	/// Returns the detail level the camera draws meshes at, or `None` while it selects them by distance. See
+	/// [`Self::with_detail_level`].
+	pub fn detail_level(&self) -> Option<u32> {
+		self.detail_level
+	}
+
+	/// Draws every mesh at detail `level`, from 0, full detail, toward coarser ones, or by distance again for `None`,
+	/// such as to inspect a mesh's levels in a preview. It applies while the camera shows the first sink of its scene,
+	/// whose view selects levels, and takes precedence over the `render.lod.force` runtime setting. See
+	/// [detail level rules](/docs/reference/rendering#the-visibility-pipeline).
+	pub fn with_detail_level(mut self, level: Option<u32>) -> Self {
+		self.detail_level = level;
+		self
+	}
 }
 
 impl Default for Camera {
@@ -227,6 +245,9 @@ pub(crate) struct SerializableCamera {
 	#[facet(default)]
 	#[serde(default)]
 	exposure: f32,
+	#[facet(default)]
+	#[serde(default)]
+	detail_level: Option<u32>,
 }
 
 fn default_fov() -> f32 {
@@ -286,7 +307,8 @@ impl TryFrom<SerializableCamera> for Camera {
 			.with_f_number(value.f_number.unwrap_or(f32::INFINITY))
 			.with_focus_distance(value.focus_distance)
 			.with_sensor_height(value.sensor_height)
-			.with_exposure(value.exposure))
+			.with_exposure(value.exposure)
+			.with_detail_level(value.detail_level))
 	}
 }
 
@@ -300,6 +322,7 @@ impl From<&Camera> for SerializableCamera {
 			focus_distance: camera.focus_distance,
 			sensor_height: camera.sensor_height,
 			exposure: camera.exposure,
+			detail_level: camera.detail_level,
 		}
 	}
 }

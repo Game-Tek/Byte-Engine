@@ -230,6 +230,8 @@ struct Slot {
 	subject: Option<Handle>,
 	framing: Framing,
 	extent: Extent,
+	/// The detail level the slot's camera draws its subject at, or `None` to select levels by distance.
+	detail_level: Option<u32>,
 }
 
 /// The `Stage` struct is the editor's preview scene and the slots its resource windows show, kept for the whole run
@@ -303,11 +305,13 @@ impl Stage {
 				subject,
 				framing,
 				extent,
+				detail_level: None,
 			});
 		} else {
 			let slot = &mut self.slots[index];
 			slot.subject = subject;
 			slot.framing = framing;
+			slot.detail_level = None;
 		}
 		self.scope.factory::<Camera>().derive(self.slots[index].camera, framing.camera());
 		self.place(index);
@@ -335,6 +339,18 @@ impl Stage {
 	/// The image the slot is drawn into, once the renderer answered.
 	pub(crate) fn image(&self, index: usize) -> Option<crate::ghi::ImageHandle> {
 		self.slots[index].image
+	}
+
+	/// Draws the slot's subject at detail `level`, or by distance for `None`, by giving its camera that level; see
+	/// [`Camera::with_detail_level`].
+	pub(crate) fn show_level(&mut self, index: usize, level: Option<u32>) {
+		let slot = &mut self.slots[index];
+		if slot.detail_level == level {
+			return;
+		}
+		slot.detail_level = level;
+		let camera = slot.framing.camera().with_detail_level(level);
+		self.scope.factory::<Camera>().derive(slot.camera, camera);
 	}
 
 	/// Turns the slot's subject by the arcball drag `turn`, from and to, and moves its camera `zoom` scroll steps

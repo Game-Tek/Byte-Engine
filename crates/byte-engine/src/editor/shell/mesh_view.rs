@@ -8,6 +8,7 @@
 use resource_management::resources::mesh::{Mesh, Primitive};
 use resource_management::types::{IndexStreamTypes, Stream, Streams};
 
+use super::level_slider::level_slider;
 use super::preview_view::preview;
 use super::resource_panels::{Drawer, Side, base, hold};
 use super::{CORNER, FIELD_HEIGHT, MUTED, ROW_GAP, SQUIRCLE, Shell, TEXT, block, hairline, hex, solid, top_highlight};
@@ -32,6 +33,14 @@ pub(super) async fn mesh_view(ctx: &mut EvaluationContext<Shell>) {
 		}
 		let mut picture = base(ctx).await;
 		preview(&mut picture).await;
+		// The slider sits over the picture, in the base, which removes it with itself; a mesh with one detail level has
+		// nothing to choose between.
+		let levels = ctx
+			.with(|shell: &mut Shell| shell.layers.mesh().map_or(0, |mesh| mesh.resource.level_count() as usize))
+			.await;
+		if levels > 1 {
+			picture.element("levels").component(async move |ctx| level_slider(ctx, levels).await).await;
+		}
 		let mut drawers = [primitives_drawer(ctx).await, summary_drawer(ctx).await];
 		hold(ctx, &mut drawers, |shell| shell.layers.mesh().is_some()).await;
 		for drawer in drawers {

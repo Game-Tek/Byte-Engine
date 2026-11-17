@@ -6,6 +6,7 @@
 //! and Byte Engine's green as the accent for the selection.
 
 mod graph_view;
+mod level_slider;
 mod mesh_view;
 mod preview_view;
 mod resource_panels;
@@ -69,6 +70,8 @@ pub(crate) struct Shell {
 	/// Where a drag over the preview started and where it reached, in arcball coordinates, until the editor turns the
 	/// preview's subject by it; see [`crate::editor::preview::Framing::turn`].
 	pub(crate) turn: Option<([f32; 2], [f32; 2])>,
+	/// How many steps the preview was scrolled closer, until the editor moves its camera by them.
+	pub(crate) zoom: f32,
 	/// Whether the preview window's drawers should show: while what the window shows fits between them.
 	pub(crate) drawer_open: bool,
 	/// How much of the preview window's drawers show, from 0 hidden to 1 in place, which centers what the window shows
@@ -77,8 +80,9 @@ pub(crate) struct Shell {
 	/// The widths of the preview window's left and right drawers, 0 for one it doesn't have, which the room between
 	/// them is measured by.
 	pub(crate) drawers: [f32; 2],
-	/// How many steps the preview was scrolled closer, until the editor moves its camera by them.
-	pub(crate) zoom: f32,
+	/// The detail level the preview draws its mesh at, which the level slider sets, or `None` to select levels by
+	/// distance.
+	pub(crate) detail_level: Option<u32>,
 	/// The entity the properties panel's trash button deleted, until the editor posts the deletion to the game.
 	pub(crate) delete: Option<Handle>,
 	/// The game's warnings and errors, shown as toasts.
@@ -103,11 +107,12 @@ impl Shell {
 			variant_edit: None,
 			view_camera: None,
 			preview: None,
-			drawers: [0.0; 2],
-			drawer_open: true,
-			drawer_shown: 0.0,
 			turn: None,
 			zoom: 0.0,
+			drawer_open: true,
+			drawer_shown: 0.0,
+			drawers: [0.0; 2],
+			detail_level: None,
 			toasts: Default::default(),
 		}
 	}
@@ -1490,6 +1495,48 @@ fn well() -> [ConcreteLayer; 3] {
 	]
 }
 
+/// A channel `height` pixels tall cut into the panel, as a switch or a slider runs in: dark and shadowed from above, with light catching its bottom lip, and
+/// filled with the accent as far as `on`, from 0 off to 1 on.
+fn channel(height: f32, on: f32) -> [ConcreteLayer; 5] {
+	[
+		solid(hex(0x0E0F11, 1.0)),
+		// The accent fill, darker toward the top, where the channel's lip shades it.
+		ConcreteLayer::default().color(vertical(
+			height,
+			hex(darker(ACCENT_RGB), on),
+			hex(ACCENT_RGB, on),
+		)),
+		// The channel's depth: a shadow cast down from its upper edge.
+		ConcreteLayer::default()
+			.color(hex(0x000000, 0.75).into())
+			.inset_shadow([0.0, 2.0], 2.5),
+		// The light the panel's surface catches on the channel's lower lip.
+		ConcreteLayer::default()
+			.color(hex(0xFFFFFF, 0.08).into())
+			.inset_shadow([0.0, -1.0], 0.0),
+		hairline(0.7),
+	]
+}
+
+/// A knob `size` across, as a switch or a slider moves: a dome lit from above, bright at its crown and shaded toward its base, that casts a
+/// soft shadow into the channel under it.
+fn cap(size: f32) -> [ConcreteLayer; 4] {
+	[
+		ConcreteLayer::default()
+			.color(hex(0x000000, 0.6).into())
+			.drop_shadow([0.0, 1.5], 1.5),
+		ConcreteLayer::default().color(vertical(size, hex(0xF7F7F9, 1.0), hex(0xA9ADB6, 1.0))),
+		top_highlight(0.9),
+		hairline(0.45),
+	]
+}
+
+/// The `0xRRGGBB` color `rgb` at two thirds of its brightness.
+fn darker(rgb: u32) -> u32 {
+	let channel = |shift: u32| ((rgb >> shift) & 0xFF) * 2 / 3;
+	channel(16) << 16 | channel(8) << 8 | channel(0)
+}
+
 /// A one-pixel light line along the top edge, as if the surface caught light from above.
 fn top_highlight(alpha: f32) -> ConcreteLayer {
 	// An inset shadow moved down by one pixel paints only the strip its hole leaves uncovered: the top edge.
@@ -1520,4 +1567,15 @@ const fn hex(rgb: u32, alpha: f32) -> RGBA {
 		(rgb & 0xFF) as f32 / 255.0,
 		alpha,
 	)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::darker;
+
+	#[test]
+	fn a_darker_color_keeps_its_hue() {
+		assert_eq!(darker(0x41D866), 0x2B9044);
+		assert_eq!(darker(0xFFFFFF), 0xAAAAAA);
+	}
 }

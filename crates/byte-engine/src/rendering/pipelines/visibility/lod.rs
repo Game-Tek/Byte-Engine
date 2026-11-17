@@ -351,7 +351,8 @@ impl LodView {
 				f32::INFINITY
 			},
 			small_bias: settings.small_bias.max(1.0),
-			force: settings.force,
+			// A camera that draws one level overrides the runtime setting.
+			force: sink.detail_level().or(settings.force),
 			frustum: view.get_frustum_planes().map(|plane| {
 				let normal = plane.normal().into_vector().to_array();
 				[normal[0], normal[1], normal[2], plane.distance()]
@@ -726,6 +727,30 @@ mod tests {
 			[&plant, &billboard].map(|lods| forced.select(lods, &model, SPHERE)),
 			[Some(2), None]
 		);
+	}
+
+	#[test]
+	fn a_camera_that_draws_one_level_overrides_distance_and_the_runtime_setting() {
+		let lods = three_levels();
+		let view = View::new_perspective(
+			Degrees::new(90.0),
+			1.0,
+			0.1,
+			100.0,
+			Point::new(0.0, 0.0, 0.0),
+			UnitVector::z_axis(),
+		);
+		let forced = LodSettings {
+			force: Some(0),
+			..LodSettings::default()
+		};
+		let pinned = |level| LodView::new(&Sink::new(view, Extent::square(1000), 0).with_detail_level(level), forced);
+		// Far away, distance alone would draw the coarsest level.
+		let far = instance(0.0, 600.0, 1.0);
+		assert_eq!(pinned(Some(1)).select(&lods, &far, SPHERE), Some(1));
+		assert_eq!(pinned(Some(9)).select(&lods, &far, SPHERE), Some(2), "past the coarsest, the coarsest");
+		assert_eq!(pinned(None).select(&lods, &far, SPHERE), Some(0), "without one, the runtime setting forces");
+		assert!(!pinned(Some(1)).scales_alike(&pinned(Some(2))), "a new level picks every instance anew");
 	}
 
 	#[test]

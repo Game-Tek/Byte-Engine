@@ -112,6 +112,11 @@ while the editor is closed.
    picture to turn the mesh as a trackball: a drag across it turns it the way you drag, and a drag around its edge
    rolls it. Scroll to move closer or farther.
 
+   A mesh with more than one detail level shows a slider at the top of its window. Its first stop, **Auto**, picks
+   each primitive's level by distance, as your application does; each stop after it draws that level, from 0, full
+   detail, to the coarsest. Drag the knob, or click a stop. The mesh changes level as the knob passes each stop, and
+   the knob snaps to the nearest one when you let go.
+
    Open a texture to see it with its size in pixels in the drawer. Scroll over the picture to zoom in or out.
    Textures show from their PNG or JPEG source files, so a build without sources finds none.
 

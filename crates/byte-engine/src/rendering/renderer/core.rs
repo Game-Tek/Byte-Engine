@@ -1353,6 +1353,7 @@ impl Renderer {
 							.with_camera(*camera_handle)
 							.with_scene(scene_of(&self.sinks, *sink_id))
 							.with_exposure_scale(camera.exposure_scale())
+							.with_detail_level(camera.detail_level())
 							.with_lens(camera.f_number(), camera.focus_distance(), camera.sensor_height())
 							.with_frame_interval(frame_interval);
 						let lighting = &self.scenes[scene_of(&self.sinks, *sink_id).index()];

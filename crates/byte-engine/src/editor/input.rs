@@ -25,13 +25,16 @@ pub(crate) struct Actions {
 	pub(crate) backspace: ActionHandle,
 	/// Either system key: Command on macOS, Windows or Super elsewhere. With K, it opens the palette on everything;
 	/// with A, on what can be placed; with E, on the resources to explore; with the period, on the runtime settings;
-	/// with S, it saves the open material graph.
+	/// with S, it saves the open material graph; with Z, it undoes, and with Shift and Z, it redoes.
 	pub(crate) meta: ActionHandle,
+	/// Either Shift key, which turns Cmd+Z's undo into redo.
+	pub(crate) shift: ActionHandle,
 	pub(crate) k: ActionHandle,
 	pub(crate) a: ActionHandle,
 	pub(crate) e: ActionHandle,
 	pub(crate) period: ActionHandle,
 	pub(crate) s: ActionHandle,
+	pub(crate) z: ActionHandle,
 	pub(crate) up: ActionHandle,
 	pub(crate) down: ActionHandle,
 	pub(crate) enter: ActionHandle,
@@ -101,6 +104,14 @@ pub(crate) fn install(app: &mut GraphicsApplication) -> (Actions, Rc<RefCell<Lay
 			],
 			Types::Boolean,
 		),
+		shift: action(
+			"EditorShift",
+			&[
+				ActionBindingDescription::new("Keyboard.LeftShift"),
+				ActionBindingDescription::new("Keyboard.RightShift"),
+			],
+			Types::Boolean,
+		),
 		k: action("EditorK", &[ActionBindingDescription::new("Keyboard.K")], Types::Boolean),
 		a: action("EditorA", &[ActionBindingDescription::new("Keyboard.A")], Types::Boolean),
 		e: action("EditorE", &[ActionBindingDescription::new("Keyboard.E")], Types::Boolean),
@@ -110,6 +121,7 @@ pub(crate) fn install(app: &mut GraphicsApplication) -> (Actions, Rc<RefCell<Lay
 			Types::Boolean,
 		),
 		s: action("EditorS", &[ActionBindingDescription::new("Keyboard.S")], Types::Boolean),
+		z: action("EditorZ", &[ActionBindingDescription::new("Keyboard.Z")], Types::Boolean),
 		up: action("EditorUp", &[ActionBindingDescription::new("Keyboard.Up")], Types::Boolean),
 		down: action(
 			"EditorDown",

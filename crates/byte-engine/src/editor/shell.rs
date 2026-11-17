@@ -92,15 +92,12 @@ impl Shell {
 		self.delete = Some(selected);
 	}
 
-	/// Changes the selected entity: the panel's copy at once, and the game's once the editor posts [`Self::edit`].
+	/// Changes the selected entity through [`Self::edit`], which the editor applies to the panel's copy and posts to
+	/// the game.
 	fn edit_selection(&mut self, change: Change) {
-		let Some(selected) = self.selected else {
-			return;
-		};
-		if let Some(entity) = self.scene.iter_mut().find(|entity| entity.handle == selected) {
-			change.apply(entity);
+		if let Some(selected) = self.selected {
+			self.edit = Some((selected, change));
 		}
-		self.edit = Some((selected, change));
 	}
 
 	/// The game's camera, the one the editor picks and draws the gizmo through.

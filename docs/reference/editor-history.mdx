@@ -1,0 +1,81 @@
+---
+title: Editor history
+description: Look up the operations the editor's undo and redo apply, the algebra they follow, and how edits group into steps on the two stacks.
+icon: Undo2
+---
+
+The editor keeps every change it makes to the game as an operation, groups
+operations into steps, and keeps the steps on two stacks: one to undo, one to
+redo. Undo and redo apply the same operations the edit applied, negated or as
+they were. To undo and redo in the editor, follow
+[Edit a level in the running game](/docs/use/editor#edit-the-scene).
+
+## Transform deltas
+
+A transform delta is the difference between two transforms. It has three
+parts:
+
+| Part | Value | Combines by |
+| --- | --- | --- |
+| Offset | A vector of three numbers | Addition |
+| Turn | A rotation | Rotating by one, then the other |
+| Stretch | A vector of three numbers | Addition, per axis |
+
+Deltas form a group. With transforms `a` and `b` and deltas `d`, `e`, and `f`:
+
+| Operation | Result |
+| --- | --- |
+| `b − a` | The delta whose offset is `b`'s position less `a`'s, whose turn rotates `a`'s orientation to `b`'s, and whose stretch is `b`'s scale less `a`'s. |
+| `a + d` | The transform whose position is `a`'s plus the offset, whose orientation is `a`'s turned by the turn, and whose scale is `a`'s plus the stretch. The position doesn't move with the turn. |
+| `d + e` | The delta that applies `d`, then `e`. |
+| `−d` | The delta that undoes `d`: the negated offset, the inverse turn, and the negated stretch. |
+| Zero | The delta with no offset, no turn, and no stretch. |
+
+These hold for every `a`, `b`, `d`, `e`, and `f`, within floating-point
+rounding:
+
+| Law | Statement |
+| --- | --- |
+| Difference | `a + (b − a) = b` |
+| Inverse | `d + (−d)` is zero, and `a + d + (−d) = a` |
+| Identity | `d +` zero `= d`, and `a +` zero `= a` |
+| Associativity | `(d + e) + f = d + (e + f)` |
+| Order | `d + e` and `e + d` differ only in the turn; offsets and stretches commute. |
+
+A stretch adds to the scale rather than multiplying it, so every delta has an
+inverse, a scale of zero included.
+
+## Operations
+
+An operation is one change to one entity.
+
+| Operation | Applies | Combines with |
+| --- | --- | --- |
+| Transform | A transform delta, added to the entity's transform, which the game receives as a `TransformationUpdate` | A transform operation on the same entity, by adding their deltas |
+
+An operation applies relative to the entity's transform at the time it's
+applied, so undoing a move keeps whatever else moved the entity since.
+
+## Steps
+
+A step is what one undo or one redo applies: a sum of operations, one for each
+entity the step changed.
+
+| Rule | Behavior |
+| --- | --- |
+| Gesture | Everything recorded between a pointer press and its release is one step, such as a whole gizmo drag or a property field dragged sideways. |
+| Typed edit | A value typed into a property field and set with Enter is a step of its own. |
+| Combining | An operation on an entity the step already changed adds to that entity's operation; any other joins the step. |
+| Negation | A step's negation is its operations, each negated, in reverse order. |
+
+## Stacks
+
+| Event | Undo stack | Redo stack | Applied |
+| --- | --- | --- | --- |
+| An edit | Gains the step, or adds to the open gesture's step | Cleared | The step |
+| Undo | Loses its top step | Gains that step | The step's negation |
+| Redo | Gains the step back | Loses its top step | The step |
+| Undo or redo on an empty stack | Unchanged | Unchanged | Nothing |
+
+Undo and redo record nothing: they only move steps between the stacks. Both
+stacks last as long as the application runs.

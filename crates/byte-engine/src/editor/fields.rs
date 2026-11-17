@@ -22,17 +22,6 @@ pub(crate) enum Change {
 	Light(SceneLight),
 }
 
-impl Change {
-	/// Applies the change to the editor's copy of `entity`.
-	pub(crate) fn apply(&self, entity: &mut SceneEntity) {
-		match self {
-			Change::Transform(transform) => entity.transform = transform.clone(),
-			Change::Camera(camera) => entity.camera = Some(camera.clone()),
-			Change::Light(light) => entity.light = Some(light.clone()),
-		}
-	}
-}
-
 /// The `Target` enum is the value of an entity a field edits.
 #[derive(Clone, Copy, Debug)]
 enum Target {

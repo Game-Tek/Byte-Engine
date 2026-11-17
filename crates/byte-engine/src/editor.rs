@@ -32,6 +32,7 @@ mod create;
 mod fields;
 mod gizmo;
 mod graph;
+mod history;
 mod input;
 mod layers;
 mod palette;
@@ -109,6 +110,12 @@ pub struct Editor {
 	pointer: UiPoint,
 	/// Whether a system key, Command or Super, is held.
 	meta: bool,
+	/// Whether a Shift key is held.
+	shift: bool,
+	/// The operations an undo or redo is applying, kept to reuse their storage.
+	applying: Vec<history::Operation>,
+	/// What the editor changed in the game, to undo and redo.
+	history: history::History,
 	/// The palette result the pointer pressed, until it leaves the palette or is released.
 	palette_press: Option<usize>,
 	/// What the palette was last used for, newest first, by label and kind, which it lists first when it opens.
@@ -162,6 +169,9 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 		drag: None,
 		pointer: UiPoint::new(0.0, 0.0),
 		meta: false,
+		shift: false,
+		applying: Vec::new(),
+		history: history::History::default(),
 		palette_press: None,
 		recent: Vec::new(),
 		settings: Vec::new(),
@@ -192,6 +202,9 @@ impl Editor {
 			}
 		}
 
+		// What the shell edited in the last evaluation is posted before this frame's input, so a release ends the gesture
+		// only after the gesture's last edit joined its step.
+		self.post_edit(app);
 		// The list is taken out while it's read, since a toggle needs the whole editor, and put back to keep its storage.
 		let mut resolved = std::mem::take(&mut self.resolved);
 		std::mem::swap(&mut resolved, &mut self.layer.borrow_mut().resolved);
@@ -210,6 +223,12 @@ impl Editor {
 			let handle = action.action;
 			match action.value {
 				Value::Vector2(v) if handle == self.actions.drag => {
+					// What one press changes, until its release, is one step to undo.
+					match action.phase {
+						ActionPhase::Started => self.history.begin_gesture(),
+						ActionPhase::Ended | ActionPhase::Cancelled => self.history.end_gesture(),
+						ActionPhase::Updated => {}
+					}
 					let pointer = UiPoint::new(v.x, v.y);
 					self.pointer = pointer;
 					// A palette or a carried mesh on top of the scene sees the pointer first.
@@ -252,6 +271,7 @@ impl Editor {
 					}
 				}
 				Value::Bool(down) if handle == self.actions.meta => self.meta = down,
+				Value::Bool(down) if handle == self.actions.shift => self.shift = down,
 				// A focused field, such as a camera setting taking typed text, hears Enter and Escape too.
 				Value::Bool(down) if handle == self.actions.enter || handle == self.actions.escape => {
 					let key = if handle == self.actions.enter {
@@ -278,7 +298,6 @@ impl Editor {
 		self.report_settings(app);
 		self.toast_log();
 		self.move_carry(app);
-		self.post_edit(app);
 		self.save_graph(app);
 		self.edit_texture(app);
 		self.place_gizmo();
@@ -362,10 +381,10 @@ impl Editor {
 	}
 
 	/// Answers a pressed key: Cmd+K opens the palette on everything, Cmd+A on what can be placed, Cmd+E on the
-	/// resources to explore, and Cmd+. on the runtime settings, Cmd+S saves the open material graph, the arrows move
-	/// the palette's highlight, Enter picks the highlighted entry or sets the typed setting, and Escape pops the top
-	/// layer, which closes the editor from the scene. A property field taking typed text answers Enter and Escape
-	/// itself.
+	/// resources to explore, and Cmd+. on the runtime settings, Cmd+S saves the open material graph, Cmd+Z undoes and
+	/// Cmd+Shift+Z redoes, the arrows move the palette's highlight, Enter picks the highlighted entry or sets the typed
+	/// setting, and Escape pops the top layer, which closes the editor from the scene. A property field taking typed
+	/// text answers Enter and Escape itself.
 	fn key(&mut self, app: &GraphicsApplication, key: crate::input::ActionHandle) {
 		let scope = if key == self.actions.k {
 			Some(palette::Scope::All)
@@ -382,6 +401,13 @@ impl Editor {
 			&& self.meta
 		{
 			self.toggle_palette(app, scope);
+			return;
+		}
+		if key == self.actions.z && self.meta {
+			// A field taking typed text keeps its own keys.
+			if !matches!(self.engine.ctx_mut().layers.top(), Some(Layer::Typing)) {
+				self.step_history(app);
+			}
 			return;
 		}
 		if key == self.actions.s && self.meta {
@@ -771,16 +797,30 @@ impl Editor {
 				log::warn!("The editor couldn't delete the entity. {error} Check that the game registers inspector messages.");
 			}
 		}
-		let Some((handle, change)) = self.engine.ctx_mut().edit.take() else {
+		let shell = self.engine.ctx_mut();
+		let Some((handle, change)) = shell.edit.take() else {
 			return;
 		};
-		let (message_type, payload) = match &change {
-			fields::Change::Transform(transform) => (
-				TRANSFORMATION_UPDATE_MESSAGE_TYPE,
-				serde_json::to_string(&InspectedValue::Transform(transform)),
-			),
-			fields::Change::Camera(camera) => (CAMERA_UPDATE_MESSAGE_TYPE, serde_json::to_string(camera)),
-			fields::Change::Light(light) => (light.kind.update_message(), serde_json::to_string(&light.payload)),
+		let Some(entity) = shell.scene.iter_mut().find(|entity| entity.handle == handle) else {
+			return;
+		};
+		let (message_type, payload) = match change {
+			fields::Change::Transform(transform) => {
+				let delta = history::Delta::between(&entity.transform, &transform);
+				self.edit(app, history::Operation::Transform { entity: handle, delta });
+				return;
+			}
+			fields::Change::Camera(camera) => {
+				let payload = serde_json::to_string(&camera);
+				entity.camera = Some(camera);
+				(CAMERA_UPDATE_MESSAGE_TYPE, payload)
+			}
+			fields::Change::Light(light) => {
+				let payload = serde_json::to_string(&light.payload);
+				let message_type = light.kind.update_message();
+				entity.light = Some(light);
+				(message_type, payload)
+			}
 		};
 		let payload = payload.expect(
 			"The edited value failed to serialize. The most likely cause is a non-finite value. Check the edited field.",
@@ -918,19 +958,58 @@ impl Editor {
 			return;
 		};
 		state.stretch = drag.stretch(pixel);
-		// The editor's copy changes at once, so the gizmo and the properties panel follow the pointer without waiting
-		// for the next scene poll.
-		entity.transform = transform;
+		let operation = history::Operation::Transform {
+			entity: *handle,
+			delta: history::Delta::between(&entity.transform, &transform),
+		};
+		drop(state);
+		self.edit(app, operation);
+	}
+
+	/// Applies `operation` and records it, so it can be undone.
+	fn edit(&mut self, app: &GraphicsApplication, operation: history::Operation) {
+		self.history.record(operation);
+		self.apply(app, operation);
+	}
+
+	/// Undoes the last step, or redoes the last undone one while Shift is held, applying its operations as an edit
+	/// does.
+	fn step_history(&mut self, app: &GraphicsApplication) {
+		// An undo mid-drag would fight the drag, which moves from where it started.
+		self.release_gizmo();
+		let mut operations = std::mem::take(&mut self.applying);
+		if self.shift {
+			operations.extend(self.history.redo());
+		} else {
+			operations.extend(self.history.undo());
+		}
+		for operation in operations.drain(..) {
+			self.apply(app, operation);
+		}
+		self.applying = operations;
+	}
+
+	/// Applies `operation` to the editor's copy of its entity and posts it to the game: the one path edits, undo, and
+	/// redo all change the game through. The copy changes at once, so the gizmo and the properties panel follow without
+	/// waiting for the next scene poll.
+	fn apply(&mut self, app: &GraphicsApplication, operation: history::Operation) {
+		let history::Operation::Transform { entity: handle, delta } = operation;
+		let shell = self.engine.ctx_mut();
+		let Some(entity) = shell.scene.iter_mut().find(|entity| entity.handle == handle) else {
+			log::warn!(
+				"The editor couldn't change an entity it no longer lists. The most likely cause is that the game removed it. Undo or redo the next step instead."
+			);
+			return;
+		};
+		entity.transform = delta.applied_to(&entity.transform);
 		let payload = serde_json::to_string(&InspectedValue::Transform(&entity.transform)).expect(
-			"Transform failed to serialize. The most likely cause is a non-finite component. Check the dragged entity's transform.",
+			"Transform failed to serialize. The most likely cause is a non-finite component. Check the edited transform.",
 		);
 		if let Err(error) = app
 			.inspector()
-			.post_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, *handle, &payload)
+			.post_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, handle, &payload)
 		{
-			log::warn!(
-				"The editor couldn't move the dragged entity. {error} Check that the game registers inspector messages."
-			);
+			log::warn!("The editor couldn't move the entity. {error} Check that the game registers inspector messages.");
 		}
 	}
 

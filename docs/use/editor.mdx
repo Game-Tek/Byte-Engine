@@ -53,6 +53,11 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
 3. Pick Move, Rotate, or Scale in the toolbar, then drag a handle of the gizmo. To set a value exactly, drag a
    property field sideways, or click it and type the value.
 
+   Press Cmd+Z to undo a move, turn, or scale, and Cmd+Shift+Z to redo it. One drag, from press to release, undoes
+   at once, and so does one typed value. An undo changes the entity by what the edit changed it by, so a move undone
+   after the game moved the entity too keeps the game's move. See [Editor history](/docs/reference/editor-history)
+   for how edits group into steps.
+
 4. Press Cmd+A to open the palette on what you can place: your meshes, your prefabs, and a point, cone, or
    directional light. Type part of a name and drag the result into the scene, or press Enter to carry it with the
    pointer until you click where it goes. A mesh or light follows the pointer; a prefab appears where you place it,

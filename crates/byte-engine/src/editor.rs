@@ -14,8 +14,9 @@
 //! The command palette opens, as VS Code's does, on a scope picked by its shortcut: Cmd+A on what can be placed, a
 //! mesh, prefab, or light to drag into the scene or pin to the pointer with Enter until a click places it, and Cmd+K
 //! on that and the material graphs to edit on a node canvas. Cmd+E opens it on the resources to explore: material
-//! graphs and textures, decoded from their source images. Each opens in a window of its own, with its own layers and
-//! UI engine, which takes the input of that window; there, any of the shortcuts finds a node kind to add to the graph.
+//! graphs, material variants, whose parameters it changes, and textures, decoded from their source images. Each opens
+//! in a window of its own, with its own layers and UI engine, which takes the input of that window; there, any of the
+//! shortcuts finds a node kind to add to the graph.
 //! A prefab spawns where it's placed, with its parameters' defaults, through the spawner the game gave the inspector,
 //! so it knows the game's own kinds. Cmd+. opens it on the game's runtime settings, which Cmd+K finds too: Enter on one
 //! shows its value in the search field, and Enter again sets it to what the field says, as the console's `set` does.
@@ -40,6 +41,7 @@ mod palette;
 mod scene;
 mod shell;
 mod toasts;
+mod variant;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -308,6 +310,7 @@ impl Editor {
 			std::mem::swap(&mut self.engine, &mut self.resources[index].engine);
 			self.save_graph(app);
 			self.edit_texture(app);
+			self.edit_variant(app);
 			std::mem::swap(&mut self.engine, &mut self.resources[index].engine);
 
 			let resource = &mut self.resources[index];
@@ -681,9 +684,10 @@ impl Editor {
 		if let Some(Layer::Palette(palette)) = layers.pop()
 			&& let palette::Scope::Folders(what) = &palette.scope
 		{
-			// A new material opens its graph on the canvas, to build its surface.
-			if let Some(graph) = create::create(app, &entry.label, what) {
-				self.choose(app, &palette::Entry::new(graph, palette::Kind::Graph), false);
+			// A new material opens its graph on the canvas, to build its surface, and a new variant opens to change its
+			// parameters.
+			if let Some(next) = create::create(app, &entry.label, what) {
+				self.choose(app, &next, false);
 			}
 			return;
 		}
@@ -756,6 +760,10 @@ impl Editor {
 				self.open_texture(app, id);
 				return;
 			}
+			palette::Kind::Variant => {
+				self.open_variant(app, id);
+				return;
+			}
 			// A command's palette gives way to one on what it asks for next: the folder what it creates goes in, or
 			// the material a variant specializes.
 			palette::Kind::NewLevel | palette::Kind::NewMaterial | palette::Kind::NewVariant | palette::Kind::Material => {
@@ -800,6 +808,32 @@ impl Editor {
 		match inspector.set_image_setting(&texture.id, setting).and_then(|()| inspector.image_settings(&texture.id)) {
 			Ok(settings) => texture.settings = Some(settings),
 			Err(error) => log::warn!("The editor couldn't change the settings of '{}'. {error}", texture.id),
+		}
+	}
+
+	/// Opens the material variant `id` in a window of its own, with its parent's parameters and the values it gives
+	/// them.
+	fn open_variant(&mut self, app: &mut GraphicsApplication, id: &str) {
+		let opened = create::read_material(app, id)
+			.and_then(|source| variant::Variant::open(id, source, |parent| create::read_material(app, parent)));
+		match opened {
+			Ok(variant) => self.open_resource(app, id, Layer::Variant(variant)),
+			Err(error) => log::warn!("The editor couldn't open the variant. {error}"),
+		}
+	}
+
+	/// Writes the parameter the variant window changed to the variant's file, which the game then bakes again.
+	fn edit_variant(&mut self, app: &GraphicsApplication) {
+		let shell = self.engine.ctx_mut();
+		let Some((name, value)) = shell.variant_edit.take() else {
+			return;
+		};
+		let Some(variant) = shell.layers.variant_mut() else {
+			return;
+		};
+		let source = variant.set(&name, value);
+		if let Err(error) = app.inspector().write_source_asset(&variant.id, &source) {
+			log::warn!("The editor couldn't save '{}'. {error}", variant.id);
 		}
 	}
 
@@ -1266,6 +1300,7 @@ fn explorable(app: &GraphicsApplication, entries: &mut Vec<palette::Entry>) {
 		Ok(graphs) => entries.extend(graphs.into_iter().map(|id| Entry::new(id, Kind::Graph))),
 		Err(error) => log::warn!("The palette couldn't list the game's material graphs. {error}"),
 	}
+	entries.extend(create::variants(app).into_iter().map(|id| Entry::new(id, Kind::Variant)));
 	for extension in ["png", "jpg", "jpeg"] {
 		match app.inspector().source_assets(extension) {
 			Ok(textures) => entries.extend(textures.into_iter().map(|id| Entry::new(id, Kind::Texture))),

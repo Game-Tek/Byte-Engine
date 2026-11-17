@@ -10,6 +10,7 @@
 use crate::editor::carry::Carry;
 use crate::editor::graph::Graph;
 use crate::editor::palette;
+use crate::editor::variant::Variant;
 
 /// The `Layer` enum is one mode the editor stacks over the game: what it shows, and what takes input while it's on
 /// top.
@@ -24,6 +25,8 @@ pub(crate) enum Layer {
 	Setting(palette::Setting),
 	/// A texture shown in a preview panel, at the bottom of the layers of its own window.
 	Texture(Texture),
+	/// A material variant's parameters, at the bottom of the layers of its own window.
+	Variant(Variant),
 	/// A mesh, prefab, or light following the pointer until a click places it.
 	Carry(Carry),
 	/// Text being typed into a property field, which answers Enter and Escape itself.
@@ -139,6 +142,21 @@ impl Layers {
 	pub(crate) fn texture_mut(&mut self) -> Option<&mut Texture> {
 		self.stack.iter_mut().rev().find_map(|layer| match layer {
 			Layer::Texture(texture) => Some(texture),
+			_ => None,
+		})
+	}
+
+	/// The variant whose parameters show, which its window shows while palettes open over it.
+	pub(crate) fn variant(&self) -> Option<&Variant> {
+		self.stack.iter().rev().find_map(|layer| match layer {
+			Layer::Variant(variant) => Some(variant),
+			_ => None,
+		})
+	}
+
+	pub(crate) fn variant_mut(&mut self) -> Option<&mut Variant> {
+		self.stack.iter_mut().rev().find_map(|layer| match layer {
+			Layer::Variant(variant) => Some(variant),
 			_ => None,
 		})
 	}

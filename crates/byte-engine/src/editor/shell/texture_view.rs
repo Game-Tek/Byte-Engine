@@ -11,20 +11,17 @@ use resource_management::processors::image::{Semantic, gamma_from_semantic};
 use resource_management::types::Gamma;
 
 use super::{
-	ACCENT, CORNER, DRAWER_TUCK, FIELD_HEIGHT, INSET, MUTED, PROPERTIES_WIDTH, SQUIRCLE, Shell, TEXT,
-	block, hairline, hex, panel, read_typed, row_style, setting_style, sidebar_height, solid, top_highlight, typing_style,
-	well,
+	ACCENT, FIELD_HEIGHT, MUTED, SQUIRCLE, Shell, TEXT, block, hairline, hex, read_typed, row_style, setting_style, solid,
+	top_highlight, typing_style, well,
 };
+use super::resource_panels::{TITLE_HEIGHT, docked_panel, main_panel};
 use crate::editor::layers::Layer;
-use crate::ui::{Anchor, Position};
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::Events;
 use crate::ui::flow;
 use crate::utils::r#async::select;
 
-/// The height of the panel's title bar, over the picture.
-const TITLE_HEIGHT: f32 = 36.0;
 /// The width of a property's control at the end of its row: a switch, a field, or a value.
 const CONTROL_WIDTH: f32 = 110.0;
 /// A switch's width and height.
@@ -57,9 +54,6 @@ fn fitted(width: u32, height: u32, room: [f32; 2]) -> [f32; 2] {
 /// texture closes or the window resizes, then returns it for removal.
 async fn texture_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
 	let viewport = ctx.with(|shell: &mut Shell| shell.viewport).await;
-	let width = (viewport.x() - PROPERTIES_WIDTH).max(200.0);
-	let height = viewport.y().max(TITLE_HEIGHT + 100.0);
-
 	// The picture's pixels are copied into the UI's storage once, as the panel is declared.
 	let (id, name, size, picture) = ctx
 		.with(|shell: &mut Shell| {
@@ -73,51 +67,10 @@ async fn texture_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 			(texture.id.clone(), name, size, (preview.width, preview.height, preview.pixels.clone()))
 		})
 		.await;
+	let (mut frame, mut close, [width, height]) = main_panel(ctx, &name, &size).await;
 	// The mat fills the panel under its title, and the picture fills the mat as far as its aspect lets it.
 	let mat_size = [width, height - TITLE_HEIGHT];
 	let shown = fitted(picture.0, picture.1, mat_size);
-
-	let mut frame = ctx
-		.element("frame")
-		.container(|c| {
-			// The panel runs under the properties panel's rounded corners, so no window shows through them.
-			c.absolute_position(0.0, 0.0)
-				.width((width + CORNER).into())
-				.height(height.into())
-				.clip(false)
-				.hit_testable(true)
-				.style(panel(height, 1.0))
-		})
-		.await;
-	let mut bar = frame
-		.element("title")
-		.container(|c| {
-			c.absolute_position(0.0, 0.0)
-				.width(width.into())
-				.height(TITLE_HEIGHT.into())
-				.flow(flow::centered_row_with_gap(8))
-		})
-		.await;
-	bar.element("lead").container(|c| c.width(6.into()).height(1.into())).await;
-	bar.element("name").text(&name, |t| t.font_size(13.0).style([solid(TEXT)])).await;
-	bar.element("size").text(&size, |t| t.font_size(11.0).style([solid(MUTED)])).await;
-	let mut close = frame
-		.element("close")
-		.container(|c| {
-			c.absolute_position(width - 32.0, (TITLE_HEIGHT - 24.0) * 0.5)
-				.width(24.into())
-				.height(24.into())
-				.corner_radius(6.0)
-				.corner_exponent(SQUIRCLE)
-				.flow(flow::center)
-				.hit_testable(true)
-				.style(row_style(false, false))
-		})
-		.await;
-	close
-		.element("cross")
-		.text("×", |t| t.font_size(16.0).style([solid(MUTED)]))
-		.await;
 	// A dark mat under the picture, so its transparent parts read as such, and around it, where its aspect leaves room.
 	let mut mat = frame
 		.element("mat")
@@ -268,31 +221,7 @@ async fn settings(ctx: &mut EvaluationContext<Shell>) -> Option<ResolvedImageSet
 /// Declares the properties panel of the open texture, docked against the window's right edge for its whole height, as
 /// the scene drawer is against the left, and returns it for removal once the texture closes or the window resizes.
 async fn properties_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
-	let width = PROPERTIES_WIDTH - INSET * 2.0;
-	let height = sidebar_height(ctx.with(|shell: &mut Shell| shell.viewport).await);
-	// The panel runs past the window's right edge, so only the corners facing the picture show rounded.
-	let mut frame = ctx
-		.element("properties")
-		.container(|c| {
-			c.position(Position::anchored(Anchor::End(-DRAWER_TUCK), Anchor::Start(0.0)))
-				.width((PROPERTIES_WIDTH + DRAWER_TUCK).into())
-				.height(height.into())
-				.corner_radius(CORNER)
-				.corner_exponent(SQUIRCLE)
-				.clip(false)
-				.hit_testable(true)
-				.style(panel(height, 1.0))
-		})
-		.await;
-	let mut content = frame
-		.element("content")
-		.container(|c| {
-			c.absolute_position(INSET, INSET)
-				.width(width.into())
-				.height((height - INSET * 2.0).into())
-				.flow(crate::ui::flow::column_with_gap(6))
-		})
-		.await;
+	let (frame, mut content, width) = docked_panel(ctx).await;
 	let (mut rows, _) = block(&mut content, "texture", "Texture", Property::ALL.len()).await;
 	for property in Property::ALL {
 		rows.element(property.label())

@@ -6,7 +6,9 @@
 //! and Byte Engine's green as the accent for the selection.
 
 mod graph_view;
+mod resource_panels;
 mod texture_view;
+mod variant_view;
 mod toasts;
 
 use crate::editor::drawer;
@@ -54,6 +56,9 @@ pub(crate) struct Shell {
 	pub(crate) save_graph: bool,
 	/// The setting the texture's properties panel changed, until the editor writes it to the texture's sidecar.
 	pub(crate) texture_edit: Option<resource_management::asset::ImageSetting>,
+	/// The parameter the variant's panel changed, by name, with its new value, until the editor writes it to the
+	/// variant's file.
+	pub(crate) variant_edit: Option<(String, serde_json::Value)>,
 	/// The entity the properties panel's trash button deleted, until the editor posts the deletion to the game.
 	pub(crate) delete: Option<Handle>,
 	/// The game's warnings and errors, shown as toasts.
@@ -75,6 +80,7 @@ impl Shell {
 			delete: None,
 			save_graph: false,
 			texture_edit: None,
+			variant_edit: None,
 			toasts: Default::default(),
 		}
 	}
@@ -215,14 +221,17 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 	}
 }
 
-/// Builds a resource window's interface: the material graph's canvas or the texture's preview, whichever is at the
-/// bottom of its layers, under the palette that opens over it.
+/// Builds a resource window's interface: the material graph's canvas, the texture's preview, or the variant's
+/// parameters, whichever is at the bottom of its layers, under the palette that opens over it.
 pub(crate) async fn window(root: &mut EvaluationContext<Shell>) {
 	root.element("graph")
 		.component(async |ctx| graph_view::graph_view(ctx).await)
 		.await;
 	root.element("texture")
 		.component(async |ctx| texture_view::texture_view(ctx).await)
+		.await;
+	root.element("variant")
+		.component(async |ctx| variant_view::variant_view(ctx).await)
 		.await;
 	root.element("palette").component(async |ctx| palette_view(ctx).await).await;
 	loop {
@@ -616,7 +625,11 @@ fn kind_tint(kind: palette::Kind) -> [RGBA; 2] {
 		palette::Kind::Mesh => [ACCENT_LIGHT, ACCENT],
 		palette::Kind::Prefab => [hex(0x8A93F0, 1.0), hex(0x5E6AD2, 1.0)],
 		palette::Kind::Light(_) => [hex(0xFFD27A, 1.0), hex(0xF5A524, 1.0)],
-		palette::Kind::Graph | palette::Kind::Material | palette::Kind::NewMaterial | palette::Kind::NewVariant => {
+		palette::Kind::Graph
+		| palette::Kind::Variant
+		| palette::Kind::Material
+		| palette::Kind::NewMaterial
+		| palette::Kind::NewVariant => {
 			[hex(0xF29BD4, 1.0), hex(0xD9539F, 1.0)]
 		}
 		palette::Kind::Texture => [hex(0x8CC4FF, 1.0), hex(0x3D8BE0, 1.0)],

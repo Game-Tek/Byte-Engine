@@ -10,8 +10,8 @@ use crate::application::graphics::GraphicsApplication;
 
 /// Writes what `what` names into `folder`, as `/` or a folder ID such as `levels/`, under the first name no source
 /// there has: `untitled.level`, `untitled.bema` with its graph `untitled.bemx`, or `<material> variant.bema`. Returns
-/// the ID of a new material's graph, which is what's edited next.
-pub(super) fn create(app: &GraphicsApplication, folder: &str, what: &Create) -> Option<String> {
+/// what's edited next: a new material's graph, or the new variant.
+pub(super) fn create(app: &GraphicsApplication, folder: &str, what: &Create) -> Option<palette::Entry> {
 	let inspector = app.inspector();
 	let created = match what {
 		Create::Level => inspector.source_assets("level").and_then(|levels| {
@@ -25,19 +25,21 @@ pub(super) fn create(app: &GraphicsApplication, folder: &str, what: &Create) -> 
 			let (id, graph) = (format!("{stem}.bema"), format!("{stem}.bemx"));
 			// The graph goes first, so the material's bake finds it.
 			inspector.write_source_asset(&graph, EMPTY_GRAPH)?;
-			inspector.write_source_asset(&id, &material_source(&graph)).map(|()| (id, Some(graph)))
+			let graph = palette::Entry::new(graph, palette::Kind::Graph);
+			inspector.write_source_asset(&id, &material_source(&graph.label)).map(|()| (id, Some(graph)))
 		}),
 		Create::Variant(parent) => inspector.source_assets("bema").and_then(|materials| {
 			let source = variant_source(parent, &read_material(app, parent)?)?;
 			let base = format!("{} variant", palette::entity_name(parent));
 			let id = format!("{}.bema", free_stem(folder, &base, |stem| has(&materials, stem, "bema")));
-			inspector.write_source_asset(&id, &source).map(|()| (id, None))
+			let variant = palette::Entry::new(id.clone(), palette::Kind::Variant);
+			inspector.write_source_asset(&id, &source).map(|()| (id, Some(variant)))
 		}),
 	};
 	match created {
-		Ok((id, graph)) => {
+		Ok((id, next)) => {
 			log::info!("The editor created '{id}'.");
-			graph
+			next
 		}
 		Err(error) => {
 			log::warn!("The editor couldn't create the asset. {error}");
@@ -58,23 +60,32 @@ fn has(ids: &[String], stem: &str, extension: &str) -> bool {
 /// The root materials among the application's `.bema` sources, as their IDs with the IDs of their graphs. A source
 /// that can't be read or parsed is left out, as is a variant.
 pub(super) fn root_materials(app: &GraphicsApplication) -> Vec<(String, String)> {
-	let ids = match app.inspector().source_assets("bema") {
-		Ok(ids) => ids,
-		Err(error) => {
-			log::warn!("The palette couldn't list the game's materials. {error}");
-			return Vec::new();
-		}
-	};
-	ids.into_iter()
-		.filter_map(|id| {
-			let graph = root_graph(&read_material(app, &id).ok()?)?;
-			Some((id, graph))
-		})
+	materials(app)
+		.filter_map(|(id, material)| Some((id, root_graph(&material)?)))
 		.collect()
 }
 
+/// The variants among the application's `.bema` sources: those with a `parent`. A source that can't be read or parsed
+/// is left out.
+pub(super) fn variants(app: &GraphicsApplication) -> Vec<String> {
+	materials(app)
+		.filter(|(_, material)| material.get("parent").is_some())
+		.map(|(id, _)| id)
+		.collect()
+}
+
+/// Every `.bema` source of the application that reads and parses, with its parsed source.
+fn materials(app: &GraphicsApplication) -> impl Iterator<Item = (String, Value)> + '_ {
+	let ids = app.inspector().source_assets("bema").unwrap_or_else(|error| {
+		log::warn!("The palette couldn't list the game's materials. {error}");
+		Vec::new()
+	});
+	ids.into_iter()
+		.filter_map(|id| read_material(app, &id).ok().map(|material| (id, material)))
+}
+
 /// Reads and parses the `.bema` source `id`.
-fn read_material(app: &GraphicsApplication, id: &str) -> Result<Value, String> {
+pub(super) fn read_material(app: &GraphicsApplication, id: &str) -> Result<Value, String> {
 	let bytes = app.inspector().read_source_asset(id)?;
 	let text = std::str::from_utf8(&bytes).map_err(|_| {
 		format!("Material '{id}' isn't text. The most likely cause is a binary file named as a material. Save it as UTF-8 JSON5.")
@@ -131,7 +142,7 @@ fn variant_source(parent: &str, material: &Value) -> Result<String, String> {
 }
 
 /// `value` as JSON indented with tabs, as the engine's sources are, which `.bema` files, being JSON5, read.
-fn pretty(value: &Value) -> String {
+pub(super) fn pretty(value: &Value) -> String {
 	use serde::Serialize;
 	let mut text = Vec::new();
 	let formatter = serde_json::ser::PrettyFormatter::with_indent(b"\t");

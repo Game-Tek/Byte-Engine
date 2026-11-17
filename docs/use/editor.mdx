@@ -87,7 +87,8 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
    back to the search. The values a setting takes are the ones the console's `set` takes; when your application refuses one, a
    toast says why. See [runtime settings](/docs/reference/parameters#runtime-settings) for what each one takes.
 
-6. To explore your resources, press Cmd+E and type part of a name. It finds your material graphs and textures. Open
+6. To explore your resources, press Cmd+E and type part of a name. It finds your material graphs, material variants,
+   and textures. Open
    a texture to see it in a window of its own, with its size in pixels, beside the running game. Press Escape in that
    window, or close it, to close it. Opening a texture that's already open does nothing. Textures show from their PNG
    or JPEG source files, so a build without sources finds none.
@@ -114,7 +115,14 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
    writes a [variant](/docs/reference/bema#variant-files), such as `paint variant.bema`, that gives every parameter
    the material's own value, so it looks like the material until you change one. While a material's graph is open,
    the palette lists **New variant** rows first, one for each root material that uses the graph, so you can skip
-   picking the material.
+   picking the material. The new variant opens to change its parameters.
+
+   To change a variant's parameters, find it with Cmd+E and open it. It opens in a window of its own, with its
+   parent's parameters on the right and the value the variant gives each, or the parent's default when it gives
+   none. Click a value and type a new one, then press Enter: a number for a `float`; three or four numbers, apart by
+   commas or spaces, or a color name such as `Purple`, for a `vec3f` or `vec4f`; or an image's asset ID for a
+   `Texture2D`. Text that isn't one changes nothing. The editor writes the change to the variant's file, and your
+   application bakes the material again. It writes plain JSON, so comments in the file don't survive a change.
 
 9. To change a material, find its graph with Cmd+E or Cmd+K and open it. The graph opens in a window of its own. In
    that window, drag between sockets to connect nodes, press Cmd+A to add one, and press Cmd+S to save the graph; your

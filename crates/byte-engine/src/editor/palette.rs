@@ -68,7 +68,7 @@ impl Scope {
 		match self {
 			Self::All => "Find something to place, a resource to open, or a setting",
 			Self::Place => "Find a mesh, prefab, or light to place",
-			Self::Explore => "Find a material or texture to open",
+			Self::Explore => "Find a material, variant, or texture to open",
 			Self::Configure => "Find a setting to show or change",
 			Self::Nodes => "Find a node to add",
 			Self::Materials => "Find the material the new variant specializes",
@@ -102,6 +102,8 @@ pub(crate) enum Kind {
 	Graph,
 	/// Previews the texture source image the label names.
 	Texture,
+	/// Opens the material variant the label names, to change its parameters.
+	Variant,
 	/// Adds a node of the kind the label names to the open graph.
 	Node,
 	/// Shows the runtime setting the label names, which takes these values, to change it.
@@ -147,7 +149,7 @@ impl Entry {
 	/// The name the row leads with: a resource's file name without its extension, or the whole label otherwise.
 	pub(crate) fn name(&self) -> &str {
 		match self.kind {
-			Kind::Mesh | Kind::Prefab | Kind::Graph | Kind::Texture | Kind::Material => entity_name(&self.label),
+			Kind::Mesh | Kind::Prefab | Kind::Graph | Kind::Texture | Kind::Variant | Kind::Material => entity_name(&self.label),
 			Kind::Light(_)
 			| Kind::Node
 			| Kind::Setting(_)

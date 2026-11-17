@@ -103,7 +103,7 @@ impl<A: Allocator + Clone> InputCollector<A> {
 	/// let mut sink = InputSink::new_in(collector.add_sink(), DefaultChannel::new(), &arena);
 	/// let action = sink.create_action(&collector, "Forward", Types::Boolean,
 	///     &[ActionBindingDescription::new("Keyboard.W")], TickPolicy::WhileActive);
-	/// collector.record(SeatHandle::stub(), device, TriggerReference::Name("Keyboard.W"), Value::Bool(true));
+	/// collector.record(SeatHandle::stub(), device, TriggerReference::Name("Keyboard.W"), Value::Bool(true), None);
 	/// sink.pull(&mut collector, |_| Capture::Captured);
 	/// assert_eq!(sink.action_state(SeatHandle::stub(), action, device), Value::Bool(true));
 	/// ```
@@ -144,11 +144,19 @@ impl<A: Allocator + Clone> InputCollector<A> {
 		self.queue.add_sink()
 	}
 
-	/// Queues one control value in arrival order.
+	/// Queues one control value in arrival order. `window` is the window the control was used in, which the actions
+	/// it resolves report; pass `None` for input from no window, such as a gamepad.
 	///
 	/// Unknown triggers and values of the wrong [`Types`](super::Types) are
 	/// dropped with a warning. Next, let each [`InputSink`](super::InputSink) pull.
-	pub fn record(&mut self, seat: SeatHandle, device: DeviceHandle, reference: TriggerReference, value: Value) {
+	pub fn record(
+		&mut self,
+		seat: SeatHandle,
+		device: DeviceHandle,
+		reference: TriggerReference,
+		value: Value,
+		window: Option<crate::core::factory::Handle>,
+	) {
 		let Some((trigger_index, trigger)) = self.registry.resolve(&reference) else {
 			warn!("Input trigger is unknown. The most likely cause is an unregistered trigger name or handle.");
 			return;
@@ -170,7 +178,7 @@ impl<A: Allocator + Clone> InputCollector<A> {
 			warn!("Input device is unknown. The most likely cause is a device handle from another collector.");
 			return;
 		}
-		self.queue.push(seat, device, trigger_index, value, trigger.transient);
+		self.queue.push(seat, device, trigger_index, value, window, trigger.transient);
 	}
 
 	/// Iterates over the queued source events in arrival order without allocating.

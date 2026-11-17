@@ -35,7 +35,7 @@ impl Context {
 			meshes: Vec::new(),
 			command_buffers: Vec::with_capacity(32),
 			synchronizers: Vec::with_capacity(32),
-			swapchains: Vec::with_capacity(4),
+			swapchains: Default::default(),
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
 			counters: crate::counters::Counters::new(counters_enabled),
 			counter_query_pool,
@@ -173,7 +173,7 @@ impl Context {
 	}
 
 	/// Immediately destroys the views of a swapchain image wrapper whose Vulkan image is being replaced.
-	fn destroy_swapchain_image_views(&mut self, handle: ImageHandle) {
+	pub(super) fn destroy_swapchain_image_views(&mut self, handle: ImageHandle) {
 		for view in std::mem::take(&mut self.images[handle.index() as usize].image_views) {
 			unsafe { self.device.destroy_image_view(view, None) };
 		}

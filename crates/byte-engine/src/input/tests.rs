@@ -69,7 +69,7 @@ impl Fixture {
 			self.keyboard
 		};
 		self.collector
-			.record(SeatHandle::stub(), device, TriggerReference::Name(name), value.into());
+			.record(SeatHandle::stub(), device, TriggerReference::Name(name), value.into(), None);
 	}
 
 	fn value(&self, name: &'static str) -> Value {
@@ -214,7 +214,7 @@ fn every_trigger_type_retains_its_last_value_and_rejects_other_types() {
 			(vec![other_type], alternate),
 		] {
 			for record in records {
-				fixture.collector.record(seat, device, reference, record);
+				fixture.collector.record(seat, device, reference, record, None);
 			}
 			assert_eq!(value(&fixture), expected, "{name}");
 		}
@@ -344,6 +344,24 @@ fn source_events_expose_every_queued_record_until_every_sink_pulled() {
 }
 
 #[test]
+fn an_action_reports_the_window_its_input_came_from() {
+	let mut fixture = Fixture::new();
+	let mut sink = fixture.sink();
+	sink.button("Keyboard.W", TickPolicy::OnChange);
+	let (main, tool) = (Handle::new(), Handle::new());
+	let mut press = |pressed: bool, window| {
+		fixture
+			.collector
+			.record(SeatHandle::stub(), fixture.keyboard, TriggerReference::Name("Keyboard.W"), pressed.into(), window);
+	};
+	press(true, Some(main));
+	press(false, Some(tool));
+	press(true, None);
+	let windows: Vec<_> = fixture.pull(&mut sink, |_| true).iter().map(|action| action.window).collect();
+	assert_eq!(windows, [Some(main), Some(tool), None]);
+}
+
+#[test]
 fn resetting_a_seat_discards_interrupted_input_and_allows_a_new_press_without_a_release() {
 	let mut fixture = Fixture::new();
 	let mut sink = fixture.sink();
@@ -360,6 +378,7 @@ fn resetting_a_seat_discards_interrupted_input_and_allows_a_new_press_without_a_
 		fixture.mouse,
 		TriggerReference::Name("Pointer.LeftButton"),
 		true.into(),
+		None,
 	);
 	fixture.collector.reset_seat(SeatHandle::stub());
 	sink.sink.cancel_seat(SeatHandle::stub());
@@ -672,7 +691,7 @@ fn cancelling_a_seat_preserves_other_seats_values_for_the_same_action() {
 	for (seat, device) in sources {
 		fixture
 			.collector
-			.record(seat, device, TriggerReference::Name("Keyboard.W"), Value::Bool(true));
+			.record(seat, device, TriggerReference::Name("Keyboard.W"), Value::Bool(true), None);
 	}
 	fixture.pull(&mut sink, pass);
 	let _ = sink.published();
@@ -707,7 +726,7 @@ fn transient_boolean_records_do_not_claim_or_repeat() {
 				SeatHandle::stub(),
 				device,
 				TriggerReference::Handle(trigger),
-				Value::Bool(true),
+				Value::Bool(true), None,
 			);
 		}
 		assert_eq!(fixture.pull(&mut ui, |_| capture).len(), 2);
@@ -738,7 +757,7 @@ fn snapshot_bindings_sample_each_press_in_queue_order() {
 		seat,
 		other_mouse,
 		TriggerReference::Name("Pointer.Position"),
-		Value::Vector2(Axis2::new(99.0, 99.0)),
+		Value::Vector2(Axis2::new(99.0, 99.0)), None,
 	);
 	fixture.record("Pointer.LeftButton", true);
 	assert_eq!(sink.count(&mut fixture.collector), 0);
@@ -774,7 +793,7 @@ fn snapshot_bindings_sample_each_press_in_queue_order() {
 		SeatHandle::from_index(42),
 		fixture.mouse,
 		TriggerReference::Name("Pointer.LeftButton"),
-		Value::Bool(true),
+		Value::Bool(true), None,
 	);
 	assert_eq!(sink.count(&mut fixture.collector), 0);
 }
@@ -956,7 +975,7 @@ fn drags_require_a_sample_at_press_and_keep_devices_and_seats_separate() {
 			seat,
 			device,
 			TriggerReference::Name("Pointer.Position"),
-			Axis2::new(8.0, 9.0).into(),
+			Axis2::new(8.0, 9.0).into(), None,
 		);
 	}
 	fixture.record("Pointer.LeftButton", true);
@@ -971,7 +990,7 @@ fn drags_require_a_sample_at_press_and_keep_devices_and_seats_separate() {
 	for (seat, device) in sources {
 		fixture
 			.collector
-			.record(seat, device, TriggerReference::Name("Pointer.LeftButton"), true.into());
+			.record(seat, device, TriggerReference::Name("Pointer.LeftButton"), true.into(), None);
 	}
 	assert_eq!(
 		fixture
@@ -989,11 +1008,11 @@ fn drags_require_a_sample_at_press_and_keep_devices_and_seats_separate() {
 			seat,
 			device,
 			TriggerReference::Name("Pointer.Position"),
-			Axis2::new(3.0, 4.0).into(),
+			Axis2::new(3.0, 4.0).into(), None,
 		);
 		fixture
 			.collector
-			.record(seat, device, TriggerReference::Name("Pointer.LeftButton"), false.into());
+			.record(seat, device, TriggerReference::Name("Pointer.LeftButton"), false.into(), None);
 	}
 	assert_eq!(
 		fixture
@@ -1034,7 +1053,7 @@ fn unknown_seats_cannot_alias_retained_controls() {
 		SeatHandle::stub(),
 		device,
 		TriggerReference::Handle(triggers[0]),
-		Value::Bool(true),
+		Value::Bool(true), None,
 	);
 	sink.pull(&mut collector, |_| Capture::Passed);
 	sink.pull(&mut collector, |_| Capture::Passed);

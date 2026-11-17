@@ -11,7 +11,7 @@
 use serde_json::Value as Json;
 
 use super::{
-	ACCENT, AXIS_COLORS, CORNER, MARGIN, MUTED, PROPERTIES_WIDTH, SIDEBAR_WIDTH, SQUIRCLE, Shell, TEXT, TOOLBAR_HEIGHT,
+	ACCENT, AXIS_COLORS, CORNER, MARGIN, MUTED, SQUIRCLE, Shell, TEXT,
 	hairline, hex, panel, read_typed, row_style, solid, top_highlight, typing_style, vertical,
 };
 use crate::editor::layers::Layer;
@@ -91,12 +91,11 @@ impl View {
 
 /// Declares the open graph's panel and keeps it current until the graph closes, then returns it for removal.
 async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
-	let (viewport, revision) = ctx.with(|shell: &mut Shell| (shell.viewport, shell.graph_revision)).await;
-	// The panel covers the game view between the scene list, the toolbar, and the properties panel.
-	let left = MARGIN * 2.0 + SIDEBAR_WIDTH;
-	let top = MARGIN * 2.0 + TOOLBAR_HEIGHT;
-	let width = (viewport.x() - left - MARGIN * 2.0 - PROPERTIES_WIDTH).max(200.0);
-	let height = (viewport.y() - top - MARGIN).max(TITLE_HEIGHT + 100.0);
+	let viewport = ctx.with(|shell: &mut Shell| shell.viewport).await;
+	// The panel fills the graph's window, inside its margin.
+	let (left, top) = (MARGIN, MARGIN);
+	let width = (viewport.x() - MARGIN * 2.0).max(200.0);
+	let height = (viewport.y() - MARGIN * 2.0).max(TITLE_HEIGHT + 100.0);
 	let canvas_size = [width - 2.0, height - TITLE_HEIGHT - 1.0];
 
 	let mut frame = ctx
@@ -241,18 +240,19 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 		}
 		close.update_container(|c| c.style(row_style(false, close_hovered))).await;
 		save.update_container(|c| c.style(row_style(false, save_hovered))).await;
-		let (current, shape, status_revision) = ctx
+		let (open, shape, status_revision, now) = ctx
 			.with(|shell: &mut Shell| {
 				let graph = shell.layers.graph();
 				(
-					graph.map(|_| shell.graph_revision),
+					graph.is_some(),
 					graph.map_or(0, |graph| graph.shape_revision),
 					graph.map_or(0, |graph| graph.revision),
+					shell.viewport,
 				)
 			})
 			.await;
-		// Another graph opening replaces this panel, so it starts fitted to the new graph.
-		if current != Some(revision) {
+		// The graph closing removes the panel, and the window resizing declares it again, fitted to the window.
+		if !open || now != viewport {
 			return frame;
 		}
 		if shape != shown_shape {

@@ -11,8 +11,8 @@ use resource_management::processors::image::{Semantic, gamma_from_semantic};
 use resource_management::types::Gamma;
 
 use super::{
-	ACCENT, CORNER, FIELD_HEIGHT, INSET, MARGIN, MUTED, PROPERTIES_WIDTH, SIDEBAR_WIDTH, SQUIRCLE, Shell, TEXT,
-	TOOLBAR_HEIGHT, block, block_height, hairline, hex, panel, read_typed, row_style, setting_style, solid, top_highlight,
+	ACCENT, CORNER, FIELD_HEIGHT, INSET, MARGIN, MUTED, PROPERTIES_WIDTH, SQUIRCLE, Shell, TEXT,
+	block, block_height, hairline, hex, panel, read_typed, row_style, setting_style, solid, top_highlight,
 	typing_style, well,
 };
 use crate::editor::layers::Layer;
@@ -59,12 +59,11 @@ fn fitted(width: u32, height: u32, room: [f32; 2]) -> [f32; 2] {
 /// opens in its place, then returns it for removal.
 async fn texture_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
 	let viewport = ctx.with(|shell: &mut Shell| shell.viewport).await;
-	// The room between the scene list, the toolbar, and the properties panel, as the graph canvas takes.
-	let left = MARGIN * 2.0 + SIDEBAR_WIDTH;
-	let top = MARGIN * 2.0 + TOOLBAR_HEIGHT;
+	// The room the texture's window leaves beside its properties panel, inside its margin.
+	let (left, top) = (MARGIN, MARGIN);
 	let room = [
-		(viewport.x() - left - MARGIN * 2.0 - PROPERTIES_WIDTH).max(200.0),
-		(viewport.y() - top - MARGIN).max(TITLE_HEIGHT + 100.0),
+		(viewport.x() - MARGIN * 3.0 - PROPERTIES_WIDTH).max(200.0),
+		(viewport.y() - MARGIN * 2.0).max(TITLE_HEIGHT + 100.0),
 	];
 
 	// The picture's pixels are copied into the UI's storage once, as the panel is declared.
@@ -155,8 +154,11 @@ async fn texture_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 			_ = ctx.render() => {},
 		}
 		close.update_container(|c| c.style(row_style(false, close_hovered))).await;
+		// The panel is declared again when the window resizes, to center the picture in the room it leaves.
 		let open = ctx
-			.with(|shell: &mut Shell| shell.layers.texture().is_some_and(|texture| texture.id == id))
+			.with(|shell: &mut Shell| {
+				shell.layers.texture().is_some_and(|texture| texture.id == id) && shell.viewport == viewport
+			})
 			.await;
 		if !open {
 			break;

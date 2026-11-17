@@ -91,6 +91,28 @@ impl SetWindowFeatures {
 	}
 }
 
+/// The `CloseWindow` struct closes an open window from the application, such as a tool closing its own window.
+///
+/// Send it on the [`crate::application::graphics::GraphicsApplication::messages`] channel with the handle the window was
+/// created with. Closing the main window, the first one opened, quits the application, as its close button does; any
+/// other window closes alone before the next frame. See [windows](/docs/reference/rendering#windows).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CloseWindow {
+	window: Handle,
+}
+
+impl CloseWindow {
+	/// Closes the window created with `window`.
+	pub fn new(window: Handle) -> Self {
+		Self { window }
+	}
+
+	/// The handle the window was created with.
+	pub fn window(&self) -> Handle {
+		self.window
+	}
+}
+
 bitflags::bitflags! {
 	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 	/// Bit flags for the features of a window.

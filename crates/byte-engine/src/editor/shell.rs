@@ -9,6 +9,8 @@ mod graph_view;
 mod texture_view;
 mod toasts;
 
+use crate::editor::drawer;
+
 use std::time::Instant;
 
 use crate::core::factory::Handle;
@@ -48,8 +50,6 @@ pub(crate) struct Shell {
 	pub(crate) tool: Tool,
 	/// The last change the properties panel made, and the entity it changed, until the editor posts it to the game.
 	pub(crate) edit: Option<(Handle, Change)>,
-	/// Advanced whenever another graph opens, so the canvas is declared again for it.
-	pub(crate) graph_revision: u64,
 	/// Whether the canvas asked to save the open graph, until the editor writes it through the inspector.
 	pub(crate) save_graph: bool,
 	/// The setting the texture's properties panel changed, until the editor writes it to the texture's sidecar.
@@ -73,7 +73,6 @@ impl Shell {
 			tool: Tool::Move,
 			edit: None,
 			delete: None,
-			graph_revision: 0,
 			save_graph: false,
 			texture_edit: None,
 			toasts: Default::default(),
@@ -119,7 +118,13 @@ impl Shell {
 const MARGIN: f32 = 10.0;
 /// The gap between a panel's edge and its content; the UI has no padding, so content sits in an inset child.
 const INSET: f32 = 8.0;
+/// The width of the scene drawer that shows, against the window's left edge.
 const SIDEBAR_WIDTH: f32 = 260.0;
+/// How far the drawer reaches past the window's left edge, which hides its left corners, so only the corners facing
+/// the scene are round, and covers the spring's overshoot as it comes in.
+const DRAWER_TUCK: f32 = 24.0;
+/// How far left the drawer moves to hide, its shadow included.
+const DRAWER_HIDDEN: f32 = SIDEBAR_WIDTH + 32.0;
 const PROPERTIES_WIDTH: f32 = 300.0;
 /// The gap between the blocks of the properties panel.
 const BLOCK_GAP: f32 = 12.0;
@@ -157,13 +162,6 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 	let mut fields = properties(root).await;
 	toolbar(root).await;
 
-	// The graph canvas goes over the game view, under the palette.
-	root.element("graph")
-		.component(async |ctx| graph_view::graph_view(ctx).await)
-		.await;
-	root.element("texture")
-		.component(async |ctx| texture_view::texture_view(ctx).await)
-		.await;
 	root.element("palette").component(async |ctx| palette_view(ctx).await).await;
 	root.element("toasts").component(async |ctx| toasts::toasts(ctx).await).await;
 
@@ -171,16 +169,22 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 	let mut shown_viewport = viewport;
 	let mut shown_revision = None;
 	let mut shown_selection = None;
-	let mut shown_texture = false;
+	// The editor starts closed, with the drawer hidden; it moves whenever the editor opens or closes.
+	let mut drawer_open = false;
+	let mut drawer_moved = Instant::now();
+	let mut drawer_settled = true;
 	loop {
-		// A texture's properties panel takes the entity's place while the texture is open.
-		let texture = root.with(|shell: &mut Shell| shell.layers.texture().is_some()).await;
-		if texture != shown_texture {
-			shown_texture = texture;
-			fields
-				.panel
-				.update_container(|c| c.opacity(if texture { 0.0 } else { 1.0 }).hit_testable(!texture))
-				.await;
+		let open = root.with(|shell: &mut Shell| shell.layers.open()).await;
+		if open != drawer_open {
+			drawer_open = open;
+			drawer_moved = Instant::now();
+			drawer_settled = false;
+		}
+		if !drawer_settled {
+			let seconds = drawer_moved.elapsed().as_secs_f32();
+			let shown = if open { drawer::entering(seconds) } else { drawer::leaving(seconds) };
+			drawer_settled = seconds >= if open { drawer::ENTER } else { drawer::EXIT };
+			sidebar.update_container(|c| c.transform(drawer_transform(shown))).await;
 		}
 		let (viewport, revision) = root.with(|shell: &mut Shell| (shell.viewport, shell.scene_revision)).await;
 		if viewport != shown_viewport {
@@ -211,20 +215,41 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 	}
 }
 
-/// The sidebar spans the window's height; the UI cannot fill "the parent less the margins", so it is computed.
-fn sidebar_height(viewport: Size) -> f32 {
-	(viewport.y() - MARGIN * 2.0).max(HEADER_HEIGHT + INSET * 2.0)
+/// Builds a resource window's interface: the material graph's canvas or the texture's preview, whichever is at the
+/// bottom of its layers, under the palette that opens over it.
+pub(crate) async fn window(root: &mut EvaluationContext<Shell>) {
+	root.element("graph")
+		.component(async |ctx| graph_view::graph_view(ctx).await)
+		.await;
+	root.element("texture")
+		.component(async |ctx| texture_view::texture_view(ctx).await)
+		.await;
+	root.element("palette").component(async |ctx| palette_view(ctx).await).await;
+	loop {
+		root.render().await;
+	}
 }
 
-/// The scene overview's panel and its header; [`list`] fills in the rows under them.
+/// The drawer spans the window's height, which it follows as the window resizes.
+fn sidebar_height(viewport: Size) -> f32 {
+	viewport.y().max(HEADER_HEIGHT + INSET * 2.0)
+}
+
+/// The transform that shows `shown` of the drawer, from 0, hidden past the window's left edge, to 1, in place.
+fn drawer_transform(shown: f32) -> Transform {
+	Transform::identity().translate_x((shown - 1.0) * DRAWER_HIDDEN)
+}
+
+/// The scene drawer, against the window's left edge, and its header; [`list`] fills in the rows under them.
 async fn sidebar(root: &mut EvaluationContext<Shell>, viewport: Size) -> (EvaluationContext<Shell>, EvaluationContext<Shell>) {
 	let height = sidebar_height(viewport);
 	let mut sidebar = root
 		.element("sidebar")
 		.container(|c| {
-			c.position(Position::anchored(Anchor::Start(MARGIN), Anchor::Start(MARGIN)))
-				.width(SIDEBAR_WIDTH.into())
+			c.position(Position::anchored(Anchor::Start(-DRAWER_TUCK), Anchor::Start(0.0)))
+				.width((SIDEBAR_WIDTH + DRAWER_TUCK).into())
 				.height(height.into())
+				.transform(drawer_transform(0.0))
 				.corner_radius(CORNER)
 				.corner_exponent(SQUIRCLE)
 				.clip(false)
@@ -233,8 +258,17 @@ async fn sidebar(root: &mut EvaluationContext<Shell>, viewport: Size) -> (Evalua
 				.style(panel(height, 1.0))
 		})
 		.await;
-	let mut content = inset(&mut sidebar, SIDEBAR_WIDTH, height).await;
 	let width = SIDEBAR_WIDTH - INSET * 2.0;
+	// The content starts past the part tucked behind the window's edge.
+	let mut content = sidebar
+		.element("content")
+		.container(|c| {
+			c.absolute_position(DRAWER_TUCK + INSET, INSET)
+				.width(width.into())
+				.height((height - INSET * 2.0).into())
+				.flow(flow::column_with_gap(6))
+		})
+		.await;
 	header(&mut content, "Scene", width).await;
 	content
 		.element("search")
@@ -1260,19 +1294,6 @@ async fn tool_button(ctx: &mut EvaluationContext<Shell>, tool: Tool) {
 			label.update_text(|t| t.style([solid(color)])).await;
 		}
 	}
-}
-
-/// A child inset from `parent`'s edges by [`INSET`], stacking its children in a column; it stands in for padding.
-async fn inset(parent: &mut EvaluationContext<Shell>, width: f32, height: f32) -> EvaluationContext<Shell> {
-	parent
-		.element("content")
-		.container(|c| {
-			c.absolute_position(INSET, INSET)
-				.width((width - INSET * 2.0).into())
-				.height((height - INSET * 2.0).into())
-				.flow(flow::column_with_gap(6))
-		})
-		.await
 }
 
 /// A panel's title over a hairline that separates it from the content; returns the title's row, which can hold a

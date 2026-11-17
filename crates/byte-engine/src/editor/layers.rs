@@ -16,13 +16,13 @@ use crate::editor::palette;
 pub(crate) enum Layer {
 	/// The panels, the gizmo, and the selection: the bottom layer, which the editor opens on.
 	Scene,
-	/// A material graph on its canvas.
+	/// A material graph on its canvas, at the bottom of the layers of its own window.
 	Graph(Graph),
 	/// The command palette, searching what its scope finds.
 	Palette(palette::State),
 	/// A runtime setting's value being typed, over the palette that found the setting.
 	Setting(palette::Setting),
-	/// A texture shown in a preview panel, as Cmd+E opened it.
+	/// A texture shown in a preview panel, at the bottom of the layers of its own window.
 	Texture(Texture),
 	/// A mesh, prefab, or light following the pointer until a click places it.
 	Carry(Carry),

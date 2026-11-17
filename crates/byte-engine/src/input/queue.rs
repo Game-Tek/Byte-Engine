@@ -15,6 +15,7 @@ use std::alloc::Allocator;
 
 use super::collector::SinkHandle;
 use super::{DeviceHandle, SeatHandle, Value};
+use crate::core::factory::Handle;
 
 /// Identifies one physical control for a device and seat.
 pub(super) type Source = (u32, u32, u32);
@@ -27,6 +28,8 @@ pub(super) struct Record {
 	pub(super) device: u32,
 	pub(super) trigger: u32,
 	pub(super) value: Value,
+	/// The window the control was used in, or `None` for input from no window, such as a gamepad.
+	pub(super) window: Option<Handle>,
 	/// The increasing arrival number within the queue; zero marks an empty retained cell.
 	pub(super) sequence: u64,
 	/// An impulse: the record is a one-time sample, not the state of a held control.
@@ -42,6 +45,7 @@ impl Record {
 		device: 0,
 		trigger: 0,
 		value: Value::Bool(false),
+		window: None,
 		sequence: 0,
 		transient: false,
 		repeated: false,
@@ -122,7 +126,15 @@ impl<A: Allocator + Clone> Queue<A> {
 	}
 
 	/// Appends a record, inheriting the sink that captured the press it continues.
-	pub(super) fn push(&mut self, seat: SeatHandle, device: DeviceHandle, trigger: u32, value: Value, transient: bool) {
+	pub(super) fn push(
+		&mut self,
+		seat: SeatHandle,
+		device: DeviceHandle,
+		trigger: u32,
+		value: Value,
+		window: Option<Handle>,
+		transient: bool,
+	) {
 		// Decode opaque identities once; queued records and gesture rules use dense indices.
 		let (seat, device) = (seat.index(), device.index());
 		debug_assert!(
@@ -154,6 +166,7 @@ impl<A: Allocator + Clone> Queue<A> {
 			device,
 			trigger,
 			value,
+			window,
 			sequence: self.sequence,
 			transient,
 			repeated,

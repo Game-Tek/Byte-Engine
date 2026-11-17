@@ -1,6 +1,33 @@
 use super::*;
 
 impl Device {
+	/// Waits for every native queue, then releases a swapchain, its backbuffers, and their attachment views.
+	pub(crate) fn destroy_swapchain(&mut self, swapchain_handle: SwapchainHandle) {
+		let index = swapchain_handle.index() as usize;
+		if self.swapchains.get(index).is_none() {
+			return;
+		}
+		self.wait_for_all_queues_idle().expect(
+			"Failed to wait for DX12 queues before destroying a swapchain. The most likely cause is that the device was removed.",
+		);
+		self.prepare_for_topology_change().expect(
+			"Failed to reset DX12 command lists before destroying a swapchain. The most likely cause is that a completed command list became invalid.",
+		);
+		self.process_all_tasks_after_idle();
+		let retired_backbuffers = self.swapchains[index]
+			.backbuffers
+			.iter()
+			.flatten()
+			.map(Self::native_resource_key)
+			.collect::<SmallVec<[usize; 8]>>();
+		self.invalidate_attachment_views_for_resources(&retired_backbuffers);
+		for &key in &retired_backbuffers {
+			self.image_states.remove(&key);
+		}
+		// Dropping the swapchain releases its backbuffers and the DXGI swapchain itself.
+		self.swapchains.remove(index);
+	}
+
 	/// Resizes a swapchain and its proxy textures while every native queue is idle.
 	pub(crate) fn swapchain_extent(&mut self, swapchain_handle: SwapchainHandle, sequence_index: u8) -> Extent {
 		let Some(swapchain) = self.swapchains.get(swapchain_handle.index() as usize) else {

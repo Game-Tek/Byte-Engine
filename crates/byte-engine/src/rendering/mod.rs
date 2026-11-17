@@ -97,7 +97,7 @@ pub use shown_transforms::ShownTransforms;
 pub use sink::Sink;
 pub use sun::Sun;
 pub use view::View;
-pub use window::{Features, SetWindowFeatures, Window};
+pub use window::{CloseWindow, Features, SetWindowFeatures, Window};
 
 use crate::space::{Orientable, Positionable};
 

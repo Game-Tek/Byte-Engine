@@ -35,6 +35,9 @@ pub struct ResolvedAction {
 	pub value: Value,
 	/// The interaction stage, including drag start and release.
 	pub phase: ActionPhase,
+	/// The window the input was used in, such as the window a pointer pressed in, or the focused window for a key.
+	/// `None` for input from no window, such as a gamepad, and for a held value's repetition.
+	pub window: Option<Handle>,
 }
 
 /// The `Capture` enum reports whether a sink's consumer took an action's input.
@@ -390,6 +393,7 @@ impl<A: Allocator + Clone> InputSink<A> {
 					handle: action.handle,
 					value: resolution.value,
 					phase: resolution.phase,
+					window: record.window,
 				}) == Capture::Captured;
 				captured |= taken;
 				if DRAGS && let (Some(slot), Mode::Drag(drags)) = (resolution.drag, &mut action.mode) {
@@ -458,6 +462,7 @@ impl<A: Allocator + Clone> InputSink<A> {
 					handle: action.handle,
 					value: held.value,
 					phase: ActionPhase::Updated,
+					window: None,
 				});
 				if let Some(handle) = action.handle {
 					self.channel.send(ActionEvent::new(

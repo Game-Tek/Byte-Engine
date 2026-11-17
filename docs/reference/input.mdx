@@ -156,6 +156,7 @@ resolve, such as a tool drawn over the game that keeps the clicks it handles.
 | Order | Each tick, the application runs its layers in the order they were added, then resolves the world's actions. |
 | Capture | Input a layer's sink captures doesn't reach later layers or the world's actions. A captured press keeps its control until it's released. |
 | Held actions | A world action that's held when a layer starts capturing its input keeps its value until the world's sink cancels it. |
+| Window | A resolved action reports the window its input came from: the window the pointer was in, or the focused window for a key. It reports none for input from no window, such as a gamepad, and for a held value repeated by its tick policy. |
 
 ## Tick policy
 

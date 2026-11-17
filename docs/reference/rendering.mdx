@@ -38,6 +38,8 @@ again.
 | Keyboard focus | Every window can take keyboard focus, with or without decorations. Keys go to the focused window. |
 | Decorations on Wayland | A window with decorations asks the compositor to draw them. When the compositor draws none, as GNOME's doesn't, libdecor draws them, in the dark theme variant when the desktop prefers dark. Without libdecor, the window opens undecorated and one warning is logged. |
 | Text on Wayland | A key press that types a printable character reports it as `Keyboard.Character`. Holding a key doesn't repeat it. |
+| Render graph | A window with a camera records the passes registered for all sinks, over its scene. A window without one records only the passes registered for it, in the order they were registered, over black; with none registered, it presents nothing. A window's passes must be registered before the frame after the window is created, and registering one later stops the application. |
+| Closing | The main window is the first one opened. Closing it, with its close button or a `CloseWindow` message naming it, quits the application. Closing any other window closes it alone: the renderer waits for the frames in flight, destroys its swapchain, and stops rendering it, and the other windows keep rendering. A `CloseWindow` message applies before the next frame; one naming no open window does nothing. |
 | Feature changes | A `SetWindowFeatures` message on the application's message scope, naming the handle the window was created with, applies before the next frame. Only cursor capture changes on an open window; a change to another feature is logged and left out, and so is a message naming no open window. |
 
 ## Camera

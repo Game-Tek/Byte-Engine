@@ -16,7 +16,7 @@ grading and after antialiasing, so they don't smooth the grain away, and before 
 setup_smaa_render_pass(&mut app);
 setup_aces_tonemap_render_pass(&mut app);
 setup_film_grain_render_pass(&mut app, FilmGrainPassSettings::default());
-setup_ui_render_pass(&mut app, "ui", &ui, &[]);
+setup_ui_render_pass(&mut app, None, "ui", &ui, &[]);
 ```
 
 The default settings give the look of 35 mm stock.

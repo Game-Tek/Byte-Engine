@@ -38,7 +38,7 @@ pub struct Device {
 	indirect_mesh_dispatch_signature: Option<ID3D12CommandSignature>,
 	shaders: Vec<Shader>,
 	meshes: Vec<Mesh>,
-	pub(crate) swapchains: Vec<Swapchain>,
+	pub(crate) swapchains: crate::swapchain::Swapchains<Swapchain>,
 	synchronizers: Vec<Synchronizer>,
 	synchronizer_masters: Vec<SynchronizerHandle>,
 	last_frame_synchronizers: [Option<SynchronizerHandle>; crate::MAX_FRAMES_IN_FLIGHT],
@@ -1389,6 +1389,10 @@ impl crate::context::Context for Device {
 		swapchain: SwapchainHandle,
 	) -> Option<crate::frame::SwapchainAcquisition> {
 		Device::acquire_swapchain_image(self, frame, swapchain)
+	}
+
+	fn destroy_swapchain(&mut self, swapchain: SwapchainHandle) {
+		Device::destroy_swapchain(self, swapchain);
 	}
 
 	fn set_present_interval(&mut self, swapchain: SwapchainHandle, interval: Option<std::time::Duration>) {

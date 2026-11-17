@@ -14,11 +14,11 @@
 //! The command palette opens, as VS Code's does, on a scope picked by its shortcut: Cmd+A on what can be placed, a
 //! mesh, prefab, or light to drag into the scene or pin to the pointer with Enter until a click places it, and Cmd+K
 //! on that and the material graphs to edit on a node canvas. Cmd+E opens it on the resources to explore: material
-//! graphs, which open on the canvas, and textures, which open in a preview panel decoded from their source images.
-//! While a graph is open, any of them finds a node kind to add to it. A prefab spawns where it's placed, with its
-//! parameters' defaults, through the spawner the game gave the inspector, so it knows the game's own kinds. Cmd+. opens it on the game's runtime settings, which Cmd+K finds too:
-//! Enter on one shows its value in the search field, and Enter again sets it to what the field says, as the console's
-//! `set` does.
+//! graphs and textures, decoded from their source images. Each opens in a window of its own, with its own layers and
+//! UI engine, which takes the input of that window; there, any of the shortcuts finds a node kind to add to the graph.
+//! A prefab spawns where it's placed, with its parameters' defaults, through the spawner the game gave the inspector,
+//! so it knows the game's own kinds. Cmd+. opens it on the game's runtime settings, which Cmd+K finds too: Enter on one
+//! shows its value in the search field, and Enter again sets it to what the field says, as the console's `set` does.
 //!
 //! Cmd+K also finds the New level command, which lists the folders under the asset directory and writes an empty
 //! level into the one picked.
@@ -29,6 +29,7 @@
 
 mod carry;
 mod create;
+mod drawer;
 mod fields;
 mod gizmo;
 mod graph;
@@ -62,9 +63,29 @@ use crate::inspector::{
 };
 use crate::math::Point;
 use crate::physics::{RayQuery, RayQueryResponse};
-use crate::rendering::{Features, ScreenSceneHit, ScreenSceneQuery, SetWindowFeatures, Window};
+use crate::rendering::{CloseWindow, Features, ScreenSceneHit, ScreenSceneQuery, SetWindowFeatures, Window};
 use crate::ui::layout::engine::Engine;
 use crate::ui::{Key, Render, RenderRevision, Size, UiPoint, UiVector};
+
+/// The size a resource window opens at, in points.
+const RESOURCE_WINDOW: [u32; 2] = [1100, 720];
+
+/// The `ResourceWindow` struct is a window of its own where the editor shows one material graph or texture, so it can
+/// be edited beside the game instead of over it.
+struct ResourceWindow {
+	/// The handle the window was created with.
+	window: Handle,
+	/// The window's native id, which its events carry, once the renderer opened it.
+	id: Option<crate::ghi::window::WindowId>,
+	/// The asset the window shows, such as `materials/floor.bemx`.
+	asset: String,
+	/// Lays out the window's interface, from its own [`Shell`].
+	engine: Engine<Shell>,
+	/// Where the window's renders go to its own UI render pass.
+	renders: Factory<Render>,
+	/// The revision of the last render sent.
+	published: Option<RenderRevision>,
+}
 
 /// How often the editor asks the inspector for the scene, the same rate the console refreshes at.
 const SCENE_POLL: Duration = Duration::from_millis(250);
@@ -112,6 +133,8 @@ pub struct Editor {
 	meta: bool,
 	/// Whether a Shift key is held.
 	shift: bool,
+	/// When the editor closed, while its pass keeps drawing for the scene drawer to leave.
+	closed: Option<std::time::Instant>,
 	/// The operations an undo or redo is applying, kept to reuse their storage.
 	applying: Vec<history::Operation>,
 	/// What the editor changed in the game, to undo and redo.
@@ -126,6 +149,10 @@ pub struct Editor {
 	rays: DefaultListener<CreateMessage<RayQueryResponse>>,
 	/// The number of the last log record the editor read, so it reads each warning and error once.
 	log_seen: u64,
+	/// The material graphs and textures open in windows of their own.
+	resources: Vec<ResourceWindow>,
+	/// Closes resource windows.
+	close_windows: DefaultChannel<CloseWindow>,
 }
 
 /// Installs the editor over `app` and returns it, so the game can step it with [`Editor::frame`].
@@ -139,7 +166,7 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 	// The gizmo draws over the game's frame, and the editor's panels over the gizmo.
 	let gizmo = Rc::new(RefCell::new(gizmo::State::default()));
 	gizmo::register(app.renderer_mut(), &gizmo);
-	crate::application::graphics::setup_ui_render_pass(app, "editor", &renders, &[]);
+	crate::application::graphics::setup_ui_render_pass(app, None, "editor", &renders, &[]);
 	// A closed editor costs nothing: its pass forwards the frame unchanged.
 	app.inspector()
 		.update_configuration("render.pass.editor", ConfigurationValue::from("bypassed"));
@@ -170,6 +197,7 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 		pointer: UiPoint::new(0.0, 0.0),
 		meta: false,
 		shift: false,
+		closed: None,
 		applying: Vec::new(),
 		history: history::History::default(),
 		palette_press: None,
@@ -178,6 +206,8 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 		rays: app.world().factory::<RayQueryResponse>().listener(),
 		// What was logged before the editor existed isn't news.
 		log_seen: crate::application::log_capture::revision(),
+		resources: Vec::new(),
+		close_windows: app.messages().channel(),
 	}
 }
 
@@ -191,14 +221,25 @@ impl Editor {
 				self.window = Some((message.handle(), message.data().features()));
 			}
 		}
+		// A resource window's native id is known once the renderer opened it, which window events name it by.
+		for resource in self.resources.iter_mut().filter(|resource| resource.id.is_none()) {
+			resource.id = app.window_id(resource.window);
+		}
 		while let Some(event) = self.window_events.read() {
-			if let Event::Window {
-				event: Events::Resize { width, height },
-				..
-			} = event && width > 0
-				&& height > 0
-			{
-				self.engine.ctx_mut().viewport = Size::new(width, height);
+			let Event::Window { window: id, event } = event else {
+				continue;
+			};
+			let resource = self.resources.iter().position(|resource| resource.id == Some(id));
+			match (event, resource) {
+				(Events::Resize { width, height }, resource) if width > 0 && height > 0 => {
+					let engine = resource.map_or(&mut self.engine, |index| &mut self.resources[index].engine);
+					engine.ctx_mut().viewport = Size::new(width, height);
+				}
+				// The application closed the window already; the editor lets go of what drew in it.
+				(Events::Close, Some(index)) => {
+					self.resources.remove(index);
+				}
+				_ => {}
 			}
 		}
 
@@ -220,72 +261,14 @@ impl Editor {
 			if !open {
 				continue;
 			}
-			let handle = action.action;
-			match action.value {
-				Value::Vector2(v) if handle == self.actions.drag => {
-					// What one press changes, until its release, is one step to undo.
-					match action.phase {
-						ActionPhase::Started => self.history.begin_gesture(),
-						ActionPhase::Ended | ActionPhase::Cancelled => self.history.end_gesture(),
-						ActionPhase::Updated => {}
-					}
-					let pointer = UiPoint::new(v.x, v.y);
-					self.pointer = pointer;
-					// A palette or a carried mesh on top of the scene sees the pointer first.
-					if self.layer_takes(app, action.phase, pointer) {
-						continue;
-					}
-					match action.phase {
-						ActionPhase::Started => {
-							// A press the editor's panels don't take lands on the game view, where it grabs the gizmo
-							// or picks a mesh.
-							if !self.engine.press(pointer) && !self.grab(pointer) {
-								self.pick(app, pointer);
-							}
-						}
-						ActionPhase::Updated if self.drag.is_some() => self.drag_to(app, pointer),
-						ActionPhase::Updated => {
-							self.engine.drag_to(pointer);
-						}
-						ActionPhase::Ended | ActionPhase::Cancelled if self.drag.is_some() => self.release_gizmo(),
-						ActionPhase::Ended => {
-							self.engine.release(pointer);
-						}
-						ActionPhase::Cancelled => {
-							self.engine.cancel();
-						}
-					}
+			// A resource window's input acts on its own engine, which takes the main engine's place while it's handled.
+			match self.resources.iter().position(|resource| Some(resource.window) == action.window) {
+				Some(index) => {
+					std::mem::swap(&mut self.engine, &mut self.resources[index].engine);
+					self.act(app, action, false);
+					std::mem::swap(&mut self.engine, &mut self.resources[index].engine);
 				}
-				Value::Vector2(v) if handle == self.actions.pointer => {
-					self.pointer = UiPoint::new(v.x, v.y);
-					self.engine.set_cursor_position(self.pointer);
-					self.hover(self.pointer);
-				}
-				Value::Bool(down) if handle == self.actions.click => self.engine.update_click_state(down),
-				Value::Float(v) if handle == self.actions.scroll => self.engine.update_scroll_state(UiVector::new(0.0, v)),
-				Value::Unicode(character) if handle == self.actions.character => self.engine.input_character(character),
-				Value::Bool(down) if handle == self.actions.backspace => {
-					self.engine.update_key_state(Key::Backspace, down);
-					if down {
-						self.engine.delete_text_backward();
-					}
-				}
-				Value::Bool(down) if handle == self.actions.meta => self.meta = down,
-				Value::Bool(down) if handle == self.actions.shift => self.shift = down,
-				// A focused field, such as a camera setting taking typed text, hears Enter and Escape too.
-				Value::Bool(down) if handle == self.actions.enter || handle == self.actions.escape => {
-					let key = if handle == self.actions.enter {
-						Key::Enter
-					} else {
-						Key::Escape
-					};
-					self.engine.update_key_state(key, down);
-					if down {
-						self.key(app, handle);
-					}
-				}
-				Value::Bool(true) => self.key(app, handle),
-				_ => {}
+				None => self.act(app, action, true),
 			}
 		}
 
@@ -298,8 +281,6 @@ impl Editor {
 		self.report_settings(app);
 		self.toast_log();
 		self.move_carry(app);
-		self.save_graph(app);
-		self.edit_texture(app);
 		self.place_gizmo();
 
 		let viewport = self.engine.ctx_mut().viewport;
@@ -308,6 +289,142 @@ impl Editor {
 		if self.published != Some(render.revision()) {
 			self.published = Some(render.revision());
 			self.renders.create(render.clone());
+		}
+		self.step_resources(app);
+	}
+
+	/// Writes what each resource window changed, lays it out, and sends its render when it changed. Closes a window
+	/// whose last layer Escape popped, and every one once the editor closed.
+	fn step_resources(&mut self, app: &mut GraphicsApplication) {
+		let open = self.engine.ctx_mut().layers.open();
+		let mut index = 0;
+		while index < self.resources.len() {
+			if !open || !self.resources[index].engine.ctx_mut().layers.open() {
+				let resource = self.resources.remove(index);
+				self.close_windows.send(CloseWindow::new(resource.window));
+				continue;
+			}
+			// Saving reads the window's own shell, which takes the main engine's place while it's written.
+			std::mem::swap(&mut self.engine, &mut self.resources[index].engine);
+			self.save_graph(app);
+			self.edit_texture(app);
+			std::mem::swap(&mut self.engine, &mut self.resources[index].engine);
+
+			let resource = &mut self.resources[index];
+			let viewport = resource.engine.ctx_mut().viewport;
+			resource.engine.evaluate(viewport, app.frame_allocator());
+			let render = resource.engine.render();
+			if resource.published != Some(render.revision()) {
+				resource.published = Some(render.revision());
+				resource.renders.create(render.clone());
+			}
+			index += 1;
+		}
+	}
+
+	/// Opens `layer`, a material graph or a texture, in a window of its own titled `id`, the asset it shows. The
+	/// window draws only its own interface, which its engine lays out with `layer` at the bottom of its stack. An asset
+	/// already open in a window doesn't open again.
+	fn open_resource(&mut self, app: &mut GraphicsApplication, id: &str, layer: Layer) {
+		if self.resources.iter().any(|resource| resource.asset == id) {
+			return;
+		}
+		let extent = utils::Extent::rectangle(RESOURCE_WINDOW[0], RESOURCE_WINDOW[1]);
+		let window = app
+			.window_factory()
+			.create(Window::new(id, extent).with_feature(Features::DECORATIONS));
+		let renders = Factory::new();
+		crate::application::graphics::setup_ui_render_pass(app, Some(window), "editor window", &renders, &[]);
+		// The window reports its size in pixels once it opens, which replaces this first guess.
+		let mut shell = Shell::new(Size::new(RESOURCE_WINDOW[0], RESOURCE_WINDOW[1]));
+		shell.layers.push(layer);
+		let mut engine = Engine::with_context(shell);
+		engine.set_waker(app.waker().into());
+		engine.mount(async |root| shell::window(root).await);
+		self.resources.push(ResourceWindow {
+			window,
+			id: None,
+			asset: id.to_owned(),
+			engine,
+			renders,
+			published: None,
+		});
+	}
+
+	/// Answers one resolved action on `self.engine`: the main window's, or a resource window's while it takes its place.
+	/// Only the main window, the `scene`, shows the game, so only its presses grab the gizmo or pick what they land on.
+	fn act(&mut self, app: &mut GraphicsApplication, action: ResolvedAction, scene: bool) {
+		let handle = action.action;
+		match action.value {
+			Value::Vector2(v) if handle == self.actions.drag => {
+				let pointer = UiPoint::new(v.x, v.y);
+				if scene {
+					// What one press changes, until its release, is one step to undo.
+					match action.phase {
+						ActionPhase::Started => self.history.begin_gesture(),
+						ActionPhase::Ended | ActionPhase::Cancelled => self.history.end_gesture(),
+						ActionPhase::Updated => {}
+					}
+					self.pointer = pointer;
+				}
+				// A palette or a carried mesh on top of the scene sees the pointer first.
+				if self.layer_takes(app, action.phase, pointer) {
+					return;
+				}
+				match action.phase {
+					ActionPhase::Started => {
+						// A press the editor's panels don't take lands on the game view, where it grabs the gizmo
+						// or picks a mesh.
+						if !self.engine.press(pointer) && scene && !self.grab(pointer) {
+							self.pick(app, pointer);
+						}
+					}
+					ActionPhase::Updated if self.drag.is_some() => self.drag_to(app, pointer),
+					ActionPhase::Updated => {
+						self.engine.drag_to(pointer);
+					}
+					ActionPhase::Ended | ActionPhase::Cancelled if self.drag.is_some() => self.release_gizmo(),
+					ActionPhase::Ended => {
+						self.engine.release(pointer);
+					}
+					ActionPhase::Cancelled => {
+						self.engine.cancel();
+					}
+				}
+			}
+			Value::Vector2(v) if handle == self.actions.pointer => {
+				let pointer = UiPoint::new(v.x, v.y);
+				self.engine.set_cursor_position(pointer);
+				if scene {
+					self.pointer = pointer;
+					self.hover(pointer);
+				}
+			}
+			Value::Bool(down) if handle == self.actions.click => self.engine.update_click_state(down),
+			Value::Float(v) if handle == self.actions.scroll => self.engine.update_scroll_state(UiVector::new(0.0, v)),
+			Value::Unicode(character) if handle == self.actions.character => self.engine.input_character(character),
+			Value::Bool(down) if handle == self.actions.backspace => {
+				self.engine.update_key_state(Key::Backspace, down);
+				if down {
+					self.engine.delete_text_backward();
+				}
+			}
+			Value::Bool(down) if handle == self.actions.meta => self.meta = down,
+			Value::Bool(down) if handle == self.actions.shift => self.shift = down,
+			// A focused field, such as a camera setting taking typed text, hears Enter and Escape too.
+			Value::Bool(down) if handle == self.actions.enter || handle == self.actions.escape => {
+				let key = if handle == self.actions.enter {
+					Key::Enter
+				} else {
+					Key::Escape
+				};
+				self.engine.update_key_state(key, down);
+				if down {
+					self.key(app, handle, scene);
+				}
+			}
+			Value::Bool(true) => self.key(app, handle, scene),
+			_ => {}
 		}
 	}
 
@@ -332,15 +449,28 @@ impl Editor {
 	/// Opens or closes the editor to match its layers: it's open while any layer is.
 	///
 	/// An open editor shows its pass, frees the game window's cursor, and takes all of the game's input, so the game's
-	/// held actions end. A closed one bypasses its pass and gives the window its own cursor capture back.
+	/// held actions end. A closed one gives the window its own cursor capture back, and bypasses its pass once the
+	/// scene drawer has slid out.
 	fn sync_open(&mut self, app: &mut GraphicsApplication) {
 		let open = self.engine.ctx_mut().layers.open();
+		// A closed editor's pass draws until the scene drawer has left, and then forwards the frame unchanged.
+		if let Some(closed) = self.closed
+			&& closed.elapsed().as_secs_f32() >= drawer::EXIT
+		{
+			self.closed = None;
+			app.inspector()
+				.update_configuration("render.pass.editor", ConfigurationValue::from("bypassed"));
+		}
 		if std::mem::replace(&mut self.layer.borrow_mut().open, open) == open {
 			return;
 		}
-		let pass = if open { "enabled" } else { "bypassed" };
-		app.inspector()
-			.update_configuration("render.pass.editor", ConfigurationValue::from(pass));
+		if open {
+			self.closed = None;
+			app.inspector()
+				.update_configuration("render.pass.editor", ConfigurationValue::from("enabled"));
+		} else {
+			self.closed = Some(std::time::Instant::now());
+		}
 		if let Some((window, features)) = self.window {
 			let features = if open { features - Features::CAPTURE_CURSOR } else { features };
 			self.window_features.send(SetWindowFeatures::new(window, features));
@@ -384,8 +514,8 @@ impl Editor {
 	/// resources to explore, and Cmd+. on the runtime settings, Cmd+S saves the open material graph, Cmd+Z undoes and
 	/// Cmd+Shift+Z redoes, the arrows move the palette's highlight, Enter picks the highlighted entry or sets the typed
 	/// setting, and Escape pops the top layer, which closes the editor from the scene. A property field taking typed
-	/// text answers Enter and Escape itself.
-	fn key(&mut self, app: &GraphicsApplication, key: crate::input::ActionHandle) {
+	/// text answers Enter and Escape itself. Undo and redo apply to the `scene` only, in the main window.
+	fn key(&mut self, app: &mut GraphicsApplication, key: crate::input::ActionHandle, scene: bool) {
 		let scope = if key == self.actions.k {
 			Some(palette::Scope::All)
 		} else if key == self.actions.a {
@@ -405,7 +535,7 @@ impl Editor {
 		}
 		if key == self.actions.z && self.meta {
 			// A field taking typed text keeps its own keys.
-			if !matches!(self.engine.ctx_mut().layers.top(), Some(Layer::Typing)) {
+			if scene && !matches!(self.engine.ctx_mut().layers.top(), Some(Layer::Typing)) {
 				self.step_history(app);
 			}
 			return;
@@ -465,7 +595,7 @@ impl Editor {
 	/// A pinned load is placed by the next press, a dragged one by its release. A press on a palette result picks it: it
 	/// spawns once the pointer leaves the palette, and follows the pointer until the release, or, released on the same
 	/// result, it's pinned. A press elsewhere closes the palette and goes on to the scene.
-	fn layer_takes(&mut self, app: &GraphicsApplication, phase: ActionPhase, pointer: UiPoint) -> bool {
+	fn layer_takes(&mut self, app: &mut GraphicsApplication, phase: ActionPhase, pointer: UiPoint) -> bool {
 		let shell = self.engine.ctx_mut();
 		match shell.layers.top() {
 			Some(Layer::Carry(carry)) => {
@@ -540,7 +670,7 @@ impl Editor {
 
 	/// Answers Enter, or a click, on the palette's `entry`: opens a setting's value over the palette to type a new one,
 	/// or closes the palette and [`Self::choose`]s the entry.
-	fn pick_entry(&mut self, app: &GraphicsApplication, entry: &palette::Entry) {
+	fn pick_entry(&mut self, app: &mut GraphicsApplication, entry: &palette::Entry) {
 		self.remember(entry);
 		let layers = &mut self.engine.ctx_mut().layers;
 		if let Some(setting) = palette::Setting::new(entry) {
@@ -610,7 +740,7 @@ impl Editor {
 
 	/// Acts on the palette's `entry`: adds a node of its kind to the open graph, opens a material graph on the canvas
 	/// or a texture in the preview panel, or carries what it places, `held` when dragged out of the palette.
-	fn choose(&mut self, app: &GraphicsApplication, entry: &palette::Entry, held: bool) {
+	fn choose(&mut self, app: &mut GraphicsApplication, entry: &palette::Entry, held: bool) {
 		let id = entry.label.as_str();
 		match entry.kind {
 			palette::Kind::Node => {
@@ -651,13 +781,7 @@ impl Editor {
 			graph::Graph::open(id, &text)
 		});
 		match opened {
-			Ok(graph) => {
-				let shell = self.engine.ctx_mut();
-				// What the explorer opens replaces the texture it showed.
-				shell.layers.close(|layer| matches!(layer, Layer::Texture(_)));
-				shell.layers.push(Layer::Graph(graph));
-				shell.graph_revision += 1;
-			}
+			Ok(graph) => self.open_resource(app, id, Layer::Graph(graph)),
 			Err(error) => log::warn!("The editor couldn't open the material graph. {error}"),
 		}
 	}
@@ -683,7 +807,7 @@ impl Editor {
 	///
 	/// The image decodes on this thread, which holds the frame for as long as a large image takes to decode; it's
 	/// what a click asked for, once.
-	fn open_texture(&mut self, app: &GraphicsApplication, id: &str) {
+	fn open_texture(&mut self, app: &mut GraphicsApplication, id: &str) {
 		// The panel never shows a texture larger than this, so a larger one is scaled down before it's uploaded.
 		const LONGEST: u32 = 1024;
 		let preview = app
@@ -698,13 +822,12 @@ impl Editor {
 					.image_settings(id)
 					.inspect_err(|error| log::warn!("The editor couldn't show the settings of '{id}'. {error}"))
 					.ok();
-				let layers = &mut self.engine.ctx_mut().layers;
-				layers.close(|layer| matches!(layer, Layer::Texture(_)));
-				layers.push(Layer::Texture(layers::Texture {
+				let texture = layers::Texture {
 					id: id.to_owned(),
 					preview,
 					settings,
-				}));
+				};
+				self.open_resource(app, id, Layer::Texture(texture));
 			}
 			Err(error) => log::warn!("The editor couldn't preview '{id}'. {error}"),
 		}

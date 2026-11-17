@@ -225,7 +225,7 @@ pub(super) struct RecordingDevice<'a> {
 	pub(super) meshes: &'a [Mesh],
 	pub(super) pipelines: &'a [Pipeline],
 	pub(super) shader_binding_tables: &'a [ShaderBindingTable],
-	pub(super) swapchains: &'a [Swapchain],
+	pub(super) swapchains: &'a crate::swapchain::Swapchains<Swapchain>,
 	/// The number of frames in flight, which resolves frame offsets into per-frame resource copies.
 	pub(super) frames: u8,
 	pub(super) debug_labels: bool,

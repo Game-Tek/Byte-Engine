@@ -127,6 +127,10 @@ pub struct GraphicsApplication {
 	window_factory: (Factory<Window>, DefaultListener<CreateMessage<Window>>),
 	/// Feature changes for open windows, which the renderer applies before each frame.
 	window_features: DefaultListener<rendering::SetWindowFeatures>,
+	/// Windows the application closes, which the renderer removes before each frame.
+	window_closes: DefaultListener<rendering::CloseWindow>,
+	/// This tick's window events, kept between ticks so polling allocates nothing.
+	polled_window_events: Vec<ghi::window::Event>,
 
 	generator_factory: Factory<std::boxed::Box<dyn Generator>>,
 
@@ -214,6 +218,7 @@ struct Services {
 	window_factory: Factory<Window>,
 	window_factory_listener: DefaultListener<CreateMessage<Window>>,
 	window_features: DefaultListener<rendering::SetWindowFeatures>,
+	window_closes: DefaultListener<rendering::CloseWindow>,
 	generator_factory: Factory<std::boxed::Box<dyn Generator>>,
 	window_events: DefaultChannel<ghi::window::Event>,
 }
@@ -338,6 +343,7 @@ impl GraphicsApplication {
 						let window_factory = messages.factory();
 						let window_factory_listener = window_factory.listener();
 						let window_features = messages.channel().listener();
+						let window_closes = messages.channel().listener();
 
 						let generator_factory = messages.factory();
 
@@ -359,6 +365,7 @@ impl GraphicsApplication {
 							window_factory,
 							window_factory_listener,
 							window_features,
+							window_closes,
 							generator_factory,
 							window_events,
 						});
@@ -459,6 +466,8 @@ impl GraphicsApplication {
 
 			window_factory: (services.window_factory, services.window_factory_listener),
 			window_features: services.window_features,
+			window_closes: services.window_closes,
+			polled_window_events: Vec::new(),
 			input_layers: Vec::new(),
 
 			generator_factory: services.generator_factory,
@@ -593,6 +602,22 @@ impl GraphicsApplication {
 		}
 	}
 
+	/// Closes the window created with `window`: the main window quits the application on the next tick, and any other
+	/// closes alone.
+	fn close_window(&mut self, window: crate::core::factory::Handle) {
+		if self.renderer.main_window() == Some(window) {
+			self.application.events().send(Events::Close);
+		} else {
+			self.renderer.remove_window(window);
+		}
+	}
+
+	/// The native window id of the open window created with `window`, which [`ghi::window::Event::Window`] events on
+	/// the message channel name it by. `None` until the renderer opened the window, the tick after it's created.
+	pub fn window_id(&self, window: crate::core::factory::Handle) -> Option<ghi::window::WindowId> {
+		self.renderer.window_id(window)
+	}
+
 	/// Routes window input events and reports whether the platform or any window requested close.
 	///
 	/// Window state changes request a frame, including a window becoming visible again, since frames skip windows
@@ -602,13 +627,23 @@ impl GraphicsApplication {
 		let mut close = false;
 		let mut redraw = false;
 		let mut display_changed = false;
-		for event in self.renderer.poll_windows(wait) {
+		// The events are taken out of the renderer first, since a closed window is removed from it while they're read.
+		let mut events = std::mem::take(&mut self.polled_window_events);
+		events.extend(self.renderer.poll_windows(wait));
+		for event in events.drain(..) {
 			match &event {
 				ghi::window::Event::App(ghi::window::AppEvents::Quit) => close = true,
 				// Dialog results only matter to whoever opened the dialog, which reads them from the window events.
 				ghi::window::Event::App(ghi::window::AppEvents::Dialog { .. }) => {}
-				&ghi::window::Event::Window { event, .. } => {
-					close |= matches!(event, ghi::window::Events::Close);
+				&ghi::window::Event::Window { window: id, event } => {
+					let window = self.renderer.window_handle(id);
+					if matches!(event, ghi::window::Events::Close) {
+						// The main window's close button quits; another window's closes that window alone.
+						match window {
+							Some(window) if self.renderer.main_window() != Some(window) => self.renderer.remove_window(window),
+							_ => close = true,
+						}
+					}
 					display_changed |= matches!(event, ghi::window::Events::DisplayChanged { .. });
 					redraw |= matches!(
 						event,
@@ -619,13 +654,14 @@ impl GraphicsApplication {
 							| ghi::window::Events::DisplayChanged { .. }
 							| ghi::window::Events::VisibilityChanged(true)
 					);
-					if process_default_window_input(&mut self.input, event) {
+					if process_default_window_input(&mut self.input, event, window) {
 						self.actions.cancel_seat(input::SeatHandle::stub());
 					}
 				}
 			}
 			self.window_events.send(event);
 		}
+		self.polled_window_events = events;
 		if redraw {
 			self.renderer.request_redraw();
 		}
@@ -688,6 +724,9 @@ impl GraphicsApplication {
 		}
 		while let Some(change) = self.window_features.read() {
 			self.renderer.set_window_features(change.window(), change.features());
+		}
+		while let Some(close) = self.window_closes.read() {
+			self.close_window(close.window());
 		}
 		while let Some(message) = self.cameras_listener.read() {
 			self.renderer.create_camera(message.handle(), message.into_data());

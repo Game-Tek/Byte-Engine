@@ -361,6 +361,26 @@ impl crate::context::Context for Context {
 		self.acquire_swapchain_image_for_sequence(sequence_index, swapchain_handle)
 	}
 
+	fn destroy_swapchain(&mut self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) {
+		let index = swapchain_handle.index() as usize;
+		if self.swapchains.get(index).is_none() {
+			return;
+		}
+		// No submitted frame may still acquire or present the swapchain's images.
+		self.device.wait();
+		let Some(swapchain) = self.swapchains.remove(index) else {
+			return;
+		};
+		// The native images belong to the swapchain; only their views are the context's to destroy.
+		for &native in &swapchain.native_images[..swapchain.max_image_count as usize] {
+			self.destroy_swapchain_image_views(native);
+		}
+		unsafe {
+			self.swapchain.destroy_swapchain(swapchain.swapchain, None);
+			self.surface.destroy_surface(swapchain.surface, None);
+		}
+	}
+
 	fn set_present_interval(
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,

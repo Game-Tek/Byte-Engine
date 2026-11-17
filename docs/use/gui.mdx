@@ -67,7 +67,7 @@ let fonts = [
     ("Inter-Regular.ttf", load("Inter-Regular.ttf")),
     ("Inter-SemiBold.ttf", load("Inter-SemiBold.ttf")),
 ];
-setup_ui_render_pass(&mut app, "ui", &ui_renders, &fonts);
+setup_ui_render_pass(&mut app, None, "ui", &ui_renders, &fonts);
 let mut engine = Engine::with_context(model).with_fonts(&fonts);
 ```
 
@@ -90,15 +90,33 @@ registered before it, so register the one that goes on top last:
 
 ```rust
 let hud_renders = Factory::new();
-setup_ui_render_pass(&mut app, "hud", &hud_renders, &[]);
+setup_ui_render_pass(&mut app, None, "hud", &hud_renders, &[]);
 let editor_renders = Factory::new();
-setup_ui_render_pass(&mut app, "editor", &editor_renders, &[]);
+setup_ui_render_pass(&mut app, None, "editor", &editor_renders, &[]);
 ```
 
 Give every pass a different name. The name is how you hide one at runtime: set
 `render.pass.editor` to `bypassed` to hide the editor and keep the heads-up
 display. A second pass with a name already in use stops the application at
 startup.
+
+## Open an interface in a window of its own
+
+To show an interface in its own operating system window, such as a tool beside
+the game, create the window without a camera and register a UI pass for that
+window alone, in the same tick:
+
+```rust
+let tool = app.window_factory().create(Window::new("Tool", Extent::rectangle(800, 600)));
+let tool_renders = Factory::new();
+setup_ui_render_pass(app, Some(tool), "tool", &tool_renders, &[]);
+```
+
+The window shows only the passes registered for it, drawn over black. Give the
+interface its own engine, sized to the window, and publish its renders to
+`tool_renders`. Passes registered with `None` draw only in windows with a
+camera, so the game's own interface stays out of the tool's window. See
+[windows](/docs/reference/rendering#windows) for the rules.
 
 ## Pin an element to an edge or the center
 

@@ -255,7 +255,7 @@ pub(crate) struct ArgumentResources<'a> {
 	pub(crate) images: &'a ResourceCollection<Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
 	pub(crate) samplers: &'a [Retained<ProtocolObject<dyn mtl::MTLSamplerState>>],
 	pub(crate) acceleration_structures: &'a super::acceleration_structures::AccelerationStructures,
-	pub(crate) swapchains: &'a [Swapchain],
+	pub(crate) swapchains: &'a crate::swapchain::Swapchains<Swapchain>,
 }
 
 /// Returns the 64-bit value Metal reads a texture, sampler, or acceleration structure from in an argument buffer.

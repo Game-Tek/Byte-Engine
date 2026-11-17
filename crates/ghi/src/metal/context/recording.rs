@@ -77,7 +77,7 @@ impl Context {
 			internal_upload_synchronizer,
 			workload_synchronizer,
 			internal_upload_queues: vec![None; MAX_FRAMES_IN_FLIGHT],
-			swapchains: Vec::new(),
+			swapchains: Default::default(),
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
 			counters: crate::counters::Counters::new(settings.counters),
 			counter_heaps,

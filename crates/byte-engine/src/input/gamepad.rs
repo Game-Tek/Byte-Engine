@@ -171,7 +171,7 @@ impl GamepadSystem {
 					event.trigger,
 					event.value
 				);
-				input.record(SeatHandle::stub(), event.device_handle, event.trigger, event.value);
+				input.record(SeatHandle::stub(), event.device_handle, event.trigger, event.value, None);
 			});
 		}
 	}

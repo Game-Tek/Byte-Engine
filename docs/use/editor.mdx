@@ -43,7 +43,7 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
 
 1. Press F5 to open the editor. It frees the cursor and takes all of your application's input until you close it
    with F5 or Escape. Escape steps back one thing at a time: it cancels what you're carrying or typing, closes the
-   palette, then a texture's preview or the material graph, and then the editor.
+   palette, and then the editor. Closing the editor also closes the windows of the graphs and textures it opened.
 
 2. Click an entity in the game view, or its row in the scene list, to select it. The properties panel shows the
    entity's name, its transform while it has one, and its camera or light settings. A light shows its color and
@@ -88,8 +88,9 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
    toast says why. See [runtime settings](/docs/reference/parameters#runtime-settings) for what each one takes.
 
 6. To explore your resources, press Cmd+E and type part of a name. It finds your material graphs and textures. Open
-   a texture to see it in a preview panel, with its size in pixels, and press Escape to close it. Textures show from
-   their PNG or JPEG source files, so a build without sources finds none.
+   a texture to see it in a window of its own, with its size in pixels, beside the running game. Press Escape in that
+   window, or close it, to close it. Opening a texture that's already open does nothing. Textures show from their PNG
+   or JPEG source files, so a build without sources finds none.
 
    The panel on the right shows the texture's [image settings](/docs/reference/assets#image-settings): its semantic
    and color space, which come from its file name, and the settings you can change: mips, compression, coverage, and
@@ -115,8 +116,10 @@ The editor starts closed, and a closed editor costs nothing: its render pass for
    the palette lists **New variant** rows first, one for each root material that uses the graph, so you can skip
    picking the material.
 
-9. To change a material, find its graph with Cmd+E or Cmd+K and open it. Drag between sockets to connect nodes, press
-   Cmd+A to add one, and press Cmd+S to save the graph; your application reloads the material.
+9. To change a material, find its graph with Cmd+E or Cmd+K and open it. The graph opens in a window of its own. In
+   that window, drag between sockets to connect nodes, press Cmd+A to add one, and press Cmd+S to save the graph; your
+   application reloads the material. Press Escape in the window, or close it, when you're done. Undo and redo apply
+   to the scene, in the game's window.
 
 ## See warnings and errors
 

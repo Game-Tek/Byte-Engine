@@ -303,7 +303,7 @@ impl Device {
 			indirect_mesh_dispatch_signature: None,
 			shaders: Vec::new(),
 			meshes: Vec::new(),
-			swapchains: Vec::new(),
+			swapchains: Default::default(),
 			synchronizers: Vec::new(),
 			synchronizer_masters: Vec::new(),
 			last_frame_synchronizers: [None; crate::MAX_FRAMES_IN_FLIGHT],

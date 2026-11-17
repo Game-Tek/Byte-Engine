@@ -60,6 +60,19 @@ impl View {
 		}
 	}
 
+	/// Creates the view that leaves positions unchanged, for a sink that shows no scene, such as a window that shows
+	/// only an interface.
+	pub fn identity() -> Self {
+		Self {
+			projection: Matrix::identity(),
+			view: Matrix::identity(),
+			near: 0.0,
+			far: 1.0,
+			y_fov: Degrees::new(0.0),
+			aspect_ratio: 1.0,
+		}
+	}
+
 	/// Creates an orthographic view for light, editor, or flat scene rendering.
 	pub fn new_orthographic(
 		left: f32,

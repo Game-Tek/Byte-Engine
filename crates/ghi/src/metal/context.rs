@@ -73,7 +73,7 @@ pub struct Context {
 	/// Signaled by every workload, which waits for it before it returns.
 	pub(crate) workload_synchronizer: graphics_hardware_interface::SynchronizerHandle,
 	internal_upload_queues: Vec<Option<graphics_hardware_interface::QueueHandle>>,
-	pub(crate) swapchains: Vec<Swapchain>,
+	pub(crate) swapchains: crate::swapchain::Swapchains<Swapchain>,
 	pub(crate) texture_readbacks: crate::context::TextureReadbackRegistry<TextureReadbackStorage>,
 	pub(crate) counters: crate::counters::Counters,
 	/// One timestamp heap per frame sequence, which the sequence's frames write their counter slots into; see

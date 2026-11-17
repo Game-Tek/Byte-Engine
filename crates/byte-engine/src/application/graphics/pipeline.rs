@@ -221,6 +221,11 @@ fn run_on_loading_thread<F: Future<Output = ()> + 'static>(
 /// its render targets are `<name>` and `<name> layer`. Give every call a different name; see
 /// [Draw one interface over another](/docs/use/gui#draw-one-interface-over-another).
 ///
+/// `window` is where the pass draws: `None` draws in every window with a camera, over its scene, and `Some` draws
+/// only in that window, which must have no camera, over black; see
+/// [Open an interface in a window of its own](/docs/use/gui#open-an-interface-in-a-window-of-its-own). Register a
+/// window's pass right after creating the window.
+///
 /// Register this pass before publishing renders that every sink must observe.
 /// The source subscribes immediately and retains the latest render for sinks
 /// initialized later. `fonts` are the fonts text is drawn with, the first being the default, or empty for a system
@@ -228,6 +233,7 @@ fn run_on_loading_thread<F: Future<Output = ()> + 'static>(
 /// [`crate::ui::Fonts`].
 pub fn setup_ui_render_pass(
 	application: &mut GraphicsApplication,
+	window: Option<crate::core::factory::Handle>,
 	name: &'static str,
 	ui: &Factory<Render>,
 	fonts: crate::ui::Fonts<'_>,
@@ -238,7 +244,7 @@ pub fn setup_ui_render_pass(
 	let source = std::rc::Rc::new(std::cell::RefCell::new(UiRenderSource::new(ui.listener())));
 	let renderer = &mut application.renderer;
 
-	renderer.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+	let factory = move |render_pass_builder: &mut rendering::RenderPassBuilder<'_>| -> Box<dyn rendering::RenderPass> {
 		/// The `CustomRenderPass` struct connects a sink to the shared retained UI source.
 		struct CustomRenderPass {
 			source: std::rc::Rc<std::cell::RefCell<UiRenderSource>>,
@@ -294,7 +300,11 @@ pub fn setup_ui_render_pass(
 			revision: 0,
 			render_pass: UiRenderPass::new(render_pass_builder, name, &fonts),
 		})
-	});
+	};
+	match window {
+		None => renderer.add_post_scene_render_pass_for_all_sinks(factory),
+		Some(window) => renderer.add_render_pass_for_window(window, factory),
+	}
 }
 
 /// The `UiRenderSource` struct retains submitted UI independently of sink startup.

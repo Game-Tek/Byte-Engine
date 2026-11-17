@@ -425,8 +425,7 @@ impl CommandBufferRecording<'_> {
 		let sequence_index = self.sequence_index as usize;
 		self.device
 			.swapchains
-			.iter()
-			.enumerate()
+			.indexed()
 			.filter_map(|(swapchain_index, swapchain)| {
 				let native_image = swapchain.native_images[swapchain.acquired_image_indices[sequence_index] as usize];
 				let first_use_stage = Self::chain_barriers_to_acquire(image_barriers, self.get_image(native_image).image);

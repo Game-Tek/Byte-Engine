@@ -101,7 +101,8 @@ fn parse_artnet_ipv4_parameter(parameter: Option<&Parameter>, default: Ipv4Addr)
 
 impl crate::core::message::Message for ghi::window::Event {}
 
-/// Records a GHI window event into the standard pointer, mouse, and keyboard devices.
+/// Records a GHI window event into the standard pointer, mouse, and keyboard devices, as used in `window`, the handle
+/// of the window the event came from, which the actions it resolves report.
 ///
 /// Focus loss, minimizing, closing, and resizing interrupt the interaction, so
 /// the seat's queued and retained records are discarded and the function
@@ -109,10 +110,11 @@ impl crate::core::message::Message for ghi::window::Event {}
 pub fn process_default_window_input<A: std::alloc::Allocator + Clone>(
 	collector: &mut input::InputCollector<A>,
 	event: ghi::window::Events,
+	window: Option<crate::core::factory::Handle>,
 ) -> bool {
 	let seat = input::SeatHandle::stub();
 	if let Some((device, trigger, value)) = translate(collector, event) {
-		collector.record(seat, device, input::TriggerReference::Name(trigger), value);
+		collector.record(seat, device, input::TriggerReference::Name(trigger), value, window);
 		return false;
 	}
 	let interrupted = matches!(
@@ -305,7 +307,7 @@ mod tests {
 	/// Records one event and returns the queued value of a device's control.
 	fn recorded(event: Events, device: impl Fn(&Devices) -> input::DeviceHandle, name: &'static str) -> input::Value {
 		let (mut collector, devices) = window_input();
-		assert!(!process_default_window_input(&mut collector, event));
+		assert!(!process_default_window_input(&mut collector, event, None));
 		assert_eq!(collector.source_events().len(), 1);
 		collector
 			.value(
@@ -525,14 +527,15 @@ mod tests {
 			ghi::window::Events::Minimize,
 			ghi::window::Events::Close,
 		] {
-			assert!(!process_default_window_input(&mut collector, press));
-			assert!(process_default_window_input(&mut collector, interruption));
+			assert!(!process_default_window_input(&mut collector, press, None));
+			assert!(process_default_window_input(&mut collector, interruption, None));
 			assert_eq!(collector.source_events().len(), 0);
 		}
 		assert!(!process_default_window_input(
 			&mut collector,
-			ghi::window::Events::FocusChanged(true)
+			ghi::window::Events::FocusChanged(true),
+			None
 		));
-		assert!(!process_default_window_input(&mut collector, ghi::window::Events::Maximize));
+		assert!(!process_default_window_input(&mut collector, ghi::window::Events::Maximize, None));
 	}
 }

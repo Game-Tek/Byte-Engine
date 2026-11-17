@@ -177,6 +177,21 @@ impl crate::context::Context for Context {
 		}
 	}
 
+	fn destroy_swapchain(&mut self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) {
+		let index = swapchain_handle.index() as usize;
+		if self.swapchains.get(index).is_none() {
+			return;
+		}
+		// Metal 4 command buffers don't retain what they use, so the drawables and images must outlive queued work.
+		self.wait();
+		let private = crate::swapchain::SwapchainHandle::from_index(swapchain_handle.index());
+		self.resource_to_descriptor.remove(&PrivateHandles::Swapchain(private));
+		if let Some(swapchain) = self.swapchains.remove(index) {
+			// The view stops showing the layer, so dropping the swapchain releases the layer and its drawables.
+			swapchain.view.setLayer(None);
+		}
+	}
+
 	/// Waits for Metal work, copies one transfer result, and releases its native staging buffer.
 	fn get_image_data(
 		&mut self,

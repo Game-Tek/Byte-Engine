@@ -423,8 +423,8 @@ pub trait Context: ContextCreate {
 	/// `desired_image_count` asks the presentation engine for that many images, clamped to what the backend and
 	/// surface support (Metal accepts only 2 or 3). `None` keeps the backend's default for `presentation_mode`.
 	///
-	/// Keep the window alive until the context drops: the context destroys the swapchain then, and on some platforms,
-	/// such as Wayland, that still talks to the window.
+	/// Keep the window alive until the swapchain is destroyed, with [`Self::destroy_swapchain`] or when the context
+	/// drops: on some platforms, such as Wayland, destroying it still talks to the window.
 	fn bind_to_window(
 		&mut self,
 		window_os_handles: &window::Handles,
@@ -456,6 +456,14 @@ pub trait Context: ContextCreate {
 	/// With display sync enabled, frames land on the first refresh at or after the interval, so an interval of
 	/// two refresh periods shows every other refresh. Backends without a timed present pace the acquisition instead.
 	fn set_present_interval(&mut self, swapchain: SwapchainHandle, interval: Option<std::time::Duration>);
+
+	/// Destroys a swapchain, so its window can close while the context lives on, such as when an application closes
+	/// one of several windows.
+	///
+	/// Waits for the GPU to finish all submitted work first, so no frame in flight still presents to it. Stop using
+	/// the handle afterwards: no frame may acquire or present it, and no descriptor may still bind it. Other
+	/// swapchains keep their handles. Destroying a destroyed swapchain does nothing. Drop the window after this call.
+	fn destroy_swapchain(&mut self, swapchain: SwapchainHandle);
 
 	/// Waits for the submission that recorded one transfer, consumes its handle, and returns its owned result.
 	///

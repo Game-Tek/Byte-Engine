@@ -5,7 +5,7 @@
 //! variant's file; see [`crate::editor::variant`].
 
 use super::preview_view::preview;
-use super::resource_panels::{Drawer, base};
+use super::resource_panels::{Drawer, Side, base, hold};
 use super::{FIELD_HEIGHT, MUTED, SQUIRCLE, Shell, TEXT, block, read_typed, setting_style, solid, typing_style};
 use crate::editor::variant::{self, Kind};
 use crate::ui::flow;
@@ -27,9 +27,11 @@ pub(super) async fn variant_view(ctx: &mut EvaluationContext<Shell>) {
 		}
 		let mut picture = base(ctx).await;
 		preview(&mut picture).await;
-		let mut drawer = parameters_drawer(ctx).await;
-		drawer.hold(ctx, |shell| shell.layers.variant().is_some()).await;
-		drawer.remove().await;
+		let mut drawers = [parameters_drawer(ctx).await];
+		hold(ctx, &mut drawers, |shell| shell.layers.variant().is_some()).await;
+		for drawer in drawers {
+			drawer.remove().await;
+		}
 		picture.remove().await;
 	}
 }
@@ -46,7 +48,7 @@ async fn parameters_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
 			(variant.file().to_owned(), format!("variant of {}", variant.parent), variant.parameters.len())
 		})
 		.await;
-	let mut drawer = Drawer::declare(ctx, &name, &parent).await;
+	let mut drawer = Drawer::declare(ctx, Side::Right, &name, &parent).await;
 	let width = drawer.width;
 	let (mut rows, _) = block(&mut drawer.content, "parameters", "Parameters", count).await;
 	for index in 0..count {

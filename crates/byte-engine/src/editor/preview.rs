@@ -84,6 +84,8 @@ pub(crate) struct Framing {
 	center: Vector,
 	/// The radius of a sphere that holds the subject, in meters, which sets how close the camera can come.
 	radius: f32,
+	/// The half extents of the box that holds the subject, in its own coordinates, which turns with it.
+	half_extents: Vector,
 	/// The camera's distance from the target, in meters.
 	distance: f32,
 	/// How the subject is turned.
@@ -95,13 +97,15 @@ pub(crate) struct Framing {
 }
 
 impl Framing {
-	/// Frames a subject whose center, `center` in its own coordinates, stands at `target`, held by a sphere of `radius`.
-	pub(crate) fn new(target: Point, center: Vector, radius: f32) -> Self {
+	/// Frames a subject whose center, `center` in its own coordinates, stands at `target`, held by a sphere of `radius`
+	/// and by a box of `half_extents` around its center.
+	pub(crate) fn new(target: Point, center: Vector, radius: f32, half_extents: Vector) -> Self {
 		let radius = radius.max(0.01);
 		Self {
 			target,
 			center,
 			radius,
+			half_extents,
 			distance: radius * FRAMING,
 			spin: Orientation::default(),
 			offset: 0.0,
@@ -114,12 +118,40 @@ impl Framing {
 		(Camera::new().vertical_fov().to_radians().value() * 0.5).tan()
 	}
 
-	/// How wide the subject shows in a picture `height` pixels high: the width of the sphere that holds it, seen from
-	/// the camera's distance.
-	pub(crate) fn diameter(&self, height: f32) -> f32 {
+	/// At most how wide the subject shows in a picture `height` pixels high: the narrower of the sphere and the turned
+	/// box that hold it, each seen in perspective from the camera.
+	pub(crate) fn width(&self, height: f32) -> f32 {
+		self.sphere_width(height).min(self.box_width(height))
+	}
+
+	/// How wide the sphere that holds the subject shows in a picture `height` pixels high.
+	fn sphere_width(&self, height: f32) -> f32 {
 		// A sphere of radius `r` seen from `d` away spans an angle whose tangent is `r / √(d² - r²)` either side.
 		let reach = self.radius / (self.distance * self.distance - self.radius * self.radius).max(1e-6).sqrt();
 		reach / Self::half_view() * height
+	}
+
+	/// How wide the box that holds the subject, turned with it, shows in a picture `height` pixels high: the span of its
+	/// corners projected through the camera. A box the camera stands in shows wider than any picture.
+	fn box_width(&self, height: f32) -> f32 {
+		let [forward, right, _] = Self::screen_axes();
+		let h = self.half_extents;
+		// Pixels per unit of the tangent from the view's middle.
+		let scale = height * 0.5 / Self::half_view();
+		let mut span = [f32::INFINITY, f32::NEG_INFINITY];
+		for corner in 0..8 {
+			let sign = |bit: u32| if corner >> bit & 1 == 0 { -1.0 } else { 1.0 };
+			let local = Vector::new(h.x() * sign(0), h.y() * sign(1), h.z() * sign(2));
+			// The corner from the target, then from the camera, which stands `distance` back along the view.
+			let placed = self.spin.rotate_vector(local);
+			let depth = self.distance + placed.dot(forward);
+			if depth <= 0.0 {
+				return f32::INFINITY;
+			}
+			let x = placed.dot(right) / depth * scale;
+			span = [span[0].min(x), span[1].max(x)];
+		}
+		span[1] - span[0]
 	}
 
 	/// Shows the subject `offset` pixels right of the middle of a picture `height` pixels high, by moving the camera
@@ -239,22 +271,24 @@ impl Stage {
 		let index = self.slots.iter().position(|slot| slot.subject.is_none()).unwrap_or(self.slots.len());
 		// Each slot stands on its own spot, far from the others.
 		let origin = Point::new(index as f32 * SPACING, 0.0, 0.0);
-		let (mesh, center, radius) = match subject {
+		let (mesh, center, radius, half_extents) = match subject {
 			Subject::Material(material) => (
 				RenderableMesh::generated(Box::new(SphereMeshGenerator::from_radius(SPHERE_RADIUS).with_material(material))),
 				Vector::new(0.0, 0.0, 0.0),
 				SPHERE_RADIUS,
+				Vector::new(SPHERE_RADIUS, SPHERE_RADIUS, SPHERE_RADIUS),
 			),
 			Subject::Mesh(id, bounds) => {
-				let center = bounds.center();
+				let (center, half_extents) = (bounds.center(), bounds.half_extents());
 				(
 					RenderableMesh::resource(id),
 					Vector::new(center.x(), center.y(), center.z()),
-					bounds.half_extents().length(),
+					half_extents.length(),
+					Vector::new(half_extents.x(), half_extents.y(), half_extents.z()),
 				)
 			}
 		};
-		let framing = Framing::new(origin + center, center, radius);
+		let framing = Framing::new(origin + center, center, radius, half_extents);
 		let subject = Some(self.scope.create(mesh).with(framing.subject_transform()).handle());
 		if index == self.slots.len() {
 			let camera = self.scope.create(Camera::new()).handle();
@@ -328,7 +362,7 @@ impl Stage {
 			framing.shift(offset, viewport[1]);
 			self.place(index);
 		}
-		self.slots[index].framing.diameter(viewport[1])
+		self.slots[index].framing.width(viewport[1])
 	}
 
 	/// Makes the slot's image `extent` pixels large, when it isn't already.
@@ -365,7 +399,7 @@ mod tests {
 
 	#[test]
 	fn the_camera_looks_at_the_subject_from_its_framing_distance() {
-		let framing = Framing::new(Point::new(1.0, 2.0, 3.0), Vector::new(0.0, 0.0, 0.0), 2.0);
+		let framing = Framing::new(Point::new(1.0, 2.0, 3.0), Vector::new(0.0, 0.0, 0.0), 2.0, Vector::new(1.0, 1.0, 1.0));
 		let transform = framing.camera_transform();
 		let toward = framing.target - transform.get_position();
 		assert!((toward.length() - 2.0 * FRAMING).abs() < 1e-4, "it stands {FRAMING} radii away");
@@ -376,7 +410,7 @@ mod tests {
 	#[test]
 	fn the_subject_turns_about_its_center_and_the_way_the_drag_moves() {
 		let center = Vector::new(0.5, 1.0, -0.25);
-		let mut framing = Framing::new(Point::new(10.0, 0.0, 0.0), center, 1.0);
+		let mut framing = Framing::new(Point::new(10.0, 0.0, 0.0), center, 1.0, Vector::new(0.5, 0.5, 0.5));
 		assert!((placed(&framing, center) - framing.target).length() < 1e-5, "the center starts at the target");
 
 		// The point facing the camera, under the ball's center, moves right with a drag to the right.
@@ -391,7 +425,7 @@ mod tests {
 
 	#[test]
 	fn a_drag_from_the_middle_of_the_ball_to_its_rim_turns_half_a_turn() {
-		let mut framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), 1.0);
+		let mut framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), 1.0, Vector::new(0.5, 0.5, 0.5));
 		let [forward, ..] = Framing::screen_axes();
 		framing.turn([0.0, 0.0], [1.0, 0.0]);
 		// The ball's points are a quarter turn apart, and the arcball turns by twice that.
@@ -401,7 +435,7 @@ mod tests {
 
 	#[test]
 	fn a_shifted_camera_shows_the_subject_that_many_pixels_from_the_middle() {
-		let mut framing = Framing::new(Point::new(3.0, 1.0, -2.0), Vector::new(0.0, 0.0, 0.0), 1.0);
+		let mut framing = Framing::new(Point::new(3.0, 1.0, -2.0), Vector::new(0.0, 0.0, 0.0), 1.0, Vector::new(0.5, 0.5, 0.5));
 		framing.shift(-150.0, 720.0);
 		let [_, right, _] = Framing::screen_axes();
 		let toward = framing.target - framing.camera_transform().get_position();
@@ -411,16 +445,45 @@ mod tests {
 
 	#[test]
 	fn the_subject_shows_wider_as_the_camera_comes_closer() {
-		let mut framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), 1.0);
-		let framed = framing.diameter(720.0);
+		let mut framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), 1.0, Vector::new(0.5, 0.5, 0.5));
+		let framed = framing.width(720.0);
 		assert!(framed > 0.0 && framed < 720.0, "framed, it fits the picture's height: {framed}");
 		framing.zoom(4.0);
-		assert!(framing.diameter(720.0) > framed);
+		assert!(framing.width(720.0) > framed);
+	}
+
+	#[test]
+	fn a_thin_subject_shows_as_wide_as_its_box_not_its_sphere() {
+		// A flat panel, wide and tall but thin, held by a sphere as wide as it is tall.
+		let half = Vector::new(1.0, 1.0, 0.05);
+		let framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), half.length(), half);
+		assert!(framing.box_width(720.0) < framing.sphere_width(720.0), "the box is the tighter bound");
+		assert_eq!(framing.width(720.0), framing.box_width(720.0));
+	}
+
+	#[test]
+	fn the_box_turns_with_the_subject() {
+		// A rod shows as wide as its length across the screen, which a quarter turn about the screen's up changes.
+		let half = Vector::new(1.0, 0.05, 0.05);
+		let mut framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), half.length(), half);
+		let before = framing.width(720.0);
+		framing.turn([0.0, 0.0], [0.7071, 0.0]);
+		let turned = framing.width(720.0);
+		assert!((turned - before).abs() > before * 0.1, "{before} before, {turned} turned");
+		assert!(turned <= framing.sphere_width(720.0));
+	}
+
+	#[test]
+	fn a_camera_inside_the_box_finds_the_subject_wider_than_any_picture() {
+		let half = Vector::new(10.0, 0.1, 10.0);
+		let framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), 0.5, half);
+		assert_eq!(framing.box_width(720.0), f32::INFINITY);
+		assert!(framing.width(720.0).is_finite(), "the sphere still bounds it");
 	}
 
 	#[test]
 	fn zooming_stays_between_the_nearest_and_farthest_the_camera_comes() {
-		let mut framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), 1.0);
+		let mut framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), 1.0, Vector::new(0.5, 0.5, 0.5));
 		framing.zoom(100.0);
 		assert!((framing.distance - ZOOM_RANGE[0]).abs() < 1e-5);
 		framing.zoom(-100.0);

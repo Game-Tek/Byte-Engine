@@ -46,12 +46,15 @@ pub(crate) struct Texture {
 	pub(crate) settings: Option<resource_management::asset::ResolvedImageSettings>,
 }
 
-/// The `Mesh` struct is a stored mesh the editor shows on its preview stage, with the box that frames it.
+/// The `Mesh` struct is a stored mesh the editor shows on its preview stage, with the box that frames it and the
+/// description its drawers list.
 pub(crate) struct Mesh {
 	/// The mesh's resource ID, such as `models/chair.glb`.
 	pub(crate) id: String,
 	/// The box that holds the mesh, in the coordinates it was authored in.
 	pub(crate) bounds: crate::math::AABB<resource_management::resources::ModelSpace>,
+	/// The stored mesh without its geometry: its primitives, materials, and vertex components.
+	pub(crate) resource: resource_management::resources::mesh::Mesh,
 }
 
 /// The `Layers` struct is the editor's stack of layers; empty while the editor is closed.

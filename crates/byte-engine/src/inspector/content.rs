@@ -13,7 +13,7 @@ use resource_management::{
 	ResourceManager,
 	asset::{ImageSetting, ResolvedImageSettings, handler::implementations::level::bake_level},
 	resource::storage_backend::Query,
-	resources::{ModelSpace, mesh::Mesh},
+	resources::mesh::Mesh,
 };
 
 use super::DefaultInspector;
@@ -85,18 +85,16 @@ impl DefaultInspector {
 		self.on_store("Resources could not be listed.", |store| query_all(store, class))
 	}
 
-	/// Returns the box that holds the stored mesh `id`, in the coordinates it was authored in, such as to frame it in a
-	/// preview. It's the smallest box around every primitive's bounding box; node transforms aren't applied.
+	/// Returns the stored mesh `id` without its geometry: its primitives, with their counts, bounds, and materials,
+	/// such as to describe the mesh in an editor or frame it with [`Mesh::bounding_box`].
 	///
 	/// It reads the store on a thread of its own and waits for it, like [`Self::resources`], and a development build
 	/// bakes the mesh first when it's missing or stale. See [Resources](/docs/reference/inspector#resources).
-	pub fn mesh_bounds(&self, id: &str) -> Result<math::AABB<ModelSpace>, String> {
-		let failure = format!("The bounds of '{id}' could not be read.");
+	pub fn mesh(&self, id: &str) -> Result<Mesh, String> {
+		let failure = format!("The mesh '{id}' could not be read.");
 		self.on_store(&failure, |store| async {
 			let mesh = store.request::<Mesh>(id).await.map_err(|error| format!("{failure} {error}"))?;
-			enclosing(mesh.resource().primitives.iter().map(|primitive| primitive.bounding_box)).ok_or_else(|| {
-				format!("{failure} The most likely cause is a mesh with no primitives. Bake it again from a model that has geometry.")
-			})
+			Ok(mesh.into_resource())
 		})
 	}
 
@@ -208,14 +206,6 @@ fn asset_manager(store: &ResourceManager) -> Result<&resource_management::asset:
 	}
 }
 
-/// The smallest box that holds every one of `boxes`, or `None` when there are none.
-fn enclosing(boxes: impl IntoIterator<Item = math::AABB<ModelSpace>>) -> Option<math::AABB<ModelSpace>> {
-	boxes.into_iter().reduce(|a, b| {
-		let min = maths_rs::min(a.min().into_maths(), b.min().into_maths());
-		let max = maths_rs::max(a.max().into_maths(), b.max().into_maths());
-		math::AABB::new(math::Point::from_maths(min), math::Point::from_maths(max))
-	})
-}
 
 /// Reads every page of the IDs of `class`'s resources, sorted.
 async fn query_all(resources: &ResourceManager, class: &str) -> Result<Vec<String>, String> {
@@ -337,19 +327,6 @@ mod tests {
 		assert!(inspector.write_source_asset("../outside.bemx", "{}").is_err());
 
 		std::fs::remove_dir_all(directory).unwrap();
-	}
-
-	#[test]
-	fn a_mesh_is_bounded_by_the_box_around_all_its_primitives() {
-		let corner = |x: f32, y: f32, z: f32| math::Point::<ModelSpace>::new(x, y, z);
-		let boxes = [
-			math::AABB::new(corner(-1.0, 0.0, 0.0), corner(0.0, 1.0, 1.0)),
-			math::AABB::new(corner(0.5, -2.0, 0.5), corner(2.0, 0.5, 0.75)),
-		];
-		let bounds = enclosing(boxes).unwrap();
-		assert_eq!(bounds.min(), corner(-1.0, -2.0, 0.0));
-		assert_eq!(bounds.max(), corner(2.0, 1.0, 1.0));
-		assert!(enclosing([]).is_none());
 	}
 
 	#[test]

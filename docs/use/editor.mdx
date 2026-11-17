@@ -104,16 +104,20 @@ while the editor is closed.
    window, and a drawer on the right holds its name and its settings. Press Escape in the window, or close it, to
    close it. Opening a resource that's already open does nothing.
 
-   Open a mesh to see it lit on a stage of its own, with its size in meters in the drawer. Drag the picture to turn
-   the mesh as a trackball: a drag across it turns it the way you drag, and a drag around its edge rolls it. Scroll
-   to move closer or farther.
+   Open a mesh to see it lit on a stage of its own. Its drawer on the right shows its size in meters and its totals:
+   primitives, materials, vertices, indices, triangles, and detail levels, and whether it has a skeleton. A second
+   drawer, on the left, lists its primitives in order. Each shows the material it draws with, its vertex, index,
+   triangle, and meshlet counts at full detail, how many [detail levels](/docs/reference/assets#detail-levels) it
+   has, and whether it's skinned. Primitives that don't fit the drawer's height are counted in its last row. Drag the
+   picture to turn the mesh as a trackball: a drag across it turns it the way you drag, and a drag around its edge
+   rolls it. Scroll to move closer or farther.
 
    Open a texture to see it with its size in pixels in the drawer. Scroll over the picture to zoom in or out.
    Textures show from their PNG or JPEG source files, so a build without sources finds none.
 
-   When you zoom in on a mesh or a texture until it's wider than the room the drawer leaves, the drawer slides away so
-   it can use the whole window, and it comes back once you zoom out until it fits again. What you look at stays
-   centered in the room the drawer leaves.
+   When you zoom in on a mesh or a texture until it's wider than the room between the drawers, the drawers slide away
+   so it can use the whole window, and they come back once you zoom out until it fits again. What you look at stays
+   centered in the room between the drawers.
 
    The drawer of a texture shows the texture's [image settings](/docs/reference/assets#image-settings): its semantic
    and color space, which come from its file name, and the settings you can change: mips, compression, coverage, and

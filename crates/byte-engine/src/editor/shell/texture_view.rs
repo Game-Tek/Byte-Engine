@@ -11,10 +11,10 @@ use resource_management::asset::{ImageSetting, ResolvedImageSettings};
 use resource_management::processors::image::{Semantic, gamma_from_semantic};
 use resource_management::types::Gamma;
 
-use super::resource_panels::{Drawer, base};
+use super::resource_panels::{Drawer, Side, base};
 use super::{
-	ACCENT, FIELD_HEIGHT, MUTED, PROPERTIES_WIDTH, SQUIRCLE, Shell, TEXT, block, fits, hairline, open_center, read_typed,
-	setting_style, solid, top_highlight, typing_style, well,
+	ACCENT, FIELD_HEIGHT, MUTED, SQUIRCLE, Shell, TEXT, block, fits, hairline, open_room, read_typed, setting_style,
+	solid, top_highlight, typing_style, well,
 };
 use crate::ui::flow;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
@@ -59,7 +59,7 @@ fn fitted(width: u32, height: u32, room: [f32; 2]) -> [f32; 2] {
 /// Shows the open texture in `base`, centered in the room the drawer leaves, zooming it as the pointer scrolls over it
 /// and asking the drawer to make room while it's wider than that room, until the texture closes or the window resizes.
 async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationContext<Shell>, drawer: &mut Drawer) {
-	let viewport = ctx.with(|shell: &mut Shell| shell.viewport).await;
+	let (viewport, drawers) = ctx.with(|shell: &mut Shell| (shell.viewport, shell.drawers)).await;
 	let (window, height) = (viewport.x(), viewport.y());
 	// The picture's pixels are copied into the UI's storage once, as it's declared.
 	let (id, source, picture) = ctx
@@ -74,9 +74,10 @@ async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationC
 		})
 		.await;
 	let (picture_width, picture_height, pixels) = picture;
-	// Unzoomed, the picture fills the room beside the drawer; zoomed in all the way, a source texel takes
+	// Unzoomed, the picture fills the room between the drawers; zoomed in all the way, a source texel takes
 	// `MAX_PIXELS_PER_TEXEL` screen pixels.
-	let fit = fitted(picture_width, picture_height, [window - PROPERTIES_WIDTH, height]);
+	let open = open_room(window, 1.0, drawers);
+	let fit = fitted(picture_width, picture_height, [open[1] - open[0], height]);
 	let most = (MAX_PIXELS_PER_TEXEL * source[0].max(1) as f32 / fit[0]).max(1.0);
 	let mut zoom = 1.0f32;
 	let mut holder = base
@@ -100,12 +101,13 @@ async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationC
 			_ = ctx.render() => {},
 		}
 		let size = [fit[0] * zoom, fit[1] * zoom];
-		let wanted = fits(size[0], window);
+		let wanted = fits(size[0], window, drawers);
 		ctx.with(move |shell: &mut Shell| shell.drawer_open = wanted).await;
 		drawer.follow(ctx).await;
 		let shown = ctx.with(|shell: &mut Shell| shell.drawer_shown).await;
-		// Centered in the room the drawer leaves, which widens as it slides away.
-		let at = [open_center(window, shown) - size[0] * 0.5, (height - size[1]) * 0.5];
+		// Centered in the room the drawers leave, which widens as they slide away.
+		let room = open_room(window, shown, drawers);
+		let at = [(room[0] + room[1] - size[0]) * 0.5, (height - size[1]) * 0.5];
 		if placed != Some((at, size)) {
 			placed = Some((at, size));
 			holder
@@ -240,7 +242,7 @@ async fn properties_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
 			(name, format!("{} × {}", source[0], source[1]))
 		})
 		.await;
-	let mut drawer = Drawer::declare(ctx, &name, &size).await;
+	let mut drawer = Drawer::declare(ctx, Side::Right, &name, &size).await;
 	let width = drawer.width;
 	let (mut rows, _) = block(&mut drawer.content, "texture", "Texture", Property::ALL.len()).await;
 	for property in Property::ALL {

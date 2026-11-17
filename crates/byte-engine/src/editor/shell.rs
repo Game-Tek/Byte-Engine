@@ -13,7 +13,7 @@ mod texture_view;
 mod toasts;
 mod variant_view;
 
-pub(crate) use resource_panels::{fits, open_center};
+pub(crate) use resource_panels::{fits, open_room};
 
 use std::time::Instant;
 
@@ -69,11 +69,14 @@ pub(crate) struct Shell {
 	/// Where a drag over the preview started and where it reached, in arcball coordinates, until the editor turns the
 	/// preview's subject by it; see [`crate::editor::preview::Framing::turn`].
 	pub(crate) turn: Option<([f32; 2], [f32; 2])>,
-	/// Whether the preview window's drawer should show: while what the window shows fits beside it.
+	/// Whether the preview window's drawers should show: while what the window shows fits between them.
 	pub(crate) drawer_open: bool,
-	/// How much of the preview window's drawer shows, from 0 hidden to 1 in place, which centers what the window shows
-	/// in the room the drawer leaves.
+	/// How much of the preview window's drawers show, from 0 hidden to 1 in place, which centers what the window shows
+	/// in the room they leave.
 	pub(crate) drawer_shown: f32,
+	/// The widths of the preview window's left and right drawers, 0 for one it doesn't have, which the room between
+	/// them is measured by.
+	pub(crate) drawers: [f32; 2],
 	/// How many steps the preview was scrolled closer, until the editor moves its camera by them.
 	pub(crate) zoom: f32,
 	/// The entity the properties panel's trash button deleted, until the editor posts the deletion to the game.
@@ -100,6 +103,7 @@ impl Shell {
 			variant_edit: None,
 			view_camera: None,
 			preview: None,
+			drawers: [0.0; 2],
 			drawer_open: true,
 			drawer_shown: 0.0,
 			turn: None,

@@ -5,7 +5,7 @@
 //! subject, moves the camera, and hands the panel the image it draws into through [`Shell::preview`]. See
 //! [`crate::editor::preview`].
 
-use super::{Shell, open_center};
+use super::{Shell, open_room};
 use crate::ui::flow;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
@@ -51,10 +51,9 @@ async fn picture(ctx: &mut EvaluationContext<Shell>) {
 				let pointer = ctx.pointer().await.position;
 				let corner = mat.geometry().await.map_or([0.0; 2], |geometry| [geometry.x(), geometry.y()]);
 				pressed = [pointer.x - corner[0], pointer.y - corner[1]];
-				// The ball sits on the subject, in the middle of the room the drawer leaves.
-				let shown = ctx.with(|shell: &mut Shell| shell.drawer_shown).await;
-				let center = open_center(width, shown);
-				ball = Ball::new([center, height * 0.5], [center * 2.0, height]);
+				// The ball sits on the subject, in the middle of the room the drawers leave.
+				let room = ctx.with(move |shell: &mut Shell| open_room(width, shell.drawer_shown, shell.drawers)).await;
+				ball = Ball::new([(room[0] + room[1]) * 0.5, height * 0.5], [room[1] - room[0], height]);
 				reached = ball.point(pressed);
 			},
 			event = mat.on(Events::Dragged) => {

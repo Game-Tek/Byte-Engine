@@ -45,6 +45,14 @@ impl<Space> AABB<Space> {
 		(self.max - self.min) * 0.5
 	}
 
+	/// Returns the smallest box that holds both this box and `other`, such as to bound a model by its parts' boxes.
+	pub fn union(&self, other: &Self) -> Self {
+		Self {
+			min: Point::from_maths(maths_rs::min(self.min.into_maths(), other.min.into_maths())),
+			max: Point::from_maths(maths_rs::max(self.max.into_maths(), other.max.into_maths())),
+		}
+	}
+
 	/// Returns the smallest and largest corners as the arrays this box is stored as.
 	fn to_array(&self) -> [[f32; 3]; 2] {
 		[self.min.to_array(), self.max.to_array()]
@@ -64,6 +72,16 @@ impl<Space> AABB<Space> {
 #[cfg(test)]
 mod tests {
 	use super::AABB;
+
+	#[test]
+	fn a_union_holds_both_boxes() {
+		let a: AABB<WorldSpace> = AABB::new(Point::new(-1.0, 0.0, 0.0), Point::new(0.0, 1.0, 1.0));
+		let b = AABB::new(Point::new(0.5, -2.0, 0.5), Point::new(2.0, 0.5, 0.75));
+		let both = a.union(&b);
+		assert_eq!(both.min(), Point::new(-1.0, -2.0, 0.0));
+		assert_eq!(both.max(), Point::new(2.0, 1.0, 1.0));
+		assert_eq!(both, b.union(&a));
+	}
 	use crate::{Point, Vector, WorldSpace};
 
 	#[test]

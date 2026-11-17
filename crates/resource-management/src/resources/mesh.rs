@@ -114,6 +114,15 @@ impl Mesh {
 			.find(|stream| stream.stream_type == stream_type && stream.level == level)
 	}
 
+	/// Returns the smallest box that holds every primitive's bounding box, in the coordinates the mesh was authored in,
+	/// such as to frame the mesh in a preview; `None` for a mesh with no primitives. Node transforms aren't applied.
+	pub fn bounding_box(&self) -> Option<math::AABB<crate::resources::ModelSpace>> {
+		self.primitives
+			.iter()
+			.map(|primitive| primitive.bounding_box)
+			.reduce(|bounds, next| bounds.union(&next))
+	}
+
 	/// Returns how many detail levels the mesh stores: the most of any primitive.
 	pub fn level_count(&self) -> u8 {
 		self.primitives

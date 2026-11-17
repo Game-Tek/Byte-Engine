@@ -359,10 +359,10 @@ impl Editor {
 				let (turn, zoom) = (shell.turn.take(), std::mem::take(&mut shell.zoom));
 				self.stage.steer(slot, turn, zoom);
 				let viewport = [shell.viewport.x(), shell.viewport.y()];
-				let center = shell::open_center(viewport[0], shell.drawer_shown);
-				// The drawer makes room while the subject is zoomed wider than the room beside it.
-				let width = self.stage.present(slot, viewport, center);
-				shell.drawer_open = shell::fits(width, viewport[0]);
+				let room = shell::open_room(viewport[0], shell.drawer_shown, shell.drawers);
+				// The drawers make room while the subject is zoomed wider than the room between them.
+				let width = self.stage.present(slot, viewport, (room[0] + room[1]) * 0.5);
+				shell.drawer_open = shell::fits(width, viewport[0], shell.drawers);
 				shell.preview = self.stage.image(slot);
 			}
 			let viewport = resource.engine.ctx_mut().viewport;
@@ -1005,9 +1005,15 @@ impl Editor {
 
 	/// Opens the stored mesh `id` in a window of its own, on the stage, framed by the box that holds it.
 	fn open_mesh(&mut self, app: &mut GraphicsApplication, id: &str) {
-		match app.inspector().mesh_bounds(id) {
-			Ok(bounds) => {
-				let mesh = layers::Mesh { id: id.to_owned(), bounds };
+		let mesh = app.inspector().mesh(id).and_then(|resource| {
+			let bounds = resource.bounding_box().ok_or_else(|| {
+				"It has no primitives. The most likely cause is a model without geometry. Bake it again from a model that has some.".to_owned()
+			})?;
+			Ok(layers::Mesh { id: id.to_owned(), bounds, resource })
+		});
+		match mesh {
+			Ok(mesh) => {
+				let bounds = mesh.bounds;
 				self.open_resource(app, id, Layer::Mesh(mesh), Some(preview::Subject::Mesh(id, bounds)));
 			}
 			Err(error) => log::warn!("The editor couldn't preview '{id}'. {error}"),

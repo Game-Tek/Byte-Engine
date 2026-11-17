@@ -9,7 +9,7 @@ use objc2::runtime::ProtocolObject;
 use objc2::{ClassType as _, DefinedClass, MainThreadMarker, MainThreadOnly, Message as _, define_class, msg_send};
 use objc2_app_kit::{
 	NSApp, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply,
-	NSBackingStoreType, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSResponder, NSScreen, NSView,
+	NSBackingStoreType, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSPasteboard, NSPasteboardTypeString, NSResponder, NSScreen, NSView,
 	NSWindow, NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask,
 };
 use objc2_core_graphics::{CGAssociateMouseAndMouseCursorPosition, CGWarpMouseCursorPosition};
@@ -812,6 +812,18 @@ impl App {
 
 	/// Adds `window` to the windows that capture the cursor, or removes it; see
 	/// [`crate::window::App::set_cursor_capture`]. The pump holds the cursor for a capturing window that has focus.
+	/// Puts `text` on the general pasteboard; see [`crate::window::App::set_clipboard_text`].
+	pub(crate) fn set_clipboard_text(&mut self, text: &str) -> Result<(), String> {
+		let pasteboard = NSPasteboard::generalPasteboard();
+		// A pasteboard takes new contents only after its owner clears it.
+		pasteboard.clearContents();
+		if pasteboard.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString }) {
+			Ok(())
+		} else {
+			Err("The clipboard was not set. The most likely cause is that macOS refused the pasteboard write, as it may while another application holds the pasteboard. Copy the text again.".to_owned())
+		}
+	}
+
 	pub(crate) fn set_cursor_capture(&mut self, window: &Window, captures: bool) {
 		let id = window.id();
 		let mut windows = self.cursor.windows.borrow_mut();

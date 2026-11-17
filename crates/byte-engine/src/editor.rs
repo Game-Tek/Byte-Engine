@@ -352,6 +352,11 @@ impl Editor {
 			std::mem::swap(&mut self.engine, &mut self.resources[index].engine);
 
 			let resource = &mut self.resources[index];
+			if let Some(text) = resource.engine.ctx_mut().copy.take()
+				&& let Err(error) = app.renderer_mut().set_clipboard_text(&text)
+			{
+				log::warn!("{error}");
+			}
 			// The preview follows the drag and scroll the panel took, fills the room the panel leaves it, and shows once
 			// the renderer named its image.
 			if let Some(slot) = resource.preview {
@@ -494,6 +499,9 @@ impl Editor {
 			}
 			Value::Bool(down) if handle == self.actions.meta => self.meta = down,
 			Value::Bool(down) if handle == self.actions.shift => self.shift = down,
+			// A resource window's engine stands in the main one's place while its input is handled, so Alt reaches the
+			// shell of the window it was pressed in.
+			Value::Bool(down) if handle == self.actions.alt => self.engine.ctx_mut().alt = down,
 			// A focused field, such as a camera setting taking typed text, hears Enter and Escape too.
 			Value::Bool(down) if handle == self.actions.enter || handle == self.actions.escape => {
 				let key = if handle == self.actions.enter {

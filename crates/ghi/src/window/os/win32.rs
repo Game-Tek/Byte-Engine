@@ -461,6 +461,11 @@ impl App {
 
 	/// Sets whether `window` holds the cursor while it has focus; see [`crate::window::App::set_cursor_capture`].
 	/// The pump clips the cursor for a capturing window that has focus.
+	/// Refuses the clipboard, which this platform doesn't have yet; see [`crate::window::App::set_clipboard_text`].
+	pub(crate) fn set_clipboard_text(&mut self, _text: &str) -> Result<(), String> {
+		Err("The clipboard was not set. Byte Engine has a clipboard only on macOS so far. Copy the text by hand on this platform.".to_owned())
+	}
+
 	pub(crate) fn set_cursor_capture(&mut self, window: &Window, captures: bool) {
 		window.data.captures_cursor.set(captures);
 		if !captures && self.cursor_capture.holds(window.data.id) {

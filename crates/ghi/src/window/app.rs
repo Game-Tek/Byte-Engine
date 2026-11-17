@@ -52,6 +52,14 @@ impl App {
 		Ok(id)
 	}
 
+	/// Puts `text` on the system clipboard as plain text, replacing what it held, so the user can paste it into another
+	/// application.
+	///
+	/// Only macOS has a clipboard so far; elsewhere this returns an error that says so.
+	pub fn set_clipboard_text(&mut self, text: &str) -> Result<(), String> {
+		self.os_app.set_clipboard_text(text)
+	}
+
 	/// Makes `window` hold the cursor while it has focus, as [`Features::CAPTURE_CURSOR`] does when it's created, or
 	/// gives the cursor back.
 	///

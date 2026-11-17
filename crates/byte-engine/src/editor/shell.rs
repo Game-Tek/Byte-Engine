@@ -87,6 +87,10 @@ pub(crate) struct Shell {
 	pub(crate) delete: Option<Handle>,
 	/// The game's warnings and errors, shown as toasts.
 	pub(crate) toasts: crate::editor::toasts::Toasts,
+	/// Whether either Alt key is held, which turns a click on a material's name into copying its resource id.
+	pub(crate) alt: bool,
+	/// Text a click asked to put on the clipboard, until the editor puts it there.
+	pub(crate) copy: Option<String>,
 }
 
 impl Shell {
@@ -114,6 +118,8 @@ impl Shell {
 			drawers: [0.0; 2],
 			detail_level: None,
 			toasts: Default::default(),
+			alt: false,
+			copy: None,
 		}
 	}
 

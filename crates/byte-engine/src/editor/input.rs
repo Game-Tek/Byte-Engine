@@ -30,6 +30,8 @@ pub(crate) struct Actions {
 	pub(crate) meta: ActionHandle,
 	/// Either Shift key, which turns Cmd+Z's undo into redo.
 	pub(crate) shift: ActionHandle,
+	/// Either Alt key, Option on macOS, which turns a click on a material's name into copying its resource id.
+	pub(crate) alt: ActionHandle,
 	pub(crate) k: ActionHandle,
 	pub(crate) a: ActionHandle,
 	pub(crate) e: ActionHandle,
@@ -132,6 +134,14 @@ pub(crate) fn install(app: &mut GraphicsApplication) -> (Actions, Rc<RefCell<Lay
 			&[
 				ActionBindingDescription::new("Keyboard.LeftShift"),
 				ActionBindingDescription::new("Keyboard.RightShift"),
+			],
+			Types::Boolean,
+		),
+		alt: action(
+			"EditorAlt",
+			&[
+				ActionBindingDescription::new("Keyboard.LeftAlt"),
+				ActionBindingDescription::new("Keyboard.RightAlt"),
 			],
 			Types::Boolean,
 		),

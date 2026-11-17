@@ -988,6 +988,15 @@ impl Renderer {
 		app.open_dialog(dialog, owner)
 	}
 
+	/// Puts `text` on the system clipboard as plain text, so the user can paste it into another application. See
+	/// [`ghi::window::App::set_clipboard_text`].
+	pub fn set_clipboard_text(&mut self, text: &str) -> Result<(), String> {
+		let Some(app) = &mut self.app else {
+			return Err("The clipboard was not set. The renderer has no window yet, and it reaches the clipboard through the window system. Copy after the first window opens.".to_owned());
+		};
+		app.set_clipboard_text(text)
+	}
+
 	/// Returns the handle that interrupts a waiting [`Self::poll_windows`], once a window connected the renderer
 	/// to the window system.
 	pub(crate) fn app_waker(&self) -> Option<ghi::window::AppWaker> {

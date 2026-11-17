@@ -275,6 +275,11 @@ impl App {
 	///
 	/// The cursor shows again only when it next enters a window, since a window that doesn't capture sets no cursor of
 	/// its own.
+	/// Refuses the clipboard, which this platform doesn't have yet; see [`crate::window::App::set_clipboard_text`].
+	pub(crate) fn set_clipboard_text(&mut self, _text: &str) -> Result<(), String> {
+		Err("The clipboard was not set. Byte Engine has a clipboard only on macOS so far. Copy the text by hand on this platform.".to_owned())
+	}
+
 	pub(crate) fn set_cursor_capture(&mut self, window: &Window, captures: bool) {
 		let Some(state) = self.data.window_mut(window.id) else {
 			return;

@@ -13,8 +13,9 @@ use super::preview_view::preview;
 use super::resource_panels::{Drawer, Side, base, hold};
 use super::{CORNER, FIELD_HEIGHT, MUTED, ROW_GAP, SQUIRCLE, Shell, TEXT, block, hairline, hex, solid, top_highlight};
 use crate::ui::flow;
-use crate::ui::layout::context::{Context, ElementContext};
+use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
+use crate::ui::primitive::Events;
 
 /// The height of one line of a primitive's card: its title, or two of its counts.
 const CARD_LINE: f32 = 16.0;
@@ -24,6 +25,8 @@ const CARD_FACT_LINES: usize = 3;
 const CARD_PADDING: f32 = 6.0;
 /// A card's height: its title and counts, padded.
 const CARD_HEIGHT: f32 = CARD_LINE * (1 + CARD_FACT_LINES) as f32 + CARD_PADDING * 2.0;
+/// The width of a card's number, so its material name starts at the same place on every card.
+const CARD_NUMBER: f32 = 28.0;
 
 /// Shows the open mesh's layers while a mesh is open, declaring them again when the window resizes.
 pub(super) async fn mesh_view(ctx: &mut EvaluationContext<Shell>) {
@@ -135,6 +138,8 @@ async fn summary_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
 
 /// The `Card` struct is what a primitive's card shows: its title and material, and its counts, two to a line.
 struct Card {
+	/// The material's resource id, whose short name the card shows and an Alt-click on it copies, for code that names
+	/// the material.
 	material: String,
 	facts: [(&'static str, String); CARD_FACT_LINES * 2],
 }
@@ -145,7 +150,7 @@ impl Card {
 		let indices = index_count(primitive);
 		let full = primitive.lods.first();
 		Self {
-			material: short_name(mesh.material(primitive).id().as_str()).to_owned(),
+			material: mesh.material(primitive).id().as_str().to_owned(),
 			facts: [
 				("Vertices", grouped(primitive.vertex_count as usize)),
 				("Indices", grouped(indices)),
@@ -234,13 +239,17 @@ async fn primitive_card(list: &mut EvaluationContext<Shell>, index: usize, card:
 		.await;
 	let mut title = lines
 		.element("title")
-		.container(|c| c.width(inner.into()).height(CARD_LINE.into()).flow(flow::centered_row_with_gap(8)))
+		.container(|c| c.width(inner.into()).height(CARD_LINE.into()).flow(flow::centered_row))
 		.await;
 	title.element("number")
+		.container(|c| c.width(CARD_NUMBER.into()).height(CARD_LINE.into()).flow(flow::centered_row))
+		.await
+		.element("text")
 		.text(&format!("#{index}"), |t| t.font_size(12.0).style([solid(TEXT)]))
 		.await;
+	let (id, width) = (card.material.clone(), inner - CARD_NUMBER);
 	title.element("material")
-		.text(&card.material, |t| t.font_size(11.0).style([solid(MUTED)]))
+		.component(async move |ctx| material_name(ctx, &id, width).await)
 		.await;
 	// Each pair is a muted label and its value, in half the card's width.
 	let half = inner * 0.5;
@@ -261,6 +270,33 @@ async fn primitive_card(list: &mut EvaluationContext<Shell>, index: usize, card:
 				.text(value, |t| t.font_size(11.0).style([solid(TEXT)]))
 				.await;
 		}
+	}
+}
+
+/// Shows the short name of the material `id` names in a card's title, `width` pixels wide, and copies the whole `id`
+/// to the clipboard when it's clicked with Alt held, until the card is removed.
+async fn material_name(ctx: &mut EvaluationContext<Shell>, id: &str, width: f32) {
+	let mut row = ctx
+		.element("name")
+		.container(|c| {
+			c.width(width.into())
+				.height(CARD_LINE.into())
+				.flow(flow::centered_row)
+				// The name takes clicks, so an Alt-click on it reaches it instead of the drawer behind.
+				.hit_testable(true)
+		})
+		.await;
+	row.element("text")
+		.text(short_name(id), |t| t.font_size(11.0).style([solid(MUTED)]))
+		.await;
+	loop {
+		row.on(Events::Actuated).await;
+		ctx.with(|shell: &mut Shell| {
+			if shell.alt {
+				shell.copy = Some(id.to_owned());
+			}
+		})
+		.await;
 	}
 }
 

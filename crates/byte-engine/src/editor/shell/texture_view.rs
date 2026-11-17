@@ -11,9 +11,9 @@ use resource_management::processors::image::{Semantic, gamma_from_semantic};
 use resource_management::types::Gamma;
 
 use super::{
-	ACCENT, CORNER, FIELD_HEIGHT, INSET, MARGIN, MUTED, PROPERTIES_WIDTH, SQUIRCLE, Shell, TEXT,
-	block, block_height, hairline, hex, panel, read_typed, row_style, setting_style, solid, top_highlight,
-	typing_style, well,
+	ACCENT, CORNER, DRAWER_TUCK, FIELD_HEIGHT, INSET, MUTED, PROPERTIES_WIDTH, SQUIRCLE, Shell, TEXT,
+	block, hairline, hex, panel, read_typed, row_style, setting_style, sidebar_height, solid, top_highlight, typing_style,
+	well,
 };
 use crate::editor::layers::Layer;
 use crate::ui::{Anchor, Position};
@@ -25,8 +25,6 @@ use crate::utils::r#async::select;
 
 /// The height of the panel's title bar, over the picture.
 const TITLE_HEIGHT: f32 = 36.0;
-/// The gap between the panel's edge and the picture.
-const PICTURE_INSET: f32 = 10.0;
 /// The width of a property's control at the end of its row: a switch, a field, or a value.
 const CONTROL_WIDTH: f32 = 110.0;
 /// A switch's width and height.
@@ -47,24 +45,20 @@ pub(super) async fn texture_view(ctx: &mut EvaluationContext<Shell>) {
 	}
 }
 
-/// The size, in pixels, a `width` by `height` picture shows at to fit in `room`: its own size, or smaller, keeping its
-/// aspect.
+/// The size, in pixels, a `width` by `height` picture shows at to fill `room` as far as its aspect lets it: as large as
+/// fits, larger or smaller than its own size.
 fn fitted(width: u32, height: u32, room: [f32; 2]) -> [f32; 2] {
 	let (width, height) = (width.max(1) as f32, height.max(1) as f32);
-	let scale = (room[0] / width).min(room[1] / height).min(1.0);
+	let scale = (room[0] / width).min(room[1] / height);
 	[width * scale, height * scale]
 }
 
-/// Declares the open texture's panel, centered over the game view, and keeps it until the texture closes or another
-/// opens in its place, then returns it for removal.
+/// Declares the open texture's panel, which fills the window left of the properties panel, and keeps it until the
+/// texture closes or the window resizes, then returns it for removal.
 async fn texture_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
 	let viewport = ctx.with(|shell: &mut Shell| shell.viewport).await;
-	// The room the texture's window leaves beside its properties panel, inside its margin.
-	let (left, top) = (MARGIN, MARGIN);
-	let room = [
-		(viewport.x() - MARGIN * 3.0 - PROPERTIES_WIDTH).max(200.0),
-		(viewport.y() - MARGIN * 2.0).max(TITLE_HEIGHT + 100.0),
-	];
+	let width = (viewport.x() - PROPERTIES_WIDTH).max(200.0);
+	let height = viewport.y().max(TITLE_HEIGHT + 100.0);
 
 	// The picture's pixels are copied into the UI's storage once, as the panel is declared.
 	let (id, name, size, picture) = ctx
@@ -79,19 +73,17 @@ async fn texture_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 			(texture.id.clone(), name, size, (preview.width, preview.height, preview.pixels.clone()))
 		})
 		.await;
-	let shown = fitted(picture.0, picture.1, [room[0] - PICTURE_INSET * 2.0, room[1] - TITLE_HEIGHT - PICTURE_INSET]);
-	// The panel hugs the picture, but stays wide enough for its title.
-	let width = (shown[0] + PICTURE_INSET * 2.0).max(240.0);
-	let height = shown[1] + TITLE_HEIGHT + PICTURE_INSET;
+	// The mat fills the panel under its title, and the picture fills the mat as far as its aspect lets it.
+	let mat_size = [width, height - TITLE_HEIGHT];
+	let shown = fitted(picture.0, picture.1, mat_size);
 
 	let mut frame = ctx
 		.element("frame")
 		.container(|c| {
-			c.absolute_position(left + (room[0] - width) * 0.5, top + (room[1] - height) * 0.5)
-				.width(width.into())
+			// The panel runs under the properties panel's rounded corners, so no window shows through them.
+			c.absolute_position(0.0, 0.0)
+				.width((width + CORNER).into())
 				.height(height.into())
-				.corner_radius(CORNER)
-				.corner_exponent(SQUIRCLE)
 				.clip(false)
 				.hit_testable(true)
 				.style(panel(height, 1.0))
@@ -126,13 +118,14 @@ async fn texture_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 		.element("cross")
 		.text("×", |t| t.font_size(16.0).style([solid(MUTED)]))
 		.await;
-	// A dark mat under the picture, so its transparent parts read as such.
+	// A dark mat under the picture, so its transparent parts read as such, and around it, where its aspect leaves room.
 	let mut mat = frame
 		.element("mat")
 		.container(|c| {
-			c.absolute_position((width - shown[0]) * 0.5, TITLE_HEIGHT)
-				.width(shown[0].into())
-				.height(shown[1].into())
+			c.absolute_position(0.0, TITLE_HEIGHT)
+				.width(mat_size[0].into())
+				.height(mat_size[1].into())
+				.flow(flow::center)
 				.style([solid(hex(0x141518, 1.0))])
 		})
 		.await;
@@ -272,16 +265,17 @@ async fn settings(ctx: &mut EvaluationContext<Shell>) -> Option<ResolvedImageSet
 		.await
 }
 
-/// Declares the properties panel of the open texture, over the entity's in the window's top-right corner, and returns
-/// it for removal once the texture closes.
+/// Declares the properties panel of the open texture, docked against the window's right edge for its whole height, as
+/// the scene drawer is against the left, and returns it for removal once the texture closes or the window resizes.
 async fn properties_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
 	let width = PROPERTIES_WIDTH - INSET * 2.0;
-	let height = INSET * 2.0 + block_height(Property::ALL.len()) + 6.0 + FOOTER_HEIGHT;
+	let height = sidebar_height(ctx.with(|shell: &mut Shell| shell.viewport).await);
+	// The panel runs past the window's right edge, so only the corners facing the picture show rounded.
 	let mut frame = ctx
 		.element("properties")
 		.container(|c| {
-			c.position(Position::anchored(Anchor::End(MARGIN), Anchor::Start(MARGIN)))
-				.width(PROPERTIES_WIDTH.into())
+			c.position(Position::anchored(Anchor::End(-DRAWER_TUCK), Anchor::Start(0.0)))
+				.width((PROPERTIES_WIDTH + DRAWER_TUCK).into())
 				.height(height.into())
 				.corner_radius(CORNER)
 				.corner_exponent(SQUIRCLE)
@@ -506,8 +500,8 @@ mod tests {
 	}
 
 	#[test]
-	fn a_picture_shows_at_its_own_size_when_it_fits_and_scales_down_keeping_its_aspect_otherwise() {
-		assert_eq!(fitted(100, 50, [400.0, 400.0]), [100.0, 50.0]);
+	fn a_picture_fills_its_room_as_far_as_its_aspect_lets_it() {
+		assert_eq!(fitted(100, 50, [400.0, 400.0]), [400.0, 200.0]);
 		assert_eq!(fitted(800, 400, [400.0, 400.0]), [400.0, 200.0]);
 		assert_eq!(fitted(400, 800, [400.0, 400.0]), [200.0, 400.0]);
 	}

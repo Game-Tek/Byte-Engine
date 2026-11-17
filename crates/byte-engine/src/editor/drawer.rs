@@ -1,8 +1,9 @@
-//! How the scene drawer moves as the editor opens and closes: it springs in from the window's left edge, settling with
-//! a slight overshoot, and accelerates back out.
+//! How a drawer moves as it opens and closes: it springs in from the window's edge, settling with a slight overshoot,
+//! and accelerates back out. The scene drawer moves so as the editor opens and closes, and a resource window's drawer
+//! as what the window shows needs the window's width or gives it back.
 //!
-//! These are pure functions of the time since the editor opened or closed; the shell places the drawer by them, and
-//! the editor keeps its render pass drawing until the drawer has left.
+//! These are pure functions of the time since the drawer started moving; the shell places the drawer by them, and the
+//! editor keeps its render pass drawing until the drawer has left.
 
 /// How long the drawer takes to settle once the editor opens, in seconds.
 pub(crate) const ENTER: f32 = 0.5;
@@ -33,9 +34,34 @@ pub(crate) fn leaving(seconds: f32) -> f32 {
 	1.0 - progress * progress * progress
 }
 
+/// How much of a drawer shows `seconds` after it started toward `open` from showing `from`: it springs in or leaves as
+/// [`entering`] and [`leaving`] move a drawer from hidden or in place, scaled to start where it was, so a drawer turned
+/// back partway doesn't jump.
+pub(crate) fn toward(from: f32, open: bool, seconds: f32) -> f32 {
+	if open {
+		from + (1.0 - from) * entering(seconds)
+	} else {
+		from * leaving(seconds)
+	}
+}
+
+/// Whether a drawer that started toward `open` `seconds` ago has stopped moving.
+pub(crate) fn settled(open: bool, seconds: f32) -> bool {
+	seconds >= if open { ENTER } else { EXIT }
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_drawer_turned_back_partway_starts_where_it_was() {
+		let partway = toward(1.0, false, EXIT * 0.5);
+		assert_eq!(toward(partway, true, 0.0), partway, "it opens again from where it was");
+		assert_eq!(toward(partway, true, ENTER), 1.0, "and ends in place");
+		assert_eq!(toward(partway, false, EXIT), 0.0, "or ends hidden");
+		assert!(settled(true, ENTER) && !settled(false, EXIT * 0.5));
+	}
 
 	/// The fraction shown at each hundredth of a second over `seconds`.
 	fn samples(motion: fn(f32) -> f32, seconds: f32) -> Vec<f32> {

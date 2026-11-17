@@ -1,13 +1,12 @@
-//! A material variant's window: a main panel titled with the variant and its parent, which previews the variant on a
-//! sphere, and the variant's parameters docked on the right, each in a field that takes a typed value.
+//! A material variant's window: a sphere wearing the variant fills it, and a drawer on the right, titled with the
+//! variant and its parent, lists the variant's parameters, each in a field that takes a typed value.
 //!
 //! A typed value that reads for its parameter's kind becomes [`Shell::variant_edit`], which the editor writes to the
 //! variant's file; see [`crate::editor::variant`].
 
 use super::preview_view::preview;
-use super::resource_panels::{docked_panel, main_panel, picture_room};
-use super::{FIELD_HEIGHT, MUTED, SQUIRCLE, Shell, TEXT, block, read_typed, row_style, setting_style, solid, typing_style};
-use crate::editor::layers::Layer;
+use super::resource_panels::{Drawer, base};
+use super::{FIELD_HEIGHT, MUTED, SQUIRCLE, Shell, TEXT, block, read_typed, setting_style, solid, typing_style};
 use crate::editor::variant::{self, Kind};
 use crate::ui::flow;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
@@ -20,71 +19,47 @@ const FIELD_SHARE: f32 = 0.6;
 /// The height of the line under the parameters that says where they're saved.
 const FOOTER_HEIGHT: f32 = 16.0;
 
-/// Shows the open variant's panels while a variant is open, declaring them again when the window resizes.
+/// Shows the open variant's layers while a variant is open, declaring them again when the window resizes.
 pub(super) async fn variant_view(ctx: &mut EvaluationContext<Shell>) {
 	loop {
 		while ctx.with(|shell: &mut Shell| shell.layers.variant().is_none()).await {
 			ctx.render().await;
 		}
-		let mut parameters = parameters_panel(ctx).await;
-		let mut frame = variant_panel(ctx).await;
-		frame.remove().await;
-		parameters.remove().await;
+		let mut picture = base(ctx).await;
+		preview(&mut picture).await;
+		let mut drawer = parameters_drawer(ctx).await;
+		drawer.hold(ctx, |shell| shell.layers.variant().is_some()).await;
+		drawer.remove().await;
+		picture.remove().await;
 	}
 }
 
-/// Declares the main panel, titled with the variant and the material it specializes, with the variant's preview under
-/// its title, and keeps it until the variant closes or the window resizes, then returns it for removal.
-async fn variant_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
-	let viewport = ctx.with(|shell: &mut Shell| shell.viewport).await;
-	let (name, parent) = ctx
+/// Declares the drawer, titled with the variant and the material it specializes, with a row for each of the variant's
+/// parameters.
+async fn parameters_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
+	let (name, parent, count) = ctx
 		.with(|shell: &mut Shell| {
-			let variant = shell.layers.variant().expect("The variant panel shows only while a variant is open.");
-			(variant.file().to_owned(), format!("variant of {}", variant.parent))
+			let variant = shell
+				.layers
+				.variant()
+				.expect("The parameters drawer shows only while a variant is open.");
+			(variant.file().to_owned(), format!("variant of {}", variant.parent), variant.parameters.len())
 		})
 		.await;
-	let (mut frame, mut close, _) = main_panel(ctx, &name, &parent).await;
-	preview(&mut frame, picture_room(viewport)).await;
-	let mut close_hovered = false;
-	loop {
-		select! {
-			_ = close.on(Events::Actuated) => {
-				ctx.with(|shell: &mut Shell| shell.layers.close(|layer| matches!(layer, Layer::Variant(_)))).await;
-			},
-			_ = close.on(Events::PointerEntered) => close_hovered = true,
-			_ = close.on(Events::PointerExited) => close_hovered = false,
-			_ = ctx.render() => {},
-		}
-		close.update_container(|c| c.style(row_style(false, close_hovered))).await;
-		let open = ctx
-			.with(|shell: &mut Shell| shell.layers.variant().is_some() && shell.viewport == viewport)
-			.await;
-		if !open {
-			return frame;
-		}
-	}
-}
-
-/// Declares the docked panel with a row for each of the variant's parameters, and returns it for removal.
-async fn parameters_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
-	let (frame, mut content, width) = docked_panel(ctx).await;
-	let (count, file) = ctx
-		.with(|shell: &mut Shell| {
-			let variant = shell.layers.variant().expect("The parameters panel shows only while a variant is open.");
-			(variant.parameters.len(), variant.file().to_owned())
-		})
-		.await;
-	let (mut rows, _) = block(&mut content, "parameters", "Parameters", count).await;
+	let mut drawer = Drawer::declare(ctx, &name, &parent).await;
+	let width = drawer.width;
+	let (mut rows, _) = block(&mut drawer.content, "parameters", "Parameters", count).await;
 	for index in 0..count {
 		rows.element(("parameter", index))
 			.component(async move |ctx| parameter_row(ctx, index, width).await)
 			.await;
 	}
-	content
+	drawer
+		.content
 		.element("footer")
-		.component(async move |ctx| footer(ctx, &file, width).await)
+		.component(async move |ctx| footer(ctx, &name, width).await)
 		.await;
-	frame
+	drawer
 }
 
 /// The parameter at `index`, by its name and kind, while the variant is open.

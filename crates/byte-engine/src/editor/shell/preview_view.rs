@@ -1,39 +1,36 @@
-//! The preview a resource window's main panel shows under its title bar: the stage's picture of the window's mesh or
-//! material, which a drag turns as an arcball and a scroll moves closer.
+//! The preview a resource window's base shows: the stage's picture of the window's mesh or material, filling the
+//! window, which a drag turns as an arcball and a scroll moves closer.
 //!
 //! The panel only reports the drag and the scroll, through [`Shell::turn`] and [`Shell::zoom`]; the editor turns the
 //! subject, moves the camera, and hands the panel the image it draws into through [`Shell::preview`]. See
 //! [`crate::editor::preview`].
 
-use super::resource_panels::TITLE_HEIGHT;
-use super::{Shell, hex, solid};
+use super::{Shell, open_center};
 use crate::ui::flow;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::Events;
 use crate::utils::r#async::select;
 
-/// Declares the preview in `frame`, the main panel, filling `room` under its title bar.
-pub(super) async fn preview(frame: &mut EvaluationContext<Shell>, room: [u32; 2]) {
-	frame
-		.element("preview")
-		.component(async move |ctx| picture(ctx, room).await)
-		.await;
+/// Declares the preview in `base`, filling the window.
+pub(super) async fn preview(base: &mut EvaluationContext<Shell>) {
+	base.element("preview").component(async move |ctx| picture(ctx).await).await;
 }
 
-/// A dark mat under the title bar, which shows the picture once the editor names its image, and reports every drag and
-/// scroll over it to the editor.
-async fn picture(ctx: &mut EvaluationContext<Shell>, room: [u32; 2]) {
-	let [width, height] = room.map(|side| side as f32);
+/// A surface over the whole window, which shows the picture once the editor names its image, and reports every drag
+/// and scroll over it to the editor. The editor draws the picture as large as the window.
+async fn picture(ctx: &mut EvaluationContext<Shell>) {
+	let viewport = ctx.with(|shell: &mut Shell| shell.viewport).await;
+	let (width, height) = (viewport.x(), viewport.y());
+	let room = [width as u32, height as u32];
 	let mut mat = ctx
-		.element("mat")
+		.element("surface")
 		.container(|c| {
-			c.absolute_position(0.0, TITLE_HEIGHT)
+			c.absolute_position(0.0, 0.0)
 				.width(width.into())
 				.height(height.into())
 				.flow(flow::center)
 				.hit_testable(true)
-				.style([solid(hex(0x141518, 1.0))])
 		})
 		.await;
 	let image = loop {
@@ -43,8 +40,10 @@ async fn picture(ctx: &mut EvaluationContext<Shell>, room: [u32; 2]) {
 		ctx.render().await;
 	};
 	mat.element("image").image(room[0], room[1], image, |i| i).await;
-	// Where the press that started the drag landed, in the mat's pixels, and the arcball point last reported.
+	// Where the press that started the drag landed, in the surface's pixels, the ball it turns, and the arcball point
+	// last reported.
 	let mut pressed = [0.0f32; 2];
+	let mut ball = Ball::new([width * 0.5, height * 0.5], [width, height]);
 	let mut reached = [0.0f32; 2];
 	loop {
 		select! {
@@ -52,11 +51,15 @@ async fn picture(ctx: &mut EvaluationContext<Shell>, room: [u32; 2]) {
 				let pointer = ctx.pointer().await.position;
 				let corner = mat.geometry().await.map_or([0.0; 2], |geometry| [geometry.x(), geometry.y()]);
 				pressed = [pointer.x - corner[0], pointer.y - corner[1]];
-				reached = on_ball(pressed, [width, height]);
+				// The ball sits on the subject, in the middle of the room the drawer leaves.
+				let shown = ctx.with(|shell: &mut Shell| shell.drawer_shown).await;
+				let center = open_center(width, shown);
+				ball = Ball::new([center, height * 0.5], [center * 2.0, height]);
+				reached = ball.point(pressed);
 			},
 			event = mat.on(Events::Dragged) => {
 				if let Some(delta) = event.delta {
-					let to = on_ball([pressed[0] + delta.x, pressed[1] + delta.y], [width, height]);
+					let to = ball.point([pressed[0] + delta.x, pressed[1] + delta.y]);
 					let from = std::mem::replace(&mut reached, to);
 					// Drags the editor hasn't taken yet join this one, from where the first of them started.
 					ctx.with(move |shell: &mut Shell| {
@@ -76,21 +79,40 @@ async fn picture(ctx: &mut EvaluationContext<Shell>, room: [u32; 2]) {
 	}
 }
 
-/// The arcball coordinates of `pixel` in a picture of `size` pixels: the ball sits in the picture's middle, as wide as
-/// its shorter side, with +x right and +y up, and its radius is 1.
-fn on_ball(pixel: [f32; 2], [width, height]: [f32; 2]) -> [f32; 2] {
-	let radius = (width.min(height) * 0.5).max(1.0);
-	[(pixel[0] - width * 0.5) / radius, (height * 0.5 - pixel[1]) / radius]
+/// The `Ball` struct is where the arcball sits on the picture, so a drag's pixels become arcball coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Ball {
+	/// The ball's middle, in the picture's pixels.
+	center: [f32; 2],
+	/// The ball's radius, in pixels.
+	radius: f32,
+}
+
+impl Ball {
+	/// The ball in the middle of `room`, a `[width, height]` in pixels, centered at `center`, as wide as the room's
+	/// shorter side.
+	fn new(center: [f32; 2], room: [f32; 2]) -> Self {
+		Self {
+			center,
+			radius: (room[0].min(room[1]) * 0.5).max(1.0),
+		}
+	}
+
+	/// The arcball coordinates of `pixel`: +x right and +y up from the ball's middle, in radii.
+	fn point(&self, pixel: [f32; 2]) -> [f32; 2] {
+		[(pixel[0] - self.center[0]) / self.radius, (self.center[1] - pixel[1]) / self.radius]
+	}
 }
 
 #[cfg(test)]
 mod tests {
-	use super::on_ball;
+	use super::Ball;
 
 	#[test]
-	fn the_ball_fills_the_shorter_side_of_the_picture() {
-		assert_eq!(on_ball([400.0, 300.0], [800.0, 600.0]), [0.0, 0.0]);
-		assert_eq!(on_ball([700.0, 0.0], [800.0, 600.0]), [1.0, 1.0]);
-		assert_eq!(on_ball([100.0, 600.0], [800.0, 600.0]), [-1.0, -1.0]);
+	fn the_ball_fills_the_shorter_side_of_its_room() {
+		let ball = Ball::new([400.0, 300.0], [800.0, 600.0]);
+		assert_eq!(ball.point([400.0, 300.0]), [0.0, 0.0]);
+		assert_eq!(ball.point([700.0, 0.0]), [1.0, 1.0]);
+		assert_eq!(ball.point([100.0, 600.0]), [-1.0, -1.0]);
 	}
 }

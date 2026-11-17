@@ -56,7 +56,12 @@ impl Fly {
 	/// 1, and returns where it now is.
 	pub(crate) fn step(&mut self, thrust: [f32; 3], dt: f32) -> Transform {
 		let forward = heading(self.yaw, self.pitch);
-		let right = up().cross(forward.into_vector());
+		// Up across a view that tilts is shorter than a unit, so it's scaled back to one, and keys push alike at any tilt.
+		let right = up()
+			.cross(forward.into_vector())
+			.normalized()
+			.expect("The camera stops short of looking straight up or down.")
+			.into_vector();
 		let up = forward.cross(right);
 		let push = thrust[0] * right + thrust[1] * up + thrust[2] * forward.into_vector();
 		self.velocity += push * ACCELERATION * dt;

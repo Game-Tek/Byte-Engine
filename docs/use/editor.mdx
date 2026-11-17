@@ -100,13 +100,22 @@ while the editor is closed.
    toast says why. See [runtime settings](/docs/reference/parameters#runtime-settings) for what each one takes.
 
 7. To explore your resources, press Cmd+E and type part of a name. It finds your material graphs, material variants,
-   meshes, and textures. Open a mesh to see it in a window of its own, lit on a stage of its own, with its size in
-   meters on the right. Drag the picture to turn the mesh as a trackball: a drag across it turns it the way you drag, and a drag around its edge rolls it. Scroll to move closer or farther. Open
-   a texture to see it in a window of its own, with its size in pixels, beside the running game. Press Escape in that
-   window, or close it, to close it. Opening a texture that's already open does nothing. Textures show from their PNG
-   or JPEG source files, so a build without sources finds none.
+   meshes, and textures. Each opens in a window of its own beside the running game: what you opened fills the
+   window, and a drawer on the right holds its name and its settings. Press Escape in the window, or close it, to
+   close it. Opening a resource that's already open does nothing.
 
-   The panel on the right shows the texture's [image settings](/docs/reference/assets#image-settings): its semantic
+   Open a mesh to see it lit on a stage of its own, with its size in meters in the drawer. Drag the picture to turn
+   the mesh as a trackball: a drag across it turns it the way you drag, and a drag around its edge rolls it. Scroll
+   to move closer or farther.
+
+   Open a texture to see it with its size in pixels in the drawer. Scroll over the picture to zoom in or out.
+   Textures show from their PNG or JPEG source files, so a build without sources finds none.
+
+   When you zoom in on a mesh or a texture until it's wider than the room the drawer leaves, the drawer slides away so
+   it can use the whole window, and it comes back once you zoom out until it fits again. What you look at stays
+   centered in the room the drawer leaves.
+
+   The drawer of a texture shows the texture's [image settings](/docs/reference/assets#image-settings): its semantic
    and color space, which come from its file name, and the settings you can change: mips, compression, coverage, and
    CPU readable. It shows the values the texture bakes with, from its BEAD sidecar and directory defaults, or the
    defaults for its semantic when nothing sets them. Click a switch, or click the coverage field and type a cutoff
@@ -130,11 +139,11 @@ while the editor is closed.
    the palette lists **New variant** rows first, one for each root material that uses the graph, so you can skip
    picking the material. The new variant opens to change its parameters.
 
-   To change a variant's parameters, find it with Cmd+E and open it. It opens in a window of its own, with its
-   parent's parameters on the right and the value the variant gives each, or the parent's default when it gives
-   none. The main panel shows a sphere wearing the variant, which you turn and zoom as you do a mesh, and which
-   follows each change once your application bakes it. Click a value and type a new one, then press Enter: a number for a `float`; three or four numbers, apart by
-   commas or spaces, or a color name such as `Purple`, for a `vec3f` or `vec4f`; or an image's asset ID for a
+   To change a variant's parameters, find it with Cmd+E and open it. Its window shows a sphere wearing the
+   variant, which you turn and zoom as you do a mesh, and which follows each change once your application bakes it.
+   Its drawer lists its parent's parameters and the value the variant gives each, or the parent's default when it
+   gives none. Click a value and type a new one, then press Enter: a number for a `float`; three or four numbers,
+   apart by commas or spaces, or a color name such as `Purple`, for a `vec3f` or `vec4f`; or an image's asset ID for a
    `Texture2D`. Text that isn't one changes nothing. The editor writes the change to the variant's file, and your
    application bakes the material again. It writes plain JSON, so comments in the file don't survive a change.
 

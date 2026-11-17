@@ -1,25 +1,25 @@
-//! The texture preview: while a texture is open from the explorer, a panel over the game view that shows it, scaled
-//! down to fit, with its name and its size in pixels, and a properties panel on the right with its image settings.
+//! A texture's window: the texture, scaled to fit beside the drawer, fills it, and a drawer on the right, titled with
+//! the texture and its size in pixels, holds its image settings.
 //!
-//! The properties panel shows what the texture bakes with: its semantic and color space, which its file name sets, and
-//! the settings it takes, as switches and a typed coverage cutoff. A change goes to the editor, which writes it to the
-//! texture's sidecar. Both panels are declared each time a texture opens and removed when it closes, by its ×, by
-//! Escape, or by another resource opening in its place.
+//! The drawer shows what the texture bakes with: its semantic and color space, which its file name sets, and the
+//! settings it takes, as switches and a typed coverage cutoff. A change goes to the editor, which writes it to the
+//! texture's sidecar. A scroll over the picture zooms it; zoomed wider than the room beside the drawer, the drawer
+//! slides away, and it comes back once the picture fits again. Both layers are declared each time a texture opens and
+//! when the window resizes, and removed when it closes, by Escape or by closing the window.
 
 use resource_management::asset::{ImageSetting, ResolvedImageSettings};
 use resource_management::processors::image::{Semantic, gamma_from_semantic};
 use resource_management::types::Gamma;
 
+use super::resource_panels::{Drawer, base};
 use super::{
-	ACCENT, FIELD_HEIGHT, MUTED, SQUIRCLE, Shell, TEXT, block, hairline, hex, read_typed, row_style, setting_style, solid,
-	top_highlight, typing_style, well,
+	ACCENT, FIELD_HEIGHT, MUTED, PROPERTIES_WIDTH, SQUIRCLE, Shell, TEXT, block, fits, hairline, open_center, read_typed,
+	setting_style, solid, top_highlight, typing_style, well,
 };
-use super::resource_panels::{TITLE_HEIGHT, docked_panel, main_panel};
-use crate::editor::layers::Layer;
+use crate::ui::flow;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::Events;
-use crate::ui::flow;
 use crate::utils::r#async::select;
 
 /// The width of a property's control at the end of its row: a switch, a field, or a value.
@@ -27,18 +27,24 @@ const CONTROL_WIDTH: f32 = 110.0;
 /// A switch's width and height.
 const SWITCH: [f32; 2] = [30.0, 16.0];
 /// The height of the line under the properties that says where they're saved.
+/// How much one scroll step zooms the picture in, as a factor of its size.
+const ZOOM_STEP: f32 = 1.25;
+/// The most screen pixels a texel of the texture's source takes, zoomed in all the way.
+const MAX_PIXELS_PER_TEXEL: f32 = 8.0;
 const FOOTER_HEIGHT: f32 = 16.0;
 
-/// Shows the open texture's panels while a texture is open, declaring them again for each texture that opens.
+/// Shows the open texture's layers while a texture is open, declaring them again for each texture that opens and when
+/// the window resizes.
 pub(super) async fn texture_view(ctx: &mut EvaluationContext<Shell>) {
 	loop {
 		while ctx.with(|shell: &mut Shell| shell.layers.texture().is_none()).await {
 			ctx.render().await;
 		}
-		let mut properties = properties_panel(ctx).await;
-		let mut frame = texture_panel(ctx).await;
-		frame.remove().await;
-		properties.remove().await;
+		let mut picture = base(ctx).await;
+		let mut drawer = properties_drawer(ctx).await;
+		show_texture(ctx, &mut picture, &mut drawer).await;
+		drawer.remove().await;
+		picture.remove().await;
 	}
 }
 
@@ -50,57 +56,63 @@ fn fitted(width: u32, height: u32, room: [f32; 2]) -> [f32; 2] {
 	[width * scale, height * scale]
 }
 
-/// Declares the open texture's panel, which fills the window left of the properties panel, and keeps it until the
-/// texture closes or the window resizes, then returns it for removal.
-async fn texture_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
+/// Shows the open texture in `base`, centered in the room the drawer leaves, zooming it as the pointer scrolls over it
+/// and asking the drawer to make room while it's wider than that room, until the texture closes or the window resizes.
+async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationContext<Shell>, drawer: &mut Drawer) {
 	let viewport = ctx.with(|shell: &mut Shell| shell.viewport).await;
-	// The picture's pixels are copied into the UI's storage once, as the panel is declared.
-	let (id, name, size, picture) = ctx
+	let (window, height) = (viewport.x(), viewport.y());
+	// The picture's pixels are copied into the UI's storage once, as it's declared.
+	let (id, source, picture) = ctx
 		.with(|shell: &mut Shell| {
-			let texture = shell
-				.layers
-				.texture()
-				.expect("The texture panel shows only while a texture is open.");
+			let texture = shell.layers.texture().expect("The texture shows only while a texture is open.");
 			let preview = &texture.preview;
-			let name = texture.id.rsplit('/').next().unwrap_or(&texture.id).to_owned();
-			let size = format!("{} × {}", preview.source[0], preview.source[1]);
-			(texture.id.clone(), name, size, (preview.width, preview.height, preview.pixels.clone()))
-		})
-		.await;
-	let (mut frame, mut close, [width, height]) = main_panel(ctx, &name, &size).await;
-	// The mat fills the panel under its title, and the picture fills the mat as far as its aspect lets it.
-	let mat_size = [width, height - TITLE_HEIGHT];
-	let shown = fitted(picture.0, picture.1, mat_size);
-	// A dark mat under the picture, so its transparent parts read as such, and around it, where its aspect leaves room.
-	let mut mat = frame
-		.element("mat")
-		.container(|c| {
-			c.absolute_position(0.0, TITLE_HEIGHT)
-				.width(mat_size[0].into())
-				.height(mat_size[1].into())
-				.flow(flow::center)
-				.style([solid(hex(0x141518, 1.0))])
+			(
+				texture.id.clone(),
+				preview.source,
+				(preview.width, preview.height, preview.pixels.clone()),
+			)
 		})
 		.await;
 	let (picture_width, picture_height, pixels) = picture;
-	mat.element("picture")
-		.image(picture_width, picture_height, pixels, |i| {
-			i.width(shown[0].into()).height(shown[1].into())
-		})
+	// Unzoomed, the picture fills the room beside the drawer; zoomed in all the way, a source texel takes
+	// `MAX_PIXELS_PER_TEXEL` screen pixels.
+	let fit = fitted(picture_width, picture_height, [window - PROPERTIES_WIDTH, height]);
+	let most = (MAX_PIXELS_PER_TEXEL * source[0].max(1) as f32 / fit[0]).max(1.0);
+	let mut zoom = 1.0f32;
+	let mut holder = base
+		.element("picture")
+		.container(|c| c.absolute_position(0.0, 0.0).width(fit[0].into()).height(fit[1].into()))
 		.await;
-
-	let mut close_hovered = false;
+	let mut image = holder
+		.element("image")
+		.image(picture_width, picture_height, pixels, |i| i.width(fit[0].into()).height(fit[1].into()))
+		.await;
+	let mut placed = None;
 	loop {
 		select! {
-			_ = close.on(Events::Actuated) => {
-				ctx.with(|shell: &mut Shell| shell.layers.close(|layer| matches!(layer, Layer::Texture(_)))).await;
+			event = base.on(Events::Scrolled) => {
+				// One step per scroll, as the graph canvas zooms, so a trackpad and a wheel move alike.
+				if let Some(delta) = event.delta.filter(|delta| delta.y != 0.0) {
+					let factor = if delta.y > 0.0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
+					zoom = (zoom * factor).clamp(1.0, most);
+				}
 			},
-			_ = close.on(Events::PointerEntered) => close_hovered = true,
-			_ = close.on(Events::PointerExited) => close_hovered = false,
 			_ = ctx.render() => {},
 		}
-		close.update_container(|c| c.style(row_style(false, close_hovered))).await;
-		// The panel is declared again when the window resizes, to center the picture in the room it leaves.
+		let size = [fit[0] * zoom, fit[1] * zoom];
+		let wanted = fits(size[0], window);
+		ctx.with(move |shell: &mut Shell| shell.drawer_open = wanted).await;
+		drawer.follow(ctx).await;
+		let shown = ctx.with(|shell: &mut Shell| shell.drawer_shown).await;
+		// Centered in the room the drawer leaves, which widens as it slides away.
+		let at = [open_center(window, shown) - size[0] * 0.5, (height - size[1]) * 0.5];
+		if placed != Some((at, size)) {
+			placed = Some((at, size));
+			holder
+				.update_container(|c| c.absolute_position(at[0], at[1]).width(size[0].into()).height(size[1].into()))
+				.await;
+			image.update_image(|i| i.width(size[0].into()).height(size[1].into())).await;
+		}
 		let open = ctx
 			.with(|shell: &mut Shell| {
 				shell.layers.texture().is_some_and(|texture| texture.id == id) && shell.viewport == viewport
@@ -110,7 +122,6 @@ async fn texture_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 			break;
 		}
 	}
-	frame
 }
 
 /// The `Property` enum is one row of the texture's properties panel: what its semantic sets, or a setting it takes.
@@ -218,21 +229,31 @@ async fn settings(ctx: &mut EvaluationContext<Shell>) -> Option<ResolvedImageSet
 		.await
 }
 
-/// Declares the properties panel of the open texture, docked against the window's right edge for its whole height, as
-/// the scene drawer is against the left, and returns it for removal once the texture closes or the window resizes.
-async fn properties_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
-	let (frame, mut content, width) = docked_panel(ctx).await;
-	let (mut rows, _) = block(&mut content, "texture", "Texture", Property::ALL.len()).await;
+/// Declares the drawer of the open texture, titled with its file name and its size in pixels, with a row for each of
+/// its image settings.
+async fn properties_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
+	let (name, size) = ctx
+		.with(|shell: &mut Shell| {
+			let texture = shell.layers.texture().expect("The texture's drawer shows only while a texture is open.");
+			let name = texture.id.rsplit('/').next().unwrap_or(&texture.id).to_owned();
+			let source = texture.preview.source;
+			(name, format!("{} × {}", source[0], source[1]))
+		})
+		.await;
+	let mut drawer = Drawer::declare(ctx, &name, &size).await;
+	let width = drawer.width;
+	let (mut rows, _) = block(&mut drawer.content, "texture", "Texture", Property::ALL.len()).await;
 	for property in Property::ALL {
 		rows.element(property.label())
 			.component(async move |ctx| property_row(ctx, property, width).await)
 			.await;
 	}
-	content
+	drawer
+		.content
 		.element("footer")
 		.component(async move |ctx| footer(ctx, width).await)
 		.await;
-	frame
+	drawer
 }
 
 /// One property's row: its label, and its value, its switch, or, for the coverage, a field that takes a typed cutoff.

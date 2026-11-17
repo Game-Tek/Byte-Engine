@@ -358,7 +358,11 @@ impl Editor {
 				let shell = resource.engine.ctx_mut();
 				let (turn, zoom) = (shell.turn.take(), std::mem::take(&mut shell.zoom));
 				self.stage.steer(slot, turn, zoom);
-				self.stage.resize(slot, shell::picture_room(shell.viewport));
+				let viewport = [shell.viewport.x(), shell.viewport.y()];
+				let center = shell::open_center(viewport[0], shell.drawer_shown);
+				// The drawer makes room while the subject is zoomed wider than the room beside it.
+				let width = self.stage.present(slot, viewport, center);
+				shell.drawer_open = shell::fits(width, viewport[0]);
 				shell.preview = self.stage.image(slot);
 			}
 			let viewport = resource.engine.ctx_mut().viewport;
@@ -398,8 +402,7 @@ impl Editor {
 		let mut engine = Engine::with_context(shell);
 		engine.set_waker(app.waker().into());
 		engine.mount(async |root| shell::window(root).await);
-		let viewport = Size::new(RESOURCE_WINDOW[0], RESOURCE_WINDOW[1]);
-		let preview = subject.map(|subject| self.stage.open(app, subject, shell::picture_room(viewport)));
+		let preview = subject.map(|subject| self.stage.open(app, subject, RESOURCE_WINDOW));
 		self.resources.push(ResourceWindow {
 			window,
 			id: None,

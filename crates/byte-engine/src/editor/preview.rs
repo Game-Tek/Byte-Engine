@@ -88,6 +88,10 @@ pub(crate) struct Framing {
 	distance: f32,
 	/// How the subject is turned.
 	spin: Orientation,
+	/// How far right of the picture's middle the subject shows, in pixels, and the picture's height in pixels, which
+	/// sets how far the camera moves sideways to show it there.
+	offset: f32,
+	height: f32,
 }
 
 impl Framing {
@@ -100,13 +104,40 @@ impl Framing {
 			radius,
 			distance: radius * FRAMING,
 			spin: Orientation::default(),
+			offset: 0.0,
+			height: 1.0,
 		}
+	}
+
+	/// The tangent of half the camera's vertical field of view, which relates distances in the world to pixels.
+	fn half_view() -> f32 {
+		(Camera::new().vertical_fov().to_radians().value() * 0.5).tan()
+	}
+
+	/// How wide the subject shows in a picture `height` pixels high: the width of the sphere that holds it, seen from
+	/// the camera's distance.
+	pub(crate) fn diameter(&self, height: f32) -> f32 {
+		// A sphere of radius `r` seen from `d` away spans an angle whose tangent is `r / √(d² - r²)` either side.
+		let reach = self.radius / (self.distance * self.distance - self.radius * self.radius).max(1e-6).sqrt();
+		reach / Self::half_view() * height
+	}
+
+	/// Shows the subject `offset` pixels right of the middle of a picture `height` pixels high, by moving the camera
+	/// sideways, so it stays centered in the room a drawer leaves.
+	pub(crate) fn shift(&mut self, offset: f32, height: f32) {
+		self.offset = offset;
+		self.height = height.max(1.0);
 	}
 
 	/// The camera's view direction, right, and up in the world, as the view it sees lays them on the screen.
 	fn screen_axes() -> [Vector; 3] {
 		let forward = heading(VIEW[0], VIEW[1]).into_vector();
-		let right = up().cross(forward);
+		// Up across a view that tilts is shorter than a unit, so it's scaled back to one.
+		let right = up()
+			.cross(forward)
+			.normalized()
+			.expect("The preview's view never looks straight up or down.")
+			.into_vector();
 		[forward, right, forward.cross(right)]
 	}
 
@@ -132,10 +163,13 @@ impl Framing {
 		self.distance = (self.distance * ZOOM_STEP.powf(steps)).clamp(nearest, farthest);
 	}
 
-	/// Where the camera stands, looking at the target.
+	/// Where the camera stands, looking along its heading past the target, moved sideways by the shift.
 	pub(crate) fn camera_transform(&self) -> Transform {
 		let view: UnitVector = heading(VIEW[0], VIEW[1]);
-		let position = self.target - view.into_vector() * self.distance;
+		let [_, right, _] = Self::screen_axes();
+		// A pixel at the target's distance spans this many meters, and the camera moves against the shift.
+		let meters_per_pixel = 2.0 * self.distance * Self::half_view() / self.height;
+		let position = self.target - view.into_vector() * self.distance - right * (self.offset * meters_per_pixel);
 		Transform::new(position, Scale::identity(), view.into())
 	}
 
@@ -283,6 +317,20 @@ impl Stage {
 		self.place(index);
 	}
 
+	/// Fills a window of `viewport` pixels, `[width, height]`, with the slot's image, and shows its subject in the middle of
+	/// the room a drawer showing `shown` leaves, from 0 hidden to 1 in place, at `center` pixels from the left. Returns how
+	/// wide the subject shows, in pixels, so the window can decide whether the drawer makes room for it.
+	pub(crate) fn present(&mut self, index: usize, viewport: [f32; 2], center: f32) -> f32 {
+		self.resize(index, viewport.map(|side| side as u32));
+		let framing = &mut self.slots[index].framing;
+		let offset = center - viewport[0] * 0.5;
+		if (framing.offset, framing.height) != (offset, viewport[1]) {
+			framing.shift(offset, viewport[1]);
+			self.place(index);
+		}
+		self.slots[index].framing.diameter(viewport[1])
+	}
+
 	/// Makes the slot's image `extent` pixels large, when it isn't already.
 	pub(crate) fn resize(&mut self, index: usize, extent: [u32; 2]) {
 		let slot = &mut self.slots[index];
@@ -349,6 +397,25 @@ mod tests {
 		// The ball's points are a quarter turn apart, and the arcball turns by twice that.
 		let facing = placed(&framing, -forward);
 		assert!((facing - Point::origin() - forward).length() < 1e-4, "the facing side turned away: {facing:?}");
+	}
+
+	#[test]
+	fn a_shifted_camera_shows_the_subject_that_many_pixels_from_the_middle() {
+		let mut framing = Framing::new(Point::new(3.0, 1.0, -2.0), Vector::new(0.0, 0.0, 0.0), 1.0);
+		framing.shift(-150.0, 720.0);
+		let [_, right, _] = Framing::screen_axes();
+		let toward = framing.target - framing.camera_transform().get_position();
+		let meters_per_pixel = 2.0 * framing.distance * Framing::half_view() / 720.0;
+		assert!((toward.dot(right) / meters_per_pixel + 150.0).abs() < 1e-2, "the subject shows 150 pixels left");
+	}
+
+	#[test]
+	fn the_subject_shows_wider_as_the_camera_comes_closer() {
+		let mut framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), 1.0);
+		let framed = framing.diameter(720.0);
+		assert!(framed > 0.0 && framed < 720.0, "framed, it fits the picture's height: {framed}");
+		framing.zoom(4.0);
+		assert!(framing.diameter(720.0) > framed);
 	}
 
 	#[test]

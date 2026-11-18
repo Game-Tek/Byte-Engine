@@ -43,9 +43,9 @@ const DEFAULT_VALUE: RGBA = hex(0x8A8F98, 0.6);
 /// Shows the open graph's panel while a graph is open, declaring it again for each graph that opens.
 pub(super) async fn graph_view(ctx: &mut EvaluationContext<Shell>) {
 	loop {
-		while ctx.with(|shell: &mut Shell| shell.layers.graph().is_none()).await {
-			ctx.render().await;
-		}
+		// Waiting on the layer reads it only when the shell changed, so a closed view asks for no frames.
+		let mut open = ctx.proactive(|shell: &Shell| shell.layers.graph().is_some());
+		while !*open.next().await {}
 		let mut frame = graph_panel(ctx).await;
 		frame.remove().await;
 	}
@@ -204,6 +204,22 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 	// The wire being dragged, as the panel last drew it, and its curve.
 	let mut shown_pending: Option<([f32; 2], [f32; 2])> = None;
 	let mut pending_curve: Option<EvaluationContext<Shell>> = None;
+	// What the panel shows of the shell: whether the graph is open, its revisions, the window's size, and the wire
+	// being dragged, from its source's output to its loose end.
+	let mut state = ctx.proactive(|shell: &Shell| {
+		let graph = shell.layers.graph();
+		let pending = graph.and_then(|graph| {
+			let wire = graph.pending?;
+			Some((graph.nodes.get(wire.from)?.output(), wire.end))
+		});
+		(
+			graph.is_some(),
+			graph.map_or(0, |graph| graph.shape_revision),
+			graph.map_or(0, |graph| graph.revision),
+			shell.viewport,
+			pending,
+		)
+	});
 	loop {
 		select! {
 			_ = canvas.on(Events::Grabbed) => pan_start = view.pan,
@@ -237,21 +253,14 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 			},
 			_ = save.on(Events::PointerEntered) => save_hovered = true,
 			_ = save.on(Events::PointerExited) => save_hovered = false,
-			_ = ctx.render() => {},
+			_ = state.next() => {},
 		}
 		close.update_container(|c| c.style(row_style(false, close_hovered))).await;
 		save.update_container(|c| c.style(row_style(false, save_hovered))).await;
-		let (open, shape, status_revision, now) = ctx
-			.with(|shell: &mut Shell| {
-				let graph = shell.layers.graph();
-				(
-					graph.is_some(),
-					graph.map_or(0, |graph| graph.shape_revision),
-					graph.map_or(0, |graph| graph.revision),
-					shell.viewport,
-				)
-			})
-			.await;
+		// Another branch can win before the first read resolves; the next pass shows the state then.
+		let Some(&(open, shape, status_revision, now, pending)) = state.latest() else {
+			continue;
+		};
 		// The graph closing removes the panel, and the window resizing declares it again, fitted to the window.
 		if !open || now != viewport {
 			return frame;
@@ -263,13 +272,6 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 			// The curve went with the old nodes.
 			(shown_pending, pending_curve) = (None, None);
 		}
-		let pending = ctx
-			.with(|shell: &mut Shell| {
-				let graph = shell.layers.graph()?;
-				let wire = graph.pending?;
-				Some((graph.nodes.get(wire.from)?.output(), wire.end))
-			})
-			.await;
 		if pending != shown_pending {
 			shown_pending = pending;
 			if let Some(mut curve) = pending_curve.take() {
@@ -525,6 +527,7 @@ async fn value_field(ctx: &mut EvaluationContext<Shell>, node: usize, row: usize
 	let mut hovered = false;
 	let mut shown_hover = false;
 	let mut shown = None;
+	let mut revision = ctx.proactive(|shell: &Shell| shell.layers.graph().map(|graph| graph.revision));
 	loop {
 		select! {
 			_ = well.on(Events::Grabbed) => {
@@ -558,12 +561,10 @@ async fn value_field(ctx: &mut EvaluationContext<Shell>, node: usize, row: usize
 			},
 			_ = well.on(Events::PointerEntered) => hovered = true,
 			_ = well.on(Events::PointerExited) => hovered = false,
-			_ = ctx.render() => {},
+			_ = revision.next() => {},
 		}
 		// The value is shown again only when the graph's values changed.
-		let revision = ctx
-			.with(|shell: &mut Shell| shell.layers.graph().map(|graph| graph.revision))
-			.await;
+		let revision = revision.latest().copied().flatten();
 		if revision.is_some() && shown != revision {
 			shown = revision;
 			let (text, color) = ctx

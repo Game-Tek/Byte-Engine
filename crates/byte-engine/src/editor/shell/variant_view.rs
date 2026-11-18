@@ -22,9 +22,9 @@ const FOOTER_HEIGHT: f32 = 16.0;
 /// Shows the open variant's layers while a variant is open, declaring them again when the window resizes.
 pub(super) async fn variant_view(ctx: &mut EvaluationContext<Shell>) {
 	loop {
-		while ctx.with(|shell: &mut Shell| shell.layers.variant().is_none()).await {
-			ctx.render().await;
-		}
+		// Waiting on the layer reads it only when the shell changed, so a closed view asks for no frames.
+		let mut open = ctx.proactive(|shell: &Shell| shell.layers.variant().is_some());
+		while !*open.next().await {}
 		let mut picture = base(ctx).await;
 		preview(&mut picture).await;
 		let mut drawers = [parameters_drawer(ctx).await];

@@ -188,6 +188,41 @@ The tests in `ui/animation.rs` guard the motions and retargeting, and
 `animation_run_tests` in `ui/layout/engine/futures.rs` guards runs, interruption,
 and the frame clock.
 
+## Reactive values
+
+A component follows outside state through a `Reactive` in `ui/reactive.rs`: a
+`Source` and the last value it handed out. `Reactive::next` asks the source to
+write the newest value into that slot and resolve when it changed. A
+`Subscriber` resolves on a watch version it hasn't seen and clones the value
+into the slot with `clone_from`, so no lock is held while the component works.
+`Polled` reads the application context and compares.
+
+### Polled reads
+
+A frame wait asks for ticks, so a component that rechecked state on every frame
+kept the whole interface awake. A polled value instead registers a read wait,
+`UiTask::read_wait`, that never counts in `Runtime::needs_tick`.
+
+`UiPoll::written` records that the application context was lent mutably: by
+`Engine::ctx_mut`, or by a `With` read. `poll_reads` in
+`ui/layout/engine/runtime.rs` runs in `Engine::evaluate` after the first ready
+tasks and before layout. While the context is written, it clears the flag,
+wakes every task with a read wait, and polls the ready tasks; a task that
+writes again starts another round, at most `READ_ROUNDS`. Changes it makes are
+laid out in the same evaluation. `Engine::next_tick` asks for a tick only while
+a write is left unread and a task waits on a read.
+
+### Rules a change must keep
+
+- A first wait resolves on its first poll, with no change needed.
+- A read wait never asks for a tick by itself. Only an unread write does.
+- Polled reads borrow the context shared and don't count as writes.
+- Reads run before layout, so their changes don't wait a frame.
+
+`reactive_tests` in `ui/layout/engine/futures.rs` guards these rules, the tests
+in `ui/watch.rs` guard watch versions, and the hint bar test in
+`editor/shell/hint_bar.rs` guards that a hesitation waits on one timer.
+
 ## Drawing
 
 `UiRenderPass` draws the whole UI with one shader pair and no vertex or index

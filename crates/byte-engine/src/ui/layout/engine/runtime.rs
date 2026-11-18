@@ -31,6 +31,9 @@ pub(super) struct UiTask {
 	pub(super) timer_waits: Vec<Registration<Instant>>,
 	/// Each element whose logical size this task waits to change, with the size it last knew.
 	pub(super) size_waits: Vec<Registration<(Id, Size)>>,
+	/// The poll that last registered a wait on a polled value, which [`poll_reads`] wakes after context writes.
+	/// A task needs one entry however many polled values it waits on, since one poll reads them all.
+	pub(super) read_wait: Option<u64>,
 }
 
 impl UiTask {
@@ -43,6 +46,7 @@ impl UiTask {
 		self.frame_waits.clear();
 		self.timer_waits.clear();
 		self.size_waits.clear();
+		self.read_wait = None;
 	}
 
 	/// Wakes the task so the next [`Runtime::poll_ready_tasks`] polls it.
@@ -63,6 +67,7 @@ impl UiTask {
 		self.text_edits.keep_waits_from(poll);
 		self.timer_waits.retain(|wait| wait.polled == poll);
 		self.size_waits.retain(|wait| wait.polled == poll);
+		self.read_wait = self.read_wait.filter(|polled| *polled == poll);
 	}
 }
 
@@ -551,6 +556,25 @@ impl Runtime {
 		}
 	}
 
+	/// Registers the current poll of `task` as waiting on a polled value. The wait asks for no tick of its own.
+	pub(super) fn wait_for_read(&mut self, task: TaskId, poll: u64) {
+		if let Some(task) = self.tasks.get_mut(task) {
+			task.read_wait = Some(poll);
+		}
+	}
+
+	/// Reports whether any task waits on a polled value.
+	pub(super) fn has_readers(&self) -> bool {
+		self.tasks.iter().any(|task| task.read_wait.is_some())
+	}
+
+	/// Wakes every task that waits on a polled value, so its next poll reads the value again.
+	fn wake_readers(&self) {
+		for task in self.tasks.iter().filter(|task| task.read_wait.is_some()) {
+			task.wake();
+		}
+	}
+
 	/// Registers the current poll of `task` as waiting for the logical size of `target` to differ from `known`.
 	pub(super) fn wait_for_size(&mut self, task: TaskId, target: Id, known: Size, poll: u64) {
 		if let Some(task) = self.tasks.get_mut(task) {
@@ -687,5 +711,34 @@ pub(super) fn poll_ready_tasks<C: 'static>(core: &mut UiPoll<C>) {
 			}
 		}
 		core.apply_commands();
+	}
+}
+
+/// The most rounds of polled reads one evaluation runs. Each round can change what the next one reads, so a cycle
+/// of components that keep changing each other's values must not stall the frame.
+const READ_ROUNDS: u32 = 8;
+
+/// Reads every polled value again while the application context was written since the last read, and runs the
+/// tasks whose value changed.
+///
+/// A task that changes the context while it runs starts another round, so a value one component writes reaches
+/// another in the same evaluation. Polled values never ask for ticks: [`super::Engine::next_tick`] asks for one only
+/// while a write is left unread.
+pub(super) fn poll_reads<C: 'static>(core: &mut UiPoll<C>) {
+	for _ in 0..READ_ROUNDS {
+		if !core.written {
+			return;
+		}
+		core.written = false;
+		if !core.runtime.has_readers() {
+			return;
+		}
+		core.runtime.wake_readers();
+		poll_ready_tasks(core);
+	}
+	if core.written {
+		log::warn!(
+			"UI components changed the application context in every one of {READ_ROUNDS} rounds of polled reads, so the rest wait for the next frame. The most likely cause is two components whose bodies change each other's polled values. Make one of them compare before writing, or follow the other through a watch."
+		);
 	}
 }

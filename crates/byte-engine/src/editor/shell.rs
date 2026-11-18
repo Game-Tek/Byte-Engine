@@ -100,9 +100,11 @@ pub struct Shell {
 	/// The messages the application's panels posted, by entity and type, with their JSON payloads, until the editor
 	/// posts them through the inspector.
 	pub(crate) posts: Vec<(Handle, &'static str, String)>,
-	/// The bindings the hint bar offers next, which the editor picks every frame with
-	/// [`crate::editor::bindings::offered`].
-	pub(crate) hints: Vec<&'static crate::editor::bindings::Binding>,
+	/// Where the pointer dragging the gizmo is, in normalized window coordinates, or `None` while nothing is dragged.
+	/// The editor writes it only when it changes, so the hint bar wakes only then.
+	pub(crate) dragged: Option<[f32; 2]>,
+	/// Whether a press ran a binding since the last modifiers went down, which finished what they started.
+	pub(crate) finished: bool,
 	/// The open palette's height, as it last fitted its results, which the editor tests the pointer against; see
 	/// [`palette::contains`].
 	pub(crate) palette_height: f32,
@@ -139,7 +141,8 @@ impl Shell {
 			copy: None,
 			panels: Vec::new(),
 			posts: Vec::new(),
-			hints: Vec::new(),
+			dragged: None,
+			finished: false,
 			palette_height: 0.0,
 			drawer_gone: true,
 		}
@@ -508,9 +511,9 @@ async fn pressed_outside(ctx: &mut EvaluationContext<Shell>, well: &mut Evaluati
 /// It takes the keyboard's focus while it shows, which goes back to what had it before once it's removed.
 async fn palette_view(ctx: &mut EvaluationContext<Shell>) {
 	loop {
-		while ctx.with(|shell: &mut Shell| shell.layers.palette().is_none()).await {
-			ctx.render().await;
-		}
+		// Waiting on the layer reads it only when the shell changed, so a closed view asks for no frames.
+		let mut open = ctx.proactive(|shell: &Shell| shell.layers.palette().is_some());
+		while !*open.next().await {}
 		let mut frame = palette_panel(ctx).await;
 		frame.remove().await;
 	}
@@ -782,6 +785,7 @@ async fn row(ctx: &mut EvaluationContext<Shell>, handle: Handle, label: &str, ki
 
 	let mut hovered = false;
 	let mut shown = (false, false);
+	let mut selected = ctx.proactive(move |shell: &Shell| shell.selected == Some(handle));
 	loop {
 		select! {
 			_ = frame.on(Events::Actuated) => {
@@ -789,9 +793,9 @@ async fn row(ctx: &mut EvaluationContext<Shell>, handle: Handle, label: &str, ki
 			},
 			_ = frame.on(Events::PointerEntered) => hovered = true,
 			_ = frame.on(Events::PointerExited) => hovered = false,
-			_ = ctx.render() => {},
+			_ = selected.next() => {},
 		}
-		let selected = ctx.with(move |shell: &mut Shell| shell.selected == Some(handle)).await;
+		let selected = selected.latest().copied().unwrap_or_default();
 		if (selected, hovered) != shown {
 			shown = (selected, hovered);
 			frame.update_container(|c| c.style(row_style(selected, hovered))).await;
@@ -1127,6 +1131,7 @@ async fn delete_button(ctx: &mut EvaluationContext<Shell>, width: f32) {
 
 	let mut hovered = false;
 	let mut shown = None;
+	let mut selected = ctx.proactive(|shell: &Shell| shell.selection().is_some());
 	loop {
 		select! {
 			_ = button.on(Events::Actuated) => {
@@ -1134,9 +1139,9 @@ async fn delete_button(ctx: &mut EvaluationContext<Shell>, width: f32) {
 			},
 			_ = button.on(Events::PointerEntered) => hovered = true,
 			_ = button.on(Events::PointerExited) => hovered = false,
-			_ = ctx.render() => {},
+			_ = selected.next() => {},
 		}
-		let selected = ctx.with(|shell: &mut Shell| shell.selection().is_some()).await;
+		let selected = selected.latest().copied().unwrap_or_default();
 		let look = (selected, hovered && selected);
 		if shown != Some(look) {
 			shown = Some(look);
@@ -1229,6 +1234,7 @@ async fn setting_field(ctx: &mut EvaluationContext<Shell>, setting: &'static Set
 	// The value shown, `None` before the first frame; the inner `None` is no selection or an unset value.
 	let mut shown: Option<Option<Option<f32>>> = None;
 	let mut text = String::new();
+	let mut current = ctx.proactive(move |shell: &Shell| shell.selection().map(|entity| setting.value(entity)));
 	loop {
 		select! {
 			_ = well.on(Events::Grabbed) => {
@@ -1256,12 +1262,10 @@ async fn setting_field(ctx: &mut EvaluationContext<Shell>, setting: &'static Set
 			},
 			_ = well.on(Events::PointerEntered) => hovered = true,
 			_ = well.on(Events::PointerExited) => hovered = false,
-			_ = ctx.render() => {},
+			_ = current.next() => {},
 		}
-		// The value is compared every frame, but formatted only when it changed.
-		let current = ctx
-			.with(move |shell: &mut Shell| shell.selection().map(|entity| setting.value(entity)))
-			.await;
+		// The value is formatted only when it changed.
+		let current = current.latest().copied().flatten();
 		if shown != Some(current) {
 			shown = Some(current);
 			match current {
@@ -1388,8 +1392,9 @@ async fn toolbar(ctx: &mut EvaluationContext<Shell>) {
 
 /// Waits until whether an entity is selected differs from `selected`, and returns it.
 async fn selection_change(ctx: &mut EvaluationContext<Shell>, selected: bool) -> bool {
+	let mut now = ctx.proactive(|shell: &Shell| shell.selection().is_some());
 	loop {
-		let now = ctx.with(|shell: &mut Shell| shell.selection().is_some()).await;
+		let now = *now.next().await;
 		if now != selected {
 			return now;
 		}
@@ -1425,6 +1430,7 @@ async fn tool_button(ctx: &mut EvaluationContext<Shell>, tool: Tool) {
 
 	let mut hovered = false;
 	let mut shown = None;
+	let mut chosen = ctx.proactive(move |shell: &Shell| shell.tool == tool);
 	loop {
 		select! {
 			_ = button.on(Events::Actuated) => {
@@ -1432,9 +1438,9 @@ async fn tool_button(ctx: &mut EvaluationContext<Shell>, tool: Tool) {
 			},
 			_ = button.on(Events::PointerEntered) => hovered = true,
 			_ = button.on(Events::PointerExited) => hovered = false,
-			_ = ctx.render() => {},
+			_ = chosen.next() => {},
 		}
-		let chosen = ctx.with(move |shell: &mut Shell| shell.tool == tool).await;
+		let chosen = chosen.latest().copied().unwrap_or_default();
 		if shown != Some((chosen, hovered)) {
 			shown = Some((chosen, hovered));
 			button.update_container(|c| c.style(tool_style(chosen, hovered))).await;

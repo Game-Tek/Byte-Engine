@@ -240,6 +240,58 @@ A geometry read returns two boxes. Use `logical` for interaction, such as
 turning the pointer into a local position, because the pointer hits that box.
 Use `display` to follow what's seen.
 
+## Follow application state
+
+To show a value that changes outside your component, such as the selection or a
+worker's progress, follow it as a reactive value and update your elements each
+time it changes. The first wait resolves at once with the current value, so the
+same code shows the starting state and every later change.
+
+Follow a value your application keeps in its context with `Context::proactive`.
+Pass a function that reads it:
+
+```rust
+let mut selected = ctx.proactive(move |app: &App| app.selected == Some(id));
+loop {
+    select! {
+        _ = row.on(Events::Actuated) => ctx.with(move |app: &mut App| app.selected = Some(id)).await,
+        selected = selected.next() => {
+            row.update_container(|c| c.style(row_style(*selected))).await;
+        }
+    }
+}
+```
+
+The read runs only after the application context was written, and a read equal
+to the last one isn't a change. It never asks for a frame, so a screen whose
+components wait only on reactive values and events stays idle. Write the
+context before you call `Engine::evaluate`, and read it with `Engine::ctx` when
+you don't change it: every `Engine::ctx_mut` counts as a write. Keep the value
+small, such as a flag, a count, or a position, since each read builds it again.
+
+Follow a value that another thread produces, or one too large to compare, with
+a `Watch`. Write it with `Watch::set` or `Watch::update`, and pass a subscriber
+to `Context::reactive`:
+
+```rust
+let mut progress = ctx.reactive(app_progress.subscribe());
+loop {
+    let percent = *progress.next().await;
+    label.update_text(|t| t.content(format_args!("{percent}%"))).await;
+}
+```
+
+A value that depends on time doesn't change by itself. To act once the user
+held still for a second, wait on a timer beside the value, and start again when
+the value changes first:
+
+```rust
+select! {
+    _ = gesture.next() => continue,
+    _ = ctx.wait(Duration::from_secs(1)) => show_hints(ctx).await,
+}
+```
+
 ## Animate an element
 
 An animation is a value your component owns: where it's headed, where it
@@ -612,6 +664,9 @@ input outside the tree, and both evaluation and rendering key on it.
 - [`Fonts`](/docs/api/latest/byte_engine/ui#type.Fonts)
 - [`Sizing`](/docs/api/latest/byte_engine/ui#enum.Sizing)
 - [`Context::logical_size_change`](/docs/api/latest/byte_engine/ui#trait.Context)
+- [`Context::reactive` and `Context::proactive`](/docs/api/latest/byte_engine/ui#trait.Context)
+- [`Reactive`](/docs/api/latest/byte_engine/ui#struct.Reactive)
+- [`Watch`](/docs/api/latest/byte_engine/ui#struct.Watch)
 - [`Animation`](/docs/api/latest/byte_engine/ui#struct.Animation)
 - [`Spring`](/docs/api/latest/byte_engine/ui#struct.Spring)
 - [`Easing`](/docs/api/latest/byte_engine/ui#struct.Easing)

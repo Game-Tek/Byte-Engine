@@ -104,9 +104,6 @@ struct ResourceWindow {
 
 /// How often the editor asks the inspector for the scene, the same rate the console refreshes at.
 const SCENE_POLL: Duration = Duration::from_millis(250);
-/// How long an action left partway, a gizmo held still or a modifier held without a second key, waits before the hint
-/// bar offers what finishes it.
-const HESITATION: Duration = Duration::from_secs(1);
 
 /// The `Editor` struct is the editor layer a game installs over itself, which the game steps from its tick.
 ///
@@ -149,11 +146,6 @@ pub struct Editor {
 	pointer: UiPoint,
 	/// The keys held down, which every key's press and release updates through [`Self::press`].
 	held: bindings::Held,
-	/// The held keys and the dragged pointer as they last changed, and when, so the hint bar knows how long the user
-	/// stopped.
-	progress: (bindings::Held, Option<[f32; 2]>, Instant),
-	/// Whether a press ran a binding since the last modifiers went down, which finished what they started.
-	finished: bool,
 	/// Whether the editor closed and its pass keeps drawing for the scene drawer to leave.
 	closing: bool,
 	/// The operations an undo or redo is applying, kept to reuse their storage.
@@ -234,8 +226,6 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 		drag: None,
 		pointer: UiPoint::new(0.0, 0.0),
 		held: bindings::Held::default(),
-		progress: (bindings::Held::default(), None, Instant::now()),
-		finished: false,
 		closing: false,
 		applying: Vec::new(),
 		history: history::History::default(),
@@ -353,9 +343,9 @@ impl Editor {
 		self.move_carry(app);
 		self.fly_camera(app);
 		self.place_gizmo();
-		self.offer_hints();
+		self.publish_drag();
 
-		let viewport = self.engine.ctx_mut().viewport;
+		let viewport = self.engine.ctx().viewport;
 		self.engine.evaluate(viewport, app.frame_allocator());
 		let render = self.engine.render();
 		if self.published != Some(render.revision()) {
@@ -369,7 +359,7 @@ impl Editor {
 	/// whose last layer Escape popped, and every one once the editor closed.
 	fn step_resources(&mut self, app: &mut GraphicsApplication) {
 		self.stage.adopt();
-		let open = self.engine.ctx_mut().layers.open();
+		let open = self.engine.ctx().layers.open();
 		let mut index = 0;
 		while index < self.resources.len() {
 			if !open || !self.resources[index].engine.ctx_mut().layers.open() {
@@ -741,7 +731,12 @@ impl Editor {
 		self.held.set(key, down);
 		// A resource window's engine stands in the main one's place while its input is handled, so the window the key
 		// reached reads it too, as a mesh window's material names do Alt.
-		self.engine.ctx_mut().held = self.held;
+		let shell = self.engine.ctx_mut();
+		shell.held = self.held;
+		// Letting go of the modifiers ends the shortcut they started, run or not.
+		if self.held.modifiers() == bindings::Held::default() {
+			shell.finished = false;
+		}
 		let field_key = match key {
 			bindings::Key::Enter => Some(Key::Enter),
 			bindings::Key::Escape => Some(Key::Escape),
@@ -761,7 +756,7 @@ impl Editor {
 		}
 		let held = self.held;
 		if let Some(run) = bindings::pressed(&self.situation(scene), held, key) {
-			self.finished = true;
+			self.engine.ctx_mut().finished = true;
 			run(self, app);
 		}
 	}
@@ -1372,26 +1367,13 @@ impl Editor {
 
 	/// Fills the hint bar with what would finish the action the main window's user left partway.
 	///
-	/// The bar stays empty until the user stops partway for [`HESITATION`]: a gizmo drag whose pointer stood still, or
-	/// modifiers held without the key that finishes a shortcut. Any change of the held keys or the dragged pointer
-	/// starts the wait again, and a shortcut run with the modifiers still down ends it.
-	fn offer_hints(&mut self) {
-		let (held, dragging) = (self.held, self.drag.is_some());
-		let state = (held, dragging.then_some([self.pointer.x, self.pointer.y]));
-		if state != (self.progress.0, self.progress.1) {
-			self.progress = (state.0, state.1, Instant::now());
+	/// It writes the shell only when the drag moved, started, or ended, so components that follow it stay asleep
+	/// while nothing changes.
+	fn publish_drag(&mut self) {
+		let dragged = self.drag.is_some().then_some([self.pointer.x, self.pointer.y]);
+		if self.engine.ctx().dragged != dragged {
+			self.engine.ctx_mut().dragged = dragged;
 		}
-		if held.modifiers() == bindings::Held::default() {
-			self.finished = false;
-		}
-		let stopped = self.progress.2.elapsed() >= HESITATION && (dragging || !self.finished);
-		// The list is taken out while it's filled, since the situation reads the shell, and put back to keep its storage.
-		let mut hints = std::mem::take(&mut self.engine.ctx_mut().hints);
-		bindings::offered(&self.situation(true), held, &mut hints);
-		if !stopped {
-			hints.clear();
-		}
-		self.engine.ctx_mut().hints = hints;
 	}
 
 	/// Moves the editor's camera by `offset`, the step a gizmo drag just moved its entity, so the entity stays where

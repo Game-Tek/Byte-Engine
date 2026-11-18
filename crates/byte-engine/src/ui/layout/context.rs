@@ -24,6 +24,7 @@ use crate::ui::{
 		},
 	},
 	primitive::{Events, Key},
+	reactive::{Polled, Reactive, Source},
 	timer::WaitFuture,
 };
 
@@ -198,6 +199,27 @@ pub trait Context<C: 'static = ()>: Sized {
 	/// Removes everything declared under this context, including the component
 	/// itself when awaited from one. See [`EvaluationContext::remove`].
 	fn remove(&mut self) -> impl Future<Output = ()>;
+
+	/// Follows a value that tells when it changes, such as a [`Watch`](crate::ui::Watch) subscriber.
+	///
+	/// Await [`Reactive::next`] in a loop or a `select!`: it resolves at once with the current value, then on each
+	/// change. For a value you read from the application context, use [`Self::proactive`].
+	fn reactive<S: Source<C>>(&self, source: S) -> Reactive<S, C> {
+		Reactive::new(source)
+	}
+
+	/// Follows a value read from the application context by `read`, such as whether an item is selected.
+	///
+	/// Await [`Reactive::next`] like a [`Self::reactive`] value. `read` runs in evaluations after the context was
+	/// written, and a read equal to the last one is not a change. It never asks for a frame, so a component that
+	/// waits only on these leaves the interface idle. Keep the value small; see [`Polled`].
+	fn proactive<T, F>(&self, read: F) -> Reactive<Polled<F>, C>
+	where
+		T: PartialEq + 'static,
+		F: FnMut(&C) -> T,
+	{
+		Reactive::new(Polled(read))
+	}
 
 	/// Returns a future that completes after `duration`. See [`WaitFuture`].
 	fn wait(&mut self, duration: Duration) -> WaitFuture<C> {

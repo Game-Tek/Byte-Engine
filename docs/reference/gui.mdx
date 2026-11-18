@@ -326,9 +326,10 @@ keeps polling it. Removing an element drops its waits and queued inputs.
 
 Within one evaluation: a changed size cancels any drag; the pointer syncs;
 drag and drop events route; the frame counter advances and due timers and
-frame waits wake; ready tasks run; layout runs; hover, click, and scroll
-events route; the focused element's keys and text edits route; ready tasks run
-again.
+frame waits wake; ready tasks run; if the application context was written,
+polled values are read again and the tasks whose value changed run; layout
+runs; hover, click, and scroll events route; the focused element's keys and
+text edits route; ready tasks run again.
 
 ## Focus
 
@@ -370,8 +371,10 @@ the drag ended. A changed evaluation size cancels first.
 | Logical size change | With the element's logical size, once that size differs from the known size the wait was given. Checked when polled and after every layout. |
 
 The frame counter advances once per evaluation. The engine's next tick is now
-while any task waits for a frame or is woken, else the earliest timer deadline,
-else never. Reads of geometry, pointer, drag, and application state complete on
+while any task waits for a frame or is woken, or while a task waits on a polled
+value and the host changed the application context since the last evaluation;
+else the earliest timer deadline, else never. A wait on a polled value never
+asks for a tick by itself. See [Reactive values](#reactive-values). Reads of geometry, pointer, drag, and application state complete on
 the first poll. A geometry read reports two transformed rectangles from the
 last evaluated frame: the logical one, which hits use, and the display one,
 which is painted. Both are the same unless a container's display size differs.
@@ -468,12 +471,30 @@ current value, and writes whichever properties it chooses.
 | Manual clock | Once the host advances the clock by hand, a frame's time is the sum advanced since the previous frame, and the wall clock no longer counts. |
 | Timers | Always follow the wall clock. |
 
-## Watches
+## Reactive values
 
-A watch holds a value that components can subscribe to. Each update advances
-its version and wakes every subscriber. A subscriber resolves once the version
-has moved past the one it last read, and writes between polls coalesce into one
-wake.
+A reactive value is a component's view of one value that changes outside it.
+It has a source, which says how a change is noticed, and keeps the last value
+it handed out.
+
+| Source | A change is noticed | Asks for ticks |
+| --- | --- | --- |
+| Watch | When a writer updates the watch, from any thread. | No; a write wakes the waiting task. |
+| Polled | When a read of the application context differs from the kept value, compared with equality. | No. Reads happen in evaluations that run anyway. Only a write left unread asks for one. |
+
+| Rule | Value |
+| --- | --- |
+| First wait | Resolves on its first poll with the current value, whether or not the value ever changed. |
+| Later waits | Resolve once the value changed since the last one handed out, with the newest value. |
+| Coalescing | Changes between two waits resolve one wait, with the newest value. No change is queued. |
+| Unchanged writes | A watch update always counts as a change. A polled read equal to the kept value doesn't. |
+| Polled reads | Run in an evaluation after the ready tasks and before layout, only when the application context was written since the last reads. A task whose value changed runs at once; if it writes the context, the reads run again, at most 8 rounds per evaluation. |
+| Writes | Lending the application context mutably, to the host or to a component's application context read, counts as a write, whether or not a value changed. |
+| Writes after reads | A write after the reads of an evaluation leaves them due. While a task waits on a polled value, the next tick is then now. |
+| Timing | A polled value that depends on time doesn't change by itself. Wait on a timer for it. |
+
+A watch holds one value and a version that each update advances. A
+subscriber starts with nothing seen, so its first wait resolves at once.
 
 ## Identity
 

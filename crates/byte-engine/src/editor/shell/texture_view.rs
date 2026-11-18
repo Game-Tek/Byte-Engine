@@ -44,9 +44,9 @@ const MAX_PIXELS_PER_TEXEL: f32 = 8.0;
 /// the window resizes.
 pub(super) async fn texture_view(ctx: &mut EvaluationContext<Shell>) {
 	loop {
-		while ctx.with(|shell: &mut Shell| shell.layers.texture().is_none()).await {
-			ctx.render().await;
-		}
+		// Waiting on the layer reads it only when the shell changed, so a closed view asks for no frames.
+		let mut open = ctx.proactive(|shell: &Shell| shell.layers.texture().is_some());
+		while !*open.next().await {}
 		let mut picture = base(ctx).await;
 		let mut drawer = properties_drawer(ctx).await;
 		show_texture(ctx, &mut picture, &mut drawer).await;

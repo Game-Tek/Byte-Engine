@@ -207,6 +207,7 @@ impl<C: 'static> Engine<C> {
 				tree: RetainedTree::new(),
 				commands,
 				sender,
+				written: false,
 			},
 			retained_layout: None,
 			retained_render: None,
@@ -239,11 +240,12 @@ impl<C: 'static> Engine<C> {
 	/// Returns when this engine next needs an evaluation, or `None` when it only reacts to events.
 	///
 	/// The engine needs one now while a component waits for a frame, which includes every running animation, or a
-	/// woken component waits to be polled. Otherwise the earliest UI timer decides. Hand the answer to the host
-	/// that drives the engine, such as `GraphicsApplication::schedule_tick`.
+	/// woken component waits to be polled, or a component waits on a polled value and the application context was
+	/// written since it last read it. Otherwise the earliest UI timer decides. Hand the answer to the host that drives
+	/// the engine, such as `GraphicsApplication::schedule_tick`.
 	pub fn next_tick(&self) -> Option<std::time::Instant> {
 		let runtime = &self.core.runtime;
-		if runtime.needs_tick() {
+		if runtime.needs_tick() || (self.core.written && runtime.has_readers()) {
 			return Some(std::time::Instant::now());
 		}
 		runtime.next_deadline()
@@ -262,7 +264,12 @@ impl<C: 'static> Engine<C> {
 	}
 
 	/// Returns the application context for the host to change between evaluations.
+	///
+	/// Components waiting on polled values read it again in the next evaluation, so change it before
+	/// [`Self::evaluate`]: a change made after asks for one more evaluation through [`Self::next_tick`]. Read with
+	/// [`Self::ctx`] when you don't change it.
 	pub fn ctx_mut(&mut self) -> &mut C {
+		self.core.written = true;
 		&mut self.core.ctx
 	}
 
@@ -298,6 +305,8 @@ impl<C: 'static> Engine<C> {
 		self.core.runtime.begin_frame();
 		self.core.tree.begin_frame();
 		poll_ready_tasks(&mut self.core);
+		// Polled values read the context after the tasks the frame woke, so their changes are laid out this frame.
+		poll_reads(&mut self.core);
 
 		self.build_layout(size, frame_allocator);
 		self.route_input_events();

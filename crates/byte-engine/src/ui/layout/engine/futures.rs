@@ -163,6 +163,8 @@ pub(crate) struct UiPoll<C> {
 	pub(super) commands: Receiver<UiCommand>,
 	/// Handed to every mount as it starts, so its destructor can send its removal.
 	pub(super) sender: Sender<UiCommand>,
+	/// Whether the application context was lent mutably since polled values last read it; see [`poll_reads`].
+	pub(super) written: bool,
 }
 
 impl<C: 'static> UiPoll<C> {
@@ -200,6 +202,14 @@ impl<C: 'static> UiPoll<C> {
 	pub(crate) fn wait_until(&mut self, deadline: Instant) {
 		let (task, poll) = self.current();
 		self.runtime.wait_until(task, deadline, poll);
+	}
+
+	/// Returns the application context for a polled read, and registers this task to read it again after the next
+	/// write. Reading doesn't count as a write.
+	pub(crate) fn read_context(&mut self) -> &C {
+		let (task, poll) = self.current();
+		self.runtime.wait_for_read(task, poll);
+		&self.ctx
 	}
 }
 
@@ -240,7 +250,10 @@ impl<C: 'static, F: FnOnce(&mut C) -> T, T> Future for With<C, F> {
 		let read = self.read.take().expect(
 			"A UI context read was polled after it completed. The most likely cause is polling a finished future again.",
 		);
-		Poll::Ready(read(&mut UiPoll::<C>::from_context(cx).ctx))
+		let poll = UiPoll::<C>::from_context(cx);
+		// The closure may change the context, so polled values read it again.
+		poll.written = true;
+		Poll::Ready(read(&mut poll.ctx))
 	}
 }
 
@@ -915,6 +928,8 @@ mod animation_run_tests {
 		let signal = interrupt.clone();
 		let (mut engine, log) = engine(async move |panel, log| {
 			let mut subscriber = signal.subscribe();
+			// The interrupt is the next write, so the value already there counts as seen.
+			drop(subscriber.read());
 			let mut x = Animation::new(0.0, ease_in(1.0));
 			x.set_target(10.0);
 			let end = log.clone();
@@ -948,5 +963,120 @@ mod animation_run_tests {
 			frame(&mut engine, 100);
 		}
 		assert_eq!(log.borrow().last().map(String::as_str), Some("back from 2.5"));
+	}
+}
+
+#[cfg(test)]
+mod reactive_tests {
+	use super::*;
+	use crate::ui::Watch;
+
+	/// The application context of these tests: a value components follow, and what each run of a component saw.
+	#[derive(Default)]
+	struct App {
+		value: u32,
+		seen: Vec<u32>,
+	}
+
+	fn frame<C: 'static>(engine: &mut Engine<C>) {
+		engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
+	}
+
+	/// Mounts a component that records every value its polled read of `App::value` hands out.
+	fn follower() -> Engine<App> {
+		let mut engine = Engine::with_context(App::default());
+		engine.mount(async move |ctx| {
+			let mut value = ctx.proactive(|app: &App| app.value);
+			loop {
+				let value = *value.next().await;
+				ctx.with(move |app| app.seen.push(value)).await;
+			}
+		});
+		engine
+	}
+
+	#[test]
+	fn a_polled_value_resolves_at_mount_with_the_current_value() {
+		let mut engine = follower();
+		engine.ctx_mut().value = 4;
+		frame(&mut engine);
+		assert_eq!(engine.ctx().seen, [4]);
+	}
+
+	#[test]
+	fn a_polled_value_resolves_only_when_the_read_differs() {
+		let mut engine = follower();
+		frame(&mut engine);
+		// A write that leaves the value as it was is not a change.
+		engine.ctx_mut().value = 0;
+		frame(&mut engine);
+		engine.ctx_mut().value = 1;
+		engine.ctx_mut().value = 2;
+		frame(&mut engine);
+		assert_eq!(engine.ctx().seen, [0, 2]);
+	}
+
+	#[test]
+	fn a_component_waiting_only_on_polled_values_asks_for_no_ticks() {
+		let mut engine = follower();
+		frame(&mut engine);
+		assert_eq!(engine.next_tick(), None);
+		frame(&mut engine);
+		assert_eq!(engine.ctx().seen, [0], "an evaluation without writes ran the component");
+	}
+
+	#[test]
+	fn a_write_after_an_evaluation_asks_for_one_tick() {
+		let mut engine = follower();
+		frame(&mut engine);
+		engine.ctx_mut().value = 3;
+		assert!(engine.next_tick().is_some(), "an unread write asked for no tick");
+		frame(&mut engine);
+		assert_eq!(engine.ctx().seen, [0, 3]);
+		assert_eq!(engine.next_tick(), None, "a read write still asks for ticks");
+	}
+
+	#[test]
+	fn a_change_one_component_writes_reaches_another_in_the_same_evaluation() {
+		let mut engine = Engine::with_context(App::default());
+		engine.mount(async move |ctx| {
+			ctx.element("writer")
+				.component(async |ctx| {
+					let mut seen = ctx.proactive(|app: &App| app.seen.len());
+					// Each time the follower records a value, the writer moves the value on, up to 3.
+					loop {
+						let count = *seen.next().await;
+						ctx.with(move |app| app.value = app.value.max(count as u32).min(3)).await;
+					}
+				})
+				.await;
+			let mut value = ctx.proactive(|app: &App| app.value);
+			loop {
+				let value = *value.next().await;
+				ctx.with(move |app| app.seen.push(value)).await;
+			}
+		});
+		frame(&mut engine);
+		assert_eq!(engine.ctx().seen, [0, 1, 2, 3]);
+		assert_eq!(engine.next_tick(), None);
+	}
+
+	#[test]
+	fn a_watch_resolves_at_mount_and_then_once_for_writes_between_frames() {
+		let watch = Watch::new(1u32);
+		let mut engine = Engine::with_context(Vec::<u32>::new());
+		let subscriber = watch.subscribe();
+		engine.mount(async move |ctx| {
+			let mut value = ctx.reactive(subscriber);
+			loop {
+				let value = *value.next().await;
+				ctx.with(move |seen: &mut Vec<u32>| seen.push(value)).await;
+			}
+		});
+		frame(&mut engine);
+		watch.set(2);
+		watch.set(3);
+		frame(&mut engine);
+		assert_eq!(*engine.ctx(), [1, 3]);
 	}
 }

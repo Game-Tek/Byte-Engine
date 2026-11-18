@@ -24,6 +24,7 @@ pub mod intersection;
 pub mod layout;
 mod point;
 pub mod primitive;
+pub mod reactive;
 pub mod render_pass;
 pub mod style;
 pub mod timer;
@@ -55,6 +56,7 @@ pub use layout::{
 };
 pub use point::{UiPoint, UiVector};
 pub use primitive::{Events, Key, Primitives, TextEdit};
+pub use reactive::{Next, Polled, Reactive, Source};
 pub use render_pass::UiRenderPass;
 pub use style::{Color, ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind, LinearGradient, MixModes, Shadow};
 pub use timer::WaitFuture;

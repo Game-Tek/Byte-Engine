@@ -31,9 +31,9 @@ const CARD_NUMBER: f32 = 28.0;
 /// Shows the open mesh's layers while a mesh is open, declaring them again when the window resizes.
 pub(super) async fn mesh_view(ctx: &mut EvaluationContext<Shell>) {
 	loop {
-		while ctx.with(|shell: &mut Shell| shell.layers.mesh().is_none()).await {
-			ctx.render().await;
-		}
+		// Waiting on the layer reads it only when the shell changed, so a closed view asks for no frames.
+		let mut open = ctx.proactive(|shell: &Shell| shell.layers.mesh().is_some());
+		while !*open.next().await {}
 		let mut picture = base(ctx).await;
 		preview(&mut picture).await;
 		// The slider sits over the picture, in the base, which removes it with itself; a mesh with one detail level has

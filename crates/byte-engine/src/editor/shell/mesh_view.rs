@@ -115,13 +115,12 @@ async fn summary_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
 	let width = drawer.width;
 	let (size, totals) = facts.split_at(3);
 	for (key, title, facts) in [("size", "Size", size), ("totals", "Mesh", totals)] {
-		let (mut rows, _) = block(&mut drawer.content, key, title, facts.len()).await;
+		let (mut rows, _) = block(&mut drawer.content, key, title).await;
 		for (label, value) in facts {
 			let mut line = rows
 				.element(*label)
-				.container(|c| c.width(width.into()).height(FIELD_HEIGHT.into()).flow(flow::centered_row))
+				.container(|c| c.width(width.into()).height(FIELD_HEIGHT.into()).padding(2.0, 0.0).flow(flow::centered_row))
 				.await;
-			line.element("lead").container(|c| c.width(2.into()).height(1.into())).await;
 			line.element("label")
 				.container(|c| c.width((width * 0.4).into()).height(FIELD_HEIGHT.into()).flow(flow::centered_row))
 				.await

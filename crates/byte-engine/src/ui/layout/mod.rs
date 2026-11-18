@@ -226,6 +226,16 @@ fn on_fit_axes(container: &Container, size: Size, fit: Size) -> Size {
 	)
 }
 
+/// Returns `size` less the container's padding on both sides of each axis: the space its flow sees and offers its
+/// children.
+fn inside_padding(container: &Container, size: Size) -> Size {
+	let padding = container.padding;
+	Size::new(
+		(size.x() - padding.x() * 2.0).max(0.0),
+		(size.y() - padding.y() * 2.0).max(0.0),
+	)
+}
+
 /// The `Measure` struct resolves element sizes for one layout pass.
 ///
 /// Leaf and fixed-size elements hit the per-element cache, which outlives the pass. A fit container's size depends
@@ -272,9 +282,12 @@ impl Measure<'_, '_> {
 			resolve(container.width, available.x()),
 			resolve(container.height, available.y()),
 		);
-		let offered = on_fit_axes(container, resolved, available);
-		let mut cursor = Offset::new(0.0, 0.0);
-		let (mut right, mut bottom) = (0.0f32, 0.0f32);
+		let offered = inside_padding(container, on_fit_axes(container, resolved, available));
+		let inner = inside_padding(container, resolved);
+		// The flow starts inside the padding, and an empty container is as large as its padding on both sides.
+		let padding = container.padding;
+		let mut cursor = Offset::new(padding.x(), padding.y());
+		let (mut right, mut bottom) = (padding.x(), padding.y());
 		for &child_index in &self.tree.children[index] {
 			// Absolutely positioned and absolute-depth children don't take part in flow, so they don't size it.
 			if let Primitives::Container(child) = &self.tree.elements[child_index].primitive
@@ -283,18 +296,19 @@ impl Measure<'_, '_> {
 				continue;
 			}
 			let child_size = self.size(child_index, offered);
-			let output = container.flow.call(FlowInput::new(resolved, cursor, child_size));
+			let output = container.flow.call(FlowInput::new(inner, cursor, child_size));
 			// The extent ends at the far edge of each child, never at the next cursor, so trailing gaps don't count.
 			right = right.max(output.child_offset().x() + child_size.x());
 			bottom = bottom.max(output.child_offset().y() + child_size.y());
 			cursor = output.next_cursor();
 		}
-		on_fit_axes(container, resolved, Size::new(right, bottom))
+		on_fit_axes(container, resolved, Size::new(right + padding.x(), bottom + padding.y()))
 	}
 
-	/// Returns the space the container at `index`, laid out at `size`, offers its flow children.
+	/// Returns the space the container at `index`, laid out at `size`, offers its flow children, inside its padding.
 	fn offered_to_children(&self, index: usize, container: &Container, size: Size) -> Size {
-		self.fits[index].map_or(size, |(offered, _)| on_fit_axes(container, size, offered))
+		let space = self.fits[index].map_or(size, |(offered, _)| on_fit_axes(container, size, offered));
+		inside_padding(container, space)
 	}
 }
 
@@ -357,7 +371,9 @@ fn layout_elements<'a>(
 			return;
 		};
 		let origin: Offset = Into::<Location>::into(position).into();
-		let mut cursor = origin;
+		// Flow children start inside the padding and see the box within it; absolute positions use the whole box.
+		let mut cursor = Offset::new(origin.x() + container.padding.x(), origin.y() + container.padding.y());
+		let inner = inside_padding(container, size);
 		let offered = measure.offered_to_children(index, container, size);
 		// Absolute-depth layers start from the viewport after ordinary flow children.
 		for reset_layer in [false, true] {
@@ -384,7 +400,7 @@ fn layout_elements<'a>(
 						cursor,
 					),
 					_ if reset => FlowOutput::new(Offset::new(0.0, 0.0), cursor),
-					_ => container.flow.call(FlowInput::new(size, cursor, child_size)),
+					_ => container.flow.call(FlowInput::new(inner, cursor, child_size)),
 				};
 				place(
 					tree,
@@ -1026,6 +1042,32 @@ mod tests {
 		assert_eq!(elements[5].size, Size::new(40, 8));
 		assert_eq!(elements[1].size, Size::new(40, 13));
 		assert_eq!(elements[5].position, Location3::new(0, 5, elements[5].position.z()));
+	}
+
+	#[test]
+	fn a_fit_container_counts_its_padding_on_both_sides() {
+		let fit = detached_container(|c| c.size(Sizing::fit()).padding(6.0, 4.0).flow(flow::row_with_gap(8)));
+		assert_eq!(fit_size(fit, [pixels(20, 10), pixels(20, 10)]), Size::new(60, 18));
+		let empty = detached_container(|c| c.size(Sizing::fit()).padding(6.0, 4.0));
+		assert_eq!(fit_size(empty, []), Size::new(12, 8));
+	}
+
+	#[test]
+	fn padding_moves_flow_children_in_and_shrinks_their_space_but_not_an_absolute_childs() {
+		let padded = detached_container(|c| c.size(Sizing::pixels(100)).padding(10.0, 20.0).flow(flow::center));
+		let full = Container::default();
+		let centered = pixels(20, 20);
+		let anchored = detached_container(|c| c.size(Sizing::pixels(10)).absolute_position(0, 0));
+		let elements = layout(
+			[Container::default(), padded, full, centered, anchored],
+			&[(0, 1), (1, 2), (1, 3), (1, 4)],
+			Size::new(400, 300),
+		);
+		assert_eq!(elements[2].size, Size::new(80, 60), "a full child fills the box inside the padding");
+		assert_eq!(elements[2].position, Location3::new(10, 20, elements[2].position.z()));
+		// A centering flow centers in the box inside the padding, which shares the box's center.
+		assert_eq!(elements[3].position, Location3::new(40, 40, elements[3].position.z()));
+		assert_eq!(elements[4].position, Location3::new(0, 0, elements[4].position.z()));
 	}
 
 	/// Returns each container's depth, in the order the containers were given to `layout`.

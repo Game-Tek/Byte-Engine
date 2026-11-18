@@ -248,7 +248,7 @@ async fn properties_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
 		.await;
 	let mut drawer = Drawer::declare(ctx, Side::Right, &name, &size).await;
 	let width = drawer.width;
-	let (mut rows, _) = block(&mut drawer.content, "texture", "Texture", Property::ALL.len()).await;
+	let (mut rows, _) = block(&mut drawer.content, "texture", "Texture").await;
 	for property in Property::ALL {
 		rows.element(property.label())
 			.component(async move |ctx| property_row(ctx, property, width).await)
@@ -270,9 +270,13 @@ async fn property_row(ctx: &mut EvaluationContext<Shell>, property: Property, wi
 		.await;
 	let mut label = line
 		.element("label")
-		.container(|c| c.width((width - CONTROL_WIDTH).into()).height(FIELD_HEIGHT.into()).flow(flow::centered_row))
+		.container(|c| {
+			c.width((width - CONTROL_WIDTH).into())
+				.height(FIELD_HEIGHT.into())
+				.padding(2.0, 0.0)
+				.flow(flow::centered_row)
+		})
 		.await;
-	label.element("lead").container(|c| c.width(2.into()).height(1.into())).await;
 	label
 		.element("text")
 		.text(property.label(), |t| t.font_size(12.0).style([solid(MUTED)]))
@@ -372,12 +376,12 @@ async fn coverage_field(ctx: &mut EvaluationContext<Shell>, control: &mut Evalua
 				.corner_radius(6.0)
 				.corner_exponent(SQUIRCLE)
 				.clip(true)
+				.padding(8.0, 0.0)
 				.flow(flow::centered_row_with_gap(6))
 				.hit_testable(true)
 				.style(setting_style(true, false))
 		})
 		.await;
-	field.element("lead").container(|c| c.width(2.into()).height(1.into())).await;
 	let mut value = field
 		.element("value")
 		.text("", |t| t.font_size(12.0).style([solid(TEXT)]))
@@ -431,9 +435,8 @@ async fn value_text(ctx: &mut EvaluationContext<Shell>, control: &mut Evaluation
 async fn footer(ctx: &mut EvaluationContext<Shell>, width: f32) {
 	let mut line = ctx
 		.element("line")
-		.container(|c| c.width(width.into()).height(FOOTER_HEIGHT.into()).flow(flow::centered_row))
+		.container(|c| c.width(width.into()).height(FOOTER_HEIGHT.into()).padding(2.0, 0.0).flow(flow::centered_row))
 		.await;
-	line.element("lead").container(|c| c.width(2.into()).height(1.into())).await;
 	let mut text = line
 		.element("text")
 		.text("", |t| t.font_size(11.0).style([solid(MUTED)]))

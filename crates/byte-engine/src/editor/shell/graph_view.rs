@@ -126,10 +126,10 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 			c.absolute_position(0.0, 0.0)
 				.width(width.into())
 				.height(TITLE_HEIGHT.into())
+				.padding(14.0, 0.0)
 				.flow(flow::centered_row_with_gap(8))
 		})
 		.await;
-	bar.element("lead").container(|c| c.width(6.into()).height(1.into())).await;
 	bar.element("name")
 		.text(&title, |t| t.font_size(13.0).style([solid(TEXT)]))
 		.await;
@@ -388,12 +388,9 @@ async fn draw_world(
 				c.absolute_position(0.0, 0.0)
 					.width((NODE_WIDTH * z).into())
 					.height((HEADER_HEIGHT * z).into())
+					.padding(10.0 * z, 0.0)
 					.flow(flow::centered_row_with_gap((6.0 * z) as u32))
 			})
-			.await;
-		header
-			.element("lead")
-			.container(|c| c.width((4.0 * z).into()).height(1.into()))
 			.await;
 		header
 			.element("name")
@@ -453,11 +450,9 @@ async fn draw_world(
 					c.absolute_position(0.0, row_top)
 						.width((NODE_WIDTH * z).into())
 						.height((ROW_HEIGHT * z).into())
+						.padding(14.0 * z, 0.0)
 						.flow(flow::centered_row_with_gap((6.0 * z) as u32))
 				})
-				.await;
-			line.element("lead")
-				.container(|c| c.width((8.0 * z).into()).height(1.into()))
 				.await;
 			line.element("label")
 				.text(row.field(), |t| t.font_size(11.0 * z).style([solid(MUTED)]))
@@ -513,13 +508,11 @@ async fn value_field(ctx: &mut EvaluationContext<Shell>, node: usize, row: usize
 				.corner_radius(4.0 * z)
 				.corner_exponent(SQUIRCLE)
 				.clip(true)
+				.padding(8.0 * z, 0.0)
 				.flow(flow::centered_row_with_gap((4.0 * z) as u32))
 				.hit_testable(true)
 				.style(row_style(false, false))
 		})
-		.await;
-	well.element("lead")
-		.container(|c| c.width((4.0 * z).into()).height(1.into()))
 		.await;
 	let mut value = well
 		.element("value")

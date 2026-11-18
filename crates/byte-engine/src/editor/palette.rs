@@ -406,29 +406,24 @@ pub(crate) fn leaving(seconds: f32) -> Look {
 	}
 }
 
-/// The palette's rectangle in a window of `viewport` pixels while it shows `rows` results: left, top, right, bottom.
-pub(crate) fn rect(viewport: Size, rows: usize) -> [f32; 4] {
+/// The palette's rectangle in a window of `viewport` pixels while it's `height` tall, as the shell measured it: left,
+/// top, right, bottom.
+pub(crate) fn rect(viewport: Size, height: f32) -> [f32; 4] {
 	let left = (viewport.x() - WIDTH) * 0.5;
-	[left, TOP, left + WIDTH, TOP + height(rows)]
+	[left, TOP, left + WIDTH, TOP + height]
 }
 
-/// The palette's height while it shows `rows` results.
-pub(crate) fn height(rows: usize) -> f32 {
-	let rows = rows.min(MAX_ROWS) as f32;
-	INSET * 2.0 + FIELD_HEIGHT + if rows > 0.0 { GAP + rows * ROW_HEIGHT } else { 0.0 }
-}
-
-/// Whether the pixel `point` is on the palette while it shows `rows` results.
-pub(crate) fn contains(viewport: Size, rows: usize, point: [f32; 2]) -> bool {
-	let [left, top, right, bottom] = rect(viewport, rows);
+/// Whether the pixel `point` is on the palette while it's `height` tall.
+pub(crate) fn contains(viewport: Size, height: f32, point: [f32; 2]) -> bool {
+	let [left, top, right, bottom] = rect(viewport, height);
 	(left..right).contains(&point[0]) && (top..bottom).contains(&point[1])
 }
 
 /// The result under the pixel `point` while the palette shows `rows` results, if any.
 pub(crate) fn row_at(viewport: Size, rows: usize, point: [f32; 2]) -> Option<usize> {
-	let [left, top, right, _] = rect(viewport, rows);
-	let first = top + INSET + FIELD_HEIGHT + GAP;
-	if !(left..right).contains(&point[0]) || point[1] < first {
+	let left = (viewport.x() - WIDTH) * 0.5;
+	let first = TOP + INSET + FIELD_HEIGHT + GAP;
+	if !(left..left + WIDTH).contains(&point[0]) || point[1] < first {
 		return None;
 	}
 	let row = ((point[1] - first) / ROW_HEIGHT) as usize;
@@ -499,18 +494,9 @@ mod tests {
 	}
 
 	#[test]
-	fn the_highlight_stops_at_the_first_and_last_result() {
-		let mut state = palette(&["a", "b", "c"]);
-		state.move_highlight(-1);
-		assert_eq!(state.highlight, 0);
-		state.move_highlight(5);
-		assert_eq!(state.highlighted().map(|entry| entry.label.as_str()), Some("c"));
-	}
-
-	#[test]
 	fn rows_are_found_under_the_pointer_below_the_field() {
 		let viewport = Size::new(1000, 800);
-		let [left, top, ..] = rect(viewport, 3);
+		let [left, top, ..] = rect(viewport, 200.0);
 		let first_row = top + INSET + FIELD_HEIGHT + GAP;
 
 		assert_eq!(row_at(viewport, 3, [left + 10.0, first_row + 1.0]), Some(0));
@@ -521,8 +507,18 @@ mod tests {
 			None,
 			"the field isn't a row"
 		);
-		assert!(contains(viewport, 3, [left + 1.0, top + 1.0]));
-		assert!(!contains(viewport, 3, [left - 1.0, top + 1.0]));
+		assert!(contains(viewport, 200.0, [left + 1.0, top + 199.0]));
+		assert!(!contains(viewport, 200.0, [left + 1.0, top + 201.0]));
+		assert!(!contains(viewport, 200.0, [left - 1.0, top + 1.0]));
+	}
+
+	#[test]
+	fn the_highlight_stops_at_the_first_and_last_result() {
+		let mut state = palette(&["a", "b", "c"]);
+		state.move_highlight(-1);
+		assert_eq!(state.highlight, 0);
+		state.move_highlight(5);
+		assert_eq!(state.highlighted().map(|entry| entry.label.as_str()), Some("c"));
 	}
 
 	#[test]

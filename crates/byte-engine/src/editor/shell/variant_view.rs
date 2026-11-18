@@ -50,7 +50,7 @@ async fn parameters_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
 		.await;
 	let mut drawer = Drawer::declare(ctx, Side::Right, &name, &parent).await;
 	let width = drawer.width;
-	let (mut rows, _) = block(&mut drawer.content, "parameters", "Parameters", count).await;
+	let (mut rows, _) = block(&mut drawer.content, "parameters", "Parameters").await;
 	for index in 0..count {
 		rows.element(("parameter", index))
 			.component(async move |ctx| parameter_row(ctx, index, width).await)
@@ -85,9 +85,13 @@ async fn parameter_row(ctx: &mut EvaluationContext<Shell>, index: usize, width: 
 		.await;
 	let mut label = line
 		.element("label")
-		.container(|c| c.width((width - field_width).into()).height(FIELD_HEIGHT.into()).flow(flow::centered_row))
+		.container(|c| {
+			c.width((width - field_width).into())
+				.height(FIELD_HEIGHT.into())
+				.padding(2.0, 0.0)
+				.flow(flow::centered_row)
+		})
 		.await;
-	label.element("lead").container(|c| c.width(2.into()).height(1.into())).await;
 	label
 		.element("text")
 		.text(&name, |t| t.font_size(12.0).style([solid(MUTED)]))
@@ -100,12 +104,12 @@ async fn parameter_row(ctx: &mut EvaluationContext<Shell>, index: usize, width: 
 				.corner_radius(6.0)
 				.corner_exponent(SQUIRCLE)
 				.clip(true)
+				.padding(8.0, 0.0)
 				.flow(flow::centered_row_with_gap(6))
 				.hit_testable(true)
 				.style(setting_style(true, false))
 		})
 		.await;
-	field.element("lead").container(|c| c.width(2.into()).height(1.into())).await;
 	let mut value = field
 		.element("value")
 		.text("", |t| t.font_size(12.0).style([solid(TEXT)]))
@@ -148,9 +152,8 @@ async fn parameter_row(ctx: &mut EvaluationContext<Shell>, index: usize, width: 
 async fn footer(ctx: &mut EvaluationContext<Shell>, file: &str, width: f32) {
 	let mut line = ctx
 		.element("line")
-		.container(|c| c.width(width.into()).height(FOOTER_HEIGHT.into()).flow(flow::centered_row))
+		.container(|c| c.width(width.into()).height(FOOTER_HEIGHT.into()).padding(2.0, 0.0).flow(flow::centered_row))
 		.await;
-	line.element("lead").container(|c| c.width(2.into()).height(1.into())).await;
 	line.element("text")
 		.text(&format!("A change saves to {file}"), |t| t.font_size(11.0).style([solid(MUTED)]))
 		.await;

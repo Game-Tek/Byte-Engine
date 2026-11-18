@@ -26,13 +26,11 @@ use crate::utils::r#async::{FusedFuture, FutureExt as _, select};
 pub(crate) type Mount = Rc<dyn Fn(&mut EvaluationContext<Shell>, Handle) -> Pin<Box<dyn Future<Output = ()> + '_>>>;
 
 /// The `Registration` struct is one panel an application registered: the component type that shows it, its block's
-/// title and height, and how to start it.
+/// title, and how to start it.
 pub(crate) struct Registration {
 	/// The component's Rust type name, as the inspector lists it among an entity's types.
 	pub(crate) component: &'static str,
 	pub(crate) title: &'static str,
-	/// The height of the panel's content, under its block's header.
-	pub(crate) height: f32,
 	pub(crate) mount: Mount,
 }
 

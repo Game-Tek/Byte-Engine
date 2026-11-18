@@ -2,7 +2,7 @@ use super::super::{
 	flow,
 	layout::{Depth, Position, Sizing},
 };
-use crate::ui::flow::{FlowInput, FlowOutput};
+use crate::ui::flow::{FlowInput, FlowOutput, Size};
 
 /// An annular sector a container is shaped as instead of a rounded rectangle.
 ///
@@ -86,6 +86,8 @@ pub struct Container {
 	pub position: Position,
 	pub clip: bool,
 	pub(crate) hit_testable: bool,
+	/// The room kept inside the left and right edges, then inside the top and bottom ones, before the flow children.
+	pub padding: Size,
 	pub flow: utils::InlineCopyFn<FlowInput, FlowOutput>,
 }
 
@@ -103,6 +105,7 @@ pub(crate) struct ContainerProperties {
 	position: Position,
 	clip: bool,
 	hit_testable: bool,
+	padding: Size,
 	flow: (std::any::TypeId, FlowOutput),
 }
 
@@ -121,6 +124,7 @@ impl Container {
 			position: self.position,
 			clip: self.clip,
 			hit_testable: self.hit_testable,
+			padding: self.padding,
 			flow: flow::placement_key(&self.flow)?,
 		})
 	}
@@ -140,6 +144,7 @@ impl Default for Container {
 			position: Position::default(),
 			clip: true,
 			hit_testable: false,
+			padding: Size::new(0, 0),
 			flow: utils::InlineCopyFn::<FlowInput, FlowOutput>::new(flow::grid),
 		}
 	}

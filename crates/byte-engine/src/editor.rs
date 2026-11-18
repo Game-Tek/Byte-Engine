@@ -262,7 +262,7 @@ impl Editor {
 	/// Opens or closes the editor on F5 and Escape, feeds this tick's pointer input and resizes into the editor's UI,
 	/// lays it out, and sends the render when it changed.
 	/// Shows `panel` at the bottom of the entity panel while an entity with a `T` component is selected, under a header
-	/// that reads `title`, in a column `height` pixels tall.
+	/// that reads `title`, in a column as tall as what the panel adds.
 	///
 	/// The editor runs `panel` with a [`Panel`] when such an entity is selected, and drops it when the selection
 	/// changes, so it can loop for as long as it shows: add its controls, then wait for clicks and frames. Register the
@@ -270,7 +270,7 @@ impl Editor {
 	/// [`DefaultInspector::register_message`](crate::inspector::DefaultInspector::register_message) and
 	/// [`DefaultInspector::watch_property`](crate::inspector::DefaultInspector::watch_property). Panels show in the
 	/// order they're registered.
-	pub fn panel<T: 'static>(&mut self, title: &'static str, height: f32, panel: impl AsyncFn(&mut Panel<'_>) + 'static) {
+	pub fn panel<T: 'static>(&mut self, title: &'static str, panel: impl AsyncFn(&mut Panel<'_>) + 'static) {
 		let panel = Rc::new(panel);
 		let mount: panels::Mount = Rc::new(move |ctx, entity| {
 			let panel = Rc::clone(&panel);
@@ -279,7 +279,6 @@ impl Editor {
 		self.engine.ctx_mut().panels.push(panels::Registration {
 			component: std::any::type_name::<T>(),
 			title,
-			height,
 			mount,
 		});
 	}
@@ -830,7 +829,7 @@ impl Editor {
 		};
 		match phase {
 			ActionPhase::Started => {
-				if !palette::contains(viewport, rows, pixel) {
+				if !palette::contains(viewport, shell.palette_height, pixel) {
 					shell.layers.close(|layer| matches!(layer, Layer::Palette(_)));
 					return false;
 				}
@@ -838,7 +837,7 @@ impl Editor {
 			}
 			ActionPhase::Updated => {
 				if let Some(row) = self.palette_press
-					&& !palette::contains(viewport, rows, pixel)
+					&& !palette::contains(viewport, shell.palette_height, pixel)
 					&& let Some(entry) = entry_at(&shell.layers, row)
 				{
 					self.palette_press = None;

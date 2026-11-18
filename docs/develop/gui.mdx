@@ -79,7 +79,10 @@ it.
 `Measure` in `ui/layout/mod.rs` resolves sizes for one layout pass. A fit
 container runs its flow over its children from a zero cursor before it's
 placed, with 0 as the parent size on each fit axis. Its size on that axis is
-the largest child offset plus the child's size, so trailing gaps don't count.
+the largest child offset plus the child's size, so trailing gaps don't count,
+plus the padding on the far side; the offsets already include the near side,
+since the flow starts past it. `inside_padding` gives the space within the
+padding, which both passes hand the flow and the children.
 Children with an absolute position or depth are skipped.
 
 `on_fit_axes` decides what each child is offered: on a fit axis, the space the
@@ -117,7 +120,8 @@ something else caused changes the size.
 - Fit is resolved only for container width and height. `Sizing::calculate`
   asserts on any other use, such as a display size, which resolves against the
   logical size and has nothing to fit.
-- The content pass and placement offer each child the same space.
+- The content pass and placement offer each child the same space, inside the
+  container's padding, and start its flow at the same place past the padding.
 - Size waits compare the untransformed logical size.
 - The engine holds no motion state for sizes. A resize animation is a display
   size, or an outer logical size, that a component writes.

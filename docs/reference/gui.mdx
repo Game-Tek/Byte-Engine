@@ -46,6 +46,7 @@ already exists keeps its properties until an edit changes them.
 | Position | Flow, or an absolute anchor per axis | Flow | An absolute position places the container against its parent's box and doesn't advance the flow cursor. See [Absolute positions](#absolute-positions). |
 | Clip | Boolean | True | |
 | Hit testable | Boolean | False | Turn it on for a container that takes pointer input, such as a button, a drag source, or a drop target. Pointer input passes through a container that's off to whatever is under it. Children keep their own policy. |
+| Padding | Layout units across and down | 0 and 0 | Room inside the edges before the flow children: the first number on the left and right, the second on the top and bottom. Negative counts as 0. See [Padding](#padding). |
 | Flow | A flow function | Grid | See [Flows](#flows). |
 
 A sector turns the container into an annular sector centered in it, with the
@@ -140,10 +141,22 @@ content pass before the container is placed.
 | Accepted on | A container's width and height. An image, curve, or path, and any display size, don't accept it. |
 | Space offered to the children | On a fit axis, the space offered to the fit container, so a relative child there is a share of that space; on the other axis, the resolved size. The content pass and placement offer the same space. |
 | Parent size the flow sees in the content pass | 0 on each fit axis and the resolved size on the others, so a centered flow packs its children from the cursor. |
-| Extent | The largest child offset plus the child's size on that axis, measured from the container's position. Gaps after the last child don't count. |
+| Extent | The largest child offset plus the child's size on that axis, measured from the container's position, plus the padding on the far side. Gaps after the last child don't count. |
 | Children left out | Children with an absolute position or an absolute depth. |
-| No flow children | 0. |
+| No flow children | The padding on both sides. |
 | Placement | After the content pass, children are placed against the resolved size, like in any container. |
+
+### Padding
+
+Padding keeps a container's flow children away from its edges.
+
+| Rule | Value |
+| --- | --- |
+| Flow cursor | Starts at the container's position moved right by the padding across and down by the padding down. |
+| Parent size the flow sees | The container's size less the padding on both sides of each axis, at least 0. |
+| Space offered to the flow children | The same size less the padding on both sides, at least 0. On a fit axis, the space offered to the container less the padding. |
+| Fit | The padding on both sides counts toward the extent. |
+| Absolute positions and absolute depths | Not affected: an absolutely positioned child is still placed against the container's whole box. |
 
 ### Display size
 

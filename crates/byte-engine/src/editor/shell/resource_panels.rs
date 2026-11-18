@@ -132,10 +132,15 @@ impl Drawer {
 			.await;
 		let mut title = content
 			.element("title")
-			.container(|c| c.width(width.into()).height(TITLE_HEIGHT.into()).flow(flow::centered_row_with_gap(8)))
+			.container(|c| {
+				c.width(width.into())
+					.height(TITLE_HEIGHT.into())
+					.padding(10.0, 0.0)
+					.flow(flow::centered_row_with_gap(8))
+			})
 			.await;
-		title.element("lead").container(|c| c.width(2.into()).height(1.into())).await;
-		title.element("name")
+		title
+			.element("name")
 			.text(name, |t| t.font_size(13.0).style([solid(TEXT)]))
 			.await;
 		title.element("detail")

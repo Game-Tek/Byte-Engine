@@ -30,9 +30,7 @@ use crate::editor::scene::SceneEntity;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::{Events, Key};
-use crate::ui::{
-	Anchor, ConcreteLayer, CurvePath, FillRule, LinearGradient, Position, Size, Transform, UiPoint, flow,
-};
+use crate::ui::{Anchor, ConcreteLayer, CurvePath, FillRule, LinearGradient, Position, Size, Sizing, Transform, UiPoint, flow};
 use crate::utils::RGBA;
 use crate::utils::r#async::select;
 
@@ -105,6 +103,9 @@ pub struct Shell {
 	/// The bindings the hint bar offers next, which the editor picks every frame with
 	/// [`crate::editor::bindings::offered`].
 	pub(crate) hints: Vec<&'static crate::editor::bindings::Binding>,
+	/// The open palette's height, as it last fitted its results, which the editor tests the pointer against; see
+	/// [`palette::contains`].
+	pub(crate) palette_height: f32,
 }
 
 impl Shell {
@@ -137,6 +138,7 @@ impl Shell {
 			panels: Vec::new(),
 			posts: Vec::new(),
 			hints: Vec::new(),
+			palette_height: 0.0,
 		}
 	}
 
@@ -210,8 +212,6 @@ const BLOCK_GAP: f32 = 12.0;
 const ROW_LABEL_WIDTH: f32 = 54.0;
 /// The colors of the X, Y, and Z axes, as the gizmo draws them: red, Byte Engine green, and blue.
 const AXIS_COLORS: [RGBA; 3] = [hex(0xF2545C, 1.0), hex(0x40D866, 1.0), hex(0x4D8CFF, 1.0)];
-/// The toolbar's width: its three tools, the gaps between them, and the same room around them as above and below.
-const TOOLBAR_WIDTH: f32 = TOOL_WIDTH * 3.0 + 8.0 + (TOOLBAR_HEIGHT - TOOL_HEIGHT);
 const TOOL_WIDTH: f32 = 64.0;
 pub(crate) const TOOL_HEIGHT: f32 = 26.0;
 const TOOLBAR_HEIGHT: f32 = 40.0;
@@ -249,6 +249,7 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 	let mut shown_viewport = viewport;
 	let mut shown_revision = None;
 	let mut shown_selection = None;
+	let mut fields_size = Size::new(0, 0);
 	// The editor starts closed, with the drawer hidden; it moves whenever the editor opens or closes.
 	let mut drawer_open = false;
 	let mut drawer_moved = Instant::now();
@@ -294,7 +295,14 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 			shown_selection = selection;
 			fields.show(root).await;
 		}
-		root.render().await;
+		select! {
+			// The properties panel fits its blocks, and its gradient follows the height it fits.
+			size = fields.panel.logical_size_change(fields_size) => {
+				fields_size = size;
+				fields.panel.update_container(|c| c.style(panel(size.y(), 1.0))).await;
+			},
+			_ = root.render() => {},
+		}
 	}
 }
 
@@ -432,13 +440,12 @@ async fn search_field(ctx: &mut EvaluationContext<Shell>, width: f32) {
 				.height(FIELD_HEIGHT.into())
 				.corner_radius(6.0)
 				.corner_exponent(SQUIRCLE)
+				.padding(8.0, 0.0)
 				.flow(flow::centered_row)
 				.hit_testable(true)
 				.style(well())
 		})
 		.await;
-	// Leading space, since the UI has no padding.
-	field.element("lead").container(|c| c.width(8.into()).height(1.into())).await;
 	let mut input = field
 		.element("input")
 		.text_field("", |t| t.font_size(12.0).style([solid(TEXT)]))
@@ -516,14 +523,17 @@ async fn palette_view(ctx: &mut EvaluationContext<Shell>) {
 /// it; it's returned once it has left.
 async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
 	let width = palette::WIDTH - palette::INSET * 2.0;
-	let height = palette::height(0);
 	let start = palette::entering(0.0);
+	// The panel grows with its results; its gradient follows the height it grows to.
+	let mut height = palette::FIELD_HEIGHT + palette::INSET * 2.0;
 	let mut frame = ctx
 		.element("frame")
 		.container(|c| {
 			c.position(Position::anchored(Anchor::Center(0.0), Anchor::Start(palette::TOP)))
 				.width(palette::WIDTH.into())
-				.height(height.into())
+				.height(Sizing::fit())
+				.padding(palette::INSET, palette::INSET)
+				.flow(flow::column_with_gap(palette::GAP as u32))
 				.corner_radius(CORNER)
 				.corner_exponent(SQUIRCLE)
 				.clip(false)
@@ -533,27 +543,18 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 				.style(panel(height, 1.0))
 		})
 		.await;
-	let mut content = frame
-		.element("content")
-		.container(|c| {
-			c.absolute_position(palette::INSET, palette::INSET)
-				.width(width.into())
-				.height((height - palette::INSET * 2.0).into())
-				.flow(flow::column_with_gap(palette::GAP as u32))
-		})
-		.await;
-	let mut well = content
+	let mut well = frame
 		.element("well")
 		.container(|c| {
 			c.width(width.into())
 				.height(palette::FIELD_HEIGHT.into())
 				.corner_radius(7.0)
 				.corner_exponent(SQUIRCLE)
+				.padding(10.0, 0.0)
 				.flow(flow::centered_row)
 				.style(well())
 		})
 		.await;
-	well.element("lead").container(|c| c.width(10.into()).height(1.into())).await;
 	let mut input = well
 		.element("input")
 		.text_field("", |t| t.font_size(14.0).style([solid(TEXT)]))
@@ -564,6 +565,7 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 		.text("", |t| t.font_size(14.0).style([solid(MUTED)]))
 		.await;
 	input.request_focus().await;
+	ctx.with(move |shell: &mut Shell| shell.palette_height = height).await;
 
 	let mut rows: Option<EvaluationContext<Shell>> = None;
 	let mut shown = None;
@@ -589,28 +591,23 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 			else {
 				break;
 			};
-			// The panel grows with its results, so the rows are declared again under a resized panel.
-			let height = palette::height(results.len());
-			frame
-				.update_container(|c| c.height(height.into()).style(panel(height, 1.0)))
-				.await;
-			content
-				.update_container(|c| c.height((height - palette::INSET * 2.0).into()))
-				.await;
 			input.update_text(|t| t.content(&search)).await;
 			hint.update_text(|t| t.content(if search.is_empty() { prompt } else { "" }))
 				.await;
 			if let Some(mut previous) = rows.take() {
 				previous.remove().await;
 			}
-			let mut list = content
-				.element("rows")
-				.container(|c| c.width(width.into()).flow(flow::column))
-				.await;
-			for (index, entry) in results.iter().enumerate() {
-				palette_row(&mut list, index, entry, index == highlight, width).await;
+			// Without results there's no list, so no gap opens under the field.
+			if !results.is_empty() {
+				let mut list = frame
+					.element("rows")
+					.container(|c| c.width(width.into()).height(Sizing::fit()).flow(flow::column))
+					.await;
+				for (index, entry) in results.iter().enumerate() {
+					palette_row(&mut list, index, entry, index == highlight, width).await;
+				}
+				rows = Some(list);
 			}
-			rows = Some(list);
 		}
 		let look = palette::entering(opened.elapsed().as_secs_f32());
 		if shown_look != Some(look) {
@@ -638,6 +635,11 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 				if let Some(text) = text {
 					input.update_text(|t| t.content(&text)).await;
 				}
+			},
+			size = frame.logical_size_change(Size::new(palette::WIDTH, height)) => {
+				height = size.y();
+				frame.update_container(|c| c.style(panel(height, 1.0))).await;
+				ctx.with(move |shell: &mut Shell| shell.palette_height = height).await;
 			},
 			_ = ctx.render() => {},
 		}
@@ -702,11 +704,11 @@ async fn palette_row(
 				.corner_radius(6.0)
 				.corner_exponent(SQUIRCLE)
 				.clip(false)
+				.padding(12.0, 0.0)
 				.flow(flow::centered_row_with_gap(10))
 				.style(row_style(highlighted, false))
 		})
 		.await;
-	row.element("lead").container(|c| c.width(2.into()).height(1.into())).await;
 	let [top, bottom] = kind_tint(entry.kind);
 	row.element("icon")
 		.container(|c| {
@@ -761,12 +763,12 @@ async fn row(ctx: &mut EvaluationContext<Shell>, handle: Handle, label: &str, ki
 				.corner_radius(6.0)
 				.corner_exponent(SQUIRCLE)
 				.clip(false)
+				.padding(10.0, 0.0)
 				.flow(flow::centered_row_with_gap(8))
 				.hit_testable(true)
 				.style(row_style(false, false))
 		})
 		.await;
-	frame.element("lead").container(|c| c.width(2.into()).height(1.into())).await;
 	frame
 		.element("icon")
 		.container(|c| {
@@ -805,33 +807,6 @@ async fn row(ctx: &mut EvaluationContext<Shell>, handle: Handle, label: &str, ki
 			frame.update_container(|c| c.style(row_style(selected, hovered))).await;
 		}
 	}
-}
-
-/// The height of a properties block of `rows` rows of fields: its header and rule over the rows, a gap between each.
-const fn block_height(rows: usize) -> f32 {
-	HEADER_HEIGHT + 2.0 + rows as f32 * FIELD_HEIGHT + (rows + 1) as f32 * 6.0
-}
-
-/// The height of a block that holds one application panel `height` tall under its header.
-fn panel_block_height(height: f32) -> f32 {
-	HEADER_HEIGHT + 2.0 + height + 2.0 * 6.0
-}
-
-/// The properties panel's height: its insets around the entity block, the transform block while the selection has a
-/// transform, a settings block of `part_rows` rows while the selection has one, and `panels`, the height of the
-/// application's panel blocks under them.
-fn properties_height(transform: bool, part_rows: usize, panels: f32) -> f32 {
-	let transform = if transform {
-		BLOCK_GAP + block_height(TRANSFORM.len())
-	} else {
-		0.0
-	};
-	let part = if part_rows > 0 {
-		BLOCK_GAP + block_height(part_rows)
-	} else {
-		0.0
-	};
-	INSET * 2.0 + block_height(1) + transform + part + panels
 }
 
 /// The `Part` struct names the settings block the panel shows under the selection's transform: a camera's or a
@@ -892,8 +867,8 @@ impl PartialEq for Part {
 /// The properties panel's parts that follow the selection: the panel, which grows to hold the blocks the selection
 /// has, the name, the transform block, and the camera's or light's settings block.
 struct Fields {
+	/// The panel, which fits the blocks it stacks.
 	panel: EvaluationContext<Shell>,
-	blocks: EvaluationContext<Shell>,
 	name: EvaluationContext<Shell>,
 	/// The transform block, while the selection has a transform. Its fields follow the selection on their own.
 	transform: Option<EvaluationContext<Shell>>,
@@ -918,7 +893,7 @@ impl Fields {
 					.iter()
 					.enumerate()
 					.filter(|(index, _)| shown & 1 << index != 0)
-					.map(|(_, panel)| (panel.title, panel.height, Rc::clone(&panel.mount)))
+					.map(|(_, panel)| (panel.title, Rc::clone(&panel.mount)))
 					.collect::<Vec<_>>();
 				Some((entity.label().to_string(), Part::of(entity), entity.handle, shown, panels))
 			})
@@ -954,24 +929,20 @@ impl Fields {
 		if transform_changed {
 			match self.transform.take() {
 				Some(mut block) => block.remove().await,
-				None => self.transform = Some(transform_block(&mut self.blocks).await),
+				None => self.transform = Some(transform_block(&mut self.panel).await),
 			}
 		}
-		let panels_height = panels.iter().map(|(_, height, _)| BLOCK_GAP + panel_block_height(*height)).sum();
-		let height = properties_height(transform, part.map_or(0, |part| part.rows()), panels_height);
-		self.panel
-			.update_container(|c| c.height(height.into()).style(panel(height, 1.0)))
-			.await;
-		self.blocks.update_container(|c| c.height(height.into())).await;
 		if let Some(part) = part
 			&& self.part.is_none()
 		{
-			self.part = Some((part, settings_block(&mut self.blocks, part).await));
+			self.part = Some((part, settings_block(&mut self.panel, part).await));
 		}
 		self.panels.0 = (handle, shown_panels);
 		if let Some(handle) = handle {
-			for (index, (title, height, mount)) in panels.into_iter().enumerate() {
-				self.panels.1.push(panel_block(&mut self.blocks, handle, index, title, height, mount).await);
+			for (index, (title, mount)) in panels.into_iter().enumerate() {
+				self.panels
+					.1
+					.push(panel_block(&mut self.panel, handle, index, title, mount).await);
 			}
 		}
 	}
@@ -980,35 +951,28 @@ impl Fields {
 /// The properties panel: a block for each part of the selected entity, the entity itself with its name, its
 /// transform, and its camera's or light's settings.
 async fn properties(root: &mut EvaluationContext<Shell>) -> Fields {
-	let height = properties_height(false, 0, 0.0);
 	let mut panel_element = root
 		.element("properties")
 		.container(|c| {
 			c.position(Position::anchored(Anchor::End(MARGIN), Anchor::Start(MARGIN)))
 				.width(PROPERTIES_WIDTH.into())
-				.height(height.into())
+				// As tall as the blocks the selection has, inset like the other panels' content but with the wider
+				// gap that sets the blocks apart.
+				.height(Sizing::fit())
+				.padding(INSET, INSET)
+				.flow(flow::column_with_gap(BLOCK_GAP as u32))
 				.corner_radius(CORNER)
 				.corner_exponent(SQUIRCLE)
 				.clip(false)
 				.hit_testable(true)
-				.style(panel(height, 1.0))
+				.style(panel(0.0, 1.0))
 		})
 		.await;
 	let width = PROPERTIES_WIDTH - INSET * 2.0;
-	// Inset like the other panels' content, but with the wider gap that sets the blocks apart.
-	let mut blocks = panel_element
-		.element("blocks")
-		.container(|c| {
-			c.absolute_position(INSET, INSET)
-				.width(width.into())
-				.height(properties_height(true, CAMERA.len().max(LIGHT.len()).div_ceil(2), 0.0).into())
-				.flow(flow::column_with_gap(BLOCK_GAP as u32))
-		})
-		.await;
 
 	// The entity block is the one every selection has, so its header holds the trash button; the other blocks come
 	// and go with the parts the entity has.
-	let (mut entity_block, mut entity_header) = block(&mut blocks, "entity", "Entity", 1).await;
+	let (mut entity_block, mut entity_header) = block(&mut panel_element, "entity", "Entity").await;
 	let name = value_well(&mut entity_block, width).await;
 	entity_header
 		.element("delete")
@@ -1017,7 +981,6 @@ async fn properties(root: &mut EvaluationContext<Shell>) -> Fields {
 
 	Fields {
 		panel: panel_element,
-		blocks,
 		name,
 		transform: None,
 		part: None,
@@ -1028,7 +991,7 @@ async fn properties(root: &mut EvaluationContext<Shell>) -> Fields {
 /// The transform block: a row of three fields for each of the position, rotation, and scale.
 async fn transform_block(blocks: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
 	let width = PROPERTIES_WIDTH - INSET * 2.0;
-	let (mut transform_block, _) = block(blocks, "transform", "Transform", TRANSFORM.len()).await;
+	let (mut transform_block, _) = block(blocks, "transform", "Transform").await;
 	// Each row is one sunken well split three ways by two one-pixel dividers.
 	let vector_width = width - ROW_LABEL_WIDTH - 6.0;
 	let field_width = (vector_width - 2.0) / 3.0;
@@ -1079,32 +1042,17 @@ async fn transform_block(blocks: &mut EvaluationContext<Shell>) -> EvaluationCon
 	transform_block
 }
 
-/// A block of the properties panel, `rows` rows of fields tall, under a header that names it; returns the block, to
-/// which the caller adds the rows, and the header.
+/// A block of the properties panel under a header that names it, as tall as the rows the caller adds; returns the
+/// block, to which the caller adds the rows, and the header.
 async fn block(
 	parent: &mut EvaluationContext<Shell>,
 	key: &str,
 	title: &str,
-	rows: usize,
-) -> (EvaluationContext<Shell>, EvaluationContext<Shell>) {
-	block_of_height(parent, key, title, block_height(rows)).await
-}
-
-/// A block of the properties panel, `height` tall with the header that names it; see [`block`].
-async fn block_of_height(
-	parent: &mut EvaluationContext<Shell>,
-	key: &str,
-	title: &str,
-	height: f32,
 ) -> (EvaluationContext<Shell>, EvaluationContext<Shell>) {
 	let width = PROPERTIES_WIDTH - INSET * 2.0;
 	let mut block = parent
 		.element(key)
-		.container(|c| {
-			c.width(width.into())
-				.height(height.into())
-				.flow(flow::column_with_gap(6))
-		})
+		.container(|c| c.width(width.into()).height(Sizing::fit()).flow(flow::column_with_gap(6)))
 		.await;
 	let header = header(&mut block, title, width).await;
 	(block, header)
@@ -1114,7 +1062,7 @@ async fn block_of_height(
 async fn settings_block(blocks: &mut EvaluationContext<Shell>, part: Part) -> EvaluationContext<Shell> {
 	let width = PROPERTIES_WIDTH - INSET * 2.0;
 	let key = format!("{} {}", part.title, part.handle.id());
-	let (mut block, _) = block(blocks, &key, part.title, part.rows()).await;
+	let (mut block, _) = block(blocks, &key, part.title).await;
 	let field_width = (width - 6.0) / 2.0;
 	let mut line = None;
 	for (index, setting) in part.settings().enumerate() {
@@ -1137,23 +1085,22 @@ async fn settings_block(blocks: &mut EvaluationContext<Shell>, part: Part) -> Ev
 	block
 }
 
-/// An application's panel block: its title over a column `height` tall, where the panel's function runs for `entity`
-/// until the block is removed.
+/// An application's panel block: its title over a column as tall as what the panel adds, where the panel's function
+/// runs for `entity` until the block is removed.
 async fn panel_block(
 	blocks: &mut EvaluationContext<Shell>,
 	entity: Handle,
 	index: usize,
 	title: &str,
-	height: f32,
 	mount: crate::editor::panels::Mount,
 ) -> EvaluationContext<Shell> {
 	let key = format!("panel {index} {}", entity.id());
-	let (mut block, _) = block_of_height(blocks, &key, title, panel_block_height(height)).await;
+	let (mut block, _) = block(blocks, &key, title).await;
 	let mut column = block
 		.element("column")
 		.container(|c| {
 			c.width(CONTENT_WIDTH.into())
-				.height(height.into())
+				.height(Sizing::fit())
 				.flow(flow::column_with_gap(6))
 		})
 		.await;
@@ -1249,12 +1196,11 @@ async fn value_well(parent: &mut EvaluationContext<Shell>, width: f32) -> Evalua
 				.height(FIELD_HEIGHT.into())
 				.corner_radius(6.0)
 				.corner_exponent(SQUIRCLE)
+				.padding(8.0, 0.0)
 				.flow(flow::centered_row_with_gap(6))
 				.style(well())
 		})
 		.await;
-	// Leading space, since the UI has no padding.
-	well.element("lead").container(|c| c.width(2.into()).height(1.into())).await;
 	well.element("value")
 		.text("–", |t| t.font_size(12.0).style([solid(TEXT)]))
 		.await
@@ -1274,13 +1220,12 @@ async fn setting_field(ctx: &mut EvaluationContext<Shell>, setting: &'static Set
 				.corner_radius(if framed { 6.0 } else { 0.0 })
 				.corner_exponent(SQUIRCLE)
 				.clip(true)
+				.padding(8.0, 0.0)
 				.flow(flow::centered_row_with_gap(6))
 				.hit_testable(true)
 				.style(setting_style(framed, false))
 		})
 		.await;
-	// Leading space, since the UI has no padding.
-	well.element("lead").container(|c| c.width(2.into()).height(1.into())).await;
 	let label_color = setting.axis().map_or(MUTED, |axis| AXIS_COLORS[axis]);
 	well.element("label")
 		.text(setting.label, |t| t.font_size(11.0).style([solid(label_color)]))
@@ -1418,12 +1363,14 @@ async fn toolbar(ctx: &mut EvaluationContext<Shell>) {
 		.element("toolbar")
 		.container(|c| {
 			c.position(Position::anchored(Anchor::Center(0.0), Anchor::Start(MARGIN)))
-				.width(TOOLBAR_WIDTH.into())
+				// As wide as its tools, with the same room beside them as above and below.
+				.width(Sizing::fit())
 				.height(TOOLBAR_HEIGHT.into())
+				.padding((TOOLBAR_HEIGHT - TOOL_HEIGHT) * 0.5, 0.0)
 				.corner_radius(CORNER)
 				.corner_exponent(SQUIRCLE)
 				.clip(false)
-				.flow(flow::center)
+				.flow(flow::centered_row_with_gap(4))
 				.hit_testable(true)
 				// Translucent and blurred, so the game shows through it.
 				.style(panel(TOOLBAR_HEIGHT, 0.72))
@@ -1431,16 +1378,8 @@ async fn toolbar(ctx: &mut EvaluationContext<Shell>) {
 				.opacity(0.0)
 		})
 		.await;
-	let mut tools = toolbar
-		.element("tools")
-		.container(|c| {
-			c.width((TOOL_WIDTH * 3.0 + 8.0).into())
-				.height(TOOL_HEIGHT.into())
-				.flow(flow::centered_row_with_gap(4))
-		})
-		.await;
 	for tool in Tool::ALL {
-		tools
+		toolbar
 			.element(tool.label())
 			.component(async move |ctx| tool_button(ctx, tool).await)
 			.await;
@@ -1742,7 +1681,6 @@ mod tests {
 		let registration = |component: &'static str| Registration {
 			component,
 			title: component,
-			height: 40.0,
 			mount: Rc::new(|_, _| Box::pin(async {})),
 		};
 		let mut shell = super::Shell::new(crate::ui::Size::new(800, 600));

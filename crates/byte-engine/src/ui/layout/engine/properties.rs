@@ -301,6 +301,13 @@ impl Properties<'_, Container> {
 		self.display_width(sizing).display_height(sizing)
 	}
 
+	/// Keeps `across` layout units free inside the left and right edges and `down` inside the top and bottom ones,
+	/// before the flow children, such as the room around a button's label. A [`Sizing::fit`] axis counts it.
+	pub fn padding(self, across: f32, down: f32) -> Self {
+		self.target.padding = crate::ui::flow::Size::new(across.max(0.0), down.max(0.0));
+		self
+	}
+
 	pub fn corner_radius(self, corner_radius: f32) -> Self {
 		self.target.corner_radius = corner_radius;
 		self

@@ -70,6 +70,13 @@ impl Fly {
 		self.transform()
 	}
 
+	/// Moves the camera by `offset` without turning it, as when it follows an entity a gizmo drag carries, and returns
+	/// where it now is.
+	pub(crate) fn carry(&mut self, offset: Vector) -> Transform {
+		self.position += offset;
+		self.transform()
+	}
+
 	/// Where the camera is, looking along its view.
 	pub(crate) fn transform(&self) -> Transform {
 		Transform::new(self.position, Scale::identity(), heading(self.yaw, self.pitch).into())

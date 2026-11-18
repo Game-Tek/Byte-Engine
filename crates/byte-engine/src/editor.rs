@@ -68,7 +68,7 @@ use crate::input::{ActionPhase, ResolvedAction, SeatHandle, Value};
 use crate::inspector::{
 	CAMERA_UPDATE_MESSAGE_TYPE, DELETE_MESSAGE_TYPE, InspectedEntity, InspectedValue, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
 };
-use crate::math::Point;
+use crate::math::{Point, Vector};
 use crate::physics::{RayQuery, RayQueryResponse};
 use crate::rendering::{
 	Camera, CloseWindow, Features, ScreenSceneHit, ScreenSceneQuery, SetWindowCamera, SetWindowFeatures, Window,
@@ -144,6 +144,8 @@ pub struct Editor {
 	meta: bool,
 	/// Whether a Shift key is held.
 	shift: bool,
+	/// Whether a Control key is held, which snaps gizmo drags.
+	control: bool,
 	/// When the editor closed, while its pass keeps drawing for the scene drawer to leave.
 	closed: Option<std::time::Instant>,
 	/// The operations an undo or redo is applying, kept to reuse their storage.
@@ -225,6 +227,7 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 		pointer: UiPoint::new(0.0, 0.0),
 		meta: false,
 		shift: false,
+		control: false,
 		closed: None,
 		applying: Vec::new(),
 		history: history::History::default(),
@@ -498,7 +501,17 @@ impl Editor {
 				}
 			}
 			Value::Bool(down) if handle == self.actions.meta => self.meta = down,
-			Value::Bool(down) if handle == self.actions.shift => self.shift = down,
+			// Either key changes how a drag snaps, so the dragged entity moves to the new snap at once, without waiting
+			// for the pointer to move.
+			Value::Bool(down) if handle == self.actions.shift || handle == self.actions.control => {
+				if handle == self.actions.shift {
+					self.shift = down;
+				} else {
+					self.control = down;
+				}
+				let pointer = self.pointer;
+				self.drag_to(app, pointer);
+			}
 			// A resource window's engine stands in the main one's place while its input is handled, so Alt reaches the
 			// shell of the window it was pressed in.
 			Value::Bool(down) if handle == self.actions.alt => self.engine.ctx_mut().alt = down,
@@ -577,9 +590,10 @@ impl Editor {
 	}
 
 	/// Whether the fly keys and the right-button drag fly the camera: while the scene is the top layer, so a field
-	/// taking text or the palette keeps the keys, and no system key is held, so Cmd+A and Cmd+S stay shortcuts.
+	/// taking text or the palette keeps the keys, no system key is held, so Cmd+A and Cmd+S stay shortcuts, and no
+	/// gizmo drag is held, so Shift refines its snap instead of lowering the camera.
 	fn flies(&mut self) -> bool {
-		!self.meta && matches!(self.engine.ctx_mut().layers.top(), Some(Layer::Scene))
+		!self.meta && self.drag.is_none() && matches!(self.engine.ctx_mut().layers.top(), Some(Layer::Scene))
 	}
 
 	/// Moves the editor's camera on by this frame's keys and drag, switching the game window to it on its first move,
@@ -1303,16 +1317,43 @@ impl Editor {
 			return;
 		};
 		let pixel = placement.pixel([pointer.x, pointer.y]);
-		let Some(transform) = drag.transform(&placement, pixel) else {
+		// Control snaps, as in Blender, and Shift with it snaps finer.
+		let snap = match (self.control, self.shift) {
+			(false, _) => gizmo::Snap::Free,
+			(true, false) => gizmo::Snap::Steps,
+			(true, true) => gizmo::Snap::Fine,
+		};
+		let Some(transform) = drag.transform(&placement, pixel, snap) else {
 			return;
 		};
-		state.stretch = drag.stretch(pixel);
+		state.stretch = drag.stretch(pixel, snap);
 		let operation = history::Operation::Transform {
 			entity: *handle,
 			delta: history::Delta::between(&entity.transform, &transform),
 		};
+		let moved = transform.get_position() - entity.transform.get_position();
+		let carry = shell.alt;
 		drop(state);
 		self.edit(app, operation);
+		if carry {
+			self.carry_camera(app, moved);
+		}
+	}
+
+	/// Moves the editor's camera by `offset`, the step a gizmo drag just moved its entity, so the entity stays where
+	/// it is on screen. Takes the game window over first, so the game's own camera never moves.
+	fn carry_camera(&mut self, app: &GraphicsApplication, offset: Vector) {
+		if offset == Vector::new(0.0, 0.0, 0.0) {
+			return;
+		}
+		self.take_over(app);
+		let (Some((fly, _)), Some(camera)) = (&mut self.flight, self.camera) else {
+			return;
+		};
+		let transform = fly.carry(offset);
+		app.world()
+			.channel::<TransformationUpdate>()
+			.send(TransformationUpdate::new(camera, transform));
 	}
 
 	/// Applies `operation` and records it, so it can be undone.

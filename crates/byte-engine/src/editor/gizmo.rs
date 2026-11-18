@@ -57,6 +57,13 @@ const MIN_TURN_PIXELS: f32 = 60.0;
 const MIN_STRETCH_PIXELS: f32 = 10.0;
 /// The smallest factor a scale drag scales by, so the selection never collapses to nothing or turns inside out.
 const MIN_STRETCH: f32 = 0.01;
+/// The steps a snapped drag moves, turns, and scales by: Blender's increments, a metre, five degrees, and a tenth.
+const MOVE_STEP: f32 = 1.0;
+const TURN_STEP: f32 = 5.0 * TAU / 360.0;
+const SCALE_STEP: f32 = 0.1;
+/// How much finer the steps of a [`Snap::Fine`] drag are.
+const FINE: f32 = 0.1;
+
 /// How far around the shapes the shader draws, in pixels: the widest shape's half width and antialiasing.
 const MARGIN_PIXELS: f32 = 8.0;
 
@@ -552,6 +559,33 @@ fn ring(p: Vec2f, center: Vec2f, u: Vec2f, v: Vec2f, first: f32, second: f32) ->
 	nearest
 }
 
+/// The `Snap` enum says whether a drag moves freely or in whole steps, which the editor picks from the keys held while
+/// it drags, so a drag can change between them partway through. See [`Drag::transform`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Snap {
+	Free,
+	/// Steps of [`MOVE_STEP`], [`TURN_STEP`], and [`SCALE_STEP`].
+	Steps,
+	/// Steps [`FINE`] times those.
+	Fine,
+}
+
+impl Snap {
+	/// The step this snap moves in for a drag whose whole step is `step`, or `None` when free.
+	fn step(self, step: f32) -> Option<f32> {
+		match self {
+			Snap::Free => None,
+			Snap::Steps => Some(step),
+			Snap::Fine => Some(step * FINE),
+		}
+	}
+
+	/// Rounds `value` to the nearest whole number of this snap's steps for `step`, or keeps it as it is when free.
+	fn round(self, value: f32, step: f32) -> f32 {
+		self.step(step).map_or(value, |step| (value / step).round() * step)
+	}
+}
+
 /// The `Motion` enum is how a drag turns pointer motion into a new transform: moving along an axis or across a plane,
 /// turning around an axis, or stretching along some axes.
 #[derive(Clone, Copy, Debug)]
@@ -569,7 +603,15 @@ enum Motion {
 		world_per_pixel: f32,
 	},
 	/// Moves within the plane through `origin` facing `normal`, keeping under the pointer the point it grabbed, `grab`.
-	Plane { origin: Vec3f, normal: Vec3f, grab: Vec3f },
+	///
+	/// The pointer's ray starts from where the camera stood at the grab, `camera`, so a camera that moves along with the
+	/// selection doesn't move it further.
+	Plane {
+		origin: Vec3f,
+		normal: Vec3f,
+		grab: Vec3f,
+		camera: Vec3f,
+	},
 	/// Turns around `axis` by how far the pointer moves along `tangent`, the grabbed ring's direction on screen, from
 	/// where it grabbed it, `pixel`.
 	///
@@ -615,8 +657,9 @@ pub(crate) struct Drag {
 
 impl Drag {
 	/// Returns the selection's transform after the pointer moved to `pixel`, or `None` while the pointer's ray misses
-	/// the drag's plane, during which the selection should stay as it is.
-	pub(crate) fn transform(&self, placement: &Placement, pixel: [f32; 2]) -> Option<Transform> {
+	/// the drag's plane, during which the selection should stay as it is. A snapped drag changes the transform it began
+	/// with by whole steps: a move along each world axis, a turn, or a scale factor.
+	pub(crate) fn transform(&self, placement: &Placement, pixel: [f32; 2], snap: Snap) -> Option<Transform> {
 		let p = Vec2f::new(pixel[0], pixel[1]);
 		let mut transform = self.start.clone();
 		let start = self.start.get_position().into_maths();
@@ -627,11 +670,21 @@ impl Drag {
 				direction,
 				world_per_pixel,
 			} => {
-				let along = maths_rs::dot(p - grabbed, direction);
-				transform.set_position(Point::from_maths(start + axis * (along * world_per_pixel)));
+				let along = snap.round(maths_rs::dot(p - grabbed, direction) * world_per_pixel, MOVE_STEP);
+				transform.set_position(Point::from_maths(start + axis * along));
 			}
-			Motion::Plane { origin, normal, grab } => {
-				let moved = plane_hit(origin, normal, placement.camera, placement.direction(pixel))? - grab;
+			Motion::Plane {
+				origin,
+				normal,
+				grab,
+				camera,
+			} => {
+				let moved = plane_hit(origin, normal, camera, placement.direction(pixel))? - grab;
+				let moved = Vec3f::new(
+					snap.round(moved.x, MOVE_STEP),
+					snap.round(moved.y, MOVE_STEP),
+					snap.round(moved.z, MOVE_STEP),
+				);
 				transform.set_position(Point::from_maths(start + moved));
 			}
 			Motion::Turn {
@@ -640,12 +693,12 @@ impl Drag {
 				tangent,
 				radians_per_pixel,
 			} => {
-				let angle = maths_rs::dot(p - grabbed, tangent) * radians_per_pixel;
+				let angle = snap.round(maths_rs::dot(p - grabbed, tangent) * radians_per_pixel, TURN_STEP);
 				let turn = Orientation::try_from_maths(Quatf::from_axis_angle(axis, angle)).ok()?;
 				transform.set_orientation(turn.compose(self.start.get_orientation()));
 			}
 			Motion::Stretch { mask, .. } => {
-				let factor = self.stretch_factor(p);
+				let factor = self.stretch_factor(p, snap);
 				let scale = self.start.scale().into_maths();
 				let scaled = Vec3f::new(1.0, 1.0, 1.0) + mask * (factor - 1.0);
 				transform.set_scale(Scale::from_maths(scale * scaled));
@@ -656,23 +709,26 @@ impl Drag {
 
 	/// While scaling, how much each axis handle stretches on screen with the pointer at `pixel`, for
 	/// [`State::stretch`]; `None` for the other tools.
-	pub(crate) fn stretch(&self, pixel: [f32; 2]) -> Option<[f32; 3]> {
+	pub(crate) fn stretch(&self, pixel: [f32; 2], snap: Snap) -> Option<[f32; 3]> {
 		let Motion::Stretch { mask, .. } = self.motion else {
 			return None;
 		};
-		let factor = self.stretch_factor(Vec2f::new(pixel[0], pixel[1]));
+		let factor = self.stretch_factor(Vec2f::new(pixel[0], pixel[1]), snap);
 		Some([0, 1, 2].map(|axis| 1.0 + mask[axis] * (factor - 1.0)))
 	}
 
-	/// The factor a stretch scales by with the pointer at `p`, 1 where it grabbed.
-	fn stretch_factor(&self, p: Vec2f) -> f32 {
+	/// The factor a stretch scales by with the pointer at `p`, 1 where it grabbed. A snapped factor never rounds to
+	/// nothing: it stops one step above it.
+	fn stretch_factor(&self, p: Vec2f, snap: Snap) -> f32 {
 		let Motion::Stretch {
 			pixel, direction, base, ..
 		} = self.motion
 		else {
 			return 1.0;
 		};
-		(1.0 + maths_rs::dot(p - pixel, direction) / base).max(MIN_STRETCH)
+		let factor = (1.0 + maths_rs::dot(p - pixel, direction) / base).max(MIN_STRETCH);
+		snap.step(SCALE_STEP)
+			.map_or(factor, |step| ((factor / step).round() * step).max(step))
 	}
 }
 
@@ -684,8 +740,15 @@ pub(crate) fn grab(placement: &Placement, target: &Transform, pixel: [f32; 2]) -
 	let ray = placement.direction(pixel);
 	let p = Vec2f::new(pixel[0], pixel[1]);
 	let from_center = p - placement.center;
-	let plane =
-		|normal: Vec3f| plane_hit(origin, normal, placement.camera, ray).map(|grab| Motion::Plane { origin, normal, grab });
+	let camera = placement.camera;
+	let plane = |normal: Vec3f| {
+		plane_hit(origin, normal, camera, ray).map(|grab| Motion::Plane {
+			origin,
+			normal,
+			grab,
+			camera,
+		})
+	};
 	let axis = part.axis();
 	let motion = match (placement.tool, part) {
 		(Tool::Move, Part::AxisX | Part::AxisY | Part::AxisZ) => {
@@ -987,7 +1050,7 @@ mod tests {
 		// Dragging toward the tip moves the selection toward +Z, and only along Z.
 		let drag = grab(&placement, &at(Point::origin()), pixel).unwrap();
 		let farther = on_arrow + projected / maths_rs::length(projected) * 13.0;
-		let moved = drag.transform(&placement, [farther.x, farther.y]).unwrap().get_position();
+		let moved = drag.transform(&placement, [farther.x, farther.y], Snap::Free).unwrap().get_position();
 		assert!(moved.z() > 0.0, "{moved:?}");
 		assert_eq!((moved.x(), moved.y()), (0.0, 0.0));
 	}
@@ -1037,13 +1100,13 @@ mod tests {
 
 		// Along the axis, the selection follows the pointer exactly.
 		let moved = drag
-			.transform(&placement, pixel_of(Point::new(1.5 + 0.5 * size, 0.5, 2.0)))
+			.transform(&placement, pixel_of(Point::new(1.5 + 0.5 * size, 0.5, 2.0)), Snap::Free)
 			.unwrap();
 		let moved = moved.get_position();
 		assert!((moved.x() - 1.5).abs() < 1e-3, "{moved:?}");
 		// Off the axis, it still moves only along it.
 		let moved = drag
-			.transform(&placement, pixel_of(Point::new(1.5 + 0.5 * size, 0.9, 2.0)))
+			.transform(&placement, pixel_of(Point::new(1.5 + 0.5 * size, 0.9, 2.0)), Snap::Free)
 			.unwrap();
 		let moved = moved.get_position();
 		assert!(moved.x() > 1.0, "{moved:?}");
@@ -1059,7 +1122,7 @@ mod tests {
 		assert_eq!(drag.part, Part::PlaneZ);
 
 		let moved = drag
-			.transform(&placement, pixel_of(Point::new(handle + 0.25, handle - 0.5, 0.0)))
+			.transform(&placement, pixel_of(Point::new(handle + 0.25, handle - 0.5, 0.0)), Snap::Free)
 			.unwrap();
 		let moved = moved.get_position();
 		assert!((moved.x() - 0.25).abs() < 1e-3 && (moved.y() + 0.5).abs() < 1e-3, "{moved:?}");
@@ -1083,7 +1146,7 @@ mod tests {
 		};
 		let quarter = maths_rs::length(placement.screen_axes[0]) * RING_RADIUS * std::f32::consts::FRAC_PI_2;
 		let moved = Vec2f::new(top[0], top[1]) + tangent * quarter;
-		let turned = drag.transform(&placement, [moved.x, moved.y]).unwrap();
+		let turned = drag.transform(&placement, [moved.x, moved.y], Snap::Free).unwrap();
 		let x = turned.get_orientation().axes::<math::WorldSpace>()[0].into_maths();
 		assert!((x.y - 1.0).abs() < 0.02, "X turned to {x:?}");
 		assert_eq!(turned.get_position(), Point::origin());
@@ -1116,13 +1179,13 @@ mod tests {
 		// Dragging the cap out to twice its distance from the center doubles X and leaves the others.
 		let drag = grab(&placement, &target, [on_cap.x, on_cap.y]).unwrap();
 		let doubled = placement.center + (on_cap - placement.center) * 2.0;
-		let scaled = drag.transform(&placement, [doubled.x, doubled.y]).unwrap().scale().to_array();
+		let scaled = drag.transform(&placement, [doubled.x, doubled.y], Snap::Free).unwrap().scale().to_array();
 		assert!(
 			(scaled[0] - 2.0).abs() < 1e-3 && scaled[1] == 1.0 && scaled[2] == 1.0,
 			"{scaled:?}"
 		);
 		assert_eq!(
-			drag.stretch([doubled.x, doubled.y]).map(|s| s.map(|s| (s * 100.0).round())),
+			drag.stretch([doubled.x, doubled.y], Snap::Free).map(|s| s.map(|s| (s * 100.0).round())),
 			Some([200.0, 100.0, 100.0])
 		);
 	}
@@ -1134,14 +1197,77 @@ mod tests {
 		let drag = grab(&placement, &at(Point::origin()), center).unwrap();
 		assert_eq!(drag.part, Part::Center);
 
-		let right = drag.transform(&placement, [center[0] + ARROW_PIXELS, center[1]]).unwrap();
+		let right = drag.transform(&placement, [center[0] + ARROW_PIXELS, center[1]], Snap::Free).unwrap();
 		assert_eq!(right.scale().to_array(), [2.0, 2.0, 2.0]);
 		let far_left = drag
-			.transform(&placement, [center[0] - ARROW_PIXELS * 3.0, center[1]])
+			.transform(&placement, [center[0] - ARROW_PIXELS * 3.0, center[1]], Snap::Free)
 			.unwrap();
 		assert!(
 			far_left.scale().to_array().iter().all(|s| (s - MIN_STRETCH).abs() < 1e-6),
 			"{far_left:?}"
 		);
+	}
+
+	#[test]
+	fn a_snapped_drag_moves_turns_and_scales_in_whole_steps() {
+		// Moving along X by 1.3 m snaps to 1 m, or to 1.3 m in fine steps.
+		let move_placement = placement(Point::origin());
+		let on_arrow = pixel_of(Point::new(0.5 * move_placement.size, 0.0, 0.0));
+		let drag = grab(&move_placement, &at(Point::origin()), on_arrow).unwrap();
+		let farther = pixel_of(Point::new(0.5 * move_placement.size + 1.3, 0.0, 0.0));
+		let x = |snap| drag.transform(&move_placement, farther, snap).unwrap().get_position().x();
+		assert_eq!(x(Snap::Steps), 1.0);
+		assert!((x(Snap::Fine) - 1.3).abs() < 1e-4, "{}", x(Snap::Fine));
+
+		// Turning the Z ring by about 27 degrees snaps to 25.
+		let turn_placement = placement_for(Point::origin(), Tool::Rotate);
+		let radius = turn_placement.size * RING_RADIUS * std::f32::consts::FRAC_1_SQRT_2;
+		let top = pixel_of(Point::new(radius, radius, 0.0));
+		let drag = grab(&turn_placement, &at(Point::origin()), top).unwrap();
+		let Motion::Turn {
+			tangent,
+			radians_per_pixel,
+			..
+		} = drag.motion
+		else {
+			panic!("{:?}", drag.motion)
+		};
+		let moved = Vec2f::new(top[0], top[1]) + tangent * (27f32.to_radians() / radians_per_pixel);
+		let turned = drag.transform(&turn_placement, [moved.x, moved.y], Snap::Steps).unwrap();
+		let x_axis = turned.get_orientation().axes::<math::WorldSpace>()[0].into_maths();
+		let degrees = x_axis.y.atan2(x_axis.x).to_degrees();
+		assert!((degrees - 25.0).abs() < 0.01, "turned {degrees} degrees");
+
+		// Scaling evenly by 1.37 snaps to 1.4, and a squeeze to nothing stops one step above it.
+		let scale_placement = placement_for(Point::origin(), Tool::Scale);
+		let center = [scale_placement.center.x, scale_placement.center.y];
+		let drag = grab(&scale_placement, &at(Point::origin()), center).unwrap();
+		let scale = |dx: f32, snap| {
+			drag.transform(&scale_placement, [center[0] + dx, center[1]], snap).unwrap().scale().to_array()[0]
+		};
+		assert!((scale(ARROW_PIXELS * 0.37, Snap::Steps) - 1.4).abs() < 1e-5);
+		assert!((scale(-ARROW_PIXELS * 3.0, Snap::Steps) - SCALE_STEP).abs() < 1e-6);
+		assert!((scale(-ARROW_PIXELS * 3.0, Snap::Fine) - SCALE_STEP * FINE).abs() < 1e-6);
+	}
+
+	#[test]
+	fn a_plane_drag_measures_from_where_the_camera_stood_at_the_grab() {
+		// A camera that follows the selection moves as far as it does, so the pointer stays over the same pixel; the
+		// drag must not count that move again.
+		let placement = placement(Point::origin());
+		let center = [placement.center.x, placement.center.y];
+		let drag = grab(&placement, &at(Point::origin()), center).unwrap();
+		assert_eq!(drag.part, Part::Center);
+		let pixel = pixel_of(Point::new(0.5, 0.25, 0.0));
+		let still = drag.transform(&placement, pixel, Snap::Free).unwrap().get_position();
+
+		// The camera and the selection both moved by (2, 1, 0).
+		let (target, camera) = (Point::new(2.0, 1.0, 0.0), Point::new(2.0, 1.0, -5.0));
+		let direction = (target - camera).normalized().unwrap();
+		let view = View::new_perspective(Degrees::new(60.0), 800.0 / 600.0, 0.1, 100.0, camera, direction);
+		let followed = Placement::new(view, Extent::rectangle(800, 600), &at(target), Tool::Move).unwrap();
+		let carried = drag.transform(&followed, pixel, Snap::Free).unwrap().get_position();
+		let (carried, still) = (carried.into_maths(), still.into_maths());
+		assert!(maths_rs::length(carried - still) < 1e-4, "{still:?} became {carried:?}");
 	}
 }

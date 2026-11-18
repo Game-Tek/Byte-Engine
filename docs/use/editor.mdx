@@ -65,6 +65,13 @@ while the editor is closed.
 4. Pick Move, Rotate, or Scale in the toolbar, then drag a handle of the gizmo. To set a value exactly, drag a
    property field sideways, or click it and type the value.
 
+   Hold Ctrl while you drag to snap, as in Blender: a move goes in steps of 1 m, a turn in steps of 5°, and a scale
+   in steps of 0.1. Hold Shift too for steps a tenth that size. The steps count from where the drag began, and you
+   can press or release Ctrl partway through a drag.
+
+   Hold Alt while you move an entity to bring the camera along: the camera moves as far as the entity does, so the
+   entity stays under the pointer while the scene slides past. Use it to carry an entity farther than the view shows.
+
    Press Cmd+Z to undo a move, turn, or scale, and Cmd+Shift+Z to redo it. One drag, from press to release, undoes
    at once, and so does one typed value. An undo changes the entity by what the edit changed it by, so a move undone
    after the game moved the entity too keeps the game's move. See [Editor history](/docs/reference/editor-history)

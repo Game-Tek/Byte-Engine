@@ -28,8 +28,10 @@ pub(crate) struct Actions {
 	/// with A, on what can be placed; with E, on the resources to explore; with the period, on the runtime settings;
 	/// with S, it saves the open material graph; with Z, it undoes, and with Shift and Z, it redoes.
 	pub(crate) meta: ActionHandle,
-	/// Either Shift key, which turns Cmd+Z's undo into redo.
+	/// Either Shift key, which turns Cmd+Z's undo into redo, and a snapped gizmo drag's steps into fine ones.
 	pub(crate) shift: ActionHandle,
+	/// Either Control key, which snaps a gizmo drag to whole steps while held, as in Blender, on every platform.
+	pub(crate) control: ActionHandle,
 	/// Either Alt key, Option on macOS, which turns a click on a material's name into copying its resource id.
 	pub(crate) alt: ActionHandle,
 	pub(crate) k: ActionHandle,
@@ -134,6 +136,14 @@ pub(crate) fn install(app: &mut GraphicsApplication) -> (Actions, Rc<RefCell<Lay
 			&[
 				ActionBindingDescription::new("Keyboard.LeftShift"),
 				ActionBindingDescription::new("Keyboard.RightShift"),
+			],
+			Types::Boolean,
+		),
+		control: action(
+			"EditorControl",
+			&[
+				ActionBindingDescription::new("Keyboard.LeftControl"),
+				ActionBindingDescription::new("Keyboard.RightControl"),
 			],
 			Types::Boolean,
 		),

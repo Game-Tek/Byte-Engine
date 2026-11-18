@@ -50,7 +50,7 @@ pub use layout::{
 	context::{ContainerContext, Context, ElementContext, ElementKey, ElementSlot},
 	engine::{
 		ElementKind, Engine, EvaluationContext, MountedComponentFuture, PointerState, Properties, Render, RenderRevision,
-		Runtime, Setup, UiEvent, UiKeyEvent, UiTextEditEvent,
+		Runtime, Setup, SizeChangeFuture, UiEvent, UiKeyEvent, UiTextEditEvent,
 	},
 };
 pub use point::{UiPoint, UiVector};

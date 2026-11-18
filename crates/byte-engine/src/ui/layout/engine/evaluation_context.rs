@@ -153,7 +153,16 @@ impl<C: 'static> Context<C> for EvaluationContext<C> {
 	}
 
 	fn geometry(&self) -> Read<C, Option<ElementGeometry>> {
-		self.read(|runtime, id| runtime.geometry.get(&id).copied())
+		self.read(|runtime, id| runtime.geometry.get(&id).map(|published| published.geometry))
+	}
+
+	fn logical_size_change(&self, known: Size) -> SizeChangeFuture<C> {
+		SizeChangeFuture {
+			target: self.id,
+			known,
+			complete: false,
+			ctx: PhantomData,
+		}
 	}
 
 	fn pointer(&self) -> Read<C, PointerState> {

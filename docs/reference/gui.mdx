@@ -126,9 +126,24 @@ shadows aren't drawn; outer shadows are.
 | Relative | A numerator over a denominator of the available space. Full is 1 over 1 and the default. |
 | Absolute | A number of layout units, whatever the available space. |
 | Available space | The parent's resolved size for a flow child; the evaluation size for a root and for an absolute-depth container. |
-| Fit to content | None. A container's size never depends on its children. |
+| Fit | A container's logical size on that axis is the extent of its flow children. See [Fit](#fit). |
 | Minimum and maximum | None. |
 | Transforms | Never change a measured size or a flow placement. |
+
+### Fit
+
+A fit axis takes the extent of the container's flow children, measured in a
+content pass before the container is placed.
+
+| Rule | Value |
+| --- | --- |
+| Accepted on | A container's width and height. An image, curve, or path, and any display size, don't accept it. |
+| Space offered to the children | On a fit axis, the space offered to the fit container, so a relative child there is a share of that space; on the other axis, the resolved size. The content pass and placement offer the same space. |
+| Parent size the flow sees in the content pass | 0 on each fit axis and the resolved size on the others, so a centered flow packs its children from the cursor. |
+| Extent | The largest child offset plus the child's size on that axis, measured from the container's position. Gaps after the last child don't count. |
+| Children left out | Children with an absolute position or an absolute depth. |
+| No flow children | 0. |
+| Placement | After the content pass, children are placed against the resolved size, like in any container. |
 
 ### Display size
 
@@ -139,6 +154,7 @@ container is seen as.
 | Rule | Logical size | Display size |
 | --- | --- | --- |
 | Resolves against | The available space | The container's own logical size, so full matches it |
+| Fit | Accepted | Not accepted; full already matches a fit logical size |
 | Measurement, flow placement, and the space children are offered | Used | Never used |
 | Painting, sector shape, and render damage | Not used | Used |
 | Clip and mask for descendants | Not used | Used |
@@ -338,6 +354,7 @@ the drag ended. A changed evaluation size cancels first.
 | --- | --- |
 | Render | On the first frame that begins after it was first polled. |
 | Duration | Once the deadline set at creation has passed, checked when polled. |
+| Logical size change | With the element's logical size, once that size differs from the known size the wait was given. Checked when polled and after every layout. |
 
 The frame counter advances once per evaluation. The engine's next tick is now
 while any task waits for a frame or is woken, else the earliest timer deadline,
@@ -345,6 +362,12 @@ else never. Reads of geometry, pointer, drag, and application state complete on
 the first poll. A geometry read reports two transformed rectangles from the
 last evaluated frame: the logical one, which hits use, and the display one,
 which is painted. Both are the same unless a container's display size differs.
+
+The logical size a size-change wait compares is the size layout resolved,
+before visual transforms, so neither a transform nor a display size edit
+completes it. A wait on an element that isn't laid out stays pending. A wait
+given a known size that's already stale completes on its first poll; a wait
+that completes after a layout completes within the same evaluation.
 
 ## Animation drivers
 
@@ -362,6 +385,10 @@ it completes. A duration of 0 completes at once.
 | Back out | Duration, overshoot | Overshoots past the target, then settles | At the duration |
 | Spring | From, to | Mass 1, stiffness 380, damping 16, from rest | Within 0.001 of the target with velocity below 0.001 |
 | Smoothing | From, to, retention | Keeps the given share of the distance after each second, by default 0.01; never overshoots | Within 0.001 of the target |
+
+A spring or a smoothing can take a new target at any time. It keeps its
+current value, and a spring keeps its velocity too, so the motion continues
+without a jump.
 
 ## Watches
 

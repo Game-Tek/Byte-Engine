@@ -216,6 +216,12 @@ impl Spring {
 		self.velocity
 	}
 
+	/// Retargets the spring while it keeps its value and velocity, so a target that moves mid-flight, such as a fit
+	/// container's size from [`crate::ui::Context::logical_size_change`], is followed without a jump.
+	pub fn set_target(&mut self, target: f32) {
+		self.target = target;
+	}
+
 	pub fn step(&mut self, dt: MediaTime) -> f32 {
 		let dt = dt.as_seconds_f32().min(MAX_STEP);
 		debug_assert!(
@@ -490,6 +496,20 @@ mod tests {
 		assert!(spring.is_settled());
 		assert_eq!(spring.finish(), 1.0);
 		assert_eq!(spring.velocity(), 0.0);
+	}
+
+	#[test]
+	fn a_retargeted_spring_keeps_its_value_and_velocity_then_settles_on_the_new_target() {
+		let mut spring = spring(0.0, 100.0);
+		spring.step(MediaTime::from_millis(16));
+		let (value, velocity) = (spring.value(), spring.velocity());
+		spring.set_target(40.0);
+		assert_eq!((spring.value(), spring.velocity()), (value, velocity));
+		for _ in 0..600 {
+			spring.step(MediaTime::from_millis(16));
+		}
+		assert!(spring.is_settled());
+		assert!((spring.value() - 40.0).abs() <= 0.001);
 	}
 
 	#[test]

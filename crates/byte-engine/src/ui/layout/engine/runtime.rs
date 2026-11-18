@@ -29,6 +29,8 @@ pub(super) struct UiTask {
 	pub(super) text_edits: Channel<UiTextEditEvent>,
 	pub(super) frame_waits: Vec<FrameWait>,
 	pub(super) timer_waits: Vec<Registration<Instant>>,
+	/// Each element whose logical size this task waits to change, with the size it last knew.
+	pub(super) size_waits: Vec<Registration<(Id, Size)>>,
 }
 
 impl UiTask {
@@ -40,6 +42,7 @@ impl UiTask {
 		self.text_edits.clear();
 		self.frame_waits.clear();
 		self.timer_waits.clear();
+		self.size_waits.clear();
 	}
 
 	/// Wakes the task so the next [`Runtime::poll_ready_tasks`] polls it.
@@ -59,6 +62,7 @@ impl UiTask {
 		self.keys.keep_waits_from(poll);
 		self.text_edits.keep_waits_from(poll);
 		self.timer_waits.retain(|wait| wait.polled == poll);
+		self.size_waits.retain(|wait| wait.polled == poll);
 	}
 }
 
@@ -276,10 +280,29 @@ pub struct Runtime {
 	next_frame_token: u64,
 	pub(super) focus_stack: Vec<Id>,
 	/// Keyed by id, which is already a well-mixed hash, so the fast hasher is enough.
-	pub(super) geometry: utils::hash::HashMap<Id, ElementGeometry>,
+	pub(super) geometry: utils::hash::HashMap<Id, Published>,
 	pub(super) pointer: PointerState,
 	pub(super) drag: Drag,
 	pub(super) frame: u64,
+}
+
+/// The `Published` struct is what the runtime keeps of one element from the last layout, for reads and size waits.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Published {
+	/// The transformed boxes a geometry read reports.
+	pub(super) geometry: ElementGeometry,
+	/// The logical size layout resolved, before visual transforms, which a [`SizeChangeFuture`] compares.
+	pub(super) size: Size,
+}
+
+impl Published {
+	/// Records `element` from the transformed layout, with its logical size from the untransformed `placement`.
+	pub(super) fn of(element: &LayoutElement, placement: &[LayoutElement], placement_indices: &[usize]) -> Self {
+		Self {
+			geometry: element.geometry(),
+			size: placement[placement_indices[element.index]].size,
+		}
+	}
 }
 
 /// The `WakeQueue` struct lets task wakers schedule polls without reaching into the runtime.
@@ -485,6 +508,29 @@ impl Runtime {
 		}
 	}
 
+	/// Registers the current poll of `task` as waiting for the logical size of `target` to differ from `known`.
+	pub(super) fn wait_for_size(&mut self, task: TaskId, target: Id, known: Size, poll: u64) {
+		if let Some(task) = self.tasks.get_mut(task) {
+			register(&mut task.size_waits, (target, known), poll);
+		}
+	}
+
+	/// Wakes every task that waits for a logical size the last layout changed.
+	///
+	/// Call it after publishing geometry. The woken wait resolves when its task is polled later in the same
+	/// evaluation, so a component sees the new size before the next layout.
+	pub(super) fn wake_resized(&self) {
+		let geometry = &self.geometry;
+		for task in self.tasks.iter().filter(|task| {
+			task.size_waits.iter().any(|wait| {
+				let (target, known) = wait.key;
+				geometry.get(&target).is_some_and(|published| published.size != known)
+			})
+		}) {
+			task.wake();
+		}
+	}
+
 	/// Delivers an input to every task that waits for it.
 	///
 	/// Inputs that fire while nobody awaits them are discarded instead of queuing for a later wait. An input already
@@ -522,10 +568,19 @@ impl Runtime {
 		self.focus_stack.last().copied()
 	}
 
-	pub(super) fn update_geometry(&mut self, elements: &[LayoutElement]) {
+	/// Replaces the published geometry with `elements`, the transformed layout; see [`Published::of`].
+	pub(super) fn update_geometry(
+		&mut self,
+		elements: &[LayoutElement],
+		placement: &[LayoutElement],
+		placement_indices: &[usize],
+	) {
 		self.geometry.clear();
-		self.geometry
-			.extend(elements.iter().map(|element| (element.id, element.geometry())));
+		self.geometry.extend(
+			elements
+				.iter()
+				.map(|element| (element.id, Published::of(element, placement, placement_indices))),
+		);
 	}
 
 	/// Removes input and geometry owned by the deleted elements.

@@ -325,3 +325,9 @@ The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves th
 - Quantize the sun direction that shadows use: a slowly turning sun frees every page each frame, as in the chapter.
 - Cone and point lights on the page pool, using the thesis's mip chains.
 - Per-level detail-level selection for the page draw.
+
+## UI fit sizing (deferred)
+
+- Minimum and maximum constraints on a fit axis, such as `Sizing::fit().max(..)`, so a menu stops growing and scrolls.
+- Move editor panels, menus, and toolbars from pixel sizes to `Sizing::fit()`, and animate their resizes through `logical_size_change`.
+- A fused wait for `Watch` changes, so a component can `select!` over a watch and a size change without `.fuse()`.

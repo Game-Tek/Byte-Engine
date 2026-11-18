@@ -454,16 +454,22 @@ impl<C: 'static> Engine<C> {
 					debug_assert_eq!(previous.elements.len(), elements.len());
 					for (previous, element) in previous.elements.iter().zip(elements.iter()) {
 						debug_assert_eq!(previous.id, element.id);
+						// A changed logical size also changes the transformed one, short of a transform that collapses
+						// the element, which hides it anyway.
 						if previous.position != element.position
 							|| previous.size != element.size
 							|| previous.display_size != element.display_size
 						{
-							runtime.geometry.insert(element.id, element.geometry());
+							let published = runtime::Published::of(element, &self.placement, &self.placement_indices);
+							runtime.geometry.insert(element.id, published);
 						}
 					}
 				} else {
-					self.core.runtime.update_geometry(elements);
+					self.core
+						.runtime
+						.update_geometry(elements, &self.placement, &self.placement_indices);
 				}
+				self.core.runtime.wake_resized();
 				let retained = self.retained_layout.get_or_insert_with(|| RetainedLayout {
 					tree: revisions,
 					has_custom_flows,
@@ -1730,13 +1736,13 @@ mod tests {
 		});
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
 		let (first, second) = engine.ctx().expect("expected test value");
-		assert_eq!(engine.core.runtime.geometry[&first].logical.y(), 0.0);
-		assert_eq!(engine.core.runtime.geometry[&second].logical.y(), 10.0);
+		assert_eq!(engine.core.runtime.geometry[&first].geometry.logical.y(), 0.0);
+		assert_eq!(engine.core.runtime.geometry[&second].geometry.logical.y(), 10.0);
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
 		engine.evaluate(Size::new(100, 100), &allocator);
 		let runtime = &engine.core.runtime;
-		assert_eq!(runtime.geometry[&second].logical.y(), 0.0);
-		assert_eq!(runtime.geometry[&first].logical.y(), 5.0);
+		assert_eq!(runtime.geometry[&second].geometry.logical.y(), 0.0);
+		assert_eq!(runtime.geometry[&first].geometry.logical.y(), 5.0);
 	}
 
 	/// Evaluates and renders one frame, returning the revision and a copy of the damage.

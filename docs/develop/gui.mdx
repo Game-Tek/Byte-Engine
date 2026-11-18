@@ -65,6 +65,66 @@ chain of revisions:
   scene color or depth. On frames it records nothing, the renderer clears its
   output instead of forwarding a scene.
 
+## Fit sizing and size feedback
+
+A fit axis makes a container's logical size depend on its descendants, which
+breaks the rule every other sizing keeps: a box resolves from the space its
+parent offers alone. Layout handles it with a content pass, and the engine
+stops there. It reports the resolved size back to components and never animates
+it, so motion stays in application code, next to the display size that carries
+it.
+
+### Content pass
+
+`Measure` in `ui/layout/mod.rs` resolves sizes for one layout pass. A fit
+container runs its flow over its children from a zero cursor before it's
+placed, with 0 as the parent size on each fit axis. Its size on that axis is
+the largest child offset plus the child's size, so trailing gaps don't count.
+Children with an absolute position or depth are skipped.
+
+`on_fit_axes` decides what each child is offered: on a fit axis, the space the
+fit container itself was offered, and on the other axis, its resolved size.
+The content pass and `place` both call it, so a relative child measures the
+same in both. Offering the child the fit size instead would make the child
+depend on the size it decides.
+
+The per-element measurement cache keys on the element's own revision, which
+doesn't change when a descendant does, so fit containers skip it. Their sizes
+live in `Measure::fits`, a frame-allocated vector indexed by element. Each fit
+subtree is measured once per pass, however deeply fits nest. Any edit inside a
+fit container already advances the placement revision, so the full replay that
+remeasures it always runs.
+
+### Size waits
+
+The runtime publishes a `Published` record for each laid-out element: the
+transformed `ElementGeometry` that reads return, and the logical size layout
+resolved before transforms. `SizeChangeFuture` compares that untransformed
+size with the size the component last knew, so neither a transform nor a
+display size edit completes it. The component's own animation can't feed back
+into the wait that drives it.
+
+Each task keeps `size_waits` registrations, kept and dropped by the same
+poll-numbering rules as frame and timer waits. After `build_layout` publishes
+geometry, it calls `Runtime::wake_resized`, which wakes the tasks whose
+element's size now differs. Those tasks are polled in the same evaluation,
+after layout, so a component sees a new size before the next layout. A size
+wait never asks for a tick on its own: it wakes only when a layout that
+something else caused changes the size.
+
+### Rules a change must keep
+
+- Fit is resolved only for container width and height. `Sizing::calculate`
+  asserts on any other use, such as a display size, which resolves against the
+  logical size and has nothing to fit.
+- The content pass and placement offer each child the same space.
+- Size waits compare the untransformed logical size.
+- The engine holds no motion state for sizes. A resize animation is a display
+  size, or an outer logical size, that a component writes.
+
+The fit tests in `ui/layout/mod.rs` and `size_change_tests` in
+`ui/layout/engine/futures.rs` guard these rules.
+
 ## Drawing
 
 `UiRenderPass` draws the whole UI with one shader pair and no vertex or index

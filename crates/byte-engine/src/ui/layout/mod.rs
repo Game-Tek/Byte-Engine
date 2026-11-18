@@ -214,6 +214,90 @@ pub(crate) fn box_size(width: Sizing, height: Sizing, available: Size) -> Size {
 	Size::new(width.calculate(available.x()), height.calculate(available.y()))
 }
 
+/// Returns `size` with the container's fit axes replaced by the matching axes of `fit`.
+///
+/// It offers a fit container's children the space the container itself was offered on its fit axes, so a relative
+/// child never measures against the size it helps decide, and it writes the content extent into the fit axes.
+fn on_fit_axes(container: &Container, size: Size, fit: Size) -> Size {
+	let pick = |sizing: Sizing, fit: f32, size: f32| if sizing == Sizing::Fit { fit } else { size };
+	Size::new(
+		pick(container.width, fit.x(), size.x()),
+		pick(container.height, fit.y(), size.y()),
+	)
+}
+
+/// The `Measure` struct resolves element sizes for one layout pass.
+///
+/// Leaf and fixed-size elements hit the per-element cache, which outlives the pass. A fit container's size depends
+/// on its descendants, which that cache can't key on, so it is measured once per pass and kept in [`Self::fits`].
+struct Measure<'t, 'a> {
+	tree: &'t retained_tree::RetainedTree,
+	text: &'t mut TextSystem,
+	measurements: &'t mut [Measurement],
+	/// The space each fit container was offered and the size its content pass resolved, by tree index.
+	fits: Vec<Option<(Size, Size)>, &'a bumpalo::Bump>,
+}
+
+impl Measure<'_, '_> {
+	/// Resolves the size of the element at `index` against the space its parent offers.
+	fn size(&mut self, index: usize, available: Size) -> Size {
+		let element = &self.tree.elements[index];
+		let container = match &element.primitive {
+			Primitives::Container(container) if container.width == Sizing::Fit || container.height == Sizing::Fit => container,
+			_ => return measure_element(element, available, self.text, &mut self.measurements[index]),
+		};
+		if let Some((offered, size)) = self.fits[index]
+			&& offered == available
+		{
+			return size;
+		}
+		let size = self.content(index, container, available);
+		self.fits[index] = Some((available, size));
+		size
+	}
+
+	/// Runs the content pass of a fit container: places its flow children from a zero cursor and returns the
+	/// container's size, with each fit axis set to the children's extent.
+	fn content(&mut self, index: usize, container: &Container, available: Size) -> Size {
+		// Fit axes resolve to 0 for the flow, so centering flows pack from the cursor instead of spreading over space
+		// the container doesn't take yet.
+		let resolve = |sizing: Sizing, available: f32| {
+			if sizing == Sizing::Fit {
+				0.0
+			} else {
+				sizing.calculate(available)
+			}
+		};
+		let resolved = Size::new(
+			resolve(container.width, available.x()),
+			resolve(container.height, available.y()),
+		);
+		let offered = on_fit_axes(container, resolved, available);
+		let mut cursor = Offset::new(0.0, 0.0);
+		let (mut right, mut bottom) = (0.0f32, 0.0f32);
+		for &child_index in &self.tree.children[index] {
+			// Absolutely positioned and absolute-depth children don't take part in flow, so they don't size it.
+			if let Primitives::Container(child) = &self.tree.elements[child_index].primitive
+				&& (matches!(child.depth, Depth::Absolute(_)) || matches!(child.position, Position::Absolute { .. }))
+			{
+				continue;
+			}
+			let child_size = self.size(child_index, offered);
+			let output = container.flow.call(FlowInput::new(resolved, cursor, child_size));
+			// The extent ends at the far edge of each child, never at the next cursor, so trailing gaps don't count.
+			right = right.max(output.child_offset().x() + child_size.x());
+			bottom = bottom.max(output.child_offset().y() + child_size.y());
+			cursor = output.next_cursor();
+		}
+		on_fit_axes(container, resolved, Size::new(right, bottom))
+	}
+
+	/// Returns the space the container at `index`, laid out at `size`, offers its flow children.
+	fn offered_to_children(&self, index: usize, container: &Container, size: Size) -> Size {
+		self.fits[index].map_or(size, |(offered, _)| on_fit_axes(container, size, offered))
+	}
+}
+
 /// Replays flow placement while remeasuring only changed elements or parent spaces.
 fn layout_elements<'a>(
 	tree: &retained_tree::RetainedTree,
@@ -227,6 +311,13 @@ fn layout_elements<'a>(
 	if tree.elements.is_empty() {
 		return elements;
 	}
+	let mut measure = Measure {
+		tree,
+		text: text_system,
+		measurements,
+		fits: Vec::with_capacity_in(tree.elements.len(), frame_allocator),
+	};
+	measure.fits.resize(tree.elements.len(), None);
 
 	// Placement uses the size already measured for the parent's flow. Visual transforms
 	// remain a later pass and cannot move the flow cursor or change sibling sizing.
@@ -238,8 +329,7 @@ fn layout_elements<'a>(
 		root_size: Size,
 		offset: Offset,
 		anchored: bool,
-		text: &mut TextSystem,
-		measurements: &mut [Measurement],
+		measure: &mut Measure,
 		slots: &mut [usize],
 		output: &mut Vec<LayoutElement, &bumpalo::Bump>,
 	) {
@@ -268,6 +358,7 @@ fn layout_elements<'a>(
 		};
 		let origin: Offset = Into::<Location>::into(position).into();
 		let mut cursor = origin;
+		let offered = measure.offered_to_children(index, container, size);
 		// Absolute-depth layers start from the viewport after ordinary flow children.
 		for reset_layer in [false, true] {
 			for &child_index in &tree.children[index] {
@@ -280,8 +371,8 @@ fn layout_elements<'a>(
 				if reset != reset_layer {
 					continue;
 				}
-				let available = if reset { root_size } else { size };
-				let child_size = measure_element(child, available, text, &mut measurements[child_index]);
+				let available = if reset { root_size } else { offered };
+				let child_size = measure.size(child_index, available);
 				let anchored = matches!(child_container.map(|value| value.position), Some(Position::Absolute { .. }));
 				let flow_output = match child_container.map(|value| value.position) {
 					// Absolute positions are anchored to the parent's box.
@@ -302,8 +393,7 @@ fn layout_elements<'a>(
 					root_size,
 					flow_output.child_offset(),
 					anchored,
-					text,
-					measurements,
+					measure,
 					slots,
 					output,
 				);
@@ -420,7 +510,7 @@ fn layout_elements<'a>(
 	// Roots are placed apart from `place`'s child loop, which stays as small as the hot recursion needs.
 	for &root in &roots {
 		let element = &tree.elements[root];
-		let size = measure_element(element, available_space, text_system, &mut measurements[root]);
+		let size = measure.size(root, available_space);
 		let (offset, anchored) = match &element.primitive {
 			Primitives::Container(Container {
 				position: Position::Absolute { x, y },
@@ -441,8 +531,7 @@ fn layout_elements<'a>(
 			available_space,
 			offset,
 			anchored,
-			text_system,
-			measurements,
+			&mut measure,
 			&mut slots,
 			&mut elements,
 		);
@@ -669,10 +758,22 @@ impl From<i32> for Depth {
 	}
 }
 
+/// The `Sizing` enum says how one axis of an element's box is resolved during layout.
+///
+/// Pass it to [`Properties::width`](crate::ui::Properties::width) and
+/// [`Properties::height`](crate::ui::Properties::height), or to a container's display size through
+/// [`Properties::display_width`](crate::ui::Properties::display_width).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Sizing {
+	/// A share of the space the parent offers: the numerator over the denominator.
 	Relative(u16, u16),
+	/// A fixed number of layout units.
 	Absolute(f32),
+	/// The extent of a container's flow children, for a panel or menu that should hug its content.
+	///
+	/// Only a container's logical width and height accept it. To animate a fit container's resize, pin its display
+	/// size and follow [`Context::logical_size_change`](crate::ui::Context::logical_size_change).
+	Fit,
 }
 
 impl Sizing {
@@ -684,8 +785,23 @@ impl Sizing {
 		Self::Absolute(value.into() as f32)
 	}
 
+	/// Sizes a container's axis to its flow children; see [`Sizing::Fit`].
+	pub fn fit() -> Self {
+		Self::Fit
+	}
+
+	/// Resolves a relative or absolute sizing against `available` layout units.
+	///
+	/// Layout resolves [`Sizing::Fit`] from the children instead. Anywhere else, it counts as full.
 	pub fn calculate(&self, available: f32) -> f32 {
 		match self {
+			Sizing::Fit => {
+				debug_assert!(
+					false,
+					"Fit sizing was used where it isn't accepted. The most likely cause is setting `Sizing::fit` on an image, curve, path, or display size, which have no children to fit. Use `Sizing::full` or a pixel size there instead."
+				);
+				available
+			}
 			Sizing::Relative(num, denom) => {
 				debug_assert_ne!(
 					*denom, 0,
@@ -825,6 +941,91 @@ mod tests {
 				Location3::new(0, y, index as u32 + 1),
 			);
 		}
+	}
+
+	/// Returns the size of the first container in a `[root, fit, children...]` fixture laid out in a 400 by 300 viewport,
+	/// with every child under the fit container.
+	fn fit_size(fit: Container, children: impl IntoIterator<Item = Container>) -> Size {
+		let children: std::vec::Vec<Container> = children.into_iter().collect();
+		let relations: std::vec::Vec<(usize, usize)> = std::iter::once((0, 1))
+			.chain((0..children.len()).map(|child| (1, child + 2)))
+			.collect();
+		let containers = [Container::default(), fit].into_iter().chain(children);
+		layout(containers, &relations, Size::new(400, 300))[1].size
+	}
+
+	fn pixels(width: u32, height: u32) -> Container {
+		detached_container(|c| c.width(Sizing::pixels(width)).height(Sizing::pixels(height)))
+	}
+
+	#[test]
+	fn a_fit_row_is_as_wide_as_its_children_and_as_tall_as_the_tallest() {
+		let fit = detached_container(|c| c.size(Sizing::fit()).flow(flow::row));
+		assert_eq!(fit_size(fit, [pixels(20, 10), pixels(30, 25)]), Size::new(50, 25));
+	}
+
+	#[test]
+	fn a_fit_container_leaves_out_the_gap_after_its_last_child() {
+		let fit = detached_container(|c| c.size(Sizing::fit()).flow(flow::row_with_gap(8)));
+		assert_eq!(fit_size(fit, [pixels(20, 10), pixels(20, 10)]), Size::new(48, 10));
+	}
+
+	#[test]
+	fn a_centered_flow_packs_its_children_on_a_fit_axis() {
+		let fit = detached_container(|c| c.size(Sizing::fit()).flow(flow::centered_row));
+		assert_eq!(fit_size(fit, [pixels(20, 10), pixels(20, 40)]), Size::new(40, 40));
+	}
+
+	#[test]
+	fn a_fit_axis_only_follows_the_children_on_that_axis() {
+		let fit = detached_container(|c| c.width(Sizing::fit()).height(Sizing::Relative(1, 2)).flow(flow::column));
+		assert_eq!(fit_size(fit, [pixels(20, 10), pixels(35, 10)]), Size::new(35, 150));
+	}
+
+	#[test]
+	fn absolutely_placed_children_dont_size_a_fit_container() {
+		let fit = detached_container(|c| c.size(Sizing::fit()).flow(flow::row));
+		let anchored = detached_container(|c| c.size(Sizing::pixels(90)).absolute_position(100, 100));
+		let layer = detached_container(|c| c.size(Sizing::pixels(90)).depth(Depth::absolute(1)));
+		assert_eq!(fit_size(fit, [pixels(20, 10), anchored, layer]), Size::new(20, 10));
+	}
+
+	#[test]
+	fn an_empty_fit_container_measures_zero() {
+		assert_eq!(fit_size(detached_container(|c| c.size(Sizing::fit())), []), Size::new(0, 0));
+	}
+
+	#[test]
+	fn a_relative_child_on_a_fit_axis_is_a_share_of_the_space_the_fit_container_was_offered() {
+		let fit = detached_container(|c| c.size(Sizing::fit()));
+		let half = detached_container(|c| c.size(Sizing::Relative(1, 2)));
+		let elements = layout([Container::default(), fit, half], &[(0, 1), (1, 2)], Size::new(400, 300));
+		assert_eq!(elements[1].size, Size::new(200, 150));
+		// Placement offers the child the same space, so it keeps the size the content pass measured.
+		assert_eq!(elements[2].size, Size::new(200, 150));
+	}
+
+	#[test]
+	fn nested_fit_containers_hug_their_innermost_children() {
+		let outer = detached_container(|c| c.size(Sizing::fit()).flow(flow::column));
+		let inner = || detached_container(|c| c.size(Sizing::fit()).flow(flow::row));
+		let elements = layout(
+			[
+				Container::default(),
+				outer,
+				inner(),
+				pixels(10, 5),
+				pixels(15, 5),
+				inner(),
+				pixels(40, 8),
+			],
+			&[(0, 1), (1, 2), (2, 3), (2, 4), (1, 5), (5, 6)],
+			Size::new(400, 300),
+		);
+		assert_eq!(elements[2].size, Size::new(25, 5));
+		assert_eq!(elements[5].size, Size::new(40, 8));
+		assert_eq!(elements[1].size, Size::new(40, 13));
+		assert_eq!(elements[5].position, Location3::new(0, 5, elements[5].position.z()));
 	}
 
 	/// Returns each container's depth, in the order the containers were given to `layout`.

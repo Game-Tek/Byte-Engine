@@ -278,6 +278,78 @@ The display box grows from the panel's top-left corner. Children never move
 while it animates, and a display edit doesn't rerun layout. Only containers
 have a display size.
 
+## Size a container to its content and animate its resize
+
+To make a menu, toast, or panel hug what's inside it, set its width or height to
+`Sizing::fit()`. The container takes the extent of its flow children, so it
+grows when you add a row or lengthen a label, with no size to keep in sync.
+
+```rust
+let mut menu = ctx
+    .element("menu")
+    .container(|c| c.size(Sizing::fit()).flow(flow::column_with_gap(4)))
+    .await;
+```
+
+A fit size changes the moment its content does. To glide to the new size
+instead, keep the logical size fitting the content and animate the display size
+toward it:
+
+1. Pin the display size to the size that's seen now, so a change in content
+   never makes the menu jump.
+2. Wait for the logical size to change with `logical_size_change`, passing the
+   size you last acted on.
+3. Retarget a spring at the new size, and write its value to the display size
+   each frame until it settles.
+
+```rust
+fn pin(c: Properties<'_, Container>, size: Size) -> Properties<'_, Container> {
+    c.display_width(Sizing::pixels(size.x())).display_height(Sizing::pixels(size.y()))
+}
+
+// The first wait resolves with the size from the first layout.
+let mut known = menu.logical_size_change(Size::new(0, 0)).await;
+menu.update_container(|c| pin(c, known)).await;
+
+let (mut width, mut height) = (spring(known.x(), known.x()), spring(known.y(), known.y()));
+let mut last = Instant::now();
+loop {
+    if width.is_settled() && height.is_settled() {
+        // Nothing moves, so wait for the content without asking for frames.
+        known = menu.logical_size_change(known).await;
+    } else {
+        select! {
+            size = menu.logical_size_change(known) => known = size,
+            _ = menu.render() => {
+                let step = MediaTime::from_std(last.elapsed());
+                let seen = Size::new(width.step(step), height.step(step));
+                menu.update_container(|c| pin(c, seen)).await;
+            }
+        }
+    }
+    if width.target() != known.x() || height.target() != known.y() {
+        width.set_target(known.x());
+        height.set_target(known.y());
+    }
+    last = Instant::now();
+}
+```
+
+A new target keeps the spring's value and speed, so content that changes again
+mid-animation bends the motion instead of restarting it. Children lay out at
+the final size at once, and the display box clips them while it catches up.
+Pointer hits use the logical size, so a new row takes clicks right away.
+
+The menu's siblings follow its logical size, so they move at once. To make them
+glide too, wrap the fitting content in a container whose logical size you
+animate. Fit the inner container, follow its `logical_size_change` as above, and
+write each spring value to the outer container's `width` and `height` instead
+of its display size. Animating a logical size reruns layout each frame, so keep
+it for content that's small.
+
+Any driver works the same way, or none: snap to a size, wait for a second
+change before you move, or animate one axis only.
+
 ## Understand component lifetime
 
 A component started with `component` runs until its future returns or until the
@@ -496,3 +568,6 @@ input outside the tree, and both evaluation and rendering key on it.
 - [`setup_ui_render_pass`](/docs/api/latest/byte_engine/application/graphics#fn.setup_ui_render_pass)
 - [`load_font`](/docs/api/latest/byte_engine/ui#fn.load_font)
 - [`Fonts`](/docs/api/latest/byte_engine/ui#type.Fonts)
+- [`Sizing`](/docs/api/latest/byte_engine/ui#enum.Sizing)
+- [`Context::logical_size_change`](/docs/api/latest/byte_engine/ui#trait.Context)
+- [`Spring`](/docs/api/latest/byte_engine/ui#struct.Spring)

@@ -39,7 +39,7 @@ use crate::{
 	},
 	configuration::{ConfigurationEventId, ConfigurationUpdateState, ConfigurationValue, Parameter},
 	core::{EntityHandle, factory::Handle, listener::DefaultListener, listener::Listener as _},
-	inspector::{DefaultInspector, InspectedEntity, InspectedValue, RegisteredMessageType, find_entities},
+	inspector::{DefaultInspector, InspectedEntity, RegisteredMessageType, find_entities},
 };
 
 /// How long `set` waits for the owning system before it reports the update as pending.
@@ -275,7 +275,7 @@ struct Sources<'a> {
 	parameters: &'a [Parameter],
 	entities: &'a [InspectedEntity],
 	/// The message types `post` accepts.
-	messages: &'a [RegisteredMessageType<'a>],
+	messages: &'a [RegisteredMessageType],
 }
 
 /// The `Action` enum is what a key asks of the console loop.
@@ -1135,12 +1135,15 @@ fn entity_rows<'a>(found: &[&'a InspectedEntity], total: usize, search: &str, he
 		.unwrap_or(0)
 		.clamp(4, 32);
 	for entity in shown {
-		let position = match entity.property("transform") {
-			Some(InspectedValue::Transform(transform)) => {
+		let transform = entity
+			.property("transform")
+			.and_then(|transform| <crate::gameplay::Transform as serde::Deserialize>::deserialize(transform).ok());
+		let position = match transform {
+			Some(transform) => {
 				let point = transform.get_position();
 				format!("{:.2}, {:.2}, {:.2}", point.x(), point.y(), point.z())
 			}
-			_ => "-".to_string(),
+			None => "-".to_string(),
 		};
 		rows.push(Line::from(vec![
 			Span::raw(format!("{:>6}  ", entity.handle().id())),
@@ -1258,12 +1261,12 @@ fn split_word(text: &str) -> (&str, &str) {
 
 #[cfg(test)]
 mod tests {
-	use crate::configuration::Accepts;
 	use std::sync::Arc;
 
 	use ratatui::{Terminal, backend::TestBackend};
 
 	use super::*;
+	use crate::configuration::Accepts;
 	use crate::{configuration::Configuration, core::message_bus::MessageBus, metrics::Metrics};
 
 	fn inspector(configuration: Configuration) -> DefaultInspector {
@@ -1750,7 +1753,7 @@ mod tests {
 			let message_bus = MessageBus::default();
 			message_bus.observe().expect("attach test message observer");
 			let scope = message_bus.new_scope("console-entities-test-world");
-			let mut inspector = DefaultInspector::new(
+			let inspector = DefaultInspector::new(
 				crate::core::channel::DefaultChannel::new(),
 				Configuration::new(),
 				scope.clone(),
@@ -1880,7 +1883,7 @@ mod tests {
 		let moved = world.inspector.entities(None, Some("shipping crate"));
 		assert_eq!(
 			moved[0].property("transform"),
-			Some(InspectedValue::Transform(&crate::gameplay::Transform::from_position(math::Point::new(4.0, 5.0, 6.0))))
+			Some(&serde_json::to_value(crate::gameplay::Transform::from_position(math::Point::new(4.0, 5.0, 6.0))).unwrap())
 		);
 	}
 

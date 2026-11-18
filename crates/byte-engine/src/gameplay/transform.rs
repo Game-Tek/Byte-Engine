@@ -79,6 +79,20 @@ impl From<&Transform> for SerializableTransform {
 	}
 }
 
+/// A transform serializes in its payload's shape, as the inspector's `transform` property shows it.
+impl serde::Serialize for Transform {
+	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		SerializableTransform::from(self).serialize(serializer)
+	}
+}
+
+/// A transform deserializes from its payload's shape, with the same defaults and checks as a posted one.
+impl<'de> serde::Deserialize<'de> for Transform {
+	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		Transform::try_from(SerializableTransform::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+	}
+}
+
 impl Default for Transform {
 	fn default() -> Self {
 		Self::identity()

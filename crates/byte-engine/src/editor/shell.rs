@@ -17,6 +17,7 @@ mod variant_view;
 
 pub(crate) use resource_panels::{fits, open_room};
 
+use std::rc::Rc;
 use std::time::Instant;
 
 use crate::core::factory::Handle;
@@ -37,7 +38,10 @@ use crate::utils::r#async::select;
 
 /// The `Shell` struct is the state the editor's panels lay out from, which [`Editor::frame`](crate::editor::Editor::frame)
 /// updates before each evaluation.
-pub(crate) struct Shell {
+///
+/// An application's own panels lay out in an [`EvaluationContext`] over it, through a
+/// [`Panel`](crate::editor::Panel); its state is the editor's own.
+pub struct Shell {
 	/// The window's size in pixels.
 	pub(crate) viewport: Size,
 	/// The entities the scene overview lists, as the editor last read them from the inspector.
@@ -93,6 +97,11 @@ pub(crate) struct Shell {
 	pub(crate) held: crate::editor::bindings::Held,
 	/// Text a click asked to put on the clipboard, until the editor puts it there.
 	pub(crate) copy: Option<String>,
+	/// The panels the application registered for its component types, which the entity panel shows at its bottom.
+	pub(crate) panels: Vec<crate::editor::panels::Registration>,
+	/// The messages the application's panels posted, by entity and type, with their JSON payloads, until the editor
+	/// posts them through the inspector.
+	pub(crate) posts: Vec<(Handle, &'static str, String)>,
 	/// The bindings the hint bar offers next, which the editor picks every frame with
 	/// [`crate::editor::bindings::offered`].
 	pub(crate) hints: Vec<&'static crate::editor::bindings::Binding>,
@@ -125,6 +134,8 @@ impl Shell {
 			toasts: Default::default(),
 			held: Default::default(),
 			copy: None,
+			panels: Vec::new(),
+			posts: Vec::new(),
 			hints: Vec::new(),
 		}
 	}
@@ -160,6 +171,18 @@ impl Shell {
 		})
 	}
 
+	/// Which registered panels `entity` shows, one bit per [`Self::panels`] entry: those of the component types it has,
+	/// among the first 64 registered.
+	fn panels_of(&self, entity: &SceneEntity) -> u64 {
+		let types = &entity.types;
+		self.panels
+			.iter()
+			.take(64)
+			.enumerate()
+			.filter(|(_, panel)| types.contains(&panel.component))
+			.fold(0, |shown, (index, _)| shown | 1 << index)
+	}
+
 	/// The selected entity, while it is still in the scene.
 	pub(crate) fn selection(&self) -> Option<&SceneEntity> {
 		let selected = self.selected?;
@@ -179,6 +202,8 @@ const DRAWER_TUCK: f32 = 24.0;
 /// How far left the drawer moves to hide, its shadow included.
 const DRAWER_HIDDEN: f32 = SIDEBAR_WIDTH + 32.0;
 const PROPERTIES_WIDTH: f32 = 300.0;
+/// The width of what a properties block holds, inside the panel's insets.
+pub(crate) const CONTENT_WIDTH: f32 = PROPERTIES_WIDTH - INSET * 2.0;
 /// The gap between the blocks of the properties panel.
 const BLOCK_GAP: f32 = 12.0;
 /// The width of the name before each row of the transform block.
@@ -187,7 +212,7 @@ const ROW_LABEL_WIDTH: f32 = 54.0;
 const AXIS_COLORS: [RGBA; 3] = [hex(0xF2545C, 1.0), hex(0x40D866, 1.0), hex(0x4D8CFF, 1.0)];
 const TOOLBAR_WIDTH: f32 = 336.0;
 const TOOL_WIDTH: f32 = 64.0;
-const TOOL_HEIGHT: f32 = 26.0;
+pub(crate) const TOOL_HEIGHT: f32 = 26.0;
 const TOOLBAR_HEIGHT: f32 = 40.0;
 const HEADER_HEIGHT: f32 = 28.0;
 const ROW_HEIGHT: f32 = 26.0;
@@ -196,7 +221,7 @@ const CORNER: f32 = 10.0;
 /// A squircle's exponent, for the softer corners Linear's surfaces have.
 const SQUIRCLE: f32 = 3.0;
 
-const TEXT: RGBA = hex(0xE6E6E9, 1.0);
+pub(crate) const TEXT: RGBA = hex(0xE6E6E9, 1.0);
 const MUTED: RGBA = hex(0x8A8F98, 1.0);
 /// Muted text on the toolbar, lighter than [`MUTED`] since the game's frame shows through the toolbar's glass.
 const TOOLBAR_MUTED: RGBA = hex(0xB9BCC4, 1.0);
@@ -258,7 +283,10 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 		// The panel follows the selection, its name as the list does, and its settings block; the fields follow their
 		// values on their own.
 		let selection = root
-			.with(|shell: &mut Shell| shell.selection().map(|entity| (entity.handle, Part::of(entity))))
+			.with(|shell: &mut Shell| {
+				let entity = shell.selection()?;
+				Some((entity.handle, Part::of(entity), shell.panels_of(entity)))
+			})
 			.await
 			.map(|selection| (selection, revision));
 		if selection != shown_selection {
@@ -779,9 +807,15 @@ const fn block_height(rows: usize) -> f32 {
 	HEADER_HEIGHT + 2.0 + rows as f32 * FIELD_HEIGHT + (rows + 1) as f32 * 6.0
 }
 
+/// The height of a block that holds one application panel `height` tall under its header.
+fn panel_block_height(height: f32) -> f32 {
+	HEADER_HEIGHT + 2.0 + height + 2.0 * 6.0
+}
+
 /// The properties panel's height: its insets around the entity block, the transform block while the selection has a
-/// transform, and a settings block of `part_rows` rows while the selection has one.
-fn properties_height(transform: bool, part_rows: usize) -> f32 {
+/// transform, a settings block of `part_rows` rows while the selection has one, and `panels`, the height of the
+/// application's panel blocks under them.
+fn properties_height(transform: bool, part_rows: usize, panels: f32) -> f32 {
 	let transform = if transform {
 		BLOCK_GAP + block_height(TRANSFORM.len())
 	} else {
@@ -792,7 +826,7 @@ fn properties_height(transform: bool, part_rows: usize) -> f32 {
 	} else {
 		0.0
 	};
-	INSET * 2.0 + block_height(1) + transform + part
+	INSET * 2.0 + block_height(1) + transform + part + panels
 }
 
 /// The `Part` struct names the settings block the panel shows under the selection's transform: a camera's or a
@@ -860,19 +894,34 @@ struct Fields {
 	transform: Option<EvaluationContext<Shell>>,
 	/// The settings block and the part it shows, while the selection is a camera or a light.
 	part: Option<(Part, EvaluationContext<Shell>)>,
+	/// The application's panel blocks the selection shows, and the entity and registered panels they're for; see
+	/// [`Shell::panels_of`].
+	panels: ((Option<Handle>, u64), Vec<EvaluationContext<Shell>>),
 }
 
 impl Fields {
 	/// Shows the selected entity's name, or a dash without a selection, its transform block while it has a transform,
-	/// and its settings block while it's a camera or a light.
+	/// its settings block while it's a camera or a light, and the application's panels for its component types.
 	async fn show(&mut self, root: &mut EvaluationContext<Shell>) {
 		let selection = root
 			.with(|shell: &mut Shell| {
-				shell
-					.selection()
-					.map(|entity| (entity.label().to_string(), Part::of(entity)))
+				let entity = shell.selection()?;
+				let shown = shell.panels_of(entity);
+				// Each panel is started with its own function, so the list is read here, while the shell is at hand.
+				let panels = shell
+					.panels
+					.iter()
+					.enumerate()
+					.filter(|(index, _)| shown & 1 << index != 0)
+					.map(|(_, panel)| (panel.title, panel.height, Rc::clone(&panel.mount)))
+					.collect::<Vec<_>>();
+				Some((entity.label().to_string(), Part::of(entity), entity.handle, shown, panels))
 			})
 			.await;
+		let (selection, handle, shown_panels, panels) = match selection {
+			Some((label, part, handle, shown, panels)) => (Some((label, part)), Some(handle), shown, panels),
+			None => (None, None, 0, Vec::new()),
+		};
 		let name = selection.as_ref().map_or("–", |(label, _)| label.as_str());
 		self.name.update_text(|t| t.content(name)).await;
 
@@ -882,13 +931,20 @@ impl Fields {
 		let part = selection.and_then(|(_, part)| part);
 		let part_changed = self.part.as_ref().map(|(shown, _)| *shown) != part;
 		let transform_changed = self.transform.is_some() != transform;
-		if !part_changed && !transform_changed {
+		// A panel belongs to one entity, as a settings block does, so another selection starts it again.
+		let panels_changed = part_changed || transform_changed || self.panels.0 != (handle, shown_panels);
+		if !part_changed && !transform_changed && !panels_changed {
 			return;
 		}
-		// Blocks stack in the order they're declared, so the settings block also comes off when the transform block
-		// comes back, to be declared again under it.
-		if let Some((_, mut block)) = self.part.take() {
+		// Blocks stack in the order they're declared, so the blocks under one that changes come off too, to be
+		// declared again under it: the panels under the settings block, and both under the transform block.
+		for mut block in self.panels.1.drain(..) {
 			block.remove().await;
+		}
+		if part_changed || transform_changed {
+			if let Some((_, mut block)) = self.part.take() {
+				block.remove().await;
+			}
 		}
 		if transform_changed {
 			match self.transform.take() {
@@ -896,12 +952,22 @@ impl Fields {
 				None => self.transform = Some(transform_block(&mut self.blocks).await),
 			}
 		}
-		let height = properties_height(transform, part.map_or(0, |part| part.rows()));
+		let panels_height = panels.iter().map(|(_, height, _)| BLOCK_GAP + panel_block_height(*height)).sum();
+		let height = properties_height(transform, part.map_or(0, |part| part.rows()), panels_height);
 		self.panel
 			.update_container(|c| c.height(height.into()).style(panel(height, 1.0)))
 			.await;
-		if let Some(part) = part {
+		self.blocks.update_container(|c| c.height(height.into())).await;
+		if let Some(part) = part
+			&& self.part.is_none()
+		{
 			self.part = Some((part, settings_block(&mut self.blocks, part).await));
+		}
+		self.panels.0 = (handle, shown_panels);
+		if let Some(handle) = handle {
+			for (index, (title, height, mount)) in panels.into_iter().enumerate() {
+				self.panels.1.push(panel_block(&mut self.blocks, handle, index, title, height, mount).await);
+			}
 		}
 	}
 }
@@ -909,7 +975,7 @@ impl Fields {
 /// The properties panel: a block for each part of the selected entity, the entity itself with its name, its
 /// transform, and its camera's or light's settings.
 async fn properties(root: &mut EvaluationContext<Shell>) -> Fields {
-	let height = properties_height(false, 0);
+	let height = properties_height(false, 0, 0.0);
 	let mut panel_element = root
 		.element("properties")
 		.container(|c| {
@@ -930,7 +996,7 @@ async fn properties(root: &mut EvaluationContext<Shell>) -> Fields {
 		.container(|c| {
 			c.absolute_position(INSET, INSET)
 				.width(width.into())
-				.height(properties_height(true, CAMERA.len().max(LIGHT.len()).div_ceil(2)).into())
+				.height(properties_height(true, CAMERA.len().max(LIGHT.len()).div_ceil(2), 0.0).into())
 				.flow(flow::column_with_gap(BLOCK_GAP as u32))
 		})
 		.await;
@@ -950,6 +1016,7 @@ async fn properties(root: &mut EvaluationContext<Shell>) -> Fields {
 		name,
 		transform: None,
 		part: None,
+		panels: ((None, 0), Vec::new()),
 	}
 }
 
@@ -1015,12 +1082,22 @@ async fn block(
 	title: &str,
 	rows: usize,
 ) -> (EvaluationContext<Shell>, EvaluationContext<Shell>) {
+	block_of_height(parent, key, title, block_height(rows)).await
+}
+
+/// A block of the properties panel, `height` tall with the header that names it; see [`block`].
+async fn block_of_height(
+	parent: &mut EvaluationContext<Shell>,
+	key: &str,
+	title: &str,
+	height: f32,
+) -> (EvaluationContext<Shell>, EvaluationContext<Shell>) {
 	let width = PROPERTIES_WIDTH - INSET * 2.0;
 	let mut block = parent
 		.element(key)
 		.container(|c| {
 			c.width(width.into())
-				.height(block_height(rows).into())
+				.height(height.into())
 				.flow(flow::column_with_gap(6))
 		})
 		.await;
@@ -1052,6 +1129,33 @@ async fn settings_block(blocks: &mut EvaluationContext<Shell>, part: Part) -> Ev
 			.component(async move |ctx| setting_field(ctx, setting, field_width, true).await)
 			.await;
 	}
+	block
+}
+
+/// An application's panel block: its title over a column `height` tall, where the panel's function runs for `entity`
+/// until the block is removed.
+async fn panel_block(
+	blocks: &mut EvaluationContext<Shell>,
+	entity: Handle,
+	index: usize,
+	title: &str,
+	height: f32,
+	mount: crate::editor::panels::Mount,
+) -> EvaluationContext<Shell> {
+	let key = format!("panel {index} {}", entity.id());
+	let (mut block, _) = block_of_height(blocks, &key, title, panel_block_height(height)).await;
+	let mut column = block
+		.element("column")
+		.container(|c| {
+			c.width(CONTENT_WIDTH.into())
+				.height(height.into())
+				.flow(flow::column_with_gap(6))
+		})
+		.await;
+	column
+		.element("panel")
+		.component(async move |ctx| mount(ctx, entity).await)
+		.await;
 	block
 }
 
@@ -1467,6 +1571,17 @@ fn tool_style(chosen: bool, hovered: bool) -> [ConcreteLayer; 3] {
 	}
 }
 
+/// A surface raised above the panel it sits on, lit from above and edged in a dark hairline, so it reads as a key or
+/// a button to press: a keycap in the hint bar, an application panel's button. It brightens under the pointer.
+pub(crate) fn raised(height: f32, hovered: bool) -> [ConcreteLayer; 3] {
+	let [top, bottom] = if hovered { [0x45464E, 0x34353C] } else { [0x3A3B42, 0x2C2D33] };
+	[
+		ConcreteLayer::default().color(vertical(height, hex(top, 1.0), hex(bottom, 1.0))),
+		top_highlight(0.1),
+		hairline(0.6),
+	]
+}
+
 /// A scene row: clear at rest, a faint lift under the pointer, and, while selected, tinted with the accent and edged
 /// in it, as the docs site marks what's active, so the light text stays readable over the brand's own green.
 fn row_style(selected: bool, hovered: bool) -> [ConcreteLayer; 3] {
@@ -1568,7 +1683,7 @@ fn vertical(height: f32, top: RGBA, bottom: RGBA) -> crate::ui::Color {
 	LinearGradient::new([0.0, 0.0], [0.0, height], top, bottom).into()
 }
 
-fn solid(color: RGBA) -> ConcreteLayer {
+pub(crate) fn solid(color: RGBA) -> ConcreteLayer {
 	ConcreteLayer::default().color(color.into())
 }
 
@@ -1585,6 +1700,37 @@ const fn hex(rgb: u32, alpha: f32) -> RGBA {
 #[cfg(test)]
 mod tests {
 	use super::darker;
+
+	#[test]
+	fn an_entity_shows_the_panels_of_the_components_it_has() {
+		use std::rc::Rc;
+
+		use crate::core::factory::Factory;
+		use crate::editor::panels::Registration;
+		use crate::editor::scene::SceneEntity;
+		use crate::gameplay::Transform;
+
+		let registration = |component: &'static str| Registration {
+			component,
+			title: component,
+			height: 40.0,
+			mount: Rc::new(|_, _| Box::pin(async {})),
+		};
+		let mut shell = super::Shell::new(crate::ui::Size::new(800, 600));
+		shell.panels = vec![registration("game::Npc"), registration("game::Door"), registration("game::Health")];
+		let npc = SceneEntity {
+			handle: Factory::<u8>::new().create(0),
+			name: String::new(),
+			kind: String::new(),
+			transform: Transform::identity(),
+			camera: None,
+			light: None,
+			types: vec!["game::Health", "game::Npc"],
+			properties: Vec::new(),
+		};
+		assert_eq!(shell.panels_of(&npc), 0b101, "in registration order, whatever order the entity has them in");
+		assert_eq!(shell.panels_of(&SceneEntity { types: Vec::new(), ..npc }), 0);
+	}
 
 	#[test]
 	fn a_darker_color_keeps_its_hue() {

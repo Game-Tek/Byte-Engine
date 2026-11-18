@@ -173,6 +173,65 @@ while the editor is closed.
     application reloads the material. Press Escape in the window, or close it, when you're done. Undo and redo apply
     to the scene, in the game's window.
 
+## Add a panel for your entities
+
+Give the entity panel controls of your own, such as a button that makes a character stumble, or a readout of what
+it's doing. A panel belongs to a component type: every entity that has the component shows it at the bottom of the entity
+panel. The panel reaches your game through the inspector, so its commands also work from the console and over HTTP.
+
+1. Register the messages your panel sends, on the channel your game listens on. A payload type must derive `Facet`,
+   so the inspector can read it from JSON.
+
+   ```rust
+   use byte_engine::core::factory::CreateMessage;
+
+   #[derive(Clone, facet::Facet)]
+   struct Stagger {
+   	strength: f32,
+   }
+
+   app.inspector()
+   	.register_message("Stagger", app.world().channel::<CreateMessage<Stagger>>())
+   	.unwrap();
+   ```
+
+2. Register the properties your panel shows. The inspector keeps the latest value each entity publishes, under the
+   name you give it. A property type must implement `Serialize`.
+
+   ```rust
+   #[derive(Clone, serde::Serialize, serde::Deserialize)]
+   struct Plan(String);
+
+   app.inspector()
+   	.watch_property("plan", app.world().channel::<CreateMessage<Plan>>())
+   	.unwrap();
+   ```
+
+   Publish a new value with `app.world().factory::<Plan>().derive(npc, Plan("Fleeing".into()))` whenever it changes.
+
+3. Register the panel for your component, with its title and height in pixels. The editor runs your function while
+   an entity with the component is selected, and stops it when the selection changes.
+
+   ```rust
+   use byte_engine::utils::r#async::select;
+
+   editor.panel::<Npc>("NPC", 64.0, async |panel| {
+   	let mut stagger = panel.button("Stagger").await;
+   	let mut plan = panel.label("").await;
+   	loop {
+   		select! {
+   			_ = stagger.clicked() => panel.post("Stagger", &Stagger { strength: 1.0 }).await,
+   			_ = panel.render() => {},
+   		}
+   		let shown = panel.property::<Plan>("plan").await.map_or(String::new(), |plan| plan.0);
+   		plan.set(&shown).await;
+   	}
+   });
+   ```
+
+   A button and a label stack in the panel's column. For anything else, such as a bar that shows health, declare
+   your own elements on `panel.ui()`.
+
 ## See warnings and errors
 
 While the editor is open, each warning and error your application logs shows as a toast in the window's bottom-right
@@ -187,3 +246,6 @@ Toasts show what `log.level` lets through, which is only errors unless you chang
 
 - [`install`](/docs/api/latest/byte_engine/editor#fn.install)
 - [`Editor`](/docs/api/latest/byte_engine/editor/Editor)
+- [`Panel`](/docs/api/latest/byte_engine/editor/Panel)
+- [`DefaultInspector::register_message`](/docs/api/latest/byte_engine/inspector/DefaultInspector#method.register_message)
+- [`DefaultInspector::watch_property`](/docs/api/latest/byte_engine/inspector/DefaultInspector#method.watch_property)

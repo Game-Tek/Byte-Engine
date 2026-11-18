@@ -1710,7 +1710,7 @@ mod tests {
 		let deletion_messages = messages.channel::<DeleteMessage>();
 		let mut deletions = deletion_messages.listener();
 		let entities = messages.factory::<String>();
-		let mut inspector = DefaultInspector::new(
+		let inspector = DefaultInspector::new(
 			DefaultChannel::new(),
 			Configuration::new(),
 			messages,

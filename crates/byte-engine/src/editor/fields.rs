@@ -347,6 +347,8 @@ mod tests {
 			transform,
 			camera,
 			light: None,
+			types: Vec::new(),
+			properties: Vec::new(),
 		}
 	}
 

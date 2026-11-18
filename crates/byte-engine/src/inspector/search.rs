@@ -5,7 +5,7 @@
 
 use neo_frizbee::{Config, Matcher, Pattern};
 
-use super::{InspectedEntity, InspectedValue};
+use super::InspectedEntity;
 
 /// Returns the entities of `entities` that pass every word of `search`, an
 /// [entity search](/docs/reference/inspector#entity-search): in handle order without a name word, and best match first
@@ -60,10 +60,7 @@ pub fn fuzzy_find(candidates: &[&str], search: &str) -> Vec<usize> {
 impl InspectedEntity {
 	/// Returns the entity's name, the `name` property, or an empty string when it has none.
 	pub fn name(&self) -> &str {
-		match self.property("name") {
-			Some(InspectedValue::Text(name)) => name,
-			_ => "",
-		}
+		self.property("name").and_then(|name| name.as_str()).unwrap_or_default()
 	}
 }
 

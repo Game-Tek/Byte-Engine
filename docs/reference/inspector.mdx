@@ -50,6 +50,10 @@ The entity query lists every factory-created handle with its types and the
 properties the inspector has observed since it started. It filters by exact
 type or name.
 
+The properties are open: an application adds its own, each under the name it
+registers, and its value is the latest one an entity published, in the shape
+its type serializes to. Every application has these:
+
 | Property | Value |
 | --- | --- |
 | `name` | The latest name attached to the entity. |
@@ -61,6 +65,10 @@ A property is present only when the entity has it. Because `transform`,
 `camera`, and the light properties have their update message's payload shape,
 a client can change one field of any of them and post the whole value back
 without resetting the others.
+
+The messages are open too: an application adds its own, each under the name
+it registers, and the message type catalog lists them with the engine's own.
+Every application accepts these:
 
 | Message | Payload | Effect |
 | --- | --- | --- |

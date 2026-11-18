@@ -4,11 +4,13 @@
 //! rows is the shell's.
 
 use crate::core::factory::Handle;
+use serde::Deserialize as _;
+
 use crate::gameplay::Transform;
-use crate::inspector::{InspectedEntity, InspectedValue, find_entities};
 use crate::inspector::{
 	CONE_LIGHT_UPDATE_MESSAGE_TYPE, DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE, POINT_LIGHT_UPDATE_MESSAGE_TYPE,
 };
+use crate::inspector::{InspectedEntity, find_entities};
 use crate::rendering::{Camera, ConeLight, DirectionalLight, PointLight};
 
 /// The `SceneEntity` struct is one row of the scene overview and what the properties panel shows when it is selected.
@@ -26,6 +28,10 @@ pub(crate) struct SceneEntity {
 	pub(crate) camera: Option<Camera>,
 	/// The entity's light settings as authored, when it's a light.
 	pub(crate) light: Option<SceneLight>,
+	/// The entity's component types, by Rust type name, which pick the application's panels it shows.
+	pub(crate) types: Vec<&'static str>,
+	/// Every property the inspector tracks for the entity, by name, serialized, which the application's panels read.
+	pub(crate) properties: Vec<(&'static str, serde_json::Value)>,
 }
 
 /// The `LightKind` enum is which shape of light an entity is, named as its inspector property and level kind.
@@ -108,7 +114,8 @@ pub(crate) fn collect(entities: &[InspectedEntity], scene: &mut Vec<SceneEntity>
 	// The new rows are built apart from the old ones, so they can be compared before they replace them.
 	let mut rows = Vec::with_capacity(entities.len());
 	for entity in entities {
-		let Some(InspectedValue::Transform(transform)) = entity.property("transform") else {
+		let Some(transform) = entity.property("transform").and_then(|transform| Transform::deserialize(transform).ok())
+		else {
 			continue;
 		};
 		let name = entity.name().to_string();
@@ -118,21 +125,20 @@ pub(crate) fn collect(entities: &[InspectedEntity], scene: &mut Vec<SceneEntity>
 			.map(|name| short_type(name))
 			.unwrap_or_default()
 			.to_string();
-		let camera = match entity.property("camera") {
-			Some(InspectedValue::Camera(camera)) => Some(camera.clone()),
-			_ => None,
-		};
+		let camera = entity.property("camera").and_then(|camera| Camera::deserialize(camera).ok());
 		let light = LightKind::ALL.into_iter().find_map(|kind| {
-			let payload = serde_json::to_value(entity.property(kind.property())?).ok()?;
+			let payload = entity.property(kind.property())?.clone();
 			Some(SceneLight { kind, payload })
 		});
 		rows.push(SceneEntity {
 			handle: entity.handle(),
 			name,
 			kind,
-			transform: transform.clone(),
+			transform,
 			camera,
 			light,
+			types: entity.types().to_vec(),
+			properties: entity.properties().to_vec(),
 		});
 	}
 	// A stable order keeps rows from jumping when the inspector reports entities in another order.

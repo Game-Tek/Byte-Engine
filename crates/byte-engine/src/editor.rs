@@ -42,17 +42,20 @@ mod history;
 mod input;
 mod layers;
 mod palette;
+mod panels;
 mod preview;
 mod scene;
 mod shell;
 mod toasts;
 mod variant;
 
+pub use panels::{Button, Label, Panel};
+pub use shell::Shell;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use shell::Shell;
 
 use crate::application::graphics::GraphicsApplication;
 use crate::configuration::{ConfigurationEventId, ConfigurationUpdateState, ConfigurationValue};
@@ -67,7 +70,7 @@ use crate::ghi::window::{Event, Events};
 use crate::editor::layers::Layer;
 use crate::input::{ActionPhase, ResolvedAction, SeatHandle, Value};
 use crate::inspector::{
-	CAMERA_UPDATE_MESSAGE_TYPE, DELETE_MESSAGE_TYPE, InspectedEntity, InspectedValue, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
+	CAMERA_UPDATE_MESSAGE_TYPE, DELETE_MESSAGE_TYPE, InspectedEntity, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
 };
 use crate::math::{Point, Vector};
 use crate::physics::{RayQuery, RayQueryResponse};
@@ -258,6 +261,29 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 impl Editor {
 	/// Opens or closes the editor on F5 and Escape, feeds this tick's pointer input and resizes into the editor's UI,
 	/// lays it out, and sends the render when it changed.
+	/// Shows `panel` at the bottom of the entity panel while an entity with a `T` component is selected, under a header
+	/// that reads `title`, in a column `height` pixels tall.
+	///
+	/// The editor runs `panel` with a [`Panel`] when such an entity is selected, and drops it when the selection
+	/// changes, so it can loop for as long as it shows: add its controls, then wait for clicks and frames. Register the
+	/// messages it posts and the properties it reads on the inspector, with
+	/// [`DefaultInspector::register_message`](crate::inspector::DefaultInspector::register_message) and
+	/// [`DefaultInspector::watch_property`](crate::inspector::DefaultInspector::watch_property). Panels show in the
+	/// order they're registered.
+	pub fn panel<T: 'static>(&mut self, title: &'static str, height: f32, panel: impl AsyncFn(&mut Panel<'_>) + 'static) {
+		let panel = Rc::new(panel);
+		let mount: panels::Mount = Rc::new(move |ctx, entity| {
+			let panel = Rc::clone(&panel);
+			Box::pin(async move { panel(&mut Panel::new(ctx, entity)).await })
+		});
+		self.engine.ctx_mut().panels.push(panels::Registration {
+			component: std::any::type_name::<T>(),
+			title,
+			height,
+			mount,
+		});
+	}
+
 	pub fn frame(&mut self, app: &mut GraphicsApplication) {
 		while let Some(message) = self.windows.read() {
 			// The editor frees the cursor of the game's first window.
@@ -1127,7 +1153,7 @@ impl Editor {
 				return;
 			};
 			let transform = carry::placed(position, carry.light);
-			let payload = serde_json::to_string(&InspectedValue::Transform(&transform)).expect(
+			let payload = serde_json::to_string(&transform).expect(
 				"Transform failed to serialize. The most likely cause is a non-finite component. Check the pointer's ray.",
 			);
 			if let Err(error) = app
@@ -1153,6 +1179,16 @@ impl Editor {
 				log::warn!("The editor couldn't delete the entity. {error} Check that the game registers inspector messages.");
 			}
 		}
+		// The panels' messages are taken out while they're posted, and put back to keep their storage.
+		let mut posts = std::mem::take(&mut self.engine.ctx_mut().posts);
+		for (entity, message_type, payload) in posts.drain(..) {
+			if let Err(error) = app.inspector().post_message(message_type, entity, &payload) {
+				log::warn!(
+					"A panel's message didn't reach the game. {error} Register it with `DefaultInspector::register_message` before the panel posts it."
+				);
+			}
+		}
+		self.engine.ctx_mut().posts = posts;
 		let shell = self.engine.ctx_mut();
 		let Some((handle, change)) = shell.edit.take() else {
 			return;
@@ -1412,7 +1448,7 @@ impl Editor {
 			return;
 		};
 		entity.transform = delta.applied_to(&entity.transform);
-		let payload = serde_json::to_string(&InspectedValue::Transform(&entity.transform)).expect(
+		let payload = serde_json::to_string(&entity.transform).expect(
 			"Transform failed to serialize. The most likely cause is a non-finite component. Check the edited transform.",
 		);
 		if let Err(error) = app

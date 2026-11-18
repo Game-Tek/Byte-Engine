@@ -29,6 +29,13 @@ impl Name {
 	}
 }
 
+/// A name serializes as its text, as the inspector's `name` property shows it.
+impl serde::Serialize for Name {
+	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		serializer.serialize_str(self.as_str())
+	}
+}
+
 impl AsRef<str> for Name {
 	fn as_ref(&self) -> &str {
 		self.as_str()

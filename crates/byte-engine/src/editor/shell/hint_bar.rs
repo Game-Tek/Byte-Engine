@@ -4,7 +4,7 @@
 //! Containers don't size to what they hold, so each hint first lays out at a width guessed from its text, and once the
 //! layout measured its text, the caps, the hints, and the bar take their measured widths.
 
-use super::{CORNER, MARGIN, SQUIRCLE, Shell, TEXT, TOOLBAR_MUTED, hairline, hex, panel, solid, top_highlight, vertical};
+use super::{CORNER, MARGIN, SQUIRCLE, Shell, TEXT, TOOLBAR_MUTED, panel, raised, solid};
 use crate::editor::bindings::Binding;
 use crate::ui::layout::context::{Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
@@ -119,7 +119,7 @@ async fn declare(bar: &mut EvaluationContext<Shell>, index: usize, binding: &Bin
 					.corner_radius(5.0)
 					.corner_exponent(SQUIRCLE)
 					.flow(flow::center)
-					.style(key_cap())
+					.style(raised(CAP_HEIGHT, false))
 			})
 			.await;
 		let text = cap
@@ -198,13 +198,4 @@ fn bar_width(widths: impl Iterator<Item = f32>) -> f32 {
 		.map(|(index, width)| width + if index > 0 { HINT_GAP } else { 0.0 })
 		.sum::<f32>()
 		+ PADDING * 2.0
-}
-
-/// A keycap: a surface raised above the bar, lit from above and edged in a dark hairline, so it reads as a key to press.
-fn key_cap() -> [crate::ui::ConcreteLayer; 3] {
-	[
-		crate::ui::ConcreteLayer::default().color(vertical(CAP_HEIGHT, hex(0x3A3B42, 1.0), hex(0x2C2D33, 1.0))),
-		top_highlight(0.1),
-		hairline(0.6),
-	]
 }

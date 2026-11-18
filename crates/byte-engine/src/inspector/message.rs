@@ -17,14 +17,14 @@ type SerializableMessagePoster = Box<dyn Fn(Handle, &str) -> Result<(), String> 
 ///
 /// Use `payload_shape` to build controls for the JSON `payload`, then
 /// send the completed value through [`DefaultInspector::post_message`].
-#[derive(Clone, Copy, Debug, serde::Serialize)]
-pub struct RegisteredMessageType<'a> {
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct RegisteredMessageType {
 	/// The stable name used in the message envelope's `type` field.
 	#[serde(rename = "type")]
 	pub message_type: &'static str,
-	/// The cached JSON-oriented shape of the message envelope's `payload` field.
+	/// The JSON-oriented shape of the message envelope's `payload` field.
 	#[serde(rename = "payload")]
-	pub payload_shape: &'a Value,
+	pub payload_shape: Value,
 }
 
 /// The `SerializableMessage` struct provides one source of truth for posting and describing an accepted protocol message.
@@ -51,10 +51,11 @@ pub const TRIGGER_ACTION_MESSAGE_TYPE: &str = "TriggerAction";
 impl DefaultInspector {
 	/// Registers one reflected targeted message and its destination channel for protocol posting.
 	///
-	/// Create the channel's listeners before registration. The channel may belong
-	/// to any scope on the shared message bus. Next, share the inspector with a protocol
-	/// adapter such as [`HttpInspectorServer`](super::http::HttpInspectorServer).
-	pub fn register_message<M>(&mut self, message_type: &'static str, channel: DefaultChannel<M>) -> Result<(), String>
+	/// Create the channel's listeners before registration. The channel may belong to any scope on the shared message
+	/// bus. An application registers its own messages, such as a debug command for its NPCs, on the inspector it
+	/// shares, [`GraphicsApplication::inspector`](crate::application::graphics::GraphicsApplication::inspector); every
+	/// protocol adapter accepts them from then on.
+	pub fn register_message<M>(&self, message_type: &'static str, channel: DefaultChannel<M>) -> Result<(), String>
 	where
 		M: TargetedMessage + Clone + Send + Sync + 'static,
 		M::Payload: Facet<'static>,
@@ -65,14 +66,15 @@ impl DefaultInspector {
 					.to_string(),
 			);
 		}
-		if self.serializable_messages.contains_key(message_type) {
+		let mut messages = self.serializable_messages.write();
+		if messages.contains_key(message_type) {
 			return Err(format!(
 				"Inspector message could not be registered. The most likely cause is that protocol type name '{message_type}' is already registered."
 			));
 		}
 
 		let payload_shape = describe_json_shape(M::Payload::SHAPE);
-		self.serializable_messages.insert(
+		messages.insert(
 			message_type,
 			SerializableMessage {
 				poster: Box::new(move |target, payload| {
@@ -100,13 +102,14 @@ impl DefaultInspector {
 	}
 
 	/// Returns registered protocol message types in stable name order.
-	pub fn message_types(&self) -> Vec<RegisteredMessageType<'_>> {
+	pub fn message_types(&self) -> Vec<RegisteredMessageType> {
 		let mut types = self
 			.serializable_messages
+			.read()
 			.iter()
 			.map(|(&message_type, message)| RegisteredMessageType {
 				message_type,
-				payload_shape: &message.payload_shape,
+				payload_shape: message.payload_shape.clone(),
 			})
 			.collect::<Vec<_>>();
 		types.sort_unstable_by_key(|message| message.message_type);
@@ -118,6 +121,7 @@ impl DefaultInspector {
 	/// Transports pass the payload exactly as received after parsing the message envelope.
 	pub fn post_message(&self, message_type: &str, target: Handle, payload: &str) -> Result<(), String> {
 		self.serializable_messages
+			.read()
 			.get(message_type)
 			.ok_or_else(|| {
 				format!(
@@ -160,7 +164,7 @@ mod tests {
 		let transforms = messages.channel();
 		let listener = transforms.listener();
 
-		let mut inspector = DefaultInspector::new(
+		let inspector = DefaultInspector::new(
 			DefaultChannel::new(),
 			Configuration::new(),
 			messages,
@@ -186,7 +190,7 @@ mod tests {
 		let deletions = messages.channel::<DeleteMessage>();
 		let listener = deletions.listener();
 		let entities = messages.factory::<String>();
-		let mut inspector = DefaultInspector::new(
+		let inspector = DefaultInspector::new(
 			DefaultChannel::new(),
 			Configuration::new(),
 			messages,
@@ -291,7 +295,7 @@ mod tests {
 		let destination_messages = message_bus.new_scope("reflected-message-test-destination");
 		let reflected_messages = destination_messages.channel::<ReflectedTestMessage>();
 		let mut listener = reflected_messages.listener();
-		let mut inspector = DefaultInspector::new(
+		let inspector = DefaultInspector::new(
 			DefaultChannel::new(),
 			Configuration::new(),
 			inspector_messages,
@@ -305,7 +309,7 @@ mod tests {
 		assert_eq!(types[0].message_type, "ReflectedTestMessage");
 		assert_eq!(
 			types[0].payload_shape,
-			&json!({
+			json!({
 				"type": "object",
 				"fields": [
 					{
@@ -353,7 +357,7 @@ mod tests {
 		let inspector_messages = message_bus.new_scope("action-inspector-test");
 		let action_events = message_bus.new_scope("action-event-test").channel::<ActionEvent>();
 		let mut listener = action_events.listener();
-		let mut inspector = DefaultInspector::new(
+		let inspector = DefaultInspector::new(
 			DefaultChannel::new(),
 			Configuration::new(),
 			inspector_messages,

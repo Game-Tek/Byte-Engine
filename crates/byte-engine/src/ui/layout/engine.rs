@@ -249,6 +249,13 @@ impl<C: 'static> Engine<C> {
 		runtime.next_deadline()
 	}
 
+	/// Moves the engine's clock on by `elapsed`, which the next evaluation's frame takes as its time. From the first
+	/// call on, frames take only the time advanced this way instead of the wall clock, so a test can step to any frame
+	/// of an animation run; see [`EvaluationContext::animate`]. Timers keep the wall clock.
+	pub fn advance_clock(&mut self, elapsed: crate::time::MediaTime) {
+		self.core.runtime.clock.advance(elapsed);
+	}
+
 	/// Returns the application context components read through [`Context::with`].
 	pub fn ctx(&self) -> &C {
 		&self.core.ctx

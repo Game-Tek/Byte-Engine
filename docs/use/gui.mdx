@@ -221,18 +221,7 @@ layers as an array, such as `.style([fill, border])`. The engine reuses the
 storage of removed elements, render entries, and ended components, so a screen
 that opens again allocates only one box for each component or mount it starts.
 
-To animate, pass `animate` an element, a driver such as `emphasized_out` or
-`spring`, and an async closure that writes one frame's value. The closure can
-edit other elements it borrows, so one animation can move a card and fade its
-content together:
-
-```rust
-animate(&mut card, emphasized_out(0.3), async |card, t| {
-    card.update_container(|c| c.opacity(t)).await;
-    label.update_text(|l| l.opacity(t)).await;
-})
-.await;
-```
+To move an element over time, see [Animate an element](#animate-an-element).
 
 Reads are futures that complete at once. Await them in the component:
 
@@ -251,32 +240,98 @@ A geometry read returns two boxes. Use `logical` for interaction, such as
 turning the pointer into a local position, because the pointer hits that box.
 Use `display` to follow what's seen.
 
-## Animate a container's size without reflowing
+## Animate an element
 
-To grow or shrink a panel smoothly, give it its final size at once and animate
-only how big it looks. The width and height are the logical size: they place
-the panel, give its children their space, and take pointer hits. The display
-width and height are the box the panel is painted at and clips its children to.
-They default to the logical size.
+An animation is a value your component owns: where it's headed, where it
+stands, and how fast it's moving. A run applies it to one container, frame by
+frame, through callbacks you write. You decide which properties each value
+drives.
 
-1. Set the logical size to the target, so the children lay out at their final
-   places and the panel takes clicks there right away.
-2. Animate the display size from the old size to the new one.
+1. Create the animation with its starting value and a motion, such as a curve
+   from `ease_out` or a `Spring`.
+2. Set its target.
+3. Run it on a container. In `on_every_frame`, write the current value to the
+   properties that show it, then await the run.
 
 ```rust
-panel.update_container(|c| c.height(Sizing::pixels(target))).await;
-animate(&mut panel, emphasized_out(0.25), async |panel, t| {
-    let height = start + (target - start) * t;
-    panel.update_container(|c| c.display_height(Sizing::pixels(height))).await;
-})
-.await;
-// Match the logical size again.
-panel.update_container(|c| c.display_height(Sizing::full())).await;
+let mut shown = Animation::new(0.0, ease_out(0.35));
+
+shown.set_target(1.0);
+toolbar
+    .animate(&mut shown)
+    .on_every_frame(|c, v| c.opacity(v.current).transform(Transform::identity().translate_y((v.current - 1.0) * 60.0)))
+    .await;
 ```
 
-The display box grows from the panel's top-left corner. Children never move
+The run resolves once the animation settles. Call `on_start` for what should
+change once, as the run begins, and `on_end` for what should change once it's
+over.
+
+### Interrupt an animation
+
+Drop a run to stop it, such as by losing a `select!`. The container keeps the
+values the run wrote last, and the animation keeps where it stands and how fast
+it moves. Set a new target and run it again, and the motion turns around from
+there: a spring keeps its speed, and a curve starts over from where it stands.
+
+```rust
+let mut shown = Animation::new(0.0, ease_out(0.35));
+loop {
+    shown.set_target(if open { 1.0 } else { 0.0 });
+    select! {
+        _ = toolbar.animate(&mut shown).on_every_frame(|c, v| c.opacity(v.current)) => {
+            open = toggled(ctx, open).await;
+        },
+        // Toggled again before the toolbar arrived: the next run starts where this one stopped.
+        changed = toggled(ctx, open) => open = changed,
+    }
+}
+```
+
+An `on_end` runs on an interruption too, with `Ending::Interrupted`, so it can
+put the container in a state it should never stay in mid-motion. It runs before
+any other change, so a run that starts in the same frame starts from what it
+left.
+
+```rust
+dial.animate(&mut pose)
+    .on_every_frame(|c, v| c.opacity(v.current))
+    .on_end(|c, _, ending| match ending {
+        Ending::Settled => c.position(PARKED),
+        Ending::Interrupted => c,
+    })
+    .await;
+```
+
+### Animate a container's size without reflowing
+
+Give the container its final size at once and animate only how big it looks.
+The width and height are the logical size: they place the container, give its
+children their space, and take pointer hits. The display width and height are
+the box it's painted at and clips its children to. A run serves both: the
+target for the logical size, and the current value for the display size.
+
+```rust
+let mut height = Animation::new(start, emphasized_out(0.25));
+height.set_target(end);
+panel
+    .animate(&mut height)
+    .on_start(|c, v| c.height(Sizing::pixels(v.target)))
+    .on_every_frame(|c, v| c.display_height(Sizing::pixels(v.current)))
+    .on_end(|c, _, _| c.display_height(Sizing::full()))
+    .await;
+```
+
+The display box grows from the container's top-left corner. Children never move
 while it animates, and a display edit doesn't rerun layout. Only containers
 have a display size.
+
+### Animate more than one value
+
+An animation's value can be a number, a fixed array of numbers, a `Size`, an
+`Offset`, a color, or a pair of these. Each number moves on its own, so a spring
+keeps a speed for each. To drive several elements from one value, step the
+animation yourself with `step` each frame and edit each element.
 
 ## Size a container to its content and animate its resize
 
@@ -292,46 +347,31 @@ let mut menu = ctx
 ```
 
 A fit size changes the moment its content does. To glide to the new size
-instead, keep the logical size fitting the content and animate the display size
-toward it:
+instead, follow the logical size with an animation and run it on the display
+size:
 
-1. Pin the display size to the size that's seen now, so a change in content
-   never makes the menu jump.
-2. Wait for the logical size to change with `logical_size_change`, passing the
-   size you last acted on.
-3. Retarget a spring at the new size, and write its value to the display size
-   each frame until it settles.
+1. Wait for the first layout's size with `logical_size_change`, and start the
+   animation there.
+2. Set the target to each new size `logical_size_change` reports, and run the
+   animation until it settles or the size changes again.
 
 ```rust
-fn pin(c: Properties<'_, Container>, size: Size) -> Properties<'_, Container> {
+fn display(c: Properties<'_, Container>, size: Size) -> Properties<'_, Container> {
     c.display_width(Sizing::pixels(size.x())).display_height(Sizing::pixels(size.y()))
 }
 
-// The first wait resolves with the size from the first layout.
-let mut known = menu.logical_size_change(Size::new(0, 0)).await;
-menu.update_container(|c| pin(c, known)).await;
-
-let (mut width, mut height) = (spring(known.x(), known.x()), spring(known.y(), known.y()));
-let mut last = Instant::now();
+let first = menu.logical_size_change(Size::new(0, 0)).await;
+let mut size = Animation::new(first, Spring::default());
 loop {
-    if width.is_settled() && height.is_settled() {
-        // Nothing moves, so wait for the content without asking for frames.
-        known = menu.logical_size_change(known).await;
-    } else {
-        select! {
-            size = menu.logical_size_change(known) => known = size,
-            _ = menu.render() => {
-                let step = MediaTime::from_std(last.elapsed());
-                let seen = Size::new(width.step(step), height.step(step));
-                menu.update_container(|c| pin(c, seen)).await;
-            }
-        }
+    // The run borrows the animation, so read the size it heads to first.
+    let target = size.target();
+    select! {
+        _ = menu.animate(&mut size).on_every_frame(|c, v| display(c, v.current)) => {
+            // Settled: wait for the content without asking for frames.
+            size.set_target(menu.logical_size_change(target).await);
+        },
+        changed = menu.logical_size_change(target) => size.set_target(changed),
     }
-    if width.target() != known.x() || height.target() != known.y() {
-        width.set_target(known.x());
-        height.set_target(known.y());
-    }
-    last = Instant::now();
 }
 ```
 
@@ -342,13 +382,15 @@ Pointer hits use the logical size, so a new row takes clicks right away.
 
 The menu's siblings follow its logical size, so they move at once. To make them
 glide too, wrap the fitting content in a container whose logical size you
-animate. Fit the inner container, follow its `logical_size_change` as above, and
-write each spring value to the outer container's `width` and `height` instead
-of its display size. Animating a logical size reruns layout each frame, so keep
-it for content that's small.
+animate: write the current value to the outer container's `width` and `height`
+instead of its display size. Animating a logical size reruns layout each frame,
+so keep it for content that's small.
 
-Any driver works the same way, or none: snap to a size, wait for a second
-change before you move, or animate one axis only.
+### Test an animation
+
+Advance the engine's clock by hand with `Engine::advance_clock`, then evaluate.
+From then on, each frame's time is what you advanced, so a test can stop in the
+middle of a run and check what it wrote.
 
 ## Understand component lifetime
 
@@ -570,4 +612,7 @@ input outside the tree, and both evaluation and rendering key on it.
 - [`Fonts`](/docs/api/latest/byte_engine/ui#type.Fonts)
 - [`Sizing`](/docs/api/latest/byte_engine/ui#enum.Sizing)
 - [`Context::logical_size_change`](/docs/api/latest/byte_engine/ui#trait.Context)
+- [`Animation`](/docs/api/latest/byte_engine/ui#struct.Animation)
 - [`Spring`](/docs/api/latest/byte_engine/ui#struct.Spring)
+- [`Easing`](/docs/api/latest/byte_engine/ui#struct.Easing)
+- [`Ending`](/docs/api/latest/byte_engine/ui#enum.Ending)

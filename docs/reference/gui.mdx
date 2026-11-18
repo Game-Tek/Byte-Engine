@@ -1,6 +1,6 @@
 ---
 title: UI
-description: Look up the UI element kinds and their properties, sizing and flow rules, styles and transforms, events, focus, hit testing, drag, timers, animation drivers, retained identity, and the renderer's limits.
+description: Look up the UI element kinds and their properties, sizing and flow rules, styles and transforms, events, focus, hit testing, drag, timers, animations, retained identity, and the renderer's limits.
 icon: PanelTop
 ---
 
@@ -365,7 +365,7 @@ the drag ended. A changed evaluation size cancels first.
 
 | Wait | Resolves |
 | --- | --- |
-| Render | On the first frame that begins after it was first polled. |
+| Render | On the first frame that begins after it was first polled, with that frame's time. See [Frame clock](#frame-clock). |
 | Duration | Once the deadline set at creation has passed, checked when polled. |
 | Logical size change | With the element's logical size, once that size differs from the known size the wait was given. Checked when polled and after every layout. |
 
@@ -382,26 +382,91 @@ completes it. A wait on an element that isn't laid out stays pending. A wait
 given a known size that's already stale completes on its first poll; a wait
 that completes after a layout completes within the same evaluation.
 
-## Animation drivers
+## Animations
 
-A driver yields a value from 0 to 1 that an animation applies each frame, with
-the wall-clock step capped at one thirtieth of a second, and a final value when
-it completes. A duration of 0 completes at once.
+An animation is a value a component owns and moves over time. It holds a
+target, where the value is headed, and a current value, where it stands. A
+run applies an animation to one container, frame by frame, through the
+callbacks the component gives it. The engine keeps no animation state: all of
+it lives in the animation.
 
-| Driver | Parameters | Curve | Completes |
-| --- | --- | --- | --- |
-| Ease in | Duration | Quadratic | At the duration |
-| Ease out | Duration | Inverse quadratic | At the duration |
-| Ease out cubic, quartic | Duration | Inverse cubic, quartic | At the duration |
-| Emphasized out | Duration | Inverse quintic | At the duration |
-| Ease in and out | Duration | Quadratic halves | At the duration |
-| Back out | Duration, overshoot | Overshoots past the target, then settles | At the duration |
-| Spring | From, to | Mass 1, stiffness 380, damping 16, from rest | Within 0.001 of the target with velocity below 0.001 |
-| Smoothing | From, to, retention | Keeps the given share of the distance after each second, by default 0.01; never overshoots | Within 0.001 of the target |
+| Term | Definition |
+| --- | --- |
+| Value | A number or a fixed group of numbers. Each number is a lane, which moves on its own. |
+| Target | The value the animation is headed to. |
+| Current | The value the animation stands at. |
+| Motion | How each lane moves from its current value toward its target. |
+| Settled | Every lane has reached its target and stopped. |
 
-A spring or a smoothing can take a new target at any time. It keeps its
-current value, and a spring keeps its velocity too, so the motion continues
-without a jump.
+A new animation is settled at its starting value: its target and current value
+are the same. Setting a target equal to the current target changes nothing.
+Setting another target starts each lane toward it, keeping what its motion
+carries over. Changing the motion does the same toward the current target.
+Snapping sets the target and the current value at once and settles the
+animation.
+
+### Values
+
+| Value | Lanes |
+| --- | --- |
+| Number | 1 |
+| Fixed array of numbers | Its length |
+| Size, offset | 2 |
+| Color | 4: red, green, blue, alpha |
+| Pair of values | The lanes of the first, then the second |
+
+### Motions
+
+| Motion | Parameters | A lane moves | A new target keeps | Settled |
+| --- | --- | --- | --- | --- |
+| Curve | Duration, curve | From where it stood when its target last changed, along the curve, reaching the target at the duration | Where it stands | Once the duration has passed |
+| Spring | Mass 1, stiffness 380, damping 16 | As a damped spring, stepped by at most a thirtieth of a second per frame | Where it stands and its speed | Within 0.001 of the target, at a speed below 0.001 |
+| Smoothing | Retention 0.01, or a half-life | Closes the same share of the distance left in equal times, so it never overshoots | Where it stands | Within 0.001 of the target |
+
+A curve of duration 0 reaches its target on the first frame. Retention is the
+share of the distance left after one second; a half-life is the time that
+closes half of it.
+
+| Curve | Shape of progress `t`, from 0 to 1 |
+| --- | --- |
+| Ease in | Quadratic |
+| Ease out | Inverse quadratic |
+| Ease out cubic, quartic | Inverse cubic, inverse quartic |
+| Emphasized out | Inverse quintic |
+| Ease in and out | Quadratic halves |
+| Back out | Passes the target by the overshoot, then returns to it |
+
+### Runs
+
+A run moves one container with one animation. It has three callbacks, each
+optional. Each receives the container's properties, the target, and the
+current value, and writes whichever properties it chooses.
+
+| Callback | Called | Current value served |
+| --- | --- | --- |
+| Start | Once, on the run's first poll | Where the animation stands as the run starts |
+| Every frame | On the run's first poll, after the start, and on each frame after | Where the animation stands after it advanced by the frame time |
+| End | Once, when the run settles or is interrupted, with which of the two | The value written last |
+
+| Rule | Value |
+| --- | --- |
+| First poll | The start and the first every-frame call write in one edit, so no frame shows only the start. |
+| Each frame after | The animation advances by the frame time, then the every-frame callback writes. |
+| Settling | The last every-frame call serves the target as the current value. The end runs in the same edit, and the run completes. |
+| Settled at the start | The start, one every-frame call, and the end all run on the first poll, and the run completes. |
+| Interruption | Dropping a run before it completes interrupts it. The container keeps the values written last, and the animation keeps its state, so a later run continues from there. |
+| End after an interruption | Applied before the next change any component makes, so a run that replaces the interrupted one starts from the ended state. |
+| One run at a time | A run holds its animation until it completes or is dropped. |
+| Frames | A run asks for frames only while it's pending. |
+| Removed container | Its edits are skipped. The run still completes once the animation settles. |
+
+### Frame clock
+
+| Rule | Value |
+| --- | --- |
+| Frame time | The time since the previous frame began, from the wall clock, at most a thirtieth of a second, so a frame after a stall or an idle stretch doesn't jump. 0 on the first frame. |
+| Manual clock | Once the host advances the clock by hand, a frame's time is the sum advanced since the previous frame, and the wall clock no longer counts. |
+| Timers | Always follow the wall clock. |
 
 ## Watches
 

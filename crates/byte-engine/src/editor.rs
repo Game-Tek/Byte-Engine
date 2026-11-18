@@ -154,8 +154,8 @@ pub struct Editor {
 	progress: (bindings::Held, Option<[f32; 2]>, Instant),
 	/// Whether a press ran a binding since the last modifiers went down, which finished what they started.
 	finished: bool,
-	/// When the editor closed, while its pass keeps drawing for the scene drawer to leave.
-	closed: Option<std::time::Instant>,
+	/// Whether the editor closed and its pass keeps drawing for the scene drawer to leave.
+	closing: bool,
 	/// The operations an undo or redo is applying, kept to reuse their storage.
 	applying: Vec<history::Operation>,
 	/// What the editor changed in the game, to undo and redo.
@@ -236,7 +236,7 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 		held: bindings::Held::default(),
 		progress: (bindings::Held::default(), None, Instant::now()),
 		finished: false,
-		closed: None,
+		closing: false,
 		applying: Vec::new(),
 		history: history::History::default(),
 		palette_press: None,
@@ -565,10 +565,8 @@ impl Editor {
 	fn sync_open(&mut self, app: &mut GraphicsApplication) {
 		let open = self.engine.ctx_mut().layers.open();
 		// A closed editor's pass draws until the scene drawer has left, and then forwards the frame unchanged.
-		if let Some(closed) = self.closed
-			&& closed.elapsed().as_secs_f32() >= drawer::EXIT
-		{
-			self.closed = None;
+		if self.closing && self.engine.ctx().drawer_gone {
+			self.closing = false;
 			app.inspector()
 				.update_configuration("render.pass.editor", ConfigurationValue::from("bypassed"));
 		}
@@ -576,11 +574,11 @@ impl Editor {
 			return;
 		}
 		if open {
-			self.closed = None;
+			self.closing = false;
 			app.inspector()
 				.update_configuration("render.pass.editor", ConfigurationValue::from("enabled"));
 		} else {
-			self.closed = Some(std::time::Instant::now());
+			self.closing = true;
 		}
 		if let Some((window, features)) = self.window {
 			let features = if open { features - Features::CAPTURE_CURSOR } else { features };

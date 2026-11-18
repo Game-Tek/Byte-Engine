@@ -20,7 +20,12 @@ pub(super) enum UiCommand {
 	Reparent { child: Id, parent: Id },
 	/// Puts `target` on top of the focus stack, or takes it off.
 	Focus { target: Id, focused: bool },
+	/// Edits the container `target` with `edit`, such as an interrupted animation run's end; see [`Animate`].
+	Edit { target: Id, edit: ContainerEdit },
 }
+
+/// An edit a dropped future hands the engine, since its destructor can't reach the tree itself.
+pub(super) type ContainerEdit = Box<dyn for<'s> FnOnce(Properties<'s, Container>) -> Properties<'s, Container>>;
 
 /// Applies one command. Invalid requests, such as moving a removed element, are logged and skipped.
 ///
@@ -41,5 +46,11 @@ pub(super) fn apply(command: UiCommand, runtime: &mut Runtime, tree: &mut Retain
 		UiCommand::Reparent { child, parent } => tree.reparent(child, parent),
 		UiCommand::Focus { target, focused: true } => runtime.request_focus(target),
 		UiCommand::Focus { target, focused: false } => runtime.release_focus(target),
+		UiCommand::Edit { target, edit } => {
+			// A container removed since the edit was sent has nothing left to edit.
+			tree.update_element(target, |element, spares| {
+				super::properties::properties::<Container>(element, spares).map(edit).is_some()
+			});
+		}
 	}
 }

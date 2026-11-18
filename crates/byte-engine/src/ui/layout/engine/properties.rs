@@ -171,7 +171,7 @@ impl Spares {
 }
 
 /// Lends `element` to setup as the properties of a `K` element, or returns `None` when it is of another kind.
-fn properties<'a, K: ElementKind>(element: &'a mut IdedElement, spares: &'a mut Spares) -> Option<Properties<'a, K>> {
+pub(super) fn properties<'a, K: ElementKind>(element: &'a mut IdedElement, spares: &'a mut Spares) -> Option<Properties<'a, K>> {
 	let IdedElement {
 		style,
 		transform,
@@ -283,7 +283,7 @@ impl Properties<'_, Container> {
 	/// Sets the width the container is painted and clips its descendants at, resolved against its logical width.
 	///
 	/// The logical [`width`](Self::width) still places the container, sizes its children, and takes pointer hits, so
-	/// animate this one, such as with [`crate::ui::animate`], to resize what is seen without reflowing. Pass
+	/// animate this one, such as with [`crate::ui::EvaluationContext::animate`], to resize what is seen without reflowing. Pass
 	/// [`Sizing::full`] to match the logical width again.
 	pub fn display_width(self, width: Sizing) -> Self {
 		self.target.display_width = width;

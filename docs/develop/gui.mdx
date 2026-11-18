@@ -124,10 +124,69 @@ something else caused changes the size.
   container's padding, and start its flow at the same place past the padding.
 - Size waits compare the untransformed logical size.
 - The engine holds no motion state for sizes. A resize animation is a display
-  size, or an outer logical size, that a component writes.
+  size, or an outer logical size, that a component writes through a run; see
+  [Animations](#animations).
 
 The fit tests in `ui/layout/mod.rs` and `size_change_tests` in
 `ui/layout/engine/futures.rs` guard these rules.
+
+## Animations
+
+Motion belongs to the component that asks for it. An `Animation` in
+`ui/animation.rs` holds every piece of motion state: the target, and one lane
+state per number of the value, as its `Motion` keeps it. The engine never stores
+a velocity, a progress, or a target, so nothing outlives the component that owns
+the animation, and two animations never share hidden state.
+
+### Lanes and motions
+
+`Animatable` splits a value into lanes by index, and joins lanes back into a
+value, so `Animation` keeps one `Motion::State` per lane in a `SmallVec` that
+stays inline for up to four lanes. A motion moves one lane: `retarget` decides
+what carries over when the target changes, which is the value and speed for a
+spring and the value alone for a curve and a smoothing. Retargeting with an
+unchanged target is a no-op, so a component can set its target every loop
+without restarting a curve.
+
+### Runs
+
+`EvaluationContext::animate` returns an `Animate`, which is a builder and the
+run's future at once, in `ui/layout/engine/futures.rs`. It holds the element's
+id and a mutable borrow of the animation, never a borrow of the context, so a
+run can wait in a `select!` beside other waits on the same element. Each poll:
+
+1. On the first poll, it writes the start and the first frame through one
+   `RetainedTree::update_element`, the same path `update_container` takes.
+2. It waits with a `RenderFuture` it owns, so it keeps the frame wait's
+   registration rules.
+3. On each frame, it steps the animation by `Runtime::frame_time` and writes the
+   frame. Once the animation settles, it writes the end in the same edit and
+   completes.
+
+A dropped run can't edit anything from its destructor. When it has an end
+callback, it boxes it with the values it wrote last and sends it as
+`UiCommand::Edit`, the channel dropped mounts send their removals through.
+`UiPoll::apply_commands` applies those before every direct write, so the end of
+an interrupted run lands before the start of the run that replaces it.
+
+### Frame clock
+
+`Runtime::begin_frame` takes the frame time from the engine's `FrameClock`. It
+reads the wall clock until `Engine::advance_clock` is called, then counts only
+what the host advanced. Runs read the frame time, so a test steps any frame of a
+run; timers keep the wall clock.
+
+### Rules a change must keep
+
+- The engine holds no motion state. All of it lives in `Animation`.
+- A run's start and first frame land in one edit, and a settling frame and its
+  end land in one edit.
+- An interrupted run's end is applied before any later change.
+- A run asks for frames only while it's pending.
+
+The tests in `ui/animation.rs` guard the motions and retargeting, and
+`animation_run_tests` in `ui/layout/engine/futures.rs` guards runs, interruption,
+and the frame clock.
 
 ## Drawing
 

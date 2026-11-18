@@ -31,8 +31,8 @@ pub mod transform;
 pub mod watch;
 
 pub use animation::{
-	Animation, AnimationDriver, BackOut, Curves, Easing, Interpolate, Smoothing, Spring, Track, animate, back_out, ease_in,
-	ease_in_out, ease_out, ease_out_cubic, ease_out_quart, emphasized_out, smooth, spring,
+	Animatable, Animation, Easing, EasingState, Ending, Motion, Smoothing, Spring, SpringState, Values, back_out, ease_in,
+	ease_in_out, ease_out, ease_out_cubic, ease_out_quart, emphasized_out,
 };
 pub use components::{
 	container::{Container, Sector},

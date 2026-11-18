@@ -7,6 +7,7 @@ use super::{
 	*,
 };
 use crate::ui::{
+	animation::{Animatable, Animation, Motion},
 	components::{image::ImageSource, path::Path},
 	layout::context::slot_path,
 };
@@ -87,6 +88,24 @@ impl<C: 'static> EvaluationContext<C> {
 	/// edit, so writing values it already has changes nothing.
 	pub fn update_container(&mut self, setup: impl Setup<Container>) -> impl Future<Output = ()> {
 		update::<C, Container>(self.id, setup)
+	}
+
+	/// Runs `animation` on this container: chain the callbacks that write its values, such as
+	/// [`Animate::on_every_frame`], then await the run. It resolves once the animation settles; drop it to interrupt
+	/// the run, and the animation keeps where it stands and how it moves for the next one.
+	///
+	/// Next, set where the animation is headed with [`Animation::set_target`] and run it again.
+	pub fn animate<'a, V: Animatable + 'static, M: Motion>(&self, animation: &'a mut Animation<V, M>) -> Animate<'a, C, V, M> {
+		Animate {
+			target: self.id,
+			animation,
+			start: None,
+			frame: None,
+			render: None,
+			started: false,
+			complete: false,
+			end: EndGuard::new(self.id, None),
+		}
 	}
 
 	/// Edits this text element or text field. See [`Self::update_container`].

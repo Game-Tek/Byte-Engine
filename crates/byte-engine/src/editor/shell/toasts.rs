@@ -1,12 +1,10 @@
 //! Draws the toast stack in the window's bottom-right corner: one card per toast, easing toward the place
 //! [`Toasts::placement`](crate::editor::toasts::Toasts::placement) gives it.
 
-use std::time::Instant;
-
 use super::{CORNER, MARGIN, MUTED, SQUIRCLE, Shell, TEXT, hex, panel, row_style, solid};
 use crate::editor::toasts::{HEIGHT, WIDTH};
 use crate::time::MediaTime;
-use crate::ui::animation::{Smoothing, smooth};
+use crate::ui::animation::{Animation, Smoothing};
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::Events;
@@ -17,8 +15,6 @@ use crate::utils::r#async::select;
 const ENTER: f32 = 24.0;
 /// How fast a card closes on its place: half the distance in this many seconds.
 const HALF_LIFE: f32 = 0.05;
-/// The longest step a card's easing takes, so a stalled frame doesn't make it jump.
-const MAX_STEP: f32 = 1.0 / 30.0;
 /// The colors of a warning's and an error's icon: Sonner's amber and red.
 const WARNING: crate::utils::RGBA = hex(0xF5A524, 1.0);
 const ERROR: crate::utils::RGBA = hex(0xE5484D, 1.0);
@@ -29,9 +25,9 @@ pub(super) async fn toasts(ctx: &mut EvaluationContext<Shell>) {
 	let mut holders: Vec<(u64, i32, EvaluationContext<Shell>)> = Vec::new();
 	// Reused every frame, so reading the stack allocates nothing.
 	let mut placed: Vec<(u64, i32)> = Vec::new();
-	let mut last = Instant::now();
+	// The toasts age by each frame's time, from the engine's clock.
+	let mut dt = 0.0;
 	loop {
-		let dt = step(&mut last);
 		placed = ctx
 			.with(move |shell: &mut Shell| {
 				shell.toasts.advance(dt);
@@ -83,7 +79,7 @@ pub(super) async fn toasts(ctx: &mut EvaluationContext<Shell>) {
 				}
 			}
 		}
-		ctx.render().await;
+		dt = ctx.render().await.as_seconds_f32();
 	}
 }
 
@@ -174,10 +170,9 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 		.await;
 	let mut cross = close.text("×", |t| t.font_size(15.0).style([solid(MUTED)])).await;
 
-	let mut y = eased(ENTER, 0.0);
-	let mut scale = eased(1.0, 1.0);
-	let mut opacity = eased(0.0, 1.0);
-	let mut last = Instant::now();
+	// The card's offset, scale, and opacity, chasing its placement, which moves as the stack spreads and toasts leave.
+	let mut look = Animation::new([ENTER, 1.0, 0.0], Smoothing::default().half_life(HALF_LIFE));
+	let mut elapsed = MediaTime::ZERO;
 	let (mut hovered, mut close_hovered) = (false, false);
 	let mut shown = None;
 	let mut shown_count = 1;
@@ -191,7 +186,7 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 			_ = card.on(Events::PointerExited) => hovered = false,
 			_ = close.on(Events::PointerEntered) => close_hovered = true,
 			_ = close.on(Events::PointerExited) => close_hovered = false,
-			_ = ctx.render() => {},
+			frame = ctx.render() => elapsed = frame,
 		}
 		// The close button is over the card, so the pointer on it still holds the stack open.
 		let over = hovered || close_hovered;
@@ -208,14 +203,12 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 			return;
 		};
 
-		let dt = MediaTime::from_seconds_f32(step(&mut last));
-		y.set_target(placement.y);
-		scale.set_target(placement.scale);
-		opacity.set_target(placement.opacity);
-		let look = [y.step(dt), scale.step(dt), opacity.step(dt)].map(settle);
-		if shown != Some(look) {
-			shown = Some(look);
-			let [y, scale, opacity] = look;
+		look.set_target([placement.y, placement.scale, placement.opacity]);
+		// Only a frame moves the card; an event between frames steps nothing.
+		let now = look.step(std::mem::replace(&mut elapsed, MediaTime::ZERO));
+		if shown != Some(now) {
+			shown = Some(now);
+			let [y, scale, opacity] = now;
 			card.update_container(move |c| {
 				c.transform(
 					Transform::identity()
@@ -240,22 +233,4 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 			cross.update_text(move |t| t.style([solid(tint)])).await;
 		}
 	}
-}
-
-/// An easing from `from` toward `to` at the cards' pace.
-fn eased(from: f32, to: f32) -> Smoothing {
-	smooth(from, to).half_life(HALF_LIFE)
-}
-
-/// Rounds an eased value to a hundredth, so a card that has all but arrived stops updating.
-fn settle(value: f32) -> f32 {
-	(value * 100.0).round() / 100.0
-}
-
-/// Returns the seconds since `last`, at most [`MAX_STEP`], and moves `last` to now.
-fn step(last: &mut Instant) -> f32 {
-	let now = Instant::now();
-	let dt = now.duration_since(*last).as_secs_f32().min(MAX_STEP);
-	*last = now;
-	dt
 }

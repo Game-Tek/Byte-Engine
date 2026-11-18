@@ -6,18 +6,18 @@
 //! [`Shell::detail_level`]; the editor gives it to the stage, which draws the mesh at it. See
 //! [`crate::editor::preview::Stage::show_level`].
 
-use std::time::Instant;
-
 use super::{
 	ACCENT_RGB, CORNER, MUTED, SQUIRCLE, Shell, TEXT, cap, channel, darker, hex, open_room, panel, solid, top_highlight,
 	vertical,
 };
+use crate::editor::drawer::arriving;
+use crate::time::MediaTime;
+use crate::ui::Animation;
 use crate::ui::flow;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::Events;
 use crate::ui::{ConcreteLayer, Transform};
-use crate::editor::drawer::arrive;
 use crate::utils::r#async::select;
 
 /// The distance between two stops, which is also the width of each stop's label.
@@ -55,32 +55,6 @@ fn nearest_stop(x: f32, count: usize) -> usize {
 /// The detail level stop `index` draws: none, by distance, for the first, **Auto**, then each level from 0.
 fn stop_level(index: usize) -> Option<u32> {
 	index.checked_sub(1).map(|level| level as u32)
-}
-
-/// The `Motion` struct is a move from one place to another along the editor's curve, started at an instant, so a view
-/// can ask where it stands each frame.
-#[derive(Clone, Copy)]
-struct Motion {
-	from: f32,
-	to: f32,
-	started: Instant,
-}
-
-impl Motion {
-	/// A motion that stands at `at`.
-	fn at(at: f32) -> Self {
-		Self { from: at, to: at, started: Instant::now() }
-	}
-
-	/// Where the motion stands now.
-	fn now(&self) -> f32 {
-		self.from + (self.to - self.from) * arrive(self.started.elapsed().as_secs_f32() / GLIDE)
-	}
-
-	/// A motion toward `to` from wherever this one stands now, unless it already heads there.
-	fn toward(self, to: f32) -> Self {
-		if self.to == to { self } else { Self { from: self.now(), to, started: Instant::now() } }
-	}
 }
 
 /// Shows the slider, over **Auto** and `levels` detail levels, until the view that declared it removes it.
@@ -175,11 +149,13 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 		})
 		.await;
 
-	// Where the knob stands, sprung toward a stop; where a drag holds it, while one does; and how far it's lifted.
-	let mut motion = Motion::at(stop_x(chosen));
+	// Where the knob stands, gliding toward a stop; where a drag holds it, while one does; and how far it's lifted. The
+	// loop runs every frame, so it steps both by each frame's time.
+	let mut motion = Animation::new(stop_x(chosen), arriving(GLIDE));
 	let mut dragged: Option<f32> = None;
 	let mut grabbed_at = 0.0f32;
-	let mut lift = Motion::at(0.0);
+	let mut lift = Animation::new(0.0, arriving(GLIDE));
+	let mut elapsed = MediaTime::ZERO;
 	// What was last drawn: the slider's left edge, the knob's place and lift, and the lit stop.
 	let mut drawn: Option<(f32, f32, f32, usize)> = None;
 	loop {
@@ -188,32 +164,34 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 				let pointer = ctx.pointer().await.position;
 				let corner = pill.geometry().await.map(|geometry| geometry.logical).map_or(0.0, |geometry| geometry.x());
 				grabbed_at = pointer.x - corner;
-				let at = motion.now();
+				let at = motion.current();
 				// A press on the knob holds it where it is; a press elsewhere glides it to the nearest stop.
 				if (grabbed_at - at).abs() > KNOB * 0.5 {
-					motion = motion.toward(stop_x(nearest_stop(grabbed_at, count)));
+					motion.set_target(stop_x(nearest_stop(grabbed_at, count)));
 				}
-				lift = lift.toward(1.0);
+				lift.set_target(1.0);
 			},
 			event = pill.on(Events::Dragged) => {
 				if let Some(delta) = event.delta {
 					let x = (grabbed_at + delta.x).clamp(first, last);
 					dragged = Some(x);
-					motion = Motion::at(x);
+					motion.snap(x);
 				}
 			},
 			_ = pill.on(Events::DragEnded) => {
 				if let Some(x) = dragged.take() {
-					motion = Motion::at(x).toward(stop_x(nearest_stop(x, count)));
+					motion.snap(x);
+					motion.set_target(stop_x(nearest_stop(x, count)));
 				}
-				lift = lift.toward(0.0);
+				lift.set_target(0.0);
 			},
-			_ = ctx.render() => {},
+			frame = ctx.render() => elapsed = frame,
 		}
 		// While dragged, the level is the stop under the knob; otherwise the one it glides to, so the level changes once,
 		// when the knob is let go, rather than at each stop it passes on the way.
-		let at = motion.now();
-		let stop = nearest_stop(dragged.unwrap_or(motion.to), count);
+		let frame_time = std::mem::replace(&mut elapsed, MediaTime::ZERO);
+		let (at, lifted) = (motion.step(frame_time), lift.step(frame_time));
+		let stop = nearest_stop(dragged.unwrap_or(motion.target()), count);
 		let level = stop_level(stop);
 		let (viewport, room) = ctx
 			.with(move |shell: &mut Shell| {
@@ -222,7 +200,6 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 			})
 			.await;
 		let left = ((room[0] + room[1] - width) * 0.5).clamp(0.0, (viewport.x() - width).max(0.0));
-		let lifted = lift.now();
 		let now = (left, at, lifted, stop);
 		if drawn == Some(now) {
 			continue;

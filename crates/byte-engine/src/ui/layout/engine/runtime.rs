@@ -284,6 +284,46 @@ pub struct Runtime {
 	pub(super) pointer: PointerState,
 	pub(super) drag: Drag,
 	pub(super) frame: u64,
+	/// The time between the previous frame and this one, which animation runs advance by.
+	pub(super) frame_time: crate::time::MediaTime,
+	pub(super) clock: FrameClock,
+}
+
+/// The `FrameClock` enum is where frame times come from: the wall clock, until the host advances time by hand, such
+/// as a test that steps through an animation, and from then on only what it advanced.
+pub(super) enum FrameClock {
+	/// When the previous frame began, `None` before the first.
+	Wall(Option<Instant>),
+	/// The time advanced by hand since the previous frame.
+	Manual(crate::time::MediaTime),
+}
+
+impl FrameClock {
+	/// The longest frame time the wall clock reports, so a frame after a stall or an idle stretch doesn't jump an
+	/// animation to its end.
+	const MAX_WALL_FRAME: f32 = 1.0 / 30.0;
+
+	/// Starts a frame and returns the time since the previous one.
+	fn tick(&mut self) -> crate::time::MediaTime {
+		use crate::time::MediaTime;
+		match self {
+			FrameClock::Wall(last) => {
+				let now = Instant::now();
+				let elapsed = last.map_or(0.0, |last| now.duration_since(last).as_secs_f32());
+				*last = Some(now);
+				MediaTime::from_seconds_f32(elapsed.min(Self::MAX_WALL_FRAME))
+			}
+			FrameClock::Manual(advanced) => std::mem::replace(advanced, MediaTime::ZERO),
+		}
+	}
+
+	/// Moves time on by `elapsed`; the first call stops the clock from following the wall clock.
+	pub(super) fn advance(&mut self, elapsed: crate::time::MediaTime) {
+		match self {
+			FrameClock::Wall(_) => *self = FrameClock::Manual(elapsed),
+			FrameClock::Manual(advanced) => *advanced += elapsed,
+		}
+	}
 }
 
 /// The `Published` struct is what the runtime keeps of one element from the last layout, for reads and size waits.
@@ -357,6 +397,8 @@ impl Runtime {
 			pointer: PointerState::default(),
 			drag: Drag::new(DRAG_THRESHOLD),
 			frame: 0,
+			frame_time: crate::time::MediaTime::ZERO,
+			clock: FrameClock::Wall(None),
 		}
 	}
 
@@ -434,6 +476,7 @@ impl Runtime {
 	/// Starts a frame: wakes the tasks that wait for one and the timers that are due.
 	pub(super) fn begin_frame(&mut self) {
 		self.frame += 1;
+		self.frame_time = self.clock.tick();
 		self.wake_due_timers(Instant::now());
 
 		for task in self.tasks.iter().filter(|task| !task.frame_waits.is_empty()) {

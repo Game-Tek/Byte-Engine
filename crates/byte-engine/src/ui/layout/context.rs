@@ -162,6 +162,8 @@ pub trait Context<C: 'static = ()>: Sized {
 		self.element("path").path(setup)
 	}
 
+	/// Waits for the next frame and resolves with its time, which a component steps its own animations by, such as
+	/// with [`Animation::step`](crate::ui::Animation::step).
 	fn render(&mut self) -> RenderFuture<C>;
 
 	/// Reads this element's logical and display boxes from the last layout, or `None` before it was laid out.
@@ -172,12 +174,13 @@ pub trait Context<C: 'static = ()>: Sized {
 	/// Waits until this element's logical size differs from `known`, then resolves with the new size.
 	///
 	/// Use it to follow a size the engine decides, such as a [`Sizing::Fit`](crate::ui::Sizing::Fit) container's, and
-	/// animate the container's display size toward it with a driver such as [`crate::ui::Spring`]. Pass the size you
+	/// animate the container's display size toward it with an [`Animation`](crate::ui::Animation). Pass the size you
 	/// last acted on, so a change between two waits is never missed. The size is the one layout resolved, before
 	/// visual transforms, so neither a transform nor a display size edit completes the wait.
 	///
-	/// Next, retarget your driver with [`crate::ui::Spring::set_target`] and apply its value with
-	/// [`crate::ui::Properties::display_width`] each [`Self::render`].
+	/// Next, retarget the animation with [`Animation::set_target`](crate::ui::Animation::set_target) and run it with
+	/// [`EvaluationContext::animate`](crate::ui::EvaluationContext::animate), writing its current value to
+	/// [`crate::ui::Properties::display_width`].
 	fn logical_size_change(&self, known: crate::ui::Size) -> SizeChangeFuture<C>;
 
 	/// Reads the pointer state the engine last synchronized.

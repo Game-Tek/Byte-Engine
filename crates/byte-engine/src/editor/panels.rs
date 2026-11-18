@@ -69,7 +69,7 @@ impl<'a> Panel<'a> {
 
 	/// Waits for the next frame, so a loop can read the entity's properties again. It can wait in a `select!` beside
 	/// [`Button::clicked`].
-	pub fn render(&mut self) -> impl FusedFuture<Output = ()> + '_ {
+	pub fn render(&mut self) -> impl FusedFuture<Output = crate::time::MediaTime> + '_ {
 		self.ctx.render()
 	}
 

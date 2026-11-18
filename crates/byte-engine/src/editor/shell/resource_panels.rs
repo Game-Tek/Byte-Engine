@@ -7,13 +7,13 @@
 //! fits the room between them; [`fits`] decides, [`Shell::drawer_open`] carries the decision, and [`hold`] moves the
 //! drawers by it. What the base shows stays centered in the open room, [`open_room`].
 
-use std::time::Instant;
-
 use super::{
 	CORNER, DRAWER_TUCK, INSET, MUTED, PROPERTIES_WIDTH, SIDEBAR_WIDTH, SQUIRCLE, Shell, TEXT, hex, panel, sidebar_height,
 	solid,
 };
 use crate::editor::drawer;
+use crate::time::MediaTime;
+use crate::ui::{Animation, Easing};
 use crate::ui::flow;
 use crate::ui::layout::context::{Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
@@ -80,11 +80,8 @@ pub(super) struct Drawer {
 	pub(super) width: f32,
 	/// The column's height under the title, for a view that fits what it lists to it.
 	pub(super) room: f32,
-	/// How much showed when the drawer started its current move, which way it moves, and when it started.
-	from: f32,
-	open: bool,
-	moved: Instant,
-	settled: bool,
+	/// How much of the drawer shows, from 0, hidden, to 1, in place.
+	shown: Animation<f32, Easing>,
 }
 
 impl Drawer {
@@ -153,29 +150,24 @@ impl Drawer {
 			width,
 			// The column's gap separates the title from what's under it.
 			room: height - INSET * 2.0 - TITLE_HEIGHT - 6.0,
-			from: shown,
-			open,
-			moved: Instant::now(),
-			settled: shown == if open { 1.0 } else { 0.0 },
+			shown: {
+				let mut motion = drawer::shown(shown);
+				drawer::head(&mut motion, open, drawer::ENTER, drawer::EXIT);
+				motion
+			},
 		}
 	}
 
-	/// Moves the drawer toward where [`Shell::drawer_open`] wants it, from wherever it is, and reports how much of it
-	/// shows in [`Shell::drawer_shown`], which centers what the base shows. Call it every frame the drawer shows.
-	pub(super) async fn follow(&mut self, ctx: &mut EvaluationContext<Shell>) {
-		let (open, shown) = ctx.with(|shell: &mut Shell| (shell.drawer_open, shell.drawer_shown)).await;
-		if open != self.open {
-			self.from = shown;
-			self.open = open;
-			self.moved = Instant::now();
-			self.settled = false;
-		}
-		if self.settled {
+	/// Moves the drawer by `elapsed` toward where [`Shell::drawer_open`] wants it, from wherever it is, and reports how
+	/// much of it shows in [`Shell::drawer_shown`], which centers what the base shows. Call it every frame the drawer
+	/// shows, with the frame's time.
+	pub(super) async fn follow(&mut self, ctx: &mut EvaluationContext<Shell>, elapsed: MediaTime) {
+		let open = ctx.with(|shell: &mut Shell| shell.drawer_open).await;
+		drawer::head(&mut self.shown, open, drawer::ENTER, drawer::EXIT);
+		if self.shown.is_settled() {
 			return;
 		}
-		let seconds = self.moved.elapsed().as_secs_f32();
-		let shown = drawer::toward(self.from, open, seconds);
-		self.settled = drawer::settled(open, seconds);
+		let shown = self.shown.step(elapsed);
 		let side = self.side;
 		self.frame.update_container(|c| c.transform(drawer_transform(side, shown))).await;
 		ctx.with(move |shell: &mut Shell| shell.drawer_shown = shown).await;
@@ -191,9 +183,9 @@ impl Drawer {
 pub(super) async fn hold(ctx: &mut EvaluationContext<Shell>, drawers: &mut [Drawer], showing: impl Fn(&Shell) -> bool) {
 	let viewport = ctx.with(|shell: &mut Shell| shell.viewport).await;
 	loop {
-		ctx.render().await;
+		let elapsed = ctx.render().await;
 		for drawer in drawers.iter_mut() {
-			drawer.follow(ctx).await;
+			drawer.follow(ctx, elapsed).await;
 		}
 		if !ctx.with(|shell: &mut Shell| showing(shell) && shell.viewport == viewport).await {
 			return;

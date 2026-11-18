@@ -16,7 +16,10 @@ use super::{
 	FIELD_HEIGHT, MUTED, SQUIRCLE, Shell, TEXT, block, cap, channel, fits, open_room, read_typed, setting_style, solid,
 	typing_style,
 };
+use crate::editor::drawer::arriving;
+use crate::time::MediaTime;
 use crate::ui::flow;
+use crate::ui::{Animation, Easing};
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::Events;
@@ -93,6 +96,7 @@ async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationC
 		.image(picture_width, picture_height, pixels, |i| i.width(fit[0].into()).height(fit[1].into()))
 		.await;
 	let mut placed = None;
+	let mut elapsed = MediaTime::ZERO;
 	loop {
 		select! {
 			event = base.on(Events::Scrolled) => {
@@ -102,12 +106,12 @@ async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationC
 					zoom = (zoom * factor).clamp(1.0, most);
 				}
 			},
-			_ = ctx.render() => {},
+			frame = ctx.render() => elapsed = frame,
 		}
 		let size = [fit[0] * zoom, fit[1] * zoom];
 		let wanted = fits(size[0], window, drawers);
 		ctx.with(move |shell: &mut Shell| shell.drawer_open = wanted).await;
-		drawer.follow(ctx).await;
+		drawer.follow(ctx, std::mem::replace(&mut elapsed, MediaTime::ZERO)).await;
 		let shown = ctx.with(|shell: &mut Shell| shell.drawer_shown).await;
 		// Centered in the room the drawers leave, which widens as they slide away.
 		let room = open_room(window, shown, drawers);
@@ -322,10 +326,10 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 				.style(cap(knob))
 		})
 		.await;
-	// Where the knob heads, from 0 off to 1 on, where it started its slide, and when; and where it stands.
-	let mut heading = None;
-	let mut from = 0.0;
-	let mut moved = std::time::Instant::now();
+	// Where the knob stands, from 0 off to 1 on, sliding toward its side; it starts on its side once the setting is
+	// read. And where it was drawn last.
+	let mut motion: Option<Animation<f32, Easing>> = None;
+	let mut elapsed = MediaTime::ZERO;
 	let mut at = None;
 	loop {
 		select! {
@@ -336,17 +340,14 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 				})
 				.await;
 			},
-			_ = ctx.render() => {},
+			frame = ctx.render() => elapsed = frame,
 		}
 		let on = settings(ctx).await.and_then(|settings| property.switched(&settings)).unwrap_or(false);
 		let target = if on { 1.0 } else { 0.0 };
-		if heading != Some(target) {
-			// A turned-over setting slides the knob from wherever it stands; the first frame shows it in place.
-			from = at.unwrap_or(target);
-			moved = std::time::Instant::now();
-			heading = Some(target);
-		}
-		let position = slide(from, target, moved.elapsed().as_secs_f32());
+		// A turned-over setting slides the knob from wherever it stands.
+		let motion = motion.get_or_insert_with(|| Animation::new(target, arriving(SLIDE)));
+		motion.set_target(target);
+		let position = motion.step(std::mem::replace(&mut elapsed, MediaTime::ZERO));
 		if at == Some(position) {
 			continue;
 		}
@@ -356,14 +357,6 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 			.update_container(|c| c.absolute_position(KNOB_GAP + travel * position, KNOB_GAP))
 			.await;
 	}
-}
-
-/// Where a knob that started sliding from `from` toward `target`, both from 0 off to 1 on, stands `seconds` later:
-/// an ease-out, quick to leave and gentle to settle, as a sprung switch moves.
-fn slide(from: f32, target: f32, seconds: f32) -> f32 {
-	let progress = (seconds / SLIDE).clamp(0.0, 1.0);
-	let eased = 1.0 - (1.0 - progress).powi(3);
-	from + (target - from) * eased
 }
 
 /// The coverage's field: a well that shows the cutoff, or `off`, and takes a typed one when clicked.
@@ -469,7 +462,7 @@ async fn footer(ctx: &mut EvaluationContext<Shell>, width: f32) {
 
 #[cfg(test)]
 mod tests {
-	use super::{ImageSetting, SLIDE, fitted, parse_coverage, slide};
+	use super::{ImageSetting, fitted, parse_coverage};
 
 	#[test]
 	fn a_typed_coverage_is_off_or_a_cutoff_from_zero_to_one() {
@@ -485,16 +478,5 @@ mod tests {
 		assert_eq!(fitted(100, 50, [400.0, 400.0]), [400.0, 200.0]);
 		assert_eq!(fitted(800, 400, [400.0, 400.0]), [400.0, 200.0]);
 		assert_eq!(fitted(400, 800, [400.0, 400.0]), [200.0, 400.0]);
-	}
-
-	#[test]
-	fn a_knob_eases_out_from_where_it_stood_and_settles_on_its_side() {
-		assert_eq!(slide(0.0, 1.0, 0.0), 0.0);
-		assert_eq!(slide(0.0, 1.0, SLIDE), 1.0);
-		assert_eq!(slide(1.0, 0.0, SLIDE * 2.0), 0.0);
-		// It covers more than half the way in the first half of the time.
-		assert!(slide(0.0, 1.0, SLIDE * 0.5) > 0.5);
-		// Turned back partway, it starts from where it stood.
-		assert_eq!(slide(0.4, 0.0, 0.0), 0.4);
 	}
 }

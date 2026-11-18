@@ -6,6 +6,7 @@ use std::{
 };
 
 use super::*;
+use crate::ui::animation::{Animatable, Animation, Ending, Motion, Values};
 
 type BoxedMountedUiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
 
@@ -243,7 +244,8 @@ impl<C: 'static, F: FnOnce(&mut C) -> T, T> Future for With<C, F> {
 	}
 }
 
-/// The `RenderFuture` struct resolves on the first frame that begins after it was first polled.
+/// The `RenderFuture` struct resolves on the first frame that begins after it was first polled, with that frame's
+/// time: the time since the frame before, from the engine's clock, which a component steps its own animations by.
 ///
 /// A wait its task stops polling before it resolves, as the losing branch of a selection is, hands the frame it was
 /// counting from to the next wait its task first polls in the same poll. A component that selects over events and
@@ -258,7 +260,7 @@ pub struct RenderFuture<C = ()> {
 impl<C> Unpin for RenderFuture<C> {}
 
 impl<C: 'static> Future for RenderFuture<C> {
-	type Output = ();
+	type Output = crate::time::MediaTime;
 
 	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
 		if self.complete {
@@ -271,7 +273,7 @@ impl<C: 'static> Future for RenderFuture<C> {
 		if seen < runtime.frame {
 			runtime.end_frame_wait(task, token);
 			self.complete = true;
-			return Poll::Ready(());
+			return Poll::Ready(runtime.frame_time);
 		}
 		runtime.keep_frame_wait(task, token, seen, poll);
 		Poll::Pending
@@ -279,6 +281,250 @@ impl<C: 'static> Future for RenderFuture<C> {
 }
 
 impl<C: 'static> FusedFuture for RenderFuture<C> {
+	fn is_terminated(&self) -> bool {
+		self.complete
+	}
+}
+
+/// The `OnStart` trait is a run's start callback: it writes a container's properties once, as the run begins, from
+/// the values the animation serves. See [`Animate::on_start`].
+pub trait OnStart<V>: for<'s> FnOnce(Properties<'s, Container>, Values<V>) -> Properties<'s, Container> {}
+
+impl<V, F: for<'s> FnOnce(Properties<'s, Container>, Values<V>) -> Properties<'s, Container>> OnStart<V> for F {}
+
+/// The `OnFrame` trait is a run's every-frame callback: it writes a container's properties from each frame's values.
+/// See [`Animate::on_every_frame`].
+pub trait OnFrame<V>: for<'s> FnMut(Properties<'s, Container>, Values<V>) -> Properties<'s, Container> {}
+
+impl<V, F: for<'s> FnMut(Properties<'s, Container>, Values<V>) -> Properties<'s, Container>> OnFrame<V> for F {}
+
+/// The `OnEnd` trait is a run's end callback: it writes a container's properties once the run settles or is
+/// interrupted. It must own what it uses, since an interrupted run hands it to the engine to apply later. See
+/// [`Animate::on_end`].
+pub trait OnEnd<V>: for<'s> FnOnce(Properties<'s, Container>, Values<V>, Ending) -> Properties<'s, Container> + 'static {}
+
+impl<V, F: for<'s> FnOnce(Properties<'s, Container>, Values<V>, Ending) -> Properties<'s, Container> + 'static> OnEnd<V>
+	for F
+{
+}
+
+/// The type a run's start or every-frame callback has while none was given; it's never called.
+pub type NoStart<V> = for<'s> fn(Properties<'s, Container>, Values<V>) -> Properties<'s, Container>;
+/// See [`NoStart`].
+pub type NoEnd<V> = for<'s> fn(Properties<'s, Container>, Values<V>, Ending) -> Properties<'s, Container>;
+
+/// The `Animate` struct is one run of an [`Animation`] on a container: it serves the animation's values to the
+/// callbacks you chain on, one frame at a time, until the animation settles.
+///
+/// Get one from [`EvaluationContext::animate`], chain [`Self::on_start`], [`Self::on_every_frame`], and
+/// [`Self::on_end`], then await it. It holds only the container's id, so it can wait in a `select!` beside other waits
+/// on the same element; dropping it interrupts the run, and the animation keeps its state for the next one.
+pub struct Animate<'a, C, V, M, S = NoStart<V>, F = NoStart<V>, E = NoEnd<V>>
+where
+	V: Animatable + 'static,
+	M: Motion,
+	E: OnEnd<V>,
+{
+	pub(super) target: Id,
+	pub(super) animation: &'a mut Animation<V, M>,
+	pub(super) start: Option<S>,
+	pub(super) frame: Option<F>,
+	/// The frame wait between two frames of the run.
+	pub(super) render: Option<RenderFuture<C>>,
+	pub(super) started: bool,
+	pub(super) complete: bool,
+	pub(super) end: EndGuard<V, E>,
+}
+
+/// The `EndGuard` struct keeps a run's end callback and, once the run has written its first frame, hands it to the
+/// engine if the run is dropped before it settles, since a destructor can't edit the tree itself.
+pub(super) struct EndGuard<V: 'static, E: OnEnd<V>> {
+	target: Id,
+	end: Option<E>,
+	/// The engine's command channel, taken on the first poll of a run with an end.
+	sender: Option<Sender<UiCommand>>,
+	/// The values the run wrote last, which an interrupted end receives.
+	written: Option<Values<V>>,
+}
+
+impl<V: 'static, E: OnEnd<V>> EndGuard<V, E> {
+	pub(super) fn new(target: Id, end: Option<E>) -> Self {
+		Self {
+			target,
+			end,
+			sender: None,
+			written: None,
+		}
+	}
+}
+
+impl<V: 'static, E: OnEnd<V>> Drop for EndGuard<V, E> {
+	fn drop(&mut self) {
+		let (Some(end), Some(sender), Some(values)) = (self.end.take(), self.sender.take(), self.written.take()) else {
+			return;
+		};
+		// The engine applies it before the next change any component makes. Once the engine is gone, nothing is left
+		// to edit, so a failed send is ignored.
+		let _ = sender.send(UiCommand::Edit {
+			target: self.target,
+			edit: Box::new(move |c| end(c, values, Ending::Interrupted)),
+		});
+	}
+}
+
+// The run never pins its fields, so it can move freely and wait in a `select!` without being pinned first.
+impl<C, V: Animatable + 'static, M: Motion, S, F, E: OnEnd<V>> Unpin for Animate<'_, C, V, M, S, F, E> {}
+
+impl<'a, C, V: Animatable + 'static, M: Motion, S, F, E: OnEnd<V>> Animate<'a, C, V, M, S, F, E> {
+	/// Calls `start` once, as the run begins, in the same edit as its first frame: the place for what the target
+	/// decides at once, such as a logical size or a position.
+	pub fn on_start<S2: OnStart<V>>(self, start: S2) -> Animate<'a, C, V, M, S2, F, E> {
+		Animate {
+			target: self.target,
+			animation: self.animation,
+			start: Some(start),
+			frame: self.frame,
+			render: self.render,
+			started: self.started,
+			complete: self.complete,
+			end: self.end,
+		}
+	}
+
+	/// Calls `frame` on the run's first frame and on each one after, until the animation settles: the place for what
+	/// the current value drives, such as a display size, a transform, or an opacity.
+	pub fn on_every_frame<F2: OnFrame<V>>(self, frame: F2) -> Animate<'a, C, V, M, S, F2, E> {
+		Animate {
+			target: self.target,
+			animation: self.animation,
+			start: self.start,
+			frame: Some(frame),
+			render: self.render,
+			started: self.started,
+			complete: self.complete,
+			end: self.end,
+		}
+	}
+
+	/// Calls `end` once the run ends: in the edit of its last frame when the animation settles, or, when the run is
+	/// dropped first, before the next change any component makes, with the values it wrote last. `Ending` says which.
+	pub fn on_end<E2: OnEnd<V>>(self, end: E2) -> Animate<'a, C, V, M, S, F, E2> {
+		// The guard being replaced holds no end to send, since the run hasn't started.
+		Animate {
+			target: self.target,
+			animation: self.animation,
+			start: self.start,
+			frame: self.frame,
+			render: self.render,
+			started: self.started,
+			complete: self.complete,
+			end: EndGuard::new(self.target, Some(end)),
+		}
+	}
+}
+
+impl<C: 'static, V, M, S, F, E> Animate<'_, C, V, M, S, F, E>
+where
+	V: Animatable + 'static,
+	M: Motion,
+	S: OnStart<V>,
+	F: OnFrame<V>,
+	E: OnEnd<V>,
+{
+	/// Writes one frame of the run in one edit: the start on the first, then the every-frame callback, then the end once
+	/// the animation settled. Returns whether it settled.
+	fn write(&mut self, poll: &mut UiPoll<C>) -> bool {
+		let values = self.animation.values();
+		let settled = self.animation.is_settled();
+		let start = self.start.take();
+		let frame = self.frame.as_mut();
+		let end = if settled { self.end.end.take() } else { None };
+		let edited = poll.tree.update_element(self.target, move |element, spares| {
+			let Some(mut c) = super::properties::properties::<Container>(element, spares) else {
+				return false;
+			};
+			if let Some(start) = start {
+				c = start(c, values);
+			}
+			if let Some(frame) = frame {
+				c = frame(c, values);
+			}
+			if let Some(end) = end {
+				c = end(c, values, Ending::Settled);
+			}
+			let _ = c;
+			true
+		});
+		match edited {
+			Some(true) => {}
+			Some(false) => log::error!(
+				"An animation run skipped a frame because its element isn't a container. The most likely cause is calling `animate` on the context of a text or an image. Run it on a container's context instead."
+			),
+			// A run on a removed element still plays out, so code that awaits it carries on.
+			None => log::debug!("An animation run skipped a frame because its element was removed."),
+		}
+		self.end.written = Some(values);
+		settled
+	}
+}
+
+impl<C: 'static, V, M, S, F, E> Future for Animate<'_, C, V, M, S, F, E>
+where
+	V: Animatable + 'static,
+	M: Motion,
+	S: OnStart<V>,
+	F: OnFrame<V>,
+	E: OnEnd<V>,
+{
+	type Output = ();
+
+	fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+		let this = self.get_mut();
+		if this.complete {
+			return Poll::Pending;
+		}
+		if !this.started {
+			this.started = true;
+			let poll = UiPoll::<C>::from_context(cx);
+			// The end of a run interrupted earlier lands before this run's start.
+			poll.apply_commands();
+			if this.end.end.is_some() {
+				this.end.sender = Some(poll.sender.clone());
+			}
+			if this.write(poll) {
+				this.complete = true;
+				return Poll::Ready(());
+			}
+		}
+		loop {
+			let render = this.render.get_or_insert_with(|| RenderFuture {
+				wait: None,
+				complete: false,
+				ctx: PhantomData,
+			});
+			let Poll::Ready(frame_time) = Pin::new(render).poll(cx) else {
+				return Poll::Pending;
+			};
+			this.render = None;
+			let poll = UiPoll::<C>::from_context(cx);
+			poll.apply_commands();
+			this.animation.step(frame_time);
+			if this.write(poll) {
+				this.complete = true;
+				return Poll::Ready(());
+			}
+		}
+	}
+}
+
+impl<C: 'static, V, M, S, F, E> FusedFuture for Animate<'_, C, V, M, S, F, E>
+where
+	V: Animatable + 'static,
+	M: Motion,
+	S: OnStart<V>,
+	F: OnFrame<V>,
+	E: OnEnd<V>,
+{
 	fn is_terminated(&self) -> bool {
 		self.complete
 	}
@@ -557,5 +803,150 @@ mod size_change_tests {
 			);
 			assert_eq!(engine.next_tick(), None, "a pending size wait requested frames");
 		}
+	}
+}
+
+#[cfg(test)]
+mod animation_run_tests {
+	use std::{cell::RefCell, rc::Rc};
+
+	use super::*;
+	use crate::{
+		time::MediaTime,
+		ui::{Watch, ease_in, ease_out},
+		utils::r#async::{FutureExt as _, select},
+	};
+
+	/// What the runs under test called, in order.
+	type Log = Rc<RefCell<std::vec::Vec<String>>>;
+
+	/// Mounts a panel and runs `component` on it, with a log the run's callbacks write to. The engine's clock steps by
+	/// hand from the first evaluation on.
+	fn engine(component: impl AsyncFnOnce(&mut EvaluationContext<()>, Log) + 'static) -> (Engine, Log) {
+		let log = Log::default();
+		let mut engine = Engine::new();
+		engine.advance_clock(MediaTime::ZERO);
+		let shared = log.clone();
+		engine.mount(async move |ctx| {
+			let mut panel = ctx.element("panel").container(|c| c).await;
+			component(&mut panel, shared).await;
+		});
+		(engine, log)
+	}
+
+	/// Advances the clock by `millis`, then evaluates.
+	fn frame(engine: &mut Engine, millis: i64) {
+		engine.advance_clock(MediaTime::from_millis(millis));
+		engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
+	}
+
+	fn push(log: &Log, entry: String) {
+		log.borrow_mut().push(entry);
+	}
+
+	#[test]
+	fn a_run_starts_once_steps_by_the_clock_and_ends_settled_in_its_last_frame() {
+		let (mut engine, log) = engine(async |panel, log| {
+			let mut opacity = Animation::new(0.0, ease_in(0.3));
+			opacity.set_target(1.0);
+			let (start, every, end) = (log.clone(), log.clone(), log.clone());
+			panel
+				.animate(&mut opacity)
+				.on_start(move |c, v| {
+					push(&start, format!("start {} {}", v.target, v.current));
+					c
+				})
+				.on_every_frame(move |c, v| {
+					push(&every, format!("frame {:.2}", v.current));
+					c.opacity(v.current)
+				})
+				.on_end(move |c, v, ending| {
+					push(&end, format!("end {ending:?} {}", v.current));
+					c
+				})
+				.await;
+			push(&log, "done".into());
+		});
+		frame(&mut engine, 0);
+		frame(&mut engine, 100);
+		frame(&mut engine, 100);
+		frame(&mut engine, 100);
+		frame(&mut engine, 100);
+		assert_eq!(
+			*log.borrow(),
+			[
+				"start 1 0",
+				"frame 0.00",
+				"frame 0.11",
+				"frame 0.44",
+				"frame 1.00",
+				"end Settled 1",
+				"done",
+			]
+		);
+	}
+
+	#[test]
+	fn a_run_of_a_settled_animation_completes_on_its_first_poll() {
+		let (mut engine, log) = engine(async |panel, log| {
+			let mut still = Animation::new(0.5, ease_out(1.0));
+			let (every, end) = (log.clone(), log.clone());
+			panel
+				.animate(&mut still)
+				.on_every_frame(move |c, v| {
+					push(&every, format!("frame {}", v.current));
+					c
+				})
+				.on_end(move |c, _, ending| {
+					push(&end, format!("end {ending:?}"));
+					c
+				})
+				.await;
+			push(&log, "done".into());
+		});
+		frame(&mut engine, 0);
+		assert_eq!(*log.borrow(), ["frame 0.5", "end Settled", "done"]);
+		assert_eq!(engine.next_tick(), None, "a finished run kept asking for frames");
+	}
+
+	#[test]
+	fn an_interrupted_run_ends_before_the_next_run_starts_from_where_it_stood() {
+		let interrupt = Watch::new(0);
+		let signal = interrupt.clone();
+		let (mut engine, log) = engine(async move |panel, log| {
+			let mut subscriber = signal.subscribe();
+			let mut x = Animation::new(0.0, ease_in(1.0));
+			x.set_target(10.0);
+			let end = log.clone();
+			let run = panel.animate(&mut x).on_end(move |c, v, ending| {
+				push(&end, format!("end {ending:?} {}", v.current));
+				c
+			});
+			select! {
+				_ = run.fuse() => push(&log, "settled".into()),
+				_ = subscriber.changed().fuse() => {},
+			}
+			let stood = x.current();
+			x.set_target(0.0);
+			let start = log.clone();
+			panel
+				.animate(&mut x)
+				.on_start(move |c, v| {
+					push(&start, format!("start {}", v.current));
+					c
+				})
+				.await;
+			push(&log, format!("back from {stood}"));
+		});
+		frame(&mut engine, 0);
+		frame(&mut engine, 500);
+		interrupt.set(1);
+		frame(&mut engine, 0);
+		let entries = log.borrow().clone();
+		assert_eq!(entries, ["end Interrupted 2.5", "start 2.5"], "{entries:?}");
+		for _ in 0..10 {
+			frame(&mut engine, 100);
+		}
+		assert_eq!(log.borrow().last().map(String::as_str), Some("back from 2.5"));
 	}
 }

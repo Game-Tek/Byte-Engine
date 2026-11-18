@@ -12,7 +12,6 @@
 
 use crate::configuration::{Accepts, Parameter};
 use crate::editor::carry::Light;
-use crate::editor::drawer::arrive;
 use crate::inspector::fuzzy_find;
 use crate::ui::TextEdit;
 use crate::ui::Size;
@@ -373,39 +372,6 @@ impl Setting {
 pub(crate) const ENTER: f32 = 0.15;
 pub(crate) const EXIT: f32 = 0.09;
 
-/// The `Look` struct is where the palette's panel is in its animation: how far above its place it sits, in pixels,
-/// its scale about its top edge, and its opacity.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Look {
-	pub(crate) y: f32,
-	pub(crate) scale: f32,
-	pub(crate) opacity: f32,
-}
-
-/// The panel `seconds` after it opened: it drops in from a little above and grows from a little smaller, along the
-/// editor's curve, [`arrive`], while it fades in faster than it moves.
-pub(crate) fn entering(seconds: f32) -> Look {
-	let progress = (seconds / ENTER).clamp(0.0, 1.0);
-	let motion = arrive(progress);
-	let fade = 1.0 - (1.0 - (progress * 2.0).min(1.0)).powi(3);
-	Look {
-		y: -10.0 * (1.0 - motion),
-		scale: 0.96 + 0.04 * motion,
-		opacity: fade,
-	}
-}
-
-/// The panel `seconds` after it closed: it lifts a little, shrinks a little, and fades out, speeding up as it goes.
-pub(crate) fn leaving(seconds: f32) -> Look {
-	let progress = (seconds / EXIT).clamp(0.0, 1.0);
-	let eased = progress * progress;
-	Look {
-		y: -6.0 * eased,
-		scale: 1.0 - 0.03 * eased,
-		opacity: 1.0 - eased,
-	}
-}
-
 /// The palette's rectangle in a window of `viewport` pixels while it's `height` tall, as the shell measured it: left,
 /// top, right, bottom.
 pub(crate) fn rect(viewport: Size, height: f32) -> [f32; 4] {
@@ -474,23 +440,6 @@ mod tests {
 		state.search = "a".to_string();
 		state.find();
 		assert_eq!(labels(&state), ["a.glb"], "a search finds by name alone");
-	}
-
-	#[test]
-	fn the_panel_comes_in_from_above_and_goes_out_upward() {
-		const REST: Look = Look {
-			y: 0.0,
-			scale: 1.0,
-			opacity: 1.0,
-		};
-		let start = entering(0.0);
-		assert!(start.opacity == 0.0 && start.y < 0.0 && start.scale < 1.0);
-		assert_eq!(entering(ENTER), REST);
-		assert!((0..20).all(|step| entering(ENTER * step as f32 / 20.0).y <= 0.0), "it never drops past its place");
-
-		assert_eq!(leaving(0.0), REST);
-		let gone = leaving(EXIT);
-		assert!(gone.opacity == 0.0 && gone.y < 0.0 && gone.scale < 1.0);
 	}
 
 	#[test]

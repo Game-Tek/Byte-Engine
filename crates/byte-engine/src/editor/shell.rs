@@ -15,12 +15,12 @@ mod texture_view;
 mod toasts;
 mod variant_view;
 
+use std::rc::Rc;
+
 pub(crate) use resource_panels::{fits, open_room};
 
-use std::rc::Rc;
-use std::time::Instant;
-
 use crate::core::factory::Handle;
+use crate::time::MediaTime;
 use crate::editor::drawer;
 use crate::editor::fields::{CAMERA, Change, LIGHT, Setting, TRANSFORM};
 use crate::editor::gizmo::Tool;
@@ -32,7 +32,7 @@ use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::{Events, Key};
 use crate::ui::{Anchor, ConcreteLayer, CurvePath, FillRule, LinearGradient, Position, Size, Sizing, Transform, UiPoint, flow};
 use crate::utils::RGBA;
-use crate::utils::r#async::select;
+use crate::utils::r#async::{FutureExt as _, select};
 
 /// The `Shell` struct is the state the editor's panels lay out from, which [`Editor::frame`](crate::editor::Editor::frame)
 /// updates before each evaluation.
@@ -106,6 +106,8 @@ pub struct Shell {
 	/// The open palette's height, as it last fitted its results, which the editor tests the pointer against; see
 	/// [`palette::contains`].
 	pub(crate) palette_height: f32,
+	/// Whether the scene drawer has left the window, which a closed editor draws until.
+	pub(crate) drawer_gone: bool,
 }
 
 impl Shell {
@@ -139,6 +141,7 @@ impl Shell {
 			posts: Vec::new(),
 			hints: Vec::new(),
 			palette_height: 0.0,
+			drawer_gone: true,
 		}
 	}
 
@@ -250,23 +253,19 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 	let mut shown_revision = None;
 	let mut shown_selection = None;
 	let mut fields_size = Size::new(0, 0);
-	// The editor starts closed, with the drawer hidden; it moves whenever the editor opens or closes.
-	let mut drawer_open = false;
-	let mut drawer_moved = Instant::now();
-	let mut drawer_settled = true;
+	// The editor starts closed, with the drawer hidden; it moves whenever the editor opens or closes. This loop runs
+	// every frame anyway, so it steps the drawer itself, by each frame's time.
+	let mut drawer_shown = drawer::shown(0.0);
+	let mut elapsed = MediaTime::ZERO;
 	loop {
 		let open = root.with(|shell: &mut Shell| shell.layers.open()).await;
-		if open != drawer_open {
-			drawer_open = open;
-			drawer_moved = Instant::now();
-			drawer_settled = false;
-		}
-		if !drawer_settled {
-			let seconds = drawer_moved.elapsed().as_secs_f32();
-			let shown = if open { drawer::entering(seconds) } else { drawer::leaving(seconds) };
-			drawer_settled = seconds >= if open { drawer::ENTER } else { drawer::EXIT };
+		drawer::head(&mut drawer_shown, open, drawer::ENTER, drawer::EXIT);
+		if !drawer_shown.is_settled() {
+			let shown = drawer_shown.step(std::mem::replace(&mut elapsed, MediaTime::ZERO));
 			sidebar.update_container(|c| c.transform(drawer_transform(shown))).await;
 		}
+		let gone = drawer_shown.is_settled() && drawer_shown.current() == 0.0;
+		root.with(move |shell: &mut Shell| shell.drawer_gone = gone).await;
 		let (viewport, revision) = root.with(|shell: &mut Shell| (shell.viewport, shell.scene_revision)).await;
 		if viewport != shown_viewport {
 			shown_viewport = viewport;
@@ -301,7 +300,7 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 				fields_size = size;
 				fields.panel.update_container(|c| c.style(panel(size.y(), 1.0))).await;
 			},
-			_ = root.render() => {},
+			frame = root.render() => elapsed = frame,
 		}
 	}
 }
@@ -519,11 +518,12 @@ async fn palette_view(ctx: &mut EvaluationContext<Shell>) {
 
 /// Declares the open palette's panel and keeps it current until the palette closes, then returns it for removal.
 ///
-/// The panel animates in as it opens and out once it closes, as [`palette::entering`] and [`palette::leaving`] place
-/// it; it's returned once it has left.
+/// The panel arrives as it opens and leaves once it closes, placed by [`look`] from how much of it shows; it's returned
+/// once it has left.
 async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
 	let width = palette::WIDTH - palette::INSET * 2.0;
-	let start = palette::entering(0.0);
+	let mut arrival = drawer::shown(0.0);
+	drawer::head(&mut arrival, true, palette::ENTER, palette::EXIT);
 	// The panel grows with its results; its gradient follows the height it grows to.
 	let mut height = palette::FIELD_HEIGHT + palette::INSET * 2.0;
 	let mut frame = ctx
@@ -538,8 +538,8 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 				.corner_exponent(SQUIRCLE)
 				.clip(false)
 				.hit_testable(true)
-				.opacity(start.opacity)
-				.transform(look_transform(start))
+				.opacity(0.0)
+				.transform(look(0.0))
 				.style(panel(height, 1.0))
 		})
 		.await;
@@ -569,8 +569,8 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 
 	let mut rows: Option<EvaluationContext<Shell>> = None;
 	let mut shown = None;
-	let opened = Instant::now();
-	let mut shown_look = Some(start);
+	// This loop runs every frame while the palette is open, so it steps the panel's arrival itself.
+	let mut elapsed = MediaTime::ZERO;
 	loop {
 		let revision = ctx
 			.with(|shell: &mut Shell| {
@@ -609,10 +609,9 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 				rows = Some(list);
 			}
 		}
-		let look = palette::entering(opened.elapsed().as_secs_f32());
-		if shown_look != Some(look) {
-			shown_look = Some(look);
-			show_look(&mut frame, look).await;
+		if !arrival.is_settled() {
+			let now = arrival.step(std::mem::replace(&mut elapsed, MediaTime::ZERO));
+			frame.update_container(|c| c.opacity(now).transform(look(now))).await;
 		}
 		select! {
 			edit = input.on_text_edit() => {
@@ -641,33 +640,24 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 				frame.update_container(|c| c.style(panel(height, 1.0))).await;
 				ctx.with(move |shell: &mut Shell| shell.palette_height = height).await;
 			},
-			_ = ctx.render() => {},
+			frame_time = ctx.render() => elapsed = frame_time,
 		}
 	}
-	// The palette closed: the panel leaves before it's removed.
-	let closed = Instant::now();
-	loop {
-		let seconds = closed.elapsed().as_secs_f32();
-		show_look(&mut frame, palette::leaving(seconds)).await;
-		if seconds >= palette::EXIT {
-			return frame;
-		}
-		ctx.render().await;
-	}
-}
-
-/// Places the palette's panel as `look` says.
-async fn show_look(frame: &mut EvaluationContext<Shell>, look: palette::Look) {
+	// The palette closed: the panel leaves from wherever it stands before it's removed.
+	drawer::head(&mut arrival, false, palette::ENTER, palette::EXIT);
 	frame
-		.update_container(move |c| c.opacity(look.opacity).transform(look_transform(look)))
+		.animate(&mut arrival)
+		.on_every_frame(|c, v| c.opacity(v.current).transform(look(v.current)))
 		.await;
+	frame
 }
 
-/// The transform that moves the palette's panel `look.y` pixels down and scales it about its top edge.
-fn look_transform(look: palette::Look) -> Transform {
+/// The transform that places the palette's panel while `shown` of it shows: it drops in from a little above and grows
+/// from a little smaller about its top edge as it arrives, and lifts and shrinks the same way as it leaves.
+fn look(shown: f32) -> Transform {
 	Transform::identity()
-		.translate_y(look.y)
-		.scale(look.scale)
+		.translate_y(-10.0 * (1.0 - shown))
+		.scale(0.96 + 0.04 * shown)
 		.origin(UiPoint::new(0.5, 0.0))
 }
 
@@ -851,10 +841,6 @@ impl Part {
 			.map(|(_, setting)| setting)
 	}
 
-	/// How many rows the block's fields take, two to a row.
-	fn rows(&self) -> usize {
-		(self.shown.count_ones() as usize).div_ceil(2)
-	}
 }
 
 /// Two parts are the same block when they're the same kind of block, for the same entity, with the same settings.
@@ -1357,7 +1343,7 @@ async fn read_typed(
 
 /// The floating toolbar over the game view: the gizmo's tools, the chosen one pressed. It shows only while an entity is
 /// selected, since the tools act on the selection: it slides down into place as one is selected, and back up and out
-/// once none is, as a drawer does; see [`drawer::toward`].
+/// once none is, as a drawer does; see [`drawer::head`].
 async fn toolbar(ctx: &mut EvaluationContext<Shell>) {
 	let mut toolbar = ctx
 		.element("toolbar")
@@ -1385,24 +1371,27 @@ async fn toolbar(ctx: &mut EvaluationContext<Shell>) {
 			.await;
 	}
 
-	// Where the toolbar is headed, how much of it showed when it set off, and when, so a toolbar turned back partway
-	// starts from where it was.
-	let (mut open, mut from, mut moved) = (false, 0.0, Instant::now());
-	let mut shown = 0.0;
-	let mut settled = true;
+	let mut shown = drawer::shown(0.0);
+	let mut selected = false;
 	loop {
-		let selected = ctx.with(|shell: &mut Shell| shell.selection().is_some()).await;
-		if selected != open {
-			(open, from, moved) = (selected, shown, Instant::now());
-			settled = false;
+		drawer::head(&mut shown, selected, drawer::ENTER, drawer::EXIT);
+		let mut run = toolbar
+			.animate(&mut shown)
+			.on_every_frame(|c, v| c.transform(toolbar_transform(v.current)).opacity(v.current));
+		select! {
+			_ = run => selected = selection_change(ctx, selected).await,
+			// The selection changed before the toolbar arrived: it turns around from where it is.
+			changed = selection_change(ctx, selected).fuse() => selected = changed,
 		}
-		if !settled {
-			let seconds = moved.elapsed().as_secs_f32();
-			shown = drawer::toward(from, open, seconds);
-			settled = drawer::settled(open, seconds);
-			toolbar
-				.update_container(|c| c.transform(toolbar_transform(shown)).opacity(shown))
-				.await;
+	}
+}
+
+/// Waits until whether an entity is selected differs from `selected`, and returns it.
+async fn selection_change(ctx: &mut EvaluationContext<Shell>, selected: bool) -> bool {
+	loop {
+		let now = ctx.with(|shell: &mut Shell| shell.selection().is_some()).await;
+		if now != selected {
+			return now;
 		}
 		ctx.render().await;
 	}

@@ -6,6 +6,7 @@
 //! and Byte Engine's green as the accent for the selection.
 
 mod graph_view;
+mod hint_bar;
 mod level_slider;
 mod mesh_view;
 mod preview_view;
@@ -87,10 +88,14 @@ pub(crate) struct Shell {
 	pub(crate) delete: Option<Handle>,
 	/// The game's warnings and errors, shown as toasts.
 	pub(crate) toasts: crate::editor::toasts::Toasts,
-	/// Whether either Alt key is held, which turns a click on a material's name into copying its resource id.
-	pub(crate) alt: bool,
+	/// The keys held down, as the editor keeps them; Alt turns a click on a material's name into copying its resource
+	/// id.
+	pub(crate) held: crate::editor::bindings::Held,
 	/// Text a click asked to put on the clipboard, until the editor puts it there.
 	pub(crate) copy: Option<String>,
+	/// The bindings the hint bar offers next, which the editor picks every frame with
+	/// [`crate::editor::bindings::offered`].
+	pub(crate) hints: Vec<&'static crate::editor::bindings::Binding>,
 }
 
 impl Shell {
@@ -118,8 +123,9 @@ impl Shell {
 			drawers: [0.0; 2],
 			detail_level: None,
 			toasts: Default::default(),
-			alt: false,
+			held: Default::default(),
 			copy: None,
+			hints: Vec::new(),
 		}
 	}
 
@@ -211,6 +217,7 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 
 	root.element("palette").component(async |ctx| palette_view(ctx).await).await;
 	root.element("toasts").component(async |ctx| toasts::toasts(ctx).await).await;
+	root.element("hints").component(async |ctx| hint_bar::hint_bar(ctx).await).await;
 
 	let mut shown_list = None;
 	let mut shown_viewport = viewport;

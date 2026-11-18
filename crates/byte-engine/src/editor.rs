@@ -30,6 +30,7 @@
 //!
 //! See [Edit a level in the running game](/docs/use/editor) for how to install it and what it edits.
 
+mod bindings;
 mod carry;
 mod create;
 mod drawer;
@@ -100,6 +101,9 @@ struct ResourceWindow {
 
 /// How often the editor asks the inspector for the scene, the same rate the console refreshes at.
 const SCENE_POLL: Duration = Duration::from_millis(250);
+/// How long an action left partway, a gizmo held still or a modifier held without a second key, waits before the hint
+/// bar offers what finishes it.
+const HESITATION: Duration = Duration::from_secs(1);
 
 /// The `Editor` struct is the editor layer a game installs over itself, which the game steps from its tick.
 ///
@@ -140,12 +144,13 @@ pub struct Editor {
 	drag: Option<(Handle, gizmo::Drag)>,
 	/// Where the pointer last was, in normalized window coordinates.
 	pointer: UiPoint,
-	/// Whether a system key, Command or Super, is held.
-	meta: bool,
-	/// Whether a Shift key is held.
-	shift: bool,
-	/// Whether a Control key is held, which snaps gizmo drags.
-	control: bool,
+	/// The keys held down, which every key's press and release updates through [`Self::press`].
+	held: bindings::Held,
+	/// The held keys and the dragged pointer as they last changed, and when, so the hint bar knows how long the user
+	/// stopped.
+	progress: (bindings::Held, Option<[f32; 2]>, Instant),
+	/// Whether a press ran a binding since the last modifiers went down, which finished what they started.
+	finished: bool,
 	/// When the editor closed, while its pass keeps drawing for the scene drawer to leave.
 	closed: Option<std::time::Instant>,
 	/// The operations an undo or redo is applying, kept to reuse their storage.
@@ -225,9 +230,9 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 		gizmo,
 		drag: None,
 		pointer: UiPoint::new(0.0, 0.0),
-		meta: false,
-		shift: false,
-		control: false,
+		held: bindings::Held::default(),
+		progress: (bindings::Held::default(), None, Instant::now()),
+		finished: false,
 		closed: None,
 		applying: Vec::new(),
 		history: history::History::default(),
@@ -323,6 +328,7 @@ impl Editor {
 		self.move_carry(app);
 		self.fly_camera(app);
 		self.place_gizmo();
+		self.offer_hints();
 
 		let viewport = self.engine.ctx_mut().viewport;
 		self.engine.evaluate(viewport, app.frame_allocator());
@@ -427,6 +433,10 @@ impl Editor {
 	/// Only the main window, the `scene`, shows the game, so only its presses grab the gizmo or pick what they land on.
 	fn act(&mut self, app: &mut GraphicsApplication, action: ResolvedAction, scene: bool) {
 		let handle = action.action;
+		if let (Value::Bool(down), Some(key)) = (action.value, self.actions.key(handle)) {
+			self.press(app, key, down, scene);
+			return;
+		}
 		match action.value {
 			// The keys and the right-button drag fly the editor's camera while nothing over the scene takes them.
 			Value::Vector3(push) if handle == self.actions.fly => {
@@ -500,34 +510,6 @@ impl Editor {
 					self.engine.delete_text_backward();
 				}
 			}
-			Value::Bool(down) if handle == self.actions.meta => self.meta = down,
-			// Either key changes how a drag snaps, so the dragged entity moves to the new snap at once, without waiting
-			// for the pointer to move.
-			Value::Bool(down) if handle == self.actions.shift || handle == self.actions.control => {
-				if handle == self.actions.shift {
-					self.shift = down;
-				} else {
-					self.control = down;
-				}
-				let pointer = self.pointer;
-				self.drag_to(app, pointer);
-			}
-			// A resource window's engine stands in the main one's place while its input is handled, so Alt reaches the
-			// shell of the window it was pressed in.
-			Value::Bool(down) if handle == self.actions.alt => self.engine.ctx_mut().alt = down,
-			// A focused field, such as a camera setting taking typed text, hears Enter and Escape too.
-			Value::Bool(down) if handle == self.actions.enter || handle == self.actions.escape => {
-				let key = if handle == self.actions.enter {
-					Key::Enter
-				} else {
-					Key::Escape
-				};
-				self.engine.update_key_state(key, down);
-				if down {
-					self.key(app, handle, scene);
-				}
-			}
-			Value::Bool(true) => self.key(app, handle, scene),
 			_ => {}
 		}
 	}
@@ -593,7 +575,9 @@ impl Editor {
 	/// taking text or the palette keeps the keys, no system key is held, so Cmd+A and Cmd+S stay shortcuts, and no
 	/// gizmo drag is held, so Shift refines its snap instead of lowering the camera.
 	fn flies(&mut self) -> bool {
-		!self.meta && self.drag.is_none() && matches!(self.engine.ctx_mut().layers.top(), Some(Layer::Scene))
+		!self.held.contains(bindings::Key::Cmd)
+			&& self.drag.is_none()
+			&& matches!(self.engine.ctx_mut().layers.top(), Some(Layer::Scene))
 	}
 
 	/// Moves the editor's camera on by this frame's keys and drag, switching the game window to it on its first move,
@@ -698,55 +682,64 @@ impl Editor {
 		}
 	}
 
-	/// Answers a pressed key: Cmd+K opens the palette on everything, Cmd+A on what can be placed, Cmd+E on the
-	/// resources to explore, and Cmd+. on the runtime settings, Cmd+S saves the open material graph, Cmd+Z undoes and
-	/// Cmd+Shift+Z redoes, the arrows move the palette's highlight, Enter picks the highlighted entry or sets the typed
-	/// setting, and Escape pops the top layer, which closes the editor from the scene. A property field taking typed
-	/// text answers Enter and Escape itself. Undo and redo apply to the `scene` only, in the main window.
-	fn key(&mut self, app: &mut GraphicsApplication, key: crate::input::ActionHandle, scene: bool) {
-		let scope = if key == self.actions.k {
-			Some(palette::Scope::All)
-		} else if key == self.actions.a {
-			Some(palette::Scope::Place)
-		} else if key == self.actions.e {
-			Some(palette::Scope::Explore)
-		} else if key == self.actions.period {
-			Some(palette::Scope::Configure)
-		} else {
-			None
-		};
-		if let Some(scope) = scope
-			&& self.meta
-		{
-			self.toggle_palette(app, scope);
-			return;
-		}
-		if key == self.actions.z && self.meta {
-			// A field taking typed text keeps its own keys.
-			if scene && !matches!(self.engine.ctx_mut().layers.top(), Some(Layer::Typing)) {
-				self.step_history(app);
-			}
-			return;
-		}
-		if key == self.actions.s && self.meta {
-			let shell = self.engine.ctx_mut();
-			shell.save_graph = shell.layers.graph().is_some();
-			return;
-		}
+	/// Moves the highlight of the palette, or of the setting it found, by `delta` rows.
+	fn move_highlight(&mut self, delta: isize) {
 		match self.engine.ctx_mut().layers.top_mut() {
-			Some(Layer::Typing) => {}
-			Some(Layer::Palette(palette)) if key == self.actions.up => palette.move_highlight(-1),
-			Some(Layer::Palette(palette)) if key == self.actions.down => palette.move_highlight(1),
-			Some(Layer::Palette(palette)) if key == self.actions.enter => {
-				if let Some(entry) = palette.highlighted().cloned() {
-					self.pick_entry(app, &entry);
-				}
-			}
-			Some(Layer::Setting(setting)) if key == self.actions.up => setting.move_highlight(-1),
-			Some(Layer::Setting(setting)) if key == self.actions.down => setting.move_highlight(1),
-			Some(Layer::Setting(_)) if key == self.actions.enter => self.set_setting(app),
-			Some(_) if key == self.actions.escape => self.pop(app),
+			Some(Layer::Palette(palette)) => palette.move_highlight(delta),
+			Some(Layer::Setting(setting)) => setting.move_highlight(delta),
 			_ => {}
+		}
+	}
+
+	/// Picks the palette's highlighted entry, as a click on it does.
+	fn pick_highlighted(&mut self, app: &mut GraphicsApplication) {
+		let entry = self.engine.ctx_mut().layers.palette().and_then(|palette| palette.highlighted().cloned());
+		if let Some(entry) = entry {
+			self.pick_entry(app, &entry);
+		}
+	}
+
+	/// What the editor is doing in the window whose engine is `self.engine`, the main one when `scene`, for the
+	/// bindings to decide which apply.
+	fn situation(&mut self, scene: bool) -> bindings::Situation<'_> {
+		let dragging = self.drag.is_some();
+		let shell = self.engine.ctx_mut();
+		bindings::Situation {
+			layers: &shell.layers,
+			scene,
+			dragging,
+			tool: shell.tool,
+		}
+	}
+
+	/// The one path every key the bindings listen for takes: it keeps [`Self::held`], lets a focused field hear Enter
+	/// and Escape, measures a drag again when a held key changes how it snaps or carries, and runs what a press binds.
+	fn press(&mut self, app: &mut GraphicsApplication, key: bindings::Key, down: bool, scene: bool) {
+		self.held.set(key, down);
+		// A resource window's engine stands in the main one's place while its input is handled, so the window the key
+		// reached reads it too, as a mesh window's material names do Alt.
+		self.engine.ctx_mut().held = self.held;
+		let field_key = match key {
+			bindings::Key::Enter => Some(Key::Enter),
+			bindings::Key::Escape => Some(Key::Escape),
+			_ => None,
+		};
+		if let Some(field_key) = field_key {
+			self.engine.update_key_state(field_key, down);
+		}
+		if key.modifier() {
+			// The dragged entity moves to the new snap at once, without waiting for the pointer to move.
+			let pointer = self.pointer;
+			self.drag_to(app, pointer);
+			return;
+		}
+		if !down {
+			return;
+		}
+		let held = self.held;
+		if let Some(run) = bindings::pressed(&self.situation(scene), held, key) {
+			self.finished = true;
+			run(self, app);
 		}
 	}
 
@@ -1305,6 +1298,17 @@ impl Editor {
 	/// Moves, turns, or scales the dragged entity to follow `pointer` along the grabbed part, and posts its new
 	/// transform to the game through the inspector.
 	fn drag_to(&mut self, app: &GraphicsApplication, pointer: UiPoint) {
+		let held = self.held;
+		let situation = self.situation(true);
+		let holding = |binding| bindings::holding(binding, &situation, held);
+		let snap = if holding(&bindings::SNAP_FINELY) {
+			gizmo::Snap::Fine
+		} else if holding(&bindings::SNAP) {
+			gizmo::Snap::Steps
+		} else {
+			gizmo::Snap::Free
+		};
+		let carry = holding(&bindings::CARRY);
 		let Some((handle, drag)) = &self.drag else {
 			return;
 		};
@@ -1317,12 +1321,6 @@ impl Editor {
 			return;
 		};
 		let pixel = placement.pixel([pointer.x, pointer.y]);
-		// Control snaps, as in Blender, and Shift with it snaps finer.
-		let snap = match (self.control, self.shift) {
-			(false, _) => gizmo::Snap::Free,
-			(true, false) => gizmo::Snap::Steps,
-			(true, true) => gizmo::Snap::Fine,
-		};
 		let Some(transform) = drag.transform(&placement, pixel, snap) else {
 			return;
 		};
@@ -1332,12 +1330,35 @@ impl Editor {
 			delta: history::Delta::between(&entity.transform, &transform),
 		};
 		let moved = transform.get_position() - entity.transform.get_position();
-		let carry = shell.alt;
 		drop(state);
 		self.edit(app, operation);
 		if carry {
 			self.carry_camera(app, moved);
 		}
+	}
+
+	/// Fills the hint bar with what would finish the action the main window's user left partway.
+	///
+	/// The bar stays empty until the user stops partway for [`HESITATION`]: a gizmo drag whose pointer stood still, or
+	/// modifiers held without the key that finishes a shortcut. Any change of the held keys or the dragged pointer
+	/// starts the wait again, and a shortcut run with the modifiers still down ends it.
+	fn offer_hints(&mut self) {
+		let (held, dragging) = (self.held, self.drag.is_some());
+		let state = (held, dragging.then_some([self.pointer.x, self.pointer.y]));
+		if state != (self.progress.0, self.progress.1) {
+			self.progress = (state.0, state.1, Instant::now());
+		}
+		if held.modifiers() == bindings::Held::default() {
+			self.finished = false;
+		}
+		let stopped = self.progress.2.elapsed() >= HESITATION && (dragging || !self.finished);
+		// The list is taken out while it's filled, since the situation reads the shell, and put back to keep its storage.
+		let mut hints = std::mem::take(&mut self.engine.ctx_mut().hints);
+		bindings::offered(&self.situation(true), held, &mut hints);
+		if !stopped {
+			hints.clear();
+		}
+		self.engine.ctx_mut().hints = hints;
 	}
 
 	/// Moves the editor's camera by `offset`, the step a gizmo drag just moved its entity, so the entity stays where
@@ -1362,13 +1383,12 @@ impl Editor {
 		self.apply(app, operation);
 	}
 
-	/// Undoes the last step, or redoes the last undone one while Shift is held, applying its operations as an edit
-	/// does.
-	fn step_history(&mut self, app: &GraphicsApplication) {
+	/// Undoes the last step, or redoes the last undone one when `redo`, applying its operations as an edit does.
+	fn step_history(&mut self, app: &GraphicsApplication, redo: bool) {
 		// An undo mid-drag would fight the drag, which moves from where it started.
 		self.release_gizmo();
 		let mut operations = std::mem::take(&mut self.applying);
-		if self.shift {
+		if redo {
 			operations.extend(self.history.redo());
 		} else {
 			operations.extend(self.history.undo());

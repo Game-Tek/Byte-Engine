@@ -292,7 +292,7 @@ async fn material_name(ctx: &mut EvaluationContext<Shell>, id: &str, width: f32)
 	loop {
 		row.on(Events::Actuated).await;
 		ctx.with(|shell: &mut Shell| {
-			if shell.alt {
+			if shell.held.contains(crate::editor::bindings::Key::Alt) {
 				shell.copy = Some(id.to_owned());
 			}
 		})

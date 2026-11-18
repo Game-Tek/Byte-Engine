@@ -1169,7 +1169,7 @@ mod leaderboard {
 		loop {
 			select_biased! {
 				_ = body.on(Events::Actuated) => {
-					let Some(geometry) = body.geometry().await else { continue };
+					let Some(geometry) = body.geometry().await.map(|geometry| geometry.logical) else { continue };
 					let pointer_y = ctx.pointer().await.position.y;
 					let index = ((pointer_y - geometry.y()) / ROW_HEIGHT) as usize;
 					if index < rows && selected != Some(index) {
@@ -1394,6 +1394,7 @@ mod board {
 				let origin = card
 					.geometry()
 					.await
+					.map(|geometry| geometry.logical)
 					.map_or(UiPoint::zero(), |geometry| UiPoint::new(geometry.x(), geometry.y()));
 				card.reparent(root_id).await;
 				card.update_container(|c| c.depth(Depth::absolute(1))).await;

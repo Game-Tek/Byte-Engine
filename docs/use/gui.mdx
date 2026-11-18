@@ -237,7 +237,7 @@ animate(&mut card, emphasized_out(0.3), async |card, t| {
 Reads are futures that complete at once. Await them in the component:
 
 ```rust
-let bounds = card.geometry().await;
+let bounds = card.geometry().await.map(|geometry| geometry.logical);
 let pointer = ctx.pointer().await;
 let held = ctx.drag().await;
 let score = ctx.with(|app: &App| app.score.get()).await;
@@ -246,6 +246,37 @@ let score = ctx.with(|app: &App| app.score.get()).await;
 `Context::with` lends the application context you passed to
 `Engine::with_context`. The host reaches the same value between evaluations
 through `Engine::ctx` and `Engine::ctx_mut`.
+
+A geometry read returns two boxes. Use `logical` for interaction, such as
+turning the pointer into a local position, because the pointer hits that box.
+Use `display` to follow what's seen.
+
+## Animate a container's size without reflowing
+
+To grow or shrink a panel smoothly, give it its final size at once and animate
+only how big it looks. The width and height are the logical size: they place
+the panel, give its children their space, and take pointer hits. The display
+width and height are the box the panel is painted at and clips its children to.
+They default to the logical size.
+
+1. Set the logical size to the target, so the children lay out at their final
+   places and the panel takes clicks there right away.
+2. Animate the display size from the old size to the new one.
+
+```rust
+panel.update_container(|c| c.height(Sizing::pixels(target))).await;
+animate(&mut panel, emphasized_out(0.25), async |panel, t| {
+    let height = start + (target - start) * t;
+    panel.update_container(|c| c.display_height(Sizing::pixels(height))).await;
+})
+.await;
+// Match the logical size again.
+panel.update_container(|c| c.display_height(Sizing::full())).await;
+```
+
+The display box grows from the panel's top-left corner. Children never move
+while it animates, and a display edit doesn't rerun layout. Only containers
+have a display size.
 
 ## Understand component lifetime
 
@@ -354,7 +385,7 @@ loop {
     };
     match event.kind {
         Events::Grabbed => {
-            origin = card.geometry().await;
+            origin = card.geometry().await.map(|geometry| geometry.logical);
             card.update_container(|c| c.depth(Depth::absolute(1))).await;
         }
         Events::Dragged => {

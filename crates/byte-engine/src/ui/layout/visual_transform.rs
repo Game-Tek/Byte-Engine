@@ -77,11 +77,12 @@ impl Affine2 {
 		(self.a * x + self.c * y + self.tx, self.b * x + self.d * y + self.ty)
 	}
 
-	pub(super) fn transform_rect(self, element: &LayoutElement) -> (Location3, Size) {
-		let left = element.position.x();
-		let top = element.position.y();
-		let right = left + element.size.x();
-		let bottom = top + element.size.y();
+	/// Returns the axis-aligned bounds of the `size` rectangle at `position` after this transform.
+	pub(super) fn transform_rect(self, position: Location3, size: Size) -> (Location3, Size) {
+		let left = position.x();
+		let top = position.y();
+		let right = left + size.x();
+		let bottom = top + size.y();
 
 		let corners = [
 			self.transform_point(left, top),
@@ -109,7 +110,7 @@ impl Affine2 {
 		let width = clamp_coordinate(max_x - min_x);
 		let height = clamp_coordinate(max_y - min_y);
 
-		(Location3::new(x, y, element.position.z()), Size::new(width, height))
+		(Location3::new(x, y, position.z()), Size::new(width, height))
 	}
 }
 
@@ -223,12 +224,13 @@ mod tests {
 			index: 0,
 			position: Location3::new(10, 10, 0),
 			size: Size::new(100, 40),
+			display_size: Size::new(100, 40),
 			hit_testable: false,
 		};
 		let physical_positions = (0..=10)
 			.map(|step| {
 				let transform = Transform::identity().translate_x(step as f32 * 0.1);
-				let (position, _) = Affine2::from_transform(transform, &element).transform_rect(&element);
+				let (position, _) = Affine2::from_transform(transform, &element).transform_rect(element.position, element.size);
 				position.x() * 2.0
 			})
 			.collect::<Vec<_>>();

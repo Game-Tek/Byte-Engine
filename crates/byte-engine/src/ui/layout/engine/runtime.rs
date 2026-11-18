@@ -276,7 +276,7 @@ pub struct Runtime {
 	next_frame_token: u64,
 	pub(super) focus_stack: Vec<Id>,
 	/// Keyed by id, which is already a well-mixed hash, so the fast hasher is enough.
-	pub(super) geometry: utils::hash::HashMap<Id, Geometry>,
+	pub(super) geometry: utils::hash::HashMap<Id, ElementGeometry>,
 	pub(super) pointer: PointerState,
 	pub(super) drag: Drag,
 	pub(super) frame: u64,
@@ -524,11 +524,8 @@ impl Runtime {
 
 	pub(super) fn update_geometry(&mut self, elements: &[LayoutElement]) {
 		self.geometry.clear();
-		self.geometry.extend(
-			elements
-				.iter()
-				.map(|element| (element.id, Geometry::new(element.position, element.size))),
-		);
+		self.geometry
+			.extend(elements.iter().map(|element| (element.id, element.geometry())));
 	}
 
 	/// Removes input and geometry owned by the deleted elements.

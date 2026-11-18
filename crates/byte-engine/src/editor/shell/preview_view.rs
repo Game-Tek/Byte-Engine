@@ -49,7 +49,7 @@ async fn picture(ctx: &mut EvaluationContext<Shell>) {
 		select! {
 			_ = mat.on(Events::Grabbed) => {
 				let pointer = ctx.pointer().await.position;
-				let corner = mat.geometry().await.map_or([0.0; 2], |geometry| [geometry.x(), geometry.y()]);
+				let corner = mat.geometry().await.map(|geometry| geometry.logical).map_or([0.0; 2], |geometry| [geometry.x(), geometry.y()]);
 				pressed = [pointer.x - corner[0], pointer.y - corner[1]];
 				// The ball sits on the subject, in the middle of the room the drawers leave.
 				let room = ctx.with(move |shell: &mut Shell| open_room(width, shell.drawer_shown, shell.drawers)).await;

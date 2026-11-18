@@ -37,7 +37,8 @@ already exists keeps its properties until an edit changes them.
 
 | Property | Type | Default | Notes |
 | --- | --- | --- | --- |
-| Width, height | Sizing | Full | |
+| Width, height | Sizing | Full | The logical size. See [Sizing](#sizing). |
+| Display width, display height | Sizing against the logical size | Full, which matches the logical size | The display size. See [Display size](#display-size). |
 | Corner radius | Layout units | 0 | Clamped to half the shorter side. |
 | Corner exponent | Number | 2 | Superellipse exponent, clamped to `[1, 8]`; non-finite or below 1 counts as 2. |
 | Sector | Optional sector | None | Described after this table. |
@@ -129,6 +130,26 @@ shadows aren't drawn; outer shadows are.
 | Minimum and maximum | None. |
 | Transforms | Never change a measured size or a flow placement. |
 
+### Display size
+
+A container has two sizes. The logical size, set by its width and height, is
+the one the sizing rules above resolve. The display size is the box the
+container is seen as.
+
+| Rule | Logical size | Display size |
+| --- | --- | --- |
+| Resolves against | The available space | The container's own logical size, so full matches it |
+| Measurement, flow placement, and the space children are offered | Used | Never used |
+| Painting, sector shape, and render damage | Not used | Used |
+| Clip and mask for descendants | Not used | Used |
+| Hit testing | Used | Not used |
+| Transform origin | A fraction of this size | Not used |
+| Anchor | | The logical box's top-left corner |
+
+An edit that changes only the display size, like a transform edit, doesn't
+replay layout. Only containers have a display size; every other kind is seen
+at its logical size.
+
 ## Flows
 
 A flow function places each child from a cursor that starts at the parent's
@@ -201,7 +222,7 @@ inherited transform scale.
 
 | Rule | Value |
 | --- | --- |
-| Clip | A clipping container clips its descendants to its rectangle inset by its widest stroke, intersected with the inherited clip. Clip off makes descendants inherit the ancestor's clip and mask. |
+| Clip | A clipping container clips its descendants to its display rectangle inset by its widest stroke, intersected with the inherited clip. Clip off makes descendants inherit the ancestor's clip and mask. |
 | Fully clipped element | Dropped from rendering and from hit testing. |
 | Mask | Made for a clipping container's descendants when a layer has a feather, or when the corner radius exceeds the border. It carries the inset geometry, the first feather, the radius minus the border, and the corner exponent. Otherwise the parent's mask is inherited. |
 | Rotation | Clips and masks are unrotated; the rotation applies at draw time. |
@@ -244,7 +265,7 @@ offset component plus the spread plus three sigma.
 | Translation | 0, 0 | Layout units, applied after scaling. |
 | Scale | 1, 1 | Around the origin. Non-finite counts as 1 and negative as 0. |
 | Rotation | 0 | Radians clockwise. Visual only: bounds, clips, and hits keep the unrotated placement. |
-| Origin | 0.5, 0.5 | A fraction of the laid-out size; values outside `[0, 1]` are allowed. |
+| Origin | 0.5, 0.5 | A fraction of the logical size; values outside `[0, 1]` are allowed. |
 
 A child's transform composes with its ancestors' from its untransformed
 placement. The inherited scale is the product of the ancestors' scales, and
@@ -295,11 +316,11 @@ kind can hold focus.
 | Hit-testable elements | Containers turned on, editable text always, curves with a hit width. Never images or paths. |
 | Opacity | Doesn't affect hits, even at 0. |
 | Bounds | Half-open: the left and top edges hit, the right and bottom don't. |
-| Sector | The point must also fall inside the sector. |
+| Sector | The point must also fall inside the sector, shaped against the logical rectangle. |
 | Curve | The point must be within half the scaled hit width of the flattened curve, which can reach beyond the declared size. |
 | Frontmost | The highest depth rank, then the later layout index. A held drag source can be excluded. |
 | Outside the indexed area | No hit. |
-| Geometry | The transformed rectangle intersected with the effective clip, from the last evaluated frame, without running layout. |
+| Geometry | The transformed logical rectangle intersected with the effective clip, from the last evaluated frame, without running layout. |
 
 ## Drag
 
@@ -321,7 +342,9 @@ the drag ended. A changed evaluation size cancels first.
 The frame counter advances once per evaluation. The engine's next tick is now
 while any task waits for a frame or is woken, else the earliest timer deadline,
 else never. Reads of geometry, pointer, drag, and application state complete on
-the first poll.
+the first poll. A geometry read reports two transformed rectangles from the
+last evaluated frame: the logical one, which hits use, and the display one,
+which is painted. Both are the same unless a container's display size differs.
 
 ## Animation drivers
 
@@ -370,7 +393,7 @@ A render's revision identifies its content and stays the same while the tree,
 its layout, and the viewport are unchanged. Its damage lists at most 8 layout
 rectangles that differ from a base revision, collapsed to their union past
 that, or reports that everything changed after the first render or a viewport
-resize. Damage covers element bounds plus outward stroke or shadow reach,
+resize. Damage covers element display bounds plus outward stroke or shadow reach,
 intersected with the clip, and the rotated bounds of turned elements.
 
 ## Renderer limits

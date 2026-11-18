@@ -152,7 +152,7 @@ impl<C: 'static> Context<C> for EvaluationContext<C> {
 		}
 	}
 
-	fn geometry(&self) -> Read<C, Option<Geometry>> {
+	fn geometry(&self) -> Read<C, Option<ElementGeometry>> {
 		self.read(|runtime, id| runtime.geometry.get(&id).copied())
 	}
 

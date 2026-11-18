@@ -29,8 +29,41 @@ pub(crate) struct LayoutElement {
 	/// snapshot need no ID hashing; see [`retained_tree::RetainedTree::index_of`].
 	pub(crate) index: usize,
 	pub(crate) position: Location3,
+	/// The logical size: what the parent's flow placed, what hits test against, and what transform origins follow.
 	pub(crate) size: Size,
+	/// The size the element is seen at, from the same top-left corner: what paints, clips descendants, and damages.
+	/// It equals [`Self::size`] for every element but a container with a display size; see [`Container::display_width`].
+	pub(crate) display_size: Size,
 	pub(crate) hit_testable: bool,
+}
+
+impl LayoutElement {
+	/// The box the element is seen as, which painting, descendant clipping, and damage use.
+	pub(crate) fn display_geometry(&self) -> Geometry {
+		Geometry::new(self.position, self.display_size)
+	}
+
+	/// Both of the element's boxes, as a geometry read reports them.
+	pub(crate) fn geometry(&self) -> ElementGeometry {
+		ElementGeometry {
+			logical: Geometry::new(self.position, self.size),
+			display: self.display_geometry(),
+		}
+	}
+}
+
+/// The `ElementGeometry` struct reports where an element was laid out in the last evaluated frame, as two boxes that
+/// share a top-left corner.
+///
+/// Read it with [`crate::ui::EvaluationContext::geometry`]. Use [`Self::logical`] for interaction, such as turning a
+/// pointer position into a local one or anchoring a popover, since hits test against it and it never animates while
+/// a container's display size does. Use [`Self::display`] to follow what is seen. Both include visual transforms.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ElementGeometry {
+	/// The box at the element's logical size, which pointer hits test against.
+	pub logical: Geometry,
+	/// The box at the element's display size, which is painted and clips its descendants.
+	pub display: Geometry,
 }
 
 /// The `RenderPlacement` struct holds where and how one render list entry draws, whatever its kind.
@@ -226,6 +259,8 @@ fn layout_elements<'a>(
 			index,
 			position,
 			size,
+			// The visual pass resolves the display size, so a display edit never needs placement replayed.
+			display_size: size,
 			hit_testable: element.primitive.hit_testable(),
 		});
 		let Primitives::Container(container) = &element.primitive else {

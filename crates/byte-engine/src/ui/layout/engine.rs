@@ -316,7 +316,7 @@ impl<C: 'static> Engine<C> {
 		if !unchanged {
 			let placement_unchanged = self.retained_layout.as_ref().is_some_and(|retained| {
 				retained.tree.placement == revisions.placement
-					&& (!retained.has_custom_flows || retained.tree.non_transform == revisions.non_transform)
+					&& (!retained.has_custom_flows || retained.tree.non_visual == revisions.non_visual)
 					&& retained.size == size
 					// Only edited text needs checking. Keep the refreshed measurement if a
 					// changed size falls through to full placement, so it is not measured twice.
@@ -328,22 +328,22 @@ impl<C: 'static> Engine<C> {
 						super::measure_element(&tree.elements[index], available, &mut self.text_system, cached) == previous_size
 					})
 			});
-			let transforms_changed = !tree.transform_changes.is_empty();
+			let visuals_changed = !tree.visual_changes.is_empty();
 			// Unchanged placement reuses the retained elements. They are moved out while the rest of the retained
 			// layout is updated, and moved back once this evaluation no longer reads them.
 			let previous = self
 				.retained_layout
 				.as_mut()
-				.filter(|_| placement_unchanged && !transforms_changed)
+				.filter(|_| placement_unchanged && !visuals_changed)
 				.map(|retained| std::mem::take(&mut retained.elements));
 			let mut placed = Vec::new_in(frame_allocator);
 			self.dirty.clear();
-			if placement_unchanged && transforms_changed {
+			if placement_unchanged && visuals_changed {
 				placed.extend_from_slice(&self.retained_layout.as_ref().unwrap().elements);
 				// Recompute from retained placement, never from already transformed bounds.
 				// An edited ancestor owns the whole subtree, including nested edited roots.
-				for &index in &tree.transform_changes {
-					let covered = tree.lineage(index).skip(1).any(|ancestor| tree.transform_changed(ancestor));
+				for &index in &tree.visual_changes {
+					let covered = tree.lineage(index).skip(1).any(|ancestor| tree.visual_changed(ancestor));
 					if !covered {
 						update_visual_subtree(
 							index,
@@ -399,7 +399,7 @@ impl<C: 'static> Engine<C> {
 			let geometry_unchanged = self.retained_layout.as_ref().is_some_and(|retained| {
 				retained.size == size
 					&& retained.tree.clip == revisions.clip
-					&& !transforms_changed
+					&& !visuals_changed
 					&& (placement_unchanged || retained.elements.as_slice() == elements)
 			});
 			if !geometry_unchanged {
@@ -410,7 +410,7 @@ impl<C: 'static> Engine<C> {
 				let transformed_from = self
 					.retained_layout
 					.as_ref()
-					.filter(|_| placement_unchanged && transforms_changed)
+					.filter(|_| placement_unchanged && visuals_changed)
 					.map(|retained| retained.revision);
 				Self::prepare_appearance(
 					&mut self.visual_state,
@@ -454,10 +454,11 @@ impl<C: 'static> Engine<C> {
 					debug_assert_eq!(previous.elements.len(), elements.len());
 					for (previous, element) in previous.elements.iter().zip(elements.iter()) {
 						debug_assert_eq!(previous.id, element.id);
-						if previous.position != element.position || previous.size != element.size {
-							runtime
-								.geometry
-								.insert(element.id, Geometry::new(element.position, element.size));
+						if previous.position != element.position
+							|| previous.size != element.size
+							|| previous.display_size != element.display_size
+						{
+							runtime.geometry.insert(element.id, element.geometry());
 						}
 					}
 				} else {
@@ -475,7 +476,7 @@ impl<C: 'static> Engine<C> {
 				retained.revision = layout_revision;
 				retained.transformed_from = transformed_from;
 				retained.size = size;
-				if !placement_unchanged || transforms_changed {
+				if !placement_unchanged || visuals_changed {
 					retained.elements.clear();
 					retained.elements.extend_from_slice(elements);
 				}
@@ -503,7 +504,7 @@ impl<C: 'static> Engine<C> {
 				retained.elements = previous;
 			}
 			tree.text_changes.clear();
-			tree.clear_transform_changes();
+			tree.clear_visual_changes();
 		}
 	}
 
@@ -811,10 +812,7 @@ impl<C: 'static> Engine<C> {
 				self.dirty_stamps[index] = stamp;
 				let offset = self.placement_indices[index];
 				let element = layout_elements[offset];
-				let now_visible = self.visual_state[index]
-					.clip
-					.apply(geometry_from_layout_element(&element))
-					.is_some();
+				let now_visible = self.visual_state[index].clip.apply(element.display_geometry()).is_some();
 				let slot = self.depth_order.binary_search(&(element.position.z(), offset as u32)).ok();
 				if slot.is_some() != now_visible {
 					flipped = true;
@@ -833,12 +831,9 @@ impl<C: 'static> Engine<C> {
 			self.depth_order.clear();
 			self.depth_order
 				.extend(layout_elements.iter().enumerate().filter_map(|(offset, element)| {
-					let visible = tree.index_of(element).is_some_and(|index| {
-						self.visual_state[index]
-							.clip
-							.apply(geometry_from_layout_element(element))
-							.is_some()
-					});
+					let visible = tree
+						.index_of(element)
+						.is_some_and(|index| self.visual_state[index].clip.apply(element.display_geometry()).is_some());
 					visible.then(|| (element.position.z(), offset as u32))
 				}));
 			self.depth_order.sort_unstable();
@@ -892,7 +887,7 @@ impl<C: 'static> Engine<C> {
 				id: retained_element.serial,
 				revision: retained_element.revision,
 				rect: {
-					let rect = geometry_from_layout_element(element).expanded(outset);
+					let rect = element.display_geometry().expanded(outset);
 					let rect = match clip {
 						Some(clip) => rect.intersect(clip),
 						None => Some(rect),
@@ -918,7 +913,7 @@ impl<C: 'static> Engine<C> {
 			let placement = RenderPlacement {
 				id: retained_element.serial,
 				position: element.position,
-				size: element.size,
+				size: element.display_size,
 				clip,
 				clip_mask,
 				rotation,
@@ -1735,13 +1730,13 @@ mod tests {
 		});
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
 		let (first, second) = engine.ctx().expect("expected test value");
-		assert_eq!(engine.core.runtime.geometry[&first].y(), 0.0);
-		assert_eq!(engine.core.runtime.geometry[&second].y(), 10.0);
+		assert_eq!(engine.core.runtime.geometry[&first].logical.y(), 0.0);
+		assert_eq!(engine.core.runtime.geometry[&second].logical.y(), 10.0);
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
 		engine.evaluate(Size::new(100, 100), &allocator);
 		let runtime = &engine.core.runtime;
-		assert_eq!(runtime.geometry[&second].y(), 0.0);
-		assert_eq!(runtime.geometry[&first].y(), 5.0);
+		assert_eq!(runtime.geometry[&second].logical.y(), 0.0);
+		assert_eq!(runtime.geometry[&first].logical.y(), 5.0);
 	}
 
 	/// Evaluates and renders one frame, returning the revision and a copy of the damage.
@@ -2326,6 +2321,52 @@ mod tests {
 	}
 
 	#[test]
+	fn display_size_paints_and_clips_while_logical_size_places_and_hits() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::with_context((0usize, None::<ElementGeometry>));
+
+		engine.mount(async move |ctx| {
+			let mut panel = ctx
+				.element("panel")
+				.container(|c| c.size(100.into()).display_width(40.into()).hit_testable(true).flow(flow::row))
+				.await;
+			for key in ["first", "second", "third"] {
+				panel.element(key).container(|c| c.width(30.into()).height(20.into())).await;
+			}
+			panel.render().await;
+			let geometry = panel.geometry().await;
+			ctx.with(|(_, read)| *read = geometry).await;
+			loop {
+				panel.on(Events::Actuated).await;
+				ctx.with(|(hits, _)| *hits += 1).await;
+			}
+		});
+
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
+		let entry = |serial| render.elements().find(|element| element.placement.id == serial);
+		// The panel paints at its display width.
+		assert_eq!(entry(1).expect("the panel paints").placement.size, Size::new(40, 100));
+		// Children keep the logical flow and clip to the display box: the third one, at x 60, is clipped away.
+		let second = entry(3).expect("the second child overlaps the display box");
+		assert_eq!(second.placement.position.x(), 30.0);
+		assert_eq!(second.placement.clip.map(|clip| clip.size), Some(Size::new(40, 100)));
+		assert!(entry(4).is_none());
+
+		let geometry = engine.ctx().1.expect("the panel was laid out");
+		assert_eq!(geometry.logical.size, Size::new(100, 100));
+		assert_eq!(geometry.display.size, Size::new(40, 100));
+		assert_eq!(geometry.display.position, geometry.logical.position);
+
+		// A press at x 70 lands outside the display box but inside the logical one, which hits test against.
+		engine.set_cursor_position(UiPoint::new(0.4, 0.0));
+		engine.update_click_state(true);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(engine.ctx().0, 1);
+	}
+
+	#[test]
 	fn default_container_clip_is_carried_to_partially_clipped_descendants() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
@@ -2632,7 +2673,7 @@ mod tests {
 	#[test]
 	fn retained_geometry_updates_after_property_mutation() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(None::<Geometry>);
+		let mut engine = Engine::with_context(None::<ElementGeometry>);
 
 		engine.mount(async move |ctx| {
 			let mut frame = ctx.element("frame").container(|c| c.clip(false)).await;
@@ -2655,9 +2696,13 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
+		let bounds = Geometry::new(Location3::new(24, 36, 1), Size::new(40, 20));
 		assert_eq!(
 			*engine.ctx(),
-			Some(Geometry::new(Location3::new(24, 36, 1), Size::new(40, 20)))
+			Some(ElementGeometry {
+				logical: bounds,
+				display: bounds,
+			})
 		);
 	}
 
@@ -4014,8 +4059,8 @@ use smallvec::SmallVec;
 use utils::{RGBA, StableVec, StableVecHandle, r#async::FusedFuture, sync::Mutex};
 
 use super::{
-	ClipMask, Geometry, IdedElement, LayoutElement, RenderCurveElement, RenderElement, RenderImageElement, RenderPathElement,
-	RenderPlacement, RenderTextElement,
+	ClipMask, ElementGeometry, Geometry, IdedElement, LayoutElement, RenderCurveElement, RenderElement, RenderImageElement,
+	RenderPathElement, RenderPlacement, RenderTextElement,
 	context::{Context, ElementContext, ElementKey, ElementSlot},
 	element::Id,
 	flow::{Location, Location3, Size},

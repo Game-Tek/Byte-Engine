@@ -17,7 +17,7 @@ use crate::ui::{
 	drag::DragCapture,
 	element::Id,
 	layout::{
-		Geometry,
+		ElementGeometry,
 		engine::{
 			EvaluationContext, EventFuture, KeyFuture, MountedComponentFuture, PointerState, Read, RenderFuture, Setup,
 			TextEditFuture, With,
@@ -164,8 +164,10 @@ pub trait Context<C: 'static = ()>: Sized {
 
 	fn render(&mut self) -> RenderFuture<C>;
 
-	/// Reads this element's bounds from the last layout, or `None` before it was laid out.
-	fn geometry(&self) -> Read<C, Option<Geometry>>;
+	/// Reads this element's logical and display boxes from the last layout, or `None` before it was laid out.
+	///
+	/// Use [`ElementGeometry::logical`] for interaction and [`ElementGeometry::display`] to follow what is seen.
+	fn geometry(&self) -> Read<C, Option<ElementGeometry>>;
 
 	/// Reads the pointer state the engine last synchronized.
 	fn pointer(&self) -> Read<C, PointerState>;

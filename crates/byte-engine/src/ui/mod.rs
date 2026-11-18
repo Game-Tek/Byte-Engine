@@ -46,7 +46,7 @@ pub use element::Id;
 pub use flow::{FlowFunction, FlowInput, FlowOutput, Location, Location3, Offset, Size};
 pub use font::{Fonts, load_font};
 pub use layout::{
-	Anchor, Depth, Geometry, Position, Sizing,
+	Anchor, Depth, ElementGeometry, Geometry, Position, Sizing,
 	context::{ContainerContext, Context, ElementContext, ElementKey, ElementSlot},
 	engine::{
 		ElementKind, Engine, EvaluationContext, MountedComponentFuture, PointerState, Properties, Render, RenderRevision,

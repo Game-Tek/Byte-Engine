@@ -219,6 +219,7 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 					let anchor = canvas
 						.geometry()
 						.await
+						.map(|geometry| geometry.logical)
 						.map_or([0.0, 0.0], |geometry| [pointer.x - geometry.x(), pointer.y - geometry.y()]);
 					let factor = if delta.y > 0.0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
 					view = view.zoomed(factor, anchor);

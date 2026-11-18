@@ -280,6 +280,27 @@ box_setters! {
 }
 
 impl Properties<'_, Container> {
+	/// Sets the width the container is painted and clips its descendants at, resolved against its logical width.
+	///
+	/// The logical [`width`](Self::width) still places the container, sizes its children, and takes pointer hits, so
+	/// animate this one, such as with [`crate::ui::animate`], to resize what is seen without reflowing. Pass
+	/// [`Sizing::full`] to match the logical width again.
+	pub fn display_width(self, width: Sizing) -> Self {
+		self.target.display_width = width;
+		self
+	}
+
+	/// Sets the display height; see [`Self::display_width`].
+	pub fn display_height(self, height: Sizing) -> Self {
+		self.target.display_height = height;
+		self
+	}
+
+	/// Sets the display width and height to the same sizing; see [`Self::display_width`].
+	pub fn display_size(self, sizing: Sizing) -> Self {
+		self.display_width(sizing).display_height(sizing)
+	}
+
 	pub fn corner_radius(self, corner_radius: f32) -> Self {
 		self.target.corner_radius = corner_radius;
 		self

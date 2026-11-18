@@ -90,6 +90,14 @@ fn placement_inputs(primitive: &Primitives) -> PlacementInputs {
 	}
 }
 
+/// Captures a container's display size, which resizes its visual box without moving placement.
+fn display_inputs(primitive: &Primitives) -> Option<(super::Sizing, super::Sizing)> {
+	match primitive {
+		Primitives::Container(container) => Some((container.display_width, container.display_height)),
+		_ => None,
+	}
+}
+
 /// The fixed-size properties that, with style, content, transform, and opacity, fully describe a primitive.
 #[derive(PartialEq)]
 enum PropertyInputs {
@@ -198,8 +206,8 @@ pub(super) struct TreeRevisions {
 	pub(super) any: u64,
 	/// Advances when a mutation may change element positions, sizes, or hit participation.
 	pub(super) placement: u64,
-	/// Custom flows may observe external state after edits other than visual transforms.
-	pub(super) non_transform: u64,
+	/// Custom flows may observe external state after edits other than visual ones: transforms and display sizes.
+	pub(super) non_visual: u64,
 	/// Advances when the set of flow types may change.
 	pub(super) flow: u64,
 	/// Structural edits also invalidate clipping, including remounts that reuse IDs.
@@ -215,7 +223,7 @@ impl TreeRevisions {
 		*self = Self {
 			any,
 			placement: any,
-			non_transform: any,
+			non_visual: any,
 			flow: any,
 			clip: any,
 			appearance: any,
@@ -256,10 +264,11 @@ pub(super) struct RetainedTree {
 	spares: Spares,
 	/// Advances per invalidation class so consumers can retain derived state.
 	pub(super) revisions: TreeRevisions,
-	/// Roots whose visual transforms changed since the last evaluation.
-	pub(super) transform_changes: Vec<usize>,
-	/// Whether each tree index is listed in `transform_changes`, so membership needs no search.
-	transform_changed: Vec<bool>,
+	/// Roots whose visual transforms or display sizes changed since the last evaluation. Neither moves placement, so
+	/// the evaluation only recomputes these subtrees' visual boxes.
+	pub(super) visual_changes: Vec<usize>,
+	/// Whether each tree index is listed in `visual_changes`, so membership needs no search.
+	visual_changed: Vec<bool>,
 	/// Maps each index before a scope removal compacted the elements to its index after, or `usize::MAX`.
 	remap: Vec<usize>,
 	/// Text edits need a size comparison before placement can be reused.
@@ -430,17 +439,18 @@ impl RetainedTree {
 		)
 	}
 
-	/// Reports whether the visual transform of the element at `index` changed since the last evaluation.
-	pub(super) fn transform_changed(&self, index: usize) -> bool {
-		self.transform_changed.get(index).copied().unwrap_or(false)
+	/// Reports whether the visual transform or display size of the element at `index` changed since the last
+	/// evaluation.
+	pub(super) fn visual_changed(&self, index: usize) -> bool {
+		self.visual_changed.get(index).copied().unwrap_or(false)
 	}
 
-	/// Forgets the transform changes the last evaluation consumed, keeping the storage.
-	pub(super) fn clear_transform_changes(&mut self) {
-		for &index in &self.transform_changes {
-			self.transform_changed[index] = false;
+	/// Forgets the visual changes the last evaluation consumed, keeping the storage.
+	pub(super) fn clear_visual_changes(&mut self) {
+		for &index in &self.visual_changes {
+			self.visual_changed[index] = false;
 		}
-		self.transform_changes.clear();
+		self.visual_changes.clear();
 	}
 
 	/// Invalidates the changed node's measurement and any affected inherited appearance.
@@ -462,6 +472,7 @@ impl RetainedTree {
 			(size, font)
 		});
 		let transform = element.transform;
+		let display = display_inputs(&element.primitive);
 		let flow = flow_type(&element.primitive);
 		let clip = clip_inputs(element);
 		let opacity = element.opacity;
@@ -491,13 +502,15 @@ impl RetainedTree {
 			element.revision = old_element_revision;
 			return Some(updated);
 		}
-		if transform != element.transform {
-			if index >= self.transform_changed.len() {
-				self.transform_changed.resize(index + 1, false);
+		// A transform and a display size only change the visual box, so both replay the visual pass alone.
+		let visual = transform != element.transform || display != display_inputs(&element.primitive);
+		if visual {
+			if index >= self.visual_changed.len() {
+				self.visual_changed.resize(index + 1, false);
 			}
 			// Each root is listed once however often it is edited before the next evaluation.
-			if !std::mem::replace(&mut self.transform_changed[index], true) {
-				self.transform_changes.push(index);
+			if !std::mem::replace(&mut self.visual_changed[index], true) {
+				self.visual_changes.push(index);
 			}
 		}
 		if flow == flow_type(&element.primitive) {
@@ -505,8 +518,8 @@ impl RetainedTree {
 		}
 		if placement == placement_inputs(&element.primitive) {
 			self.revisions.placement = before.placement;
-			if transform != element.transform {
-				self.revisions.non_transform = before.non_transform;
+			if visual {
+				self.revisions.non_visual = before.non_visual;
 			}
 			if text_measurement_inputs(&element.primitive)
 				.is_some_and(|(content, size, font)| text_before != Some((size, font)) || content != self.text_before)
@@ -569,7 +582,7 @@ impl RetainedTree {
 		}
 		self.revisions.advance();
 		// The listed indices are stale now; structural edits replay placement, which recomputes every transform.
-		self.clear_transform_changes();
+		self.clear_visual_changes();
 		self.remap_links();
 		&self.removed
 	}

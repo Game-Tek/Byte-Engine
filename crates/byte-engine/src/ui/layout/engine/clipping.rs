@@ -60,10 +60,6 @@ impl EffectiveClip {
 	}
 }
 
-pub(super) fn geometry_from_layout_element(element: &LayoutElement) -> Geometry {
-	Geometry::new(element.position, element.size)
-}
-
 /// Resolves clip and mask inheritance together without allocating per-element maps.
 pub(super) fn prepare_visual_state(elements: &[LayoutElement], tree: &RetainedTree, states: &mut Vec<VisualState>) {
 	states.clear();
@@ -106,7 +102,7 @@ pub(super) fn inherited_visual_state(
 	{
 		// Descendants clip to the inside of the border, so they never paint over an inset stroke.
 		let border = border_width(node.style.layers());
-		let geometry = geometry_from_layout_element(element).expanded(-border);
+		let geometry = element.display_geometry().expanded(-border);
 		let corner_radius = (container.corner_radius - border).max(0.0);
 		state.descendant_clip = clip.clip_descendants(geometry);
 		// A rounded container masks its descendants even without a feather; the rectangle clip cannot round.
@@ -220,6 +216,8 @@ pub(super) fn clipped_hit_elements<'a>(
 			index: element.index,
 			position: entry.position,
 			size: entry.size,
+			// The hit index reads only the logical box.
+			display_size: entry.size,
 			hit_testable: element.hit_testable,
 		});
 	}
@@ -272,7 +270,7 @@ fn hit_entry(
 			});
 			(bounds, Some(half_width))
 		}
-		None => (Some(geometry_from_layout_element(element)), None),
+		None => (Some(Geometry::new(element.position, element.size)), None),
 	};
 	let geometry = bounds
 		.and_then(|bounds| clip.apply(bounds))
@@ -367,11 +365,22 @@ pub(super) fn update_visual_subtree(
 		}
 		dirty.push(index);
 		let local = placement[offset];
+		let node = &tree.elements[index];
 		let parent = tree.parent(index).map_or_else(Affine2::identity, |parent| resolved[parent]);
-		let transform = parent.compose(Affine2::from_transform(tree.elements[index].transform, &local));
-		let (position, size) = transform.transform_rect(&local);
+		// The transform origin follows the logical size, so animating the display size never moves the pivot.
+		let transform = parent.compose(Affine2::from_transform(node.transform, &local));
+		let display = match &node.primitive {
+			Primitives::Container(container) => {
+				super::super::box_size(container.display_width, container.display_height, local.size)
+			}
+			_ => local.size,
+		};
+		// Both boxes share the logical top-left corner, so the display box grows from where the logical one starts.
+		let (position, size) = transform.transform_rect(local.position, local.size);
+		let (_, display_size) = transform.transform_rect(local.position, display);
 		elements[offset].position = position;
 		elements[offset].size = size;
+		elements[offset].display_size = display_size;
 		resolved[index] = transform;
 		work.extend(tree.children[index].iter().rev().copied());
 	}

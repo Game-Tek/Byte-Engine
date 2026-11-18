@@ -485,10 +485,14 @@ async fn search_field(ctx: &mut EvaluationContext<Shell>, width: f32) {
 /// Whether the pointer is pressed outside `well`, which ends typing into it.
 async fn pressed_outside(ctx: &mut EvaluationContext<Shell>, well: &mut EvaluationContext<Shell>) -> bool {
 	let pointer = ctx.pointer().await;
-	let outside = well.geometry().await.is_some_and(|geometry| {
-		let [x, y] = [pointer.position.x, pointer.position.y];
-		x < geometry.x() || x > geometry.right() || y < geometry.y() || y > geometry.bottom()
-	});
+	let outside = well
+		.geometry()
+		.await
+		.map(|geometry| geometry.logical)
+		.is_some_and(|geometry| {
+			let [x, y] = [pointer.position.x, pointer.position.y];
+			x < geometry.x() || x > geometry.right() || y < geometry.y() || y > geometry.bottom()
+		});
 	pointer.pressed && outside
 }
 

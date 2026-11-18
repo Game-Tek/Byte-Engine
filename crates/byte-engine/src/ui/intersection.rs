@@ -688,6 +688,7 @@ mod tests {
 			index: 0,
 			position: Location3::new(x, y, 0),
 			size: Size::new(10.0, 10.0),
+			display_size: Size::new(10.0, 10.0),
 			hit_testable: true,
 		};
 		for (x, y) in [(95.0, 0.0), (0.0, 95.0)] {

@@ -34,6 +34,16 @@ chain of revisions:
   re-declaring the same element path on a later frame doesn't count either.
 - `Engine::evaluate` reuses the retained layout while the tree revision and the
   viewport size repeat. Input routing and task polling still run every frame.
+- Visual transforms and container display sizes are visual edits. The tree
+  lists the edited elements instead of advancing the placement revision, and
+  `Engine::evaluate` recomputes only those subtrees' boxes from the retained
+  placement, in `update_visual_subtree`. Each placed element keeps two boxes:
+  the logical box, which flow placement, hit testing, geometry reads, and
+  transform origins use, and the display box, which painting, descendant
+  clipping, and damage use. Keep that split: the display size must never feed
+  measurement, flow placement, or hits, or an animated size starts reflowing
+  children and moving hit targets. `display_size_edits_reuse_flow_placement_and_match_fresh_scenes`
+  guards it.
 - `Engine::render` returns a reference to the render retained by the engine.
   It keeps the same `Render::revision` while the tree, its layout, and the
   viewport are unchanged, so clone it only when the revision moved.

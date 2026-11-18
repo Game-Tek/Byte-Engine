@@ -186,7 +186,7 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 		select! {
 			_ = pill.on(Events::Grabbed) => {
 				let pointer = ctx.pointer().await.position;
-				let corner = pill.geometry().await.map_or(0.0, |geometry| geometry.x());
+				let corner = pill.geometry().await.map(|geometry| geometry.logical).map_or(0.0, |geometry| geometry.x());
 				grabbed_at = pointer.x - corner;
 				let at = motion.now();
 				// A press on the knob holds it where it is; a press elsewhere glides it to the nearest stop.

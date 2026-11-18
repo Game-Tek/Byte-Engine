@@ -69,8 +69,16 @@ impl Sector {
 /// The engine owns every container. Declare one with [`crate::ui::ElementContext::container`] and edit it with
 /// [`crate::ui::EvaluationContext::update_container`]; both hand you [`crate::ui::Properties`] setters.
 pub struct Container {
+	/// The logical width: the space the container takes in its parent's flow and offers its children.
 	pub width: Sizing,
+	/// The logical height; see [`Self::width`].
 	pub height: Sizing,
+	/// The display width: the width the container is painted and clips its descendants at, resolved against the
+	/// logical width and anchored at its top-left corner. Animate it instead of [`Self::width`] to resize what is seen
+	/// without moving the children or the hit box.
+	pub display_width: Sizing,
+	/// The display height; see [`Self::display_width`].
+	pub display_height: Sizing,
 	pub corner_radius: f32,
 	pub corner_exponent: f32,
 	pub sector: Option<Sector>,
@@ -86,6 +94,8 @@ pub struct Container {
 pub(crate) struct ContainerProperties {
 	width: Sizing,
 	height: Sizing,
+	display_width: Sizing,
+	display_height: Sizing,
 	corner_radius: f32,
 	corner_exponent: f32,
 	sector: Option<Sector>,
@@ -102,6 +112,8 @@ impl Container {
 		Some(ContainerProperties {
 			width: self.width,
 			height: self.height,
+			display_width: self.display_width,
+			display_height: self.display_height,
 			corner_radius: self.corner_radius,
 			corner_exponent: self.corner_exponent,
 			sector: self.sector,
@@ -119,6 +131,8 @@ impl Default for Container {
 		Self {
 			width: Sizing::full(),
 			height: Sizing::full(),
+			display_width: Sizing::full(),
+			display_height: Sizing::full(),
 			corner_radius: 0.0,
 			corner_exponent: 2.0,
 			sector: None,

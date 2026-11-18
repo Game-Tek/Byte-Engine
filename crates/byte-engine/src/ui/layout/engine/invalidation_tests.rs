@@ -528,7 +528,7 @@ fn remounting_the_same_id_restores_its_context_geometry() {
 	let observed = engine.ctx();
 	assert_eq!(observed.len(), 2);
 	assert_eq!(observed[0], observed[1]);
-	assert_eq!(observed[1].1.unwrap().size, Size::new(20, 20));
+	assert_eq!(observed[1].1.unwrap().logical.size, Size::new(20, 20));
 }
 
 /// Camera edits preserve flow results, nested pivots, clipping, and older snapshots.
@@ -610,6 +610,76 @@ fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
 					actual.hit(UiPoint::new(x as f32 / 150.0 - 1.0, 1.0 - y as f32 / 100.0), None),
 					expected.hit(UiPoint::new(x as f32 / 150.0 - 1.0, 1.0 - y as f32 / 100.0), None)
 				);
+			}
+		}
+		assert_same_render(retained.render(), fresh.render());
+	}
+}
+
+/// Display size edits, like transform edits, keep flow placement and match a scene declared at that display size.
+#[test]
+fn display_size_edits_reuse_flow_placement_and_match_fresh_scenes() {
+	thread_local! { static CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+	fn counted(input: crate::ui::FlowInput) -> crate::ui::FlowOutput {
+		CALLS.with(|calls| calls.set(calls.get() + 1));
+		flow::column(input)
+	}
+	fn scene(display: [f32; 2]) -> Engine<[f32; 2]> {
+		let mut engine = Engine::with_context(display);
+		engine.mount(async move |ctx| {
+			let mut applied = ctx.with(|c| *c).await;
+			let mut root = ctx.element("root").container(|c| c.flow(counted as fn(_) -> _)).await;
+			let mut panel = root
+				.element("panel")
+				.container(|c| {
+					c.size(120.into())
+						.display_width(applied[0].into())
+						.display_height(applied[1].into())
+						.corner_radius(8.0)
+						.transform(Transform::identity().scale(1.25))
+						.hit_testable(true)
+				})
+				.await;
+			panel
+				.element("row")
+				.container(|c| c.size(Sizing::pixels(90)).hit_testable(true))
+				.await;
+			panel.element("label").text("Inside the panel", |t| t).await;
+			root.element("footer")
+				.container(|c| c.size(30.into()).hit_testable(true))
+				.await;
+			loop {
+				let display = ctx.with(|c| *c).await;
+				if display != applied {
+					panel
+						.update_container(|c| c.display_width(display[0].into()).display_height(display[1].into()))
+						.await;
+					applied = display;
+				}
+				ctx.render().await;
+			}
+		});
+		engine
+	}
+	let arena = bumpalo::Bump::new();
+	let mut retained = scene([120.0, 120.0]);
+	retained.evaluate(Size::new(300, 300), &arena);
+	for display in [[40.0, 120.0], [64.5, 10.25], [0.0, 0.0], [200.0, 150.0], [120.0, 120.0]] {
+		*retained.ctx_mut() = display;
+		let calls = CALLS.with(std::cell::Cell::get);
+		let actual = retained.evaluate(Size::new(300, 300), &arena);
+		assert_eq!(
+			CALLS.with(std::cell::Cell::get),
+			calls,
+			"A display size edit called the layout flow."
+		);
+		let mut fresh = scene(display);
+		let expected = fresh.evaluate(Size::new(300, 300), &arena);
+		assert_eq!(actual.elements, expected.elements);
+		for y in (0..300).step_by(5) {
+			for x in (0..300).step_by(5) {
+				let point = UiPoint::new(x as f32 / 150.0 - 1.0, 1.0 - y as f32 / 150.0);
+				assert_eq!(actual.hit(point, None), expected.hit(point, None));
 			}
 		}
 		assert_same_render(retained.render(), fresh.render());

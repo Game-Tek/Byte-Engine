@@ -143,14 +143,14 @@ async fn fit(bar: &mut EvaluationContext<Shell>, drawn: &mut [Drawn]) -> bool {
 	for (index, hint) in drawn.iter_mut().enumerate() {
 		let mut keys = 0.0;
 		for (count, (cap, text)) in hint.caps.iter_mut().enumerate() {
-			let Some(geometry) = text.geometry().await else {
+			let Some(geometry) = text.geometry().await.map(|geometry| geometry.logical) else {
 				return false;
 			};
 			let width = cap_width(geometry.width());
 			cap.update_container(|c| c.width(width.into())).await;
 			keys += width + if count > 0 { CAP_GAP } else { 0.0 };
 		}
-		let Some(label) = hint.label.geometry().await else {
+		let Some(label) = hint.label.geometry().await.map(|geometry| geometry.logical) else {
 			return false;
 		};
 		hint.keys.update_container(|c| c.width(keys.into())).await;

@@ -12,6 +12,7 @@
 
 use crate::configuration::{Accepts, Parameter};
 use crate::editor::carry::Light;
+use crate::editor::drawer::arrive;
 use crate::inspector::fuzzy_find;
 use crate::ui::TextEdit;
 use crate::ui::Size;
@@ -381,14 +382,11 @@ pub(crate) struct Look {
 	pub(crate) opacity: f32,
 }
 
-/// The panel `seconds` after it opened: it drops in from a little above and grows from a little smaller, settling
-/// with a slight overshoot, while it fades in faster than it moves.
+/// The panel `seconds` after it opened: it drops in from a little above and grows from a little smaller, along the
+/// editor's curve, [`arrive`], while it fades in faster than it moves.
 pub(crate) fn entering(seconds: f32) -> Look {
 	let progress = (seconds / ENTER).clamp(0.0, 1.0);
-	// A back-out curve: past 1 near the end, then back, so the panel lands with a little give.
-	const OVERSHOOT: f32 = 0.8;
-	let t = progress - 1.0;
-	let motion = 1.0 + (OVERSHOOT + 1.0) * t * t * t + OVERSHOOT * t * t;
+	let motion = arrive(progress);
 	let fade = 1.0 - (1.0 - (progress * 2.0).min(1.0)).powi(3);
 	Look {
 		y: -10.0 * (1.0 - motion),
@@ -493,8 +491,7 @@ mod tests {
 		let start = entering(0.0);
 		assert!(start.opacity == 0.0 && start.y < 0.0 && start.scale < 1.0);
 		assert_eq!(entering(ENTER), REST);
-		// The overshoot carries it a little past its place before it settles.
-		assert!((0..20).any(|step| entering(ENTER * step as f32 / 20.0).y > 0.0));
+		assert!((0..20).all(|step| entering(ENTER * step as f32 / 20.0).y <= 0.0), "it never drops past its place");
 
 		assert_eq!(leaving(0.0), REST);
 		let gone = leaving(EXIT);

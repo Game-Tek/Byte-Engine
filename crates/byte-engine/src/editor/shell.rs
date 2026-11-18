@@ -197,7 +197,7 @@ const INSET: f32 = 8.0;
 /// The width of the scene drawer that shows, against the window's left edge.
 const SIDEBAR_WIDTH: f32 = 260.0;
 /// How far the drawer reaches past the window's left edge, which hides its left corners, so only the corners facing
-/// the scene are round, and covers the spring's overshoot as it comes in.
+/// the scene are round.
 const DRAWER_TUCK: f32 = 24.0;
 /// How far left the drawer moves to hide, its shadow included.
 const DRAWER_HIDDEN: f32 = SIDEBAR_WIDTH + 32.0;
@@ -210,7 +210,8 @@ const BLOCK_GAP: f32 = 12.0;
 const ROW_LABEL_WIDTH: f32 = 54.0;
 /// The colors of the X, Y, and Z axes, as the gizmo draws them: red, Byte Engine green, and blue.
 const AXIS_COLORS: [RGBA; 3] = [hex(0xF2545C, 1.0), hex(0x40D866, 1.0), hex(0x4D8CFF, 1.0)];
-const TOOLBAR_WIDTH: f32 = 336.0;
+/// The toolbar's width: its three tools, the gaps between them, and the same room around them as above and below.
+const TOOLBAR_WIDTH: f32 = TOOL_WIDTH * 3.0 + 8.0 + (TOOLBAR_HEIGHT - TOOL_HEIGHT);
 const TOOL_WIDTH: f32 = 64.0;
 pub(crate) const TOOL_HEIGHT: f32 = 26.0;
 const TOOLBAR_HEIGHT: f32 = 40.0;
@@ -238,7 +239,7 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 
 	let (mut sidebar, mut content) = sidebar(root, viewport).await;
 	let mut fields = properties(root).await;
-	toolbar(root).await;
+	root.element("toolbar").component(async |ctx| toolbar(ctx).await).await;
 
 	root.element("palette").component(async |ctx| palette_view(ctx).await).await;
 	root.element("toasts").component(async |ctx| toasts::toasts(ctx).await).await;
@@ -1405,9 +1406,11 @@ async fn read_typed(
 	apply.then_some(typed)
 }
 
-/// The floating toolbar over the game view: the gizmo's tools, the chosen one pressed, and the game's name.
-async fn toolbar(root: &mut EvaluationContext<Shell>) {
-	let mut toolbar = root
+/// The floating toolbar over the game view: the gizmo's tools, the chosen one pressed. It shows only while an entity is
+/// selected, since the tools act on the selection: it slides down into place as one is selected, and back up and out
+/// once none is, as a drawer does; see [`drawer::toward`].
+async fn toolbar(ctx: &mut EvaluationContext<Shell>) {
+	let mut toolbar = ctx
 		.element("toolbar")
 		.container(|c| {
 			c.position(Position::anchored(Anchor::Center(0.0), Anchor::Start(MARGIN)))
@@ -1416,10 +1419,12 @@ async fn toolbar(root: &mut EvaluationContext<Shell>) {
 				.corner_radius(CORNER)
 				.corner_exponent(SQUIRCLE)
 				.clip(false)
-				.flow(flow::centered_row_with_gap(10))
+				.flow(flow::center)
 				.hit_testable(true)
 				// Translucent and blurred, so the game shows through it.
 				.style(panel(TOOLBAR_HEIGHT, 0.72))
+				.transform(toolbar_transform(0.0))
+				.opacity(0.0)
 		})
 		.await;
 	let mut tools = toolbar
@@ -1436,14 +1441,34 @@ async fn toolbar(root: &mut EvaluationContext<Shell>) {
 			.component(async move |ctx| tool_button(ctx, tool).await)
 			.await;
 	}
-	toolbar
-		.element("divider")
-		.container(|c| c.width(1.into()).height(18.into()).style([solid(hex(0x000000, 0.45))]))
-		.await;
-	toolbar
-		.element("title")
-		.text("Third Person", |t| t.font_size(13.0).style([solid(TOOLBAR_MUTED)]))
-		.await;
+
+	// Where the toolbar is headed, how much of it showed when it set off, and when, so a toolbar turned back partway
+	// starts from where it was.
+	let (mut open, mut from, mut moved) = (false, 0.0, Instant::now());
+	let mut shown = 0.0;
+	let mut settled = true;
+	loop {
+		let selected = ctx.with(|shell: &mut Shell| shell.selection().is_some()).await;
+		if selected != open {
+			(open, from, moved) = (selected, shown, Instant::now());
+			settled = false;
+		}
+		if !settled {
+			let seconds = moved.elapsed().as_secs_f32();
+			shown = drawer::toward(from, open, seconds);
+			settled = drawer::settled(open, seconds);
+			toolbar
+				.update_container(|c| c.transform(toolbar_transform(shown)).opacity(shown))
+				.await;
+		}
+		ctx.render().await;
+	}
+}
+
+/// The transform that shows `shown` of the toolbar, from 0, hidden above the window's top edge, to 1, in place.
+fn toolbar_transform(shown: f32) -> Transform {
+	// It rises past the margin above it and its own height, its shadow included.
+	Transform::identity().translate_y((shown - 1.0) * (MARGIN + TOOLBAR_HEIGHT + 16.0))
 }
 
 /// One of the toolbar's tool buttons: pressed while its tool is chosen, lifted faintly under the pointer, and choosing

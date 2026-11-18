@@ -1,30 +1,25 @@
-//! How a drawer moves as it opens and closes: it springs in from the window's edge, settling with a slight overshoot,
-//! and accelerates back out. The scene drawer moves so as the editor opens and closes, and a resource window's drawer
-//! as what the window shows needs the window's width or gives it back.
+//! How the editor's surfaces move: they glide in on one decelerating curve, [`arrive`], landing in place without
+//! overshooting, and accelerate back out. The scene drawer moves so as the editor opens and closes, the toolbar as an
+//! entity is selected and deselected, and a resource window's drawer as what the window shows needs the window's
+//! width or gives it back; the palette and the detail level slider move on the same curve.
 //!
 //! These are pure functions of the time since the drawer started moving; the shell places the drawer by them, and the
 //! editor keeps its render pass drawing until the drawer has left.
 
-/// How long the drawer takes to settle once the editor opens, in seconds.
-pub(crate) const ENTER: f32 = 0.5;
-/// How long the drawer takes to leave once the editor closes, in seconds.
+/// How long the drawer takes to arrive once it opens, in seconds.
+pub(crate) const ENTER: f32 = 0.35;
+/// How long the drawer takes to leave once it closes, in seconds.
 pub(crate) const EXIT: f32 = 0.22;
 
-/// The spring's damping ratio: under 1, so it overshoots a little, about 3%, before it settles.
-const DAMPING: f32 = 0.75;
-/// The spring's undamped angular frequency, in radians per second, which settles it in about 0.4 seconds.
-const FREQUENCY: f32 = 14.0;
+/// How far along a move that's `progress` of the way through its time stands, from 0 to 1: fast at first and
+/// slowing smoothly into place, a quartic ease-out, the curve every surface of the editor arrives on.
+pub(crate) fn arrive(progress: f32) -> f32 {
+	1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(4)
+}
 
-/// How much of the drawer shows `seconds` after the editor opened: 0 hidden, 1 in place, a little over 1 while it
-/// overshoots. This is the step response of a damped spring.
+/// How much of the drawer shows `seconds` after it opened: 0 hidden, 1 in place, along [`arrive`].
 pub(crate) fn entering(seconds: f32) -> f32 {
-	if seconds >= ENTER {
-		return 1.0;
-	}
-	let t = seconds.max(0.0);
-	let decay = DAMPING * FREQUENCY;
-	let damped = FREQUENCY * (1.0 - DAMPING * DAMPING).sqrt();
-	1.0 - (-decay * t).exp() * ((damped * t).cos() + decay / damped * (damped * t).sin())
+	arrive(seconds / ENTER)
 }
 
 /// How much of the drawer shows `seconds` after the editor closed: it starts in place and leaves faster and faster, a
@@ -34,7 +29,7 @@ pub(crate) fn leaving(seconds: f32) -> f32 {
 	1.0 - progress * progress * progress
 }
 
-/// How much of a drawer shows `seconds` after it started toward `open` from showing `from`: it springs in or leaves as
+/// How much of a drawer shows `seconds` after it started toward `open` from showing `from`: it arrives or leaves as
 /// [`entering`] and [`leaving`] move a drawer from hidden or in place, scaled to start where it was, so a drawer turned
 /// back partway doesn't jump.
 pub(crate) fn toward(from: f32, open: bool, seconds: f32) -> f32 {
@@ -69,14 +64,16 @@ mod tests {
 	}
 
 	#[test]
-	fn the_drawer_springs_in_from_hidden_and_settles_in_place() {
+	fn the_drawer_arrives_slower_and_slower_and_never_past_its_place() {
 		let shown = samples(entering, ENTER);
 		assert_eq!(shown[0], 0.0, "it starts hidden");
-		assert_eq!(*shown.last().unwrap(), 1.0, "it ends in place");
-		let peak = shown.iter().copied().fold(0.0, f32::max);
-		assert!(peak > 1.0 && peak < 1.04, "it overshoots a little, by {peak}");
-		let settled = entering(ENTER - 0.01);
-		assert!((settled - 1.0).abs() < 0.01, "it has settled before it snaps in place: {settled}");
+		assert_eq!(entering(ENTER), 1.0, "it ends in place");
+		assert!(shown.iter().all(|shown| *shown <= 1.0), "it never overshoots");
+		let steps: Vec<f32> = shown.windows(2).map(|pair| pair[1] - pair[0]).collect();
+		assert!(
+			steps.windows(2).all(|pair| pair[1] <= pair[0]),
+			"each step is at most the last"
+		);
 	}
 
 	#[test]

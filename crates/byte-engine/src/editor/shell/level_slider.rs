@@ -1,8 +1,8 @@
 //! The detail level slider a mesh window shows at its top, centered over the room between its drawers: a domed knob in
 //! a channel, over one stop for **Auto** and one for each of the mesh's detail levels.
 //!
-//! The knob follows a drag, and the mesh changes level as it passes each stop; let go, or click a stop, and it springs
-//! to the nearest one, overshooting a little and settling, lifted while held. The slider only reports the level, through
+//! The knob follows a drag, and the mesh changes level as it passes each stop; let go, or click a stop, and it glides
+//! to the nearest one on the editor's curve, lifted while held. The slider only reports the level, through
 //! [`Shell::detail_level`]; the editor gives it to the stage, which draws the mesh at it. See
 //! [`crate::editor::preview::Stage::show_level`].
 
@@ -17,6 +17,7 @@ use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::Events;
 use crate::ui::{ConcreteLayer, Transform};
+use crate::editor::drawer::arrive;
 use crate::utils::r#async::select;
 
 /// The distance between two stops, which is also the width of each stop's label.
@@ -38,24 +39,8 @@ const LABEL_HEIGHT: f32 = 14.0;
 /// The size of the dot that marks each stop in the channel.
 const TICK: f32 = 4.0;
 
-/// The spring's damping ratio: under one, it overshoots once, by about 16 % at one half, and settles.
-const DAMPING: f32 = 0.5;
-/// The spring's natural frequency, in radians a second, which sets how fast it moves.
-const FREQUENCY: f32 = 20.0;
-/// How long the spring takes to settle within 0.2 % of its end, in seconds, after which it stands there.
-const SETTLE: f32 = 0.62;
-
-/// How far a sprung move from 0 to 1 stands `seconds` after it started: the step response of an underdamped spring,
-/// which overshoots its end once and settles on it.
-fn spring(seconds: f32) -> f32 {
-	if seconds >= SETTLE {
-		return 1.0;
-	}
-	let seconds = seconds.max(0.0);
-	let decay = DAMPING * FREQUENCY;
-	let damped = FREQUENCY * (1.0 - DAMPING * DAMPING).sqrt();
-	1.0 - (-decay * seconds).exp() * ((damped * seconds).cos() + decay / damped * (damped * seconds).sin())
-}
+/// How long the knob takes to glide to a stop, and to lift or set down, in seconds.
+const GLIDE: f32 = 0.2;
 
 /// Where stop `index` stands from the slider's left edge.
 fn stop_x(index: usize) -> f32 {
@@ -72,8 +57,8 @@ fn stop_level(index: usize) -> Option<u32> {
 	index.checked_sub(1).map(|level| level as u32)
 }
 
-/// The `Motion` struct is a sprung move from one place to another, started at an instant, so a view can ask where it
-/// stands each frame.
+/// The `Motion` struct is a move from one place to another along the editor's curve, started at an instant, so a view
+/// can ask where it stands each frame.
 #[derive(Clone, Copy)]
 struct Motion {
 	from: f32,
@@ -89,7 +74,7 @@ impl Motion {
 
 	/// Where the motion stands now.
 	fn now(&self) -> f32 {
-		self.from + (self.to - self.from) * spring(self.started.elapsed().as_secs_f32())
+		self.from + (self.to - self.from) * arrive(self.started.elapsed().as_secs_f32() / GLIDE)
 	}
 
 	/// A motion toward `to` from wherever this one stands now, unless it already heads there.
@@ -204,7 +189,7 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 				let corner = pill.geometry().await.map_or(0.0, |geometry| geometry.x());
 				grabbed_at = pointer.x - corner;
 				let at = motion.now();
-				// A press on the knob holds it where it is; a press elsewhere springs it to the nearest stop.
+				// A press on the knob holds it where it is; a press elsewhere glides it to the nearest stop.
 				if (grabbed_at - at).abs() > KNOB * 0.5 {
 					motion = motion.toward(stop_x(nearest_stop(grabbed_at, count)));
 				}
@@ -225,8 +210,8 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 			},
 			_ = ctx.render() => {},
 		}
-		// While dragged, the level is the stop under the knob; otherwise the one it springs to, so an overshoot past
-		// half a stop never flickers to the next level.
+		// While dragged, the level is the stop under the knob; otherwise the one it glides to, so the level changes once,
+		// when the knob is let go, rather than at each stop it passes on the way.
 		let at = motion.now();
 		let stop = nearest_stop(dragged.unwrap_or(motion.to), count);
 		let level = stop_level(stop);
@@ -257,7 +242,7 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 				text.update_text(|t| t.style([solid(color)])).await;
 			}
 		}
-		// Once the springs settle, `now` stops changing, and the slider stops redrawing until something moves it.
+		// Once the knob arrives, `now` stops changing, and the slider stops redrawing until something moves it.
 		drawn = Some(now);
 	}
 }
@@ -265,16 +250,6 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 #[cfg(test)]
 mod tests {
 	use super::*;
-
-	#[test]
-	fn the_spring_overshoots_once_and_settles_on_its_end() {
-		assert_eq!(spring(0.0), 0.0);
-		let samples: Vec<f32> = (0..=100).map(|step| spring(SETTLE * step as f32 / 100.0)).collect();
-		let peak = samples.iter().copied().fold(0.0, f32::max);
-		assert!(peak > 1.1 && peak < 1.2, "it overshoots by about 16 %: {peak}");
-		assert!((spring(SETTLE - 0.001) - 1.0).abs() < 0.01, "it has settled before it snaps in place");
-		assert_eq!(spring(SETTLE), 1.0);
-	}
 
 	#[test]
 	fn a_place_snaps_to_the_nearest_stop_within_the_slider() {

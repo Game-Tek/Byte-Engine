@@ -50,8 +50,6 @@ pub(crate) fn fits(width: f32, window: f32, drawers: [f32; 2]) -> bool {
 /// The room `drawers` showing `shown`, from 0 hidden to 1 in place, leave in a window `window` pixels wide, as its
 /// left and right edges from the window's left edge. What the base shows is centered in it.
 pub(crate) fn open_room(window: f32, shown: f32, drawers: [f32; 2]) -> [f32; 2] {
-	// A drawer overshoots a little as it springs in; the room doesn't.
-	let shown = shown.clamp(0.0, 1.0);
 	[drawers[0] * shown, window - drawers[1] * shown]
 }
 
@@ -225,7 +223,5 @@ mod tests {
 		assert_eq!(open_room(1000.0, 1.0, [260.0, 300.0]), [260.0, 700.0]);
 		assert_eq!(open_room(1000.0, 0.5, [260.0, 300.0]), [130.0, 850.0]);
 		assert_eq!(open_room(1000.0, 0.0, [260.0, 300.0]), [0.0, 1000.0]);
-		// The drawers overshoot a little as they spring in; the room doesn't.
-		assert_eq!(open_room(1000.0, 1.03, [260.0, 300.0]), open_room(1000.0, 1.0, [260.0, 300.0]));
 	}
 }

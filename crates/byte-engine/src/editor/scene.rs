@@ -113,7 +113,7 @@ impl SceneEntity {
 /// Compare it with the scene the shell holds and write it only when it differs, so components that follow the scene
 /// stay asleep; see [`relisted`] for whether the list must be rebuilt.
 pub(crate) fn collect(entities: &[InspectedEntity]) -> Vec<SceneEntity> {
-	let mut rows = Vec::with_capacity(entities.len());
+	let mut rows = Vec::new();
 	for entity in entities {
 		let Some(transform) = entity
 			.property("transform")

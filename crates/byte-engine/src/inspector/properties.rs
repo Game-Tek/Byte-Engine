@@ -2,19 +2,20 @@
 //!
 //! [`DefaultInspector::watch_property`](super::DefaultInspector::watch_property) adds one. Each property keeps the
 //! latest value of every entity in a table of its own type, so a publication only replaces a value in place; a value
-//! is serialized only when a query reads it, through [`Properties::of`].
+//! is serialized only when a query reads it, through [`Properties::read`].
 
 use std::{collections::HashMap, sync::Arc};
 
 use serde::Serialize;
 use utils::sync::{Mutex, RwLock};
 
+use super::InspectedEntity;
 use crate::core::factory::Handle;
 
 /// The `Table` trait is one property's latest values, by entity, read without knowing their type.
 trait Table: Send + Sync {
-	/// The entity's latest value, serialized, if it published one.
-	fn value(&self, handle: Handle) -> Option<serde_json::Value>;
+	/// Appends this property's values to a handle-sorted entity snapshot.
+	fn read(&self, name: &'static str, entities: &mut [InspectedEntity]);
 	/// Forgets the entity, once it was deleted.
 	fn forget(&self, handle: Handle);
 }
@@ -23,16 +24,27 @@ trait Table: Send + Sync {
 struct Typed<T>(Mutex<HashMap<Handle, T>>);
 
 impl<T: Serialize + Send + Sync> Table for Typed<T> {
-	fn value(&self, handle: Handle) -> Option<serde_json::Value> {
+	fn read(&self, name: &'static str, entities: &mut [InspectedEntity]) {
 		let values = self.0.lock();
-		let value = values.get(&handle)?;
-		match serde_json::to_value(value) {
-			Ok(value) => Some(value),
-			Err(error) => {
-				log::warn!(
-					"An inspector property couldn't be read. The most likely cause is that its type doesn't serialize to JSON: {error}. Make its `Serialize` implementation produce JSON-compatible data."
-				);
-				None
+		let append = |entity: &mut InspectedEntity, value: &T| match serde_json::to_value(value) {
+			Ok(value) => entity.properties.push((name, value)),
+			Err(error) => log::warn!(
+				"An inspector property couldn't be read. The most likely cause is that its type doesn't serialize to JSON: {error}. Make its `Serialize` implementation produce JSON-compatible data."
+			),
+		};
+		// Sparse tables join their stored handles by binary search; dense tables and narrow queries use direct lookups.
+		let search_steps = entities.len().checked_ilog2().unwrap_or(0) as usize + 1;
+		if values.len().saturating_mul(search_steps) < entities.len() {
+			for (handle, value) in values.iter() {
+				if let Ok(index) = entities.binary_search_by_key(&handle.id(), |entity| entity.handle().id()) {
+					append(&mut entities[index], value);
+				}
+			}
+		} else {
+			for entity in entities {
+				if let Some(value) = values.get(&entity.handle()) {
+					append(entity, value);
+				}
 			}
 		}
 	}
@@ -74,13 +86,12 @@ impl Properties {
 		})
 	}
 
-	/// Returns every property the entity has, by name, serialized.
-	pub(super) fn of(&self, handle: Handle) -> Vec<(&'static str, serde_json::Value)> {
-		self.tables
-			.read()
-			.iter()
-			.filter_map(|(name, table)| Some((*name, table.value(handle)?)))
-			.collect()
+	/// Appends properties in registration order, locking each table once for the whole handle-sorted snapshot.
+	pub(super) fn read(&self, entities: &mut [InspectedEntity]) {
+		debug_assert!(entities.windows(2).all(|pair| pair[0].handle().id() < pair[1].handle().id()));
+		for (name, table) in self.tables.read().iter() {
+			table.read(name, entities);
+		}
 	}
 
 	/// Forgets every property of the entity, once it was deleted.

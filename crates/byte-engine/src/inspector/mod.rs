@@ -330,23 +330,22 @@ impl DefaultInspector {
 
 	/// Returns current factory-created entities filtered by an exact Rust type or attached name.
 	pub fn entities(&self, entity_type: Option<&str>, name: Option<&str>) -> Vec<InspectedEntity> {
-		self.message_observer
+		let mut entities: Vec<_> = self
+			.message_observer
 			.entities()
 			.into_iter()
-			.filter_map(|entity| {
-				if entity_type.is_some_and(|entity_type| !entity.types().contains(&entity_type)) {
-					return None;
-				}
-				let entity = InspectedEntity {
-					properties: self.properties.of(entity.handle()),
-					entity,
-				};
-				if name.is_some_and(|name| entity.property("name").and_then(|value| value.as_str()) != Some(name)) {
-					return None;
-				}
-				Some(entity)
+			.filter(|entity| entity_type.is_none_or(|entity_type| entity.types().contains(&entity_type)))
+			.map(|entity| InspectedEntity {
+				entity,
+				properties: Vec::new(),
 			})
-			.collect()
+			.collect();
+		// The catalog preserves handle order, so property tables can join their sparse values to this snapshot.
+		self.properties.read(&mut entities);
+		if let Some(name) = name {
+			entities.retain(|entity| entity.property("name").and_then(|value| value.as_str()) == Some(name));
+		}
+		entities
 	}
 
 	/// Drains passive publication headers and resolves their route metadata.
@@ -456,6 +455,54 @@ mod tests {
 		metrics::Metrics,
 		rendering::{Camera, CameraUpdate},
 	};
+
+	#[test]
+	fn entity_queries_preserve_sparse_properties_and_registration_order() {
+		let message_bus = MessageBus::default();
+		message_bus.observe().unwrap();
+		let world = message_bus.new_scope("sparse-properties-test");
+		let inspector = DefaultInspector::new(
+			DefaultChannel::new(),
+			Configuration::new(),
+			world.clone(),
+			Arc::new(Metrics::new()),
+		);
+		inspector
+			.watch_property("count", world.channel::<crate::core::factory::CreateMessage<u32>>())
+			.unwrap();
+		let first: Handle = world
+			.create(10_u32)
+			.with(Name::new("first"))
+			.with(Transform::identity())
+			.into();
+		let second: Handle = world.create(20_u32).with(Name::new("second")).into();
+		let transient: Handle = world.create(String::from("no properties")).into();
+
+		let all = inspector.entities(None, None);
+		assert_eq!(
+			all.iter().map(|entity| entity.handle()).collect::<Vec<_>>(),
+			[first, second, transient]
+		);
+		assert_eq!(
+			all[0].properties().iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+			["name", "transform", "count"]
+		);
+		assert_eq!(all[0].property("count"), Some(&json!(10)));
+		assert_eq!(all[1].property("count"), Some(&json!(20)));
+		assert!(all[2].properties().is_empty());
+
+		// A narrow type query still returns every property of each match, in the same order as the full catalog.
+		assert_eq!(
+			inspector.entities(Some(std::any::type_name::<Transform>()), None),
+			[all[0].clone()]
+		);
+		assert_eq!(inspector.entities(None, Some("second")), [all[1].clone()]);
+		assert!(
+			inspector
+				.entities(Some(std::any::type_name::<Transform>()), Some("second"))
+				.is_empty()
+		);
+	}
 
 	#[test]
 	fn properties_follow_spawn_replacement_and_deletion_through_the_inspector() {

@@ -22,6 +22,7 @@ use std::{
 	sync::{Arc, OnceLock},
 };
 
+use smallvec::SmallVec;
 use utils::{hash::HashMap, sync::Mutex};
 
 use crate::core::{factory::Handle, message_bus::TopicSnapshot};
@@ -109,7 +110,8 @@ impl MessageObservationBatch {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObservedEntity {
 	handle: Handle,
-	types: Vec<&'static str>,
+	// Most catalog entries have one representation, so a snapshot needn't allocate for each of them.
+	types: SmallVec<[&'static str; 1]>,
 }
 
 impl ObservedEntity {
@@ -203,12 +205,14 @@ impl MessageObserver {
 					continue;
 				}
 				let handle = Handle::from_id((chunk_index * ENTITIES_PER_CHUNK + entry_index) as u32 + 1);
-				let types = if entity_state(word) == OVERFLOW_STATE {
-					side.get(&handle.id())
+				let types = match entity_state(word) {
+					// Decode the usual one-type entry directly into its inline storage.
+					1 => SmallVec::from_buf([inner.type_name(((word >> STATE_BITS) & INDEX_MASK) as u16)]),
+					OVERFLOW_STATE => side
+						.get(&handle.id())
 						.map(|types| types.iter().map(|&index| inner.type_name(index)).collect())
-						.unwrap_or_default()
-				} else {
-					inline_types(word).map(|index| inner.type_name(index)).collect()
+						.unwrap_or_default(),
+					_ => inline_types(word).map(|index| inner.type_name(index)).collect(),
 				};
 				snapshot.push(ObservedEntity { handle, types });
 			}

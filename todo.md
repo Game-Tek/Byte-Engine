@@ -56,6 +56,7 @@
 
 ## UI
 
+- Retire completed physics ray queries and responses from the Inspector catalog, and query scene entities before materializing unrelated diagnostics. NPC sight queries still grow the catalog over time.
 - Reuse UI layout, draw-list, geometry, vertex, index, text, relation, and batch storage instead of rebuilding and cloning it each frame.
 - Replace UI layout relation and element scans with an ID index and contiguous parent-to-children adjacency storage.
 - Replace hit-test `Vec<Vec<usize>>` buckets with contiguous candidate storage plus per-cell ranges.

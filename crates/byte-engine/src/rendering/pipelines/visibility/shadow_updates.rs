@@ -289,12 +289,16 @@ impl ShadowMapStates {
 		let cascade_texels = u64::from(cascade_resolution).pow(2);
 		let class_texels = |size_class: usize| u64::from(local_shadow_map_resolution(size_class)).pow(2);
 		let cascade = |slot, cascade| Unit::Cascade { slot, cascade };
-		// Only suns whose shadows are cascades have maps here; a virtual shadow map keeps its own pages.
-		let always_drawn = (0..layout.suns)
+		// Only suns whose shadows are cascades have maps here; a virtual shadow map keeps its own pages. The count comes
+		// from the selection, which `views` matches, and not from `layout`: the images keep room for suns that are gone,
+		// such as every sun on a frame without sinks, while a window is hidden.
+		let cascade_suns = if selection.virtual_suns { 0 } else { selection.suns.len() };
+		debug_assert!(cascade_suns <= layout.suns, "The shadow images hold fewer suns than the selection.");
+		let always_drawn = (0..cascade_suns)
 			.flat_map(|slot| (0..ALWAYS_DRAWN_CASCADES).map(move |index| cascade(slot, index)))
 			.collect::<SmallVec<[Unit; SHADOW_MAPS_INLINE]>>();
 		// Every competing map with its importance and texels.
-		let competing = (0..layout.suns)
+		let competing = (0..cascade_suns)
 			.flat_map(|slot| (ALWAYS_DRAWN_CASCADES..SHADOW_CASCADE_COUNT).map(move |index| cascade(slot, index)))
 			.map(|unit| (unit, sink_pixels, cascade_texels))
 			.chain(
@@ -628,6 +632,28 @@ mod tests {
 			1,
 			"The image grew to three layers, so every map in it starts over and only the one that drew holds a view."
 		);
+	}
+
+	/// A frame without sinks, as while every window is hidden, selects no lights, but the images keep room for the sun
+	/// that cast shadows before. Nothing draws, and the sun's cascades start over when it returns.
+	#[test]
+	fn a_frame_that_selects_no_sun_draws_no_cascades_while_the_images_keep_room_for_one() {
+		let (light, transform) = (cone(), Transform::default());
+		let with_sun = selection(&light, &transform, 0, 0, 1);
+		let mut states = ShadowMapStates::default();
+		states.update(&with_sun, layout_of(&with_sun), &views(&[], 1), 1.0, 64, u64::MAX);
+
+		let draws = states.update(
+			&ShadowLightSelection::default(),
+			layout_of(&with_sun),
+			&views(&[], 0),
+			1.0,
+			64,
+			u64::MAX,
+		);
+
+		assert!(draws.is_empty(), "No sun is selected, so no cascade should draw.");
+		assert_eq!(states.drawn_cascades(1), 0, "The sun left its slot, so its cascades hold nothing.");
 	}
 
 	#[test]

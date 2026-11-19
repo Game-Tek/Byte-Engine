@@ -1509,9 +1509,10 @@ impl Editor {
 	/// Reads the scene through the inspector, as the console and HTTP inspector do, at most every [`SCENE_POLL`], and
 	/// returns whether it read.
 	///
-	/// It doesn't read during a gizmo drag, when the inspector may still report where the entity was.
+	/// It doesn't read while the editor is closed, since nothing shows the scene then and the first frame after opening
+	/// reads it again, or during a gizmo drag, when the inspector may still report where the entity was.
 	fn poll_scene(&mut self, app: &GraphicsApplication) -> bool {
-		if self.drag.is_some() {
+		if !self.layer.borrow().open || self.drag.is_some() {
 			return false;
 		}
 		let now = Instant::now();

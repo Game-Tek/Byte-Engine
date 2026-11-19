@@ -16,14 +16,14 @@ use super::{
 	FIELD_HEIGHT, MUTED, SQUIRCLE, Shell, TEXT, block, cap, channel, fits, open_room, read_typed, setting_style, solid,
 	typing_style,
 };
-use crate::editor::drawer::arriving;
+use crate::editor::drawer::{self, arriving};
 use crate::time::MediaTime;
 use crate::ui::flow;
 use crate::ui::{Animation, Easing};
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::Events;
-use crate::utils::r#async::select;
+use crate::utils::r#async::{FutureExt as _, select};
 
 /// The width of a property's control at the end of its row: a switch, a field, or a value.
 const CONTROL_WIDTH: f32 = 110.0;
@@ -96,22 +96,20 @@ async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationC
 		.image(picture_width, picture_height, pixels, |i| i.width(fit[0].into()).height(fit[1].into()))
 		.await;
 	let mut placed = None;
+	let mut asked = None;
 	let mut elapsed = MediaTime::ZERO;
+	// The picture shows until the texture closes, another opens, or the window resizes.
+	let mut open = ctx.proactive(move |shell: &Shell| {
+		shell.layers.texture().is_some_and(|texture| texture.id == id) && shell.viewport == viewport
+	});
 	loop {
-		select! {
-			event = base.on(Events::Scrolled) => {
-				// One step per scroll, as the graph canvas zooms, so a trackpad and a wheel move alike.
-				if let Some(delta) = event.delta.filter(|delta| delta.y != 0.0) {
-					let factor = if delta.y > 0.0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
-					zoom = (zoom * factor).clamp(1.0, most);
-				}
-			},
-			frame = ctx.render() => elapsed = frame,
-		}
 		let size = [fit[0] * zoom, fit[1] * zoom];
 		let wanted = fits(size[0], window, drawers);
-		ctx.with(move |shell: &mut Shell| shell.drawer_open = wanted).await;
-		drawer.follow(ctx, std::mem::replace(&mut elapsed, MediaTime::ZERO)).await;
+		if asked != Some(wanted) {
+			asked = Some(wanted);
+			ctx.with(move |shell: &mut Shell| shell.drawer_open = wanted).await;
+		}
+		drawer.follow(ctx, wanted, std::mem::replace(&mut elapsed, MediaTime::ZERO)).await;
 		let shown = ctx.with(|shell: &mut Shell| shell.drawer_shown).await;
 		// Centered in the room the drawers leave, which widens as they slide away.
 		let room = open_room(window, shown, drawers);
@@ -123,13 +121,20 @@ async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationC
 				.await;
 			image.update_image(|i| i.width(size[0].into()).height(size[1].into())).await;
 		}
-		let open = ctx
-			.with(|shell: &mut Shell| {
-				shell.layers.texture().is_some_and(|texture| texture.id == id) && shell.viewport == viewport
-			})
-			.await;
-		if !open {
-			break;
+		let render = ctx.render();
+		select! {
+			open = open.next() => if !*open {
+				break;
+			},
+			event = base.on(Events::Scrolled) => {
+				// One step per scroll, as the graph canvas zooms, so a trackpad and a wheel move alike.
+				if let Some(delta) = event.delta.filter(|delta| delta.y != 0.0) {
+					let factor = if delta.y > 0.0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
+					zoom = (zoom * factor).clamp(1.0, most);
+				}
+			},
+			// The drawer slides while the picture waits for the rest.
+			frame = drawer::unless_settled(drawer.settled(), render).fuse() => elapsed = frame,
 		}
 	}
 }
@@ -331,7 +336,29 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 	let mut motion: Option<Animation<f32, Easing>> = None;
 	let mut elapsed = MediaTime::ZERO;
 	let mut at = None;
+	let mut on = ctx.proactive(move |shell: &Shell| {
+		shell
+			.layers
+			.texture()
+			.and_then(|texture| texture.settings)
+			.and_then(|settings| property.switched(&settings))
+			.unwrap_or(false)
+	});
+	on.next().await;
 	loop {
+		let target = if on.latest() == Some(&true) { 1.0 } else { 0.0 };
+		// A turned-over setting slides the knob from wherever it stands.
+		let motion = motion.get_or_insert_with(|| Animation::new(target, arriving(SLIDE)));
+		motion.set_target(target);
+		let position = motion.step(std::mem::replace(&mut elapsed, MediaTime::ZERO));
+		if at != Some(position) {
+			at = Some(position);
+			track.update_container(|c| c.style(channel(SWITCH[1], position))).await;
+			handle
+				.update_container(|c| c.absolute_position(KNOB_GAP + travel * position, KNOB_GAP))
+				.await;
+		}
+		let render = ctx.render();
 		select! {
 			_ = track.on(Events::Actuated) => {
 				ctx.with(move |shell: &mut Shell| {
@@ -340,22 +367,10 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 				})
 				.await;
 			},
-			frame = ctx.render() => elapsed = frame,
+			_ = on.next() => {},
+			// The knob slides while the switch waits for the rest.
+			frame = drawer::unless_settled(motion.is_settled(), render).fuse() => elapsed = frame,
 		}
-		let on = settings(ctx).await.and_then(|settings| property.switched(&settings)).unwrap_or(false);
-		let target = if on { 1.0 } else { 0.0 };
-		// A turned-over setting slides the knob from wherever it stands.
-		let motion = motion.get_or_insert_with(|| Animation::new(target, arriving(SLIDE)));
-		motion.set_target(target);
-		let position = motion.step(std::mem::replace(&mut elapsed, MediaTime::ZERO));
-		if at == Some(position) {
-			continue;
-		}
-		at = Some(position);
-		track.update_container(|c| c.style(channel(SWITCH[1], position))).await;
-		handle
-			.update_container(|c| c.absolute_position(KNOB_GAP + travel * position, KNOB_GAP))
-			.await;
 	}
 }
 
@@ -380,8 +395,10 @@ async fn coverage_field(ctx: &mut EvaluationContext<Shell>, control: &mut Evalua
 		.text("", |t| t.font_size(12.0).style([solid(TEXT)]))
 		.await;
 	let mut shown = None;
+	let mut current = ctx.proactive(|shell: &Shell| shell.layers.texture().and_then(|texture| texture.settings));
 	loop {
 		select! {
+			_ = current.next() => {},
 			_ = field.on(Events::Actuated) => {
 				value.update_text(|t| t.content("")).await;
 				let styles = [typing_style(true), setting_style(true, false)];
@@ -397,9 +414,8 @@ async fn coverage_field(ctx: &mut EvaluationContext<Shell>, control: &mut Evalua
 			_ = field.on(Events::PointerExited) => {
 				field.update_container(|c| c.style(setting_style(true, false))).await;
 			},
-			_ = ctx.render() => {},
 		}
-		let current = settings(ctx).await;
+		let current = current.latest().copied().flatten();
 		if shown != Some(current) {
 			shown = Some(current);
 			let text = current.map_or_else(|| "–".to_owned(), |settings| Property::Coverage.value(&settings));
@@ -418,9 +434,7 @@ async fn value_text(ctx: &mut EvaluationContext<Shell>, control: &mut Evaluation
 	let text = current.map_or_else(|| "–".to_owned(), |settings| property.value(&settings));
 	row.element("text").text(&text, |t| t.font_size(12.0).style([solid(TEXT)])).await;
 	// The file name sets these, so they don't change while the texture is open.
-	loop {
-		ctx.render().await;
-	}
+	std::future::pending::<()>().await;
 }
 
 /// The line under the properties that says where they're saved: the texture's sidecar, or, while it has none, that a
@@ -434,13 +448,17 @@ async fn footer(ctx: &mut EvaluationContext<Shell>, width: f32) {
 		.element("text")
 		.text("", |t| t.font_size(11.0).style([solid(MUTED)]))
 		.await;
-	// Whether the settings were read and the texture has a sidecar, as last shown; `None` before the first frame.
+	// Whether the settings were read and the texture has a sidecar, as last shown; `None` before the first read.
 	let mut shown = None;
+	// Only the state is compared as the shell changes; the line is formatted when it changes.
+	let mut saved = ctx.proactive(|shell: &Shell| {
+		shell
+			.layers
+			.texture()
+			.map(|texture| texture.settings.map(|settings| settings.sidecar))
+	});
 	loop {
-		// Only the state is compared each frame; the line is formatted when it changes.
-		let state = ctx
-			.with(|shell: &mut Shell| shell.layers.texture().map(|texture| texture.settings.map(|settings| settings.sidecar)))
-			.await;
+		let state = *saved.next().await;
 		if shown != Some(state) {
 			shown = Some(state);
 			let line = ctx
@@ -456,7 +474,6 @@ async fn footer(ctx: &mut EvaluationContext<Shell>, width: f32) {
 				.await;
 			text.update_text(|t| t.content(line.as_deref().unwrap_or(""))).await;
 		}
-		ctx.render().await;
 	}
 }
 

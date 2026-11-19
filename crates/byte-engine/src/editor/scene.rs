@@ -105,13 +105,11 @@ impl SceneEntity {
 	}
 }
 
-/// Rewrites `scene` from the inspector's `entities`, keeping only entities with a transform, sorted by label.
+/// Builds the scene from the inspector's `entities`, keeping only entities with a transform, sorted by label.
 ///
-/// Returns whether the rows changed in a way the list must be rebuilt for: an entity appeared, disappeared, or was
-/// renamed. A moved entity or a changed camera changes only values the properties panel reads on its own.
-pub(crate) fn collect(entities: &[InspectedEntity], scene: &mut Vec<SceneEntity>) -> bool {
-	let previous = scene.len();
-	// The new rows are built apart from the old ones, so they can be compared before they replace them.
+/// Compare it with the scene the shell holds and write it only when it differs, so components that follow the scene
+/// stay asleep; see [`relisted`] for whether the list must be rebuilt.
+pub(crate) fn collect(entities: &[InspectedEntity]) -> Vec<SceneEntity> {
 	let mut rows = Vec::with_capacity(entities.len());
 	for entity in entities {
 		let Some(transform) = entity.property("transform").and_then(|transform| Transform::deserialize(transform).ok())
@@ -144,13 +142,18 @@ pub(crate) fn collect(entities: &[InspectedEntity], scene: &mut Vec<SceneEntity>
 	// A stable order keeps rows from jumping when the inspector reports entities in another order.
 	rows.sort_by(|a, b| a.label().cmp(b.label()).then(a.handle.id().cmp(&b.handle.id())));
 
-	let changed = rows.len() != previous
-		|| rows
+	rows
+}
+
+/// Whether going from the `old` scene to the `new` one changes the rows the list shows: an entity appeared,
+/// disappeared, or was renamed. A moved entity or a changed camera changes only values the properties panel reads on
+/// its own.
+pub(crate) fn relisted(old: &[SceneEntity], new: &[SceneEntity]) -> bool {
+	old.len() != new.len()
+		|| new
 			.iter()
-			.zip(scene.iter())
-			.any(|(new, old)| new.handle != old.handle || new.name != old.name || new.kind != old.kind);
-	*scene = rows;
-	changed
+			.zip(old)
+			.any(|(new, old)| new.handle != old.handle || new.name != old.name || new.kind != old.kind)
 }
 
 /// Returns the handles of the `scene` entities the overview lists for `search`, in the order it lists them.

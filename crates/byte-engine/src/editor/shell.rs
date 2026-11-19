@@ -20,7 +20,6 @@ use std::rc::Rc;
 pub(crate) use resource_panels::{fits, open_room};
 
 use crate::core::factory::Handle;
-use crate::time::MediaTime;
 use crate::editor::drawer;
 use crate::editor::fields::{CAMERA, Change, LIGHT, Setting, TRANSFORM};
 use crate::editor::gizmo::Tool;
@@ -256,54 +255,78 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 	let mut shown_revision = None;
 	let mut shown_selection = None;
 	let mut fields_size = Size::new(0, 0);
-	// The editor starts closed, with the drawer hidden; it moves whenever the editor opens or closes. This loop runs
-	// every frame anyway, so it steps the drawer itself, by each frame's time.
+	// The editor starts closed, with the drawer hidden; it moves whenever the editor opens or closes.
 	let mut drawer_shown = drawer::shown(0.0);
-	let mut elapsed = MediaTime::ZERO;
+	let mut gone = true;
+	// The loop wakes only when what it shows changes: whether the editor is open, the window's size, the scene, or
+	// the selection, with the panel's settings block and the game's panels it has.
+	let mut state = root.proactive(|shell: &Shell| {
+		let selection = shell
+			.selection()
+			.map(|entity| (entity.handle, Part::of(entity), shell.panels_of(entity)));
+		(shell.layers.open(), shell.viewport, shell.scene_revision, selection)
+	});
 	loop {
-		let open = root.with(|shell: &mut Shell| shell.layers.open()).await;
-		drawer::head(&mut drawer_shown, open, drawer::ENTER, drawer::EXIT);
-		if !drawer_shown.is_settled() {
-			let shown = drawer_shown.step(std::mem::replace(&mut elapsed, MediaTime::ZERO));
-			sidebar.update_container(|c| c.transform(drawer_transform(shown))).await;
+		// What woke the loop. The drawer's run borrows the drawer's animation, so the loop acts after the selection
+		// drops it.
+		enum Woke {
+			State,
+			Fitted(Size),
+			Moved,
 		}
-		let gone = drawer_shown.is_settled() && drawer_shown.current() == 0.0;
-		root.with(move |shell: &mut Shell| shell.drawer_gone = gone).await;
-		let (viewport, revision) = root.with(|shell: &mut Shell| (shell.viewport, shell.scene_revision)).await;
-		if viewport != shown_viewport {
-			shown_viewport = viewport;
-			let height = sidebar_height(viewport);
-			sidebar
-				.update_container(|c| c.height(height.into()).style(panel(height, 1.0)))
-				.await;
-			// The list's height follows the sidebar's, so it is declared again.
-			shown_revision = None;
-		}
-		if shown_revision != Some(revision) {
-			shown_revision = Some(revision);
-			shown_list = Some(list(&mut content, shown_list.take(), viewport).await);
-		}
-
-		// The panel follows the selection, its name as the list does, and its settings block; the fields follow their
-		// values on their own.
-		let selection = root
-			.with(|shell: &mut Shell| {
-				let entity = shell.selection()?;
-				Some((entity.handle, Part::of(entity), shell.panels_of(entity)))
-			})
-			.await
-			.map(|selection| (selection, revision));
-		if selection != shown_selection {
-			shown_selection = selection;
-			fields.show(root).await;
-		}
-		select! {
+		let woke = select! {
+			_ = state.next() => Woke::State,
 			// The properties panel fits its blocks, and its gradient follows the height it fits.
-			size = fields.panel.logical_size_change(fields_size) => {
+			size = fields.panel.logical_size_change(fields_size) => Woke::Fitted(size),
+			_ = drawer::unless_settled(
+				drawer_shown.is_settled(),
+				sidebar.animate(&mut drawer_shown).on_every_frame(|c, v| c.transform(drawer_transform(v.current))),
+			)
+			.fuse() => Woke::Moved,
+		};
+		match woke {
+			Woke::Fitted(size) => {
 				fields_size = size;
 				fields.panel.update_container(|c| c.style(panel(size.y(), 1.0))).await;
-			},
-			frame = root.render() => elapsed = frame,
+			}
+			// The drawer left: the editor's render pass can stop drawing.
+			Woke::Moved => {
+				if drawer_shown.current() == 0.0 && !gone {
+					gone = true;
+					root.with(|shell: &mut Shell| shell.drawer_gone = true).await;
+				}
+			}
+			Woke::State => {
+				let Some(&(open, viewport, revision, selection)) = state.latest() else {
+					continue;
+				};
+				// A drawer turned back partway starts from where it stands.
+				drawer::head(&mut drawer_shown, open, drawer::ENTER, drawer::EXIT);
+				if open && gone {
+					gone = false;
+					root.with(|shell: &mut Shell| shell.drawer_gone = false).await;
+				}
+				if viewport != shown_viewport {
+					shown_viewport = viewport;
+					let height = sidebar_height(viewport);
+					sidebar
+						.update_container(|c| c.height(height.into()).style(panel(height, 1.0)))
+						.await;
+					// The list's height follows the sidebar's, so it is declared again.
+					shown_revision = None;
+				}
+				if shown_revision != Some(revision) {
+					shown_revision = Some(revision);
+					shown_list = Some(list(&mut content, shown_list.take(), viewport).await);
+				}
+				// The panel follows the selection, its name as the list does, and its settings block; the fields
+				// follow their values on their own.
+				let selection = selection.map(|selection| (selection, revision));
+				if selection != shown_selection {
+					shown_selection = selection;
+					fields.show(root).await;
+				}
+			}
 		}
 	}
 }
@@ -322,9 +345,8 @@ pub(crate) async fn window(root: &mut EvaluationContext<Shell>) {
 		.await;
 	root.element("mesh").component(async |ctx| mesh_view::mesh_view(ctx).await).await;
 	root.element("palette").component(async |ctx| palette_view(ctx).await).await;
-	loop {
-		root.render().await;
-	}
+	// The views run on their own; the root only keeps them mounted.
+	std::future::pending::<()>().await;
 }
 
 /// The drawer spans the window's height, which it follows as the window resizes.
@@ -477,11 +499,8 @@ async fn search_field(ctx: &mut EvaluationContext<Shell>, width: f32) {
 				},
 				_ = input.on_key(Key::Enter) => break,
 				_ = input.on_key(Key::Escape) => break,
-				_ = ctx.render() => {
-					if pressed_outside(ctx, &mut field).await {
-						break;
-					}
-				},
+				// A press outside the well takes the focus, which ends the typing.
+				_ = input.focus_change(true) => break,
 			}
 		}
 		input.release_focus().await;
@@ -491,24 +510,10 @@ async fn search_field(ctx: &mut EvaluationContext<Shell>, width: f32) {
 	}
 }
 
-/// Whether the pointer is pressed outside `well`, which ends typing into it.
-async fn pressed_outside(ctx: &mut EvaluationContext<Shell>, well: &mut EvaluationContext<Shell>) -> bool {
-	let pointer = ctx.pointer().await;
-	let outside = well
-		.geometry()
-		.await
-		.map(|geometry| geometry.logical)
-		.is_some_and(|geometry| {
-			let [x, y] = [pointer.position.x, pointer.position.y];
-			x < geometry.x() || x > geometry.right() || y < geometry.y() || y > geometry.bottom()
-		});
-	pointer.pressed && outside
-}
-
 /// The command palette: while it's open, a search field over the meshes it finds, the highlighted one lit.
 ///
 /// The panel is declared each time the palette opens and removed when it closes, so it starts from an empty search.
-/// It takes the keyboard's focus while it shows, which goes back to what had it before once it's removed.
+/// It takes the keyboard's focus while it shows, and its removal takes the focus with it.
 async fn palette_view(ctx: &mut EvaluationContext<Shell>) {
 	loop {
 		// Waiting on the layer reads it only when the shell changed, so a closed view asks for no frames.
@@ -572,17 +577,15 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 
 	let mut rows: Option<EvaluationContext<Shell>> = None;
 	let mut shown = None;
-	// This loop runs every frame while the palette is open, so it steps the panel's arrival itself.
-	let mut elapsed = MediaTime::ZERO;
+	// What the palette shows follows the scope's results and a setting typed over it; it closes once it reads `None`.
+	let mut state = ctx.proactive(|shell: &Shell| {
+		let layers = &shell.layers;
+		let setting = layers.setting().map(|setting| setting.revision);
+		layers.palette().map(|palette| (palette.revision, layers.revision, setting))
+	});
+	state.next().await;
 	loop {
-		let revision = ctx
-			.with(|shell: &mut Shell| {
-				let layers = &shell.layers;
-				let setting = layers.setting().map(|setting| setting.revision);
-				layers.palette().map(|palette| (palette.revision, layers.revision, setting))
-			})
-			.await;
-		let Some(revision) = revision else {
+		let Some(Some(revision)) = state.latest().copied() else {
 			break;
 		};
 		if shown != Some(revision) {
@@ -612,11 +615,14 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 				rows = Some(list);
 			}
 		}
-		if !arrival.is_settled() {
-			let now = arrival.step(std::mem::replace(&mut elapsed, MediaTime::ZERO));
-			frame.update_container(|c| c.opacity(now).transform(look(now))).await;
-		}
 		select! {
+			_ = state.next() => {},
+			// The panel arrives while it waits for the rest.
+			_ = drawer::unless_settled(
+				arrival.is_settled(),
+				frame.animate(&mut arrival).on_every_frame(|c, v| c.opacity(v.current).transform(look(v.current))),
+			)
+			.fuse() => {},
 			edit = input.on_text_edit() => {
 				let text = ctx
 					.with(move |shell: &mut Shell| {
@@ -638,12 +644,13 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 					input.update_text(|t| t.content(&text)).await;
 				}
 			},
+			// The palette keeps the keyboard while it's open, so a press elsewhere that takes the focus gives it back.
+			_ = input.focus_change(true) => input.request_focus().await,
 			size = frame.logical_size_change(Size::new(palette::WIDTH, height)) => {
 				height = size.y();
 				frame.update_container(|c| c.style(panel(height, 1.0))).await;
 				ctx.with(move |shell: &mut Shell| shell.palette_height = height).await;
 			},
-			frame_time = ctx.render() => elapsed = frame_time,
 		}
 	}
 	// The palette closed: the panel leaves from wherever it stands before it's removed.
@@ -1330,14 +1337,11 @@ async fn read_typed(
 			},
 			_ = input.on_key(Key::Enter) => break true,
 			_ = input.on_key(Key::Escape) => break false,
-			_ = ctx.render() => {
-				if pressed_outside(ctx, well).await {
-					break false;
-				}
-			},
+			// A press outside the well takes the focus, which cancels the typing.
+			_ = input.focus_change(true) => break false,
 		}
 	};
-	// Removing the field gives the keyboard back to what had it before.
+	// Removing the field takes its focus with it.
 	input.remove().await;
 	ctx.with(|shell: &mut Shell| shell.layers.close(|layer| matches!(layer, Layer::Typing)))
 		.await;
@@ -1398,7 +1402,6 @@ async fn selection_change(ctx: &mut EvaluationContext<Shell>, selected: bool) ->
 		if now != selected {
 			return now;
 		}
-		ctx.render().await;
 	}
 }
 
@@ -1663,6 +1666,40 @@ const fn hex(rgb: u32, alpha: f32) -> RGBA {
 #[cfg(test)]
 mod tests {
 	use super::darker;
+
+	#[test]
+	fn the_editor_asks_for_frames_only_while_its_drawer_moves() {
+		use crate::editor::layers::Layer;
+		use crate::time::MediaTime;
+		use crate::ui::{Engine, Size};
+
+		let size = Size::new(800, 600);
+		let allocator = bumpalo::Bump::new();
+		let mut engine = Engine::with_context(super::Shell::new(size));
+		engine.mount(async |ctx| super::shell(ctx).await);
+		// Settles the editor one tenth of a second at a time, and returns how many frames it asked for.
+		let settle = |engine: &mut Engine<super::Shell>| {
+			let mut frames = 0;
+			while engine.next_tick().is_some_and(|tick| tick <= std::time::Instant::now()) {
+				assert!(frames < 20, "The editor kept asking for frames after its drawer arrived.");
+				engine.advance_clock(MediaTime::from_seconds_f32(0.1));
+				engine.evaluate(size, &allocator);
+				frames += 1;
+			}
+			frames
+		};
+		engine.evaluate(size, &allocator);
+		settle(&mut engine);
+		assert!(engine.ctx().drawer_gone, "A closed editor's drawer isn't gone.");
+
+		engine.ctx_mut().layers.push(Layer::Scene);
+		assert!(settle(&mut engine) > 1, "The drawer didn't move in over several frames.");
+		assert!(!engine.ctx().drawer_gone, "An open editor's drawer is gone.");
+
+		engine.ctx_mut().layers.pop();
+		assert!(settle(&mut engine) > 1, "The drawer didn't move out over several frames.");
+		assert!(engine.ctx().drawer_gone, "The drawer isn't gone once it left.");
+	}
 
 	#[test]
 	fn an_entity_shows_the_panels_of_the_components_it_has() {

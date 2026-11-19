@@ -206,6 +206,15 @@ impl<C: 'static> Context<C> for EvaluationContext<C> {
 		})
 	}
 
+	fn focus_change(&self, known: bool) -> FocusChangeFuture<C> {
+		FocusChangeFuture {
+			target: self.id,
+			known,
+			complete: false,
+			ctx: PhantomData,
+		}
+	}
+
 	fn remove(&mut self) -> impl Future<Output = ()> {
 		EvaluationContext::remove(self)
 	}

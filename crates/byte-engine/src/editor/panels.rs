@@ -20,6 +20,7 @@ use crate::ui::flow;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::Events;
+use crate::ui::{Polled, Reactive};
 use crate::utils::r#async::{FusedFuture, FutureExt as _, select};
 
 /// Starts a panel's function in the block's slot, for the selected entity.
@@ -38,7 +39,7 @@ pub(crate) struct Registration {
 /// messages it can post, and the panel's own column of elements.
 ///
 /// Add controls with [`Self::button`] and [`Self::label`], or declare any elements on [`Self::ui`]. Then loop: wait for
-/// a click or for [`Self::render`], read what changed with [`Self::property`], and send commands with [`Self::post`].
+/// a click or for a change of a [`Self::property`], and send commands with [`Self::post`].
 pub struct Panel<'a> {
 	ctx: &'a mut EvaluationContext<Shell>,
 	entity: Handle,
@@ -67,28 +68,23 @@ impl<'a> Panel<'a> {
 		self.ctx
 	}
 
-	/// Waits for the next frame, so a loop can read the entity's properties again. It can wait in a `select!` beside
-	/// [`Button::clicked`].
-	pub fn render(&mut self) -> impl FusedFuture<Output = crate::time::MediaTime> + '_ {
-		self.ctx.render()
-	}
-
-	/// Reads the entity's property `name`, as the application watches it with
-	/// [`DefaultInspector::watch_property`](crate::inspector::DefaultInspector::watch_property), or `None` while it has
-	/// none or it doesn't read as a `T`. The editor reads the scene a few times a second, so a value can be that old.
-	pub async fn property<T: DeserializeOwned>(&mut self, name: &str) -> Option<T> {
+	/// Follows the entity's property `name`, as the application watches it with
+	/// [`DefaultInspector::watch_property`](crate::inspector::DefaultInspector::watch_property): `None` while it has none
+	/// or it doesn't read as a `T`.
+	///
+	/// Await [`Reactive::next`] in a `select!` beside [`Button::clicked`]: the first wait resolves at once with the
+	/// current value, and later ones each time it changed. The editor reads the scene a few times a second, so a value
+	/// can be that old. Waiting on it asks for no frames, so an idle panel leaves the editor idle.
+	pub fn property<T: DeserializeOwned + PartialEq + 'static>(
+		&self,
+		name: &str,
+	) -> Reactive<Polled<impl FnMut(&Shell) -> Option<T> + use<T>>, Shell> {
 		let (entity, name) = (self.entity, name.to_owned());
-		let value = self
-			.ctx
-			.with(move |shell: &mut Shell| {
-				let entity = shell.scene.iter().find(|scene| scene.handle == entity)?;
-				entity
-					.properties
-					.iter()
-					.find_map(|(property, value)| (*property == name).then(|| value.clone()))
-			})
-			.await?;
-		serde_json::from_value(value).ok()
+		self.ctx.proactive(move |shell: &Shell| {
+			let entity = shell.scene.iter().find(|scene| scene.handle == entity)?;
+			let (_, value) = entity.properties.iter().find(|(property, _)| *property == name)?;
+			T::deserialize(value).ok()
+		})
 	}
 
 	/// Posts the message `message_type` with `payload` to the entity, through the inspector, which must have it

@@ -39,6 +39,16 @@ pub(crate) fn head(shown: &mut Animation<f32, Easing>, open: bool, enter: f32, e
 	}
 }
 
+/// Awaits `run`, such as a run that moves a surface or a wait for the next frame, unless the surface is `settled`: a
+/// surface at rest never resolves, so a `select!` over it wakes only for what else it waits on and asks for no
+/// frames while nothing moves.
+pub(crate) async fn unless_settled<T>(settled: bool, run: impl Future<Output = T>) -> T {
+	if settled {
+		std::future::pending::<()>().await;
+	}
+	run.await
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

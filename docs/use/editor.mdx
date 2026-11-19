@@ -196,10 +196,11 @@ panel. The panel reaches your game through the inspector, so its commands also w
    ```
 
 2. Register the properties your panel shows. The inspector keeps the latest value each entity publishes, under the
-   name you give it. A property type must implement `Serialize`.
+   name you give it. A property type must implement `Serialize`; to show it in a panel, `Deserialize` and `PartialEq`
+   too.
 
    ```rust
-   #[derive(Clone, serde::Serialize, serde::Deserialize)]
+   #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
    struct Plan(String);
 
    app.inspector()
@@ -217,19 +218,20 @@ panel. The panel reaches your game through the inspector, so its commands also w
 
    editor.panel::<Npc>("NPC", async |panel| {
    	let mut stagger = panel.button("Stagger").await;
-   	let mut plan = panel.label("").await;
+   	let mut label = panel.label("").await;
+   	let mut plan = panel.property::<Plan>("plan");
    	loop {
    		select! {
    			_ = stagger.clicked() => panel.post("Stagger", &Stagger { strength: 1.0 }).await,
-   			_ = panel.render() => {},
+   			plan = plan.next() => label.set(plan.as_ref().map_or("", |plan| plan.0.as_str())).await,
    		}
-   		let shown = panel.property::<Plan>("plan").await.map_or(String::new(), |plan| plan.0);
-   		plan.set(&shown).await;
    	}
    });
    ```
 
-   A button and a label stack in the panel's column, which grows to hold them. For anything else, such as a bar that
+   The first `plan.next()` resolves at once with the current value, and each later one when the value changes, so
+   the panel does nothing while the plan stays the same. A button and a label stack in the panel's column, which grows
+   to hold them. For anything else, such as a bar that
    shows health, declare your own elements on `panel.ui()`, with a height or `Sizing::fit()`.
 
 ## See warnings and errors

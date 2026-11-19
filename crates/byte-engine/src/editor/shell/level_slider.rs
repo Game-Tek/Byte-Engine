@@ -10,7 +10,7 @@ use super::{
 	ACCENT_RGB, CORNER, MUTED, SQUIRCLE, Shell, TEXT, cap, channel, darker, hex, open_room, panel, solid, top_highlight,
 	vertical,
 };
-use crate::editor::drawer::arriving;
+use crate::editor::drawer::{self, arriving};
 use crate::time::MediaTime;
 use crate::ui::Animation;
 use crate::ui::flow;
@@ -18,7 +18,7 @@ use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::Events;
 use crate::ui::{ConcreteLayer, Transform};
-use crate::utils::r#async::select;
+use crate::utils::r#async::{FutureExt as _, select};
 
 /// The distance between two stops, which is also the width of each stop's label.
 const STOP_SPACING: f32 = 46.0;
@@ -150,7 +150,7 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 		.await;
 
 	// Where the knob stands, gliding toward a stop; where a drag holds it, while one does; and how far it's lifted. The
-	// loop runs every frame, so it steps both by each frame's time.
+	// loop steps both by each frame's time while either moves.
 	let mut motion = Animation::new(stop_x(chosen), arriving(GLIDE));
 	let mut dragged: Option<f32> = None;
 	let mut grabbed_at = 0.0f32;
@@ -158,8 +158,12 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 	let mut elapsed = MediaTime::ZERO;
 	// What was last drawn: the slider's left edge, the knob's place and lift, and the lit stop.
 	let mut drawn: Option<(f32, f32, f32, usize)> = None;
+	// The slider stands centered in the room the drawers leave, which follows the window and the drawers.
+	let mut room = ctx.proactive(|shell: &Shell| (shell.viewport, shell.drawer_shown, shell.drawers));
 	loop {
+		let render = ctx.render();
 		select! {
+			_ = room.next() => {},
 			_ = pill.on(Events::Grabbed) => {
 				let pointer = ctx.pointer().await.position;
 				let corner = pill.geometry().await.map(|geometry| geometry.logical).map_or(0.0, |geometry| geometry.x());
@@ -185,7 +189,7 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 				}
 				lift.set_target(0.0);
 			},
-			frame = ctx.render() => elapsed = frame,
+			frame = drawer::unless_settled(motion.is_settled() && lift.is_settled(), render).fuse() => elapsed = frame,
 		}
 		// While dragged, the level is the stop under the knob; otherwise the one it glides to, so the level changes once,
 		// when the knob is let go, rather than at each stop it passes on the way.

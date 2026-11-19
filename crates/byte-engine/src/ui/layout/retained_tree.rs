@@ -439,6 +439,29 @@ impl RetainedTree {
 		)
 	}
 
+	/// Returns the absolute-depth container that starts the focus layer `id` is in: the nearest one among `id` and its
+	/// visual ancestors, or `None` for the base layer.
+	pub(super) fn layer_of(&self, id: Id) -> Option<Id> {
+		let index = *self.element_indices.get(&id)?;
+		self.lineage(index)
+			.find(|&index| {
+				matches!(
+					&self.elements[index].primitive,
+					Primitives::Container(container) if matches!(container.depth, super::Depth::Absolute(_))
+				)
+			})
+			.map(|index| self.elements[index].id)
+	}
+
+	/// Returns the nearest hit-testable visual ancestor of `id`, such as the well around a text field: the surface a
+	/// press on the element's surroundings lands on, which keeps the element's focus.
+	pub(super) fn holder_of(&self, id: Id) -> Option<Id> {
+		let parent = self.parent(*self.element_indices.get(&id)?)?;
+		self.lineage(parent)
+			.find(|&index| self.elements[index].primitive.hit_testable())
+			.map(|index| self.elements[index].id)
+	}
+
 	/// Reports whether the visual transform or display size of the element at `index` changed since the last
 	/// evaluation.
 	pub(super) fn visual_changed(&self, index: usize) -> bool {

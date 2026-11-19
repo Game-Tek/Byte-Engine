@@ -115,8 +115,11 @@ async fn parameter_row(ctx: &mut EvaluationContext<Shell>, index: usize, width: 
 		.text("", |t| t.font_size(12.0).style([solid(TEXT)]))
 		.await;
 	let mut shown = None;
+	let mut current = ctx
+		.proactive(move |shell: &Shell| Some(shell.layers.variant()?.parameters.get(index)?.value.clone()));
 	loop {
 		select! {
+			_ = current.next() => {},
 			_ = field.on(Events::Actuated) => {
 				value.update_text(|t| t.content("")).await;
 				let styles = [typing_style(true), setting_style(true, false)];
@@ -133,13 +136,8 @@ async fn parameter_row(ctx: &mut EvaluationContext<Shell>, index: usize, width: 
 			_ = field.on(Events::PointerExited) => {
 				field.update_container(|c| c.style(setting_style(true, false))).await;
 			},
-			_ = ctx.render() => {},
 		}
-		let current = ctx
-			.with(move |shell: &mut Shell| {
-				Some(shell.layers.variant()?.parameters.get(index)?.value.clone())
-			})
-			.await;
+		let current = current.latest().cloned().flatten();
 		if shown != Some(current.clone()) {
 			let text = current.as_ref().map_or_else(|| "–".to_owned(), variant::shown);
 			value.update_text(|t| t.content(&text)).await;
@@ -157,7 +155,6 @@ async fn footer(ctx: &mut EvaluationContext<Shell>, file: &str, width: f32) {
 	line.element("text")
 		.text(&format!("A change saves to {file}"), |t| t.font_size(11.0).style([solid(MUTED)]))
 		.await;
-	loop {
-		ctx.render().await;
-	}
+	// The file doesn't change while the variant is open.
+	std::future::pending::<()>().await;
 }

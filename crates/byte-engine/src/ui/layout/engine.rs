@@ -23,6 +23,8 @@ pub struct Engine<C = ()> {
 	key_states: HashMap<Key, bool>,
 	key_presses: VecDeque<Key>,
 	text_edits: VecDeque<TextEdit>,
+	/// Whether input arrived since the last evaluation, which the next one delivers; see [`Self::next_tick`].
+	input: bool,
 	text_system: TextSystem,
 	/// The runtime, retained tree, and application context, lent to every task poll; see [`UiPoll`].
 	core: UiPoll<C>,
@@ -199,6 +201,7 @@ impl<C: 'static> Engine<C> {
 			key_states: HashMap::new(),
 			key_presses: VecDeque::new(),
 			text_edits: VecDeque::new(),
+			input: false,
 			text_system: TextSystem::new(),
 			core: UiPoll {
 				runtime: Runtime::new(),
@@ -241,11 +244,18 @@ impl<C: 'static> Engine<C> {
 	///
 	/// The engine needs one now while a component waits for a frame, which includes every running animation, or a
 	/// woken component waits to be polled, or a component waits on a polled value and the application context was
-	/// written since it last read it. Otherwise the earliest UI timer decides. Hand the answer to the host that drives
-	/// the engine, such as `GraphicsApplication::schedule_tick`.
+	/// written since it last read it. It needs one too when input arrived since the last evaluation, or when a
+	/// component changed the tree after the last layout, as one does in response to an event, so the change is laid
+	/// out. Otherwise the earliest UI timer decides. Hand the answer to the host that drives the engine, such as
+	/// `GraphicsApplication::schedule_tick`, or skip [`Self::evaluate`] until it comes; evaluate anyway when the
+	/// viewport's size changes.
 	pub fn next_tick(&self) -> Option<std::time::Instant> {
 		let runtime = &self.core.runtime;
-		if runtime.needs_tick() || (self.core.written && runtime.has_readers()) {
+		let unlaid = self
+			.retained_layout
+			.as_ref()
+			.is_none_or(|retained| retained.tree.any != self.core.tree.revisions.any);
+		if self.input || unlaid || runtime.needs_tick() || (self.core.written && runtime.has_readers()) {
 			return Some(std::time::Instant::now());
 		}
 		runtime.next_deadline()
@@ -300,6 +310,7 @@ impl<C: 'static> Engine<C> {
 		if self.retained_layout.as_ref().is_some_and(|retained| retained.size != size) {
 			self.cancel();
 		}
+		self.input = false;
 		self.sync_pointer_state(size);
 		self.route_drag();
 		self.core.runtime.begin_frame();
@@ -593,11 +604,33 @@ impl<C: 'static> Engine<C> {
 				self.core.runtime.push_event(bare_event(target, Events::Actuated));
 			}
 		}
+		if presses > 0 {
+			self.release_pressed_focus(target);
+		}
 
 		while let Some(delta) = self.scrolls.pop() {
 			if let Some(target) = target {
 				self.route_bubbling_event(target, Events::Scrolled, Some(delta), None);
 			}
+		}
+	}
+
+	/// Takes focus from the layer a press landed in, `target`'s or the base layer's when it hit nothing, unless it
+	/// landed on or inside the focused element, such as a button in a focused modal, or on the nearest hit-testable
+	/// element holding it, such as a text field's well.
+	fn release_pressed_focus(&mut self, target: Option<Id>) {
+		let tree = &self.core.tree;
+		let runtime = &mut self.core.runtime;
+		let layer = target.and_then(|target| tree.layer_of(target));
+		let kept = |focused: Id| {
+			target.is_some_and(|target| {
+				Some(target) == tree.holder_of(focused) || tree.ancestors(target).any(|ancestor| ancestor == focused)
+			})
+		};
+		if let Some(focused) = runtime.focused_in(layer)
+			&& !kept(focused)
+		{
+			runtime.release_focus(focused);
 		}
 	}
 
@@ -1072,19 +1105,23 @@ impl<C: 'static> Engine<C> {
 	}
 
 	pub fn set_cursor_position(&mut self, v: UiPoint) {
+		self.input |= self.cursor_position != v;
 		self.cursor_position = v;
 	}
 
 	pub fn update_click_state(&mut self, v: bool) {
+		self.input |= self.is_clicking != v || v;
 		self.is_clicking = v;
 		self.presses += u32::from(v);
 	}
 
 	pub fn update_scroll_state(&mut self, delta: UiVector) {
+		self.input = true;
 		self.scrolls.push(delta);
 	}
 
 	pub fn update_key_state(&mut self, key: Key, pressed: bool) {
+		self.input = true;
 		let was_pressed = self.key_states.insert(key, pressed).unwrap_or(false);
 		if pressed && !was_pressed {
 			self.key_presses.push_back(key);
@@ -1092,12 +1129,14 @@ impl<C: 'static> Engine<C> {
 	}
 
 	pub fn input_character(&mut self, character: char) {
+		self.input = true;
 		if character != '\0' {
 			self.text_edits.push_back(TextEdit::Inserted(character));
 		}
 	}
 
 	pub fn delete_text_backward(&mut self) {
+		self.input = true;
 		if let Some(character) = self.focused_text_field_last_char() {
 			self.text_edits.push_back(TextEdit::Deleted(character));
 		}
@@ -1120,6 +1159,7 @@ impl<C: 'static> Engine<C> {
 			return false;
 		}
 		runtime.push_event(bare_event(source, Events::Grabbed));
+		self.input = true;
 		true
 	}
 
@@ -1132,6 +1172,7 @@ impl<C: 'static> Engine<C> {
 		let Some(point) = self.layout_point(position) else {
 			return false;
 		};
+		self.input = true;
 		self.core.runtime.drag.move_to(point)
 	}
 
@@ -1146,6 +1187,7 @@ impl<C: 'static> Engine<C> {
 		let point = self.layout_point(position)?;
 		let runtime = &mut self.core.runtime;
 		let held = runtime.drag.capture()?.source;
+		self.input = true;
 		let dropped = runtime.drag.release(point);
 		// The target is any surface under the release point other than the source, in the frame the caller measured
 		// the release against. Both events go out now, so a cancel or resize before the next evaluation can't lose them.
@@ -1196,6 +1238,7 @@ impl<C: 'static> Engine<C> {
 		let runtime = &mut self.core.runtime;
 		let source = runtime.drag.cancel()?;
 		runtime.push_event(bare_event(source, Events::DragEnded));
+		self.input = true;
 		Some(source)
 	}
 
@@ -2784,7 +2827,7 @@ mod tests {
 	}
 
 	#[test]
-	fn requesting_focus_again_moves_target_without_duplication() {
+	fn a_layer_keeps_one_focused_element_and_a_release_leaves_it_without_one() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context((0, 0));
 
@@ -2799,7 +2842,7 @@ mod tests {
 			first.on_key(Key::Escape).await;
 			ctx.with(|(first_hits, _)| *first_hits += 1).await;
 			first.release_focus().await;
-			ctx.render().await;
+			// The second element lost the focus to the first, so it hears nothing once the first lets it go.
 			second.on_key(Key::Escape).await;
 			ctx.with(|(_, second_hits)| *second_hits += 1).await;
 		});
@@ -2814,11 +2857,11 @@ mod tests {
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(engine.ctx().0, 1);
-		assert_eq!(engine.ctx().1, 1);
+		assert_eq!(engine.ctx().1, 0);
 	}
 
 	#[test]
-	fn releasing_focus_reveals_previous_focus_target() {
+	fn releasing_a_layers_focus_gives_keys_to_the_layer_under_it() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context((0, 0));
 
@@ -2836,7 +2879,7 @@ mod tests {
 			frame
 				.element("second")
 				.component(async move |ctx| {
-					let mut second = ctx.element("button").container(|c| c).await;
+					let mut second = ctx.element("button").container(|c| c.depth(Depth::absolute(1))).await;
 					second.request_focus().await;
 					second.release_focus().await;
 					second.on_key(Key::Escape).await;
@@ -2851,6 +2894,145 @@ mod tests {
 
 		assert_eq!(engine.ctx().0, 1);
 		assert_eq!(engine.ctx().1, 0);
+	}
+
+	#[test]
+	fn keys_go_to_the_highest_layer_with_focus_whatever_the_request_order() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::with_context((0, 0));
+
+		engine.mount(async move |ctx| {
+			let mut modal = ctx.element("modal").container(|c| c.depth(Depth::absolute(1))).await;
+			let mut base = ctx.element("base").container(|c| c).await;
+			modal.request_focus().await;
+			// The base layer takes focus after the modal, but the modal paints above it and keeps the keys.
+			base.request_focus().await;
+			let mut modal_key = modal.on_key(Key::Escape);
+			let mut base_key = base.on_key(Key::Escape);
+			utils::r#async::select! {
+				_ = modal_key => ctx.with(|(modal_hits, _)| *modal_hits += 1).await,
+				_ = base_key => ctx.with(|(_, base_hits)| *base_hits += 1).await,
+			}
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.update_key_state(Key::Escape, true);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(*engine.ctx(), (1, 0));
+	}
+
+	#[test]
+	fn a_press_elsewhere_in_a_layer_takes_its_focus_and_a_press_on_the_holder_keeps_it() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::with_context(Vec::<bool>::new());
+
+		engine.mount(async move |ctx| {
+			let mut well = ctx
+				.element("well")
+				.container(|c| c.size(Sizing::pixels(50)).hit_testable(true))
+				.await;
+			let _elsewhere = ctx
+				.element("elsewhere")
+				.container(|c| c.size(Sizing::pixels(40)).absolute_position(60, 60).hit_testable(true))
+				.await;
+			let mut input = well.element("input").text_field("", |t| t).await;
+			input.request_focus().await;
+			let mut known = true;
+			loop {
+				known = input.focus_change(known).await;
+				ctx.with(move |changes: &mut Vec<bool>| changes.push(known)).await;
+			}
+		});
+
+		let size = Size::new(100, 100);
+		let _ = engine.evaluate(size, &frame_allocator);
+		// Presses at layout units in the 100 by 100 window, which the cursor takes in normalized window coordinates.
+		let press = |engine: &mut Engine<Vec<bool>>, x: f32, y: f32| {
+			engine.set_cursor_position(UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0));
+			engine.update_click_state(true);
+			let _ = engine.evaluate(size, &frame_allocator);
+			engine.update_click_state(false);
+			let _ = engine.evaluate(size, &frame_allocator);
+		};
+
+		press(&mut engine, 40.0, 40.0);
+		assert!(engine.ctx().is_empty(), "a press on the well that holds the field keeps its focus");
+		press(&mut engine, 70.0, 70.0);
+		assert_eq!(*engine.ctx(), [false], "a press elsewhere in the layer takes it");
+	}
+
+	#[test]
+	fn a_press_inside_a_focused_element_keeps_its_focus() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::with_context(true);
+
+		engine.mount(async move |ctx| {
+			let mut modal = ctx
+				.element("modal")
+				.container(|c| c.size(Sizing::pixels(50)).depth(Depth::absolute(1)).hit_testable(true))
+				.await;
+			let _button = modal
+				.element("button")
+				.container(|c| c.size(Sizing::pixels(20)).hit_testable(true))
+				.await;
+			modal.request_focus().await;
+			modal.focus_change(true).await;
+			ctx.with(|kept| *kept = false).await;
+		});
+
+		let size = Size::new(100, 100);
+		let _ = engine.evaluate(size, &frame_allocator);
+		// The cursor takes normalized window coordinates: (10, 10) in the 100 by 100 window, on the button.
+		engine.set_cursor_position(UiPoint::new(-0.8, 0.8));
+		engine.update_click_state(true);
+		let _ = engine.evaluate(size, &frame_allocator);
+		assert!(*engine.ctx(), "a press on a button inside the focused modal keeps the modal's focus");
+	}
+
+	#[test]
+	fn a_press_on_another_layer_or_on_nothing_takes_only_that_layers_focus() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::with_context((true, true));
+
+		engine.mount(async move |ctx| {
+			let mut base = ctx.element("base").container(|c| c.size(Sizing::pixels(10))).await;
+			let mut modal = ctx
+				.element("modal")
+				.container(|c| c.size(Sizing::pixels(50)).depth(Depth::absolute(1)))
+				.await;
+			let mut field = modal.element("field").container(|c| c.size(Sizing::pixels(10))).await;
+			let _button = modal
+				.element("button")
+				.container(|c| c.size(Sizing::pixels(20)).absolute_position(20, 20).hit_testable(true))
+				.await;
+			base.request_focus().await;
+			field.request_focus().await;
+			let mut base_kept = base.focus_change(true);
+			let mut field_kept = field.focus_change(true);
+			loop {
+				utils::r#async::select! {
+					_ = base_kept => ctx.with(|(base, _)| *base = false).await,
+					_ = field_kept => ctx.with(|(_, field)| *field = false).await,
+					complete => break,
+				}
+			}
+		});
+
+		let size = Size::new(100, 100);
+		let _ = engine.evaluate(size, &frame_allocator);
+		// The cursor takes normalized window coordinates: (30, 30) and (80, 80) in the 100 by 100 window.
+		engine.set_cursor_position(UiPoint::new(-0.4, 0.4));
+		engine.update_click_state(true);
+		let _ = engine.evaluate(size, &frame_allocator);
+		assert_eq!(*engine.ctx(), (true, false), "a press on a button in the modal takes only the modal's focus");
+
+		engine.update_click_state(false);
+		let _ = engine.evaluate(size, &frame_allocator);
+		engine.set_cursor_position(UiPoint::new(0.6, -0.6));
+		engine.update_click_state(true);
+		let _ = engine.evaluate(size, &frame_allocator);
+		assert_eq!(*engine.ctx(), (false, false), "a press on nothing takes the base layer's");
 	}
 
 	#[test]
@@ -2953,7 +3135,7 @@ mod tests {
 				.await;
 
 			let mut modal = frame.element("modal").mount(async move |ctx| {
-				let mut modal = ctx.element("window").container(|c| c).await;
+				let mut modal = ctx.element("window").container(|c| c.depth(Depth::absolute(1))).await;
 				modal.request_focus().await;
 				modal.on_key(Key::Escape).await;
 			});
@@ -3307,6 +3489,32 @@ mod tests {
 		let now = std::time::Instant::now();
 		assert!(tick > now + std::time::Duration::from_secs(3500));
 		assert!(tick <= now + std::time::Duration::from_secs(3600));
+	}
+
+	#[test]
+	fn input_asks_for_a_tick_and_an_edit_made_for_it_for_one_more_to_lay_it_out() {
+		let allocator = bumpalo::Bump::new();
+		let size = Size::new(100, 100);
+		let mut engine = Engine::new();
+		engine.mount(async move |ctx| {
+			let mut button = ctx.element("button").container(|c| c.size(100.into()).hit_testable(true)).await;
+			button.on(Events::Actuated).await;
+			button.update_container(|c| c.opacity(0.5)).await;
+			std::future::pending::<()>().await;
+		});
+		engine.evaluate(size, &allocator);
+		assert_eq!(engine.next_tick(), None, "An idle interface asked for a tick.");
+
+		engine.set_cursor_position(UiPoint::new(0.0, 0.0));
+		engine.update_click_state(true);
+		assert!(engine.next_tick().is_some(), "A click didn't ask for a tick.");
+		engine.evaluate(size, &allocator);
+		assert!(
+			engine.next_tick().is_some(),
+			"The edit the click's handler made after the layout didn't ask for a tick to lay it out."
+		);
+		engine.evaluate(size, &allocator);
+		assert_eq!(engine.next_tick(), None, "The interface didn't go idle once the edit was laid out.");
 	}
 
 	/// Mounts a container, text, curve, and image, and applies the edit selected by `edit` on every frame.

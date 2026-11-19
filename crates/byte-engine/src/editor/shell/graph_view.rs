@@ -700,7 +700,6 @@ async fn wire_handle(ctx: &mut EvaluationContext<Shell>, grip: PendingWire, z: f
 				})
 				.await;
 			},
-			_ = ctx.render() => {},
 		}
 	}
 }
@@ -792,7 +791,6 @@ async fn remove_button(ctx: &mut EvaluationContext<Shell>, node: usize, z: f32) 
 			_ = button.on(Events::PointerExited) => {
 				button.update_container(|c| c.style(row_style(false, false))).await;
 			},
-			_ = ctx.render() => {},
 		}
 	}
 }

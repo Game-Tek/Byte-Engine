@@ -186,8 +186,26 @@ button or a drop target. Everything else, such as a panel, a label's frame, or
 a heads-up display, lets the pointer through to what's under it.
 Text input is app-owned: a text field emits edit deltas such as inserted and deleted characters, and application state decides how to apply them. Write the result back with `update_text`.
 
-Components request and release focus explicitly. Send key and text-edit events to
-the focused element.
+Keys and typed text go to the focused element on their own. A component requests
+focus for the element that should take them, such as a text field it just
+declared, and releases it when it's done. Each absolute-depth layer, such as a
+modal, keeps its own focused element, and the highest one takes the keys, so
+opening a modal doesn't take focus from the screen under it.
+
+A press elsewhere in the same layer takes focus away, while a press on the
+element, inside it, or on the hit-testable container that holds it doesn't. To end typing
+when that happens, await `focus_change(true)` beside the field's text edits:
+
+```rust
+input.request_focus().await;
+loop {
+	select! {
+		edit = input.on_text_edit() => { /* apply the edit */ },
+		_ = input.on_key(Key::Enter) => break,
+		_ = input.focus_change(true) => break,
+	}
+}
+```
 
 ## Read and change engine state
 
@@ -268,6 +286,22 @@ components wait only on reactive values and events stays idle. Write the
 context before you call `Engine::evaluate`, and read it with `Engine::ctx` when
 you don't change it: every `Engine::ctx_mut` counts as a write. Keep the value
 small, such as a flag, a count, or a position, since each read builds it again.
+
+To let an idle screen cost nothing, evaluate only when the engine asks. Call
+`Engine::next_tick` each frame, and skip `Engine::evaluate` until the tick it
+returns has come, unless the window's size changed:
+
+```rust
+let due = engine.next_tick().is_some_and(|tick| tick <= Instant::now());
+if due || size != laid_out {
+    engine.evaluate(size, &frame_allocator);
+    laid_out = size;
+}
+```
+
+Input you feed the engine and edits your components make in response to it ask
+for the ticks they need, so nothing is missed. For the same reason, write the
+context only when a value changes: compare through `Engine::ctx` first.
 
 Follow a value that another thread produces, or one too large to compare, with
 a `Watch`. Write it with `Watch::set` or `Watch::update`, and pass a subscriber

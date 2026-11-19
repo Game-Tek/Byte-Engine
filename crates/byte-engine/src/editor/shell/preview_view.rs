@@ -33,11 +33,12 @@ async fn picture(ctx: &mut EvaluationContext<Shell>) {
 				.hit_testable(true)
 		})
 		.await;
+	// The renderer names the preview's image once it made it.
+	let mut named = ctx.proactive(|shell: &Shell| shell.preview);
 	let image = loop {
-		if let Some(image) = ctx.with(|shell: &mut Shell| shell.preview).await {
+		if let Some(image) = *named.next().await {
 			break image;
 		}
-		ctx.render().await;
 	};
 	mat.element("image").image(room[0], room[1], image, |i| i).await;
 	// Where the press that started the drag landed, in the surface's pixels, the ball it turns, and the arcball point
@@ -73,7 +74,6 @@ async fn picture(ctx: &mut EvaluationContext<Shell>) {
 					ctx.with(move |shell: &mut Shell| shell.zoom += delta.y.signum()).await;
 				}
 			},
-			_ = ctx.render() => {},
 		}
 	}
 }

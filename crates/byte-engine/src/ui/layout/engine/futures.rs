@@ -585,6 +585,46 @@ impl<C: 'static> FusedFuture for SizeChangeFuture<C> {
 	}
 }
 
+/// The `FocusChangeFuture` struct lets a component follow whether its element keeps the focus, such as a text field
+/// that ends typing once a press elsewhere takes it, without checking the pointer every frame.
+///
+/// Get one from [`Context::focus_change`] and await it beside the field's inputs. It checks on every poll and after
+/// every focus change, so a change before the first poll resolves it at once.
+pub struct FocusChangeFuture<C = ()> {
+	pub(super) target: Id,
+	pub(super) known: bool,
+	pub(super) complete: bool,
+	pub(super) ctx: PhantomData<fn() -> C>,
+}
+
+impl<C> Unpin for FocusChangeFuture<C> {}
+
+impl<C: 'static> Future for FocusChangeFuture<C> {
+	type Output = bool;
+
+	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+		if self.complete {
+			return Poll::Pending;
+		}
+		let access = UiPoll::<C>::from_context(cx);
+		let (task, poll) = access.current();
+		let runtime = &mut access.runtime;
+		let focused = runtime.holds_focus(self.target);
+		if focused != self.known {
+			self.complete = true;
+			return Poll::Ready(focused);
+		}
+		runtime.wait_for_focus(task, poll);
+		Poll::Pending
+	}
+}
+
+impl<C: 'static> FusedFuture for FocusChangeFuture<C> {
+	fn is_terminated(&self) -> bool {
+		self.complete
+	}
+}
+
 /// The `InputFuture` struct resolves with the next input of one kind that reaches its element, such as a click.
 ///
 /// Get one from [`ContainerContext::on`], [`ContainerContext::on_key`], or [`ContainerContext::on_text_edit`] and

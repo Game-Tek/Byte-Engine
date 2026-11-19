@@ -212,16 +212,65 @@ writes again starts another round, at most `READ_ROUNDS`. Changes it makes are
 laid out in the same evaluation. `Engine::next_tick` asks for a tick only while
 a write is left unread and a task waits on a read.
 
+### Ticks a host can skip to
+
+`Engine::next_tick` is complete, so a host such as the editor's `present` in
+`editor.rs` evaluates only when it comes or the viewport resizes. Besides frame
+waits, woken tasks, and unread writes, it's now in two more cases:
+
+- `Engine::input` is set by every input method, such as
+  `Engine::set_cursor_position` when the position changed, and cleared at the
+  start of `Engine::evaluate`.
+- An unlaid edit: the tree's revision differs from the one the retained layout
+  was built from. Event handlers run in the second `poll_ready_tasks`, after
+  `build_layout`, so their edits would otherwise wait for an unrelated tick.
+
 ### Rules a change must keep
 
 - A first wait resolves on its first poll, with no change needed.
 - A read wait never asks for a tick by itself. Only an unread write does.
 - Polled reads borrow the context shared and don't count as writes.
 - Reads run before layout, so their changes don't wait a frame.
+- Every input method sets `Engine::input`, and every tree change after layout
+  leaves the next tick now, so a host that skips evaluations misses nothing.
 
 `reactive_tests` in `ui/layout/engine/futures.rs` guards these rules, the tests
 in `ui/watch.rs` guard watch versions, and the hint bar test in
 `editor/shell/hint_bar.rs` guards that a hesitation waits on one timer.
+`input_asks_for_a_tick_and_an_edit_made_for_it_for_one_more_to_lay_it_out` in
+`ui/layout/engine.rs` guards input and unlaid edits, and
+`the_editor_asks_for_frames_only_while_its_drawer_moves` in `editor/shell.rs`
+guards that the editor goes idle.
+
+## Focus
+
+`Runtime::focus` in `ui/layout/engine/runtime.rs` holds at most one `Focus` per
+layer: the element, and the absolute-depth container that starts its layer, or
+`None` for the base layer. `RetainedTree::layer_of` finds that container among
+the element's visual ancestors when a focus request is applied, so a request
+needs no layout. `Runtime::focused` picks the entry whose layer container paints
+highest in the last layout; the base layer ranks under every other.
+
+A press never gives focus; it only takes it. `Engine::release_pressed_focus`
+runs as clicks route and releases the focused element of the pressed layer
+unless the press hit that element, an element inside it, or
+`RetainedTree::holder_of` it, the nearest hit-testable ancestor, such as a text
+field's well. A component learns that its
+element lost focus through `FocusChangeFuture`, which registers
+`UiTask::focus_wait`; every focus change wakes all such tasks, since focus
+changes are rare and the woken future checks its own element.
+
+### Rules a change must keep
+
+- Each layer keeps its own focused element, and a press or request in one layer
+  never changes another's.
+- A press on nothing counts as a press on the base layer.
+- A focus wait never asks for a tick by itself.
+
+The focus tests in `ui/layout/engine.rs`, such as
+`a_press_elsewhere_in_a_layer_takes_its_focus_and_a_press_on_the_holder_keeps_it`
+and `a_press_on_another_layer_or_on_nothing_takes_only_that_layers_focus`, guard
+these rules.
 
 ## Drawing
 

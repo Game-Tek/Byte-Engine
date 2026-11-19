@@ -19,7 +19,7 @@ const HALF_LIFE: f32 = 0.05;
 const WARNING: crate::utils::RGBA = hex(0xF5A524, 1.0);
 const ERROR: crate::utils::RGBA = hex(0xE5484D, 1.0);
 
-/// Ages the toasts every frame and keeps one card per toast, newer cards over older ones.
+/// Ages the toasts every frame while any shows and keeps one card per toast, newer cards over older ones.
 pub(super) async fn toasts(ctx: &mut EvaluationContext<Shell>) {
 	// Each card's holder, by toast, and the last depth given to it.
 	let mut holders: Vec<(u64, i32, EvaluationContext<Shell>)> = Vec::new();
@@ -27,6 +27,8 @@ pub(super) async fn toasts(ctx: &mut EvaluationContext<Shell>) {
 	let mut placed: Vec<(u64, i32)> = Vec::new();
 	// The toasts age by each frame's time, from the engine's clock.
 	let mut dt = 0.0;
+	// Nothing ages while no toast shows, so the stack sleeps until one is posted.
+	let mut empty = ctx.proactive(|shell: &Shell| shell.toasts.list().is_empty());
 	loop {
 		placed = ctx
 			.with(move |shell: &mut Shell| {
@@ -79,7 +81,12 @@ pub(super) async fn toasts(ctx: &mut EvaluationContext<Shell>) {
 				}
 			}
 		}
-		dt = ctx.render().await.as_seconds_f32();
+		if placed.is_empty() {
+			while *empty.next().await {}
+			dt = 0.0;
+		} else {
+			dt = ctx.render().await.as_seconds_f32();
+		}
 	}
 }
 

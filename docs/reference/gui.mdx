@@ -328,16 +328,25 @@ Within one evaluation: a changed size cancels any drag; the pointer syncs;
 drag and drop events route; the frame counter advances and due timers and
 frame waits wake; ready tasks run; if the application context was written,
 polled values are read again and the tasks whose value changed run; layout
-runs; hover, click, and scroll events route; the focused element's keys and
-text edits route; ready tasks run again.
+runs; hover, click, and scroll events route and presses release focus; the
+focused element's keys and text edits route; ready tasks run again.
 
 ## Focus
 
-Requesting focus puts an element on top of the focus stack; releasing removes
-it. The focused element is the top entry among the elements the last layout
-placed, so focus falls back when an element disappears. Keys and text edits go
-only to the focused element and are dropped when nothing has focus. Any element
-kind can hold focus.
+Focus is kept per layer. The base layer holds every element outside an
+absolute-depth container, and each absolute-depth container starts a layer of
+its own that holds the elements inside it, up to the next absolute-depth
+container. Each layer has at most one focused element, and any element kind can
+be it.
+
+| Rule | Value |
+| --- | --- |
+| Request | Makes the element its layer's focused element, replacing the one before. |
+| Release | Leaves the element's layer without a focused element, if the element was it. |
+| Removal | A removed element stops being its layer's focused element. |
+| Press | Lands in the layer of the frontmost hit-testable element under the pointer, or in the base layer when it hits nothing. It releases that layer's focused element unless it hits the focused element, an element inside it, or the nearest hit-testable element that contains it. It never gives an element focus, and it leaves other layers' focus alone. |
+| Keys and text edits | Go to the focused element of the highest-painting layer that has one, among the elements the last layout placed. They're dropped when no layer has a focused element. |
+| Focus change | Resolves once whether an element is its layer's focused element differs from what the component last knew, checked on every poll and after every focus change. |
 
 ## Hit testing
 
@@ -371,10 +380,19 @@ the drag ended. A changed evaluation size cancels first.
 | Logical size change | With the element's logical size, once that size differs from the known size the wait was given. Checked when polled and after every layout. |
 
 The frame counter advances once per evaluation. The engine's next tick is now
-while any task waits for a frame or is woken, or while a task waits on a polled
-value and the host changed the application context since the last evaluation;
-else the earliest timer deadline, else never. A wait on a polled value never
-asks for a tick by itself. See [Reactive values](#reactive-values). Reads of geometry, pointer, drag, and application state complete on
+while any of these holds; else the earliest timer deadline, else never:
+
+| Next tick is now | When |
+| --- | --- |
+| Frame wait | A task waits for a frame, which includes every running animation. |
+| Woken task | A task was woken and waits to be polled. |
+| Unread write | A task waits on a polled value and the application context was written since the last reads. |
+| Input | Input arrived since the last evaluation: a pointer move, a press or release, a scroll, a key, a text edit, or a drag change. |
+| Unlaid edit | The tree changed since the last layout, as an edit a task makes in response to an event, after that evaluation's layout. |
+
+A wait on a polled value never asks for a tick by itself. See
+[Reactive values](#reactive-values). A host may skip evaluations until the next
+tick comes, as long as it still evaluates when the viewport's size changes. Reads of geometry, pointer, drag, and application state complete on
 the first poll. A geometry read reports two transformed rectangles from the
 last evaluated frame: the logical one, which hits use, and the display one,
 which is painted. Both are the same unless a container's display size differs.
@@ -511,7 +529,7 @@ subscriber starts with nothing seen, so its first wait resolves at once.
 | Scope removal | Follows declaration paths, never the current visual parent. |
 | Reparent and adopt | Move an element as the last child, keeping its ID, path, and properties. Refused for unknown IDs, self, or a cycle. |
 | Edit | Compares every value before and after, so an edit that writes the values already present changes nothing. A kind mismatch is logged and skipped. |
-| Write order | Declarations, edits, removals, reparents, and focus requests apply on first poll in await order, and the next layout and later components in the same evaluation see them. |
+| Write order | Declarations, edits, removals, reparents, and focus requests and releases apply on first poll in await order, and the next layout and later components in the same evaluation see them. |
 
 ## Render output
 

@@ -20,7 +20,7 @@ use crate::ui::{
 		ElementGeometry,
 		engine::{
 			EvaluationContext, EventFuture, KeyFuture, MountedComponentFuture, PointerState, Read, RenderFuture, Setup,
-			SizeChangeFuture, TextEditFuture, With,
+			FocusChangeFuture, SizeChangeFuture, TextEditFuture, With,
 		},
 	},
 	primitive::{Events, Key},
@@ -190,11 +190,21 @@ pub trait Context<C: 'static = ()>: Sized {
 	/// Reads the engine's captured drag gesture, if a source is held.
 	fn drag(&self) -> Read<C, Option<DragCapture>>;
 
-	/// Puts this element on top of the focus stack, so key and text input reach it. Await it.
+	/// Makes this element its layer's focused element, so key and text input reach it while no higher layer has one.
+	/// Await it. Each absolute-depth layer keeps its own focused element, so a modal that requests focus leaves the
+	/// screen under it focused as it was.
+	///
+	/// Next, await the element's [`ContainerContext::on_text_edit`] or [`ContainerContext::on_key`], beside
+	/// [`Context::focus_change`] to learn when a press elsewhere takes the focus away.
 	fn request_focus(&mut self) -> impl Future<Output = ()>;
 
-	/// Takes this element off the focus stack, returning focus to the element focused before it. Await it.
+	/// Leaves this element's layer without a focused element, if this element was it. Await it.
 	fn release_focus(&mut self) -> impl Future<Output = ()>;
+
+	/// Resolves with whether this element is its layer's focused element, once that differs from `known`, what the
+	/// component last knew. A text field being typed into awaits `focus_change(true)` to end the typing when a press
+	/// elsewhere in its layer, a release, or its removal takes the focus away.
+	fn focus_change(&self, known: bool) -> FocusChangeFuture<C>;
 
 	/// Removes everything declared under this context, including the component
 	/// itself when awaited from one. See [`EvaluationContext::remove`].

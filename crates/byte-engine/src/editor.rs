@@ -96,8 +96,8 @@ struct ResourceWindow {
 	engine: Engine<Shell>,
 	/// Where the window's renders go to its own UI render pass.
 	renders: Factory<Render>,
-	/// The revision of the last render sent.
-	published: Option<RenderRevision>,
+	/// The window size of the last evaluation and the revision of the last render sent; see [`present`].
+	published: Option<(Size, RenderRevision)>,
 	/// The stage slot the window's main panel shows, while it previews a mesh or material.
 	preview: Option<usize>,
 }
@@ -113,8 +113,9 @@ pub struct Editor {
 	engine: Engine<Shell>,
 	/// Where the editor's renders go to its own UI render pass.
 	renders: Factory<Render>,
-	/// The revision of the last render sent, so an unchanged editor is not sent again.
-	published: Option<RenderRevision>,
+	/// The window size of the last evaluation and the revision of the last render sent, so an idle editor isn't laid
+	/// out and an unchanged one isn't sent again; see [`present`].
+	published: Option<(Size, RenderRevision)>,
 	/// The editor's actions, which its input layer resolves before the game's.
 	actions: input::Actions,
 	/// What the input layer resolved, and whether it takes the game's input.
@@ -248,9 +249,31 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 	}
 }
 
+/// Lays `engine` out for its window's size and sends its render to `renders` when it changed since `published`, the
+/// size it was last laid out for and the revision last sent.
+///
+/// It skips the evaluation while the engine asks for none, through [`Engine::next_tick`], and the window keeps its
+/// size, so an idle interface costs nothing.
+fn present(
+	engine: &mut Engine<Shell>,
+	renders: &mut Factory<Render>,
+	published: &mut Option<(Size, RenderRevision)>,
+	frame_allocator: &bumpalo::Bump,
+) {
+	let viewport = engine.ctx().viewport;
+	let due = engine.next_tick().is_some_and(|tick| tick <= Instant::now());
+	if !due && published.is_some_and(|(size, _)| size == viewport) {
+		return;
+	}
+	engine.evaluate(viewport, frame_allocator);
+	let render = engine.render();
+	if published.is_none_or(|(_, revision)| revision != render.revision()) {
+		renders.create(render.clone());
+	}
+	*published = Some((viewport, render.revision()));
+}
+
 impl Editor {
-	/// Opens or closes the editor on F5 and Escape, feeds this tick's pointer input and resizes into the editor's UI,
-	/// lays it out, and sends the render when it changed.
 	/// Shows `panel` at the bottom of the entity panel while an entity with a `T` component is selected, under a header
 	/// that reads `title`, in a column as tall as what the panel adds.
 	///
@@ -273,6 +296,8 @@ impl Editor {
 		});
 	}
 
+	/// Opens or closes the editor on F5 and Escape, feeds this tick's pointer input and resizes into the editor's UI,
+	/// lays it out, and sends the render when it changed.
 	pub fn frame(&mut self, app: &mut GraphicsApplication) {
 		while let Some(message) = self.windows.read() {
 			// The editor frees the cursor of the game's first window.
@@ -345,13 +370,7 @@ impl Editor {
 		self.place_gizmo();
 		self.publish_drag();
 
-		let viewport = self.engine.ctx().viewport;
-		self.engine.evaluate(viewport, app.frame_allocator());
-		let render = self.engine.render();
-		if self.published != Some(render.revision()) {
-			self.published = Some(render.revision());
-			self.renders.create(render.clone());
-		}
+		present(&mut self.engine, &mut self.renders, &mut self.published, app.frame_allocator());
 		self.step_resources(app);
 	}
 
@@ -362,7 +381,7 @@ impl Editor {
 		let open = self.engine.ctx().layers.open();
 		let mut index = 0;
 		while index < self.resources.len() {
-			if !open || !self.resources[index].engine.ctx_mut().layers.open() {
+			if !open || !self.resources[index].engine.ctx().layers.open() {
 				let resource = self.resources.remove(index);
 				self.close_windows.send(CloseWindow::new(resource.window));
 				self.release(&resource);
@@ -376,32 +395,43 @@ impl Editor {
 			std::mem::swap(&mut self.engine, &mut self.resources[index].engine);
 
 			let resource = &mut self.resources[index];
-			if let Some(text) = resource.engine.ctx_mut().copy.take()
+			if resource.engine.ctx().copy.is_some()
+				&& let Some(text) = resource.engine.ctx_mut().copy.take()
 				&& let Err(error) = app.renderer_mut().set_clipboard_text(&text)
 			{
 				log::warn!("{error}");
 			}
 			// The preview follows the drag and scroll the panel took, fills the room the panel leaves it, and shows once
 			// the renderer named its image.
+			// The shell is written only when the panel took a drag or a scroll, or what the stage reports changed.
 			if let Some(slot) = resource.preview {
-				let shell = resource.engine.ctx_mut();
-				let (turn, zoom) = (shell.turn.take(), std::mem::take(&mut shell.zoom));
+				let shell = resource.engine.ctx();
+				let (turn, zoom) = if shell.turn.is_some() || shell.zoom != 0.0 {
+					let shell = resource.engine.ctx_mut();
+					(shell.turn.take(), std::mem::take(&mut shell.zoom))
+				} else {
+					(None, 0.0)
+				};
+				let shell = resource.engine.ctx();
 				self.stage.steer(slot, turn, zoom);
 				self.stage.show_level(slot, shell.detail_level);
 				let viewport = [shell.viewport.x(), shell.viewport.y()];
 				let room = shell::open_room(viewport[0], shell.drawer_shown, shell.drawers);
 				// The drawers make room while the subject is zoomed wider than the room between them.
 				let width = self.stage.present(slot, viewport, (room[0] + room[1]) * 0.5);
-				shell.drawer_open = shell::fits(width, viewport[0], shell.drawers);
-				shell.preview = self.stage.image(slot);
+				let open = shell::fits(width, viewport[0], shell.drawers);
+				let image = self.stage.image(slot);
+				if (open, image) != (shell.drawer_open, shell.preview) {
+					let shell = resource.engine.ctx_mut();
+					(shell.drawer_open, shell.preview) = (open, image);
+				}
 			}
-			let viewport = resource.engine.ctx_mut().viewport;
-			resource.engine.evaluate(viewport, app.frame_allocator());
-			let render = resource.engine.render();
-			if resource.published != Some(render.revision()) {
-				resource.published = Some(render.revision());
-				resource.renders.create(render.clone());
-			}
+			present(
+				&mut resource.engine,
+				&mut resource.renders,
+				&mut resource.published,
+				app.frame_allocator(),
+			);
 			index += 1;
 		}
 	}
@@ -553,7 +583,7 @@ impl Editor {
 	/// held actions end. A closed one gives the window its own cursor capture back, and bypasses its pass once the
 	/// scene drawer has slid out.
 	fn sync_open(&mut self, app: &mut GraphicsApplication) {
-		let open = self.engine.ctx_mut().layers.open();
+		let open = self.engine.ctx().layers.open();
 		// A closed editor's pass draws until the scene drawer has left, and then forwards the frame unchanged.
 		if self.closing && self.engine.ctx().drawer_gone {
 			self.closing = false;
@@ -590,7 +620,7 @@ impl Editor {
 	fn flies(&mut self) -> bool {
 		!self.held.contains(bindings::Key::Cmd)
 			&& self.drag.is_none()
-			&& matches!(self.engine.ctx_mut().layers.top(), Some(Layer::Scene))
+			&& matches!(self.engine.ctx().layers.top(), Some(Layer::Scene))
 	}
 
 	/// Moves the editor's camera on by this frame's keys and drag, switching the game window to it on its first move,
@@ -673,7 +703,7 @@ impl Editor {
 	///
 	/// The answer arrives a few frames later; [`Self::adopt_hits`] selects it.
 	fn pick(&mut self, app: &GraphicsApplication, pointer: UiPoint) {
-		let shell = self.engine.ctx_mut();
+		let shell = self.engine.ctx();
 		let Some(camera) = shell.camera() else {
 			return;
 		};
@@ -997,6 +1027,9 @@ impl Editor {
 	/// Writes the setting the texture's properties panel changed to the texture's sidecar, and reads back what the
 	/// texture now bakes with, for the panel to show.
 	fn edit_texture(&mut self, app: &GraphicsApplication) {
+		if self.engine.ctx().texture_edit.is_none() {
+			return;
+		}
 		let shell = self.engine.ctx_mut();
 		let Some(setting) = shell.texture_edit.take() else {
 			return;
@@ -1024,6 +1057,9 @@ impl Editor {
 
 	/// Writes the parameter the variant window changed to the variant's file, which the game then bakes again.
 	fn edit_variant(&mut self, app: &GraphicsApplication) {
+		if self.engine.ctx().variant_edit.is_none() {
+			return;
+		}
 		let shell = self.engine.ctx_mut();
 		let Some((name, value)) = shell.variant_edit.take() else {
 			return;
@@ -1118,8 +1154,11 @@ impl Editor {
 	/// One query waits at a time, so the mesh follows the pointer a physics step behind.
 	fn move_carry(&mut self, app: &GraphicsApplication) {
 		let ray = self.pointer_ray();
-		let Some(carry) = self.engine.ctx_mut().layers.carry_mut() else {
+		if !matches!(self.engine.ctx().layers.top(), Some(Layer::Carry(_))) {
 			while self.rays.read().is_some() {}
+			return;
+		}
+		let Some(carry) = self.engine.ctx_mut().layers.carry_mut() else {
 			return;
 		};
 		let Some(ray) = ray else {
@@ -1162,6 +1201,12 @@ impl Editor {
 	/// Posts the deletion and the change the properties panel made to the game: a deletion as a `Delete`, a transform
 	/// as a `TransformationUpdate`, camera settings as a `CameraUpdate`, and light settings as the light's own update.
 	fn post_edit(&mut self, app: &GraphicsApplication) {
+		// The shell is read first and written only when it holds something to post, so a quiet frame leaves the
+		// components that follow it asleep.
+		let shell = self.engine.ctx();
+		if shell.delete.is_none() && shell.posts.is_empty() && shell.edit.is_none() {
+			return;
+		}
 		if let Some(handle) = self.engine.ctx_mut().delete.take() {
 			// The deleted entity can't be dragged on.
 			if self.drag.as_ref().is_some_and(|(dragged, _)| *dragged == handle) {
@@ -1219,6 +1264,9 @@ impl Editor {
 	/// A graph that breaks the format's rules isn't written; the canvas shows why. A written graph is baked again, as
 	/// after any source change, so the game's materials show the edit.
 	fn save_graph(&mut self, app: &GraphicsApplication) {
+		if !self.engine.ctx().save_graph {
+			return;
+		}
 		let shell = self.engine.ctx_mut();
 		if !std::mem::take(&mut shell.save_graph) {
 			return;
@@ -1266,12 +1314,13 @@ impl Editor {
 	fn toast_log(&mut self) {
 		use crate::application::log_capture::{self, LineKind};
 		let open = self.layer.borrow().open;
-		let toasts = &mut self.engine.ctx_mut().toasts;
+		// The shell is written only when a toast is posted.
+		let engine = &mut self.engine;
 		self.log_seen = log_capture::entries_since(self.log_seen, |entry| {
 			if let LineKind::Log(level @ (log::Level::Warn | log::Level::Error)) = entry.kind
 				&& open
 			{
-				toasts.post(level, entry.message());
+				engine.ctx_mut().toasts.post(level, entry.message());
 			}
 		});
 	}
@@ -1280,7 +1329,7 @@ impl Editor {
 	/// Stands the gizmo at the selection while the editor is open, in the game camera's view, and hides it otherwise.
 	fn place_gizmo(&mut self) {
 		let open = self.layer.borrow().open;
-		let shell = self.engine.ctx_mut();
+		let shell = self.engine.ctx();
 		let mut state = self.gizmo.borrow_mut();
 		state.target = shell.selection().filter(|_| open).map(|entity| entity.transform.clone());
 		state.camera = shell.camera();
@@ -1292,13 +1341,13 @@ impl Editor {
 
 	/// Lights the gizmo part under `pointer`, in normalized window coordinates, unless a part is being dragged.
 	fn hover(&mut self, pointer: UiPoint) {
-		let shell = self.engine.ctx_mut();
+		let shell = self.engine.ctx();
 		// Only the scene's own layer shows the gizmo to point at; anything over it takes the pointer.
 		if self.drag.is_some() || !matches!(shell.layers.top(), Some(Layer::Scene)) {
 			self.gizmo.borrow_mut().hovered = None;
 			return;
 		}
-		let target = self.engine.ctx_mut().selection().map(|entity| entity.transform.clone());
+		let target = self.engine.ctx().selection().map(|entity| entity.transform.clone());
 		let mut state = self.gizmo.borrow_mut();
 		state.hovered = target
 			.and_then(|target| state.placement(&target))
@@ -1307,7 +1356,7 @@ impl Editor {
 
 	/// Begins dragging the selection by the gizmo part under `pointer`, and returns whether the pointer was over one.
 	fn grab(&mut self, pointer: UiPoint) -> bool {
-		let Some(entity) = self.engine.ctx_mut().selection() else {
+		let Some(entity) = self.engine.ctx().selection() else {
 			return false;
 		};
 		let mut state = self.gizmo.borrow_mut();
@@ -1464,9 +1513,11 @@ impl Editor {
 		if let Some(camera) = self.camera {
 			self.entities.retain(|entity| entity.handle() != camera);
 		}
-		let shell = self.engine.ctx_mut();
-		if scene::collect(&self.entities, &mut shell.scene) {
-			shell.scene_revision += 1;
+		let scene = scene::collect(&self.entities);
+		if scene != self.engine.ctx().scene {
+			let shell = self.engine.ctx_mut();
+			shell.scene_revision += u64::from(scene::relisted(&shell.scene, &scene));
+			shell.scene = scene;
 		}
 		true
 	}
@@ -1474,13 +1525,14 @@ impl Editor {
 	/// Finds the rows the overview lists, when the scene was just read or the search changed, and has the list rebuilt
 	/// when they changed.
 	fn find_shown(&mut self, polled: bool) {
-		let shell = self.engine.ctx_mut();
+		let shell = self.engine.ctx();
 		if !polled && shell.search == self.searched {
 			return;
 		}
 		self.searched.clone_from(&shell.search);
 		let shown = scene::shown(&self.entities, &shell.scene, &shell.search);
 		if shown != shell.shown {
+			let shell = self.engine.ctx_mut();
 			shell.shown = shown;
 			shell.scene_revision += 1;
 		}

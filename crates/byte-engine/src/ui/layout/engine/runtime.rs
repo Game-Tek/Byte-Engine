@@ -34,6 +34,9 @@ pub(super) struct UiTask {
 	/// The poll that last registered a wait on a polled value, which [`poll_reads`] wakes after context writes.
 	/// A task needs one entry however many polled values it waits on, since one poll reads them all.
 	pub(super) read_wait: Option<u64>,
+	/// The poll that last registered a wait on an element's focus, which [`Runtime::wake_focus_waits`] wakes after
+	/// any focus change; see [`super::FocusChangeFuture`].
+	pub(super) focus_wait: Option<u64>,
 }
 
 impl UiTask {
@@ -47,6 +50,7 @@ impl UiTask {
 		self.timer_waits.clear();
 		self.size_waits.clear();
 		self.read_wait = None;
+		self.focus_wait = None;
 	}
 
 	/// Wakes the task so the next [`Runtime::poll_ready_tasks`] polls it.
@@ -68,6 +72,7 @@ impl UiTask {
 		self.timer_waits.retain(|wait| wait.polled == poll);
 		self.size_waits.retain(|wait| wait.polled == poll);
 		self.read_wait = self.read_wait.filter(|polled| *polled == poll);
+		self.focus_wait = self.focus_wait.filter(|polled| *polled == poll);
 	}
 }
 
@@ -283,7 +288,8 @@ pub struct Runtime {
 	polls: u64,
 	/// Hands every [`RenderFuture`] a distinct [`FrameWait::token`].
 	next_frame_token: u64,
-	pub(super) focus_stack: Vec<Id>,
+	/// Each layer's focused element, at most one per layer; see [`Focus`].
+	pub(super) focus: Vec<Focus>,
 	/// Keyed by id, which is already a well-mixed hash, so the fast hasher is enough.
 	pub(super) geometry: utils::hash::HashMap<Id, Published>,
 	pub(super) pointer: PointerState,
@@ -292,6 +298,16 @@ pub struct Runtime {
 	/// The time between the previous frame and this one, which animation runs advance by.
 	pub(super) frame_time: crate::time::MediaTime,
 	pub(super) clock: FrameClock,
+}
+
+/// The `Focus` struct is the element one layer gives keys and typed text, so each modal or overlay keeps its own while
+/// the layers under it keep theirs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Focus {
+	/// The absolute-depth container that starts the layer, or `None` for the base layer; see
+	/// [`RetainedTree::layer_of`](super::super::retained_tree::RetainedTree::layer_of).
+	pub(super) layer: Option<Id>,
+	pub(super) element: Id,
 }
 
 /// The `FrameClock` enum is where frame times come from: the wall clock, until the host advances time by hand, such
@@ -397,7 +413,7 @@ impl Runtime {
 			}),
 			polls: 0,
 			next_frame_token: 0,
-			focus_stack: Vec::new(),
+			focus: Vec::new(),
 			geometry: utils::hash::HashMap::default(),
 			pointer: PointerState::default(),
 			drag: Drag::new(DRAG_THRESHOLD),
@@ -616,23 +632,62 @@ impl Runtime {
 		E::channel(self.tasks.get_mut(task)?).take(target, filter)
 	}
 
-	pub(super) fn request_focus(&mut self, target: Id) {
-		self.focus_stack.retain(|focused| *focused != target);
-		self.focus_stack.push(target);
+	/// Makes `target` the focused element of `layer`, the layer it's in, replacing the one before.
+	pub(super) fn request_focus(&mut self, target: Id, layer: Option<Id>) {
+		self.focus.retain(|focus| focus.layer != layer && focus.element != target);
+		self.focus.push(Focus { layer, element: target });
+		self.wake_focus_waits();
 	}
 
+	/// Leaves `target`'s layer without a focused element, if `target` was it.
 	pub(super) fn release_focus(&mut self, target: Id) {
-		self.focus_stack.retain(|focused| *focused != target);
+		let before = self.focus.len();
+		self.focus.retain(|focus| focus.element != target);
+		if self.focus.len() != before {
+			self.wake_focus_waits();
+		}
 	}
 
-	/// Returns the element key and text input reach: the top of the focus stack among the laid-out elements.
-	///
-	/// Entries for elements the last layout did not place are dropped, so focus falls back to the element focused
-	/// before them.
-	pub(super) fn focused(&mut self) -> Option<Id> {
+	/// Returns the focused element of `layer`, if it has one.
+	pub(super) fn focused_in(&self, layer: Option<Id>) -> Option<Id> {
+		self.focus.iter().find(|focus| focus.layer == layer).map(|focus| focus.element)
+	}
+
+	/// Reports whether `target` is its layer's focused element.
+	pub(super) fn holds_focus(&self, target: Id) -> bool {
+		self.focus.iter().any(|focus| focus.element == target)
+	}
+
+	/// Returns the element keys and text input reach: the focused element of the highest-painting layer among the
+	/// elements the last layout placed.
+	pub(super) fn focused(&self) -> Option<Id> {
 		let geometry = &self.geometry;
-		self.focus_stack.retain(|focused| geometry.contains_key(focused));
-		self.focus_stack.last().copied()
+		// The base layer paints under every absolute-depth layer; a layer whose container isn't placed takes nothing.
+		let rank = |layer: Option<Id>| match layer {
+			None => Some(-1),
+			Some(layer) => geometry.get(&layer).map(|published| i64::from(published.geometry.logical.z())),
+		};
+		self.focus
+			.iter()
+			.filter(|focus| geometry.contains_key(&focus.element))
+			.filter_map(|focus| Some((rank(focus.layer)?, focus.element)))
+			.max_by_key(|&(rank, _)| rank)
+			.map(|(_, element)| element)
+	}
+
+	/// Registers the current poll of `task` as waiting for any element's focus to change.
+	pub(super) fn wait_for_focus(&mut self, task: TaskId, poll: u64) {
+		if let Some(task) = self.tasks.get_mut(task) {
+			task.focus_wait = Some(poll);
+		}
+	}
+
+	/// Wakes every task that waits on an element's focus, so its next poll checks it again. Focus changes are rare, so
+	/// waking every waiter is cheaper than tracking which element each one waits on.
+	fn wake_focus_waits(&self) {
+		for task in self.tasks.iter().filter(|task| task.focus_wait.is_some()) {
+			task.wake();
+		}
 	}
 
 	/// Replaces the published geometry with `elements`, the transformed layout; see [`Published::of`].
@@ -652,7 +707,11 @@ impl Runtime {
 
 	/// Removes input and geometry owned by the deleted elements.
 	pub(super) fn remove_targets(&mut self, targets: &utils::hash::HashSet<Id>) {
-		self.focus_stack.retain(|focused| !targets.contains(focused));
+		let before = self.focus.len();
+		self.focus.retain(|focus| !targets.contains(&focus.element));
+		if self.focus.len() != before {
+			self.wake_focus_waits();
+		}
 		// Delete known keys instead of searching the removal list for every live entry.
 		for id in targets {
 			self.geometry.remove(id);

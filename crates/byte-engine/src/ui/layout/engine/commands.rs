@@ -18,7 +18,7 @@ pub(super) enum UiCommand {
 	Remove { path: u64, owner: Option<ScopeId> },
 	/// Moves `child` under `parent` as its last child.
 	Reparent { child: Id, parent: Id },
-	/// Puts `target` on top of the focus stack, or takes it off.
+	/// Makes `target` its layer's focused element, or leaves the layer without one if `target` was it.
 	Focus { target: Id, focused: bool },
 	/// Edits the container `target` with `edit`, such as an interrupted animation run's end; see [`Animate`].
 	Edit { target: Id, edit: ContainerEdit },
@@ -44,7 +44,7 @@ pub(super) fn apply(command: UiCommand, runtime: &mut Runtime, tree: &mut Retain
 			});
 		}
 		UiCommand::Reparent { child, parent } => tree.reparent(child, parent),
-		UiCommand::Focus { target, focused: true } => runtime.request_focus(target),
+		UiCommand::Focus { target, focused: true } => runtime.request_focus(target, tree.layer_of(target)),
 		UiCommand::Focus { target, focused: false } => runtime.release_focus(target),
 		UiCommand::Edit { target, edit } => {
 			// A container removed since the edit was sent has nothing left to edit.

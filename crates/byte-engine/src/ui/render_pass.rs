@@ -884,10 +884,28 @@ impl UiRenderPass {
 		self.primitives = primitives.primitives;
 		self.primitive_copies_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
 
-		if primitives.steps.iter().any(|step| matches!(step, UiStep::Blur(_))) {
+		// Which resolution paths this frame's blurs filter through. A blur between the two quality ranges uses both.
+		let (uses_full, uses_half) = primitives.steps.iter().fold((false, false), |(full, half), step| match step {
+			UiStep::Blur(blur) => (
+				full || blur_uses_full_resolution(blur.resolution_mix),
+				half || blur_uses_half_resolution(blur.resolution_mix),
+			),
+			UiStep::Draw { .. } => (full, half),
+		});
+		if uses_full || uses_half {
+			// Only the paths a frame uses grow to the viewport; one no blur has used keeps its initial size. An
+			// unused path is never shrunk, so a UI that alternates radii does not reallocate every frame. The
+			// ubershader never samples an inactive path, so its stale size is harmless.
 			let half_extent = blur_half_extent(extent);
-			for (index, image) in self.blur_images.into_iter().enumerate() {
-				frame.resize_image(image, if index < UI_BLUR_HALF_SOURCE { extent } else { half_extent });
+			frame.resize_image(self.blur_images[UI_BLUR_BACKDROP], extent);
+			if uses_full {
+				frame.resize_image(self.blur_images[UI_BLUR_FULL_SCRATCH], extent);
+				frame.resize_image(self.blur_images[UI_BLUR_FULL_OUTPUT], extent);
+			}
+			if uses_half {
+				for image in &self.blur_images[UI_BLUR_HALF_SOURCE..=UI_BLUR_HALF_OUTPUT] {
+					frame.resize_image(*image, half_extent);
+				}
 			}
 			if !self.blur_textures_bound {
 				frame.write(&[

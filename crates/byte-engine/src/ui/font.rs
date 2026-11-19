@@ -196,6 +196,8 @@ pub(crate) struct TextSystem {
 	measure_cache_bytes: usize,
 	/// Emptied keys of the generation that rotated out, which new measurements reuse instead of allocating.
 	spare_measure_keys: Vec<String>,
+	/// Emptied size groups of the generation that rotated out, which new font sizes reuse instead of allocating.
+	spare_measure_groups: Vec<HashMap<String, Size>>,
 	glyph_cache: HashMap<GlyphKey, Glyph>,
 	reported_unavailable: bool,
 }
@@ -223,6 +225,7 @@ impl TextSystem {
 			measure_cache_entries: 0,
 			measure_cache_bytes: 0,
 			spare_measure_keys: Vec::new(),
+			spare_measure_groups: Vec::new(),
 			glyph_cache: HashMap::default(),
 			reported_unavailable: false,
 		}
@@ -278,22 +281,32 @@ impl TextSystem {
 			{
 				std::mem::swap(&mut self.measure_cache, &mut self.previous_measure_cache);
 				// The rotated-out generation leaves its key storage to the measurements that replace it.
-				for sizes in self.measure_cache.values_mut() {
+				// The size groups leave the map too, keeping their buckets for the sizes measured next. Leaving
+				// them in place would keep one empty group for every size ever used, such as an animated font size.
+				for (_, mut sizes) in self.measure_cache.drain() {
 					self.spare_measure_keys.extend(sizes.drain().map(|(mut key, _)| {
 						key.clear();
 						key
 					}));
+					self.spare_measure_groups.push(sizes);
 				}
 				self.measure_cache_entries = 0;
 				self.measure_cache_bytes = 0;
 			}
 			let mut text_key = self.spare_measure_keys.pop().unwrap_or_default();
 			text_key.push_str(text);
-			self.measure_cache.entry(key).or_default().insert(text_key, size);
+			let spare_groups = &mut self.spare_measure_groups;
+			self.measure_cache
+				.entry(key)
+				.or_insert_with(|| spare_groups.pop().unwrap_or_default())
+				.insert(text_key, size);
 			self.measure_cache_entries += 1;
 			self.measure_cache_bytes += text.len();
+			// Every size group holds at least one measurement, so groups are bounded by entries.
 			debug_assert!(
-				self.measure_cache_entries <= MEASURE_CACHE_ENTRIES && self.measure_cache_bytes <= MEASURE_CACHE_BYTES
+				self.measure_cache_entries <= MEASURE_CACHE_ENTRIES
+					&& self.measure_cache_bytes <= MEASURE_CACHE_BYTES
+					&& self.measure_cache.len() <= self.measure_cache_entries
 			);
 		}
 		size
@@ -1003,6 +1016,17 @@ mod tests {
 		for ((text, size), expected) in labels.into_iter().zip(expected) {
 			assert_eq!(text_system.measure(text, None, size), expected);
 		}
+	}
+
+	#[test]
+	fn measurements_stay_consistent_across_many_font_sizes() {
+		let mut text_system = TextSystem::new();
+		let expected = text_system.measure("Score", None, 16.0);
+		// Each measurement uses a size no other one does, as an animated font size would.
+		for step in 0..3 * super::MEASURE_CACHE_ENTRIES {
+			text_system.measure("Score", None, 16.0 + step as f32 / 1024.0);
+		}
+		assert_eq!(text_system.measure("Score", None, 16.0), expected);
 	}
 
 	#[test]

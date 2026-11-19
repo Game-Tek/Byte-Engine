@@ -377,6 +377,43 @@ fn slug_text_warm(bencher: Bencher, count: usize) {
 }
 
 #[divan::bench(args = [100, 1000])]
+/// Builds Slug text geometry for a one-pixel damaged region, as a caret blink or a small change redraws.
+fn slug_text_one_pixel_damage(bencher: Bencher, count: usize) {
+	let data = draw_list(count, Scene::Text);
+	let mut arena = bumpalo::Bump::new();
+	let mut system = TextSystem::new();
+	let mut glyphs = UiGlyphCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY);
+	let mut masks = UiMaskTable::default();
+	let damage = [UiPixelRegion {
+		origin: [0, 0],
+		extent: Extent::rectangle(1, 1),
+	}];
+	let geometry = slug::build_ui_slug_geometry_damaged(
+		&data,
+		viewport(),
+		&mut system,
+		&mut glyphs,
+		&mut masks,
+		&arena,
+		Some(&damage),
+	);
+	assert!(!geometry.truncated && geometry.dropped_glyphs == 0 && geometry.primitives.len() < count);
+	drop(geometry);
+	bencher.bench_local(|| {
+		arena.reset();
+		black_box(slug::build_ui_slug_geometry_damaged(
+			black_box(&data),
+			viewport(),
+			&mut system,
+			&mut glyphs,
+			&mut masks,
+			&arena,
+			Some(&damage),
+		));
+	});
+}
+
+#[divan::bench(args = [100, 1000])]
 /// Includes reading outlines and packing curves and bands, with font loading outside timing.
 fn slug_text_cold_glyphs(bencher: Bencher, count: usize) {
 	let data = draw_list(count, Scene::Text);

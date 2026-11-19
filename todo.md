@@ -351,3 +351,12 @@ Cmd+E explores the game's resources: material graphs open on the canvas and text
 - Minimum and maximum constraints on a fit axis, such as `Sizing::fit().max(..)`, so a menu stops growing and scrolls.
 - Move editor panels, menus, and toolbars from pixel sizes to `Sizing::fit()`, and animate their resizes through `logical_size_change`.
 - A fused wait for `Watch` changes, so a component can `select!` over a watch and a size change without `.fuse()`.
+
+## UI memory footprint (deferred)
+
+Deferred on 2026-11-19 from a UI CPU and GPU memory report.
+
+- Shrink `UiPrimitive` (`src/ui/render_pass/data.rs`) from 112 bytes: move the gradient axis and end color into a table and pack the kind and mask slot into one `u32` (80 bytes), or store both colors as adjacent FP16 vectors (96 bytes). Keep positions and curve coordinates in f32. Changes the BESL layout in `assets/rendering/ui/layouts/ui.besl`; check visual precision. Lowering the buffer's capacity may be a cheaper first step.
+- Write slug glyphs straight into painter order instead of staging them in `UiTextGeometry` and copying them in `geometry.rs`.
+- Store each distinct inherited clip mask once in the layout engine's visual state and carry 32-bit indices, keeping mask identity across incremental updates (160 to 72 bytes per tree slot).
+- Patch retained damage footprints in place on incremental renders when membership and indices are stable, instead of resizing and refilling the scratch array (`layout/engine.rs`).

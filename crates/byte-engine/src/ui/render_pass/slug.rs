@@ -309,13 +309,30 @@ pub(super) fn build_ui_slug_geometry_damaged<'a>(
 		y1: height,
 	};
 
-	// One UTF-8 byte is a cheap upper bound for one output glyph.
-	let glyph_capacity = draw_list
-		.texts
-		.iter()
-		.filter(|text| should_rasterize_text(text))
-		.fold(0usize, |count, text| count.saturating_add(text.text.len()))
-		.min(MAX_UI_PRIMITIVES);
+	// Decide once which labels this frame draws and where they clip, so a rebuild after a reset tests no label again.
+	// One UTF-8 byte is a cheap upper bound for one output glyph, and only drawn labels count, so a small damaged
+	// region reserves for the few labels it touches instead of for the whole UI.
+	let mut clips = Vec::with_capacity_in(draw_list.texts.len(), frame_allocator);
+	let mut glyph_capacity = 0usize;
+	for text in &draw_list.texts {
+		let damaged = || {
+			let bounds = element_bounds(
+				text.position,
+				[text.size[0] * sx, text.size[1] * sy],
+				sx,
+				sy,
+				UI_DAMAGE_MARGIN_PIXELS,
+			);
+			damage_intersects(damage, turned_bounds(bounds, text.clip_mask, sx, sy))
+		};
+		let clip = Some(pixel_clip(text.clip, sx, sy, viewport_clip))
+			.filter(|clip| should_rasterize_text(text) && !clip.is_empty() && damaged());
+		if clip.is_some() {
+			glyph_capacity = glyph_capacity.saturating_add(text.text.len());
+		}
+		clips.push(clip);
+	}
+	let glyph_capacity = glyph_capacity.clamp(UI_GLYPH_RESERVE_MIN, MAX_UI_PRIMITIVES);
 	let mut geometry = UiTextGeometry {
 		primitives: Vec::with_capacity_in(glyph_capacity, frame_allocator),
 		labels: Vec::with_capacity_in(draw_list.texts.len(), frame_allocator),
@@ -325,28 +342,12 @@ pub(super) fn build_ui_slug_geometry_damaged<'a>(
 
 	let mut reset = false;
 	loop {
-		for text in &draw_list.texts {
+		for (text, clip) in draw_list.texts.iter().zip(&clips) {
 			let start = geometry.primitives.len();
 			geometry.labels.push(start..start);
-			let clip = pixel_clip(text.clip, sx, sy, viewport_clip);
-			if geometry.truncated || !should_rasterize_text(text) || clip.is_empty() {
+			let Some(clip) = clip.filter(|_| !geometry.truncated) else {
 				continue;
-			}
-			let bounds = turned_bounds(
-				element_bounds(
-					text.position,
-					[text.size[0] * sx, text.size[1] * sy],
-					sx,
-					sy,
-					UI_DAMAGE_MARGIN_PIXELS,
-				),
-				text.clip_mask,
-				sx,
-				sy,
-			);
-			if !damage_intersects(damage, bounds) {
-				continue;
-			}
+			};
 
 			let size = (text.font_size * font_scale).max(1.0);
 			let origin = [text.position[0] * sx, text.position[1] * sy];
@@ -390,6 +391,9 @@ pub(super) fn build_ui_slug_geometry_damaged<'a>(
 
 	geometry
 }
+
+/// The fewest glyph primitives a frame reserves, so a small redraw still starts from a reasonable buffer.
+const UI_GLYPH_RESERVE_MIN: usize = 256;
 
 #[cfg(test)]
 mod tests {

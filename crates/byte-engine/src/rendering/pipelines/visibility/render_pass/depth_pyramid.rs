@@ -20,6 +20,18 @@ pub(super) const DEPTH_PYRAMID_MIP_COUNT: u32 = 3;
 /// The pyramid's mips, as `layouts/depth_pyramid.besl` names the image each one is written through.
 const REDUCED_DEPTH_NAMES: [&str; DEPTH_PYRAMID_MIP_COUNT as usize] = ["reduced_depth_1", "reduced_depth_2", "reduced_depth_3"];
 
+/// The smallest side the pyramid's mip zero may have: each mip halves it, and the last one must keep a texel.
+const MIN_PYRAMID_SIDE: u32 = 1 << (DEPTH_PYRAMID_MIP_COUNT - 1);
+
+/// The extent of the pyramid's mip zero for a sink whose half resolution is `half_extent`.
+///
+/// Graphics APIs reject an image with more mips than its largest side can halve into, so a sink a few pixels wide, such
+/// as an editor preview shrunk to a pixel while it waits for its next subject, would otherwise fail to allocate it. The
+/// padding only grows sinks too small to show anything, so what its texels hold doesn't matter.
+fn pyramid_extent(half_extent: Extent) -> Extent {
+	Extent::rectangle(half_extent.width().max(MIN_PYRAMID_SIDE), half_extent.height().max(MIN_PYRAMID_SIDE))
+}
+
 /// The `ScreenViewData` struct gives half-resolution screen-space passes compact camera reconstruction constants.
 ///
 /// Shaders rebuild a view-space position from a pixel and its linear depth, and project a view-space position
@@ -156,7 +168,7 @@ impl DepthPyramidPass {
 	) -> impl RenderPassFunction + use<> {
 		let half_extent = sink.extent().scaled_down(2);
 		*frame.map(self.view_data) = screen_view_data(sink, half_extent);
-		frame.resize_image(self.depth_pyramid.into(), half_extent);
+		frame.resize_image(self.depth_pyramid.into(), pyramid_extent(half_extent));
 		let descriptor_sets = [self.view_descriptor_set, self.descriptor_set];
 
 		move |c: &mut ghi::implementation::CommandBufferRecording| {

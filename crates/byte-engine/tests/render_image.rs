@@ -191,7 +191,11 @@ fn a_render_image_leaves_out_the_passes_registered_for_windows() {
 			break;
 		}
 	}
-	assert_eq!(pixel, [0, 255, 0, 255], "A pass registered for windows drew into the render image.");
+	assert_eq!(
+		pixel,
+		[0, 255, 0, 255],
+		"A pass registered for windows drew into the render image."
+	);
 }
 
 /// What one scene pipeline saw: the sinks it built state for, and each sink it prepared with whether it carried a sun.
@@ -348,5 +352,9 @@ fn each_scene_generates_its_own_environment() {
 		application.tick();
 	}
 
-	assert_eq!(*built.lock().unwrap(), 2, "The renderer builds one environment for each scene, not for each sink.");
+	assert_eq!(
+		*built.lock().unwrap(),
+		2,
+		"The renderer builds one environment for each scene, not for each sink."
+	);
 }

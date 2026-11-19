@@ -536,6 +536,10 @@ mod tests {
 			ghi::window::Events::FocusChanged(true),
 			None
 		));
-		assert!(!process_default_window_input(&mut collector, ghi::window::Events::Maximize, None));
+		assert!(!process_default_window_input(
+			&mut collector,
+			ghi::window::Events::Maximize,
+			None
+		));
 	}
 }

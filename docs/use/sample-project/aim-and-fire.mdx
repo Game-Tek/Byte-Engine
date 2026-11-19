@@ -1,0 +1,245 @@
+---
+title: Aim and fire
+description: Turn the mouse, keyboard, and gamepad into look and fire actions, turn the camera where the player looks, and fire balls from an invisible cannon.
+icon: JoystickCross
+---
+
+In this step, you let the player play. Moving the mouse turns the view, and
+clicking fires a ball from an invisible cannon at the player's eyes, straight
+where they look.
+
+## Create actions
+
+Your game doesn't read the mouse directly. Instead, it creates *actions*,
+things the player does, such as *look* and *fire*. Each action lists the
+buttons and sticks that do it. That way, the same code works with a mouse, a
+keyboard, or a gamepad.
+
+1. Replace the `use` block at the top of `src/main.rs` with this one. It adds
+   the input types, the types that send messages, and `VecDeque`, a list you
+   use to remember the balls you fire:
+
+   ```rust title="src/main.rs"
+   use std::collections::VecDeque;
+
+   use byte_engine::{
+   	application::{
+   		graphics::{self, GraphicsApplication},
+   		parameters::Parameters as _,
+   	},
+   	constants::{forward, right, up},
+   	core::{Creator as _, channel::Channel as _, factory::Handle, message::DeleteMessage},
+   	gameplay::transform::{Transform, TransformationUpdate},
+   	input::{Action, ActionBindingDescription, ActionEvent, Axis3, Extract, Function, Types, ValueMapping},
+   	math::{Degrees, Orientation, Point, Radians, Scale, UnitVector, Vector, orientation_from_direction},
+   	physics::{Body, BodyTypes, Constraint, LocalSpace, Physics, Shapes, build_convex_hull},
+   	rendering::{
+   		Camera, DirectionalLight, ExponentialHeightFog, FogLayer, LightColor, PhotometricIntensity, PointLight,
+   		RenderableMesh, SceneId, mesh::generator::BoxMeshGenerator, window::Window,
+   	},
+   	utils::Extent,
+   };
+
+   use crate::disk::Disk;
+   ```
+
+2. At the end of the file, add the function that creates the two actions:
+
+   ```rust title="src/main.rs"
+   /// Creates the two things the player does: look around with the mouse or right stick, and fire.
+   fn create_actions(app: &GraphicsApplication) -> (Handle, Handle) {
+   	let look = app
+   		.world()
+   		.create(Action::new(
+   			"Look",
+   			&[
+   				ActionBindingDescription::new("Pointer.Position")
+   					.mapped(Into::<ValueMapping>::into(Axis3::new(1.0, 1.0, 1.0)).function(Function::Sphere)),
+   				ActionBindingDescription::new("Gamepad.RightStick"),
+   			],
+   			Types::Vector3,
+   		))
+   		.handle();
+   	let fire = app
+   		.world()
+   		.create(Action::new(
+   			"Fire",
+   			&[
+   				ActionBindingDescription::new("Pointer.LeftButton"),
+   				ActionBindingDescription::new("Keyboard.Space"),
+   				ActionBindingDescription::new("Gamepad.X"),
+   			],
+   			Types::Boolean,
+   		))
+   		.handle();
+   	(look, fire)
+   }
+   ```
+
+   - **Look** is a direction, a `Vector3`. It comes from where the pointer is
+     in the window, or from the gamepad's right stick. The pointer's position
+     is flat, two numbers, so `Function::Sphere` bends it into a direction: the
+     middle of the window looks straight ahead, and the edges look to the
+     sides, up, and down.
+   - **Fire** is on or off, a `Boolean`. The left mouse button, the space bar,
+     and the gamepad's X button all fire.
+
+3. In `main`, create the actions in the first tick, and return their handles
+   with the camera and the targets. Change the end of the first tick to:
+
+   ```rust title="src/main.rs"
+   		let targets = ROWS.iter().enumerate().flat_map(|(row, _)| build_row(app, row)).collect::<Vec<_>>();
+
+   		let (look, fire) = create_actions(app);
+   		(camera, look, fire, targets)
+   	}) else {
+   		return;
+   	};
+   ```
+
+   And change the line that starts the first tick to:
+
+   ```rust title="src/main.rs"
+   	let Some((camera, look, fire, targets)) = app.tick_with(|app, _| {
+   ```
+
+<Callout type="info" title="Learn more about input">
+	[Respond to input](/docs/use/input) shows how to read actions, follow a
+	drag, and let players change their controls. The
+	[input reference](/docs/reference/input#value-mapping) explains every way to
+	map a button or a stick to an action's value, and
+	[Input bindings](/docs/reference/input-bindings#trigger-names) lists the
+	names of every button and stick.
+</Callout>
+
+## Listen for actions
+
+When the player uses an action, the engine sends an *action event* on the
+world's `ActionEvent` *channel*. A *listener* receives the events a channel
+sends.
+
+Right after the first tick, before the `while` loop, add this code:
+
+```rust title="src/main.rs"
+	let events = app.world().channel::<ActionEvent>().listener();
+	let mut look = events.filtered(move |event| event.handle() == look);
+	let mut fire = events.filtered(move |event| event.handle() == fire);
+
+	let mut aim = forward();
+	let mut balls = VecDeque::new();
+```
+
+- `listener` creates a listener for every action event. `filtered` splits it
+  into two: one that receives only *Look* events, and one that receives only
+  *Fire* events.
+- `aim` is the direction the player looks. It starts straight ahead,
+  `forward()`.
+- `balls` remembers each ball you fire, and when, so you can remove it later.
+
+<Callout type="info" title="Learn more about channels">
+	Channels carry every message in a Byte Engine world, from input to
+	transforms to deletions. See
+	[Channels and listeners](/docs/reference/world#channels-and-listeners).
+</Callout>
+
+## Aim, fire, and clean up
+
+1. Below the `eye` function, near the top of the file, add the constants for
+   the balls:
+
+   ```rust title="src/main.rs"
+   /// How fast a ball leaves the cannon, in meters per second.
+   const BALL_SPEED: f32 = 30.0;
+   const BALL_RADIUS: f32 = 0.06;
+   /// How long a ball stays in the world after it is fired, in seconds.
+   const BALL_LIFETIME: f32 = 4.0;
+   ```
+
+2. Replace the `while` loop at the end of `main` with this one:
+
+   ```rust title="src/main.rs"
+   	while app
+   		.tick_with(|app, time| {
+   			let now = time.elapsed().as_seconds_f32();
+   			let world = app.world();
+   			// Balls deleted last tick leave the simulation before this tick's step.
+   			physics.flush_deletions();
+
+   			for event in &mut look {
+   				let direction = Extract::<Axis3>::extract(&event.value());
+   				if let Ok(direction) = Vector::new(direction.x, direction.y, direction.z).normalized() {
+   					aim = direction;
+   				}
+   			}
+   			world.channel::<TransformationUpdate>().send(TransformationUpdate::new(
+   				camera,
+   				Transform::new(eye(), Scale::identity(), orientation_from_direction(aim)),
+   			));
+
+   			// The cannon is invisible: balls come out just in front of the eyes, the way the player looks.
+   			for event in &mut fire {
+   				if Extract::<bool>::extract(&event.value()) {
+   					let ball = world
+   						.create(RenderableMesh::sphere(BALL_RADIUS))
+   						.with(
+   							Body::new(BodyTypes::Dynamic, Shapes::sphere(BALL_RADIUS))
+   								.with_mass(0.3)
+   								.with_velocity(aim * BALL_SPEED),
+   						)
+   						.with(Transform::from_position(eye() + aim * 0.5))
+   						.handle();
+   					balls.push_back((ball, now));
+   				}
+   			}
+   			while balls.front().is_some_and(|&(_, fired)| now - fired > BALL_LIFETIME) {
+   				let (ball, _) = balls.pop_front().unwrap();
+   				world.channel::<DeleteMessage>().send(DeleteMessage::new(ball));
+   			}
+
+   			// Last, so the step sees every ball and transform this tick created.
+   			physics.step(time, app.alley_mut());
+   		})
+   		.is_some()
+   	{}
+   ```
+
+Each tick now does five things, in order:
+
+1. **It removes old balls from physics.** `flush_deletions` removes the bodies
+   of the balls you deleted in the tick before, so the step doesn't move them.
+2. **It aims.** For each *Look* event, it reads the event's direction and keeps
+   it in `aim`. `normalized` makes the direction one meter long, and fails if
+   the direction has no length, so a bad event can't break the aim. Then it
+   turns the camera: it sends a `TransformationUpdate` that keeps the camera at
+   `eye()` and turns it toward `aim`.
+3. **It fires.** For each *Fire* event whose value is `true`, the button went
+   down, it creates a ball half a meter in front of the eyes. The ball is a
+   sphere mesh with a dynamic sphere body, and it starts flying along `aim` at
+   30 meters per second. A *Fire* event whose value is `false` means the button
+   went up, so it's ignored.
+4. **It cleans up.** A ball that has flown for more than 4 seconds is deleted by
+   sending a `DeleteMessage`. The oldest balls are at the front of `balls`, so
+   the loop stops at the first ball that's still young.
+5. **It steps physics** last, so the step sees the balls this tick created.
+
+## Run the program
+
+Run `cargo run`. Move the mouse over the window to look around, and click, or
+press the space bar, to fire. Balls fly from your eyes, bounce off what they
+hit, and fall to the floor.
+
+The targets still slide off their shelves after a few seconds, so fire at them
+quickly. A ball that hits a target tips it back on its hinge. In the next step,
+the targets come back around, and every hit counts.
+
+## Next step
+
+You can hit targets, but nothing counts yet. [Keep score](/docs/use/sample-project/keep-score).
+
+## Rust API
+
+- [`Action`](/docs/api/latest/byte_engine/input/action/Action)
+- [`ActionEvent`](/docs/api/latest/byte_engine/input/ActionEvent)
+- [`TransformationUpdate`](/docs/api/latest/byte_engine/gameplay/transform/TransformationUpdate)
+- [`DeleteMessage`](/docs/api/latest/byte_engine/core/message/DeleteMessage)
+- [`Physics::flush_deletions`](/docs/api/latest/byte_engine/physics/Physics#method.flush_deletions)

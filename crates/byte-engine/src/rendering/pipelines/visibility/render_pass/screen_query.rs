@@ -95,7 +95,10 @@ impl ScreenQueryPass {
 		pipeline_manager: &PipelineManagerClient,
 		points: &[[u32; 2]],
 	) -> Option<ScreenQueryStages> {
-		debug_assert!(points.len() <= SCREEN_QUERY_CAPACITY, "A sink reads at most {SCREEN_QUERY_CAPACITY} queries a frame.");
+		debug_assert!(
+			points.len() <= SCREEN_QUERY_CAPACITY,
+			"A sink reads at most {SCREEN_QUERY_CAPACITY} queries a frame."
+		);
 		if points.is_empty() {
 			return None;
 		}
@@ -129,10 +132,7 @@ impl ScreenQueryPass {
 	/// were given, or `None` before any frame of this sequence completed.
 	///
 	/// Only the entries of points that frame was given hold its reads; the caller keeps how many there were.
-	pub(crate) fn read<'a>(
-		&self,
-		frame: &'a ghi::implementation::Frame,
-	) -> Option<&'a [u32; SCREEN_QUERY_CAPACITY]> {
+	pub(crate) fn read<'a>(&self, frame: &'a ghi::implementation::Frame) -> Option<&'a [u32; SCREEN_QUERY_CAPACITY]> {
 		frame.read(self.readback)
 	}
 }

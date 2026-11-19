@@ -438,9 +438,28 @@ mod tests {
 			("non-finite angle", cone(0.5, f32::NAN).err()),
 			(
 				"IES dimmer above 1",
-				ConeLight::new(white, PhotometricIntensity::Ies { profile: "lamp.ies".into(), dimmer: 1.5 }, Radians::new(0.2), Radians::new(0.5)).err(),
+				ConeLight::new(
+					white,
+					PhotometricIntensity::Ies {
+						profile: "lamp.ies".into(),
+						dimmer: 1.5,
+					},
+					Radians::new(0.2),
+					Radians::new(0.5),
+				)
+				.err(),
 			),
-			("empty IES profile", PointLight::new(white, PhotometricIntensity::Ies { profile: " ".into(), dimmer: 0.5 }).err()),
+			(
+				"empty IES profile",
+				PointLight::new(
+					white,
+					PhotometricIntensity::Ies {
+						profile: " ".into(),
+						dimmer: 0.5,
+					},
+				)
+				.err(),
+			),
 			(
 				"angular radius past π/2",
 				DirectionalLight::new(white, PhotometricIntensity::illuminance(1_000.0))

@@ -1,32 +1,90 @@
 ---
 title: Your first Byte
-description: Build your first Byte Engine application.
+description: Build a night-time shooting gallery, step by step, to learn how a Byte Engine application fits together.
 icon: Gamepad2
 ---
 
-Build a small target gallery to learn how Byte Engine systems fit together.
+In this tutorial, you build your first Byte: a shooting gallery like the ones
+at a fair. Three rows of bullseye targets slide past, each row the other way and
+farther back than the one in front. You aim with the mouse and fire balls at
+them. A target you hit tips back and falls down, and your score goes up.
 
-<Callout type="info" title="Guide in progress">
-	The complete implementation steps aren't available yet. Use this page to
-	understand the sample's scope and find its main APIs.
-</Callout>
+You don't need to know anything about Byte Engine to follow along. Each step
+tells you what to type, where it goes, and what you should see when you run the
+application. If you're new to Rust, keep [the Rust book](https://doc.rust-lang.org/book/)
+open beside you.
 
-Your first Byte is a target gallery where you shoot targets to score points.
+## What you learn
 
-The finished application lets you:
+On the way, you use the systems most games need:
 
-- Move the camera with a mouse or gamepad.
-- Shoot with the left mouse button or right trigger.
-- Increase the score by hitting a target.
-- End the session when its timer reaches zero.
+- **The application loop.** Open a window and run your game one tick at a time.
+- **Meshes and materials.** Build every shape from code, and paint it with
+  materials you write in small text files.
+- **Lights.** Light the scene for the night with bulbs, lamps, and moonlight.
+- **Physics.** Make targets that slide, swing on hinges, and fall when a ball
+  hits them.
+- **Input.** Turn the mouse, the keyboard, and a gamepad into actions your game
+  responds to.
 
-Complete the [setup guide](/docs/use/setup) before you build your first Byte.
+## Before you start
+
+Complete the [setup guide](/docs/use/setup). When you finish it, you have a Rust
+project that depends on Byte Engine, with an `assets` folder that links to the
+engine's assets. This tutorial calls that project `my-game`; use your own
+project's name wherever you see it.
+
+## Steps
+
+Follow the steps in order. Each one adds to the program from the step before.
+
+<Steps>
+<Step>
+
+### [Open a window](/docs/use/sample-project/open-a-window)
+
+Start the engine, place a camera, and show what it sees in a window.
+
+</Step>
+<Step>
+
+### [Build the booth](/docs/use/sample-project/build-the-booth)
+
+Write your first materials and build the booth from painted boxes.
+
+</Step>
+<Step>
+
+### [Light the night](/docs/use/sample-project/light-the-night)
+
+Hang a string of bulbs, add lamps and moonlight, and fill the air with haze.
+
+</Step>
+<Step>
+
+### [Make the targets](/docs/use/sample-project/make-the-targets)
+
+Draw a round target, then use physics to make rows of targets that slide and
+swing on hinges.
+
+</Step>
+<Step>
+
+### [Aim and fire](/docs/use/sample-project/aim-and-fire)
+
+Turn the camera with the mouse and fire balls where you look.
+
+</Step>
+<Step>
+
+### [Keep score](/docs/use/sample-project/keep-score)
+
+Count the targets you knock down, and bring each row back around.
+
+</Step>
+</Steps>
 
 ## Rust API
 
 - [`GraphicsApplication`](/docs/api/latest/byte_engine/application/graphics/GraphicsApplication)
-- [`default_setup`](/docs/api/latest/byte_engine/application/graphics/defaults#fn.default_setup)
-- [`setup_default_window`](/docs/api/latest/byte_engine/application/graphics/defaults#fn.setup_default_window)
-- [`setup_default_input`](/docs/api/latest/byte_engine/application/graphics/defaults#fn.setup_default_input)
-
-When your application is ready, [build and bundle it](/docs/use/build).
+- [`Physics`](/docs/api/latest/byte_engine/physics/Physics)

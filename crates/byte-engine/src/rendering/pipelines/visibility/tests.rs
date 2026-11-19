@@ -2275,7 +2275,11 @@ fn run_gtao(
 	GtaoOutput {
 		ao: rgba(&output, coordinate),
 		bent_normal: rgba(&bent_normal, coordinate),
-		view_vector: gtao_fixture_view_vector([width, height], coordinate, levels[0][(coordinate[1] * width + coordinate[0]) as usize][0]),
+		view_vector: gtao_fixture_view_vector(
+			[width, height],
+			coordinate,
+			levels[0][(coordinate[1] * width + coordinate[0]) as usize][0],
+		),
 	}
 }
 
@@ -2304,7 +2308,13 @@ impl GtaoOutput {
 	/// Returns the bent normal in view space, rebuilt from its components in the frame `t = normalize(up × V)`,
 	/// `b = V × t` and the hemisphere around `V`.
 	fn decoded_bent_normal(&self) -> [f32; 3] {
-		let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+		let cross = |a: [f32; 3], b: [f32; 3]| {
+			[
+				a[1] * b[2] - a[2] * b[1],
+				a[2] * b[0] - a[0] * b[2],
+				a[0] * b[1] - a[1] * b[0],
+			]
+		};
 		let view = self.view_vector;
 		let t = cross([0.0, 1.0, 0.0], view);
 		let t_length = t.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
@@ -2605,7 +2615,11 @@ fn gtao_wall_depths(wall_column: u32) -> Vec<[f32; 4]> {
 	(0..64 * 64)
 		.map(|index| {
 			let column = index % 64;
-			let depth = if column >= wall_column { 2.0 - 0.1 * (column - wall_column + 1) as f32 } else { 2.0 };
+			let depth = if column >= wall_column {
+				2.0 - 0.1 * (column - wall_column + 1) as f32
+			} else {
+				2.0
+			};
 			[depth.max(0.5), 0.0, 0.0, 1.0]
 		})
 		.collect()
@@ -2735,7 +2749,9 @@ fn run_screen_query(name: &str, instance: impl Fn(usize) -> u32, points: &[[u32;
 	}
 	let mut instances = buffer(&program, slot(&program, "instances"));
 	for (index, value) in previous.into_iter().enumerate() {
-		instances.write_array_element(index, Value::U32(value)).expect("previous instance");
+		instances
+			.write_array_element(index, Value::U32(value))
+			.expect("previous instance");
 	}
 	let mut texture = instance_texture(4, instance);
 	let mut descriptors = DescriptorBindings::new();

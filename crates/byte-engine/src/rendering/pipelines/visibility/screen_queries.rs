@@ -128,7 +128,11 @@ mod tests {
 
 	/// Takes the waiting queries of `camera` for one sink, as one frame would, and returns their handles and points.
 	fn take(queries: &mut ScreenQueries, camera: Handle) -> (Vec<Handle>, Vec<[u32; 2]>) {
-		queries.take(camera).into_iter().map(|(handle, query)| (handle, query.point())).unzip()
+		queries
+			.take(camera)
+			.into_iter()
+			.map(|(handle, query)| (handle, query.point()))
+			.unzip()
 	}
 
 	#[test]

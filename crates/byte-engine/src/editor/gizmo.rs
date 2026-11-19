@@ -1050,7 +1050,10 @@ mod tests {
 		// Dragging toward the tip moves the selection toward +Z, and only along Z.
 		let drag = grab(&placement, &at(Point::origin()), pixel).unwrap();
 		let farther = on_arrow + projected / maths_rs::length(projected) * 13.0;
-		let moved = drag.transform(&placement, [farther.x, farther.y], Snap::Free).unwrap().get_position();
+		let moved = drag
+			.transform(&placement, [farther.x, farther.y], Snap::Free)
+			.unwrap()
+			.get_position();
 		assert!(moved.z() > 0.0, "{moved:?}");
 		assert_eq!((moved.x(), moved.y()), (0.0, 0.0));
 	}
@@ -1179,13 +1182,18 @@ mod tests {
 		// Dragging the cap out to twice its distance from the center doubles X and leaves the others.
 		let drag = grab(&placement, &target, [on_cap.x, on_cap.y]).unwrap();
 		let doubled = placement.center + (on_cap - placement.center) * 2.0;
-		let scaled = drag.transform(&placement, [doubled.x, doubled.y], Snap::Free).unwrap().scale().to_array();
+		let scaled = drag
+			.transform(&placement, [doubled.x, doubled.y], Snap::Free)
+			.unwrap()
+			.scale()
+			.to_array();
 		assert!(
 			(scaled[0] - 2.0).abs() < 1e-3 && scaled[1] == 1.0 && scaled[2] == 1.0,
 			"{scaled:?}"
 		);
 		assert_eq!(
-			drag.stretch([doubled.x, doubled.y], Snap::Free).map(|s| s.map(|s| (s * 100.0).round())),
+			drag.stretch([doubled.x, doubled.y], Snap::Free)
+				.map(|s| s.map(|s| (s * 100.0).round())),
 			Some([200.0, 100.0, 100.0])
 		);
 	}
@@ -1197,7 +1205,9 @@ mod tests {
 		let drag = grab(&placement, &at(Point::origin()), center).unwrap();
 		assert_eq!(drag.part, Part::Center);
 
-		let right = drag.transform(&placement, [center[0] + ARROW_PIXELS, center[1]], Snap::Free).unwrap();
+		let right = drag
+			.transform(&placement, [center[0] + ARROW_PIXELS, center[1]], Snap::Free)
+			.unwrap();
 		assert_eq!(right.scale().to_array(), [2.0, 2.0, 2.0]);
 		let far_left = drag
 			.transform(&placement, [center[0] - ARROW_PIXELS * 3.0, center[1]], Snap::Free)
@@ -1243,7 +1253,10 @@ mod tests {
 		let center = [scale_placement.center.x, scale_placement.center.y];
 		let drag = grab(&scale_placement, &at(Point::origin()), center).unwrap();
 		let scale = |dx: f32, snap| {
-			drag.transform(&scale_placement, [center[0] + dx, center[1]], snap).unwrap().scale().to_array()[0]
+			drag.transform(&scale_placement, [center[0] + dx, center[1]], snap)
+				.unwrap()
+				.scale()
+				.to_array()[0]
 		};
 		assert!((scale(ARROW_PIXELS * 0.37, Snap::Steps) - 1.4).abs() < 1e-5);
 		assert!((scale(-ARROW_PIXELS * 3.0, Snap::Steps) - SCALE_STEP).abs() < 1e-6);

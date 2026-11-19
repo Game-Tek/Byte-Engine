@@ -212,8 +212,7 @@ pub(crate) static SNAP: Binding = shows(&[Key::Ctrl], "Snap", dragging);
 /// Snaps a gizmo drag to steps a tenth that size while held.
 pub(crate) static SNAP_FINELY: Binding = shows(&[Key::Ctrl, Key::Shift], "Snap finely", dragging);
 /// Moves the camera along with the entity a Move drag carries while held.
-pub(crate) static CARRY: Binding =
-	shows(&[Key::Alt], "Bring the camera", |s| dragging(s) && s.tool == Tool::Move);
+pub(crate) static CARRY: Binding = shows(&[Key::Alt], "Bring the camera", |s| dragging(s) && s.tool == Tool::Move);
 
 /// Every binding, in the order a press tries them and the hint bar lists them.
 pub(crate) static BINDINGS: &[&Binding] = &[
@@ -222,14 +221,22 @@ pub(crate) static BINDINGS: &[&Binding] = &[
 	&SNAP_FINELY,
 	&CARRY,
 	&shows(&[Key::Release], "Finish", dragging),
-	&runs(&[Key::Escape], "Close the editor", |s| s.on_scene() && !s.dragging, |editor, app| editor.pop(app)),
+	&runs(
+		&[Key::Escape],
+		"Close the editor",
+		|s| s.on_scene() && !s.dragging,
+		|editor, app| editor.pop(app),
+	),
 	// The shortcuts Cmd starts; the palette refuses to open over a field taking text or a carried load.
 	&runs(&[Key::Cmd, Key::K], "Search everything", palette_opens, |editor, app| {
 		editor.toggle_palette(app, Scope::All)
 	}),
-	&runs(&[Key::Cmd, Key::A], "Add a node", |s| palette_opens(s) && s.layers.graph().is_some(), |editor, app| {
-		editor.toggle_palette(app, Scope::Place)
-	}),
+	&runs(
+		&[Key::Cmd, Key::A],
+		"Add a node",
+		|s| palette_opens(s) && s.layers.graph().is_some(),
+		|editor, app| editor.toggle_palette(app, Scope::Place),
+	),
 	&runs(&[Key::Cmd, Key::A], "Place", palette_opens, |editor, app| {
 		editor.toggle_palette(app, Scope::Place)
 	}),
@@ -239,26 +246,56 @@ pub(crate) static BINDINGS: &[&Binding] = &[
 	&runs(&[Key::Cmd, Key::Period], "Settings", palette_opens, |editor, app| {
 		editor.toggle_palette(app, Scope::Configure)
 	}),
-	&runs(&[Key::Cmd, Key::Z], "Undo", undoes, |editor, app| editor.step_history(app, false)),
-	&runs(&[Key::Cmd, Key::Shift, Key::Z], "Redo", undoes, |editor, app| editor.step_history(app, true)),
-	&runs(&[Key::Cmd, Key::S], "Save", |s| s.layers.graph().is_some(), |editor, _| {
-		editor.engine.ctx_mut().save_graph = true
+	&runs(&[Key::Cmd, Key::Z], "Undo", undoes, |editor, app| {
+		editor.step_history(app, false)
 	}),
+	&runs(&[Key::Cmd, Key::Shift, Key::Z], "Redo", undoes, |editor, app| {
+		editor.step_history(app, true)
+	}),
+	&runs(
+		&[Key::Cmd, Key::S],
+		"Save",
+		|s| s.layers.graph().is_some(),
+		|editor, _| editor.engine.ctx_mut().save_graph = true,
+	),
 	// The palette, and the setting it found.
 	&runs(&[Key::Up], "Previous", chooses, |editor, _| editor.move_highlight(-1)),
 	&runs(&[Key::Down], "Next", chooses, |editor, _| editor.move_highlight(1)),
-	&runs(&[Key::Enter], "Pick", |s| matches!(s.top(), Some(Layer::Palette(_))), |editor, app| {
-		editor.pick_highlighted(app)
-	}),
-	&runs(&[Key::Enter], "Set", |s| matches!(s.top(), Some(Layer::Setting(_))), |editor, app| {
-		editor.set_setting(app)
-	}),
-	&runs(&[Key::Escape], "Close", |s| matches!(s.top(), Some(Layer::Palette(_))), |editor, app| editor.pop(app)),
-	&runs(&[Key::Escape], "Back", |s| matches!(s.top(), Some(Layer::Setting(_))), |editor, app| editor.pop(app)),
+	&runs(
+		&[Key::Enter],
+		"Pick",
+		|s| matches!(s.top(), Some(Layer::Palette(_))),
+		|editor, app| editor.pick_highlighted(app),
+	),
+	&runs(
+		&[Key::Enter],
+		"Set",
+		|s| matches!(s.top(), Some(Layer::Setting(_))),
+		|editor, app| editor.set_setting(app),
+	),
+	&runs(
+		&[Key::Escape],
+		"Close",
+		|s| matches!(s.top(), Some(Layer::Palette(_))),
+		|editor, app| editor.pop(app),
+	),
+	&runs(
+		&[Key::Escape],
+		"Back",
+		|s| matches!(s.top(), Some(Layer::Setting(_))),
+		|editor, app| editor.pop(app),
+	),
 	// A carried load, until a click places it; a field taking text answers Enter and Escape itself.
-	&runs(&[Key::Escape], "Cancel", |s| matches!(s.top(), Some(Layer::Carry(_))), |editor, app| editor.pop(app)),
+	&runs(
+		&[Key::Escape],
+		"Cancel",
+		|s| matches!(s.top(), Some(Layer::Carry(_))),
+		|editor, app| editor.pop(app),
+	),
 	// A resource window's own view.
-	&runs(&[Key::Escape], "Close the window", resource_view, |editor, app| editor.pop(app)),
+	&runs(&[Key::Escape], "Close the window", resource_view, |editor, app| {
+		editor.pop(app)
+	}),
 ];
 
 /// Whether a gizmo drag is under way in the scene, the only time its held keys mean anything.
@@ -293,9 +330,7 @@ fn resource_view(s: &Situation) -> bool {
 /// whose modifiers are exactly the ones held, so Cmd+Shift+Z never also undoes.
 pub(crate) fn pressed(situation: &Situation, held: Held, key: Key) -> Option<Run> {
 	BINDINGS.iter().find_map(|binding| {
-		let fits = binding.keys.last() == Some(&key)
-			&& binding.modifiers() == held.modifiers()
-			&& (binding.when)(situation);
+		let fits = binding.keys.last() == Some(&key) && binding.modifiers() == held.modifiers() && (binding.when)(situation);
 		binding.run.filter(|_| fits)
 	})
 }
@@ -386,7 +421,10 @@ mod tests {
 		assert!(labels(&s, &[Key::Ctrl]).is_empty(), "Ctrl snaps only during a drag");
 
 		let shortcuts = labels(&s, &[Key::Cmd]);
-		assert!(shortcuts.contains(&"Search everything") && shortcuts.contains(&"Redo"), "{shortcuts:?}");
+		assert!(
+			shortcuts.contains(&"Search everything") && shortcuts.contains(&"Redo"),
+			"{shortcuts:?}"
+		);
 		assert_eq!(labels(&s, &[Key::Cmd, Key::Shift]), ["Redo"]);
 
 		let dragging = Situation { dragging: true, ..s };

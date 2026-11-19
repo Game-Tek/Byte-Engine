@@ -608,7 +608,11 @@ impl ConfigurationPort {
 			return;
 		};
 		// The event names the parameter in full; the route keeps it by the name inside the prefix.
-		let name = event.parameter.strip_prefix(self.prefix.as_str()).unwrap_or(&event.parameter).to_string();
+		let name = event
+			.parameter
+			.strip_prefix(self.prefix.as_str())
+			.unwrap_or(&event.parameter)
+			.to_string();
 		if let Some(parameter) = state.routes[self.route]
 			.parameters
 			.iter_mut()
@@ -780,7 +784,11 @@ mod tests {
 		pass.declare([("ui", Accepts::Choice(&["enabled", "bypassed"]), enabled())]);
 		pass.declare([("bloom", Accepts::Choice(&["enabled", "bypassed"]), enabled())]);
 
-		let names: Vec<String> = configuration.parameters().into_iter().map(|parameter| parameter.name).collect();
+		let names: Vec<String> = configuration
+			.parameters()
+			.into_iter()
+			.map(|parameter| parameter.name)
+			.collect();
 		assert_eq!(names, ["render.lod.bias", "render.lod.force", "render.pass.bloom"]);
 	}
 

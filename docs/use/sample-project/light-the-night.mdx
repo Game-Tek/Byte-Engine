@@ -1,0 +1,163 @@
+---
+title: Light the night
+description: Light the booth with glowing bulbs, hidden lamps, and moonlight, and add haze and bloom so the light glows.
+icon: Sun
+---
+
+In this step, you light the booth for a night at the fair: a string of glowing
+bulbs along the top of the opening, lamps hidden over the targets, and faint
+moonlight. A thin haze and a soft glow around bright light finish the look.
+
+## Make a bulb material
+
+A bulb glows, so its material gives off light. In `assets`, create one more
+variant of your paint:
+
+```json5 title="assets/bulb.bema"
+{
+	"parent": "paint.bema",
+	"variables": [
+		{ "name": "color", "value": [1.0, 0.9, 0.7] },
+		{ "name": "emission", "value": [400.0, 300.0, 150.0] }
+	]
+}
+```
+
+`emission` is how much light the surface gives off, in red, green, and blue.
+It's much larger than a color because it's an amount of light, not a fraction:
+a bulb is hundreds of times brighter than the paint around it.
+
+A glowing material makes the bulb look bright, but it doesn't light anything
+else. For that, you add lights.
+
+## Add the lights
+
+1. In the `use` block at the top of `src/main.rs`, add `constants` and the
+   light types. The block now looks like this:
+
+   ```rust title="src/main.rs"
+   use byte_engine::{
+   	application::graphics::{self, GraphicsApplication},
+   	constants::{forward, right},
+   	core::Creator as _,
+   	gameplay::transform::Transform,
+   	math::{Degrees, Point, Vector},
+   	physics::{Body, BodyTypes, LocalSpace, Shapes},
+   	rendering::{
+   		Camera, DirectionalLight, ExponentialHeightFog, FogLayer, LightColor, PhotometricIntensity, PointLight,
+   		RenderableMesh, SceneId, mesh::generator::BoxMeshGenerator, window::Window,
+   	},
+   	utils::Extent,
+   };
+   ```
+
+2. Add this function after `build_booth`:
+
+   ```rust title="src/main.rs"
+   /// Lights the booth for the night: a string of bulbs along the top of the opening, lamps hidden over the rows, and a
+   /// faint moon.
+   fn light_booth(app: &GraphicsApplication) {
+   	for bulb in 0..8 {
+   		let position = Point::new(-3.5 + bulb as f32, 3.5, 4.85);
+   		app.world()
+   			.create(RenderableMesh::generated(Box::new(
+   				BoxMeshGenerator::from_size(Vector::<LocalSpace>::new(0.06, 0.06, 0.06).into_maths()).with_material("bulb.bema"),
+   			)))
+   			.with(Transform::from_position(position));
+   		// Every other bulb casts light, which is plenty and keeps the shadowed lights few.
+   		if bulb % 2 == 0 {
+   			app.world()
+   				.create(PointLight::new(LightColor::kelvin(2700.0), PhotometricIntensity::luminous_flux(600.0)).unwrap())
+   				.with(Transform::from_position(position + forward() * 0.2 + right() * 0.5));
+   		}
+   	}
+
+   	for lamp in [Point::new(-3.0, 4.2, 8.0), Point::new(3.0, 4.2, 8.0), Point::new(0.0, 4.5, 11.0)] {
+   		app.world()
+   			.create(PointLight::new(LightColor::kelvin(3200.0), PhotometricIntensity::luminous_flux(2500.0)).unwrap())
+   			.with(Transform::from_position(lamp));
+   	}
+
+   	let moonlight = Vector::new(0.3, -1.0, 0.5).normalized().unwrap();
+   	app.world()
+   		.create(DirectionalLight::new(LightColor::kelvin(9000.0), PhotometricIntensity::illuminance(0.3)).unwrap())
+   		.with(Transform::from_rotation(moonlight.into()));
+
+   	app.world().factory::<ExponentialHeightFog>().create(
+   		ExponentialHeightFog::new(FogLayer::new(0.004).with_height_falloff(0.3)).with_ambient_illuminance(0.0),
+   	);
+   }
+   ```
+
+   Here is what each part creates:
+
+   - **Eight bulbs** in a row along the top of the opening, 1 meter apart. Each
+     is a small box with your glowing `bulb.bema`.
+   - **Four bulb lights.** A `PointLight` shines in every direction from one
+     point. Every other bulb gets one, just in front of it. Light color is a
+     temperature in kelvin: 2,700 K is the warm yellow of an old light bulb.
+     Brightness is in lumens, the number printed on a real bulb's box.
+   - **Three lamps** over the rows of targets, brighter and a little whiter.
+     They hang above the opening, so the player sees their light but not the
+     lamps.
+   - **The moon.** A `DirectionalLight` shines in one direction everywhere, like
+     the sun or the moon. Its `Transform` turns it to point down and away from
+     the player. Moonlight is about 0.3 lux, and 9,000 K gives it its cold blue.
+   - **The haze.** `ExponentialHeightFog` fills the air with a thin mist, so the
+     light of the bulbs and lamps shows in the air around them.
+
+3. In `main`, call `light_booth` right after `build_booth`:
+
+   ```rust title="src/main.rs"
+   		build_booth(app);
+   		light_booth(app);
+   ```
+
+<Callout type="info" title="Learn more about lights">
+	[Light your scene](/docs/use/lighting) shows how to choose a light's
+	color and how bright to make it, and how to give lights shadows. The
+	[lighting reference](/docs/reference/lighting) lists every light shape and
+	unit.
+</Callout>
+
+## Turn on the haze and the glow
+
+The haze and the glow around bright lights each need a render pass. In
+`main`, add two lines between the line that sets up the pipeline and the line
+that sets up the tone map:
+
+```rust title="src/main.rs"
+	graphics::setup_pbr_visibility_shading_render_pipeline(&mut app, SceneId::WORLD);
+	// A thin haze lets the bulbs' light glow through the air.
+	graphics::setup_exponential_height_fog_render_pass(&mut app);
+	graphics::setup_bloom_render_pass(&mut app, Default::default());
+	graphics::setup_agx_tonemap_render_pass(&mut app);
+```
+
+The order matters: each pass works on the picture that the passes before it
+drew. The fog pass draws haze over the scene, the bloom pass spreads bright
+light into a soft glow, and the tone map turns the result into screen colors,
+so it comes last.
+
+<Callout type="info" title="Learn more about fog">
+	To make thicker mist, mist that stays near the ground, or mist that fills
+	only part of a level, see [Add height fog](/docs/use/lighting#add-height-fog).
+</Callout>
+
+## Run the program
+
+Run `cargo run`. Now you see the booth at night: the string of bright bulbs
+along the top of the opening, the red curtain at the back, lit by the lamps,
+and the wooden counter in front of you. A soft haze glows around the lights.
+
+## Next step
+
+The booth is ready for targets. [Make the targets](/docs/use/sample-project/make-the-targets).
+
+## Rust API
+
+- [`PointLight`](/docs/api/latest/byte_engine/rendering/lights/point/PointLight)
+- [`DirectionalLight`](/docs/api/latest/byte_engine/rendering/lights/directional/DirectionalLight)
+- [`LightColor`](/docs/api/latest/byte_engine/rendering/LightColor)
+- [`PhotometricIntensity`](/docs/api/latest/byte_engine/rendering/PhotometricIntensity)
+- [`ExponentialHeightFog`](/docs/api/latest/byte_engine/rendering/ExponentialHeightFog)

@@ -71,7 +71,10 @@ async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationC
 	// The picture's pixels are copied into the UI's storage once, as it's declared.
 	let (id, source, picture) = ctx
 		.with(|shell: &mut Shell| {
-			let texture = shell.layers.texture().expect("The texture shows only while a texture is open.");
+			let texture = shell
+				.layers
+				.texture()
+				.expect("The texture shows only while a texture is open.");
 			let preview = &texture.preview;
 			(
 				texture.id.clone(),
@@ -93,7 +96,9 @@ async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationC
 		.await;
 	let mut image = holder
 		.element("image")
-		.image(picture_width, picture_height, pixels, |i| i.width(fit[0].into()).height(fit[1].into()))
+		.image(picture_width, picture_height, pixels, |i| {
+			i.width(fit[0].into()).height(fit[1].into())
+		})
 		.await;
 	let mut placed = None;
 	let mut asked = None;
@@ -200,7 +205,10 @@ impl Property {
 				Gamma::SRGB => "sRGB".to_owned(),
 				Gamma::Linear => "Linear".to_owned(),
 			},
-			Self::Coverage => settings.settings.coverage.map_or_else(|| "off".to_owned(), |cutoff| format!("{cutoff:.2}")),
+			Self::Coverage => settings
+				.settings
+				.coverage
+				.map_or_else(|| "off".to_owned(), |cutoff| format!("{cutoff:.2}")),
 			Self::Mips | Self::Compression | Self::CpuReadable => String::new(),
 		}
 	}
@@ -249,7 +257,10 @@ async fn settings(ctx: &mut EvaluationContext<Shell>) -> Option<ResolvedImageSet
 async fn properties_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
 	let (name, size) = ctx
 		.with(|shell: &mut Shell| {
-			let texture = shell.layers.texture().expect("The texture's drawer shows only while a texture is open.");
+			let texture = shell
+				.layers
+				.texture()
+				.expect("The texture's drawer shows only while a texture is open.");
 			let name = texture.id.rsplit('/').next().unwrap_or(&texture.id).to_owned();
 			let source = texture.preview.source;
 			(name, format!("{} × {}", source[0], source[1]))
@@ -428,11 +439,17 @@ async fn coverage_field(ctx: &mut EvaluationContext<Shell>, control: &mut Evalua
 async fn value_text(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationContext<Shell>, property: Property) {
 	let mut row = control
 		.element("value")
-		.container(|c| c.width(CONTROL_WIDTH.into()).height(FIELD_HEIGHT.into()).flow(flow::centered_row))
+		.container(|c| {
+			c.width(CONTROL_WIDTH.into())
+				.height(FIELD_HEIGHT.into())
+				.flow(flow::centered_row)
+		})
 		.await;
 	let current = settings(ctx).await;
 	let text = current.map_or_else(|| "–".to_owned(), |settings| property.value(&settings));
-	row.element("text").text(&text, |t| t.font_size(12.0).style([solid(TEXT)])).await;
+	row.element("text")
+		.text(&text, |t| t.font_size(12.0).style([solid(TEXT)]))
+		.await;
 	// The file name sets these, so they don't change while the texture is open.
 	std::future::pending::<()>().await;
 }

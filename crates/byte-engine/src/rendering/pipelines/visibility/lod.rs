@@ -501,7 +501,10 @@ impl LodView {
 	pub(crate) fn in_space(&self, model: &Mat4x3f) -> LodSpace {
 		let [x_axis, y_axis, z_axis, translation] = <[[f32; 3]; 4]>::from(*model).map(|[x, y, z]| Vec3f::new(x, y, z));
 		let scales = [x_axis, y_axis, z_axis].map(|axis| dot(axis, axis).sqrt());
-		let (smallest, largest) = (scales.into_iter().fold(f32::INFINITY, f32::min), scales.into_iter().fold(0.0, f32::max));
+		let (smallest, largest) = (
+			scales.into_iter().fold(f32::INFINITY, f32::min),
+			scales.into_iter().fold(0.0, f32::max),
+		);
 		// The eye in model space solves `axes × eye = eye − translation` by Cramer's rule.
 		let determinant = dot(x_axis, cross(y_axis, z_axis));
 		let relative = self.eye - translation;
@@ -513,7 +516,11 @@ impl LodView {
 		}
 		// A model-space distance is at least the smallest scale's share of the world-space one, and a model-space
 		// error at most the largest scale's, so the allowance never shows more than the allowed pixels.
-		LodSpace::new(eye, self.error_per_distance * smallest / largest, self.constant_error / largest)
+		LodSpace::new(
+			eye,
+			self.error_per_distance * smallest / largest,
+			self.constant_error / largest,
+		)
 	}
 
 	/// Returns the largest model-space error that stays within the allowed pixels for an instance.
@@ -748,9 +755,20 @@ mod tests {
 		// Far away, distance alone would draw the coarsest level.
 		let far = instance(0.0, 600.0, 1.0);
 		assert_eq!(pinned(Some(1)).select(&lods, &far, SPHERE), Some(1));
-		assert_eq!(pinned(Some(9)).select(&lods, &far, SPHERE), Some(2), "past the coarsest, the coarsest");
-		assert_eq!(pinned(None).select(&lods, &far, SPHERE), Some(0), "without one, the runtime setting forces");
-		assert!(!pinned(Some(1)).scales_alike(&pinned(Some(2))), "a new level picks every instance anew");
+		assert_eq!(
+			pinned(Some(9)).select(&lods, &far, SPHERE),
+			Some(2),
+			"past the coarsest, the coarsest"
+		);
+		assert_eq!(
+			pinned(None).select(&lods, &far, SPHERE),
+			Some(0),
+			"without one, the runtime setting forces"
+		);
+		assert!(
+			!pinned(Some(1)).scales_alike(&pinned(Some(2))),
+			"a new level picks every instance anew"
+		);
 	}
 
 	#[test]
@@ -858,10 +876,16 @@ mod tests {
 		// A box around the camera allows no error.
 		assert_eq!(space.allowed_error([-10.0; 3], [10.0; 3]), 0.0);
 		// A collapsed model allows none anywhere.
-		assert_eq!(view.in_space(&instance(0.0, 10.0, 0.0)).allowed_error([0.0; 3], [1.0; 3]), 0.0);
+		assert_eq!(
+			view.in_space(&instance(0.0, 10.0, 0.0)).allowed_error([0.0; 3], [1.0; 3]),
+			0.0
+		);
 		// A model stretched along one axis measures distances by its shortest axis and errors by its longest.
 		let stretched = [[1.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 10.0]].into();
-		assert!(close(view.in_space(&stretched).allowed_error([0.0; 3], [1.0; 3]), 10.0 / 500.0 / 4.0));
+		assert!(close(
+			view.in_space(&stretched).allowed_error([0.0; 3], [1.0; 3]),
+			10.0 / 500.0 / 4.0
+		));
 	}
 
 	#[test]

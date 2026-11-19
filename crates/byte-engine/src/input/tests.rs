@@ -350,9 +350,13 @@ fn an_action_reports_the_window_its_input_came_from() {
 	sink.button("Keyboard.W", TickPolicy::OnChange);
 	let (main, tool) = (Handle::new(), Handle::new());
 	let mut press = |pressed: bool, window| {
-		fixture
-			.collector
-			.record(SeatHandle::stub(), fixture.keyboard, TriggerReference::Name("Keyboard.W"), pressed.into(), window);
+		fixture.collector.record(
+			SeatHandle::stub(),
+			fixture.keyboard,
+			TriggerReference::Name("Keyboard.W"),
+			pressed.into(),
+			window,
+		);
 	};
 	press(true, Some(main));
 	press(false, Some(tool));
@@ -726,7 +730,8 @@ fn transient_boolean_records_do_not_claim_or_repeat() {
 				SeatHandle::stub(),
 				device,
 				TriggerReference::Handle(trigger),
-				Value::Bool(true), None,
+				Value::Bool(true),
+				None,
 			);
 		}
 		assert_eq!(fixture.pull(&mut ui, |_| capture).len(), 2);
@@ -757,7 +762,8 @@ fn snapshot_bindings_sample_each_press_in_queue_order() {
 		seat,
 		other_mouse,
 		TriggerReference::Name("Pointer.Position"),
-		Value::Vector2(Axis2::new(99.0, 99.0)), None,
+		Value::Vector2(Axis2::new(99.0, 99.0)),
+		None,
 	);
 	fixture.record("Pointer.LeftButton", true);
 	assert_eq!(sink.count(&mut fixture.collector), 0);
@@ -793,7 +799,8 @@ fn snapshot_bindings_sample_each_press_in_queue_order() {
 		SeatHandle::from_index(42),
 		fixture.mouse,
 		TriggerReference::Name("Pointer.LeftButton"),
-		Value::Bool(true), None,
+		Value::Bool(true),
+		None,
 	);
 	assert_eq!(sink.count(&mut fixture.collector), 0);
 }
@@ -975,7 +982,8 @@ fn drags_require_a_sample_at_press_and_keep_devices_and_seats_separate() {
 			seat,
 			device,
 			TriggerReference::Name("Pointer.Position"),
-			Axis2::new(8.0, 9.0).into(), None,
+			Axis2::new(8.0, 9.0).into(),
+			None,
 		);
 	}
 	fixture.record("Pointer.LeftButton", true);
@@ -1008,7 +1016,8 @@ fn drags_require_a_sample_at_press_and_keep_devices_and_seats_separate() {
 			seat,
 			device,
 			TriggerReference::Name("Pointer.Position"),
-			Axis2::new(3.0, 4.0).into(), None,
+			Axis2::new(3.0, 4.0).into(),
+			None,
 		);
 		fixture
 			.collector
@@ -1053,7 +1062,8 @@ fn unknown_seats_cannot_alias_retained_controls() {
 		SeatHandle::stub(),
 		device,
 		TriggerReference::Handle(triggers[0]),
-		Value::Bool(true), None,
+		Value::Bool(true),
+		None,
 	);
 	sink.pull(&mut collector, |_| Capture::Passed);
 	sink.pull(&mut collector, |_| Capture::Passed);

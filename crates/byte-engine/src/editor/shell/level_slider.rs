@@ -100,11 +100,7 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 				.corner_radius(TRACK_HEIGHT * 0.5)
 				.style([
 					solid(hex(0x000000, 0.0)),
-					ConcreteLayer::default().color(vertical(
-						TRACK_HEIGHT,
-						hex(darker(ACCENT_RGB), 1.0),
-						hex(ACCENT_RGB, 1.0),
-					)),
+					ConcreteLayer::default().color(vertical(TRACK_HEIGHT, hex(darker(ACCENT_RGB), 1.0), hex(ACCENT_RGB, 1.0))),
 					top_highlight(0.12),
 				])
 		})
@@ -121,7 +117,11 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 					.style([solid(hex(0xFFFFFF, 0.22))])
 			})
 			.await;
-		let text = if index == 0 { "Auto".to_owned() } else { (index - 1).to_string() };
+		let text = if index == 0 {
+			"Auto".to_owned()
+		} else {
+			(index - 1).to_string()
+		};
 		let mut label = pill
 			.element(("label", index))
 			.container(|c| {
@@ -134,7 +134,9 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 		labels.push(
 			label
 				.element("text")
-				.text(&text, |t| t.font_size(11.0).style([solid(if index == chosen { TEXT } else { MUTED })]))
+				.text(&text, |t| {
+					t.font_size(11.0).style([solid(if index == chosen { TEXT } else { MUTED })])
+				})
 				.await,
 		);
 	}
@@ -200,7 +202,10 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 		let (viewport, room) = ctx
 			.with(move |shell: &mut Shell| {
 				shell.detail_level = level;
-				(shell.viewport, open_room(shell.viewport.x(), shell.drawer_shown, shell.drawers))
+				(
+					shell.viewport,
+					open_room(shell.viewport.x(), shell.drawer_shown, shell.drawers),
+				)
 			})
 			.await;
 		let left = ((room[0] + room[1] - width) * 0.5).clamp(0.0, (viewport.x() - width).max(0.0));

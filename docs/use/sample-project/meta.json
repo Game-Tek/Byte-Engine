@@ -1,0 +1,5 @@
+{
+	"title": "Your first Byte",
+	"icon": "Gamepad2",
+	"pages": ["index", "open-a-window", "build-the-booth", "light-the-night", "make-the-targets", "aim-and-fire", "keep-score"]
+}

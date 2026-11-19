@@ -93,7 +93,10 @@ impl DefaultInspector {
 	pub fn mesh(&self, id: &str) -> Result<Mesh, String> {
 		let failure = format!("The mesh '{id}' could not be read.");
 		self.on_store(&failure, |store| async {
-			let mesh = store.request::<Mesh>(id).await.map_err(|error| format!("{failure} {error}"))?;
+			let mesh = store
+				.request::<Mesh>(id)
+				.await
+				.map_err(|error| format!("{failure} {error}"))?;
 			Ok(mesh.into_resource())
 		})
 	}
@@ -206,7 +209,6 @@ fn asset_manager(store: &ResourceManager) -> Result<&resource_management::asset:
 	}
 }
 
-
 /// Reads every page of the IDs of `class`'s resources, sorted.
 async fn query_all(resources: &ResourceManager, class: &str) -> Result<Vec<String>, String> {
 	let mut ids = Vec::new();
@@ -316,7 +318,10 @@ mod tests {
 
 		assert_eq!(inspector.source_assets("bemx").unwrap(), ["materials/floor.bemx"]);
 		assert_eq!(inspector.read_source_asset("materials/floor.bemx").unwrap(), b"{ nodes: [] }");
-		assert_eq!(inspector.read_source_asset("materials/floor.png").unwrap(), [0u8, 159, 146, 150]);
+		assert_eq!(
+			inspector.read_source_asset("materials/floor.png").unwrap(),
+			[0u8, 159, 146, 150]
+		);
 
 		inspector.write_source_asset("materials/wall.bemx", "{ nodes: [1] }").unwrap();
 		assert_eq!(

@@ -101,10 +101,42 @@ pub(crate) const LIGHT: [Setting; 14] = [
 	light("/color/linear_srgb/0", "R", 1.0, "", 2, Scrub::Linear(0.005), "–"),
 	light("/color/linear_srgb/1", "G", 1.0, "", 2, Scrub::Linear(0.005), "–"),
 	light("/color/linear_srgb/2", "B", 1.0, "", 2, Scrub::Linear(0.005), "–"),
-	light("/intensity/illuminance/lux", "Lux", 1.0, " lx", 0, Scrub::Exponential(120.0), "–"),
-	light("/intensity/luminous_intensity/candela", "Cd", 1.0, " cd", 0, Scrub::Exponential(120.0), "–"),
-	light("/intensity/luminous_flux/lumens", "Flux", 1.0, " lm", 0, Scrub::Exponential(120.0), "–"),
-	light("/intensity/luminance/nits", "Lum", 1.0, " nt", 0, Scrub::Exponential(120.0), "–"),
+	light(
+		"/intensity/illuminance/lux",
+		"Lux",
+		1.0,
+		" lx",
+		0,
+		Scrub::Exponential(120.0),
+		"–",
+	),
+	light(
+		"/intensity/luminous_intensity/candela",
+		"Cd",
+		1.0,
+		" cd",
+		0,
+		Scrub::Exponential(120.0),
+		"–",
+	),
+	light(
+		"/intensity/luminous_flux/lumens",
+		"Flux",
+		1.0,
+		" lm",
+		0,
+		Scrub::Exponential(120.0),
+		"–",
+	),
+	light(
+		"/intensity/luminance/nits",
+		"Lum",
+		1.0,
+		" nt",
+		0,
+		Scrub::Exponential(120.0),
+		"–",
+	),
 	light("/intensity/ies/dimmer", "Dimmer", 1.0, "", 2, Scrub::Linear(0.005), "–"),
 	light("/inner_angle", "Inner", DEGREES, "°", 1, Scrub::Linear(0.004), "–"),
 	light("/outer_angle", "Outer", DEGREES, "°", 1, Scrub::Linear(0.004), "–"),
@@ -306,7 +338,10 @@ impl Setting {
 	/// or what the field shows unset, and `None` means the text isn't a number.
 	pub(crate) fn parse(&self, text: &str) -> Option<Option<f32>> {
 		let text = text.trim().trim_end_matches(self.unit.trim()).trim();
-		if ["∞", "inf", "off", self.unset].iter().any(|unset| text.eq_ignore_ascii_case(unset)) {
+		if ["∞", "inf", "off", self.unset]
+			.iter()
+			.any(|unset| text.eq_ignore_ascii_case(unset))
+		{
 			return Some(None);
 		}
 		text.parse::<f32>().ok().map(|value| Some(value / self.display_scale))

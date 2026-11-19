@@ -49,7 +49,11 @@ pub struct Panel<'a> {
 
 impl<'a> Panel<'a> {
 	pub(crate) fn new(ctx: &'a mut EvaluationContext<Shell>, entity: Handle) -> Self {
-		Self { ctx, entity, controls: 0 }
+		Self {
+			ctx,
+			entity,
+			controls: 0,
+		}
 	}
 
 	/// The selected entity the panel shows.
@@ -140,7 +144,10 @@ impl<'a> Panel<'a> {
 			.element("text")
 			.text(text, |t| t.font_size(12.0).style([solid(TEXT)]))
 			.await;
-		Label { text, shown: String::new() }
+		Label {
+			text,
+			shown: String::new(),
+		}
 	}
 
 	fn next_key(&mut self) -> usize {

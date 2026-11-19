@@ -1,0 +1,145 @@
+---
+title: Open a window
+description: Start the engine, place a camera where the player stands, and show what it sees in a window.
+icon: PanelTop
+---
+
+In this step, you write the smallest Byte Engine application that does
+something you can see: it opens a window that shows what a camera sees. The
+rest of the tutorial builds on this program.
+
+## Write the program
+
+Open `src/main.rs` in your project, delete everything in it, and type this
+program:
+
+```rust title="src/main.rs"
+use byte_engine::{
+	application::graphics::{self, GraphicsApplication},
+	core::Creator as _,
+	gameplay::transform::Transform,
+	math::{Degrees, Point},
+	rendering::{Camera, SceneId, window::Window},
+	utils::Extent,
+};
+
+/// Returns where the player's eyes are. The booth is in front, along +z.
+fn eye() -> Point {
+	Point::new(0.0, 1.6, 0.0)
+}
+
+fn main() {
+	let mut app = GraphicsApplication::new("gallery", &[]);
+
+	graphics::setup_default_resource_and_asset_management(&mut app, graphics::configure_default_baking);
+	graphics::setup_default_input(&mut app);
+	graphics::setup_pbr_visibility_shading_render_pipeline(&mut app, SceneId::WORLD);
+	graphics::setup_agx_tonemap_render_pass(&mut app);
+	graphics::defaults::launch_deferred_tasks_thread(&mut app);
+
+	// Windows created inside a tick are adopted after it, so the scene is built in a tick of its own.
+	let Some(camera) = app.tick_with(|app, _| {
+		let camera = app
+			.world()
+			.create(Camera::new().with_fov(Degrees::new(60.0)).with_exposure(-3.5))
+			.with(Transform::from_position(eye()))
+			.handle();
+		let mut window = Window::new("gallery", Extent::rectangle(1600, 900));
+		window.attach(camera);
+		app.window_factory().create(window);
+
+		camera
+	}) else {
+		return;
+	};
+
+	while app.tick_with(|_, _| {}).is_some() {}
+}
+```
+
+## Understand the program
+
+Read the program from the top down. It does four things.
+
+1. **It creates the application.** `GraphicsApplication::new` creates an
+   application named `gallery`. The application holds everything your game
+   uses: its world, its windows, and its render passes.
+
+2. **It sets up the engine's systems.** Each `graphics::setup_` call turns on
+   one system:
+
+   - `setup_default_resource_and_asset_management` finds the files in your
+     `assets` folder and prepares them for the engine. You add your own files
+     there in the next step.
+   - `setup_default_input` reads the mouse, the keyboard, and gamepads.
+   - `setup_pbr_visibility_shading_render_pipeline` draws your scene with
+     physically based lighting, so surfaces look like real materials.
+   - `setup_agx_tonemap_render_pass` turns the light the renderer computes
+     into colors your screen can show.
+   - `launch_deferred_tasks_thread` starts the work that loads resources in the
+     background, while your game keeps running. Call it after the other setup
+     calls.
+
+3. **It builds the scene in the first tick.** Your game runs in *ticks*: each
+   call to `tick_with` advances the game by one frame and runs the code you
+   pass it. The first tick creates a camera and a window:
+
+   - `app.world().create(...)` adds an *entity* to the world. Here the entity
+     is a `Camera` with a 60° field of view, and `with` gives it a `Transform`
+     that places it at `eye()`, 1.6 meters above the ground, where a
+     standing player's eyes are.
+   - `handle()` returns the camera's *handle*, a small value that names the
+     camera so you can change it later.
+   - `Window::new` describes a window of 1,600 by 900 pixels, and `attach`
+     makes it show the camera's view. `window_factory().create` opens it.
+
+   The tick returns the camera's handle, so the rest of `main` can use it.
+   `tick_with` returns `None` when the application is closing, and the
+   `let ... else` statement then ends `main`.
+
+4. **It runs the game.** The `while` loop calls `tick_with` again and again
+   until the player closes the window. Each of those ticks has nothing to do yet.
+
+<Callout type="info" title="Where things are">
+	Byte Engine measures distances in meters. +y points up, +z points forward,
+	away from the player, and +x points to the right. You build the booth in
+	front of the player, along +z. See [Conventions](/docs/reference/conventions#axes)
+	for every axis and unit the engine uses.
+</Callout>
+
+`with_exposure(-3.5)` sets how much the camera darkens the light it sees, in
+stops. Byte Engine lights scenes with real-world amounts of light, so a camera
+under the midday sun needs about −15. The booth you build is lit by a few bulbs
+at night, so it needs much less. To learn how to choose an exposure, see
+[Set camera exposure](/docs/use/lighting#set-camera-exposure).
+
+## Run the program
+
+In a terminal, in your project folder, run the application:
+
+```sh
+cargo run
+```
+
+The first run takes several minutes: Cargo compiles Byte Engine, and the
+engine prepares its own shaders. Later runs start much faster.
+
+A window titled **gallery** opens. It's black, because the world has nothing in
+it yet. Close the window to end the application.
+
+<Callout type="info" title="Warnings about unused names">
+	Rust warns that `camera` is never used. That's expected: you use the camera
+	to aim in [Aim and fire](/docs/use/sample-project/aim-and-fire). In this
+	tutorial, a warning about a name that a later step uses is safe to ignore.
+</Callout>
+
+## Next step
+
+Fill the world with something to look at: [build the booth](/docs/use/sample-project/build-the-booth).
+
+## Rust API
+
+- [`GraphicsApplication`](/docs/api/latest/byte_engine/application/graphics/GraphicsApplication)
+- [`Camera`](/docs/api/latest/byte_engine/rendering/camera/Camera)
+- [`Transform`](/docs/api/latest/byte_engine/gameplay/transform/Transform)
+- [`Window`](/docs/api/latest/byte_engine/rendering/window/Window)

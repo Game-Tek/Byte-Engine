@@ -39,13 +39,13 @@ pub(crate) use events::{EventBatch, EventCursor, EventFilter, EventSignal, Event
 pub mod http;
 mod message;
 mod properties;
-use properties::Properties;
 use message::SerializableMessage;
 pub use message::{
 	CAMERA_UPDATE_MESSAGE_TYPE, CONE_LIGHT_UPDATE_MESSAGE_TYPE, DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE,
 	DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE, POINT_LIGHT_UPDATE_MESSAGE_TYPE, RegisteredMessageType,
 	TRANSFORMATION_UPDATE_MESSAGE_TYPE, TRIGGER_ACTION_MESSAGE_TYPE,
 };
+use properties::Properties;
 #[cfg(feature = "headed")]
 pub(crate) mod screenshot;
 // The search's fuzzy matcher comes with the headed build, as the console does.
@@ -400,8 +400,18 @@ fn watch_properties(messages: &MessageScope, properties: &Arc<Properties>, obser
 	#[cfg(feature = "headed")]
 	{
 		watch(properties, "camera", &messages.channel::<crate::rendering::CameraUpdate>()).expect(DISTINCT);
-		watch(properties, "point_light", &messages.channel::<crate::rendering::PointLightUpdate>()).expect(DISTINCT);
-		watch(properties, "cone_light", &messages.channel::<crate::rendering::ConeLightUpdate>()).expect(DISTINCT);
+		watch(
+			properties,
+			"point_light",
+			&messages.channel::<crate::rendering::PointLightUpdate>(),
+		)
+		.expect(DISTINCT);
+		watch(
+			properties,
+			"cone_light",
+			&messages.channel::<crate::rendering::ConeLightUpdate>(),
+		)
+		.expect(DISTINCT);
 		watch(
 			properties,
 			"directional_light",
@@ -433,7 +443,6 @@ mod tests {
 	use std::sync::Arc;
 
 	use math::Point;
-
 	use serde_json::json;
 
 	use super::DefaultInspector;
@@ -521,7 +530,9 @@ mod tests {
 		inspector.watch_property("plan", plans.clone()).unwrap();
 		inspector.register_message("Plan", plans).unwrap();
 		assert!(
-			inspector.watch_property("plan", world.channel::<CreateMessage<Plan>>()).is_err(),
+			inspector
+				.watch_property("plan", world.channel::<CreateMessage<Plan>>())
+				.is_err(),
 			"a name is registered once"
 		);
 

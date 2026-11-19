@@ -1,0 +1,590 @@
+---
+title: Keep score
+description: Read where physics moved each target to count the ones you knock down, keep the rows evenly spaced, and bring every target back around.
+icon: Sparkles
+---
+
+In this last step, you finish the game. You count each target you knock down,
+and you bring each target back around, standing again, when it slides off the
+end of its row.
+
+## Find out where physics moved things
+
+To know when a target falls, or when it reaches the end of its row, your game
+needs to know where physics moved it. After each step, physics sends a
+`TransformationUpdate` for each body it moved, on the same channel you used to
+turn the camera. Your game listens to that channel.
+
+1. In the `use` block, add `listener::Listener as _` to the `core` line, so
+   it reads:
+
+   ```rust title="src/main.rs"
+   	core::{Creator as _, channel::Channel as _, factory::Handle, listener::Listener as _, message::DeleteMessage},
+   ```
+
+2. After the line that creates the `fire` listener, create a listener for
+   transform updates:
+
+   ```rust title="src/main.rs"
+   	// Physics publishes where it moved every body here, which tells the game where the targets are.
+   	let mut moved = app.world().channel::<TransformationUpdate>().listener();
+   ```
+
+3. After `let mut balls = VecDeque::new();`, add the score:
+
+   ```rust title="src/main.rs"
+   	let mut score = 0;
+   ```
+
+4. Your game changes the targets now, so the first tick must return them as
+   mutable. Change `targets` to `mut targets` in the line that starts the
+   first tick:
+
+   ```rust title="src/main.rs"
+   	let Some((camera, look, fire, mut targets)) = app.tick_with(|app, _| {
+   ```
+
+## Count the hits
+
+1. In the `while` loop, right after the line that reads `now`, read how long
+   the tick took:
+
+   ```rust title="src/main.rs"
+   			let delta = time.delta().as_seconds_f32();
+   ```
+
+2. Right before the comment `// Last, so the step sees every ball`, add this
+   code. It reads every transform update physics sent:
+
+   ```rust title="src/main.rs"
+   			// Note where each carriage went, and count each disk the first time it tips past halfway down.
+   			while let Some(update) = moved.read() {
+   				for target in targets.iter_mut() {
+   					if update.handle() == target.carriage {
+   						let x = update.transform().get_position().x();
+   						if delta > 0.0 {
+   							target.speed = (x - target.x) / delta;
+   						}
+   						target.x = x;
+   					} else if update.handle() == target.disk && !target.down {
+   						let disk_up = update.transform().get_orientation().rotate_vector(up().into_vector());
+   						if disk_up.y() < 0.5 {
+   							target.down = true;
+   							score += 1;
+   							println!("Hit! Score: {score}");
+   						}
+   					}
+   				}
+   			}
+   ```
+
+   `moved.read()` returns the next update, or `None` when there are no more.
+   For each update, the code looks for the target it belongs to:
+
+   - **A carriage update** says where the carriage is now. The code keeps its
+     position along the row in `x`, and works out its speed: how far it moved,
+     divided by how long the tick took.
+   - **A disk update** says how the disk is turned. The code turns the up
+     direction by the disk's orientation to find which way the disk's top
+     points. When the top points less than halfway up, the disk has fallen.
+     The first time that happens, `down` becomes `true`, the score goes up,
+     and the game prints the score.
+
+A target counts when its disk falls, not when a ball touches it, so a ball
+that only grazes a target doesn't score.
+
+<Callout type="info" title="Learn more about transforms">
+	To learn how an entity's transform changes and who sends the updates, see
+	[Transforms](/docs/reference/world#transforms).
+</Callout>
+
+## Bring the targets around
+
+Right after the code you just added, still before the
+`// Last, so the step sees every ball` comment, add this loop:
+
+```rust title="src/main.rs"
+			for target in targets.iter_mut() {
+				let row = &ROWS[target.row];
+				// Carriages slide without friction, but balls that hit them nudge them. A push back to the row's speed
+				// keeps the targets evenly spaced.
+				let push = (row.speed - target.speed) * CARRIAGE_MASS;
+				physics.apply_impulse(target.carriage, Vector::new(push, 0.0, 0.0));
+
+				// A carriage that slid out of one side of the booth comes back in at the other, with its disk standing.
+				let half_width = row_half_width(row);
+				let past_end = if row.speed > 0.0 { target.x > half_width } else { target.x < -half_width };
+				if past_end {
+					target.x -= 2.0 * half_width * row.speed.signum();
+					target.down = false;
+					let (carriage, disk) = target_poses(row, target.x);
+					TransformationUpdate::apply(&world.channel(), target.carriage, carriage);
+					TransformationUpdate::apply(&world.channel(), target.disk, disk);
+				}
+			}
+```
+
+It does two things for every target:
+
+1. **It keeps the row's speed.** A ball that hits a carriage pushes it, and
+   without help, the targets in a row would bunch up. An *impulse* is a push
+   that changes a body's speed at once: the difference between the row's speed
+   and the carriage's speed, times the carriage's mass, puts it back at the
+   row's speed.
+2. **It brings the target around.** When a carriage slides past the end of its
+   row, the code moves it to the other end. `target_poses` says where the
+   carriage and its disk go there, standing up again, and
+   `TransformationUpdate::apply` moves each body there. `down` goes back to
+   `false`, so the target can score again.
+
+## Play
+
+Run `cargo run`. The rows slide past without end. Aim with the mouse and fire
+with the left mouse button or the space bar. Each target you knock down tips
+back and lies down, and the terminal prints your score:
+
+```text
+Hit! Score: 1
+Hit! Score: 2
+```
+
+A target you knocked down comes back standing when it reaches the end of its
+row and comes around again.
+
+Congratulations: you built your first Byte.
+
+## Check your program
+
+If something doesn't work, compare your `src/main.rs` with the complete
+program:
+
+```rust title="src/main.rs"
+//! A night-time shooting gallery, the kind found at a fair: rows of bullseye targets slide past, each row the other
+//! way and at its own depth, and you knock them down with balls fired from where you stand.
+//!
+//! Every target is a disk on a hinge, standing on a small carriage that slides along its row's shelf. A ball that
+//! hits a disk tips it back on its hinge until it lies down. When a carriage leaves the booth at one side, it comes
+//! back in at the other with its disk stood up again.
+//!
+//! Look around with the mouse and fire with the left mouse button or the space bar. Run it from this crate's
+//! directory with `cargo run`.
+
+mod disk;
+
+use std::collections::VecDeque;
+
+use byte_engine::{
+	application::{
+		graphics::{self, GraphicsApplication},
+		parameters::Parameters as _,
+	},
+	constants::{forward, right, up},
+	core::{Creator as _, channel::Channel as _, factory::Handle, listener::Listener as _, message::DeleteMessage},
+	gameplay::transform::{Transform, TransformationUpdate},
+	input::{Action, ActionBindingDescription, ActionEvent, Axis3, Extract, Function, Types, ValueMapping},
+	math::{Degrees, Orientation, Point, Radians, Scale, UnitVector, Vector, orientation_from_direction},
+	physics::{Body, BodyTypes, Constraint, LocalSpace, Physics, Shapes, build_convex_hull},
+	rendering::{
+		Camera, DirectionalLight, ExponentialHeightFog, FogLayer, LightColor, PhotometricIntensity, PointLight,
+		RenderableMesh, SceneId, mesh::generator::BoxMeshGenerator, window::Window,
+	},
+	utils::Extent,
+};
+
+use crate::disk::Disk;
+
+/// Returns where the player's eyes are. The booth is in front, along +z.
+fn eye() -> Point {
+	Point::new(0.0, 1.6, 0.0)
+}
+/// How fast a ball leaves the cannon, in meters per second.
+const BALL_SPEED: f32 = 30.0;
+const BALL_RADIUS: f32 = 0.06;
+/// How long a ball stays in the world after it is fired, in seconds.
+const BALL_LIFETIME: f32 = 4.0;
+
+/// The `Row` struct describes one shelf of targets: how far it is from the player, how high its shelf is, and how
+/// fast its targets slide, with the sign giving the direction.
+struct Row {
+	depth: f32,
+	height: f32,
+	speed: f32,
+}
+
+/// The rows, nearest first. Each one is higher than the one in front so its targets show over it, and slides the
+/// other way.
+const ROWS: [Row; 3] = [
+	Row { depth: 7.0, height: 0.8, speed: 1.5 },
+	Row { depth: 9.5, height: 1.4, speed: -2.0 },
+	Row { depth: 12.0, height: 2.0, speed: 2.5 },
+];
+
+/// The distance between neighboring targets along a row.
+const TARGET_SPACING: f32 = 1.6;
+/// Returns the half size of a carriage, the block a target stands on.
+fn carriage_size() -> Vector<LocalSpace> {
+	Vector::new(0.25, 0.1, 0.15)
+}
+const CARRIAGE_MASS: f32 = 20.0;
+/// The gap between a carriage's top and its disk's rim, so the two never touch.
+const HINGE_GAP: f32 = 0.05;
+const DISK: Disk = Disk { radius: 0.3, half_thickness: 0.03, material: "target.bema" };
+/// How far a standing disk leans toward the player, so gravity holds it against its hinge's forward stop.
+const LEAN: f32 = 0.1;
+/// How far back from standing a disk can fall before its hinge stops it, lying down.
+const FALL: f32 = 1.45;
+
+/// The `Target` struct tracks one carriage and the disk hinged to it, so the game can bring it around and count it.
+struct Target {
+	carriage: Handle,
+	disk: Handle,
+	row: usize,
+	/// Where along the row the carriage was when physics last moved it.
+	x: f32,
+	/// How fast the carriage moved along the row in that step.
+	speed: f32,
+	/// Whether the disk has been knocked down since the target last came around.
+	down: bool,
+}
+
+fn main() {
+	let mut app = GraphicsApplication::new("gallery", &[]);
+
+	graphics::setup_default_resource_and_asset_management(&mut app, graphics::configure_default_baking);
+	graphics::setup_default_input(&mut app);
+	graphics::setup_pbr_visibility_shading_render_pipeline(&mut app, SceneId::WORLD);
+	// A thin haze lets the bulbs' light glow through the air.
+	graphics::setup_exponential_height_fog_render_pass(&mut app);
+	graphics::setup_bloom_render_pass(&mut app, Default::default());
+	graphics::setup_agx_tonemap_render_pass(&mut app);
+	graphics::defaults::launch_deferred_tasks_thread(&mut app);
+
+	// Physics only sees bodies created after it, so it comes before the scene.
+	let mut physics = Physics::new(app.world(), app.parameters().scope("physics"));
+
+	// Windows created inside a tick are adopted after it, so the scene is built in a tick of its own.
+	let Some((camera, look, fire, mut targets)) = app.tick_with(|app, _| {
+		let camera = app
+			.world()
+			.create(Camera::new().with_fov(Degrees::new(60.0)).with_exposure(-3.5))
+			.with(Transform::from_position(eye()))
+			.handle();
+		let mut window = Window::new("gallery", Extent::rectangle(1600, 900));
+		window.attach(camera);
+		app.window_factory().create(window);
+
+		build_booth(app);
+		light_booth(app);
+		let targets = ROWS.iter().enumerate().flat_map(|(row, _)| build_row(app, row)).collect::<Vec<_>>();
+
+		let (look, fire) = create_actions(app);
+		(camera, look, fire, targets)
+	}) else {
+		return;
+	};
+
+	let events = app.world().channel::<ActionEvent>().listener();
+	let mut look = events.filtered(move |event| event.handle() == look);
+	let mut fire = events.filtered(move |event| event.handle() == fire);
+	// Physics publishes where it moved every body here, which tells the game where the targets are.
+	let mut moved = app.world().channel::<TransformationUpdate>().listener();
+
+	let mut aim = forward();
+	let mut balls = VecDeque::new();
+	let mut score = 0;
+
+	while app
+		.tick_with(|app, time| {
+			let now = time.elapsed().as_seconds_f32();
+			let delta = time.delta().as_seconds_f32();
+			let world = app.world();
+			// Balls deleted last tick leave the simulation before this tick's step.
+			physics.flush_deletions();
+
+			for event in &mut look {
+				let direction = Extract::<Axis3>::extract(&event.value());
+				if let Ok(direction) = Vector::new(direction.x, direction.y, direction.z).normalized() {
+					aim = direction;
+				}
+			}
+			world.channel::<TransformationUpdate>().send(TransformationUpdate::new(
+				camera,
+				Transform::new(eye(), Scale::identity(), orientation_from_direction(aim)),
+			));
+
+			// The cannon is invisible: balls come out just in front of the eyes, the way the player looks.
+			for event in &mut fire {
+				if Extract::<bool>::extract(&event.value()) {
+					let ball = world
+						.create(RenderableMesh::sphere(BALL_RADIUS))
+						.with(
+							Body::new(BodyTypes::Dynamic, Shapes::sphere(BALL_RADIUS))
+								.with_mass(0.3)
+								.with_velocity(aim * BALL_SPEED),
+						)
+						.with(Transform::from_position(eye() + aim * 0.5))
+						.handle();
+					balls.push_back((ball, now));
+				}
+			}
+			while balls.front().is_some_and(|&(_, fired)| now - fired > BALL_LIFETIME) {
+				let (ball, _) = balls.pop_front().unwrap();
+				world.channel::<DeleteMessage>().send(DeleteMessage::new(ball));
+			}
+
+			// Note where each carriage went, and count each disk the first time it tips past halfway down.
+			while let Some(update) = moved.read() {
+				for target in targets.iter_mut() {
+					if update.handle() == target.carriage {
+						let x = update.transform().get_position().x();
+						if delta > 0.0 {
+							target.speed = (x - target.x) / delta;
+						}
+						target.x = x;
+					} else if update.handle() == target.disk && !target.down {
+						let disk_up = update.transform().get_orientation().rotate_vector(up().into_vector());
+						if disk_up.y() < 0.5 {
+							target.down = true;
+							score += 1;
+							println!("Hit! Score: {score}");
+						}
+					}
+				}
+			}
+
+			for target in targets.iter_mut() {
+				let row = &ROWS[target.row];
+				// Carriages slide without friction, but balls that hit them nudge them. A push back to the row's speed
+				// keeps the targets evenly spaced.
+				let push = (row.speed - target.speed) * CARRIAGE_MASS;
+				physics.apply_impulse(target.carriage, Vector::new(push, 0.0, 0.0));
+
+				// A carriage that slid out of one side of the booth comes back in at the other, with its disk standing.
+				let half_width = row_half_width(row);
+				let past_end = if row.speed > 0.0 { target.x > half_width } else { target.x < -half_width };
+				if past_end {
+					target.x -= 2.0 * half_width * row.speed.signum();
+					target.down = false;
+					let (carriage, disk) = target_poses(row, target.x);
+					TransformationUpdate::apply(&world.channel(), target.carriage, carriage);
+					TransformationUpdate::apply(&world.channel(), target.disk, disk);
+				}
+			}
+
+			// Last, so the step sees every ball and transform this tick created.
+			physics.step(time, app.alley_mut());
+		})
+		.is_some()
+	{}
+}
+
+/// Returns how far a row reaches to each side: just past what the booth's opening lets the player see at its depth.
+fn row_half_width(row: &Row) -> f32 {
+	row.depth * 0.7 + 1.0
+}
+
+/// Returns where a carriage at `x` along `row` sits, and where its disk stands on it, leaning toward the player.
+fn target_poses(row: &Row, x: f32) -> (Transform, Transform) {
+	let carriage = Point::new(x, row.height + carriage_size().y(), row.depth);
+	// Turning about +x tips the top away from the player, so the lean toward them is a negative turn.
+	let lean = Orientation::try_from_axis_angle(right(), Radians::new(-LEAN)).unwrap();
+	let hinge = carriage + up() * (carriage_size().y() + HINGE_GAP);
+	let disk = hinge + lean.rotate_vector(up().into_vector()) * DISK.radius;
+	(
+		Transform::from_position(carriage),
+		Transform::new(disk, Scale::identity(), lean),
+	)
+}
+
+/// Creates a row's shelf and the targets that slide along it, and returns the targets.
+fn build_row(app: &GraphicsApplication, row: usize) -> Vec<Target> {
+	let Row { depth, height, speed } = ROWS[row];
+	let half_width = row_half_width(&ROWS[row]);
+
+	// The shelf is a block from the floor up to the row's height. Two low lips along its top keep the carriages on it
+	// when a ball knocks them back.
+	let length = half_width + 1.0;
+	block(app, Vector::new(length, height * 0.5, 0.5), Point::new(0.0, height * 0.5, depth), "wood.bema");
+	for side in [-1.0, 1.0] {
+		let lip = Vector::new(length, 0.04, 0.02);
+		let z = depth + side * (carriage_size().z() + 0.01 + lip.z());
+		block(app, lip, Point::new(0.0, height + lip.y(), z), "brass.bema");
+	}
+
+	// The disks share one hull: every disk collides as the same shape.
+	let hull = std::sync::Arc::new(build_convex_hull(&DISK.rim()).expect("a disk has volume"));
+	let count = (2.0 * half_width / TARGET_SPACING) as usize;
+	(0..count)
+		.map(|place| {
+			let x = -half_width + (place as f32 + 0.5) * 2.0 * half_width / count as f32;
+			let (carriage_pose, disk_pose) = target_poses(&ROWS[row], x);
+
+			// The carriage slides without friction and never turns, so it keeps the row's speed and stays upright.
+			let carriage = app
+				.world()
+				.create(RenderableMesh::generated(Box::new(
+					BoxMeshGenerator::from_size(carriage_size().into_maths()).with_material("brass.bema"),
+				)))
+				.with(
+					Body::new(BodyTypes::Dynamic, Shapes::cube(carriage_size()))
+						.with_mass(CARRIAGE_MASS)
+						.with_friction(0.0)
+						.with_rotation(false)
+						.with_velocity(Vector::new(speed, 0.0, 0.0)),
+				)
+				.with(carriage_pose)
+				.handle();
+			let disk = app
+				.world()
+				.create(RenderableMesh::generated(Box::new(DISK)))
+				.with(
+					Body::new(BodyTypes::Dynamic, Shapes::convex_hull(hull.clone()))
+						.with_mass(0.5)
+						.with_velocity(Vector::new(speed, 0.0, 0.0)),
+				)
+				.with(disk_pose)
+				.handle();
+
+			// The hinge runs along the row through the disk's bottom rim. It stops the disk where it was created,
+			// leaning forward, and lets it fall back until it lies nearly flat.
+			let axis = UnitVector::<LocalSpace>::x_axis();
+			let hinge = Constraint::hinge(carriage, disk, axis, Some(Radians::new(0.0)..=Radians::new(FALL))).with_anchors(
+				Point::new(0.0, carriage_size().y() + HINGE_GAP, 0.0),
+				Point::new(0.0, -DISK.radius, 0.0),
+			);
+			app.world().create(hinge);
+
+			Target { carriage, disk, row, x, speed, down: false }
+		})
+		.collect()
+}
+
+/// Creates the booth around the rows: the floor, a curtain behind them, and a front wall with an opening to shoot
+/// through.
+fn build_booth(app: &GraphicsApplication) {
+	block(app, Vector::new(20.0, 0.5, 20.0), Point::new(0.0, -0.5, 10.0), "wood.bema");
+	block(app, Vector::new(14.0, 4.0, 0.2), Point::new(0.0, 4.0, 14.0), "curtain.bema");
+
+	// The front wall's opening spans 7 meters across, from 1 to 3.6 meters high.
+	let wall = 5.0;
+	block(app, Vector::new(4.0, 2.75, 0.1), Point::new(-7.5, 2.75, wall), "booth.bema");
+	block(app, Vector::new(4.0, 2.75, 0.1), Point::new(7.5, 2.75, wall), "booth.bema");
+	block(app, Vector::new(3.5, 0.95, 0.1), Point::new(0.0, 4.55, wall), "booth.bema");
+	block(app, Vector::new(3.5, 0.5, 0.1), Point::new(0.0, 0.5, wall), "booth.bema");
+	// The counter the player leans on.
+	block(app, Vector::new(3.5, 0.05, 0.3), Point::new(0.0, 1.0, wall - 0.4), "wood.bema");
+}
+
+/// Lights the booth for the night: a string of bulbs along the top of the opening, lamps hidden over the rows, and a
+/// faint moon.
+fn light_booth(app: &GraphicsApplication) {
+	for bulb in 0..8 {
+		let position = Point::new(-3.5 + bulb as f32, 3.5, 4.85);
+		app.world()
+			.create(RenderableMesh::generated(Box::new(
+				BoxMeshGenerator::from_size(Vector::<LocalSpace>::new(0.06, 0.06, 0.06).into_maths()).with_material("bulb.bema"),
+			)))
+			.with(Transform::from_position(position));
+		// Every other bulb casts light, which is plenty and keeps the shadowed lights few.
+		if bulb % 2 == 0 {
+			app.world()
+				.create(PointLight::new(LightColor::kelvin(2700.0), PhotometricIntensity::luminous_flux(600.0)).unwrap())
+				.with(Transform::from_position(position + forward() * 0.2 + right() * 0.5));
+		}
+	}
+
+	for lamp in [Point::new(-3.0, 4.2, 8.0), Point::new(3.0, 4.2, 8.0), Point::new(0.0, 4.5, 11.0)] {
+		app.world()
+			.create(PointLight::new(LightColor::kelvin(3200.0), PhotometricIntensity::luminous_flux(2500.0)).unwrap())
+			.with(Transform::from_position(lamp));
+	}
+
+	let moonlight = Vector::new(0.3, -1.0, 0.5).normalized().unwrap();
+	app.world()
+		.create(DirectionalLight::new(LightColor::kelvin(9000.0), PhotometricIntensity::illuminance(0.3)).unwrap())
+		.with(Transform::from_rotation(moonlight.into()));
+
+	app.world().factory::<ExponentialHeightFog>().create(
+		ExponentialHeightFog::new(FogLayer::new(0.004).with_height_falloff(0.3)).with_ambient_illuminance(0.0),
+	);
+}
+
+/// Creates a static, painted box: `half` is its half size and `center` where its middle goes.
+fn block(app: &GraphicsApplication, half: Vector<LocalSpace>, center: Point, material: &'static str) {
+	app.world()
+		.create(RenderableMesh::generated(Box::new(
+			BoxMeshGenerator::from_size(half.into_maths()).with_material(material),
+		)))
+		.with(Body::new(BodyTypes::Static, Shapes::cube(half)))
+		.with(Transform::from_position(center));
+}
+
+/// Creates the two things the player does: look around with the mouse or right stick, and fire.
+fn create_actions(app: &GraphicsApplication) -> (Handle, Handle) {
+	let look = app
+		.world()
+		.create(Action::new(
+			"Look",
+			&[
+				ActionBindingDescription::new("Pointer.Position")
+					.mapped(Into::<ValueMapping>::into(Axis3::new(1.0, 1.0, 1.0)).function(Function::Sphere)),
+				ActionBindingDescription::new("Gamepad.RightStick"),
+			],
+			Types::Vector3,
+		))
+		.handle();
+	let fire = app
+		.world()
+		.create(Action::new(
+			"Fire",
+			&[
+				ActionBindingDescription::new("Pointer.LeftButton"),
+				ActionBindingDescription::new("Keyboard.Space"),
+				ActionBindingDescription::new("Gamepad.X"),
+			],
+			Types::Boolean,
+		))
+		.handle();
+	(look, fire)
+}
+```
+
+Your project has these files:
+
+```text
+my-game/
+├── Cargo.toml
+├── assets/
+│   ├── byte_engine        (the link to the engine's assets)
+│   ├── booth.bema
+│   ├── brass.bema
+│   ├── bulb.bema
+│   ├── bullseye.bema
+│   ├── bullseye.bemx
+│   ├── curtain.bema
+│   ├── paint.bema
+│   ├── paint.bemx
+│   ├── target.bema
+│   └── wood.bema
+└── src/
+    ├── disk.rs
+    └── main.rs
+```
+
+## Where to go next
+
+Make the game your own. Here are some ideas, and where to learn what you need:
+
+- **Add a timer**, and stop counting when it runs out. Use `time.elapsed()`,
+  which you already read in every tick.
+- **Show the score on screen** instead of in the terminal. See
+  [Build a user interface](/docs/use/gui).
+- **Play a sound** when a target falls. See [Play sounds](/docs/use/audio).
+- **Share it.** [Build and bundle your application](/docs/use/build) so others
+  can play it.
+
+## Rust API
+
+- [`TransformationUpdate`](/docs/api/latest/byte_engine/gameplay/transform/TransformationUpdate)
+- [`DynabitWorld::apply_impulse`](/docs/api/latest/byte_engine/physics/dynabit/world/World#method.apply_impulse), which you call through `Physics`
+- [`Physics::step`](/docs/api/latest/byte_engine/physics/Physics#method.step)

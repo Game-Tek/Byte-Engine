@@ -99,7 +99,10 @@ impl Ball {
 
 	/// The arcball coordinates of `pixel`: +x right and +y up from the ball's middle, in radii.
 	fn point(&self, pixel: [f32; 2]) -> [f32; 2] {
-		[(pixel[0] - self.center[0]) / self.radius, (self.center[1] - pixel[1]) / self.radius]
+		[
+			(pixel[0] - self.center[0]) / self.radius,
+			(self.center[1] - pixel[1]) / self.radius,
+		]
 	}
 }
 

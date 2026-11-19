@@ -34,13 +34,22 @@ impl Spawner {
 			spawner
 				.register::<crate::rendering::DirectionalLight>("directional_light")
 				.expect(DISTINCT);
-			spawner.register::<crate::rendering::PointLight>("point_light").expect(DISTINCT);
+			spawner
+				.register::<crate::rendering::PointLight>("point_light")
+				.expect(DISTINCT);
 			spawner.register::<crate::rendering::ConeLight>("cone_light").expect(DISTINCT);
 			spawner.register_with("lightmap", rendering::lightmap).expect(DISTINCT);
 			spawner.register_with("terrain", rendering::terrain).expect(DISTINCT);
 		}
 		#[cfg(not(feature = "headed"))]
-		for kind in ["mesh", "directional_light", "point_light", "cone_light", "lightmap", "terrain"] {
+		for kind in [
+			"mesh",
+			"directional_light",
+			"point_light",
+			"cone_light",
+			"lightmap",
+			"terrain",
+		] {
 			spawner.ignore(kind).expect(DISTINCT);
 		}
 		spawner
@@ -311,5 +320,4 @@ mod rendering {
 		}
 		Ok(RenderableTerrain::resource(resource_id))
 	}
-
 }

@@ -78,9 +78,16 @@ pub(crate) fn install(app: &mut GraphicsApplication) -> (Actions, Rc<RefCell<Lay
 	let keys = Key::LISTENED
 		.iter()
 		.map(|&key| {
-			let inputs: Vec<_> = key.inputs().iter().map(|&input| ActionBindingDescription::new(input)).collect();
+			let inputs: Vec<_> = key
+				.inputs()
+				.iter()
+				.map(|&input| ActionBindingDescription::new(input))
+				.collect();
 			let name = format!("Editor{key:?}");
-			(sink.create_action(collector, name, Types::Boolean, &inputs, TickPolicy::OnChange), key)
+			(
+				sink.create_action(collector, name, Types::Boolean, &inputs, TickPolicy::OnChange),
+				key,
+			)
 		})
 		.collect();
 	let mut action = |name: &'static str, bindings: &[ActionBindingDescription], kind: Types| {

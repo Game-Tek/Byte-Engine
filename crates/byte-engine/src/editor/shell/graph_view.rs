@@ -11,11 +11,11 @@
 use serde_json::Value as Json;
 
 use super::{
-	ACCENT, AXIS_COLORS, CORNER, MARGIN, MUTED, SQUIRCLE, Shell, TEXT,
-	hairline, hex, panel, read_typed, row_style, solid, top_highlight, typing_style, vertical,
+	ACCENT, AXIS_COLORS, CORNER, MARGIN, MUTED, SQUIRCLE, Shell, TEXT, hairline, hex, panel, read_typed, row_style, solid,
+	top_highlight, typing_style, vertical,
 };
-use crate::editor::layers::Layer;
 use crate::editor::graph::{Graph, HEADER_HEIGHT, NODE_WIDTH, PendingWire, ROW_HEIGHT, Row, Source};
+use crate::editor::layers::Layer;
 use crate::ui::components::container::Container;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;

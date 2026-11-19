@@ -286,6 +286,25 @@ The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves th
 - Add triangle-mesh and heightfield colliders, and convex hulls baked from mesh resources, so a `body` can collide as level geometry.
 - Share one `Arc<str>` per distinct mesh ID within a spawn. The `mesh` kind allocates its ID twice per entity, about 40 ns of the 47 ns a mesh costs to spawn.
 
+## Editor resource explorer (deferred)
+
+Cmd+E explores the game's resources: material graphs open on the canvas and textures show in a preview panel. Left out:
+
+- Preview a mesh from Cmd+E. Render images, isolated scenes (`GraphicsApplication::create_scene`), and GPU images in UI `image` elements now exist; what's left is the preview itself: stage the mesh in its own scene, orbit its camera, and show the render image in the explorer. Deferred on 2026-11-16.
+- Preview baked textures in builds without sources. Baked images are BC7; decoding needs the BC7 decoder in `resources/mips/bc7.rs` and a way to read a resource's binary streams through the inspector.
+
+## Editor levels (deferred)
+
+- Load the level the palette's New level command creates, in place of the running one, so the editor edits it. The command only writes an empty `.level` source today.
+- Name a new level as it's created. Today it's `untitled.level`, numbered when taken.
+
+## Clipboard (deferred)
+
+`ghi::window::App::set_clipboard_text` puts text on the clipboard on macOS only; the editor's Alt-click on a material name uses it. Deferred on 2026-11-17:
+
+- Windows: `OpenClipboard`, `EmptyClipboard`, then `SetClipboardData(CF_UNICODETEXT)` with a UTF-16 global allocation.
+- Wayland: offer a `wl_data_source` with `text/plain;charset=utf-8` through `wl_data_device::set_selection` with the last input serial, and write the text to each `send` request's descriptor from the event loop while it owns the selection.
+
 ## Ownership cleanup (deferred)
 
 - Replace the process-wide `COUNTER` in `crates/byte-engine/src/core/factory.rs` with an id counter owned by the world or message bus and passed to the factories. Deferred on request during the Rc/Arc and globals cleanup.

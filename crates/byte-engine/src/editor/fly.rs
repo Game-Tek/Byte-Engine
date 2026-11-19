@@ -103,7 +103,11 @@ mod tests {
 
 	fn looking(direction: Vector) -> Transform {
 		let direction = direction.normalized().unwrap();
-		Transform::new(Point::new(1.0, 2.0, 3.0), Scale::identity(), orientation_from_direction(direction))
+		Transform::new(
+			Point::new(1.0, 2.0, 3.0),
+			Scale::identity(),
+			orientation_from_direction(direction),
+		)
 	}
 
 	fn view(transform: &Transform) -> Vector {
@@ -127,7 +131,10 @@ mod tests {
 			fly.step([0.0, 0.0, 1.0], 1.0 / 60.0);
 		}
 		let pushed = fly.transform().get_position() - start;
-		assert!(pushed.x() > 0.0 && pushed.y().abs() < 1e-4 && pushed.z().abs() < 1e-4, "forward is the view: {pushed:?}");
+		assert!(
+			pushed.x() > 0.0 && pushed.y().abs() < 1e-4 && pushed.z().abs() < 1e-4,
+			"forward is the view: {pushed:?}"
+		);
 		for _ in 0..600 {
 			fly.step([0.0; 3], 1.0 / 60.0);
 		}
@@ -139,7 +146,10 @@ mod tests {
 		let mut fly = Fly::from_transform(&looking(Vector::new(0.0, 0.0, 1.0)));
 		fly.turn([0.5, 0.0]);
 		let turned = view(&fly.transform());
-		assert!((turned - Vector::new(1.0, 0.0, 0.0)).length() < 1e-4, "half a window turns a quarter: {turned:?}");
+		assert!(
+			(turned - Vector::new(1.0, 0.0, 0.0)).length() < 1e-4,
+			"half a window turns a quarter: {turned:?}"
+		);
 		fly.turn([0.0, 5.0]);
 		let up = view(&fly.transform());
 		assert!(up.y() < 1.0 && up.y() > 0.99, "the view stops short of straight up: {up:?}");

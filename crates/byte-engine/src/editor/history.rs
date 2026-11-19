@@ -82,12 +82,16 @@ impl Operation {
 	/// `self`, then `other`, as one operation, or `None` when they change different entities or values.
 	fn then(self, other: Self) -> Option<Self> {
 		match (self, other) {
-			(Self::Transform { entity, delta }, Self::Transform { entity: next, delta: more }) if entity == next => {
-				Some(Self::Transform {
-					entity,
-					delta: delta + more,
-				})
-			}
+			(
+				Self::Transform { entity, delta },
+				Self::Transform {
+					entity: next,
+					delta: more,
+				},
+			) if entity == next => Some(Self::Transform {
+				entity,
+				delta: delta + more,
+			}),
 			_ => None,
 		}
 	}
@@ -160,7 +164,9 @@ impl History {
 			self.redo.push(step);
 			&self.redo[self.redo.len() - 1]
 		});
-		undone.into_iter().flat_map(|step| step.iter().rev().map(|operation| -*operation))
+		undone
+			.into_iter()
+			.flat_map(|step| step.iter().rev().map(|operation| -*operation))
 	}
 
 	/// Moves the last undone step back to the undo stack and returns its operations, to apply again. Returns nothing
@@ -206,17 +212,28 @@ mod tests {
 		let (d, e, f) = (Delta::between(&a, &b), Delta::between(&b, &c), Delta::between(&c, &a));
 
 		assert!(same(&d.applied_to(&a), &b), "difference");
-		assert!(same(&(-d).applied_to(&d.applied_to(&a)), &a), "inverse, a scale of zero included");
+		assert!(
+			same(&(-d).applied_to(&d.applied_to(&a)), &a),
+			"inverse, a scale of zero included"
+		);
 		assert!(same(&(d + -d).applied_to(&a), &a), "a delta plus its negation is zero");
 		let zero = Delta::between(&a, &a);
-		assert!(same(&zero.applied_to(&b), &b) && same(&(d + zero).applied_to(&a), &b), "identity");
-		assert!(same(&((d + e) + f).applied_to(&a), &(d + (e + f)).applied_to(&a)), "associativity");
+		assert!(
+			same(&zero.applied_to(&b), &b) && same(&(d + zero).applied_to(&a), &b),
+			"identity"
+		);
+		assert!(
+			same(&((d + e) + f).applied_to(&a), &(d + (e + f)).applied_to(&a)),
+			"associativity"
+		);
 		assert!(same(&(d + e).applied_to(&a), &c), "adding applies one, then the other");
 	}
 
 	/// What applying `operations` to one entity leaves `start` as.
 	fn apply(start: &Transform, operations: impl Iterator<Item = Operation>) -> Transform {
-		operations.fold(start.clone(), |transform, Operation::Transform { delta, .. }| delta.applied_to(&transform))
+		operations.fold(start.clone(), |transform, Operation::Transform { delta, .. }| {
+			delta.applied_to(&transform)
+		})
 	}
 
 	#[test]
@@ -231,7 +248,10 @@ mod tests {
 		history.begin_gesture();
 		let mut at = start.clone();
 		for to in &moves {
-			history.record(Operation::Transform { entity, delta: Delta::between(&at, to) });
+			history.record(Operation::Transform {
+				entity,
+				delta: Delta::between(&at, to),
+			});
 			at = to.clone();
 		}
 		history.end_gesture();
@@ -249,22 +269,43 @@ mod tests {
 		let (entity, other) = (Handle::new(), Handle::new());
 		let step = |x: f32| Delta::between(&transform([0.0; 3], 0.0, [1.0; 3]), &transform([x, 0.0, 0.0], 0.0, [1.0; 3]));
 		let mut history = History::default();
-		history.record(Operation::Transform { entity, delta: step(1.0) });
-		history.record(Operation::Transform { entity, delta: step(2.0) });
+		history.record(Operation::Transform {
+			entity,
+			delta: step(1.0),
+		});
+		history.record(Operation::Transform {
+			entity,
+			delta: step(2.0),
+		});
 		assert_eq!(
 			history.undo().collect::<Vec<_>>(),
-			[Operation::Transform { entity, delta: -step(2.0) }],
+			[Operation::Transform {
+				entity,
+				delta: -step(2.0)
+			}],
 			"a typed edit is a step of its own"
 		);
 
-		history.record(Operation::Transform { entity: other, delta: step(3.0) });
+		history.record(Operation::Transform {
+			entity: other,
+			delta: step(3.0),
+		});
 		assert_eq!(history.redo().count(), 0, "a new edit clears redo");
 
 		// A gesture over two entities keeps one operation for each, undone in reverse order.
 		history.begin_gesture();
-		history.record(Operation::Transform { entity, delta: step(1.0) });
-		history.record(Operation::Transform { entity: other, delta: step(1.0) });
-		history.record(Operation::Transform { entity, delta: step(1.0) });
+		history.record(Operation::Transform {
+			entity,
+			delta: step(1.0),
+		});
+		history.record(Operation::Transform {
+			entity: other,
+			delta: step(1.0),
+		});
+		history.record(Operation::Transform {
+			entity,
+			delta: step(1.0),
+		});
 		history.end_gesture();
 		let undone: Vec<_> = history.undo().collect();
 		assert_eq!(undone.len(), 2);

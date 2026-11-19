@@ -368,7 +368,8 @@ impl GraphicsApplication {
 							application_events.listener(),
 							parameters.scope("console"),
 						);
-						let http_inspector = HttpInspectorServer::new(inspector.clone(), waker.clone(), parameters.scope("inspector"));
+						let http_inspector =
+							HttpInspectorServer::new(inspector.clone(), waker.clone(), parameters.scope("inspector"));
 
 						let window_factory = messages.factory();
 						let window_factory_listener = window_factory.listener();

@@ -85,7 +85,11 @@ pub struct MotionBlurControls {
 impl MotionBlurControls {
 	/// Creates controls that start at `settings` and apply the runtime updates queued on `configuration`.
 	pub fn new(settings: MotionBlurPassSettings, configuration: ConfigurationPort) -> Rc<Self> {
-		configuration.declare(MotionBlurPassSettings::SETTINGS.iter().map(|setting| setting.parameter(settings)));
+		configuration.declare(
+			MotionBlurPassSettings::SETTINGS
+				.iter()
+				.map(|setting| setting.parameter(settings)),
+		);
 		Rc::new(Self {
 			settings: Cell::new(settings),
 			configuration,

@@ -49,13 +49,12 @@ mod shell;
 mod toasts;
 mod variant;
 
-pub use panels::{Button, Label, Panel};
-pub use shell::Shell;
-
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+pub use panels::{Button, Label, Panel};
+pub use shell::Shell;
 
 use crate::application::graphics::GraphicsApplication;
 use crate::configuration::{ConfigurationEventId, ConfigurationUpdateState, ConfigurationValue};
@@ -63,15 +62,13 @@ use crate::core::Creator as _;
 use crate::core::channel::{Channel as _, DefaultChannel};
 use crate::core::factory::{CreateMessage, Factory, Handle};
 use crate::core::listener::{DefaultListener, Listener as _};
+use crate::editor::layers::Layer;
 use crate::gameplay::Transform;
 use crate::gameplay::level::level_entity_handle_from_root;
 use crate::gameplay::transform::TransformationUpdate;
 use crate::ghi::window::{Event, Events};
-use crate::editor::layers::Layer;
 use crate::input::{ActionPhase, ResolvedAction, SeatHandle, Value};
-use crate::inspector::{
-	CAMERA_UPDATE_MESSAGE_TYPE, DELETE_MESSAGE_TYPE, InspectedEntity, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
-};
+use crate::inspector::{CAMERA_UPDATE_MESSAGE_TYPE, DELETE_MESSAGE_TYPE, InspectedEntity, TRANSFORMATION_UPDATE_MESSAGE_TYPE};
 use crate::math::{Point, Vector};
 use crate::physics::{RayQuery, RayQueryResponse};
 use crate::rendering::{
@@ -347,7 +344,11 @@ impl Editor {
 				continue;
 			}
 			// A resource window's input acts on its own engine, which takes the main engine's place while it's handled.
-			match self.resources.iter().position(|resource| Some(resource.window) == action.window) {
+			match self
+				.resources
+				.iter()
+				.position(|resource| Some(resource.window) == action.window)
+			{
 				Some(index) => {
 					std::mem::swap(&mut self.engine, &mut self.resources[index].engine);
 					self.act(app, action, false);
@@ -628,7 +629,10 @@ impl Editor {
 	fn fly_camera(&mut self, app: &GraphicsApplication) {
 		let now = Instant::now();
 		// A long frame, such as the first after a pause, moves the camera no further than a short one.
-		let dt = self.flown.map_or(0.0, |flown| now.duration_since(flown).as_secs_f32()).min(0.1);
+		let dt = self
+			.flown
+			.map_or(0.0, |flown| now.duration_since(flown).as_secs_f32())
+			.min(0.1);
 		self.flown = Some(now);
 		let thrust = std::mem::take(&mut self.thrust);
 		let turned = std::mem::take(&mut self.turned);
@@ -660,11 +664,7 @@ impl Editor {
 			return;
 		}
 		let shell = self.engine.ctx_mut();
-		let Some((game, settings)) = shell
-			.scene
-			.iter()
-			.find_map(|entity| Some((entity, entity.camera.clone()?)))
-		else {
+		let Some((game, settings)) = shell.scene.iter().find_map(|entity| Some((entity, entity.camera.clone()?))) else {
 			return;
 		};
 		// The editor's camera is made once and placed again each time it takes over.
@@ -736,7 +736,12 @@ impl Editor {
 
 	/// Picks the palette's highlighted entry, as a click on it does.
 	fn pick_highlighted(&mut self, app: &mut GraphicsApplication) {
-		let entry = self.engine.ctx_mut().layers.palette().and_then(|palette| palette.highlighted().cloned());
+		let entry = self
+			.engine
+			.ctx_mut()
+			.layers
+			.palette()
+			.and_then(|palette| palette.highlighted().cloned());
 		if let Some(entry) = entry {
 			self.pick_entry(app, &entry);
 		}
@@ -954,18 +959,20 @@ impl Editor {
 	/// Toasts each setting the palette changed that its system refused, with the system's reason, and forgets those
 	/// it answered.
 	fn report_settings(&mut self, app: &GraphicsApplication) {
-		self.settings.retain(|(id, name)| match app.inspector().configuration_event(*id).map(|event| event.state().clone()) {
-			Some(ConfigurationUpdateState::Pending) => true,
-			Some(ConfigurationUpdateState::NotSet { reason }) => {
-				// The toast names the setting, as some systems' reasons don't; a reason that does opens with the same
-				// sentence, which would show twice.
-				let lead = format!("`{name}` was not set. ");
-				let cause = reason.strip_prefix(lead.as_str()).unwrap_or(&reason);
-				log::warn!("{lead}{cause}");
-				false
-			}
-			Some(ConfigurationUpdateState::Set { .. }) | None => false,
-		});
+		self.settings.retain(
+			|(id, name)| match app.inspector().configuration_event(*id).map(|event| event.state().clone()) {
+				Some(ConfigurationUpdateState::Pending) => true,
+				Some(ConfigurationUpdateState::NotSet { reason }) => {
+					// The toast names the setting, as some systems' reasons don't; a reason that does opens with the same
+					// sentence, which would show twice.
+					let lead = format!("`{name}` was not set. ");
+					let cause = reason.strip_prefix(lead.as_str()).unwrap_or(&reason);
+					log::warn!("{lead}{cause}");
+					false
+				}
+				Some(ConfigurationUpdateState::Set { .. }) | None => false,
+			},
+		);
 	}
 
 	/// Acts on the palette's `entry`: adds a node of its kind to the open graph, opens a material graph on the canvas
@@ -1014,7 +1021,9 @@ impl Editor {
 		}
 		let opened = app.inspector().read_source_asset(id).and_then(|bytes| {
 			let text = String::from_utf8(bytes).map_err(|_| {
-				format!("'{id}' isn't text. The most likely cause is a binary file named as a graph. Open a `.bemx` file saved as UTF-8 text.")
+				format!(
+					"'{id}' isn't text. The most likely cause is a binary file named as a graph. Open a `.bemx` file saved as UTF-8 text."
+				)
 			})?;
 			graph::Graph::open(id, &text)
 		});
@@ -1038,7 +1047,10 @@ impl Editor {
 			return;
 		};
 		let inspector = app.inspector();
-		match inspector.set_image_setting(&texture.id, setting).and_then(|()| inspector.image_settings(&texture.id)) {
+		match inspector
+			.set_image_setting(&texture.id, setting)
+			.and_then(|()| inspector.image_settings(&texture.id))
+		{
 			Ok(settings) => texture.settings = Some(settings),
 			Err(error) => log::warn!("The editor couldn't change the settings of '{}'. {error}", texture.id),
 		}
@@ -1325,7 +1337,6 @@ impl Editor {
 		});
 	}
 
-
 	/// Stands the gizmo at the selection while the editor is open, in the game camera's view, and hides it otherwise.
 	fn place_gizmo(&mut self) {
 		let open = self.layer.borrow().open;
@@ -1414,7 +1425,7 @@ impl Editor {
 		}
 	}
 
-	/// Fills the hint bar with what would finish the action the main window's user left partway.
+	/// Publishes where the pointer dragging the gizmo is, for the hint bar to tell when the user stopped.
 	///
 	/// It writes the shell only when the drag moved, started, or ended, so components that follow it stay asleep
 	/// while nothing changes.

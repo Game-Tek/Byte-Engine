@@ -3,9 +3,9 @@
 //! This module only turns inspector entities into rows. Polling the inspector is the editor's job, and drawing the
 //! rows is the shell's.
 
-use crate::core::factory::Handle;
 use serde::Deserialize as _;
 
+use crate::core::factory::Handle;
 use crate::gameplay::Transform;
 use crate::inspector::{
 	CONE_LIGHT_UPDATE_MESSAGE_TYPE, DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE, POINT_LIGHT_UPDATE_MESSAGE_TYPE,
@@ -94,7 +94,10 @@ impl SceneLight {
 			LightKind::Cone => checked::<ConeLight>(payload),
 			LightKind::Directional => checked::<DirectionalLight>(payload),
 		}?;
-		Some(Self { kind: self.kind, payload })
+		Some(Self {
+			kind: self.kind,
+			payload,
+		})
 	}
 }
 
@@ -112,7 +115,9 @@ impl SceneEntity {
 pub(crate) fn collect(entities: &[InspectedEntity]) -> Vec<SceneEntity> {
 	let mut rows = Vec::with_capacity(entities.len());
 	for entity in entities {
-		let Some(transform) = entity.property("transform").and_then(|transform| Transform::deserialize(transform).ok())
+		let Some(transform) = entity
+			.property("transform")
+			.and_then(|transform| Transform::deserialize(transform).ok())
 		else {
 			continue;
 		};

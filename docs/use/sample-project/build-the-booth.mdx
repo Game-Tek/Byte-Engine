@@ -1,0 +1,216 @@
+---
+title: Build the booth
+description: Write a material and its variants, and build the gallery's booth from painted boxes.
+icon: Boxes
+---
+
+In this step, you build the booth the gallery stands in: a wooden floor, a red
+curtain at the back, and a blue front wall with an opening to shoot through.
+You build every part from boxes, and you paint them with materials you write.
+
+## Write a material
+
+A *material* says what a surface looks like: its color, how rough or shiny it
+is, and whether it gives off light. In Byte Engine, you write a material in two
+files that you put in your `assets` folder:
+
+- A `.bemx` file describes a *graph*: the steps that compute the surface.
+- A `.bema` file names the graph and gives values to its parameters.
+
+1. In your project's `assets` folder, create `paint.bemx` with this graph:
+
+   ```json5 title="assets/paint.bemx"
+   // A painted surface: a flat colour, how rough the paint is, and the light it gives off (zero for anything but a bulb).
+   {
+   	nodes: [
+   		{ name: "color", node: "parameter", parameter: "color", type: "color3" },
+   		{ name: "roughness", node: "parameter", parameter: "roughness", type: "float" },
+   		{ name: "glow", node: "parameter", parameter: "emission", type: "color3" },
+   		{ name: "surface", node: "surface", base_color: "color", roughness: "roughness", emission: "glow" },
+   	],
+   }
+   ```
+
+   Each entry in `nodes` is one step. The three `parameter` nodes read values
+   from the material. The `surface` node is the result: it takes the color,
+   the roughness, and the glow, by the names of the nodes that compute them.
+
+2. Create `paint.bema` next to it. It names the graph, and it gives each
+   parameter a type and a starting value:
+
+   ```json5 title="assets/paint.bema"
+   {
+   	"domain": "World",
+   	"type": "Surface",
+   	"graph": "paint.bemx",
+   	"variables": [
+   		{ "name": "color", "data_type": "vec3f", "value": [0.5, 0.5, 0.5], "type": "Dynamic" },
+   		{ "name": "roughness", "data_type": "float", "value": 0.6, "type": "Dynamic" },
+   		{ "name": "emission", "data_type": "vec3f", "value": [0.0, 0.0, 0.0], "type": "Dynamic" }
+   	]
+   }
+   ```
+
+   Colors are red, green, and blue amounts from 0 to 1. A roughness of 0 is a
+   mirror, and 1 is chalk.
+
+<Callout type="info" title="Learn more about materials">
+	The graph language has nodes for textures, math, and much more. See the
+	[`.bemx` reference](/docs/reference/bemx) for every node, the
+	[`.bema` reference](/docs/reference/bema) for every field, and
+	[Declare a material](/docs/use/resources/author#declare-a-material) for
+	materials that use images.
+</Callout>
+
+## Paint with variants
+
+Your boxes use *variants* of `paint.bema`. A variant names a parent material
+and changes some of its values, so one graph paints many surfaces. Byte Engine
+draws meshes you build in code with variants, not with the parent material
+itself.
+
+Create these three files in `assets`:
+
+```json5 title="assets/wood.bema"
+{
+	"parent": "paint.bema",
+	"variables": [
+		{ "name": "color", "value": [0.35, 0.2, 0.1] },
+		{ "name": "roughness", "value": 0.8 }
+	]
+}
+```
+
+```json5 title="assets/curtain.bema"
+{
+	"parent": "paint.bema",
+	"variables": [
+		{ "name": "color", "value": [0.35, 0.03, 0.05] },
+		{ "name": "roughness", "value": 0.9 }
+	]
+}
+```
+
+```json5 title="assets/booth.bema"
+{
+	"parent": "paint.bema",
+	"variables": [
+		{ "name": "color", "value": [0.05, 0.25, 0.4] },
+		{ "name": "roughness", "value": 0.5 }
+	]
+}
+```
+
+None of them sets `emission`, so they keep the parent's value: no glow. A
+variant can leave a parameter out because `paint.bema` marks its parameters
+`Dynamic`.
+
+## Build with boxes
+
+Now write the Rust code that builds the booth.
+
+1. Replace the `use` block at the top of `src/main.rs` with this one, which
+   adds the names this step uses:
+
+   ```rust title="src/main.rs"
+   use byte_engine::{
+   	application::graphics::{self, GraphicsApplication},
+   	core::Creator as _,
+   	gameplay::transform::Transform,
+   	math::{Degrees, Point, Vector},
+   	physics::{Body, BodyTypes, LocalSpace, Shapes},
+   	rendering::{Camera, RenderableMesh, SceneId, mesh::generator::BoxMeshGenerator, window::Window},
+   	utils::Extent,
+   };
+   ```
+
+2. At the end of the file, add a function that creates one painted box:
+
+   ```rust title="src/main.rs"
+   /// Creates a static, painted box: `half` is its half size and `center` where its middle goes.
+   fn block(app: &GraphicsApplication, half: Vector<LocalSpace>, center: Point, material: &'static str) {
+   	app.world()
+   		.create(RenderableMesh::generated(Box::new(
+   			BoxMeshGenerator::from_size(half.into_maths()).with_material(material),
+   		)))
+   		.with(Body::new(BodyTypes::Static, Shapes::cube(half)))
+   		.with(Transform::from_position(center));
+   }
+   ```
+
+   The entity it creates has three parts:
+
+   - A `RenderableMesh`, which draws it. `BoxMeshGenerator` builds a box's
+     triangles in code, as big as `half` in each direction, and
+     `with_material` paints it with one of your variants.
+   - A `Body`, which makes it solid. A `Static` body never moves, and other
+     bodies bounce off it. Nothing moves yet; you turn on physics when you
+     [make the targets](/docs/use/sample-project/make-the-targets).
+   - A `Transform`, which puts its middle at `center`.
+
+   `half` is a *half* size: a box with `half` of 1 meter is 2 meters wide.
+
+3. Above `block`, add the function that builds the booth from boxes:
+
+   ```rust title="src/main.rs"
+   /// Creates the booth around the rows: the floor, a curtain behind them, and a front wall with an opening to shoot
+   /// through.
+   fn build_booth(app: &GraphicsApplication) {
+   	block(app, Vector::new(20.0, 0.5, 20.0), Point::new(0.0, -0.5, 10.0), "wood.bema");
+   	block(app, Vector::new(14.0, 4.0, 0.2), Point::new(0.0, 4.0, 14.0), "curtain.bema");
+
+   	// The front wall's opening spans 7 meters across, from 1 to 3.6 meters high.
+   	let wall = 5.0;
+   	block(app, Vector::new(4.0, 2.75, 0.1), Point::new(-7.5, 2.75, wall), "booth.bema");
+   	block(app, Vector::new(4.0, 2.75, 0.1), Point::new(7.5, 2.75, wall), "booth.bema");
+   	block(app, Vector::new(3.5, 0.95, 0.1), Point::new(0.0, 4.55, wall), "booth.bema");
+   	block(app, Vector::new(3.5, 0.5, 0.1), Point::new(0.0, 0.5, wall), "booth.bema");
+   	// The counter the player leans on.
+   	block(app, Vector::new(3.5, 0.05, 0.3), Point::new(0.0, 1.0, wall - 0.4), "wood.bema");
+   }
+   ```
+
+   The floor's top is at height 0. The front wall stands 5 meters in front of
+   the player, and its four boxes leave an opening in the middle. The curtain
+   is 14 meters away, behind where the targets go.
+
+4. In `main`, call `build_booth` in the first tick, after the line that creates
+   the window:
+
+   ```rust title="src/main.rs"
+   		let mut window = Window::new("gallery", Extent::rectangle(1600, 900));
+   		window.attach(camera);
+   		app.window_factory().create(window);
+
+   		build_booth(app);
+
+   		camera
+   ```
+
+## Run the program
+
+Run `cargo run` again. Byte Engine finds your new material files and prepares
+them before the window opens.
+
+The window is still black. The booth is there, but it's night, and nothing
+lights it yet. You turn the lights on in the next step.
+
+<Callout type="info" title="If a material doesn't load">
+	When the engine can't load a material, it writes a warning to the terminal,
+	and the meshes that use it don't appear. Check that each file is in
+	`assets`, that every file name matches the name in your code, and that
+	every variant names `paint.bema` as its parent. See
+	[Debug resource loading](/docs/use/resources/debug-loading) for more ways
+	to find the problem.
+</Callout>
+
+## Next step
+
+[Light the night](/docs/use/sample-project/light-the-night).
+
+## Rust API
+
+- [`RenderableMesh`](/docs/api/latest/byte_engine/rendering/renderable/mesh/RenderableMesh)
+- [`BoxMeshGenerator`](/docs/api/latest/byte_engine/rendering/mesh/generator/box/BoxMeshGenerator)
+- [`Body`](/docs/api/latest/byte_engine/physics/body/Body)
+- [`Shapes`](/docs/api/latest/byte_engine/physics/collider/Shapes)

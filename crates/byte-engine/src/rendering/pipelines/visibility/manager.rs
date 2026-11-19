@@ -54,6 +54,7 @@ use super::residency::MeshResidencies;
 use super::scene::{
 	InstanceCapacity, MaterialEvaluation, PosedVertices, RenderEntity, RenderInfo, RenderSkin, SinkState, VisibilityScene,
 };
+use super::screen_queries::ScreenQueries;
 use super::set_layouts;
 use super::shader_data::{IesProfileTexture, MaterialData, ShaderFrame, ShaderMesh, ShaderViewData};
 use super::shadow_selection::{
@@ -63,10 +64,10 @@ use super::shadow_selection::{
 use super::shadow_updates::{
 	DEFAULT_SHADOW_UPDATE_TEXELS, ShadowMapStates, ShadowViews, drawn_cascade_view, undrawn_cascade_view,
 };
-use super::terrain::{TerrainChange, TerrainStreams};
 use super::skinning::{
 	DualQuaternion, MAX_SKINNING_MATRICES, SkinningDispatch, SkinningPaletteKind, SkinningPass, append_dual_quaternion_palette,
 };
+use super::terrain::{TerrainChange, TerrainStreams};
 use super::virtual_shadows::{
 	DirectionalShadowTechnique, ShaderVirtualShadowFrame, VirtualShadowLevels, VirtualShadowSettings,
 	place_virtual_shadow_levels, range_union,
@@ -77,7 +78,6 @@ use crate::core::factory::{CreateMessage, Factory, Handle};
 use crate::core::listener::{DefaultListener, Listener as _};
 use crate::core::message::DeleteMessage;
 use crate::core::message_bus::MessageScope;
-use super::screen_queries::ScreenQueries;
 use crate::gameplay::Transform;
 use crate::rendering::csm::{self, CascadeFitting, CascadeSplits};
 use crate::rendering::lights::{ConeLight, DirectionalLight, Lights, LocalEmission, PointLight};
@@ -1012,19 +1012,22 @@ impl VisibilityPipelineManager {
 			settings.surfel_capacity,
 			settings.surfel_ray_budget,
 		);
-		let probe_gi_settings = ProbeGiSettings::new(
-			settings.features.probe_gi,
-			settings.probe_ray_budget,
-			settings.probe_spacing,
-		);
+		let probe_gi_settings =
+			ProbeGiSettings::new(settings.features.probe_gi, settings.probe_ray_budget, settings.probe_spacing);
 		let contact_shadow_settings = ContactShadowSettings::default();
 		let lod_settings = LodSettings::default();
 		gtao_configuration.declare(GtaoSettings::SETTINGS.iter().map(|setting| setting.parameter(gtao_settings)));
 		gi_configuration.declare(GiSettings::SETTINGS.iter().map(|setting| setting.parameter(gi_settings)));
-		surfel_gi_configuration
-			.declare(SurfelGiSettings::SETTINGS.iter().map(|setting| setting.parameter(surfel_gi_settings)));
-		probe_gi_configuration
-			.declare(ProbeGiSettings::SETTINGS.iter().map(|setting| setting.parameter(probe_gi_settings)));
+		surfel_gi_configuration.declare(
+			SurfelGiSettings::SETTINGS
+				.iter()
+				.map(|setting| setting.parameter(surfel_gi_settings)),
+		);
+		probe_gi_configuration.declare(
+			ProbeGiSettings::SETTINGS
+				.iter()
+				.map(|setting| setting.parameter(probe_gi_settings)),
+		);
 		contact_shadow_configuration.declare(
 			ContactShadowSettings::SETTINGS
 				.iter()
@@ -1279,13 +1282,13 @@ impl VisibilityPipelineManager {
 		for (handle, transform) in transforms.changed() {
 			// A terrain's nodes draw at its transform.
 			for handle in std::iter::once(*handle).chain(self.terrains.instances(*handle)) {
-			self.scene.update_transform(handle, transform, |slot| {
-				// A primitive added since the last rebuild has no kept slot yet, and the rebuild it waits for picks it.
-				if let Some(kept) = kept.get_mut(slot) {
-					kept.release();
-				}
-				moved = true;
-			});
+				self.scene.update_transform(handle, transform, |slot| {
+					// A primitive added since the last rebuild has no kept slot yet, and the rebuild it waits for picks it.
+					if let Some(kept) = kept.get_mut(slot) {
+						kept.release();
+					}
+					moved = true;
+				});
 			}
 		}
 		self.instances_moved |= moved;
@@ -2042,11 +2045,7 @@ impl VisibilityPipelineManager {
 		for change in changes.drain(..) {
 			match change {
 				TerrainChange::Remove(instance) => self.remove_mesh_instance(instance),
-				TerrainChange::Add {
-					terrain,
-					instance,
-					mesh,
-				} => {
+				TerrainChange::Add { terrain, instance, mesh } => {
 					let Some(data) = self.loader.mesh(mesh).cloned() else {
 						continue;
 					};
@@ -2804,7 +2803,10 @@ impl PipelineManager for VisibilityPipelineManager {
 				let _span = debug_span!("Visibility::prepare_sink", sink = sink.index()).entered();
 				// The sink reads the pixels of the oldest queries that name its camera.
 				let taken = sink.camera().map(|camera| screen_queries.take(camera)).unwrap_or_default();
-				let points = taken.iter().map(|(_, query)| query.point()).collect::<SmallVec<[[u32; 2]; 16]>>();
+				let points = taken
+					.iter()
+					.map(|(_, query)| query.point())
+					.collect::<SmallVec<[[u32; 2]; 16]>>();
 				let query_stages = render_pass.prepare_screen_queries(frame, &points);
 				let command = render_pass.prepare(
 					frame,
@@ -2979,8 +2981,14 @@ mod tests {
 	#[test]
 	fn resolved_ies_profile_applies_the_per_light_dimmer() {
 		let profile_light = Lights::Point(
-			PointLight::new(LightColor::LinearSrgb([1.0, 1.0, 1.0]), PhotometricIntensity::Ies { profile: "lights/office.ies".into(), dimmer: 0.5 })
-				.expect("physical IES point light"),
+			PointLight::new(
+				LightColor::LinearSrgb([1.0, 1.0, 1.0]),
+				PhotometricIntensity::Ies {
+					profile: "lights/office.ies".into(),
+					dimmer: 0.5,
+				},
+			)
+			.expect("physical IES point light"),
 		);
 		let analytic_light = Lights::Point(
 			PointLight::new(

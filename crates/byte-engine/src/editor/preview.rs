@@ -255,10 +255,14 @@ impl Stage {
 		let sun = DirectionalLight::new(LightColor::kelvin(6000.0), PhotometricIntensity::illuminance(SUN_ILLUMINANCE))
 			.expect("The preview's sun is a valid light.");
 		// A key light from above the view, a little to its left, so the side the camera sees is lit.
-		let down: UnitVector = Vector::new(-0.2, -1.0, -0.7).normalized().expect("The sun's direction has length.");
-		scope
-			.create(sun)
-			.with(Transform::new(Point::origin(), Scale::identity(), orientation_from_direction(down)));
+		let down: UnitVector = Vector::new(-0.2, -1.0, -0.7)
+			.normalized()
+			.expect("The sun's direction has length.");
+		scope.create(sun).with(Transform::new(
+			Point::origin(),
+			Scale::identity(),
+			orientation_from_direction(down),
+		));
 		Self {
 			scene,
 			ready: app.messages().channel::<RenderImageReady>().listener(),
@@ -270,12 +274,18 @@ impl Stage {
 
 	/// Shows `subject` in a slot `extent` pixels large, reusing a free one before opening another, and returns it.
 	pub(crate) fn open(&mut self, app: &GraphicsApplication, subject: Subject, extent: [u32; 2]) -> usize {
-		let index = self.slots.iter().position(|slot| slot.subject.is_none()).unwrap_or(self.slots.len());
+		let index = self
+			.slots
+			.iter()
+			.position(|slot| slot.subject.is_none())
+			.unwrap_or(self.slots.len());
 		// Each slot stands on its own spot, far from the others.
 		let origin = Point::new(index as f32 * SPACING, 0.0, 0.0);
 		let (mesh, center, radius, half_extents) = match subject {
 			Subject::Material(material) => (
-				RenderableMesh::generated(Box::new(SphereMeshGenerator::from_radius(SPHERE_RADIUS).with_material(material))),
+				RenderableMesh::generated(Box::new(
+					SphereMeshGenerator::from_radius(SPHERE_RADIUS).with_material(material),
+				)),
 				Vector::new(0.0, 0.0, 0.0),
 				SPHERE_RADIUS,
 				Vector::new(SPHERE_RADIUS, SPHERE_RADIUS, SPHERE_RADIUS),
@@ -313,7 +323,9 @@ impl Stage {
 			slot.framing = framing;
 			slot.detail_level = None;
 		}
-		self.scope.factory::<Camera>().derive(self.slots[index].camera, framing.camera());
+		self.scope
+			.factory::<Camera>()
+			.derive(self.slots[index].camera, framing.camera());
 		self.place(index);
 		self.resize(index, extent);
 		index
@@ -415,10 +427,18 @@ mod tests {
 
 	#[test]
 	fn the_camera_looks_at_the_subject_from_its_framing_distance() {
-		let framing = Framing::new(Point::new(1.0, 2.0, 3.0), Vector::new(0.0, 0.0, 0.0), 2.0, Vector::new(1.0, 1.0, 1.0));
+		let framing = Framing::new(
+			Point::new(1.0, 2.0, 3.0),
+			Vector::new(0.0, 0.0, 0.0),
+			2.0,
+			Vector::new(1.0, 1.0, 1.0),
+		);
 		let transform = framing.camera_transform();
 		let toward = framing.target - transform.get_position();
-		assert!((toward.length() - 2.0 * FRAMING).abs() < 1e-4, "it stands {FRAMING} radii away");
+		assert!(
+			(toward.length() - 2.0 * FRAMING).abs() < 1e-4,
+			"it stands {FRAMING} radii away"
+		);
 		let view = direction_from_orientation(transform.get_orientation()).into_vector();
 		assert!((view - toward.normalized().unwrap().into_vector()).length() < 1e-4);
 	}
@@ -427,7 +447,10 @@ mod tests {
 	fn the_subject_turns_about_its_center_and_the_way_the_drag_moves() {
 		let center = Vector::new(0.5, 1.0, -0.25);
 		let mut framing = Framing::new(Point::new(10.0, 0.0, 0.0), center, 1.0, Vector::new(0.5, 0.5, 0.5));
-		assert!((placed(&framing, center) - framing.target).length() < 1e-5, "the center starts at the target");
+		assert!(
+			(placed(&framing, center) - framing.target).length() < 1e-5,
+			"the center starts at the target"
+		);
 
 		// The point facing the camera, under the ball's center, moves right with a drag to the right.
 		let [forward, right, _] = Framing::screen_axes();
@@ -436,7 +459,10 @@ mod tests {
 		framing.turn([0.0, 0.0], [0.1, 0.0]);
 		let moved = placed(&framing, facing) - before;
 		assert!(moved.dot(right) > 0.05, "the facing point followed the drag: {moved:?}");
-		assert!((placed(&framing, center) - framing.target).length() < 1e-5, "the center stays at the target");
+		assert!(
+			(placed(&framing, center) - framing.target).length() < 1e-5,
+			"the center stays at the target"
+		);
 	}
 
 	#[test]
@@ -446,24 +472,38 @@ mod tests {
 		framing.turn([0.0, 0.0], [1.0, 0.0]);
 		// The ball's points are a quarter turn apart, and the arcball turns by twice that.
 		let facing = placed(&framing, -forward);
-		assert!((facing - Point::origin() - forward).length() < 1e-4, "the facing side turned away: {facing:?}");
+		assert!(
+			(facing - Point::origin() - forward).length() < 1e-4,
+			"the facing side turned away: {facing:?}"
+		);
 	}
 
 	#[test]
 	fn a_shifted_camera_shows_the_subject_that_many_pixels_from_the_middle() {
-		let mut framing = Framing::new(Point::new(3.0, 1.0, -2.0), Vector::new(0.0, 0.0, 0.0), 1.0, Vector::new(0.5, 0.5, 0.5));
+		let mut framing = Framing::new(
+			Point::new(3.0, 1.0, -2.0),
+			Vector::new(0.0, 0.0, 0.0),
+			1.0,
+			Vector::new(0.5, 0.5, 0.5),
+		);
 		framing.shift(-150.0, 720.0);
 		let [_, right, _] = Framing::screen_axes();
 		let toward = framing.target - framing.camera_transform().get_position();
 		let meters_per_pixel = 2.0 * framing.distance * Framing::half_view() / 720.0;
-		assert!((toward.dot(right) / meters_per_pixel + 150.0).abs() < 1e-2, "the subject shows 150 pixels left");
+		assert!(
+			(toward.dot(right) / meters_per_pixel + 150.0).abs() < 1e-2,
+			"the subject shows 150 pixels left"
+		);
 	}
 
 	#[test]
 	fn the_subject_shows_wider_as_the_camera_comes_closer() {
 		let mut framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), 1.0, Vector::new(0.5, 0.5, 0.5));
 		let framed = framing.width(720.0);
-		assert!(framed > 0.0 && framed < 720.0, "framed, it fits the picture's height: {framed}");
+		assert!(
+			framed > 0.0 && framed < 720.0,
+			"framed, it fits the picture's height: {framed}"
+		);
 		framing.zoom(4.0);
 		assert!(framing.width(720.0) > framed);
 	}
@@ -473,7 +513,10 @@ mod tests {
 		// A flat panel, wide and tall but thin, held by a sphere as wide as it is tall.
 		let half = Vector::new(1.0, 1.0, 0.05);
 		let framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), half.length(), half);
-		assert!(framing.box_width(720.0) < framing.sphere_width(720.0), "the box is the tighter bound");
+		assert!(
+			framing.box_width(720.0) < framing.sphere_width(720.0),
+			"the box is the tighter bound"
+		);
 		assert_eq!(framing.width(720.0), framing.box_width(720.0));
 	}
 

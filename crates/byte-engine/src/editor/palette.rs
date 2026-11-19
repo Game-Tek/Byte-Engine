@@ -13,8 +13,8 @@
 use crate::configuration::{Accepts, Parameter};
 use crate::editor::carry::Light;
 use crate::inspector::fuzzy_find;
-use crate::ui::TextEdit;
 use crate::ui::Size;
+use crate::ui::TextEdit;
 
 /// The palette's width, in pixels.
 pub(crate) const WIDTH: f32 = 520.0;
@@ -151,13 +151,7 @@ impl Entry {
 	/// The name the row leads with: a resource's file name without its extension, or the whole label otherwise.
 	pub(crate) fn name(&self) -> &str {
 		match self.kind {
-			Kind::Mesh
-			| Kind::MeshPreview
-			| Kind::Prefab
-			| Kind::Graph
-			| Kind::Texture
-			| Kind::Variant
-			| Kind::Material => {
+			Kind::Mesh | Kind::MeshPreview | Kind::Prefab | Kind::Graph | Kind::Texture | Kind::Variant | Kind::Material => {
 				entity_name(&self.label)
 			}
 			Kind::Light(_)
@@ -230,7 +224,10 @@ impl State {
 		{
 			// A folder that doesn't exist yet is offered too; writing the level creates it. It leads while what's
 			// typed can't still grow into a listed folder's name, so Enter takes it, and trails the matches otherwise.
-			let leads = !self.entries.iter().any(|entry| entry.label.starts_with(folder.trim_end_matches('/')));
+			let leads = !self
+				.entries
+				.iter()
+				.any(|entry| entry.label.starts_with(folder.trim_end_matches('/')));
 			let entry = Entry {
 				detail: "New folder".to_owned(),
 				..Entry::new(folder, Kind::Folder)
@@ -260,7 +257,10 @@ impl State {
 /// when it's empty or the asset folder itself, or has an empty, `.`, or `..` part.
 fn typed_folder(search: &str) -> Option<String> {
 	let path = search.trim().trim_matches('/');
-	let valid = !path.is_empty() && path.split('/').all(|part| !part.trim().is_empty() && part != "." && part != "..");
+	let valid = !path.is_empty()
+		&& path
+			.split('/')
+			.all(|part| !part.trim().is_empty() && part != "." && part != "..");
 	valid.then(|| format!("{path}/"))
 }
 
@@ -302,7 +302,10 @@ impl Setting {
 		};
 		setting.list();
 		// The value it opened with is the one highlighted, so Enter alone keeps it.
-		let current = setting.rows.iter().position(|row| row.label.eq_ignore_ascii_case(&setting.value));
+		let current = setting
+			.rows
+			.iter()
+			.position(|row| row.label.eq_ignore_ascii_case(&setting.value));
 		setting.highlight = setting.highlight.and(current.or(Some(0)));
 		Some(setting)
 	}
@@ -358,7 +361,11 @@ impl Setting {
 			}
 		};
 		// Before anything is typed, every value is listed; the field then holds the value it opened with.
-		let prefix = if self.typed { self.value.trim().to_ascii_lowercase() } else { String::new() };
+		let prefix = if self.typed {
+			self.value.trim().to_ascii_lowercase()
+		} else {
+			String::new()
+		};
 		self.rows = words
 			.iter()
 			.filter(|word| word.to_ascii_lowercase().starts_with(&prefix))
@@ -407,7 +414,11 @@ mod tests {
 	use super::*;
 
 	fn palette(resources: &[&str]) -> State {
-		State::new(Scope::Place, resources.iter().map(|id| Entry::new(*id, Kind::Mesh)).collect(), &[])
+		State::new(
+			Scope::Place,
+			resources.iter().map(|id| Entry::new(*id, Kind::Mesh)).collect(),
+			&[],
+		)
 	}
 
 	fn labels(state: &State) -> Vec<&str> {
@@ -430,7 +441,10 @@ mod tests {
 		let entries = ["a.glb", "b.glb", "c.glb"].map(|id| Entry::new(id, Kind::Mesh)).to_vec();
 		// A setting used last belongs to another scope, so it isn't listed here.
 		let recent = [
-			("render.lod.bias".to_string(), Kind::Setting(crate::configuration::Accepts::Bool)),
+			(
+				"render.lod.bias".to_string(),
+				Kind::Setting(crate::configuration::Accepts::Bool),
+			),
 			("c.glb".to_string(), Kind::Mesh),
 			("b.glb".to_string(), Kind::Mesh),
 		];
@@ -534,12 +548,18 @@ mod tests {
 
 	#[test]
 	fn a_typed_folder_that_isnt_listed_is_offered_as_a_new_one() {
-		let folders = ["/", "levels/", "textures/"].map(|folder| Entry::new(folder, Kind::Folder)).to_vec();
+		let folders = ["/", "levels/", "textures/"]
+			.map(|folder| Entry::new(folder, Kind::Folder))
+			.to_vec();
 		let mut state = State::new(Scope::Folders(Create::Level), folders, &[]);
 		let typed = |state: &mut State, search: &str| {
 			state.search = search.to_owned();
 			state.find();
-			state.results.iter().map(|entry| (entry.label.clone(), entry.detail.clone())).collect::<Vec<_>>()
+			state
+				.results
+				.iter()
+				.map(|entry| (entry.label.clone(), entry.detail.clone()))
+				.collect::<Vec<_>>()
 		};
 		let new = |label: &str| (label.to_owned(), "New folder".to_owned());
 

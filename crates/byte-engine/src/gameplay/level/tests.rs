@@ -424,14 +424,17 @@ fn a_prefab_spawns_at_its_placement_with_the_parameters_code_sets() {
 	let loaded = Loaded::prefab("soldier.prefab", soldier, payload);
 	let spawner = spawner();
 
-	let quarter_turn = Orientation::try_from_array([0.0, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2]).unwrap();
+	let quarter_turn =
+		Orientation::try_from_array([0.0, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2]).unwrap();
 	let placement = Transform::new(Point::new(10.0, 0.0, 0.0), Scale::new(2.0, 2.0, 2.0), quarter_turn);
 	let first = spawner.spawn(&world, &loaded, Placement::at(placement.clone())).unwrap();
 	let second = spawner
 		.spawn(
 			&world,
 			&loaded,
-			Placement::default().with_parameters(&serde_json::json!({ "number": 3 })).unwrap(),
+			Placement::default()
+				.with_parameters(&serde_json::json!({ "number": 3 }))
+				.unwrap(),
 		)
 		.unwrap();
 
@@ -477,7 +480,11 @@ fn an_instance_spawns_its_prefab_under_itself_at_its_transform() {
 	let names = drain(&mut names);
 	let handle_of = |name: &str| names.iter().find(|(_, n)| n.as_str() == name).unwrap().0;
 	let (post, body, helmet) = (handle_of("post"), handle_of("soldier"), handle_of("helmet"));
-	assert_eq!(handle_of("gate").id(), post.id() + 1, "level entities come before the prefab's");
+	assert_eq!(
+		handle_of("gate").id(),
+		post.id() + 1,
+		"level entities come before the prefab's"
+	);
 	assert_eq!(body.id(), post.id() + 2);
 	assert_eq!(
 		drain(&mut members),
@@ -515,11 +522,16 @@ fn a_nested_prefab_takes_the_parameters_its_enclosing_prefab_passes_on() {
 		.spawn(
 			&world,
 			&loaded,
-			Placement::default().with_parameters(&serde_json::json!({ "number": 9 })).unwrap(),
+			Placement::default()
+				.with_parameters(&serde_json::json!({ "number": 9 }))
+				.unwrap(),
 		)
 		.unwrap();
 
-	assert_eq!(drain(&mut teams).into_iter().map(|(_, team)| team.number).collect::<Vec<_>>(), [9, 7]);
+	assert_eq!(
+		drain(&mut teams).into_iter().map(|(_, team)| team.number).collect::<Vec<_>>(),
+		[9, 7]
+	);
 }
 
 #[test]
@@ -535,19 +547,40 @@ fn a_prefab_spawn_that_cannot_complete_publishes_nothing() {
 			.with_prefab("broken.prefab", broken.clone(), broken_payload.clone())
 	};
 	for (problem, source, cause) in [
-		("unknown parameter", r#"{ entities: [{ prefab: { resource: "soldier.prefab", parameters: { rank: 1 } } }] }"#, "doesn't declare"),
-		("missing prefab", r#"{ entities: [{ prefab: { resource: "absent.prefab" } }] }"#, "isn't loaded"),
-		("prefab that places itself", r#"{ entities: [{ prefab: { resource: "loop.prefab" } }] }"#, "nest more than"),
-		("prefab that doesn't decode", r#"{ entities: [{ components: { name: "a" } }, { prefab: { resource: "broken.prefab" } }] }"#, "entity 'bad' of 'broken.prefab'"),
+		(
+			"unknown parameter",
+			r#"{ entities: [{ prefab: { resource: "soldier.prefab", parameters: { rank: 1 } } }] }"#,
+			"doesn't declare",
+		),
+		(
+			"missing prefab",
+			r#"{ entities: [{ prefab: { resource: "absent.prefab" } }] }"#,
+			"isn't loaded",
+		),
+		(
+			"prefab that places itself",
+			r#"{ entities: [{ prefab: { resource: "loop.prefab" } }] }"#,
+			"nest more than",
+		),
+		(
+			"prefab that doesn't decode",
+			r#"{ entities: [{ components: { name: "a" } }, { prefab: { resource: "broken.prefab" } }] }"#,
+			"entity 'bad' of 'broken.prefab'",
+		),
 	] {
 		let world = MessageScope::standalone("world");
 		let mut scenes = world.factory::<Scene>().listener();
 		let mut names = world.factory::<Name>().listener();
 
-		let error = spawner().spawn(&world, &level(source), Placement::default()).expect_err(problem);
+		let error = spawner()
+			.spawn(&world, &level(source), Placement::default())
+			.expect_err(problem);
 
 		assert!(error.contains(cause), "{problem}: {error}");
-		assert!(drain(&mut scenes).is_empty() && drain(&mut names).is_empty(), "{problem} published something");
+		assert!(
+			drain(&mut scenes).is_empty() && drain(&mut names).is_empty(),
+			"{problem} published something"
+		);
 	}
 }
 
@@ -566,7 +599,9 @@ fn deleting_an_instance_deletes_its_prefab() {
 	deletes.send(DeleteMessage::new(post));
 	scenes.cascade();
 
-	let mut deleted = std::iter::from_fn(|| deleted.read()).map(|deletion| deletion.into_handle().id()).collect::<Vec<_>>();
+	let mut deleted = std::iter::from_fn(|| deleted.read())
+		.map(|deletion| deletion.into_handle().id())
+		.collect::<Vec<_>>();
 	deleted.sort();
 	assert_eq!(deleted, [post.id(), post.id() + 1, post.id() + 2]);
 }

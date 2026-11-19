@@ -242,7 +242,11 @@ impl DebugViewRegistry {
 		self.passes.iter().flat_map(|pass| {
 			pass.views.iter().enumerate().map(move |(index, view)| {
 				let shown = pass.shown & 1 << index != 0;
-				(format!("{}.{view}", pass.name), Accepts::Bool, ConfigurationValue::Bool(shown))
+				(
+					format!("{}.{view}", pass.name),
+					Accepts::Bool,
+					ConfigurationValue::Bool(shown),
+				)
 			})
 		})
 	}

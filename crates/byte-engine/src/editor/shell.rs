@@ -248,7 +248,9 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 
 	root.element("palette").component(async |ctx| palette_view(ctx).await).await;
 	root.element("toasts").component(async |ctx| toasts::toasts(ctx).await).await;
-	root.element("hints").component(async |ctx| hint_bar::hint_bar(ctx).await).await;
+	root.element("hints")
+		.component(async |ctx| hint_bar::hint_bar(ctx).await)
+		.await;
 
 	let mut shown_list = None;
 	let mut shown_viewport = viewport;
@@ -343,7 +345,9 @@ pub(crate) async fn window(root: &mut EvaluationContext<Shell>) {
 	root.element("variant")
 		.component(async |ctx| variant_view::variant_view(ctx).await)
 		.await;
-	root.element("mesh").component(async |ctx| mesh_view::mesh_view(ctx).await).await;
+	root.element("mesh")
+		.component(async |ctx| mesh_view::mesh_view(ctx).await)
+		.await;
 	root.element("palette").component(async |ctx| palette_view(ctx).await).await;
 	// The views run on their own; the root only keeps them mounted.
 	std::future::pending::<()>().await;
@@ -592,8 +596,7 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 			shown = Some(revision);
 			// A shortcut can switch the open palette to another scope, which says what it finds, and a setting opened
 			// over it shows its own row and value.
-			let Some((results, highlight, search, prompt)) =
-				ctx.with(|shell: &mut Shell| palette_shown(&shell.layers)).await
+			let Some((results, highlight, search, prompt)) = ctx.with(|shell: &mut Shell| palette_shown(&shell.layers)).await
 			else {
 				break;
 			};
@@ -675,8 +678,17 @@ fn look(shown: f32) -> Transform {
 /// empty. A setting being typed over it shows its own row and value instead.
 fn palette_shown(layers: &Layers) -> Option<(Vec<palette::Entry>, usize, String, &'static str)> {
 	if let Some(setting) = layers.setting() {
-		let prompt = if setting.highlight.is_some() { "Type or pick a value" } else { "Type a new value" };
-		return Some((setting.rows.clone(), setting.highlight.unwrap_or(0), setting.value.clone(), prompt));
+		let prompt = if setting.highlight.is_some() {
+			"Type or pick a value"
+		} else {
+			"Type a new value"
+		};
+		return Some((
+			setting.rows.clone(),
+			setting.highlight.unwrap_or(0),
+			setting.value.clone(),
+			prompt,
+		));
 	}
 	let palette = layers.palette()?;
 	Some((
@@ -723,7 +735,11 @@ async fn palette_row(
 		.text(entry.name(), |t| t.font_size(13.0).style([solid(TEXT)]))
 		.await;
 	// A setting's value, or what it takes while it's edited, says more than its name repeated would.
-	let detail = if entry.detail.is_empty() { &entry.label } else { &entry.detail };
+	let detail = if entry.detail.is_empty() {
+		&entry.label
+	} else {
+		&entry.detail
+	};
 	if entry.name() != detail {
 		row.element("id")
 			.text(detail, |t| t.font_size(11.5).style([solid(MUTED)]))
@@ -743,9 +759,7 @@ fn kind_tint(kind: palette::Kind) -> [RGBA; 2] {
 		| palette::Kind::Variant
 		| palette::Kind::Material
 		| palette::Kind::NewMaterial
-		| palette::Kind::NewVariant => {
-			[hex(0xF29BD4, 1.0), hex(0xD9539F, 1.0)]
-		}
+		| palette::Kind::NewVariant => [hex(0xF29BD4, 1.0), hex(0xD9539F, 1.0)],
 		palette::Kind::Texture => [hex(0x8CC4FF, 1.0), hex(0x3D8BE0, 1.0)],
 		palette::Kind::Node => [hex(0xB9BCC4, 1.0), hex(0x6E737C, 1.0)],
 		palette::Kind::Setting(_) => [hex(0x7FE3E0, 1.0), hex(0x2BA8A4, 1.0)],
@@ -1595,11 +1609,7 @@ fn channel(height: f32, on: f32) -> [ConcreteLayer; 5] {
 	[
 		solid(hex(0x0E0F11, 1.0)),
 		// The accent fill, darker toward the top, where the channel's lip shades it.
-		ConcreteLayer::default().color(vertical(
-			height,
-			hex(darker(ACCENT_RGB), on),
-			hex(ACCENT_RGB, on),
-		)),
+		ConcreteLayer::default().color(vertical(height, hex(darker(ACCENT_RGB), on), hex(ACCENT_RGB, on))),
 		// The channel's depth: a shadow cast down from its upper edge.
 		ConcreteLayer::default()
 			.color(hex(0x000000, 0.75).into())
@@ -1716,7 +1726,11 @@ mod tests {
 			mount: Rc::new(|_, _| Box::pin(async {})),
 		};
 		let mut shell = super::Shell::new(crate::ui::Size::new(800, 600));
-		shell.panels = vec![registration("game::Npc"), registration("game::Door"), registration("game::Health")];
+		shell.panels = vec![
+			registration("game::Npc"),
+			registration("game::Door"),
+			registration("game::Health"),
+		];
 		let npc = SceneEntity {
 			handle: Factory::<u8>::new().create(0),
 			name: String::new(),
@@ -1727,8 +1741,18 @@ mod tests {
 			types: vec!["game::Health", "game::Npc"],
 			properties: Vec::new(),
 		};
-		assert_eq!(shell.panels_of(&npc), 0b101, "in registration order, whatever order the entity has them in");
-		assert_eq!(shell.panels_of(&SceneEntity { types: Vec::new(), ..npc }), 0);
+		assert_eq!(
+			shell.panels_of(&npc),
+			0b101,
+			"in registration order, whatever order the entity has them in"
+		);
+		assert_eq!(
+			shell.panels_of(&SceneEntity {
+				types: Vec::new(),
+				..npc
+			}),
+			0
+		);
 	}
 
 	#[test]

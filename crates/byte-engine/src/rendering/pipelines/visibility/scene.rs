@@ -458,8 +458,14 @@ mod tests {
 		)
 		.expect("finite IES orientation");
 		let transform = Transform::from_rotation(orientation);
-		let light = PointLight::new(LightColor::LinearSrgb([1.0, 1.0, 1.0]), PhotometricIntensity::Ies { profile: "lights/office.ies".into(), dimmer: 0.25 })
-			.expect("physical IES point light");
+		let light = PointLight::new(
+			LightColor::LinearSrgb([1.0, 1.0, 1.0]),
+			PhotometricIntensity::Ies {
+				profile: "lights/office.ies".into(),
+				dimmer: 0.25,
+			},
+		)
+		.expect("physical IES point light");
 		let resident = light_data(
 			&Lights::Point(light),
 			&transform,

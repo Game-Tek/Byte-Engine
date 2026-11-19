@@ -42,7 +42,10 @@ pub(super) async fn mesh_view(ctx: &mut EvaluationContext<Shell>) {
 			.with(|shell: &mut Shell| shell.layers.mesh().map_or(0, |mesh| mesh.resource.level_count() as usize))
 			.await;
 		if levels > 1 {
-			picture.element("levels").component(async move |ctx| level_slider(ctx, levels).await).await;
+			picture
+				.element("levels")
+				.component(async move |ctx| level_slider(ctx, levels).await)
+				.await;
 		}
 		let mut drawers = [primitives_drawer(ctx).await, summary_drawer(ctx).await];
 		hold(ctx, &mut drawers, |shell| shell.layers.mesh().is_some()).await;
@@ -106,7 +109,10 @@ fn summary(mesh: &crate::editor::layers::Mesh) -> [(&'static str, String); 10] {
 async fn summary_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
 	let (id, facts) = ctx
 		.with(|shell: &mut Shell| {
-			let mesh = shell.layers.mesh().expect("The mesh's drawers show only while a mesh is open.");
+			let mesh = shell
+				.layers
+				.mesh()
+				.expect("The mesh's drawers show only while a mesh is open.");
 			(mesh.id.clone(), summary(mesh))
 		})
 		.await;
@@ -122,7 +128,11 @@ async fn summary_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
 				.container(|c| c.width(width.into()).height(FIELD_HEIGHT.into()).padding(2.0, 0.0).flow(flow::centered_row))
 				.await;
 			line.element("label")
-				.container(|c| c.width((width * 0.4).into()).height(FIELD_HEIGHT.into()).flow(flow::centered_row))
+				.container(|c| {
+					c.width((width * 0.4).into())
+						.height(FIELD_HEIGHT.into())
+						.flow(flow::centered_row)
+				})
 				.await
 				.element("text")
 				.text(label, |t| t.font_size(12.0).style([solid(MUTED)]))
@@ -167,12 +177,22 @@ impl Card {
 async fn primitives_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
 	let cards = ctx
 		.with(|shell: &mut Shell| {
-			let mesh = &shell.layers.mesh().expect("The mesh's drawers show only while a mesh is open.").resource;
-			mesh.primitives().map(|primitive| Card::new(mesh, primitive)).collect::<Vec<_>>()
+			let mesh = &shell
+				.layers
+				.mesh()
+				.expect("The mesh's drawers show only while a mesh is open.")
+				.resource;
+			mesh.primitives()
+				.map(|primitive| Card::new(mesh, primitive))
+				.collect::<Vec<_>>()
 		})
 		.await;
 	let count = cards.len();
-	let detail = if count == 1 { "1 primitive".to_owned() } else { format!("{} primitives", grouped(count)) };
+	let detail = if count == 1 {
+		"1 primitive".to_owned()
+	} else {
+		format!("{} primitives", grouped(count))
+	};
 	let mut drawer = Drawer::declare(ctx, Side::Left, "Primitives", &detail).await;
 	let (width, room) = (drawer.width, drawer.room);
 	let fit = shown_cards(count, room);
@@ -191,7 +211,11 @@ async fn primitives_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
 	}
 	if fit < count {
 		let more = count - fit;
-		let text = if more == 1 { "1 more primitive".to_owned() } else { format!("{} more primitives", grouped(more)) };
+		let text = if more == 1 {
+			"1 more primitive".to_owned()
+		} else {
+			format!("{} more primitives", grouped(more))
+		};
 		list.element("more")
 			.container(|c| c.width(width.into()).height(CARD_LINE.into()).flow(flow::centered_row))
 			.await
@@ -240,14 +264,16 @@ async fn primitive_card(list: &mut EvaluationContext<Shell>, index: usize, card:
 		.element("title")
 		.container(|c| c.width(inner.into()).height(CARD_LINE.into()).flow(flow::centered_row))
 		.await;
-	title.element("number")
+	title
+		.element("number")
 		.container(|c| c.width(CARD_NUMBER.into()).height(CARD_LINE.into()).flow(flow::centered_row))
 		.await
 		.element("text")
 		.text(&format!("#{index}"), |t| t.font_size(12.0).style([solid(TEXT)]))
 		.await;
 	let (id, width) = (card.material.clone(), inner - CARD_NUMBER);
-	title.element("material")
+	title
+		.element("material")
 		.component(async move |ctx| material_name(ctx, &id, width).await)
 		.await;
 	// Each pair is a muted label and its value, in half the card's width.
@@ -260,7 +286,11 @@ async fn primitive_card(list: &mut EvaluationContext<Shell>, index: usize, card:
 		for (label, value) in pair {
 			let mut fact = line
 				.element(*label)
-				.container(|c| c.width(half.into()).height(CARD_LINE.into()).flow(flow::centered_row_with_gap(6)))
+				.container(|c| {
+					c.width(half.into())
+						.height(CARD_LINE.into())
+						.flow(flow::centered_row_with_gap(6))
+				})
 				.await;
 			fact.element("label")
 				.text(label, |t| t.font_size(11.0).style([solid(MUTED)]))

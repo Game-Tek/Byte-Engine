@@ -141,7 +141,8 @@ impl Drawer {
 			.element("name")
 			.text(name, |t| t.font_size(13.0).style([solid(TEXT)]))
 			.await;
-		title.element("detail")
+		title
+			.element("detail")
 			.text(detail, |t| t.font_size(11.0).style([solid(MUTED)]))
 			.await;
 		Self {
@@ -169,7 +170,9 @@ impl Drawer {
 		}
 		let shown = self.shown.step(elapsed);
 		let side = self.side;
-		self.frame.update_container(|c| c.transform(drawer_transform(side, shown))).await;
+		self.frame
+			.update_container(|c| c.transform(drawer_transform(side, shown)))
+			.await;
 		ctx.with(move |shell: &mut Shell| shell.drawer_shown = shown).await;
 	}
 

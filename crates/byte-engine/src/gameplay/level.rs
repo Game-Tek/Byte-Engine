@@ -403,7 +403,9 @@ impl Spawner {
 		}
 		// Values from code take the string table after the templates'.
 		let code_strings = arguments.strings.len();
-		arguments.strings.push(read_strings(&placement.parameters.strings).ok_or_else(malformed)?);
+		arguments
+			.strings
+			.push(read_strings(&placement.parameters.strings).ok_or_else(malformed)?);
 
 		// The loaded template is expansion 0; each instance adds the expansion of its prefab, depth first.
 		let mut planner = Planner {
@@ -464,12 +466,7 @@ impl Spawner {
 				.column
 				.run(template.payload, &column.strings, run)
 				.ok_or_else(malformed)?;
-			let values = TokenDeserializer::new(
-				values,
-				first_entity + planned.first,
-				Some(expansion),
-				&arguments,
-			);
+			let values = TokenDeserializer::new(values, first_entity + planned.first, Some(expansion), &arguments);
 			let count = run_length(column.column, run);
 			match column.kind {
 				Some(kind) => kind.decode(values, count).map(Run::Components),
@@ -531,12 +528,14 @@ impl Spawner {
 		for (expansion, planned) in expansions.iter().enumerate() {
 			let template = &templates[planned.template];
 			let owner = planned.owner.map_or(root, |(owner, entity)| handle(owner, entity));
-			world.factory::<SceneNode>().derive_many(template.parents.iter().enumerate().map(|(entity, parent)| {
-				(
-					handle(expansion, entity as u32),
-					SceneNode::under(parent.map_or(owner, |parent| handle(expansion, parent))),
-				)
-			}));
+			world
+				.factory::<SceneNode>()
+				.derive_many(template.parents.iter().enumerate().map(|(entity, parent)| {
+					(
+						handle(expansion, entity as u32),
+						SceneNode::under(parent.map_or(owner, |parent| handle(expansion, parent))),
+					)
+				}));
 		}
 		// Runs are in expansion order, then kind order, then entity order, so each kind's entities are taken run by run.
 		let mut entities = None;
@@ -560,7 +559,10 @@ impl Spawner {
 			};
 			let entities = entities.as_mut().ok_or_else(malformed)?;
 			let length = run_length(column.column, run) as usize;
-			components.publish(world, &mut entities.by_ref().take(length).map(|entity| handle(expansion, entity)));
+			components.publish(
+				world,
+				&mut entities.by_ref().take(length).map(|entity| handle(expansion, entity)),
+			);
 		}
 		Ok(root)
 	}
@@ -587,7 +589,10 @@ impl Spawner {
 					)
 				})?)
 			};
-			if column.entities(payload).is_none_or(|entities| entities.len() != column.count as usize) {
+			if column
+				.entities(payload)
+				.is_none_or(|entities| entities.len() != column.count as usize)
+			{
 				return Err(malformed());
 			}
 			let strings = column.strings(payload).ok_or_else(malformed)?;
@@ -661,13 +666,16 @@ impl<'p> Planner<'_, '_, 'p> {
 		let source = &loaded.templates[template];
 		if depth > MAX_NESTING {
 			return Err(format!(
-				"its instances nest more than {MAX_NESTING} deep, at '{}', which happens when a prefab places itself through its instances. Remove the instance that closes the loop."
-				, source.id
+				"its instances nest more than {MAX_NESTING} deep, at '{}', which happens when a prefab places itself through its instances. Remove the instance that closes the loop.",
+				source.id
 			));
 		}
 		let index = self.expansions.len();
 		let first = self.entities;
-		self.entities = self.entities.checked_add(source.level.entities).ok_or_else(|| TOO_MANY.to_string())?;
+		self.entities = self
+			.entities
+			.checked_add(source.level.entities)
+			.ok_or_else(|| TOO_MANY.to_string())?;
 		self.expansions.push(Expansion { template, first, owner });
 		self.arguments.push(arguments);
 

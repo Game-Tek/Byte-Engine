@@ -93,7 +93,9 @@ impl Variant {
 	/// a type the window can't show.
 	pub(crate) fn open(id: &str, variant: Value, read: impl FnOnce(&str) -> Result<Value, String>) -> Result<Self, String> {
 		let parent_id = variant.get("parent").and_then(Value::as_str).ok_or_else(|| {
-			format!("'{id}' has no `parent`. The most likely cause is a root material opened as a variant. Open its graph instead.")
+			format!(
+				"'{id}' has no `parent`. The most likely cause is a root material opened as a variant. Open its graph instead."
+			)
 		})?;
 		let parent = read(parent_id)?;
 		let declared = parent.get("variables").and_then(Value::as_array).ok_or_else(|| {
@@ -177,14 +179,29 @@ mod tests {
 		let variant = json!({ "parent": "paint.bema", "variables": [{ "name": "albedo", "value": "moss.png" }] });
 		let variant = Variant::open("moss.bema", variant, |_| Ok(parent())).unwrap();
 		assert_eq!(variant.parent, "paint.bema");
-		let values: Vec<_> = variant.parameters.iter().map(|parameter| (parameter.kind, parameter.value.clone())).collect();
-		assert_eq!(values, [(Kind::Texture, json!("moss.png")), (Kind::Vec3, json!([1, 1, 1])), (Kind::Float, json!(0.5))]);
-		assert!(Variant::open("paint.bema", parent(), |_| Ok(parent())).is_err(), "a root material isn't a variant");
+		let values: Vec<_> = variant
+			.parameters
+			.iter()
+			.map(|parameter| (parameter.kind, parameter.value.clone()))
+			.collect();
+		assert_eq!(
+			values,
+			[
+				(Kind::Texture, json!("moss.png")),
+				(Kind::Vec3, json!([1, 1, 1])),
+				(Kind::Float, json!(0.5))
+			]
+		);
+		assert!(
+			Variant::open("paint.bema", parent(), |_| Ok(parent())).is_err(),
+			"a root material isn't a variant"
+		);
 	}
 
 	#[test]
 	fn setting_a_parameter_changes_its_entry_or_adds_one_and_keeps_the_rest() {
-		let source = json!({ "parent": "paint.bema", "double_sided": true, "variables": [{ "name": "albedo", "value": "moss.png" }] });
+		let source =
+			json!({ "parent": "paint.bema", "double_sided": true, "variables": [{ "name": "albedo", "value": "moss.png" }] });
 		let mut variant = Variant::open("moss.bema", source, |_| Ok(parent())).unwrap();
 		variant.set("albedo", json!("bark.png"));
 		let text = variant.set("rough", json!(0.25));

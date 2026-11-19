@@ -314,7 +314,10 @@ pub(crate) enum VisibilityResident {
 		image: ghi::implementation::DetachedImage,
 	},
 	/// A terrain's node tree.
-	Terrain { id: Arc<str>, terrain: Terrain },
+	Terrain {
+		id: Arc<str>,
+		terrain: Terrain,
+	},
 	/// Upload-complete image-based lighting whose images the render thread still interns.
 	Environment {
 		id: String,

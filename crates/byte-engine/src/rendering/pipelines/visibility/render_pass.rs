@@ -169,8 +169,6 @@ pub(super) fn record_meshlet_dispatches(
 }
 
 use self::backdrop::BackdropPass;
-use self::screen_query::ScreenQueryPass;
-pub(crate) use self::screen_query::{NO_INSTANCE, SCREEN_QUERY_CAPACITY, ScreenQueryStages};
 pub(crate) use self::backdrop::{BackdropTargets, create_backdrop_targets};
 use self::depth_pyramid::DepthPyramidPass;
 // Only the layout tests compare the record with the stride its layer reflects.
@@ -197,6 +195,8 @@ pub(crate) use self::probe_gi::{
 pub(super) use self::ray_hits::RAY_HIT_PIPELINES;
 pub(crate) use self::ray_hits::{RayHits, RayTracing};
 use self::reflections::ScreenSpaceReflections;
+use self::screen_query::ScreenQueryPass;
+pub(crate) use self::screen_query::{NO_INSTANCE, SCREEN_QUERY_CAPACITY, ScreenQueryStages};
 use self::shadows::CascadeFitPass;
 pub(crate) use self::shadows::{ShadowMaps, ShadowWork, SunCascades};
 pub(super) use self::ssgi::SSGI_PIPELINES;
@@ -521,7 +521,14 @@ impl GiSettings {
 			name: "technique",
 			// Listed in `IndirectDiffuseSource::ALL` order, which `apply` indexes.
 			accepts: Accepts::Choice(&["ssgi", "surfels", "probes", "baked"]),
-			value: |settings| Read::Choice(IndirectDiffuseSource::ALL.iter().position(|technique| *technique == settings.technique).unwrap_or(0)),
+			value: |settings| {
+				Read::Choice(
+					IndirectDiffuseSource::ALL
+						.iter()
+						.position(|technique| *technique == settings.technique)
+						.unwrap_or(0),
+				)
+			},
 			apply: |settings, read| {
 				let technique = IndirectDiffuseSource::ALL[read.choice()];
 				let (name, feature) = technique.names();

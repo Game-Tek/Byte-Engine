@@ -123,7 +123,11 @@ pub struct AtmosphereSkyControls {
 impl AtmosphereSkyControls {
 	/// Creates controls that start at `settings` and apply the runtime updates queued on `configuration`.
 	pub fn new(settings: AtmosphereSkyRenderPassSettings, configuration: ConfigurationPort) -> Rc<Self> {
-		configuration.declare(AtmosphereSkyRenderPassSettings::SETTINGS.iter().map(|setting| setting.parameter(settings)));
+		configuration.declare(
+			AtmosphereSkyRenderPassSettings::SETTINGS
+				.iter()
+				.map(|setting| setting.parameter(settings)),
+		);
 		Rc::new(Self {
 			settings: Cell::new(settings),
 			configuration,
@@ -794,14 +798,7 @@ mod tests {
 		exposure_scale: f32,
 		looking: UnitVector,
 	) -> Buffer {
-		let view = crate::rendering::View::new_perspective(
-			math::Degrees::new(60.0),
-			1.0,
-			0.1,
-			100.0,
-			Point::origin(),
-			looking,
-		);
+		let view = crate::rendering::View::new_perspective(math::Degrees::new(60.0), 1.0, 0.1, 100.0, Point::origin(), looking);
 		let sink = crate::rendering::Sink::new(view, utils::Extent::square(1), 0).with_exposure_scale(exposure_scale);
 		let data = super::sky_shader_data(settings, &sun, &sink);
 		let mut parameters = buffer(program, parameter_slot);
@@ -1048,7 +1045,14 @@ mod tests {
 	) -> [f32; 4] {
 		let sun = test_sun(sun_illuminance, sun_direction);
 		let sky_view = texture_2d(1, 1, &[sky_scattering]);
-		composite_looking(settings, sun, sky_view, sun_transmittance, exposure_scale, UnitVector::z_axis())
+		composite_looking(
+			settings,
+			sun,
+			sky_view,
+			sun_transmittance,
+			exposure_scale,
+			UnitVector::z_axis(),
+		)
 	}
 
 	/// Composites one background pixel as [`composite`] does, over the sky-view LUT `sky_view`, for a camera looking
@@ -1112,7 +1116,10 @@ mod tests {
 		let below = shown(&full, Vector::new(0.0, -1.0, 1.0));
 		let straight_up = shown(&full, Vector::new(0.0, 1.0, 1.0));
 		assert_rgba_close(below, horizon, 1e-6);
-		assert!(straight_up != horizon, "The texels above the horizon tell directions apart: {straight_up:?}");
+		assert!(
+			straight_up != horizon,
+			"The texels above the horizon tell directions apart: {straight_up:?}"
+		);
 
 		let skipping = super::AtmosphereSkyRenderPassSettings {
 			skip_below_horizon: true,
@@ -1249,8 +1256,13 @@ mod tests {
 		let texels: Vec<[f32; 4]> = (0..64).map(|index| [1.0 + index as f32, 0.0, 0.0, 1.0]).collect();
 		// The center texel of a three-texel face looks straight along the face's axis.
 		let center = |settings: &super::AtmosphereSkyRenderPassSettings, face: u32| {
-			let mut parameters =
-				sky_parameters(&program, parameter_slot, settings, test_sun([1.0; 3], test_sun_direction()), 1.0);
+			let mut parameters = sky_parameters(
+				&program,
+				parameter_slot,
+				settings,
+				test_sun([1.0; 3], test_sun_direction()),
+				1.0,
+			);
 			let mut sky_view = texture_2d(8, 8, &texels);
 			let mut result = empty_image(3, 3);
 			let mut descriptors = DescriptorBindings::new();

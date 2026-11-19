@@ -21,12 +21,16 @@ pub(super) fn create(app: &GraphicsApplication, folder: &str, what: &Create) -> 
 		Create::Material => inspector.source_assets("bema").and_then(|materials| {
 			let graphs = inspector.source_assets("bemx")?;
 			// The material and its graph share a name, so both must be free.
-			let stem = free_stem(folder, "untitled", |stem| has(&materials, stem, "bema") || has(&graphs, stem, "bemx"));
+			let stem = free_stem(folder, "untitled", |stem| {
+				has(&materials, stem, "bema") || has(&graphs, stem, "bemx")
+			});
 			let (id, graph) = (format!("{stem}.bema"), format!("{stem}.bemx"));
 			// The graph goes first, so the material's bake finds it.
 			inspector.write_source_asset(&graph, EMPTY_GRAPH)?;
 			let graph = palette::Entry::new(graph, palette::Kind::Graph);
-			inspector.write_source_asset(&id, &material_source(&graph.label)).map(|()| (id, Some(graph)))
+			inspector
+				.write_source_asset(&id, &material_source(&graph.label))
+				.map(|()| (id, Some(graph)))
 		}),
 		Create::Variant(parent) => inspector.source_assets("bema").and_then(|materials| {
 			let source = variant_source(parent, &read_material(app, parent)?)?;
@@ -88,10 +92,14 @@ fn materials(app: &GraphicsApplication) -> impl Iterator<Item = (String, Value)>
 pub(super) fn read_material(app: &GraphicsApplication, id: &str) -> Result<Value, String> {
 	let bytes = app.inspector().read_source_asset(id)?;
 	let text = std::str::from_utf8(&bytes).map_err(|_| {
-		format!("Material '{id}' isn't text. The most likely cause is a binary file named as a material. Save it as UTF-8 JSON5.")
+		format!(
+			"Material '{id}' isn't text. The most likely cause is a binary file named as a material. Save it as UTF-8 JSON5."
+		)
 	})?;
 	resource_management::asset::parse_json(text).map_err(|error| {
-		format!("Material '{id}' couldn't be read. The most likely cause is a syntax error in the file: {error}. Fix the file's JSON5.")
+		format!(
+			"Material '{id}' couldn't be read. The most likely cause is a syntax error in the file: {error}. Fix the file's JSON5."
+		)
 	})
 }
 
@@ -161,13 +169,19 @@ mod tests {
 	fn a_new_asset_takes_the_first_name_free_in_its_folder() {
 		assert_eq!(free_stem("/", "untitled", |_| false), "untitled");
 		let taken = ["levels/untitled", "levels/untitled 2", "untitled 3"];
-		assert_eq!(free_stem("levels/", "untitled", |stem| taken.contains(&stem)), "levels/untitled 3");
+		assert_eq!(
+			free_stem("levels/", "untitled", |stem| taken.contains(&stem)),
+			"levels/untitled 3"
+		);
 	}
 
 	#[test]
 	fn a_new_material_names_its_graph_and_declares_no_parameters() {
 		let material = resource_management::asset::parse_json(&material_source("m/untitled.bemx")).unwrap();
-		assert_eq!(material, json!({ "domain": "World", "graph": "m/untitled.bemx", "variables": [] }));
+		assert_eq!(
+			material,
+			json!({ "domain": "World", "graph": "m/untitled.bemx", "variables": [] })
+		);
 		assert_eq!(root_graph(&material).as_deref(), Some("m/untitled.bemx"));
 		resource_management::bemx::json::parse(EMPTY_GRAPH).expect("the new graph is valid");
 	}

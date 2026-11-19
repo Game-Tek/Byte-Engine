@@ -144,7 +144,9 @@ impl Transform {
 	/// Spawning uses it to place a prefab's entities at their instance. Scale composes axis by axis, so a non-uniform
 	/// scale combined with a rotated `local` keeps each axis's scale instead of shearing.
 	pub fn compose(&self, local: &Self) -> Self {
-		let offset = self.orientation.rotate_vector(self.scale * (local.position - Point::origin()));
+		let offset = self
+			.orientation
+			.rotate_vector(self.scale * (local.position - Point::origin()));
 		Self::new(
 			self.position + offset,
 			self.scale * local.scale,
@@ -293,7 +295,8 @@ mod tests {
 
 	#[test]
 	fn compose_places_a_local_transform_in_its_parent_space() {
-		let quarter_turn = Orientation::try_from_array([0.0, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2]).unwrap();
+		let quarter_turn =
+			Orientation::try_from_array([0.0, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2]).unwrap();
 		let parent = Transform::new(Point::new(1.0, 0.0, 0.0), Scale::new(2.0, 2.0, 2.0), quarter_turn);
 		let local = Transform::from_position(Point::new(1.0, 0.0, 0.0));
 

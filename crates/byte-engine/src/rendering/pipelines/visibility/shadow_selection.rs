@@ -1141,8 +1141,14 @@ mod tests {
 	/// Verifies a resident profile's dimmed peak intensity drives both local-shadow range and selection.
 	#[test]
 	fn ies_profile_scale_expands_point_shadow_coverage() {
-		let light = PointLight::new(LightColor::LinearSrgb([1.0, 1.0, 1.0]), PhotometricIntensity::Ies { profile: "lights/office.ies".into(), dimmer: 0.5 })
-			.expect("physical IES point light");
+		let light = PointLight::new(
+			LightColor::LinearSrgb([1.0, 1.0, 1.0]),
+			PhotometricIntensity::Ies {
+				profile: "lights/office.ies".into(),
+				dimmer: 0.5,
+			},
+		)
+		.expect("physical IES point light");
 		let lights = [Lights::Point(light.clone())];
 		let transforms = [light_transform(20.0)];
 		let sinks = [sink(Point::origin())];

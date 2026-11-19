@@ -1039,7 +1039,11 @@ fn candidates(before: &str, sources: &Sources) -> (usize, Vec<Candidate>, Option
 					whole: true,
 				})
 				.collect();
-			(start, candidates, Some(format!("{name} is {value} and takes {}", accepts.describe())))
+			(
+				start,
+				candidates,
+				Some(format!("{name} is {value} and takes {}", accepts.describe())),
+			)
 		}
 		["post"] => {
 			let candidates = sources
@@ -1541,9 +1545,17 @@ mod tests {
 		[
 			("render.gi.enabled", Accepts::Bool, ConfigurationValue::Bool(true)),
 			("render.gi.technique", Accepts::Choice(&["ssgi", "surfels"]), "ssgi".into()),
-			("render.lod.bias", Accepts::Number { min: 0.0 }, ConfigurationValue::Float(1.0)),
+			(
+				"render.lod.bias",
+				Accepts::Number { min: 0.0 },
+				ConfigurationValue::Float(1.0),
+			),
 			("render.lod.force", Accepts::WholeOr("off"), "off".into()),
-			("render.pass.atmosphere sky", Accepts::Choice(&["enabled", "bypassed"]), "enabled".into()),
+			(
+				"render.pass.atmosphere sky",
+				Accepts::Choice(&["enabled", "bypassed"]),
+				"enabled".into(),
+			),
 		]
 		.into_iter()
 		.map(|(name, accepts, value)| Parameter {
@@ -1626,7 +1638,10 @@ mod tests {
 		assert_eq!(tab(&mut console, "set render.gi.technique "), "set render.gi.technique s");
 		let rows = draw(&mut console, &VecDeque::new(), 80, 8);
 		assert!(rows[2].contains("ssgi") && rows[3].contains("surfels"), "{rows:?}");
-		assert!(rows[4].contains("render.gi.technique is ssgi and takes `ssgi` or `surfels`"), "{rows:?}");
+		assert!(
+			rows[4].contains("render.gi.technique is ssgi and takes `ssgi` or `surfels`"),
+			"{rows:?}"
+		);
 	}
 
 	#[test]
@@ -1634,7 +1649,10 @@ mod tests {
 		let mut console = Console::default();
 		assert_eq!(tab(&mut console, "set render.lod.bias "), "set render.lod.bias ");
 		let rows = draw(&mut console, &VecDeque::new(), 80, 6);
-		assert!(rows[2].contains("render.lod.bias is 1 and takes a number of 0 or more"), "{rows:?}");
+		assert!(
+			rows[2].contains("render.lod.bias is 1 and takes a number of 0 or more"),
+			"{rows:?}"
+		);
 	}
 
 	#[test]

@@ -1,0 +1,529 @@
+---
+title: Make the targets
+description: Build a round target mesh in code, paint it with a bullseye, and use physics to make rows of targets that slide and swing on hinges.
+icon: Flag
+---
+
+In this step, you make the targets. Each target is a round disk painted with a
+bullseye. It stands on a small brass carriage that slides along a wooden shelf,
+and it's joined to the carriage by a *hinge*, like a door, so a ball that hits
+it tips it back. Three rows of targets slide past, each the other way.
+
+This is the longest step. Take it one part at a time, and run the program at
+the end.
+
+## Draw a disk
+
+Byte Engine has ready-made boxes, spheres, and capsules, but not disks. You
+write your own *mesh generator*: code that lists a shape's corners and the
+triangles between them.
+
+1. A mesh generator gives its directions with the `maths-rs` crate's vector
+   type. In your project folder, add the crate:
+
+   ```sh
+   cargo add maths-rs@1
+   ```
+
+2. Create `src/disk.rs` with this code:
+
+   ```rust title="src/disk.rs"
+   //! A procedural disk: the mesh the targets are drawn with and the points their collision hull is built from.
+
+   use std::{
+   	borrow::Cow,
+   	f32::consts::TAU,
+   	hash::{Hash as _, Hasher as _},
+   };
+
+   use byte_engine::{
+   	math::Point,
+   	physics::LocalSpace,
+   	rendering::mesh::generator::MeshGenerator,
+   };
+   use maths_rs::Vec3f;
+
+   /// The number of corners around the rim. Enough for a round silhouette at the distances the targets are seen from.
+   const SEGMENTS: u32 = 32;
+
+   /// The `Disk` struct describes a flat cylinder whose faces point along the local z-axis, so that a target made from
+   /// it faces the player when it is not turned.
+   ///
+   /// Draw it with [`byte_engine::rendering::RenderableMesh::generated`], and collide with it through
+   /// [`byte_engine::physics::build_convex_hull`] over [`Disk::rim`].
+   #[derive(Clone)]
+   pub struct Disk {
+   	pub radius: f32,
+   	pub half_thickness: f32,
+   	/// The material resource the disk is drawn with. Its faces span texture coordinates 0 to 1, so the material can
+   	/// paint rings around the middle.
+   	pub material: &'static str,
+   }
+
+   impl Disk {
+   	/// Returns the corners of both faces' rims, which is all a convex hull of the disk needs.
+   	pub fn rim(&self) -> Vec<Point<LocalSpace>> {
+   		self.ring(-self.half_thickness)
+   			.chain(self.ring(self.half_thickness))
+   			.map(|(x, y, z)| Point::new(x, y, z))
+   			.collect()
+   	}
+
+   	/// Returns the corners around the rim at depth `z`, counterclockwise when seen from +z.
+   	fn ring(&self, z: f32) -> impl Iterator<Item = (f32, f32, f32)> + '_ {
+   		(0..SEGMENTS).map(move |segment| {
+   			let angle = segment as f32 / SEGMENTS as f32 * TAU;
+   			(self.radius * angle.cos(), self.radius * angle.sin(), z)
+   		})
+   	}
+
+   	/// Returns each vertex as a position and normal, in four runs of `SEGMENTS + 1` or `SEGMENTS` vertices: the front
+   	/// face (center first), the back face (center first), then the side's front and back rims.
+   	fn vertices(&self) -> Vec<((f32, f32, f32), (f32, f32, f32))> {
+   		let h = self.half_thickness;
+   		let front = std::iter::once((0.0, 0.0, -h)).chain(self.ring(-h)).map(|p| (p, (0.0, 0.0, -1.0)));
+   		let back = std::iter::once((0.0, 0.0, h)).chain(self.ring(h)).map(|p| (p, (0.0, 0.0, 1.0)));
+   		// The side's normals point out from the axis, so its vertices are copies of the rims' with their own normals.
+   		let radial = |(x, y, z): (f32, f32, f32)| ((x, y, z), (x / self.radius, y / self.radius, 0.0));
+   		let side = self.ring(-h).map(radial).chain(self.ring(h).map(radial));
+   		front.chain(back).chain(side).collect()
+   	}
+   }
+
+   impl MeshGenerator for Disk {
+   	fn positions(&self) -> Cow<'_, [(f32, f32, f32)]> {
+   		Cow::Owned(self.vertices().into_iter().map(|(position, _)| position).collect())
+   	}
+
+   	fn normals(&self) -> Cow<'_, [(f32, f32, f32)]> {
+   		Cow::Owned(self.vertices().into_iter().map(|(_, normal)| normal).collect())
+   	}
+
+   	fn uvs(&self) -> Cow<'_, [(f32, f32)]> {
+   		// Both faces map the disk onto the unit square; the side reuses the same mapping, which only the rim shows.
+   		let (r, uv) = (self.radius, |x: f32, y: f32, r: f32| (0.5 + x / (2.0 * r), 0.5 - y / (2.0 * r)));
+   		Cow::Owned(self.vertices().into_iter().map(|((x, y, _), _)| uv(x, y, r)).collect())
+   	}
+
+   	fn indices(&self) -> Cow<'_, [u32]> {
+   		// A triangle faces out when `(b - a) × (c - a)` points out, as for the engine's box.
+   		let (n, back, side) = (SEGMENTS, SEGMENTS + 1, 2 * (SEGMENTS + 1));
+   		let mut indices = Vec::with_capacity(SEGMENTS as usize * 12);
+   		for i in 0..n {
+   			let next = (i + 1) % n;
+   			// The front face points along -z, so its rim runs clockwise.
+   			indices.extend([0, 1 + next, 1 + i]);
+   			indices.extend([back, back + 1 + i, back + 1 + next]);
+   			let (front_rim, back_rim) = (side, side + n);
+   			indices.extend([front_rim + i, front_rim + next, back_rim + i]);
+   			indices.extend([front_rim + next, back_rim + next, back_rim + i]);
+   		}
+   		Cow::Owned(indices)
+   	}
+
+   	fn tangents(&self) -> Cow<'_, [Vec3f]> {
+   		Cow::Owned(vec![Vec3f::new(1.0, 0.0, 0.0); self.vertices().len()])
+   	}
+
+   	fn bitangents(&self) -> Cow<'_, [Vec3f]> {
+   		Cow::Owned(vec![Vec3f::new(0.0, -1.0, 0.0); self.vertices().len()])
+   	}
+
+   	fn material(&self) -> Option<&str> {
+   		Some(self.material)
+   	}
+
+   	fn hash(&self) -> u64 {
+   		let mut hasher = std::hash::DefaultHasher::new();
+   		self.radius.to_bits().hash(&mut hasher);
+   		self.half_thickness.to_bits().hash(&mut hasher);
+   		self.material.hash(&mut hasher);
+   		hasher.finish()
+   	}
+
+   	fn clone_box(&self) -> Box<dyn MeshGenerator> {
+   		Box::new(self.clone())
+   	}
+   }
+   ```
+
+You don't need to follow every line of `disk.rs` now. These are the ideas that
+matter:
+
+- `ring` places 32 corners around a circle. Two rings, one for each face, give
+  the disk its shape.
+- `positions` lists every corner, and `indices` lists the triangles, three
+  corners at a time. `normals` says which way the surface faces at each corner,
+  so light falls on it correctly.
+- `uvs` gives every corner a *texture coordinate* from 0 to 1 across the face.
+  Your bullseye material uses it to find the middle of the disk.
+- `material` names the material the disk is drawn with.
+- `hash` returns a number that's the same for two identical disks, so the
+  engine builds the mesh once and shares it.
+- `rim` returns the corners of both faces. Physics uses them to give the disk
+  the same shape as its mesh.
+
+## Paint a bullseye
+
+The bullseye paints rings from the middle of the disk to its rim. It needs its
+own graph, a material, and a variant for the disk to use.
+
+1. Create `assets/bullseye.bemx`:
+
+   ```json5 title="assets/bullseye.bemx"
+   // A bullseye: rings of two colours around the middle of the disk's face, whose texture coordinates span 0 to 1.
+   {
+   	nodes: [
+   		{ name: "uv", node: "texcoord" },
+   		{ name: "middle", node: "constant", value: [0.5, 0.5] },
+   		{ name: "from_middle", node: "subtract", in1: "uv", in2: "middle" },
+   		{ name: "distance", node: "magnitude", in: "from_middle" },
+   		// Five rings from the middle to the rim, so the ring number goes up by one every tenth of the face.
+   		{ name: "rings_per_unit", node: "constant", value: 10.0 },
+   		{ name: "rings", node: "multiply", in1: "distance", in2: "rings_per_unit" },
+   		{ name: "ring", node: "floor", in: "rings" },
+   		{ name: "two", node: "constant", value: 2.0 },
+   		// One for odd rings, zero for even ones.
+   		{ name: "odd", node: "modulo", in1: "ring", in2: "two" },
+   		{ name: "inner", node: "parameter", parameter: "inner", type: "color3" },
+   		{ name: "outer", node: "parameter", parameter: "outer", type: "color3" },
+   		{ name: "color", node: "mix", bg: "inner", fg: "outer", mix: "odd" },
+   		{ name: "roughness", node: "constant", value: 0.4 },
+   		{ name: "surface", node: "surface", base_color: "color", roughness: "roughness" },
+   	],
+   }
+   ```
+
+   Read it from the top. It measures how far each point is from the middle of
+   the face, counts which ring that distance falls in, and paints odd rings
+   one color and even rings the other.
+
+2. Create `assets/bullseye.bema`, the material with the two colors:
+
+   ```json5 title="assets/bullseye.bema"
+   {
+   	"domain": "World",
+   	"type": "Surface",
+   	"graph": "bullseye.bemx",
+   	"variables": [
+   		{ "name": "inner", "data_type": "vec3f", "value": [0.8, 0.05, 0.03], "type": "Dynamic" },
+   		{ "name": "outer", "data_type": "vec3f", "value": [0.9, 0.9, 0.85], "type": "Dynamic" }
+   	]
+   }
+   ```
+
+3. Create `assets/target.bema`, the variant the disks are drawn with. Like the
+   booth's boxes, the disks are meshes you build in code, so they use a
+   variant:
+
+   ```json5 title="assets/target.bema"
+   {
+   	"parent": "bullseye.bema",
+   	"variables": [
+   		{ "name": "inner", "value": [0.8, 0.05, 0.03] },
+   		{ "name": "outer", "value": [0.9, 0.9, 0.85] }
+   	]
+   }
+   ```
+
+4. The carriages are brass. Create `assets/brass.bema`, one more variant of
+   your paint:
+
+   ```json5 title="assets/brass.bema"
+   {
+   	"parent": "paint.bema",
+   	"variables": [
+   		{ "name": "color", "value": [0.8, 0.6, 0.25] },
+   		{ "name": "roughness", "value": 0.3 }
+   	]
+   }
+   ```
+
+## Describe the rows
+
+Now go back to `src/main.rs`.
+
+1. At the top of the file, before the `use` block, tell Rust about the new
+   file:
+
+   ```rust title="src/main.rs"
+   mod disk;
+   ```
+
+2. Replace the `use` block with this one. It adds the physics types and a few
+   math types:
+
+   ```rust title="src/main.rs"
+   use byte_engine::{
+   	application::{
+   		graphics::{self, GraphicsApplication},
+   		parameters::Parameters as _,
+   	},
+   	constants::{forward, right, up},
+   	core::{Creator as _, factory::Handle},
+   	gameplay::transform::Transform,
+   	math::{Degrees, Orientation, Point, Radians, Scale, UnitVector, Vector},
+   	physics::{Body, BodyTypes, Constraint, LocalSpace, Physics, Shapes, build_convex_hull},
+   	rendering::{
+   		Camera, DirectionalLight, ExponentialHeightFog, FogLayer, LightColor, PhotometricIntensity, PointLight,
+   		RenderableMesh, SceneId, mesh::generator::BoxMeshGenerator, window::Window,
+   	},
+   	utils::Extent,
+   };
+
+   use crate::disk::Disk;
+   ```
+
+3. After the `eye` function, describe the rows and the targets:
+
+   ```rust title="src/main.rs"
+   /// The `Row` struct describes one shelf of targets: how far it is from the player, how high its shelf is, and how
+   /// fast its targets slide, with the sign giving the direction.
+   struct Row {
+   	depth: f32,
+   	height: f32,
+   	speed: f32,
+   }
+
+   /// The rows, nearest first. Each one is higher than the one in front so its targets show over it, and slides the
+   /// other way.
+   const ROWS: [Row; 3] = [
+   	Row { depth: 7.0, height: 0.8, speed: 1.5 },
+   	Row { depth: 9.5, height: 1.4, speed: -2.0 },
+   	Row { depth: 12.0, height: 2.0, speed: 2.5 },
+   ];
+
+   /// The distance between neighboring targets along a row.
+   const TARGET_SPACING: f32 = 1.6;
+   /// Returns the half size of a carriage, the block a target stands on.
+   fn carriage_size() -> Vector<LocalSpace> {
+   	Vector::new(0.25, 0.1, 0.15)
+   }
+   const CARRIAGE_MASS: f32 = 20.0;
+   /// The gap between a carriage's top and its disk's rim, so the two never touch.
+   const HINGE_GAP: f32 = 0.05;
+   const DISK: Disk = Disk { radius: 0.3, half_thickness: 0.03, material: "target.bema" };
+   /// How far a standing disk leans toward the player, so gravity holds it against its hinge's forward stop.
+   const LEAN: f32 = 0.1;
+   /// How far back from standing a disk can fall before its hinge stops it, lying down.
+   const FALL: f32 = 1.45;
+
+   /// The `Target` struct tracks one carriage and the disk hinged to it, so the game can bring it around and count it.
+   struct Target {
+   	carriage: Handle,
+   	disk: Handle,
+   	row: usize,
+   	/// Where along the row the carriage was when physics last moved it.
+   	x: f32,
+   	/// How fast the carriage moved along the row in that step.
+   	speed: f32,
+   	/// Whether the disk has been knocked down since the target last came around.
+   	down: bool,
+   }
+   ```
+
+   Each `Row` is one shelf. `depth` is its distance from the player, `height`
+   is how high its top is, and `speed` is how fast its targets slide, in meters
+   per second. A negative speed slides to the left, so the middle row goes the
+   other way.
+
+   Each `Target` remembers the handles of its carriage and its disk, so your
+   game can find them again. You use `x`, `speed`, and `down` to
+   [keep score](/docs/use/sample-project/keep-score).
+
+## Build the rows
+
+1. After `main`, add a function that says how wide a row is, and one that says
+   where a carriage and its disk stand:
+
+   ```rust title="src/main.rs"
+   /// Returns how far a row reaches to each side: just past what the booth's opening lets the player see at its depth.
+   fn row_half_width(row: &Row) -> f32 {
+   	row.depth * 0.7 + 1.0
+   }
+
+   /// Returns where a carriage at `x` along `row` sits, and where its disk stands on it, leaning toward the player.
+   fn target_poses(row: &Row, x: f32) -> (Transform, Transform) {
+   	let carriage = Point::new(x, row.height + carriage_size().y(), row.depth);
+   	// Turning about +x tips the top away from the player, so the lean toward them is a negative turn.
+   	let lean = Orientation::try_from_axis_angle(right(), Radians::new(-LEAN)).unwrap();
+   	let hinge = carriage + up() * (carriage_size().y() + HINGE_GAP);
+   	let disk = hinge + lean.rotate_vector(up().into_vector()) * DISK.radius;
+   	(
+   		Transform::from_position(carriage),
+   		Transform::new(disk, Scale::identity(), lean),
+   	)
+   }
+   ```
+
+   The carriage sits on top of the shelf. The disk stands on the carriage,
+   turned so it leans a little toward the player. Its bottom edge sits just
+   above the carriage, where the hinge goes.
+
+2. Add the function that builds one row: its shelf, and the targets on it:
+
+   ```rust title="src/main.rs"
+   /// Creates a row's shelf and the targets that slide along it, and returns the targets.
+   fn build_row(app: &GraphicsApplication, row: usize) -> Vec<Target> {
+   	let Row { depth, height, speed } = ROWS[row];
+   	let half_width = row_half_width(&ROWS[row]);
+
+   	// The shelf is a block from the floor up to the row's height. Two low lips along its top keep the carriages on it
+   	// when a ball knocks them back.
+   	let length = half_width + 1.0;
+   	block(app, Vector::new(length, height * 0.5, 0.5), Point::new(0.0, height * 0.5, depth), "wood.bema");
+   	for side in [-1.0, 1.0] {
+   		let lip = Vector::new(length, 0.04, 0.02);
+   		let z = depth + side * (carriage_size().z() + 0.01 + lip.z());
+   		block(app, lip, Point::new(0.0, height + lip.y(), z), "brass.bema");
+   	}
+
+   	// The disks share one hull: every disk collides as the same shape.
+   	let hull = std::sync::Arc::new(build_convex_hull(&DISK.rim()).expect("a disk has volume"));
+   	let count = (2.0 * half_width / TARGET_SPACING) as usize;
+   	(0..count)
+   		.map(|place| {
+   			let x = -half_width + (place as f32 + 0.5) * 2.0 * half_width / count as f32;
+   			let (carriage_pose, disk_pose) = target_poses(&ROWS[row], x);
+
+   			// The carriage slides without friction and never turns, so it keeps the row's speed and stays upright.
+   			let carriage = app
+   				.world()
+   				.create(RenderableMesh::generated(Box::new(
+   					BoxMeshGenerator::from_size(carriage_size().into_maths()).with_material("brass.bema"),
+   				)))
+   				.with(
+   					Body::new(BodyTypes::Dynamic, Shapes::cube(carriage_size()))
+   						.with_mass(CARRIAGE_MASS)
+   						.with_friction(0.0)
+   						.with_rotation(false)
+   						.with_velocity(Vector::new(speed, 0.0, 0.0)),
+   				)
+   				.with(carriage_pose)
+   				.handle();
+   			let disk = app
+   				.world()
+   				.create(RenderableMesh::generated(Box::new(DISK)))
+   				.with(
+   					Body::new(BodyTypes::Dynamic, Shapes::convex_hull(hull.clone()))
+   						.with_mass(0.5)
+   						.with_velocity(Vector::new(speed, 0.0, 0.0)),
+   				)
+   				.with(disk_pose)
+   				.handle();
+
+   			// The hinge runs along the row through the disk's bottom rim. It stops the disk where it was created,
+   			// leaning forward, and lets it fall back until it lies nearly flat.
+   			let axis = UnitVector::<LocalSpace>::x_axis();
+   			let hinge = Constraint::hinge(carriage, disk, axis, Some(Radians::new(0.0)..=Radians::new(FALL))).with_anchors(
+   				Point::new(0.0, carriage_size().y() + HINGE_GAP, 0.0),
+   				Point::new(0.0, -DISK.radius, 0.0),
+   			);
+   			app.world().create(hinge);
+
+   			Target { carriage, disk, row, x, speed, down: false }
+   		})
+   		.collect()
+   }
+   ```
+
+   Take it in four parts:
+
+   - **The shelf** is a wooden block from the floor up to the row's height,
+     made with your `block` function. Two thin brass *lips* run along its top,
+     one on each side of the carriages, so a ball that hits a carriage can't
+     push it off.
+   - **The carriage** is a `Dynamic` body: physics moves it. It starts at the
+     row's speed. Because it has no friction, nothing slows it down, and
+     `with_rotation(false)` keeps it from tipping over.
+   - **The disk** is a light dynamic body. Its shape is a *convex hull*, the
+     tightest solid shape around the rim's corners. All the disks are the same,
+     so they share one hull.
+   - **The hinge** is a `Constraint`: a rule that physics keeps true. It joins
+     the disk to the carriage along a line that runs across the row, through
+     the disk's bottom edge. Its *limit* lets the disk turn between 0, where it
+     stands leaning forward, and `FALL`, about 83°, where it lies back.
+     *Anchors* say where the hinge is on each body: just above the carriage's
+     top, and at the bottom of the disk.
+
+   A standing disk leans a little toward the player. Gravity holds it against
+   its hinge's forward stop, so it stands still until a ball pushes it back.
+
+<Callout type="info" title="Learn more about physics">
+	The [physics reference](/docs/reference/physics) describes every kind of
+	body, shape, and constraint, and how bodies collide and settle. See
+	[Constraints](/docs/reference/physics#constraints) for hinges and their
+	limits.
+</Callout>
+
+## Turn on physics
+
+Bodies don't move until you create the physics simulation and *step* it every
+tick.
+
+1. In `main`, create the physics simulation right before the first tick:
+
+   ```rust title="src/main.rs"
+   	// Physics only sees bodies created after it, so it comes before the scene.
+   	let mut physics = Physics::new(app.world(), app.parameters().scope("physics"));
+   ```
+
+   Physics only sees bodies that you create after it. Creating it before the
+   first tick lets it see every body in the scene.
+
+2. In the first tick, build the rows after the lights, and return the targets
+   with the camera. Replace everything from `build_booth(app);` to the end of
+   `main` with this code:
+
+   ```rust title="src/main.rs"
+   		build_booth(app);
+   		light_booth(app);
+   		let targets = ROWS.iter().enumerate().flat_map(|(row, _)| build_row(app, row)).collect::<Vec<_>>();
+
+   		(camera, targets)
+   	}) else {
+   		return;
+   	};
+
+   	while app
+   		.tick_with(|app, time| {
+   			physics.step(time, app.alley_mut());
+   		})
+   		.is_some()
+   	{}
+   }
+   ```
+
+3. The first tick now returns two values, so change the line that starts it
+   from `let Some(camera) =` to:
+
+   ```rust title="src/main.rs"
+   	let Some((camera, targets)) = app.tick_with(|app, _| {
+   ```
+
+Each tick now calls `physics.step`, which moves every dynamic body forward by
+the time the tick took, and puts each one where physics moved it.
+
+## Run the program
+
+Run `cargo run`. Three wooden shelves stand behind the opening, and bullseyes
+slide along them: the nearest row to the right, the middle row to the left,
+and the back row to the right again.
+
+After a few seconds, the shelves are empty. Each target slides off the end of
+its shelf, out of sight, and nothing brings it back yet. If the window takes a
+while to open, the targets may be gone before you see them. You bring them
+back around in the last step, when you
+[keep score](/docs/use/sample-project/keep-score).
+
+## Next step
+
+[Aim and fire](/docs/use/sample-project/aim-and-fire).
+
+## Rust API
+
+- [`MeshGenerator`](/docs/api/latest/byte_engine/rendering/mesh/generator/MeshGenerator)
+- [`Physics`](/docs/api/latest/byte_engine/physics/Physics)
+- [`Body`](/docs/api/latest/byte_engine/physics/body/Body)
+- [`Constraint`](/docs/api/latest/byte_engine/physics/constraint/Constraint)
+- [`build_convex_hull`](/docs/api/latest/byte_engine/physics/convex_hull#fn.build_convex_hull)

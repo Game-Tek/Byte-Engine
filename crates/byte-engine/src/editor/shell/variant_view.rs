@@ -45,7 +45,11 @@ async fn parameters_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
 				.layers
 				.variant()
 				.expect("The parameters drawer shows only while a variant is open.");
-			(variant.file().to_owned(), format!("variant of {}", variant.parent), variant.parameters.len())
+			(
+				variant.file().to_owned(),
+				format!("variant of {}", variant.parent),
+				variant.parameters.len(),
+			)
 		})
 		.await;
 	let mut drawer = Drawer::declare(ctx, Side::Right, &name, &parent).await;
@@ -153,7 +157,9 @@ async fn footer(ctx: &mut EvaluationContext<Shell>, file: &str, width: f32) {
 		.container(|c| c.width(width.into()).height(FOOTER_HEIGHT.into()).padding(2.0, 0.0).flow(flow::centered_row))
 		.await;
 	line.element("text")
-		.text(&format!("A change saves to {file}"), |t| t.font_size(11.0).style([solid(MUTED)]))
+		.text(&format!("A change saves to {file}"), |t| {
+			t.font_size(11.0).style([solid(MUTED)])
+		})
 		.await;
 	// The file doesn't change while the variant is open.
 	std::future::pending::<()>().await;

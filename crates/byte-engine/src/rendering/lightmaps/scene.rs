@@ -172,7 +172,8 @@ mod tests {
 	fn a_level_yields_its_meshes_lights_and_lightmap_holder_by_spawn_index() {
 		let (level, payload) = bake_level(LEVEL.as_bytes()).expect("the test level should bake");
 
-		let scene = collect_level("arena.lightmap.bead", level.clone(), payload.clone()).expect("the level should be collected");
+		let scene =
+			collect_level("arena.lightmap.bead", level.clone(), payload.clone()).expect("the level should be collected");
 
 		assert_eq!(scene.holder, 3);
 		assert_eq!(scene.lights.len(), 1);
